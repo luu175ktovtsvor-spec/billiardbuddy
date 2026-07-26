@@ -2,6 +2,8 @@
 
 > 目标：Windows x64 与 macOS arm64 的单一 Electron 桌面产品。
 
+注意！！！文档只是给开发方向的说明，具体怎么做，按照最好的架构，以及实现细节自己判断，下面的内容不一定都对，自己判断怎么并推理出来如何改，但是得对项目负责，主要就是我对BilliardBuddy主要的产品愿景
+
 ## 文档职责
 
 - 重构完成后，BilliardBuddy 打开**用户项目**时，`AGENTS.md` 与 `BilliardBuddy.md` 是同一层项目指令入口；它们的产品语义等同于 Claude 的 `CLAUDE.md` 与 Codex 的 `AGENTS.md`。`.BilliardBuddy/BilliardBuddy.md`、`.BilliardBuddy/rules/*.md` 和 `.BilliardBuddy/BilliardBuddy.local.md` 是 BilliardBuddy 的目录化入口。Harness 将它们从根目录到当前目录合并为一次任务快照，再交给 DeepSeek；模型不直接读取本机磁盘。
@@ -590,7 +592,7 @@ Provider registry 是 model ID、能力、上下文窗口、body budget、compac
 当且仅当以下事实同时成立，本轮重构才算完成：
 
 - 一个安装包内只有一套 GUI、任务领域、媒体领域和 Agent 执行链；
-- Agent Core 的正式能力保留，DeepSeek 原生 Anthropic Web Search 可用；
+- billiardbuddy Agent Core 的正式能力保留，DeepSeek 原生 Anthropic Web Search 可用；
 - 图片和视频吸收了历史上成熟的后端编排，但没有复活旧运行时；
 - 用户能完成主要旅程，并在失败、断网、取消、升级和重启后继续；
 - 所有真实外部副作用、远程用量和资源调度可控制、可观察、可对账；

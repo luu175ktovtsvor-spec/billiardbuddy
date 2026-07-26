@@ -16,6 +16,7 @@ import {
   prepareDeepSeekChatBody,
   DeepSeekRequestError,
 } from './deepseekChat'
+import { fetchMimoWithRetry, MimoRequestError, prepareMimoChatBody } from './mimoChat'
 import {
   containsImageContent,
   createVisionBridge,
@@ -79,10 +80,8 @@ type TokenBucketWaiter = {
   timeout?: ReturnType<typeof setTimeout>
 }
 
-// 唯一可路由的文本上游是 DeepSeek TextReasoning；视觉证据由 Registry-owned
-// VisualEvidence bridge 单独调用。
 type ChatProvider = {
-  label: 'deepseek'
+  label: 'deepseek' | 'mimo'
   base: string
   key: string
   defaultModel: string
@@ -94,7 +93,7 @@ type ChatProvider = {
   retryBaseMs: number
   retryMaxMs: number
   prepareBody: (rawBody: string, allowed: ReadonlySet<string>, defaultModel: string, ctx?: { userId?: string }) => { body: string }
-  /** A verified owner-derived opaque user ID is passed to the sole TextReasoning provider. */
+  /** A verified owner-derived opaque user ID is passed only when the provider supports it. */
   deriveUserId?: (user: string) => string | undefined
   fetchWithRetry: (
     doRequest: (attempt: number) => Promise<Response>,
@@ -893,6 +892,10 @@ function textReasoningBodyCaps() {
   return textReasoningRegistryEntry().body_caps
 }
 
+function visualEvidenceBodyCaps() {
+  return visualEvidenceRegistryEntry().body_caps
+}
+
 function requireTextReasoningModel(rawBody: string): string {
   const model = parseChatModel(rawBody).trim()
   if (!model || !textReasoningRegistryEntry(model)) {
@@ -915,14 +918,15 @@ function isRecord(value: unknown): value is Record<string, any> {
 }
 
 /**
- * The sole chat handler routes the registry-selected DeepSeek TextReasoning provider.
+ * A narrow provider handler used by the DeepSeek chat route and the separate MiMo
+ * media-workbench route.
  * It owns authenticated capacity, rate limits, retries, SSE passthrough, redacted upstream
  * errors, and usage logging without any provider fallback.
  */
 function createChatHandler(provider: ChatProvider, fetchImpl: FetchLike, store: UsageStore): ChatHandler {
   return async function chatHandler(request: Request, rawBody: string, user: string, principalId: string): Promise<Response> {
     // prepareBody 在拿容量许可之前跑,校验失败(400/503)不会漏掉一个许可名额。
-    // The sole DeepSeek TextReasoning provider derives its trusted opaque user ID here.
+    // DeepSeek derives a trusted opaque user ID; MiMo does not receive one.
     const userId = provider.deriveUserId?.(user)
     const prepared = provider.prepareBody(rawBody, provider.allowedModels, provider.defaultModel, { userId })
     const queuedStarted = performance.now()
@@ -1237,6 +1241,27 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
       },
   })
     : null
+  const mimoMediaProvider: ChatProvider | null = config.mimoKey
+    ? {
+      label: 'mimo',
+      base: config.mimoBase,
+      key: config.mimoKey,
+      defaultModel: visualEvidenceRegistryEntry().model_id,
+      allowedModels: new Set([visualEvidenceRegistryEntry().model_id]),
+      bucket: mimoBucket,
+      capacity: mimoReservations.forLane('native'),
+      queueMaxWait: config.mimoQueueMaxWait,
+      retryMax: config.mimoRetryMax,
+      retryBaseMs: config.mimoRetryBaseMs,
+      retryMaxMs: config.mimoRetryMaxMs,
+      prepareBody: prepareMimoChatBody,
+      fetchWithRetry: fetchMimoWithRetry,
+      RequestError: MimoRequestError,
+    }
+    : null
+  const mimoMediaReasoning: ChatHandler | null = mimoMediaProvider
+    ? createChatHandler(mimoMediaProvider, fetchImpl, store)
+    : null
   const imgBucket = new TokenBucket(config.imgIpm, config.imgQueueMax)
   const ingressBodyBudget = new InflightByteBudget(config.ingressInflightBodyBytes, '请求较多，请稍后重试')
   const transcribeBucket = new TokenBucket(config.transcribeRpm, config.transcribeQueueMax)
@@ -1515,6 +1540,42 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
           )
           return await runMeteredStream(receipt, usageOperation, () => deepseekNativeWebSearch(request, rawBody, user, identity.principalId))
         })
+      }
+
+      // Media workbenches use MiMo V2.5 directly for visual understanding and
+      // evidence-based planning. This route is intentionally separate from Agent
+      // chat, whose /v1/chat/completions path remains DeepSeek-only and retains the
+      // existing MiMo visual-evidence bridge for image messages.
+      if (request.method === 'POST' && url.pathname === '/v1/media/reasoning') {
+        const identity = auth(authority, request)
+        requireProviderProtocol(request)
+        requireRemoteConsent(request)
+        const usageOperation = usageOperationId(request)
+        server?.timeout(request, 0)
+        const contentType = request.headers.get('content-type')
+        if (contentType && !isJsonContentType(contentType)) throw new HttpError(415, '媒体理解请求需要 JSON')
+        return await withBufferedBodyReservation(
+          request,
+          visualEvidenceBodyCaps().VISION_BODY_MAX_BYTES,
+          ingressBodyBudget,
+          config.ingressBodyReadTimeoutMs,
+          async rawBody => {
+            if (!mimoMediaReasoning) throw new HttpError(503, 'MiMo 媒体理解服务未配置')
+            const inputBytes = Buffer.byteLength(rawBody, 'utf8')
+            const receipt = reserveMetered(
+              identity,
+              'VisualEvidence',
+              `${usageOperation}:media`,
+              usageFingerprint(`VisualEvidence\0${rawBody}`),
+              { requests: 1, input_bytes: inputBytes, output_units: requestedOutputUnits(rawBody) },
+            )
+            return await runMeteredStream(
+              receipt,
+              usageOperation,
+              () => mimoMediaReasoning(request, rawBody, identity.owner, identity.principalId),
+            )
+          },
+        )
       }
 
       if (request.method === 'POST' && url.pathname === '/v1/chat/completions') {

@@ -87,6 +87,7 @@ export const mediaVersionSchema = z.object({
   created_at: mediaIsoDateSchema,
 })
 export const mediaDeletionReceiptSchema = z.object({
+  schema_version: z.literal(1).default(1),
   deletion_id: mediaIdSchema,
   project_id: mediaIdSchema,
   owner: mediaOwnerSchema,
@@ -101,6 +102,7 @@ export const mediaDeletionReceiptSchema = z.object({
   trash_key: mediaIdSchema,
 })
 export const publicMediaDeletionReceiptSchema = mediaDeletionReceiptSchema.omit({
+  schema_version: true,
   owner: true,
   trash_key: true,
 })

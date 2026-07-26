@@ -2,7 +2,7 @@
  * CronService — 管理定时任务的增删改查
  *
  * 任务持久化到 ~/.claude/scheduled_tasks.json（JSON 文件）。
- * 文件格式: { "tasks": [ CronTask, ... ] }
+ * 文件格式: { "schemaVersion": 1, "tasks": [ CronTask, ... ] }
  */
 
 import * as fs from 'fs/promises'
@@ -52,7 +52,10 @@ export type CronTask = {
   notification?: TaskNotificationConfig
 }
 
+export const CURRENT_SCHEDULED_TASKS_SCHEMA_VERSION = 1
+
 type TasksFile = {
+  schemaVersion: typeof CURRENT_SCHEDULED_TASKS_SCHEMA_VERSION
   tasks: CronTask[]
 }
 
@@ -60,10 +63,13 @@ const TASKS_FILE_WRITE_ATTEMPTS = 2
 const tasksFileLocks = new Map<string, Promise<void>>()
 
 export class CronService {
+  constructor(private readonly configDir?: string) {}
+
   /** 任务文件路径 */
   private getTasksFilePath(): string {
-    const configDir =
-      process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude')
+    const configDir = this.configDir
+      ?? process.env.CLAUDE_CONFIG_DIR
+      ?? path.join(os.homedir(), '.claude')
     return path.join(configDir, 'scheduled_tasks.json')
   }
 
@@ -104,6 +110,21 @@ export class CronService {
   async listTasks(): Promise<CronTask[]> {
     const data = await this.readTasksFile()
     return data.tasks
+  }
+
+  /** Persist the supported legacy envelope before the scheduler can execute it. */
+  async migrateSupportedStorage(): Promise<void> {
+    await this.withTasksLock(async () => {
+      const filePath = this.getTasksFilePath()
+      const before = await fs.readFile(filePath, 'utf-8').catch((error: NodeJS.ErrnoException) => {
+        if (error.code === 'ENOENT') return null
+        throw error
+      })
+      if (before === null) return
+      const data = await this.readTasksFile()
+      const after = JSON.stringify(data, null, 2) + '\n'
+      if (before !== after) await this.writeTasksFile(data)
+    })
   }
 
   /** 创建新任务 */
@@ -196,12 +217,13 @@ export class CronService {
   private async readTasksFile(): Promise<TasksFile> {
     try {
       const raw = await fs.readFile(this.getTasksFilePath(), 'utf-8')
-      const parsed = JSON.parse(raw) as TasksFile
-      // 兼容异常格式
-      if (!Array.isArray(parsed.tasks)) {
-        return { tasks: [] }
+      const parsed = JSON.parse(raw) as Partial<TasksFile>
+      if (parsed.schemaVersion !== undefined && parsed.schemaVersion !== CURRENT_SCHEDULED_TASKS_SCHEMA_VERSION) {
+        throw new Error('UNSUPPORTED_SCHEDULED_TASKS_SCHEMA')
       }
+      if (!Array.isArray(parsed.tasks)) throw new Error('INVALID_SCHEDULED_TASKS_SCHEMA')
       return {
+        schemaVersion: CURRENT_SCHEDULED_TASKS_SCHEMA_VERSION,
         tasks: parsed.tasks.map((task) => {
           const { useWorktree: _legacyUseWorktree, ...safeTask } = task as CronTask & {
             useWorktree?: unknown
@@ -219,7 +241,7 @@ export class CronService {
       }
     } catch (err: unknown) {
       if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
-        return { tasks: [] }
+        return { schemaVersion: CURRENT_SCHEDULED_TASKS_SCHEMA_VERSION, tasks: [] }
       }
       throw ApiError.internal(
         `Failed to read scheduled tasks: ${(err as Error).message}`,

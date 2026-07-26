@@ -903,6 +903,23 @@ export class ProductTaskService {
 
   async listSideTasksAuthoritatively(taskId: string): Promise<ProductSideTask[]> { return this.listSideTasks(taskId) }
 
+  /**
+   * Materialize every supported v1-v4 task record through the existing domain
+   * normalizer before the legacy reader is eligible for retirement.
+   */
+  async migrateSupportedStorage(): Promise<void> {
+    const taskIds = await this.withStoreLock(async () => {
+      const exists = await fs.access(this.storagePath).then(() => true, () => false)
+      if (!exists) return []
+      const { store } = await this.loadRegisteredStore()
+      await this.writeStore(store)
+      return Object.keys(store.tasks).sort()
+    })
+    for (const taskId of taskIds) {
+      await this.ensureAuthorityProjectionForLegacyTask(taskId, { authorityPath: this.authorityPath })
+    }
+  }
+
   private async listTasksUnlocked(): Promise<ProductTaskIndexResponse> {
     const { store, sessions } = await this.loadRegisteredStore()
     const sideTaskSessionIds = new Set(

@@ -1213,6 +1213,24 @@ export class MediaProjectService {
     }) as VideoStudioProject
   }
 
+  /** Upgrade every supported persisted record without swallowing a corrupt or future schema. */
+  async migrateSupportedStorage(): Promise<void> {
+    await this.ensureDirs()
+    for (const name of (await readdir(this.projectsDir)).filter(name => name.endsWith('.json')).sort()) {
+      await this.getProject(name.slice(0, -5))
+    }
+    for (const name of (await readdir(this.tasksDir)).filter(name => name.endsWith('.json')).sort()) {
+      const task = mediaTaskSchema.parse(JSON.parse(await readFile(join(this.tasksDir, name), 'utf8')))
+      if (!task.operation_id || !task.owner) await this.saveTask(task)
+    }
+    for (const name of (await readdir(this.deletionsDir)).filter(name => name.endsWith('.json')).sort()) {
+      const filePath = join(this.deletionsDir, name)
+      const raw = JSON.parse(await readFile(filePath, 'utf8')) as unknown
+      const receipt = mediaDeletionReceiptSchema.parse(raw)
+      if (!raw || typeof raw !== 'object' || !('schema_version' in raw)) await this.writeJson(filePath, receipt)
+    }
+  }
+
   async listProjects(kind?: 'image' | 'video', owner?: MediaOwner): Promise<MediaProject[]> {
     await this.ensureDirs()
     const names = await readdir(this.projectsDir)

@@ -1,6 +1,7 @@
-import { beforeEach, describe, expect, test } from 'vitest'
+import { beforeEach, describe, expect, test, vi } from 'vitest'
 import {
   CURRENT_DESKTOP_PERSISTENCE_SCHEMA_VERSION,
+  DESKTOP_PERSISTENCE_BACKUP_KEY,
   DESKTOP_PERSISTENCE_VERSION_KEY,
   runDesktopPersistenceMigrations,
 } from './persistenceMigrations'
@@ -130,18 +131,16 @@ describe('desktop persistence migrations', () => {
     expect(window.localStorage.getItem('billiardbuddy-theme')).toBeNull()
   })
 
-  test('preserves a valid persisted theme and drops the retired pure white theme', () => {
-    // 有效主题(light/dark/system)原样保留。
-    window.localStorage.setItem('billiardbuddy-theme', 'dark')
-    const validReport = runDesktopPersistenceMigrations()
-    expect(validReport.migratedKeys).not.toContain('billiardbuddy-theme')
-    expect(window.localStorage.getItem('billiardbuddy-theme')).toBe('dark')
+  test.each([
+    ['dark', false],
+    ['white', true],
+  ])('migrates persisted theme %s according to the current theme contract', (theme, removed) => {
+    window.localStorage.setItem('billiardbuddy-theme', theme)
 
-    // 已退役的 'white' 不再是合法主题 → 迁移清除,由默认（跟随系统）接管。
-    window.localStorage.setItem('billiardbuddy-theme', 'white')
-    const retiredReport = runDesktopPersistenceMigrations()
-    expect(retiredReport.migratedKeys).toContain('billiardbuddy-theme')
-    expect(window.localStorage.getItem('billiardbuddy-theme')).toBeNull()
+    const report = runDesktopPersistenceMigrations()
+
+    expect(report.migratedKeys.includes('billiardbuddy-theme')).toBe(removed)
+    expect(window.localStorage.getItem('billiardbuddy-theme')).toBe(removed ? null : theme)
   })
 
   test.each(['zh-TW', 'jp', 'kr'])('preserves the supported %s locale on restart', (locale) => {
@@ -153,20 +152,16 @@ describe('desktop persistence migrations', () => {
     expect(window.localStorage.getItem('billiardbuddy-locale')).toBe(locale)
   })
 
-  test('preserves valid app zoom and removes invalid app zoom values', () => {
-    window.localStorage.setItem('billiardbuddy-app-zoom', '1.2')
+  test.each([
+    ['1.2', false],
+    ['4', true],
+  ])('migrates persisted app zoom %s according to the supported range', (zoom, removed) => {
+    window.localStorage.setItem('billiardbuddy-app-zoom', zoom)
 
-    const validReport = runDesktopPersistenceMigrations()
+    const report = runDesktopPersistenceMigrations()
 
-    expect(validReport.migratedKeys).not.toContain('billiardbuddy-app-zoom')
-    expect(window.localStorage.getItem('billiardbuddy-app-zoom')).toBe('1.2')
-
-    window.localStorage.setItem('billiardbuddy-app-zoom', '4')
-
-    const invalidReport = runDesktopPersistenceMigrations()
-
-    expect(invalidReport.migratedKeys).toContain('billiardbuddy-app-zoom')
-    expect(window.localStorage.getItem('billiardbuddy-app-zoom')).toBeNull()
+    expect(report.migratedKeys.includes('billiardbuddy-app-zoom')).toBe(removed)
+    expect(window.localStorage.getItem('billiardbuddy-app-zoom')).toBe(removed ? null : zoom)
   })
 
   test('migrates the legacy UI zoom key into app zoom storage', () => {
@@ -182,7 +177,9 @@ describe('desktop persistence migrations', () => {
     expect(window.localStorage.getItem('billiardbuddy-ui-zoom')).toBeNull()
   })
 
-  test('does not throw if schema version persistence is blocked', () => {
+  test('restores exact source values when the version commit fails', () => {
+    window.localStorage.setItem('billiardbuddy-theme', 'white')
+    window.localStorage.setItem('billiardbuddy-open-tabs', '{"openTabs":')
     const storage = {
       getItem: window.localStorage.getItem.bind(window.localStorage),
       removeItem: window.localStorage.removeItem.bind(window.localStorage),
@@ -194,11 +191,14 @@ describe('desktop persistence migrations', () => {
       },
     }
 
-    expect(() => runDesktopPersistenceMigrations(storage)).not.toThrow()
-    expect(runDesktopPersistenceMigrations(storage).migratedKeys).toContain(DESKTOP_PERSISTENCE_VERSION_KEY)
+    expect(() => runDesktopPersistenceMigrations(storage)).toThrow('storage blocked')
+    expect(window.localStorage.getItem('billiardbuddy-theme')).toBe('white')
+    expect(window.localStorage.getItem('billiardbuddy-open-tabs')).toBe('{"openTabs":')
+    expect(window.localStorage.getItem(DESKTOP_PERSISTENCE_VERSION_KEY)).toBeNull()
+    expect(window.localStorage.getItem(DESKTOP_PERSISTENCE_BACKUP_KEY)).not.toBeNull()
   })
 
-  test('does not throw if storage reads and writes are blocked', () => {
+  test('fails closed if storage reads and writes are blocked', () => {
     const storage = {
       getItem: () => {
         throw new Error('storage unavailable')
@@ -211,16 +211,51 @@ describe('desktop persistence migrations', () => {
       },
     }
 
+    expect(() => runDesktopPersistenceMigrations(storage)).toThrow('storage unavailable')
+  })
+
+  test('rejects a future schema before creating a backup or changing user state', () => {
+    window.localStorage.setItem(DESKTOP_PERSISTENCE_VERSION_KEY, String(CURRENT_DESKTOP_PERSISTENCE_SCHEMA_VERSION + 1))
+    window.localStorage.setItem('billiardbuddy-theme', 'dark')
+
+    expect(() => runDesktopPersistenceMigrations()).toThrow('newer than supported schema')
+    expect(window.localStorage.getItem('billiardbuddy-theme')).toBe('dark')
+    expect(window.localStorage.getItem(DESKTOP_PERSISTENCE_BACKUP_KEY)).toBeNull()
+  })
+
+  test('recovers a prepared migration backup before retrying after a crash', () => {
+    window.localStorage.setItem('billiardbuddy-theme', 'white')
+    const failAtVersionCommit = {
+      getItem: window.localStorage.getItem.bind(window.localStorage),
+      removeItem: window.localStorage.removeItem.bind(window.localStorage),
+      setItem: (key: string, value: string) => {
+        if (key === DESKTOP_PERSISTENCE_VERSION_KEY) throw new Error('simulated crash')
+        window.localStorage.setItem(key, value)
+      },
+    }
+    expect(() => runDesktopPersistenceMigrations(failAtVersionCommit)).toThrow('simulated crash')
+
+    window.localStorage.setItem('billiardbuddy-theme', 'partially-written')
+    const report = runDesktopPersistenceMigrations()
+
+    expect(report.backupKey).toBe(DESKTOP_PERSISTENCE_BACKUP_KEY)
+    expect(window.localStorage.getItem('billiardbuddy-theme')).toBeNull()
+    expect(window.localStorage.getItem(DESKTOP_PERSISTENCE_VERSION_KEY)).toBe(String(CURRENT_DESKTOP_PERSISTENCE_SCHEMA_VERSION))
+  })
+
+  test('is an exact no-op after the current schema version is committed', () => {
+    window.localStorage.setItem('billiardbuddy-theme', 'dark')
+    runDesktopPersistenceMigrations()
+    const storage = {
+      getItem: window.localStorage.getItem.bind(window.localStorage),
+      removeItem: vi.fn(window.localStorage.removeItem.bind(window.localStorage)),
+      setItem: vi.fn(window.localStorage.setItem.bind(window.localStorage)),
+    }
+
     const report = runDesktopPersistenceMigrations(storage)
 
-    expect(report.migratedKeys).toEqual(expect.arrayContaining([
-      'billiardbuddy-open-tabs',
-      'billiardbuddy-session-runtime',
-      'billiardbuddy-theme',
-      'billiardbuddy-locale',
-      'billiardbuddy-active-settings-tab',
-      'billiardbuddy-app-zoom',
-      DESKTOP_PERSISTENCE_VERSION_KEY,
-    ]))
+    expect(report).toEqual({ migratedKeys: [] })
+    expect(storage.setItem).not.toHaveBeenCalled()
+    expect(storage.removeItem).not.toHaveBeenCalled()
   })
 })
