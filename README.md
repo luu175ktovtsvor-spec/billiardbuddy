@@ -8,7 +8,7 @@ BilliardBuddy 是面向球房经营者的桌面 Agent。当前能力和完成度
 
 BilliardBuddy 的 Agent Harness 会在启动任务时，把项目工作区中的指令文件收集为一次不可变快照，再注入当前模型上下文。因此 DeepSeek 不是自行读取磁盘；它接收的是由 Harness 按工作区边界、优先级和长度限制整理好的项目指令。
 
-| 文件 | 作用 | 兼容性 |
+| 文件 | 作用 | 说明 |
 |---|---|---|
 | `AGENTS.md`、`BilliardBuddy.md`、`.BilliardBuddy/BilliardBuddy.md`、`.BilliardBuddy/rules/*.md`、`.BilliardBuddy/BilliardBuddy.local.md` | BilliardBuddy 项目指令 | `AGENTS.md` 与 `BilliardBuddy.md` 同层；`.BilliardBuddy` 是本产品唯一的目录化配置入口 |
 
