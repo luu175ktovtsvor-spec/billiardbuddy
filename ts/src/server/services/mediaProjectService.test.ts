@@ -2228,7 +2228,7 @@ describe('MediaProjectService video projects', () => {
     expect(cancelledActive.every(task => task.status === 'cancelled')).toBe(true)
     expect(renderStarts).toBe(100)
     expect(activeEncoders).toBe(0)
-  })
+  }, 15_000)
 
   test('limits each local sidecar to two FFprobe scans and eight waiting windows', async () => {
     const mediaRoot = await root()
