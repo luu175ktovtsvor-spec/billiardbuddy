@@ -199,6 +199,57 @@ test('product Harness feeds a real tool result into the next model sample', asyn
   expect(events.at(-1)).toEqual({ type: 'result', subtype: 'success', is_error: false, result: '证据已验证。' })
 })
 
+test('product Harness never executes tool calls from a token-truncated model response', async () => {
+  let toolCalls = 0
+  const samples: any[][] = []
+  const tool = {
+    name: 'TruncatedProbe',
+    inputSchema: z.object({ value: z.string() }),
+    isConcurrencySafe: () => false,
+    isEnabled: () => true,
+    isReadOnly: () => false,
+    checkPermissions: async () => ({ behavior: 'allow', updatedInput: { value: 'looks-complete' }, decisionReason: { type: 'mode', mode: 'default' } }),
+    call: async () => { toolCalls += 1; return { data: 'must-not-run' } },
+    mapToolResultToToolResultBlockParam: (data: string, toolUseId: string) => ({ type: 'tool_result', tool_use_id: toolUseId, content: data }),
+    toAutoClassifierInput: () => '',
+  } as any
+  const runModel = ((input: { messages: any[] }) => (async function* () {
+    samples.push(input.messages)
+    yield samples.length === 1
+      ? {
+          type: 'assistant', uuid: 'assistant-truncated', timestamp: new Date(0).toISOString(),
+          message: { id: 'response-truncated', role: 'assistant', content: [{ type: 'tool_call', id: 'truncated-tool', name: 'TruncatedProbe', arguments: { value: 'looks-complete' } }], model: 'deepseek-v4-flash', stop_reason: 'length', usage: { input_tokens: 1, output_tokens: 16_384 } },
+        }
+      : {
+          type: 'assistant', uuid: 'assistant-recovered', timestamp: new Date(0).toISOString(),
+          message: { id: 'response-recovered', role: 'assistant', content: [{ type: 'text', text: '已用完整参数重新规划。' }], model: 'deepseek-v4-flash', stop_reason: 'end_turn', usage: { input_tokens: 1, output_tokens: 1 } },
+        }
+  })()) as any
+  const messages: any[] = []
+  const toolUseContext = productToolContext([tool], messages)
+
+  for await (const _event of runProductAgentLoop({
+    commands: [], prompt: '不要执行截断调用', tools: [tool], toolUseContext,
+    canUseTool: async (_tool, toolInput) => ({ behavior: 'allow', updatedInput: toolInput, decisionReason: { type: 'mode', mode: 'default' } }),
+    mutableMessages: messages,
+    promptContext: { workspace: '/workspace/example', date: '2026-07-26' },
+    runModel,
+  })) { /* consume */ }
+
+  expect(toolCalls).toBe(0)
+  expect(samples).toHaveLength(2)
+  expect(samples[1]).toContainEqual(expect.objectContaining({
+    message: expect.objectContaining({ content: expect.arrayContaining([
+      expect.objectContaining({
+        type: 'tool_result',
+        tool_call_id: 'truncated-tool',
+        is_error: true,
+        content: expect.stringContaining('was not executed'),
+      }),
+    ]) }),
+  }))
+})
+
 test('product Harness runs PreToolUse before Host execution and returns a structured denial to the model', async () => {
   let toolCalls = 0
   const samples: any[][] = []

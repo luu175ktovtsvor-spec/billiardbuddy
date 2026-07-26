@@ -122,4 +122,32 @@ describe('BilliardBuddy product model runtime', () => {
       }),
     }])
   })
+
+  test('preserves a length stop reason when a streamed tool call looks complete', async () => {
+    globalThis.fetch = (async () => stream([
+      { choices: [{ delta: { tool_calls: [{ index: 0, id: 'call_truncated', function: { name: 'Read', arguments: '{"file_path":"notes.md"}' } }] }, finish_reason: 'length' }] },
+    ])) as typeof fetch
+    const events = []
+    for await (const event of runProductModel({
+      messages: [],
+      systemPrompt: ['You are BilliardBuddy.'],
+      thinkingConfig: { type: 'disabled' },
+      tools: [{
+        name: 'Read',
+        inputJSONSchema: { type: 'object', properties: { file_path: { type: 'string' } }, required: ['file_path'] },
+        description: async () => 'Read one workspace file',
+      } as never],
+      signal: new AbortController().signal,
+      options,
+    })) events.push(event)
+
+    expect(events).toHaveLength(1)
+    expect(events[0]).toMatchObject({
+      type: 'assistant',
+      message: {
+        stop_reason: 'length',
+        content: [{ type: 'tool_call', id: 'call_truncated', name: 'Read', arguments: { file_path: 'notes.md' } }],
+      },
+    })
+  })
 })
