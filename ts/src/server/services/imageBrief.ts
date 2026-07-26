@@ -1,4 +1,5 @@
 import type {
+  ImageBriefOverrides,
   ImageCreativeBrief,
   ImageProjectReference,
 } from '../../../shared/contracts/media.js'
@@ -86,4 +87,17 @@ export function providerPromptForImageBrief(brief: ImageCreativeBrief): string {
     '不得编造价格、日期、地址、联系方式、品牌或活动规则。',
     brief.exact_text.length ? '不要在生成画面中绘制可读文字，为后续确定性文字图层预留清晰区域。' : '',
   ].filter(Boolean).join('\n')
+}
+
+export function applyImageBriefOverrides(
+  brief: ImageCreativeBrief,
+  overrides: ImageBriefOverrides = {},
+): ImageCreativeBrief {
+  return {
+    ...brief,
+    ...(overrides.confirmed_facts !== undefined ? { confirmed_facts: overrides.confirmed_facts } : {}),
+    ...(overrides.must_preserve !== undefined ? { must_preserve: overrides.must_preserve } : {}),
+    ...(overrides.may_change !== undefined ? { may_change: overrides.may_change } : {}),
+    ...(overrides.exact_text !== undefined ? { exact_text: overrides.exact_text } : {}),
+  }
 }

@@ -3,6 +3,7 @@ import { Columns2, Download, ImagePlus, Layers3, Loader2, Minus, Paintbrush, Plu
 import {
   MAX_REFERENCE_IMAGE_BYTES,
   MAX_REFERENCE_IMAGES_TOTAL_BYTES,
+  type ImageBriefOverrides,
   type ImageCanvasSize,
   type ImageReferenceRole,
   type ImageTextLayer,
@@ -25,6 +26,22 @@ function stateLabel(state: string): string {
 
 type ReferenceImage = { name: string; dataUrl: string; size: number; role: ImageReferenceRole }
 type TextLayoutSetting = { x: number; y: number; fontSize: number; fill: string }
+type EditableBriefField = keyof ImageBriefOverrides
+
+const EDITABLE_BRIEF_FIELDS: Array<{ field: EditableBriefField; label: string; help: string }> = [
+  { field: 'confirmed_facts', label: '已确认事实', help: '价格、日期、地址等只能来自你确认的事实' },
+  { field: 'must_preserve', label: '必须保留', help: '主体、品牌、Logo、二维码或其他不能改变的元素' },
+  { field: 'may_change', label: '允许调整', help: '模型和编辑工具可以变化的视觉部分' },
+  { field: 'exact_text', label: '精确文字', help: '每行一段，生成后由确定性文字图层排版' },
+]
+
+function lines(value: string): string[] {
+  return [...new Set(value.split('\n').map(item => item.trim()).filter(Boolean))].slice(0, 40)
+}
+
+function sameBriefOverrides(left: ImageBriefOverrides, right: ImageBriefOverrides): boolean {
+  return EDITABLE_BRIEF_FIELDS.every(({ field }) => JSON.stringify(left[field]) === JSON.stringify(right[field]))
+}
 
 const REFERENCE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp'])
 
@@ -382,6 +399,7 @@ export function ImageWorkbench() {
   const [zoom, setZoom] = useState(1)
   const [compareMode, setCompareMode] = useState(false)
   const [selectedLayerId, setSelectedLayerId] = useState<string | null>(null)
+  const [briefOverrides, setBriefOverrides] = useState<ImageBriefOverrides>({})
   const promptRef = useRef(prompt)
   const sizeRef = useRef(size)
   const draftOwnerIdRef = useRef<string | null>(null)
@@ -479,6 +497,7 @@ export function ImageWorkbench() {
     setZoom(1)
     setTextLayoutSettings({})
     setTextCopy(active?.brief?.exact_text.join('\n') ?? '')
+    setBriefOverrides(active?.brief_overrides ?? {})
   }, [activeId, active?.current_version_id])
 
   useEffect(() => { promptRef.current = prompt }, [prompt])
@@ -513,6 +532,7 @@ export function ImageWorkbench() {
     draftOwnerIdRef.current = null
     draftDirtyRef.current = false
     setReferences([])
+    setBriefOverrides({})
     setInputError(null)
     setCreating(true)
   }
@@ -579,6 +599,7 @@ export function ImageWorkbench() {
     && (
       prompt.trim() !== active.brief?.user_request
       || size !== active.size
+      || !sameBriefOverrides(briefOverrides, active.brief_overrides ?? {})
     ),
   )
 
@@ -588,6 +609,7 @@ export function ImageWorkbench() {
     return await saveImageDraft({
       ...active,
       brief: { ...active.brief!, user_request: prompt.trim() },
+      brief_overrides: briefOverrides,
       size,
     }, confirmUnknownRetry)
   }
@@ -1007,6 +1029,28 @@ export function ImageWorkbench() {
                       </select>
                       <span className="text-[var(--color-text-tertiary)]">候选</span>
                       <span className="text-[var(--color-text-secondary)]">固定生成 3 张</span>
+                    </div>
+                    <div className="mt-4 border-t border-[var(--color-border)] pt-4">
+                      <div className="mb-1 text-[12px] font-medium text-[var(--color-text-primary)]">可编辑 Brief</div>
+                      <p className="mb-3 text-[10px] leading-4 text-[var(--color-text-tertiary)]">每项一行。你明确填写的内容会持久保存，后续图片理解只能补充其他字段，不能覆盖这些约束。</p>
+                      <div className="space-y-3">
+                        {EDITABLE_BRIEF_FIELDS.map(({ field, label, help }) => (
+                          <label key={field} className="block">
+                            <span className="mb-1 block text-[11px] text-[var(--color-text-secondary)]">{label}</span>
+                            <textarea
+                              aria-label={`Brief ${label}`}
+                              value={(briefOverrides[field] ?? active.brief?.[field] ?? []).join('\n')}
+                              onChange={event => setBriefOverrides(current => ({
+                                ...current,
+                                [field]: lines(event.target.value),
+                              }))}
+                              rows={3}
+                              className="w-full resize-y rounded-[6px] border border-[var(--color-border)] bg-[var(--color-input-bg)] px-2 py-1.5 text-[11px] leading-4 text-[var(--color-text-primary)]"
+                            />
+                            <span className="mt-1 block text-[10px] leading-4 text-[var(--color-text-tertiary)]">{help}</span>
+                          </label>
+                        ))}
+                      </div>
                     </div>
                   </>
                 ) : (

@@ -253,6 +253,13 @@ export const imageCreativeBriefSchema = z.object({
   compiler_version: z.literal('image-brief-v1'),
 })
 
+export const imageBriefOverridesSchema = z.object({
+  confirmed_facts: z.array(z.string().min(1).max(500)).max(40).optional(),
+  must_preserve: z.array(z.string().min(1).max(500)).max(40).optional(),
+  may_change: z.array(z.string().min(1).max(500)).max(40).optional(),
+  exact_text: z.array(z.string().min(1).max(500)).max(40).optional(),
+})
+
 export const imageWorkbenchProjectSchema = mediaProjectBaseSchema.extend({
   kind: z.literal('image'),
   state: z.enum(['draft', 'queued', 'generating', 'ready', 'failed']),
@@ -266,6 +273,8 @@ export const imageWorkbenchProjectSchema = mediaProjectBaseSchema.extend({
   /** Selecting or rolling back changes only this pointer; Version history is immutable. */
   current_version_id: mediaIdSchema.optional(),
   brief: imageCreativeBriefSchema.optional(),
+  /** User-confirmed Brief fields replace generated suggestions and survive later reasoning. */
+  brief_overrides: imageBriefOverridesSchema.default({}),
   references: z.array(imageProjectReferenceSchema).max(8).default([]),
   reference_images: z.array(referenceImageDataUrlSchema).max(8).default([]),
   reference_image_assets: z.array(referenceImageAssetNameSchema).max(8).optional(),
@@ -575,6 +584,7 @@ export const updateImageProjectInputSchema = z.object({
   revision: z.number().int().nonnegative(),
   user_request: z.string().min(1).max(8000),
   size: imageCanvasSizeSchema,
+  brief_overrides: imageBriefOverridesSchema.optional(),
   confirm_unknown_retry: z.boolean().default(false),
 })
 
@@ -699,6 +709,7 @@ export type PublicImageVersion = z.infer<typeof publicImageVersionSchema>
 export type ImageVersionKind = z.infer<typeof imageVersionKindSchema>
 export type ImageTextLayer = z.infer<typeof imageTextLayerSchema>
 export type ImageCreativeBrief = z.infer<typeof imageCreativeBriefSchema>
+export type ImageBriefOverrides = z.infer<typeof imageBriefOverridesSchema>
 export type ImageReferenceRole = z.infer<typeof imageReferenceRoleSchema>
 export type ImageProjectReference = z.infer<typeof imageProjectReferenceSchema>
 export type MediaDeletionReceipt = z.infer<typeof mediaDeletionReceiptSchema>
