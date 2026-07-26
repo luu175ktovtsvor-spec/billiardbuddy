@@ -26,7 +26,7 @@ const macWorkflowPath = path.resolve(
 )
 const baselineScriptPath = path.resolve(
   import.meta.dir,
-  '../desktop/scripts/build-windows-upgrade-baseline.ps1',
+  '../desktop/scripts/prepare-published-windows-upgrade-baseline.ps1',
 )
 
 function steps(): WorkflowStep[] {
@@ -73,9 +73,7 @@ describe('Desktop release workflow contract', () => {
     expect(cleanup?.run).toContain('billiardbuddy-release-upload')
     expect(cleanup?.run).toContain('billiardbuddy-media-toolchain.zip')
     expect(cleanup?.run).toContain('billiardbuddy-media-toolchain')
-    expect(cleanup?.run).toContain('git worktree remove --force')
-    expect(cleanup?.run).toContain('billiardbuddy-old-0.4.9-media')
-    expect(cleanup?.run).toContain('billiardbuddy-old-0.4.9-installer')
+    expect(cleanup?.run).toContain('billiardbuddy-published-0.4.9-installer')
   })
 
   test('releases unpacked audit files before launching the Windows installer', () => {
@@ -85,15 +83,13 @@ describe('Desktop release workflow contract', () => {
     expect(unpack?.run).toContain('finally')
   })
 
-  test('proves the current installer before building the oldest upgrade baseline', () => {
+  test('proves the current installer before downloading the published upgrade baseline', () => {
     const workflowSteps = steps()
-    const checkout = workflowSteps.find(step => step.uses === 'actions/checkout@v5')
-    const baselineIndex = workflowSteps.findIndex(step => step.name === '构建最老支持 Windows 升级基线包')
+    const baselineIndex = workflowSteps.findIndex(step => step.name === '准备已发布的 Windows 升级基线包')
     const currentIndex = workflowSteps.findIndex(step => step.run?.includes('bun run electron:package'))
     const installIndex = workflowSteps.findIndex(step => step.name === '安装、启动并卸载 Windows 成品')
     const upgradeIndex = workflowSteps.findIndex(step => step.name === '从最老支持版本升级并回退 Windows 成品')
     expect(baselineIndex).toBeGreaterThanOrEqual(0)
-    expect(checkout?.with?.['fetch-depth']).toBe(0)
     expect(currentIndex).toBeGreaterThanOrEqual(0)
     expect(installIndex).toBeGreaterThan(currentIndex)
     expect(baselineIndex).toBeGreaterThan(installIndex)
@@ -101,12 +97,10 @@ describe('Desktop release workflow contract', () => {
     expect(workflowSteps[upgradeIndex]?.run).toContain('accept-windows-upgrade.ps1')
     expect(workflowSteps[upgradeIndex]?.run).toContain('BB_OLD_WINDOWS_INSTALLER')
     const baselineScript = readFileSync(baselineScriptPath, 'utf8')
-    expect(baselineScript).toContain('billiardbuddy-old-0.4.9-installer')
-    expect(baselineScript).toContain('git worktree remove --force')
-    expect(baselineScript).toContain('BB_OLD_WINDOWS_INSTALLER=$persistedInstaller')
-    expect(baselineScript).toContain("Where-Object { $_ -ne 'dist/**' }")
-    expect(baselineScript).toContain("$oldPackageJson.version -ne '0.4.9'")
-    expect(baselineScript).toContain("$oldPackageJson.build.appId -ne 'com.billiardbuddy.desktop'")
+    expect(baselineScript).toContain('https://zzyppz.cn/desktop/BilliardBuddy-0.4.9-win-x64.exe')
+    expect(baselineScript).toContain('$expectedSize = 239427245')
+    expect(baselineScript).toContain('XJViXgG33Ps+pyjMT4xbLqDrhN9mTEdIqA3qNJ3JKqgqbxk2k23OjxLGUxC/bsK3GVDrwTbxZ17KuF3nazCIHw==')
+    expect(baselineScript).toContain('BB_OLD_WINDOWS_INSTALLER=$installerPath')
   })
 
   test('proves Windows update download recovery after upgrade acceptance', () => {
