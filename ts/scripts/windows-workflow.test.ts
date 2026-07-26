@@ -179,6 +179,10 @@ describe('Desktop release workflow contract', () => {
     const recoveryAcceptance = readFileSync(updateRecoveryAcceptancePath, 'utf8')
     expect(recoveryAcceptance).toContain("BB_ELECTRON_WINDOW_SMOKE_INCLUDE_ERROR_DETAILS = '1'")
     expect(recoveryAcceptance).toContain('$failure[0] | ConvertTo-Json -Compress -Depth 5')
+    const readyIndex = recoveryAcceptance.indexOf('Wait-ReadyProductWindow -SmokeLog $smokeLog -Process $script:appProcess')
+    const probeIndex = recoveryAcceptance.indexOf('$output = @(& bun run $probeScript')
+    expect(readyIndex).toBeGreaterThanOrEqual(0)
+    expect(probeIndex).toBeGreaterThan(readyIndex)
   })
 
   test('proves macOS update download recovery after installed-package acceptance', () => {

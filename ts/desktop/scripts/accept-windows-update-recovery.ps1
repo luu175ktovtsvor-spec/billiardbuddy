@@ -100,6 +100,29 @@ function Assert-ReadyProductWindow {
   }
 }
 
+function Wait-ReadyProductWindow {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$SmokeLog,
+    [Parameter(Mandatory = $true)]
+    [System.Diagnostics.Process]$Process
+  )
+  $deadline = (Get-Date).AddSeconds(60)
+  $lastError = $null
+  while ((Get-Date) -lt $deadline) {
+    if ($Process.HasExited) { throw "更新恢复验收在 Product Server 就绪前退出: $($Process.ExitCode)" }
+    try {
+      Assert-ReadyProductWindow -SmokeLog $SmokeLog
+      return
+    } catch {
+      if ($_.Exception.Message.StartsWith('更新恢复验收的 Product Server 启动失败:')) { throw }
+      $lastError = $_
+    }
+    Start-Sleep -Milliseconds 250
+  }
+  throw "更新恢复验收没有在 60 秒内进入 backend-ready: $lastError"
+}
+
 function Invoke-UpdateAttempt {
   param(
     [Parameter(Mandatory = $true)]
@@ -131,13 +154,13 @@ function Invoke-UpdateAttempt {
     "--ignore-certificate-errors-spki-list=$($UpdateGateway.certificatePin)"
   ) -PassThru
   try {
+    Wait-ReadyProductWindow -SmokeLog $smokeLog -Process $script:appProcess
     $output = @(& bun run $probeScript `
       --port "$port" `
       --expected-version $UpdateGateway.version `
       --expect $Expectation)
     if ($LASTEXITCODE -ne 0) { throw "Windows 更新 $Expectation renderer 验收失败" }
     if (-not ($output | Where-Object { $_ -match '^{' })) { throw 'Windows 更新 renderer 验收没有返回 JSON 结果' }
-    Assert-ReadyProductWindow -SmokeLog $smokeLog
   } finally {
     if ($script:appProcess) {
       Stop-ProcessTree -Process $script:appProcess -Name 'BilliardBuddy'
