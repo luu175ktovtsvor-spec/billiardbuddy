@@ -1,5 +1,4 @@
-import { createServer } from 'node:net'
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
@@ -8,22 +7,17 @@ import { waitForReadyProductWindow } from './package-window-smoke'
 import desktopPackage from '../package.json'
 import { useTemporaryAcceptanceKeychain, type TemporaryAcceptanceKeychain } from './macos-acceptance-keychain'
 import { startPackageAuthGateway, type PackageAuthGateway } from './package-auth-gateway'
+import { OLDEST_SUPPORTED_PRODUCT_VERSION } from '../../src/server/services/productStorageMigrations'
 import {
-  CURRENT_PRODUCT_STORAGE_MIGRATION_VERSION,
-  OLDEST_SUPPORTED_PRODUCT_VERSION,
-} from '../../src/server/services/productStorageMigrations'
-
-type DevToolsTarget = {
-  type?: unknown
-  title?: unknown
-  url?: unknown
-  webSocketDebuggerUrl?: unknown
-}
-
-type ProductRuntimeSnapshot = {
-  status?: unknown
-  tasks?: Array<{ id?: unknown }>
-}
+  seedInterruptedProductStorage,
+  verifyRollbackProductStorage,
+  waitForProductStorageUpgrade,
+} from './package-upgrade-storage'
+import {
+  reserveLoopbackPort as reservePort,
+  terminatePackagedApp as terminate,
+} from './packaged-renderer-driver'
+import { probePackageRenderer } from './package-renderer-product-api'
 
 function run(command: string, args: string[]): void {
   const result = spawnSync(command, args, { stdio: 'ignore' })
@@ -76,141 +70,6 @@ function installFromDmg(dmgPath: string, appPath: string, tempRoot: string): voi
   }
 }
 
-async function reservePort(): Promise<number> {
-  const server = createServer()
-  await new Promise<void>((resolveListen, reject) => {
-    server.once('error', reject)
-    server.listen(0, '127.0.0.1', resolveListen)
-  })
-  const address = server.address()
-  if (!address || typeof address === 'string') throw new Error('无法分配 renderer 验收端口')
-  await new Promise<void>((resolveClose, reject) => server.close(error => error ? reject(error) : resolveClose()))
-  return address.port
-}
-
-async function waitForRenderer(port: number, child: ChildProcess): Promise<DevToolsTarget> {
-  const deadline = Date.now() + 60_000
-  let lastError: unknown = new Error('DevTools 目标尚未就绪')
-  while (Date.now() < deadline) {
-    if (child.exitCode !== null) throw new Error(`BilliardBuddy 在 renderer 就绪前退出: ${child.exitCode}`)
-    try {
-      const response = await fetch(`http://127.0.0.1:${port}/json/list`, {
-        signal: AbortSignal.timeout(1_000),
-      })
-      if (!response.ok) throw new Error(`DevTools HTTP ${response.status}`)
-      const targets = await response.json() as DevToolsTarget[]
-      const target = targets.find(value => value.type === 'page'
-        && value.title === 'BilliardBuddy'
-        && typeof value.url === 'string'
-        && value.url.includes('/dist/index.html'))
-      if (target) return target
-      lastError = new Error('未找到正式 BilliardBuddy renderer')
-    } catch (error) {
-      lastError = error
-    }
-    await new Promise(resolveDelay => setTimeout(resolveDelay, 250))
-  }
-  throw new Error(`安装包 renderer 未在 60 秒内就绪: ${String(lastError)}`)
-}
-
-async function evaluateInRenderer<T>(target: DevToolsTarget, expression: string): Promise<T> {
-  if (typeof target.webSocketDebuggerUrl !== 'string') throw new Error('renderer 缺少 DevTools 调试地址')
-  const socket = new WebSocket(target.webSocketDebuggerUrl)
-  return await new Promise<T>((resolveValue, rejectValue) => {
-    let settled = false
-    const finish = (error?: unknown, value?: T) => {
-      if (settled) return
-      settled = true
-      clearTimeout(timeout)
-      socket.close()
-      if (error) rejectValue(error)
-      else resolveValue(value as T)
-    }
-    const timeout = setTimeout(() => finish(new Error('renderer 产品 API 验收超时')), 30_000)
-    socket.addEventListener('error', () => finish(new Error('无法连接 renderer DevTools')))
-    socket.addEventListener('open', () => {
-      socket.send(JSON.stringify({
-        id: 1,
-        method: 'Runtime.evaluate',
-        params: { expression, awaitPromise: true, returnByValue: true },
-      }))
-    })
-    socket.addEventListener('message', event => {
-      try {
-        const payload = JSON.parse(String(event.data)) as {
-          id?: unknown
-          error?: { message?: unknown }
-          result?: {
-            exceptionDetails?: { text?: unknown }
-            result?: { value?: T, description?: unknown }
-          }
-        }
-        if (payload.id !== 1) return
-        if (payload.error) throw new Error(`renderer DevTools 调用失败: ${String(payload.error.message)}`)
-        if (payload.result?.exceptionDetails) {
-          throw new Error(`renderer 产品 API 调用失败: ${String(
-            payload.result.result?.description ?? payload.result.exceptionDetails.text,
-          )}`)
-        }
-        finish(undefined, payload.result?.result?.value)
-      } catch (error) {
-        finish(error)
-      }
-    })
-  })
-}
-
-async function inspectProductRuntime(target: DevToolsTarget, expectedTaskId?: string): Promise<void> {
-  const snapshot = await evaluateInRenderer<ProductRuntimeSnapshot>(target, `(async () => {
-    const serverUrl = await window.desktopHost.runtime.getServerUrl()
-    const response = await fetch(serverUrl.replace(/\\/$/, '') + '/api/product/tasks')
-    const body = await response.json()
-    return { status: response.status, tasks: body.tasks }
-  })()`)
-  if (snapshot.status !== 200 || !Array.isArray(snapshot.tasks)) {
-    throw new Error('安装包没有返回可用的权威任务列表')
-  }
-  if (expectedTaskId && !snapshot.tasks.some(task => task.id === expectedTaskId)) {
-    throw new Error(`安装包没有读到迁移任务: ${expectedTaskId}`)
-  }
-}
-
-async function createOldProductTask(target: DevToolsTarget, workDir: string): Promise<string> {
-  const result = await evaluateInRenderer<{ status?: unknown, task?: { id?: unknown } }>(target, `(async () => {
-    const serverUrl = await window.desktopHost.runtime.getServerUrl()
-    const response = await fetch(serverUrl.replace(/\\/$/, '') + '/api/product/tasks', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        workDir: ${JSON.stringify(workDir)},
-        title: 'Oldest supported package task',
-        permissionMode: 'ask',
-      }),
-    })
-    return { status: response.status, ...(await response.json()) }
-  })()`)
-  if (result.status !== 201 || typeof result.task?.id !== 'string') {
-    throw new Error('最老支持安装包没有创建真实产品任务')
-  }
-  return result.task.id
-}
-
-async function terminate(child: ChildProcess): Promise<void> {
-  if (child.exitCode !== null) return
-  child.kill('SIGTERM')
-  await Promise.race([
-    new Promise<void>(resolveExit => child.once('exit', () => resolveExit())),
-    new Promise<void>(resolveTimeout => setTimeout(resolveTimeout, 5_000)),
-  ])
-  if (child.exitCode === null) {
-    child.kill('SIGKILL')
-    await new Promise<void>((resolveExit, reject) => {
-      child.once('exit', () => resolveExit())
-      child.once('error', reject)
-    })
-  }
-}
-
 async function launchAndVerify(
   appPath: string,
   configDir: string,
@@ -218,7 +77,7 @@ async function launchAndVerify(
   useLegacyGateway: boolean,
   expectedTaskId?: string,
   createTaskWorkDir?: string,
-): Promise<{ target: DevToolsTarget, createdTaskId?: string }> {
+): Promise<{ url: string, createdTaskId?: string }> {
   const port = await reservePort()
   const child = spawn(join(appPath, 'Contents', 'MacOS', 'BilliardBuddy'), [
     `--user-data-dir=${userDataDir}`,
@@ -238,87 +97,15 @@ async function launchAndVerify(
     stdio: 'ignore',
   })
   try {
-    const target = await waitForRenderer(port, child)
-    await inspectProductRuntime(target, expectedTaskId)
-    const createdTaskId = createTaskWorkDir ? await createOldProductTask(target, createTaskWorkDir) : undefined
-    if (createdTaskId) await inspectProductRuntime(target, createdTaskId)
-    return { target, ...(createdTaskId ? { createdTaskId } : {}) }
+    return await probePackageRenderer({
+      port,
+      child,
+      ...(expectedTaskId ? { expectedTaskId } : {}),
+      ...(createTaskWorkDir ? { createTaskWorkDir } : {}),
+    })
   } finally {
     await terminate(child)
   }
-}
-
-function seedInterruptedOldStorage(configDir: string, expectedTaskId: string): string {
-  const productDir = join(configDir, 'billiardbuddy')
-  const storePath = join(productDir, 'product-tasks.json')
-  const backupId = 'v3-20260726T000000Z-a1b2c3d4'
-  const backupDir = join(productDir, 'storage-migration-backups', backupId)
-  const original = readFileSync(storePath, 'utf8')
-  const oldStore = JSON.parse(original) as { version?: unknown, tasks?: Record<string, unknown> }
-  if (oldStore.version !== 4 || !oldStore.tasks?.[expectedTaskId]) {
-    throw new Error('最老支持安装包没有留下可升级的真实任务状态')
-  }
-  const journal = {
-    schema_version: 1,
-    target_version: CURRENT_PRODUCT_STORAGE_MIGRATION_VERSION,
-    backup_id: backupId,
-    existing_paths: ['billiardbuddy/product-tasks.json'],
-    backed_up_files: [{ path: 'billiardbuddy/product-tasks.json', mode: 0o600 }],
-  }
-  mkdirSync(dirname(storePath), { recursive: true })
-  mkdirSync(join(backupDir, 'files', 'billiardbuddy'), { recursive: true })
-  writeFileSync(join(backupDir, 'files', 'billiardbuddy', 'product-tasks.json'), original, { mode: 0o600 })
-  writeFileSync(join(backupDir, 'manifest.json'), `${JSON.stringify(journal, null, 2)}\n`, { mode: 0o600 })
-  writeFileSync(join(productDir, 'storage-migration-journal.json'), `${JSON.stringify(journal, null, 2)}\n`, { mode: 0o600 })
-  writeFileSync(storePath, `${JSON.stringify({ ...oldStore, tasks: {} }, null, 2)}\n`, { mode: 0o600 })
-  return original
-}
-
-async function waitForUpgrade(
-  configDir: string,
-  original: string,
-  expectedTaskId: string,
-): Promise<{ backupId: string, taskId: string }> {
-  const productDir = join(configDir, 'billiardbuddy')
-  const statePath = join(productDir, 'storage-migration-state.json')
-  const deadline = Date.now() + 60_000
-  let lastError: unknown = new Error('迁移状态尚未生成')
-  while (Date.now() < deadline) {
-    try {
-      const state = JSON.parse(readFileSync(statePath, 'utf8')) as Record<string, unknown>
-      if (state.completed_version !== CURRENT_PRODUCT_STORAGE_MIGRATION_VERSION
-        || state.oldest_supported_product_version !== OLDEST_SUPPORTED_PRODUCT_VERSION
-        || typeof state.backup_id !== 'string') {
-        throw new Error('迁移状态不符合发行合同')
-      }
-      if (existsSync(join(productDir, 'storage-migration-journal.json'))) {
-        throw new Error('迁移日志未完成结算')
-      }
-      const store = JSON.parse(readFileSync(join(productDir, 'product-tasks.json'), 'utf8')) as {
-        version?: unknown
-        tasks?: Record<string, { title?: unknown }>
-      }
-      const migratedTask = store.tasks?.[expectedTaskId]
-      if (store.version !== 4 || migratedTask?.title !== 'Oldest supported package task') {
-        throw new Error('旧任务没有迁移到当前存储版本')
-      }
-      const backupId = state.backup_id as string
-      const backup = readFileSync(join(
-        productDir,
-        'storage-migration-backups',
-        backupId,
-        'files',
-        'billiardbuddy',
-        'product-tasks.json',
-      ), 'utf8')
-      if (backup !== original) throw new Error('升级备份没有保留恢复后的旧版本原始字节')
-      return { backupId, taskId: expectedTaskId }
-    } catch (error) {
-      lastError = error
-    }
-    await new Promise(resolveDelay => setTimeout(resolveDelay, 250))
-  }
-  throw new Error(`安装包升级未在 60 秒内完成: ${String(lastError)}`)
 }
 
 function backendFailureReason(windowSmokeLog: string): string | null {
@@ -353,7 +140,7 @@ async function main() {
     if (oldVersion !== OLDEST_SUPPORTED_PRODUCT_VERSION) throw new Error(`最老支持包版本不正确: ${oldVersion}`)
     const oldLaunch = await launchAndVerify(appPath, configDir, userDataDir, true, undefined, oldWorkspace)
     if (!oldLaunch.createdTaskId) throw new Error('最老支持安装包没有返回真实任务标识')
-    const original = seedInterruptedOldStorage(configDir, oldLaunch.createdTaskId)
+    const upgradeEvidence = seedInterruptedProductStorage(configDir, oldLaunch.createdTaskId)
 
     installFromDmg(newDmg, appPath, tempRoot)
     const newVersion = packageVersion(appPath)
@@ -378,14 +165,17 @@ async function main() {
       },
       stdio: 'ignore',
     })
-    let currentRenderer: DevToolsTarget
+    let currentRendererUrl = ''
     let upgrade: { backupId: string, taskId: string }
     try {
-      currentRenderer = await waitForReadyProductWindow(windowSmokeLog)
+      await waitForReadyProductWindow(windowSmokeLog)
       try {
-        upgrade = await waitForUpgrade(configDir, original, oldLaunch.createdTaskId)
-        currentRenderer = await waitForRenderer(currentRendererPort, newChild)
-        await inspectProductRuntime(currentRenderer, upgrade.taskId)
+        upgrade = await waitForProductStorageUpgrade(configDir, upgradeEvidence)
+        currentRendererUrl = (await probePackageRenderer({
+          port: currentRendererPort,
+          child: newChild,
+          expectedTaskId: upgrade.taskId,
+        })).url
       } catch (error) {
         const backendFailure = backendFailureReason(windowSmokeLog)
         throw new Error(`${String(error)}${backendFailure ? `; ${backendFailure}` : ''}`)
@@ -396,13 +186,7 @@ async function main() {
 
     installFromDmg(oldDmg, appPath, tempRoot)
     const rollbackLaunch = await launchAndVerify(appPath, configDir, userDataDir, true, upgrade.taskId)
-    const rolledBackStore = JSON.parse(readFileSync(join(configDir, 'billiardbuddy', 'product-tasks.json'), 'utf8')) as {
-      version?: unknown
-      tasks?: Record<string, unknown>
-    }
-    if (rolledBackStore.version !== 4 || !rolledBackStore.tasks?.[upgrade.taskId]) {
-      throw new Error('回退旧包后迁移数据不可读')
-    }
+    verifyRollbackProductStorage(configDir, upgrade.taskId)
 
     console.log(JSON.stringify({
       accepted: true,
@@ -412,7 +196,7 @@ async function main() {
       backupId: upgrade.backupId,
       migratedTaskId: upgrade.taskId,
       rollbackRelaunched: true,
-      rendererUrls: [oldLaunch.target.url, currentRenderer.url, rollbackLaunch.target.url],
+      rendererUrls: [oldLaunch.url, currentRendererUrl, rollbackLaunch.url],
     }))
   } finally {
     await authGateway?.close()

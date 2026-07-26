@@ -6,6 +6,7 @@ const root = path.resolve(import.meta.dir, '..')
 const repositoryRoot = path.resolve(root, '..')
 
 export const RELEASE_SOURCE_PATHS = [
+  '.github/workflows/desktop-build-mac.yml',
   '.github/workflows/desktop-build-win.yml',
   'ts/desktop',
   'ts/shared',

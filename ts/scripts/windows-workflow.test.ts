@@ -18,13 +18,22 @@ const workflowPath = path.resolve(
   import.meta.dir,
   '../../.github/workflows/desktop-build-win.yml',
 )
+const macWorkflowPath = path.resolve(
+  import.meta.dir,
+  '../../.github/workflows/desktop-build-mac.yml',
+)
 
 function steps(): WorkflowStep[] {
   const workflow = parse(readFileSync(workflowPath, 'utf8')) as Workflow
   return workflow.jobs?.['verify-and-build']?.steps ?? []
 }
 
-describe('Windows release workflow contract', () => {
+function macSteps(): WorkflowStep[] {
+  const workflow = parse(readFileSync(macWorkflowPath, 'utf8')) as Workflow
+  return workflow.jobs?.['verify-and-build']?.steps ?? []
+}
+
+describe('Desktop release workflow contract', () => {
   test('audits tracked sources before injecting build-only inputs', () => {
     const workflowSteps = steps()
     const auditIndex = workflowSteps.findIndex(step => step.run?.includes('check-release-tracked-files.ts'))
@@ -58,5 +67,40 @@ describe('Windows release workflow contract', () => {
     expect(cleanup?.run).toContain('billiardbuddy-release-upload')
     expect(cleanup?.run).toContain('billiardbuddy-media-toolchain.zip')
     expect(cleanup?.run).toContain('billiardbuddy-media-toolchain')
+    expect(cleanup?.run).toContain('git worktree remove --force')
+    expect(cleanup?.run).toContain('billiardbuddy-old-0.4.9-media')
+  })
+
+  test('builds the oldest supported installer before proving upgrade and rollback', () => {
+    const workflowSteps = steps()
+    const baselineIndex = workflowSteps.findIndex(step => step.name === '构建最老支持 Windows 升级基线包')
+    const currentIndex = workflowSteps.findIndex(step => step.run?.includes('bun run electron:package'))
+    const installIndex = workflowSteps.findIndex(step => step.name === '安装、启动并卸载 Windows 成品')
+    const upgradeIndex = workflowSteps.findIndex(step => step.name === '从最老支持版本升级并回退 Windows 成品')
+    expect(baselineIndex).toBeGreaterThanOrEqual(0)
+    expect(currentIndex).toBeGreaterThan(baselineIndex)
+    expect(upgradeIndex).toBeGreaterThan(installIndex)
+    expect(workflowSteps[upgradeIndex]?.run).toContain('accept-windows-upgrade.ps1')
+    expect(workflowSteps[upgradeIndex]?.run).toContain('BB_OLD_WINDOWS_INSTALLER')
+  })
+
+  test('proves Windows update download recovery after upgrade acceptance', () => {
+    const workflowSteps = steps()
+    const upgradeIndex = workflowSteps.findIndex(step => step.name === '从最老支持版本升级并回退 Windows 成品')
+    const recoveryIndex = workflowSteps.findIndex(step => step.name === '模拟更新下载中断并验证 Windows 重启恢复')
+    expect(upgradeIndex).toBeGreaterThanOrEqual(0)
+    expect(recoveryIndex).toBeGreaterThan(upgradeIndex)
+    expect(workflowSteps[recoveryIndex]?.run).toContain('accept-windows-update-recovery.ps1')
+  })
+
+  test('proves macOS update download recovery after installed-package acceptance', () => {
+    const workflowSteps = macSteps()
+    const installIndex = workflowSteps.findIndex(step => step.run?.includes('accept-macos-package.ts'))
+    const recoveryIndex = workflowSteps.findIndex(step => step.name === '模拟更新下载中断并验证重启恢复')
+    expect(installIndex).toBeGreaterThanOrEqual(0)
+    expect(recoveryIndex).toBeGreaterThan(installIndex)
+    expect(workflowSteps[recoveryIndex]?.run).toContain('accept-macos-update-recovery.ts')
+    expect(workflowSteps[recoveryIndex]?.run).toContain('--dmg')
+    expect(workflowSteps[recoveryIndex]?.run).toContain('--zip')
   })
 })
