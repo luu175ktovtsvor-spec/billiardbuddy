@@ -18,7 +18,7 @@ This repository is built for agent-assisted development. Keep the root `AGENTS.m
 
 ## Architecture Refactors
 
-- 改动聊天 Harness、图片/视频工作台、模型请求、网关或前端前，先执行重构合同第 3.0 节的“参考—改动”证据链；本地 Codex 前端 bundle 只能按其 README 和证据等级推理，不能冒充原始或私有源码。
+- 改动聊天 Harness、图片/视频工作台、模型请求、网关或前端前，先执行重构合同第 3.0 节的“参考—改动”证据链；`codex-frontend-reference/` 是 Codex 前端的指定本地源码参考，必须阅读 `raw`、`reverse-readable` 与 `host-bridge`。可用部分可直接移植或改造进 BilliardBuddy renderer，但不能把原 bundle 整体当成运行时依赖，且必须接回本项目的真实状态与 IPC。
 - 本轮允许按重构合同调整 Gateway、Relay 和两台服务器；仍须备份、先本地验证、最小化部署、健康检查并记录版本与配置摘要。
 
 ## General Coding Rules
