@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { startPackageUpdateGateway } from './package-update-gateway'
 import { cleanupNewCacheEntries, snapshotCacheEntries } from './accept-macos-update-recovery'
+import { verifyPublishedUpdate } from './verify-published-update'
 
 function get(
   url: string,
@@ -31,6 +32,43 @@ function get(
 }
 
 describe('packaged desktop update gateway', () => {
+  it('accepts a published feed only when metadata and ranged artifact bytes match', async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'billiardbuddy-published-update-'))
+    const metadataPath = join(tempDir, 'latest.yml')
+    const artifactPath = join(tempDir, 'BilliardBuddy-0.5.0-win-x64.exe')
+    const artifact = Buffer.alloc(16 * 1024, 11)
+    const metadata = 'version: 0.5.0\nfiles:\n  - url: BilliardBuddy-0.5.0-win-x64.exe\n'
+    writeFileSync(metadataPath, metadata)
+    writeFileSync(artifactPath, artifact)
+    const fetchImpl = async (input: string | URL | Request, init?: RequestInit) => {
+      const name = new URL(String(input)).pathname.split('/').at(-1)
+      if (name === 'latest.yml') return new Response(metadata)
+      if (name !== 'BilliardBuddy-0.5.0-win-x64.exe') return new Response(null, { status: 404 })
+      if (init?.method === 'HEAD') {
+        return new Response(null, { headers: { 'content-length': String(artifact.length), 'accept-ranges': 'bytes' } })
+      }
+      const match = new Headers(init?.headers).get('range')?.match(/^bytes=(\d+)-(\d+)$/)
+      if (!match) return new Response(null, { status: 416 })
+      const start = Number(match[1])
+      const end = Number(match[2])
+      return new Response(artifact.subarray(start, end + 1), { status: 206 })
+    }
+    try {
+      await expect(verifyPublishedUpdate({
+        baseUrl: 'https://updates.example.test/desktop',
+        expectedVersion: '0.5.0',
+        metadataPath,
+        artifactPaths: [artifactPath],
+      }, fetchImpl as typeof fetch)).resolves.toEqual({
+        version: '0.5.0',
+        metadata: 'latest.yml',
+        artifacts: [{ name: 'BilliardBuddy-0.5.0-win-x64.exe', size: artifact.length }],
+      })
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true })
+    }
+  })
+
   it('removes only updater cache entries created by the acceptance run', () => {
     const tempDir = mkdtempSync(join(tmpdir(), 'billiardbuddy-update-cache-'))
     const existing = join(tempDir, 'existing')

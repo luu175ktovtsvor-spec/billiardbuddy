@@ -296,6 +296,26 @@ jobs:
           & ssh @sshArgs root@zzyppz.cn ($publishCommands -join '; ')
           if ($LASTEXITCODE -ne 0) { throw 'Windows 发布文件校验或切换失败' }
 
+      - name: 验证正式 Windows 更新源
+        if: startsWith(github.ref, 'refs/tags/v') || inputs.publish == true
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $artifactDir = 'ts/desktop/build-artifacts/electron'
+          $expectedVersion = (Get-Content 'ts/desktop/package.json' -Raw | ConvertFrom-Json).version
+          $installers = @(Get-ChildItem "$artifactDir/*.exe" -ErrorAction Stop)
+          $blockmaps = @(Get-ChildItem "$artifactDir/*.blockmap" -ErrorAction Stop)
+          if ($installers.Count -ne 1 -or $blockmaps.Count -ne 1) {
+            throw 'Windows 正式更新源验收文件不完整或不唯一'
+          }
+          & bun run ts/desktop/scripts/verify-published-update.ts `
+            --base-url https://zzyppz.cn/desktop `
+            --expected-version $expectedVersion `
+            --metadata "$artifactDir/latest.yml" `
+            --artifact ($installers[0].FullName) `
+            --artifact ($blockmaps[0].FullName)
+          if ($LASTEXITCODE -ne 0) { throw 'Windows 正式更新源公网验收失败' }
+
       - name: 清理临时凭据与媒体工具链
         if: always()
         shell: pwsh

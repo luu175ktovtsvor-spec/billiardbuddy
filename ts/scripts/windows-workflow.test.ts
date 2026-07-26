@@ -107,4 +107,15 @@ describe('Desktop release workflow contract', () => {
     expect(workflowSteps[recoveryIndex]?.run).toContain('--dmg')
     expect(workflowSteps[recoveryIndex]?.run).toContain('--zip')
   })
+
+  test('verifies the public Windows update feed after publishing', () => {
+    const workflowSteps = steps()
+    const publishIndex = workflowSteps.findIndex(step => step.name === '发布 Windows 安装包与更新清单')
+    const verifyIndex = workflowSteps.findIndex(step => step.name === '验证正式 Windows 更新源')
+    expect(publishIndex).toBeGreaterThanOrEqual(0)
+    expect(verifyIndex).toBeGreaterThan(publishIndex)
+    expect(workflowSteps[verifyIndex]?.if).toBe(workflowSteps[publishIndex]?.if)
+    expect(workflowSteps[verifyIndex]?.run).toContain('verify-published-update.ts')
+    expect(workflowSteps[verifyIndex]?.run).toContain('https://zzyppz.cn/desktop')
+  })
 })
