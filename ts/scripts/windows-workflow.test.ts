@@ -130,6 +130,8 @@ describe('Desktop release workflow contract', () => {
     const installIndex = workflowSteps.findIndex(step => step.name === '安装、启动并卸载 Windows 成品')
     const upgradeIndex = workflowSteps.findIndex(step => step.name === '从最老支持版本升级并回退 Windows 成品')
     expect(baselineIndex).toBeGreaterThanOrEqual(0)
+    expect(workflowSteps[baselineIndex]?.run).toContain('prepare-published-windows-upgrade-baseline.ps1')
+    expect(workflowSteps[baselineIndex]?.run).not.toContain('$LASTEXITCODE')
     expect(currentIndex).toBeGreaterThanOrEqual(0)
     expect(installIndex).toBeGreaterThan(currentIndex)
     expect(baselineIndex).toBeGreaterThan(installIndex)
