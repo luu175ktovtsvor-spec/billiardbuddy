@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import type { ProductAssistantMessage, ProductHarnessMessage, ProductPrompt, ProductToolCallBlock, ProductToolResultBlock } from '../../../shared/product/harnessMessages.js'
 import { createProductUserMessage } from './productMessages.js'
 import { runProductModel, type ProductModelRunner } from './productModelRuntime.js'
@@ -50,10 +51,10 @@ async function expandPromptCommand(
   prompt: ProductPrompt,
   commands: readonly ProductCommand[],
   context: ProductToolContext,
-): Promise<ProductPrompt> {
-  if (typeof prompt !== 'string') return prompt
+): Promise<{ prompt: ProductPrompt; directToolCall?: ProductToolCallBlock }> {
+  if (typeof prompt !== 'string') return { prompt }
   const match = prompt.trim().match(/^\/([A-Za-z0-9:_-]+)(?:\s+([\s\S]*))?$/)
-  if (!match) return prompt
+  if (!match) return { prompt }
   const name = match[1]!
   const command = commands.find(candidate => candidate.name === name
     || candidate.userFacingName?.() === name
@@ -62,7 +63,36 @@ async function expandPromptCommand(
   if (command.type !== 'prompt' || command.userInvocable === false || command.disableNonInteractive) {
     throw new Error('PRODUCT_COMMAND_UNAVAILABLE')
   }
-  return command.getPromptForCommand(match[2] ?? '', context)
+  const args = match[2] ?? ''
+  const expanded = await command.getPromptForCommand(args, context)
+  return {
+    prompt: expanded,
+    ...(command.directTool ? {
+      directToolCall: {
+        type: 'tool_call' as const,
+        id: `command_${randomUUID()}`,
+        name: command.directTool.name,
+        arguments: { [command.directTool.argument]: args.trim() },
+      },
+    } : {}),
+  }
+}
+
+function directToolAssistant(block: ProductToolCallBlock): ProductAssistantMessage {
+  const uuid = randomUUID()
+  return {
+    type: 'assistant',
+    uuid,
+    timestamp: new Date().toISOString(),
+    message: {
+      id: uuid,
+      role: 'assistant',
+      content: [block],
+      model: 'billiardbuddy-command-router',
+      stop_reason: 'tool_call',
+      usage: { input_tokens: 0, output_tokens: 0 },
+    },
+  }
 }
 
 function toolUseBlocks(messages: readonly ProductAssistantMessage[]): ProductToolCallBlock[] {
@@ -119,36 +149,46 @@ export async function* runProductAgentLoop(input: ProductAgentLoopInput): AsyncG
   const messages = input.mutableMessages ?? []
   let context = input.toolUseContext
   const persist = async () => input.onMessageState?.(messages)
-  const prompt = await expandPromptCommand(input.prompt, input.commands, context)
-  const userMessage = createProductUserMessage({ content: prompt })
+  const expanded = await expandPromptCommand(input.prompt, input.commands, context)
+  const userMessage = createProductUserMessage({ content: expanded.prompt })
   messages.push(userMessage)
   await persist()
   yield userMessage
 
   const systemPrompt = buildProductSystemPrompt(input.promptContext)
   let finalText = ''
+  let pendingDirectAssistant = expanded.directToolCall ? directToolAssistant(expanded.directToolCall) : undefined
 
   for (let iteration = 0; iteration < MAX_MODEL_TOOL_ITERATIONS; iteration += 1) {
     if (context.abortController.signal.aborted) throw new Error('PRODUCT_AGENT_LOOP_ABORTED')
     const assistantMessages: ProductAssistantMessage[] = []
-    for await (const event of (input.runModel ?? runProductModel)({
-      messages: [...messages],
-      systemPrompt,
-      thinkingConfig: context.options.thinkingConfig,
-      tools: input.tools,
-      signal: context.abortController.signal,
-      options: {
-        model: input.model ?? productDefaultTextModel(),
-      },
-      toolPermissionContext: context.permissionContext,
-    })) {
-      yield event
-      if (event.type !== 'assistant') continue
+    if (pendingDirectAssistant) {
+      const event = pendingDirectAssistant
+      pendingDirectAssistant = undefined
       assistantMessages.push(event)
       messages.push(event)
-      const text = assistantText(event)
-      if (text) finalText = text
       await persist()
+      yield event
+    } else {
+      for await (const event of (input.runModel ?? runProductModel)({
+        messages: [...messages],
+        systemPrompt,
+        thinkingConfig: context.options.thinkingConfig,
+        tools: input.tools,
+        signal: context.abortController.signal,
+        options: {
+          model: input.model ?? productDefaultTextModel(),
+        },
+        toolPermissionContext: context.permissionContext,
+      })) {
+        yield event
+        if (event.type !== 'assistant') continue
+        assistantMessages.push(event)
+        messages.push(event)
+        const text = assistantText(event)
+        if (text) finalText = text
+        await persist()
+      }
     }
 
     if (assistantMessages.length === 0) throw new Error('PRODUCT_MODEL_EMPTY_RESPONSE')

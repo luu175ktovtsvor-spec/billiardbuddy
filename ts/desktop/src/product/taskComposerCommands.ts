@@ -91,7 +91,7 @@ export function buildTaskComposerAgentCommands(
     const displayAgentType = reserveDisplayName(preferredDisplayAgentType, displayNames)
     displayNames.add(displayAgentType)
     const name = `agent ${displayAgentType}`
-    const runtimeName = `agent ${runtimeAgentType}`
+    const runtimeName = `agent:${runtimeAgentType}`
 
     commands.push({
       name,

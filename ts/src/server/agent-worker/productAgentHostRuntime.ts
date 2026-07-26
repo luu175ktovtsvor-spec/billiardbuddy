@@ -8,7 +8,8 @@ import { runWithProductPermissionEnvelope } from '../../utils/permissions/produc
 import { projectAgentWorkerApprovalReview, projectProductTaskActionApproval } from '../product/taskApprovalProjection.js'
 import { buildProductTaskAskUserQuestionUpdatedInput } from '../product/taskInboundPolicy.js'
 import { projectAnswerableAskUserQuestions } from '../product/taskEventProjection.js'
-import { loadProductAgentCommands, loadProductAgentPluginTools } from './productExtensionLoader.js'
+import { loadProductAgentCommands, loadProductAgentExtensionTools } from './productExtensionLoader.js'
+import { productAgentCommands } from './productPluginAgentLoader.js'
 import { loadProductAgentTools } from './productToolLoader.js'
 import type { ProductTaskMcpHost } from './mcpHost.js'
 import { runProductModel } from './productModelRuntime.js'
@@ -25,6 +26,7 @@ export type ProductHostCommandDescriptor = {
   disableModelInvocation?: boolean
   disableNonInteractive?: boolean
   userInvocable?: boolean
+  directTool?: { name: string; argument: string }
 }
 
 export type ProductHostRuntimeSnapshot = {
@@ -101,8 +103,10 @@ export class StandardProductAgentHostRuntime implements ProductAgentHostRuntime 
         networkScope: this.input.permission_envelope.network_scope,
       })
       this.mcpCleanup = mcp.clients.flatMap(client => client.cleanup ? [client.cleanup] : [])
-      this.commands = uniqBy([...await loadProductAgentCommands(this.input.work_dir), ...mcp.commands], 'name')
-      this.toolsForTurn = uniqBy([...loadProductAgentTools(this.toolPermissionContext, this.commands), ...await loadProductAgentPluginTools(this.input.work_dir), ...mcp.tools], 'name')
+      const baseCommands = uniqBy([...await loadProductAgentCommands(this.input.work_dir), ...mcp.commands], 'name')
+      const extensionTools = await loadProductAgentExtensionTools(this.input.work_dir)
+      this.toolsForTurn = uniqBy([...loadProductAgentTools(this.toolPermissionContext, baseCommands), ...extensionTools, ...mcp.tools], 'name')
+      this.commands = uniqBy([...baseCommands, ...productAgentCommands(extensionTools)], 'name')
       this.context = {
         productTaskId: this.input.task_id,
         options: {
@@ -123,6 +127,7 @@ export class StandardProductAgentHostRuntime implements ProductAgentHostRuntime 
           disableModelInvocation: command.disableModelInvocation,
           disableNonInteractive: command.disableNonInteractive,
           userInvocable: command.userInvocable,
+          directTool: command.directTool,
         })),
         tools: this.toolsForTurn.map(tool => ({ name: tool.name })),
         mcp_clients: mcp.clients.map(client => ({ name: client.name, type: client.type })),

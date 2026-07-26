@@ -5,7 +5,7 @@ import { z } from 'zod/v4'
 import type { ProductHarnessMessage } from '../../../shared/product/harnessMessages.js'
 import { resolveProductTextModel } from '../product/productGatewayRuntime.js'
 import { runProductAgentLoop } from './productAgentLoop.js'
-import { buildProductTool, type ProductTool, type ProductToolContext } from './productTool.js'
+import { buildProductTool, type ProductCommand, type ProductTool, type ProductToolContext } from './productTool.js'
 
 const MAX_AGENTS = 128
 const MAX_AGENT_BYTES = 512 * 1024
@@ -114,4 +114,28 @@ export async function loadProductPluginAgentTools(directory: string, pluginRoot:
     output.push(agentTool({ plugin: namespace, name, description, instructions: parsed.body, allowedTools: allowedTools(parsed.metadata.tools), ...(model ? { model } : {}) }))
   }
   return output
+}
+
+export function productAgentCommands(tools: readonly ProductTool[]): ProductCommand[] {
+  return tools
+    .filter(tool => tool.name.startsWith('agent__'))
+    .map((tool) => {
+      const displayName = tool.userFacingName()
+      return {
+        type: 'prompt' as const,
+        name: `agent:${tool.name}`,
+        description: `使用 ${displayName} 独立处理一项任务。`,
+        argumentHint: '<prompt>',
+        userInvocable: true,
+        source: tool.name.startsWith('agent__project__') ? 'project' as const : 'plugin' as const,
+        contentLength: displayName.length,
+        progressMessage: `正在启动 ${displayName}`,
+        directTool: { name: tool.name, argument: 'prompt' },
+        async getPromptForCommand(args: string) {
+          const prompt = args.trim()
+          if (!prompt) throw new Error('PRODUCT_AGENT_PROMPT_REQUIRED')
+          return [{ type: 'text' as const, text: `已明确指派给 ${displayName}：\n${prompt}` }]
+        },
+      }
+    })
 }
