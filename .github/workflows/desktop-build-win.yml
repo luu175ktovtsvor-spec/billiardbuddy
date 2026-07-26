@@ -190,6 +190,7 @@ jobs:
           }
 
       - name: 保存已审计的 Windows 安装包
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: BilliardBuddy-windows-x64-${{ github.sha }}
