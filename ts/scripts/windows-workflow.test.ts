@@ -24,6 +24,10 @@ const macWorkflowPath = path.resolve(
   import.meta.dir,
   '../../.github/workflows/desktop-build-mac.yml',
 )
+const baselineScriptPath = path.resolve(
+  import.meta.dir,
+  '../desktop/scripts/build-windows-upgrade-baseline.ps1',
+)
 
 function steps(): WorkflowStep[] {
   const workflow = parse(readFileSync(workflowPath, 'utf8')) as Workflow
@@ -71,6 +75,14 @@ describe('Desktop release workflow contract', () => {
     expect(cleanup?.run).toContain('billiardbuddy-media-toolchain')
     expect(cleanup?.run).toContain('git worktree remove --force')
     expect(cleanup?.run).toContain('billiardbuddy-old-0.4.9-media')
+    expect(cleanup?.run).toContain('billiardbuddy-old-0.4.9-installer')
+  })
+
+  test('releases unpacked audit files before launching the Windows installer', () => {
+    const workflowSteps = steps()
+    const unpack = workflowSteps.find(step => step.name === '解包并审计 Windows 成品')
+    expect(unpack?.run).toContain('Remove-Item -LiteralPath $installerAuditDir, $appAuditDir')
+    expect(unpack?.run).toContain('finally')
   })
 
   test('builds the oldest supported installer before proving upgrade and rollback', () => {
@@ -86,6 +98,10 @@ describe('Desktop release workflow contract', () => {
     expect(upgradeIndex).toBeGreaterThan(installIndex)
     expect(workflowSteps[upgradeIndex]?.run).toContain('accept-windows-upgrade.ps1')
     expect(workflowSteps[upgradeIndex]?.run).toContain('BB_OLD_WINDOWS_INSTALLER')
+    const baselineScript = readFileSync(baselineScriptPath, 'utf8')
+    expect(baselineScript).toContain('billiardbuddy-old-0.4.9-installer')
+    expect(baselineScript).toContain('git worktree remove --force')
+    expect(baselineScript).toContain('BB_OLD_WINDOWS_INSTALLER=$persistedInstaller')
   })
 
   test('proves Windows update download recovery after upgrade acceptance', () => {
