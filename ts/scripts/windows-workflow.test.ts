@@ -33,6 +33,10 @@ const installerRunnerPath = path.resolve(
   '../desktop/scripts/windows-installer-runner.ps1',
 )
 const desktopPackagePath = path.resolve(import.meta.dir, '../desktop/package.json')
+const nsisMultiUserTemplatePath = path.resolve(
+  import.meta.dir,
+  '../desktop/node_modules/app-builder-lib/templates/nsis/multiUser.nsh',
+)
 
 function steps(): WorkflowStep[] {
   const workflow = parse(readFileSync(workflowPath, 'utf8')) as Workflow
@@ -106,15 +110,21 @@ describe('Desktop release workflow contract', () => {
     }
   })
 
-  test('pins the Windows installer runtime that replaces the crashing NSIS System plugin', () => {
+  test('pins the audited NSIS compiler and the builder template with the bounded path copy', () => {
     const desktopPackage = JSON.parse(readFileSync(desktopPackagePath, 'utf8')) as {
       build?: { nsis?: { customNsisBinary?: { url?: string; checksum?: string; version?: string } } }
+      devDependencies?: Record<string, string>
     }
     expect(desktopPackage.build?.nsis?.customNsisBinary).toEqual({
       url: 'https://github.com/electron-userland/electron-builder-binaries/releases/download/nsis-3.0.5.0/nsis-3.0.5.0.7z',
       checksum: 'cTeQgtymnETCMGZa89l5A790zw4otqFThfQbm52AbhUtPUD2yp2lmmu/T9Hd6fG/rDej0o6X6OTupxZB3n8HbA==',
       version: '3.0.5.0',
     })
+    expect(desktopPackage.devDependencies?.['electron-builder']).toBe('26.15.7')
+    expect(desktopPackage.devDependencies?.['electron-builder-squirrel-windows']).toBe('26.15.7')
+    const multiUserTemplate = readFileSync(nsisMultiUserTemplatePath, 'utf8')
+    expect(multiUserTemplate).toContain('KERNEL32::lstrcpynW')
+    expect(multiUserTemplate).not.toContain("System::Call '*$2(&w${NSIS_MAX_STRLEN} .s)'")
   })
 
   test('proves the current installer before downloading the published upgrade baseline', () => {
