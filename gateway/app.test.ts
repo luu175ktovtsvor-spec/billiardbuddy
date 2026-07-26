@@ -1155,6 +1155,42 @@ test('image task submit enforces its body limit before forwarding declared or st
   expect(streamed.calls).toEqual([])
 })
 
+test('image edit uploads use their own bounded read window instead of the short chat deadline', async () => {
+  const { fetch, calls } = makeGateway({
+    GW_RELAY_TASKS_BASE: 'https://relay.example/relay/imgtasks',
+    GW_INGRESS_BODY_READ_TIMEOUT_MS: '20',
+    GW_IMG_TASK_BODY_READ_TIMEOUT_MS: '100',
+  })
+  let delivered = false
+  const body = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      if (delivered) return
+      delivered = true
+      await new Promise(resolve => setTimeout(resolve, 40))
+      controller.enqueue(new TextEncoder().encode(JSON.stringify({
+        mode: 'edit',
+        prompt: '只调整背景',
+        images: ['data:image/png;base64,AA=='],
+      })))
+      controller.close()
+    },
+  })
+  const response = await fetch(new Request('http://local/v1/images/tasks', authed({
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Idempotency-Key': 'slow-image-edit-operation' },
+    body,
+    duplex: 'half',
+  } as RequestInit & { duplex: 'half' })))
+  expect(response.status).toBe(200)
+  expect(calls.filter(call => call.url.endsWith('/images/tasks'))).toHaveLength(1)
+
+  const health = await fetch(new Request('http://local/healthz', authed()))
+  expect((await health.json()).limits).toMatchObject({
+    ingress_body_read_timeout_ms: 20,
+    img_task_body_read_timeout_ms: 100,
+  })
+})
+
 test('image gateway admits a 100-user × 10-submit burst to relay while the body budget stays bounded', async () => {
   let relayActive = 0
   let relayPeak = 0

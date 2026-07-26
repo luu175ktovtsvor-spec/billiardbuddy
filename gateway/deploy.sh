@@ -45,7 +45,9 @@
 #     同一多图请求把自己的后续图片挤成 429) / GW_VISION_CACHE_MAX(512) / GW_VISION_CACHE_TTL_MS(600000)。
 #     视觉桥接复用 GW_MIMO_KEY/GW_MIMO_BASE(唯一视觉上游,绝不用 ARK);缺 GW_MIMO_KEY 时带图请求失败关闭 503。
 #   - 长聊天/relay 请求在 Bun 层关闭 10 秒空闲超时，但公共请求体仍受
-#     GW_INGRESS_BODY_READ_TIMEOUT_MS(30000) 限制，防慢上传长期占住连接和内存。
+#     普通 JSON 请求仍由 GW_INGRESS_BODY_READ_TIMEOUT_MS(30000) 限制；带完整底图的已鉴权改图上传
+#     使用独立 GW_IMG_TASK_BODY_READ_TIMEOUT_MS(默认 180000)，同时继续受 32MB 单请求与 256MB 全局
+#     在途内存预算约束，避免把普通聊天的短慢上传窗口错误套到大图提交。
 #   - Bun 服务级 idleTimeout 默认显式设为 255 秒（可用 GW_SERVER_IDLE_TIMEOUT_SECONDS 调整，范围
 #     30–255；Bun 的硬上限为 255）。长流 handler 仍会对具体请求调用 timeout(..., 0)，因此 US /gw
 #     代理的 300 秒窗口可以保留为外层连接窗口。

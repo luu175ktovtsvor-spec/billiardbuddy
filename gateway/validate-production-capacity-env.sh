@@ -57,6 +57,7 @@ image_ipm="$(read_decimal GW_IMG_IPM 1200)"
 image_waiters="$(read_decimal GW_IMG_QUEUE_MAX 200)"
 idle_timeout="$(read_decimal GW_SERVER_IDLE_TIMEOUT_SECONDS 255)"
 relay_result_timeout="$(read_decimal GW_RELAY_RESULT_TIMEOUT_MS 300000)"
+image_body_read_timeout="$(read_decimal GW_IMG_TASK_BODY_READ_TIMEOUT_MS 180000)"
 
 (( deepseek_total >= 1000 )) || die 'GW_DEEPSEEK_CONC must be at least 1000 for the 100 x 10 target'
 (( deepseek_user >= 10 )) || die 'GW_DEEPSEEK_USER_CONC must be at least 10 for the 100 x 10 target'
@@ -65,6 +66,7 @@ relay_result_timeout="$(read_decimal GW_RELAY_RESULT_TIMEOUT_MS 300000)"
 (( image_waiters >= 0 )) || die 'GW_IMG_QUEUE_MAX must be non-negative'
 (( idle_timeout >= 30 && idle_timeout <= 255 )) || die 'GW_SERVER_IDLE_TIMEOUT_SECONDS must be between 30 and 255'
 (( relay_result_timeout >= 300000 )) || die 'GW_RELAY_RESULT_TIMEOUT_MS must be at least 300000 (5 minutes)'
+(( image_body_read_timeout >= 120000 )) || die 'GW_IMG_TASK_BODY_READ_TIMEOUT_MS must be at least 120000 for authenticated edit uploads'
 
-printf '1000-window gateway capacity configuration accepted: deepseek=%s user=%s token=%s image_ipm=%s image_waiters=%s idle_timeout=%s relay_result_timeout=%s\n' \
-  "$deepseek_total" "$deepseek_user" "$deepseek_token" "$image_ipm" "$image_waiters" "$idle_timeout" "$relay_result_timeout"
+printf '1000-window gateway capacity configuration accepted: deepseek=%s user=%s token=%s image_ipm=%s image_waiters=%s idle_timeout=%s relay_result_timeout=%s image_body_read_timeout=%s\n' \
+  "$deepseek_total" "$deepseek_user" "$deepseek_token" "$image_ipm" "$image_waiters" "$idle_timeout" "$relay_result_timeout" "$image_body_read_timeout"

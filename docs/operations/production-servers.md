@@ -1,6 +1,6 @@
 # BilliardBuddy 生产服务器
 
-更新时间：2026-07-26。本文件只记录本次部署后实测状态；不得把历史快照当成当前事实。
+更新时间：2026-07-27。本文件只记录本次部署后实测状态；不得把历史快照当成当前事实。
 
 ## 拓扑
 
@@ -55,6 +55,7 @@ GW_DEEPSEEK_USER_CONC
 GW_FUNASR_KEY
 GW_IMG_IPM
 GW_IMG_QUEUE_MAX
+GW_IMG_TASK_BODY_READ_TIMEOUT_MS
 GW_INGRESS_INFLIGHT_BODY_BYTES
 GW_LICENSE_PROVISIONING
 GW_MIMO_BASE
@@ -136,9 +137,11 @@ RELAY_USER_MAX
 - 美国本机经 Nginx 访问 Relay health：200
 - 大陆公网 `http://39.106.214.21/healthz`：404
 - 两台服务器相关 systemd 服务均为 `active`
-- Gateway 运行闭包在部署前通过授权、`64 = 48 + 16` MiMo 硬分区和 1000-window 配置预检；部署后 `/opt/billiardbuddy-gateway/app.ts` 与仓库 SHA-256 同为 `384015fb48ba28eeb475d09ece85cb2306135f5d14cbf1759a20310f30750729`。
+- Gateway 运行闭包在部署前通过授权、`64 = 48 + 16` MiMo 硬分区和 1000-window 配置预检；部署后 `/opt/billiardbuddy-gateway/app.ts` 与仓库 SHA-256 同为 `6b732cf147b82758c3cc2c58a559a30e0744d47ef02f863b22824d14b48cb051`。
 - Relay 未发生源码漂移；`/opt/billiardbuddy-relay/app.ts` 与仓库 SHA-256 同为 `9593d9da9d29e9a98d7e99f1bce23d81275cc1cb4e6879410a6540c0e2288a6d`。
 - 使用现有生产授权创建并注销一个固定验收安装会话，实际通过 Gateway 调用 DeepSeek `TextReasoning`、MiMo `MediaReasoning`（真实 PNG、4000 token 正式参数）、MiMo → DeepSeek `VisualEvidence`、DeepSeek 原生 Web Search 和 Fun-ASR；五条能力均返回可消费的非空结果，原生搜索流包含 server tool use、tool result 与终止事件。
 - 使用同一安装身份提交一个 Seedream 持久图片任务，Relay 成功落盘并通过 owner-bound 结果授权返回 703905 字节图片；随后 ack 成功，临时验收上传物和会话均已清理。
+- 已鉴权图片任务的请求体读取使用独立 180 秒总窗口；普通聊天/媒体理解仍保持 30 秒入口读取窗口。两者继续共享 256 MiB 在途请求体预算，图片单请求仍不超过 32 MiB。
+- 使用正式产品会话和生产 Gateway 提交 2,955,288 字节本地图片作为真实改图基线，改图任务成功完成并落下本地版本、视觉质检与 1,220,724 字节导出；导出哈希、父版本血缘、服务重启恢复、版本回退与前进均通过。
 
 这些检查证明当前运行闭包、路由和五条真实上游能力可用；它们仍不是 1000 窗口真实上游吞吐证明，也不替代最后从 macOS/Windows 安装包执行的用户旅程。
