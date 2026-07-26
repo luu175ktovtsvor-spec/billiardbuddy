@@ -87,6 +87,7 @@ vi.mock('../stores/productTaskStore', () => ({
 
 vi.mock('../stores/productTaskRuntimeStore', () => ({
   PRODUCT_TASK_SAFE_ERROR_LABEL: {
+    task_network_unavailable: '当前无法连接模型服务，或响应流已中断，请检查网络后重试。',
     temporarily_unavailable: '服务暂时不可用，请稍后重试。',
   },
   canSendProductTaskMessage: (value: string, attachments: unknown[] = []) => (
@@ -728,9 +729,10 @@ describe('ProductTaskPage', () => {
       ...mocks.runtime,
       runState: 'idle',
       recoveryRequired: true,
-      error: { code: 'task_failed', retryable: false },
+      error: { code: 'task_network_unavailable', retryable: true },
     }
     render(<ProductTaskPage taskId="task-1" />)
+    expect(screen.getByRole('alert')).toHaveTextContent('当前无法连接模型服务')
     expect(screen.getByRole('alert')).toHaveTextContent('可能重复外部操作')
     fireEvent.click(screen.getByRole('button', { name: '恢复失败任务' }))
     await waitFor(() => expect(mocks.recoverTaskRun).toHaveBeenCalledWith('task-1'))

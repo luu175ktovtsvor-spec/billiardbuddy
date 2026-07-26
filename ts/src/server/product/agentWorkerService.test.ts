@@ -5,6 +5,7 @@ import { createProductAgentHarness } from '../agent-worker/productAgentHarness.j
 import { runProductAgentLoop } from '../agent-worker/productAgentLoop.js'
 import { emptyProductToolPermissionContext, type ProductToolContext, type ProductTools } from '../agent-worker/productTool.js'
 import { z } from 'zod/v4'
+import { classifyProductTaskRunFailure } from './taskRunFailure.js'
 
 const receipt = { job_id: 'agent-worker:run:1', outcome: 'admitted' as const, profile_revision: 'p', resource_keys: ['agent.worker'] as const, fencing_token: 1, lease: { owner_id: 'owner', process_id: 'p', process_generation: 'g', fencing_token: 1, expires_at: '2027-01-01T00:00:00.000Z' } }
 
@@ -23,12 +24,30 @@ function productToolContext(tools: ProductTools, messages: any[]): ProductToolCo
   }
 }
 
+test('run failure classifier exposes only stable product categories', () => {
+  for (const [internal, expected] of [
+    ['PRODUCT_GATEWAY_NOT_CONFIGURED', { code: 'task_model_configuration', retryable: false }],
+    ['PRODUCT_GATEWAY_HTTP_401', { code: 'task_authentication', retryable: false }],
+    ['PRODUCT_GATEWAY_HTTP_429', { code: 'task_capacity_limited', retryable: true }],
+    ['PRODUCT_GATEWAY_HTTP_503', { code: 'task_model_unavailable', retryable: true }],
+    ['PRODUCT_GATEWAY_UNREACHABLE', { code: 'task_network_unavailable', retryable: true }],
+    ['CONTEXT_COMPACTION_FAILED', { code: 'task_context_limit', retryable: false }],
+    ['PRODUCT_MODEL_INVALID_STREAM', { code: 'task_model_response_invalid', retryable: true }],
+    ['PRODUCT_HOOK_PERMISSION_ENVELOPE_MISSING', { code: 'task_project_automation_failed', retryable: false }],
+    ['CHAT_VIDEO_PROBE_FAILED', { code: 'task_attachment_processing_failed', retryable: false }],
+    ['PRODUCT_SHELL_SANDBOX_UNAVAILABLE', { code: 'task_execution_environment_failed', retryable: false }],
+    ['/private/workspace/secret YOUR_API_KEY', { code: 'task_failed', retryable: false }],
+  ] as const) expect(classifyProductTaskRunFailure(new Error(internal))).toEqual(expected)
+})
+
 test('worker consumes one supervisor-issued capability and never claims or replays input', async () => {
   const calls: string[] = []; const prepared = bootstrap({ start: async () => ({ input: async text => { calls.push(`input:${text}`) }, approve: async () => {}, stop: async () => {}, shutdown: async () => {} }) })
   const service = new AgentWorkerService(prepared)
   expect(await service.start({ type: 'start', run_id: 'run', dispatch_generation: 1, scheduler_receipt: receipt, envelope: prepared.envelope })).toMatchObject({ type: 'claim_receipt', outcome: 'claimed' })
   expect(await service.input('user turn')).toBeUndefined(); expect(calls).toEqual(['input:user turn'])
   expect(await service.start({ type: 'start', run_id: 'run', dispatch_generation: 1, scheduler_receipt: receipt, envelope: prepared.envelope })).toMatchObject({ type: 'fatal', code: 'ENVELOPE_DENIED' })
+  expect(service.relayCoreMessage({ type: 'terminal', state: 'recovery_required', run_id: 'run' } as never)).toBeUndefined()
+  expect(service.relayCoreMessage({ type: 'terminal', state: 'recovery_required', run_id: 'run', failure: { code: 'task_network_unavailable', retryable: false } } as never)).toBeUndefined()
 })
 
 test('worker acknowledges a steer only after the private Core consumes it', async () => {

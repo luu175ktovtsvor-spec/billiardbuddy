@@ -3,6 +3,7 @@ import type { PermissionExecutionEnvelope } from '../../../shared/product/permis
 import { buildProviderRegistryRuntimeEnv, validateProviderRuntimeConfiguration } from '../../../../gateway/providerRegistry.js'
 import type { ProductResourceReceipt } from '../../../shared/product/resourceScheduler.js'
 import { verifyAgentWorkerChildStartCapability, verifyPermissionExecutionEnvelope, type AgentWorkerChildStartCapability } from './permissionExecutionEnvelope.js'
+import { isProductTaskRunFailureCode, productTaskRunFailure } from './taskRunFailure.js'
 
 /** Server-private Core activity port; the launcher alone may relay it. */
 export type AgentWorkerCore = {
@@ -53,6 +54,11 @@ export class AgentWorkerService {
   /** Reject a Core terminal record that was not bound to this durable run. */
   relayCoreMessage(message: Extract<AgentWorkerOutbound, { type: 'event' | 'terminal' }>): Extract<AgentWorkerOutbound, { type: 'event' | 'terminal' }> | undefined {
     if (!this.core || (message.type === 'terminal' && message.run_id !== this.runId)) return undefined
+    if (message.type === 'terminal') {
+      const failure = message.failure
+      if ((message.state === 'recovery_required') !== (failure !== undefined)) return undefined
+      if (failure && (!isProductTaskRunFailureCode(failure.code) || productTaskRunFailure(failure.code).retryable !== failure.retryable)) return undefined
+    }
     return message
   }
   async stop(): Promise<AgentWorkerOutbound> { if (!this.core || !this.runId) return { type: 'fatal', code: 'NOT_READY' }; await this.core.stop(); return { type: 'terminal', state: 'stopped', run_id: this.runId } }

@@ -832,6 +832,26 @@ describe('product task runtime store', () => {
     )
   })
 
+  it('keeps a retryable run failure terminal and recoverable after durable replay', () => {
+    const store = useProductTaskRuntimeStore.getState()
+    store.handleEvent('task-network-failure', {
+      type: 'run_terminal',
+      id: `turn_${'e'.repeat(32)}`,
+      state: 'recovery_required',
+      failure: { code: 'task_network_unavailable', retryable: true },
+      replayed: true,
+      event_sequence: 7,
+    })
+
+    expect(useProductTaskRuntimeStore.getState().tasks['task-network-failure']).toEqual(
+      expect.objectContaining({
+        runState: 'idle',
+        recoveryRequired: true,
+        error: { code: 'task_network_unavailable', retryable: true },
+      }),
+    )
+  })
+
   it('does not collapse a later attachment-only message into a same-text history snapshot', async () => {
     const pendingThread = deferred<unknown>()
     const firstAttachment = {

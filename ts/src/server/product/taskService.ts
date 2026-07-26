@@ -29,7 +29,8 @@ import {
   type SubmitTaskRunReceipt,
   type UpdateProductTaskInput,
 } from '../../../shared/product/domain.js'
-import type { ProductTaskActionApproval, ProductTaskAttachmentSummary, ProductTaskEvent, ProductTaskQuestion, ProductTaskQueuedInput, ProductTaskThread, ProductTaskThreadEntry, TaskEvent } from '../../../shared/product/taskEvents.js'
+import type { ProductTaskActionApproval, ProductTaskAttachmentSummary, ProductTaskEvent, ProductTaskQuestion, ProductTaskQueuedInput, ProductTaskRunFailure, ProductTaskThread, ProductTaskThreadEntry, TaskEvent } from '../../../shared/product/taskEvents.js'
+import { isProductTaskRunFailureCode, productTaskRunFailure } from './taskRunFailure.js'
 import { assertAuthorityMapKey } from '../../../shared/product/authority.js'
 import type {
   ProductTaskReviewComment,
@@ -1914,8 +1915,9 @@ export class ProductTaskService {
     dispatchGeneration: number,
     terminalState: 'completed' | 'stopped' | 'recovery_required',
     assistantText: string,
+    failure?: ProductTaskRunFailure,
   ): Promise<{ task_id: string }> {
-    if (!runId || !Number.isSafeInteger(dispatchGeneration) || dispatchGeneration < 1 || !['completed', 'stopped', 'recovery_required'].includes(terminalState) || assistantText.length > MAX_DURABLE_ASSISTANT_TEXT_LENGTH) throw new Error('AUTHORITY_INVALID')
+    if (!runId || !Number.isSafeInteger(dispatchGeneration) || dispatchGeneration < 1 || !['completed', 'stopped', 'recovery_required'].includes(terminalState) || assistantText.length > MAX_DURABLE_ASSISTANT_TEXT_LENGTH || (failure !== undefined && (!isProductTaskRunFailureCode(failure.code) || failure.retryable !== productTaskRunFailure(failure.code).retryable)) || (terminalState !== 'recovery_required' && failure !== undefined)) throw new Error('AUTHORITY_INVALID')
     const authority = new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps)
     const { result } = await authority.transactSubmit((state) => {
       const run = state.task_runs[runId] as { task_id?: unknown; event_contract?: unknown } | undefined
@@ -1926,7 +1928,8 @@ export class ProductTaskService {
       const priorAssistant = events.find((event): event is Extract<TaskEvent, { type: 'assistant_text' }> => event.type === 'assistant_text' && event.run_id === runId && event.dispatch_generation === dispatchGeneration)
       if (priorTerminal) {
         const expectedDispatchState = terminalState === 'recovery_required' ? 'recovery_required' : 'terminal'
-        if (priorTerminal.state !== terminalState || (priorAssistant?.text ?? '') !== assistantText || dispatch.state !== expectedDispatchState) throw new Error('AUTHORITY_INVALID')
+        const expectedError = terminalState === 'completed' ? 'TERMINAL' : terminalState === 'stopped' ? 'STOPPED' : failure?.code ?? 'task_failed'
+        if (priorTerminal.state !== terminalState || (priorAssistant?.text ?? '') !== assistantText || dispatch.state !== expectedDispatchState || dispatch.error !== expectedError) throw new Error('AUTHORITY_INVALID')
         return { changed: false as const, value: { task_id: run.task_id as string } }
       }
       if (!['pending', 'claimed', 'started'].includes(dispatch.state as string)) throw new Error('AUTHORITY_INVALID')
@@ -1979,7 +1982,7 @@ export class ProductTaskService {
       }
       dispatch.state = terminalState === 'recovery_required' ? 'recovery_required' : 'terminal'
       dispatch.completed_at = now
-      dispatch.error = terminalState === 'completed' ? 'TERMINAL' : terminalState === 'stopped' ? 'STOPPED' : 'CORE_RECOVERY_REQUIRED'
+      dispatch.error = terminalState === 'completed' ? 'TERMINAL' : terminalState === 'stopped' ? 'STOPPED' : failure?.code ?? 'task_failed'
       return { task_id: run.task_id }
     })
     return result
@@ -2366,7 +2369,7 @@ export class ProductTaskService {
    * intentionally not visible here: reconnect cursors are keyed only by the
    * permanent task-event sequence.
    */
-  async listTaskEvents(taskId: string, afterEventSequence = 0, limit = 200): Promise<{ events: Array<TaskEvent & { attachments?: ProductTaskAttachmentSummary[] }>; cursor: number; has_more?: true }> {
+  async listTaskEvents(taskId: string, afterEventSequence = 0, limit = 200): Promise<{ events: Array<TaskEvent & { attachments?: ProductTaskAttachmentSummary[]; failure?: ProductTaskRunFailure }>; cursor: number; has_more?: true }> {
     if (!Number.isSafeInteger(afterEventSequence) || afterEventSequence < 0 || !Number.isSafeInteger(limit) || limit < 1 || limit > 500) {
       throw ApiError.badRequest('事件游标无效')
     }
@@ -2380,6 +2383,15 @@ export class ProductTaskService {
     const durableEvents = matchingEvents.slice(0, limit)
     const hasMore = matchingEvents.length > durableEvents.length
     const events = await Promise.all(durableEvents.map(async event => {
+      if (event.type === 'run_terminal') {
+        const dispatch = state.dispatch_records[event.run_id] as { error?: unknown } | undefined
+        const failure = event.state === 'recovery_required' && isProductTaskRunFailureCode(dispatch?.error)
+          ? productTaskRunFailure(dispatch.error)
+          : event.state === 'recovery_required'
+            ? productTaskRunFailure('task_failed')
+            : undefined
+        return { ...event, ...(failure ? { failure } : {}) }
+      }
       if (event.type !== 'user_text') return { ...event }
       const attachments = await Promise.all(event.attachment_ids.map(async attachmentId => {
         const attachment = state.task_attachments[attachmentId] as { content_hash?: unknown; byte_size?: unknown; verified_media_type?: unknown } | undefined
@@ -2629,13 +2641,19 @@ export class ProductTaskService {
   }
 
   /** BB-03DR terminal/recovery marker; it cannot create or replay a user turn. */
-  async settleTaskRunDispatch(runId: string, dispatchGeneration: number, state: 'recovery_required' | 'terminal', error?: string): Promise<void> {
+  async settleTaskRunDispatch(runId: string, dispatchGeneration: number, state: 'recovery_required' | 'terminal', error?: string, failure?: ProductTaskRunFailure): Promise<void> {
+    if (failure !== undefined && (!isProductTaskRunFailureCode(failure.code) || failure.retryable !== productTaskRunFailure(failure.code).retryable || state !== 'recovery_required')) throw new Error('AUTHORITY_INVALID')
     const authority = new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps)
     const { result: taskId } = await authority.transactSubmit((file) => {
       const run = file.task_runs[runId] as { task_id?: unknown; event_contract?: unknown } | undefined
       const dispatch = file.dispatch_records[runId] as { dispatch_generation?: unknown; state?: unknown; completed_at?: unknown; error?: unknown } | undefined
       if (typeof run?.task_id !== 'string' || !dispatch || dispatch.dispatch_generation !== dispatchGeneration) throw new Error('AUTHORITY_INVALID')
-      if (dispatch.state === 'terminal' || dispatch.state === 'recovery_required') return { changed: false as const, value: undefined }
+      if (dispatch.state === 'terminal' || dispatch.state === 'recovery_required') {
+        const expectedState = state
+        const expectedError = state === 'recovery_required' ? failure?.code ?? 'task_failed' : error
+        if (dispatch.state !== expectedState || (expectedError !== undefined && dispatch.error !== expectedError)) throw new Error('AUTHORITY_INVALID')
+        return { changed: false as const, value: undefined }
+      }
       const now = this.now().toISOString()
       if (run.event_contract === 'durable_items_v1' && !Object.values(file.task_events).some(value => {
         const event = value as TaskEvent
@@ -2653,10 +2671,10 @@ export class ProductTaskService {
           created_at: now,
         }
       }
-      dispatch.state = state; dispatch.completed_at = now; if (error) dispatch.error = error
+      dispatch.state = state; dispatch.completed_at = now; if (state === 'recovery_required') dispatch.error = failure?.code ?? 'task_failed'; else if (error) dispatch.error = error
       return run.task_id
     })
-    if (state === 'recovery_required' && taskId) productTaskWorkerRuntimeEvents.publish(taskId, { type: 'error', code: 'task_failed', retryable: false })
+    if (state === 'recovery_required' && taskId) productTaskWorkerRuntimeEvents.publish(taskId, { type: 'error', ...(failure ?? { code: 'task_failed', retryable: false }) })
   }
 
   /** BB-02D two-confirmation lifecycle mutation; never deletes a workspace or source path. */

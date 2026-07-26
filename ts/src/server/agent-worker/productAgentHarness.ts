@@ -33,6 +33,8 @@ import { createProductHookSnapshot } from './productHookSnapshot.js'
 import { decideProductToolPermission } from './productPermissionDecision.js'
 import { emptyProductToolPermissionContext, type ProductCommand, type ProductQueuedCommand, type ProductToolContext, type ProductToolHooks, type ProductToolPermissionContext, type ProductTools } from './productTool.js'
 import { productCompactThreshold, productDefaultTextModel, resolveProductTextModel } from '../product/productGatewayRuntime.js'
+import { classifyProductTaskRunFailure } from '../product/taskRunFailure.js'
+import type { ProductTaskRunFailure } from '../../../shared/product/taskEvents.js'
 
 export type ProductAgentHarnessPort = {
   input(text: string, attachments?: readonly string[], queueItemId?: string): Promise<boolean | void>
@@ -171,7 +173,7 @@ export async function createProductAgentHarness(input: {
   }
   const listeners = new Set<(message: Extract<AgentWorkerOutbound, { type: 'event' | 'terminal' }>) => void>()
   const emit = (message: Parameters<(typeof listeners)['add']>[0] extends (message: infer Message) => void ? Message : never) => listeners.forEach(listener => listener(message))
-  const finish = (state: 'completed' | 'stopped' | 'recovery_required') => { if (terminal) return; terminal = true; for (const pending of queuedSteers.values()) pending.resolve(false); queuedSteers.clear(); emit({ type: 'terminal', state, run_id: input.run_id }) }
+  const finish = (state: 'completed' | 'stopped' | 'recovery_required', failure?: ProductTaskRunFailure) => { if (terminal) return; terminal = true; for (const pending of queuedSteers.values()) pending.resolve(false); queuedSteers.clear(); emit({ type: 'terminal', state, run_id: input.run_id, ...(state === 'recovery_required' ? { failure: failure ?? classifyProductTaskRunFailure(undefined) } : {}) }) }
   const emitAssistantText = (message: ProductHarnessMessage) => {
     if (message.type !== 'assistant' || !Array.isArray(message.message?.content)) return
     const text = message.message.content
@@ -333,7 +335,7 @@ export async function createProductAgentHarness(input: {
           const initialized = await autoMemoryRepository!.initialize(input.auto_memory)
           emit({ type: 'event', event: 'delta', data: initialized.created || initialized.instruction_created ? '项目已初始化。' : '项目已经初始化，无需更改。' })
           finish('completed')
-        } catch { finish('recovery_required') } finally { controller = undefined }
+        } catch (error) { finish('recovery_required', classifyProductTaskRunFailure(error)) } finally { controller = undefined }
         return
       }
       try {
@@ -532,8 +534,8 @@ export async function createProductAgentHarness(input: {
         ))
         if (completedResult !== undefined && input.auto_memory) productAutoMemory = await autoMemoryRepository!.appendCompletedTurn(input.auto_memory, { task_id: input.auto_memory.task_id, entry_id: input.auto_memory.entry_id, user: text, assistant: completedResult })
         finish(controller.signal.aborted ? 'stopped' : 'completed')
-      } catch {
-        finish(controller.signal.aborted ? 'stopped' : 'recovery_required')
+      } catch (error) {
+        finish(controller.signal.aborted ? 'stopped' : 'recovery_required', classifyProductTaskRunFailure(error))
       } finally { controller = undefined }
     },
     async approve(requestId, approved) { approvals.get(requestId)?.({ approved }) },

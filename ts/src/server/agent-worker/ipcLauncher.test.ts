@@ -74,8 +74,8 @@ test('server-owned IPC launcher rejects unknown, stale, non-text, and mixed mode
   ]
   for (const env of invalidCases) {
     await withProviderRuntimeEnv(env, async () => {
-      let starts = 0; let resolves = 0; const settled: string[] = []
-      const runs = { readTaskRunDispatchIdentity: async () => ({ task_id: 'task', lineage_id: 'lineage', resume_binding_id: 'private', initial_input: 'durable turn' }), claimTaskRunDispatch: async () => ({ outcome: 'claimed' as const, task_id: 'task' }), settleTaskRunDispatch: async (_r: string, _g: number, state: string, error?: string) => { settled.push(`${state}:${error}`) } }
+      let starts = 0; let resolves = 0; const settled: string[] = []; const failures: unknown[] = []
+      const runs = { readTaskRunDispatchIdentity: async () => ({ task_id: 'task', lineage_id: 'lineage', resume_binding_id: 'private', initial_input: 'durable turn' }), claimTaskRunDispatch: async () => ({ outcome: 'claimed' as const, task_id: 'task' }), settleTaskRunDispatch: async (_r: string, _g: number, state: string, error?: string, failure?: unknown) => { settled.push(`${state}:${error}`); failures.push(failure) } }
       const scheduler = { profileRevision: () => 'p', submit: async () => receipt, complete: async () => receipt } as any
       const launcher = new IpcAgentWorkerLauncher(
         { resolveTaskRunCoreBinding: async () => { resolves++; return { session_id: 'session', work_dir: process.cwd() } } },
@@ -83,7 +83,7 @@ test('server-owned IPC launcher rejects unknown, stale, non-text, and mixed mode
       )
       const supervisor = new AgentWorkerSupervisor(runs, scheduler, launcher)
       expect(await supervisor.dispatch('run', 1)).toBe('started'); await waitFor(() => settled.length > 0)
-      expect(resolves, JSON.stringify(env)).toBe(0); expect(starts, JSON.stringify(env)).toBe(0); expect(settled).toEqual(['recovery_required:模型配置无效'])
+      expect(resolves, JSON.stringify(env)).toBe(0); expect(starts, JSON.stringify(env)).toBe(0); expect(settled).toEqual(['recovery_required:MODEL_CONFIGURATION_INVALID']); expect(failures).toEqual([{ code: 'task_model_configuration', retryable: false }])
     })
   }
 }, 20_000)
