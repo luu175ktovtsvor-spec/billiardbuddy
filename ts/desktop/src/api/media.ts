@@ -1,4 +1,5 @@
 import type {
+  AddImageProjectReferencesInput,
   CreateImageProjectInput,
   CreateVideoProjectInput,
   ApplyVideoAlternativeInput,
@@ -134,6 +135,11 @@ export const mediaApi = {
         `/api/media/images/projects/${encodeURIComponent(projectId)}`,
         input,
       ),
+  addImageProjectReferences: (projectId: string, input: AddImageProjectReferencesInput) =>
+    api.post<{ project: PublicImageWorkbenchProject }>(
+      `/api/media/images/projects/${encodeURIComponent(projectId)}/references`,
+      input,
+    ),
   createVideoProject: (input: CreateVideoProjectInput) =>
     api.post<{ project: PublicVideoStudioProject }>('/api/media/videos/projects', input),
   addVideoSource: (projectId: string, path: string) =>
@@ -180,6 +186,7 @@ export const mediaApi = {
 }
 
 export type {
+  AddImageProjectReferencesInput,
   CreateImageProjectInput,
   CreateVideoProjectInput,
   ImageCanvasSize,

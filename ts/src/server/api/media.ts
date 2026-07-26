@@ -1,6 +1,7 @@
 import { timingSafeEqual } from 'node:crypto'
 import { z } from 'zod/v4'
 import {
+  addImageProjectReferencesInputSchema,
   addVideoSourceInputSchema,
   analyzeVideoProjectInputSchema,
   applyVideoAlternativeInputSchema,
@@ -338,6 +339,10 @@ export function createMediaApiHandler(
         await service.assertProjectOwner(projectId, STANDALONE_MEDIA_OWNER)
         if (action === 'references') {
           const referenceId = segments[6]
+          if (!referenceId && req.method === 'POST' && !segments[7]) {
+            const input = addImageProjectReferencesInputSchema.parse(await parseJson(req))
+            return Response.json({ project: publicProject(await service.addImageProjectReferences(projectId, input)) }, { status: 201 })
+          }
           if (!referenceId || segments[7] !== 'content' || segments[8]) {
             throw ApiError.badRequest('无效的图片参考素材地址')
           }

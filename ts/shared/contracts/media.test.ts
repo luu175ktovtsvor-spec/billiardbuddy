@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import {
+  addImageProjectReferencesInputSchema,
   commitImageVersionInputSchema,
   createImageProjectInputSchema,
   imageWorkbenchProjectSchema,
@@ -87,6 +88,16 @@ describe('provider-neutral image creation contract', () => {
       new_reference_images: [reference],
       new_reference_roles: ['unclassified'],
     }).success).toBe(false)
+    expect(addImageProjectReferencesInputSchema.safeParse({
+      revision: 1,
+      reference_images: [reference],
+      reference_roles: [],
+    }).success).toBe(false)
+    expect(addImageProjectReferencesInputSchema.safeParse({
+      revision: 1,
+      reference_images: [reference],
+      reference_roles: ['logo'],
+    }).success).toBe(true)
   })
 
   test('keeps provider and legacy outputs private while exposing immutable version history', () => {

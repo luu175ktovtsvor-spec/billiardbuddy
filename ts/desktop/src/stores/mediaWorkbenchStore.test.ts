@@ -5,6 +5,7 @@ const mediaApiMock = vi.hoisted(() => ({
   getToolchain: vi.fn(),
   createImageProject: vi.fn(),
   updateImageProject: vi.fn(),
+  addImageProjectReferences: vi.fn(),
   submitImageProject: vi.fn(),
   startImageOperation: vi.fn(),
   commitImageVersion: vi.fn(),
@@ -194,6 +195,35 @@ describe('mediaWorkbenchStore', () => {
       imageProjects: [second],
       activeImageId: second.id,
     })
+  })
+
+  it('adds references to a completed image project without replacing its versions', async () => {
+    const ready = { ...image('img_ready001'), state: 'ready' as const, revision: 4 }
+    const saved = {
+      ...ready,
+      revision: 5,
+      reference_image_count: 1,
+      references: [{
+        asset_id: 'ref_brand0001',
+        role: 'brand' as const,
+        image_path: `/api/media/images/projects/${ready.id}/references/ref_brand0001/content`,
+        mime_type: 'image/png' as const,
+      }],
+    }
+    mediaApiMock.addImageProjectReferences.mockResolvedValue({ project: saved })
+    useMediaWorkbenchStore.setState({ imageProjects: [ready], activeImageId: ready.id })
+
+    await useMediaWorkbenchStore.getState().addImageReferences(ready.id, ready.revision, [{
+      dataUrl: 'data:image/png;base64,AAAA',
+      role: 'brand',
+    }])
+
+    expect(mediaApiMock.addImageProjectReferences).toHaveBeenCalledWith(ready.id, {
+      revision: 4,
+      reference_images: ['data:image/png;base64,AAAA'],
+      reference_roles: ['brand'],
+    })
+    expect(useMediaWorkbenchStore.getState().imageProjects).toEqual([saved])
   })
 
   it('applies monotonic project events and refreshes the owning project projection', async () => {

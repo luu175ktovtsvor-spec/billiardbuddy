@@ -211,11 +211,28 @@ test('media API redacts reference image bytes, updates drafts, and deletes proje
   })
   expect(Buffer.from(await (await route(handler, addedReference!.image_path)).arrayBuffer()).toString()).toBe('new-reference-bytes')
 
+  const appended = await route(handler, `/api/media/images/projects/${createdBody.project.id}/references`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      revision: updatedBody.project.revision,
+      reference_images: [`data:image/png;base64,${Buffer.from('canvas-logo-bytes').toString('base64')}`],
+      reference_roles: ['logo'],
+    }),
+  })
+  const appendedBody = await appended.json() as {
+    project: { revision: number; reference_image_count: number; references: Array<{ role: string; image_path: string }> }
+  }
+  expect(appended.status).toBe(201)
+  expect(appendedBody.project.reference_image_count).toBe(3)
+  const canvasReference = appendedBody.project.references.find(referenceItem => referenceItem.role === 'logo')!
+  expect(Buffer.from(await (await route(handler, canvasReference.image_path)).arrayBuffer()).toString()).toBe('canvas-logo-bytes')
+
   const removed = await route(handler, `/api/media/images/projects/${createdBody.project.id}`, {
     method: 'PUT',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
-      revision: updatedBody.project.revision,
+      revision: appendedBody.project.revision,
       user_request: '不再使用参考素材',
       size: '1024x1536',
       references: [],
@@ -226,6 +243,7 @@ test('media API redacts reference image bytes, updates drafts, and deletes proje
   })
   expect((await route(handler, createdBody.project.references[0]!.image_path)).status).toBe(404)
   expect((await route(handler, addedReference!.image_path)).status).toBe(404)
+  expect((await route(handler, canvasReference.image_path)).status).toBe(404)
 
   const deleted = await route(handler, `/api/media/project/${createdBody.project.id}`, { method: 'DELETE' })
   expect(deleted.status).toBe(204)

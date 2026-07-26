@@ -633,6 +633,23 @@ export const updateImageProjectInputSchema = z.object({
   }
 })
 
+export const addImageProjectReferencesInputSchema = z.object({
+  revision: z.number().int().nonnegative(),
+  reference_images: z.array(referenceImageDataUrlSchema).min(1).max(8),
+  reference_roles: z.array(imageReferenceRoleSchema).min(1).max(8),
+}).superRefine((value, context) => {
+  if (value.reference_images.length !== value.reference_roles.length) {
+    context.addIssue({ code: 'custom', path: ['reference_roles'], message: 'every reference image needs one explicit role' })
+  }
+  if (value.reference_roles.includes('unclassified')) {
+    context.addIssue({ code: 'custom', path: ['reference_roles'], message: 'reference image roles must be confirmed' })
+  }
+  const bytes = value.reference_images.reduce((total, image) => total + approximateDataUrlBytes(image), 0)
+  if (bytes > MAX_REFERENCE_IMAGES_TOTAL_BYTES) {
+    context.addIssue({ code: 'custom', path: ['reference_images'], message: 'reference images exceed the total size limit' })
+  }
+})
+
 export const submitImageProjectInputSchema = z.object({
   confirm_unknown_retry: z.boolean().default(false),
 })
@@ -779,6 +796,7 @@ export type VideoPreview = z.infer<typeof videoPreviewSchema>
 export type CreateImageProjectInput = z.input<typeof createImageProjectInputSchema>
 export type CreateVideoProjectInput = z.input<typeof createVideoProjectInputSchema>
 export type UpdateImageProjectInput = z.input<typeof updateImageProjectInputSchema>
+export type AddImageProjectReferencesInput = z.input<typeof addImageProjectReferencesInputSchema>
 export type SubmitImageProjectInput = z.input<typeof submitImageProjectInputSchema>
 export type StartImageOperationInput = z.input<typeof startImageOperationInputSchema>
 export type CommitImageVersionInput = z.input<typeof commitImageVersionInputSchema>

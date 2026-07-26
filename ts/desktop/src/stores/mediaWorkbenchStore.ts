@@ -33,6 +33,11 @@ type MediaWorkbenchStore = {
     confirmUnknownRetry?: boolean,
     newReferences?: Array<{ dataUrl: string; role: ImageReferenceRole }>,
   ) => Promise<ImageWorkbenchProject>
+  addImageReferences: (
+    projectId: string,
+    revision: number,
+    references: Array<{ dataUrl: string; role: ImageReferenceRole }>,
+  ) => Promise<ImageWorkbenchProject>
   submitImage: (projectId: string, confirmUnknownRetry?: boolean) => Promise<MediaTask>
   startImageOperation: (
     projectId: string,
@@ -309,6 +314,26 @@ export const useMediaWorkbenchStore = create<MediaWorkbenchStore>((set, get) => 
       nextProjectLoadVersion('image')
       set(state => ({ imageProjects: upsert(state.imageProjects, saved) }))
       return saved
+    } catch (error) {
+      const safeError = rendererSafeError(error)
+      set({ error: safeError.message })
+      throw safeError
+    } finally {
+      finishLoading()
+    }
+  },
+
+  addImageReferences: async (projectId, revision, references) => {
+    const finishLoading = beginLoading(set)
+    try {
+      const { project } = await mediaApi.addImageProjectReferences(projectId, {
+        revision,
+        reference_images: references.map(reference => reference.dataUrl),
+        reference_roles: references.map(reference => reference.role),
+      })
+      nextProjectLoadVersion('image')
+      set(state => ({ imageProjects: upsert(state.imageProjects, project) }))
+      return project
     } catch (error) {
       const safeError = rendererSafeError(error)
       set({ error: safeError.message })
