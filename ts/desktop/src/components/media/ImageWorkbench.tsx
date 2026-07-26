@@ -72,6 +72,21 @@ function sameImageLayers(left: CanvasImageLayer[], right: CanvasImageLayer[]): b
   return JSON.stringify(left.map(comparable)) === JSON.stringify(right.map(comparable))
 }
 
+function sameTextLayers(left: ImageTextLayer[], right: ImageTextLayer[]): boolean {
+  const comparable = (layer: ImageTextLayer) => ({
+    text: layer.text,
+    x: Math.round(layer.x),
+    y: Math.round(layer.y),
+    max_width: layer.max_width === undefined ? undefined : Math.round(layer.max_width),
+    fill: layer.fill,
+    font_family: layer.font_family,
+    font_size: layer.font_size,
+    font_weight: layer.font_weight,
+    text_align: layer.text_align,
+  })
+  return JSON.stringify(left.map(comparable)) === JSON.stringify(right.map(comparable))
+}
+
 const REFERENCE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp'])
 
 const IMAGE_SIZE_OPTIONS: Array<{
@@ -577,13 +592,22 @@ export function ImageWorkbench() {
     ? versions.findIndex(version => version.id === currentVersion.id)
     : -1
   const currentVersionUrl = currentVersionIndex >= 0 ? outputUrls[currentVersionIndex] : undefined
-  const compositionBaseVersion = selectedVersion?.kind === 'composite' && selectedVersion.parent_version_id
-    ? versions.find(version => version.id === selectedVersion.parent_version_id) ?? selectedVersion
+  const selectedParentVersion = selectedVersion?.parent_version_id
+    ? versions.find(version => version.id === selectedVersion.parent_version_id)
+    : undefined
+  const textBaseVersion = selectedVersion?.kind === 'text_layout'
+    ? selectedParentVersion ?? selectedVersion
     : selectedVersion
-  const compositionBaseIndex = compositionBaseVersion
-    ? versions.findIndex(version => version.id === compositionBaseVersion.id)
-    : -1
-  const compositionBaseUrl = compositionBaseIndex >= 0 ? outputUrls[compositionBaseIndex] : outputUrl
+  const compositionBaseVersion = selectedVersion?.kind === 'composite'
+    ? selectedParentVersion ?? selectedVersion
+    : selectedVersion
+  const versionUrl = (version: typeof selectedVersion) => {
+    const index = version ? versions.findIndex(candidate => candidate.id === version.id) : -1
+    return index >= 0 ? outputUrls[index] : outputUrl
+  }
+  const textBaseUrl = versionUrl(textBaseVersion)
+  const compositionBaseUrl = versionUrl(compositionBaseVersion)
+  const canvasBaseUrl = selectedVersion?.kind === 'text_layout' ? textBaseUrl : compositionBaseUrl
   const visibleImageLayers = selectedVersion?.id === currentVersion?.id
     ? draftImageLayers
     : selectedVersion?.image_layers ?? []
@@ -620,11 +644,17 @@ export function ImageWorkbench() {
         text_align: 'center',
       }
     }), [draftCanvasHeight, draftCanvasWidth, textCopy, textLayoutSettings])
+  const textLayoutDirty = Boolean(
+    selectedVersion?.id === currentVersion?.id
+    && (
+      currentVersion?.kind !== 'text_layout'
+      || !sameTextLayers(draftTextLayers, currentVersion.text_layers)
+    ),
+  )
   const previewingDraftText = Boolean(
     active
     && selectedVersion
     && active.current_version_id === selectedVersion.id
-    && selectedVersion.kind !== 'text_layout'
     && draftTextLayers.length > 0,
   )
   const visibleCanvasLayers = previewingDraftText ? draftTextLayers : selectedVersion?.text_layers ?? []
@@ -650,8 +680,18 @@ export function ImageWorkbench() {
     setSelectedLayerId(null)
     setCompareMode(false)
     setZoom(1)
-    setTextLayoutSettings({})
-    setTextCopy(active?.brief?.exact_text.join('\n') ?? '')
+    const persistedTextLayers = currentVersion?.kind === 'text_layout' ? currentVersion.text_layers : []
+    const persistedWidth = currentVersion?.width ?? (Number(active?.size.split('x')[0]) || 1024)
+    const persistedHeight = currentVersion?.height ?? (Number(active?.size.split('x')[1]) || 1024)
+    setTextLayoutSettings(Object.fromEntries(persistedTextLayers.map((layer, index) => [index, {
+      x: layer.x / persistedWidth * 100,
+      y: layer.y / persistedHeight * 100,
+      fontSize: layer.font_size,
+      fill: layer.fill,
+    }])))
+    setTextCopy(persistedTextLayers.length > 0
+      ? persistedTextLayers.map(layer => layer.text).join('\n')
+      : active?.brief?.exact_text.join('\n') ?? '')
     setBriefOverrides(active?.brief_overrides ?? {})
     setReferenceDraft(active?.references ?? [])
     setPendingReferences([])
@@ -901,12 +941,12 @@ export function ImageWorkbench() {
   }
 
   const commitText = async () => {
-    if (!active || !selectedVersion || !outputUrl || draftTextLayers.length === 0) return
+    if (!active || !selectedVersion || !textBaseVersion || !textBaseUrl || draftTextLayers.length === 0) return
     try {
-      const rendered = await renderTextLayers(outputUrl, draftTextLayers)
+      const rendered = await renderTextLayers(textBaseUrl, draftTextLayers)
       await commitImageVersion(active.id, {
         revision: active.revision,
-        base_version_id: selectedVersion.id,
+        base_version_id: textBaseVersion.id,
         kind: 'text_layout',
         ...rendered,
       })
@@ -1074,7 +1114,7 @@ export function ImageWorkbench() {
                 <div className="flex min-w-0 flex-col items-center gap-2">
                   {compareMode && <span className="text-[11px] text-[var(--color-text-tertiary)]">所选候选</span>}
                   <ImageCanvasSurface
-                    url={compositionBaseUrl ?? outputUrl}
+                    url={canvasBaseUrl ?? outputUrl}
                     title={active?.title ?? '生成结果'}
                     textLayers={visibleCanvasLayers}
                     imageLayers={visibleImageLayers}
@@ -1664,7 +1704,7 @@ export function ImageWorkbench() {
                       placeholder="每行生成一个确定性文字图层"
                       className="mt-4 w-full resize-none rounded-[6px] border border-[var(--color-border)] bg-[var(--color-input-bg)] px-2 py-1.5 text-[12px]"
                     />
-                    {draftTextLayers.length > 0 && selectedVersion.kind !== 'text_layout' && (
+                    {draftTextLayers.length > 0 && (
                       <div className="mt-2 space-y-2 rounded-[6px] bg-[var(--color-surface-container)] p-2">
                         {draftTextLayers.map((layer, index) => {
                           const setting = textLayoutSettings[index] ?? {
@@ -1686,7 +1726,7 @@ export function ImageWorkbench() {
                         <p className="text-[10px] text-[var(--color-text-tertiary)]">横向/纵向位置使用画布百分比；调整会立即投影到画布，提交后形成不可变版本。</p>
                       </div>
                     )}
-                    <button type="button" onClick={() => void commitText()} disabled={loading || !textCopy.trim()} className="mt-2 h-8 w-full rounded-[6px] border border-[var(--color-border)] text-[12px] disabled:opacity-45">生成文字排版版本</button>
+                    <button type="button" onClick={() => void commitText()} disabled={loading || !textCopy.trim() || !textLayoutDirty} className="mt-2 h-8 w-full rounded-[6px] border border-[var(--color-border)] text-[12px] disabled:opacity-45">保存文字排版版本</button>
                   </div>
                 )}
               </>
