@@ -110,16 +110,12 @@ describe('Desktop release workflow contract', () => {
     }
   })
 
-  test('pins the audited NSIS compiler and the builder template with the bounded path copy', () => {
+  test('pins the builder template with the bounded Windows path copy', () => {
     const desktopPackage = JSON.parse(readFileSync(desktopPackagePath, 'utf8')) as {
-      build?: { nsis?: { customNsisBinary?: { url?: string; checksum?: string; version?: string } } }
+      build?: { nsis?: { customNsisBinary?: unknown } }
       devDependencies?: Record<string, string>
     }
-    expect(desktopPackage.build?.nsis?.customNsisBinary).toEqual({
-      url: 'https://github.com/electron-userland/electron-builder-binaries/releases/download/nsis-3.0.5.0/nsis-3.0.5.0.7z',
-      checksum: 'cTeQgtymnETCMGZa89l5A790zw4otqFThfQbm52AbhUtPUD2yp2lmmu/T9Hd6fG/rDej0o6X6OTupxZB3n8HbA==',
-      version: '3.0.5.0',
-    })
+    expect(desktopPackage.build?.nsis?.customNsisBinary).toBeUndefined()
     expect(desktopPackage.devDependencies?.['electron-builder']).toBe('26.15.7')
     expect(desktopPackage.devDependencies?.['electron-builder-squirrel-windows']).toBe('26.15.7')
     const multiUserTemplate = readFileSync(nsisMultiUserTemplatePath, 'utf8')
