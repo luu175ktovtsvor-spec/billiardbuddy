@@ -29,6 +29,7 @@ type ServerRuntimeOptions = {
   desktopRoot: string
   appRoot?: string
   resolveSystemProxy?: (url: string) => Promise<string>
+  systemProxyTimeoutMs?: number
   /** Product gateway config injected into the SERVER sidecar only (never adapters). */
   resolveGatewayConfig?: () => ProductGatewayConfig
   /** Main-process session manager returns only a current installation access bearer. */
@@ -45,6 +46,7 @@ export class ElectronServerRuntime {
   private readonly desktopRoot: string
   private readonly appRoot: string
   private readonly resolveSystemProxy?: (url: string) => Promise<string>
+  private readonly systemProxyTimeoutMs: number
   private readonly resolveGatewayConfig?: () => ProductGatewayConfig
   private readonly resolveInstallationAccessToken?: () => Promise<string>
   private readonly mediaUiCapability?: string
@@ -62,6 +64,7 @@ export class ElectronServerRuntime {
     this.desktopRoot = options.desktopRoot
     this.appRoot = options.appRoot ?? options.desktopRoot
     this.resolveSystemProxy = options.resolveSystemProxy
+    this.systemProxyTimeoutMs = options.systemProxyTimeoutMs ?? 5_000
     this.resolveGatewayConfig = options.resolveGatewayConfig
     this.resolveInstallationAccessToken = options.resolveInstallationAccessToken
     this.mediaUiCapability = options.mediaUiCapability
@@ -211,7 +214,11 @@ export class ElectronServerRuntime {
     try {
       const proxyTarget = this.resolveGatewayConfig?.().url
       if (!proxyTarget) return this.applyPowerShellOverride(process.env)
-      const rules = await this.resolveSystemProxy(proxyTarget)
+      const rules = await promiseWithTimeout(
+        this.resolveSystemProxy(proxyTarget),
+        this.systemProxyTimeoutMs,
+        'Desktop system proxy resolution timed out',
+      )
       return this.applyPowerShellOverride(mergeProxyEnv(
         process.env,
         proxyUrlFromElectronProxyRules(rules),
@@ -235,5 +242,21 @@ export class ElectronServerRuntime {
       // Misconfigured custom shell etc. — fall through to the unmodified env.
     }
     return env
+  }
+}
+
+async function promiseWithTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) throw new Error('systemProxyTimeoutMs must be a positive safe integer')
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error(message)), timeoutMs)
+        timer.unref?.()
+      }),
+    ])
+  } finally {
+    if (timer) clearTimeout(timer)
   }
 }

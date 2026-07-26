@@ -6,9 +6,26 @@ import { CronService } from './cronService.js'
 import { migrateSupportedScheduledTaskRuns } from './cronScheduler.js'
 import {
   CURRENT_PRODUCT_STORAGE_MIGRATION_VERSION,
+  OLDEST_SUPPORTED_PRODUCT_VERSION,
   ProductStorageMigrationCoordinator,
   type ProductStorageMigrationDependencies,
 } from './productStorageMigrations.js'
+import desktopPackage from '../../../desktop/package.json'
+
+function versionTuple(value: string): [number, number, number] {
+  const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(value)
+  if (!match) throw new Error(`invalid release version: ${value}`)
+  return [Number(match[1]), Number(match[2]), Number(match[3])]
+}
+
+function compareVersions(left: string, right: string): number {
+  const a = versionTuple(left)
+  const b = versionTuple(right)
+  for (let index = 0; index < a.length; index += 1) {
+    if (a[index] !== b[index]) return a[index]! - b[index]!
+  }
+  return 0
+}
 
 function noOpDependencies(overrides: Partial<ProductStorageMigrationDependencies> = {}): ProductStorageMigrationDependencies {
   return {
@@ -22,6 +39,10 @@ function noOpDependencies(overrides: Partial<ProductStorageMigrationDependencies
 }
 
 describe('Product storage migration coordinator', () => {
+  test('binds the desktop release to a newer version than the supported rollback floor', () => {
+    expect(compareVersions(desktopPackage.version, OLDEST_SUPPORTED_PRODUCT_VERSION)).toBeGreaterThan(0)
+  })
+
   test('backs up once, serializes callers, and never reruns a committed migration', async () => {
     const root = await mkdtemp(join(tmpdir(), 'bb-storage-migration-'))
     try {

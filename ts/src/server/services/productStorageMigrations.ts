@@ -4,7 +4,6 @@ import { randomBytes } from 'node:crypto'
 
 export const CURRENT_PRODUCT_STORAGE_MIGRATION_VERSION = 3
 export const OLDEST_SUPPORTED_PRODUCT_VERSION = '0.4.9'
-export const OLDEST_SUPPORTED_PRODUCT_BASELINE = '2a6e79846a49f45a24080a9b50e93a7c66c12e61'
 
 type MigrationState = {
   schema_version: 1

@@ -17,6 +17,7 @@ export type InstallationSessionManagerOptions = {
   installationId: string
   /** Refresh this far ahead of the server expiry; never serve a token in this window. */
   refreshSkewMs?: number
+  requestTimeoutMs?: number
   now?: () => number
   fetchFn?: typeof fetch
   onTokenChanged?: (accessToken: string) => void | Promise<void>
@@ -24,6 +25,7 @@ export type InstallationSessionManagerOptions = {
 }
 
 const DEFAULT_REFRESH_SKEW_MS = 60_000
+const DEFAULT_REQUEST_TIMEOUT_MS = 15_000
 
 type AuthResponse = { access_token: string; refresh_token: string; expires_at: number; token_type?: string }
 
@@ -35,6 +37,7 @@ export class InstallationSessionManager {
   private readonly refreshSkewMs: number
   private readonly now: () => number
   private readonly fetchFn: typeof fetch
+  private readonly requestTimeoutMs: number
   private session: InstallationSession | null | undefined
   private logoutIntent = false
   private logoutPromise: Promise<void> | null = null
@@ -45,6 +48,7 @@ export class InstallationSessionManager {
     this.refreshSkewMs = positiveDuration(options.refreshSkewMs ?? DEFAULT_REFRESH_SKEW_MS, 'refreshSkewMs')
     this.now = options.now ?? Date.now
     this.fetchFn = options.fetchFn ?? fetch
+    this.requestTimeoutMs = positiveDuration(options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS, 'requestTimeoutMs')
   }
 
   async accessToken(): Promise<string> {
@@ -121,6 +125,7 @@ export class InstallationSessionManager {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ refresh_token: session.refreshToken }),
+        signal: AbortSignal.timeout(this.requestTimeoutMs),
       })
       if (response.status !== 204) throw new Error(`Installation session logout failed (${response.status})`)
       this.session = null
@@ -138,7 +143,12 @@ export class InstallationSessionManager {
   private async requestTokens(operation: 'activate' | 'refresh', body: Record<string, string>): Promise<InstallationSession> {
     const headers: Record<string, string> = { 'content-type': 'application/json' }
     if (operation === 'activate') headers.authorization = `Bearer ${this.options.bootstrapCredential}`
-    const response = await this.fetchFn(this.endpoint(operation), { method: 'POST', headers, body: JSON.stringify(body) })
+    const response = await this.fetchFn(this.endpoint(operation), {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(this.requestTimeoutMs),
+    })
     if (!response.ok) throw new Error(`Installation session ${operation} failed (${response.status})`)
     return parseAuthResponse(await response.json())
   }

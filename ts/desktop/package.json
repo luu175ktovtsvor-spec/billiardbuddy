@@ -1,7 +1,7 @@
 {
   "name": "billiardbuddy-desktop",
   "private": true,
-  "version": "0.4.9",
+  "version": "0.5.0",
   "description": "BilliardBuddy desktop agent for billiards venue operations and content creation.",
   "author": {
     "name": "BilliardBuddy"
@@ -102,6 +102,9 @@
     "stage:media-toolchain": "bun run ./scripts/stage-media-toolchain.ts",
     "verify:media-toolchain": "bun run ./scripts/stage-media-toolchain.ts --verify",
     "audit:package": "bun run ./scripts/audit-packaged-resources.ts",
+    "accept:package:mac": "bun run ./scripts/accept-macos-package.ts",
+    "accept:upgrade:mac": "bun run ./scripts/accept-macos-upgrade.ts",
+    "accept:package:windows": "powershell -ExecutionPolicy Bypass -File ./scripts/accept-windows-package.ps1",
     "clean:electron-output": "bun run ./scripts/clean-electron-output.ts",
     "build:macos-arm64": "bash ./scripts/build-macos-arm64.sh",
     "build:windows-x64": "powershell -ExecutionPolicy Bypass -File ./scripts/build-windows-x64.ps1",

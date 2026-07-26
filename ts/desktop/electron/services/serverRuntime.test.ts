@@ -29,6 +29,23 @@ describe('ElectronServerRuntime access-token reconfiguration', () => {
     expect(resolveSystemProxy).toHaveBeenCalledWith('https://gateway.example/gw')
   })
 
+  it('falls back instead of blocking sidecar startup when system proxy resolution hangs', async () => {
+    const diagnostic = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    const runtime = new ElectronServerRuntime({
+      desktopRoot: '/desktop',
+      resolveSystemProxy: () => new Promise(() => undefined),
+      resolveGatewayConfig: () => ({ url: 'https://gateway.example/gw' }),
+      systemProxyTimeoutMs: 5,
+    }) as unknown as { resolveSidecarBaseEnvOnce(): Promise<NodeJS.ProcessEnv> }
+
+    await expect(runtime.resolveSidecarBaseEnvOnce()).resolves.toBeDefined()
+    expect(diagnostic).toHaveBeenCalledWith(
+      '[desktop] failed to resolve system proxy for sidecars',
+      expect.any(Error),
+    )
+    diagnostic.mockRestore()
+  })
+
   it('waits for the old child exit before spawning exactly one replacement', async () => {
     const runtime = new ElectronServerRuntime({ desktopRoot: '/desktop' }) as unknown as {
       server: { url: string; child: ReturnType<typeof child> } | null
