@@ -6,6 +6,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'windows-installer-runner.ps1')
 $oldInstallerPath = (Resolve-Path -LiteralPath $OldInstaller).Path
 $newInstallerPath = (Resolve-Path -LiteralPath $NewInstaller).Path
 $desktopDir = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
@@ -71,8 +72,11 @@ function Install-Package {
     [Parameter(Mandatory = $true)]
     [string]$ExpectedVersion
   )
-  $process = Start-Process -FilePath $InstallerPath -ArgumentList @('/S', "/D=$installDir") -PassThru -Wait
-  if ($process.ExitCode -ne 0) { throw "Windows $ExpectedVersion 安装程序退出码为 $($process.ExitCode)" }
+  $process = Invoke-BilliardBuddyWindowsInstaller `
+    -InstallerPath $InstallerPath `
+    -InstallDir $installDir `
+    -TempRoot $tempRoot `
+    -FailureLabel "Windows $ExpectedVersion 安装程序"
   if (-not (Test-Path -LiteralPath $appPath -PathType Leaf)) { throw "Windows $ExpectedVersion 安装后缺少 BilliardBuddy.exe" }
   $script:installed = $true
   $actualVersion = (Get-Item -LiteralPath $appPath).VersionInfo.ProductVersion
