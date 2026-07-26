@@ -592,14 +592,28 @@ export const updateImageProjectInputSchema = z.object({
   size: imageCanvasSizeSchema,
   brief_overrides: imageBriefOverridesSchema.optional(),
   references: z.array(imageProjectReferenceSchema).max(8).optional(),
+  new_reference_images: z.array(referenceImageDataUrlSchema).max(8).default([]),
+  new_reference_roles: z.array(imageReferenceRoleSchema).max(8).default([]),
   confirm_unknown_retry: z.boolean().default(false),
 }).superRefine((value, context) => {
-  if (!value.references) return
-  if (value.references.some(reference => reference.role === 'unclassified')) {
+  if (value.references?.some(reference => reference.role === 'unclassified')) {
     context.addIssue({ code: 'custom', path: ['references'], message: 'reference image roles must be confirmed' })
   }
-  if (new Set(value.references.map(reference => reference.asset_id)).size !== value.references.length) {
+  if (value.references && new Set(value.references.map(reference => reference.asset_id)).size !== value.references.length) {
     context.addIssue({ code: 'custom', path: ['references'], message: 'reference image ids must be unique' })
+  }
+  if (value.new_reference_images.length !== value.new_reference_roles.length) {
+    context.addIssue({ code: 'custom', path: ['new_reference_roles'], message: 'every new reference image needs one explicit role' })
+  }
+  if (value.new_reference_roles.includes('unclassified')) {
+    context.addIssue({ code: 'custom', path: ['new_reference_roles'], message: 'new reference image roles must be confirmed' })
+  }
+  if ((value.references?.length ?? 0) + value.new_reference_images.length > 8) {
+    context.addIssue({ code: 'custom', path: ['new_reference_images'], message: 'an image project accepts at most eight references' })
+  }
+  const newBytes = value.new_reference_images.reduce((total, image) => total + approximateDataUrlBytes(image), 0)
+  if (newBytes > MAX_REFERENCE_IMAGES_TOTAL_BYTES) {
+    context.addIssue({ code: 'custom', path: ['new_reference_images'], message: 'new reference images exceed the total size limit' })
   }
 })
 

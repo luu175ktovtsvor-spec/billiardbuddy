@@ -4,6 +4,7 @@ import {
   type CreateImageProjectInput,
   type CreateVideoProjectInput,
   type CommitImageVersionInput,
+  type ImageReferenceRole,
   type ImageWorkbenchProject,
   type MediaTask,
   type MediaToolchainStatus,
@@ -30,6 +31,7 @@ type MediaWorkbenchStore = {
   saveImageDraft: (
     project: ImageWorkbenchProject,
     confirmUnknownRetry?: boolean,
+    newReferences?: Array<{ dataUrl: string; role: ImageReferenceRole }>,
   ) => Promise<ImageWorkbenchProject>
   submitImage: (projectId: string, confirmUnknownRetry?: boolean) => Promise<MediaTask>
   startImageOperation: (
@@ -291,7 +293,7 @@ export const useMediaWorkbenchStore = create<MediaWorkbenchStore>((set, get) => 
     }
   },
 
-  saveImageDraft: async (project, confirmUnknownRetry = false) => {
+  saveImageDraft: async (project, confirmUnknownRetry = false, newReferences = []) => {
     const finishLoading = beginLoading(set)
     try {
       const { project: saved } = await mediaApi.updateImageProject(project.id, {
@@ -300,6 +302,8 @@ export const useMediaWorkbenchStore = create<MediaWorkbenchStore>((set, get) => 
         size: project.size,
         brief_overrides: project.brief_overrides,
         references: project.references,
+        new_reference_images: newReferences.map(reference => reference.dataUrl),
+        new_reference_roles: newReferences.map(reference => reference.role),
         confirm_unknown_retry: confirmUnknownRetry,
       })
       nextProjectLoadVersion('image')

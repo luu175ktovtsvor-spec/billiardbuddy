@@ -184,6 +184,8 @@ describe('mediaWorkbenchStore', () => {
       size: edited.size,
       brief_overrides: edited.brief_overrides,
       references: edited.references,
+      new_reference_images: [],
+      new_reference_roles: [],
       confirm_unknown_retry: false,
     })
 
