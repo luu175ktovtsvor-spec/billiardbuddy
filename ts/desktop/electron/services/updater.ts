@@ -35,7 +35,6 @@ export type ElectronUpdaterProxyController = {
 }
 
 export type ElectronUpdaterRuntimeOptions = {
-  enabled?: boolean
   updateConfigPath?: string
 }
 
@@ -73,7 +72,6 @@ function isMissingUpdateMetadataError(error: unknown): boolean {
 export class ElectronUpdaterService {
   private readonly updater: ElectronUpdaterLike
   private readonly proxyController?: ElectronUpdaterProxyController
-  private readonly enabled: boolean
   private readonly updateConfigPath?: string
   private pendingUpdate: ElectronUpdateMetadata | null = null
   private downloaded = false
@@ -86,7 +84,6 @@ export class ElectronUpdaterService {
   ) {
     this.updater = updater
     this.proxyController = proxyController
-    this.enabled = runtimeOptions.enabled ?? true
     this.updateConfigPath = runtimeOptions.updateConfigPath
     this.updater.autoDownload = false
     this.updater.logger = null
@@ -104,7 +101,6 @@ export class ElectronUpdaterService {
   }
 
   async checkForUpdates(options?: ElectronUpdateCheckOptions): Promise<ElectronUpdateMetadata | null> {
-    if (!this.enabled) return null
     let result: ElectronUpdateCheckResult
     try {
       await this.applyProxy(options)
@@ -123,7 +119,6 @@ export class ElectronUpdaterService {
   }
 
   async downloadUpdate(emit: (event: DesktopUpdateDownloadEvent) => void): Promise<void> {
-    if (!this.enabled) throw new Error('Electron updates are disabled on this platform')
     if (!this.pendingUpdate) {
       throw new Error('No Electron update is available to download')
     }
@@ -166,7 +161,6 @@ export class ElectronUpdaterService {
   }
 
   stageDownloadedUpdate() {
-    if (!this.enabled) throw new Error('Electron updates are disabled on this platform')
     if (!this.pendingUpdate) {
       throw new Error('No Electron update is ready to install')
     }
@@ -176,7 +170,7 @@ export class ElectronUpdaterService {
   }
 
   hasDownloadedUpdate(): boolean {
-    return this.enabled && !!this.pendingUpdate && this.downloaded
+    return !!this.pendingUpdate && this.downloaded
   }
 
   quitAndInstallDownloadedUpdate() {
