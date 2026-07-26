@@ -116,6 +116,29 @@ function Assert-CurrentReady {
   }
 }
 
+function Wait-CurrentReady {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$SmokeLog,
+    [Parameter(Mandatory = $true)]
+    [System.Diagnostics.Process]$Process
+  )
+  $deadline = (Get-Date).AddSeconds(60)
+  $lastError = $null
+  while ((Get-Date) -lt $deadline) {
+    if ($Process.HasExited) { throw "当前安装包在 Product Server 就绪前退出: $($Process.ExitCode)" }
+    try {
+      Assert-CurrentReady -SmokeLog $SmokeLog
+      return
+    } catch {
+      if ($_.Exception.Message -eq '当前安装包的 Product Server 启动失败') { throw }
+      $lastError = $_
+    }
+    Start-Sleep -Milliseconds 250
+  }
+  throw "当前安装包没有在 60 秒内完成迁移并进入 backend-ready: $lastError"
+}
+
 function Invoke-RendererProbe {
   param(
     [string]$CreateTaskWorkDir,
@@ -137,6 +160,9 @@ function Invoke-RendererProbe {
     "--remote-debugging-port=$port"
   ) -PassThru
   try {
+    if ($RequireCurrentReady) {
+      Wait-CurrentReady -SmokeLog $smokeLog -Process $script:appProcess
+    }
     $arguments = @('run', $probeScript, '--port', "$port")
     if (-not [string]::IsNullOrWhiteSpace($CreateTaskWorkDir)) {
       $arguments += @('--create-task-work-dir', $CreateTaskWorkDir)
@@ -149,7 +175,6 @@ function Invoke-RendererProbe {
     $jsonLine = @($output | Where-Object { $_ -match '^\{' } | Select-Object -Last 1)
     if ($jsonLine.Count -ne 1) { throw '安装包 renderer 验收没有返回唯一 JSON 结果' }
     $result = $jsonLine[0] | ConvertFrom-Json
-    if ($RequireCurrentReady) { Assert-CurrentReady -SmokeLog $smokeLog }
     return $result
   } finally {
     if ($script:appProcess) {

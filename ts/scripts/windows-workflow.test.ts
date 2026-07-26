@@ -32,6 +32,10 @@ const installerRunnerPath = path.resolve(
   import.meta.dir,
   '../desktop/scripts/windows-installer-runner.ps1',
 )
+const upgradeAcceptancePath = path.resolve(
+  import.meta.dir,
+  '../desktop/scripts/accept-windows-upgrade.ps1',
+)
 const desktopPackagePath = path.resolve(import.meta.dir, '../desktop/package.json')
 const nsisMultiUserTemplatePath = path.resolve(
   import.meta.dir,
@@ -143,6 +147,14 @@ describe('Desktop release workflow contract', () => {
     expect(baselineScript).toContain('$expectedSize = 239427245')
     expect(baselineScript).toContain('XJViXgG33Ps+pyjMT4xbLqDrhN9mTEdIqA3qNJ3JKqgqbxk2k23OjxLGUxC/bsK3GVDrwTbxZ17KuF3nazCIHw==')
     expect(baselineScript).toContain('BB_OLD_WINDOWS_INSTALLER=$installerPath')
+  })
+
+  test('waits for the upgraded Product Server before probing its renderer API', () => {
+    const acceptance = readFileSync(upgradeAcceptancePath, 'utf8')
+    const readyIndex = acceptance.indexOf('Wait-CurrentReady -SmokeLog $smokeLog -Process $script:appProcess')
+    const probeIndex = acceptance.indexOf('$output = @(& bun @arguments)')
+    expect(readyIndex).toBeGreaterThanOrEqual(0)
+    expect(probeIndex).toBeGreaterThan(readyIndex)
   })
 
   test('proves Windows update download recovery after upgrade acceptance', () => {
