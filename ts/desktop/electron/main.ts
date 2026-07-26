@@ -335,7 +335,6 @@ function getUpdaterService() {
       await session.defaultSession.forceReloadProxyConfig()
     },
   }, {
-    enabled: process.platform !== 'darwin' || smokeUpdater !== null,
     updateConfigPath: !smokeUpdater && app.isPackaged ? path.join(process.resourcesPath, 'app-update.yml') : undefined,
   })
   return updaterService

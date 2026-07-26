@@ -17,7 +17,7 @@ const electronHost = createElectronHost({
       ipcRenderer.removeListener(channel, listener)
     })
   },
-}, { updatesEnabled: process.platform !== 'darwin' })
+})
 
 // Do not give an embedded frame access to the desktop IPC bridge. The main
 // process separately validates the top-level sender and renderer origin.
