@@ -30,7 +30,13 @@ describe('SecureSessionStore', () => {
     try {
       expect(() => new SecureSessionStore(file, unavailable).save('refresh')).toThrow('unavailable')
       writeFileSync(file, Buffer.from('garbage').toString('base64'))
-      expect(() => new SecureSessionStore(file, available).load()).toThrow('corrupt')
+      let failure: unknown
+      try { new SecureSessionStore(file, available).load() } catch (error) { failure = error }
+      expect(failure).toMatchObject({
+        message: 'Secure credential storage is corrupt or cannot be decrypted',
+        code: 'SECURE_CREDENTIAL_DECRYPT_FAILED',
+      })
+      expect(Object.keys(failure as object)).not.toContain('smokeDiagnostic')
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
