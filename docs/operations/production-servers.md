@@ -35,6 +35,7 @@
   - `ImageGeneration`：转发美国 Relay
 - MiMo 实际配置：总并发 64，MediaReasoning 48，VisualEvidence 16。
 - 已确认 `/opt/billiardbuddy-gateway/qwenChat.ts` 与 `/opt/billiardbuddy-gateway/webSearch.ts` 不存在；DeepSeek 原生搜索由独立 `/v1/messages` 窄路由提供。
+- 旧 `/opt/qfgw`、`qfgw.service` 与 `qfgw-tunnel` 系统账户已在状态迁移和新服务健康检查后删除。
 
 Gateway 环境变量名称（只记录名称，不记录值）：
 
@@ -95,12 +96,14 @@ GW_VISION_QUEUE_MAX_WAIT_MS
 - Relay 进程：`/root/.bun/bin/bun /opt/billiardbuddy-relay/app.ts`
 - Relay 监听：仅 `127.0.0.1:8790`
 - Gateway 隧道监听：`127.0.0.1:8800` → 大陆 `127.0.0.1:8799`
+- Gateway 隧道账户与凭据目录：大陆 `billiardbuddy-gateway-tunnel`、美国 `/etc/billiardbuddy-gateway-tunnel`。
 - Nginx：公网 `:80/:443`
 - Gateway 公网入口：`https://zzyppz.cn/gw/`
 - Relay 内部入口：`https://zzyppz.cn/relay/imgtasks/`
 - Relay ACL：仅允许 `39.106.214.21` 与 `127.0.0.1`，外部实测 403
 - 持久状态：`relay.db*` 权限 `0600`，`blobs/` 权限 `0700`
 - 当前健康值：queue 2000、单 owner 20、GPT Image 并发 16/单 owner 2、Seedream 已配置且并发 6/单 owner 1、输入预算 512 MiB。
+- 旧 `/opt/qfrelay`、`qfrelay.service`、`qfgw-tunnel.service` 与 `qfgw-us-https-proxy.conf` 已删除；站点只加载当前 `billiardbuddy-gateway-us-https-proxy.conf`。
 
 Relay 环境变量名称：
 
@@ -124,7 +127,7 @@ RELAY_USER_MAX
 
 - Relay：上传 `relay/app.ts`、`relay/validate-production-env.sh`、`relay/deploy.sh` 后执行部署脚本。
 - Gateway：上传 `gateway/app.ts` 及其正式依赖、`ts/shared/product/authEntitlement.ts`（目标名 `authority.ts`）、校验脚本与 `gateway/deploy.sh` 后执行部署脚本。
-- 两个部署脚本都保留已有凭据文件，校验非敏感容量配置，重启 systemd，并验证本机 `/healthz` 的协议清单。
+- 两个部署脚本都迁移已有凭据与持久状态，改写本机旧状态路径，校验非敏感容量配置，切换到唯一的当前 systemd 服务，并在新 `/healthz` 通过后删除旧目录与 unit。
 
 本次实测：
 
@@ -133,8 +136,8 @@ RELAY_USER_MAX
 - 美国本机经 Nginx 访问 Relay health：200
 - 大陆公网 `http://39.106.214.21/healthz`：404
 - 两台服务器相关 systemd 服务均为 `active`
-- Gateway 运行闭包在部署前通过授权、`64 = 48 + 16` MiMo 硬分区和 1000-window 配置预检；部署后 `/opt/billiardbuddy-gateway/app.ts` 与仓库 SHA-256 同为 `05746da18dc167f5767590f0d7bf7bc36a3ab28521bbcf761b102a8760a1c940`。
-- Relay 未发生源码漂移；`/opt/billiardbuddy-relay/app.ts` 与仓库 SHA-256 同为 `0250443599bfd3d46daf11655f1ab1c1afaf1f79e7eb0f19f8670630e7cebac7`。
+- Gateway 运行闭包在部署前通过授权、`64 = 48 + 16` MiMo 硬分区和 1000-window 配置预检；部署后 `/opt/billiardbuddy-gateway/app.ts` 与仓库 SHA-256 同为 `384015fb48ba28eeb475d09ece85cb2306135f5d14cbf1759a20310f30750729`。
+- Relay 未发生源码漂移；`/opt/billiardbuddy-relay/app.ts` 与仓库 SHA-256 同为 `9593d9da9d29e9a98d7e99f1bce23d81275cc1cb4e6879410a6540c0e2288a6d`。
 - 使用现有生产授权创建并注销一个固定验收安装会话，实际通过 Gateway 调用 DeepSeek `TextReasoning`、MiMo `MediaReasoning`（真实 PNG、4000 token 正式参数）、MiMo → DeepSeek `VisualEvidence`、DeepSeek 原生 Web Search 和 Fun-ASR；五条能力均返回可消费的非空结果，原生搜索流包含 server tool use、tool result 与终止事件。
 - 使用同一安装身份提交一个 Seedream 持久图片任务，Relay 成功落盘并通过 owner-bound 结果授权返回 703905 字节图片；随后 ack 成功，临时验收上传物和会话均已清理。
 

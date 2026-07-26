@@ -33,7 +33,7 @@
 #     proxy_read_timeout 300s;  # 允许完整图片结果从美国 relay 返回网关
 #     proxy_send_timeout 300s;
 #   }
-set -e
+set -euo pipefail
 APPDIR=/opt/billiardbuddy-relay
 [ -f /tmp/relay-app.ts ] || { echo "缺少 /tmp/relay-app.ts" >&2; exit 1; }
 [ -f /tmp/validate-production-env.sh ] || { echo "缺少 /tmp/validate-production-env.sh" >&2; exit 1; }
@@ -46,10 +46,25 @@ if [ -f /tmp/relay.env ]; then
   install -m 600 /tmp/relay.env "$APPDIR/relay.env.new"
   mv -f "$APPDIR/relay.env.new" "$APPDIR/relay.env"
   rm -f /tmp/relay.env
+elif [ ! -f "$APPDIR/relay.env" ] && [ -f /opt/qfrelay/relay.env ]; then
+  # One-time product-name migration. Preserve credentials without evaluating or
+  # printing the EnvironmentFile, then validate its non-secret deployment fields.
+  install -m 600 /opt/qfrelay/relay.env "$APPDIR/relay.env"
 elif [ ! -f "$APPDIR/relay.env" ]; then
   echo "缺少 /tmp/relay.env,且现网不存在 $APPDIR/relay.env" >&2
   exit 1
 fi
+
+# qfrelay 是已经退役的产品名。只改写明确的本机持久化字段。
+relay_env_migration="$(mktemp "$APPDIR/relay.env.migration.XXXXXX")"
+awk '
+  /^[[:space:]]*(RELAY_DB|RELAY_BLOB_DIR)[[:space:]]*=/ {
+    sub("/opt/qfrelay", "/opt/billiardbuddy-relay")
+  }
+  { print }
+' "$APPDIR/relay.env" > "$relay_env_migration"
+install -m 600 "$relay_env_migration" "$APPDIR/relay.env"
+rm -f -- "$relay_env_migration"
 # Do not silently restart a production relay at the former 600/5 profile or with
 # in-memory queue state. The preflight reads only non-secret values and never
 # evaluates relay.env.
@@ -72,13 +87,28 @@ chmod 700 -- "$relay_blob_dir"
 cd "$APPDIR"
 
 echo "=== Bun runtime ==="
-if ! command -v bun >/dev/null 2>&1; then
+if command -v bun >/dev/null 2>&1; then
+  BUN_BIN="$(command -v bun)"
+elif [ -x "$HOME/.bun/bin/bun" ]; then
+  BUN_BIN="$HOME/.bun/bin/bun"
+else
   curl -fsSL https://bun.sh/install | bash
-  export PATH="$HOME/.bun/bin:$PATH"
+  BUN_BIN="$HOME/.bun/bin/bun"
 fi
-BUN_BIN="$(command -v bun)"
+[ -x "$BUN_BIN" ] || { echo "Bun 安装失败" >&2; exit 1; }
 
 echo "=== systemd 服务 ==="
+if systemctl is-active --quiet qfrelay 2>/dev/null; then
+  systemctl stop qfrelay
+fi
+for state_file in relay.db relay.db-shm relay.db-wal; do
+  if [ -f "/opt/qfrelay/$state_file" ] && [ ! -e "$APPDIR/$state_file" ]; then
+    cp -a "/opt/qfrelay/$state_file" "$APPDIR/$state_file"
+  fi
+done
+if [ -d /opt/qfrelay/blobs ]; then
+  cp -a /opt/qfrelay/blobs/. "$relay_blob_dir/"
+fi
 cat > /etc/systemd/system/billiardbuddy-relay.service <<'UNIT'
 [Unit]
 Description=BilliardBuddy image async task relay (Bun)
@@ -106,4 +136,10 @@ health_json="$(curl -fsS --max-time 8 http://127.0.0.1:8790/healthz)"
 HEALTH_JSON="$health_json" "$BUN_BIN" -e 'const value=JSON.parse(process.env.HEALTH_JSON??"{}");if(value.component_manifest?.component!=="billiardbuddy-relay"||value.component_manifest?.protocol!=="bb-provider-gateway/1.0"||value.component_manifest?.requires_gateway_protocol_for_owned_tasks!==true)throw new Error("billiardbuddy-relay component manifest incompatible")'
 echo "$health_json"
 chmod 600 "$APPDIR"/relay.db* 2>/dev/null || true
+systemctl disable qfrelay >/dev/null 2>&1 || true
+rm -f /etc/systemd/system/qfrelay.service
+systemctl daemon-reload
+if [ -d /opt/qfrelay ]; then
+  rm -rf /opt/qfrelay
+fi
 echo "DEPLOY_DONE"

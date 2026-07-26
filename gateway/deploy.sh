@@ -1,5 +1,5 @@
 #!/bin/bash
-# 在大陆机 39.106.214.21 上部署网关阀门(零干扰现网:只占 127.0.0.1:8799 + 一个 systemd 服务)。
+# 在大陆机 39.106.214.21 上部署唯一的 BilliardBuddy Gateway。
 #
 # gw.env(600)保存启动授权、MiMo、DeepSeek、Fun-ASR 与 Relay 配置。DeepSeek V4 Flash 需要:
 #   GW_DEEPSEEK_KEY   (真 key,只在本机 gw.env) / GW_DEEPSEEK_BASE(默认 https://api.deepseek.com)
@@ -78,25 +78,44 @@ install -m 644 /tmp/validate-auth-env.ts "$APPDIR/validate-auth-env.ts"
 rm -f "$APPDIR/qwenChat.ts" "$APPDIR/webSearch.ts"
 install -m 755 /tmp/validate-mimo-capacity-env.sh "$APPDIR/validate-mimo-capacity-env.sh"
 install -m 755 /tmp/validate-production-capacity-env.sh "$APPDIR/validate-production-capacity-env.sh"
-# Upload these separately with the runtime files when a controlled live capacity
-# run is scheduled. They are never invoked by deployment, and keeping them in
-# /opt/billiardbuddy-gateway keeps controlled operators close to service health; runners still require
-# an explicit short-lived installation access token and never read bootstrap credentials.
-# A normal runtime-only deployment remains valid when no runner was uploaded.
-for runner in real-loadtest.ts vision-real-loadtest.ts image-real-loadtest.ts mimo-mixed-real-loadtest.ts; do
-  if [ -f "/tmp/$runner" ]; then
-    install -m 644 "/tmp/$runner" "$APPDIR/$runner"
-  else
-    echo "未上传受控压测器 /tmp/$runner；此次未更新该工具" >&2
-  fi
+# Upload the controlled load-test closure as one unit. Every simulated
+# installation must use its own signed token, loaded by loadtestCredentials.ts;
+# installing only part of this closure would leave an operator tool that cannot run.
+loadtest_sources=(loadtestCredentials.ts real-loadtest.ts vision-real-loadtest.ts image-real-loadtest.ts mimo-mixed-real-loadtest.ts)
+loadtest_upload=0
+for runner in "${loadtest_sources[@]}"; do
+  [ ! -f "/tmp/$runner" ] || loadtest_upload=1
 done
+if [ "$loadtest_upload" -eq 1 ]; then
+  for runner in "${loadtest_sources[@]}"; do
+    [ -f "/tmp/$runner" ] || { echo "受控压测工具必须整组上传，缺少 /tmp/$runner" >&2; exit 1; }
+    install -m 644 "/tmp/$runner" "$APPDIR/$runner"
+  done
+else
+  echo "此次未上传受控压测工具；保留现有工具版本" >&2
+fi
 if [ -f /tmp/gw.env ]; then
   install -m 600 /tmp/gw.env "$APPDIR/gw.env.new"
   mv -f "$APPDIR/gw.env.new" "$APPDIR/gw.env"
+elif [ ! -f "$APPDIR/gw.env" ] && [ -f /opt/qfgw/gw.env ]; then
+  # One-time product-name migration. Copy as data without sourcing or printing
+  # credentials; the complete authorization validator runs before either service changes.
+  install -m 600 /opt/qfgw/gw.env "$APPDIR/gw.env"
 elif [ ! -f "$APPDIR/gw.env" ]; then
   echo "缺少 /tmp/gw.env，且现网不存在 $APPDIR/gw.env" >&2
   exit 1
 fi
+
+# qfgw 是已经退役的产品名。只改写明确的本机状态字段，不触碰凭据或远端 URL。
+gateway_env_migration="$(mktemp "$APPDIR/gw.env.migration.XXXXXX")"
+awk '
+  /^[[:space:]]*(GW_DB|GW_AUTHORITY_FILE)[[:space:]]*=/ {
+    sub("/opt/qfgw", "/opt/billiardbuddy-gateway")
+  }
+  { print }
+' "$APPDIR/gw.env" > "$gateway_env_migration"
+install -m 600 "$gateway_env_migration" "$APPDIR/gw.env"
+rm -f -- "$gateway_env_migration"
 
 # 只在三项均缺失的新环境补入非敏感默认值。不能对旧的低容量 gw.env 单独塞入 48/16，
 # 否则会让原本有效的 GW_MIMO_CONC=16 变成不一致配置。已有总量由 app.ts 兼容推导；
@@ -132,6 +151,14 @@ fi
 "$BUN_BIN" "$APPDIR/validate-auth-env.ts" "$APPDIR/gw.env"
 
 echo "=== systemd 服务 ==="
+if systemctl is-active --quiet qfgw 2>/dev/null; then
+  systemctl stop qfgw
+fi
+for state_file in authority.json usage.db usage.db-shm usage.db-wal; do
+  if [ -f "/opt/qfgw/$state_file" ] && [ ! -e "$APPDIR/$state_file" ]; then
+    cp -a "/opt/qfgw/$state_file" "$APPDIR/$state_file"
+  fi
+done
 cat > /etc/systemd/system/billiardbuddy-gateway.service <<'UNIT'
 [Unit]
 Description=BilliardBuddy AI gateway valve (Bun)
@@ -163,6 +190,12 @@ health_json="$(curl -fsS --max-time 8 http://127.0.0.1:8799/healthz)"
 HEALTH_JSON="$health_json" "$BUN_BIN" -e 'const value=JSON.parse(process.env.HEALTH_JSON??"{}");if(value.component_manifest?.component!=="billiardbuddy-gateway"||value.component_manifest?.protocol!=="bb-provider-gateway/1.0"||value.component_manifest?.relay_protocol!=="bb-provider-gateway/1.0")throw new Error("billiardbuddy-gateway component manifest incompatible")'
 echo "$health_json"
 chmod 600 "$APPDIR"/usage.db* 2>/dev/null || true
+systemctl disable qfgw >/dev/null 2>&1 || true
+rm -f /etc/systemd/system/qfgw.service
+systemctl daemon-reload
+if [ -d /opt/qfgw ]; then
+  rm -rf /opt/qfgw
+fi
 echo "=== 内存占用 ==="
 free -h | head -2
 echo "DEPLOY_DONE"
