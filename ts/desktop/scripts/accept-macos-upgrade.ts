@@ -6,6 +6,8 @@ import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import { auditPackagedResources } from './audit-packaged-resources'
 import { waitForReadyProductWindow } from './package-window-smoke'
 import desktopPackage from '../package.json'
+import { useTemporaryAcceptanceKeychain, type TemporaryAcceptanceKeychain } from './macos-acceptance-keychain'
+import { startPackageAuthGateway, type PackageAuthGateway } from './package-auth-gateway'
 import {
   CURRENT_PRODUCT_STORAGE_MIGRATION_VERSION,
   OLDEST_SUPPORTED_PRODUCT_VERSION,
@@ -173,6 +175,26 @@ async function inspectProductRuntime(target: DevToolsTarget, expectedTaskId?: st
   }
 }
 
+async function createOldProductTask(target: DevToolsTarget, workDir: string): Promise<string> {
+  const result = await evaluateInRenderer<{ status?: unknown, task?: { id?: unknown } }>(target, `(async () => {
+    const serverUrl = await window.desktopHost.runtime.getServerUrl()
+    const response = await fetch(serverUrl.replace(/\\/$/, '') + '/api/product/tasks', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        workDir: ${JSON.stringify(workDir)},
+        title: 'Oldest supported package task',
+        permissionMode: 'ask',
+      }),
+    })
+    return { status: response.status, ...(await response.json()) }
+  })()`)
+  if (result.status !== 201 || typeof result.task?.id !== 'string') {
+    throw new Error('最老支持安装包没有创建真实产品任务')
+  }
+  return result.task.id
+}
+
 async function terminate(child: ChildProcess): Promise<void> {
   if (child.exitCode !== null) return
   child.kill('SIGTERM')
@@ -195,7 +217,8 @@ async function launchAndVerify(
   userDataDir: string,
   useLegacyGateway: boolean,
   expectedTaskId?: string,
-): Promise<DevToolsTarget> {
+  createTaskWorkDir?: string,
+): Promise<{ target: DevToolsTarget, createdTaskId?: string }> {
   const port = await reservePort()
   const child = spawn(join(appPath, 'Contents', 'MacOS', 'BilliardBuddy'), [
     `--user-data-dir=${userDataDir}`,
@@ -206,6 +229,7 @@ async function launchAndVerify(
       BILLIARDBUDDY_CONFIG_DIR: configDir,
       BB_ELECTRON_DISABLE_SINGLE_INSTANCE_LOCK: '1',
       ...(useLegacyGateway ? {
+        CLAUDE_CONFIG_DIR: configDir,
         QF_GATEWAY_URL: 'https://example.test/gw',
         QF_GATEWAY_TOKEN: 'YOUR_API_KEY_1234',
         QF_GATEWAY_MODEL: 'qwen3.5-plus',
@@ -216,31 +240,24 @@ async function launchAndVerify(
   try {
     const target = await waitForRenderer(port, child)
     await inspectProductRuntime(target, expectedTaskId)
-    return target
+    const createdTaskId = createTaskWorkDir ? await createOldProductTask(target, createTaskWorkDir) : undefined
+    if (createdTaskId) await inspectProductRuntime(target, createdTaskId)
+    return { target, ...(createdTaskId ? { createdTaskId } : {}) }
   } finally {
     await terminate(child)
   }
 }
 
-function seedInterruptedOldStorage(configDir: string): string {
+function seedInterruptedOldStorage(configDir: string, expectedTaskId: string): string {
   const productDir = join(configDir, 'billiardbuddy')
   const storePath = join(productDir, 'product-tasks.json')
   const backupId = 'v3-20260726T000000Z-a1b2c3d4'
   const backupDir = join(productDir, 'storage-migration-backups', backupId)
-  const original = `${JSON.stringify({
-    version: 1,
-    tasks: {
-      'fixture-core-v1': {
-        title: 'Oldest supported package task',
-        lifecycle: 'active',
-        kind: 'main',
-        createdAt: '2025-01-01T00:00:00.000Z',
-        updatedAt: '2025-01-01T00:00:00.000Z',
-        worktreeState: 'not_requested',
-      },
-    },
-    sideTasks: {},
-  }, null, 2)}\n`
+  const original = readFileSync(storePath, 'utf8')
+  const oldStore = JSON.parse(original) as { version?: unknown, tasks?: Record<string, unknown> }
+  if (oldStore.version !== 4 || !oldStore.tasks?.[expectedTaskId]) {
+    throw new Error('最老支持安装包没有留下可升级的真实任务状态')
+  }
   const journal = {
     schema_version: 1,
     target_version: CURRENT_PRODUCT_STORAGE_MIGRATION_VERSION,
@@ -253,11 +270,15 @@ function seedInterruptedOldStorage(configDir: string): string {
   writeFileSync(join(backupDir, 'files', 'billiardbuddy', 'product-tasks.json'), original, { mode: 0o600 })
   writeFileSync(join(backupDir, 'manifest.json'), `${JSON.stringify(journal, null, 2)}\n`, { mode: 0o600 })
   writeFileSync(join(productDir, 'storage-migration-journal.json'), `${JSON.stringify(journal, null, 2)}\n`, { mode: 0o600 })
-  writeFileSync(storePath, '{"version":4,"tasks":{},"sideTasks":{}}\n', { mode: 0o600 })
+  writeFileSync(storePath, `${JSON.stringify({ ...oldStore, tasks: {} }, null, 2)}\n`, { mode: 0o600 })
   return original
 }
 
-async function waitForUpgrade(configDir: string, original: string): Promise<{ backupId: string }> {
+async function waitForUpgrade(
+  configDir: string,
+  original: string,
+  expectedTaskId: string,
+): Promise<{ backupId: string, taskId: string }> {
   const productDir = join(configDir, 'billiardbuddy')
   const statePath = join(productDir, 'storage-migration-state.json')
   const deadline = Date.now() + 60_000
@@ -277,19 +298,21 @@ async function waitForUpgrade(configDir: string, original: string): Promise<{ ba
         version?: unknown
         tasks?: Record<string, { title?: unknown }>
       }
-      if (store.version !== 4 || store.tasks?.['fixture-core-v1']?.title !== 'Oldest supported package task') {
+      const migratedTask = store.tasks?.[expectedTaskId]
+      if (store.version !== 4 || migratedTask?.title !== 'Oldest supported package task') {
         throw new Error('旧任务没有迁移到当前存储版本')
       }
+      const backupId = state.backup_id as string
       const backup = readFileSync(join(
         productDir,
         'storage-migration-backups',
-        state.backup_id,
+        backupId,
         'files',
         'billiardbuddy',
         'product-tasks.json',
       ), 'utf8')
       if (backup !== original) throw new Error('升级备份没有保留恢复后的旧版本原始字节')
-      return { backupId: state.backup_id }
+      return { backupId, taskId: expectedTaskId }
     } catch (error) {
       lastError = error
     }
@@ -316,38 +339,53 @@ async function main() {
   const appPath = join(tempRoot, 'installed', 'BilliardBuddy.app')
   const configDir = join(tempRoot, 'config')
   const userDataDir = join(tempRoot, 'user-data')
+  const oldWorkspace = join(tempRoot, 'old-workspace')
   mkdirSync(configDir)
   mkdirSync(userDataDir)
+  mkdirSync(oldWorkspace)
+  let keychain: TemporaryAcceptanceKeychain | null = null
+  let authGateway: PackageAuthGateway | null = null
 
   try {
+    keychain = useTemporaryAcceptanceKeychain(tempRoot)
     installFromDmg(oldDmg, appPath, tempRoot)
     const oldVersion = packageVersion(appPath)
     if (oldVersion !== OLDEST_SUPPORTED_PRODUCT_VERSION) throw new Error(`最老支持包版本不正确: ${oldVersion}`)
-    const oldRenderer = await launchAndVerify(appPath, configDir, userDataDir, true)
-    const original = seedInterruptedOldStorage(configDir)
+    const oldLaunch = await launchAndVerify(appPath, configDir, userDataDir, true, undefined, oldWorkspace)
+    if (!oldLaunch.createdTaskId) throw new Error('最老支持安装包没有返回真实任务标识')
+    const original = seedInterruptedOldStorage(configDir, oldLaunch.createdTaskId)
 
     installFromDmg(newDmg, appPath, tempRoot)
     const newVersion = packageVersion(appPath)
     if (newVersion !== desktopPackage.version) throw new Error(`当前包版本不正确: ${newVersion}`)
     auditPackagedResources({ platform: 'darwin', resourcesDir: join(appPath, 'Contents', 'Resources') })
+    authGateway = await startPackageAuthGateway()
     const windowSmokeLog = join(tempRoot, 'current-window-smoke.jsonl')
+    const currentRendererPort = await reservePort()
     const newChild = spawn(join(appPath, 'Contents', 'MacOS', 'BilliardBuddy'), [
       `--user-data-dir=${userDataDir}`,
+      `--remote-debugging-port=${currentRendererPort}`,
     ], {
       env: {
         ...process.env,
         BILLIARDBUDDY_CONFIG_DIR: configDir,
         BB_ELECTRON_DISABLE_SINGLE_INSTANCE_LOCK: '1',
         BB_ELECTRON_WINDOW_SMOKE_LOG: windowSmokeLog,
+        BB_GATEWAY_URL: authGateway.url,
+        BB_GATEWAY_BOOTSTRAP_CREDENTIAL: authGateway.bootstrapCredential,
+        BB_LICENSE_KEY: authGateway.licenseKey,
+        NODE_EXTRA_CA_CERTS: authGateway.caPath,
       },
       stdio: 'ignore',
     })
-    let currentRenderer: { url?: unknown }
-    let upgrade: { backupId: string }
+    let currentRenderer: DevToolsTarget
+    let upgrade: { backupId: string, taskId: string }
     try {
       currentRenderer = await waitForReadyProductWindow(windowSmokeLog)
       try {
-        upgrade = await waitForUpgrade(configDir, original)
+        upgrade = await waitForUpgrade(configDir, original, oldLaunch.createdTaskId)
+        currentRenderer = await waitForRenderer(currentRendererPort, newChild)
+        await inspectProductRuntime(currentRenderer, upgrade.taskId)
       } catch (error) {
         const backendFailure = backendFailureReason(windowSmokeLog)
         throw new Error(`${String(error)}${backendFailure ? `; ${backendFailure}` : ''}`)
@@ -357,12 +395,12 @@ async function main() {
     }
 
     installFromDmg(oldDmg, appPath, tempRoot)
-    const rollbackRenderer = await launchAndVerify(appPath, configDir, userDataDir, true, 'fixture-core-v1')
+    const rollbackLaunch = await launchAndVerify(appPath, configDir, userDataDir, true, upgrade.taskId)
     const rolledBackStore = JSON.parse(readFileSync(join(configDir, 'billiardbuddy', 'product-tasks.json'), 'utf8')) as {
       version?: unknown
       tasks?: Record<string, unknown>
     }
-    if (rolledBackStore.version !== 4 || !rolledBackStore.tasks?.['fixture-core-v1']) {
+    if (rolledBackStore.version !== 4 || !rolledBackStore.tasks?.[upgrade.taskId]) {
       throw new Error('回退旧包后迁移数据不可读')
     }
 
@@ -372,10 +410,13 @@ async function main() {
       newVersion,
       interruptedMigrationRecovered: true,
       backupId: upgrade.backupId,
+      migratedTaskId: upgrade.taskId,
       rollbackRelaunched: true,
-      rendererUrls: [oldRenderer.url, currentRenderer.url, rollbackRenderer.url],
+      rendererUrls: [oldLaunch.target.url, currentRenderer.url, rollbackLaunch.target.url],
     }))
   } finally {
+    await authGateway?.close()
+    keychain?.restore()
     rmSync(tempRoot, { recursive: true, force: true })
   }
 }

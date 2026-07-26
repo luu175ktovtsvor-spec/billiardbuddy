@@ -13,6 +13,7 @@ $userDataDir = Join-Path $tempRoot 'user-data'
 $smokeLog = Join-Path $tempRoot 'window-smoke.jsonl'
 $appPath = Join-Path $installDir 'BilliardBuddy.exe'
 $appProcess = $null
+$authGatewayProcess = $null
 $installed = $false
 $mainError = $null
 $cleanupError = $null
@@ -20,8 +21,10 @@ $acceptanceEnv = @{
   BILLIARDBUDDY_CONFIG_DIR = $configDir
   BB_ELECTRON_DISABLE_SINGLE_INSTANCE_LOCK = '1'
   BB_ELECTRON_WINDOW_SMOKE_LOG = $smokeLog
-  BB_GATEWAY_BOOTSTRAP_CREDENTIAL = 'smoke-invalid-bootstrap'
-  BB_LICENSE_KEY = 'smoke-invalid-license'
+  BB_GATEWAY_URL = ''
+  BB_GATEWAY_BOOTSTRAP_CREDENTIAL = ''
+  BB_LICENSE_KEY = ''
+  NODE_EXTRA_CA_CERTS = ''
 }
 $previousEnv = @{}
 foreach ($name in $acceptanceEnv.Keys) {
@@ -49,6 +52,26 @@ function Assert-ReadyProductWindow {
 
 try {
   New-Item -ItemType Directory -Force $tempRoot, $configDir, $userDataDir | Out-Null
+  $readyFile = Join-Path $tempRoot 'auth-gateway.json'
+  $desktopDir = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
+  $authGatewayProcess = Start-Process -FilePath 'bun' -ArgumentList @(
+    'run',
+    (Join-Path $PSScriptRoot 'package-auth-gateway.ts'),
+    '--ready-file',
+    $readyFile
+  ) -WorkingDirectory $desktopDir -PassThru -NoNewWindow
+  $gatewayDeadline = (Get-Date).AddSeconds(15)
+  while ((Get-Date) -lt $gatewayDeadline -and -not (Test-Path -LiteralPath $readyFile -PathType Leaf)) {
+    if ($authGatewayProcess.HasExited) { throw "本地安装包激活服务提前退出: $($authGatewayProcess.ExitCode)" }
+    Start-Sleep -Milliseconds 100
+  }
+  if (-not (Test-Path -LiteralPath $readyFile -PathType Leaf)) { throw '本地安装包激活服务未在 15 秒内就绪' }
+  $gateway = Get-Content -LiteralPath $readyFile -Raw | ConvertFrom-Json
+  $acceptanceEnv.BB_GATEWAY_URL = $gateway.url
+  $acceptanceEnv.BB_GATEWAY_BOOTSTRAP_CREDENTIAL = $gateway.bootstrapCredential
+  $acceptanceEnv.BB_LICENSE_KEY = $gateway.licenseKey
+  $acceptanceEnv.NODE_EXTRA_CA_CERTS = $gateway.caPath
+
   $installerProcess = Start-Process -FilePath $installerPath -ArgumentList @('/S', "/D=$installDir") -PassThru -Wait
   if ($installerProcess.ExitCode -ne 0) { throw "Windows 安装程序退出码为 $($installerProcess.ExitCode)" }
   if (-not (Test-Path -LiteralPath $appPath -PathType Leaf)) { throw 'Windows 安装后缺少 BilliardBuddy.exe' }
@@ -83,6 +106,17 @@ try {
       & taskkill /PID $appProcess.Id /T /F | Out-Null
       if ($LASTEXITCODE -ne 0 -and -not $appProcess.HasExited) {
         throw "无法终止 BilliardBuddy 进程树: $LASTEXITCODE"
+      }
+    } catch {
+      if ($null -eq $cleanupError) { $cleanupError = $_ }
+    }
+  }
+
+  if ($authGatewayProcess -and -not $authGatewayProcess.HasExited) {
+    try {
+      & taskkill /PID $authGatewayProcess.Id /T /F | Out-Null
+      if ($LASTEXITCODE -ne 0 -and -not $authGatewayProcess.HasExited) {
+        throw "无法终止本地安装包激活服务: $LASTEXITCODE"
       }
     } catch {
       if ($null -eq $cleanupError) { $cleanupError = $_ }
