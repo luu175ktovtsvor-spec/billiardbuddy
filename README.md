@@ -4,16 +4,15 @@ BilliardBuddy 是面向球房经营者的桌面 Agent。当前能力和完成度
 
 当前重构方向和执行边界见 [BilliardBuddy 重构合同](./BilliardBuddy-重构合同.md)。
 
-## 项目指令兼容
+## BilliardBuddy 项目指令
 
 BilliardBuddy 的 Agent Harness 会在启动任务时，把项目工作区中的指令文件收集为一次不可变快照，再注入当前模型上下文。因此 DeepSeek 不是自行读取磁盘；它接收的是由 Harness 按工作区边界、优先级和长度限制整理好的项目指令。
 
 | 文件 | 作用 | 兼容性 |
 |---|---|---|
-| `AGENTS.md` 或 `BilliardBuddy.md` | BilliardBuddy 的同一类项目指令入口 | 两者均可单独使用；已有 `AGENTS.md` 无需迁移，`BilliardBuddy.md` 是本产品的同义文件名 |
-| `CLAUDE.md`、`.claude/CLAUDE.md`、`.claude/rules/*.md`、`CLAUDE.local.md` | Claude Code 兼容指令 | BilliardBuddy 完整加载 |
+| `BilliardBuddy.md`、`.BilliardBuddy/BilliardBuddy.md`、`.BilliardBuddy/rules/*.md`、`.BilliardBuddy/BilliardBuddy.local.md` | BilliardBuddy 项目指令 | `.BilliardBuddy` 是本产品唯一的目录化配置入口 |
 
-指令从仓库根目录向当前工作目录逐层收集；同一目录的优先顺序为 `CLAUDE.md`、`.claude/CLAUDE.md`、`.claude/rules/*.md`、`AGENTS.md`、`BilliardBuddy.md`、`CLAUDE.local.md`，后加载的规则在冲突时优先。`AGENTS.md` 与 `BilliardBuddy.md` 属于同一项目指令层：用户可任选其一；若两者同时存在，BilliardBuddy 合并它们，`BilliardBuddy.md` 只覆盖冲突部分。
+指令从仓库根目录向当前工作目录逐层收集；同一目录的优先顺序为 `BilliardBuddy.md`、`.BilliardBuddy/BilliardBuddy.md`、`.BilliardBuddy/rules/*.md`、`.BilliardBuddy/BilliardBuddy.local.md`，后加载的规则在冲突时优先。根目录的 `AGENTS.md` 仅用于本仓库开发，不属于 BilliardBuddy 产品功能，也不会成为用户项目指令。
 
 ## 代码结构
 

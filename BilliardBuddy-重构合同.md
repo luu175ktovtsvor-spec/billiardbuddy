@@ -4,12 +4,14 @@
 
 ## 文档职责
 
-- `AGENTS.md` 与 `BilliardBuddy.md`：BilliardBuddy 给用户项目提供的同一类项目指令入口，不是两套产品能力。用户可任选一个；两者同时存在时由 Harness 合并为一个任务快照，`BilliardBuddy.md` 仅覆盖同目录中的冲突规则。该快照从根目录到当前目录收集后交给 DeepSeek；模型不直接读取本机磁盘。
-- BilliardBuddy 同时兼容 `CLAUDE.md`、`.claude/CLAUDE.md`、`.claude/rules/*.md` 和 `CLAUDE.local.md`，因此已有 Codex 或 Claude Code 项目无需迁移。具体加载顺序和冲突规则以 README 的“项目指令兼容”为准。
+- `BilliardBuddy.md`、`.BilliardBuddy/BilliardBuddy.md`、`.BilliardBuddy/rules/*.md` 和 `.BilliardBuddy/BilliardBuddy.local.md` 是 BilliardBuddy 唯一的项目指令入口。Harness 将它们从根目录到当前目录合并为一次任务快照，再交给 DeepSeek；模型不直接读取本机磁盘。
+- 根目录 `AGENTS.md` 仅约束本仓库的开发智能体，不是 BilliardBuddy 的产品文件，不进入用户项目，也不参与产品运行。
 - 本文：BilliardBuddy 产品本身的重构合同，定义产品定位、架构边界、研究方法、实施顺序和完成标准；它不是要注入每个用户项目的 Agent 提示词。
 - `README.md`：项目介绍、运行入口和用户如何配置项目指令。
 
 本文是本轮开发的唯一产品裁决依据。它规定要提供的用户结果、必须守住的系统边界、可验证的研究方法和完成标准；不冻结旧类、旧接口、旧目录或旧流程。现有代码只有在符合本文合同且有验证证据时才保留，其他实现可以以更小、更可靠的方式迁移、重构或删除。
+
+最终只保留 BilliardBuddy GUI 产品实际需要的代码：Electron 桌面壳、界面、其调用的本地服务以及模型适配。独立 CLI、TUI、开发智能体入口和旧兼容层不属于最终产品，完成 GUI 调用链迁移后直接删除；不把它们改名后继续作为第二套产品保留。所有用户可见的项目状态与配置统一使用 BilliardBuddy 名称和 `.BilliardBuddy` 目录。
 
 ---
 
