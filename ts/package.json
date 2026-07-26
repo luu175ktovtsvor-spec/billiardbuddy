@@ -10,6 +10,7 @@
     "check:electron": "cd desktop && bun run check:electron",
     "check:media-real-fixture": "bun scripts/acceptance/media-real-fixture.ts",
     "check:image-real-fixture": "bun scripts/acceptance/image-real-fixture.ts",
+    "check:agent-real-fixture": "bun scripts/acceptance/agent-real-fixture.ts",
     "check:native": "cd desktop && bun run build:sidecars && bun run check:electron && CSC_IDENTITY_AUTO_DISCOVERY=false bun run electron:package:dir",
     "audit:source": "bun desktop/scripts/scan-missing-imports.ts"
   },

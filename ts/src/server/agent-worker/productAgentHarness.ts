@@ -113,16 +113,29 @@ export async function createProductAgentHarness(input: {
       }
     : discoveredInstructionSnapshot
   let productSessionContext = restoredHarnessSession?.context_prefix ?? input.session_context?.text ?? ''
-  let productHookContext = ''
+  const restoredSameRun = restoredHarnessSession?.run_id === input.run_id
+  let productHookContext = restoredSameRun ? restoredHarnessSession.hook_context ?? '' : ''
   const modelMessages: ProductHarnessMessage[] = restoredHarnessSession?.messages ?? []
-  const persistHarnessSession = async (messages: readonly ProductHarnessMessage[] = modelMessages) => {
+  const recoveringActiveTurn = restoredSameRun
+    && restoredHarnessSession.turn_state === 'active'
+    && modelMessages.length > 0
+  const recoveringPreparedTurn = restoredSameRun && restoredHarnessSession.turn_state === 'preparing'
+  const persistHarnessSession = async (
+    messages: readonly ProductHarnessMessage[] = modelMessages,
+    turnState: 'preparing' | 'active' | 'completed' = 'active',
+    completedResult?: string,
+  ) => {
     if (!input.harness_session) return
+    if (messages !== modelMessages) modelMessages.splice(0, modelMessages.length, ...messages)
     await harnessSessionRepository!.save(input.harness_session, {
       context_prefix: productSessionContext,
-      messages,
+      messages: modelMessages,
       run_id: input.run_id,
       instruction_digest: instructionSnapshot.digest,
       instruction_prompt: instructionSnapshot.prompt,
+      turn_state: turnState,
+      hook_context: productHookContext,
+      ...(completedResult !== undefined ? { completed_result: completedResult } : {}),
     })
   }
   const productPromptContext = () => ({
@@ -331,10 +344,21 @@ export async function createProductAgentHarness(input: {
       if ((!text && attachments.length === 0) || terminal || controller) return false
       controller = createAbortController()
       emit({ type: 'event', event: 'started' })
+      if (restoredSameRun && restoredHarnessSession?.turn_state === 'completed') {
+        const completedResult = restoredHarnessSession.completed_result ?? ''
+        for (let offset = 0; offset < completedResult.length; offset += 32_000) {
+          emit({ type: 'event', event: 'delta', data: completedResult.slice(offset, offset + 32_000) })
+        }
+        finish('completed')
+        controller = undefined
+        return
+      }
       if (text.trim() === '/init' && input.auto_memory) {
         try {
           const initialized = await autoMemoryRepository!.initialize(input.auto_memory)
-          emit({ type: 'event', event: 'delta', data: initialized.created || initialized.instruction_created ? '项目已初始化。' : '项目已经初始化，无需更改。' })
+          const result = initialized.created || initialized.instruction_created ? '项目已初始化。' : '项目已经初始化，无需更改。'
+          emit({ type: 'event', event: 'delta', data: result })
+          await persistHarnessSession(modelMessages, 'completed', result)
           finish('completed')
         } catch (error) { finish('recovery_required', classifyProductTaskRunFailure(error)) } finally { controller = undefined }
         return
@@ -344,32 +368,37 @@ export async function createProductAgentHarness(input: {
         if (controller.signal.aborted || terminal) return
         const model = resolveProductTextModel()
         if (!model) throw new Error('MODEL_CONFIGURATION_INVALID')
-        const hookContext = createToolUseContext([], [], controller)
-        const hookSource = restoredHarnessSession ? 'resume' as const : 'startup' as const
-        const hookResults = await runInProductScope(async () => {
-          const sessionStart = await lifecycleHooks.sessionStart({
-            source: hookSource,
-            sessionId: input.session_id,
-            model,
-            signal: controller!.signal,
+        if (!recoveringPreparedTurn && !recoveringActiveTurn) {
+          const hookContext = createToolUseContext([], [], controller)
+          const hookSource = restoredHarnessSession ? 'resume' as const : 'startup' as const
+          const hookResults = await runInProductScope(async () => {
+            const sessionStart = await lifecycleHooks.sessionStart({
+              source: hookSource,
+              sessionId: input.session_id,
+              model,
+              signal: controller!.signal,
+            })
+            if (sessionStart.blocked) return sessionStart
+            const userPrompt = await lifecycleHooks.userPrompt({
+              prompt: text,
+              permissionMode: toolPermissionContext.mode,
+              context: hookContext,
+            })
+            return {
+              ...userPrompt,
+              additionalContext: [sessionStart.additionalContext, userPrompt.additionalContext].filter(Boolean).join('\n\n') || undefined,
+            }
           })
-          if (sessionStart.blocked) return sessionStart
-          const userPrompt = await lifecycleHooks.userPrompt({
-            prompt: text,
-            permissionMode: toolPermissionContext.mode,
-            context: hookContext,
-          })
-          return {
-            ...userPrompt,
-            additionalContext: [sessionStart.additionalContext, userPrompt.additionalContext].filter(Boolean).join('\n\n') || undefined,
+          if (hookResults.blocked) {
+            const result = '项目 Hook 已阻止本次请求。请检查项目自动化规则后重试。'
+            emit({ type: 'event', event: 'delta', data: result })
+            await persistHarnessSession(modelMessages, 'completed', result)
+            finish('completed')
+            return
           }
-        })
-        if (hookResults.blocked) {
-          emit({ type: 'event', event: 'delta', data: '项目 Hook 已阻止本次请求。请检查项目自动化规则后重试。' })
-          finish('completed')
-          return
+          productHookContext = (hookResults.additionalContext ?? '').slice(0, 40_000)
+          await persistHarnessSession(modelMessages, 'preparing')
         }
-        productHookContext = hookResults.additionalContext ?? ''
         const privateContext = modelMessages.map(message => JSON.stringify(message)).join('\n')
         const compactionContext = [
           productSessionContext,
@@ -382,11 +411,13 @@ export async function createProductAgentHarness(input: {
         const clearContext = text.trim() === '/clear'
         const manualCompaction = text.trim() === '/compact' || clearContext
         if (manualCompaction && !compactionContext) {
-          emit({ type: 'event', event: 'delta', data: clearContext ? '当前没有可清空的上下文。' : '当前没有可压缩的上下文。' })
+          const result = clearContext ? '当前没有可清空的上下文。' : '当前没有可压缩的上下文。'
+          emit({ type: 'event', event: 'delta', data: result })
+          await persistHarnessSession(modelMessages, 'completed', result)
           finish('completed')
           return
         }
-        if (compactionContext && (manualCompaction || estimatedContextTokens >= productCompactThreshold(model))) {
+        if (compactionContext && !recoveringActiveTurn && (manualCompaction || estimatedContextTokens >= productCompactThreshold(model))) {
           const source = compactionContext
           const compactGeneration = (input.session_context?.compact_generation ?? 0) + 1
           const compactSource = manualCompaction ? 'manual' as const : 'automatic' as const
@@ -428,11 +459,13 @@ export async function createProductAgentHarness(input: {
             if (!summary || summary.length > 40_000 || controller.signal.aborted) throw new Error('CONTEXT_COMPACTION_FAILED')
             productSessionContext = `<context_summary generation="${compactGeneration}">\n${summary}\n</context_summary>`
             modelMessages.splice(0, modelMessages.length)
-            await persistHarnessSession()
+            await persistHarnessSession(modelMessages, 'preparing')
             await runInProductScope(() => lifecycleHooks.postCompact({ trigger: compactTrigger, summary, signal: controller!.signal }))
             emit({ type: 'event', event: 'context_compaction', phase: 'completed', source: compactSource, generation: compactGeneration, input_tokens: estimatedContextTokens, output_tokens: Math.max(1, Math.ceil(summary.length / 4)), summary, compacted_through_event_sequence: input.session_context?.event_sequence ?? 0 })
             if (manualCompaction) {
-              emit({ type: 'event', event: 'delta', data: clearContext ? '上下文已清空。' : '上下文已压缩。' })
+              const result = clearContext ? '上下文已清空。' : '上下文已压缩。'
+              emit({ type: 'event', event: 'delta', data: result })
+              await persistHarnessSession(modelMessages, 'completed', result)
               finish('completed')
               return
             }
@@ -463,6 +496,7 @@ export async function createProductAgentHarness(input: {
         })
         let completedResult: string | undefined
         let prompt = await (input.build_chat_prompt ?? ((value, files) => buildProductChatPrompt(value, files)))(text, attachments, controller.signal)
+        let resumePersistedTurn = recoveringActiveTurn
         await runWithProductPermissionEnvelope(input.permission_envelope, () => (
           runInProductScope(async () => {
             const toolUseContext = createToolUseContext(commands, tools, controller!)
@@ -509,6 +543,7 @@ export async function createProductAgentHarness(input: {
                 runModel: input.run_model,
                 executeTools: input.execute_tools,
                 toolHooks: productToolHooks,
+                resume: resumePersistedTurn,
               })
               for await (const message of stream) {
                 if (message.type === 'model_delta') {
@@ -521,6 +556,7 @@ export async function createProductAgentHarness(input: {
                   if (message.type === 'result' && message.subtype === 'success' && !message.is_error) completedResult = message.result
                 }
               }
+              resumePersistedTurn = false
               if (completedResult === undefined) throw new Error('PRODUCT_AGENT_TURN_INCOMPLETE')
               const stopHook = await lifecycleHooks.stop({
                 permissionMode: toolPermissionContext.mode,
@@ -536,6 +572,7 @@ export async function createProductAgentHarness(input: {
           })
         ))
         if (completedResult !== undefined && input.auto_memory) productAutoMemory = await autoMemoryRepository!.appendCompletedTurn(input.auto_memory, { task_id: input.auto_memory.task_id, entry_id: input.auto_memory.entry_id, user: text, assistant: completedResult })
+        if (completedResult !== undefined) await persistHarnessSession(modelMessages, 'completed', completedResult)
         finish(controller.signal.aborted ? 'stopped' : 'completed')
       } catch (error) {
         finish(controller.signal.aborted ? 'stopped' : 'recovery_required', classifyProductTaskRunFailure(error))

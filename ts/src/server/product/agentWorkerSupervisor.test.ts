@@ -184,7 +184,7 @@ test('child exit and stop/shutdown settle their fencing claim once', async () =>
   expect(await supervisor.dispatch('run', 1)).toBe('started'); onExit?.(); onExit?.(); await waitFor(async () => f.settled.length === 1 && (await f.scheduler.snapshot()).active === 0)
   expect(f.settled).toEqual(['recovery_required:CHILD_EXIT']); expect((await f.scheduler.snapshot()).active).toBe(0)
 
-  const stopped = await fixture(); const active = new AgentWorkerSupervisor(stopped.runs, stopped.scheduler, stopped.launcher)
+  const stopped = await fixture(); const stoppingLauncher = { launch: async (input: { onMessage: (message: any) => void; onExit: () => void }) => { const child = { send: (message: unknown) => stopped.sent.push(message), stop: async () => input.onExit() }; setTimeout(() => { input.onMessage({ type: 'hello', versions: { min: 1, max: 1 }, capabilities: [] }); input.onMessage({ type: 'ready' }) }, 0); return child } }; const active = new AgentWorkerSupervisor(stopped.runs, stopped.scheduler, stoppingLauncher)
   expect(await active.dispatch('run', 1)).toBe('started'); await waitFor(() => stopped.sent.some(message => (message as { type?: unknown }).type === 'start')); await active.stop('run', 1); await active.stop('run', 1)
   expect(stopped.sent).toEqual(expect.arrayContaining([expect.objectContaining({ type: 'stop' })])); expect(stopped.settled).toEqual(['terminal:STOPPED']); expect((await stopped.scheduler.snapshot()).active).toBe(0)
 })
@@ -212,10 +212,11 @@ test('scheduled dispatch atomically claims schedule.dispatch with agent.worker',
 test('terminal projection closes the relay before a late Core delta', async () => {
   const f = await fixture()
   let onMessage: ((message: any) => void) | undefined
+  let childStops = 0
   const sink: string[] = []
   const launcher = { launch: async (input: { onMessage: (message: any) => void }) => {
     onMessage = input.onMessage
-    const child = { send: () => {}, stop: async () => {} }
+    const child = { send: () => {}, stop: async () => { childStops++ } }
     setTimeout(() => { input.onMessage({ type: 'hello', versions: { min: 1, max: 1 }, capabilities: [] }); input.onMessage({ type: 'ready' }) }, 0)
     return child
   } }
@@ -227,4 +228,5 @@ test('terminal projection closes the relay before a late Core delta', async () =
   await Bun.sleep(15)
   expect(sink).toEqual(['terminal:completed'])
   expect(f.settled).toEqual(['terminal:TERMINAL'])
+  expect(childStops).toBe(1)
 })

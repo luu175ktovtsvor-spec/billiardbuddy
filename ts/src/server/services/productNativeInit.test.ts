@@ -4,6 +4,8 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 import { createHash } from 'node:crypto'
 import { createProductAgentHarness } from '../agent-worker/productAgentHarness.js'
+import { ProductHarnessSessionRepository } from '../agent-worker/harnessSessionRepository.js'
+import { StandardProductAgentHostRuntime } from '../agent-worker/productAgentHostRuntime.js'
 import type { ProductHarnessLifecycleHookHost } from '../agent-worker/productLifecycleHooks.js'
 import type { ProductCommand, ProductTool, ProductToolContext } from '../agent-worker/productTool.js'
 import type { ProductMcpConnection } from '../agent-worker/productMcpClient.js'
@@ -100,6 +102,36 @@ test('native ProductTask Core passes hosted MCP clients, tools, and commands int
   expect(toolUseContext?.options.tools).toContain(tool)
   expect(queryInput?.tools).toContain(tool)
   expect(queryInput?.commands).toContain(command)
+})
+
+test('production Product Host keeps the frozen workspace when it executes a real Read tool', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'bb-native-host-workspace-')); roots.push(root)
+  await fs.writeFile(path.join(root, 'fixture.txt'), 'host-workspace-evidence\n', 'utf8')
+  const runtime = new StandardProductAgentHostRuntime({
+    task_id: 'task-host-workspace',
+    work_dir: root,
+    permission_envelope: createPolicyBoundEnvelope(productPermissionSnapshot('approve_for_me')),
+    mcp_host: { connect: async () => ({ clients: [], tools: [], commands: [], resources: {} }) },
+  })
+  const assistant = {
+    type: 'assistant' as const,
+    uuid: 'assistant-host-read',
+    timestamp: '2026-07-27T00:00:00.000Z',
+    message: {
+      id: 'response-host-read',
+      role: 'assistant' as const,
+      content: [{ type: 'tool_call' as const, id: 'tool-host-read', name: 'Read', arguments: { file_path: 'fixture.txt' } }],
+      model: 'test-model',
+      stop_reason: 'tool_call',
+      usage: { input_tokens: 1, output_tokens: 1 },
+    },
+  }
+
+  const messages = await runtime.tools({ blocks: [assistant.message.content[0]], assistantMessages: [assistant], messages: [] })
+
+  expect(JSON.stringify(messages)).toContain('host-workspace-evidence')
+  expect(JSON.stringify(messages)).not.toContain('PRODUCT_WORKSPACE_MISSING')
+  await runtime.shutdown()
 })
 
 test('native ProductTask Harness runs lifecycle Hooks and continues when Stop blocks completion', async () => {
@@ -329,6 +361,96 @@ test('native ProductTask recovery keeps the original instruction snapshot for th
   const projectInstructions = (resumed?.promptContext as { projectInstructions: string }).projectInstructions
   expect(projectInstructions).toContain('same turn alpha instruction')
   expect(projectInstructions).not.toContain('same turn beta instruction')
+})
+
+test('native ProductTask recovery continues a persisted Turn without duplicating input or replaying an uncertain tool call', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'bb-native-safe-recovery-')); roots.push(root)
+  const binding = { storage_dir: path.join(root, 'sessions'), binding_id: 'binding', lineage_id: 'lineage' }
+  const repository = new ProductHarnessSessionRepository()
+  await repository.save(binding, {
+    context_prefix: '',
+    run_id: 'same-run',
+    instruction_digest: 'a'.repeat(64),
+    instruction_prompt: null,
+    turn_state: 'active',
+    hook_context: '已冻结的 Hook 上下文',
+    messages: [
+      { type: 'user', uuid: 'user-1', timestamp: '2026-07-27T00:00:00.000Z', message: { role: 'user', content: '执行一次写入' } },
+      { type: 'assistant', uuid: 'assistant-1', timestamp: '2026-07-27T00:00:01.000Z', message: { id: 'response-1', role: 'assistant', content: [{ type: 'tool_call', id: 'tool-1', name: 'Write', arguments: { file_path: 'result.txt', content: 'once' } }], model: 'test-model', stop_reason: 'tool_call', usage: { input_tokens: 1, output_tokens: 1 } } },
+    ],
+  })
+  let sampledMessages: Array<Record<string, unknown>> = []
+  let toolExecutions = 0
+  const port = await createProductAgentHarness({
+    run_id: 'same-run',
+    session_id: 'replacement-process',
+    work_dir: root,
+    permission_envelope: createPolicyBoundEnvelope(productPermissionSnapshot('ask_for_approval')),
+    harness_session: binding,
+    lifecycle_hooks: lifecycleHooks({
+      sessionStart: async () => { throw new Error('must not rerun SessionStart') },
+      userPrompt: async () => { throw new Error('must not rerun UserPromptSubmit') },
+    }),
+    run_model: (async function* (value: { messages: Array<Record<string, unknown>> }) {
+      sampledMessages = value.messages
+      yield { type: 'assistant', uuid: 'assistant-2', timestamp: '2026-07-27T00:00:02.000Z', message: { id: 'response-2', role: 'assistant', content: [{ type: 'text', text: '已检查当前状态后安全继续。' }], model: 'test-model', stop_reason: 'end_turn', usage: { input_tokens: 2, output_tokens: 2 } } }
+    }) as never,
+    execute_tools: (async function* () { toolExecutions += 1 }) as never,
+    load_commands: async () => [],
+    load_tools: () => [],
+  })
+
+  await port.input('执行一次写入')
+
+  const serialized = JSON.stringify(sampledMessages)
+  expect(serialized.match(/执行一次写入/g)).toHaveLength(1)
+  expect(serialized).toContain('prior execution outcome is unknown')
+  expect(toolExecutions).toBe(0)
+  expect(await repository.load(binding)).toMatchObject({
+    run_id: 'same-run',
+    turn_state: 'completed',
+    completed_result: '已检查当前状态后安全继续。',
+  })
+})
+
+test('native ProductTask recovery replays a durably completed result without reconnecting extensions or sampling again', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'bb-native-completed-recovery-')); roots.push(root)
+  const binding = { storage_dir: path.join(root, 'sessions'), binding_id: 'binding', lineage_id: 'lineage' }
+  await new ProductHarnessSessionRepository().save(binding, {
+    context_prefix: '',
+    run_id: 'completed-run',
+    instruction_digest: 'b'.repeat(64),
+    instruction_prompt: null,
+    turn_state: 'completed',
+    completed_result: '此前已经完整完成。',
+    messages: [
+      { type: 'user', uuid: 'user-1', timestamp: '2026-07-27T00:00:00.000Z', message: { role: 'user', content: '完成任务' } },
+      { type: 'assistant', uuid: 'assistant-1', timestamp: '2026-07-27T00:00:01.000Z', message: { id: 'response-1', role: 'assistant', content: [{ type: 'text', text: '此前已经完整完成。' }], model: 'test-model', stop_reason: 'end_turn', usage: { input_tokens: 1, output_tokens: 1 } } },
+    ],
+  })
+  let connected = false
+  let sampled = false
+  const port = await createProductAgentHarness({
+    run_id: 'completed-run',
+    session_id: 'replacement-process',
+    work_dir: root,
+    permission_envelope: createPolicyBoundEnvelope(productPermissionSnapshot('ask_for_approval')),
+    harness_session: binding,
+    mcp_host: { connect: async () => { connected = true; throw new Error('must not connect') } },
+    query: (async function* () { sampled = true }) as never,
+  })
+  const events: unknown[] = []
+  port.subscribe(message => events.push(message))
+
+  await port.input('完成任务')
+
+  expect(connected).toBeFalse()
+  expect(sampled).toBeFalse()
+  expect(events).toEqual([
+    { type: 'event', event: 'started' },
+    { type: 'event', event: 'delta', data: '此前已经完整完成。' },
+    { type: 'terminal', state: 'completed', run_id: 'completed-run' },
+  ])
 })
 
 test('native ProductTask compacts large private tool context before it can overflow the model', async () => {
