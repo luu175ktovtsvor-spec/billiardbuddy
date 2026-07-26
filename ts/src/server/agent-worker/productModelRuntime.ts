@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { PROVIDER_GATEWAY_PROTOCOL, PROVIDER_GATEWAY_PROTOCOL_HEADER } from '../../../shared/product/providerGateway.js'
 import type { ProductAssistantMessage, ProductHarnessMessage, ProductModelEvent } from '../../../shared/product/harnessMessages.js'
 import { zodToJsonSchema } from '../../utils/zodToJsonSchema.js'
-import { productGatewayTarget, productInstallationId } from '../product/productGatewayRuntime.js'
+import { productGatewayTarget } from '../product/productGatewayRuntime.js'
 import { emptyProductToolPermissionContext, type ProductThinkingConfig, type ProductToolPermissionContext, type ProductTools } from './productTool.js'
 
 type ProductModelOptions = {
@@ -135,8 +135,6 @@ export const runProductModel: ProductModelRunner = async function* ({ messages, 
     [PROVIDER_GATEWAY_PROTOCOL_HEADER]: PROVIDER_GATEWAY_PROTOCOL.headerValue,
     'X-BB-Operation-ID': `chat:${requestId}`,
   }
-  const installationId = productInstallationId()
-  if (installationId) headers['X-BB-Installation-ID'] = installationId
   const system = systemPrompt.filter(Boolean).join('\n\n')
   const body = {
     model: options.model,

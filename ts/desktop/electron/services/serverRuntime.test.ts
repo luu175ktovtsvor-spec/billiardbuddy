@@ -16,6 +16,19 @@ function deferredChild() {
 }
 
 describe('ElectronServerRuntime access-token reconfiguration', () => {
+  it('resolves the system proxy for the configured BilliardBuddy gateway', async () => {
+    const resolveSystemProxy = vi.fn(async () => 'DIRECT')
+    const runtime = new ElectronServerRuntime({
+      desktopRoot: '/desktop',
+      resolveSystemProxy,
+      resolveGatewayConfig: () => ({ url: 'https://gateway.example/gw' }),
+    }) as unknown as { resolveSidecarBaseEnvOnce(): Promise<NodeJS.ProcessEnv> }
+
+    await runtime.resolveSidecarBaseEnvOnce()
+
+    expect(resolveSystemProxy).toHaveBeenCalledWith('https://gateway.example/gw')
+  })
+
   it('waits for the old child exit before spawning exactly one replacement', async () => {
     const runtime = new ElectronServerRuntime({ desktopRoot: '/desktop' }) as unknown as {
       server: { url: string; child: ReturnType<typeof child> } | null

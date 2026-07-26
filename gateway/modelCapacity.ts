@@ -26,8 +26,8 @@ export interface CapacitySnapshot {
 export interface AcquireOptions {
   maxWaitMs: number
   signal?: AbortSignal
-  /** Token this identity belongs to. Bounds ALL of one token's clients together (defends
-   *  against a single token forging many X-BB-Installation-IDs). Defaults to the user id. */
+  /** Verified principal this installation belongs to. Bounds all installations of
+   *  one principal together. Defaults to the verified installation owner. */
   tokenId?: string
 }
 
@@ -387,11 +387,9 @@ type Pending = {
  *
  * Three tiers gate every grant:
  *  - `maxConcurrent`        — global pool ceiling (protects the upstream). Never exceeded.
- *  - `maxConcurrentPerToken`— all clients under one token combined. This is the defense
- *    against a single token forging many `X-BB-Installation-ID`s to monopolize the pool: even
- *    with unlimited fake client ids, a token can hold at most this many in-flight.
- *  - `maxConcurrentPerUser` — a single fair-scheduling identity (token#client, i.e. one
- *    install). Gives honest multi-install usage its per-install fair share.
+ *  - `maxConcurrentPerToken`— all verified installations under one principal combined.
+ *  - `maxConcurrentPerUser` — one verified installation owner. Gives each installation
+ *    its fair share without accepting a caller-supplied identity header.
  *  - `maxInflightPerUser` — optional active + queued cap for one scheduling identity.
  *    This is deliberately separate from the active-only per-user limit: it protects a
  *    bounded waiting queue from a single installation's sequential follow-up windows.

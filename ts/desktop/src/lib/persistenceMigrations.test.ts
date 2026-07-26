@@ -25,7 +25,7 @@ describe('desktop persistence migrations', () => {
     expect(window.localStorage.getItem(DESKTOP_PERSISTENCE_VERSION_KEY)).toBe(String(CURRENT_DESKTOP_PERSISTENCE_SCHEMA_VERSION))
   })
 
-  test('preserves only supported product tabs', () => {
+  test('preserves supported product tabs and migrates retired area tabs', () => {
     window.localStorage.setItem('billiardbuddy-open-tabs', JSON.stringify({
       openTabs: [
         { sessionId: '__settings__', title: '设置', type: 'settings' },
@@ -54,11 +54,9 @@ describe('desktop persistence migrations', () => {
       openTabs: [
         { sessionId: '__settings__', title: '设置', type: 'settings' },
         { sessionId: '__scheduled__', title: '定时任务', type: 'scheduled' },
-        { sessionId: '__creation__', title: '创作', type: 'creation' },
-        { sessionId: '__operations__', title: '经营', type: 'operations' },
-        { sessionId: '__image_workbench__', title: '生成图片', type: 'image-workbench' },
-        { sessionId: '__video_studio__', title: '剪视频', type: 'video-studio' },
+        { sessionId: '__image_workbench__', title: '图片创作', type: 'image-workbench' },
         { sessionId: '__product_tasks__', title: '任务中心', type: 'product-tasks' },
+        { sessionId: '__video_studio__', title: '剪视频', type: 'video-studio' },
         {
           sessionId: '__product_task__task-1',
           title: '球房排班',

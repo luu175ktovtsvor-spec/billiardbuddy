@@ -5,19 +5,18 @@ let nextNewProductTaskRequestId = 0
 
 export const SETTINGS_TAB_ID = '__settings__'
 export const SCHEDULED_TAB_ID = '__scheduled__'
-export const CREATION_TAB_ID = '__creation__'
-export const OPERATIONS_TAB_ID = '__operations__'
 export const IMAGE_WORKBENCH_TAB_ID = '__image_workbench__'
 export const VIDEO_STUDIO_TAB_ID = '__video_studio__'
 export const PRODUCT_TASKS_TAB_ID = '__product_tasks__'
 export const NEW_PRODUCT_TASK_TAB_ID = '__new_product_task__'
 export const PRODUCT_TASK_TAB_PREFIX = '__product_task__'
 
+const LEGACY_CREATION_TAB_ID = '__creation__'
+const LEGACY_OPERATIONS_TAB_ID = '__operations__'
+
 export type TabType =
   | 'settings'
   | 'scheduled'
-  | 'creation'
-  | 'operations'
   | 'image-workbench'
   | 'video-studio'
   | 'product-tasks'
@@ -31,8 +30,6 @@ export type TabType =
 export type OpenTabType =
   | 'settings'
   | 'scheduled'
-  | 'creation'
-  | 'operations'
   | 'image-workbench'
   | 'video-studio'
   | 'product-tasks'
@@ -75,8 +72,6 @@ type TabStore = {
 function isOpenTabType(value: unknown): value is OpenTabType {
   return value === 'settings'
     || value === 'scheduled'
-    || value === 'creation'
-    || value === 'operations'
     || value === 'image-workbench'
     || value === 'video-studio'
     || value === 'product-tasks'
@@ -313,8 +308,7 @@ export const useTabStore = create<TabStore>((set, get) => ({
         return
       }
 
-      const validTabs: Tab[] = data.openTabs
-        .flatMap(toRestoredTab)
+      const validTabs = dedupeTabs(data.openTabs.flatMap(toRestoredTab))
 
       if (validTabs.length === 0) {
         set({ tabs: [], activeTabId: null, lastActiveProductTaskId: null })
@@ -322,8 +316,9 @@ export const useTabStore = create<TabStore>((set, get) => ({
         return
       }
 
-      const activeId = typeof data.activeTabId === 'string' && validTabs.some((t) => t.sessionId === data.activeTabId)
-        ? data.activeTabId
+      const requestedActiveId = migrateLegacyTabId(data.activeTabId)
+      const activeId = requestedActiveId && validTabs.some((t) => t.sessionId === requestedActiveId)
+        ? requestedActiveId
         : validTabs[0]!.sessionId
 
       set({
@@ -344,8 +339,6 @@ function isPersistableTab(tab: Tab): boolean {
   return (
     tab.type === 'settings'
     || tab.type === 'scheduled'
-    || tab.type === 'creation'
-    || tab.type === 'operations'
     || tab.type === 'image-workbench'
     || tab.type === 'video-studio'
     || tab.type === 'product-tasks'
@@ -356,11 +349,17 @@ function isPersistableTab(tab: Tab): boolean {
 function toRestoredTab(tab: TabPersistence['openTabs'][number]): Tab[] {
   if (!tab || typeof tab.sessionId !== 'string' || typeof tab.title !== 'string') return []
 
+  if (tab.type === 'creation') {
+    return [{ sessionId: IMAGE_WORKBENCH_TAB_ID, title: '图片创作', type: 'image-workbench' }]
+  }
+
+  if (tab.type === 'operations') {
+    return [{ sessionId: PRODUCT_TASKS_TAB_ID, title: '任务中心', type: 'product-tasks' }]
+  }
+
   if (
     tab.type === 'settings'
     || tab.type === 'scheduled'
-    || tab.type === 'creation'
-    || tab.type === 'operations'
     || tab.type === 'image-workbench'
     || tab.type === 'video-studio'
     || tab.type === 'product-tasks'
@@ -378,4 +377,20 @@ function toRestoredTab(tab: TabPersistence['openTabs'][number]): Tab[] {
   }
 
   return []
+}
+
+function migrateLegacyTabId(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  if (value === LEGACY_CREATION_TAB_ID) return IMAGE_WORKBENCH_TAB_ID
+  if (value === LEGACY_OPERATIONS_TAB_ID) return PRODUCT_TASKS_TAB_ID
+  return value
+}
+
+function dedupeTabs(tabs: Tab[]): Tab[] {
+  const seen = new Set<string>()
+  return tabs.filter((tab) => {
+    if (seen.has(tab.sessionId)) return false
+    seen.add(tab.sessionId)
+    return true
+  })
 }

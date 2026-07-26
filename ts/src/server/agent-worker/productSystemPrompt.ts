@@ -1,4 +1,3 @@
-import { SYSTEM_PROMPT_DYNAMIC_BOUNDARY } from '../../constants/systemPrompt.js'
 import { asSystemPrompt, type SystemPrompt } from '../../utils/systemPromptType.js'
 import type { ProductPromptContext } from '../../../shared/product/promptContext.js'
 
@@ -74,7 +73,6 @@ export function buildProductSystemPrompt(context: ProductPromptContext): SystemP
     SAFETY,
     CONTEXT_RULES,
     COMMUNICATION,
-    SYSTEM_PROMPT_DYNAMIC_BOUNDARY,
     ...(dynamic.length > 0 ? [`# Current task context\n\n${dynamic.join('\n\n')}`] : []),
   ])
 }

@@ -1,4 +1,8 @@
 import { describe, expect, test } from 'bun:test'
+import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { loadLoadtestInstallationTokens } from './loadtestCredentials'
 import {
   createConcurrentStartGate,
   isSseContentType,
@@ -18,6 +22,36 @@ import {
 } from './real-loadtest'
 
 describe('real upstream loadtest thinking-mode guard', () => {
+  test('requires one protected, distinct access token for every simulated installation', async () => {
+    await expect(loadLoadtestInstallationTokens(2, {})).rejects.toThrow('BB_LOADTEST_TOKENS_FILE')
+    await expect(loadLoadtestInstallationTokens(2, { BB_LOADTEST_TOKENS_FILE: 'tokens.json' })).rejects.toThrow('absolute path')
+
+    const directory = await mkdtemp(join(tmpdir(), 'bb-loadtest-tokens-'))
+    const file = join(directory, 'tokens.json')
+    try {
+      await writeFile(file, JSON.stringify(['signed-token-00000001', 'signed-token-00000002']))
+      await chmod(file, 0o600)
+      await expect(loadLoadtestInstallationTokens(2, { BB_LOADTEST_TOKENS_FILE: file })).resolves.toEqual([
+        'signed-token-00000001',
+        'signed-token-00000002',
+      ])
+
+      await writeFile(file, JSON.stringify(['signed-token-00000001', 'signed-token-00000001']))
+      await expect(loadLoadtestInstallationTokens(2, { BB_LOADTEST_TOKENS_FILE: file })).rejects.toThrow('must be unique')
+
+      if (process.platform !== 'win32') {
+        await chmod(file, 0o644)
+        await expect(loadLoadtestInstallationTokens(2, { BB_LOADTEST_TOKENS_FILE: file })).rejects.toThrow('only by its owner')
+      }
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
+
+    await expect(loadLoadtestInstallationTokens(1, { BB_LOADTEST_TOKEN: 'signed-token-00000001' })).resolves.toEqual([
+      'signed-token-00000001',
+    ])
+  })
+
   test('defaults to a high-to-low 1000-window capacity search', () => {
     expect(parsePhases(undefined, 1_000)).toEqual([1_000, 800, 600, 400, 200, 100, 50, 20, 1])
     expect(parsePhases('100,1000,400', 1_000)).toEqual([1_000, 400, 100])

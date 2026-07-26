@@ -1,5 +1,4 @@
 import { describe, expect, test } from 'bun:test'
-import { SYSTEM_PROMPT_DYNAMIC_BOUNDARY } from '../../constants/systemPrompt.js'
 import { buildProductSystemPrompt } from './productSystemPrompt.js'
 
 describe('BilliardBuddy system prompt', () => {
@@ -11,13 +10,14 @@ describe('BilliardBuddy system prompt', () => {
       projectMemory: 'A prior task changed the scheduler.',
     })
 
-    const boundary = prompt.indexOf(SYSTEM_PROMPT_DYNAMIC_BOUNDARY)
-    expect(boundary).toBeGreaterThan(0)
-    expect(prompt.slice(0, boundary).join('\n')).toContain('You are BilliardBuddy')
-    expect(prompt.slice(0, boundary).join('\n')).toContain('Acting within authority')
-    expect(prompt.slice(0, boundary).join('\n')).not.toMatch(/Claude|Anthropic|MediaProject|provider|IPC/)
-    expect(prompt.slice(boundary + 1).join('\n')).toContain('source="project-instructions" authority="instruction"')
-    expect(prompt.slice(boundary + 1).join('\n')).toContain('source="project-memory" authority="background"')
+    const dynamicIndex = prompt.findIndex(segment => segment.startsWith('# Current task context'))
+    expect(dynamicIndex).toBeGreaterThan(0)
+    expect(prompt.slice(0, dynamicIndex).join('\n')).toContain('You are BilliardBuddy')
+    expect(prompt.slice(0, dynamicIndex).join('\n')).toContain('Acting within authority')
+    expect(prompt.slice(0, dynamicIndex).join('\n')).not.toMatch(/Claude|Anthropic|MediaProject|provider|IPC/)
+    expect(prompt.slice(dynamicIndex).join('\n')).toContain('source="project-instructions" authority="instruction"')
+    expect(prompt.slice(dynamicIndex).join('\n')).toContain('source="project-memory" authority="background"')
+    expect(prompt.join('\n')).not.toContain('__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__')
   })
 
   test('does not emit absent context or allow it to close its source block', () => {

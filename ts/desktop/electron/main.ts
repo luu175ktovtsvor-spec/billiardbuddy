@@ -67,7 +67,7 @@ import {
 } from './services/windows'
 
 // Own the product identity before anything resolves app.getPath('userData').
-// This keeps BilliardBuddy state isolated from any other installed coding agent.
+// This keeps BilliardBuddy state isolated from every other installed application.
 app.setName('BilliardBuddy')
 
 const mediaUiCapability = randomBytes(32).toString('base64url')
@@ -677,9 +677,16 @@ app.whenReady().then(async () => {
   // After portable/ops override is resolved, default the kernel config dir to
   // BilliardBuddy's own data root keeps the sidecar isolated from other products.
   applyDefaultConfigDir(app)
-  await getServerRuntime().startServer().catch(error => {
-    console.error('[desktop] failed to start Electron server sidecar', error)
-  })
+  // The window is the recovery surface for activation, proxy, credential-store,
+  // and sidecar failures, so establish it before constructing the backend.
+  await createMainWindow()
+  try {
+    void getServerRuntime().startServer().catch(error => {
+      console.error('[desktop] failed to start Electron server sidecar', error)
+    })
+  } catch (error) {
+    console.error('[desktop] failed to initialize Electron server runtime', error)
+  }
   await installApplicationMenu(app, () => mainWindow)
   if (shouldInstallTray(process.platform)) {
     trayController = await installTray({
@@ -695,7 +702,6 @@ app.whenReady().then(async () => {
       return null
     })
   }
-  await createMainWindow()
   if (pendingProductTaskId) {
     const taskId = pendingProductTaskId
     pendingProductTaskId = null
@@ -716,6 +722,8 @@ app.whenReady().then(async () => {
     }
     void createMainWindow()
   })
+}).catch(error => {
+  console.error('[desktop] failed during application startup', error)
 })
 
 app.on('window-all-closed', () => {

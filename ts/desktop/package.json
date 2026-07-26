@@ -2,7 +2,7 @@
   "name": "billiardbuddy-desktop",
   "private": true,
   "version": "0.4.9",
-  "description": "Desktop coding agent workbench for BilliardBuddy.",
+  "description": "BilliardBuddy desktop agent for billiards venue operations and content creation.",
   "author": {
     "name": "BilliardBuddy"
   },
@@ -67,7 +67,7 @@
       }
     ],
     "mac": {
-      "category": "public.app-category.developer-tools",
+      "category": "public.app-category.business",
       "target": [
         "dmg",
         "zip"

@@ -7,13 +7,15 @@
  * any batch. It polls only compact relay metadata, never image bytes.
  */
 
+import { loadLoadtestInstallationTokens } from './loadtestCredentials'
+
 type FailureKind = 'timeout' | 'network' | 'response_too_large' | 'invalid_response' | 'cancel_not_confirmed' | `http_${number}`
 type TerminalState = 'succeeded' | 'failed' | 'failed_unknown' | 'cancelled' | 'unknown'
 type LatencyPercentiles = { p50: number | null; p95: number | null }
 
 type SubmittedTask = {
   taskId: string
-  clientId: string
+  installationToken: string
   acceptedAt: number
 }
 
@@ -45,7 +47,7 @@ export type ImageLoadtestPlan = {
 export type ImageLoadtestOptions = ImageLoadtestPlan & {
   baseUrl: string
   targetOrigin: string
-  token: string
+  installationTokens: readonly string[]
   /** `admission` verifies the gateway/relay burst envelope, then cancels queued work. */
   mode: 'terminal' | 'admission'
   size: '1024x1024' | '1536x1024' | '1024x1536'
@@ -96,7 +98,7 @@ const TERMINAL_STATES = new Set<TerminalState>(['succeeded', 'failed', 'failed_u
 function usage(exitCode = 2): never {
   console.error(`Usage:
   BB_LOADTEST_URL=http://127.0.0.1:8799 \\
-  BB_LOADTEST_TOKEN=<installation-access-token> \\
+  BB_LOADTEST_TOKENS_FILE=/run/billiardbuddy/loadtest-tokens.json \\
   bun gateway/image-real-loadtest.ts --execute [options]
 
 Options:
@@ -112,8 +114,9 @@ Options:
   --poll-floor-ms=<n>         Minimum poll delay, capped at 60000 (default: 5000)
   --poll-request-timeout-ms=<n>  Per-status-request deadline (default: 15000)
 
-The runner uses one X-BB-Installation-ID per simulated installation, so --users=100
---windows=10 models ten windows from each installation. admission mode is the right
+The token file must contain one distinct short-lived access token per simulated
+installation, so --users=100 --windows=10 really models ten windows from each
+verified installation. admission mode is the right
 mode for a 1,000-task burst: it proves acceptance/queue behaviour only when every
 accepted task confirms cancellation, but does not claim that 1,000 paid images
 completed without waiting. It never logs access tokens,
@@ -229,10 +232,6 @@ export function createImageLoadtestPlan(users: number, windows: number, confirme
     throw new Error('--confirm-billable-batch is required before creating more than one paid image task')
   }
   return { users, windows, total }
-}
-
-export function clientIdForTask(index: number, users: number): string {
-  return `image-loadtest-user-${String(index % users).padStart(3, '0')}`
 }
 
 function isTaskId(value: unknown): value is string {
@@ -354,16 +353,15 @@ async function mapWithConcurrency<T, R>(items: readonly T[], concurrency: number
 async function submitTask(index: number, options: ImageLoadtestOptions, deps: Required<Pick<RunnerDeps, 'fetchImpl' | 'now'>>): Promise<SubmitResult> {
   const startedAt = deps.now()
   const elapsedMs = () => Math.max(0, Math.round(deps.now() - startedAt))
-  const clientId = clientIdForTask(index, options.users)
+  const installationToken = options.installationTokens[index % options.users]!
   const attempt = await fetchAttempt(
     deps.fetchImpl,
     `${options.baseUrl}/v1/images/tasks`,
     {
       method: 'POST',
       headers: {
-        Authorization: `Bearer ${options.token}`,
+        Authorization: `Bearer ${installationToken}`,
         'Content-Type': 'application/json',
-        'X-BB-Installation-ID': clientId,
         'Idempotency-Key': `loadtest-${crypto.randomUUID()}-${index}`,
         'X-BB-Provider-Protocol': PROVIDER_GATEWAY_PROTOCOL,
       },
@@ -394,7 +392,7 @@ async function submitTask(index: number, options: ImageLoadtestOptions, deps: Re
   return {
     status: response.status,
     elapsedMs: Math.max(0, Math.round(acceptedAt - startedAt)),
-    task: { taskId, clientId, acceptedAt },
+    task: { taskId, installationToken, acceptedAt },
   }
 }
 
@@ -404,7 +402,7 @@ async function cancelTask(task: SubmittedTask, options: ImageLoadtestOptions, fe
     `${options.baseUrl}/v1/images/tasks/${encodeURIComponent(task.taskId)}/cancel`,
     {
       method: 'POST',
-      headers: { Authorization: `Bearer ${options.token}`, 'X-BB-Installation-ID': task.clientId, 'X-BB-Provider-Protocol': PROVIDER_GATEWAY_PROTOCOL },
+      headers: { Authorization: `Bearer ${task.installationToken}`, 'X-BB-Provider-Protocol': PROVIDER_GATEWAY_PROTOCOL },
     },
     undefined,
     options.pollRequestTimeoutMs,
@@ -465,7 +463,7 @@ async function pollTask(
       const attempt = await fetchAttempt(
         deps.fetchImpl,
         `${options.baseUrl}/v1/images/tasks/${encodeURIComponent(task.taskId)}?metadata_only=1`,
-        { headers: { Authorization: `Bearer ${options.token}`, 'X-BB-Installation-ID': task.clientId, 'X-BB-Provider-Protocol': PROVIDER_GATEWAY_PROTOCOL } },
+        { headers: { Authorization: `Bearer ${task.installationToken}`, 'X-BB-Provider-Protocol': PROVIDER_GATEWAY_PROTOCOL } },
         controller.signal,
         options.pollRequestTimeoutMs,
       )
@@ -514,6 +512,9 @@ async function pollTask(
 }
 
 export async function runImageLoadtest(options: ImageLoadtestOptions, suppliedDeps: RunnerDeps = {}): Promise<ImageLoadtestSummary> {
+  if (options.installationTokens.length !== options.users || new Set(options.installationTokens).size !== options.users) {
+    throw new Error('installationTokens must contain one unique token per simulated installation')
+  }
   const deps = {
     fetchImpl: suppliedDeps.fetchImpl ?? globalThis.fetch,
     now: suppliedDeps.now ?? (() => performance.now()),
@@ -649,11 +650,10 @@ async function main(): Promise<void> {
   const rawBaseUrl = process.env.BB_LOADTEST_URL?.trim()
   if (!rawBaseUrl) throw new Error('BB_LOADTEST_URL is required with --execute')
   const { base, baseUrl, targetOrigin } = parseLoadTarget(rawBaseUrl)
-  const token = process.env.BB_LOADTEST_TOKEN?.trim()
-  if (!token) throw new Error('BB_LOADTEST_TOKEN installation access token is required with --execute')
   const users = boundedInteger(option(args, '--users'), '--users', 1, MAX_USERS)
   const windows = boundedInteger(option(args, '--windows'), '--windows', 1, MAX_WINDOWS)
   const plan = createImageLoadtestPlan(users, windows, args.includes('--confirm-billable-batch'))
+  const installationTokens = await loadLoadtestInstallationTokens(users)
   const mode = option(args, '--mode') ?? 'terminal'
   if (mode !== 'terminal' && mode !== 'admission') throw new Error('--mode must be terminal or admission')
   const size = option(args, '--size') ?? '1024x1024'
@@ -662,7 +662,7 @@ async function main(): Promise<void> {
     ...plan,
     baseUrl,
     targetOrigin,
-    token,
+    installationTokens,
     mode,
     size: size as ImageLoadtestOptions['size'],
     submitConcurrency: boundedInteger(

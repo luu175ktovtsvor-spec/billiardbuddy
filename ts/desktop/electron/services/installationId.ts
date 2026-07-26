@@ -3,23 +3,20 @@ import fs from 'node:fs'
 import path from 'node:path'
 
 /**
- * Per-install identity for fair scheduling (BilliardBuddy 50~100-user private beta).
+ * Stable installation identity for BilliardBuddy activation and local ownership.
  *
- * Every managed build shares activation inputs, so the gateway can no longer treat all installs as
- * one user. On first launch we generate an unpredictable installationId and persist it in
- * the product data root (the active BILLIARDBUDDY_CONFIG_DIR). It is injected ONLY into the server
- * sidecar env (BB_INSTALLATION_ID); the sidecar attaches it as `X-BB-Installation-ID` on gateway
- * requests so the gateway can subdivide per-user fairness by install.
+ * On first launch Main generates an unpredictable ID in the product data root and
+ * registers it during the authenticated activation exchange. The Gateway encodes
+ * that verified identity in the short-lived access token; ordinary product requests
+ * never send a caller-asserted installation header.
  *
- * Boundary: it must NEVER reach the renderer, the Agent worker subprocess, provider files, or logs.
- *  - Agent worker subprocess: stripped at every spawn chokepoint (HOST_ONLY_GATEWAY_ENV_KEYS).
- *  - renderer / providers.json: never written there (it is a request-time header from env).
- * It is used ONLY for scheduling and usage attribution — it grants no permission and cannot
- * bypass the gateway's global caps.
+ * Boundary: the ID belongs to Electron Main and the activation service. It never
+ * reaches the renderer, Agent worker, provider files, model prompt, or logs. It is
+ * identity metadata, not a permission or provider credential.
  */
 
 const INSTALLATION_ID_FILE = 'installation-id.json'
-/** Must satisfy the gateway's X-BB-Installation-ID format: [A-Za-z0-9._-]{8,128}. */
+/** Stable file and activation identifier format. */
 const INSTALLATION_ID_PATTERN = /^[A-Za-z0-9._-]{8,128}$/
 
 function newId(generate: () => string): string {
@@ -49,14 +46,4 @@ export function ensureInstallationId(configDir: string, generate: () => string =
     // Best effort — a read-only data root still gets a stable-per-run id.
   }
   return id
-}
-
-/**
- * Overlay the installationId onto a SERVER sidecar env as BB_INSTALLATION_ID. A value already
- * present (dev/ops override) always wins. Returns a new object; pass an empty id to leave the
- * env untouched.
- */
-export function applyInstallationIdToEnv(baseEnv: NodeJS.ProcessEnv, id: string | undefined): NodeJS.ProcessEnv {
-  if (!id || baseEnv.BB_INSTALLATION_ID) return baseEnv
-  return { ...baseEnv, BB_INSTALLATION_ID: id }
 }

@@ -2,7 +2,8 @@
  * scan-missing-imports.ts
  *
  * 在编译 sidecar 之前，扫描 src/ 里所有相对路径的 import / require / 类型 import
- * specifier，找出磁盘上不存在的目标并停止构建。
+ * specifier，找出磁盘上不存在的目标并停止构建；同时从正式 sidecar 入口建立
+ * 生产可达图，拒绝继续保留没有消费者的 CLI、TUI、旧 Harness 或占位模块。
  *
  * 导入基线中已经存在的 feature-gated stub 都是 Git 跟踪文件，fresh checkout
  * 无需重新生成。新的缺口通常意味着迁移或重构断链，不能再用万能 Proxy 自动
@@ -10,7 +11,7 @@
  */
 
 import { readdir, readFile } from 'node:fs/promises'
-import { existsSync } from 'node:fs'
+import { existsSync, statSync } from 'node:fs'
 import path from 'node:path'
 
 const repoRoot = path.resolve(import.meta.dir, '../..')
@@ -78,6 +79,48 @@ function missingTargetPath(importer: string, spec: string): string {
   return base
 }
 
+function existingTarget(importer: string, spec: string): string | null {
+  for (const candidate of resolveCandidates(importer, spec)) {
+    if (existsSync(candidate) && statSync(candidate).isFile()) return candidate
+  }
+  return null
+}
+
+function isProductionSource(file: string): boolean {
+  const normalized = file.split(path.sep).join('/')
+  return !normalized.includes('/__tests__/')
+    && !normalized.endsWith('.test.ts')
+    && !normalized.endsWith('.test.tsx')
+    && !normalized.endsWith('.test.js')
+    && !normalized.endsWith('.test.jsx')
+}
+
+async function reachableFrom(entrypoints: string[]): Promise<Set<string>> {
+  const reachable = new Set<string>()
+  const pending = [...entrypoints]
+  while (pending.length > 0) {
+    const file = pending.pop()!
+    if (reachable.has(file) || !existsSync(file) || !statSync(file).isFile()) continue
+    reachable.add(file)
+
+    let contents: string
+    try {
+      contents = await readFile(file, 'utf8')
+    } catch {
+      continue
+    }
+    for (const pattern of IMPORT_PATTERNS) {
+      pattern.lastIndex = 0
+      let match: RegExpExecArray | null
+      while ((match = pattern.exec(contents)) !== null) {
+        const target = existingTarget(file, match[1]!)
+        if (target && !reachable.has(target)) pending.push(target)
+      }
+    }
+  }
+  return reachable
+}
+
 async function* walkRoots(roots: string[]): AsyncGenerator<string> {
   for (const root of roots) {
     if (!existsSync(root)) continue
@@ -87,10 +130,12 @@ async function* walkRoots(roots: string[]): AsyncGenerator<string> {
 
 async function main() {
   const missing = new Map<string, Set<string>>() // stubPath → set of importers
+  const productionSources: string[] = []
   let scannedFiles = 0
 
   for await (const file of walkRoots([srcRoot, adaptersRoot])) {
     scannedFiles++
+    if (isProductionSource(file)) productionSources.push(file)
     let contents: string
     try {
       contents = await readFile(file, 'utf8')
@@ -104,15 +149,7 @@ async function main() {
       while ((match = pattern.exec(contents)) !== null) {
         const spec = match[1]!
         if (!spec.startsWith('.')) continue
-        const candidates = resolveCandidates(file, spec)
-        let exists = false
-        for (const c of candidates) {
-          if (existsSync(c)) {
-            exists = true
-            break
-          }
-        }
-        if (exists) continue
+        if (existingTarget(file, spec)) continue
         const targetPath = missingTargetPath(file, spec)
         if (!missing.has(targetPath)) missing.set(targetPath, new Set())
         missing.get(targetPath)!.add(path.relative(repoRoot, file))
@@ -122,18 +159,27 @@ async function main() {
 
   console.log(`[scan] scanned ${scannedFiles} source files`)
   console.log(`[scan] missing ${missing.size} import targets`)
-  if (missing.size === 0) return
-
-  for (const [targetPath, importers] of missing) {
-    const rel = path.relative(repoRoot, targetPath)
-    const sample = [...importers].slice(0, 2).join(', ')
-    console.error(
-      `[scan] missing: ${rel} (referenced from ${sample}${importers.size > 2 ? `, +${importers.size - 2}` : ''})`,
+  if (missing.size > 0) {
+    for (const [targetPath, importers] of missing) {
+      const rel = path.relative(repoRoot, targetPath)
+      const sample = [...importers].slice(0, 2).join(', ')
+      console.error(
+        `[scan] missing: ${rel} (referenced from ${sample}${importers.size > 2 ? `, +${importers.size - 2}` : ''})`,
+      )
+    }
+    throw new Error(
+      `[scan] ${missing.size} unresolved relative import target(s); restore the real module or remove its consumer`,
     )
   }
-  throw new Error(
-    `[scan] ${missing.size} unresolved relative import target(s); restore the real module or add an explicitly reviewed tracked stub`,
-  )
+
+  const entrypoint = path.join(repoRoot, 'desktop', 'sidecars', 'billiardbuddy-sidecar.ts')
+  const reachable = await reachableFrom([entrypoint])
+  const unreachable = productionSources.filter(file => !reachable.has(file)).sort()
+  console.log(`[scan] production sources ${productionSources.length}; reachable ${productionSources.length - unreachable.length}`)
+  if (unreachable.length > 0) {
+    for (const file of unreachable) console.error(`[scan] unreachable production source: ${path.relative(repoRoot, file)}`)
+    throw new Error(`[scan] ${unreachable.length} production source file(s) have no path from the BilliardBuddy sidecar entrypoint`)
+  }
 }
 
 await main()

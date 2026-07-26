@@ -10,7 +10,7 @@
     "check:electron": "cd desktop && bun run check:electron",
     "check:media-real-fixture": "bun scripts/acceptance/media-real-fixture.ts",
     "check:native": "cd desktop && bun run build:sidecars && bun run check:electron && CSC_IDENTITY_AUTO_DISCOVERY=false bun run electron:package:dir",
-    "check:product-contracts": "bun scripts/product-contracts/check.ts && bun test tests/product-contracts"
+    "check:product-contracts": "bun desktop/scripts/scan-missing-imports.ts && bun scripts/product-contracts/check.ts && bun test tests/product-contracts"
   },
   "dependencies": {
     "@anthropic-ai/sandbox-runtime": "^0.0.44",

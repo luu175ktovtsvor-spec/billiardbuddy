@@ -48,7 +48,3 @@ export function productGatewayTarget(): { baseUrl: string; token: string } | nul
 export function productGatewayConfigured(): boolean {
   return productGatewayTarget() !== null
 }
-
-export function productInstallationId(): string {
-  return environment('BB_INSTALLATION_ID')
-}

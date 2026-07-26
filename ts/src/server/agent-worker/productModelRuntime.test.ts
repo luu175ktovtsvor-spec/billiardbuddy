@@ -68,7 +68,7 @@ describe('BilliardBuddy product model runtime', () => {
     expect(captured?.url).toBe('https://gateway.example.test/gw/v1/chat/completions')
     expect(new Headers(captured?.init.headers).get('Authorization')).toBe('Bearer test-gateway-token')
     expect(new Headers(captured?.init.headers).get(PROVIDER_GATEWAY_PROTOCOL_HEADER)).toBe(PROVIDER_GATEWAY_PROTOCOL.headerValue)
-    expect(new Headers(captured?.init.headers).get('X-BB-Installation-ID')).toBe('installation-test')
+    expect(new Headers(captured?.init.headers).get('X-BB-Installation-ID')).toBeNull()
     const requestMessages = captured?.body.messages as Array<Record<string, unknown>>
     expect(requestMessages[0]).toMatchObject({ role: 'system' })
     expect(String(requestMessages[0]?.content)).toContain('BilliardBuddy')

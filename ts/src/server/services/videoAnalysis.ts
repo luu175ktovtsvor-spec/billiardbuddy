@@ -10,7 +10,7 @@ import {
   PROVIDER_GATEWAY_PROTOCOL,
   PROVIDER_GATEWAY_PROTOCOL_HEADER,
 } from '../../../shared/product/providerGateway.js'
-import { productGatewayTarget, productInstallationId } from '../product/productGatewayRuntime.js'
+import { productGatewayTarget } from '../product/productGatewayRuntime.js'
 import { mediaReasoningRegistryEntry } from '../../../../gateway/providerRegistry.js'
 
 const MAX_GATEWAY_RESPONSE_CHARS = 512 * 1024
@@ -238,8 +238,6 @@ async function gatewayJson(
     [PROVIDER_GATEWAY_PROTOCOL_HEADER]: PROVIDER_GATEWAY_PROTOCOL.headerValue,
     'X-BB-Operation-ID': options.operationId,
   }
-  const installationId = (env.BB_INSTALLATION_ID ?? (env === process.env ? productInstallationId() : '')).trim()
-  if (installationId) headers['X-BB-Installation-ID'] = installationId
   let response: Response
   try {
     response = await (options.fetchImpl ?? fetch)(`${gatewayUrl.replace(/\/+$/, '')}/v1/media/reasoning`, {
@@ -289,8 +287,6 @@ async function gatewayVisualEvidence(
     [PROVIDER_GATEWAY_PROTOCOL_HEADER]: PROVIDER_GATEWAY_PROTOCOL.headerValue,
     'X-BB-Operation-ID': options.operationId,
   }
-  const installationId = (env.BB_INSTALLATION_ID ?? (env === process.env ? productInstallationId() : '')).trim()
-  if (installationId) headers['X-BB-Installation-ID'] = installationId
   let response: Response
   try {
     response = await (options.fetchImpl ?? fetch)(`${gatewayUrl.replace(/\/+$/, '')}/v1/visual/evidence`, {
