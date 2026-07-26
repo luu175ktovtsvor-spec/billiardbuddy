@@ -25,6 +25,7 @@ import {
   renderVideoInputSchema,
   saveImageOutputInputSchema,
   selectImageVersionInputSchema,
+  selectVideoTimelineVersionInputSchema,
   startImageOperationInputSchema,
   submitImageProjectInputSchema,
   updateImageProjectInputSchema,
@@ -54,6 +55,7 @@ import {
   type RenderVideoInput,
   type SaveImageOutputInput,
   type SelectImageVersionInput,
+  type SelectVideoTimelineVersionInput,
   type StartImageOperationInput,
   type SubmitImageProjectInput,
   type UpdateImageProjectInput,
@@ -3534,6 +3536,38 @@ export class MediaProjectService {
 
   async updateVideoTimeline(projectId: string, raw: UpdateVideoTimelineInput): Promise<VideoStudioProject> {
     return await this.withVideoProjectMutation(projectId, () => this.updateVideoTimelineSerial(projectId, raw))
+  }
+
+  async selectVideoTimelineVersion(
+    projectId: string,
+    raw: SelectVideoTimelineVersionInput,
+  ): Promise<VideoStudioProject> {
+    return await this.withVideoProjectMutation(projectId, async () => {
+      const input = selectVideoTimelineVersionInputSchema.parse(raw)
+      const project = await this.getProject(projectId)
+      if (project.kind !== 'video') throw new MediaServiceError('这不是视频项目', 409, 'WRONG_PROJECT_KIND')
+      if (project.state === 'rendering') throw new MediaServiceError('正在导出，暂时不能恢复时间线', 409, 'RENDER_IN_PROGRESS')
+      if (project.revision !== input.revision) {
+        throw new MediaServiceError('视频项目已更新，请刷新后再选择版本', 409, 'REVISION_CONFLICT')
+      }
+      const version = project.timeline_versions.find(candidate => candidate.id === input.version_id)
+      if (!version) throw new MediaServiceError('视频时间线版本不存在', 404, 'TIMELINE_VERSION_MISSING')
+      if (project.current_timeline_version_id === version.id) return project
+      return await this.saveProject({
+        ...project,
+        timeline: version.scenes.map(scene => ({
+          id: scene.id,
+          source_id: scene.source_id,
+          in_ms: scene.in_ms,
+          out_ms: scene.out_ms,
+        })),
+        current_timeline_version_id: version.id,
+        alternatives: [],
+        state: version.scenes.length ? 'ready' : 'draft',
+        revision: project.revision + 1,
+        updated_at: this.iso(),
+      }) as VideoStudioProject
+    })
   }
 
   private async updateVideoTimelineSerial(projectId: string, raw: UpdateVideoTimelineInput): Promise<VideoStudioProject> {

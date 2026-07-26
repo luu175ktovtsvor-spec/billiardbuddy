@@ -8,6 +8,7 @@ import {
   publicImageWorkbenchProjectSchema,
   publicMediaTaskSchema,
   publicVideoStudioProjectSchema,
+  selectVideoTimelineVersionInputSchema,
   startImageOperationInputSchema,
   updateImageProjectInputSchema,
 } from './media.js'
@@ -39,6 +40,18 @@ describe('standalone media ownership contract', () => {
     expect(mediaOwnerSchema.safeParse({
       kind: 'product_task',
       owner_id: 'task_0123456789abcdef',
+    }).success).toBe(false)
+  })
+})
+
+describe('video timeline version contract', () => {
+  test('requires an explicit project revision and immutable version id', () => {
+    expect(selectVideoTimelineVersionInputSchema.safeParse({
+      revision: 3,
+      version_id: 'timeline_version01',
+    }).success).toBe(true)
+    expect(selectVideoTimelineVersionInputSchema.safeParse({
+      version_id: 'timeline_version01',
     }).success).toBe(false)
   })
 })

@@ -19,6 +19,7 @@ import {
   renderVideoInputSchema,
   saveImageOutputInputSchema,
   selectImageVersionInputSchema,
+  selectVideoTimelineVersionInputSchema,
   startImageOperationInputSchema,
   submitImageProjectInputSchema,
   updateImageProjectInputSchema,
@@ -441,7 +442,18 @@ export function createMediaApiHandler(
           return Response.json({ ...result, project: publicProject(result.project), task: publicTask(result.task) }, { status: 201 })
         }
         if (action === 'timeline') {
-          if (req.method !== 'PUT') throw methodNotAllowed(req.method)
+          const timelineArea = segments[6]
+          const versionId = segments[7]
+          const versionAction = segments[8]
+          if (timelineArea === 'versions' && versionId && versionAction === 'select') {
+            if (req.method !== 'POST' || segments[9]) throw methodNotAllowed(req.method)
+            const input = selectVideoTimelineVersionInputSchema.parse({
+              ...(await parseJson(req) as Record<string, unknown>),
+              version_id: versionId,
+            })
+            return Response.json({ project: publicProject(await service.selectVideoTimelineVersion(projectId, input)) })
+          }
+          if (req.method !== 'PUT' || timelineArea) throw methodNotAllowed(req.method)
           const input = updateVideoTimelineInputSchema.parse(await parseJson(req))
           return Response.json({ project: publicProject(await service.updateVideoTimeline(projectId, input)) })
         }

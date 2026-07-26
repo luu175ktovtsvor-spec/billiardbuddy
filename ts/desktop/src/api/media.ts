@@ -23,6 +23,7 @@ import type {
   RenderVideoInput,
   SaveImageOutputInput,
   SelectImageVersionInput,
+  SelectVideoTimelineVersionInput,
   StartImageOperationInput,
   UpdateImageProjectInput,
   UpdateVideoTimelineInput,
@@ -148,6 +149,11 @@ export const mediaApi = {
     api.put<{ project: PublicVideoStudioProject }>(
       `/api/media/videos/projects/${encodeURIComponent(projectId)}/timeline`,
       input,
+    ),
+  selectVideoTimelineVersion: (projectId: string, input: SelectVideoTimelineVersionInput) =>
+    api.post<{ project: PublicVideoStudioProject }>(
+      `/api/media/videos/projects/${encodeURIComponent(projectId)}/timeline/versions/${encodeURIComponent(input.version_id)}/select`,
+      { revision: input.revision },
     ),
   analyzeVideo: (projectId: string, input: AnalyzeVideoProjectInput) =>
     getDesktopHost().media.analyzeVideo({
