@@ -7,7 +7,8 @@ function Invoke-BilliardBuddyWindowsInstaller {
     [Parameter(Mandatory = $true)]
     [string]$TempRoot,
     [Parameter(Mandatory = $true)]
-    [string]$FailureLabel
+    [string]$FailureLabel,
+    [string[]]$AdditionalArguments = @()
   )
 
   $nsisTemp = Join-Path $TempRoot "nsis-$([Guid]::NewGuid().ToString('N'))"
@@ -18,7 +19,10 @@ function Invoke-BilliardBuddyWindowsInstaller {
   try {
     [Environment]::SetEnvironmentVariable('TEMP', $nsisTemp, 'Process')
     [Environment]::SetEnvironmentVariable('TMP', $nsisTemp, 'Process')
-    $process = Start-Process -FilePath $InstallerPath -ArgumentList @('/S', "/D=$InstallDir") -PassThru -Wait
+    # NSIS requires /D to be the final argument. Compatibility switches must
+    # therefore be inserted before it.
+    $arguments = @('/S') + $AdditionalArguments + @("/D=$InstallDir")
+    $process = Start-Process -FilePath $InstallerPath -ArgumentList $arguments -PassThru -Wait
   } finally {
     [Environment]::SetEnvironmentVariable('TEMP', $previousTemp, 'Process')
     [Environment]::SetEnvironmentVariable('TMP', $previousTmp, 'Process')

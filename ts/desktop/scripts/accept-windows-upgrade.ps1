@@ -70,13 +70,16 @@ function Install-Package {
     [Parameter(Mandatory = $true)]
     [string]$InstallerPath,
     [Parameter(Mandatory = $true)]
-    [string]$ExpectedVersion
+    [string]$ExpectedVersion,
+    [switch]$AllUsers
   )
+  $additionalArguments = if ($AllUsers) { @('/allusers') } else { @() }
   $process = Invoke-BilliardBuddyWindowsInstaller `
     -InstallerPath $InstallerPath `
     -InstallDir $installDir `
     -TempRoot $tempRoot `
-    -FailureLabel "Windows $ExpectedVersion 安装程序"
+    -FailureLabel "Windows $ExpectedVersion 安装程序" `
+    -AdditionalArguments $additionalArguments
   if (-not (Test-Path -LiteralPath $appPath -PathType Leaf)) { throw "Windows $ExpectedVersion 安装后缺少 BilliardBuddy.exe" }
   $script:installed = $true
   $actualVersion = (Get-Item -LiteralPath $appPath).VersionInfo.ProductVersion
@@ -198,7 +201,7 @@ function Invoke-StorageEvidence {
 try {
   New-Item -ItemType Directory -Force $tempRoot, $configDir, $userDataDir, $oldWorkspace | Out-Null
 
-  Install-Package -InstallerPath $oldInstallerPath -ExpectedVersion '0.4.9'
+  Install-Package -InstallerPath $oldInstallerPath -ExpectedVersion '0.4.9' -AllUsers
   $oldLaunch = Invoke-RendererProbe -CreateTaskWorkDir $oldWorkspace -ExpectedTaskId '' -RequireCurrentReady $false -Environment @{
     CLAUDE_CONFIG_DIR = $configDir
     QF_GATEWAY_URL = 'https://example.test/gw'
@@ -209,7 +212,7 @@ try {
   $taskId = $oldLaunch.createdTaskId
   Invoke-StorageEvidence -Operation 'seed' -TaskId $taskId
 
-  Install-Package -InstallerPath $newInstallerPath -ExpectedVersion '0.5.0'
+  Install-Package -InstallerPath $newInstallerPath -ExpectedVersion '0.5.0' -AllUsers
   $authGatewayProcess = Start-Process -FilePath 'bun' -ArgumentList @(
     'run',
     (Join-Path $PSScriptRoot 'package-auth-gateway.ts'),
@@ -233,7 +236,7 @@ try {
   Stop-ProcessTree -Process $authGatewayProcess -Name '本地安装包激活服务'
   $authGatewayProcess = $null
 
-  Install-Package -InstallerPath $oldInstallerPath -ExpectedVersion '0.4.9'
+  Install-Package -InstallerPath $oldInstallerPath -ExpectedVersion '0.4.9' -AllUsers
   $rollbackLaunch = Invoke-RendererProbe -CreateTaskWorkDir '' -ExpectedTaskId $taskId -RequireCurrentReady $false -Environment @{
     CLAUDE_CONFIG_DIR = $configDir
     QF_GATEWAY_URL = 'https://example.test/gw'
