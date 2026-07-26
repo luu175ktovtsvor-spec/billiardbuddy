@@ -177,9 +177,19 @@ export class ElectronServerRuntime {
     } catch (error) {
       if (child && !this.server) await stopSidecar(child).catch(() => undefined)
       const message = error instanceof Error ? error.message : String(error)
-      console.error('[desktop] local server startup failed', formatStartupDiagnostic(message, logs))
+      const diagnostic = formatStartupDiagnostic(message, logs)
+      console.error('[desktop] local server startup failed', diagnostic)
       this.startupError = formatStartupError(message, logs)
-      throw new Error(this.startupError)
+      const startupError = Object.assign(new Error(this.startupError), {
+        code: this.startupError,
+      })
+      Object.defineProperty(startupError, 'smokeDiagnostic', {
+        configurable: false,
+        enumerable: false,
+        value: diagnostic,
+        writable: false,
+      })
+      throw startupError
     }
   }
 

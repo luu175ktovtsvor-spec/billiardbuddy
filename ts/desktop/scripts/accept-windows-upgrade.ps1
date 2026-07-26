@@ -31,6 +31,7 @@ $environmentNames = @(
   'CLAUDE_CONFIG_DIR',
   'BB_ELECTRON_DISABLE_SINGLE_INSTANCE_LOCK',
   'BB_ELECTRON_WINDOW_SMOKE_LOG',
+  'BB_ELECTRON_WINDOW_SMOKE_INCLUDE_ERROR_DETAILS',
   'QF_GATEWAY_URL',
   'QF_GATEWAY_TOKEN',
   'QF_GATEWAY_MODEL',
@@ -107,8 +108,10 @@ function Assert-CurrentReady {
   )
   if (-not (Test-Path -LiteralPath $SmokeLog -PathType Leaf)) { throw '当前安装包没有写入窗口/后端启动证据' }
   $snapshots = @(Get-Content -LiteralPath $SmokeLog | Where-Object { $_ } | ForEach-Object { $_ | ConvertFrom-Json })
-  if ($snapshots | Where-Object { $_.reason -in @('backend-failed', 'backend-initialization-failed') }) {
-    throw '当前安装包的 Product Server 启动失败'
+  $failure = @($snapshots | Where-Object { $_.reason -in @('backend-failed', 'backend-initialization-failed') } | Select-Object -Last 1)
+  if ($failure.Count -eq 1) {
+    $failureEvidence = $failure[0] | ConvertTo-Json -Compress -Depth 5
+    throw "当前安装包的 Product Server 启动失败: $failureEvidence"
   }
   if (-not ($snapshots | Where-Object { $_.reason -eq 'backend-ready' })) {
     throw '当前安装包没有进入 backend-ready'
@@ -134,7 +137,7 @@ function Wait-CurrentReady {
       Assert-CurrentReady -SmokeLog $SmokeLog
       return
     } catch {
-      if ($_.Exception.Message -eq '当前安装包的 Product Server 启动失败') { throw }
+      if ($_.Exception.Message.StartsWith('当前安装包的 Product Server 启动失败:')) { throw }
       $lastError = $_
     }
     Start-Sleep -Milliseconds 250
@@ -155,6 +158,7 @@ function Invoke-RendererProbe {
     BILLIARDBUDDY_CONFIG_DIR = $configDir
     BB_ELECTRON_DISABLE_SINGLE_INSTANCE_LOCK = '1'
     BB_ELECTRON_WINDOW_SMOKE_LOG = $smokeLog
+    BB_ELECTRON_WINDOW_SMOKE_INCLUDE_ERROR_DETAILS = '1'
   }
   foreach ($entry in $Environment.GetEnumerator()) { $launchEnvironment[$entry.Key] = $entry.Value }
   Set-LaunchEnvironment -Values $launchEnvironment

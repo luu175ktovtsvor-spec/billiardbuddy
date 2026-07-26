@@ -44,4 +44,32 @@ describe('Electron window smoke diagnostics', () => {
       rmSync(tempDir, { recursive: true, force: true })
     }
   })
+
+  it('only writes detailed startup diagnostics when acceptance explicitly enables them', () => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'billiardbuddy-window-smoke-error-'))
+    const logPath = join(tempDir, 'window-smoke.jsonl')
+    try {
+      const error = Object.assign(new Error('BB_STARTUP_FAILED'), {
+        code: 'BB_STARTUP_FAILED',
+        smokeDiagnostic: 'sidecar exited with migration failure',
+      })
+      writeWindowSmokeSnapshot(null, 'backend-failed', {
+        BB_ELECTRON_WINDOW_SMOKE_LOG: logPath,
+      }, { error })
+      writeWindowSmokeSnapshot(null, 'backend-failed', {
+        BB_ELECTRON_WINDOW_SMOKE_LOG: logPath,
+        BB_ELECTRON_WINDOW_SMOKE_INCLUDE_ERROR_DETAILS: '1',
+      }, { error })
+
+      const [safe, diagnostic] = readFileSync(logPath, 'utf8').trim().split('\n').map(line => JSON.parse(line))
+      expect(safe.error).toEqual({
+        name: 'Error',
+        message: 'BB_STARTUP_FAILED',
+        code: 'BB_STARTUP_FAILED',
+      })
+      expect(diagnostic.error.diagnostic).toBe('sidecar exited with migration failure')
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true })
+    }
+  })
 })
