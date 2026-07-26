@@ -131,6 +131,32 @@ Skill 在这个结构中是给 Agent 按需加载的操作说明、领域知识�
 
 每一次落地必须交付一张“参考—改动”表：参考文件/commit、直接证据或推理等级、要解决的用户问题、BilliardBuddy 当前代码路径、唯一状态源、最小改动、失败/恢复行为、测试与真实旅程。该表未完成时，只能继续调研，不能修改生产执行链。
 
+#### 3.0.2 已核对的当前实现差距
+
+当前实现不能被本文的目标描述掩盖。2026-07-26 已读源码得到以下必须处理的差距；每一项在对应工作流实施时要删除或替换，而不是另包一层兼容逻辑：
+
+| 当前代码事实 | 与目标的冲突 | 重构决定 |
+|---|---|---|
+| `ts/shared/contracts/media.ts` 仍定义 `product_task` media owner、`product_task_id` 和 `data_egress_consent`；`MediaProjectService` 仍保存/校验逐次 consent receipt。 | 工作台被 ProductTask/聊天关联污染，并保留了用户已否定的逐操作出境/计费语义。 | 迁移到独立 `MediaProject` 项目身份；删除 ProductTask 挂接与 consent receipt/schema/header/测试链。远程 provider 是工作台正常执行路径，不产生“付费操作”或单次确认。 |
+| `ts/desktop/src/product/api/tasks.ts` 仍暴露 `attachMediaProject`，产品任务领域仍有 media attachable/project 类型。 | 聊天和工作台仍可被同一任务领域直接连接。 | 删除聊天侧 MediaProject 绑定 API、类型、路由、UI consumer 和迁移后无消费者代码；聊天只处理自身附件的 VisualEvidence。 |
+| `ImageWorkbench.tsx` 与 `VideoStudio.tsx` 以 `setTimeout` 轮询 `refreshTask`，共享 renderer store 以轮询结果判断 Job。 | 不能恢复、重连和表示真实持久 Job 事件；与 Invoke 的队列状态模型不等价。 | 保留单一 MediaJob/Operation 真相，提供 cursor/event 订阅和重连读取；前端只投影事件，轮询链及其 backoff 语义一并删除。 |
+| `VideoStudio.tsx` 已有素材、源预览、可编辑 timeline、场景锁与导出；`MediaProjectService` 已有本机 FFmpeg/FFprobe 队列。 | 这已是工作台雏形，但时间线交互与预览仍是自制简化实现。 | 以 OpenShot 的项目脏状态/状态机/独立预览线程合同和 OpenCut 的桌面分栏为基线，决定直接复用或重写；不得把它改回聊天步骤。 |
+
+这张差距表是后续代码改动的起点，不是“现有方案已经合理”的证明。
+
+#### 3.0.3 本轮工作台源码的直接结论
+
+下表只记录本轮实际打开并阅读的固定版本文件；它把“参考成熟工作台”落实为可执行的复用判断，而不是把 Agent 代码错误套到工作台上：
+
+| 工作台 | 已读文件 | 源码事实 | BilliardBuddy 的直接决定 |
+|---|---|---|---|
+| InvokeAI 生图 | commit `68b90174` 的 `session_queue/session_queue_base.py`、`services/events/queueStatusEvents.ts`、`onQueueItemStatusChanged.tsx` | 后端队列拥有 enqueue、状态、取消、重试、父子工作流与分页；前端消费带 `status_sequence` 的状态事件，先按序更新本地投影，再失效查询以处理事件丢失/乱序。 | 直接学习并可移植“持久 Job + 单调状态序列 + 事件投影 + cursor/查询校正”这一链；不移植其完整 Redux、用户队列或模型执行器。用它替换当前 Image/Video 的 `setTimeout` 轮询。 |
+| InvokeAI 画布 | 同 commit 的 `InvokeCanvasComponent.tsx`、`controlLayers` 与 Canvas/Workflow 组件树 | 画布、图层、暂存区和工作流集成是一级工作区，不是聊天消息卡片。 | 生图保留独立画布、参考图角色、候选与 Version；优先从 Apache-2.0 源码直接移植适配的画布/队列组件或逻辑。 |
+| OpenShot 视频 | commit `9cd2b3f3` 的 `project_data.py`、`timeline_backend/state.py`、`preview_thread.py` | 项目数据有 dirty/save/load/history；时间线交互用明确的拖动、裁切、播放头、框选、关键帧状态机；预览 worker 在独立线程消费最新 seek/播放请求。 | 视频项目、Timeline Version、编辑状态机与非阻塞预览是必要工作台合同。源码为 GPLv3：只有接受相应发行义务才直接复制，否则按这些已验证边界重写。 |
+| OpenCut 视频 | commit `4d8c49ed` 的 `apps/desktop/src/panels/timeline.rs`、`preview.rs` | 该 commit 的两个面板只是静态 `Timeline`/`Preview` 占位，并未实现可复用的时间线或渲染内核。 | 它只能作为桌面分栏布局的早期观察，不能被文档或实现冒充为成熟视频工作台源码，也不能作为直接复用的视频内核。 |
+
+聊天 Harness 的源码阅读仍单列：Codex、Pi、Claude 解决 Thread/Turn/Item、Session、工具循环、权限与恢复；它们不定义生图画布或视频时间线。反过来，InvokeAI/OpenShot/OpenCut 也不定义聊天 Harness。
+
 论文和技术报告用于验证模型能力边界、抽帧/时序理解的假设和评测条件，不能直接替代产品架构。当前 MiMo-VL 技术报告支持将 VLM 用于视觉理解与多模态推理；视频时序研究也支持“采样策略必须受任务约束”这一原则。因此，在真实素材和上游 API 合同验证前，聊天与工作台都保持本机有限抽帧、音轨分离、可追溯来源与 schema 校验，不假定可安全直传任意整段视频。
 
 调研也明确排除了一个不应自创的产品层：Codex 与 Claude 的确认发生在工具权限边界，Pi 的 loop 只发出事件并执行受宿主控制的工具；它们都不要求每个任务进入“请审核”“请发布”或“请确定”的通用流程。生图和视频工作台的成熟做法是候选/版本、画布或时间线、预览与导出。BilliardBuddy 因此只保留工具权限确认，以及可查看的真实结果、版本和运行历史；不得新增泛化审核、发布确认或 review inbox 工作流。
@@ -330,9 +356,11 @@ Codex 的公开 App 资料和 App Server 清楚地把 project/thread、运行事
 | 网关服务器 | 安装身份、DeepSeek 聊天、聊天 MiMo 视觉桥接、MiMo `MediaReasoning`、Fun-ASR、模型并发/超时/用量/审计 | 保存聊天或媒体项目真相；让工作台走聊天端点 |
 | Relay 服务器 | 图片生成 provider 的持久提交、异步状态、结果 blob、幂等查询与 ack | 运行 Agent Harness、FFmpeg、视频项目、聊天路由 |
 
-网关至少分成五个明确能力和容量泳道：`TextReasoning`（DeepSeek 聊天）、`VisualEvidence`（聊天看图 bridge）、`MediaReasoning`（MiMo V2.5 工作台）、`SpeechTranscription`（Fun-ASR）和 `ImageGeneration`（转 Relay）。其中前两者虽共用 MiMo 账号，也必须分端点、并发池、operation ID、超时和用量：聊天看图不能被长视频规划挤占，工作台也不能借聊天端点绕过自己的状态合同。部署调整按这个边界进行；先完成本地契约与假上游回归，再做两台服务器的配置、迁移、健康检查和真实素材小流量验证。
+网关至少分成五个明确能力和容量泳道：`TextReasoning`（DeepSeek 聊天）、`VisualEvidence`（聊天看图 bridge）、`MediaReasoning`（MiMo V2.5 工作台）、`SpeechTranscription`（Fun-ASR）和 `ImageGeneration`（转 Relay）。其中前两者虽共用 MiMo 账号，也必须分端点、并发池、operation ID、超时和用量：聊天看图不能被长视频规划挤占，工作台也不能借聊天端点绕过自己的状态合同。服务器可直接按这一边界重建；完成后以真实服务、端口、路由、环境变量名称和进程状态更新服务器运行文档，不在改造前用旧部署快照限制新架构。
 
-本轮已获得对两台服务器、Gateway、Relay、环境配置、容量泳道和部署闭包的调整授权：只要为实现本文合同所必需，可自主实施服务器侧变更，无需把“是否能改服务器”当作额外阻塞条件。该授权不取消工程约束：变更前备份可恢复状态，先以本地契约和假上游验证，再最小化部署；部署后记录版本/配置摘要，执行健康检查和相关真实小流量旅程。不得借此扩大用户数据、公开接口、凭据读取范围或删除不可恢复数据。
+本轮已获得对两台服务器、Gateway、Relay、环境配置、容量泳道和部署闭包的整体重建授权。当前无人使用，旧服务、旧数据库、旧队列、旧部署脚本和旧路由均可直接删除、替换或重建；不把备份、回滚、最小化部署或先行本地验证当作前置门槛。唯一前置事实是先盘点两台服务器当前的文件、进程、端口、路由、凭据引用和真正仍需保留的数据；实施完成后必须以实际状态重写 `docs/operations/production-servers.md`。不得虚构迁移结果、保留无消费者旧链或把旧快照当成新架构事实。
+
+2026-07-26 的只读盘点已确认当前旧闭包：大陆机只有 `qfgw.service`（Bun，`127.0.0.1:8799`）与 Nginx（公网 `:80`），运行目录为 `/opt/qfgw`，包含 `app.ts`、`gw.env`、`authority.json`、`usage.db*` 与旧容量/压测脚本；美国机有 `qfrelay.service`（Bun，`127.0.0.1:8790`）、`qfgw-tunnel.service`（`127.0.0.1:8800 → 大陆 127.0.0.1:8799`）和 Nginx（公网 `:80/:443`），运行目录为 `/opt/qfrelay`，包含 `app.ts`、`relay.env`、`relay.db*` 与 `blobs/`。这只是重建前清单：这些服务和目录均不是保留要求，完成替换后必须由新的实际状态覆盖。
 
 ---
 
