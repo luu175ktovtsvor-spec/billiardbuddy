@@ -66,6 +66,16 @@ export type ProductTaskRuntime = {
 
 export const PRODUCT_TASK_SAFE_ERROR_LABEL: Record<ProductTaskSafeErrorCode, string> = {
   attachment_ingest_unavailable: '附件导入当前不可用，请先完成附件导入后再提交。',
+  task_model_configuration: '当前模型配置不可用，请先检查模型与 Gateway 设置。',
+  task_authentication: '模型服务认证失效，请重新完成登录或授权。',
+  task_capacity_limited: '模型服务当前限流、容量不足或额度暂不可用，请稍后再试。',
+  task_model_unavailable: '模型服务暂时无法完成请求，请稍后再试。',
+  task_network_unavailable: '当前无法连接模型服务，或响应流已中断，请检查网络后重试。',
+  task_context_limit: '当前任务上下文无法压缩到模型限制内，请缩短输入或清理上下文。',
+  task_model_response_invalid: '模型返回了不完整或无法安全处理的响应，可以稍后重试。',
+  task_project_automation_failed: '项目命令、Hook 或扩展未能完成，请检查项目自动化配置。',
+  task_attachment_processing_failed: '附件无法安全读取或转换，请检查文件后重新提交。',
+  task_execution_environment_failed: '本机权限、沙箱或执行环境当前不可用，请检查设置后重试。',
   task_failed: '任务暂未完成，请稍后重试。',
   task_unavailable: '当前任务暂时不可用。',
   input_too_large: '提交的内容过大，请精简后再试。',
@@ -73,6 +83,20 @@ export const PRODUCT_TASK_SAFE_ERROR_LABEL: Record<ProductTaskSafeErrorCode, str
   unsupported_input: '该内容暂不支持处理。',
   temporarily_unavailable: '服务暂时不可用，请稍后重试。',
 }
+
+const PRODUCT_TASK_RUN_FAILURE_CODES = new Set<ProductTaskSafeErrorCode>([
+  'task_model_configuration',
+  'task_authentication',
+  'task_capacity_limited',
+  'task_model_unavailable',
+  'task_network_unavailable',
+  'task_context_limit',
+  'task_model_response_invalid',
+  'task_project_automation_failed',
+  'task_attachment_processing_failed',
+  'task_execution_environment_failed',
+  'task_failed',
+])
 
 const EMPTY_RUNTIME: ProductTaskRuntime = {
   connectionState: 'disconnected',
@@ -351,7 +375,7 @@ export const useProductTaskRuntimeStore = create<ProductTaskRuntimeStore>((set, 
     updateTask(taskId, (runtime) => ({
       ...runtime,
       historyStatus: runtime.entries.length === 0 ? 'loading' : runtime.historyStatus,
-      error: null,
+      error: runtime.recoveryRequired ? runtime.error : null,
     }))
 
     try {
@@ -666,7 +690,7 @@ export const useProductTaskRuntimeStore = create<ProductTaskRuntimeStore>((set, 
           stopRequested: false,
           recoveryRequired: event.state === 'recovery_required',
           ...(event.state === 'recovery_required'
-            ? { error: { code: 'task_failed' as const, retryable: false } }
+            ? { error: event.failure ?? { code: 'task_failed' as const, retryable: false } }
             : { error: null }),
         }))
         void refreshThread(taskId, 'turn_complete')
@@ -795,17 +819,20 @@ export const useProductTaskRuntimeStore = create<ProductTaskRuntimeStore>((set, 
             }
 
           case 'error':
+            {
+            const runFailure = PRODUCT_TASK_RUN_FAILURE_CODES.has(event.code)
             return {
               ...runtime,
               error: { code: event.code, retryable: event.retryable },
-              ...(!event.retryable && (event.code === 'task_failed' || event.code === 'task_unavailable') ? { recoveryRequired: true } : {}),
+              ...(runFailure || (!event.retryable && event.code === 'task_unavailable') ? { recoveryRequired: true } : {}),
               streamingEntryId: null,
               approvalResponsePending: false,
               // A terminal product error has no corresponding Core completion
               // event to return the compact task UI to an actionable state.
-              ...(event.retryable
+              ...(!runFailure && event.retryable
                 ? {}
                 : { runState: 'idle', activeActivity: null, pendingApproval: null, stopRequested: false }),
+            }
             }
         }
       })

@@ -25,6 +25,7 @@
 | `task_model_configuration` | 模型或 Gateway 未正确配置 | false |
 | `task_authentication` | 模型服务身份/授权无效 | false |
 | `task_capacity_limited` | 限流、容量或暂时额度限制 | true |
+| `task_model_unavailable` | 模型服务返回可恢复的临时故障 | true |
 | `task_network_unavailable` | 无法连接 Gateway 或流中断 | true |
 | `task_context_limit` | 上下文或压缩无法落入模型窗口 | false |
 | `task_model_response_invalid` | 模型返回空、破损或无法配对的结构 | true |
@@ -40,3 +41,11 @@
 - 不把 `retryable: true` 当成可以自动重放整个 Turn。
 - 不在 durable terminal 和 dispatch record 各存一份可能漂移的失败代码；dispatch 是代码真相，terminal replay 是读取投影。
 - 不把完成本项描述成聊天 Harness、图片工作台或视频工作台已经全部完成。
+
+## 施工后证据
+
+- Worker 把稳定内部错误映射为 11 个受控产品代码；未知 Error、路径和任意文本只能落到 `task_failed`，原始内容不会经过 IPC。
+- recovery terminal 必须携带与代码固定匹配的 `retryable`；Host relay、Product Server 写入和 renderer 协议三层都会拒绝缺失、未知或伪造的组合。
+- dispatch record 是失败代码的唯一持久真相；durable `run_terminal` 读取时投影同一 failure，因此实时失败、刷新重连和恢复卡片不会再变成三种说法。旧数据中的 `CORE_RECOVERY_REQUIRED` 仍安全投影为泛化 `task_failed`。
+- 页面先显示具体原因，再显示“新执行代次可能重复外部操作”；即使网络/容量故障标记为 retryable，也仍进入用户确认的 recovery，而不会自动重放 Turn。
+- 完整服务端类型检查与 569 项服务端测试通过；桌面定向协议/store/page 共 71 项通过，桌面完整门禁已执行。真实 401、429、断网与安装包旅程尚未执行，且本轮按用户要求不触碰正在进行的 Windows 出包。

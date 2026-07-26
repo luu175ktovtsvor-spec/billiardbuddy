@@ -1041,7 +1041,8 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
 
             {runtime?.recoveryRequired ? (
               <div role="alert" className="mx-auto mt-5 max-w-2xl rounded-xl border border-amber-500/30 bg-[var(--color-surface)] px-4 py-3 text-sm text-[var(--color-text-secondary)]">
-                <p>上次运行在结果未确认时中断。恢复会用新的执行代次重新运行这条消息，可能重复外部操作，请确认后继续。</p>
+                <p className="font-medium text-[var(--color-text-primary)]">{runtime.error ? PRODUCT_TASK_SAFE_ERROR_LABEL[runtime.error.code] : '上次运行未能确认结果。'}</p>
+                <p className="mt-2">恢复会用新的执行代次重新运行这条消息，可能重复外部操作，请确认后继续。</p>
                 <button type="button" disabled={isRecoveryPending} onClick={() => { void recoverFailedRun() }} className="mt-3 rounded-lg bg-[var(--color-primary)] px-3 py-2 text-sm font-medium text-white disabled:opacity-50">
                   {isRecoveryPending ? '正在恢复…' : '恢复失败任务'}
                 </button>

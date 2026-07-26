@@ -68,6 +68,8 @@ export type {
   ProductTaskQuestion,
   ProductTaskQuestionOption,
   ProductTaskRunState,
+  ProductTaskRunFailure,
+  ProductTaskRunFailureCode,
   ProductTaskQueuedInput,
   ProductTaskSafeErrorCode,
   ProductTaskThread,

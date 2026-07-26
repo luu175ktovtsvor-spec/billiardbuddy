@@ -10,6 +10,8 @@ import type {
   ProductTaskQuestion,
   ProductTaskQuestionOption,
   ProductTaskRunState,
+  ProductTaskRunFailure,
+  ProductTaskRunFailureCode,
   ProductTaskSafeErrorCode,
   ProductTaskQueuedInput,
   ProductTaskThread,
@@ -101,6 +103,16 @@ const PRODUCT_TASK_APPROVAL_KINDS = new Set<ProductTaskApprovalKind>([
 ])
 const PRODUCT_TASK_SAFE_ERROR_CODES = new Set<ProductTaskSafeErrorCode>([
   'attachment_ingest_unavailable',
+  'task_model_configuration',
+  'task_authentication',
+  'task_capacity_limited',
+  'task_model_unavailable',
+  'task_network_unavailable',
+  'task_context_limit',
+  'task_model_response_invalid',
+  'task_project_automation_failed',
+  'task_attachment_processing_failed',
+  'task_execution_environment_failed',
   'task_failed',
   'task_unavailable',
   'input_too_large',
@@ -108,6 +120,36 @@ const PRODUCT_TASK_SAFE_ERROR_CODES = new Set<ProductTaskSafeErrorCode>([
   'unsupported_input',
   'temporarily_unavailable',
 ])
+const PRODUCT_TASK_RUN_FAILURE_CODES = new Set<ProductTaskRunFailureCode>([
+  'task_model_configuration',
+  'task_authentication',
+  'task_capacity_limited',
+  'task_model_unavailable',
+  'task_network_unavailable',
+  'task_context_limit',
+  'task_model_response_invalid',
+  'task_project_automation_failed',
+  'task_attachment_processing_failed',
+  'task_execution_environment_failed',
+  'task_failed',
+])
+const PRODUCT_TASK_RETRYABLE_RUN_FAILURE_CODES = new Set<ProductTaskRunFailureCode>([
+  'task_capacity_limited',
+  'task_model_unavailable',
+  'task_network_unavailable',
+  'task_model_response_invalid',
+])
+
+function parseRunFailure(value: unknown): ProductTaskRunFailure | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
+  const record = value as Record<string, unknown>
+  return hasOnlyKeys(record, ['code', 'retryable']) &&
+    isEnumValue(record.code, PRODUCT_TASK_RUN_FAILURE_CODES) &&
+    typeof record.retryable === 'boolean' &&
+    record.retryable === PRODUCT_TASK_RETRYABLE_RUN_FAILURE_CODES.has(record.code)
+    ? { code: record.code, retryable: record.retryable }
+    : undefined
+}
 const PRODUCT_TASK_ATTACHMENT_TYPES = new Set<ProductTaskAttachmentSummary['type']>([
   'file',
   'image',
@@ -457,13 +499,17 @@ export function parseProductTaskEvent(value: unknown): ProductTaskEvent | null {
       }
     }
 
-    case 'run_terminal':
-      return hasOnlyKeys(value, ['type', 'id', 'state', 'replayed', 'event_sequence']) &&
+    case 'run_terminal': {
+      const failure = 'failure' in value ? parseRunFailure(value.failure) : undefined
+      return hasOnlyKeys(value, ['type', 'id', 'state', 'failure', 'replayed', 'event_sequence']) &&
         typeof value.id === 'string' && /^turn_[a-f0-9]{32}$/.test(value.id) &&
         (value.state === 'completed' || value.state === 'stopped' || value.state === 'recovery_required') &&
+        (!('failure' in value) || failure !== undefined) &&
+        ((value.state === 'recovery_required') === (failure !== undefined)) &&
         value.replayed === true && typeof value.event_sequence === 'number' && Number.isSafeInteger(value.event_sequence) && value.event_sequence > 0
-        ? { type: 'run_terminal', id: value.id, state: value.state, replayed: true, event_sequence: value.event_sequence }
+        ? { type: 'run_terminal', id: value.id, state: value.state, ...(failure ? { failure } : {}), replayed: true, event_sequence: value.event_sequence }
         : null
+    }
 
     case 'approval_required': {
       if (

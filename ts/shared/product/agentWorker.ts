@@ -1,6 +1,6 @@
 import type { PermissionExecutionEnvelope } from './permissionExecutionEnvelope.js'
 import type { ProductResourceReceipt } from './resourceScheduler.js'
-import type { ProductTaskActionApproval, ProductTaskQuestion, ProductTaskRunActivity } from './taskEvents.js'
+import type { ProductTaskActionApproval, ProductTaskQuestion, ProductTaskRunActivity, ProductTaskRunFailure } from './taskEvents.js'
 
 export const AGENT_WORKER_PROTOCOL_VERSION = 1 as const
 export const AGENT_WORKER_MAX_FRAME_BYTES = 64 * 1024
@@ -44,7 +44,7 @@ export type AgentWorkerOutbound =
   | { type: 'event'; event: 'context_compaction'; phase: 'completed'; source: 'automatic' | 'manual'; generation: number; input_tokens: number; output_tokens: number; summary: string; compacted_through_event_sequence: number }
   | { type: 'event'; event: 'context_compaction'; phase: 'failed'; source: 'automatic' | 'manual'; generation: number; input_tokens: number }
   | { type: 'steer_consumed'; queue_item_id: string }
-  | { type: 'terminal'; state: 'completed' | 'stopped' | 'recovery_required'; run_id: string }
+  | { type: 'terminal'; state: 'completed' | 'stopped' | 'recovery_required'; run_id: string; failure?: ProductTaskRunFailure }
   | { type: 'fatal'; code: 'FRAME_INVALID' | 'FRAME_TOO_LARGE' | 'PROTOCOL_INVALID' | 'CAPABILITY_MISMATCH' | 'MODEL_CONFIGURATION_INVALID' | 'NOT_READY' | 'ENVELOPE_DENIED' | 'SCHEDULER_DENIED' | 'CORE_FAILED'; message?: string }
   | { type: 'shutdown' }
 

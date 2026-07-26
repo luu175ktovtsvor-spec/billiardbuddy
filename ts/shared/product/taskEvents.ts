@@ -93,9 +93,30 @@ export type ProductTaskQuestion = {
   multiSelect?: boolean
 }
 
+export const PRODUCT_TASK_RUN_FAILURE_CODES = [
+  'task_model_configuration',
+  'task_authentication',
+  'task_capacity_limited',
+  'task_model_unavailable',
+  'task_network_unavailable',
+  'task_context_limit',
+  'task_model_response_invalid',
+  'task_project_automation_failed',
+  'task_attachment_processing_failed',
+  'task_execution_environment_failed',
+  'task_failed',
+] as const
+
+export type ProductTaskRunFailureCode = typeof PRODUCT_TASK_RUN_FAILURE_CODES[number]
+
+export type ProductTaskRunFailure = {
+  code: ProductTaskRunFailureCode
+  retryable: boolean
+}
+
 export type ProductTaskSafeErrorCode =
   | 'attachment_ingest_unavailable'
-  | 'task_failed'
+  | ProductTaskRunFailureCode
   | 'task_unavailable'
   | 'input_too_large'
   | 'protected_input'
@@ -201,6 +222,7 @@ export type ProductTaskEvent =
       type: 'run_terminal'
       id: string
       state: 'completed' | 'stopped' | 'recovery_required'
+      failure?: ProductTaskRunFailure
       replayed: true
       event_sequence: number
     }

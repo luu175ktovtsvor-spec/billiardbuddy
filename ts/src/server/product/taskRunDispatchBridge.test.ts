@@ -34,6 +34,26 @@ test('worker sink publishes only product-safe assistant text and one terminal fe
   expect(durable).toEqual([['run', 1, 'completed', '完成结果']])
 })
 
+test('worker sink persists and publishes the same safe run failure', async () => {
+  const durable: unknown[] = []
+  const tasks = {
+    readTaskRunDispatchIdentity: async () => ({ task_id: 'task-failure' }),
+    recordTaskRunTerminalProjection: async (...args: unknown[]) => { durable.push(args); return { task_id: 'task-failure' } },
+  } as unknown as ProductTaskService
+  const sink = new ProductTaskWorkerMessageSink(tasks)
+  const events: unknown[] = []
+  const unsubscribe = productTaskWorkerRuntimeEvents.subscribe((taskId, event) => {
+    if (taskId === 'task-failure') events.push(event)
+  })
+  const failure = { code: 'task_network_unavailable' as const, retryable: true }
+
+  await sink.record('run-failure', 3, { type: 'terminal', state: 'recovery_required', run_id: 'run-failure', failure })
+  unsubscribe()
+
+  expect(durable).toEqual([['run-failure', 3, 'recovery_required', '', failure]])
+  expect(events).toEqual([{ type: 'error', ...failure }])
+})
+
 test('terminal waits for an earlier event identity and rejects only events arriving after the fence', async () => {
   let resolveIdentity!: (value: { task_id: string }) => void
   const identity = new Promise<{ task_id: string }>((resolve) => { resolveIdentity = resolve })

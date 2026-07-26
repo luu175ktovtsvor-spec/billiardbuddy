@@ -4,6 +4,8 @@ import * as fs from 'node:fs/promises'
 import type { ProductResourceScheduler } from './resourceScheduler.js'
 import { productPermissionSnapshot, type ProductPermissionSnapshot } from '../../../shared/product/domain.js'
 import { createAgentWorkerChildStartCapability, createPolicyBoundEnvelope } from './permissionExecutionEnvelope.js'
+import { classifyProductTaskRunFailure } from './taskRunFailure.js'
+import type { ProductTaskRunFailure } from '../../../shared/product/taskEvents.js'
 
 export type AgentWorkerCoreIdentity = {
   task_id: string
@@ -33,7 +35,7 @@ type DispatchStore = {
   readTaskRunDispatchIdentity(run: string, generation: number): Promise<AgentWorkerCoreIdentity>
   inspectTaskRunQueuePosition?(run: string, generation: number): Promise<'ready' | 'queued'>
   claimTaskRunDispatch(run: string, generation: number): Promise<{ outcome: 'claimed' | 'duplicate' | 'queued' | 'recovery_required'; task_id: string }>
-  settleTaskRunDispatch(run: string, generation: number, state: 'recovery_required' | 'terminal', error?: string): Promise<void>
+  settleTaskRunDispatch(run: string, generation: number, state: 'recovery_required' | 'terminal', error?: string, failure?: ProductTaskRunFailure): Promise<void>
   advanceTaskRunQueue?(run: string, generation: number): Promise<void>
 }
 export type AgentWorkerChild = { send(message: AgentWorkerInbound): void; stop(): Promise<void> }
@@ -137,7 +139,7 @@ export class AgentWorkerSupervisor {
           // projection before settling durable dispatch state.
           this.terminalPending.add(key)
           void Promise.resolve(this.messages?.record(runId, generation, message))
-            .then(() => this.fail(runId, generation, receipt.fencing_token, 'TERMINAL', message.state === 'recovery_required' ? 'recovery_required' : 'terminal'))
+            .then(() => this.fail(runId, generation, receipt.fencing_token, 'TERMINAL', message.state === 'recovery_required' ? 'recovery_required' : 'terminal', message.failure))
             .catch(() => this.fail(runId, generation, receipt.fencing_token, 'EVENT_PERSIST_FAILED', 'recovery_required'))
           return
         }
@@ -176,11 +178,11 @@ export class AgentWorkerSupervisor {
   async shutdown(): Promise<void> {
     await Promise.all([...this.active.values()].map(active => this.stop(active.run_id, active.generation)))
   }
-  private async fail(run: string, generation: number, fencing: number | undefined, error: string, state: 'recovery_required' | 'terminal' = 'recovery_required'): Promise<'recovery_required'> {
+  private async fail(run: string, generation: number, fencing: number | undefined, error: string, state: 'recovery_required' | 'terminal' = 'recovery_required', failure?: ProductTaskRunFailure): Promise<'recovery_required'> {
     const key = `${run}:${generation}`
     if (this.settled.has(key)) return 'recovery_required'
     this.settled.add(key); this.terminalPending.delete(key); this.stopRequested.delete(key); this.active.delete(key); const timer = this.readyTimers.get(key); if (timer) clearTimeout(timer); this.readyTimers.delete(key); const heartbeat = this.heartbeatTimers.get(key); if (heartbeat) clearInterval(heartbeat); this.heartbeatTimers.delete(key)
-    try { await this.runs.settleTaskRunDispatch(run, generation, state, error === 'MODEL_CONFIGURATION_INVALID' ? '模型配置无效' : error) } catch {}
+    try { await this.runs.settleTaskRunDispatch(run, generation, state, error, state === 'recovery_required' ? failure ?? classifyProductTaskRunFailure(new Error(error)) : undefined) } catch {}
     // Durable terminal/recovery state is the fence for all later child IPC;
     // scheduler journal I/O must not delay that transition.
     await this.releaseSchedulerClaim(run, generation, fencing)
