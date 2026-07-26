@@ -16,7 +16,6 @@
     "afterSign": "scripts/electron-after-pack.cjs",
     "asar": true,
     "asarUnpack": [
-      "dist/**",
       "node_modules/node-pty/**",
       "runtime-assets/binaries/**"
     ],
