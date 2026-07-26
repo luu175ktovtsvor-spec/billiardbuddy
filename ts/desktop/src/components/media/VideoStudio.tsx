@@ -62,6 +62,7 @@ export function VideoStudio() {
   const createVideo = useMediaWorkbenchStore(state => state.createVideo)
   const addVideoSource = useMediaWorkbenchStore(state => state.addVideoSource)
   const saveTimeline = useMediaWorkbenchStore(state => state.saveTimeline)
+  const selectVideoTimelineVersion = useMediaWorkbenchStore(state => state.selectVideoTimelineVersion)
   const analyzeVideo = useMediaWorkbenchStore(state => state.analyzeVideo)
   const lockVideoScene = useMediaWorkbenchStore(state => state.lockVideoScene)
   const applyVideoAlternative = useMediaWorkbenchStore(state => state.applyVideoAlternative)
@@ -101,6 +102,10 @@ export function VideoStudio() {
   const previewStale = Boolean(active?.preview && active.preview.timeline_version_id !== active.current_timeline_version_id)
   const timelineDuration = timelineState.clips.reduce((total, clip) => total + clip.out_ms - clip.in_ms, 0)
   const timelineVersion = active?.timeline_versions.find(version => version.id === active.current_timeline_version_id)
+  const undoTimelineVersion = active?.timeline_versions.find(version => version.id === timelineVersion?.parent_version_id)
+  const redoTimelineVersion = active?.timeline_versions
+    .filter(version => version.parent_version_id === timelineVersion?.id)
+    .at(-1)
   const sceneById = useMemo(
     () => new Map((timelineVersion?.scenes ?? []).map(scene => [scene.id, scene])),
     [timelineVersion],
@@ -390,6 +395,12 @@ export function VideoStudio() {
     } finally {
       setDeletingId(null)
     }
+  }
+
+  const restoreTimelineVersion = async (versionId: string) => {
+    if (!active || busy || loading || versionId === active.current_timeline_version_id) return
+    if (draft && !sameTimeline(draft.timeline, active.timeline) && !window.confirm('恢复历史版本会放弃尚未保存的时间线修改，是否继续？')) return
+    await selectVideoTimelineVersion(active.id, active.revision, versionId)
   }
 
   return (
@@ -724,6 +735,47 @@ export function VideoStudio() {
                         </div>
                       </div>
                     ))}
+                  </div>
+                )}
+                {active.timeline_versions.length > 0 && (
+                  <div className="mt-3 rounded-[6px] border border-[var(--color-border)] p-2" aria-label="时间线版本历史">
+                    <label htmlFor="video-timeline-version" className="block text-[11px] font-medium text-[var(--color-text-secondary)]">
+                      时间线版本
+                    </label>
+                    <select
+                      id="video-timeline-version"
+                      value={active.current_timeline_version_id}
+                      onChange={event => void restoreTimelineVersion(event.target.value)}
+                      disabled={busy || loading}
+                      className="mt-1 h-8 w-full rounded-[6px] border border-[var(--color-border)] bg-[var(--color-input-bg)] px-2 text-[11px] text-[var(--color-text-primary)] outline-none disabled:opacity-45"
+                    >
+                      {[...active.timeline_versions].reverse().map((version, index) => (
+                        <option key={version.id} value={version.id}>
+                          {index === 0 ? '最新 · ' : ''}{new Date(version.created_at).toLocaleString()} · {version.scenes.length} 个片段
+                        </option>
+                      ))}
+                    </select>
+                    <div className="mt-2 grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => undoTimelineVersion && void restoreTimelineVersion(undoTimelineVersion.id)}
+                        disabled={!undoTimelineVersion || busy || loading}
+                        className="h-7 rounded-[5px] border border-[var(--color-border)] text-[11px] text-[var(--color-text-secondary)] disabled:opacity-35"
+                      >
+                        撤销到父版本
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => redoTimelineVersion && void restoreTimelineVersion(redoTimelineVersion.id)}
+                        disabled={!redoTimelineVersion || busy || loading}
+                        className="h-7 rounded-[5px] border border-[var(--color-border)] text-[11px] text-[var(--color-text-secondary)] disabled:opacity-35"
+                      >
+                        重做到子版本
+                      </button>
+                    </div>
+                    <p className="mt-1.5 text-[10px] leading-4 text-[var(--color-text-tertiary)]">
+                      恢复只切换当前版本；再次编辑时会从该版本创建新分支，不覆盖历史。
+                    </p>
                   </div>
                 )}
                 <div className="my-3 border-t border-[var(--color-border)]" />

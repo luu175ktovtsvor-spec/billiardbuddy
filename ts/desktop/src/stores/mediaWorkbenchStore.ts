@@ -48,6 +48,7 @@ type MediaWorkbenchStore = {
   createVideo: (input?: CreateVideoProjectInput) => Promise<VideoStudioProject>
   addVideoSource: (projectId: string, path: string) => Promise<VideoStudioProject>
   saveTimeline: (project: VideoStudioProject) => Promise<VideoStudioProject>
+  selectVideoTimelineVersion: (projectId: string, revision: number, versionId: string) => Promise<VideoStudioProject>
   analyzeVideo: (project: VideoStudioProject, userGoal: string) => Promise<MediaTask>
   lockVideoScene: (project: VideoStudioProject, sceneId: string, locked: boolean) => Promise<VideoStudioProject>
   applyVideoAlternative: (project: VideoStudioProject, alternativeId: string) => Promise<VideoStudioProject>
@@ -390,6 +391,25 @@ export const useMediaWorkbenchStore = create<MediaWorkbenchStore>((set, get) => 
       nextProjectLoadVersion('video')
       set(state => ({ videoProjects: upsert(state.videoProjects, saved) }))
       return saved
+    } catch (error) {
+      const safeError = rendererSafeError(error)
+      set({ error: safeError.message })
+      throw safeError
+    } finally {
+      finishLoading()
+    }
+  },
+
+  selectVideoTimelineVersion: async (projectId, revision, versionId) => {
+    const finishLoading = beginLoading(set)
+    try {
+      const { project } = await mediaApi.selectVideoTimelineVersion(projectId, {
+        revision,
+        version_id: versionId,
+      })
+      nextProjectLoadVersion('video')
+      set(state => ({ videoProjects: upsert(state.videoProjects, project) }))
+      return project
     } catch (error) {
       const safeError = rendererSafeError(error)
       set({ error: safeError.message })

@@ -1836,6 +1836,29 @@ describe('MediaProjectService video projects', () => {
       base_timeline_version_id: locked.current_timeline_version_id,
       clips: [{ ...locked.timeline[0]!, in_ms: 100, out_ms: 1900 }],
     })).rejects.toMatchObject({ code: 'LOCKED_SCENE_CONFLICT', status: 409 })
+
+    const restored = await service.selectVideoTimelineVersion(project.id, {
+      revision: locked.revision,
+      version_id: initialVersionId,
+    })
+    expect(restored.current_timeline_version_id).toBe(initialVersionId)
+    expect(restored.timeline).toEqual(project.timeline)
+    expect(restored.timeline_versions.find(version => version.id === initialVersionId)).toEqual(initialVersion)
+    expect(restored.timeline_versions.at(-1)?.scenes[0]?.locked).toBe(true)
+
+    const branched = await service.updateVideoTimeline(project.id, {
+      base_revision: restored.revision,
+      base_timeline_version_id: initialVersionId,
+      clips: [{ ...restored.timeline[0]!, in_ms: 100, out_ms: 1900 }],
+    })
+    expect(branched.current_timeline_version_id).not.toBe(initialVersionId)
+    expect(branched.timeline_versions.at(-1)).toMatchObject({ parent_version_id: initialVersionId })
+    expect(branched.timeline_versions.find(version => version.id === initialVersionId)).toEqual(initialVersion)
+
+    await expect(service.selectVideoTimelineVersion(project.id, {
+      revision: restored.revision,
+      version_id: initialVersionId,
+    })).rejects.toMatchObject({ code: 'REVISION_CONFLICT', status: 409 })
   })
 
   test('reuses an active render, supports cancellation, deletion, and interrupted-render recovery', async () => {

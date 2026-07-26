@@ -718,6 +718,11 @@ export const updateVideoTimelineInputSchema = z.object({
   message: 'base_revision is required',
 }).transform(value => ({ ...value, base_revision: value.base_revision ?? value.revision! }))
 
+export const selectVideoTimelineVersionInputSchema = z.object({
+  revision: z.number().int().nonnegative(),
+  version_id: mediaIdSchema,
+})
+
 export const analyzeVideoProjectInputSchema = z.object({
   base_revision: z.number().int().nonnegative(),
   user_goal: z.string().trim().min(1).max(8000),
@@ -803,6 +808,7 @@ export type CommitImageVersionInput = z.input<typeof commitImageVersionInputSche
 export type SelectImageVersionInput = z.input<typeof selectImageVersionInputSchema>
 export type AddVideoSourceInput = z.input<typeof addVideoSourceInputSchema>
 export type UpdateVideoTimelineInput = z.input<typeof updateVideoTimelineInputSchema>
+export type SelectVideoTimelineVersionInput = z.input<typeof selectVideoTimelineVersionInputSchema>
 export type AnalyzeVideoProjectInput = z.input<typeof analyzeVideoProjectInputSchema>
 export type LockVideoSceneInput = z.input<typeof lockVideoSceneInputSchema>
 export type ApplyVideoAlternativeInput = z.input<typeof applyVideoAlternativeInputSchema>

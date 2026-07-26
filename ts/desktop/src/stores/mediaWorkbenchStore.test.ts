@@ -13,6 +13,7 @@ const mediaApiMock = vi.hoisted(() => ({
   createVideoProject: vi.fn(),
   addVideoSource: vi.fn(),
   updateVideoTimeline: vi.fn(),
+  selectVideoTimelineVersion: vi.fn(),
   previewVideo: vi.fn(),
   renderVideo: vi.fn(),
   cancelTask: vi.fn(),

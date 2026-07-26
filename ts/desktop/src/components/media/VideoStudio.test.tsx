@@ -10,6 +10,7 @@ const mediaApiMock = vi.hoisted(() => ({
   createVideoProject: vi.fn(),
   addVideoSource: vi.fn(),
   updateVideoTimeline: vi.fn(),
+  selectVideoTimelineVersion: vi.fn(),
   analyzeVideo: vi.fn(),
   lockVideoScene: vi.fn(),
   applyVideoAlternative: vi.fn(),
@@ -390,5 +391,65 @@ describe('VideoStudio committing state', () => {
     await waitFor(() => expect(document.querySelector('video')).toHaveAttribute('src', 'http://127.0.0.1/preview.mp4'))
     expect(screen.getByText(/这是旧时间线的预览/)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '刷新节目预览' })).toBeInTheDocument()
+  })
+
+  it('restores an immutable timeline version and keeps later editing branchable', async () => {
+    const earlier = {
+      id: 'timeline_earlier1',
+      project_revision: 4,
+      evidence_revision: `sha256:${'a'.repeat(64)}`,
+      created_at: '2026-07-18T00:00:00.000Z',
+      scenes: [{
+        id: 'clip_video01', source_id: 'src_video001', in_ms: 0, out_ms: 4_000,
+        story_role: 'hook' as const, evidence_ids: [], rationale: '较早版本', needs_review: false, locked: false,
+      }],
+    }
+    const current = {
+      id: 'timeline_current1',
+      parent_version_id: earlier.id,
+      project_revision: 5,
+      evidence_revision: `sha256:${'b'.repeat(64)}`,
+      created_at: '2026-07-18T00:01:00.000Z',
+      scenes: [{
+        id: 'clip_video01', source_id: 'src_video001', in_ms: 500, out_ms: 5_000,
+        story_role: 'hook' as const, evidence_ids: [], rationale: '当前版本', needs_review: false, locked: false,
+      }],
+    }
+    const editable: VideoStudioProject = {
+      ...project,
+      state: 'ready',
+      task_id: undefined,
+      output_path: undefined,
+      revision: 5,
+      sources: [{
+        id: 'src_video001', name: 'source.mp4', duration_ms: 10_000,
+        width: 1920, height: 1080, fps: 30, has_audio: false,
+        rotation: 0, video_stream_count: 1, audio_stream_count: 0, missing: false,
+      }],
+      timeline: [{ id: 'clip_video01', source_id: 'src_video001', in_ms: 500, out_ms: 5_000 }],
+      timeline_versions: [earlier, current],
+      current_timeline_version_id: current.id,
+    }
+    const restored = {
+      ...editable,
+      revision: 6,
+      timeline: [{ id: 'clip_video01', source_id: 'src_video001', in_ms: 0, out_ms: 4_000 }],
+      current_timeline_version_id: earlier.id,
+    }
+    mediaApiMock.listProjects.mockResolvedValue({ projects: [editable] })
+    mediaApiMock.selectVideoTimelineVersion.mockResolvedValue({ project: restored })
+    useMediaWorkbenchStore.setState({
+      videoProjects: [editable], tasks: {}, activeVideoId: editable.id,
+      toolchain: { ffmpeg: { available: true }, ffprobe: { available: true } },
+    })
+
+    render(<VideoStudio />)
+    fireEvent.click(await screen.findByRole('button', { name: '撤销到父版本' }))
+
+    await waitFor(() => expect(mediaApiMock.selectVideoTimelineVersion).toHaveBeenCalledWith(
+      editable.id,
+      { revision: editable.revision, version_id: earlier.id },
+    ))
+    expect(await screen.findByText(/恢复只切换当前版本/)).toBeInTheDocument()
   })
 })

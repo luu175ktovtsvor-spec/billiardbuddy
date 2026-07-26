@@ -388,6 +388,58 @@ test('media API starts an owner-scoped video preview without exposing private ta
   expect(body.task).not.toHaveProperty('attempt')
 })
 
+test('media API restores a selected video timeline version through the project boundary', async () => {
+  const calls: unknown[] = []
+  const now = '2026-07-26T00:00:00.000Z'
+  const version = {
+    id: 'timeline_earlier1',
+    project_revision: 2,
+    evidence_revision: `sha256:${'a'.repeat(64)}`,
+    scenes: [],
+    created_at: now,
+  }
+  const handler = createMediaApiHandler({
+    async assertProjectOwner(projectId: string) {
+      expect(projectId).toBe('vid_restore01')
+      return {} as never
+    },
+    async selectVideoTimelineVersion(projectId: string, input: unknown) {
+      calls.push({ projectId, input })
+      return {
+        schema_version: 1,
+        id: projectId,
+        kind: 'video',
+        title: '可恢复视频',
+        revision: 4,
+        created_at: now,
+        updated_at: now,
+        state: 'draft',
+        sources: [],
+        timeline: [],
+        output: { width: 1080, height: 1920, fps: 30 },
+        evidence: [],
+        timeline_versions: [version],
+        current_timeline_version_id: version.id,
+        alternatives: [],
+      }
+    },
+  } as unknown as MediaProjectService)
+
+  const response = await route(handler, '/api/media/videos/projects/vid_restore01/timeline/versions/timeline_earlier1/select', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ revision: 3 }),
+  })
+  const body = await response.json() as { project: { current_timeline_version_id: string } }
+
+  expect(response.status).toBe(200)
+  expect(calls).toEqual([{
+    projectId: 'vid_restore01',
+    input: { revision: 3, version_id: 'timeline_earlier1' },
+  }])
+  expect(body.project.current_timeline_version_id).toBe('timeline_earlier1')
+})
+
 test('remote media actions, local source import, and final export require the Electron-owned UI capability', async () => {
   const capability = 'c'.repeat(43)
   const sidecarEnv = { BB_MEDIA_UI_CAPABILITY: capability }
