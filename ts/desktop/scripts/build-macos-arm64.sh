@@ -116,9 +116,9 @@ BUILDER_ARGS=(node "${ELECTRON_BUILDER_CLI}" --mac "${MAC_TARGET_ARRAY[@]}" --ar
 if [[ "${SIGN_BUILD:-0}" != "1" ]]; then
   export CSC_IDENTITY_AUTO_DISCOVERY=false
   # package.json sets mac.notarize=true for the signed CI release path. A local
-  # unsigned build has no Developer ID credentials, so explicitly disable
-  # notarization here to keep `electron:package` working without an Apple account.
-  BUILDER_ARGS+=(-c.mac.notarize=false)
+  # build has no Developer ID credentials, so sign the complete app ad-hoc and
+  # disable notarization while retaining strict bundle-integrity verification.
+  BUILDER_ARGS+=(-c.mac.identity=- -c.mac.notarize=false)
 fi
 if [[ "$#" -gt 0 ]]; then
   BUILDER_ARGS+=("$@")
