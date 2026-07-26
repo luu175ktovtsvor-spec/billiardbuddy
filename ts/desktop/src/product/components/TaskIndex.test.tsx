@@ -576,7 +576,7 @@ describe('TaskIndex', () => {
     expect(screen.queryByText('projectSettings')).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: '开始任务' }))
 
-    await waitFor(() => expect(onSubmit).toHaveBeenCalledWith({ text: '/agent venue-analyst', attachment_ids: [], permission_mode: 'ask_for_approval' }))
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledWith({ text: '/agent:venue-analyst', attachment_ids: [], permission_mode: 'ask_for_approval' }))
   })
 
   it('keeps Agent discovery usable when Skill command discovery is unavailable', async () => {

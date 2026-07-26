@@ -18,13 +18,13 @@ describe('taskComposerCommands', () => {
     expect(commands).toEqual([
       {
         name: 'agent assistant-1',
-        runtimeName: 'agent venue-analyst',
+        runtimeName: 'agent:venue-analyst',
         description: '',
         argumentHint: '<prompt>',
       },
     ])
     expect(resolveTaskComposerRuntimeCommand('/agent assistant-1 inspect tables', commands)).toBe(
-      '/agent venue-analyst inspect tables',
+      '/agent:venue-analyst inspect tables',
     )
   })
 
@@ -47,15 +47,15 @@ describe('taskComposerCommands', () => {
     expect(commands).toEqual([
       expect.objectContaining({
         name: 'agent assistant-1',
-        runtimeName: 'agent venue-analyst',
+        runtimeName: 'agent:venue-analyst',
       }),
       expect.objectContaining({
         name: 'agent assistant-1-assistant',
-        runtimeName: 'agent venue-operator',
+        runtimeName: 'agent:venue-operator',
       }),
     ])
     expect(resolveTaskComposerRuntimeCommand('/agent assistant-1-assistant continue', commands)).toBe(
-      '/agent venue-operator continue',
+      '/agent:venue-operator continue',
     )
   })
 
@@ -111,7 +111,7 @@ describe('taskComposerCommands', () => {
       'agent assistant-1-2',
     ])
     expect(resolveTaskComposerRuntimeCommand('/agent assistant-1-2 处理数据', commands)).toBe(
-      '/agent venue-analyst 处理数据',
+      '/agent:venue-analyst 处理数据',
     )
   })
 

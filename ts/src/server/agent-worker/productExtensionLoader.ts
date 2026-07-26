@@ -17,7 +17,7 @@ function isWithinRoot(root: string, candidate: string): boolean {
   return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative))
 }
 
-function productSkillDirectories(cwd: string): { root: string; directories: string[] } | null {
+function productExtensionDirectories(cwd: string, kind: 'skills' | 'agents'): { root: string; directories: string[] } | null {
   const discoveredRoot = findProductGitRoot(cwd) ?? cwd
   let root: string
   let active: string
@@ -38,7 +38,7 @@ function productSkillDirectories(cwd: string): { root: string; directories: stri
   const seen = new Set<string>()
   const result: string[] = []
   for (const directory of directories.reverse()) {
-    const candidate = path.join(directory, '.BilliardBuddy', 'skills')
+    const candidate = path.join(directory, '.BilliardBuddy', kind)
     let canonical: string
     try {
       if (!fs.statSync(candidate).isDirectory()) continue
@@ -54,7 +54,7 @@ function productSkillDirectories(cwd: string): { root: string; directories: stri
 }
 
 async function loadProductSkillCommands(cwd: string): Promise<ProductCommand[]> {
-  const discovered = productSkillDirectories(cwd)
+  const discovered = productExtensionDirectories(cwd, 'skills')
   if (!discovered) return []
   const loaded = await Promise.all(discovered.directories.map(directory => (
     loadProductSkillCommandsFromDirectory(directory, discovered.root)
@@ -94,11 +94,23 @@ export async function loadProductAgentCommands(cwd: string): Promise<ProductComm
   ].filter(command => (command.isEnabled?.() ?? true)), 'name')
 }
 
-export async function loadProductAgentPluginTools(cwd: string): Promise<ProductTool[]> {
+async function loadProjectAgentTools(cwd: string): Promise<ProductTool[]> {
+  const discovered = productExtensionDirectories(cwd, 'agents')
+  if (!discovered) return []
+  const loaded = await Promise.all(discovered.directories.map(directory => (
+    loadProductPluginAgentTools(directory, discovered.root, 'project')
+  )))
+  return loaded.flat()
+}
+
+export async function loadProductAgentExtensionTools(cwd: string): Promise<ProductTool[]> {
   const plugins = (await listProductPlugins(cwd)).filter(plugin => plugin.enabled)
-  const agents = await Promise.all(plugins.flatMap(plugin => productPluginAgentRoots(plugin).map(directory => (
-    loadProductPluginAgentTools(directory, plugin.root, plugin.name)
-  ))))
+  const [projectAgents, pluginAgents] = await Promise.all([
+    loadProjectAgentTools(cwd),
+    Promise.all(plugins.flatMap(plugin => productPluginAgentRoots(plugin).map(directory => (
+      loadProductPluginAgentTools(directory, plugin.root, plugin.name)
+    )))),
+  ])
   const lsp = plugins.flatMap(plugin => productPluginLspServers(plugin).map(server => createProductPluginLspTool(server)))
-  return uniqBy([...agents.flat(), ...lsp], 'name')
+  return uniqBy([...projectAgents, ...pluginAgents.flat(), ...lsp], 'name')
 }

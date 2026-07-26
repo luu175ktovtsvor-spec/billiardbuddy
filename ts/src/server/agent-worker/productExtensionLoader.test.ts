@@ -2,7 +2,9 @@ import { afterEach, expect, test } from 'bun:test'
 import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { loadProductAgentCommands, loadProductAgentPluginTools } from './productExtensionLoader.js'
+import { loadProductAgentCommands, loadProductAgentExtensionTools } from './productExtensionLoader.js'
+import { productAgentCommands } from './productPluginAgentLoader.js'
+import { listProductTaskAgentCommands } from '../product/taskCommandDiscovery.js'
 import { createProductHookSnapshot } from './productHookSnapshot.js'
 import { runWithProductPermissionEnvelope } from '../../utils/permissions/productPermissionRuntime.js'
 
@@ -39,6 +41,42 @@ test('Product Harness rejects a Skill symlink that escapes the checkout', async 
   expect((await loadProductAgentCommands(root)).some(command => command.name === 'escaped-skill')).toBeFalse()
 })
 
+test('Product Harness discovers project named Agents only from .BilliardBuddy', async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'bb-product-agents-')); roots.push(root)
+  const projectAgents = path.join(root, '.BilliardBuddy', 'agents')
+  const legacyAgents = path.join(root, '.claude', 'agents')
+  mkdirSync(projectAgents, { recursive: true })
+  mkdirSync(legacyAgents, { recursive: true })
+  writeFileSync(path.join(projectAgents, 'reviewer.md'), '---\ndescription: Review the current change\ntools: Read, Grep\n---\nInspect the requested change and report concrete evidence.')
+  writeFileSync(path.join(legacyAgents, 'legacy.md'), '---\ndescription: Legacy agent\n---\nDo not load this file.')
+
+  const tools = await loadProductAgentExtensionTools(root)
+  const commands = productAgentCommands(tools)
+
+  expect(tools.map(tool => tool.name)).toContain('agent__project__reviewer')
+  expect(tools.map(tool => tool.name)).not.toContain('agent__project__legacy')
+  expect(commands).toContainEqual(expect.objectContaining({
+    name: 'agent:agent__project__reviewer',
+    directTool: { name: 'agent__project__reviewer', argument: 'prompt' },
+  }))
+  expect(await listProductTaskAgentCommands(root)).toEqual([{
+    displayName: 'project:reviewer',
+    runtimeName: 'agent__project__reviewer',
+  }])
+})
+
+test('Product Harness rejects an Agent directory symlink that escapes the checkout', async () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'bb-product-agents-')); roots.push(root)
+  const outside = mkdtempSync(path.join(os.tmpdir(), 'bb-product-agents-outside-')); roots.push(outside)
+  const outsideAgents = path.join(outside, 'agents')
+  mkdirSync(outsideAgents, { recursive: true })
+  writeFileSync(path.join(outsideAgents, 'escaped.md'), '---\ndescription: Escaped agent\n---\nOutside the checkout.')
+  mkdirSync(path.join(root, '.BilliardBuddy'), { recursive: true })
+  symlinkSync(outsideAgents, path.join(root, '.BilliardBuddy', 'agents'))
+
+  expect(await loadProductAgentExtensionTools(root)).toEqual([])
+})
+
 test('Product plugin commands, named agents, and Hooks enter the same frozen extension surface', async () => {
   const root = mkdtempSync(path.join(os.tmpdir(), 'bb-product-plugin-')); roots.push(root)
   const plugin = path.join(root, '.BilliardBuddy', 'plugins', 'review-kit')
@@ -54,7 +92,7 @@ test('Product plugin commands, named agents, and Hooks enter the same frozen ext
 
   const [commands, tools, hooks] = await Promise.all([
     loadProductAgentCommands(root),
-    loadProductAgentPluginTools(root),
+    loadProductAgentExtensionTools(root),
     createProductHookSnapshot(root),
   ])
 
@@ -90,7 +128,7 @@ test('Product plugin discovery ignores a legacy plugin manifest', async () => {
   writeFileSync(path.join(plugin, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'legacy', version: '1.0.0', commands: 'commands' }))
 
   expect((await loadProductAgentCommands(root)).some(command => command.name.startsWith('legacy:'))).toBeFalse()
-  expect(await loadProductAgentPluginTools(root)).toEqual([])
+  expect(await loadProductAgentExtensionTools(root)).toEqual([])
 })
 
 test('Product plugin LSP capability executes a real JSON-RPC request inside the frozen workspace', async () => {
@@ -115,7 +153,7 @@ send({ jsonrpc: '2.0', id: 3, result: null })
   }))
   writeFileSync(path.join(root, 'sample.ts'), 'const answer = 42\n')
 
-  const tools = await loadProductAgentPluginTools(root)
+  const tools = await loadProductAgentExtensionTools(root)
   const lsp = tools.find(tool => tool.name === 'lsp__language-kit__typescript')
   expect(lsp).toBeDefined()
   const controller = new AbortController()

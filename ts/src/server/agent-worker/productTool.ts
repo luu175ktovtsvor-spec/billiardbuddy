@@ -22,6 +22,8 @@ export type ProductCommand = {
   contentLength: number
   progressMessage: string
   userFacingName?: () => string
+  /** Declarative tool routing for an explicit command, preserved across the private Worker boundary. */
+  directTool?: { name: string; argument: string }
   getPromptForCommand(args: string, context: ProductToolContext): Promise<ProductContentBlock[]>
 }
 

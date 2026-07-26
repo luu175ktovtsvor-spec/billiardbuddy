@@ -218,6 +218,73 @@ test('product Harness feeds a real tool result into the next model sample', asyn
   expect(events.at(-1)).toEqual({ type: 'result', subtype: 'success', is_error: false, result: '证据已验证。' })
 })
 
+test('an explicit named Agent command executes its exact tool before model synthesis', async () => {
+  const messages: any[] = []
+  const toolCalls: string[] = []
+  const samples: any[][] = []
+  const tool = {
+    name: 'agent__project__reviewer',
+    inputSchema: z.object({ prompt: z.string().min(1) }),
+    isConcurrencySafe: () => false,
+    isEnabled: () => true,
+    isReadOnly: () => false,
+    checkPermissions: async (input: { prompt: string }) => ({ behavior: 'allow', updatedInput: input, reason: 'test' }),
+    call: async (input: { prompt: string }) => { toolCalls.push(input.prompt); return { data: '子 Agent 已检查代码。' } },
+    mapToolResultToToolResultBlockParam: (data: string, toolUseId: string) => ({ type: 'tool_result', tool_use_id: toolUseId, content: data }),
+    toAutoClassifierInput: () => '',
+  } as any
+  const command = {
+    type: 'prompt' as const,
+    name: 'agent:agent__project__reviewer',
+    description: 'Run reviewer',
+    userInvocable: true,
+    source: 'project' as const,
+    contentLength: 0,
+    progressMessage: 'Starting reviewer',
+    directTool: { name: tool.name, argument: 'prompt' },
+    getPromptForCommand: async (args: string) => [{ type: 'text' as const, text: `Assigned to reviewer:\n${args}` }],
+  }
+  const runModel = ((input: { messages: any[] }) => (async function* () {
+    samples.push(input.messages)
+    yield {
+      type: 'assistant',
+      uuid: 'assistant-final',
+      timestamp: new Date(0).toISOString(),
+      message: {
+        id: 'response-final',
+        role: 'assistant',
+        content: [{ type: 'text', text: '审查结果已经汇总。' }],
+        model: 'deepseek-v4-flash',
+        stop_reason: 'end_turn',
+        usage: { input_tokens: 1, output_tokens: 1 },
+      },
+    }
+  })()) as any
+  const toolUseContext = productToolContext([tool], messages)
+  toolUseContext.options.commands = [command]
+  const events: any[] = []
+  for await (const event of runProductAgentLoop({
+    commands: [command],
+    prompt: '/agent:agent__project__reviewer inspect auth.ts',
+    tools: [tool],
+    toolUseContext,
+    canUseTool: async (_tool, toolInput) => ({ behavior: 'allow', updatedInput: toolInput, reason: 'test' }),
+    mutableMessages: messages,
+    promptContext: { workspace: '/workspace/example', date: '2026-07-27' },
+    runModel,
+  })) events.push(event)
+
+  expect(toolCalls).toEqual(['inspect auth.ts'])
+  expect(samples).toHaveLength(1)
+  expect(samples[0]).toContainEqual(expect.objectContaining({
+    type: 'user',
+    message: expect.objectContaining({
+      content: expect.arrayContaining([expect.objectContaining({ content: '子 Agent 已检查代码。' })]),
+    }),
+  }))
+  expect(events.at(-1)).toEqual({ type: 'result', subtype: 'success', is_error: false, result: '审查结果已经汇总。' })
+})
+
 test('product Harness never executes tool calls from a token-truncated model response', async () => {
   let toolCalls = 0
   const samples: any[][] = []

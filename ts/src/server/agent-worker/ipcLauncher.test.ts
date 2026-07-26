@@ -160,6 +160,72 @@ test('real worker owns the Harness loop while the Host samples models and execut
   })
 }, 10_000)
 
+test('an explicit named Agent command keeps its deterministic tool route across the private Worker boundary', async () => {
+  await withProviderRuntimeEnv({}, async () => {
+    const recorded: unknown[] = []
+    let commandExpansions = 0
+    let modelSamples = 0
+    let hostToolExecutions = 0
+    const runtime = {
+      prepare: async () => ({
+        commands: [{
+          name: 'agent:agent__project__reviewer',
+          description: 'Run the project reviewer',
+          userInvocable: true,
+          directTool: { name: 'agent__project__reviewer', argument: 'prompt' },
+        }],
+        tools: [{ name: 'agent__project__reviewer' }],
+        mcp_clients: [],
+      }),
+      commandPrompt: async (_name: string, args: string) => {
+        commandExpansions++
+        return [{ type: 'text', text: `Assigned to reviewer:\n${args}` }]
+      },
+      chatPrompt: async (text: string) => text,
+      async *model(request: { messages: unknown[] }) {
+        modelSamples++
+        expect(JSON.stringify(request.messages)).toContain('reviewer-evidence')
+        yield {
+          type: 'assistant', uuid: 'assistant-final', timestamp: new Date(0).toISOString(),
+          message: { id: 'response-final', role: 'assistant', content: [{ type: 'text', text: '指定 Agent 已完成。' }], model: 'deepseek-v4-flash', stop_reason: 'end_turn', usage: { input_tokens: 1, output_tokens: 1 } },
+        }
+      },
+      tools: async (request: { blocks: Array<{ id: string; name: string; arguments: Record<string, unknown> }> }) => {
+        hostToolExecutions++
+        expect(request.blocks).toEqual([expect.objectContaining({
+          name: 'agent__project__reviewer',
+          arguments: { prompt: 'inspect auth.ts' },
+        })])
+        return [{
+          type: 'user', uuid: 'tool-result', timestamp: new Date(0).toISOString(),
+          message: { role: 'user', content: [{ type: 'tool_result', tool_call_id: request.blocks[0]!.id, content: 'reviewer-evidence' }] },
+        }]
+      },
+      approve: async () => {}, answer: async () => {}, stop: async () => {}, shutdown: async () => {}, subscribe: () => () => {},
+    }
+    const runs = {
+      readTaskRunDispatchIdentity: async () => ({ task_id: 'task', lineage_id: 'lineage', resume_binding_id: 'private', initial_input: '/agent:agent__project__reviewer inspect auth.ts' }),
+      claimTaskRunDispatch: async () => ({ outcome: 'claimed' as const, task_id: 'task' }),
+      settleTaskRunDispatch: async () => {},
+    }
+    const scheduler = { profileRevision: () => 'p', submit: async () => receipt, complete: async () => receipt } as any
+    const launcher = new IpcAgentWorkerLauncher(
+      { resolveTaskRunCoreBinding: async () => ({ session_id: 'session', work_dir: process.cwd() }) },
+      { start: async () => runtime },
+    )
+    const supervisor = new AgentWorkerSupervisor(runs, scheduler, launcher, 5_000, { record: async (_run, _generation, message) => { recorded.push(message) } })
+    expect(await supervisor.dispatch('run', 1)).toBe('started')
+    await waitFor(() => recorded.some(message => message && typeof message === 'object' && (message as { type?: unknown }).type === 'terminal'), 5_000)
+
+    expect(commandExpansions).toBe(1)
+    expect(hostToolExecutions).toBe(1)
+    expect(modelSamples).toBe(1)
+    expect(recorded).toContainEqual({ type: 'event', event: 'delta', data: '指定 Agent 已完成。' })
+    expect(recorded).toContainEqual({ type: 'terminal', state: 'completed', run_id: 'run' })
+    await supervisor.shutdown()
+  })
+}, 10_000)
+
 test('actual agent-worker child receives no host gateway credentials while retaining IPC-safe environment', async () => {
   await withProviderRuntimeEnv({}, async () => {
     const directory = mkdtempSync(join(tmpdir(), 'bb-agent-worker-env-'))

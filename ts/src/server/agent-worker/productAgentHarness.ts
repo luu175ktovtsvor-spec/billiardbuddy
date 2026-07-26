@@ -18,7 +18,8 @@ import { runProductAgentLoop } from './productAgentLoop.js'
 import type { ProductAgentLoopInput } from './productAgentLoop.js'
 import { runProductModel } from './productModelRuntime.js'
 import { createProductUserMessage } from './productMessages.js'
-import { loadProductAgentCommands, loadProductAgentPluginTools } from './productExtensionLoader.js'
+import { loadProductAgentCommands, loadProductAgentExtensionTools } from './productExtensionLoader.js'
+import { productAgentCommands } from './productPluginAgentLoader.js'
 import { loadProductAgentTools } from './productToolLoader.js'
 import { buildProductChatPrompt } from './productChatAttachments.js'
 import {
@@ -440,9 +441,11 @@ export async function createProductAgentHarness(input: {
             throw error
           }
         }
-        const commands = uniqBy([...await (input.load_commands ?? loadProductAgentCommands)(input.work_dir), ...mcpRuntime.commands], 'name')
-        const baseTools = input.load_tools ? input.load_tools(toolPermissionContext) : loadProductAgentTools(toolPermissionContext, commands)
-        const tools = uniqBy([...baseTools, ...await loadProductAgentPluginTools(input.work_dir), ...mcpRuntime.tools], 'name')
+        const baseCommands = uniqBy([...await (input.load_commands ?? loadProductAgentCommands)(input.work_dir), ...mcpRuntime.commands], 'name')
+        const baseTools = input.load_tools ? input.load_tools(toolPermissionContext) : loadProductAgentTools(toolPermissionContext, baseCommands)
+        const extensionTools = await loadProductAgentExtensionTools(input.work_dir)
+        const tools = uniqBy([...baseTools, ...extensionTools, ...mcpRuntime.tools], 'name')
+        const commands = uniqBy([...baseCommands, ...productAgentCommands(extensionTools)], 'name')
         const extensionSnapshot = JSON.stringify({
           commands: commands.map(command => command.name).sort(),
           tools: tools.map(tool => tool.name).sort(),

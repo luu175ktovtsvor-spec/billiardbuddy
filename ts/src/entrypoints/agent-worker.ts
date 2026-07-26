@@ -71,6 +71,7 @@ function remoteCommands(snapshot: ProductHostRuntimeSnapshot): ProductCommand[] 
     source: 'mcp' as const,
     progressMessage: '正在加载扩展',
     contentLength: 0,
+    directTool: descriptor.directTool,
     getPromptForCommand: async (args: string) => await request('command_prompt', { name: descriptor.name, args }) as never,
   }))
 }
