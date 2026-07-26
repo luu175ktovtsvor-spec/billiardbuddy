@@ -207,7 +207,6 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           & ts/desktop/scripts/prepare-published-windows-upgrade-baseline.ps1
-          if ($LASTEXITCODE -ne 0) { throw 'Windows 已发布升级基线准备失败' }
 
       - name: 从最老支持版本升级并回退 Windows 成品
         shell: pwsh
