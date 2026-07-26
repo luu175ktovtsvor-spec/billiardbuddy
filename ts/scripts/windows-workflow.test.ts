@@ -106,6 +106,7 @@ describe('Desktop release workflow contract', () => {
     expect(runner).toContain("SetEnvironmentVariable('TMP', $nsisTemp, 'Process')")
     expect(runner).toContain("ProviderName -in @('Application Error', 'Windows Error Reporting')")
     expect(runner).toContain("LogName = 'Microsoft-Windows-Windows Defender/Operational'")
+    expect(runner).toContain("$arguments = @('/S') + $AdditionalArguments + @(\"/D=$InstallDir\")")
 
     for (const scriptName of [
       'accept-windows-package.ps1',
@@ -159,6 +160,7 @@ describe('Desktop release workflow contract', () => {
     const probeIndex = acceptance.indexOf('$output = @(& bun @arguments)')
     expect(readyIndex).toBeGreaterThanOrEqual(0)
     expect(probeIndex).toBeGreaterThan(readyIndex)
+    expect(acceptance.match(/Install-Package .* -AllUsers/g)).toHaveLength(3)
   })
 
   test('proves Windows update download recovery after upgrade acceptance', () => {
