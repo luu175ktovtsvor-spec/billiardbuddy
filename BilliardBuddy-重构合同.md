@@ -4,7 +4,7 @@
 
 ## 文档职责
 
-- BilliardBuddy 打开**用户项目**时，`AGENTS.md` 与 `BilliardBuddy.md` 是同一层项目指令入口；它们的产品语义等同于 Claude 的 `CLAUDE.md` 与 Codex 的 `AGENTS.md`。`.BilliardBuddy/BilliardBuddy.md`、`.BilliardBuddy/rules/*.md` 和 `.BilliardBuddy/BilliardBuddy.local.md` 是 BilliardBuddy 的目录化入口。Harness 将它们从根目录到当前目录合并为一次任务快照，再交给 DeepSeek；模型不直接读取本机磁盘。
+- 重构完成后，BilliardBuddy 打开**用户项目**时，`AGENTS.md` 与 `BilliardBuddy.md` 是同一层项目指令入口；它们的产品语义等同于 Claude 的 `CLAUDE.md` 与 Codex 的 `AGENTS.md`。`.BilliardBuddy/BilliardBuddy.md`、`.BilliardBuddy/rules/*.md` 和 `.BilliardBuddy/BilliardBuddy.local.md` 是 BilliardBuddy 的目录化入口。Harness 将它们从根目录到当前目录合并为一次任务快照，再交给 DeepSeek；模型不直接读取本机磁盘。
 - 本仓库根目录的 `AGENTS.md` 仅约束本仓库的开发智能体；它和用户项目中同名的 `AGENTS.md` 处于不同作用域，不能据此改变 BilliardBuddy 的产品语义。
 - 本文：BilliardBuddy 产品本身的重构合同，定义产品定位、架构边界、研究方法、实施顺序和完成标准；它不是要注入每个用户项目的 Agent 提示词。
 - `README.md`：项目介绍、运行入口和用户如何配置项目指令。
