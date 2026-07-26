@@ -404,6 +404,61 @@ describe('ImageWorkbench unknown paid result', () => {
     })
   })
 
+  it('restores a persisted text layout from its parent instead of applying default positions again', async () => {
+    const baseVersion = {
+      id: 'ver_textbase01',
+      kind: 'generated' as const,
+      asset_id: 'out_textbase01',
+      image_path: `/api/media/assets/${project.id}/out_textbase01.png`,
+      mime_type: 'image/png' as const,
+      width: 1024,
+      height: 1024,
+      text_layers: [],
+      image_layers: [],
+      created_at: '2026-07-18T00:02:00.000Z',
+    }
+    const textVersion = {
+      ...baseVersion,
+      id: 'ver_textlayout01',
+      kind: 'text_layout' as const,
+      parent_version_id: baseVersion.id,
+      asset_id: 'out_textlayout01',
+      image_path: `/api/media/assets/${project.id}/out_textlayout01.png`,
+      text_layers: [{
+        id: 'text_saved001',
+        text: '会员日',
+        x: 256,
+        y: 320,
+        max_width: 860,
+        fill: '#ffcc00',
+        font_family: 'PingFang SC',
+        font_size: 72,
+        font_weight: 'bold' as const,
+        text_align: 'center' as const,
+      }],
+    }
+    const ready: ImageWorkbenchProject = {
+      ...project,
+      state: 'ready',
+      task_id: undefined,
+      current_version_id: textVersion.id,
+      version_history: [baseVersion, textVersion],
+      error: undefined,
+    }
+    mediaApiMock.listProjects.mockResolvedValue({ projects: [ready] })
+    render(<ImageWorkbench />)
+
+    expect(await screen.findByLabelText('精确文字图层')).toHaveValue('会员日')
+    expect(screen.getByLabelText('会员日 横向位置')).toHaveValue(25)
+    expect(screen.getByLabelText('会员日 纵向位置')).toHaveValue(31.25)
+    expect(screen.getByLabelText('会员日 字号')).toHaveValue(72)
+    expect(screen.getByLabelText('会员日 颜色')).toHaveValue('#ffcc00')
+    const save = screen.getByRole('button', { name: '保存文字排版版本' })
+    expect(save).toBeDisabled()
+    fireEvent.change(screen.getByLabelText('会员日 横向位置'), { target: { value: '30' } })
+    expect(save).toBeEnabled()
+  })
+
   it('renders a stable product error instead of a persisted upstream detail', async () => {
     const rawDetail = 'gateway provider rejected token=private-token for /private/source.png'
     mediaApiMock.listProjects.mockResolvedValue({

@@ -505,9 +505,25 @@ describe('MediaProjectService image projects', () => {
       text_layers: [{ id: 'text_member01', text: '会员日', x: 0, y: 0 }],
     })
     const textVersionId = textVersionProject.current_version_id!
-    const upscaled = await service.commitImageVersion(textVersionProject.id, {
+    const revisedTextProject = await service.commitImageVersion(textVersionProject.id, {
       revision: textVersionProject.revision,
-      base_version_id: textVersionId,
+      base_version_id: editedVersion.id,
+      kind: 'text_layout',
+      rendered_image: pngDataUrl(1, 1),
+      width: 1,
+      height: 1,
+      text_layers: [{ id: 'text_member02', text: '会员日', x: 0, y: 0, fill: '#ffcc00' }],
+    })
+    const revisedTextVersionId = revisedTextProject.current_version_id!
+    expect(revisedTextProject.versions.find(version => version.id === revisedTextVersionId)).toMatchObject({
+      kind: 'text_layout',
+      parent_version_id: editedVersion.id,
+      text_layers: [{ text: '会员日', fill: '#ffcc00' }],
+    })
+    expect(revisedTextProject.versions.some(version => version.id === textVersionId)).toBe(true)
+    const upscaled = await service.commitImageVersion(revisedTextProject.id, {
+      revision: revisedTextProject.revision,
+      base_version_id: revisedTextVersionId,
       kind: 'upscale',
       rendered_image: pngDataUrl(2, 2),
       width: 2,
@@ -517,7 +533,7 @@ describe('MediaProjectService image projects', () => {
     })
     expect(upscaled.versions.find(version => version.id === upscaled.current_version_id)).toMatchObject({
       kind: 'upscale',
-      parent_version_id: textVersionId,
+      parent_version_id: revisedTextVersionId,
       width: 2,
       height: 2,
     })
