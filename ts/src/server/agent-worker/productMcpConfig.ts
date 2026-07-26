@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
-import { constants as fsConstants } from 'node:fs'
 import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
+import { syncParentDirectory } from '../../utils/durableFile.js'
 import { lock } from '../../utils/lockfile.js'
 import { getProductConfigDir } from '../product/productPaths.js'
 
@@ -168,8 +168,7 @@ async function writeJson(filePath: string, value: Record<string, unknown>, allow
   try {
     await fs.rename(temporary, filePath)
     await fs.chmod(filePath, existing?.mode ?? 0o600)
-    const directory = await fs.open(path.dirname(filePath), fsConstants.O_RDONLY)
-    try { await directory.sync() } finally { await directory.close() }
+    await syncParentDirectory(filePath)
   } finally { await fs.rm(temporary, { force: true }).catch(() => undefined) }
 }
 

@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
-import { constants as fsConstants } from 'node:fs'
 import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
+import { syncParentDirectory } from '../../utils/durableFile.js'
 import { lock } from '../../utils/lockfile.js'
 import { getProductConfigDir } from './productPaths.js'
 
@@ -37,8 +37,7 @@ async function atomicWrite(file: string, value: Record<string, unknown>): Promis
   }
   try {
     await fs.rename(temporary, file)
-    const directory = await fs.open(path.dirname(file), fsConstants.O_RDONLY)
-    try { await directory.sync() } finally { await directory.close() }
+    await syncParentDirectory(file)
   } finally {
     await fs.rm(temporary, { force: true }).catch(() => undefined)
   }

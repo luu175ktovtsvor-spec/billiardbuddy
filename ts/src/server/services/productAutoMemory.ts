@@ -1,8 +1,8 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { constants as fsConstants } from 'node:fs'
 import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
 import { lock } from '../../utils/lockfile.js'
+import { syncParentDirectory } from '../../utils/durableFile.js'
 import { findProductGitRoot } from '../product/productGit.js'
 import { createProductInstructionSnapshot } from './productInstructions.js'
 
@@ -131,8 +131,7 @@ export class ProductAutoMemoryRepository {
     } finally {
       await handle?.close()
     }
-    const directory = await fs.open(root, fsConstants.O_RDONLY)
-    try { await directory.sync() } finally { await directory.close() }
+    await syncParentDirectory(file)
     return true
   }
 
@@ -164,8 +163,7 @@ export class ProductAutoMemoryRepository {
     const handle = await fs.open(temporary, 'wx', 0o600)
     try { await handle.writeFile(`${JSON.stringify(record)}\n`, 'utf8'); await handle.sync() } finally { await handle.close() }
     await fs.rename(temporary, file)
-    const directory = await fs.open(path.dirname(file), fsConstants.O_RDONLY)
-    try { await directory.sync() } finally { await directory.close() }
+    await syncParentDirectory(file)
   }
 
   private async withLock<T>(storageDir: string, operation: () => Promise<T>): Promise<T> {
