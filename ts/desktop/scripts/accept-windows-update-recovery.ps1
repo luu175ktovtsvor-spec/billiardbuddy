@@ -29,6 +29,7 @@ $environmentNames = @(
   'BILLIARDBUDDY_CONFIG_DIR',
   'BB_ELECTRON_DISABLE_SINGLE_INSTANCE_LOCK',
   'BB_ELECTRON_WINDOW_SMOKE_LOG',
+  'BB_ELECTRON_WINDOW_SMOKE_INCLUDE_ERROR_DETAILS',
   'BB_GATEWAY_URL',
   'BB_GATEWAY_BOOTSTRAP_CREDENTIAL',
   'BB_LICENSE_KEY',
@@ -85,8 +86,10 @@ function Assert-ReadyProductWindow {
   )
   if (-not (Test-Path -LiteralPath $SmokeLog -PathType Leaf)) { throw '更新恢复验收没有窗口/后端启动证据' }
   $snapshots = @(Get-Content -LiteralPath $SmokeLog | Where-Object { $_ } | ForEach-Object { $_ | ConvertFrom-Json })
-  if ($snapshots | Where-Object { $_.reason -in @('backend-failed', 'backend-initialization-failed') }) {
-    throw '更新恢复验收的 Product Server 启动失败'
+  $failure = @($snapshots | Where-Object { $_.reason -in @('backend-failed', 'backend-initialization-failed') } | Select-Object -Last 1)
+  if ($failure.Count -eq 1) {
+    $failureEvidence = $failure[0] | ConvertTo-Json -Compress -Depth 5
+    throw "更新恢复验收的 Product Server 启动失败: $failureEvidence"
   }
   if (-not ($snapshots | Where-Object { $_.reason -eq 'backend-ready' })) {
     throw '更新恢复验收没有进入 backend-ready'
@@ -112,6 +115,7 @@ function Invoke-UpdateAttempt {
     BILLIARDBUDDY_CONFIG_DIR = $configDir
     BB_ELECTRON_DISABLE_SINGLE_INSTANCE_LOCK = '1'
     BB_ELECTRON_WINDOW_SMOKE_LOG = $smokeLog
+    BB_ELECTRON_WINDOW_SMOKE_INCLUDE_ERROR_DETAILS = '1'
     BB_GATEWAY_URL = $AuthGateway.url
     BB_GATEWAY_BOOTSTRAP_CREDENTIAL = $AuthGateway.bootstrapCredential
     BB_LICENSE_KEY = $AuthGateway.licenseKey
