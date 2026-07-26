@@ -8,7 +8,8 @@ import {
 } from './check-release-tracked-files'
 
 describe('release source tracking audit', () => {
-  test('covers the Windows workflow and complete desktop release tree', () => {
+  test('covers both release workflows and the complete desktop release tree', () => {
+    expect(RELEASE_SOURCE_PATHS).toContain('.github/workflows/desktop-build-mac.yml')
     expect(RELEASE_SOURCE_PATHS).toContain('.github/workflows/desktop-build-win.yml')
     expect(RELEASE_SOURCE_PATHS).toContain('ts/desktop')
     expect(RELEASE_SOURCE_PATHS).toContain('ts/src')

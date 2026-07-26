@@ -172,6 +172,18 @@ export class InstallationSessionManager {
 function parseSession(encoded: string): InstallationSession {
   let value: unknown
   try { value = JSON.parse(encoded) } catch { throw new Error('Installation session is corrupt') }
+  if (value && typeof value === 'object') {
+    const stored = value as Partial<InstallationSession>
+    if (typeof stored.accessToken === 'string' && stored.accessToken.trim()
+      && typeof stored.refreshToken === 'string' && stored.refreshToken.trim()
+      && typeof stored.expiresAt === 'number' && Number.isSafeInteger(stored.expiresAt) && stored.expiresAt > 0) {
+      return {
+        accessToken: stored.accessToken,
+        refreshToken: stored.refreshToken,
+        expiresAt: stored.expiresAt,
+      }
+    }
+  }
   return parseAuthResponse(value)
 }
 

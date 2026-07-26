@@ -29,6 +29,26 @@ function manager(store: InstallationSessionStore, fetchFn: typeof fetch, extra: 
 }
 
 describe('InstallationSessionManager', () => {
+  it('loads the exact encrypted session shape it persisted after an application restart', async () => {
+    const store = stored(null)
+    const activate = vi.fn(async () => Response.json(tokens('persisted-access', 'persisted-refresh'))) as unknown as typeof fetch
+    const firstProcess = manager(store, activate)
+
+    await expect(firstProcess.accessToken()).resolves.toBe('persisted-access')
+    firstProcess.dispose()
+    expect(JSON.parse(store.value!)).toEqual({
+      accessToken: 'persisted-access',
+      refreshToken: 'persisted-refresh',
+      expiresAt: now + 15 * 60_000,
+    })
+
+    const restartFetch = vi.fn(async () => { throw new Error('restart must not reactivate') }) as unknown as typeof fetch
+    const restartedProcess = manager(store, restartFetch)
+    await expect(restartedProcess.accessToken()).resolves.toBe('persisted-access')
+    restartedProcess.dispose()
+    expect(restartFetch).not.toHaveBeenCalled()
+  })
+
   it('serializes near-expiry concurrent callers into one refresh and one rotated access token', async () => {
     const store = stored({ access_token: 'old-access', refresh_token: 'old-refresh', expires_at: now + 60_000 })
     let resolveFetch: ((value: Response) => void) | undefined
