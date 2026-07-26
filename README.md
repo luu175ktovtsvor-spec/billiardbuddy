@@ -10,9 +10,9 @@ BilliardBuddy 的 Agent Harness 会在启动任务时，把项目工作区中的
 
 | 文件 | 作用 | 兼容性 |
 |---|---|---|
-| `BilliardBuddy.md`、`.BilliardBuddy/BilliardBuddy.md`、`.BilliardBuddy/rules/*.md`、`.BilliardBuddy/BilliardBuddy.local.md` | BilliardBuddy 项目指令 | `.BilliardBuddy` 是本产品唯一的目录化配置入口 |
+| `AGENTS.md`、`BilliardBuddy.md`、`.BilliardBuddy/BilliardBuddy.md`、`.BilliardBuddy/rules/*.md`、`.BilliardBuddy/BilliardBuddy.local.md` | BilliardBuddy 项目指令 | `AGENTS.md` 与 `BilliardBuddy.md` 同层；`.BilliardBuddy` 是本产品唯一的目录化配置入口 |
 
-指令从仓库根目录向当前工作目录逐层收集；同一目录的优先顺序为 `BilliardBuddy.md`、`.BilliardBuddy/BilliardBuddy.md`、`.BilliardBuddy/rules/*.md`、`.BilliardBuddy/BilliardBuddy.local.md`，后加载的规则在冲突时优先。根目录的 `AGENTS.md` 仅用于本仓库开发，不属于 BilliardBuddy 产品功能，也不会成为用户项目指令。
+重构完成后，BilliardBuddy 在**用户项目**中从仓库根目录向当前工作目录逐层收集；同一目录的优先顺序为 `AGENTS.md`、`BilliardBuddy.md`、`.BilliardBuddy/BilliardBuddy.md`、`.BilliardBuddy/rules/*.md`、`.BilliardBuddy/BilliardBuddy.local.md`，后加载的规则在冲突时优先。这个项目指令层的作用等同于 Claude 的 `CLAUDE.md` 与 Codex 的 `AGENTS.md`：由 Harness 冻结后注入当前任务，而不是让模型自行读取磁盘。本仓库根目录的 `AGENTS.md` 则只约束本仓库开发，二者不能混淆。
 
 ## 代码结构
 
