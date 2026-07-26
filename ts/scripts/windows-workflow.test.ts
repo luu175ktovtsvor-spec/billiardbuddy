@@ -28,6 +28,10 @@ const baselineScriptPath = path.resolve(
   import.meta.dir,
   '../desktop/scripts/prepare-published-windows-upgrade-baseline.ps1',
 )
+const installerRunnerPath = path.resolve(
+  import.meta.dir,
+  '../desktop/scripts/windows-installer-runner.ps1',
+)
 
 function steps(): WorkflowStep[] {
   const workflow = parse(readFileSync(workflowPath, 'utf8')) as Workflow
@@ -81,6 +85,24 @@ describe('Desktop release workflow contract', () => {
     const unpack = workflowSteps.find(step => step.name === '解包并审计 Windows 成品')
     expect(unpack?.run).toContain('Remove-Item -LiteralPath $installerAuditDir, $appAuditDir')
     expect(unpack?.run).toContain('finally')
+  })
+
+  test('isolates NSIS temp files and reports Windows crash evidence', () => {
+    const runner = readFileSync(installerRunnerPath, 'utf8')
+    expect(runner).toContain("SetEnvironmentVariable('TEMP', $nsisTemp, 'Process')")
+    expect(runner).toContain("SetEnvironmentVariable('TMP', $nsisTemp, 'Process')")
+    expect(runner).toContain("ProviderName -in @('Application Error', 'Windows Error Reporting')")
+    expect(runner).toContain("LogName = 'Microsoft-Windows-Windows Defender/Operational'")
+
+    for (const scriptName of [
+      'accept-windows-package.ps1',
+      'accept-windows-upgrade.ps1',
+      'accept-windows-update-recovery.ps1',
+    ]) {
+      const script = readFileSync(path.resolve(import.meta.dir, '../desktop/scripts', scriptName), 'utf8')
+      expect(script).toContain(". (Join-Path $PSScriptRoot 'windows-installer-runner.ps1')")
+      expect(script).toContain('Invoke-BilliardBuddyWindowsInstaller')
+    }
   })
 
   test('proves the current installer before downloading the published upgrade baseline', () => {

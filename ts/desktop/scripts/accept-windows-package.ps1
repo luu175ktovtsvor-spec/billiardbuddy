@@ -4,6 +4,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'windows-installer-runner.ps1')
 $installerPath = (Resolve-Path -LiteralPath $Installer).Path
 $tempBase = if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { [IO.Path]::GetTempPath() }
 $tempRoot = Join-Path $tempBase "billiardbuddy-package-acceptance-$([Guid]::NewGuid().ToString('N'))"
@@ -72,8 +73,11 @@ try {
   $acceptanceEnv.BB_LICENSE_KEY = $gateway.licenseKey
   $acceptanceEnv.NODE_EXTRA_CA_CERTS = $gateway.caPath
 
-  $installerProcess = Start-Process -FilePath $installerPath -ArgumentList @('/S', "/D=$installDir") -PassThru -Wait
-  if ($installerProcess.ExitCode -ne 0) { throw "Windows 安装程序退出码为 $($installerProcess.ExitCode)" }
+  $installerProcess = Invoke-BilliardBuddyWindowsInstaller `
+    -InstallerPath $installerPath `
+    -InstallDir $installDir `
+    -TempRoot $tempRoot `
+    -FailureLabel 'Windows 安装程序'
   if (-not (Test-Path -LiteralPath $appPath -PathType Leaf)) { throw 'Windows 安装后缺少 BilliardBuddy.exe' }
   $installed = $true
 
