@@ -1170,7 +1170,7 @@ function AboutSettings() {
         </div>
       )}
 
-      {isDesktopRuntime() && (
+      {getDesktopHost().capabilities.updates && (
         <div className="mt-8 w-full rounded-xl border border-[var(--color-border)] bg-[var(--color-surface-container-low)] p-4">
           <div className="flex items-start justify-between gap-4">
             <div className="min-w-0">

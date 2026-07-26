@@ -73,6 +73,19 @@ describe('Electron updater service', () => {
     ])
   })
 
+  it('does not check, download, or install when updates are disabled for the platform', async () => {
+    const localUpdater = fakeUpdater()
+    const service = new ElectronUpdaterService(localUpdater, undefined, { enabled: false })
+
+    await expect(service.checkForUpdates()).resolves.toBeNull()
+    await expect(service.downloadUpdate(() => {})).rejects.toThrow('disabled on this platform')
+    expect(() => service.stageDownloadedUpdate()).toThrow('disabled on this platform')
+    expect(service.hasDownloadedUpdate()).toBe(false)
+    expect(localUpdater.checkForUpdates).not.toHaveBeenCalled()
+    expect(localUpdater.downloadUpdate).not.toHaveBeenCalled()
+    expect(localUpdater.quitAndInstall).not.toHaveBeenCalled()
+  })
+
   it('treats missing unpacked app update metadata as no update', async () => {
     const service = new ElectronUpdaterService(updater)
     updater.checkForUpdates.mockRejectedValueOnce(Object.assign(new Error("ENOENT: no such file or directory, open '/App/Contents/Resources/app-update.yml'"), {

@@ -36,7 +36,10 @@ function safeInvoke<T>(
   return bridge.invoke<T>(channel, payload)
 }
 
-export function createElectronHost(bridge: ElectronHostBridge): DesktopHost {
+export function createElectronHost(
+  bridge: ElectronHostBridge,
+  options: { updatesEnabled?: boolean } = {},
+): DesktopHost {
   const invoke = <T>(channel: ElectronIpcChannel, payload?: unknown) =>
     safeInvoke<T>(bridge, channel, payload)
   const subscribe = <T>(channel: ElectronEventChannel, handler: (payload: T) => void) =>
@@ -72,7 +75,7 @@ export function createElectronHost(bridge: ElectronHostBridge): DesktopHost {
       shell: true,
       terminal: true,
       taskWindows: true,
-      updates: true,
+      updates: options.updatesEnabled ?? true,
       windowControls: true,
       zoom: true,
     },

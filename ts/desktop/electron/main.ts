@@ -38,7 +38,7 @@ import {
   setAppMode,
   type PortableDetection,
 } from './services/appMode'
-import { SecureSessionStore } from './services/keychain'
+import { createCredentialStore } from './services/keychain'
 import { InstallationSessionManager } from './services/installationSession'
 import { applyWindowsAppUserModelId } from './services/appIdentity'
 import {
@@ -254,14 +254,14 @@ function getInstallationSessionManager() {
       installationId: ensureInstallationId(process.env.BILLIARDBUDDY_CONFIG_DIR || app.getPath('userData')),
       onTokenChanged: () => serverRuntime?.reconfigureServer(),
       onSessionFailure: () => serverRuntime?.stopServer(),
-    }, new SecureSessionStore(path.join(app.getPath('userData'), 'installation-session'), safeStorage))
+    }, createCredentialStore(process.platform, app.getPath('userData'), 'installation-session', safeStorage))
   })()
   return installationSessionManager
 }
 
 function getMcpOAuthCredentialKey(): string {
   if (mcpOAuthCredentialKey) return mcpOAuthCredentialKey
-  const store = new SecureSessionStore(path.join(app.getPath('userData'), 'mcp-oauth-master-key'), safeStorage)
+  const store = createCredentialStore(process.platform, app.getPath('userData'), 'mcp-oauth-master-key', safeStorage)
   const existing = store.load()
   if (existing) {
     let decoded: Buffer
@@ -335,6 +335,7 @@ function getUpdaterService() {
       await session.defaultSession.forceReloadProxyConfig()
     },
   }, {
+    enabled: process.platform !== 'darwin' || smokeUpdater !== null,
     updateConfigPath: !smokeUpdater && app.isPackaged ? path.join(process.resourcesPath, 'app-update.yml') : undefined,
   })
   return updaterService
