@@ -169,8 +169,8 @@ jobs:
           if ($installer.Count -ne 1) { throw '未生成唯一的 Windows 安装包' }
           $installDir = Join-Path $env:RUNNER_TEMP 'BilliardBuddy-installed-audit'
           if (Test-Path -LiteralPath $installDir) { throw 'Windows 审计安装目录已存在' }
-          & $installer[0].FullName /S "/D=$installDir"
-          if ($LASTEXITCODE -ne 0) { throw "Windows 静默安装失败: $LASTEXITCODE" }
+          $installProcess = Start-Process -FilePath $installer[0].FullName -ArgumentList @('/S', "/D=$installDir") -Wait -PassThru
+          if ($installProcess.ExitCode -ne 0) { throw "Windows 静默安装失败: $($installProcess.ExitCode)" }
           $resourcesDir = Join-Path $installDir 'resources'
           if (-not (Test-Path -LiteralPath (Join-Path $resourcesDir 'app.asar') -PathType Leaf)) {
             throw 'Windows 安装目录缺少 resources/app.asar'

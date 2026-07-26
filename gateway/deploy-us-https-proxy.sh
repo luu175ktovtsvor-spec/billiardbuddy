@@ -14,6 +14,7 @@ snippet_file="$snippet_dir/billiardbuddy-gateway-us-https-proxy.conf"
 main_config="${BB_US_NGINX_MAIN_CONFIG:-/etc/nginx/nginx.conf}"
 required_connections="${BB_US_NGINX_WORKER_CONNECTIONS:-8192}"
 include_line="    include $snippet_file;"
+legacy_include_line="    include /etc/nginx/snippets/qfgw-us-https-proxy.conf;"
 
 test -f "$site_file"
 test -f "$snippet_source"
@@ -68,24 +69,22 @@ if (( 10#$worker_connection_lines < 10#$required_connections )); then
   rm -f -- "$main_candidate"
 fi
 
-if grep -Fqx "$include_line" "$site_file"; then
-  :
-else
-  site_backup="${site_file}.billiardbuddy-gateway-proxy-${timestamp}.bak"
-  cp -p "$site_file" "$site_backup"
-  site_candidate="$(mktemp "${site_file}.billiardbuddy-gateway-proxy.XXXXXX")"
-  if ! awk -v line="$include_line" '
-    !inserted && $0 ~ /^[[:space:]]*listen 443 ssl;[[:space:]]*$/ { print line; inserted = 1 }
-    { print }
-    END { if (!inserted) exit 42 }
-  ' "$site_file" > "$site_candidate"; then
-    rm -f -- "$site_candidate"
-    echo "Could not find the HTTPS listen directive in $site_file" >&2
-    exit 1
-  fi
-  install -m 644 "$site_candidate" "$site_file"
+site_backup="${site_file}.billiardbuddy-gateway-proxy-${timestamp}.bak"
+cp -p "$site_file" "$site_backup"
+site_candidate="$(mktemp "${site_file}.billiardbuddy-gateway-proxy.XXXXXX")"
+if ! awk -v line="$include_line" -v legacy="$legacy_include_line" '
+  $0 == legacy { if (!inserted) { print line; inserted = 1 }; next }
+  $0 == line { if (!inserted) { print; inserted = 1 }; next }
+  !inserted && $0 ~ /^[[:space:]]*listen 443 ssl;[[:space:]]*$/ { print line; inserted = 1 }
+  { print }
+  END { if (!inserted) exit 42 }
+' "$site_file" > "$site_candidate"; then
   rm -f -- "$site_candidate"
+  echo "Could not find the HTTPS listen directive in $site_file" >&2
+  exit 1
 fi
+install -m 644 "$site_candidate" "$site_file"
+rm -f -- "$site_candidate"
 
 install -d -m 755 "$snippet_dir"
 if test -f "$snippet_file"; then
@@ -112,5 +111,6 @@ if ! systemctl reload nginx; then
 fi
 
 rm -f -- ${main_config_backup:+"$main_config_backup"} ${site_backup:+"$site_backup"} ${snippet_backup:+"$snippet_backup"}
+rm -f -- /etc/nginx/snippets/qfgw-us-https-proxy.conf
 
 echo "billiardbuddy-gateway HTTPS proxy enabled at /gw/ with worker_connections >= $required_connections"
