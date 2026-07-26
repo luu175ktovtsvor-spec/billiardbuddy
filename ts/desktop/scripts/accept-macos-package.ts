@@ -4,6 +4,8 @@ import { basename, join, resolve } from 'node:path'
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import { auditPackagedResources } from './audit-packaged-resources'
 import { waitForReadyProductWindow } from './package-window-smoke'
+import { useTemporaryAcceptanceKeychain, type TemporaryAcceptanceKeychain } from './macos-acceptance-keychain'
+import { startPackageAuthGateway, type PackageAuthGateway } from './package-auth-gateway'
 
 function run(command: string, args: string[]): void {
   const result = spawnSync(command, args, { stdio: 'inherit' })
@@ -48,12 +50,15 @@ async function main() {
   const installedApp = join(installDir, 'BilliardBuddy.app')
   let mounted = false
   let child: ChildProcess | null = null
+  let keychain: TemporaryAcceptanceKeychain | null = null
+  let authGateway: PackageAuthGateway | null = null
 
   try {
     mkdirSync(mountDir)
     mkdirSync(installDir)
     mkdirSync(configDir)
     mkdirSync(userDataDir)
+    keychain = useTemporaryAcceptanceKeychain(tempRoot)
     run('hdiutil', ['attach', '-nobrowse', '-readonly', '-mountpoint', mountDir, dmgPath])
     mounted = true
     const mountedApp = join(mountDir, 'BilliardBuddy.app')
@@ -65,6 +70,7 @@ async function main() {
     run('codesign', ['--verify', '--deep', '--strict', installedApp])
     run('hdiutil', ['detach', mountDir])
     mounted = false
+    authGateway = await startPackageAuthGateway()
 
     child = spawn(join(installedApp, 'Contents', 'MacOS', 'BilliardBuddy'), [
       `--user-data-dir=${userDataDir}`,
@@ -74,8 +80,10 @@ async function main() {
         BILLIARDBUDDY_CONFIG_DIR: configDir,
         BB_ELECTRON_DISABLE_SINGLE_INSTANCE_LOCK: '1',
         BB_ELECTRON_WINDOW_SMOKE_LOG: smokeLog,
-        BB_GATEWAY_BOOTSTRAP_CREDENTIAL: 'smoke-invalid-bootstrap',
-        BB_LICENSE_KEY: 'smoke-invalid-license',
+        BB_GATEWAY_URL: authGateway.url,
+        BB_GATEWAY_BOOTSTRAP_CREDENTIAL: authGateway.bootstrapCredential,
+        BB_LICENSE_KEY: authGateway.licenseKey,
+        NODE_EXTRA_CA_CERTS: authGateway.caPath,
       },
       stdio: 'inherit',
     })
@@ -88,6 +96,8 @@ async function main() {
     }))
   } finally {
     await terminate(child)
+    await authGateway?.close()
+    keychain?.restore()
     if (mounted) {
       spawnSync('hdiutil', ['detach', mountDir], { stdio: 'ignore' })
     }
