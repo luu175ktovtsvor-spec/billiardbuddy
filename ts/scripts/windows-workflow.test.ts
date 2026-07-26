@@ -36,6 +36,10 @@ const upgradeAcceptancePath = path.resolve(
   import.meta.dir,
   '../desktop/scripts/accept-windows-upgrade.ps1',
 )
+const updateRecoveryAcceptancePath = path.resolve(
+  import.meta.dir,
+  '../desktop/scripts/accept-windows-update-recovery.ps1',
+)
 const localMacBuildPath = path.resolve(
   import.meta.dir,
   '../desktop/scripts/build-macos-arm64.sh',
@@ -172,6 +176,9 @@ describe('Desktop release workflow contract', () => {
     expect(upgradeIndex).toBeGreaterThanOrEqual(0)
     expect(recoveryIndex).toBeGreaterThan(upgradeIndex)
     expect(workflowSteps[recoveryIndex]?.run).toContain('accept-windows-update-recovery.ps1')
+    const recoveryAcceptance = readFileSync(updateRecoveryAcceptancePath, 'utf8')
+    expect(recoveryAcceptance).toContain("BB_ELECTRON_WINDOW_SMOKE_INCLUDE_ERROR_DETAILS = '1'")
+    expect(recoveryAcceptance).toContain('$failure[0] | ConvertTo-Json -Compress -Depth 5')
   })
 
   test('proves macOS update download recovery after installed-package acceptance', () => {
