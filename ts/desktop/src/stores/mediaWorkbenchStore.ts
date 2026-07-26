@@ -6,6 +6,7 @@ import {
   type CommitImageVersionInput,
   type ImageReferenceRole,
   type ImageWorkbenchProject,
+  type MediaDeletionReceipt,
   type MediaTask,
   type MediaToolchainStatus,
   type StartImageOperationInput,
@@ -16,6 +17,7 @@ import {
 type MediaWorkbenchStore = {
   imageProjects: ImageWorkbenchProject[]
   videoProjects: VideoStudioProject[]
+  deletions: MediaDeletionReceipt[]
   tasks: Record<string, MediaTask | undefined>
   eventCursors: Record<string, number | undefined>
   toolchain: MediaToolchainStatus | null
@@ -24,6 +26,7 @@ type MediaWorkbenchStore = {
   loading: boolean
   error: string | null
   loadProjects: (kind: 'image' | 'video', quiet?: boolean) => Promise<void>
+  loadDeletions: () => Promise<void>
   loadToolchain: () => Promise<void>
   selectImage: (id: string | null) => void
   selectVideo: (id: string | null) => void
@@ -56,6 +59,7 @@ type MediaWorkbenchStore = {
   renderVideo: (project: VideoStudioProject, outputPath: string) => Promise<MediaTask>
   cancelTask: (taskId: string) => Promise<MediaTask>
   deleteProject: (projectId: string, kind: 'image' | 'video') => Promise<void>
+  restoreProject: (projectId: string) => Promise<void>
   subscribeProjectEvents: (projectId: string, kind: 'image' | 'video') => () => void
   clearError: () => void
 }
@@ -88,6 +92,7 @@ const projectLoadVersion: Record<'image' | 'video', number> = {
   image: 0,
   video: 0,
 }
+let deletionLoadVersion = 0
 
 const taskLoadVersion: Record<string, number> = {}
 
@@ -161,6 +166,7 @@ async function loadProjectTasks(
 export const useMediaWorkbenchStore = create<MediaWorkbenchStore>((set, get) => ({
   imageProjects: [],
   videoProjects: [],
+  deletions: [],
   tasks: {},
   eventCursors: {},
   toolchain: null,
@@ -198,6 +204,21 @@ export const useMediaWorkbenchStore = create<MediaWorkbenchStore>((set, get) => 
       }
     } catch (error) {
       if (projectLoadVersion[kind] !== version) return
+      set({ error: message(error) })
+    } finally {
+      finishLoading()
+    }
+  },
+
+  loadDeletions: async () => {
+    const version = ++deletionLoadVersion
+    const finishLoading = beginLoading(set)
+    try {
+      const { deletions } = await mediaApi.listDeletions()
+      if (deletionLoadVersion !== version) return
+      set({ deletions: deletions.filter(deletion => ['pending', 'deleted', 'restoring'].includes(deletion.status)) })
+    } catch (error) {
+      if (deletionLoadVersion !== version) return
       set({ error: message(error) })
     } finally {
       finishLoading()
@@ -565,6 +586,27 @@ export const useMediaWorkbenchStore = create<MediaWorkbenchStore>((set, get) => 
           }
         })
       }
+      await get().loadDeletions()
+    } catch (error) {
+      const safeError = rendererSafeError(error)
+      set({ error: safeError.message })
+      throw safeError
+    } finally {
+      finishLoading()
+    }
+  },
+
+  restoreProject: async projectId => {
+    const finishLoading = beginLoading(set)
+    try {
+      await mediaApi.restoreProject(projectId)
+      const { project } = await mediaApi.getProject(projectId)
+      await Promise.all([
+        get().loadProjects(project.kind, true),
+        get().loadDeletions(),
+      ])
+      if (project.kind === 'image') set({ activeImageId: project.id })
+      else set({ activeVideoId: project.id })
     } catch (error) {
       const safeError = rendererSafeError(error)
       set({ error: safeError.message })

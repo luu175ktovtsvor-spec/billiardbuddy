@@ -2,6 +2,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const mediaApiMock = vi.hoisted(() => ({
   listProjects: vi.fn(),
+  listDeletions: vi.fn(),
+  restoreProject: vi.fn(),
+  getProject: vi.fn(),
   getToolchain: vi.fn(),
   createImageProject: vi.fn(),
   updateImageProject: vi.fn(),
@@ -73,9 +76,11 @@ function image(id: string, prompt = '活动海报'): ImageWorkbenchProject {
 beforeEach(() => {
   vi.clearAllMocks()
   mediaApiMock.listProjects.mockResolvedValue({ projects: [] })
+  mediaApiMock.listDeletions.mockResolvedValue({ deletions: [] })
   useMediaWorkbenchStore.setState({
     imageProjects: [],
     videoProjects: [],
+    deletions: [],
     tasks: {},
     eventCursors: {},
     toolchain: null,
@@ -87,6 +92,37 @@ beforeEach(() => {
 })
 
 describe('mediaWorkbenchStore', () => {
+  it('restores a deleted project and selects the recovered workbench entry', async () => {
+    const restored = image('img_restored01', '恢复的海报')
+    mediaApiMock.restoreProject.mockResolvedValue({
+      deletion: {
+        deletion_id: 'del_restored01',
+        project_id: restored.id,
+        project_kind: 'image',
+        project_title: restored.title,
+        status: 'restored',
+        deleted_at: '2026-07-27T01:00:00.000Z',
+        purge_after: '2026-08-26T01:00:00.000Z',
+        restored_at: '2026-07-27T02:00:00.000Z',
+        task_ids: [],
+        managed_asset_count: 0,
+        managed_asset_bytes: 0,
+      },
+    })
+    mediaApiMock.getProject.mockResolvedValue({ project: restored })
+    mediaApiMock.listProjects.mockResolvedValue({ projects: [restored] })
+
+    await useMediaWorkbenchStore.getState().restoreProject(restored.id)
+
+    expect(mediaApiMock.restoreProject).toHaveBeenCalledWith(restored.id)
+    expect(useMediaWorkbenchStore.getState()).toMatchObject({
+      imageProjects: [restored],
+      activeImageId: restored.id,
+      deletions: [],
+      loading: false,
+    })
+  })
+
   it('keeps a newly created image project when an older refresh finishes last', async () => {
     const older = image('img_older001', '旧快照')
     const newer = image('img_newer001', '最新草稿')

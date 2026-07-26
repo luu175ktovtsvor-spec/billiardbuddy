@@ -65,12 +65,14 @@ function sameTimeline(
 
 export function VideoStudio() {
   const projects = useMediaWorkbenchStore(state => state.videoProjects)
+  const deletions = useMediaWorkbenchStore(state => state.deletions)
   const activeId = useMediaWorkbenchStore(state => state.activeVideoId)
   const tasks = useMediaWorkbenchStore(state => state.tasks)
   const toolchain = useMediaWorkbenchStore(state => state.toolchain)
   const loading = useMediaWorkbenchStore(state => state.loading)
   const error = useMediaWorkbenchStore(state => state.error)
   const loadProjects = useMediaWorkbenchStore(state => state.loadProjects)
+  const loadDeletions = useMediaWorkbenchStore(state => state.loadDeletions)
   const loadToolchain = useMediaWorkbenchStore(state => state.loadToolchain)
   const selectVideo = useMediaWorkbenchStore(state => state.selectVideo)
   const createVideo = useMediaWorkbenchStore(state => state.createVideo)
@@ -84,6 +86,7 @@ export function VideoStudio() {
   const renderVideo = useMediaWorkbenchStore(state => state.renderVideo)
   const cancelTask = useMediaWorkbenchStore(state => state.cancelTask)
   const deleteProject = useMediaWorkbenchStore(state => state.deleteProject)
+  const restoreProject = useMediaWorkbenchStore(state => state.restoreProject)
   const subscribeProjectEvents = useMediaWorkbenchStore(state => state.subscribeProjectEvents)
   const clearError = useMediaWorkbenchStore(state => state.clearError)
   const [selectedSourceId, setSelectedSourceId] = useState<string | null>(null)
@@ -93,6 +96,7 @@ export function VideoStudio() {
   const [outputPreset, setOutputPreset] = useState<OutputPreset>('portrait')
   const [outputFormat, setOutputFormat] = useState<OutputFormat>('mp4')
   const [deletingId, setDeletingId] = useState<string | null>(null)
+  const [restoringId, setRestoringId] = useState<string | null>(null)
   const [voiceEvidence, setVoiceEvidence] = useState<VoiceConsumerEvidence[]>([])
   const [userGoal, setUserGoal] = useState('')
   const [previewSurface, setPreviewSurface] = useState<'source' | 'program'>('source')
@@ -141,8 +145,9 @@ export function VideoStudio() {
 
   useEffect(() => {
     void loadProjects('video')
+    void loadDeletions()
     void loadToolchain()
-  }, [loadProjects, loadToolchain])
+  }, [loadDeletions, loadProjects, loadToolchain])
 
   useEffect(() => {
     const previousCanonical = canonicalProjectRef.current
@@ -424,6 +429,16 @@ export function VideoStudio() {
     }
   }
 
+  const restoreDeletedProject = async (projectId: string) => {
+    setRestoringId(projectId)
+    try {
+      await restoreProject(projectId)
+      setCreating(false)
+    } finally {
+      setRestoringId(null)
+    }
+  }
+
   const restoreTimelineVersion = async (versionId: string) => {
     if (!active || busy || loading || versionId === active.current_timeline_version_id) return
     if (draft && !sameTimeline(draft.timeline, active.timeline) && !window.confirm('恢复历史版本会放弃尚未保存的时间线修改，是否继续？')) return
@@ -460,7 +475,10 @@ export function VideoStudio() {
           activeId={activeId}
           onSelect={id => { clearError(); setCreating(false); selectVideo(id) }}
           onDelete={project => void removeProject(project)}
+          deletions={deletions}
+          onRestore={projectId => void restoreDeletedProject(projectId)}
           deletingId={deletingId}
+          restoringId={restoringId}
         />
 
         <main className="flex min-w-0 flex-1 flex-col bg-[var(--color-surface-container-low)]">

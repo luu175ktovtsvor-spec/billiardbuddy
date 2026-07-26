@@ -250,7 +250,12 @@ test('media API redacts reference image bytes, updates drafts, and deletes proje
   expect((await route(handler, `/api/media/project/${createdBody.project.id}`)).status).toBe(404)
   const deletionList = await route(handler, '/api/media/deletions')
   expect(await deletionList.json()).toMatchObject({
-    deletions: [expect.objectContaining({ project_id: createdBody.project.id, status: 'deleted' })],
+    deletions: [expect.objectContaining({
+      project_id: createdBody.project.id,
+      project_kind: 'image',
+      project_title: '不再使用参考素材',
+      status: 'deleted',
+    })],
   })
   const restored = await route(handler, `/api/media/project/${createdBody.project.id}/restore`, { method: 'POST' })
   expect(restored.status).toBe(200)
