@@ -88,6 +88,7 @@ import {
   assessImageCandidates,
   ImageReasoningError,
   reasonImageBrief,
+  type ImageQualityAssessment,
 } from './imageReasoning.js'
 import { transcribeVoiceFile } from './voiceTranscription.js'
 import {
@@ -164,6 +165,8 @@ const MAX_CONCURRENT_VIDEO_PROBES = 2
 const DEFAULT_MAX_QUEUED_VIDEO_PROBES = 8
 const MAX_QUEUED_VIDEO_PROBES = 8
 const MAX_MEDIA_JOB_EVENTS_PER_PROJECT = 2000
+const MAX_IMAGE_QUALITY_REQUEST_CHARS = 1024 * 1024
+const IMAGE_QUALITY_PREVIEW_EDGE = 512
 
 function maxQueuedVideoRenders(env: Record<string, string | undefined>): number {
   const configured = env.BB_MEDIA_MAX_QUEUED_RENDERS?.trim()
@@ -632,6 +635,62 @@ export class MediaProjectService {
     } finally {
       if (timer) clearTimeout(timer)
     }
+  }
+
+  private async boundedImageQualityCandidates(
+    candidates: Array<{
+      data_url: string
+      candidate_index: number
+      source_path: string
+      width?: number
+      height?: number
+    }>,
+    options: {
+      maxChars?: number
+      previewEdge?: number
+      jpegQuality?: number
+    } = {},
+  ): Promise<Array<{ data_url: string; candidate_index: number }>> {
+    const maxChars = options.maxChars ?? MAX_IMAGE_QUALITY_REQUEST_CHARS
+    const previewEdge = options.previewEdge ?? IMAGE_QUALITY_PREVIEW_EDGE
+    const jpegQuality = options.jpegQuality ?? 6
+    const needsPreview = candidates.reduce((total, candidate) => total + candidate.data_url.length, 0)
+      > maxChars
+      || candidates.some(candidate => Math.max(candidate.width ?? 0, candidate.height ?? 0) > previewEdge)
+    if (!needsPreview) {
+      return candidates.map(({ data_url, candidate_index }) => ({ data_url, candidate_index }))
+    }
+
+    const previews: Array<{ data_url: string; candidate_index: number }> = []
+    for (const candidate of candidates) {
+      const previewPath = `${candidate.source_path}.quality-${randomUUID()}.jpg`
+      try {
+        const result = await this.runProcess([
+          this.binary('ffmpeg'),
+          '-hide_banner', '-loglevel', 'error', '-y',
+          '-i', candidate.source_path,
+          '-vf', `scale=${previewEdge}:${previewEdge}:force_original_aspect_ratio=decrease`,
+          '-map_metadata', '-1',
+          '-frames:v', '1',
+          '-pix_fmt', 'yuv420p',
+          '-q:v', String(jpegQuality),
+          previewPath,
+        ], { signal: AbortSignal.timeout(30_000) })
+        if (result.exitCode !== 0) throw new Error('image quality preview conversion failed')
+        const bytes = await readFile(previewPath)
+        if (bytes.length === 0) throw new Error('image quality preview is empty')
+        previews.push({
+          candidate_index: candidate.candidate_index,
+          data_url: `data:image/jpeg;base64,${bytes.toString('base64')}`,
+        })
+      } finally {
+        await rm(previewPath, { force: true }).catch(() => undefined)
+      }
+    }
+    if (previews.reduce((total, candidate) => total + candidate.data_url.length, 0) > maxChars) {
+      throw new Error('image quality previews exceed the bounded reasoning payload')
+    }
+    return previews
   }
 
   private async ensureDirs(): Promise<void> {
@@ -3187,7 +3246,13 @@ export class MediaProjectService {
     const parentVersionId = task.image_operation?.base_version_id ?? attachedProject.versions.at(-1)?.id
     const projectAssetDir = join(this.assetsDir, task.project_id)
     const createdAssets: string[] = []
-    const qualityCandidates: Array<{ data_url: string; candidate_index: number }> = []
+    const qualityCandidates: Array<{
+      data_url: string
+      candidate_index: number
+      source_path: string
+      width?: number
+      height?: number
+    }> = []
     await mkdir(projectAssetDir, { recursive: true, mode: 0o700 })
     for (const item of body.data ?? []) {
       const outputId = id('out')
@@ -3205,6 +3270,9 @@ export class MediaProjectService {
         qualityCandidates.push({
           data_url: `data:${mimeType};base64,${item.b64_json}`,
           candidate_index: outputs.length,
+          source_path: assetPath,
+          width: dimensions?.width,
+          height: dimensions?.height,
         })
         outputs.push({
           id: outputId,
@@ -3248,14 +3316,34 @@ export class MediaProjectService {
     })
     if (attachedProject.brief && qualityCandidates.length > 0) {
       try {
-        const assessments = await assessImageCandidates({
-          brief: attachedProject.brief,
-          candidates: qualityCandidates,
-        }, {
-          operationId: foundationId('op', task.operation_id ?? task.id, 'quality'),
-          fetchImpl: this.fetchImpl as typeof fetch,
-          env: this.env,
-        })
+        const boundedCandidates = await this.boundedImageQualityCandidates(qualityCandidates)
+        const primaryOperationId = foundationId('op', task.operation_id ?? task.id, 'quality')
+        let assessments: ImageQualityAssessment[]
+        try {
+          assessments = await assessImageCandidates({
+            brief: attachedProject.brief,
+            candidates: boundedCandidates,
+          }, {
+            operationId: primaryOperationId,
+            fetchImpl: this.fetchImpl as typeof fetch,
+            env: this.env,
+          })
+        } catch (error) {
+          if (!(error instanceof ImageReasoningError) || error.status !== 400) throw error
+          const fallbackCandidates = await this.boundedImageQualityCandidates(qualityCandidates, {
+            maxChars: 512 * 1024,
+            previewEdge: 320,
+            jpegQuality: 8,
+          })
+          assessments = await assessImageCandidates({
+            brief: attachedProject.brief,
+            candidates: fallbackCandidates,
+          }, {
+            operationId: foundationId('op', primaryOperationId, 'smaller-preview'),
+            fetchImpl: this.fetchImpl as typeof fetch,
+            env: this.env,
+          })
+        }
         outputsWithQuality = outputs.map((output, index) => {
           const assessment = assessments.find(item => item.candidate_index === index)
           return assessment ? {
@@ -3270,7 +3358,9 @@ export class MediaProjectService {
         })
         qualityStatus = 'completed'
       } catch (error) {
-        recordMediaFailure('image_quality_reasoning', error)
+        recordMediaFailure('image_quality_reasoning', error instanceof ImageReasoningError
+          ? { name: error.name, message: error.message, status: error.status, code: error.code }
+          : error)
       }
     }
     const next = await this.saveTask({

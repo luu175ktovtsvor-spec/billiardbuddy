@@ -193,6 +193,76 @@ describe('MediaProjectService image projects', () => {
     expect(calls.every(call => call.body.model === 'mimo-v2.5')).toBe(true)
   })
 
+  test('bounds generated candidate bytes before sending the three-image quality request', async () => {
+    process.env.BB_GATEWAY_URL = 'https://gateway.example/gw'
+    process.env.BB_GATEWAY_TOKEN = 'app-token'
+    const mediaRoot = await root()
+    const qualityBodies: string[] = []
+    const processCommands: string[][] = []
+    const largeCandidate = pngBytes(1024, 1024)
+    const service = new MediaProjectService({
+      root: mediaRoot,
+      env: {
+        BB_GATEWAY_URL: 'https://gateway.example/gw',
+        BB_GATEWAY_TOKEN: 'app-token',
+        BB_MEDIA_BIN_DIR: '/bundle/media',
+      },
+      runProcess: async command => {
+        processCommands.push(command)
+        await writeFile(command.at(-1)!, Buffer.from([0xff, 0xd8, 0xff, 0xd9]))
+        return { exitCode: 0, stdout: '', stderr: '' }
+      },
+      fetchImpl: async (input, init) => {
+        const url = String(input)
+        if (url.endsWith('/v1/media/reasoning')) {
+          const body = String(init?.body)
+          if (body.includes('candidate_index=')) {
+            qualityBodies.push(body)
+            if (qualityBodies.length === 1) {
+              return Response.json({ error: 'candidate preview rejected' }, { status: 400 })
+            }
+            return Response.json({ choices: [{ message: { content: JSON.stringify({
+              assessments: [0, 1, 2].map(candidate_index => ({
+                candidate_index,
+                score: 90,
+                summary: '候选可用',
+                issues: [],
+                suggestions: [],
+              })),
+            }) } }] })
+          }
+          return Response.json({ choices: [{ message: { content: JSON.stringify({
+            must_preserve: [],
+            may_change: [],
+            missing_information: [],
+          }) } }] })
+        }
+        if (url.endsWith('/ack')) return Response.json({ status: 'succeeded', result_acknowledged: true })
+        if (init?.method === 'POST') return Response.json({ task_id: 'remote-quality-preview', status: 'queued' }, { status: 202 })
+        return Response.json({
+          status: 'succeeded',
+          provider_receipt_hash: 'c'.repeat(64),
+          data: Array.from({ length: 3 }, () => ({
+            b64_json: largeCandidate.toString('base64'),
+            mime_type: 'image/png',
+          })),
+        })
+      },
+    })
+
+    const project = await service.createImageProject({ user_request: '生成三张台球主题图片' })
+    const task = await service.submitImageProject(project.id)
+    expect((await service.getTask(task.id)).status).toBe('succeeded')
+    expect(processCommands).toHaveLength(6)
+    expect(processCommands.every(command => command[0] === '/bundle/media/ffmpeg')).toBe(true)
+    expect(qualityBodies).toHaveLength(2)
+    expect(qualityBodies.every(body => body.includes('data:image/jpeg;base64,/9j/2Q=='))).toBe(true)
+    expect(qualityBodies.every(body => !body.includes(largeCandidate.toString('base64')))).toBe(true)
+    const ready = await service.getProject(project.id)
+    expect(ready.kind === 'image' ? ready.outputs.every(output => output.quality_assessment?.score === 90) : false).toBe(true)
+    expect(await readdir(join(mediaRoot, 'assets', project.id))).not.toContainEqual(expect.stringContaining('.quality-'))
+  })
+
   test('uses one idempotent GPT edit task without legacy parameters and persists local image bytes', async () => {
     process.env.BB_GATEWAY_URL = 'https://gateway.example/gw'
     process.env.BB_GATEWAY_TOKEN = 'app-token'
