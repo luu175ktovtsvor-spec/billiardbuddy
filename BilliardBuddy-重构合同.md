@@ -374,7 +374,15 @@ Provider registry 是 model ID、能力、上下文窗口、body budget、compac
 - **Approve for me**：`workspace-write + on-request + auto-review`；沙箱不变，只把符合条件的越界请求交给独立 reviewer 判断；
 - **Full access**：`danger-full-access + never`；解除普通文件、网络沙箱和常规审批。
 
-以上定义的是 Codex/Agent Core 的本机执行权限。无论选择哪一档，BilliardBuddy 自己的 owner、可恢复删除、招聘提交和对外发布等真实业务边界仍保留；这些是产品规则，不是对 Codex 权限名称的改写。
+权限能力的作用是为一个 `TaskRun/Turn` 决定三件事：**工具能做什么**（读、写、Shell、网络、MCP 或子任务）、**它能触及什么范围**（工作区、允许的目录、网络域和资源上限）、以及**何时必须停下等待确认**。它不决定模型、Skill 内容、用量扣费、远程数据处理、媒体 Job 成败或业务发布结果。
+
+| 学习对象 | 已验证的权限思想 | BilliardBuddy 的保留方式 |
+|---|---|---|
+| Codex | 将“技术上能否执行”的 sandbox 与“何时询问用户”的 approval policy 分开；默认收紧，按可信工作流再放宽。 | 三档 UI 只选择这两个维度的组合；每次工具调用仍由 Host 重新校验当前 workspace、网络和权限快照。 |
+| Claude Code / Agent SDK | 权限是 Session 级策略，可在会话中调整；自动文件编辑仍受工作目录限制，子任务继承父任务策略。 | `TaskRun/Turn` 启动时冻结 profile；后续升级须写新的权限事件，子任务不能借机扩大权限。 |
+| Pi | Agent loop 负责上下文、事件和 tool-result 循环，不承担产品级授权判断。 | Harness 不自行允许操作；每个 tool call 先经 Product Server/Host 的策略检查，再执行并持久化真实回执。 |
+
+以上定义的是从 Codex、Claude 与 Pi 抽取出的本机执行权限合同。无论选择哪一档，BilliardBuddy 自己的 owner、可恢复删除、招聘提交和对外发布等真实业务边界仍保留；这些是产品规则，不是对 Codex 权限名称的改写。正式实现必须把 profile、实际批准/拒绝、执行范围和结果写为 durable `Item/Event`，GUI 只展示和发起选择，不能自行放行。
 
 共同要求：
 
