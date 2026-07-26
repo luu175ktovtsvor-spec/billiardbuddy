@@ -17,7 +17,6 @@ export type VoiceTranscriptionOptions = {
   language?: string
   signal?: AbortSignal
   timeoutMs?: number
-  consentReceiptId?: string
   providerProtocol?: string
   operationId?: string
 }

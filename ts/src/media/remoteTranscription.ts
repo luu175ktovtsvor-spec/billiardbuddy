@@ -28,7 +28,6 @@ export type RemoteTranscriptionOptions = {
   signal?: AbortSignal
   timeoutMs?: number
   fetchImpl?: RemoteTranscriptionFetch
-  consentReceiptId?: string
   providerProtocol?: string
   operationId?: string
 }
@@ -41,8 +40,8 @@ function nonEmpty(value: string | undefined): string | null {
 export function resolveRemoteTranscriptionConfig(
   env: Record<string, string | undefined>,
 ): RemoteTranscriptionConfig | null {
-  const base = nonEmpty(env.QF_GATEWAY_URL)
-  const token = nonEmpty(env.QF_GATEWAY_TOKEN)
+  const base = nonEmpty(env.BB_GATEWAY_URL)
+  const token = nonEmpty(env.BB_GATEWAY_TOKEN)
   if (!base || !token) return null
 
   let url: URL
@@ -93,7 +92,7 @@ export async function transcribeRemoteFile(
 
   const form = new FormData()
   form.set('file', file)
-  form.set('language', opts.language || env.QF_TRANSCRIBE_LANGUAGE || 'zh')
+  form.set('language', opts.language || env.BB_TRANSCRIBE_LANGUAGE || 'zh')
   form.set('response_format', 'json')
   const combined = combineSignal(opts.signal, opts.timeoutMs ?? 10 * 60_000)
 
@@ -101,8 +100,7 @@ export async function transcribeRemoteFile(
     const headers: Record<string, string> = {
       Authorization: `Bearer ${config.token}`,
     }
-    if (config.clientId) headers['X-QF-Client-ID'] = config.clientId
-    if (opts.consentReceiptId) headers['X-BB-Data-Egress-Consent'] = opts.consentReceiptId
+    if (config.clientId) headers['X-BB-Installation-ID'] = config.clientId
     if (opts.providerProtocol) headers['X-BB-Provider-Protocol'] = opts.providerProtocol
     if (opts.operationId) headers['X-BB-Operation-ID'] = opts.operationId
 

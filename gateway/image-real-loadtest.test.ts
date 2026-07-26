@@ -12,7 +12,6 @@ function options(overrides: Partial<ImageLoadtestOptions> = {}): ImageLoadtestOp
     baseUrl: 'http://127.0.0.1:8799',
     targetOrigin: 'http://127.0.0.1:8799',
     token: 'test-token',
-    consentReceiptId: 'a'.repeat(64),
     users: 1,
     windows: 1,
     total: 1,
@@ -67,10 +66,9 @@ describe('image real-loadtest safety guards', () => {
     })
     expect(summary).toMatchObject({ requested: 1, accepted: 1, succeeded: 1, exitCode: 0 })
     expect(calls[1]?.url).toContain('?metadata_only=1')
-    expect(calls.every(call => call.headers.get('X-QF-Client-ID') === 'image-loadtest-user-000')).toBe(true)
+    expect(calls.every(call => call.headers.get('X-BB-Installation-ID') === 'image-loadtest-user-000')).toBe(true)
     expect(calls.every(call => call.headers.get('X-BB-Provider-Protocol') === 'bb-provider-gateway/1.0')).toBe(true)
-    expect(calls[0]?.headers.get('X-BB-Data-Egress-Consent')).toBe('a'.repeat(64))
-    expect(calls[1]?.headers.get('X-BB-Data-Egress-Consent')).toBeNull()
+    expect(calls.every(call => call.headers.get('X-BB-Data-Egress-Consent') === null)).toBe(true)
     expect(JSON.stringify(events)).not.toContain('test-token')
 
     const missingOutputCalls: string[] = []
@@ -113,7 +111,7 @@ describe('image real-loadtest safety guards', () => {
     expect(calls.some(call => call.url.endsWith('/cancel'))).toBe(true)
     const submitClientIds = calls
       .filter(call => call.url.endsWith('/v1/images/tasks'))
-      .map(call => call.headers.get('X-QF-Client-ID'))
+      .map(call => call.headers.get('X-BB-Installation-ID'))
     expect(submitClientIds).toEqual(['image-loadtest-user-000', 'image-loadtest-user-000'])
   })
 

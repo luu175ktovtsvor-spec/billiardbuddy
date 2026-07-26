@@ -50,7 +50,7 @@ test('rejects instruction symlinks that escape the project root', () => {
   expect(discoverProductInstructions(root, root)).toEqual([])
 })
 
-test('unifies compatible project instructions and preserves conditional rules', () => {
+test('does not silently import Claude project instructions', () => {
   const root = mkdtempSync(path.join(tmpdir(), 'bb-instructions-'))
   roots.push(root)
   const nested = path.join(root, 'packages', 'app')
@@ -64,21 +64,31 @@ test('unifies compatible project instructions and preserves conditional rules', 
     path.join(rules, 'typescript.md'),
     '---\npaths: "**/*.ts"\n---\nconditional rule',
   )
-  writeFileSync(path.join(root, 'AGENTS.md'), 'root agent')
-  writeFileSync(path.join(root, 'BilliardBuddy.md'), 'root product')
   writeFileSync(path.join(nested, 'CLAUDE.local.md'), 'nested local')
+
+  expect(discoverProductProjectInstructions(nested, root)).toEqual([])
+})
+
+test('loads BilliardBuddy directory instructions, scoped rules, and local override', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'bb-instructions-'))
+  roots.push(root)
+  const nested = path.join(root, 'packages', 'app')
+  const productRules = path.join(root, '.BilliardBuddy', 'rules')
+  mkdirSync(nested, { recursive: true })
+  mkdirSync(productRules, { recursive: true })
+  writeFileSync(path.join(root, 'AGENTS.md'), 'agent contract')
+  writeFileSync(path.join(root, '.BilliardBuddy', 'BilliardBuddy.md'), 'directory contract')
+  writeFileSync(path.join(productRules, 'typescript.md'), '---\npaths: "src/**/*.ts"\n---\ntypescript contract')
+  writeFileSync(path.join(root, '.BilliardBuddy', 'BilliardBuddy.local.md'), 'private local contract')
 
   const instructions = discoverProductProjectInstructions(nested, root)
   expect(instructions.map(item => item.content)).toEqual([
-    'root compatible',
-    'dot compatible',
-    'always rule',
-    'conditional rule',
-    'root agent',
-    'root product',
-    'nested local',
+    'agent contract',
+    'directory contract',
+    'typescript contract',
+    'private local contract',
   ])
-  expect(instructions[3]?.paths).toEqual(['**/*.ts'])
+  expect(instructions[2]?.paths).toEqual(['src/**/*.ts'])
 })
 
 test('creates an immutable in-memory snapshot for one project', () => {
@@ -102,8 +112,8 @@ test('keeps sibling project instruction snapshots isolated', () => {
   const beta = path.join(parent, 'beta')
   mkdirSync(alpha)
   mkdirSync(beta)
-  writeFileSync(path.join(alpha, 'CLAUDE.md'), 'alpha private instruction')
-  writeFileSync(path.join(beta, 'CLAUDE.md'), 'beta private instruction')
+  writeFileSync(path.join(alpha, 'AGENTS.md'), 'alpha private instruction')
+  writeFileSync(path.join(beta, 'BilliardBuddy.md'), 'beta private instruction')
 
   const alphaSnapshot = createProductInstructionSnapshot(alpha)
   const betaSnapshot = createProductInstructionSnapshot(beta)

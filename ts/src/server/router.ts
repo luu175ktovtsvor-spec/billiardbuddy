@@ -4,7 +4,6 @@
 
 import { handleStatusApi } from './api/status.js'
 import { handlePluginsApi } from './api/plugins.js'
-import { handleComputerUseApi } from './api/computer-use.js'
 import { handleMcpApi } from './api/mcp.js'
 import { handleDiagnosticsApi } from './api/diagnostics.js'
 import { handleMediaApi } from './api/media.js'
@@ -36,9 +35,6 @@ export async function handleApiRequest(
 
     case 'plugins':
       return handlePluginsApi(req, url, segments)
-
-    case 'computer-use':
-      return handleComputerUseApi(req, url, segments)
 
     case 'diagnostics':
       return handleDiagnosticsApi(req, url, segments)

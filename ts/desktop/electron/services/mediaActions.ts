@@ -1,5 +1,4 @@
 import {
-  IMAGE_DATA_EGRESS_POLICY_REVISION,
   MEDIA_UI_CAPABILITY_HEADER,
   mediaSafeError,
   type PublicMediaTask as MediaTask,
@@ -7,6 +6,7 @@ import {
   type RenderVideoInput,
   type UpdateImageProjectInput,
   type PublicImageWorkbenchProject as ImageWorkbenchProject,
+  type PublicVideoStudioProject as VideoStudioProject,
   type SaveImageOutputInput,
   type StartImageOperationInput,
 } from '../../../shared/contracts/media'
@@ -30,35 +30,17 @@ export class ElectronMediaActions {
   submitImageProject(
     projectId: string,
     confirmUnknownRetry = false,
-    confirmedDataEgress = false,
   ): Promise<{ task: MediaTask }> {
     return this.post(`/api/media/images/projects/${encodeURIComponent(projectId)}/submit`, {
       confirm_unknown_retry: confirmUnknownRetry,
-      ...(confirmedDataEgress ? {
-        data_egress_consent: {
-          policy_revision: IMAGE_DATA_EGRESS_POLICY_REVISION,
-          acknowledged: true,
-          acknowledged_at: new Date().toISOString(),
-        },
-      } : {}),
     })
   }
 
   startImageOperation(
     projectId: string,
-    input: Omit<StartImageOperationInput, 'data_egress_consent'>,
-    confirmedDataEgress = false,
+    input: StartImageOperationInput,
   ): Promise<{ task: MediaTask }> {
-    return this.post(`/api/media/images/projects/${encodeURIComponent(projectId)}/operations`, {
-      ...input,
-      ...(confirmedDataEgress ? {
-        data_egress_consent: {
-          policy_revision: IMAGE_DATA_EGRESS_POLICY_REVISION,
-          acknowledged: true,
-          acknowledged_at: new Date().toISOString(),
-        },
-      } : {}),
-    })
+    return this.post(`/api/media/images/projects/${encodeURIComponent(projectId)}/operations`, input)
   }
 
   updateUnknownImageProject(
@@ -89,6 +71,10 @@ export class ElectronMediaActions {
         : `/api/media/images/projects/${encodeURIComponent(projectId)}/outputs/${encodeURIComponent(resultId)}/save`,
       { output_path: input.output_path },
     )
+  }
+
+  addVideoSource(projectId: string, path: string): Promise<{ project: VideoStudioProject; task: MediaTask }> {
+    return this.post(`/api/media/videos/projects/${encodeURIComponent(projectId)}/sources`, { path })
   }
 
   private async post<T>(path: string, body?: unknown): Promise<T> {

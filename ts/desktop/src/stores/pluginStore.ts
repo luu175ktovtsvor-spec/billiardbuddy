@@ -44,6 +44,7 @@ type PluginStore = {
   bulkEnablePlugins: (plugins: PluginActionTarget[], cwd?: string, taskId?: string) => Promise<PluginBulkActionResult>
   bulkDisablePlugins: (plugins: PluginActionTarget[], cwd?: string, taskId?: string) => Promise<PluginBulkActionResult>
   updatePlugin: (id: string, scope?: PluginScope, cwd?: string, taskId?: string) => Promise<PluginActionResult>
+  installPlugin: (sourcePath: string, scope: 'user' | 'project', cwd?: string, taskId?: string) => Promise<PluginActionResult>
   uninstallPlugin: (id: string, scope?: PluginScope, keepData?: boolean, cwd?: string, taskId?: string) => Promise<PluginActionResult>
   clearSelection: () => void
 }
@@ -121,7 +122,7 @@ export const usePluginStore = create<PluginStore>((set, get) => ({
 
   enablePlugin: async (id, scope, cwd, taskId) => {
     return runAction(
-      () => pluginsApi.enable({ id, scope }),
+      () => pluginsApi.enable({ id, scope, cwd }),
       set,
       get,
       cwd,
@@ -131,7 +132,7 @@ export const usePluginStore = create<PluginStore>((set, get) => ({
 
   disablePlugin: async (id, scope, cwd, taskId) => {
     return runAction(
-      () => pluginsApi.disable({ id, scope }),
+      () => pluginsApi.disable({ id, scope, cwd }),
       set,
       get,
       cwd,
@@ -142,7 +143,7 @@ export const usePluginStore = create<PluginStore>((set, get) => ({
   bulkEnablePlugins: async (plugins, cwd, taskId) => {
     return runBulkAction(
       plugins,
-      (plugin) => pluginsApi.enable(plugin),
+      (plugin) => pluginsApi.enable({ ...plugin, cwd }),
       set,
       get,
       cwd,
@@ -153,7 +154,7 @@ export const usePluginStore = create<PluginStore>((set, get) => ({
   bulkDisablePlugins: async (plugins, cwd, taskId) => {
     return runBulkAction(
       plugins,
-      (plugin) => pluginsApi.disable(plugin),
+      (plugin) => pluginsApi.disable({ ...plugin, cwd }),
       set,
       get,
       cwd,
@@ -163,7 +164,17 @@ export const usePluginStore = create<PluginStore>((set, get) => ({
 
   updatePlugin: async (id, scope, cwd, taskId) => {
     return runAction(
-      () => pluginsApi.update({ id, scope }),
+      () => pluginsApi.update({ id, scope, cwd }),
+      set,
+      get,
+      cwd,
+      taskId,
+    )
+  },
+
+  installPlugin: async (sourcePath, scope, cwd, taskId) => {
+    return runAction(
+      () => pluginsApi.install({ sourcePath, scope, cwd }),
       set,
       get,
       cwd,
@@ -173,7 +184,7 @@ export const usePluginStore = create<PluginStore>((set, get) => ({
 
   uninstallPlugin: async (id, scope, keepData = false, cwd, taskId) => {
     return runAction(
-      () => pluginsApi.uninstall({ id, scope, keepData }),
+      () => pluginsApi.uninstall({ id, scope, keepData, cwd }),
       set,
       get,
       cwd,

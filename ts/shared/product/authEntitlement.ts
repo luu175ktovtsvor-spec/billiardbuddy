@@ -221,7 +221,7 @@ function readLockOwner(lock: string): LockOwner | null {
     if (!value || typeof value !== 'object') return null
     const owner = value as Partial<LockOwner>
     return typeof owner.nonce === 'string' && /^[A-Za-z0-9_-]{32}$/.test(owner.nonce)
-      && Number.isSafeInteger(owner.pid) && owner.pid > 0
+      && typeof owner.pid === 'number' && Number.isSafeInteger(owner.pid) && owner.pid > 0
       && typeof owner.hostname === 'string' && owner.hostname.length > 0 && owner.hostname.length <= 255
       && typeof owner.startMarker === 'string' && owner.startMarker.length > 0 && owner.startMarker.length <= 512
       ? owner as LockOwner : null
@@ -487,7 +487,7 @@ function assertProvisioning(value: LicenseProvisioning): void {
   if (!value || typeof value !== 'object' || typeof value.licenseKey !== 'string' || typeof value.principalId !== 'string' || !licensePattern.test(value.licenseKey) || !principalPattern.test(value.principalId) || typeof value.active !== 'boolean' || !Number.isSafeInteger(value.deviceLimit) || value.deviceLimit <= 0 || !Number.isSafeInteger(value.revision) || value.revision <= 0) throw new Error('Invalid license provisioning')
 }
 function assertState(state: unknown): asserts state is State {
-  if (!isRecord(state) || Object.keys(state).length !== 5 || state.version !== 1 || !Number.isSafeInteger(state.revision) || state.revision < 0 || !Array.isArray(state.entitlements) || !Array.isArray(state.registrations) || !Array.isArray(state.sessions)) throw new Error('Gateway authority state is invalid')
+  if (!isRecord(state) || Object.keys(state).length !== 5 || state.version !== 1 || !isDate(state.revision) || !Array.isArray(state.entitlements) || !Array.isArray(state.registrations) || !Array.isArray(state.sessions)) throw new Error('Gateway authority state is invalid')
   const entitlements = new Set<string>(); const registrations = new Set<string>(); const sessions = new Set<string>()
   for (const item of state.entitlements) {
     if (!isRecord(item) || Object.keys(item).length !== 5 || !matches(licensePattern, item.licenseKey) || !matches(principalPattern, item.principalId) || typeof item.active !== 'boolean' || !isPositiveSafeInteger(item.deviceLimit) || !isPositiveSafeInteger(item.authorityRevision) || entitlements.has(item.licenseKey)) throw new Error('Gateway authority state is invalid')

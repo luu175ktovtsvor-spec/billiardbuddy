@@ -12,6 +12,7 @@ export const ELECTRON_IPC_CHANNELS = {
   mediaStartImageOperation: 'desktop:media:start-image-operation',
   mediaUpdateUnknownImage: 'desktop:media:update-unknown-image',
   mediaSaveImageOutput: 'desktop:media:save-image-output',
+  mediaAddVideoSource: 'desktop:media:add-video-source',
   mediaRenderVideo: 'desktop:media:render-video',
   mediaAnalyzeVideo: 'desktop:media:analyze-video',
   browserStatus: 'desktop:browser:status',

@@ -9,7 +9,6 @@ import { useSettingsStore } from './stores/settingsStore'
 import { ProductTaskPage } from './product/components/ProductTaskPage'
 import { parseProductTaskWindowSearch } from '../../shared/product/taskLinks'
 import { useEffect, useState } from 'react'
-import { RemoteDataEgressConsentGate } from './product/components/RemoteDataEgressConsent'
 
 function MainApp() {
   useScheduledTaskDesktopNotifications()
@@ -86,7 +85,6 @@ function ProductTaskWindowApp({ initialTaskId }: { initialTaskId: string }) {
         />
       </div>
       <ToastContainer />
-      <RemoteDataEgressConsentGate />
     </div>
   )
 }

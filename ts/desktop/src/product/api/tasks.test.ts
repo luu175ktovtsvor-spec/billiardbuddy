@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('../../lib/desktopRuntime', () => ({ getServerBaseUrl: () => 'http://127.0.0.1:49237' }))
 
-import { PRODUCT_MEDIA_RESULT_TIMEOUT_MS, productTasksApi } from './tasks'
+import { productTasksApi } from './tasks'
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
@@ -59,15 +59,14 @@ describe('productTasksApi authoritative mutations', () => {
     expect(fetchMock.mock.calls[0]?.[1]?.body).toBe(JSON.stringify(envelope))
   })
 
-  it('uses product task index, thread, review and media routes', async () => {
+  it('uses product task index, thread and review routes', async () => {
     const fetchMock = vi.fn().mockImplementation(() => jsonResponse({ tasks: [] }))
     vi.stubGlobal('fetch', fetchMock)
-    await productTasksApi.list(); await productTasksApi.getThread('task 1'); await productTasksApi.getReviewFile('task 1', 'src/main.ts'); await productTasksApi.getMedia('task 1')
+    await productTasksApi.list(); await productTasksApi.getThread('task 1'); await productTasksApi.getReviewFile('task 1', 'src/main.ts')
     expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
       'http://127.0.0.1:49237/api/product/tasks',
       'http://127.0.0.1:49237/api/product/tasks/task%201/thread',
       'http://127.0.0.1:49237/api/product/tasks/task%201/review/file?path=src%2Fmain.ts',
-      'http://127.0.0.1:49237/api/product/tasks/task%201/media',
     ])
   })
 
@@ -97,12 +96,4 @@ describe('productTasksApi authoritative mutations', () => {
     expect(fetchMock.mock.calls[1]?.[1]?.body).toBe(JSON.stringify(input))
   })
 
-  it('keeps task-scoped final image materialization open for five minutes', async () => {
-    vi.useFakeTimers()
-    const fetchMock = vi.fn().mockImplementation((_input, init?: RequestInit) => new Promise<Response>((_resolve, reject) => init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), { once: true })))
-    vi.stubGlobal('fetch', fetchMock)
-    const pending = productTasksApi.getMedia('task 1').catch((error) => error as Error)
-    await vi.advanceTimersByTimeAsync(PRODUCT_MEDIA_RESULT_TIMEOUT_MS)
-    await expect(pending).resolves.toMatchObject({ name: 'AbortError' })
-  })
 })

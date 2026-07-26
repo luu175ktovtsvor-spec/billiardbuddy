@@ -3,7 +3,7 @@ import path from 'node:path'
 
 const desktopRoot = path.resolve(import.meta.dir, '..')
 const repoRoot = path.resolve(desktopRoot, '..')
-const binariesDir = path.join(desktopRoot, 'src-tauri', 'binaries')
+const binariesDir = path.join(desktopRoot, 'runtime-assets', 'binaries')
 
 const targetTriple =
   process.env.SIDECAR_TARGET_TRIPLE ||
@@ -26,9 +26,8 @@ if (scanExit !== 0) {
 
 await mkdir(binariesDir, { recursive: true })
 
-// 单一合并 sidecar：server / cli 共享一份 bun runtime + 共享依赖代码。
-// 调用方（Electron sidecar manager / conversationService）
-// 通过第一个 positional 参数选择 'server' 或 'cli' 模式，详见 desktop/sidecars/billiardbuddy-sidecar.ts。
+// 单一 GUI sidecar：Product Server、内部 agent-worker 与 browser host 共享一份
+// bun runtime。详见 desktop/sidecars/billiardbuddy-sidecar.ts。
 await compileExecutable({
   entrypoint: path.join(desktopRoot, 'sidecars/billiardbuddy-sidecar.ts'),
   outfileBase: path.join(binariesDir, `billiardbuddy-sidecar-${targetTriple}`),
@@ -90,10 +89,8 @@ async function compileExecutable({
     minify: { whitespace: true, identifiers: true, syntax: true },
     sourcemap: 'none',
     target: 'bun',
-    // 可选 npm 包：开 telemetry / 用 sharp 图像 / 用 Bedrock/Vertex 等
-    // 替代 provider 时才需要，全部不在顶层 package.json 里。标 external
-    // 让 bun build 跳过解析；运行时 import 在没装时自然失败，由 try/catch
-    // 或 feature() gate 兜底。
+    // 可选 telemetry exporters 不在默认产品依赖中；只有显式启用相应
+    // exporter 的目标环境才需要提供它们。
     external: [
       // OpenTelemetry exporters（开 OTEL_* env 时才加载）
       '@opentelemetry/exporter-trace-otlp-grpc',
@@ -106,18 +103,6 @@ async function compileExecutable({
       '@opentelemetry/exporter-metrics-otlp-http',
       '@opentelemetry/exporter-metrics-otlp-proto',
       '@opentelemetry/exporter-prometheus',
-      // 替代 LLM provider —— 默认不用，用户自装
-      '@aws-sdk/client-bedrock',
-      '@aws-sdk/client-sts',
-      '@anthropic-ai/bedrock-sdk',
-      '@anthropic-ai/foundry-sdk',
-      '@anthropic-ai/vertex-sdk',
-      '@azure/identity',
-      // ant-internal / 可选工具
-      '@anthropic-ai/mcpb',
-      'fflate',
-      'sharp',
-      'react-devtools-core',
     ],
     compile: {
       target: bunTarget,

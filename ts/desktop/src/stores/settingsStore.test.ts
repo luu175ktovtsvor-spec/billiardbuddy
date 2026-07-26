@@ -262,16 +262,14 @@ describe('settingsStore app mode', () => {
   beforeEach(() => {
     vi.resetModules()
     vi.clearAllMocks()
-    delete (window as unknown as { __TAURI_INTERNALS__?: object }).__TAURI_INTERNALS__
     Reflect.deleteProperty(window, 'desktopHost')
-    Reflect.deleteProperty(window, '__TAURI__')
   })
 
   it('hydrates app mode from the Electron desktop host', async () => {
     const getAppMode = vi.fn().mockResolvedValue({
       mode: 'portable',
-      portableDir: 'C:\\billiardbuddy\\CLAUDE_CONFIG_DIR',
-      defaultPortableDir: 'C:\\billiardbuddy\\CLAUDE_CONFIG_DIR',
+      portableDir: 'C:\\billiardbuddy\\BILLIARDBUDDY_CONFIG_DIR',
+      defaultPortableDir: 'C:\\billiardbuddy\\BILLIARDBUDDY_CONFIG_DIR',
     })
     installElectronAppModeHost({ get: getAppMode })
 
@@ -282,8 +280,8 @@ describe('settingsStore app mode', () => {
     expect(getAppMode).toHaveBeenCalledTimes(1)
     expect(useSettingsStore.getState().appMode).toEqual({
       mode: 'portable',
-      portableDir: 'C:\\billiardbuddy\\CLAUDE_CONFIG_DIR',
-      defaultPortableDir: 'C:\\billiardbuddy\\CLAUDE_CONFIG_DIR',
+      portableDir: 'C:\\billiardbuddy\\BILLIARDBUDDY_CONFIG_DIR',
+      defaultPortableDir: 'C:\\billiardbuddy\\BILLIARDBUDDY_CONFIG_DIR',
     })
   })
 
@@ -316,7 +314,7 @@ describe('settingsStore app mode', () => {
       appMode: {
         mode: 'default',
         portableDir: null,
-        defaultPortableDir: 'C:\\billiardbuddy\\CLAUDE_CONFIG_DIR',
+        defaultPortableDir: 'C:\\billiardbuddy\\BILLIARDBUDDY_CONFIG_DIR',
       },
       appModeRequiresRestart: false,
     })
@@ -325,13 +323,13 @@ describe('settingsStore app mode', () => {
 
     expect(setAppMode).toHaveBeenCalledWith({
       mode: 'portable',
-      portableDir: 'C:\\billiardbuddy\\CLAUDE_CONFIG_DIR',
+      portableDir: 'C:\\billiardbuddy\\BILLIARDBUDDY_CONFIG_DIR',
     })
     expect(useSettingsStore.getState().appMode).toEqual({
       mode: 'portable',
-      portableDir: 'C:\\billiardbuddy\\CLAUDE_CONFIG_DIR',
-      defaultPortableDir: 'C:\\billiardbuddy\\CLAUDE_CONFIG_DIR',
-      activeConfigDir: 'C:\\billiardbuddy\\CLAUDE_CONFIG_DIR',
+      portableDir: 'C:\\billiardbuddy\\BILLIARDBUDDY_CONFIG_DIR',
+      defaultPortableDir: 'C:\\billiardbuddy\\BILLIARDBUDDY_CONFIG_DIR',
+      activeConfigDir: 'C:\\billiardbuddy\\BILLIARDBUDDY_CONFIG_DIR',
       configDirSource: 'portable',
     })
     expect(useSettingsStore.getState().appModeRequiresRestart).toBe(true)
@@ -369,7 +367,7 @@ describe('settingsStore app mode', () => {
       appMode: {
         mode: 'default',
         portableDir: null,
-        defaultPortableDir: 'C:\\billiardbuddy\\CLAUDE_CONFIG_DIR',
+        defaultPortableDir: 'C:\\billiardbuddy\\BILLIARDBUDDY_CONFIG_DIR',
       },
       appModeRequiresRestart: false,
     })
@@ -397,7 +395,7 @@ describe('settingsStore app mode', () => {
       appMode: {
         mode: 'portable',
         portableDir: 'D:\\portable-data',
-        defaultPortableDir: 'C:\\billiardbuddy\\CLAUDE_CONFIG_DIR',
+        defaultPortableDir: 'C:\\billiardbuddy\\BILLIARDBUDDY_CONFIG_DIR',
         activeConfigDir: 'D:\\portable-data',
         configDirSource: 'portable',
       },
@@ -413,7 +411,7 @@ describe('settingsStore app mode', () => {
     expect(useSettingsStore.getState().appMode).toEqual({
       mode: 'default',
       portableDir: null,
-      defaultPortableDir: 'C:\\billiardbuddy\\CLAUDE_CONFIG_DIR',
+      defaultPortableDir: 'C:\\billiardbuddy\\BILLIARDBUDDY_CONFIG_DIR',
       activeConfigDir: null,
       configDirSource: 'system',
     })

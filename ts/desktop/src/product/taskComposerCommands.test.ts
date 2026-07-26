@@ -106,6 +106,7 @@ describe('taskComposerCommands', () => {
     )
 
     expect(commands.map((command) => command.name)).toEqual([
+      'compact',
       'agent assistant-1',
       'agent assistant-1-2',
     ])

@@ -19,7 +19,8 @@ export class DeepSeekRequestError extends Error {
 const MODEL_PATTERN = /^[A-Za-z0-9._:-]{1,120}$/
 
 /**
- * Anthropic's native server-side web search schema. The QF gateway handles
+ * DeepSeek's native server-side web search uses the official Anthropic
+ * Messages schema. The QF gateway handles
  * this one narrow protocol directly so the normal OpenAI-compatible chat and
  * vision-bridge path stays unchanged.
  */
@@ -156,7 +157,7 @@ export function isDeepSeekNativeWebSearchRequest(value: unknown): boolean {
 
 /**
  * Validates and prepares the one native Anthropic request the managed gateway
- * supports: Claude Code's server-side WebSearchTool. It keeps the official
+ * supports: DeepSeek server-side web search. It keeps the official
  * schema intact, coerces only the server-allowed DeepSeek model, and replaces
  * any client-provided user id with the trusted opaque installation identity.
  */
@@ -232,7 +233,7 @@ function isRecord(value: unknown): value is Record<string, any> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
-// 与 qwen/mimo 一致:只重试"明确可重试的 5xx",429 一律不重试(避免与 CC CLI 重试相乘)。
+// 与其他受管模型路由一致：只重试明确可重试的 5xx；429 一律不重试，避免与调用方重试相乘。
 // 连接错误在 catch 分支重试;调用点把 maxRetries 夹在 [0,1],一次逻辑调用最多额外尝试一次。
 function isRetryableStatus(status: number): boolean {
   return status >= 500 && status <= 599

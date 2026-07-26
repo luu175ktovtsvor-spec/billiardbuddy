@@ -1,4 +1,5 @@
 import { Database } from 'bun:sqlite'
+import { createHash, createHmac } from 'node:crypto'
 import { dirname } from 'node:path'
 import { mkdirSync } from 'node:fs'
 import { AuthAuthority, AuthError, FileAuthorityStore, parseLicenseProvisioning, type LicenseProvisioning } from './auth/authority'
@@ -23,7 +24,7 @@ import {
   VisionBridgeError,
   type VisionBridge,
 } from './visionBridge'
-import { PROVIDER_REGISTRY, textReasoningRegistryEntry, visualEvidenceRegistryEntry } from './providerRegistry'
+import { PROVIDER_REGISTRY, mediaReasoningRegistryEntry, textReasoningRegistryEntry, visualEvidenceRegistryEntry } from './providerRegistry'
 import {
   fileUsageFingerprint,
   SqliteUsageBudgetService,
@@ -42,11 +43,12 @@ type RequestTimeoutController = { timeout(request: Request, seconds: number): vo
 
 export const PROVIDER_GATEWAY_PROTOCOL_VALUE = 'bb-provider-gateway/1.0'
 const PROVIDER_GATEWAY_PROTOCOL_HEADER = 'x-bb-provider-protocol'
-const DATA_EGRESS_CONSENT_HEADER = 'x-bb-data-egress-consent'
+export const MEDIA_RESULT_HANDOFF_HEADER = 'x-bb-media-result-handoff'
+export const MEDIA_RESULT_HANDOFF_DIRECT_V1 = 'direct-v1'
+const RELAY_RESULT_GRANT_TTL_MS = 10 * 60_000
 const COMPONENT_MANIFEST = {
-  component: 'qf-gateway',
+  component: 'billiardbuddy-gateway',
   protocol: PROVIDER_GATEWAY_PROTOCOL_VALUE,
-  requires_data_egress_consent: true,
   relay_protocol: PROVIDER_GATEWAY_PROTOCOL_VALUE,
 } as const
 
@@ -119,6 +121,7 @@ type GatewayConfig = {
   relayTasksBase: string
   relaySubmitTimeoutMs: number
   relayResultTimeoutMs: number
+  relayResultMaxBytes: number
   adminToken: string
   db: string
   bootstrapCredentials: Set<string>
@@ -126,7 +129,7 @@ type GatewayConfig = {
   mimoBase: string
   mimoRpm: number
   /** Retained scheduler lane; BB-04C submits only VisualEvidence work. */
-  mimoNativeConc: number
+  mimoMediaConc: number
   mimoConc: number
   mimoUserConc: number
   mimoInflightPerUser: number
@@ -214,12 +217,6 @@ function requireProviderProtocol(request: Request): void {
   if (request.headers.get(PROVIDER_GATEWAY_PROTOCOL_HEADER)?.trim() !== PROVIDER_GATEWAY_PROTOCOL_VALUE) {
     throw new HttpError(426, 'PROVIDER_PROTOCOL_INCOMPATIBLE')
   }
-}
-
-function requireRemoteConsent(request: Request): string {
-  const receipt = request.headers.get(DATA_EGRESS_CONSENT_HEADER)?.trim() ?? ''
-  if (!/^[a-f0-9]{64}$/.test(receipt)) throw new HttpError(428, 'DATA_EGRESS_CONSENT_REQUIRED')
-  return receipt
 }
 
 class TokenBucket {
@@ -320,7 +317,7 @@ class TokenBucket {
 }
 
 /**
- * Tracks a process-wide reservation for image-task request bodies while qfgw reads,
+ * Tracks a process-wide reservation for image-task request bodies while billiardbuddy-gateway reads,
  * merges, decodes and forwards them. Relay's task queue protects expensive image work,
  * but it cannot protect this gateway from a simultaneous burst of base64 bodies.
  */
@@ -479,7 +476,7 @@ async function readRequestBodyBounded(
     while (true) {
       if (aborted) throw new HttpError(499, '请求已取消')
       if (readTimedOut) throw new HttpError(408, '请求体读取超时')
-      let result: ReadableStreamReadResult<Uint8Array>
+      let result
       try {
         result = await reader.read()
       } catch {
@@ -627,13 +624,13 @@ function loadConfig(env: Env): GatewayConfig {
   // account ceiling: unused capacity makes health misleading and is not a reservation.
   const implicitVisionConc = Math.min(12, Math.max(1, mimoConc - 1))
   const visionConc = Math.max(1, intEnv(env, 'GW_VISION_CONC', implicitVisionConc))
-  const implicitNativeConc = mimoConc - visionConc
-  if (implicitNativeConc < 1) {
-    throw new Error('GW_MIMO_CONC must leave at least one native and one visual MiMo slot')
+  const implicitMediaConc = mimoConc - visionConc
+  if (implicitMediaConc < 1) {
+    throw new Error('GW_MIMO_CONC must leave at least one media-reasoning and one visual-evidence MiMo slot')
   }
-  const mimoNativeConc = Math.max(1, intEnv(env, 'GW_MIMO_NATIVE_CONC', implicitNativeConc))
-  if (mimoNativeConc + visionConc !== mimoConc) {
-    throw new Error('GW_MIMO_NATIVE_CONC + GW_VISION_CONC must equal GW_MIMO_CONC')
+  const mimoMediaConc = Math.max(1, intEnv(env, 'GW_MIMO_MEDIA_CONC', implicitMediaConc))
+  if (mimoMediaConc + visionConc !== mimoConc) {
+    throw new Error('GW_MIMO_MEDIA_CONC + GW_VISION_CONC must equal GW_MIMO_CONC')
   }
   return {
     relayToken: required(env, 'GW_RELAY_TOKEN'),
@@ -641,18 +638,19 @@ function loadConfig(env: Env): GatewayConfig {
     relayTasksBase: httpsUrlOrEmpty(env.GW_RELAY_TASKS_BASE),
     // Relay 只负责快速接受持久化任务；跨境提交异常不能无限占用入口 body reservation。
     relaySubmitTimeoutMs: Math.max(1, intEnv(env, 'GW_RELAY_SUBMIT_TIMEOUT_MS', 15_000)),
-    // 最终状态响应可能携带完整 Base64 图片；从美国 relay 读取响应头和正文共用五分钟截止时间。
+    // 最终状态响应可能携带完整 Base64 图片；流式正文仍受总时限和字节上限约束。
     relayResultTimeoutMs: Math.max(1, intEnv(env, 'GW_RELAY_RESULT_TIMEOUT_MS', 5 * 60_000)),
+    relayResultMaxBytes: Math.max(1, intEnv(env, 'GW_RELAY_RESULT_MAX_BYTES', 96 * 1024 * 1024)),
     adminToken: env.GW_ADMIN_TOKEN ?? 'change-me',
-    db: env.GW_DB ?? '/opt/qfgw/usage.db',
+    db: env.GW_DB ?? '/opt/billiardbuddy-gateway/usage.db',
     bootstrapCredentials: bootstrapCredentials(env),
     mimoKey: env.GW_MIMO_KEY ?? '',
     mimoBase: (env.GW_MIMO_BASE ?? 'https://api.xiaomimimo.com/v1').replace(/\/+$/, ''),
     mimoRpm: intEnv(env, 'GW_MIMO_RPM', 100_000),
-    // The retained scheduler partition remains internally consistent while BB-04C
-    // submits only Registry-owned VisualEvidence work through the visual lane.
+    // MediaReasoning and VisualEvidence share one physical account but have hard,
+    // separately observable reservations so neither product path can starve the other.
     mimoConc,
-    mimoNativeConc,
+    mimoMediaConc,
     mimoUserConc: Math.max(1, intEnv(env, 'GW_MIMO_USER_CONC', 1)),
     mimoInflightPerUser: Math.max(1, intEnv(env, 'GW_MIMO_INFLIGHT_PER_USER', 1)),
     mimoTokenConc: Math.max(1, intEnv(env, 'GW_MIMO_TOKEN_CONC', mimoConc)),
@@ -726,7 +724,7 @@ function loadConfig(env: Env): GatewayConfig {
       intEnv(env, 'GW_CHAT_INFLIGHT_BODY_BYTES', intEnv(env, 'GW_IMG_INFLIGHT_BODY_BYTES', 256 * 1024 * 1024)),
     )),
     ingressBodyReadTimeoutMs: Math.max(1, intEnv(env, 'GW_INGRESS_BODY_READ_TIMEOUT_MS', 30_000)),
-    // Image generation itself is queued on relay; qfgw only accepts short submissions.
+    // Image generation itself is queued on relay; billiardbuddy-gateway only accepts short submissions.
     // Permit a 100×10 burst to reach relay's idempotent queue instead of throttling it to
     // 18/min here. The byte reservation below is the memory guard for those submissions.
     imgIpm: intEnv(env, 'GW_IMG_IPM', 1_200),
@@ -812,6 +810,30 @@ function bootstrapCredential(config: GatewayConfig, request: Request): boolean {
 /** 传给美国 relay 的受信任务归属身份只来自已验证 owner。 */
 function relayOwner(owner: string): string {
   return owner
+}
+
+type RelayResultGrantPayload = {
+  v: 1
+  task_id: string
+  owner_sha256: string
+  expires_at: number
+}
+
+export function createRelayResultGrant(
+  relayToken: string,
+  taskId: string,
+  owner: string,
+  now = Date.now(),
+): string {
+  const payload: RelayResultGrantPayload = {
+    v: 1,
+    task_id: taskId,
+    owner_sha256: createHash('sha256').update(owner).digest('hex'),
+    expires_at: now + RELAY_RESULT_GRANT_TTL_MS,
+  }
+  const encoded = Buffer.from(JSON.stringify(payload)).toString('base64url')
+  const signature = createHmac('sha256', relayToken).update(encoded).digest('hex')
+  return `${encoded}.${signature}`
 }
 
 async function logUsage(store: UsageStore, entry: UsageEntry): Promise<void> {
@@ -1024,7 +1046,7 @@ function createChatHandler(provider: ChatProvider, fetchImpl: FetchLike, store: 
 }
 
 /**
- * Narrow native Anthropic route for Claude Code's WebSearchTool. Normal agent
+ * Narrow native Anthropic route required by DeepSeek server-side web search. Normal agent
  * chat deliberately remains on the OpenAI-compatible path so the server-side
  * image-evidence bridge remains mandatory.
  */
@@ -1170,12 +1192,12 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
   const mimoBucket = new TokenBucket(config.mimoRpm)
   const mimoReservations = new MimoReservationScheduler({
     maxConcurrent: config.mimoConc,
-    nativeConcurrent: config.mimoNativeConc,
+    mediaConcurrent: config.mimoMediaConc,
     visionConcurrent: config.visionConc,
     maxConcurrentPerUser: config.mimoUserConc,
     maxConcurrentPerToken: config.mimoTokenConc,
     maxInflightPerUser: config.mimoInflightPerUser,
-    nativeQueueMax: config.mimoQueueMax,
+    mediaQueueMax: config.mimoQueueMax,
     visionQueueMax: config.visionQueueMax,
     visionMaxConcurrentPerUser: config.visionPerClientConc,
     visionMaxInflightPerUser: config.visionMaxInflightPerClient,
@@ -1246,10 +1268,10 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
       label: 'mimo',
       base: config.mimoBase,
       key: config.mimoKey,
-      defaultModel: visualEvidenceRegistryEntry().model_id,
-      allowedModels: new Set([visualEvidenceRegistryEntry().model_id]),
+      defaultModel: mediaReasoningRegistryEntry().model_id,
+      allowedModels: new Set([mediaReasoningRegistryEntry().model_id]),
       bucket: mimoBucket,
-      capacity: mimoReservations.forLane('native'),
+      capacity: mimoReservations.forLane('media'),
       queueMaxWait: config.mimoQueueMaxWait,
       retryMax: config.mimoRetryMax,
       retryBaseMs: config.mimoRetryBaseMs,
@@ -1337,36 +1359,133 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
   async function proxyRelayImageResult(request: Request, input: string, headers: Record<string, string>): Promise<Response> {
     const controller = new AbortController()
     let timedOut = false
-    const abortForClient = () => controller.abort()
+    let bodyController: ReadableStreamDefaultController<Uint8Array> | undefined
+    let closed = false
+    const abortForClient = () => {
+      controller.abort()
+      if (!closed) bodyController?.error(new Error('relay result request cancelled'))
+    }
     if (request.signal.aborted) abortForClient()
     else request.signal.addEventListener('abort', abortForClient, { once: true })
     let timer: ReturnType<typeof setTimeout> | undefined
+    const cleanup = () => {
+      if (closed) return
+      closed = true
+      if (timer) clearTimeout(timer)
+      request.signal.removeEventListener('abort', abortForClient)
+    }
     const timeout = new Promise<never>((_resolve, reject) => {
       timer = setTimeout(() => {
         timedOut = true
         controller.abort()
+        if (!closed) bodyController?.error(new Error('relay result response deadline exceeded'))
         reject(new HttpError(504, '生图结果读取超时，请稍后重试'))
       }, config.relayResultTimeoutMs)
       ;(timer as unknown as { unref?: () => void }).unref?.()
     })
-    const fetchAndRead = async () => {
-      const upstream = await fetchImpl(input, {
+    try {
+      const upstream = await Promise.race([fetchImpl(input, {
         method: 'GET',
         headers,
         signal: controller.signal,
+      }), timeout])
+      if (!isJsonContentType(upstream.headers.get('content-type'))) {
+        controller.abort()
+        cleanup()
+        throw new HttpError(502, '生图结果响应格式无效')
+      }
+      const declaredBytes = Number(upstream.headers.get('content-length') ?? '')
+      if (Number.isFinite(declaredBytes) && declaredBytes > config.relayResultMaxBytes) {
+        controller.abort()
+        cleanup()
+        throw new HttpError(502, '生图结果响应过大')
+      }
+      if (!upstream.body) {
+        cleanup()
+        return new Response(null, {
+          status: upstream.status,
+          statusText: upstream.statusText,
+          headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
+        })
+      }
+      const reader = upstream.body.getReader()
+      let receivedBytes = 0
+      const body = new ReadableStream<Uint8Array>({
+        start(value) { bodyController = value },
+        async pull(value) {
+          if (closed) return
+          try {
+            const chunk = await reader.read()
+            if (chunk.done) {
+              cleanup()
+              value.close()
+              return
+            }
+            receivedBytes += chunk.value.byteLength
+            if (receivedBytes > config.relayResultMaxBytes) {
+              controller.abort()
+              cleanup()
+              await reader.cancel('relay result response exceeded byte limit').catch(() => undefined)
+              value.error(new Error('relay result response exceeded byte limit'))
+              return
+            }
+            value.enqueue(chunk.value)
+          } catch (error) {
+            cleanup()
+            value.error(error)
+          }
+        },
+        async cancel(reason) {
+          controller.abort()
+          cleanup()
+          await reader.cancel(reason).catch(() => undefined)
+        },
       })
-      return await proxyJsonOrRaw(upstream)
-    }
-    try {
-      return await Promise.race([fetchAndRead(), timeout])
+      const responseHeaders = new Headers({
+        'Content-Type': 'application/json',
+        'Cache-Control': 'no-store',
+      })
+      if (Number.isFinite(declaredBytes) && declaredBytes >= 0) responseHeaders.set('Content-Length', String(declaredBytes))
+      return new Response(body, {
+        status: upstream.status,
+        statusText: upstream.statusText,
+        headers: responseHeaders,
+      })
     } catch (error) {
+      cleanup()
       if (timedOut) throw new HttpError(504, '生图结果读取超时，请稍后重试')
       if (request.signal.aborted) throw new HttpError(499, '请求已取消')
       throw error
-    } finally {
-      if (timer) clearTimeout(timer)
-      request.signal.removeEventListener('abort', abortForClient)
     }
+  }
+
+  async function imageResultHandoff(
+    taskId: string,
+    owner: string,
+    headers: Record<string, string>,
+  ): Promise<Response> {
+    const upstream = await fetchImpl(
+      `${config.relayTasksBase}/images/tasks/${encodeURIComponent(taskId)}?metadata_only=1`,
+      { method: 'GET', headers },
+    )
+    if (!isJsonContentType(upstream.headers.get('content-type'))) {
+      throw new HttpError(502, '生图任务状态响应格式无效')
+    }
+    const metadata = await upstream.json() as Record<string, unknown>
+    if (!upstream.ok) return jsonResponse(metadata, { status: upstream.status })
+    if (metadata.status !== 'succeeded' || metadata.result_available !== true) {
+      return jsonResponse(metadata, { status: upstream.status, headers: { 'Cache-Control': 'no-store' } })
+    }
+    const grant = createRelayResultGrant(config.relayToken, taskId, relayOwner(owner))
+    const outputCount = typeof metadata.output_count === 'number'
+      ? Math.max(0, Math.min(4, Math.trunc(metadata.output_count)))
+      : 0
+    const resultBase = `${config.relayTasksBase}/images/results/${encodeURIComponent(grant)}`
+    return jsonResponse({
+      ...metadata,
+      result_url: resultBase,
+      result_urls: Array.from({ length: outputCount }, (_value, index) => `${resultBase}/${index}`),
+    }, { status: upstream.status, headers: { 'Cache-Control': 'no-store' } })
   }
 
   async function fetchHandler(request: Request, server?: RequestTimeoutController): Promise<Response> {
@@ -1376,7 +1495,7 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
         if (!hasInstallationAccess(authority, request)) return jsonResponse({ ok: true, component_manifest: COMPONENT_MANIFEST })
         const identity = auth(authority, request)
         const mimo = mimoReservations.snapshot()
-        const nativeMimo = mimoReservations.laneSnapshot('native')
+        const mediaMimo = mimoReservations.laneSnapshot('media')
         const reservedVision = mimoReservations.laneSnapshot('vision')
         const vision = visionBridge?.snapshot() ?? {
           active: reservedVision.active,
@@ -1393,7 +1512,7 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
           limits: {
             mimo_rpm: config.mimoRpm,
             mimo_conc: config.mimoConc,
-            mimo_native_conc: config.mimoNativeConc,
+            mimo_media_conc: config.mimoMediaConc,
             mimo_user_conc: config.mimoUserConc,
             mimo_inflight_per_user: config.mimoInflightPerUser,
             mimo_token_conc: config.mimoTokenConc,
@@ -1416,6 +1535,7 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
             img_task_max_body_bytes: config.imgTaskMaxBodyBytes,
             relay_submit_timeout_ms: config.relaySubmitTimeoutMs,
             relay_result_timeout_ms: config.relayResultTimeoutMs,
+            relay_result_max_bytes: config.relayResultMaxBytes,
             ingress_inflight_body_bytes: config.ingressInflightBodyBytes,
             ingress_body_read_timeout_ms: config.ingressBodyReadTimeoutMs,
             transcribe_rpm: config.transcribeRpm,
@@ -1426,23 +1546,23 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
           quota: {},
           usage_budget: {
             policy_revision: usageBudget.policyRevision(),
-            metered_capabilities: ['TextReasoning', 'VisualEvidence', 'SpeechTranscription'],
+            metered_capabilities: ['TextReasoning', 'VisualEvidence', 'MediaReasoning', 'SpeechTranscription'],
           },
           usage_summary: usageBudget.summary(identity.principalId, identity.installationId),
           capacity: {
-            // `mimo` remains the backwards-compatible account aggregate seen by existing
-            // runners. `mimo_native` exposes the retained scheduler reservation separately.
+            // `mimo` is the account aggregate; each product contract also exposes its
+            // own reservation so overload and starvation are attributable.
             mimo: {
               ...mimo,
-              nativeReserved: config.mimoNativeConc,
+              mediaReserved: config.mimoMediaConc,
               visionReserved: config.visionConc,
             },
-            mimo_native: nativeMimo,
+            mimo_media: mediaMimo,
             // Explicit alias for dashboards that want to distinguish the historic
             // `mimo` name from the aggregate physical-account view.
             mimo_total: {
               ...mimo,
-              nativeReserved: config.mimoNativeConc,
+              mediaReserved: config.mimoMediaConc,
               visionReserved: config.visionConc,
             },
             deepseek: deepseekCapacity.snapshot(),
@@ -1512,7 +1632,6 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
       if (request.method === 'POST' && url.pathname === '/v1/messages') {
         const identity = auth(authority, request)
         requireProviderProtocol(request)
-        requireRemoteConsent(request)
         const user = identity.owner
         const usageOperation = usageOperationId(request)
         // Bun defaults to a 10 s idle timeout. Native web-search may legitimately wait
@@ -1549,7 +1668,6 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
       if (request.method === 'POST' && url.pathname === '/v1/media/reasoning') {
         const identity = auth(authority, request)
         requireProviderProtocol(request)
-        requireRemoteConsent(request)
         const usageOperation = usageOperationId(request)
         server?.timeout(request, 0)
         const contentType = request.headers.get('content-type')
@@ -1564,9 +1682,9 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
             const inputBytes = Buffer.byteLength(rawBody, 'utf8')
             const receipt = reserveMetered(
               identity,
-              'VisualEvidence',
+              'MediaReasoning',
               `${usageOperation}:media`,
-              usageFingerprint(`VisualEvidence\0${rawBody}`),
+              usageFingerprint(`MediaReasoning\0${rawBody}`),
               { requests: 1, input_bytes: inputBytes, output_units: requestedOutputUnits(rawBody) },
             )
             return await runMeteredStream(
@@ -1578,10 +1696,51 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
         )
       }
 
+      // Product workbenches request provider-neutral, question-independent visual
+      // evidence here. The Host binds the returned items to source IDs and time
+      // ranges; image bytes and provider credentials never enter a model planner.
+      if (request.method === 'POST' && url.pathname === '/v1/visual/evidence') {
+        const identity = auth(authority, request)
+        requireProviderProtocol(request)
+        const usageOperation = usageOperationId(request)
+        server?.timeout(request, 0)
+        const contentType = request.headers.get('content-type')
+        if (contentType && !isJsonContentType(contentType)) throw new HttpError(415, '视觉证据请求需要 JSON')
+        return await withBufferedBodyReservation(
+          request,
+          visualEvidenceBodyCaps().VISION_BODY_MAX_BYTES,
+          ingressBodyBudget,
+          config.ingressBodyReadTimeoutMs,
+          async rawBody => {
+            if (!visionBridge) throw new HttpError(503, '视觉证据服务未配置')
+            if (!containsImageContent(rawBody)) throw new HttpError(400, '视觉证据请求缺少图片')
+            const inputBytes = Buffer.byteLength(rawBody, 'utf8')
+            const receipt = reserveMetered(
+              identity,
+              'VisualEvidence',
+              `${usageOperation}:vision`,
+              usageFingerprint(`VisualEvidence\0${rawBody}`),
+              { requests: 1, input_bytes: inputBytes, output_units: 4_096 },
+            )
+            return await runMeteredStream(receipt, usageOperation, async () => {
+              const result = await visionBridge.transform(rawBody, {
+                signal: request.signal,
+                schedulerId: identity.owner,
+                tokenId: identity.principalId,
+              })
+              return jsonResponse({
+                schema: 'bb.visual-evidence-batch.v1',
+                evidence: result.evidence,
+                metrics: result.metrics,
+              }, { headers: { 'Cache-Control': 'no-store' } })
+            })
+          },
+        )
+      }
+
       if (request.method === 'POST' && url.pathname === '/v1/chat/completions') {
         const identity = auth(authority, request)
         requireProviderProtocol(request)
-        requireRemoteConsent(request)
         const user = identity.owner
         const usageOperation = usageOperationId(request)
         // Long DeepSeek queues and quiet SSE streams are valid product behavior. Set
@@ -1656,7 +1815,6 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
       if (request.method === 'POST' && url.pathname === '/v1/audio/transcriptions') {
         const identity = auth(authority, request)
         requireProviderProtocol(request)
-        requireRemoteConsent(request)
         server?.timeout(request, 0)
         const user = identity.owner
         const usageOperation = usageOperationId(request)
@@ -1742,7 +1900,6 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
         if (!config.relayTasksBase) throw new HttpError(503, '生图异步任务未配置(缺 GW_RELAY_TASKS_BASE)')
         const contentType = request.headers.get('content-type')
         if (contentType && !isJsonContentType(contentType)) throw new HttpError(415, '生图任务需要 JSON')
-        const consentHash = requireRemoteConsent(request)
         const idempotencyKey = request.headers.get('idempotency-key')?.trim() ?? ''
         if (!idempotencyKey || idempotencyKey.length > 160) throw new HttpError(428, 'OPERATION_ID_REQUIRED')
         try {
@@ -1758,7 +1915,6 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
               Authorization: `Bearer ${config.relayToken}`,
               'Content-Type': 'application/json',
               'X-Relay-Owner': relayOwner(user),
-              'X-Relay-Data-Egress-Consent': consentHash,
               'X-BB-Provider-Protocol': PROVIDER_GATEWAY_PROTOCOL_VALUE,
             }
             submitHeaders['Idempotency-Key'] = idempotencyKey
@@ -1879,14 +2035,18 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
         // parameters from an app client to the internal relay.
         const metadataOnly = url.searchParams.get('metadata_only') === '1'
         const metadataQuery = metadataOnly ? '?metadata_only=1' : ''
+        const relayHeaders = {
+          Authorization: `Bearer ${config.relayToken}`,
+          'X-Relay-Owner': relayOwner(user),
+          'X-BB-Provider-Protocol': PROVIDER_GATEWAY_PROTOCOL_VALUE,
+        }
+        if (request.headers.get(MEDIA_RESULT_HANDOFF_HEADER) === MEDIA_RESULT_HANDOFF_DIRECT_V1) {
+          return await imageResultHandoff(taskId, user, relayHeaders)
+        }
         return await proxyRelayImageResult(
           request,
           `${config.relayTasksBase}/images/tasks/${encodeURIComponent(taskId)}${metadataQuery}`,
-          {
-            Authorization: `Bearer ${config.relayToken}`,
-            'X-Relay-Owner': relayOwner(user),
-            'X-BB-Provider-Protocol': PROVIDER_GATEWAY_PROTOCOL_VALUE,
-          },
+          relayHeaders,
         )
       }
 
@@ -1896,7 +2056,7 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
       if (err instanceof CapacityQueueError || err instanceof DeepSeekRequestError) {
         return jsonError(err.status, err.publicMessage)
       }
-      console.error('[qfgw] request failed', err)
+      console.error('[billiardbuddy-gateway] request failed', err)
       return jsonError(500, 'internal server error')
     }
   }
@@ -1965,5 +2125,5 @@ export function startGatewayServer(opts: { host?: string; port?: number } = {}) 
 if (import.meta.main) {
   const { host, port } = parseArgs(process.argv.slice(2))
   const server = startGatewayServer({ host, port })
-  console.log(`[qfgw] listening on http://${host}:${server.port}`)
+  console.log(`[billiardbuddy-gateway] listening on http://${host}:${server.port}`)
 }

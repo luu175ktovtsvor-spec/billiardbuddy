@@ -172,12 +172,12 @@ test('five-window profile caps one installation at five permits before later use
 function mimoReservations(overrides: Partial<ConstructorParameters<typeof MimoReservationScheduler>[0]> = {}) {
   return new MimoReservationScheduler({
     maxConcurrent: 4,
-    nativeConcurrent: 2,
+    mediaConcurrent: 2,
     visionConcurrent: 2,
     maxConcurrentPerUser: 2,
     maxConcurrentPerToken: 4,
     maxInflightPerUser: 2,
-    nativeQueueMax: 2,
+    mediaQueueMax: 2,
     visionQueueMax: 2,
     visionMaxConcurrentPerUser: 2,
     visionMaxInflightPerUser: 2,
@@ -186,8 +186,8 @@ function mimoReservations(overrides: Partial<ConstructorParameters<typeof MimoRe
 }
 
 test('MiMo reservations atomically enforce the total and each hard lane without a second gate', async () => {
-  const scheduler = mimoReservations({ maxConcurrent: 64, nativeConcurrent: 52, visionConcurrent: 12, maxConcurrentPerToken: 64 })
-  const native = await Promise.all(Array.from({ length: 52 }, (_, index) => scheduler.acquire('native', `native-${index}`, {
+  const scheduler = mimoReservations({ maxConcurrent: 64, mediaConcurrent: 52, visionConcurrent: 12, maxConcurrentPerToken: 64 })
+  const media = await Promise.all(Array.from({ length: 52 }, (_, index) => scheduler.acquire('media', `media-${index}`, {
     tokenId: `token-n-${index}`,
     maxWaitMs: 1000,
   })))
@@ -197,17 +197,17 @@ test('MiMo reservations atomically enforce the total and each hard lane without 
   })))
 
   expect(scheduler.snapshot()).toMatchObject({ active: 64, queued: 0, maxConcurrent: 64 })
-  expect(scheduler.laneSnapshot('native')).toMatchObject({ active: 52, queued: 0, maxConcurrent: 52 })
+  expect(scheduler.laneSnapshot('media')).toMatchObject({ active: 52, queued: 0, maxConcurrent: 52 })
   expect(scheduler.laneSnapshot('vision')).toMatchObject({ active: 12, queued: 0, maxConcurrent: 12 })
   await expect(scheduler.acquire('vision', 'overflow', { tokenId: 'overflow', maxWaitMs: 0 })).rejects.toMatchObject({ status: 429 })
 
-  for (const permit of [...native, ...vision]) permit.release()
+  for (const permit of [...media, ...vision]) permit.release()
   expect(scheduler.snapshot()).toMatchObject({ active: 0, queued: 0, oldestQueueMs: 0 })
 })
 
-test('MiMo reservations apply one token cap across native and visual calls without blocking another token', async () => {
+test('MiMo reservations apply one token cap across media and visual calls without blocking another token', async () => {
   const scheduler = mimoReservations({ maxConcurrentPerToken: 3 })
-  const nativeA = await Promise.all(['a-1', 'a-2'].map(user => scheduler.acquire('native', user, {
+  const mediaA = await Promise.all(['a-1', 'a-2'].map(user => scheduler.acquire('media', user, {
     tokenId: 'token-a',
     maxWaitMs: 1000,
   })))
@@ -222,36 +222,36 @@ test('MiMo reservations apply one token cap across native and visual calls witho
   const admittedA = await blockedA
   expect(scheduler.snapshot()).toMatchObject({ active: 4, queued: 0 })
 
-  for (const permit of [...nativeA, visualB, admittedA]) permit.release()
+  for (const permit of [...mediaA, visualB, admittedA]) permit.release()
   expect(scheduler.snapshot()).toMatchObject({ active: 0, queued: 0 })
 })
 
 test('MiMo reservations rebalance a full lane queue when a token-capped waiter would otherwise leave the next slot idle', async () => {
   const scheduler = mimoReservations({
     maxConcurrent: 3,
-    nativeConcurrent: 2,
+    mediaConcurrent: 2,
     visionConcurrent: 1,
     maxConcurrentPerToken: 1,
-    nativeQueueMax: 1,
+    mediaQueueMax: 1,
     visionQueueMax: 0,
     maxInflightPerUser: 2,
   })
-  const tokenAActive = await scheduler.acquire('native', 'token-a-active', { tokenId: 'token-a', maxWaitMs: 1000 })
-  const tokenCActive = await scheduler.acquire('native', 'token-c-active', { tokenId: 'token-c', maxWaitMs: 1000 })
-  const tokenAQueued = scheduler.acquire('native', 'token-a-queued', { tokenId: 'token-a', maxWaitMs: 1000 })
+  const tokenAActive = await scheduler.acquire('media', 'token-a-active', { tokenId: 'token-a', maxWaitMs: 1000 })
+  const tokenCActive = await scheduler.acquire('media', 'token-c-active', { tokenId: 'token-c', maxWaitMs: 1000 })
+  const tokenAQueued = scheduler.acquire('media', 'token-a-queued', { tokenId: 'token-a', maxWaitMs: 1000 })
     .then(() => 'granted', (error: unknown) => error)
-  expect(scheduler.laneSnapshot('native')).toMatchObject({ active: 2, queued: 1, queueMax: 1 })
+  expect(scheduler.laneSnapshot('media')).toMatchObject({ active: 2, queued: 1, queueMax: 1 })
 
   // Token A is already at its active cap, so this fresh token B must be able to wait
-  // for C's native slot rather than inherit a full queue of A-only blocked work.
-  const tokenBQueued = scheduler.acquire('native', 'token-b-queued', { tokenId: 'token-b', maxWaitMs: 1000 })
+  // for C's media slot rather than inherit a full queue of A-only blocked work.
+  const tokenBQueued = scheduler.acquire('media', 'token-b-queued', { tokenId: 'token-b', maxWaitMs: 1000 })
   const displaced = await tokenAQueued
   expect(displaced).toMatchObject({ status: 429 })
-  expect(scheduler.laneSnapshot('native')).toMatchObject({ active: 2, queued: 1, queueMax: 1 })
+  expect(scheduler.laneSnapshot('media')).toMatchObject({ active: 2, queued: 1, queueMax: 1 })
 
   tokenCActive.release()
   const tokenBPermit = await tokenBQueued
-  expect(scheduler.laneSnapshot('native')).toMatchObject({ active: 2, queued: 0 })
+  expect(scheduler.laneSnapshot('media')).toMatchObject({ active: 2, queued: 0 })
 
   tokenAActive.release()
   tokenBPermit.release()
@@ -259,24 +259,24 @@ test('MiMo reservations rebalance a full lane queue when a token-capped waiter w
 })
 
 test('MiMo reservations honor a widened installation allowance across both lanes and release cancelled waiters', async () => {
-  const scheduler = mimoReservations({ maxConcurrent: 3, nativeConcurrent: 2, visionConcurrent: 1 })
-  const native = await scheduler.acquire('native', 'same-install', { tokenId: 'token-a', maxWaitMs: 1000 })
+  const scheduler = mimoReservations({ maxConcurrent: 3, mediaConcurrent: 2, visionConcurrent: 1 })
+  const media = await scheduler.acquire('media', 'same-install', { tokenId: 'token-a', maxWaitMs: 1000 })
   const vision = await scheduler.acquire('vision', 'same-install', { tokenId: 'token-a', maxWaitMs: 1000 })
-  await expect(scheduler.acquire('native', 'same-install', { tokenId: 'token-a', maxWaitMs: 1000 })).rejects.toMatchObject({ status: 429 })
+  await expect(scheduler.acquire('media', 'same-install', { tokenId: 'token-a', maxWaitMs: 1000 })).rejects.toMatchObject({ status: 429 })
 
-  const held = await scheduler.acquire('native', 'other-install', { tokenId: 'token-b', maxWaitMs: 1000 })
+  const held = await scheduler.acquire('media', 'other-install', { tokenId: 'token-b', maxWaitMs: 1000 })
   const controller = new AbortController()
-  const cancelled = scheduler.acquire('native', 'waiting-install', { tokenId: 'token-c', maxWaitMs: 1000, signal: controller.signal })
+  const cancelled = scheduler.acquire('media', 'waiting-install', { tokenId: 'token-c', maxWaitMs: 1000, signal: controller.signal })
   controller.abort()
   await expect(cancelled).rejects.toMatchObject({ status: 499 })
-  expect(scheduler.laneSnapshot('native')).toMatchObject({ active: 2, queued: 0 })
+  expect(scheduler.laneSnapshot('media')).toMatchObject({ active: 2, queued: 0 })
 
-  for (const permit of [native, vision, held]) permit.release()
+  for (const permit of [media, vision, held]) permit.release()
   expect(scheduler.snapshot()).toMatchObject({ active: 0, queued: 0, oldestQueueMs: 0 })
 })
 
 test('MiMo reservations reject a partition that cannot account for every physical slot', () => {
-  expect(() => mimoReservations({ nativeConcurrent: 3, visionConcurrent: 2, maxConcurrent: 4 })).toThrow(
-    'MiMo native and vision reservations must exactly equal the account capacity',
+  expect(() => mimoReservations({ mediaConcurrent: 3, visionConcurrent: 2, maxConcurrent: 4 })).toThrow(
+    'MiMo media and vision reservations must exactly equal the account capacity',
   )
 })

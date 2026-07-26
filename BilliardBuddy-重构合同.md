@@ -64,6 +64,8 @@ Skill 在这个结构中是给 Agent 按需加载的操作说明、领域知识�
 
 现有代码、测试、部署和历史提交都只是待核对的候选实现，不自动构成正确架构或完成证据。每次改动必须先按第 3.0 节读取外部可得源码与当前生产调用链，再按第 4 节合同和第 5 节实施轮次决定保留、迁移、重写或删除。
 
+截至 2026-07-26，源码重构与远端运行闭包已经按本文边界收口：正式桌面只保留 Electron GUI、本地 Product Server 和内部 `agent-worker`；聊天使用 Product Agent Harness，图片/视频使用独立 MediaProject 工作台；Gateway/Relay 已按五条能力泳道部署并完成真实上游小流量验收。这个状态仍不等于本轮完成：macOS/Windows 安装包、升级/恢复和安装后主要用户旅程必须按第 7、9 节最后验收。
+
 
 ## 3. 目标架构
 
@@ -144,18 +146,18 @@ Skill 在这个结构中是给 Agent 按需加载的操作说明、领域知识�
 
 每一次落地必须交付一张“参考—改动”表：参考文件/commit、直接证据或推理等级、要解决的用户问题、BilliardBuddy 当前代码路径、唯一状态源、最小改动、失败/恢复行为、测试与真实旅程。该表未完成时，只能继续调研，不能修改生产执行链。
 
-#### 3.0.2 已核对的当前实现差距
+#### 3.0.2 已核对并处理的实现差距
 
-当前实现不能被本文的目标描述掩盖。2026-07-26 已读源码得到以下必须处理的差距；每一项在对应工作流实施时要删除或替换，而不是另包一层兼容逻辑：
+2026-07-26 的源码核对曾发现以下差距。它们已经在当前工作树中按右列收口；保留此表是为了说明为什么删除旧链，而不是继续把过期事实描述成现状：
 
-| 当前代码事实 | 与目标的冲突 | 重构决定 |
+| 原差距 | 与目标的冲突 | 当前处理结果 |
 |---|---|---|
-| `ts/shared/contracts/media.ts` 仍定义 `product_task` media owner、`product_task_id` 和 `data_egress_consent`；`MediaProjectService` 仍保存/校验逐次 consent receipt。 | 工作台被 ProductTask/聊天关联污染，并保留了用户已否定的逐操作出境/计费语义。 | 迁移到独立 `MediaProject` 项目身份；删除 ProductTask 挂接与 consent receipt/schema/header/测试链。远程 provider 是工作台正常执行路径，不产生“付费操作”或单次确认。 |
-| `ts/desktop/src/product/api/tasks.ts` 仍暴露 `attachMediaProject`，产品任务领域仍有 media attachable/project 类型。 | 聊天和工作台仍可被同一任务领域直接连接。 | 删除聊天侧 MediaProject 绑定 API、类型、路由、UI consumer 和迁移后无消费者代码；聊天只处理自身附件的 VisualEvidence。 |
-| `ImageWorkbench.tsx` 与 `VideoStudio.tsx` 以 `setTimeout` 轮询 `refreshTask`，共享 renderer store 以轮询结果判断 Job。 | 不能恢复、重连和表示真实持久 Job 事件；与 Invoke 的队列状态模型不等价。 | 保留单一 MediaJob/Operation 真相，提供 cursor/event 订阅和重连读取；前端只投影事件，轮询链及其 backoff 语义一并删除。 |
-| `VideoStudio.tsx` 已有素材、源预览、可编辑 timeline、场景锁与导出；`MediaProjectService` 已有本机 FFmpeg/FFprobe 队列。 | 这已是工作台雏形，但时间线交互与预览仍是自制简化实现。 | 以 OpenShot 的项目脏状态/状态机/独立预览线程合同和 OpenCut 的桌面分栏为基线，决定直接复用或重写；不得把它改回聊天步骤。 |
+| 媒体合同包含 `product_task` owner、`product_task_id` 和逐操作 `data_egress_consent`。 | 工作台被聊天任务身份和逐操作确认污染。 | 已删除 ProductTask 媒体挂接、consent schema/header/receipt/UI/test；图片与视频只以 MediaProject owner 和正常远程能力执行。 |
+| 聊天任务 API 暴露 `attachMediaProject` 与 media attachable 类型。 | 聊天可以直接操纵独立工作台项目。 | API、路由、类型和 UI 消费者已删除；聊天只处理自身附件并生成 VisualEvidence。 |
+| ImageWorkbench/VideoStudio 用组件 `setTimeout` 轮询判断 Job。 | renderer 临时时序会冒充持久任务真相。 | 工作台改为 Product Server 的单调媒体事件与 cursor 订阅，重连后查询校正；组件轮询链已删除。 |
+| 视频已有素材/时间线/FFmpeg 雏形，但预览、版本和失败恢复边界不完整。 | 模型建议、临时 UI 与实际导出容易混淆。 | 已保留本机 FFmpeg/ffprobe 权威执行，补齐 Evidence/Transcript、Timeline Version、场景锁、持久预览/渲染 Job、取消、恢复和导出 hash；真实媒体 fixture 已通过。 |
 
-这张差距表是后续代码改动的起点，不是“现有方案已经合理”的证明。
+这张表只证明对应差距已有源码与测试闭包；安装包内是否仍残留旧入口，仍须通过最终解包和安装旅程证明。
 
 #### 3.0.3 本轮工作台源码的直接结论
 
@@ -373,7 +375,7 @@ Codex 的公开 App 资料和 App Server 清楚地把 project/thread、运行事
 
 本轮已获得对两台服务器、Gateway、Relay、环境配置、容量泳道和部署闭包的整体重建授权。当前无人使用，旧服务、旧数据库、旧队列、旧部署脚本和旧路由均可直接删除、替换或重建；不把备份、回滚、最小化部署或先行本地验证当作前置门槛。唯一前置事实是先盘点两台服务器当前的文件、进程、端口、路由、凭据引用和真正仍需保留的数据；实施完成后必须以实际状态重写 `docs/operations/production-servers.md`。不得虚构迁移结果、保留无消费者旧链或把旧快照当成新架构事实。
 
-2026-07-26 的只读盘点已确认当前旧闭包：大陆机只有 `qfgw.service`（Bun，`127.0.0.1:8799`）与 Nginx（公网 `:80`），运行目录为 `/opt/qfgw`，包含 `app.ts`、`gw.env`、`authority.json`、`usage.db*` 与旧容量/压测脚本；美国机有 `qfrelay.service`（Bun，`127.0.0.1:8790`）、`qfgw-tunnel.service`（`127.0.0.1:8800 → 大陆 127.0.0.1:8799`）和 Nginx（公网 `:80/:443`），运行目录为 `/opt/qfrelay`，包含 `app.ts`、`relay.env`、`relay.db*` 与 `blobs/`。这只是重建前清单：这些服务和目录均不是保留要求，完成替换后必须由新的实际状态覆盖。
+2026-07-26 已完成只读盘点、运行闭包替换和部署核验。当前大陆 `billiardbuddy-gateway.service` 仅监听 `127.0.0.1:8799`；美国 `billiardbuddy-relay.service` 仅监听 `127.0.0.1:8790`，`billiardbuddy-gateway-tunnel.service` 提供 `127.0.0.1:8800 → 大陆 127.0.0.1:8799`，Nginx 只把 `/gw/` 公开为 TLS 入口，并把 `/relay/imgtasks/` 限制为大陆出口 IP。Gateway 与 Relay 源码哈希已和工作树对齐，五条能力已用真实生产凭据做小流量验收；具体文件、进程、端口、环境变量名称、哈希与未验证边界以 `docs/operations/production-servers.md` 为准。
 
 ---
 
@@ -396,7 +398,7 @@ Provider registry 是 model ID、能力、上下文窗口、body budget、compac
 |---|---|---|
 | `TextReasoning` | DeepSeek；当前登记为 `deepseek-v4-flash` | 聊天唯一文本主模型；升级模型时整体更新 registry 和验证证据 |
 | `VisualEvidence` | MiMo V2.5 | 仅处理聊天图片桥接，输出带来源的结构化证据后回到 DeepSeek |
-| `MediaReasoning` | MiMo V2.5；目标登记为 `mimo-v2.5` | 图片/视频工作台专用的多模态理解、Brief、质检和方案合同；不得经过聊天 Harness 或 DeepSeek |
+| `MediaReasoning` | MiMo V2.5；当前登记为 `mimo-v2.5` | 图片/视频工作台专用的多模态理解、Brief、质检和方案合同；不得经过聊天 Harness 或 DeepSeek |
 | `ImageGeneration` | GPT Image 2 / Seedream adapter | MediaProject 提交 provider-neutral operation；服务端按能力路由，不静默跨 provider 重试 |
 | `SpeechTranscription` | Fun-ASR | 只接收音频，返回 Transcript/时间戳证据 |
 
@@ -470,7 +472,7 @@ Provider registry 是 model ID、能力、上下文窗口、body budget、compac
 - 每个 Operation 绑定项目范围、project、input revision、base asset/version、`client_operation_id` 和上游任务回执；MediaJob 只能推进所属 Operation。
 - 外部素材默认只读引用；应用托管副本按项目范围、配额、引用计数和 retention policy 清理。
 - 聊天不创建或打开 MediaProject；聊天中只能给出图片/视频 Brief、建议和可复制的文字，实际作品始终从独立工作台开始。
-- 当前 `MediaTask` 是迁移来源，不是未来第二套概念；仍需恢复的记录映射到 MediaOperation/MediaJob，旧写入链只在新消费者稳定并通过删除闸后移除。
+- 当前代码中的 `MediaTask` 是 `MediaProjectService` 内部持久 Job 的兼容类型名，语义等同于本节的 MediaJob；它没有独立仓储、独立 owner 或第二条写入链。后续可以改名，但不能仅为名称一致再造一层转换协议。
 
 ---
 
@@ -598,5 +600,5 @@ Provider registry 是 model ID、能力、上下文窗口、body budget、compac
 - 用户能完成主要旅程，并在失败、断网、取消、升级和重启后继续；
 - 所有真实外部副作用、远程用量和资源调度可控制、可观察、可对账；
 - 不再使用的代码、依赖、配置、测试、资源和安装包内容已经实际删除。
-最后按照最新项目架构更新项目的README.md，然后这个BilliardBuddy-重构合同里面描述不对的对方也更新
-关于项目的测试以前肯定很多测试是不能依托于新代码来进行测试的，那这个测试该怎么调整自己想办法最后面所有的测试文件也是要清理掉的
+
+收尾时必须按最终架构更新 `README.md`，并同步修正本文中已经被实测推翻或完成后失效的现状描述。旧测试若依赖已删除的代码形状或过期产品语义，应迁移到新合同的行为测试或直接删除；不得为保住旧测试而复活旧运行时。最终测试目录只保留能执行当前生产代码、迁移 reader、故障行为或发行验收的用例。

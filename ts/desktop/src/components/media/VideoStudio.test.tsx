@@ -1,10 +1,11 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import '@testing-library/jest-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const mediaApiMock = vi.hoisted(() => ({
   listProjects: vi.fn(),
   getTask: vi.fn(),
+  waitForProjectEvents: vi.fn(),
   getToolchain: vi.fn(),
   createVideoProject: vi.fn(),
   addVideoSource: vi.fn(),
@@ -12,10 +13,12 @@ const mediaApiMock = vi.hoisted(() => ({
   analyzeVideo: vi.fn(),
   lockVideoScene: vi.fn(),
   applyVideoAlternative: vi.fn(),
+  previewVideo: vi.fn(),
   renderVideo: vi.fn(),
   cancelTask: vi.fn(),
   deleteProject: vi.fn(),
   sourceUrl: vi.fn(() => 'http://127.0.0.1/source.mp4'),
+  assetUrl: vi.fn(() => 'http://127.0.0.1/preview.mp4'),
 }))
 const voiceApiMock = vi.hoisted(() => ({
   listEvidence: vi.fn(),
@@ -65,6 +68,7 @@ const task: MediaTask = {
   project_id: project.id,
   kind: 'video.render',
   status: 'committing',
+  status_sequence: 3,
   progress: 95,
   stage: '正在完成导出',
   created_at: '2026-07-18T00:00:00.000Z',
@@ -75,6 +79,9 @@ beforeEach(() => {
   vi.clearAllMocks()
   mediaApiMock.listProjects.mockResolvedValue({ projects: [project] })
   mediaApiMock.getTask.mockResolvedValue({ task })
+  mediaApiMock.waitForProjectEvents.mockImplementation((_projectId, _cursor, signal: AbortSignal) => (
+    new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), { once: true }))
+  ))
   mediaApiMock.getToolchain.mockResolvedValue({
     ffmpeg: { available: true },
     ffprobe: { available: true },
@@ -174,6 +181,96 @@ describe('VideoStudio committing state', () => {
     expect(saved.clips[1]).toMatchObject({ in_ms: 5_000, out_ms: 10_000 })
   })
 
+  it('preserves unsaved edits across task refreshes and blocks export while preview is running', async () => {
+    const editable: VideoStudioProject = {
+      ...project,
+      state: 'ready',
+      task_id: undefined,
+      output_path: undefined,
+      revision: 3,
+      sources: [{
+        id: 'src_video001',
+        name: 'source.mp4',
+        duration_ms: 10_000,
+        width: 1920,
+        height: 1080,
+        fps: 30,
+        has_audio: true,
+        rotation: 0,
+        video_stream_count: 1,
+        audio_stream_count: 1,
+        missing: false,
+      }],
+      timeline: [{
+        id: 'clip_video01',
+        source_id: 'src_video001',
+        in_ms: 0,
+        out_ms: 10_000,
+      }],
+      timeline_versions: [{
+        id: 'timeline_current1',
+        project_revision: 3,
+        evidence_revision: `sha256:${'a'.repeat(64)}`,
+        created_at: project.updated_at,
+        scenes: [{
+          id: 'clip_video01',
+          source_id: 'src_video001',
+          in_ms: 0,
+          out_ms: 10_000,
+          story_role: 'hook',
+          evidence_ids: [],
+          rationale: '用户时间线',
+          needs_review: false,
+          locked: false,
+        }],
+      }],
+      current_timeline_version_id: 'timeline_current1',
+      preview_task_id: 'task_preview01',
+    }
+    const previewTask: MediaTask = {
+      ...task,
+      id: 'task_preview01',
+      project_id: editable.id,
+      kind: 'video.preview',
+      status: 'running',
+      progress: 50,
+      stage: '正在生成预览',
+    }
+    mediaApiMock.listProjects.mockResolvedValue({ projects: [editable] })
+    mediaApiMock.getTask.mockResolvedValue({ task: previewTask })
+    mediaApiMock.updateVideoTimeline.mockImplementation(async (_projectId, input) => ({
+      project: { ...editable, revision: 4, timeline: input.clips },
+    }))
+    useMediaWorkbenchStore.setState({
+      videoProjects: [editable],
+      tasks: { [previewTask.id]: previewTask },
+      activeVideoId: editable.id,
+      toolchain: { ffmpeg: { available: true }, ffprobe: { available: true } },
+    })
+
+    render(<VideoStudio />)
+    const goal = await screen.findByLabelText('剪辑目标')
+    fireEvent.change(goal, { target: { value: '保留我正在输入的目标' } })
+    fireEvent.click(screen.getByRole('button', { name: '将 source.mp4 加入时间线' }))
+    expect(screen.getByRole('button', { name: '导出视频' })).toBeDisabled()
+
+    act(() => {
+      useMediaWorkbenchStore.setState({
+        videoProjects: [{ ...editable, updated_at: '2026-07-26T00:02:00.000Z' }],
+      })
+    })
+
+    expect(goal).toHaveValue('保留我正在输入的目标')
+    fireEvent.click(screen.getByRole('button', { name: '保存' }))
+    await waitFor(() => expect(mediaApiMock.updateVideoTimeline).toHaveBeenCalledWith(
+      editable.id,
+      expect.objectContaining({ clips: expect.arrayContaining([
+        expect.objectContaining({ id: 'clip_video01' }),
+      ]) }),
+    ))
+    expect(mediaApiMock.updateVideoTimeline.mock.calls[0]?.[1].clips).toHaveLength(2)
+  })
+
   it('shows evidence-based plans and exposes analyze, lock, and alternative operations', async () => {
     const planned: VideoStudioProject = {
       ...project,
@@ -248,5 +345,50 @@ describe('VideoStudio committing state', () => {
       planned.id,
       { base_revision: planned.revision, user_goal: '突出进球瞬间' },
     ))
+  })
+
+  it('shows a version-bound program preview separately from source playback', async () => {
+    const previewed: VideoStudioProject = {
+      ...project,
+      state: 'ready',
+      task_id: undefined,
+      output_path: undefined,
+      revision: 5,
+      sources: [{
+        id: 'src_video001', name: 'source.mp4', duration_ms: 10_000,
+        width: 1920, height: 1080, fps: 30, has_audio: false,
+        rotation: 0, video_stream_count: 1, audio_stream_count: 0, missing: false,
+      }],
+      timeline: [{ id: 'clip_video01', source_id: 'src_video001', in_ms: 0, out_ms: 5_000 }],
+      timeline_versions: [{
+        id: 'timeline_current1', project_revision: 5,
+        evidence_revision: `sha256:${'b'.repeat(64)}`, created_at: project.updated_at,
+        scenes: [{
+          id: 'clip_video01', source_id: 'src_video001', in_ms: 0, out_ms: 5_000,
+          story_role: 'hook', evidence_ids: [], rationale: '用户时间线', needs_review: false, locked: false,
+        }],
+      }],
+      current_timeline_version_id: 'timeline_current1',
+      preview: {
+        timeline_version_id: 'timeline_previous1',
+        asset_id: 'preview_asset001',
+        asset_path: '/api/media/assets/vid_project01/preview_asset001.mp4',
+        content_hash: `sha256:${'c'.repeat(64)}`,
+        created_at: project.updated_at,
+      },
+    }
+    mediaApiMock.listProjects.mockResolvedValue({ projects: [previewed] })
+    useMediaWorkbenchStore.setState({
+      videoProjects: [previewed],
+      tasks: {},
+      activeVideoId: previewed.id,
+      toolchain: { ffmpeg: { available: true }, ffprobe: { available: true } },
+    })
+
+    render(<VideoStudio />)
+    fireEvent.click(await screen.findByRole('button', { name: '节目预览' }))
+    await waitFor(() => expect(document.querySelector('video')).toHaveAttribute('src', 'http://127.0.0.1/preview.mp4'))
+    expect(screen.getByText(/这是旧时间线的预览/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '刷新节目预览' })).toBeInTheDocument()
   })
 })

@@ -4,17 +4,14 @@ import type {
   ProductTaskActivityProgress,
   ProductTaskRunActivity,
   ProductTaskAttachmentSummary,
-  ProductTaskMediaDraft,
   ProductTaskActionApproval,
   ProductTaskApprovalKind,
-  ProductTaskComputerUseApp,
-  ProductTaskComputerUseApproval,
-  ProductTaskComputerUseCapability,
   ProductTaskEvent,
   ProductTaskQuestion,
   ProductTaskQuestionOption,
   ProductTaskRunState,
   ProductTaskSafeErrorCode,
+  ProductTaskQueuedInput,
   ProductTaskThread,
   ProductTaskThreadEntry,
   ProductPublicWorkspace,
@@ -36,8 +33,6 @@ const MAX_ENTRY_ID_LENGTH = 200
 const MAX_TIMESTAMP_LENGTH = 64
 const MAX_ATTACHMENT_COUNT = 16
 const MAX_ATTACHMENT_NAME_LENGTH = 160
-const MAX_COMPUTER_USE_APP_COUNT = 24
-const MAX_COMPUTER_USE_APP_NAME_LENGTH = 120
 const MAX_ACTIVITY_SUMMARY_LENGTH = 80
 const MAX_ACTIVITY_PROGRESS_TOTAL = 10_000
 const MAX_RUN_ACTIVITY_COUNT = 256
@@ -49,6 +44,8 @@ const PRODUCT_TASK_RUN_STATES = new Set<ProductTaskRunState>([
   'awaiting_approval',
 ])
 const PRODUCT_TASK_ACTIVITY_KINDS = new Set<ProductTaskActivityKind>([
+  'file_read',
+  'file_change',
   'workspace',
   'command',
   'research',
@@ -67,6 +64,12 @@ const PRODUCT_TASK_ACTIVITY_PHASES = new Set<ProductTaskActivityPhase>([
 // runtime text through this field: even a generic-looking string could carry
 // a Core tool argument, file path, or model message.
 const PRODUCT_TASK_ACTIVITY_SUMMARIES = new Set([
+  '正在读取工作区内容',
+  '已读取工作区内容',
+  '工作区内容读取未完成',
+  '正在修改工作区内容',
+  '已修改工作区内容',
+  '工作区内容修改未完成',
   '正在整理任务计划',
   '已整理任务计划',
   '任务计划整理未完成',
@@ -95,17 +98,6 @@ const PRODUCT_TASK_ACTIVITY_SUMMARIES = new Set([
 const PRODUCT_TASK_APPROVAL_KINDS = new Set<ProductTaskApprovalKind>([
   'action',
   'question',
-  'computer_use',
-])
-const PRODUCT_TASK_COMPUTER_USE_TIERS = new Set<ProductTaskComputerUseApp['tier']>([
-  'read',
-  'click',
-  'full',
-])
-const PRODUCT_TASK_COMPUTER_USE_CAPABILITIES = new Set<ProductTaskComputerUseCapability>([
-  'clipboard_read',
-  'clipboard_write',
-  'system_key_combos',
 ])
 const PRODUCT_TASK_SAFE_ERROR_CODES = new Set<ProductTaskSafeErrorCode>([
   'attachment_ingest_unavailable',
@@ -120,12 +112,6 @@ const PRODUCT_TASK_ATTACHMENT_TYPES = new Set<ProductTaskAttachmentSummary['type
   'file',
   'image',
 ])
-const PRODUCT_TASK_MEDIA_DRAFT_KINDS = new Set<ProductTaskMediaDraft['kind']>([
-  'image',
-  'video',
-])
-const PRODUCT_TASK_MEDIA_DRAFT_STATE = 'draft' as const
-const PRODUCT_TASK_MEDIA_PROJECT_ID_PATTERN = /^[a-z0-9][a-z0-9_-]{7,79}$/
 const PRODUCT_TASK_IMAGE_MIME_TYPES = new Set<NonNullable<ProductTaskAttachmentSummary['mimeType']>>([
   'image/jpeg',
   'image/png',
@@ -268,78 +254,6 @@ function parseQuestions(value: unknown): ProductTaskQuestion[] | null {
     : questions as ProductTaskQuestion[]
 }
 
-function isBundleIdentifierLike(value: string): boolean {
-  return /^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+){1,}$/.test(value)
-}
-
-function isSafeComputerUseAppName(value: unknown): value is string {
-  return isVisibleString(value, MAX_COMPUTER_USE_APP_NAME_LENGTH) &&
-    !value.includes('/') &&
-    !value.includes('\\') &&
-    !/^file:/i.test(value) &&
-    !isBundleIdentifierLike(value)
-}
-
-function parseComputerUseApp(value: unknown): ProductTaskComputerUseApp | null {
-  if (!isRecord(value) || !hasOnlyKeys(value, ['name', 'tier', 'alreadyAuthorized'])) return null
-  if (
-    !isSafeComputerUseAppName(value.name) ||
-    !isEnumValue(value.tier, PRODUCT_TASK_COMPUTER_USE_TIERS) ||
-    typeof value.alreadyAuthorized !== 'boolean'
-  ) {
-    return null
-  }
-  return {
-    name: value.name,
-    tier: value.tier,
-    alreadyAuthorized: value.alreadyAuthorized,
-  }
-}
-
-function parseComputerUseApproval(value: unknown): ProductTaskComputerUseApproval | null {
-  if (!isRecord(value) || !hasOnlyKeys(value, ['apps', 'capabilities', 'systemPermissions'])) {
-    return null
-  }
-  if (!Array.isArray(value.apps) || value.apps.length > MAX_COMPUTER_USE_APP_COUNT) return null
-  if (!Array.isArray(value.capabilities) || value.capabilities.length > PRODUCT_TASK_COMPUTER_USE_CAPABILITIES.size) {
-    return null
-  }
-
-  const apps = value.apps.map(parseComputerUseApp)
-  if (apps.some((app): app is null => app === null)) return null
-  const capabilities = value.capabilities
-  if (
-    !capabilities.every((capability) => isEnumValue(capability, PRODUCT_TASK_COMPUTER_USE_CAPABILITIES)) ||
-    new Set(capabilities).size !== capabilities.length
-  ) {
-    return null
-  }
-
-  let systemPermissions: ProductTaskComputerUseApproval['systemPermissions']
-  if ('systemPermissions' in value) {
-    const permissions = value.systemPermissions
-    if (
-      !isRecord(permissions) ||
-      !hasOnlyKeys(permissions, ['accessibilityRequired', 'screenRecordingRequired']) ||
-      typeof permissions.accessibilityRequired !== 'boolean' ||
-      typeof permissions.screenRecordingRequired !== 'boolean' ||
-      (!permissions.accessibilityRequired && !permissions.screenRecordingRequired)
-    ) {
-      return null
-    }
-    systemPermissions = {
-      accessibilityRequired: permissions.accessibilityRequired,
-      screenRecordingRequired: permissions.screenRecordingRequired,
-    }
-  }
-
-  return {
-    apps: apps as ProductTaskComputerUseApp[],
-    capabilities: capabilities as ProductTaskComputerUseCapability[],
-    ...(systemPermissions ? { systemPermissions } : {}),
-  }
-}
-
 function parseActionApproval(value: unknown): ProductTaskActionApproval | null {
   if (!isRecord(value) || !hasOnlyKeys(value, ['what', 'scope', 'consequence'])) return null
   if (!isVisibleString(value.what, MAX_APPROVAL_EXPLANATION_LENGTH) ||
@@ -379,23 +293,6 @@ function parseAttachmentSummaries(value: unknown): ProductTaskAttachmentSummary[
     : attachments as ProductTaskAttachmentSummary[]
 }
 
-function parseMediaDraft(value: unknown): ProductTaskMediaDraft | null {
-  if (!isRecord(value) || !hasOnlyKeys(value, ['projectId', 'kind', 'state'])) return null
-  if (
-    typeof value.projectId !== 'string' ||
-    !PRODUCT_TASK_MEDIA_PROJECT_ID_PATTERN.test(value.projectId) ||
-    !isEnumValue(value.kind, PRODUCT_TASK_MEDIA_DRAFT_KINDS) ||
-    value.state !== PRODUCT_TASK_MEDIA_DRAFT_STATE
-  ) {
-    return null
-  }
-  return {
-    projectId: value.projectId,
-    kind: value.kind,
-    state: 'draft',
-  }
-}
-
 /**
  * Runtime-validate the browser-facing product event contract.  TypeScript
  * types alone cannot protect the reducer from a malformed socket payload.
@@ -409,9 +306,10 @@ export function parseProductTaskEvent(value: unknown): ProductTaskEvent | null {
 
     case 'user_text': {
       if (
-        !hasOnlyKeys(value, ['type', 'text', 'replayed', 'event_sequence', 'attachments', 'referenceEntryIds']) ||
+        !hasOnlyKeys(value, ['type', 'id', 'text', 'replayed', 'event_sequence', 'attachments', 'referenceEntryIds']) ||
         !isNonEmptyString(value.text, MAX_PRODUCT_TEXT_LENGTH) ||
         value.replayed !== true ||
+        ('id' in value && (typeof value.id !== 'string' || !/^thread_[a-f0-9]{20}$/.test(value.id))) ||
         ('event_sequence' in value && (typeof value.event_sequence !== 'number' || !Number.isSafeInteger(value.event_sequence) || value.event_sequence < 1))
       ) {
         return null
@@ -431,6 +329,7 @@ export function parseProductTaskEvent(value: unknown): ProductTaskEvent | null {
         type: 'user_text',
         text: value.text,
         replayed: true,
+        ...(typeof value.id === 'string' ? { id: value.id } : {}),
         ...(typeof value.event_sequence === 'number' ? { event_sequence: value.event_sequence } : {}),
         ...(attachments ? { attachments } : {}),
         ...(referenceEntryIds?.length ? { referenceEntryIds } : {}),
@@ -450,10 +349,62 @@ export function parseProductTaskEvent(value: unknown): ProductTaskEvent | null {
         ? { type: 'assistant_text_delta', text: value.text }
         : null
 
+    case 'assistant_text':
+      return hasOnlyKeys(value, ['type', 'id', 'text', 'replayed', 'event_sequence']) &&
+        typeof value.id === 'string' && /^thread_[a-f0-9]{20}$/.test(value.id) &&
+        isNonEmptyString(value.text, MAX_PRODUCT_TEXT_LENGTH) && value.replayed === true &&
+        typeof value.event_sequence === 'number' && Number.isSafeInteger(value.event_sequence) && value.event_sequence > 0
+        ? { type: 'assistant_text', id: value.id, text: value.text, replayed: true, event_sequence: value.event_sequence }
+        : null
+
     case 'status':
       return hasOnlyKeys(value, ['type', 'state']) && isEnumValue(value.state, PRODUCT_TASK_RUN_STATES)
         ? { type: 'status', state: value.state }
         : null
+
+    case 'queue_updated': {
+      if (
+        !hasOnlyKeys(value, ['type', 'item', 'event_sequence', 'replayed']) ||
+        typeof value.event_sequence !== 'number' ||
+        !Number.isSafeInteger(value.event_sequence) ||
+        value.event_sequence < 1 ||
+        ('replayed' in value && value.replayed !== true)
+      ) return null
+      const item = parseProductTaskQueuedInput(value.item)
+      return item
+        ? {
+            type: 'queue_updated',
+            item,
+            event_sequence: value.event_sequence,
+            ...(value.replayed === true ? { replayed: true as const } : {}),
+          }
+        : null
+    }
+
+    case 'context_compaction': {
+      if (
+        !hasOnlyKeys(value, ['type', 'item', 'event_sequence', 'replayed']) ||
+        !isRecord(value.item) ||
+        !hasOnlyKeys(value.item, ['id', 'phase', 'source', 'generation']) ||
+        typeof value.item.id !== 'string' || !/^compact_[a-f0-9]{32}$/.test(value.item.id) ||
+        (value.item.phase !== 'started' && value.item.phase !== 'completed' && value.item.phase !== 'failed') ||
+        (value.item.source !== 'automatic' && value.item.source !== 'manual') ||
+        typeof value.item.generation !== 'number' || !Number.isSafeInteger(value.item.generation) || value.item.generation < 1 ||
+        typeof value.event_sequence !== 'number' || !Number.isSafeInteger(value.event_sequence) || value.event_sequence < 1 ||
+        ('replayed' in value && value.replayed !== true)
+      ) return null
+      return {
+        type: 'context_compaction',
+        item: {
+          id: value.item.id,
+          phase: value.item.phase,
+          source: value.item.source,
+          generation: value.item.generation,
+        },
+        event_sequence: value.event_sequence,
+        ...(value.replayed === true ? { replayed: true as const } : {}),
+      }
+    }
 
     case 'run_snapshot': {
       if (
@@ -479,7 +430,7 @@ export function parseProductTaskEvent(value: unknown): ProductTaskEvent | null {
 
     case 'activity': {
       if (
-        !hasOnlyKeys(value, ['type', 'kind', 'phase', 'id', 'parentId', 'summary', 'progress']) ||
+        !hasOnlyKeys(value, ['type', 'kind', 'phase', 'id', 'parentId', 'summary', 'progress', 'event_sequence', 'replayed']) ||
         !isEnumValue(value.kind, PRODUCT_TASK_ACTIVITY_KINDS) ||
         !isEnumValue(value.phase, PRODUCT_TASK_ACTIVITY_PHASES) ||
         !isProductActivityId(value.id) ||
@@ -492,6 +443,8 @@ export function parseProductTaskEvent(value: unknown): ProductTaskEvent | null {
       }
       const progress = 'progress' in value ? parseActivityProgress(value.progress) : undefined
       if ('progress' in value && !progress) return null
+      if ('event_sequence' in value && (typeof value.event_sequence !== 'number' || !Number.isSafeInteger(value.event_sequence) || value.event_sequence < 1 || value.replayed !== true)) return null
+      if ('replayed' in value && value.replayed !== true) return null
       return {
         type: 'activity',
         id: value.id,
@@ -500,12 +453,21 @@ export function parseProductTaskEvent(value: unknown): ProductTaskEvent | null {
         phase: value.phase,
         summary: value.summary,
         ...(progress ? { progress } : {}),
+        ...(typeof value.event_sequence === 'number' ? { event_sequence: value.event_sequence, replayed: true as const } : {}),
       }
     }
 
+    case 'run_terminal':
+      return hasOnlyKeys(value, ['type', 'id', 'state', 'replayed', 'event_sequence']) &&
+        typeof value.id === 'string' && /^turn_[a-f0-9]{32}$/.test(value.id) &&
+        (value.state === 'completed' || value.state === 'stopped' || value.state === 'recovery_required') &&
+        value.replayed === true && typeof value.event_sequence === 'number' && Number.isSafeInteger(value.event_sequence) && value.event_sequence > 0
+        ? { type: 'run_terminal', id: value.id, state: value.state, replayed: true, event_sequence: value.event_sequence }
+        : null
+
     case 'approval_required': {
       if (
-        !hasOnlyKeys(value, ['type', 'requestId', 'kind', 'questions', 'computerUse', 'action']) ||
+        !hasOnlyKeys(value, ['type', 'requestId', 'kind', 'questions', 'action']) ||
         !isVisibleString(value.requestId, MAX_REQUEST_ID_LENGTH) ||
         !isEnumValue(value.kind, PRODUCT_TASK_APPROVAL_KINDS)
       ) {
@@ -513,14 +475,11 @@ export function parseProductTaskEvent(value: unknown): ProductTaskEvent | null {
       }
 
       const questions = 'questions' in value ? parseQuestions(value.questions) : undefined
-      const computerUse = 'computerUse' in value
-        ? parseComputerUseApproval(value.computerUse)
-        : undefined
       const action = 'action' in value ? parseActionApproval(value.action) : undefined
-      if (('questions' in value && !questions) || ('computerUse' in value && !computerUse) || ('action' in value && !action)) return null
+      if (('questions' in value && !questions) || ('action' in value && !action)) return null
 
       if (value.kind === 'question') {
-        return questions && !computerUse && !action
+        return questions && !action
           ? {
               type: 'approval_required',
               requestId: value.requestId,
@@ -530,18 +489,7 @@ export function parseProductTaskEvent(value: unknown): ProductTaskEvent | null {
           : null
       }
 
-      if (value.kind === 'computer_use') {
-        return computerUse && !questions && !action
-          ? {
-              type: 'approval_required',
-              requestId: value.requestId,
-              kind: 'computer_use',
-              computerUse,
-            }
-          : null
-      }
-
-      return !questions && !computerUse
+      return !questions
         ? { type: 'approval_required', requestId: value.requestId, kind: 'action', ...(action ? { action } : {}) }
         : null
     }
@@ -563,6 +511,32 @@ export function parseProductTaskEvent(value: unknown): ProductTaskEvent | null {
 
     default:
       return null
+  }
+}
+
+export function parseProductTaskQueuedInput(value: unknown): ProductTaskQueuedInput | null {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ['id', 'text', 'state', 'createdAt', 'attachmentCount', 'targetRunId']) ||
+    typeof value.id !== 'string' ||
+    !/^queue_[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(value.id) ||
+    !isNonEmptyString(value.text, MAX_PRODUCT_TEXT_LENGTH) ||
+    !isEnumValue(value.state, new Set(['queued', 'injected', 'promoted', 'failed'] as const)) ||
+    !isTimestamp(value.createdAt) ||
+    typeof value.attachmentCount !== 'number' ||
+    !Number.isSafeInteger(value.attachmentCount) ||
+    value.attachmentCount < 0 ||
+    value.attachmentCount > MAX_ATTACHMENT_COUNT ||
+    ('targetRunId' in value && (typeof value.targetRunId !== 'string' || !/^run_[0-9a-f-]{36}$/.test(value.targetRunId))) ||
+    ((value.state === 'injected' || value.state === 'promoted') !== ('targetRunId' in value))
+  ) return null
+  return {
+    id: value.id,
+    text: value.text,
+    state: value.state,
+    createdAt: value.createdAt,
+    attachmentCount: value.attachmentCount,
+    ...(typeof value.targetRunId === 'string' ? { targetRunId: value.targetRunId } : {}),
   }
 }
 
@@ -618,19 +592,6 @@ function parseThreadEntry(value: unknown): ProductTaskThreadEntry | null {
           type: 'activity',
           kind: value.kind,
           phase: value.phase,
-          createdAt: value.createdAt,
-        }
-      : null
-  }
-
-  if (value.type === 'media_draft') {
-    if (!hasOnlyKeys(value, ['id', 'type', 'draft', 'createdAt'])) return null
-    const draft = parseMediaDraft(value.draft)
-    return draft
-      ? {
-          id: value.id,
-          type: 'media_draft',
-          draft,
           createdAt: value.createdAt,
         }
       : null

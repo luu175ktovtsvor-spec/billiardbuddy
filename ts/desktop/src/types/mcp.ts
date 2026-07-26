@@ -28,8 +28,21 @@ export type McpServerRecord = {
   canEdit: boolean
   canRemove: boolean
   canReconnect: boolean
+  canAuthorize?: boolean
   canToggle: boolean
   projectPath?: string
+}
+
+export type McpAuthorizationStart = {
+  connected: boolean
+  flowId?: string
+  authorizationUrl?: string
+  expiresAt?: number
+}
+
+export type McpAuthorizationStatus = {
+  status: 'pending' | 'connected' | 'failed' | 'expired'
+  error?: 'MCP_OAUTH_FAILED' | 'MCP_OAUTH_EXPIRED'
 }
 
 export type McpWritableScope = 'local' | 'project' | 'user'
@@ -42,7 +55,7 @@ export type McpUpsertPayload = {
 /** Safe result of applying an MCP toggle to the active product task. */
 export type McpTaskSyncResult = {
   applied: boolean
-  reason?: 'not_running' | 'failed'
+  reason?: 'next_turn'
 }
 
 export type McpToggleResponse = {

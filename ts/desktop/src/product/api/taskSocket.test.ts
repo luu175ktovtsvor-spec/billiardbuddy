@@ -113,22 +113,19 @@ describe('ProductTaskSocketManager', () => {
     expect(lifecycle.at(-1)).toEqual({ type: 'connected', reconnected: true })
   })
 
-  it('queues typed stop commands until the product socket reconnects', async () => {
+  it('never replays a stale stop command after the product socket reconnects', async () => {
     manager.connect('task-1', () => {})
     const first = FakeWebSocket.instances[0]!
     first.open()
     expect(first.sent).toEqual([JSON.stringify({ type: 'resume', cursor: 0 })])
 
     first.fail()
-    manager.send('task-1', { type: 'stop_generation' })
+    expect(manager.send('task-1', { type: 'stop_generation' })).toBe(false)
     await vi.advanceTimersByTimeAsync(1_000)
 
     const second = FakeWebSocket.instances[1]!
     second.open()
-    expect(second.sent).toEqual([
-      JSON.stringify({ type: 'resume', cursor: 0 }),
-      JSON.stringify({ type: 'stop_generation' }),
-    ])
+    expect(second.sent).toEqual([JSON.stringify({ type: 'resume', cursor: 0 })])
   })
 
   it('serializes only cursor, approval, and stop envelopes', () => {
@@ -146,18 +143,12 @@ describe('ProductTaskSocketManager', () => {
       requestId: 'question-1',
       answers: ['方案 A'],
     })
-    manager.send('task-1', {
-      type: 'computer_use_permission_response',
-      requestId: 'computer-use-1',
-      allowed: false,
-    })
     manager.send('task-1', { type: 'stop_generation' })
 
     expect(socket.sent).toEqual([
       JSON.stringify({ type: 'resume', cursor: 0 }),
       JSON.stringify({ type: 'permission_response', requestId: 'permission-1', allowed: true }),
       JSON.stringify({ type: 'ask_user_question_response', requestId: 'question-1', answers: ['方案 A'] }),
-      JSON.stringify({ type: 'computer_use_permission_response', requestId: 'computer-use-1', allowed: false }),
       JSON.stringify({ type: 'stop_generation' }),
     ])
   })

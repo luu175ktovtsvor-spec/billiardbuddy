@@ -80,7 +80,7 @@ describe('Electron terminal service', () => {
   it('uses the portable terminal config path before app userData', () => {
     const app = { getPath: vi.fn(() => '/app/user-data') }
 
-    expect(terminalConfigPath(app, { CLAUDE_CONFIG_DIR: '/portable' })).toBe('/portable/terminal-config.json')
+    expect(terminalConfigPath(app, { BILLIARDBUDDY_CONFIG_DIR: '/portable' })).toBe('/portable/terminal-config.json')
     expect(terminalConfigPath(app, {})).toBe('/app/user-data/terminal-config.json')
   })
 
@@ -89,7 +89,7 @@ describe('Electron terminal service', () => {
     const bash = path.join(dir, 'bash.exe')
     fs.writeFileSync(bash, '')
     const service = new ElectronTerminalService({
-      env: { CLAUDE_CONFIG_DIR: dir },
+      env: { BILLIARDBUDDY_CONFIG_DIR: dir },
       isFile: filePath => filePath === bash,
     })
 
@@ -102,7 +102,7 @@ describe('Electron terminal service', () => {
     expect(normalizeTerminalBashPath('   ', () => false)).toBeNull()
   })
 
-  it('resolves platform-specific shells from the same settings shape as Tauri', () => {
+  it('resolves platform-specific shells from the desktop settings contract', () => {
     expect(resolveDesktopTerminalShell('win32', { startupShell: 'pwsh' })).toBe('pwsh.exe')
     expect(resolveDesktopTerminalShell('win32', { startupShell: 'powershell' })).toBe('powershell.exe')
     expect(resolveDesktopTerminalShell('win32', { startupShell: 'cmd' })).toBe('cmd.exe')
@@ -119,11 +119,11 @@ describe('Electron terminal service', () => {
     expect(defaultShell('linux', { SHELL: '/bin/fish' }, null, () => false)).toBe('/bin/fish')
   })
 
-  it('reads desktop terminal settings from the Claude config directory', () => {
+  it('reads desktop terminal settings from the BilliardBuddy config directory', () => {
     const dir = tempDir()
-    fs.mkdirSync(path.join(dir, '.claude'), { recursive: true })
+    fs.mkdirSync(path.join(dir, '.BilliardBuddy'), { recursive: true })
     fs.writeFileSync(
-      path.join(dir, '.claude', 'settings.json'),
+      path.join(dir, '.BilliardBuddy', 'settings.json'),
       JSON.stringify({ desktopTerminal: { startupShell: 'cmd' } }),
     )
 
@@ -132,7 +132,7 @@ describe('Electron terminal service', () => {
       platform: 'win32',
     })
 
-    expect(desktopTerminalSettingsPath({ HOME: dir })).toBe(path.join(dir, '.claude', 'settings.json'))
+    expect(desktopTerminalSettingsPath({ HOME: dir })).toBe(path.join(dir, '.BilliardBuddy', 'settings.json'))
     expect(service.resolveShell()).toBe('cmd.exe')
   })
 
@@ -148,19 +148,19 @@ describe('Electron terminal service', () => {
   it('does not expose product-managed credentials to the user terminal', () => {
     expect(terminalEnvironment('/missing/shell', 'linux', {
       PATH: '/usr/bin',
-      QF_GATEWAY_BOOTSTRAP_CREDENTIAL: 'bootstrap-secret',
-      QF_GATEWAY_TOKEN: 'access-secret',
+      BB_GATEWAY_BOOTSTRAP_CREDENTIAL: 'bootstrap-secret',
+      BB_GATEWAY_TOKEN: 'access-secret',
       BB_BROWSER_UI_CAPABILITY: 'browser-secret',
     })).toMatchObject({ PATH: '/usr/bin' })
     expect(terminalEnvironment('/missing/shell', 'linux', {
-      QF_GATEWAY_TOKEN: 'access-secret',
-    })).not.toHaveProperty('QF_GATEWAY_TOKEN')
+      BB_GATEWAY_TOKEN: 'access-secret',
+    })).not.toHaveProperty('BB_GATEWAY_TOKEN')
   })
 
   it('builds crash watchdogs without forwarding the desktop environment', () => {
     const windows = terminalWatchdogPlan(7001, 9001, 'win32', {
       SystemRoot: 'C:\\Windows',
-      QF_GATEWAY_TOKEN: 'must-not-leak',
+      BB_GATEWAY_TOKEN: 'must-not-leak',
     })
     expect(windows.command).toBe('C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe')
     expect(windows.args.join(' ')).toContain('Wait-Process -Id 7001')
@@ -172,7 +172,7 @@ describe('Electron terminal service', () => {
     })
     expect(JSON.stringify(windows)).not.toContain('must-not-leak')
 
-    const unix = terminalWatchdogPlan(7001, 9001, 'darwin', { QF_GATEWAY_TOKEN: 'must-not-leak' })
+    const unix = terminalWatchdogPlan(7001, 9001, 'darwin', { BB_GATEWAY_TOKEN: 'must-not-leak' })
     expect(unix.command).toBe('/bin/sh')
     expect(unix.args).toContain('7001')
     expect(unix.args).toContain('9001')
@@ -340,8 +340,10 @@ describe('Electron terminal service', () => {
     const output: string[] = []
     let finish: (() => void) | undefined
     let finishOutput: (() => void) | undefined
+    let finishReady: (() => void) | undefined
     const exited = new Promise<void>(resolve => { finish = resolve })
     const observedWorkspace = new Promise<void>(resolve => { finishOutput = resolve })
+    const ready = new Promise<void>(resolve => { finishReady = resolve })
     const service = new ElectronTerminalService({
       env: { ...process.env, HOME: dir, SHELL: '/bin/zsh' },
       platform: process.platform,
@@ -355,12 +357,14 @@ describe('Electron terminal service', () => {
         send: (channel, payload) => {
           if (channel === ELECTRON_EVENT_CHANNELS.terminalOutput) {
             output.push((payload as { data: string }).data)
+            finishReady?.()
             if (output.join('').includes(dir)) finishOutput?.()
           }
           if (channel === ELECTRON_EVENT_CHANNELS.terminalExit) finish?.()
         },
       },
     )
+    await ready
     service.write(77, 'task-real', session.session_id, 'printf "BB_PTY_REAL\\n"; pwd\r')
     await observedWorkspace
     service.write(77, 'task-real', session.session_id, 'exit\r')

@@ -2,34 +2,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import '@testing-library/jest-dom'
 
-const minimize = vi.fn().mockResolvedValue(undefined)
-const toggleMaximize = vi.fn().mockResolvedValue(undefined)
-const close = vi.fn().mockResolvedValue(undefined)
 const hostMinimize = vi.fn().mockResolvedValue(undefined)
 const hostToggleMaximize = vi.fn().mockResolvedValue(undefined)
 const hostClose = vi.fn().mockResolvedValue(undefined)
 const hostIsMaximized = vi.fn().mockResolvedValue(false)
 const hostOnResized = vi.fn().mockResolvedValue(() => {})
-const isMaximized = vi.fn().mockResolvedValue(false)
-const onResized = vi.fn().mockResolvedValue(() => {})
-
-vi.mock('@tauri-apps/api/window', () => ({
-  getCurrentWindow: () => ({
-    minimize,
-    toggleMaximize,
-    close,
-    isMaximized,
-    onResized,
-  }),
-}))
 
 describe('WindowControls', () => {
   const originalPlatform = navigator.platform
 
   beforeEach(async () => {
-    minimize.mockClear()
-    toggleMaximize.mockClear()
-    close.mockClear()
     hostMinimize.mockClear()
     hostToggleMaximize.mockClear()
     hostClose.mockClear()
@@ -37,10 +19,6 @@ describe('WindowControls', () => {
     hostIsMaximized.mockResolvedValue(false)
     hostOnResized.mockReset()
     hostOnResized.mockResolvedValue(() => {})
-    isMaximized.mockClear()
-    onResized.mockClear()
-
-    Reflect.deleteProperty(window, '__TAURI_INTERNALS__')
     window.desktopHost = {
       kind: 'electron',
       isDesktop: true,
@@ -75,7 +53,6 @@ describe('WindowControls', () => {
   })
 
   afterEach(() => {
-    Reflect.deleteProperty(window, '__TAURI_INTERNALS__')
     Reflect.deleteProperty(window, 'desktopHost')
     Object.defineProperty(navigator, 'platform', {
       configurable: true,
@@ -116,8 +93,5 @@ describe('WindowControls', () => {
       expect(hostToggleMaximize).toHaveBeenCalledTimes(1)
       expect(hostClose).toHaveBeenCalledTimes(1)
     })
-    expect(minimize).not.toHaveBeenCalled()
-    expect(toggleMaximize).not.toHaveBeenCalled()
-    expect(close).not.toHaveBeenCalled()
   })
 })

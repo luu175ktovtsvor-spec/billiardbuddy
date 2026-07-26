@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   update: vi.fn(),
   remove: vi.fn(),
   run: vi.fn(),
+  cancelRun: vi.fn(),
   getRecentRuns: vi.fn(),
   getTaskRuns: vi.fn(),
 }))
@@ -20,6 +21,7 @@ vi.mock('../api/scheduledTasks', () => ({
     update: mocks.update,
     delete: mocks.remove,
     run: mocks.run,
+    cancelRun: mocks.cancelRun,
     getRecentRuns: mocks.getRecentRuns,
     getTaskRuns: mocks.getTaskRuns,
   },
@@ -43,10 +45,12 @@ function makeTask(overrides: Partial<ProductScheduledTask> = {}): ProductSchedul
     title: '每日营业复盘',
     description: '汇总当天关键数据',
     schedule: '0 21 * * *',
+    timeZone: 'Asia/Shanghai',
     instruction: '整理今天的营业数据并给出明日建议。',
     enabled: true,
     recurring: true,
     missedRunPolicy: 'run_once',
+    context: { mode: 'independent' },
     grant: { version: 1, scope: 'workdir', fileAccess: 'workspace_write', networkAccess: 'denied', destructiveActions: 'denied' },
     workDir: '/workspace/billiard',
     createdAt: 1,
@@ -69,6 +73,7 @@ beforeEach(() => {
   mocks.update.mockResolvedValue({ task: makeTask() })
   mocks.remove.mockResolvedValue({ ok: true })
   mocks.run.mockResolvedValue({ ok: true })
+  mocks.cancelRun.mockResolvedValue({ ok: true })
   mocks.getRecentRuns.mockResolvedValue({ runs: [] })
   mocks.getTaskRuns.mockResolvedValue({
     runs: [{
@@ -123,6 +128,8 @@ describe('ProductScheduledTasksPage', () => {
       enabled: true,
       workDir: '/workspace/billiard',
       missedRunPolicy: 'run_once',
+      timeZone: expect.any(String),
+      context: { mode: 'independent' },
     })))
     expect(await screen.findByTestId('product-scheduled-task-schedule-2')).toHaveTextContent('早班检查')
   })

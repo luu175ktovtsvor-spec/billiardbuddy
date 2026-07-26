@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { parseProductAttachmentOperationResult, parseProductPublicComposerDraft, parseProductPublicConversationLineage, parseProductPublicWorkspace, parseProductTaskEvent, parseProductTaskThread } from './taskProtocol'
+import { parseProductAttachmentOperationResult, parseProductPublicComposerDraft, parseProductPublicConversationLineage, parseProductPublicWorkspace, parseProductTaskEvent, parseProductTaskQueuedInput, parseProductTaskThread } from './taskProtocol'
 
 const safeAttachment = {
   type: 'image',
@@ -11,6 +11,7 @@ describe('product task protocol attachment summaries', () => {
   it('accepts only bounded opaque history references on replay and reconnect snapshots', () => {
     const referenceEntryIds = ['thread_0123456789abcdef0123']
     expect(parseProductTaskEvent({ type: 'user_text', text: '继续', replayed: true, referenceEntryIds })).toMatchObject({ referenceEntryIds })
+    expect(parseProductTaskEvent({ type: 'user_text', id: 'thread_abcdef0123456789abcd', text: '继续', replayed: true, event_sequence: 1 })).toMatchObject({ id: 'thread_abcdef0123456789abcd', event_sequence: 1 })
     expect(parseProductTaskThread({ taskId: 'task-reference', entries: [{ id: 'thread_user', type: 'user_text', text: '继续', referenceEntryIds, createdAt: '2026-07-19T00:00:00.000Z' }] }, 'task-reference')).toMatchObject({ entries: [{ referenceEntryIds }] })
     expect(parseProductTaskEvent({ type: 'user_text', text: '继续', replayed: true, referenceEntryIds: ['/private/history'] })).toBeNull()
   })
@@ -91,34 +92,40 @@ describe('product task protocol attachment summaries', () => {
   })
 })
 
-describe('product task protocol media draft entries', () => {
-  const taskId = 'task-media-draft'
-  const entry = {
-    id: 'thread-media-draft',
-    type: 'media_draft',
-    draft: { projectId: 'img_12345678', kind: 'image', state: 'draft' },
-    createdAt: '2026-07-20T00:00:00.000Z',
+describe('product task input queue protocol', () => {
+  const queued = {
+    id: 'queue_123e4567-e89b-42d3-a456-426614174000',
+    text: '请先补充这一点',
+    state: 'queued',
+    createdAt: '2026-07-26T00:00:00.000Z',
+    attachmentCount: 0,
   } as const
 
-  it('accepts only the narrow task-scoped media draft reference', () => {
-    expect(parseProductTaskThread({ taskId, entries: [entry] }, taskId)).toEqual({
-      taskId,
-      entries: [entry],
-    })
+  it('accepts only the bounded public queue projection', () => {
+    expect(parseProductTaskQueuedInput(queued)).toEqual(queued)
+    expect(parseProductTaskEvent({
+      type: 'queue_updated',
+      item: queued,
+      event_sequence: 11,
+      replayed: true,
+    })).toEqual({ type: 'queue_updated', item: queued, event_sequence: 11, replayed: true })
   })
 
-  it('rejects media paths, prompts, non-draft state, and invalid project ids', () => {
-    for (const draft of [
-      { ...entry.draft, path: '/Users/private/project.json' },
-      { ...entry.draft, prompt: 'PRIVATE_PROMPT' },
-      { ...entry.draft, state: 'ready' },
-      { ...entry.draft, projectId: '../private-project' },
-    ]) {
-      expect(parseProductTaskThread({
-        taskId,
-        entries: [{ ...entry, draft }],
-      }, taskId)).toBeNull()
-    }
+  it('rejects private identities, invalid state assignment, and extra fields', () => {
+    expect(parseProductTaskQueuedInput({ ...queued, run_id: 'private' })).toBeNull()
+    expect(parseProductTaskQueuedInput({ ...queued, state: 'injected' })).toBeNull()
+    expect(parseProductTaskQueuedInput({ ...queued, id: 'queue_private' })).toBeNull()
+    expect(parseProductTaskEvent({ type: 'queue_updated', item: queued, event_sequence: 11, sessionId: 'private' })).toBeNull()
+  })
+})
+
+describe('product task compact protocol', () => {
+  const item = { id: `compact_${'d'.repeat(32)}`, phase: 'completed', source: 'automatic', generation: 3 } as const
+
+  it('accepts only the public compact lifecycle projection', () => {
+    expect(parseProductTaskEvent({ type: 'context_compaction', item, event_sequence: 12, replayed: true })).toEqual({ type: 'context_compaction', item, event_sequence: 12, replayed: true })
+    expect(parseProductTaskEvent({ type: 'context_compaction', item: { ...item, summary: 'private' }, event_sequence: 12 })).toBeNull()
+    expect(parseProductTaskEvent({ type: 'context_compaction', item: { ...item, id: 'compact_private' }, event_sequence: 12 })).toBeNull()
   })
 })
 
@@ -153,8 +160,16 @@ describe('product task protocol run activities', () => {
     })).toBeNull()
   })
 
+  it('accepts only exact durable assistant activity and terminal replay envelopes', () => {
+    expect(parseProductTaskEvent({ type: 'assistant_text', id: 'thread_0123456789abcdef0123', text: '已完成', replayed: true, event_sequence: 8 })).toMatchObject({ type: 'assistant_text', event_sequence: 8 })
+    expect(parseProductTaskEvent({ type: 'activity', id: activityId, kind: 'workspace', phase: 'completed', summary: '已整理工作内容', replayed: true, event_sequence: 9 })).toMatchObject({ type: 'activity', event_sequence: 9, replayed: true })
+    expect(parseProductTaskEvent({ type: 'run_terminal', id: `turn_${'c'.repeat(32)}`, state: 'completed', replayed: true, event_sequence: 10 })).toMatchObject({ type: 'run_terminal', event_sequence: 10 })
+    expect(parseProductTaskEvent({ type: 'assistant_text', id: 'thread_0123456789abcdef0123', text: '已完成', replayed: true, event_sequence: 8, sessionId: 'private' })).toBeNull()
+    expect(parseProductTaskEvent({ type: 'run_terminal', id: `turn_${'c'.repeat(32)}`, state: 'completed', replayed: true, event_sequence: 10, error: 'private' })).toBeNull()
+  })
+
   it('rejects Core details and malformed identifiers before activity state is updated', () => {
-    const privatePath = '/Users/private/.claude/task.json'
+    const privatePath = '/Users/private/.BilliardBuddy/task.json'
     for (const value of [
       {
         type: 'activity', id: activityId, kind: 'command', phase: 'running', summary: privatePath,
@@ -287,7 +302,7 @@ describe('product task protocol run snapshots', () => {
   })
 })
 
-describe('product task protocol Computer Use approvals', () => {
+describe('product task action approval protocol', () => {
   it('accepts only product-authored action scope and consequence fields', () => {
     const event = {
       type: 'approval_required' as const,
@@ -303,62 +318,6 @@ describe('product task protocol Computer Use approvals', () => {
     expect(parseProductTaskEvent({ ...event, action: { ...event.action, command: 'rm secret' } })).toBeNull()
   })
 
-  it('accepts only the narrow Computer Use approval projection', () => {
-    expect(parseProductTaskEvent({
-      type: 'approval_required',
-      requestId: 'computer-use-1',
-      kind: 'computer_use',
-      computerUse: {
-        apps: [{ name: '记分牌', tier: 'click', alreadyAuthorized: false }],
-        capabilities: ['clipboard_read', 'system_key_combos'],
-        systemPermissions: {
-          accessibilityRequired: true,
-          screenRecordingRequired: false,
-        },
-      },
-    })).toEqual({
-      type: 'approval_required',
-      requestId: 'computer-use-1',
-      kind: 'computer_use',
-      computerUse: {
-        apps: [{ name: '记分牌', tier: 'click', alreadyAuthorized: false }],
-        capabilities: ['clipboard_read', 'system_key_combos'],
-        systemPermissions: {
-          accessibilityRequired: true,
-          screenRecordingRequired: false,
-        },
-      },
-    })
-  })
-
-  it('rejects raw Computer Use implementation details before they reach product state', () => {
-    for (const computerUse of [
-      {
-        apps: [{ name: 'com.example.private', tier: 'full', alreadyAuthorized: false }],
-        capabilities: [],
-      },
-      {
-        apps: [{ name: '/Applications/Private.app', tier: 'full', alreadyAuthorized: false }],
-        capabilities: [],
-      },
-      {
-        apps: [{ name: '记分牌', tier: 'full', alreadyAuthorized: false, bundleId: 'com.example.private' }],
-        capabilities: [],
-      },
-      {
-        apps: [],
-        capabilities: ['clipboard_read'],
-        rawToolInput: { private: true },
-      },
-    ]) {
-      expect(parseProductTaskEvent({
-        type: 'approval_required',
-        requestId: 'computer-use-1',
-        kind: 'computer_use',
-        computerUse,
-      })).toBeNull()
-    }
-  })
 })
 
 

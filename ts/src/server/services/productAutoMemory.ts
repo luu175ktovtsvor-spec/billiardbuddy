@@ -2,8 +2,8 @@ import { createHash, randomUUID } from 'node:crypto'
 import { constants as fsConstants } from 'node:fs'
 import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
-import { findGitRoot } from '../../utils/git.js'
 import { lock } from '../../utils/lockfile.js'
+import { findProductGitRoot } from '../product/productGit.js'
 import { createProductInstructionSnapshot } from './productInstructions.js'
 
 const VERSION = 1 as const
@@ -61,7 +61,7 @@ function render(turns: readonly AutoMemoryTurn[]): string {
   return `${prefix}${sections.join('\n\n')}`
 }
 
-/** Project-bound long-term memory. It never discovers legacy Claude memory. */
+/** Project-bound long-term memory loaded only from BilliardBuddy storage. */
 export class ProductAutoMemoryRepository {
   async initialize(binding: ProductAutoMemoryBinding, now = new Date()): Promise<{ created: boolean; instruction_created: boolean }> {
     const { canonical, projectDigest } = await this.projectIdentity(binding.work_dir)
@@ -99,9 +99,26 @@ export class ProductAutoMemoryRepository {
     })
   }
 
+  /** Remove only the completed turns contributed by one ProductTask. */
+  async purgeTaskTurns(storageDir: string, taskId: string, entryIds: readonly string[]): Promise<void> {
+    const sourceDigests = new Set(entryIds.map(entryId => digest(`${taskId}\0${entryId}`)))
+    if (!sourceDigests.size) return
+    await this.withLock(storageDir, async () => {
+      const entries = await fs.readdir(storageDir, { withFileTypes: true })
+      for (const entry of entries) {
+        if (!entry.isFile() || !/^[a-f0-9]{64}\.json$/.test(entry.name)) continue
+        const file = path.join(storageDir, entry.name)
+        const record = await this.read(file)
+        if (!record) continue
+        const turns = record.turns.filter(turn => !sourceDigests.has(turn.source_digest))
+        if (turns.length !== record.turns.length) await this.write(file, { ...record, turns })
+      }
+    })
+  }
+
   private async initializeInstructions(workDir: string): Promise<boolean> {
     if (createProductInstructionSnapshot(workDir).sources.length > 0) return false
-    const root = await fs.realpath(findGitRoot(workDir) ?? workDir)
+    const root = await fs.realpath(findProductGitRoot(workDir) ?? workDir)
     const file = path.join(root, 'BilliardBuddy.md')
     let handle: fs.FileHandle | undefined
     try {
@@ -120,7 +137,7 @@ export class ProductAutoMemoryRepository {
   }
 
   private async projectIdentity(workDir: string): Promise<{ canonical: string; projectDigest: string }> {
-    const canonical = await fs.realpath(findGitRoot(workDir) ?? workDir)
+    const canonical = await fs.realpath(findProductGitRoot(workDir) ?? workDir)
     const stat = await fs.stat(canonical)
     if (!stat.isDirectory()) throw new Error('AUTO_MEMORY_PROJECT_INVALID')
     return { canonical, projectDigest: digest(`${process.platform}\0${canonical}\0${stat.dev}\0${stat.ino}`) }

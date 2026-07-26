@@ -14,6 +14,7 @@ import {
 } from '../services/cronService.js'
 import {
   cronScheduler,
+  nextScheduledOccurrence,
   type CronScheduler,
   type TaskRun,
 } from '../services/cronScheduler.js'
@@ -28,8 +29,16 @@ const MAX_RESULT_LENGTH = 12_000
 
 type ScheduledTaskScheduler = Pick<
   CronScheduler,
-  'executeTask' | 'getRecentRuns' | 'getTaskRuns'
+  'executeTask' | 'getRecentRuns' | 'getTaskRuns' | 'cancelTaskRun'
 >
+
+type RelatedTaskContextPort = {
+  get(taskId: string): Promise<{ lifecycle: string; workDir: string }>
+}
+
+const unavailableRelatedTaskContext: RelatedTaskContextPort = {
+  get: async () => { throw new ApiError(503, '关联任务状态暂时不可用', 'PRODUCT_TASK_CONTEXT_UNAVAILABLE') },
+}
 
 type JsonRecord = Record<string, unknown>
 
@@ -42,6 +51,7 @@ export class ProductScheduledTaskService {
   constructor(
     private readonly cronService: CronService = new CronService(),
     private readonly scheduler: ScheduledTaskScheduler = cronScheduler,
+    private readonly relatedTaskContext: RelatedTaskContextPort = unavailableRelatedTaskContext,
   ) {}
 
   async listTasks(): Promise<ProductScheduledTask[]> {
@@ -51,6 +61,7 @@ export class ProductScheduledTaskService {
   async createTask(input: unknown): Promise<ProductScheduledTask> {
     const stored = toStoredCreateInput(input)
     stored.folderPath = await requireCanonicalWorkDir(stored.folderPath)
+    await this.validateRelatedTask(stored.context, stored.folderPath)
     const task = await this.cronService.createTask(stored)
     return publicScheduledTask(task)
   }
@@ -66,6 +77,9 @@ export class ProductScheduledTaskService {
     if ((updates.enabled ?? existing.enabled ?? true) && !(updates.folderPath ?? existing.folderPath)) {
       throw ApiError.badRequest('启用定时任务前必须选择工作目录')
     }
+    const nextContext = updates.context ?? existing.context ?? { mode: 'independent' as const }
+    const nextWorkDir = updates.folderPath ?? existing.folderPath
+    if (nextWorkDir) await this.validateRelatedTask(nextContext, nextWorkDir)
     const task = await this.cronService.updateTask(
       normalizedTaskId,
       updates,
@@ -88,7 +102,8 @@ export class ProductScheduledTaskService {
         'PRODUCT_SCHEDULED_TASK_DISABLED',
       )
     }
-    await requireCanonicalWorkDir(task.folderPath)
+    const workDir = await requireCanonicalWorkDir(task.folderPath)
+    await this.validateRelatedTask(task.context, workDir)
 
     // The scheduler persists a real running record before starting the Core
     // process. Do not make up an optimistic client-side completion state.
@@ -106,6 +121,26 @@ export class ProductScheduledTaskService {
     const runs = await this.scheduler.getTaskRuns(requireProductScheduledTaskId(taskId))
     return runs.map(publicScheduledTaskRun)
   }
+
+  async cancelTaskRun(taskId: string, runId: string): Promise<void> {
+    const normalizedTaskId = requireProductScheduledTaskId(taskId)
+    if (!/^[0-9a-zA-Z_-]{1,96}$/.test(runId)) throw ApiError.notFound('运行记录不存在')
+    if (!await this.scheduler.cancelTaskRun(normalizedTaskId, runId)) {
+      throw new ApiError(409, '这次运行已经结束或暂时无法取消', 'PRODUCT_SCHEDULED_TASK_RUN_NOT_CANCELLABLE')
+    }
+  }
+
+  private async validateRelatedTask(context: CronTask['context'], workDir: string): Promise<void> {
+    if (context?.mode !== 'related_task') return
+    const target = await this.relatedTaskContext.get(context.taskId)
+    if (target.lifecycle !== 'active') {
+      throw new ApiError(409, '关联任务当前不能执行定时任务', 'PRODUCT_SCHEDULED_TASK_CONTEXT_INACTIVE')
+    }
+    const targetWorkDir = await requireCanonicalWorkDir(target.workDir)
+    if (targetWorkDir !== workDir) {
+      throw new ApiError(409, '定时任务工作目录必须与关联任务一致', 'PRODUCT_SCHEDULED_TASK_WORKDIR_MISMATCH')
+    }
+  }
 }
 
 export const productScheduledTaskService = new ProductScheduledTaskService()
@@ -116,11 +151,13 @@ function toStoredCreateInput(input: unknown): Omit<CronTask, 'id' | 'createdAt'>
     name: requireText(record.title, '任务名称', MAX_TITLE_LENGTH),
     description: optionalText(record.description, '任务说明', MAX_DESCRIPTION_LENGTH),
     cron: requireSchedule(record.schedule),
+    timeZone: requireTimeZone(record.timeZone),
     prompt: requireText(record.instruction, '任务内容', MAX_INSTRUCTION_LENGTH),
     enabled: optionalBoolean(record.enabled, '启用状态') ?? true,
     recurring: optionalBoolean(record.recurring, '重复执行') ?? true,
     folderPath: requireText(record.workDir, '工作目录', MAX_WORK_DIR_LENGTH),
     missedRunPolicy: optionalMissedRunPolicy(record.missedRunPolicy) ?? 'run_once',
+    context: optionalContext(record.context) ?? { mode: 'independent' },
     notification: optionalNotification(record.notification),
   }
 }
@@ -132,10 +169,12 @@ function toStoredUpdateInput(input: unknown): Partial<CronTask> {
   if ('title' in record) updates.name = requireText(record.title, '任务名称', MAX_TITLE_LENGTH)
   if ('description' in record) updates.description = optionalNullableText(record.description, '任务说明', MAX_DESCRIPTION_LENGTH)
   if ('schedule' in record) updates.cron = requireSchedule(record.schedule)
+  if ('timeZone' in record) updates.timeZone = requireTimeZone(record.timeZone)
   if ('instruction' in record) updates.prompt = requireText(record.instruction, '任务内容', MAX_INSTRUCTION_LENGTH)
   if ('enabled' in record) updates.enabled = optionalBoolean(record.enabled, '启用状态')
   if ('recurring' in record) updates.recurring = optionalBoolean(record.recurring, '重复执行')
   if ('missedRunPolicy' in record) updates.missedRunPolicy = requireMissedRunPolicy(record.missedRunPolicy)
+  if ('context' in record) updates.context = requireContext(record.context)
   if ('workDir' in record) updates.folderPath = requireText(record.workDir, '工作目录', MAX_WORK_DIR_LENGTH)
   if ('notification' in record) updates.notification = optionalNullableNotification(record.notification)
 
@@ -148,6 +187,7 @@ function toStoredUpdateInput(input: unknown): Partial<CronTask> {
 function publicScheduledTask(task: CronTask): ProductScheduledTask {
   const notification = publicNotification(task.notification)
   const hasWorkDir = Boolean(task.folderPath?.trim())
+  const nextRun = task.enabled === false ? null : nextScheduledOccurrence(task, new Date())
   return {
     id: task.id,
     title: boundedText(task.name?.trim() || task.prompt.trim() || '未命名定时任务', MAX_TITLE_LENGTH),
@@ -155,12 +195,16 @@ function publicScheduledTask(task: CronTask): ProductScheduledTask {
       ? { description: boundedText(task.description.trim(), MAX_DESCRIPTION_LENGTH) }
       : {}),
     schedule: task.cron,
+    timeZone: task.timeZone ?? 'UTC',
     instruction: boundedText(task.prompt, MAX_INSTRUCTION_LENGTH),
     // Older generic cron records did not require a working directory. Keep
     // them visible for repair, but never present them as runnable ProductTasks.
     enabled: task.enabled !== false && hasWorkDir,
     recurring: task.recurring !== false,
     missedRunPolicy: task.missedRunPolicy === 'skip' ? 'skip' : 'run_once',
+    context: task.context?.mode === 'related_task' && task.context.taskId
+      ? task.context
+      : { mode: 'independent' },
     grant: {
       version: 1,
       scope: 'workdir',
@@ -170,13 +214,14 @@ function publicScheduledTask(task: CronTask): ProductScheduledTask {
     },
     createdAt: Number.isFinite(task.createdAt) ? task.createdAt : 0,
     ...(validTimestamp(task.lastFiredAt) ? { lastRunAt: task.lastFiredAt } : {}),
+    ...(nextRun ? { nextRunAt: nextRun.toISOString() } : {}),
     ...(task.folderPath?.trim() ? { workDir: boundedText(task.folderPath.trim(), MAX_WORK_DIR_LENGTH) } : {}),
     ...(notification ? { notification } : {}),
   }
 }
 
 function publicScheduledTaskRun(run: TaskRun): ProductScheduledTaskRun {
-  const status = run.status === 'running' || run.status === 'completed' || run.status === 'timeout'
+  const status = run.status === 'running' || run.status === 'completed' || run.status === 'timeout' || run.status === 'cancelled'
     ? run.status
     : 'failed'
   return {
@@ -186,6 +231,7 @@ function publicScheduledTaskRun(run: TaskRun): ProductScheduledTaskRun {
     startedAt: run.startedAt,
     occurrenceAt: validTimestamp(run.occurrenceAt) ? run.occurrenceAt : run.startedAt,
     trigger: run.trigger === 'schedule' ? 'schedule' : 'manual',
+    ...(run.productTaskId ? { productTaskId: run.productTaskId } : {}),
     ...(validTimestamp(run.completedAt) ? { completedAt: run.completedAt } : {}),
     status,
     ...(run.output?.trim() ? { result: boundedText(run.output.trim(), MAX_RESULT_LENGTH) } : {}),
@@ -193,6 +239,30 @@ function publicScheduledTaskRun(run: TaskRun): ProductScheduledTaskRun {
       ? { durationMs: run.durationMs }
       : {}),
   }
+}
+
+function requireTimeZone(value: unknown): string {
+  const timeZone = requireText(value, '时区', 100)
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone }).format(new Date(0))
+    return timeZone
+  } catch {
+    throw ApiError.badRequest('时区格式有误')
+  }
+}
+
+function optionalContext(value: unknown): CronTask['context'] | undefined {
+  if (value === undefined) return undefined
+  return requireContext(value)
+}
+
+function requireContext(value: unknown): NonNullable<CronTask['context']> {
+  const record = requireRecord(value)
+  if (record.mode === 'independent' && Object.keys(record).length === 1) return { mode: 'independent' }
+  if (record.mode === 'related_task' && Object.keys(record).every(key => key === 'mode' || key === 'taskId')) {
+    return { mode: 'related_task', taskId: requireText(record.taskId, '关联任务', 160) }
+  }
+  throw ApiError.badRequest('上下文模式格式有误')
 }
 
 function requireProductScheduledTaskId(value: string): string {

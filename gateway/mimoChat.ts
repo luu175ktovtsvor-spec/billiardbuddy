@@ -70,7 +70,7 @@ export async function fetchMimoWithRetry(
   }
 }
 
-// 网关只重试"明确可重试的 5xx"。429 一律不重试(直接把限流回传给客户端),避免与 CC CLI
+// 网关只重试"明确可重试的 5xx"。429 一律不重试(直接把限流回传给客户端),避免与调用方
 // 自身的重试相乘、把一次逻辑调用放大成对上游的多次请求。连接错误(fetch 抛出)在下面的
 // catch 分支重试;调用点把 maxRetries 夹在 [0,1],所以一次逻辑调用最多只额外尝试一次。
 function isRetryableStatus(status: number): boolean {

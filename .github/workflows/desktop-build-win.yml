@@ -1,7 +1,13 @@
 name: 桌面版-Windows现役TS出包
 
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: '构建验证通过后发布到正式更新源'
+        required: false
+        default: false
+        type: boolean
   push:
     tags:
       - 'v*'
@@ -116,8 +122,8 @@ jobs:
           '39.106.214.21 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIgaQWyo3iZcvWHsVpYf+Oncgf5RZhkpMdz7ap5Gbusc' |
             Set-Content -LiteralPath $knownHostsPath -Encoding ascii
 
-          $gatewayCredentials = (& ssh -i $keyPath -o BatchMode=yes -o StrictHostKeyChecking=yes root@39.106.214.21 "sed -n 's/^GW_APP_CREDENTIALS=//p' /opt/qfgw/gw.env").Trim()
-          $licenseProvisioningJson = (& ssh -i $keyPath -o BatchMode=yes -o StrictHostKeyChecking=yes root@39.106.214.21 "sed -n 's/^GW_LICENSE_PROVISIONING=//p' /opt/qfgw/gw.env").Trim()
+          $gatewayCredentials = (& ssh -i $keyPath -o BatchMode=yes -o StrictHostKeyChecking=yes root@39.106.214.21 "sed -n 's/^GW_APP_CREDENTIALS=//p' /opt/billiardbuddy-gateway/gw.env").Trim()
+          $licenseProvisioningJson = (& ssh -i $keyPath -o BatchMode=yes -o StrictHostKeyChecking=yes root@39.106.214.21 "sed -n 's/^GW_LICENSE_PROVISIONING=//p' /opt/billiardbuddy-gateway/gw.env").Trim()
           try {
             $gatewayBootstrapCredential = @($gatewayCredentials -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })[0]
             $licenseProvisioning = @($licenseProvisioningJson | ConvertFrom-Json)
@@ -155,7 +161,40 @@ jobs:
           if ($updateMetadata.Count -ne 1) { throw '未生成唯一的 Windows 更新清单 latest.yml' }
           $installers | ForEach-Object { Write-Host "$($_.Name) $($_.Length) bytes" }
 
+      - name: 安装并审计 Windows 成品
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $installer = @(Get-ChildItem ts/desktop/build-artifacts/electron/*.exe -ErrorAction Stop)
+          if ($installer.Count -ne 1) { throw '未生成唯一的 Windows 安装包' }
+          $installDir = Join-Path $env:RUNNER_TEMP 'BilliardBuddy-installed-audit'
+          if (Test-Path -LiteralPath $installDir) { throw 'Windows 审计安装目录已存在' }
+          & $installer[0].FullName /S "/D=$installDir"
+          if ($LASTEXITCODE -ne 0) { throw "Windows 静默安装失败: $LASTEXITCODE" }
+          $resourcesDir = Join-Path $installDir 'resources'
+          if (-not (Test-Path -LiteralPath (Join-Path $resourcesDir 'app.asar') -PathType Leaf)) {
+            throw 'Windows 安装目录缺少 resources/app.asar'
+          }
+          Push-Location ts/desktop
+          try {
+            bun run audit:package -- --platform win32 --resources $resourcesDir
+          } finally {
+            Pop-Location
+          }
+
+      - name: 保存已审计的 Windows 安装包
+        uses: actions/upload-artifact@v4
+        with:
+          name: BilliardBuddy-windows-x64-${{ github.sha }}
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            ts/desktop/build-artifacts/electron/*.exe
+            ts/desktop/build-artifacts/electron/*.blockmap
+            ts/desktop/build-artifacts/electron/latest.yml
+
       - name: 发布 Windows 安装包与更新清单
+        if: startsWith(github.ref, 'refs/tags/v') || inputs.publish == true
         shell: pwsh
         env:
           BB_RELEASE_UPLOAD_SSH_KEY_B64: ${{ secrets.BB_RELEASE_UPLOAD_SSH_KEY_B64 }}

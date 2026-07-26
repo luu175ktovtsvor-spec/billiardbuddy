@@ -16,45 +16,55 @@ describe('ElectronMediaActions', () => {
       fetchImpl,
     })
 
-    await actions.submitImageProject('img_project01', true, true)
+    await actions.submitImageProject('img_project01', true)
     await actions.startImageOperation('img_project01', {
       revision: 3,
       base_version_id: 'ver_base0001',
       kind: 'edit',
       instruction: '只调整背景色',
       confirm_unknown_retry: false,
-    }, true)
+    })
+    await actions.updateUnknownImageProject('img_project01', {
+      revision: 4,
+      user_request: '保留设置重新生成',
+      size: '3840x2160',
+      confirm_unknown_retry: true,
+    })
+    await actions.addVideoSource('vid_project01', '/tmp/source.mp4')
     await actions.renderVideo('vid_project01', { revision: 2, output_path: '/tmp/final.mp4' })
     await actions.analyzeVideo('vid_project01', { base_revision: 2, user_goal: '剪成活动短片' })
     await actions.saveImageOutput('img_project01', { version_id: 'ver_result001', output_path: '/tmp/final.png' })
 
     expect(fetchImpl.mock.calls[0]?.[0]).toBe('http://127.0.0.1:3456/api/media/images/projects/img_project01/submit')
     const submitBody = JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body))
-    expect(submitBody).toMatchObject({
-      confirm_unknown_retry: true,
-      data_egress_consent: {
-        policy_revision: 'bb-04e-image-v1',
-        acknowledged: true,
-      },
-    })
-    expect(Number.isNaN(Date.parse(submitBody.data_egress_consent.acknowledged_at))).toBe(false)
+    expect(submitBody).toEqual({ confirm_unknown_retry: true })
     expect(fetchImpl.mock.calls[1]?.[0]).toBe('http://127.0.0.1:3456/api/media/images/projects/img_project01/operations')
-    expect(JSON.parse(String(fetchImpl.mock.calls[1]?.[1]?.body))).toMatchObject({
+    expect(JSON.parse(String(fetchImpl.mock.calls[1]?.[1]?.body))).toEqual({
       revision: 3,
       base_version_id: 'ver_base0001',
       kind: 'edit',
       instruction: '只调整背景色',
-      data_egress_consent: { acknowledged: true },
+      confirm_unknown_retry: false,
     })
-    expect(fetchImpl.mock.calls[2]?.[0]).toBe('http://127.0.0.1:3456/api/media/videos/projects/vid_project01/render')
+    expect(fetchImpl.mock.calls[2]?.[0]).toBe('http://127.0.0.1:3456/api/media/images/projects/img_project01')
+    expect(fetchImpl.mock.calls[2]?.[1]?.method).toBe('PUT')
     expect(JSON.parse(String(fetchImpl.mock.calls[2]?.[1]?.body))).toEqual({
+      revision: 4,
+      user_request: '保留设置重新生成',
+      size: '3840x2160',
+      confirm_unknown_retry: true,
+    })
+    expect(fetchImpl.mock.calls[3]?.[0]).toBe('http://127.0.0.1:3456/api/media/videos/projects/vid_project01/sources')
+    expect(JSON.parse(String(fetchImpl.mock.calls[3]?.[1]?.body))).toEqual({ path: '/tmp/source.mp4' })
+    expect(fetchImpl.mock.calls[4]?.[0]).toBe('http://127.0.0.1:3456/api/media/videos/projects/vid_project01/render')
+    expect(JSON.parse(String(fetchImpl.mock.calls[4]?.[1]?.body))).toEqual({
       revision: 2,
       output_path: '/tmp/final.mp4',
     })
-    expect(fetchImpl.mock.calls[3]?.[0]).toBe('http://127.0.0.1:3456/api/media/videos/projects/vid_project01/analyze')
-    expect(JSON.parse(String(fetchImpl.mock.calls[3]?.[1]?.body))).toEqual({ base_revision: 2, user_goal: '剪成活动短片' })
-    expect(fetchImpl.mock.calls[4]?.[0]).toBe('http://127.0.0.1:3456/api/media/images/projects/img_project01/versions/ver_result001/save')
-    expect(JSON.parse(String(fetchImpl.mock.calls[4]?.[1]?.body))).toEqual({ output_path: '/tmp/final.png' })
+    expect(fetchImpl.mock.calls[5]?.[0]).toBe('http://127.0.0.1:3456/api/media/videos/projects/vid_project01/analyze')
+    expect(JSON.parse(String(fetchImpl.mock.calls[5]?.[1]?.body))).toEqual({ base_revision: 2, user_goal: '剪成活动短片' })
+    expect(fetchImpl.mock.calls[6]?.[0]).toBe('http://127.0.0.1:3456/api/media/images/projects/img_project01/versions/ver_result001/save')
+    expect(JSON.parse(String(fetchImpl.mock.calls[6]?.[1]?.body))).toEqual({ output_path: '/tmp/final.png' })
   })
 
   it('rejects a weak process capability', () => {

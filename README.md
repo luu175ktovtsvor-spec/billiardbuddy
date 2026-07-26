@@ -1,33 +1,61 @@
 # BilliardBuddy
 
-BilliardBuddy 是面向球房经营者的桌面 Agent。当前能力和完成度以源码与实际运行结果为准。
+BilliardBuddy 是面向球房经营者的单一 Electron 桌面 Agent。产品由聊天 Agent、生图工作台和视频工作台三个并列板块组成；它们共享一个桌面壳、身份与资源控制面，但各自保持正确的执行链和领域真相。
 
-当前重构方向和执行边界见 [BilliardBuddy 重构合同](./BilliardBuddy-重构合同.md)。
+产品方向、不可变边界和完成标准以 [BilliardBuddy 产品重构合同](./BilliardBuddy-重构合同.md) 为准。
 
-## BilliardBuddy 项目指令
+## 产品结构
 
-BilliardBuddy 的 Agent Harness 会在启动任务时，把项目工作区中的指令文件收集为一次不可变快照，再注入当前模型上下文。因此 DeepSeek 不是自行读取磁盘；它接收的是由 Harness 按工作区边界、优先级和长度限制整理好的项目指令。
+| 板块 | 用户结果 | 权威状态 | 正式执行链 |
+|---|---|---|---|
+| 聊天 Agent | 连续对话、工具执行、Skills、Plugins、MCP、子任务、权限、恢复和定时执行 | `ProductTask`、`TaskRun`、durable event | DeepSeek `TextReasoning` ↔ Product Agent Harness ↔ Tool/MCP/Skill；聊天图片先经 MiMo `VisualEvidence` |
+| 生图工作台 | 参考图、画布、三候选、版本、编辑、比较和导出 | `MediaProject`、Operation/Job、Asset、Version | MiMo `MediaReasoning` → Gateway/Relay → GPT Image 2 或 Seedream |
+| 视频工作台 | 素材、证据、转写、场景、时间线、预览、渲染和导出 | `MediaProject`、Evidence、Timeline Version、持久 Job | 本机 FFmpeg/ffprobe + Fun-ASR + MiMo `MediaReasoning` |
 
-| 文件 | 作用 | 说明 |
-|---|---|---|
-| `AGENTS.md`、`BilliardBuddy.md`、`.BilliardBuddy/BilliardBuddy.md`、`.BilliardBuddy/rules/*.md`、`.BilliardBuddy/BilliardBuddy.local.md` | BilliardBuddy 项目指令 | `AGENTS.md` 与 `BilliardBuddy.md` 同层；`.BilliardBuddy` 是本产品唯一的目录化配置入口 |
+Renderer 只保存视图投影；Electron Main 负责受限 IPC、窗口、安全存储和 sidecar 生命周期；本机 Product Server 是 ProductTask、MediaProject、计划任务和资源调度的唯一写入权威。远端 Gateway 只承担安装身份、模型能力、用量与容量控制，Relay 只承担图片 provider 的持久异步任务和结果 blob，不保存第二份业务项目。
 
-重构完成后，BilliardBuddy 在**用户项目**中从仓库根目录向当前工作目录逐层收集；同一目录的优先顺序为 `AGENTS.md`、`BilliardBuddy.md`、`.BilliardBuddy/BilliardBuddy.md`、`.BilliardBuddy/rules/*.md`、`.BilliardBuddy/BilliardBuddy.local.md`，后加载的规则在冲突时优先。这个项目指令层的作用等同于 Claude 的 `CLAUDE.md` 与 Codex 的 `AGENTS.md`：由 Harness 冻结后注入当前任务，而不是让模型自行读取磁盘。本仓库根目录的 `AGENTS.md` 则只约束本仓库开发，二者不能混淆。
+## Agent Harness
 
-## 代码结构
+正式聊天路径位于本地 `agent-worker` 内，不经过公共 CLI。每个 Turn 由唯一的模型—工具循环推进，工具调用先经过 Host 的工作区、权限和资源校验，再把真实回执写入 durable event。桌面重开后从事件 cursor 恢复；取消、工具授权、compact、resume、MCP OAuth、Skills、Hooks、Plugins 和子任务都属于这条 Harness，而不是 renderer 临时状态。
+
+用户权限只有三档：
+
+- Ask for approval：工作区沙箱 + 按需询问。
+- Approve for me：工作区沙箱 + 本机自动策略。
+- Full access：完整本机权限，不做常规工具询问。
+
+本机终端是独立 PTY，不是 Agent Bash 回放，也不会继承产品管理的 Gateway 凭据。
+
+## 项目指令
+
+打开用户项目时，Harness 会从仓库根目录到当前工作目录逐层收集以下文件，并在 Turn 开始时冻结为有明确来源的上下文：
+
+1. `AGENTS.md`
+2. `BilliardBuddy.md`
+3. `.BilliardBuddy/BilliardBuddy.md`
+4. `.BilliardBuddy/rules/*.md`
+5. `.BilliardBuddy/BilliardBuddy.local.md`
+
+同一目录中后加载的规则优先，路径更深的规则覆盖上层规则。模型不会自行扫描磁盘或把普通文件冒充成项目指令。本仓库根目录的 `AGENTS.md` 只约束本仓库开发，不能与用户项目指令混淆。
+
+## 目录
 
 | 路径 | 职责 |
 |---|---|
-| `ts/src` | Agent 内核、桌面本地服务、工具与扩展机制 |
-| `ts/desktop` | React renderer、Electron 桌面宿主和本地 sidecar 打包 |
-| `ts/shared` | 桌面与本地服务共享契约 |
-| `gateway` | 模型、视觉和 Fun-ASR 网关 |
-| `relay` | 图片生成与编辑异步中转 |
+| `ts/src/server` | 本地 Product Server、ProductTask、Agent Host、媒体、语音、计划任务和资源调度 |
+| `ts/src/server/agent-worker` | 正式 Product Agent Harness、Tool、Skill、Hook、Plugin、MCP 和子任务运行时 |
+| `ts/shared` | 桌面、本地服务和 Gateway 共用的产品契约 |
+| `ts/desktop` | React renderer、Electron Main、preload、sidecar 与发行脚本 |
+| `gateway` | 五条 provider 能力泳道、安装身份、用量、容量和 Relay 代理 |
+| `relay` | GPT Image 2 / Seedream 持久任务、幂等、结果 blob 与 ack |
+| `ts/product-contracts` | 可生成、可校验的产品策略、迁移 reader 与删除消费者证据 |
+| `docs/refactor` | 外部参考源码到本项目改动的证据链 |
 
-两台专用生产服务器的职责、目录、部署、备份和迁移步骤见
-[服务器运行与迁移手册](./docs/operations/production-servers.md)。
+生产服务器的真实进程、端口、路由、环境变量名称和验证结果见 [生产服务器运行文档](./docs/operations/production-servers.md)。
 
 ## 本地开发
+
+需要 Bun、Node.js，以及 Electron/node-pty 支持的本机工具链。
 
 ```bash
 cd ts
@@ -37,18 +65,52 @@ bun install
 bun run electron:dev
 ```
 
-## 生产网关容量约束
+常用源码门禁：
 
-大陆网关由 [`gateway/deploy.sh`](./gateway/deploy.sh) 部署。新 `gw.env` 三项都缺失时，脚本会写入以下非敏感默认值；已有旧配置不会被单独插入新字段而破坏：
+```bash
+cd ts
+bun run check:product-contracts
+bun run check:server
+bun run check:desktop
+bun run check:electron
+bun run check:media-real-fixture
+```
 
-- `GW_MIMO_CONC=64`：一个 MiMo 账号在网关内允许的物理总在途数。
-- `GW_MIMO_NATIVE_CONC=48`：原生 MiMo 文本与 Computer Use 图像请求的固定槽位。
-- `GW_VISION_CONC=16`：DeepSeek→MiMo 图片理解桥接的固定槽位。
+真实 PTY 用 Electron 对应的 Node/Vitest 运行时验收：
 
-这不是可互相借用的软限流，而是 `48 + 16 = 64` 的硬预留：原生请求不会耗尽视觉槽，图片桥接也不会在 64 条原生请求之后继续等待。手工调整时必须使 `GW_MIMO_NATIVE_CONC + GW_VISION_CONC = GW_MIMO_CONC`；网关会拒绝未分配或超配的配置。视觉桥接仍受 48 个短队列和 3 秒等待限制，不能据此承诺 100 人多窗口图片请求全部无等待。
+```bash
+cd ts/desktop
+BB_LIVE_PTY_TEST=1 bunx vitest run electron/services/terminal.test.ts --testTimeout 30000
+```
 
-部署脚本会把 `gateway/validate-mimo-capacity-env.sh` 与网关源码一并复制到大陆机，并在重启 `qfgw` 前校验这三个非敏感字段；手工上传时也必须带上该脚本。旧环境只设置 `GW_MIMO_CONC` 时，会按网关同一规则自动推导分区；格式错误或不相加的显式配置会在服务重启前失败。
+Gateway 与 Relay 测试从仓库根目录运行：
 
-面向 100 人 × 10 个 DeepSeek 窗口的部署会执行 `gateway/validate-production-capacity-env.sh` 做容量配置准入预检：显式旧 `800/8/800` 配置会被拒绝，必须改为至少 `1000/10/1000` 后才能重启。它只读取非敏感容量字段，不会执行或打印 `gw.env` 中的令牌和上游密钥；这只证明配置下限，不代表 1,000 个真实请求已经通过。图片 relay 的 `relay/validate-production-env.sh` 同样要求持久化 SQLite、blob 目录、至少 1000 个小任务队列和每装机 10 个任务额度，避免重启后丢失队列或悄然保留旧 `600/5` 档位。
+```bash
+bun test gateway relay --timeout 30000
+```
 
-计划真机验收时，可同时上传 `real-loadtest.ts`、`vision-real-loadtest.ts`、`image-real-loadtest.ts`、`mimo-mixed-real-loadtest.ts`；网关部署脚本只复制它们，不会自动发起收费或高并发请求。真实压测应从高档位逐级向下，并在每档确认网关已排空后再继续。
+测试通过只证明对应源码边界；不能替代真实上游、安装、升级、恢复、签名、公证或安装包用户旅程。
+
+## Provider 与容量边界
+
+Provider registry 是 model ID、能力、上下文和 body budget 的唯一来源。客户端不能选择供应商或覆盖模型：
+
+- `TextReasoning`：DeepSeek `deepseek-v4-flash`
+- `VisualEvidence`：MiMo `mimo-v2.5`，只用于聊天看图桥接
+- `MediaReasoning`：MiMo `mimo-v2.5`，只用于图片/视频工作台
+- `SpeechTranscription`：Fun-ASR
+- `ImageGeneration`：GPT Image 2 / Seedream，经 Relay 持久任务
+
+当前 MiMo 生产分区为 `GW_MIMO_CONC=64`、`GW_MIMO_MEDIA_CONC=48`、`GW_VISION_CONC=16`，三者必须满足 `48 + 16 = 64`。`gateway/validate-mimo-capacity-env.sh`、`gateway/validate-production-capacity-env.sh` 和 `relay/validate-production-env.sh` 会在重启服务前校验非敏感容量配置与持久存储条件；这些数字是准入上限，不是线上吞吐承诺。
+
+## 发行
+
+发行阶段必须在源码、迁移、部署和文档收口后执行。macOS arm64 与 Windows x64 分别使用：
+
+```bash
+cd ts/desktop
+bun run build:macos-arm64
+bun run build:windows-x64
+```
+
+最终验收必须解包两个平台的产物，审计运行闭包与旧入口，并从真实安装包完成激活、普通任务、三档权限、原生搜索、图片三候选、视频证据编排、语音、计划任务、本机终端、升级、断网、重启和失败恢复。源码搜索或 `electron-builder --dir` 不能替代这一步。

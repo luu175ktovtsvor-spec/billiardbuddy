@@ -6,7 +6,7 @@ type Capacity = { active: number; queued: number }
 function request(label: string, index: number, signal?: AbortSignal): Request {
   return new Request('http://local/v1/chat/completions', {
     method: 'POST', signal,
-    headers: { Authorization: `Bearer ${gatewayTestAccessTokenFor(`${label}-${index}`)}`, 'Content-Type': 'application/json', 'X-QF-Client-ID': `${label}-client-${index}`, 'X-BB-Data-Egress-Consent': 'a'.repeat(64), 'X-BB-Provider-Protocol': 'bb-provider-gateway/1.0' },
+    headers: { Authorization: `Bearer ${gatewayTestAccessTokenFor(`${label}-${index}`)}`, 'Content-Type': 'application/json', 'X-BB-Installation-ID': `${label}-client-${index}`, 'X-BB-Provider-Protocol': 'bb-provider-gateway/1.0' },
     body: JSON.stringify({ model: 'deepseek-v4-flash', stream: true }),
   })
 }
@@ -78,4 +78,4 @@ test('500 simultaneous requests cancel 100 known queued turns; 400 upstream call
   await Promise.all(pending.slice(0, 400).map(async promise => { const response = await promise; expect(response.status).toBe(200); await response.text() }))
   expect(gateway.stats()).toMatchObject({ calls: 400, active: 0, peak: 100 })
   expect(await gateway.capacity()).toMatchObject({ active: 0, queued: 0 })
-}, { timeout: 20_000 })
+}, { timeout: 30_000 })

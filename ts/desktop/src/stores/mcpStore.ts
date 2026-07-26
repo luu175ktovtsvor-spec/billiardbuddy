@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import { mcpApi } from '../api/mcp'
-import type { McpServerRecord, McpToggleResponse, McpUpsertPayload } from '../types/mcp'
+import type { McpAuthorizationStart, McpAuthorizationStatus, McpServerRecord, McpToggleResponse, McpUpsertPayload } from '../types/mcp'
 
 type McpStore = {
   servers: McpServerRecord[]
@@ -13,6 +13,8 @@ type McpStore = {
   deleteServer: (server: McpServerRecord, cwd?: string) => Promise<void>
   toggleServer: (server: McpServerRecord, cwd?: string, taskId?: string) => Promise<McpToggleResponse>
   reconnectServer: (server: McpServerRecord, cwd?: string) => Promise<McpServerRecord>
+  authorizeServer: (server: McpServerRecord, cwd?: string) => Promise<McpAuthorizationStart>
+  authorizationStatus: (server: McpServerRecord, flowId: string, cwd?: string) => Promise<McpAuthorizationStatus>
   refreshServerStatus: (server: McpServerRecord, cwd?: string) => Promise<McpServerRecord>
   selectServer: (server: McpServerRecord | null) => void
 }
@@ -162,6 +164,10 @@ export const useMcpStore = create<McpStore>((set) => ({
     }))
     return updated
   },
+
+  authorizeServer: async (server, cwd) => mcpApi.authorize(server.name, cwd),
+
+  authorizationStatus: async (server, flowId, cwd) => mcpApi.authorizationStatus(server.name, flowId, cwd),
 
   refreshServerStatus: async (server, cwd) => {
     const response = await mcpApi.status(server.name, cwd)

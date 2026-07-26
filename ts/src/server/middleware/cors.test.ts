@@ -47,9 +47,9 @@ describe('resolveCors', () => {
       'http://10.0.0.5:5173',
       'http://127.example.com:5173',
       'http://127.bad.0.1:5173',
-      'http://tauri.localhost',
-      'https://tauri.localhost',
-      'tauri://localhost',
+      'http://desktop.localhost.example',
+      'https://desktop.localhost.example',
+      'desktop://localhost',
       'not-a-url',
     ]) {
       const result = await resolveCors(origin)

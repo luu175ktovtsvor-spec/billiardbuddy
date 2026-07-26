@@ -14,7 +14,7 @@
       "contract_version": 1,
       "model_id": "deepseek-v4-flash",
       "provider": "deepseek",
-      "registry_sha256": "e47f12a35cb3367b3a55e9e63e53ce4549f786d93fa59094cab95436c3d7d2f3",
+      "registry_sha256": "afb2350497e7d4aa6e564fecc4ab6ef6c71ac56f5c552d8eb0bc1c3aeee2d671",
       "resume_evidence": {
         "path": "ts/src/server/product/agentWorkerSupervisor.ts",
         "status": "verified"
@@ -23,13 +23,8 @@
       "verified_context_window": 16000,
       "worker_env_source": {
         "default_model": true,
-        "slot_aliases": [
-          "ANTHROPIC_MODEL",
-          "ANTHROPIC_DEFAULT_HAIKU_MODEL",
-          "ANTHROPIC_DEFAULT_SONNET_MODEL",
-          "ANTHROPIC_DEFAULT_OPUS_MODEL"
-        ],
-        "variable": "QF_GATEWAY_MODEL"
+        "slot_aliases": [],
+        "variable": "BB_GATEWAY_MODEL"
       }
     },
     {
@@ -39,13 +34,14 @@
         "VISION_BODY_MAX_BYTES": 25165824
       },
       "capabilities": [
-        "VisualEvidence"
+        "VisualEvidence",
+        "MediaReasoning"
       ],
       "compact_threshold": 12000,
       "contract_version": 1,
       "model_id": "mimo-v2.5",
       "provider": "mimo",
-      "registry_sha256": "e47f12a35cb3367b3a55e9e63e53ce4549f786d93fa59094cab95436c3d7d2f3",
+      "registry_sha256": "afb2350497e7d4aa6e564fecc4ab6ef6c71ac56f5c552d8eb0bc1c3aeee2d671",
       "resume_evidence": {
         "path": "gateway/visionBridge.ts",
         "status": "conservative"
@@ -70,7 +66,7 @@
       "contract_version": 1,
       "model_id": "gpt-image-2",
       "provider": "openai",
-      "registry_sha256": "e47f12a35cb3367b3a55e9e63e53ce4549f786d93fa59094cab95436c3d7d2f3",
+      "registry_sha256": "afb2350497e7d4aa6e564fecc4ab6ef6c71ac56f5c552d8eb0bc1c3aeee2d671",
       "resume_evidence": {
         "path": "relay/app.ts",
         "status": "verified"
@@ -95,7 +91,7 @@
       "contract_version": 1,
       "model_id": "doubao-seedream-4-5-251128",
       "provider": "bytedance-ark",
-      "registry_sha256": "e47f12a35cb3367b3a55e9e63e53ce4549f786d93fa59094cab95436c3d7d2f3",
+      "registry_sha256": "afb2350497e7d4aa6e564fecc4ab6ef6c71ac56f5c552d8eb0bc1c3aeee2d671",
       "resume_evidence": {
         "path": "relay/app.ts",
         "status": "verified"
@@ -120,7 +116,7 @@
       "contract_version": 1,
       "model_id": "fun-asr-flash-2026-06-15",
       "provider": "dashscope",
-      "registry_sha256": "e47f12a35cb3367b3a55e9e63e53ce4549f786d93fa59094cab95436c3d7d2f3",
+      "registry_sha256": "afb2350497e7d4aa6e564fecc4ab6ef6c71ac56f5c552d8eb0bc1c3aeee2d671",
       "resume_evidence": {
         "path": "gateway/transcription.ts",
         "status": "verified"
@@ -133,11 +129,11 @@
       }
     }
   ],
-  "registry_sha256": "e47f12a35cb3367b3a55e9e63e53ce4549f786d93fa59094cab95436c3d7d2f3",
+  "registry_sha256": "afb2350497e7d4aa6e564fecc4ab6ef6c71ac56f5c552d8eb0bc1c3aeee2d671",
   "schema_version": 1,
   "worker_capability_manifest": {
     "contract_version": 1,
     "path": "ts/product-contracts/worker-capability-manifest.json",
-    "registry_sha256": "e47f12a35cb3367b3a55e9e63e53ce4549f786d93fa59094cab95436c3d7d2f3"
+    "registry_sha256": "afb2350497e7d4aa6e564fecc4ab6ef6c71ac56f5c552d8eb0bc1c3aeee2d671"
   }
 }

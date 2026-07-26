@@ -16,11 +16,11 @@
 #     分钟级隐藏等待。2500 是上游账号额度，不等于单机 Bun 网关应直接开到 2500；/healthz
 #     会返回 active/queued/queueMax/oldestQueueMs 供观察。
 #   - 在把线上阈值调高、或将 1,000 当成长期生产承诺前，必须以真 DeepSeek 账号逐级压测，并同时观察
-#     长 SSE/长上下文下的 qfgw CPU、内存、文件描述符、上游 429/5xx 和 p95 首 token 时间。若尾延迟不可接受，应先调低
+#     长 SSE/长上下文下的 billiardbuddy-gateway CPU、内存、文件描述符、上游 429/5xx 和 p95 首 token 时间。若尾延迟不可接受，应先调低
 #     GW_DEEPSEEK_CONC/GW_DEEPSEEK_TOKEN_CONC，而不是放大队列或直接追随 2500 账户额度。
 #   - MiMo 尚无可复现的高并发真实上游验收，不能承诺 100 人多窗口无等待。因此先固定
 #     GW_MIMO_CONC=64（当前账号级物理总上限）/
-#     GW_MIMO_NATIVE_CONC=48（原生 MiMo 文本/Computer Use 槽）/
+#     GW_MIMO_MEDIA_CONC=48（图片/视频工作台 MediaReasoning 槽）/
 #     GW_VISION_CONC=16（DeepSeek→MiMo 图片桥接槽）的视觉优先硬预留，48 + 16 = 64。原生路径不能借用
 #     视觉的 16 槽，视觉也不会在 64 条原生请求之后排队；任一数值调整时必须同时校验三者之和等于
 #     GW_MIMO_CONC。另固定 GW_MIMO_USER_CONC=1 / GW_MIMO_INFLIGHT_PER_USER=1 /
@@ -50,12 +50,12 @@
 #     30–255；Bun 的硬上限为 255）。长流 handler 仍会对具体请求调用 timeout(..., 0)，因此 US /gw
 #     代理的 300 秒窗口可以保留为外层连接窗口。
 # 回滚(本脚本不做备份/回滚,需运维在部署前手工执行):
-#   部署前备份代码 `cp -a /opt/qfgw /opt/qfgw.bak-<ts>`、gw.env 单独备份 `cp -a /opt/qfgw/gw.env /root/gw.env.bak-<ts>`。
-#   部署失败回滚**不能** `cp -a /opt/qfgw.bak-<ts> /opt/qfgw`(/opt/qfgw 已存在,cp -a 会把备份复制成子目录、不覆盖、回滚不生效),
-#   正确做法: `rsync -a --delete /opt/qfgw.bak-<ts>/ /opt/qfgw/ && systemctl restart qfgw`(源路径带结尾 `/`)。
-#   gw.env 是单文件,`cp -a /root/gw.env.bak-<ts> /opt/qfgw/gw.env` 单文件覆盖安全、不会嵌套。
+#   部署前备份代码 `cp -a /opt/billiardbuddy-gateway /opt/billiardbuddy-gateway.bak-<ts>`、gw.env 单独备份 `cp -a /opt/billiardbuddy-gateway/gw.env /root/gw.env.bak-<ts>`。
+#   部署失败回滚**不能** `cp -a /opt/billiardbuddy-gateway.bak-<ts> /opt/billiardbuddy-gateway`(/opt/billiardbuddy-gateway 已存在,cp -a 会把备份复制成子目录、不覆盖、回滚不生效),
+#   正确做法: `rsync -a --delete /opt/billiardbuddy-gateway.bak-<ts>/ /opt/billiardbuddy-gateway/ && systemctl restart billiardbuddy-gateway`(源路径带结尾 `/`)。
+#   gw.env 是单文件,`cp -a /root/gw.env.bak-<ts> /opt/billiardbuddy-gateway/gw.env` 单文件覆盖安全、不会嵌套。
 set -euo pipefail
-APPDIR=/opt/qfgw
+APPDIR=/opt/billiardbuddy-gateway
 for source in app.ts authority.ts mimoChat.ts deepseekChat.ts modelCapacity.ts visionBridge.ts transcription.ts usageBudget.ts providerRegistry.ts validate-auth-env.ts validate-mimo-capacity-env.sh validate-production-capacity-env.sh; do
   [ -f "/tmp/$source" ] || { echo "缺少 /tmp/$source" >&2; exit 1; }
 done
@@ -80,7 +80,7 @@ install -m 755 /tmp/validate-mimo-capacity-env.sh "$APPDIR/validate-mimo-capacit
 install -m 755 /tmp/validate-production-capacity-env.sh "$APPDIR/validate-production-capacity-env.sh"
 # Upload these separately with the runtime files when a controlled live capacity
 # run is scheduled. They are never invoked by deployment, and keeping them in
-# /opt/qfgw keeps controlled operators close to service health; runners still require
+# /opt/billiardbuddy-gateway keeps controlled operators close to service health; runners still require
 # an explicit short-lived installation access token and never read bootstrap credentials.
 # A normal runtime-only deployment remains valid when no runner was uploaded.
 for runner in real-loadtest.ts vision-real-loadtest.ts image-real-loadtest.ts mimo-mixed-real-loadtest.ts; do
@@ -102,9 +102,9 @@ fi
 # 否则会让原本有效的 GW_MIMO_CONC=16 变成不一致配置。已有总量由 app.ts 兼容推导；
 # 新的显式配置必须满足总 64 = 原生 48 + 视觉 16（或三项严格相等的其他分区）。
 if ! grep -Eq '^[[:space:]]*GW_MIMO_CONC=' "$APPDIR/gw.env" \
-  && ! grep -Eq '^[[:space:]]*GW_MIMO_NATIVE_CONC=' "$APPDIR/gw.env" \
+  && ! grep -Eq '^[[:space:]]*GW_MIMO_MEDIA_CONC=' "$APPDIR/gw.env" \
   && ! grep -Eq '^[[:space:]]*GW_VISION_CONC=' "$APPDIR/gw.env"; then
-  printf '\nGW_MIMO_CONC=64\nGW_MIMO_NATIVE_CONC=48\nGW_VISION_CONC=16\n' >> "$APPDIR/gw.env"
+  printf '\nGW_MIMO_CONC=64\nGW_MIMO_MEDIA_CONC=48\nGW_VISION_CONC=16\n' >> "$APPDIR/gw.env"
 fi
 
 # Fail before touching systemd if an operator supplied a partial or inconsistent
@@ -132,14 +132,14 @@ fi
 "$BUN_BIN" "$APPDIR/validate-auth-env.ts" "$APPDIR/gw.env"
 
 echo "=== systemd 服务 ==="
-cat > /etc/systemd/system/qfgw.service <<'UNIT'
+cat > /etc/systemd/system/billiardbuddy-gateway.service <<'UNIT'
 [Unit]
-Description=qfang AI gateway valve (Bun)
+Description=BilliardBuddy AI gateway valve (Bun)
 After=network.target
 [Service]
-EnvironmentFile=/opt/qfgw/gw.env
-WorkingDirectory=/opt/qfgw
-ExecStart=__BUN_BIN__ /opt/qfgw/app.ts --host 127.0.0.1 --port 8799
+EnvironmentFile=/opt/billiardbuddy-gateway/gw.env
+WorkingDirectory=/opt/billiardbuddy-gateway
+ExecStart=__BUN_BIN__ /opt/billiardbuddy-gateway/app.ts --host 127.0.0.1 --port 8799
 Restart=always
 RestartSec=2
 # 一条代理 SSE 通常会同时占用入站和上游出站连接。100 人 × 10 窗口时最多约 1,000 个
@@ -150,17 +150,17 @@ UMask=0077
 [Install]
 WantedBy=multi-user.target
 UNIT
-sed -i "s#__BUN_BIN__#$BUN_BIN#g" /etc/systemd/system/qfgw.service
+sed -i "s#__BUN_BIN__#$BUN_BIN#g" /etc/systemd/system/billiardbuddy-gateway.service
 systemctl daemon-reload
-systemctl enable qfgw >/dev/null 2>&1 || true
-systemctl restart qfgw
+systemctl enable billiardbuddy-gateway >/dev/null 2>&1 || true
+systemctl restart billiardbuddy-gateway
 sleep 3
 
 echo "=== 服务状态 ==="
-systemctl is-active qfgw || (journalctl -u qfgw -n 20 --no-pager; exit 1)
+systemctl is-active billiardbuddy-gateway || (journalctl -u billiardbuddy-gateway -n 20 --no-pager; exit 1)
 echo "=== /healthz ==="
 health_json="$(curl -fsS --max-time 8 http://127.0.0.1:8799/healthz)"
-HEALTH_JSON="$health_json" "$BUN_BIN" -e 'const value=JSON.parse(process.env.HEALTH_JSON??"{}");if(value.component_manifest?.component!=="qf-gateway"||value.component_manifest?.protocol!=="bb-provider-gateway/1.0"||value.component_manifest?.requires_data_egress_consent!==true||value.component_manifest?.relay_protocol!=="bb-provider-gateway/1.0")throw new Error("qf-gateway component manifest incompatible")'
+HEALTH_JSON="$health_json" "$BUN_BIN" -e 'const value=JSON.parse(process.env.HEALTH_JSON??"{}");if(value.component_manifest?.component!=="billiardbuddy-gateway"||value.component_manifest?.protocol!=="bb-provider-gateway/1.0"||value.component_manifest?.relay_protocol!=="bb-provider-gateway/1.0")throw new Error("billiardbuddy-gateway component manifest incompatible")'
 echo "$health_json"
 chmod 600 "$APPDIR"/usage.db* 2>/dev/null || true
 echo "=== 内存占用 ==="

@@ -9,7 +9,7 @@ export type TrayController = {
 
 export function resolveTrayIconPath(desktopRoot: string): string {
   const candidates = [
-    path.join(desktopRoot, 'src-tauri', 'icons', 'icon.png'),
+    path.join(desktopRoot, 'runtime-assets', 'icons', 'icon.png'),
     path.join(desktopRoot, 'public', 'app-icon.png'),
     path.join(desktopRoot, 'dist', 'app-icon.png'),
   ]

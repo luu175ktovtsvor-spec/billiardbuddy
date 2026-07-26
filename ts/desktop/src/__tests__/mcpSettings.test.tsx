@@ -11,6 +11,11 @@ import { PRODUCT_TASK_TAB_PREFIX, useTabStore } from '../stores/tabStore'
 import { EMPTY_PRODUCT_TASK_INDEX, useProductTaskStore } from '../product/stores/productTaskStore'
 import type { McpServerRecord } from '../types/mcp'
 
+const { openExternal } = vi.hoisted(() => ({ openExternal: vi.fn() }))
+vi.mock('../lib/desktopHost', () => ({
+  getDesktopHost: () => ({ shell: { open: openExternal } }),
+}))
+
 function makeServer(overrides: Partial<McpServerRecord> = {}): McpServerRecord {
   return {
     name: 'context7',
@@ -39,6 +44,7 @@ describe('McpSettings', () => {
   beforeEach(() => {
     useSettingsStore.setState({ locale: 'en' })
     useUIStore.setState({ toasts: [] })
+    openExternal.mockReset()
     useTabStore.setState({
       activeTabId: '__settings__',
       lastActiveProductTaskId: 'task-1',
@@ -114,6 +120,8 @@ describe('McpSettings', () => {
       deleteServer: vi.fn(),
       toggleServer: vi.fn(),
       reconnectServer: vi.fn(),
+      authorizeServer: vi.fn(),
+      authorizationStatus: vi.fn(),
       refreshServerStatus: vi.fn(),
       selectServer: vi.fn(),
     })
@@ -215,6 +223,34 @@ describe('McpSettings', () => {
     expect(reconnectServer).toHaveBeenCalledWith(server, '/workspace/project')
   })
 
+  it('opens the verified OAuth URL, observes callback completion, and reconnects', async () => {
+    const server = makeServer({
+      name: 'oauth-server',
+      transport: 'http',
+      status: 'needs-auth',
+      canAuthorize: true,
+      canEdit: false,
+    })
+    const authorizeServer = vi.fn().mockResolvedValue({
+      connected: false,
+      flowId: 'flow-1',
+      authorizationUrl: 'https://auth.example.test/authorize',
+      expiresAt: Date.now() + 60_000,
+    })
+    const authorizationStatus = vi.fn().mockResolvedValue({ status: 'connected' })
+    const reconnectServer = vi.fn().mockResolvedValue({ ...server, status: 'connected' as const })
+    useMcpStore.setState({ servers: [server], authorizeServer, authorizationStatus, reconnectServer })
+
+    await renderLoadedMcpSettings()
+    fireEvent.click(screen.getByRole('button', { name: 'Manage oauth-server' }))
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: /Authorize/ })) })
+
+    expect(authorizeServer).toHaveBeenCalledWith(server, '/workspace/project')
+    expect(openExternal).toHaveBeenCalledWith('https://auth.example.test/authorize')
+    expect(authorizationStatus).toHaveBeenCalledWith(server, 'flow-1', '/workspace/project')
+    expect(reconnectServer).toHaveBeenCalledWith(server, '/workspace/project')
+  })
+
   it('uses the active product task when toggling a connection', async () => {
     const server = makeServer()
     const toggleServer = vi.fn().mockResolvedValue({
@@ -235,7 +271,7 @@ describe('McpSettings', () => {
     const server = makeServer()
     const toggleServer = vi.fn().mockResolvedValue({
       server: { ...server, enabled: false },
-      taskSync: { applied: false, reason: 'not_running' },
+      taskSync: { applied: false, reason: 'next_turn' },
     })
     useMcpStore.setState({ servers: [server], toggleServer })
 
@@ -254,7 +290,7 @@ describe('McpSettings', () => {
     const server = makeServer()
     const toggleServer = vi.fn().mockResolvedValue({
       server: { ...server, enabled: false },
-      taskSync: { applied: false, reason: 'failed' },
+      taskSync: { applied: false, reason: 'next_turn' },
     })
     useMcpStore.setState({ servers: [server], toggleServer })
 
@@ -265,7 +301,7 @@ describe('McpSettings', () => {
 
     expect(useUIStore.getState().toasts.at(-1)).toMatchObject({
       type: 'warning',
-      message: 'Saved MCP server "context7", but it could not be applied to the current task. Try again or it will take effect the next time the task runs.',
+      message: 'Saved MCP server "context7", but the current task was not updated. It will take effect the next time the task runs.',
     })
   })
 

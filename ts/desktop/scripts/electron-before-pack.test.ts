@@ -33,7 +33,7 @@ afterEach(() => {
 describe('desktop product package config', () => {
   it('accepts a public gateway URL and separately staged activation inputs', () => {
     const desktopDir = createDesktopBuild(
-      { gatewayUrl: 'https://gw.example/gw', gatewayModel: 'deepseek-v4-flash' },
+      { $comment: 'public routing only', gatewayUrl: 'https://gw.example/gw' },
       { gatewayBootstrapCredential: 'revocable-bootstrap-credential', licenseKey: 'release-license-0001' },
     )
     expect(() => validateProductPackageFiles(desktopDir)).not.toThrow()
@@ -59,9 +59,15 @@ describe('desktop product package config', () => {
       { gatewayUrl: 'https://gw.example/gw', gatewayBootstrapCredential: 'public-leak' },
       { gatewayBootstrapCredential: 'revocable-bootstrap-credential', licenseKey: 'release-license-0001' },
     )
-    expect(() => validateProductPackageFiles(desktopDir)).toThrow(
-      'credentials must not be stored in public product-config.json',
+    expect(() => validateProductPackageFiles(desktopDir)).toThrow('contains unsupported fields')
+  })
+
+  it('blocks obsolete model selection fields from entering the installer', () => {
+    const desktopDir = createDesktopBuild(
+      { gatewayUrl: 'https://gw.example/gw', gatewayModel: 'deepseek-v4-flash' },
+      { gatewayBootstrapCredential: 'revocable-bootstrap-credential', licenseKey: 'release-license-0001' },
     )
+    expect(() => validateProductPackageFiles(desktopDir)).toThrow('contains unsupported fields: gatewayModel')
   })
 
   it('blocks a package that would send installation authorization over HTTP', () => {
@@ -74,7 +80,7 @@ describe('desktop product package config', () => {
 
   it('blocks a secure URL that is not the product gateway base path', () => {
     const desktopDir = createDesktopBuild(
-      { gatewayUrl: 'https://gateway.example', gatewayModel: 'deepseek-v4-flash' },
+      { gatewayUrl: 'https://gateway.example' },
       { gatewayBootstrapCredential: 'revocable-bootstrap-credential', licenseKey: 'release-license-0001' },
     )
     expect(() => validateProductPackageFiles(desktopDir)).toThrow('gatewayUrl must use HTTPS at the /gw endpoint')

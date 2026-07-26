@@ -6,6 +6,8 @@ import { spawnSync } from 'node:child_process'
 
 type SupportedPlatform = 'darwin' | 'win32'
 
+type BinaryHashMode = 'sha256' | 'mach-o-code-signature-neutral-sha256'
+
 type SourceManifest = {
   schemaVersion: 1
   version: string
@@ -13,9 +15,11 @@ type SourceManifest = {
   sourceUrl: string
   licenseSha256: string
   files: Record<string, string>
+  binaryHashMode?: BinaryHashMode
 }
 
-type StagedManifest = SourceManifest & {
+type StagedManifest = Omit<SourceManifest, 'binaryHashMode'> & {
+  binaryHashMode: BinaryHashMode
   buildConfiguration: string
   binaryVersion: string
 }
@@ -70,6 +74,79 @@ function sha256(path: string): string {
   return createHash('sha256').update(readFileSync(path)).digest('hex')
 }
 
+function isThinMachO64(path: string): boolean {
+  const bytes = readFileSync(path)
+  return bytes.length >= 32 && bytes.readUInt32LE(0) === 0xfeedfacf
+}
+
+export function machOCodeSignatureNeutralSha256(path: string): string {
+  const bytes = readFileSync(path)
+  if (bytes.length < 32 || bytes.readUInt32LE(0) !== 0xfeedfacf) {
+    throw new Error(`不是受支持的 64 位小端 Mach-O 文件: ${path}`)
+  }
+
+  const commandCount = bytes.readUInt32LE(16)
+  const commandsSize = bytes.readUInt32LE(20)
+  const commandsEnd = 32 + commandsSize
+  if (commandsEnd > bytes.length) throw new Error(`Mach-O load commands 越界: ${path}`)
+
+  const normalized = Buffer.from(bytes)
+  let commandOffset = 32
+  let signatureOffset: number | undefined
+  let signatureSize: number | undefined
+  let linkEditFound = false
+  for (let index = 0; index < commandCount; index += 1) {
+    if (commandOffset + 8 > commandsEnd) throw new Error(`Mach-O load command 不完整: ${path}`)
+    const command = bytes.readUInt32LE(commandOffset)
+    const commandSize = bytes.readUInt32LE(commandOffset + 4)
+    if (commandSize < 8 || commandOffset + commandSize > commandsEnd) {
+      throw new Error(`Mach-O load command 大小无效: ${path}`)
+    }
+    if (command === 0x1d) {
+      if (commandSize < 16 || signatureOffset !== undefined) {
+        throw new Error(`Mach-O code signature command 无效: ${path}`)
+      }
+      signatureOffset = bytes.readUInt32LE(commandOffset + 8)
+      signatureSize = bytes.readUInt32LE(commandOffset + 12)
+      normalized.writeUInt32LE(0, commandOffset + 8)
+      normalized.writeUInt32LE(0, commandOffset + 12)
+    }
+    if (command === 0x19 && commandSize >= 72) {
+      const segmentName = bytes.subarray(commandOffset + 8, commandOffset + 24)
+        .toString('utf8')
+        .replace(/\0+$/, '')
+      if (segmentName === '__LINKEDIT') {
+        if (linkEditFound) throw new Error(`Mach-O 包含重复的 __LINKEDIT segment: ${path}`)
+        linkEditFound = true
+        // codesign extends __LINKEDIT to fit the new signature and updates these
+        // two sizes. All other segment metadata and executable bytes remain hashed.
+        normalized.writeBigUInt64LE(0n, commandOffset + 32)
+        normalized.writeBigUInt64LE(0n, commandOffset + 48)
+      }
+    }
+    commandOffset += commandSize
+  }
+  if (commandOffset !== commandsEnd) throw new Error(`Mach-O load commands 长度不一致: ${path}`)
+  if (signatureOffset === undefined || signatureSize === undefined) {
+    throw new Error(`Mach-O 缺少 code signature command: ${path}`)
+  }
+  if (!linkEditFound) throw new Error(`Mach-O 缺少 __LINKEDIT segment: ${path}`)
+  if (signatureOffset < commandsEnd || signatureOffset + signatureSize > bytes.length) {
+    throw new Error(`Mach-O code signature 区域越界: ${path}`)
+  }
+
+  return createHash('sha256')
+    .update(normalized.subarray(0, signatureOffset))
+    .update(normalized.subarray(signatureOffset + signatureSize))
+    .digest('hex')
+}
+
+function binaryHash(path: string, mode: BinaryHashMode): string {
+  return mode === 'mach-o-code-signature-neutral-sha256'
+    ? machOCodeSignatureNeutralSha256(path)
+    : sha256(path)
+}
+
 function readJson<T>(path: string): T {
   return JSON.parse(readFileSync(path, 'utf8')) as T
 }
@@ -82,6 +159,9 @@ function validateMetadata(manifest: SourceManifest): void {
   if (!/^https:\/\//.test(manifest.sourceUrl)) throw new Error('媒体工具链 manifest 必须记录 HTTPS 源码地址')
   if (!/^[a-f0-9]{64}$/.test(manifest.licenseSha256?.toLowerCase() ?? '')) {
     throw new Error('媒体工具链 manifest 缺少许可证文件 SHA-256')
+  }
+  if (manifest.binaryHashMode && !['sha256', 'mach-o-code-signature-neutral-sha256'].includes(manifest.binaryHashMode)) {
+    throw new Error(`媒体工具链 manifest 使用了不支持的二进制哈希模式: ${manifest.binaryHashMode}`)
   }
 }
 
@@ -165,12 +245,13 @@ function verifyLicenseFile(directory: string, fileName: string, manifest: Source
 }
 
 function verifyHashes(directory: string, manifest: SourceManifest, names: string[]): void {
+  const mode = manifest.binaryHashMode ?? 'sha256'
   for (const name of names) {
     const path = join(directory, name)
     if (!existsSync(path)) throw new Error(`缺少媒体工具链文件: ${path}`)
     const expected = manifest.files[name]?.toLowerCase()
     if (!/^[a-f0-9]{64}$/.test(expected ?? '')) throw new Error(`manifest 缺少 ${name} 的 SHA-256`)
-    const actual = sha256(path)
+    const actual = binaryHash(path, mode)
     if (actual !== expected) throw new Error(`${name} SHA-256 不匹配`)
   }
 }
@@ -219,8 +300,14 @@ export function stageMediaToolchain(options: MediaToolchainStageOptions): void {
     if (options.platform !== 'win32') chmodSync(join(destination, name), 0o755)
   }
   copyFileSync(sourceLicensePath, join(destination, LICENSE_FILE))
+  const binaryHashMode: BinaryHashMode = options.platform === 'darwin'
+    && names.every((name) => isThinMachO64(join(destination, name)))
+    ? 'mach-o-code-signature-neutral-sha256'
+    : 'sha256'
   const staged: StagedManifest = {
     ...manifest,
+    binaryHashMode,
+    files: Object.fromEntries(names.map((name) => [name, binaryHash(join(destination, name), binaryHashMode)])),
     buildConfiguration: audit.buildConfiguration,
     binaryVersion: audit.version,
   }
@@ -235,7 +322,7 @@ if (import.meta.main) {
   if (!['darwin', 'win32'].includes(platform)) throw new Error(`不支持的媒体工具链平台: ${platform}`)
   stageMediaToolchain({
     sourceDir: process.env.BB_MEDIA_TOOLCHAIN_SOURCE_DIR,
-    destinationDir: cli.destinationDir ?? join(desktopRoot, 'src-tauri', 'binaries'),
+    destinationDir: cli.destinationDir ?? join(desktopRoot, 'runtime-assets', 'binaries'),
     platform,
     verifyOnly: cli.verifyOnly,
   })

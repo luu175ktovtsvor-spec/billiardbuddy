@@ -100,23 +100,11 @@
       "to": "v1-private-asset"
     },
     {
-      "backup_strategy": "existing-before-migration-backup; module-22-policy-governs-release-migration",
-      "fixture": "ts/product-contracts/fixtures/provider-root-v1-legacy-index.json",
-      "fixture_sha256": "7bfaa0f270c284b78ed21669db0f6b473416951918ca5e445620d9c2c59bd283",
-      "from": "root-v1-legacy-index",
       "id": "provider-root-v1-legacy-index-to-provider-index-v2",
-      "idempotence_test": "ts/tests/product-contracts/legacy-reader-migrations.test.ts",
-      "idempotence_test_id": "provider-root-v1-legacy-index-to-provider-index-v2:idempotence",
       "layer": "disk",
-      "migration_owner_module": "04",
-      "physical_location": "CLAUDE_CONFIG_DIR/providers.json to CLAUDE_CONFIG_DIR/billiardbuddy/providers.json",
-      "positive_test": "ts/tests/product-contracts/legacy-reader-migrations.test.ts",
-      "positive_test_id": "provider-root-v1-legacy-index-to-provider-index-v2:positive",
-      "reader_entry": "ts/src/server/services/persistentStorageMigrations.ts",
-      "release_association": "first-versioned-migration-release",
-      "status": "supported",
-      "storage_id": "provider-index",
-      "to": "provider-index-v2"
+      "reason": "Provider selection and credentials are managed by the product Gateway. The desktop has no provider-index consumer and leaves an old root providers.json untouched instead of importing it into a second product state.",
+      "status": "unsupported",
+      "storage_id": "provider-index"
     },
     {
       "id": "managed-settings-tested-fields",
@@ -126,10 +114,19 @@
       "storage_id": "managed-settings"
     },
     {
-      "id": "cron-tested-fields",
+      "backup_strategy": "product-storage-v3-versioned-backup-before-write",
+      "fixture": "ts/product-contracts/fixtures/cron-disk-v0-legacy-fields.json",
+      "fixture_sha256": "a46843264f81e06395b3eef4959aa04940524808f685108911d089abd2de2e85",
+      "id": "cron-disk-v0-legacy-fields-to-v1",
+      "idempotence_test": "ts/tests/product-contracts/legacy-reader-migrations.test.ts",
+      "idempotence_test_id": "cron-disk-v0-legacy-fields-to-v1:idempotence",
       "layer": "disk",
-      "reason": "No versioned immutable fixture, reader/migration test, backup contract, or release evidence is registered.",
-      "status": "unsupported",
+      "migration_owner_module": "product-storage-v3",
+      "positive_test": "ts/tests/product-contracts/legacy-reader-migrations.test.ts",
+      "positive_test_id": "cron-disk-v0-legacy-fields-to-v1:positive",
+      "reader_entry": "ts/src/server/services/cronService.ts",
+      "release_association": "first-versioned-migration-release",
+      "status": "supported",
       "storage_id": "cron"
     },
     {
@@ -154,10 +151,19 @@
       "storage_id": "recruiting"
     },
     {
-      "id": "cron-run-log-history",
+      "backup_strategy": "product-storage-v3-versioned-backup-before-write",
+      "fixture": "ts/product-contracts/fixtures/cron-run-log-v0-private-runtime-fields.json",
+      "fixture_sha256": "99634c1cf065f2abccc8f40d6205b9feb11bef1fd17e943135e8944354e8b9f2",
+      "id": "cron-run-log-v0-private-runtime-fields-to-v1",
+      "idempotence_test": "ts/tests/product-contracts/legacy-reader-migrations.test.ts",
+      "idempotence_test_id": "cron-run-log-v0-private-runtime-fields-to-v1:idempotence",
       "layer": "disk",
-      "reason": "No versioned immutable fixture is registered.",
-      "status": "unsupported",
+      "migration_owner_module": "product-storage-v3",
+      "positive_test": "ts/tests/product-contracts/legacy-reader-migrations.test.ts",
+      "positive_test_id": "cron-run-log-v0-private-runtime-fields-to-v1:positive",
+      "reader_entry": "ts/src/server/services/cronScheduler.ts",
+      "release_association": "first-versioned-migration-release",
+      "status": "supported",
       "storage_id": "cron-run-log"
     },
     {
@@ -185,5 +191,5 @@
   ],
   "matrix_revision": "bb-01a-initial",
   "matrix_schema_version": 1,
-  "source_sha256": "d8093117450b63681a83d080587f201df4c0b21e39a600d9e82ab0db98756736"
+  "source_sha256": "8445b9a6e144e73d8fa81757b2c1f4e38de434e1bdbb099b6e5eb3ad3f63370d"
 }

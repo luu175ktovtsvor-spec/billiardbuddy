@@ -82,6 +82,7 @@ describe('pluginStore', () => {
     expect(mockedPluginsApi.enable).toHaveBeenCalledWith({
       id: 'draw@test',
       scope: 'user',
+      cwd: '/workspace/project',
     })
     expect(mockedPluginsApi.reload).toHaveBeenCalledWith(
       '/workspace/project',
@@ -127,10 +128,12 @@ describe('pluginStore', () => {
     expect(mockedPluginsApi.enable).toHaveBeenNthCalledWith(1, {
       id: 'draw@test',
       scope: 'user',
+      cwd: '/workspace/project',
     })
     expect(mockedPluginsApi.enable).toHaveBeenNthCalledWith(2, {
       id: 'review@test',
       scope: 'project',
+      cwd: '/workspace/project',
     })
     expect(mockedPluginsApi.reload).toHaveBeenCalledTimes(1)
     expect(mockedPluginsApi.reload).toHaveBeenCalledWith(
@@ -161,10 +164,12 @@ describe('pluginStore', () => {
     expect(mockedPluginsApi.disable).toHaveBeenNthCalledWith(1, {
       id: 'github@test',
       scope: 'user',
+      cwd: '/workspace/project',
     })
     expect(mockedPluginsApi.disable).toHaveBeenNthCalledWith(2, {
       id: 'review@test',
       scope: 'project',
+      cwd: '/workspace/project',
     })
     expect(mockedPluginsApi.reload).toHaveBeenCalledTimes(1)
     expect(mockedPluginsApi.reload).toHaveBeenCalledWith(
@@ -188,7 +193,7 @@ describe('pluginStore', () => {
   it('preserves a task sync result when plugin configuration is not applied to a running task', async () => {
     const task = {
       applied: false,
-      reason: 'not_running' as const,
+      reason: 'next_turn' as const,
       commands: 0,
       agents: 0,
       plugins: 0,

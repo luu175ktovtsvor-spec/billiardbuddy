@@ -16,6 +16,15 @@ describe('resolveSidecarInvocation', () => {
     })
   })
 
+  it('accepts the internal agent worker and rejects the retired public CLI mode', () => {
+    expect(resolveSidecarInvocation(['agent-worker'], '/app/root')).toEqual({
+      mode: 'agent-worker',
+      restArgs: [],
+      defaultAppRoot: '/app/root',
+    })
+    expect(resolveSidecarInvocation(['cli'], '/app/root').mode).toBeNull()
+  })
+
   it('recognizes Chrome native-host launches by their extension origin', () => {
     expect(resolveSidecarInvocation([
       'chrome-extension://bloolcbpfgdgmimikocneolpiickndlk/',

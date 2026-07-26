@@ -17,19 +17,10 @@ const desktopNotificationsMock = vi.hoisted(() => ({
   requestDesktopNotificationPermission: vi.fn(),
   openDesktopNotificationSettings: vi.fn(),
 }))
-const tauriCoreMock = vi.hoisted(() => ({
-  invoke: vi.fn(),
-}))
-const tauriDialogMock = vi.hoisted(() => ({
-  open: vi.fn(),
-}))
-const tauriProcessMock = vi.hoisted(() => ({
-  relaunch: vi.fn(),
-}))
+const prepareRestartMock = vi.hoisted(() => vi.fn())
+const dialogOpenMock = vi.hoisted(() => vi.fn())
+const restartMock = vi.hoisted(() => vi.fn())
 vi.mock('../lib/desktopNotifications', () => desktopNotificationsMock)
-vi.mock('@tauri-apps/api/core', () => tauriCoreMock)
-vi.mock('@tauri-apps/plugin-dialog', () => tauriDialogMock)
-vi.mock('@tauri-apps/plugin-process', () => tauriProcessMock)
 function installElectronDesktopHost() {
   window.desktopHost = {
     ...browserHost,
@@ -49,7 +40,7 @@ function installElectronDesktopHost() {
     },
     dialogs: {
       ...browserHost.dialogs,
-      open: vi.fn((options) => tauriDialogMock.open(options)),
+      open: vi.fn((options) => dialogOpenMock(options)),
     },
     shell: {
       ...browserHost.shell,
@@ -57,8 +48,8 @@ function installElectronDesktopHost() {
     },
     appMode: {
       ...browserHost.appMode,
-      prepareRestart: vi.fn(() => tauriCoreMock.invoke('prepare_for_app_mode_restart')),
-      restart: vi.fn(() => tauriProcessMock.relaunch()),
+      prepareRestart: prepareRestartMock,
+      restart: restartMock,
     },
   }
 }
@@ -71,19 +62,21 @@ describe('Settings > General tab', () => {
     desktopNotificationsMock.notifyDesktop.mockReset()
     desktopNotificationsMock.requestDesktopNotificationPermission.mockReset()
     desktopNotificationsMock.openDesktopNotificationSettings.mockReset()
-    desktopNotificationsMock.getDesktopNotificationPermission.mockResolvedValue('default')
+    // Most cases do not exercise notification discovery. Keep that mount-time
+    // request pending so unrelated assertions cannot finish while an async
+    // state update is still queued; the dedicated notification cases exercise
+    // the user-triggered permission request below.
+    desktopNotificationsMock.getDesktopNotificationPermission.mockImplementation(() => new Promise(() => undefined))
     desktopNotificationsMock.getDesktopNotificationPlatform.mockReturnValue('darwin')
     desktopNotificationsMock.notifyDesktop.mockResolvedValue(true)
     desktopNotificationsMock.requestDesktopNotificationPermission.mockResolvedValue('granted')
     desktopNotificationsMock.openDesktopNotificationSettings.mockResolvedValue(true)
-    tauriCoreMock.invoke.mockReset()
-    tauriCoreMock.invoke.mockResolvedValue(undefined)
-    tauriDialogMock.open.mockReset()
-    tauriDialogMock.open.mockResolvedValue('/Users/test/billiardbuddy-data')
-    tauriProcessMock.relaunch.mockReset()
-    tauriProcessMock.relaunch.mockResolvedValue(undefined)
-    delete (window as unknown as { __TAURI_INTERNALS__?: object }).__TAURI_INTERNALS__
-    delete (window as unknown as { __TAURI__?: object }).__TAURI__
+    prepareRestartMock.mockReset()
+    prepareRestartMock.mockResolvedValue(undefined)
+    dialogOpenMock.mockReset()
+    dialogOpenMock.mockResolvedValue('/Users/test/billiardbuddy-data')
+    restartMock.mockReset()
+    restartMock.mockResolvedValue(undefined)
     installElectronDesktopHost()
     useSettingsStore.setState({
       locale: 'en',
@@ -101,23 +94,6 @@ describe('Settings > General tab', () => {
         aiRequestTimeoutMs: 120_000,
         proxy: { mode: 'direct', url: '' },
       },
-      outputStyle: 'default',
-      outputStyles: [
-        {
-          value: 'default',
-          label: 'Default',
-          description: 'Default response style',
-          source: 'built-in',
-        },
-      ],
-      outputStyleScope: 'userSettings',
-      outputStyleWorkDir: null,
-      outputStylesLoading: false,
-      outputStyleError: null,
-      fetchOutputStyles: vi.fn().mockResolvedValue(undefined),
-      setOutputStyle: vi.fn().mockImplementation(async (outputStyle: string) => {
-        useSettingsStore.setState({ outputStyle })
-      }),
       setProductAutoMemoryEnabled: vi.fn().mockImplementation(async (enabled: boolean) => {
         useSettingsStore.setState({ productAutoMemoryEnabled: enabled })
       }),
@@ -154,7 +130,7 @@ describe('Settings > General tab', () => {
       appMode: {
         mode: 'default',
         portableDir: null,
-        defaultPortableDir: '/Applications/BilliardBuddy/CLAUDE_CONFIG_DIR',
+        defaultPortableDir: '/Applications/BilliardBuddy/BILLIARDBUDDY_CONFIG_DIR',
         activeConfigDir: null,
         configDirSource: 'system',
       },
@@ -164,9 +140,9 @@ describe('Settings > General tab', () => {
         useSettingsStore.setState({
           appMode: {
             mode,
-            portableDir: mode === 'portable' ? portableDir ?? '/Applications/BilliardBuddy/CLAUDE_CONFIG_DIR' : null,
-            defaultPortableDir: '/Applications/BilliardBuddy/CLAUDE_CONFIG_DIR',
-            activeConfigDir: mode === 'portable' ? portableDir ?? '/Applications/BilliardBuddy/CLAUDE_CONFIG_DIR' : null,
+            portableDir: mode === 'portable' ? portableDir ?? '/Applications/BilliardBuddy/BILLIARDBUDDY_CONFIG_DIR' : null,
+            defaultPortableDir: '/Applications/BilliardBuddy/BILLIARDBUDDY_CONFIG_DIR',
+            activeConfigDir: mode === 'portable' ? portableDir ?? '/Applications/BilliardBuddy/BILLIARDBUDDY_CONFIG_DIR' : null,
             configDirSource: mode === 'portable' ? 'portable' : 'system',
           },
           appModeRequiresRestart: true,
@@ -309,8 +285,8 @@ describe('Settings > General tab', () => {
 
     await waitFor(() => {
       expect(useSettingsStore.getState().setAppMode).toHaveBeenCalledWith('portable', '/Users/test/billiardbuddy-data')
-      expect(tauriCoreMock.invoke).toHaveBeenCalledWith('prepare_for_app_mode_restart')
-      expect(tauriProcessMock.relaunch).toHaveBeenCalledTimes(1)
+      expect(prepareRestartMock).toHaveBeenCalledTimes(1)
+      expect(restartMock).toHaveBeenCalledTimes(1)
     })
   })
 
@@ -319,7 +295,7 @@ describe('Settings > General tab', () => {
       appMode: {
         mode: 'portable',
         portableDir: '/Users/test/billiardbuddy-data',
-        defaultPortableDir: '/Applications/BilliardBuddy/CLAUDE_CONFIG_DIR',
+        defaultPortableDir: '/Applications/BilliardBuddy/BILLIARDBUDDY_CONFIG_DIR',
         activeConfigDir: '/Users/test/billiardbuddy-data',
         configDirSource: 'portable',
       },
@@ -335,8 +311,8 @@ describe('Settings > General tab', () => {
 
     await waitFor(() => {
       expect(useSettingsStore.getState().setAppMode).toHaveBeenCalledWith('default', null)
-      expect(tauriCoreMock.invoke).toHaveBeenCalledWith('prepare_for_app_mode_restart')
-      expect(tauriProcessMock.relaunch).toHaveBeenCalledTimes(1)
+      expect(prepareRestartMock).toHaveBeenCalledTimes(1)
+      expect(restartMock).toHaveBeenCalledTimes(1)
     })
   })
 
@@ -365,9 +341,9 @@ describe('Settings > General tab', () => {
     useSettingsStore.setState({
       appMode: {
         mode: 'portable',
-        portableDir: '/Users/test/.claude',
-        defaultPortableDir: '/Applications/BilliardBuddy/CLAUDE_CONFIG_DIR',
-        activeConfigDir: '/Users/test/.claude',
+        portableDir: '/Users/test/.BilliardBuddy',
+        defaultPortableDir: '/Applications/BilliardBuddy/BILLIARDBUDDY_CONFIG_DIR',
+        activeConfigDir: '/Users/test/.BilliardBuddy',
         configDirSource: 'portable',
       },
     })
@@ -380,11 +356,11 @@ describe('Settings > General tab', () => {
     expect(input).toHaveValue('')
     expect(input).toHaveAttribute('placeholder', 'BilliardBuddy-managed data location')
     expect(screen.getAllByText('BilliardBuddy-managed data location').length).toBeGreaterThanOrEqual(2)
-    expect(screen.queryByText('/Users/test/.claude')).not.toBeInTheDocument()
+    expect(screen.queryByText('/Users/test/.BilliardBuddy')).not.toBeInTheDocument()
   })
 
   it('shows folder picker failures as an inline storage error', async () => {
-    tauriDialogMock.open.mockRejectedValueOnce(new Error('dialog unavailable'))
+    dialogOpenMock.mockRejectedValueOnce(new Error('dialog unavailable'))
 
     render(<Settings />)
 
@@ -398,9 +374,9 @@ describe('Settings > General tab', () => {
     useSettingsStore.setState({
       appMode: {
         mode: 'portable',
-        portableDir: '/env/claude-data',
-        defaultPortableDir: '/Applications/BilliardBuddy/CLAUDE_CONFIG_DIR',
-        activeConfigDir: '/env/claude-data',
+        portableDir: '/env/billiardbuddy-data',
+        defaultPortableDir: '/Applications/BilliardBuddy/BILLIARDBUDDY_CONFIG_DIR',
+        activeConfigDir: '/env/billiardbuddy-data',
         configDirSource: 'environment',
       },
     })
@@ -435,7 +411,7 @@ describe('Settings > General tab', () => {
   })
 
   it('shows restart preparation failures without relaunching', async () => {
-    tauriCoreMock.invoke.mockRejectedValueOnce(new Error('restart preparation failed'))
+    prepareRestartMock.mockRejectedValueOnce(new Error('restart preparation failed'))
 
     render(<Settings />)
 
@@ -445,7 +421,7 @@ describe('Settings > General tab', () => {
 
     expect(await screen.findByText('The change was saved, but automatic restart failed. Restart the app manually.')).toBeInTheDocument()
     expect(screen.queryByText('restart preparation failed')).not.toBeInTheDocument()
-    expect(tauriProcessMock.relaunch).not.toHaveBeenCalled()
+    expect(restartMock).not.toHaveBeenCalled()
   })
 
   it('shows the saved restart-required state inside the storage section', () => {
@@ -536,26 +512,6 @@ describe('Settings > General tab', () => {
     expect(useSettingsStore.getState().setDeepThinkingEnabled).toHaveBeenCalledWith(false)
     expect(screen.queryByText(/DeepSeek/)).not.toBeInTheDocument()
     expect(screen.queryByText(/--thinking/)).not.toBeInTheDocument()
-  })
-
-  it('sanitizes internal output-style labels and descriptions before displaying them', () => {
-    useSettingsStore.setState({
-      outputStyle: 'managed',
-      outputStyles: [{
-        value: 'managed',
-        label: 'Claude Code / DeepSeek V4',
-        description: 'Provider model reads .claude/settings.local.json and hidden system prompts with 120k tokens.',
-        source: 'built-in',
-      }],
-    })
-
-    render(<Settings />)
-
-    fireEvent.click(screen.getByText('General'))
-
-    const outputStyle = screen.getByRole('button', { name: 'Select output style' })
-    expect(outputStyle).toHaveTextContent('BilliardBuddy')
-    expect(outputStyle).not.toHaveTextContent(/Claude|DeepSeek|Provider|model|\.claude|hidden system prompt|tokens/i)
   })
 
   it('keeps project long-term memory inside collapsed task run options without a background-task confirmation', async () => {

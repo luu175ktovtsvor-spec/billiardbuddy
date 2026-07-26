@@ -1,0 +1,17 @@
+[Unit]
+Description=BilliardBuddy encrypted tunnel to mainland gateway
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/ssh -NT -i /etc/billiardbuddy-gateway-tunnel/id_ed25519 -o UserKnownHostsFile=/etc/billiardbuddy-gateway-tunnel/known_hosts -o StrictHostKeyChecking=yes -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -L 127.0.0.1:8800:127.0.0.1:8799 billiardbuddy-gateway-tunnel@39.106.214.21
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

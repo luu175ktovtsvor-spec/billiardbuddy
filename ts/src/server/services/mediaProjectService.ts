@@ -10,16 +10,16 @@ import {
   commitImageVersionInputSchema,
   createImageProjectInputSchema,
   createVideoProjectInputSchema,
-  IMAGE_DATA_EGRESS_POLICY_REVISION,
   imageGenerationModelSchema,
   imageSizeSupportedByModel,
   imageWorkbenchProjectSchema,
   imageGenerationTaskResultSchema,
   mediaDeletionReceiptSchema,
+  mediaJobEventJournalSchema,
   mediaSafeError,
   mediaProjectSchema,
   mediaTaskSchema,
-  productTaskOwnerIdSchema,
+  previewVideoInputSchema,
   renderVideoInputSchema,
   saveImageOutputInputSchema,
   selectImageVersionInputSchema,
@@ -29,6 +29,7 @@ import {
   updateVideoTimelineInputSchema,
   lockVideoSceneInputSchema,
   videoStudioProjectSchema,
+  videoPreviewTaskResultSchema,
   videoRenderTaskResultSchema,
   type AddVideoSourceInput,
   type AnalyzeVideoProjectInput,
@@ -39,10 +40,14 @@ import {
   type ImageWorkbenchProject,
   type MediaAsset,
   type MediaDeletionReceipt,
+  type MediaJobEvent,
+  type MediaJobEventJournal,
   type MediaOwner,
   type MediaProject,
   type MediaSafeErrorCode,
   type MediaTask,
+  type MediaTaskInput,
+  type PreviewVideoInput,
   type RenderVideoInput,
   type SaveImageOutputInput,
   type SelectImageVersionInput,
@@ -60,21 +65,25 @@ import {
   type VideoTimelineVersion,
 } from '../../../shared/contracts/media.js'
 import {
+  MEDIA_RESULT_HANDOFF_DIRECT_V1,
+  MEDIA_RESULT_HANDOFF_HEADER,
   PROVIDER_GATEWAY_PROTOCOL,
   PROVIDER_GATEWAY_PROTOCOL_HEADER,
-  type RemoteDataEgressReceipt,
-} from '../../../shared/product/dataEgress.js'
+} from '../../../shared/product/providerGateway.js'
 import { diagnosticsService } from './diagnosticsService.js'
 import { lock } from '../../utils/lockfile.js'
 import {
-  getInstallationId,
-  getQfGatewayToken,
-  getQfGatewayUrl,
-  qfGatewayConfigured,
-} from './qfGatewayProvider.js'
+  productGatewayConfigured,
+  productGatewayTarget,
+  productInstallationId,
+} from '../product/productGatewayRuntime.js'
 import { providerRegistryEntriesForCapability } from '../../../../gateway/providerRegistry.js'
 import { compileImageBrief } from './imageBrief.js'
-import { remoteDataEgressConsentService } from './remoteDataEgressConsent.js'
+import {
+  assessImageCandidates,
+  ImageReasoningError,
+  reasonImageBrief,
+} from './imageReasoning.js'
 import { transcribeVoiceFile } from './voiceTranscription.js'
 import {
   analyzeVideoEvidence,
@@ -104,6 +113,12 @@ type VideoEncoderProfile = {
 }
 
 type ActiveVideoRender = {
+  controller: AbortController
+  completion: Promise<void>
+  outputPath: string
+}
+
+type ActiveVideoPreview = {
   controller: AbortController
   completion: Promise<void>
   outputPath: string
@@ -143,6 +158,7 @@ const MAX_CONCURRENT_VIDEO_PROBES = 2
 // disk scans at once.
 const DEFAULT_MAX_QUEUED_VIDEO_PROBES = 8
 const MAX_QUEUED_VIDEO_PROBES = 8
+const MAX_MEDIA_JOB_EVENTS_PER_PROJECT = 2000
 
 function maxQueuedVideoRenders(env: Record<string, string | undefined>): number {
   const configured = env.BB_MEDIA_MAX_QUEUED_RENDERS?.trim()
@@ -173,8 +189,6 @@ export type MediaProjectServiceOptions = {
   platform?: NodeJS.Platform
   /** Injectable retention window for deterministic deletion/GC tests. */
   deletionRetentionDays?: number
-  /** Authoritative installation consent lookup; injectable only for deterministic tests. */
-  remoteConsentReceipt?: () => Promise<RemoteDataEgressReceipt | null>
 }
 
 type RelayImageTask = {
@@ -192,37 +206,33 @@ type RelayImageTask = {
   input_fidelity_requested?: string
   input_fidelity_status?: 'accepted' | 'unsupported'
   input_fidelity_risk?: string
-  data_egress_consent_hash?: string
   provider_receipt_hash?: string
   result_acknowledged?: boolean
   acknowledged_at?: number
+  result_url?: string
+  result_urls?: string[]
 }
 
-function imageConsentReceipt(
-  project: ImageWorkbenchProject,
-  acknowledgement: NonNullable<SubmitImageProjectInput['data_egress_consent']>,
-  operationDigest: string,
-  model = project.model,
-) {
-  const receiver = model === 'gpt-image-2' ? 'OpenAI' as const : 'ByteDance Ark' as const
-  const receiptId = createHash('sha256').update([
-    IMAGE_DATA_EGRESS_POLICY_REVISION,
-    project.id,
-    operationDigest,
-    receiver,
-    acknowledgement.acknowledged_at,
-  ].join('\0')).digest('hex')
-  return {
-    receipt_id: receiptId,
-    policy_revision: IMAGE_DATA_EGRESS_POLICY_REVISION,
-    purpose: 'image_generation' as const,
-    capability: 'ImageGeneration' as const,
-    receiver,
-    relay_region: 'United States' as const,
-    retention: 'input-until-terminal;result-up-to-7-days' as const,
-    billable: true as const,
-    granted_at: acknowledgement.acknowledged_at,
-    revocable_until: 'provider_submission' as const,
+function trustedMediaResultUrl(value: unknown, gatewayBaseUrl: string): string | null {
+  if (typeof value !== 'string') return null
+  try {
+    const result = new URL(value)
+    const gateway = new URL(gatewayBaseUrl)
+    if (
+      result.protocol !== 'https:'
+      || result.origin !== gateway.origin
+      || result.username
+      || result.password
+      || result.search
+      || result.hash
+    ) return null
+    const prefix = '/relay/imgtasks/images/results/'
+    if (!result.pathname.startsWith(prefix)) return null
+    const grant = result.pathname.slice(prefix.length)
+    if (!/^[A-Za-z0-9_-]+\.[a-f0-9]{64}(?:\/[0-3])?$/.test(grant)) return null
+    return result.toString()
+  } catch {
+    return null
   }
 }
 
@@ -269,7 +279,7 @@ class ImageSubmissionAttemptError extends MediaServiceError {
   }
 }
 
-function id(prefix: 'img' | 'vid' | 'src' | 'clip' | 'task' | 'out' | 'mask' | 'evidence' | 'scene' | 'alternative' | 'timeline'): string {
+function id(prefix: 'img' | 'vid' | 'src' | 'clip' | 'task' | 'out' | 'preview' | 'mask' | 'evidence' | 'scene' | 'alternative' | 'timeline'): string {
   return `${prefix}_${randomUUID().replaceAll('-', '')}`
 }
 
@@ -277,6 +287,26 @@ const LEGACY_MEDIA_WRITER_FENCE = `fence_${'0'.repeat(32)}`
 const STANDALONE_MEDIA_OWNER: MediaOwner = {
   kind: 'standalone',
   owner_id: 'local_workbench',
+}
+
+function migrateLegacyMediaOwnerRecord(raw: unknown): { value: unknown; migrated: boolean } {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { value: raw, migrated: false }
+  const record = raw as Record<string, unknown>
+  const owner = record.owner
+  const legacyOwner = Boolean(
+    'product_task_id' in record
+    || (owner && typeof owner === 'object' && !Array.isArray(owner)
+      && (owner as Record<string, unknown>).kind === 'product_task'),
+  )
+  const legacyConsent = 'data_egress_consent' in record
+  if (!legacyOwner && !legacyConsent) return { value: raw, migrated: false }
+  const value = { ...record }
+  if (legacyOwner) {
+    value.owner = STANDALONE_MEDIA_OWNER
+    delete value.product_task_id
+  }
+  delete value.data_egress_consent
+  return { value, migrated: true }
 }
 
 function foundationId(prefix: 'op' | 'ver' | 'export', ...parts: string[]): string {
@@ -367,6 +397,13 @@ function referenceImageMime(fileName: string): 'image/png' | 'image/jpeg' | 'ima
 
 function dataUrlBytes(dataUrl: string): Buffer {
   return Buffer.from(dataUrl.slice(dataUrl.indexOf(',') + 1), 'base64')
+}
+
+function detectedImageMime(bytes: Buffer): 'image/png' | 'image/jpeg' | 'image/webp' | null {
+  if (bytes.length >= 8 && bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) return 'image/png'
+  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return 'image/jpeg'
+  if (bytes.length >= 12 && bytes.toString('ascii', 0, 4) === 'RIFF' && bytes.toString('ascii', 8, 12) === 'WEBP') return 'image/webp'
+  return null
 }
 
 function imageDimensions(bytes: Buffer, mimeType: string): { width: number; height: number } | null {
@@ -487,6 +524,7 @@ export class MediaProjectService {
   private readonly root: string
   private readonly projectsDir: string
   private readonly tasksDir: string
+  private readonly eventsDir: string
   private readonly assetsDir: string
   private readonly locksDir: string
   private readonly deletionsDir: string
@@ -500,8 +538,8 @@ export class MediaProjectService {
   private readonly env: Record<string, string | undefined>
   private readonly platform: NodeJS.Platform
   private readonly deletionRetentionDays: number
-  private readonly remoteConsentReceipt: () => Promise<RemoteDataEgressReceipt | null>
   private readonly activeRenders = new Map<string, ActiveVideoRender>()
+  private readonly activeVideoPreviews = new Map<string, ActiveVideoPreview>()
   private readonly activeVideoAnalyses = new Map<string, ActiveVideoAnalysis>()
   private readonly queuedVideoRenders: QueuedVideoRender[] = []
   private readonly maxQueuedVideoRenders: number
@@ -509,17 +547,17 @@ export class MediaProjectService {
   private readonly activeImageSubmissions = new Map<string, Promise<MediaTask>>()
   private readonly activeImageRefreshes = new Map<string, Promise<MediaTask>>()
   private readonly videoProjectMutations = new Map<string, Promise<void>>()
+  private readonly eventWaiters = new Map<string, Set<() => void>>()
   private videoRenderAdmissions: Promise<void> = Promise.resolve()
   private activeVideoProbes = 0
   private readonly queuedVideoProbeAdmissions: Array<() => void> = []
-  /** Shared across service instances in the desktop server process. */
-  private static readonly productTaskAttachmentMutations = new Map<string, Promise<void>>()
   private encoderProfilePromise: Promise<VideoEncoderProfile> | null = null
 
   constructor(options: MediaProjectServiceOptions = {}) {
-    this.root = options.root ?? join(process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude'), 'billiardbuddy', 'media')
+    this.root = options.root ?? join(process.env.BILLIARDBUDDY_CONFIG_DIR ?? join(homedir(), '.BilliardBuddy'), 'billiardbuddy', 'media')
     this.projectsDir = join(this.root, 'projects')
     this.tasksDir = join(this.root, 'tasks')
+    this.eventsDir = join(this.root, 'events')
     this.assetsDir = join(this.root, 'assets')
     this.locksDir = join(this.root, 'locks')
     this.deletionsDir = join(this.root, 'deletions')
@@ -535,8 +573,6 @@ export class MediaProjectService {
     this.deletionRetentionDays = Math.max(1, Math.min(365, Math.trunc(
       options.deletionRetentionDays ?? Number(this.env.BB_MEDIA_DELETION_RETENTION_DAYS ?? 30),
     ) || 30))
-    this.remoteConsentReceipt = options.remoteConsentReceipt
-      ?? (() => remoteDataEgressConsentService.activeReceipt())
     this.maxQueuedVideoRenders = maxQueuedVideoRenders(this.env)
     this.maxQueuedVideoProbes = maxQueuedVideoProbes(this.env)
   }
@@ -597,6 +633,7 @@ export class MediaProjectService {
     await Promise.all([
       mkdir(this.projectsDir, { recursive: true, mode: 0o700 }),
       mkdir(this.tasksDir, { recursive: true, mode: 0o700 }),
+      mkdir(this.eventsDir, { recursive: true, mode: 0o700 }),
       mkdir(this.assetsDir, { recursive: true, mode: 0o700 }),
       mkdir(this.locksDir, { recursive: true, mode: 0o700 }),
       mkdir(this.deletionsDir, { recursive: true, mode: 0o700 }),
@@ -624,6 +661,11 @@ export class MediaProjectService {
       throw new MediaServiceError('无效的媒体任务 ID', 400, 'INVALID_TASK_ID')
     }
     return join(this.tasksDir, `${taskId}.json`)
+  }
+
+  private eventJournalPath(projectId: string): string {
+    this.projectPath(projectId)
+    return join(this.eventsDir, `${projectId}.json`)
   }
 
   private deletionPath(deletionId: string): string {
@@ -658,6 +700,21 @@ export class MediaProjectService {
   private async withCasWriteLock<T>(action: () => Promise<T>): Promise<T> {
     await this.ensureDirs()
     const guard = join(this.locksDir, 'cas.guard')
+    await writeFile(guard, '', { flag: 'a', mode: 0o600 })
+    const release = await lock(guard, {
+      stale: 30_000,
+      retries: { retries: 100, minTimeout: 5, maxTimeout: 25 },
+    })
+    try {
+      return await action()
+    } finally {
+      await release()
+    }
+  }
+
+  private async withEventWriteLock<T>(projectId: string, action: () => Promise<T>): Promise<T> {
+    await this.ensureDirs()
+    const guard = join(this.locksDir, `events-${projectId}.guard`)
     await writeFile(guard, '', { flag: 'a', mode: 0o600 })
     const release = await lock(guard, {
       stale: 30_000,
@@ -729,12 +786,6 @@ export class MediaProjectService {
     return { path: canonicalAssetPath, size: info.size }
   }
 
-  private canonicalOwner(project: MediaProject): MediaOwner {
-    return project.product_task_id
-      ? { kind: 'product_task', owner_id: project.product_task_id }
-      : project.owner
-  }
-
   private async managedAssetMetadata(
     locator: string,
   ): Promise<Pick<MediaAsset, 'byte_size' | 'content_hash' | 'storage'>> {
@@ -764,11 +815,20 @@ export class MediaProjectService {
     }
   }
 
+  private async verifiedImageMimeCorrection(existing: MediaAsset, candidate: MediaAsset): Promise<boolean> {
+    if (existing.storage.kind !== 'cas' || candidate.storage.kind !== 'cas') return false
+    if (JSON.stringify({ ...existing, mime_type: candidate.mime_type }) !== JSON.stringify(candidate)) return false
+    const match = /^sha256\/([a-f0-9]{64})$/.exec(existing.storage.locator)
+    if (!match) return false
+    const bytes = await readFile(join(this.casDir, match[1]!)).catch(() => null)
+    return Boolean(bytes && detectedImageMime(bytes) === candidate.mime_type)
+  }
+
   private async materializeProjectFoundation(
     project: MediaProject,
     current?: MediaProject,
   ): Promise<MediaProject> {
-    const owner = this.canonicalOwner(project)
+    const owner = project.owner
     const seeds: Array<Omit<MediaAsset, 'version_id' | 'created_at' | 'byte_size' | 'content_hash'> & {
       version_id?: string
       byte_size?: number
@@ -827,7 +887,7 @@ export class MediaProjectService {
           storage: { kind: 'external', locator: source.path },
           mime_type: this.videoContentType(source.path),
           byte_size: info?.isFile() ? info.size : undefined,
-          content_hash: source.fingerprint,
+          content_hash: source.fingerprint as `sha256:${string}` | undefined,
         })
       }
       if (project.state === 'complete' && project.output_path) {
@@ -837,7 +897,7 @@ export class MediaProjectService {
           storage: { kind: 'external', locator: project.output_path },
           mime_type: this.videoContentType(project.output_path),
           byte_size: await stat(project.output_path).then(info => info.isFile() ? info.size : undefined).catch(() => undefined),
-          content_hash: project.output_content_hash,
+          content_hash: project.output_content_hash as `sha256:${string}` | undefined,
         })
       }
     }
@@ -855,7 +915,10 @@ export class MediaProjectService {
     for (const asset of project.assets) {
       const existing = existingAssets.get(asset.id)
       if (existing && JSON.stringify(existing) !== JSON.stringify(asset)) {
-        throw new MediaServiceError('媒体资产记录不可原地改写', 409, 'ASSET_IMMUTABLE')
+        if (!await this.verifiedImageMimeCorrection(existing, asset)) {
+          throw new MediaServiceError('媒体资产记录不可原地改写', 409, 'ASSET_IMMUTABLE')
+        }
+        existingAssets.set(asset.id, asset)
       }
       if (!existing) existingAssets.set(asset.id, asset)
     }
@@ -936,7 +999,7 @@ export class MediaProjectService {
     const input = mediaProjectSchema.parse(project)
     return await this.withProjectWriteLock(input.id, async () => {
       const current = await readFile(this.projectPath(input.id), 'utf8')
-        .then(value => mediaProjectSchema.parse(JSON.parse(value)))
+        .then(value => mediaProjectSchema.parse(migrateLegacyMediaOwnerRecord(JSON.parse(value)).value))
         .catch(error => {
           if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined
           throw error
@@ -975,26 +1038,189 @@ export class MediaProjectService {
     })
   }
 
-  private async saveTask(task: MediaTask): Promise<MediaTask> {
-    const input = mediaTaskSchema.parse(task)
-    let owner = input.owner
-    if (!owner) {
-      owner = await readFile(this.projectPath(input.project_id), 'utf8')
-        .then(value => this.canonicalOwner(mediaProjectSchema.parse(JSON.parse(value))))
-        .catch(() => STANDALONE_MEDIA_OWNER)
+  private taskEventProjection(task: MediaTask): unknown {
+    return {
+      project_id: task.project_id,
+      operation_id: task.operation_id,
+      kind: task.kind,
+      status: task.status,
+      progress: task.progress,
+      stage: task.stage,
+      remote_task_id: task.remote_task_id,
+      outcome_unknown: task.outcome_unknown,
+      provider_receipt_hash: task.provider_receipt_hash,
+      result: task.result,
+      error: task.error,
+      error_code: task.error_code,
     }
-    const parsed = mediaTaskSchema.parse({
-      ...input,
-      owner,
-      operation_id: input.operation_id ?? foundationId(
+  }
+
+  private async readEventJournal(projectId: string): Promise<MediaJobEventJournal> {
+    await this.ensureDirs()
+    const raw = await readFile(this.eventJournalPath(projectId), 'utf8').catch(error => {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+      throw error
+    })
+    if (raw === null) return { schema_version: 1, next_cursor: 1, events: [] }
+    return mediaJobEventJournalSchema.parse(JSON.parse(raw))
+  }
+
+  private async appendTaskEventUnlocked(task: MediaTask): Promise<void> {
+    const journal = await this.readEventJournal(task.project_id)
+    const cursor = journal.next_cursor
+    const event: MediaJobEvent = {
+      schema_version: 1,
+      cursor,
+      project_id: task.project_id,
+      task_id: task.id,
+      operation_id: task.operation_id!,
+      status_sequence: task.status_sequence,
+      occurred_at: task.updated_at,
+      task,
+    }
+    await this.writeJson(this.eventJournalPath(task.project_id), {
+      schema_version: 1,
+      next_cursor: cursor + 1,
+      events: [...journal.events, event].slice(-MAX_MEDIA_JOB_EVENTS_PER_PROJECT),
+    } satisfies MediaJobEventJournal)
+    for (const notify of this.eventWaiters.get(task.project_id) ?? []) notify()
+  }
+
+  private async saveTask(task: MediaTaskInput): Promise<MediaTask> {
+    const input = mediaTaskSchema.parse(task)
+    return await this.withEventWriteLock(input.project_id, async () => {
+      const previousRaw = await readFile(this.taskPath(input.id), 'utf8')
+        .then(value => JSON.parse(value) as unknown)
+        .catch(error => {
+          if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+          throw error
+        })
+      const previous = previousRaw === null
+        ? null
+        : mediaTaskSchema.parse(migrateLegacyMediaOwnerRecord(previousRaw).value)
+      const previousHadSequence = Boolean(
+        previousRaw
+        && typeof previousRaw === 'object'
+        && 'status_sequence' in previousRaw,
+      )
+      let owner = input.owner ?? previous?.owner
+      if (!owner) {
+        owner = await readFile(this.projectPath(input.project_id), 'utf8')
+          .then(value => mediaProjectSchema.parse(migrateLegacyMediaOwnerRecord(JSON.parse(value)).value).owner)
+          .catch(() => STANDALONE_MEDIA_OWNER)
+      }
+      const operationId = input.operation_id ?? previous?.operation_id ?? foundationId(
         'op',
         input.project_id,
         input.kind,
         input.idempotency_key ?? input.id,
-      ),
+      )
+      const eventChanged = previous === null
+        || !previousHadSequence
+        || JSON.stringify(this.taskEventProjection(previous)) !== JSON.stringify(this.taskEventProjection({
+          ...input,
+          owner,
+          operation_id: operationId,
+        }))
+      const parsed = mediaTaskSchema.parse({
+        ...input,
+        owner,
+        operation_id: operationId,
+        status_sequence: eventChanged
+          ? (previous?.status_sequence ?? 0) + 1
+          : previous?.status_sequence ?? input.status_sequence,
+      })
+      await this.writeJson(this.taskPath(parsed.id), parsed)
+      if (eventChanged) await this.appendTaskEventUnlocked(parsed)
+      return parsed
     })
-    await this.writeJson(this.taskPath(parsed.id), parsed)
-    return parsed
+  }
+
+  async listJobEvents(
+    projectId: string,
+    afterCursor = 0,
+    limit = 100,
+  ): Promise<{ events: MediaJobEvent[]; cursor: number; reset_required: boolean }> {
+    const journal = await this.readEventJournal(projectId)
+    const safeCursor = Math.max(0, Math.trunc(afterCursor) || 0)
+    const safeLimit = Math.max(1, Math.min(200, Math.trunc(limit) || 100))
+    const firstCursor = journal.events[0]?.cursor ?? journal.next_cursor
+    const latestCursor = journal.next_cursor - 1
+    const resetRequired = safeCursor > latestCursor
+      || (safeCursor > 0 && safeCursor < firstCursor - 1)
+    const effectiveCursor = resetRequired ? firstCursor - 1 : safeCursor
+    const events = journal.events
+      .filter(event => event.cursor > effectiveCursor)
+      .slice(0, safeLimit)
+    return {
+      events,
+      cursor: events.at(-1)?.cursor ?? (resetRequired ? latestCursor : safeCursor),
+      reset_required: resetRequired,
+    }
+  }
+
+  async waitForJobEvents(
+    projectId: string,
+    afterCursor = 0,
+    limit = 100,
+    waitMs = 25_000,
+    signal?: AbortSignal,
+  ): Promise<{ events: MediaJobEvent[]; cursor: number; reset_required: boolean }> {
+    let existing = await this.listJobEvents(projectId, afterCursor, limit)
+    if (existing.events.length > 0 || existing.reset_required || waitMs <= 0 || signal?.aborted) return existing
+    const remoteRefreshDelay = await this.remoteImageRefreshDelay(projectId)
+    if (remoteRefreshDelay === 0) {
+      await this.refreshActiveRemoteImageTask(projectId)
+      existing = await this.listJobEvents(projectId, afterCursor, limit)
+      if (existing.events.length > 0 || existing.reset_required || signal?.aborted) return existing
+    }
+    const boundedWaitMs = Math.max(1, Math.min(
+      25_000,
+      Math.trunc(waitMs),
+      remoteRefreshDelay ?? 25_000,
+    ))
+    let timedOut = false
+    await new Promise<void>(resolveWait => {
+      let settled = false
+      const waiters = this.eventWaiters.get(projectId) ?? new Set<() => void>()
+      const finish = () => {
+        if (settled) return
+        settled = true
+        clearTimeout(timeout)
+        waiters.delete(finish)
+        signal?.removeEventListener('abort', finish)
+        if (waiters.size === 0) this.eventWaiters.delete(projectId)
+        resolveWait()
+      }
+      const timeout = setTimeout(() => {
+        timedOut = true
+        finish()
+      }, boundedWaitMs)
+      ;(timeout as unknown as { unref?: () => void }).unref?.()
+      waiters.add(finish)
+      this.eventWaiters.set(projectId, waiters)
+      signal?.addEventListener('abort', finish, { once: true })
+    })
+    if (timedOut && !signal?.aborted) await this.refreshActiveRemoteImageTask(projectId)
+    return await this.listJobEvents(projectId, afterCursor, limit)
+  }
+
+  private async remoteImageRefreshDelay(projectId: string): Promise<number | null> {
+    const project = await this.getProject(projectId).catch(() => null)
+    if (project?.kind !== 'image' || !project.task_id) return null
+    const task = await this.getTask(project.task_id, false).catch(() => null)
+    if (!task || task.kind !== 'image.generate' || !['queued', 'running'].includes(task.status)) return null
+    const interval = (task.poll_after_seconds ?? (task.status === 'running' ? 3 : 15)) * 1000
+    return Math.max(0, interval - Math.max(0, this.now().getTime() - Date.parse(task.updated_at)))
+  }
+
+  private async refreshActiveRemoteImageTask(projectId: string): Promise<void> {
+    const project = await this.getProject(projectId).catch(() => null)
+    if (project?.kind !== 'image' || !project.task_id) return
+    const task = await this.getTask(project.task_id, false).catch(() => null)
+    if (task?.kind === 'image.generate' && ['queued', 'running'].includes(task.status)) {
+      await this.getTask(task.id, true).catch(error => recordMediaFailure('image_event_refresh', error))
+    }
   }
 
   private async withVideoProjectMutation<T>(projectId: string, action: () => Promise<T>): Promise<T> {
@@ -1057,28 +1283,6 @@ export class MediaProjectService {
       const next = this.queuedVideoProbeAdmissions.shift()
       if (next) next()
       else this.activeVideoProbes -= 1
-    }
-  }
-
-  /**
-   * Product-media ownership is a one-time claim. Keep concurrent requests for
-   * one project serialized so two task pages cannot both observe an unowned
-   * draft and overwrite one another's owner.
-   */
-  private async withProductTaskAttachmentMutation<T>(projectId: string, action: () => Promise<T>): Promise<T> {
-    const previous = MediaProjectService.productTaskAttachmentMutations.get(projectId) ?? Promise.resolve()
-    let release!: () => void
-    const current = new Promise<void>(resolveLock => { release = resolveLock })
-    const queued = previous.then(() => current)
-    MediaProjectService.productTaskAttachmentMutations.set(projectId, queued)
-    await previous
-    try {
-      return await action()
-    } finally {
-      release()
-      if (MediaProjectService.productTaskAttachmentMutations.get(projectId) === queued) {
-        MediaProjectService.productTaskAttachmentMutations.delete(projectId)
-      }
     }
   }
 
@@ -1198,6 +1402,66 @@ export class MediaProjectService {
     return await this.saveProject({ ...project, outputs }) as ImageWorkbenchProject
   }
 
+  private async migrateImageMimeMetadata(project: ImageWorkbenchProject): Promise<ImageWorkbenchProject> {
+    const corrections = new Map<string, {
+      mime_type: 'image/png' | 'image/jpeg' | 'image/webp'
+      width: number
+      height: number
+      asset_path: string
+    }>()
+    const stagedPaths: Array<{ previous: string; next: string }> = []
+    for (const output of project.outputs) {
+      const asset = project.assets.find(candidate => candidate.id === output.id && candidate.role === 'result')
+      if (!asset || asset.storage.kind !== 'cas') continue
+      const match = /^sha256\/([a-f0-9]{64})$/.exec(asset.storage.locator)
+      if (!match) continue
+      const casPath = join(this.casDir, match[1]!)
+      const bytes = await readFile(casPath).catch(() => null)
+      if (!bytes) continue
+      const mimeType = detectedImageMime(bytes)
+      const dimensions = mimeType ? imageDimensions(bytes, mimeType) : null
+      if (!mimeType || !dimensions) continue
+      const extension = mimeType === 'image/jpeg' ? 'jpg' : mimeType === 'image/webp' ? 'webp' : 'png'
+      const nextFileName = `${output.id}.${extension}`
+      const nextAssetPath = `/api/media/assets/${project.id}/${nextFileName}`
+      if (
+        output.mime_type === mimeType
+        && output.width === dimensions.width
+        && output.height === dimensions.height
+        && output.asset_path === nextAssetPath
+        && asset.mime_type === mimeType
+      ) continue
+      corrections.set(output.id, { mime_type: mimeType, ...dimensions, asset_path: nextAssetPath })
+      const previousFileName = output.asset_path?.split('/').pop()
+      if (previousFileName && previousFileName !== nextFileName) {
+        const nextPath = join(this.assetsDir, project.id, nextFileName)
+        const alreadyExists = await stat(nextPath).then(info => info.isFile()).catch(() => false)
+        if (!alreadyExists) {
+          await link(casPath, nextPath).catch(async error => {
+            if ((error as NodeJS.ErrnoException).code !== 'EEXIST') await copyFile(casPath, nextPath)
+          })
+          stagedPaths.push({ previous: join(this.assetsDir, project.id, previousFileName), next: nextPath })
+        }
+      }
+    }
+    if (corrections.size === 0) return project
+    const outputs = project.outputs.map(output => corrections.has(output.id) ? { ...output, ...corrections.get(output.id)! } : output)
+    const assets = project.assets.map(asset => corrections.has(asset.id) ? { ...asset, mime_type: corrections.get(asset.id)!.mime_type } : asset)
+    const versions = project.versions.map(version => {
+      const outputId = version.asset_ids.find(assetId => corrections.has(assetId))
+      const correction = outputId ? corrections.get(outputId) : undefined
+      return correction ? { ...version, width: correction.width, height: correction.height } : version
+    })
+    try {
+      const saved = await this.saveProject({ ...project, outputs, assets, versions }) as ImageWorkbenchProject
+      await Promise.all(stagedPaths.map(path => rm(path.previous, { force: true })))
+      return saved
+    } catch (error) {
+      await Promise.all(stagedPaths.map(path => rm(path.next, { force: true })))
+      throw error
+    }
+  }
+
   private async migrateVideoTimeline(project: VideoStudioProject): Promise<VideoStudioProject> {
     if (
       project.current_timeline_version_id
@@ -1220,14 +1484,20 @@ export class MediaProjectService {
       await this.getProject(name.slice(0, -5))
     }
     for (const name of (await readdir(this.tasksDir)).filter(name => name.endsWith('.json')).sort()) {
-      const task = mediaTaskSchema.parse(JSON.parse(await readFile(join(this.tasksDir, name), 'utf8')))
-      if (!task.operation_id || !task.owner) await this.saveTask(task)
+      const raw = JSON.parse(await readFile(join(this.tasksDir, name), 'utf8')) as unknown
+      const migrated = migrateLegacyMediaOwnerRecord(raw)
+      const task = mediaTaskSchema.parse(migrated.value)
+      const hasStatusSequence = Boolean(raw && typeof raw === 'object' && 'status_sequence' in raw)
+      if (migrated.migrated || !task.operation_id || !task.owner || !hasStatusSequence) await this.saveTask(task)
     }
     for (const name of (await readdir(this.deletionsDir)).filter(name => name.endsWith('.json')).sort()) {
       const filePath = join(this.deletionsDir, name)
       const raw = JSON.parse(await readFile(filePath, 'utf8')) as unknown
-      const receipt = mediaDeletionReceiptSchema.parse(raw)
-      if (!raw || typeof raw !== 'object' || !('schema_version' in raw)) await this.writeJson(filePath, receipt)
+      const migrated = migrateLegacyMediaOwnerRecord(raw)
+      const receipt = mediaDeletionReceiptSchema.parse(migrated.value)
+      if (migrated.migrated || !raw || typeof raw !== 'object' || !('schema_version' in raw)) {
+        await this.writeJson(filePath, receipt)
+      }
     }
   }
 
@@ -1245,9 +1515,12 @@ export class MediaProjectService {
       .filter((project): project is MediaProject => Boolean(project)
         && (!kind || project!.kind === kind)
         && (!owner || sameOwner(project!.owner, owner)))
-    await Promise.all(validProjects.map(project => project.task_id
-      ? this.getTask(project.task_id, false).catch(() => null)
-      : null))
+    await Promise.all(validProjects.flatMap(project => [
+      project.task_id ? this.getTask(project.task_id, false).catch(() => null) : null,
+      project.kind === 'video' && project.preview_task_id
+        ? this.getTask(project.preview_task_id, false).catch(() => null)
+        : null,
+    ]))
     const reconciled = await Promise.all(validProjects.map(project => this.getProject(project.id).catch(() => null)))
     return reconciled
       .filter((project): project is MediaProject => Boolean(project))
@@ -1256,24 +1529,27 @@ export class MediaProjectService {
 
   async getProject(projectId: string): Promise<MediaProject> {
     try {
-      let project = mediaProjectSchema.parse(JSON.parse(await readFile(this.projectPath(projectId), 'utf8')))
-      const owner = this.canonicalOwner(project)
+      const raw = JSON.parse(await readFile(this.projectPath(projectId), 'utf8')) as unknown
+      const migrated = migrateLegacyMediaOwnerRecord(raw)
+      let project = mediaProjectSchema.parse(migrated.value)
       if (
-        project.writer_fence === LEGACY_MEDIA_WRITER_FENCE
-        || !sameOwner(project.owner, owner)
+        migrated.migrated
+        || project.writer_fence === LEGACY_MEDIA_WRITER_FENCE
         || project.versions.length === 0
       ) {
         try {
-          project = await this.saveProject({ ...project, owner })
+          project = await this.saveProject(project)
         } catch (error) {
           if (!(error instanceof MediaServiceError) || error.code !== 'WRITER_FENCE_CONFLICT') throw error
-          project = mediaProjectSchema.parse(JSON.parse(await readFile(this.projectPath(projectId), 'utf8')))
+          project = mediaProjectSchema.parse(migrateLegacyMediaOwnerRecord(
+            JSON.parse(await readFile(this.projectPath(projectId), 'utf8')),
+          ).value)
         }
       }
       if (project.kind === 'video') return await this.migrateVideoTimeline(project)
-      return await this.migrateImageVersions(
+      return await this.migrateImageMimeMetadata(await this.migrateImageVersions(
         await this.migrateImageBrief(await this.migrateLegacyReferenceImages(project)),
-      )
+      ))
     } catch (error) {
       if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') {
         throw new MediaServiceError('找不到媒体项目', 404, 'PROJECT_NOT_FOUND')
@@ -1300,13 +1576,15 @@ export class MediaProjectService {
   async assertTaskOwner(taskId: string, owner: MediaOwner): Promise<MediaTask> {
     let task: MediaTask
     try {
-      task = mediaTaskSchema.parse(JSON.parse(await readFile(this.taskPath(taskId), 'utf8')))
+      task = mediaTaskSchema.parse(migrateLegacyMediaOwnerRecord(
+        JSON.parse(await readFile(this.taskPath(taskId), 'utf8')),
+      ).value)
     } catch {
       throw new MediaServiceError('找不到媒体任务', 404, 'TASK_NOT_FOUND')
     }
     if (!task.owner) {
       const projectOwner = await readFile(this.projectPath(task.project_id), 'utf8')
-        .then(value => this.canonicalOwner(mediaProjectSchema.parse(JSON.parse(value))))
+        .then(value => mediaProjectSchema.parse(migrateLegacyMediaOwnerRecord(JSON.parse(value)).value).owner)
         .catch(() => null)
       if (projectOwner && sameOwner(projectOwner, owner)) task = await this.saveTask({ ...task, owner: projectOwner })
     }
@@ -1319,8 +1597,11 @@ export class MediaProjectService {
   async getTask(taskId: string, refreshRemote = true): Promise<MediaTask> {
     let task: MediaTask
     try {
-      task = mediaTaskSchema.parse(JSON.parse(await readFile(this.taskPath(taskId), 'utf8')))
-      if (!task.operation_id || !task.owner) task = await this.saveTask(task)
+      const raw = JSON.parse(await readFile(this.taskPath(taskId), 'utf8')) as unknown
+      const migrated = migrateLegacyMediaOwnerRecord(raw)
+      task = mediaTaskSchema.parse(migrated.value)
+      const hasStatusSequence = Boolean(raw && typeof raw === 'object' && 'status_sequence' in raw)
+      if (migrated.migrated || !task.operation_id || !task.owner || !hasStatusSequence) task = await this.saveTask(task)
     } catch (error) {
       if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') {
         throw new MediaServiceError('找不到媒体任务', 404, 'TASK_NOT_FOUND')
@@ -1363,6 +1644,13 @@ export class MediaProjectService {
       return await this.recoverInterruptedVideoRender(task)
     }
     if (
+      task.kind === 'video.preview'
+      && ['queued', 'running', 'committing'].includes(task.status)
+      && !this.activeVideoPreviews.has(task.id)
+    ) {
+      return await this.recoverInterruptedVideoPreview(task)
+    }
+    if (
       (task.kind === 'video.analyze' || task.kind === 'video.plan')
       && ['queued', 'running'].includes(task.status)
       && !this.activeVideoAnalyses.has(task.id)
@@ -1383,10 +1671,79 @@ export class MediaProjectService {
 
   private async reconcileTaskAndProject(task: MediaTask): Promise<MediaTask> {
     const project = await this.getProject(task.project_id).catch(() => null)
-    if (!project || project.task_id !== task.id) return task
+    if (!project) return task
+
+    if (task.kind === 'video.preview' && project.kind === 'video') {
+      if (project.preview_task_id !== task.id) return task
+      const result = videoPreviewTaskResultSchema.safeParse(task.result)
+      if (task.status === 'succeeded' && result.success && project.preview?.asset_id !== result.data.asset_id) {
+        const assetExists = await stat(join(this.assetsDir, project.id, basename(result.data.asset_path)))
+          .then(info => info.isFile())
+          .catch(() => false)
+        if (
+          assetExists
+          && project.current_timeline_version_id === result.data.timeline_version_id
+          && result.data.content_hash
+        ) {
+          await this.saveProject({
+            ...project,
+            preview: {
+              timeline_version_id: result.data.timeline_version_id,
+              asset_id: result.data.asset_id,
+              asset_path: result.data.asset_path,
+              content_hash: result.data.content_hash,
+              created_at: task.updated_at,
+            },
+            updated_at: this.iso(),
+          })
+        }
+      }
+      return task
+    }
+
+    if (project.task_id !== task.id) return task
 
     if (task.kind === 'image.generate' && project.kind === 'image') {
       const result = imageGenerationTaskResultSchema.safeParse(task.result)
+      if (
+        task.status === 'committing'
+        && !this.activeImageRefreshes.has(task.id)
+        && result.success
+        && result.data.outputs.length > 0
+      ) {
+        const assetsExist = await Promise.all(result.data.outputs.map(async output => {
+          if (!output.asset_path) return false
+          const fileName = output.asset_path.split('/').pop() ?? ''
+          if (!/^[a-z0-9][a-z0-9_.-]{2,120}$/.test(fileName)) return false
+          return await stat(join(this.assetsDir, project.id, fileName)).then(info => info.isFile()).catch(() => false)
+        }))
+        if (assetsExist.every(Boolean)) {
+          const operationKind = task.image_operation?.kind ?? 'generate'
+          await this.saveProject({
+            ...project,
+            state: 'ready',
+            outputs: [
+              ...project.outputs.filter(output => !result.data.outputs.some(completed => completed.id === output.id)),
+              ...result.data.outputs,
+            ],
+            current_version_id: operationKind === 'generate'
+              ? project.current_version_id
+              : result.data.outputs[0]?.version_id ?? project.current_version_id,
+            notice: '候选已从中断的本地提交恢复；视觉质检可在后续迭代中重新执行。',
+            error: undefined,
+            error_code: undefined,
+            updated_at: this.iso(),
+          })
+          return await this.saveTask({
+            ...task,
+            status: 'succeeded',
+            progress: 100,
+            stage: '生成完成（已恢复）',
+            updated_at: this.iso(),
+          })
+        }
+        return await this.failImageTask(task, 'MEDIA_IMAGE_OUTCOME_UNKNOWN', true, task.provider_receipt_hash)
+      }
       if (task.status === 'succeeded' && project.state !== 'ready' && result.success && result.data.outputs.length > 0) {
         const completedOutputs = result.data.outputs
         const operationKind = task.image_operation?.kind ?? 'generate'
@@ -1535,7 +1892,25 @@ export class MediaProjectService {
     return next
   }
 
-  async assetResponse(projectId: string, fileName: string): Promise<Response> {
+  private async recoverInterruptedVideoPreview(task: MediaTask): Promise<MediaTask> {
+    const failure = mediaSafeError('MEDIA_VIDEO_PREVIEW_INTERRUPTED')
+    const next = await this.saveTask({
+      ...task,
+      status: 'failed',
+      progress: 0,
+      stage: '预览已中断',
+      error: failure.message,
+      error_code: failure.code,
+      updated_at: this.iso(),
+    })
+    const result = videoPreviewTaskResultSchema.safeParse(task.result)
+    if (result.success && result.data.temporary_output) {
+      await rm(result.data.temporary_output, { force: true }).catch(() => undefined)
+    }
+    return next
+  }
+
+  async assetResponse(projectId: string, fileName: string, request?: Request): Promise<Response> {
     this.projectPath(projectId)
     if (!/^[a-z0-9][a-z0-9_.-]{2,120}$/.test(fileName)) {
       throw new MediaServiceError('无效的媒体资产名', 400, 'INVALID_ASSET_NAME')
@@ -1545,6 +1920,14 @@ export class MediaProjectService {
       code: 'ASSET_NOT_FOUND',
     })
     const extension = extname(fileName).toLowerCase()
+    if (['.mp4', '.mov', '.webm'].includes(extension)) {
+      return await this.videoFileResponse(
+        asset.path,
+        request ?? new Request('http://localhost/media-asset'),
+        '找不到媒体资产',
+        'ASSET_NOT_FOUND',
+      )
+    }
     const contentType = extension === '.jpg' || extension === '.jpeg'
       ? 'image/jpeg'
       : extension === '.webp'
@@ -1598,30 +1981,6 @@ export class MediaProjectService {
       throw new MediaServiceError('图片结果不可用', 404, 'IMAGE_OUTPUT_NOT_LOCAL')
     }
     return await this.assetResponse(project.id, fileName)
-  }
-
-  /**
-   * Bind an existing project to a public product task exactly once. This is
-   * intentionally separate from the standalone create routes so callers
-   * cannot smuggle arbitrary owner ids into general media project creation.
-   */
-  async attachProjectToProductTask(projectId: string, productTaskId: string): Promise<MediaProject> {
-    const ownerId = productTaskOwnerIdSchema.parse(productTaskId)
-    return await this.withProductTaskAttachmentMutation(projectId, async () => {
-      const project = await this.getProject(projectId)
-      if (project.product_task_id && project.product_task_id !== ownerId) {
-        throw new MediaServiceError('媒体项目已关联到另一项任务', 409, 'PROJECT_ALREADY_ATTACHED')
-      }
-      if (project.product_task_id === ownerId) return project
-      if (project.state !== 'draft') {
-        throw new MediaServiceError('只有未关联的媒体草稿可以加入任务', 409, 'PROJECT_NOT_ATTACHABLE')
-      }
-      return await this.saveProject({
-        ...project,
-        product_task_id: ownerId,
-        updated_at: this.iso(),
-      })
-    })
   }
 
   private imageVersionRecord(project: ImageWorkbenchProject, versionId: string) {
@@ -1958,44 +2317,44 @@ export class MediaProjectService {
         && existing.idempotency_key
         && (['queued', 'running'].includes(existing.status) || existing.outcome_unknown)
       ) {
-        if (!existing.data_egress_consent) {
-          throw new MediaServiceError('生图前需要确认数据出境范围、保留期限和可能费用', 428, 'DATA_EGRESS_CONSENT_REQUIRED')
-        }
         return await this.submitPersistedImageTask(project, existing)
       }
       if (existing?.outcome_unknown && !input.confirm_unknown_retry) {
         throw new MediaServiceError(
-          '上一次任务可能已经产生费用。继续会创建新的生图任务，请在桌面工作台明确确认',
+          '上一次任务是否已被远程服务受理暂时无法确认。继续会创建新的生图操作，请在桌面工作台明确确认',
           409,
           'IMAGE_UNKNOWN_RETRY_CONFIRMATION_REQUIRED',
         )
       }
       if (existing && existing.status !== 'failed' && existing.status !== 'cancelled') return existing
     }
-    if (!qfGatewayConfigured()) {
+    if (!productGatewayConfigured()) {
       throw new MediaServiceError(mediaSafeError('MEDIA_IMAGE_UNAVAILABLE').message, 503, 'GATEWAY_NOT_CONFIGURED')
     }
+    // Admission validates project-scoped reference bytes before publishing a Job.
+    // The reasoning stage reads them again so a post-admission swap still fails closed.
+    await this.loadReferenceImages(project)
 
     const now = this.iso()
     const nextRevision = project.revision + 1
-    const payload = await this.imageSubmissionPayload(project)
-    const digest = createHash('sha256')
-      .update(`${project.id}:${nextRevision}:${JSON.stringify(payload)}`)
-      .digest('hex')
-    if (!input.data_egress_consent) {
-      throw new MediaServiceError('生图前需要确认数据出境范围、保留期限和可能费用', 428, 'DATA_EGRESS_CONSENT_REQUIRED')
-    }
-    const consent = imageConsentReceipt(project, input.data_egress_consent, digest)
+    const operationId = foundationId(
+      'op',
+      project.id,
+      'generate',
+      String(nextRevision),
+      project.brief?.user_request ?? project.prompt,
+    )
+    const digest = createHash('sha256').update(operationId).digest('hex')
     let task = mediaTaskSchema.parse({
       schema_version: 1,
       id: id('task'),
       project_id: project.id,
+      operation_id: operationId,
       kind: 'image.generate',
       status: 'queued',
       progress: 0,
-      stage: '正在提交',
+      stage: '等待理解参考图',
       idempotency_key: `bb-media-${digest}`,
-      data_egress_consent: consent,
       image_operation: {
         kind: 'generate',
         model: project.model,
@@ -2029,19 +2388,16 @@ export class MediaProjectService {
     if (project.revision !== input.revision) {
       throw new MediaServiceError('图片项目已更新，请刷新后再编辑', 409, 'REVISION_CONFLICT')
     }
-    if (!input.data_egress_consent) {
-      throw new MediaServiceError('生图前需要确认数据出境范围、保留期限和可能费用', 428, 'DATA_EGRESS_CONSENT_REQUIRED')
-    }
     if (project.task_id) {
       const existing = await this.getTask(project.task_id, false).catch(() => null)
       if (existing?.outcome_unknown && !input.confirm_unknown_retry) {
-        throw new MediaServiceError('上一次任务可能已经产生费用，请明确确认后再创建新操作', 409, 'IMAGE_UNKNOWN_RETRY_CONFIRMATION_REQUIRED')
+        throw new MediaServiceError('上一次任务是否已被远程服务受理暂时无法确认，请明确确认后再创建新操作', 409, 'IMAGE_UNKNOWN_RETRY_CONFIRMATION_REQUIRED')
       }
       if (existing && ['queued', 'running', 'committing'].includes(existing.status)) {
         throw new MediaServiceError('当前图片操作尚未完成', 409, 'IMAGE_OPERATION_ACTIVE')
       }
     }
-    if (!qfGatewayConfigured()) {
+    if (!productGatewayConfigured()) {
       throw new MediaServiceError(mediaSafeError('MEDIA_IMAGE_UNAVAILABLE').message, 503, 'GATEWAY_NOT_CONFIGURED')
     }
     const base = await this.imageVersionBytes(project, input.base_version_id)
@@ -2097,7 +2453,6 @@ export class MediaProjectService {
       { image_operation: operation },
     )
     const digest = createHash('sha256').update(`${operationId}:${JSON.stringify(payload)}`).digest('hex')
-    const consent = imageConsentReceipt(project, input.data_egress_consent, digest, model)
     let task = mediaTaskSchema.parse({
       schema_version: 1,
       id: id('task'),
@@ -2108,7 +2463,6 @@ export class MediaProjectService {
       progress: 0,
       stage: input.kind === 'inpaint' ? '正在提交局部重绘' : '正在提交图片编辑',
       idempotency_key: `bb-media-${digest}`,
-      data_egress_consent: consent,
       image_operation: operation,
       created_at: now,
       updated_at: now,
@@ -2176,10 +2530,82 @@ export class MediaProjectService {
   private submitPersistedImageTask(project: ImageWorkbenchProject, task: MediaTask): Promise<MediaTask> {
     const active = this.activeImageSubmissions.get(task.id)
     if (active) return active
-    const submission = this.performImageSubmission(project, task)
+    const submission = this.performPersistedImagePipeline(project, task)
       .finally(() => this.activeImageSubmissions.delete(task.id))
     this.activeImageSubmissions.set(task.id, submission)
     return submission
+  }
+
+  private async performPersistedImagePipeline(
+    originalProject: ImageWorkbenchProject,
+    originalTask: MediaTask,
+  ): Promise<MediaTask> {
+    let project = originalProject
+    let task = originalTask
+    if (task.image_operation?.kind === 'generate' && task.result?.reasoning_complete !== true) {
+      task = await this.saveTask({
+        ...task,
+        status: 'running',
+        progress: Math.max(task.progress, 1),
+        stage: '正在理解参考图与整理 Brief',
+        error: undefined,
+        error_code: undefined,
+        updated_at: this.iso(),
+      })
+      try {
+        const referenceImages = await this.loadReferenceImages(project)
+        const reasoned = await reasonImageBrief({
+          userRequest: project.brief?.user_request ?? project.prompt,
+          references: project.references.map((reference, index) => ({
+            ...reference,
+            data_url: referenceImages[index]!,
+          })),
+        }, {
+          operationId: `${task.operation_id ?? task.id}-reasoning`,
+          fetchImpl: this.fetchImpl as typeof fetch,
+          env: this.env,
+        })
+        project = await this.saveProject({
+          ...project,
+          brief: reasoned.brief,
+          prompt: reasoned.providerPrompt,
+          updated_at: this.iso(),
+        }) as ImageWorkbenchProject
+        task = await this.saveTask({
+          ...task,
+          status: 'queued',
+          progress: Math.max(task.progress, 5),
+          stage: 'Brief 已就绪，等待提交生成',
+          result: { ...(task.result ?? {}), reasoning_complete: true },
+          updated_at: this.iso(),
+        })
+      } catch (error) {
+        recordMediaFailure('image_brief_reasoning', error)
+        const failure = mediaSafeError('MEDIA_IMAGE_REASONING_UNAVAILABLE')
+        task = await this.saveTask({
+          ...task,
+          status: 'failed',
+          progress: 0,
+          stage: '图片理解失败',
+          error: failure.message,
+          error_code: failure.code,
+          updated_at: this.iso(),
+        })
+        await this.saveProject({
+          ...project,
+          state: 'failed',
+          error: failure.message,
+          error_code: failure.code,
+          updated_at: this.iso(),
+        })
+        throw new MediaServiceError(
+          failure.message,
+          error instanceof ImageReasoningError ? error.status : 502,
+          'IMAGE_REASONING_FAILED',
+        )
+      }
+    }
+    return await this.performImageSubmission(project, task)
   }
 
   private refreshPersistedImageTask(task: MediaTask): Promise<MediaTask> {
@@ -2192,14 +2618,11 @@ export class MediaProjectService {
   }
 
   private async performImageSubmission(project: ImageWorkbenchProject, originalTask: MediaTask): Promise<MediaTask> {
-    if (!qfGatewayConfigured()) {
+    if (!productGatewayConfigured()) {
       throw new MediaServiceError(mediaSafeError('MEDIA_IMAGE_UNAVAILABLE').message, 503, 'GATEWAY_NOT_CONFIGURED')
     }
     if (!originalTask.idempotency_key) {
       throw new MediaServiceError('生图任务缺少幂等凭据', 500, 'IMAGE_SUBMISSION_CORRUPT')
-    }
-    if (!originalTask.data_egress_consent) {
-      throw new MediaServiceError('生图任务缺少数据出境同意回执', 428, 'DATA_EGRESS_CONSENT_REQUIRED')
     }
     const payload = await this.imageSubmissionPayload(project, originalTask)
     let task = await this.saveTask({
@@ -2220,16 +2643,17 @@ export class MediaProjectService {
       error_code: undefined,
       updated_at: this.iso(),
     }) as ImageWorkbenchProject
-    const endpoint = `${getQfGatewayUrl().replace(/\/+$/, '')}/v1/images/tasks`
+    const gateway = productGatewayTarget()
+    if (!gateway) throw new MediaServiceError('产品网关未配置', 503, 'GATEWAY_NOT_CONFIGURED')
+    const endpoint = `${gateway.baseUrl}/v1/images/tasks`
     const headers: Record<string, string> = {
-      Authorization: `Bearer ${getQfGatewayToken()}`,
+      Authorization: `Bearer ${gateway.token}`,
       'Content-Type': 'application/json',
       'Idempotency-Key': originalTask.idempotency_key,
-      'X-BB-Data-Egress-Consent': originalTask.data_egress_consent.receipt_id,
       [PROVIDER_GATEWAY_PROTOCOL_HEADER]: PROVIDER_GATEWAY_PROTOCOL.headerValue,
     }
-    const installationId = getInstallationId()
-    if (installationId) headers['X-QF-Client-ID'] = installationId
+    const installationId = productInstallationId()
+    if (installationId) headers['X-BB-Installation-ID'] = installationId
 
     try {
       const { response, body } = await this.fetchImageGatewayJson(endpoint, {
@@ -2303,7 +2727,7 @@ export class MediaProjectService {
       const existing = await this.getTask(project.task_id, false).catch(() => null)
       if (existing?.outcome_unknown && !input.confirm_unknown_retry) {
         throw new MediaServiceError(
-          '上一次任务可能已经产生费用。修改后再生成会创建新任务，请在桌面工作台明确确认',
+          '上一次任务是否已被远程服务受理暂时无法确认。修改后再生成会创建新操作，请在桌面工作台明确确认',
           409,
           'IMAGE_UNKNOWN_RETRY_CONFIRMATION_REQUIRED',
         )
@@ -2341,7 +2765,7 @@ export class MediaProjectService {
       || !task.remote_task_id
       || !task.provider_receipt_hash
       || task.remote_result_acknowledged_at
-      || !qfGatewayConfigured()
+      || !productGatewayConfigured()
     ) return task
     const result = imageGenerationTaskResultSchema.safeParse(task.result)
     if (!result.success || result.data.outputs.length === 0) return task
@@ -2356,15 +2780,17 @@ export class MediaProjectService {
     }))
     if (localAssets.some(persisted => !persisted)) return task
 
+    const gateway = productGatewayTarget()
+    if (!gateway) return task
     const headers: Record<string, string> = {
-      Authorization: `Bearer ${getQfGatewayToken()}`,
+      Authorization: `Bearer ${gateway.token}`,
       [PROVIDER_GATEWAY_PROTOCOL_HEADER]: PROVIDER_GATEWAY_PROTOCOL.headerValue,
     }
-    const installationId = getInstallationId()
-    if (installationId) headers['X-QF-Client-ID'] = installationId
+    const installationId = productInstallationId()
+    if (installationId) headers['X-BB-Installation-ID'] = installationId
     try {
       const { response, body } = await this.fetchImageGatewayJson(
-        `${getQfGatewayUrl().replace(/\/+$/, '')}/v1/images/tasks/${encodeURIComponent(task.remote_task_id)}/ack`,
+        `${gateway.baseUrl}/v1/images/tasks/${encodeURIComponent(task.remote_task_id)}/ack`,
         { method: 'POST', headers },
       )
       if (!response.ok || body.result_acknowledged !== true) {
@@ -2386,22 +2812,52 @@ export class MediaProjectService {
 
   private async refreshImageTask(task: MediaTask): Promise<MediaTask> {
     if (!task.remote_task_id) return task
-    if (!qfGatewayConfigured()) return task
+    if (!productGatewayConfigured()) return task
+    const gateway = productGatewayTarget()
+    if (!gateway) return task
     const headers: Record<string, string> = {
-      Authorization: `Bearer ${getQfGatewayToken()}`,
+      Authorization: `Bearer ${gateway.token}`,
       [PROVIDER_GATEWAY_PROTOCOL_HEADER]: PROVIDER_GATEWAY_PROTOCOL.headerValue,
+      [MEDIA_RESULT_HANDOFF_HEADER]: MEDIA_RESULT_HANDOFF_DIRECT_V1,
     }
-    const installationId = getInstallationId()
-    if (installationId) headers['X-QF-Client-ID'] = installationId
+    const installationId = productInstallationId()
+    if (installationId) headers['X-BB-Installation-ID'] = installationId
     let response: Response
     let body: RelayImageTask & { message?: string }
     try {
       const result = await this.fetchImageGatewayJson(
-        `${getQfGatewayUrl().replace(/\/+$/, '')}/v1/images/tasks/${encodeURIComponent(task.remote_task_id)}`,
+        `${gateway.baseUrl}/v1/images/tasks/${encodeURIComponent(task.remote_task_id)}`,
         { headers },
       )
       response = result.response
       body = result.body
+      if (response.ok && body.status === 'succeeded' && body.result_urls?.length) {
+        if (body.result_urls.length > 4) throw new Error('too many image result handoff URLs')
+        const resultUrls = body.result_urls.map(value => trustedMediaResultUrl(value, gateway.baseUrl))
+        if (resultUrls.some(value => !value)) throw new Error('untrusted image result handoff URL')
+        const direct = await Promise.all(resultUrls.map(resultUrl => this.fetchImageGatewayJson(resultUrl!, {
+          method: 'GET',
+          redirect: 'error',
+          headers: { Accept: 'application/json' },
+        })))
+        const failed = direct.find(result => !result.response.ok)
+        if (failed) {
+          response = failed.response
+          body = failed.body
+        } else {
+          body = { ...body, data: direct.flatMap(result => result.body.data ?? []) }
+        }
+      } else if (response.ok && body.status === 'succeeded' && body.result_url) {
+        const resultUrl = trustedMediaResultUrl(body.result_url, gateway.baseUrl)
+        if (!resultUrl) throw new Error('untrusted image result handoff URL')
+        const direct = await this.fetchImageGatewayJson(resultUrl, {
+          method: 'GET',
+          redirect: 'error',
+          headers: { Accept: 'application/json' },
+        })
+        response = direct.response
+        body = { ...body, ...direct.body }
+      }
     } catch (error) {
       // The remote task can still be running. Keep its persisted status rather
       // than inventing a terminal result from a transient status-read failure.
@@ -2471,20 +2927,25 @@ export class MediaProjectService {
     const parentVersionId = task.image_operation?.base_version_id ?? attachedProject.versions.at(-1)?.id
     const projectAssetDir = join(this.assetsDir, task.project_id)
     const createdAssets: string[] = []
+    const qualityCandidates: Array<{ data_url: string; candidate_index: number }> = []
     await mkdir(projectAssetDir, { recursive: true, mode: 0o700 })
     for (const item of body.data ?? []) {
       const outputId = id('out')
       const operationId = task.operation_id ?? foundationId('op', task.project_id, task.kind, task.id)
       const versionId = foundationId('ver', task.project_id, operationId, outputId)
       if (item.b64_json) {
-        const mimeType = item.mime_type ?? 'image/png'
         const bytes = Buffer.from(item.b64_json, 'base64')
+        const mimeType = detectedImageMime(bytes) ?? item.mime_type ?? 'image/png'
         const dimensions = imageDimensions(bytes, mimeType)
         const extension = mimeType === 'image/jpeg' ? 'jpg' : mimeType === 'image/webp' ? 'webp' : 'png'
         const fileName = `${outputId}.${extension}`
         const assetPath = join(projectAssetDir, fileName)
         await writeFile(assetPath, bytes, { mode: 0o600 })
         createdAssets.push(assetPath)
+        qualityCandidates.push({
+          data_url: `data:${mimeType};base64,${item.b64_json}`,
+          candidate_index: outputs.length,
+        })
         outputs.push({
           id: outputId,
           operation_id: operationId,
@@ -2514,6 +2975,44 @@ export class MediaProjectService {
       recordMediaFailure('image_result_empty', body)
       return await this.failImageTask(task, 'MEDIA_IMAGE_UNAVAILABLE')
     }
+    let outputsWithQuality = outputs
+    let qualityStatus: 'completed' | 'unavailable' = 'unavailable'
+    await this.saveTask({
+      ...task,
+      status: 'committing',
+      progress: 90,
+      stage: '正在质检并保存候选',
+      provider_receipt_hash: body.provider_receipt_hash,
+      result: { output_count: outputs.length, outputs, quality_status: 'pending' },
+      updated_at: this.iso(),
+    })
+    if (attachedProject.brief && qualityCandidates.length > 0) {
+      try {
+        const assessments = await assessImageCandidates({
+          brief: attachedProject.brief,
+          candidates: qualityCandidates,
+        }, {
+          operationId: foundationId('op', task.operation_id ?? task.id, 'quality'),
+          fetchImpl: this.fetchImpl as typeof fetch,
+          env: this.env,
+        })
+        outputsWithQuality = outputs.map((output, index) => {
+          const assessment = assessments.find(item => item.candidate_index === index)
+          return assessment ? {
+            ...output,
+            quality_assessment: {
+              score: assessment.score,
+              summary: assessment.summary,
+              issues: assessment.issues,
+              suggestions: assessment.suggestions,
+            },
+          } : output
+        })
+        qualityStatus = 'completed'
+      } catch (error) {
+        recordMediaFailure('image_quality_reasoning', error)
+      }
+    }
     const next = await this.saveTask({
       ...task,
       status: 'succeeded',
@@ -2522,7 +3021,8 @@ export class MediaProjectService {
       provider_receipt_hash: body.provider_receipt_hash,
       result: {
         output_count: outputs.length,
-        outputs,
+        outputs: outputsWithQuality,
+        quality_status: qualityStatus,
         ...(body.input_fidelity_requested ? { input_fidelity_requested: body.input_fidelity_requested } : {}),
         ...(body.input_fidelity_status ? { input_fidelity_status: body.input_fidelity_status } : {}),
         ...(body.input_fidelity_risk ? { input_fidelity_risk: boundedMessage(body.input_fidelity_risk) } : {}),
@@ -2536,7 +3036,7 @@ export class MediaProjectService {
         ...next,
         stage: '生成完成（结果未附着到当前草稿）',
         result: {
-          output_count: outputs.length,
+          output_count: outputsWithQuality.length,
           ...(body.input_fidelity_requested ? { input_fidelity_requested: body.input_fidelity_requested } : {}),
           ...(body.input_fidelity_status ? { input_fidelity_status: body.input_fidelity_status } : {}),
           ...(body.input_fidelity_risk ? { input_fidelity_risk: boundedMessage(body.input_fidelity_risk) } : {}),
@@ -2548,13 +3048,17 @@ export class MediaProjectService {
       ...project,
       state: 'ready',
       outputs: [
-        ...project.outputs.filter(output => !outputs.some(completed => completed.id === output.id)),
-        ...outputs,
+        ...project.outputs.filter(output => !outputsWithQuality.some(completed => completed.id === output.id)),
+        ...outputsWithQuality,
       ],
       current_version_id: operationKind === 'generate'
         ? project.current_version_id
-        : outputs[0]?.version_id ?? project.current_version_id,
-      notice: body.input_fidelity_risk ? boundedMessage(body.input_fidelity_risk) : undefined,
+        : outputsWithQuality[0]?.version_id ?? project.current_version_id,
+      notice: body.input_fidelity_risk
+        ? boundedMessage(body.input_fidelity_risk)
+        : qualityStatus === 'unavailable'
+          ? '候选已保存；视觉质检暂时不可用，可稍后继续编辑或重新生成。'
+          : undefined,
       error: undefined,
       error_code: undefined,
       updated_at: this.iso(),
@@ -2964,7 +3468,6 @@ export class MediaProjectService {
   private async extractVideoAnalysisInputs(
     project: VideoStudioProject,
     operationId: string,
-    receipt: RemoteDataEgressReceipt,
     signal: AbortSignal,
   ): Promise<{ frames: VideoAnalysisFrame[]; transcripts: VideoEvidence[]; gaps: string[] }> {
     const directory = join(this.root, 'analysis', operationId)
@@ -2977,19 +3480,28 @@ export class MediaProjectService {
     try {
       for (const source of sampled) {
         if (signal.aborted) throw new VideoAnalysisError('视频分析已取消', 499, 'VIDEO_ANALYSIS_CANCELLED')
-        const frameTimeMs = Math.max(0, Math.floor(source.duration_ms / 2))
-        const framePath = join(directory, `${source.id}.jpg`)
-        const frame = await this.runProcess([
-          this.binary('ffmpeg'), '-hide_banner', '-loglevel', 'error',
-          '-ss', (frameTimeMs / 1000).toFixed(3), '-i', source.path,
-          '-frames:v', '1', '-vf', 'scale=1280:-2:force_original_aspect_ratio=decrease',
-          '-q:v', '3', '-y', framePath,
-        ], { signal }).catch(() => null)
-        const frameBytes = frame?.exitCode === 0 ? await readFile(framePath).catch(() => null) : null
-        if (frameBytes?.length) {
+        const frameTimes = [...new Set([0.1, 0.5, 0.9].map(position => (
+          Math.max(0, Math.min(source.duration_ms - 1, Math.floor(source.duration_ms * position)))
+        )))]
+        let extractedFrames = 0
+        for (const [frameIndex, frameTimeMs] of frameTimes.entries()) {
+          if (signal.aborted) throw new VideoAnalysisError('视频分析已取消', 499, 'VIDEO_ANALYSIS_CANCELLED')
+          const framePath = join(directory, `${source.id}-${frameIndex}.jpg`)
+          const frame = await this.runProcess([
+            this.binary('ffmpeg'), '-hide_banner', '-loglevel', 'error',
+            '-ss', (frameTimeMs / 1000).toFixed(3), '-i', source.path,
+            '-frames:v', '1', '-vf', 'scale=1280:-2:force_original_aspect_ratio=decrease',
+            '-q:v', '3', '-y', framePath,
+          ], { signal }).catch(() => null)
+          const frameBytes = frame?.exitCode === 0 ? await readFile(framePath).catch(() => null) : null
+          if (!frameBytes?.length) continue
           frames.push({ source_id: source.id, in_ms: frameTimeMs, data_url: `data:image/jpeg;base64,${frameBytes.toString('base64')}` })
-        } else {
+          extractedFrames += 1
+        }
+        if (extractedFrames === 0) {
           gaps.push(`${source.name} 未能抽取画面证据。`)
+        } else if (extractedFrames < frameTimes.length) {
+          gaps.push(`${source.name} 仅抽取到 ${extractedFrames}/${frameTimes.length} 个画面采样点。`)
         }
 
         if (!source.has_audio) continue
@@ -3012,7 +3524,6 @@ export class MediaProjectService {
               env: this.env,
               fetchImpl: this.fetchImpl,
               signal,
-              consentReceiptId: receipt.receipt_id,
               providerProtocol: PROVIDER_GATEWAY_PROTOCOL.headerValue,
               operationId: `${operationId}-speech-${source.id}`,
             },
@@ -3105,8 +3616,6 @@ export class MediaProjectService {
 
   async analyzeVideoProject(projectId: string, raw: AnalyzeVideoProjectInput): Promise<MediaTask> {
     const input = analyzeVideoProjectInputSchema.parse(raw)
-    const receipt = await this.remoteConsentReceipt()
-    if (!receipt) throw new MediaServiceError('需要先确认远端数据处理说明', 403, 'MEDIA_UI_CONFIRMATION_REQUIRED')
     const launch = await this.withVideoProjectMutation(projectId, async () => {
       let project = await this.getProject(projectId)
       if (project.kind !== 'video') throw new MediaServiceError('这不是视频项目', 409, 'WRONG_PROJECT_KIND')
@@ -3137,7 +3646,7 @@ export class MediaProjectService {
         updated_at: now,
       })
       await this.saveProject({ ...project, task_id: task.id, updated_at: this.iso() })
-      return { project, task, receipt, userGoal: input.user_goal }
+      return { project, task, userGoal: input.user_goal }
     })
     const controller = new AbortController()
     const active: ActiveVideoAnalysis = {
@@ -3147,7 +3656,6 @@ export class MediaProjectService {
     active.completion = Promise.resolve().then(() => this.runVideoAnalysis(
       launch.project,
       launch.task,
-      launch.receipt,
       launch.userGoal,
       controller.signal,
       active,
@@ -3159,14 +3667,13 @@ export class MediaProjectService {
   private async runVideoAnalysis(
     baseProject: VideoStudioProject,
     analyzeTask: MediaTask,
-    receipt: RemoteDataEgressReceipt,
     userGoal: string,
     signal: AbortSignal,
     active: ActiveVideoAnalysis,
   ): Promise<void> {
     let activeTask = analyzeTask
     try {
-      const extracted = await this.extractVideoAnalysisInputs(baseProject, analyzeTask.operation_id!, receipt, signal)
+      const extracted = await this.extractVideoAnalysisInputs(baseProject, analyzeTask.operation_id!, signal)
       await this.saveTask({ ...analyzeTask, progress: 45, stage: '正在分析画面与语音证据', updated_at: this.iso() })
       const retainedEvidenceIds = new Set(
         baseProject.timeline_versions
@@ -3182,7 +3689,6 @@ export class MediaProjectService {
         userGoal,
         extractionGaps: extracted.gaps,
       }, {
-        receipt,
         operationId: `${analyzeTask.operation_id}-evidence`,
         signal,
         fetchImpl: this.fetchImpl,
@@ -3251,7 +3757,6 @@ export class MediaProjectService {
         userGoal,
         analysisGaps: next.gaps,
       }, {
-        receipt,
         operationId: `${next.planTask.operation_id}-timeline`,
         signal,
         fetchImpl: this.fetchImpl,
@@ -3330,6 +3835,222 @@ export class MediaProjectService {
     }
   }
 
+  async previewVideo(projectId: string, raw: PreviewVideoInput): Promise<MediaTask> {
+    return await this.withVideoProjectMutation(projectId, async () => {
+      const input = previewVideoInputSchema.parse(raw)
+      const project = await this.getProject(projectId)
+      if (project.kind !== 'video') throw new MediaServiceError('这不是视频项目', 409, 'WRONG_PROJECT_KIND')
+      if (project.state === 'rendering') throw new MediaServiceError('正在导出，暂时不能生成预览', 409, 'RENDER_IN_PROGRESS')
+      if (project.revision !== input.base_revision) throw new MediaServiceError('视频项目已更新，请刷新后再生成预览', 409, 'REVISION_CONFLICT')
+      if (project.current_timeline_version_id !== input.timeline_version_id) {
+        throw new MediaServiceError('视频时间线已更新，请刷新后再生成预览', 409, 'TIMELINE_VERSION_CONFLICT')
+      }
+      if (!project.timeline_versions.some(version => version.id === input.timeline_version_id)) {
+        throw new MediaServiceError('视频时间线版本不存在', 409, 'TIMELINE_VERSION_MISSING')
+      }
+      if (!project.timeline.length) throw new MediaServiceError('时间线还是空的', 409, 'EMPTY_TIMELINE')
+      if (project.preview_task_id) {
+        const existing = await this.getTask(project.preview_task_id, false).catch(() => null)
+        const existingResult = videoPreviewTaskResultSchema.safeParse(existing?.result)
+        if (
+          existing?.kind === 'video.preview'
+          && ['queued', 'running', 'committing'].includes(existing.status)
+          && existingResult.success
+          && existingResult.data.timeline_version_id === input.timeline_version_id
+        ) return existing
+        if (existing && ['queued', 'running', 'committing'].includes(existing.status)) {
+          throw new MediaServiceError('已有视频预览正在生成，请先取消', 409, 'VIDEO_PREVIEW_BUSY')
+        }
+      }
+      const status = await this.toolchainStatus()
+      if (!status.ffmpeg.available || !status.ffprobe.available) {
+        throw new MediaServiceError(
+          mediaSafeError('MEDIA_VIDEO_TOOLCHAIN_UNAVAILABLE').message,
+          503,
+          'VIDEO_TOOLCHAIN_UNAVAILABLE',
+        )
+      }
+
+      const assetId = id('preview')
+      const assetFileName = `${assetId}.mp4`
+      const outputPath = join(this.assetsDir, project.id, assetFileName)
+      const assetPath = `/api/media/assets/${project.id}/${assetFileName}`
+      const now = this.iso()
+      const task = await this.saveTask({
+        schema_version: 1,
+        id: id('task'),
+        project_id: project.id,
+        kind: 'video.preview',
+        status: 'queued',
+        progress: 0,
+        stage: '等待生成预览',
+        result: {
+          preview_revision: project.revision,
+          timeline_version_id: input.timeline_version_id,
+          asset_id: assetId,
+          asset_path: assetPath,
+        },
+        created_at: now,
+        updated_at: now,
+      })
+      await this.saveProject({
+        ...project,
+        preview_task_id: task.id,
+        updated_at: this.iso(),
+      })
+      const controller = new AbortController()
+      const completion = Promise.resolve().then(() => this.runVideoPreview(
+        project,
+        task,
+        outputPath,
+        controller.signal,
+      ))
+      this.activeVideoPreviews.set(task.id, { controller, completion, outputPath })
+      return task
+    })
+  }
+
+  private previewProject(project: VideoStudioProject): VideoStudioProject {
+    const scale = Math.min(1, 960 / Math.max(project.output.width, project.output.height))
+    const even = (value: number) => Math.max(2, Math.round(value / 2) * 2)
+    return {
+      ...project,
+      output: {
+        width: even(project.output.width * scale),
+        height: even(project.output.height * scale),
+        fps: Math.min(24, project.output.fps),
+      },
+    }
+  }
+
+  private async runVideoPreview(
+    project: VideoStudioProject,
+    task: MediaTask,
+    outputPath: string,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const temporaryOutput = `${outputPath}.partial-${task.id}.mp4`
+    try {
+      await mkdir(dirname(outputPath), { recursive: true, mode: 0o700 })
+      await this.saveTask({
+        ...task,
+        status: 'running',
+        progress: 10,
+        stage: '正在生成预览',
+        result: { ...(task.result ?? {}), temporary_output: temporaryOutput },
+        updated_at: this.iso(),
+      })
+      const result = await this.runProcess(
+        buildVideoRenderCommand(
+          this.binary('ffmpeg'),
+          this.previewProject(project),
+          temporaryOutput,
+          { name: 'mpeg4', args: ['-q:v', '5'] },
+        ),
+        { signal },
+      )
+      if (result.exitCode !== 0) throw new Error(result.stderr.trim() || `ffmpeg exited ${result.exitCode}`)
+      if (signal.aborted) throw new Error('预览已取消')
+      await this.saveTask({
+        ...task,
+        status: 'running',
+        progress: 90,
+        stage: '正在校验预览',
+        result: { ...(task.result ?? {}), temporary_output: temporaryOutput },
+        updated_at: this.iso(),
+      })
+      const validated = await this.validateVideoOutput(temporaryOutput)
+      await this.saveTask({
+        ...task,
+        status: 'committing',
+        progress: 95,
+        stage: '正在发布预览',
+        result: {
+          ...(task.result ?? {}),
+          temporary_output: temporaryOutput,
+          content_hash: validated.contentHash,
+        },
+        updated_at: this.iso(),
+      })
+      if (signal.aborted) throw new Error('预览已取消')
+      const parsedResult = videoPreviewTaskResultSchema.parse({
+        ...(task.result ?? {}),
+        temporary_output: temporaryOutput,
+        content_hash: validated.contentHash,
+      })
+      await this.withVideoProjectMutation(project.id, async () => {
+        const latest = await this.getProject(project.id)
+        if (
+          latest.kind !== 'video'
+          || latest.revision !== parsedResult.preview_revision
+          || latest.current_timeline_version_id !== parsedResult.timeline_version_id
+          || latest.preview_task_id !== task.id
+        ) throw new MediaServiceError('视频时间线已更新，本次预览不再发布', 409, 'VIDEO_PREVIEW_STALE')
+        await this.moveFile(temporaryOutput, outputPath)
+        const preview = {
+          timeline_version_id: parsedResult.timeline_version_id,
+          asset_id: parsedResult.asset_id,
+          asset_path: parsedResult.asset_path,
+          content_hash: validated.contentHash,
+          created_at: this.iso(),
+        }
+        const asset: MediaAsset = {
+          id: parsedResult.asset_id,
+          role: 'preview',
+          version_id: parsedResult.timeline_version_id,
+          storage: { kind: 'managed', locator: join(project.id, basename(outputPath)) },
+          mime_type: 'video/mp4',
+          byte_size: validated.byteSize,
+          content_hash: validated.contentHash,
+          created_at: preview.created_at,
+        }
+        await this.saveProject({
+          ...latest,
+          assets: [...latest.assets.filter(candidate => candidate.role !== 'preview'), asset],
+          preview,
+          updated_at: this.iso(),
+        })
+        if (latest.preview && latest.preview.asset_id !== preview.asset_id) {
+          await rm(join(this.assetsDir, project.id, basename(latest.preview.asset_path)), { force: true })
+            .catch(() => undefined)
+        }
+      })
+      await this.saveTask({
+        ...task,
+        status: 'succeeded',
+        progress: 100,
+        stage: '预览已就绪',
+        result: {
+          ...(task.result ?? {}),
+          content_hash: validated.contentHash,
+          temporary_output: undefined,
+        },
+        updated_at: this.iso(),
+      })
+    } catch (error) {
+      const cancelled = signal.aborted
+      const stale = error instanceof MediaServiceError && error.code === 'VIDEO_PREVIEW_STALE'
+      if (!cancelled && !stale) recordMediaFailure('video_preview', error)
+      const failure = mediaSafeError(cancelled
+        ? 'MEDIA_VIDEO_PREVIEW_CANCELLED'
+        : stale
+          ? 'MEDIA_STATE_CONFLICT'
+          : 'MEDIA_VIDEO_PREVIEW_FAILED')
+      await this.saveTask({
+        ...task,
+        status: cancelled || stale ? 'cancelled' : 'failed',
+        progress: 0,
+        stage: cancelled ? '已取消' : stale ? '预览已过期' : '预览生成失败',
+        error: failure.message,
+        error_code: failure.code,
+        updated_at: this.iso(),
+      }).catch(() => undefined)
+    } finally {
+      await rm(temporaryOutput, { force: true }).catch(() => undefined)
+      this.activeVideoPreviews.delete(task.id)
+    }
+  }
+
   async renderVideo(projectId: string, raw: RenderVideoInput): Promise<MediaTask> {
     return await this.withVideoRenderAdmission(() => (
       this.withVideoProjectMutation(projectId, () => this.renderVideoSerial(projectId, raw))
@@ -3345,6 +4066,12 @@ export class MediaProjectService {
       const existing = project.task_id ? await this.getTask(project.task_id, false).catch(() => null) : null
       if (existing && ['queued', 'running', 'committing'].includes(existing.status)) return existing
       throw new MediaServiceError('导出状态异常，请刷新后重试', 409, 'RENDER_STATE_CONFLICT')
+    }
+    if (project.preview_task_id) {
+      const previewTask = await this.getTask(project.preview_task_id, false).catch(() => null)
+      if (previewTask?.kind === 'video.preview' && ['queued', 'running', 'committing'].includes(previewTask.status)) {
+        throw new MediaServiceError('请先等待视频预览完成或取消预览', 409, 'VIDEO_PREVIEW_BUSY')
+      }
     }
     if (project.revision !== input.base_revision) throw new MediaServiceError('视频项目已更新，请刷新后再导出', 409, 'REVISION_CONFLICT')
     const timelineVersionId = input.timeline_version_id ?? project.current_timeline_version_id
@@ -3588,6 +4315,13 @@ export class MediaProjectService {
       await active.completion
       return await this.getTask(task.id, false)
     }
+    if (task.kind === 'video.preview' && ['queued', 'running', 'committing'].includes(task.status)) {
+      const active = this.activeVideoPreviews.get(task.id)
+      if (!active) throw new MediaServiceError('当前任务不能取消', 409, 'TASK_NOT_CANCELLABLE')
+      active.controller.abort(new Error('video preview cancelled'))
+      await active.completion
+      return await this.getTask(task.id, false)
+    }
     if (task.kind !== 'video.render' || !['queued', 'running'].includes(task.status)) {
       throw new MediaServiceError('当前任务不能取消', 409, 'TASK_NOT_CANCELLABLE')
     }
@@ -3630,19 +4364,21 @@ export class MediaProjectService {
     if (task.status !== 'queued' || !task.remote_task_id) {
       throw new MediaServiceError('生图任务已经开始或提交结果尚未确认，不能安全取消', 409, 'TASK_NOT_CANCELLABLE')
     }
-    if (!qfGatewayConfigured()) {
+    if (!productGatewayConfigured()) {
       throw new MediaServiceError(mediaSafeError('MEDIA_IMAGE_CANCEL_UNKNOWN').message, 503, 'GATEWAY_NOT_CONFIGURED')
     }
+    const gateway = productGatewayTarget()
+    if (!gateway) throw new MediaServiceError(mediaSafeError('MEDIA_IMAGE_CANCEL_UNKNOWN').message, 503, 'GATEWAY_NOT_CONFIGURED')
     const headers: Record<string, string> = {
-      Authorization: `Bearer ${getQfGatewayToken()}`,
+      Authorization: `Bearer ${gateway.token}`,
       [PROVIDER_GATEWAY_PROTOCOL_HEADER]: PROVIDER_GATEWAY_PROTOCOL.headerValue,
     }
-    const installationId = getInstallationId()
-    if (installationId) headers['X-QF-Client-ID'] = installationId
+    const installationId = productInstallationId()
+    if (installationId) headers['X-BB-Installation-ID'] = installationId
     let response: Response
     try {
       response = await this.fetchImpl(
-        `${getQfGatewayUrl().replace(/\/+$/, '')}/v1/images/tasks/${encodeURIComponent(task.remote_task_id)}/cancel`,
+        `${gateway.baseUrl}/v1/images/tasks/${encodeURIComponent(task.remote_task_id)}/cancel`,
         { method: 'POST', headers },
       )
     } catch (error) {
@@ -3696,7 +4432,12 @@ export class MediaProjectService {
     const names = await readdir(this.deletionsDir)
     const receipts = await Promise.all(names.filter(name => name.endsWith('.json')).map(async name => {
       try {
-        return mediaDeletionReceiptSchema.parse(JSON.parse(await readFile(join(this.deletionsDir, name), 'utf8')))
+        const filePath = join(this.deletionsDir, name)
+        const raw = JSON.parse(await readFile(filePath, 'utf8')) as unknown
+        const migrated = migrateLegacyMediaOwnerRecord(raw)
+        const receipt = mediaDeletionReceiptSchema.parse(migrated.value)
+        if (migrated.migrated) await this.writeJson(filePath, receipt)
+        return receipt
       } catch (error) {
         recordMediaFailure('read_deletion_receipt', error)
         return null
@@ -3723,6 +4464,7 @@ export class MediaProjectService {
     for (const taskId of receipt.task_ids) {
       await this.moveIfPresent(this.taskPath(taskId), join(trash, 'tasks', `${taskId}.json`))
     }
+    await this.moveIfPresent(this.eventJournalPath(receipt.project_id), join(trash, 'events.json'))
     await this.moveIfPresent(join(this.assetsDir, receipt.project_id), join(trash, 'assets'))
     const deleted = mediaDeletionReceiptSchema.parse({ ...receipt, status: 'deleted' })
     await this.writeJson(this.deletionPath(deleted.deletion_id), deleted)
@@ -3748,7 +4490,7 @@ export class MediaProjectService {
 
     return await this.withProjectWriteLock(projectId, async () => {
       const current = await readFile(this.projectPath(projectId), 'utf8')
-        .then(value => mediaProjectSchema.parse(JSON.parse(value)))
+        .then(value => mediaProjectSchema.parse(migrateLegacyMediaOwnerRecord(JSON.parse(value)).value))
         .catch(async error => {
           if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
           const pending = await this.latestDeletion(projectId, ['pending', 'deleted'])
@@ -3756,19 +4498,25 @@ export class MediaProjectService {
           throw new MediaServiceError('找不到媒体项目', 404, 'PROJECT_NOT_FOUND')
         })
       if ('deletion_id' in current) return current
-      if (current.task_id) {
-        const task = await readFile(this.taskPath(current.task_id), 'utf8')
-          .then(value => mediaTaskSchema.parse(JSON.parse(value)))
+      const activeTaskIds = [
+        current.task_id,
+        current.kind === 'video' ? current.preview_task_id : undefined,
+      ].filter((taskId): taskId is string => Boolean(taskId))
+      for (const taskId of activeTaskIds) {
+        const task = await readFile(this.taskPath(taskId), 'utf8')
+          .then(value => mediaTaskSchema.parse(migrateLegacyMediaOwnerRecord(JSON.parse(value)).value))
           .catch(() => null)
         if (task && ['queued', 'running', 'committing'].includes(task.status)) {
-          throw new MediaServiceError('请先等待当前任务完成或取消导出', 409, 'TASK_IN_PROGRESS')
+          throw new MediaServiceError('请先等待当前媒体任务完成或取消', 409, 'TASK_IN_PROGRESS')
         }
       }
       const taskNames = await readdir(this.tasksDir)
       const taskIds: string[] = []
       for (const name of taskNames.filter(name => name.endsWith('.json'))) {
         try {
-          const task = mediaTaskSchema.parse(JSON.parse(await readFile(join(this.tasksDir, name), 'utf8')))
+          const task = mediaTaskSchema.parse(migrateLegacyMediaOwnerRecord(
+            JSON.parse(await readFile(join(this.tasksDir, name), 'utf8')),
+          ).value)
           if (task.project_id === projectId) taskIds.push(task.id)
         } catch {
           // A corrupt unrelated task must not block an accounted project deletion.
@@ -3814,6 +4562,7 @@ export class MediaProjectService {
       for (const taskId of restoring.task_ids) {
         await this.moveIfPresent(join(trash, 'tasks', `${taskId}.json`), this.taskPath(taskId))
       }
+      await this.moveIfPresent(join(trash, 'events.json'), this.eventJournalPath(projectId))
       // Publish the project last so readers never observe a partially restored owner.
       await this.moveIfPresent(join(trash, 'project.json'), this.projectPath(projectId))
       if (!(await stat(this.projectPath(projectId)).then(() => true).catch(() => false))) {
@@ -3835,7 +4584,7 @@ export class MediaProjectService {
       throw error
     })
     if (raw === null) return
-    const project = mediaProjectSchema.parse(JSON.parse(raw))
+    const project = mediaProjectSchema.parse(migrateLegacyMediaOwnerRecord(JSON.parse(raw)).value)
     for (const asset of project.assets) {
       if (asset.storage.kind === 'cas' && /^sha256\/[a-f0-9]{64}$/.test(asset.storage.locator)) {
         references.add(asset.storage.locator.slice('sha256/'.length))

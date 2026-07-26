@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Validate only non-secret 1000-window qfgw capacity fields in a systemd EnvironmentFile.
+# Validate only non-secret 1000-window billiardbuddy-gateway capacity fields in a systemd EnvironmentFile.
 # Never source the file: it also contains app tokens and provider credentials.
 set -euo pipefail
 

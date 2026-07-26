@@ -10,6 +10,7 @@ import { useUIStore } from '../stores/uiStore'
 import type { McpServerRecord, McpUpsertPayload, McpWritableScope } from '../types/mcp'
 import { useCurrentProductTaskContext } from '../product/currentProductTaskContext'
 import { useProductTaskStore } from '../product/stores/productTaskStore'
+import { getDesktopHost } from '../lib/desktopHost'
 
 type View =
   | { type: 'list' }
@@ -42,6 +43,7 @@ type McpDraft = {
   headersHelper: string
   oauthClientId: string
   oauthCallbackPort: string
+  oauthEnabled: boolean
 }
 
 const WRITABLE_SCOPES: McpWritableScope[] = ['local', 'project', 'user']
@@ -98,6 +100,7 @@ function createDraft(server?: McpServerRecord, defaultProjectPath = ''): McpDraf
     headersHelper: '',
     oauthClientId: '',
     oauthCallbackPort: '',
+    oauthEnabled: false,
   }
 }
 
@@ -137,7 +140,7 @@ function buildPayload(draft: McpDraft): McpUpsertPayload {
       url: draft.url.trim(),
       headers: rowsToRecord(draft.headers),
       ...(draft.headersHelper.trim() ? { headersHelper: draft.headersHelper.trim() } : {}),
-      ...(oauthClientId || validCallbackPort
+      ...(draft.oauthEnabled || oauthClientId || validCallbackPort
         ? {
             oauth: {
               ...(oauthClientId ? { clientId: oauthClientId } : {}),
@@ -168,8 +171,6 @@ function scopeTranslationKey(server: McpServerRecord): TranslationKey {
       return 'settings.mcp.scope.managed'
     case 'enterprise':
       return 'settings.mcp.scope.enterprise'
-    case 'claudeai':
-      return 'settings.mcp.scope.claudeai'
     default:
       return 'settings.mcp.scope.dynamic'
   }
@@ -374,6 +375,8 @@ export function McpSettings() {
     deleteServer,
     toggleServer,
     reconnectServer,
+    authorizeServer,
+    authorizationStatus,
     refreshServerStatus,
     selectServer,
   } = useMcpStore()
@@ -478,7 +481,7 @@ export function McpSettings() {
         type: taskSync?.applied === false ? 'warning' : 'success',
         message: taskSync?.applied === false
           ? t(
-              taskSync.reason === 'not_running'
+              taskSync.reason === 'next_turn'
                 ? 'settings.mcp.toast.taskSyncNextRun'
                 : 'settings.mcp.toast.taskSyncFailed',
               { name: server.name },
@@ -531,6 +534,31 @@ export function McpSettings() {
     } finally {
       setBusyServerKey(null)
     }
+  }
+
+  const handleAuthorize = async (server: McpServerRecord) => {
+    const key = getServerIdentityKey(server)
+    const cwd = resolveOperationCwd(server)
+    setBusyServerKey(key)
+    try {
+      const started = await authorizeServer(server, cwd)
+      if (!started.connected) {
+        if (!started.flowId || !started.authorizationUrl || !started.expiresAt) throw new Error('MCP_OAUTH_FLOW_INVALID')
+        await getDesktopHost().shell.open(started.authorizationUrl)
+        let status = await authorizationStatus(server, started.flowId, cwd)
+        while (status.status === 'pending' && Date.now() < started.expiresAt) {
+          await new Promise(resolve => window.setTimeout(resolve, 1_000))
+          status = await authorizationStatus(server, started.flowId, cwd)
+        }
+        if (status.status !== 'connected') throw new Error('MCP_OAUTH_FAILED')
+      }
+      const updated = await reconnectServer(server, cwd)
+      if (updated.status !== 'connected') throw new Error('MCP_OAUTH_FAILED')
+      setView((current) => current.type === 'list' ? current : { ...current, server: updated } as View)
+      addToast({ type: 'success', message: t('settings.mcp.toast.authorized', { name: server.name }) })
+    } catch {
+      addToast({ type: 'error', message: t('settings.mcp.toast.authorizationFailed') })
+    } finally { setBusyServerKey(null) }
   }
 
   const confirmDelete = async () => {
@@ -635,7 +663,12 @@ export function McpSettings() {
               <p className="mt-3 max-w-2xl text-base leading-7 text-[var(--color-text-secondary)]">{t('settings.mcp.detailsHint')}</p>
               <div className="mt-4"><StatusBadge server={server} /></div>
             </div>
-            {server.canReconnect ? (
+            {server.status === 'needs-auth' && server.canAuthorize ? (
+              <Button variant="secondary" onClick={() => void handleAuthorize(server)} loading={busyServerKey === getServerIdentityKey(server)}>
+                <span className="material-symbols-outlined text-[16px]">login</span>
+                {t('settings.mcp.form.authorize')}
+              </Button>
+            ) : server.canReconnect ? (
               <Button variant="secondary" onClick={() => void handleReconnect(server)} loading={busyServerKey === getServerIdentityKey(server)}>
                 <span className="material-symbols-outlined text-[16px]">sync</span>
                 {t('settings.mcp.form.reconnect')}
@@ -672,7 +705,12 @@ export function McpSettings() {
                 <p className="mt-3 max-w-3xl text-sm leading-6 text-[var(--color-text-tertiary)]">{t('settings.mcp.privateConfigHint')}</p>
               ) : null}
             </div>
-            {targetServer?.canReconnect ? (
+            {targetServer?.status === 'needs-auth' && targetServer.canAuthorize ? (
+              <Button variant="secondary" onClick={() => void handleAuthorize(targetServer)} loading={busyServerKey === getServerIdentityKey(targetServer)}>
+                <span className="material-symbols-outlined text-[16px]">login</span>
+                {t('settings.mcp.form.authorize')}
+              </Button>
+            ) : targetServer?.canReconnect ? (
               <Button variant="secondary" onClick={() => void handleReconnect(targetServer)} loading={busyServerKey === getServerIdentityKey(targetServer)}>
                 <span className="material-symbols-outlined text-[16px]">sync</span>
                 {t('settings.mcp.form.reconnect')}
@@ -752,6 +790,10 @@ export function McpSettings() {
                 </section>
                 <KeyValueRows label={t('settings.mcp.form.headers')} rows={draft.headers} addLabel={t('settings.mcp.form.addHeader')} onChange={(id, field, value) => updateKeyValueRows('headers', id, field, value)} onAdd={() => addKeyValueRow('headers')} onRemove={(id) => removeKeyValueRow('headers', id)} />
                 <section className="rounded-[var(--radius-xl)] border border-[var(--color-border)] bg-[var(--color-surface)] p-5">
+                  <label className="mb-4 flex items-center gap-3 text-sm font-medium text-[var(--color-text-primary)]">
+                    <input type="checkbox" checked={draft.oauthEnabled} onChange={(event) => setDraftField('oauthEnabled', event.target.checked)} />
+                    {t('settings.mcp.form.oauthEnabled')}
+                  </label>
                   <div className="grid gap-4 md:grid-cols-2">
                     <Input label={t('settings.mcp.form.oauthClientId')} value={draft.oauthClientId} onChange={(event) => setDraftField('oauthClientId', event.target.value)} placeholder={t('settings.mcp.form.oauthClientIdPlaceholder')} />
                     <Input label={t('settings.mcp.form.oauthCallbackPort')} value={draft.oauthCallbackPort} onChange={(event) => setDraftField('oauthCallbackPort', event.target.value)} placeholder={t('settings.mcp.form.oauthCallbackPortPlaceholder')} />

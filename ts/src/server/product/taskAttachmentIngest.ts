@@ -5,6 +5,8 @@ import type { ProductTaskAttachmentSummary } from '../../../shared/product/taskE
 
 const MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024
 const MAX_DATA_URL_LENGTH = Math.ceil((MAX_ATTACHMENT_BYTES * 4) / 3) + 256
+export const MAX_VIDEO_ATTACHMENT_BYTES = 32 * 1024 * 1024
+export const MAX_MULTIPART_ATTACHMENT_BYTES = MAX_VIDEO_ATTACHMENT_BYTES + 1024 * 1024
 
 const EXTENSION_BY_MIME_TYPE: Readonly<Record<string, string>> = {
   'image/jpeg': '.jpg',
@@ -18,6 +20,10 @@ const EXTENSION_BY_MIME_TYPE: Readonly<Record<string, string>> = {
   'text/csv': '.csv',
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document': '.docx',
   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': '.xlsx',
+  'video/mp4': '.mp4',
+  'video/quicktime': '.mov',
+  'video/x-m4v': '.m4v',
+  'video/webm': '.webm',
 }
 
 export type VerifiedProductAttachment = {
@@ -43,6 +49,10 @@ function matchesMediaType(bytes: Buffer, mediaType: string): boolean {
   if (mediaType === 'image/gif') return ['GIF87a', 'GIF89a'].includes(bytes.subarray(0, 6).toString('ascii'))
   if (mediaType === 'image/webp') return bytes.subarray(0, 4).toString('ascii') === 'RIFF' && bytes.subarray(8, 12).toString('ascii') === 'WEBP'
   if (mediaType === 'application/pdf') return bytes.subarray(0, 5).toString('ascii') === '%PDF-'
+  if (['video/mp4', 'video/quicktime', 'video/x-m4v'].includes(mediaType)) {
+    return bytes.length >= 12 && bytes.subarray(4, 8).toString('ascii') === 'ftyp'
+  }
+  if (mediaType === 'video/webm') return bytes.length >= 4 && bytes.subarray(0, 4).equals(Buffer.from([0x1a, 0x45, 0xdf, 0xa3]))
   if (mediaType === 'application/json') {
     const text = validUtf8(bytes)
     if (text === null) return false
@@ -79,7 +89,22 @@ export function verifyProductAttachmentInput(input: {
   const match = /^data:([a-z0-9][a-z0-9!#$&^_.+-]*\/[a-z0-9][a-z0-9!#$&^_.+-]*);base64,([A-Za-z0-9+/]+={0,2})$/i.exec(input.data)
   if (!match || match[1]!.toLowerCase() !== mediaType || match[2]!.length % 4 !== 0) return null
   const bytes = Buffer.from(match[2]!, 'base64')
-  if (bytes.length < 1 || bytes.length > MAX_ATTACHMENT_BYTES || !matchesMediaType(bytes, mediaType)) return null
+  if (bytes.length > MAX_ATTACHMENT_BYTES) return null
+  return verifyProductAttachmentBytes({ ...input, bytes })
+}
+
+export function verifyProductAttachmentBytes(input: {
+  type: 'file' | 'image'
+  name: string
+  mime_type: string
+  bytes: Buffer
+}): VerifiedProductAttachment | null {
+  const mediaType = input.mime_type.trim().toLowerCase()
+  const extension = EXTENSION_BY_MIME_TYPE[mediaType]
+  const maxBytes = mediaType.startsWith('video/') ? MAX_VIDEO_ATTACHMENT_BYTES : MAX_ATTACHMENT_BYTES
+  if (!extension || (input.type === 'image') !== mediaType.startsWith('image/')) return null
+  const bytes = input.bytes
+  if (bytes.length < 1 || bytes.length > maxBytes || !matchesMediaType(bytes, mediaType)) return null
   const safeName = safeAttachmentName(input.name, mediaType)
   if (!safeName) return null
   const contentHash = createHash('sha256').update(bytes).digest('hex')
@@ -93,12 +118,17 @@ export function productAttachmentStorageRoot(storagePath: string): string {
   return path.join(path.dirname(storagePath), 'product-task-attachments')
 }
 
+function attachmentDirectory(root: string, attachmentId: string): string {
+  if (!/^[A-Za-z0-9_-]{1,160}$/.test(attachmentId)) throw new Error('ATTACHMENT_ID_INVALID')
+  return path.join(root, attachmentId)
+}
+
 export async function storeProductAttachmentCopy(
   root: string,
   attachmentId: string,
   attachment: VerifiedProductAttachment,
 ): Promise<string> {
-  const directory = path.join(root, attachmentId)
+  const directory = attachmentDirectory(root, attachmentId)
   const target = path.join(directory, attachment.safeName)
   const temporary = path.join(directory, `.${randomUUID()}.tmp`)
   await fs.mkdir(directory, { recursive: true, mode: 0o700 })
@@ -117,13 +147,19 @@ export async function resolveProductAttachmentCopy(
   expectedHash: string,
   expectedBytes: number,
 ): Promise<string> {
-  const directory = path.join(root, attachmentId)
+  const directory = attachmentDirectory(root, attachmentId)
   const names = (await fs.readdir(directory)).filter(name => !name.startsWith('.'))
   if (names.length !== 1) throw new Error('ATTACHMENT_COPY_INVALID')
   const target = path.join(directory, names[0]!)
   const bytes = await fs.readFile(target)
   if (bytes.length !== expectedBytes || createHash('sha256').update(bytes).digest('hex') !== expectedHash) throw new Error('ATTACHMENT_COPY_INVALID')
   return target
+}
+
+export async function purgeProductAttachmentCopies(root: string, attachmentIds: readonly string[]): Promise<void> {
+  for (const attachmentId of attachmentIds) {
+    await fs.rm(attachmentDirectory(root, attachmentId), { recursive: true, force: true })
+  }
 }
 
 export function productAttachmentSummary(filePath: string, mediaType: string): ProductTaskAttachmentSummary {

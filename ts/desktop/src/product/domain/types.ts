@@ -12,7 +12,7 @@ import type {
   ProductTaskOperationEnvelope,
   ProductTaskOperationReceipt,
 } from '../../../../shared/product/authority'
-import type { ProductTaskThread } from '../../../../shared/product/taskEvents'
+import type { ProductTaskQueuedInput, ProductTaskThread } from '../../../../shared/product/taskEvents'
 import type {
   ProductTaskReviewCommentMutation,
   ProductTaskReviewComments,
@@ -22,11 +22,6 @@ import type {
   ProductTaskReviewTree,
   WorkspaceFileRef,
 } from '../../../../shared/product/taskReview'
-import type {
-  ProductTaskMediaAttachableList,
-  ProductTaskMediaList,
-  ProductTaskMediaProject,
-} from '../../../../shared/product/taskMedia'
 import type {
   CreateProductScheduledTaskInput,
   ProductScheduledTask,
@@ -66,16 +61,14 @@ export type {
   ProductTaskRunActivity,
   ProductTaskRunSnapshot,
   ProductTaskAttachmentSummary,
-  ProductTaskMediaDraft,
   ProductTaskActionApproval,
   ProductTaskApprovalKind,
-  ProductTaskComputerUseApp,
-  ProductTaskComputerUseApproval,
-  ProductTaskComputerUseCapability,
+  ProductTaskContextCompaction,
   ProductTaskEvent,
   ProductTaskQuestion,
   ProductTaskQuestionOption,
   ProductTaskRunState,
+  ProductTaskQueuedInput,
   ProductTaskSafeErrorCode,
   ProductTaskThread,
   ProductTaskThreadEntry,
@@ -94,14 +87,6 @@ export type {
   ProductTaskReviewTreeEntry,
   WorkspaceFileRef,
 } from '../../../../shared/product/taskReview'
-export type {
-  ProductTaskMediaAsset,
-  ProductTaskMediaAttachableList,
-  ProductTaskMediaAttachableProject,
-  ProductTaskMediaList,
-  ProductTaskMediaProject,
-  ProductTaskMediaTask,
-} from '../../../../shared/product/taskMedia'
 export type {
   CreateProductScheduledTaskInput,
   ProductScheduledTask,
@@ -262,6 +247,8 @@ export type ProductTaskApi = {
   closeSideTask: (taskId: string, sideTaskId: string, input: MutationEnvelope) => Promise<ProductTaskActionResponse>
   getOperation: (taskId: string, operationId: string) => Promise<{ receipt: OperationReceipt; authority: AuthoritySnapshot }>
   getThread: (taskId: string) => Promise<ProductTaskThreadResponse>
+  getQueue: (taskId: string) => Promise<{ items: ProductTaskQueuedInput[] }>
+  resumeQueue: (taskId: string, input: { expected_task_revision: number; client_operation_id: string }) => Promise<{ outcome: 'accepted' | 'duplicate' | 'conflict' | 'rejected'; task_revision: number }>
   getReviewStatus: (taskId: string) => Promise<ProductTaskReviewStatus>
   getReviewTree: (taskId: string, path?: string) => Promise<ProductTaskReviewTree>
   getReviewFile: (taskId: string, path: string) => Promise<ProductTaskReviewFile>
@@ -274,9 +261,6 @@ export type ProductTaskApi = {
     body: string
     client_operation_id: string
   }) => Promise<ProductTaskReviewCommentMutation>
-  getMedia: (taskId: string) => Promise<ProductTaskMediaList>
-  getAttachableMedia: (taskId: string) => Promise<ProductTaskMediaAttachableList>
-  attachMediaProject: (taskId: string, projectId: string) => Promise<{ project: ProductTaskMediaProject }>
 }
 
 export type ProductSideTaskApi = {
@@ -295,6 +279,7 @@ export type ProductScheduledTaskApi = {
   update: (taskId: string, input: UpdateProductScheduledTaskInput) => Promise<ProductScheduledTaskResponse>
   delete: (taskId: string) => Promise<{ ok: true }>
   run: (taskId: string) => Promise<{ ok: true }>
+  cancelRun: (taskId: string, runId: string) => Promise<{ ok: true }>
   getRecentRuns: (limit?: number) => Promise<ProductScheduledTaskRunsResponse>
   getTaskRuns: (taskId: string) => Promise<ProductScheduledTaskRunsResponse>
 }

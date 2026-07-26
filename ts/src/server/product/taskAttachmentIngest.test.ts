@@ -80,4 +80,31 @@ describe('ProductTask attachment ingest', () => {
     const authority = await new ProductTaskAuthorityRepository(path.join(root, 'product-task-authority.v1.json')).read()
     expect(authority.task_attachments).toEqual({})
   })
+
+  test('accepts a bounded browser-selected video as a managed Turn attachment', async () => {
+    const { service, draftId } = await fixture()
+    const mp4 = Buffer.concat([Buffer.from([0, 0, 0, 20]), Buffer.from('ftypisom'), Buffer.alloc(24, 1)])
+    const ingested = await service.ingestAttachment({
+      owner: { kind: 'composer_draft', id: draftId },
+      type: 'file',
+      name: '../训练片段.exe',
+      mime_type: 'video/mp4',
+      bytes: mp4,
+      client_operation_id: 'video-ingest',
+    })
+
+    expect(ingested).toMatchObject({ outcome: 'accepted', attachment_revision: 2 })
+    const submitted = await service.submitTaskRun('task', {
+      expected_task_revision: 1,
+      expected_lineage_revision: 0,
+      draft_id: draftId,
+      expected_draft_revision: 0,
+      client_operation_id: 'video-submit',
+      text: '分析视频',
+      attachment_ids: [ingested.attachment_id],
+    })
+    const identity = await service.readTaskRunDispatchIdentity(submitted.result!.run_id, 1)
+    expect(path.basename(identity.initial_attachments![0]!)).toBe('训练片段.mp4')
+    expect(await fs.readFile(identity.initial_attachments![0]!)).toEqual(mp4)
+  })
 })

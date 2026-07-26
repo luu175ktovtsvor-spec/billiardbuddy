@@ -1,5 +1,4 @@
-import { SettingsService } from './settingsService.js'
-import { getProxyFetchOptions } from '../../utils/proxy.js'
+import { ProductSettingsRepository } from '../product/productSettingsRepository.js'
 
 export type NetworkProxyMode = 'direct' | 'system' | 'manual'
 
@@ -11,19 +10,7 @@ export type NetworkSettings = {
   }
 }
 
-// aiRequestTimeoutMs is the user-facing "wait for the first reply" budget. It
-// drives two CLI knobs in lockstep (see conversationService.buildChildEnv):
-//   1. API_TIMEOUT_MS — the SDK client timeout, which on a streaming request
-//      only covers connection → response headers (the SDK clears it the moment
-//      headers arrive; the streaming body is not covered).
-//   2. CLAUDE_STREAM_FIRST_TOKEN_TIMEOUT_MS — the CLI's first-token watchdog,
-//      which covers the gap between response headers and the FIRST SSE chunk.
-// Together they make the configured timeout span the whole pre-first-token
-// window: third-party gateways and local models (sensenova, bailian, zhipu,
-// ollama, llama.cpp, ...) often send nothing — not headers, not an SSE ping —
-// for minutes while prefilling a large context (#766, #826). Once tokens start
-// flowing the CLI hands off to the shorter mid-stream idle watchdog. The
-// default matches the SDK's own 600s.
+// User-facing budget from request start until the first streamed response.
 export const DEFAULT_AI_REQUEST_TIMEOUT_MS = 600_000
 export const MIN_AI_REQUEST_TIMEOUT_MS = 30_000
 export const MAX_AI_REQUEST_TIMEOUT_MS = 1_800_000
@@ -135,22 +122,34 @@ export function buildNetworkEnvironment(
 export function getNetworkProxyFetchOptions(
   settings: NetworkSettings,
   targetUrl: string | URL,
-): ReturnType<typeof getProxyFetchOptions> {
+): { proxy?: string } {
   const noProxy = mergeLoopbackNoProxy(process.env.no_proxy || process.env.NO_PROXY)
-  if (settings.proxy.mode === 'system') {
-    return getProxyFetchOptions({ targetUrl, noProxy })
-  }
+  const proxyUrl = settings.proxy.mode === 'manual'
+    ? getManualNetworkProxyUrl(settings)
+    : settings.proxy.mode === 'system'
+      ? process.env.https_proxy || process.env.HTTPS_PROXY || process.env.http_proxy || process.env.HTTP_PROXY
+      : undefined
+  return proxyUrl && !shouldBypassProductProxy(targetUrl, noProxy) ? { proxy: proxyUrl } : {}
+}
 
-  return getProxyFetchOptions({
-    proxyUrl: settings.proxy.mode === 'manual'
-      ? getManualNetworkProxyUrl(settings) ?? null
-      : null,
-    targetUrl,
-    noProxy,
+function shouldBypassProductProxy(targetUrl: string | URL, noProxy: string): boolean {
+  let url: URL
+  try { url = targetUrl instanceof URL ? targetUrl : new URL(targetUrl) } catch { return false }
+  const hostname = url.hostname.replace(/^\[|\]$/g, '').toLowerCase()
+  const port = url.port || (url.protocol === 'https:' ? '443' : '80')
+  return noProxy.split(/[,\s]+/).filter(Boolean).some(raw => {
+    const entry = raw.trim().toLowerCase()
+    if (entry === '*') return true
+    const bracketed = entry.match(/^\[(.+)](?::(\d+))?$/)
+    if (bracketed) return hostname === bracketed[1] && (!bracketed[2] || bracketed[2] === port)
+    const portMatch = entry.match(/^([^:]+):(\d+)$/)
+    if (portMatch) return hostname === portMatch[1] && port === portMatch[2]
+    const normalized = entry.startsWith('.') ? entry.slice(1) : entry
+    return hostname === normalized || (entry.startsWith('.') && hostname.endsWith(entry))
   })
 }
 
 export async function loadNetworkSettings(): Promise<NetworkSettings> {
-  const settings = await new SettingsService().getUserSettings()
+  const settings = await new ProductSettingsRepository().get()
   return normalizeNetworkSettings(settings)
 }

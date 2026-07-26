@@ -35,4 +35,17 @@ describe('productSideTaskStore authority mutations', () => {
    await useProductSideTaskStore.getState().closeSideTask(parent, open.id)
    expect(useProductSideTaskStore.getState().sideTasksByParentTaskId[parent]?.[0]?.status).toBe('open')
  })
+ it('forgets every side-task projection and pending intent for a deleted parent', () => {
+   useProductSideTaskStore.setState({
+     sideTasksByParentTaskId: { [parent]: [side()] },
+     loadingByParentTaskId: { [parent]: true },
+     panelByParentTaskId: { [parent]: { isOpen: true, selectedSideTaskId: 'side-1' } },
+     pending: { [`${parent}:side-1:close`]: { expected_revision: 1, client_operation_id: 'pending' } },
+     mutations: { [`${parent}:side-1:close`]: true },
+   })
+   useProductSideTaskStore.getState().forgetTask(parent)
+   expect(useProductSideTaskStore.getState()).toMatchObject({
+     sideTasksByParentTaskId: {}, loadingByParentTaskId: {}, panelByParentTaskId: {}, pending: {}, mutations: {},
+   })
+ })
 })

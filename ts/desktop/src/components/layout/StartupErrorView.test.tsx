@@ -13,12 +13,12 @@ describe('safeStartupErrorCode', () => {
 
 describe('StartupErrorView', () => {
   it('does not render or copy raw startup stderr and paths', () => {
-    const privateOutput = 'startup failed at /Users/test/.claude/runtime with [stderr] gateway rejected token'
+    const privateOutput = 'startup failed at /Users/test/.BilliardBuddy/runtime with [stderr] gateway rejected token'
     render(<StartupErrorView error={privateOutput} />)
 
     expect(screen.getByText('本地服务启动失败')).toBeInTheDocument()
     expect(screen.getByText('错误编号：BB_STARTUP_FAILED')).toBeInTheDocument()
-    expect(document.body.textContent).not.toContain('/Users/test/.claude')
+    expect(document.body.textContent).not.toContain('/Users/test/.BilliardBuddy')
     expect(document.body.textContent).not.toContain('gateway rejected token')
     expect(screen.queryByRole('button', { name: /复制诊断信息/i })).toBeNull()
   })

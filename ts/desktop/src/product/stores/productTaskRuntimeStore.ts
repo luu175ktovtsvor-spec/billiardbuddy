@@ -11,7 +11,7 @@ import {
   type ProductTaskAttachment,
   type ProductTaskSocketLifecycleEvent,
 } from '../api/taskSocket'
-import { parseProductTaskThread } from '../api/taskProtocol'
+import { parseProductTaskQueuedInput, parseProductTaskThread } from '../api/taskProtocol'
 import { useTabStore } from '../../stores/tabStore'
 import { useProductTaskStore } from './productTaskStore'
 import type {
@@ -21,10 +21,11 @@ import type {
   ProductTaskAttachmentSummary,
   ProductTaskActionApproval,
   ProductTaskApprovalKind,
-  ProductTaskComputerUseApproval,
+  ProductTaskContextCompaction,
   ProductTaskEvent,
   ProductTaskQuestion,
   ProductTaskRunState,
+  ProductTaskQueuedInput,
   ProductTaskSafeErrorCode,
   ProductTaskThreadEntry,
 } from '../domain/types'
@@ -39,18 +40,19 @@ export type ProductTaskRuntime = {
   historyStatus: 'idle' | 'loading' | 'ready' | 'error'
   runState: ProductTaskRunState
   entries: ProductTaskThreadEntry[]
+  queuedInputs: ProductTaskQueuedInput[]
   activeActivity: {
     kind: ProductTaskActivityKind
     phase: ProductTaskActivityPhase
     summary: string
   } | null
   runActivities: ProductTaskRunActivity[]
+  contextCompactions: ProductTaskContextCompaction[]
   pendingApproval: {
     requestId: string
     kind: ProductTaskApprovalKind
     action?: ProductTaskActionApproval
     questions?: ProductTaskQuestion[]
-    computerUse?: ProductTaskComputerUseApproval
   } | null
   approvalResponsePending: boolean
   error: {
@@ -77,8 +79,10 @@ const EMPTY_RUNTIME: ProductTaskRuntime = {
   historyStatus: 'idle',
   runState: 'idle',
   entries: [],
+  queuedInputs: [],
   activeActivity: null,
   runActivities: [],
+  contextCompactions: [],
   pendingApproval: null,
   approvalResponsePending: false,
   error: null,
@@ -118,6 +122,8 @@ function createRuntime(): ProductTaskRuntime {
   return {
     ...EMPTY_RUNTIME,
     entries: [],
+    queuedInputs: [],
+    contextCompactions: [],
   }
 }
 
@@ -159,9 +165,6 @@ function mergeThreadSnapshot(
 
 function entrySignature(entry: ProductTaskThreadEntry): string {
   if (entry.type === 'activity') return `activity:${entry.kind}:${entry.phase}`
-  if (entry.type === 'media_draft') {
-    return `media_draft:${entry.draft.projectId}:${entry.draft.kind}:${entry.draft.state}`
-  }
   // The persisted product projection trims visible text; stream deltas retain
   // whitespace while they are arriving, so normalize only for reconciliation.
   return `${entry.type}:${entry.text.trim()}:${entry.type === 'user_text'
@@ -274,6 +277,7 @@ type UpdateTask = (
   update: (runtime: ProductTaskRuntime) => ProductTaskRuntime,
 ) => void
 type RefreshTaskThread = (taskId: string, reason?: ThreadRefreshReason) => Promise<void>
+type RefreshTaskQueue = (taskId: string) => Promise<void>
 
 function liveEntryIds(runtime: ProductTaskRuntime | undefined): Set<string> {
   return new Set(
@@ -310,12 +314,13 @@ type ProductTaskRuntimeStore = {
   tasks: Record<string, ProductTaskRuntime | undefined>
   connectTask: (taskId: string) => Promise<void>
   disconnectTask: (taskId: string) => void
+  forgetTask: (taskId: string) => void
   sendText: (taskId: string, text: string, referenceEntryIds?: string[]) => Promise<boolean>
   sendMessage: (taskId: string, text: string, attachments?: ProductTaskAttachment[], referenceEntryIds?: string[]) => Promise<boolean>
   stopTask: (taskId: string) => void
+  resumeQueue: (taskId: string) => Promise<boolean>
   respondToApproval: (taskId: string, allowed: boolean) => boolean
   respondToQuestions: (taskId: string, answers: string[]) => boolean
-  respondToComputerUseApproval: (taskId: string, allowed: boolean) => boolean
   refreshThread: (taskId: string) => Promise<void>
   handleEvent: (taskId: string, event: ProductTaskEvent) => void
 }
@@ -371,6 +376,22 @@ export const useProductTaskRuntimeStore = create<ProductTaskRuntimeStore>((set, 
     }
   }
 
+  const refreshQueue: RefreshTaskQueue = async (taskId) => {
+    try {
+      const response = await productTasksApi.getQueue(taskId)
+      if (!response || !Array.isArray(response.items)) throw new Error('Invalid product task queue payload')
+      const items = response.items.map(parseProductTaskQueuedInput)
+      if (items.some((item) => item === null)) throw new Error('Invalid product task queue payload')
+      updateTask(taskId, (runtime) => ({
+        ...runtime,
+        queuedInputs: items as ProductTaskQueuedInput[],
+      }))
+    } catch {
+      // The transcript remains usable if a queue snapshot cannot be refreshed.
+      // Live queue events can still reconcile it after the socket connects.
+    }
+  }
+
   const submitMessage = async (
     taskId: string,
     text: string,
@@ -404,7 +425,9 @@ export const useProductTaskRuntimeStore = create<ProductTaskRuntimeStore>((set, 
             type: attachment.type,
             name: attachment.name ?? (attachment.type === 'image' ? '图片附件' : '文件附件'),
             mime_type: attachment.mimeType,
-            data: attachment.data,
+            ...('file' in attachment && attachment.file
+              ? { file: attachment.file }
+              : { data: attachment.data }),
             client_operation_id: `${operationId}:attachment:${index}`,
           })
           attachmentIds.push(ingested.attachment.attachment_id)
@@ -423,8 +446,28 @@ export const useProductTaskRuntimeStore = create<ProductTaskRuntimeStore>((set, 
         void useProductTaskStore.getState().refresh()
         return false
       }
+      const receiptResult = response.receipt.result
 
       updateTask(taskId, (current) => {
+        const queuedResult = 'queue_item_id' in receiptResult
+          ? receiptResult
+          : null
+        if (queuedResult) {
+          const alreadyQueued = current.queuedInputs.some((item) => item.id === queuedResult.queue_item_id)
+          return {
+            ...current,
+            stopRequested: false,
+            recoveryRequired: false,
+            error: null,
+            queuedInputs: alreadyQueued ? current.queuedInputs : [...current.queuedInputs, {
+              id: queuedResult.queue_item_id,
+              text: content,
+              state: 'queued',
+              createdAt: createdAt(),
+              attachmentCount: attachments.length,
+            }],
+          }
+        }
         const duplicate = current.entries.some((entry) => (
           entry.type === 'user_text'
           && entry.id.startsWith('live_')
@@ -460,6 +503,7 @@ export const useProductTaskRuntimeStore = create<ProductTaskRuntimeStore>((set, 
         }
       })
       await useProductTaskStore.getState().refresh()
+      if ('queue_item_id' in receiptResult) void refreshQueue(taskId)
       return true
     } catch {
       void useProductTaskStore.getState().refresh()
@@ -485,7 +529,7 @@ export const useProductTaskRuntimeStore = create<ProductTaskRuntimeStore>((set, 
           },
         ))
       }
-      await refreshThread(taskId, 'initial')
+      await Promise.all([refreshThread(taskId, 'initial'), refreshQueue(taskId)])
     },
 
     disconnectTask: (taskId) => {
@@ -500,6 +544,19 @@ export const useProductTaskRuntimeStore = create<ProductTaskRuntimeStore>((set, 
       }))
     },
 
+    forgetTask: (taskId) => {
+      historyRequestVersions.set(taskId, (historyRequestVersions.get(taskId) ?? 0) + 1)
+      socketUnsubscribers.get(taskId)?.()
+      socketUnsubscribers.delete(taskId)
+      submitRequests.delete(taskId)
+      productTaskSocket.disconnect(taskId)
+      set((state) => {
+        const tasks = { ...state.tasks }
+        delete tasks[taskId]
+        return { tasks }
+      })
+    },
+
     // BB-02C accepts user text only through the durable HTTP submit receipt.
     // A task socket never becomes a second submit transport.
     sendText: (taskId, text, referenceEntryIds) => submitMessage(taskId, text, [], referenceEntryIds),
@@ -507,8 +564,27 @@ export const useProductTaskRuntimeStore = create<ProductTaskRuntimeStore>((set, 
     sendMessage: (taskId, text, attachments, referenceEntryIds) => submitMessage(taskId, text, attachments, referenceEntryIds),
 
     stopTask: (taskId) => {
+      if (!productTaskSocket.send(taskId, { type: 'stop_generation' })) return
       updateTask(taskId, (runtime) => ({ ...runtime, stopRequested: true }))
-      productTaskSocket.send(taskId, { type: 'stop_generation' })
+    },
+
+    resumeQueue: async (taskId) => {
+      const task = useProductTaskStore.getState().index.tasks.find((candidate) => candidate.id === taskId)
+      const runtime = get().tasks[taskId]
+      if (!task || !runtime?.queuedInputs.some((item) => item.state === 'queued') || runtime.runState !== 'idle') return false
+      try {
+        const result = await productTasksApi.resumeQueue(taskId, {
+          expected_task_revision: task.revision ?? 0,
+          client_operation_id: `task-queue-resume-${crypto.randomUUID()}`,
+        })
+        if (result.outcome !== 'accepted' && result.outcome !== 'duplicate') return false
+        updateTask(taskId, (current) => ({ ...current, runState: 'working', error: null, recoveryRequired: false }))
+        await Promise.all([useProductTaskStore.getState().refresh(), refreshQueue(taskId)])
+        return true
+      } catch {
+        void useProductTaskStore.getState().refresh()
+        return false
+      }
     },
 
     respondToApproval: (taskId, allowed) => {
@@ -516,11 +592,11 @@ export const useProductTaskRuntimeStore = create<ProductTaskRuntimeStore>((set, 
       const pending = runtime?.pendingApproval
       if (!pending || pending.kind !== 'action' || runtime?.approvalResponsePending) return false
 
-      productTaskSocket.send(taskId, {
+      if (!productTaskSocket.send(taskId, {
         type: 'permission_response',
         requestId: pending.requestId,
         allowed,
-      })
+      })) return false
       updateTask(taskId, (current) => ({ ...current, approvalResponsePending: true }))
       return true
     },
@@ -539,35 +615,11 @@ export const useProductTaskRuntimeStore = create<ProductTaskRuntimeStore>((set, 
         return false
       }
 
-      productTaskSocket.send(taskId, {
+      if (!productTaskSocket.send(taskId, {
         type: 'ask_user_question_response',
         requestId: pending.requestId,
         answers: answers.map((answer) => answer.trim()),
-      })
-      updateTask(taskId, (current) => ({ ...current, approvalResponsePending: true }))
-      return true
-    },
-
-    respondToComputerUseApproval: (taskId, allowed) => {
-      const runtime = get().tasks[taskId]
-      const pending = runtime?.pendingApproval
-      if (
-        !pending ||
-        pending.kind !== 'computer_use' ||
-        !pending.computerUse ||
-        runtime?.approvalResponsePending
-      ) {
-        return false
-      }
-
-      // The product client chooses only this one-shot allow/deny decision.
-      // The server reconstructs every app grant and requested capability from
-      // the pending Computer Use request.
-      productTaskSocket.send(taskId, {
-        type: 'computer_use_permission_response',
-        requestId: pending.requestId,
-        allowed,
-      })
+      })) return false
       updateTask(taskId, (current) => ({ ...current, approvalResponsePending: true }))
       return true
     },
@@ -595,10 +647,30 @@ export const useProductTaskRuntimeStore = create<ProductTaskRuntimeStore>((set, 
           stopRequested: false,
         }))
         void refreshThread(taskId, 'turn_complete')
+        void refreshQueue(taskId)
         // The task index is product-owned. Refresh it from the server only
         // after a completed turn so task and project ordering follows the
         // Core transcript timestamp instead of renderer-local activity.
         void useProductTaskStore.getState().refresh()
+        return
+      }
+
+      if (event.type === 'run_terminal') {
+        updateTask(taskId, (runtime) => ({
+          ...runtime,
+          runState: 'idle',
+          activeActivity: null,
+          pendingApproval: null,
+          approvalResponsePending: false,
+          streamingEntryId: null,
+          stopRequested: false,
+          recoveryRequired: event.state === 'recovery_required',
+          ...(event.state === 'recovery_required'
+            ? { error: { code: 'task_failed' as const, retryable: false } }
+            : { error: null }),
+        }))
+        void refreshThread(taskId, 'turn_complete')
+        void refreshQueue(taskId)
         return
       }
 
@@ -626,24 +698,29 @@ export const useProductTaskRuntimeStore = create<ProductTaskRuntimeStore>((set, 
 
           case 'user_text': {
             const eventSignature = `${event.text}:${attachmentSignature(event.attachments)}:${(event.referenceEntryIds ?? []).join(',')}`
+            if (event.id && runtime.entries.some(entry => entry.id === event.id)) return runtime
             const alreadyOptimistic = runtime.entries.some((entry) => (
               entry.type === 'user_text' &&
               entry.id.startsWith('live_') &&
               `${entry.text}:${attachmentSignature(entry.attachments)}:${(entry.referenceEntryIds ?? []).join(',')}` === eventSignature
             ))
-            if (alreadyOptimistic) return runtime
+            if (alreadyOptimistic && !event.id) return runtime
+            const persistedEntry: ProductTaskThreadEntry = {
+              id: event.id ?? liveEntryId(taskId, 'replayed-user'),
+              type: 'user_text',
+              text: event.text,
+              createdAt: createdAt(),
+              ...(event.attachments?.length ? { attachments: event.attachments } : {}),
+              ...(event.referenceEntryIds?.length ? { referenceEntryIds: event.referenceEntryIds } : {}),
+            }
             return {
               ...runtime,
               activeActivity: null,
               runActivities: [],
-              entries: [...runtime.entries, {
-                id: liveEntryId(taskId, 'replayed-user'),
-                type: 'user_text',
-                text: event.text,
-                createdAt: createdAt(),
-                ...(event.attachments?.length ? { attachments: event.attachments } : {}),
-                ...(event.referenceEntryIds?.length ? { referenceEntryIds: event.referenceEntryIds } : {}),
-              }],
+              entries: [
+                ...runtime.entries.filter(entry => !(alreadyOptimistic && entry.id.startsWith('live_') && entry.type === 'user_text' && `${entry.text}:${attachmentSignature(entry.attachments)}:${(entry.referenceEntryIds ?? []).join(',')}` === eventSignature)),
+                persistedEntry,
+              ],
             }
           }
 
@@ -656,6 +733,18 @@ export const useProductTaskRuntimeStore = create<ProductTaskRuntimeStore>((set, 
           case 'assistant_text_delta':
             return runtime.stopRequested ? runtime : appendOrReplaceStreamingText(runtime, taskId, event.text)
 
+          case 'assistant_text': {
+            const persisted: ProductTaskThreadEntry = {
+              id: event.id,
+              type: 'assistant_text',
+              text: event.text,
+              createdAt: createdAt(),
+            }
+            const entries = runtime.entries
+              .filter(entry => entry.id !== event.id && !(entry.id.startsWith('live_') && entry.type === 'assistant_text' && entry.text.trim() === event.text.trim()))
+            return { ...runtime, entries: [...entries, persisted], streamingEntryId: null }
+          }
+
           case 'status':
             return {
               ...runtime,
@@ -666,15 +755,28 @@ export const useProductTaskRuntimeStore = create<ProductTaskRuntimeStore>((set, 
                 : { pendingApproval: null, approvalResponsePending: false }),
             }
 
+          case 'queue_updated': {
+            const withoutItem = runtime.queuedInputs.filter((item) => item.id !== event.item.id)
+            return {
+              ...runtime,
+              queuedInputs: event.item.state === 'queued' || event.item.state === 'failed'
+                ? [...withoutItem, event.item].sort((left, right) => Date.parse(left.createdAt) - Date.parse(right.createdAt) || left.id.localeCompare(right.id))
+                : withoutItem,
+            }
+          }
+
+          case 'context_compaction': {
+            const previous = runtime.contextCompactions.filter(item => item.id !== event.item.id)
+            return { ...runtime, contextCompactions: [...previous, event.item].slice(-64) }
+          }
+
           case 'activity': {
             const runActivities = upsertRunActivity(runtime.runActivities, event)
             return {
               ...runtime,
-              activeActivity: {
-                kind: event.kind,
-                phase: event.phase,
-                summary: event.summary,
-              },
+              activeActivity: event.phase === 'started' || event.phase === 'running'
+                ? { kind: event.kind, phase: event.phase, summary: event.summary }
+                : activeActivityFromRunActivities(runActivities),
               runActivities,
             }
           }
@@ -688,7 +790,6 @@ export const useProductTaskRuntimeStore = create<ProductTaskRuntimeStore>((set, 
                 kind: event.kind,
                 ...(event.kind === 'action' && event.action ? { action: event.action } : {}),
                 ...(event.kind === 'question' ? { questions: event.questions } : {}),
-                ...(event.kind === 'computer_use' ? { computerUse: event.computerUse } : {}),
               },
               approvalResponsePending: false,
             }

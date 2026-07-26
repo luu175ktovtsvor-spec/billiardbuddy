@@ -10,9 +10,6 @@ import type {
   ProductTaskDeletionResponse,
   ProductTaskApi,
   ProductTaskIndexResponse,
-  ProductTaskMediaAttachableList,
-  ProductTaskMediaList,
-  ProductTaskMediaProject,
   ProductTaskReviewCommentMutation,
   ProductTaskReviewComments,
   ProductTaskReviewDiff,
@@ -26,13 +23,12 @@ import type {
   ProductConversationLineageApi,
   ProductAttachmentApi,
   ProductTaskPermissionMode,
+  ProductTaskQueuedInput,
 } from '../domain/types'
 
 function taskPath(taskId: string): string {
   return `/api/product/tasks/${encodeURIComponent(taskId)}`
 }
-
-export const PRODUCT_MEDIA_RESULT_TIMEOUT_MS = 5 * 60_000
 
 function reviewPath(
   taskId: string,
@@ -68,7 +64,9 @@ export type AtomicTaskSubmitResponse = {
   receipt: {
     outcome: 'accepted' | 'duplicate' | 'conflict' | 'rejected'
     authority_revision: number
-    result?: { task_id: string; run_id: string; entry_id: string; dispatch_generation: number }
+    result?:
+      | { task_id: string; run_id: string; entry_id: string; dispatch_generation: number; delivery?: 'turn' }
+      | { task_id: string; queue_item_id: string; entry_id: string; delivery: 'queued' }
   }
 }
 
@@ -109,6 +107,8 @@ export const productTasksApi: ProductTaskApi = {
   getOperation: (taskId: string, operationId: string) =>
     productApi.get<OperationQueryResponse>(`${taskPath(taskId)}/operations/${encodeURIComponent(operationId)}`),
   getThread: (taskId: string) => productApi.get<ProductTaskThreadResponse>(`${taskPath(taskId)}/thread`),
+  getQueue: (taskId: string) => productApi.get<{ items: ProductTaskQueuedInput[] }>(`${taskPath(taskId)}/queue`),
+  resumeQueue: (taskId, input) => productApi.post(`${taskPath(taskId)}/queue/resume`, input),
   getReviewStatus: (taskId) => productApi.get<ProductTaskReviewStatus>(reviewPath(taskId, 'status')),
   getReviewTree: (taskId, path) => productApi.get<ProductTaskReviewTree>(reviewPath(taskId, 'tree', path)),
   getReviewFile: (taskId, path) => productApi.get<ProductTaskReviewFile>(reviewPath(taskId, 'file', path)),
@@ -119,15 +119,6 @@ export const productTasksApi: ProductTaskApi = {
   createReviewComment: (taskId, input) => productApi.post<ProductTaskReviewCommentMutation>(
     reviewPath(taskId, 'comments'),
     input,
-  ),
-  getMedia: (taskId) => productApi.get<ProductTaskMediaList>(
-    `${taskPath(taskId)}/media`,
-    { timeout: PRODUCT_MEDIA_RESULT_TIMEOUT_MS },
-  ),
-  getAttachableMedia: (taskId) => productApi.get<ProductTaskMediaAttachableList>(`${taskPath(taskId)}/media/attachable-projects`),
-  attachMediaProject: (taskId, projectId) => productApi.post<{ project: ProductTaskMediaProject }>(
-    `${taskPath(taskId)}/media/projects/${encodeURIComponent(projectId)}/attach`,
-    {},
   ),
 }
 
@@ -154,16 +145,25 @@ export const productAttachmentIngestApi = {
     type: 'file' | 'image'
     name: string
     mime_type: string
-    data: string
     client_operation_id: string
-  }) => productApi.post<{
+  } & ({ data: string; file?: never } | { file: File; data?: never })) => productApi.post<{
     attachment: {
       attachment_id: string
       attachment_revision: number
       authority_revision: number
       outcome: 'accepted' | 'duplicate'
     }
-  }>(`/api/product/composer-drafts/${encodeURIComponent(draftId)}/attachments`, input),
+  }>(`/api/product/composer-drafts/${encodeURIComponent(draftId)}/attachments`, 'file' in input && input.file
+    ? (() => {
+        const form = new FormData()
+        form.set('type', input.type)
+        form.set('name', input.name)
+        form.set('mime_type', input.mime_type)
+        form.set('client_operation_id', input.client_operation_id)
+        form.set('file', input.file, input.name)
+        return form
+      })()
+    : input, { timeout: 120_000 }),
 }
 
 

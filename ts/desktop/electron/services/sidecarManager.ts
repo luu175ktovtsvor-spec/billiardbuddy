@@ -43,7 +43,7 @@ export function resolveHostTriple(platform = process.platform, arch = process.ar
 }
 
 export function resolveSidecarExecutable(desktopRoot: string, triple = resolveHostTriple()): string {
-  const base = path.join(desktopRoot, 'src-tauri', 'binaries', `billiardbuddy-sidecar-${triple}`)
+  const base = path.join(desktopRoot, 'runtime-assets', 'binaries', `billiardbuddy-sidecar-${triple}`)
   return process.platform === 'win32' ? `${base}.exe` : base
 }
 
@@ -97,13 +97,13 @@ export async function reserveServerPort(
   return await reserveLocalPort(bindHost)
 }
 
-export function claudeConfigDir(env: NodeJS.ProcessEnv = process.env): string {
-  return env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude')
+export function billiardBuddyConfigDir(env: NodeJS.ProcessEnv = process.env): string {
+  return env.BILLIARDBUDDY_CONFIG_DIR || path.join(os.homedir(), '.BilliardBuddy')
 }
 
 export function readLastServerPort(env: NodeJS.ProcessEnv = process.env): number | null {
   try {
-    const statePath = path.join(claudeConfigDir(env), SERVER_STATE_FILE)
+    const statePath = path.join(billiardBuddyConfigDir(env), SERVER_STATE_FILE)
     const state: unknown = JSON.parse(readFileSync(statePath, 'utf-8'))
     if (!state || typeof state !== 'object') return null
     const port = (state as Record<string, unknown>).lastPort
@@ -116,7 +116,7 @@ export function readLastServerPort(env: NodeJS.ProcessEnv = process.env): number
 
 export function writeLastServerPort(port: number, env: NodeJS.ProcessEnv = process.env): void {
   try {
-    const dir = claudeConfigDir(env)
+    const dir = billiardBuddyConfigDir(env)
     mkdirSync(dir, { recursive: true })
     writeFileSync(path.join(dir, SERVER_STATE_FILE), `${JSON.stringify({ lastPort: port }, null, 2)}\n`, 'utf-8')
   } catch (error) {
@@ -260,7 +260,7 @@ function mergeLoopbackNoProxy(existing: string | undefined): string {
 // The agent's PowerShellTool reads this env var to honor the user's chosen shell
 // (mirrors src/utils/shell/powershellDetection.ts). Without it the agent would
 // re-autodetect PowerShell instead of using the shell the user picked in the UI.
-export const POWERSHELL_PATH_OVERRIDE_ENV = 'CLAUDE_CODE_POWERSHELL_PATH'
+export const POWERSHELL_PATH_OVERRIDE_ENV = 'BILLIARDBUDDY_POWERSHELL_PATH'
 
 /**
  * Map a resolved Windows shell path to a PowerShell override for the sidecar env.
@@ -280,13 +280,14 @@ export function windowsPowerShellOverride(
 }
 
 export const SIDE_CAR_SECRET_ENV_KEYS = [
-  'QF_GATEWAY_BOOTSTRAP_CREDENTIAL',
-  'QF_LICENSE_KEY',
-  'QF_GATEWAY_REFRESH_TOKEN',
-  'QF_GATEWAY_SESSION',
-  'QF_GATEWAY_SESSION_PROOF',
-  'QF_GATEWAY_TOKEN',
+  'BB_GATEWAY_BOOTSTRAP_CREDENTIAL',
+  'BB_LICENSE_KEY',
+  'BB_GATEWAY_REFRESH_TOKEN',
+  'BB_GATEWAY_SESSION',
+  'BB_GATEWAY_SESSION_PROOF',
+  'BB_GATEWAY_TOKEN',
   'BB_INSTALLATION_ID',
+  'BILLIARDBUDDY_MCP_OAUTH_KEY',
 ] as const
 
 /** Start from a clean credential boundary before injecting a single access bearer. */
@@ -298,11 +299,11 @@ export function stripSidecarSecretEnv(baseEnv: NodeJS.ProcessEnv): NodeJS.Proces
 
 export function buildSidecarEnv(baseEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const env = stripSidecarSecretEnv(baseEnv)
-  const configDir = baseEnv.CLAUDE_CONFIG_DIR
+  const configDir = baseEnv.BILLIARDBUDDY_CONFIG_DIR
   if (configDir) {
     const cacheDir = path.join(configDir, 'Cache')
     mkdirSync(cacheDir, { recursive: true })
-    env.CLAUDE_CONFIG_DIR = configDir
+    env.BILLIARDBUDDY_CONFIG_DIR = configDir
     env.XDG_CACHE_HOME = cacheDir
   }
   return env
@@ -325,7 +326,7 @@ export function createServerPlan({
   accessToken?: string
 }): SidecarPlan {
   const cleanEnv = buildSidecarEnv(env)
-  if (accessToken) cleanEnv.QF_GATEWAY_TOKEN = accessToken
+  if (accessToken) cleanEnv.BB_GATEWAY_TOKEN = accessToken
   return {
     command: resolveSidecarExecutable(desktopRoot),
     args: ['server', '--app-root', appRoot, '--host', bindHost, '--port', String(port)],

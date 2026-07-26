@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import {
-  DEFAULT_NATIVE_SLOTS,
+  DEFAULT_MEDIA_SLOTS,
   DEFAULT_VISION_SLOTS,
   isMiMoCapacityDrained,
   parseLoadTarget,
@@ -9,13 +9,13 @@ import {
 } from './mimo-mixed-real-loadtest'
 
 describe('controlled MiMo mixed real-loadtest guards', () => {
-  test('defaults to the one bounded 48 native plus 16 visual reservation wave', () => {
+  test('defaults to the one bounded 48 media plus 16 visual reservation wave', () => {
     expect(parseMixedShape(undefined, undefined)).toEqual({
-      nativeSlots: DEFAULT_NATIVE_SLOTS,
+      mediaSlots: DEFAULT_MEDIA_SLOTS,
       visionSlots: DEFAULT_VISION_SLOTS,
       totalSlots: 64,
     })
-    expect(parseMixedShape('40', '12')).toEqual({ nativeSlots: 40, visionSlots: 12, totalSlots: 52 })
+    expect(parseMixedShape('40', '12')).toEqual({ mediaSlots: 40, visionSlots: 12, totalSlots: 52 })
     expect(() => parseMixedShape('49', '16')).toThrow('must not exceed 64')
     expect(() => parseMixedShape('48', '17')).toThrow('between 1 and 16')
   })
@@ -45,7 +45,7 @@ describe('controlled MiMo mixed real-loadtest guards', () => {
     const drained = {
       capacity: {
         mimo: { active: 0, queued: 0 },
-        mimo_native: { active: 0, queued: 0 },
+        mimo_media: { active: 0, queued: 0 },
         mimo_total: { active: 0, queued: 0 },
         vision: { active: 0, queued: 0 },
       },
@@ -62,7 +62,7 @@ describe('controlled MiMo mixed real-loadtest guards', () => {
     expect(isMiMoCapacityDrained({
       capacity: {
         mimo: { active: 0, queued: 0 },
-        mimo_native: { active: 0, queued: 0 },
+        mimo_media: { active: 0, queued: 0 },
         mimo_total: { active: 0, queued: 0 },
       },
     })).toBe(false)

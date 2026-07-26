@@ -9,8 +9,6 @@ import {
   type DesktopTerminalSettings,
   type DesktopTerminalStartupShell,
   type NetworkSettings,
-  type OutputStyleOption,
-  type OutputStylesResponse,
   type ThemeMode,
   type UpdateProxyMode,
   type UpdateProxySettings,
@@ -51,12 +49,6 @@ type SettingsStore = {
   locale: Locale
   theme: ThemeMode
   chatSendBehavior: ChatSendBehavior
-  outputStyle: string
-  outputStyles: OutputStyleOption[]
-  outputStyleScope: OutputStylesResponse['scope']
-  outputStyleWorkDir: string | null
-  outputStylesLoading: boolean
-  outputStyleError: string | null
   skipWebFetchPreflight: boolean
   desktopNotificationsEnabled: boolean
   desktopTerminal: DesktopTerminalSettings
@@ -78,8 +70,6 @@ type SettingsStore = {
   setLocale: (locale: Locale) => void
   setTheme: (theme: ThemeMode) => Promise<void>
   setChatSendBehavior: (behavior: ChatSendBehavior) => Promise<void>
-  fetchOutputStyles: (workDir?: string | null) => Promise<void>
-  setOutputStyle: (outputStyle: string, workDir?: string | null) => Promise<void>
   setSkipWebFetchPreflight: (enabled: boolean) => Promise<void>
   setDesktopNotificationsEnabled: (enabled: boolean) => Promise<void>
   setDesktopTerminal: (settings: DesktopTerminalSettings) => Promise<void>
@@ -114,16 +104,6 @@ const DEFAULT_NETWORK_SETTINGS: NetworkSettings = {
   },
 }
 
-const DEFAULT_OUTPUT_STYLE = 'default'
-const DEFAULT_OUTPUT_STYLE_OPTIONS: OutputStyleOption[] = [
-  {
-    value: DEFAULT_OUTPUT_STYLE,
-    label: 'Default',
-    description: 'BilliardBuddy completes tasks efficiently and provides concise responses',
-    source: 'built-in',
-  },
-]
-
 export const useSettingsStore = create<SettingsStore>((set, get) => ({
   productAutoMemoryEnabled: true,
   deepThinkingEnabled: true,
@@ -131,12 +111,6 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
   locale: getStoredLocale(),
   theme: useUIStore.getState().theme,
   chatSendBehavior: 'enter',
-  outputStyle: DEFAULT_OUTPUT_STYLE,
-  outputStyles: DEFAULT_OUTPUT_STYLE_OPTIONS,
-  outputStyleScope: 'userSettings',
-  outputStyleWorkDir: null,
-  outputStylesLoading: false,
-  outputStyleError: null,
   skipWebFetchPreflight: true,
   desktopNotificationsEnabled: false,
   desktopTerminal: DEFAULT_DESKTOP_TERMINAL_SETTINGS,
@@ -255,57 +229,6 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
       await productSettingsApi.updateUser({ chatSendBehavior: next })
     } catch (error) {
       set({ chatSendBehavior: prev })
-      throw error
-    }
-  },
-
-  fetchOutputStyles: async (workDir) => {
-    set({ outputStylesLoading: true, outputStyleError: null })
-    try {
-      const response = await productSettingsApi.getOutputStyles(workDir)
-      set({
-        outputStyle: normalizeOutputStyle(response.outputStyle),
-        outputStyles: normalizeOutputStyleOptions(response.styles),
-        outputStyleScope: response.scope,
-        outputStyleWorkDir: response.workDir,
-        outputStylesLoading: false,
-        outputStyleError: null,
-      })
-    } catch (error) {
-      set({
-        outputStylesLoading: false,
-        outputStyleError: getErrorMessage(error, 'Failed to load output styles.'),
-      })
-      throw error
-    }
-  },
-
-  setOutputStyle: async (outputStyle, workDir) => {
-    const prev = {
-      outputStyle: get().outputStyle,
-      outputStyleScope: get().outputStyleScope,
-      outputStyleWorkDir: get().outputStyleWorkDir,
-      outputStyleError: get().outputStyleError,
-    }
-    set({
-      outputStyle,
-      outputStyleError: null,
-    })
-    try {
-      const result = await productSettingsApi.setOutputStyle(outputStyle, workDir)
-      set({
-        outputStyle: normalizeOutputStyle(result.outputStyle),
-        outputStyleScope: result.scope,
-        outputStyleWorkDir: result.workDir,
-        outputStyleError: null,
-      })
-    } catch (error) {
-      set({
-        outputStyle: prev.outputStyle,
-        outputStyleScope: prev.outputStyleScope,
-        outputStyleWorkDir: prev.outputStyleWorkDir,
-        outputStyleError: getErrorMessage(error, 'Failed to save output style.'),
-      })
       throw error
     }
   },
@@ -444,30 +367,6 @@ function normalizeChatSendBehavior(value: unknown): ChatSendBehavior {
   return value === 'modifierEnter' ? 'modifierEnter' : 'enter'
 }
 
-function normalizeOutputStyle(value: unknown): string {
-  return typeof value === 'string' && value.trim().length > 0
-    ? value
-    : DEFAULT_OUTPUT_STYLE
-}
-
-function normalizeOutputStyleOptions(styles: OutputStyleOption[] | undefined): OutputStyleOption[] {
-  if (!Array.isArray(styles) || styles.length === 0) return DEFAULT_OUTPUT_STYLE_OPTIONS
-  const normalized = styles
-    .filter((style): style is OutputStyleOption =>
-      typeof style?.value === 'string' &&
-      style.value.trim().length > 0 &&
-      typeof style.label === 'string' &&
-      typeof style.description === 'string',
-    )
-    .map(style => ({
-      ...style,
-      value: style.value.trim(),
-      label: style.label.trim() || style.value.trim(),
-      description: style.description.trim(),
-    }))
-  return normalized.length > 0 ? normalized : DEFAULT_OUTPUT_STYLE_OPTIONS
-}
-
 function isUpdateProxyMode(value: unknown): value is UpdateProxyMode {
   return value === 'system' || value === 'manual'
 }
@@ -520,10 +419,6 @@ function normalizeDesktopTerminalSettings(
       ? settings.customShellPath
       : DEFAULT_DESKTOP_TERMINAL_SETTINGS.customShellPath,
   }
-}
-
-function getErrorMessage(error: unknown, fallback: string) {
-  return error instanceof Error && error.message.trim().length > 0 ? error.message : fallback
 }
 
 function isDesktopTerminalStartupShell(value: unknown): value is DesktopTerminalStartupShell {

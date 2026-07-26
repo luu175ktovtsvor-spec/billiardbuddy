@@ -224,7 +224,7 @@ describe('VoiceInputControl', () => {
   })
 
   it('uses a safe recovery message when transcription fails', async () => {
-    const rawError = 'DeepSeek provider rejected /private/.claude/settings.json token'
+    const rawError = 'DeepSeek provider rejected /private/.BilliardBuddy/settings.json token'
     vi.mocked(productVoiceApi.transcribe).mockRejectedValue(new Error(rawError))
     render(<VoiceInputControl onTranscript={vi.fn()} />)
 

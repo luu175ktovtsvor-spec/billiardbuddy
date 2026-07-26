@@ -49,7 +49,7 @@ const SETTINGS_TABS = [
   'mcp',
   'skills',
   'plugins',
-  'computerUse',
+  'recruitingBrowser',
   'about',
 ]
 
@@ -198,6 +198,11 @@ function normalizeEnumKey(
 }
 
 function migrateRetiredSettingsTab(storage: StorageLike, report: DesktopMigrationReport): void {
+  if (storage.getItem(ACTIVE_SETTINGS_TAB_STORAGE_KEY) === 'computerUse') {
+    storage.setItem(ACTIVE_SETTINGS_TAB_STORAGE_KEY, 'recruitingBrowser')
+    report.migratedKeys.push(ACTIVE_SETTINGS_TAB_STORAGE_KEY)
+    return
+  }
   if (storage.getItem(ACTIVE_SETTINGS_TAB_STORAGE_KEY) === 'activity') {
     storage.setItem(ACTIVE_SETTINGS_TAB_STORAGE_KEY, 'general')
     report.migratedKeys.push(ACTIVE_SETTINGS_TAB_STORAGE_KEY)

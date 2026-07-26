@@ -4,7 +4,7 @@ import { validateGatewayAuthEnvironment } from './validate-auth-env'
 const valid = [
   'GW_APP_CREDENTIALS=bootstrap-credential-0001',
   'GW_AUTH_SIGNING_KEY=0123456789abcdef0123456789abcdef',
-  'GW_AUTHORITY_FILE=/opt/qfgw/authority.json',
+  'GW_AUTHORITY_FILE=/opt/billiardbuddy-gateway/authority.json',
   'GW_LICENSE_PROVISIONING=[{"licenseKey":"license-0001","principalId":"release:default","deviceLimit":1000,"active":true,"revision":1}]',
 ].join('\n')
 

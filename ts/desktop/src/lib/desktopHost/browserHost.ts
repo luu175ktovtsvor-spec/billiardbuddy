@@ -104,16 +104,19 @@ export const browserHost: DesktopHost = {
   },
   media: {
     async submitImageProject() {
-      unsupported('Paid image submission')
+      unsupported('Image submission')
     },
     async startImageOperation() {
-      unsupported('Paid image editing')
+      unsupported('Image editing')
     },
     async updateUnknownImageProject() {
       unsupported('Confirming an unknown image task update')
     },
     async saveImageOutput() {
       unsupported('Saving generated images')
+    },
+    async addVideoSource() {
+      unsupported('Importing local video sources')
     },
     async renderVideo() {
       unsupported('Final video export')

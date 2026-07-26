@@ -1,4 +1,4 @@
-import { registerBundledSkill } from '../bundledSkills.js'
+import { registerProductBundledSkill } from '../productSkillRegistry.js'
 import { BILLIARDS_KNOWLEDGE_FILES } from './billiardsKnowledge.js'
 
 type BilliardsOperationsSkill = {
@@ -43,7 +43,7 @@ export const BILLIARDS_OPERATIONS_SKILLS: readonly BilliardsOperationsSkill[] = 
     displayName: '策划门店活动',
     description: '围绕拉新、复购、空闲时段、比赛或节日目标做一套能落地的球房活动。',
     whenToUse: '用户要做球房活动、比赛、组局、拉新、复购、充值、节日营销、宣传文案或活动复盘时使用。',
-    allowedTools: ['Read', 'Grep', 'Glob', 'Write', 'Edit', 'MediaWorkbench'],
+    allowedTools: ['Read', 'Grep', 'Glob', 'Write', 'Edit'],
     prompt: `# 策划门店活动
 
 围绕一次明确的经营目标设计完整活动，不先套促销模板。
@@ -51,7 +51,7 @@ export const BILLIARDS_OPERATIONS_SKILLS: readonly BilliardsOperationsSkill[] = 
 1. 从用户输入中提取目标、对象、时间、场地和人员条件、预算、容量、真实产品与可兑现权益。
 2. 把“做个活动”转成可观察目标，再设计客户从看到内容、报名或到店、现场参与到后续跟进的完整路径。
 3. 方案覆盖机制、规则、现场分工、容量、物资、成本风险和异常处理。缺少成本或容量时把可行性标为待确认。
-4. 用户确认活动事实后，再准备渠道文案、员工口径和图片 Brief。需要海报时，先确认“做海报和图片”工作台及其执行链真实可用，再交给该 Skill；未接线或无法生成时，只交付图片 Brief，不把草稿或成品写成已生成。精确文字必须沿用已确认内容。
+4. 用户确认活动事实后，再准备渠道文案、员工口径和可复制到生图工作台的图片 Brief。聊天不创建、打开或操作媒体项目；工作台未接线或无法生成时，只交付图片 Brief，不把草稿或成品写成已生成；精确文字必须沿用已确认内容。
 5. 选择少量可采集指标并说明来源和观察窗口。活动结束后分开写真实结果、执行偏差、用户反馈和下次调整。`,
   },
   {
@@ -123,14 +123,14 @@ export const BILLIARDS_OPERATIONS_SKILLS: readonly BilliardsOperationsSkill[] = 
     displayName: '制作门店内容',
     description: '把已确认的门店事实整理成可发布文案、图片 Brief 或真实媒体工作台产物。',
     whenToUse: '用户要制作球房朋友圈、短视频文案、活动海报、赛事预告、门店介绍、招聘内容或日常内容计划时使用。',
-    allowedTools: ['Read', 'Grep', 'Glob', 'Write', 'Edit', 'MediaWorkbench'],
+    allowedTools: ['Read', 'Grep', 'Glob', 'Write', 'Edit'],
     prompt: `# 制作门店内容
 
 把当前门店可兑现的事实转成适合渠道的内容，不把行业示例当作门店卖点。
 
 1. 核对门店、渠道、受众、发布时间、目标和可公开的价格、地址、时间、规则、名额与素材授权；缺少时效或授权的内容不进入成品。
 2. 先形成信息骨架和精确文字，再按渠道调整标题、正文、行动指引和必要免责声明。不同渠道分别交付，不用同一段文字机械复制。
-3. 需要图片时调用真实 MediaWorkbench 创建项目；只有工具回执给出项目或版本后才说“已创建/已生成”，否则只交付图片 Brief。
+3. 需要图片时交付一份可复制到生图工作台的图片 Brief；聊天不创建、打开或操作媒体项目，也不把 Brief 说成已生成的作品。
 4. 需要保存文案时使用当前任务工作区中的用户指定文件，保留来源和核验时间；写入工具失败时保留为聊天草稿。
 5. 发布、投放、群发和平台状态变更不属于本 Skill 的自动完成范围，除非当前任务另有正式产品工具、用户确认且能读回结果。`,
   },
@@ -139,7 +139,7 @@ export const BILLIARDS_OPERATIONS_SKILLS: readonly BilliardsOperationsSkill[] = 
 export function registerBilliardsOperationsSkills(): void {
   for (const skill of BILLIARDS_OPERATIONS_SKILLS) {
     const content = `${skill.prompt}\n\n${COMMON_INSTRUCTIONS}`
-    registerBundledSkill({
+    registerProductBundledSkill({
       name: skill.name,
       description: skill.description,
       whenToUse: skill.whenToUse,

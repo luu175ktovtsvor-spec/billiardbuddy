@@ -9,10 +9,8 @@ import {
   type AgentCoreSession,
 } from '../../src/server/product/taskService.js'
 import { MediaProjectService } from '../../src/server/services/mediaProjectService.js'
-import {
-  ensurePersistentStorageUpgraded,
-  resetPersistentStorageMigrationsForTests,
-} from '../../src/server/services/persistentStorageMigrations.js'
+import { CronService } from '../../src/server/services/cronService.js'
+import { migrateSupportedScheduledTaskRuns } from '../../src/server/services/cronScheduler.js'
 
 const tsRoot = resolve(import.meta.dir, '../..')
 
@@ -85,39 +83,58 @@ async function migrateMediaFixture(idempotence: boolean): Promise<void> {
   }
 }
 
-async function migrateProviderFixture(idempotence: boolean): Promise<void> {
-  const fixture = loadFixture('provider-root-v1-legacy-index.json')
-  const tempRoot = await mkdtemp(join(tmpdir(), 'bb-01a-provider-'))
-  const previous = process.env.CLAUDE_CONFIG_DIR
+async function migrateCronFixture(idempotence: boolean): Promise<void> {
+  const fixture = loadFixture('cron-disk-v0-legacy-fields.json')
+  const tempRoot = await mkdtemp(join(tmpdir(), 'bb-cron-migration-'))
   try {
-    process.env.CLAUDE_CONFIG_DIR = tempRoot
-    resetPersistentStorageMigrationsForTests()
-    const legacyPath = join(tempRoot, 'providers.json')
-    const legacyBytes = `${JSON.stringify(fixture.value.legacy_root, null, 2)}\n`
-    await writeFile(legacyPath, legacyBytes)
-    const report = await ensurePersistentStorageUpgraded()
-    expect(report.failures).toEqual([])
-    expect(report.migratedEntries).toContain('providers.json -> billiardbuddy/providers.json')
-    expect(await readFile(legacyPath, 'utf8')).toBe(legacyBytes)
-    const migratedPath = join(tempRoot, 'billiardbuddy', 'providers.json')
-    const migrated = JSON.parse(await readFile(migratedPath, 'utf8'))
-    expect(migrated.schemaVersion).toBe(fixture.value.expected_provider_index_version)
-    expect(migrated.activeId).toBe('fixture-provider')
-    expect(migrated.providers[0].models.main).toBe('fixture-model')
-    expect(loadFixture('provider-root-v1-legacy-index.json').raw).toBe(fixture.raw)
-    expect((await readdir(join(tempRoot, 'billiardbuddy'))).filter(file => file.includes('bak-before-migration'))).toEqual([])
+    const storagePath = join(tempRoot, 'scheduled_tasks.json')
+    await writeFile(storagePath, `${JSON.stringify(fixture.value.store, null, 2)}\n`)
+    const service = new CronService(tempRoot)
+    await service.migrateSupportedStorage()
+    const firstBytes = await readFile(storagePath, 'utf8')
+    const migrated = JSON.parse(firstBytes)
+    expect(migrated.schemaVersion).toBe(1)
+    expect(migrated.tasks[0]).toMatchObject({
+      id: 'legacy01',
+      folderPath: '/example/workspace',
+      permissionMode: 'dontAsk',
+      missedRunPolicy: 'run_once',
+      context: { mode: 'independent' },
+    })
+    for (const retired of ['folder', 'model', 'providerId', 'useWorktree', 'frequency', 'scheduledTime']) {
+      expect(migrated.tasks[0]).not.toHaveProperty(retired)
+    }
+    expect(loadFixture('cron-disk-v0-legacy-fields.json').raw).toBe(fixture.raw)
     if (idempotence) {
-      const firstBytes = await readFile(migratedPath, 'utf8')
-      resetPersistentStorageMigrationsForTests()
-      const second = await ensurePersistentStorageUpgraded()
-      expect(second.migratedEntries).toEqual([])
-      expect(await readFile(migratedPath, 'utf8')).toBe(firstBytes)
-      expect(await readFile(legacyPath, 'utf8')).toBe(legacyBytes)
+      await new CronService(tempRoot).migrateSupportedStorage()
+      expect(await readFile(storagePath, 'utf8')).toBe(firstBytes)
     }
   } finally {
-    resetPersistentStorageMigrationsForTests()
-    if (previous === undefined) delete process.env.CLAUDE_CONFIG_DIR
-    else process.env.CLAUDE_CONFIG_DIR = previous
+    await rm(tempRoot, { recursive: true, force: true })
+  }
+}
+
+async function migrateCronRunFixture(idempotence: boolean): Promise<void> {
+  const fixture = loadFixture('cron-run-log-v0-private-runtime-fields.json')
+  const tempRoot = await mkdtemp(join(tmpdir(), 'bb-cron-run-migration-'))
+  try {
+    const storagePath = join(tempRoot, 'scheduled_tasks_log.json')
+    await writeFile(storagePath, `${JSON.stringify(fixture.value.store, null, 2)}\n`)
+    await migrateSupportedScheduledTaskRuns(tempRoot)
+    const firstBytes = await readFile(storagePath, 'utf8')
+    const migrated = JSON.parse(firstBytes)
+    expect(migrated.schemaVersion).toBe(1)
+    expect(migrated.runs[0]).toMatchObject({ id: 'run-legacy01' })
+    expect(migrated.runs[0]).not.toHaveProperty('productTaskId')
+    for (const retired of ['sessionId', 'model', 'providerId']) {
+      expect(migrated.runs[0]).not.toHaveProperty(retired)
+    }
+    expect(loadFixture('cron-run-log-v0-private-runtime-fields.json').raw).toBe(fixture.raw)
+    if (idempotence) {
+      await migrateSupportedScheduledTaskRuns(tempRoot)
+      expect(await readFile(storagePath, 'utf8')).toBe(firstBytes)
+    }
+  } finally {
     await rm(tempRoot, { recursive: true, force: true })
   }
 }
@@ -131,6 +148,8 @@ describe('BB-01A registered legacy reader migrations', () => {
   it('product-task-disk-v4-current:idempotence', () => migrateProductTaskFixture('product-task-disk-v4.json', true))
   it('media-disk-v1-inline-reference-images-to-private-asset:positive', () => migrateMediaFixture(false))
   it('media-disk-v1-inline-reference-images-to-private-asset:idempotence', () => migrateMediaFixture(true))
-  it('provider-root-v1-legacy-index-to-provider-index-v2:positive', () => migrateProviderFixture(false))
-  it('provider-root-v1-legacy-index-to-provider-index-v2:idempotence', () => migrateProviderFixture(true))
+  it('cron-disk-v0-legacy-fields-to-v1:positive', () => migrateCronFixture(false))
+  it('cron-disk-v0-legacy-fields-to-v1:idempotence', () => migrateCronFixture(true))
+  it('cron-run-log-v0-private-runtime-fields-to-v1:positive', () => migrateCronRunFixture(false))
+  it('cron-run-log-v0-private-runtime-fields-to-v1:idempotence', () => migrateCronRunFixture(true))
 })

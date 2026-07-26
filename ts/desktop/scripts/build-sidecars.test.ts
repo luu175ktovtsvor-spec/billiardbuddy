@@ -17,7 +17,7 @@ describe('build-sidecars Windows x64 target mapping', () => {
     expect(extractWindowsX64BunTarget(readBuildScript())).toBe('bun-windows-x64-baseline')
   })
 
-  it('does not inherit the retired Tauri target environment variable', () => {
+  it('does not inherit the retired desktop target environment variable', () => {
     expect(readBuildScript()).not.toContain('TAURI_ENV_TARGET_TRIPLE')
   })
 })

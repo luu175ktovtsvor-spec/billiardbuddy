@@ -6,7 +6,7 @@ import {
 
 type ProductScheduledTasksApi = Pick<
   ProductScheduledTaskService,
-  'listTasks' | 'createTask' | 'updateTask' | 'deleteTask' | 'runTask' | 'listRecentRuns' | 'listTaskRuns'
+  'listTasks' | 'createTask' | 'updateTask' | 'deleteTask' | 'runTask' | 'listRecentRuns' | 'listTaskRuns' | 'cancelTaskRun'
 >
 
 export async function handleProductScheduledTasksApi(
@@ -36,6 +36,12 @@ export async function handleProductScheduledTasksApi(
     if (action === 'runs' && !segments[5]) {
       if (req.method !== 'GET') return methodNotAllowed(req.method)
       return Response.json({ runs: await scheduledTasks.listTaskRuns(taskId) })
+    }
+
+    if (action === 'runs' && segments[5] && segments[6] === 'cancel' && !segments[7]) {
+      if (req.method !== 'POST') return methodNotAllowed(req.method)
+      await scheduledTasks.cancelTaskRun(taskId, segments[5])
+      return Response.json({ ok: true })
     }
 
     if (action === 'run' && !segments[5]) {

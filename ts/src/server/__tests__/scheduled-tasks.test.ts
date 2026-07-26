@@ -2,7 +2,7 @@
  * Unit tests for CronService and Scheduled Tasks API
  */
 
-import { describe, it, expect, beforeEach, afterEach, spyOn } from 'bun:test'
+import { describe, it, expect, beforeEach, afterEach } from 'bun:test'
 import * as fs from 'fs/promises'
 import * as path from 'path'
 import * as os from 'os'
@@ -11,10 +11,10 @@ import { CronService } from '../services/cronService.js'
 // ─── Test helpers ───────────────────────────────────────────────────────────
 
 let tmpDir: string
-const originalConfigDir = process.env.CLAUDE_CONFIG_DIR
+const originalConfigDir = process.env.BILLIARDBUDDY_CONFIG_DIR
 
 async function createTmpDir(): Promise<string> {
-  const dir = path.join(os.tmpdir(), `claude-test-${Date.now()}-${Math.random().toString(36).slice(2)}`)
+  const dir = path.join(os.tmpdir(), `billiardbuddy-schedule-test-${Date.now()}-${Math.random().toString(36).slice(2)}`)
   await fs.mkdir(dir, { recursive: true })
   return dir
 }
@@ -34,15 +34,15 @@ describe('CronService', () => {
 
   beforeEach(async () => {
     tmpDir = await createTmpDir()
-    process.env.CLAUDE_CONFIG_DIR = tmpDir
+    process.env.BILLIARDBUDDY_CONFIG_DIR = tmpDir
     service = new CronService()
   })
 
   afterEach(async () => {
     if (originalConfigDir) {
-      process.env.CLAUDE_CONFIG_DIR = originalConfigDir
+      process.env.BILLIARDBUDDY_CONFIG_DIR = originalConfigDir
     } else {
-      delete process.env.CLAUDE_CONFIG_DIR
+      delete process.env.BILLIARDBUDDY_CONFIG_DIR
     }
     await cleanupTmpDir(tmpDir)
   })
@@ -80,6 +80,11 @@ describe('CronService', () => {
           createdAt: Date.now(),
           permissionMode: 'bypassPermissions',
           useWorktree: true,
+          model: 'legacy-model',
+          providerId: 'legacy-provider',
+          folder: tmpDir,
+          frequency: 'daily',
+          scheduledTime: '09:00',
         }],
       }),
       'utf-8',
@@ -88,16 +93,23 @@ describe('CronService', () => {
     const [task] = await service.listTasks()
 
     expect(task?.permissionMode).toBe('dontAsk')
+    expect(task?.folderPath).toBe(tmpDir)
     expect(task).not.toHaveProperty('useWorktree')
+    expect(task).not.toHaveProperty('model')
+    expect(task).not.toHaveProperty('providerId')
+    expect(task).not.toHaveProperty('frequency')
+    expect(task).not.toHaveProperty('scheduledTime')
     await service.updateTask('legacy-task', { name: 'Migrated task' })
     const persisted = JSON.parse(await fs.readFile(taskFile, 'utf-8')) as {
-      tasks: Array<{ name?: string; permissionMode?: string; useWorktree?: boolean }>
+      tasks: Array<Record<string, unknown>>
     }
     expect(persisted.tasks[0]).toMatchObject({
       name: 'Migrated task',
       permissionMode: 'dontAsk',
     })
     expect(persisted.tasks[0]).not.toHaveProperty('useWorktree')
+    expect(persisted.tasks[0]).not.toHaveProperty('model')
+    expect(persisted.tasks[0]).not.toHaveProperty('providerId')
   })
 
   it('should persist tasks to file', async () => {
@@ -193,8 +205,7 @@ describe('CronService', () => {
     const originalRename = fs.rename
     let renameCalls = 0
 
-    const renameSpy = spyOn(fs, 'rename')
-    renameSpy.mockImplementation(async (...args) => {
+    service = new CronService(tmpDir, { rename: async (...args) => {
       renameCalls += 1
 
       if (renameCalls === 1) {
@@ -206,22 +217,18 @@ describe('CronService', () => {
       }
 
       return originalRename(...args)
+    } })
+
+    const task = await service.createTask({
+      cron: '0 9 * * *',
+      prompt: 'Retry rename once',
     })
 
-    try {
-      const task = await service.createTask({
-        cron: '0 9 * * *',
-        prompt: 'Retry rename once',
-      })
-
-      const tasks = await service.listTasks()
-      expect(task.id).toBeDefined()
-      expect(tasks).toHaveLength(1)
-      expect(tasks[0]?.prompt).toBe('Retry rename once')
-      expect(renameCalls).toBe(2)
-    } finally {
-      renameSpy.mockRestore()
-    }
+    const tasks = await service.listTasks()
+    expect(task.id).toBeDefined()
+    expect(tasks).toHaveLength(1)
+    expect(tasks[0]?.prompt).toBe('Retry rename once')
+    expect(renameCalls).toBe(2)
   })
 })
 
@@ -237,7 +244,7 @@ describe('Product Scheduled Tasks API', () => {
 
   beforeEach(async () => {
     tmpDir = await createTmpDir()
-    process.env.CLAUDE_CONFIG_DIR = tmpDir
+    process.env.BILLIARDBUDDY_CONFIG_DIR = tmpDir
 
     // 动态导入以获取最新的环境变量
     const mod = await import('../api/productScheduledTasks.js')
@@ -246,9 +253,9 @@ describe('Product Scheduled Tasks API', () => {
 
   afterEach(async () => {
     if (originalConfigDir) {
-      process.env.CLAUDE_CONFIG_DIR = originalConfigDir
+      process.env.BILLIARDBUDDY_CONFIG_DIR = originalConfigDir
     } else {
-      delete process.env.CLAUDE_CONFIG_DIR
+      delete process.env.BILLIARDBUDDY_CONFIG_DIR
     }
     await cleanupTmpDir(tmpDir)
   })
@@ -275,6 +282,7 @@ describe('Product Scheduled Tasks API', () => {
       body: JSON.stringify({
         title: 'Daily review',
         schedule: '0 9 * * *',
+        timeZone: 'Asia/Shanghai',
         instruction: 'Daily review',
         workDir: tmpDir,
         recurring: true,
@@ -312,6 +320,7 @@ describe('Product Scheduled Tasks API', () => {
       body: JSON.stringify({
         title: 'Unsafe task',
         schedule: '0 9 * * *',
+        timeZone: 'Asia/Shanghai',
         instruction: 'Unsafe task',
         workDir: tmpDir,
         permissionMode: 'bypassPermissions',
@@ -359,7 +368,7 @@ describe('Product Scheduled Tasks API', () => {
     const createReq = new Request('http://localhost/api/product/scheduled-tasks', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title: 'Test task', schedule: '0 9 * * *', instruction: 'Test task', workDir: tmpDir }),
+      body: JSON.stringify({ title: 'Test task', schedule: '0 9 * * *', timeZone: 'Asia/Shanghai', instruction: 'Test task', workDir: tmpDir }),
     })
     const createResp = await handleProductScheduledTasksApi(
       createReq,

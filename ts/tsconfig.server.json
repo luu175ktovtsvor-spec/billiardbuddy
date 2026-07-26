@@ -1,0 +1,25 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "allowImportingTsExtensions": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "strict": true,
+    "types": ["bun", "node"]
+  },
+  "include": [
+    "preload.ts",
+    "shared/**/*.ts",
+    "src/**/*.ts",
+    "../gateway/**/*.ts",
+    "../relay/**/*.ts"
+  ],
+  "exclude": [
+    "**/*.test.ts",
+    "**/*.test.tsx",
+    "src/server/__tests__/**",
+    "../gateway/**/*.test.ts",
+    "../relay/**/*.test.ts",
+    "../gateway/**/*loadtest.ts"
+  ]
+}

@@ -10,7 +10,6 @@ import { useUpdateStore } from '../../stores/updateStore'
 describe('UpdateChecker', () => {
   beforeEach(() => {
     useSettingsStore.setState({ locale: 'en' })
-    Reflect.deleteProperty(window, '__TAURI__')
     window.desktopHost = {
       ...browserHost,
       kind: 'electron',
@@ -122,7 +121,6 @@ describe('UpdateChecker', () => {
   })
 
   it('drives the Electron mock-feed check/download/install flow without leaving the prompt stuck', async () => {
-    Reflect.deleteProperty(window, '__TAURI__')
     const download = vi.fn(async (onEvent?: (event: unknown) => void) => {
       onEvent?.({ event: 'Started', data: { contentLength: 100 } })
       onEvent?.({ event: 'Progress', data: { chunkLength: 100 } })

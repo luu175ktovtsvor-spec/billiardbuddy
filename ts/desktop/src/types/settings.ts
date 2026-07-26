@@ -13,28 +13,6 @@ export function isThemeMode(value: unknown): value is ThemeMode {
 
 export type ChatSendBehavior = 'enter' | 'modifierEnter'
 
-export type OutputStyleSource =
-  | 'built-in'
-  | 'userSettings'
-  | 'projectSettings'
-  | 'localSettings'
-  | 'policySettings'
-  | 'plugin'
-
-export type OutputStyleOption = {
-  value: string
-  label: string
-  description: string
-  source: OutputStyleSource
-}
-
-export type OutputStylesResponse = {
-  outputStyle: string
-  styles: OutputStyleOption[]
-  scope: 'userSettings' | 'localSettings'
-  workDir: string | null
-}
-
 export type WebSearchSettings = {
   /**
    * Product-facing preference only.  Backend selection and credentials stay

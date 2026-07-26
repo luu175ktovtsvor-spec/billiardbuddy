@@ -8,9 +8,8 @@ import {
   type AgentCoreAdapter,
   type AgentCoreSession,
 } from '../product/taskService.js'
-import { ProductTaskRunProjection } from '../product/taskRunProjection.js'
 import { ProductTaskAuthorityRepository } from '../product/authorityRepository.js'
-import type { MessageEntry } from '../services/sessionService.js'
+import type { ProductLegacyCoreMessageEntry as MessageEntry } from '../product/taskThreadProjection.js'
 
 let tempDir: string | undefined
 
@@ -102,7 +101,7 @@ function makeCore(): TestCore {
       }
       const useNewWorktree = target === 'new_worktree'
       const branchWorkDir = useNewWorktree
-        ? `${source.projectRoot ?? source.workDir ?? ''}/.claude/worktrees/desktop-continuation-${nextId + 1}`
+        ? `${source.projectRoot ?? source.workDir ?? ''}/.BilliardBuddy/worktrees/desktop-continuation-${nextId + 1}`
         : source.workDir ?? ''
       const session = add(
         branchWorkDir,
@@ -344,7 +343,7 @@ describe('ProductTaskService', () => {
 
     expect(continuation.projectId).toBe(source.projectId)
     expect(continuation.directoryId).toBe(source.directoryId)
-    expect(continuation.workDir).toContain(`${rootDir}/.claude/worktrees/desktop-continuation-`)
+    expect(continuation.workDir).toContain(`${rootDir}/.BilliardBuddy/worktrees/desktop-continuation-`)
     expect(continuation.worktreeState).toBe('materialized')
 
     const reloaded = (await service.listTasks()).tasks.find((task) => task.id === continuation.id)
@@ -353,7 +352,7 @@ describe('ProductTaskService', () => {
       directoryId: source.directoryId,
       worktreeState: 'materialized',
     })
-    expect(reloaded?.workDir).toContain(`${rootDir}/.claude/worktrees/desktop-continuation-`)
+    expect(reloaded?.workDir).toContain(`${rootDir}/.BilliardBuddy/worktrees/desktop-continuation-`)
   })
 
   it('derives recent picker projects from registered product tasks only', async () => {
@@ -421,7 +420,7 @@ describe('ProductTaskService', () => {
     expect(JSON.stringify({ task, listed })).not.toContain(coreSessionId)
   })
 
-  it('reconstructs the current durable lineage from each private run transcript in event order', async () => {
+  it('reconstructs the current durable lineage from ProductTask Item/Event order', async () => {
     tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'bb-product-tasks-'))
     const core = makeCore()
     const storagePath = path.join(tempDir, 'product-tasks.json')
@@ -452,18 +451,11 @@ describe('ProductTaskService', () => {
       text: '第二问',
       attachment_ids: [],
     })
-    const authority = await new ProductTaskAuthorityRepository(authorityPath).read()
-    const sessionId = (runId: string) => (
-      authority.task_runs[runId] as { core_binding: { session_id: string } }
-    ).core_binding.session_id
-    core.setSessionMessages(sessionId(first.result!.run_id), [
-      sourceMessage('first-user', '第一问'),
-      { id: 'first-assistant', type: 'assistant', content: '第一答', timestamp: '2026-07-19T08:00:01.000Z' },
-    ])
-    core.setSessionMessages(sessionId(second.result!.run_id), [
-      sourceMessage('second-user', '第二问'),
-      { id: 'second-assistant', type: 'assistant', content: '第二答', timestamp: '2026-07-19T08:00:02.000Z' },
-    ])
+    await service.recordTaskRunTerminalProjection(first.result!.run_id, 1, 'completed', '第一答')
+    await service.advanceTaskRunQueue(first.result!.run_id, 1)
+    const state = await new ProductTaskAuthorityRepository(authorityPath).read()
+    const secondRunId = (state.turn_input_queue[(second.result as { queue_item_id: string }).queue_item_id] as { target_run_id: string }).target_run_id
+    await service.recordTaskRunTerminalProjection(secondRunId, 1, 'completed', '第二答')
 
     expect((await service.getTaskThread(task.id)).entries.map((entry) => (
       entry.type === 'user_text' || entry.type === 'assistant_text' ? entry.text : entry.type
@@ -486,6 +478,7 @@ describe('ProductTaskService', () => {
       sourceMessage('first-user', '第一问'),
       { id: 'first-assistant', type: 'assistant', content: '第一答', timestamp: '2026-07-19T08:00:01.000Z' },
     ])
+    await service.recordTaskRunTerminalProjection(first.result!.run_id, 1, 'completed', '第一答')
     const sourceEntryId = (await service.getTaskThread(task.id)).entries.find(entry => entry.type === 'assistant_text')!.id
     const quoted = await service.submitTaskRun(task.id, { expected_task_revision: 2, expected_lineage_revision: 1, client_operation_id: 'quoted', text: '引用后追问', attachment_ids: [], reference_entry_ids: [sourceEntryId] })
     expect(quoted.outcome).toBe('accepted')
@@ -515,7 +508,7 @@ describe('ProductTaskService', () => {
     expect(await fs.readFile(authorityPath)).toEqual(bytes)
     expect((await service.getTaskThread(task.id)).entries.map(entry => entry.type === 'user_text' || entry.type === 'assistant_text' ? entry.text : entry.type)).toEqual(['第一问', '第一答'])
     await expect(service.continueTaskAuthoritatively({ taskId: task.id, expected_revision: 4, client_operation_id: 'fork-hidden', canonical_input: JSON.stringify({ sourceEntryId: hiddenAfterForkEntryId, target: 'new_worktree' }) }, { authorityPath, bridge })).rejects.toMatchObject({ statusCode: 400, code: 'BAD_REQUEST' })
-    await service.settleTaskRunDispatch(first.result!.run_id, 1, 'recovery_required', 'TEST_FAILURE')
+    await service.settleTaskRunDispatch(quoted.result!.run_id, 1, 'recovery_required', 'TEST_FAILURE')
     expect(await service.getTaskThread(task.id)).toMatchObject({ recoveryRequired: true })
   })
 
@@ -609,10 +602,10 @@ describe('ProductTaskService', () => {
     expect(task.worktreeState).toBe('planned')
 
     core.setWorktreeLaunchState(coreSessionId, 'materialized')
-    core.setSessionWorkDir(coreSessionId, '/workspace/hall-operations/.claude/worktrees/desktop-task')
+    core.setSessionWorkDir(coreSessionId, '/workspace/hall-operations/.BilliardBuddy/worktrees/desktop-task')
     const materialized = (await service.listTasks()).tasks.find((candidate) => candidate.id === task.id)
     expect(materialized?.worktreeState).toBe('materialized')
-    expect(materialized?.workDir).toBe('/workspace/hall-operations/.claude/worktrees/desktop-task')
+    expect(materialized?.workDir).toBe('/workspace/hall-operations/.BilliardBuddy/worktrees/desktop-task')
 
     await service.setPinned(task.id, true)
     await service.setArchived(task.id, true)
@@ -671,16 +664,29 @@ describe('ProductTaskService', () => {
   it('keeps a live product run visible and rejects archival until it settles', async () => {
     tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'bb-product-tasks-'))
     const core = makeCore()
-    const runs = new ProductTaskRunProjection()
+    const storagePath = path.join(tempDir, 'product-tasks.json')
     const service = new ProductTaskService({
-      storagePath: path.join(tempDir, 'product-tasks.json'),
+      storagePath,
       core,
-      runs,
+      dispatcher: { dispatch: async () => 'started' },
     })
     const task = await service.createTask({ workDir: '/workspace/hall-operations' })
-    const coreSessionId = await service.resolveCoreSessionId(task.id)
-
-    runs.beginRun(task.id, coreSessionId)
+    await service.ensureAuthorityProjectionForLegacyTask(task.id, {
+      authorityPath: path.join(tempDir, 'product-task-authority.v1.json'),
+    })
+    const lineage = await service.createConversationLineage({
+      task_id: task.id,
+      expected_task_revision: 0,
+      client_operation_id: 'lineage',
+    })
+    const submitted = await service.submitTaskRun(task.id, {
+      expected_task_revision: 1,
+      expected_lineage_revision: 0,
+      client_operation_id: 'run',
+      text: '检查球房库存',
+      attachment_ids: [],
+    })
+    const run = submitted.result!
 
     expect((await service.getTask(task.id)).actions).not.toContain('archive')
     expect((await service.listTasks()).tasks[0]?.actions).not.toContain('archive')
@@ -689,20 +695,12 @@ describe('ProductTaskService', () => {
       code: 'PRODUCT_TASK_ACTIVE_RUN',
     })
 
-    runs.projectSessionMessage(coreSessionId, {
-      type: 'status',
-      state: 'permission_pending',
-    })
-
     expect((await service.getTask(task.id)).actions).not.toContain('archive')
     await expect(service.setArchived(task.id, true)).rejects.toThrow(
       '任务正在运行或等待确认，请先停止任务后再归档',
     )
 
-    runs.projectSessionMessage(coreSessionId, {
-      type: 'message_complete',
-      usage: { input_tokens: 0, output_tokens: 0 },
-    })
+    await service.settleTaskRunDispatch(run.run_id, run.dispatch_generation, 'terminal')
 
     expect((await service.getTask(task.id)).actions).toContain('archive')
     await expect(service.setArchived(task.id, true)).resolves.toMatchObject({
@@ -917,7 +915,7 @@ describe('ProductTaskService', () => {
       target: 'new_worktree',
     })
     expect(continuation.worktreeState).toBe('materialized')
-    expect(continuation.workDir).toContain('/.claude/worktrees/desktop-continuation-')
+    expect(continuation.workDir).toContain('/.BilliardBuddy/worktrees/desktop-continuation-')
   })
 
   it('rejects unsupported continuation targets', async () => {

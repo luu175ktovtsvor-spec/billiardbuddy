@@ -1,8 +1,8 @@
-const version = process.env.CLAUDE_CODE_LOCAL_VERSION ?? '999.0.0-local';
-const packageUrl = process.env.CLAUDE_CODE_LOCAL_PACKAGE_URL ?? 'claude-code-local';
-const buildTime = process.env.CLAUDE_CODE_LOCAL_BUILD_TIME ?? new Date().toISOString();
+const version = process.env.BILLIARDBUDDY_LOCAL_VERSION ?? '999.0.0-local';
+const packageUrl = process.env.BILLIARDBUDDY_LOCAL_PACKAGE_URL ?? 'billiardbuddy-local';
+const buildTime = process.env.BILLIARDBUDDY_LOCAL_BUILD_TIME ?? new Date().toISOString();
 
-process.env.CLAUDE_CODE_LOCAL_SKIP_REMOTE_PREFETCH ??= '1';
+process.env.BILLIARDBUDDY_LOCAL_SKIP_REMOTE_PREFETCH ??= '1';
 
 Object.assign(globalThis, {
   MACRO: {

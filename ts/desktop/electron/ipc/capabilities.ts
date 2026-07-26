@@ -97,29 +97,33 @@ const mediaProjectId = (value: unknown): value is string =>
 
 const mediaSubmitImage: Validator = value =>
   isRecord(value)
-  && hasOnlyKeys(value, ['projectId', 'confirmUnknownRetry', 'confirmedDataEgress'])
+  && hasOnlyKeys(value, ['projectId', 'confirmUnknownRetry'])
   && mediaProjectId(value.projectId)
   && typeof value.confirmUnknownRetry === 'boolean'
-  && typeof value.confirmedDataEgress === 'boolean'
 
 const mediaUpdateUnknownImage: Validator = value => {
   if (!isRecord(value) || !hasOnlyKeys(value, ['projectId', 'input'])) return false
   if (!mediaProjectId(value.projectId) || !isRecord(value.input)) return false
   const input = value.input
-  return hasOnlyKeys(input, ['revision', 'prompt', 'size', 'count', 'confirm_unknown_retry'])
+  return hasOnlyKeys(input, ['revision', 'user_request', 'size', 'confirm_unknown_retry'])
     && typeof input.revision === 'number'
     && Number.isInteger(input.revision)
     && input.revision >= 0
-    && typeof input.prompt === 'string'
-    && input.prompt.trim().length > 0
-    && input.prompt.length <= 8000
-    && ['1024x1024', '1536x1024', '1024x1536'].includes(String(input.size))
-    && typeof input.count === 'number'
-    && Number.isInteger(input.count)
-    && input.count >= 1
-    && input.count <= 4
+    && typeof input.user_request === 'string'
+    && input.user_request.trim().length > 0
+    && input.user_request.length <= 8000
+    && typeof input.size === 'string'
+    && /^\d{3,4}x\d{3,4}$/.test(input.size)
     && input.confirm_unknown_retry === true
 }
+
+const mediaAddVideoSource: Validator = value =>
+  isRecord(value)
+  && hasOnlyKeys(value, ['projectId', 'path'])
+  && mediaProjectId(value.projectId)
+  && typeof value.path === 'string'
+  && value.path.length > 0
+  && value.path.length <= 4096
 
 const mediaRenderVideo: Validator = value =>
   isRecord(value)
@@ -155,8 +159,8 @@ const mediaSaveImageOutput: Validator = value => {
 }
 
 const mediaStartImageOperation: Validator = value => {
-  if (!isRecord(value) || !hasOnlyKeys(value, ['projectId', 'input', 'confirmedDataEgress'])) return false
-  if (!mediaProjectId(value.projectId) || typeof value.confirmedDataEgress !== 'boolean' || !isRecord(value.input)) return false
+  if (!isRecord(value) || !hasOnlyKeys(value, ['projectId', 'input'])) return false
+  if (!mediaProjectId(value.projectId) || !isRecord(value.input)) return false
   return hasOnlyKeys(value.input, [
     'revision', 'base_version_id', 'kind', 'instruction', 'mask_data_url', 'confirm_unknown_retry',
   ])
@@ -187,6 +191,7 @@ export const ELECTRON_IPC_VALIDATORS = {
   [ELECTRON_IPC_CHANNELS.mediaStartImageOperation]: mediaStartImageOperation,
   [ELECTRON_IPC_CHANNELS.mediaUpdateUnknownImage]: mediaUpdateUnknownImage,
   [ELECTRON_IPC_CHANNELS.mediaSaveImageOutput]: mediaSaveImageOutput,
+  [ELECTRON_IPC_CHANNELS.mediaAddVideoSource]: mediaAddVideoSource,
   [ELECTRON_IPC_CHANNELS.mediaRenderVideo]: mediaRenderVideo,
   [ELECTRON_IPC_CHANNELS.mediaAnalyzeVideo]: mediaAnalyzeVideo,
   [ELECTRON_IPC_CHANNELS.browserStatus]: noPayload,

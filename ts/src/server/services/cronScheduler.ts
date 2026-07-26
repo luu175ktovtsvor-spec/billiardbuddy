@@ -4,7 +4,7 @@
  * Periodically checks all scheduled tasks and executes those whose cron
  * expression matches the current time. Each occurrence becomes one durable
  * ProductTask run and is dispatched by the internal agent-worker. Execution
- * submission history is persisted to ~/.claude/scheduled_tasks_log.json.
+ * submission history is persisted to ~/.BilliardBuddy/scheduled_tasks_log.json.
  */
 
 import * as fs from 'fs/promises'
@@ -28,7 +28,7 @@ export type TaskRun = {
   taskName: string
   startedAt: string // ISO timestamp
   completedAt?: string
-  status: 'running' | 'completed' | 'failed' | 'timeout'
+  status: 'running' | 'completed' | 'failed' | 'timeout' | 'cancelled'
   prompt: string
   output?: string // captured stdout summary
   error?: string
@@ -37,6 +37,7 @@ export type TaskRun = {
   occurrenceAt?: string
   trigger?: 'schedule' | 'manual'
   productRunId?: string
+  productTaskId?: string
   dispatchGeneration?: number
   // Old installations can still have this field in persisted run logs. It is
   // never created by the scheduler and is stripped from the product API.
@@ -44,8 +45,9 @@ export type TaskRun = {
 }
 
 export type ScheduledTaskRunBridge = {
-  submitScheduledTaskRun(scheduleId: string, title: string, prompt: string, workDir: string, occurrence: string): Promise<{ run_id: string; dispatch_generation: number }>
-  inspectScheduledTaskRun?(runId: string, dispatchGeneration: number): Promise<{ state: 'running' | 'completed' | 'failed'; completed_at?: string }>
+  submitScheduledTaskRun(scheduleId: string, title: string, prompt: string, workDir: string, occurrence: string, context: CronTask['context']): Promise<{ task_id: string; run_id: string; dispatch_generation: number }>
+  inspectScheduledTaskRun?(runId: string, dispatchGeneration: number): Promise<{ state: 'running' | 'completed' | 'failed' | 'cancelled'; completed_at?: string }>
+  stopScheduledTaskRun?(runId: string, dispatchGeneration: number): Promise<boolean>
 }
 
 // ─── Cron expression matching ──────────────────────────────────────────────────
@@ -109,26 +111,69 @@ function singleFieldMatches(part: string, value: number): boolean {
  * Check whether a standard 5-field cron expression matches the given date.
  * Fields: minute hour day-of-month month day-of-week
  */
-export function cronMatches(cronExpr: string, date: Date): boolean {
+export function cronMatches(
+  cronExpr: string,
+  date: Date,
+  timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
+): boolean {
   const fields = parseCronExpression(cronExpr)
-  return fields ? cronFieldsMatch(fields, date) : false
+  return fields ? cronFieldsMatch(fields, date, timeZone) : false
 }
 
-function cronFieldsMatch(fields: CronFields, date: Date): boolean {
+function cronFieldsMatch(fields: CronFields, date: Date, timeZone: string): boolean {
+  const parts = zonedDateParts(date, timeZone)
   const dayOfMonthWildcard = fields.dayOfMonth.length === 31
   const dayOfWeekWildcard = fields.dayOfWeek.length === 7
   const dayMatches = dayOfMonthWildcard && dayOfWeekWildcard
     ? true
     : dayOfMonthWildcard
-      ? fields.dayOfWeek.includes(date.getDay())
+      ? fields.dayOfWeek.includes(parts.dayOfWeek)
       : dayOfWeekWildcard
-        ? fields.dayOfMonth.includes(date.getDate())
-        : fields.dayOfMonth.includes(date.getDate()) || fields.dayOfWeek.includes(date.getDay())
-  return fields.minute.includes(date.getMinutes())
-    && fields.hour.includes(date.getHours())
-    && fields.month.includes(date.getMonth() + 1)
+        ? fields.dayOfMonth.includes(parts.day)
+        : fields.dayOfMonth.includes(parts.day) || fields.dayOfWeek.includes(parts.dayOfWeek)
+  return fields.minute.includes(parts.minute)
+    && fields.hour.includes(parts.hour)
+    && fields.month.includes(parts.month)
     && dayMatches
 }
+
+function zonedDateParts(date: Date, timeZone: string): {
+  minute: number
+  hour: number
+  day: number
+  month: number
+  dayOfWeek: number
+} {
+  let formatter = zonedFormatters.get(timeZone)
+  if (!formatter) {
+    formatter = new Intl.DateTimeFormat('en-CA', {
+      timeZone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      hourCycle: 'h23',
+    })
+    zonedFormatters.set(timeZone, formatter)
+  }
+  const values = Object.fromEntries(formatter.formatToParts(date).filter(part => part.type !== 'literal').map(part => [part.type, Number(part.value)]))
+  const year = values.year
+  const month = values.month
+  const day = values.day
+  const hour = values.hour
+  const minute = values.minute
+  if (![year, month, day, hour, minute].every(Number.isInteger)) throw new Error('SCHEDULE_TIME_ZONE_INVALID')
+  return {
+    minute,
+    hour,
+    day,
+    month,
+    dayOfWeek: new Date(Date.UTC(year, month - 1, day)).getUTCDay(),
+  }
+}
+
+const zonedFormatters = new Map<string, Intl.DateTimeFormat>()
 
 // ─── Log file I/O ──────────────────────────────────────────────────────────────
 
@@ -140,7 +185,7 @@ type RunsFile = {
 }
 
 function getLogFilePath(
-  configDir = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude'),
+  configDir = process.env.BILLIARDBUDDY_CONFIG_DIR || path.join(os.homedir(), '.BilliardBuddy'),
 ): string {
   return path.join(configDir, 'scheduled_tasks_log.json')
 }
@@ -153,7 +198,18 @@ async function readRunsFile(configDir?: string): Promise<RunsFile> {
       throw new Error('UNSUPPORTED_SCHEDULED_TASK_RUNS_SCHEMA')
     }
     if (!Array.isArray(parsed.runs)) throw new Error('INVALID_SCHEDULED_TASK_RUNS_SCHEMA')
-    return { schemaVersion: CURRENT_SCHEDULED_TASK_RUNS_SCHEMA_VERSION, runs: parsed.runs }
+    return {
+      schemaVersion: CURRENT_SCHEDULED_TASK_RUNS_SCHEMA_VERSION,
+      runs: parsed.runs.map((run) => {
+        const {
+          sessionId: _legacySessionId,
+          model: _legacyModel,
+          providerId: _legacyProviderId,
+          ...current
+        } = run as TaskRun & { model?: unknown; providerId?: unknown }
+        return current
+      }),
+    }
   } catch (err: unknown) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
       return { schemaVersion: CURRENT_SCHEDULED_TASK_RUNS_SCHEMA_VERSION, runs: [] }
@@ -192,13 +248,13 @@ async function withRunsLock<T>(operation: () => Promise<T>, configDir?: string):
   }
 }
 
-async function mutateRuns(operation: (data: RunsFile) => void): Promise<void> {
+async function mutateRuns(operation: (data: RunsFile) => void, configDir?: string): Promise<void> {
   await withRunsLock(async () => {
-    const data = await readRunsFile()
+    const data = await readRunsFile(configDir)
     operation(data)
     trimRuns(data)
-    await writeRunsFile(data)
-  })
+    await writeRunsFile(data, configDir)
+  }, configDir)
 }
 
 export async function migrateSupportedScheduledTaskRuns(configDir?: string): Promise<void> {
@@ -212,6 +268,22 @@ export async function migrateSupportedScheduledTaskRuns(configDir?: string): Pro
     const after = JSON.stringify(data, null, 2) + '\n'
     if (before !== after) await writeRunsFile(data, configDir)
   }, configDir)
+}
+
+/** Remove schedule history that would retain a deleted ProductTask identity. */
+export async function purgeScheduledTaskRunsForDeletedTask(
+  productTaskId: string,
+  scheduleIds: readonly string[],
+  configDir?: string,
+): Promise<number> {
+  const schedules = new Set(scheduleIds)
+  let purged = 0
+  await mutateRuns((data) => {
+    const retained = data.runs.filter(run => run.productTaskId !== productTaskId && !schedules.has(run.taskId))
+    purged = data.runs.length - retained.length
+    data.runs = retained
+  }, configDir)
+  return purged
 }
 
 /** Append a run to the log and trim to keep at most MAX_RUNS_PER_TASK per task. */
@@ -270,7 +342,7 @@ export function latestScheduledOccurrence(task: CronTask, now: Date): Date | nul
   if (!fields) return null
   const current = minuteStart(now)
   if (task.missedRunPolicy === 'skip') {
-    return cronFieldsMatch(fields, current) ? current : null
+    return cronFieldsMatch(fields, current, task.timeZone ?? 'UTC') ? current : null
   }
   const lastFired = task.lastFiredAt && Number.isFinite(Date.parse(task.lastFiredAt))
     ? Date.parse(task.lastFiredAt)
@@ -278,13 +350,32 @@ export function latestScheduledOccurrence(task: CronTask, now: Date): Date | nul
   const lowerBound = Math.max(task.createdAt, lastFired, current.getTime() - MISSED_RUN_LOOKBACK_MS)
   for (let timestamp = current.getTime(); timestamp > lowerBound; timestamp -= 60_000) {
     const candidate = new Date(timestamp)
-    if (cronFieldsMatch(fields, candidate)) return candidate
+    if (cronFieldsMatch(fields, candidate, task.timeZone ?? 'UTC')) return candidate
+  }
+  return null
+}
+
+export function nextScheduledOccurrence(task: CronTask, now: Date): Date | null {
+  const fields = parseCronExpression(task.cron)
+  if (!fields || task.enabled === false) return null
+  const first = minuteStart(new Date(now.getTime() + 60_000)).getTime()
+  const end = first + 400 * 24 * 60 * 60_000
+  for (let timestamp = first; timestamp <= end;) {
+    const candidate = new Date(timestamp)
+    if (cronFieldsMatch(fields, candidate, task.timeZone ?? 'UTC')) return candidate
+    const parts = zonedDateParts(candidate, task.timeZone ?? 'UTC')
+    if (!fields.month.includes(parts.month) || !fields.hour.includes(parts.hour)) {
+      timestamp += Math.max(1, 60 - parts.minute) * 60_000
+      continue
+    }
+    const nextMinute = fields.minute.find(value => value > parts.minute)
+    timestamp += (nextMinute === undefined ? 60 - parts.minute + fields.minute[0] : nextMinute - parts.minute) * 60_000
   }
   return null
 }
 
 export function resolveCronTaskTimeoutMs(
-  env: { BB_TASK_TIMEOUT_MS?: string } = process.env,
+  env: { BB_TASK_TIMEOUT_MS?: string } | NodeJS.ProcessEnv = process.env,
 ): number {
   const raw = env.BB_TASK_TIMEOUT_MS?.trim()
   if (!raw) return DEFAULT_TASK_TIMEOUT_MS
@@ -420,17 +511,19 @@ export class CronScheduler {
       const workDir = this.resolveCanonicalWorkDir(task.folderPath)
 
       // The scheduled occurrence is now a durable ProductTask TaskRun. Do not
-      // spawn the public CLI or synthesize an empty Core session here.
+      // spawn a second public runtime or synthesize an empty Core session here.
       const durable = await this.taskRuns.submitScheduledTaskRun(
         task.id,
         task.name || task.prompt.slice(0, 60),
         task.prompt,
         workDir,
         execution.trigger === 'schedule' ? logicalOccurrence : `manual:${crypto.randomUUID()}`,
+        task.context ?? { mode: 'independent' },
       )
       const acceptedRun: TaskRun = {
         ...run,
         productRunId: durable.run_id,
+        productTaskId: durable.task_id,
         dispatchGeneration: durable.dispatch_generation,
         output: '已提交到 ProductTask，正在执行',
       }
@@ -446,6 +539,12 @@ export class CronScheduler {
       if (execution.trigger === 'schedule') await this.cronService.updateLastFired(task.id, logicalOccurrence).catch(() => {})
       return failedRun
     }
+  }
+
+  async cancelTaskRun(taskId: string, runId: string): Promise<boolean> {
+    const run = (await readRunsFile()).runs.find(entry => entry.id === runId && entry.taskId === taskId)
+    if (!run || run.status !== 'running' || !run.productRunId || !run.dispatchGeneration || !this.taskRuns.stopScheduledTaskRun) return false
+    return await this.taskRuns.stopScheduledTaskRun(run.productRunId, run.dispatchGeneration)
   }
 
   private resolveCanonicalWorkDir(workDir: string): string {
@@ -473,7 +572,7 @@ export class CronScheduler {
     const timeoutMs = resolveCronTaskTimeoutMs()
     await Promise.all(data.runs.filter((run) => run.status === 'running').map(async (run) => {
       this.runningTasks.set(run.taskId, { startedAt: Date.parse(run.startedAt), runId: run.id })
-      let terminal: 'completed' | 'failed' | undefined
+      let terminal: 'completed' | 'failed' | 'cancelled' | undefined
       let completedAt: string | undefined
       if (run.productRunId && run.dispatchGeneration && this.taskRuns.inspectScheduledTaskRun) {
         try {
@@ -499,6 +598,7 @@ export class CronScheduler {
         durationMs: Math.max(0, Date.parse(settledAt) - Date.parse(run.startedAt)),
         output: terminal === 'completed' ? 'ProductTask 已完成' : undefined,
         ...(terminal === 'failed' ? { error: 'PRODUCT_TASK_NOT_COMPLETED' } : {}),
+        ...(terminal === 'cancelled' ? { output: '已取消' } : {}),
       }
       await updateRun(settled)
       if (this.runningTasks.get(run.taskId)?.runId === run.id) this.runningTasks.delete(run.taskId)

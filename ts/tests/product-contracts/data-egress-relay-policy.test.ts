@@ -50,14 +50,13 @@ test('data egress and relay policy evidence points to runnable behavior tests', 
   }
 })
 
-test('account retention overrides and production invoice reconciliation remain externally unverified', () => {
+test('remote execution has no per-operation consent while relay production reconciliation remains external', () => {
   const egress = json('ts/product-contracts/data-egress-policy.json')
-  expect(egress.external_verification).toEqual({
-    openai_account_retention_override: 'NOT_VERIFIED_EXTERNALLY',
-    ark_account_retention_term: 'NOT_VERIFIED_EXTERNALLY',
-    deepseek_account_api_retention_term: 'NOT_VERIFIED_EXTERNALLY',
-    mimo_account_api_retention_term: 'NOT_VERIFIED_EXTERNALLY',
-    fun_asr_account_retention_term: 'NOT_VERIFIED_EXTERNALLY',
+  expect(egress.execution_contract).toMatchObject({
+    per_operation_consent: false,
+    billing_confirmation: false,
+    installation_identity_required: true,
+    idempotency_required_for_durable_side_effects: true,
   })
   const relay = json('ts/product-contracts/relay-retention-policy.json')
   expect(relay.external_verification).toEqual({

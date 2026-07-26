@@ -119,7 +119,7 @@ describe('vision real-loadtest safety guards', () => {
     expect(validatePng(first).iendOffset).toBeGreaterThan(8)
     expect(validatePng(wrapped).iendOffset).toBeGreaterThan(8)
     expect(Buffer.from(first).equals(Buffer.from(wrapped))).toBe(false)
-    expect(Buffer.from(first).includes(Buffer.from('qf-loadtest\0'))).toBe(true)
+    expect(Buffer.from(first).includes(Buffer.from('billiardbuddy-loadtest\0'))).toBe(true)
     const corrupt = first.slice()
     corrupt[20] = corrupt[20]! ^ 1
     expect(() => validatePng(corrupt)).toThrow('invalid PNG checksum')

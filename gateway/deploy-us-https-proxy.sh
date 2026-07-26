@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run as root on the US Nginx server after copying qfgw-us-https-proxy.conf to /tmp.
+# Run as root on the US Nginx server after copying billiardbuddy-gateway-us-https-proxy.conf to /tmp.
 # It keeps rollback snapshots only for the duration of the deployment and restores
 # them if validation or reload fails.
 # A 1000-window SSE burst needs both the /gw/ location and enough Nginx event
@@ -7,23 +7,23 @@
 # connection. This script requires an effective worker_connections floor of 8192.
 set -euo pipefail
 
-site_file="${QF_US_NGINX_SITE:-/etc/nginx/sites-available/billiards}"
-snippet_source="${QF_US_PROXY_SNIPPET_SOURCE:-/tmp/qfgw-us-https-proxy.conf}"
-snippet_dir="${QF_US_PROXY_SNIPPET_DIR:-/etc/nginx/snippets}"
-snippet_file="$snippet_dir/qfgw-us-https-proxy.conf"
-main_config="${QF_US_NGINX_MAIN_CONFIG:-/etc/nginx/nginx.conf}"
-required_connections="${QF_US_NGINX_WORKER_CONNECTIONS:-8192}"
+site_file="${BB_US_NGINX_SITE:-/etc/nginx/sites-available/billiards}"
+snippet_source="${BB_US_PROXY_SNIPPET_SOURCE:-/tmp/billiardbuddy-gateway-us-https-proxy.conf}"
+snippet_dir="${BB_US_PROXY_SNIPPET_DIR:-/etc/nginx/snippets}"
+snippet_file="$snippet_dir/billiardbuddy-gateway-us-https-proxy.conf"
+main_config="${BB_US_NGINX_MAIN_CONFIG:-/etc/nginx/nginx.conf}"
+required_connections="${BB_US_NGINX_WORKER_CONNECTIONS:-8192}"
 include_line="    include $snippet_file;"
 
 test -f "$site_file"
 test -f "$snippet_source"
 test -f "$main_config"
-systemctl is-active --quiet qfgw-tunnel || {
-  echo 'qfgw-tunnel must be active before exposing /gw/' >&2
+systemctl is-active --quiet billiardbuddy-gateway-tunnel || {
+  echo 'billiardbuddy-gateway-tunnel must be active before exposing /gw/' >&2
   exit 1
 }
 if ! [[ "$required_connections" =~ ^[0-9]+$ ]] || (( 10#$required_connections < 8192 )); then
-  echo 'QF_US_NGINX_WORKER_CONNECTIONS must be a decimal integer of at least 8192' >&2
+  echo 'BB_US_NGINX_WORKER_CONNECTIONS must be a decimal integer of at least 8192' >&2
   exit 2
 fi
 
@@ -49,9 +49,9 @@ worker_connection_lines="$(awk '/^[[:space:]]*worker_connections[[:space:]]+[0-9
 }
 
 if (( 10#$worker_connection_lines < 10#$required_connections )); then
-  main_config_backup="${main_config}.qfgw-capacity-${timestamp}.bak"
+  main_config_backup="${main_config}.billiardbuddy-gateway-capacity-${timestamp}.bak"
   cp -p "$main_config" "$main_config_backup"
-  main_candidate="$(mktemp "${main_config}.qfgw-capacity.XXXXXX")"
+  main_candidate="$(mktemp "${main_config}.billiardbuddy-gateway-capacity.XXXXXX")"
   if ! awk -v required="$required_connections" '
     /^[[:space:]]*worker_connections[[:space:]]+[0-9]+[[:space:]]*;[[:space:]]*$/ {
       sub(/[0-9]+[[:space:]]*;[[:space:]]*$/, required ";")
@@ -71,9 +71,9 @@ fi
 if grep -Fqx "$include_line" "$site_file"; then
   :
 else
-  site_backup="${site_file}.qfgw-proxy-${timestamp}.bak"
+  site_backup="${site_file}.billiardbuddy-gateway-proxy-${timestamp}.bak"
   cp -p "$site_file" "$site_backup"
-  site_candidate="$(mktemp "${site_file}.qfgw-proxy.XXXXXX")"
+  site_candidate="$(mktemp "${site_file}.billiardbuddy-gateway-proxy.XXXXXX")"
   if ! awk -v line="$include_line" '
     !inserted && $0 ~ /^[[:space:]]*listen 443 ssl;[[:space:]]*$/ { print line; inserted = 1 }
     { print }
@@ -89,7 +89,7 @@ fi
 
 install -d -m 755 "$snippet_dir"
 if test -f "$snippet_file"; then
-  snippet_backup="${snippet_file}.qfgw-proxy-${timestamp}.bak"
+  snippet_backup="${snippet_file}.billiardbuddy-gateway-proxy-${timestamp}.bak"
   cp -p "$snippet_file" "$snippet_backup"
 else
   created_snippet=1
@@ -99,7 +99,7 @@ install -m 644 "$snippet_source" "$snippet_file"
 if ! nginx -t; then
   restore_changes
   nginx -t || true
-  echo "qfgw HTTPS proxy/capacity settings were not applied; backups were restored." >&2
+  echo "billiardbuddy-gateway HTTPS proxy/capacity settings were not applied; backups were restored." >&2
   exit 1
 fi
 
@@ -107,10 +107,10 @@ if ! systemctl reload nginx; then
   restore_changes
   nginx -t || true
   systemctl reload nginx || true
-  echo "qfgw HTTPS proxy/capacity settings were not applied because nginx reload failed; backups were restored." >&2
+  echo "billiardbuddy-gateway HTTPS proxy/capacity settings were not applied because nginx reload failed; backups were restored." >&2
   exit 1
 fi
 
 rm -f -- ${main_config_backup:+"$main_config_backup"} ${site_backup:+"$site_backup"} ${snippet_backup:+"$snippet_backup"}
 
-echo "qfgw HTTPS proxy enabled at /gw/ with worker_connections >= $required_connections"
+echo "billiardbuddy-gateway HTTPS proxy enabled at /gw/ with worker_connections >= $required_connections"

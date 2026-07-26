@@ -2,13 +2,13 @@ import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
 import { randomBytes } from 'node:crypto'
 
-export const CURRENT_PRODUCT_STORAGE_MIGRATION_VERSION = 1
+export const CURRENT_PRODUCT_STORAGE_MIGRATION_VERSION = 3
 export const OLDEST_SUPPORTED_PRODUCT_VERSION = '0.4.9'
 export const OLDEST_SUPPORTED_PRODUCT_BASELINE = '2a6e79846a49f45a24080a9b50e93a7c66c12e61'
 
 type MigrationState = {
   schema_version: 1
-  completed_version: typeof CURRENT_PRODUCT_STORAGE_MIGRATION_VERSION
+  completed_version: number
   oldest_supported_product_version: typeof OLDEST_SUPPORTED_PRODUCT_VERSION
   completed_at: string
   backup_id: string
@@ -17,22 +17,22 @@ type MigrationState = {
 type BackupFile = { path: string; mode: number }
 type MigrationJournal = {
   schema_version: 1
-  target_version: typeof CURRENT_PRODUCT_STORAGE_MIGRATION_VERSION
+  target_version: number
   backup_id: string
   existing_paths: string[]
   backed_up_files: BackupFile[]
 }
 
 export type ProductStorageMigrationReport = {
-  version: typeof CURRENT_PRODUCT_STORAGE_MIGRATION_VERSION
+  version: number
   migrated: boolean
   backup_id?: string
 }
 
 export type ProductStorageMigrationDependencies = {
-  migrateManagedSettings: () => Promise<unknown>
   migrateProductTasks: () => Promise<void>
   migrateMedia: () => Promise<void>
+  migrateVoice?: () => Promise<void>
   migrateScheduledTasks: () => Promise<void>
   migrateScheduledTaskRuns: () => Promise<void>
   now?: () => Date
@@ -42,8 +42,6 @@ export type ProductStorageMigrationDependencies = {
 const FIXED_MUTABLE_FILES = [
   'scheduled_tasks.json',
   'scheduled_tasks_log.json',
-  'billiardbuddy/providers.json',
-  'billiardbuddy/settings.json',
   'billiardbuddy/product-tasks.json',
   'billiardbuddy/product-task-authority.v1.json',
 ] as const
@@ -52,12 +50,18 @@ const TRACKED_ROOTS = [
   'billiardbuddy/media/projects',
   'billiardbuddy/media/tasks',
   'billiardbuddy/media/deletions',
+  'billiardbuddy/voice/operations',
   'billiardbuddy/media/assets',
   'billiardbuddy/media/cas/sha256',
 ] as const
 
-const MUTABLE_JSON_ROOTS = new Set(TRACKED_ROOTS.slice(0, 3))
-const BACKUP_ID = /^v1-[0-9]{8}T[0-9]{6}Z-[a-f0-9]{8}$/
+const MUTABLE_JSON_ROOTS = new Set([
+  'billiardbuddy/media/projects',
+  'billiardbuddy/media/tasks',
+  'billiardbuddy/media/deletions',
+  'billiardbuddy/voice/operations',
+])
+const BACKUP_ID = /^v[123]-[0-9]{8}T[0-9]{6}Z-[a-f0-9]{8}$/
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
@@ -114,7 +118,7 @@ async function readJsonIfPresent(filePath: string): Promise<unknown | undefined>
 async function listRegularFiles(root: string): Promise<string[]> {
   const output: string[] = []
   const visit = async (directory: string): Promise<void> => {
-    let entries: Awaited<ReturnType<typeof fs.readdir>>
+    let entries: Array<import('node:fs').Dirent<string>>
     try {
       entries = await fs.readdir(directory, { withFileTypes: true })
     } catch (error) {
@@ -162,23 +166,17 @@ async function preflightSupportedSchemas(configDir: string): Promise<void> {
     if (value.schemaVersion !== undefined) assertVersion(value.schemaVersion, [1], code)
   }
 
-  const providersPath = path.join(configDir, 'billiardbuddy', 'providers.json')
-  try {
-    const providers = await readJsonIfPresent(providersPath)
-    if (isRecord(providers) && providers.schemaVersion !== undefined) {
-      assertVersion(providers.schemaVersion, [1, 2], 'UNSUPPORTED_PROVIDER_INDEX_SCHEMA')
-    }
-  } catch (error) {
-    if (!(error instanceof SyntaxError)) throw error
-  }
-
   for (const relativeRoot of MUTABLE_JSON_ROOTS) {
     for (const filePath of await listRegularFiles(path.join(configDir, ...relativeRoot.split('/')))) {
       if (!filePath.endsWith('.json')) continue
       const value = await readJsonIfPresent(filePath)
-      if (!isRecord(value)) throw new Error('MEDIA_STORAGE_INVALID')
+      if (!isRecord(value)) throw new Error('PRODUCT_STORAGE_INVALID')
       if (relativeRoot === 'billiardbuddy/media/deletions' && value.schema_version === undefined) continue
-      assertVersion(value.schema_version, [1], 'UNSUPPORTED_MEDIA_SCHEMA')
+      assertVersion(
+        value.schema_version,
+        [1],
+        relativeRoot === 'billiardbuddy/voice/operations' ? 'UNSUPPORTED_VOICE_SCHEMA' : 'UNSUPPORTED_MEDIA_SCHEMA',
+      )
     }
   }
 }
@@ -236,7 +234,9 @@ async function createBackup(configDir: string, backupsRoot: string, backupId: st
 function parseJournal(value: unknown): MigrationJournal {
   if (!isRecord(value)
     || value.schema_version !== 1
-    || value.target_version !== CURRENT_PRODUCT_STORAGE_MIGRATION_VERSION
+    || !Number.isSafeInteger(value.target_version)
+    || (value.target_version as number) < 1
+    || (value.target_version as number) > CURRENT_PRODUCT_STORAGE_MIGRATION_VERSION
     || typeof value.backup_id !== 'string'
     || !BACKUP_ID.test(value.backup_id)
     || !Array.isArray(value.existing_paths)
@@ -320,16 +320,16 @@ export class ProductStorageMigrationCoordinator {
 
     await preflightSupportedSchemas(this.configDir)
     const timestamp = this.now().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z')
-    const backupId = `v1-${timestamp}-${randomBytes(4).toString('hex')}`
+    const backupId = `v${CURRENT_PRODUCT_STORAGE_MIGRATION_VERSION}-${timestamp}-${randomBytes(4).toString('hex')}`
     const journal = await createBackup(this.configDir, backupsRoot, backupId)
     await atomicWriteJson(journalPath, journal)
 
     let completed: MigrationState
     try {
       const steps: Array<[string, () => Promise<unknown>]> = [
-        ['managed-settings', this.deps.migrateManagedSettings],
         ['product-tasks', this.deps.migrateProductTasks],
         ['media', this.deps.migrateMedia],
+        ['voice', this.deps.migrateVoice ?? (async () => undefined)],
         ['scheduled-tasks', this.deps.migrateScheduledTasks],
         ['scheduled-task-runs', this.deps.migrateScheduledTaskRuns],
       ]

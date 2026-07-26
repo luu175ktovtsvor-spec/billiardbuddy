@@ -3,7 +3,11 @@ import { createHash } from 'node:crypto'
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { parseMediaToolchainCliOptions, stageMediaToolchain } from './stage-media-toolchain'
+import {
+  machOCodeSignatureNeutralSha256,
+  parseMediaToolchainCliOptions,
+  stageMediaToolchain,
+} from './stage-media-toolchain'
 
 const roots: string[] = []
 
@@ -63,15 +67,47 @@ afterEach(() => {
 })
 
 describe('media toolchain staging', () => {
+  test('hashes Mach-O executable content independently from its code-signature blob', () => {
+    const first = join(temp(), 'first')
+    const second = join(temp(), 'second')
+    const makeMachO = (signature: string, path: string) => {
+      const bytes = Buffer.alloc(144)
+      bytes.writeUInt32LE(0xfeedfacf, 0)
+      bytes.writeUInt32LE(2, 16)
+      bytes.writeUInt32LE(88, 20)
+      bytes.writeUInt32LE(0x19, 32)
+      bytes.writeUInt32LE(72, 36)
+      bytes.write('__LINKEDIT', 40)
+      bytes.writeBigUInt64LE(0x1000n, 64)
+      bytes.writeBigUInt64LE(0x5000n, 80)
+      bytes.writeUInt32LE(0x1d, 104)
+      bytes.writeUInt32LE(16, 108)
+      bytes.writeUInt32LE(128, 112)
+      bytes.writeUInt32LE(16, 116)
+      bytes.write('body-data', 120)
+      bytes.write(signature, 128)
+      writeFileSync(path, bytes)
+    }
+    makeMachO('first-signature', first)
+    makeMachO('other-signature!', second)
+    expect(hash(first)).not.toBe(hash(second))
+    expect(machOCodeSignatureNeutralSha256(first)).toBe(machOCodeSignatureNeutralSha256(second))
+
+    const changed = Buffer.from(readFileSync(second))
+    changed[124] ^= 1
+    writeFileSync(second, changed)
+    expect(machOCodeSignatureNeutralSha256(first)).not.toBe(machOCodeSignatureNeutralSha256(second))
+  })
+
   test('parses only the explicit staging and packaged-artifact verification arguments', () => {
     expect(parseMediaToolchainCliOptions([
       '--verify',
       '--platform', 'darwin',
-      '--destination', '/tmp/BilliardBuddy.app/Contents/Resources/app.asar.unpacked/src-tauri/binaries',
+      '--destination', '/tmp/BilliardBuddy.app/Contents/Resources/app.asar.unpacked/runtime-assets/binaries',
     ])).toEqual({
       verifyOnly: true,
       platform: 'darwin',
-      destinationDir: '/tmp/BilliardBuddy.app/Contents/Resources/app.asar.unpacked/src-tauri/binaries',
+      destinationDir: '/tmp/BilliardBuddy.app/Contents/Resources/app.asar.unpacked/runtime-assets/binaries',
     })
     expect(() => parseMediaToolchainCliOptions(['--platform'])).toThrow('需要一个值')
     expect(() => parseMediaToolchainCliOptions(['--unknown'])).toThrow('未知媒体工具链参数')

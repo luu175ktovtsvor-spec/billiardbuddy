@@ -2,9 +2,9 @@ import { create } from 'zustand'
 
 export type ProductTaskBrowserPreviewMode = 'browser' | 'preview'
 
-export type ProductTaskWorkspaceRightDockPanel = 'review' | 'media' | 'browser-preview'
+export type ProductTaskWorkspaceRightDockPanel = 'run' | 'review' | 'browser-preview'
 
-export type ProductTaskWorkspacePanel = 'review' | 'media' | ProductTaskBrowserPreviewMode | 'terminal'
+export type ProductTaskWorkspacePanel = 'run' | 'review' | ProductTaskBrowserPreviewMode | 'terminal'
 
 /**
  * Product-owned workspace chrome, keyed only by the public product task id.
@@ -13,7 +13,7 @@ export type ProductTaskWorkspacePanel = 'review' | 'media' | ProductTaskBrowserP
  */
 export type ProductTaskWorkspaceState = {
   reviewOpen: boolean
-  mediaOpen: boolean
+  runOpen: boolean
   browserOpen: boolean
   previewOpen: boolean
   terminalOpen: boolean
@@ -26,17 +26,18 @@ type ProductTaskWorkspaceStore = {
   openPanel: (taskId: string, panel: ProductTaskWorkspacePanel, workspaceAvailable?: boolean) => void
   closePanel: (taskId: string, panel: ProductTaskWorkspacePanel) => void
   activatePanel: (taskId: string, panel: ProductTaskWorkspacePanel) => void
+  forgetTask: (taskId: string) => void
 }
 
 const RIGHT_DOCK_PANEL_ORDER: readonly ProductTaskWorkspaceRightDockPanel[] = [
+  'run',
   'review',
-  'media',
   'browser-preview',
 ]
 
 const DEFAULT_WORKSPACE_STATE: ProductTaskWorkspaceState = {
   reviewOpen: false,
-  mediaOpen: false,
+  runOpen: false,
   browserOpen: false,
   previewOpen: false,
   terminalOpen: false,
@@ -60,10 +61,10 @@ function isRightDockPanelOpen(
   panel: ProductTaskWorkspaceRightDockPanel,
 ): boolean {
   switch (panel) {
+    case 'run':
+      return state.runOpen
     case 'review':
       return state.reviewOpen
-    case 'media':
-      return state.mediaOpen
     case 'browser-preview':
       return isBrowserPreviewOpen(state)
   }
@@ -122,15 +123,24 @@ export const useProductTaskWorkspaceStore = create<ProductTaskWorkspaceStore>((s
   byTaskId: {},
 
   openPanel: (taskId, panel, workspaceAvailable = true) => set((state) => {
-    // Review and source preview need a real workspace; renderer state cannot
-    // manufacture that capability for an unbound task.
+    // Review and source preview need a real workspace; the read-only browser
+    // is an Electron capability and remains useful for tasks without one.
     if (!workspaceAvailable && (panel === 'review' || panel === 'preview')) return state
     const current = currentState(state.byTaskId, taskId)
     let next: ProductTaskWorkspaceState
 
     switch (panel) {
+      case 'run':
+        next = { ...current, runOpen: true, activePanel: 'run' }
+        break
       case 'browser':
-        return state
+        next = {
+          ...current,
+          browserOpen: true,
+          activePanel: 'browser-preview',
+          activeBrowserPreviewMode: 'browser',
+        }
+        break
       case 'terminal':
         next = { ...current, terminalOpen: true }
         break
@@ -145,9 +155,6 @@ export const useProductTaskWorkspaceStore = create<ProductTaskWorkspaceStore>((s
       case 'review':
         next = { ...current, reviewOpen: true, activePanel: 'review' }
         break
-      case 'media':
-        next = { ...current, mediaOpen: true, activePanel: 'media' }
-        break
     }
 
     return replaceTaskState(state, taskId, next)
@@ -158,17 +165,17 @@ export const useProductTaskWorkspaceStore = create<ProductTaskWorkspaceStore>((s
     let next: ProductTaskWorkspaceState
 
     switch (panel) {
+      case 'run': {
+        next = { ...current, runOpen: false }
+        next.activePanel = current.activePanel === 'run'
+          ? nextOpenRightDockPanel('run', next)
+          : current.activePanel
+        break
+      }
       case 'review': {
         next = { ...current, reviewOpen: false }
         next.activePanel = current.activePanel === 'review'
           ? nextOpenRightDockPanel('review', next)
-          : current.activePanel
-        break
-      }
-      case 'media': {
-        next = { ...current, mediaOpen: false }
-        next.activePanel = current.activePanel === 'media'
-          ? nextOpenRightDockPanel('media', next)
           : current.activePanel
         break
       }
@@ -200,11 +207,11 @@ export const useProductTaskWorkspaceStore = create<ProductTaskWorkspaceStore>((s
     let next = current
 
     switch (panel) {
+      case 'run':
+        if (current.runOpen) next = { ...current, activePanel: 'run' }
+        break
       case 'review':
         if (current.reviewOpen) next = { ...current, activePanel: 'review' }
-        break
-      case 'media':
-        if (current.mediaOpen) next = { ...current, activePanel: 'media' }
         break
       case 'browser':
         if (current.browserOpen) {
@@ -230,5 +237,11 @@ export const useProductTaskWorkspaceStore = create<ProductTaskWorkspaceStore>((s
     }
 
     return next === current ? state : replaceTaskState(state, taskId, next)
+  }),
+
+  forgetTask: (taskId) => set((state) => {
+    const byTaskId = { ...state.byTaskId }
+    delete byTaskId[taskId]
+    return { byTaskId }
   }),
 }))

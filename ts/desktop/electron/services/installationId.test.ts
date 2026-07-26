@@ -18,7 +18,7 @@ describe('ensureInstallationId', () => {
   it('generates a gateway-format id on first launch and persists it without group/world access', () => {
     const dir = tempDir()
     const id = ensureInstallationId(dir, () => '1111-2222-3333-4444')
-    expect(id).toMatch(/^[A-Za-z0-9._-]{8,128}$/) // matches the gateway X-QF-Client-ID pattern
+    expect(id).toMatch(/^[A-Za-z0-9._-]{8,128}$/) // matches the gateway X-BB-Installation-ID pattern
     expect(id.startsWith('bb-')).toBe(true)
     const file = path.join(dir, 'installation-id.json')
     expect(JSON.parse(fs.readFileSync(file, 'utf8')).installationId).toBe(id)

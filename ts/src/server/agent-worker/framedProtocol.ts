@@ -37,7 +37,9 @@ export class AgentWorkerProtocol {
     if (this.terminal) return
     if (message.type === 'start') return this.emit(await this.service.start(message))
     if (message.type === 'input') { const result = await this.service.input(message.text); if (result) this.emit(result); return }
+    if (message.type === 'steer') { const result = await this.service.steer(message.queue_item_id, message.text); if (result) this.emit(result); return }
     if (message.type === 'approval_response') { const result = await this.service.approval(message.request_id, message.approved); if (result) this.emit(result); return }
+    if (message.type === 'question_response') { const result = await this.service.answer(message.request_id, message.answers); if (result) this.emit(result); return }
     if (message.type === 'stop') { this.terminal = true; return this.emit(await this.service.stop()) }
     if (message.type === 'shutdown') { await this.service.shutdown(); return this.emit({ type: 'shutdown' }) }
     this.emit({ type: 'fatal', code: 'PROTOCOL_INVALID' })
@@ -48,10 +50,12 @@ function exact(value: Record<string, unknown>, keys: readonly string[]): boolean
 function record(value: unknown): value is Record<string, unknown> { return Boolean(value) && typeof value === 'object' && !Array.isArray(value) }
 function validInbound(value: unknown): value is AgentWorkerInbound {
   if (!record(value) || typeof value.type !== 'string') return false
-  if (value.type === 'hello') return exact(value, ['type', 'versions', 'capabilities']) && record(value.versions) && exact(value.versions, ['min', 'max']) && Number.isInteger(value.versions.min) && Number.isInteger(value.versions.max) && Array.isArray(value.capabilities) && value.capabilities.every(capability => typeof capability === 'string')
+  if (value.type === 'hello') return exact(value, ['type', 'versions', 'capabilities']) && record(value.versions) && exact(value.versions, ['min', 'max']) && typeof value.versions.min === 'number' && Number.isInteger(value.versions.min) && typeof value.versions.max === 'number' && Number.isInteger(value.versions.max) && Array.isArray(value.capabilities) && value.capabilities.every(capability => typeof capability === 'string')
   if (value.type === 'ready' || value.type === 'stop' || value.type === 'shutdown') return exact(value, ['type'])
   if (value.type === 'input') return exact(value, ['type', 'text']) && typeof value.text === 'string'
+  if (value.type === 'steer') return exact(value, ['type', 'queue_item_id', 'text']) && typeof value.queue_item_id === 'string' && /^queue_[a-f0-9-]{36}$/.test(value.queue_item_id) && typeof value.text === 'string'
   if (value.type === 'approval_response') return exact(value, ['type', 'request_id', 'approved']) && typeof value.request_id === 'string' && typeof value.approved === 'boolean'
-  if (value.type === 'start') return exact(value, ['type', 'run_id', 'dispatch_generation', 'scheduler_receipt', 'envelope']) && typeof value.run_id === 'string' && Number.isInteger(value.dispatch_generation) && value.dispatch_generation > 0 && record(value.scheduler_receipt) && record(value.envelope)
+  if (value.type === 'question_response') return exact(value, ['type', 'request_id', 'answers']) && typeof value.request_id === 'string' && Array.isArray(value.answers) && value.answers.length > 0 && value.answers.length <= 8 && value.answers.every(answer => typeof answer === 'string' && answer.trim().length > 0 && answer.length <= 4_000)
+  if (value.type === 'start') return exact(value, ['type', 'run_id', 'dispatch_generation', 'scheduler_receipt', 'envelope']) && typeof value.run_id === 'string' && typeof value.dispatch_generation === 'number' && Number.isInteger(value.dispatch_generation) && value.dispatch_generation > 0 && record(value.scheduler_receipt) && record(value.envelope)
   return false
 }

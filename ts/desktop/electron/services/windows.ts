@@ -27,7 +27,7 @@ export type WindowChromeOptions = Pick<
 >
 
 export function windowStatePath(app: App, env: NodeJS.ProcessEnv = process.env): string {
-  return path.join(env.CLAUDE_CONFIG_DIR || app.getPath('userData'), WINDOW_STATE_FILE)
+  return path.join(env.BILLIARDBUDDY_CONFIG_DIR || app.getPath('userData'), WINDOW_STATE_FILE)
 }
 
 export function isPersistableWindowState(state: StoredWindowState): boolean {

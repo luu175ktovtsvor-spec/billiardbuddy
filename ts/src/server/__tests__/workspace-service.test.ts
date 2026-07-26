@@ -187,32 +187,15 @@ describe('WorkspaceService', () => {
     expect(diff.diff?.length).toBeGreaterThan(0)
   })
 
-  it('prefers the live git diff over stale transcript edits for a currently changed file', async () => {
+  it('uses the live git diff as the only source for a currently changed file', async () => {
     const repoDir = await createGitWorkspace()
-    const service = new WorkspaceService(
-      async (sessionId) => sessionId === 'session-1' ? repoDir : null,
-      async () => [{
-        id: 'assistant-1',
-        type: 'tool_use',
-        timestamp: new Date().toISOString(),
-        content: [{
-          type: 'tool_use',
-          name: 'Edit',
-          input: {
-            file_path: 'tracked.txt',
-            old_string: 'before\n',
-            new_string: 'model snapshot\n',
-          },
-        }],
-      }],
-    )
+    const service = new WorkspaceService(async (sessionId) => sessionId === 'session-1' ? repoDir : null)
 
     const diff = await service.getDiff('session-1', 'tracked.txt')
 
     expect(diff.state).toBe('ok')
     expect(diff.diff).toContain('diff --git a/tracked.txt b/tracked.txt')
     expect(diff.diff).toContain('+after')
-    expect(diff.diff).not.toContain('+model snapshot')
   })
 
   it('returns explicit non-git and missing-workdir states', async () => {
@@ -242,28 +225,12 @@ describe('WorkspaceService', () => {
     })
   })
 
-  it('reports session tool edits without requiring a git repository', async () => {
+  it('does not infer non-git status from a retired transcript resolver', async () => {
     const nonGitDir = await makeTempDir('workspace-service-session-changes-')
     await fs.mkdir(path.join(nonGitDir, 'src'))
     await fs.writeFile(path.join(nonGitDir, 'src/App.jsx'), 'export default function App() { return <main>New</main> }\n')
 
-    const service = new WorkspaceService(
-      async () => nonGitDir,
-      async () => [{
-        id: 'assistant-1',
-        type: 'tool_use',
-        timestamp: new Date().toISOString(),
-        content: [{
-          type: 'tool_use',
-          name: 'Edit',
-          input: {
-            file_path: 'src/App.jsx',
-            old_string: 'export default function App() { return <main>Old</main> }\n',
-            new_string: 'export default function App() { return <main>New</main> }\n',
-          },
-        }],
-      }],
-    )
+    const service = new WorkspaceService(async () => nonGitDir)
 
     const status = await service.getStatus('session-1')
 
@@ -271,42 +238,22 @@ describe('WorkspaceService', () => {
       state: 'ok',
       workDir: nonGitDir,
       isGitRepo: false,
-      changedFiles: [{
-        path: 'src/App.jsx',
-        status: 'modified',
-        additions: 1,
-        deletions: 1,
-      }],
+      changedFiles: [],
     })
 
     const diff = await service.getDiff('session-1', 'src/App.jsx')
     expect(diff.state).toBe('ok')
-    expect(diff.diff).toContain('diff --session a/src/App.jsx b/src/App.jsx')
-    expect(diff.diff).toContain('-export default function App() { return <main>Old</main> }')
+    expect(diff.diff).toContain('diff --session /dev/null b/src/App.jsx')
     expect(diff.diff).toContain('+export default function App() { return <main>New</main> }')
   })
 
-  it('reports file-history changes without requiring a git repository', async () => {
+  it('does not infer non-git status from retired file-history state', async () => {
     const nonGitDir = await makeTempDir('workspace-service-file-history-')
     const generatedFile = path.join(nonGitDir, 'aacc', 'src', 'App.tsx')
     await fs.mkdir(path.dirname(generatedFile), { recursive: true })
     await fs.writeFile(generatedFile, 'export default function App() { return <main>Tetris</main> }\n')
 
-    const service = new WorkspaceService(
-      async () => nonGitDir,
-      async () => [],
-      async () => [{
-        messageId: '11111111-1111-4111-8111-111111111111',
-        timestamp: new Date('2026-01-01T00:00:00.000Z'),
-        trackedFileBackups: {
-          'aacc/src/App.tsx': {
-            backupFileName: null,
-            version: 1,
-            backupTime: new Date('2026-01-01T00:00:00.000Z'),
-          },
-        },
-      }],
-    )
+    const service = new WorkspaceService(async () => nonGitDir)
 
     const status = await service.getStatus('session-1')
 
@@ -314,54 +261,13 @@ describe('WorkspaceService', () => {
       state: 'ok',
       workDir: nonGitDir,
       isGitRepo: false,
-      changedFiles: [{
-        path: 'aacc/src/App.tsx',
-        status: 'added',
-        additions: 1,
-        deletions: 0,
-      }],
+      changedFiles: [],
     })
 
     const diff = await service.getDiff('session-1', 'aacc/src/App.tsx')
     expect(diff.state).toBe('ok')
     expect(diff.diff).toContain('diff --session /dev/null b/aacc/src/App.tsx')
     expect(diff.diff).toContain('+export default function App() { return <main>Tetris</main> }')
-  })
-
-  it('matches Windows file-history paths case-insensitively inside the workspace', async () => {
-    if (process.platform !== 'win32') return
-
-    const nonGitDir = await makeTempDir('workspace-service-windows-paths-')
-    const targetFile = path.join(nonGitDir, 'Child', 'index.ts')
-    await fs.mkdir(path.dirname(targetFile), { recursive: true })
-    await fs.writeFile(targetFile, 'export const value = 1\n')
-
-    const lowerDrivePath = targetFile[0]?.toLowerCase() + targetFile.slice(1)
-    const service = new WorkspaceService(
-      async () => nonGitDir,
-      async () => [],
-      async () => [{
-        messageId: '22222222-2222-4222-8222-222222222222',
-        timestamp: new Date('2026-01-01T00:00:00.000Z'),
-        trackedFileBackups: {
-          [lowerDrivePath]: {
-            backupFileName: null,
-            version: 1,
-            backupTime: new Date('2026-01-01T00:00:00.000Z'),
-          },
-        },
-      }],
-    )
-
-    const status = await service.getStatus('session-1')
-
-    expect(status.changedFiles).toEqual([{
-      path: 'Child/index.ts',
-      oldPath: undefined,
-      status: 'added',
-      additions: 1,
-      deletions: 0,
-    }])
   })
 
   it('rejects traversal attempts for file, diff, and tree access', async () => {

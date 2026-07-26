@@ -1,6 +1,7 @@
 export const PROVIDER_CAPABILITIES = [
   'TextReasoning',
   'VisualEvidence',
+  'MediaReasoning',
   'ImageGeneration',
   'SpeechTranscription',
 ] as const
@@ -28,6 +29,12 @@ export interface TextReasoningProviderContract {
 /** Provider-neutral visual-evidence capability; image bytes remain gateway-owned. */
 export interface VisualEvidenceProviderContract {
   capability: 'VisualEvidence'
+  model_id: string
+}
+
+/** Provider-neutral media planning/QA capability; it is not the chat visual-evidence bridge. */
+export interface MediaReasoningProviderContract {
+  capability: 'MediaReasoning'
   model_id: string
 }
 

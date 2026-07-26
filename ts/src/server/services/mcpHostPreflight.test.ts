@@ -2,7 +2,6 @@ import { afterEach, beforeEach, describe, expect, it } from 'bun:test'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { resetMcpStdioEnvironmentCacheForTests } from '../../utils/mcpStdioEnvironment.js'
 import { inspectMcpHostCommand } from './mcpHostPreflight.js'
 
 let tmpDir: string
@@ -25,11 +24,13 @@ async function writeFakeZsh(filePath: string) {
       '#!/bin/sh',
       'command=',
       'while [ "$#" -gt 0 ]; do',
-      '  if [ "$1" = "-c" ]; then',
+      '  case "$1" in',
+      '  *c)',
       '    shift',
       '    command="$1"',
       '    break',
-      '  fi',
+      '    ;;',
+      '  esac',
       '  shift',
       'done',
       'if [ -f "$HOME/.zshrc" ]; then',
@@ -53,7 +54,6 @@ describe('MCP host preflight', () => {
         process.env.BB_DISABLE_TERMINAL_SHELL_ENV,
     }
     delete process.env.BB_DISABLE_TERMINAL_SHELL_ENV
-    resetMcpStdioEnvironmentCacheForTests()
   })
 
   afterEach(async () => {
@@ -64,7 +64,6 @@ describe('MCP host preflight', () => {
         process.env[key] = value
       }
     }
-    resetMcpStdioEnvironmentCacheForTests()
     await rm(tmpDir, { recursive: true, force: true })
   })
 

@@ -3,7 +3,7 @@ import {
   commitImageVersionInputSchema,
   createImageProjectInputSchema,
   imageWorkbenchProjectSchema,
-  productTaskOwnerIdSchema,
+  mediaOwnerSchema,
   publicImageWorkbenchProjectSchema,
   publicMediaTaskSchema,
   publicVideoStudioProjectSchema,
@@ -28,20 +28,16 @@ const baseImageProject = {
   outputs: [],
 }
 
-describe('media product task ownership contract', () => {
-  test('keeps legacy standalone projects valid while allowing an opaque public task owner', () => {
-    expect(imageWorkbenchProjectSchema.parse(baseImageProject).product_task_id).toBeUndefined()
-
-    const owned = imageWorkbenchProjectSchema.parse({
-      ...baseImageProject,
-      product_task_id: 'task_0f15e1d4-7ced-4a8d-a980-d52dc0b55ffb',
+describe('standalone media ownership contract', () => {
+  test('only accepts the independent local workbench owner', () => {
+    expect(imageWorkbenchProjectSchema.parse(baseImageProject).owner).toEqual({
+      kind: 'standalone',
+      owner_id: 'local_workbench',
     })
-    expect(owned.product_task_id).toBe('task_0f15e1d4-7ced-4a8d-a980-d52dc0b55ffb')
-  })
-
-  test('does not accept a Core-style session id as a media owner', () => {
-    expect(productTaskOwnerIdSchema.safeParse('session_internal_1234567890').success).toBe(false)
-    expect(productTaskOwnerIdSchema.safeParse('task_0123456789abcdef').success).toBe(true)
+    expect(mediaOwnerSchema.safeParse({
+      kind: 'product_task',
+      owner_id: 'task_0123456789abcdef',
+    }).success).toBe(false)
   })
 })
 
@@ -120,20 +116,24 @@ describe('provider-neutral image creation contract', () => {
     }).success).toBe(false)
   })
 
-  test('keeps relay acknowledgement bookkeeping out of the renderer task contract', () => {
+  test('exposes the job sequence while keeping provider polling and acknowledgement bookkeeping private', () => {
     const task = publicMediaTaskSchema.parse({
       schema_version: 1,
       id: 'task_public01',
       project_id: 'img_12345678',
       kind: 'image.generate',
       status: 'succeeded',
+      status_sequence: 4,
       progress: 100,
       stage: '生成完成',
+      poll_after_seconds: 30,
       remote_result_acknowledged_at: '2026-07-24T05:00:00.000Z',
       created_at: '2026-07-24T04:59:00.000Z',
       updated_at: '2026-07-24T05:00:00.000Z',
     })
     expect(task).not.toHaveProperty('remote_result_acknowledged_at')
+    expect(task).not.toHaveProperty('poll_after_seconds')
+    expect(task.status_sequence).toBe(4)
   })
 
   test('exposes video fingerprints and versions without exposing source paths', () => {
@@ -161,8 +161,28 @@ describe('provider-neutral image creation contract', () => {
       evidence: [],
       timeline_versions: [],
       alternatives: [],
+      preview_task_id: 'task_preview01',
+      preview: {
+        timeline_version_id: 'timeline_preview01',
+        asset_id: 'preview_asset001',
+        asset_path: '/api/media/assets/vid_12345678/preview_asset001.mp4',
+        content_hash: `sha256:${'b'.repeat(64)}`,
+        created_at: baseImageProject.updated_at,
+      },
     })
     expect(project.sources[0]?.fingerprint).toBe(`sha256:${'a'.repeat(64)}`)
     expect(project.sources[0]).not.toHaveProperty('path')
+    expect(project.preview).toMatchObject({ asset_id: 'preview_asset001' })
+    expect(publicMediaTaskSchema.safeParse({
+      schema_version: 1,
+      id: 'task_preview01',
+      project_id: project.id,
+      kind: 'video.preview',
+      status: 'running',
+      progress: 50,
+      stage: '正在生成预览',
+      created_at: baseImageProject.created_at,
+      updated_at: baseImageProject.updated_at,
+    }).success).toBe(true)
   })
 })

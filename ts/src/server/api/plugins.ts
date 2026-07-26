@@ -1,15 +1,12 @@
-import type { PluginScope } from '../../utils/plugins/schemas.js'
 import { ApiError } from '../middleware/errorHandler.js'
 import { PluginService } from '../services/pluginService.js'
-import { conversationService } from '../services/conversationService.js'
-import { updateSessionSlashCommands } from '../ws/handler.js'
-import { productTaskService, type ProductTaskService } from '../product/taskService.js'
+import type { ProductPluginScope } from '../services/productPluginRegistry.js'
 
 const pluginService = new PluginService()
 
 type PluginTaskReloadSummary = {
   applied: boolean
-  reason?: 'not_running' | 'failed'
+  reason?: 'next_turn'
   commands: number
   agents: number
   plugins: number
@@ -21,7 +18,6 @@ export async function handlePluginsApi(
   req: Request,
   url: URL,
   segments: string[],
-  tasks: Pick<ProductTaskService, 'resolveCoreSessionId'> = productTaskService,
 ): Promise<Response> {
   try {
     const method = req.method
@@ -44,22 +40,25 @@ export async function handlePluginsApi(
 
     if (method === 'POST' && sub === 'reload') {
       const taskId = optionalProductTaskId(url.searchParams)
-      const coreSessionId = taskId
-        ? await resolveProductTaskCoreSessionId(taskId, tasks)
-        : undefined
       const response = await pluginService.reloadPlugins(cwd)
-      if (!coreSessionId) {
+      if (!taskId) {
         return Response.json(response)
       }
 
       return Response.json({
         ...response,
-        task: await reloadCoreSessionPlugins(coreSessionId),
+        task: nextTurnPluginSummary(),
       })
     }
 
     if (method === 'POST' && sub) {
       const body = await parseJsonBody(req)
+      const actionCwd = cwd || (typeof body.cwd === 'string' && body.cwd ? body.cwd : undefined)
+      if (sub === 'install') {
+        const sourcePath = asString(body.sourcePath)
+        if (!sourcePath) throw new ApiError(400, 'Invalid plugin source', 'PLUGIN_ACTION_INVALID')
+        return Response.json(await pluginService.installPlugin(sourcePath, coerceScope(body.scope) ?? 'user', actionCwd))
+      }
       const pluginId = asString(body.id)
       if (!pluginId) {
         throw new ApiError(400, 'Invalid plugin request', 'PLUGIN_ACTION_INVALID')
@@ -69,12 +68,12 @@ export async function handlePluginsApi(
 
       switch (sub) {
         case 'enable':
-          return Response.json(await pluginService.enablePlugin(pluginId, scope))
+          return Response.json(await pluginService.enablePlugin(pluginId, scope, actionCwd))
         case 'disable':
-          return Response.json(await pluginService.disablePlugin(pluginId, scope))
+          return Response.json(await pluginService.disablePlugin(pluginId, scope, actionCwd))
         case 'update':
           return Response.json(
-            await pluginService.updatePlugin(pluginId, scope as PluginScope | undefined),
+            await pluginService.updatePlugin(pluginId, scope, actionCwd),
           )
         case 'uninstall':
           return Response.json(
@@ -82,6 +81,7 @@ export async function handlePluginsApi(
               pluginId,
               scope,
               body.keepData === true,
+              actionCwd,
             ),
           )
         default:
@@ -102,62 +102,10 @@ function optionalProductTaskId(searchParams: URLSearchParams): string | undefine
   throw new ApiError(503, 'Product task is unavailable', 'PRODUCT_TASK_UNAVAILABLE')
 }
 
-async function resolveProductTaskCoreSessionId(
-  taskId: string,
-  tasks: Pick<ProductTaskService, 'resolveCoreSessionId'>,
-): Promise<string> {
-  try {
-    // This is the product/Core boundary: a renderer only supplies an opaque
-    // product task id, and the Core session binding remains server-private.
-    return await tasks.resolveCoreSessionId(taskId)
-  } catch {
-    // Do not expose whether the private binding is absent, stale, or the
-    // product store itself is temporarily unavailable.
-    throw new ApiError(503, 'Product task is unavailable', 'PRODUCT_TASK_UNAVAILABLE')
-  }
-}
-
-async function reloadCoreSessionPlugins(
-  coreSessionId: string,
-): Promise<PluginTaskReloadSummary> {
-  if (!conversationService.hasSession(coreSessionId)) {
-    return inactiveTaskPluginSummary()
-  }
-
-  try {
-    const response = await conversationService.requestControl(
-      coreSessionId,
-      { subtype: 'reload_plugins' },
-      120_000,
-    )
-    const commands = Array.isArray(response.commands) ? response.commands : []
-    const normalizedCommands = updateSessionSlashCommands(coreSessionId, commands)
-
-    return {
-      applied: true,
-      commands: normalizedCommands.length,
-      agents: Array.isArray(response.agents) ? response.agents.length : 0,
-      plugins: Array.isArray(response.plugins) ? response.plugins.length : 0,
-      mcpServers: Array.isArray(response.mcpServers) ? response.mcpServers.length : 0,
-      errors: typeof response.error_count === 'number' ? response.error_count : 0,
-    }
-  } catch {
-    return {
-      applied: false,
-      reason: 'failed',
-      commands: 0,
-      agents: 0,
-      plugins: 0,
-      mcpServers: 0,
-      errors: 0,
-    }
-  }
-}
-
-function inactiveTaskPluginSummary(): PluginTaskReloadSummary {
+function nextTurnPluginSummary(): PluginTaskReloadSummary {
   return {
     applied: false,
-    reason: 'not_running',
+    reason: 'next_turn',
     commands: 0,
     agents: 0,
     plugins: 0,
@@ -178,18 +126,11 @@ function asString(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined
 }
 
-function coerceScope(value: unknown):
-  | 'user'
-  | 'project'
-  | 'local'
-  | 'managed'
-  | undefined {
+function coerceScope(value: unknown): ProductPluginScope | undefined {
   if (value == null) return undefined
   if (
     value === 'user' ||
-    value === 'project' ||
-    value === 'local' ||
-    value === 'managed'
+    value === 'project'
   ) {
     return value
   }

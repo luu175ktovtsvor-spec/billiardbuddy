@@ -1,0 +1,24 @@
+{
+  "support_id": "cron-run-log-v0-private-runtime-fields-to-v1",
+  "immutable": true,
+  "store": {
+    "runs": [
+      {
+        "id": "run-legacy01",
+        "taskId": "legacy01",
+        "taskName": "每日营业复盘",
+        "startedAt": "2026-07-19T00:00:00.000Z",
+        "completedAt": "2026-07-19T00:00:05.000Z",
+        "status": "completed",
+        "prompt": "整理今天的营业数据并给出明日建议。",
+        "output": "已完成营业复盘",
+        "durationMs": 5000,
+        "occurrenceAt": "2026-07-19T00:00:00.000Z",
+        "trigger": "schedule",
+        "sessionId": "private-legacy-session",
+        "model": "legacy-model",
+        "providerId": "legacy-provider"
+      }
+    ]
+  }
+}

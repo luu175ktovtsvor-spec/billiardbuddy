@@ -62,9 +62,8 @@ export type ThinkingMode = 'enabled' | 'disabled'
 
 function usage(exitCode = 2): never {
   console.error(`Usage:
-  QF_LOADTEST_URL=http://127.0.0.1:8799 \\
-  QF_LOADTEST_TOKEN=<installation-access-token> \\
-  QF_LOADTEST_CONSENT_RECEIPT=<64-hex-consent-receipt> \\
+  BB_LOADTEST_URL=http://127.0.0.1:8799 \\
+  BB_LOADTEST_TOKEN=<installation-access-token> \\
   bun gateway/vision-real-loadtest.ts --execute --generate-image \\
     --unique-image-per-request [options]
 
@@ -81,7 +80,7 @@ Options:
   --unique-image-per-request  Required acknowledgement; prevents cache/singleflight bias
   --max-tokens=<n>            Downstream completion cap (default: 16)
   --thinking=enabled|disabled Thinking mode; bridge defaults to enabled for its
-                               downstream DeepSeek request, native MiMo defaults disabled
+                               downstream DeepSeek request, direct visual checks default disabled
   --timeout-ms=<n>            Per-request deadline (default: 180000)
   --health-interval-ms=<n>    Health sampling interval (default: 100)
   --health-timeout-ms=<n>     Bound each /healthz sample (default: 1000)
@@ -281,16 +280,16 @@ export function parseLoadTarget(raw: string): LoadTarget {
   try {
     base = new URL(raw)
   } catch {
-    throw new Error('QF_LOADTEST_URL must be an absolute HTTP(S) URL')
+    throw new Error('BB_LOADTEST_URL must be an absolute HTTP(S) URL')
   }
   if (base.protocol !== 'http:' && base.protocol !== 'https:') {
-    throw new Error('QF_LOADTEST_URL must be an absolute HTTP(S) URL')
+    throw new Error('BB_LOADTEST_URL must be an absolute HTTP(S) URL')
   }
   if (base.username || base.password || base.search || base.hash || raw.includes('?') || raw.includes('#')) {
-    throw new Error('QF_LOADTEST_URL must not include credentials, a query, or a fragment')
+    throw new Error('BB_LOADTEST_URL must not include credentials, a query, or a fragment')
   }
   if (base.protocol === 'http:' && !isHttpLoopback(base)) {
-    throw new Error('QF_LOADTEST_URL requires HTTPS unless it is a loopback HTTP target')
+    throw new Error('BB_LOADTEST_URL requires HTTPS unless it is a loopback HTTP target')
   }
   const path = base.pathname.replace(/\/+$/, '')
   return {
@@ -341,7 +340,7 @@ function pngChunk(kind: string, data: Uint8Array): Uint8Array {
 function loadTestText(index: number): Uint8Array {
   // PNG tEXt uses a NUL-separated keyword and Latin-1 text. It makes otherwise
   // identical image pixels distinct to the VisionBridge SHA-256 cache as well.
-  return encoder.encode(`qf-loadtest\0${index}`)
+  return encoder.encode(`billiardbuddy-loadtest\0${index}`)
 }
 
 function pngChunkType(bytes: Uint8Array, offset: number): string {
@@ -542,16 +541,11 @@ async function main(): Promise<void> {
     throw new Error('--unique-image-per-request is required to avoid VisionBridge cache/singleflight bias')
   }
 
-  const rawBaseUrl = process.env.QF_LOADTEST_URL?.trim()
-  if (!rawBaseUrl) throw new Error('QF_LOADTEST_URL is required with --execute')
+  const rawBaseUrl = process.env.BB_LOADTEST_URL?.trim()
+  if (!rawBaseUrl) throw new Error('BB_LOADTEST_URL is required with --execute')
   const { base, baseUrl, targetOrigin } = parseLoadTarget(rawBaseUrl)
-  const token = process.env.QF_LOADTEST_TOKEN?.trim()
-  if (!token) throw new Error('QF_LOADTEST_TOKEN installation access token is required with --execute')
-  const consentReceiptId = process.env.QF_LOADTEST_CONSENT_RECEIPT?.trim() ?? ''
-  if (!/^[a-f0-9]{64}$/.test(consentReceiptId)) {
-    throw new Error('QF_LOADTEST_CONSENT_RECEIPT must be a 64-character lowercase hex receipt')
-  }
-
+  const token = process.env.BB_LOADTEST_TOKEN?.trim()
+  if (!token) throw new Error('BB_LOADTEST_TOKEN installation access token is required with --execute')
   const users = boundedInteger(option(args, '--users'), '--users', 1, MAX_USERS)
   const windows = boundedInteger(option(args, '--windows'), '--windows', 1, MAX_WINDOWS)
   const maxTokens = integer(option(args, '--max-tokens'), '--max-tokens', 16)
@@ -589,7 +583,6 @@ async function main(): Promise<void> {
   const headers = {
     Authorization: `Bearer ${token}`,
     'Content-Type': 'application/json',
-    'X-BB-Data-Egress-Consent': consentReceiptId,
     'X-BB-Provider-Protocol': PROVIDER_GATEWAY_PROTOCOL,
   }
 
@@ -648,7 +641,7 @@ async function main(): Promise<void> {
       ]
       const response = await fetch(`${baseUrl}/v1/chat/completions`, {
         method: 'POST',
-        headers: { ...headers, 'X-QF-Client-ID': installation },
+        headers: { ...headers, 'X-BB-Installation-ID': installation },
         signal: controller.signal,
         body: JSON.stringify({
           model,

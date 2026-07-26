@@ -56,7 +56,7 @@
     "bootstrap_credential": "activation_only",
     "untrusted_inputs": [
       "installation_id",
-      "X-QF-Client-ID",
+      "X-BB-Installation-ID",
       "client_plan"
     ],
     "gateway_offline_grace": false
@@ -78,5 +78,5 @@
     "refresh_proof_logout": true,
     "strict_device_limit": true
   },
-  "sha256": "59f30eb653e6f7de7fb64bd8c2217f73a2a9afb49a44a2c246434207f30d91d3"
+  "sha256": "f994f4041f0f60a47b29fad0bef7fcc5b8f6623fa1ee30ad0b9a22c8ebc7d18c"
 }

@@ -13,6 +13,7 @@ type PluginActionPayload = {
   id: string
   scope?: PluginScope
   keepData?: boolean
+  cwd?: string
 }
 
 const PLUGIN_REQUEST_ERROR_CODES = new Set<PluginRequestErrorCode>([
@@ -34,6 +35,7 @@ const PLUGIN_ERROR_TRANSLATION_KEYS: Record<PluginRequestErrorCode, string> = {
 const PLUGIN_ACTION_TRANSLATION_KEYS: Record<PluginAction, string> = {
   enabled: 'settings.plugins.action.enabled',
   disabled: 'settings.plugins.action.disabled',
+  installed: 'settings.plugins.action.installed',
   updated: 'settings.plugins.action.updated',
   uninstalled: 'settings.plugins.action.uninstalled',
 }
@@ -62,6 +64,7 @@ export function pluginActionTranslationKey(action: PluginAction) {
   return PLUGIN_ACTION_TRANSLATION_KEYS[action] as
     | 'settings.plugins.action.enabled'
     | 'settings.plugins.action.disabled'
+    | 'settings.plugins.action.installed'
     | 'settings.plugins.action.updated'
     | 'settings.plugins.action.uninstalled'
 }
@@ -69,7 +72,7 @@ export function pluginActionTranslationKey(action: PluginAction) {
 export function pluginTaskSyncTranslationKey(task?: PluginTaskReloadSummary) {
   if (!task || task.applied) return undefined
 
-  return task.reason === 'not_running'
+  return task.reason === 'next_turn'
     ? 'settings.plugins.taskSync.nextRun'
     : 'settings.plugins.taskSync.failed'
 }
@@ -97,6 +100,9 @@ export const pluginsApi = {
 
   uninstall: (payload: PluginActionPayload) =>
     api.post<{ ok: true; action: PluginAction }>('/api/plugins/uninstall', payload),
+
+  install: (payload: { sourcePath: string; scope: 'user' | 'project'; cwd?: string }) =>
+    api.post<{ ok: true; action: PluginAction }>('/api/plugins/install', payload),
 
   reload: (cwd?: string, taskId?: string) => {
     const query = new URLSearchParams()

@@ -24,7 +24,7 @@ test('valid hello, ready, and start ordering reaches one claim receipt', async (
 
 test('announce rejects invalid model configuration before hello and ready', () => {
   const output: unknown[] = []; const worker = service()
-  const invalid = new AgentWorkerService(worker.bootstrap, undefined, { QF_GATEWAY_MODEL: 'unknown' })
+  const invalid = new AgentWorkerService(worker.bootstrap, undefined, { BB_GATEWAY_MODEL: 'unknown' })
   // No Core factory call is possible until a configuration-valid ready handshake.
   const protocol = new AgentWorkerProtocol(invalid, value => output.push(value))
   protocol.announce()

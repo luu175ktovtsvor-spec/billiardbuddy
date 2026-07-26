@@ -105,11 +105,11 @@ describe('Electron preview service', () => {
   it('falls back from app.asar to app.asar.unpacked for the preview agent script', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'billiardbuddy-preview-asar-'))
     tempDirs.push(dir)
-    const unpackedFile = path.join(dir, 'app.asar.unpacked', 'src-tauri', 'resources', 'preview-agent.js')
+    const unpackedFile = path.join(dir, 'app.asar.unpacked', 'runtime-assets', 'resources', 'preview-agent.js')
     fs.mkdirSync(path.dirname(unpackedFile), { recursive: true })
     fs.writeFileSync(unpackedFile, 'window.__previewInjected = true')
 
-    const packagedPath = path.join(dir, 'app.asar', 'src-tauri', 'resources', 'preview-agent.js')
+    const packagedPath = path.join(dir, 'app.asar', 'runtime-assets', 'resources', 'preview-agent.js')
     expect(resolvePreviewScriptPath(packagedPath)).toBe(unpackedFile)
   })
 

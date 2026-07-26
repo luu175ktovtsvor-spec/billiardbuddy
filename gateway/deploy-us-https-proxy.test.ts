@@ -17,31 +17,31 @@ function run(options: { currentConnections: number; nginxSucceeds?: boolean }) {
   const snippets = join(root, 'snippets')
   const site = join(root, 'billiards')
   const main = join(root, 'nginx.conf')
-  const source = join(root, 'qfgw-us-https-proxy.conf')
+  const source = join(root, 'billiardbuddy-gateway-us-https-proxy.conf')
   Bun.spawnSync(['mkdir', '-p', bin])
   writeFileSync(site, 'server {\n    listen 443 ssl;\n}\n')
   writeFileSync(main, `events {\n    worker_connections ${options.currentConnections};\n}\nhttp {}\n`)
   writeFileSync(source, 'location /gw/ {\n    proxy_pass http://127.0.0.1:8800/;\n}\n')
   executable(join(bin, 'nginx'), options.nginxSucceeds === false ? 'exit 1' : 'exit 0')
-  executable(join(bin, 'systemctl'), 'printf "%s\\n" "$*" >> "$QF_TEST_SYSTEMCTL_LOG"')
+  executable(join(bin, 'systemctl'), 'printf "%s\\n" "$*" >> "$BB_TEST_SYSTEMCTL_LOG"')
   const log = join(root, 'systemctl.log')
   const result = spawnSync('bash', [script], {
     encoding: 'utf8',
     env: {
       ...process.env,
       PATH: `${bin}:${process.env.PATH ?? ''}`,
-      QF_TEST_SYSTEMCTL_LOG: log,
-      QF_US_NGINX_SITE: site,
-      QF_US_NGINX_MAIN_CONFIG: main,
-      QF_US_PROXY_SNIPPET_SOURCE: source,
-      QF_US_PROXY_SNIPPET_DIR: snippets,
+      BB_TEST_SYSTEMCTL_LOG: log,
+      BB_US_NGINX_SITE: site,
+      BB_US_NGINX_MAIN_CONFIG: main,
+      BB_US_PROXY_SNIPPET_SOURCE: source,
+      BB_US_PROXY_SNIPPET_DIR: snippets,
     },
   })
   const outcome = {
     result,
     site: readFileSync(site, 'utf8'),
     main: readFileSync(main, 'utf8'),
-    snippet: Bun.file(join(snippets, 'qfgw-us-https-proxy.conf')),
+    snippet: Bun.file(join(snippets, 'billiardbuddy-gateway-us-https-proxy.conf')),
     log: Bun.file(log),
   }
   return { root, outcome }
@@ -76,7 +76,7 @@ describe('US HTTPS proxy deployment', () => {
     try {
       expect(outcome.result.status).toBe(1)
       expect(outcome.main).toContain('worker_connections 768;')
-      expect(outcome.site).not.toContain('qfgw-us-https-proxy.conf')
+      expect(outcome.site).not.toContain('billiardbuddy-gateway-us-https-proxy.conf')
     } finally {
       rmSync(root, { recursive: true, force: true })
     }

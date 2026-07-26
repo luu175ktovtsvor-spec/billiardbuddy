@@ -126,7 +126,7 @@ Write-Step 'Cleaning stale Electron outputs...'
 Remove-Item -LiteralPath (Join-Path $desktopDir 'dist') -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath (Join-Path $desktopDir 'electron-dist') -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath $electronOutputDir -Recurse -Force -ErrorAction SilentlyContinue
-Remove-Item -Path (Join-Path $desktopDir 'src-tauri\binaries\billiardbuddy-sidecar-*') -Force -ErrorAction SilentlyContinue
+Remove-Item -Path (Join-Path $desktopDir 'runtime-assets\binaries\billiardbuddy-sidecar-*') -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath (Join-Path $desktopDir 'tsconfig.tsbuildinfo') -Force -ErrorAction SilentlyContinue
 
 Write-Step "Building sidecars for $targetTriple..."

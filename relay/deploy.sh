@@ -9,15 +9,23 @@
 #   RELAY_ARK_KEY          # 真火山方舟 key,启用豆包 Seedream 时必填
 #   RELAY_ARK_BASE         # 默认 https://ark.cn-beijing.volces.com/api/v3
 #   RELAY_UPSTREAM_TIMEOUT_MS=300000        # OpenAI/Seedream 生成并完整读取结果的 5 分钟截止时间
-#   RELAY_DB=/opt/qfrelay/relay.db          # 100 用户生产部署必须配置；SQLite 持久化(重启恢复不能用 :memory:)
-#   RELAY_BLOB_DIR=/opt/qfrelay/blobs       # 100 用户生产部署必须配置；大体积输入/结果 blob(700 目录,应用会自建)
+#   RELAY_DB=/opt/billiardbuddy-relay/relay.db          # 100 用户生产部署必须配置；SQLite 持久化(重启恢复不能用 :memory:)
+#   RELAY_BLOB_DIR=/opt/billiardbuddy-relay/blobs       # 100 用户生产部署必须配置；大体积输入/结果 blob(700 目录,应用会自建)
 #   RELAY_QUEUE_MAX=2000 RELAY_USER_MAX=20 RELAY_IMG_CONC=16 RELAY_IMG_USER_CONC=2 RELAY_SEEDREAM_CONC=6 RELAY_SEEDREAM_USER_CONC=1 RELAY_RETRY_AFTER_SECONDS=30
 #   RELAY_ACTIVE_INPUT_BYTES_MAX=536870912 RELAY_PENDING_INPUT_BYTES_MAX=67108864  # 落盘队列总输入预算 + 上传阶段 JS 堆预算
 #   RELAY_MAX_BODY_BYTES RELAY_TASK_TTL_MS  # 单请求大小与结果留存,可选；结果默认留 7 天，磁盘需按实际图片体积监控
 #
-# 部署后需在该机 nginx 暴露受保护路径,且【仅允许大陆 qfgw 出口 IP + 保留 Bearer】,客户端不得直连:
+# 部署后需在该机 nginx 暴露两条边界：短时签名结果由桌面直取，其余任务 API
+# 仍只允许大陆 Gateway 出口 IP 并保留 Bearer。签名结果路径关闭访问日志，避免授权落日志：
+#   location ^~ /relay/imgtasks/images/results/ {
+#     limit_except GET { deny all; }
+#     proxy_pass http://127.0.0.1:8790/images/results/;
+#     proxy_buffering off;
+#     access_log off;
+#     proxy_read_timeout 300s;
+#   }
 #   location /relay/imgtasks/ {
-#     allow <大陆 qfgw 出口 IP>;    # 只放行大陆网关,例如 39.106.214.21
+#     allow <大陆 billiardbuddy-gateway 出口 IP>;    # 只放行大陆网关,例如 39.106.214.21
 #     deny all;
 #     client_max_body_size 32m;    # 与 RELAY_MAX_BODY_BYTES 对齐，避免 nginx 默认 1m 先行拒绝改图
 #     proxy_request_buffering off; # 流式交给 relay 的活跃输入预算，不让 nginx 先攒满大请求
@@ -26,7 +34,7 @@
 #     proxy_send_timeout 300s;
 #   }
 set -e
-APPDIR=/opt/qfrelay
+APPDIR=/opt/billiardbuddy-relay
 [ -f /tmp/relay-app.ts ] || { echo "缺少 /tmp/relay-app.ts" >&2; exit 1; }
 [ -f /tmp/validate-production-env.sh ] || { echo "缺少 /tmp/validate-production-env.sh" >&2; exit 1; }
 mkdir -p "$APPDIR"
@@ -71,30 +79,31 @@ fi
 BUN_BIN="$(command -v bun)"
 
 echo "=== systemd 服务 ==="
-cat > /etc/systemd/system/qfrelay.service <<'UNIT'
+cat > /etc/systemd/system/billiardbuddy-relay.service <<'UNIT'
 [Unit]
 Description=BilliardBuddy image async task relay (Bun)
 After=network.target
 [Service]
-EnvironmentFile=/opt/qfrelay/relay.env
-WorkingDirectory=/opt/qfrelay
-ExecStart=__BUN_BIN__ /opt/qfrelay/app.ts
+EnvironmentFile=/opt/billiardbuddy-relay/relay.env
+WorkingDirectory=/opt/billiardbuddy-relay
+ExecStart=__BUN_BIN__ /opt/billiardbuddy-relay/app.ts
 Restart=always
 RestartSec=2
 LimitNOFILE=65536
 [Install]
 WantedBy=multi-user.target
 UNIT
-sed -i "s#__BUN_BIN__#$BUN_BIN#g" /etc/systemd/system/qfrelay.service
+sed -i "s#__BUN_BIN__#$BUN_BIN#g" /etc/systemd/system/billiardbuddy-relay.service
 systemctl daemon-reload
-systemctl enable qfrelay >/dev/null 2>&1 || true
-systemctl restart qfrelay
+systemctl enable billiardbuddy-relay >/dev/null 2>&1 || true
+systemctl restart billiardbuddy-relay
 sleep 3
 
 echo "=== 服务状态 ==="
-systemctl is-active qfrelay || (journalctl -u qfrelay -n 20 --no-pager; exit 1)
+systemctl is-active billiardbuddy-relay || (journalctl -u billiardbuddy-relay -n 20 --no-pager; exit 1)
 echo "=== /healthz ==="
 health_json="$(curl -fsS --max-time 8 http://127.0.0.1:8790/healthz)"
-HEALTH_JSON="$health_json" "$BUN_BIN" -e 'const value=JSON.parse(process.env.HEALTH_JSON??"{}");if(value.component_manifest?.component!=="qf-relay"||value.component_manifest?.protocol!=="bb-provider-gateway/1.0"||value.component_manifest?.requires_gateway_protocol_for_owned_tasks!==true)throw new Error("qf-relay component manifest incompatible")'
+HEALTH_JSON="$health_json" "$BUN_BIN" -e 'const value=JSON.parse(process.env.HEALTH_JSON??"{}");if(value.component_manifest?.component!=="billiardbuddy-relay"||value.component_manifest?.protocol!=="bb-provider-gateway/1.0"||value.component_manifest?.requires_gateway_protocol_for_owned_tasks!==true)throw new Error("billiardbuddy-relay component manifest incompatible")'
 echo "$health_json"
+chmod 600 "$APPDIR"/relay.db* 2>/dev/null || true
 echo "DEPLOY_DONE"

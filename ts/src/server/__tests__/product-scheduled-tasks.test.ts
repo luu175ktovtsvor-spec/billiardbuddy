@@ -9,9 +9,9 @@ import { CronService } from '../services/cronService.js'
 import type { CronScheduler, TaskRun } from '../services/cronScheduler.js'
 
 let tempDir: string
-const originalConfigDir = process.env.CLAUDE_CONFIG_DIR
+const originalConfigDir = process.env.BILLIARDBUDDY_CONFIG_DIR
 
-function schedulerWith(runs: TaskRun[] = []): Pick<CronScheduler, 'executeTask' | 'getRecentRuns' | 'getTaskRuns'> {
+function schedulerWith(runs: TaskRun[] = []): Pick<CronScheduler, 'executeTask' | 'getRecentRuns' | 'getTaskRuns' | 'cancelTaskRun'> {
   return {
     async executeTask(task) {
       return {
@@ -29,6 +29,9 @@ function schedulerWith(runs: TaskRun[] = []): Pick<CronScheduler, 'executeTask' 
     async getTaskRuns(taskId) {
       return runs.filter((run) => run.taskId === taskId)
     },
+    async cancelTaskRun() {
+      return true
+    },
   }
 }
 
@@ -39,12 +42,12 @@ function productSegments(...segments: string[]): string[] {
 describe('product scheduled task adapter', () => {
   beforeEach(async () => {
     tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'billiardbuddy-product-schedule-'))
-    process.env.CLAUDE_CONFIG_DIR = tempDir
+    process.env.BILLIARDBUDDY_CONFIG_DIR = tempDir
   })
 
   afterEach(async () => {
-    if (originalConfigDir) process.env.CLAUDE_CONFIG_DIR = originalConfigDir
-    else delete process.env.CLAUDE_CONFIG_DIR
+    if (originalConfigDir) process.env.BILLIARDBUDDY_CONFIG_DIR = originalConfigDir
+    else delete process.env.BILLIARDBUDDY_CONFIG_DIR
     await fs.rm(tempDir, { recursive: true, force: true })
   })
 
@@ -57,6 +60,7 @@ describe('product scheduled task adapter', () => {
         title: '每日营业复盘',
         description: '汇总当天关键数据',
         schedule: '0 21 * * *',
+        timeZone: 'Asia/Shanghai',
         instruction: '整理今天的营业数据并给出明日建议。',
         workDir: tempDir,
         notification: { enabled: true, channels: ['desktop'] },
@@ -78,10 +82,12 @@ describe('product scheduled task adapter', () => {
     expect(body.task).toMatchObject({
       title: '每日营业复盘',
       schedule: '0 21 * * *',
+      timeZone: 'Asia/Shanghai',
       instruction: '整理今天的营业数据并给出明日建议。',
       enabled: true,
       recurring: true,
       missedRunPolicy: 'run_once',
+      context: { mode: 'independent' },
       grant: {
         version: 1,
         scope: 'workdir',
@@ -113,7 +119,7 @@ describe('product scheduled task adapter', () => {
       status: 'failed',
       prompt: 'private instruction',
       output: '公开的执行结果',
-      error: 'private stderr /Users/me/.claude/token',
+      error: 'private stderr /Users/me/.BilliardBuddy/private-token',
       sessionId: 'private-core-session',
       durationMs: 5_000,
     }
@@ -159,6 +165,7 @@ describe('product scheduled task adapter', () => {
     const task = await service.createTask({
       title: '手动运行',
       schedule: '0 9 * * *',
+      timeZone: 'Asia/Shanghai',
       instruction: '检查营业日报。',
       workDir: tempDir,
     })
@@ -174,6 +181,29 @@ describe('product scheduled task adapter', () => {
     expect(response.status).toBe(200)
     await expect(response.json()).resolves.toEqual({ ok: true })
     expect(runCalls).toBe(1)
+  })
+
+  it('keeps related schedules bound to one active task and its exact workspace', async () => {
+    let lifecycle = 'active'
+    let runCalls = 0
+    const scheduler = schedulerWith()
+    const executeTask = scheduler.executeTask
+    scheduler.executeTask = async task => { runCalls += 1; return executeTask(task) }
+    const service = new ProductScheduledTaskService(new CronService(), scheduler, {
+      get: async taskId => ({ lifecycle, workDir: taskId === 'task-active' ? tempDir : path.dirname(tempDir) }),
+    })
+    const task = await service.createTask({
+      title: '关联任务', schedule: '0 9 * * *', timeZone: 'Asia/Shanghai', instruction: '继续处理。',
+      workDir: tempDir, context: { mode: 'related_task', taskId: 'task-active' },
+    })
+    await expect(service.createTask({
+      title: '目录不符', schedule: '0 10 * * *', timeZone: 'Asia/Shanghai', instruction: '继续处理。',
+      workDir: tempDir, context: { mode: 'related_task', taskId: 'task-other' },
+    })).rejects.toMatchObject({ code: 'PRODUCT_SCHEDULED_TASK_WORKDIR_MISMATCH' })
+
+    lifecycle = 'archived'
+    await expect(service.runTask(task.id)).rejects.toMatchObject({ code: 'PRODUCT_SCHEDULED_TASK_CONTEXT_INACTIVE' })
+    expect(runCalls).toBe(0)
   })
 
   it('keeps legacy tasks without a working directory visible but safely paused', async () => {
@@ -205,6 +235,7 @@ describe('product scheduled task adapter', () => {
     const task = await service.createTask({
       title: '暂停后运行',
       schedule: '0 9 * * *',
+      timeZone: 'Asia/Shanghai',
       instruction: '检查营业日报。',
       workDir: tempDir,
     })

@@ -6,7 +6,7 @@ import * as path from 'node:path'
 import { CronScheduler, resolveCronTaskTimeoutMs } from '../services/cronScheduler.js'
 import { CronService } from '../services/cronService.js'
 
-const originalConfigDir = process.env.CLAUDE_CONFIG_DIR
+const originalConfigDir = process.env.BILLIARDBUDDY_CONFIG_DIR
 
 describe('cron scheduler durable ProductTask hand-off', () => {
   let root: string
@@ -14,13 +14,13 @@ describe('cron scheduler durable ProductTask hand-off', () => {
 
   beforeEach(async () => {
     root = await fs.mkdtemp(path.join(os.tmpdir(), 'bb-cron-worker-'))
-    process.env.CLAUDE_CONFIG_DIR = path.join(root, 'config')
+    process.env.BILLIARDBUDDY_CONFIG_DIR = path.join(root, 'config')
     cron = new CronService()
   })
 
   afterEach(async () => {
-    if (originalConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
-    else process.env.CLAUDE_CONFIG_DIR = originalConfigDir
+    if (originalConfigDir === undefined) delete process.env.BILLIARDBUDDY_CONFIG_DIR
+    else process.env.BILLIARDBUDDY_CONFIG_DIR = originalConfigDir
     await fs.rm(root, { recursive: true, force: true })
   })
 
@@ -36,7 +36,7 @@ describe('cron scheduler durable ProductTask hand-off', () => {
     const scheduler = new CronScheduler(cron, {
       submitScheduledTaskRun: async (scheduleId, title, prompt, workDir, occurrence) => {
         submissions.push({ scheduleId, title, prompt, workDir, occurrence })
-        return { run_id: 'run_durable', dispatch_generation: 1 }
+        return { task_id: 'task_durable', run_id: 'run_durable', dispatch_generation: 1 }
       },
     })
     const task = await cron.createTask({
@@ -72,7 +72,7 @@ describe('cron scheduler durable ProductTask hand-off', () => {
         calls += 1
         enter()
         await gate
-        return { run_id: 'run_once', dispatch_generation: 1 }
+        return { task_id: 'task_once', run_id: 'run_once', dispatch_generation: 1 }
       },
     })
     const task = await cron.createTask({
@@ -95,7 +95,7 @@ describe('cron scheduler durable ProductTask hand-off', () => {
   it('keeps a run active until the durable ProductTask reaches a real terminal state', async () => {
     let state: 'running' | 'completed' = 'running'
     const scheduler = new CronScheduler(cron, {
-      submitScheduledTaskRun: async () => ({ run_id: 'run_terminal', dispatch_generation: 1 }),
+      submitScheduledTaskRun: async () => ({ task_id: 'task_terminal', run_id: 'run_terminal', dispatch_generation: 1 }),
       inspectScheduledTaskRun: async () => state === 'running'
         ? { state }
         : { state, completed_at: '2026-07-24T06:06:05.000Z' },

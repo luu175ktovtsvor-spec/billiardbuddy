@@ -33,10 +33,12 @@ type ServerRuntimeOptions = {
   resolveGatewayConfig?: () => ProductGatewayConfig
   /** Main-process session manager returns only a current installation access bearer. */
   resolveInstallationAccessToken?: () => Promise<string>
-  /** Electron-owned capability for paid/final media actions. Never inherited by Agent CLI processes. */
+  /** Electron-owned capability for paid/final media actions. Never inherited by Agent worker processes. */
   mediaUiCapability?: string
   /** Electron-owned capability for confirming recruiting side effects. */
   browserUiCapability?: string
+  /** Electron-encrypted master key used only to encrypt MCP OAuth credentials at rest. */
+  mcpOAuthCredentialKey?: string
 }
 
 export class ElectronServerRuntime {
@@ -47,6 +49,7 @@ export class ElectronServerRuntime {
   private readonly resolveInstallationAccessToken?: () => Promise<string>
   private readonly mediaUiCapability?: string
   private readonly browserUiCapability?: string
+  private readonly mcpOAuthCredentialKey?: string
   private sidecarEnvPromise: Promise<NodeJS.ProcessEnv> | null = null
   private server: { url: string, child: SidecarChild } | null = null
   private startupError: string | null = null
@@ -63,14 +66,12 @@ export class ElectronServerRuntime {
     this.resolveInstallationAccessToken = options.resolveInstallationAccessToken
     this.mediaUiCapability = options.mediaUiCapability
     this.browserUiCapability = options.browserUiCapability
+    this.mcpOAuthCredentialKey = options.mcpOAuthCredentialKey
   }
 
   /** Build a sidecar base env after removing inherited credential material. */
   private async buildServerEnv(baseEnv: NodeJS.ProcessEnv): Promise<NodeJS.ProcessEnv> {
-    const cleanBase = stripSidecarSecretEnv({
-      ...baseEnv,
-      ENABLE_CLAUDEAI_MCP_SERVERS: 'false',
-    })
+    const cleanBase = stripSidecarSecretEnv(baseEnv)
     const withGateway = applyGatewayConfigToEnv(cleanBase, this.resolveGatewayConfig?.())
     const withMediaCapability = this.mediaUiCapability
       ? { ...withGateway, BB_MEDIA_UI_CAPABILITY: this.mediaUiCapability }
@@ -78,16 +79,19 @@ export class ElectronServerRuntime {
     const withBrowserCapability = this.browserUiCapability
       ? { ...withMediaCapability, BB_BROWSER_UI_CAPABILITY: this.browserUiCapability }
       : withMediaCapability
-    if (withBrowserCapability.BB_MEDIA_BIN_DIR) return withBrowserCapability
+    const withMcpCredentialKey = this.mcpOAuthCredentialKey
+      ? { ...withBrowserCapability, BILLIARDBUDDY_MCP_OAUTH_KEY: this.mcpOAuthCredentialKey }
+      : withBrowserCapability
+    if (withMcpCredentialKey.BB_MEDIA_BIN_DIR) return withMcpCredentialKey
 
-    const mediaBinDir = path.join(this.desktopRoot, 'src-tauri', 'binaries')
+    const mediaBinDir = path.join(this.desktopRoot, 'runtime-assets', 'binaries')
     const executableSuffix = process.platform === 'win32' ? '.exe' : ''
     const hasMediaToolchain = ['ffmpeg', 'ffprobe'].every(name => (
       existsSync(path.join(mediaBinDir, `${name}${executableSuffix}`))
     ))
     return hasMediaToolchain
-      ? { ...withBrowserCapability, BB_MEDIA_BIN_DIR: mediaBinDir }
-      : withBrowserCapability
+      ? { ...withMcpCredentialKey, BB_MEDIA_BIN_DIR: mediaBinDir }
+      : withMcpCredentialKey
   }
 
   async startServer(): Promise<string> {
@@ -160,7 +164,7 @@ export class ElectronServerRuntime {
     let child: SidecarChild | null = null
     try {
       child = spawnSidecar(plan)
-      this.captureLogs(child, 'claude-server', logs)
+      this.captureLogs(child, 'billiardbuddy-server', logs)
       await waitForServer(SERVER_CONTROL_HOST, port, SERVER_STARTUP_TIMEOUT_MS)
       if (this.closing || generation !== this.generation) throw new Error('Desktop server runtime is closing')
       writeLastServerPort(port)

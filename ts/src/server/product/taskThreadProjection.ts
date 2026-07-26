@@ -5,7 +5,6 @@ import type {
   ProductTaskThread,
   ProductTaskThreadEntry,
 } from '../../../shared/product/taskEvents.js'
-import type { MessageEntry } from '../services/sessionService.js'
 import { productTaskActivityKindForTool } from './taskEventProjection.js'
 import {
   projectProductTaskUserContent,
@@ -13,6 +12,13 @@ import {
 } from './taskAttachmentProjection.js'
 
 type RecordValue = Record<string, unknown>
+
+export type ProductLegacyCoreMessageEntry = {
+  id: string
+  type: 'user' | 'assistant' | 'system' | 'tool_use' | 'tool_result'
+  content: unknown
+  timestamp: string
+}
 
 const MAX_THREAD_TEXT_LENGTH = 100_000
 
@@ -29,7 +35,7 @@ function visibleText(value: unknown): string | null {
     : trimmed
 }
 
-function entryId(message: MessageEntry, suffix: string): string {
+function entryId(message: ProductLegacyCoreMessageEntry, suffix: string): string {
   const digest = createHash('sha256')
     .update(`${message.id}:${suffix}`)
     .digest('hex')
@@ -37,14 +43,14 @@ function entryId(message: MessageEntry, suffix: string): string {
   return `thread_${digest}`
 }
 
-function createdAt(message: MessageEntry): string {
+function createdAt(message: ProductLegacyCoreMessageEntry): string {
   return typeof message.timestamp === 'string' && Number.isFinite(Date.parse(message.timestamp))
     ? message.timestamp
     : new Date(0).toISOString()
 }
 
 function textEntry(
-  message: MessageEntry,
+  message: ProductLegacyCoreMessageEntry,
   suffix: string,
   type: 'user_text' | 'assistant_text',
   text: string,
@@ -65,7 +71,7 @@ function textEntry(
 }
 
 function activityEntry(
-  message: MessageEntry,
+  message: ProductLegacyCoreMessageEntry,
   suffix: string,
   kind: ProductTaskActivityKind,
   phase: 'completed' | 'failed' = 'completed',
@@ -79,7 +85,7 @@ function activityEntry(
   }
 }
 
-function assistantEntries(message: MessageEntry): ProductTaskThreadEntry[] {
+function assistantEntries(message: ProductLegacyCoreMessageEntry): ProductTaskThreadEntry[] {
   if (typeof message.content === 'string') {
     const text = visibleText(message.content)
     const safeText = text ? sanitizeProductTaskVisibleText(text) : ''
@@ -107,7 +113,7 @@ function assistantEntries(message: MessageEntry): ProductTaskThreadEntry[] {
   return entries
 }
 
-function userEntries(message: MessageEntry): ProductTaskThreadEntry[] {
+function userEntries(message: ProductLegacyCoreMessageEntry): ProductTaskThreadEntry[] {
   const visibleContent = typeof message.content === 'string'
     ? visibleText(message.content)
     : Array.isArray(message.content)
@@ -127,7 +133,7 @@ function userEntries(message: MessageEntry): ProductTaskThreadEntry[] {
     : []
 }
 
-function toolResultEntries(message: MessageEntry): ProductTaskThreadEntry[] {
+function toolResultEntries(message: ProductLegacyCoreMessageEntry): ProductTaskThreadEntry[] {
   if (Array.isArray(message.content)) {
     const entries: ProductTaskThreadEntry[] = []
     for (const [index, block] of message.content.entries()) {
@@ -150,7 +156,7 @@ function toolResultEntries(message: MessageEntry): ProductTaskThreadEntry[] {
  * side-task or continuation action never receives a Core transcript id.
  */
 export function resolveCoreMessageIdForProductThreadEntry(
-  messages: readonly MessageEntry[],
+  messages: readonly ProductLegacyCoreMessageEntry[],
   productEntryId: string,
 ): string | null {
   for (const message of messages) {
@@ -176,7 +182,7 @@ export function resolveCoreMessageIdForProductThreadEntry(
  */
 export function projectSessionTranscriptForProductTask(
   taskId: string,
-  messages: readonly MessageEntry[],
+  messages: readonly ProductLegacyCoreMessageEntry[],
 ): ProductTaskThread {
   const entries: ProductTaskThreadEntry[] = []
   for (const message of messages) {

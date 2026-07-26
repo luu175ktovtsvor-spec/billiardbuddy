@@ -62,7 +62,6 @@ test('100 users × 5 moderate edit uploads persist as bounded disk queue input i
         'content-type': 'application/json',
         'x-relay-owner': owner,
         'idempotency-key': `window-${index % 5}`,
-        'x-relay-data-egress-consent': 'a'.repeat(64),
         'x-bb-provider-protocol': 'bb-provider-gateway/1.0',
       },
       body: JSON.stringify(body),

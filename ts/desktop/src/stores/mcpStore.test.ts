@@ -41,7 +41,7 @@ describe('mcpStore', () => {
 
   it('keeps the server update and task sync result from a task-aware toggle', async () => {
     const server = makeServer()
-    const taskSync = { applied: false as const, reason: 'not_running' as const }
+    const taskSync = { applied: false as const, reason: 'next_turn' as const }
     mockedMcpApi.toggle.mockResolvedValue({
       server: { ...server, enabled: false },
       taskSync,

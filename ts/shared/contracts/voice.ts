@@ -49,15 +49,12 @@ export const voiceOperationSchema = z.object({
   transcript_id: voiceIdSchema.optional(),
   raw_revision_id: voiceIdSchema.optional(),
   error_code: z.enum(['TRANSCRIPTION_FAILED', 'INTERRUPTED']).optional(),
-  consent_receipt_id: z.string().regex(/^[a-f0-9]{64}$/),
   created_at: voiceIsoDateSchema,
   updated_at: voiceIsoDateSchema,
   finished_at: voiceIsoDateSchema.optional(),
 })
 
-export const publicVoiceOperationSchema = voiceOperationSchema.omit({
-  consent_receipt_id: true,
-})
+export const publicVoiceOperationSchema = voiceOperationSchema
 
 export const voiceTranscriptionResponseSchema = z.object({
   text: z.string().min(1).max(20_000),

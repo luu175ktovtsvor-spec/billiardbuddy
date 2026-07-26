@@ -50,7 +50,6 @@ export function SideTaskPanel({ parentTask }: SideTaskPanelProps) {
   const stopTask = useProductTaskRuntimeStore((state) => state.stopTask)
   const respondToApproval = useProductTaskRuntimeStore((state) => state.respondToApproval)
   const respondToQuestions = useProductTaskRuntimeStore((state) => state.respondToQuestions)
-  const respondToComputerUseApproval = useProductTaskRuntimeStore((state) => state.respondToComputerUseApproval)
   const chatSendBehavior = useSettingsStore((state) => state.chatSendBehavior)
   const [draft, setDraft] = useState('')
   const [sendError, setSendError] = useState<string | null>(null)
@@ -248,7 +247,6 @@ export function SideTaskPanel({ parentTask }: SideTaskPanelProps) {
             {runtime?.entries.map((entry) => (
               <div key={entry.id} className="mb-3">
                 <ProductTaskThreadEntryView
-                  taskId={selectedTaskId}
                   entry={entry}
                   streaming={entry.id === runtime.streamingEntryId}
                 />
@@ -260,7 +258,6 @@ export function SideTaskPanel({ parentTask }: SideTaskPanelProps) {
                 responding={runtime.approvalResponsePending}
                 onRespondToAction={(allowed) => { void respondToApproval(selectedTaskId, allowed) }}
                 onRespondToQuestions={(answers) => { void respondToQuestions(selectedTaskId, answers) }}
-                onRespondToComputerUse={(allowed) => { void respondToComputerUseApproval(selectedTaskId, allowed) }}
               />
             ) : null}
             {runtime?.error ? <p role="alert" className="mt-3 text-xs text-[var(--color-error)]">{PRODUCT_TASK_SAFE_ERROR_LABEL[runtime.error.code]}</p> : null}

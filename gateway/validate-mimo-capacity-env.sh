@@ -53,15 +53,15 @@ read_capacity() {
 }
 
 total="$(read_capacity GW_MIMO_CONC 64)"
-(( total >= 2 )) || die 'GW_MIMO_CONC must leave at least one native and one visual slot'
+(( total >= 2 )) || die 'GW_MIMO_CONC must leave at least one media-reasoning and one visual-evidence slot'
 
 implicit_vision=$((total - 1))
 if (( implicit_vision > 12 )); then implicit_vision=12; fi
 vision="$(read_capacity GW_VISION_CONC "$implicit_vision")"
-(( vision >= 1 && vision < total )) || die 'GW_VISION_CONC must leave at least one native slot'
+(( vision >= 1 && vision < total )) || die 'GW_VISION_CONC must leave at least one media-reasoning slot'
 
-native="$(read_capacity GW_MIMO_NATIVE_CONC "$((total - vision))")"
-(( native >= 1 )) || die 'GW_MIMO_NATIVE_CONC must be at least 1'
-(( native + vision == total )) || die 'GW_MIMO_NATIVE_CONC + GW_VISION_CONC must equal GW_MIMO_CONC'
+media="$(read_capacity GW_MIMO_MEDIA_CONC "$((total - vision))")"
+(( media >= 1 )) || die 'GW_MIMO_MEDIA_CONC must be at least 1'
+(( media + vision == total )) || die 'GW_MIMO_MEDIA_CONC + GW_VISION_CONC must equal GW_MIMO_CONC'
 
-printf 'MiMo capacity validated: total=%s native=%s vision=%s\n' "$total" "$native" "$vision"
+printf 'MiMo capacity validated: total=%s media=%s vision=%s\n' "$total" "$media" "$vision"

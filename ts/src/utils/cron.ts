@@ -5,7 +5,7 @@
 //
 // Field syntax: wildcard, N, step (star-slash-N), range (N-M), list (N,M,...).
 // No L, W, ?, or name aliases. All times are interpreted in the process's
-// local timezone — "0 9 * * *" means 9am wherever the CLI is running.
+// Local timezone — "0 9 * * *" means 9am in the desktop sidecar's configured zone.
 
 export type CronFields = {
   minute: number[]

@@ -1,7 +1,7 @@
 /**
  * CronService — 管理定时任务的增删改查
  *
- * 任务持久化到 ~/.claude/scheduled_tasks.json（JSON 文件）。
+ * 任务持久化到 ~/.BilliardBuddy/scheduled_tasks.json（JSON 文件）。
  * 文件格式: { "schemaVersion": 1, "tasks": [ CronTask, ... ] }
  */
 
@@ -11,7 +11,10 @@ import * as os from 'os'
 import * as crypto from 'crypto'
 import { ApiError } from '../middleware/errorHandler.js'
 import { lock } from '../../utils/lockfile.js'
-import type { ProductScheduledTaskMissedRunPolicy } from '../../../shared/product/scheduledTasks.js'
+import type {
+  ProductScheduledTaskContext,
+  ProductScheduledTaskMissedRunPolicy,
+} from '../../../shared/product/scheduledTasks.js'
 
 export type TaskNotificationConfig = {
   enabled: boolean
@@ -38,16 +41,15 @@ export type CronTask = {
   name?: string
   description?: string
   cron: string // 5-field cron expression
+  timeZone?: string
   prompt: string
   createdAt: number // epoch ms
   lastFiredAt?: string // ISO timestamp of last execution
   enabled?: boolean // allow disabling without deleting (default true)
   recurring?: boolean
   missedRunPolicy?: ProductScheduledTaskMissedRunPolicy
-  permanent?: boolean
+  context?: ProductScheduledTaskContext
   permissionMode?: ScheduledTaskPermissionMode
-  model?: string
-  providerId?: string | null
   folderPath?: string
   notification?: TaskNotificationConfig
 }
@@ -63,13 +65,16 @@ const TASKS_FILE_WRITE_ATTEMPTS = 2
 const tasksFileLocks = new Map<string, Promise<void>>()
 
 export class CronService {
-  constructor(private readonly configDir?: string) {}
+  constructor(
+    private readonly configDir?: string,
+    private readonly fileOps: { rename?: typeof fs.rename } = {},
+  ) {}
 
   /** 任务文件路径 */
   private getTasksFilePath(): string {
     const configDir = this.configDir
-      ?? process.env.CLAUDE_CONFIG_DIR
-      ?? path.join(os.homedir(), '.claude')
+      ?? process.env.BILLIARDBUDDY_CONFIG_DIR
+      ?? path.join(os.homedir(), '.BilliardBuddy')
     return path.join(configDir, 'scheduled_tasks.json')
   }
 
@@ -146,6 +151,8 @@ export class CronService {
         ...safeTask,
         permissionMode: SCHEDULED_TASK_PERMISSION_MODE,
         missedRunPolicy: safeTask.missedRunPolicy ?? 'run_once',
+        timeZone: safeTask.timeZone ?? systemTimeZone(),
+        context: safeTask.context ?? { mode: 'independent' },
         id: crypto.randomBytes(4).toString('hex'),
         createdAt: Date.now(),
       }
@@ -177,6 +184,8 @@ export class CronService {
         ...safeUpdates,
         permissionMode: SCHEDULED_TASK_PERMISSION_MODE,
         missedRunPolicy: safeUpdates.missedRunPolicy ?? data.tasks[index].missedRunPolicy ?? 'run_once',
+        timeZone: safeUpdates.timeZone ?? data.tasks[index].timeZone ?? systemTimeZone(),
+        context: safeUpdates.context ?? data.tasks[index].context ?? { mode: 'independent' },
       }
       await this.writeTasksFile(data)
       return data.tasks[index]
@@ -225,9 +234,26 @@ export class CronService {
       return {
         schemaVersion: CURRENT_SCHEDULED_TASKS_SCHEMA_VERSION,
         tasks: parsed.tasks.map((task) => {
-          const { useWorktree: _legacyUseWorktree, ...safeTask } = task as CronTask & {
+          const {
+            useWorktree: _legacyUseWorktree,
+            model: _legacyModel,
+            providerId: _legacyProviderId,
+            permanent: _legacyPermanent,
+            frequency: _legacyFrequency,
+            scheduledTime: _legacyScheduledTime,
+            folder: legacyFolder,
+            ...safeTask
+          } = task as CronTask & {
             useWorktree?: unknown
+            model?: unknown
+            providerId?: unknown
+            permanent?: unknown
+            frequency?: unknown
+            scheduledTime?: unknown
+            folder?: unknown
           }
+          const folderPath = safeTask.folderPath
+            ?? (typeof legacyFolder === 'string' && legacyFolder.trim() ? legacyFolder : undefined)
           return {
             ...safeTask,
             // Existing desktop builds persisted bypassPermissions. Normalize it
@@ -236,6 +262,11 @@ export class CronService {
             // worktree launcher, so discard that legacy no-op setting too.
             permissionMode: SCHEDULED_TASK_PERMISSION_MODE,
             missedRunPolicy: safeTask.missedRunPolicy === 'skip' ? 'skip' : 'run_once',
+            timeZone: safeTask.timeZone ?? systemTimeZone(),
+            context: safeTask.context?.mode === 'related_task' && safeTask.context.taskId
+              ? safeTask.context
+              : { mode: 'independent' },
+            ...(folderPath ? { folderPath } : {}),
           }
         }),
       }
@@ -262,7 +293,7 @@ export class CronService {
       try {
         await fs.mkdir(dir, { recursive: true })
         await fs.writeFile(tmpFile, contents, { encoding: 'utf-8', mode: 0o600 })
-        await fs.rename(tmpFile, filePath)
+        await (this.fileOps.rename ?? fs.rename)(tmpFile, filePath)
         return
       } catch (err) {
         lastError = err as Error
@@ -281,4 +312,8 @@ export class CronService {
       `Failed to write scheduled tasks: ${lastError?.message ?? 'unknown error'}`,
     )
   }
+}
+
+function systemTimeZone(): string {
+  return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
 }

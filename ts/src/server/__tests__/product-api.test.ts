@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'bun:test'
 import { handleProductApi } from '../api/product.js'
-import type { ProductTaskMediaApi } from '../product/taskMediaService.js'
 import type { ProductCapabilitySnapshotService } from '../services/productCapabilitySnapshot.js'
 
 const task = {
@@ -73,6 +72,8 @@ function createService() {
       createAndSubmitTask: record('createAndSubmitTask', { client_operation_id: 'create-request', outcome: 'accepted', authority_revision: 1, entity_revisions: {}, result: { task_id: task.id, run_id: 'run-1', entry_id: 'entry-1', dispatch_generation: 1 } }),
       mutateTaskAuthoritatively: record('mutateTaskAuthoritatively', { task, receipt: { outcome: 'accepted', revision: 1 }, snapshot: { revision: 1, event_sequence: 1, tasks: [task] } }),
       recoverTaskRun: record('recoverTaskRun', { task, receipt: { outcome: 'accepted', revision: 2 }, snapshot: { revision: 2, event_sequence: 2, tasks: [task], side_tasks: [] } }),
+      listQueuedInputs: record('listQueuedInputs', { items: [] }),
+      resumeTaskInputQueue: record('resumeTaskInputQueue', { outcome: 'accepted', task_revision: 5 }),
       mutateTaskDeletion: record('mutateTaskDeletion', { task, outcome: 'accepted', blockers: [] }),
       continueTaskAuthoritatively: record('continueTaskAuthoritatively', { outcome: 'accepted', revision: 1 }),
       createSideTaskAuthoritatively: record('createSideTaskAuthoritatively', { outcome: 'accepted', revision: 1 }),
@@ -90,7 +91,6 @@ async function request(
   method: string,
   path: string,
   body?: unknown,
-  media?: ProductTaskMediaApi,
   capabilitySnapshots?: Pick<ProductCapabilitySnapshotService, 'snapshot'>,
 ) {
   const url = new URL(`http://localhost${path}`)
@@ -104,14 +104,41 @@ async function request(
     url.pathname.split('/').filter(Boolean),
     service,
     undefined,
-    media,
     undefined,
     capabilitySnapshots,
   )
   return { status: response.status, body: await response.json() }
 }
 
+async function multipartRequest(
+  service: ReturnType<typeof createService>['service'],
+  path: string,
+  form: FormData,
+) {
+  const url = new URL(`http://localhost${path}`)
+  const req = new Request(url, { method: 'POST', body: form })
+  req.headers.set('Content-Length', '1024')
+  const response = await handleProductApi(
+    req,
+    url,
+    url.pathname.split('/').filter(Boolean),
+    service,
+  )
+  return { status: response.status, body: await response.json() }
+}
+
 describe('Product tasks API', () => {
+  it('routes queue snapshots and an exact explicit resume mutation', async () => {
+    const { service, calls } = createService()
+    expect(await request(service, 'GET', '/api/product/tasks/task-1/queue')).toEqual({ status: 200, body: { items: [] } })
+    expect(await request(service, 'POST', '/api/product/tasks/task-1/queue/resume', { expected_task_revision: 4, client_operation_id: 'resume-queue-1' })).toEqual({ status: 200, body: { outcome: 'accepted', task_revision: 5 } })
+    expect(calls).toEqual([
+      { name: 'listQueuedInputs', args: ['task-1'] },
+      { name: 'resumeTaskInputQueue', args: ['task-1', { expected_task_revision: 4, client_operation_id: 'resume-queue-1' }] },
+    ])
+    expect((await request(service, 'POST', '/api/product/tasks/task-1/queue/resume', { expected_task_revision: 4, client_operation_id: 'resume-queue-2', run_id: 'private' })).status).toBe(400)
+  })
+
   it('returns the server-owned capability snapshot without accepting a mutation surface', async () => {
     const { service } = createService()
     const capabilitySnapshots = {
@@ -121,11 +148,11 @@ describe('Product tasks API', () => {
         capabilities: [{ id: 'assistant' as const, state: 'available' as const }],
       }),
     }
-    expect(await request(service, 'GET', '/api/product/capabilities', undefined, undefined, capabilitySnapshots)).toEqual({
+    expect(await request(service, 'GET', '/api/product/capabilities', undefined, capabilitySnapshots)).toEqual({
       status: 200,
       body: await capabilitySnapshots.snapshot(),
     })
-    expect((await request(service, 'PATCH', '/api/product/capabilities', {}, undefined, capabilitySnapshots)).status).toBe(405)
+    expect((await request(service, 'PATCH', '/api/product/capabilities', {}, capabilitySnapshots)).status).toBe(405)
   })
 
   it('ingests attachment bytes only under a server-owned composer draft', async () => {
@@ -152,6 +179,31 @@ describe('Product tasks API', () => {
       data,
       client_operation_id: 'attachment-ingest-1',
     }] }])
+    expect(JSON.stringify(response.body)).not.toContain('base64')
+  })
+
+  it('accepts multipart video bytes without exposing a native path or base64 payload', async () => {
+    const { service, calls } = createService()
+    const form = new FormData()
+    form.set('type', 'file')
+    form.set('name', '训练.mp4')
+    form.set('mime_type', 'video/mp4')
+    form.set('client_operation_id', 'attachment-video-1')
+    form.set('file', new File([Buffer.concat([Buffer.from([0, 0, 0, 20]), Buffer.from('ftypisom')])], '训练.mp4', { type: 'video/mp4' }))
+
+    const response = await multipartRequest(service, '/api/product/composer-drafts/draft-1/attachments', form)
+    expect(response.status).toBe(201)
+    expect(calls).toHaveLength(1)
+    const input = calls[0]!.args[0] as Record<string, unknown>
+    expect(input).toMatchObject({
+      owner: { kind: 'composer_draft', id: 'draft-1' },
+      type: 'file',
+      name: '训练.mp4',
+      mime_type: 'video/mp4',
+      client_operation_id: 'attachment-video-1',
+    })
+    expect(input.bytes).toBeInstanceOf(Buffer)
+    expect(input).not.toHaveProperty('path')
     expect(JSON.stringify(response.body)).not.toContain('base64')
   })
 
@@ -259,76 +311,17 @@ describe('Product tasks API', () => {
     expect(calls).toEqual([{ name: 'getTaskThread', args: ['task-1'] }])
   })
 
-  it('routes task-scoped media listing and explicit attachment', async () => {
-    const { service } = createService()
-    const calls: Array<{ name: string; args: unknown[] }> = []
-    const media: ProductTaskMediaApi = {
-      listForTask: async (...args) => {
-        calls.push({ name: 'listForTask', args })
-        return { taskId: task.id, projects: [] }
-      },
-      listAttachableForTask: async (...args) => {
-        calls.push({ name: 'listAttachableForTask', args })
-        return { taskId: task.id, projects: [] }
-      },
-      attachProject: async (...args) => {
-        calls.push({ name: 'attachProject', args })
-        return {
-          id: 'img_12345678',
-          kind: 'image',
-          title: '会员日海报',
-          state: 'ready',
-          updatedAt: '2026-07-19T00:00:00.000Z',
-          mediaTask: null,
-          assets: [],
-        }
-      },
-      assetResponse: async (...args) => {
-        calls.push({ name: 'assetResponse', args })
-        return new Response('image-bytes', { status: 206, headers: { 'Content-Type': 'image/png' } })
-      },
+  it('does not expose media workbench routes under product tasks', async () => {
+    const { service, calls } = createService()
+    for (const [method, path] of [
+      ['GET', '/api/product/tasks/task-1/media'],
+      ['GET', '/api/product/tasks/task-1/media/attachable-projects'],
+      ['POST', '/api/product/tasks/task-1/media/projects/img_12345678/attach'],
+      ['GET', '/api/product/tasks/task-1/media/projects/img_12345678/assets/out_12345678'],
+    ] as const) {
+      expect((await request(service, method, path)).status).toBe(404)
     }
-
-    const listed = await request(service, 'GET', '/api/product/tasks/task-1/media', undefined, media)
-    const attachable = await request(
-      service,
-      'GET',
-      '/api/product/tasks/task-1/media/attachable-projects',
-      undefined,
-      media,
-    )
-    const attached = await request(
-      service,
-      'POST',
-      '/api/product/tasks/task-1/media/projects/img_12345678/attach',
-      undefined,
-      media,
-    )
-    const assetUrl = new URL('http://localhost/api/product/tasks/task-1/media/projects/img_12345678/assets/out_12345678')
-    const asset = await handleProductApi(
-      new Request(assetUrl),
-      assetUrl,
-      assetUrl.pathname.split('/').filter(Boolean),
-      service,
-      undefined,
-      media,
-    )
-    expect(listed).toEqual({ status: 200, body: { taskId: task.id, projects: [] } })
-    expect(attachable).toEqual({ status: 200, body: { taskId: task.id, projects: [] } })
-    expect(attached).toEqual({
-      status: 200,
-      body: {
-        project: expect.objectContaining({ id: 'img_12345678', kind: 'image', assets: [] }),
-      },
-    })
-    expect(asset.status).toBe(206)
-    expect(await asset.text()).toBe('image-bytes')
-    expect(calls).toEqual([
-      { name: 'listForTask', args: [task.id] },
-      { name: 'listAttachableForTask', args: [task.id] },
-      { name: 'attachProject', args: [task.id, 'img_12345678'] },
-      { name: 'assetResponse', args: [task.id, 'img_12345678', 'out_12345678', expect.any(Request)] },
-    ])
+    expect(calls).toEqual([])
   })
 
   it('routes task-scoped review resources without falling back to session APIs', async () => {

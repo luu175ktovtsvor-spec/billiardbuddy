@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from 'react'
-import { Download, ImagePlus, Loader2, Plus, RefreshCw, Sparkles, Undo2, X } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
+import { Columns2, Download, ImagePlus, Layers3, Loader2, Minus, Paintbrush, Plus, RefreshCw, Sparkles, Trash2, Undo2, X } from 'lucide-react'
 import {
   MAX_REFERENCE_IMAGE_BYTES,
   MAX_REFERENCE_IMAGES_TOTAL_BYTES,
@@ -24,6 +24,7 @@ function stateLabel(state: string): string {
 }
 
 type ReferenceImage = { name: string; dataUrl: string; size: number; role: ImageReferenceRole }
+type TextLayoutSetting = { x: number; y: number; fontSize: number; fill: string }
 
 const REFERENCE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp'])
 
@@ -64,27 +65,6 @@ const REFERENCE_ROLE_OPTIONS: Array<{ value: ImageReferenceRole; label: string }
   { value: 'logo', label: 'Logo' },
   { value: 'qrcode', label: '二维码' },
 ]
-
-/**
- * A queued task can sit behind a paid image slot for minutes. Respect the relay's
- * backoff hint and add a stable small jitter so a 500-window burst does not wake up
- * and poll the mainland/US path in one synchronized spike.
- */
-export function imageTaskPollDelayMs(
-  taskId: string,
-  state: string,
-  suggestedSeconds?: number,
-): number {
-  const fallbackSeconds = state === 'generating' ? 3 : 15
-  const rawSeconds = typeof suggestedSeconds === 'number' && Number.isFinite(suggestedSeconds)
-    ? Math.trunc(suggestedSeconds)
-    : fallbackSeconds
-  const baseMs = Math.max(2_500, Math.min(60_000, Math.max(1, rawSeconds) * 1_000))
-  let hash = 0
-  for (let index = 0; index < taskId.length; index += 1) hash = (hash * 31 + taskId.charCodeAt(index)) >>> 0
-  const jitterMs = Math.max(250, Math.floor(baseMs * 0.1))
-  return baseMs + (hash % jitterMs)
-}
 
 function megabytes(bytes: number): string {
   return `${Math.round(bytes / 1024 / 1024)} MB`
@@ -127,7 +107,7 @@ async function renderUpscale(url: string, scale: 2 | 3 | 4) {
   return { rendered_image: canvas.toDataURL('image/png'), width, height }
 }
 
-async function renderTextLayers(url: string, copy: string) {
+async function renderTextLayers(url: string, sourceLayers: ImageTextLayer[]) {
   const image = await loadCanvasImage(url)
   const canvas = document.createElement('canvas')
   canvas.width = image.naturalWidth
@@ -135,21 +115,9 @@ async function renderTextLayers(url: string, copy: string) {
   const context = canvas.getContext('2d')
   if (!context) throw new Error('CANVAS_UNAVAILABLE')
   context.drawImage(image, 0, 0)
-  const lines = copy.split('\n').map(line => line.trim()).filter(Boolean)
-  const fontSize = Math.max(24, Math.min(160, Math.round(canvas.width / 14)))
-  const lineHeight = Math.round(fontSize * 1.3)
-  const startY = Math.round(canvas.height * 0.12)
-  const layers: ImageTextLayer[] = lines.map((text, index) => ({
+  const layers: ImageTextLayer[] = sourceLayers.map(layer => ({
+    ...layer,
     id: `text_${crypto.randomUUID().replaceAll('-', '')}`,
-    text,
-    x: Math.round(canvas.width / 2),
-    y: startY + index * lineHeight,
-    max_width: Math.round(canvas.width * 0.84),
-    fill: '#ffffff',
-    font_family: 'PingFang SC',
-    font_size: fontSize,
-    font_weight: 'bold',
-    text_align: 'center',
   }))
   context.textBaseline = 'top'
   for (const layer of layers) {
@@ -169,6 +137,216 @@ async function renderTextLayers(url: string, copy: string) {
   }
 }
 
+function ImageCanvasSurface({
+  url,
+  title,
+  textLayers,
+  selectedLayerId,
+  onSelectLayer,
+  zoom,
+  showTextContent = false,
+  maskEditing = false,
+  maskBrushSize = 128,
+  maskDataUrl = null,
+  onMaskChange,
+}: {
+  url: string
+  title: string
+  textLayers: ImageTextLayer[]
+  selectedLayerId: string | null
+  onSelectLayer: (id: string | null) => void
+  zoom: number
+  showTextContent?: boolean
+  maskEditing?: boolean
+  maskBrushSize?: number
+  maskDataUrl?: string | null
+  onMaskChange?: (dataUrl: string) => void
+}) {
+  const canvasRef = useRef<HTMLCanvasElement>(null)
+  const maskCanvasRef = useRef<HTMLCanvasElement>(null)
+  const maskBufferRef = useRef<HTMLCanvasElement | null>(null)
+  const maskPointerRef = useRef<{ id: number; x: number; y: number } | null>(null)
+  const [dimensions, setDimensions] = useState({ width: 1, height: 1 })
+
+  useEffect(() => {
+    let active = true
+    void loadCanvasImage(url).then(image => {
+      if (!active || !canvasRef.current) return
+      const canvas = canvasRef.current
+      canvas.width = image.naturalWidth
+      canvas.height = image.naturalHeight
+      const context = canvas.getContext('2d')
+      if (!context) return
+      context.clearRect(0, 0, canvas.width, canvas.height)
+      context.drawImage(image, 0, 0)
+      setDimensions({ width: image.naturalWidth, height: image.naturalHeight })
+    })
+    return () => { active = false }
+  }, [url])
+
+  useEffect(() => {
+    if (!maskEditing) return
+    let active = true
+    void loadCanvasImage(url).then(async image => {
+      if (!active || !maskCanvasRef.current) return
+      const mask = document.createElement('canvas')
+      mask.width = image.naturalWidth
+      mask.height = image.naturalHeight
+      const maskContext = mask.getContext('2d')
+      const overlay = maskCanvasRef.current
+      overlay.width = image.naturalWidth
+      overlay.height = image.naturalHeight
+      const overlayContext = overlay.getContext('2d')
+      if (!maskContext || !overlayContext) return
+      maskContext.fillStyle = '#ffffff'
+      maskContext.fillRect(0, 0, mask.width, mask.height)
+      if (maskDataUrl) {
+        const persistedMask = await loadCanvasImage(maskDataUrl)
+        if (!active) return
+        maskContext.clearRect(0, 0, mask.width, mask.height)
+        maskContext.drawImage(persistedMask, 0, 0, mask.width, mask.height)
+      }
+      overlayContext.clearRect(0, 0, overlay.width, overlay.height)
+      overlayContext.fillStyle = 'rgba(239, 68, 68, 0.42)'
+      overlayContext.fillRect(0, 0, overlay.width, overlay.height)
+      overlayContext.globalCompositeOperation = 'destination-out'
+      overlayContext.drawImage(mask, 0, 0)
+      overlayContext.globalCompositeOperation = 'source-over'
+      maskBufferRef.current = mask
+    })
+    return () => {
+      active = false
+      maskPointerRef.current = null
+    }
+  }, [maskDataUrl, maskEditing, url])
+
+  const maskPoint = (event: ReactPointerEvent<HTMLCanvasElement>) => {
+    const canvas = maskCanvasRef.current
+    if (!canvas) return null
+    const bounds = canvas.getBoundingClientRect()
+    if (!bounds.width || !bounds.height) return null
+    return {
+      x: (event.clientX - bounds.left) * canvas.width / bounds.width,
+      y: (event.clientY - bounds.top) * canvas.height / bounds.height,
+    }
+  }
+
+  const paintMask = (from: { x: number; y: number }, to: { x: number; y: number }) => {
+    const mask = maskBufferRef.current
+    const overlay = maskCanvasRef.current
+    const maskContext = mask?.getContext('2d')
+    const overlayContext = overlay?.getContext('2d')
+    if (!maskContext || !overlayContext) return
+    for (const context of [maskContext, overlayContext]) {
+      context.lineCap = 'round'
+      context.lineJoin = 'round'
+      context.lineWidth = maskBrushSize
+      context.beginPath()
+      context.moveTo(from.x, from.y)
+      context.lineTo(to.x, to.y)
+    }
+    maskContext.globalCompositeOperation = 'destination-out'
+    maskContext.stroke()
+    maskContext.globalCompositeOperation = 'source-over'
+    overlayContext.globalCompositeOperation = 'source-over'
+    overlayContext.strokeStyle = 'rgba(239, 68, 68, 0.42)'
+    overlayContext.stroke()
+  }
+
+  const beginMaskStroke = (event: ReactPointerEvent<HTMLCanvasElement>) => {
+    const point = maskPoint(event)
+    if (!point || !maskEditing) return
+    event.preventDefault()
+    event.stopPropagation()
+    event.currentTarget.setPointerCapture(event.pointerId)
+    maskPointerRef.current = { id: event.pointerId, ...point }
+    paintMask(point, point)
+  }
+
+  const continueMaskStroke = (event: ReactPointerEvent<HTMLCanvasElement>) => {
+    const previous = maskPointerRef.current
+    if (!previous || previous.id !== event.pointerId) return
+    const point = maskPoint(event)
+    if (!point) return
+    event.preventDefault()
+    paintMask(previous, point)
+    maskPointerRef.current = { id: event.pointerId, ...point }
+  }
+
+  const finishMaskStroke = (event: ReactPointerEvent<HTMLCanvasElement>) => {
+    const previous = maskPointerRef.current
+    if (!previous || previous.id !== event.pointerId) return
+    event.preventDefault()
+    event.stopPropagation()
+    maskPointerRef.current = null
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId)
+    const mask = maskBufferRef.current
+    if (mask) onMaskChange?.(mask.toDataURL('image/png'))
+  }
+
+  return (
+    <div
+      className="relative origin-center shadow-[var(--shadow-popover)]"
+      style={{ transform: `scale(${zoom})` }}
+      data-testid="image-canvas-surface"
+    >
+      <canvas
+        ref={canvasRef}
+        aria-label={title}
+        className="block max-h-[62vh] max-w-[min(70vw,920px)] bg-white object-contain"
+        onClick={() => onSelectLayer(null)}
+      />
+      {maskEditing && (
+        <canvas
+          ref={maskCanvasRef}
+          aria-label="局部重绘蒙版画布"
+          className="absolute inset-0 h-full w-full cursor-crosshair touch-none"
+          onPointerDown={beginMaskStroke}
+          onPointerMove={continueMaskStroke}
+          onPointerUp={finishMaskStroke}
+          onPointerCancel={finishMaskStroke}
+        />
+      )}
+      {textLayers.map(layer => {
+        const width = Math.min(100, ((layer.max_width ?? dimensions.width) / dimensions.width) * 100)
+        const left = layer.text_align === 'center'
+          ? (layer.x / dimensions.width) * 100 - width / 2
+          : layer.text_align === 'right'
+            ? (layer.x / dimensions.width) * 100 - width
+            : (layer.x / dimensions.width) * 100
+        return (
+          <button
+            key={layer.id}
+            type="button"
+            aria-label={`选择文字图层 ${layer.text}`}
+            onClick={event => { event.stopPropagation(); onSelectLayer(layer.id) }}
+            className="absolute overflow-hidden border bg-transparent text-center"
+            style={{
+              left: `${Math.max(0, left)}%`,
+              top: `${Math.min(100, (layer.y / dimensions.height) * 100)}%`,
+              width: `${width}%`,
+              height: `${Math.max(2, (layer.font_size * 1.3 / dimensions.height) * 100)}%`,
+              borderColor: selectedLayerId === layer.id ? 'var(--color-brand)' : 'transparent',
+            }}
+          >
+            {showTextContent && (
+              <span
+                className="block whitespace-nowrap"
+                style={{
+                  color: layer.fill,
+                  fontFamily: layer.font_family,
+                  fontSize: `${Math.max(8, (layer.font_size / dimensions.width) * 700)}px`,
+                  fontWeight: layer.font_weight,
+                }}
+              >{layer.text}</span>
+            )}
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
 export function ImageWorkbench() {
   const projects = useMediaWorkbenchStore(state => state.imageProjects)
   const activeId = useMediaWorkbenchStore(state => state.activeImageId)
@@ -183,7 +361,7 @@ export function ImageWorkbench() {
   const startImageOperation = useMediaWorkbenchStore(state => state.startImageOperation)
   const commitImageVersion = useMediaWorkbenchStore(state => state.commitImageVersion)
   const selectImageVersion = useMediaWorkbenchStore(state => state.selectImageVersion)
-  const refreshTask = useMediaWorkbenchStore(state => state.refreshTask)
+  const subscribeProjectEvents = useMediaWorkbenchStore(state => state.subscribeProjectEvents)
   const cancelTask = useMediaWorkbenchStore(state => state.cancelTask)
   const deleteProject = useMediaWorkbenchStore(state => state.deleteProject)
   const clearError = useMediaWorkbenchStore(state => state.clearError)
@@ -195,10 +373,19 @@ export function ImageWorkbench() {
   const [operationKind, setOperationKind] = useState<'edit' | 'inpaint'>('edit')
   const [operationInstruction, setOperationInstruction] = useState('')
   const [maskDataUrl, setMaskDataUrl] = useState<string | null>(null)
+  const [maskBrushSize, setMaskBrushSize] = useState(128)
   const [upscale, setUpscale] = useState<2 | 3 | 4>(2)
   const [textCopy, setTextCopy] = useState('')
+  const [textLayoutSettings, setTextLayoutSettings] = useState<Record<number, TextLayoutSetting>>({})
   const [inputError, setInputError] = useState<string | null>(null)
   const [deletingId, setDeletingId] = useState<string | null>(null)
+  const [zoom, setZoom] = useState(1)
+  const [compareMode, setCompareMode] = useState(false)
+  const [selectedLayerId, setSelectedLayerId] = useState<string | null>(null)
+  const promptRef = useRef(prompt)
+  const sizeRef = useRef(size)
+  const draftOwnerIdRef = useRef<string | null>(null)
+  const draftDirtyRef = useRef(false)
 
   const active = useMemo(
     () => projects.find(project => project.id === activeId) ?? null,
@@ -229,6 +416,52 @@ export function ImageWorkbench() {
     ? mediaUserFacingError({ code: task.error_code })
     : null
   const [previewWidth, previewHeight] = (active?.size ?? size).split('x').map(Number)
+  const currentVersionIndex = currentVersion
+    ? versions.findIndex(version => version.id === currentVersion.id)
+    : -1
+  const currentVersionUrl = currentVersionIndex >= 0 ? outputUrls[currentVersionIndex] : undefined
+  const draftCanvasWidth = selectedVersion?.width ?? previewWidth ?? 1024
+  const draftCanvasHeight = selectedVersion?.height ?? previewHeight ?? 1024
+  const draftTextLayers = useMemo<ImageTextLayer[]>(() => textCopy
+    .split('\n')
+    .map(line => line.trim())
+    .filter(Boolean)
+    .map((text, index) => {
+      const defaults: TextLayoutSetting = {
+        x: 50,
+        y: Math.min(90, 12 + index * 10),
+        fontSize: Math.max(24, Math.min(160, Math.round(draftCanvasWidth / 14))),
+        fill: '#ffffff',
+      }
+      const setting = textLayoutSettings[index] ?? defaults
+      return {
+        id: `text_preview_${String(index).padStart(4, '0')}`,
+        text,
+        x: Math.round(draftCanvasWidth * setting.x / 100),
+        y: Math.round(draftCanvasHeight * setting.y / 100),
+        max_width: Math.round(draftCanvasWidth * 0.84),
+        fill: setting.fill,
+        font_family: 'PingFang SC',
+        font_size: setting.fontSize,
+        font_weight: 'bold',
+        text_align: 'center',
+      }
+    }), [draftCanvasHeight, draftCanvasWidth, textCopy, textLayoutSettings])
+  const previewingDraftText = Boolean(
+    active
+    && selectedVersion
+    && active.current_version_id === selectedVersion.id
+    && selectedVersion.kind !== 'text_layout'
+    && draftTextLayers.length > 0,
+  )
+  const visibleCanvasLayers = previewingDraftText ? draftTextLayers : selectedVersion?.text_layers ?? []
+  const maskEditing = Boolean(
+    active
+    && selectedVersion
+    && active.current_version_id === selectedVersion.id
+    && operationKind === 'inpaint'
+    && !['queued', 'generating'].includes(active.state),
+  )
 
   useEffect(() => {
     void loadProjects('image')
@@ -241,41 +474,44 @@ export function ImageWorkbench() {
     setSelectedOutput(currentIndex >= 0 ? currentIndex : 0)
     setOperationInstruction('')
     setMaskDataUrl(null)
+    setSelectedLayerId(null)
+    setCompareMode(false)
+    setZoom(1)
+    setTextLayoutSettings({})
     setTextCopy(active?.brief?.exact_text.join('\n') ?? '')
   }, [activeId, active?.current_version_id])
 
-  useEffect(() => {
-    if (!active || creating) return
-    setPrompt(active.brief?.user_request ?? '')
-    setSize(active.size)
-  }, [active, creating])
+  useEffect(() => { promptRef.current = prompt }, [prompt])
+  useEffect(() => { sizeRef.current = size }, [size])
 
   useEffect(() => {
-    if (!active?.task_id || active.state === 'ready' || active.state === 'failed') return
-    let stopped = false
-    let timer: number | undefined
-    const poll = async () => {
-      if (stopped) return
-      await refreshTask(active.task_id!).catch(() => undefined)
-      if (!stopped) {
-        timer = window.setTimeout(
-          () => void poll(),
-          imageTaskPollDelayMs(active.task_id!, active.state, task?.poll_after_seconds),
-        )
-      }
+    if (creating) return
+    if (!active) return
+
+    const nextPrompt = active.brief?.user_request ?? ''
+    const ownsCurrentProject = draftOwnerIdRef.current === active.id
+    const localMatchesLatest = promptRef.current.trim() === nextPrompt && sizeRef.current === active.size
+    if (!ownsCurrentProject || !draftDirtyRef.current || localMatchesLatest) {
+      promptRef.current = nextPrompt
+      sizeRef.current = active.size
+      draftOwnerIdRef.current = active.id
+      draftDirtyRef.current = false
+      setPrompt(nextPrompt)
+      setSize(active.size)
     }
-    void poll()
-    return () => {
-      stopped = true
-      if (timer !== undefined) window.clearTimeout(timer)
-    }
-  }, [active?.state, active?.task_id, refreshTask, task?.poll_after_seconds])
+  }, [active, creating])
+
+  useEffect(() => active?.id
+    ? subscribeProjectEvents(active.id, 'image')
+    : undefined, [active?.id, subscribeProjectEvents])
 
   const beginNew = () => {
     clearError()
     selectImage(null)
     setPrompt('')
     setSize('1024x1024')
+    draftOwnerIdRef.current = null
+    draftDirtyRef.current = false
     setReferences([])
     setInputError(null)
     setCreating(true)
@@ -359,17 +595,11 @@ export function ImageWorkbench() {
   const startGeneration = async () => {
     if (!active) return
     const unknownOutcome = task?.outcome_unknown === true
-    const createsNewPaidTask = unknownOutcome && (Boolean(task.remote_task_id) || hasDraftChanges)
-    const warnings = [
-      unknownOutcome ? (createsNewPaidTask
-        ? '上一次任务的结果无法确认，可能已经产生费用。继续会创建一个新的生图任务，可能再次扣费。确认继续吗？'
-        : '上一次提交的结果无法确认，可能已经产生费用。继续只会使用原来的提交编号确认状态，不会主动创建第二个任务。') : '',
-      `将把已确认的 Brief${active.reference_image_count > 0 ? '和参考图片' : ''}发送到美国 Relay，由当前 ImageGeneration 能力执行。Relay 在任务终态删除输入，结果最多保留 7 天；本次将生成 3 个候选并可能产生费用。进入生成服务后无法撤销，确认继续吗？`,
-    ].filter(Boolean).join('\n\n')
-    if (!window.confirm(warnings)) return
-    const project = await saveActiveDraft(createsNewPaidTask)
+    const createsNewRemoteTask = unknownOutcome && (Boolean(task.remote_task_id) || hasDraftChanges)
+    if (createsNewRemoteTask && !window.confirm('上一次任务的结果无法确认。继续会创建新的远程操作，而不是重用原提交编号查询状态。确认继续吗？')) return
+    const project = await saveActiveDraft(createsNewRemoteTask)
     if (!project) return
-    await submitImage(project.id, createsNewPaidTask, true)
+    await submitImage(project.id, createsNewRemoteTask)
   }
 
   const downloadOutput = async () => {
@@ -402,15 +632,16 @@ export function ImageWorkbench() {
       setInputError('局部重绘需要上传与基础版本同尺寸的透明 PNG 蒙版')
       return
     }
-    if (!window.confirm('将把当前基础版本、编辑指令和可选蒙版发送到美国 Relay，由 ImageGeneration 能力执行；本次可能产生费用。确认继续吗？')) return
+    const confirmUnknownRetry = task?.outcome_unknown === true
+    if (confirmUnknownRetry && !window.confirm('上一次远程图片操作的结果无法确认。继续会创建新的付费操作，可能产生重复结果和费用。确认继续吗？')) return
     await startImageOperation(active.id, {
       revision: active.revision,
       base_version_id: selectedVersion.id,
       kind: operationKind,
       instruction: operationInstruction.trim(),
       mask_data_url: operationKind === 'inpaint' ? maskDataUrl ?? undefined : undefined,
-      confirm_unknown_retry: task?.outcome_unknown === true,
-    }, true)
+      confirm_unknown_retry: confirmUnknownRetry,
+    })
   }
 
   const commitUpscale = async () => {
@@ -432,9 +663,9 @@ export function ImageWorkbench() {
   }
 
   const commitText = async () => {
-    if (!active || !selectedVersion || !outputUrl || !textCopy.trim()) return
+    if (!active || !selectedVersion || !outputUrl || draftTextLayers.length === 0) return
     try {
-      const rendered = await renderTextLayers(outputUrl, textCopy)
+      const rendered = await renderTextLayers(outputUrl, draftTextLayers)
       await commitImageVersion(active.id, {
         revision: active.revision,
         base_version_id: selectedVersion.id,
@@ -445,6 +676,20 @@ export function ImageWorkbench() {
     } catch (error) {
       setInputError(mediaUserFacingError(error, '无法在本机完成文字排版，请检查文字后重试。'))
     }
+  }
+
+  const updateTextLayoutSetting = (index: number, patch: Partial<TextLayoutSetting>) => {
+    setTextLayoutSettings(current => ({
+      ...current,
+      [index]: {
+        x: 50,
+        y: Math.min(90, 12 + index * 10),
+        fontSize: Math.max(24, Math.min(160, Math.round(draftCanvasWidth / 14))),
+        fill: '#ffffff',
+        ...current[index],
+        ...patch,
+      },
+    }))
   }
 
   return (
@@ -471,60 +716,116 @@ export function ImageWorkbench() {
           deletingId={deletingId}
         />
 
-        <main className="flex min-w-0 flex-1 flex-col items-center justify-center overflow-auto bg-[var(--color-surface-container-low)] p-6">
-          {outputUrl ? (
-            <img
-              src={outputUrl}
-              alt={active?.title ?? '生成结果'}
-              className="max-h-full max-w-full object-contain shadow-[var(--shadow-popover)]"
-            />
-          ) : (
-            <div
-              className="flex max-h-[68vh] w-[min(68vh,70%)] max-w-[720px] items-center justify-center border border-dashed border-[var(--color-border)] bg-[var(--color-app-main)]"
-              style={{ aspectRatio: `${previewWidth || 1} / ${previewHeight || 1}` }}
-            >
-              {active && ['queued', 'generating'].includes(active.state) ? (
-                <Loader2 size={28} className="animate-spin text-[var(--color-brand)]" aria-label="生成中" />
-              ) : (
-                <ImagePlus size={30} className="text-[var(--color-text-tertiary)]" aria-label="尚未生成" />
-              )}
+        <main className="flex min-w-0 flex-1 flex-col bg-[var(--color-surface-container-low)]">
+          <div className="flex h-10 shrink-0 items-center justify-between border-b border-[var(--color-border)] px-3">
+            <div className="inline-flex items-center gap-1.5 text-[12px] text-[var(--color-text-secondary)]">
+              <Layers3 size={14} aria-hidden="true" />
+              画布 · {selectedVersion ? `版本 ${selectedOutput + 1}` : '尚无版本'}
             </div>
-          )}
-          {outputUrls.length > 1 && (
-            <div className="mt-3 flex h-14 max-w-full shrink-0 gap-2 overflow-x-auto">
-              {outputUrls.map((url, index) => (
-                <button
-                  key={versions[index]?.id ?? `${active?.id ?? 'output'}-${index}`}
-                  type="button"
-                  onClick={() => setSelectedOutput(index)}
-                  className="h-14 w-14 shrink-0 overflow-hidden border bg-[var(--color-app-main)]"
-                  style={{ borderColor: index === selectedOutput ? 'var(--color-brand)' : 'var(--color-border)' }}
-                  aria-label={`查看版本 ${index + 1}`}
-                >
-                  <img src={url} alt="" className="h-full w-full object-cover" />
-                </button>
-              ))}
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                onClick={() => setZoom(value => Math.max(0.5, Number((value - 0.25).toFixed(2))))}
+                className="flex h-7 w-7 items-center justify-center rounded-[5px] hover:bg-[var(--color-surface-hover)]"
+                aria-label="缩小画布"
+              ><Minus size={14} /></button>
+              <span className="w-10 text-center text-[11px] text-[var(--color-text-tertiary)]">{Math.round(zoom * 100)}%</span>
+              <button
+                type="button"
+                onClick={() => setZoom(value => Math.min(2, Number((value + 0.25).toFixed(2))))}
+                className="flex h-7 w-7 items-center justify-center rounded-[5px] hover:bg-[var(--color-surface-hover)]"
+                aria-label="放大画布"
+              ><Plus size={14} /></button>
+              <button
+                type="button"
+                onClick={() => setCompareMode(value => !value)}
+                disabled={!outputUrl || !currentVersionUrl || currentVersionUrl === outputUrl}
+                className="ml-2 inline-flex h-7 items-center gap-1 rounded-[5px] px-2 text-[11px] text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-hover)] disabled:opacity-40"
+                aria-pressed={compareMode}
+              ><Columns2 size={14} />对比当前版本</button>
             </div>
-          )}
-          {outputUrl && (
-            <div className="mt-3 flex gap-2">
+          </div>
+
+          <div className="flex min-h-0 flex-1 items-center justify-center gap-5 overflow-auto p-6">
+            {outputUrl && selectedVersion ? (
+              <>
+                {compareMode && currentVersionUrl && currentVersion && (
+                  <div className="flex min-w-0 flex-col items-center gap-2">
+                    <span className="text-[11px] text-[var(--color-text-tertiary)]">当前版本</span>
+                    <ImageCanvasSurface
+                      url={currentVersionUrl}
+                      title={`${active?.title ?? '图片'}当前版本`}
+                      textLayers={currentVersion.text_layers}
+                      selectedLayerId={null}
+                      onSelectLayer={() => undefined}
+                      zoom={Math.min(zoom, 1)}
+                    />
+                  </div>
+                )}
+                <div className="flex min-w-0 flex-col items-center gap-2">
+                  {compareMode && <span className="text-[11px] text-[var(--color-text-tertiary)]">所选候选</span>}
+                  <ImageCanvasSurface
+                    url={outputUrl}
+                    title={active?.title ?? '生成结果'}
+                    textLayers={visibleCanvasLayers}
+                    selectedLayerId={selectedLayerId}
+                    onSelectLayer={setSelectedLayerId}
+                    zoom={compareMode ? Math.min(zoom, 1) : zoom}
+                    showTextContent={previewingDraftText}
+                    maskEditing={maskEditing}
+                    maskBrushSize={maskBrushSize}
+                    maskDataUrl={maskDataUrl}
+                    onMaskChange={setMaskDataUrl}
+                  />
+                </div>
+              </>
+            ) : (
+              <div
+                className="flex max-h-[68vh] w-[min(68vh,70%)] max-w-[720px] items-center justify-center border border-dashed border-[var(--color-border)] bg-[var(--color-app-main)]"
+                style={{ aspectRatio: `${previewWidth || 1} / ${previewHeight || 1}` }}
+              >
+                {active && ['queued', 'generating'].includes(active.state) ? (
+                  <Loader2 size={28} className="animate-spin text-[var(--color-brand)]" aria-label="生成中" />
+                ) : (
+                  <ImagePlus size={30} className="text-[var(--color-text-tertiary)]" aria-label="尚未生成" />
+                )}
+              </div>
+            )}
+          </div>
+
+          {outputUrls.length > 0 && (
+            <div className="flex h-[76px] shrink-0 items-center gap-2 border-t border-[var(--color-border)] bg-[var(--color-app-main)] px-3">
+              <span className="mr-1 text-[11px] text-[var(--color-text-tertiary)]">候选 / 版本</span>
+              <div className="flex min-w-0 flex-1 gap-2 overflow-x-auto py-2">
+                {outputUrls.map((url, index) => (
+                  <button
+                    key={versions[index]?.id ?? `${active?.id ?? 'output'}-${index}`}
+                    type="button"
+                    onClick={() => { setSelectedOutput(index); setSelectedLayerId(null) }}
+                    className="relative h-14 w-14 shrink-0 overflow-hidden border-2 bg-[var(--color-app-main)]"
+                    style={{ borderColor: index === selectedOutput ? 'var(--color-brand)' : 'var(--color-border)' }}
+                    aria-label={`查看版本 ${index + 1}`}
+                  >
+                    <img src={url} alt="" className="h-full w-full object-cover" />
+                    {versions[index]?.id === active?.current_version_id && (
+                      <span className="absolute bottom-0 left-0 right-0 bg-black/65 py-0.5 text-[8px] text-white">当前</span>
+                    )}
+                  </button>
+                ))}
+              </div>
               <button
                 type="button"
                 onClick={() => void chooseVersion()}
                 disabled={!selectedVersion || active?.current_version_id === selectedVersion.id || loading}
-                className="inline-flex h-8 items-center gap-1.5 rounded-[6px] border border-[var(--color-border)] bg-[var(--color-app-main)] px-3 text-[12px] text-[var(--color-text-secondary)] disabled:opacity-45"
-              >
-                <Undo2 size={14} aria-hidden="true" />
-                {active?.current_version_id === selectedVersion?.id ? '当前版本' : '切换到此版本'}
-              </button>
+                aria-label={active?.current_version_id === selectedVersion?.id ? '当前版本' : '切换到此版本'}
+                className="inline-flex h-8 items-center gap-1.5 rounded-[6px] border border-[var(--color-border)] px-3 text-[12px] text-[var(--color-text-secondary)] disabled:opacity-45"
+              ><Undo2 size={14} />{active?.current_version_id === selectedVersion?.id ? '当前版本' : '设为当前'}</button>
               <button
                 type="button"
                 onClick={() => void downloadOutput()}
-                className="inline-flex h-8 items-center gap-1.5 rounded-[6px] border border-[var(--color-border)] bg-[var(--color-app-main)] px-3 text-[12px] text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-hover)]"
-              >
-                <Download size={14} aria-hidden="true" />
-                导出当前预览
-              </button>
+                aria-label="导出当前预览"
+                className="inline-flex h-8 items-center gap-1.5 rounded-[6px] border border-[var(--color-border)] px-3 text-[12px] text-[var(--color-text-secondary)]"
+              ><Download size={14} />导出</button>
             </div>
           )}
         </main>
@@ -540,7 +841,12 @@ export function ImageWorkbench() {
                 <textarea
                   id="image-prompt"
                   value={prompt}
-                  onChange={event => setPrompt(event.target.value)}
+                  onChange={event => {
+                    draftOwnerIdRef.current = active?.id ?? null
+                    draftDirtyRef.current = true
+                    promptRef.current = event.target.value
+                    setPrompt(event.target.value)
+                  }}
                   rows={9}
                   autoFocus
                   className="w-full resize-none rounded-[6px] border border-[var(--color-border)] bg-[var(--color-input-bg)] px-2.5 py-2 text-[13px] leading-5 text-[var(--color-text-primary)] outline-none focus:border-[var(--color-brand)]"
@@ -593,7 +899,13 @@ export function ImageWorkbench() {
                   <select
                     id="image-size"
                     value={size}
-                    onChange={event => setSize(event.target.value as typeof size)}
+                    onChange={event => {
+                      draftOwnerIdRef.current = active?.id ?? null
+                      draftDirtyRef.current = true
+                      const nextSize = event.target.value as typeof size
+                      sizeRef.current = nextSize
+                      setSize(nextSize)
+                    }}
                     className="h-8 rounded-[6px] border border-[var(--color-border)] bg-[var(--color-input-bg)] px-2 text-[12px] text-[var(--color-text-primary)] outline-none"
                   >
                     {IMAGE_SIZE_OPTIONS.map(option => (
@@ -624,13 +936,54 @@ export function ImageWorkbench() {
                     </div>
                   )}
                 </div>
+                {selectedVersion && (
+                  <div className="mb-4 border-b border-[var(--color-border)] pb-4">
+                    <div className="mb-2 flex items-center gap-1.5 text-[12px] font-medium text-[var(--color-text-primary)]">
+                      <Layers3 size={14} aria-hidden="true" />图层与质检
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setSelectedLayerId(null)}
+                      className="flex h-8 w-full items-center justify-between rounded-[5px] px-2 text-left text-[11px] hover:bg-[var(--color-surface-hover)]"
+                      style={{ color: selectedLayerId === null ? 'var(--color-brand)' : 'var(--color-text-secondary)' }}
+                    >
+                      <span>基础图像</span><span>{selectedVersion.width ?? '—'} × {selectedVersion.height ?? '—'}</span>
+                    </button>
+                    {visibleCanvasLayers.map(layer => (
+                      <button
+                        key={layer.id}
+                        type="button"
+                        onClick={() => setSelectedLayerId(layer.id)}
+                        className="flex h-8 w-full items-center justify-between rounded-[5px] px-2 text-left text-[11px] hover:bg-[var(--color-surface-hover)]"
+                        style={{ color: selectedLayerId === layer.id ? 'var(--color-brand)' : 'var(--color-text-secondary)' }}
+                      >
+                        <span className="truncate">文字 · {layer.text}</span><span>{layer.font_size}px</span>
+                      </button>
+                    ))}
+                    {selectedVersion.quality_assessment ? (
+                      <div className="mt-2 rounded-[6px] bg-[var(--color-surface-container)] p-2 text-[11px] leading-4 text-[var(--color-text-secondary)]">
+                        <div className="mb-1 font-medium text-[var(--color-text-primary)]">视觉质检 {selectedVersion.quality_assessment.score}/100</div>
+                        <p>{selectedVersion.quality_assessment.summary}</p>
+                        {selectedVersion.quality_assessment.issues.length > 0 && <p className="mt-1 text-[var(--color-warning)]">问题：{selectedVersion.quality_assessment.issues.join('；')}</p>}
+                        {selectedVersion.quality_assessment.suggestions.length > 0 && <p className="mt-1">建议：{selectedVersion.quality_assessment.suggestions.join('；')}</p>}
+                      </div>
+                    ) : (
+                      <p className="mt-2 text-[11px] text-[var(--color-text-tertiary)]">此版本没有可用的视觉质检结果。</p>
+                    )}
+                  </div>
+                )}
                 {['draft', 'failed'].includes(active.state) ? (
                   <>
                     <label className="mb-1 block text-[12px] text-[var(--color-text-secondary)]" htmlFor="active-image-prompt">画面需求</label>
                     <textarea
                       id="active-image-prompt"
                       value={prompt}
-                      onChange={event => setPrompt(event.target.value)}
+                      onChange={event => {
+                        draftOwnerIdRef.current = active.id
+                        draftDirtyRef.current = true
+                        promptRef.current = event.target.value
+                        setPrompt(event.target.value)
+                      }}
                       rows={8}
                       className="w-full resize-none rounded-[6px] border border-[var(--color-border)] bg-[var(--color-input-bg)] px-2.5 py-2 text-[13px] leading-5 text-[var(--color-text-primary)] outline-none focus:border-[var(--color-brand)]"
                     />
@@ -639,7 +992,13 @@ export function ImageWorkbench() {
                       <select
                         id="active-image-size"
                         value={size}
-                        onChange={event => setSize(event.target.value as typeof size)}
+                        onChange={event => {
+                          draftOwnerIdRef.current = active.id
+                          draftDirtyRef.current = true
+                          const nextSize = event.target.value as typeof size
+                          sizeRef.current = nextSize
+                          setSize(nextSize)
+                        }}
                         className="h-8 rounded-[6px] border border-[var(--color-border)] bg-[var(--color-input-bg)] px-2 text-[12px] text-[var(--color-text-primary)] outline-none"
                       >
                         {IMAGE_SIZE_OPTIONS.map(option => (
@@ -706,16 +1065,6 @@ export function ImageWorkbench() {
                     开始生成
                   </button>
                 )}
-                {active.task_id && ['queued', 'generating'].includes(active.state) && (
-                  <button
-                    type="button"
-                    onClick={() => void refreshTask(active.task_id!)}
-                    className="inline-flex h-8 w-full items-center justify-center gap-1.5 rounded-[6px] border border-[var(--color-border)] text-[13px] text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-hover)]"
-                  >
-                    <RefreshCw size={14} />
-                    刷新状态
-                  </button>
-                )}
                 {active.task_id && task?.status === 'queued' && task.remote_task_id && (
                   <button
                     type="button"
@@ -768,18 +1117,46 @@ export function ImageWorkbench() {
                       className="mt-2 w-full resize-none rounded-[6px] border border-[var(--color-border)] bg-[var(--color-input-bg)] px-2 py-1.5 text-[12px]"
                     />
                     {operationKind === 'inpaint' && (
-                      <label className="mt-2 block text-[11px] text-[var(--color-text-secondary)]">
-                        透明 PNG 蒙版（透明区域将被重绘）
-                        <input
-                          type="file"
-                          accept="image/png"
-                          onChange={event => {
-                            const file = event.target.files?.[0]
-                            if (file) void readImage(file).then(setMaskDataUrl)
-                          }}
-                          className="mt-1 block w-full text-[11px]"
-                        />
-                      </label>
+                      <div className="mt-2 rounded-[6px] bg-[var(--color-surface-container)] p-2 text-[11px] text-[var(--color-text-secondary)]">
+                        <div className="flex items-center gap-1.5 font-medium text-[var(--color-text-primary)]">
+                          <Paintbrush size={13} aria-hidden="true" />在画布涂抹要重绘的区域
+                        </div>
+                        <label className="mt-2 grid grid-cols-[52px_1fr_36px] items-center gap-2">
+                          <span>笔刷</span>
+                          <input
+                            aria-label="蒙版笔刷大小"
+                            type="range"
+                            min={16}
+                            max={512}
+                            step={8}
+                            value={maskBrushSize}
+                            onChange={event => setMaskBrushSize(Number(event.target.value))}
+                          />
+                          <span className="text-right">{maskBrushSize}</span>
+                        </label>
+                        <div className="mt-2 flex items-center gap-2">
+                          <label className="min-w-0 flex-1">
+                            <span className="sr-only">上传透明 PNG 蒙版</span>
+                            <input
+                              aria-label="上传透明 PNG 蒙版"
+                              type="file"
+                              accept="image/png"
+                              onChange={event => {
+                                const file = event.target.files?.[0]
+                                if (file) void readImage(file).then(setMaskDataUrl)
+                                event.currentTarget.value = ''
+                              }}
+                              className="block w-full text-[10px]"
+                            />
+                          </label>
+                          <button
+                            type="button"
+                            onClick={() => setMaskDataUrl(null)}
+                            className="inline-flex h-7 items-center gap-1 rounded border border-[var(--color-border)] px-2"
+                          ><Trash2 size={12} />清空</button>
+                        </div>
+                        <p className="mt-1.5 text-[10px] text-[var(--color-text-tertiary)]">红色区域会生成透明蒙版并交给图片编辑能力；未涂抹区域保持不变。</p>
+                      </div>
                     )}
                     <button
                       type="button"
@@ -812,6 +1189,28 @@ export function ImageWorkbench() {
                       placeholder="每行生成一个确定性文字图层"
                       className="mt-4 w-full resize-none rounded-[6px] border border-[var(--color-border)] bg-[var(--color-input-bg)] px-2 py-1.5 text-[12px]"
                     />
+                    {draftTextLayers.length > 0 && selectedVersion.kind !== 'text_layout' && (
+                      <div className="mt-2 space-y-2 rounded-[6px] bg-[var(--color-surface-container)] p-2">
+                        {draftTextLayers.map((layer, index) => {
+                          const setting = textLayoutSettings[index] ?? {
+                            x: 50,
+                            y: Math.min(90, 12 + index * 10),
+                            fontSize: layer.font_size,
+                            fill: layer.fill,
+                          }
+                          return (
+                            <div key={layer.id} className="grid grid-cols-[1fr_48px_48px_52px_28px] items-center gap-1 text-[10px]">
+                              <span className="truncate text-[var(--color-text-secondary)]" title={layer.text}>{layer.text}</span>
+                              <input aria-label={`${layer.text} 横向位置`} type="number" min={0} max={100} value={setting.x} onChange={event => updateTextLayoutSetting(index, { x: Math.max(0, Math.min(100, Number(event.target.value))) })} className="h-7 rounded border border-[var(--color-border)] bg-[var(--color-input-bg)] px-1" />
+                              <input aria-label={`${layer.text} 纵向位置`} type="number" min={0} max={100} value={setting.y} onChange={event => updateTextLayoutSetting(index, { y: Math.max(0, Math.min(100, Number(event.target.value))) })} className="h-7 rounded border border-[var(--color-border)] bg-[var(--color-input-bg)] px-1" />
+                              <input aria-label={`${layer.text} 字号`} type="number" min={12} max={512} value={setting.fontSize} onChange={event => updateTextLayoutSetting(index, { fontSize: Math.max(12, Math.min(512, Number(event.target.value))) })} className="h-7 rounded border border-[var(--color-border)] bg-[var(--color-input-bg)] px-1" />
+                              <input aria-label={`${layer.text} 颜色`} type="color" value={setting.fill} onChange={event => updateTextLayoutSetting(index, { fill: event.target.value })} className="h-7 w-7" />
+                            </div>
+                          )
+                        })}
+                        <p className="text-[10px] text-[var(--color-text-tertiary)]">横向/纵向位置使用画布百分比；调整会立即投影到画布，提交后形成不可变版本。</p>
+                      </div>
+                    )}
                     <button type="button" onClick={() => void commitText()} disabled={loading || !textCopy.trim()} className="mt-2 h-8 w-full rounded-[6px] border border-[var(--color-border)] text-[12px] disabled:opacity-45">生成文字排版版本</button>
                   </div>
                 )}

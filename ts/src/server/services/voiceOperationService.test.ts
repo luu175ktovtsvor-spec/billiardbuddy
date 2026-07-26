@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { mkdtemp, readdir } from 'node:fs/promises'
+import { mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { VoiceOperationError, VoiceOperationService } from './voiceOperationService.js'
@@ -8,15 +8,10 @@ async function root(): Promise<string> {
   return await mkdtemp(join(tmpdir(), 'bb-voice-operation-'))
 }
 
-const consent = 'a'.repeat(64)
-
 describe('VoiceOperationService', () => {
   test('materializes VoiceOperation, raw Transcript and an immutable edit revision', async () => {
     const service = new VoiceOperationService({ root: await root() })
-    const started = await service.begin(
-      new File(['audio'], 'voice.webm', { type: 'audio/webm' }),
-      consent,
-    )
+    const started = await service.begin(new File(['audio'], 'voice.webm', { type: 'audio/webm' }))
     const completed = await service.complete(started.operation.id, ' 原始转写 ')
     const raw = completed.transcript.revisions[0]!
 
@@ -45,7 +40,7 @@ describe('VoiceOperationService', () => {
 
   test('cancels the owned signal and discards a late provider result', async () => {
     const service = new VoiceOperationService({ root: await root() })
-    const started = await service.begin(new File(['audio'], 'voice.webm'), consent)
+    const started = await service.begin(new File(['audio'], 'voice.webm'))
     await service.cancel(started.operation.id)
 
     expect(started.signal.aborted).toBe(true)
@@ -55,7 +50,7 @@ describe('VoiceOperationService', () => {
 
   test('binds an exact revision to Composer and video Evidence idempotently', async () => {
     const service = new VoiceOperationService({ root: await root() })
-    const started = await service.begin(new File(['audio'], 'voice.webm'), consent)
+    const started = await service.begin(new File(['audio'], 'voice.webm'))
     const { transcript } = await service.complete(started.operation.id, '比赛画面说明')
     const rawRevisionId = transcript.raw_revision_id
 
@@ -90,9 +85,9 @@ describe('VoiceOperationService', () => {
     const storage = await root()
     const service = new VoiceOperationService({ root: storage, now: () => now, retentionDays: 1 })
 
-    const unboundOperation = await service.begin(new File(['one'], 'one.webm'), consent)
+    const unboundOperation = await service.begin(new File(['one'], 'one.webm'))
     await service.complete(unboundOperation.operation.id, '无绑定')
-    const boundOperation = await service.begin(new File(['two'], 'two.webm'), consent)
+    const boundOperation = await service.begin(new File(['two'], 'two.webm'))
     const bound = await service.complete(boundOperation.operation.id, '有绑定')
     await service.bind(bound.transcript.id, {
       revision_id: bound.transcript.raw_revision_id,
@@ -104,5 +99,20 @@ describe('VoiceOperationService', () => {
     expect(await service.getOperation(boundOperation.operation.id)).toMatchObject({ status: 'succeeded' })
     expect(await readdir(join(storage, 'operations'))).toHaveLength(1)
     expect(await readdir(join(storage, 'transcripts'))).toHaveLength(1)
+  })
+
+  test('migrates an old operation receipt out of durable storage', async () => {
+    const storage = await root()
+    const service = new VoiceOperationService({ root: storage })
+    const started = await service.begin(new File(['audio'], 'voice.webm'))
+    const operationPath = join(storage, 'operations', `${started.operation.id}.json`)
+    const legacy = JSON.parse(await readFile(operationPath, 'utf8')) as Record<string, unknown>
+    legacy.consent_receipt_id = 'a'.repeat(64)
+    await writeFile(operationPath, `${JSON.stringify(legacy, null, 2)}\n`)
+
+    await service.migrateSupportedStorage()
+
+    expect(JSON.parse(await readFile(operationPath, 'utf8'))).not.toHaveProperty('consent_receipt_id')
+    expect(await service.getOperation(started.operation.id)).toMatchObject({ status: 'running' })
   })
 })

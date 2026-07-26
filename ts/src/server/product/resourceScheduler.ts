@@ -37,7 +37,7 @@ function exact(value: Record<string, unknown>, required: readonly string[], opti
 function safeKey(value: unknown): value is string { return typeof value === 'string' && value.length > 0 && value.length <= 256 && !dangerousKeys.has(value) }
 function nonEmpty(value: unknown): value is string { return typeof value === 'string' && value.length > 0 && value.length <= 512 }
 function timestamp(value: unknown): value is string { return typeof value === 'string' && Number.isFinite(Date.parse(value)) }
-function count(value: unknown, maximum = Number.MAX_SAFE_INTEGER): value is number { return Number.isSafeInteger(value) && value >= 0 && value <= maximum }
+function count(value: unknown, maximum = Number.MAX_SAFE_INTEGER): value is number { return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 && value <= maximum }
 function bytes(value: unknown): asserts value is ProductResourceByteBudget { const record = object(value); exact(record, ['memory', 'input', 'temp', 'output']); if (!Object.values(record).every(item => count(item, 32 * 1024 * 1024 * 1024))) invalidState() }
 
 function validateClaim(claim: unknown, jobId: string): asserts claim is ProductResourceClaim {
@@ -173,13 +173,28 @@ export class ProductResourceScheduler {
 
   async snapshot(): Promise<ProductResourceSnapshot> { return this.mutate(state => { this.reapExpired(state); return this.snapshotOf(state) }) }
 
-  private validateClaim(claim: ProductResourceClaim, keys: string[], profile: ProductResourceProfile): ProductResourceReasonCode | undefined {
+  async hasBlockingOwnerJobs(ownerId: string): Promise<boolean> {
+    return this.mutate(state => {
+      this.reapExpired(state)
+      return Object.values(state.jobs).some(job => job.claim.owner_id === ownerId && (isQueued(job) || isActive(job)))
+    })
+  }
+
+  async purgeOwnerJobs(ownerId: string): Promise<void> {
+    await this.mutate(state => {
+      this.reapExpired(state)
+      if (Object.values(state.jobs).some(job => job.claim.owner_id === ownerId && (isQueued(job) || isActive(job)))) throw new Error('OWNER_JOBS_ACTIVE')
+      for (const [jobId, job] of Object.entries(state.jobs)) if (job.claim.owner_id === ownerId) delete state.jobs[jobId]
+    })
+  }
+
+  private validateClaim(claim: ProductResourceClaim, keys: ReturnType<typeof stableProductResourceKeys>, profile: ProductResourceProfile): ProductResourceReasonCode | undefined {
     if (!claim.job_id || !claim.owner_id || !claim.idempotency_key || !claim.profile_revision || claim.scope !== 'desktop-host' || !keys.length || keys.length !== claim.resources.length || claim.resources.some(resource => !Number.isSafeInteger(resource.units) || resource.units < 1) || Object.values(claim.bytes).some(value => !Number.isSafeInteger(value) || value < 0)) return 'PROFILE_REQUIRED'
     if (claim.profile_revision !== profile.revision) return 'PROFILE_REQUIRED'
     return keys.some(key => !profile.limits[key]) ? 'PROFILE_REQUIRED' : undefined
   }
 
-  private queueReason(state: DurableState, claim: ProductResourceClaim, keys: string[], profile: ProductResourceProfile): ProductResourceReasonCode | undefined {
+  private queueReason(state: DurableState, claim: ProductResourceClaim, keys: ReturnType<typeof stableProductResourceKeys>, profile: ProductResourceProfile): ProductResourceReasonCode | undefined {
     for (const key of keys) {
       const limit = profile.limits[key]!
       const queued = Object.values(state.jobs).filter(job => isQueued(job) && job.resource_keys.includes(key))

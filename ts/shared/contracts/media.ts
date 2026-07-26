@@ -22,28 +22,14 @@ function approximateDataUrlBytes(value: string): number {
 
 export const mediaIdSchema = z.string().regex(/^[a-z0-9][a-z0-9_-]{7,79}$/)
 export const mediaIsoDateSchema = z.string().datetime()
-/**
- * A product task reference is intentionally distinct from an Agent Core
- * session id. It accepts both the current UUID form and the one-time legacy
- * import form used by the product task registry.
- */
-export const productTaskOwnerIdSchema = z.string().regex(
-  /^task_(?:[a-f0-9]{16}|[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})$/,
-)
 export const STANDALONE_MEDIA_OWNER_ID = 'local_workbench'
-export const mediaOwnerSchema = z.discriminatedUnion('kind', [
-  z.object({
-    kind: z.literal('standalone'),
-    owner_id: z.literal(STANDALONE_MEDIA_OWNER_ID),
-  }),
-  z.object({
-    kind: z.literal('product_task'),
-    owner_id: productTaskOwnerIdSchema,
-  }),
-])
+export const mediaOwnerSchema = z.object({
+  kind: z.literal('standalone'),
+  owner_id: z.literal(STANDALONE_MEDIA_OWNER_ID),
+})
 export const mediaAssetSchema = z.object({
   id: mediaIdSchema,
-  role: z.enum(['reference', 'mask', 'source', 'result', 'export']),
+  role: z.enum(['reference', 'mask', 'source', 'result', 'preview', 'export']),
   version_id: mediaIdSchema,
   storage: z.object({
     kind: z.enum(['cas', 'managed', 'external', 'remote']),
@@ -121,26 +107,6 @@ export const IMAGE_GENERATION_MODELS = [
   'doubao-seedream-4-5-251128',
 ] as const
 export const imageGenerationModelSchema = z.enum(IMAGE_GENERATION_MODELS)
-export const IMAGE_DATA_EGRESS_POLICY_REVISION = 'bb-04e-image-v1'
-
-export const imageDataEgressAcknowledgementSchema = z.object({
-  policy_revision: z.literal(IMAGE_DATA_EGRESS_POLICY_REVISION),
-  acknowledged: z.literal(true),
-  acknowledged_at: mediaIsoDateSchema,
-})
-
-export const imageDataEgressConsentReceiptSchema = z.object({
-  receipt_id: z.string().regex(/^[a-f0-9]{64}$/),
-  policy_revision: z.literal(IMAGE_DATA_EGRESS_POLICY_REVISION),
-  purpose: z.literal('image_generation'),
-  capability: z.literal('ImageGeneration'),
-  receiver: z.enum(['OpenAI', 'ByteDance Ark']),
-  relay_region: z.literal('United States'),
-  retention: z.literal('input-until-terminal;result-up-to-7-days'),
-  billable: z.literal(true),
-  granted_at: mediaIsoDateSchema,
-  revocable_until: z.literal('provider_submission'),
-})
 
 export const GPT_IMAGE_CANVAS_SIZES = [
   '1024x1024',
@@ -202,9 +168,7 @@ const mediaProjectBaseSchema = z.object({
   id: mediaIdSchema,
   title: z.string().min(1).max(160),
   workspace_root: z.string().min(1).max(4096).optional(),
-  /** Optional so standalone and legacy media projects remain valid. */
-  product_task_id: productTaskOwnerIdSchema.optional(),
-  /** Canonical owner. product_task_id remains a read-compatible projection. */
+  /** Media workbenches are independent products and never belong to chat tasks. */
   owner: mediaOwnerSchema.default({
     kind: 'standalone',
     owner_id: STANDALONE_MEDIA_OWNER_ID,
@@ -217,6 +181,13 @@ const mediaProjectBaseSchema = z.object({
   revision: z.number().int().nonnegative(),
   created_at: mediaIsoDateSchema,
   updated_at: mediaIsoDateSchema,
+})
+
+export const imageQualityAssessmentResultSchema = z.object({
+  score: z.number().int().min(0).max(100),
+  summary: z.string().min(1).max(1000),
+  issues: z.array(z.string().min(1).max(500)).max(20).default([]),
+  suggestions: z.array(z.string().min(1).max(500)).max(20).default([]),
 })
 
 export const imageWorkbenchOutputSchema = z.object({
@@ -235,6 +206,7 @@ export const imageWorkbenchOutputSchema = z.object({
   asset_path: z.string().startsWith('/api/media/assets/').optional(),
   url: z.string().url().optional(),
   revised_prompt: z.string().max(8000).optional(),
+  quality_assessment: imageQualityAssessmentResultSchema.optional(),
 }).refine(value => Boolean(value.data_url || value.asset_path || value.url), {
   message: 'an image output needs data_url, asset_path or url',
 })
@@ -250,6 +222,7 @@ export const publicImageVersionSchema = z.object({
   width: z.number().int().positive().max(12000).optional(),
   height: z.number().int().positive().max(12000).optional(),
   text_layers: z.array(imageTextLayerSchema).max(80).default([]),
+  quality_assessment: imageQualityAssessmentResultSchema.optional(),
   created_at: mediaIsoDateSchema,
 })
 
@@ -395,6 +368,14 @@ export const videoTimelineVersionSchema = z.object({
   created_at: mediaIsoDateSchema,
 })
 
+export const videoPreviewSchema = z.object({
+  timeline_version_id: mediaIdSchema,
+  asset_id: mediaIdSchema,
+  asset_path: z.string().startsWith('/api/media/assets/'),
+  content_hash: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+  created_at: mediaIsoDateSchema,
+})
+
 export const videoStudioProjectSchema = mediaProjectBaseSchema.extend({
   kind: z.literal('video'),
   state: z.enum(['draft', 'ready', 'rendering', 'complete', 'failed']),
@@ -408,6 +389,8 @@ export const videoStudioProjectSchema = mediaProjectBaseSchema.extend({
   current_timeline_version_id: mediaIdSchema.optional(),
   alternatives: z.array(videoAlternativeSchema).max(3).default([]),
   task_id: mediaIdSchema.optional(),
+  preview_task_id: mediaIdSchema.optional(),
+  preview: videoPreviewSchema.optional(),
   output_path: z.string().min(1).max(4096).optional(),
   output_asset_id: mediaIdSchema.optional(),
   output_content_hash: z.string().regex(/^sha256:[a-f0-9]{64}$/).optional(),
@@ -421,7 +404,6 @@ export const mediaProjectSchema = z.discriminatedUnion('kind', [
 ])
 
 const persistedMediaProjectFields = {
-  product_task_id: true,
   owner: true,
   writer_fence: true,
   assets: true,
@@ -454,8 +436,10 @@ export const mediaTaskSchema = z.object({
   operation_id: mediaIdSchema.optional(),
   owner: mediaOwnerSchema.optional(),
   attempt: z.number().int().positive().default(1),
-  kind: z.enum(['image.generate', 'video.probe', 'video.analyze', 'video.plan', 'video.render']),
+  kind: z.enum(['image.generate', 'video.probe', 'video.analyze', 'video.plan', 'video.preview', 'video.render']),
   status: mediaTaskStatusSchema,
+  /** Monotonic sequence for user-visible changes to this persisted job. */
+  status_sequence: z.number().int().nonnegative().default(0),
   progress: z.number().min(0).max(100),
   stage: z.string().max(160),
   remote_task_id: z.string().min(1).max(256).optional(),
@@ -463,7 +447,6 @@ export const mediaTaskSchema = z.object({
   poll_after_seconds: z.number().int().min(1).max(3600).optional(),
   idempotency_key: z.string().min(16).max(160).optional(),
   outcome_unknown: z.boolean().optional(),
-  data_egress_consent: imageDataEgressConsentReceiptSchema.optional(),
   provider_receipt_hash: z.string().regex(/^[a-f0-9]{64}$/).optional(),
   /** Relay result blob was deleted only after the local Version/Asset commit succeeded. */
   remote_result_acknowledged_at: mediaIsoDateSchema.optional(),
@@ -485,7 +468,35 @@ export const publicMediaTaskSchema = mediaTaskSchema.omit({
   owner: true,
   attempt: true,
   image_operation: true,
+  poll_after_seconds: true,
   remote_result_acknowledged_at: true,
+})
+
+export const mediaJobEventSchema = z.object({
+  schema_version: z.literal(1),
+  cursor: z.number().int().positive(),
+  project_id: mediaIdSchema,
+  task_id: mediaIdSchema,
+  operation_id: mediaIdSchema,
+  status_sequence: z.number().int().nonnegative(),
+  occurred_at: mediaIsoDateSchema,
+  task: mediaTaskSchema,
+})
+
+export const mediaJobEventJournalSchema = z.object({
+  schema_version: z.literal(1),
+  next_cursor: z.number().int().positive(),
+  events: z.array(mediaJobEventSchema).max(2000),
+})
+
+export const publicMediaJobEventSchema = mediaJobEventSchema.omit({ task: true }).extend({
+  task: publicMediaTaskSchema,
+})
+
+export const publicMediaJobEventPageSchema = z.object({
+  events: z.array(publicMediaJobEventSchema).max(200),
+  cursor: z.number().int().nonnegative(),
+  reset_required: z.boolean(),
 })
 
 export const imageGenerationTaskResultSchema = z.object({
@@ -504,6 +515,15 @@ export const videoRenderTaskResultSchema = z.object({
   output_content_hash: z.string().regex(/^sha256:[a-f0-9]{64}$/).optional(),
   temporary_output: z.string().min(1).max(4096).optional(),
   video_encoder: z.enum(['h264_videotoolbox', 'h264_mf', 'mpeg4']).optional(),
+})
+
+export const videoPreviewTaskResultSchema = z.object({
+  preview_revision: z.number().int().nonnegative(),
+  timeline_version_id: mediaIdSchema,
+  asset_id: mediaIdSchema,
+  asset_path: z.string().startsWith('/api/media/assets/'),
+  content_hash: z.string().regex(/^sha256:[a-f0-9]{64}$/).optional(),
+  temporary_output: z.string().min(1).max(4096).optional(),
 })
 
 export const createImageProjectInputSchema = z.object({
@@ -560,7 +580,6 @@ export const updateImageProjectInputSchema = z.object({
 
 export const submitImageProjectInputSchema = z.object({
   confirm_unknown_retry: z.boolean().default(false),
-  data_egress_consent: imageDataEgressAcknowledgementSchema.optional(),
 })
 
 const imagePngDataUrlSchema = z.string()
@@ -574,7 +593,6 @@ export const startImageOperationInputSchema = z.object({
   instruction: z.string().min(1).max(4000),
   mask_data_url: imagePngDataUrlSchema.optional(),
   confirm_unknown_retry: z.boolean().default(false),
-  data_egress_consent: imageDataEgressAcknowledgementSchema.optional(),
 }).superRefine((value, context) => {
   if (value.kind === 'inpaint' && !value.mask_data_url) {
     context.addIssue({ code: 'custom', path: ['mask_data_url'], message: 'inpaint requires a PNG mask' })
@@ -647,6 +665,11 @@ export const renderVideoInputSchema = z.object({
   message: 'base_revision is required',
 }).transform(value => ({ ...value, base_revision: value.base_revision ?? value.revision! }))
 
+export const previewVideoInputSchema = z.object({
+  base_revision: z.number().int().nonnegative(),
+  timeline_version_id: mediaIdSchema,
+})
+
 export const saveImageOutputInputSchema = z.object({
   version_id: mediaIdSchema.optional(),
   /** One-release compatibility for callers that still address legacy outputs. */
@@ -660,10 +683,15 @@ export type MediaProject = z.infer<typeof mediaProjectSchema>
 export type ImageWorkbenchProject = z.infer<typeof imageWorkbenchProjectSchema>
 export type VideoStudioProject = z.infer<typeof videoStudioProjectSchema>
 export type MediaTask = z.infer<typeof mediaTaskSchema>
+export type MediaTaskInput = z.input<typeof mediaTaskSchema>
 export type PublicMediaProject = z.infer<typeof publicMediaProjectSchema>
 export type PublicImageWorkbenchProject = z.infer<typeof publicImageWorkbenchProjectSchema>
 export type PublicVideoStudioProject = z.infer<typeof publicVideoStudioProjectSchema>
 export type PublicMediaTask = z.infer<typeof publicMediaTaskSchema>
+export type MediaJobEvent = z.infer<typeof mediaJobEventSchema>
+export type MediaJobEventJournal = z.infer<typeof mediaJobEventJournalSchema>
+export type PublicMediaJobEvent = z.infer<typeof publicMediaJobEventSchema>
+export type PublicMediaJobEventPage = z.infer<typeof publicMediaJobEventPageSchema>
 export type MediaOwner = z.infer<typeof mediaOwnerSchema>
 export type MediaAsset = z.infer<typeof mediaAssetSchema>
 export type MediaVersion = z.infer<typeof mediaVersionSchema>
@@ -682,6 +710,7 @@ export type VideoBrief = z.infer<typeof videoBriefSchema>
 export type VideoScene = z.infer<typeof videoSceneSchema>
 export type VideoAlternative = z.infer<typeof videoAlternativeSchema>
 export type VideoTimelineVersion = z.infer<typeof videoTimelineVersionSchema>
+export type VideoPreview = z.infer<typeof videoPreviewSchema>
 export type CreateImageProjectInput = z.input<typeof createImageProjectInputSchema>
 export type CreateVideoProjectInput = z.input<typeof createVideoProjectInputSchema>
 export type UpdateImageProjectInput = z.input<typeof updateImageProjectInputSchema>
@@ -695,6 +724,8 @@ export type AnalyzeVideoProjectInput = z.input<typeof analyzeVideoProjectInputSc
 export type LockVideoSceneInput = z.input<typeof lockVideoSceneInputSchema>
 export type ApplyVideoAlternativeInput = z.input<typeof applyVideoAlternativeInputSchema>
 export type RenderVideoInput = z.input<typeof renderVideoInputSchema>
+export type PreviewVideoInput = z.input<typeof previewVideoInputSchema>
 export type SaveImageOutputInput = z.input<typeof saveImageOutputInputSchema>
 export type ImageGenerationTaskResult = z.infer<typeof imageGenerationTaskResultSchema>
 export type VideoRenderTaskResult = z.infer<typeof videoRenderTaskResultSchema>
+export type VideoPreviewTaskResult = z.infer<typeof videoPreviewTaskResultSchema>

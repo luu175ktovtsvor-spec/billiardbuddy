@@ -5,15 +5,13 @@ import { parseProductTaskEvent } from './taskProtocol'
 export type ProductTaskAttachment = {
   type: 'file' | 'image'
   name?: string
-  data: string
   mimeType: string
-}
+} & ({ data: string; file?: never } | { file: File; data?: never })
 
 export type ProductTaskClientMessage =
   | { type: 'resume'; cursor: number }
   | { type: 'permission_response'; requestId: string; allowed: boolean }
   | { type: 'ask_user_question_response'; requestId: string; answers: string[] }
-  | { type: 'computer_use_permission_response'; requestId: string; allowed: boolean }
   | { type: 'stop_generation' }
   | { type: 'ping' }
 
@@ -37,7 +35,6 @@ type Connection = {
   reconnectAttempt: number
   pingInterval: ReturnType<typeof setInterval> | null
   intentionalClose: boolean
-  pendingMessages: ProductTaskClientMessage[]
   hasOpened: boolean
   lifecycleEvent: ProductTaskSocketLifecycleEvent
   resumeCursor: number
@@ -77,7 +74,6 @@ export class ProductTaskSocketManager {
       clearTimeout(connection.reconnectTimer)
       connection.reconnectTimer = null
     }
-    connection.pendingMessages = []
     this.publishLifecycle(connection, { type: 'disconnected', willReconnect: false })
     connection.ws.close()
     this.connections.delete(taskId)
@@ -89,24 +85,13 @@ export class ProductTaskSocketManager {
     }
   }
 
-  send(taskId: string, message: ProductTaskClientMessage): void {
-    let connection = this.connections.get(taskId)
-    if (!connection || connection.intentionalClose) {
-      connection = this.createConnection(taskId, connection)
-    }
-
-    if (connection.ws.readyState === WebSocket.OPEN) {
-      connection.ws.send(JSON.stringify(message))
-      return
-    }
-
-    connection.pendingMessages.push(message)
-    if (
-      connection.ws.readyState === WebSocket.CLOSED ||
-      connection.ws.readyState === WebSocket.CLOSING
-    ) {
-      this.scheduleReconnect(taskId, connection)
-    }
+  send(taskId: string, message: ProductTaskClientMessage): boolean {
+    const connection = this.connections.get(taskId)
+    // Approval and stop controls describe the run visible on this exact live
+    // connection. Replaying one after a reconnect could target a later Turn.
+    if (!connection || connection.intentionalClose || connection.ws.readyState !== WebSocket.OPEN) return false
+    connection.ws.send(JSON.stringify(message))
+    return true
   }
 
   private createConnection(taskId: string, previous?: Connection): Connection {
@@ -119,7 +104,6 @@ export class ProductTaskSocketManager {
       reconnectAttempt: previous?.reconnectAttempt ?? 0,
       pingInterval: null,
       intentionalClose: false,
-      pendingMessages: previous?.pendingMessages ?? [],
       hasOpened: previous?.hasOpened ?? false,
       lifecycleEvent: previous?.hasOpened
         ? { type: 'reconnecting' }
@@ -141,10 +125,6 @@ export class ProductTaskSocketManager {
       this.startPingLoop(taskId, connection)
       this.publishLifecycle(connection, { type: 'connected', reconnected })
       ws.send(JSON.stringify({ type: 'resume', cursor: connection.resumeCursor }))
-      while (connection.pendingMessages.length > 0) {
-        const message = connection.pendingMessages.shift()!
-        ws.send(JSON.stringify(message))
-      }
     }
 
     ws.onmessage = (event) => {
@@ -155,7 +135,7 @@ export class ProductTaskSocketManager {
         if (!productEvent) return
         if (productEvent.type === 'resume_cursor') {
           connection.resumeCursor = Math.max(connection.resumeCursor, productEvent.cursor)
-        } else if (productEvent.type === 'user_text' && productEvent.event_sequence !== undefined) {
+        } else if ('event_sequence' in productEvent && productEvent.event_sequence !== undefined) {
           connection.resumeCursor = Math.max(connection.resumeCursor, productEvent.event_sequence)
         }
         for (const handler of connection.handlers) {

@@ -4,40 +4,17 @@
  * GET/PATCH /api/product/settings/user    — 普通产品偏好
  * GET/PATCH /api/product/settings/runtime — Agent 运行时偏好
  * GET/PATCH /api/product/settings/desktop — 桌面宿主偏好
- * GET       /api/product/settings/output-styles
- * PATCH     /api/product/settings/output-style
  */
 
-import { SettingsService } from '../services/settingsService.js'
+import { ProductSettingsRepository } from '../product/productSettingsRepository.js'
 import { ApiError, errorResponse } from '../middleware/errorHandler.js'
-import {
-  DEFAULT_OUTPUT_STYLE_NAME,
-  getAllOutputStyles,
-  type OutputStyleConfig,
-} from '../../constants/outputStyles.js'
-import { getCwd } from '../../utils/cwd.js'
 import {
   MAX_AI_REQUEST_TIMEOUT_MS,
   MIN_AI_REQUEST_TIMEOUT_MS,
   normalizeNetworkSettings,
 } from '../services/networkSettings.js'
 
-const settingsService = new SettingsService()
-
-type OutputStyleSource =
-  | OutputStyleConfig['source']
-  | 'built-in'
-
-type OutputStyleListItem = {
-  value: string
-  label: string
-  description: string
-  source: OutputStyleSource
-}
-
-const DEFAULT_OUTPUT_STYLE_LABEL = 'Default'
-const DEFAULT_OUTPUT_STYLE_DESCRIPTION =
-  'BilliardBuddy completes tasks efficiently and provides concise responses'
+const settingsService = new ProductSettingsRepository()
 
 const PRODUCT_THEME_MODES = ['light', 'dark', 'system'] as const
 const CHAT_SEND_BEHAVIORS = ['enter', 'modifierEnter'] as const
@@ -92,12 +69,6 @@ export async function handleProductSettingsApi(
       case 'desktop':
         return await handleDesktopSettings(req)
 
-      case 'output-styles':
-        return await handleOutputStyles(req, url)
-
-      case 'output-style':
-        return await handleOutputStyle(req)
-
       default:
         throw ApiError.notFound(`Unknown settings endpoint: ${sub}`)
     }
@@ -110,13 +81,13 @@ export async function handleProductSettingsApi(
 
 async function handleUserSettings(req: Request): Promise<Response> {
   if (req.method === 'GET') {
-    const settings = await settingsService.getUserSettings()
+    const settings = await settingsService.get()
     return Response.json(projectUserPreferences(settings))
   }
 
   if (req.method === 'PATCH') {
     const update = validateUserPreferenceUpdate(await parseJsonBody(req))
-    await settingsService.mutateUserSettings(current =>
+    await settingsService.mutate(current =>
       mergeUserPreferenceUpdate(current, update),
     )
     return Response.json({ ok: true })
@@ -127,12 +98,12 @@ async function handleUserSettings(req: Request): Promise<Response> {
 
 async function handleRuntimeSettings(req: Request): Promise<Response> {
   if (req.method === 'GET') {
-    return Response.json(projectRuntimeSettings(await settingsService.getUserSettings()))
+    return Response.json(projectRuntimeSettings(await settingsService.get()))
   }
 
   if (req.method === 'PATCH') {
     const update = validateRuntimeSettingsUpdate(await parseJsonBody(req))
-    await settingsService.mutateUserSettings(current =>
+    await settingsService.mutate(current =>
       mergeRuntimeSettingsUpdate(current, update),
     )
     return Response.json({ ok: true })
@@ -143,12 +114,12 @@ async function handleRuntimeSettings(req: Request): Promise<Response> {
 
 async function handleDesktopSettings(req: Request): Promise<Response> {
   if (req.method === 'GET') {
-    return Response.json(projectDesktopSettings(await settingsService.getUserSettings()))
+    return Response.json(projectDesktopSettings(await settingsService.get()))
   }
 
   if (req.method === 'PATCH') {
     const update = validateDesktopSettingsUpdate(await parseJsonBody(req))
-    await settingsService.mutateUserSettings(current =>
+    await settingsService.mutate(current =>
       mergeDesktopSettingsUpdate(current, update),
     )
     return Response.json({ ok: true })
@@ -468,7 +439,7 @@ function mergeDesktopSettingsUpdate(
     if (terminal.startupShell === 'custom' && typeof terminal.customShellPath !== 'string') {
       throw ApiError.badRequest('A custom desktop terminal requires "customShellPath"')
     }
-    if (terminal.startupShell === 'custom' && terminal.customShellPath.trim().length === 0) {
+    if (terminal.startupShell === 'custom' && typeof terminal.customShellPath === 'string' && terminal.customShellPath.trim().length === 0) {
       throw ApiError.badRequest('A custom desktop terminal requires "customShellPath"')
     }
     next.desktopTerminal = terminal
@@ -484,73 +455,6 @@ function mergeDesktopSettingsUpdate(
   }
 
   return next
-}
-
-async function handleOutputStyles(req: Request, url: URL): Promise<Response> {
-  if (req.method !== 'GET') {
-    throw methodNotAllowed(req.method)
-  }
-
-  const workDir = getWorkDirFromUrl(url)
-  const styles = await listOutputStyles(workDir)
-  const settings = workDir
-    ? Object.assign(
-        {},
-        await settingsService.getUserSettings(),
-        await settingsService.getProjectSettings(workDir).catch(() => ({})),
-        await settingsService.getLocalSettings(workDir).catch(() => ({})),
-      )
-    : await settingsService.getUserSettings()
-  const outputStyle =
-    typeof settings.outputStyle === 'string'
-      ? settings.outputStyle
-      : DEFAULT_OUTPUT_STYLE_NAME
-
-  return Response.json({
-    outputStyle,
-    styles,
-    scope: workDir ? 'localSettings' : 'userSettings',
-    workDir: workDir ?? null,
-  })
-}
-
-async function handleOutputStyle(req: Request): Promise<Response> {
-  if (req.method !== 'PATCH') {
-    throw methodNotAllowed(req.method)
-  }
-
-  const body = await parseJsonBody(req)
-  const outputStyle = body.outputStyle
-  if (typeof outputStyle !== 'string' || outputStyle.trim().length === 0) {
-    throw ApiError.badRequest('Missing or invalid "outputStyle" in request body')
-  }
-
-  const workDir =
-    typeof body.workDir === 'string' && body.workDir.trim().length > 0
-      ? body.workDir
-      : undefined
-  const styles = await listOutputStyles(workDir)
-  if (!styles.some(style => style.value === outputStyle)) {
-    throw ApiError.badRequest(`Unknown output style: "${outputStyle}"`)
-  }
-
-  if (workDir) {
-    await settingsService.updateLocalSettings({ outputStyle }, workDir)
-    return Response.json({
-      ok: true,
-      outputStyle,
-      scope: 'localSettings',
-      workDir,
-    })
-  }
-
-  await settingsService.updateUserSettings({ outputStyle })
-  return Response.json({
-    ok: true,
-    outputStyle,
-    scope: 'userSettings',
-    workDir: null,
-  })
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -570,23 +474,4 @@ async function parseJsonBody(req: Request): Promise<Record<string, unknown>> {
 
 function methodNotAllowed(method: string): ApiError {
   return new ApiError(405, `Method ${method} not allowed`, 'METHOD_NOT_ALLOWED')
-}
-
-function getWorkDirFromUrl(url: URL): string | undefined {
-  const raw = url.searchParams.get('workDir')
-  if (typeof raw === 'string' && raw.trim().length > 0) {
-    return raw
-  }
-  return undefined
-}
-
-async function listOutputStyles(workDir?: string): Promise<OutputStyleListItem[]> {
-  const cwd = workDir ?? getCwd()
-  const styles = await getAllOutputStyles(cwd)
-  return Object.entries(styles).map(([value, config]) => ({
-    value,
-    label: config?.name ?? DEFAULT_OUTPUT_STYLE_LABEL,
-    description: config?.description ?? DEFAULT_OUTPUT_STYLE_DESCRIPTION,
-    source: config?.source ?? 'built-in',
-  }))
 }

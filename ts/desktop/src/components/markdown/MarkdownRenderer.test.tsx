@@ -88,7 +88,7 @@ describe('MarkdownRenderer', () => {
 
   it('uses semantic code colors for inline code so both themes stay readable', () => {
     const { container } = render(
-      <MarkdownRenderer content={'Use `claude-sonnet-4-6` for balanced speed.'} />,
+      <MarkdownRenderer content={'Use `deepseek-v4-flash` for balanced speed.'} />,
     )
 
     const root = container.firstChild as HTMLDivElement
@@ -96,7 +96,7 @@ describe('MarkdownRenderer', () => {
     expect(root.className).toContain('prose-code:text-[var(--color-code-fg)]')
     expect(root.className).toContain('prose-code:bg-[var(--color-code-bg)]')
     expect(root.className).not.toContain('prose-code:text-[var(--color-primary-fixed)]')
-    expect(screen.getByText('claude-sonnet-4-6')).toBeInTheDocument()
+    expect(screen.getByText('deepseek-v4-flash')).toBeInTheDocument()
   })
 
   it('renders mermaid fenced blocks with the Mermaid renderer', () => {

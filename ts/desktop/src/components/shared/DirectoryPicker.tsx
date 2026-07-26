@@ -19,7 +19,7 @@ type Props = {
   isGitProject?: boolean
 }
 
-const DESKTOP_WORKTREE_MARKER = '/.claude/worktrees/'
+const DESKTOP_WORKTREE_MARKER = '/.BilliardBuddy/worktrees/'
 const DROPDOWN_WIDTH = 400
 const DROPDOWN_VIEWPORT_MARGIN = 12
 const DROPDOWN_HEIGHT = 380 // approximate max height

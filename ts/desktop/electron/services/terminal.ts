@@ -115,17 +115,17 @@ export type TerminalWatchdogPlan = {
 }
 
 const TERMINAL_PRIVATE_ENV_KEYS = [
-  'QF_GATEWAY_BOOTSTRAP_CREDENTIAL',
-  'QF_LICENSE_KEY',
-  'QF_GATEWAY_REFRESH_TOKEN',
-  'QF_GATEWAY_SESSION',
-  'QF_GATEWAY_SESSION_PROOF',
-  'QF_GATEWAY_TOKEN',
+  'BB_GATEWAY_BOOTSTRAP_CREDENTIAL',
+  'BB_LICENSE_KEY',
+  'BB_GATEWAY_REFRESH_TOKEN',
+  'BB_GATEWAY_SESSION',
+  'BB_GATEWAY_SESSION_PROOF',
+  'BB_GATEWAY_TOKEN',
   'BB_INSTALLATION_ID',
   'BB_MEDIA_UI_CAPABILITY',
   'BB_BROWSER_UI_CAPABILITY',
-  'CLAUDE_CODE_SESSION_ACCESS_TOKEN',
-  'CLAUDE_CODE_WEBSOCKET_AUTH_FILE_DESCRIPTOR',
+  'BILLIARDBUDDY_SESSION_ACCESS_TOKEN',
+  'BILLIARDBUDDY_WEBSOCKET_AUTH_FILE_DESCRIPTOR',
 ] as const
 
 const preparedNodePtyDirs = new Set<string>()
@@ -192,7 +192,7 @@ export function spawnTerminalWatchdog(
 }
 
 export function terminalConfigPath(app: TerminalAppLike | undefined, env: NodeJS.ProcessEnv = process.env): string | null {
-  const portableDir = env.CLAUDE_CONFIG_DIR?.trim()
+  const portableDir = env.BILLIARDBUDDY_CONFIG_DIR?.trim()
   if (portableDir) {
     return path.join(portableDir, TERMINAL_CONFIG_FILE)
   }
@@ -200,15 +200,15 @@ export function terminalConfigPath(app: TerminalAppLike | undefined, env: NodeJS
   return path.join(app.getPath('userData'), TERMINAL_CONFIG_FILE)
 }
 
-export function claudeConfigDir(env: NodeJS.ProcessEnv = process.env): string | null {
-  const portableDir = env.CLAUDE_CONFIG_DIR?.trim()
+export function billiardBuddyConfigDir(env: NodeJS.ProcessEnv = process.env): string | null {
+  const portableDir = env.BILLIARDBUDDY_CONFIG_DIR?.trim()
   if (portableDir) return portableDir
   const home = env.HOME || env.USERPROFILE || os.homedir()
-  return home ? path.join(home, '.claude') : null
+  return home ? path.join(home, '.BilliardBuddy') : null
 }
 
 export function desktopTerminalSettingsPath(env: NodeJS.ProcessEnv = process.env): string | null {
-  const dir = claudeConfigDir(env)
+  const dir = billiardBuddyConfigDir(env)
   return dir ? path.join(dir, 'settings.json') : null
 }
 
@@ -357,7 +357,7 @@ export function resolveTerminalCwd(
 ): string {
   const trimmed = cwd?.trim()
   const resolved = trimmed
-    || env.CLAUDE_CONFIG_DIR
+    || env.BILLIARDBUDDY_CONFIG_DIR
     || env.HOME
     || env.USERPROFILE
     || currentDirectory()

@@ -2,7 +2,7 @@ import { constants } from 'node:fs'
 import { access } from 'node:fs/promises'
 import path from 'node:path'
 import { getCwd } from '../../utils/cwd.js'
-import { getMcpStdioEnvironment } from '../../utils/mcpStdioEnvironment.js'
+import { productSubprocessEnvironment } from '../agent-worker/productSubprocessEnvironment.js'
 
 type HostCommandCheckResult =
   | {
@@ -37,6 +37,33 @@ function getWindowsExecutableCandidates(command: string) {
     .filter(Boolean)
 
   return [command, ...pathext.map((entry) => `${command}${entry.toLowerCase()}`)]
+}
+
+async function getInteractiveShellPath(): Promise<string | undefined> {
+  if (process.platform === 'win32') return undefined
+  const shell = process.env.SHELL
+  if (!shell || !path.isAbsolute(shell)) return undefined
+  try {
+    await access(shell, constants.X_OK)
+  } catch {
+    return undefined
+  }
+  const proc = Bun.spawn([shell, '-ilc', 'printf %s "$PATH"'], {
+    env: productSubprocessEnvironment(),
+    stdin: 'ignore',
+    stdout: 'pipe',
+    stderr: 'ignore',
+  })
+  const timeout = setTimeout(() => proc.kill(), 3_000)
+  try {
+    const [code, output] = await Promise.all([
+      proc.exited,
+      new Response(proc.stdout).text(),
+    ])
+    return code === 0 && output.length <= 64 * 1024 ? output.trim() || undefined : undefined
+  } finally {
+    clearTimeout(timeout)
+  }
 }
 
 function isPathLikeCommand(command: string) {
@@ -160,10 +187,10 @@ export async function inspectMcpHostCommand(
   }
 
   if (!hasExplicitPath) {
-    const stdioEnv = await getMcpStdioEnvironment(env)
+    const shellPath = await getInteractiveShellPath()
     const shellResolvedCommand = await resolveCommandFromPath(
       trimmedCommand,
-      stdioEnv.PATH,
+      shellPath,
     )
     if (shellResolvedCommand) {
       return {

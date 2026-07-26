@@ -6,9 +6,8 @@
  * this program never prints it, response text, or request bodies.
  *
  * Example on the gateway host (the token should be populated locally there):
- *   QF_LOADTEST_URL=http://127.0.0.1:8799 \
- *   QF_LOADTEST_TOKEN=... \
- *   QF_LOADTEST_CONSENT_RECEIPT=... \
+ *   BB_LOADTEST_URL=http://127.0.0.1:8799 \
+ *   BB_LOADTEST_TOKEN=... \
  *   bun gateway/real-loadtest.ts --execute --users=100 --windows=10 \
  *     --phases=1000,800,600,400,200,100 --scenario=stream --thinking=enabled
  */
@@ -87,9 +86,8 @@ type PhaseSummary = {
 
 function usage(exitCode = 2): never {
   console.error(`Usage:
-  QF_LOADTEST_URL=https://gateway.example/gw \\
-  QF_LOADTEST_TOKEN=<installation-access-token> \\
-  QF_LOADTEST_CONSENT_RECEIPT=<64-hex-consent-receipt> \\
+  BB_LOADTEST_URL=https://gateway.example/gw \\
+  BB_LOADTEST_TOKEN=<installation-access-token> \\
   bun gateway/real-loadtest.ts --execute [options]
 
 Options:
@@ -112,7 +110,7 @@ Options:
   --stop-after-failure        Stop after a phase has an HTTP or incomplete-SSE failure
   --continue-after-failure    Deprecated compatibility alias; high-to-low continues by default
 
-The runner uses controlled X-QF-Client-ID values so a 100×10 phase models ten
+The runner uses controlled X-BB-Installation-ID values so a 100×10 phase models ten
 windows per installation, reads every SSE body to completion, and requires a
 terminal data: [DONE] event for success. It reports only status/timing/capacity
 metadata; it never logs tokens, request bodies, or model output.`)
@@ -293,16 +291,16 @@ export function parseLoadTarget(raw: string): LoadTarget {
   try {
     base = new URL(raw)
   } catch {
-    throw new Error('QF_LOADTEST_URL must be an absolute HTTP(S) URL')
+    throw new Error('BB_LOADTEST_URL must be an absolute HTTP(S) URL')
   }
   if (base.protocol !== 'http:' && base.protocol !== 'https:') {
-    throw new Error('QF_LOADTEST_URL must be an absolute HTTP(S) URL')
+    throw new Error('BB_LOADTEST_URL must be an absolute HTTP(S) URL')
   }
   if (base.username || base.password || base.search || base.hash || raw.includes('?') || raw.includes('#')) {
-    throw new Error('QF_LOADTEST_URL must not include credentials, a query, or a fragment')
+    throw new Error('BB_LOADTEST_URL must not include credentials, a query, or a fragment')
   }
   if (base.protocol === 'http:' && !isHttpLoopback(base)) {
-    throw new Error('QF_LOADTEST_URL requires HTTPS unless it is a loopback HTTP target')
+    throw new Error('BB_LOADTEST_URL requires HTTPS unless it is a loopback HTTP target')
   }
   const path = base.pathname.replace(/\/+$/, '')
   return {
@@ -367,16 +365,11 @@ async function main(): Promise<void> {
     usage()
   }
 
-  const rawBaseUrl = process.env.QF_LOADTEST_URL?.trim()
-  if (!rawBaseUrl) throw new Error('QF_LOADTEST_URL is required with --execute')
+  const rawBaseUrl = process.env.BB_LOADTEST_URL?.trim()
+  if (!rawBaseUrl) throw new Error('BB_LOADTEST_URL is required with --execute')
   const { base, baseUrl, targetOrigin } = parseLoadTarget(rawBaseUrl)
-  const token = process.env.QF_LOADTEST_TOKEN?.trim()
-  if (!token) throw new Error('QF_LOADTEST_TOKEN installation access token is required with --execute')
-  const consentReceiptId = process.env.QF_LOADTEST_CONSENT_RECEIPT?.trim() ?? ''
-  if (!/^[a-f0-9]{64}$/.test(consentReceiptId)) {
-    throw new Error('QF_LOADTEST_CONSENT_RECEIPT must be a 64-character lowercase hex receipt')
-  }
-
+  const token = process.env.BB_LOADTEST_TOKEN?.trim()
+  if (!token) throw new Error('BB_LOADTEST_TOKEN installation access token is required with --execute')
   const users = integer(option(args, '--users'), '--users', 100)
   const windows = integer(option(args, '--windows'), '--windows', 10)
   const maxTokens = integer(option(args, '--max-tokens'), '--max-tokens', 64)
@@ -392,7 +385,7 @@ async function main(): Promise<void> {
   const scenario = option(args, '--scenario') ?? 'stream'
   if (scenario !== 'short' && scenario !== 'stream') throw new Error('--scenario must be short or stream')
   const thinking = resolveLoadtestThinkingMode(option(args, '--thinking'))
-  const model = process.env.QF_LOADTEST_MODEL?.trim() || 'deepseek-v4-flash'
+  const model = process.env.BB_LOADTEST_MODEL?.trim() || 'deepseek-v4-flash'
   const pool = option(args, '--pool') ?? (model.toLowerCase().startsWith('mimo') ? 'mimo' : 'deepseek')
   if (pool !== 'deepseek' && pool !== 'mimo') throw new Error('--pool must be deepseek or mimo')
   const total = users * windows
@@ -407,7 +400,6 @@ async function main(): Promise<void> {
   const headers = {
     Authorization: `Bearer ${token}`,
     'Content-Type': 'application/json',
-    'X-BB-Data-Egress-Consent': consentReceiptId,
     'X-BB-Provider-Protocol': PROVIDER_GATEWAY_PROTOCOL,
   }
   const prompt = scenario === 'short'
@@ -452,7 +444,7 @@ async function main(): Promise<void> {
       const installation = `capacity-${String(index % users).padStart(4, '0')}`
       const response = await fetch(`${baseUrl}/v1/chat/completions`, {
         method: 'POST',
-        headers: { ...headers, 'X-QF-Client-ID': installation },
+        headers: { ...headers, 'X-BB-Installation-ID': installation },
         redirect: 'error',
         signal: controller.signal,
         body: JSON.stringify({

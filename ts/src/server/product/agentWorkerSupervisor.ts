@@ -1,5 +1,6 @@
 import { AGENT_WORKER_PROTOCOL_VERSION, intersectsAgentWorkerVersions, type AgentWorkerInbound, type AgentWorkerOutbound } from '../../../shared/product/agentWorker.js'
 import { randomBytes } from 'node:crypto'
+import * as fs from 'node:fs/promises'
 import type { ProductResourceScheduler } from './resourceScheduler.js'
 import { productPermissionSnapshot, type ProductPermissionSnapshot } from '../../../shared/product/domain.js'
 import { createAgentWorkerChildStartCapability, createPolicyBoundEnvelope } from './permissionExecutionEnvelope.js'
@@ -16,10 +17,16 @@ export type AgentWorkerCoreIdentity = {
     enabled: boolean
     entry_id: string
   }
-  session_memory?: {
+  session_context?: {
+    text: string
+    event_sequence: number
+    estimated_tokens: number
+    compact_generation: number
+  }
+  harness_session?: {
     storage_dir: string
-    entry_id: string
-    ancestors: Array<{ lineage_id: string; resume_binding_id: string; inherit_through_entry_id?: string }>
+    binding_id: string
+    lineage_id: string
   }
 }
 type DispatchStore = {
@@ -32,13 +39,13 @@ type DispatchStore = {
 export type AgentWorkerChild = { send(message: AgentWorkerInbound): void; stop(): Promise<void> }
 export type AgentWorkerChildLauncher = { launch(input: { run_id: string; core: AgentWorkerCoreIdentity; bootstrap: { capability: ReturnType<typeof createAgentWorkerChildStartCapability>; capability_key: Buffer }; onMessage: (message: AgentWorkerOutbound) => void; onExit: () => void }): Promise<AgentWorkerChild> }
 export type AgentWorkerSafeMessageSink = {
-  record(runId: string, generation: number, message: Extract<AgentWorkerOutbound, { type: 'event' | 'terminal' }>): Promise<void>
+  record(runId: string, generation: number, message: Extract<AgentWorkerOutbound, { type: 'event' | 'terminal' | 'steer_consumed' }>): Promise<void>
 }
 export type AgentWorkerDispatchKind = 'interactive' | 'scheduled'
 
 /** Single Local Product Server owner of durable TaskRun → child-worker launch. */
 export class AgentWorkerSupervisor {
-  private readonly active = new Map<string, { child: AgentWorkerChild; fencing: number }>()
+  private readonly active = new Map<string, { child: AgentWorkerChild; fencing: number; task_id: string; run_id: string; generation: number }>()
   private readonly starting = new Map<string, Promise<'started' | 'queued' | 'recovery_required'>>()
   private readonly settled = new Set<string>()
   private readonly terminalPending = new Set<string>()
@@ -67,7 +74,17 @@ export class AgentWorkerSupervisor {
     const resources = kind === 'scheduled'
       ? [{ key: 'schedule.dispatch' as const, units: 1 }, { key: 'agent.worker' as const, units: 1 }]
       : [{ key: 'agent.worker' as const, units: 1 }]
-    const claim = { job_id: `agent-worker:${runId}:${generation}`, owner_id: `task:${identity.task_id}`, idempotency_key: `agent-worker:${runId}:${generation}`, scope: 'desktop-host' as const, resources, bytes: { memory: 0, input: 0, temp: 0, output: 0 }, priority: kind, cancel_mode: 'cooperative' as const, resume_policy: 'idempotent' as const, profile_revision: this.scheduler.profileRevision(), task_run: { run_id: runId, dispatch_generation: generation } }
+    let attachmentBytes = 0
+    try {
+      attachmentBytes = (await Promise.all((identity.initial_attachments ?? []).map(async file => {
+        const stat = await fs.lstat(file)
+        if (!stat.isFile() || stat.isSymbolicLink()) throw new Error('ATTACHMENT_COPY_INVALID')
+        return stat.size
+      }))).reduce((total, bytes) => total + bytes, 0)
+    } catch {
+      return this.fail(runId, generation, undefined, 'ATTACHMENT_COPY_INVALID')
+    }
+    const claim = { job_id: `agent-worker:${runId}:${generation}`, owner_id: `task:${identity.task_id}`, idempotency_key: `agent-worker:${runId}:${generation}`, scope: 'desktop-host' as const, resources, bytes: { memory: 0, input: attachmentBytes, temp: 0, output: 0 }, priority: kind, cancel_mode: 'cooperative' as const, resume_policy: 'idempotent' as const, profile_revision: this.scheduler.profileRevision(), task_run: { run_id: runId, dispatch_generation: generation } }
     try {
       receipt = await this.scheduler.submit(claim)
       while ((receipt.outcome === 'queued' || receipt.outcome === 'duplicate') && !receipt.fencing_token) {
@@ -110,20 +127,25 @@ export class AgentWorkerSupervisor {
             .catch(() => this.fail(runId, generation, receipt.fencing_token, 'EVENT_PERSIST_FAILED'))
           return
         }
+        if (message.type === 'steer_consumed') {
+          void Promise.resolve(this.messages?.record(runId, generation, message))
+            .catch(() => this.fail(runId, generation, receipt.fencing_token, 'EVENT_PERSIST_FAILED'))
+          return
+        }
         if (message.type === 'terminal') {
           // Close the relay synchronously, then persist the final safe
           // projection before settling durable dispatch state.
           this.terminalPending.add(key)
           void Promise.resolve(this.messages?.record(runId, generation, message))
-            .catch(() => undefined)
-            .then(() => this.fail(runId, generation, receipt.fencing_token, 'TERMINAL', 'terminal'))
+            .then(() => this.fail(runId, generation, receipt.fencing_token, 'TERMINAL', message.state === 'recovery_required' ? 'recovery_required' : 'terminal'))
+            .catch(() => this.fail(runId, generation, receipt.fencing_token, 'EVENT_PERSIST_FAILED', 'recovery_required'))
           return
         }
         if (message.type === 'fatal') void this.fail(runId, generation, receipt.fencing_token, message.code)
       } })
       if (this.settled.has(key)) { await child.stop(); await this.releaseSchedulerClaim(runId, generation, receipt.fencing_token); return 'recovery_required' }
       if (this.terminalPending.has(key) || this.stopRequested.has(key)) { await child.stop(); return this.fail(runId, generation, receipt.fencing_token, 'STOPPED', 'terminal') }
-      this.active.set(key, { child, fencing: receipt.fencing_token }); return 'started'
+      this.active.set(key, { child, fencing: receipt.fencing_token, task_id: dispatchClaim.task_id, run_id: runId, generation }); return 'started'
     } catch { clearTimeout(timeout); this.readyTimers.delete(key); return this.fail(runId, generation, receipt.fencing_token, 'LAUNCH_FAILED') }
   }
   async approve(runId: string, generation: number, requestId: string, approved: boolean): Promise<boolean> {
@@ -134,7 +156,26 @@ export class AgentWorkerSupervisor {
     active.child.send({ type: 'approval_response', request_id: requestId, approved })
     return true
   }
+  async answer(runId: string, generation: number, requestId: string, answers: readonly string[]): Promise<boolean> {
+    const key = `${runId}:${generation}`
+    if (this.settled.has(key) || this.terminalPending.has(key) || !requestId || answers.length === 0) return false
+    const active = this.active.get(key)
+    if (!active) return false
+    active.child.send({ type: 'question_response', request_id: requestId, answers: [...answers] })
+    return true
+  }
+  async steer(runId: string, generation: number, queueItemId: string, text: string): Promise<boolean> {
+    const key = `${runId}:${generation}`
+    if (this.settled.has(key) || this.terminalPending.has(key) || !/^queue_[a-f0-9-]{36}$/.test(queueItemId) || !text) return false
+    const active = this.active.get(key)
+    if (!active) return false
+    active.child.send({ type: 'steer', queue_item_id: queueItemId, text })
+    return true
+  }
   async stop(runId: string, generation: number): Promise<void> { const key = `${runId}:${generation}`; if (this.settled.has(key)) return; this.stopRequested.add(key); this.terminalPending.add(key); const active = this.active.get(key); try { if (active) { active.child.send({ type: 'stop' }); await active.child.stop() } else await this.scheduler.cancel(`agent-worker:${runId}:${generation}`).catch(() => undefined); await this.messages?.record(runId, generation, { type: 'terminal', state: 'stopped', run_id: runId }) } finally { await this.fail(runId, generation, active?.fencing, 'STOPPED', 'terminal') } }
+  async shutdown(): Promise<void> {
+    await Promise.all([...this.active.values()].map(active => this.stop(active.run_id, active.generation)))
+  }
   private async fail(run: string, generation: number, fencing: number | undefined, error: string, state: 'recovery_required' | 'terminal' = 'recovery_required'): Promise<'recovery_required'> {
     const key = `${run}:${generation}`
     if (this.settled.has(key)) return 'recovery_required'
@@ -149,7 +190,7 @@ export class AgentWorkerSupervisor {
   private startSchedulerHeartbeat(run: string, generation: number, fencing: number, expiresAt?: string): void {
     const key = `${run}:${generation}`
     const remaining = expiresAt ? Date.parse(expiresAt) - Date.now() : 30_000
-    const interval = Math.max(25, Math.min(10_000, Math.floor(remaining / 3)))
+    const interval = Math.max(1, Math.min(10_000, Math.floor(remaining / 3)))
     const timer = setInterval(() => {
       void this.scheduler.heartbeat(`agent-worker:${run}:${generation}`, fencing).then(receipt => {
         if (receipt.outcome !== 'admitted') void this.fail(run, generation, fencing, 'SCHEDULER_LEASE_LOST')

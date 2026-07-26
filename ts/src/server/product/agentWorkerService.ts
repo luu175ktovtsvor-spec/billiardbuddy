@@ -6,8 +6,9 @@ import { verifyAgentWorkerChildStartCapability, verifyPermissionExecutionEnvelop
 
 /** Server-private Core activity port; the launcher alone may relay it. */
 export type AgentWorkerCore = {
-  input(text: string, attachments?: readonly string[]): Promise<void>
+  input(text: string, attachments?: readonly string[], queueItemId?: string): Promise<boolean | void>
   approve(requestId: string, approved: boolean): Promise<void>
+  answer?(requestId: string, answers: readonly string[]): Promise<void>
   stop(): Promise<void>
   shutdown(): Promise<void>
   subscribe?(listener: (message: Extract<AgentWorkerOutbound, { type: 'event' | 'terminal' }>) => void): () => void
@@ -43,7 +44,12 @@ export class AgentWorkerService {
     }
   }
   async input(text: string): Promise<AgentWorkerOutbound | undefined> { if (!this.core || !text) return { type: 'fatal', code: 'NOT_READY' }; await this.core.input(text) }
+  async steer(queueItemId: string, text: string): Promise<AgentWorkerOutbound | undefined> {
+    if (!this.core || !/^queue_[a-f0-9-]{36}$/.test(queueItemId) || !text) return { type: 'fatal', code: 'NOT_READY' }
+    return await this.core.input(text, undefined, queueItemId) === true ? { type: 'steer_consumed', queue_item_id: queueItemId } : undefined
+  }
   async approval(requestId: string, approved: boolean): Promise<AgentWorkerOutbound | undefined> { if (!this.core || !requestId) return { type: 'fatal', code: 'NOT_READY' }; await this.core.approve(requestId, approved) }
+  async answer(requestId: string, answers: readonly string[]): Promise<AgentWorkerOutbound | undefined> { if (!this.core?.answer || !requestId || answers.length === 0) return { type: 'fatal', code: 'NOT_READY' }; await this.core.answer(requestId, answers) }
   /** Reject a Core terminal record that was not bound to this durable run. */
   relayCoreMessage(message: Extract<AgentWorkerOutbound, { type: 'event' | 'terminal' }>): Extract<AgentWorkerOutbound, { type: 'event' | 'terminal' }> | undefined {
     if (!this.core || (message.type === 'terminal' && message.run_id !== this.runId)) return undefined

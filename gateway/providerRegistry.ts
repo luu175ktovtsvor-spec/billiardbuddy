@@ -10,13 +10,6 @@ export const PROVIDER_RUNTIME_CONTRACT_VERSION_ENV = 'BB_PROVIDER_CONTRACT_VERSI
 export const PROVIDER_RUNTIME_REGISTRY_SHA256_ENV = 'BB_PROVIDER_REGISTRY_SHA256'
 export const PROVIDER_RUNTIME_MANIFEST_SHA256_ENV = 'BB_PROVIDER_WORKER_MANIFEST_SHA256'
 
-const SLOT_ALIASES = [
-  'ANTHROPIC_MODEL',
-  'ANTHROPIC_DEFAULT_HAIKU_MODEL',
-  'ANTHROPIC_DEFAULT_SONNET_MODEL',
-  'ANTHROPIC_DEFAULT_OPUS_MODEL',
-] as const
-
 /**
  * The one canonical, non-secret model registry.  Windows are deliberately the
  * project-wide lower bound (16k): repository evidence records larger advertised
@@ -27,7 +20,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     model_id: 'deepseek-v4-flash',
     provider: 'deepseek',
     capabilities: ['TextReasoning'],
-    worker_env_source: { variable: 'QF_GATEWAY_MODEL', slot_aliases: [...SLOT_ALIASES], default_model: true },
+    worker_env_source: { variable: 'BB_GATEWAY_MODEL', slot_aliases: [], default_model: true },
     verified_context_window: 16_000,
     body_caps: {
       CHAT_TEXT_BODY_MAX_BYTES: 24 * 1024 * 1024,
@@ -42,7 +35,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
   {
     model_id: 'mimo-v2.5',
     provider: 'mimo',
-    capabilities: ['VisualEvidence'],
+    capabilities: ['VisualEvidence', 'MediaReasoning'],
     worker_env_source: { variable: 'GW_MIMO_MODEL', slot_aliases: [] },
     verified_context_window: 16_000,
     body_caps: {
@@ -125,6 +118,8 @@ type WorkerModelRegistryEntry = {
   model_id: string
   capabilities: readonly string[]
   worker_env_source: { default_model?: boolean }
+  verified_context_window: number
+  compact_threshold: number
 }
 
 export function workerTextReasoningEntry(registry: readonly WorkerModelRegistryEntry[] = PROVIDER_REGISTRY): WorkerModelRegistryEntry | undefined {
@@ -170,6 +165,10 @@ export function textReasoningRegistryEntry(model?: string): ProviderRegistryEntr
 
 export function visualEvidenceRegistryEntry(): ProviderRegistryEntry {
   return providerRegistryEntryForCapability('VisualEvidence')
+}
+
+export function mediaReasoningRegistryEntry(): ProviderRegistryEntry {
+  return providerRegistryEntryForCapability('MediaReasoning')
 }
 
 export type ProviderContractArtifacts = {
@@ -229,14 +228,13 @@ export function buildProviderRegistryRuntimeEnv(model: string | undefined): Reco
     [PROVIDER_RUNTIME_CONTRACT_VERSION_ENV]: String(PROVIDER_REGISTRY_CONTRACT_VERSION),
     [PROVIDER_RUNTIME_REGISTRY_SHA256_ENV]: providerRegistrySha256(),
     [PROVIDER_RUNTIME_MANIFEST_SHA256_ENV]: providerManifestSha256(),
-    QF_GATEWAY_MODEL: selected,
+    BB_GATEWAY_MODEL: selected,
   }
   if (!entry) return contract
   return {
     ...contract,
-    ...Object.fromEntries(entry.worker_env_source.slot_aliases.map(alias => [alias, selected])),
-    CLAUDE_CODE_MODEL_CONTEXT_WINDOWS: JSON.stringify({ [selected]: entry.verified_context_window }),
-    CLAUDE_CODE_AUTO_COMPACT_WINDOW: String(entry.compact_threshold),
+    BILLIARDBUDDY_MODEL_CONTEXT_WINDOWS: JSON.stringify({ [selected]: entry.verified_context_window }),
+    BILLIARDBUDDY_AUTO_COMPACT_WINDOW: String(entry.compact_threshold),
   }
 }
 
@@ -256,9 +254,8 @@ export function validateProviderRuntimeConfiguration(env: Record<string, string 
   }
   const textReasoning = workerTextReasoningEntry()
   if (!textReasoning) return 'MODEL_CONFIGURATION_INVALID'
-  if (env.QF_GATEWAY_MODEL?.trim() !== textReasoning.model_id) return 'MODEL_CONFIGURATION_INVALID'
-  for (const alias of SLOT_ALIASES) {
-    if (env[alias]?.trim() !== textReasoning.model_id) return 'MODEL_CONFIGURATION_INVALID'
-  }
+  if (env.BB_GATEWAY_MODEL?.trim() !== textReasoning.model_id) return 'MODEL_CONFIGURATION_INVALID'
+  if (env.BILLIARDBUDDY_MODEL_CONTEXT_WINDOWS !== JSON.stringify({ [textReasoning.model_id]: textReasoning.verified_context_window })) return 'MODEL_CONFIGURATION_INVALID'
+  if (env.BILLIARDBUDDY_AUTO_COMPACT_WINDOW !== String(textReasoning.compact_threshold)) return 'MODEL_CONFIGURATION_INVALID'
   return undefined
 }

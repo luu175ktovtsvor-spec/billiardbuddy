@@ -4,6 +4,7 @@ import {
   buildProviderRegistryRuntimeEnv,
   defaultProviderModel,
   providerManifestSha256,
+  mediaReasoningRegistryEntry,
   providerRegistryEntryForCapability,
   providerRegistrySha256,
   renderProviderContractArtifacts,
@@ -14,9 +15,9 @@ import {
   workerTextReasoningEntry,
 } from './providerRegistry'
 
-test('registry provides the four neutral capabilities from one conservative source', () => {
+test('registry provides the five neutral capabilities from one conservative source', () => {
   expect(new Set(PROVIDER_REGISTRY.flatMap(entry => entry.capabilities))).toEqual(new Set([
-    'TextReasoning', 'VisualEvidence', 'ImageGeneration', 'SpeechTranscription',
+    'TextReasoning', 'VisualEvidence', 'MediaReasoning', 'ImageGeneration', 'SpeechTranscription',
   ]))
   expect(PROVIDER_REGISTRY.every(entry => entry.verified_context_window < 1_000_000)).toBe(true)
   expect(PROVIDER_REGISTRY.every(entry => entry.body_caps.CHAT_TEXT_BODY_MAX_BYTES === 24 * 1024 * 1024)).toBe(true)
@@ -28,6 +29,7 @@ test('registry provides the four neutral capabilities from one conservative sour
     .toEqual(['gpt-image-2', 'doubao-seedream-4-5-251128'])
   expect(textReasoningRegistryEntry()).toBe(providerRegistryEntryForCapability('TextReasoning'))
   expect(visualEvidenceRegistryEntry()).toBe(providerRegistryEntryForCapability('VisualEvidence'))
+  expect(mediaReasoningRegistryEntry()).toBe(providerRegistryEntryForCapability('MediaReasoning'))
 })
 
 test('both generated artifacts share and cross-reference the canonical digest', () => {
@@ -56,21 +58,21 @@ test('TextReasoning default selection requires one text entry, one default entry
   }
 })
 
-test('runtime configuration binds every Core model slot to the unique TextReasoning entry before ready', () => {
+test('runtime configuration binds the Core model and context policy to the unique TextReasoning entry before ready', () => {
   const textReasoning = PROVIDER_REGISTRY.filter(entry => entry.capabilities.includes('TextReasoning'))
   const nonText = PROVIDER_REGISTRY.find(entry => !entry.capabilities.includes('TextReasoning'))!
   expect(textReasoning).toHaveLength(1)
   const textModel = textReasoning[0]!.model_id
   const valid = buildProviderRegistryRuntimeEnv(defaultProviderModel())
-  const slots = ['QF_GATEWAY_MODEL', 'ANTHROPIC_MODEL', 'ANTHROPIC_DEFAULT_HAIKU_MODEL', 'ANTHROPIC_DEFAULT_SONNET_MODEL', 'ANTHROPIC_DEFAULT_OPUS_MODEL'] as const
-  expect(slots.map(slot => valid[slot])).toEqual([textModel, textModel, textModel, textModel, textModel])
+  expect(valid.BB_GATEWAY_MODEL).toBe(textModel)
+  expect(valid.BILLIARDBUDDY_MODEL_CONTEXT_WINDOWS).toBe(JSON.stringify({ [textModel]: textReasoning[0]!.verified_context_window }))
+  expect(valid.BILLIARDBUDDY_AUTO_COMPACT_WINDOW).toBe(String(textReasoning[0]!.compact_threshold))
   expect(validateProviderRuntimeConfiguration(valid)).toBeUndefined()
   expect(validateProviderRuntimeConfiguration(buildProviderRegistryRuntimeEnv(nonText.model_id))).toBe('MODEL_CONFIGURATION_INVALID')
-  expect(validateProviderRuntimeConfiguration({ ...valid, QF_GATEWAY_MODEL: nonText.model_id })).toBe('MODEL_CONFIGURATION_INVALID')
-  expect(validateProviderRuntimeConfiguration({ ...valid, ANTHROPIC_DEFAULT_OPUS_MODEL: nonText.model_id })).toBe('MODEL_CONFIGURATION_INVALID')
-  expect(validateProviderRuntimeConfiguration({ ...valid, QF_GATEWAY_MODEL: textModel, ANTHROPIC_MODEL: nonText.model_id })).toBe('MODEL_CONFIGURATION_INVALID')
-  expect(validateProviderRuntimeConfiguration({ ...valid, QF_GATEWAY_MODEL: 'qwen3-coder-plus' })).toBe('MODEL_CONFIGURATION_INVALID')
-  expect(validateProviderRuntimeConfiguration({ ...valid, ANTHROPIC_DEFAULT_OPUS_MODEL: 'unknown' })).toBe('MODEL_CONFIGURATION_INVALID')
+  expect(validateProviderRuntimeConfiguration({ ...valid, BB_GATEWAY_MODEL: nonText.model_id })).toBe('MODEL_CONFIGURATION_INVALID')
+  expect(validateProviderRuntimeConfiguration({ ...valid, BILLIARDBUDDY_MODEL_CONTEXT_WINDOWS: '{}' })).toBe('MODEL_CONFIGURATION_INVALID')
+  expect(validateProviderRuntimeConfiguration({ ...valid, BILLIARDBUDDY_AUTO_COMPACT_WINDOW: '1' })).toBe('MODEL_CONFIGURATION_INVALID')
+  expect(validateProviderRuntimeConfiguration({ ...valid, BB_GATEWAY_MODEL: 'qwen3-coder-plus' })).toBe('MODEL_CONFIGURATION_INVALID')
   expect(validateProviderRuntimeConfiguration({ ...valid, BB_PROVIDER_REGISTRY_SHA256: '0'.repeat(64) })).toBe('MODEL_CONTRACT_HASH_MISMATCH')
   expect(validateProviderRuntimeConfiguration({ ...valid, BB_PROVIDER_CONTRACT_VERSION: '0' })).toBe('MODEL_CONTRACT_VERSION_MISMATCH')
   expect(providerManifestSha256()).toMatch(/^[a-f0-9]{64}$/)

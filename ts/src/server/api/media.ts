@@ -11,8 +11,10 @@ import {
   mediaSafeErrorForServiceError,
   publicMediaProjectSchema,
   publicMediaDeletionReceiptSchema,
+  publicMediaJobEventPageSchema,
   publicMediaTaskSchema,
   lockVideoSceneInputSchema,
+  previewVideoInputSchema,
   renderVideoInputSchema,
   saveImageOutputInputSchema,
   selectImageVersionInputSchema,
@@ -22,6 +24,7 @@ import {
   updateVideoTimelineInputSchema,
   MEDIA_UI_CAPABILITY_HEADER,
   type MediaProject,
+  type MediaJobEvent,
   type MediaTask,
   type PublicMediaProject,
   type PublicMediaTask,
@@ -98,7 +101,6 @@ export function consumeMediaUiCapability(
 
 function publicProject(project: MediaProject): PublicMediaProject {
   const {
-    product_task_id: _productTaskId,
     owner: _owner,
     writer_fence: _writerFence,
     assets: _assets,
@@ -133,6 +135,7 @@ function publicProject(project: MediaProject): PublicMediaProject {
           width: version.width ?? output?.width,
           height: version.height ?? output?.height,
           text_layers: version.text_layers ?? output?.text_layers ?? [],
+          quality_assessment: output?.quality_assessment,
           created_at: version.created_at,
         }]
       }),
@@ -166,7 +169,9 @@ function publicTask(task: MediaTask): PublicMediaTask {
       ? 'MEDIA_VIDEO_SOURCE_UNREADABLE'
       : task.kind === 'video.analyze' || task.kind === 'video.plan'
         ? 'MEDIA_VIDEO_ANALYSIS_UNAVAILABLE'
-        : 'MEDIA_VIDEO_EXPORT_FAILED'
+        : task.kind === 'video.preview'
+          ? 'MEDIA_VIDEO_PREVIEW_FAILED'
+          : 'MEDIA_VIDEO_EXPORT_FAILED'
   const failure = _rawError ? mediaSafeError(persistedErrorCode ?? fallback) : null
   const safeResult = task.kind === 'image.generate' && persistedResult
     ? Object.fromEntries([
@@ -181,6 +186,13 @@ function publicTask(task: MediaTask): PublicMediaTask {
     ...(safeResult ? { result: safeResult } : {}),
     ...(failure ? { error: failure.message, error_code: failure.code } : {}),
   })
+}
+
+function publicJobEvent(event: MediaJobEvent) {
+  return {
+    ...event,
+    task: publicTask(event.task),
+  }
 }
 
 function publicToolchainStatus(status: Awaited<ReturnType<MediaProjectService['toolchainStatus']>>) {
@@ -203,13 +215,31 @@ export function createMediaApiHandler(
       const area = segments[2]
 
       if (area === 'projects') {
+        const projectId = segments[3]
+        if (projectId) {
+          if (segments[4] !== 'events' || segments[5]) throw ApiError.badRequest('无效的媒体项目操作')
+          if (req.method !== 'GET') throw methodNotAllowed(req.method)
+          await service.assertProjectOwner(projectId, STANDALONE_MEDIA_OWNER)
+          const cursor = Number(url.searchParams.get('cursor') ?? 0)
+          const limit = Number(url.searchParams.get('limit') ?? 100)
+          const waitMs = Number(url.searchParams.get('wait_ms') ?? 25_000)
+          if (!Number.isInteger(cursor) || cursor < 0) throw ApiError.badRequest('cursor 必须是非负整数')
+          if (!Number.isInteger(limit) || limit < 1 || limit > 200) throw ApiError.badRequest('limit 必须在 1 到 200 之间')
+          if (!Number.isInteger(waitMs) || waitMs < 0 || waitMs > 25_000) throw ApiError.badRequest('wait_ms 必须在 0 到 25000 之间')
+          const page = await service.waitForJobEvents(projectId, cursor, limit, waitMs, req.signal)
+          return Response.json(publicMediaJobEventPageSchema.parse({
+            ...page,
+            events: page.events.map(publicJobEvent),
+          }))
+        }
         if (req.method !== 'GET') throw methodNotAllowed(req.method)
-        const kind = url.searchParams.get('kind')
-        if (kind !== null && kind !== 'image' && kind !== 'video') {
+        const requestedKind = url.searchParams.get('kind')
+        if (requestedKind !== null && requestedKind !== 'image' && requestedKind !== 'video') {
           throw ApiError.badRequest('kind 只能是 image 或 video')
         }
+        const kind = requestedKind === 'image' || requestedKind === 'video' ? requestedKind : undefined
         return Response.json({
-          projects: (await service.listProjectsForOwner(STANDALONE_MEDIA_OWNER, kind ?? undefined)).map(publicProject),
+          projects: (await service.listProjectsForOwner(STANDALONE_MEDIA_OWNER, kind)).map(publicProject),
         })
       }
 
@@ -219,7 +249,7 @@ export function createMediaApiHandler(
         const fileName = segments[4]
         if (!projectId || !fileName || segments[5]) throw ApiError.badRequest('无效的媒体资产地址')
         await service.assertProjectOwner(projectId, STANDALONE_MEDIA_OWNER)
-        return await service.assetResponse(projectId, fileName)
+        return await service.assetResponse(projectId, fileName, req)
       }
 
       if (area === 'deletions') {
@@ -350,6 +380,7 @@ export function createMediaApiHandler(
             return await service.videoSourceResponse(projectId, sourceId, req)
           }
           if (req.method !== 'POST' || sourceId) throw methodNotAllowed(req.method)
+          requireMediaUiCapability(req, mediaUiCapability)
           const input = addVideoSourceInputSchema.parse(await parseJson(req))
           const result = await service.addVideoSource(projectId, input)
           return Response.json({ ...result, project: publicProject(result.project), task: publicTask(result.task) }, { status: 201 })
@@ -385,6 +416,11 @@ export function createMediaApiHandler(
           requireMediaUiCapability(req, mediaUiCapability)
           const input = renderVideoInputSchema.parse(await parseJson(req))
           return Response.json({ task: publicTask(await service.renderVideo(projectId, input)) }, { status: 202 })
+        }
+        if (action === 'preview') {
+          if (req.method !== 'POST' || segments[6]) throw methodNotAllowed(req.method)
+          const input = previewVideoInputSchema.parse(await parseJson(req))
+          return Response.json({ task: publicTask(await service.previewVideo(projectId, input)) }, { status: 202 })
         }
       }
 
