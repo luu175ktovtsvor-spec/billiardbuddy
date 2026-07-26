@@ -10,6 +10,7 @@ TARGET_TRIPLE="aarch64-apple-darwin"
 CANONICAL_OUTPUT_DIR="${DESKTOP_DIR}/build-artifacts/macos-arm64"
 ELECTRON_OUTPUT_DIR="${DESKTOP_DIR}/build-artifacts/electron"
 ELECTRON_BUILDER_CLI="${DESKTOP_DIR}/node_modules/electron-builder/out/cli/cli.js"
+BUILD_LOCK_DIR="${DESKTOP_DIR}/build-artifacts/.macos-arm64-build.lock"
 
 usage() {
   cat <<'EOF'
@@ -43,6 +44,39 @@ if [[ "$(uname -m)" != "arm64" ]]; then
   echo "[build-macos-arm64] This script is intended for Apple Silicon hosts (arm64)." >&2
   exit 1
 fi
+
+acquire_build_lock() {
+  mkdir -p "$(dirname "${BUILD_LOCK_DIR}")"
+
+  if mkdir "${BUILD_LOCK_DIR}" 2>/dev/null; then
+    printf '%s\n' "$$" > "${BUILD_LOCK_DIR}/pid"
+    return 0
+  fi
+
+  local owner_pid=""
+  if [[ -f "${BUILD_LOCK_DIR}/pid" ]]; then
+    owner_pid="$(<"${BUILD_LOCK_DIR}/pid")"
+  fi
+  if [[ "${owner_pid}" =~ ^[0-9]+$ ]] && kill -0 "${owner_pid}" 2>/dev/null; then
+    echo "[build-macos-arm64] Another macOS build is already running (pid ${owner_pid})." >&2
+    exit 1
+  fi
+
+  rm -rf "${BUILD_LOCK_DIR}"
+  if ! mkdir "${BUILD_LOCK_DIR}" 2>/dev/null; then
+    echo "[build-macos-arm64] Another macOS build acquired the lock." >&2
+    exit 1
+  fi
+  printf '%s\n' "$$" > "${BUILD_LOCK_DIR}/pid"
+}
+
+release_build_lock() {
+  rm -f "${BUILD_LOCK_DIR}/pid"
+  rmdir "${BUILD_LOCK_DIR}" 2>/dev/null || true
+}
+
+acquire_build_lock
+trap release_build_lock EXIT INT TERM
 
 for command in bun node codesign hdiutil; do
   if ! command -v "${command}" >/dev/null 2>&1; then
