@@ -4,6 +4,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const mediaApiMock = vi.hoisted(() => ({
   listProjects: vi.fn(),
+  listDeletions: vi.fn(),
+  restoreProject: vi.fn(),
+  getProject: vi.fn(),
   getTask: vi.fn(),
   waitForProjectEvents: vi.fn(),
   getToolchain: vi.fn(),
@@ -79,6 +82,7 @@ const task: MediaTask = {
 beforeEach(() => {
   vi.clearAllMocks()
   mediaApiMock.listProjects.mockResolvedValue({ projects: [project] })
+  mediaApiMock.listDeletions.mockResolvedValue({ deletions: [] })
   mediaApiMock.getTask.mockResolvedValue({ task })
   mediaApiMock.waitForProjectEvents.mockImplementation((_projectId, _cursor, signal: AbortSignal) => (
     new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), { once: true }))
@@ -91,6 +95,7 @@ beforeEach(() => {
   useMediaWorkbenchStore.setState({
     imageProjects: [],
     videoProjects: [project],
+    deletions: [],
     tasks: { [task.id]: task },
     toolchain: null,
     activeImageId: null,

@@ -4927,6 +4927,8 @@ export class MediaProjectService {
       const receipt = mediaDeletionReceiptSchema.parse({
         deletion_id: deletionId,
         project_id: projectId,
+        project_kind: current.kind,
+        project_title: current.title,
         owner: current.owner,
         status: 'pending',
         deleted_at: deletedAt,

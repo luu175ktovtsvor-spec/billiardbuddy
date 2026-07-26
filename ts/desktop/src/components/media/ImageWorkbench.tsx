@@ -516,11 +516,13 @@ function ImageCanvasSurface({
 
 export function ImageWorkbench() {
   const projects = useMediaWorkbenchStore(state => state.imageProjects)
+  const deletions = useMediaWorkbenchStore(state => state.deletions)
   const activeId = useMediaWorkbenchStore(state => state.activeImageId)
   const tasks = useMediaWorkbenchStore(state => state.tasks)
   const loading = useMediaWorkbenchStore(state => state.loading)
   const error = useMediaWorkbenchStore(state => state.error)
   const loadProjects = useMediaWorkbenchStore(state => state.loadProjects)
+  const loadDeletions = useMediaWorkbenchStore(state => state.loadDeletions)
   const selectImage = useMediaWorkbenchStore(state => state.selectImage)
   const createImage = useMediaWorkbenchStore(state => state.createImage)
   const saveImageDraft = useMediaWorkbenchStore(state => state.saveImageDraft)
@@ -532,6 +534,7 @@ export function ImageWorkbench() {
   const subscribeProjectEvents = useMediaWorkbenchStore(state => state.subscribeProjectEvents)
   const cancelTask = useMediaWorkbenchStore(state => state.cancelTask)
   const deleteProject = useMediaWorkbenchStore(state => state.deleteProject)
+  const restoreProject = useMediaWorkbenchStore(state => state.restoreProject)
   const clearError = useMediaWorkbenchStore(state => state.clearError)
   const [prompt, setPrompt] = useState('')
   const [creating, setCreating] = useState(false)
@@ -547,6 +550,7 @@ export function ImageWorkbench() {
   const [textLayoutSettings, setTextLayoutSettings] = useState<Record<number, TextLayoutSetting>>({})
   const [inputError, setInputError] = useState<string | null>(null)
   const [deletingId, setDeletingId] = useState<string | null>(null)
+  const [restoringId, setRestoringId] = useState<string | null>(null)
   const [zoom, setZoom] = useState(1)
   const [compareMode, setCompareMode] = useState(false)
   const [selectedLayerId, setSelectedLayerId] = useState<string | null>(null)
@@ -668,7 +672,8 @@ export function ImageWorkbench() {
 
   useEffect(() => {
     void loadProjects('image')
-  }, [loadProjects])
+    void loadDeletions()
+  }, [loadDeletions, loadProjects])
 
   useEffect(() => {
     const currentIndex = active?.current_version_id
@@ -791,6 +796,16 @@ export function ImageWorkbench() {
       if (project.id === activeId) setCreating(false)
     } finally {
       setDeletingId(null)
+    }
+  }
+
+  const restoreDeletedProject = async (projectId: string) => {
+    setRestoringId(projectId)
+    try {
+      await restoreProject(projectId)
+      setCreating(false)
+    } finally {
+      setRestoringId(null)
     }
   }
 
@@ -1062,7 +1077,10 @@ export function ImageWorkbench() {
           activeId={activeId}
           onSelect={id => { clearError(); setInputError(null); setCreating(false); selectImage(id) }}
           onDelete={project => void removeProject(project)}
+          deletions={deletions}
+          onRestore={projectId => void restoreDeletedProject(projectId)}
           deletingId={deletingId}
+          restoringId={restoringId}
         />
 
         <main className="flex min-w-0 flex-1 flex-col bg-[var(--color-surface-container-low)]">

@@ -87,6 +87,9 @@ export const mediaDeletionReceiptSchema = z.object({
   schema_version: z.literal(1).default(1),
   deletion_id: mediaIdSchema,
   project_id: mediaIdSchema,
+  /** Optional for deletion receipts written before the desktop recovery UI existed. */
+  project_kind: z.enum(['image', 'video']).optional(),
+  project_title: z.string().min(1).max(200).optional(),
   owner: mediaOwnerSchema,
   status: z.enum(['pending', 'deleted', 'restoring', 'restored', 'purged']),
   deleted_at: mediaIsoDateSchema,
