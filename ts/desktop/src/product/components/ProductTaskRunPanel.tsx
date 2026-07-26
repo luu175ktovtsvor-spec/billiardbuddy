@@ -3,6 +3,7 @@ import type {
   ProductTaskActivityKind,
   ProductTaskActivityPhase,
   ProductTaskActivityProgress,
+  ProductTaskContextCompaction,
 } from '../domain/types'
 
 export type ProductTaskRunActivityView = {
@@ -15,6 +16,8 @@ export type ProductTaskRunActivityView = {
 }
 
 const ACTIVE_ACTIVITY_LABEL: Record<ProductTaskActivityKind, string> = {
+  file_read: '正在读取工作区内容',
+  file_change: '正在修改工作区内容',
   workspace: '正在处理文件',
   command: '正在执行命令',
   research: '正在检索资料',
@@ -25,6 +28,8 @@ const ACTIVE_ACTIVITY_LABEL: Record<ProductTaskActivityKind, string> = {
 }
 
 const COMPLETED_ACTIVITY_LABEL: Record<ProductTaskActivityKind, string> = {
+  file_read: '工作区内容读取完成',
+  file_change: '工作区内容修改完成',
   workspace: '文件处理完成',
   command: '命令执行完成',
   research: '资料检索完成',
@@ -35,6 +40,8 @@ const COMPLETED_ACTIVITY_LABEL: Record<ProductTaskActivityKind, string> = {
 }
 
 const FAILED_ACTIVITY_LABEL: Record<ProductTaskActivityKind, string> = {
+  file_read: '工作区内容读取未完成',
+  file_change: '工作区内容修改未完成',
   workspace: '文件处理未完成',
   command: '命令未完成',
   research: '资料检索未完成',
@@ -51,6 +58,12 @@ const PRODUCT_ACTIVITY_SUMMARIES = new Set([
   '正在整理任务计划',
   '已整理任务计划',
   '任务计划整理未完成',
+  '正在读取工作区内容',
+  '已读取工作区内容',
+  '工作区内容读取未完成',
+  '正在修改工作区内容',
+  '已修改工作区内容',
+  '工作区内容修改未完成',
   '正在整理工作内容',
   '已整理工作内容',
   '工作内容整理未完成',
@@ -149,16 +162,18 @@ function phaseDotClass(phase: ProductTaskActivityPhase): string {
 
 export function ProductTaskRunPanel({
   activities,
+  compactions = [],
 }: {
   activities: readonly ProductTaskRunActivityView[]
+  compactions?: readonly ProductTaskContextCompaction[]
 }) {
   const [isOpen, setIsOpen] = useState(false)
   const rows = useMemo(() => productTaskRunActivityRows(activities), [activities])
-  if (rows.length === 0) return null
+  if (rows.length === 0 && compactions.length === 0) return null
 
   const activeCount = rows.filter((activity) => (
     activity.phase === 'started' || activity.phase === 'running'
-  )).length
+  )).length + compactions.filter(item => item.phase === 'started').length
 
   return (
     <section
@@ -175,7 +190,7 @@ export function ProductTaskRunPanel({
           <span aria-hidden="true" className="material-symbols-outlined text-[18px] text-[var(--color-text-secondary)]">account_tree</span>
           <span className="text-sm font-medium text-[var(--color-text-primary)]">运行活动</span>
           <span className="truncate text-xs text-[var(--color-text-tertiary)]">
-            {activeCount > 0 ? `${activeCount} 项进行中` : `${rows.length} 个步骤`}
+            {activeCount > 0 ? `${activeCount} 项进行中` : `${rows.length + compactions.length} 个步骤`}
           </span>
         </span>
         <span aria-hidden="true" className="material-symbols-outlined text-[18px] text-[var(--color-text-tertiary)]">
@@ -185,6 +200,15 @@ export function ProductTaskRunPanel({
 
       {isOpen ? (
         <ol className="border-t border-[var(--color-border)] px-3.5 py-2.5" aria-label="任务运行活动">
+          {compactions.map((item) => (
+            <li key={item.id} className="flex min-w-0 items-center gap-2 py-1.5 text-sm">
+              <span aria-hidden="true" className={`h-1.5 w-1.5 shrink-0 rounded-full ${item.phase === 'failed' ? 'bg-[var(--color-error)]' : item.phase === 'completed' ? 'bg-emerald-500' : 'bg-[var(--color-primary)]'}`} />
+              <span className="min-w-0 flex-1 truncate text-[var(--color-text-secondary)]">
+                {item.phase === 'started' ? '正在压缩上下文' : item.phase === 'completed' ? '上下文压缩完成' : '上下文压缩未完成'}
+              </span>
+              <span className="shrink-0 text-xs tabular-nums text-[var(--color-text-tertiary)]">第 {item.generation} 代</span>
+            </li>
+          ))}
           {rows.map((activity) => (
             <li
               key={activity.id}

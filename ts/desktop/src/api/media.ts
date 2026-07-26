@@ -8,11 +8,14 @@ import type {
   ImageReferenceRole,
   ImageTextLayer,
   PublicImageWorkbenchProject,
+  PublicMediaJobEvent,
+  PublicMediaJobEventPage,
   PublicMediaDeletionReceipt,
   PublicMediaProject,
   PublicMediaTask,
   PublicVideoStudioProject,
   LockVideoSceneInput,
+  PreviewVideoInput,
   RenderVideoInput,
   SaveImageOutputInput,
   SelectImageVersionInput,
@@ -80,17 +83,34 @@ export const mediaApi = {
       `/api/media/tasks/${encodeURIComponent(taskId)}`,
       { timeout: MEDIA_RESULT_REQUEST_TIMEOUT_MS },
     ),
+  waitForProjectEvents: async (
+    projectId: string,
+    cursor: number,
+    signal?: AbortSignal,
+  ): Promise<PublicMediaJobEventPage> => {
+    const query = new URLSearchParams({
+      cursor: String(cursor),
+      limit: '100',
+      wait_ms: '25000',
+    })
+    const response = await fetch(getApiUrl(
+      `/api/media/projects/${encodeURIComponent(projectId)}/events?${query.toString()}`,
+    ), { signal })
+    if (!response.ok) {
+      throw new ApiError(response.status, await response.json().catch(() => undefined))
+    }
+    return await response.json() as PublicMediaJobEventPage
+  },
   cancelTask: (taskId: string) =>
     api.post<{ task: PublicMediaTask }>(`/api/media/tasks/${encodeURIComponent(taskId)}/cancel`),
   createImageProject: (input: CreateImageProjectInput) =>
     api.post<{ project: PublicImageWorkbenchProject }>('/api/media/images/projects', input),
-  submitImageProject: (projectId: string, confirmUnknownRetry = false, confirmedDataEgress = false) =>
-    getDesktopHost().media.submitImageProject(projectId, confirmUnknownRetry, confirmedDataEgress),
+  submitImageProject: (projectId: string, confirmUnknownRetry = false) =>
+    getDesktopHost().media.submitImageProject(projectId, confirmUnknownRetry),
   startImageOperation: (
     projectId: string,
-    input: Omit<StartImageOperationInput, 'data_egress_consent'>,
-    confirmedDataEgress = false,
-  ) => getDesktopHost().media.startImageOperation(projectId, input, confirmedDataEgress),
+    input: StartImageOperationInput,
+  ) => getDesktopHost().media.startImageOperation(projectId, input),
   commitImageVersion: (projectId: string, input: CommitImageVersionInput) =>
     api.post<{ project: PublicImageWorkbenchProject }>(
       `/api/media/images/projects/${encodeURIComponent(projectId)}/versions`,
@@ -114,11 +134,7 @@ export const mediaApi = {
   createVideoProject: (input: CreateVideoProjectInput) =>
     api.post<{ project: PublicVideoStudioProject }>('/api/media/videos/projects', input),
   addVideoSource: (projectId: string, path: string) =>
-    api.post<{ project: PublicVideoStudioProject; task: PublicMediaTask }>(
-      `/api/media/videos/projects/${encodeURIComponent(projectId)}/sources`,
-      { path },
-      { timeout: 180_000 },
-    ),
+    getDesktopHost().media.addVideoSource(projectId, path),
   updateVideoTimeline: (projectId: string, input: UpdateVideoTimelineInput) =>
     api.put<{ project: PublicVideoStudioProject }>(
       `/api/media/videos/projects/${encodeURIComponent(projectId)}/timeline`,
@@ -139,6 +155,12 @@ export const mediaApi = {
     api.post<{ project: PublicVideoStudioProject }>(
       `/api/media/videos/projects/${encodeURIComponent(projectId)}/alternatives/${encodeURIComponent(alternativeId)}/apply`,
       input,
+    ),
+  previewVideo: (projectId: string, input: PreviewVideoInput) =>
+    api.post<{ task: PublicMediaTask }>(
+      `/api/media/videos/projects/${encodeURIComponent(projectId)}/preview`,
+      input,
+      { timeout: MEDIA_RESULT_REQUEST_TIMEOUT_MS },
     ),
   renderVideo: (projectId: string, input: RenderVideoInput) =>
     getDesktopHost().media.renderVideo({
@@ -164,6 +186,8 @@ export type {
   PublicImageWorkbenchProject as ImageWorkbenchProject,
   PublicMediaProject as MediaProject,
   PublicMediaDeletionReceipt as MediaDeletionReceipt,
+  PublicMediaJobEvent as MediaJobEvent,
+  PublicMediaJobEventPage as MediaJobEventPage,
   PublicMediaTask as MediaTask,
   PublicVideoStudioProject as VideoStudioProject,
   SelectImageVersionInput,

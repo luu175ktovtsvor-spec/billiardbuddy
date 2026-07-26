@@ -11,8 +11,6 @@ import type {
 } from '../../../shared/product/taskReview.js'
 import { parseProductTaskReviewDiff } from '../../../shared/product/taskReview.js'
 import { ApiError } from '../middleware/errorHandler.js'
-import { conversationService } from '../services/conversationService.js'
-import { sessionService } from '../services/sessionService.js'
 import {
   WorkspaceService,
   type WorkspaceDiffResult,
@@ -30,9 +28,9 @@ const VCS_METADATA_PATH_SEGMENTS = new Set(['.git', '.svn', '.hg', '.bzr', '.jj'
 
 type TaskResolver = Pick<
   ProductTaskService,
-  'resolveCoreSessionId' | 'requireWorkspaceCapability' | 'listReviewComments' | 'createReviewComment'
+  'requireWorkspaceCapability' | 'listReviewComments' | 'createReviewComment'
 >
-type CoreWorkDirResolver = (sessionId: string) => Promise<string | undefined>
+type TaskWorkDirResolver = (taskId: string) => Promise<string | undefined>
 type TaskReviewWorkspace = Pick<WorkspaceService, 'getStatus' | 'readTree' | 'getDiff' | 'getFileRevision'> & {
   readFile(
     sessionId: string,
@@ -42,17 +40,15 @@ type TaskReviewWorkspace = Pick<WorkspaceService, 'getStatus' | 'readTree' | 'ge
 }
 
 /**
- * A task-scoped adapter over the existing WorkspaceService.
- *
- * The Core session id is resolved only for the call into WorkspaceService and
- * is never included in a public result. The projection also removes absolute
- * work-directory paths and implementation error text from that service.
+ * A task-scoped adapter over the deterministic workspace reader. ProductTask
+ * owns the capability and canonical root; no historical transcript or private
+ * model-session store participates in the review path.
  */
 export class ProductTaskReviewService {
   constructor(
     private readonly tasks: TaskResolver,
     private readonly workspace: TaskReviewWorkspace,
-    private readonly getSessionWorkDir: CoreWorkDirResolver,
+    private readonly getTaskWorkDir: TaskWorkDirResolver,
   ) {}
 
   async getStatus(taskId: string): Promise<ProductTaskReviewStatus> {
@@ -106,25 +102,26 @@ export class ProductTaskReviewService {
       const after = await this.workspace.getFileRevision(sessionId, filePath)
       return { before, diff, after }
     })
-    if (!('diff' in result)) {
+    if (!result.diff) {
       return staleDiff(taskId, filePath, result.after)
     }
-    if (result.diff.state === 'error' && result.diff.error?.includes('outside workspace')) {
+    const diff = result.diff
+    if (diff.state === 'error' && diff.error?.includes('outside workspace')) {
       throw new ApiError(403, '路径不在当前任务工作区内', 'FORBIDDEN')
     }
     if (hasRevisionError(result.before, result.after)) {
-      return unavailableDiff(taskId, result.diff.path)
+      return unavailableDiff(taskId, diff.path)
     }
     if (!sameWorkspaceRevision(result.before, result.after)) {
       return staleDiff(taskId, filePath, result.after)
     }
 
     const fileRef = createFileRef(taskId, filePath, result.after)
-      ?? createDiffFileRef(taskId, filePath, result.diff)
+      ?? createDiffFileRef(taskId, filePath, diff)
     if (revision && fileRef?.revision !== revision) {
       return staleDiff(taskId, filePath, result.after, fileRef)
     }
-    return projectDiff(taskId, result.diff, fileRef)
+    return projectDiff(taskId, diff, fileRef)
   }
 
   async getComments(
@@ -186,42 +183,36 @@ export class ProductTaskReviewService {
 
   private async withTaskWorkspace<T>(
     taskId: string,
-    operation: (sessionId: string) => Promise<T>,
+    operation: (taskId: string) => Promise<T>,
   ): Promise<T> {
-    let sessionId: string
     try {
-      // This is the sole Review boundary: never resolve a Core session/cwd
-      // before the ProductTask-owned workspace capability is accepted.
       const workspace = await this.tasks.requireWorkspaceCapability(taskId, 'review')
-      sessionId = await this.tasks.resolveCoreSessionId(taskId)
-      const cwd = await this.getSessionWorkDir(sessionId)
+      const cwd = await this.getTaskWorkDir(taskId)
       if (!cwd || path.resolve(cwd) !== path.resolve(workspace.canonical_root)) throw new ApiError(409, '任务工作区不可用', 'WORKSPACE_REQUIRED')
     } catch (error) {
       throw reviewApiError(error)
     }
 
     try {
-      return await operation(sessionId)
+      return await operation(taskId)
     } catch (error) {
       throw reviewApiError(error)
     }
   }
 }
 
-const workspaceService = new WorkspaceService(
-  async (sessionId) => (
-    conversationService.getSessionWorkDir(sessionId) ||
-    await sessionService.getSessionWorkDir(sessionId)
-  ),
-  async (sessionId) => sessionService.getSessionMessages(sessionId),
-  async (sessionId) => sessionService.getSessionFileHistorySnapshots(sessionId),
-)
+export function createProductTaskReviewService(tasks: TaskResolver): ProductTaskReviewService {
+  const getTaskWorkDir = async (taskId: string) => (
+    await tasks.requireWorkspaceCapability(taskId, 'review')
+  ).canonical_root
+  return new ProductTaskReviewService(
+    tasks,
+    new WorkspaceService(getTaskWorkDir),
+    getTaskWorkDir,
+  )
+}
 
-export const productTaskReviewService = new ProductTaskReviewService(
-  productTaskService,
-  workspaceService,
-  async (sessionId) => conversationService.getSessionWorkDir(sessionId) || await sessionService.getSessionWorkDir(sessionId),
-)
+export const productTaskReviewService = createProductTaskReviewService(productTaskService)
 
 function projectStatus(taskId: string, status: WorkspaceStatusResult): ProductTaskReviewStatus {
   if (status.state !== 'ok') {

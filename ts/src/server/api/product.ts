@@ -15,12 +15,9 @@ import {
   type ProductTaskReviewService,
 } from '../product/taskReviewService.js'
 import { assertAuthorityMapKey, assertOperationEnvelope } from '../../../shared/product/authority.js'
-import { CoreOperationBridge, SessionCoreOperationBackend } from '../product/coreOperationBridge.js'
+import { ProductCoreOperationBridge } from '../product/productCoreOperationBridge.js'
 import { productTaskService, type ProductTaskService } from '../product/taskService.js'
-import {
-  ProductTaskMediaService,
-  type ProductTaskMediaApi,
-} from '../product/taskMediaService.js'
+import { MAX_MULTIPART_ATTACHMENT_BYTES } from '../product/taskAttachmentIngest.js'
 import { handleProductScheduledTasksApi } from './productScheduledTasks.js'
 import {
   productScheduledTaskService,
@@ -29,7 +26,6 @@ import {
 import { handleProductSettingsApi } from './productSettings.js'
 import { handleProductTaskCommandsApi } from './productTaskCommands.js'
 import { handleProductVoiceApi } from './productVoice.js'
-import { handleProductDataEgressConsentApi } from './productDataEgressConsent.js'
 import { ProductCapabilitySnapshotService } from '../services/productCapabilitySnapshot.js'
 
 type ProductTaskReviewApi = Pick<
@@ -38,10 +34,10 @@ type ProductTaskReviewApi = Pick<
 >
 
 function authorityPath(): string {
-  return path.join(process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude'), 'billiardbuddy', 'product-task-authority.v1.json')
+  return path.join(process.env.BILLIARDBUDDY_CONFIG_DIR || path.join(os.homedir(), '.BilliardBuddy'), 'billiardbuddy', 'product-task-authority.v1.json')
 }
 
-const authorityBridge = new CoreOperationBridge(new SessionCoreOperationBackend())
+const defaultCoreOperationBridge = new ProductCoreOperationBridge()
 
 function authoritativeEnvelope(value: unknown): { expected_revision: number; client_operation_id: string } {
   try {
@@ -104,6 +100,8 @@ export async function handleProductApi(
     | 'recoverTaskRun'
     | 'createAndSubmitTask'
     | 'listTaskEvents'
+    | 'listQueuedInputs'
+    | 'resumeTaskInputQueue'
     | 'claimTaskRunDispatch'
     | 'createNewTaskComposerDraft'
     | 'createComposerDraft'
@@ -115,15 +113,11 @@ export async function handleProductApi(
     | 'bindTaskWorkspace'
   > = productTaskService,
   review: ProductTaskReviewApi = productTaskReviewService,
-  media: ProductTaskMediaApi = new ProductTaskMediaService(tasks),
   scheduledTasks: ProductScheduledTaskService = productScheduledTaskService,
   capabilitySnapshots: Pick<ProductCapabilitySnapshotService, 'snapshot'> = new ProductCapabilitySnapshotService(),
+  coreOperationBridge: ProductCoreOperationBridge = defaultCoreOperationBridge,
 ): Promise<Response> {
   try {
-    if (segments[2] === 'data-egress-consent') {
-      return await handleProductDataEgressConsentApi(req, segments)
-    }
-
     if (segments[2] === 'voice') {
       return await handleProductVoiceApi(req, segments)
     }
@@ -163,7 +157,7 @@ export async function handleProductApi(
         if (req.method !== 'POST' || segments[3]) throw ApiError.notFound('未知会话谱系资源')
         const input = await readJson<{ task_id?: unknown; expected_task_revision?: unknown; parent_lineage_id?: unknown; fork_checkpoint_id?: unknown; client_operation_id?: unknown }>(req)
         if (!exactKeys(input, ['task_id', 'expected_task_revision', 'parent_lineage_id', 'fork_checkpoint_id', 'client_operation_id']) || typeof input.task_id !== 'string' || !Number.isSafeInteger(input.expected_task_revision) || (input.expected_task_revision as number) < 0 || typeof input.client_operation_id !== 'string' || input.parent_lineage_id !== null || input.fork_checkpoint_id !== null) throw ApiError.badRequest('lineage create 参数无效')
-        const result = await tasks.createConversationLineage({ task_id: input.task_id, expected_task_revision: input.expected_task_revision, client_operation_id: input.client_operation_id })
+        const result = await tasks.createConversationLineage({ task_id: input.task_id, expected_task_revision: input.expected_task_revision as number, client_operation_id: input.client_operation_id })
         return Response.json({ lineage: publicLineage(result.lineage), receipt: { outcome: result.outcome, revision: result.authority_revision } }, { status: result.outcome === 'accepted' ? 201 : 200 })
       }
       if (!action && req.method === 'GET') {
@@ -174,14 +168,14 @@ export async function handleProductApi(
       }
       // Child lineage construction is intentionally not an HTTP capability.
       // These mutations only advance an already-public opaque lineage id.
-      if (!action || segments[5] || req.method !== 'POST' || !['advance', 'park', 'recovery', 'compact'].includes(action)) {
+      if (!action || segments[5] || req.method !== 'POST' || !['advance', 'park', 'recovery'].includes(action)) {
         throw ApiError.notFound('未知会话谱系资源')
       }
       const input = await readJson<{ expected_lineage_revision?: unknown; client_operation_id?: unknown; head_entry_id?: unknown }>(req)
       if (!assertPlainExactObject(input, ['expected_lineage_revision', 'client_operation_id'], ['head_entry_id']) || !Number.isSafeInteger(input.expected_lineage_revision) || (input.expected_lineage_revision as number) < 0 || typeof input.client_operation_id !== 'string' || (action === 'advance' && typeof input.head_entry_id !== 'string')) {
         throw ApiError.badRequest('lineage revision 和 operation 必填')
       }
-      const receipt = await tasks.mutateConversationLineage({ lineage_id: lineageId, expected_revision: input.expected_lineage_revision, client_operation_id: input.client_operation_id, action: action as 'advance' | 'park' | 'recovery' | 'compact', ...(typeof input.head_entry_id === 'string' ? { head_entry_id: input.head_entry_id } : {}) })
+      const receipt = await tasks.mutateConversationLineage({ lineage_id: lineageId, expected_revision: input.expected_lineage_revision as number, client_operation_id: input.client_operation_id, action: action as 'advance' | 'park' | 'recovery', ...(typeof input.head_entry_id === 'string' ? { head_entry_id: input.head_entry_id } : {}) })
       return Response.json({ receipt })
     }
 
@@ -199,23 +193,40 @@ export async function handleProductApi(
         if (req.method !== 'POST') return methodNotAllowed(req.method)
         const input = await readJson<{ target_task_id?: unknown; workspace_id?: unknown; ttl_ms?: unknown; client_operation_id?: unknown }>(req)
         if (!assertPlainExactObject(input, ['target_task_id', 'ttl_ms', 'client_operation_id'], ['workspace_id']) || typeof input.target_task_id !== 'string' || (input.workspace_id !== undefined && typeof input.workspace_id !== 'string') || !Number.isSafeInteger(input.ttl_ms) || (input.ttl_ms as number) < 1 || typeof input.client_operation_id !== 'string') throw ApiError.badRequest('draft 参数无效')
-        const created = await tasks.createComposerDraft({ target_task_id: input.target_task_id, ...(typeof input.workspace_id === 'string' ? { workspace_id: input.workspace_id } : {}), ttl_ms: input.ttl_ms, client_operation_id: input.client_operation_id })
+        const created = await tasks.createComposerDraft({ target_task_id: input.target_task_id, ...(typeof input.workspace_id === 'string' ? { workspace_id: input.workspace_id } : {}), ttl_ms: input.ttl_ms as number, client_operation_id: input.client_operation_id })
         return Response.json({ ...created, draft: publicDraft(created.draft) }, { status: 201 })
       }
       if (draftId && !segments[4] && req.method === 'GET') return Response.json({ draft: await tasks.getComposerDraft(draftId) })
       if (req.method !== 'POST' || !segments[4]) return methodNotAllowed(req.method)
       const action = segments[4]
       if (action === 'attachments' && !segments[5]) {
-        const input = await readJson<Record<string, unknown>>(req)
-        if (!assertPlainExactObject(input, ['type', 'name', 'mime_type', 'data', 'client_operation_id']) || (input.type !== 'file' && input.type !== 'image') || typeof input.name !== 'string' || typeof input.mime_type !== 'string' || typeof input.data !== 'string' || typeof input.client_operation_id !== 'string') throw ApiError.badRequest('附件摄取参数无效')
+        const contentType = req.headers.get('content-type')?.toLowerCase() ?? ''
+        let input: { type: 'file' | 'image'; name: string; mime_type: string; client_operation_id: string; data?: string; bytes?: Buffer }
+        if (contentType.startsWith('multipart/form-data')) {
+          const declared = Number(req.headers.get('content-length'))
+          if (!Number.isSafeInteger(declared) || declared < 1 || declared > MAX_MULTIPART_ATTACHMENT_BYTES) throw new ApiError(413, '附件上传过大', 'ATTACHMENT_REJECTED')
+          const form = await req.formData().catch(() => null)
+          if (!form || new Set([...form.keys()]).size !== 5 || !['type', 'name', 'mime_type', 'client_operation_id', 'file'].every(key => form.has(key))) throw ApiError.badRequest('附件摄取参数无效')
+          const type = form.get('type')
+          const name = form.get('name')
+          const mimeType = form.get('mime_type')
+          const operationId = form.get('client_operation_id')
+          const file = form.get('file')
+          if ((type !== 'file' && type !== 'image') || typeof name !== 'string' || typeof mimeType !== 'string' || typeof operationId !== 'string' || !(file instanceof File) || file.size < 1 || file.size > MAX_MULTIPART_ATTACHMENT_BYTES) throw ApiError.badRequest('附件摄取参数无效')
+          input = { type, name, mime_type: mimeType, client_operation_id: operationId, bytes: Buffer.from(await file.arrayBuffer()) }
+        } else {
+          const raw = await readJson<Record<string, unknown>>(req)
+          if (!assertPlainExactObject(raw, ['type', 'name', 'mime_type', 'data', 'client_operation_id']) || (raw.type !== 'file' && raw.type !== 'image') || typeof raw.name !== 'string' || typeof raw.mime_type !== 'string' || typeof raw.data !== 'string' || typeof raw.client_operation_id !== 'string') throw ApiError.badRequest('附件摄取参数无效')
+          input = { type: raw.type, name: raw.name, mime_type: raw.mime_type, data: raw.data, client_operation_id: raw.client_operation_id }
+        }
         try { assertAuthorityMapKey(input.client_operation_id) } catch { throw ApiError.badRequest('附件摄取参数无效') }
-        const attachment = await tasks.ingestAttachment({ owner: { kind: 'composer_draft', id: draftId }, type: input.type, name: input.name, mime_type: input.mime_type, data: input.data, client_operation_id: input.client_operation_id })
+        const attachment = await tasks.ingestAttachment({ owner: { kind: 'composer_draft', id: draftId }, ...input })
         return Response.json({ attachment }, { status: attachment.outcome === 'accepted' ? 201 : 200 })
       }
       if (!['update', 'consume', 'expire'].includes(action)) throw ApiError.notFound('未知草稿操作')
       const input = await readJson<{ expected_draft_revision?: unknown; client_operation_id?: unknown }>(req)
       if (!assertPlainExactObject(input, ['expected_draft_revision', 'client_operation_id']) || !Number.isSafeInteger(input.expected_draft_revision) || typeof input.client_operation_id !== 'string') throw ApiError.badRequest('draft revision 和 operation 必填')
-      return Response.json({ receipt: await tasks.mutateComposerDraft({ draft_id: draftId, expected_revision: input.expected_draft_revision, client_operation_id: input.client_operation_id, action: action as 'update' | 'consume' | 'expire' }) })
+      return Response.json({ receipt: await tasks.mutateComposerDraft({ draft_id: draftId, expected_revision: input.expected_draft_revision as number, client_operation_id: input.client_operation_id, action: action as 'update' | 'consume' | 'expire' }) })
     }
 
     if (segments[2] === 'attachments') {
@@ -231,12 +242,12 @@ export async function handleProductApi(
         const input = await readJson<{ expected_revision?: unknown; target_state?: unknown; client_operation_id?: unknown; error?: unknown }>(req)
         if (!assertPlainExactObject(input, ['expected_revision', 'target_state', 'client_operation_id'], ['error']) || !Number.isSafeInteger(input.expected_revision) || !['inspecting', 'ready', 'failed', 'cancelled', 'discarded'].includes(input.target_state as string) || typeof input.client_operation_id !== 'string' || (input.error !== undefined && typeof input.error !== 'string')) throw ApiError.badRequest('attachment transition 参数无效')
         if (input.target_state === 'inspecting' || input.target_state === 'ready') throw new ApiError(409, '附件验证状态当前不可用', 'OUT_OF_SCOPE_DISABLED')
-        return Response.json(await tasks.transitionAttachment({ attachment_id: attachmentId, expected_revision: input.expected_revision, target_state: input.target_state as 'inspecting' | 'ready' | 'failed' | 'cancelled' | 'discarded', client_operation_id: input.client_operation_id, ...(typeof input.error === 'string' ? { error: input.error } : {}) }))
+        return Response.json(await tasks.transitionAttachment({ attachment_id: attachmentId, expected_revision: input.expected_revision as number, target_state: input.target_state as 'inspecting' | 'ready' | 'failed' | 'cancelled' | 'discarded', client_operation_id: input.client_operation_id, ...(typeof input.error === 'string' ? { error: input.error } : {}) }))
       }
       const input = await readJson<{ expected_revision?: unknown; owner?: unknown; client_operation_id?: unknown }>(req)
       const owner = input.owner as Record<string, unknown> | undefined
       if (!exactKeys(input, ['expected_revision', 'owner', 'client_operation_id']) || !Number.isSafeInteger(input.expected_revision) || !owner || !exactKeys(owner, ['kind', 'id']) || (owner.kind !== 'composer_draft' && owner.kind !== 'product_task') || typeof owner.id !== 'string' || typeof input.client_operation_id !== 'string') throw ApiError.badRequest('attachment bind 参数无效')
-      return Response.json(await tasks.bindAttachment(attachmentId, input.expected_revision, { kind: owner.kind, id: owner.id }, input.client_operation_id))
+      return Response.json(await tasks.bindAttachment(attachmentId, input.expected_revision as number, { kind: owner.kind, id: owner.id }, input.client_operation_id))
     }
 
     if (segments[2] === 'workspaces') {
@@ -245,20 +256,20 @@ export async function handleProductApi(
         if (req.method !== 'POST') return methodNotAllowed(req.method)
         const input = await readJson<{ root?: unknown; expected_revision?: unknown; client_operation_id?: unknown }>(req)
         if (!exactKeys(input, ['root', 'expected_revision', 'client_operation_id']) || typeof input.root !== 'string' || !input.root.trim() || !Number.isSafeInteger(input.expected_revision) || (input.expected_revision as number) < 0 || typeof input.client_operation_id !== 'string' || !input.client_operation_id) throw ApiError.badRequest('workspace operation 参数无效')
-        const result = await tasks.registerWorkspaceOperation({ root: input.root, expected_revision: input.expected_revision, client_operation_id: input.client_operation_id })
+        const result = await tasks.registerWorkspaceOperation({ root: input.root, expected_revision: input.expected_revision as number, client_operation_id: input.client_operation_id })
         return Response.json({ workspace: publicWorkspace(result.workspace), receipt: result.receipt }, { status: result.receipt.outcome === 'accepted' ? 201 : 200 })
       }
       if (segments[4] === 'inspect' && req.method === 'POST') return Response.json({ workspace: publicWorkspace(await tasks.inspectWorkspace(workspaceId)) })
       if (segments[4] === 'relocate' && req.method === 'POST') {
         const input = await readJson<{ root?: unknown; expected_workspace_revision?: unknown; client_operation_id?: unknown }>(req)
         if (!exactKeys(input, ['root', 'expected_workspace_revision', 'client_operation_id']) || typeof input.root !== 'string' || !input.root.trim() || !Number.isSafeInteger(input.expected_workspace_revision) || (input.expected_workspace_revision as number) < 0 || typeof input.client_operation_id !== 'string' || !input.client_operation_id) throw ApiError.badRequest('workspace relocate 参数无效')
-        const result = await tasks.relocateWorkspaceOperation({ workspace_id: workspaceId, root: input.root, expected_workspace_revision: input.expected_workspace_revision, client_operation_id: input.client_operation_id })
+        const result = await tasks.relocateWorkspaceOperation({ workspace_id: workspaceId, root: input.root, expected_workspace_revision: input.expected_workspace_revision as number, client_operation_id: input.client_operation_id })
         return Response.json({ workspace: publicWorkspace(result.workspace), receipt: result.receipt })
       }
       if (segments[4] === 'relink' && req.method === 'POST') {
         const input = await readJson<{ root?: unknown; expected_workspace_revision?: unknown; client_operation_id?: unknown }>(req)
         if (!exactKeys(input, ['root', 'expected_workspace_revision', 'client_operation_id']) || typeof input.root !== 'string' || !input.root.trim() || !Number.isSafeInteger(input.expected_workspace_revision) || (input.expected_workspace_revision as number) < 0 || typeof input.client_operation_id !== 'string' || !input.client_operation_id) throw ApiError.badRequest('workspace relink 参数无效')
-        const result = await tasks.relinkWorkspaceOperation({ workspace_id: workspaceId, root: input.root, expected_workspace_revision: input.expected_workspace_revision, client_operation_id: input.client_operation_id })
+        const result = await tasks.relinkWorkspaceOperation({ workspace_id: workspaceId, root: input.root, expected_workspace_revision: input.expected_workspace_revision as number, client_operation_id: input.client_operation_id })
         return Response.json({ workspace: publicWorkspace(result.workspace), receipt: result.receipt })
       }
       throw ApiError.notFound('未知工作区资源')
@@ -270,6 +281,7 @@ export async function handleProductApi(
 
     const taskId = segments[3]
     const action = segments[4]
+    if (action === 'media') throw ApiError.notFound('未知任务资源')
 
     if (!taskId) {
       if (req.method === 'GET') return Response.json(publicTaskIndex(await tasks.listTasksAuthoritatively()))
@@ -302,8 +314,25 @@ export async function handleProductApi(
     if (action === 'events' && !segments[5]) {
       if (req.method !== 'GET') return methodNotAllowed(req.method)
       const after = url.searchParams.get('after') ?? '0'
-      if (!/^(0|[1-9][0-9]*)$/.test(after)) throw ApiError.badRequest('事件游标无效')
-      return Response.json(await tasks.listTaskEvents(taskId, Number(after)))
+      const limit = url.searchParams.get('limit') ?? '200'
+      if (!/^(0|[1-9][0-9]*)$/.test(after) || !/^[1-9][0-9]*$/.test(limit)) throw ApiError.badRequest('事件游标无效')
+      return Response.json(await tasks.listTaskEvents(taskId, Number(after), Number(limit)))
+    }
+
+    if (action === 'queue' && !segments[5]) {
+      if (req.method !== 'GET') return methodNotAllowed(req.method)
+      return Response.json(await tasks.listQueuedInputs(taskId))
+    }
+
+    if (action === 'queue' && segments[5] === 'resume' && !segments[6]) {
+      if (req.method !== 'POST') return methodNotAllowed(req.method)
+      const input = await readJson<Record<string, unknown>>(req)
+      if (!assertPlainExactObject(input, ['expected_task_revision', 'client_operation_id'])
+        || !Number.isSafeInteger(input.expected_task_revision) || (input.expected_task_revision as number) < 0
+        || typeof input.client_operation_id !== 'string' || !input.client_operation_id) throw ApiError.badRequest('队列恢复参数无效')
+      try { assertAuthorityMapKey(input.client_operation_id) } catch { throw ApiError.badRequest('队列恢复参数无效') }
+      const result = await tasks.resumeTaskInputQueue(taskId, input as { expected_task_revision: number; client_operation_id: string })
+      return Response.json(result, { status: result.outcome === 'conflict' ? 409 : result.outcome === 'rejected' ? 422 : 200 })
     }
 
     if (action === 'delete' && !segments[5]) {
@@ -315,7 +344,7 @@ export async function handleProductApi(
         || typeof input.client_operation_id !== 'string') throw ApiError.badRequest('删除阶段、revision 和 operation 必填')
       const result = await tasks.mutateTaskDeletion(taskId, {
         action: input.phase as 'begin' | 'cancel' | 'commit_purge' | 'retry',
-        expected_revision: input.expected_revision,
+        expected_revision: input.expected_revision as number,
         client_operation_id: input.client_operation_id,
       })
       return Response.json({ task: publicTask(result.task), receipt: { outcome: result.outcome }, blockers: result.blockers }, { status: result.outcome === 'conflict' ? 409 : result.outcome === 'rejected' ? 422 : 200 })
@@ -340,40 +369,13 @@ export async function handleProductApi(
       if (req.method === 'POST') {
         const input = await readJson<{ lineage_id?: unknown; expected_task_revision?: unknown; expected_lineage_revision?: unknown; client_operation_id?: unknown }>(req)
         if (!exactKeys(input, ['lineage_id', 'expected_task_revision', 'expected_lineage_revision', 'client_operation_id']) || typeof input.lineage_id !== 'string' || !Number.isSafeInteger(input.expected_task_revision) || (input.expected_task_revision as number) < 0 || !Number.isSafeInteger(input.expected_lineage_revision) || (input.expected_lineage_revision as number) < 0 || typeof input.client_operation_id !== 'string') throw ApiError.badRequest('lineage current 参数无效')
-        return Response.json({ receipt: await tasks.setConversationLineageCurrent({ task_id: taskId, lineage_id: input.lineage_id, expected_task_revision: input.expected_task_revision, expected_lineage_revision: input.expected_lineage_revision, client_operation_id: input.client_operation_id }) })
+        return Response.json({ receipt: await tasks.setConversationLineageCurrent({ task_id: taskId, lineage_id: input.lineage_id, expected_task_revision: input.expected_task_revision as number, expected_lineage_revision: input.expected_lineage_revision as number, client_operation_id: input.client_operation_id }) })
       }
       return methodNotAllowed(req.method)
     }
 
     if (action === 'review') {
       return await handleTaskReviewRoute(review, req, url, taskId, segments[5])
-    }
-
-    if (action === 'media') {
-      const resource = segments[5]
-      if (!resource) {
-        if (req.method !== 'GET') return methodNotAllowed(req.method)
-        return Response.json(await media.listForTask(taskId))
-      }
-      if (resource === 'attachable-projects' && !segments[6]) {
-        if (req.method !== 'GET') return methodNotAllowed(req.method)
-        return Response.json(await media.listAttachableForTask(taskId))
-      }
-      if (
-        resource === 'projects'
-        && segments[6]
-      ) {
-        const projectId = segments[6]
-        if (segments[7] === 'assets' && segments[8] && !segments[9]) {
-          if (req.method !== 'GET') return methodNotAllowed(req.method)
-          return await media.assetResponse(taskId, projectId, segments[8], req)
-        }
-        if (segments[7] === 'attach' && !segments[8]) {
-          if (req.method !== 'POST') return methodNotAllowed(req.method)
-          return Response.json({ project: await media.attachProject(taskId, projectId) })
-        }
-      }
-      throw ApiError.notFound('未知任务媒体资源')
     }
 
     if (action === 'side-tasks') {
@@ -388,7 +390,7 @@ export async function handleProductApi(
           const input = await readJson<CreateProductSideTaskInput & { sideTaskId?: string }>(req)
           const envelope = authoritativeEnvelope(input)
           if (!input.sideTaskId) throw ApiError.badRequest('sideTaskId 必填')
-          const result = await tasks.createSideTaskAuthoritatively({ taskId, sideTaskId: input.sideTaskId, ...envelope, canonical_input: JSON.stringify(input) }, { authorityPath: authorityPath(), bridge: authorityBridge })
+          const result = await tasks.createSideTaskAuthoritatively({ taskId, sideTaskId: input.sideTaskId, ...envelope, canonical_input: JSON.stringify(input) }, { authorityPath: authorityPath(), bridge: coreOperationBridge })
           const operation = await tasks.getAuthorityOperation(taskId, envelope.client_operation_id, { authorityPath: authorityPath() })
           return Response.json({ receipt: operation.receipt, authority: publicAuthority(operation.authority), sideTask: operation.authority.side_tasks?.find((sideTask) => sideTask.id === input.sideTaskId) }, { status: 201 })
         }
@@ -415,7 +417,7 @@ export async function handleProductApi(
       if (req.method !== 'POST') return methodNotAllowed(req.method)
       const input = await readJson<{ workspace_id?: unknown; expected_task_revision?: unknown; expected_workspace_revision?: unknown; client_operation_id?: unknown }>(req)
       if (!assertPlainExactObject(input, ['workspace_id', 'expected_task_revision', 'expected_workspace_revision', 'client_operation_id']) || typeof input.workspace_id !== 'string' || !Number.isSafeInteger(input.expected_task_revision) || !Number.isSafeInteger(input.expected_workspace_revision) || typeof input.client_operation_id !== 'string') throw ApiError.badRequest('workspace_id、双 revision 和 client_operation_id 必填')
-      return Response.json({ receipt: await tasks.bindTaskWorkspace({ task_id: taskId, workspace_id: input.workspace_id, expected_task_revision: input.expected_task_revision, expected_workspace_revision: input.expected_workspace_revision, client_operation_id: input.client_operation_id }) })
+      return Response.json({ receipt: await tasks.bindTaskWorkspace({ task_id: taskId, workspace_id: input.workspace_id, expected_task_revision: input.expected_task_revision as number, expected_workspace_revision: input.expected_workspace_revision as number, client_operation_id: input.client_operation_id }) })
     }
 
     if (!action) {
@@ -423,10 +425,10 @@ export async function handleProductApi(
       const input = await readJson<UpdateProductTaskInput>(req)
       const envelope = authoritativeEnvelope(input)
       if (input.title !== undefined) {
-        const result = await tasks.renameTaskAuthoritatively({ taskId, title: input.title, ...envelope }, { authorityPath: authorityPath(), bridge: authorityBridge })
+        const result = await tasks.renameTaskAuthoritatively({ taskId, title: input.title, ...envelope }, { authorityPath: authorityPath(), bridge: coreOperationBridge })
         let mirror = result.mirror
         try {
-          mirror = await tasks.reconcileRenameAuthoritatively(envelope.client_operation_id, { authorityPath: authorityPath(), bridge: authorityBridge })
+          mirror = await tasks.reconcileRenameAuthoritatively(envelope.client_operation_id, { authorityPath: authorityPath(), bridge: coreOperationBridge })
         } catch {
           mirror = { state: 'failed', error: 'OPERATION_REJECTED' }
         }
@@ -450,7 +452,7 @@ export async function handleProductApi(
       }
       case 'continue': {
         const body = input as ContinueProductTaskInput
-        const result = await tasks.continueTaskAuthoritatively({ taskId, ...envelope, canonical_input: JSON.stringify(body) }, { authorityPath: authorityPath(), bridge: authorityBridge })
+        const result = await tasks.continueTaskAuthoritatively({ taskId, ...envelope, canonical_input: JSON.stringify(body) }, { authorityPath: authorityPath(), bridge: coreOperationBridge })
         const operation = await tasks.getAuthorityOperation(taskId, envelope.client_operation_id, { authorityPath: authorityPath() })
         return Response.json({ receipt: { outcome: result.outcome, revision: result.revision }, authority: publicAuthority(operation.authority) }, { status: 201 })
       }

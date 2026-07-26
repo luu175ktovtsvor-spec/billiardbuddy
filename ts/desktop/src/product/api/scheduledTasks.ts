@@ -20,6 +20,7 @@ export const productScheduledTasksApi: ProductScheduledTaskApi = {
   update: (taskId: string, input: UpdateProductScheduledTaskInput) => productApi.patch<ProductScheduledTaskResponse>(taskPath(taskId), input),
   delete: (taskId: string) => productApi.delete<{ ok: true }>(taskPath(taskId)),
   run: (taskId: string) => productApi.post<{ ok: true }>(`${taskPath(taskId)}/run`, {}),
+  cancelRun: (taskId: string, runId: string) => productApi.post<{ ok: true }>(`${taskPath(taskId)}/runs/${encodeURIComponent(runId)}/cancel`, {}),
   getRecentRuns: (limit = 50) => productApi.get<ProductScheduledTaskRunsResponse>(`${SCHEDULED_TASKS_PATH}/runs?limit=${limit}`),
   getTaskRuns: (taskId: string) => productApi.get<ProductScheduledTaskRunsResponse>(`${taskPath(taskId)}/runs`),
 }

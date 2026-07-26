@@ -1,7 +1,7 @@
 import { $ } from 'bun'
 import { readFile, rename, rm } from 'node:fs/promises'
 
-const outfile = './src-tauri/resources/preview-agent.js'
+const outfile = './runtime-assets/resources/preview-agent.js'
 const tmpfile = `${outfile}.${process.pid}.tmp`
 
 await $`bun build ./src/preview-agent/index.ts --outfile=${tmpfile} --format=iife --minify`

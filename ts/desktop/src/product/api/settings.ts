@@ -1,7 +1,6 @@
 import { productApi } from './client'
 import type {
   DesktopSettings,
-  OutputStylesResponse,
   RuntimeSettings,
   UserSettings,
   UserSettingsUpdate,
@@ -30,22 +29,5 @@ export const productSettingsApi = {
 
   updateDesktop(settings: Partial<DesktopSettings>) {
     return productApi.patch<{ ok: true }>('/api/product/settings/desktop', settings)
-  },
-
-  getOutputStyles(workDir?: string | null) {
-    const query = workDir ? `?workDir=${encodeURIComponent(workDir)}` : ''
-    return productApi.get<OutputStylesResponse>(`/api/product/settings/output-styles${query}`)
-  },
-
-  setOutputStyle(outputStyle: string, workDir?: string | null) {
-    return productApi.patch<{
-      ok: true
-      outputStyle: string
-      scope: OutputStylesResponse['scope']
-      workDir: string | null
-    }>('/api/product/settings/output-style', {
-      outputStyle,
-      ...(workDir ? { workDir } : {}),
-    })
   },
 }

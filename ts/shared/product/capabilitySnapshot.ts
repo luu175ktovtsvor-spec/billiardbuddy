@@ -21,7 +21,6 @@ export type ProductCapabilityId = (typeof PRODUCT_CAPABILITY_IDS)[number]
 
 export const PRODUCT_CAPABILITY_REASON_CODES = [
   'installation_activation_required',
-  'privacy_confirmation_required',
   'service_unreachable',
   'service_unavailable',
   'daily_quota_used',
@@ -34,7 +33,6 @@ export type ProductCapabilityReasonCode = (typeof PRODUCT_CAPABILITY_REASON_CODE
 
 export const PRODUCT_CAPABILITY_REPAIR_ACTIONS = [
   'retry',
-  'open_privacy',
   'check_update',
   'install_recruiting_browser',
   'restart_app',

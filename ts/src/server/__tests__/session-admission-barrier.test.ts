@@ -1,8 +1,7 @@
 import { expect, test } from 'bun:test'
-import { ActiveCoreRunRegistry } from '../product/activeCoreRunRegistry.js'
 import { SessionAdmissionBarrier } from '../product/sessionAdmissionBarrier.js'
 
-test('session admission is FIFO, concurrent across sessions, and releases after errors', async () => {
+test('task mutation admission is FIFO, concurrent across tasks, and releases after errors', async () => {
   const gate = new SessionAdmissionBarrier()
   const order: string[] = []
   let release!: () => void
@@ -20,12 +19,4 @@ test('session admission is FIFO, concurrent across sessions, and releases after 
   await expect(gate.withRunStart('error', async () => { throw new Error('expected') })).rejects.toThrow('expected')
   await gate.withRunStart('error', async () => { order.push('after-error') })
   expect(order).toContain('after-error')
-})
-
-test('active Core registry uses non-negative reference counts', () => {
-  const registry = new ActiveCoreRunRegistry()
-  registry.markActive('session'); registry.markActive('session')
-  registry.markInactive('session'); expect(registry.hasActive('session')).toBeTrue()
-  registry.markInactive('session'); expect(registry.hasActive('session')).toBeFalse()
-  registry.markInactive('session'); expect(registry.hasActive('session')).toBeFalse()
 })

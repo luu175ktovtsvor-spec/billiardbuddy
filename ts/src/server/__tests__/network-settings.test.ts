@@ -12,25 +12,22 @@ import {
   loadNetworkSettings,
   normalizeNetworkSettings,
 } from '../services/networkSettings.js'
-import { resetSettingsCache } from '../../utils/settings/settingsCache.js'
 
 let tmpDir: string
 let originalConfigDir: string | undefined
 
 async function setup() {
   tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'network-settings-test-'))
-  originalConfigDir = process.env.CLAUDE_CONFIG_DIR
-  process.env.CLAUDE_CONFIG_DIR = tmpDir
-  resetSettingsCache()
+  originalConfigDir = process.env.BILLIARDBUDDY_CONFIG_DIR
+  process.env.BILLIARDBUDDY_CONFIG_DIR = tmpDir
 }
 
 async function teardown() {
   if (originalConfigDir !== undefined) {
-    process.env.CLAUDE_CONFIG_DIR = originalConfigDir
+    process.env.BILLIARDBUDDY_CONFIG_DIR = originalConfigDir
   } else {
-    delete process.env.CLAUDE_CONFIG_DIR
+    delete process.env.BILLIARDBUDDY_CONFIG_DIR
   }
-  resetSettingsCache()
   await fs.rm(tmpDir, { recursive: true, force: true })
 }
 

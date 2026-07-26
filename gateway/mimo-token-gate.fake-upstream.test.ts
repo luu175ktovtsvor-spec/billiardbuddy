@@ -3,9 +3,9 @@ import { CapacityQueueError, MimoReservationScheduler } from './modelCapacity'
 
 test('five vision permits sharing one token reject a sixth while another token can enter', async () => {
   const reservations = new MimoReservationScheduler({
-    maxConcurrent: 8, nativeConcurrent: 2, visionConcurrent: 6,
+    maxConcurrent: 8, mediaConcurrent: 2, visionConcurrent: 6,
     maxConcurrentPerUser: 6, maxConcurrentPerToken: 5, maxInflightPerUser: 6,
-    nativeQueueMax: 1, visionQueueMax: 1, visionMaxConcurrentPerUser: 6, visionMaxInflightPerUser: 6,
+    mediaQueueMax: 1, visionQueueMax: 1, visionMaxConcurrentPerUser: 6, visionMaxInflightPerUser: 6,
   })
   const vision = reservations.forLane('vision')
   let simulatedUpstreamCalls = 0

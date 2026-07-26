@@ -36,8 +36,18 @@ describe('scheduled ProductTask grant', () => {
       workspace,
       '2026-07-24T06:00:00.000Z',
     )
+    const nextOccurrence = await service.submitScheduledTaskRun(
+      'daily-review',
+      '每日营业复盘',
+      '读取经营数据并整理复盘。',
+      workspace,
+      '2026-07-25T06:00:00.000Z',
+    )
 
     expect(duplicate).toEqual(first)
+    expect(nextOccurrence.task_id).not.toBe(first.task_id)
+    expect((await service.readTaskRunDispatchIdentity(nextOccurrence.run_id, nextOccurrence.dispatch_generation)).session_context)
+      .toMatchObject({ text: '', compact_generation: 0, estimated_tokens: 0 })
     expect(await service.readTaskRunDispatchIdentity(first.run_id, first.dispatch_generation)).toMatchObject({
       initial_input: '读取经营数据并整理复盘。',
       permission_snapshot: {

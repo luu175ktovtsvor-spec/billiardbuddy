@@ -49,21 +49,28 @@ test('media API creates and lists image/video projects without invoking upstream
   expect(JSON.stringify(body)).not.toContain('local_workbench')
 })
 
-test('media API keeps a product task owner private to task-scoped product routes', async () => {
+test('media API migrates a legacy task-owned project into the standalone workbench', async () => {
   root = await mkdtemp(join(tmpdir(), 'billiardbuddy-media-api-'))
   const service = new MediaProjectService({ root })
   const handler = createMediaApiHandler(service)
   const project = await service.createImageProject({ prompt: '任务海报' })
-  await service.attachProjectToProductTask(project.id, 'task_0f15e1d4-7ced-4a8d-a980-d52dc0b55ffb')
+  await writeFile(join(root, 'projects', `${project.id}.json`), `${JSON.stringify({
+    ...project,
+    product_task_id: 'task_0f15e1d4-7ced-4a8d-a980-d52dc0b55ffb',
+    owner: {
+      kind: 'product_task',
+      owner_id: 'task_0f15e1d4-7ced-4a8d-a980-d52dc0b55ffb',
+    },
+  }, null, 2)}\n`)
 
   const response = await route(handler, `/api/media/project/${project.id}`)
-  const body = await response.json() as { error?: string }
+  const body = await response.json() as { project?: { id: string } }
   const listed = await route(handler, '/api/media/projects')
   const listedBody = await listed.json() as { projects: Array<{ id: string }> }
 
-  expect(response.status).toBe(404)
-  expect(body.error).toBe('MEDIA_RESOURCE_UNAVAILABLE')
-  expect(listedBody.projects).not.toContainEqual(expect.objectContaining({ id: project.id }))
+  expect(response.status).toBe(200)
+  expect(body.project?.id).toBe(project.id)
+  expect(listedBody.projects).toContainEqual(expect.objectContaining({ id: project.id }))
   expect(JSON.stringify(body)).not.toContain('task_0f15e1d4-7ced-4a8d-a980-d52dc0b55ffb')
 })
 
@@ -205,7 +212,116 @@ test('media API reports toolchain availability without disclosing executable pat
   expect(JSON.stringify(body)).not.toContain('/private')
 })
 
-test('paid image submission and final render require the Electron-owned UI capability', async () => {
+test('media API exposes owner-scoped cursor events without provider polling hints or private task fields', async () => {
+  const now = '2026-07-26T00:00:00.000Z'
+  const service = {
+    async assertProjectOwner(projectId: string) {
+      expect(projectId).toBe('img_events001')
+    },
+    async waitForJobEvents(
+      projectId: string,
+      cursor: number,
+      limit: number,
+      waitMs: number,
+      signal: AbortSignal,
+    ) {
+      expect({ projectId, cursor, limit, waitMs, aborted: signal.aborted }).toEqual({
+        projectId: 'img_events001', cursor: 7, limit: 25, waitMs: 0, aborted: false,
+      })
+      return {
+        cursor: 8,
+        reset_required: false,
+        events: [{
+          schema_version: 1 as const,
+          cursor: 8,
+          project_id: projectId,
+          task_id: 'task_events001',
+          operation_id: 'op_events000001',
+          status_sequence: 3,
+          occurred_at: now,
+          task: {
+            schema_version: 1 as const,
+            id: 'task_events001',
+            project_id: projectId,
+            operation_id: 'op_events000001',
+            owner: { kind: 'standalone' as const, owner_id: 'local_workbench' as const },
+            attempt: 2,
+            kind: 'image.generate' as const,
+            status: 'running' as const,
+            status_sequence: 3,
+            progress: 40,
+            stage: '生成中',
+            poll_after_seconds: 30,
+            image_operation: { kind: 'generate' as const, model: 'gpt-image-2' as const, output_count: 3 },
+            created_at: now,
+            updated_at: now,
+          },
+        }],
+      }
+    },
+  } as unknown as MediaProjectService
+  const handler = createMediaApiHandler(service)
+  const response = await route(handler, '/api/media/projects/img_events001/events?cursor=7&limit=25&wait_ms=0')
+  const body = await response.json() as Record<string, unknown>
+
+  expect(response.status).toBe(200)
+  expect(body).toMatchObject({
+    cursor: 8,
+    reset_required: false,
+    events: [{ task: { status: 'running', status_sequence: 3, progress: 40 } }],
+  })
+  expect(JSON.stringify(body)).not.toContain('local_workbench')
+  expect(JSON.stringify(body)).not.toContain('poll_after_seconds')
+  expect(JSON.stringify(body)).not.toContain('image_operation')
+  expect(JSON.stringify(body)).not.toContain('attempt')
+})
+
+test('media API starts an owner-scoped video preview without exposing private task fields', async () => {
+  const calls: unknown[] = []
+  const handler = createMediaApiHandler({
+    async assertProjectOwner(projectId: string) {
+      expect(projectId).toBe('vid_preview01')
+      return {} as never
+    },
+    async previewVideo(projectId: string, input: unknown) {
+      calls.push({ projectId, input })
+      return {
+        schema_version: 1,
+        id: 'task_preview01',
+        project_id: projectId,
+        operation_id: 'op_preview00001',
+        owner: { kind: 'standalone', owner_id: 'local_workbench' },
+        attempt: 1,
+        kind: 'video.preview',
+        status: 'queued',
+        status_sequence: 1,
+        progress: 0,
+        stage: '等待生成预览',
+        result: {
+          preview_revision: 3,
+          timeline_version_id: 'timeline_preview01',
+          asset_id: 'preview_asset001',
+          asset_path: '/api/media/assets/vid_preview01/preview_asset001.mp4',
+        },
+        created_at: '2026-07-26T00:00:00.000Z',
+        updated_at: '2026-07-26T00:00:00.000Z',
+      }
+    },
+  } as unknown as MediaProjectService)
+  const response = await route(handler, '/api/media/videos/projects/vid_preview01/preview', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ base_revision: 3, timeline_version_id: 'timeline_preview01' }),
+  })
+  const body = await response.json() as { task: Record<string, unknown> }
+  expect(response.status).toBe(202)
+  expect(calls).toEqual([{ projectId: 'vid_preview01', input: { base_revision: 3, timeline_version_id: 'timeline_preview01' } }])
+  expect(body.task).toMatchObject({ kind: 'video.preview', status: 'queued' })
+  expect(body.task).not.toHaveProperty('owner')
+  expect(body.task).not.toHaveProperty('attempt')
+})
+
+test('remote media actions, local source import, and final export require the Electron-owned UI capability', async () => {
   const capability = 'c'.repeat(43)
   const sidecarEnv = { BB_MEDIA_UI_CAPABILITY: capability }
   const capturedCapability = consumeMediaUiCapability(sidecarEnv)
@@ -292,6 +408,12 @@ test('paid image submission and final render require the Electron-owned UI capab
     body: JSON.stringify({ revision: 0, output_path: '/tmp/final.mp4' }),
   })
   expect(deniedRender.status).toBe(403)
+  const deniedSource = await route(handler, '/api/media/videos/projects/vid_project01/sources', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ path: '/tmp/source.mp4' }),
+  })
+  expect(deniedSource.status).toBe(403)
   expect((await route(handler, '/api/media/videos/projects/vid_project01/analyze', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },

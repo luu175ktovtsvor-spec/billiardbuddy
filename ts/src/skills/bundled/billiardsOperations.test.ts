@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test'
 import {
-  clearBundledSkills,
-  getBundledSkillDescriptors,
-} from '../bundledSkills.js'
+  clearProductBundledSkills,
+  getProductBundledSkillDescriptors,
+} from '../productSkillRegistry.js'
 import { BILLIARDS_KNOWLEDGE_FILES } from './billiardsKnowledge.js'
 import {
   BILLIARDS_OPERATIONS_SKILLS,
@@ -11,18 +11,18 @@ import {
 
 describe('billiards operations skills', () => {
   beforeEach(() => {
-    clearBundledSkills()
+    clearProductBundledSkills()
   })
 
   afterEach(() => {
-    clearBundledSkills()
+    clearProductBundledSkills()
   })
 
   it('registers task-oriented skills with plain Chinese desktop names', () => {
     registerBilliardsOperationsSkills()
     registerBilliardsOperationsSkills()
 
-    const descriptors = getBundledSkillDescriptors()
+    const descriptors = getProductBundledSkillDescriptors()
     expect(descriptors).toHaveLength(BILLIARDS_OPERATIONS_SKILLS.length)
     expect(descriptors.map(skill => skill.name)).toEqual([
       'venue-daily-review',
@@ -81,7 +81,7 @@ describe('billiards operations skills', () => {
   it('tells the Agent to hide technical choices and separate store facts', () => {
     registerBilliardsOperationsSkills()
 
-    const descriptors = getBundledSkillDescriptors()
+    const descriptors = getProductBundledSkillDescriptors()
     for (const skill of descriptors) {
       expect(skill.content).toContain('由 Agent 在内部选择模型、工具、Skill、文件格式和技术实现')
       expect(skill.content).toContain('每项经营事实标明门店、来源和观察时间')
@@ -93,18 +93,19 @@ describe('billiards operations skills', () => {
 
   it('routes saved and media results through real product tools', () => {
     registerBilliardsOperationsSkills()
-    const descriptors = getBundledSkillDescriptors()
+    const descriptors = getProductBundledSkillDescriptors()
     expect(descriptors.find(skill => skill.name === 'venue-staff-scheduling')?.allowedTools).toContain('Write')
-    expect(descriptors.find(skill => skill.name === 'venue-content-production')?.allowedTools).toContain('MediaWorkbench')
-    expect(descriptors.find(skill => skill.name === 'venue-campaign-planning')?.allowedTools).toContain('MediaWorkbench')
+    expect(descriptors.find(skill => skill.name === 'venue-content-production')?.allowedTools).not.toContain('MediaWorkbench')
+    expect(descriptors.find(skill => skill.name === 'venue-campaign-planning')?.allowedTools).not.toContain('MediaWorkbench')
   })
 
-  it('does not claim that campaign artwork exists before its workbench can run', () => {
+  it('keeps campaign artwork as a copyable brief outside the chat runtime', () => {
     const campaign = BILLIARDS_OPERATIONS_SKILLS.find(
       skill => skill.name === 'venue-campaign-planning',
     )
 
-    expect(campaign?.prompt).toContain('先确认“做海报和图片”工作台及其执行链真实可用')
+    expect(campaign?.prompt).toContain('可复制到生图工作台的图片 Brief')
+    expect(campaign?.prompt).toContain('聊天不创建、打开或操作媒体项目')
     expect(campaign?.prompt).toContain('未接线或无法生成时，只交付图片 Brief')
     expect(campaign?.prompt).toContain('不把草稿或成品写成已生成')
   })

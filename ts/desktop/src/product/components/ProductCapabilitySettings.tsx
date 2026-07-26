@@ -31,11 +31,11 @@ const STATE_LABELS: Record<Locale, Record<ProductCapabilityState, string>> = {
 }
 
 const REASON_LABELS: Record<Locale, Record<ProductCapabilityReasonCode, string>> = {
-  en: { installation_activation_required: 'Restart BilliardBuddy to renew this installation.', privacy_confirmation_required: 'Review and confirm the privacy scope before using this capability.', service_unreachable: 'The service could not be reached. Check the network and try again.', service_unavailable: 'This capability is not included in the current installation.', daily_quota_used: 'Today’s allowance has been used. It resets automatically.', media_tools_missing: 'The installed media tools are incomplete.', browser_extension_disconnected: 'Install the local connection and connect a supported Chrome page.', browser_bridge_failed: 'The recruiting browser connection needs to be repaired.' },
-  zh: { installation_activation_required: '请重启 BilliardBuddy，以续订当前安装身份。', privacy_confirmation_required: '使用前请查看并确认隐私范围。', service_unreachable: '暂时无法连接服务，请检查网络后重试。', service_unavailable: '当前安装版本未包含这项能力。', daily_quota_used: '今日额度已用完，将在重置时间自动恢复。', media_tools_missing: '当前安装包的媒体工具不完整。', browser_extension_disconnected: '请安装本机连接，并在 Chrome 中主动连接受支持页面。', browser_bridge_failed: '招聘浏览器连接需要修复。' },
-  'zh-TW': { installation_activation_required: '請重新啟動 BilliardBuddy，以更新目前安裝身分。', privacy_confirmation_required: '使用前請查看並確認隱私範圍。', service_unreachable: '暫時無法連線服務，請檢查網路後重試。', service_unavailable: '目前安裝版本未包含此能力。', daily_quota_used: '今日額度已用完，將在重設時間自動恢復。', media_tools_missing: '目前安裝包的媒體工具不完整。', browser_extension_disconnected: '請安裝本機連線，並在 Chrome 中主動連接受支援頁面。', browser_bridge_failed: '招募瀏覽器連線需要修復。' },
-  jp: { installation_activation_required: 'BilliardBuddy を再起動して、このインストールを更新してください。', privacy_confirmation_required: '使用前にプライバシー範囲を確認してください。', service_unreachable: 'サービスに接続できません。ネットワークを確認して再試行してください。', service_unavailable: '現在のインストールにはこの機能が含まれていません。', daily_quota_used: '本日の上限に達しました。リセット時刻に自動回復します。', media_tools_missing: 'インストール済みのメディアツールが不完全です。', browser_extension_disconnected: 'ローカル接続をインストールし、対応する Chrome ページを接続してください。', browser_bridge_failed: '採用ブラウザー接続の修復が必要です。' },
-  kr: { installation_activation_required: 'BilliardBuddy를 다시 시작해 설치 인증을 갱신하세요.', privacy_confirmation_required: '사용 전에 개인정보 범위를 확인하세요.', service_unreachable: '서비스에 연결할 수 없습니다. 네트워크를 확인하고 다시 시도하세요.', service_unavailable: '현재 설치에 이 기능이 포함되어 있지 않습니다.', daily_quota_used: '오늘 사용량을 모두 사용했습니다. 재설정 시각에 자동 복구됩니다.', media_tools_missing: '설치된 미디어 도구가 완전하지 않습니다.', browser_extension_disconnected: '로컬 연결을 설치하고 지원되는 Chrome 페이지를 연결하세요.', browser_bridge_failed: '채용 브라우저 연결을 복구해야 합니다.' },
+  en: { installation_activation_required: 'Restart BilliardBuddy to renew this installation.', service_unreachable: 'The service could not be reached. Check the network and try again.', service_unavailable: 'This capability is not included in the current installation.', daily_quota_used: 'Today’s allowance has been used. It resets automatically.', media_tools_missing: 'The installed media tools are incomplete.', browser_extension_disconnected: 'Install the local connection and connect a supported Chrome page.', browser_bridge_failed: 'The recruiting browser connection needs to be repaired.' },
+  zh: { installation_activation_required: '请重启 BilliardBuddy，以续订当前安装身份。', service_unreachable: '暂时无法连接服务，请检查网络后重试。', service_unavailable: '当前安装版本未包含这项能力。', daily_quota_used: '今日额度已用完，将在重置时间自动恢复。', media_tools_missing: '当前安装包的媒体工具不完整。', browser_extension_disconnected: '请安装本机连接，并在 Chrome 中主动连接受支持页面。', browser_bridge_failed: '招聘浏览器连接需要修复。' },
+  'zh-TW': { installation_activation_required: '請重新啟動 BilliardBuddy，以更新目前安裝身分。', service_unreachable: '暫時無法連線服務，請檢查網路後重試。', service_unavailable: '目前安裝版本未包含此能力。', daily_quota_used: '今日額度已用完，將在重設時間自動恢復。', media_tools_missing: '目前安裝包的媒體工具不完整。', browser_extension_disconnected: '請安裝本機連線，並在 Chrome 中主動連接受支援頁面。', browser_bridge_failed: '招募瀏覽器連線需要修復。' },
+  jp: { installation_activation_required: 'BilliardBuddy を再起動して、このインストールを更新してください。', service_unreachable: 'サービスに接続できません。ネットワークを確認して再試行してください。', service_unavailable: '現在のインストールにはこの機能が含まれていません。', daily_quota_used: '本日の上限に達しました。リセット時刻に自動回復します。', media_tools_missing: 'インストール済みのメディアツールが不完全です。', browser_extension_disconnected: 'ローカル接続をインストールし、対応する Chrome ページを接続してください。', browser_bridge_failed: '採用ブラウザー接続の修復が必要です。' },
+  kr: { installation_activation_required: 'BilliardBuddy를 다시 시작해 설치 인증을 갱신하세요.', service_unreachable: '서비스에 연결할 수 없습니다. 네트워크를 확인하고 다시 시도하세요.', service_unavailable: '현재 설치에 이 기능이 포함되어 있지 않습니다.', daily_quota_used: '오늘 사용량을 모두 사용했습니다. 재설정 시각에 자동 복구됩니다.', media_tools_missing: '설치된 미디어 도구가 완전하지 않습니다.', browser_extension_disconnected: '로컬 연결을 설치하고 지원되는 Chrome 페이지를 연결하세요.', browser_bridge_failed: '채용 브라우저 연결을 복구해야 합니다.' },
 }
 
 const SHELL_COPY: Record<Locale, { intro: string; loading: string; error: string; retry: string; remaining: string; reset: string; privacy: string; update: string; browser: string; restart: string; wait: string; updated: string }> = {
@@ -47,7 +47,6 @@ const SHELL_COPY: Record<Locale, { intro: string; loading: string; error: string
 }
 
 function repairLabel(action: ProductCapabilityRepairAction, copy: typeof SHELL_COPY[Locale]): string {
-  if (action === 'open_privacy') return copy.privacy
   if (action === 'check_update') return copy.update
   if (action === 'install_recruiting_browser') return copy.browser
   if (action === 'restart_app') return copy.restart
@@ -79,9 +78,8 @@ export function ProductCapabilitySettings() {
   }, [refresh])
 
   const repair = async (action: ProductCapabilityRepairAction) => {
-    if (action === 'open_privacy') return setActiveTab('privacy')
     if (action === 'check_update') return setActiveTab('about')
-    if (action === 'install_recruiting_browser') return setActiveTab('computerUse')
+    if (action === 'install_recruiting_browser') return setActiveTab('recruitingBrowser')
     setBusyAction(action)
     try {
       if (action === 'restart_app') {

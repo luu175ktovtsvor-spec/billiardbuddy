@@ -1,8 +1,8 @@
 /**
  * Controlled real-upstream validation for the MiMo 64-slot reservation.
  *
- * The default wave is deliberately fixed to the production split: 48 native
- * MiMo streams plus 16 DeepSeek -> MiMo image-bridge requests.  It never runs
+ * The default wave is deliberately fixed to the production split: 48
+ * MediaReasoning streams plus 16 DeepSeek -> MiMo image-bridge requests. It never runs
  * without --execute, never prints credentials/request bodies/model output, and
  * caps the whole run at 64 requests / 16 generated images so it cannot become
  * a disguised 500-image load test.
@@ -10,7 +10,7 @@
 
 import { generatedPng, validatePng } from './vision-real-loadtest'
 
-export const DEFAULT_NATIVE_SLOTS = 48
+export const DEFAULT_MEDIA_SLOTS = 48
 export const DEFAULT_VISION_SLOTS = 16
 const MAX_TOTAL_REQUESTS = 64
 const MAX_VISION_REQUESTS = 16
@@ -21,7 +21,7 @@ type Capacity = {
   active?: number
   queued?: number
   maxConcurrent?: number
-  nativeReserved?: number
+  mediaReserved?: number
   visionReserved?: number
 }
 
@@ -32,7 +32,7 @@ type VisionCapacity = Capacity & {
 export type GatewayHealth = {
   capacity?: {
     mimo?: Capacity
-    mimo_native?: Capacity
+    mimo_media?: Capacity
     mimo_total?: Capacity
     vision?: VisionCapacity
   }
@@ -45,12 +45,12 @@ export type LoadTarget = {
 }
 
 export type MixedShape = {
-  nativeSlots: number
+  mediaSlots: number
   visionSlots: number
   totalSlots: number
 }
 
-type Lane = 'native' | 'bridge'
+type Lane = 'media' | 'bridge'
 
 type RequestResult = {
   lane: Lane
@@ -67,20 +67,19 @@ type ObservedCapacity = {
   limit: number
 }
 
-type ObservedHealth = Record<'mimo' | 'mimo_native' | 'mimo_total' | 'vision', ObservedCapacity>
+type ObservedHealth = Record<'mimo' | 'mimo_media' | 'mimo_total' | 'vision', ObservedCapacity>
 
 function usage(exitCode = 2): never {
   console.error(`Usage:
-  QF_LOADTEST_URL=https://gateway.example/gw \\
-  QF_LOADTEST_TOKEN=<installation-access-token> \\
-  QF_LOADTEST_CONSENT_RECEIPT=<64-hex-consent-receipt> \\
+  BB_LOADTEST_URL=https://gateway.example/gw \\
+  BB_LOADTEST_TOKEN=<installation-access-token> \\
   bun gateway/mimo-mixed-real-loadtest.ts --execute [options]
 
 Options:
-  --native-slots=<n>          Native MiMo requests and expected native reservation (default: 48)
+  --media-slots=<n>          MediaReasoning requests and expected reservation (default: 48)
   --vision-slots=<n>          Unique bridge-image requests and expected vision reservation (default: 16, max: 16)
   --thinking=enabled|disabled Downstream DeepSeek thinking mode (default: enabled)
-  --native-max-tokens=<n>     Native stream token cap (default: 64, max: 128)
+  --media-max-tokens=<n>     Media stream token cap (default: 64, max: 128)
   --bridge-max-tokens=<n>     Bridge downstream token cap (default: 256, max: 512)
   --image-seed=<n>            Unique PNG seed (default: current time)
   --timeout-ms=<n>            Per-request deadline (default: 180000)
@@ -109,14 +108,14 @@ function positiveInteger(value: string | undefined, name: string, fallback: numb
   return parsed
 }
 
-export function parseMixedShape(nativeRaw: string | undefined, visionRaw: string | undefined): MixedShape {
-  const nativeSlots = positiveInteger(nativeRaw, '--native-slots', DEFAULT_NATIVE_SLOTS, MAX_TOTAL_REQUESTS)
+export function parseMixedShape(mediaRaw: string | undefined, visionRaw: string | undefined): MixedShape {
+  const mediaSlots = positiveInteger(mediaRaw, '--media-slots', DEFAULT_MEDIA_SLOTS, MAX_TOTAL_REQUESTS)
   const visionSlots = positiveInteger(visionRaw, '--vision-slots', DEFAULT_VISION_SLOTS, MAX_VISION_REQUESTS)
-  const totalSlots = nativeSlots + visionSlots
+  const totalSlots = mediaSlots + visionSlots
   if (totalSlots > MAX_TOTAL_REQUESTS) {
-    throw new Error(`--native-slots plus --vision-slots must not exceed ${MAX_TOTAL_REQUESTS}`)
+    throw new Error(`--media-slots plus --vision-slots must not exceed ${MAX_TOTAL_REQUESTS}`)
   }
-  return { nativeSlots, visionSlots, totalSlots }
+  return { mediaSlots, visionSlots, totalSlots }
 }
 
 export function parseThinkingMode(value: string | undefined): 'enabled' | 'disabled' {
@@ -141,16 +140,16 @@ export function parseLoadTarget(raw: string): LoadTarget {
   try {
     base = new URL(raw)
   } catch {
-    throw new Error('QF_LOADTEST_URL must be an absolute HTTP(S) URL')
+    throw new Error('BB_LOADTEST_URL must be an absolute HTTP(S) URL')
   }
   if (base.protocol !== 'http:' && base.protocol !== 'https:') {
-    throw new Error('QF_LOADTEST_URL must be an absolute HTTP(S) URL')
+    throw new Error('BB_LOADTEST_URL must be an absolute HTTP(S) URL')
   }
   if (base.username || base.password || base.search || base.hash || raw.includes('?') || raw.includes('#')) {
-    throw new Error('QF_LOADTEST_URL must not include credentials, a query, or a fragment')
+    throw new Error('BB_LOADTEST_URL must not include credentials, a query, or a fragment')
   }
   if (base.protocol === 'http:' && !isHttpLoopback(base)) {
-    throw new Error('QF_LOADTEST_URL requires HTTPS unless it is a loopback HTTP target')
+    throw new Error('BB_LOADTEST_URL requires HTTPS unless it is a loopback HTTP target')
   }
   const path = base.pathname.replace(/\/+$/, '')
   return {
@@ -183,7 +182,7 @@ function capacityView(capacity: Capacity | VisionCapacity | undefined): Observed
 function emptyObservedHealth(): ObservedHealth {
   return {
     mimo: { active: 0, queued: 0, maxConcurrent: 0, limit: 0 },
-    mimo_native: { active: 0, queued: 0, maxConcurrent: 0, limit: 0 },
+    mimo_media: { active: 0, queued: 0, maxConcurrent: 0, limit: 0 },
     mimo_total: { active: 0, queued: 0, maxConcurrent: 0, limit: 0 },
     vision: { active: 0, queued: 0, maxConcurrent: 0, limit: 0 },
   }
@@ -191,7 +190,7 @@ function emptyObservedHealth(): ObservedHealth {
 
 function observe(target: ObservedHealth, health: GatewayHealth | null): void {
   const capacity = health?.capacity
-  for (const name of ['mimo', 'mimo_native', 'mimo_total', 'vision'] as const) {
+  for (const name of ['mimo', 'mimo_media', 'mimo_total', 'vision'] as const) {
     const incoming = capacityView(capacity?.[name])
     target[name].active = Math.max(target[name].active, incoming.active)
     target[name].queued = Math.max(target[name].queued, incoming.queued)
@@ -204,21 +203,21 @@ function observe(target: ObservedHealth, health: GatewayHealth | null): void {
 export function reservationHealthErrors(health: GatewayHealth | null, shape: MixedShape): string[] {
   const capacity = health?.capacity
   const mimo = capacity?.mimo
-  const native = capacity?.mimo_native
+  const media = capacity?.mimo_media
   const total = capacity?.mimo_total
   const vision = capacity?.vision
   const errors: string[] = []
-  if (!mimo || !native || !total || !vision) return ['authenticated health is missing one or more MiMo capacity views']
+  if (!mimo || !media || !total || !vision) return ['authenticated health is missing one or more MiMo capacity views']
   const expect = (actual: number | undefined, expected: number, label: string) => {
     if (value(actual) !== expected) errors.push(`${label}=${value(actual)} (expected ${expected})`)
   }
   expect(mimo.maxConcurrent, shape.totalSlots, 'mimo.maxConcurrent')
   expect(total.maxConcurrent, shape.totalSlots, 'mimo_total.maxConcurrent')
-  expect(native.maxConcurrent, shape.nativeSlots, 'mimo_native.maxConcurrent')
+  expect(media.maxConcurrent, shape.mediaSlots, 'mimo_media.maxConcurrent')
   expect(vision.limit, shape.visionSlots, 'vision.limit')
-  expect(mimo.nativeReserved, shape.nativeSlots, 'mimo.nativeReserved')
+  expect(mimo.mediaReserved, shape.mediaSlots, 'mimo.mediaReserved')
   expect(mimo.visionReserved, shape.visionSlots, 'mimo.visionReserved')
-  expect(total.nativeReserved, shape.nativeSlots, 'mimo_total.nativeReserved')
+  expect(total.mediaReserved, shape.mediaSlots, 'mimo_total.mediaReserved')
   expect(total.visionReserved, shape.visionSlots, 'mimo_total.visionReserved')
   return errors
 }
@@ -227,7 +226,7 @@ export function reservationHealthErrors(health: GatewayHealth | null, shape: Mix
 export function idleHealthErrors(health: GatewayHealth | null): string[] {
   const capacity = health?.capacity
   const errors: string[] = []
-  for (const name of ['mimo', 'mimo_native', 'mimo_total', 'vision'] as const) {
+  for (const name of ['mimo', 'mimo_media', 'mimo_total', 'vision'] as const) {
     const snapshot = capacity?.[name]
     if (!snapshot) {
       errors.push(`${name} is unavailable`)
@@ -243,7 +242,7 @@ export function idleHealthErrors(health: GatewayHealth | null): string[] {
 /** A successful wave must leave every authenticated MiMo capacity view explicitly at zero. */
 export function isMiMoCapacityDrained(health: GatewayHealth | null): boolean {
   const capacity = health?.capacity
-  return ['mimo', 'mimo_native', 'mimo_total', 'vision'].every(name => {
+  return ['mimo', 'mimo_media', 'mimo_total', 'vision'].every(name => {
     const snapshot = capacity?.[name as keyof NonNullable<GatewayHealth['capacity']>]
     return snapshot !== undefined
       && Number.isFinite(snapshot.active)
@@ -259,7 +258,7 @@ export function observedReservationErrors(observed: ObservedHealth, shape: Mixed
   const expected: Array<[keyof ObservedHealth, number]> = [
     ['mimo', shape.totalSlots],
     ['mimo_total', shape.totalSlots],
-    ['mimo_native', shape.nativeSlots],
+    ['mimo_media', shape.mediaSlots],
     ['vision', shape.visionSlots],
   ]
   for (const [name, active] of expected) {
@@ -390,19 +389,14 @@ async function main(): Promise<void> {
     usage()
   }
 
-  const rawBaseUrl = process.env.QF_LOADTEST_URL?.trim()
-  if (!rawBaseUrl) throw new Error('QF_LOADTEST_URL is required with --execute')
+  const rawBaseUrl = process.env.BB_LOADTEST_URL?.trim()
+  if (!rawBaseUrl) throw new Error('BB_LOADTEST_URL is required with --execute')
   const { base, baseUrl, targetOrigin } = parseLoadTarget(rawBaseUrl)
-  const token = process.env.QF_LOADTEST_TOKEN?.trim()
-  if (!token) throw new Error('QF_LOADTEST_TOKEN installation access token is required with --execute')
-  const consentReceiptId = process.env.QF_LOADTEST_CONSENT_RECEIPT?.trim() ?? ''
-  if (!/^[a-f0-9]{64}$/.test(consentReceiptId)) {
-    throw new Error('QF_LOADTEST_CONSENT_RECEIPT must be a 64-character lowercase hex receipt')
-  }
-
-  const shape = parseMixedShape(option(args, '--native-slots'), option(args, '--vision-slots'))
+  const token = process.env.BB_LOADTEST_TOKEN?.trim()
+  if (!token) throw new Error('BB_LOADTEST_TOKEN installation access token is required with --execute')
+  const shape = parseMixedShape(option(args, '--media-slots'), option(args, '--vision-slots'))
   const thinking = parseThinkingMode(option(args, '--thinking'))
-  const nativeMaxTokens = positiveInteger(option(args, '--native-max-tokens'), '--native-max-tokens', 64, 128)
+  const mediaMaxTokens = positiveInteger(option(args, '--media-max-tokens'), '--media-max-tokens', 64, 128)
   const bridgeMaxTokens = positiveInteger(option(args, '--bridge-max-tokens'), '--bridge-max-tokens', 256, 512)
   const imageSeed = positiveInteger(option(args, '--image-seed'), '--image-seed', Date.now())
   const timeoutMs = positiveInteger(option(args, '--timeout-ms'), '--timeout-ms', 180_000, 600_000)
@@ -412,7 +406,6 @@ async function main(): Promise<void> {
   const headers = {
     Authorization: `Bearer ${token}`,
     'Content-Type': 'application/json',
-    'X-BB-Data-Egress-Consent': consentReceiptId,
     'X-BB-Provider-Protocol': PROVIDER_GATEWAY_PROTOCOL,
   }
   const bridgeImages = Array.from({ length: shape.visionSlots }, (_, index) => uniquePngDataUrl(imageSeed, index))
@@ -464,21 +457,25 @@ async function main(): Promise<void> {
     return { promise, release: () => release?.() }
   })()
 
-  async function runNative(index: number): Promise<RequestResult> {
+  async function runMedia(index: number): Promise<RequestResult> {
     await startGate.promise
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), timeoutMs)
     const started = performance.now()
     try {
-      const response = await fetch(`${baseUrl}/v1/chat/completions`, {
+      const response = await fetch(`${baseUrl}/v1/media/reasoning`, {
         method: 'POST',
-        headers: { ...headers, 'X-QF-Client-ID': `mixed-native-${String(index).padStart(3, '0')}` },
+        headers: {
+          ...headers,
+          'X-BB-Installation-ID': `mixed-media-${String(index).padStart(3, '0')}`,
+          'X-BB-Operation-ID': `mixed-media-operation-${String(index).padStart(3, '0')}`,
+        },
         redirect: 'error',
         signal: controller.signal,
         body: JSON.stringify({
           model: 'mimo-v2.5',
           stream: true,
-          max_tokens: nativeMaxTokens,
+          max_tokens: mediaMaxTokens,
           thinking: { type: 'disabled' },
           temperature: 0,
           messages: [{ role: 'user', content: '请逐行输出从 1 到 16 的整数，不要加任何解释。' }],
@@ -486,11 +483,11 @@ async function main(): Promise<void> {
       })
       if (!response.ok) {
         await cancelResponseBody(response)
-        return { lane: 'native', status: response.status, totalMs: Math.round(performance.now() - started), completed: false, failure: `http_${response.status}` }
+        return { lane: 'media', status: response.status, totalMs: Math.round(performance.now() - started), completed: false, failure: `http_${response.status}` }
       }
       if (response.headers.get('content-type')?.split(';', 1)[0]?.trim().toLowerCase() !== 'text/event-stream') {
         await cancelResponseBody(response)
-        return { lane: 'native', status: response.status, totalMs: Math.round(performance.now() - started), completed: false, failure: 'unexpected_content_type' }
+        return { lane: 'media', status: response.status, totalMs: Math.round(performance.now() - started), completed: false, failure: 'unexpected_content_type' }
       }
       const reader = response.body?.getReader()
       const detector = new SseDoneDetector()
@@ -512,7 +509,7 @@ async function main(): Promise<void> {
       }
       const completed = sawChunk && detector.completed()
       return {
-        lane: 'native',
+        lane: 'media',
         status: response.status,
         totalMs: Math.round(performance.now() - started),
         completed,
@@ -520,7 +517,7 @@ async function main(): Promise<void> {
       }
     } catch {
       return {
-        lane: 'native',
+        lane: 'media',
         status: 0,
         totalMs: Math.round(performance.now() - started),
         completed: false,
@@ -539,7 +536,7 @@ async function main(): Promise<void> {
     try {
       const response = await fetch(`${baseUrl}/v1/chat/completions`, {
         method: 'POST',
-        headers: { ...headers, 'X-QF-Client-ID': `mixed-vision-${String(index).padStart(3, '0')}` },
+        headers: { ...headers, 'X-BB-Installation-ID': `mixed-vision-${String(index).padStart(3, '0')}` },
         redirect: 'error',
         signal: controller.signal,
         body: JSON.stringify({
@@ -611,41 +608,41 @@ async function main(): Promise<void> {
       await sleep(Math.max(0, healthIntervalMs - (performance.now() - started)))
     }
   })()
-  const nativeTasks = Array.from({ length: shape.nativeSlots }, (_, index) => runNative(index))
+  const mediaTasks = Array.from({ length: shape.mediaSlots }, (_, index) => runMedia(index))
   const bridgeTasks = Array.from({ length: shape.visionSlots }, (_, index) => runBridge(index))
   console.log(JSON.stringify({
     event: 'mimo_mixed_loadtest_start',
     targetOrigin,
-    nativeSlots: shape.nativeSlots,
+    mediaSlots: shape.mediaSlots,
     visionSlots: shape.visionSlots,
     totalSlots: shape.totalSlots,
     bridgeImages: shape.visionSlots,
     thinking,
   }))
   startGate.release()
-  const [nativeResults, bridgeResults] = await Promise.all([Promise.all(nativeTasks), Promise.all(bridgeTasks)])
+  const [mediaResults, bridgeResults] = await Promise.all([Promise.all(mediaTasks), Promise.all(bridgeTasks)])
   monitoring = false
   await monitor
   const drain = await waitForDrain()
   const finalHealth = drain.snapshot
 
-  const allResults = [...nativeResults, ...bridgeResults]
+  const allResults = [...mediaResults, ...bridgeResults]
   const errors = [
     ...observedReservationErrors(observed, shape),
     ...(drain.drained ? [] : [`MiMo capacity did not drain within ${drainTimeoutMs}ms`]),
   ]
   if (unavailableHealthSamples > 0) errors.push(`health unavailable for ${unavailableHealthSamples} sample(s)`)
-  if (allResults.some(result => !result.completed)) errors.push('one or more native or bridge requests did not complete')
+  if (allResults.some(result => !result.completed)) errors.push('one or more media or bridge requests did not complete')
 
   console.log(JSON.stringify({
     event: 'mimo_mixed_loadtest_result',
     targetOrigin,
-    native: {
-      requested: nativeResults.length,
-      succeeded: nativeResults.filter(result => result.completed).length,
-      statuses: countStatuses(nativeResults),
-      failures: countFailures(nativeResults),
-      totalMs: percentiles(nativeResults),
+    media: {
+      requested: mediaResults.length,
+      succeeded: mediaResults.filter(result => result.completed).length,
+      statuses: countStatuses(mediaResults),
+      failures: countFailures(mediaResults),
+      totalMs: percentiles(mediaResults),
     },
     bridge: {
       requested: bridgeResults.length,

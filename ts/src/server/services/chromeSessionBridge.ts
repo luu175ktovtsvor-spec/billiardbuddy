@@ -271,6 +271,17 @@ export class ChromeSessionBridge {
       .map(publicAction), false)
   }
 
+  async purgeTaskActions(taskId: string): Promise<void> {
+    if (!SAFE_ID.test(taskId)) throw new Error('BROWSER_ACTION_INVALID')
+    await this.reconcileTimedOutDispatches()
+    await this.mutate(state => {
+      const actions = Object.values(state.actions).filter(action => action.task_id === taskId)
+      if (actions.some(action => !TERMINAL_STATES.has(action.state))) throw new Error('BROWSER_ACTION_ACTIVE')
+      for (const action of actions) delete state.actions[action.id]
+    })
+    await this.options.scheduler.purgeOwnerJobs(taskId)
+  }
+
   async getAction(taskId: string, actionId: string): Promise<PublicRecruitingAction | undefined> {
     if (!SAFE_ID.test(taskId) || !SAFE_ID.test(actionId)) return undefined
     await this.reconcileTimedOutDispatches()

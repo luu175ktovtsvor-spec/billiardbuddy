@@ -28,9 +28,9 @@
         "dist/**",
         "electron-dist/**",
         "node_modules/node-pty/**",
-        "src-tauri/binaries/**",
-        "src-tauri/icons/**",
-        "src-tauri/resources/preview-agent.js",
+        "runtime-assets/binaries/**",
+        "runtime-assets/icons/**",
+        "runtime-assets/resources/preview-agent.js",
         "package.json"
       ],
       "extra_resources": [
@@ -90,19 +90,31 @@
       },
       {
         "name": "gateway-adapter",
-        "entry": "ts/src/server/services/qfGatewayProvider.ts",
+        "entry": "ts/src/server/product/productGatewayRuntime.ts",
         "kind": "remote_gateway_adapter",
         "consumers": [
-          "ts/src/server/services/mediaProjectService.ts"
+          "ts/src/server/agent-worker/productModelRuntime.ts",
+          "ts/src/server/services/mediaProjectService.ts",
+          "ts/src/server/services/imageReasoning.ts",
+          "ts/src/server/services/videoAnalysis.ts"
         ]
       },
       {
-        "name": "relay-adapter",
-        "entry": "ts/src/upstreamproxy/relay.ts",
-        "kind": "remote_relay_adapter",
+        "name": "gateway-service",
+        "entry": "gateway/app.ts",
+        "kind": "remote_gateway_service",
         "consumers": [
-          "ts/src/server/services/qfGatewayProvider.ts",
-          "ts/src/server/services/mediaProjectService.ts"
+          "gateway/deploy.sh",
+          "ts/src/server/product/productGatewayRuntime.ts"
+        ]
+      },
+      {
+        "name": "relay-service",
+        "entry": "relay/app.ts",
+        "kind": "remote_relay_service",
+        "consumers": [
+          "gateway/app.ts",
+          "relay/deploy.sh"
         ]
       }
     ],
@@ -232,21 +244,10 @@
     },
     {
       "id": "provider-root-v1-legacy-index-to-provider-index-v2",
-      "status": "supported",
+      "status": "unsupported",
       "storage_id": "provider-index",
       "layer": "disk",
-      "physical_location": "CLAUDE_CONFIG_DIR/providers.json to CLAUDE_CONFIG_DIR/billiardbuddy/providers.json",
-      "from": "root-v1-legacy-index",
-      "to": "provider-index-v2",
-      "reader_entry": "ts/src/server/services/persistentStorageMigrations.ts",
-      "migration_owner_module": "04",
-      "fixture": "ts/product-contracts/fixtures/provider-root-v1-legacy-index.json",
-      "positive_test": "ts/tests/product-contracts/legacy-reader-migrations.test.ts",
-      "idempotence_test": "ts/tests/product-contracts/legacy-reader-migrations.test.ts",
-      "backup_strategy": "existing-before-migration-backup; module-22-policy-governs-release-migration",
-      "release_association": "first-versioned-migration-release",
-      "positive_test_id": "provider-root-v1-legacy-index-to-provider-index-v2:positive",
-      "idempotence_test_id": "provider-root-v1-legacy-index-to-provider-index-v2:idempotence"
+      "reason": "Provider selection and credentials are managed by the product Gateway. The desktop has no provider-index consumer and leaves an old root providers.json untouched instead of importing it into a second product state."
     },
     {
       "id": "managed-settings-tested-fields",
@@ -256,11 +257,19 @@
       "reason": "Current field normalizers lack a versioned immutable fixture, positive/idempotence migration test, backup contract, and release evidence."
     },
     {
-      "id": "cron-tested-fields",
-      "status": "unsupported",
+      "id": "cron-disk-v0-legacy-fields-to-v1",
+      "status": "supported",
       "storage_id": "cron",
       "layer": "disk",
-      "reason": "No versioned immutable fixture, reader/migration test, backup contract, or release evidence is registered."
+      "fixture": "ts/product-contracts/fixtures/cron-disk-v0-legacy-fields.json",
+      "reader_entry": "ts/src/server/services/cronService.ts",
+      "positive_test": "ts/tests/product-contracts/legacy-reader-migrations.test.ts",
+      "idempotence_test": "ts/tests/product-contracts/legacy-reader-migrations.test.ts",
+      "backup_strategy": "product-storage-v3-versioned-backup-before-write",
+      "release_association": "first-versioned-migration-release",
+      "migration_owner_module": "product-storage-v3",
+      "positive_test_id": "cron-disk-v0-legacy-fields-to-v1:positive",
+      "idempotence_test_id": "cron-disk-v0-legacy-fields-to-v1:idempotence"
     },
     {
       "id": "ordinary-settings-history",
@@ -284,11 +293,19 @@
       "reason": "No legacy persisted schema is evidenced."
     },
     {
-      "id": "cron-run-log-history",
-      "status": "unsupported",
+      "id": "cron-run-log-v0-private-runtime-fields-to-v1",
+      "status": "supported",
       "storage_id": "cron-run-log",
       "layer": "disk",
-      "reason": "No versioned immutable fixture is registered."
+      "fixture": "ts/product-contracts/fixtures/cron-run-log-v0-private-runtime-fields.json",
+      "reader_entry": "ts/src/server/services/cronScheduler.ts",
+      "positive_test": "ts/tests/product-contracts/legacy-reader-migrations.test.ts",
+      "idempotence_test": "ts/tests/product-contracts/legacy-reader-migrations.test.ts",
+      "backup_strategy": "product-storage-v3-versioned-backup-before-write",
+      "release_association": "first-versioned-migration-release",
+      "migration_owner_module": "product-storage-v3",
+      "positive_test_id": "cron-run-log-v0-private-runtime-fields-to-v1:positive",
+      "idempotence_test_id": "cron-run-log-v0-private-runtime-fields-to-v1:idempotence"
     },
     {
       "id": "desktop-localstorage-history",
@@ -432,95 +449,6 @@
       "retained_reader": "reader, ID/revision/sequence mapping, and fixtures"
     },
     {
-      "object_id": "product-instructions-outer-injection",
-      "edges": [
-        {
-          "object": {
-            "id": "product-instructions-outer-injection",
-            "symbol": "prepareProductInstructionsFile",
-            "definition": {
-              "path": "ts/src/server/services/productInstructions.ts",
-              "text": "export function prepareProductInstructionsFile(workDir: string): string | null {"
-            }
-          },
-          "consumer": {
-            "path": "ts/src/server/services/conversationService.ts",
-            "symbol": "prepareProductInstructionsFile",
-            "reference": {
-              "kind": "import",
-              "text": "import { prepareProductInstructionsFile } from './productInstructions.js'"
-            }
-          },
-          "condition": "D4 may remove this exact consumer only after the listed migration modules are accepted and the retained reader remains reachable."
-        }
-      ],
-      "migration_modules": [
-        "05"
-      ],
-      "d4_owner_module": "23",
-      "retained_reader": "native resolver and legacy files"
-    },
-    {
-      "object_id": "public-cli-tui-ink-repl-doctor-bin-help-publish",
-      "edges": [
-        {
-          "object": {
-            "id": "public-cli-tui-ink-repl-doctor-bin-help-publish",
-            "symbol": "main",
-            "definition": {
-              "path": "ts/src/main.tsx",
-              "text": "export async function main() {"
-            }
-          },
-          "consumer": {
-            "path": "ts/src/entrypoints/cli.tsx",
-            "symbol": "cliMain",
-            "reference": {
-              "kind": "dynamic_import",
-              "text": "  const {\n    main: cliMain\n  } = await import('../main.js');"
-            }
-          },
-          "condition": "D4 may remove this exact consumer only after the listed migration modules are accepted and the retained reader remains reachable."
-        }
-      ],
-      "migration_modules": [
-        "03",
-        "17"
-      ],
-      "d4_owner_module": "23",
-      "retained_reader": "internal agent-worker, native-host mode, Core handler"
-    },
-    {
-      "object_id": "qwen-executable-runtime",
-      "edges": [
-        {
-          "object": {
-            "id": "qwen-executable-runtime",
-            "symbol": "QwenRequestError",
-            "definition": {
-              "path": "gateway/qwenChat.ts",
-              "text": "export class QwenRequestError extends Error {"
-            }
-          },
-          "consumer": {
-            "path": "gateway/qwenChat.test.ts",
-            "symbol": "QwenRequestError",
-            "reference": {
-              "kind": "import",
-              "text": "import {\n  fetchQwenWithRetry,\n  loadQwenAllowedModels,\n  prepareQwenChatBody,\n  QwenRequestError,\n} from './qwenChat'"
-            }
-          },
-          "condition": "BB-04C leaves only this test-only executable consumer; Gateway runtime consumers are zero and the D3 mapper remains reachable for Module 22."
-        }
-      ],
-      "migration_modules": [
-        "04",
-        "22"
-      ],
-      "d4_owner_module": "23",
-      "retained_reader": "gateway/qwenLegacyModelMapper.ts (pure D3 value mapper)"
-    },
-    {
       "object_id": "whisper-old-asr-runtime",
       "edges": [
         {
@@ -548,164 +476,6 @@
       ],
       "d4_owner_module": "23",
       "retained_reader": "pure legacy value mapper"
-    },
-    {
-      "object_id": "desktop-computer-use",
-      "edges": [
-        {
-          "object": {
-            "id": "desktop-computer-use",
-            "symbol": "ComputerExecutor",
-            "definition": {
-              "path": "ts/src/vendor/computer-use-mcp/executor.ts",
-              "text": "export interface ComputerExecutor {"
-            }
-          },
-          "consumer": {
-            "path": "ts/src/utils/computerUse/executor.ts",
-            "symbol": "ComputerExecutor",
-            "reference": {
-              "kind": "import",
-              "text": "import type {\n  ComputerExecutor,\n  DisplayGeometry,\n  FrontmostApp,\n  InstalledApp,\n  ResolvePrepareCaptureResult,\n  RunningApp,\n  ScreenshotResult,\n} from '../../vendor/computer-use-mcp/index.js'"
-            }
-          },
-          "condition": "D4 may remove this exact consumer only after the listed migration modules are accepted and the retained reader remains reachable."
-        }
-      ],
-      "migration_modules": [
-        "18",
-        "21"
-      ],
-      "d4_owner_module": "23",
-      "retained_reader": "BrowserCapability, MiMo visual evidence, Core Tool/MCP"
-    },
-    {
-      "object_id": "websearch-tavily-brave-native-search",
-      "edges": [
-        {
-          "object": {
-            "id": "websearch-tavily-brave-native-search",
-            "symbol": "WebSearchTool",
-            "definition": {
-              "path": "ts/src/tools/WebSearchTool/WebSearchTool.ts",
-              "text": "export const WebSearchTool = buildTool({"
-            }
-          },
-          "consumer": {
-            "path": "ts/src/tools.ts",
-            "symbol": "WebSearchTool",
-            "reference": {
-              "kind": "import",
-              "text": "import { WebSearchTool } from './tools/WebSearchTool/WebSearchTool.js'"
-            }
-          },
-          "condition": "D4 may remove this exact consumer only after the listed migration modules are accepted and the retained reader remains reachable."
-        }
-      ],
-      "migration_modules": [
-        "21"
-      ],
-      "d4_owner_module": "23",
-      "retained_reader": "WebFetch and BrowserCapability"
-    },
-    {
-      "object_id": "autodream-teammem",
-      "edges": [
-        {
-          "object": {
-            "id": "autodream-teammem",
-            "symbol": "initAutoDream",
-            "definition": {
-              "path": "ts/src/services/autoDream/autoDream.ts",
-              "text": "export function initAutoDream(): void {"
-            }
-          },
-          "consumer": {
-            "path": "ts/src/utils/backgroundHousekeeping.ts",
-            "symbol": "initAutoDream",
-            "reference": {
-              "kind": "import",
-              "text": "import { initAutoDream } from '../services/autoDream/autoDream.js'"
-            }
-          },
-          "condition": "D4 may remove this exact consumer only after the listed migration modules are accepted and the retained reader remains reachable."
-        },
-        {
-          "object": {
-            "id": "autodream-teammem",
-            "symbol": "checkTeamMemSecrets",
-            "definition": {
-              "path": "ts/src/services/teamMemorySync/teamMemSecretGuard.ts",
-              "text": "export function checkTeamMemSecrets("
-            }
-          },
-          "consumer": {
-            "path": "ts/src/tools/FileWriteTool/FileWriteTool.ts",
-            "symbol": "checkTeamMemSecrets",
-            "reference": {
-              "kind": "import",
-              "text": "import { checkTeamMemSecrets } from '../../services/teamMemorySync/teamMemSecretGuard.js'"
-            }
-          },
-          "condition": "D4 may remove this exact consumer only after the listed migration modules are accepted and the retained reader remains reachable."
-        }
-      ],
-      "migration_modules": [
-        "05",
-        "21"
-      ],
-      "d4_owner_module": "23",
-      "retained_reader": "necessary migration mapping only"
-    },
-    {
-      "object_id": "media-chat-bridge",
-      "edges": [
-        {
-          "object": {
-            "id": "media-chat-bridge",
-            "symbol": "ProductTaskInlineMedia",
-            "definition": {
-              "path": "ts/desktop/src/product/components/ProductTaskInlineMedia.tsx",
-              "text": "export function ProductTaskInlineMedia({"
-            }
-          },
-          "consumer": {
-            "path": "ts/desktop/src/product/components/ProductTaskPage.tsx",
-            "symbol": "ProductTaskInlineMedia",
-            "reference": {
-              "kind": "jsx",
-              "text": "<ProductTaskInlineMedia"
-            }
-          },
-          "condition": "D4 may remove this exact consumer only after the listed migration modules are accepted and the retained reader remains reachable."
-        },
-        {
-          "object": {
-            "id": "media-chat-bridge",
-            "symbol": "ProductTaskMediaService",
-            "definition": {
-              "path": "ts/src/server/product/taskMediaService.ts",
-              "text": "export class ProductTaskMediaService {"
-            }
-          },
-          "consumer": {
-            "path": "ts/src/server/index.ts",
-            "symbol": "ProductTaskMediaService",
-            "reference": {
-              "kind": "new",
-              "text": "new ProductTaskMediaService(productTaskService, mediaService)"
-            }
-          },
-          "condition": "D4 may remove this exact consumer only after the listed migration modules are accepted and the retained reader remains reachable."
-        }
-      ],
-      "migration_modules": [
-        "13",
-        "16",
-        "22"
-      ],
-      "d4_owner_module": "23",
-      "retained_reader": "independent MediaProject and legacy migrator"
     },
     {
       "object_id": "legacy-workflow-runtime-and-duplicate-media-service",
@@ -786,38 +556,6 @@
       ],
       "d4_owner_module": "23",
       "retained_reader": "candidate-only trigger and protected Release Orchestrator"
-    },
-    {
-      "object_id": "tauri-linux-and-duplicate-build-workflow",
-      "edges": [
-        {
-          "object": {
-            "id": "tauri-linux-and-duplicate-build-workflow",
-            "symbol": "src-tauri/binaries/**",
-            "definition": {
-              "path": "ts/desktop/package.json",
-              "text": "\"src-tauri/binaries/**\"",
-              "pointer": "/build/asarUnpack/2"
-            }
-          },
-          "consumer": {
-            "path": "ts/desktop/package.json",
-            "symbol": "build.files[3]",
-            "reference": {
-              "kind": "json_entry",
-              "text": "\"src-tauri/binaries/**\"",
-              "pointer": "/build/files/3"
-            }
-          },
-          "condition": "D4 may remove this exact consumer only after the listed migration modules are accepted and the retained reader remains reachable."
-        }
-      ],
-      "migration_modules": [
-        "06",
-        "20-22"
-      ],
-      "d4_owner_module": "23",
-      "retained_reader": "Windows x64 and macOS arm64 Electron candidate builds"
     }
   ],
   "auth_entitlement_policy": {

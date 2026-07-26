@@ -12,7 +12,6 @@ const mocks = vi.hoisted(() => ({
   stopTask: vi.fn(),
   respondToApproval: vi.fn(),
   respondToQuestions: vi.fn(),
-  respondToComputerUseApproval: vi.fn(),
   runtimes: {} as Record<string, Record<string, unknown>>,
 }))
 
@@ -27,7 +26,6 @@ vi.mock('../stores/productTaskRuntimeStore', () => ({
     stopTask: mocks.stopTask,
     respondToApproval: mocks.respondToApproval,
     respondToQuestions: mocks.respondToQuestions,
-    respondToComputerUseApproval: mocks.respondToComputerUseApproval,
   }),
 }))
 
@@ -122,7 +120,7 @@ describe('SideTaskPanel', () => {
   })
 
   it('renders a safe error when loading side tasks fails upstream', async () => {
-    const rawError = 'DeepSeek provider rejected /private/.claude/settings.json token'
+    const rawError = 'DeepSeek provider rejected /private/.BilliardBuddy/settings.json token'
     useProductSideTaskStore.setState({
       panelByParentTaskId: {
         [parentTaskId]: { isOpen: true },
@@ -239,6 +237,7 @@ describe('SideTaskPanel', () => {
     await waitFor(() => expect(mocks.connectTask).toHaveBeenCalledWith('task-public-side-73'))
     fireEvent.change(screen.getByLabelText('继续侧边任务'), { target: { value: '核对价格表' } })
     fireEvent.click(screen.getByRole('button', { name: '发送' }))
+    await waitFor(() => expect(screen.getByLabelText('继续侧边任务')).toHaveValue(''))
     fireEvent.click(screen.getByRole('button', { name: '停止' }))
 
     expect(mocks.sendText).toHaveBeenCalledWith('task-public-side-73', '核对价格表')

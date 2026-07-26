@@ -1,8 +1,8 @@
 /**
  * Authentication middleware
  *
- * 本地桌面应用场景下，使用 Anthropic API Key 做可选鉴权。
- * 验证请求头中的 Authorization: Bearer <key> 与 .env 中的 ANTHROPIC_API_KEY 是否匹配。
+ * 本地桌面应用的可选 bearer 鉴权。此令牌只保护 Product Server，
+ * 与模型供应商凭据完全分离。
  */
 
 type AuthResult = { valid: boolean; error?: string }
@@ -31,9 +31,9 @@ export function validateAuth(req: Request): AuthResult {
 }
 
 function validateApiKey(token: string): AuthResult {
-  const apiKey = process.env.ANTHROPIC_API_KEY
+  const apiKey = process.env.BILLIARDBUDDY_SERVER_TOKEN
   if (!apiKey) {
-    return { valid: false, error: 'Server ANTHROPIC_API_KEY not configured' }
+    return { valid: false, error: 'BilliardBuddy server token is not configured' }
   }
 
   if (token !== apiKey) {

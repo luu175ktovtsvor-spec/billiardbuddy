@@ -64,3 +64,14 @@ test('replaying one durable source replaces it without duplicating long-term con
   expect(memory).toContain('new result')
   expect(memory).not.toContain('old result')
 })
+
+test('task purge removes only that task contribution from shared project memory', async () => {
+  const { binding } = await fixture('purge-task')
+  const repository = new ProductAutoMemoryRepository(); await repository.initialize(binding)
+  await repository.appendCompletedTurn(binding, { task_id: 'task-a', entry_id: 'entry-a', user: 'remove me', assistant: 'task a result' })
+  await repository.appendCompletedTurn(binding, { task_id: 'task-b', entry_id: 'entry-b', user: 'keep me', assistant: 'task b result' })
+  await repository.purgeTaskTurns(binding.storage_dir, 'task-a', ['entry-a'])
+  const memory = await repository.load(binding)
+  expect(memory).not.toContain('task a result')
+  expect(memory).toContain('task b result')
+})

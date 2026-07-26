@@ -1,8 +1,10 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ProductTaskSocketLifecycleEvent } from '../api/taskSocket'
 
 const apiMocks = vi.hoisted(() => ({
   getThread: vi.fn(),
+  getQueue: vi.fn(),
+  resumeQueue: vi.fn(),
   list: vi.fn(),
   currentLineage: vi.fn(),
   submitRun: vi.fn(),
@@ -18,6 +20,8 @@ const socketMocks = vi.hoisted(() => ({
 vi.mock('../api/tasks', () => ({
   productTasksApi: {
     getThread: apiMocks.getThread,
+    getQueue: apiMocks.getQueue,
+    resumeQueue: apiMocks.resumeQueue,
     list: apiMocks.list,
   },
   productConversationLineageApi: {
@@ -89,6 +93,10 @@ function deferred<T>() {
 }
 
 describe('product task runtime store', () => {
+  beforeEach(() => {
+    socketMocks.send.mockReturnValue(true)
+  })
+
   afterEach(() => {
     for (const taskId of Object.keys(useProductTaskRuntimeStore.getState().tasks)) {
       useProductTaskRuntimeStore.getState().disconnectTask(taskId)
@@ -102,6 +110,8 @@ describe('product task runtime store', () => {
     })
     useTabStore.setState({ tabs: [], activeTabId: null })
     apiMocks.getThread.mockReset()
+    apiMocks.getQueue.mockReset()
+    apiMocks.resumeQueue.mockReset()
     apiMocks.list.mockReset()
     apiMocks.currentLineage.mockReset()
     apiMocks.submitRun.mockReset()
@@ -125,6 +135,7 @@ describe('product task runtime store', () => {
         createdAt: '2026-07-19T00:00:00.000Z',
       }],
     })
+    apiMocks.getQueue.mockResolvedValue({ items: [] })
     wireTaskSocket()
 
     await useProductTaskRuntimeStore.getState().connectTask('task-1')
@@ -150,6 +161,65 @@ describe('product task runtime store', () => {
     expect(runtime.runActivities).toEqual([
       expect.objectContaining({ id: activityId, kind: 'workspace', phase: 'completed' }),
     ])
+  })
+
+  it('disconnects and forgets the transcript projection after durable task deletion', async () => {
+    apiMocks.getThread.mockResolvedValue({ taskId: 'task-delete', entries: [] })
+    apiMocks.getQueue.mockResolvedValue({ items: [] })
+    wireTaskSocket()
+    await useProductTaskRuntimeStore.getState().connectTask('task-delete')
+
+    useProductTaskRuntimeStore.getState().forgetTask('task-delete')
+
+    expect(socketMocks.disconnect).toHaveBeenCalledWith('task-delete')
+    expect(useProductTaskRuntimeStore.getState().tasks).not.toHaveProperty('task-delete')
+  })
+
+  it('restores queued input and removes it only after durable assignment', async () => {
+    const queued = {
+      id: 'queue_123e4567-e89b-42d3-a456-426614174000',
+      text: '请补充风险说明',
+      state: 'queued' as const,
+      createdAt: '2026-07-26T00:00:00.000Z',
+      attachmentCount: 0,
+    }
+    apiMocks.getThread.mockResolvedValue({ taskId: 'task-queue', entries: [] })
+    apiMocks.getQueue.mockResolvedValue({ items: [queued] })
+    wireTaskSocket()
+
+    await useProductTaskRuntimeStore.getState().connectTask('task-queue')
+    expect(useProductTaskRuntimeStore.getState().tasks['task-queue']?.queuedInputs).toEqual([queued])
+
+    eventHandler?.({
+      type: 'queue_updated',
+      item: { ...queued, state: 'injected', targetRunId: 'run_123e4567-e89b-42d3-a456-426614174000' },
+      event_sequence: 3,
+    })
+    expect(useProductTaskRuntimeStore.getState().tasks['task-queue']?.queuedInputs).toEqual([])
+  })
+
+  it('keeps only the latest public phase for each compact item', () => {
+    const store = useProductTaskRuntimeStore.getState()
+    const id = `compact_${'c'.repeat(32)}`
+    store.handleEvent('task-compact', { type: 'context_compaction', item: { id, phase: 'started', source: 'automatic', generation: 1 }, event_sequence: 2 })
+    store.handleEvent('task-compact', { type: 'context_compaction', item: { id, phase: 'completed', source: 'automatic', generation: 1 }, event_sequence: 3 })
+    expect(useProductTaskRuntimeStore.getState().tasks['task-compact']?.contextCompactions).toEqual([{ id, phase: 'completed', source: 'automatic', generation: 1 }])
+  })
+
+  it('reconciles durable assistant and terminal replay with the canonical thread', async () => {
+    apiMocks.list.mockResolvedValue(EMPTY_PRODUCT_TASK_INDEX)
+    apiMocks.getThread.mockResolvedValue({
+      taskId: 'task-replay',
+      entries: [threadEntry('thread_0123456789abcdef0123', 'assistant_text', '重连后的答案')],
+    })
+    const store = useProductTaskRuntimeStore.getState()
+    store.handleEvent('task-replay', { type: 'assistant_text', id: 'thread_0123456789abcdef0123', text: '重连后的答案', replayed: true, event_sequence: 4 })
+    store.handleEvent('task-replay', { type: 'run_terminal', id: `turn_${'a'.repeat(32)}`, state: 'completed', replayed: true, event_sequence: 5 })
+    await flushMicrotasks()
+    const runtime = useProductTaskRuntimeStore.getState().tasks['task-replay']!
+    expect(runtime.runState).toBe('idle')
+    expect(runtime.recoveryRequired).toBe(false)
+    expect(runtime.entries).toEqual([threadEntry('thread_0123456789abcdef0123', 'assistant_text', '重连后的答案')])
   })
 
   it('keeps a bounded opaque run activity tree separate from the message transcript', async () => {
@@ -574,19 +644,24 @@ describe('product task runtime store', () => {
     })
   })
 
-  it('BB-09A accepts a follow-up while the current run is working', async () => {
+  it('accepts a durable follow-up queue item without pretending it is already in the Turn', async () => {
     const task: ProductTaskRecord = {
       id: 'task-queue', revision: 4, current_lineage_id: 'lineage-queue', projectId: 'project', directoryId: 'directory', workDir: '/workspace', title: '排队任务', lifecycle: 'active', kind: 'main', createdAt: '2026-07-19T00:00:00.000Z', updatedAt: '2026-07-19T00:00:00.000Z', worktreeState: 'not_requested', actions: [],
     }
     useProductTaskStore.setState({ index: { ...EMPTY_PRODUCT_TASK_INDEX, tasks: [task], total: 1 } })
     useProductTaskRuntimeStore.getState().handleEvent(task.id, { type: 'status', state: 'working' })
     apiMocks.currentLineage.mockResolvedValue({ lineage: { lineage_id: 'lineage-queue', product_task_id: task.id, revision: 3 } })
-    apiMocks.submitRun.mockResolvedValue({ receipt: { outcome: 'accepted', authority_revision: 10, result: { task_id: task.id, run_id: 'run-queued', entry_id: 'entry-queued', dispatch_generation: 1 } } })
+    apiMocks.submitRun.mockResolvedValue({ receipt: { outcome: 'accepted', authority_revision: 10, result: { task_id: task.id, queue_item_id: 'queue_123e4567-e89b-42d3-a456-426614174000', entry_id: 'entry-queued', delivery: 'queued' } } })
     apiMocks.list.mockResolvedValue(useProductTaskStore.getState().index)
+    apiMocks.getQueue.mockResolvedValue({ items: [{ id: 'queue_123e4567-e89b-42d3-a456-426614174000', text: '接着整理下一批订单', state: 'queued', createdAt: '2026-07-26T00:00:00.000Z', attachmentCount: 0 }] })
 
     await expect(useProductTaskRuntimeStore.getState().sendText(task.id, '接着整理下一批订单')).resolves.toBe(true)
     expect(apiMocks.submitRun).toHaveBeenCalledWith(task.id, expect.objectContaining({ expected_task_revision: 4, expected_lineage_revision: 3, text: '接着整理下一批订单' }))
-    expect(useProductTaskRuntimeStore.getState().tasks[task.id]).toMatchObject({ runState: 'working', entries: [expect.objectContaining({ text: '接着整理下一批订单' })] })
+    expect(useProductTaskRuntimeStore.getState().tasks[task.id]).toMatchObject({
+      runState: 'working',
+      entries: [],
+      queuedInputs: [expect.objectContaining({ id: 'queue_123e4567-e89b-42d3-a456-426614174000', text: '接着整理下一批订单' })],
+    })
   })
 
   it('matches the product text boundary before creating optimistic task state', () => {
@@ -657,23 +732,6 @@ describe('product task runtime store', () => {
     })
     expect(store.respondToQuestions('task-question', ['方案 A'])).toBe(false)
 
-    store.handleEvent('task-computer-use', {
-      type: 'approval_required',
-      requestId: 'computer-use-1',
-      kind: 'computer_use',
-      computerUse: {
-        apps: [{ name: '记分牌', tier: 'click', alreadyAuthorized: false }],
-        capabilities: ['clipboard_read'],
-      },
-    })
-
-    expect(store.respondToComputerUseApproval('task-computer-use', true)).toBe(true)
-    expect(socketMocks.send).toHaveBeenCalledWith('task-computer-use', {
-      type: 'computer_use_permission_response',
-      requestId: 'computer-use-1',
-      allowed: true,
-    })
-    expect(store.respondToComputerUseApproval('task-computer-use', false)).toBe(false)
   })
 
   it('records a safe error code instead of a raw runtime error message', () => {

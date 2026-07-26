@@ -14,7 +14,6 @@ import { getDesktopHost } from '../../lib/desktopHost'
 import { useTabStore, SETTINGS_TAB_ID } from '../../stores/tabStore'
 import { useTranslation } from '../../i18n'
 import { TaskSearchModal } from '../../product/components/TaskSearchModal'
-import { RemoteDataEgressConsentGate } from '../../product/components/RemoteDataEgressConsent'
 
 /**
  * The only delivered application frame: BilliardBuddy's desktop task shell.
@@ -108,7 +107,6 @@ export function AppShell() {
       <ToastContainer />
       <UpdateChecker />
       <TaskSearchModal open={activeModal === 'task-search'} onClose={closeModal} />
-      <RemoteDataEgressConsentGate />
     </div>
   )
 }

@@ -59,7 +59,7 @@ export class VoiceOperationService {
 
   constructor(options: VoiceOperationServiceOptions = {}) {
     this.root = options.root ?? join(
-      process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude'),
+      process.env.BILLIARDBUDDY_CONFIG_DIR ?? join(homedir(), '.BilliardBuddy'),
       'billiardbuddy',
       'voice',
     )
@@ -122,8 +122,14 @@ export class VoiceOperationService {
   }
 
   private async readOperation(operationId: string): Promise<VoiceOperation> {
-    return readFile(this.operationPath(operationId), 'utf8')
-      .then(value => voiceOperationSchema.parse(JSON.parse(value)))
+    const path = this.operationPath(operationId)
+    return readFile(path, 'utf8')
+      .then(async value => {
+        const raw = JSON.parse(value) as Record<string, unknown>
+        const operation = voiceOperationSchema.parse(raw)
+        if ('consent_receipt_id' in raw) await this.writeJson(path, operation)
+        return operation
+      })
       .catch(error => {
         if ((error as NodeJS.ErrnoException).code === 'ENOENT') throw missing('VOICE_OPERATION_NOT_FOUND')
         throw error
@@ -139,10 +145,7 @@ export class VoiceOperationService {
       })
   }
 
-  async begin(
-    file: File,
-    consentReceiptId: string,
-  ): Promise<{ operation: PublicVoiceOperation; signal: AbortSignal }> {
+  async begin(file: File): Promise<{ operation: PublicVoiceOperation; signal: AbortSignal }> {
     await this.ensureDirs()
     const bytes = new Uint8Array(await file.arrayBuffer())
     const now = this.iso()
@@ -156,7 +159,6 @@ export class VoiceOperationService {
         byte_size: file.size,
         content_hash: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
       },
-      consent_receipt_id: consentReceiptId,
       created_at: now,
       updated_at: now,
     })
@@ -164,6 +166,13 @@ export class VoiceOperationService {
     this.active.set(operation.id, controller)
     await this.writeJson(this.operationPath(operation.id), operation)
     return { operation: publicVoiceOperationSchema.parse(operation), signal: controller.signal }
+  }
+
+  async migrateSupportedStorage(): Promise<void> {
+    await this.ensureDirs()
+    for (const name of (await readdir(this.operationsDir)).filter(name => name.endsWith('.json')).sort()) {
+      await this.readOperation(name.slice(0, -5))
+    }
   }
 
   async getOperation(operationId: string): Promise<PublicVoiceOperation> {

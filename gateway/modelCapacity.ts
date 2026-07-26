@@ -27,16 +27,16 @@ export interface AcquireOptions {
   maxWaitMs: number
   signal?: AbortSignal
   /** Token this identity belongs to. Bounds ALL of one token's clients together (defends
-   *  against a single token forging many X-QF-Client-IDs). Defaults to the user id. */
+   *  against a single token forging many X-BB-Installation-IDs). Defaults to the user id. */
   tokenId?: string
 }
 
-export type MimoLane = 'native' | 'vision'
+export type MimoLane = 'media' | 'vision'
 
 export type MimoReservationConfig = {
   /** Account-wide physical ceiling. It must exactly equal the two lane reservations. */
   maxConcurrent: number
-  nativeConcurrent: number
+  mediaConcurrent: number
   visionConcurrent: number
   /** All MiMo paths for an installation share this active-call cap. */
   maxConcurrentPerUser: number
@@ -44,7 +44,7 @@ export type MimoReservationConfig = {
   maxConcurrentPerToken: number
   /** All MiMo paths for an installation share this active + queued cap. */
   maxInflightPerUser: number
-  nativeQueueMax: number
+  mediaQueueMax: number
   visionQueueMax: number
   /** Vision has its own stricter per-installation caps in addition to the shared ones. */
   visionMaxConcurrentPerUser: number
@@ -68,28 +68,28 @@ type MimoLaneLimits = Record<MimoLane, number>
 /**
  * One atomic scheduler for an account that reserves physical capacity for two request
  * classes. A grant checks the account, lane, token, installation and queue limits in
- * one operation. This is deliberately not composed from separate native/vision gates:
+ * one operation. This is deliberately not composed from separate media/vision gates:
  * independently acquiring two queues can leave a request holding one physical slot
  * while it waits for another, which defeats the visual reservation and can deadlock.
  */
 export class MimoReservationScheduler {
   private active = 0
-  private readonly activeByLane: Record<MimoLane, number> = { native: 0, vision: 0 }
+  private readonly activeByLane: Record<MimoLane, number> = { media: 0, vision: 0 }
   private readonly activeByUser = new Map<string, number>()
   private readonly activeVisionByUser = new Map<string, number>()
   private readonly activeByToken = new Map<string, number>()
   private readonly pendingByUser = new Map<string, MimoPending[]>()
   private readonly waitingUsers: string[] = []
-  private readonly queuedByLane: Record<MimoLane, number> = { native: 0, vision: 0 }
+  private readonly queuedByLane: Record<MimoLane, number> = { media: 0, vision: 0 }
   private readonly laneLimits: MimoLaneLimits
   private readonly laneQueueMax: MimoLaneLimits
 
   constructor(private readonly config: MimoReservationConfig) {
-    this.laneLimits = { native: config.nativeConcurrent, vision: config.visionConcurrent }
-    this.laneQueueMax = { native: config.nativeQueueMax, vision: config.visionQueueMax }
+    this.laneLimits = { media: config.mediaConcurrent, vision: config.visionConcurrent }
+    this.laneQueueMax = { media: config.mediaQueueMax, vision: config.visionQueueMax }
     for (const [name, value] of Object.entries({
       maxConcurrent: config.maxConcurrent,
-      nativeConcurrent: config.nativeConcurrent,
+      mediaConcurrent: config.mediaConcurrent,
       visionConcurrent: config.visionConcurrent,
       maxConcurrentPerUser: config.maxConcurrentPerUser,
       maxConcurrentPerToken: config.maxConcurrentPerToken,
@@ -102,12 +102,12 @@ export class MimoReservationScheduler {
     for (const [name, value] of Object.entries(this.laneQueueMax)) {
       if (!Number.isInteger(value) || value < 0) throw new Error(`${name} queue max must be a non-negative integer`)
     }
-    if (config.nativeConcurrent + config.visionConcurrent !== config.maxConcurrent) {
-      throw new Error('MiMo native and vision reservations must exactly equal the account capacity')
+    if (config.mediaConcurrent + config.visionConcurrent !== config.maxConcurrent) {
+      throw new Error('MiMo media and vision reservations must exactly equal the account capacity')
     }
   }
 
-  /** Adapter for native MiMo chat, whose generic handler expects FairCapacityScheduler's surface. */
+  /** Adapter for media reasoning MiMo chat, whose generic handler expects FairCapacityScheduler's surface. */
   forLane(lane: MimoLane): { acquire(user: string, opts: AcquireOptions): Promise<CapacityPermit>; snapshot(): CapacitySnapshot } {
     return {
       acquire: (user, opts) => this.acquire(lane, user, opts),
@@ -179,9 +179,9 @@ export class MimoReservationScheduler {
   }
 
   private makeSnapshot(lane: MimoLane | undefined): CapacitySnapshot {
-    const queueMax = lane === undefined ? this.laneQueueMax.native + this.laneQueueMax.vision : this.laneQueueMax[lane]
+    const queueMax = lane === undefined ? this.laneQueueMax.media + this.laneQueueMax.vision : this.laneQueueMax[lane]
     const active = lane === undefined ? this.active : this.activeByLane[lane]
-    const queued = lane === undefined ? this.queuedByLane.native + this.queuedByLane.vision : this.queuedByLane[lane]
+    const queued = lane === undefined ? this.queuedByLane.media + this.queuedByLane.vision : this.queuedByLane[lane]
     return {
       active,
       queued,
@@ -388,7 +388,7 @@ type Pending = {
  * Three tiers gate every grant:
  *  - `maxConcurrent`        — global pool ceiling (protects the upstream). Never exceeded.
  *  - `maxConcurrentPerToken`— all clients under one token combined. This is the defense
- *    against a single token forging many `X-QF-Client-ID`s to monopolize the pool: even
+ *    against a single token forging many `X-BB-Installation-ID`s to monopolize the pool: even
  *    with unlimited fake client ids, a token can hold at most this many in-flight.
  *  - `maxConcurrentPerUser` — a single fair-scheduling identity (token#client, i.e. one
  *    install). Gives honest multi-install usage its per-install fair share.

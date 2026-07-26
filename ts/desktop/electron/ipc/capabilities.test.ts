@@ -43,12 +43,31 @@ describe('Electron IPC capabilities', () => {
     expect(validateElectronIpcPayload(ELECTRON_IPC_CHANNELS.mediaSubmitImage, {
       projectId: 'img_project01',
       confirmUnknownRetry: true,
-      confirmedDataEgress: true,
     })).toBe(true)
     expect(validateElectronIpcPayload(ELECTRON_IPC_CHANNELS.mediaSubmitImage, {
       projectId: '../escape',
       confirmUnknownRetry: false,
-      confirmedDataEgress: true,
+    })).toBe(false)
+    expect(validateElectronIpcPayload(ELECTRON_IPC_CHANNELS.mediaUpdateUnknownImage, {
+      projectId: 'img_project01',
+      input: {
+        revision: 3,
+        user_request: '保留上次设置并重新生成',
+        size: '3840x2160',
+        confirm_unknown_retry: true,
+      },
+    })).toBe(true)
+    expect(validateElectronIpcPayload(ELECTRON_IPC_CHANNELS.mediaUpdateUnknownImage, {
+      projectId: 'img_project01',
+      input: { revision: 3, prompt: '旧字段', size: '1024x1024', count: 3, confirm_unknown_retry: true },
+    })).toBe(false)
+    expect(validateElectronIpcPayload(ELECTRON_IPC_CHANNELS.mediaAddVideoSource, {
+      projectId: 'vid_project01',
+      path: '/tmp/source.mp4',
+    })).toBe(true)
+    expect(validateElectronIpcPayload(ELECTRON_IPC_CHANNELS.mediaAddVideoSource, {
+      projectId: '../escape',
+      path: '/tmp/source.mp4',
     })).toBe(false)
     expect(validateElectronIpcPayload(ELECTRON_IPC_CHANNELS.mediaStartImageOperation, {
       projectId: 'img_project01',
@@ -60,7 +79,6 @@ describe('Electron IPC capabilities', () => {
         mask_data_url: 'data:image/png;base64,AAAA',
         confirm_unknown_retry: false,
       },
-      confirmedDataEgress: true,
     })).toBe(true)
     expect(validateElectronIpcPayload(ELECTRON_IPC_CHANNELS.mediaStartImageOperation, {
       projectId: 'img_project01',
@@ -71,12 +89,10 @@ describe('Electron IPC capabilities', () => {
         instruction: '只修改蒙版区域',
         confirm_unknown_retry: false,
       },
-      confirmedDataEgress: true,
     })).toBe(false)
     expect(validateElectronIpcPayload(ELECTRON_IPC_CHANNELS.mediaSubmitImage, {
       projectId: 'img_project01',
       confirmUnknownRetry: false,
-      confirmedDataEgress: true,
       capability: 'must-not-cross-ipc',
     })).toBe(false)
     expect(validateElectronIpcPayload(ELECTRON_IPC_CHANNELS.mediaRenderVideo, {

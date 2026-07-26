@@ -11,6 +11,7 @@ import { useUIStore } from '../../stores/uiStore'
 import { useCurrentProductTaskContext } from '../../product/currentProductTaskContext'
 import { Button } from '../shared/Button'
 import { ConfirmDialog } from '../shared/ConfirmDialog'
+import { DirectoryPicker } from '../shared/DirectoryPicker'
 import type {
   PluginDescriptionKind,
   PluginStatus,
@@ -37,12 +38,15 @@ export function PluginList() {
     reloadPlugins,
     bulkEnablePlugins,
     bulkDisablePlugins,
+    installPlugin,
   } = usePluginStore()
   const { taskId: currentTaskId, workDir: currentWorkDir } = useCurrentProductTaskContext()
   const addToast = useUIStore((s) => s.addToast)
   const t = useTranslation()
   const [selectedPluginIds, setSelectedPluginIds] = useState<Set<string>>(() => new Set())
   const [confirmBatchAction, setConfirmBatchAction] = useState<BatchAction | null>(null)
+  const [installSource, setInstallSource] = useState('')
+  const [installScope, setInstallScope] = useState<'user' | 'project'>('user')
   useEffect(() => {
     void fetchPlugins(currentWorkDir)
   }, [fetchPlugins, currentWorkDir])
@@ -114,6 +118,36 @@ export function PluginList() {
       })
     }
   }
+
+  const handleInstall = async () => {
+    if (!installSource || (installScope === 'project' && !currentWorkDir)) return
+    try {
+      const result = await installPlugin(installSource, installScope, currentWorkDir, currentTaskId)
+      setInstallSource('')
+      const taskSyncKey = pluginTaskSyncTranslationKey(result.task)
+      addToast({ type: taskSyncKey ? 'warning' : 'success', message: taskSyncKey ? t(taskSyncKey) : t('settings.plugins.action.installed') })
+    } catch (error) {
+      addToast({ type: 'error', message: t(pluginErrorTranslationKey(getPluginRequestErrorCode(error))) })
+    }
+  }
+
+  const installPanel = (
+    <section className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface-container-low)] p-5">
+      <div className="text-sm font-semibold text-[var(--color-text-primary)]">{t('settings.plugins.install.title')}</div>
+      <p className="mt-1 text-xs leading-5 text-[var(--color-text-tertiary)]">{t('settings.plugins.install.hint')}</p>
+      <div className="mt-4 flex flex-col gap-3 md:flex-row md:items-center">
+        <div className="min-w-0 flex-1"><DirectoryPicker value={installSource} onChange={setInstallSource} /></div>
+        <div className="flex rounded-lg border border-[var(--color-border)] p-1">
+          {(['user', 'project'] as const).map(scope => (
+            <button key={scope} type="button" disabled={scope === 'project' && !currentWorkDir} onClick={() => setInstallScope(scope)} className={`rounded-md px-3 py-2 text-xs font-medium ${installScope === scope ? 'bg-[var(--color-surface-selected)] text-[var(--color-text-primary)]' : 'text-[var(--color-text-secondary)]'}`}>
+              {t(scope === 'user' ? 'settings.plugins.install.userScope' : 'settings.plugins.install.projectScope')}
+            </button>
+          ))}
+        </div>
+        <Button onClick={() => void handleInstall()} disabled={!installSource || (installScope === 'project' && !currentWorkDir)} loading={isApplying}>{t('settings.plugins.install.action')}</Button>
+      </div>
+    </section>
+  )
 
   const togglePluginSelection = (pluginId: string, selected: boolean) => {
     setSelectedPluginIds((current) => {
@@ -193,7 +227,9 @@ export function PluginList() {
 
   if (plugins.length === 0) {
     return (
-      <div className="text-center py-12 rounded-2xl border border-dashed border-[var(--color-border)] bg-[var(--color-surface-container-low)] px-6">
+      <div className="flex flex-col gap-5">
+        {installPanel}
+        <div className="text-center py-12 rounded-2xl border border-dashed border-[var(--color-border)] bg-[var(--color-surface-container-low)] px-6">
         <span className="material-symbols-outlined text-[40px] text-[var(--color-text-tertiary)] mb-2 block">
           extension
         </span>
@@ -203,12 +239,14 @@ export function PluginList() {
         <p className="text-xs text-[var(--color-text-tertiary)] mt-1">
           {t('settings.plugins.emptyHint')}
         </p>
+        </div>
       </div>
     )
   }
 
   return (
     <div className="flex flex-col gap-6 min-w-0">
+      {installPanel}
       <section className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface-container-low)] overflow-hidden">
         <div className="flex flex-col gap-4 px-5 py-5 min-w-0">
           <div className="flex flex-col gap-4 min-w-0 xl:flex-row xl:items-start xl:justify-between">

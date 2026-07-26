@@ -21,7 +21,6 @@ const { bridge } = vi.hoisted(() => ({
   },
 }))
 vi.mock('../../lib/previewBridge', () => ({ previewBridge: bridge }))
-vi.mock('@tauri-apps/api/event', () => ({ listen: () => Promise.resolve(() => {}) }))
 
 import { BrowserSurface } from './BrowserSurface'
 import { useBrowserPanelStore } from '../../stores/browserPanelStore'

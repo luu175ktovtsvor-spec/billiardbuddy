@@ -18,7 +18,7 @@ function packagedMediaToolchainDir(context) {
   const resourcesDir = platform === 'darwin'
     ? path.join(context.appOutDir, `${productFilename}.app`, 'Contents', 'Resources')
     : path.join(context.appOutDir, 'resources')
-  return path.join(resourcesDir, 'app.asar.unpacked', 'src-tauri', 'binaries')
+  return path.join(resourcesDir, 'app.asar.unpacked', 'runtime-assets', 'binaries')
 }
 
 function validatePackagedMediaToolchain(context) {

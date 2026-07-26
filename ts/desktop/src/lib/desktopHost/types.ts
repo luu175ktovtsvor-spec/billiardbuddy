@@ -4,6 +4,7 @@ import type {
 } from '../../types/settings'
 import type {
   PublicImageWorkbenchProject as ImageWorkbenchProject,
+  PublicVideoStudioProject as VideoStudioProject,
   PublicMediaTask as MediaTask,
   SaveImageOutputInput,
   StartImageOperationInput,
@@ -201,18 +202,17 @@ export type DesktopHost = {
     submitImageProject(
       projectId: string,
       confirmUnknownRetry?: boolean,
-      confirmedDataEgress?: boolean,
     ): Promise<{ task: MediaTask }>
     startImageOperation(
       projectId: string,
-      input: Omit<StartImageOperationInput, 'data_egress_consent'>,
-      confirmedDataEgress?: boolean,
+      input: StartImageOperationInput,
     ): Promise<{ task: MediaTask }>
     updateUnknownImageProject(
       projectId: string,
       input: UpdateImageProjectInput,
     ): Promise<{ project: ImageWorkbenchProject }>
     saveImageOutput(projectId: string, input: SaveImageOutputInput): Promise<{ path: string }>
+    addVideoSource(projectId: string, path: string): Promise<{ project: VideoStudioProject; task: MediaTask }>
     renderVideo(request: MediaRenderRequest): Promise<{ task: MediaTask }>
     analyzeVideo(request: MediaAnalyzeRequest): Promise<{ task: MediaTask }>
   }

@@ -20,6 +20,7 @@ import { useTranslation } from '../../i18n'
 import { describeCron, isValidCron } from '../../lib/cronDescribe'
 import { productScheduledTasksApi } from '../api/scheduledTasks'
 import { productApiUserFacingError } from '../api/client'
+import { useProductTaskStore } from '../stores/productTaskStore'
 import type {
   CreateProductScheduledTaskInput,
   ProductScheduledTask,
@@ -52,6 +53,7 @@ function runLabel(status: ProductScheduledTaskRun['status']): string {
     case 'running': return '正在运行'
     case 'completed': return '已完成'
     case 'timeout': return '已超时'
+    case 'cancelled': return '已取消'
     default: return '未完成'
   }
 }
@@ -83,6 +85,11 @@ export function ProductScheduledTasksPage() {
   const [runsTaskId, setRunsTaskId] = useState<string | null>(null)
   const [runs, setRuns] = useState<ProductScheduledTaskRun[]>([])
   const [runsLoading, setRunsLoading] = useState(false)
+  const productTasks = useProductTaskStore((state) => state.index.tasks)
+  const relatedTaskOptions = useMemo(
+    () => productTasks.filter((task) => task.lifecycle === 'active' && !task.id.startsWith('scheduled_')),
+    [productTasks],
+  )
   const taskListVersionRef = useRef(0)
   const taskListRequestVersionRef = useRef(0)
   const taskListLoadedRef = useRef(false)
@@ -280,6 +287,19 @@ export function ProductScheduledTasksPage() {
     }
   }
 
+  const cancelRun = async (task: ProductScheduledTask, run: ProductScheduledTaskRun) => {
+    setPendingAction(`cancel:${run.id}`)
+    setError(null)
+    try {
+      await productScheduledTasksApi.cancelRun(task.id, run.id)
+      await refreshRuns(task.id)
+    } catch (cause) {
+      setError(productApiUserFacingError(cause, '这次运行暂时无法取消，请稍后重试。'))
+    } finally {
+      setPendingAction(null)
+    }
+  }
+
   return (
     <main className="flex h-full min-h-0 flex-col bg-[var(--color-app-main)]" data-testid="product-scheduled-tasks">
       <header className="flex shrink-0 flex-wrap items-start justify-between gap-4 border-b border-[var(--color-border)] px-6 py-5">
@@ -320,6 +340,7 @@ export function ProductScheduledTasksPage() {
               const runOpen = task.id === runsTaskId
               const isPending = pendingAction !== null && pendingAction.endsWith(task.id)
               const lastRun = formatDateTime(task.lastRunAt)
+              const nextRun = formatDateTime(task.nextRunAt)
               return (
                 <article key={task.id} className="rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)]" data-testid={`product-scheduled-task-${task.id}`}>
                   <div className="flex flex-wrap items-start gap-4 px-4 py-4">
@@ -333,8 +354,11 @@ export function ProductScheduledTasksPage() {
                       {task.description ? <p className="mt-1 text-sm text-[var(--color-text-secondary)]">{task.description}</p> : null}
                       <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-[var(--color-text-tertiary)]">
                         {lastRun ? <span>上次运行：{lastRun}</span> : <span>尚未运行</span>}
+                        {nextRun ? <span>下次运行：{nextRun}</span> : null}
+                        <span>时区：{task.timeZone}</span>
                         {task.workDir ? <span className="truncate" title={task.workDir}>工作目录：{task.workDir}</span> : null}
                         <span>{task.missedRunPolicy === 'skip' ? '休眠错过时跳过' : '休眠恢复后最多补跑一次'}</span>
+                        <span>{task.context.mode === 'related_task' ? '关联既有任务上下文' : '每次使用独立上下文'}</span>
                         {task.notification?.enabled ? <span className="inline-flex items-center gap-1"><Bell size={12} />完成后提醒</span> : null}
                       </div>
                     </div>
@@ -353,6 +377,8 @@ export function ProductScheduledTasksPage() {
                       loading={runsLoading}
                       onClose={() => setRunsTaskId(null)}
                       onRefresh={() => void refreshRuns(activeRunsTask.id)}
+                      pendingAction={pendingAction}
+                      onCancel={(run) => void cancelRun(activeRunsTask, run)}
                     />
                   ) : null}
                 </article>
@@ -369,6 +395,7 @@ export function ProductScheduledTasksPage() {
           saving={pendingAction === 'create' || (editorTarget !== 'create' && pendingAction === `update:${editorTarget.id}`)}
           onClose={() => setEditorTarget(null)}
           onSubmit={saveEditor}
+          relatedTasks={relatedTaskOptions}
         />
       ) : null}
 
@@ -412,12 +439,16 @@ function ScheduledTaskRunsPanel({
   loading,
   onClose,
   onRefresh,
+  pendingAction,
+  onCancel,
 }: {
   task: ProductScheduledTask
   runs: ProductScheduledTaskRun[]
   loading: boolean
   onClose: () => void
   onRefresh: () => void
+  pendingAction: string | null
+  onCancel: (run: ProductScheduledTaskRun) => void
 }) {
   return (
     <section className="border-t border-[var(--color-border)] bg-[var(--color-surface-container)]/40 px-4 py-3" aria-label={`${task.title} 的运行记录`}>
@@ -446,6 +477,7 @@ function ScheduledTaskRunsPanel({
                 {typeof run.durationMs === 'number' ? <span className="text-[var(--color-text-tertiary)]">用时 {Math.max(1, Math.round(run.durationMs / 1_000))} 秒</span> : null}
               </div>
               {run.result ? <p className="mt-2 whitespace-pre-wrap break-words text-sm leading-6 text-[var(--color-text-secondary)]">{run.result}</p> : null}
+              {run.status === 'running' ? <Button className="mt-2" size="sm" variant="secondary" disabled={pendingAction === `cancel:${run.id}`} onClick={() => onCancel(run)}>取消运行</Button> : null}
               {run.status === 'failed' || run.status === 'timeout' ? <p className="mt-2 text-sm text-[var(--color-error)]">本次运行未完成，请稍后重试。</p> : null}
             </div>
           ))}
@@ -460,22 +492,27 @@ function ScheduledTaskEditor({
   saving,
   onClose,
   onSubmit,
+  relatedTasks,
 }: {
   task?: ProductScheduledTask
   saving: boolean
   onClose: () => void
   onSubmit: (input: CreateProductScheduledTaskInput | UpdateProductScheduledTaskInput) => Promise<void>
+  relatedTasks: Array<{ id: string; title: string; workDir: string }>
 }) {
   const [title, setTitle] = useState(task?.title ?? '')
   const [description, setDescription] = useState(task?.description ?? '')
   const [instruction, setInstruction] = useState(task?.instruction ?? '')
   const [schedule, setSchedule] = useState(task?.schedule ?? '0 9 * * *')
+  const [timeZone, setTimeZone] = useState(task?.timeZone ?? (Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'))
   const [workDir, setWorkDir] = useState(task?.workDir ?? '')
   const [missedRunPolicy, setMissedRunPolicy] = useState(task?.missedRunPolicy ?? 'run_once')
+  const [contextMode, setContextMode] = useState(task?.context.mode ?? 'independent')
+  const [relatedTaskId, setRelatedTaskId] = useState(task?.context.mode === 'related_task' ? task.context.taskId : '')
   const [notifyOnComplete, setNotifyOnComplete] = useState(task?.notification?.enabled ?? false)
   const [submitError, setSubmitError] = useState<string | null>(null)
 
-  const canSubmit = title.trim().length > 0 && instruction.trim().length > 0 && workDir.trim().length > 0 && isValidCron(schedule)
+  const canSubmit = title.trim().length > 0 && instruction.trim().length > 0 && workDir.trim().length > 0 && timeZone.trim().length > 0 && isValidCron(schedule) && (contextMode === 'independent' || relatedTaskId.length > 0)
 
   const submit = async () => {
     if (!canSubmit) return
@@ -484,9 +521,13 @@ function ScheduledTaskEditor({
       title: title.trim(),
       description: description.trim() || null,
       schedule: schedule.trim(),
+      timeZone: timeZone.trim(),
       instruction: instruction.trim(),
       workDir: workDir.trim(),
       missedRunPolicy,
+      context: contextMode === 'related_task'
+        ? { mode: 'related_task' as const, taskId: relatedTaskId }
+        : { mode: 'independent' as const },
       notification: notifyOnComplete
         ? { enabled: true, channels: ['desktop'] as Array<'desktop'> }
         : { enabled: false, channels: [] as Array<'desktop'> },
@@ -543,6 +584,10 @@ function ScheduledTaskEditor({
             </p>
           </div>
         </Field>
+        <Field label="时区" required>
+          <input value={timeZone} onChange={(event) => setTimeZone(event.target.value)} placeholder="Asia/Shanghai" className={INPUT_CLASS} />
+          <p className="mt-1.5 text-xs text-[var(--color-text-tertiary)]">夏令时、休眠补跑和下一次时间都按这个 IANA 时区计算。</p>
+        </Field>
         <Field label="工作目录" required interactive>
           <DirectoryPicker value={workDir} onChange={setWorkDir} />
           {workDir ? <p className="mt-1.5 break-all font-[var(--font-mono)] text-xs text-[var(--color-text-tertiary)]">{workDir}</p> : <p className="mt-1.5 text-xs text-[var(--color-error)]">请选择任务可以访问的工作目录。</p>}
@@ -552,6 +597,29 @@ function ScheduledTaskEditor({
             <option value="run_once">恢复后补跑最近一次（最多一次）</option>
             <option value="skip">错过的时点直接跳过</option>
           </select>
+        </Field>
+        <Field label="运行上下文">
+          <select value={contextMode} onChange={(event) => setContextMode(event.target.value as 'independent' | 'related_task')} className={INPUT_CLASS}>
+            <option value="independent">每次独立上下文（推荐）</option>
+            <option value="related_task">关联一个既有任务</option>
+          </select>
+          {contextMode === 'related_task' ? (
+            <select
+              className={`${INPUT_CLASS} mt-2`}
+              value={relatedTaskId}
+              onChange={(event) => {
+                const nextId = event.target.value
+                setRelatedTaskId(nextId)
+                const selected = relatedTasks.find((entry) => entry.id === nextId)
+                if (selected?.workDir) setWorkDir(selected.workDir)
+              }}
+              aria-label="关联任务"
+            >
+              <option value="">选择任务</option>
+              {relatedTasks.map((entry) => <option key={entry.id} value={entry.id}>{entry.title}</option>)}
+            </select>
+          ) : null}
+          <p className="mt-1.5 text-xs text-[var(--color-text-tertiary)]">独立模式不会读取上一次计划运行；只有明确关联后才读取所选任务的摘要与历史。</p>
         </Field>
         <label className="flex cursor-pointer items-start gap-3 rounded-lg border border-[var(--color-border)] p-3">
           <input type="checkbox" checked={notifyOnComplete} onChange={(event) => setNotifyOnComplete(event.target.checked)} className="mt-0.5 h-4 w-4 accent-[var(--color-brand)]" />

@@ -1,5 +1,5 @@
 import { ApiError, api } from './client'
-import type { McpServerRecord, McpToggleResponse, McpUpsertPayload } from '../types/mcp'
+import type { McpAuthorizationStart, McpAuthorizationStatus, McpServerRecord, McpToggleResponse, McpUpsertPayload } from '../types/mcp'
 
 export type McpRequestErrorCode =
   | 'PRODUCT_TASK_UNAVAILABLE'
@@ -59,5 +59,15 @@ export const mcpApi = {
 
   reconnect: (name: string, cwd?: string) => {
     return api.post<{ server: McpServerRecord }>(`/api/mcp/${encodeURIComponent(name)}/reconnect`, cwd ? { cwd } : {})
+  },
+
+  authorize: (name: string, cwd?: string) => {
+    return api.post<McpAuthorizationStart>(`/api/mcp/${encodeURIComponent(name)}/authorize`, cwd ? { cwd } : {})
+  },
+
+  authorizationStatus: (name: string, flowId: string, cwd?: string) => {
+    const query = new URLSearchParams({ flowId })
+    if (cwd) query.set('cwd', cwd)
+    return api.get<McpAuthorizationStatus>(`/api/mcp/${encodeURIComponent(name)}/authorization-status?${query.toString()}`)
   },
 }

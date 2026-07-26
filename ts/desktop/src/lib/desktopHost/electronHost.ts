@@ -104,13 +104,13 @@ export function createElectronHost(bridge: ElectronHostBridge): DesktopHost {
       save: options => invoke(ELECTRON_IPC_CHANNELS.dialogSave, options),
     },
     media: {
-      submitImageProject: (projectId, confirmUnknownRetry = false, confirmedDataEgress = false) => invoke(
+      submitImageProject: (projectId, confirmUnknownRetry = false) => invoke(
         ELECTRON_IPC_CHANNELS.mediaSubmitImage,
-        { projectId, confirmUnknownRetry, confirmedDataEgress },
+        { projectId, confirmUnknownRetry },
       ),
-      startImageOperation: (projectId, input, confirmedDataEgress = false) => invoke(
+      startImageOperation: (projectId, input) => invoke(
         ELECTRON_IPC_CHANNELS.mediaStartImageOperation,
-        { projectId, input, confirmedDataEgress },
+        { projectId, input },
       ),
       updateUnknownImageProject: (projectId, input) => invoke(
         ELECTRON_IPC_CHANNELS.mediaUpdateUnknownImage,
@@ -119,6 +119,10 @@ export function createElectronHost(bridge: ElectronHostBridge): DesktopHost {
       saveImageOutput: (projectId, input) => invoke(
         ELECTRON_IPC_CHANNELS.mediaSaveImageOutput,
         { projectId, input },
+      ),
+      addVideoSource: (projectId, path) => invoke(
+        ELECTRON_IPC_CHANNELS.mediaAddVideoSource,
+        { projectId, path },
       ),
       renderVideo: request => invoke(ELECTRON_IPC_CHANNELS.mediaRenderVideo, request),
       analyzeVideo: request => invoke(ELECTRON_IPC_CHANNELS.mediaAnalyzeVideo, request),

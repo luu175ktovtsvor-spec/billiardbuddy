@@ -18,6 +18,11 @@
       "max_active_per_installation": 1,
       "max_queued": 24
     },
+    "MediaReasoning": {
+      "max_active": 52,
+      "max_active_per_installation": 1,
+      "max_queued": 64
+    },
     "SpeechTranscription": {
       "max_active": 1,
       "max_active_per_installation": 1,
@@ -35,10 +40,15 @@
     },
     {
       "path": "gateway/app.test.ts",
+      "test_id": "media reasoning uses the dedicated MiMo route and budget without consuming visual evidence",
+      "status": "local_fake_verified"
+    },
+    {
+      "path": "gateway/app.test.ts",
       "test_id": "audio transcription authenticates, validates uploads and records successful usage",
       "status": "local_fake_verified"
     }
   ],
   "production_capacity": "NOT_VERIFIED_EXTERNALLY",
-  "sha256": "06dd6d33fb8e41b90f30ea91a8710625479902f6c5e0717ddb00de52fddd2895"
+  "sha256": "a427c18c35f85fd9c4451357239506171f6e42f759798b0dac4547635fd09953"
 }

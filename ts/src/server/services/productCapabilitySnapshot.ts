@@ -7,12 +7,11 @@ import type { BrowserCapabilityStatus } from '../../../shared/product/browserCap
 import type { ProductScheduledTaskRun } from '../../../shared/product/scheduledTasks.js'
 import { getChromeSessionBridge } from './chromeSessionBridge.js'
 import { loadNetworkSettings, getNetworkProxyFetchOptions } from './networkSettings.js'
-import { getQfGatewayToken, getQfGatewayUrl, qfGatewayConfigured } from './qfGatewayProvider.js'
-import { remoteDataEgressConsentService } from './remoteDataEgressConsent.js'
+import { productGatewayConfigured, productGatewayTarget } from '../product/productGatewayRuntime.js'
 import { MediaProjectService } from './mediaProjectService.js'
 import { productScheduledTaskService } from '../product/scheduledTaskService.js'
 
-type MeteredCapability = 'TextReasoning' | 'VisualEvidence' | 'SpeechTranscription'
+type MeteredCapability = 'TextReasoning' | 'VisualEvidence' | 'MediaReasoning' | 'SpeechTranscription'
 
 type GatewayProductStatus = {
   features: {
@@ -28,7 +27,6 @@ type GatewayProductStatus = {
 type CapabilitySnapshotDependencies = {
   gatewayConfigured: () => boolean
   gatewayStatus: () => Promise<GatewayProductStatus>
-  consentStatus: () => Promise<{ available: boolean; active: boolean }>
   mediaToolchainStatus: () => Promise<{ ffmpeg: { available: boolean }; ffprobe: { available: boolean } }>
   browserStatus: () => BrowserCapabilityStatus
   scheduledRuns: () => Promise<ProductScheduledTaskRun[]>
@@ -58,7 +56,7 @@ function parseGatewayProductStatus(value: unknown): GatewayProductStatus {
     throw new Error('CAPABILITY_STATUS_INVALID')
   }
   const usage = {} as GatewayProductStatus['usage']
-  for (const capability of ['TextReasoning', 'VisualEvidence', 'SpeechTranscription'] as const) {
+  for (const capability of ['TextReasoning', 'VisualEvidence', 'MediaReasoning', 'SpeechTranscription'] as const) {
     const entry = capabilities[capability]
     if (!isRecord(entry)) throw new Error('CAPABILITY_STATUS_INVALID')
     const remaining = boundedPercent(entry.remaining_percent)
@@ -98,10 +96,12 @@ async function readBoundedBody(response: Response): Promise<unknown> {
 }
 
 async function fetchGatewayStatus(): Promise<GatewayProductStatus> {
-  const url = `${getQfGatewayUrl().replace(/\/+$/, '')}/healthz`
+  const target = productGatewayTarget()
+  if (!target) throw new Error('CAPABILITY_STATUS_UNREACHABLE')
+  const url = `${target.baseUrl}/healthz`
   const network = await loadNetworkSettings()
   const response = await fetch(url, {
-    headers: { Authorization: `Bearer ${getQfGatewayToken()}` },
+    headers: { Authorization: `Bearer ${target.token}` },
     signal: AbortSignal.timeout(Math.min(network.aiRequestTimeoutMs, 5_000)),
     ...getNetworkProxyFetchOptions(network, url),
   })
@@ -114,13 +114,9 @@ function remoteCapability(
   gateway: GatewayProductStatus,
   feature: keyof GatewayProductStatus['features'],
   metered: MeteredCapability | null,
-  consentActive: boolean,
 ): ProductCapability {
   if (!gateway.features[feature]) {
     return { id, state: 'degraded', reason_code: 'service_unavailable', repair_action: 'check_update' }
-  }
-  if (metered && !consentActive) {
-    return { id, state: 'configured', reason_code: 'privacy_confirmation_required', repair_action: 'open_privacy' }
   }
   if (!metered) return { id, state: 'available' }
   const usage = gateway.usage[metered]
@@ -145,9 +141,8 @@ export class ProductCapabilitySnapshotService {
   constructor(overrides: Partial<CapabilitySnapshotDependencies> = {}) {
     const media = overrides.mediaToolchainStatus ? null : new MediaProjectService()
     this.deps = {
-      gatewayConfigured: qfGatewayConfigured,
+      gatewayConfigured: productGatewayConfigured,
       gatewayStatus: fetchGatewayStatus,
-      consentStatus: () => remoteDataEgressConsentService.status(),
       mediaToolchainStatus: overrides.mediaToolchainStatus ?? (() => media!.toolchainStatus()),
       browserStatus: () => getChromeSessionBridge().status(),
       scheduledRuns: () => productScheduledTaskService.listRecentRuns(100),
@@ -180,13 +175,12 @@ export class ProductCapabilitySnapshotService {
       return unavailableRemoteCapabilities('configured', 'installation_activation_required')
     }
     try {
-      const [gateway, consent] = await Promise.all([this.deps.gatewayStatus(), this.deps.consentStatus()])
-      const consentActive = consent.available && consent.active
+      const gateway = await this.deps.gatewayStatus()
       return [
-        remoteCapability('assistant', gateway, 'assistant', 'TextReasoning', consentActive),
-        remoteCapability('image_understanding', gateway, 'image_understanding', 'VisualEvidence', consentActive),
-        remoteCapability('image_creation', gateway, 'image_creation', null, consentActive),
-        remoteCapability('voice_input', gateway, 'voice_input', 'SpeechTranscription', consentActive),
+        remoteCapability('assistant', gateway, 'assistant', 'TextReasoning'),
+        remoteCapability('image_understanding', gateway, 'image_understanding', 'VisualEvidence'),
+        remoteCapability('image_creation', gateway, 'image_creation', null),
+        remoteCapability('voice_input', gateway, 'voice_input', 'SpeechTranscription'),
       ]
     } catch {
       return unavailableRemoteCapabilities('degraded', 'service_unreachable')

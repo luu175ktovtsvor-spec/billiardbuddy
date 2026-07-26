@@ -1,38 +1,28 @@
-/**
- * Claude Code Desktop App — HTTP + WebSocket Server
- *
- * 为桌面端 UI 提供 REST API 和 WebSocket 实时通信。
- * 读写与 CLI 完全相同的文件系统，确保 CLI/UI 数据互通。
- */
+/** BilliardBuddy local Product Server for the desktop GUI. */
 
 import { handleApiRequest } from './router.js'
-import { handleWebSocket, type WebSocketData } from './ws/handler.js'
+import { productTaskWebSocket, type ProductTaskWebSocketData } from './product/taskWebSocket.js'
 import { resolveCors, type CorsResolution } from './middleware/cors.js'
 import { requireAuth } from './middleware/auth.js'
-import { teamWatcher } from './services/teamWatcher.js'
-import { cronScheduler } from './services/cronScheduler.js'
-import { handleProxyRequest } from './proxy/handler.js'
-import { ProviderService } from './services/providerService.js'
-import { ensureQfGatewayRegistration } from './services/qfGatewayProvider.js'
-import { conversationService } from './services/conversationService.js'
-import { enableConfigs } from '../utils/config.js'
+import { CronScheduler, cronScheduler } from './services/cronScheduler.js'
 import { diagnosticsService } from './services/diagnosticsService.js'
-import { ensurePersistentStorageUpgraded } from './services/persistentStorageMigrations.js'
 import { consumeMediaUiCapability, createMediaApiHandler } from './api/media.js'
 import { isLongMediaRequestPath } from './mediaRequestTimeout.js'
 import { handleProductApi } from './api/product.js'
-import { resetProductTaskServiceForServer } from './product/taskService.js'
-import { ProductTaskMediaService } from './product/taskMediaService.js'
+import { productTaskService as liveProductTaskService, resetProductTaskServiceForServer } from './product/taskService.js'
 import { MediaProjectService } from './services/mediaProjectService.js'
-import { configureMediaWorkbenchDiscovery } from '../skills/bundled/mediaWorkbenches.js'
 import { voiceOperationService } from './services/voiceOperationService.js'
-import { getClaudeConfigHomeDir } from '../utils/envUtils.js'
+import { getProductConfigDir } from './product/productPaths.js'
 import { configureChromeSessionBridge, getChromeSessionBridge } from './services/chromeSessionBridge.js'
 import { ProductCapabilitySnapshotService } from './services/productCapabilitySnapshot.js'
 import { ProductResourceScheduler } from './product/resourceScheduler.js'
 import { ProductStorageMigrationCoordinator } from './services/productStorageMigrations.js'
 import { CronService } from './services/cronService.js'
-import { migrateSupportedScheduledTaskRuns } from './services/cronScheduler.js'
+import { ProductScheduledTaskService } from './product/scheduledTaskService.js'
+import { createProductTaskReviewService } from './product/taskReviewService.js'
+import { createRuntimeTaskLifecycleParticipants } from './product/taskLifecycleParticipants.js'
+import { ProductCoreOperationBridge } from './product/productCoreOperationBridge.js'
+import { migrateSupportedScheduledTaskRuns, purgeScheduledTaskRunsForDeletedTask } from './services/cronScheduler.js'
 import * as path from 'node:path'
 
 function readArgValue(flag: string): string | undefined {
@@ -50,12 +40,7 @@ function resolveServerOptions() {
   const portArg = readArgValue('--port')
   const port = Number.parseInt(portArg || process.env.SERVER_PORT || '3456', 10)
   const host = readArgValue('--host') || process.env.SERVER_HOST || '127.0.0.1'
-  const cliPath = readArgValue('--cli-path')
   const authRequired = hasArgFlag('--auth-required')
-
-  if (cliPath) {
-    process.env.CLAUDE_CLI_PATH = cliPath
-  }
 
   return { port, host, authRequired }
 }
@@ -63,6 +48,7 @@ function resolveServerOptions() {
 const SERVER_OPTIONS = resolveServerOptions()
 const PORT = SERVER_OPTIONS.port
 const HOST = SERVER_OPTIONS.host
+let liveCronScheduler: CronScheduler = cronScheduler
 
 function withCors(response: Response, cors: CorsResolution): Response {
   const headers = new Headers(response.headers)
@@ -109,20 +95,39 @@ export function resolveLocalServerHost(host: string): string {
 
 export function startServer(port = PORT, host = HOST) {
   const localHost = resolveLocalServerHost(host)
-  // Consume the Electron-owned capability once. Product command discovery
-  // needs only this boolean; it never receives the raw confirmation value.
   const mediaUiCapability = consumeMediaUiCapability()
-  configureMediaWorkbenchDiscovery(Boolean(mediaUiCapability))
-  const productTaskService = resetProductTaskServiceForServer()
-  const browserRoot = path.join(getClaudeConfigHomeDir(), 'billiardbuddy', 'browser')
-  const chromeSessionBridge = configureChromeSessionBridge({
+  const configDir = getProductConfigDir()
+  const cronService = new CronService(configDir)
+  const coreOperationBridge = new ProductCoreOperationBridge()
+  let chromeSessionBridge: ReturnType<typeof configureChromeSessionBridge> | undefined
+  let desktopResourceScheduler: ProductResourceScheduler | undefined
+  const productTaskService = resetProductTaskServiceForServer({
+    additionalLifecycleParticipants: createRuntimeTaskLifecycleParticipants({
+      schedules: cronService,
+      recruiting: () => chromeSessionBridge,
+      resources: () => desktopResourceScheduler,
+      operationJournal: coreOperationBridge,
+      scheduledRuns: {
+        purgeTaskRuns: (taskId, scheduleIds) => purgeScheduledTaskRunsForDeletedTask(taskId, scheduleIds, configDir),
+      },
+    }),
+  })
+  const scheduler = new CronScheduler(cronService, productTaskService)
+  liveCronScheduler = scheduler
+  const scheduledTasks = new ProductScheduledTaskService(cronService, scheduler, {
+    get: taskId => productTaskService.getScheduledTaskContext(taskId),
+  })
+  const taskReview = createProductTaskReviewService(productTaskService)
+  const browserRoot = path.join(getProductConfigDir(), 'billiardbuddy', 'browser')
+  desktopResourceScheduler = new ProductResourceScheduler({ statePath: productTaskService.workerSchedulerStatePath() })
+  chromeSessionBridge = configureChromeSessionBridge({
     statePath: path.join(browserRoot, 'actions.json'),
     descriptorPath: path.join(browserRoot, 'native-bridge.json'),
-    scheduler: new ProductResourceScheduler({ statePath: productTaskService.workerSchedulerStatePath() }),
+    scheduler: desktopResourceScheduler,
   })
   let productTaskQueueRecovery: Promise<void> | undefined
-  // All media-facing routes share one process-local service so video exports from
-  // task views and the media workbench use the same FFmpeg admission queue.
+  // The independent image and video workbenches share one process-local media
+  // service. Chat/ProductTask routes never receive this service.
   const mediaService = new MediaProjectService()
   if (process.env.NODE_ENV !== 'test') {
     void voiceOperationService.purgeExpired().catch(error => diagnosticsService.recordEvent({
@@ -136,17 +141,16 @@ export function startServer(port = PORT, host = HOST) {
     mediaService,
     mediaUiCapability,
   )
-  const productMedia = new ProductTaskMediaService(productTaskService, mediaService)
   const productCapabilitySnapshots = new ProductCapabilitySnapshotService({
     mediaToolchainStatus: () => mediaService.toolchainStatus(),
+    scheduledRuns: () => scheduledTasks.listRecentRuns(100),
   })
-  const configDir = getClaudeConfigHomeDir()
   const productStorageUpgrade = new ProductStorageMigrationCoordinator(
     configDir,
     {
-      migrateManagedSettings: () => ensurePersistentStorageUpgraded(configDir),
       migrateProductTasks: () => productTaskService.migrateSupportedStorage(),
       migrateMedia: () => mediaService.migrateSupportedStorage(),
+      migrateVoice: () => voiceOperationService.migrateSupportedStorage(),
       migrateScheduledTasks: () => new CronService(configDir).migrateSupportedStorage(),
       migrateScheduledTaskRuns: () => migrateSupportedScheduledTaskRuns(configDir),
     },
@@ -167,13 +171,12 @@ export function startServer(port = PORT, host = HOST) {
       url,
       segments,
       productTaskService,
-      undefined,
-      productMedia,
-      undefined,
+      taskReview,
+      scheduledTasks,
       productCapabilitySnapshots,
+      coreOperationBridge,
     )
   )
-  enableConfigs()
   // Don't hijack the global console / process handlers under `bun test`:
   // a test that boots the server would otherwise route every test-side
   // console.error/warn into the user's real diagnostics file.
@@ -191,10 +194,10 @@ export function startServer(port = PORT, host = HOST) {
     SERVER_OPTIONS.authRequired ||
     process.env.SERVER_AUTH_REQUIRED === '1'
 
-  let server: ReturnType<typeof Bun.serve<WebSocketData>>
+  let server: ReturnType<typeof Bun.serve<ProductTaskWebSocketData>>
 
   try {
-    server = Bun.serve<WebSocketData>({
+    server = Bun.serve<ProductTaskWebSocketData>({
       port,
       hostname: localHost,
       idleTimeout: 60,
@@ -251,40 +254,6 @@ export function startServer(port = PORT, host = HOST) {
               productTaskId: taskId,
               connectedAt: Date.now(),
               channel: 'product',
-              sdkToken: null,
-              serverPort,
-              serverHost: localConnectHost,
-            },
-          })
-          if (upgraded) return undefined
-          return new Response('WebSocket upgrade failed', { status: 400 })
-        }
-
-        // Internal SDK WebSocket used by the spawned Claude CLI.
-        if (url.pathname.startsWith('/sdk/')) {
-          if (cors.rejected) {
-            return corsRejectedResponse(cors)
-          }
-
-          if (forceAuth) {
-            const authError = await requireAuth(req, url.searchParams.get('token'))
-            if (authError) {
-              return withCors(authError, cors)
-            }
-          }
-
-          const sessionId = url.pathname.split('/').pop() || ''
-          if (!sessionId || !/^[0-9a-zA-Z_-]{1,64}$/.test(sessionId)) {
-            return new Response('Invalid session ID', { status: 400 })
-          }
-          const upgraded = server.upgrade(req, {
-            data: {
-              sessionId,
-              connectedAt: Date.now(),
-              channel: 'sdk',
-              sdkToken: url.searchParams.get('token'),
-              serverPort,
-              serverHost: localConnectHost,
             },
           })
           if (upgraded) return undefined
@@ -331,36 +300,6 @@ export function startServer(port = PORT, host = HOST) {
           }
         }
 
-        // Proxy — protocol-translating reverse proxy for OpenAI-compatible APIs
-        if (url.pathname.startsWith('/proxy/')) {
-          if (cors.rejected) {
-            return corsRejectedResponse(cors)
-          }
-
-          if (forceAuth) {
-            const authError = await requireAuth(req)
-            if (authError) {
-              return withCors(authError, cors)
-            }
-          }
-          try {
-            const response = await handleProxyRequest(req, url)
-            return withCors(response, cors)
-          } catch (error) {
-            void diagnosticsService.recordEvent({
-              type: 'proxy_request_failed',
-              severity: 'error',
-              summary: error instanceof Error ? error.message : String(error),
-              details: { path: url.pathname, method: req.method, error },
-            })
-            console.error('[Server] Proxy error:', error)
-            return withCors(Response.json(
-              { type: 'error', error: { type: 'api_error', message: 'Internal proxy error' } },
-              { status: 500 },
-            ), cors)
-          }
-        }
-
         // Health check
         if (url.pathname === '/health') {
           if (cors.rejected) {
@@ -380,55 +319,42 @@ export function startServer(port = PORT, host = HOST) {
         return new Response('Not Found', { status: 404 })
       },
 
-      websocket: handleWebSocket,
+      websocket: productTaskWebSocket,
     })
+    if (typeof server.port !== 'number') throw new Error('SERVER_PORT_UNAVAILABLE')
     serverPort = server.port
-    ProviderService.setServerPort(serverPort)
     void chromeSessionBridge.activate(`http://${localConnectHost}:${serverPort}`).catch(() => undefined)
   } catch (error) {
     const originalMessage = error instanceof Error ? error.message.trim() : ''
     const message = originalMessage && originalMessage !== 'Error'
       ? originalMessage
       : `Failed to start server. Is port ${port} in use?`
-    throw new Error(message, { cause: error })
+    const startupError = new Error(message)
+    startupError.cause = error
+    // Bun can surface a Bun.serve bind failure with a stack whose first line is
+    // only "Error" even after it is wrapped. Keep the actionable startup
+    // reason explicit for both stderr and the diagnostics record.
+    if (!startupError.stack?.includes(message)) {
+      startupError.stack = `${startupError.name}: ${message}\n${startupError.stack ?? ''}`
+    }
+    throw startupError
   }
 
-  // Product-managed gateway auto-routing: when the gateway is configured (URL+token)
-  // and the user hasn't chosen their own provider, route the agent through the local
-  // proxy → gateway. Idempotent; never overwrites a user's active provider.
-  // startServer is synchronous, so registration is kicked off (not awaited) here —
-  // but it is memoized, and every session-start path awaits whenQfGatewayReady()
-  // before reading the active provider, so the first session never races a
-  // pre-registration null activeId. Kept AFTER setServerPort so the proxy base URL
-  // synced into settings carries the finalized port.
-  void productStorageUpgrade
-    .then(() => ensureQfGatewayRegistration(new ProviderService()))
-    .catch(error => diagnosticsService.recordEvent({
-      type: 'storage_migration_failed',
-      severity: 'error',
-      summary: 'Product storage migration failed',
-      details: { error },
-    }))
-
-  // Start watching ~/.claude/teams/ for real-time WebSocket push
-  teamWatcher.start()
-
   // Never execute an unattended task against a partially migrated store.
-  void productStorageUpgrade.then(() => cronScheduler.start()).catch(() => undefined)
+  void productStorageUpgrade.then(() => scheduler.start()).catch(() => undefined)
 
   console.log(`[Server] BilliardBuddy Agent service running at http://${localHost}:${serverPort}`)
   return server
 }
 
-// ─── Graceful shutdown: kill all CLI subprocesses on exit ────────────────────
+// ─── Graceful shutdown: stop product workers and local services ──────────────
 
 let shutdownInProgress: Promise<void> | null = null
 
 export async function stopServerRuntimeForShutdown(
-  options: { waitForCli?: boolean } = {},
+  _options: { waitForCli?: boolean } = {},
 ): Promise<void> {
-  teamWatcher.stop()
-  cronScheduler.stop()
+  liveCronScheduler.stop()
   try {
     await getChromeSessionBridge().deactivate()
   } catch {
@@ -436,15 +362,8 @@ export async function stopServerRuntimeForShutdown(
     // is configured. There is no descriptor or live session to clean up then.
   }
 
-  const active = conversationService.getActiveSessions()
-  if (active.length > 0) {
-    console.log(`[Server] Shutting down — killing ${active.length} CLI subprocess(es)`)
-    if (options.waitForCli === false) {
-      conversationService.stopAllSessions()
-    } else {
-      await conversationService.stopAllSessionsAndWait()
-    }
-  }
+  const { shutdownDispatcherFor } = await import('./product/taskRunDispatchBridge.js')
+  await shutdownDispatcherFor(liveProductTaskService)
 }
 
 function cleanupAllSessions() {

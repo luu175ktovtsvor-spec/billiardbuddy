@@ -146,7 +146,7 @@ afterEach(() => {
 
 describe('TaskIndex', () => {
   it('renders only the safe task-list error supplied by the product store', () => {
-    const rawError = 'DeepSeek provider rejected /private/.claude/settings.json token'
+    const rawError = 'DeepSeek provider rejected /private/.BilliardBuddy/settings.json token'
     renderIndex(makeIndex(), { error: '暂时无法读取任务，请稍后重试。' })
 
     const alert = screen.getByRole('alert')
@@ -595,7 +595,7 @@ describe('TaskIndex', () => {
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
 
-  it('does not show a command choice while Skill command discovery is loading or unavailable', async () => {
+  it('keeps the built-in compact command usable while Skill discovery is loading or unavailable', async () => {
     let rejectSkillCommands: (error: Error) => void = () => undefined
     mocks.listSkillCommands.mockImplementation(() => new Promise((_, reject) => {
       rejectSkillCommands = reject
@@ -604,12 +604,14 @@ describe('TaskIndex', () => {
 
     fireEvent.change(screen.getByLabelText('你想完成什么？'), { target: { value: '/' } })
 
-    expect(await screen.findByRole('status')).toHaveTextContent('正在读取可用命令')
+    expect(await screen.findByRole('button', { name: /\/compact/ })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /\/复盘今天经营/ })).not.toBeInTheDocument()
 
     rejectSkillCommands(new Error('服务不可用'))
 
-    expect(await screen.findByRole('alert')).toHaveTextContent('无法读取可用命令：暂时无法读取可用命令')
+    await waitFor(() => expect(mocks.listSkillCommands).toHaveBeenCalledWith('/workspace/billiard'))
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /\/compact/ })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /\/复盘今天经营/ })).not.toBeInTheDocument()
   })
 

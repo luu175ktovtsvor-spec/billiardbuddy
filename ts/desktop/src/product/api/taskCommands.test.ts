@@ -21,7 +21,7 @@ describe('productTaskCommandsApi', () => {
     const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout')
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(Response.json({
-        agents: [{ displayName: 'agent-guide', runtimeName: 'claude-code-guide' }],
+        agents: [{ displayName: 'agent-guide', runtimeName: 'product-guide' }],
       }))
       .mockResolvedValueOnce(Response.json({
         commands: [{
@@ -33,7 +33,7 @@ describe('productTaskCommandsApi', () => {
     vi.stubGlobal('fetch', fetchMock)
 
     await expect(productTaskCommandsApi.listAgents('/workspace/桌球厅')).resolves.toEqual({
-      agents: [{ displayName: 'agent-guide', runtimeName: 'claude-code-guide' }],
+      agents: [{ displayName: 'agent-guide', runtimeName: 'product-guide' }],
     })
     await expect(productTaskCommandsApi.listSkills('/workspace/桌球厅')).resolves.toEqual({
       commands: [{

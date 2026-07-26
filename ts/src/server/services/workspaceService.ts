@@ -1,12 +1,9 @@
 import * as fs from 'node:fs/promises'
+import type { Stats } from 'node:fs'
 import { execFile as execFileCallback } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import * as path from 'node:path'
 import { promisify } from 'node:util'
-import { diffLines } from 'diff'
-import type { MessageEntry } from './sessionService.js'
-import type { FileHistorySnapshot } from '../../utils/fileHistory.js'
-import { getClaudeConfigHomeDir } from '../../utils/envUtils.js'
 import { isWithinRegisteredFilesystemRoot } from './filesystemAccessRoots.js'
 import {
   isSameOrInsidePathForPlatform,
@@ -192,7 +189,7 @@ type WorkspacePathResolution = {
 type WorkspaceStatResult =
   | {
       kind: 'ok'
-      stat: Awaited<ReturnType<typeof fs.stat>>
+      stat: Stats
     }
   | {
       kind: 'missing'
@@ -242,10 +239,6 @@ type UntrackedDiffResult =
       message: string
   }
 
-type SessionFileChange = WorkspaceChangedFile & {
-  diff?: string
-}
-
 export function parseStatus(code: string): WorkspaceFileStatus {
   const x = code[0] ?? ' '
   const y = code[1] ?? ' '
@@ -265,12 +258,6 @@ export class WorkspaceService {
     private readonly resolveSessionWorkDir: (
       sessionId: string,
     ) => Promise<string | null>,
-    private readonly resolveSessionMessages: (
-      sessionId: string,
-    ) => Promise<MessageEntry[]> = async () => [],
-    private readonly resolveSessionFileHistorySnapshots: (
-      sessionId: string,
-    ) => Promise<FileHistorySnapshot[]> = async () => [],
   ) {}
 
   async getStatus(sessionId: string): Promise<WorkspaceStatusResult> {
@@ -299,28 +286,14 @@ export class WorkspaceService {
     }
 
     const repoInfo = await this.getGitRepoInfo(workDir)
-    const sessionChanges = this.mergeSessionFileChanges(
-      [
-        ...await this.getSessionFileChanges(
-          sessionId,
-          workspaceInfo.workspaceRoot,
-        ),
-        ...await this.getFileHistoryChanges(
-          sessionId,
-          workspaceInfo.workspaceRoot,
-        ),
-      ],
-    )
-
     if (repoInfo.kind === 'not_git_repo') {
-      sessionChanges.sort((a, b) => a.path.localeCompare(b.path))
       return {
         state: 'ok',
         workDir,
         repoName: path.basename(workspaceInfo.workspaceRoot),
         branch: null,
         isGitRepo: false,
-        changedFiles: sessionChanges.map(({ diff: _diff, ...change }) => change),
+        changedFiles: [],
       }
     }
     if (repoInfo.kind === 'error') {
@@ -404,20 +377,6 @@ export class WorkspaceService {
     }
 
     changedFiles.sort((a, b) => a.path.localeCompare(b.path))
-    const changedFileByPath = new Map(changedFiles.map((file) => [file.path, file]))
-    for (const change of sessionChanges) {
-      if (!changedFileByPath.has(change.path)) {
-        changedFileByPath.set(change.path, {
-          path: change.path,
-          oldPath: change.oldPath,
-          status: change.status,
-          additions: change.additions,
-          deletions: change.deletions,
-        })
-      }
-    }
-    const mergedChangedFiles = [...changedFileByPath.values()]
-      .sort((a, b) => a.path.localeCompare(b.path))
 
     return {
       state: 'ok',
@@ -425,7 +384,7 @@ export class WorkspaceService {
       repoName: path.basename(repoInfo.repoRoot),
       branch: repoInfo.branch,
       isGitRepo: true,
-      changedFiles: mergedChangedFiles,
+      changedFiles,
     }
   }
 
@@ -446,7 +405,7 @@ export class WorkspaceService {
         error: stat.message,
       }
     }
-    if (stat.kind === 'missing' || !stat.stat.isFile()) {
+    if (stat.kind !== 'ok' || !stat.stat.isFile()) {
       return {
         state: 'missing',
         path: resolvedPath.relativePath,
@@ -454,6 +413,7 @@ export class WorkspaceService {
         size: 0,
       }
     }
+    const fileSize = Number(stat.stat.size)
 
     const language = this.detectLanguage(resolvedPath.absolutePath)
     const imageMimeType = this.detectImageMimeType(resolvedPath.absolutePath)
@@ -474,33 +434,33 @@ export class WorkspaceService {
       typeof maxImagePreviewBytes === 'number' &&
       Number.isFinite(maxImagePreviewBytes) &&
       maxImagePreviewBytes >= 0 &&
-      stat.stat.size > maxImagePreviewBytes
+      fileSize > maxImagePreviewBytes
     ) {
       return {
         state: 'too_large',
         path: resolvedPath.relativePath,
         mimeType: imageMimeType,
         language: 'image',
-        size: stat.stat.size,
+        size: fileSize,
       }
     }
 
     if (
       videoPreview &&
-      stat.stat.size > videoPreview.maxBytes
+      fileSize > videoPreview.maxBytes
     ) {
       return {
         state: 'too_large',
         path: resolvedPath.relativePath,
         mimeType: videoPreview.mimeType,
         language: 'video',
-        size: stat.stat.size,
+        size: fileSize,
       }
     }
 
     let content: Buffer
     try {
-      if (!imageMimeType && !videoPreview && stat.stat.size > MAX_PREVIEW_BYTES) {
+      if (!imageMimeType && !videoPreview && fileSize > MAX_PREVIEW_BYTES) {
         const fileHandle = await fs.open(resolvedPath.absolutePath, 'r')
         try {
           const previewBuffer = Buffer.alloc(MAX_PREVIEW_BYTES)
@@ -517,7 +477,7 @@ export class WorkspaceService {
         state: 'error',
         path: resolvedPath.relativePath,
         language,
-        size: stat.stat.size,
+        size: fileSize,
         error: this.formatFsError(
           'Failed to read workspace file',
           resolvedPath.absolutePath,
@@ -533,7 +493,7 @@ export class WorkspaceService {
         dataUrl: `data:${imageMimeType};base64,${content.toString('base64')}`,
         mimeType: imageMimeType,
         language: 'image',
-        size: stat.stat.size,
+        size: fileSize,
       }
     }
 
@@ -545,7 +505,7 @@ export class WorkspaceService {
         dataUrl: `data:${videoPreview.mimeType};base64,${content.toString('base64')}`,
         mimeType: videoPreview.mimeType,
         language: 'video',
-        size: stat.stat.size,
+        size: fileSize,
       }
     }
 
@@ -554,7 +514,7 @@ export class WorkspaceService {
         state: 'binary',
         path: resolvedPath.relativePath,
         language: 'binary',
-        size: stat.stat.size,
+        size: fileSize,
       }
     }
 
@@ -564,8 +524,8 @@ export class WorkspaceService {
       previewType: 'text',
       content: content.toString('utf8'),
       language,
-      size: stat.stat.size,
-      truncated: content.length < stat.stat.size,
+      size: fileSize,
+      truncated: content.length < fileSize,
       readBytes: content.length,
     }
   }
@@ -583,7 +543,7 @@ export class WorkspaceService {
         error: stat.message,
       }
     }
-    if (stat.kind === 'missing' || !stat.stat.isFile()) {
+    if (stat.kind !== 'ok' || !stat.stat.isFile()) {
       return { state: 'missing', path: resolvedPath.relativePath }
     }
 
@@ -618,7 +578,7 @@ export class WorkspaceService {
         error: stat.message,
       }
     }
-    if (stat.kind === 'missing' || !stat.stat.isDirectory()) {
+    if (stat.kind !== 'ok' || !stat.stat.isDirectory()) {
       return { state: 'missing', path: resolvedPath.relativePath, entries: [] }
     }
 
@@ -691,14 +651,6 @@ export class WorkspaceService {
       return { state: 'not_git_repo', path: resolvedPath.relativePath }
     }
     if (repoInfo.kind === 'error') {
-      const storedDiff = await this.getStoredWorkspaceDiff(
-        sessionId,
-        resolvedPath.workspaceRoot,
-        resolvedPath.relativePath,
-      )
-      if (storedDiff) {
-        return { state: 'ok', path: resolvedPath.relativePath, diff: storedDiff }
-      }
       return {
         state: 'error',
         path: resolvedPath.relativePath,
@@ -708,14 +660,6 @@ export class WorkspaceService {
 
     const statusEntries = await this.getStatusEntries(repoInfo.repoRoot)
     if (statusEntries.kind === 'error') {
-      const storedDiff = await this.getStoredWorkspaceDiff(
-        sessionId,
-        resolvedPath.workspaceRoot,
-        resolvedPath.relativePath,
-      )
-      if (storedDiff) {
-        return { state: 'ok', path: resolvedPath.relativePath, diff: storedDiff }
-      }
       return {
         state: 'error',
         path: resolvedPath.relativePath,
@@ -739,14 +683,6 @@ export class WorkspaceService {
     )
 
     if (!statusEntry) {
-      const storedDiff = await this.getStoredWorkspaceDiff(
-        sessionId,
-        resolvedPath.workspaceRoot,
-        resolvedPath.relativePath,
-      )
-      if (storedDiff) {
-        return { state: 'ok', path: resolvedPath.relativePath, diff: storedDiff }
-      }
       return { state: 'missing', path: resolvedPath.relativePath }
     }
 
@@ -786,346 +722,14 @@ export class WorkspaceService {
 
   private async getStoredWorkspaceDiff(
     sessionId: string,
-    workspaceRoot: string,
+    _workspaceRoot: string,
     relativePath: string,
   ): Promise<string | null> {
-    const sessionDiff = await this.getSessionDiff(sessionId, relativePath)
-    if (sessionDiff) return sessionDiff
-
-    return await this.getFileHistoryDiff(
-      sessionId,
-      workspaceRoot,
-      relativePath,
-    )
-  }
-
-  private async getSessionDiff(
-    sessionId: string,
-    relativePath: string,
-  ): Promise<string | null> {
-    const workDir = await this.requireWorkDir(sessionId)
-    const changes = await this.getSessionFileChanges(sessionId, workDir)
-    const change = changes.find((entry) => entry.path === relativePath)
-    if (!change) return null
-    if (change.diff?.trim()) return change.diff
-
     const file = await this.readFile(sessionId, relativePath)
     if (file.state !== 'ok' || file.previewType === 'image' || typeof file.content !== 'string') {
       return null
     }
     return this.buildSyntheticDiff('/dev/null', relativePath, '', file.content)
-  }
-
-  private async getSessionFileChanges(
-    sessionId: string,
-    workspaceRoot: string,
-  ): Promise<SessionFileChange[]> {
-    let messages: MessageEntry[]
-    try {
-      messages = await this.resolveSessionMessages(sessionId)
-    } catch {
-      return []
-    }
-
-    const changes = new Map<string, SessionFileChange>()
-
-    for (const message of messages) {
-      if (message.type !== 'tool_use' || !Array.isArray(message.content)) continue
-
-      for (const block of message.content) {
-        if (!block || typeof block !== 'object') continue
-        const record = block as Record<string, unknown>
-        if (record.type !== 'tool_use' || typeof record.name !== 'string') continue
-        const input = record.input
-        if (!input || typeof input !== 'object') continue
-
-        for (const change of this.extractSessionChangesFromTool(
-          record.name,
-          input as Record<string, unknown>,
-          workspaceRoot,
-        )) {
-          const existing = changes.get(change.path)
-          if (!existing) {
-            changes.set(change.path, change)
-            continue
-          }
-
-          changes.set(change.path, {
-            ...existing,
-            status: existing.status === 'added' ? existing.status : change.status,
-            additions: existing.additions + change.additions,
-            deletions: existing.deletions + change.deletions,
-            diff: [existing.diff, change.diff].filter(Boolean).join('\n'),
-          })
-        }
-      }
-    }
-
-    return [...changes.values()]
-  }
-
-  private async getFileHistoryChanges(
-    sessionId: string,
-    workspaceRoot: string,
-  ): Promise<SessionFileChange[]> {
-    let snapshots: FileHistorySnapshot[]
-    try {
-      snapshots = await this.resolveSessionFileHistorySnapshots(sessionId)
-    } catch {
-      return []
-    }
-    if (snapshots.length === 0) return []
-
-    const changes: SessionFileChange[] = []
-    const trackedPaths = this.collectFileHistoryTrackedPaths(snapshots)
-
-    for (const trackingPath of trackedPaths) {
-      const relativePath = this.resolveFileHistoryRelativePath(trackingPath, workspaceRoot)
-      if (!relativePath) continue
-
-      const beforeContent = await this.readFileHistoryBackupContent(
-        sessionId,
-        this.getEarliestFileHistoryBackupName(trackingPath, snapshots),
-      )
-      if (beforeContent === undefined) continue
-
-      const absolutePath = path.resolve(workspaceRoot, relativePath)
-      const afterContent = await this.readTextFileOrNull(absolutePath)
-      if (beforeContent === afterContent) continue
-
-      const stats = this.countDiffStats(beforeContent ?? '', afterContent ?? '')
-      changes.push({
-        path: relativePath,
-        status: beforeContent === null
-          ? 'added'
-          : afterContent === null
-            ? 'deleted'
-            : 'modified',
-        additions: stats.additions,
-        deletions: stats.deletions,
-        diff: this.buildSyntheticDiff(
-          beforeContent === null ? '/dev/null' : relativePath,
-          afterContent === null ? '/dev/null' : relativePath,
-          beforeContent ?? '',
-          afterContent ?? '',
-        ),
-      })
-    }
-
-    return changes
-  }
-
-  private async getFileHistoryDiff(
-    sessionId: string,
-    workspaceRoot: string,
-    relativePath: string,
-  ): Promise<string | null> {
-    const changes = await this.getFileHistoryChanges(sessionId, workspaceRoot)
-    return changes.find((change) => change.path === relativePath)?.diff ?? null
-  }
-
-  private mergeSessionFileChanges(changes: SessionFileChange[]): SessionFileChange[] {
-    const merged = new Map<string, SessionFileChange>()
-    for (const change of changes) {
-      const existing = merged.get(change.path)
-      if (!existing) {
-        merged.set(change.path, change)
-        continue
-      }
-
-      merged.set(change.path, {
-        ...existing,
-        status: change.status,
-        additions: change.additions,
-        deletions: change.deletions,
-        diff: change.diff ?? existing.diff,
-      })
-    }
-    return [...merged.values()]
-  }
-
-  private collectFileHistoryTrackedPaths(snapshots: FileHistorySnapshot[]): Set<string> {
-    const trackedPaths = new Set<string>()
-    for (const snapshot of snapshots) {
-      for (const trackingPath of Object.keys(snapshot.trackedFileBackups)) {
-        trackedPaths.add(trackingPath)
-      }
-    }
-    return trackedPaths
-  }
-
-  private getEarliestFileHistoryBackupName(
-    trackingPath: string,
-    snapshots: FileHistorySnapshot[],
-  ): string | null | undefined {
-    for (const snapshot of snapshots) {
-      const backup = snapshot.trackedFileBackups[trackingPath]
-      if (backup !== undefined) {
-        return backup.backupFileName
-      }
-    }
-    return undefined
-  }
-
-  private resolveFileHistoryRelativePath(
-    trackingPath: string,
-    workspaceRoot: string,
-  ): string | null {
-    const absolutePath = path.isAbsolute(trackingPath)
-      ? path.resolve(trackingPath)
-      : path.resolve(workspaceRoot, trackingPath)
-    if (!this.isWithinRoot(absolutePath, workspaceRoot)) return null
-    return this.normalizeRelativePath(path.relative(workspaceRoot, absolutePath))
-  }
-
-  private async readFileHistoryBackupContent(
-    sessionId: string,
-    backupFileName: string | null | undefined,
-  ): Promise<string | null | undefined> {
-    if (backupFileName === undefined) return undefined
-    if (backupFileName === null) return null
-    return await this.readTextFileOrNull(
-      path.join(getClaudeConfigHomeDir(), 'file-history', sessionId, backupFileName),
-    )
-  }
-
-  private async readTextFileOrNull(filePath: string): Promise<string | null> {
-    try {
-      const content = await fs.readFile(filePath)
-      if (content.includes(0)) return null
-      return content.toString('utf8')
-    } catch {
-      return null
-    }
-  }
-
-  private countDiffStats(oldContent: string, newContent: string): { additions: number; deletions: number } {
-    let additions = 0
-    let deletions = 0
-    for (const change of diffLines(oldContent, newContent)) {
-      if (change.added) additions += change.count || 0
-      if (change.removed) deletions += change.count || 0
-    }
-    return { additions, deletions }
-  }
-
-  private extractSessionChangesFromTool(
-    toolName: string,
-    input: Record<string, unknown>,
-    workspaceRoot: string,
-  ): SessionFileChange[] {
-    const normalizedToolName = toolName.toLowerCase()
-    if (normalizedToolName === 'write') {
-      const filePath = this.resolveSessionToolPath(input.file_path ?? input.path, workspaceRoot)
-      if (!filePath) return []
-      const content = typeof input.content === 'string' ? input.content : ''
-      return [{
-        path: filePath,
-        status: 'added',
-        additions: this.countChangedLines(content),
-        deletions: 0,
-        diff: this.buildSyntheticDiff('/dev/null', filePath, '', content),
-      }]
-    }
-
-    if (normalizedToolName === 'edit') {
-      const filePath = this.resolveSessionToolPath(input.file_path ?? input.path, workspaceRoot)
-      if (!filePath) return []
-      return [this.buildEditSessionChange(filePath, input)]
-    }
-
-    if (normalizedToolName === 'multiedit') {
-      const filePath = this.resolveSessionToolPath(input.file_path ?? input.path, workspaceRoot)
-      if (!filePath || !Array.isArray(input.edits)) return []
-      return input.edits
-        .filter((edit): edit is Record<string, unknown> => !!edit && typeof edit === 'object')
-        .map((edit) => this.buildEditSessionChange(filePath, edit))
-    }
-
-    if (normalizedToolName === 'notebookedit') {
-      const filePath = this.resolveSessionToolPath(
-        input.notebook_path ?? input.file_path ?? input.path,
-        workspaceRoot,
-      )
-      if (!filePath) return []
-      const oldString = typeof input.old_source === 'string' ? input.old_source : ''
-      const newString = typeof input.new_source === 'string' ? input.new_source : ''
-      return [{
-        path: filePath,
-        status: oldString ? 'modified' : 'added',
-        additions: this.countChangedLines(newString),
-        deletions: this.countChangedLines(oldString),
-        diff: this.buildSyntheticDiff(filePath, filePath, oldString, newString),
-      }]
-    }
-
-    if (normalizedToolName === 'apply_patch') {
-      return this.extractApplyPatchSessionChanges(input.patch, workspaceRoot)
-    }
-
-    return []
-  }
-
-  private buildEditSessionChange(
-    filePath: string,
-    input: Record<string, unknown>,
-  ): SessionFileChange {
-    const oldString = typeof input.old_string === 'string' ? input.old_string : ''
-    const newString = typeof input.new_string === 'string' ? input.new_string : ''
-    return {
-      path: filePath,
-      status: oldString ? 'modified' : 'added',
-      additions: this.countChangedLines(newString),
-      deletions: this.countChangedLines(oldString),
-      diff: this.buildSyntheticDiff(filePath, filePath, oldString, newString),
-    }
-  }
-
-  private extractApplyPatchSessionChanges(
-    patch: unknown,
-    workspaceRoot: string,
-  ): SessionFileChange[] {
-    if (typeof patch !== 'string') return []
-    const changes: SessionFileChange[] = []
-
-    for (const line of patch.split('\n')) {
-      const match = line.match(/^\*\*\* (?:Add|Update|Delete) File: (.+)$/)
-      if (!match?.[1]) continue
-      const filePath = this.resolveSessionToolPath(match[1], workspaceRoot)
-      if (!filePath) continue
-      const status: WorkspaceFileStatus = line.includes('Add File')
-        ? 'added'
-        : line.includes('Delete File')
-          ? 'deleted'
-          : 'modified'
-      changes.push({
-        path: filePath,
-        status,
-        additions: 0,
-        deletions: 0,
-      })
-    }
-
-    return changes
-  }
-
-  private resolveSessionToolPath(
-    filePath: unknown,
-    workspaceRoot: string,
-  ): string | null {
-    if (typeof filePath !== 'string' || !filePath.trim()) return null
-    const absolutePath = path.isAbsolute(filePath)
-      ? path.resolve(filePath)
-      : path.resolve(workspaceRoot, filePath)
-    if (!this.isWithinRoot(absolutePath, workspaceRoot)) return null
-    return this.normalizeRelativePath(path.relative(workspaceRoot, absolutePath))
-  }
-
-  private countChangedLines(value: string): number {
-    if (!value) return 0
-    return value.endsWith('\n')
-      ? value.split('\n').length - 1
-      : value.split('\n').length
   }
 
   private buildSyntheticDiff(
@@ -1791,7 +1395,7 @@ export class WorkspaceService {
     if (stat.kind === 'error') {
       return { kind: 'error', message: stat.message }
     }
-    if (stat.kind === 'missing' || !stat.stat.isFile()) {
+    if (stat.kind !== 'ok' || !stat.stat.isFile()) {
       return { kind: 'missing' }
     }
     if (stat.stat.size > MAX_UNTRACKED_DIFF_BYTES) {

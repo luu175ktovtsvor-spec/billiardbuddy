@@ -28,11 +28,11 @@ afterEach(() => {
 })
 
 describe('resolveProductGatewayConfig', () => {
-  it('reads the public URL/model from packaged product-config.json (no shell env)', () => {
+  it('reads the public URL and ignores packaged model selection', () => {
     const dir = tempDir()
     writeJson(dir, 'product-config.json', {
       gatewayUrl: 'https://gw.example/gw',
-      gatewayModel: 'qwen3-coder-plus',
+      gatewayModel: 'unregistered-model',
     })
     writeJson(dir, 'product-secrets.json', { gatewayBootstrapCredential: 'packaged-bootstrap', licenseKey: 'license-001' })
 
@@ -41,7 +41,6 @@ describe('resolveProductGatewayConfig', () => {
       url: 'https://gw.example/gw',
       token: 'packaged-bootstrap',
       licenseKey: 'license-001',
-      model: 'qwen3-coder-plus',
     })
   })
 
@@ -54,7 +53,7 @@ describe('resolveProductGatewayConfig', () => {
     expect(cfg.token).toBeUndefined()
   })
 
-  it('lets env override the packaged config for every field (dev/ops override)', () => {
+  it('lets env override the packaged URL and activation fields but not the model', () => {
     const dir = tempDir()
     writeJson(dir, 'product-config.json', { gatewayUrl: 'https://packaged/gw', gatewayModel: 'packaged-model' })
     writeJson(dir, 'product-secrets.json', { gatewayBootstrapCredential: 'packaged-bootstrap', licenseKey: 'packaged-license' })
@@ -62,15 +61,15 @@ describe('resolveProductGatewayConfig', () => {
     const cfg = resolveProductGatewayConfig({
       isPackaged: true,
       resourcesPath: dir,
-      env: { QF_GATEWAY_URL: 'https://override/gw', QF_GATEWAY_BOOTSTRAP_CREDENTIAL: 'env-bootstrap', QF_LICENSE_KEY: 'env-license', QF_GATEWAY_MODEL: 'env-model' },
+      env: { BB_GATEWAY_URL: 'https://override/gw', BB_GATEWAY_BOOTSTRAP_CREDENTIAL: 'env-bootstrap', BB_LICENSE_KEY: 'env-license', BB_GATEWAY_MODEL: 'env-model' },
     })
-    expect(cfg).toEqual({ url: 'https://override/gw', token: 'env-bootstrap', licenseKey: 'env-license', model: 'env-model' })
+    expect(cfg).toEqual({ url: 'https://override/gw', token: 'env-bootstrap', licenseKey: 'env-license' })
   })
 
-  it('does not treat legacy QF_GATEWAY_TOKEN as a bootstrap credential', () => {
+  it('does not treat legacy BB_GATEWAY_TOKEN as a bootstrap credential', () => {
     const cfg = resolveProductGatewayConfig({
       isPackaged: false,
-      env: { QF_GATEWAY_URL: 'https://gw.example/gw', QF_GATEWAY_TOKEN: 'legacy-access' },
+      env: { BB_GATEWAY_URL: 'https://gw.example/gw', BB_GATEWAY_TOKEN: 'legacy-access' },
     })
     expect(cfg.token).toBeUndefined()
     expect(() => requireProductGatewayConfig(cfg)).toThrow('missing bootstrap credential')
@@ -92,7 +91,7 @@ describe('resolveProductGatewayConfig', () => {
   it('returns undefined fields when no config files and no env are present', () => {
     const dir = tempDir()
     const cfg = resolveProductGatewayConfig({ isPackaged: true, resourcesPath: dir, env: {} })
-    expect(cfg).toEqual({ url: undefined, token: undefined, licenseKey: undefined, model: undefined })
+    expect(cfg).toEqual({ url: undefined, token: undefined, licenseKey: undefined })
   })
 
   it('tolerates malformed JSON without throwing', () => {
@@ -101,7 +100,7 @@ describe('resolveProductGatewayConfig', () => {
     const cfg = resolveProductGatewayConfig({
       isPackaged: true,
       resourcesPath: dir,
-      env: { QF_GATEWAY_URL: 'https://env-only/gw' },
+      env: { BB_GATEWAY_URL: 'https://env-only/gw' },
     })
     expect(cfg.url).toBe('https://env-only/gw')
   })
@@ -111,26 +110,26 @@ describe('applyGatewayConfigToEnv', () => {
   it('injects gateway config into the server env when absent', () => {
     const out = applyGatewayConfigToEnv(
       { PATH: '/usr/bin' },
-      { url: 'https://gw/gw', token: 'app-token', model: 'qwen3-coder-plus' },
+      { url: 'https://gw/gw', token: 'app-token' },
     )
-    expect(out.QF_GATEWAY_URL).toBe('https://gw/gw')
-    expect(out.QF_GATEWAY_TOKEN).toBeUndefined()
-    expect(out.QF_GATEWAY_MODEL).toBe('qwen3-coder-plus')
+    expect(out.BB_GATEWAY_URL).toBe('https://gw/gw')
+    expect(out.BB_GATEWAY_TOKEN).toBeUndefined()
+    expect(out.BB_GATEWAY_MODEL).toBe('deepseek-v4-flash')
     expect(out.PATH).toBe('/usr/bin')
   })
 
-  it('injects the registry default when packaged config leaves the model unset', () => {
-    const out = applyGatewayConfigToEnv({ PATH: '/usr/bin' }, { url: 'https://gw/gw', token: 'app-token' })
-    expect(out.QF_GATEWAY_MODEL).toBe('deepseek-v4-flash')
+  it('overrides an inherited model with the registry default', () => {
+    const out = applyGatewayConfigToEnv({ PATH: '/usr/bin', BB_GATEWAY_MODEL: 'unregistered-model' }, { url: 'https://gw/gw', token: 'app-token' })
+    expect(out.BB_GATEWAY_MODEL).toBe('deepseek-v4-flash')
   })
 
   it('never overrides an existing shell/ops value', () => {
     const out = applyGatewayConfigToEnv(
-      { QF_GATEWAY_URL: 'https://ops-override/gw', QF_GATEWAY_TOKEN: 'ops-token' },
+      { BB_GATEWAY_URL: 'https://ops-override/gw', BB_GATEWAY_TOKEN: 'ops-token' },
       { url: 'https://packaged/gw', token: 'packaged-token' },
     )
-    expect(out.QF_GATEWAY_URL).toBe('https://ops-override/gw')
-    expect(out.QF_GATEWAY_TOKEN).toBe('ops-token')
+    expect(out.BB_GATEWAY_URL).toBe('https://ops-override/gw')
+    expect(out.BB_GATEWAY_TOKEN).toBe('ops-token')
   })
 
   it('leaves the env untouched for the adapter path (no gateway config)', () => {
@@ -146,12 +145,10 @@ describe('requireProductGatewayConfig', () => {
       url: 'https://gw.example/gw',
       token: 'app-token',
       licenseKey: 'license-001',
-      model: 'deepseek-v4-flash',
     })).toEqual({
       url: 'https://gw.example/gw',
       token: 'app-token',
       licenseKey: 'license-001',
-      model: 'deepseek-v4-flash',
     })
   })
 

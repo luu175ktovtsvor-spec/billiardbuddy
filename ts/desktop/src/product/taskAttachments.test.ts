@@ -67,6 +67,20 @@ describe('validateProductTaskAttachments', () => {
       data: expect.stringMatching(/^data:image\/png;base64,/),
     })])
   })
+
+  it('keeps bounded video bytes as a multipart File instead of a base64 draft', async () => {
+    const video = new File([new Uint8Array([0, 0, 0, 20, 0x66, 0x74, 0x79, 0x70])], '训练.mp4', { type: 'video/mp4' })
+    const result = await readProductTaskAttachmentDrafts([video])
+
+    expect(result.rejectedCount).toBe(0)
+    expect(result.attachments).toEqual([expect.objectContaining({
+      type: 'file',
+      name: '训练.mp4',
+      mimeType: 'video/mp4',
+      file: video,
+    })])
+    expect(result.attachments[0]).not.toHaveProperty('data')
+  })
 })
 
 describe('createProductTaskPreviewImageDraft', () => {

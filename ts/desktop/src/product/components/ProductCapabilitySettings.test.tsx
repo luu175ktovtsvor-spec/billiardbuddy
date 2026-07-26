@@ -57,15 +57,7 @@ describe('ProductCapabilitySettings', () => {
     expect(document.body.textContent).not.toMatch(/DeepSeek|MiMo|provider|model|api.?key|token|queue/i)
   })
 
-  it('routes privacy and update repairs to their actionable product pages', async () => {
-    mocks.getSnapshot.mockResolvedValue(snapshot({
-      id: 'assistant', state: 'configured', reason_code: 'privacy_confirmation_required', repair_action: 'open_privacy',
-    }))
-    const { unmount } = render(<ProductCapabilitySettings />)
-    fireEvent.click(await screen.findByRole('button', { name: '查看隐私' }))
-    expect(useUIStore.getState().activeSettingsTab).toBe('privacy')
-
-    unmount()
+  it('routes update repairs to the actionable product page', async () => {
     mocks.getSnapshot.mockResolvedValue(snapshot({
       id: 'video_editing', state: 'degraded', reason_code: 'media_tools_missing', repair_action: 'check_update',
     }))
@@ -80,7 +72,7 @@ describe('ProductCapabilitySettings', () => {
     }))
     const { unmount } = render(<ProductCapabilitySettings />)
     fireEvent.click(await screen.findByRole('button', { name: '设置浏览器' }))
-    expect(useUIStore.getState().activeSettingsTab).toBe('computerUse')
+    expect(useUIStore.getState().activeSettingsTab).toBe('recruitingBrowser')
     expect(mocks.install).not.toHaveBeenCalled()
 
     unmount()

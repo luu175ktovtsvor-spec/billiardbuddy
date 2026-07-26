@@ -28,6 +28,7 @@ const mocks = vi.hoisted(() => ({
     historyStatus: 'ready',
     runState: 'idle',
     entries: [],
+    queuedInputs: [],
     activeActivity: null,
     pendingApproval: null,
     error: null,
@@ -36,27 +37,27 @@ const mocks = vi.hoisted(() => ({
   refresh: vi.fn(),
   archiveTask: vi.fn(),
   restoreTask: vi.fn(),
+  mutateTaskDeletion: vi.fn(),
   recoverTaskRun: vi.fn(),
   pinTask: vi.fn(),
   unpinTask: vi.fn(),
   continueTask: vi.fn(),
   connectTask: vi.fn(),
   disconnectTask: vi.fn(),
+  forgetRuntimeTask: vi.fn(),
   sendText: vi.fn(),
   sendMessage: vi.fn(),
   stopTask: vi.fn(),
+  resumeQueue: vi.fn(),
   respondToApproval: vi.fn(),
   respondToQuestions: vi.fn(),
-  respondToComputerUseApproval: vi.fn(),
   refreshThread: vi.fn(),
   openTab: vi.fn(),
   openProductTaskTab: vi.fn(),
-  attachMediaProject: vi.fn(),
-  getMedia: vi.fn(),
-  selectImage: vi.fn(),
-  selectVideo: vi.fn(),
+  closeTab: vi.fn(),
   createSideTask: vi.fn(),
   openSideTaskPanel: vi.fn(),
+  forgetSideTasks: vi.fn(),
   listSkills: vi.fn(),
   listAgents: vi.fn(),
   previewWebview: false,
@@ -75,6 +76,7 @@ vi.mock('../stores/productTaskStore', () => ({
     refresh: mocks.refresh,
     archiveTask: mocks.archiveTask,
     restoreTask: mocks.restoreTask,
+    mutateTaskDeletion: mocks.mutateTaskDeletion,
     recoverTaskRun: mocks.recoverTaskRun,
     pinTask: mocks.pinTask,
     unpinTask: mocks.unpinTask,
@@ -94,12 +96,13 @@ vi.mock('../stores/productTaskRuntimeStore', () => ({
     tasks: { 'task-1': mocks.runtime },
     connectTask: mocks.connectTask,
     disconnectTask: mocks.disconnectTask,
+    forgetTask: mocks.forgetRuntimeTask,
     sendText: mocks.sendText,
     sendMessage: mocks.sendMessage,
     stopTask: mocks.stopTask,
+    resumeQueue: mocks.resumeQueue,
     respondToApproval: mocks.respondToApproval,
     respondToQuestions: mocks.respondToQuestions,
-    respondToComputerUseApproval: mocks.respondToComputerUseApproval,
     refreshThread: mocks.refreshThread,
   }),
 }))
@@ -111,29 +114,13 @@ vi.mock('../../stores/settingsStore', () => ({
 }))
 
 vi.mock('../../stores/tabStore', () => ({
-  IMAGE_WORKBENCH_TAB_ID: '__image_workbench__',
   PRODUCT_TASKS_TAB_ID: '__product_tasks__',
-  VIDEO_STUDIO_TAB_ID: '__video_studio__',
+  PRODUCT_TASK_TAB_PREFIX: '__product_task__',
   useTabStore: (selector: (state: Record<string, unknown>) => unknown) => selector({
     openTab: mocks.openTab,
     openProductTaskTab: mocks.openProductTaskTab,
+    closeTab: mocks.closeTab,
   }),
-}))
-
-vi.mock('../../stores/mediaWorkbenchStore', () => ({
-  useMediaWorkbenchStore: {
-    getState: () => ({
-      selectImage: mocks.selectImage,
-      selectVideo: mocks.selectVideo,
-    }),
-  },
-}))
-
-vi.mock('../api/tasks', () => ({
-  productTasksApi: {
-    attachMediaProject: mocks.attachMediaProject,
-    getMedia: mocks.getMedia,
-  },
 }))
 
 vi.mock('../api/taskCommands', () => ({
@@ -150,6 +137,7 @@ vi.mock('../stores/productSideTaskStore', () => ({
   useProductSideTaskStore: (selector: (state: Record<string, unknown>) => unknown) => selector({
     createSideTask: mocks.createSideTask,
     openSideTaskPanel: mocks.openSideTaskPanel,
+    forgetTask: mocks.forgetSideTasks,
     mutations: {},
   }),
 }))
@@ -170,12 +158,6 @@ vi.mock('../../components/markdown/MarkdownRenderer', () => ({
 vi.mock('./ProductTaskReviewDock', () => ({
   ProductTaskReviewDock: ({ taskId, onClose }: { taskId: string; onClose: () => void }) => (
     <div data-testid="product-task-review-dock">review:{taskId}<button type="button" onClick={onClose}>关闭审阅</button></div>
-  ),
-}))
-
-vi.mock('./ProductTaskMediaDock', () => ({
-  ProductTaskMediaDock: ({ taskId, onClose }: { taskId: string; onClose: () => void }) => (
-    <div data-testid="product-task-media-dock">media:{taskId}<button type="button" onClick={onClose}>关闭媒体</button></div>
   ),
 }))
 
@@ -265,12 +247,12 @@ beforeEach(() => {
   mocks.error = null
   mocks.previewWebview = false
   mocks.terminal = false
-  mocks.getMedia.mockResolvedValue({ taskId: 'task-1', projects: [] })
   mocks.runtime = {
     connectionState: 'connected',
     historyStatus: 'ready',
     runState: 'idle',
     entries: [],
+    queuedInputs: [],
     activeActivity: null,
     pendingApproval: null,
     approvalResponsePending: false,
@@ -281,6 +263,13 @@ beforeEach(() => {
   mocks.refresh.mockReset().mockResolvedValue(undefined)
   mocks.archiveTask.mockReset().mockResolvedValue(undefined)
   mocks.restoreTask.mockReset().mockResolvedValue(undefined)
+  mocks.mutateTaskDeletion.mockReset().mockImplementation(async (_taskId: string, phase: string) => {
+    const [current] = (mocks.index as { tasks: Array<Record<string, unknown>> }).tasks
+    const lifecycle = phase === 'begin' ? 'deleting' : phase === 'commit_purge' ? 'purge_committed' : phase === 'cancel' ? 'archived' : 'deleted'
+    const next = { ...current, lifecycle, actions: lifecycle === 'archived' ? ['restore', 'continue'] : [] }
+    mocks.index = { ...mocks.index, tasks: lifecycle === 'deleted' ? [] : [next] }
+    return next
+  })
   mocks.recoverTaskRun.mockReset().mockResolvedValue(undefined)
   mocks.pinTask.mockReset().mockResolvedValue(undefined)
   mocks.unpinTask.mockReset().mockResolvedValue(undefined)
@@ -298,18 +287,18 @@ beforeEach(() => {
   })
   mocks.connectTask.mockReset().mockResolvedValue(undefined)
   mocks.disconnectTask.mockReset()
+  mocks.forgetRuntimeTask.mockReset()
   mocks.sendText.mockReset().mockReturnValue(true)
   mocks.sendMessage.mockReset().mockReturnValue(true)
   mocks.stopTask.mockReset()
+  mocks.resumeQueue.mockReset().mockResolvedValue(true)
   mocks.respondToApproval.mockReset().mockReturnValue(true)
   mocks.respondToQuestions.mockReset().mockReturnValue(true)
-  mocks.respondToComputerUseApproval.mockReset().mockReturnValue(true)
   mocks.refreshThread.mockReset().mockResolvedValue(undefined)
+  mocks.closeTab.mockReset()
+  mocks.forgetSideTasks.mockReset()
   mocks.openTab.mockReset()
   mocks.openProductTaskTab.mockReset()
-  mocks.attachMediaProject.mockReset().mockResolvedValue({})
-  mocks.selectImage.mockReset()
-  mocks.selectVideo.mockReset()
   mocks.listSkills.mockReset().mockResolvedValue({ commands: [] })
   mocks.listAgents.mockReset().mockResolvedValue({ agents: [] })
   useProductTaskWorkspaceStore.setState(
@@ -338,46 +327,6 @@ afterEach(() => {
 })
 
 describe('ProductTaskPage', () => {
-  it('requires a user click before associating an Agent-prepared media draft and opening its workbench', async () => {
-    mocks.runtime = {
-      ...mocks.runtime,
-      entries: [{
-        id: 'thread_media_draft',
-        type: 'media_draft',
-        draft: { projectId: 'img_12345678', kind: 'image', state: 'draft' },
-        createdAt: '2026-07-20T00:00:00.000Z',
-      }],
-    }
-
-    render(<ProductTaskPage taskId="task-1" />)
-
-    expect(screen.getByTestId('product-task-media-draft-image').textContent).toContain('已准备图片草稿')
-    expect(screen.queryByText('img_12345678')).toBeNull()
-    expect(mocks.attachMediaProject).not.toHaveBeenCalled()
-
-    fireEvent.click(screen.getByRole('button', { name: '关联到当前任务并打开工作台' }))
-
-    await waitFor(() => {
-      expect(mocks.attachMediaProject).toHaveBeenCalledWith('task-1', 'img_12345678')
-    })
-    expect(mocks.selectImage).toHaveBeenCalledWith('img_12345678')
-    expect(mocks.openTab).toHaveBeenCalledWith('__image_workbench__', '生成图片', 'image-workbench')
-    expect(useProductTaskWorkspaceStore.getState().byTaskId['task-1']).toMatchObject({
-      mediaOpen: true,
-      activePanel: 'media',
-    })
-  })
-
-  it('opens a task-scoped read-only media dock without replacing the task thread', () => {
-    render(<ProductTaskPage taskId="task-1" />)
-
-    fireEvent.click(screen.getByRole('button', { name: '媒体' }))
-
-    expect(screen.getByTestId('product-task-dock-panel-media').getAttribute('data-active')).toBe('true')
-    expect(screen.getByTestId('product-task-media-dock').textContent).toContain('media:task-1')
-    expect(screen.getByRole('button', { name: '媒体' }).getAttribute('aria-pressed')).toBe('true')
-  })
-
   it('connects only through the product task runtime and renders safe thread content', () => {
     mocks.runtime = {
       ...mocks.runtime,
@@ -445,6 +394,7 @@ describe('ProductTaskPage', () => {
     fireEvent.click(screen.getByRole('button', { name: '发送' }))
 
     expect(mocks.sendText).toHaveBeenCalledWith('task-1', '/venue-daily-review 整理今天订单')
+    await waitFor(() => expect(input.value).toBe(''))
   })
 
   it('appends a voice transcript to the product composer without sending it', () => {
@@ -487,6 +437,7 @@ describe('ProductTaskPage', () => {
       mimeType: 'image/png',
       data: expect.stringMatching(/^data:image\/png;base64,/),
     }])
+    await waitFor(() => expect(screen.queryByText('球台.png')).toBeNull())
   })
 
   it('keeps the text and selected attachment when safe ingest rejects the submit', async () => {
@@ -541,38 +492,6 @@ describe('ProductTaskPage', () => {
     fireEvent.click(screen.getByRole('button', { name: '允许本次操作' }))
 
     expect(mocks.respondToApproval).toHaveBeenCalledWith('task-1', true)
-  })
-
-  it('renders the safe Computer Use details and sends only a one-shot decision', () => {
-    mocks.runtime = {
-      ...mocks.runtime,
-      runState: 'awaiting_approval',
-      pendingApproval: {
-        requestId: 'computer-use-1',
-        kind: 'computer_use',
-        computerUse: {
-          apps: [{ name: '台球厅管理', tier: 'click', alreadyAuthorized: false }],
-          capabilities: ['clipboard_read', 'system_key_combos'],
-          systemPermissions: {
-            accessibilityRequired: true,
-            screenRecordingRequired: false,
-          },
-        },
-      },
-      approvalResponsePending: false,
-    }
-    render(<ProductTaskPage taskId="task-1" />)
-
-    const approval = screen.getByTestId('product-task-computer-use-approval')
-    expect(approval.textContent).toContain('台球厅管理')
-    expect(approval.textContent).toContain('点击操作')
-    expect(approval.textContent).toContain('读取剪贴板')
-    expect(approval.textContent).toContain('系统快捷键')
-    expect(approval.textContent).toContain('辅助功能')
-    expect(approval.textContent).toContain('允许本次不能绕过系统权限')
-
-    fireEvent.click(screen.getByRole('button', { name: '允许本次 Computer Use' }))
-    expect(mocks.respondToComputerUseApproval).toHaveBeenCalledWith('task-1', true)
   })
 
   it('submits projected question answers without a raw tool input envelope', () => {
@@ -722,6 +641,26 @@ describe('ProductTaskPage', () => {
     expect(mocks.stopTask).toHaveBeenCalledWith('task-1')
   })
 
+  it('shows the durable paused queue and resumes it explicitly', () => {
+    mocks.runtime = {
+      ...mocks.runtime,
+      runState: 'idle',
+      queuedInputs: [{
+        id: 'queue_123e4567-e89b-42d3-a456-426614174000',
+        text: '检查刚才附上的图片',
+        state: 'queued',
+        createdAt: '2026-07-26T00:00:00.000Z',
+        attachmentCount: 1,
+      }],
+    }
+    render(<ProductTaskPage taskId="task-1" />)
+
+    expect(screen.getByLabelText('待处理输入队列')).toHaveTextContent('检查刚才附上的图片')
+    expect(screen.getByLabelText('待处理输入队列')).toHaveTextContent('1 个附件')
+    fireEvent.click(screen.getByRole('button', { name: '继续队列' }))
+    expect(mocks.resumeQueue).toHaveBeenCalledWith('task-1')
+  })
+
   it('hides archive while a task is waiting for approval', () => {
     mocks.runtime = {
       ...mocks.runtime,
@@ -755,6 +694,33 @@ describe('ProductTaskPage', () => {
     expect(mocks.restoreTask).toHaveBeenCalledWith('task-1')
     expect(mocks.pinTask).not.toHaveBeenCalled()
     expect(mocks.unpinTask).not.toHaveBeenCalled()
+  })
+
+  it('requires two confirmations, then forgets every renderer projection after durable deletion', async () => {
+    const [currentTask] = (mocks.index as { tasks: Array<Record<string, unknown>> }).tasks
+    mocks.index = {
+      ...mocks.index,
+      tasks: [{ ...currentTask, lifecycle: 'archived', actions: ['restore', 'continue'] }],
+    }
+    useProductTaskWorkspaceStore.setState({ byTaskId: { 'task-1': {
+      reviewOpen: false, runOpen: false, browserOpen: false, previewOpen: false, terminalOpen: false,
+      activePanel: null, activeBrowserPreviewMode: null,
+    } } })
+    render(<ProductTaskPage taskId="task-1" />)
+
+    fireEvent.click(screen.getByRole('button', { name: '删除任务' }))
+    expect(screen.getByRole('dialog')).toHaveTextContent('工作区及其中的文件不会被删除')
+    fireEvent.click(screen.getByRole('button', { name: '准备删除' }))
+    await waitFor(() => expect(mocks.mutateTaskDeletion).toHaveBeenCalledWith('task-1', 'begin'))
+    expect(await screen.findByRole('button', { name: '永久删除' })).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: '永久删除' }))
+    await waitFor(() => expect(mocks.mutateTaskDeletion.mock.calls.map((call) => call[1])).toEqual(['begin', 'commit_purge', 'retry']))
+    expect(mocks.forgetRuntimeTask).toHaveBeenCalledWith('task-1')
+    expect(mocks.forgetSideTasks).toHaveBeenCalledWith('task-1')
+    expect(useProductTaskWorkspaceStore.getState().byTaskId).not.toHaveProperty('task-1')
+    expect(mocks.openTab).toHaveBeenCalledWith('__product_tasks__', '任务中心', 'product-tasks')
+    expect(mocks.closeTab).toHaveBeenCalledWith('__product_task__task-1')
   })
 
   it('shows durable crash recovery after reconnect and confirms the new execution generation', async () => {
@@ -828,6 +794,21 @@ describe('ProductTaskPage', () => {
     expect(screen.queryByTestId('product-task-browser-preview-dock')).toBeNull()
   })
 
+  it('opens the native Browser result surface when the Electron preview transport is available', () => {
+    mocks.previewWebview = true
+    render(<ProductTaskPage taskId="task-1" />)
+
+    const browser = screen.getByRole('button', { name: '浏览器' })
+    expect(browser).toBeEnabled()
+    fireEvent.click(browser)
+    expect(screen.getByTestId('product-task-browser-preview-dock')).toBeInTheDocument()
+    expect(useProductTaskWorkspaceStore.getState().byTaskId['task-1']).toMatchObject({
+      browserOpen: true,
+      activePanel: 'browser-preview',
+      activeBrowserPreviewMode: 'browser',
+    })
+  })
+
   it('closes the available review axis without creating a disabled terminal dock', () => {
     render(<ProductTaskPage taskId="task-1" />)
 
@@ -839,11 +820,11 @@ describe('ProductTaskPage', () => {
     expect(screen.queryByTestId('product-task-terminal-dock')).toBeNull()
   })
 
-  it('toggles only currently available workspace panels from header controls', () => {
+  it('toggles only currently available workspace panels and has no media control', () => {
     render(<ProductTaskPage taskId="task-1" />)
 
     const review = screen.getByRole('button', { name: '审阅' })
-    const media = screen.getByRole('button', { name: '媒体' })
+    expect(screen.queryByRole('button', { name: '媒体' })).toBeNull()
     expect(screen.getByRole('button', { name: '浏览器' })).toBeDisabled()
     expect(screen.getByRole('button', { name: '预览' })).toBeDisabled()
     expect(screen.getByRole('button', { name: '终端' })).toBeDisabled()
@@ -852,10 +833,6 @@ describe('ProductTaskPage', () => {
     expect(review).toHaveAttribute('aria-pressed', 'true')
     fireEvent.click(review)
     expect(review).toHaveAttribute('aria-pressed', 'false')
-    fireEvent.click(media)
-    expect(media).toHaveAttribute('aria-pressed', 'true')
-    fireEvent.click(media)
-    expect(media).toHaveAttribute('aria-pressed', 'false')
     expect(useProductTaskWorkspaceStore.getState().byTaskId['task-1']).toMatchObject({
       browserOpen: false,
       previewOpen: false,
@@ -896,5 +873,8 @@ describe('ProductTaskPage', () => {
     expect(mocks.connectTask).not.toHaveBeenCalled()
     fireEvent.click(screen.getByRole('button', { name: '返回任务中心' }))
     expect(mocks.openTab).toHaveBeenCalledWith('__product_tasks__', '任务中心', 'product-tasks')
+    expect(mocks.forgetRuntimeTask).toHaveBeenCalledWith('missing-task')
+    expect(mocks.forgetSideTasks).toHaveBeenCalledWith('missing-task')
+    expect(mocks.closeTab).toHaveBeenCalledWith('__product_task__missing-task')
   })
 })

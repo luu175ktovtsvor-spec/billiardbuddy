@@ -7,19 +7,19 @@ import path from 'node:path'
  *
  * Every managed build shares activation inputs, so the gateway can no longer treat all installs as
  * one user. On first launch we generate an unpredictable installationId and persist it in
- * the product data root (the active CLAUDE_CONFIG_DIR). It is injected ONLY into the server
- * sidecar env (BB_INSTALLATION_ID); the sidecar attaches it as `X-QF-Client-ID` on gateway
+ * the product data root (the active BILLIARDBUDDY_CONFIG_DIR). It is injected ONLY into the server
+ * sidecar env (BB_INSTALLATION_ID); the sidecar attaches it as `X-BB-Installation-ID` on gateway
  * requests so the gateway can subdivide per-user fairness by install.
  *
- * Boundary: it must NEVER reach the renderer, the CLI subprocess, providers.json, or logs.
- *  - CLI subprocess: stripped at every spawn chokepoint (HOST_ONLY_GATEWAY_ENV_KEYS).
+ * Boundary: it must NEVER reach the renderer, the Agent worker subprocess, provider files, or logs.
+ *  - Agent worker subprocess: stripped at every spawn chokepoint (HOST_ONLY_GATEWAY_ENV_KEYS).
  *  - renderer / providers.json: never written there (it is a request-time header from env).
  * It is used ONLY for scheduling and usage attribution — it grants no permission and cannot
  * bypass the gateway's global caps.
  */
 
 const INSTALLATION_ID_FILE = 'installation-id.json'
-/** Must satisfy the gateway's X-QF-Client-ID format: [A-Za-z0-9._-]{8,128}. */
+/** Must satisfy the gateway's X-BB-Installation-ID format: [A-Za-z0-9._-]{8,128}. */
 const INSTALLATION_ID_PATTERN = /^[A-Za-z0-9._-]{8,128}$/
 
 function newId(generate: () => string): string {

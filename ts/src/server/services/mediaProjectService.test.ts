@@ -3,26 +3,19 @@ import { createHash } from 'node:crypto'
 import { link, mkdir, mkdtemp, readFile, readdir, rename, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import type { MediaProject, VideoStudioProject } from '../../../shared/contracts/media.js'
-import { MediaProjectService, MediaServiceError, type MediaProcessRunner } from './mediaProjectService.js'
+import type { VideoEvidence, VideoScene, VideoSource, VideoStudioProject } from '../../../shared/contracts/media.js'
+import {
+  MediaProjectService,
+  MediaServiceError,
+  type MediaProcessRunner,
+  type MediaProjectServiceOptions,
+} from './mediaProjectService.js'
+import { assessImageCandidates, reasonImageBrief } from './imageReasoning.js'
+import { planVideoTimeline } from './videoAnalysis.js'
 
 const roots: string[] = []
-const originalGatewayUrl = process.env.QF_GATEWAY_URL
-const originalGatewayToken = process.env.QF_GATEWAY_TOKEN
-const DATA_EGRESS_CONSENT = {
-  policy_revision: 'bb-04e-image-v1' as const,
-  acknowledged: true as const,
-  acknowledged_at: '2026-07-24T00:00:00.000Z',
-}
-const MANAGED_REMOTE_RECEIPT = {
-  receipt_id: 'b'.repeat(64),
-  policy_revision: 'bb-04f-managed-remote-v1' as const,
-  capabilities: ['TextReasoning', 'VisualEvidence', 'SpeechTranscription'] as const,
-  purpose: 'managed_ai_tasks' as const,
-  billable: true as const,
-  granted_at: '2026-07-24T00:00:00.000Z',
-  revoked_at: null,
-}
+const originalGatewayUrl = process.env.BB_GATEWAY_URL
+const originalGatewayToken = process.env.BB_GATEWAY_TOKEN
 
 function pngBytes(width: number, height: number): Buffer {
   const bytes = Buffer.alloc(24)
@@ -42,7 +35,37 @@ function submitImage(
   projectId: string,
   input: { confirm_unknown_retry?: boolean } = {},
 ) {
-  return service.submitImageProject(projectId, { ...input, data_egress_consent: DATA_EGRESS_CONSENT })
+  return service.submitImageProject(projectId, input)
+}
+
+function testMediaProjectService(options: MediaProjectServiceOptions): MediaProjectService {
+  const fetchImpl = options.fetchImpl
+  return new MediaProjectService({
+    ...options,
+    fetchImpl: async (input, init) => {
+      const body = typeof init?.body === 'string' ? init.body : ''
+      if (String(input).endsWith('/v1/media/reasoning') && body.includes('图片工作台')) {
+        const content = body.includes('candidate_index=')
+          ? {
+              assessments: [...body.matchAll(/candidate_index=(\d+)/g)].map(match => ({
+                candidate_index: Number(match[1]),
+                score: 88,
+                summary: '候选符合测试 Brief',
+                issues: [],
+                suggestions: [],
+              })),
+            }
+          : {
+              must_preserve: [],
+              may_change: ['保持用户指定的视觉方向'],
+              missing_information: [],
+            }
+        return Response.json({ choices: [{ message: { content: JSON.stringify(content) } }] })
+      }
+      if (!fetchImpl) throw new Error(`unexpected fetch: ${String(input)}`)
+      return await fetchImpl(input, init)
+    },
+  })
 }
 
 async function root(): Promise<string> {
@@ -52,22 +75,109 @@ async function root(): Promise<string> {
 }
 
 afterEach(async () => {
-  if (originalGatewayUrl === undefined) delete process.env.QF_GATEWAY_URL
-  else process.env.QF_GATEWAY_URL = originalGatewayUrl
-  if (originalGatewayToken === undefined) delete process.env.QF_GATEWAY_TOKEN
-  else process.env.QF_GATEWAY_TOKEN = originalGatewayToken
+  if (originalGatewayUrl === undefined) delete process.env.BB_GATEWAY_URL
+  else process.env.BB_GATEWAY_URL = originalGatewayUrl
+  if (originalGatewayToken === undefined) delete process.env.BB_GATEWAY_TOKEN
+  else process.env.BB_GATEWAY_TOKEN = originalGatewayToken
   await Promise.all(roots.splice(0).map(path => rm(path, { recursive: true, force: true })))
 })
 
 describe('MediaProjectService image projects', () => {
+  test('persists the authoritative image Job before MediaReasoning and resumes the same operation', async () => {
+    process.env.BB_GATEWAY_URL = 'https://gateway.example/gw'
+    process.env.BB_GATEWAY_TOKEN = 'app-token'
+    let releaseReasoning!: () => void
+    let markReasoningStarted!: () => void
+    const reasoningStarted = new Promise<void>(resolve => { markReasoningStarted = resolve })
+    const reasoningGate = new Promise<void>(resolve => { releaseReasoning = resolve })
+    const service = new MediaProjectService({
+      root: await root(),
+      fetchImpl: async (input, init) => {
+        if (String(input).endsWith('/v1/media/reasoning')) {
+          markReasoningStarted()
+          await reasoningGate
+          return Response.json({ choices: [{ message: { content: JSON.stringify({
+            must_preserve: [],
+            may_change: ['调整构图'],
+            missing_information: [],
+          }) } }] })
+        }
+        if (init?.method === 'POST') return Response.json({ task_id: 'remote-reasoned', status: 'queued' }, { status: 202 })
+        throw new Error(`unexpected fetch: ${String(input)}`)
+      },
+    })
+    const draft = await service.createImageProject({ user_request: '生成一张台球活动海报' })
+    const submission = service.submitImageProject(draft.id)
+    await reasoningStarted
+
+    const queuedProject = await service.getProject(draft.id)
+    if (queuedProject.kind !== 'image' || !queuedProject.task_id) throw new Error('missing image job')
+    const reasoningTask = await service.getTask(queuedProject.task_id, false)
+    expect(reasoningTask.status).toBe('running')
+    expect(reasoningTask.stage).toContain('理解参考图')
+    expect(reasoningTask.operation_id).toBeDefined()
+    const events = await service.listJobEvents(draft.id, 0)
+    expect(events.events.at(-1)?.task.id).toBe(reasoningTask.id)
+    expect(events.events.at(-1)?.task.status_sequence).toBe(reasoningTask.status_sequence)
+
+    releaseReasoning()
+    const submitted = await submission
+    expect(submitted.id).toBe(reasoningTask.id)
+    expect(submitted.operation_id).toBe(reasoningTask.operation_id)
+    expect(submitted.remote_task_id).toBe('remote-reasoned')
+  })
+
+  test('routes editable Brief and candidate QA through MediaReasoning without replacing Host hard facts', async () => {
+    const calls: Array<{ url: string; headers: Headers; body: Record<string, unknown> }> = []
+    const fetchImpl: typeof fetch = async (input, init) => {
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>
+      calls.push({ url: String(input), headers: new Headers(init?.headers), body })
+      const serialized = JSON.stringify(body)
+      const content = serialized.includes('candidate_index=')
+        ? { assessments: [{ candidate_index: 0, score: 91, summary: '主体清晰', issues: [], suggestions: ['增加留白'] }] }
+        : { must_preserve: ['保持人物姿态'], may_change: ['调整背景'], missing_information: ['未说明输出渠道'] }
+      return Response.json({ choices: [{ message: { content: JSON.stringify(content) } }] })
+    }
+    const env = {
+      BB_GATEWAY_URL: 'https://gateway.example/gw',
+      BB_GATEWAY_TOKEN: 'test-access-token',
+      BB_INSTALLATION_ID: 'install_image_reasoning_01',
+    }
+    const reasoned = await reasonImageBrief({
+      userRequest: '标题：“会员日”；价格：99 元。保持人物主体。',
+      references: [{
+        asset_id: 'ref_1234567890abcdef1234567890abcdef',
+        role: 'subject',
+        data_url: pngDataUrl(1, 1),
+      }],
+    }, { operationId: 'operation-image-brief-001', fetchImpl, env })
+    expect(reasoned.brief.confirmed_facts).toContain('价格：99 元')
+    expect(reasoned.brief.exact_text).toContain('会员日')
+    expect(reasoned.brief.must_preserve).toContain('保持人物姿态')
+    expect(reasoned.providerPrompt).toContain('不得编造价格')
+
+    const quality = await assessImageCandidates({
+      brief: reasoned.brief,
+      candidates: [{ candidate_index: 0, data_url: pngDataUrl(1, 1) }],
+    }, { operationId: 'operation-image-quality-001', fetchImpl, env })
+    expect(quality).toEqual([{ candidate_index: 0, score: 91, summary: '主体清晰', issues: [], suggestions: ['增加留白'] }])
+    expect(calls).toHaveLength(2)
+    expect(calls.every(call => call.url.endsWith('/v1/media/reasoning'))).toBe(true)
+    expect(calls.map(call => call.headers.get('x-bb-operation-id'))).toEqual([
+      'operation-image-brief-001',
+      'operation-image-quality-001',
+    ])
+    expect(calls.every(call => call.body.model === 'mimo-v2.5')).toBe(true)
+  })
+
   test('uses one idempotent GPT edit task without legacy parameters and persists local image bytes', async () => {
-    process.env.QF_GATEWAY_URL = 'https://gateway.example/gw'
-    process.env.QF_GATEWAY_TOKEN = 'app-token'
-    const calls: Array<{ url: string; key: string | null; consent: string | null; body?: Record<string, unknown> }> = []
+    process.env.BB_GATEWAY_URL = 'https://gateway.example/gw'
+    process.env.BB_GATEWAY_TOKEN = 'app-token'
+    const calls: Array<{ url: string; key: string | null; body?: Record<string, unknown> }> = []
     let polls = 0
     let acknowledgements = 0
     const mediaRoot = await root()
-    const service = new MediaProjectService({
+    const service = testMediaProjectService({
       root: mediaRoot,
       fetchImpl: async (input, init) => {
         const requestUrl = String(input)
@@ -75,7 +185,7 @@ describe('MediaProjectService image projects', () => {
         const body = init?.method === 'POST' && typeof init.body === 'string'
           ? JSON.parse(init.body) as Record<string, unknown>
           : undefined
-        calls.push({ url: requestUrl, key: headers.get('idempotency-key'), consent: headers.get('x-bb-data-egress-consent'), body })
+        calls.push({ url: requestUrl, key: headers.get('idempotency-key'), body })
         if (requestUrl.endsWith('/ack')) {
           acknowledgements += 1
           return acknowledgements === 1
@@ -106,12 +216,6 @@ describe('MediaProjectService image projects', () => {
     expect(duplicate.id).toBe(first.id)
     expect(calls.filter(call => call.url.endsWith('/v1/images/tasks'))).toHaveLength(1)
     expect(calls[0]?.key).toMatch(/^bb-media-[a-f0-9]{64}$/)
-    expect(calls[0]?.consent).toMatch(/^[a-f0-9]{64}$/)
-    expect(first.data_egress_consent).toMatchObject({
-      purpose: 'image_generation', capability: 'ImageGeneration', receiver: 'OpenAI',
-      relay_region: 'United States', retention: 'input-until-terminal;result-up-to-7-days',
-      billable: true, revocable_until: 'provider_submission',
-    })
     expect(calls[0]?.body).toMatchObject({ mode: 'edit', model: 'gpt-image-2' })
     expect(calls[0]?.body?.response_format).toBeUndefined()
     expect(calls[0]?.body?.input_fidelity).toBeUndefined()
@@ -131,6 +235,7 @@ describe('MediaProjectService image projects', () => {
     if (ready.kind !== 'image') throw new Error('wrong kind')
     expect(ready.state).toBe('ready')
     expect(ready.outputs[0]?.asset_path).toContain(`/api/media/assets/${project.id}/`)
+    expect(ready.outputs[0]?.quality_assessment).toMatchObject({ score: 88, summary: '候选符合测试 Brief' })
     const persisted = await readFile(join(mediaRoot, 'projects', `${project.id}.json`), 'utf8')
     expect(persisted).not.toContain(Buffer.from('png-bytes').toString('base64'))
     const asset = await service.assetResponse(project.id, ready.outputs[0]!.asset_path!.split('/').pop()!)
@@ -149,13 +254,85 @@ describe('MediaProjectService image projects', () => {
     expect(await readFile(savedPath, 'utf8')).toBe('png-bytes')
   })
 
+  test('accepts only a same-origin signed result handoff and fetches it without gateway credentials', async () => {
+    process.env.BB_GATEWAY_URL = 'https://gateway.example/gw'
+    process.env.BB_GATEWAY_TOKEN = 'app-token'
+    const grant = `${Buffer.from('{"v":1}').toString('base64url')}.${'a'.repeat(64)}`
+    const resultUrl = `https://gateway.example/relay/imgtasks/images/results/${grant}`
+    const resultUrls = [`${resultUrl}/0`, `${resultUrl}/1`]
+    const calls: Array<{ url: string; headers: Headers }> = []
+    const service = testMediaProjectService({
+      root: await root(),
+      fetchImpl: async (input, init) => {
+        const url = String(input)
+        const headers = new Headers(init?.headers)
+        calls.push({ url, headers })
+        if (url.endsWith('/v1/images/tasks') && init?.method === 'POST') {
+          return Response.json({ task_id: 'remote-direct', status: 'queued' }, { status: 202 })
+        }
+        if (url.endsWith('/v1/images/tasks/remote-direct/ack')) {
+          return Response.json({ status: 'succeeded', result_acknowledged: true })
+        }
+        if (url.endsWith('/v1/images/tasks/remote-direct')) {
+          return Response.json({ status: 'succeeded', result_available: true, result_url: resultUrl, result_urls: resultUrls })
+        }
+        if (resultUrls.includes(url)) {
+          const index = Number(url.at(-1))
+          return Response.json({
+            status: 'succeeded',
+            data: [{ b64_json: pngBytes(2 + index, 3).toString('base64'), mime_type: 'image/png' }],
+          })
+        }
+        throw new Error(`unexpected fetch: ${url}`)
+      },
+    })
+    const project = await service.createImageProject({ prompt: '直传结果海报' })
+    const submitted = await submitImage(service, project.id)
+    expect((await service.getTask(submitted.id)).status).toBe('succeeded')
+
+    const statusCall = calls.find(call => call.url.endsWith('/v1/images/tasks/remote-direct'))
+    expect(statusCall?.headers.get('x-bb-media-result-handoff')).toBe('direct-v1')
+    const directCalls = calls.filter(call => resultUrls.includes(call.url))
+    expect(directCalls).toHaveLength(2)
+    expect(directCalls.every(call => call.headers.get('authorization') === null)).toBe(true)
+    expect(directCalls.every(call => call.headers.get('x-bb-provider-protocol') === null)).toBe(true)
+  })
+
+  test('rejects a cross-origin image result handoff before any direct request', async () => {
+    process.env.BB_GATEWAY_URL = 'https://gateway.example/gw'
+    process.env.BB_GATEWAY_TOKEN = 'app-token'
+    const calls: string[] = []
+    const service = testMediaProjectService({
+      root: await root(),
+      fetchImpl: async (input, init) => {
+        const url = String(input)
+        calls.push(url)
+        if (url.endsWith('/v1/images/tasks') && init?.method === 'POST') {
+          return Response.json({ task_id: 'remote-untrusted', status: 'queued' }, { status: 202 })
+        }
+        if (url.endsWith('/v1/images/tasks/remote-untrusted')) {
+          return Response.json({
+            status: 'succeeded',
+            result_available: true,
+            result_url: `https://attacker.example/relay/imgtasks/images/results/${'x'.repeat(12)}.${'a'.repeat(64)}`,
+          })
+        }
+        throw new Error(`unexpected fetch: ${url}`)
+      },
+    })
+    const project = await service.createImageProject({ prompt: '拒绝越界直传' })
+    const submitted = await submitImage(service, project.id)
+    expect((await service.getTask(submitted.id)).status).toBe('queued')
+    expect(calls.some(url => url.startsWith('https://attacker.example/'))).toBe(false)
+  })
+
   test('ignores caller provider fields and routes a three-candidate operation through the registry', async () => {
-    process.env.QF_GATEWAY_URL = 'https://gateway.example/gw'
-    process.env.QF_GATEWAY_TOKEN = 'app-token'
+    process.env.BB_GATEWAY_URL = 'https://gateway.example/gw'
+    process.env.BB_GATEWAY_TOKEN = 'app-token'
     let submittedBody: Record<string, unknown> | undefined
     let polls = 0
     const mediaRoot = await root()
-    const service = new MediaProjectService({
+    const service = testMediaProjectService({
       root: mediaRoot,
       fetchImpl: async (_input, init) => {
         if (init?.method === 'POST') {
@@ -202,11 +379,11 @@ describe('MediaProjectService image projects', () => {
   })
 
   test('branches edit, inpaint, exact text, upscale, rollback, and export from explicit base versions', async () => {
-    process.env.QF_GATEWAY_URL = 'https://gateway.example/gw'
-    process.env.QF_GATEWAY_TOKEN = 'app-token'
+    process.env.BB_GATEWAY_URL = 'https://gateway.example/gw'
+    process.env.BB_GATEWAY_TOKEN = 'app-token'
     const submissions: Record<string, unknown>[] = []
     let remoteIndex = 0
-    const service = new MediaProjectService({
+    const service = testMediaProjectService({
       root: await root(),
       fetchImpl: async (_input, init) => {
         if (init?.method === 'POST') {
@@ -248,7 +425,6 @@ describe('MediaProjectService image projects', () => {
       kind: 'inpaint',
       instruction: '只修改蒙版区域',
       mask_data_url: pngDataUrl(2, 1),
-      data_egress_consent: DATA_EGRESS_CONSENT,
     })).rejects.toMatchObject({ code: 'IMAGE_MASK_DIMENSIONS_MISMATCH' })
     const operationTask = await service.startImageOperation(selected.id, {
       revision: selected.revision,
@@ -256,7 +432,6 @@ describe('MediaProjectService image projects', () => {
       kind: 'inpaint',
       instruction: '只把左上角球杆改成红色，其余内容保持不变',
       mask_data_url: pngDataUrl(1, 1),
-      data_egress_consent: DATA_EGRESS_CONSENT,
     })
     expect(submissions[1]).toMatchObject({
       mode: 'edit',
@@ -333,7 +508,7 @@ describe('MediaProjectService image projects', () => {
 
   test('rejects a project asset directory symlink that points outside the media asset root', async () => {
     const mediaRoot = await root()
-    const service = new MediaProjectService({ root: mediaRoot })
+    const service = testMediaProjectService({ root: mediaRoot })
     const project = await service.createImageProject({ prompt: '安全测试图片' })
     const outsideDir = join(mediaRoot, 'outside-assets')
     await Promise.all([
@@ -355,7 +530,7 @@ describe('MediaProjectService image projects', () => {
 
   test('rejects an image output asset symlink that points outside its project directory', async () => {
     const mediaRoot = await root()
-    const service = new MediaProjectService({ root: mediaRoot })
+    const service = testMediaProjectService({ root: mediaRoot })
     const project = await service.createImageProject({ prompt: '保存安全测试图片' })
     const projectAssetDir = join(mediaRoot, 'assets', project.id)
     const outsidePath = join(mediaRoot, 'outside.png')
@@ -381,9 +556,9 @@ describe('MediaProjectService image projects', () => {
   })
 
   test('does not submit without a configured gateway', async () => {
-    delete process.env.QF_GATEWAY_URL
-    delete process.env.QF_GATEWAY_TOKEN
-    const service = new MediaProjectService({ root: await root() })
+    delete process.env.BB_GATEWAY_URL
+    delete process.env.BB_GATEWAY_TOKEN
+    const service = testMediaProjectService({ root: await root() })
     const project = await service.createImageProject({ prompt: '活动海报' })
     await expect(submitImage(service, project.id)).rejects.toMatchObject({
       code: 'GATEWAY_NOT_CONFIGURED',
@@ -391,25 +566,11 @@ describe('MediaProjectService image projects', () => {
     })
   })
 
-  test('requires an explicit data egress acknowledgement before persisting or forwarding a paid image task', async () => {
-    process.env.QF_GATEWAY_URL = 'https://gateway.example/gw'
-    process.env.QF_GATEWAY_TOKEN = 'app-token'
-    let calls = 0
-    const service = new MediaProjectService({ root: await root(), fetchImpl: async () => { calls++; return Response.json({}) } })
-    const project = await service.createImageProject({ prompt: '需要确认的活动海报' })
-    await expect(service.submitImageProject(project.id)).rejects.toMatchObject({
-      code: 'DATA_EGRESS_CONSENT_REQUIRED',
-      status: 428,
-    })
-    expect(calls).toBe(0)
-    expect((await service.getProject(project.id)).state).toBe('draft')
-  })
-
   test('persists a safe image failure instead of the upstream response detail', async () => {
-    process.env.QF_GATEWAY_URL = 'https://gateway.example/gw'
-    process.env.QF_GATEWAY_TOKEN = 'app-token'
+    process.env.BB_GATEWAY_URL = 'https://gateway.example/gw'
+    process.env.BB_GATEWAY_TOKEN = 'app-token'
     const rawDetail = 'provider quota rejected token=private-token at /private/gateway.log'
-    const service = new MediaProjectService({
+    const service = testMediaProjectService({
       root: await root(),
       fetchImpl: async () => Response.json({ error: rawDetail }, { status: 400 }),
     })
@@ -436,11 +597,11 @@ describe('MediaProjectService image projects', () => {
   })
 
   test('requires explicit confirmation before an unknown submission is replaced by an edited draft', async () => {
-    process.env.QF_GATEWAY_URL = 'https://gateway.example/gw'
-    process.env.QF_GATEWAY_TOKEN = 'app-token'
+    process.env.BB_GATEWAY_URL = 'https://gateway.example/gw'
+    process.env.BB_GATEWAY_TOKEN = 'app-token'
     const keys: string[] = []
     let submissions = 0
-    const service = new MediaProjectService({
+    const service = testMediaProjectService({
       root: await root(),
       fetchImpl: async (_input, init) => {
         keys.push(new Headers(init?.headers).get('idempotency-key') ?? '')
@@ -479,11 +640,11 @@ describe('MediaProjectService image projects', () => {
   })
 
   test('reuses the persisted idempotency key when a submit response is lost', async () => {
-    process.env.QF_GATEWAY_URL = 'https://gateway.example/gw'
-    process.env.QF_GATEWAY_TOKEN = 'app-token'
+    process.env.BB_GATEWAY_URL = 'https://gateway.example/gw'
+    process.env.BB_GATEWAY_TOKEN = 'app-token'
     const keys: string[] = []
     let calls = 0
-    const service = new MediaProjectService({
+    const service = testMediaProjectService({
       root: await root(),
       fetchImpl: async (_input, init) => {
         keys.push(new Headers(init?.headers).get('idempotency-key') ?? '')
@@ -504,11 +665,11 @@ describe('MediaProjectService image projects', () => {
   })
 
   test('recovers a crash after intent persistence but before remote task id persistence', async () => {
-    process.env.QF_GATEWAY_URL = 'https://gateway.example/gw'
-    process.env.QF_GATEWAY_TOKEN = 'app-token'
+    process.env.BB_GATEWAY_URL = 'https://gateway.example/gw'
+    process.env.BB_GATEWAY_TOKEN = 'app-token'
     const mediaRoot = await root()
     let firstKey = ''
-    const interrupted = new MediaProjectService({
+    const interrupted = testMediaProjectService({
       root: mediaRoot,
       fetchImpl: async (_input, init) => {
         firstKey = new Headers(init?.headers).get('idempotency-key') ?? ''
@@ -527,7 +688,7 @@ describe('MediaProjectService image projects', () => {
     expect(firstKey).toMatch(/^bb-media-/)
 
     let recoveredKey = ''
-    const restarted = new MediaProjectService({
+    const restarted = testMediaProjectService({
       root: mediaRoot,
       fetchImpl: async (_input, init) => {
         recoveredKey = new Headers(init?.headers).get('idempotency-key') ?? ''
@@ -539,12 +700,12 @@ describe('MediaProjectService image projects', () => {
     expect(recoveredKey).toBe(firstKey)
   })
 
-  test('surfaces failed_unknown as a possible-charge warning instead of silently retrying', async () => {
-    process.env.QF_GATEWAY_URL = 'https://gateway.example/gw'
-    process.env.QF_GATEWAY_TOKEN = 'app-token'
+  test('surfaces failed_unknown as an acceptance warning instead of silently retrying', async () => {
+    process.env.BB_GATEWAY_URL = 'https://gateway.example/gw'
+    process.env.BB_GATEWAY_TOKEN = 'app-token'
     const keys: string[] = []
     let postCount = 0
-    const service = new MediaProjectService({
+    const service = testMediaProjectService({
       root: await root(),
       fetchImpl: async (_input, init) => {
         if (init?.method === 'POST') {
@@ -563,7 +724,7 @@ describe('MediaProjectService image projects', () => {
     const failed = await service.getTask(task.id)
     expect(failed.status).toBe('failed')
     expect(failed.outcome_unknown).toBe(true)
-    expect(failed.error).toContain('可能已经产生费用')
+    expect(failed.error).toContain('无法确认图片任务是否已被远程服务受理')
     const failedProject = await service.getProject(project.id)
     expect(failedProject).toMatchObject({ state: 'failed' })
 
@@ -577,10 +738,10 @@ describe('MediaProjectService image projects', () => {
   })
 
   test('bounds a stalled gateway result body while keeping the remote task pollable', async () => {
-    process.env.QF_GATEWAY_URL = 'https://gateway.example/gw'
-    process.env.QF_GATEWAY_TOKEN = 'app-token'
+    process.env.BB_GATEWAY_URL = 'https://gateway.example/gw'
+    process.env.BB_GATEWAY_TOKEN = 'app-token'
     let resultBodyAborted = false
-    const service = new MediaProjectService({
+    const service = testMediaProjectService({
       root: await root(),
       imageResultTimeoutMs: 20,
       fetchImpl: async (_input, init) => {
@@ -603,12 +764,12 @@ describe('MediaProjectService image projects', () => {
   })
 
   test('deduplicates concurrent final image polls and materializes the result once', async () => {
-    process.env.QF_GATEWAY_URL = 'https://gateway.example/gw'
-    process.env.QF_GATEWAY_TOKEN = 'app-token'
+    process.env.BB_GATEWAY_URL = 'https://gateway.example/gw'
+    process.env.BB_GATEWAY_TOKEN = 'app-token'
     let resultPolls = 0
     let releaseResult!: () => void
     const resultReady = new Promise<void>(resolve => { releaseResult = resolve })
-    const service = new MediaProjectService({
+    const service = testMediaProjectService({
       root: await root(),
       fetchImpl: async (_input, init) => {
         if (init?.method === 'POST') {
@@ -640,7 +801,7 @@ describe('MediaProjectService image projects', () => {
   test('stores reference images as private assets and migrates legacy inline projects on read', async () => {
     const mediaRoot = await root()
     const reference = `data:image/png;base64,${Buffer.from('private-reference').toString('base64')}`
-    const service = new MediaProjectService({ root: mediaRoot })
+    const service = testMediaProjectService({ root: mediaRoot })
     const created = await service.createImageProject({
       prompt: '参考图编辑',
       mode: 'edit',
@@ -659,7 +820,7 @@ describe('MediaProjectService image projects', () => {
       reference_images: [reference],
       reference_image_assets: undefined,
     }, null, 2)}\n`)
-    const migrated = await new MediaProjectService({ root: mediaRoot }).getProject(created.id)
+    const migrated = await testMediaProjectService({ root: mediaRoot }).getProject(created.id)
     expect(migrated.kind).toBe('image')
     if (migrated.kind !== 'image') throw new Error('wrong kind')
     expect(migrated.reference_images).toEqual([])
@@ -669,7 +830,7 @@ describe('MediaProjectService image projects', () => {
 
   test('migrates legacy output lists into independent immutable versions without losing results', async () => {
     const mediaRoot = await root()
-    const service = new MediaProjectService({ root: mediaRoot })
+    const service = testMediaProjectService({ root: mediaRoot })
     const created = await service.createImageProject({ user_request: '旧图片结果' })
     const outputId = 'out_legacy001'
     const fileName = `${outputId}.png`
@@ -685,7 +846,7 @@ describe('MediaProjectService image projects', () => {
       }],
     }, null, 2)}\n`)
 
-    const migrated = await new MediaProjectService({ root: mediaRoot }).getProject(created.id)
+    const migrated = await testMediaProjectService({ root: mediaRoot }).getProject(created.id)
     if (migrated.kind !== 'image') throw new Error('wrong kind')
     expect(migrated.outputs[0]).toMatchObject({
       id: outputId,
@@ -697,15 +858,15 @@ describe('MediaProjectService image projects', () => {
       id: migrated.outputs[0]!.version_id,
       asset_ids: [outputId],
     }))
-    const reread = await new MediaProjectService({ root: mediaRoot }).getProject(created.id)
+    const reread = await testMediaProjectService({ root: mediaRoot }).getProject(created.id)
     expect(reread.writer_fence).toBe(migrated.writer_fence)
   })
 
   test('rejects a reference-image symlink before it can be sent to the image service', async () => {
-    process.env.QF_GATEWAY_URL = 'https://gateway.example/gw'
-    process.env.QF_GATEWAY_TOKEN = 'app-token'
+    process.env.BB_GATEWAY_URL = 'https://gateway.example/gw'
+    process.env.BB_GATEWAY_TOKEN = 'app-token'
     const mediaRoot = await root()
-    const service = new MediaProjectService({
+    const service = testMediaProjectService({
       root: mediaRoot,
       fetchImpl: async () => Response.json({ task_id: 'should-not-submit', status: 'queued' }),
     })
@@ -732,10 +893,10 @@ describe('MediaProjectService image projects', () => {
   })
 
   test('reconciles a succeeded image task whose project update was interrupted', async () => {
-    process.env.QF_GATEWAY_URL = 'https://gateway.example/gw'
-    process.env.QF_GATEWAY_TOKEN = 'app-token'
+    process.env.BB_GATEWAY_URL = 'https://gateway.example/gw'
+    process.env.BB_GATEWAY_TOKEN = 'app-token'
     const mediaRoot = await root()
-    const service = new MediaProjectService({
+    const service = testMediaProjectService({
       root: mediaRoot,
       fetchImpl: async (_input, init) => init?.method === 'POST'
         ? Response.json({ task_id: 'remote-image-reconcile', status: 'queued' }, { status: 202 })
@@ -755,18 +916,39 @@ describe('MediaProjectService image projects', () => {
       outputs: [],
     }, null, 2)}\n`)
 
-    await new MediaProjectService({ root: mediaRoot }).getTask(task.id, false)
-    expect(await new MediaProjectService({ root: mediaRoot }).getProject(created.id)).toMatchObject({
+    await testMediaProjectService({ root: mediaRoot }).getTask(task.id, false)
+    expect(await testMediaProjectService({ root: mediaRoot }).getProject(created.id)).toMatchObject({
       state: 'ready',
+      outputs: [expect.objectContaining({ asset_path: expect.stringContaining('/api/media/assets/') })],
+    })
+
+    const reconciledProject = await testMediaProjectService({ root: mediaRoot }).getProject(created.id)
+    const persistedTask = JSON.parse(await readFile(join(mediaRoot, 'tasks', `${task.id}.json`), 'utf8')) as Record<string, unknown>
+    await writeFile(join(mediaRoot, 'projects', `${ready.id}.json`), `${JSON.stringify({
+      ...reconciledProject,
+      state: 'generating',
+      outputs: [],
+    }, null, 2)}\n`)
+    await writeFile(join(mediaRoot, 'tasks', `${task.id}.json`), `${JSON.stringify({
+      ...persistedTask,
+      status: 'committing',
+      progress: 90,
+      stage: '正在质检并保存候选',
+    }, null, 2)}\n`)
+    const recoveredCommit = await testMediaProjectService({ root: mediaRoot }).getTask(task.id, false)
+    expect(recoveredCommit).toMatchObject({ status: 'succeeded', stage: '生成完成（已恢复）' })
+    expect(await testMediaProjectService({ root: mediaRoot }).getProject(created.id)).toMatchObject({
+      state: 'ready',
+      notice: expect.stringContaining('中断的本地提交恢复'),
       outputs: [expect.objectContaining({ asset_path: expect.stringContaining('/api/media/assets/') })],
     })
   })
 
   test('does not attach a stale image task result to a project already bound to a replacement task', async () => {
-    process.env.QF_GATEWAY_URL = 'https://gateway.example/gw'
-    process.env.QF_GATEWAY_TOKEN = 'app-token'
+    process.env.BB_GATEWAY_URL = 'https://gateway.example/gw'
+    process.env.BB_GATEWAY_TOKEN = 'app-token'
     const mediaRoot = await root()
-    const service = new MediaProjectService({
+    const service = testMediaProjectService({
       root: mediaRoot,
       fetchImpl: async (_input, init) => init?.method === 'POST'
         ? Response.json({ task_id: 'remote-stale-image', status: 'queued' }, { status: 202 })
@@ -799,9 +981,9 @@ describe('MediaProjectService image projects', () => {
   })
 
   test('cancels only a remotely confirmed queued image task', async () => {
-    process.env.QF_GATEWAY_URL = 'https://gateway.example/gw'
-    process.env.QF_GATEWAY_TOKEN = 'app-token'
-    const service = new MediaProjectService({
+    process.env.BB_GATEWAY_URL = 'https://gateway.example/gw'
+    process.env.BB_GATEWAY_TOKEN = 'app-token'
+    const service = testMediaProjectService({
       root: await root(),
       fetchImpl: async (input, init) => {
         if (String(input).endsWith('/cancel')) return Response.json({ status: 'cancelled' })
@@ -821,12 +1003,84 @@ describe('MediaProjectService image projects', () => {
 })
 
 describe('MediaProjectService video projects', () => {
+  const planningFixture = () => {
+    const source: VideoSource = {
+      id: 'src_12345678', path: '/tmp/source.mp4', name: 'source.mp4', duration_ms: 4_000,
+      width: 640, height: 360, fps: 24, has_audio: false,
+      fingerprint: `sha256:${'a'.repeat(64)}`, rotation: 0,
+      video_stream_count: 1, audio_stream_count: 0, missing: false,
+    }
+    const evidence: VideoEvidence = {
+      id: 'evidence_12345678', kind: 'source_role', source_id: source.id,
+      source_fingerprint: source.fingerprint!, in_ms: 0, out_ms: source.duration_ms,
+      text: '真实视频素材', confidence: 1, warnings: [], created_at: new Date(0).toISOString(),
+    }
+    const scene: VideoScene = {
+      id: 'scene_12345678', source_id: source.id, in_ms: 0, out_ms: source.duration_ms,
+      story_role: 'hook', evidence_ids: [evidence.id], rationale: '用户当前时间线',
+      needs_review: false, locked: false,
+    }
+    return { source, evidence, scene }
+  }
+
+  test('falls back to Host-bound facts when the video planner returns malformed or invented structure', async () => {
+    const { source, evidence, scene } = planningFixture()
+    const base = {
+      sources: [source], evidence: [evidence], currentScenes: [scene],
+      userGoal: '剪成短片', analysisGaps: ['没有语音转写。'],
+    }
+    const options = {
+      operationId: 'op_video_plan_fallback',
+      env: { BB_GATEWAY_URL: 'https://gateway.example', BB_GATEWAY_TOKEN: 'token' },
+    }
+    const malformed = await planVideoTimeline(base, {
+      ...options,
+      fetchImpl: async () => Response.json({ choices: [{ message: { content: '{"brief":' } }] }),
+    })
+    expect(malformed).toMatchObject({
+      scenes: [{ source_id: source.id, evidence_ids: [evidence.id], needs_review: true }],
+      alternatives: [],
+    })
+    expect(malformed.brief.gaps).toContain('智能剪辑建议暂不可用，已保留真实素材顺序。')
+
+    const invented = await planVideoTimeline(base, {
+      ...options,
+      fetchImpl: async () => Response.json({ choices: [{ message: { content: JSON.stringify({
+        brief: {
+          content_type: '短片', output_channel: '竖屏', must_preserve_text: [],
+          recommended_direction: '动作优先', rationale: ['模型建议'], gaps: [],
+        },
+        scenes: [{
+          source_id: 'src_invented', in_ms: 0, out_ms: 1_000, story_role: 'hook',
+          evidence_ids: [evidence.id], rationale: '不存在的素材', needs_review: false,
+        }],
+        alternatives: [],
+      }) } }] }),
+    })
+    expect(invented.scenes[0]).toMatchObject({ source_id: source.id, evidence_ids: [evidence.id], needs_review: true })
+  })
+
+  test('does not replace video-planning cancellation with a fallback plan', async () => {
+    const { source, evidence, scene } = planningFixture()
+    const controller = new AbortController()
+    controller.abort()
+    await expect(planVideoTimeline({
+      sources: [source], evidence: [evidence], currentScenes: [scene],
+      userGoal: '剪成短片', analysisGaps: [],
+    }, {
+      operationId: 'op_video_plan_cancelled',
+      signal: controller.signal,
+      env: { BB_GATEWAY_URL: 'https://gateway.example', BB_GATEWAY_TOKEN: 'token' },
+      fetchImpl: async () => { throw new DOMException('aborted', 'AbortError') },
+    })).rejects.toMatchObject({ code: 'VIDEO_ANALYSIS_CANCELLED' })
+  })
+
   test('returns a safe source-read error instead of probe diagnostics', async () => {
     const mediaRoot = await root()
     const sourcePath = join(mediaRoot, 'source.mp4')
     const rawDetail = 'ffprobe could not parse /private/Movies/source.mp4 token=private-token'
     await writeFile(sourcePath, 'source')
-    const service = new MediaProjectService({
+    const service = testMediaProjectService({
       root: mediaRoot,
       runProcess: async () => ({ exitCode: 1, stdout: '', stderr: rawDetail }),
     })
@@ -844,7 +1098,7 @@ describe('MediaProjectService video projects', () => {
     const outputPath = join(mediaRoot, 'output.mp4')
     const rawDetail = 'ffmpeg failed for /private/Movies/source.mp4 token=private-token'
     await writeFile(sourcePath, 'source')
-    const service = new MediaProjectService({
+    const service = testMediaProjectService({
       root: mediaRoot,
       runProcess: async command => {
         if (command.includes('-version')) return { exitCode: 0, stdout: 'version', stderr: '' }
@@ -870,8 +1124,8 @@ describe('MediaProjectService video projects', () => {
     })
 
     let failed = await service.getTask(task.id, false)
-    for (let index = 0; index < 20 && failed.status !== 'failed'; index += 1) {
-      await Bun.sleep(5)
+    for (let index = 0; index < 100 && failed.status !== 'failed'; index += 1) {
+      await Bun.sleep(10)
       failed = await service.getTask(task.id, false)
     }
     const failedProject = await service.getProject(project.id)
@@ -914,7 +1168,7 @@ describe('MediaProjectService video projects', () => {
       await writeFile(command.at(-1)!, 'rendered')
       return { exitCode: 0, stdout: '', stderr: '' }
     }
-    const service = new MediaProjectService({ root: mediaRoot, runProcess })
+    const service = testMediaProjectService({ root: mediaRoot, runProcess })
     const created = await service.createVideoProject({ title: '门店活动' })
     const { project } = await service.addVideoSource(created.id, { path: sourcePath })
     expect(project.sources[0]).toMatchObject({
@@ -981,6 +1235,7 @@ describe('MediaProjectService video projects', () => {
     const mediaRoot = await root()
     const sourcePath = join(mediaRoot, 'source.mp4')
     await writeFile(sourcePath, 'source-video')
+    const commands: string[][] = []
     const gatewayCalls: Array<{ url: string; headers: Headers; body: string }> = []
     const fetchImpl: typeof fetch = async (input, init) => {
       const url = String(input)
@@ -988,23 +1243,24 @@ describe('MediaProjectService video projects', () => {
       const body = typeof init?.body === 'string' ? init.body : ''
       gatewayCalls.push({ url, headers, body })
       if (url.endsWith('/v1/audio/transcriptions')) return Response.json({ text: '进球以后挥手庆祝' })
+      if (url.endsWith('/v1/visual/evidence')) {
+        const count = [...body.matchAll(/"type":"image_url"/g)].length
+        return Response.json({
+          schema: 'bb.visual-evidence-batch.v1',
+          evidence: Array.from({ length: count }, () => ({
+            schema: 'bb.visual-evidence.v1',
+            ocr: '',
+            objects: ['人物', '台球桌'],
+            layout: '人物位于台球桌旁',
+            ui: [],
+            alerts: [],
+            observations: ['人物完成击球并庆祝'],
+          })),
+        })
+      }
       const sourceId = body.match(/src_[a-f0-9]{32}/)?.[0]
       if (!sourceId) return Response.json({ detail: 'missing source' }, { status: 400 })
-      const isVisualAnalysis = body.includes('image_url')
-      const content = isVisualAnalysis
-        ? {
-            evidence: [{
-              kind: 'visual',
-              source_id: sourceId,
-              in_ms: 100,
-              out_ms: 900,
-              text: '人物完成击球并庆祝',
-              confidence: 0.92,
-              warnings: [],
-            }],
-            gaps: [],
-          }
-        : (() => {
+      const content = (() => {
             const evidenceId = body.match(/evidence_[a-f0-9]{32}/)?.[0]
             return {
               brief: {
@@ -1041,16 +1297,16 @@ describe('MediaProjectService video projects', () => {
           })()
       return Response.json({ choices: [{ message: { content: JSON.stringify(content) } }] })
     }
-    const service = new MediaProjectService({
+    const service = testMediaProjectService({
       root: mediaRoot,
       env: {
-        QF_GATEWAY_URL: 'https://gateway.example/gw',
-        QF_GATEWAY_TOKEN: 'test-access-token',
+        BB_GATEWAY_URL: 'https://gateway.example/gw',
+        BB_GATEWAY_TOKEN: 'test-access-token',
         BB_INSTALLATION_ID: 'install_video_analysis_0001',
       },
       fetchImpl,
-      remoteConsentReceipt: async () => MANAGED_REMOTE_RECEIPT,
       runProcess: async command => {
+        commands.push(command)
         if (command.includes('-show_streams')) {
           return {
             exitCode: 0,
@@ -1077,7 +1333,7 @@ describe('MediaProjectService video projects', () => {
       await Bun.sleep(5)
       analyzed = await service.getTask(analyze.id, false)
     }
-    expect(analyzed).toMatchObject({ status: 'succeeded', result: { evidence_count: 3 } })
+    expect(analyzed).toMatchObject({ status: 'succeeded', result: { evidence_count: 5 } })
     const planTaskId = String(analyzed.result?.next_task_id)
     let planned = await service.getTask(planTaskId, false)
     for (let index = 0; index < 100 && planned.status === 'running'; index += 1) {
@@ -1092,21 +1348,26 @@ describe('MediaProjectService video projects', () => {
       user_goal: '剪成一条突出进球瞬间的竖屏短片',
       compiler_version: 'video-brief-v1',
     })
-    expect(completed.evidence.map(item => item.kind).sort()).toEqual(['source_role', 'transcript', 'visual'])
+    expect(completed.evidence.map(item => item.kind).sort()).toEqual(['source_role', 'transcript', 'visual', 'visual', 'visual'])
     expect(completed.timeline_versions.at(-1)?.scenes[0]).toMatchObject({ story_role: 'hook', locked: false })
     expect(completed.alternatives).toHaveLength(1)
 
     expect(gatewayCalls).toHaveLength(3)
     const speech = gatewayCalls.find(call => call.url.endsWith('/v1/audio/transcriptions'))!
-    const visual = gatewayCalls.find(call => call.body.includes('image_url'))!
-    const planning = gatewayCalls.find(call => call.url.endsWith('/v1/chat/completions') && !call.body.includes('image_url'))!
+    const framePayload = Buffer.from('jpeg-frame').toString('base64')
+    const visual = gatewayCalls.find(call => call.body.includes(framePayload))!
+    const planning = gatewayCalls.find(call => call !== speech && call !== visual)!
     for (const call of gatewayCalls) {
-      expect(call.headers.get('X-BB-Data-Egress-Consent')).toBe(MANAGED_REMOTE_RECEIPT.receipt_id)
+      expect(call.headers.get('X-BB-Data-Egress-Consent')).toBeNull()
       expect(call.headers.get('X-BB-Provider-Protocol')).toBe('bb-provider-gateway/1.0')
       expect(call.headers.get('X-BB-Operation-ID')).toBeTruthy()
     }
     expect(speech.body).toBe('')
-    expect(visual.body).toContain(Buffer.from('jpeg-frame').toString('base64'))
+    expect(visual.body).toContain(framePayload)
+    expect(visual.url).toEndWith('/v1/visual/evidence')
+    expect(visual.body).not.toContain('time_ms=')
+    expect(visual.body).not.toContain('source_id')
+    expect(commands.filter(command => command.includes('-frames:v'))).toHaveLength(3)
     expect(visual.body).not.toContain('mp3-audio')
     expect(planning.body).toContain('人物完成击球并庆祝')
     expect(planning.body).toContain('进球以后挥手庆祝')
@@ -1121,18 +1382,20 @@ describe('MediaProjectService video projects', () => {
     let notifyPlanStarted!: () => void
     let resolvePlan!: (response: Response) => void
     const planStarted = new Promise<void>(resolve => { notifyPlanStarted = resolve })
-    const fetchImpl: typeof fetch = async (_input, init) => {
+    const fetchImpl: typeof fetch = async (input, init) => {
+      const url = String(input)
       const body = typeof init?.body === 'string' ? init.body : ''
-      const sourceId = body.match(/src_[a-f0-9]{32}/)?.[0]!
-      if (body.includes('image_url')) {
-        return Response.json({ choices: [{ message: { content: JSON.stringify({
-          evidence: [{
-            kind: 'visual', source_id: sourceId, in_ms: 0, out_ms: 1000,
-            text: '可见连续击球动作', confidence: 0.9, warnings: [],
-          }],
-          gaps: [],
-        }) } }] })
+      if (url.endsWith('/v1/visual/evidence')) {
+        const count = [...body.matchAll(/"type":"image_url"/g)].length
+        return Response.json({
+          schema: 'bb.visual-evidence-batch.v1',
+          evidence: Array.from({ length: count }, () => ({
+            schema: 'bb.visual-evidence.v1', ocr: '', objects: ['台球'], layout: '连续动作',
+            ui: [], alerts: [], observations: ['可见连续击球动作'],
+          })),
+        })
       }
+      const sourceId = body.match(/src_[a-f0-9]{32}/)?.[0]!
       const evidenceId = body.match(/evidence_[a-f0-9]{32}/)?.[0]!
       notifyPlanStarted()
       return await new Promise<Response>(resolve => {
@@ -1149,15 +1412,14 @@ describe('MediaProjectService video projects', () => {
         alternatives: [],
       }) } }] }))
     }
-    const service = new MediaProjectService({
+    const service = testMediaProjectService({
       root: mediaRoot,
       env: {
-        QF_GATEWAY_URL: 'https://gateway.example/gw',
-        QF_GATEWAY_TOKEN: 'test-access-token',
+        BB_GATEWAY_URL: 'https://gateway.example/gw',
+        BB_GATEWAY_TOKEN: 'test-access-token',
         BB_INSTALLATION_ID: 'install_video_analysis_0002',
       },
       fetchImpl,
-      remoteConsentReceipt: async () => MANAGED_REMOTE_RECEIPT,
       runProcess: async command => {
         if (command.includes('-show_streams')) {
           return {
@@ -1205,6 +1467,183 @@ describe('MediaProjectService video projects', () => {
     expect(final.kind === 'video' ? final.current_timeline_version_id : null).toBe(edited.current_timeline_version_id)
   })
 
+  test('publishes a managed low-cost preview for the exact timeline version and keeps it stale after edits', async () => {
+    const mediaRoot = await root()
+    const sourcePath = join(mediaRoot, 'source.mp4')
+    await writeFile(sourcePath, 'source')
+    const commands: string[][] = []
+    const runProcess: MediaProcessRunner = async command => {
+      commands.push(command)
+      if (command.includes('-version')) return { exitCode: 0, stdout: 'version', stderr: '' }
+      if (command.includes('-show_streams')) {
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify({
+            format: { duration: '4' },
+            streams: [{ codec_type: 'video', width: 1920, height: 1080 }],
+          }),
+          stderr: '',
+        }
+      }
+      await writeFile(command.at(-1)!, 'preview-bytes')
+      return { exitCode: 0, stdout: '', stderr: '' }
+    }
+    const service = testMediaProjectService({ root: mediaRoot, runProcess })
+    const created = await service.createVideoProject({})
+    const { project } = await service.addVideoSource(created.id, { path: sourcePath })
+    const task = await service.previewVideo(project.id, {
+      base_revision: project.revision,
+      timeline_version_id: project.current_timeline_version_id!,
+    })
+    let completed = await service.getTask(task.id, false)
+    for (let index = 0; index < 30 && completed.status !== 'succeeded'; index += 1) {
+      await Bun.sleep(5)
+      completed = await service.getTask(task.id, false)
+    }
+    expect(completed.status).toBe('succeeded')
+    const previewCommand = commands.find(command => command.includes('-filter_complex'))
+    expect(previewCommand?.join(' ')).toContain('scale=540:960')
+    expect(previewCommand?.join(' ')).toContain('fps=24')
+    const previewed = await service.getProject(project.id)
+    expect(previewed.kind).toBe('video')
+    if (previewed.kind !== 'video') throw new Error('wrong kind')
+    const previewAssetId = previewed.preview?.asset_id
+    expect(previewAssetId).toMatch(/^preview_/)
+    expect(previewed.preview).toMatchObject({
+      timeline_version_id: project.current_timeline_version_id,
+      content_hash: `sha256:${createHash('sha256').update('preview-bytes').digest('hex')}`,
+    })
+    expect(previewed.assets).toEqual(expect.arrayContaining([
+      expect.objectContaining({ role: 'preview', id: previewed.preview?.asset_id }),
+    ]))
+    const response = await service.assetResponse(project.id, previewed.preview!.asset_path.split('/').pop()!)
+    expect(response.headers.get('Content-Type')).toBe('video/mp4')
+    expect(await response.text()).toBe('preview-bytes')
+    const ranged = await service.assetResponse(
+      project.id,
+      previewed.preview!.asset_path.split('/').pop()!,
+      new Request('http://localhost/preview', { headers: { Range: 'bytes=0-6' } }),
+    )
+    expect(ranged.status).toBe(206)
+    expect(await ranged.text()).toBe('preview')
+
+    const edited = await service.updateVideoTimeline(project.id, {
+      base_revision: previewed.revision,
+      base_timeline_version_id: previewed.current_timeline_version_id,
+      clips: [{ ...previewed.timeline[0]!, in_ms: 250 }],
+    })
+    expect(edited.preview?.asset_id).toBe(previewAssetId)
+    expect(edited.preview?.timeline_version_id).not.toBe(edited.current_timeline_version_id)
+  })
+
+  test('discards a late preview after a timeline edit and cancels an active preview process', async () => {
+    const mediaRoot = await root()
+    const sourcePath = join(mediaRoot, 'source.mp4')
+    await writeFile(sourcePath, 'source')
+    let releaseRender!: () => void
+    let markStarted!: () => void
+    const started = new Promise<void>(resolve => { markStarted = resolve })
+    const renderGate = new Promise<void>(resolve => { releaseRender = resolve })
+    let activeRenderGate = renderGate
+    const runProcess: MediaProcessRunner = async (command, options) => {
+      if (command.includes('-version')) return { exitCode: 0, stdout: 'version', stderr: '' }
+      if (command.includes('-show_streams')) {
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify({ format: { duration: '4' }, streams: [{ codec_type: 'video', width: 1280, height: 720 }] }),
+          stderr: '',
+        }
+      }
+      markStarted()
+      await Promise.race([
+        activeRenderGate,
+        new Promise<void>(resolve => options?.signal?.addEventListener('abort', () => resolve(), { once: true })),
+      ])
+      if (options?.signal?.aborted) return { exitCode: 1, stdout: '', stderr: 'cancelled' }
+      await writeFile(command.at(-1)!, 'late-preview')
+      return { exitCode: 0, stdout: '', stderr: '' }
+    }
+    const service = testMediaProjectService({ root: mediaRoot, runProcess })
+    const created = await service.createVideoProject({})
+    const { project } = await service.addVideoSource(created.id, { path: sourcePath })
+    const lateTask = await service.previewVideo(project.id, {
+      base_revision: project.revision,
+      timeline_version_id: project.current_timeline_version_id!,
+    })
+    await started
+    await service.updateVideoTimeline(project.id, {
+      base_revision: project.revision,
+      base_timeline_version_id: project.current_timeline_version_id,
+      clips: [{ ...project.timeline[0]!, out_ms: project.timeline[0]!.out_ms - 250 }],
+    })
+    releaseRender()
+    let late = await service.getTask(lateTask.id, false)
+    for (let index = 0; index < 30 && !['cancelled', 'failed'].includes(late.status); index += 1) {
+      await Bun.sleep(5)
+      late = await service.getTask(lateTask.id, false)
+    }
+    expect(late).toMatchObject({ status: 'cancelled', error_code: 'MEDIA_STATE_CONFLICT' })
+    const afterLate = await service.getProject(project.id)
+    expect(afterLate.kind === 'video' ? afterLate.preview : null).toBeUndefined()
+
+    if (afterLate.kind !== 'video') throw new Error('wrong kind')
+    let markSecondStarted!: () => void
+    const secondStarted = new Promise<void>(resolve => { markSecondStarted = resolve })
+    markStarted = markSecondStarted
+    activeRenderGate = new Promise<void>(() => undefined)
+    const cancelTask = await service.previewVideo(afterLate.id, {
+      base_revision: afterLate.revision,
+      timeline_version_id: afterLate.current_timeline_version_id!,
+    })
+    await secondStarted
+    const cancelled = await service.cancelTask(cancelTask.id)
+    expect(cancelled).toMatchObject({ status: 'cancelled', error_code: 'MEDIA_VIDEO_PREVIEW_CANCELLED' })
+    const afterCancel = await service.getProject(project.id)
+    expect(afterCancel.kind === 'video' ? afterCancel.preview : null).toBeUndefined()
+  })
+
+  test('fails an interrupted preview safely after service restart', async () => {
+    const mediaRoot = await root()
+    const sourcePath = join(mediaRoot, 'source.mp4')
+    await writeFile(sourcePath, 'source')
+    let markStarted!: () => void
+    const started = new Promise<void>(resolve => { markStarted = resolve })
+    const runProcess: MediaProcessRunner = async (command, options) => {
+      if (command.includes('-version')) return { exitCode: 0, stdout: 'version', stderr: '' }
+      if (command.includes('-show_streams')) {
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify({ format: { duration: '4' }, streams: [{ codec_type: 'video', width: 1280, height: 720 }] }),
+          stderr: '',
+        }
+      }
+      markStarted()
+      await new Promise<void>(resolve => options?.signal?.addEventListener('abort', () => resolve(), { once: true }))
+      return { exitCode: 1, stdout: '', stderr: 'interrupted' }
+    }
+    const service = testMediaProjectService({ root: mediaRoot, runProcess })
+    const created = await service.createVideoProject({})
+    const { project } = await service.addVideoSource(created.id, { path: sourcePath })
+    const task = await service.previewVideo(project.id, {
+      base_revision: project.revision,
+      timeline_version_id: project.current_timeline_version_id!,
+    })
+    await started
+
+    const restarted = testMediaProjectService({ root: mediaRoot, runProcess })
+    expect(await restarted.getTask(task.id, false)).toMatchObject({
+      status: 'failed',
+      stage: '预览已中断',
+      error_code: 'MEDIA_VIDEO_PREVIEW_INTERRUPTED',
+    })
+
+    const active = (service as unknown as {
+      activeVideoPreviews: Map<string, { controller: AbortController; completion: Promise<void> }>
+    }).activeVideoPreviews.get(task.id)
+    active?.controller.abort()
+    await active?.completion
+  })
+
   test('falls back once from an automatic VideoToolbox encoder failure to portable mpeg4', async () => {
     const mediaRoot = await root()
     const sourcePath = join(mediaRoot, 'source.mp4')
@@ -1233,7 +1672,7 @@ describe('MediaProjectService video projects', () => {
       await writeFile(command.at(-1)!, 'rendered')
       return { exitCode: 0, stdout: '', stderr: '' }
     }
-    const service = new MediaProjectService({ root: mediaRoot, runProcess, platform: 'darwin' })
+    const service = testMediaProjectService({ root: mediaRoot, runProcess, platform: 'darwin' })
     const first = await service.createVideoProject({ title: 'hardware fallback' })
     const firstReady = await service.addVideoSource(first.id, { path: sourcePath })
     const firstTask = await service.renderVideo(firstReady.project.id, {
@@ -1267,7 +1706,7 @@ describe('MediaProjectService video projects', () => {
     const mediaRoot = await root()
     const sourcePath = join(mediaRoot, 'source.mp4')
     await writeFile(sourcePath, 'source')
-    const service = new MediaProjectService({
+    const service = testMediaProjectService({
       root: mediaRoot,
       runProcess: async command => command.includes('-show_streams')
         ? { exitCode: 0, stdout: JSON.stringify({ format: { duration: '1' }, streams: [{ codec_type: 'video', width: 1, height: 1 }] }), stderr: '' }
@@ -1285,7 +1724,7 @@ describe('MediaProjectService video projects', () => {
     const mediaRoot = await root()
     const sourcePath = join(mediaRoot, 'source.mp4')
     await writeFile(sourcePath, 'source')
-    const service = new MediaProjectService({
+    const service = testMediaProjectService({
       root: mediaRoot,
       runProcess: async command => command.includes('-show_streams')
         ? { exitCode: 0, stdout: JSON.stringify({ format: { duration: '2' }, streams: [{ codec_type: 'video', width: 1280, height: 720 }] }), stderr: '' }
@@ -1343,7 +1782,7 @@ describe('MediaProjectService video projects', () => {
         }, { once: true })
       })
     }
-    const service = new MediaProjectService({ root: mediaRoot, runProcess })
+    const service = testMediaProjectService({ root: mediaRoot, runProcess })
     const created = await service.createVideoProject({})
     const { project } = await service.addVideoSource(created.id, { path: sourcePath })
     const first = await service.renderVideo(project.id, { revision: project.revision, output_path: outputPath })
@@ -1363,7 +1802,7 @@ describe('MediaProjectService video projects', () => {
       revision: withSource.project.revision,
       output_path: join(mediaRoot, 'interrupted.mp4'),
     })
-    const restarted = new MediaProjectService({ root: mediaRoot, runProcess })
+    const restarted = testMediaProjectService({ root: mediaRoot, runProcess })
     const recovered = await restarted.getTask(interruptedTask.id)
     expect(recovered).toMatchObject({ status: 'failed', stage: '导出已中断' })
     expect(await restarted.getProject(interrupted.id)).toMatchObject({ state: 'ready' })
@@ -1394,7 +1833,7 @@ describe('MediaProjectService video projects', () => {
         else options?.signal?.addEventListener('abort', finish, { once: true })
       })
     }
-    const service = new MediaProjectService({
+    const service = testMediaProjectService({
       root: mediaRoot,
       runProcess,
       env: { BB_MEDIA_MAX_QUEUED_RENDERS: '0' },
@@ -1452,7 +1891,7 @@ describe('MediaProjectService video projects', () => {
         else options?.signal?.addEventListener('abort', finish, { once: true })
       })
     }
-    const service = new MediaProjectService({ root: mediaRoot, runProcess })
+    const service = testMediaProjectService({ root: mediaRoot, runProcess })
     const first = await service.createVideoProject({ title: 'first' })
     const second = await service.createVideoProject({ title: 'second' })
     const firstReady = await service.addVideoSource(first.id, { path: sourcePath })
@@ -1501,7 +1940,7 @@ describe('MediaProjectService video projects', () => {
         else options?.signal?.addEventListener('abort', finish, { once: true })
       })
     }
-    const service = new MediaProjectService({ root: mediaRoot, runProcess })
+    const service = testMediaProjectService({ root: mediaRoot, runProcess })
     const ready: Array<{ project: VideoStudioProject }> = []
     for (let index = 0; index < 11; index += 1) {
       const project = await service.createVideoProject({ title: `window-${index + 1}` })
@@ -1565,7 +2004,7 @@ describe('MediaProjectService video projects', () => {
       const mediaRoot = await root()
       const sourcePath = join(mediaRoot, 'source.mp4')
       await writeFile(sourcePath, 'source')
-      const service = new MediaProjectService({ root: mediaRoot, runProcess })
+      const service = testMediaProjectService({ root: mediaRoot, runProcess })
       const projects = await Promise.all(Array.from({ length: 10 }, (_, windowIndex) => (
         service.createVideoProject({ title: `user-${userIndex + 1}-window-${windowIndex + 1}` })
       )))
@@ -1619,7 +2058,7 @@ describe('MediaProjectService video projects', () => {
         stderr: '',
       }
     }
-    const service = new MediaProjectService({ root: mediaRoot, runProcess })
+    const service = testMediaProjectService({ root: mediaRoot, runProcess })
     const projectIds = await Promise.all(Array.from({ length: 10 }, async (_, index) => (
       (await service.createVideoProject({ title: `probe-window-${index + 1}` })).id
     )))
@@ -1646,7 +2085,7 @@ describe('MediaProjectService video projects', () => {
         stderr: '',
       }
     }
-    const service = new MediaProjectService({ root: mediaRoot, runProcess })
+    const service = testMediaProjectService({ root: mediaRoot, runProcess })
     const projectIds = await Promise.all(Array.from({ length: 11 }, async (_, index) => (
       (await service.createVideoProject({ title: `probe-overflow-${index + 1}` })).id
     )))
@@ -1690,7 +2129,7 @@ describe('MediaProjectService video projects', () => {
       await writeFile(command.at(-1)!, 'rendered')
       return { exitCode: 0, stdout: '', stderr: '' }
     }
-    const service = new MediaProjectService({
+    const service = testMediaProjectService({
       root: mediaRoot,
       runProcess,
       moveFile: async (source, destination) => {
@@ -1740,7 +2179,7 @@ describe('MediaProjectService video projects', () => {
       }
       return { exitCode: 0, stdout: ' V..... mpeg4 MPEG-4 part 2', stderr: '' }
     }
-    const service = new MediaProjectService({ root: mediaRoot, runProcess })
+    const service = testMediaProjectService({ root: mediaRoot, runProcess })
     const created = await service.createVideoProject({})
     const { project } = await service.addVideoSource(created.id, { path: sourcePath })
     for (const output_path of [sourcePath, linkedPath]) {
@@ -1756,7 +2195,7 @@ describe('MediaProjectService video projects', () => {
     const firstPath = join(mediaRoot, 'first.mp4')
     const secondPath = join(mediaRoot, 'second.mp4')
     await Promise.all([writeFile(firstPath, 'first'), writeFile(secondPath, 'second')])
-    const service = new MediaProjectService({
+    const service = testMediaProjectService({
       root: mediaRoot,
       runProcess: async command => {
         if (command.includes('-show_streams')) await Bun.sleep(5)
@@ -1789,7 +2228,7 @@ describe('MediaProjectService video projects', () => {
     let releaseSecondProbe!: () => void
     const secondProbeStarted = new Promise<void>(resolve => { notifySecondProbeStarted = resolve })
     const secondProbeRelease = new Promise<void>(resolve => { releaseSecondProbe = resolve })
-    const service = new MediaProjectService({
+    const service = testMediaProjectService({
       root: mediaRoot,
       runProcess: async command => {
         if (command.includes('-show_streams')) {
@@ -1852,7 +2291,7 @@ describe('MediaProjectService video projects', () => {
     await writeFile(sourcePath, 'source')
     let moved!: () => void
     const movedPromise = new Promise<void>(resolve => { moved = resolve })
-    const service = new MediaProjectService({
+    const service = testMediaProjectService({
       root: mediaRoot,
       runProcess: async command => {
         if (command.includes('-show_streams')) return { exitCode: 0, stdout: JSON.stringify({ format: { duration: '1' }, streams: [{ codec_type: 'video' }] }), stderr: '' }
@@ -1871,56 +2310,68 @@ describe('MediaProjectService video projects', () => {
     const task = await service.renderVideo(project.id, { revision: project.revision, output_path: outputPath })
     await movedPromise
 
-    const restarted = new MediaProjectService({ root: mediaRoot })
+    const restarted = testMediaProjectService({ root: mediaRoot })
     expect(await restarted.getTask(task.id)).toMatchObject({ status: 'succeeded' })
     expect(await restarted.getProject(project.id)).toMatchObject({ state: 'complete', output_path: outputPath })
     expect(await readFile(outputPath, 'utf8')).toBe('rendered')
   })
 
-  test('persists one opaque product-task owner without affecting legacy standalone projects', async () => {
+  test('migrates legacy task-owned media records into the independent workbench', async () => {
     const mediaRoot = await root()
-    const service = new MediaProjectService({ root: mediaRoot })
-    const project = await service.createImageProject({ prompt: '任务关联海报' })
-    expect(project.product_task_id).toBeUndefined()
-
+    const service = testMediaProjectService({ root: mediaRoot })
+    const project = await service.createImageProject({ prompt: '旧任务关联海报' })
     const owner = 'task_0f15e1d4-7ced-4a8d-a980-d52dc0b55ffb'
-    const attached = await service.attachProjectToProductTask(project.id, owner)
-    expect(attached.product_task_id).toBe(owner)
-    expect(await new MediaProjectService({ root: mediaRoot }).getProject(project.id))
-      .toMatchObject({ product_task_id: owner })
+    const legacyOwner = { kind: 'product_task', owner_id: owner }
+    await mkdir(join(mediaRoot, 'tasks'), { recursive: true })
+    await mkdir(join(mediaRoot, 'deletions'), { recursive: true })
+    await writeFile(join(mediaRoot, 'projects', `${project.id}.json`), `${JSON.stringify({
+      ...project,
+      product_task_id: owner,
+      owner: legacyOwner,
+    }, null, 2)}\n`)
+    await writeFile(join(mediaRoot, 'tasks', 'task_legacyowner1.json'), `${JSON.stringify({
+      schema_version: 1,
+      id: 'task_legacyowner1',
+      project_id: project.id,
+      owner: legacyOwner,
+      kind: 'video.probe',
+      status: 'failed',
+      progress: 0,
+      stage: '旧任务',
+      created_at: '2026-07-19T00:00:00.000Z',
+      updated_at: '2026-07-19T00:00:00.000Z',
+    }, null, 2)}\n`)
+    await writeFile(join(mediaRoot, 'deletions', 'del_legacyowner1.json'), `${JSON.stringify({
+      schema_version: 1,
+      deletion_id: 'del_legacyowner1',
+      project_id: project.id,
+      owner: legacyOwner,
+      status: 'restored',
+      deleted_at: '2026-07-19T00:00:00.000Z',
+      purge_after: '2026-08-19T00:00:00.000Z',
+      task_ids: [],
+      managed_asset_count: 0,
+      managed_asset_bytes: 0,
+      trash_key: 'trash_legacyowner1',
+    }, null, 2)}\n`)
 
-    await expect(service.attachProjectToProductTask(project.id, 'task_0123456789abcdef'))
-      .rejects.toMatchObject({ code: 'PROJECT_ALREADY_ATTACHED', status: 409 })
-  })
+    await service.migrateSupportedStorage()
 
-  test('serializes competing task attachments across separate media service instances', async () => {
-    const mediaRoot = await root()
-    const creator = new MediaProjectService({ root: mediaRoot })
-    const project = await creator.createImageProject({ prompt: '并发关联海报' })
-    const first = new MediaProjectService({ root: mediaRoot })
-    const second = new MediaProjectService({ root: mediaRoot })
-    const firstOwner = 'task_0f15e1d4-7ced-4a8d-a980-d52dc0b55ffb'
-    const secondOwner = 'task_0123456789abcdef'
-
-    const results = await Promise.allSettled([
-      first.attachProjectToProductTask(project.id, firstOwner),
-      second.attachProjectToProductTask(project.id, secondOwner),
-    ])
-    const attached = results.filter((result): result is PromiseFulfilledResult<MediaProject> => result.status === 'fulfilled')
-    const rejected = results.filter((result): result is PromiseRejectedResult => result.status === 'rejected')
-
-    expect(attached).toHaveLength(1)
-    expect(rejected).toHaveLength(1)
-    expect(rejected[0]?.reason).toMatchObject({ code: 'PROJECT_ALREADY_ATTACHED', status: 409 })
-    expect(await creator.getProject(project.id)).toMatchObject({
-      product_task_id: attached[0]!.value.product_task_id,
-    })
+    for (const filePath of [
+      join(mediaRoot, 'projects', `${project.id}.json`),
+      join(mediaRoot, 'tasks', 'task_legacyowner1.json'),
+      join(mediaRoot, 'deletions', 'del_legacyowner1.json'),
+    ]) {
+      const persisted = JSON.parse(await readFile(filePath, 'utf8')) as Record<string, unknown>
+      expect(persisted.owner).toEqual({ kind: 'standalone', owner_id: 'local_workbench' })
+      expect(persisted).not.toHaveProperty('product_task_id')
+    }
   })
 
   test('materializes owner, operation, immutable assets, versions, and writer fences', async () => {
     const mediaRoot = await root()
     const reference = `data:image/png;base64,${Buffer.from('foundation-reference').toString('base64')}`
-    const service = new MediaProjectService({ root: mediaRoot })
+    const service = testMediaProjectService({ root: mediaRoot })
     const project = await service.createImageProject({
       prompt: '媒体基础合同',
       mode: 'edit',
@@ -1960,7 +2411,7 @@ describe('MediaProjectService video projects', () => {
     const video = await service.createVideoProject({})
     const sourcePath = join(mediaRoot, 'foundation.mp4')
     await writeFile(sourcePath, 'source')
-    const imported = await new MediaProjectService({
+    const imported = await testMediaProjectService({
       root: mediaRoot,
       runProcess: async () => ({
         exitCode: 0,
@@ -1980,9 +2431,9 @@ describe('MediaProjectService video projects', () => {
 
   test('uses compare-and-swap fencing so concurrent draft writes never silently overwrite', async () => {
     const mediaRoot = await root()
-    const creator = new MediaProjectService({ root: mediaRoot })
+    const creator = testMediaProjectService({ root: mediaRoot })
     const project = await creator.createImageProject({ prompt: '初始文案' })
-    const writers = Array.from({ length: 12 }, () => new MediaProjectService({ root: mediaRoot }))
+    const writers = Array.from({ length: 12 }, () => testMediaProjectService({ root: mediaRoot }))
     const results = await Promise.allSettled(writers.map((writer, index) => writer.updateImageProject(project.id, {
       revision: project.revision,
       user_request: `并发文案 ${index}`,
@@ -1997,7 +2448,7 @@ describe('MediaProjectService video projects', () => {
   test('moves a deletion into an accounted recovery window and restores every managed byte', async () => {
     const mediaRoot = await root()
     const now = new Date('2026-07-24T04:00:00.000Z')
-    const service = new MediaProjectService({ root: mediaRoot, now: () => now, deletionRetentionDays: 30 })
+    const service = testMediaProjectService({ root: mediaRoot, now: () => now, deletionRetentionDays: 30 })
     const referenceBytes = Buffer.from('recoverable-reference')
     const project = await service.createImageProject({
       prompt: '可恢复删除',
@@ -2016,10 +2467,6 @@ describe('MediaProjectService video projects', () => {
     })
     expect(deleted.purge_after).toBe('2026-08-23T04:00:00.000Z')
     await expect(service.getProject(project.id)).rejects.toMatchObject({ code: 'PROJECT_NOT_FOUND' })
-    await expect(service.restoreProject(project.id, {
-      kind: 'product_task',
-      owner_id: 'task_0123456789abcdef',
-    })).rejects.toMatchObject({ code: 'PROJECT_NOT_FOUND' })
 
     expect(await service.restoreProject(project.id, {
       kind: 'standalone', owner_id: 'local_workbench',
@@ -2032,7 +2479,7 @@ describe('MediaProjectService video projects', () => {
   test('garbage collection purges expired trash but retains the accounting receipt', async () => {
     const mediaRoot = await root()
     let now = new Date('2026-07-24T04:00:00.000Z')
-    const service = new MediaProjectService({ root: mediaRoot, now: () => now, deletionRetentionDays: 1 })
+    const service = testMediaProjectService({ root: mediaRoot, now: () => now, deletionRetentionDays: 1 })
     const project = await service.createImageProject({
       prompt: '过期回收',
       mode: 'edit',
@@ -2056,11 +2503,11 @@ describe('MediaProjectService video projects', () => {
 
   test('deduplicates concurrent deletion and resumes a restore after project publication', async () => {
     const mediaRoot = await root()
-    const creator = new MediaProjectService({ root: mediaRoot })
+    const creator = testMediaProjectService({ root: mediaRoot })
     const project = await creator.createImageProject({ prompt: '并发删除恢复' })
     const [first, second] = await Promise.all([
-      new MediaProjectService({ root: mediaRoot }).deleteProject(project.id),
-      new MediaProjectService({ root: mediaRoot }).deleteProject(project.id),
+      testMediaProjectService({ root: mediaRoot }).deleteProject(project.id),
+      testMediaProjectService({ root: mediaRoot }).deleteProject(project.id),
     ])
     expect(second.deletion_id).toBe(first.deletion_id)
 
@@ -2075,5 +2522,66 @@ describe('MediaProjectService video projects', () => {
       kind: 'standalone', owner_id: 'local_workbench',
     })).toMatchObject({ status: 'restored' })
     expect(await creator.getProject(project.id)).toMatchObject({ id: project.id })
+  })
+})
+
+describe('MediaProjectService media job events', () => {
+  test('persists monotonic job events and resumes from a project cursor after service restart', async () => {
+    process.env.BB_GATEWAY_URL = 'https://gateway.example/gw'
+    process.env.BB_GATEWAY_TOKEN = 'app-token'
+    const mediaRoot = await root()
+    let remoteStatus: 'running' | 'succeeded' = 'running'
+    const fetchImpl = async (_input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === 'POST') {
+        return Response.json({ task_id: 'remote-events-1', status: 'queued', poll_after_seconds: 1 }, { status: 202 })
+      }
+      if (remoteStatus === 'running') {
+        return Response.json({ task_id: 'remote-events-1', status: 'running', poll_after_seconds: 1 })
+      }
+      return Response.json({
+        task_id: 'remote-events-1',
+        status: 'succeeded',
+        data: [{ b64_json: pngBytes(1, 1).toString('base64'), mime_type: 'image/png' }],
+      })
+    }
+    const service = testMediaProjectService({ root: mediaRoot, fetchImpl })
+    const project = await service.createImageProject({ user_request: '事件序列海报' })
+    const submitted = await submitImage(service, project.id)
+    const initial = await service.listJobEvents(project.id)
+
+    expect(initial.events.length).toBeGreaterThanOrEqual(2)
+    expect(initial.events.map(event => event.cursor)).toEqual(
+      [...initial.events.map(event => event.cursor)].sort((left, right) => left - right),
+    )
+    expect(initial.events.map(event => event.status_sequence)).toEqual(
+      [...initial.events.map(event => event.status_sequence)].sort((left, right) => left - right),
+    )
+    expect(initial.events.at(-1)?.task.id).toBe(submitted.id)
+    expect(await service.listJobEvents(project.id, initial.cursor + 100)).toMatchObject({
+      cursor: initial.cursor,
+      reset_required: true,
+    })
+
+    const waiting = service.waitForJobEvents(project.id, initial.cursor, 100, 2_000)
+    await service.getTask(submitted.id)
+    const runningPage = await waiting
+    expect(runningPage.events).toHaveLength(1)
+    expect(runningPage.events[0]).toMatchObject({
+      cursor: initial.cursor + 1,
+      task: { status: 'running' },
+    })
+
+    remoteStatus = 'succeeded'
+    await service.getTask(submitted.id)
+    const restarted = testMediaProjectService({ root: mediaRoot, fetchImpl })
+    const resumed = await restarted.listJobEvents(project.id, runningPage.cursor)
+    expect(resumed.events.at(-1)?.task.status).toBe('succeeded')
+    expect(resumed.cursor).toBeGreaterThan(runningPage.cursor)
+
+    const deleted = await restarted.deleteProject(project.id)
+    expect(await stat(join(mediaRoot, 'events', `${project.id}.json`)).catch(() => null)).toBeNull()
+    expect(await stat(join(mediaRoot, 'trash', deleted.trash_key, 'events.json'))).not.toBeNull()
+    await restarted.restoreProject(project.id, { kind: 'standalone', owner_id: 'local_workbench' })
+    expect((await restarted.listJobEvents(project.id)).events.length).toBeGreaterThan(0)
   })
 })

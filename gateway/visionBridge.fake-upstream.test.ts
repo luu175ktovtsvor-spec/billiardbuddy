@@ -33,7 +33,6 @@ function authed(init: RequestInit = {}): RequestInit {
     headers: {
       Authorization: `Bearer ${gatewayTestAccessToken}`,
       'Content-Type': 'application/json',
-      'X-BB-Data-Egress-Consent': 'a'.repeat(64),
       'X-BB-Provider-Protocol': 'bb-provider-gateway/1.0',
       ...(init.headers as Record<string, string> | undefined),
     },
@@ -122,11 +121,11 @@ function withImagesBody(model: string, urls: string[]) {
   })
 }
 
-function computerUseImageBody(model: string) {
+function screenshotToolImageBody(model: string) {
   const parsed = JSON.parse(withImageBody(model)) as Record<string, unknown>
   parsed.tools = [
-    { type: 'function', function: { name: 'mcp__computer-use__screenshot', parameters: { type: 'object' } } },
-    { type: 'function', function: { name: 'mcp__computer-use__left_click', parameters: { type: 'object' } } },
+    { type: 'function', function: { name: 'CaptureVisualEvidence', parameters: { type: 'object' } } },
+    { type: 'function', function: { name: 'InspectVisualEvidence', parameters: { type: 'object' } } },
   ]
   return JSON.stringify(parsed)
 }
@@ -164,7 +163,7 @@ test('default one-slot MiMo/vision fairness serializes two distinct images from 
   const distinctImages = ['one', 'two'].map(value => `data:image/png;base64,${Buffer.from(value).toString('base64')}`)
   const res = await fetch(new Request('http://local/v1/chat/completions', authed({
     method: 'POST',
-    headers: { 'X-QF-Client-ID': 'desktop-one' },
+    headers: { 'X-BB-Installation-ID': 'desktop-one' },
     body: withImagesBody('deepseek-v4-flash', distinctImages),
   })))
   expect(res.status).toBe(200)
@@ -212,7 +211,7 @@ test('default one-slot fairness holds a second distinct image until the first re
   const distinctImages = ['held-one', 'held-two'].map(value => `data:image/png;base64,${Buffer.from(value).toString('base64')}`)
   const responsePromise = fetch(new Request('http://local/v1/chat/completions', authed({
     method: 'POST',
-    headers: { 'X-QF-Client-ID': 'held-desktop-one' },
+    headers: { 'X-BB-Installation-ID': 'held-desktop-one' },
     body: withImagesBody('deepseek-v4-flash', distinctImages),
   })))
 
@@ -230,9 +229,9 @@ test('default one-slot fairness holds a second distinct image until the first re
   expect((await healthzCapacity(fetch)).mimo).toMatchObject({ active: 0, queued: 0 })
 })
 
-test('Computer Use screenshot is transformed to evidence before DeepSeek receives the turn', async () => {
+test('a screenshot tool result is transformed to evidence before DeepSeek receives the turn', async () => {
   const { fetch, calls } = makeGateway()
-  const res = await fetch(new Request('http://local/v1/chat/completions', authed({ method: 'POST', body: computerUseImageBody('deepseek-v4-flash') })))
+  const res = await fetch(new Request('http://local/v1/chat/completions', authed({ method: 'POST', body: screenshotToolImageBody('deepseek-v4-flash') })))
   expect(res.status).toBe(200)
   const mimoCalls = calls.filter(c => c.url.includes('mimo.example'))
   const deepseekCalls = calls.filter(c => c.url.includes('deepseek.example'))
@@ -283,9 +282,9 @@ test('⑤ retired Qwen/MiMo/unknown image models fail before vision capacity or 
   }
 })
 
-test('⑥ Computer Use screenshots are evidence-bridged, never routed as a native MiMo turn', async () => {
+test('⑥ screenshot tool results are evidence-bridged, never routed as a direct MiMo turn', async () => {
   const { fetch, calls } = makeGateway()
-  const res = await fetch(new Request('http://local/v1/chat/completions', authed({ method: 'POST', body: computerUseImageBody('deepseek-v4-flash') })))
+  const res = await fetch(new Request('http://local/v1/chat/completions', authed({ method: 'POST', body: screenshotToolImageBody('deepseek-v4-flash') })))
   expect(res.status).toBe(200)
   expect(calls.filter(call => call.url.includes('mimo.example'))).toHaveLength(1)
   const deepseek = calls.find(call => call.url.includes('deepseek.example'))!
@@ -334,7 +333,7 @@ test('⑬ once the global vision concurrency and queue are both saturated, a new
     method: 'POST',
     headers: {
       Authorization: `Bearer ${gatewayTestAccessTokenFor(`vision-overflow-${n}`)}`,
-      'X-QF-Client-ID': `vision-overflow-${n}`,
+      'X-BB-Installation-ID': `vision-overflow-${n}`,
     },
     body: withImageBody('deepseek-v4-flash', `data:image/png;base64,${Buffer.from(`overflow-image-${n}`).toString('base64')}`),
   }))
@@ -383,7 +382,7 @@ test('⑭ aborting the client request while its image is queued in the vision se
     body: withImageBody('deepseek-v4-flash'),
     headers: {
       Authorization: `Bearer ${gatewayTestAccessTokenFor('vision-abort-busy')}`,
-      'X-QF-Client-ID': 'vision-abort-busy',
+      'X-BB-Installation-ID': 'vision-abort-busy',
     },
   })))
   await new Promise(r => setTimeout(r, 20))
@@ -396,7 +395,7 @@ test('⑭ aborting the client request while its image is queued in the vision se
     signal: ac.signal,
     headers: {
       Authorization: `Bearer ${gatewayTestAccessTokenFor('vision-abort-queued')}`,
-      'X-QF-Client-ID': 'vision-abort-queued',
+      'X-BB-Installation-ID': 'vision-abort-queued',
     },
   })))
   await new Promise(r => setTimeout(r, 20))
@@ -441,7 +440,7 @@ test('different client headers cannot split one bearer owner across VisualEviden
   })
   const request = (clientId: string, image: string) => new Request('http://local/v1/chat/completions', authed({
     method: 'POST',
-    headers: { 'X-QF-Client-ID': clientId },
+    headers: { 'X-BB-Installation-ID': clientId },
     body: withImageBody('deepseek-v4-flash', image),
   }))
   const first = fetch(request('untrusted-a', `data:image/png;base64,${Buffer.from('owner-a').toString('base64')}`))

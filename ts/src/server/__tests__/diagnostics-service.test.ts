@@ -11,14 +11,14 @@ let originalConfigDir: string | undefined
 
 beforeEach(async () => {
   tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'billiardbuddy-diagnostics-test-'))
-  originalConfigDir = process.env.CLAUDE_CONFIG_DIR
-  process.env.CLAUDE_CONFIG_DIR = tmpDir
+  originalConfigDir = process.env.BILLIARDBUDDY_CONFIG_DIR
+  process.env.BILLIARDBUDDY_CONFIG_DIR = tmpDir
 })
 
 afterEach(async () => {
   diagnosticsService.restoreConsoleCaptureForTests()
-  if (originalConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
-  else process.env.CLAUDE_CONFIG_DIR = originalConfigDir
+  if (originalConfigDir === undefined) delete process.env.BILLIARDBUDDY_CONFIG_DIR
+  else process.env.BILLIARDBUDDY_CONFIG_DIR = originalConfigDir
   await fs.rm(tmpDir, { recursive: true, force: true })
 })
 
@@ -101,18 +101,18 @@ describe('DiagnosticsService', () => {
     ).rejects.toThrow()
   })
 
-  test('drops events under NODE_ENV=test when no CLAUDE_CONFIG_DIR is set', async () => {
+  test('drops events under NODE_ENV=test when no BILLIARDBUDDY_CONFIG_DIR is set', async () => {
     const service = new DiagnosticsService()
     const appendSpy = spyOn(fs, 'appendFile')
-    const savedConfigDir = process.env.CLAUDE_CONFIG_DIR
-    delete process.env.CLAUDE_CONFIG_DIR
+    const savedConfigDir = process.env.BILLIARDBUDDY_CONFIG_DIR
+    delete process.env.BILLIARDBUDDY_CONFIG_DIR
     try {
       await service.recordEvent({ type: 'leaked_test_event', severity: 'error', summary: 'should not be written' })
       expect(appendSpy).not.toHaveBeenCalled()
     } finally {
       appendSpy.mockRestore()
-      if (savedConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
-      else process.env.CLAUDE_CONFIG_DIR = savedConfigDir
+      if (savedConfigDir === undefined) delete process.env.BILLIARDBUDDY_CONFIG_DIR
+      else process.env.BILLIARDBUDDY_CONFIG_DIR = savedConfigDir
     }
   })
 
@@ -121,7 +121,7 @@ describe('DiagnosticsService', () => {
     const serverArgs = ['bun', 'run', 'src/server/index.ts', '--host', '127.0.0.1', '--port', String(port)]
     const env = {
       ...process.env,
-      CLAUDE_CONFIG_DIR: tmpDir,
+      BILLIARDBUDDY_CONFIG_DIR: tmpDir,
     }
     delete (env as Record<string, string | undefined>).NODE_ENV
 

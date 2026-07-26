@@ -43,7 +43,7 @@ afterEach(() => {
 })
 
 describe('Electron app mode service', () => {
-  it('detects portable data using the same sentinel files and directories as Tauri', () => {
+  it('detects portable data from the supported sentinel files and directories', () => {
     const root = tempDir()
     expect(dirHasPortableData(root)).toBe(false)
     fs.writeFileSync(path.join(root, 'settings.json'), '{}')
@@ -60,7 +60,7 @@ describe('Electron app mode service', () => {
     fs.writeFileSync(path.join(defaultDir, 'settings.json'), '{}')
 
     expect(determineStartupPortableDir(fakeApp, {})).toBe(defaultDir)
-    expect(determineStartupPortableDir(fakeApp, { CLAUDE_CONFIG_DIR: '/external' })).toBeNull()
+    expect(determineStartupPortableDir(fakeApp, { BILLIARDBUDDY_CONFIG_DIR: '/external' })).toBeNull()
 
     fs.writeFileSync(path.join(defaultDir, 'app-mode.json'), JSON.stringify({ mode: 'default' }))
     expect(determineStartupPortableDir(fakeApp, {})).toBeNull()
@@ -74,7 +74,7 @@ describe('Electron app mode service', () => {
     fs.writeFileSync(path.join(defaultDir, 'settings.json'), '{}')
 
     expect(applyStartupPortableMode(fakeApp, env)).toBe(defaultDir)
-    expect(env.CLAUDE_CONFIG_DIR).toBe(defaultDir)
+    expect(env.BILLIARDBUDDY_CONFIG_DIR).toBe(defaultDir)
     expect(env.BB_APP_PORTABLE_DIR).toBe('1')
     expect(env.WEBVIEW2_USER_DATA_FOLDER).toBe(path.join(defaultDir, 'EBWebView'))
   })
@@ -89,13 +89,13 @@ describe('Electron app mode service', () => {
       activeConfigDir: fakeApp.getPath('userData'),
       configDirSource: 'system',
     })
-    expect(getAppMode(fakeApp, { CLAUDE_CONFIG_DIR: '/portable', BB_APP_PORTABLE_DIR: '1' })).toMatchObject({
+    expect(getAppMode(fakeApp, { BILLIARDBUDDY_CONFIG_DIR: '/portable', BB_APP_PORTABLE_DIR: '1' })).toMatchObject({
       mode: 'portable',
       portableDir: '/portable',
       activeConfigDir: '/portable',
       configDirSource: 'portable',
     })
-    expect(getAppMode(fakeApp, { CLAUDE_CONFIG_DIR: '/external' })).toMatchObject({
+    expect(getAppMode(fakeApp, { BILLIARDBUDDY_CONFIG_DIR: '/external' })).toMatchObject({
       configDirSource: 'environment',
     })
   })
@@ -107,7 +107,7 @@ describe('Electron app mode service', () => {
 
     expect(dataRoot).toBe(path.join(fakeApp.getPath('userData'), 'config'))
     expect(applyDefaultConfigDir(fakeApp, env)).toBe(dataRoot)
-    expect(env.CLAUDE_CONFIG_DIR).toBe(dataRoot)
+    expect(env.BILLIARDBUDDY_CONFIG_DIR).toBe(dataRoot)
     expect(env.BB_DEFAULT_CONFIG_DIR).toBe('1')
     expect(fs.existsSync(dataRoot)).toBe(true)
     // The app-set default is not a user override — still default/system, not portable.
@@ -118,11 +118,11 @@ describe('Electron app mode service', () => {
     })
   })
 
-  it('applyDefaultConfigDir defers to an explicit CLAUDE_CONFIG_DIR (ops/portable override wins)', () => {
+  it('applyDefaultConfigDir defers to an explicit BILLIARDBUDDY_CONFIG_DIR (ops/portable override wins)', () => {
     const fakeApp = app()
-    const env: NodeJS.ProcessEnv = { CLAUDE_CONFIG_DIR: '/external' }
+    const env: NodeJS.ProcessEnv = { BILLIARDBUDDY_CONFIG_DIR: '/external' }
     expect(applyDefaultConfigDir(fakeApp, env)).toBeNull()
-    expect(env.CLAUDE_CONFIG_DIR).toBe('/external')
+    expect(env.BILLIARDBUDDY_CONFIG_DIR).toBe('/external')
     expect(env.BB_DEFAULT_CONFIG_DIR).toBeUndefined()
     expect(getAppMode(fakeApp, env)).toMatchObject({ configDirSource: 'environment' })
   })
@@ -132,14 +132,14 @@ describe('Electron app mode service', () => {
     const active = tempDir()
     const selected = path.join(tempDir(), 'portable')
 
-    setAppMode(fakeApp, { mode: 'portable', portableDir: selected }, { CLAUDE_CONFIG_DIR: active })
+    setAppMode(fakeApp, { mode: 'portable', portableDir: selected }, { BILLIARDBUDDY_CONFIG_DIR: active })
 
     const expected = { mode: 'portable', portable_dir: selected }
     expect(JSON.parse(fs.readFileSync(path.join(active, 'app-mode.json'), 'utf8'))).toEqual(expected)
     expect(JSON.parse(fs.readFileSync(path.join(selected, 'app-mode.json'), 'utf8'))).toEqual(expected)
     expect(JSON.parse(fs.readFileSync(path.join(fakeApp.getPath('userData'), 'app-mode.json'), 'utf8'))).toEqual(expected)
 
-    setAppMode(fakeApp, { mode: 'default', portableDir: null }, { CLAUDE_CONFIG_DIR: active })
+    setAppMode(fakeApp, { mode: 'default', portableDir: null }, { BILLIARDBUDDY_CONFIG_DIR: active })
     expect(JSON.parse(fs.readFileSync(path.join(active, 'app-mode.json'), 'utf8'))).toEqual({
       mode: 'default',
       portable_dir: null,

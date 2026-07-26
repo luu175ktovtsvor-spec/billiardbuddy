@@ -17,8 +17,7 @@ import {
   transcribeVoiceFile,
   type VoiceTranscriptionOptions,
 } from '../services/voiceTranscription.js'
-import { remoteDataEgressConsentService } from '../services/remoteDataEgressConsent.js'
-import { PROVIDER_GATEWAY_PROTOCOL } from '../../../shared/product/dataEgress.js'
+import { PROVIDER_GATEWAY_PROTOCOL } from '../../../shared/product/providerGateway.js'
 import {
   VoiceOperationError,
   voiceOperationService,
@@ -29,7 +28,6 @@ const DEFAULT_MAX_AUDIO_BYTES = 96 * 1024 * 1024
 
 type ProductVoiceApiDependencies = Pick<VoiceTranscriptionOptions, 'env' | 'fetchImpl'> & {
   transcribe?: typeof transcribeVoiceFile
-  consentReceiptId?: string | null
   operations?: Pick<
     VoiceOperationService,
     'begin' | 'complete' | 'fail' | 'cancel' | 'getOperation' | 'getTranscript' | 'revise' | 'bind' | 'listBound'
@@ -37,7 +35,7 @@ type ProductVoiceApiDependencies = Pick<VoiceTranscriptionOptions, 'env' | 'fetc
 }
 
 function maxAudioBytes(env: Record<string, string | undefined>): number {
-  const parsed = Number.parseInt(env.QF_TRANSCRIBE_MAX_BYTES ?? '', 10)
+  const parsed = Number.parseInt(env.BB_TRANSCRIBE_MAX_BYTES ?? '', 10)
   return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_MAX_AUDIO_BYTES
 }
 
@@ -167,14 +165,7 @@ export async function handleProductVoiceApi(
       ? languageValue.trim().slice(0, 16)
       : undefined
 
-    const consentReceiptId = deps.consentReceiptId === undefined
-      ? (await remoteDataEgressConsentService.activeReceipt())?.receipt_id ?? null
-      : deps.consentReceiptId
-    if (!consentReceiptId) {
-      throw new ApiError(428, '请先确认远程数据使用范围', 'REMOTE_DATA_EGRESS_REQUIRED')
-    }
-
-    const started = await operations.begin(file, consentReceiptId)
+    const started = await operations.begin(file)
     const onRequestAbort = () => { void operations.cancel(started.operation.id) }
     req.signal.addEventListener('abort', onRequestAbort, { once: true })
     if (req.signal.aborted) onRequestAbort()
@@ -184,7 +175,6 @@ export async function handleProductVoiceApi(
         fetchImpl: deps.fetchImpl,
         language,
         signal: started.signal,
-        consentReceiptId,
         providerProtocol: PROVIDER_GATEWAY_PROTOCOL.headerValue,
         operationId: started.operation.id,
       })

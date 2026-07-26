@@ -97,7 +97,7 @@ export interface VisionBridgeMetrics {
 }
 
 export interface VisionBridge {
-  transform(rawBody: string, opts: { signal?: AbortSignal; schedulerId?: string; tokenId?: string }): Promise<{ body: string; metrics: VisionBridgeMetrics }>
+  transform(rawBody: string, opts: { signal?: AbortSignal; schedulerId?: string; tokenId?: string }): Promise<{ body: string; evidence: unknown[]; metrics: VisionBridgeMetrics }>
   /** Live semaphore state for the authenticated gateway health endpoint. */
   snapshot(): VisionSemaphoreSnapshot
 }
@@ -148,7 +148,7 @@ export function containsImageContent(rawBody: string): boolean {
 export function createVisionBridge(deps: VisionBridgeDeps): VisionBridge {
   // 只兜底非法值(非正数/非有限数),不设"业务上合理"的下限——调用方(app.ts loadConfig)负责
   // 生产环境的合理默认值,这里只防止 0/负数/NaN 把桥接变成一个恒真或恒假的黑洞。
-  const caps: VisionBridgeCaps = {
+  const caps: VisionBridgeCaps & { maxInflightPerClient: number } = {
     maxImages: Math.max(1, Math.floor(deps.caps.maxImages)),
     maxImageBytes: Math.max(1, Math.floor(deps.caps.maxImageBytes)),
     maxTotalBytes: Math.max(1, Math.floor(deps.caps.maxTotalBytes)),
@@ -255,7 +255,7 @@ export function createVisionBridge(deps: VisionBridgeDeps): VisionBridge {
 
       if (images.length === 0) {
         // 防御性兜底：调用方应只在 containsImageContent 为真时才调用 transform，这里保持原样返回。
-        return { body: rawBody, metrics: { visionBridgeMs: elapsed(started), cacheHits: 0, imageCount: 0 } }
+        return { body: rawBody, evidence: [], metrics: { visionBridgeMs: elapsed(started), cacheHits: 0, imageCount: 0 } }
       }
       if (images.length > caps.maxImages) {
         throw new VisionBridgeError(413, `图片数量超过上限（最多 ${caps.maxImages} 张）`)
@@ -345,6 +345,7 @@ export function createVisionBridge(deps: VisionBridgeDeps): VisionBridge {
 
       return {
         body: JSON.stringify(parsed),
+        evidence: texts.map(text => JSON.parse(text) as unknown),
         metrics: { visionBridgeMs: elapsed(started), cacheHits, imageCount: images.length },
       }
     },

@@ -20,23 +20,21 @@ export type PortableDetection = {
 }
 
 export function defaultPortableDir(app: AppModeAppLike): string {
-  return path.join(path.dirname(app.getPath('exe')), 'CLAUDE_CONFIG_DIR')
+  return path.join(path.dirname(app.getPath('exe')), 'BILLIARDBUDDY_DATA')
 }
 
 /**
- * BilliardBuddy's OWN product data root. Lives under the (rebranded) userData so
- * the kernel never falls back to the shared ~/.claude / ~/.claude/billiardbuddy that an
- * another installed coding agent would own. Host-layer isolation only — the
- * kernel's internal <configDir>/billiardbuddy/* layout is unchanged.
+ * BilliardBuddy's product data root. Desktop and sidecar processes receive the
+ * same absolute directory and never discover another product's state.
  */
 export function defaultProductDataDir(app: AppModeAppLike): string {
   return path.join(app.getPath('userData'), 'config')
 }
 
 /**
- * When neither a shell/ops override nor portable mode set CLAUDE_CONFIG_DIR, point
+ * When neither a shell/ops override nor portable mode set BILLIARDBUDDY_CONFIG_DIR, point
  * it at BilliardBuddy's own data root so a fresh double-click install does not read
- * shared third-party state. Marks BB_DEFAULT_CONFIG_DIR so getAppMode still reports this
+ * unrelated state. Marks BB_DEFAULT_CONFIG_DIR so getAppMode still reports this
  * as the normal "default/system" mode rather than a user "environment" override.
  * Must run AFTER applyStartupPortableMode so an explicit portable dir wins.
  */
@@ -44,10 +42,10 @@ export function applyDefaultConfigDir(
   app: AppModeAppLike,
   env: NodeJS.ProcessEnv = process.env,
 ): string | null {
-  if (env.CLAUDE_CONFIG_DIR) return null
+  if (env.BILLIARDBUDDY_CONFIG_DIR) return null
   const dir = defaultProductDataDir(app)
   fs.mkdirSync(dir, { recursive: true })
-  env.CLAUDE_CONFIG_DIR = dir
+  env.BILLIARDBUDDY_CONFIG_DIR = dir
   env.BB_DEFAULT_CONFIG_DIR = '1'
   return dir
 }
@@ -56,7 +54,7 @@ export function dirHasPortableData(dir: string): boolean {
   if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) return false
   return [
     'settings.json',
-    '.claude.json',
+    '.BilliardBuddy.json',
     '.mcp.json',
     'window-state.json',
     'terminal-config.json',
@@ -93,7 +91,7 @@ export function determineStartupPortableDir(
   app: AppModeAppLike,
   env: NodeJS.ProcessEnv = process.env,
 ): string | null {
-  if (env.CLAUDE_CONFIG_DIR) return null
+  if (env.BILLIARDBUDDY_CONFIG_DIR) return null
 
   const defaultDir = defaultPortableDir(app)
   const defaultMode = readAppModeConfig(defaultDir)
@@ -119,7 +117,7 @@ export function applyStartupPortableMode(
 ): string | null {
   const portableDir = determineStartupPortableDir(app, env)
   if (!portableDir) return null
-  env.CLAUDE_CONFIG_DIR = portableDir
+  env.BILLIARDBUDDY_CONFIG_DIR = portableDir
   env.BB_APP_PORTABLE_DIR = '1'
   env.WEBVIEW2_USER_DATA_FOLDER = path.join(portableDir, 'EBWebView')
   fs.mkdirSync(env.WEBVIEW2_USER_DATA_FOLDER, { recursive: true })
@@ -130,7 +128,7 @@ export function getAppMode(
   app: AppModeAppLike,
   env: NodeJS.ProcessEnv = process.env,
 ): AppModeConfig {
-  const envConfigDir = env.CLAUDE_CONFIG_DIR || null
+  const envConfigDir = env.BILLIARDBUDDY_CONFIG_DIR || null
   // The app-set BilliardBuddy default is NOT a user override: report it as default/system.
   const appDefault = envConfigDir != null && env.BB_DEFAULT_CONFIG_DIR === '1'
   const userOverride = envConfigDir != null && !appDefault
@@ -151,7 +149,7 @@ export function setAppMode(
   input: AppModeSetInput,
   env: NodeJS.ProcessEnv = process.env,
 ): void {
-  const activeConfigDir = env.CLAUDE_CONFIG_DIR || app.getPath('userData')
+  const activeConfigDir = env.BILLIARDBUDDY_CONFIG_DIR || app.getPath('userData')
   let config: PersistedAppModeConfig = { mode: 'default', portable_dir: null }
   let targetPortableDir: string | null = null
 

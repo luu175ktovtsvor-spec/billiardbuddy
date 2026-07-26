@@ -44,6 +44,10 @@ export const DEFAULT_GATEWAY_USAGE_POLICY: UsageBudgetPolicy = {
       principal: { requests: 20_000, input_bytes: 500 * 1024 ** 3, output_units: 20_000_000 },
       installation: { requests: 2_000, input_bytes: 50 * 1024 ** 3, output_units: 2_000_000 },
     },
+    MediaReasoning: {
+      principal: { requests: 20_000, input_bytes: 500 * 1024 ** 3, output_units: 20_000_000 },
+      installation: { requests: 2_000, input_bytes: 50 * 1024 ** 3, output_units: 2_000_000 },
+    },
     SpeechTranscription: {
       principal: { requests: 20_000, input_bytes: 500 * 1024 ** 3, output_units: 200_000_000 },
       installation: { requests: 2_000, input_bytes: 50 * 1024 ** 3, output_units: 20_000_000 },
@@ -81,7 +85,7 @@ function validateAmount(amount: UsageAmount): void {
 
 function validatePolicy(policy: UsageBudgetPolicy): void {
   if (!policy.revision.trim() || policy.period !== 'utc_day') throw new UsageBudgetError(503, 'BUDGET_UNAVAILABLE')
-  for (const capability of ['TextReasoning', 'VisualEvidence', 'SpeechTranscription'] as const) {
+  for (const capability of ['TextReasoning', 'VisualEvidence', 'MediaReasoning', 'SpeechTranscription'] as const) {
     const limits = policy.capabilities[capability]
     if (!limits) throw new UsageBudgetError(503, 'BUDGET_UNAVAILABLE')
     validateAmount(limits.principal)
@@ -205,7 +209,7 @@ export class SqliteUsageBudgetService implements UsageBudgetService {
       'SELECT * FROM usage_budget_reservations WHERE period=? AND principal_id=? AND state<>\'released\'',
     ).all(period, principalId) as SqlRow[]).map(fromSql)
     const capabilities = Object.fromEntries(
-      (['TextReasoning', 'VisualEvidence', 'SpeechTranscription'] as const).map((capability) => {
+      (['TextReasoning', 'VisualEvidence', 'MediaReasoning', 'SpeechTranscription'] as const).map((capability) => {
         const principal = { requests: 0, input_bytes: 0, output_units: 0 }
         const installation = { requests: 0, input_bytes: 0, output_units: 0 }
         for (const row of rows) {

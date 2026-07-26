@@ -43,7 +43,7 @@ Thumbs.db
 
 .superpowers/
 
-# Claude Code 受管 worktree(隔离开发用,不入库)
+# 其他工具生成的本地隔离 worktree（不入库）
 .claude/worktrees/
 
 # 桌面本地试用产物(不进git)
@@ -74,6 +74,11 @@ gateway/gw.env
 
 # 装机版可撤销 app token(打包时由构建密钥写入 extraResources,绝不进 git);product-config.json 是公开配置,可入库
 ts/desktop/build/product-secrets.json
+
+# 桌面打包生成物：平台图标入库，sidecar/媒体工具链和生成的 preview bundle 不入库
+ts/desktop/runtime-assets/binaries/
+ts/desktop/runtime-assets/resources/preview-agent.js
+ts/desktop/runtime-assets/.DS_Store
 
 # Bun/MCP 单测在包目录旁创建的临时 fixture(中断时可能来不及清理)
 **/.agent-plugin-wired-*/

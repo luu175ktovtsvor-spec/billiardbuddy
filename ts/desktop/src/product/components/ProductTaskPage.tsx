@@ -1,22 +1,11 @@
 import { useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent, type KeyboardEvent } from 'react'
-import { getApiUrl } from '../../api/client'
 import { MarkdownRenderer } from '../../components/markdown/MarkdownRenderer'
+import { ConfirmDialog } from '../../components/shared/ConfirmDialog'
 import { getDesktopHost } from '../../lib/desktopHost'
 import { useSettingsStore } from '../../stores/settingsStore'
-import {
-  IMAGE_WORKBENCH_TAB_ID,
-  PRODUCT_TASKS_TAB_ID,
-  VIDEO_STUDIO_TAB_ID,
-  useTabStore,
-} from '../../stores/tabStore'
-import { useMediaWorkbenchStore } from '../../stores/mediaWorkbenchStore'
+import { PRODUCT_TASKS_TAB_ID, PRODUCT_TASK_TAB_PREFIX, useTabStore } from '../../stores/tabStore'
 import { shouldSubmitOnEnter } from '../../components/chat/sendShortcut'
-import type {
-  ProductTaskMediaDraft,
-  ProductTaskRecord,
-  ProductTaskThreadEntry,
-} from '../domain/types'
-import { productTasksApi } from '../api/tasks'
+import type { ProductTaskRecord, ProductTaskThreadEntry } from '../domain/types'
 import {
   productTaskCommandsApi,
   type ProductTaskAgentCommand,
@@ -42,8 +31,6 @@ import {
   useProductTaskWorkspaceStore,
   type ProductTaskBrowserPreviewMode,
 } from '../stores/productTaskWorkspaceStore'
-import { ProductTaskMediaDock } from './ProductTaskMediaDock'
-import { ProductTaskInlineMedia } from './ProductTaskInlineMedia'
 import {
   buildProductTaskPreviewIntentText,
   ProductTaskBrowserPreviewDock,
@@ -68,18 +55,6 @@ import {
   validateProductTaskAttachments,
   type ProductTaskAttachmentDraft,
 } from '../taskAttachments'
-
-const COMPUTER_USE_TIER_LABEL = {
-  read: '查看',
-  click: '点击操作',
-  full: '完整操作',
-} as const
-
-const COMPUTER_USE_CAPABILITY_LABEL = {
-  clipboard_read: '读取剪贴板',
-  clipboard_write: '写入剪贴板',
-  system_key_combos: '使用系统快捷键',
-} as const
 
 function runStateLabel(state: 'idle' | 'working' | 'awaiting_approval'): string {
   switch (state) {
@@ -110,12 +85,9 @@ type ProductTaskComposerSlashCommand = TaskComposerCommand & {
 }
 
 type ProductTaskThreadEntryViewProps = {
-  taskId?: string
   entry: ProductTaskThreadEntry
   streaming: boolean
   actionPending?: boolean
-  mediaDraftActionPending?: boolean
-  onAttachMediaDraft?: (draft: ProductTaskMediaDraft) => void
   onContinueFromEntry?: (
     sourceEntryId: string,
     target: 'current_workspace' | 'new_worktree',
@@ -135,7 +107,6 @@ function ProductTaskThreadEntryActions({
   if (
     streaming ||
     entry.type === 'activity' ||
-    entry.type === 'media_draft' ||
     !/^thread_[a-f0-9]{20}$/.test(entry.id) ||
     (!onContinueFromEntry && !onCreateSideTask && !onQuote)
   ) {
@@ -179,12 +150,9 @@ function ProductTaskThreadEntryActions({
 }
 
 export function ProductTaskThreadEntryView({
-  taskId,
   entry,
   streaming,
   actionPending,
-  mediaDraftActionPending,
-  onAttachMediaDraft,
   onContinueFromEntry,
   onCreateSideTask,
   onQuote,
@@ -240,26 +208,9 @@ export function ProductTaskThreadEntryView({
     )
   }
 
-  if (entry.type === 'media_draft') {
-    return (
-      <ProductTaskInlineMedia
-        taskId={taskId}
-        draft={entry.draft}
-        actionPending={mediaDraftActionPending}
-        onAttach={onAttachMediaDraft}
-      />
-    )
-  }
-
-  const taskMediaPrefix = taskId
-    ? `/api/product/tasks/${encodeURIComponent(taskId)}/media/`
-    : null
   const resolveImageSrc = (source: string): string | null => {
     const trimmed = source.trim()
-    if (/^https?:\/\//i.test(trimmed)) return trimmed
-    return taskMediaPrefix && trimmed.startsWith(taskMediaPrefix)
-      ? getApiUrl(trimmed)
-      : null
+    return /^https?:\/\//i.test(trimmed) ? trimmed : null
   }
 
   return (
@@ -288,13 +239,11 @@ export function ProductTaskApprovalCard({
   responding,
   onRespondToAction,
   onRespondToQuestions,
-  onRespondToComputerUse,
 }: {
   approval: NonNullable<ProductTaskRuntime['pendingApproval']>
   responding: boolean
   onRespondToAction: (allowed: boolean) => void
   onRespondToQuestions: (answers: string[]) => void
-  onRespondToComputerUse: (allowed: boolean) => void
 }) {
   const questions = approval.questions ?? []
   const [selected, setSelected] = useState<Record<number, string[]>>({})
@@ -319,55 +268,6 @@ export function ProductTaskApprovalCard({
         <div className="mt-3 flex gap-2">
           <button type="button" disabled={responding} onClick={() => onRespondToAction(true)} className="rounded-lg bg-[var(--color-primary)] px-3 py-2 text-sm font-medium text-white disabled:opacity-50">允许本次操作</button>
           <button type="button" disabled={responding} onClick={() => onRespondToAction(false)} className="rounded-lg border border-[var(--color-border)] px-3 py-2 text-sm text-[var(--color-text-secondary)] disabled:opacity-50">拒绝</button>
-        </div>
-      </div>
-    )
-  }
-
-  if (approval.kind === 'computer_use') {
-    const computerUse = approval.computerUse
-    if (!computerUse) return null
-
-    const systemPermissions = computerUse.systemPermissions
-    return (
-      <div data-testid="product-task-computer-use-approval" role="status" className="mx-auto mt-5 max-w-2xl rounded-xl border border-amber-500/30 bg-amber-500/5 px-4 py-3 text-sm text-[var(--color-text-secondary)]">
-        <p className="font-medium text-[var(--color-text-primary)]">需要允许本次 Computer Use</p>
-        <p className="mt-1 leading-6">任务将在本次会话中使用电脑完成已请求的操作，不会获得持续授权。</p>
-        {computerUse.apps.length > 0 ? (
-          <div className="mt-3">
-            <p className="text-xs text-[var(--color-text-tertiary)]">请求使用的应用</p>
-            <ul className="mt-1.5 space-y-1.5">
-              {computerUse.apps.map((app, index) => (
-                <li key={`${app.name}:${app.tier}:${index}`} className="flex items-center justify-between gap-3 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-xs">
-                  <span className="min-w-0 truncate text-[var(--color-text-primary)]">{app.name}</span>
-                  <span className="shrink-0 text-[var(--color-text-tertiary)]">
-                    {COMPUTER_USE_TIER_LABEL[app.tier]}{app.alreadyAuthorized ? ' · 已获授权' : ''}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          </div>
-        ) : null}
-        {computerUse.capabilities.length > 0 ? (
-          <p className="mt-3 text-xs leading-5 text-[var(--color-text-secondary)]">
-            还会请求：{computerUse.capabilities.map((capability) => COMPUTER_USE_CAPABILITY_LABEL[capability]).join('、')}
-          </p>
-        ) : null}
-        {systemPermissions ? (
-          <div className="mt-3 rounded-lg border border-amber-500/25 bg-amber-500/5 px-3 py-2 text-xs leading-5 text-[var(--color-text-secondary)]">
-            <p className="font-medium text-[var(--color-text-primary)]">需要系统权限</p>
-            <p>
-              {[
-                systemPermissions.accessibilityRequired ? '辅助功能' : null,
-                systemPermissions.screenRecordingRequired ? '屏幕录制' : null,
-              ].filter(Boolean).join('、')}
-              {' '}尚未开启。请先在系统设置中授权；允许本次不能绕过系统权限。
-            </p>
-          </div>
-        ) : null}
-        <div className="mt-3 flex gap-2">
-          <button type="button" disabled={responding} onClick={() => onRespondToComputerUse(true)} className="rounded-lg bg-[var(--color-primary)] px-3 py-2 text-sm font-medium text-white disabled:opacity-50">允许本次 Computer Use</button>
-          <button type="button" disabled={responding} onClick={() => onRespondToComputerUse(false)} className="rounded-lg border border-[var(--color-border)] px-3 py-2 text-sm text-[var(--color-text-secondary)] disabled:opacity-50">拒绝</button>
         </div>
       </div>
     )
@@ -456,6 +356,7 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
   const refreshTasks = useProductTaskStore((state) => state.refresh)
   const archiveTask = useProductTaskStore((state) => state.archiveTask)
   const restoreTask = useProductTaskStore((state) => state.restoreTask)
+  const mutateTaskDeletion = useProductTaskStore((state) => state.mutateTaskDeletion)
   const recoverTaskRun = useProductTaskStore((state) => state.recoverTaskRun)
   const pinTask = useProductTaskStore((state) => state.pinTask)
   const unpinTask = useProductTaskStore((state) => state.unpinTask)
@@ -464,22 +365,26 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
   const runtime = useProductTaskRuntimeStore((state) => state.tasks[taskId])
   const connectTask = useProductTaskRuntimeStore((state) => state.connectTask)
   const disconnectTask = useProductTaskRuntimeStore((state) => state.disconnectTask)
+  const forgetRuntimeTask = useProductTaskRuntimeStore((state) => state.forgetTask)
   const sendText = useProductTaskRuntimeStore((state) => state.sendText)
   const sendMessage = useProductTaskRuntimeStore((state) => state.sendMessage)
   const stopTask = useProductTaskRuntimeStore((state) => state.stopTask)
+  const resumeQueue = useProductTaskRuntimeStore((state) => state.resumeQueue)
   const respondToApproval = useProductTaskRuntimeStore((state) => state.respondToApproval)
   const respondToQuestions = useProductTaskRuntimeStore((state) => state.respondToQuestions)
-  const respondToComputerUseApproval = useProductTaskRuntimeStore((state) => state.respondToComputerUseApproval)
   const refreshThread = useProductTaskRuntimeStore((state) => state.refreshThread)
   const createSideTask = useProductSideTaskStore((state) => state.createSideTask)
   const openSideTaskPanel = useProductSideTaskStore((state) => state.openSideTaskPanel)
+  const forgetSideTasks = useProductSideTaskStore((state) => state.forgetTask)
   const sideTaskMutations = useProductSideTaskStore((state) => state.mutations)
   const workspace = useProductTaskWorkspaceStore((state) => state.byTaskId[taskId])
   const openWorkspacePanel = useProductTaskWorkspaceStore((state) => state.openPanel)
   const closeWorkspacePanel = useProductTaskWorkspaceStore((state) => state.closePanel)
+  const forgetWorkspace = useProductTaskWorkspaceStore((state) => state.forgetTask)
   const chatSendBehavior = useSettingsStore((state) => state.chatSendBehavior)
   const openTab = useTabStore((state) => state.openTab)
   const openProductTaskTab = useTabStore((state) => state.openProductTaskTab)
+  const closeTab = useTabStore((state) => state.closeTab)
   const [draft, setDraft] = useState('')
   const [referenceEntryIds, setReferenceEntryIds] = useState<string[]>([])
   const [discoverableSkills, setDiscoverableSkills] = useState<ProductTaskSkillCommand[] | null>(null)
@@ -492,18 +397,20 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
   const [attachments, setAttachments] = useState<ProductTaskAttachmentDraft[]>([])
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [threadActionError, setThreadActionError] = useState<string | null>(null)
-  const [mediaDraftActionProjectId, setMediaDraftActionProjectId] = useState<string | null>(null)
+  const [deletionDialog, setDeletionDialog] = useState<'prepare' | 'commit' | null>(null)
+  const [deletionError, setDeletionError] = useState<string | null>(null)
   const composingRef = useRef(false)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
+  const missingTaskRefreshAttemptRef = useRef<string | null>(null)
+  const isRunOpen = workspace?.runOpen ?? false
   const isReviewOpen = workspace?.reviewOpen ?? false
-  const isMediaOpen = workspace?.mediaOpen ?? false
   const isTerminalOpen = workspace?.terminalOpen ?? false
   const isBrowserOpen = workspace?.browserOpen ?? false
   const isPreviewOpen = workspace?.previewOpen ?? false
   const activeRightDockPanel = workspace?.activePanel ?? null
   const activeBrowserPreviewMode = workspace?.activeBrowserPreviewMode ?? null
+  const isRunActive = activeRightDockPanel === 'run'
   const isReviewActive = activeRightDockPanel === 'review'
-  const isMediaActive = activeRightDockPanel === 'media'
   const isBrowserPreviewActive = activeRightDockPanel === 'browser-preview'
 
   const task = useMemo(
@@ -512,6 +419,7 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
   )
   const workspaceAvailable = task?.workspace_capability?.available === true
   const desktopCapabilities = getDesktopHost().capabilities
+  const browserAvailable = desktopCapabilities.previewWebview
   const previewAvailable = workspaceAvailable && desktopCapabilities.previewWebview
   const terminalAvailable = workspaceAvailable && desktopCapabilities.terminal
   const normalizedWorkDir = workspaceAvailable ? task?.workDir.trim() ?? '' : ''
@@ -520,8 +428,15 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
   const resolvedTaskId = task?.id
 
   useEffect(() => {
-    if (!task && !isTaskIndexLoading) void refreshTasks()
-  }, [isTaskIndexLoading, refreshTasks, task])
+    if (task) {
+      missingTaskRefreshAttemptRef.current = null
+      return
+    }
+    if (!isTaskIndexLoading && missingTaskRefreshAttemptRef.current !== taskId) {
+      missingTaskRefreshAttemptRef.current = taskId
+      void refreshTasks()
+    }
+  }, [isTaskIndexLoading, refreshTasks, task, taskId])
 
   useEffect(() => {
     if (!resolvedTaskId) return
@@ -530,10 +445,24 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
   }, [connectTask, disconnectTask, resolvedTaskId])
 
   useEffect(() => {
-    if (!isSlashInput || !normalizedWorkDir) {
+    if (!resolvedTaskId) return
+    const compacting = (runtime?.contextCompactions ?? []).some(item => item.phase === 'started')
+    if (runtime?.pendingApproval || runtime?.queuedInputs.length || compacting) openWorkspacePanel(resolvedTaskId, 'run', true)
+  }, [openWorkspacePanel, resolvedTaskId, runtime?.contextCompactions, runtime?.pendingApproval, runtime?.queuedInputs.length])
+
+  useEffect(() => {
+    if (!isSlashInput) {
       setDiscoverableSkills(null)
       setDiscoverableAgents(null)
       setCommandDiscoveryWorkDir(null)
+      setSkillDiscoveryError(null)
+      setAgentDiscoveryError(null)
+      return
+    }
+    if (!normalizedWorkDir) {
+      setDiscoverableSkills([])
+      setDiscoverableAgents([])
+      setCommandDiscoveryWorkDir('')
       setSkillDiscoveryError(null)
       setAgentDiscoveryError(null)
       return
@@ -609,6 +538,86 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
   }
   const returnLabel = onReturnToTaskIndex ? '关闭窗口' : '返回任务'
 
+  const forgetTaskView = () => {
+    forgetRuntimeTask(taskId)
+    forgetSideTasks(taskId)
+    forgetWorkspace(taskId)
+  }
+
+  const finishDeletedTask = () => {
+    forgetTaskView()
+    returnToTaskIndex()
+    closeTab(`${PRODUCT_TASK_TAB_PREFIX}${taskId}`)
+  }
+
+  const dismissMissingTask = () => {
+    forgetTaskView()
+    returnToTaskIndex()
+    closeTab(`${PRODUCT_TASK_TAB_PREFIX}${taskId}`)
+  }
+
+  const refreshMissingTask = () => {
+    missingTaskRefreshAttemptRef.current = taskId
+    void refreshTasks()
+  }
+
+  const prepareTaskDeletion = async () => {
+    try {
+      setDeletionError(null)
+      const next = await mutateTaskDeletion(taskId, 'begin')
+      if (next.lifecycle !== 'deleting') throw new Error('DELETE_PREPARE_INCOMPLETE')
+      setDeletionDialog('commit')
+    } catch {
+      setDeletionError('删除准备没有完成。请先处理仍在运行、排队或关联的任务，再重试。')
+    }
+  }
+
+  const cancelTaskDeletion = async () => {
+    try {
+      setDeletionError(null)
+      await mutateTaskDeletion(taskId, 'cancel')
+      setDeletionDialog(null)
+    } catch {
+      setDeletionError('暂时无法取消删除，请刷新任务状态后重试。')
+    }
+  }
+
+  const retryTaskDeletion = async () => {
+    try {
+      setDeletionError(null)
+      const next = await mutateTaskDeletion(taskId, 'retry')
+      if (next.lifecycle === 'deleted') {
+        setDeletionDialog(null)
+        finishDeletedTask()
+      } else if (next.lifecycle === 'deleting') {
+        setDeletionDialog('commit')
+      } else {
+        setDeletionError('仍有任务数据未能安全清理，请稍后再次重试。')
+      }
+    } catch {
+      setDeletionError('暂时无法继续清理任务数据，请稍后重试。')
+    }
+  }
+
+  const commitTaskDeletion = async () => {
+    try {
+      setDeletionError(null)
+      const committed = await mutateTaskDeletion(taskId, 'commit_purge')
+      if (committed.lifecycle !== 'purge_committed') throw new Error('DELETE_COMMIT_INCOMPLETE')
+      const deleted = await mutateTaskDeletion(taskId, 'retry')
+      if (deleted.lifecycle !== 'deleted') {
+        setDeletionDialog(null)
+        setDeletionError('任务已进入清理阶段，但仍有数据未清理完成。请点击“继续清理”。')
+        return
+      }
+      setDeletionDialog(null)
+      finishDeletedTask()
+    } catch {
+      setDeletionDialog(null)
+      setDeletionError('永久删除尚未完成。已提交的清理会保留进度，请点击“继续清理”。')
+    }
+  }
+
   const submit = async () => {
     if (isSubmitting) return
     if (!canSendProductTaskMessage(draft, attachments)) {
@@ -659,7 +668,7 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
 
     if (accepted.length > 0) setAttachments((current) => [...current, ...accepted])
     if (rejected > 0 || files.length > availableSlots) {
-      setAttachmentMessage(`部分附件未添加。仅支持常见图片、PDF、文本、JSON、CSV、Word 和 Excel，单个不超过 ${MAX_PRODUCT_TASK_ATTACHMENT_BYTES / 1024 / 1024} MB。`)
+      setAttachmentMessage(`部分附件未添加。支持常见图片、视频和文档；普通附件单个不超过 ${MAX_PRODUCT_TASK_ATTACHMENT_BYTES / 1024 / 1024} MB，视频不超过 32 MB，总计不超过 64 MB。`)
     } else {
       setAttachmentMessage(null)
     }
@@ -740,8 +749,8 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
               {indexError ? '任务信息暂时无法读取。' : '这个任务已不存在，或暂时无法访问。'}
             </p>
             <div className="flex gap-2">
-              <button type="button" onClick={() => void refreshTasks()} className="rounded-lg border border-[var(--color-border)] px-3 py-2 text-sm text-[var(--color-text-secondary)]">重新读取</button>
-              <button type="button" onClick={returnToTaskIndex} className="rounded-lg bg-[var(--color-primary)] px-3 py-2 text-sm font-medium text-white">{onReturnToTaskIndex ? '关闭窗口' : '返回任务中心'}</button>
+              <button type="button" onClick={refreshMissingTask} className="rounded-lg border border-[var(--color-border)] px-3 py-2 text-sm text-[var(--color-text-secondary)]">重新读取</button>
+              <button type="button" onClick={dismissMissingTask} className="rounded-lg bg-[var(--color-primary)] px-3 py-2 text-sm font-medium text-white">{onReturnToTaskIndex ? '关闭窗口' : '返回任务中心'}</button>
             </div>
           </>
         )}
@@ -750,12 +759,14 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
   }
 
   const isArchived = task.lifecycle === 'archived'
+  const isTaskReadOnly = task.lifecycle !== 'active'
   const pinAction = task.pinnedAt ? 'unpin' : 'pin'
   const lifecycleAction = isArchived ? 'restore' : 'archive'
   const canPinTask = task.actions.includes(pinAction)
   const hasActiveRun = runtime?.runState === 'working'
     || runtime?.runState === 'awaiting_approval'
     || runtime?.pendingApproval != null
+  const taskControlsConnected = runtime?.connectionState === 'connected'
   const canChangeLifecycle = task.actions.includes(lifecycleAction) && (isArchived || !hasActiveRun)
   const isTaskMutationPending = mutations[`${taskId}:archive`] || mutations[`${taskId}:restore`]
   const isPinMutationPending = mutations[`${taskId}:${pinAction}`]
@@ -769,20 +780,20 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
     closeWorkspacePanel(task.id, 'review')
   }
 
-  const closeTerminalDock = () => {
-    closeWorkspacePanel(task.id, 'terminal')
+  const closeRunDock = () => {
+    closeWorkspacePanel(task.id, 'run')
   }
 
-  const closeMediaDock = () => {
-    closeWorkspacePanel(task.id, 'media')
+  const closeTerminalDock = () => {
+    closeWorkspacePanel(task.id, 'terminal')
   }
 
   const openReviewDock = () => {
     openWorkspacePanel(task.id, 'review', workspaceAvailable)
   }
 
-  const openMediaDock = () => {
-    openWorkspacePanel(task.id, 'media')
+  const openRunDock = () => {
+    openWorkspacePanel(task.id, 'run', true)
   }
 
   const openTerminalDock = () => {
@@ -797,12 +808,12 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
     openReviewDock()
   }
 
-  const toggleMediaDock = () => {
-    if (isMediaOpen && isMediaActive) {
-      closeMediaDock()
+  const toggleRunDock = () => {
+    if (isRunOpen && isRunActive) {
+      closeRunDock()
       return
     }
-    openMediaDock()
+    openRunDock()
   }
 
   const toggleTerminalDock = () => {
@@ -818,7 +829,7 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
   }
 
   const openBrowserPreviewMode = (mode: ProductTaskBrowserPreviewMode) => {
-    openWorkspacePanel(task.id, mode, workspaceAvailable)
+    openWorkspacePanel(task.id, mode, mode === 'browser' ? browserAvailable : previewAvailable)
   }
 
   const toggleBrowserPreviewMode = (mode: ProductTaskBrowserPreviewMode) => {
@@ -872,27 +883,6 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
     }
   }
 
-  const attachMediaDraft = async (draft: ProductTaskMediaDraft) => {
-    if (mediaDraftActionProjectId) return
-    setThreadActionError(null)
-    setMediaDraftActionProjectId(draft.projectId)
-    try {
-      await productTasksApi.attachMediaProject(task.id, draft.projectId)
-      openMediaDock()
-      if (draft.kind === 'image') {
-        useMediaWorkbenchStore.getState().selectImage(draft.projectId)
-        openTab(IMAGE_WORKBENCH_TAB_ID, '生成图片', 'image-workbench')
-      } else {
-        useMediaWorkbenchStore.getState().selectVideo(draft.projectId)
-        openTab(VIDEO_STUDIO_TAB_ID, '剪视频', 'video-studio')
-      }
-    } catch {
-      setThreadActionError('媒体草稿暂时无法关联，请刷新后再试。')
-    } finally {
-      setMediaDraftActionProjectId(null)
-    }
-  }
-
   return (
     <main className="flex h-full min-h-0 flex-col bg-[var(--color-app-main)]" data-testid="product-task-page">
       <header className="flex shrink-0 items-center gap-3 border-b border-[var(--color-border)] bg-[var(--color-surface)] px-4 py-3">
@@ -930,6 +920,39 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
             {isArchived ? '恢复' : '归档'}
           </button>
         ) : null}
+        {isArchived ? (
+          <button
+            type="button"
+            onClick={() => { setDeletionError(null); setDeletionDialog('prepare') }}
+            disabled={mutations[`${taskId}:delete-begin`] === true}
+            className="rounded-md border border-red-500/40 px-2.5 py-1.5 text-xs text-red-600 disabled:opacity-50 dark:text-red-300"
+          >
+            删除任务
+          </button>
+        ) : null}
+        {task.lifecycle === 'deleting' ? (
+          <>
+            <button type="button" onClick={() => void cancelTaskDeletion()} disabled={mutations[`${taskId}:delete-cancel`] === true} className="rounded-md border border-[var(--color-border)] px-2.5 py-1.5 text-xs text-[var(--color-text-secondary)] disabled:opacity-50">取消删除</button>
+            <button type="button" onClick={() => setDeletionDialog('commit')} className="rounded-md border border-red-500/40 px-2.5 py-1.5 text-xs text-red-600 dark:text-red-300">继续删除</button>
+          </>
+        ) : null}
+        {task.lifecycle === 'delete_failed_pre_purge' ? (
+          <>
+            <button type="button" onClick={() => void cancelTaskDeletion()} disabled={mutations[`${taskId}:delete-cancel`] === true} className="rounded-md border border-[var(--color-border)] px-2.5 py-1.5 text-xs text-[var(--color-text-secondary)] disabled:opacity-50">取消删除</button>
+            <button type="button" onClick={() => void retryTaskDeletion()} disabled={mutations[`${taskId}:delete-retry`] === true} className="rounded-md border border-red-500/40 px-2.5 py-1.5 text-xs text-red-600 disabled:opacity-50 dark:text-red-300">重试删除准备</button>
+          </>
+        ) : null}
+        {task.lifecycle === 'purge_committed' || task.lifecycle === 'delete_failed_post_purge' ? (
+          <button type="button" onClick={() => void retryTaskDeletion()} disabled={mutations[`${taskId}:delete-retry`] === true} className="rounded-md border border-red-500/40 px-2.5 py-1.5 text-xs text-red-600 disabled:opacity-50 dark:text-red-300">继续清理</button>
+        ) : null}
+        <button
+          type="button"
+          onClick={toggleRunDock}
+          aria-pressed={isRunActive}
+          className="rounded-md border border-[var(--color-border)] px-2.5 py-1.5 text-xs text-[var(--color-text-secondary)]"
+        >
+          运行
+        </button>
         <button
           type="button"
           onClick={toggleReviewDock}
@@ -941,16 +964,8 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
         </button>
         <button
           type="button"
-          onClick={toggleMediaDock}
-          aria-pressed={isMediaActive}
-          className="rounded-md border border-[var(--color-border)] px-2.5 py-1.5 text-xs text-[var(--color-text-secondary)]"
-        >
-          媒体
-        </button>
-        <button
-          type="button"
           onClick={() => toggleBrowserPreviewMode('browser')}
-          disabled
+          disabled={!browserAvailable}
           aria-pressed={isBrowserPreviewActive && isBrowserOpen && activeBrowserPreviewMode === 'browser'}
           className="rounded-md border border-[var(--color-border)] px-2.5 py-1.5 text-xs text-[var(--color-text-secondary)]"
         >
@@ -994,27 +1009,20 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
               <p className="py-12 text-center text-sm text-[var(--color-text-secondary)]">任务已创建。描述下一步希望完成的事情。</p>
             ) : null}
 
-            <ProductTaskRunPanel activities={runtime?.runActivities ?? []} />
-
             <div className="mx-auto flex max-w-4xl flex-col gap-4">
               {runtime?.entries.map((entry) => (
                 <ProductTaskThreadEntryView
                   key={entry.id}
-                  taskId={taskId}
                   entry={entry}
                   streaming={entry.id === runtime.streamingEntryId}
                   actionPending={isContinuationPending || isSideTaskCreationPending}
-                  mediaDraftActionPending={entry.type === 'media_draft' && mediaDraftActionProjectId === entry.draft.projectId}
-                  onAttachMediaDraft={isArchived ? undefined : (draft) => {
-                    void attachMediaDraft(draft)
-                  }}
-                  onContinueFromEntry={isArchived ? undefined : (sourceEntryId, target) => {
+                  onContinueFromEntry={isTaskReadOnly ? undefined : (sourceEntryId, target) => {
                     void continueFromEntry(sourceEntryId, target)
                   }}
-                  onCreateSideTask={isArchived ? undefined : (sourceEntryId) => {
+                  onCreateSideTask={isTaskReadOnly ? undefined : (sourceEntryId) => {
                     void createSideTaskFromEntry(sourceEntryId)
                   }}
-                  onQuote={isArchived ? undefined : quoteEntry}
+                  onQuote={isTaskReadOnly ? undefined : quoteEntry}
                 />
               ))}
             </div>
@@ -1027,16 +1035,6 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
                   runtime.activeActivity.summary,
                 )}…
               </p>
-            ) : null}
-
-            {runtime?.pendingApproval ? (
-              <ProductTaskApprovalCard
-                approval={runtime.pendingApproval}
-                responding={runtime.approvalResponsePending}
-                onRespondToAction={(allowed) => { respondToApproval(taskId, allowed) }}
-                onRespondToQuestions={(answers) => { respondToQuestions(taskId, answers) }}
-                onRespondToComputerUse={(allowed) => { respondToComputerUseApproval(taskId, allowed) }}
-              />
             ) : null}
 
             <RecruitingActionApproval taskId={taskId} />
@@ -1063,9 +1061,9 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
           <SideTaskPanel parentTask={task} />
 
           <form className="shrink-0 border-t border-[var(--color-border)] bg-[var(--color-surface)] px-4 py-3 sm:px-6" onSubmit={onSubmit}>
-            {isArchived ? (
+            {isTaskReadOnly ? (
               <p className="rounded-lg bg-[var(--color-surface-container)] px-3 py-2 text-sm text-[var(--color-text-secondary)]">
-                此任务已归档。恢复后可以继续处理。
+                {isArchived ? '此任务已归档。恢复后可以继续处理。' : '此任务正在删除，不能再提交新内容。'}
               </p>
             ) : (
               <>
@@ -1128,7 +1126,7 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
                   <div className="flex min-w-0 items-center gap-3">
                     <button type="button" onClick={chooseAttachments} disabled={attachments.length >= MAX_PRODUCT_TASK_ATTACHMENT_COUNT} className="rounded-lg border border-[var(--color-border)] px-2.5 py-1.5 text-xs text-[var(--color-text-secondary)] disabled:opacity-50">添加附件</button>
                     <VoiceInputControl
-                      disabled={isArchived}
+                      disabled={isTaskReadOnly}
                       consumer={{ kind: 'composer', id: taskId }}
                       onTranscript={(text) => {
                         setDraft((current) => current ? `${current}\n${text}` : text)
@@ -1139,7 +1137,7 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
                   </div>
                   <div className="flex shrink-0 gap-2">
                     {hasActiveRun ? (
-                      <button type="button" onClick={() => stopTask(taskId)} className="rounded-lg border border-[var(--color-border)] px-3 py-2 text-sm text-[var(--color-text-secondary)]">停止</button>
+                      <button type="button" disabled={!taskControlsConnected} onClick={() => stopTask(taskId)} className="rounded-lg border border-[var(--color-border)] px-3 py-2 text-sm text-[var(--color-text-secondary)] disabled:opacity-50">停止</button>
                     ) : null}
                     <button type="submit" disabled={isSubmitting} className="rounded-lg bg-[var(--color-primary)] px-3 py-2 text-sm font-medium text-white disabled:opacity-50">{isSubmitting ? '发送中…' : hasActiveRun ? '加入队列' : '发送'}</button>
                   </div>
@@ -1151,6 +1149,60 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
 
         {activeRightDockPanel ? (
           <aside className="flex min-h-0 w-[min(34rem,46vw)] min-w-[22rem] flex-col overflow-hidden border-l border-[var(--color-border)] bg-[var(--color-surface)]" data-testid="product-task-dock-rail">
+            {isRunOpen ? (
+              <div
+                data-testid="product-task-dock-panel-run"
+                data-active={isRunActive ? 'true' : 'false'}
+                className={`min-h-0 flex-1 flex-col overflow-hidden ${isRunActive ? 'flex' : 'hidden'}`}
+              >
+                <header className="flex items-center justify-between gap-3 border-b border-[var(--color-border)] px-4 py-3">
+                  <div>
+                    <h2 className="text-sm font-semibold text-[var(--color-text-primary)]">运行检查器</h2>
+                    <p className="text-xs text-[var(--color-text-tertiary)]">{runStateLabel(runtime?.runState ?? 'idle')}</p>
+                  </div>
+                  <button type="button" onClick={closeRunDock} aria-label="关闭运行检查器" className="rounded-md px-2 py-1 text-sm text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-hover)]">关闭</button>
+                </header>
+                <div className="min-h-0 flex-1 overflow-y-auto p-4">
+                  <ProductTaskRunPanel activities={runtime?.runActivities ?? []} compactions={runtime?.contextCompactions ?? []} />
+                  {runtime?.pendingApproval ? (
+                    <ProductTaskApprovalCard
+                      approval={runtime.pendingApproval}
+                      responding={runtime.approvalResponsePending || !taskControlsConnected}
+                      onRespondToAction={(allowed) => { respondToApproval(taskId, allowed) }}
+                      onRespondToQuestions={(answers) => { respondToQuestions(taskId, answers) }}
+                    />
+                  ) : null}
+                  {runtime?.queuedInputs.length ? (
+                    <section className="mt-4 rounded-xl border border-[var(--color-border)] bg-[var(--color-app-main)] p-3" aria-label="待处理输入队列">
+                      <div className="mb-2 flex items-center justify-between gap-3">
+                        <h3 className="text-xs font-medium text-[var(--color-text-secondary)]">待处理输入</h3>
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs text-[var(--color-text-tertiary)]">{runtime.queuedInputs.length} 条</span>
+                          {runtime.runState === 'idle' && runtime.queuedInputs.some(item => item.state === 'queued') ? (
+                            <button type="button" onClick={() => { void resumeQueue(taskId) }} className="rounded border border-[var(--color-border)] px-2 py-0.5 text-xs text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-hover)]">继续队列</button>
+                          ) : null}
+                        </div>
+                      </div>
+                      <div className="flex flex-col gap-2">
+                        {runtime.queuedInputs.map(item => (
+                          <div key={item.id} className="flex items-start gap-2 text-xs text-[var(--color-text-secondary)]">
+                            <span className={`shrink-0 rounded px-1.5 py-0.5 ${item.state === 'failed' ? 'bg-[var(--color-error)]/10 text-[var(--color-error)]' : 'bg-[var(--color-primary)]/10 text-[var(--color-primary)]'}`}>{item.state === 'failed' ? '无法继续' : item.attachmentCount > 0 ? '下一轮' : '等待安全点'}</span>
+                            <span className="min-w-0 flex-1 break-words">{item.text}</span>
+                            {item.attachmentCount > 0 ? <span className="shrink-0 text-[var(--color-text-tertiary)]">{item.attachmentCount} 个附件</span> : null}
+                          </div>
+                        ))}
+                      </div>
+                    </section>
+                  ) : null}
+                  {!runtime?.pendingApproval && !runtime?.queuedInputs.length && !runtime?.runActivities.length && !(runtime?.contextCompactions ?? []).length ? (
+                    <p className="py-8 text-center text-sm text-[var(--color-text-tertiary)]">当前没有运行中的步骤。</p>
+                  ) : null}
+                  {hasActiveRun ? (
+                    <button type="button" disabled={!taskControlsConnected} onClick={() => stopTask(taskId)} className="mt-4 w-full rounded-lg border border-[var(--color-border)] px-3 py-2 text-sm text-[var(--color-text-secondary)] disabled:opacity-50">停止当前运行</button>
+                  ) : null}
+                </div>
+              </div>
+            ) : null}
             {workspaceAvailable && isReviewOpen ? (
               <div
                 data-testid="product-task-dock-panel-review"
@@ -1160,16 +1212,7 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
                 <ProductTaskReviewDock taskId={task.id} onClose={closeReviewDock} />
               </div>
             ) : null}
-            {isMediaOpen ? (
-              <div
-                data-testid="product-task-dock-panel-media"
-                data-active={isMediaActive ? 'true' : 'false'}
-                className={`min-h-0 flex-1 flex-col overflow-hidden ${isMediaActive ? 'flex' : 'hidden'}`}
-              >
-                <ProductTaskMediaDock taskId={task.id} onClose={closeMediaDock} />
-              </div>
-            ) : null}
-            {workspaceAvailable && isBrowserPreviewActive && (isBrowserOpen || isPreviewOpen) ? (
+            {isBrowserPreviewActive && (isBrowserOpen || (workspaceAvailable && isPreviewOpen)) ? (
               <div
                 data-testid="product-task-dock-panel-browser-preview"
                 className="flex min-h-0 flex-1 flex-col overflow-hidden"
@@ -1205,6 +1248,27 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
           />
         </section>
       ) : null}
+      {deletionError ? <p role="alert" className="mx-4 mb-3 rounded-lg border border-red-500/30 bg-red-500/5 px-3 py-2 text-sm text-red-600 dark:text-red-300">{deletionError}</p> : null}
+      <ConfirmDialog
+        open={deletionDialog === 'prepare'}
+        onClose={() => setDeletionDialog(null)}
+        onConfirm={prepareTaskDeletion}
+        title="准备删除任务"
+        body="先检查并冻结这项任务的运行、队列、定时任务和浏览器操作。工作区及其中的文件不会被删除。"
+        confirmLabel="准备删除"
+        cancelLabel="取消"
+        loading={mutations[`${taskId}:delete-begin`] === true}
+      />
+      <ConfirmDialog
+        open={deletionDialog === 'commit'}
+        onClose={() => setDeletionDialog(null)}
+        onConfirm={commitTaskDeletion}
+        title="永久删除任务记录"
+        body="这是第二次确认。任务对话、附件副本、运行记录、私有绑定和关联状态将被永久清理；工作区文件仍会保留。"
+        confirmLabel="永久删除"
+        cancelLabel="暂不删除"
+        loading={mutations[`${taskId}:delete-commit_purge`] === true || mutations[`${taskId}:delete-retry`] === true}
+      />
     </main>
   )
 }

@@ -1,29 +1,68 @@
 import type { ProductTaskEvent, ProductTaskRunSnapshot } from '../../../shared/product/taskEvents.js'
 
+const MAX_SNAPSHOT_ACTIVITIES = 256
+
+function upsertSnapshotActivity(
+  snapshot: ProductTaskRunSnapshot,
+  event: Extract<ProductTaskEvent, { type: 'activity' }>,
+): ProductTaskRunSnapshot {
+  const activity = {
+    id: event.id,
+    ...(event.parentId ? { parentId: event.parentId } : {}),
+    kind: event.kind,
+    phase: event.phase,
+    summary: event.summary,
+    ...(event.progress ? { progress: { ...event.progress } } : {}),
+  }
+  const index = snapshot.activities.findIndex(candidate => candidate.id === event.id)
+  const activities = index === -1
+    ? [...snapshot.activities, activity]
+    : snapshot.activities.map((candidate, candidateIndex) => candidateIndex === index ? activity : candidate)
+  return { state: snapshot.state, activities: activities.slice(-MAX_SNAPSHOT_ACTIVITIES) }
+}
+
 type Listener = (taskId: string, event: ProductTaskEvent) => void
 
 class ProductTaskWorkerRuntimeEvents {
   private readonly listeners = new Set<Listener>()
   private readonly snapshots = new Map<string, ProductTaskRunSnapshot>()
-  private readonly pendingApprovals = new Map<string, Extract<ProductTaskEvent, { type: 'approval_required'; kind: 'action' }>>()
+  private readonly pendingApprovals = new Map<string, Extract<ProductTaskEvent, { type: 'approval_required' }>>()
 
   publish(taskId: string, event: ProductTaskEvent): void {
     if (event.type === 'status') {
-      this.snapshots.set(taskId, { state: event.state, activities: [] })
+      const previous = this.snapshots.get(taskId) ?? { state: 'idle' as const, activities: [] }
+      this.snapshots.set(taskId, {
+        state: event.state,
+        activities: previous.state === 'idle' && event.state === 'working' ? [] : previous.activities,
+      })
       if (event.state !== 'awaiting_approval') this.pendingApprovals.delete(taskId)
     }
-    if (event.type === 'approval_required' && event.kind === 'action') {
+    if (event.type === 'activity') {
+      this.snapshots.set(taskId, upsertSnapshotActivity(
+        this.snapshots.get(taskId) ?? { state: 'working', activities: [] },
+        event,
+      ))
+    }
+    if (event.type === 'approval_required') {
       this.rememberApproval(taskId, event)
-      this.snapshots.set(taskId, { state: 'awaiting_approval', activities: [] })
+      const previous = this.snapshots.get(taskId)
+      this.snapshots.set(taskId, { state: 'awaiting_approval', activities: previous?.activities ?? [] })
     }
     if (event.type === 'turn_complete' || (event.type === 'error' && !event.retryable)) {
       this.snapshots.set(taskId, { state: 'idle', activities: [] })
       this.pendingApprovals.delete(taskId)
     }
-    for (const listener of this.listeners) listener(taskId, event)
+    for (const listener of this.listeners) {
+      try {
+        listener(taskId, event)
+      } catch {
+        // A disconnected or faulty presentation subscriber cannot turn an
+        // already-durable worker event into an execution persistence failure.
+      }
+    }
   }
 
-  rememberApproval(taskId: string, event: Extract<ProductTaskEvent, { type: 'approval_required'; kind: 'action' }>): void {
+  rememberApproval(taskId: string, event: Extract<ProductTaskEvent, { type: 'approval_required' }>): void {
     this.pendingApprovals.set(taskId, event)
   }
 
@@ -32,7 +71,16 @@ class ProductTaskWorkerRuntimeEvents {
   }
 
   snapshot(taskId: string): ProductTaskRunSnapshot {
-    return this.snapshots.get(taskId) ?? { state: 'idle', activities: [] }
+    const snapshot = this.snapshots.get(taskId)
+    return snapshot
+      ? {
+          state: snapshot.state,
+          activities: snapshot.activities.map(activity => ({
+            ...activity,
+            ...(activity.progress ? { progress: { ...activity.progress } } : {}),
+          })),
+        }
+      : { state: 'idle', activities: [] }
   }
 
   subscribe(listener: Listener): () => void {

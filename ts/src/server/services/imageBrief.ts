@@ -74,13 +74,16 @@ export function compileImageBrief(
     exact_text: exact,
     compiler_version: 'image-brief-v1',
   }
-  const prompt = [
-    `用户原始需求：${userRequest}`,
-    facts.length ? `已确认事实：${facts.join('；')}` : '',
-    mustPreserve.length ? `必须保留：${mustPreserve.join('；')}` : '',
-    `允许调整：${mayChange.join('；')}`,
+  return { brief, providerPrompt: providerPromptForImageBrief(brief) }
+}
+
+export function providerPromptForImageBrief(brief: ImageCreativeBrief): string {
+  return [
+    `用户原始需求：${brief.user_request}`,
+    brief.confirmed_facts.length ? `已确认事实：${brief.confirmed_facts.join('；')}` : '',
+    brief.must_preserve.length ? `必须保留：${brief.must_preserve.join('；')}` : '',
+    `允许调整：${brief.may_change.join('；')}`,
     '不得编造价格、日期、地址、联系方式、品牌或活动规则。',
-    exact.length ? '不要在生成画面中绘制可读文字，为后续确定性文字图层预留清晰区域。' : '',
+    brief.exact_text.length ? '不要在生成画面中绘制可读文字，为后续确定性文字图层预留清晰区域。' : '',
   ].filter(Boolean).join('\n')
-  return { brief, providerPrompt: prompt }
 }

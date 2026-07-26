@@ -1,32 +1,26 @@
-import type { Command } from '../../commands.js'
-import type { Tool } from '../../Tool.js'
-import {
-  getMcpToolsCommandsAndResources,
-} from '../../services/mcp/client.js'
-import { getAllMcpConfigs } from '../../services/mcp/config.js'
-import type {
-  MCPServerConnection,
-  ScopedMcpServerConfig,
-  ServerResource,
-} from '../../services/mcp/types.js'
 import { runWithCwdOverride } from '../../utils/cwd.js'
-import { createBrowserRecruitingTool } from '../../tools/BrowserRecruitingTool/BrowserRecruitingTool.js'
 import { getChromeSessionBridge } from '../services/chromeSessionBridge.js'
+import { connectProductMcpServer, type ProductMcpConnection, type ProductMcpConnectionResult, type ProductMcpResource } from './productMcpClient.js'
+import { loadProductMcpConfigs, type ScopedProductMcpServerConfig } from './productMcpConfig.js'
+import { listProductPlugins, productPluginMcpServers } from '../services/productPluginRegistry.js'
+import { createProductRecruitingBrowserTool } from './productRecruitingBrowserTool.js'
+import type { ProductCommand, ProductTool } from './productTool.js'
 
 export type ProductTaskMcpRuntime = {
-  clients: MCPServerConnection[]
-  tools: Tool[]
-  commands: Command[]
-  resources: Record<string, ServerResource[]>
+  clients: ProductMcpConnection[]
+  tools: ProductTool[]
+  commands: ProductCommand[]
+  resources: Record<string, ProductMcpResource[]>
 }
 
 export type ProductTaskMcpHost = {
-  connect(workDir: string, context?: { taskId: string }): Promise<ProductTaskMcpRuntime>
+  connect(workDir: string, context?: { taskId?: string; networkScope?: 'denied' | 'approved' | 'unrestricted' }): Promise<ProductTaskMcpRuntime>
 }
 
 type ProductTaskMcpHostDependencies = {
-  loadConfigs: () => Promise<{ servers: Record<string, ScopedMcpServerConfig> }>
-  connect: typeof getMcpToolsCommandsAndResources
+  loadConfigs: (workDir: string) => Promise<{ servers: Record<string, ScopedProductMcpServerConfig>; disabled?: Set<string> }>
+  connect: (name: string, config: ScopedProductMcpServerConfig) => Promise<ProductMcpConnectionResult>
+  loadPluginConfigs?: (workDir: string) => Promise<Record<string, ScopedProductMcpServerConfig>>
 }
 
 function uniqueByName<T extends { name: string }>(values: T[]): T[] {
@@ -42,27 +36,37 @@ function uniqueByName<T extends { name: string }>(values: T[]): T[] {
  */
 export class StandardProductTaskMcpHost implements ProductTaskMcpHost {
   constructor(private readonly dependencies: ProductTaskMcpHostDependencies = {
-    loadConfigs: getAllMcpConfigs,
-    connect: getMcpToolsCommandsAndResources,
+    loadConfigs: loadProductMcpConfigs,
+    connect: connectProductMcpServer,
+    loadPluginConfigs: async workDir => Object.assign({}, ...(await listProductPlugins(workDir)).map(productPluginMcpServers)),
   }) {}
 
-  connect(workDir: string, context?: { taskId: string }): Promise<ProductTaskMcpRuntime> {
+  connect(workDir: string, context?: { taskId?: string; networkScope?: 'denied' | 'approved' | 'unrestricted' }): Promise<ProductTaskMcpRuntime> {
     return runWithCwdOverride(workDir, async () => {
-      const { servers } = await this.dependencies.loadConfigs()
-      const clients: MCPServerConnection[] = []
-      const tools: Tool[] = []
-      const commands: Command[] = []
-      const resources: Record<string, ServerResource[]> = {}
+      const { servers: configuredServers, disabled = new Set<string>() } = await this.dependencies.loadConfigs(workDir)
+      const pluginServers = await this.dependencies.loadPluginConfigs?.(workDir) ?? {}
+      const servers = { ...configuredServers, ...pluginServers }
+      const clients: ProductMcpConnection[] = []
+      const tools: ProductTool[] = []
+      const commands: ProductCommand[] = []
+      const resources: Record<string, ProductMcpResource[]> = {}
 
-      await this.dependencies.connect((result) => {
+      const results = await Promise.all(Object.entries(servers).map(async ([name, config]) => (
+        disabled.has(name)
+          ? { client: { name, type: 'disabled' as const, config }, tools: [], commands: [], resources: [] }
+          : (config.type === 'http' || config.type === 'sse') && context?.networkScope === 'denied'
+            ? { client: { name, type: 'failed' as const, config }, tools: [], commands: [], resources: [] }
+          : this.dependencies.connect(name, config)
+      )))
+      for (const result of results) {
         clients.push(result.client)
         tools.push(...result.tools)
         commands.push(...result.commands)
-        if (result.resources) resources[result.client.name] = result.resources
-      }, servers)
+        if (result.resources?.length) resources[result.client.name] = result.resources
+      }
 
       if (context?.taskId) {
-        tools.push(createBrowserRecruitingTool(context.taskId, getChromeSessionBridge()))
+        tools.push(createProductRecruitingBrowserTool(context.taskId, getChromeSessionBridge()))
       }
 
       return {

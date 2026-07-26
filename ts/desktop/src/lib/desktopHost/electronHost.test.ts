@@ -126,14 +126,15 @@ describe('electron desktop host', () => {
       subscribe: vi.fn(),
     })
 
-    await host.media.submitImageProject('img_project01', true, true)
+    await host.media.submitImageProject('img_project01', true)
     await host.media.startImageOperation('img_project01', {
       revision: 2,
       base_version_id: 'ver_base0001',
       kind: 'edit',
       instruction: '只调整背景色',
       confirm_unknown_retry: false,
-    }, true)
+    })
+    await host.media.addVideoSource('vid_project01', '/tmp/source.mp4')
     await host.media.renderVideo({
       projectId: 'vid_project01',
       baseRevision: 4,
@@ -149,7 +150,7 @@ describe('electron desktop host', () => {
     expect(invoke).toHaveBeenNthCalledWith(
       1,
       ELECTRON_IPC_CHANNELS.mediaSubmitImage,
-      { projectId: 'img_project01', confirmUnknownRetry: true, confirmedDataEgress: true },
+      { projectId: 'img_project01', confirmUnknownRetry: true },
     )
     expect(invoke).toHaveBeenNthCalledWith(2, ELECTRON_IPC_CHANNELS.mediaStartImageOperation, {
       projectId: 'img_project01',
@@ -160,15 +161,18 @@ describe('electron desktop host', () => {
         instruction: '只调整背景色',
         confirm_unknown_retry: false,
       },
-      confirmedDataEgress: true,
     })
-    expect(invoke).toHaveBeenNthCalledWith(3, ELECTRON_IPC_CHANNELS.mediaRenderVideo, {
+    expect(invoke).toHaveBeenNthCalledWith(3, ELECTRON_IPC_CHANNELS.mediaAddVideoSource, {
+      projectId: 'vid_project01',
+      path: '/tmp/source.mp4',
+    })
+    expect(invoke).toHaveBeenNthCalledWith(4, ELECTRON_IPC_CHANNELS.mediaRenderVideo, {
       projectId: 'vid_project01',
       baseRevision: 4,
       timelineVersionId: 'timeline_0123456789abcdef01234567',
       outputPath: '/tmp/final.mp4',
     })
-    expect(invoke).toHaveBeenNthCalledWith(4, ELECTRON_IPC_CHANNELS.mediaAnalyzeVideo, {
+    expect(invoke).toHaveBeenNthCalledWith(5, ELECTRON_IPC_CHANNELS.mediaAnalyzeVideo, {
       projectId: 'vid_project01',
       baseRevision: 4,
       userGoal: '剪成活动短片',

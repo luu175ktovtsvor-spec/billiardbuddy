@@ -1,584 +1,181 @@
-import {
-  clearMcpClientConfig,
-  clearServerTokensFromLocalStorage,
-} from '../../services/mcp/auth.js'
-import {
-  clearServerCache,
-  connectToServer,
-  reconnectMcpServerImpl,
-} from '../../services/mcp/client.js'
-import {
-  addMcpConfig,
-  getAllMcpConfigs,
-  getClaudeCodeMcpConfigs,
-  getMcpConfigByName,
-  isMcpServerDisabled,
-  removeMcpConfig,
-  setMcpServerEnabled,
-} from '../../services/mcp/config.js'
 import { inspectMcpHostCommand } from '../services/mcpHostPreflight.js'
-import type {
-  ConfigScope,
-  McpHTTPServerConfig,
-  McpSSEServerConfig,
-  McpServerConfig,
-  McpStdioServerConfig,
-  ScopedMcpServerConfig,
-} from '../../services/mcp/types.js'
-import { ensureConfigScope } from '../../services/mcp/utils.js'
-import { enableConfigs } from '../../utils/config.js'
-import { getCwd, runWithCwdOverride } from '../../utils/cwd.js'
 import { ApiError } from '../middleware/errorHandler.js'
-import { conversationService } from '../services/conversationService.js'
-import { productTaskService, type ProductTaskService } from '../product/taskService.js'
+import { connectProductMcpServer } from '../agent-worker/productMcpClient.js'
+import {
+  beginProductMcpAuthorization,
+  deleteProductMcpOAuthCredential,
+  productMcpAuthorizationStatus,
+} from '../agent-worker/productMcpOAuth.js'
+import {
+  loadProductMcpConfigs,
+  parseProductMcpServerConfig,
+  removeProductMcpServer,
+  replaceProductMcpServer,
+  saveProductMcpServer,
+  setProductMcpEnabled,
+  type ProductMcpScope,
+  type ProductMcpServerConfig,
+  type ScopedProductMcpServerConfig,
+} from '../agent-worker/productMcpConfig.js'
 
 type McpServerDto = {
   name: string
-  scope: string
-  transport: string
+  scope: ProductMcpScope
+  transport: 'stdio' | 'http' | 'sse'
   enabled: boolean
   status: 'connected' | 'needs-auth' | 'failed' | 'disabled' | 'checking'
-  canEdit: boolean
-  canRemove: boolean
+  canEdit: true
+  canRemove: true
   canReconnect: boolean
-  canToggle: boolean
+  canAuthorize: boolean
+  canToggle: true
 }
-
-type McpMutationBody = {
-  cwd?: string
-  previousCwd?: string
-  scope?: string
-  taskId?: string
-  config?: unknown
-}
-
-type McpTaskSyncDto = {
-  applied: boolean
-  reason?: 'not_running' | 'failed'
-}
-
-const EDITABLE_SCOPES = new Set<ConfigScope>(['local', 'project', 'user'])
 
 function parseJsonBody(req: Request): Promise<Record<string, unknown>> {
-  return req
-    .json()
-    .then((body) => body as Record<string, unknown>)
-    .catch(() => {
-      throw ApiError.badRequest('Invalid JSON body')
-    })
+  return req.json().then(value => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error()
+    return value as Record<string, unknown>
+  }).catch(() => { throw ApiError.badRequest('Invalid JSON body') })
 }
 
-function optionalString(value: unknown): string | undefined {
-  return typeof value === 'string' && value.length > 0 ? value : undefined
+function cwdFor(url: URL, body?: Record<string, unknown>): string {
+  const value = url.searchParams.get('cwd') || (typeof body?.cwd === 'string' ? body.cwd : '')
+  return value || process.cwd()
 }
 
-function optionalProductTaskId(body?: Record<string, unknown>): string | undefined {
-  if (!body || !Object.prototype.hasOwnProperty.call(body, 'taskId')) return undefined
-  const taskId = typeof body.taskId === 'string' ? body.taskId.trim() : ''
-  if (taskId) return taskId
+function scopeOf(value: unknown): ProductMcpScope {
+  if (value === 'user' || value === 'project' || value === 'local') return value
+  throw new ApiError(400, 'Invalid MCP scope', 'MCP_CONFIGURATION_INVALID')
+}
+
+function taskId(body?: Record<string, unknown>): string | undefined {
+  if (!body || !Object.hasOwn(body, 'taskId')) return undefined
+  if (typeof body.taskId === 'string' && body.taskId.trim()) return body.taskId.trim()
   throw new ApiError(503, 'Product task is unavailable', 'PRODUCT_TASK_UNAVAILABLE')
 }
 
-async function resolveProductTaskCoreSessionId(
-  taskId: string,
-  tasks: Pick<ProductTaskService, 'resolveCoreSessionId'>,
-): Promise<string> {
-  try {
-    // This is the product/Core boundary: a renderer only supplies an opaque
-    // product task id, and the Core session binding remains server-private.
-    return await tasks.resolveCoreSessionId(taskId)
-  } catch {
-    // Do not expose whether the private binding is absent, stale, or the
-    // product store itself is temporarily unavailable.
-    throw new ApiError(503, 'Product task is unavailable', 'PRODUCT_TASK_UNAVAILABLE')
-  }
-}
-
-async function syncMcpToggleToProductTask(
-  coreSessionId: string | undefined,
-  serverName: string,
-  enabled: boolean,
-): Promise<McpTaskSyncDto | undefined> {
-  if (!coreSessionId) return undefined
-
-  if (!conversationService.hasSession(coreSessionId)) {
-    return { applied: false, reason: 'not_running' }
-  }
-
-  try {
-    await conversationService.requestControl(
-      coreSessionId,
-      { subtype: 'mcp_toggle', serverName, enabled },
-      120_000,
-    )
-    return { applied: true }
-  } catch {
-    return {
-      applied: false,
-      reason: 'failed',
-    }
-  }
-}
-
-function resolveRequestCwd(url: URL, body?: Record<string, unknown>): string {
-  const cwd = url.searchParams.get('cwd') || (typeof body?.cwd === 'string' ? body.cwd : undefined)
-  return cwd || getCwd()
-}
-
-function stripScope(config: ScopedMcpServerConfig): McpServerConfig {
-  const { scope: _scope, pluginSource: _pluginSource, ...rest } = config
-  return rest
-}
-
-function isVisibleServer(name: string, config: ScopedMcpServerConfig): boolean {
-  if (name === 'ide') return false
-  if (config.type === 'sse-ide' || config.type === 'ws-ide') return false
-  return true
-}
-
-function getInitialStatus(
-  enabled: boolean,
-): Pick<McpServerDto, 'status'> {
-  if (!enabled) {
-    return { status: 'disabled' }
-  }
-
-  return { status: 'checking' }
-}
-
-async function getHostPreflightStatus(
-  config: ScopedMcpServerConfig | McpServerConfig,
-  enabled: boolean,
-): Promise<Pick<McpServerDto, 'status'> | null> {
-  if (!enabled) {
-    return null
-  }
-
-  if ((config.type ?? 'stdio') !== 'stdio') {
-    return null
-  }
-
-  const stdioConfig = config as McpStdioServerConfig
-  const result = await inspectMcpHostCommand(
-    stdioConfig.command,
-    getCwd(),
-    stdioConfig.env,
-  )
-  if (result.ok) {
-    return null
-  }
-
-  return { status: 'failed' }
-}
-
-async function inspectServerStatus(
-  name: string,
-  config: ScopedMcpServerConfig,
-  enabled: boolean,
-): Promise<Pick<McpServerDto, 'status'>> {
-  if (!enabled) {
-    return { status: 'disabled' }
-  }
-
-  const hostPreflightStatus = await getHostPreflightStatus(config, enabled)
-  if (hostPreflightStatus) {
-    return hostPreflightStatus
-  }
-
-  try {
-    const client = await connectToServer(name, config)
-    await clearServerCache(name, config).catch(() => {})
-
-    const status: McpServerDto['status'] =
-      client.type === 'connected'
-        ? 'connected'
-        : client.type === 'needs-auth'
-          ? 'needs-auth'
-          : 'failed'
-
-    return { status }
-  } catch {
-    await clearServerCache(name, config).catch(() => {})
-    return { status: 'failed' }
-  }
-}
-
-function buildServerDto(
-  name: string,
-  config: ScopedMcpServerConfig,
-  status: Pick<McpServerDto, 'status'>,
-): McpServerDto {
-  const enabled = !isMcpServerDisabled(name)
-  const transport = config.type ?? 'stdio'
-  const canEdit = EDITABLE_SCOPES.has(config.scope) && (transport === 'stdio' || transport === 'http' || transport === 'sse')
-
+function dto(name: string, config: ScopedProductMcpServerConfig, enabled: boolean, status: McpServerDto['status'] = enabled ? 'checking' : 'disabled'): McpServerDto {
   return {
     name,
     scope: config.scope,
-    transport,
-    enabled: !isMcpServerDisabled(name),
-    status: status.status,
-    canEdit,
-    canRemove: EDITABLE_SCOPES.has(config.scope),
+    transport: config.type ?? 'stdio',
+    enabled,
+    status,
+    canEdit: true,
+    canRemove: true,
     canReconnect: enabled,
+    canAuthorize: enabled && (config.type === 'http' || config.type === 'sse') && Boolean(config.oauth),
     canToggle: true,
   }
 }
 
-function serializeServerSnapshot(
-  name: string,
-  config: ScopedMcpServerConfig,
-): McpServerDto {
-  return buildServerDto(name, config, getInitialStatus(!isMcpServerDisabled(name)))
+async function preflight(config: ProductMcpServerConfig, cwd: string): Promise<boolean> {
+  if ((config.type ?? 'stdio') !== 'stdio') return true
+  const local = config as Extract<ProductMcpServerConfig, { command: string }>
+  return (await inspectMcpHostCommand(local.command, cwd, local.env)).ok
 }
 
-async function serializeServerWithLiveStatus(
-  name: string,
-  config: ScopedMcpServerConfig,
-): Promise<McpServerDto> {
-  const enabled = !isMcpServerDisabled(name)
-  const status = await inspectServerStatus(name, config, enabled)
-  return buildServerDto(name, config, status)
+async function liveStatus(name: string, config: ScopedProductMcpServerConfig, cwd: string, enabled: boolean): Promise<McpServerDto> {
+  if (!enabled) return dto(name, config, false, 'disabled')
+  if (!await preflight(config, cwd)) return dto(name, config, true, 'failed')
+  const result = await connectProductMcpServer(name, config)
+  await result.client.cleanup?.().catch(() => undefined)
+  return dto(name, config, true, result.client.type === 'connected' ? 'connected' : result.client.type === 'needs-auth' ? 'needs-auth' : 'failed')
 }
 
-async function resolveServerForRuntimeAction(
-  name: string,
-): Promise<ScopedMcpServerConfig | null> {
-  const configured = getMcpConfigByName(name)
-  if (configured) {
-    return configured
-  }
-
-  const { servers } = await getAllMcpConfigs()
-  return servers[name] ?? null
-}
-
-function buildServerConfig(config: unknown): McpServerConfig {
-  if (!config || typeof config !== 'object') {
-    throw ApiError.badRequest('Missing or invalid "config" in request body')
-  }
-
-  const raw = config as Record<string, unknown>
-  const type = raw.type
-
-  if (!type || type === 'stdio') {
-    const command = typeof raw.command === 'string' ? raw.command.trim() : ''
-    if (!command) {
-      throw ApiError.badRequest('Command is required for stdio MCP servers')
-    }
-
-    const args = Array.isArray(raw.args)
-      ? raw.args.filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
-      : []
-
-    const envEntries = raw.env && typeof raw.env === 'object'
-      ? Object.entries(raw.env as Record<string, unknown>).filter(
-          (entry): entry is [string, string] => typeof entry[0] === 'string' && typeof entry[1] === 'string' && entry[0].trim().length > 0,
-        )
-      : []
-
-    return {
-      type: 'stdio',
-      command,
-      args,
-      ...(envEntries.length > 0 ? { env: Object.fromEntries(envEntries) } : {}),
-    }
-  }
-
-  if (type === 'http' || type === 'sse') {
-    const url = typeof raw.url === 'string' ? raw.url.trim() : ''
-    if (!url) {
-      throw ApiError.badRequest('URL is required for remote MCP servers')
-    }
-
-    const headersEntries = raw.headers && typeof raw.headers === 'object'
-      ? Object.entries(raw.headers as Record<string, unknown>).filter(
-          (entry): entry is [string, string] => typeof entry[0] === 'string' && typeof entry[1] === 'string' && entry[0].trim().length > 0,
-        )
-      : []
-
-    const oauthRaw = raw.oauth && typeof raw.oauth === 'object' ? (raw.oauth as Record<string, unknown>) : undefined
-    const clientId = typeof oauthRaw?.clientId === 'string' ? oauthRaw.clientId.trim() : ''
-    const callbackPort =
-      typeof oauthRaw?.callbackPort === 'number'
-        ? oauthRaw.callbackPort
-        : typeof oauthRaw?.callbackPort === 'string' && oauthRaw.callbackPort.trim()
-          ? Number(oauthRaw.callbackPort)
-          : undefined
-
-    return {
-      type,
-      url,
-      ...(headersEntries.length > 0 ? { headers: Object.fromEntries(headersEntries) } : {}),
-      ...(typeof raw.headersHelper === 'string' && raw.headersHelper.trim()
-        ? { headersHelper: raw.headersHelper.trim() }
-        : {}),
-      ...(clientId || callbackPort
-        ? {
-            oauth: {
-              ...(clientId ? { clientId } : {}),
-              ...(callbackPort ? { callbackPort } : {}),
-            },
-          }
-        : {}),
-    }
-  }
-
-  throw ApiError.badRequest(`Unsupported MCP transport: ${String(type)}`)
-}
-
-function cleanupSecureStorage(name: string, config: ScopedMcpServerConfig) {
-  if (config.type !== 'sse' && config.type !== 'http') return
-  clearServerTokensFromLocalStorage(name, config)
-  clearMcpClientConfig(name, config)
-}
-
-async function listServers(): Promise<Response> {
-  const { servers } = await getAllMcpConfigs()
-  const visibleServers = Object.entries(servers)
-    .filter(([name, config]) => isVisibleServer(name, config))
-    .sort((a, b) => a[0].localeCompare(b[0]))
-  return Response.json({
-    servers: visibleServers.map(([name, config]) => serializeServerSnapshot(name, config)),
-  })
-}
-
-async function getServerStatus(name: string): Promise<Response> {
-  const existing = await resolveServerForRuntimeAction(name)
-  if (!existing) {
-    throw new ApiError(404, 'MCP server is unavailable', 'MCP_NOT_AVAILABLE')
-  }
-
-  return Response.json({
-    server: await serializeServerWithLiveStatus(name, existing),
-  })
-}
-
-async function assertHostPrerequisites(config: McpServerConfig) {
-  const hostPreflightStatus = await getHostPreflightStatus(config, true)
-  if (hostPreflightStatus) {
-    throw new ApiError(400, 'MCP host is unavailable', 'MCP_HOST_UNAVAILABLE')
-  }
-}
-
-async function createServer(body: Record<string, unknown>): Promise<Response> {
-  const name = typeof body.name === 'string' ? body.name.trim() : ''
-  if (!name) {
-    throw ApiError.badRequest('Missing or invalid "name" in request body')
-  }
-
-  const scope = ensureConfigScope(typeof body.scope === 'string' ? body.scope : undefined)
-  const config = buildServerConfig(body.config)
-  await assertHostPrerequisites(config)
-
-  try {
-    await addMcpConfig(name, config, scope)
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
-    if (message.includes('already exists')) {
-      throw new ApiError(409, 'MCP server already exists', 'MCP_NAME_CONFLICT')
-    }
-    throw new ApiError(400, 'MCP configuration is invalid', 'MCP_CONFIGURATION_INVALID')
-  }
-
-  const created = getMcpConfigByName(name)
-  if (!created) {
-    throw new ApiError(500, 'MCP server could not be reloaded', 'MCP_MUTATION_FAILED')
-  }
-
-  return Response.json({ server: serializeServerSnapshot(name, created) }, { status: 201 })
-}
-
-async function updateServer(name: string, body: Record<string, unknown>): Promise<Response> {
-  const targetCwd = getCwd()
-  const previousCwd = optionalString(body.previousCwd)
-  const previousLookupCwd = previousCwd ?? targetCwd
-  const existing = runWithCwdOverride(previousLookupCwd, () => getMcpConfigByName(name))
-  if (!existing) {
-    throw new ApiError(404, 'MCP server is unavailable', 'MCP_NOT_AVAILABLE')
-  }
-
-  if (!EDITABLE_SCOPES.has(existing.scope)) {
-    throw new ApiError(400, 'MCP server cannot be changed here', 'MCP_CONFIGURATION_LOCKED')
-  }
-
-  const nextScope = ensureConfigScope(typeof body.scope === 'string' ? body.scope : existing.scope)
-  const nextConfig = buildServerConfig(body.config)
-  await assertHostPrerequisites(nextConfig)
-  const previousConfig = stripScope(existing)
-  const previousScope = existing.scope
-
-  try {
-    await runWithCwdOverride(previousLookupCwd, () => removeMcpConfig(name, previousScope))
-    await addMcpConfig(name, nextConfig, nextScope)
-  } catch (error) {
-    try {
-      const restored = runWithCwdOverride(previousLookupCwd, () => getMcpConfigByName(name))
-      if (!restored) {
-        await runWithCwdOverride(previousLookupCwd, () => addMcpConfig(name, previousConfig, previousScope))
-      }
-    } catch {
-      // Preserve the original update error below.
-    }
-
-    const message = error instanceof Error ? error.message : String(error)
-    if (message.includes('already exists')) {
-      throw new ApiError(409, 'MCP server already exists', 'MCP_NAME_CONFLICT')
-    }
-    throw new ApiError(400, 'MCP configuration is invalid', 'MCP_CONFIGURATION_INVALID')
-  }
-
-  const updated = getMcpConfigByName(name)
-  if (!updated) {
-    throw new ApiError(500, 'MCP server could not be reloaded', 'MCP_MUTATION_FAILED')
-  }
-
-  return Response.json({ server: serializeServerSnapshot(name, updated) })
-}
-
-async function deleteServer(name: string, url: URL): Promise<Response> {
-  const scope = ensureConfigScope(url.searchParams.get('scope') || undefined)
-  const existing = getMcpConfigByName(name)
-  if (!existing) {
-    throw new ApiError(404, 'MCP server is unavailable', 'MCP_NOT_AVAILABLE')
-  }
-
-  await removeMcpConfig(name, scope)
-  cleanupSecureStorage(name, existing)
-  await clearServerCache(name, existing).catch(() => {})
-
-  return Response.json({ ok: true })
-}
-
-async function toggleServer(
-  name: string,
-  taskId: string | undefined,
-  tasks: Pick<ProductTaskService, 'resolveCoreSessionId'>,
-): Promise<Response> {
-  const existing = await resolveServerForRuntimeAction(name)
-  if (!existing) {
-    throw new ApiError(404, 'MCP server is unavailable', 'MCP_NOT_AVAILABLE')
-  }
-
-  const coreSessionId = taskId
-    ? await resolveProductTaskCoreSessionId(taskId, tasks)
-    : undefined
-  const enabled = isMcpServerDisabled(name)
-  setMcpServerEnabled(name, enabled)
-  const taskSync = await syncMcpToggleToProductTask(coreSessionId, name, enabled)
-
-  if (!enabled) {
-    await clearServerCache(name, existing).catch(() => {})
-    const updated = serializeServerSnapshot(name, existing)
-    return Response.json({ server: updated, ...(taskSync ? { taskSync } : {}) })
-  }
-
-  const hostPreflightStatus = await getHostPreflightStatus(existing, true)
-  if (hostPreflightStatus) {
-    await clearServerCache(name, existing).catch(() => {})
-    return Response.json({
-      server: buildServerDto(name, existing, hostPreflightStatus),
-    })
-  }
-
-  await reconnectMcpServerImpl(name, existing)
-  await clearServerCache(name, existing).catch(() => {})
-
-  const updated = await serializeServerWithLiveStatus(name, existing)
-  return Response.json({
-    server: updated,
-    ...(taskSync ? { taskSync } : {}),
-  })
-}
-
-async function reconnectServer(name: string): Promise<Response> {
-  const existing = await resolveServerForRuntimeAction(name)
-  if (!existing) {
-    throw new ApiError(404, 'MCP server is unavailable', 'MCP_NOT_AVAILABLE')
-  }
-
-  const hostPreflightStatus = await getHostPreflightStatus(existing, !isMcpServerDisabled(name))
-  if (hostPreflightStatus) {
-    await clearServerCache(name, existing).catch(() => {})
-    return Response.json({
-      server: buildServerDto(name, existing, hostPreflightStatus),
-    })
-  }
-
-  await reconnectMcpServerImpl(name, existing)
-  await clearServerCache(name, existing).catch(() => {})
-
-  const server = await serializeServerWithLiveStatus(name, existing)
-  return Response.json({ server })
-}
-
-function mcpErrorResponse(error: unknown): Response {
-  const status = error instanceof ApiError ? error.statusCode : 500
-  const requestedCode = error instanceof ApiError ? error.code : undefined
-  const code =
-    requestedCode === 'MCP_NOT_AVAILABLE' ||
-    requestedCode === 'MCP_NAME_CONFLICT' ||
-    requestedCode === 'PRODUCT_TASK_UNAVAILABLE'
-      ? requestedCode
-      : requestedCode === 'MCP_HOST_UNAVAILABLE' || requestedCode === 'MCP_CONFIGURATION_LOCKED'
-        ? requestedCode
-        : requestedCode === 'MCP_REQUEST_INVALID' || status === 405
-          ? 'MCP_REQUEST_INVALID'
-          : requestedCode === 'MCP_CONFIGURATION_INVALID' || status === 400
-            ? 'MCP_CONFIGURATION_INVALID'
-            : 'MCP_UNAVAILABLE'
-
+function configError(error: unknown): Response {
+  const requested = error instanceof ApiError ? error.code : error instanceof Error ? error.message : ''
+  const status = error instanceof ApiError ? error.statusCode : requested === 'MCP_NAME_CONFLICT' ? 409 : 400
+  const code = requested === 'PRODUCT_TASK_UNAVAILABLE'
+    ? 'PRODUCT_TASK_UNAVAILABLE'
+    : requested === 'MCP_NAME_CONFLICT'
+      ? 'MCP_NAME_CONFLICT'
+      : requested === 'MCP_NOT_AVAILABLE'
+        ? 'MCP_NOT_AVAILABLE'
+        : requested === 'MCP_HOST_UNAVAILABLE'
+          ? 'MCP_HOST_UNAVAILABLE'
+          : requested === 'MCP_REQUEST_INVALID' || status === 405
+            ? 'MCP_REQUEST_INVALID'
+            : 'MCP_CONFIGURATION_INVALID'
   return Response.json({ error: code }, { status })
 }
 
-export async function handleMcpApi(
-  req: Request,
-  url: URL,
-  segments: string[],
-  tasks: Pick<ProductTaskService, 'resolveCoreSessionId'> = productTaskService,
-): Promise<Response> {
+export async function handleMcpApi(req: Request, url: URL, segments: string[]): Promise<Response> {
   try {
-    enableConfigs()
-
-    const serverName = segments[2] ? decodeURIComponent(segments[2]) : undefined
+    const name = segments[2] ? decodeURIComponent(segments[2]) : undefined
     const action = segments[3]
-    const body =
-      req.method === 'POST' || req.method === 'PUT'
-        ? await parseJsonBody(req)
-        : undefined
+    const body = req.method === 'POST' || req.method === 'PUT' ? await parseJsonBody(req) : undefined
+    const cwd = cwdFor(url, body)
 
-    return await runWithCwdOverride(resolveRequestCwd(url, body), async () => {
-      if (req.method === 'GET' && !serverName) {
-        return listServers()
+    if (req.method === 'GET' && !name) {
+      const snapshot = await loadProductMcpConfigs(cwd)
+      return Response.json({ servers: Object.entries(snapshot.servers).sort(([a], [b]) => a.localeCompare(b)).map(([serverName, config]) => dto(serverName, config, !snapshot.disabled.has(serverName))) })
+    }
+    if (req.method === 'GET' && name && action === 'status') {
+      const snapshot = await loadProductMcpConfigs(cwd)
+      const config = snapshot.servers[name]
+      if (!config) throw new ApiError(404, 'MCP server is unavailable', 'MCP_NOT_AVAILABLE')
+      return Response.json({ server: await liveStatus(name, config, cwd, !snapshot.disabled.has(name)) })
+    }
+    if (req.method === 'POST' && !name) {
+      const serverName = typeof body?.name === 'string' ? body.name.trim() : ''
+      const scope = scopeOf(body?.scope)
+      const config = parseProductMcpServerConfig(body?.config)
+      if (!await preflight(config, cwd)) throw new ApiError(400, 'MCP host unavailable', 'MCP_HOST_UNAVAILABLE')
+      await saveProductMcpServer(serverName, config, scope, cwd)
+      return Response.json({ server: dto(serverName, { ...config, scope }, true) }, { status: 201 })
+    }
+    if (req.method === 'PUT' && name && !action) {
+      const previousCwd = typeof body?.previousCwd === 'string' && body.previousCwd ? body.previousCwd : cwd
+      const previous = (await loadProductMcpConfigs(previousCwd)).servers[name]
+      if (!previous) throw new ApiError(404, 'MCP server is unavailable', 'MCP_NOT_AVAILABLE')
+      const scope = scopeOf(body?.scope ?? previous.scope)
+      const config = parseProductMcpServerConfig(body?.config)
+      if (!await preflight(config, cwd)) throw new ApiError(400, 'MCP host unavailable', 'MCP_HOST_UNAVAILABLE')
+      await deleteProductMcpOAuthCredential(name, previous).catch(() => undefined)
+      if (previousCwd === cwd) await replaceProductMcpServer(name, config, scope, previous.scope, cwd)
+      else {
+        await removeProductMcpServer(name, previous.scope, previousCwd)
+        await saveProductMcpServer(name, config, scope, cwd)
       }
-
-      if (req.method === 'GET' && serverName && action === 'status') {
-        return getServerStatus(serverName)
-      }
-
-      if (req.method === 'POST' && !serverName) {
-        return createServer(body ?? {})
-      }
-
-      if (req.method === 'PUT' && serverName) {
-        return updateServer(serverName, body ?? {})
-      }
-
-      if (req.method === 'DELETE' && serverName && !action) {
-        return deleteServer(serverName, url)
-      }
-
-      if (req.method === 'POST' && serverName && action === 'toggle') {
-        return toggleServer(serverName, optionalProductTaskId(body), tasks)
-      }
-
-      if (req.method === 'POST' && serverName && action === 'reconnect') {
-        return reconnectServer(serverName)
-      }
-
-      throw new ApiError(405, 'Unsupported MCP request', 'MCP_REQUEST_INVALID')
-    })
+      return Response.json({ server: dto(name, { ...config, scope }, true) })
+    }
+    if (req.method === 'DELETE' && name && !action) {
+      const scope = scopeOf(url.searchParams.get('scope'))
+      const existing = (await loadProductMcpConfigs(cwd)).servers[name]
+      if (existing) await deleteProductMcpOAuthCredential(name, existing).catch(() => undefined)
+      await removeProductMcpServer(name, scope, cwd)
+      return Response.json({ ok: true })
+    }
+    if (req.method === 'POST' && name && action === 'toggle') {
+      const currentTask = taskId(body)
+      const snapshot = await loadProductMcpConfigs(cwd)
+      const config = snapshot.servers[name]
+      if (!config) throw new ApiError(404, 'MCP server is unavailable', 'MCP_NOT_AVAILABLE')
+      const enabled = snapshot.disabled.has(name)
+      await setProductMcpEnabled(name, enabled, cwd)
+      return Response.json({ server: dto(name, config, enabled), ...(currentTask ? { taskSync: { applied: false, reason: 'next_turn' } } : {}) })
+    }
+    if (req.method === 'POST' && name && action === 'reconnect') {
+      const snapshot = await loadProductMcpConfigs(cwd)
+      const config = snapshot.servers[name]
+      if (!config) throw new ApiError(404, 'MCP server is unavailable', 'MCP_NOT_AVAILABLE')
+      return Response.json({ server: await liveStatus(name, config, cwd, !snapshot.disabled.has(name)) })
+    }
+    if (req.method === 'POST' && name && action === 'authorize') {
+      const snapshot = await loadProductMcpConfigs(cwd)
+      const config = snapshot.servers[name]
+      if (!config) throw new ApiError(404, 'MCP server is unavailable', 'MCP_NOT_AVAILABLE')
+      if (snapshot.disabled.has(name)) throw new ApiError(400, 'MCP server is disabled', 'MCP_OAUTH_NOT_CONFIGURED')
+      return Response.json(await beginProductMcpAuthorization(name, config))
+    }
+    if (req.method === 'GET' && name && action === 'authorization-status') {
+      const flowId = url.searchParams.get('flowId')
+      if (!flowId) throw new ApiError(400, 'MCP authorization flow is invalid', 'MCP_OAUTH_FLOW_NOT_FOUND')
+      return Response.json(productMcpAuthorizationStatus(name, flowId))
+    }
+    throw new ApiError(405, 'Unsupported MCP request', 'MCP_REQUEST_INVALID')
   } catch (error) {
-    return mcpErrorResponse(error)
+    return configError(error)
   }
 }

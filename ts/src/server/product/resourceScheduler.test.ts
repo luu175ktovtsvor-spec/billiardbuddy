@@ -1,5 +1,12 @@
-import { describe, expect, test } from 'bun:test'
+import { afterEach, describe, expect, test } from 'bun:test'
+import * as fs from 'node:fs/promises'
+import * as os from 'node:os'
+import * as path from 'node:path'
+import { ProductResourceScheduler } from './resourceScheduler.js'
 import { conservativeDesktopResourceProfile, DesktopResourceProfiles } from './resourceProfiles.js'
+
+const roots: string[] = []
+afterEach(async () => { await Promise.all(roots.splice(0).map(root => fs.rm(root, { recursive: true, force: true }))) })
 
 describe('DesktopResourceProfiles', () => {
   test('uses conservative baseline and degrades expired, mismatched, and failed benchmarks', () => {
@@ -16,4 +23,19 @@ describe('DesktopResourceProfiles', () => {
     expect(profiles.promote({ ...promoted, revision: 'wrong-toolchain', toolchain: 'other' })).toMatchObject({ status: 'degraded', reason: 'TOOLCHAIN_MISMATCH', hardware: promoted.hardware, benchmark: { profile_revision: 'wrong-toolchain', toolchain: 'other' } })
     expect(profiles.promote({ ...promoted, revision: 'wrong-platform', platform: 'other' })).toMatchObject({ status: 'degraded', reason: 'PLATFORM_MISMATCH', hardware: promoted.hardware, benchmark: { profile_revision: 'wrong-platform', platform: 'other' } })
   })
+})
+
+test('owner purge rejects live work and removes only terminal jobs for that ProductTask', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'bb-resource-owner-purge-')); roots.push(root)
+  const scheduler = new ProductResourceScheduler({ statePath: path.join(root, 'scheduler.json') })
+  const receipt = await scheduler.submit({
+    job_id: 'job-task-a', owner_id: 'task:task-a', idempotency_key: 'job-task-a', scope: 'desktop-host',
+    resources: [{ key: 'agent.worker', units: 1 }], bytes: { memory: 0, input: 0, temp: 0, output: 0 },
+    priority: 'interactive', cancel_mode: 'cooperative', resume_policy: 'manual', profile_revision: scheduler.profileRevision(),
+  })
+  expect(receipt.outcome).toBe('admitted')
+  await expect(scheduler.purgeOwnerJobs('task:task-a')).rejects.toThrow('OWNER_JOBS_ACTIVE')
+  await scheduler.complete('job-task-a', receipt.fencing_token!)
+  await scheduler.purgeOwnerJobs('task:task-a')
+  expect(await scheduler.hasBlockingOwnerJobs('task:task-a')).toBeFalse()
 })

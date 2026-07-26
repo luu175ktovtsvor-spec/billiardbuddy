@@ -16,23 +16,6 @@ const shellApiMock = vi.hoisted(() => ({
   open: vi.fn(),
 }))
 const requestUserAttentionMock = vi.hoisted(() => vi.fn())
-const windowApiMock = vi.hoisted(() => ({
-  requestUserAttention: requestUserAttentionMock,
-  getCurrentWindow: vi.fn(() => ({
-    requestUserAttention: requestUserAttentionMock,
-  })),
-  UserAttentionType: {
-    Critical: 1,
-    Informational: 2,
-  },
-}))
-
-vi.mock('@tauri-apps/plugin-notification', () => notificationPluginMock)
-vi.mock('@tauri-apps/api/core', () => coreApiMock)
-vi.mock('@tauri-apps/api/event', () => eventApiMock)
-vi.mock('@tauri-apps/api/window', () => windowApiMock)
-vi.mock('@tauri-apps/plugin-shell', () => shellApiMock)
-
 import {
   getDesktopNotificationPermission,
   installDesktopNotificationClickListener,
@@ -107,16 +90,13 @@ describe('desktopNotifications', () => {
     notificationPluginMock.requestPermission.mockReset()
     notificationPluginMock.sendNotification.mockReset()
     notificationPluginMock.onAction.mockReset()
-    windowApiMock.getCurrentWindow.mockClear()
-    windowApiMock.requestUserAttention.mockReset()
+    requestUserAttentionMock.mockReset()
     useSettingsStore.setState({ desktopNotificationsEnabled: true })
     Object.defineProperty(navigator, 'platform', {
       configurable: true,
       value: 'Linux x86_64',
     })
     installElectronNotificationHost()
-    Reflect.deleteProperty(window, '__TAURI_INTERNALS__')
-    Reflect.deleteProperty(window, '__TAURI__')
   })
 
   it('sends through the desktop notification host when permission is already granted', async () => {
@@ -481,8 +461,8 @@ describe('desktopNotifications', () => {
     })
 
     await vi.waitFor(() => expect(sender).toHaveBeenCalledTimes(1))
-    await vi.waitFor(() => expect(windowApiMock.requestUserAttention).toHaveBeenCalledTimes(1))
-    expect(windowApiMock.requestUserAttention).toHaveBeenCalledWith()
+    await vi.waitFor(() => expect(requestUserAttentionMock).toHaveBeenCalledTimes(1))
+    expect(requestUserAttentionMock).toHaveBeenCalledWith()
   })
 
   it('throttles bursts within the same cooldown scope', async () => {

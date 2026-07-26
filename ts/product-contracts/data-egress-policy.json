@@ -1,118 +1,55 @@
 {
   "policy_schema_version": 1,
-  "policy_revision": "bb-04e-image-v1",
+  "policy_revision": "bb-remote-processing-v2",
   "owner_module": "04",
   "scope": [
     "TextReasoning",
     "VisualEvidence",
+    "MediaReasoning",
     "ImageGeneration",
     "SpeechTranscription"
   ],
   "disclosure": {
-    "purpose": "image_generation",
+    "presentation": "single_privacy_statement",
+    "surface": "settings/privacy",
+    "purpose": "complete the remote capability selected by the user",
     "data": [
-      "prompt",
-      "reference_images_when_editing"
-    ],
-    "path": [
-      "BilliardBuddy desktop",
-      "United States Relay",
-      "selected image provider"
-    ],
-    "billable": true,
-    "revocable_until": "provider_submission"
+      "task text required by the selected capability",
+      "images, audio or bounded media evidence required by the selected capability"
+    ]
   },
-  "consent_receipt": {
-    "per_operation": true,
-    "persisted_before_network": true,
-    "bound_to_input_fingerprint": true,
-    "gateway_fail_closed": true,
-    "relay_fail_closed": true
-  },
-  "managed_remote_consent": {
-    "policy_revision": "bb-04f-managed-remote-v1",
-    "capabilities": [
-      "TextReasoning",
-      "VisualEvidence",
-      "SpeechTranscription"
-    ],
-    "first_use_disclosure": true,
-    "installation_bound": true,
-    "persisted_before_network": true,
-    "revocable": true,
-    "gateway_fail_closed": true,
+  "execution_contract": {
+    "per_operation_consent": false,
+    "billing_confirmation": false,
+    "installation_identity_required": true,
+    "ordinary_tool_permissions_preserved": true,
+    "operation_identity_required_for_durable_side_effects": true,
+    "idempotency_required_for_durable_side_effects": true,
+    "timeouts_and_cancellation_required": true,
+    "quota_enforced_before_upstream_submission": true,
     "protocol": "bb-provider-gateway/1.0"
-  },
-  "provider_retention": {
-    "DeepSeek": {
-      "status": "PUBLIC_POLICY_VERIFIED_ACCOUNT_API_TERM_NOT_VERIFIED",
-      "summary": "personal information is retained for the minimum necessary period; legally required network logs may be retained for at least six months",
-      "source": "https://platform.deepseek.com/downloads/DeepSeek%20Privacy%20Policy.pdf",
-      "verified_at": "2026-07-24"
-    },
-    "Xiaomi MiMo": {
-      "status": "PUBLIC_GENERAL_POLICY_VERIFIED_ACCOUNT_API_TERM_NOT_VERIFIED",
-      "summary": "information is retained while needed for its collection purpose or applicable legal requirements; the MiMo API account-specific term is not verified",
-      "source": "https://privacy.mi.com/all/en_US/",
-      "verified_at": "2026-07-24"
-    },
-    "Alibaba Cloud Model Studio Fun-ASR": {
-      "status": "PUBLIC_STORAGE_STATEMENT_VERIFIED_ACCOUNT_TERM_NOT_VERIFIED",
-      "summary": "Model Studio states that model-call data is stored under applicable law and its service agreement; the account-specific duration is not verified",
-      "source": "https://help.aliyun.com/en/model-studio/privacy-notice",
-      "verified_at": "2026-07-24"
-    },
-    "OpenAI": {
-      "status": "PUBLIC_DEFAULT_VERIFIED_ACCOUNT_OVERRIDE_NOT_VERIFIED",
-      "summary": "API image endpoints have no application-state retention; default abuse-monitoring logs may retain customer content for up to 30 days",
-      "source": "https://platform.openai.com/docs/models/default-usage-policies-by-endpoint",
-      "verified_at": "2026-07-24"
-    },
-    "ByteDance Ark": {
-      "status": "PUBLIC_CONTRACT_VERIFIED_ACCOUNT_TERM_NOT_VERIFIED",
-      "summary": "customer data is processed for the necessary contracted period; account-specific term is not verified",
-      "source": "https://www.volcengine.com/docs/undefined/67493?lang=zh",
-      "verified_at": "2026-07-24"
-    }
   },
   "evidence": [
     {
-      "constraint": "user_disclosure_before_egress",
-      "path": "ts/desktop/src/components/media/ImageWorkbench.test.tsx",
-      "test_id": "warns before creating another paid task and forwards explicit confirmation"
+      "constraint": "remote_processing_disclosed_once",
+      "path": "ts/desktop/src/product/components/ProductPrivacySettings.test.tsx",
+      "test_id": "states remote processing once without consent, billing or provider controls"
     },
     {
-      "constraint": "host_receipt_before_forward",
+      "constraint": "host_forwards_protocol_without_consent_header",
+      "path": "ts/src/server/agent-worker/productModelRuntime.test.ts",
+      "test_id": "sends the product prompt and provider-neutral history directly as OpenAI Chat"
+    },
+    {
+      "constraint": "gateway_requires_operation_identity_before_relay",
+      "path": "gateway/app.test.ts",
+      "test_id": "image task submission requires an operation id before relay work"
+    },
+    {
+      "constraint": "media_job_keeps_idempotency_without_consent",
       "path": "ts/src/server/services/mediaProjectService.test.ts",
-      "test_id": "requires an explicit data egress acknowledgement before persisting or forwarding a paid image task"
-    },
-    {
-      "constraint": "gateway_fail_closed",
-      "path": "gateway/app.test.ts",
-      "test_id": "image task submission requires trusted consent and an operation id before relay work"
-    },
-    {
-      "constraint": "managed_remote_user_disclosure",
-      "path": "ts/desktop/src/product/components/RemoteDataEgressConsent.test.tsx",
-      "test_id": "shows purpose, receivers, retention, billing and revocation before granting"
-    },
-    {
-      "constraint": "managed_remote_receipt_is_revocable",
-      "path": "ts/src/server/services/remoteDataEgressConsent.test.ts",
-      "test_id": "managed remote consent is installation-bound, durable and revocable"
-    },
-    {
-      "constraint": "old_component_fails_before_provider",
-      "path": "gateway/app.test.ts",
-      "test_id": "provider routes reject an authenticated old component before any paid work"
+      "test_id": "uses one idempotent GPT edit task without legacy parameters and persists local image bytes"
     }
   ],
-  "external_verification": {
-    "openai_account_retention_override": "NOT_VERIFIED_EXTERNALLY",
-    "ark_account_retention_term": "NOT_VERIFIED_EXTERNALLY",
-    "deepseek_account_api_retention_term": "NOT_VERIFIED_EXTERNALLY",
-    "mimo_account_api_retention_term": "NOT_VERIFIED_EXTERNALLY",
-    "fun_asr_account_retention_term": "NOT_VERIFIED_EXTERNALLY"
-  },
-  "sha256": "8ce4f703bb10a47196d5b6203f1a3f3f48807b77a107f9551b2446a0638164f7"
+  "sha256": "be0b93a4176b9d0a3168b62678cf04df3ecda787cf7518af497deff22a7ecdf7"
 }

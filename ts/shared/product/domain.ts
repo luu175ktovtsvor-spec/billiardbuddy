@@ -305,6 +305,8 @@ export type SubmitTaskRunReceipt = {
   outcome: 'accepted' | 'duplicate' | 'conflict' | 'rejected'
   authority_revision: number
   entity_revisions: Record<string, number>
-  result?: { task_id: string; run_id: string; entry_id: string; dispatch_generation: number }
+  result?:
+    | { task_id: string; run_id: string; entry_id: string; dispatch_generation: number; delivery?: 'turn' }
+    | { task_id: string; queue_item_id: string; entry_id: string; delivery: 'queued' }
   error?: string
 }

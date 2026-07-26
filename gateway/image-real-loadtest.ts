@@ -46,7 +46,6 @@ export type ImageLoadtestOptions = ImageLoadtestPlan & {
   baseUrl: string
   targetOrigin: string
   token: string
-  consentReceiptId: string
   /** `admission` verifies the gateway/relay burst envelope, then cancels queued work. */
   mode: 'terminal' | 'admission'
   size: '1024x1024' | '1536x1024' | '1024x1536'
@@ -96,9 +95,8 @@ const TERMINAL_STATES = new Set<TerminalState>(['succeeded', 'failed', 'failed_u
 
 function usage(exitCode = 2): never {
   console.error(`Usage:
-  QF_LOADTEST_URL=http://127.0.0.1:8799 \\
-  QF_LOADTEST_TOKEN=<installation-access-token> \\
-  QF_LOADTEST_CONSENT_RECEIPT=<64-hex-consent-receipt> \\
+  BB_LOADTEST_URL=http://127.0.0.1:8799 \\
+  BB_LOADTEST_TOKEN=<installation-access-token> \\
   bun gateway/image-real-loadtest.ts --execute [options]
 
 Options:
@@ -114,7 +112,7 @@ Options:
   --poll-floor-ms=<n>         Minimum poll delay, capped at 60000 (default: 5000)
   --poll-request-timeout-ms=<n>  Per-status-request deadline (default: 15000)
 
-The runner uses one X-QF-Client-ID per simulated installation, so --users=100
+The runner uses one X-BB-Installation-ID per simulated installation, so --users=100
 --windows=10 models ten windows from each installation. admission mode is the right
 mode for a 1,000-task burst: it proves acceptance/queue behaviour only when every
 accepted task confirms cancellation, but does not claim that 1,000 paid images
@@ -203,16 +201,16 @@ export function parseLoadTarget(raw: string): LoadTarget {
   try {
     base = new URL(raw)
   } catch {
-    throw new Error('QF_LOADTEST_URL must be an absolute HTTP(S) URL')
+    throw new Error('BB_LOADTEST_URL must be an absolute HTTP(S) URL')
   }
   if (base.protocol !== 'http:' && base.protocol !== 'https:') {
-    throw new Error('QF_LOADTEST_URL must be an absolute HTTP(S) URL')
+    throw new Error('BB_LOADTEST_URL must be an absolute HTTP(S) URL')
   }
   if (base.username || base.password || base.search || base.hash || raw.includes('?') || raw.includes('#')) {
-    throw new Error('QF_LOADTEST_URL must not include credentials, a query, or a fragment')
+    throw new Error('BB_LOADTEST_URL must not include credentials, a query, or a fragment')
   }
   if (base.protocol === 'http:' && !isHttpLoopback(base)) {
-    throw new Error('QF_LOADTEST_URL requires HTTPS unless it is a loopback HTTP target')
+    throw new Error('BB_LOADTEST_URL requires HTTPS unless it is a loopback HTTP target')
   }
   const path = base.pathname.replace(/\/+$/, '')
   return {
@@ -365,9 +363,8 @@ async function submitTask(index: number, options: ImageLoadtestOptions, deps: Re
       headers: {
         Authorization: `Bearer ${options.token}`,
         'Content-Type': 'application/json',
-        'X-QF-Client-ID': clientId,
+        'X-BB-Installation-ID': clientId,
         'Idempotency-Key': `loadtest-${crypto.randomUUID()}-${index}`,
-        'X-BB-Data-Egress-Consent': options.consentReceiptId,
         'X-BB-Provider-Protocol': PROVIDER_GATEWAY_PROTOCOL,
       },
       body: JSON.stringify({
@@ -407,7 +404,7 @@ async function cancelTask(task: SubmittedTask, options: ImageLoadtestOptions, fe
     `${options.baseUrl}/v1/images/tasks/${encodeURIComponent(task.taskId)}/cancel`,
     {
       method: 'POST',
-      headers: { Authorization: `Bearer ${options.token}`, 'X-QF-Client-ID': task.clientId, 'X-BB-Provider-Protocol': PROVIDER_GATEWAY_PROTOCOL },
+      headers: { Authorization: `Bearer ${options.token}`, 'X-BB-Installation-ID': task.clientId, 'X-BB-Provider-Protocol': PROVIDER_GATEWAY_PROTOCOL },
     },
     undefined,
     options.pollRequestTimeoutMs,
@@ -468,7 +465,7 @@ async function pollTask(
       const attempt = await fetchAttempt(
         deps.fetchImpl,
         `${options.baseUrl}/v1/images/tasks/${encodeURIComponent(task.taskId)}?metadata_only=1`,
-        { headers: { Authorization: `Bearer ${options.token}`, 'X-QF-Client-ID': task.clientId, 'X-BB-Provider-Protocol': PROVIDER_GATEWAY_PROTOCOL } },
+        { headers: { Authorization: `Bearer ${options.token}`, 'X-BB-Installation-ID': task.clientId, 'X-BB-Provider-Protocol': PROVIDER_GATEWAY_PROTOCOL } },
         controller.signal,
         options.pollRequestTimeoutMs,
       )
@@ -649,16 +646,11 @@ async function main(): Promise<void> {
     usage()
   }
 
-  const rawBaseUrl = process.env.QF_LOADTEST_URL?.trim()
-  if (!rawBaseUrl) throw new Error('QF_LOADTEST_URL is required with --execute')
+  const rawBaseUrl = process.env.BB_LOADTEST_URL?.trim()
+  if (!rawBaseUrl) throw new Error('BB_LOADTEST_URL is required with --execute')
   const { base, baseUrl, targetOrigin } = parseLoadTarget(rawBaseUrl)
-  const token = process.env.QF_LOADTEST_TOKEN?.trim()
-  if (!token) throw new Error('QF_LOADTEST_TOKEN installation access token is required with --execute')
-  const consentReceiptId = process.env.QF_LOADTEST_CONSENT_RECEIPT?.trim() ?? ''
-  if (!/^[a-f0-9]{64}$/.test(consentReceiptId)) {
-    throw new Error('QF_LOADTEST_CONSENT_RECEIPT must be a 64-character lowercase hex receipt')
-  }
-
+  const token = process.env.BB_LOADTEST_TOKEN?.trim()
+  if (!token) throw new Error('BB_LOADTEST_TOKEN installation access token is required with --execute')
   const users = boundedInteger(option(args, '--users'), '--users', 1, MAX_USERS)
   const windows = boundedInteger(option(args, '--windows'), '--windows', 1, MAX_WINDOWS)
   const plan = createImageLoadtestPlan(users, windows, args.includes('--confirm-billable-batch'))
@@ -671,7 +663,6 @@ async function main(): Promise<void> {
     baseUrl,
     targetOrigin,
     token,
-    consentReceiptId,
     mode,
     size: size as ImageLoadtestOptions['size'],
     submitConcurrency: boundedInteger(

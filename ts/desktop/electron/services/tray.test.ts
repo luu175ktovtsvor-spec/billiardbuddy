@@ -49,7 +49,7 @@ describe('Electron tray service', () => {
   it('uses the existing desktop icon assets for the tray icon', () => {
     const root = mkdtempSync(path.join(tmpdir(), 'electron-tray-'))
     try {
-      const iconPath = path.join(root, 'src-tauri', 'icons', 'icon.png')
+      const iconPath = path.join(root, 'runtime-assets', 'icons', 'icon.png')
       mkdirSync(path.dirname(iconPath), { recursive: true })
       writeFileSync(iconPath, 'png')
 
@@ -79,7 +79,7 @@ describe('Electron tray service', () => {
     try {
       const trayMocks = createElectronTrayMocks()
       ;(globalThis as Record<string, unknown>)[trayMocksKey] = trayMocks
-      const iconPath = path.join(root, 'src-tauri', 'icons', 'icon.png')
+      const iconPath = path.join(root, 'runtime-assets', 'icons', 'icon.png')
       mkdirSync(path.dirname(iconPath), { recursive: true })
       writeFileSync(iconPath, 'png')
       const show = vi.fn()

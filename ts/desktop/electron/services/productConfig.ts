@@ -5,15 +5,15 @@ import { defaultProviderModel } from '../../../../gateway/providerRegistry.js'
 /**
  * Product gateway configuration source for the SERVER sidecar.
  *
- * A Finder-launched .app has no shell to export QF_GATEWAY_* — so besides the
+ * A Finder-launched .app has no shell to export BB_GATEWAY_* — so besides the
  * dev/ops env override we resolve the config from packaged resources:
  *
  *  - `product-config.json` — PUBLIC config, safe to commit and ship: the stable
- *    HTTPS product gateway URL and the default upstream model. No secrets.
+ *    HTTPS product gateway URL. No secrets or model selection.
  *  - `product-secrets.json` — the activation bootstrap credential and License key. Git-ignored; it is
  *    written into the build resources at release/packaging time from a build
  *    secret, never committed. It never appears in product-config.json, source,
- *    Git, the renderer, providers.json, settings.json, the CLI subprocess, or logs.
+ *    Git, the renderer, provider/settings files, the Agent worker subprocess, or logs.
  *
  * Precedence per field: env override (dev/ops) > packaged file > undefined.
  *
@@ -27,7 +27,6 @@ export type ProductGatewayConfig = {
   token?: string
   /** Provisioned License key, never sent to the sidecar. */
   licenseKey?: string
-  model?: string
 }
 
 export type ProductConfigSource = {
@@ -94,11 +93,10 @@ export function resolveProductGatewayConfig(source: ProductConfigSource): Produc
   const secretCfg = dir ? readJsonObject(path.join(dir, 'product-secrets.json')) : null
 
   return {
-    url: trimmed(env.QF_GATEWAY_URL) ?? trimmed(publicCfg?.gatewayUrl),
+    url: trimmed(env.BB_GATEWAY_URL) ?? trimmed(publicCfg?.gatewayUrl),
     // The token is only ever env or the git-ignored secrets file — never public config.
-    token: trimmed(env.QF_GATEWAY_BOOTSTRAP_CREDENTIAL) ?? trimmed(secretCfg?.gatewayBootstrapCredential),
-    licenseKey: trimmed(env.QF_LICENSE_KEY) ?? trimmed(secretCfg?.licenseKey),
-    model: trimmed(env.QF_GATEWAY_MODEL) ?? trimmed(publicCfg?.gatewayModel),
+    token: trimmed(env.BB_GATEWAY_BOOTSTRAP_CREDENTIAL) ?? trimmed(secretCfg?.gatewayBootstrapCredential),
+    licenseKey: trimmed(env.BB_LICENSE_KEY) ?? trimmed(secretCfg?.licenseKey),
   }
 }
 
@@ -136,6 +134,8 @@ export function requireProductGatewayConfig(
 /**
  * Overlay public gateway routing config onto a SERVER sidecar env. The bootstrap
  * credential is deliberately not propagated; Main exchanges it for an access token.
+ * TextReasoning is always selected by the canonical provider registry. Packaged
+ * files and inherited shell variables cannot override it.
  */
 export function applyGatewayConfigToEnv(
   baseEnv: NodeJS.ProcessEnv,
@@ -143,7 +143,7 @@ export function applyGatewayConfigToEnv(
 ): NodeJS.ProcessEnv {
   if (!gateway) return baseEnv
   const env: NodeJS.ProcessEnv = { ...baseEnv }
-  if (gateway.url && !env.QF_GATEWAY_URL) env.QF_GATEWAY_URL = gateway.url
-  if (!env.QF_GATEWAY_MODEL) env.QF_GATEWAY_MODEL = gateway.model ?? defaultProviderModel()
+  if (gateway.url && !env.BB_GATEWAY_URL) env.BB_GATEWAY_URL = gateway.url
+  env.BB_GATEWAY_MODEL = defaultProviderModel()
   return env
 }

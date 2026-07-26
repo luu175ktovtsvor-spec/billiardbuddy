@@ -103,7 +103,7 @@ test('prepareBody adds the object type required by DeepSeek while preserving uni
 test('prepares only the native Anthropic web-search request and injects the trusted metadata user id', () => {
   const allowed = new Set(['deepseek-v4-flash'])
   const { body } = prepareDeepSeekAnthropicWebSearchBody(JSON.stringify({
-    model: 'claude-sonnet-4-5',
+    model: 'unsupported-client-model',
     messages: [{ role: 'user', content: 'search current billiards rules' }],
     tools: [{
       type: DEEPSEEK_NATIVE_WEB_SEARCH_TOOL_TYPE,

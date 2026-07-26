@@ -34,8 +34,6 @@ describe('desktopRuntime local server bootstrap', () => {
     vi.useRealTimers()
     window.history.pushState({}, '', '/')
     Reflect.deleteProperty(window, 'desktopHost')
-    Reflect.deleteProperty(window, '__TAURI_INTERNALS__')
-    Reflect.deleteProperty(window, '__TAURI__')
     globalThis.fetch = originalFetch
   })
 

@@ -14,7 +14,7 @@ export type PluginStatus = 'attention' | 'enabled' | 'disabled'
 
 export type PluginDescriptionKind = 'workspace_extension'
 
-export type PluginAction = 'enabled' | 'disabled' | 'updated' | 'uninstalled'
+export type PluginAction = 'enabled' | 'disabled' | 'installed' | 'updated' | 'uninstalled'
 
 export type PluginRequestErrorCode =
   | 'PLUGIN_ACTION_FAILED'
@@ -30,6 +30,7 @@ export type PluginSummary = {
   enabled: boolean
   status: PluginStatus
   canManage: boolean
+  canUpdate: boolean
   descriptionKind: PluginDescriptionKind
   componentCounts: PluginComponentCounts
 }
@@ -59,7 +60,7 @@ export type PluginReloadSummary = {
 /** Product-task scoped result of applying plugin changes to a running task. */
 export type PluginTaskReloadSummary = {
   applied: boolean
-  reason?: 'not_running' | 'failed'
+  reason?: 'next_turn'
   commands: number
   agents: number
   plugins: number

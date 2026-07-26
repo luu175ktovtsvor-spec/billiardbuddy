@@ -28,7 +28,7 @@ describe('DirectoryPicker', () => {
   it('uses the source repository name as the fallback label for desktop worktree paths', () => {
     render(
       <DirectoryPicker
-        value="/workspace/checkout/.claude/worktrees/desktop-feature-rail-12345678"
+        value="/workspace/checkout/.BilliardBuddy/worktrees/desktop-feature-rail-12345678"
         onChange={vi.fn()}
       />,
     )

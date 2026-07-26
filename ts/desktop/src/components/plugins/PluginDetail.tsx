@@ -163,7 +163,7 @@ export function PluginDetail() {
 
       <section className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface)] px-5 py-4">
         <div className="flex flex-wrap gap-2">
-          {selectedPlugin.canManage && (
+          {selectedPlugin.canManage && selectedPlugin.canUpdate && (
             selectedPlugin.enabled ? (
               <Button
                 variant="secondary"

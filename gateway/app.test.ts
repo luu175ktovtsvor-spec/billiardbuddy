@@ -1,5 +1,11 @@
 import { expect, test } from 'bun:test'
-import { createGatewayFetch, gatewayServerIdleTimeoutSeconds, MemoryUsageStore } from './app'
+import {
+  createGatewayFetch,
+  gatewayServerIdleTimeoutSeconds,
+  MEDIA_RESULT_HANDOFF_DIRECT_V1,
+  MEDIA_RESULT_HANDOFF_HEADER,
+  MemoryUsageStore,
+} from './app'
 import { gatewayTestAccessToken, gatewayTestAuthority } from './auth/testFixture'
 import type { GatewayTranscriber } from './transcription'
 import { SqliteUsageBudgetService, type UsageBudgetPolicy } from './usageBudget'
@@ -32,7 +38,6 @@ function authed(init: RequestInit = {}): RequestInit {
     ...init,
     headers: {
       Authorization: `Bearer ${gatewayTestAccessToken}`,
-      'X-BB-Data-Egress-Consent': 'a'.repeat(64),
       'X-BB-Provider-Protocol': 'bb-provider-gateway/1.0',
       ...(init.headers as Record<string, string> | undefined),
     },
@@ -80,6 +85,7 @@ function oneRequestPolicy(): UsageBudgetPolicy {
     capabilities: {
       TextReasoning: { principal: one, installation: one },
       VisualEvidence: { principal: one, installation: one },
+      MediaReasoning: { principal: one, installation: one },
       SpeechTranscription: { principal: one, installation: one },
     },
   }
@@ -91,9 +97,8 @@ test('healthz exposes capacity limits and an empty legacy quota object', async (
   expect(await publicRes.json()).toEqual({
     ok: true,
     component_manifest: {
-      component: 'qf-gateway',
+      component: 'billiardbuddy-gateway',
       protocol: 'bb-provider-gateway/1.0',
-      requires_data_egress_consent: true,
       relay_protocol: 'bb-provider-gateway/1.0',
     },
   })
@@ -126,12 +131,13 @@ test('healthz exposes capacity limits and an empty legacy quota object', async (
   expect(body.quota).toEqual({})
   expect(body.usage_budget).toEqual({
     policy_revision: 'bb-04d-gateway-v1',
-    metered_capabilities: ['TextReasoning', 'VisualEvidence', 'SpeechTranscription'],
+    metered_capabilities: ['TextReasoning', 'VisualEvidence', 'MediaReasoning', 'SpeechTranscription'],
   })
   expect(body.usage_summary).toMatchObject({
     capabilities: {
       TextReasoning: { remaining_percent: 100, exhausted: false },
       VisualEvidence: { remaining_percent: 100, exhausted: false },
+      MediaReasoning: { remaining_percent: 100, exhausted: false },
       SpeechTranscription: { remaining_percent: 100, exhausted: false },
     },
   })
@@ -145,10 +151,10 @@ test('healthz exposes capacity limits and an empty legacy quota object', async (
     maxConcurrentPerUser: 1,
     maxConcurrentPerToken: 64,
     queueMax: 88,
-    nativeReserved: 52,
+    mediaReserved: 52,
     visionReserved: 12,
   })
-  expect(body.capacity.mimo_native).toMatchObject({ active: 0, queued: 0, maxConcurrent: 52, maxConcurrentPerUser: 1, queueMax: 64, oldestQueueMs: 0 })
+  expect(body.capacity.mimo_media).toMatchObject({ active: 0, queued: 0, maxConcurrent: 52, maxConcurrentPerUser: 1, queueMax: 64, oldestQueueMs: 0 })
   expect(body.capacity.mimo_total).toMatchObject({
     active: 0,
     queued: 0,
@@ -156,7 +162,7 @@ test('healthz exposes capacity limits and an empty legacy quota object', async (
     maxConcurrentPerUser: 1,
     maxConcurrentPerToken: 64,
     queueMax: 88,
-    nativeReserved: 52,
+    mediaReserved: 52,
     visionReserved: 12,
   })
   expect(body.capacity.vision).toEqual({
@@ -171,12 +177,61 @@ test('healthz exposes capacity limits and an empty legacy quota object', async (
   expect(body.capacity.ingress_body).toEqual({ reservedBytes: 0, maxBytes: 256 * 1024 * 1024 })
 })
 
+test('media reasoning uses the dedicated MiMo route and budget without consuming visual evidence', async () => {
+  const { fetch, calls } = makeGateway()
+  const response = await fetch(new Request('http://local/v1/media/reasoning', authed({
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-BB-Operation-ID': 'operation-media-reasoning-001',
+    },
+    body: JSON.stringify({
+      model: 'mimo-v2.5',
+      stream: false,
+      max_tokens: 100,
+      messages: [{ role: 'user', content: 'compile a media brief' }],
+    }),
+  })))
+  expect(response.status).toBe(200)
+  expect(await response.text()).toBe('data: hello\n\n')
+  const mimoCalls = calls.filter(call => call.url.includes('mimo.example') && call.url.endsWith('/chat/completions'))
+  expect(mimoCalls).toHaveLength(1)
+  expect(JSON.parse(mimoCalls[0]!.body)).toMatchObject({ model: 'mimo-v2.5', stream: false })
+
+  const health = await fetch(new Request('http://local/healthz', authed()))
+  const body = await health.json()
+  expect(body.usage_summary.capabilities.MediaReasoning.remaining_percent).toBeLessThan(100)
+  expect(body.usage_summary.capabilities.VisualEvidence.remaining_percent).toBe(100)
+})
+
+test('visual evidence endpoint returns provider-neutral evidence without invoking text or media planning', async () => {
+  const { fetch, calls } = makeGateway()
+  const response = await fetch(new Request('http://local/v1/visual/evidence', authed({
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-BB-Operation-ID': 'operation-visual-evidence-001' },
+    body: JSON.stringify({
+      messages: [{ role: 'user', content: [{
+        type: 'image_url',
+        image_url: { url: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=' },
+      }] }],
+    }),
+  })))
+  expect(response.status).toBe(200)
+  expect(await response.json()).toMatchObject({
+    schema: 'bb.visual-evidence-batch.v1',
+    evidence: [{ schema: 'bb.visual-evidence.v1' }],
+    metrics: { imageCount: 1 },
+  })
+  expect(calls.filter(call => call.url.includes('mimo.example'))).toHaveLength(1)
+  expect(calls.some(call => call.url.includes('deepseek.example'))).toBe(false)
+})
+
 test('MiMo hard reservations must account for the whole account capacity', () => {
   expect(() => makeGateway({
     GW_MIMO_CONC: '64',
-    GW_MIMO_NATIVE_CONC: '51',
+    GW_MIMO_MEDIA_CONC: '51',
     GW_VISION_CONC: '12',
-  })).toThrow('GW_MIMO_NATIVE_CONC + GW_VISION_CONC must equal GW_MIMO_CONC')
+  })).toThrow('GW_MIMO_MEDIA_CONC + GW_VISION_CONC must equal GW_MIMO_CONC')
 })
 
 test('gateway server keeps an SSE-safe idle timeout before per-request stream overrides apply', () => {
@@ -214,7 +269,7 @@ test('native Anthropic WebSearchTool reaches DeepSeek directly with server-only 
       'Content-Type': 'application/json',
       'anthropic-version': '2023-06-01',
       'anthropic-beta': 'web-search-2025-03-05',
-      'X-QF-Client-ID': 'desktop-install-1234',
+      'X-BB-Installation-ID': 'desktop-install-1234',
     },
     body: JSON.stringify({
       model: 'deepseek-v4-flash',
@@ -331,7 +386,7 @@ test('untrusted client headers cannot split a verified owner capacity or opaque 
   })
   const request = (clientId: string) => new Request('http://local/v1/chat/completions', authed({
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-QF-Client-ID': clientId },
+    headers: { 'Content-Type': 'application/json', 'X-BB-Installation-ID': clientId },
     body: JSON.stringify({ model: 'deepseek-v4-flash', stream: true, messages: [] }),
   }))
 
@@ -380,7 +435,6 @@ test('separate installations of one principal share the principal capacity ceili
       Authorization: `Bearer ${token}`,
       'Content-Type': 'application/json',
       'X-BB-Operation-ID': operation,
-      'X-BB-Data-Egress-Consent': 'a'.repeat(64),
       'X-BB-Provider-Protocol': 'bb-provider-gateway/1.0',
     },
     body: JSON.stringify({ model: 'deepseek-v4-flash', stream: true, messages: [] }),
@@ -559,7 +613,9 @@ test('long-lived chat, native Messages, and every relay image task operation dis
     env: env({ GW_RELAY_TASKS_BASE: 'https://relay.example/relay/imgtasks' }),
     usageStore: new MemoryUsageStore(),
     transcribeImpl: null,
-    fetchImpl: async () => new Response('data: ok\n\n', { headers: { 'content-type': 'text/event-stream' } }),
+    fetchImpl: async (input) => String(input).includes('/images/tasks/')
+      ? Response.json({ status: 'running' })
+      : new Response('data: ok\n\n', { headers: { 'content-type': 'text/event-stream' } }),
   })
   const server = { timeout: (_request: Request, seconds: number) => { timeoutCalls.push(seconds) } }
 
@@ -882,7 +938,7 @@ test('deepseek-v4-flash routes to the DeepSeek upstream and injects a trusted op
   const { fetch, calls, usage } = makeGateway()
   const res = await fetch(new Request('http://local/v1/chat/completions', authed({
     method: 'POST',
-    headers: { Authorization: `Bearer ${gatewayTestAccessToken}`, 'Content-Type': 'application/json', 'X-QF-Client-ID': 'install-0001' },
+    headers: { Authorization: `Bearer ${gatewayTestAccessToken}`, 'Content-Type': 'application/json', 'X-BB-Installation-ID': 'install-0001' },
     body: JSON.stringify({ model: 'deepseek-v4-flash', messages: [{ role: 'user', content: 'hi' }], stream: true }),
   })))
   expect(res.status).toBe(200)
@@ -1001,19 +1057,50 @@ test('image task submit/poll/ack/cancel proxy to relay tasks base with relay tok
     'https://relay.example/relay/imgtasks/images/tasks/task-1/cancel',
   ])
   expect((calls[0].init?.headers as Record<string, string>).Authorization).toBe('Bearer relay-secret')
-  expect((calls[0].init?.headers as Record<string, string>)['X-Relay-Data-Egress-Consent']).toBe('a'.repeat(64))
+  expect((calls[0].init?.headers as Record<string, string>)['X-Relay-Data-Egress-Consent']).toBeUndefined()
   expect(JSON.parse(calls[0].body ?? '{}')).toMatchObject({ input_fidelity: 'high' })
 })
 
-test('image task submission requires trusted consent and an operation id before relay work', async () => {
+test('image result handoff returns an owner-bound relay grant after a metadata-only poll', async () => {
+  const calls: Array<{ url: string; headers: Headers }> = []
+  const fetch = createGatewayFetch({
+    authority: gatewayTestAuthority,
+    env: env({ GW_RELAY_TASKS_BASE: 'https://relay.example/relay/imgtasks' }),
+    usageStore: new MemoryUsageStore(),
+    transcribeImpl: null,
+    fetchImpl: async (input, init) => {
+      calls.push({ url: String(input), headers: new Headers(init?.headers) })
+      return Response.json({
+        status: 'succeeded',
+        metadata_only: true,
+        result_available: true,
+        output_count: 3,
+        provider_receipt_hash: 'a'.repeat(64),
+      })
+    },
+  })
+  const response = await fetch(new Request('http://local/v1/images/tasks/task-direct', authed({
+    headers: { [MEDIA_RESULT_HANDOFF_HEADER]: MEDIA_RESULT_HANDOFF_DIRECT_V1 },
+  })))
+  expect(response.status).toBe(200)
+  const body = await response.json()
+  expect(calls).toHaveLength(1)
+  expect(calls[0]?.url).toBe('https://relay.example/relay/imgtasks/images/tasks/task-direct?metadata_only=1')
+  expect(calls[0]?.headers.get('authorization')).toBe('Bearer relay-secret')
+  expect(body).toMatchObject({ status: 'succeeded', output_count: 3 })
+  expect(body.data).toBeUndefined()
+  const resultUrl = new URL(body.result_url)
+  expect(resultUrl.origin).toBe('https://relay.example')
+  expect(resultUrl.pathname).toMatch(/^\/relay\/imgtasks\/images\/results\/[A-Za-z0-9_-]+\.[a-f0-9]{64}$/)
+  const encoded = resultUrl.pathname.split('/').at(-1)!.split('.')[0]!
+  const grantPayload = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8'))
+  expect(grantPayload).toMatchObject({ v: 1, task_id: 'task-direct', owner_sha256: expect.stringMatching(/^[a-f0-9]{64}$/) })
+  expect(JSON.stringify(grantPayload)).not.toContain('test-principal:test-installation')
+  expect(body.result_urls).toEqual([`${body.result_url}/0`, `${body.result_url}/1`, `${body.result_url}/2`])
+})
+
+test('image task submission requires an operation id before relay work', async () => {
   const { fetch, calls } = makeGateway({ GW_RELAY_TASKS_BASE: 'https://relay.example/relay/imgtasks' })
-  const missingConsent = await fetch(new Request('http://local/v1/images/tasks', {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${gatewayTestAccessToken}`, 'Content-Type': 'application/json', 'Idempotency-Key': 'image-operation', 'X-BB-Provider-Protocol': 'bb-provider-gateway/1.0' },
-    body: JSON.stringify({ prompt: '海报' }),
-  }))
-  expect(missingConsent.status).toBe(428)
-  expect(await missingConsent.json()).toEqual({ detail: 'DATA_EGRESS_CONSENT_REQUIRED' })
   const missingOperation = await fetch(new Request('http://local/v1/images/tasks', authed({
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prompt: '海报' }),
   })))
@@ -1029,7 +1116,6 @@ test('provider routes reject an authenticated old component before any paid work
     headers: {
       Authorization: `Bearer ${gatewayTestAccessToken}`,
       'Content-Type': 'application/json',
-      'X-BB-Data-Egress-Consent': 'a'.repeat(64),
     },
     body: JSON.stringify({ model: 'deepseek-v4-flash', messages: [] }),
   }))
@@ -1205,7 +1291,7 @@ test('image gateway aborts a stalled relay submission at its bounded deadline an
   expect((await health.json()).capacity.ingress_body).toEqual({ reservedBytes: 0, maxBytes: 256 * 1024 * 1024 })
 })
 
-test('image gateway bounds the complete relay result body without waiting a fixed five minutes', async () => {
+test('image gateway streams relay results while bounding the complete response deadline', async () => {
   let relayAborted = false
   const fetch = createGatewayFetch({
     authority: gatewayTestAuthority,
@@ -1225,9 +1311,29 @@ test('image gateway bounds the complete relay result body without waiting a fixe
   })
 
   const response = await fetch(new Request('http://local/v1/images/tasks/task-stalled', authed()))
-  expect(response.status).toBe(504)
+  expect(response.status).toBe(200)
+  await expect(response.text()).rejects.toThrow()
   expect(relayAborted).toBe(true)
-  expect(await response.json()).toEqual({ detail: '生图结果读取超时，请稍后重试' })
+})
+
+test('image gateway returns successful relay headers before the result body is complete', async () => {
+  let relay!: ReadableStreamDefaultController<Uint8Array>
+  const fetch = createGatewayFetch({
+    authority: gatewayTestAuthority,
+    env: env({ GW_RELAY_TASKS_BASE: 'https://relay.example/relay/imgtasks' }),
+    usageStore: new MemoryUsageStore(),
+    transcribeImpl: null,
+    fetchImpl: async () => new Response(new ReadableStream<Uint8Array>({
+      start(controller) { relay = controller },
+    }), { status: 200, headers: { 'content-type': 'application/json' } }),
+  })
+
+  const response = await fetch(new Request('http://local/v1/images/tasks/task-streamed', authed()))
+  expect(response.status).toBe(200)
+  const body = response.text()
+  relay.enqueue(new TextEncoder().encode('{"status":"succeeded"}'))
+  relay.close()
+  expect(await body).toBe('{"status":"succeeded"}')
 })
 
 test('image gateway rejects a body-budget overflow before it can reach relay and releases after forward', async () => {

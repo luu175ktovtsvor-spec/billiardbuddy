@@ -1,10 +1,10 @@
-export type SidecarMode = 'server' | 'cli' | 'browser-host'
+export type SidecarMode = 'server' | 'agent-worker' | 'browser-host'
 
-const EXPLICIT_MODES = new Set<SidecarMode>(['server', 'cli', 'browser-host'])
+const EXPLICIT_MODES = new Set<SidecarMode>(['server', 'agent-worker', 'browser-host'])
 
 export function resolveSidecarInvocation(
   rawArgs: string[],
-  envAppRoot: string | null = process.env.CLAUDE_APP_ROOT ?? null,
+  envAppRoot: string | null = process.env.BILLIARDBUDDY_APP_ROOT ?? null,
 ): {
   mode: SidecarMode | null
   restArgs: string[]
@@ -36,7 +36,7 @@ export function resolveSidecarInvocation(
 
 export function parseLauncherArgs(
   rawArgs: string[],
-  defaultAppRoot: string | null = process.env.CLAUDE_APP_ROOT ?? null,
+  defaultAppRoot: string | null = process.env.BILLIARDBUDDY_APP_ROOT ?? null,
 ): { appRoot: string; args: string[] } {
   const nextArgs: string[] = []
   let appRoot: string | null = defaultAppRoot

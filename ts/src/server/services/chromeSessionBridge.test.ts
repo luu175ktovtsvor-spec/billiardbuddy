@@ -78,7 +78,7 @@ describe('ChromeSessionBridge', () => {
   })
 
   it('requires a task-scoped human confirmation before one fenced dispatch', async () => {
-    const { bridge, sync, page } = await fixture()
+    const { bridge, sync, page, scheduler } = await fixture()
     await sync({ page })
     const prepared = await bridge.prepareAction('product_task_1234', {
       session_id: 'browser_session_1234',
@@ -89,6 +89,7 @@ describe('ChromeSessionBridge', () => {
       client_operation_id: 'client_operation_1234',
     })
     expect(prepared).toMatchObject({ state: 'awaiting_confirmation', revision: 0, target_label: '示例候选人' })
+    await expect(bridge.purgeTaskActions('product_task_1234')).rejects.toThrow('BROWSER_ACTION_ACTIVE')
     expect(await sync({})).toEqual({ ok: true, acknowledged_operation_ids: [] })
     expect(await bridge.getAction('other_task_1234', prepared.id)).toBeUndefined()
 
@@ -111,6 +112,9 @@ describe('ChromeSessionBridge', () => {
     expect(await sync({ results: [result] })).toMatchObject({ acknowledged_operation_ids: [prepared.id] })
     expect((await bridge.getAction('product_task_1234', prepared.id))?.state).toBe('succeeded')
     expect(await sync({ results: [result] })).toMatchObject({ acknowledged_operation_ids: [prepared.id] })
+    await bridge.purgeTaskActions('product_task_1234')
+    expect(await bridge.listActions('product_task_1234')).toEqual([])
+    expect(await scheduler.hasBlockingOwnerJobs('product_task_1234')).toBeFalse()
   })
 
   it('replays the same prepared action and fails closed when the page revision changed', async () => {

@@ -18,8 +18,6 @@ describe('appZoom', () => {
     document.documentElement.style.removeProperty('--app-zoom')
     document.body.style.removeProperty('zoom')
     Reflect.deleteProperty(window, 'desktopHost')
-    Reflect.deleteProperty(window, '__TAURI_INTERNALS__')
-    Reflect.deleteProperty(window, '__TAURI__')
   })
 
   it('normalizes, clamps, and steps app zoom levels', () => {

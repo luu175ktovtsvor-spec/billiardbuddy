@@ -2,47 +2,34 @@ import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:te
 import * as fs from 'fs/promises'
 import * as os from 'os'
 import * as path from 'path'
-import { getOriginalCwd, setCwdState, setOriginalCwd } from '../../bootstrap/state.js'
-import * as mcpClient from '../../services/mcp/client.js'
-import * as mcpConfig from '../../services/mcp/config.js'
-import { _setGlobalConfigCacheForTesting, getProjectPathForConfig } from '../../utils/config.js'
-import { getGlobalClaudeFile } from '../../utils/env.js'
+import * as productMcpClient from '../agent-worker/productMcpClient.js'
 import * as mcpHostPreflight from '../services/mcpHostPreflight.js'
 import { handleMcpApi } from '../api/mcp.js'
-import { conversationService } from '../services/conversationService.js'
 
 let tmpDir: string
 let projectRoot: string
 let originalConfigDir: string | undefined
 let connectSpy: ReturnType<typeof spyOn> | undefined
-let getClaudeCodeMcpConfigsSpy: ReturnType<typeof spyOn> | undefined
-let getAllMcpConfigsSpy: ReturnType<typeof spyOn> | undefined
-let reconnectSpy: ReturnType<typeof spyOn> | undefined
 let hostPreflightSpy: ReturnType<typeof spyOn> | undefined
-let originalRequestControl: typeof conversationService.requestControl
-let originalHasSession: typeof conversationService.hasSession
 
 function clearConfigPathCaches() {
-  getGlobalClaudeFile.cache.clear?.()
-  getProjectPathForConfig.cache.clear?.()
-  _setGlobalConfigCacheForTesting(null)
 }
 
 async function setup() {
-  tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'claude-mcp-test-'))
+  tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'billiardbuddy-mcp-test-'))
   projectRoot = path.join(tmpDir, 'project')
-  await fs.mkdir(path.join(projectRoot, '.claude'), { recursive: true })
+  await fs.mkdir(path.join(projectRoot, '.BilliardBuddy'), { recursive: true })
 
-  originalConfigDir = process.env.CLAUDE_CONFIG_DIR
-  process.env.CLAUDE_CONFIG_DIR = tmpDir
+  originalConfigDir = process.env.BILLIARDBUDDY_CONFIG_DIR
+  process.env.BILLIARDBUDDY_CONFIG_DIR = tmpDir
   clearConfigPathCaches()
 }
 
 async function teardown() {
   if (originalConfigDir !== undefined) {
-    process.env.CLAUDE_CONFIG_DIR = originalConfigDir
+    process.env.BILLIARDBUDDY_CONFIG_DIR = originalConfigDir
   } else {
-    delete process.env.CLAUDE_CONFIG_DIR
+    delete process.env.BILLIARDBUDDY_CONFIG_DIR
   }
 
   clearConfigPathCaches()
@@ -76,38 +63,22 @@ describe('MCP API', () => {
       ok: true,
       resolvedCommand: '/usr/bin/mock-command',
     })
-    originalRequestControl = conversationService.requestControl.bind(conversationService)
-    originalHasSession = conversationService.hasSession.bind(conversationService)
-
-    connectSpy = spyOn(mcpClient, 'connectToServer').mockImplementation(async (name, config) => ({
-      name,
-      type: 'connected',
-      client: {} as never,
-      capabilities: {},
-      config,
-      cleanup: mock(async () => {}),
+    connectSpy = spyOn(productMcpClient, 'connectProductMcpServer').mockImplementation(async (name, config) => ({
+      client: { name, type: 'connected', config, cleanup: mock(async () => {}) },
+      tools: [], commands: [], resources: [],
     }))
   })
 
   afterEach(async () => {
     connectSpy?.mockRestore()
     connectSpy = undefined
-    getClaudeCodeMcpConfigsSpy?.mockRestore()
-    getClaudeCodeMcpConfigsSpy = undefined
-    getAllMcpConfigsSpy?.mockRestore()
-    getAllMcpConfigsSpy = undefined
-    reconnectSpy?.mockRestore()
-    reconnectSpy = undefined
     hostPreflightSpy?.mockRestore()
     hostPreflightSpy = undefined
-    conversationService.requestControl = originalRequestControl
-    conversationService.hasSession = originalHasSession
     await teardown()
   })
 
   it('writes local MCP config and disabled state to the requested cwd project', async () => {
     const previousNodeEnv = process.env.NODE_ENV
-    const previousOriginalCwd = getOriginalCwd()
     const projectA = path.join(tmpDir, 'project-a')
     const projectB = path.join(tmpDir, 'project-b')
     await fs.mkdir(projectA, { recursive: true })
@@ -115,8 +86,6 @@ describe('MCP API', () => {
 
     process.env.NODE_ENV = 'development'
     clearConfigPathCaches()
-    setOriginalCwd(projectA)
-    setCwdState(projectA)
 
     try {
       const create = makeRequest('POST', '/api/mcp', {
@@ -140,25 +109,20 @@ describe('MCP API', () => {
       const disableRes = await handleMcpApi(disable.req, disable.url, disable.segments)
       expect(disableRes.status).toBe(200)
 
-      const rawConfig = JSON.parse(
-        await fs.readFile(path.join(tmpDir, '.claude.json'), 'utf8'),
-      )
+      const rawConfig = JSON.parse(await fs.readFile(path.join(projectB, '.BilliardBuddy', 'settings.local.json'), 'utf8'))
 
-      expect(rawConfig.projects?.[projectA]?.mcpServers?.['scoped-server']).toBeUndefined()
-      expect(rawConfig.projects?.[projectA]?.disabledMcpServers ?? []).not.toContain('scoped-server')
-      expect(rawConfig.projects?.[projectB]?.mcpServers?.['scoped-server']).toMatchObject({
+      expect(await fs.stat(path.join(projectA, '.BilliardBuddy', 'settings.local.json')).catch(() => undefined)).toBeUndefined()
+      expect(rawConfig.mcpServers?.['scoped-server']).toMatchObject({
         type: 'stdio',
         command: 'node',
       })
-      expect(rawConfig.projects?.[projectB]?.disabledMcpServers).toContain('scoped-server')
+      expect(rawConfig.disabledMcpServers).toContain('scoped-server')
     } finally {
       if (previousNodeEnv === undefined) {
         delete process.env.NODE_ENV
       } else {
         process.env.NODE_ENV = previousNodeEnv
       }
-      setOriginalCwd(previousOriginalCwd)
-      setCwdState(previousOriginalCwd)
       clearConfigPathCaches()
     }
   })
@@ -194,6 +158,7 @@ describe('MCP API', () => {
     expect(listBody.servers[0].name).toBe('chrome-devtools')
     expect(listBody.servers[0].status).toBe('checking')
     expect(Object.keys(listBody.servers[0]).sort()).toEqual([
+      'canAuthorize',
       'canEdit',
       'canReconnect',
       'canRemove',
@@ -385,8 +350,8 @@ describe('MCP API', () => {
     const updateRes = await handleMcpApi(update.req, update.url, update.segments)
     expect(updateRes.status).toBe(200)
 
-    const projectAConfig = JSON.parse(await fs.readFile(path.join(projectA, '.mcp.json'), 'utf8'))
-    const projectBConfig = JSON.parse(await fs.readFile(path.join(projectB, '.mcp.json'), 'utf8'))
+    const projectAConfig = JSON.parse(await fs.readFile(path.join(projectA, '.BilliardBuddy', 'settings.json'), 'utf8'))
+    const projectBConfig = JSON.parse(await fs.readFile(path.join(projectB, '.BilliardBuddy', 'settings.json'), 'utf8'))
 
     expect(projectAConfig.mcpServers?.['shared-tools']).toBeUndefined()
     expect(projectBConfig.mcpServers?.['shared-tools']).toMatchObject({
@@ -419,35 +384,14 @@ describe('MCP API', () => {
     expect(connectSpy).toHaveBeenCalled()
   })
 
-  it('lists runtime-visible claude.ai MCP connectors as read-only settings entries', async () => {
-    getAllMcpConfigsSpy = spyOn(mcpConfig, 'getAllMcpConfigs').mockResolvedValue({
-      servers: {
-        'claude.ai Docs': {
-          type: 'claudeai-proxy',
-          url: 'https://mcp.example.com/docs',
-          id: 'srv_docs',
-          scope: 'claudeai',
-        },
-      },
-      errors: [],
-    })
-
+  it('does not import Claude.ai connector state into the BilliardBuddy MCP registry', async () => {
+    await fs.writeFile(path.join(tmpDir, '.claude.json'), JSON.stringify({
+      mcpServers: { docs: { type: 'http', url: 'https://mcp.example.com/docs' } },
+    }))
     const list = makeRequest('GET', `/api/mcp?cwd=${encodeURIComponent(projectRoot)}`)
-    const listRes = await handleMcpApi(list.req, list.url, list.segments)
-
-    expect(listRes.status).toBe(200)
-    const listBody = await listRes.json()
-
-    expect(listBody.servers).toContainEqual(
-      expect.objectContaining({
-        name: 'claude.ai Docs',
-        scope: 'claudeai',
-        transport: 'claudeai-proxy',
-        canEdit: false,
-        canRemove: false,
-      }),
-    )
-    expect(connectSpy).not.toHaveBeenCalled()
+    const response = await handleMcpApi(list.req, list.url, list.segments)
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual({ servers: [] })
   })
 
   it('rejects stdio MCP creation when the host command is unavailable', async () => {
@@ -562,7 +506,7 @@ describe('MCP API', () => {
     expect(listBody.servers.some((server: { name: string }) => server.name === 'context7')).toBe(false)
   })
 
-  it('syncs MCP toggles through an opaque product task binding', async () => {
+  it('keeps the active Turn MCP snapshot frozen and applies a toggle next Turn', async () => {
     const create = makeRequest('POST', '/api/mcp', {
       cwd: projectRoot,
       name: 'session-sync',
@@ -576,71 +520,16 @@ describe('MCP API', () => {
     })
     await handleMcpApi(create.req, create.url, create.segments)
 
-    const requestControl = mock(async () => ({}))
-    conversationService.hasSession = ((sessionId: string) => sessionId === 'session-1') as typeof conversationService.hasSession
-    conversationService.requestControl = requestControl as typeof conversationService.requestControl
-
     const disable = makeRequest('POST', '/api/mcp/session-sync/toggle', {
       cwd: projectRoot,
       taskId: 'task-mcp-sync',
     })
-    const resolveCoreSessionId = mock(async (taskId: string) => {
-      expect(taskId).toBe('task-mcp-sync')
-      return 'session-1'
-    })
-    const disableRes = await handleMcpApi(
-      disable.req,
-      disable.url,
-      disable.segments,
-      { resolveCoreSessionId },
-    )
+    const disableRes = await handleMcpApi(disable.req, disable.url, disable.segments)
 
     expect(disableRes.status).toBe(200)
-    expect(resolveCoreSessionId).toHaveBeenCalledWith('task-mcp-sync')
-    expect(requestControl).toHaveBeenCalledWith(
-      'session-1',
-      { subtype: 'mcp_toggle', serverName: 'session-sync', enabled: false },
-      120_000,
-    )
-  })
-
-  it('returns a safe task-context error without changing MCP config when the public task cannot resolve', async () => {
-    const create = makeRequest('POST', '/api/mcp', {
-      cwd: projectRoot,
-      name: 'task-context-guard',
-      scope: 'local',
-      config: {
-        type: 'stdio',
-        command: 'npx',
-        args: ['task-context-guard'],
-        env: {},
-      },
-    })
-    expect((await handleMcpApi(create.req, create.url, create.segments)).status).toBe(201)
-
-    const toggle = makeRequest('POST', '/api/mcp/task-context-guard/toggle', {
-      cwd: projectRoot,
-      taskId: 'missing-task',
-    })
-    const resolveCoreSessionId = mock(async () => {
-      throw new Error('private product store detail')
-    })
-    const response = await handleMcpApi(
-      toggle.req,
-      toggle.url,
-      toggle.segments,
-      { resolveCoreSessionId },
-    )
-
-    expect(response.status).toBe(503)
-    expect(await response.json()).toEqual({ error: 'PRODUCT_TASK_UNAVAILABLE' })
-    expect(resolveCoreSessionId).toHaveBeenCalledWith('missing-task')
-
-    const list = makeRequest('GET', `/api/mcp?cwd=${encodeURIComponent(projectRoot)}`)
-    const listResponse = await handleMcpApi(list.req, list.url, list.segments)
-    const listBody = await listResponse.json() as { servers: Array<{ name: string; enabled: boolean }> }
-    expect(listBody.servers.find((server) => server.name === 'task-context-guard')).toMatchObject({
-      enabled: true,
+    expect(await disableRes.json()).toMatchObject({
+      server: { enabled: false },
+      taskSync: { applied: false, reason: 'next_turn' },
     })
   })
 
@@ -675,135 +564,4 @@ describe('MCP API', () => {
     })
   })
 
-  it('returns not_running only after a public task resolves to an inactive Core runtime', async () => {
-    const create = makeRequest('POST', '/api/mcp', {
-      cwd: projectRoot,
-      name: 'task-offline',
-      scope: 'local',
-      config: {
-        type: 'stdio',
-        command: 'npx',
-        args: ['task-offline'],
-        env: {},
-      },
-    })
-    expect((await handleMcpApi(create.req, create.url, create.segments)).status).toBe(201)
-
-    conversationService.hasSession = (() => false) as typeof conversationService.hasSession
-    const toggle = makeRequest('POST', '/api/mcp/task-offline/toggle', {
-      cwd: projectRoot,
-      taskId: 'offline-task',
-    })
-    const resolveCoreSessionId = mock(async () => 'offline-core-session')
-    const response = await handleMcpApi(
-      toggle.req,
-      toggle.url,
-      toggle.segments,
-      { resolveCoreSessionId },
-    )
-
-    expect(response.status).toBe(200)
-    expect(resolveCoreSessionId).toHaveBeenCalledWith('offline-task')
-    expect(await response.json()).toMatchObject({
-      server: { enabled: false },
-      taskSync: { applied: false, reason: 'not_running' },
-    })
-  })
-
-  it('reconnects plugin-scoped MCP servers exposed via the merged server list', async () => {
-    const pluginServerName = 'plugin:telegram:telegram'
-    const pluginServerConfig = {
-      scope: 'dynamic',
-      type: 'stdio',
-      command: 'bun',
-      args: ['run', 'start'],
-      env: {
-        CLAUDE_PLUGIN_ROOT: '/tmp/telegram-plugin',
-      },
-      pluginSource: 'telegram@claude-plugins-official',
-    } as const
-
-    getClaudeCodeMcpConfigsSpy = spyOn(mcpConfig, 'getClaudeCodeMcpConfigs').mockResolvedValue({
-      servers: {
-        [pluginServerName]: pluginServerConfig,
-      },
-      errors: [],
-    })
-
-    reconnectSpy = spyOn(mcpClient, 'reconnectMcpServerImpl').mockResolvedValue({
-      name: pluginServerName,
-      client: {
-        name: pluginServerName,
-        type: 'connected',
-        client: {} as never,
-        capabilities: {},
-        config: pluginServerConfig,
-        cleanup: mock(async () => {}),
-      },
-    })
-
-    const reconnect = makeRequest('POST', `/api/mcp/${encodeURIComponent(pluginServerName)}/reconnect`, {
-      cwd: projectRoot,
-    })
-    const reconnectRes = await handleMcpApi(reconnect.req, reconnect.url, reconnect.segments)
-
-    expect(reconnectRes.status).toBe(200)
-    expect(reconnectSpy).toHaveBeenCalledWith(pluginServerName, pluginServerConfig)
-
-    const body = await reconnectRes.json()
-    expect(body.server.name).toBe(pluginServerName)
-    expect(body.server.scope).toBe('dynamic')
-  })
-
-  it('returns a failed server state when reconnect preflight fails on the host machine', async () => {
-    const pluginServerName = 'plugin:telegram:telegram'
-    const pluginServerConfig = {
-      scope: 'dynamic',
-      type: 'stdio',
-      command: 'npx',
-      args: ['telegram-mcp'],
-      env: {},
-      pluginSource: 'telegram@claude-plugins-official',
-    } as const
-
-    getClaudeCodeMcpConfigsSpy = spyOn(mcpConfig, 'getClaudeCodeMcpConfigs').mockResolvedValue({
-      servers: {
-        [pluginServerName]: pluginServerConfig,
-      },
-      errors: [],
-    })
-
-    hostPreflightSpy?.mockResolvedValueOnce({
-      ok: false,
-      message: 'Host command "npx" is not available in PATH.',
-    })
-
-    reconnectSpy = spyOn(mcpClient, 'reconnectMcpServerImpl').mockResolvedValue({
-      name: pluginServerName,
-      client: {
-        name: pluginServerName,
-        type: 'connected',
-        client: {} as never,
-        capabilities: {},
-        config: pluginServerConfig,
-        cleanup: mock(async () => {}),
-      },
-    })
-
-    const reconnect = makeRequest('POST', `/api/mcp/${encodeURIComponent(pluginServerName)}/reconnect`, {
-      cwd: projectRoot,
-    })
-    const reconnectRes = await handleMcpApi(reconnect.req, reconnect.url, reconnect.segments)
-
-    expect(reconnectRes.status).toBe(200)
-    expect(reconnectSpy).not.toHaveBeenCalled()
-    const body = await reconnectRes.json()
-    expect(body).toMatchObject({
-      server: {
-        name: pluginServerName,
-        status: 'failed',
-      },
-    })
-    expect(JSON.stringify(body)).not.toContain('Host command "npx" is not available in PATH.')
-  })
 })

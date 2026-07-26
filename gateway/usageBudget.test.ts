@@ -20,6 +20,7 @@ function policy(): UsageBudgetPolicy {
     capabilities: {
       TextReasoning: { principal: limit, installation: limit },
       VisualEvidence: { principal: limit, installation: limit },
+      MediaReasoning: { principal: limit, installation: limit },
       SpeechTranscription: { principal: limit, installation: limit },
     },
   }
@@ -60,6 +61,7 @@ test('usage summary is scoped to the verified principal and installation and inc
     capabilities: {
       TextReasoning: { remaining_percent: 50, exhausted: false },
       VisualEvidence: { remaining_percent: 100, exhausted: false },
+      MediaReasoning: { remaining_percent: 100, exhausted: false },
       SpeechTranscription: { remaining_percent: 100, exhausted: false },
     },
   })

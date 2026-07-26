@@ -14,9 +14,9 @@
       "dist/**",
       "electron-dist/**",
       "node_modules/node-pty/**",
-      "src-tauri/binaries/**",
-      "src-tauri/icons/**",
-      "src-tauri/resources/preview-agent.js",
+      "runtime-assets/binaries/**",
+      "runtime-assets/icons/**",
+      "runtime-assets/resources/preview-agent.js",
       "package.json"
     ],
     "sidecar_build_entry": "ts/desktop/sidecars/billiardbuddy-sidecar.ts"
@@ -115,21 +115,33 @@
     },
     {
       "consumers": [
-        "ts/src/server/services/mediaProjectService.ts"
+        "ts/src/server/agent-worker/productModelRuntime.ts",
+        "ts/src/server/services/mediaProjectService.ts",
+        "ts/src/server/services/imageReasoning.ts",
+        "ts/src/server/services/videoAnalysis.ts"
       ],
-      "entry": "ts/src/server/services/qfGatewayProvider.ts",
+      "entry": "ts/src/server/product/productGatewayRuntime.ts",
       "kind": "remote_gateway_adapter",
       "name": "gateway-adapter"
     },
     {
       "consumers": [
-        "ts/src/server/services/qfGatewayProvider.ts",
-        "ts/src/server/services/mediaProjectService.ts"
+        "gateway/deploy.sh",
+        "ts/src/server/product/productGatewayRuntime.ts"
       ],
-      "entry": "ts/src/upstreamproxy/relay.ts",
-      "kind": "remote_relay_adapter",
-      "name": "relay-adapter"
+      "entry": "gateway/app.ts",
+      "kind": "remote_gateway_service",
+      "name": "gateway-service"
+    },
+    {
+      "consumers": [
+        "gateway/app.ts",
+        "relay/deploy.sh"
+      ],
+      "entry": "relay/app.ts",
+      "kind": "remote_relay_service",
+      "name": "relay-service"
     }
   ],
-  "source_sha256": "d8093117450b63681a83d080587f201df4c0b21e39a600d9e82ab0db98756736"
+  "source_sha256": "8445b9a6e144e73d8fa81757b2c1f4e38de434e1bdbb099b6e5eb3ad3f63370d"
 }

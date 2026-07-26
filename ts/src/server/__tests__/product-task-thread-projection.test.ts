@@ -1,12 +1,14 @@
 import { describe, expect, it } from 'bun:test'
-import type { MessageEntry } from '../services/sessionService.js'
 import {
   projectSessionTranscriptForProductTask,
   resolveCoreMessageIdForProductThreadEntry,
+  type ProductLegacyCoreMessageEntry,
 } from '../product/taskThreadProjection.js'
 
+type MessageEntry = ProductLegacyCoreMessageEntry
+
 describe('product task thread projection', () => {
-  it('keeps MediaWorkbench activity but does not create chat media drafts', () => {
+  it('projects historical MediaWorkbench records only as generic activity', () => {
     const privateToolId = 'private-media-tool-use-id'
     const privatePrompt = 'PRIVATE_POSTER_PROMPT'
     const privatePath = '/Users/private/media-workspace'
@@ -63,9 +65,6 @@ describe('product task thread projection', () => {
     ]
 
     const projected = projectSessionTranscriptForProductTask('task-visible-media', source)
-    const drafts = projected.entries.filter((entry) => entry.type === 'media_draft')
-
-    expect(drafts).toEqual([])
     expect(projected.entries.filter(entry => entry.type === 'activity')).toHaveLength(4)
 
     const serialized = JSON.stringify(projected)
@@ -224,7 +223,7 @@ describe('product task thread projection', () => {
   })
 
   it('replaces persisted upload transport with safe attachment summaries', () => {
-    const uploadRoot = '/Users/private-user/.claude/uploads/core-session-secret'
+    const uploadRoot = '/Users/private-user/.BilliardBuddy/uploads/core-session-secret'
     const rawImageData = 'data:image/png;base64,PRIVATE_IMAGE_BASE64'
     const source: MessageEntry[] = [
       {

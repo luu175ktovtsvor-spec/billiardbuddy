@@ -11,6 +11,7 @@ const gateway = {
   usage: {
     TextReasoning: { remaining_percent: 72, exhausted: false },
     VisualEvidence: { remaining_percent: 0, exhausted: true },
+    MediaReasoning: { remaining_percent: 68, exhausted: false },
     SpeechTranscription: { remaining_percent: 95, exhausted: false },
   },
   resets_at: '2026-07-27T00:00:00.000Z',
@@ -20,7 +21,6 @@ function service(overrides: ConstructorParameters<typeof ProductCapabilitySnapsh
   return new ProductCapabilitySnapshotService({
     gatewayConfigured: () => true,
     gatewayStatus: async () => gateway,
-    consentStatus: async () => ({ available: true, active: true }),
     mediaToolchainStatus: async () => ({ ffmpeg: { available: true }, ffprobe: { available: true } }),
     browserStatus: () => ({ state: 'connected', connected_sessions: 1 }),
     scheduledRuns: async () => [{
@@ -50,17 +50,11 @@ test('aggregates actionable product capability states without technical gateway 
   expect(JSON.stringify(snapshot)).not.toMatch(/provider|model|api.?key|token|url|concurrency|queue/i)
 })
 
-test('reports setup, privacy and repair states from real dependency outcomes', async () => {
+test('reports setup from the real installation identity state', async () => {
   const setup = await service({ gatewayConfigured: () => false }).snapshot()
   expect(setup.capabilities.slice(0, 4)).toEqual([
     'assistant', 'image_understanding', 'image_creation', 'voice_input',
   ].map(id => ({ id, state: 'configured', reason_code: 'installation_activation_required', repair_action: 'restart_app' })))
-
-  const privacy = await service({ consentStatus: async () => ({ available: true, active: false }) }).snapshot()
-  expect(privacy.capabilities.find(item => item.id === 'assistant')).toEqual({
-    id: 'assistant', state: 'configured', reason_code: 'privacy_confirmation_required', repair_action: 'open_privacy',
-  })
-  expect(privacy.capabilities.find(item => item.id === 'image_creation')).toEqual({ id: 'image_creation', state: 'available' })
 })
 
 test('fails remote, media, scheduler and browser checks closed with accurate repair entries', async () => {

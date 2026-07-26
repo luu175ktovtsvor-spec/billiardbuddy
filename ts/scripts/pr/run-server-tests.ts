@@ -4,7 +4,13 @@ import { readdirSync, statSync } from 'node:fs'
 import { join, relative, sep } from 'node:path'
 
 const root = process.cwd()
-const roots = ['src/server', 'src/tools', 'src/utils']
+const roots = [
+  'shared/contracts',
+  'shared/product',
+  'src/media',
+  'src/server',
+  'src/skills',
+]
 
 function normalize(path: string) {
   return relative(root, path).split(sep).join('/')

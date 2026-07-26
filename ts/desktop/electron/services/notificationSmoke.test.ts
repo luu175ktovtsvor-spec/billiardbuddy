@@ -42,7 +42,7 @@ describe('Electron notification smoke hook', () => {
     expect(NotificationClass).not.toHaveBeenCalled()
   })
 
-  it('schedules a targeted notification for Computer Use smoke validation', () => {
+  it('schedules a targeted desktop notification smoke validation', () => {
     const timer = vi.fn((handler: () => void) => handler())
     const { NotificationClass, handlers, show } = fakeNotificationClass()
     const onAction = vi.fn()

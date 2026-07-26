@@ -64,7 +64,7 @@ function packagedContext() {
     'Contents',
     'Resources',
     'app.asar.unpacked',
-    'src-tauri',
+    'runtime-assets',
     'binaries',
   )
   mkdirSync(toolchainDir, { recursive: true })
@@ -90,9 +90,10 @@ afterEach(() => {
 describe('packaged media toolchain verification', () => {
   it('registers the post-pack verifier in Electron Builder configuration', () => {
     const packageJson = JSON.parse(readFileSync(join(scriptDir, '..', 'package.json'), 'utf8')) as {
-      build?: { afterPack?: string }
+      build?: { afterPack?: string; afterSign?: string }
     }
     expect(packageJson.build?.afterPack).toBe('scripts/electron-after-pack.cjs')
+    expect(packageJson.build?.afterSign).toBe('scripts/electron-after-pack.cjs')
   })
 
   it('uses the Electron app.asar.unpacked location for each supported package platform', () => {
@@ -103,14 +104,14 @@ describe('packaged media toolchain verification', () => {
       'Contents',
       'Resources',
       'app.asar.unpacked',
-      'src-tauri',
+      'runtime-assets',
       'binaries',
     ))
     expect(afterPack.packagedMediaToolchainDir({
       appOutDir: '/tmp/win-unpacked',
       electronPlatformName: 'win32',
       packager: { appInfo: { productFilename: 'BilliardBuddy' } },
-    })).toBe('/tmp/win-unpacked/resources/app.asar.unpacked/src-tauri/binaries')
+    })).toBe('/tmp/win-unpacked/resources/app.asar.unpacked/runtime-assets/binaries')
   })
 
   it('fails packaging when the assembled app is missing or has changed FFmpeg/ffprobe', () => {

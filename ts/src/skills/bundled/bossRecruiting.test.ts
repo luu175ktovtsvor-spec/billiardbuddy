@@ -1,12 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test'
-import { readFile, rm } from 'node:fs/promises'
-import { join } from 'node:path'
 import {
-  clearBundledSkills,
-  getBundledSkillExtractDir,
-  getBundledSkillDescriptors,
-  getBundledSkills,
-} from '../bundledSkills.js'
+  clearProductBundledSkills,
+  getProductBundledSkillDescriptors,
+  getProductBundledSkills,
+} from '../productSkillRegistry.js'
 import {
   BOSS_RECRUITING_FILES,
   registerBossRecruitingSkill,
@@ -14,18 +11,18 @@ import {
 
 describe('boss recruiting skill', () => {
   beforeEach(() => {
-    clearBundledSkills()
+    clearProductBundledSkills()
   })
 
   afterEach(() => {
-    clearBundledSkills()
+    clearProductBundledSkills()
   })
 
   it('registers a plain-language recruiting workflow', () => {
     registerBossRecruitingSkill()
     registerBossRecruitingSkill()
 
-    const descriptors = getBundledSkillDescriptors()
+    const descriptors = getProductBundledSkillDescriptors()
     expect(descriptors).toHaveLength(1)
     expect(descriptors[0]).toEqual(expect.objectContaining({
       name: 'boss-recruiting',
@@ -41,7 +38,7 @@ describe('boss recruiting skill', () => {
   it('prefers the formal BOSS tool without promising an unavailable channel', () => {
     registerBossRecruitingSkill()
 
-    const content = getBundledSkillDescriptors()[0]!.content
+    const content = getProductBundledSkillDescriptors()[0]!.content
     expect(content).toContain('使用当前正式执行通道')
     expect(content).toContain('BOSS 页面优先使用 ProductTask 正式提供的 RecruitingBrowser')
     expect(content).toContain('不能确认或执行')
@@ -64,7 +61,7 @@ describe('boss recruiting skill', () => {
   it('keeps account credentials and irrelevant candidate data out of the workflow', () => {
     registerBossRecruitingSkill()
 
-    const content = getBundledSkillDescriptors()[0]!.content
+    const content = getProductBundledSkillDescriptors()[0]!.content
     expect(content).toContain('不要索取账号密码、验证码、Cookie、会话令牌或身份、生物识别信息')
     expect(content).toContain('不收集、复制或推断与岗位职责无直接关系的身份、家庭、健康、宗教、民族等个人信息')
     expect(BOSS_RECRUITING_FILES['references/execution-pattern.md']).toContain(
@@ -73,39 +70,14 @@ describe('boss recruiting skill', () => {
   })
 
   it('loads the same guarded instructions and references when the Skill is invoked', async () => {
-    const macroTarget = globalThis as typeof globalThis & {
-      MACRO?: { VERSION: string }
-    }
-    const previousMacro = macroTarget.MACRO
-    if (!previousMacro) macroTarget.MACRO = { VERSION: 'boss-recruiting-test' }
+    registerBossRecruitingSkill()
+    const command = getProductBundledSkills().find(candidate => candidate.name === 'boss-recruiting')
+    expect(command?.type).toBe('prompt')
+    if (!command) throw new Error('BOSS recruiting Skill was not registered as a prompt command')
 
-    const skillDir = getBundledSkillExtractDir('boss-recruiting')
-    await rm(skillDir, { recursive: true, force: true })
-
-    try {
-      registerBossRecruitingSkill()
-      const command = getBundledSkills().find(candidate => candidate.name === 'boss-recruiting')
-      expect(command?.type).toBe('prompt')
-      if (!command || command.type !== 'prompt') {
-        throw new Error('BOSS recruiting Skill was not registered as a prompt command')
-      }
-
-      const prompt = await command.getPromptForCommand('招一名球房教练', undefined as never)
-      const firstBlock = prompt[0]
-      expect(firstBlock?.type).toBe('text')
-      if (firstBlock?.type !== 'text') {
-        throw new Error('BOSS recruiting Skill did not return a text prompt')
-      }
-
-      expect(firstBlock.text).toStartWith(`Base directory for this skill: ${skillDir}`)
-      expect(firstBlock.text).toContain('不把准备工作说成已完成的招聘动作')
-      expect(await readFile(join(skillDir, 'references', 'execution-pattern.md'), 'utf-8')).toContain(
-        '它只读取脱敏岗位证据和准备待确认动作',
-      )
-    } finally {
-      await rm(skillDir, { recursive: true, force: true })
-      if (previousMacro === undefined) delete macroTarget.MACRO
-      else macroTarget.MACRO = previousMacro
-    }
+    const prompt = await command.getPromptForCommand('招一名球房教练', undefined as never)
+    const text = prompt.flatMap(block => block.type === 'text' ? [block.text] : []).join('\n')
+    expect(text).toContain('不把准备工作说成已完成的招聘动作')
+    expect(text).toContain('它只读取脱敏岗位证据和准备待确认动作')
   })
 })

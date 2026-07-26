@@ -26,6 +26,7 @@ function makePlugin(overrides: Partial<PluginSummary> = {}): PluginSummary {
     enabled: true,
     status: 'enabled',
     canManage: true,
+    canUpdate: true,
     descriptionKind,
     componentCounts: {
       commands: 1,
@@ -41,7 +42,7 @@ function makePlugin(overrides: Partial<PluginSummary> = {}): PluginSummary {
 
 function makeTaskReload(overrides: Partial<{
   applied: boolean
-  reason: 'not_running' | 'failed'
+  reason: 'next_turn'
   commands: number
   agents: number
   plugins: number
@@ -143,6 +144,7 @@ describe('Settings > Plugins tab', () => {
       bulkEnablePlugins: vi.fn().mockResolvedValue({ changed: 0, task: makeTaskReload() }),
       bulkDisablePlugins: vi.fn().mockResolvedValue({ changed: 0, task: makeTaskReload() }),
       updatePlugin: vi.fn().mockResolvedValue({ action: 'updated', task: makeTaskReload() }),
+      installPlugin: vi.fn().mockResolvedValue({ action: 'installed', task: makeTaskReload() }),
       uninstallPlugin: vi.fn().mockResolvedValue({ action: 'uninstalled', task: makeTaskReload() }),
       clearSelection: vi.fn(),
     })
@@ -152,7 +154,7 @@ describe('Settings > Plugins tab', () => {
     const pluginWithPrivateExtras = {
       ...makePlugin(),
       description: 'DO_NOT_RENDER_MANIFEST_DESCRIPTION',
-      installPath: '/Users/test/.claude/plugins/private',
+      installPath: '/Users/test/.BilliardBuddy/plugins/private',
       projectPath: '/workspace/private-project',
       errors: ['DO_NOT_RENDER_RAW_ERROR'],
       marketplace: 'https://private.example.test/marketplace',
@@ -187,7 +189,7 @@ describe('Settings > Plugins tab', () => {
     expect(screen.getByText('pyright')).toBeInTheDocument()
     expect(screen.getAllByText('Adds optional capabilities to the desktop assistant. Configuration details remain private.')).toHaveLength(2)
     expect(screen.queryByText('DO_NOT_RENDER_MANIFEST_DESCRIPTION')).not.toBeInTheDocument()
-    expect(screen.queryByText('/Users/test/.claude/plugins/private')).not.toBeInTheDocument()
+    expect(screen.queryByText('/Users/test/.BilliardBuddy/plugins/private')).not.toBeInTheDocument()
     expect(screen.queryByText('DO_NOT_RENDER_RAW_ERROR')).not.toBeInTheDocument()
     expect(screen.queryByText('https://private.example.test/marketplace')).not.toBeInTheDocument()
     expect(screen.queryByText('Known marketplaces')).not.toBeInTheDocument()
@@ -246,7 +248,7 @@ describe('Settings > Plugins tab', () => {
       hookEntries: [{ event: 'PreToolUse', actions: ['DO_NOT_RENDER_HOOK --secret'] }],
       mcpServerEntries: [{ name: 'private-server', summary: 'https://private.example.test/mcp?secret=1' }],
       skillEntries: [{ name: 'private-skill', description: 'DO_NOT_RENDER_SKILL' }],
-      installPath: '/Users/test/.claude/plugins/private',
+      installPath: '/Users/test/.BilliardBuddy/plugins/private',
       errors: ['DO_NOT_RENDER_RAW_ERROR'],
     } as PluginDetail
     usePluginStore.setState({ selectedPlugin })
@@ -264,7 +266,7 @@ describe('Settings > Plugins tab', () => {
     expect(screen.queryByText('DO_NOT_RENDER_HOOK --secret')).not.toBeInTheDocument()
     expect(screen.queryByText('https://private.example.test/mcp?secret=1')).not.toBeInTheDocument()
     expect(screen.queryByText('DO_NOT_RENDER_SKILL')).not.toBeInTheDocument()
-    expect(screen.queryByText('/Users/test/.claude/plugins/private')).not.toBeInTheDocument()
+    expect(screen.queryByText('/Users/test/.BilliardBuddy/plugins/private')).not.toBeInTheDocument()
     expect(screen.queryByText('DO_NOT_RENDER_RAW_ERROR')).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /private-command/i })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /private-skill/i })).not.toBeInTheDocument()
@@ -281,7 +283,7 @@ describe('Settings > Plugins tab', () => {
 
   it('warns when saved plugin configuration cannot be applied because the current task is not running', async () => {
     const reloadPlugins = vi.fn().mockResolvedValue(makeReloadResult({
-      task: makeTaskReload({ applied: false, reason: 'not_running', commands: 0, agents: 0, plugins: 0, mcpServers: 0 }),
+      task: makeTaskReload({ applied: false, reason: 'next_turn', commands: 0, agents: 0, plugins: 0, mcpServers: 0 }),
     }))
     usePluginStore.setState({
       plugins: [makePlugin()],
@@ -305,7 +307,7 @@ describe('Settings > Plugins tab', () => {
   it('warns instead of claiming success when a plugin action cannot sync to the current task', async () => {
     const disablePlugin = vi.fn().mockResolvedValue({
       action: 'disabled',
-      task: makeTaskReload({ applied: false, reason: 'failed', commands: 0, agents: 0, plugins: 0, mcpServers: 0 }),
+      task: makeTaskReload({ applied: false, reason: 'next_turn', commands: 0, agents: 0, plugins: 0, mcpServers: 0 }),
     })
     usePluginStore.setState({
       selectedPlugin: makePlugin(),
@@ -325,7 +327,7 @@ describe('Settings > Plugins tab', () => {
       )
       expect(useUIStore.getState().toasts.at(-1)).toMatchObject({
         type: 'warning',
-        message: 'Plugin configuration was saved, but it could not be applied to the current task. Try again or it will take effect the next time the task runs.',
+        message: 'Plugin configuration was saved, but the current task was not updated. It will take effect the next time the task runs.',
       })
     })
   })

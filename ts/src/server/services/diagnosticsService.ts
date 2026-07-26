@@ -54,21 +54,17 @@ export class DiagnosticsService {
     return path.join(this.getLogDir(), 'diagnostics.jsonl')
   }
 
-  getCliDiagnosticsPath(): string {
-    return path.join(this.getLogDir(), 'cli-diagnostics.jsonl')
-  }
-
   private getRuntimeErrorsPath(): string {
     return path.join(this.getLogDir(), 'runtime-errors.log')
   }
 
   async recordEvent(input: DiagnosticEventInput): Promise<void> {
     // Test isolation: never let a test run write into the user's real
-    // ~/.claude/billiardbuddy/diagnostics. Tests that genuinely exercise diagnostics
-    // set CLAUDE_CONFIG_DIR to a tmp dir; anything else under NODE_ENV=test is
+    // ~/.BilliardBuddy/billiardbuddy/diagnostics. Tests that genuinely exercise diagnostics
+    // set BILLIARDBUDDY_CONFIG_DIR to a tmp dir; anything else under NODE_ENV=test is
     // a leak (e.g. a fire-and-forget recordEvent resolving after a test's
-    // afterEach restored CLAUDE_CONFIG_DIR) and must be dropped.
-    if (process.env.NODE_ENV === 'test' && !process.env.CLAUDE_CONFIG_DIR) return
+    // afterEach restored BILLIARDBUDDY_CONFIG_DIR) and must be dropped.
+    if (process.env.NODE_ENV === 'test' && !process.env.BILLIARDBUDDY_CONFIG_DIR) return
 
     const event: DiagnosticEvent = {
       id: crypto.randomUUID(),
@@ -240,7 +236,7 @@ export class DiagnosticsService {
   }
 
   private getConfigDir(): string {
-    return process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude')
+    return process.env.BILLIARDBUDDY_CONFIG_DIR || path.join(os.homedir(), '.BilliardBuddy')
   }
 
   private formatConsoleArgs(args: unknown[]): string {

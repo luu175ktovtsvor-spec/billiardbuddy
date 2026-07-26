@@ -81,6 +81,7 @@ let terminalService: ElectronTerminalService | null = null
 let previewService: ElectronPreviewService | null = null
 let mediaActions: ElectronMediaActions | null = null
 let browserCapability: ElectronBrowserCapability | null = null
+let mcpOAuthCredentialKey: string | null = null
 let isQuitting = false
 let trayController: TrayController | null = null
 const trustedProductWindowEntries = new Map<BrowserWindow, string>()
@@ -105,7 +106,7 @@ function previewPreloadPath() {
 }
 
 function previewAgentPath() {
-  return path.join(appRoot(), 'src-tauri', 'resources', 'preview-agent.js')
+  return path.join(appRoot(), 'runtime-assets', 'resources', 'preview-agent.js')
 }
 
 function rendererEntry() {
@@ -250,12 +251,29 @@ function getInstallationSessionManager() {
       gatewayUrl: config.url,
       bootstrapCredential: config.token,
       licenseKey: config.licenseKey,
-      installationId: ensureInstallationId(process.env.CLAUDE_CONFIG_DIR || app.getPath('userData')),
+      installationId: ensureInstallationId(process.env.BILLIARDBUDDY_CONFIG_DIR || app.getPath('userData')),
       onTokenChanged: () => serverRuntime?.reconfigureServer(),
       onSessionFailure: () => serverRuntime?.stopServer(),
     }, new SecureSessionStore(path.join(app.getPath('userData'), 'installation-session'), safeStorage))
   })()
   return installationSessionManager
+}
+
+function getMcpOAuthCredentialKey(): string {
+  if (mcpOAuthCredentialKey) return mcpOAuthCredentialKey
+  const store = new SecureSessionStore(path.join(app.getPath('userData'), 'mcp-oauth-master-key'), safeStorage)
+  const existing = store.load()
+  if (existing) {
+    let decoded: Buffer
+    try { decoded = Buffer.from(existing, 'base64url') } catch { throw new Error('MCP OAuth credential storage is corrupt') }
+    if (decoded.length !== 32) throw new Error('MCP OAuth credential storage is corrupt')
+    mcpOAuthCredentialKey = existing
+    return existing
+  }
+  const created = randomBytes(32).toString('base64url')
+  store.save(created)
+  mcpOAuthCredentialKey = created
+  return created
 }
 
 function getServerRuntime() {
@@ -277,6 +295,7 @@ function getServerRuntime() {
     resolveInstallationAccessToken: () => getInstallationSessionManager().accessToken(),
     mediaUiCapability,
     browserUiCapability,
+    mcpOAuthCredentialKey: getMcpOAuthCredentialKey(),
   })
   return serverRuntime
 }
@@ -287,7 +306,7 @@ function getBrowserCapability() {
     resourcesPath: process.resourcesPath,
     isPackaged: app.isPackaged,
     userDataPath: app.getPath('userData'),
-    configDir: process.env.CLAUDE_CONFIG_DIR || app.getPath('userData'),
+    configDir: process.env.BILLIARDBUDDY_CONFIG_DIR || app.getPath('userData'),
     getServerUrl: () => getServerRuntime().getServerUrl(),
     uiCapability: browserUiCapability,
   })
@@ -392,10 +411,6 @@ function registerHandler<T>(
   })
 }
 
-function unsupported(name: string): never {
-  throw new Error(`${name} is not implemented in the Electron host yet`)
-}
-
 function emitNotificationAction(payload: unknown) {
   showMainWindow(mainWindow, app)
   mainWindow?.webContents.send(ELECTRON_EVENT_CHANNELS.notificationAction, payload)
@@ -423,7 +438,7 @@ async function handleCommandInvoke(payload: unknown): Promise<unknown> {
     case 'open_windows_notification_settings':
       return openSystemSettingsUrl('ms-settings:notifications')
     default:
-      return unsupported(`Electron command ${command}`)
+      throw new Error(`Unsupported Electron command: ${command}`)
   }
 }
 
@@ -443,16 +458,15 @@ function registerIpcHandlers() {
   registerHandler(ELECTRON_IPC_CHANNELS.dialogSave, (event, payload) =>
     saveDialog(currentWindow(event), payload as Parameters<typeof saveDialog>[1]))
   registerHandler(ELECTRON_IPC_CHANNELS.mediaSubmitImage, (_event, payload) => {
-    const input = payload as { projectId: string, confirmUnknownRetry: boolean, confirmedDataEgress: boolean }
-    return getMediaActions().submitImageProject(input.projectId, input.confirmUnknownRetry, input.confirmedDataEgress)
+    const input = payload as { projectId: string, confirmUnknownRetry: boolean }
+    return getMediaActions().submitImageProject(input.projectId, input.confirmUnknownRetry)
   })
   registerHandler(ELECTRON_IPC_CHANNELS.mediaStartImageOperation, (_event, payload) => {
     const request = payload as {
       projectId: string
       input: Parameters<ElectronMediaActions['startImageOperation']>[1]
-      confirmedDataEgress: boolean
     }
-    return getMediaActions().startImageOperation(request.projectId, request.input, request.confirmedDataEgress)
+    return getMediaActions().startImageOperation(request.projectId, request.input)
   })
   registerHandler(ELECTRON_IPC_CHANNELS.mediaUpdateUnknownImage, (_event, payload) => {
     const update = payload as {
@@ -467,6 +481,10 @@ function registerIpcHandlers() {
       input: Parameters<ElectronMediaActions['saveImageOutput']>[1]
     }
     return getMediaActions().saveImageOutput(request.projectId, request.input)
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.mediaAddVideoSource, (_event, payload) => {
+    const input = payload as { projectId: string; path: string }
+    return getMediaActions().addVideoSource(input.projectId, input.path)
   })
   registerHandler(ELECTRON_IPC_CHANNELS.mediaRenderVideo, (_event, payload) => {
     const input = payload as { projectId: string, baseRevision: number, timelineVersionId: string, outputPath: string }

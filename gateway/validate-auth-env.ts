@@ -22,8 +22,8 @@ export function validateGatewayAuthEnvironment(raw: string): { bootstrapCredenti
   }
   const signingKey = env.get('GW_AUTH_SIGNING_KEY')?.trim() ?? ''
   if (signingKey.length < 32) throw new Error('GW_AUTH_SIGNING_KEY must contain at least 32 characters')
-  if (env.get('GW_AUTHORITY_FILE') !== '/opt/qfgw/authority.json') {
-    throw new Error('GW_AUTHORITY_FILE must be /opt/qfgw/authority.json')
+  if (env.get('GW_AUTHORITY_FILE') !== '/opt/billiardbuddy-gateway/authority.json') {
+    throw new Error('GW_AUTHORITY_FILE must be /opt/billiardbuddy-gateway/authority.json')
   }
 
   let licenses: unknown

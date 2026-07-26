@@ -91,15 +91,15 @@ describe('Electron sidecar manager', () => {
       env: {},
     })
 
-    expect(plan.command).toContain('/Applications/App.app/Contents/Resources/app.asar.unpacked/src-tauri/binaries/billiardbuddy-sidecar-')
+    expect(plan.command).toContain('/Applications/App.app/Contents/Resources/app.asar.unpacked/runtime-assets/binaries/billiardbuddy-sidecar-')
     expect(plan.args).toContain('/Applications/App.app/Contents/Resources/app.asar')
   })
 
   it('passes portable config through the sidecar env', () => {
     const configDir = mkdtempSync(path.join(tmpdir(), 'bb-config-'))
     try {
-      const env = buildSidecarEnv({ CLAUDE_CONFIG_DIR: configDir })
-      expect(env.CLAUDE_CONFIG_DIR).toBe(configDir)
+      const env = buildSidecarEnv({ BILLIARDBUDDY_CONFIG_DIR: configDir })
+      expect(env.BILLIARDBUDDY_CONFIG_DIR).toBe(configDir)
       expect(env.XDG_CACHE_HOME).toBe(path.join(configDir, 'Cache'))
     } finally {
       rmSync(configDir, { recursive: true, force: true })
@@ -108,16 +108,17 @@ describe('Electron sidecar manager', () => {
 
   it('strips bootstrap, license, refresh material and old access before injecting only current access', () => {
     const inherited = {
-      QF_GATEWAY_BOOTSTRAP_CREDENTIAL: 'bootstrap',
-      QF_LICENSE_KEY: 'license',
-      QF_GATEWAY_REFRESH_TOKEN: 'refresh',
-      QF_GATEWAY_SESSION_PROOF: 'proof',
-      QF_GATEWAY_TOKEN: 'old-access',
+      BB_GATEWAY_BOOTSTRAP_CREDENTIAL: 'bootstrap',
+      BB_LICENSE_KEY: 'license',
+      BB_GATEWAY_REFRESH_TOKEN: 'refresh',
+      BB_GATEWAY_SESSION_PROOF: 'proof',
+      BB_GATEWAY_TOKEN: 'old-access',
       BB_INSTALLATION_ID: 'installation',
+      BILLIARDBUDDY_MCP_OAUTH_KEY: 'mcp-oauth-key',
     }
     expect(stripSidecarSecretEnv(inherited)).toEqual({})
     const plan = createServerPlan({ desktopRoot: '/desktop', appRoot: '/app', port: 49321, env: inherited, accessToken: 'current-access' })
-    expect(plan.env).toEqual({ QF_GATEWAY_TOKEN: 'current-access' })
+    expect(plan.env).toEqual({ BB_GATEWAY_TOKEN: 'current-access' })
   })
 
   it('converts Electron system proxy rules into sidecar proxy env', () => {
@@ -157,13 +158,13 @@ describe('Electron sidecar manager', () => {
   })
 
   it('keeps raw startup output in the main-process diagnostic but returns only a safe renderer code', () => {
-    const rawMessage = 'failed to bind /Users/test/.claude/runtime'
+    const rawMessage = 'failed to bind /Users/test/.BilliardBuddy/runtime'
     const rawLog = '[stderr] provider rejected token'
 
     expect(formatStartupDiagnostic(rawMessage, [rawLog])).toContain(rawMessage)
     expect(formatStartupDiagnostic(rawMessage, [rawLog])).toContain(rawLog)
     expect(formatStartupError(rawMessage, [rawLog])).toBe('BB_STARTUP_FAILED')
-    expect(formatStartupError(rawMessage, [rawLog])).not.toContain('/Users/test/.claude')
+    expect(formatStartupError(rawMessage, [rawLog])).not.toContain('/Users/test/.BilliardBuddy')
   })
 
   it('maps http urls to adapter websocket urls', () => {
@@ -205,7 +206,7 @@ describe('Electron sidecar manager', () => {
     const spawnFn = vi.fn(() => spawned)
     const existsSyncFn = vi.fn(() => true)
     const plan = {
-      command: '/app/desktop/src-tauri/binaries/billiardbuddy-sidecar-x86_64-pc-windows-msvc.exe',
+      command: '/app/desktop/runtime-assets/binaries/billiardbuddy-sidecar-x86_64-pc-windows-msvc.exe',
       args: ['server', '--port', '49321'],
       env: {},
     }
@@ -234,7 +235,7 @@ describe('Electron sidecar manager', () => {
 
   it('persists and reuses the last local server port from the config dir', () => {
     const configDir = mkdtempSync(path.join(tmpdir(), 'cchh-server-state-'))
-    const env = { CLAUDE_CONFIG_DIR: configDir } as NodeJS.ProcessEnv
+    const env = { BILLIARDBUDDY_CONFIG_DIR: configDir } as NodeJS.ProcessEnv
     try {
       // Nothing stored yet: no preferred ports.
       expect(preferredServerPorts(env)).toEqual([])

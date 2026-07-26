@@ -1,6 +1,6 @@
 import type { PermissionExecutionEnvelope } from './permissionExecutionEnvelope.js'
 import type { ProductResourceReceipt } from './resourceScheduler.js'
-import type { ProductTaskActionApproval } from './taskEvents.js'
+import type { ProductTaskActionApproval, ProductTaskQuestion, ProductTaskRunActivity } from './taskEvents.js'
 
 export const AGENT_WORKER_PROTOCOL_VERSION = 1 as const
 export const AGENT_WORKER_MAX_FRAME_BYTES = 64 * 1024
@@ -25,7 +25,9 @@ export type AgentWorkerInbound =
   | { type: 'ready' }
   | AgentWorkerStart
   | { type: 'input'; text: string }
+  | { type: 'steer'; queue_item_id: string; text: string }
   | { type: 'approval_response'; request_id: string; approved: boolean }
+  | { type: 'question_response'; request_id: string; answers: string[] }
   | { type: 'stop' }
   | { type: 'shutdown' }
 
@@ -33,8 +35,15 @@ export type AgentWorkerOutbound =
   | { type: 'hello'; versions: AgentWorkerVersionRange; capabilities: string[] }
   | { type: 'ready' }
   | { type: 'claim_receipt'; outcome: 'claimed' | 'duplicate' | 'recovery_required' | 'rejected'; run_id: string; code?: string }
-  | { type: 'event'; event: 'started' | 'delta' | 'tool' | 'stopping'; data?: string }
+  | { type: 'event'; event: 'started' | 'delta' | 'stopping'; data?: string }
+  | { type: 'event'; event: 'activity'; activity: ProductTaskRunActivity }
+  | { type: 'event'; event: 'extension_snapshot'; digest: string; tool_count: number; command_count: number; mcp_server_count: number }
   | { type: 'event'; event: 'approval'; request_id: string; action: ProductTaskActionApproval; review: AgentWorkerApprovalReviewFacts }
+  | { type: 'event'; event: 'question'; request_id: string; questions: ProductTaskQuestion[] }
+  | { type: 'event'; event: 'context_compaction'; phase: 'started'; source: 'automatic' | 'manual'; generation: number; input_tokens: number }
+  | { type: 'event'; event: 'context_compaction'; phase: 'completed'; source: 'automatic' | 'manual'; generation: number; input_tokens: number; output_tokens: number; summary: string; compacted_through_event_sequence: number }
+  | { type: 'event'; event: 'context_compaction'; phase: 'failed'; source: 'automatic' | 'manual'; generation: number; input_tokens: number }
+  | { type: 'steer_consumed'; queue_item_id: string }
   | { type: 'terminal'; state: 'completed' | 'stopped' | 'recovery_required'; run_id: string }
   | { type: 'fatal'; code: 'FRAME_INVALID' | 'FRAME_TOO_LARGE' | 'PROTOCOL_INVALID' | 'CAPABILITY_MISMATCH' | 'MODEL_CONFIGURATION_INVALID' | 'NOT_READY' | 'ENVELOPE_DENIED' | 'SCHEDULER_DENIED' | 'CORE_FAILED'; message?: string }
   | { type: 'shutdown' }

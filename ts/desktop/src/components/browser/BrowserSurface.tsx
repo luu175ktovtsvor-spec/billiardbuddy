@@ -21,6 +21,7 @@ type BrowserSurfaceProps = {
   sessionId: string
   unsupportedNavigationMessage?: string
   showPreviewActions?: boolean
+  showElementPicker?: boolean
   subscribeEvents?: BrowserPreviewEventSubscriber
 }
 
@@ -37,6 +38,7 @@ export function BrowserSurface({
   sessionId,
   unsupportedNavigationMessage,
   showPreviewActions = true,
+  showElementPicker = showPreviewActions,
   subscribeEvents = subscribePreviewEvents,
 }: BrowserSurfaceProps) {
   const hostRef = useRef<HTMLDivElement>(null)
@@ -126,7 +128,7 @@ export function BrowserSurface({
     useBrowserPanelStore.getState().setLoading(sessionId, false)
   }, [session?.url, sessionId, unsupportedNavigationMessage])
 
-  // Visibility-sync: a fullscreen DOM overlay (e.g. ImageGalleryModal) would
+  // Visibility-sync: a fullscreen DOM overlay would
   // otherwise be partially covered by the native child webview, which always
   // renders above the DOM. While overlayCount > 0 we hide the webview; when
   // it returns to 0 (and we're still mounted in browser mode) we re-show it.
@@ -202,7 +204,7 @@ export function BrowserSurface({
       >
         <Camera size={16} />
       </button>
-      <button
+      {showElementPicker ? <button
         aria-label="选择元素"
         aria-pressed={Boolean(session.pickerActive)}
         title="选择元素"
@@ -220,7 +222,7 @@ export function BrowserSurface({
         }}
       >
         <MousePointer2 size={16} />
-      </button>
+      </button> : null}
     </>
   ) : undefined
 

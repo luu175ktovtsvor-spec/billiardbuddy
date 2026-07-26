@@ -1,7 +1,13 @@
 name: 桌面版-macOS现役TS出包
 
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: '构建验证通过后发布到正式更新源'
+        required: false
+        default: false
+        type: boolean
   push:
     tags:
       - 'v*'
@@ -106,12 +112,12 @@ jobs:
           gateway_credentials="$(
             ssh -i "${key_path}" -o BatchMode=yes -o StrictHostKeyChecking=yes \
               root@39.106.214.21 \
-              "sed -n 's/^GW_APP_CREDENTIALS=//p' /opt/qfgw/gw.env"
+              "sed -n 's/^GW_APP_CREDENTIALS=//p' /opt/billiardbuddy-gateway/gw.env"
           )"
           license_provisioning_json="$(
             ssh -i "${key_path}" -o BatchMode=yes -o StrictHostKeyChecking=yes \
               root@39.106.214.21 \
-              "sed -n 's/^GW_LICENSE_PROVISIONING=//p' /opt/qfgw/gw.env"
+              "sed -n 's/^GW_LICENSE_PROVISIONING=//p' /opt/billiardbuddy-gateway/gw.env"
           )"
           gateway_bootstrap_credential="$(
             node -e '
@@ -211,7 +217,39 @@ jobs:
             test -s "${file}"
           done
 
+          bun run ts/desktop/scripts/audit-packaged-resources.ts \
+            --platform darwin \
+            --resources "${apps[0]}/Contents/Resources"
+
+          mount_dir="$(mktemp -d "${RUNNER_TEMP}/billiardbuddy-dmg-audit.XXXXXX")"
+          cleanup_mount() {
+            hdiutil detach "${mount_dir}" >/dev/null 2>&1 || true
+            rmdir "${mount_dir}" >/dev/null 2>&1 || true
+          }
+          trap cleanup_mount EXIT
+          hdiutil attach -nobrowse -readonly -mountpoint "${mount_dir}" "${dmgs[0]}" >/dev/null
+          bun run ts/desktop/scripts/audit-packaged-resources.ts \
+            --platform darwin \
+            --resources "${mount_dir}/BilliardBuddy.app/Contents/Resources"
+          codesign --verify --deep --strict "${mount_dir}/BilliardBuddy.app"
+          hdiutil detach "${mount_dir}" >/dev/null
+          rmdir "${mount_dir}"
+          trap - EXIT
+
+      - name: 保存已审计的 macOS 安装包
+        uses: actions/upload-artifact@v4
+        with:
+          name: BilliardBuddy-macos-arm64-${{ github.sha }}
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            ts/desktop/build-artifacts/electron/*.dmg
+            ts/desktop/build-artifacts/electron/*.zip
+            ts/desktop/build-artifacts/electron/*.blockmap
+            ts/desktop/build-artifacts/electron/latest-mac.yml
+
       - name: 发布 macOS 安装包与更新清单
+        if: startsWith(github.ref, 'refs/tags/v') || inputs.publish == true
         shell: bash
         run: |
           set -euo pipefail

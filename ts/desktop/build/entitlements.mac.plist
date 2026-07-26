@@ -7,7 +7,7 @@
   <true/>
   <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
   <true/>
-  <!-- The server sidecar relies on environment-variable injection (proxy, CLAUDE_*). -->
+  <!-- The server sidecar receives product runtime and proxy settings through its environment. -->
   <key>com.apple.security.cs.allow-dyld-environment-variables</key>
   <true/>
   <!-- Allow loading the node-pty native module and spawning the Bun sidecar binary,

@@ -28,15 +28,15 @@ const fakeApp = (userData: string) => ({
 })
 
 describe('Electron window service', () => {
-  it('persists window state in CLAUDE_CONFIG_DIR when portable config is active', () => {
+  it('persists window state in BILLIARDBUDDY_CONFIG_DIR when portable config is active', () => {
     const tmp = mkdtempSync(path.join(tmpdir(), 'electron-window-state-'))
     try {
       const app = fakeApp(path.join(tmp, 'user-data'))
       const state = { x: 10, y: 20, width: 1280, height: 820, maximized: false }
 
-      writeWindowState(app as never, state, { CLAUDE_CONFIG_DIR: tmp })
+      writeWindowState(app as never, state, { BILLIARDBUDDY_CONFIG_DIR: tmp })
 
-      const statePath = windowStatePath(app as never, { CLAUDE_CONFIG_DIR: tmp })
+      const statePath = windowStatePath(app as never, { BILLIARDBUDDY_CONFIG_DIR: tmp })
       expect(JSON.parse(readFileSync(statePath, 'utf-8'))).toEqual(state)
       expect(app.getPath).not.toHaveBeenCalled()
     } finally {

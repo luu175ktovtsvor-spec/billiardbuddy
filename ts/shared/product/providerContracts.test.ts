@@ -6,9 +6,9 @@ import {
   type ProviderUsageReceipt,
 } from './providerContracts'
 
-test('provider-neutral contracts expose exactly four capabilities without credentials', () => {
+test('provider-neutral contracts expose exactly five capabilities without credentials', () => {
   expect(PROVIDER_CAPABILITIES).toEqual([
-    'TextReasoning', 'VisualEvidence', 'ImageGeneration', 'SpeechTranscription',
+    'TextReasoning', 'VisualEvidence', 'MediaReasoning', 'ImageGeneration', 'SpeechTranscription',
   ])
   const entry: ProviderRegistryEntry = {
     model_id: 'model', provider: 'provider', capabilities: ['TextReasoning'],

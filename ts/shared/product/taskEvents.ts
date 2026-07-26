@@ -15,6 +15,8 @@ export type ProductTaskRunState =
   | 'awaiting_approval'
 
 export type ProductTaskActivityKind =
+  | 'file_read'
+  | 'file_change'
   | 'workspace'
   | 'command'
   | 'research'
@@ -41,7 +43,8 @@ export type ProductTaskActivityProgress = {
 
 /**
  * One safe, opaque item in a product task's active run tree.  It intentionally
- * contains no Core tool identity, input, output, path, or session metadata.
+ * contains no Core tool identity, raw input/output, path, or session metadata.
+ * Its kind still identifies the user-verifiable class of work.
  */
 export type ProductTaskRunActivity = {
   id: string
@@ -65,43 +68,12 @@ export type ProductTaskRunSnapshot = {
 export type ProductTaskApprovalKind =
   | 'action'
   | 'question'
-  | 'computer_use'
 
 /** Product-authored explanation of one Core boundary crossing. */
 export type ProductTaskActionApproval = {
   what: string
   scope: string
   consequence: string
-}
-
-/**
- * Safe Computer Use capabilities a product task can request. These are
- * deliberately capability labels rather than desktop grant flags, so the
- * browser never receives a mutable Computer Use policy object.
- */
-export type ProductTaskComputerUseCapability =
-  | 'clipboard_read'
-  | 'clipboard_write'
-  | 'system_key_combos'
-
-/** A human-readable application summary with no bundle identifier or path. */
-export type ProductTaskComputerUseApp = {
-  name: string
-  tier: 'read' | 'click' | 'full'
-  alreadyAuthorized: boolean
-}
-
-/**
- * Product-safe Computer Use approval details. Local paths, bundle IDs, icon
- * payloads, raw tool input, and runtime metadata never cross this boundary.
- */
-export type ProductTaskComputerUseApproval = {
-  apps: ProductTaskComputerUseApp[]
-  capabilities: ProductTaskComputerUseCapability[]
-  systemPermissions?: {
-    accessibilityRequired: boolean
-    screenRecordingRequired: boolean
-  }
 }
 
 export type ProductTaskQuestionOption = {
@@ -140,15 +112,21 @@ export type ProductTaskAttachmentSummary = {
   mimeType?: 'image/jpeg' | 'image/png' | 'image/webp' | 'image/gif'
 }
 
-/**
- * A task-thread hint for a media draft prepared by the Agent. It contains
- * only the opaque local project identity and its immutable draft shape; the
- * renderer must still ask the product media API to associate it explicitly.
- */
-export type ProductTaskMediaDraft = {
-  projectId: string
-  kind: 'image' | 'video'
-  state: 'draft'
+export type ProductTaskQueuedInput = {
+  id: string
+  text: string
+  state: 'queued' | 'injected' | 'promoted' | 'failed'
+  createdAt: string
+  attachmentCount: number
+  /** Present only after the input has been assigned to an actual Turn. */
+  targetRunId?: string
+}
+
+export type ProductTaskContextCompaction = {
+  id: string
+  phase: 'started' | 'completed' | 'failed'
+  source: 'automatic' | 'manual'
+  generation: number
 }
 
 export type ProductTaskEvent =
@@ -159,12 +137,33 @@ export type ProductTaskEvent =
       replayed: true
       /** Permanent durable-ledger cursor; absent only for legacy Core replay. */
       event_sequence?: number
+      /** Stable public Item identity when replayed from the durable ledger. */
+      id?: string
       attachments?: ProductTaskAttachmentSummary[]
       referenceEntryIds?: string[]
     }
   | { type: 'assistant_text_start' }
   | { type: 'assistant_text_delta'; text: string }
+  | {
+      type: 'assistant_text'
+      id: string
+      text: string
+      replayed: true
+      event_sequence: number
+    }
   | { type: 'status'; state: ProductTaskRunState }
+  | {
+      type: 'queue_updated'
+      item: ProductTaskQueuedInput
+      event_sequence: number
+      replayed?: true
+    }
+  | {
+      type: 'context_compaction'
+      item: ProductTaskContextCompaction
+      event_sequence: number
+      replayed?: true
+    }
   | ({ type: 'run_snapshot' } & ProductTaskRunSnapshot)
   | {
       type: 'activity'
@@ -180,6 +179,9 @@ export type ProductTaskEvent =
       summary: string
       /** Present only when the source exposes a trustworthy bounded count. */
       progress?: ProductTaskActivityProgress
+      /** Durable-ledger cursor when this activity is replayed after reconnect. */
+      event_sequence?: number
+      replayed?: true
     }
   | {
       type: 'approval_required'
@@ -194,13 +196,14 @@ export type ProductTaskEvent =
       kind: 'question'
       questions: ProductTaskQuestion[]
     }
-  | {
-      type: 'approval_required'
-      requestId: string
-      kind: 'computer_use'
-      computerUse: ProductTaskComputerUseApproval
-    }
   | { type: 'turn_complete' }
+  | {
+      type: 'run_terminal'
+      id: string
+      state: 'completed' | 'stopped' | 'recovery_required'
+      replayed: true
+      event_sequence: number
+    }
   | {
       type: 'error'
       code: ProductTaskSafeErrorCode
@@ -236,12 +239,6 @@ export type ProductTaskThreadEntry =
       phase: Extract<ProductTaskActivityPhase, 'completed' | 'failed'>
       createdAt: string
     }
-  | {
-      id: string
-      type: 'media_draft'
-      draft: ProductTaskMediaDraft
-      createdAt: string
-    }
 
 export type ProductTaskThread = {
   taskId: string
@@ -250,15 +247,82 @@ export type ProductTaskThread = {
   recoveryRequired?: boolean
 }
 
-/** Durable BB-02C ledger event. This is distinct from authority operation audit. */
-export type TaskEvent = {
+type TaskEventBase = {
   event_sequence: number
   task_id: string
-  run_id: string
-  type: 'user_text'
-  entry_id: string
-  text: string
-  attachment_ids: string[]
-  reference_entry_ids?: string[]
   created_at: string
 }
+
+/** Durable BB-02C Item/Event ledger. This is distinct from authority operation audit. */
+type TaskEventPayload =
+  | {
+      type: 'user_text'
+      run_id: string
+      entry_id: string
+      item_id?: string
+      text: string
+      attachment_ids: string[]
+      reference_entry_ids?: string[]
+    }
+  | {
+      type: 'assistant_text'
+      run_id: string
+      dispatch_generation: number
+      item_id: string
+      text: string
+    }
+  | {
+      type: 'activity'
+      run_id: string
+      dispatch_generation: number
+      item_id: string
+      parent_item_id?: string
+      kind: ProductTaskActivityKind
+      phase: ProductTaskActivityPhase
+      summary: string
+      progress?: ProductTaskActivityProgress
+    }
+  | {
+      type: 'run_terminal'
+      run_id: string
+      dispatch_generation: number
+      item_id: string
+      state: 'completed' | 'stopped' | 'recovery_required'
+    }
+  | {
+      type: 'queue_updated'
+      queue_item_id: string
+      entry_id: string
+      phase: 'queued' | 'injected' | 'promoted' | 'failed'
+      text: string
+      attachment_count: number
+      target_run_id?: string
+    }
+  | {
+      type: 'context_compaction'
+      run_id: string
+      dispatch_generation: number
+      item_id: string
+      phase: 'started' | 'completed' | 'failed'
+      source: 'automatic' | 'manual'
+      generation: number
+      input_tokens: number
+      output_tokens?: number
+    }
+  | {
+      type: 'approval'
+      run_id: string
+      dispatch_generation: number
+      item_id: string
+      request_id: string
+      phase: 'requested' | 'resolved'
+      action: ProductTaskActionApproval
+      decision?: 'allowed' | 'denied'
+      reviewer?: 'user' | 'automatic'
+    }
+
+/** Keep the persisted event as an explicit discriminated union so callers can
+ * narrow on `type` without falling back to unchecked property access. */
+export type TaskEvent = {
+  [Kind in TaskEventPayload['type']]: TaskEventBase & Extract<TaskEventPayload, { type: Kind }>
+}[TaskEventPayload['type']]

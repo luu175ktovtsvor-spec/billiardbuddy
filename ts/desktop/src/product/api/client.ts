@@ -25,9 +25,6 @@ const PRODUCT_API_SAFE_ERROR_MESSAGES: Record<string, string> = {
   TRANSCRIPT_REVISION_CONFLICT: '转写文本已被更新，请刷新后重试。',
   TRANSCRIPT_REVISION_INVALID: '转写编辑内容无效。',
   TRANSCRIPT_BINDING_INVALID: '转写绑定目标无效。',
-  REMOTE_DATA_EGRESS_REQUIRED: '请先确认远程数据使用范围。',
-  REMOTE_DATA_EGRESS_UNAVAILABLE: '远程能力暂时不可用。',
-  REMOTE_DATA_EGRESS_INVALID: '数据使用说明已更新，请重新确认。',
 }
 
 function readProductApiErrorCode(body: unknown): string | null {

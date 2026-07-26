@@ -11,6 +11,8 @@ import {
   fieldMatches,
   CronScheduler,
   latestScheduledOccurrence,
+  nextScheduledOccurrence,
+  purgeScheduledTaskRunsForDeletedTask,
   type TaskRun,
 } from '../services/cronScheduler.js'
 import { CronService, type CronTask } from '../services/cronService.js'
@@ -18,12 +20,12 @@ import { CronService, type CronTask } from '../services/cronService.js'
 // ─── Test helpers ───────────────────────────────────────────────────────────
 
 let tmpDir: string
-const originalConfigDir = process.env.CLAUDE_CONFIG_DIR
+const originalConfigDir = process.env.BILLIARDBUDDY_CONFIG_DIR
 
 async function createTmpDir(): Promise<string> {
   const dir = path.join(
     os.tmpdir(),
-    `claude-test-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    `billiardbuddy-test-${Date.now()}-${Math.random().toString(36).slice(2)}`,
   )
   await fs.mkdir(dir, { recursive: true })
   return dir
@@ -156,6 +158,24 @@ describe('cronMatches', () => {
   it('uses standard cron OR semantics when day-of-month and weekday are both constrained', () => {
     expect(cronMatches('0 9 1 * 1', new Date(2026, 5, 8, 9, 0))).toBe(true)
   })
+
+  it('evaluates an occurrence in the schedule IANA time zone', () => {
+    const instant = new Date('2026-07-24T01:00:00.000Z')
+    expect(cronMatches('0 9 * * *', instant, 'Asia/Shanghai')).toBe(true)
+    expect(cronMatches('0 9 * * *', instant, 'UTC')).toBe(false)
+  })
+
+  it('skips a nonexistent DST wall-clock minute when calculating the next occurrence', () => {
+    const task: CronTask = {
+      id: 'dst',
+      cron: '30 2 * * *',
+      timeZone: 'America/New_York',
+      prompt: 'dst',
+      createdAt: 0,
+    }
+    expect(nextScheduledOccurrence(task, new Date('2026-03-08T05:00:00.000Z'))?.toISOString())
+      .toBe('2026-03-09T06:30:00.000Z')
+  })
 })
 
 describe('missed-run policy', () => {
@@ -191,10 +211,10 @@ describe('CronScheduler', () => {
 
   beforeEach(async () => {
     tmpDir = await createTmpDir()
-    process.env.CLAUDE_CONFIG_DIR = tmpDir
+    process.env.BILLIARDBUDDY_CONFIG_DIR = tmpDir
     cronService = new CronService()
     scheduler = new CronScheduler(cronService, {
-      submitScheduledTaskRun: async (scheduleId) => ({ run_id: `durable_${scheduleId}`, dispatch_generation: 1 }),
+      submitScheduledTaskRun: async (scheduleId) => ({ task_id: `task_${scheduleId}`, run_id: `durable_${scheduleId}`, dispatch_generation: 1 }),
       inspectScheduledTaskRun: async () => ({ state: 'completed' }),
     })
   })
@@ -202,9 +222,9 @@ describe('CronScheduler', () => {
   afterEach(async () => {
     scheduler.stop()
     if (originalConfigDir) {
-      process.env.CLAUDE_CONFIG_DIR = originalConfigDir
+      process.env.BILLIARDBUDDY_CONFIG_DIR = originalConfigDir
     } else {
-      delete process.env.CLAUDE_CONFIG_DIR
+      delete process.env.BILLIARDBUDDY_CONFIG_DIR
     }
     await cleanupTmpDir(tmpDir)
   })
@@ -259,6 +279,20 @@ describe('CronScheduler', () => {
     expect(logContent.runs[0].taskId).toBe(task.id)
     expect(logContent.runs[0].taskName).toBe('Test Task')
     expect(logContent.runs[0].prompt).toBe('echo test')
+  })
+
+  it('purges run history owned by a deleted ProductTask or its related schedules', async () => {
+    const logPath = path.join(tmpDir, 'scheduled_tasks_log.json')
+    const runs: TaskRun[] = [
+      { id: 'related', taskId: 'schedule-related', taskName: 'Related', startedAt: new Date().toISOString(), status: 'completed', prompt: 'private', productTaskId: 'task-delete' },
+      { id: 'failed-related', taskId: 'schedule-related', taskName: 'Failed related', startedAt: new Date().toISOString(), status: 'failed', prompt: 'private' },
+      { id: 'keep', taskId: 'schedule-keep', taskName: 'Keep', startedAt: new Date().toISOString(), status: 'completed', prompt: 'keep', productTaskId: 'task-keep' },
+    ]
+    await fs.writeFile(logPath, JSON.stringify({ schemaVersion: 1, runs }, null, 2), 'utf8')
+
+    expect(await purgeScheduledTaskRunsForDeletedTask('task-delete', ['schedule-related'], tmpDir)).toBe(2)
+    const stored = JSON.parse(await fs.readFile(logPath, 'utf8')) as { runs: TaskRun[] }
+    expect(stored.runs.map(run => run.id)).toEqual(['keep'])
   })
 
   it('should disable non-recurring task after execution', async () => {
@@ -388,10 +422,10 @@ describe('Execution log trimming', () => {
 
   beforeEach(async () => {
     tmpDir = await createTmpDir()
-    process.env.CLAUDE_CONFIG_DIR = tmpDir
+    process.env.BILLIARDBUDDY_CONFIG_DIR = tmpDir
     cronService = new CronService()
     scheduler = new CronScheduler(cronService, {
-      submitScheduledTaskRun: async (scheduleId) => ({ run_id: `durable_${scheduleId}`, dispatch_generation: 1 }),
+      submitScheduledTaskRun: async (scheduleId) => ({ task_id: `task_${scheduleId}`, run_id: `durable_${scheduleId}`, dispatch_generation: 1 }),
       inspectScheduledTaskRun: async () => ({ state: 'completed' }),
     })
   })
@@ -399,9 +433,9 @@ describe('Execution log trimming', () => {
   afterEach(async () => {
     scheduler.stop()
     if (originalConfigDir) {
-      process.env.CLAUDE_CONFIG_DIR = originalConfigDir
+      process.env.BILLIARDBUDDY_CONFIG_DIR = originalConfigDir
     } else {
-      delete process.env.CLAUDE_CONFIG_DIR
+      delete process.env.BILLIARDBUDDY_CONFIG_DIR
     }
     await cleanupTmpDir(tmpDir)
   })
@@ -460,7 +494,7 @@ describe('Product Scheduled Tasks API — runs endpoints', () => {
 
   beforeEach(async () => {
     tmpDir = await createTmpDir()
-    process.env.CLAUDE_CONFIG_DIR = tmpDir
+    process.env.BILLIARDBUDDY_CONFIG_DIR = tmpDir
 
     const mod = await import('../api/productScheduledTasks.js')
     handleProductScheduledTasksApi = mod.handleProductScheduledTasksApi
@@ -468,9 +502,9 @@ describe('Product Scheduled Tasks API — runs endpoints', () => {
 
   afterEach(async () => {
     if (originalConfigDir) {
-      process.env.CLAUDE_CONFIG_DIR = originalConfigDir
+      process.env.BILLIARDBUDDY_CONFIG_DIR = originalConfigDir
     } else {
-      delete process.env.CLAUDE_CONFIG_DIR
+      delete process.env.BILLIARDBUDDY_CONFIG_DIR
     }
     await cleanupTmpDir(tmpDir)
   })

@@ -3,9 +3,9 @@ import { CapacityQueueError, MimoReservationScheduler } from './modelCapacity'
 
 function scheduler(overrides: Partial<ConstructorParameters<typeof MimoReservationScheduler>[0]> = {}) {
   return new MimoReservationScheduler({
-    maxConcurrent: 6, nativeConcurrent: 2, visionConcurrent: 4,
+    maxConcurrent: 6, mediaConcurrent: 2, visionConcurrent: 4,
     maxConcurrentPerUser: 4, maxConcurrentPerToken: 6, maxInflightPerUser: 4,
-    nativeQueueMax: 1, visionQueueMax: 1, visionMaxConcurrentPerUser: 4, visionMaxInflightPerUser: 4,
+    mediaQueueMax: 1, visionQueueMax: 1, visionMaxConcurrentPerUser: 4, visionMaxInflightPerUser: 4,
     ...overrides,
   })
 }
@@ -21,7 +21,7 @@ test('vision lane global cap admits four distinct users then rejects the fifth',
 })
 
 test('vision lane limits one user while admitting another user', async () => {
-  const reservations = scheduler({ maxConcurrent: 4, nativeConcurrent: 2, visionConcurrent: 2, visionMaxConcurrentPerUser: 1, visionMaxInflightPerUser: 1 })
+  const reservations = scheduler({ maxConcurrent: 4, mediaConcurrent: 2, visionConcurrent: 2, visionMaxConcurrentPerUser: 1, visionMaxInflightPerUser: 1 })
   const vision = reservations.forLane('vision')
   const first = await vision.acquire('same-user', { maxWaitMs: 0, tokenId: 'same-token' })
   await expect(vision.acquire('same-user', { maxWaitMs: 0, tokenId: 'same-token' })).rejects.toMatchObject({ status: 429 } satisfies Partial<CapacityQueueError>)
@@ -32,7 +32,7 @@ test('vision lane limits one user while admitting another user', async () => {
 })
 
 test('vision queue abort removes its waiter and preserves active permit accounting', async () => {
-  const reservations = scheduler({ maxConcurrent: 3, nativeConcurrent: 2, visionConcurrent: 1, visionQueueMax: 1, visionMaxConcurrentPerUser: 2, visionMaxInflightPerUser: 2 })
+  const reservations = scheduler({ maxConcurrent: 3, mediaConcurrent: 2, visionConcurrent: 1, visionQueueMax: 1, visionMaxConcurrentPerUser: 2, visionMaxInflightPerUser: 2 })
   const vision = reservations.forLane('vision')
   const first = await vision.acquire('first', { maxWaitMs: 0, tokenId: 'first-token' })
   const controller = new AbortController()

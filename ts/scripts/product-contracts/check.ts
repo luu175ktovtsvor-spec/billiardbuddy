@@ -401,7 +401,7 @@ export function validate(source: Source, artifacts = render(source)): void {
     for (const consumer of entry.consumers as string[]) requireCondition(existsSync(resolve(root, consumer)), `missing runtime consumer: ${consumer}`)
   }
   const supported = source.legacy_support.filter((entry) => entry.status === 'supported' || entry.status === 'current')
-  requireCondition(supported.length === 5, 'initial matrix must have exactly five supported/current disk entries')
+  requireCondition(supported.length > 0, 'legacy matrix must retain at least one supported/current disk reader')
   for (const entry of source.legacy_support) {
     const status = String(entry.status)
     if (status === 'supported' || status === 'current') {

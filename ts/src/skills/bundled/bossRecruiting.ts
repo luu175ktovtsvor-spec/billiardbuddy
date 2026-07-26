@@ -1,4 +1,4 @@
-import { registerBundledSkill } from '../bundledSkills.js'
+import { registerProductBundledSkill } from '../productSkillRegistry.js'
 
 export const BOSS_RECRUITING_FILES: Record<string, string> = {
   'references/execution-pattern.md': `# 招聘任务执行模式
@@ -110,7 +110,7 @@ const BOSS_RECRUITING_PROMPT = `# 招聘球房员工
 按需读取 references/recruiting-worksheet.md。汇报岗位、候选人、动作、真实结果和下一步；需要保存时使用用户指定的位置和字段。中断时写清已完成范围、最后一个确认对象和恢复方式，让下一次会话能继续。`
 
 export function registerBossRecruitingSkill(): void {
-  registerBundledSkill({
+  registerProductBundledSkill({
     name: 'boss-recruiting',
     description: '把球房招聘目标整理成真实岗位、候选人分析、沟通草稿和可人工确认的跟进清单。',
     whenToUse: '用户要在 BOSS 直聘或其他渠道筹备招聘店长、教练、助教、前厅、服务员、收银、保洁等球房员工，或要分析候选人和准备招聘话术时使用；外部发布或联系只在当前会话有真实、已授权通道并经用户确认后进行。',

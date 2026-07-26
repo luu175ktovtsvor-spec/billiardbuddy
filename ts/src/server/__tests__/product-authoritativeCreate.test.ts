@@ -3,11 +3,19 @@ import * as fs from 'node:fs/promises'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import { ProductTaskService } from '../product/taskService.js'
-import { CoreOperationTerminalError } from '../product/coreOperationBridge.js'
+import { ProductCoreOperationTerminalError } from '../product/productCoreOperationBridge.js'
 import { ProductTaskAuthorityRepository } from '../product/authorityRepository.js'
 import { SessionAdmissionBarrier } from '../product/sessionAdmissionBarrier.js'
-import { ActiveCoreRunRegistry } from '../product/activeCoreRunRegistry.js'
-import { SessionService } from '../services/sessionService.js'
+import { ProductHarnessSessionRepository } from '../agent-worker/harnessSessionRepository.js'
+import { createProductUserMessage } from '../agent-worker/productMessages.js'
+import { ProductAutoMemoryRepository } from '../services/productAutoMemory.js'
+
+class ActiveTurnFlag {
+  private active = false
+  markActive(): void { this.active = true }
+  markInactive(): void { this.active = false }
+  hasActive(): boolean { return this.active }
+}
 
 test('authoritative create prepares before bridge, never writes legacy, and replays after finalize crash', async () => { const root = await fs.mkdtemp(path.join(os.tmpdir(), 'authority-create-')); const legacy = path.join(root, 'product-tasks.json'); await fs.writeFile(legacy, '{"version":4,"tasks":{}}'); const before = await fs.readFile(legacy); const authority = path.join(root, 'product-task-authority.v1.json'); let calls = 0; let observedPrepared = false; const bridge = { ensureCreate: async () => { calls++; observedPrepared = Boolean((await fs.readFile(authority, 'utf8')).includes('"prepared"')); return { coreSessionId: 'private-core' } } }; const service = new ProductTaskService({ storagePath: legacy }); const input = { workDir: root, title: 'hello', expected_revision: 0, client_operation_id: 'op-create' }; await expect(service.createTaskAuthoritatively(input, { authorityPath: authority, bridge, afterEnsure: () => { throw new Error('crash-after-bridge') } })).rejects.toThrow('crash-after-bridge'); const result = await new ProductTaskService({ storagePath: legacy }).createTaskAuthoritatively(input, { authorityPath: authority, bridge }); expect(observedPrepared).toBeTrue(); expect(calls).toBe(2); expect(result.receipt.outcome).toBe('accepted'); expect(JSON.stringify(result.task)).not.toContain('private-core'); expect(await fs.readFile(legacy)).toEqual(before) })
 test('authoritative create rejects input reuse conflict', async () => { const root = await fs.mkdtemp(path.join(os.tmpdir(), 'authority-create-conflict-')); const authority = path.join(root, 'product-task-authority.v1.json'); const bridge = { ensureCreate: async () => ({ coreSessionId: 'private' }) }; const s = new ProductTaskService(); await s.createTaskAuthoritatively({ workDir: root, expected_revision: 0, client_operation_id: 'same' }, { authorityPath: authority, bridge }); const second = await s.createTaskAuthoritatively({ workDir: `${root}/other`, expected_revision: 0, client_operation_id: 'same' }, { authorityPath: authority, bridge }); expect(second.receipt.outcome).toBe('conflict') })
@@ -448,8 +456,8 @@ test('lineage mutate action matrix advances only valid action states', async () 
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'lineage-mutate-matrix-')); const storagePath = path.join(root, 'product-tasks.json'); await fs.writeFile(storagePath, JSON.stringify({ version: 4, tasks: { task: { coreSessionId: 'core', title: 'task', lifecycle: 'active', kind: 'main', createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z' } } }))
   const service = new ProductTaskService({ storagePath, installationId: 'install' }); const authorityPath = path.join(root, 'product-task-authority.v1.json'); await service.ensureAuthorityProjectionForLegacyTask('task', { authorityPath }); const created = await service.createConversationLineage({ task_id: 'task', client_operation_id: 'create' }); const id = created.lineage.lineage_id as string
   let revision = 0
-  for (const [action, head] of [['advance', 'head'], ['park', undefined], ['recovery', undefined], ['compact', undefined]] as const) { const result = await service.mutateConversationLineage({ lineage_id: id, expected_revision: revision, client_operation_id: `${action}-${revision}`, action, ...(head ? { head_entry_id: head } : {}) }); expect(result).toMatchObject({ outcome: 'accepted', lineage_revision: revision + 1 }); revision += 1 }
-  const before = await new ProductTaskAuthorityRepository(authorityPath).read(); expect((await service.mutateConversationLineage({ lineage_id: id, expected_revision: 0, client_operation_id: 'stale', action: 'compact' })).outcome).toBe('conflict'); const after = await new ProductTaskAuthorityRepository(authorityPath).read(); expect(JSON.stringify({ revision: after.revision, lineages: after.conversation_lineages })).toBe(JSON.stringify({ revision: before.revision, lineages: before.conversation_lineages }))
+  for (const [action, head] of [['advance', 'head'], ['park', undefined], ['recovery', undefined]] as const) { const result = await service.mutateConversationLineage({ lineage_id: id, expected_revision: revision, client_operation_id: `${action}-${revision}`, action, ...(head ? { head_entry_id: head } : {}) }); expect(result).toMatchObject({ outcome: 'accepted', lineage_revision: revision + 1 }); revision += 1 }
+  const before = await new ProductTaskAuthorityRepository(authorityPath).read(); expect((await service.mutateConversationLineage({ lineage_id: id, expected_revision: 0, client_operation_id: 'stale', action: 'recovery' })).outcome).toBe('conflict'); const after = await new ProductTaskAuthorityRepository(authorityPath).read(); expect(JSON.stringify({ revision: after.revision, lineages: after.conversation_lineages })).toBe(JSON.stringify({ revision: before.revision, lineages: before.conversation_lineages }))
 })
 
 test('lineage current switch is unique and dual-CAS identity fenced', async () => {
@@ -487,7 +495,7 @@ test('terminal Core create failure is finalized as a durable rejected receipt', 
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'authority-rejected-'))
   const authority = path.join(root, 'authority.json')
   const service = new ProductTaskService()
-  const result = await service.createTaskAuthoritatively({ workDir: root, expected_revision: 0, client_operation_id: 'terminal-create' }, { authorityPath: authority, bridge: { ensureCreate: async () => { throw new CoreOperationTerminalError('CORE_OPERATION_INPUT_INVALID', 'bad') } } })
+  const result = await service.createTaskAuthoritatively({ workDir: root, expected_revision: 0, client_operation_id: 'terminal-create' }, { authorityPath: authority, bridge: { ensureCreate: async () => { throw new ProductCoreOperationTerminalError('PRODUCT_OPERATION_INPUT_INVALID', 'bad') } } })
   expect(result.receipt.outcome).toBe('rejected')
   const persisted = await new ProductTaskAuthorityRepository(authority).read()
   expect(persisted.prepared['terminal-create']).toBeUndefined()
@@ -508,32 +516,32 @@ test('root lineage uses task entity CAS and duplicate is byte-stable', async () 
 })
 
 test('admission gate queues run start behind workspace mutation', async () => {
-  const barrier = new SessionAdmissionBarrier(); const registry = new ActiveCoreRunRegistry(); let release!: () => void; const held = new Promise<void>(resolve => { release = resolve }); const order: string[] = []
+  const barrier = new SessionAdmissionBarrier(); const registry = new ActiveTurnFlag(); let release!: () => void; const held = new Promise<void>(resolve => { release = resolve }); const order: string[] = []
   const mutation = barrier.withWorkspaceMutation('core', async () => { order.push('bind-inspect-clear'); await held; order.push('bind-commit') })
   await Bun.sleep(5)
-  const run = barrier.withRunStart('core', async () => { registry.markActive('core'); order.push('run-active') })
-  await Bun.sleep(5); expect(order).toEqual(['bind-inspect-clear']); expect(registry.hasActive('core')).toBeFalse()
-  release(); await Promise.all([mutation, run]); expect(order).toEqual(['bind-inspect-clear', 'bind-commit', 'run-active']); registry.markInactive('core')
+  const run = barrier.withRunStart('core', async () => { registry.markActive(); order.push('run-active') })
+  await Bun.sleep(5); expect(order).toEqual(['bind-inspect-clear']); expect(registry.hasActive()).toBeFalse()
+  release(); await Promise.all([mutation, run]); expect(order).toEqual(['bind-inspect-clear', 'bind-commit', 'run-active']); registry.markInactive()
 })
 
 test('real bind waits for active run admission then rejects without workspace mutation', async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'bind-active-admission-')); const storagePath = path.join(root, 'tasks.json'); await fs.writeFile(storagePath, '{"version":4,"tasks":{}}'); const barrier = new SessionAdmissionBarrier(); const registry = new ActiveCoreRunRegistry(); const authority = path.join(root, 'product-task-authority.v1.json'); let inspectCalls = 0
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'bind-active-admission-')); const storagePath = path.join(root, 'tasks.json'); await fs.writeFile(storagePath, '{"version":4,"tasks":{}}'); const barrier = new SessionAdmissionBarrier(); const registry = new ActiveTurnFlag(); const authority = path.join(root, 'product-task-authority.v1.json'); let inspectCalls = 0
   const receipts = (active: boolean) => active ? [{ participant: 'active_core_run', status: 'BLOCKED', code: 'ACTIVE_RUN' }, { participant: 'queue', status: 'OUT_OF_SCOPE_DISABLED', owner_module: 'BB-02C' }, { participant: 'pty', status: 'OUT_OF_SCOPE_DISABLED', owner_module: 'BB-02C' }, { participant: 'preview', status: 'OUT_OF_SCOPE_DISABLED', owner_module: 'BB-02C' }, { participant: 'workspace_write', status: 'OUT_OF_SCOPE_DISABLED', owner_module: 'BB-02C' }] as const : [{ participant: 'active_core_run', status: 'CLEAR' }, { participant: 'queue', status: 'OUT_OF_SCOPE_DISABLED', owner_module: 'BB-02C' }, { participant: 'pty', status: 'OUT_OF_SCOPE_DISABLED', owner_module: 'BB-02C' }, { participant: 'preview', status: 'OUT_OF_SCOPE_DISABLED', owner_module: 'BB-02C' }, { participant: 'workspace_write', status: 'OUT_OF_SCOPE_DISABLED', owner_module: 'BB-02C' }] as const
-  const service = new ProductTaskService({ storagePath, admissionBarrier: barrier, workspaceFs: { inspect: async (value) => ({ canonical_root: value, identity: { platform: 'test', volume_id: 'v', file_id: value }, availability: 'available' as const }) }, workspaceBindBlockers: { inspect: async () => { inspectCalls++; return { receipts: receipts(registry.hasActive('core')) } } } })
+  const service = new ProductTaskService({ storagePath, admissionBarrier: barrier, workspaceFs: { inspect: async (value) => ({ canonical_root: value, identity: { platform: 'test', volume_id: 'v', file_id: value }, availability: 'available' as const }) }, workspaceBindBlockers: { inspect: async () => { inspectCalls++; return { receipts: receipts(registry.hasActive()) } } } })
   const task = await service.createTaskAuthoritatively({ workDir: root, expected_revision: 0, client_operation_id: 'create' }, { authorityPath: authority, bridge: { ensureCreate: async () => ({ coreSessionId: 'core' }) } }); const workspace = await service.registerWorkspace('/workspace'); const before = await new ProductTaskAuthorityRepository(authority).read()
-  let release!: () => void; const held = new Promise<void>(resolve => { release = resolve }); const run = barrier.withRunStart('core', async () => { registry.markActive('core'); await held }); await Bun.sleep(5)
+  let release!: () => void; const held = new Promise<void>(resolve => { release = resolve }); const run = barrier.withRunStart(task.task.id, async () => { registry.markActive(); await held }); await Bun.sleep(5)
   let settled = false; const bind = service.bindTaskWorkspace({ task_id: task.task.id, workspace_id: workspace.workspace_id, expected_task_revision: 0, expected_workspace_revision: 0, client_operation_id: 'bind' }).then(value => { settled = true; return value }); await Bun.sleep(5); expect(settled).toBeFalse(); expect(inspectCalls).toBe(0)
-  release(); await run; const result = await bind; expect(result).toMatchObject({ outcome: 'rejected', error: 'ACTIVE_RUN' }); const after = await new ProductTaskAuthorityRepository(authority).read(); expect((after.tasks[task.task.id] as { task: { revision: number } }).task.revision).toBe((before.tasks[task.task.id] as { task: { revision: number } }).task.revision); expect(after.workspaces[workspace.workspace_id].revision).toBe(before.workspaces[workspace.workspace_id].revision); expect(after.task_scopes[task.task.id]).toBeUndefined(); registry.markInactive('core')
+  release(); await run; const result = await bind; expect(result).toMatchObject({ outcome: 'rejected', error: 'ACTIVE_RUN' }); const after = await new ProductTaskAuthorityRepository(authority).read(); expect((after.tasks[task.task.id] as { task: { revision: number } }).task.revision).toBe((before.tasks[task.task.id] as { task: { revision: number } }).task.revision); expect(after.workspaces[workspace.workspace_id].revision).toBe(before.workspaces[workspace.workspace_id].revision); expect(after.task_scopes[task.task.id]).toBeUndefined(); registry.markInactive()
 })
 
 test('real bind commit keeps a same-session run start queued until clear inspection commits', async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'bind-clear-admission-')); const storagePath = path.join(root, 'tasks.json'); await fs.writeFile(storagePath, '{"version":4,"tasks":{}}'); const barrier = new SessionAdmissionBarrier(); const registry = new ActiveCoreRunRegistry(); const authority = path.join(root, 'product-task-authority.v1.json'); let inspected!: () => void; const inspectStarted = new Promise<void>(resolve => { inspected = resolve }); let releaseInspect!: () => void; const inspectHeld = new Promise<void>(resolve => { releaseInspect = resolve })
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'bind-clear-admission-')); const storagePath = path.join(root, 'tasks.json'); await fs.writeFile(storagePath, '{"version":4,"tasks":{}}'); const barrier = new SessionAdmissionBarrier(); const registry = new ActiveTurnFlag(); const authority = path.join(root, 'product-task-authority.v1.json'); let inspected!: () => void; const inspectStarted = new Promise<void>(resolve => { inspected = resolve }); let releaseInspect!: () => void; const inspectHeld = new Promise<void>(resolve => { releaseInspect = resolve })
   const disabled = [{ participant: 'queue', status: 'OUT_OF_SCOPE_DISABLED', owner_module: 'BB-02C' }, { participant: 'pty', status: 'OUT_OF_SCOPE_DISABLED', owner_module: 'BB-02C' }, { participant: 'preview', status: 'OUT_OF_SCOPE_DISABLED', owner_module: 'BB-02C' }, { participant: 'workspace_write', status: 'OUT_OF_SCOPE_DISABLED', owner_module: 'BB-02C' }] as const
   const service = new ProductTaskService({ storagePath, admissionBarrier: barrier, workspaceFs: { inspect: async value => ({ canonical_root: value, identity: { platform: 'test', volume_id: 'v', file_id: value }, availability: 'available' as const }) }, workspaceBindBlockers: { inspect: async () => { inspected(); await inspectHeld; return { receipts: [{ participant: 'active_core_run', status: 'CLEAR' }, ...disabled] } } } })
   const task = await service.createTaskAuthoritatively({ workDir: root, expected_revision: 0, client_operation_id: 'create' }, { authorityPath: authority, bridge: { ensureCreate: async () => ({ coreSessionId: 'core' }) } }); const workspace = await service.registerWorkspace('/workspace')
   const bind = service.bindTaskWorkspace({ task_id: task.task.id, workspace_id: workspace.workspace_id, expected_task_revision: 0, expected_workspace_revision: 0, client_operation_id: 'bind' }); await inspectStarted
-  let runEntered = false; const run = barrier.withRunStart('core', async () => { runEntered = true; registry.markActive('core') }); await Bun.sleep(5); expect(runEntered).toBeFalse(); expect(registry.hasActive('core')).toBeFalse()
-  releaseInspect(); const result = await bind; expect(result.outcome).toBe('accepted'); expect(result.participant_receipts).toHaveLength(5); await run; expect(runEntered).toBeTrue(); const after = await new ProductTaskAuthorityRepository(authority).read(); expect((after.tasks[task.task.id] as { task: { revision: number } }).task.revision).toBe(1); expect(after.workspaces[workspace.workspace_id].revision).toBe(1); expect(after.task_scopes[task.task.id]).toMatchObject({ kind: 'workspace', workspace_id: workspace.workspace_id }); registry.markInactive('core')
+  let runEntered = false; const run = barrier.withRunStart(task.task.id, async () => { runEntered = true; registry.markActive() }); await Bun.sleep(5); expect(runEntered).toBeFalse(); expect(registry.hasActive()).toBeFalse()
+  releaseInspect(); const result = await bind; expect(result.outcome).toBe('accepted'); expect(result.participant_receipts).toHaveLength(5); await run; expect(runEntered).toBeTrue(); const after = await new ProductTaskAuthorityRepository(authority).read(); expect((after.tasks[task.task.id] as { task: { revision: number } }).task.revision).toBe(1); expect(after.workspaces[workspace.workspace_id].revision).toBe(1); expect(after.task_scopes[task.task.id]).toMatchObject({ kind: 'workspace', workspace_id: workspace.workspace_id }); registry.markInactive()
 })
 
 describe('BB-02C atomic homepage submit', () => {
@@ -543,7 +551,7 @@ describe('BB-02C atomic homepage submit', () => {
   test('commits all submit maps, upgrades revision, and replays canonically without bytes changing', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'bb-02c-homepage-')); const storagePath = path.join(root, 'product-tasks.json'); const authorityPath = path.join(root, 'product-task-authority.v1.json'); await fs.writeFile(storagePath, '{"version":4,"tasks":{}}')
     const service = new ProductTaskService({ storagePath, installationId: 'install', now }); const draft = await service.createNewTaskComposerDraft({ ttl_ms: 1000, client_operation_id: 'draft' }); const first = await service.createAndSubmitTask(input(draft.draft.draft_id as string)); expect(first).toMatchObject({ outcome: 'accepted', entity_revisions: { task: 1, lineage: 1, draft: 1 } })
-    const state = await new ProductTaskAuthorityRepository(authorityPath).read(); expect(state.authority_schema_revision).toBe(3); for (const map of [state.tasks, state.conversation_lineages, state.thread_entries, state.task_runs, state.dispatch_records, state.task_events, state.receipts, state.events]) expect(Object.keys(map).length).toBeGreaterThan(0)
+    const state = await new ProductTaskAuthorityRepository(authorityPath).read(); expect(state.authority_schema_revision).toBe(7); for (const map of [state.tasks, state.conversation_lineages, state.thread_entries, state.task_runs, state.dispatch_records, state.task_events, state.receipts, state.events]) expect(Object.keys(map).length).toBeGreaterThan(0)
     const bytes = await fs.readFile(authorityPath); const duplicate = await service.createAndSubmitTask({ attachment_ids: [], text: 'homepage text', client_operation_id: 'submit', expected_draft_revision: 0, draft_id: draft.draft.draft_id as string, permission_mode: 'ask_for_approval' }); expect(duplicate).toMatchObject({ outcome: 'duplicate', result: first.result, entity_revisions: first.entity_revisions }); expect(await fs.readFile(authorityPath)).toEqual(bytes)
     expect(await service.createAndSubmitTask({ ...input(draft.draft.draft_id as string), text: 'changed' })).toMatchObject({ outcome: 'rejected', error: 'OPERATION_INPUT_CONFLICT' }); expect(await fs.readFile(authorityPath)).toEqual(bytes)
   })
@@ -596,6 +604,10 @@ describe('BB-02C atomic homepage submit', () => {
     expect(delivered).toHaveLength(1)
     const state = await new ProductTaskAuthorityRepository(authorityPath).read()
     expect(state.dispatch_records[run.run_id]).toMatchObject({ approvals: [{ request_id: 'approval-1', review, status: 'resolved', decision: 'allowed', reviewer: 'user', resolution_reason: 'user_decision' }] })
+    expect(Object.values(state.task_events).filter((event: any) => event.type === 'approval')).toMatchObject([
+      { request_id: 'approval-1', phase: 'requested', action },
+      { request_id: 'approval-1', phase: 'resolved', action, decision: 'allowed', reviewer: 'user' },
+    ])
   })
 
   test('binds approve-for-me requests only to an automatic reviewer receipt', async () => {
@@ -649,21 +661,69 @@ describe('BB-02C atomic homepage submit', () => {
       service.claimTaskRunDispatch(run.run_id, run.dispatch_generation),
     ])
     expect(claims.map((claim) => claim.outcome).sort()).toEqual(['claimed', 'duplicate'])
-    expect((await new ProductTaskAuthorityRepository(path.join(root, 'product-task-authority.v1.json')).read()).dispatch_records[run.run_id]).toMatchObject({ state: 'claimed', dispatch_generation: 1 })
+    const claimedState = await new ProductTaskAuthorityRepository(path.join(root, 'product-task-authority.v1.json')).read()
+    expect(claimedState.dispatch_records[run.run_id]).toMatchObject({ state: 'claimed', dispatch_generation: 1 })
+    expect(claimedState.task_runs[run.run_id]).toMatchObject({ provider: 'deepseek', model: 'deepseek-v4-flash' })
+  })
+
+  test('persists assistant activity and terminal items with cursor paging and a terminal fence', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'bb-03-items-'))
+    const storagePath = path.join(root, 'product-tasks.json')
+    await fs.writeFile(storagePath, '{"version":4,"tasks":{}}')
+    const service = new ProductTaskService({ storagePath, installationId: 'install', now })
+    const draft = await service.createNewTaskComposerDraft({ ttl_ms: 1000, client_operation_id: 'draft-items' })
+    const accepted = await service.createAndSubmitTask(input(draft.draft.draft_id as string, 'submit-items'))
+    const run = accepted.result!
+    await service.claimTaskRunDispatch(run.run_id, 1)
+    const parentId = 'activity_fedcba9876543210fedcba9876543210'
+    const id = 'activity_0123456789abcdef0123456789abcdef'
+    const started = { type: 'activity' as const, id, kind: 'workspace' as const, phase: 'started' as const, summary: '正在整理工作内容' }
+    const completed = { ...started, parentId, progress: { completed: 2, total: 2 }, phase: 'completed' as const, summary: '已整理工作内容' }
+    await service.recordTaskRunActivity(run.run_id, 1, started)
+    const beforeDuplicate = await new ProductTaskAuthorityRepository(path.join(root, 'product-task-authority.v1.json')).read()
+    await service.recordTaskRunActivity(run.run_id, 1, started)
+    expect((await new ProductTaskAuthorityRepository(path.join(root, 'product-task-authority.v1.json')).read()).event_sequence).toBe(beforeDuplicate.event_sequence)
+    await service.recordTaskRunActivity(run.run_id, 1, completed)
+    await service.recordTaskRunTerminalProjection(run.run_id, 1, 'completed', '最终回答')
+    await expect(service.recordTaskRunActivity(run.run_id, 1, { ...started, id: 'activity_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' })).rejects.toThrow('AUTHORITY_INVALID')
+
+    const first = await service.listTaskEvents(run.task_id, 0, 2)
+    const second = await service.listTaskEvents(run.task_id, first.cursor, 2)
+    const third = await service.listTaskEvents(run.task_id, second.cursor, 2)
+    expect(first.has_more).toBeTrue()
+    expect(second.has_more).toBeTrue()
+    expect(third.has_more).toBeUndefined()
+    expect([...first.events, ...second.events, ...third.events].map(event => event.type)).toEqual([
+      'user_text', 'activity', 'activity', 'assistant_text', 'run_terminal',
+    ])
+    expect([...first.events, ...second.events, ...third.events]).toContainEqual(expect.objectContaining({
+      type: 'activity',
+      item_id: id,
+      parent_item_id: parentId,
+      progress: { completed: 2, total: 2 },
+    }))
+    expect(await service.getTaskThread(run.task_id)).toMatchObject({
+      entries: [
+        { type: 'user_text', text: 'homepage text' },
+        { type: 'activity', kind: 'workspace', phase: 'completed' },
+        { type: 'assistant_text', text: '最终回答' },
+      ],
+    })
+    expect(JSON.stringify([...first.events, ...second.events, ...third.events])).not.toContain('session')
   })
 
   test('keeps durable Core binding private and replays one session fail-closed', async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'bb-03dr3-binding-')); const storagePath = path.join(root, 'product-tasks.json'); const authorityPath = path.join(root, 'product-task-authority.v1.json'); const sessionBindingPort = new SessionService(path.join(root, 'claude')); await fs.writeFile(storagePath, '{"version":4,"tasks":{}}')
-    const service = new ProductTaskService({ storagePath, installationId: 'install', now, sessionBindingPort }); const draft = await service.createNewTaskComposerDraft({ ttl_ms: 1000, client_operation_id: 'draft' }); const accepted = await service.createAndSubmitTask(input(draft.draft.draft_id as string)); const run = accepted.result!
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'bb-03dr3-binding-')); const storagePath = path.join(root, 'product-tasks.json'); const authorityPath = path.join(root, 'product-task-authority.v1.json'); await fs.writeFile(storagePath, '{"version":4,"tasks":{}}')
+    const service = new ProductTaskService({ storagePath, installationId: 'install', now }); const draft = await service.createNewTaskComposerDraft({ ttl_ms: 1000, client_operation_id: 'draft' }); const accepted = await service.createAndSubmitTask(input(draft.draft.draft_id as string)); const run = accepted.result!
     const file = await new ProductTaskAuthorityRepository(authorityPath).read(); const binding = (file.task_runs[run.run_id] as any).core_binding; const lineage = file.conversation_lineages[(file.task_runs[run.run_id] as any).lineage_id] as any
     expect(binding).toMatchObject({ resume_binding_id: lineage.resume_binding_id, dispatch_generation: run.dispatch_generation, work_dir: root }); expect(JSON.stringify(await service.listTaskEvents(run.task_id))).not.toContain(binding.session_id); expect(JSON.stringify(await service.getConversationLineage(lineage.lineage_id))).not.toContain(binding.resume_binding_id)
-    const first = await service.resolveTaskRunCoreBinding(run.run_id, run.dispatch_generation); const restarted = new ProductTaskService({ storagePath, installationId: 'install', now, sessionBindingPort }); const replay = await restarted.resolveTaskRunCoreBinding(run.run_id, run.dispatch_generation); expect(replay).toEqual(first); expect((await Promise.all([restarted.resolveTaskRunCoreBinding(run.run_id, 1), restarted.resolveTaskRunCoreBinding(run.run_id, 1)])).every(value => value.session_id === first.session_id)).toBeTrue()
+    const first = await service.resolveTaskRunCoreBinding(run.run_id, run.dispatch_generation); const restarted = new ProductTaskService({ storagePath, installationId: 'install', now }); const replay = await restarted.resolveTaskRunCoreBinding(run.run_id, run.dispatch_generation); expect(replay).toEqual(first); expect((await Promise.all([restarted.resolveTaskRunCoreBinding(run.run_id, 1), restarted.resolveTaskRunCoreBinding(run.run_id, 1)])).every(value => value.session_id === first.session_id)).toBeTrue()
     await expect(restarted.resolveTaskRunCoreBinding(run.run_id, 2)).rejects.toThrow('CORE_BINDING_UNAVAILABLE'); await new ProductTaskAuthorityRepository(authorityPath).transactSubmit(state => { const stored = state.task_runs[run.run_id] as any; stored.core_binding = { ...stored.core_binding, resume_binding_id: 'resume_forged' }; return undefined }); await expect(restarted.resolveTaskRunCoreBinding(run.run_id, 1)).rejects.toThrow('CORE_BINDING_UNAVAILABLE'); await fs.rm(root, { recursive: true, force: true }); await expect(restarted.resolveTaskRunCoreBinding(run.run_id, 1)).rejects.toThrow('CORE_BINDING_UNAVAILABLE')
   })
 
   test('anchors a workspace-bound submit to its authoritative canonical root', async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'bb-03dr3-workspace-')); const storagePath = path.join(root, 'product-tasks.json'); const authorityPath = path.join(root, 'product-task-authority.v1.json'); const sessionBindingPort = new SessionService(path.join(root, 'claude')); await fs.writeFile(storagePath, JSON.stringify({ version: 4, tasks: { task: { coreSessionId: 'core', title: 'task', lifecycle: 'active', kind: 'main', createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z' } } }))
-    const service = new ProductTaskService({ storagePath, installationId: 'install', now, sessionBindingPort, workspaceFs: { inspect: async value => ({ canonical_root: value, identity: { platform: 'test', volume_id: 'volume', file_id: 'file' }, availability: 'available' as const }) } }); await service.ensureAuthorityProjectionForLegacyTask('task', { authorityPath }); const workspace = await service.registerWorkspace(root); expect((await service.bindTaskWorkspace({ task_id: 'task', workspace_id: workspace.workspace_id, expected_task_revision: 0, expected_workspace_revision: 0, client_operation_id: 'bind' })).outcome).toBe('accepted')
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'bb-03dr3-workspace-')); const storagePath = path.join(root, 'product-tasks.json'); const authorityPath = path.join(root, 'product-task-authority.v1.json'); await fs.writeFile(storagePath, JSON.stringify({ version: 4, tasks: { task: { coreSessionId: 'core', title: 'task', lifecycle: 'active', kind: 'main', createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z' } } }))
+    const service = new ProductTaskService({ storagePath, installationId: 'install', now, workspaceFs: { inspect: async value => ({ canonical_root: value, identity: { platform: 'test', volume_id: 'volume', file_id: 'file' }, availability: 'available' as const }) } }); await service.ensureAuthorityProjectionForLegacyTask('task', { authorityPath }); const workspace = await service.registerWorkspace(root); expect((await service.bindTaskWorkspace({ task_id: 'task', workspace_id: workspace.workspace_id, expected_task_revision: 0, expected_workspace_revision: 0, client_operation_id: 'bind' })).outcome).toBe('accepted')
     const accepted = await service.submitTaskRun('task', { expected_task_revision: 1, expected_lineage_revision: 0, client_operation_id: 'submit', text: 'text', attachment_ids: [] }); const run = accepted.result!; const file = await new ProductTaskAuthorityRepository(authorityPath).read(); const stored = file.task_runs[run.run_id] as any; expect(stored).toMatchObject({ execution_capability: 'workspace_bound', core_binding: { work_dir: root, dispatch_generation: 1 } }); expect(stored.core_binding.resume_binding_id).toBe((file.conversation_lineages[stored.lineage_id] as any).resume_binding_id); await expect(service.resolveTaskRunCoreBinding(run.run_id, 1)).resolves.toMatchObject({ work_dir: await fs.realpath(root) })
   })
 
@@ -727,10 +787,72 @@ describe('BB-02C existing task submit matrix', () => {
 
     expect(await service.stopActiveTaskRun('task')).toBeTrue()
     expect(stopped).toEqual([[first.result!.run_id, first.result!.dispatch_generation]])
-    expect(stopped[0]?.[0]).not.toBe(second.result!.run_id)
+    expect(second.result).toMatchObject({ delivery: 'queued' })
   })
 
-  test('BB-09A keeps follow-up runs in durable FIFO order and resumes the next pending head after restart', async () => {
+  test('injects only the durable queue head into the same active Turn and replays consumption idempotently', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'bb-steer-consume-'))
+    const storagePath = path.join(root, 'product-tasks.json')
+    const authorityPath = path.join(root, 'product-task-authority.v1.json')
+    const now = () => new Date('2026-01-01T00:00:00.000Z')
+    await fs.writeFile(storagePath, JSON.stringify({ version: 4, tasks: { task: { coreSessionId: 'core', title: 'task', lifecycle: 'active', kind: 'main', createdAt: now().toISOString(), updatedAt: now().toISOString() } } }))
+    const service = new ProductTaskService({ storagePath, installationId: 'install', now })
+    await service.ensureAuthorityProjectionForLegacyTask('task', { authorityPath })
+    await service.createConversationLineage({ task_id: 'task', expected_task_revision: 0, client_operation_id: 'lineage' })
+    const first = await service.submitTaskRun('task', { expected_task_revision: 1, expected_lineage_revision: 0, client_operation_id: 'first', text: 'first', attachment_ids: [] })
+    const second = await service.submitTaskRun('task', { expected_task_revision: 2, expected_lineage_revision: 1, client_operation_id: 'second', text: 'second', attachment_ids: [] })
+    const third = await service.submitTaskRun('task', { expected_task_revision: 3, expected_lineage_revision: 1, client_operation_id: 'third', text: 'third', attachment_ids: [] })
+    const runId = (first.result as { run_id: string }).run_id
+    const secondQueueId = (second.result as { queue_item_id: string }).queue_item_id
+    const thirdQueueId = (third.result as { queue_item_id: string }).queue_item_id
+    await service.claimTaskRunDispatch(runId, 1)
+
+    await expect(service.recordQueuedInputConsumed(runId, 1, thirdQueueId)).rejects.toThrow('AUTHORITY_INVALID')
+    const consumed = await service.recordQueuedInputConsumed(runId, 1, secondQueueId)
+    expect(consumed.events.map((event) => event.type)).toEqual(['queue_updated', 'user_text'])
+    expect(consumed.events[1]).toMatchObject({ type: 'user_text', text: 'second', replayed: true })
+    expect(await service.recordQueuedInputConsumed(runId, 1, secondQueueId)).toEqual(consumed)
+
+    const state = await new ProductTaskAuthorityRepository(authorityPath).read()
+    expect(Object.keys(state.task_runs)).toEqual([runId])
+    expect(Object.values(state.thread_entries).map((entry) => (entry as { run_id: string }).run_id)).toEqual([runId, runId])
+    expect((state.conversation_lineages[(state.task_runs[runId] as { lineage_id: string }).lineage_id] as { revision: number }).revision).toBe(2)
+    expect((await service.listQueuedInputs('task')).items.map((item) => item.id)).toEqual([thirdQueueId])
+  })
+
+  test('keeps an attachment follow-up for the next Turn and requires an explicit resume after stop', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'bb-queue-attachment-'))
+    const storagePath = path.join(root, 'product-tasks.json')
+    const authorityPath = path.join(root, 'product-task-authority.v1.json')
+    const now = () => new Date('2026-01-01T00:00:00.000Z')
+    await fs.writeFile(storagePath, JSON.stringify({ version: 4, tasks: { task: { coreSessionId: 'core', title: 'task', lifecycle: 'active', kind: 'main', createdAt: now().toISOString(), updatedAt: now().toISOString() } } }))
+    const dispatched: string[] = []
+    const service = new ProductTaskService({ storagePath, installationId: 'install', now, dispatcher: { dispatch: async runId => { dispatched.push(runId); return 'started' } } })
+    await service.ensureAuthorityProjectionForLegacyTask('task', { authorityPath })
+    await service.createConversationLineage({ task_id: 'task', expected_task_revision: 0, client_operation_id: 'lineage' })
+    const attachment = await service.registerAttachmentIdentity({ kind: 'product_task', id: 'task' }, { source_fingerprint: 'a'.repeat(64), content_hash: 'b'.repeat(64), verified_media_type: 'image/png', storage_kind: 'external_reference', byte_size: 1 }, 1_000, 'attachment')
+    await service.setAttachmentReadyForTest(attachment.attachment_id, 0)
+    const first = await service.submitTaskRun('task', { expected_task_revision: 1, expected_lineage_revision: 0, client_operation_id: 'first', text: 'first', attachment_ids: [] })
+    const queued = await service.submitTaskRun('task', { expected_task_revision: 2, expected_lineage_revision: 1, client_operation_id: 'attachment-follow-up', text: 'inspect image', attachment_ids: [attachment.attachment_id] })
+    const runId = (first.result as { run_id: string }).run_id
+    const queueId = (queued.result as { queue_item_id: string }).queue_item_id
+    await service.claimTaskRunDispatch(runId, 1)
+    await expect(service.recordQueuedInputConsumed(runId, 1, queueId)).rejects.toThrow('AUTHORITY_INVALID')
+    await service.recordTaskRunTerminalProjection(runId, 1, 'stopped', '')
+    await service.advanceTaskRunQueue(runId, 1)
+    expect((await service.listQueuedInputs('task')).items.map((item) => item.id)).toEqual([queueId])
+
+    const overtaking = await service.submitTaskRun('task', { expected_task_revision: 3, expected_lineage_revision: 1, client_operation_id: 'later', text: 'later', attachment_ids: [] })
+    expect(overtaking.result).toMatchObject({ delivery: 'queued' })
+    const resumed = await service.resumeTaskInputQueue('task', { expected_task_revision: 4, client_operation_id: 'resume' })
+    expect(resumed).toMatchObject({ outcome: 'accepted', task_revision: 5 })
+    const state = await new ProductTaskAuthorityRepository(authorityPath).read()
+    expect(state.turn_input_queue[queueId]).toMatchObject({ state: 'promoted' })
+    expect(Object.values(state.attachment_bindings)).toContainEqual(expect.objectContaining({ attachment_id: attachment.attachment_id }))
+    expect(dispatched.length).toBeGreaterThanOrEqual(2)
+  })
+
+  test('keeps follow-up input in durable FIFO order and promotes one new Turn at a time', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'bb-09a-task-queue-'))
     const storagePath = path.join(root, 'product-tasks.json')
     const authorityPath = path.join(root, 'product-task-authority.v1.json')
@@ -741,21 +863,73 @@ describe('BB-02C existing task submit matrix', () => {
     await service.createConversationLineage({ task_id: 'task', expected_task_revision: 0, client_operation_id: 'lineage' })
     const first = await service.submitTaskRun('task', { expected_task_revision: 1, expected_lineage_revision: 0, client_operation_id: 'first', text: 'first', attachment_ids: [] })
     const second = await service.submitTaskRun('task', { expected_task_revision: 2, expected_lineage_revision: 1, client_operation_id: 'second', text: 'second', attachment_ids: [] })
-    const third = await service.submitTaskRun('task', { expected_task_revision: 3, expected_lineage_revision: 2, client_operation_id: 'third', text: 'third', attachment_ids: [] })
+    const third = await service.submitTaskRun('task', { expected_task_revision: 3, expected_lineage_revision: 1, client_operation_id: 'third', text: 'third', attachment_ids: [] })
     expect(await service.inspectTaskRunQueuePosition(first.result!.run_id, 1)).toBe('ready')
-    expect(await service.claimTaskRunDispatch(second.result!.run_id, 1)).toMatchObject({ outcome: 'queued' })
     expect(await service.claimTaskRunDispatch(first.result!.run_id, 1)).toMatchObject({ outcome: 'claimed' })
-    expect(await service.inspectTaskRunQueuePosition(second.result!.run_id, 1)).toBe('queued')
-    await service.settleTaskRunDispatch(first.result!.run_id, 1, 'terminal')
-    expect(await service.inspectTaskRunQueuePosition(second.result!.run_id, 1)).toBe('ready')
-    expect(await service.claimTaskRunDispatch(second.result!.run_id, 1)).toMatchObject({ outcome: 'claimed' })
-    await service.settleTaskRunDispatch(second.result!.run_id, 1, 'terminal')
+    expect(second.result).toMatchObject({ delivery: 'queued' })
+    expect(third.result).toMatchObject({ delivery: 'queued' })
+    await service.recordTaskRunTerminalProjection(first.result!.run_id, 1, 'completed', 'first answer')
+    await service.advanceTaskRunQueue(first.result!.run_id, 1)
+    let state = await new ProductTaskAuthorityRepository(authorityPath).read()
+    const secondRunId = (state.turn_input_queue[(second.result as { queue_item_id: string }).queue_item_id] as { target_run_id: string }).target_run_id
+    expect(await service.inspectTaskRunQueuePosition(secondRunId, 1)).toBe('ready')
+    expect(await service.claimTaskRunDispatch(secondRunId, 1)).toMatchObject({ outcome: 'claimed' })
+    await service.recordTaskRunTerminalProjection(secondRunId, 1, 'completed', 'second answer')
+    await service.advanceTaskRunQueue(secondRunId, 1)
+    state = await new ProductTaskAuthorityRepository(authorityPath).read()
+    const thirdRunId = (state.turn_input_queue[(third.result as { queue_item_id: string }).queue_item_id] as { target_run_id: string }).target_run_id
 
     const dispatched: string[] = []
     const restarted = new ProductTaskService({ storagePath, installationId: 'install', now, dispatcher: { dispatch: async runId => { dispatched.push(runId); return 'queued' } } })
     await restarted.recoverDurableTaskRunQueue()
     await restarted.recoverDurableTaskRunQueue()
-    expect(dispatched).toEqual([third.result!.run_id])
+    expect(dispatched).toEqual([thirdRunId])
+  })
+
+  test('promotes a queued follow-up exactly once after a completed Turn restart gap', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'bb-queue-completed-recovery-'))
+    const storagePath = path.join(root, 'product-tasks.json')
+    const authorityPath = path.join(root, 'product-task-authority.v1.json')
+    const now = () => new Date('2026-01-01T00:00:00.000Z')
+    await fs.writeFile(storagePath, JSON.stringify({ version: 4, tasks: { task: { coreSessionId: 'core', title: 'task', lifecycle: 'active', kind: 'main', createdAt: now().toISOString(), updatedAt: now().toISOString() } } }))
+    const service = new ProductTaskService({ storagePath, installationId: 'install', now })
+    await service.ensureAuthorityProjectionForLegacyTask('task', { authorityPath })
+    await service.createConversationLineage({ task_id: 'task', expected_task_revision: 0, client_operation_id: 'lineage' })
+    const first = await service.submitTaskRun('task', { expected_task_revision: 1, expected_lineage_revision: 0, client_operation_id: 'first', text: 'first', attachment_ids: [] })
+    const followUp = await service.submitTaskRun('task', { expected_task_revision: 2, expected_lineage_revision: 1, client_operation_id: 'follow-up', text: 'follow-up', attachment_ids: [] })
+    await service.recordTaskRunTerminalProjection(first.result!.run_id, 1, 'completed', 'done')
+
+    const dispatched: string[] = []
+    const restarted = new ProductTaskService({ storagePath, installationId: 'install', now, dispatcher: { dispatch: async runId => { dispatched.push(runId); return 'started' } } })
+    await restarted.recoverDurableTaskRunQueue()
+    await restarted.recoverDurableTaskRunQueue()
+
+    const state = await new ProductTaskAuthorityRepository(authorityPath).read()
+    const queueId = (followUp.result as { queue_item_id: string }).queue_item_id
+    expect(state.turn_input_queue[queueId]).toMatchObject({ state: 'promoted' })
+    expect(dispatched).toEqual([(state.turn_input_queue[queueId] as { target_run_id: string }).target_run_id])
+  })
+
+  test('keeps a queued follow-up paused across restart after a stopped Turn', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'bb-queue-stopped-recovery-'))
+    const storagePath = path.join(root, 'product-tasks.json')
+    const authorityPath = path.join(root, 'product-task-authority.v1.json')
+    const now = () => new Date('2026-01-01T00:00:00.000Z')
+    await fs.writeFile(storagePath, JSON.stringify({ version: 4, tasks: { task: { coreSessionId: 'core', title: 'task', lifecycle: 'active', kind: 'main', createdAt: now().toISOString(), updatedAt: now().toISOString() } } }))
+    const service = new ProductTaskService({ storagePath, installationId: 'install', now })
+    await service.ensureAuthorityProjectionForLegacyTask('task', { authorityPath })
+    await service.createConversationLineage({ task_id: 'task', expected_task_revision: 0, client_operation_id: 'lineage' })
+    const first = await service.submitTaskRun('task', { expected_task_revision: 1, expected_lineage_revision: 0, client_operation_id: 'first', text: 'first', attachment_ids: [] })
+    const followUp = await service.submitTaskRun('task', { expected_task_revision: 2, expected_lineage_revision: 1, client_operation_id: 'follow-up', text: 'follow-up', attachment_ids: [] })
+    await service.recordTaskRunTerminalProjection(first.result!.run_id, 1, 'stopped', '')
+
+    const dispatched: string[] = []
+    const restarted = new ProductTaskService({ storagePath, installationId: 'install', now, dispatcher: { dispatch: async runId => { dispatched.push(runId); return 'started' } } })
+    await restarted.recoverDurableTaskRunQueue()
+
+    const queueId = (followUp.result as { queue_item_id: string }).queue_item_id
+    expect(dispatched).toEqual([])
+    expect((await restarted.listQueuedInputs('task')).items).toContainEqual(expect.objectContaining({ id: queueId, state: 'queued' }))
   })
 
   test('BB-09A never replays an interrupted Core run or overtakes it after restart', async () => {
@@ -769,8 +943,8 @@ describe('BB-02C existing task submit matrix', () => {
     await service.createConversationLineage({ task_id: 'task', expected_task_revision: 0, client_operation_id: 'lineage' })
     const first = await service.submitTaskRun('task', { expected_task_revision: 1, expected_lineage_revision: 0, client_operation_id: 'first', text: 'first', attachment_ids: [] })
     await service.submitTaskRun('task', { expected_task_revision: 2, expected_lineage_revision: 1, client_operation_id: 'second', text: 'second', attachment_ids: [] })
-    for (let index = 3; index <= 8; index += 1) expect((await service.submitTaskRun('task', { expected_task_revision: index, expected_lineage_revision: index - 1, client_operation_id: `queued-${index}`, text: `queued-${index}`, attachment_ids: [] })).outcome).toBe('accepted')
-    expect(await service.submitTaskRun('task', { expected_task_revision: 9, expected_lineage_revision: 8, client_operation_id: 'queue-full', text: 'queue-full', attachment_ids: [] })).toMatchObject({ outcome: 'rejected', error: 'TASK_QUEUE_FULL' })
+    for (let index = 3; index <= 8; index += 1) expect((await service.submitTaskRun('task', { expected_task_revision: index, expected_lineage_revision: 1, client_operation_id: `queued-${index}`, text: `queued-${index}`, attachment_ids: [] })).outcome).toBe('accepted')
+    expect(await service.submitTaskRun('task', { expected_task_revision: 9, expected_lineage_revision: 1, client_operation_id: 'queue-full', text: 'queue-full', attachment_ids: [] })).toMatchObject({ outcome: 'rejected', error: 'TASK_QUEUE_FULL' })
     await service.claimTaskRunDispatch(first.result!.run_id, 1)
     const dispatched: string[] = []
     const restarted = new ProductTaskService({ storagePath, installationId: 'install', now, dispatcher: { dispatch: async runId => { dispatched.push(runId); return 'started' } } })
@@ -813,7 +987,7 @@ describe('BB-02C existing task submit matrix', () => {
     const attachment = await service.registerAttachmentIdentity({ kind: 'product_task', id: 'task' }, { source_fingerprint: 'a'.repeat(64), content_hash: 'b'.repeat(64), verified_media_type: 'image/png', storage_kind: 'external_reference', byte_size: 1 }, 1000, 'attachment'); await service.setAttachmentReadyForTest(attachment.attachment_id, 0)
     const firstInput = { expected_task_revision: 1, expected_lineage_revision: 0, client_operation_id: 'first', text: 'first', attachment_ids: [attachment.attachment_id] }; const first = await service.submitTaskRun('task', firstInput); expect(first.outcome).toBe('accepted'); const bytes = await fs.readFile(authorityPath)
     expect((await service.submitTaskRun('task', { expected_task_revision: 2, expected_lineage_revision: 1, client_operation_id: 'second', text: 'second', attachment_ids: [] })).outcome).toBe('accepted'); const duplicate = await service.submitTaskRun('task', firstInput); expect(duplicate).toEqual({ ...first, outcome: 'duplicate' }); const afterDuplicate = await fs.readFile(authorityPath); expect(afterDuplicate).not.toEqual(bytes)
-    const stable = await fs.readFile(authorityPath); expect(await service.submitTaskRun('task', { ...firstInput, text: 'changed' })).toMatchObject({ outcome: 'rejected', error: 'OPERATION_INPUT_CONFLICT' }); expect(await service.submitTaskRun('task', { ...firstInput, client_operation_id: 'stale' })).toMatchObject({ outcome: 'conflict' }); fail = true; expect((await service.submitTaskRun('task', { expected_task_revision: 3, expected_lineage_revision: 2, client_operation_id: 'write-fail', text: 'fail', attachment_ids: [] })).outcome).toBe('rejected'); expect(await fs.readFile(authorityPath)).toEqual(stable)
+    const stable = await fs.readFile(authorityPath); expect(await service.submitTaskRun('task', { ...firstInput, text: 'changed' })).toMatchObject({ outcome: 'rejected', error: 'OPERATION_INPUT_CONFLICT' }); expect(await service.submitTaskRun('task', { ...firstInput, client_operation_id: 'stale' })).toMatchObject({ outcome: 'conflict' }); fail = true; expect((await service.submitTaskRun('task', { expected_task_revision: 3, expected_lineage_revision: 1, client_operation_id: 'write-fail', text: 'fail', attachment_ids: [] })).outcome).toBe('rejected'); expect(await fs.readFile(authorityPath)).toEqual(stable)
   })
 
   test('submit attachment negative matrix is atomic', async () => {
@@ -836,12 +1010,12 @@ test('submit service rejects unpaired draft CAS fields without a durable write',
   expect(await fs.readFile(authorityPath)).toEqual(before)
 })
 
-describe('BB-02C revision 3 upgrade', () => {
+describe('authority submit schema upgrade', () => {
   test('first C transaction upgrades legal revision one and restart reads all C maps', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'bb-02c-rev3-')); const authorityPath = path.join(root, 'authority.json'); const now = '2026-01-01T00:00:00.000Z'; const task = { id: 'task', projectId: '', directoryId: '', workDir: '', title: 'task', lifecycle: 'active', kind: 'main', createdAt: now, updatedAt: now, worktreeState: 'not_requested', actions: ['pin', 'unpin', 'rename', 'continue', 'archive', 'restore'], revision: 1, current_lineage_id: 'lineage' }
     await fs.writeFile(authorityPath, JSON.stringify({ version: 1, revision: 0, event_sequence: 0, tasks: { task: { task, binding: { coreSessionId: 'core' } } }, side_tasks: {}, bindings: {}, receipts: {}, events: {}, outbox: {}, prepared: {}, provenance: { task: { version: 4, store_digest: 'a'.repeat(64), record_digest: 'b'.repeat(64) } } }))
     await new ProductTaskAuthorityRepository(authorityPath).transactSubmit(state => { state.conversation_lineages.lineage = { lineage_id: 'lineage', product_task_id: 'task', revision: 1, compact_generation: 0, resume_binding_id: 'resume', state: 'active', created_at: now, updated_at: now, head_entry_id: 'entry' }; state.thread_entries.entry = { entry_id: 'entry', task_id: 'task', run_id: 'run', text: 'text', created_at: now }; state.task_runs.run = { run_id: 'run', task_id: 'task', lineage_id: 'lineage', entry_id: 'entry', created_at: now, execution_capability: 'installation_default_denied', permission_mode: null, provider: null, model: null }; state.dispatch_records.run = { run_id: 'run', dispatch_generation: 1, state: 'pending' }; state.task_events['1'] = { event_sequence: 1, task_id: 'task', run_id: 'run', type: 'user_text', entry_id: 'entry', text: 'text', attachment_ids: [], created_at: now }; state.events.submit = { event_sequence: 1, client_operation_id: 'submit', kind: 'task_submit', revision: 1, canonical_input: '{}', entity_id: 'task', product_task_id: 'task' }; state.receipts.submit = { client_operation_id: 'submit', expected_revision: 1, outcome: 'accepted', revision: 1, result: { task_id: 'task', run_id: 'run', entry_id: 'entry', dispatch_generation: 1, authority_revision: 1, entity_revisions: { task: 1, lineage: 1 } } } })
-    const restarted = await new ProductTaskAuthorityRepository(authorityPath).read(); expect(restarted.authority_schema_revision).toBe(3); expect(restarted).toMatchObject({ task_runs: { run: { entry_id: 'entry' } }, dispatch_records: { run: { state: 'pending' } }, task_events: { '1': { run_id: 'run' } } })
+    const restarted = await new ProductTaskAuthorityRepository(authorityPath).read(); expect(restarted.authority_schema_revision).toBe(7); expect(restarted).toMatchObject({ task_runs: { run: { entry_id: 'entry' } }, dispatch_records: { run: { state: 'pending' } }, task_events: { '1': { run_id: 'run' } }, turn_input_queue: {}, context_snapshots: {} })
   })
 
   test('real existing submit upgrades rev2 to rev3 without losing B maps', async () => {
@@ -852,7 +1026,7 @@ describe('BB-02C revision 3 upgrade', () => {
     const repository = new ProductTaskAuthorityRepository(authorityPath); await repository.mutateCapabilities(state => { state.workspaces.workspace = { workspace_id: 'workspace', installation_id: 'install', canonical_root: '/workspace', root_identity: { platform: 'test', volume_id: 'v', file_id: 'f' }, revision: 0, availability: 'available', created_at: now().toISOString(), updated_at: now().toISOString() }; state.task_scopes.task = { kind: 'installation-default' } })
     const before = await repository.read(); const b = JSON.stringify({ workspaces: before.workspaces, task_scopes: before.task_scopes, composer_drafts: before.composer_drafts, task_attachments: before.task_attachments, conversation_lineages: before.conversation_lineages })
     const accepted = await service.submitTaskRun('task', { expected_task_revision: 1, expected_lineage_revision: 0, expected_draft_revision: 0, draft_id: draft.draft.draft_id as string, client_operation_id: 'submit', text: 'text', attachment_ids: [attachment.attachment_id] }); expect(accepted.outcome).toBe('accepted')
-    const after = await new ProductTaskAuthorityRepository(authorityPath).read(); expect(after.authority_schema_revision).toBe(3); expect(JSON.stringify({ workspaces: after.workspaces, task_scopes: after.task_scopes })).toBe(JSON.stringify({ workspaces: before.workspaces, task_scopes: before.task_scopes })); expect(Object.keys(after.thread_entries)).toHaveLength(1); expect(Object.keys(after.task_runs)).toHaveLength(1); expect(Object.keys(after.dispatch_records)).toHaveLength(1); expect(Object.keys(after.task_events)).toHaveLength(1); expect(Object.keys(after.attachment_bindings)).toHaveLength(1); expect(JSON.stringify(after.composer_drafts)).not.toBe(JSON.stringify(before.composer_drafts)); expect(JSON.stringify(after.task_attachments)).not.toBe(JSON.stringify(before.task_attachments)); expect(JSON.stringify(after.conversation_lineages)).not.toBe(JSON.stringify(before.conversation_lineages)); expect(b).toContain('workspace')
+    const after = await new ProductTaskAuthorityRepository(authorityPath).read(); expect(after.authority_schema_revision).toBe(7); expect(JSON.stringify({ workspaces: after.workspaces, task_scopes: after.task_scopes })).toBe(JSON.stringify({ workspaces: before.workspaces, task_scopes: before.task_scopes })); expect(Object.keys(after.thread_entries)).toHaveLength(1); expect(Object.keys(after.task_runs)).toHaveLength(1); expect(Object.keys(after.dispatch_records)).toHaveLength(1); expect(Object.keys(after.task_events)).toHaveLength(1); expect(Object.keys(after.attachment_bindings)).toHaveLength(1); expect(after.turn_input_queue).toEqual({}); expect(after.context_snapshots).toEqual({}); expect(JSON.stringify(after.composer_drafts)).not.toBe(JSON.stringify(before.composer_drafts)); expect(JSON.stringify(after.task_attachments)).not.toBe(JSON.stringify(before.task_attachments)); expect(JSON.stringify(after.conversation_lineages)).not.toBe(JSON.stringify(before.conversation_lineages)); expect(b).toContain('workspace')
     const bytes = await fs.readFile(authorityPath); fail = true; expect((await service.submitTaskRun('task', { expected_task_revision: 2, expected_lineage_revision: 1, client_operation_id: 'write-fail', text: 'fail', attachment_ids: [] })).outcome).toBe('rejected'); expect(await fs.readFile(authorityPath)).toEqual(bytes)
   })
 
@@ -929,5 +1103,50 @@ describe('BB-02D recoverable task deletion', () => {
     expect(Object.keys(deleted.task_events)).toHaveLength(0)
     expect(Object.keys(deleted.conversation_lineages)).toHaveLength(0)
     expect(await service.mutateTaskDeletion(taskId, { action: 'retry', expected_revision: 7, client_operation_id: 'delete-retry' })).toMatchObject({ outcome: 'duplicate', task: { lifecycle: 'deleted', revision: 8 } })
+  })
+
+  test('purges private bindings, attachments, harness sessions, AutoMem turns, and side-task consumers', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'bb-02d-private-artifacts-'))
+    const storagePath = path.join(root, 'product-tasks.json')
+    const authorityPath = path.join(root, 'product-task-authority.v1.json')
+    const timestamp = '2026-01-01T00:00:00.000Z'
+    await fs.writeFile(storagePath, JSON.stringify({ version: 4, tasks: { task: { coreSessionId: 'private-core', title: 'task', lifecycle: 'active', kind: 'main', createdAt: timestamp, updatedAt: timestamp } } }))
+    const service = new ProductTaskService({ storagePath, installationId: 'install', now: () => new Date(timestamp) })
+    await service.ensureAuthorityProjectionForLegacyTask('task', { authorityPath })
+    const repository = new ProductTaskAuthorityRepository(authorityPath)
+    await repository.transactSubmit(state => {
+      const stored = state.tasks.task as { task: Record<string, unknown>; binding: unknown }
+      state.tasks.task = { ...stored, task: { ...stored.task, lifecycle: 'archived', archivedAt: timestamp, actions: ['restore', 'continue'], revision: 1 } }
+      state.conversation_lineages.lineage = { lineage_id: 'lineage', product_task_id: 'task', revision: 0, compact_generation: 0, resume_binding_id: 'resume-private', state: 'active', created_at: timestamp, updated_at: timestamp }
+      state.thread_entries.entry = { entry_id: 'entry', task_id: 'task', run_id: 'run-terminal', text: 'remember me', created_at: timestamp }
+      state.composer_drafts.draft = { draft_id: 'draft', installation_id: 'install', target_task_id: 'task', revision: 0, last_activity: timestamp, state: 'consumed', created_at: timestamp, expires_at: '2027-01-01T00:00:00.000Z' }
+      state.task_attachments.attachment_asset = { attachment_id: 'attachment_asset', installation_id: 'install', owner_kind: 'product_task', owner_id: 'task', source_fingerprint: 'a'.repeat(64), content_hash: 'b'.repeat(64), verified_media_type: 'text/plain', storage_kind: 'app_owned_copy', byte_size: 7, state: 'accepted_bound', refs: ['task'], created_at: timestamp, last_activity: timestamp, expires_at: '2027-01-01T00:00:00.000Z', revision: 1 }
+      state.side_tasks.side = { id: 'side', parentTaskId: 'task', taskId: 'task-side', title: 'side', status: 'closed', createdAt: timestamp, updatedAt: timestamp, closedAt: timestamp }
+      state.bindings.side = { id: 'side', kind: 'side', binding: { coreSessionId: 'side-private' } }
+    })
+    const attachmentDir = path.join(root, 'product-task-attachments', 'attachment_asset')
+    await fs.mkdir(attachmentDir, { recursive: true }); await fs.writeFile(path.join(attachmentDir, 'source.txt'), 'private')
+    const harnessBinding = { storage_dir: path.join(root, 'product-harness-sessions'), binding_id: 'resume-private', lineage_id: 'lineage' }
+    const harness = new ProductHarnessSessionRepository()
+    await harness.save(harnessBinding, { context_prefix: '', messages: [createProductUserMessage({ content: 'private turn' })], run_id: 'run-terminal', instruction_digest: 'c'.repeat(64), instruction_prompt: null })
+    const autoMemory = new ProductAutoMemoryRepository()
+    const memoryBinding = { storage_dir: path.join(root, 'product-auto-memory'), work_dir: root, enabled: true }
+    await autoMemory.initialize(memoryBinding); await autoMemory.appendCompletedTurn(memoryBinding, { task_id: 'task', entry_id: 'entry', user: 'remember me', assistant: 'private result' })
+
+    expect((await service.mutateTaskDeletion('task', { action: 'begin', expected_revision: 1, client_operation_id: 'delete-begin' })).outcome).toBe('accepted')
+    expect((await service.mutateTaskDeletion('task', { action: 'commit_purge', expected_revision: 2, client_operation_id: 'delete-commit' })).outcome).toBe('accepted')
+    expect((await service.mutateTaskDeletion('task', { action: 'retry', expected_revision: 3, client_operation_id: 'delete-purge' })).task.lifecycle).toBe('deleted')
+
+    const deleted = await repository.read()
+    expect(deleted.tasks.task).not.toHaveProperty('binding')
+    expect(Object.keys(deleted.bindings)).toEqual([])
+    expect(Object.keys(deleted.side_tasks)).toEqual([])
+    expect(Object.keys(deleted.task_attachments)).toEqual([])
+    expect(Object.keys(deleted.composer_drafts)).toEqual([])
+    const registry = JSON.parse(await fs.readFile(storagePath, 'utf8')) as { tasks: Record<string, unknown> }
+    expect(registry.tasks).not.toHaveProperty('task')
+    expect(await harness.load(harnessBinding)).toBeUndefined()
+    expect(await autoMemory.load(memoryBinding)).toBe('')
+    await expect(fs.stat(attachmentDir)).rejects.toMatchObject({ code: 'ENOENT' })
   })
 })

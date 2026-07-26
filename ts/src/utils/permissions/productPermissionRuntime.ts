@@ -13,3 +13,7 @@ export function runWithProductPermissionEnvelope<T>(
 export function productSandboxIsUnrestricted(): boolean {
   return productPermissionRuntime.getStore()?.sandbox_profile === 'unrestricted'
 }
+
+export function getProductPermissionEnvelope(): PermissionExecutionEnvelope | undefined {
+  return productPermissionRuntime.getStore()
+}

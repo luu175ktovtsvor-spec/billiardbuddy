@@ -44,7 +44,7 @@ desktop/package-lock.json
 # Desktop brand asset candidates (keep only selected ones in public/)
 desktop/brand-assets/
 
-# Claude local config & auto-generated
+# 其他 Agent 工具的本地配置与生成物
 .claude/
 
 # Superpowers plans & specs (local only)
@@ -81,7 +81,7 @@ runtime/__pycache__
 # Codex logs
 .codex-logs/
 
-# Local AI assistant artifacts (graph, notes)
+# 其他 Agent 工具的本地说明与图数据
 CLAUDE.md
 .mavis/
 .opencode/

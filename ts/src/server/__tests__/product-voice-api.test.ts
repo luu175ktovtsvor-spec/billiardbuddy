@@ -38,7 +38,6 @@ describe('product voice API', () => {
       productVoiceSegments,
       {
         operations: await operations(),
-        consentReceiptId: 'a'.repeat(64),
         transcribe: async (file: File, opts: VoiceTranscriptionOptions = {}) => {
           received = { name: file.name, language: opts.language, signal: opts.signal, operationId: opts.operationId }
           return { text: '今天晚上八点开赛' }
@@ -81,7 +80,7 @@ describe('product voice API', () => {
     const oversized = await handleProductVoiceApi(
       voiceRequest(new File(['12345'], 'large.webm')),
       productVoiceSegments,
-      { env: { QF_TRANSCRIBE_MAX_BYTES: '4' } },
+      { env: { BB_TRANSCRIBE_MAX_BYTES: '4' } },
     )
     expect(oversized.status).toBe(413)
     expect(await oversized.json()).toEqual({
@@ -95,7 +94,7 @@ describe('product voice API', () => {
         headers: { 'content-length': String(1024 * 1024 + 5) },
       }),
       productVoiceSegments,
-      { env: { QF_TRANSCRIBE_MAX_BYTES: '4' } },
+      { env: { BB_TRANSCRIBE_MAX_BYTES: '4' } },
     )
     expect(declaredOversized.status).toBe(413)
     expect(await declaredOversized.json()).toEqual({
@@ -108,7 +107,7 @@ describe('product voice API', () => {
     const response = await handleProductVoiceApi(
       voiceRequest(new File(['audio'], 'voice.webm')),
       productVoiceSegments,
-      { env: {}, consentReceiptId: 'a'.repeat(64), operations: await operations() },
+      { env: {}, operations: await operations() },
     )
 
     expect(response.status).toBe(503)
@@ -122,7 +121,6 @@ describe('product voice API', () => {
       productVoiceSegments,
       {
         operations: await operations(),
-        consentReceiptId: 'a'.repeat(64),
         transcribe: async () => {
           throw new VoiceTranscriptionError('DeepSeek rejected a private gateway token', 503)
         },
@@ -142,7 +140,6 @@ describe('product voice API', () => {
       productVoiceSegments,
       {
         operations: await operations(),
-        consentReceiptId: 'a'.repeat(64),
         transcribe: async () => {
           throw new VoiceTranscriptionError('gateway request aborted', 499)
         },
@@ -155,30 +152,9 @@ describe('product voice API', () => {
     })
   })
 
-  it('stops before transcription when remote data consent is absent', async () => {
-    let called = false
-    const response = await handleProductVoiceApi(
-      voiceRequest(new File(['audio'], 'voice.webm')),
-      productVoiceSegments,
-      {
-        consentReceiptId: null,
-        transcribe: async () => {
-          called = true
-          return { text: 'should not run' }
-        },
-      },
-    )
-    expect(response.status).toBe(428)
-    expect(called).toBe(false)
-    expect(await response.json()).toEqual({
-      error: 'REMOTE_DATA_EGRESS_REQUIRED',
-      message: '请先确认远程数据使用范围',
-    })
-  })
-
   it('exposes immutable revision, binding and cancellation resources', async () => {
     const voice = await operations()
-    const started = await voice.begin(new File(['audio'], 'voice.webm'), 'a'.repeat(64))
+    const started = await voice.begin(new File(['audio'], 'voice.webm'))
     const completed = await voice.complete(started.operation.id, '原始文本')
 
     const revisionResponse = await handleProductVoiceApi(
@@ -223,7 +199,7 @@ describe('product voice API', () => {
       evidence: [{ revision: { text: '校正文本' }, binding: { consumer: { kind: 'composer' } } }],
     })
 
-    const pending = await voice.begin(new File(['audio'], 'pending.webm'), 'a'.repeat(64))
+    const pending = await voice.begin(new File(['audio'], 'pending.webm'))
     const cancelled = await handleProductVoiceApi(
       new Request(`http://localhost/api/product/voice/operations/${pending.operation.id}/cancel`, { method: 'POST' }),
       ['api', 'product', 'voice', 'operations', pending.operation.id, 'cancel'],

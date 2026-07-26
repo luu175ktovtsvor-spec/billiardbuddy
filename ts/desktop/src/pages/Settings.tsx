@@ -18,7 +18,7 @@ import { ConfirmDialog } from '../components/shared/ConfirmDialog'
 import { Input } from '../components/shared/Input'
 import { Button } from '../components/shared/Button'
 import { Dropdown } from '../components/shared/Dropdown'
-import type { ThemeMode, AppMode, ChatSendBehavior, OutputStyleSource } from '../types/settings'
+import type { ThemeMode, AppMode, ChatSendBehavior } from '../types/settings'
 import type { Locale } from '../i18n'
 import { SkillList } from '../components/skills/SkillList'
 import { usePluginStore } from '../stores/pluginStore'
@@ -33,7 +33,6 @@ import { PRODUCT_TASKS_TAB_ID, useTabStore } from '../stores/tabStore'
 import { isDesktopRuntime } from '../lib/desktopRuntime'
 import { getDesktopHost } from '../lib/desktopHost'
 import { publicAssetPath } from '../lib/publicAsset'
-import { useCurrentProductTaskContext } from '../product/currentProductTaskContext'
 import {
   getDesktopNotificationPermission,
   notifyDesktop,
@@ -42,7 +41,7 @@ import {
   requestDesktopNotificationPermission,
   type DesktopNotificationPermission,
 } from '../lib/desktopNotifications'
-import { RemoteDataEgressSettings } from '../product/components/RemoteDataEgressConsent'
+import { ProductPrivacySettings } from '../product/components/ProductPrivacySettings'
 import { ProductCapabilitySettings } from '../product/components/ProductCapabilitySettings'
 
 const SETTINGS_CHECKBOX_INPUT_CLASS = 'settings-checkbox-input peer'
@@ -69,7 +68,7 @@ const EXTENSION_SETTINGS: SettingsNavItem[] = [
 
 const ENVIRONMENT_SETTINGS: SettingsNavItem[] = [
   { tab: 'terminal', icon: <Terminal size={16} /> },
-  { tab: 'computerUse', icon: <Cpu size={16} /> },
+  { tab: 'recruitingBrowser', icon: <Cpu size={16} /> },
 ]
 
 const SETTINGS_LABEL_KEYS: Record<SettingsTab, TranslationKey> = {
@@ -80,7 +79,7 @@ const SETTINGS_LABEL_KEYS: Record<SettingsTab, TranslationKey> = {
   mcp: 'settings.tab.mcp',
   skills: 'settings.tab.skills',
   plugins: 'settings.tab.plugins',
-  computerUse: 'settings.tab.computerUse',
+  recruitingBrowser: 'settings.tab.recruitingBrowser',
   about: 'settings.tab.about',
 }
 
@@ -92,7 +91,7 @@ const ZH_PRODUCT_SETTINGS_LABELS: Record<SettingsTab, string> = {
   mcp: 'MCP 服务',
   skills: 'Skills',
   plugins: '插件',
-  computerUse: '招聘浏览器',
+  recruitingBrowser: '招聘浏览器',
   about: '关于',
 }
 
@@ -121,22 +120,7 @@ function settingsContentTitle(
   return locale === 'zh' ? label : `${label} · ${t('settings.title')}`
 }
 
-const INTERNAL_AGENT_DATA_LOCATION = /(?:^|[\\/])\.claude(?:[\\/]|$)|\bCLAUDE_CONFIG_DIR\b/i
-
-function productizeAgentText(value: string): string {
-  return value
-    .replace(/\bClaude Code\b/gi, 'BilliardBuddy')
-    .replace(/\bClaude\b/gi, 'BilliardBuddy')
-    .replace(/\b(?:DeepSeek|MiMo|Qwen)(?:[-\w.]*)?\b/gi, 'BilliardBuddy assistant')
-    .replace(/\b(?:Anthropic|OpenAI)\b/gi, 'BilliardBuddy')
-    .replace(/\bproviders?\b/gi, 'assistant service')
-    .replace(/\bmodels?\b/gi, 'assistant setup')
-    .replace(/\bCLAUDE_CONFIG_DIR\b/gi, 'BilliardBuddy data')
-    .replace(/\.claude(?:[\\/][\w.-]+)*/gi, 'BilliardBuddy settings')
-    .replace(/\b(?:hidden\s+)?system\s+prompts?\b|\bhidden\s+prompts?\b/gi, 'task settings')
-    .replace(/\bprompts?\b/gi, 'task instructions')
-    .replace(/\b(?:context\s+)?tokens?\b/gi, 'task context')
-}
+const INTERNAL_AGENT_DATA_LOCATION = /(?:^|[\\/])\.BilliardBuddy(?:[\\/]|$)|\bBILLIARDBUDDY_CONFIG_DIR\b/i
 
 function isInternalAgentDataLocation(value: string | null | undefined): boolean {
   return typeof value === 'string' && INTERNAL_AGENT_DATA_LOCATION.test(value)
@@ -226,12 +210,12 @@ export function Settings() {
   const content = (() => {
     if (activeTab === 'general') return <GeneralSettings />
     if (activeTab === 'capabilities') return <ProductCapabilitySettings />
-    if (activeTab === 'privacy') return <RemoteDataEgressSettings />
+    if (activeTab === 'privacy') return <ProductPrivacySettings />
     if (activeTab === 'terminal') return <ProductTerminalPreferences />
     if (activeTab === 'mcp') return <McpSettings />
     if (activeTab === 'skills') return <SkillSettings />
     if (activeTab === 'plugins') return <PluginSettings />
-    if (activeTab === 'computerUse') return <RecruitingBrowserSettings />
+    if (activeTab === 'recruitingBrowser') return <RecruitingBrowserSettings />
     return <AboutSettings />
   })()
 
@@ -296,13 +280,6 @@ export function GeneralSettings() {
     setTheme,
     chatSendBehavior,
     setChatSendBehavior,
-    outputStyle,
-    outputStyles,
-    outputStyleScope,
-    outputStylesLoading,
-    outputStyleError,
-    fetchOutputStyles,
-    setOutputStyle,
     desktopNotificationsEnabled,
     setDesktopNotificationsEnabled,
     webSearch,
@@ -316,7 +293,6 @@ export function GeneralSettings() {
     uiZoom,
     setUiZoom,
   } = useSettingsStore()
-  const { workDir: outputStyleWorkDir } = useCurrentProductTaskContext()
   const t = useTranslation()
   const [notificationPermission, setNotificationPermission] = useState<DesktopNotificationPermission>('default')
   const [notificationActionRunning, setNotificationActionRunning] = useState(false)
@@ -329,7 +305,6 @@ export function GeneralSettings() {
   const [uiZoomDraft, setUiZoomDraft] = useState(uiZoom)
   const [isUiZoomDragging, setIsUiZoomDragging] = useState(false)
   const isUiZoomDraggingRef = useRef(false)
-  const addToast = useUIStore((s) => s.addToast)
   const uiZoomPercent = Math.round(uiZoomDraft * 100)
   const uiZoomRangeProgress = `${Math.round(((uiZoomDraft - UI_ZOOM_MIN) / (UI_ZOOM_MAX - UI_ZOOM_MIN)) * 1000) / 10}%`
   const activeConfigDir = appMode.activeConfigDir ?? (appMode.mode === 'portable' ? appMode.portableDir : null)
@@ -337,10 +312,6 @@ export function GeneralSettings() {
   const isEnvironmentConfigDir = configDirSource === 'environment'
   const managedDataLocationLabel = t('settings.general.storageManagedLocation')
   const portableDirUsesInternalAgentLocation = isInternalAgentDataLocation(portableDirDraft)
-  useEffect(() => {
-    void fetchOutputStyles(outputStyleWorkDir)
-  }, [fetchOutputStyles, outputStyleWorkDir])
-
   useEffect(() => {
     if (!isUiZoomDragging) {
       setUiZoomDraft(uiZoom)
@@ -402,19 +373,6 @@ export function GeneralSettings() {
 
   const selectedResponseLanguageLabel =
     RESPONSE_LANGUAGES.find(({ value }) => value === responseLanguage)?.label ?? RESPONSE_LANGUAGES[0]!.label
-  const outputStyleItems = outputStyles.map((style) => ({
-    value: style.value,
-    label: productizeAgentText(style.label),
-    description: `${productizeAgentText(style.description)} · ${getOutputStyleSourceLabel(style.source, t)}`,
-  }))
-  const selectedOutputStyle =
-    outputStyles.find((style) => style.value === outputStyle) ?? outputStyles[0]
-  const outputStyleScopeLabel = outputStyleScope === 'localSettings'
-    ? t('settings.general.outputStyleScopeLocal')
-    : t('settings.general.outputStyleScopeUser')
-  const outputStyleScopeHint = outputStyleScope === 'localSettings'
-    ? t('settings.general.outputStyleScopeLocalHint')
-    : t('settings.general.outputStyleScopeUserHint')
 
   const THEMES: Array<{ value: ThemeMode; label: string }> = [
     { value: 'light', label: t('settings.general.appearance.light') },
@@ -481,18 +439,6 @@ export function GeneralSettings() {
       }
     } finally {
       setNotificationActionRunning(false)
-    }
-  }
-
-  const handleOutputStyleChange = async (value: string) => {
-    try {
-      await setOutputStyle(value, outputStyleWorkDir)
-      addToast({
-        type: 'success',
-        message: t('settings.general.outputStyleSaved'),
-      })
-    } catch {
-      // The store exposes outputStyleError below; keep the interaction local.
     }
   }
 
@@ -736,62 +682,6 @@ export function GeneralSettings() {
           </button>
         }
       />
-
-      {/* Output style */}
-      <h2 className="text-base font-semibold text-[var(--color-text-primary)] mb-1">{t('settings.general.outputStyleTitle')}</h2>
-      <p className="text-sm text-[var(--color-text-tertiary)] mb-3">{t('settings.general.outputStyleDescription')}</p>
-      <div className="mb-8 rounded-xl border border-[var(--color-border)] bg-[var(--color-surface-container-low)] px-4 py-4">
-        <Dropdown<string>
-          items={outputStyleItems}
-          value={outputStyle}
-          onChange={(value) => void handleOutputStyleChange(value)}
-          width="100%"
-          maxHeight={360}
-          className="block w-full"
-          trigger={
-            <button
-              type="button"
-              aria-label={t('settings.general.outputStyleSelectLabel')}
-              disabled={outputStylesLoading}
-              className="flex min-h-10 w-full items-center gap-3 rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface)] px-3 py-2 text-left text-sm text-[var(--color-text-primary)] outline-none transition-colors hover:border-[var(--color-border-focus)] hover:bg-[var(--color-surface-container-low)] focus-visible:border-[var(--color-border-focus)] focus-visible:shadow-[var(--shadow-focus-ring)] disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              <span className="material-symbols-outlined flex-shrink-0 text-[18px] text-[var(--color-text-secondary)]">format_paint</span>
-              <span className="min-w-0 flex-1">
-                <span className="block truncate font-medium">
-                  {outputStylesLoading
-                    ? t('settings.general.outputStyleLoading')
-                    : selectedOutputStyle ? productizeAgentText(selectedOutputStyle.label) : outputStyle}
-                </span>
-                {selectedOutputStyle?.description && (
-                  <span className="mt-0.5 block truncate text-xs text-[var(--color-text-tertiary)]">
-                    {productizeAgentText(selectedOutputStyle.description)}
-                  </span>
-                )}
-              </span>
-              <span className="material-symbols-outlined flex-shrink-0 text-[18px] text-[var(--color-text-secondary)]">expand_more</span>
-            </button>
-          }
-        />
-        <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-[var(--color-text-tertiary)]">
-          <span className="inline-flex items-center rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1 font-medium text-[var(--color-text-secondary)]">
-            {outputStyleScopeLabel}
-          </span>
-          {selectedOutputStyle && (
-            <span className="inline-flex items-center rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1">
-              {getOutputStyleSourceLabel(selectedOutputStyle.source, t)}
-            </span>
-          )}
-          <span className="min-w-0 flex-1 leading-5">{outputStyleScopeHint}</span>
-        </div>
-        <p className="mt-2 text-xs leading-5 text-[var(--color-text-tertiary)]">
-          {t('settings.general.outputStyleRestartHint')}
-        </p>
-        {outputStyleError && (
-          <p className="mt-2 text-xs leading-5 text-[var(--color-error)]">
-            {outputStyleError}
-          </p>
-        )}
-      </div>
 
       <div className="mb-8">
         <h2 className="text-base font-semibold text-[var(--color-text-primary)] mb-1">{t('settings.general.deepThinkingTitle')}</h2>
@@ -1175,26 +1065,6 @@ export function GeneralSettings() {
       />
     </div>
   )
-}
-
-function getOutputStyleSourceLabel(
-  source: OutputStyleSource,
-  t: (key: TranslationKey) => string,
-) {
-  switch (source) {
-    case 'built-in':
-      return t('settings.general.outputStyleSourceBuiltIn')
-    case 'userSettings':
-      return t('settings.general.outputStyleSourceUser')
-    case 'projectSettings':
-      return t('settings.general.outputStyleSourceProject')
-    case 'localSettings':
-      return t('settings.general.outputStyleSourceLocal')
-    case 'policySettings':
-      return t('settings.general.outputStyleSourcePolicy')
-    case 'plugin':
-      return t('settings.general.outputStyleSourcePlugin')
-  }
 }
 
 function SettingsCheckboxMark({ checked, disabled = false }: { checked: boolean; disabled?: boolean }) {

@@ -80,6 +80,26 @@ function renderDock(onSubmitSelection = vi.fn().mockResolvedValue(true)) {
 }
 
 describe('ProductTaskBrowserPreviewDock', () => {
+  it('opens Browser without a workspace and keeps source-only element selection hidden', async () => {
+    render(
+      <ProductTaskBrowserPreviewDock
+        taskId="task_public_browser"
+        browserOpen
+        previewOpen={false}
+        activeMode="browser"
+        workspaceAvailable={false}
+        onClose={vi.fn()}
+        onCapture={vi.fn()}
+        onSubmitSelection={vi.fn().mockResolvedValue(true)}
+      />,
+    )
+
+    expect(screen.getByText('浏览器')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '截图' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '选择元素' })).toBeNull()
+    await waitFor(() => expect(previewSubscription.options).toBeDefined())
+  })
+
   it('collects a one-shot selection outside the page and submits source-edit evidence', async () => {
     const { onSubmitSelection } = renderDock()
     await waitFor(() => expect(previewSubscription.options).toBeDefined())

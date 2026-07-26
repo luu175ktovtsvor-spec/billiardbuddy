@@ -27,13 +27,14 @@
 // 鉴权:Bearer <RELAY_TOKEN>(= 网关注入的 GW_RELAY_TOKEN)。真 OpenAI/ARK key 只在本服务环境变量,绝不下发。
 
 import { Database } from 'bun:sqlite'
-import { createHash } from 'node:crypto'
+import { createHash, createHmac, timingSafeEqual } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<Response>
 
 export const PROVIDER_GATEWAY_PROTOCOL_VALUE = 'bb-provider-gateway/1.0'
+const RELAY_RESULT_GRANT_MAX_FUTURE_MS = 15 * 60_000
 
 function requireGatewayProtocol(req: Request, owner: string): void {
   if (owner && req.headers.get('x-bb-provider-protocol')?.trim() !== PROVIDER_GATEWAY_PROTOCOL_VALUE) {
@@ -104,7 +105,7 @@ export function loadRelayConfig(env: Env): RelayConfig {
       seedreamConc,
       Math.max(1, intEnv(env, 'RELAY_SEEDREAM_USER_CONC', 1)),
     ),
-    // 持久化:默认内存 SQLite(测试用);生产设 RELAY_DB=/opt/qfrelay/relay.db 以支持重启恢复。
+    // 持久化:默认内存 SQLite(测试用);生产设 RELAY_DB=/opt/billiardbuddy-relay/relay.db 以支持重启恢复。
     dbPath: env.RELAY_DB ?? ':memory:',
     // 大体积 blob:设了 RELAY_BLOB_DIR 就落 700 目录的磁盘文件;没设(测试)就放进程内存。
     blobDir: env.RELAY_BLOB_DIR && env.RELAY_BLOB_DIR.trim() ? env.RELAY_BLOB_DIR.trim() : null,
@@ -316,7 +317,6 @@ type TaskRow = {
   input_fidelity: string | null // JSON of InputFidelityCapability, or null
   input_bytes: number
   input_fingerprint: string | null
-  consent_receipt_hash: string | null
   provider: string | null
   provider_receipt_hash: string | null
   acknowledged_at: number | null
@@ -334,7 +334,7 @@ class TaskStore {
       'CREATE TABLE IF NOT EXISTS tasks(' +
       'id TEXT PRIMARY KEY, owner TEXT, idempotency_key TEXT, status TEXT NOT NULL, ' +
       'error TEXT, input_fidelity TEXT, input_bytes INTEGER NOT NULL DEFAULT 0, ' +
-      'input_fingerprint TEXT, consent_receipt_hash TEXT, provider TEXT, provider_receipt_hash TEXT, ' +
+      'input_fingerprint TEXT, provider TEXT, provider_receipt_hash TEXT, ' +
       'acknowledged_at INTEGER, created INTEGER NOT NULL, updated INTEGER NOT NULL)'
     )
     // 旧的持久化库没有 input_bytes；CREATE TABLE IF NOT EXISTS 不会自动补列。
@@ -342,7 +342,7 @@ class TaskStore {
     if (!columns.some(column => column.name === 'input_bytes')) {
       this.db.exec('ALTER TABLE tasks ADD COLUMN input_bytes INTEGER NOT NULL DEFAULT 0')
     }
-    for (const column of ['input_fingerprint', 'consent_receipt_hash', 'provider', 'provider_receipt_hash']) {
+    for (const column of ['input_fingerprint', 'provider', 'provider_receipt_hash']) {
       if (!columns.some(existing => existing.name === column)) this.db.exec(`ALTER TABLE tasks ADD COLUMN ${column} TEXT`)
     }
     if (!columns.some(existing => existing.name === 'acknowledged_at')) {
@@ -353,10 +353,10 @@ class TaskStore {
     this.db.exec('CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)')
   }
 
-  insert(id: string, owner: string, key: string | null, inputBytes: number, inputFingerprint: string, consentReceiptHash: string | null, provider: string): void {
+  insert(id: string, owner: string, key: string | null, inputBytes: number, inputFingerprint: string, provider: string): void {
     const ts = this.now()
-    this.db.query('INSERT INTO tasks(id,owner,idempotency_key,status,error,input_fidelity,input_bytes,input_fingerprint,consent_receipt_hash,provider,provider_receipt_hash,created,updated) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)')
-      .run(id, owner, key, 'queued', null, null, inputBytes, inputFingerprint, consentReceiptHash, provider, null, ts, ts)
+    this.db.query('INSERT INTO tasks(id,owner,idempotency_key,status,error,input_fidelity,input_bytes,input_fingerprint,provider,provider_receipt_hash,created,updated) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)')
+      .run(id, owner, key, 'queued', null, null, inputBytes, inputFingerprint, provider, null, ts, ts)
   }
 
   setInputBytes(id: string, inputBytes: number): void {
@@ -487,7 +487,7 @@ async function readRequestBodyBounded(
 
   try {
     while (true) {
-      let next: ReadableStreamReadResult<Uint8Array>
+      let next
       try {
         next = await reader.read()
       } catch {
@@ -537,12 +537,52 @@ function sha256(value: string | Uint8Array): string {
   return createHash('sha256').update(value).digest('hex')
 }
 
+type RelayResultGrantPayload = {
+  v: 1
+  task_id: string
+  owner_sha256: string
+  expires_at: number
+}
+
+export function verifyRelayResultGrant(
+  relayToken: string,
+  grant: string,
+  now = Date.now(),
+): RelayResultGrantPayload | null {
+  const [encoded, signature, extra] = grant.split('.')
+  if (!encoded || !signature || extra !== undefined || !/^[a-f0-9]{64}$/.test(signature)) return null
+  const expected = createHmac('sha256', relayToken).update(encoded).digest()
+  const supplied = Buffer.from(signature, 'hex')
+  if (supplied.byteLength !== expected.byteLength || !timingSafeEqual(supplied, expected)) return null
+  let payload: unknown
+  try {
+    payload = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8'))
+  } catch {
+    return null
+  }
+  if (!payload || typeof payload !== 'object') return null
+  const value = payload as Record<string, unknown>
+  if (
+    value.v !== 1
+    || typeof value.task_id !== 'string'
+    || !value.task_id
+    || value.task_id.includes('/')
+    || typeof value.owner_sha256 !== 'string'
+    || !/^[a-f0-9]{64}$/.test(value.owner_sha256)
+    || typeof value.expires_at !== 'number'
+    || !Number.isSafeInteger(value.expires_at)
+    || value.expires_at <= now
+    || value.expires_at > now + RELAY_RESULT_GRANT_MAX_FUTURE_MS
+  ) return null
+  return value as RelayResultGrantPayload
+}
+
 function taskProvider(body: SubmitBody): 'OpenAI' | 'ByteDance Ark' {
   return isSeedreamModel(String(body.model ?? GPT_IMAGE_MODEL)) ? 'ByteDance Ark' : 'OpenAI'
 }
 
-function sameOperationBinding(row: TaskRow, fingerprint: string, consentReceiptHash: string | null): boolean {
-  return row.input_fingerprint === fingerprint && row.consent_receipt_hash === consentReceiptHash
+function sameOperationBinding(row: TaskRow, fingerprint: string): boolean {
+  return row.input_fingerprint === fingerprint
 }
 
 export type RelayDeps = { env: Env; fetchImpl?: FetchLike; now?: () => number }
@@ -666,9 +706,15 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
     if (!item || typeof item !== 'object') return null
     const source = item as Record<string, unknown>
     if (typeof source.b64_json === 'string' && source.b64_json) {
+      const bytes = Buffer.from(source.b64_json, 'base64')
+      const mimeType = bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff
+        ? 'image/jpeg'
+        : bytes.length >= 12 && bytes.toString('ascii', 0, 4) === 'RIFF' && bytes.toString('ascii', 8, 12) === 'WEBP'
+          ? 'image/webp'
+          : 'image/png'
       return {
         b64_json: source.b64_json,
-        mime_type: 'image/png',
+        mime_type: mimeType,
         ...(typeof source.revised_prompt === 'string' ? { revised_prompt: source.revised_prompt } : {}),
       }
     }
@@ -691,12 +737,17 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
       throw new UpstreamOutcomeUnknownError(`Seedream 已生成图片，但下载结果失败: HTTP ${imageResponse.status}`)
     }
     if (bytes.byteLength === 0) throw new UpstreamOutcomeUnknownError('Seedream 已生成图片，但下载结果为空')
+    const buffer = Buffer.from(bytes)
     const contentType = imageResponse.headers.get('content-type')?.toLowerCase() ?? ''
-    const mimeType = contentType.startsWith('image/jpeg')
+    const mimeType = buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff
       ? 'image/jpeg'
-      : contentType.startsWith('image/webp')
+      : buffer.length >= 12 && buffer.toString('ascii', 0, 4) === 'RIFF' && buffer.toString('ascii', 8, 12) === 'WEBP'
         ? 'image/webp'
-        : 'image/png'
+        : contentType.startsWith('image/jpeg')
+          ? 'image/jpeg'
+          : contentType.startsWith('image/webp')
+            ? 'image/webp'
+            : 'image/png'
     return {
       b64_json: Buffer.from(bytes).toString('base64'),
       mime_type: mimeType,
@@ -906,7 +957,6 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
       created: rec.created,
       operation_id: rec.id,
       provider: rec.provider ?? undefined,
-      data_egress_consent_hash: rec.consent_receipt_hash ?? undefined,
       provider_receipt_hash: rec.provider_receipt_hash ?? undefined,
       result_acknowledged: rec.acknowledged_at !== null,
       acknowledged_at: rec.acknowledged_at ?? undefined,
@@ -929,7 +979,7 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
         return Response.json({
           ok: true,
           component_manifest: {
-            component: 'qf-relay',
+            component: 'billiardbuddy-relay',
             protocol: PROVIDER_GATEWAY_PROTOCOL_VALUE,
             requires_gateway_protocol_for_owned_tasks: true,
           },
@@ -959,12 +1009,8 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
         const owner = readOwner(req)
         requireGatewayProtocol(req, owner)
         const idempotencyKey = (req.headers.get('idempotency-key') ?? '').trim() || null
-        const consentReceiptHash = (req.headers.get('x-relay-data-egress-consent') ?? '').trim() || null
         if (owner && (!idempotencyKey || idempotencyKey.length > 160)) {
-          throw new HttpError(428, 'relay: 缺少有效的付费 operation id')
-        }
-        if (owner && !/^[a-f0-9]{64}$/.test(consentReceiptHash ?? '')) {
-          throw new HttpError(428, 'relay: 缺少有效的数据出境同意回执')
+          throw new HttpError(428, 'relay: 缺少有效的 operation id')
         }
         // 请求体大小上限:先看 content-length 快速拒,再按实际字节校验。
         const declared = Number(req.headers.get('content-length') ?? '')
@@ -990,8 +1036,8 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
           if (idempotencyKey) {
             const existing = store.findByIdempotency(owner, idempotencyKey)
             if (existing) {
-              if (!sameOperationBinding(existing, inputFingerprint, consentReceiptHash)) {
-                throw new HttpError(409, 'relay: operation 已绑定不同输入或同意回执')
+              if (!sameOperationBinding(existing, inputFingerprint)) {
+                throw new HttpError(409, 'relay: operation 已绑定不同输入')
               }
               return Response.json({
                 task_id: existing.id,
@@ -1007,15 +1053,15 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
 
           const id = crypto.randomUUID()
           try {
-            store.insert(id, owner, idempotencyKey, raw.byteLength, inputFingerprint, consentReceiptHash, provider)
+            store.insert(id, owner, idempotencyKey, raw.byteLength, inputFingerprint, provider)
             activeInputBytes += raw.byteLength
           } catch (err) {
             // 唯一索引撞车(并发同 owner+key):取回已存在的那条,保证幂等只一个真实任务。
             if (idempotencyKey) {
               const existing = store.findByIdempotency(owner, idempotencyKey)
               if (existing) {
-                if (!sameOperationBinding(existing, inputFingerprint, consentReceiptHash)) {
-                  throw new HttpError(409, 'relay: operation 已绑定不同输入或同意回执')
+                if (!sameOperationBinding(existing, inputFingerprint)) {
+                  throw new HttpError(409, 'relay: operation 已绑定不同输入')
                 }
                 return Response.json({
                   task_id: existing.id,
@@ -1042,6 +1088,37 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
         } finally {
           if (!persisted) bodyReservation.release()
         }
+      }
+      if (req.method === 'GET' && url.pathname.startsWith('/images/results/')) {
+        sweep()
+        const [grant, outputIndexRaw, extra] = url.pathname.slice('/images/results/'.length).split('/')
+        if (!grant || extra !== undefined || (outputIndexRaw !== undefined && !/^\d+$/.test(outputIndexRaw))) {
+          throw new HttpError(400, 'relay: 无效结果地址')
+        }
+        const payload = verifyRelayResultGrant(config.relayToken, grant, now())
+        if (!payload) throw new HttpError(403, 'relay: 结果授权无效或已过期')
+        const rec = store.get(payload.task_id)
+        if (!rec) return Response.json({ status: 'failed', error: '任务不存在或已过期' }, { status: 404 })
+        const ownerDigest = Buffer.from(sha256(rec.owner), 'hex')
+        const grantedDigest = Buffer.from(payload.owner_sha256, 'hex')
+        if (!rec.owner || !timingSafeEqual(ownerDigest, grantedDigest)) {
+          throw new HttpError(403, 'relay: 结果授权与任务归属不匹配')
+        }
+        if (rec.status !== 'succeeded') throw new HttpError(409, 'relay: 图片结果尚未就绪')
+        if (blobs.byteLength(rec.id, 'out') === null) throw new HttpError(410, 'relay: 图片结果已确认或已清理')
+        const response = outputIndexRaw === undefined
+          ? pollResponse(rec)
+          : (() => {
+              const out = blobs.get(rec.id, 'out') as { data?: unknown[] } | null
+              const outputIndex = Number.parseInt(outputIndexRaw, 10)
+              const output = Array.isArray(out?.data) ? out.data[outputIndex] : undefined
+              if (output === undefined) throw new HttpError(404, 'relay: 图片候选不存在')
+              return Response.json({ status: 'succeeded', operation_id: rec.id, data: [output] })
+            })()
+        const headers = new Headers(response.headers)
+        headers.set('Cache-Control', 'private, no-store')
+        headers.set('X-Content-Type-Options', 'nosniff')
+        return new Response(response.body, { status: response.status, headers })
       }
       if (req.method === 'GET' && url.pathname.startsWith('/images/tasks/')) {
         auth(req)
@@ -1120,7 +1197,7 @@ export function withRelayRequestTimeout(
 
 if (import.meta.main) {
   const port = Number(process.env.RELAY_PORT ?? 8790)
-  // 只监听 loopback(默认 127.0.0.1),由 nginx 暴露受保护路径并按大陆 qfgw 出口 IP 放行;
+  // 只监听 loopback(默认 127.0.0.1),由 nginx 暴露受保护路径并按大陆 billiardbuddy-gateway 出口 IP 放行;
   // 绝不把 relay 直接绑到公网口(否则绕过 nginx 允许名单,只剩 Bearer 一层)。
   const hostname = process.env.RELAY_HOST ?? '127.0.0.1'
   const handler = createRelayFetch({ env: process.env }) // 配置非法(缺 RELAY_TOKEN/RELAY_OPENAI_KEY)会在此抛错

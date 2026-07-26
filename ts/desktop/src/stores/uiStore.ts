@@ -12,7 +12,7 @@ const SETTINGS_TABS = [
   'mcp',
   'skills',
   'plugins',
-  'computerUse',
+  'recruitingBrowser',
   'about',
 ] as const
 
@@ -87,7 +87,7 @@ export type SettingsTab =
   | 'mcp'
   | 'skills'
   | 'plugins'
-  | 'computerUse'
+  | 'recruitingBrowser'
   | 'about'
 
 export type ModalId = 'new-task' | 'task-search'

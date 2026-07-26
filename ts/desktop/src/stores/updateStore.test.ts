@@ -5,18 +5,6 @@ const check = vi.fn()
 const relaunch = vi.fn()
 const invoke = vi.fn()
 
-vi.mock('@tauri-apps/plugin-updater', () => ({
-  check,
-}))
-
-vi.mock('@tauri-apps/plugin-process', () => ({
-  relaunch,
-}))
-
-vi.mock('@tauri-apps/api/core', () => ({
-  invoke,
-}))
-
 function installElectronUpdateHost() {
   window.desktopHost = {
     ...browserHost,
@@ -43,8 +31,6 @@ describe('updateStore', () => {
     invoke.mockReset()
     window.localStorage.clear()
     installElectronUpdateHost()
-    Reflect.deleteProperty(window, '__TAURI_INTERNALS__')
-    Reflect.deleteProperty(window, '__TAURI__')
   })
 
   it('stores available update metadata after a successful check', async () => {
@@ -112,7 +98,6 @@ describe('updateStore', () => {
   })
 
   it('checks, downloads, installs, and relaunches through an injected desktop host in one action', async () => {
-    Reflect.deleteProperty(window, '__TAURI_INTERNALS__')
     const download = vi.fn(async (onEvent?: (event: unknown) => void) => {
       onEvent?.({ event: 'Started', data: { contentLength: 100 } })
       onEvent?.({ event: 'Progress', data: { chunkLength: 100 } })

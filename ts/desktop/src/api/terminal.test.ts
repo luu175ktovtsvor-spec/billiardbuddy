@@ -6,14 +6,10 @@ describe('terminalApi desktop host bridge', () => {
   beforeEach(() => {
     vi.resetModules()
     Reflect.deleteProperty(window, 'desktopHost')
-    Reflect.deleteProperty(window, '__TAURI_INTERNALS__')
-    Reflect.deleteProperty(window, '__TAURI__')
   })
 
   afterEach(() => {
     Reflect.deleteProperty(window, 'desktopHost')
-    Reflect.deleteProperty(window, '__TAURI_INTERNALS__')
-    Reflect.deleteProperty(window, '__TAURI__')
   })
 
   it('routes terminal commands through an injected desktop host', async () => {

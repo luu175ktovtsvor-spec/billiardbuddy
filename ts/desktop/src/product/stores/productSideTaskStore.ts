@@ -26,6 +26,7 @@ type ProductSideTaskStore = {
   openSideTaskPanel: (parentTaskId: string, sideTaskId?: string) => void
   closeSideTaskPanel: (parentTaskId: string) => void
   selectSideTask: (parentTaskId: string, sideTaskId: string) => void
+  forgetTask: (parentTaskId: string) => void
 }
 
 function errorMessage(error: unknown, fallback: string): string { return productApiUserFacingError(error, fallback) }
@@ -127,5 +128,18 @@ export const useProductSideTaskStore = create<ProductSideTaskStore>((set, get) =
     },
     closeSideTaskPanel: (parentTaskId) => set((state) => ({ panelByParentTaskId: { ...state.panelByParentTaskId, [parentTaskId]: { isOpen: false } } })),
     selectSideTask: (parentTaskId, sideTaskId) => set((state) => ({ panelByParentTaskId: { ...state.panelByParentTaskId, [parentTaskId]: { isOpen: true, selectedSideTaskId: sideTaskId } } })),
+    forgetTask: (parentTaskId) => {
+      latestRefreshRequestIdByParentTaskId.delete(parentTaskId)
+      set((state) => {
+        const sideTasksByParentTaskId = { ...state.sideTasksByParentTaskId }; delete sideTasksByParentTaskId[parentTaskId]
+        const loadingByParentTaskId = { ...state.loadingByParentTaskId }; delete loadingByParentTaskId[parentTaskId]
+        const errorsByParentTaskId = { ...state.errorsByParentTaskId }; delete errorsByParentTaskId[parentTaskId]
+        const panelByParentTaskId = { ...state.panelByParentTaskId }; delete panelByParentTaskId[parentTaskId]
+        const confirmedAuthorityRevisionByParentTaskId = { ...state.confirmedAuthorityRevisionByParentTaskId }; delete confirmedAuthorityRevisionByParentTaskId[parentTaskId]
+        const mutations = Object.fromEntries(Object.entries(state.mutations).filter(([key]) => !key.startsWith(`${parentTaskId}:`)))
+        const pending = Object.fromEntries(Object.entries(state.pending).filter(([key]) => !key.startsWith(`${parentTaskId}:`)))
+        return { sideTasksByParentTaskId, loadingByParentTaskId, errorsByParentTaskId, panelByParentTaskId, confirmedAuthorityRevisionByParentTaskId, mutations, pending }
+      })
+    },
   }
 })

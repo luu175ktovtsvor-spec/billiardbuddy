@@ -20,7 +20,6 @@ function protectedHeaders(headers: Record<string, string>): Record<string, strin
   if (!headers['x-relay-owner']) return headers
   return {
     'idempotency-key': `test-operation-${++operationSequence}`,
-    'x-relay-data-egress-consent': 'a'.repeat(64),
     'x-bb-provider-protocol': 'bb-provider-gateway/1.0',
     ...headers,
   }
@@ -115,7 +114,6 @@ test('owned relay work rejects an old gateway protocol before task persistence',
       'content-type': 'application/json',
       'x-relay-owner': 'old-gateway',
       'idempotency-key': 'old-operation',
-      'x-relay-data-egress-consent': 'a'.repeat(64),
     },
     body: JSON.stringify(GEN),
   }))

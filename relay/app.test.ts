@@ -1,5 +1,6 @@
 import { expect, test } from 'bun:test'
-import { createRelayFetch, withRelayRequestTimeout } from './app'
+import { createRelayFetch, verifyRelayResultGrant, withRelayRequestTimeout } from './app'
+import { createRelayResultGrant } from '../gateway/app'
 
 function env(overrides: Record<string, string | undefined> = {}) {
   return {
@@ -17,7 +18,7 @@ test('healthz publishes the relay compatibility manifest', async () => {
   expect(await (await fetch(new Request('http://relay/healthz'))).json()).toMatchObject({
     ok: true,
     component_manifest: {
-      component: 'qf-relay',
+      component: 'billiardbuddy-relay',
       protocol: 'bb-provider-gateway/1.0',
       requires_gateway_protocol_for_owned_tasks: true,
     },
@@ -94,6 +95,53 @@ test('submit generate → background OpenAI call → poll succeeds with data', a
     provider_receipt_hash: metadata.provider_receipt_hash,
   })
   expect(calls).toEqual(['https://api.openai.example/v1/images/generations'])
+})
+
+test('a gateway grant streams one owned result without exposing the relay bearer', async () => {
+  const clock = 1_000_000
+  const owner = 'principal:installation'
+  const fetch = createRelayFetch({
+    env: env(),
+    now: () => clock,
+    fetchImpl: async () => Response.json({ data: [{ b64_json: B64 }] }),
+  })
+  const submit = await fetch(new Request('http://relay/images/tasks', {
+    method: 'POST',
+    headers: {
+      authorization: 'Bearer relay-secret',
+      'content-type': 'application/json',
+      'x-relay-owner': owner,
+      'x-bb-provider-protocol': 'bb-provider-gateway/1.0',
+      'idempotency-key': 'owned-result-handoff-test',
+    },
+    body: JSON.stringify({ mode: 'generate', prompt: '海报' }),
+  }))
+  expect(submit.status).toBe(202)
+  const { task_id } = await submit.json()
+  for (let attempt = 0; attempt < 50; attempt++) {
+    const status = await fetch(new Request(`http://relay/images/tasks/${task_id}`, { headers: {
+      authorization: 'Bearer relay-secret',
+      'x-relay-owner': owner,
+      'x-bb-provider-protocol': 'bb-provider-gateway/1.0',
+    } }))
+    if ((await status.json()).status === 'succeeded') break
+    await new Promise(resolve => setTimeout(resolve, 2))
+  }
+  const grant = createRelayResultGrant('relay-secret', task_id, owner, clock)
+  expect(verifyRelayResultGrant('relay-secret', grant, clock)).toMatchObject({ task_id })
+  const result = await fetch(new Request(`http://relay/images/results/${grant}`))
+  expect(result.status).toBe(200)
+  expect(result.headers.get('cache-control')).toBe('private, no-store')
+  expect(await result.json()).toMatchObject({ status: 'succeeded', data: [{ b64_json: B64 }] })
+  const firstCandidate = await fetch(new Request(`http://relay/images/results/${grant}/0`))
+  expect(firstCandidate.status).toBe(200)
+  expect(await firstCandidate.json()).toMatchObject({ data: [{ b64_json: B64 }] })
+  expect((await fetch(new Request(`http://relay/images/results/${grant}/1`))).status).toBe(404)
+
+  const tampered = `${grant.slice(0, -1)}${grant.endsWith('0') ? '1' : '0'}`
+  expect((await fetch(new Request(`http://relay/images/results/${tampered}`))).status).toBe(403)
+  expect((await fetch(new Request(`http://relay/images/results/${createRelayResultGrant('relay-secret', task_id, 'other-owner', clock)}`))).status).toBe(403)
+  expect(verifyRelayResultGrant('relay-secret', grant, clock + 10 * 60_000)).toBeNull()
 })
 
 test('relay HTTP surface disables Bun idle timeout while sending completed image bytes', async () => {

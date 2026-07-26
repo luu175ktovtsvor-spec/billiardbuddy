@@ -17,33 +17,55 @@ export class ProductTaskWorkerMessageSink {
   private readonly textBuffers = new Map<string, string>()
   private readonly pendingSeparators = new Map<string, string>()
   private readonly droppingTokens = new Set<string>()
+  private readonly publishedText = new Map<string, string>()
+  private readonly queues = new Map<string, Promise<void>>()
 
   constructor(private readonly tasks: ProductTaskService) {}
 
-  async record(runId: string, generation: number, message: Extract<AgentWorkerOutbound, { type: 'event' | 'terminal' }>): Promise<void> {
+  record(runId: string, generation: number, message: Extract<AgentWorkerOutbound, { type: 'event' | 'terminal' | 'steer_consumed' }>): Promise<void> {
     const key = `${runId}:${generation}`
-    if (message.type === 'terminal') this.closed.add(key)
-    else if (this.closed.has(key)) return
+    if (message.type === 'terminal') {
+      if (this.closed.has(key)) return Promise.resolve()
+      this.closed.add(key)
+    } else if (this.closed.has(key)) return Promise.resolve()
+    const previous = this.queues.get(key) ?? Promise.resolve()
+    const queued = previous.catch(() => undefined).then(() => this.recordOrdered(runId, generation, message))
+    this.queues.set(key, queued)
+    return queued.finally(() => { if (this.queues.get(key) === queued) this.queues.delete(key) })
+  }
+
+  private async recordOrdered(runId: string, generation: number, message: Extract<AgentWorkerOutbound, { type: 'event' | 'terminal' | 'steer_consumed' }>): Promise<void> {
+    const key = `${runId}:${generation}`
     let taskId = this.taskIds.get(key)
     if (!taskId) {
       taskId = (await this.tasks.readTaskRunDispatchIdentity(runId, generation)).task_id
       this.taskIds.set(key, taskId)
     }
-    // An earlier event may have been awaiting its identity while a terminal
-    // message closed this generation. Recheck before publishing any content.
-    if (message.type !== 'terminal' && this.closed.has(key)) return
     if (message.type === 'terminal') {
       this.flushText(taskId, key, true)
-      productTaskWorkerRuntimeEvents.publish(taskId, { type: 'turn_complete' })
+      await this.tasks.recordTaskRunTerminalProjection(runId, generation, message.state, this.publishedText.get(key) ?? '')
+      if (message.state === 'recovery_required') productTaskWorkerRuntimeEvents.publish(taskId, { type: 'error', code: 'task_failed', retryable: false })
+      else productTaskWorkerRuntimeEvents.publish(taskId, { type: 'turn_complete' })
       this.taskIds.delete(key)
       this.startedText.delete(key)
       this.textBuffers.delete(key)
       this.pendingSeparators.delete(key)
       this.droppingTokens.delete(key)
+      this.publishedText.delete(key)
+      return
+    }
+    if (message.type === 'steer_consumed') {
+      const recorded = await this.tasks.recordQueuedInputConsumed(runId, generation, message.queue_item_id)
+      for (const event of recorded.events) productTaskWorkerRuntimeEvents.publish(taskId, event)
       return
     }
     if (message.event === 'started') {
       productTaskWorkerRuntimeEvents.publish(taskId, { type: 'status', state: 'working' })
+      return
+    }
+    if (message.event === 'context_compaction') {
+      const recorded = await this.tasks.recordTaskRunContextCompaction(runId, generation, message)
+      productTaskWorkerRuntimeEvents.publish(taskId, recorded.event)
       return
     }
     if (message.event === 'approval') {
@@ -70,6 +92,30 @@ export class ProductTaskWorkerMessageSink {
       }
       return
     }
+    if (message.event === 'question') {
+      const recorded = await this.tasks.recordTaskRunQuestionRequest(
+        runId,
+        generation,
+        message.request_id,
+        message.questions,
+      )
+      productTaskWorkerRuntimeEvents.publish(taskId, recorded.event)
+      return
+    }
+    if (message.event === 'extension_snapshot') {
+      await this.tasks.recordTaskRunExtensionSnapshot(runId, generation, {
+        digest: message.digest,
+        tool_count: message.tool_count,
+        command_count: message.command_count,
+        mcp_server_count: message.mcp_server_count,
+      })
+      return
+    }
+    if (message.event === 'activity') {
+      const recorded = await this.tasks.recordTaskRunActivity(runId, generation, { type: 'activity', ...message.activity })
+      productTaskWorkerRuntimeEvents.publish(taskId, recorded.event)
+      return
+    }
     if (message.event !== 'delta' || !message.data) return
     if (this.droppingTokens.has(key)) {
       const boundary = message.data.search(/[\s。！？；]/)
@@ -86,14 +132,18 @@ export class ProductTaskWorkerMessageSink {
 
   private publishText(taskId: string, key: string, text: string): void {
     if (!text) return
+    const current = this.publishedText.get(key) ?? ''
+    const visible = text.slice(0, Math.max(0, 100_000 - current.length))
+    if (!visible) return
+    this.publishedText.set(key, `${current}${visible}`)
     if (!this.startedText.has(key)) {
       this.startedText.add(key)
       productTaskWorkerRuntimeEvents.publish(taskId, { type: 'assistant_text_start' })
     }
-    for (let offset = 0; offset < text.length; offset += 32_000) {
+    for (let offset = 0; offset < visible.length; offset += 32_000) {
       productTaskWorkerRuntimeEvents.publish(taskId, {
         type: 'assistant_text_delta',
-        text: text.slice(offset, offset + 32_000),
+        text: visible.slice(offset, offset + 32_000),
       })
     }
   }
@@ -144,4 +194,11 @@ export function dispatcherFor(tasks: ProductTaskService): AgentWorkerSupervisor 
     supervisors.set(tasks, supervisor)
   }
   return supervisor
+}
+
+export async function shutdownDispatcherFor(tasks: ProductTaskService): Promise<void> {
+  const supervisor = supervisors.get(tasks)
+  if (!supervisor) return
+  supervisors.delete(tasks)
+  await supervisor.shutdown()
 }

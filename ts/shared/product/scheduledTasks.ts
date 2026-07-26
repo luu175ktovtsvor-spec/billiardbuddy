@@ -11,6 +11,7 @@ export const PRODUCT_SCHEDULED_TASK_RUN_STATUSES = [
   'completed',
   'failed',
   'timeout',
+  'cancelled',
 ] as const
 
 export type ProductScheduledTaskRunStatus =
@@ -28,6 +29,10 @@ export const PRODUCT_SCHEDULED_TASK_MISSED_RUN_POLICIES = [
 
 export type ProductScheduledTaskMissedRunPolicy =
   (typeof PRODUCT_SCHEDULED_TASK_MISSED_RUN_POLICIES)[number]
+
+export type ProductScheduledTaskContext =
+  | { mode: 'independent' }
+  | { mode: 'related_task'; taskId: string }
 
 /**
  * Scheduled runs use one deliberately narrow grant. The selected workDir is
@@ -47,13 +52,16 @@ export type ProductScheduledTask = {
   title: string
   description?: string
   schedule: string
+  timeZone: string
   instruction: string
   enabled: boolean
   recurring: boolean
   missedRunPolicy: ProductScheduledTaskMissedRunPolicy
+  context: ProductScheduledTaskContext
   grant: ProductScheduledTaskGrant
   createdAt: number
   lastRunAt?: string
+  nextRunAt?: string
   workDir?: string
   notification?: ProductScheduledTaskNotification
 }
@@ -62,10 +70,12 @@ export type CreateProductScheduledTaskInput = {
   title: string
   description?: string
   schedule: string
+  timeZone: string
   instruction: string
   enabled?: boolean
   recurring?: boolean
   missedRunPolicy?: ProductScheduledTaskMissedRunPolicy
+  context?: ProductScheduledTaskContext
   workDir: string
   notification?: ProductScheduledTaskNotification
 }
@@ -74,10 +84,12 @@ export type UpdateProductScheduledTaskInput = {
   title?: string
   description?: string | null
   schedule?: string
+  timeZone?: string
   instruction?: string
   enabled?: boolean
   recurring?: boolean
   missedRunPolicy?: ProductScheduledTaskMissedRunPolicy
+  context?: ProductScheduledTaskContext
   workDir?: string | null
   notification?: ProductScheduledTaskNotification | null
 }
@@ -89,6 +101,7 @@ export type ProductScheduledTaskRun = {
   startedAt: string
   occurrenceAt: string
   trigger: 'schedule' | 'manual'
+  productTaskId?: string
   completedAt?: string
   status: ProductScheduledTaskRunStatus
   result?: string

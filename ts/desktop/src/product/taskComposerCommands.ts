@@ -16,6 +16,10 @@ export type TaskComposerSkill = {
   description: string
 }
 
+const BUILTIN_TASK_COMMANDS: readonly TaskComposerCommand[] = [
+  { name: 'compact', description: '压缩当前任务上下文，同时保留完整历史。' },
+]
+
 /**
  * Keep the bundled Skill runtime name out of the Composer while retaining it
  * for the product-to-Agent boundary immediately before task creation.
@@ -56,6 +60,7 @@ export function buildTaskComposerCommands(
 ): TaskComposerCommand[] {
   const reservedNames = new Set<string>()
   return [
+    ...BUILTIN_TASK_COMMANDS,
     ...buildTaskComposerSkillCommands(skills),
     ...buildTaskComposerAgentCommands(agents),
   ].map((command) => {

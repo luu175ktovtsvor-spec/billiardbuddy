@@ -75,6 +75,7 @@ export function ProductTaskBrowserPreviewDock({
     : activeMode === 'browser' && browserOpen
       ? 'browser'
       : null
+  const modeAvailable = mode === 'browser' || workspaceAvailable
   const browserKey = mode ? productTaskBrowserPreviewKey(taskId, mode) : null
   const [pending, setPending] = useState<{
     selectionId: string
@@ -85,9 +86,9 @@ export function ProductTaskBrowserPreviewDock({
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
-    if (!workspaceAvailable || !browserKey) return
+    if (!modeAvailable || !browserKey) return
     useBrowserPanelStore.getState().ensureBlank(browserKey)
-  }, [browserKey, workspaceAvailable])
+  }, [browserKey, modeAvailable])
 
   const subscribeEvents = useCallback<BrowserPreviewEventSubscriber>(async (key, options = {}) => (
     subscribePreviewEvents(key, {
@@ -110,7 +111,7 @@ export function ProductTaskBrowserPreviewDock({
     })
   ), [mode, onCapture])
 
-  if (!workspaceAvailable || !mode || !browserKey) return null
+  if (!modeAvailable || !mode || !browserKey) return null
 
   const submitSelection = async () => {
     if (!pending || !instruction.trim() || submitting) return
@@ -137,8 +138,10 @@ export function ProductTaskBrowserPreviewDock({
     <div className="flex min-h-0 flex-1 flex-col" data-testid="product-task-browser-preview-dock">
       <div className="flex h-11 shrink-0 items-center justify-between border-b border-[var(--color-border)] px-3">
         <div>
-          <p className="text-sm font-medium text-[var(--color-text-primary)]">源码预览</p>
-          <p className="text-[11px] text-[var(--color-text-tertiary)]">选择元素只会生成一次性只读证据</p>
+          <p className="text-sm font-medium text-[var(--color-text-primary)]">{mode === 'browser' ? '浏览器' : '源码预览'}</p>
+          <p className="text-[11px] text-[var(--color-text-tertiary)]">
+            {mode === 'browser' ? '可将当前网页截图作为任务证据' : '选择元素只会生成一次性只读证据'}
+          </p>
         </div>
         <button
           type="button"
@@ -193,8 +196,9 @@ export function ProductTaskBrowserPreviewDock({
       <div className="min-h-0 flex-1">
         <BrowserSurface
           sessionId={browserKey}
-          unsupportedNavigationMessage="源码预览仅支持 HTTP(S) 开发地址。"
+          unsupportedNavigationMessage={mode === 'browser' ? '浏览器仅支持 HTTP(S) 地址。' : '源码预览仅支持 HTTP(S) 开发地址。'}
           showPreviewActions
+          showElementPicker={mode === 'preview'}
           subscribeEvents={subscribeEvents}
         />
       </div>

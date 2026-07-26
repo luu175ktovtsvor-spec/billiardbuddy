@@ -1,10 +1,19 @@
-import type { ComposerAttachment } from '../lib/composerAttachments'
 import type { ProductTaskAttachment } from './api/taskSocket'
+
+type ComposerAttachment = {
+  id: string
+  name: string
+  type: 'image' | 'file'
+  mimeType?: string
+  data?: string
+  file?: File
+}
 
 export const PRODUCT_TASK_ATTACHMENT_LIMITS = {
   count: 4,
   eachBytes: 8 * 1024 * 1024,
-  totalBytes: 16 * 1024 * 1024,
+  videoBytes: 32 * 1024 * 1024,
+  totalBytes: 64 * 1024 * 1024,
 } as const
 
 export const MAX_PRODUCT_TASK_ATTACHMENT_COUNT = PRODUCT_TASK_ATTACHMENT_LIMITS.count
@@ -30,6 +39,17 @@ const PRODUCT_FILE_MIME_TYPES = new Set([
   'text/csv',
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'video/mp4',
+  'video/quicktime',
+  'video/x-m4v',
+  'video/webm',
+])
+
+const PRODUCT_VIDEO_MIME_TYPES = new Set([
+  'video/mp4',
+  'video/quicktime',
+  'video/x-m4v',
+  'video/webm',
 ])
 
 export type ProductTaskAttachmentValidation =
@@ -66,24 +86,28 @@ export function validateProductTaskAttachments(
   const result: ProductTaskAttachment[] = []
   for (const attachment of attachments) {
     const mimeType = attachment.mimeType?.trim().toLowerCase()
-    const byteLength = attachment.data ? dataUrlByteLength(attachment.data) : null
-    if (!attachment.data || !mimeType || byteLength === null || !hasSupportedMime(attachment.type, mimeType)) {
-      return { ok: false, message: '附件类型暂不支持。可添加图片、PDF、TXT、Markdown、CSV、JSON、Word 或 Excel 文件。' }
+    const byteLength = attachment.data
+      ? dataUrlByteLength(attachment.data)
+      : attachment.file instanceof File
+        ? attachment.file.size
+        : null
+    if (!mimeType || byteLength === null || !hasSupportedMime(attachment.type, mimeType)) {
+      return { ok: false, message: '附件类型暂不支持。可添加图片、视频、PDF、TXT、Markdown、CSV、JSON、Word 或 Excel 文件。' }
     }
-    if (byteLength <= 0 || byteLength > PRODUCT_TASK_ATTACHMENT_LIMITS.eachBytes) {
-      return { ok: false, message: '单个附件不能超过 8 MB。' }
+    const limit = PRODUCT_VIDEO_MIME_TYPES.has(mimeType)
+      ? PRODUCT_TASK_ATTACHMENT_LIMITS.videoBytes
+      : PRODUCT_TASK_ATTACHMENT_LIMITS.eachBytes
+    if (byteLength <= 0 || byteLength > limit) {
+      return { ok: false, message: PRODUCT_VIDEO_MIME_TYPES.has(mimeType) ? '单个视频不能超过 32 MB。' : '单个附件不能超过 8 MB。' }
     }
     totalBytes += byteLength
     if (totalBytes > PRODUCT_TASK_ATTACHMENT_LIMITS.totalBytes) {
-      return { ok: false, message: '本次附件总大小不能超过 16 MB。' }
+      return { ok: false, message: '本次附件总大小不能超过 64 MB。' }
     }
 
-    result.push({
-      type: attachment.type,
-      name: attachment.name,
-      data: attachment.data,
-      mimeType,
-    })
+    result.push(attachment.file
+      ? { type: attachment.type, name: attachment.name, file: attachment.file, mimeType }
+      : { type: attachment.type, name: attachment.name, data: attachment.data!, mimeType })
   }
 
   return { ok: true, attachments: result }
@@ -145,9 +169,9 @@ function readFileAsDataUrl(file: File): Promise<string> {
 }
 
 /**
- * Read browser-selected files for the task page. This intentionally never
- * forwards an Electron-native path; the product socket accepts only bounded
- * inline data selected by the person in the renderer.
+ * Read browser-selected files for the task page. Documents and images remain
+ * small inline drafts; bounded videos retain their browser File and are sent
+ * as multipart bytes, never as an Electron-native path or base64 socket frame.
  */
 export async function readProductTaskAttachmentDrafts(
   files: readonly File[],
@@ -167,7 +191,9 @@ export async function readProductTaskAttachmentDrafts(
       !file.name.trim() ||
       file.name.length > 160 ||
       file.size <= 0 ||
-      file.size > MAX_PRODUCT_TASK_ATTACHMENT_BYTES ||
+      file.size > (PRODUCT_VIDEO_MIME_TYPES.has(mimeType)
+        ? PRODUCT_TASK_ATTACHMENT_LIMITS.videoBytes
+        : MAX_PRODUCT_TASK_ATTACHMENT_BYTES) ||
       totalBytes + file.size > PRODUCT_TASK_ATTACHMENT_LIMITS.totalBytes
     ) {
       rejectedCount += 1
@@ -175,6 +201,17 @@ export async function readProductTaskAttachmentDrafts(
     }
 
     try {
+      if (PRODUCT_VIDEO_MIME_TYPES.has(mimeType)) {
+        attachments.push({
+          id: nextDraftId(),
+          type,
+          name: file.name.trim(),
+          mimeType,
+          file,
+        })
+        totalBytes += file.size
+        continue
+      }
       const data = await readFileAsDataUrl(file)
       const byteLength = dataUrlByteLength(data)
       if (byteLength === null || byteLength !== file.size) {

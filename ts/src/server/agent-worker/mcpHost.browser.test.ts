@@ -18,7 +18,7 @@ it('adds one task-scoped recruiting tool only to ProductTask Core runs', async (
   })
   const host = new StandardProductTaskMcpHost({
     loadConfigs: async () => ({ servers: {} }),
-    connect: async () => undefined,
+    connect: async () => { throw new Error('no MCP servers expected') },
   })
   expect((await host.connect('/workspace')).tools.map(tool => tool.name)).not.toContain('RecruitingBrowser')
   expect((await host.connect('/workspace', { taskId: 'product_task_1234' })).tools.map(tool => tool.name)).toEqual(['RecruitingBrowser'])
