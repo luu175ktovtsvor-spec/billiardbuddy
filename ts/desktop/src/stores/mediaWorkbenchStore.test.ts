@@ -183,6 +183,7 @@ describe('mediaWorkbenchStore', () => {
       user_request: edited.brief.user_request,
       size: edited.size,
       brief_overrides: edited.brief_overrides,
+      references: edited.references,
       confirm_unknown_retry: false,
     })
 

@@ -299,6 +299,7 @@ export const useMediaWorkbenchStore = create<MediaWorkbenchStore>((set, get) => 
         user_request: project.brief?.user_request ?? project.title,
         size: project.size,
         brief_overrides: project.brief_overrides,
+        references: project.references,
         confirm_unknown_retry: confirmUnknownRetry,
       })
       nextProjectLoadVersion('image')

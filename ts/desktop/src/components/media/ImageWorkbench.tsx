@@ -5,6 +5,7 @@ import {
   MAX_REFERENCE_IMAGES_TOTAL_BYTES,
   type ImageBriefOverrides,
   type ImageCanvasSize,
+  type ImageProjectReference,
   type ImageReferenceRole,
   type ImageTextLayer,
   mediaApi,
@@ -41,6 +42,15 @@ function lines(value: string): string[] {
 
 function sameBriefOverrides(left: ImageBriefOverrides, right: ImageBriefOverrides): boolean {
   return EDITABLE_BRIEF_FIELDS.every(({ field }) => JSON.stringify(left[field]) === JSON.stringify(right[field]))
+}
+
+function sameReferences(left: ImageProjectReference[], right: ImageProjectReference[]): boolean {
+  const project = (reference: ImageProjectReference) => ({
+    asset_id: reference.asset_id,
+    role: reference.role,
+    label: reference.label,
+  })
+  return JSON.stringify(left.map(project)) === JSON.stringify(right.map(project))
 }
 
 const REFERENCE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp'])
@@ -404,6 +414,7 @@ export function ImageWorkbench() {
   const [compareMode, setCompareMode] = useState(false)
   const [selectedLayerId, setSelectedLayerId] = useState<string | null>(null)
   const [briefOverrides, setBriefOverrides] = useState<ImageBriefOverrides>({})
+  const [referenceDraft, setReferenceDraft] = useState<ImageProjectReference[]>([])
   const promptRef = useRef(prompt)
   const sizeRef = useRef(size)
   const draftOwnerIdRef = useRef<string | null>(null)
@@ -502,6 +513,7 @@ export function ImageWorkbench() {
     setTextLayoutSettings({})
     setTextCopy(active?.brief?.exact_text.join('\n') ?? '')
     setBriefOverrides(active?.brief_overrides ?? {})
+    setReferenceDraft(active?.references ?? [])
   }, [activeId, active?.current_version_id])
 
   useEffect(() => { promptRef.current = prompt }, [prompt])
@@ -537,6 +549,7 @@ export function ImageWorkbench() {
     draftDirtyRef.current = false
     setReferences([])
     setBriefOverrides({})
+    setReferenceDraft([])
     setInputError(null)
     setCreating(true)
   }
@@ -604,6 +617,7 @@ export function ImageWorkbench() {
       prompt.trim() !== active.brief?.user_request
       || size !== active.size
       || !sameBriefOverrides(briefOverrides, active.brief_overrides ?? {})
+      || !sameReferences(referenceDraft, active.references)
     ),
   )
 
@@ -614,6 +628,7 @@ export function ImageWorkbench() {
       ...active,
       brief: { ...active.brief!, user_request: prompt.trim() },
       brief_overrides: briefOverrides,
+      references: referenceDraft,
       size,
     }, confirmUnknownRetry)
   }
@@ -1082,20 +1097,43 @@ export function ImageWorkbench() {
                   <span className="text-[var(--color-text-tertiary)]">方式</span>
                   <span className="text-right text-[var(--color-text-secondary)]">{active.reference_image_count > 0 ? `参考图生成 (${active.reference_image_count})` : '文字生成'}</span>
                 </div>
-                {active.references.length > 0 && (
+                {referenceDraft.length > 0 && (
                   <div className="mb-5 border-t border-[var(--color-border)] pt-4">
                     <div className="mb-2 text-[12px] font-medium text-[var(--color-text-primary)]">参考素材</div>
                     <div className="grid grid-cols-3 gap-2">
-                      {active.references.map(reference => (
+                      {referenceDraft.map(reference => (
                         <figure key={reference.asset_id} className="overflow-hidden rounded-[5px] border border-[var(--color-border)] bg-[var(--color-surface-container)]">
                           <img
                             src={mediaApi.assetUrl(reference.image_path)}
                             alt={reference.label ?? `${REFERENCE_ROLE_LABELS[reference.role]}参考图`}
                             className="aspect-square w-full object-cover"
                           />
-                          <figcaption className="truncate px-1.5 py-1 text-[10px] text-[var(--color-text-secondary)]">
-                            {reference.label ?? REFERENCE_ROLE_LABELS[reference.role]}
-                          </figcaption>
+                          {['draft', 'failed'].includes(active.state) ? (
+                            <div className="flex items-center border-t border-[var(--color-border)]">
+                              <select
+                                aria-label={`${reference.label ?? reference.asset_id} 的参考作用`}
+                                value={reference.role}
+                                onChange={event => setReferenceDraft(current => current.map(item => item.asset_id === reference.asset_id
+                                  ? { ...item, role: event.target.value as ImageReferenceRole }
+                                  : item))}
+                                className="h-7 min-w-0 flex-1 bg-[var(--color-input-bg)] px-1 text-[10px]"
+                              >
+                                {REFERENCE_ROLE_OPTIONS.filter(option => option.value !== 'unclassified').map(option => (
+                                  <option key={option.value} value={option.value}>{option.label}</option>
+                                ))}
+                              </select>
+                              <button
+                                type="button"
+                                onClick={() => setReferenceDraft(current => current.filter(item => item.asset_id !== reference.asset_id))}
+                                className="flex h-7 w-7 items-center justify-center text-[var(--color-text-tertiary)] hover:text-[var(--color-error)]"
+                                aria-label={`移除参考素材 ${reference.label ?? REFERENCE_ROLE_LABELS[reference.role]}`}
+                              ><X size={12} /></button>
+                            </div>
+                          ) : (
+                            <figcaption className="truncate px-1.5 py-1 text-[10px] text-[var(--color-text-secondary)]">
+                              {reference.label ?? REFERENCE_ROLE_LABELS[reference.role]}
+                            </figcaption>
+                          )}
                         </figure>
                       ))}
                     </div>

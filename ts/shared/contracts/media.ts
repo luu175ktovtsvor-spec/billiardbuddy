@@ -591,7 +591,16 @@ export const updateImageProjectInputSchema = z.object({
   user_request: z.string().min(1).max(8000),
   size: imageCanvasSizeSchema,
   brief_overrides: imageBriefOverridesSchema.optional(),
+  references: z.array(imageProjectReferenceSchema).max(8).optional(),
   confirm_unknown_retry: z.boolean().default(false),
+}).superRefine((value, context) => {
+  if (!value.references) return
+  if (value.references.some(reference => reference.role === 'unclassified')) {
+    context.addIssue({ code: 'custom', path: ['references'], message: 'reference image roles must be confirmed' })
+  }
+  if (new Set(value.references.map(reference => reference.asset_id)).size !== value.references.length) {
+    context.addIssue({ code: 'custom', path: ['references'], message: 'reference image ids must be unique' })
+  }
 })
 
 export const submitImageProjectInputSchema = z.object({

@@ -159,7 +159,7 @@ test('media API redacts reference image bytes, updates drafts, and deletes proje
       revision: number
       reference_images: string[]
       reference_image_count: number
-      references: Array<{ role: string; image_path: string; mime_type: string }>
+      references: Array<{ asset_id: string; role: string; image_path: string; mime_type: string }>
     }
   }
   expect(createdBody.project.reference_images).toEqual([])
@@ -183,16 +183,37 @@ test('media API redacts reference image bytes, updates drafts, and deletes proje
       revision: createdBody.project.revision,
       user_request: '修改后的海报',
       size: '1024x1536',
+      references: [{
+        asset_id: createdBody.project.references[0]!.asset_id,
+        role: 'style',
+      }],
     }),
   })
-  expect(await updated.json()).toMatchObject({
+  const updatedBody = await updated.json() as { project: { revision: number; references: Array<{ role: string }> } }
+  expect(updatedBody).toMatchObject({
     project: {
       brief: { user_request: '修改后的海报' },
       size: '1024x1536',
       candidate_count: 3,
       reference_image_count: 1,
+      references: [expect.objectContaining({ role: 'style' })],
     },
   })
+
+  const removed = await route(handler, `/api/media/images/projects/${createdBody.project.id}`, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      revision: updatedBody.project.revision,
+      user_request: '不再使用参考素材',
+      size: '1024x1536',
+      references: [],
+    }),
+  })
+  expect(await removed.json()).toMatchObject({
+    project: { reference_image_count: 0, references: [], mode: 'generate' },
+  })
+  expect((await route(handler, createdBody.project.references[0]!.image_path)).status).toBe(404)
 
   const deleted = await route(handler, `/api/media/project/${createdBody.project.id}`, { method: 'DELETE' })
   expect(deleted.status).toBe(204)

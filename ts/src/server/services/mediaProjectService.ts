@@ -2754,14 +2754,22 @@ export class MediaProjectService {
         )
       }
     }
-    const compiled = compileImageBrief(input.user_request, project.references)
+    const availableReferenceIds = new Set(project.references.map(reference => reference.asset_id))
+    const references = input.references ?? project.references
+    if (references.some(reference => !availableReferenceIds.has(reference.asset_id))) {
+      throw new MediaServiceError('图片参考素材已更新，请刷新后再编辑', 409, 'IMAGE_REFERENCE_CONFLICT')
+    }
+    const referenceIds = new Set(references.map(reference => reference.asset_id))
+    const referenceImageAssets = (project.reference_image_assets ?? [])
+      .filter(fileName => referenceIds.has(fileName.slice(0, fileName.lastIndexOf('.'))))
+    const compiled = compileImageBrief(input.user_request, references)
     const briefOverrides = input.brief_overrides ?? project.brief_overrides
     const brief = applyImageBriefOverrides(compiled.brief, briefOverrides)
     const providerPrompt = providerPromptForImageBrief(brief)
     const routedModel = routedImageModel(
       input.user_request,
       input.size,
-      project.references.some(reference => reference.role === 'subject'),
+      references.some(reference => reference.role === 'subject'),
     )
     return await this.saveProject({
       ...project,
@@ -2770,6 +2778,10 @@ export class MediaProjectService {
       prompt: providerPrompt,
       brief,
       brief_overrides: briefOverrides,
+      references,
+      reference_image_assets: referenceImageAssets,
+      reference_image_count: references.length,
+      mode: references.length > 0 ? 'edit' : 'generate',
       title: defaultTitle(input.user_request, project.title),
       model: routedModel,
       size: input.size,

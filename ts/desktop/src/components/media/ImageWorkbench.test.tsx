@@ -180,6 +180,33 @@ describe('ImageWorkbench unknown paid result', () => {
     expect(screen.getByLabelText('画面需求')).toHaveValue('保留用户尚未提交的新提示词')
   })
 
+  it('persists reference role changes from an editable project', async () => {
+    const editable = {
+      ...project,
+      reference_image_count: 1,
+      references: [{
+        asset_id: 'ref_subject0001',
+        role: 'subject' as const,
+        image_path: `/api/media/images/projects/${project.id}/references/ref_subject0001/content`,
+        mime_type: 'image/png' as const,
+      }],
+    }
+    mediaApiMock.listProjects.mockResolvedValue({ projects: [editable] })
+    mediaApiMock.updateImageProject.mockImplementation(async (_id, input) => ({
+      project: { ...editable, revision: editable.revision + 1, references: input.references },
+    }))
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    render(<ImageWorkbench />)
+
+    fireEvent.change(await screen.findByLabelText('ref_subject0001 的参考作用'), {
+      target: { value: 'style' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: '确认后重新生成' }))
+    await waitFor(() => expect(mediaApiMock.updateImageProject).toHaveBeenCalledWith(project.id, expect.objectContaining({
+      references: [expect.objectContaining({ asset_id: 'ref_subject0001', role: 'style' })],
+    })))
+  })
+
   it('requires explicit confirmation before replacing an outcome-unknown edit operation', async () => {
     const version = {
       id: 'ver_result001',
