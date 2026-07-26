@@ -66,4 +66,22 @@ describe('ProductHarnessSessionRepository', () => {
     expect(await repository.load(target)).toBeUndefined()
     expect(await repository.load(other)).toMatchObject({ run_id: 'run-2' })
   })
+
+  test('loads a version 2 session as an active turn and upgrades it on the next save', async () => {
+    const target = await binding()
+    const repository = new ProductHarnessSessionRepository()
+    await repository.save(target, value(1))
+    const file = (await fs.readdir(target.storage_dir)).find(name => name.endsWith('.json'))!
+    const filePath = path.join(target.storage_dir, file)
+    const legacy = JSON.parse(await fs.readFile(filePath, 'utf8')) as Record<string, unknown>
+    legacy.version = 2
+    delete legacy.turn_state
+    delete legacy.hook_context
+    delete legacy.completed_result
+    await fs.writeFile(filePath, JSON.stringify(legacy), 'utf8')
+
+    expect(await repository.load(target)).toMatchObject({ run_id: 'run-1', turn_state: 'active' })
+    await repository.save(target, { ...value(2), turn_state: 'completed', completed_result: '完成' })
+    expect(JSON.parse(await fs.readFile(filePath, 'utf8'))).toMatchObject({ version: 3, turn_state: 'completed', completed_result: '完成' })
+  })
 })

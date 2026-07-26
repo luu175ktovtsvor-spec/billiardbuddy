@@ -38,6 +38,8 @@ export type ProductAgentLoopInput = {
   ) => AsyncGenerator<ProductToolMessageUpdate, void>
   toolHooks?: ProductToolHooks
   promptContext: ProductPromptContext
+  /** Continue a persisted Turn without appending its original user input again. */
+  resume?: boolean
 }
 
 function assistantText(message: ProductAssistantMessage): string {
@@ -138,6 +140,32 @@ function hookContextMessage(context: string, phase: 'PreToolUse' | 'PostToolUse'
   })
 }
 
+function unresolvedPersistedToolCalls(messages: readonly ProductHarnessMessage[]): ProductToolCallBlock[] {
+  const completed = new Set(messages.flatMap(message => {
+    const content = message.message.content
+    return Array.isArray(content)
+      ? content.flatMap(block => block.type === 'tool_result' ? [block.tool_call_id] : [])
+      : []
+  }))
+  const seen = new Set<string>()
+  return messages.flatMap(message => {
+    if (message.type !== 'assistant') return []
+    return message.message.content.flatMap(block => {
+      if (block.type !== 'tool_call' || completed.has(block.id) || seen.has(block.id)) return []
+      seen.add(block.id)
+      return [block]
+    })
+  })
+}
+
+function resumableCompletedText(messages: readonly ProductHarnessMessage[]): string | undefined {
+  const last = messages.at(-1)
+  if (last?.type !== 'assistant' || last.message.content.some(block => block.type === 'tool_call')) return undefined
+  if (last.message.stop_reason === 'length' || last.message.stop_reason === 'max_tokens') return undefined
+  const text = assistantText(last)
+  return text || undefined
+}
+
 /**
  * The only BilliardBuddy model-tool loop.
  *
@@ -149,15 +177,37 @@ export async function* runProductAgentLoop(input: ProductAgentLoopInput): AsyncG
   const messages = input.mutableMessages ?? []
   let context = input.toolUseContext
   const persist = async () => input.onMessageState?.(messages)
-  const expanded = await expandPromptCommand(input.prompt, input.commands, context)
-  const userMessage = createProductUserMessage({ content: expanded.prompt })
-  messages.push(userMessage)
-  await persist()
-  yield userMessage
+  let pendingDirectAssistant: ProductAssistantMessage | undefined
+  const unresolved = unresolvedPersistedToolCalls(messages)
+  for (const block of unresolved) {
+    const message = createProductUserMessage({ content: [{
+      type: 'tool_result',
+      tool_call_id: block.id,
+      is_error: true,
+      content: 'The previous BilliardBuddy turn ended before this tool result was durably recorded. The prior execution outcome is unknown. Inspect the current state before deciding whether to issue a new tool call; do not assume the operation did or did not happen.',
+    }] })
+    messages.push(message)
+    await persist()
+    yield message
+  }
+  if (input.resume) {
+    if (messages.length === 0) throw new Error('PRODUCT_AGENT_RESUME_EMPTY')
+    const completedText = unresolved.length === 0 ? resumableCompletedText(messages) : undefined
+    if (completedText) {
+      yield { type: 'result', subtype: 'success', is_error: false, result: completedText }
+      return
+    }
+  } else {
+    const expanded = await expandPromptCommand(input.prompt, input.commands, context)
+    const userMessage = createProductUserMessage({ content: expanded.prompt })
+    messages.push(userMessage)
+    await persist()
+    yield userMessage
+    pendingDirectAssistant = expanded.directToolCall ? directToolAssistant(expanded.directToolCall) : undefined
+  }
 
   const systemPrompt = buildProductSystemPrompt(input.promptContext)
   let finalText = ''
-  let pendingDirectAssistant = expanded.directToolCall ? directToolAssistant(expanded.directToolCall) : undefined
 
   for (let iteration = 0; iteration < MAX_MODEL_TOOL_ITERATIONS; iteration += 1) {
     if (context.abortController.signal.aborted) throw new Error('PRODUCT_AGENT_LOOP_ABORTED')

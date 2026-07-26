@@ -174,17 +174,20 @@ export class AgentWorkerSupervisor {
     active.child.send({ type: 'steer', queue_item_id: queueItemId, text })
     return true
   }
-  async stop(runId: string, generation: number): Promise<void> { const key = `${runId}:${generation}`; if (this.settled.has(key)) return; this.stopRequested.add(key); this.terminalPending.add(key); const active = this.active.get(key); try { if (active) { active.child.send({ type: 'stop' }); await active.child.stop() } else await this.scheduler.cancel(`agent-worker:${runId}:${generation}`).catch(() => undefined); await this.messages?.record(runId, generation, { type: 'terminal', state: 'stopped', run_id: runId }) } finally { await this.fail(runId, generation, active?.fencing, 'STOPPED', 'terminal') } }
+  async stop(runId: string, generation: number): Promise<void> { const key = `${runId}:${generation}`; if (this.settled.has(key)) return; this.stopRequested.add(key); this.terminalPending.add(key); const active = this.active.get(key); try { if (active) active.child.send({ type: 'stop' }); else await this.scheduler.cancel(`agent-worker:${runId}:${generation}`).catch(() => undefined); await this.messages?.record(runId, generation, { type: 'terminal', state: 'stopped', run_id: runId }) } finally { await this.fail(runId, generation, active?.fencing, 'STOPPED', 'terminal') } }
   async shutdown(): Promise<void> {
     await Promise.all([...this.active.values()].map(active => this.stop(active.run_id, active.generation)))
   }
   private async fail(run: string, generation: number, fencing: number | undefined, error: string, state: 'recovery_required' | 'terminal' = 'recovery_required', failure?: ProductTaskRunFailure): Promise<'recovery_required'> {
     const key = `${run}:${generation}`
     if (this.settled.has(key)) return 'recovery_required'
+    const active = this.active.get(key)
     this.settled.add(key); this.terminalPending.delete(key); this.stopRequested.delete(key); this.active.delete(key); const timer = this.readyTimers.get(key); if (timer) clearTimeout(timer); this.readyTimers.delete(key); const heartbeat = this.heartbeatTimers.get(key); if (heartbeat) clearInterval(heartbeat); this.heartbeatTimers.delete(key)
     try { await this.runs.settleTaskRunDispatch(run, generation, state, error, state === 'recovery_required' ? failure ?? classifyProductTaskRunFailure(new Error(error)) : undefined) } catch {}
-    // Durable terminal/recovery state is the fence for all later child IPC;
-    // scheduler journal I/O must not delay that transition.
+    // Durable terminal/recovery state is the fence for all later child IPC.
+    // Stop the isolated runtime before releasing its scheduler claim so a
+    // completed Turn cannot leave a warm worker behind.
+    await active?.child.stop().catch(() => undefined)
     await this.releaseSchedulerClaim(run, generation, fencing)
     if (state === 'terminal') await this.runs.advanceTaskRunQueue?.(run, generation).catch(() => undefined)
     return 'recovery_required'

@@ -18,6 +18,7 @@ import { decideProductToolPermission } from './productPermissionDecision.js'
 import { emptyProductToolPermissionContext, type ProductCommand, type ProductThinkingConfig, type ProductToolContext, type ProductToolPermissionContext, type ProductTools } from './productTool.js'
 import { productDefaultTextModel } from '../product/productGatewayRuntime.js'
 import { buildProductChatPrompt } from './productChatAttachments.js'
+import { getLocalISODate } from '../../constants/common.js'
 
 export type ProductHostCommandDescriptor = {
   name: string
@@ -109,6 +110,10 @@ export class StandardProductAgentHostRuntime implements ProductAgentHostRuntime 
       this.commands = uniqBy([...baseCommands, ...productAgentCommands(extensionTools)], 'name')
       this.context = {
         productTaskId: this.input.task_id,
+        productPromptContext: {
+          workspace: this.input.work_dir,
+          date: getLocalISODate(),
+        },
         options: {
           commands: this.commands,
           mainLoopModel: productDefaultTextModel(),
