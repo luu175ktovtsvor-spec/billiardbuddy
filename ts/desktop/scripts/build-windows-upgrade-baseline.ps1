@@ -48,6 +48,17 @@ try {
 }
 
 $oldDesktop = Join-Path $oldRoot 'ts\desktop'
+$oldPackageJsonPath = Join-Path $oldDesktop 'package.json'
+$oldPackageJson = Get-Content -LiteralPath $oldPackageJsonPath -Raw | ConvertFrom-Json
+if ($oldPackageJson.version -ne '0.4.9') { throw 'Windows 最老支持版本号不是 0.4.9' }
+if ($oldPackageJson.build.appId -ne 'com.billiardbuddy.desktop') { throw 'Windows 最老支持版本 appId 不匹配' }
+$oldAsarUnpack = @($oldPackageJson.build.asarUnpack | Where-Object { $_ -ne 'dist/**' })
+if ($oldAsarUnpack.Count -eq @($oldPackageJson.build.asarUnpack).Count) {
+  throw 'Windows 最老支持版本缺少待回移的 dist 解包配置'
+}
+$oldPackageJson.build.asarUnpack = $oldAsarUnpack
+$oldPackageJson | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $oldPackageJsonPath -Encoding utf8NoBOM
+Write-Host '已向 0.4.9 临时基线回移 Windows 安装修复：renderer 保持在 app.asar 内'
 Push-Location $oldDesktop
 try {
   & bun install --frozen-lockfile

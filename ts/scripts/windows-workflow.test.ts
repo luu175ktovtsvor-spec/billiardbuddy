@@ -104,6 +104,9 @@ describe('Desktop release workflow contract', () => {
     expect(baselineScript).toContain('billiardbuddy-old-0.4.9-installer')
     expect(baselineScript).toContain('git worktree remove --force')
     expect(baselineScript).toContain('BB_OLD_WINDOWS_INSTALLER=$persistedInstaller')
+    expect(baselineScript).toContain("Where-Object { $_ -ne 'dist/**' }")
+    expect(baselineScript).toContain("$oldPackageJson.version -ne '0.4.9'")
+    expect(baselineScript).toContain("$oldPackageJson.build.appId -ne 'com.billiardbuddy.desktop'")
   })
 
   test('proves Windows update download recovery after upgrade acceptance', () => {
