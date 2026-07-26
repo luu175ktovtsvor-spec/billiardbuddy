@@ -1,9 +1,9 @@
 import { randomUUID } from 'node:crypto'
-import { constants as fsConstants } from 'node:fs'
 import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
 import { getProductConfigDir } from '../product/productPaths.js'
 import { parseProductMcpServerConfig, type ScopedProductMcpServerConfig } from '../agent-worker/productMcpConfig.js'
+import { syncParentDirectory } from '../../utils/durableFile.js'
 import { lock } from '../../utils/lockfile.js'
 
 export type ProductPluginScope = 'user' | 'project'
@@ -171,8 +171,7 @@ async function writeMap<T extends string | boolean>(filePath: string, cwd: strin
   } finally { await handle.close() }
   try {
     await fs.rename(temporary, filePath)
-    const directory = await fs.open(path.dirname(filePath), fsConstants.O_RDONLY)
-    try { await directory.sync() } finally { await directory.close() }
+    await syncParentDirectory(filePath)
   } finally { await fs.rm(temporary, { force: true }).catch(() => undefined) }
 }
 

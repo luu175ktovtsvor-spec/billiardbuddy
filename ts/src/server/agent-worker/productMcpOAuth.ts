@@ -1,5 +1,4 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from 'node:crypto'
-import { constants as fsConstants } from 'node:fs'
 import * as fs from 'node:fs/promises'
 import { createServer, type Server } from 'node:http'
 import * as path from 'node:path'
@@ -9,6 +8,7 @@ import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import type { OAuthClientInformationMixed, OAuthClientMetadata, OAuthTokens } from '@modelcontextprotocol/sdk/shared/auth.js'
 import { getProductConfigDir } from '../product/productPaths.js'
+import { syncParentDirectory } from '../../utils/durableFile.js'
 import { lock } from '../../utils/lockfile.js'
 import type { ScopedProductMcpServerConfig } from './productMcpConfig.js'
 import { resolveProductMcpHeaders } from './productMcpHeaders.js'
@@ -109,8 +109,7 @@ async function writeCredential(serverName: string, config: RemoteConfig, value: 
   try {
     await fs.rename(temporary, file)
     await fs.chmod(file, 0o600).catch(() => undefined)
-    const directoryHandle = await fs.open(directory, fsConstants.O_RDONLY)
-    try { await directoryHandle.sync() } finally { await directoryHandle.close() }
+    await syncParentDirectory(file)
   } finally { await fs.rm(temporary, { force: true }).catch(() => undefined) }
 }
 

@@ -1,8 +1,8 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { constants as fsConstants } from 'node:fs'
 import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
 import { parseProductHarnessMessages, type ProductHarnessMessage } from '../../../shared/product/harnessMessages.js'
+import { syncParentDirectory } from '../../utils/durableFile.js'
 import { lock } from '../../utils/lockfile.js'
 
 const MAX_SESSION_BYTES = 64 * 1024 * 1024
@@ -128,12 +128,7 @@ export class ProductHarnessSessionRepository {
       try {
         await fs.rename(temporaryPath, filePath)
         await fs.chmod(filePath, 0o600)
-        const directory = await fs.open(binding.storage_dir, fsConstants.O_RDONLY)
-        try {
-          await directory.sync()
-        } finally {
-          await directory.close()
-        }
+        await syncParentDirectory(filePath)
       } finally {
         await fs.rm(temporaryPath, { force: true }).catch(() => undefined)
       }

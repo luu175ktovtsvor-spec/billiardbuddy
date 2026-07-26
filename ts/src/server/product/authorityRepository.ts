@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto'
 import * as fs from 'node:fs/promises'
-import { constants as fsConstants } from 'node:fs'
+import { syncParentDirectory } from '../../utils/durableFile.js'
 import { lock } from '../../utils/lockfile.js'
 import * as path from 'node:path'
 import {
@@ -713,8 +713,7 @@ export class ProductTaskAuthorityRepository {
       await handle.sync()
     } finally { await handle.close() }
     await fs.rename(temporaryPath, this.authorityPath)
-    const directory = await fs.open(path.dirname(this.authorityPath), fsConstants.O_RDONLY)
-    try { await directory.sync() } finally { await directory.close() }
+    await syncParentDirectory(this.authorityPath)
     return file
   }
 
