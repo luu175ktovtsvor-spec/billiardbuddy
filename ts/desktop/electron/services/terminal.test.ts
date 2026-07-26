@@ -340,10 +340,8 @@ describe('Electron terminal service', () => {
     const output: string[] = []
     let finish: (() => void) | undefined
     let finishOutput: (() => void) | undefined
-    let finishReady: (() => void) | undefined
     const exited = new Promise<void>(resolve => { finish = resolve })
     const observedWorkspace = new Promise<void>(resolve => { finishOutput = resolve })
-    const ready = new Promise<void>(resolve => { finishReady = resolve })
     const service = new ElectronTerminalService({
       env: { ...process.env, HOME: dir, SHELL: '/bin/zsh' },
       platform: process.platform,
@@ -357,14 +355,12 @@ describe('Electron terminal service', () => {
         send: (channel, payload) => {
           if (channel === ELECTRON_EVENT_CHANNELS.terminalOutput) {
             output.push((payload as { data: string }).data)
-            finishReady?.()
             if (output.join('').includes(dir)) finishOutput?.()
           }
           if (channel === ELECTRON_EVENT_CHANNELS.terminalExit) finish?.()
         },
       },
     )
-    await ready
     service.write(77, 'task-real', session.session_id, 'printf "BB_PTY_REAL\\n"; pwd\r')
     await observedWorkspace
     service.write(77, 'task-real', session.session_id, 'exit\r')
