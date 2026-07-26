@@ -1287,7 +1287,19 @@ describe('MediaProjectService video projects', () => {
     expect(completedProject).toMatchObject({
       output_asset_id: done.result?.output_asset_id,
       output_content_hash: done.result?.output_content_hash,
+      output_verification: {
+        timeline_version_id: clipped.current_timeline_version_id,
+        byte_size: 8,
+        duration_ms: 4500,
+        video_stream_count: 1,
+        audio_stream_count: 1,
+        width: 1920,
+        height: 1080,
+        fps: 29.97,
+        content_hash: done.result?.output_content_hash,
+      },
     })
+    expect(done.result?.output_verification).toEqual(completedProject.kind === 'video' ? completedProject.output_verification : undefined)
     expect(completedProject.assets).toEqual(expect.arrayContaining([
       expect.objectContaining({
         id: done.result?.output_asset_id,

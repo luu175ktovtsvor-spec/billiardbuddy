@@ -29,6 +29,11 @@ function seconds(milliseconds: number): string {
   return (milliseconds / 1000).toFixed(2)
 }
 
+function fileSize(bytes: number): string {
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`
+}
+
 const OUTPUT_PRESETS = {
   portrait: { label: '竖版 9:16', width: 1080, height: 1920, fps: 30 },
   landscape: { label: '横版 16:9', width: 1920, height: 1080, fps: 30 },
@@ -951,6 +956,21 @@ export function VideoStudio() {
                 {task && (
                   <div className="mt-2 h-1 overflow-hidden bg-[var(--color-surface-container)]">
                     <div className="h-full bg-[var(--color-brand)]" style={{ width: `${task.progress}%` }} />
+                  </div>
+                )}
+                {active.state === 'complete' && active.output_verification && (
+                  <div className="mt-3 rounded-[6px] border border-[var(--color-success)]/40 bg-[var(--color-surface-container)] p-2" aria-label="导出校验结果">
+                    <p className="text-[11px] font-medium text-[var(--color-success)]">导出已通过本机校验</p>
+                    <div className="mt-1.5 grid grid-cols-2 gap-x-2 gap-y-1 text-[10px] text-[var(--color-text-tertiary)]">
+                      <span>时长</span><span className="text-right text-[var(--color-text-secondary)]">{seconds(active.output_verification.duration_ms)} 秒</span>
+                      <span>文件大小</span><span className="text-right text-[var(--color-text-secondary)]">{fileSize(active.output_verification.byte_size)}</span>
+                      <span>媒体轨</span><span className="text-right text-[var(--color-text-secondary)]">{active.output_verification.video_stream_count} 视频 / {active.output_verification.audio_stream_count} 音频</span>
+                      {active.output_verification.width && active.output_verification.height && (
+                        <><span>画面</span><span className="text-right text-[var(--color-text-secondary)]">{active.output_verification.width}×{active.output_verification.height}{active.output_verification.fps ? ` · ${active.output_verification.fps} fps` : ''}</span></>
+                      )}
+                      <span>时间线</span><span className="truncate text-right text-[var(--color-text-secondary)]" title={active.output_verification.timeline_version_id}>{active.output_verification.timeline_version_id.slice(-12)}</span>
+                      <span>SHA-256</span><span className="truncate text-right font-mono text-[var(--color-text-secondary)]" title={active.output_verification.content_hash}>{active.output_verification.content_hash.slice(7, 23)}…</span>
+                    </div>
                   </div>
                 )}
                 {active.state === 'complete' && active.output_path && (

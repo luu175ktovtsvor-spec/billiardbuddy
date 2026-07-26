@@ -258,10 +258,27 @@ describe('provider-neutral image creation contract', () => {
         content_hash: `sha256:${'b'.repeat(64)}`,
         created_at: baseImageProject.updated_at,
       },
+      output_verification: {
+        timeline_version_id: 'timeline_preview01',
+        byte_size: 2048,
+        duration_ms: 1000,
+        video_stream_count: 1,
+        audio_stream_count: 1,
+        width: 1920,
+        height: 1080,
+        fps: 30,
+        content_hash: `sha256:${'c'.repeat(64)}`,
+        verified_at: baseImageProject.updated_at,
+      },
     })
     expect(project.sources[0]?.fingerprint).toBe(`sha256:${'a'.repeat(64)}`)
     expect(project.sources[0]).not.toHaveProperty('path')
     expect(project.preview).toMatchObject({ asset_id: 'preview_asset001' })
+    expect(project.output_verification).toMatchObject({
+      timeline_version_id: 'timeline_preview01',
+      duration_ms: 1000,
+      content_hash: `sha256:${'c'.repeat(64)}`,
+    })
     expect(publicMediaTaskSchema.safeParse({
       schema_version: 1,
       id: 'task_preview01',
