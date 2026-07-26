@@ -47,7 +47,8 @@ describe('packaged desktop update gateway', () => {
       if (init?.method === 'HEAD') {
         return new Response(null, { headers: { 'content-length': String(artifact.length), 'accept-ranges': 'bytes' } })
       }
-      const match = new Headers(init?.headers).get('range')?.match(/^bytes=(\d+)-(\d+)$/)
+      const requestHeaders = init?.headers as Record<string, string> | undefined
+      const match = requestHeaders?.range?.match(/^bytes=(\d+)-(\d+)$/)
       if (!match) return new Response(null, { status: 416 })
       const start = Number(match[1])
       const end = Number(match[2])
@@ -64,6 +65,13 @@ describe('packaged desktop update gateway', () => {
         metadata: 'latest.yml',
         artifacts: [{ name: 'BilliardBuddy-0.5.0-win-x64.exe', size: artifact.length }],
       })
+      artifact[artifact.length - 1] = 12
+      await expect(verifyPublishedUpdate({
+        baseUrl: 'https://updates.example.test/desktop',
+        expectedVersion: '0.5.0',
+        metadataPath,
+        artifactPaths: [artifactPath],
+      }, fetchImpl as typeof fetch)).rejects.toThrow('正式发布文件内容不匹配')
     } finally {
       rmSync(tempDir, { recursive: true, force: true })
     }
