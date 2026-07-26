@@ -171,54 +171,30 @@ export function mediaReasoningRegistryEntry(): ProviderRegistryEntry {
   return providerRegistryEntryForCapability('MediaReasoning')
 }
 
-export type ProviderContractArtifacts = {
-  'model-contract.json': Json
-  'worker-capability-manifest.json': Json
-}
-
-/** Both public artifacts are projections of the exact same canonical registry. */
-export function renderProviderContractArtifacts(): ProviderContractArtifacts {
+/** Build the private Worker compatibility manifest from the canonical registry. */
+export function renderProviderRuntimeManifest(): Json {
   const registry_sha256 = providerRegistrySha256()
-  const models = PROVIDER_REGISTRY.map(entry => ({ ...entry, registry_sha256 })) as unknown as Json[]
   return {
-    'model-contract.json': {
-      schema_version: 1,
-      contract_version: PROVIDER_REGISTRY_CONTRACT_VERSION,
-      registry_sha256,
-      worker_capability_manifest: {
-        path: 'ts/product-contracts/worker-capability-manifest.json',
-        contract_version: PROVIDER_REGISTRY_CONTRACT_VERSION,
-        registry_sha256,
-      },
-      models,
-    },
-    'worker-capability-manifest.json': {
-      schema_version: 1,
-      contract_version: PROVIDER_REGISTRY_CONTRACT_VERSION,
-      registry_sha256,
-      model_contract: {
-        path: 'ts/product-contracts/model-contract.json',
-        contract_version: PROVIDER_REGISTRY_CONTRACT_VERSION,
-        registry_sha256,
-      },
-      capabilities: PROVIDER_REGISTRY.map(entry => ({
-        model_id: entry.model_id,
-        provider: entry.provider,
-        capabilities: entry.capabilities,
-        worker_env_source: entry.worker_env_source,
-        verified_context_window: entry.verified_context_window,
-        body_caps: entry.body_caps,
-        compact_threshold: entry.compact_threshold,
-        resume_evidence: entry.resume_evidence,
-        contract_version: entry.contract_version,
-        verification_date: entry.verification_date,
-      })) as unknown as Json[],
-    },
+    schema_version: 1,
+    contract_version: PROVIDER_REGISTRY_CONTRACT_VERSION,
+    registry_sha256,
+    capabilities: PROVIDER_REGISTRY.map(entry => ({
+      model_id: entry.model_id,
+      provider: entry.provider,
+      capabilities: entry.capabilities,
+      worker_env_source: entry.worker_env_source,
+      verified_context_window: entry.verified_context_window,
+      body_caps: entry.body_caps,
+      compact_threshold: entry.compact_threshold,
+      resume_evidence: entry.resume_evidence,
+      contract_version: entry.contract_version,
+      verification_date: entry.verification_date,
+    })) as unknown as Json[],
   }
 }
 
 export function providerManifestSha256(): string {
-  return createHash('sha256').update(stableProviderJson(renderProviderContractArtifacts()['worker-capability-manifest.json'])).digest('hex')
+  return createHash('sha256').update(stableProviderJson(renderProviderRuntimeManifest())).digest('hex')
 }
 
 export function buildProviderRegistryRuntimeEnv(model: string | undefined): Record<string, string> {

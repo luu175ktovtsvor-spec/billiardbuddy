@@ -7,7 +7,7 @@ import {
   mediaReasoningRegistryEntry,
   providerRegistryEntryForCapability,
   providerRegistrySha256,
-  renderProviderContractArtifacts,
+  renderProviderRuntimeManifest,
   stableProviderJson,
   textReasoningRegistryEntry,
   validateProviderRuntimeConfiguration,
@@ -32,15 +32,13 @@ test('registry provides the five neutral capabilities from one conservative sour
   expect(mediaReasoningRegistryEntry()).toBe(providerRegistryEntryForCapability('MediaReasoning'))
 })
 
-test('both generated artifacts share and cross-reference the canonical digest', () => {
-  const artifacts = renderProviderContractArtifacts()
-  const contract = artifacts['model-contract.json'] as any
-  const manifest = artifacts['worker-capability-manifest.json'] as any
-  expect(contract.registry_sha256).toBe(providerRegistrySha256())
+test('the Worker runtime manifest is a deterministic projection of the canonical registry', () => {
+  const manifest = renderProviderRuntimeManifest() as any
   expect(manifest.registry_sha256).toBe(providerRegistrySha256())
-  expect(contract.worker_capability_manifest.registry_sha256).toBe(manifest.registry_sha256)
-  expect(manifest.model_contract.registry_sha256).toBe(contract.registry_sha256)
-  expect(stableProviderJson(artifacts['model-contract.json'])).toBe(stableProviderJson(renderProviderContractArtifacts()['model-contract.json']))
+  expect(manifest.capabilities.map((entry: { model_id: string }) => entry.model_id)).toEqual(
+    PROVIDER_REGISTRY.map(entry => entry.model_id),
+  )
+  expect(stableProviderJson(manifest)).toBe(stableProviderJson(renderProviderRuntimeManifest()))
 })
 
 test('TextReasoning default selection requires one text entry, one default entry, and matching model IDs', () => {
