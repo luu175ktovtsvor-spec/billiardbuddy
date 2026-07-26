@@ -33,6 +33,8 @@ BilliardBuddy 是面向台球门店经营者的桌面 Agent。用户在一个 GU
 
 **实现选择规则：**同一用户结果只保留一条权威状态和一条正式执行路径。现有代码已满足合同、失败行为和验证要求时直接复用；缺少边界时在原路径上最小收紧；若继续套壳、兼容或转译比替换更复杂，就重写成唯一实现。不得为了迁就旧内核增加“旧对象 → 中间协议 → 新对象”的常驻链路、镜像 Store、双写、无消费者 adapter 或仅转发数据的服务。跨 GUI/本地服务、权限隔离、持久化恢复和真实远程 API 的类型契约仍应保留，因为它们承担不可替代的安全、故障或演进边界；迁移 reader 只在支持期内单向读取旧数据，不能成为正式运行路径。
 
+**上游源码复用规则：**直接复制、移植或改造上游公开源码是正式实现选项；当它比重新写一份更小、更稳定时，应优先采用，而不是人为绕开。每次引入必须在变更中记录上游仓库、固定 commit、文件范围和许可证，并保留该许可证要求的声明、NOTICE 与商标边界。`codex-frontend-reference/` 是本轮 Codex 前端的本地源码参考，必须直接阅读其 `raw`、`reverse-readable` 与 `host-bridge`；可复用部分可直接移植到 BilliardBuddy renderer，不把它作为运行时依赖。没有源码或只有产品行为时，才以行为为参考；这不是禁止学习或复用代码，而是该材料本身没有可直接导入的源码链。许可证与本产品发行方式不兼容时，也不是假装“不能抄”，而是明确选择：接受该许可证义务后直接复用，或只复用已验证的设计/行为并自行实现。
+
 Agent 内核同样不冻结。当前 `cc-haha` 衍生代码和 Claude Code Harness 只是不完整的待审计材料，不构成保留理由；最终 Harness 以 Codex、Pi、Claude 的公开且可验证的循环、事件、Session、权限、恢复与扩展合同重新定义。只有逐项证明符合最终合同、失败行为和验证要求的局部才可直接复用；其余直接重写或删除，不为来源、目录或历史兼容保留任何执行链。
 
 Skill 在这个结构中是给 Agent 按需加载的操作说明、领域知识和工作流程，不是独立应用，也不是新的执行内核。Agent 负责理解和编排，Tool、MCP 和产品 API 提供真实能力，ProductTask、MediaProject 等权威状态源保存结果。Skill 可以教 Agent 如何做事，但不能自建业务数据、绕过权限或用提示词声称代替工具回执。
@@ -95,7 +97,7 @@ Skill 在这个结构中是给 Agent 按需加载的操作说明、领域知识�
 
 本文的三条主线必须分别以**外部可验证证据 + 当前代码事实 + 可验收差距**作出决定，不能以产品宣传、截图、模型印象或“看过类似产品”替代。每一次进入代码改动前，负责人必须在同一变更说明或 PR 中留下以下五项：
 
-1. 已读的外部源码仓库、固定 commit/版本与具体文件；若完整实现未公开，明确写“未公开”，只引用公开的 SDK、协议或产品资料；
+1. 已读的外部源码仓库、固定 commit/版本、具体文件与许可证；若完整实现未公开，明确写“未公开”，只引用公开的 SDK、协议或产品资料；
 2. 已读的 BilliardBuddy 生产调用链、权威状态、测试和失败路径，不能从历史文档或 UI 名称推断现状；
 3. 外部做法解决的用户问题、它不适用于本项目的条件，以及本项目选择/拒绝它的理由；
 4. 最小改动后的合同、状态迁移、权限、取消、重试、恢复和资源释放行为；
@@ -103,7 +105,7 @@ Skill 在这个结构中是给 Agent 按需加载的操作说明、领域知识�
 
 | 主线 | 必读外部实现与资料 | 已得到的架构结论 | 每次实施前必须核对的本项目事实 |
 |---|---|---|---|
-| 聊天 Harness | Codex `Turn` loop 与 App Server 的 `Thread → Turn → Item` 事件协议；Pi 的 `agentLoop`；当前 Query loop；Claude Code 公开仓库及 Claude Agent SDK 的公开 Session/Tool 合同。完整 Claude Code 与 Codex App 前端私有实现一律不臆测。 | 连续模型—工具循环、流式事件、steer、compact、resume、权限和工具授权必须是可恢复的 Harness 合同；GUI 只消费事件投影。 | `query`/agent-worker、ProductTask/TaskRun、Tool/MCP/Skill 发现、`visionBridge`、桌面 Thread/Composer/`/`/右侧检查器及其测试。 |
+| 聊天 Harness 与 GUI | Codex 公开 `Turn` loop、App Server，以及本地 `codex-frontend-reference/` 的前端代码；Pi 的 `agentLoop`；Claude Code 的公开 Session/Tool 合同。 | Codex 前端代码负责聊天 GUI 的信息架构、组件和交互参考；Codex/Pi/Claude 的 Harness 代码与合同负责连续模型—工具循环、流式事件、steer、compact、resume、权限和工具授权。 | `query`/agent-worker、ProductTask/TaskRun、Tool/MCP/Skill 发现、`visionBridge`、桌面 Thread/Composer/`/`/右侧检查器及其测试。 |
 | 生图工作台 | InvokeAI 已读 `session_queue`、工作流调用和前端 queue 状态事件源码；Firefly Boards 的画布/参考图/候选交互资料。 | 图像创作是项目、版本、持久 Job 与候选资产的工作流，不是聊天子循环；前端状态来自权威 Job/Event，不靠轮询猜测。 | `MediaProject`/`MediaOperation`/`MediaJob`、ImageWorkbench、图片 provider adapter、版本/Asset 合同、取消与迟到回执测试。 |
 | 视频工作台 | OpenShot 已读项目数据更新、时间线状态机与独立预览线程源码；OpenCut 的源码仅作为仍在重构中的布局/分层观察，不能当成熟执行内核；再以 Runway、Premiere、Descript 的公开产品资料核对素材、检索、时间线、预览与导出体验。 | 视频编辑需要独立项目真相、有限状态机、非阻塞预览与可重放导出；VLM 只提供证据/建议，不能持有时间线或代替渲染。 | `videoAnalysis`、VideoStudio、素材 fingerprint、Evidence/Transcript、Timeline Version、FFmpeg Job、预览/导出/恢复及其真实素材测试。 |
 
@@ -117,13 +119,13 @@ Skill 在这个结构中是给 Agent 按需加载的操作说明、领域知识�
 | 交叉推理 | 两个以上独立产物一致，例如页面组件、中文文案、动作注册和 host bridge 都指向同一状态转换 | 逐像素设计稿、隐藏 feature flag 的最终产品语义 |
 | 假设 | 仅用于提出待验证问题和实验 | 实施依据、产品承诺或完成声明 |
 
-`codex-frontend-reference/` 的读取顺序固定为：先读 `README.md` 的提取版本、完整性与 source-map 缺失说明；再从不可改写的 `raw/webview/` 确认 chunk/import/字符串；随后在 `reverse-readable/` 追踪组件边界、动作、事件、中文文案和参数；最后用 `host-bridge/build/` 验证前端如何调用 Electron 宿主。变量名即使混淆，也必须通过“入口 → 状态 → 动作 → UI 反馈 → host/API”还原行为；至少两条独立证据一致才可列为交叉推理。该目录是安装包的编译产物，不是 OpenAI 原始前端源码；没有 source map 或私有服务源码时，必须保留未知项，不能补写猜测。
+`codex-frontend-reference/` 是本轮 Codex 前端的唯一指定本地源码参考，前端重构必须先读它，而不是凭截图仿制。读取顺序固定为：先读 `README.md` 的提取版本与完整性说明；再从不可改写的 `raw/webview/` 读取实际 chunk/import/字符串；随后在 `reverse-readable/` 追踪组件边界、动作、事件、中文文案和参数；最后用 `host-bridge/build/` 验证前端如何调用 Electron 宿主。可读且适配的组件、状态组织和交互可以直接移植、拆分或改造到 BilliardBuddy renderer；变量名混淆或 source-map 缺失时，再通过“入口 → 状态 → 动作 → UI 反馈 → host/API”补足理解。它不是 BilliardBuddy 的运行时依赖；移植后的代码必须接到 BilliardBuddy 自己的状态和 IPC，不能把原 bundle 整体塞进安装包或用假状态模拟后端。
 
 | 对象 | 必读源码/产物 | 推理结果如何映射到本项目 |
 |---|---|---|
-| Codex | 公共 `Turn` loop、App Server 协议；本地 `codex-frontend-reference` 的 thread shell、Composer、queued message、side panel、artifact preview、projects/worktrees、settings chunks | 先抽取 Thread/Turn/Item、队列、Diff/结果预览、右侧工作面等用户结果；再映射到 `ProductTask`、`TaskRun`、Item/Event、桌面侧栏/Composer/右栏。不得复制 bundle 或声称拥有私有源码。 |
+| Codex | 公共 `Turn` loop、App Server 协议；本地 `codex-frontend-reference` 的 thread shell、Composer、queued message、side panel、artifact preview、projects/worktrees、settings chunks | 先直接读并移植可用的前端组件/状态组织；再把 Thread/Turn/Item、队列、Diff/结果预览、右侧工作面映射到 `ProductTask`、`TaskRun`、Item/Event、桌面侧栏/Composer/右栏。原 bundle 不作为最终运行依赖，移植代码接入 BilliardBuddy 自己的 IPC 与状态。 |
 | Claude Code | 先盘点公开仓库实际内容；核心执行器未公开时只读公开 SDK/Session/Tool/MCP/Hook 合同与可运行集成 | 把“未公开”作为边界，学习可验证的 Session、结构化 tool result、权限和恢复合同；绝不从 CLI 外观倒推私有 Harness。 |
-| Pi | `packages/agent/src/agent-loop.ts` 以及 Harness、Session、Hook、Skill、steer/follow-up/compact 相邻实现 | 抽取内循环、外循环和事件边界，映射到现有 Query/Core、agent-worker、TaskRun 和持久事件；不复制语言、目录或 Pi 产品功能。 |
+| Pi | `packages/agent/src/agent-loop.ts` 以及 Harness、Session、Hook、Skill、steer/follow-up/compact 相邻实现 | 先判断直接移植或改造是否比重写更小；抽取/复用内循环、外循环和事件边界，映射到现有 Query/Core、agent-worker、TaskRun 和持久事件。 |
 | 生图工作台 | InvokeAI 的 session queue、workflow invocation、前端 queue event、Canvas/Workflow 源码；Firefly 仅作为公开交互资料 | 抽取“项目/画布/候选/版本/持久 Job/状态事件”合同，映射到 `MediaProject`、`MediaOperation`、`MediaJob`、`Asset/Version` 和 ImageWorkbench；MiMo 只负责可校验的理解/计划。 |
 | 视频工作台 | OpenShot 的 ProjectDataStore、时间线状态机、preview worker；OpenCut 仅限其已实现部分；Runway/Premiere/Descript 仅作产品体验资料 | 抽取“项目真相、有限状态交互、异步预览、时间线版本、确定性导出”，映射到素材 fingerprint、Evidence/Transcript、Timeline Version、FFmpeg Job 和 VideoStudio；不把 VLM 文本当成已渲染视频。 |
 
@@ -139,11 +141,11 @@ Skill 在这个结构中是给 Agent 按需加载的操作说明、领域知识�
 
 学习对象不是它们的品牌、界面像素或某个内部类，而是它们都必须解决的同一组生产问题：模型会连续调用工具，用户会在运行中补充指令，长会话会超出上下文，桌面程序会断线/重启，工具会失败或需要工具授权，定时任务会在用户不在场时触发。一个可替换模型的 Agent 产品，必须先把这些边界做成稳定合同，前端才可能自然。
 
-| 参考对象 | 已核实的做法 | 本项目学习的原则 | 不照搬的部分 |
+| 参考对象 | 已核实的做法 | 本项目学习的原则 | 直接复用/改造决定 |
 |---|---|---|---|
-| Codex | 公开 App Server 以 `Thread → Turn → Item` 表示会话、一次执行和可流式的消息/工具/工具授权项；支持 start、resume、fork、steer、compact、分页历史和 item 终态事件。Core 在同一 Turn 内把 tool result 再送回模型，直到最终回复。 | 让 GUI 消费稳定事件与终态，不能从聊天 DOM 猜执行结果；Turn 是唯一可写边界，历史可分页、恢复和分叉。 | 不复制 Rust、OpenAI 云任务、工作树实现或 Codex 的产品命名。 |
-| Pi | `agentLoop` 明确区分“工具结果继续采样”的内循环与“follow-up 继续工作”的外循环；Harness 持有 Session、Hooks、Tools、Skills、steer/follow-up 队列与 compact，并把每一步变成事件。 | 保留一个小而清晰的模型—工具循环；把队列、持久化、compact 和 Hook 放在 Harness 周围，而不是塞进业务 Tool。 | Pi 没有把产品级 Cron 塞进 loop；本项目也不应把定时器变成模型的后台自说自话。 |
-| Claude Code / Agent SDK | Claude 的公开 CLI 仓库不包含完整核心执行器，不能伪称已读；官方 SDK/平台则明确 Session、工具/MCP、Hook、客户端 tool result、resume 与环境是独立合同。 | Tool 只返回结构化请求，Host 执行后回传结果；Session/环境/权限与业务实体分离，恢复必须有持久记录。 | 不依赖 Claude 私有实现，不把 SDK 包装层误当作通用业务架构。 |
+| Codex | 公开 App Server 以 `Thread → Turn → Item` 表示会话、一次执行和可流式的消息/工具/工具授权项；支持 start、resume、fork、steer、compact、分页历史和 item 终态事件。Core 在同一 Turn 内把 tool result 再送回模型，直到最终回复。 | 让 GUI 消费稳定事件与终态，不能从聊天 DOM 猜执行结果；Turn 是唯一可写边界，历史可分页、恢复和分叉。 | 官方开源 Harness/App Server 与本地前端参考中的可用部分，都可直接移植或改造；最终只保留 BilliardBuddy 所需的最小一套。 |
+| Pi | `agentLoop` 明确区分“工具结果继续采样”的内循环与“follow-up 继续工作”的外循环；Harness 持有 Session、Hooks、Tools、Skills、steer/follow-up 队列与 compact，并把每一步变成事件。 | 保留一个小而清晰的模型—工具循环；把队列、持久化、compact 和 Hook 放在 Harness 周围，而不是塞进业务 Tool。 | Pi 的 MIT 源码可在记录 commit/许可证后直接复用或移植；不需要保留其 CLI/TUI 或把 Cron 塞进 loop。 |
+| Claude Code / Agent SDK | Claude 的公开 CLI 仓库不包含完整核心执行器，不能伪称已读；官方 SDK/平台则明确 Session、工具/MCP、Hook、客户端 tool result、resume 与环境是独立合同。 | Tool 只返回结构化请求，Host 执行后回传结果；Session/环境/权限与业务实体分离，恢复必须有持久记录。 | 对有明确复用授权的公开包可直接复用；核心执行器不在可自由复用的源码范围内时，以公开合同和产品行为补全。 |
 
 因此，本项目不预设保留当前 cc-haha 衍生 Harness。先以 Codex 的 Turn/Item、Pi 的小循环和 Claude 的 Session/Tool/权限合同定义一个唯一 Harness，再逐个审计现有模型流、Tools、Skills、Hooks、MCP、compact、resume 与错误恢复：符合者直接纳入，不符合者重写或删除；不得在旧 Harness 外再包一层“新 Harness”。
 
@@ -208,6 +210,10 @@ ProductTask/Thread
 ### 3.2 生图与视频是两个独立工作台
 
 生图和视频剪辑已经从 Agent Core 中拆出，是两个边界清楚的垂直工作台，不是聊天中临时拼出的两个流程，也不是一项“媒体 Agent”功能。它们可以复用 `MediaProject`、资源调度、权限和持久任务等底层合同，但各自保留独立的用户目标、编排步骤和工作区界面；共享底座不等于重新合并成一个工作台。
+
+因此，两个工作台的研究对象是现有图像/视频工作台，不是 Codex、Pi 或 Claude 的 Agent 界面：生图优先读取 InvokeAI 的画布、工作流、队列与图库源码，并以 Firefly Boards 核对画布、参考图和候选体验；视频优先读取 OpenCut、OpenShot 的项目、时间线、预览与导出源码，并以 Runway、Premiere、Descript 核对成熟产品的素材、预览、时间线和导出体验。Codex 前端只为三个板块提供共同的 App Shell、左中右信息秩序和状态反馈参考，不定义画布、候选或时间线本身。
+
+工作台同样可以直接复用源码：InvokeAI 为 Apache-2.0，可按其许可证移植 queue/workflow/canvas 的合适部分；OpenCut 为 MIT，可移植适合桌面工作台的项目/时间线部分；OpenShot 为 GPLv3，若选择直接复制则 BilliardBuddy 发行物必须接受相应 GPL 义务，否则只采用已验证的架构与行为。Runway、Premiere、Descript、Firefly 是产品体验参考，不假装有它们的源码。这里的判断是源码与许可证的实际差异，不是把“工作台代码不能抄”写成一条虚假的禁令。
 
 | 产品能力 | 自己负责 | 不负责 |
 |---|---|---|
@@ -522,18 +528,18 @@ Provider registry 是 model ID、能力、上下文窗口、body budget、compac
 - DeepSeek Anthropic-compatible API：<https://api-docs.deepseek.com/guides/anthropic_api>
 - DeepSeek 模型与 API 更新：<https://api-docs.deepseek.com/updates/>
 - Anthropic server-side Web Search 协议：<https://platform.claude.com/docs/en/agents-and-tools/tool-use/web-search-tool>
-- Codex Agent 回合与工具循环：<https://github.com/openai/codex/blob/main/codex-rs/core/src/session/turn.rs>
+- Codex Agent 回合与工具循环：<https://github.com/openai/codex/blob/main/codex-rs/core/src/session/turn.rs>；公开仓库许可证：Apache-2.0。
 - Codex App Server 的 Thread / Turn / Item / 事件与恢复：<https://github.com/openai/codex/blob/main/codex-rs/app-server/README.md>
 - Codex App、Skills 与 Automations：<https://openai.com/index/introducing-the-codex-app/>
-- Pi Agent loop / Harness / Skills：<https://github.com/earendil-works/pi/tree/main/packages/agent/src>
+- Pi Agent loop / Harness / Skills：<https://github.com/earendil-works/pi/tree/main/packages/agent/src>；公开仓库许可证：MIT。
 - cc-haha 流式 Agent 循环：<https://github.com/NanmiCoder/cc-haha/blob/main/src/query.ts>
-- Claude Code 公开仓库：<https://github.com/anthropics/claude-code>；当前公开内容主要是插件、Skills、集成和发布记录，不把未公开的核心执行器当成已读源码。
+- Claude Code 公开仓库：<https://github.com/anthropics/claude-code>；其仓库 `LICENSE.md` 为 Anthropic Commercial Terms，当前公开内容主要是插件、Skills、集成和发布记录，不把未公开的核心执行器当成已读源码。
 - Claude Agent 的 Session、Tools、MCP、Skills：<https://platform.claude.com/docs/en/managed-agents/sessions>、<https://platform.claude.com/docs/en/managed-agents/tools>
 - Claude scheduled deployment 的 cron 与 run history：<https://platform.claude.com/docs/en/managed-agents/scheduled-deployments>
 - 小米 MiMo-VL 图片/视频理解与推理：<https://github.com/XiaomiMiMo/MiMo-VL>；MiMo V2.5 开放平台模型定位：<https://platform.xiaomimimo.com/token-plan>
 - MiMo-VL 技术报告：<https://arxiv.org/abs/2506.03569>；视频任务条件化时序采样参考：<https://arxiv.org/abs/2507.13353>
-- 图片工作台参考：Adobe Firefly Boards 的画布、参考图、变体与胶片条：<https://helpx.adobe.com/firefly/web/create-mood-boards/firefly-boards/add-images.html>；Invoke 的画布、工作流与图库：<https://github.com/invoke-ai/InvokeAI>。本轮实际阅读 InvokeAI commit `68b90174aafebbbba45d14b049fb6852271c76a8` 的 `session_queue/session_queue_base.py` 与 `queueStatusEvents.ts`。
-- 视频工作台参考：Runway Edit Studio：<https://runwayml.com/news/introducing-aleph-2-and-edit-studio>；Premiere 的素材智能检索：<https://helpx.adobe.com/premiere/desktop/organize-media/file-organization/media-intelligence-and-search-panel.html>；Descript 的时间线：<https://help.descript.com/hc/en-us/articles/10249275208717-Timeline-overview>。本轮实际阅读 OpenShot commit `9cd2b3f3ee9024c3496487a2de30a402515ed659` 的 `project_data.py`、`timeline_backend/state.py` 与 `preview_thread.py`；OpenCut commit `4d8c49ed0706c4dc145361e01c6b1f1a87cbb863` 仅作早期重构中的面板拆分参考，不作为成熟内核。
+- 图片工作台参考：Adobe Firefly Boards 的画布、参考图、变体与胶片条：<https://helpx.adobe.com/firefly/web/create-mood-boards/firefly-boards/add-images.html>；Invoke 的画布、工作流与图库：<https://github.com/invoke-ai/InvokeAI>（Apache-2.0）。本轮实际阅读 InvokeAI commit `68b90174aafebbbba45d14b049fb6852271c76a8` 的 `session_queue/session_queue_base.py` 与 `queueStatusEvents.ts`。
+- 视频工作台参考：Runway Edit Studio：<https://runwayml.com/news/introducing-aleph-2-and-edit-studio>；Premiere 的素材智能检索：<https://helpx.adobe.com/premiere/desktop/organize-media/file-organization/media-intelligence-and-search-panel.html>；Descript 的时间线：<https://help.descript.com/hc/en-us/articles/10249275208717-Timeline-overview>。本轮实际阅读 OpenShot commit `9cd2b3f3ee9024c3496487a2de30a402515ed659` 的 `project_data.py`、`timeline_backend/state.py` 与 `preview_thread.py`（GPLv3）；OpenCut commit `4d8c49ed0706c4dc145361e01c6b1f1a87cbb863`（MIT）仅作早期重构中的面板拆分参考，不作为成熟内核。
 - Electron 安全清单：<https://www.electronjs.org/docs/latest/tutorial/security>
 - Chrome Native Messaging 协议：<https://developer.chrome.com/docs/extensions/develop/concepts/native-messaging>
 
