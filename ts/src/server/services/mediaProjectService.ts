@@ -1496,6 +1496,27 @@ export class MediaProjectService {
     }) as VideoStudioProject
   }
 
+  private async reconcileVideoOutputAvailability(project: VideoStudioProject): Promise<VideoStudioProject> {
+    if (project.state !== 'complete' || !project.output_path) return project
+    const info = await stat(project.output_path).catch(() => null)
+    const verification = project.output_verification
+    const changed = !info?.isFile()
+      || Boolean(verification && (
+        info.size !== verification.byte_size
+        || (verification.file_mtime_ms !== undefined && Math.abs(info.mtimeMs - verification.file_mtime_ms) > 1)
+      ))
+    if (!changed) return project
+    const failure = mediaSafeError('MEDIA_VIDEO_OUTPUT_UNAVAILABLE')
+    return await this.saveProject({
+      ...project,
+      state: 'failed',
+      revision: project.revision + 1,
+      error: failure.message,
+      error_code: failure.code,
+      updated_at: this.iso(),
+    }) as VideoStudioProject
+  }
+
   /** Upgrade every supported persisted record without swallowing a corrupt or future schema. */
   async migrateSupportedStorage(): Promise<void> {
     await this.ensureDirs()
@@ -1565,7 +1586,9 @@ export class MediaProjectService {
           ).value)
         }
       }
-      if (project.kind === 'video') return await this.migrateVideoTimeline(project)
+      if (project.kind === 'video') {
+        return await this.reconcileVideoOutputAvailability(await this.migrateVideoTimeline(project))
+      }
       return await this.migrateImageMimeMetadata(await this.migrateImageVersions(
         await this.migrateImageBrief(await this.migrateLegacyReferenceImages(project)),
       ))
@@ -2312,6 +2335,7 @@ export class MediaProjectService {
       contentHash: `sha256:${string}`
       byteSize: number
       durationMs: number
+      modifiedAtMs: number
       videoStreamCount: number
       audioStreamCount: number
       width?: number
@@ -2344,6 +2368,7 @@ export class MediaProjectService {
     return {
       byteSize: info.size,
       durationMs: Math.max(1, Math.round(duration * 1000)),
+      modifiedAtMs: info.mtimeMs,
       videoStreamCount: videoStreams.length,
       audioStreamCount: audioStreams.length,
       ...(Number.isInteger(width) && width > 0 ? { width } : {}),
@@ -4497,6 +4522,7 @@ export class MediaProjectService {
       const validated: VideoOutputVerification = {
         timeline_version_id: timelineVersionId,
         byte_size: inspection.byteSize,
+        file_mtime_ms: inspection.modifiedAtMs,
         duration_ms: inspection.durationMs,
         video_stream_count: inspection.videoStreamCount,
         audio_stream_count: inspection.audioStreamCount,

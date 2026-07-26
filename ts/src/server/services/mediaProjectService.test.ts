@@ -1321,6 +1321,14 @@ describe('MediaProjectService video projects', () => {
     expect(ffmpeg).toContain('+faststart')
     expect(ffmpeg?.join(' ')).toContain('concat=n=1:v=1:a=1')
     expect(ffmpeg?.join(' ')).toContain('channel_layouts=stereo')
+
+    await rm(outputPath)
+    const missingOutput = await service.getProject(project.id)
+    expect(missingOutput).toMatchObject({
+      state: 'failed',
+      error_code: 'MEDIA_VIDEO_OUTPUT_UNAVAILABLE',
+      output_verification: completedProject.kind === 'video' ? completedProject.output_verification : undefined,
+    })
   })
 
   test('routes bounded frames, audio, evidence, and planning through the managed gateway', async () => {
