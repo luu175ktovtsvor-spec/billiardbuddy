@@ -161,19 +161,26 @@ jobs:
           if ($updateMetadata.Count -ne 1) { throw '未生成唯一的 Windows 更新清单 latest.yml' }
           $installers | ForEach-Object { Write-Host "$($_.Name) $($_.Length) bytes" }
 
-      - name: 安装并审计 Windows 成品
+      - name: 解包并审计 Windows 成品
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           $installer = @(Get-ChildItem ts/desktop/build-artifacts/electron/*.exe -ErrorAction Stop)
           if ($installer.Count -ne 1) { throw '未生成唯一的 Windows 安装包' }
-          $installDir = Join-Path $env:RUNNER_TEMP 'BilliardBuddy-installed-audit'
-          if (Test-Path -LiteralPath $installDir) { throw 'Windows 审计安装目录已存在' }
-          $installProcess = Start-Process -FilePath $installer[0].FullName -ArgumentList @('/S', "/D=$installDir") -Wait -PassThru
-          if ($installProcess.ExitCode -ne 0) { throw "Windows 静默安装失败: $($installProcess.ExitCode)" }
-          $resourcesDir = Join-Path $installDir 'resources'
+          $installerAuditDir = Join-Path $env:RUNNER_TEMP 'BilliardBuddy-installer-audit'
+          $appAuditDir = Join-Path $env:RUNNER_TEMP 'BilliardBuddy-app-audit'
+          if ((Test-Path -LiteralPath $installerAuditDir) -or (Test-Path -LiteralPath $appAuditDir)) {
+            throw 'Windows 解包审计目录已存在'
+          }
+          & 7z x $installer[0].FullName "-o$installerAuditDir" -y | Out-Host
+          if ($LASTEXITCODE -ne 0) { throw "Windows NSIS 解包失败: $LASTEXITCODE" }
+          $appArchives = @(Get-ChildItem -LiteralPath $installerAuditDir -Recurse -Filter 'app-64.7z' -File)
+          if ($appArchives.Count -ne 1) { throw 'Windows NSIS 中缺少唯一的 app-64.7z' }
+          & 7z x $appArchives[0].FullName "-o$appAuditDir" -y | Out-Host
+          if ($LASTEXITCODE -ne 0) { throw "Windows App 解包失败: $LASTEXITCODE" }
+          $resourcesDir = Join-Path $appAuditDir 'resources'
           if (-not (Test-Path -LiteralPath (Join-Path $resourcesDir 'app.asar') -PathType Leaf)) {
-            throw 'Windows 安装目录缺少 resources/app.asar'
+            throw 'Windows 解包内容缺少 resources/app.asar'
           }
           Push-Location ts/desktop
           try {
