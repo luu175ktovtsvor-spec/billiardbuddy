@@ -62,6 +62,7 @@ const project: ImageWorkbenchProject = {
     exact_text: [],
     compiler_version: 'image-brief-v1',
   },
+  brief_overrides: {},
   references: [],
   reference_images: [],
   reference_image_count: 0,
@@ -93,6 +94,13 @@ beforeEach(() => {
     new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), { once: true }))
   ))
   mediaApiMock.submitImageProject.mockResolvedValue({ task: { ...task, id: 'task_retry001' } })
+  mediaApiMock.updateImageProject.mockImplementation(async (_id, input) => ({
+    project: {
+      ...project,
+      revision: project.revision + 1,
+      brief_overrides: input.brief_overrides ?? {},
+    },
+  }))
   mediaApiMock.saveImageOutput.mockResolvedValue({ path: '/tmp/saved.png' })
   desktopHostMock.save.mockResolvedValue('/tmp/saved.png')
   useMediaWorkbenchStore.setState({
@@ -139,8 +147,16 @@ describe('ImageWorkbench unknown paid result', () => {
     expect(confirm).toHaveBeenCalledWith(expect.stringContaining('而不是重用原提交编号查询状态'))
     expect(mediaApiMock.submitImageProject).not.toHaveBeenCalled()
 
+    fireEvent.change(screen.getByLabelText('Brief 必须保留'), {
+      target: { value: '人物五官不变\nLogo 原样保留' },
+    })
     fireEvent.click(retry)
     await waitFor(() => {
+      expect(mediaApiMock.updateImageProject).toHaveBeenCalledWith(project.id, expect.objectContaining({
+        brief_overrides: expect.objectContaining({
+          must_preserve: ['人物五官不变', 'Logo 原样保留'],
+        }),
+      }))
       expect(mediaApiMock.submitImageProject).toHaveBeenCalledWith(project.id, true)
     })
   })

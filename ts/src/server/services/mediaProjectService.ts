@@ -77,7 +77,7 @@ import {
   productGatewayTarget,
 } from '../product/productGatewayRuntime.js'
 import { providerRegistryEntriesForCapability } from '../../../../gateway/providerRegistry.js'
-import { compileImageBrief } from './imageBrief.js'
+import { applyImageBriefOverrides, compileImageBrief, providerPromptForImageBrief } from './imageBrief.js'
 import {
   assessImageCandidates,
   ImageReasoningError,
@@ -1372,8 +1372,14 @@ export class MediaProjectService {
       && references.every((reference, index) => reference.asset_id === project.references[index]?.asset_id)
     ) return project
     const userRequest = project.brief?.user_request ?? project.prompt
-    const { brief } = compileImageBrief(userRequest, references)
-    return await this.saveProject({ ...project, brief, references }) as ImageWorkbenchProject
+    const compiled = compileImageBrief(userRequest, references)
+    const brief = applyImageBriefOverrides(compiled.brief, project.brief_overrides)
+    return await this.saveProject({
+      ...project,
+      brief,
+      prompt: providerPromptForImageBrief(brief),
+      references,
+    }) as ImageWorkbenchProject
   }
 
   private async migrateImageVersions(project: ImageWorkbenchProject): Promise<ImageWorkbenchProject> {
@@ -2290,6 +2296,7 @@ export class MediaProjectService {
       count: 3,
       candidate_count: 3,
       brief,
+      brief_overrides: {},
       references,
       reference_images: [],
       reference_image_assets: referenceAssets,
@@ -2559,6 +2566,7 @@ export class MediaProjectService {
             ...reference,
             data_url: referenceImages[index]!,
           })),
+          overrides: project.brief_overrides,
         }, {
           operationId: `${task.operation_id ?? task.id}-reasoning`,
           fetchImpl: this.fetchImpl as typeof fetch,
@@ -2730,7 +2738,10 @@ export class MediaProjectService {
         )
       }
     }
-    const { brief, providerPrompt } = compileImageBrief(input.user_request, project.references)
+    const compiled = compileImageBrief(input.user_request, project.references)
+    const briefOverrides = input.brief_overrides ?? project.brief_overrides
+    const brief = applyImageBriefOverrides(compiled.brief, briefOverrides)
+    const providerPrompt = providerPromptForImageBrief(brief)
     const routedModel = routedImageModel(
       input.user_request,
       input.size,
@@ -2742,6 +2753,7 @@ export class MediaProjectService {
       task_id: undefined,
       prompt: providerPrompt,
       brief,
+      brief_overrides: briefOverrides,
       title: defaultTitle(input.user_request, project.title),
       model: routedModel,
       size: input.size,

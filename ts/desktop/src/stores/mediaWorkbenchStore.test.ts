@@ -50,7 +50,7 @@ function image(id: string, prompt = '活动海报'): ImageWorkbenchProject {
     mode: 'generate',
     size: '1024x1024',
     candidate_count: 3,
-    brief: {
+  brief: {
       schema_version: 1,
       user_request: prompt,
       confirmed_facts: [],
@@ -58,9 +58,10 @@ function image(id: string, prompt = '活动海报'): ImageWorkbenchProject {
       may_change: [],
       missing_information: [],
       exact_text: [],
-      compiler_version: 'image-brief-v1',
-    },
-    references: [],
+    compiler_version: 'image-brief-v1',
+  },
+  brief_overrides: {},
+  references: [],
     reference_images: [],
     reference_image_count: 0,
     version_history: [],
@@ -181,6 +182,7 @@ describe('mediaWorkbenchStore', () => {
       revision: edited.revision,
       user_request: edited.brief.user_request,
       size: edited.size,
+      brief_overrides: edited.brief_overrides,
       confirm_unknown_retry: false,
     })
 

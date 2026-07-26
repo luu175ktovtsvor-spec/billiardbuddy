@@ -1,6 +1,7 @@
 import { z } from 'zod/v4'
 import {
   imageCreativeBriefSchema,
+  type ImageBriefOverrides,
   type ImageCreativeBrief,
   type ImageProjectReference,
 } from '../../../shared/contracts/media.js'
@@ -10,7 +11,7 @@ import {
 } from '../../../shared/product/providerGateway.js'
 import { mediaReasoningRegistryEntry } from '../../../../gateway/providerRegistry.js'
 import { productGatewayTarget } from '../product/productGatewayRuntime.js'
-import { compileImageBrief, providerPromptForImageBrief } from './imageBrief.js'
+import { applyImageBriefOverrides, compileImageBrief, providerPromptForImageBrief } from './imageBrief.js'
 
 const MAX_GATEWAY_RESPONSE_CHARS = 512 * 1024
 
@@ -122,6 +123,7 @@ export async function reasonImageBrief(
   input: {
     userRequest: string
     references: Array<ImageProjectReference & { data_url: string }>
+    overrides?: ImageBriefOverrides
   },
   options: ImageReasoningGatewayOptions,
 ): Promise<{ brief: ImageCreativeBrief; providerPrompt: string }> {
@@ -145,12 +147,13 @@ export async function reasonImageBrief(
   const parsed = briefDraftSchema.safeParse(raw)
   if (!parsed.success) throw new ImageReasoningError('图片 Brief 不符合产品合同')
   const base = compileImageBrief(input.userRequest, input.references).brief
-  const brief = imageCreativeBriefSchema.parse({
+  const reasonedBrief = imageCreativeBriefSchema.parse({
     ...base,
     must_preserve: [...new Set([...base.must_preserve, ...parsed.data.must_preserve])].slice(0, 40),
     may_change: [...new Set([...base.may_change, ...parsed.data.may_change])].slice(0, 40),
     missing_information: [...new Set([...base.missing_information, ...parsed.data.missing_information])].slice(0, 20),
   })
+  const brief = imageCreativeBriefSchema.parse(applyImageBriefOverrides(reasonedBrief, input.overrides))
   return { brief, providerPrompt: providerPromptForImageBrief(brief) }
 }
 

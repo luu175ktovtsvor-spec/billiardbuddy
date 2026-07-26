@@ -106,7 +106,17 @@ describe('MediaProjectService image projects', () => {
         throw new Error(`unexpected fetch: ${String(input)}`)
       },
     })
-    const draft = await service.createImageProject({ user_request: '生成一张台球活动海报' })
+    const created = await service.createImageProject({ user_request: '生成一张台球活动海报' })
+    const draft = await service.updateImageProject(created.id, {
+      revision: created.revision,
+      user_request: created.brief!.user_request,
+      size: created.size,
+      brief_overrides: {
+        must_preserve: ['用户确认：人物与 Logo 不得变化'],
+        may_change: ['仅允许调整背景光线'],
+        exact_text: ['周末台球赛'],
+      },
+    })
     const submission = service.submitImageProject(draft.id)
     await reasoningStarted
 
@@ -125,6 +135,12 @@ describe('MediaProjectService image projects', () => {
     expect(submitted.id).toBe(reasoningTask.id)
     expect(submitted.operation_id).toBe(reasoningTask.operation_id)
     expect(submitted.remote_task_id).toBe('remote-reasoned')
+    const reasonedProject = await service.getProject(draft.id)
+    expect(reasonedProject.kind === 'image' ? reasonedProject.brief : null).toMatchObject({
+      must_preserve: ['用户确认：人物与 Logo 不得变化'],
+      may_change: ['仅允许调整背景光线'],
+      exact_text: ['周末台球赛'],
+    })
   })
 
   test('routes editable Brief and candidate QA through MediaReasoning without replacing Host hard facts', async () => {
@@ -150,10 +166,17 @@ describe('MediaProjectService image projects', () => {
         role: 'subject',
         data_url: pngDataUrl(1, 1),
       }],
+      overrides: {
+        must_preserve: ['用户锁定人物和球杆'],
+        may_change: ['只调整背景'],
+        exact_text: ['会员专场'],
+      },
     }, { operationId: 'operation-image-brief-001', fetchImpl, env })
     expect(reasoned.brief.confirmed_facts).toContain('价格：99 元')
-    expect(reasoned.brief.exact_text).toContain('会员日')
-    expect(reasoned.brief.must_preserve).toContain('保持人物姿态')
+    expect(reasoned.brief.exact_text).toEqual(['会员专场'])
+    expect(reasoned.brief.must_preserve).toEqual(['用户锁定人物和球杆'])
+    expect(reasoned.brief.may_change).toEqual(['只调整背景'])
+    expect(reasoned.brief.must_preserve).not.toContain('保持人物姿态')
     expect(reasoned.providerPrompt).toContain('不得编造价格')
 
     const quality = await assessImageCandidates({
