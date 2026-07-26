@@ -22,7 +22,7 @@ BilliardBuddy 是面向台球门店经营者的桌面 Agent。用户在一个 GU
 最终产品必须同时满足：
 
 1. 只有一个正式 GUI、一个 Electron Main、一个本地 Product Server；每个业务领域只有一个权威状态源。
-2. Agent 能力是产品核心，保留原有 Core 的循环、Tools、Skills、Hooks、MCP、子任务、resume 与 compact；GUI 通过内部 `agent-worker` 使用它，不通过公共 CLI 绕行。
+2. Agent 能力是产品核心；最终 Harness 必须提供连续模型—工具循环、Tools、Skills、Hooks、MCP、子任务、resume 与 compact。它以 Codex、Pi、Claude 的可验证合同重新实现，GUI 只通过内部 `agent-worker` 使用它，不通过公共 CLI 绕行。
 3. 普通任务以 `ProductTask` 为唯一真相；图片和视频以 `MediaProject` 为唯一真相。
 4. 文本、视觉、图片生成和语音各有清晰能力边界；不可用时显式失败，不偷偷切换供应商。
 5. 用户看见的是任务、作品、权限、额度、恢复状态和可管理的 Agent 扩展；Skills、Plugins 与 MCP 是成熟 Agent 产品的通用能力名称，保留它们不等于展示底层技术；provider、model、密钥、协议、并发和内部运行时配置不是普通用户界面。
@@ -33,7 +33,7 @@ BilliardBuddy 是面向台球门店经营者的桌面 Agent。用户在一个 GU
 
 **实现选择规则：**同一用户结果只保留一条权威状态和一条正式执行路径。现有代码已满足合同、失败行为和验证要求时直接复用；缺少边界时在原路径上最小收紧；若继续套壳、兼容或转译比替换更复杂，就重写成唯一实现。不得为了迁就旧内核增加“旧对象 → 中间协议 → 新对象”的常驻链路、镜像 Store、双写、无消费者 adapter 或仅转发数据的服务。跨 GUI/本地服务、权限隔离、持久化恢复和真实远程 API 的类型契约仍应保留，因为它们承担不可替代的安全、故障或演进边界；迁移 reader 只在支持期内单向读取旧数据，不能成为正式运行路径。
 
-Agent 内核同样不冻结。当前参考的 `cc-haha` / Claude Code Harness 只是已有运行起点，不是必须保留的代码形状；只要 Agent 循环、Tools、Skills、Hooks、MCP、子任务、resume、compact 以及权限、安全、持久化和恢复结果等价，内部类、接口、目录和执行方式都可以调整。优先减少权威状态、执行路径、运行时和重复概念，用尽可能小的改动交付同等用户能力和工程质量，不为了“像原内核”保留不必要的兼容层。
+Agent 内核同样不冻结。当前 `cc-haha` 衍生代码和 Claude Code Harness 只是不完整的待审计材料，不构成保留理由；最终 Harness 以 Codex、Pi、Claude 的公开且可验证的循环、事件、Session、权限、恢复与扩展合同重新定义。只有逐项证明符合最终合同、失败行为和验证要求的局部才可直接复用；其余直接重写或删除，不为来源、目录或历史兼容保留任何执行链。
 
 Skill 在这个结构中是给 Agent 按需加载的操作说明、领域知识和工作流程，不是独立应用，也不是新的执行内核。Agent 负责理解和编排，Tool、MCP 和产品 API 提供真实能力，ProductTask、MediaProject 等权威状态源保存结果。Skill 可以教 Agent 如何做事，但不能自建业务数据、绕过权限或用提示词声称代替工具回执。
 
@@ -54,7 +54,7 @@ Skill 在这个结构中是给 Agent 按需加载的操作说明、领域知识�
 
 ```text
 ┌──────────────────── 一个 Desktop App Shell ────────────────────┐
-│ 左：项目/板块/任务/扩展   中：当前主工作   右：审阅 或 运行检查器 │
+│ 左：项目/板块/任务/扩展   中：当前主工作   右：成果预览 或 运行检查器 │
 │                         Chat | Image | Video                   │
 └─────────────────────────────┬──────────────────────────────────┘
                               │ typed IPC
@@ -88,8 +88,8 @@ Skill 在这个结构中是给 Agent 按需加载的操作说明、领域知识�
 - Renderer 只持有视图状态，不写领域真相，不接触供应商密钥。
 - Electron Main 管理窗口、本机权限、安全存储、sidecar 生命周期和受控 IPC。
 - Product Server 是本机领域权威；Agent Core 不能越过它直接改 ProductTask 或 MediaProject。
-- Gateway/Relay 持有远程凭据、安装身份、额度、调度、上游回执和远程任务状态；这是 Harness 的运行基础设施，不是用户可见的“付费操作”或逐操作出境审批系统。
-- 会影响第三方的发送、邀约、拒绝、发布等业务副作用，以及不能安全重放的长时异步任务，必须有 owner、operation identity、幂等键、状态和可对账结果。
+- Gateway/Relay 持有远程凭据、安装身份、额度、调度、上游回执和远程任务状态；这是 Harness 的运行基础设施，不是用户可见的“付费操作”或逐操作出境确认系统。
+- 不能安全重放的外部动作和长时异步任务必须有 operation identity、幂等键、状态和可对账结果；这是可恢复执行约束，不是另一套用户审核流程。
 
 ### 3.0 调研与实施的不可跳过门槛
 
@@ -103,9 +103,9 @@ Skill 在这个结构中是给 Agent 按需加载的操作说明、领域知识�
 
 | 主线 | 必读外部实现与资料 | 已得到的架构结论 | 每次实施前必须核对的本项目事实 |
 |---|---|---|---|
-| 聊天 Harness | Codex `Turn` loop 与 App Server 的 `Thread → Turn → Item` 事件协议；Pi 的 `agentLoop`；cc-haha 的 Query loop；Claude Code 公开仓库及 Claude Agent SDK 的公开 Session/Tool 合同。完整 Claude Code 与 Codex App 前端私有实现一律不臆测。 | 连续模型—工具循环、流式事件、steer、compact、resume、权限和审批必须是可恢复的 Harness 合同；GUI 只消费事件投影。 | `query`/agent-worker、ProductTask/TaskRun、Tool/MCP/Skill 发现、`visionBridge`、桌面 Thread/Composer/`/`/右侧检查器及其测试。 |
+| 聊天 Harness | Codex `Turn` loop 与 App Server 的 `Thread → Turn → Item` 事件协议；Pi 的 `agentLoop`；当前 Query loop；Claude Code 公开仓库及 Claude Agent SDK 的公开 Session/Tool 合同。完整 Claude Code 与 Codex App 前端私有实现一律不臆测。 | 连续模型—工具循环、流式事件、steer、compact、resume、权限和工具授权必须是可恢复的 Harness 合同；GUI 只消费事件投影。 | `query`/agent-worker、ProductTask/TaskRun、Tool/MCP/Skill 发现、`visionBridge`、桌面 Thread/Composer/`/`/右侧检查器及其测试。 |
 | 生图工作台 | InvokeAI 已读 `session_queue`、工作流调用和前端 queue 状态事件源码；Firefly Boards 的画布/参考图/候选交互资料。 | 图像创作是项目、版本、持久 Job 与候选资产的工作流，不是聊天子循环；前端状态来自权威 Job/Event，不靠轮询猜测。 | `MediaProject`/`MediaOperation`/`MediaJob`、ImageWorkbench、图片 provider adapter、版本/Asset 合同、取消与迟到回执测试。 |
-| 视频工作台 | OpenShot 已读项目数据更新、时间线状态机与独立预览线程源码；OpenCut 的源码仅作为仍在重构中的布局/分层观察，不能当成熟执行内核；再以 Runway、Premiere、Descript 的公开产品资料核对素材、检索、时间线与审阅体验。 | 视频编辑需要独立项目真相、有限状态机、非阻塞预览与可重放导出；VLM 只提供证据/建议，不能持有时间线或代替渲染。 | `videoAnalysis`、VideoStudio、素材 fingerprint、Evidence/Transcript、Timeline Version、FFmpeg Job、预览/导出/恢复及其真实素材测试。 |
+| 视频工作台 | OpenShot 已读项目数据更新、时间线状态机与独立预览线程源码；OpenCut 的源码仅作为仍在重构中的布局/分层观察，不能当成熟执行内核；再以 Runway、Premiere、Descript 的公开产品资料核对素材、检索、时间线、预览与导出体验。 | 视频编辑需要独立项目真相、有限状态机、非阻塞预览与可重放导出；VLM 只提供证据/建议，不能持有时间线或代替渲染。 | `videoAnalysis`、VideoStudio、素材 fingerprint、Evidence/Transcript、Timeline Version、FFmpeg Job、预览/导出/恢复及其真实素材测试。 |
 
 #### 3.0.1 源码阅读、混淆推理与落地方法
 
@@ -121,7 +121,7 @@ Skill 在这个结构中是给 Agent 按需加载的操作说明、领域知识�
 
 | 对象 | 必读源码/产物 | 推理结果如何映射到本项目 |
 |---|---|---|
-| Codex | 公共 `Turn` loop、App Server 协议；本地 `codex-frontend-reference` 的 thread shell、Composer、queued message、side panel、artifact preview、projects/worktrees、settings chunks | 先抽取 Thread/Turn/Item、队列、审阅、右侧工作面等用户结果；再映射到 `ProductTask`、`TaskRun`、Item/Event、桌面侧栏/Composer/右栏。不得复制 bundle 或声称拥有私有源码。 |
+| Codex | 公共 `Turn` loop、App Server 协议；本地 `codex-frontend-reference` 的 thread shell、Composer、queued message、side panel、artifact preview、projects/worktrees、settings chunks | 先抽取 Thread/Turn/Item、队列、Diff/结果预览、右侧工作面等用户结果；再映射到 `ProductTask`、`TaskRun`、Item/Event、桌面侧栏/Composer/右栏。不得复制 bundle 或声称拥有私有源码。 |
 | Claude Code | 先盘点公开仓库实际内容；核心执行器未公开时只读公开 SDK/Session/Tool/MCP/Hook 合同与可运行集成 | 把“未公开”作为边界，学习可验证的 Session、结构化 tool result、权限和恢复合同；绝不从 CLI 外观倒推私有 Harness。 |
 | Pi | `packages/agent/src/agent-loop.ts` 以及 Harness、Session、Hook、Skill、steer/follow-up/compact 相邻实现 | 抽取内循环、外循环和事件边界，映射到现有 Query/Core、agent-worker、TaskRun 和持久事件；不复制语言、目录或 Pi 产品功能。 |
 | 生图工作台 | InvokeAI 的 session queue、workflow invocation、前端 queue event、Canvas/Workflow 源码；Firefly 仅作为公开交互资料 | 抽取“项目/画布/候选/版本/持久 Job/状态事件”合同，映射到 `MediaProject`、`MediaOperation`、`MediaJob`、`Asset/Version` 和 ImageWorkbench；MiMo 只负责可校验的理解/计划。 |
@@ -131,19 +131,21 @@ Skill 在这个结构中是给 Agent 按需加载的操作说明、领域知识�
 
 论文和技术报告用于验证模型能力边界、抽帧/时序理解的假设和评测条件，不能直接替代产品架构。当前 MiMo-VL 技术报告支持将 VLM 用于视觉理解与多模态推理；视频时序研究也支持“采样策略必须受任务约束”这一原则。因此，在真实素材和上游 API 合同验证前，聊天与工作台都保持本机有限抽帧、音轨分离、可追溯来源与 schema 校验，不假定可安全直传任意整段视频。
 
+调研也明确排除了一个不应自创的产品层：Codex 与 Claude 的确认发生在工具权限边界，Pi 的 loop 只发出事件并执行受宿主控制的工具；它们都不要求每个任务进入“请审核”“请发布”或“请确定”的通用流程。生图和视频工作台的成熟做法是候选/版本、画布或时间线、预览与导出。BilliardBuddy 因此只保留工具权限确认，以及可查看的真实结果、版本和运行历史；不得新增泛化审核、发布确认或 review inbox 工作流。
+
 ### 3.1 Agent Harness 的固定责任
 
 #### 3.1.0 为什么要学习 Codex、Pi 与 Claude Code
 
-学习对象不是它们的品牌、界面像素或某个内部类，而是它们都必须解决的同一组生产问题：模型会连续调用工具，用户会在运行中补充指令，长会话会超出上下文，桌面程序会断线/重启，工具会失败或需要审批，定时任务会在用户不在场时触发。一个可替换模型的 Agent 产品，必须先把这些边界做成稳定合同，前端才可能自然。
+学习对象不是它们的品牌、界面像素或某个内部类，而是它们都必须解决的同一组生产问题：模型会连续调用工具，用户会在运行中补充指令，长会话会超出上下文，桌面程序会断线/重启，工具会失败或需要工具授权，定时任务会在用户不在场时触发。一个可替换模型的 Agent 产品，必须先把这些边界做成稳定合同，前端才可能自然。
 
 | 参考对象 | 已核实的做法 | 本项目学习的原则 | 不照搬的部分 |
 |---|---|---|---|
-| Codex | 公开 App Server 以 `Thread → Turn → Item` 表示会话、一次执行和可流式的消息/工具/审批项；支持 start、resume、fork、steer、compact、分页历史和 item 终态事件。Core 在同一 Turn 内把 tool result 再送回模型，直到最终回复。 | 让 GUI 消费稳定事件与终态，不能从聊天 DOM 猜执行结果；Turn 是唯一可写边界，历史可分页、恢复和分叉。 | 不复制 Rust、OpenAI 云任务、工作树实现或 Codex 的产品命名。 |
+| Codex | 公开 App Server 以 `Thread → Turn → Item` 表示会话、一次执行和可流式的消息/工具/工具授权项；支持 start、resume、fork、steer、compact、分页历史和 item 终态事件。Core 在同一 Turn 内把 tool result 再送回模型，直到最终回复。 | 让 GUI 消费稳定事件与终态，不能从聊天 DOM 猜执行结果；Turn 是唯一可写边界，历史可分页、恢复和分叉。 | 不复制 Rust、OpenAI 云任务、工作树实现或 Codex 的产品命名。 |
 | Pi | `agentLoop` 明确区分“工具结果继续采样”的内循环与“follow-up 继续工作”的外循环；Harness 持有 Session、Hooks、Tools、Skills、steer/follow-up 队列与 compact，并把每一步变成事件。 | 保留一个小而清晰的模型—工具循环；把队列、持久化、compact 和 Hook 放在 Harness 周围，而不是塞进业务 Tool。 | Pi 没有把产品级 Cron 塞进 loop；本项目也不应把定时器变成模型的后台自说自话。 |
 | Claude Code / Agent SDK | Claude 的公开 CLI 仓库不包含完整核心执行器，不能伪称已读；官方 SDK/平台则明确 Session、工具/MCP、Hook、客户端 tool result、resume 与环境是独立合同。 | Tool 只返回结构化请求，Host 执行后回传结果；Session/环境/权限与业务实体分离，恢复必须有持久记录。 | 不依赖 Claude 私有实现，不把 SDK 包装层误当作通用业务架构。 |
 
-这也是本项目继续保留当前 cc-haha 衍生 Harness 的原因：它已有模型流、Tools、Skills、Hooks、MCP、compact、resume 与错误恢复。要改的是它与 ProductTask、媒体工作台和 GUI 的边界，不是为了“更像 Codex”重写一个第二 Harness。
+因此，本项目不预设保留当前 cc-haha 衍生 Harness。先以 Codex 的 Turn/Item、Pi 的小循环和 Claude 的 Session/Tool/权限合同定义一个唯一 Harness，再逐个审计现有模型流、Tools、Skills、Hooks、MCP、compact、resume 与错误恢复：符合者直接纳入，不符合者重写或删除；不得在旧 Harness 外再包一层“新 Harness”。
 
 BilliardBuddy 不再把 Agent Core 理解成一组需要被产品层包围的供应商功能，而是整个产品的执行脚手架。先固定四个不能混用的概念：
 
@@ -156,7 +158,7 @@ BilliardBuddy 不再把 Agent Core 理解成一组需要被产品层包围的供
 
 Codex CLI 可以被理解为长在终端里的 Agent 运行与交互表面：模型提供推理，CLI/Core 提供 Harness，终端提供工作环境。同理，BilliardBuddy 是嫁接选定模型的 Agent 产品；本项目以后由 DeepSeek 处理主聊天推理，由本项目的 Harness 给它提供能做事、能持续、能恢复的环境。“Agent”因此不是 DeepSeek 的别名，也不是单独一个聊天组件。
 
-参考 Codex、Pi 和 cc-haha 的公开实现后，只固定以下职责：
+参考 Codex、Pi 与 Claude 的公开实现后，只固定以下职责：
 
 | 层 | 责任 | 不应承担 |
 |---|---|---|
@@ -165,9 +167,9 @@ Codex CLI 可以被理解为长在终端里的 Agent 运行与交互表面：模
 | Tools | 执行文件、Shell、浏览器和业务 API，返回可验证结果 | 用提示词伪造完成回执，或操控独立工作台项目 |
 | Skills | 按需向模型注入操作说明、领域知识和工作流程 | 独立运行时或业务状态 |
 | MCP / Plugins | 发现、组合和管理外部工具、资源与可复用扩展 | 绕过当前任务权限 |
-| GUI / App Server | 把 Harness 事件投影成聊天、`/`、队列、审批、Review 和作品预览 | 再实现一次 Agent loop |
+| GUI / App Server | 把 Harness 事件投影成聊天、`/`、队列、工具授权请求和成果预览 | 再实现一次 Agent loop |
 
-聊天模型请求、聊天视觉理解和聊天 Tool/MCP 都是 Harness 的运行调用；图片生成、工作台媒体推理、语音转写和视频渲染则是独立工作台的受控 Job。两类远程调用都受安装身份、额度、普通权限、超时、取消和幂等约束，但不再创建逐操作“数据出境同意回执”或“付费操作”类型。远程处理事实在隐私说明中一次说清，不在每个 Agent 回合中反复审批。
+聊天模型请求、聊天视觉理解和聊天 Tool/MCP 都是 Harness 的运行调用；图片生成、工作台媒体推理、语音转写和视频渲染则是独立工作台的受控 Job。两类远程调用都受安装身份、额度、普通权限、超时、取消和幂等约束，但不再创建逐操作“数据出境同意回执”或“付费操作”类型。远程处理事实在隐私说明中一次说清，不在每个 Agent 回合中反复要求确认。
 
 #### 3.1.1 聊天 Harness 的生产闭环
 
@@ -179,7 +181,7 @@ ProductTask/Thread
   → DeepSeek 返回最终文本或 tool call
   → Harness 在当前权限内执行 Tool/MCP，持久化 Item/Event
   → tool result 返回同一 Turn 的 DeepSeek
-  → 直到最终回复、用户停止、需要审批或真实失败
+  → 直到最终回复、用户停止、需要工具授权或真实失败
 ```
 
 `ProductTask → TaskRun/Turn → Item/Event` 是对 GUI 和产品层的稳定合同。Core session ID、模型 client、compact 快照和 worker 进程只是私有执行细节；它们可以重建或替换，不能反过来成为第二套用户任务真相。同一 `ProductTask` 同时只有一个可写 Turn；steer/follow-up 进入受控队列，不另起一条无主循环。
@@ -187,20 +189,20 @@ ProductTask/Thread
 聊天的实现路径固定如下：
 
 1. Product Server 创建或恢复 `ProductTask`，为这次运行建立唯一 `TaskRun/Turn`，冻结该 Turn 的权限、工作区、Skill/MCP 清单和上下文快照。
-2. agent-worker 只运行 Harness：DeepSeek 采样，持久化 assistant/tool/approval 的 `Item` 事件；Tool 由 Host 执行，真实结果再回到同一 Turn。
-3. 用户运行中输入不是直接并发打进模型，而是写入 steer/follow-up 队列；当前 Turn 可接受时按顺序注入，否则下一 Turn 消费。停止、取消、审批、失败和完成都必须写终态。
+2. agent-worker 只运行 Harness：DeepSeek 采样，持久化 assistant/tool/tool-authorization 的 `Item` 事件；Tool 由 Host 执行，真实结果再回到同一 Turn。
+3. 用户运行中输入不是直接并发打进模型，而是写入 steer/follow-up 队列；当前 Turn 可接受时按顺序注入，否则下一 Turn 消费。停止、取消、工具授权、失败和完成都必须写终态。
 4. 聊天上传图片保持现有链路不变：`图片 → MiMo VisualEvidence → 带来源的结构化视觉证据 → DeepSeek`。DeepSeek 仍是聊天主模型；MiMo 只负责让不直接看图的文本回合获得受控视觉证据。
 5. 聊天上传视频也属于同一视觉委托：`视频 → 本机有界抽帧/必要时音轨转写 → MiMo VisualEvidence → 带来源的结构化视频证据 → DeepSeek`。MiMo 不在聊天中接管对话、Tool/MCP 决策或最终答复；如果上游以后验证了可靠的视频原生输入，替换的也只是该 VisualEvidence 适配器，返回 DeepSeek 的结构化证据合同不变。
 6. compact 只替换模型上下文中的历史表示，不删除权威 `Item/Event`；恢复先读取持久快照和分页历史，再决定继续、失败或等待用户。
 
 这条链的边界同样明确：Harness 不直接写 ProductTask、MediaProject 或 renderer store；业务 Tool 不自行开模型循环；GUI 只展示 `Item/Event` 的投影。这样聊天中央区域可以像 Codex 一样始终表达“当前任务正在做什么、接下来等什么、是否已经完成”，而不是展示一串无法核验的模型文本。
 
-#### 3.1.2 对当前内核的处理决定
+#### 3.1.2 Harness 的重建决定
 
-当前 `cc-haha` 衍生的 Query/Core loop 已有模型流、Tool、Skill、Hook、MCP、compact、resume 和错误恢复，不因来源或内部类名重写。`agent-worker` 子进程隔离、协议握手、密钥剥离和 fencing 也是有效生产边界，不是第二套 Harness。后续只在有证据时做三类最小收紧：
+先完整读取 Codex、Pi、Claude 的公开实现/合同与当前调用图，再建立唯一的 BilliardBuddy Harness；不是把当前 Query/Core 继续包起来。它必须具备同一 Turn 内的模型—工具循环、事件化 Tool/工具授权回执、Session/上下文快照、steer/follow-up、compact、resume、取消、权限与扩展发现。当前 `agent-worker`、Query/Core、协议握手、密钥剥离、fencing、Tool/Skill/MCP 和事件代码逐项审计，只有证明满足该合同且比重写更小的部分才复用。
 
-- 从 Core loop 中排除媒体项目和全部工作台命令；聊天只可基于聊天自身的附件、Tool/MCP 回执输出文字 Brief 或建议，不能创建、打开或操控工作台项目。
-- 在一个 Turn 内复用同一模型会话与已连接扩展，按需加载 Tool/Skill/MCP；只对测得到的重复建立或队列堵塞优化。
+- 聊天 Harness 永远排除媒体项目和全部工作台命令；聊天只可基于聊天自身附件、Tool/MCP 回执输出文字 Brief 或建议，不能创建、打开或操控工作台项目。
+- 一个 Turn 只存在一个正式模型会话、权限快照、扩展清单与事件序列；旧 Session、队列、协议或状态镜像没有唯一消费者时直接删除。
 - 事件队列和历史读取必须有界、可分页、可从 cursor 恢复；GUI 只投影事件，不从聊天 DOM 或 renderer store 倒推真实任务状态。
 
 ### 3.2 生图与视频是两个独立工作台
@@ -268,7 +270,7 @@ VLM 在这里就是“看画面的模型”：MiMo 说清代表帧里有什么�
 
 ### 3.3 定时任务是 Harness 外的控制面
 
-Codex Automations 将“指令 + 可选 Skills + 时间表”作为独立对象运行，结果进入 review inbox；它区分每次新开聊天的 standalone 任务与复用既有上下文的 thread task，并允许项目工作在本地目录或隔离 worktree。Claude 的 scheduled deployment 也是 cron 触发新 Session、保留 run history；Pi 的 Harness 没有产品级 Cron，说明调度本来不属于模型—工具循环。
+Codex Automations 将“指令 + 可选 Skills + 时间表”作为独立对象运行，并保留运行结果；它区分每次新开聊天的 standalone 任务与复用既有上下文的 thread task，并允许项目工作在本地目录或隔离 worktree。Claude 的 scheduled deployment 也是 cron 触发新 Session、保留 run history；Pi 的 Harness 没有产品级 Cron，说明调度本来不属于模型—工具循环。
 
 因此定时任务的正确边界是：
 
@@ -277,37 +279,37 @@ Schedule 定义（cron、时区、missed-run policy、权限快照）
   → durable occurrence（确定性 ID）
   → ProductTask / TaskRun
   → 复用聊天 Harness 的一次正常 Turn
-  → run history / review inbox / 通知
+  → run history / 结果查看 / 通知
 ```
 
-本项目继续复用 `CronService → CronScheduler → ProductTask → ProductResourceScheduler`，不让模型自己计时、sleep 或从旧聊天无限自唤醒。每个 occurrence 只能启动一次；要明确 DST、休眠、错过触发、重试、取消和无人值守权限。默认运行使用独立上下文，只有用户明确选择“关联既有任务”才读取指定任务的摘要与允许的历史；两种模式都必须在 UI 中显示下一次时间、最近结果、运行记录和待审核结果。
+`CronService → CronScheduler → ProductTask → ProductResourceScheduler` 只是现有候选链；逐项符合上述合同且无需中转时可复用，否则重写为唯一调度链。不让模型自己计时、sleep 或从旧聊天无限自唤醒。每个 occurrence 只能启动一次；要明确 DST、休眠、错过触发、重试、取消和无人值守权限。默认运行使用独立上下文，只有用户明确选择“关联既有任务”才读取指定任务的摘要与允许的历史；两种模式都必须在 UI 中显示下一次时间、最近结果和运行记录。
 
 ### 3.4 一个 App 的前端秩序
 
-Codex 的关键不在炫技，而在于同一个产品壳始终围绕“项目、线程、当前运行、审阅和下一步”组织信息。BilliardBuddy 学习这种秩序，并让三个板块共享：左侧一级导航和项目切换、统一的顶部上下文、同一套字号/留白/色彩/图标/状态胶囊、统一任务队列与错误反馈、右侧详情/预览抽屉、键盘导航和一致的空状态。
+Codex 的关键不在炫技，而在于同一个产品壳始终围绕“项目、线程、当前运行、结果和下一步”组织信息。BilliardBuddy 学习这种秩序，并让三个板块共享：左侧一级导航和项目切换、统一的顶部上下文、同一套字号/留白/色彩/图标/状态胶囊、统一任务队列与错误反馈、右侧详情/预览抽屉、键盘导航和一致的空状态。
 
 **品牌边界固定如下：**产品名称始终是 **BilliardBuddy**；保留现有蓝色笑脸作为唯一主图标，源资产为 `ts/desktop/public/app-icon.svg` / `app-icon.png`，各平台安装图标只能由这套资产生成；保留现有品牌蓝的主色关系（`--bb-blue-*` 与笑脸渐变）。学习 Codex 的布局、密度、状态和交互，只学习产品秩序，不能替换 BilliardBuddy 的名称、蓝色笑脸、蓝色调性或品牌资产。所有启动页、侧栏、设置/关于页、任务栏/Dock 与安装包图标必须一致；未从同一源资产生成的图标、其他产品名称或其他品牌色不得进入正式 GUI。
 
 #### 3.4.1 左—中—右不是三份聊天，而是三种职责
 
-Codex 的公开 App 资料和 App Server 清楚地把 project/thread、运行事件、Diff/review、工作树与恢复分开；公开 TUI 源码也把 review、patch preview、side thread 与 status feed 当成独立 UI 状态。本项目当前可解析的 Codex 前端参考代码与构建材料统一位于 `codex-frontend-reference/`（包括 `raw/`、`reverse-readable/` 和 host bridge）；它是本地研究基线，不等同于 OpenAI 公开发布的完整 Codex 桌面 App 前端源码，也不能作为“私有实现已被完整读到”的证据。完整桌面 App 前端仍属未公开范围，因此不能伪称逐像素复刻；但可验证的产品结构足以给出本项目的正确映射：
+Codex 的公开 App 资料和 App Server 清楚地把 project/thread、运行事件、Diff/变更预览、工作树与恢复分开；公开 TUI 源码也把变更预览、patch preview、side thread 与 status feed 当成独立 UI 状态。本项目当前可解析的 Codex 前端参考代码与构建材料统一位于 `codex-frontend-reference/`（包括 `raw/`、`reverse-readable/` 和 host bridge）；它是本地研究基线，不等同于 OpenAI 公开发布的完整 Codex 桌面 App 前端源码，也不能作为“私有实现已被完整读到”的证据。完整桌面 App 前端仍属未公开范围，因此不能伪称逐像素复刻；但可验证的产品结构足以给出本项目的正确映射：
 
 | 区域 | 对用户的意义 | BilliardBuddy 的正式内容 | 不应变成 |
 |---|---|---|---|
 | 左侧：导航与范围 | “我在哪个项目、哪个板块、哪些任务待处理” | 任务/聊天、图片创作、视频创作、已安排、Skills/Plugins、设置；当前项目和运行列表 | 只有历史聊天标题的无结构侧栏，或把插件设置塞进每个会话 |
 | 中间：主工作 | “我正在完成什么” | 聊天的 Thread/Turn/Item；图片的画布与候选；视频的时间线与节目预览 | 三个板块都被降级成一个聊天框，或每个板块各造一套 App 壳 |
-| 右侧 A：成果审阅 | “实际产物是什么，能否比较与确认” | 文件与 Diff、网页预览、聊天附件、图片大图/候选比较、视频播放器/导出文件 | 只显示模型文本，或把未完成的草稿说成产物 |
-| 右侧 B：运行检查器 | “系统现在在做什么，我能安全地改什么” | 聊天的 plan、Tool/审批/队列/引用；图片的参考图角色、图层、Version、Job；视频的素材、Evidence/Transcript、Scene 锁、Version、渲染 Job | 技术日志墙、第二个聊天窗口，或由 renderer 临时状态冒充权威任务状态 |
+| 右侧 A：成果预览 | “实际产物是什么，能否查看和比较” | 文件与 Diff、网页预览、聊天附件、图片大图/候选比较、视频播放器/导出文件 | 只显示模型文本，或把未完成的草稿说成产物 |
+| 右侧 B：运行检查器 | “系统现在在做什么，我能安全地改什么” | 聊天的 plan、Tool/授权请求/队列/引用；图片的参考图角色、图层、Version、Job；视频的素材、Evidence/Transcript、Scene 锁、Version、渲染 Job | 技术日志墙、第二个聊天窗口，或由 renderer 临时状态冒充权威任务状态 |
 
-右侧 A 和右侧 B 是同一右侧工作区的两个标签/模式，不要求始终并排占用空间。默认随上下文切换：聊天在有文件/网页/图片时打开“成果”，等待审批或排队时打开“运行”；图片默认打开候选/画布审阅；视频默认打开预览/时间线相关信息。用户可固定标签和调整宽度，但每个面板只消费 Product Server 的项目、Version、TaskRun 与 Item/Event，不读取模型幻觉或 DOM 临时状态。
+右侧 A 和右侧 B 是同一右侧工作区的两个标签/模式，不要求始终并排占用空间。默认随上下文切换：聊天在有文件/网页/图片时打开“成果”，等待工具权限或排队时打开“运行”；图片默认打开候选/画布预览；视频默认打开预览/时间线相关信息。用户可固定标签和调整宽度，但每个面板只消费 Product Server 的项目、Version、TaskRun 与 Item/Event，不读取模型幻觉或 DOM 临时状态。
 
-这个设计也回答了图片与视频预览的位置：图片和视频预览不是聊天功能，它们是独立工作台的“成果审阅”标签；聊天右侧只负责显示该聊天自身的附件、网页、文件和 Diff。这样同一 App 有统一的右侧体验，却不会重新把工作台接回聊天。
+这个设计也回答了图片与视频预览的位置：图片和视频预览不是聊天功能，它们是独立工作台的“成果预览”标签；聊天右侧只负责显示该聊天自身的附件、网页、文件和 Diff。这样同一 App 有统一的右侧体验，却不会重新把工作台接回聊天。
 
 但主工作区必须服从任务本身：
 
 | 区域 | 主画布 | 右侧详情 | 统一交互 |
 |---|---|---|---|
-| 聊天 Agent | Thread/Turn/Item 事件流与底部 Composer | 文件、Diff、网页/图片预览、任务状态 | `/` 只发现聊天命令、Skills、Plugins、MCP；运行卡片、审批、停止、恢复与 review 一致 |
+| 聊天 Agent | Thread/Turn/Item 事件流与底部 Composer | 文件、Diff、网页/图片预览、任务状态 | `/` 只发现聊天命令、Skills、Plugins、MCP；运行卡片、工具权限、停止与恢复一致 |
 | 生图工作台 | 画布、图层、候选胶片条/图库 | 参考图角色、生成参数、Version、Job、导出 | 同一项目标题、状态、任务队列、版本历史、空态与错误样式 |
 | 视频工作台 | 素材箱、源预览、Evidence/Transcript、时间线、节目预览 | Scene、方案、锁定、Job、导出 | 同一项目标题、状态、任务队列、版本历史、空态与错误样式 |
 
@@ -334,10 +336,10 @@ Codex 的公开 App 资料和 App Server 清楚地把 project/thread、运行事
 
 - `ProductTask` 是项目、工作区、线程、TaskRun、消息、事件游标和生命周期的唯一普通任务身份。
 - 每次写入带 `expected_revision` 或等价 CAS；每次命令带 `client_operation_id`；重放返回同一 receipt，不重复执行。
-- 提交、流式输出、工具调用、审批、停止、崩溃恢复和重连都投影为 durable event；UI 刷新后从 cursor 继续。
+- 提交、流式输出、工具调用、工具授权、停止、崩溃恢复和重连都投影为 durable event；UI 刷新后从 cursor 继续。
 - `agent-worker` 只接收完成任务所需的最小输入，不能得到 host/Gateway 密钥。stdout 保持协议专用，晚到事件不能改写终态。
-- Agent 的文件、Shell、Skill、MCP 和子任务能力保留，但必须受 owner、workspace、权限模式和 ProductResourceScheduler 约束。
-- 本机用户终端是独立 PTY；它不是 Agent Bash 的回放板，也不能绕过 Agent 审批。
+- Agent 的文件、Shell、Skill、MCP 和子任务能力保留，但必须受当前项目范围、workspace、权限模式和 ProductResourceScheduler 约束。
+- 本机用户终端是独立 PTY；它不是 Agent Bash 的回放板，也不能绕过 Agent 的工具授权。
 
 ### 4.2 模型与能力
 
@@ -363,20 +365,20 @@ Provider registry 是 model ID、能力、上下文窗口、body budget、compac
 2. 仅包含原生搜索工具的 Anthropic Messages 请求走独立窄路由：`/v1/messages` → `https://api.deepseek.com/anthropic/v1/messages`。
 3. 基础工具类型保留 `web_search_20250305`；请求字段只在 DeepSeek 当前官方兼容范围内原样透传，未确认支持的字段显式拒绝或忽略，不另造搜索 schema。
 4. `server_tool_use`、`web_search_tool_result`、SSE、keep-alive 和终止原因原样处理；客户端必须能恢复中断的流，不把搜索结果伪装成普通函数调用。
-5. model 由 registry 强制收口；`metadata.user_id` 只能由可信 owner 派生的匿名 ID 注入，不能接受客户端伪造身份。
+5. model 由 registry 强制收口；`metadata.user_id` 只能由可信安装身份派生的匿名 ID 注入，不能接受客户端伪造身份。
 6. Anthropic 入口不承担图片或文档理解。图片先经 MiMo 形成结构化证据，再交给 DeepSeek 文本回合。
 7. 搜索次数、token、超时、429、取消和 usage 单独计量；密钥、请求正文和搜索结果不得进入普通日志。
 8. 不得因为删除旧搜索服务而删除本路由、工具类型、响应块、测试或用户能力。
 
 ### 4.4 权限与安全
 
-产品面向用户的权限层级直接学习 Codex 的三档用户决策边界，不另造第四套 Agent 权限，也不把它混成业务审批：
+产品面向用户的权限层级直接学习 Codex 的三档用户决策边界，不另造第四套 Agent 权限，也不把它混成业务流程：
 
-- **Ask for approval**：`workspace-write + on-request + user reviewer`；Agent 在工作区沙箱内执行，越过边界时由用户审批；
-- **Approve for me**：`workspace-write + on-request + auto-review`；沙箱不变，只把符合条件的越界请求交给独立 reviewer 判断；
-- **Full access**：`danger-full-access + never`；解除普通文件、网络沙箱和常规审批。
+- **Ask for approval**：`workspace-write + on-request + user confirmation`；Agent 在工作区沙箱内执行，越过边界时等待用户决定；
+- **Approve for me**：`workspace-write + on-request + automatic policy`；沙箱不变，只由明确的本机策略决定符合条件的越界请求；
+- **Full access**：`danger-full-access + never`；解除普通文件、网络沙箱和常规工具授权。
 
-权限能力的作用是为一个 `TaskRun/Turn` 决定三件事：**工具能做什么**（读、写、Shell、网络、MCP 或子任务）、**它能触及什么范围**（工作区、允许的目录、网络域和资源上限）、以及**何时必须停下等待确认**。它不决定模型、Skill 内容、用量扣费、远程数据处理、媒体 Job 成败或业务发布结果。
+权限能力的作用是为一个 `TaskRun/Turn` 决定三件事：**工具能做什么**（读、写、Shell、网络、MCP 或子任务）、**它能触及什么范围**（工作区、允许的目录、网络域和资源上限）、以及**何时必须停下等待确认**。它不决定模型、Skill 内容、用量扣费、远程数据处理或媒体 Job 成败。
 
 | 学习对象 | 已验证的权限思想 | BilliardBuddy 的保留方式 |
 |---|---|---|
@@ -388,20 +390,20 @@ Provider registry 是 model ID、能力、上下文窗口、body budget、compac
 
 共同要求：
 
-- 所有路径先 canonicalize，再校验 workspace/owner；拒绝 traversal、symlink 越界和跨项目 ID 猜测。
+- 所有路径先 canonicalize，再校验 workspace/当前项目范围；拒绝 traversal、symlink 越界和跨项目 ID 猜测。
 - Renderer 不启用 Node integration；保持 context isolation、sandbox、CSP、受限导航、受限新窗口和 sender 校验。
-- 远程模型与远程工具是产品的正常运行路径；不设逐操作出境 consent、计费确认或 provider 审批。
+- 远程模型与远程工具是产品的正常运行路径；不设逐操作出境 consent、计费确认或 provider 工具授权。
 - 安装身份无效、额度不足、能力不可用或远程合同不兼容时不提交上游，并返回用户可理解的失败。
-- 日志和诊断包默认脱敏，不保存密钥、正文、图片 base64、Cookie、简历敏感字段或本地绝对路径。
+- 日志和诊断包默认脱敏，不保存密钥、正文、图片 base64、Cookie、用户上传的敏感附件或本地绝对路径。
 
 ### 4.5 资源、任务和远程副作用
 
 - `ProductResourceScheduler` 是 agent、媒体、语音、浏览器和定时任务的统一资源入口。
-- claim 至少绑定 owner、resource kind、数量、lease、fencing token、deadline 和取消信号。
+- claim 至少绑定项目范围、resource kind、数量、lease、fencing token、deadline 和取消信号。
 - 本机、Gateway 和 Relay 都要有明确 capacity profile；配置未知即 capability unavailable，不能用乐观默认值冒充容量。
 - 不能安全重放的长时远程任务或真实外部副作用使用 durable Operation：先 claim，提交后记录上游回执，终态再结算资源 claim。
 - 网络断开但无法确认上游是否受理时进入 `outcome_unknown`；只查询原 operation，不能自动创建第二次远程提交。
-- 公平性、owner 上限、总字节、磁盘、CPU、provider concurrency 和队列都要可观测并有 overload 原因码。
+- 公平性、项目范围上限、总字节、磁盘、CPU、provider concurrency 和队列都要可观测并有 overload 原因码。
 
 ### 4.6 图片与视频的唯一媒体领域
 
@@ -409,17 +411,17 @@ Provider registry 是 model ID、能力、上下文窗口、body budget、compac
 
 | 目标实体 | 唯一职责 |
 |---|---|
-| `MediaProject` | 作品的 owner、种类、当前 revision、存储和生命周期根 |
+| `MediaProject` | 作品的项目范围、种类、当前 revision、存储和生命周期根 |
 | `MediaOperation` | 一次用户意图与幂等身份；重试不能生成第二次用户意图 |
 | `MediaJob` | Operation 内某个执行阶段或 attempt；保存 checkpoint、进度、取消和结果状态 |
-| `Asset` | 不可变的输入或输出字节及其 fingerprint、owner 和存储位置 |
+| `Asset` | 不可变的输入或输出字节及其 fingerprint、项目范围和存储位置 |
 | `Version` | 图片画布或媒体作品的一次不可变状态；引用 Asset，不覆盖历史 |
 | `Evidence` | 从特定 source fingerprint/time range 派生的可追溯观察，不是模型自由描述 |
 | `Timeline Version` | 视频 Scene/layer/锁定状态的一次不可变编排版本 |
 
 - 编辑产生新 Version；回滚只移动 current pointer。
-- 每个 Operation 绑定 owner、project、input revision、base asset/version、`client_operation_id` 和上游任务回执；MediaJob 只能推进所属 Operation。
-- 外部素材默认只读引用；应用托管副本按 owner、配额、引用计数和 retention policy 清理。
+- 每个 Operation 绑定项目范围、project、input revision、base asset/version、`client_operation_id` 和上游任务回执；MediaJob 只能推进所属 Operation。
+- 外部素材默认只读引用；应用托管副本按项目范围、配额、引用计数和 retention policy 清理。
 - 聊天不创建或打开 MediaProject；聊天中只能给出图片/视频 Brief、建议和可复制的文字，实际作品始终从独立工作台开始。
 - 当前 `MediaTask` 是迁移来源，不是未来第二套概念；仍需恢复的记录映射到 MediaOperation/MediaJob，旧写入链只在新消费者稳定并通过删除闸后移除。
 
@@ -431,10 +433,10 @@ Provider registry 是 model ID、能力、上下文窗口、body budget、compac
 
 ### 第一轮：聊天 Agent Harness
 
-- 目标：把聊天做成以 DeepSeek 为主模型、可连续执行、可中断、可恢复、可审阅的 Agent 运行面，而不是堆叠聊天 UI 或把工作台塞进 Tool。
-- 实施：先用 Codex `Thread → Turn → Item`、Pi loop 和公开 Claude Session/Tool 合同复核当前 Query/Core、agent-worker、ProductTask/TaskRun、事件 cursor、steer、compact、resume、`/`、审批与右侧运行检查器；随后只修补真实缺口。
+- 目标：把聊天做成以 DeepSeek 为主模型、可连续执行、可中断、可恢复、可查看结果的 Agent 运行面，而不是堆叠聊天 UI 或把工作台塞进 Tool。
+- 实施：先用 Codex `Thread → Turn → Item`、Pi loop 和公开 Claude Session/Tool 合同定义完整 Harness，再审计当前 Query/Core、agent-worker、ProductTask/TaskRun、事件 cursor、steer、compact、resume、`/`、工具授权与右侧运行检查器；符合者直接复用，不符合者重写并删除旧链，绝不在旧链外加中转层。
 - 视觉边界：聊天图片与视频均走 `媒体附件 → MiMo VisualEvidence → 结构化证据 → DeepSeek`；视频先本机有限抽帧/必要时转写。DeepSeek 负责最终回答和聊天 Tool/MCP 决策，MiMo 不接管聊天。
-- 验收：每个 Turn 的事件、审批、取消、错误、恢复与工具回执有唯一持久真相；桌面重开后 cursor 可续；聊天不能创建或操控图片/视频工作台项目。
+- 验收：每个 Turn 的事件、工具授权、取消、错误、恢复与工具回执有唯一持久真相；桌面重开后 cursor 可续；聊天不能创建或操控图片/视频工作台项目。
 
 ### 第二轮：生图工作台
 
@@ -453,10 +455,10 @@ Provider registry 是 model ID、能力、上下文窗口、body budget、compac
 ### 第四轮：共享控制面与统一 App 壳
 
 - 目标：三个板块共享项目范围、身份/权限、持久任务、资源调度、网关能力、左中右信息秩序、设置、空态和错误恢复，但不共享错误的执行链。
-- 实施：复核 Gateway 的五条能力泳道、Relay、`CronService → CronScheduler → ProductTask → ProductResourceScheduler`、安装身份、用量、超时、取消与幂等；按 Codex 的项目/线程/审阅秩序统一 Shell。右侧固定为“成果审阅”和“运行检查器”两种工作面：聊天展示附件/Diff/网页与 Turn 状态，工作台展示各自的图片或视频产物与 Job/版本状态。
+- 实施：复核 Gateway 的五条能力泳道、Relay、`CronService → CronScheduler → ProductTask → ProductResourceScheduler`、安装身份、用量、超时、取消与幂等；按 Codex 的项目/线程/结果查看秩序统一 Shell。右侧固定为“成果预览”和“运行检查器”两种工作面：聊天展示附件/Diff/网页与 Turn 状态，工作台展示各自的图片或视频产物与 Job/版本状态。
 - 验收：定时任务是 Harness 外控制面；工作台不会借聊天端点或 quota 运行；同一 App 外观一致而不强行把画布、时间线改成聊天框。
 
-### 第五轮：数据迁移、删除与发布
+### 第五轮：数据迁移与清理收尾
 
 - 目标：把已验证的新合同迁入旧数据，删除被取代的执行链，并以真实安装包证明产品而非源码自证。
 - 实施：逐个 reader/consumer 做停止写入、只读兼容、迁移、物理删除和安装包审计；任何已有状态、测试、配置和部署记录都重新核验，不继承“已完成”结论。
@@ -480,7 +482,7 @@ Provider registry 是 model ID、能力、上下文窗口、body budget、compac
 - 删除后产品合同、类型检查、测试、打包和安装验证通过；
 - Git 历史和必要第三方许可证仍能追溯。
 
-迁移 reader 不能永久保留。至少发布一个包含该 reader 的稳定版本，并在最低支持版本政策允许后，单独删除 reader 与 fixture。
+迁移 reader 不能永久保留。至少交付一个包含该 reader 的稳定版本，并在最低支持版本政策允许后，单独删除 reader 与 fixture。
 
 ---
 
@@ -491,7 +493,7 @@ Provider registry 是 model ID、能力、上下文窗口、body budget、compac
 ```text
 用户得到的结果
 + 唯一权威状态
-+ 明确 owner / revision / operation identity
++ 明确项目范围 / revision / operation identity
 + 取消、冲突、崩溃和重连行为
 + 权限、隐私、用量和资源边界
 + 旧消费者已迁移
@@ -523,7 +525,7 @@ Provider registry 是 model ID、能力、上下文窗口、body budget、compac
 - Codex Agent 回合与工具循环：<https://github.com/openai/codex/blob/main/codex-rs/core/src/session/turn.rs>
 - Codex App Server 的 Thread / Turn / Item / 事件与恢复：<https://github.com/openai/codex/blob/main/codex-rs/app-server/README.md>
 - Codex App、Skills 与 Automations：<https://openai.com/index/introducing-the-codex-app/>
-- Pi Agent loop / Harness / Skills：<https://github.com/badlogic/pi-mono/tree/main/packages/agent/src>
+- Pi Agent loop / Harness / Skills：<https://github.com/earendil-works/pi/tree/main/packages/agent/src>
 - cc-haha 流式 Agent 循环：<https://github.com/NanmiCoder/cc-haha/blob/main/src/query.ts>
 - Claude Code 公开仓库：<https://github.com/anthropics/claude-code>；当前公开内容主要是插件、Skills、集成和发布记录，不把未公开的核心执行器当成已读源码。
 - Claude Agent 的 Session、Tools、MCP、Skills：<https://platform.claude.com/docs/en/managed-agents/sessions>、<https://platform.claude.com/docs/en/managed-agents/tools>
