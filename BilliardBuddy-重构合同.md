@@ -37,7 +37,7 @@ Skill 在这个结构中是给 Agent 按需加载的操作说明、领域知识�
 
 界面平衡以 Codex App 这类成熟 Agent GUI 为参考：不用技术炫技来证明能力，也不因为“不要太技术”就隐去 Agent 本身的通用概念。中央会话、`/` 能力入口、任务队列、右侧工作区和设置都应先呈现用户目标、当前状态和下一个可执行动作；只有在管理扩展时才使用 Skills、Plugins、MCP 等稳定名称，其余技术细节收进诊断和内部运行层。
 
-前端设计获得主动学习 GPT/Codex App 的授权：后续发现整体气质、布局、样式、信息密度、留白、层级、文案、状态反馈、动效或操作细节不如成熟 Agent App 时，可在不损害 BilliardBuddy 台球经营场景、产品合同和真实能力的前提下主动调整。学习的是完整的产品秩序和交互质量，不是像素级复刻品牌资产；验收看整条用户旅程是否自然、一致、游刃有余，不以单个页面或按钮相似度代替。
+前端设计获得主动学习 Codex App 等成熟 Agent GUI 的授权：后续发现整体气质、布局、样式、信息密度、留白、层级、文案、状态反馈、动效或操作细节不如成熟 Agent App 时，可在不损害 BilliardBuddy 台球经营场景、产品合同和真实能力的前提下主动调整。学习的是完整的产品秩序和交互质量，不是像素级复刻品牌资产；验收看整条用户旅程是否自然、一致、游刃有余，不以单个页面或按钮相似度代替。
 
 ---
 
@@ -149,10 +149,10 @@ BilliardBuddy 不再把 Agent Core 理解成一组需要被产品层包围的供
 |---|---|
 | 模型 | DeepSeek 等可替换的推理核心；输入上下文，输出文本或 tool call，不自己拥有持久任务、文件系统或工作台状态 |
 | Agent Harness | 让模型可以连续工作的运行环境；提供上下文、tool loop、Skill、MCP、权限、事件、compact、resume、取消和恢复 |
-| Agent 产品 | 用户真正交互的整体；本项目中是 GPT.app / BilliardBuddy，包含 GUI、Product Server、Harness 和选定模型 |
+| Agent 产品 | 用户真正交互的整体；本项目中是 BilliardBuddy，包含 GUI、Product Server、Harness 和选定模型 |
 | 工具与工作台 | Agent Tool 是聊天 Harness 的真实执行能力；生图和视频是独立工作台，拥有自己的项目、Job、Version 和产物，不是 Agent Tool，也不是第二、第三套 Agent Harness |
 
-Codex CLI 可以被理解为长在终端里的 Agent 运行与交互表面：模型提供推理，CLI/Core 提供 Harness，终端提供工作环境。同理，GPT.app 是嫁接选定模型的 Agent 产品；本项目以后由 DeepSeek 处理主聊天推理，由本项目的 Harness 给它提供能做事、能持续、能恢复的环境。“Agent”因此不是 DeepSeek 的别名，也不是单独一个聊天组件。
+Codex CLI 可以被理解为长在终端里的 Agent 运行与交互表面：模型提供推理，CLI/Core 提供 Harness，终端提供工作环境。同理，BilliardBuddy 是嫁接选定模型的 Agent 产品；本项目以后由 DeepSeek 处理主聊天推理，由本项目的 Harness 给它提供能做事、能持续、能恢复的环境。“Agent”因此不是 DeepSeek 的别名，也不是单独一个聊天组件。
 
 参考 Codex、Pi 和 cc-haha 的公开实现后，只固定以下职责：
 
