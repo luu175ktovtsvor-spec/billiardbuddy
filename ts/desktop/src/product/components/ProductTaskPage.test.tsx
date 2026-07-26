@@ -48,6 +48,10 @@ const mocks = vi.hoisted(() => ({
   sendText: vi.fn(),
   sendMessage: vi.fn(),
   stopTask: vi.fn(),
+  editQueuedInput: vi.fn(),
+  deleteQueuedInput: vi.fn(),
+  reorderQueuedInputs: vi.fn(),
+  steerQueuedInput: vi.fn(),
   resumeQueue: vi.fn(),
   respondToApproval: vi.fn(),
   respondToQuestions: vi.fn(),
@@ -101,6 +105,10 @@ vi.mock('../stores/productTaskRuntimeStore', () => ({
     sendText: mocks.sendText,
     sendMessage: mocks.sendMessage,
     stopTask: mocks.stopTask,
+    editQueuedInput: mocks.editQueuedInput,
+    deleteQueuedInput: mocks.deleteQueuedInput,
+    reorderQueuedInputs: mocks.reorderQueuedInputs,
+    steerQueuedInput: mocks.steerQueuedInput,
     resumeQueue: mocks.resumeQueue,
     respondToApproval: mocks.respondToApproval,
     respondToQuestions: mocks.respondToQuestions,
@@ -292,6 +300,10 @@ beforeEach(() => {
   mocks.sendText.mockReset().mockReturnValue(true)
   mocks.sendMessage.mockReset().mockReturnValue(true)
   mocks.stopTask.mockReset()
+  mocks.editQueuedInput.mockReset().mockResolvedValue(true)
+  mocks.deleteQueuedInput.mockReset().mockResolvedValue(true)
+  mocks.reorderQueuedInputs.mockReset().mockResolvedValue(true)
+  mocks.steerQueuedInput.mockReset().mockResolvedValue(true)
   mocks.resumeQueue.mockReset().mockResolvedValue(true)
   mocks.respondToApproval.mockReset().mockReturnValue(true)
   mocks.respondToQuestions.mockReset().mockReturnValue(true)
@@ -660,6 +672,34 @@ describe('ProductTaskPage', () => {
     expect(screen.getByLabelText('待处理输入队列')).toHaveTextContent('1 个附件')
     fireEvent.click(screen.getByRole('button', { name: '继续队列' }))
     expect(mocks.resumeQueue).toHaveBeenCalledWith('task-1')
+  })
+
+  it('edits, reorders, deletes, and explicitly sends a live follow-up', async () => {
+    mocks.runtime = {
+      ...mocks.runtime,
+      runState: 'working',
+      queuedInputs: [{
+        id: 'queue_123e4567-e89b-42d3-a456-426614174000', text: '第一条补充', state: 'queued', createdAt: '2026-07-26T00:00:00.000Z', attachmentCount: 0,
+      }, {
+        id: 'queue_123e4567-e89b-42d3-a456-426614174001', text: '第二条补充', state: 'queued', createdAt: '2026-07-26T00:00:01.000Z', attachmentCount: 0,
+      }],
+    }
+    render(<ProductTaskPage taskId="task-1" />)
+
+    fireEvent.click(screen.getByRole('button', { name: '编辑队列输入：第一条补充' }))
+    fireEvent.change(screen.getByRole('textbox', { name: '编辑队列输入' }), { target: { value: '改后的第一条' } })
+    fireEvent.click(screen.getByRole('button', { name: '保存' }))
+    await waitFor(() => expect(mocks.editQueuedInput).toHaveBeenCalledWith('task-1', 'queue_123e4567-e89b-42d3-a456-426614174000', '改后的第一条'))
+
+    fireEvent.click(screen.getAllByRole('button', { name: '下移队列输入' })[0]!)
+    await waitFor(() => expect(mocks.reorderQueuedInputs).toHaveBeenCalledWith('task-1', [
+      'queue_123e4567-e89b-42d3-a456-426614174001',
+      'queue_123e4567-e89b-42d3-a456-426614174000',
+    ]))
+    fireEvent.click(screen.getByRole('button', { name: '立即发送队列输入：第一条补充' }))
+    await waitFor(() => expect(mocks.steerQueuedInput).toHaveBeenCalledWith('task-1', 'queue_123e4567-e89b-42d3-a456-426614174000'))
+    fireEvent.click(screen.getByRole('button', { name: '删除队列输入：第二条补充' }))
+    await waitFor(() => expect(mocks.deleteQueuedInput).toHaveBeenCalledWith('task-1', 'queue_123e4567-e89b-42d3-a456-426614174001'))
   })
 
   it('hides archive while a task is waiting for approval', () => {

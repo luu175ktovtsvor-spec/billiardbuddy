@@ -43,7 +43,8 @@ export class ProductTaskWorkerMessageSink {
     }
     if (message.type === 'terminal') {
       this.flushText(taskId, key, true)
-      await this.tasks.recordTaskRunTerminalProjection(runId, generation, message.state, this.publishedText.get(key) ?? '', message.failure)
+      const recorded = await this.tasks.recordTaskRunTerminalProjection(runId, generation, message.state, this.publishedText.get(key) ?? '', message.failure)
+      for (const event of recorded.queue_events) productTaskWorkerRuntimeEvents.publish(taskId, event)
       if (message.state === 'recovery_required') productTaskWorkerRuntimeEvents.publish(taskId, { type: 'error', ...(message.failure ?? { code: 'task_failed', retryable: false }) })
       else productTaskWorkerRuntimeEvents.publish(taskId, { type: 'turn_complete' })
       this.taskIds.delete(key)

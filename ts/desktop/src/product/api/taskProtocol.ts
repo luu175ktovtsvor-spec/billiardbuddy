@@ -567,14 +567,15 @@ export function parseProductTaskQueuedInput(value: unknown): ProductTaskQueuedIn
     typeof value.id !== 'string' ||
     !/^queue_[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(value.id) ||
     !isNonEmptyString(value.text, MAX_PRODUCT_TEXT_LENGTH) ||
-    !isEnumValue(value.state, new Set(['queued', 'injected', 'promoted', 'failed'] as const)) ||
+    !isEnumValue(value.state, new Set(['queued', 'injected', 'promoted', 'failed', 'cancelled'] as const)) ||
     !isTimestamp(value.createdAt) ||
     typeof value.attachmentCount !== 'number' ||
     !Number.isSafeInteger(value.attachmentCount) ||
     value.attachmentCount < 0 ||
     value.attachmentCount > MAX_ATTACHMENT_COUNT ||
     ('targetRunId' in value && (typeof value.targetRunId !== 'string' || !/^run_[0-9a-f-]{36}$/.test(value.targetRunId))) ||
-    ((value.state === 'injected' || value.state === 'promoted') !== ('targetRunId' in value))
+    ((value.state === 'injected' || value.state === 'promoted') && !('targetRunId' in value)) ||
+    (value.state !== 'queued' && value.state !== 'injected' && value.state !== 'promoted' && 'targetRunId' in value)
   ) return null
   return {
     id: value.id,

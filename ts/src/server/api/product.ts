@@ -101,6 +101,8 @@ export async function handleProductApi(
     | 'createAndSubmitTask'
     | 'listTaskEvents'
     | 'listQueuedInputs'
+    | 'mutateTaskInputQueue'
+    | 'steerTaskInputQueue'
     | 'resumeTaskInputQueue'
     | 'claimTaskRunDispatch'
     | 'createNewTaskComposerDraft'
@@ -322,6 +324,35 @@ export async function handleProductApi(
     if (action === 'queue' && !segments[5]) {
       if (req.method !== 'GET') return methodNotAllowed(req.method)
       return Response.json(await tasks.listQueuedInputs(taskId))
+    }
+
+    if (action === 'queue' && segments[5] === 'mutate' && !segments[6]) {
+      if (req.method !== 'POST') return methodNotAllowed(req.method)
+      const input = await readJson<Record<string, unknown>>(req)
+      const commonValid = Number.isSafeInteger(input.expected_task_revision) && (input.expected_task_revision as number) >= 0 && typeof input.client_operation_id === 'string' && Boolean(input.client_operation_id)
+      const actionValid = input.action === 'edit'
+        ? assertPlainExactObject(input, ['action', 'queue_item_id', 'text', 'expected_task_revision', 'client_operation_id']) && typeof input.queue_item_id === 'string' && typeof input.text === 'string' && Boolean(input.text.trim()) && input.text.length <= 32_000
+        : input.action === 'delete'
+          ? assertPlainExactObject(input, ['action', 'queue_item_id', 'expected_task_revision', 'client_operation_id']) && typeof input.queue_item_id === 'string'
+          : input.action === 'reorder'
+            ? assertPlainExactObject(input, ['action', 'queue_item_ids', 'expected_task_revision', 'client_operation_id']) && Array.isArray(input.queue_item_ids) && input.queue_item_ids.length > 0 && input.queue_item_ids.length <= 8 && input.queue_item_ids.every(id => typeof id === 'string')
+            : false
+      if (!commonValid || !actionValid) throw ApiError.badRequest('队列修改参数无效')
+      try { assertAuthorityMapKey(input.client_operation_id) } catch { throw ApiError.badRequest('队列修改参数无效') }
+      const result = await tasks.mutateTaskInputQueue(taskId, input as import('../product/taskService.js').ProductTaskInputQueueMutation)
+      return Response.json(result, { status: result.outcome === 'conflict' ? 409 : result.outcome === 'rejected' ? 422 : 200 })
+    }
+
+    if (action === 'queue' && segments[5] === 'steer' && !segments[6]) {
+      if (req.method !== 'POST') return methodNotAllowed(req.method)
+      const input = await readJson<Record<string, unknown>>(req)
+      if (!assertPlainExactObject(input, ['queue_item_id', 'expected_task_revision', 'client_operation_id'])
+        || typeof input.queue_item_id !== 'string'
+        || !Number.isSafeInteger(input.expected_task_revision) || (input.expected_task_revision as number) < 0
+        || typeof input.client_operation_id !== 'string' || !input.client_operation_id) throw ApiError.badRequest('立即发送参数无效')
+      try { assertAuthorityMapKey(input.client_operation_id) } catch { throw ApiError.badRequest('立即发送参数无效') }
+      const result = await tasks.steerTaskInputQueue(taskId, input as { queue_item_id: string; expected_task_revision: number; client_operation_id: string })
+      return Response.json(result, { status: result.outcome === 'conflict' ? 409 : result.outcome === 'rejected' ? 422 : 200 })
     }
 
     if (action === 'queue' && segments[5] === 'resume' && !segments[6]) {

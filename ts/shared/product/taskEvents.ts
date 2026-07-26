@@ -136,10 +136,10 @@ export type ProductTaskAttachmentSummary = {
 export type ProductTaskQueuedInput = {
   id: string
   text: string
-  state: 'queued' | 'injected' | 'promoted' | 'failed'
+  state: 'queued' | 'injected' | 'promoted' | 'failed' | 'cancelled'
   createdAt: string
   attachmentCount: number
-  /** Present only after the input has been assigned to an actual Turn. */
+  /** Present while a queued steer is locked to, or after it joins, an actual Turn. */
   targetRunId?: string
 }
 
@@ -315,7 +315,7 @@ type TaskEventPayload =
       type: 'queue_updated'
       queue_item_id: string
       entry_id: string
-      phase: 'queued' | 'injected' | 'promoted' | 'failed'
+      phase: 'queued' | 'injected' | 'promoted' | 'failed' | 'cancelled'
       text: string
       attachment_count: number
       target_run_id?: string

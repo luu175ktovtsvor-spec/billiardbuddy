@@ -221,6 +221,17 @@ export type ProductTaskDeletionResponse = {
 
 export type ProductTaskThreadResponse = ProductTaskThread
 
+export type ProductTaskInputQueueMutation =
+  | { action: 'edit'; queue_item_id: string; text: string; expected_task_revision: number; client_operation_id: string }
+  | { action: 'delete'; queue_item_id: string; expected_task_revision: number; client_operation_id: string }
+  | { action: 'reorder'; queue_item_ids: string[]; expected_task_revision: number; client_operation_id: string }
+
+export type ProductTaskInputQueueMutationResult = {
+  outcome: 'accepted' | 'duplicate' | 'conflict' | 'rejected'
+  task_revision: number
+  items: ProductTaskQueuedInput[]
+}
+
 export type ProductSideTaskListResponse = {
   sideTasks: ProductSideTask[]
 }
@@ -250,6 +261,8 @@ export type ProductTaskApi = {
   getOperation: (taskId: string, operationId: string) => Promise<{ receipt: OperationReceipt; authority: AuthoritySnapshot }>
   getThread: (taskId: string) => Promise<ProductTaskThreadResponse>
   getQueue: (taskId: string) => Promise<{ items: ProductTaskQueuedInput[] }>
+  mutateQueue: (taskId: string, input: ProductTaskInputQueueMutation) => Promise<ProductTaskInputQueueMutationResult>
+  steerQueue: (taskId: string, input: { queue_item_id: string; expected_task_revision: number; client_operation_id: string }) => Promise<ProductTaskInputQueueMutationResult & { delivery: 'steer' | 'queued' }>
   resumeQueue: (taskId: string, input: { expected_task_revision: number; client_operation_id: string }) => Promise<{ outcome: 'accepted' | 'duplicate' | 'conflict' | 'rejected'; task_revision: number }>
   getReviewStatus: (taskId: string) => Promise<ProductTaskReviewStatus>
   getReviewTree: (taskId: string, path?: string) => Promise<ProductTaskReviewTree>
