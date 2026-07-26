@@ -59,6 +59,15 @@ describe('electron desktop host', () => {
     expect(host.capabilities.windowControls).toBe(true)
   })
 
+  it('can hide update capability on platforms where releases are not enabled', () => {
+    const host = createElectronHost({
+      invoke: vi.fn(),
+      subscribe: vi.fn(),
+    }, { updatesEnabled: false })
+
+    expect(host.capabilities.updates).toBe(false)
+  })
+
   it('keeps the legacy window dragging IPC channel payload-free', async () => {
     const invoke = vi.fn().mockResolvedValue(undefined)
     const host = createElectronHost({

@@ -1,15 +1,60 @@
-import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { SecureSessionStore, type SafeStorageLike } from './keychain'
+import { createCredentialStore, LocalEncryptedSessionStore, SecureSessionStore, type SafeStorageLike } from './keychain'
 
 const productionMainSource = readFileSync(path.join(process.cwd(), 'electron', 'main.ts'), 'utf8')
 
 describe('Electron production credential storage', () => {
-  it('keeps the OS credential store on all production platforms', () => {
+  it('does not weaken Chromium credential storage with command-line switches', () => {
     expect(productionMainSource).not.toContain('use-mock-keychain')
     expect(productionMainSource).not.toContain('password-store=basic')
+  })
+
+  it('uses local encrypted files on macOS without touching safeStorage', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'bb-local-credential-'))
+    const safeStorage: SafeStorageLike = {
+      isEncryptionAvailable: () => { throw new Error('must not call safeStorage') },
+      encryptString: () => { throw new Error('must not call safeStorage') },
+      decryptString: () => { throw new Error('must not call safeStorage') },
+    }
+    try {
+      const store = createCredentialStore('darwin', dir, 'installation-session', safeStorage)
+      store.save('rotated-refresh-proof')
+
+      expect(store.load()).toBe('rotated-refresh-proof')
+      const credentialDir = path.join(dir, 'local-credentials')
+      expect(readdirSync(credentialDir).sort()).toEqual(['installation-session.enc', 'master-key'])
+      expect(readFileSync(path.join(credentialDir, 'installation-session.enc'), 'utf8'))
+        .not.toContain('rotated-refresh-proof')
+      expect(statSync(path.join(credentialDir, 'installation-session.enc')).mode & 0o777).toBe(0o600)
+      expect(statSync(path.join(credentialDir, 'master-key')).mode & 0o777).toBe(0o600)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('LocalEncryptedSessionStore', () => {
+  it('fails closed when encrypted data or its local key is corrupt', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'bb-local-credential-'))
+    const file = path.join(dir, 'session.enc')
+    const keyFile = path.join(dir, 'master-key')
+    try {
+      const store = new LocalEncryptedSessionStore(file, keyFile)
+      store.save('refresh-proof')
+      writeFileSync(file, '{"version":1,"iv":"broken"}')
+
+      expect(() => store.load()).toThrow('Local credential storage is corrupt or cannot be decrypted')
+      const secondFile = path.join(dir, 'second.enc')
+      const secondStore = new LocalEncryptedSessionStore(secondFile, keyFile)
+      secondStore.save('another-refresh-proof')
+      unlinkSync(keyFile)
+      expect(() => secondStore.load()).toThrow('Local credential storage is corrupt or cannot be decrypted')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 })
 
