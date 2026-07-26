@@ -57,6 +57,8 @@ This repository is built for agent-assisted development. Keep the root `AGENTS.m
 
 ## Where to Update Instructions
 
+- Treat this file as a maintained hot-path memory, not a frozen policy. Update it whenever current evidence or the user's direction changes the best way to work; remove stale rules that obstruct the intended product result.
+- Keep only durable guidance that helps a future compressed session recover the product direction, working boundaries, verification standard, and operational safety quickly. Do not encode temporary implementation plans, mandatory reference rituals, or architecture choices that should remain open to judgment.
 - Keep rules that affect almost every task in the root `AGENTS.md`.
 - Put task-specific product requirements and implementation details in the relevant construction document, not in this file.
 - Keep instruction updates focused and supported by the user's stated intent.
