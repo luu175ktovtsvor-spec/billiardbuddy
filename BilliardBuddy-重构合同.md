@@ -6,7 +6,7 @@
 
 ## 文档职责
 
-- 重构完成后，BilliardBuddy 打开**用户项目**时，`AGENTS.md` 与 `BilliardBuddy.md` 是同一层项目指令入口；它们的产品语义等同于 Claude 的 `CLAUDE.md` 与 Codex 的 `AGENTS.md`。`.BilliardBuddy/BilliardBuddy.md`、`.BilliardBuddy/rules/*.md` 和 `.BilliardBuddy/BilliardBuddy.local.md` 是 BilliardBuddy 的目录化入口。Harness 将它们从根目录到当前目录合并为一次任务快照，再交给 DeepSeek；模型不直接读取本机磁盘。
+- 重构完成后，BilliardBuddy 打开**用户项目**时，`AGENTS.md` 与 `BilliardBuddy.md` 是同一层项目指令入口；它们的产品语义等同于 Claude 的 `CLAUDE.md` 与 Codex 的 `AGENTS.md`。`.BilliardBuddy/BilliardBuddy.md`、`.BilliardBuddy/rules/*.md` 和 `.BilliardBuddy/BilliardBuddy.local.md` 是 BilliardBuddy 的目录化入口
 - 本仓库根目录的 `AGENTS.md` 仅约束本仓库的开发智能体；它和用户项目中同名的 `AGENTS.md` 处于不同作用域，不能据此改变 BilliardBuddy 的产品语义。
 - 本文：BilliardBuddy 产品本身的重构合同，定义产品定位、架构边界、研究方法、实施顺序和完成标准；它不是要注入每个用户项目的 Agent 提示词。
 - `README.md`：项目介绍、运行入口和用户如何配置项目指令。
@@ -21,13 +21,14 @@
 
 BilliardBuddy 是面向台球门店经营者的桌面 Agent。用户在一个 GUI 中完成日常任务、内容创作和定时工作；Agent 负责理解目标、调用工具、修改文件、生成媒体、恢复长任务并说明结果。
 
-**三个子项目：**这个桌面 App 明确由三个并列、可独立演进的子项目组成，共同构成 BilliardBuddy 这个桌面 Agent 产品：
+**三个板块：**这个桌面 App 明确由三个并列、可独立演进的子项目组成，共同构成 BilliardBuddy 这个桌面 Agent 产品：
 
 1. **聊天（Agent Harness）**：以 DeepSeek 为主推理模型，提供会话、连续模型—工具循环、权限、恢复、Skills、Plugins、MCP 与定时执行；聊天内的图片/视频附件经 MiMo 形成证据后再进入 DeepSeek。
 2. **生图工作台**：独立的图片创作项目，直接使用 MiMo 做多模态理解/规划，并由自己的图片 Job 调用所选图像生成能力，拥有画布、候选、版本、持久 Job 和作品资产；它不进入聊天 Harness，也不经过 DeepSeek。
 3. **生视频工作台**：独立的视频创作项目，直接使用 MiMo 的多模态理解/规划，拥有自己的素材、时间线、预览、渲染、导出、版本和持久 Job；它不进入聊天 Harness，也不经过 DeepSeek。
 
 三者共享同一个桌面壳、身份、权限、资源调度、持久化和品牌，但不因此混为一条执行链。这里“BilliardBuddy 是桌面 Agent”指整个由这三个子项目组成的产品；只有聊天子项目承担通用 Agent Harness，两个工作台承担独立的可视化创作能力。
+聊天板块是codex的样子就行左边，中间，右边，最后一边，实现相对应的能力
 
 **本文的约束范围：**本文只提供产品方向、三个子项目的结果边界、当前代码事实、外部源码/产品研究索引和验收证据要求，不冻结内部实现。参考 Codex、Pi、Claude、InvokeAI、OpenShot 或其他材料，不等于规定必须照其目录、类、协议、队列或编排方式实现。负责执行的人必须以当前代码、外部证据和最终用户结果为依据，自行选择当时最合适且最简单可靠的架构，并为实际运行、失败恢复、迁移与用户旅程负责；只要满足本文定义的结果、边界与验收，可直接复用、改造、重写或删除任意内部实现。
 
@@ -597,3 +598,5 @@ Provider registry 是 model ID、能力、上下文窗口、body budget、compac
 - 用户能完成主要旅程，并在失败、断网、取消、升级和重启后继续；
 - 所有真实外部副作用、远程用量和资源调度可控制、可观察、可对账；
 - 不再使用的代码、依赖、配置、测试、资源和安装包内容已经实际删除。
+最后按照最新项目架构更新项目的README.md，然后这个BilliardBuddy-重构合同里面描述不对的对方也更新
+关于项目的测试以前肯定很多测试是不能依托于新代码来进行测试的，那这个测试该怎么调整自己想办法最后面所有的测试文件也是要清理掉的
