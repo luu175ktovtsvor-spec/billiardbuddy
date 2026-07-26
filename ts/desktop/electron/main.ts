@@ -685,11 +685,11 @@ app.whenReady().then(async () => {
     void getServerRuntime().startServer()
       .then(() => writeWindowSmokeSnapshot(mainWindow, 'backend-ready'))
       .catch(error => {
-        writeWindowSmokeSnapshot(mainWindow, 'backend-failed')
+        writeWindowSmokeSnapshot(mainWindow, 'backend-failed', process.env, { error })
         console.error('[desktop] failed to start Electron server sidecar', error)
       })
   } catch (error) {
-    writeWindowSmokeSnapshot(mainWindow, 'backend-initialization-failed')
+    writeWindowSmokeSnapshot(mainWindow, 'backend-initialization-failed', process.env, { error })
     console.error('[desktop] failed to initialize Electron server runtime', error)
   }
   await installApplicationMenu(app, () => mainWindow)

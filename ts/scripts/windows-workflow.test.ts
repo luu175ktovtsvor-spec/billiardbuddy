@@ -161,6 +161,8 @@ describe('Desktop release workflow contract', () => {
     expect(readyIndex).toBeGreaterThanOrEqual(0)
     expect(probeIndex).toBeGreaterThan(readyIndex)
     expect(acceptance.match(/Install-Package .* -AllUsers/g)).toHaveLength(3)
+    expect(acceptance).toContain("BB_ELECTRON_WINDOW_SMOKE_INCLUDE_ERROR_DETAILS = '1'")
+    expect(acceptance).toContain('$failure[0] | ConvertTo-Json -Compress -Depth 5')
   })
 
   test('proves Windows update download recovery after upgrade acceptance', () => {
