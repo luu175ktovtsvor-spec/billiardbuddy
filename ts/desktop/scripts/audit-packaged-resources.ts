@@ -62,6 +62,7 @@ function requireExactKeys(value: Record<string, unknown>, expected: string[], la
 function auditProductArchive(archive: string): void {
   if (!existsSync(archive)) throw new Error(`安装包缺少 app.asar: ${archive}`)
   const entries = listPackage(archive, { isPack: false })
+    .map((entry) => entry.replaceAll('\\', '/'))
   for (const entry of requiredEntries) {
     if (!entries.includes(entry)) throw new Error(`app.asar 缺少正式运行文件: ${entry}`)
   }
