@@ -8,7 +8,6 @@
     "types": ["bun", "node"]
   },
   "include": [
-    "preload.ts",
     "shared/**/*.ts",
     "src/**/*.ts",
     "../gateway/**/*.ts",

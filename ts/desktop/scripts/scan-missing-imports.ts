@@ -35,8 +35,6 @@ const runtimeRoots = [
   desktopBrowserExtensionRoot,
 ]
 
-const runtimeFiles = [path.join(repoRoot, 'preload.ts')]
-
 const runtimeEntrypoints = [
   path.join(desktopSidecarsRoot, 'billiardbuddy-sidecar.ts'),
   path.join(desktopRendererRoot, 'main.tsx'),
@@ -173,7 +171,7 @@ async function main() {
   const productionSources: string[] = []
   let scannedFiles = 0
 
-  const sourceFiles = [...runtimeFiles]
+  const sourceFiles: string[] = []
   for await (const file of walkRoots(runtimeRoots)) sourceFiles.push(file)
 
   for (const file of sourceFiles) {

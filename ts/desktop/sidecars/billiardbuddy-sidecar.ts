@@ -32,10 +32,7 @@ if (mode === 'browser-host') {
 
   process.env.BILLIARDBUDDY_APP_ROOT = appRoot
   process.env.BB_COMPILED_SIDECAR = '1'
-  process.env.CALLER_DIR ||= process.cwd()
   process.argv = [process.argv[0]!, process.argv[1]!, ...args]
-
-  await import('../../preload.ts')
 
   if (mode === 'server') {
     console.log(`[billiardbuddy-sidecar] starting server mode (${process.platform}/${process.arch})`)
