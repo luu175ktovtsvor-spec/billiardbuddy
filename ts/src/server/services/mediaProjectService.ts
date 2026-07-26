@@ -64,6 +64,7 @@ import {
   type VideoClip,
   type VideoAlternative,
   type VideoEvidence,
+  type VideoOutputVerification,
   type VideoScene,
   type VideoSource,
   type VideoStudioProject,
@@ -1809,6 +1810,7 @@ export class MediaProjectService {
           output_path: result.data.output_path,
           output_asset_id: result.data.output_asset_id,
           output_content_hash: result.data.output_content_hash,
+          output_verification: result.data.output_verification,
           error: undefined,
           error_code: undefined,
           updated_at: this.iso(),
@@ -1866,6 +1868,7 @@ export class MediaProjectService {
             output_path: result.data.output_path,
             output_asset_id: result.data.output_asset_id,
             output_content_hash: result.data.output_content_hash,
+            output_verification: result.data.output_verification,
             error: undefined,
             error_code: undefined,
             updated_at: this.iso(),
@@ -2303,7 +2306,18 @@ export class MediaProjectService {
     return 'video/mp4'
   }
 
-  private async validateVideoOutput(path: string): Promise<{ contentHash: `sha256:${string}`; byteSize: number }> {
+  private async validateVideoOutput(
+    path: string,
+  ): Promise<{
+      contentHash: `sha256:${string}`
+      byteSize: number
+      durationMs: number
+      videoStreamCount: number
+      audioStreamCount: number
+      width?: number
+      height?: number
+      fps?: number
+    }> {
     const info = await stat(path).catch(() => null)
     if (!info?.isFile() || info.size <= 0) throw new Error('导出文件不存在或为空')
     const probe = await this.runProcess([
@@ -2315,11 +2329,28 @@ export class MediaProjectService {
       path,
     ])
     if (probe.exitCode !== 0) throw new Error('导出文件无法通过 ffprobe 校验')
-    const metadata = JSON.parse(probe.stdout) as { streams?: Array<Record<string, unknown>>; format?: { duration?: string } }
-    const hasVideo = metadata.streams?.some(stream => stream.codec_type === 'video') ?? false
+    const metadata = JSON.parse(probe.stdout) as {
+      streams?: Array<{ codec_type?: unknown; width?: unknown; height?: unknown; avg_frame_rate?: unknown; r_frame_rate?: unknown }>
+      format?: { duration?: string }
+    }
+    const videoStreams = metadata.streams?.filter(stream => stream.codec_type === 'video') ?? []
+    const audioStreams = metadata.streams?.filter(stream => stream.codec_type === 'audio') ?? []
+    const primaryVideo = videoStreams[0]
     const duration = Number(metadata.format?.duration ?? 0)
-    if (!hasVideo || !Number.isFinite(duration) || duration <= 0) throw new Error('导出文件缺少有效视频轨或时长')
-    return { contentHash: await this.fileFingerprint(path), byteSize: info.size }
+    if (!videoStreams.length || !Number.isFinite(duration) || duration <= 0) throw new Error('导出文件缺少有效视频轨或时长')
+    const width = Number(primaryVideo?.width)
+    const height = Number(primaryVideo?.height)
+    const fps = parseRate(primaryVideo?.avg_frame_rate ?? primaryVideo?.r_frame_rate)
+    return {
+      byteSize: info.size,
+      durationMs: Math.max(1, Math.round(duration * 1000)),
+      videoStreamCount: videoStreams.length,
+      audioStreamCount: audioStreams.length,
+      ...(Number.isInteger(width) && width > 0 ? { width } : {}),
+      ...(Number.isInteger(height) && height > 0 ? { height } : {}),
+      ...(fps && fps > 0 ? { fps } : {}),
+      contentHash: await this.fileFingerprint(path),
+    }
   }
 
   private async videoFileResponse(
@@ -4364,6 +4395,7 @@ export class MediaProjectService {
       output_path: input.output_path,
       output_asset_id: undefined,
       output_content_hash: undefined,
+      output_verification: undefined,
       error: undefined,
       error_code: undefined,
       updated_at: this.iso(),
@@ -4460,7 +4492,20 @@ export class MediaProjectService {
         },
         updated_at: this.iso(),
       })
-      const validated = await this.validateVideoOutput(temporaryOutput)
+      const timelineVersionId = project.current_timeline_version_id!
+      const inspection = await this.validateVideoOutput(temporaryOutput)
+      const validated: VideoOutputVerification = {
+        timeline_version_id: timelineVersionId,
+        byte_size: inspection.byteSize,
+        duration_ms: inspection.durationMs,
+        video_stream_count: inspection.videoStreamCount,
+        audio_stream_count: inspection.audioStreamCount,
+        ...(inspection.width ? { width: inspection.width } : {}),
+        ...(inspection.height ? { height: inspection.height } : {}),
+        ...(inspection.fps ? { fps: inspection.fps } : {}),
+        content_hash: inspection.contentHash,
+        verified_at: this.iso(),
+      }
       const outputAssetId = id('out')
       await this.saveTask({
         ...task,
@@ -4471,7 +4516,8 @@ export class MediaProjectService {
           ...(task.result ?? {}),
           temporary_output: temporaryOutput,
           output_asset_id: outputAssetId,
-          output_content_hash: validated.contentHash,
+          output_content_hash: validated.content_hash,
+          output_verification: validated,
         },
         updated_at: this.iso(),
       })
@@ -4484,7 +4530,8 @@ export class MediaProjectService {
           state: 'complete',
           output_path: outputPath,
           output_asset_id: outputAssetId,
-          output_content_hash: validated.contentHash,
+          output_content_hash: validated.content_hash,
+          output_verification: validated,
           error: undefined,
           error_code: undefined,
           updated_at: this.iso(),
@@ -4500,7 +4547,8 @@ export class MediaProjectService {
           output_path: outputPath,
           temporary_output: undefined,
           output_asset_id: outputAssetId,
-          output_content_hash: validated.contentHash,
+          output_content_hash: validated.content_hash,
+          output_verification: validated,
           video_encoder: encoder.name,
         },
         updated_at: this.iso(),

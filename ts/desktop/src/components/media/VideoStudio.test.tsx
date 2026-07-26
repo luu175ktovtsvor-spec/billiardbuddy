@@ -124,6 +124,37 @@ describe('VideoStudio committing state', () => {
     expect(alert).not.toHaveTextContent(rawDetail)
   })
 
+  it('shows the persisted metadata and hash proof for a verified export', async () => {
+    const complete: VideoStudioProject = {
+      ...project,
+      state: 'complete',
+      task_id: undefined,
+      output_verification: {
+        timeline_version_id: 'timeline_export01',
+        byte_size: 2_621_440,
+        duration_ms: 12_500,
+        video_stream_count: 1,
+        audio_stream_count: 1,
+        width: 1080,
+        height: 1920,
+        fps: 30,
+        content_hash: `sha256:${'c'.repeat(64)}`,
+        verified_at: project.updated_at,
+      },
+    }
+    mediaApiMock.listProjects.mockResolvedValue({ projects: [complete] })
+    useMediaWorkbenchStore.setState({ videoProjects: [complete], tasks: {}, activeVideoId: complete.id })
+
+    render(<VideoStudio />)
+
+    expect(await screen.findByText('导出已通过本机校验')).toBeInTheDocument()
+    expect(screen.getByText('12.50 秒')).toBeInTheDocument()
+    expect(screen.getByText('2.5 MB')).toBeInTheDocument()
+    expect(screen.getByText('1 视频 / 1 音频')).toBeInTheDocument()
+    expect(screen.getByText('1080×1920 · 30 fps')).toBeInTheDocument()
+    expect(screen.getByTitle(`sha256:${'c'.repeat(64)}`)).toBeInTheDocument()
+  })
+
   it('can add the same source again and split clips before saving the timeline', async () => {
     const editable: VideoStudioProject = {
       ...project,

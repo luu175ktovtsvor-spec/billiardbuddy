@@ -406,6 +406,19 @@ export const videoPreviewSchema = z.object({
   created_at: mediaIsoDateSchema,
 })
 
+export const videoOutputVerificationSchema = z.object({
+  timeline_version_id: mediaIdSchema,
+  byte_size: z.number().int().positive(),
+  duration_ms: z.number().int().positive(),
+  video_stream_count: z.number().int().positive(),
+  audio_stream_count: z.number().int().nonnegative(),
+  width: z.number().int().positive().max(12000).optional(),
+  height: z.number().int().positive().max(12000).optional(),
+  fps: z.number().positive().max(240).optional(),
+  content_hash: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+  verified_at: mediaIsoDateSchema,
+})
+
 export const videoStudioProjectSchema = mediaProjectBaseSchema.extend({
   kind: z.literal('video'),
   state: z.enum(['draft', 'ready', 'rendering', 'complete', 'failed']),
@@ -424,6 +437,7 @@ export const videoStudioProjectSchema = mediaProjectBaseSchema.extend({
   output_path: z.string().min(1).max(4096).optional(),
   output_asset_id: mediaIdSchema.optional(),
   output_content_hash: z.string().regex(/^sha256:[a-f0-9]{64}$/).optional(),
+  output_verification: videoOutputVerificationSchema.optional(),
   error: z.string().max(2000).optional(),
   error_code: mediaSafeErrorCodeSchema.optional(),
 })
@@ -544,6 +558,7 @@ export const videoRenderTaskResultSchema = z.object({
   output_path: z.string().min(1).max(4096),
   output_asset_id: mediaIdSchema.optional(),
   output_content_hash: z.string().regex(/^sha256:[a-f0-9]{64}$/).optional(),
+  output_verification: videoOutputVerificationSchema.optional(),
   temporary_output: z.string().min(1).max(4096).optional(),
   video_encoder: z.enum(['h264_videotoolbox', 'h264_mf', 'mpeg4']).optional(),
 })
@@ -798,6 +813,7 @@ export type VideoScene = z.infer<typeof videoSceneSchema>
 export type VideoAlternative = z.infer<typeof videoAlternativeSchema>
 export type VideoTimelineVersion = z.infer<typeof videoTimelineVersionSchema>
 export type VideoPreview = z.infer<typeof videoPreviewSchema>
+export type VideoOutputVerification = z.infer<typeof videoOutputVerificationSchema>
 export type CreateImageProjectInput = z.input<typeof createImageProjectInputSchema>
 export type CreateVideoProjectInput = z.input<typeof createVideoProjectInputSchema>
 export type UpdateImageProjectInput = z.input<typeof updateImageProjectInputSchema>
