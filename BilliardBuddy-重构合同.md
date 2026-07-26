@@ -17,7 +17,7 @@
 
 ## 1. 最终要做成什么
 
-BilliardBuddy 是面向台球门店经营者的桌面 Agent。用户在一个 GUI 中完成日常任务、内容创作、定时工作和招聘辅助；Agent 负责理解目标、调用工具、修改文件、生成媒体、恢复长任务并说明结果。
+BilliardBuddy 是面向台球门店经营者的桌面 Agent。用户在一个 GUI 中完成日常任务、内容创作和定时工作；Agent 负责理解目标、调用工具、修改文件、生成媒体、恢复长任务并说明结果。
 
 最终产品必须同时满足：
 
@@ -160,7 +160,7 @@ Codex CLI 可以被理解为长在终端里的 Agent 运行与交互表面：模
 
 | 层 | 责任 | 不应承担 |
 |---|---|---|
-| Agent loop | 组装当前上下文，调用模型，执行 tool call，将 tool result 送回模型，直到最终回复 | 台球业务数据库 |
+| Agent loop | 组装当前上下文，调用模型，执行 tool call，将 tool result 送回模型，直到最终回复 | 产品领域状态数据库 |
 | Session | 持久消息、事件、队列、steer/follow-up、compact、resume 和中断边界 | 第二套 ProductTask |
 | Tools | 执行文件、Shell、浏览器和业务 API，返回可验证结果 | 用提示词伪造完成回执，或操控独立工作台项目 |
 | Skills | 按需向模型注入操作说明、领域知识和工作流程 | 独立运行时或业务状态 |
@@ -384,7 +384,7 @@ Provider registry 是 model ID、能力、上下文窗口、body budget、compac
 | Claude Code / Agent SDK | 权限是 Session 级策略，可在会话中调整；自动文件编辑仍受工作目录限制，子任务继承父任务策略。 | `TaskRun/Turn` 启动时冻结 profile；后续升级须写新的权限事件，子任务不能借机扩大权限。 |
 | Pi | Agent loop 负责上下文、事件和 tool-result 循环，不承担产品级授权判断。 | Harness 不自行允许操作；每个 tool call 先经 Product Server/Host 的策略检查，再执行并持久化真实回执。 |
 
-以上定义的是从 Codex、Claude 与 Pi 抽取出的本机执行权限合同。无论选择哪一档，BilliardBuddy 自己的 owner、可恢复删除、招聘提交和对外发布等真实业务边界仍保留；这些是产品规则，不是对 Codex 权限名称的改写。正式实现必须把 profile、实际批准/拒绝、执行范围和结果写为 durable `Item/Event`，GUI 只展示和发起选择，不能自行放行。
+以上定义的是从 Codex、Claude 与 Pi 抽取出的本机执行权限合同。正式实现必须把 profile、实际批准/拒绝、执行范围和结果写为 durable `Item/Event`，GUI 只展示和发起选择，不能自行放行。
 
 共同要求：
 
@@ -507,7 +507,7 @@ Provider registry 是 model ID、能力、上下文窗口、body budget、compac
 - `git diff --check`
 - Windows x64 与 macOS arm64 安装包解包审计
 - 从最老受支持版本升级、更新失败恢复和回滚演练
-- 普通任务、三档权限、DeepSeek 原生搜索、图片三候选、视频证据编排、语音、计划任务、招聘人工确认和本机终端的端到端旅程
+- 普通任务、三档权限、DeepSeek 原生搜索、图片三候选、视频证据编排、语音、计划任务和本机终端的端到端旅程
 
 不得用 mock 页面证明产品完成，不得用源码搜索证明安装包完成，不得用代码中的并发数字证明线上容量。
 
