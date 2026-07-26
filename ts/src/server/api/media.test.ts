@@ -187,18 +187,29 @@ test('media API redacts reference image bytes, updates drafts, and deletes proje
         asset_id: createdBody.project.references[0]!.asset_id,
         role: 'style',
       }],
+      new_reference_images: [`data:image/png;base64,${Buffer.from('new-reference-bytes').toString('base64')}`],
+      new_reference_roles: ['brand'],
     }),
   })
-  const updatedBody = await updated.json() as { project: { revision: number; references: Array<{ role: string }> } }
+  const updatedBody = await updated.json() as {
+    project: { revision: number; references: Array<{ role: string; image_path: string }> }
+  }
+  expect(updatedBody.project.references.map(referenceItem => referenceItem.role)).toEqual(['style', 'brand'])
+  const addedReference = updatedBody.project.references.find(referenceItem => referenceItem.role === 'brand')
+  expect(addedReference).toBeDefined()
   expect(updatedBody).toMatchObject({
     project: {
       brief: { user_request: '修改后的海报' },
       size: '1024x1536',
       candidate_count: 3,
-      reference_image_count: 1,
-      references: [expect.objectContaining({ role: 'style' })],
+      reference_image_count: 2,
+      references: [
+        expect.objectContaining({ role: 'style' }),
+        expect.objectContaining({ role: 'brand' }),
+      ],
     },
   })
+  expect(Buffer.from(await (await route(handler, addedReference!.image_path)).arrayBuffer()).toString()).toBe('new-reference-bytes')
 
   const removed = await route(handler, `/api/media/images/projects/${createdBody.project.id}`, {
     method: 'PUT',
@@ -214,6 +225,7 @@ test('media API redacts reference image bytes, updates drafts, and deletes proje
     project: { reference_image_count: 0, references: [], mode: 'generate' },
   })
   expect((await route(handler, createdBody.project.references[0]!.image_path)).status).toBe(404)
+  expect((await route(handler, addedReference!.image_path)).status).toBe(404)
 
   const deleted = await route(handler, `/api/media/project/${createdBody.project.id}`, { method: 'DELETE' })
   expect(deleted.status).toBe(204)

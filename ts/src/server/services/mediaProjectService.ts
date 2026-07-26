@@ -14,6 +14,7 @@ import {
   imageSizeSupportedByModel,
   imageWorkbenchProjectSchema,
   imageGenerationTaskResultSchema,
+  MAX_REFERENCE_IMAGES_TOTAL_BYTES,
   mediaDeletionReceiptSchema,
   mediaJobEventJournalSchema,
   mediaSafeError,
@@ -1289,11 +1290,18 @@ export class MediaProjectService {
     if (images.length === 0) return []
     const directory = join(this.assetsDir, projectId, 'references')
     await mkdir(directory, { recursive: true, mode: 0o700 })
-    return await Promise.all(images.map(async image => {
-      const fileName = `ref_${randomUUID().replaceAll('-', '')}.${referenceImageExtension(image)}`
-      await writeFile(join(directory, fileName), dataUrlBytes(image), { mode: 0o600 })
-      return fileName
-    }))
+    const written: string[] = []
+    try {
+      for (const image of images) {
+        const fileName = `ref_${randomUUID().replaceAll('-', '')}.${referenceImageExtension(image)}`
+        await writeFile(join(directory, fileName), dataUrlBytes(image), { mode: 0o600 })
+        written.push(fileName)
+      }
+      return written
+    } catch (error) {
+      await Promise.all(written.map(fileName => rm(join(directory, fileName), { force: true })))
+      throw error
+    }
   }
 
   private async loadReferenceImages(project: ImageWorkbenchProject): Promise<string[]> {
@@ -2759,40 +2767,68 @@ export class MediaProjectService {
     if (references.some(reference => !availableReferenceIds.has(reference.asset_id))) {
       throw new MediaServiceError('图片参考素材已更新，请刷新后再编辑', 409, 'IMAGE_REFERENCE_CONFLICT')
     }
+    if (references.length + input.new_reference_images.length > 8) {
+      throw new MediaServiceError('每个图片项目最多保留 8 张参考图片', 400, 'TOO_MANY_REFERENCE_IMAGES')
+    }
     const referenceIds = new Set(references.map(reference => reference.asset_id))
-    const referenceImageAssets = (project.reference_image_assets ?? [])
+    const retainedReferenceAssets = (project.reference_image_assets ?? [])
       .filter(fileName => referenceIds.has(fileName.slice(0, fileName.lastIndexOf('.'))))
-    const compiled = compileImageBrief(input.user_request, references)
-    const briefOverrides = input.brief_overrides ?? project.brief_overrides
-    const brief = applyImageBriefOverrides(compiled.brief, briefOverrides)
-    const providerPrompt = providerPromptForImageBrief(brief)
-    const routedModel = routedImageModel(
-      input.user_request,
-      input.size,
-      references.some(reference => reference.role === 'subject'),
-    )
-    return await this.saveProject({
-      ...project,
-      state: 'draft',
-      task_id: undefined,
-      prompt: providerPrompt,
-      brief,
-      brief_overrides: briefOverrides,
-      references,
-      reference_image_assets: referenceImageAssets,
-      reference_image_count: references.length,
-      mode: references.length > 0 ? 'edit' : 'generate',
-      title: defaultTitle(input.user_request, project.title),
-      model: routedModel,
-      size: input.size,
-      count: 3,
-      candidate_count: 3,
-      revision: project.revision + 1,
-      error: undefined,
-      error_code: undefined,
-      notice: undefined,
-      updated_at: this.iso(),
-    }) as ImageWorkbenchProject
+    const retainedBytes = (await Promise.all(retainedReferenceAssets.map(fileName => this.resolveOwnedAsset(
+      project.id,
+      fileName,
+      { message: '参考图片文件已经丢失', code: 'REFERENCE_IMAGE_MISSING' },
+      'references',
+    )))).reduce((total, asset) => total + asset.size, 0)
+    const addedBytes = input.new_reference_images.reduce((total, image) => total + dataUrlBytes(image).byteLength, 0)
+    if (retainedBytes + addedBytes > MAX_REFERENCE_IMAGES_TOTAL_BYTES) {
+      throw new MediaServiceError('参考图片合计不能超过 20 MB', 400, 'REFERENCE_IMAGES_TOO_LARGE')
+    }
+    const addedReferenceAssets = await this.persistReferenceImages(project.id, input.new_reference_images)
+    try {
+      const addedReferences = addedReferenceAssets.map((fileName, index) => ({
+        asset_id: fileName.slice(0, fileName.lastIndexOf('.')),
+        role: input.new_reference_roles[index]!,
+      }))
+      const nextReferences = [...references, ...addedReferences]
+      const referenceImageAssets = [...retainedReferenceAssets, ...addedReferenceAssets]
+      const compiled = compileImageBrief(input.user_request, nextReferences)
+      const briefOverrides = input.brief_overrides ?? project.brief_overrides
+      const brief = applyImageBriefOverrides(compiled.brief, briefOverrides)
+      const providerPrompt = providerPromptForImageBrief(brief)
+      const routedModel = routedImageModel(
+        input.user_request,
+        input.size,
+        nextReferences.some(reference => reference.role === 'subject'),
+      )
+      return await this.saveProject({
+        ...project,
+        state: 'draft',
+        task_id: undefined,
+        prompt: providerPrompt,
+        brief,
+        brief_overrides: briefOverrides,
+        references: nextReferences,
+        reference_image_assets: referenceImageAssets,
+        reference_image_count: nextReferences.length,
+        mode: nextReferences.length > 0 ? 'edit' : 'generate',
+        title: defaultTitle(input.user_request, project.title),
+        model: routedModel,
+        size: input.size,
+        count: 3,
+        candidate_count: 3,
+        revision: project.revision + 1,
+        error: undefined,
+        error_code: undefined,
+        notice: undefined,
+        updated_at: this.iso(),
+      }) as ImageWorkbenchProject
+    } catch (error) {
+      await Promise.all(addedReferenceAssets.map(fileName => rm(
+        join(this.assetsDir, project.id, 'references', fileName),
+        { force: true },
+      )))
+      throw error
+    }
   }
 
   private async acknowledgePersistedImageResult(task: MediaTask): Promise<MediaTask> {

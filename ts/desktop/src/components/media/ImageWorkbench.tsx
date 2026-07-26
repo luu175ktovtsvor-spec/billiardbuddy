@@ -415,6 +415,7 @@ export function ImageWorkbench() {
   const [selectedLayerId, setSelectedLayerId] = useState<string | null>(null)
   const [briefOverrides, setBriefOverrides] = useState<ImageBriefOverrides>({})
   const [referenceDraft, setReferenceDraft] = useState<ImageProjectReference[]>([])
+  const [pendingReferences, setPendingReferences] = useState<ReferenceImage[]>([])
   const promptRef = useRef(prompt)
   const sizeRef = useRef(size)
   const draftOwnerIdRef = useRef<string | null>(null)
@@ -514,6 +515,7 @@ export function ImageWorkbench() {
     setTextCopy(active?.brief?.exact_text.join('\n') ?? '')
     setBriefOverrides(active?.brief_overrides ?? {})
     setReferenceDraft(active?.references ?? [])
+    setPendingReferences([])
   }, [activeId, active?.current_version_id])
 
   useEffect(() => { promptRef.current = prompt }, [prompt])
@@ -550,6 +552,7 @@ export function ImageWorkbench() {
     setReferences([])
     setBriefOverrides({})
     setReferenceDraft([])
+    setPendingReferences([])
     setInputError(null)
     setCreating(true)
   }
@@ -611,6 +614,40 @@ export function ImageWorkbench() {
     }
   }
 
+  const addPendingReferences = async (files: FileList | null) => {
+    if (!files?.length) return
+    const remaining = Math.max(0, 8 - referenceDraft.length - pendingReferences.length)
+    if (files.length > remaining) {
+      setInputError('每个项目最多保留 8 张参考图片')
+      return
+    }
+    const selected = Array.from(files).slice(0, remaining)
+    const unsupported = selected.find(file => !REFERENCE_TYPES.has(file.type))
+    if (unsupported) {
+      setInputError(`${unsupported.name} 不是支持的 PNG、JPEG 或 WebP 图片`)
+      return
+    }
+    const oversized = selected.find(file => file.size > MAX_REFERENCE_IMAGE_BYTES)
+    if (oversized) {
+      setInputError(`${oversized.name} 超过单张 ${megabytes(MAX_REFERENCE_IMAGE_BYTES)} 限制`)
+      return
+    }
+    const pendingBytes = pendingReferences.reduce((total, reference) => total + reference.size, 0)
+      + selected.reduce((total, file) => total + file.size, 0)
+    if (pendingBytes > MAX_REFERENCE_IMAGES_TOTAL_BYTES) {
+      setInputError(`本次新增参考图片合计不能超过 ${megabytes(MAX_REFERENCE_IMAGES_TOTAL_BYTES)}`)
+      return
+    }
+    const loaded = await Promise.all(selected.map(async file => ({
+      name: file.name,
+      size: file.size,
+      dataUrl: await readImage(file),
+      role: 'unclassified' as const,
+    })))
+    setPendingReferences(current => [...current, ...loaded])
+    setInputError(null)
+  }
+
   const hasDraftChanges = Boolean(
     active
     && (
@@ -618,19 +655,27 @@ export function ImageWorkbench() {
       || size !== active.size
       || !sameBriefOverrides(briefOverrides, active.brief_overrides ?? {})
       || !sameReferences(referenceDraft, active.references)
+      || pendingReferences.length > 0
     ),
   )
 
   const saveActiveDraft = async (confirmUnknownRetry = false) => {
     if (!active || !prompt.trim()) return active
+    if (pendingReferences.some(reference => reference.role === 'unclassified')) {
+      setInputError('请先为每张新增参考图片选择作用')
+      return null
+    }
     if (!hasDraftChanges) return active
-    return await saveImageDraft({
+    const saved = await saveImageDraft({
       ...active,
       brief: { ...active.brief!, user_request: prompt.trim() },
       brief_overrides: briefOverrides,
       references: referenceDraft,
       size,
-    }, confirmUnknownRetry)
+    }, confirmUnknownRetry, pendingReferences)
+    setReferenceDraft(saved.references)
+    setPendingReferences([])
+    return saved
   }
 
   const startGeneration = async () => {
@@ -1097,9 +1142,26 @@ export function ImageWorkbench() {
                   <span className="text-[var(--color-text-tertiary)]">方式</span>
                   <span className="text-right text-[var(--color-text-secondary)]">{active.reference_image_count > 0 ? `参考图生成 (${active.reference_image_count})` : '文字生成'}</span>
                 </div>
-                {referenceDraft.length > 0 && (
+                {(referenceDraft.length > 0 || pendingReferences.length > 0 || ['draft', 'failed'].includes(active.state)) && (
                   <div className="mb-5 border-t border-[var(--color-border)] pt-4">
                     <div className="mb-2 text-[12px] font-medium text-[var(--color-text-primary)]">参考素材</div>
+                    {['draft', 'failed'].includes(active.state) && (
+                      <label className="mb-3 block">
+                        <span className="sr-only">添加参考图片</span>
+                        <input
+                          aria-label="添加参考图片"
+                          type="file"
+                          accept="image/png,image/jpeg,image/webp"
+                          multiple
+                          disabled={referenceDraft.length + pendingReferences.length >= 8}
+                          onChange={event => {
+                            void addPendingReferences(event.target.files)
+                            event.currentTarget.value = ''
+                          }}
+                          className="block w-full text-[10px] text-[var(--color-text-secondary)] disabled:opacity-40"
+                        />
+                      </label>
+                    )}
                     <div className="grid grid-cols-3 gap-2">
                       {referenceDraft.map(reference => (
                         <figure key={reference.asset_id} className="overflow-hidden rounded-[5px] border border-[var(--color-border)] bg-[var(--color-surface-container)]">
@@ -1134,6 +1196,29 @@ export function ImageWorkbench() {
                               {reference.label ?? REFERENCE_ROLE_LABELS[reference.role]}
                             </figcaption>
                           )}
+                        </figure>
+                      ))}
+                      {pendingReferences.map((reference, index) => (
+                        <figure key={`${reference.name}-${index}`} className="overflow-hidden rounded-[5px] border border-dashed border-[var(--color-brand)] bg-[var(--color-surface-container)]">
+                          <img src={reference.dataUrl} alt={reference.name} className="aspect-square w-full object-cover" />
+                          <div className="flex items-center border-t border-[var(--color-border)]">
+                            <select
+                              aria-label={`${reference.name} 的新增参考作用`}
+                              value={reference.role}
+                              onChange={event => setPendingReferences(current => current.map((item, itemIndex) => itemIndex === index
+                                ? { ...item, role: event.target.value as ImageReferenceRole }
+                                : item))}
+                              className="h-7 min-w-0 flex-1 bg-[var(--color-input-bg)] px-1 text-[10px]"
+                            >
+                              {REFERENCE_ROLE_OPTIONS.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
+                            </select>
+                            <button
+                              type="button"
+                              onClick={() => setPendingReferences(current => current.filter((_, itemIndex) => itemIndex !== index))}
+                              className="flex h-7 w-7 items-center justify-center text-[var(--color-text-tertiary)] hover:text-[var(--color-error)]"
+                              aria-label={`取消新增 ${reference.name}`}
+                            ><X size={12} /></button>
+                          </div>
                         </figure>
                       ))}
                     </div>

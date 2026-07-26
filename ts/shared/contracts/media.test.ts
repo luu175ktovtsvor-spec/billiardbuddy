@@ -8,6 +8,7 @@ import {
   publicMediaTaskSchema,
   publicVideoStudioProjectSchema,
   startImageOperationInputSchema,
+  updateImageProjectInputSchema,
 } from './media.js'
 
 const baseImageProject = {
@@ -72,6 +73,20 @@ describe('provider-neutral image creation contract', () => {
       reference_roles: ['subject'],
     })
     expect(parsed.reference_roles).toEqual(['subject'])
+    expect(updateImageProjectInputSchema.safeParse({
+      revision: 0,
+      user_request: '新增参考图',
+      size: '1024x1024',
+      new_reference_images: [reference],
+      new_reference_roles: [],
+    }).success).toBe(false)
+    expect(updateImageProjectInputSchema.safeParse({
+      revision: 0,
+      user_request: '新增参考图',
+      size: '1024x1024',
+      new_reference_images: [reference],
+      new_reference_roles: ['unclassified'],
+    }).success).toBe(false)
   })
 
   test('keeps provider and legacy outputs private while exposing immutable version history', () => {

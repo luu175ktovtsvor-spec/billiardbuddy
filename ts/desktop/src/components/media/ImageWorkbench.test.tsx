@@ -201,9 +201,16 @@ describe('ImageWorkbench unknown paid result', () => {
     fireEvent.change(await screen.findByLabelText('ref_subject0001 的参考作用'), {
       target: { value: 'style' },
     })
+    const addedFile = new File(['new-reference'], 'brand.png', { type: 'image/png' })
+    fireEvent.change(screen.getByLabelText('添加参考图片'), { target: { files: [addedFile] } })
+    fireEvent.change(await screen.findByLabelText('brand.png 的新增参考作用'), {
+      target: { value: 'brand' },
+    })
     fireEvent.click(screen.getByRole('button', { name: '确认后重新生成' }))
     await waitFor(() => expect(mediaApiMock.updateImageProject).toHaveBeenCalledWith(project.id, expect.objectContaining({
       references: [expect.objectContaining({ asset_id: 'ref_subject0001', role: 'style' })],
+      new_reference_images: [expect.stringMatching(/^data:image\/png;base64,/)],
+      new_reference_roles: ['brand'],
     })))
   })
 
