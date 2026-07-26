@@ -117,6 +117,22 @@ function publicProject(project: MediaProject): PublicMediaProject {
   const projected = publicMediaProjectSchema.parse({
     ...safeProject,
     ...(project.kind === 'image' ? {
+      references: (project.references ?? []).flatMap(reference => {
+        const asset = (project.assets ?? []).find(candidate => candidate.id === reference.asset_id && candidate.role === 'reference')
+        if (
+          !asset
+          || (asset.mime_type !== 'image/png'
+            && asset.mime_type !== 'image/jpeg'
+            && asset.mime_type !== 'image/webp')
+        ) return []
+        const fileName = project.reference_image_assets?.find(candidate => candidate.startsWith(`${reference.asset_id}.`))
+        if (!fileName) return []
+        return [{
+          ...reference,
+          image_path: `/api/media/images/projects/${project.id}/references/${reference.asset_id}/content`,
+          mime_type: asset.mime_type,
+        }]
+      }),
       version_history: (project.versions ?? []).flatMap(version => {
         const asset = version.asset_ids.length === 1
           ? (project.assets ?? []).find(candidate => candidate.id === version.asset_ids[0] && candidate.role === 'result')
@@ -302,6 +318,14 @@ export function createMediaApiHandler(
           return Response.json({ project: publicProject(await service.createImageProject(input)) }, { status: 201 })
         }
         await service.assertProjectOwner(projectId, STANDALONE_MEDIA_OWNER)
+        if (action === 'references') {
+          const referenceId = segments[6]
+          if (!referenceId || segments[7] !== 'content' || segments[8]) {
+            throw ApiError.badRequest('无效的图片参考素材地址')
+          }
+          if (req.method !== 'GET') throw methodNotAllowed(req.method)
+          return await service.imageReferenceResponse(projectId, referenceId, req)
+        }
         if (!action && req.method === 'PUT') {
           const input = updateImageProjectInputSchema.parse(await parseJson(req))
           if (input.confirm_unknown_retry) {

@@ -83,6 +83,10 @@ const REFERENCE_ROLE_OPTIONS: Array<{ value: ImageReferenceRole; label: string }
   { value: 'qrcode', label: '二维码' },
 ]
 
+const REFERENCE_ROLE_LABELS = Object.fromEntries(
+  REFERENCE_ROLE_OPTIONS.map(option => [option.value, option.label]),
+) as Record<ImageReferenceRole, string>
+
 function megabytes(bytes: number): string {
   return `${Math.round(bytes / 1024 / 1024)} MB`
 }
@@ -1078,6 +1082,25 @@ export function ImageWorkbench() {
                   <span className="text-[var(--color-text-tertiary)]">方式</span>
                   <span className="text-right text-[var(--color-text-secondary)]">{active.reference_image_count > 0 ? `参考图生成 (${active.reference_image_count})` : '文字生成'}</span>
                 </div>
+                {active.references.length > 0 && (
+                  <div className="mb-5 border-t border-[var(--color-border)] pt-4">
+                    <div className="mb-2 text-[12px] font-medium text-[var(--color-text-primary)]">参考素材</div>
+                    <div className="grid grid-cols-3 gap-2">
+                      {active.references.map(reference => (
+                        <figure key={reference.asset_id} className="overflow-hidden rounded-[5px] border border-[var(--color-border)] bg-[var(--color-surface-container)]">
+                          <img
+                            src={mediaApi.assetUrl(reference.image_path)}
+                            alt={reference.label ?? `${REFERENCE_ROLE_LABELS[reference.role]}参考图`}
+                            className="aspect-square w-full object-cover"
+                          />
+                          <figcaption className="truncate px-1.5 py-1 text-[10px] text-[var(--color-text-secondary)]">
+                            {reference.label ?? REFERENCE_ROLE_LABELS[reference.role]}
+                          </figcaption>
+                        </figure>
+                      ))}
+                    </div>
+                  </div>
+                )}
                 {currentVersion && (
                   <div className="mb-3 grid grid-cols-2 gap-2">
                     <button

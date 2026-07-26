@@ -284,6 +284,13 @@ describe('ImageWorkbench unknown paid result', () => {
       ...project,
       state: 'ready',
       task_id: undefined,
+      reference_image_count: 1,
+      references: [{
+        asset_id: 'ref_subject0001',
+        role: 'subject',
+        image_path: `/api/media/images/projects/${project.id}/references/ref_subject0001/content`,
+        mime_type: 'image/png',
+      }],
       current_version_id: firstVersion.id,
       version_history: [firstVersion, secondVersion],
       error: undefined,
@@ -296,6 +303,10 @@ describe('ImageWorkbench unknown paid result', () => {
 
     expect(await screen.findByTestId('image-canvas-surface')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '选择文字图层 会员日' })).toBeInTheDocument()
+    expect(screen.getByRole('img', { name: '主体参考图' })).toHaveAttribute(
+      'src',
+      `/api/media/images/projects/${project.id}/references/ref_subject0001/content`,
+    )
     expect(screen.getByText('视觉质检 92/100')).toBeInTheDocument()
     expect(await screen.findByRole('button', { name: '继续编辑' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '局部重绘' })).toBeInTheDocument()

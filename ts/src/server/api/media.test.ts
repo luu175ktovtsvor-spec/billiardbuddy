@@ -153,9 +153,25 @@ test('media API redacts reference image bytes, updates drafts, and deletes proje
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ user_request: '参考图海报', reference_images: [reference], reference_roles: ['subject'] }),
   })
-  const createdBody = await created.json() as { project: { id: string; revision: number; reference_images: string[]; reference_image_count: number } }
+  const createdBody = await created.json() as {
+    project: {
+      id: string
+      revision: number
+      reference_images: string[]
+      reference_image_count: number
+      references: Array<{ role: string; image_path: string; mime_type: string }>
+    }
+  }
   expect(createdBody.project.reference_images).toEqual([])
   expect(createdBody.project.reference_image_count).toBe(1)
+  expect(createdBody.project.references).toEqual([expect.objectContaining({
+    role: 'subject',
+    image_path: expect.stringMatching(new RegExp(`^/api/media/images/projects/${createdBody.project.id}/references/ref_.+/content$`)),
+    mime_type: 'image/png',
+  })])
+  const referenceResponse = await route(handler, createdBody.project.references[0]!.image_path)
+  expect(referenceResponse.status).toBe(200)
+  expect(Buffer.from(await referenceResponse.arrayBuffer()).toString()).toBe('reference-bytes')
 
   const listed = await route(handler, '/api/media/projects?kind=image')
   expect(JSON.stringify(await listed.json())).not.toContain('reference-bytes')
