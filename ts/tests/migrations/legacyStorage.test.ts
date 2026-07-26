@@ -15,7 +15,7 @@ import { migrateSupportedScheduledTaskRuns } from '../../src/server/services/cro
 const tsRoot = resolve(import.meta.dir, '../..')
 
 function loadFixture(name: string): { raw: string, value: any } {
-  const raw = readFileSync(join(tsRoot, 'product-contracts/fixtures', name), 'utf8')
+  const raw = readFileSync(join(tsRoot, 'fixtures/migrations', name), 'utf8')
   return { raw, value: JSON.parse(raw) }
 }
 
@@ -139,7 +139,7 @@ async function migrateCronRunFixture(idempotence: boolean): Promise<void> {
   }
 }
 
-describe('BB-01A registered legacy reader migrations', () => {
+describe('supported storage migrations', () => {
   it('product-task-disk-v1-to-v4:positive', () => migrateProductTaskFixture('product-task-disk-v1.json', false))
   it('product-task-disk-v1-to-v4:idempotence', () => migrateProductTaskFixture('product-task-disk-v1.json', true))
   it('product-task-disk-v3-to-v4:positive', () => migrateProductTaskFixture('product-task-disk-v3.json', false))

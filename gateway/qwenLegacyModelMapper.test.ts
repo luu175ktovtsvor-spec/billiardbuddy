@@ -3,8 +3,8 @@ import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { mapLegacyQwenModelValue } from './qwenLegacyModelMapper'
 
-test('D3 legacy Qwen values map without retaining a runtime route', () => {
-  const fixture = JSON.parse(readFileSync(resolve(import.meta.dir, '../ts/product-contracts/fixtures/provider-legacy-qwen-model-values-v1.json'), 'utf8')) as {
+test('legacy Qwen values map without retaining a runtime route', () => {
+  const fixture = JSON.parse(readFileSync(resolve(import.meta.dir, 'fixtures/provider-legacy-qwen-model-values-v1.json'), 'utf8')) as {
     values: Array<{ legacy_model: string; result: string | null }>
   }
   for (const entry of fixture.values) {

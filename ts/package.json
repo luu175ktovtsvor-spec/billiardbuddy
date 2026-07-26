@@ -10,12 +10,11 @@
     "check:electron": "cd desktop && bun run check:electron",
     "check:media-real-fixture": "bun scripts/acceptance/media-real-fixture.ts",
     "check:native": "cd desktop && bun run build:sidecars && bun run check:electron && CSC_IDENTITY_AUTO_DISCOVERY=false bun run electron:package:dir",
-    "check:product-contracts": "bun desktop/scripts/scan-missing-imports.ts && bun scripts/product-contracts/check.ts && bun test tests/product-contracts"
+    "audit:source": "bun desktop/scripts/scan-missing-imports.ts"
   },
   "dependencies": {
     "@anthropic-ai/sandbox-runtime": "^0.0.44",
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "ajv": "^8.18.0",
     "axios": "^1.14.0",
     "jsonc-parser": "^3.3.1",
     "lodash-es": "^4.17.23",

@@ -10,6 +10,7 @@ const roots = [
   'src/media',
   'src/server',
   'src/skills',
+  'tests/migrations',
 ]
 
 function normalize(path: string) {

@@ -48,7 +48,7 @@ Renderer 只保存视图投影；Electron Main 负责受限 IPC、窗口、安�
 | `ts/desktop` | React renderer、Electron Main、preload、sidecar 与发行脚本 |
 | `gateway` | 五条 provider 能力泳道、安装身份、用量、容量和 Relay 代理 |
 | `relay` | GPT Image 2 / Seedream 持久任务、幂等、结果 blob 与 ack |
-| `ts/product-contracts` | 可生成、可校验的产品策略、迁移 reader 与删除消费者证据 |
+| `ts/fixtures/migrations` | 当前支持升级范围内的旧数据样本；只用于证明 reader 与迁移连续性 |
 | `docs/refactor` | 外部参考源码到本项目改动的证据链 |
 
 生产服务器的真实进程、端口、路由、环境变量名称和验证结果见 [生产服务器运行文档](./docs/operations/production-servers.md)。
@@ -65,11 +65,11 @@ bun install
 bun run electron:dev
 ```
 
-常用源码门禁：
+常用源码检查：
 
 ```bash
 cd ts
-bun run check:product-contracts
+bun run audit:source
 bun run check:server
 bun run check:desktop
 bun run check:electron
