@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import {
+  IMAGE_WORKBENCH_TAB_ID,
   NEW_PRODUCT_TASK_TAB_ID,
   PRODUCT_TASKS_TAB_ID,
   PRODUCT_TASK_TAB_PREFIX,
@@ -236,6 +237,27 @@ describe('tabStore', () => {
         title: '任务中心',
         type: 'product-tasks',
       }],
+    })
+  })
+
+  it('migrates retired creation and operations tabs to real product surfaces', async () => {
+    localStorage.setItem('billiardbuddy-open-tabs', JSON.stringify({
+      openTabs: [
+        { sessionId: '__creation__', title: '创作', type: 'creation' },
+        { sessionId: '__operations__', title: '经营', type: 'operations' },
+        { sessionId: IMAGE_WORKBENCH_TAB_ID, title: '生成图片', type: 'image-workbench' },
+      ],
+      activeTabId: '__creation__',
+    }))
+
+    await useTabStore.getState().restoreTabs()
+
+    expect(useTabStore.getState()).toMatchObject({
+      activeTabId: IMAGE_WORKBENCH_TAB_ID,
+      tabs: [
+        { sessionId: IMAGE_WORKBENCH_TAB_ID, title: '图片创作', type: 'image-workbench' },
+        { sessionId: PRODUCT_TASKS_TAB_ID, title: '任务中心', type: 'product-tasks' },
+      ],
     })
   })
 

@@ -3,11 +3,11 @@ import { cleanup, fireEvent, render, screen, within } from '@testing-library/rea
 import '@testing-library/jest-dom'
 import { DesktopSidebar } from './DesktopSidebar'
 import {
-  CREATION_TAB_ID,
+  IMAGE_WORKBENCH_TAB_ID,
   NEW_PRODUCT_TASK_TAB_ID,
-  OPERATIONS_TAB_ID,
   PRODUCT_TASK_TAB_PREFIX,
   PRODUCT_TASKS_TAB_ID,
+  VIDEO_STUDIO_TAB_ID,
   useTabStore,
 } from '../../stores/tabStore'
 import { EMPTY_PRODUCT_TASK_INDEX, useProductTaskStore } from '../../product/stores/productTaskStore'
@@ -53,13 +53,12 @@ describe('DesktopSidebar', () => {
     useProductTaskRuntimeStore.setState({ tasks: {} })
   })
 
-  it('presents only the five product navigation entries and opens the task index', () => {
+  it('presents the three product workbenches and scheduled-task control plane', () => {
     render(<DesktopSidebar />)
 
     const navigation = screen.getByRole('navigation', { name: '产品导航' })
-    expect(navigation).toHaveTextContent('任务创作经营已安排')
-    expect(navigation).not.toHaveTextContent('生成图片')
-    expect(navigation).not.toHaveTextContent('剪视频')
+    expect(navigation).toHaveTextContent('任务图片创作视频创作已安排')
+    expect(navigation).not.toHaveTextContent('经营')
     expect(navigation).not.toHaveTextContent('插件')
     expect(screen.getByRole('button', { name: '设置' })).toBeInTheDocument()
 
@@ -75,21 +74,21 @@ describe('DesktopSidebar', () => {
     })
   })
 
-  it('routes creation and operations through stable product-area tabs', () => {
+  it('opens image and video workbenches directly from primary navigation', () => {
     render(<DesktopSidebar />)
 
-    fireEvent.click(screen.getByRole('button', { name: '创作' }))
+    fireEvent.click(screen.getByRole('button', { name: '图片创作' }))
     expect(useTabStore.getState()).toMatchObject({
-      activeTabId: CREATION_TAB_ID,
-      tabs: [expect.objectContaining({ type: 'creation', title: '创作' })],
+      activeTabId: IMAGE_WORKBENCH_TAB_ID,
+      tabs: [expect.objectContaining({ type: 'image-workbench', title: '图片创作' })],
     })
 
-    fireEvent.click(screen.getByRole('button', { name: '经营' }))
+    fireEvent.click(screen.getByRole('button', { name: '视频创作' }))
     expect(useTabStore.getState()).toMatchObject({
-      activeTabId: OPERATIONS_TAB_ID,
+      activeTabId: VIDEO_STUDIO_TAB_ID,
       tabs: [
-        expect.objectContaining({ type: 'creation' }),
-        expect.objectContaining({ type: 'operations', title: '经营' }),
+        expect.objectContaining({ type: 'image-workbench' }),
+        expect.objectContaining({ type: 'video-studio', title: '视频创作' }),
       ],
     })
   })

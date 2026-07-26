@@ -21,7 +21,13 @@ const requiredEntries = [
 
 const forbiddenProductStrings = [
   'attachMediaProject',
+  'Claude Code',
+  'CLAUDE.md',
+  '.claude-plugin',
+  'claude-api',
+  'good-claude',
   'GW_MIMO_NATIVE',
+  '__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__',
   'qwenChat',
   '/api/v1/chat',
   '/api/v1/qwen',
@@ -132,7 +138,18 @@ export function auditPackagedResources(options: AuditOptions): void {
   const sidecar = options.platform === 'darwin'
     ? 'billiardbuddy-sidecar-aarch64-apple-darwin'
     : 'billiardbuddy-sidecar-x86_64-pc-windows-msvc.exe'
-  if (!existsSync(join(toolchainDir, sidecar))) throw new Error(`安装包缺少正式 sidecar: ${sidecar}`)
+  const sidecarPath = join(toolchainDir, sidecar)
+  if (!existsSync(sidecarPath)) throw new Error(`安装包缺少正式 sidecar: ${sidecar}`)
+  const sidecarBytes = readFileSync(sidecarPath)
+  // Bun's standalone runtime embeds one upstream build-rule filename. It is
+  // compiler payload, not BilliardBuddy source or prompt, so exclude only that
+  // runtime-owned filename while auditing every other product marker.
+  const forbiddenSidecarString = forbiddenProductStrings
+    .filter(candidate => candidate !== 'CLAUDE.md')
+    .find(candidate => sidecarBytes.includes(Buffer.from(candidate)))
+  if (forbiddenSidecarString) {
+    throw new Error(`安装包 sidecar 残留旧运行字符串: ${forbiddenSidecarString}`)
+  }
 }
 
 if (import.meta.main) {

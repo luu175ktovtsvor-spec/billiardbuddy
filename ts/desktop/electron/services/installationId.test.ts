@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { applyInstallationIdToEnv, ensureInstallationId } from './installationId'
+import { ensureInstallationId } from './installationId'
 
 const dirs: string[] = []
 afterEach(() => {
@@ -15,10 +15,10 @@ function tempDir(): string {
 }
 
 describe('ensureInstallationId', () => {
-  it('generates a gateway-format id on first launch and persists it without group/world access', () => {
+  it('generates an activation id on first launch and persists it without group/world access', () => {
     const dir = tempDir()
     const id = ensureInstallationId(dir, () => '1111-2222-3333-4444')
-    expect(id).toMatch(/^[A-Za-z0-9._-]{8,128}$/) // matches the gateway X-BB-Installation-ID pattern
+    expect(id).toMatch(/^[A-Za-z0-9._-]{8,128}$/)
     expect(id.startsWith('bb-')).toBe(true)
     const file = path.join(dir, 'installation-id.json')
     expect(JSON.parse(fs.readFileSync(file, 'utf8')).installationId).toBe(id)
@@ -44,21 +44,5 @@ describe('ensureInstallationId', () => {
     const a = ensureInstallationId(tempDir(), seeds)
     const b = ensureInstallationId(tempDir(), seeds)
     expect(a).not.toBe(b)
-  })
-})
-
-describe('applyInstallationIdToEnv', () => {
-  it('injects BB_INSTALLATION_ID when absent', () => {
-    expect(applyInstallationIdToEnv({ PATH: '/x' }, 'bb-1').BB_INSTALLATION_ID).toBe('bb-1')
-  })
-
-  it('never overrides an existing ops/shell value', () => {
-    expect(applyInstallationIdToEnv({ BB_INSTALLATION_ID: 'ops' }, 'bb-1').BB_INSTALLATION_ID).toBe('ops')
-  })
-
-  it('leaves the env object untouched when the id is empty (adapter path)', () => {
-    const base = { PATH: '/x' }
-    expect(applyInstallationIdToEnv(base, undefined)).toBe(base)
-    expect(applyInstallationIdToEnv(base, '')).toBe(base)
   })
 })

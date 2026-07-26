@@ -6,7 +6,6 @@ import { VideoStudio } from '../media/VideoStudio'
 import { ProductShell } from '../../product/components/ProductShell'
 import { ProductTaskPage } from '../../product/components/ProductTaskPage'
 import { ProductScheduledTasksPage } from '../../product/components/ProductScheduledTasksPage'
-import { ProductCreationPage, ProductOperationsPage } from '../../product/components/ProductAreaPages'
 import { previewBridge } from '../../lib/previewBridge'
 
 export function ContentRouter() {
@@ -27,10 +26,6 @@ export function ContentRouter() {
     page = <Settings />
   } else if (activeTabType === 'scheduled') {
     page = <ProductScheduledTasksPage />
-  } else if (activeTabType === 'creation') {
-    page = <ProductCreationPage />
-  } else if (activeTabType === 'operations') {
-    page = <ProductOperationsPage />
   } else if (activeTabType === 'image-workbench') {
     page = <ImageWorkbench />
   } else if (activeTabType === 'video-studio') {

@@ -24,6 +24,10 @@ type DesktopPersistenceBackup = {
 type StorageLike = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>
 
 const TAB_STORAGE_KEY = 'billiardbuddy-open-tabs'
+const LEGACY_CREATION_TAB_ID = '__creation__'
+const LEGACY_OPERATIONS_TAB_ID = '__operations__'
+const IMAGE_WORKBENCH_TAB_ID = '__image_workbench__'
+const PRODUCT_TASKS_TAB_ID = '__product_tasks__'
 const RETIRED_SESSION_RUNTIME_STORAGE_KEY = 'billiardbuddy-session-runtime'
 const THEME_STORAGE_KEY = 'billiardbuddy-theme'
 const LOCALE_STORAGE_KEY = 'billiardbuddy-locale'
@@ -135,18 +139,24 @@ function migrateTabs(storage: StorageLike, report: DesktopMigrationReport): void
       : isRecord(parsed) && Array.isArray(parsed.openTabs)
         ? parsed.openTabs
         : []
-    const openTabs = rawTabs
+    const migratedTabs = rawTabs
       .filter((tab): tab is Record<string, unknown> => isRecord(tab))
       .filter((tab) => typeof tab.sessionId === 'string' && typeof tab.title === 'string')
       .flatMap((tab) => {
         const sessionId = tab.sessionId as string
         const title = tab.title as string
 
+        if (tab.type === 'creation') {
+          return [{ sessionId: IMAGE_WORKBENCH_TAB_ID, title: '图片创作', type: 'image-workbench' }]
+        }
+
+        if (tab.type === 'operations') {
+          return [{ sessionId: PRODUCT_TASKS_TAB_ID, title: '任务中心', type: 'product-tasks' }]
+        }
+
         if (
           tab.type === 'settings'
           || tab.type === 'scheduled'
-          || tab.type === 'creation'
-          || tab.type === 'operations'
           || tab.type === 'image-workbench'
           || tab.type === 'video-studio'
           || tab.type === 'product-tasks'
@@ -160,11 +170,23 @@ function migrateTabs(storage: StorageLike, report: DesktopMigrationReport): void
 
         return []
       })
+    const seenTabIds = new Set<string>()
+    const openTabs = migratedTabs.filter((tab) => {
+      if (seenTabIds.has(tab.sessionId)) return false
+      seenTabIds.add(tab.sessionId)
+      return true
+    })
+    const rawActiveTabId = isRecord(parsed) && typeof parsed.activeTabId === 'string'
+      ? parsed.activeTabId
+      : null
+    const requestedActiveTabId = rawActiveTabId === LEGACY_CREATION_TAB_ID
+      ? IMAGE_WORKBENCH_TAB_ID
+      : rawActiveTabId === LEGACY_OPERATIONS_TAB_ID
+        ? PRODUCT_TASKS_TAB_ID
+        : rawActiveTabId
     const activeTabId =
-      isRecord(parsed) &&
-      typeof parsed.activeTabId === 'string' &&
-      openTabs.some((tab) => tab.sessionId === parsed.activeTabId)
-        ? parsed.activeTabId
+      requestedActiveTabId && openTabs.some((tab) => tab.sessionId === requestedActiveTabId)
+        ? requestedActiveTabId
         : (openTabs[0]?.sessionId ?? null)
 
     if (openTabs.length === 0) {

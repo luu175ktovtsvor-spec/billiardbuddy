@@ -12,7 +12,6 @@ export type RemoteTranscriptionFetch = (
 export type RemoteTranscriptionConfig = {
   endpoint: string
   token: string
-  clientId?: string
 }
 
 export class RemoteTranscriptionError extends Error {
@@ -60,8 +59,7 @@ export function resolveRemoteTranscriptionConfig(
     : /\/v1$/i.test(normalized)
       ? `${normalized}/audio/transcriptions`
       : `${normalized}/v1/audio/transcriptions`
-  const clientId = nonEmpty(env.BB_INSTALLATION_ID) ?? undefined
-  return { endpoint, token, ...(clientId ? { clientId } : {}) }
+  return { endpoint, token }
 }
 
 function combineSignal(
@@ -100,7 +98,6 @@ export async function transcribeRemoteFile(
     const headers: Record<string, string> = {
       Authorization: `Bearer ${config.token}`,
     }
-    if (config.clientId) headers['X-BB-Installation-ID'] = config.clientId
     if (opts.providerProtocol) headers['X-BB-Provider-Protocol'] = opts.providerProtocol
     if (opts.operationId) headers['X-BB-Operation-ID'] = opts.operationId
 

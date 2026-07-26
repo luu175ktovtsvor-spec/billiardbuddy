@@ -75,7 +75,6 @@ import { lock } from '../../utils/lockfile.js'
 import {
   productGatewayConfigured,
   productGatewayTarget,
-  productInstallationId,
 } from '../product/productGatewayRuntime.js'
 import { providerRegistryEntriesForCapability } from '../../../../gateway/providerRegistry.js'
 import { compileImageBrief } from './imageBrief.js'
@@ -2652,8 +2651,6 @@ export class MediaProjectService {
       'Idempotency-Key': originalTask.idempotency_key,
       [PROVIDER_GATEWAY_PROTOCOL_HEADER]: PROVIDER_GATEWAY_PROTOCOL.headerValue,
     }
-    const installationId = productInstallationId()
-    if (installationId) headers['X-BB-Installation-ID'] = installationId
 
     try {
       const { response, body } = await this.fetchImageGatewayJson(endpoint, {
@@ -2786,8 +2783,6 @@ export class MediaProjectService {
       Authorization: `Bearer ${gateway.token}`,
       [PROVIDER_GATEWAY_PROTOCOL_HEADER]: PROVIDER_GATEWAY_PROTOCOL.headerValue,
     }
-    const installationId = productInstallationId()
-    if (installationId) headers['X-BB-Installation-ID'] = installationId
     try {
       const { response, body } = await this.fetchImageGatewayJson(
         `${gateway.baseUrl}/v1/images/tasks/${encodeURIComponent(task.remote_task_id)}/ack`,
@@ -2820,8 +2815,6 @@ export class MediaProjectService {
       [PROVIDER_GATEWAY_PROTOCOL_HEADER]: PROVIDER_GATEWAY_PROTOCOL.headerValue,
       [MEDIA_RESULT_HANDOFF_HEADER]: MEDIA_RESULT_HANDOFF_DIRECT_V1,
     }
-    const installationId = productInstallationId()
-    if (installationId) headers['X-BB-Installation-ID'] = installationId
     let response: Response
     let body: RelayImageTask & { message?: string }
     try {
@@ -4373,8 +4366,6 @@ export class MediaProjectService {
       Authorization: `Bearer ${gateway.token}`,
       [PROVIDER_GATEWAY_PROTOCOL_HEADER]: PROVIDER_GATEWAY_PROTOCOL.headerValue,
     }
-    const installationId = productInstallationId()
-    if (installationId) headers['X-BB-Installation-ID'] = installationId
     let response: Response
     try {
       response = await this.fetchImpl(

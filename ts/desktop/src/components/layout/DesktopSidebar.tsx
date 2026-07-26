@@ -2,17 +2,17 @@
 // restricted product-task runtime.
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import {
-  PanelLeft, Search, Clock, Store,
+  PanelLeft, Search, Clock, Image, Video,
   Folder, FolderOpen, Settings as SettingsIcon, ChevronDown, Sun, Moon,
-  Palette, Plus, Loader2, ListTodo, Pin,
+  Plus, Loader2, ListTodo, Pin,
 } from 'lucide-react'
 import { useUIStore, resolveEffectiveTheme } from '../../stores/uiStore'
 import {
   useTabStore,
   SETTINGS_TAB_ID,
   SCHEDULED_TAB_ID,
-  CREATION_TAB_ID,
-  OPERATIONS_TAB_ID,
+  IMAGE_WORKBENCH_TAB_ID,
+  VIDEO_STUDIO_TAB_ID,
   PRODUCT_TASKS_TAB_ID,
   type OpenTabType,
 } from '../../stores/tabStore'
@@ -111,8 +111,8 @@ function useSidebarData() {
     openNewTask,
     openScheduled: () => openTabView(SCHEDULED_TAB_ID, t('sidebar.scheduled'), 'scheduled'),
     openProductTasks,
-    openCreation: () => openTabView(CREATION_TAB_ID, '创作', 'creation'),
-    openOperations: () => openTabView(OPERATIONS_TAB_ID, '经营', 'operations'),
+    openImageWorkbench: () => openTabView(IMAGE_WORKBENCH_TAB_ID, '图片创作', 'image-workbench'),
+    openVideoStudio: () => openTabView(VIDEO_STUDIO_TAB_ID, '视频创作', 'video-studio'),
     openSettings: () => {
       setActiveSettingsTab('general')
       openTabView(SETTINGS_TAB_ID, t('sidebar.settings'), 'settings')
@@ -276,7 +276,7 @@ export function DesktopSidebar() {
         </div>
       )}
 
-      {/* 一级导航严格对应产品的五个用户入口；具体工具只在入口页面内出现。 */}
+      {/* 一级导航对应三个产品工作台与定时任务控制面。 */}
       <nav className="px-2 pb-1" aria-label="产品导航">
         <NavItem
           icon={<ListTodo size={17} />}
@@ -285,12 +285,17 @@ export function DesktopSidebar() {
           onClick={d.openProductTasks}
         />
         <NavItem
-          icon={<Palette size={17} />}
-          label="创作"
-          active={d.activeTabType === 'creation' || d.activeTabType === 'image-workbench' || d.activeTabType === 'video-studio'}
-          onClick={d.openCreation}
+          icon={<Image size={17} />}
+          label="图片创作"
+          active={d.activeTabType === 'image-workbench'}
+          onClick={d.openImageWorkbench}
         />
-        <NavItem icon={<Store size={17} />} label="经营" active={d.activeTabType === 'operations'} onClick={d.openOperations} />
+        <NavItem
+          icon={<Video size={17} />}
+          label="视频创作"
+          active={d.activeTabType === 'video-studio'}
+          onClick={d.openVideoStudio}
+        />
         <NavItem icon={<Clock size={17} />} label={t('sidebar.scheduled')} active={d.activeTabType === 'scheduled'} onClick={d.openScheduled} />
       </nav>
 

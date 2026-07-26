@@ -1,6 +1,5 @@
 import { describe, expect, test } from 'bun:test'
 import {
-  clientIdForTask,
   createImageLoadtestPlan,
   parseLoadTarget,
   runImageLoadtest,
@@ -8,10 +7,10 @@ import {
 } from './image-real-loadtest'
 
 function options(overrides: Partial<ImageLoadtestOptions> = {}): ImageLoadtestOptions {
-  return {
+  const base: ImageLoadtestOptions = {
     baseUrl: 'http://127.0.0.1:8799',
     targetOrigin: 'http://127.0.0.1:8799',
-    token: 'test-token',
+    installationTokens: ['test-token-00000001'],
     users: 1,
     windows: 1,
     total: 1,
@@ -24,14 +23,19 @@ function options(overrides: Partial<ImageLoadtestOptions> = {}): ImageLoadtestOp
     pollRequestTimeoutMs: 1_000,
     ...overrides,
   }
+  if (overrides.installationTokens === undefined) {
+    base.installationTokens = Array.from(
+      { length: base.users },
+      (_, index) => `test-token-${String(index).padStart(8, '0')}`,
+    )
+  }
+  return base
 }
 
 describe('image real-loadtest safety guards', () => {
   test('requires explicit batch acknowledgement and accepts the 100-user × 10-window target', () => {
     expect(() => createImageLoadtestPlan(100, 10, false)).toThrow('confirm-billable-batch')
     expect(createImageLoadtestPlan(100, 10, true)).toEqual({ users: 100, windows: 10, total: 1_000 })
-    expect(clientIdForTask(0, 2)).toBe(clientIdForTask(2, 2))
-    expect(clientIdForTask(0, 2)).not.toBe(clientIdForTask(1, 2))
   })
 
   test('permits HTTP only for loopback and rejects URL-embedded credentials or tokens', () => {
@@ -66,10 +70,11 @@ describe('image real-loadtest safety guards', () => {
     })
     expect(summary).toMatchObject({ requested: 1, accepted: 1, succeeded: 1, exitCode: 0 })
     expect(calls[1]?.url).toContain('?metadata_only=1')
-    expect(calls.every(call => call.headers.get('X-BB-Installation-ID') === 'image-loadtest-user-000')).toBe(true)
+    expect(calls.every(call => call.headers.get('X-BB-Installation-ID') === null)).toBe(true)
+    expect(calls.every(call => call.headers.get('Authorization') === 'Bearer test-token-00000000')).toBe(true)
     expect(calls.every(call => call.headers.get('X-BB-Provider-Protocol') === 'bb-provider-gateway/1.0')).toBe(true)
     expect(calls.every(call => call.headers.get('X-BB-Data-Egress-Consent') === null)).toBe(true)
-    expect(JSON.stringify(events)).not.toContain('test-token')
+    expect(JSON.stringify(events)).not.toContain('test-token-00000000')
 
     const missingOutputCalls: string[] = []
     const missingOutput = await runImageLoadtest(options(), {
@@ -109,10 +114,10 @@ describe('image real-loadtest safety guards', () => {
     })
     expect(summary).toMatchObject({ requested: 2, accepted: 1, succeeded: 0, cleanupAttempted: 1, exitCode: 1 })
     expect(calls.some(call => call.url.endsWith('/cancel'))).toBe(true)
-    const submitClientIds = calls
+    const submitAuthorization = calls
       .filter(call => call.url.endsWith('/v1/images/tasks'))
-      .map(call => call.headers.get('X-BB-Installation-ID'))
-    expect(submitClientIds).toEqual(['image-loadtest-user-000', 'image-loadtest-user-000'])
+      .map(call => call.headers.get('Authorization'))
+    expect(submitAuthorization).toEqual(['Bearer test-token-00000000', 'Bearer test-token-00000000'])
   })
 
   test('admission mode reports a full burst only after every accepted task confirms cancellation', async () => {

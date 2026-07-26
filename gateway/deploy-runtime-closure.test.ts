@@ -21,6 +21,8 @@ test('gateway deployment ships the current runtime closure without retired Qwen 
   }
   expect(deploy).toContain('$APPDIR/auth/authority.ts')
   expect(deploy).toContain('chmod 700 "$APPDIR"')
+  expect(deploy).toContain('loadtestCredentials.ts real-loadtest.ts vision-real-loadtest.ts image-real-loadtest.ts mimo-mixed-real-loadtest.ts')
+  expect(deploy).toContain('受控压测工具必须整组上传')
   expect(deploy).not.toContain('/tmp/qwenChat.ts')
   expect(deploy).toContain('rm -f "$APPDIR/qwenChat.ts" "$APPDIR/webSearch.ts"')
 })

@@ -8,6 +8,7 @@
  */
 
 import { deflateSync } from 'node:zlib'
+import { loadLoadtestInstallationTokens } from './loadtestCredentials'
 
 type Capacity = {
   active?: number
@@ -63,7 +64,7 @@ export type ThinkingMode = 'enabled' | 'disabled'
 function usage(exitCode = 2): never {
   console.error(`Usage:
   BB_LOADTEST_URL=http://127.0.0.1:8799 \\
-  BB_LOADTEST_TOKEN=<installation-access-token> \\
+  BB_LOADTEST_TOKENS_FILE=/run/billiardbuddy/loadtest-tokens.json \\
   bun gateway/vision-real-loadtest.ts --execute --generate-image \\
     --unique-image-per-request [options]
 
@@ -93,7 +94,8 @@ Options:
   --stop-after-failure        Stop after a failed phase instead of locating a lower ceiling
   --continue-after-failure    Deprecated compatibility alias; high-to-low continues by default
 
-This runner never logs access tokens, request bodies, image bytes, or model output.
+The token file must contain one distinct short-lived access token per simulated
+installation. This runner never logs access tokens, request bodies, image bytes, or model output.
 It reports only status, timing, and observed gateway-capacity metadata.`)
   process.exit(exitCode)
 }
@@ -544,8 +546,6 @@ async function main(): Promise<void> {
   const rawBaseUrl = process.env.BB_LOADTEST_URL?.trim()
   if (!rawBaseUrl) throw new Error('BB_LOADTEST_URL is required with --execute')
   const { base, baseUrl, targetOrigin } = parseLoadTarget(rawBaseUrl)
-  const token = process.env.BB_LOADTEST_TOKEN?.trim()
-  if (!token) throw new Error('BB_LOADTEST_TOKEN installation access token is required with --execute')
   const users = boundedInteger(option(args, '--users'), '--users', 1, MAX_USERS)
   const windows = boundedInteger(option(args, '--windows'), '--windows', 1, MAX_WINDOWS)
   const maxTokens = integer(option(args, '--max-tokens'), '--max-tokens', 16)
@@ -567,6 +567,7 @@ async function main(): Promise<void> {
   const imageSeed = integer(option(args, '--image-seed'), '--image-seed', Date.now())
   const total = users * windows
   if (!Number.isSafeInteger(total) || total > MAX_REQUESTS) throw new Error(`--users * --windows must not exceed ${MAX_REQUESTS}`)
+  const installationTokens = await loadLoadtestInstallationTokens(users)
   const minimumObservedActive = parseMinimumObservedActive(option(args, '--min-observed-active'), total)
   const maximumObservedQueued = parseMaximumObservedQueued(option(args, '--max-observed-queued'), total)
   const phases = parsePhases(option(args, '--phases'), total)
@@ -581,7 +582,7 @@ async function main(): Promise<void> {
   }
   const model = route === 'bridge' ? 'deepseek-v4-flash' : 'mimo-v2.5'
   const headers = {
-    Authorization: `Bearer ${token}`,
+    Authorization: `Bearer ${installationTokens[0]}`,
     'Content-Type': 'application/json',
     'X-BB-Provider-Protocol': PROVIDER_GATEWAY_PROTOCOL,
   }
@@ -631,7 +632,7 @@ async function main(): Promise<void> {
     const timer = setTimeout(() => controller.abort(), timeoutMs)
     const started = performance.now()
     try {
-      const installation = `vision-capacity-${String(index % users).padStart(4, '0')}`
+      const installationToken = installationTokens[index % users]!
       const content = [
         { type: 'text', text: '请只回复 OK。' },
         ...Array.from({ length: imagesPerRequest }, (_, offset) => ({
@@ -641,7 +642,7 @@ async function main(): Promise<void> {
       ]
       const response = await fetch(`${baseUrl}/v1/chat/completions`, {
         method: 'POST',
-        headers: { ...headers, 'X-BB-Installation-ID': installation },
+        headers: { ...headers, Authorization: `Bearer ${installationToken}` },
         signal: controller.signal,
         body: JSON.stringify({
           model,

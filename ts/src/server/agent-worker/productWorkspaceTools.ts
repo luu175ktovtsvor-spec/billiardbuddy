@@ -7,7 +7,7 @@ import { promisify } from 'node:util'
 import { z } from 'zod/v4'
 import { buildProductTool, type ProductToolContext, type ProductToolDef } from './productTool.js'
 import { PROVIDER_GATEWAY_PROTOCOL, PROVIDER_GATEWAY_PROTOCOL_HEADER } from '../../../shared/product/providerGateway.js'
-import { productDefaultTextModel, productGatewayTarget, productInstallationId } from '../product/productGatewayRuntime.js'
+import { productDefaultTextModel, productGatewayTarget } from '../product/productGatewayRuntime.js'
 
 const execFile = promisify(execFileCallback)
 const MAX_TEXT_BYTES = 1024 * 1024
@@ -383,8 +383,6 @@ export const ProductWebSearchTool = buildProductTool({
       Accept: 'text/event-stream',
       [PROVIDER_GATEWAY_PROTOCOL_HEADER]: PROVIDER_GATEWAY_PROTOCOL.headerValue,
     }
-    const installation = productInstallationId()
-    if (installation) headers['X-BB-Installation-ID'] = installation
     if (!context.productTaskId || !context.toolUseId) throw new Error('PRODUCT_WEB_SEARCH_OPERATION_MISSING')
     headers['X-BB-Operation-ID'] = `web-search:${context.productTaskId}:${context.toolUseId}`
     const response = await fetch(`${target.baseUrl}/v1/messages`, {

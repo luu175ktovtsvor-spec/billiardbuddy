@@ -209,7 +209,9 @@ export class ElectronServerRuntime {
     if (!this.resolveSystemProxy) return this.applyPowerShellOverride(process.env)
 
     try {
-      const rules = await this.resolveSystemProxy('https://auth.openai.com/')
+      const proxyTarget = this.resolveGatewayConfig?.().url
+      if (!proxyTarget) return this.applyPowerShellOverride(process.env)
+      const rules = await this.resolveSystemProxy(proxyTarget)
       return this.applyPowerShellOverride(mergeProxyEnv(
         process.env,
         proxyUrlFromElectronProxyRules(rules),

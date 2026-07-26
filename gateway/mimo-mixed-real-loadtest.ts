@@ -9,6 +9,7 @@
  */
 
 import { generatedPng, validatePng } from './vision-real-loadtest'
+import { loadLoadtestInstallationTokens } from './loadtestCredentials'
 
 export const DEFAULT_MEDIA_SLOTS = 48
 export const DEFAULT_VISION_SLOTS = 16
@@ -72,7 +73,7 @@ type ObservedHealth = Record<'mimo' | 'mimo_media' | 'mimo_total' | 'vision', Ob
 function usage(exitCode = 2): never {
   console.error(`Usage:
   BB_LOADTEST_URL=https://gateway.example/gw \\
-  BB_LOADTEST_TOKEN=<installation-access-token> \\
+  BB_LOADTEST_TOKENS_FILE=/run/billiardbuddy/loadtest-tokens.json \\
   bun gateway/mimo-mixed-real-loadtest.ts --execute [options]
 
 Options:
@@ -87,8 +88,9 @@ Options:
   --health-interval-ms=<n>    Health sampling interval (default: 100)
   --health-timeout-ms=<n>     Health request deadline (default: 1000)
 
-The runner sends exactly one same-wave reservation check. It requires an idle,
-authenticated health snapshot before traffic, checks the 48 + 16 reservation,
+The token file must contain one distinct short-lived access token for every
+request in the wave. The runner requires an idle, authenticated health snapshot
+before traffic, checks the 48 + 16 reservation,
 and requires all four MiMo health views to drain back to zero afterwards.`)
   process.exit(exitCode)
 }
@@ -392,9 +394,8 @@ async function main(): Promise<void> {
   const rawBaseUrl = process.env.BB_LOADTEST_URL?.trim()
   if (!rawBaseUrl) throw new Error('BB_LOADTEST_URL is required with --execute')
   const { base, baseUrl, targetOrigin } = parseLoadTarget(rawBaseUrl)
-  const token = process.env.BB_LOADTEST_TOKEN?.trim()
-  if (!token) throw new Error('BB_LOADTEST_TOKEN installation access token is required with --execute')
   const shape = parseMixedShape(option(args, '--media-slots'), option(args, '--vision-slots'))
+  const installationTokens = await loadLoadtestInstallationTokens(shape.totalSlots)
   const thinking = parseThinkingMode(option(args, '--thinking'))
   const mediaMaxTokens = positiveInteger(option(args, '--media-max-tokens'), '--media-max-tokens', 64, 128)
   const bridgeMaxTokens = positiveInteger(option(args, '--bridge-max-tokens'), '--bridge-max-tokens', 256, 512)
@@ -404,7 +405,7 @@ async function main(): Promise<void> {
   const healthIntervalMs = positiveInteger(option(args, '--health-interval-ms'), '--health-interval-ms', 100, 10_000)
   const healthTimeoutMs = positiveInteger(option(args, '--health-timeout-ms'), '--health-timeout-ms', 1_000, 30_000)
   const headers = {
-    Authorization: `Bearer ${token}`,
+    Authorization: `Bearer ${installationTokens[0]}`,
     'Content-Type': 'application/json',
     'X-BB-Provider-Protocol': PROVIDER_GATEWAY_PROTOCOL,
   }
@@ -467,7 +468,7 @@ async function main(): Promise<void> {
         method: 'POST',
         headers: {
           ...headers,
-          'X-BB-Installation-ID': `mixed-media-${String(index).padStart(3, '0')}`,
+          Authorization: `Bearer ${installationTokens[index]}`,
           'X-BB-Operation-ID': `mixed-media-operation-${String(index).padStart(3, '0')}`,
         },
         redirect: 'error',
@@ -536,7 +537,7 @@ async function main(): Promise<void> {
     try {
       const response = await fetch(`${baseUrl}/v1/chat/completions`, {
         method: 'POST',
-        headers: { ...headers, 'X-BB-Installation-ID': `mixed-vision-${String(index).padStart(3, '0')}` },
+        headers: { ...headers, Authorization: `Bearer ${installationTokens[shape.mediaSlots + index]}` },
         redirect: 'error',
         signal: controller.signal,
         body: JSON.stringify({

@@ -13,7 +13,6 @@ test('resolveRemoteTranscriptionConfig targets the product gateway', () => {
   })).toEqual({
     endpoint: 'https://gateway.example/gw/v1/audio/transcriptions',
     token: 'app-token',
-    clientId: 'install-001',
   })
   expect(resolveRemoteTranscriptionConfig({
     BB_GATEWAY_URL: 'file:///tmp/gateway',
@@ -48,7 +47,7 @@ test('transcribeRemoteFile forwards audio with server-side auth', async () => {
 
   expect(requestUrl).toBe('https://gateway.example/gw/v1/audio/transcriptions')
   expect(new Headers(request?.headers).get('authorization')).toBe('Bearer app-token')
-  expect(new Headers(request?.headers).get('x-bb-installation-id')).toBe('install-001')
+  expect(new Headers(request?.headers).get('x-bb-installation-id')).toBeNull()
   expect(new Headers(request?.headers).get('x-bb-data-egress-consent')).toBeNull()
   expect(new Headers(request?.headers).get('x-bb-provider-protocol')).toBe('bb-provider-gateway/1.0')
   expect(new Headers(request?.headers).get('x-bb-operation-id')).toBe('voice_0123456789abcdef0123456789abcdef')

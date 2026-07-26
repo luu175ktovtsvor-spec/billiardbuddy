@@ -7,10 +7,12 @@
  *
  * Example on the gateway host (the token should be populated locally there):
  *   BB_LOADTEST_URL=http://127.0.0.1:8799 \
- *   BB_LOADTEST_TOKEN=... \
+ *   BB_LOADTEST_TOKENS_FILE=/run/billiardbuddy/loadtest-tokens.json \
  *   bun gateway/real-loadtest.ts --execute --users=100 --windows=10 \
  *     --phases=1000,800,600,400,200,100 --scenario=stream --thinking=enabled
  */
+
+import { loadLoadtestInstallationTokens } from './loadtestCredentials'
 
 type Capacity = {
   active?: number
@@ -87,7 +89,7 @@ type PhaseSummary = {
 function usage(exitCode = 2): never {
   console.error(`Usage:
   BB_LOADTEST_URL=https://gateway.example/gw \\
-  BB_LOADTEST_TOKEN=<installation-access-token> \\
+  BB_LOADTEST_TOKENS_FILE=/run/billiardbuddy/loadtest-tokens.json \\
   bun gateway/real-loadtest.ts --execute [options]
 
 Options:
@@ -110,8 +112,9 @@ Options:
   --stop-after-failure        Stop after a phase has an HTTP or incomplete-SSE failure
   --continue-after-failure    Deprecated compatibility alias; high-to-low continues by default
 
-The runner uses controlled X-BB-Installation-ID values so a 100×10 phase models ten
-windows per installation, reads every SSE body to completion, and requires a
+The token file must contain one distinct short-lived installation access token per
+simulated installation, so a 100×10 phase really models ten windows per verified
+installation. The runner reads every SSE body to completion and requires a
 terminal data: [DONE] event for success. It reports only status/timing/capacity
 metadata; it never logs tokens, request bodies, or model output.`)
   process.exit(exitCode)
@@ -368,8 +371,6 @@ async function main(): Promise<void> {
   const rawBaseUrl = process.env.BB_LOADTEST_URL?.trim()
   if (!rawBaseUrl) throw new Error('BB_LOADTEST_URL is required with --execute')
   const { base, baseUrl, targetOrigin } = parseLoadTarget(rawBaseUrl)
-  const token = process.env.BB_LOADTEST_TOKEN?.trim()
-  if (!token) throw new Error('BB_LOADTEST_TOKEN installation access token is required with --execute')
   const users = integer(option(args, '--users'), '--users', 100)
   const windows = integer(option(args, '--windows'), '--windows', 10)
   const maxTokens = integer(option(args, '--max-tokens'), '--max-tokens', 64)
@@ -390,6 +391,7 @@ async function main(): Promise<void> {
   if (pool !== 'deepseek' && pool !== 'mimo') throw new Error('--pool must be deepseek or mimo')
   const total = users * windows
   if (!Number.isSafeInteger(total)) throw new Error('--users * --windows is too large')
+  const installationTokens = await loadLoadtestInstallationTokens(users)
   const phases = parsePhases(option(args, '--phases'), total)
   const minimumObservedActive = parseMinimumObservedActive(option(args, '--min-observed-active'), total)
   const maximumObservedQueued = parseMaximumObservedQueued(option(args, '--max-observed-queued'), total)
@@ -398,7 +400,7 @@ async function main(): Promise<void> {
   // incident-style probes where any failure must halt traffic immediately.
   const continueAfterFailure = shouldContinueAfterFailure(args)
   const headers = {
-    Authorization: `Bearer ${token}`,
+    Authorization: `Bearer ${installationTokens[0]}`,
     'Content-Type': 'application/json',
     'X-BB-Provider-Protocol': PROVIDER_GATEWAY_PROTOCOL,
   }
@@ -441,10 +443,10 @@ async function main(): Promise<void> {
     const timeout = setTimeout(() => controller.abort(), timeoutMs)
     const started = performance.now()
     try {
-      const installation = `capacity-${String(index % users).padStart(4, '0')}`
+      const installationToken = installationTokens[index % users]!
       const response = await fetch(`${baseUrl}/v1/chat/completions`, {
         method: 'POST',
-        headers: { ...headers, 'X-BB-Installation-ID': installation },
+        headers: { ...headers, Authorization: `Bearer ${installationToken}` },
         redirect: 'error',
         signal: controller.signal,
         body: JSON.stringify({
