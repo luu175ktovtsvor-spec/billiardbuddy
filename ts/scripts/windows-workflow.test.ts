@@ -8,6 +8,8 @@ type WorkflowStep = {
   if?: string
   run?: string
   env?: Record<string, string>
+  uses?: string
+  with?: Record<string, unknown>
 }
 
 type Workflow = {
@@ -73,11 +75,13 @@ describe('Desktop release workflow contract', () => {
 
   test('builds the oldest supported installer before proving upgrade and rollback', () => {
     const workflowSteps = steps()
+    const checkout = workflowSteps.find(step => step.uses === 'actions/checkout@v5')
     const baselineIndex = workflowSteps.findIndex(step => step.name === '构建最老支持 Windows 升级基线包')
     const currentIndex = workflowSteps.findIndex(step => step.run?.includes('bun run electron:package'))
     const installIndex = workflowSteps.findIndex(step => step.name === '安装、启动并卸载 Windows 成品')
     const upgradeIndex = workflowSteps.findIndex(step => step.name === '从最老支持版本升级并回退 Windows 成品')
     expect(baselineIndex).toBeGreaterThanOrEqual(0)
+    expect(checkout?.with?.['fetch-depth']).toBe(0)
     expect(currentIndex).toBeGreaterThan(baselineIndex)
     expect(upgradeIndex).toBeGreaterThan(installIndex)
     expect(workflowSteps[upgradeIndex]?.run).toContain('accept-windows-upgrade.ps1')
