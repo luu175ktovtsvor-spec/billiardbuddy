@@ -21,7 +21,7 @@ describe('1000-window gateway deployment capacity preflight', () => {
   test('accepts source defaults when the non-secret capacity keys are absent', () => {
     const result = validate('GW_APP_TOKENS={"opaque":"owner"}\n')
     expect(result.status).toBe(0)
-    expect(result.stdout).toContain('deepseek=1000 user=10 token=1000 image_ipm=1200 image_waiters=200 idle_timeout=255 relay_result_timeout=300000')
+    expect(result.stdout).toContain('deepseek=1000 user=10 token=1000 image_ipm=1200 image_waiters=200 idle_timeout=255 relay_result_timeout=300000 image_body_read_timeout=180000')
   })
 
   test('accepts the explicit 1000-window profile with systemd-style quoting', () => {
@@ -40,6 +40,12 @@ describe('1000-window gateway deployment capacity preflight', () => {
     const result = validate('GW_RELAY_RESULT_TIMEOUT_MS=120000\n')
     expect(result.status).toBe(1)
     expect(result.stderr).toContain('GW_RELAY_RESULT_TIMEOUT_MS must be at least 300000')
+  })
+
+  test('rejects an image edit upload window shorter than two minutes', () => {
+    const result = validate('GW_IMG_TASK_BODY_READ_TIMEOUT_MS=30000\n')
+    expect(result.status).toBe(1)
+    expect(result.stderr).toContain('GW_IMG_TASK_BODY_READ_TIMEOUT_MS must be at least 120000')
   })
 
   test('rejects malformed capacity values without evaluating the EnvironmentFile', () => {

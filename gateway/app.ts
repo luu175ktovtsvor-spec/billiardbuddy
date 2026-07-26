@@ -161,6 +161,8 @@ type GatewayConfig = {
   ingressInflightBodyBytes: number
   /** Slowloris guard for public JSON body reads after Bun's request idle timeout is disabled. */
   ingressBodyReadTimeoutMs: number
+  /** Larger authenticated image-edit uploads keep their own bounded total read window. */
+  imgTaskBodyReadTimeoutMs: number
   visionTimeoutMs: number
   visionConc: number
   visionQueueMax: number
@@ -733,6 +735,7 @@ function loadConfig(env: Env): GatewayConfig {
     // 20 MB decoded reference images expand to about 26.7 MB as base64. Enforce the
     // same 32 MB request ceiling at the public gateway before buffering or forwarding.
     imgTaskMaxBodyBytes: Math.max(1, intEnv(env, 'GW_IMG_TASK_MAX_BODY_BYTES', 32 * 1024 * 1024)),
+    imgTaskBodyReadTimeoutMs: Math.max(1, intEnv(env, 'GW_IMG_TASK_BODY_READ_TIMEOUT_MS', 180_000)),
     queueMaxWait: floatEnv(env, 'GW_QUEUE_MAX_WAIT', 60),
     transcribeRpm: intEnv(env, 'GW_TRANSCRIBE_RPM', 12),
     transcribeConc: intEnv(env, 'GW_TRANSCRIBE_CONC', 1),
@@ -1533,6 +1536,7 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
             img_ipm: config.imgIpm,
             img_queue_max: config.imgQueueMax,
             img_task_max_body_bytes: config.imgTaskMaxBodyBytes,
+            img_task_body_read_timeout_ms: config.imgTaskBodyReadTimeoutMs,
             relay_submit_timeout_ms: config.relaySubmitTimeoutMs,
             relay_result_timeout_ms: config.relayResultTimeoutMs,
             relay_result_max_bytes: config.relayResultMaxBytes,
@@ -1903,7 +1907,7 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
         const idempotencyKey = request.headers.get('idempotency-key')?.trim() ?? ''
         if (!idempotencyKey || idempotencyKey.length > 160) throw new HttpError(428, 'OPERATION_ID_REQUIRED')
         try {
-          return await withBufferedBodyReservation(request, config.imgTaskMaxBodyBytes, ingressBodyBudget, config.ingressBodyReadTimeoutMs, async rawBody => {
+          return await withBufferedBodyReservation(request, config.imgTaskMaxBodyBytes, ingressBodyBudget, config.imgTaskBodyReadTimeoutMs, async rawBody => {
             // Submission counts toward the short ingress rate guard, not relay's actual
             // image-generation concurrency. Respect cancellation while waiting so a
             // disconnected client cannot occupy TokenBucket's serialized chain forever.
