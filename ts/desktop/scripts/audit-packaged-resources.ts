@@ -61,8 +61,11 @@ function requireExactKeys(value: Record<string, unknown>, expected: string[], la
 
 function auditProductArchive(archive: string): void {
   if (!existsSync(archive)) throw new Error(`安装包缺少 app.asar: ${archive}`)
-  const entries = listPackage(archive, { isPack: false })
-    .map((entry) => entry.replaceAll('\\', '/'))
+  const archiveEntries = listPackage(archive, { isPack: false })
+  const archiveEntryByPortablePath = new Map(
+    archiveEntries.map((entry) => [entry.replaceAll('\\', '/'), entry]),
+  )
+  const entries = [...archiveEntryByPortablePath.keys()]
   for (const entry of requiredEntries) {
     if (!entries.includes(entry)) throw new Error(`app.asar 缺少正式运行文件: ${entry}`)
   }
@@ -78,7 +81,9 @@ function auditProductArchive(archive: string): void {
     || /^\/electron-dist\/.*\.cjs$/.test(entry)
     || entry === '/runtime-assets/resources/preview-agent.js')
   for (const entry of productTextEntries) {
-    const value = extractFile(archive, entry.slice(1)).toString('utf8')
+    const archiveEntry = archiveEntryByPortablePath.get(entry)
+    if (!archiveEntry) throw new Error(`app.asar 无法解析正式运行文件: ${entry}`)
+    const value = extractFile(archive, archiveEntry.slice(1)).toString('utf8')
     const forbidden = forbiddenProductStrings.find((candidate) => value.includes(candidate))
     if (forbidden) throw new Error(`app.asar 的 ${entry} 残留旧运行字符串: ${forbidden}`)
   }
