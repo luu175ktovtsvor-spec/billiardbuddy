@@ -4,10 +4,11 @@ import { createProductUserMessage } from './productMessages.js'
 import { runProductModel, type ProductModelRunner } from './productModelRuntime.js'
 import { runProductTools, type ProductToolMessageUpdate } from './productToolExecution.js'
 import { buildProductSystemPrompt, type ProductPromptContext } from './productSystemPrompt.js'
-import type { ProductCanUseTool, ProductCommand, ProductQueuedCommand, ProductToolContext, ProductToolHooks, ProductTools } from './productTool.js'
+import { findProductTool, type ProductCanUseTool, type ProductCommand, type ProductQueuedCommand, type ProductToolContext, type ProductToolHooks, type ProductTools } from './productTool.js'
 import { productDefaultTextModel } from '../product/productGatewayRuntime.js'
 
 const MAX_MODEL_TOOL_ITERATIONS = 128
+const MAX_PARALLEL_LOCAL_READS = 8
 
 export type ProductAgentLoopEvent =
   | ProductHarnessMessage
@@ -166,6 +167,23 @@ function resumableCompletedText(messages: readonly ProductHarnessMessage[]): str
   return text || undefined
 }
 
+async function isParallelLocalRead(
+  block: ProductToolCallBlock,
+  tools: ProductTools,
+): Promise<boolean> {
+  const tool = findProductTool(tools, block.name)
+  if (!tool || tool.isMcp || tool.requiresUserInteraction?.()) return false
+  try {
+    const parsed = await tool.inputSchema.safeParseAsync(block.arguments)
+    return parsed.success
+      && tool.isConcurrencySafe(parsed.data)
+      && tool.isReadOnly(parsed.data)
+      && !tool.isOpenWorld(parsed.data)
+  } catch {
+    return false
+  }
+}
+
 /**
  * The only BilliardBuddy model-tool loop.
  *
@@ -245,46 +263,106 @@ export async function* runProductAgentLoop(input: ProductAgentLoopInput): AsyncG
     const blocks = toolUseBlocks(assistantMessages)
     const truncatedIds = truncatedToolUseIds(assistantMessages)
     if (blocks.length > 0) {
-      for (const block of blocks) {
+      const collectExecution = async (block: ProductToolCallBlock, executionContext: ProductToolContext) => {
+        const updates: ProductHarnessMessage[] = []
+        let nextContext = executionContext
+        let observedResult: { success: boolean; content: unknown } | undefined
+        for await (const update of (input.executeTools ?? runProductTools)([block], assistantMessages, input.canUseTool, executionContext)) {
+          nextContext = update.newContext
+          if (!update.message) continue
+          const result = productToolResult(update.message, block.id) as { is_error?: boolean; content?: unknown } | undefined
+          if (result) observedResult = { success: result.is_error !== true, content: result.content }
+          updates.push(update.message)
+        }
+        if (!observedResult) throw new Error('PRODUCT_TOOL_RESULT_MISSING')
+        return { updates, nextContext, observedResult }
+      }
+      const persistUpdates = async (updates: readonly ProductHarnessMessage[]) => {
+        for (const message of updates) {
+          messages.push(message)
+          await persist()
+        }
+      }
+      const postToolMessages = async (
+        block: ProductToolCallBlock,
+        preHook: Awaited<ReturnType<ProductToolHooks['before']>> | undefined,
+        observedResult: { success: boolean; content: unknown },
+        hookContext: ProductToolContext,
+      ): Promise<ProductHarnessMessage[]> => {
+        const postHook = await input.toolHooks?.after(block, observedResult, hookContext)
+        const hookContexts = [preHook?.additionalContext, postHook?.additionalContext, postHook?.blocked ? postHook.reason ?? 'Project PostToolUse Hook reported a failure' : undefined].filter(Boolean)
+        return hookContexts.length ? [hookContextMessage(hookContexts.join('\n\n'), 'PostToolUse')] : []
+      }
+
+      for (let blockIndex = 0; blockIndex < blocks.length;) {
+        const block = blocks[blockIndex]!
         if (truncatedIds.has(block.id)) {
           const message = truncatedToolResult(block)
           messages.push(message)
           await persist()
           yield message
+          blockIndex += 1
           continue
         }
-        const preHook = await input.toolHooks?.before(block, context)
-        if (preHook?.blocked) {
-          const message = createProductUserMessage({ content: [{
-            type: 'tool_result',
-            tool_call_id: block.id,
-            is_error: true,
-            content: `PreToolUse Hook blocked ${block.name}: ${preHook.reason ?? 'project automation rule'}`.slice(0, 8_000),
-          }] })
-          messages.push(message)
-          await persist()
-          yield message
-          continue
+
+        const parallelLocalRead = await isParallelLocalRead(block, input.tools)
+        const group = [block]
+        if (parallelLocalRead) {
+          while (group.length < MAX_PARALLEL_LOCAL_READS && blockIndex + group.length < blocks.length) {
+            const candidate = blocks[blockIndex + group.length]!
+            if (truncatedIds.has(candidate.id) || !(await isParallelLocalRead(candidate, input.tools))) break
+            group.push(candidate)
+          }
         }
-        let observedResult: { success: boolean; content: unknown } | undefined
-        for await (const update of (input.executeTools ?? runProductTools)([block], assistantMessages, input.canUseTool, context)) {
-          context = update.newContext
-          if (!update.message) continue
-          const result = productToolResult(update.message, block.id) as { is_error?: boolean; content?: unknown } | undefined
-          if (result) observedResult = { success: result.is_error !== true, content: result.content }
-          messages.push(update.message)
-          await persist()
-          yield update.message
+
+        const executable: Array<{
+          block: ProductToolCallBlock
+          preHook: Awaited<ReturnType<ProductToolHooks['before']>> | undefined
+        }> = []
+        for (const candidate of group) {
+          const preHook = await input.toolHooks?.before(candidate, context)
+          if (preHook?.blocked) {
+            const message = createProductUserMessage({ content: [{
+              type: 'tool_result',
+              tool_call_id: candidate.id,
+              is_error: true,
+              content: `PreToolUse Hook blocked ${candidate.name}: ${preHook.reason ?? 'project automation rule'}`.slice(0, 8_000),
+            }] })
+            messages.push(message)
+            await persist()
+            yield message
+          } else {
+            executable.push({ block: candidate, preHook })
+          }
         }
-        if (!observedResult) throw new Error('PRODUCT_TOOL_RESULT_MISSING')
-        const postHook = await input.toolHooks?.after(block, observedResult, context)
-        const hookContexts = [preHook?.additionalContext, postHook?.additionalContext, postHook?.blocked ? postHook.reason ?? 'Project PostToolUse Hook reported a failure' : undefined].filter(Boolean)
-        if (hookContexts.length) {
-          const message = hookContextMessage(hookContexts.join('\n\n'), 'PostToolUse')
-          messages.push(message)
-          await persist()
-          yield message
+
+        if (parallelLocalRead && executable.length > 1) {
+          const sharedContext = context
+          const completed = await Promise.all(executable.map(item => collectExecution(item.block, sharedContext)))
+          if (completed.some(item => item.nextContext !== sharedContext)) {
+            throw new Error('PRODUCT_CONCURRENT_TOOL_CONTEXT_MUTATION')
+          }
+          for (let index = 0; index < executable.length; index += 1) {
+            const item = executable[index]!
+            const result = completed[index]!
+            await persistUpdates(result.updates)
+            for (const message of result.updates) yield message
+            const hookMessages = await postToolMessages(item.block, item.preHook, result.observedResult, sharedContext)
+            await persistUpdates(hookMessages)
+            for (const message of hookMessages) yield message
+          }
+        } else {
+          for (const item of executable) {
+            const result = await collectExecution(item.block, context)
+            context = result.nextContext
+            await persistUpdates(result.updates)
+            for (const message of result.updates) yield message
+            const hookMessages = await postToolMessages(item.block, item.preHook, result.observedResult, context)
+            await persistUpdates(hookMessages)
+            for (const message of hookMessages) yield message
+          }
         }
+        blockIndex += group.length
       }
     }
 

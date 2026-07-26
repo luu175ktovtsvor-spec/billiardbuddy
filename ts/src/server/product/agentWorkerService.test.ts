@@ -3,7 +3,7 @@ import { AgentWorkerService, type AgentWorkerCoreFactory } from './agentWorkerSe
 import { createAgentWorkerChildStartCapability, createLegacyDeferredEnvelope } from './permissionExecutionEnvelope.js'
 import { createProductAgentHarness } from '../agent-worker/productAgentHarness.js'
 import { runProductAgentLoop } from '../agent-worker/productAgentLoop.js'
-import { emptyProductToolPermissionContext, type ProductToolContext, type ProductTools } from '../agent-worker/productTool.js'
+import { buildProductTool, emptyProductToolPermissionContext, type ProductToolContext, type ProductTools } from '../agent-worker/productTool.js'
 import { z } from 'zod/v4'
 import { classifyProductTaskRunFailure } from './taskRunFailure.js'
 
@@ -216,6 +216,146 @@ test('product Harness feeds a real tool result into the next model sample', asyn
     }),
   }))
   expect(events.at(-1)).toEqual({ type: 'result', subtype: 'success', is_error: false, result: '证据已验证。' })
+})
+
+test('product Harness runs an explicitly safe local read batch concurrently and persists results in model order', async () => {
+  const messages: any[] = []
+  const lifecycle: string[] = []
+  const releases = new Map<string, () => void>()
+  let releaseStarted!: () => void
+  const bothStarted = new Promise<void>(resolve => { releaseStarted = resolve })
+  let active = 0
+  let maximumActive = 0
+  const tool = buildProductTool({
+    name: 'ParallelReadProbe',
+    maxResultSizeChars: 1_000,
+    inputSchema: z.strictObject({ value: z.string() }),
+    description: async () => 'read one independent value',
+    isReadOnly: () => true,
+    isConcurrencySafe: () => true,
+    async call({ value }) {
+      lifecycle.push(`call:${value}`)
+      active += 1
+      maximumActive = Math.max(maximumActive, active)
+      if (active === 2) releaseStarted()
+      await new Promise<void>(resolve => { releases.set(value, resolve) })
+      active -= 1
+      return { data: `evidence:${value}` }
+    },
+    mapToolResultToToolResultBlockParam: (data, toolUseID) => ({ type: 'tool_result', tool_use_id: toolUseID, content: data }),
+  })
+  let sample = 0
+  const runModel = (() => (async function* () {
+    sample += 1
+    yield sample === 1 ? {
+      type: 'assistant',
+      uuid: 'assistant-parallel',
+      timestamp: new Date(0).toISOString(),
+      message: {
+        id: 'response-parallel', role: 'assistant', model: 'test', stop_reason: 'tool_call', usage: { input_tokens: 1, output_tokens: 1 },
+        content: [
+          { type: 'tool_call', id: 'call-first', name: 'ParallelReadProbe', arguments: { value: 'first' } },
+          { type: 'tool_call', id: 'call-second', name: 'ParallelReadProbe', arguments: { value: 'second' } },
+        ],
+      },
+    } : {
+      type: 'assistant',
+      uuid: 'assistant-final',
+      timestamp: new Date(1).toISOString(),
+      message: { id: 'response-final', role: 'assistant', model: 'test', stop_reason: 'end_turn', usage: { input_tokens: 1, output_tokens: 1 }, content: [{ type: 'text', text: 'done' }] },
+    }
+  })()) as any
+  const loop = (async () => {
+    for await (const _event of runProductAgentLoop({
+      commands: [],
+      prompt: 'read in parallel',
+      tools: [tool],
+      toolUseContext: productToolContext([tool], messages),
+      canUseTool: async (_tool, input) => ({ behavior: 'allow', updatedInput: input, reason: 'test' }),
+      mutableMessages: messages,
+      promptContext: { workspace: '/workspace/example', date: '2026-07-27' },
+      runModel,
+      toolHooks: {
+        before: async block => { lifecycle.push(`before:${block.id}`); return {} },
+        after: async block => { lifecycle.push(`after:${block.id}`); return {} },
+      },
+    })) {}
+  })()
+
+  await bothStarted
+  expect(maximumActive).toBe(2)
+  releases.get('second')?.()
+  await Bun.sleep(0)
+  releases.get('first')?.()
+  await loop
+
+  const resultIds = messages.flatMap(message => Array.isArray(message.message.content)
+    ? message.message.content.filter((block: { type?: string }) => block.type === 'tool_result').map((block: { tool_call_id: string }) => block.tool_call_id)
+    : [])
+  expect(resultIds).toEqual(['call-first', 'call-second'])
+  expect(lifecycle).toEqual([
+    'before:call-first',
+    'before:call-second',
+    'call:first',
+    'call:second',
+    'after:call-first',
+    'after:call-second',
+  ])
+})
+
+test('product Harness keeps write-capable calls serial even when a tool claims concurrency safety', async () => {
+  const messages: any[] = []
+  let active = 0
+  let maximumActive = 0
+  const calls: string[] = []
+  const tool = buildProductTool({
+    name: 'WriteProbe',
+    maxResultSizeChars: 1_000,
+    inputSchema: z.strictObject({ value: z.string() }),
+    description: async () => 'write one value',
+    isReadOnly: () => false,
+    isConcurrencySafe: () => true,
+    async call({ value }) {
+      active += 1
+      maximumActive = Math.max(maximumActive, active)
+      calls.push(value)
+      await Bun.sleep(2)
+      active -= 1
+      return { data: `wrote:${value}` }
+    },
+    mapToolResultToToolResultBlockParam: (data, toolUseID) => ({ type: 'tool_result', tool_use_id: toolUseID, content: data }),
+  })
+  let sample = 0
+  const runModel = (() => (async function* () {
+    sample += 1
+    yield sample === 1 ? {
+      type: 'assistant', uuid: 'assistant-writes', timestamp: new Date(0).toISOString(),
+      message: {
+        id: 'response-writes', role: 'assistant', model: 'test', stop_reason: 'tool_call', usage: { input_tokens: 1, output_tokens: 1 },
+        content: [
+          { type: 'tool_call', id: 'write-first', name: 'WriteProbe', arguments: { value: 'first' } },
+          { type: 'tool_call', id: 'write-second', name: 'WriteProbe', arguments: { value: 'second' } },
+        ],
+      },
+    } : {
+      type: 'assistant', uuid: 'assistant-final', timestamp: new Date(1).toISOString(),
+      message: { id: 'response-final', role: 'assistant', model: 'test', stop_reason: 'end_turn', usage: { input_tokens: 1, output_tokens: 1 }, content: [{ type: 'text', text: 'done' }] },
+    }
+  })()) as any
+
+  for await (const _event of runProductAgentLoop({
+    commands: [],
+    prompt: 'write serially',
+    tools: [tool],
+    toolUseContext: productToolContext([tool], messages),
+    canUseTool: async (_tool, input) => ({ behavior: 'allow', updatedInput: input, reason: 'test' }),
+    mutableMessages: messages,
+    promptContext: { workspace: '/workspace/example', date: '2026-07-27' },
+    runModel,
+  })) {}
+
+  expect(calls).toEqual(['first', 'second'])
+  expect(maximumActive).toBe(1)
 })
 
 test('an explicit named Agent command executes its exact tool before model synthesis', async () => {
