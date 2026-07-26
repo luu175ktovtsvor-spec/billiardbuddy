@@ -1915,7 +1915,12 @@ export class MediaProjectService {
     return next
   }
 
-  async assetResponse(projectId: string, fileName: string, request?: Request): Promise<Response> {
+  async assetResponse(
+    projectId: string,
+    fileName: string,
+    request?: Request,
+    subdirectory?: 'references',
+  ): Promise<Response> {
     this.projectPath(projectId)
     if (!/^[a-z0-9][a-z0-9_.-]{2,120}$/.test(fileName)) {
       throw new MediaServiceError('无效的媒体资产名', 400, 'INVALID_ASSET_NAME')
@@ -1923,7 +1928,7 @@ export class MediaProjectService {
     const asset = await this.resolveOwnedAsset(projectId, fileName, {
       message: '找不到媒体资产',
       code: 'ASSET_NOT_FOUND',
-    })
+    }, subdirectory)
     const extension = extname(fileName).toLowerCase()
     if (['.mp4', '.mov', '.webm'].includes(extension)) {
       return await this.videoFileResponse(
@@ -1945,6 +1950,17 @@ export class MediaProjectService {
         'Cache-Control': 'private, max-age=31536000, immutable',
       },
     })
+  }
+
+  async imageReferenceResponse(projectId: string, referenceId: string, request?: Request): Promise<Response> {
+    const project = await this.getProject(projectId)
+    if (project.kind !== 'image') throw new MediaServiceError('这不是图片项目', 409, 'WRONG_PROJECT_KIND')
+    if (!project.references.some(reference => reference.asset_id === referenceId)) {
+      throw new MediaServiceError('找不到图片参考素材', 404, 'ASSET_NOT_FOUND')
+    }
+    const fileName = project.reference_image_assets?.find(candidate => candidate.startsWith(`${referenceId}.`))
+    if (!fileName) throw new MediaServiceError('找不到图片参考素材', 404, 'ASSET_NOT_FOUND')
+    return await this.assetResponse(projectId, fileName, request, 'references')
   }
 
   /**

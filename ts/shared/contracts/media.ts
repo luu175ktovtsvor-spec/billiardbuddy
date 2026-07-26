@@ -242,6 +242,11 @@ export const imageProjectReferenceSchema = z.object({
   label: z.string().min(1).max(120).optional(),
 })
 
+export const publicImageProjectReferenceSchema = imageProjectReferenceSchema.extend({
+  image_path: z.string().startsWith('/api/media/images/projects/'),
+  mime_type: z.enum(['image/png', 'image/jpeg', 'image/webp']),
+})
+
 export const imageCreativeBriefSchema = z.object({
   schema_version: z.literal(1),
   user_request: z.string().min(1).max(8000),
@@ -427,6 +432,7 @@ export const publicImageWorkbenchProjectSchema = imageWorkbenchProjectSchema.omi
   /** Legacy result projection remains persisted for migration but is not a UI authority. */
   outputs: true,
 }).extend({
+  references: z.array(publicImageProjectReferenceSchema).max(8).default([]),
   version_history: z.array(publicImageVersionSchema).max(1000).default([]),
 })
 export const publicVideoStudioProjectSchema = videoStudioProjectSchema.omit(persistedMediaProjectFields).extend({
@@ -712,6 +718,7 @@ export type ImageCreativeBrief = z.infer<typeof imageCreativeBriefSchema>
 export type ImageBriefOverrides = z.infer<typeof imageBriefOverridesSchema>
 export type ImageReferenceRole = z.infer<typeof imageReferenceRoleSchema>
 export type ImageProjectReference = z.infer<typeof imageProjectReferenceSchema>
+export type PublicImageProjectReference = z.infer<typeof publicImageProjectReferenceSchema>
 export type MediaDeletionReceipt = z.infer<typeof mediaDeletionReceiptSchema>
 export type PublicMediaDeletionReceipt = z.infer<typeof publicMediaDeletionReceiptSchema>
 export type VideoSource = z.infer<typeof videoSourceSchema>
