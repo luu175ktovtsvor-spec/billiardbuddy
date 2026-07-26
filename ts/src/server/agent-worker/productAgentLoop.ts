@@ -71,6 +71,22 @@ function toolUseBlocks(messages: readonly ProductAssistantMessage[]): ProductToo
   ))
 }
 
+function truncatedToolUseIds(messages: readonly ProductAssistantMessage[]): Set<string> {
+  return new Set(messages.flatMap(message => {
+    if (message.message.stop_reason !== 'length' && message.message.stop_reason !== 'max_tokens') return []
+    return message.message.content.flatMap(block => block.type === 'tool_call' ? [block.id] : [])
+  }))
+}
+
+function truncatedToolResult(block: ProductToolCallBlock): ProductHarnessMessage {
+  return createProductUserMessage({ content: [{
+    type: 'tool_result',
+    tool_call_id: block.id,
+    is_error: true,
+    content: 'The model output reached its token limit before this tool call was complete. The tool was not executed. Reissue the tool call with complete arguments.',
+  }] })
+}
+
 function queuedFollowUps(queue: ProductCommandQueue | undefined): ProductQueuedCommand[] {
   if (!queue) return []
   return queue.snapshot('next').filter(command => command.mode === 'prompt' && command.value.trim())
@@ -137,8 +153,16 @@ export async function* runProductAgentLoop(input: ProductAgentLoopInput): AsyncG
 
     if (assistantMessages.length === 0) throw new Error('PRODUCT_MODEL_EMPTY_RESPONSE')
     const blocks = toolUseBlocks(assistantMessages)
+    const truncatedIds = truncatedToolUseIds(assistantMessages)
     if (blocks.length > 0) {
       for (const block of blocks) {
+        if (truncatedIds.has(block.id)) {
+          const message = truncatedToolResult(block)
+          messages.push(message)
+          await persist()
+          yield message
+          continue
+        }
         const preHook = await input.toolHooks?.before(block, context)
         if (preHook?.blocked) {
           const message = createProductUserMessage({ content: [{

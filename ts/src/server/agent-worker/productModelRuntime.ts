@@ -196,7 +196,13 @@ export const runProductModel: ProductModelRunner = async function* ({ messages, 
       role: 'assistant',
       content,
       model,
-      stop_reason: calls.size ? 'tool_call' : stopReason === 'stop' ? 'end_turn' : stopReason,
+      stop_reason: stopReason === 'length'
+        ? 'length'
+        : calls.size
+          ? 'tool_call'
+          : stopReason === 'stop'
+            ? 'end_turn'
+            : stopReason,
       usage,
     },
   }
