@@ -409,6 +409,7 @@ export const videoPreviewSchema = z.object({
 export const videoOutputVerificationSchema = z.object({
   timeline_version_id: mediaIdSchema,
   byte_size: z.number().int().positive(),
+  file_mtime_ms: z.number().finite().nonnegative().optional(),
   duration_ms: z.number().int().positive(),
   video_stream_count: z.number().int().positive(),
   audio_stream_count: z.number().int().nonnegative(),
