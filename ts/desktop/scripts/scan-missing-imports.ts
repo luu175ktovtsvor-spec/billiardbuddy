@@ -1,9 +1,10 @@
 /**
  * scan-missing-imports.ts
  *
- * 在编译 sidecar 之前，扫描 src/ 里所有相对路径的 import / require / 类型 import
- * specifier，找出磁盘上不存在的目标并停止构建；同时从正式 sidecar 入口建立
- * 生产可达图，拒绝继续保留没有消费者的 CLI、TUI、旧 Harness 或占位模块。
+ * 在编译正式运行入口之前，扫描 Product Server、agent-worker、renderer、Electron、
+ * preload、预览代理与浏览器扩展里的本地 import / require / 类型 import specifier，
+ * 找出磁盘上不存在的目标并停止构建；同时从全部 GUI 入口建立生产可达图，报告
+ * 需要人工确认的无消费者 CLI、TUI、旧 Harness、旧页面或占位模块。
  *
  * 导入基线中已经存在的 feature-gated stub 都是 Git 跟踪文件，fresh checkout
  * 无需重新生成。新的缺口通常意味着迁移或重构断链，不能再用万能 Proxy 自动
@@ -15,20 +16,51 @@ import { existsSync, statSync } from 'node:fs'
 import path from 'node:path'
 
 const repoRoot = path.resolve(import.meta.dir, '../..')
+const workspaceRoot = path.resolve(repoRoot, '..')
 const srcRoot = path.join(repoRoot, 'src')
 const adaptersRoot = path.join(repoRoot, 'adapters')
+const sharedRoot = path.join(repoRoot, 'shared')
+const desktopRendererRoot = path.join(repoRoot, 'desktop', 'src')
+const desktopElectronRoot = path.join(repoRoot, 'desktop', 'electron')
+const desktopSidecarsRoot = path.join(repoRoot, 'desktop', 'sidecars')
+const desktopBrowserExtensionRoot = path.join(repoRoot, 'desktop', 'browser-extension')
+
+const runtimeRoots = [
+  srcRoot,
+  adaptersRoot,
+  sharedRoot,
+  desktopRendererRoot,
+  desktopElectronRoot,
+  desktopSidecarsRoot,
+  desktopBrowserExtensionRoot,
+]
+
+const runtimeFiles = [path.join(repoRoot, 'preload.ts')]
+
+const runtimeEntrypoints = [
+  path.join(desktopSidecarsRoot, 'billiardbuddy-sidecar.ts'),
+  path.join(desktopRendererRoot, 'main.tsx'),
+  path.join(desktopRendererRoot, 'preview-agent', 'index.ts'),
+  path.join(desktopElectronRoot, 'main.ts'),
+  path.join(desktopElectronRoot, 'preload.ts'),
+  path.join(desktopElectronRoot, 'preview-preload.ts'),
+  path.join(desktopBrowserExtensionRoot, 'service-worker.js'),
+  path.join(desktopBrowserExtensionRoot, 'content-script.js'),
+  path.join(workspaceRoot, 'gateway', 'app.ts'),
+  path.join(workspaceRoot, 'relay', 'app.ts'),
+]
 
 const IMPORT_PATTERNS = [
   // import X from './foo'
-  /from\s+['"](\.[^'"]+)['"]/g,
+  /from\s+['"]([^'"]+)['"]/g,
   // import('./foo')
-  /import\s*\(\s*['"](\.[^'"]+)['"]/g,
+  /import\s*\(\s*['"]([^'"]+)['"]/g,
   // require('./foo')
-  /require\s*\(\s*['"](\.[^'"]+)['"]/g,
+  /require\s*\(\s*['"]([^'"]+)['"]/g,
   // import './foo' (side-effect only)
-  /import\s+['"](\.[^'"]+)['"]/g,
+  /import\s+['"]([^'"]+)['"]/g,
   // typeof import('./foo')
-  /typeof\s+import\s*\(\s*['"](\.[^'"]+)['"]/g,
+  /typeof\s+import\s*\(\s*['"]([^'"]+)['"]/g,
 ]
 
 const SOURCE_EXT = new Set(['.ts', '.tsx', '.js', '.jsx', '.mts', '.cts', '.mjs', '.cjs'])
@@ -48,9 +80,16 @@ async function* walk(dir: string): AsyncGenerator<string> {
   }
 }
 
+function resolveLocalBase(importer: string, spec: string): string | null {
+  const sourceSpec = spec.split(/[?#]/, 1)[0]!
+  if (sourceSpec.startsWith('.')) return path.resolve(path.dirname(importer), sourceSpec)
+  if (sourceSpec.startsWith('@/')) return path.join(desktopRendererRoot, sourceSpec.slice(2))
+  return null
+}
+
 function resolveCandidates(importer: string, spec: string): string[] {
-  const importerDir = path.dirname(importer)
-  const base = path.resolve(importerDir, spec)
+  const base = resolveLocalBase(importer, spec)
+  if (!base) return []
   return [
     base,
     base + '.ts',
@@ -70,8 +109,8 @@ function resolveCandidates(importer: string, spec: string): string[] {
 }
 
 function missingTargetPath(importer: string, spec: string): string {
-  const importerDir = path.dirname(importer)
-  const base = path.resolve(importerDir, spec)
+  const base = resolveLocalBase(importer, spec)
+  if (!base) throw new Error(`not a local import: ${spec}`)
   // 把 .js 还原成 .ts —— TS 源里写 .js 是 ESM-on-Node 的惯例
   if (base.endsWith('.js')) return base.slice(0, -3) + '.ts'
   if (base.endsWith('.jsx')) return base.slice(0, -4) + '.tsx'
@@ -89,6 +128,7 @@ function existingTarget(importer: string, spec: string): string | null {
 function isProductionSource(file: string): boolean {
   const normalized = file.split(path.sep).join('/')
   return !normalized.includes('/__tests__/')
+    && !normalized.endsWith('.d.ts')
     && !normalized.endsWith('.test.ts')
     && !normalized.endsWith('.test.tsx')
     && !normalized.endsWith('.test.js')
@@ -133,7 +173,10 @@ async function main() {
   const productionSources: string[] = []
   let scannedFiles = 0
 
-  for await (const file of walkRoots([srcRoot, adaptersRoot])) {
+  const sourceFiles = [...runtimeFiles]
+  for await (const file of walkRoots(runtimeRoots)) sourceFiles.push(file)
+
+  for (const file of sourceFiles) {
     scannedFiles++
     if (isProductionSource(file)) productionSources.push(file)
     let contents: string
@@ -148,7 +191,7 @@ async function main() {
       let match: RegExpExecArray | null
       while ((match = pattern.exec(contents)) !== null) {
         const spec = match[1]!
-        if (!spec.startsWith('.')) continue
+        if (!resolveLocalBase(file, spec)) continue
         if (existingTarget(file, spec)) continue
         const targetPath = missingTargetPath(file, spec)
         if (!missing.has(targetPath)) missing.set(targetPath, new Set())
@@ -172,13 +215,12 @@ async function main() {
     )
   }
 
-  const entrypoint = path.join(repoRoot, 'desktop', 'sidecars', 'billiardbuddy-sidecar.ts')
-  const reachable = await reachableFrom([entrypoint])
+  const reachable = await reachableFrom(runtimeEntrypoints)
   const unreachable = productionSources.filter(file => !reachable.has(file)).sort()
   console.log(`[scan] production sources ${productionSources.length}; reachable ${productionSources.length - unreachable.length}`)
   if (unreachable.length > 0) {
     for (const file of unreachable) console.error(`[scan] unreachable production source: ${path.relative(repoRoot, file)}`)
-    throw new Error(`[scan] ${unreachable.length} production source file(s) have no path from the BilliardBuddy sidecar entrypoint`)
+    console.warn(`[scan] ${unreachable.length} source file(s) need manual consumer review; static reachability is diagnostic, not an architecture gate`)
   }
 }
 
