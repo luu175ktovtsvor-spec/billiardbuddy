@@ -36,6 +36,10 @@ const upgradeAcceptancePath = path.resolve(
   import.meta.dir,
   '../desktop/scripts/accept-windows-upgrade.ps1',
 )
+const localMacBuildPath = path.resolve(
+  import.meta.dir,
+  '../desktop/scripts/build-macos-arm64.sh',
+)
 const desktopPackagePath = path.resolve(import.meta.dir, '../desktop/package.json')
 const nsisMultiUserTemplatePath = path.resolve(
   import.meta.dir,
@@ -175,6 +179,12 @@ describe('Desktop release workflow contract', () => {
     expect(workflowSteps[recoveryIndex]?.run).toContain('accept-macos-update-recovery.ts')
     expect(workflowSteps[recoveryIndex]?.run).toContain('--dmg')
     expect(workflowSteps[recoveryIndex]?.run).toContain('--zip')
+  })
+
+  test('ad-hoc signs the complete local macOS app without notarization', () => {
+    const localMacBuild = readFileSync(localMacBuildPath, 'utf8')
+    expect(localMacBuild).toContain('BUILDER_ARGS+=(-c.mac.identity=- -c.mac.notarize=false)')
+    expect(localMacBuild).toContain('CSC_IDENTITY_AUTO_DISCOVERY=false')
   })
 
   test('verifies the public Windows update feed after publishing', () => {
