@@ -8,8 +8,9 @@ $baselineCommit = '2a6e79846a49f45a24080a9b50e93a7c66c12e61'
 $tempBase = if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { [IO.Path]::GetTempPath() }
 $oldRoot = Join-Path $tempBase 'billiardbuddy-old-0.4.9'
 $oldMedia = Join-Path $tempBase 'billiardbuddy-old-0.4.9-media'
+$oldInstallerDir = Join-Path $tempBase 'billiardbuddy-old-0.4.9-installer'
 $mediaSource = (Resolve-Path -LiteralPath $MediaSourceDir).Path
-if ((Test-Path -LiteralPath $oldRoot) -or (Test-Path -LiteralPath $oldMedia)) {
+if ((Test-Path -LiteralPath $oldRoot) -or (Test-Path -LiteralPath $oldMedia) -or (Test-Path -LiteralPath $oldInstallerDir)) {
   throw 'Windows 最老支持版本构建目录已存在'
 }
 
@@ -69,6 +70,12 @@ try {
 
 $installers = @(Get-ChildItem -LiteralPath (Join-Path $oldDesktop 'build-artifacts\electron') -Filter '*.exe' -File)
 if ($installers.Count -ne 1) { throw 'Windows 最老支持版本没有生成唯一安装包' }
+New-Item -ItemType Directory -Force $oldInstallerDir | Out-Null
+$persistedInstaller = Join-Path $oldInstallerDir $installers[0].Name
+Copy-Item -LiteralPath $installers[0].FullName -Destination $persistedInstaller
+& git worktree remove --force $oldRoot
+if ($LASTEXITCODE -ne 0) { throw 'Windows 最老支持版本构建后无法释放 worktree' }
+Remove-Item -LiteralPath $oldMedia -Recurse -Force
 if (-not $env:GITHUB_ENV) { throw '缺少 GITHUB_ENV，无法传递 Windows 最老支持安装包' }
-"BB_OLD_WINDOWS_INSTALLER=$($installers[0].FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-Write-Host (@{ baselineCommit = $baselineCommit; installer = $installers[0].FullName } | ConvertTo-Json -Compress)
+"BB_OLD_WINDOWS_INSTALLER=$persistedInstaller" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+Write-Host (@{ baselineCommit = $baselineCommit; installer = $persistedInstaller } | ConvertTo-Json -Compress)

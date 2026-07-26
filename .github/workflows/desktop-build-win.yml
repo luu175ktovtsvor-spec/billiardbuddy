@@ -181,21 +181,25 @@ jobs:
           if ((Test-Path -LiteralPath $installerAuditDir) -or (Test-Path -LiteralPath $appAuditDir)) {
             throw 'Windows 解包审计目录已存在'
           }
-          & 7z x $installer[0].FullName "-o$installerAuditDir" -y | Out-Host
-          if ($LASTEXITCODE -ne 0) { throw "Windows NSIS 解包失败: $LASTEXITCODE" }
-          $appArchives = @(Get-ChildItem -LiteralPath $installerAuditDir -Recurse -Filter 'app-64.7z' -File)
-          if ($appArchives.Count -ne 1) { throw 'Windows NSIS 中缺少唯一的 app-64.7z' }
-          & 7z x $appArchives[0].FullName "-o$appAuditDir" -y | Out-Host
-          if ($LASTEXITCODE -ne 0) { throw "Windows App 解包失败: $LASTEXITCODE" }
-          $resourcesDir = Join-Path $appAuditDir 'resources'
-          if (-not (Test-Path -LiteralPath (Join-Path $resourcesDir 'app.asar') -PathType Leaf)) {
-            throw 'Windows 解包内容缺少 resources/app.asar'
-          }
-          Push-Location ts/desktop
           try {
-            bun run audit:package -- --platform win32 --resources $resourcesDir
+            & 7z x $installer[0].FullName "-o$installerAuditDir" -y | Out-Host
+            if ($LASTEXITCODE -ne 0) { throw "Windows NSIS 解包失败: $LASTEXITCODE" }
+            $appArchives = @(Get-ChildItem -LiteralPath $installerAuditDir -Recurse -Filter 'app-64.7z' -File)
+            if ($appArchives.Count -ne 1) { throw 'Windows NSIS 中缺少唯一的 app-64.7z' }
+            & 7z x $appArchives[0].FullName "-o$appAuditDir" -y | Out-Host
+            if ($LASTEXITCODE -ne 0) { throw "Windows App 解包失败: $LASTEXITCODE" }
+            $resourcesDir = Join-Path $appAuditDir 'resources'
+            if (-not (Test-Path -LiteralPath (Join-Path $resourcesDir 'app.asar') -PathType Leaf)) {
+              throw 'Windows 解包内容缺少 resources/app.asar'
+            }
+            Push-Location ts/desktop
+            try {
+              bun run audit:package -- --platform win32 --resources $resourcesDir
+            } finally {
+              Pop-Location
+            }
           } finally {
-            Pop-Location
+            Remove-Item -LiteralPath $installerAuditDir, $appAuditDir -Recurse -Force -ErrorAction SilentlyContinue
           }
 
       - name: 安装、启动并卸载 Windows 成品
@@ -329,5 +333,6 @@ jobs:
             & git worktree remove --force $oldRoot
           }
           Remove-Item (Join-Path $env:RUNNER_TEMP 'billiardbuddy-old-0.4.9-media') -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item (Join-Path $env:RUNNER_TEMP 'billiardbuddy-old-0.4.9-installer') -Recurse -Force -ErrorAction SilentlyContinue
 
 # Windows 发布文件仅在本工作流完成构建和完整性校验后上传至受控更新源；electron-builder 本身始终不直接发布。
