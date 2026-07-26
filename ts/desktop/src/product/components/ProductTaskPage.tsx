@@ -369,6 +369,10 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
   const sendText = useProductTaskRuntimeStore((state) => state.sendText)
   const sendMessage = useProductTaskRuntimeStore((state) => state.sendMessage)
   const stopTask = useProductTaskRuntimeStore((state) => state.stopTask)
+  const editQueuedInput = useProductTaskRuntimeStore((state) => state.editQueuedInput)
+  const deleteQueuedInput = useProductTaskRuntimeStore((state) => state.deleteQueuedInput)
+  const reorderQueuedInputs = useProductTaskRuntimeStore((state) => state.reorderQueuedInputs)
+  const steerQueuedInput = useProductTaskRuntimeStore((state) => state.steerQueuedInput)
   const resumeQueue = useProductTaskRuntimeStore((state) => state.resumeQueue)
   const respondToApproval = useProductTaskRuntimeStore((state) => state.respondToApproval)
   const respondToQuestions = useProductTaskRuntimeStore((state) => state.respondToQuestions)
@@ -397,6 +401,10 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
   const [attachments, setAttachments] = useState<ProductTaskAttachmentDraft[]>([])
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [threadActionError, setThreadActionError] = useState<string | null>(null)
+  const [queueEditingId, setQueueEditingId] = useState<string | null>(null)
+  const [queueEditingText, setQueueEditingText] = useState('')
+  const [queueActionId, setQueueActionId] = useState<string | null>(null)
+  const [queueActionError, setQueueActionError] = useState<string | null>(null)
   const [deletionDialog, setDeletionDialog] = useState<'prepare' | 'commit' | null>(null)
   const [deletionError, setDeletionError] = useState<string | null>(null)
   const composingRef = useRef(false)
@@ -766,6 +774,39 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
   const hasActiveRun = runtime?.runState === 'working'
     || runtime?.runState === 'awaiting_approval'
     || runtime?.pendingApproval != null
+  const mutateQueueItem = async (queueItemId: string, action: () => Promise<boolean>) => {
+    if (queueActionId) return false
+    setQueueActionId(queueItemId)
+    setQueueActionError(null)
+    try {
+      const accepted = await action()
+      if (!accepted) setQueueActionError('队列已经变化，请重试。')
+      return accepted
+    } finally {
+      setQueueActionId(null)
+    }
+  }
+  const saveQueuedInput = async (queueItemId: string) => {
+    const text = queueEditingText.trim()
+    if (!text) {
+      setQueueActionError('队列内容不能为空。')
+      return
+    }
+    if (await mutateQueueItem(queueItemId, () => editQueuedInput(taskId, queueItemId, text))) {
+      setQueueEditingId(null)
+      setQueueEditingText('')
+    }
+  }
+  const moveQueuedInput = async (queueItemId: string, direction: -1 | 1) => {
+    const queueItemIds = (runtime?.queuedInputs ?? [])
+      .filter(item => item.state === 'queued' && !item.targetRunId)
+      .map(item => item.id)
+    const index = queueItemIds.indexOf(queueItemId)
+    const target = index + direction
+    if (index < 0 || target < 0 || target >= queueItemIds.length) return
+    ;[queueItemIds[index], queueItemIds[target]] = [queueItemIds[target]!, queueItemIds[index]!]
+    await mutateQueueItem(queueItemId, () => reorderQueuedInputs(taskId, queueItemIds))
+  }
   const taskControlsConnected = runtime?.connectionState === 'connected'
   const canChangeLifecycle = task.actions.includes(lifecycleAction) && (isArchived || !hasActiveRun)
   const isTaskMutationPending = mutations[`${taskId}:archive`] || mutations[`${taskId}:restore`]
@@ -1185,13 +1226,42 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
                         </div>
                       </div>
                       <div className="flex flex-col gap-2">
-                        {runtime.queuedInputs.map(item => (
-                          <div key={item.id} className="flex items-start gap-2 text-xs text-[var(--color-text-secondary)]">
-                            <span className={`shrink-0 rounded px-1.5 py-0.5 ${item.state === 'failed' ? 'bg-[var(--color-error)]/10 text-[var(--color-error)]' : 'bg-[var(--color-primary)]/10 text-[var(--color-primary)]'}`}>{item.state === 'failed' ? '无法继续' : item.attachmentCount > 0 ? '下一轮' : '等待安全点'}</span>
-                            <span className="min-w-0 flex-1 break-words">{item.text}</span>
-                            {item.attachmentCount > 0 ? <span className="shrink-0 text-[var(--color-text-tertiary)]">{item.attachmentCount} 个附件</span> : null}
-                          </div>
-                        ))}
+                        {runtime.queuedInputs.map((item) => {
+                          const editable = item.state === 'queued' && !item.targetRunId
+                          const editableQueue = runtime.queuedInputs.filter(candidate => candidate.state === 'queued' && !candidate.targetRunId)
+                          const editableIndex = editableQueue.findIndex(candidate => candidate.id === item.id)
+                          const busy = queueActionId === item.id
+                          return (
+                            <div key={item.id} className="rounded-lg border border-[var(--color-border)]/70 p-2 text-xs text-[var(--color-text-secondary)]">
+                              <div className="flex items-start gap-2">
+                                <span className={`shrink-0 rounded px-1.5 py-0.5 ${item.state === 'failed' ? 'bg-[var(--color-error)]/10 text-[var(--color-error)]' : 'bg-[var(--color-primary)]/10 text-[var(--color-primary)]'}`}>{item.state === 'failed' ? '无法继续' : item.targetRunId ? '正在发送' : item.attachmentCount > 0 ? '下一轮' : '等待安全点'}</span>
+                                {queueEditingId === item.id ? (
+                                  <textarea aria-label="编辑队列输入" value={queueEditingText} onChange={event => setQueueEditingText(event.target.value)} maxLength={32_000} rows={3} className="min-w-0 flex-1 resize-y rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1 text-[var(--color-text-primary)] outline-none focus:border-[var(--color-primary)]" />
+                                ) : <span className="min-w-0 flex-1 break-words">{item.text}</span>}
+                                {item.attachmentCount > 0 ? <span className="shrink-0 text-[var(--color-text-tertiary)]">{item.attachmentCount} 个附件</span> : null}
+                              </div>
+                              {editable ? (
+                                <div className="mt-2 flex flex-wrap justify-end gap-1.5">
+                                  {queueEditingId === item.id ? (
+                                    <>
+                                      <button type="button" disabled={busy} onClick={() => { void saveQueuedInput(item.id) }} className="rounded border border-[var(--color-border)] px-2 py-1 hover:bg-[var(--color-surface-hover)] disabled:opacity-50">保存</button>
+                                      <button type="button" disabled={busy} onClick={() => { setQueueEditingId(null); setQueueEditingText('') }} className="rounded border border-[var(--color-border)] px-2 py-1 hover:bg-[var(--color-surface-hover)] disabled:opacity-50">取消</button>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <button type="button" aria-label={`编辑队列输入：${item.text}`} disabled={busy} onClick={() => { setQueueEditingId(item.id); setQueueEditingText(item.text); setQueueActionError(null) }} className="rounded border border-[var(--color-border)] px-2 py-1 hover:bg-[var(--color-surface-hover)] disabled:opacity-50">编辑</button>
+                                      <button type="button" aria-label="上移队列输入" disabled={busy || editableIndex <= 0} onClick={() => { void moveQueuedInput(item.id, -1) }} className="rounded border border-[var(--color-border)] px-2 py-1 hover:bg-[var(--color-surface-hover)] disabled:opacity-50">上移</button>
+                                      <button type="button" aria-label="下移队列输入" disabled={busy || editableIndex < 0 || editableIndex >= editableQueue.length - 1} onClick={() => { void moveQueuedInput(item.id, 1) }} className="rounded border border-[var(--color-border)] px-2 py-1 hover:bg-[var(--color-surface-hover)] disabled:opacity-50">下移</button>
+                                      {hasActiveRun && item.attachmentCount === 0 ? <button type="button" aria-label={`立即发送队列输入：${item.text}`} disabled={busy} onClick={() => { void mutateQueueItem(item.id, () => steerQueuedInput(taskId, item.id)) }} className="rounded border border-[var(--color-primary)] px-2 py-1 text-[var(--color-primary)] hover:bg-[var(--color-primary)]/10 disabled:opacity-50">立即发送</button> : null}
+                                      <button type="button" aria-label={`删除队列输入：${item.text}`} disabled={busy} onClick={() => { void mutateQueueItem(item.id, () => deleteQueuedInput(taskId, item.id)) }} className="rounded border border-[var(--color-error)]/40 px-2 py-1 text-[var(--color-error)] hover:bg-[var(--color-error)]/10 disabled:opacity-50">删除</button>
+                                    </>
+                                  )}
+                                </div>
+                              ) : null}
+                            </div>
+                          )
+                        })}
+                        {queueActionError ? <p role="alert" className="text-xs text-[var(--color-error)]">{queueActionError}</p> : null}
                       </div>
                     </section>
                   ) : null}

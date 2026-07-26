@@ -4,6 +4,8 @@ import type { ProductTaskSocketLifecycleEvent } from '../api/taskSocket'
 const apiMocks = vi.hoisted(() => ({
   getThread: vi.fn(),
   getQueue: vi.fn(),
+  mutateQueue: vi.fn(),
+  steerQueue: vi.fn(),
   resumeQueue: vi.fn(),
   list: vi.fn(),
   currentLineage: vi.fn(),
@@ -21,6 +23,8 @@ vi.mock('../api/tasks', () => ({
   productTasksApi: {
     getThread: apiMocks.getThread,
     getQueue: apiMocks.getQueue,
+    mutateQueue: apiMocks.mutateQueue,
+    steerQueue: apiMocks.steerQueue,
     resumeQueue: apiMocks.resumeQueue,
     list: apiMocks.list,
   },
@@ -111,6 +115,8 @@ describe('product task runtime store', () => {
     useTabStore.setState({ tabs: [], activeTabId: null })
     apiMocks.getThread.mockReset()
     apiMocks.getQueue.mockReset()
+    apiMocks.mutateQueue.mockReset()
+    apiMocks.steerQueue.mockReset()
     apiMocks.resumeQueue.mockReset()
     apiMocks.list.mockReset()
     apiMocks.currentLineage.mockReset()
@@ -662,6 +668,26 @@ describe('product task runtime store', () => {
       entries: [],
       queuedInputs: [expect.objectContaining({ id: 'queue_123e4567-e89b-42d3-a456-426614174000', text: '接着整理下一批订单' })],
     })
+  })
+
+  it('applies authoritative queue edits and explicit steer snapshots', async () => {
+    const task: ProductTaskRecord = {
+      id: 'task-manage-queue', revision: 4, current_lineage_id: 'lineage-queue', projectId: 'project', directoryId: 'directory', workDir: '/workspace', title: '管理队列', lifecycle: 'active', kind: 'main', createdAt: '2026-07-19T00:00:00.000Z', updatedAt: '2026-07-19T00:00:00.000Z', worktreeState: 'not_requested', actions: [],
+    }
+    const queued = { id: 'queue_123e4567-e89b-42d3-a456-426614174000', text: '原始内容', state: 'queued' as const, createdAt: '2026-07-26T00:00:00.000Z', attachmentCount: 0 }
+    useProductTaskStore.setState({ index: { ...EMPTY_PRODUCT_TASK_INDEX, tasks: [task], total: 1 } })
+    useProductTaskRuntimeStore.setState({ tasks: { [task.id]: { ...useProductTaskRuntimeStore.getState().tasks[task.id], connectionState: 'connected', historyStatus: 'ready', runState: 'working', entries: [], queuedInputs: [queued], activeActivity: null, runActivities: [], contextCompactions: [], pendingApproval: null, approvalResponsePending: false, error: null, streamingEntryId: null, stopRequested: false, recoveryRequired: false } } })
+    apiMocks.list.mockResolvedValue({ ...EMPTY_PRODUCT_TASK_INDEX, tasks: [task], total: 1 })
+    apiMocks.mutateQueue.mockResolvedValue({ outcome: 'accepted', task_revision: 5, items: [{ ...queued, text: '修改后的内容' }] })
+
+    await expect(useProductTaskRuntimeStore.getState().editQueuedInput(task.id, queued.id, '修改后的内容')).resolves.toBe(true)
+    expect(apiMocks.mutateQueue).toHaveBeenCalledWith(task.id, expect.objectContaining({ action: 'edit', queue_item_id: queued.id, text: '修改后的内容', expected_task_revision: 4 }))
+    expect(useProductTaskRuntimeStore.getState().tasks[task.id]?.queuedInputs).toEqual([{ ...queued, text: '修改后的内容' }])
+
+    apiMocks.steerQueue.mockResolvedValue({ outcome: 'accepted', task_revision: 5, delivery: 'steer', items: [{ ...queued, text: '修改后的内容', targetRunId: 'run_123e4567-e89b-42d3-a456-426614174111' }] })
+    await expect(useProductTaskRuntimeStore.getState().steerQueuedInput(task.id, queued.id)).resolves.toBe(true)
+    expect(apiMocks.steerQueue).toHaveBeenCalledWith(task.id, expect.objectContaining({ queue_item_id: queued.id, expected_task_revision: 4 }))
+    expect(useProductTaskRuntimeStore.getState().tasks[task.id]?.queuedInputs[0]).toMatchObject({ id: queued.id, targetRunId: 'run_123e4567-e89b-42d3-a456-426614174111' })
   })
 
   it('matches the product text boundary before creating optimistic task state', () => {

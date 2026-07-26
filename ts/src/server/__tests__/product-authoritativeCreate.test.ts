@@ -790,13 +790,25 @@ describe('BB-02C existing task submit matrix', () => {
     expect(second.result).toMatchObject({ delivery: 'queued' })
   })
 
-  test('injects only the durable queue head into the same active Turn and replays consumption idempotently', async () => {
+  test('injects only an explicitly steered durable input into the active Turn and replays consumption idempotently', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'bb-steer-consume-'))
     const storagePath = path.join(root, 'product-tasks.json')
     const authorityPath = path.join(root, 'product-task-authority.v1.json')
     const now = () => new Date('2026-01-01T00:00:00.000Z')
     await fs.writeFile(storagePath, JSON.stringify({ version: 4, tasks: { task: { coreSessionId: 'core', title: 'task', lifecycle: 'active', kind: 'main', createdAt: now().toISOString(), updatedAt: now().toISOString() } } }))
-    const service = new ProductTaskService({ storagePath, installationId: 'install', now })
+    const steered: Array<[string, number, string, string]> = []
+    const service = new ProductTaskService({
+      storagePath,
+      installationId: 'install',
+      now,
+      dispatcher: {
+        dispatch: async () => 'started',
+        steer: async (targetRunId, generation, queueItemId, text) => {
+          steered.push([targetRunId, generation, queueItemId, text])
+          return true
+        },
+      },
+    })
     await service.ensureAuthorityProjectionForLegacyTask('task', { authorityPath })
     await service.createConversationLineage({ task_id: 'task', expected_task_revision: 0, client_operation_id: 'lineage' })
     const first = await service.submitTaskRun('task', { expected_task_revision: 1, expected_lineage_revision: 0, client_operation_id: 'first', text: 'first', attachment_ids: [] })
@@ -808,6 +820,12 @@ describe('BB-02C existing task submit matrix', () => {
     await service.claimTaskRunDispatch(runId, 1)
 
     await expect(service.recordQueuedInputConsumed(runId, 1, thirdQueueId)).rejects.toThrow('AUTHORITY_INVALID')
+    expect(await service.steerTaskInputQueue('task', {
+      queue_item_id: secondQueueId,
+      expected_task_revision: 4,
+      client_operation_id: 'steer-second',
+    })).toMatchObject({ outcome: 'accepted', task_revision: 5, delivery: 'steer' })
+    expect(steered).toEqual([[runId, 1, secondQueueId, 'second']])
     const consumed = await service.recordQueuedInputConsumed(runId, 1, secondQueueId)
     expect(consumed.events.map((event) => event.type)).toEqual(['queue_updated', 'user_text'])
     expect(consumed.events[1]).toMatchObject({ type: 'user_text', text: 'second', replayed: true })
@@ -818,6 +836,46 @@ describe('BB-02C existing task submit matrix', () => {
     expect(Object.values(state.thread_entries).map((entry) => (entry as { run_id: string }).run_id)).toEqual([runId, runId])
     expect((state.conversation_lineages[(state.task_runs[runId] as { lineage_id: string }).lineage_id] as { revision: number }).revision).toBe(2)
     expect((await service.listQueuedInputs('task')).items.map((item) => item.id)).toEqual([thirdQueueId])
+  })
+
+  test('edits, reorders, deletes, and releases unconsumed durable follow-ups', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'bb-queue-manage-'))
+    const storagePath = path.join(root, 'product-tasks.json')
+    const authorityPath = path.join(root, 'product-task-authority.v1.json')
+    const now = () => new Date('2026-01-01T00:00:00.000Z')
+    await fs.writeFile(storagePath, JSON.stringify({ version: 4, tasks: { task: { coreSessionId: 'core', title: 'task', lifecycle: 'active', kind: 'main', createdAt: now().toISOString(), updatedAt: now().toISOString() } } }))
+    const service = new ProductTaskService({
+      storagePath,
+      installationId: 'install',
+      now,
+      dispatcher: { dispatch: async () => 'started', steer: async () => true },
+    })
+    await service.ensureAuthorityProjectionForLegacyTask('task', { authorityPath })
+    await service.createConversationLineage({ task_id: 'task', expected_task_revision: 0, client_operation_id: 'lineage' })
+    const first = await service.submitTaskRun('task', { expected_task_revision: 1, expected_lineage_revision: 0, client_operation_id: 'first', text: 'first', attachment_ids: [] })
+    const second = await service.submitTaskRun('task', { expected_task_revision: 2, expected_lineage_revision: 1, client_operation_id: 'second', text: 'second', attachment_ids: [] })
+    const third = await service.submitTaskRun('task', { expected_task_revision: 3, expected_lineage_revision: 1, client_operation_id: 'third', text: 'third', attachment_ids: [] })
+    const fourth = await service.submitTaskRun('task', { expected_task_revision: 4, expected_lineage_revision: 1, client_operation_id: 'fourth', text: 'fourth', attachment_ids: [] })
+    const runId = (first.result as { run_id: string }).run_id
+    const secondQueueId = (second.result as { queue_item_id: string }).queue_item_id
+    const thirdQueueId = (third.result as { queue_item_id: string }).queue_item_id
+    const fourthQueueId = (fourth.result as { queue_item_id: string }).queue_item_id
+
+    expect(await service.mutateTaskInputQueue('task', { action: 'reorder', queue_item_ids: [fourthQueueId, secondQueueId, thirdQueueId], expected_task_revision: 5, client_operation_id: 'reorder' })).toMatchObject({ outcome: 'accepted', task_revision: 6 })
+    expect(await service.mutateTaskInputQueue('task', { action: 'edit', queue_item_id: secondQueueId, text: 'second edited', expected_task_revision: 6, client_operation_id: 'edit' })).toMatchObject({ outcome: 'accepted', task_revision: 7 })
+    expect(await service.mutateTaskInputQueue('task', { action: 'delete', queue_item_id: thirdQueueId, expected_task_revision: 7, client_operation_id: 'delete' })).toMatchObject({ outcome: 'accepted', task_revision: 8 })
+    expect((await service.listQueuedInputs('task')).items.map(item => [item.id, item.text])).toEqual([[fourthQueueId, 'fourth'], [secondQueueId, 'second edited']])
+
+    await service.claimTaskRunDispatch(runId, 1)
+    expect(await service.steerTaskInputQueue('task', { queue_item_id: fourthQueueId, expected_task_revision: 8, client_operation_id: 'steer' })).toMatchObject({ outcome: 'accepted', task_revision: 9, delivery: 'steer' })
+    expect((await service.listQueuedInputs('task')).items[0]).toMatchObject({ id: fourthQueueId, targetRunId: runId })
+    const terminal = await service.recordTaskRunTerminalProjection(runId, 1, 'completed', '')
+    expect(terminal.queue_events).toHaveLength(1)
+    expect((await service.listQueuedInputs('task')).items).toEqual([
+      expect.objectContaining({ id: fourthQueueId, text: 'fourth' }),
+      expect.objectContaining({ id: secondQueueId, text: 'second edited' }),
+    ])
+    expect((await service.listQueuedInputs('task')).items[0]?.targetRunId).toBeUndefined()
   })
 
   test('keeps an attachment follow-up for the next Turn and requires an explicit resume after stop', async () => {

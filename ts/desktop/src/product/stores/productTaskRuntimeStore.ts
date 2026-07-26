@@ -26,6 +26,8 @@ import type {
   ProductTaskQuestion,
   ProductTaskRunState,
   ProductTaskQueuedInput,
+  ProductTaskInputQueueMutation,
+  ProductTaskInputQueueMutationResult,
   ProductTaskSafeErrorCode,
   ProductTaskThreadEntry,
 } from '../domain/types'
@@ -342,12 +344,22 @@ type ProductTaskRuntimeStore = {
   sendText: (taskId: string, text: string, referenceEntryIds?: string[]) => Promise<boolean>
   sendMessage: (taskId: string, text: string, attachments?: ProductTaskAttachment[], referenceEntryIds?: string[]) => Promise<boolean>
   stopTask: (taskId: string) => void
+  editQueuedInput: (taskId: string, queueItemId: string, text: string) => Promise<boolean>
+  deleteQueuedInput: (taskId: string, queueItemId: string) => Promise<boolean>
+  reorderQueuedInputs: (taskId: string, queueItemIds: string[]) => Promise<boolean>
+  steerQueuedInput: (taskId: string, queueItemId: string) => Promise<boolean>
   resumeQueue: (taskId: string) => Promise<boolean>
   respondToApproval: (taskId: string, allowed: boolean) => boolean
   respondToQuestions: (taskId: string, answers: string[]) => boolean
   refreshThread: (taskId: string) => Promise<void>
   handleEvent: (taskId: string, event: ProductTaskEvent) => void
 }
+
+type ProductTaskInputQueueMutationIntent = ProductTaskInputQueueMutation extends infer Mutation
+  ? Mutation extends ProductTaskInputQueueMutation
+    ? Omit<Mutation, 'expected_task_revision' | 'client_operation_id'>
+    : never
+  : never
 
 export const useProductTaskRuntimeStore = create<ProductTaskRuntimeStore>((set, get) => {
   const updateTask = (
@@ -413,6 +425,40 @@ export const useProductTaskRuntimeStore = create<ProductTaskRuntimeStore>((set, 
     } catch {
       // The transcript remains usable if a queue snapshot cannot be refreshed.
       // Live queue events can still reconcile it after the socket connects.
+    }
+  }
+
+  const applyQueueMutationResult = async (
+    taskId: string,
+    result: ProductTaskInputQueueMutationResult,
+  ): Promise<boolean> => {
+    if (result.outcome !== 'accepted' && result.outcome !== 'duplicate') {
+      await Promise.all([useProductTaskStore.getState().refresh(), refreshQueue(taskId)])
+      return false
+    }
+    const items = result.items.map(parseProductTaskQueuedInput)
+    if (items.some(item => item === null)) {
+      await refreshQueue(taskId)
+      return false
+    }
+    updateTask(taskId, runtime => ({ ...runtime, queuedInputs: items as ProductTaskQueuedInput[] }))
+    await useProductTaskStore.getState().refresh()
+    return true
+  }
+
+  const mutateQueue = async (taskId: string, mutation: ProductTaskInputQueueMutationIntent): Promise<boolean> => {
+    const task = useProductTaskStore.getState().index.tasks.find(candidate => candidate.id === taskId)
+    if (!task) return false
+    try {
+      const result = await productTasksApi.mutateQueue(taskId, {
+        ...mutation,
+        expected_task_revision: task.revision ?? 0,
+        client_operation_id: `task-queue-${mutation.action}-${crypto.randomUUID()}`,
+      } as ProductTaskInputQueueMutation)
+      return applyQueueMutationResult(taskId, result)
+    } catch {
+      await Promise.all([useProductTaskStore.getState().refresh(), refreshQueue(taskId)])
+      return false
     }
   }
 
@@ -592,6 +638,28 @@ export const useProductTaskRuntimeStore = create<ProductTaskRuntimeStore>((set, 
       updateTask(taskId, (runtime) => ({ ...runtime, stopRequested: true }))
     },
 
+    editQueuedInput: (taskId, queueItemId, text) => mutateQueue(taskId, { action: 'edit', queue_item_id: queueItemId, text }),
+
+    deleteQueuedInput: (taskId, queueItemId) => mutateQueue(taskId, { action: 'delete', queue_item_id: queueItemId }),
+
+    reorderQueuedInputs: (taskId, queueItemIds) => mutateQueue(taskId, { action: 'reorder', queue_item_ids: queueItemIds }),
+
+    steerQueuedInput: async (taskId, queueItemId) => {
+      const task = useProductTaskStore.getState().index.tasks.find(candidate => candidate.id === taskId)
+      if (!task) return false
+      try {
+        const result = await productTasksApi.steerQueue(taskId, {
+          queue_item_id: queueItemId,
+          expected_task_revision: task.revision ?? 0,
+          client_operation_id: `task-queue-steer-${crypto.randomUUID()}`,
+        })
+        return applyQueueMutationResult(taskId, result)
+      } catch {
+        await Promise.all([useProductTaskStore.getState().refresh(), refreshQueue(taskId)])
+        return false
+      }
+    },
+
     resumeQueue: async (taskId) => {
       const task = useProductTaskStore.getState().index.tasks.find((candidate) => candidate.id === taskId)
       const runtime = get().tasks[taskId]
@@ -713,6 +781,11 @@ export const useProductTaskRuntimeStore = create<ProductTaskRuntimeStore>((set, 
           ...(event.state === 'idle' ? { stopRequested: false } : {}),
         }))
         return
+      }
+
+      if (event.type === 'queue_updated') {
+        void refreshQueue(taskId)
+        void useProductTaskStore.getState().refresh()
       }
 
       updateTask(taskId, (runtime) => {

@@ -103,12 +103,18 @@ describe('product task input queue protocol', () => {
 
   it('accepts only the bounded public queue projection', () => {
     expect(parseProductTaskQueuedInput(queued)).toEqual(queued)
+    expect(parseProductTaskQueuedInput({ ...queued, targetRunId: 'run_123e4567-e89b-42d3-a456-426614174000' })).toEqual({ ...queued, targetRunId: 'run_123e4567-e89b-42d3-a456-426614174000' })
     expect(parseProductTaskEvent({
       type: 'queue_updated',
       item: queued,
       event_sequence: 11,
       replayed: true,
     })).toEqual({ type: 'queue_updated', item: queued, event_sequence: 11, replayed: true })
+    expect(parseProductTaskEvent({
+      type: 'queue_updated',
+      item: { ...queued, state: 'cancelled' },
+      event_sequence: 12,
+    })).toEqual({ type: 'queue_updated', item: { ...queued, state: 'cancelled' }, event_sequence: 12 })
   })
 
   it('rejects private identities, invalid state assignment, and extra fields', () => {

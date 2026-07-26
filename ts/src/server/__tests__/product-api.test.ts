@@ -73,6 +73,8 @@ function createService() {
       mutateTaskAuthoritatively: record('mutateTaskAuthoritatively', { task, receipt: { outcome: 'accepted', revision: 1 }, snapshot: { revision: 1, event_sequence: 1, tasks: [task] } }),
       recoverTaskRun: record('recoverTaskRun', { task, receipt: { outcome: 'accepted', revision: 2 }, snapshot: { revision: 2, event_sequence: 2, tasks: [task], side_tasks: [] } }),
       listQueuedInputs: record('listQueuedInputs', { items: [] }),
+      mutateTaskInputQueue: record('mutateTaskInputQueue', { outcome: 'accepted', task_revision: 5, items: [] }),
+      steerTaskInputQueue: record('steerTaskInputQueue', { outcome: 'accepted', task_revision: 6, items: [], delivery: 'steer' }),
       resumeTaskInputQueue: record('resumeTaskInputQueue', { outcome: 'accepted', task_revision: 5 }),
       mutateTaskDeletion: record('mutateTaskDeletion', { task, outcome: 'accepted', blockers: [] }),
       continueTaskAuthoritatively: record('continueTaskAuthoritatively', { outcome: 'accepted', revision: 1 }),
@@ -137,6 +139,23 @@ describe('Product tasks API', () => {
       { name: 'resumeTaskInputQueue', args: ['task-1', { expected_task_revision: 4, client_operation_id: 'resume-queue-1' }] },
     ])
     expect((await request(service, 'POST', '/api/product/tasks/task-1/queue/resume', { expected_task_revision: 4, client_operation_id: 'resume-queue-2', run_id: 'private' })).status).toBe(400)
+  })
+
+  it('routes exact queue edit, reorder, and explicit steer mutations', async () => {
+    const { service, calls } = createService()
+    const edit = { action: 'edit', queue_item_id: 'queue-1', text: '改后的补充要求', expected_task_revision: 4, client_operation_id: 'queue-edit-1' }
+    const reorder = { action: 'reorder', queue_item_ids: ['queue-2', 'queue-1'], expected_task_revision: 5, client_operation_id: 'queue-order-1' }
+    const steer = { queue_item_id: 'queue-2', expected_task_revision: 5, client_operation_id: 'queue-steer-1' }
+    expect(await request(service, 'POST', '/api/product/tasks/task-1/queue/mutate', edit)).toEqual({ status: 200, body: { outcome: 'accepted', task_revision: 5, items: [] } })
+    expect(await request(service, 'POST', '/api/product/tasks/task-1/queue/mutate', reorder)).toEqual({ status: 200, body: { outcome: 'accepted', task_revision: 5, items: [] } })
+    expect(await request(service, 'POST', '/api/product/tasks/task-1/queue/steer', steer)).toEqual({ status: 200, body: { outcome: 'accepted', task_revision: 6, items: [], delivery: 'steer' } })
+    expect(calls).toEqual([
+      { name: 'mutateTaskInputQueue', args: ['task-1', edit] },
+      { name: 'mutateTaskInputQueue', args: ['task-1', reorder] },
+      { name: 'steerTaskInputQueue', args: ['task-1', steer] },
+    ])
+    expect((await request(service, 'POST', '/api/product/tasks/task-1/queue/mutate', { ...edit, target_run_id: 'private' })).status).toBe(400)
+    expect((await request(service, 'POST', '/api/product/tasks/task-1/queue/steer', { ...steer, text: 'private' })).status).toBe(400)
   })
 
   it('returns the server-owned capability snapshot without accepting a mutation surface', async () => {

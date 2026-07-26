@@ -24,6 +24,8 @@ import type {
   ProductAttachmentApi,
   ProductTaskPermissionMode,
   ProductTaskQueuedInput,
+  ProductTaskInputQueueMutation,
+  ProductTaskInputQueueMutationResult,
 } from '../domain/types'
 
 function taskPath(taskId: string): string {
@@ -108,6 +110,8 @@ export const productTasksApi: ProductTaskApi = {
     productApi.get<OperationQueryResponse>(`${taskPath(taskId)}/operations/${encodeURIComponent(operationId)}`),
   getThread: (taskId: string) => productApi.get<ProductTaskThreadResponse>(`${taskPath(taskId)}/thread`),
   getQueue: (taskId: string) => productApi.get<{ items: ProductTaskQueuedInput[] }>(`${taskPath(taskId)}/queue`),
+  mutateQueue: (taskId: string, input: ProductTaskInputQueueMutation) => productApi.post<ProductTaskInputQueueMutationResult>(`${taskPath(taskId)}/queue/mutate`, input),
+  steerQueue: (taskId, input) => productApi.post(`${taskPath(taskId)}/queue/steer`, input),
   resumeQueue: (taskId, input) => productApi.post(`${taskPath(taskId)}/queue/resume`, input),
   getReviewStatus: (taskId) => productApi.get<ProductTaskReviewStatus>(reviewPath(taskId, 'status')),
   getReviewTree: (taskId, path) => productApi.get<ProductTaskReviewTree>(reviewPath(taskId, 'tree', path)),

@@ -5,9 +5,10 @@ import { productTaskWorkerRuntimeEvents } from './taskWorkerRuntimeEvents.js'
 
 test('worker sink publishes only product-safe assistant text and one terminal fence', async () => {
   const durable: unknown[] = []
+  const releasedQueueEvent = { type: 'queue_updated' as const, item: { id: 'queue_123e4567-e89b-42d3-a456-426614174000', text: '稍后继续', state: 'queued' as const, createdAt: '2026-07-26T00:00:00.000Z', attachmentCount: 0 }, event_sequence: 9 }
   const tasks = {
     readTaskRunDispatchIdentity: async () => ({ task_id: 'task-safe' }),
-    recordTaskRunTerminalProjection: async (...args: unknown[]) => { durable.push(args); return { task_id: 'task-safe' } },
+    recordTaskRunTerminalProjection: async (...args: unknown[]) => { durable.push(args); return { task_id: 'task-safe', queue_events: [releasedQueueEvent] } },
   } as unknown as ProductTaskService
   const sink = new ProductTaskWorkerMessageSink(tasks)
   const events: unknown[] = []
@@ -29,6 +30,7 @@ test('worker sink publishes only product-safe assistant text and one terminal fe
     { type: 'status', state: 'working' },
     { type: 'assistant_text_start' },
     { type: 'assistant_text_delta', text: '完成结果' },
+    releasedQueueEvent,
     { type: 'turn_complete' },
   ])
   expect(durable).toEqual([['run', 1, 'completed', '完成结果']])
@@ -38,7 +40,7 @@ test('worker sink persists and publishes the same safe run failure', async () =>
   const durable: unknown[] = []
   const tasks = {
     readTaskRunDispatchIdentity: async () => ({ task_id: 'task-failure' }),
-    recordTaskRunTerminalProjection: async (...args: unknown[]) => { durable.push(args); return { task_id: 'task-failure' } },
+    recordTaskRunTerminalProjection: async (...args: unknown[]) => { durable.push(args); return { task_id: 'task-failure', queue_events: [] } },
   } as unknown as ProductTaskService
   const sink = new ProductTaskWorkerMessageSink(tasks)
   const events: unknown[] = []
@@ -59,7 +61,7 @@ test('terminal waits for an earlier event identity and rejects only events arriv
   const identity = new Promise<{ task_id: string }>((resolve) => { resolveIdentity = resolve })
   const tasks = {
     readTaskRunDispatchIdentity: async () => identity,
-    recordTaskRunTerminalProjection: async () => ({ task_id: 'task-race' }),
+    recordTaskRunTerminalProjection: async () => ({ task_id: 'task-race', queue_events: [] }),
   } as unknown as ProductTaskService
   const sink = new ProductTaskWorkerMessageSink(tasks)
   const events: unknown[] = []
