@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { startPackageUpdateGateway } from './package-update-gateway'
+import { cleanupNewCacheEntries, snapshotCacheEntries } from './accept-macos-update-recovery'
 
 function get(
   url: string,
@@ -30,6 +31,19 @@ function get(
 }
 
 describe('packaged desktop update gateway', () => {
+  it('removes only updater cache entries created by the acceptance run', () => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'billiardbuddy-update-cache-'))
+    const existing = join(tempDir, 'existing')
+    const created = join(tempDir, 'created')
+    writeFileSync(existing, 'keep')
+    const snapshot = snapshotCacheEntries(tempDir)
+    writeFileSync(created, 'remove')
+    cleanupNewCacheEntries(tempDir, snapshot)
+    expect(readFileSync(existing, 'utf8')).toBe('keep')
+    expect(() => readFileSync(created)).toThrow()
+    rmSync(tempDir, { recursive: true, force: true })
+  })
+
   it('keeps downloads interrupted until recovery is explicitly enabled, then serves byte ranges', async () => {
     const tempDir = mkdtempSync(join(tmpdir(), 'billiardbuddy-update-gateway-'))
     const artifactPath = join(tempDir, 'update.zip')
