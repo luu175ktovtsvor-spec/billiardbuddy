@@ -509,6 +509,7 @@ export function ImageWorkbench() {
   const selectImage = useMediaWorkbenchStore(state => state.selectImage)
   const createImage = useMediaWorkbenchStore(state => state.createImage)
   const saveImageDraft = useMediaWorkbenchStore(state => state.saveImageDraft)
+  const addImageReferences = useMediaWorkbenchStore(state => state.addImageReferences)
   const submitImage = useMediaWorkbenchStore(state => state.submitImage)
   const startImageOperation = useMediaWorkbenchStore(state => state.startImageOperation)
   const commitImageVersion = useMediaWorkbenchStore(state => state.commitImageVersion)
@@ -825,6 +826,18 @@ export function ImageWorkbench() {
     const project = await saveActiveDraft(createsNewRemoteTask)
     if (!project) return
     await submitImage(project.id, createsNewRemoteTask)
+  }
+
+  const saveReadyReferences = async () => {
+    if (!active || active.state !== 'ready' || pendingReferences.length === 0) return
+    if (pendingReferences.some(reference => reference.role === 'unclassified')) {
+      setInputError('请先为每张新增参考图片选择作用')
+      return
+    }
+    const saved = await addImageReferences(active.id, active.revision, pendingReferences)
+    setReferenceDraft(saved.references)
+    setPendingReferences([])
+    setInputError(null)
   }
 
   const downloadOutput = async () => {
@@ -1385,10 +1398,10 @@ export function ImageWorkbench() {
                   <span className="text-[var(--color-text-tertiary)]">方式</span>
                   <span className="text-right text-[var(--color-text-secondary)]">{active.reference_image_count > 0 ? `参考图生成 (${active.reference_image_count})` : '文字生成'}</span>
                 </div>
-                {(referenceDraft.length > 0 || pendingReferences.length > 0 || ['draft', 'failed'].includes(active.state)) && (
+                {(referenceDraft.length > 0 || pendingReferences.length > 0 || !['queued', 'generating'].includes(active.state)) && (
                   <div className="mb-5 border-t border-[var(--color-border)] pt-4">
                     <div className="mb-2 text-[12px] font-medium text-[var(--color-text-primary)]">参考素材</div>
-                    {['draft', 'failed'].includes(active.state) && (
+                    {!['queued', 'generating'].includes(active.state) && (
                       <label className="mb-3 block">
                         <span className="sr-only">添加参考图片</span>
                         <input
@@ -1475,6 +1488,14 @@ export function ImageWorkbench() {
                         </figure>
                       ))}
                     </div>
+                    {active.state === 'ready' && pendingReferences.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => void saveReadyReferences()}
+                        disabled={loading || pendingReferences.some(reference => reference.role === 'unclassified')}
+                        className="mt-2 h-7 w-full rounded border border-[var(--color-border)] text-[11px] text-[var(--color-brand)] disabled:opacity-45"
+                      >保存新增参考素材</button>
+                    )}
                   </div>
                 )}
                 {currentVersion && (

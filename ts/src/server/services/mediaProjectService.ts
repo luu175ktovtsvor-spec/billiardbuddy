@@ -4,6 +4,7 @@ import { copyFile, link, mkdir, readFile, readdir, realpath, rename, rm, stat, w
 import { homedir } from 'node:os'
 import { basename, dirname, extname, isAbsolute, join, relative, resolve } from 'node:path'
 import {
+  addImageProjectReferencesInputSchema,
   addVideoSourceInputSchema,
   analyzeVideoProjectInputSchema,
   applyVideoAlternativeInputSchema,
@@ -33,6 +34,7 @@ import {
   videoPreviewTaskResultSchema,
   videoRenderTaskResultSchema,
   type AddVideoSourceInput,
+  type AddImageProjectReferencesInput,
   type AnalyzeVideoProjectInput,
   type ApplyVideoAlternativeInput,
   type CommitImageVersionInput,
@@ -2894,6 +2896,67 @@ export class MediaProjectService {
       }) as ImageWorkbenchProject
     } catch (error) {
       await Promise.all(addedReferenceAssets.map(fileName => rm(
+        join(this.assetsDir, project.id, 'references', fileName),
+        { force: true },
+      )))
+      throw error
+    }
+  }
+
+  async addImageProjectReferences(
+    projectId: string,
+    raw: AddImageProjectReferencesInput,
+  ): Promise<ImageWorkbenchProject> {
+    const input = addImageProjectReferencesInputSchema.parse(raw)
+    const project = await this.getProject(projectId)
+    if (project.kind !== 'image') throw new MediaServiceError('这不是图片项目', 409, 'WRONG_PROJECT_KIND')
+    if (['queued', 'generating'].includes(project.state)) {
+      throw new MediaServiceError('当前图片操作尚未完成，暂时不能追加参考素材', 409, 'IMAGE_OPERATION_ACTIVE')
+    }
+    if (project.revision !== input.revision) {
+      throw new MediaServiceError('图片项目已更新，请刷新后再追加参考素材', 409, 'REVISION_CONFLICT')
+    }
+    if (project.references.length + input.reference_images.length > 8) {
+      throw new MediaServiceError('每个图片项目最多保留 8 张参考图片', 400, 'TOO_MANY_REFERENCE_IMAGES')
+    }
+    const retainedAssets = project.reference_image_assets ?? []
+    const retainedBytes = (await Promise.all(retainedAssets.map(fileName => this.resolveOwnedAsset(
+      project.id,
+      fileName,
+      { message: '参考图片文件已经丢失', code: 'REFERENCE_IMAGE_MISSING' },
+      'references',
+    )))).reduce((total, asset) => total + asset.size, 0)
+    const addedBytes = input.reference_images.reduce((total, image) => total + dataUrlBytes(image).byteLength, 0)
+    if (retainedBytes + addedBytes > MAX_REFERENCE_IMAGES_TOTAL_BYTES) {
+      throw new MediaServiceError('参考图片合计不能超过 20 MB', 400, 'REFERENCE_IMAGES_TOO_LARGE')
+    }
+    const addedAssets = await this.persistReferenceImages(project.id, input.reference_images)
+    try {
+      const addedReferences = addedAssets.map((fileName, index) => ({
+        asset_id: fileName.slice(0, fileName.lastIndexOf('.')),
+        role: input.reference_roles[index]!,
+      }))
+      const references = [...project.references, ...addedReferences]
+      const compiled = compileImageBrief(project.brief?.user_request ?? project.title, references)
+      const brief = applyImageBriefOverrides(compiled.brief, project.brief_overrides)
+      return await this.saveProject({
+        ...project,
+        prompt: providerPromptForImageBrief(brief),
+        brief,
+        references,
+        reference_image_assets: [...retainedAssets, ...addedAssets],
+        reference_image_count: references.length,
+        mode: 'edit',
+        model: routedImageModel(
+          brief.user_request,
+          project.size,
+          references.some(reference => reference.role === 'subject'),
+        ),
+        revision: project.revision + 1,
+        updated_at: this.iso(),
+      }) as ImageWorkbenchProject
+    } catch (error) {
+      await Promise.all(addedAssets.map(fileName => rm(
         join(this.assetsDir, project.id, 'references', fileName),
         { force: true },
       )))

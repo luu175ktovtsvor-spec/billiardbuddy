@@ -9,6 +9,7 @@ const mediaApiMock = vi.hoisted(() => ({
   getToolchain: vi.fn(),
   createImageProject: vi.fn(),
   updateImageProject: vi.fn(),
+  addImageProjectReferences: vi.fn(),
   submitImageProject: vi.fn(),
   startImageOperation: vi.fn(),
   commitImageVersion: vi.fn(),
@@ -212,6 +213,42 @@ describe('ImageWorkbench unknown paid result', () => {
       new_reference_images: [expect.stringMatching(/^data:image\/png;base64,/)],
       new_reference_roles: ['brand'],
     })))
+  })
+
+  it('adds a new canvas reference after generation without restarting the image task', async () => {
+    const ready = {
+      ...project,
+      state: 'ready' as const,
+      task_id: undefined,
+      error: undefined,
+    }
+    mediaApiMock.listProjects.mockResolvedValue({ projects: [ready] })
+    mediaApiMock.addImageProjectReferences.mockImplementation(async (_id, input) => ({
+      project: {
+        ...ready,
+        revision: ready.revision + 1,
+        reference_image_count: 1,
+        references: [{
+          asset_id: 'ref_logo0001',
+          role: input.reference_roles[0],
+          image_path: `/api/media/images/projects/${ready.id}/references/ref_logo0001/content`,
+          mime_type: 'image/png',
+        }],
+      },
+    }))
+    render(<ImageWorkbench />)
+
+    const file = new File(['new-logo'], 'logo.png', { type: 'image/png' })
+    fireEvent.change(await screen.findByLabelText('添加参考图片'), { target: { files: [file] } })
+    fireEvent.change(await screen.findByLabelText('logo.png 的新增参考作用'), { target: { value: 'logo' } })
+    fireEvent.click(screen.getByRole('button', { name: '保存新增参考素材' }))
+
+    await waitFor(() => expect(mediaApiMock.addImageProjectReferences).toHaveBeenCalledWith(ready.id, {
+      revision: ready.revision,
+      reference_images: [expect.stringMatching(/^data:image\/png;base64,/)],
+      reference_roles: ['logo'],
+    }))
+    expect(mediaApiMock.submitImageProject).not.toHaveBeenCalled()
   })
 
   it('requires explicit confirmation before replacing an outcome-unknown edit operation', async () => {

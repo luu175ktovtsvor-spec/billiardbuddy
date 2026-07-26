@@ -553,8 +553,20 @@ describe('MediaProjectService image projects', () => {
     })
     expect(Buffer.from(await (await service.imageLayerAssetResponse(composite.id, referenceId)).arrayBuffer()))
       .toEqual(pngBytes(1, 1))
+    const expanded = await service.addImageProjectReferences(composite.id, {
+      revision: composite.revision,
+      reference_images: [pngDataUrl(1, 1)],
+      reference_roles: ['brand'],
+    })
+    expect(expanded).toMatchObject({
+      state: 'ready',
+      current_version_id: composite.current_version_id,
+      reference_image_count: 2,
+    })
+    expect(composite.versions.every(version => expanded.versions.some(candidateVersion => candidateVersion.id === version.id))).toBe(true)
+    expect(expanded.outputs).toEqual(composite.outputs)
     const exportPath = join(await root(), 'selected.png')
-    await service.saveImageOutput(composite.id, { version_id: candidate.version_id, output_path: exportPath })
+    await service.saveImageOutput(expanded.id, { version_id: candidate.version_id, output_path: exportPath })
     expect(await readFile(exportPath)).toEqual(pngBytes(1, 1))
   })
 
