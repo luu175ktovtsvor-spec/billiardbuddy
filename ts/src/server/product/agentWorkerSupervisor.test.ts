@@ -7,6 +7,15 @@ import { AgentWorkerService } from './agentWorkerService.js'
 import { ProductResourceScheduler } from './resourceScheduler.js'
 import { DesktopResourceProfiles, conservativeDesktopResourceProfile } from './resourceProfiles.js'
 
+async function waitFor(check: () => boolean | Promise<boolean>, timeoutMs = 2_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (await check()) return
+    await Bun.sleep(5)
+  }
+  throw new Error('timed out waiting for supervisor state')
+}
+
 async function fixture() {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'worker-supervisor-')); const now = new Date('2026-01-01T00:00:00.000Z'); const scheduler = new ProductResourceScheduler({ statePath: path.join(root, 'scheduler.json'), now: () => now, profiles: new DesktopResourceProfiles(conservativeDesktopResourceProfile(now, 'test', 'toolchain'), () => now, 'test', 'toolchain') })
   let submits = 0; const submit = scheduler.submit.bind(scheduler); scheduler.submit = async claim => { submits++; return submit(claim) }
@@ -19,7 +28,7 @@ async function fixture() {
 test('supervisor rejects unbound input and starts exactly one child/Core binding per durable dispatch', async () => {
   const f = await fixture(); const supervisor = new AgentWorkerSupervisor({ ...f.runs, readTaskRunDispatchIdentity: async () => { throw new Error('unbound') } }, f.scheduler, f.launcher)
   expect(await supervisor.dispatch('run', 1)).toBe('recovery_required'); expect(f.launches).toBe(0); expect(f.claims).toBe(0); expect(f.sent).toEqual([]); expect(f.settled).toEqual([])
-  const bound = new AgentWorkerSupervisor(f.runs, f.scheduler, f.launcher); expect(await bound.dispatch('run', 1)).toBe('started'); expect(await bound.dispatch('run', 1)).toBe('started'); await Bun.sleep(10)
+  const bound = new AgentWorkerSupervisor(f.runs, f.scheduler, f.launcher); expect(await bound.dispatch('run', 1)).toBe('started'); expect(await bound.dispatch('run', 1)).toBe('started'); await waitFor(() => f.sent.some(message => (message as { type?: unknown }).type === 'start'))
   expect(f.launches).toBe(1); expect(f.claims).toBe(1); expect(f.sent).toEqual(expect.arrayContaining([expect.objectContaining({ type: 'start', run_id: 'run' })]))
   expect(await bound.approve('run', 1, 'approval-1', true)).toBeTrue()
   expect(f.sent).toEqual(expect.arrayContaining([{ type: 'approval_response', request_id: 'approval-1', approved: true }]))
@@ -32,7 +41,7 @@ test('supervisor rejects unbound input and starts exactly one child/Core binding
 
 test('supervisor fences stop and protocol mismatch into one durable settlement', async () => {
   const f = await fixture(); const badLauncher = { launch: async (input: { onMessage: (message: any) => void }) => { const child = { send: () => {}, stop: async () => {} }; setTimeout(() => input.onMessage({ type: 'hello', versions: { min: 2, max: 2 }, capabilities: [] }), 0); return child } }
-  const supervisor = new AgentWorkerSupervisor(f.runs, f.scheduler, badLauncher); expect(await supervisor.dispatch('run', 1)).toBe('started'); await Bun.sleep(10); expect(f.settled).toEqual(['recovery_required:CAPABILITY_MISMATCH']); expect((await f.scheduler.snapshot()).active).toBe(0)
+  const supervisor = new AgentWorkerSupervisor(f.runs, f.scheduler, badLauncher); expect(await supervisor.dispatch('run', 1)).toBe('started'); await waitFor(async () => f.settled.length === 1 && (await f.scheduler.snapshot()).active === 0); expect(f.settled).toEqual(['recovery_required:CAPABILITY_MISMATCH']); expect((await f.scheduler.snapshot()).active).toBe(0)
 })
 
 test('invalid model configuration settles before Core startup with stable product projection', async () => {
@@ -43,13 +52,13 @@ test('invalid model configuration settles before Core startup with stable produc
     return child
   } }
   const supervisor = new AgentWorkerSupervisor(f.runs, f.scheduler, launcher)
-  expect(await supervisor.dispatch('run', 1)).toBe('started'); await Bun.sleep(10)
+  expect(await supervisor.dispatch('run', 1)).toBe('started'); await waitFor(() => f.settled.length === 1)
   expect(f.sent).not.toEqual(expect.arrayContaining([expect.objectContaining({ type: 'start' })])); expect(f.settled).toEqual(['recovery_required:模型配置无效'])
 })
 
 test('concurrent dispatch calls share one startup before the first durable await', async () => {
   const f = await fixture(); const supervisor = new AgentWorkerSupervisor(f.runs, f.scheduler, f.launcher)
-  expect(await Promise.all([supervisor.dispatch('run', 1), supervisor.dispatch('run', 1), supervisor.dispatch('run', 1)])).toEqual(['started', 'started', 'started']); await Bun.sleep(10)
+  expect(await Promise.all([supervisor.dispatch('run', 1), supervisor.dispatch('run', 1), supervisor.dispatch('run', 1)])).toEqual(['started', 'started', 'started']); await waitFor(() => f.launches === 1)
   expect(f.submits).toBe(1); expect(f.claims).toBe(1); expect(f.launches).toBe(1); expect(f.settled).toEqual([])
 })
 
@@ -80,7 +89,13 @@ test('BB-09A waits in the durable scheduler instead of failing a resource-queued
 
 test('BB-09A heartbeats a long queue head so a waiting run cannot overtake an expired lease', async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'worker-queue-heartbeat-'))
-  const scheduler = new ProductResourceScheduler({ statePath: path.join(root, 'scheduler.json'), leaseMs: 30 })
+  const scheduler = new ProductResourceScheduler({ statePath: path.join(root, 'scheduler.json'), leaseMs: 1_000 })
+  const heartbeat = scheduler.heartbeat.bind(scheduler)
+  let heartbeatCalls = 0
+  scheduler.heartbeat = async (...args) => {
+    heartbeatCalls += 1
+    return heartbeat(...args)
+  }
   const callbacks = new Map<string, (message: any) => void>()
   const launches: string[] = []
   const runs = {
@@ -94,9 +109,11 @@ test('BB-09A heartbeats a long queue head so a waiting run cannot overtake an ex
     return { send: () => {}, stop: async () => {} }
   } }
   const supervisor = new AgentWorkerSupervisor(runs, scheduler, launcher)
+  const originalLeaseStartedAt = Date.now()
   expect(await supervisor.dispatch('first', 1)).toBe('started')
   const waiting = supervisor.dispatch('second', 1)
-  await Bun.sleep(90)
+  await waitFor(() => heartbeatCalls > 0)
+  await Bun.sleep(Math.max(0, originalLeaseStartedAt + 1_100 - Date.now()))
   expect(launches).toEqual(['first'])
   expect((await scheduler.snapshot()).active).toBe(1)
   callbacks.get('first')?.({ type: 'terminal', state: 'completed', run_id: 'first' })
@@ -139,7 +156,7 @@ test('supervisor claim and child bootstrap start one private Core without a seco
     return child
   } }
   const supervisor = new AgentWorkerSupervisor(f.runs, f.scheduler, launcher)
-  expect(await supervisor.dispatch('run', 1)).toBe('started'); await Bun.sleep(10)
+  expect(await supervisor.dispatch('run', 1)).toBe('started'); await waitFor(() => coreStarts === 1)
   expect(f.claims).toBe(1); expect(coreStarts).toBe(1); expect(inputs).toEqual(['durable user turn']); expect(f.settled).toEqual([])
 })
 
@@ -163,11 +180,11 @@ test('child exit and stop/shutdown settle their fencing claim once', async () =>
   const f = await fixture(); let onExit: (() => void) | undefined; const sent: unknown[] = []
   const exitingLauncher = { launch: async (input: { onExit: () => void }) => { onExit = input.onExit; return { send: (message: unknown) => sent.push(message), stop: async () => {} } } }
   const supervisor = new AgentWorkerSupervisor(f.runs, f.scheduler, exitingLauncher)
-  expect(await supervisor.dispatch('run', 1)).toBe('started'); onExit?.(); onExit?.(); await Bun.sleep(10)
+  expect(await supervisor.dispatch('run', 1)).toBe('started'); onExit?.(); onExit?.(); await waitFor(async () => f.settled.length === 1 && (await f.scheduler.snapshot()).active === 0)
   expect(f.settled).toEqual(['recovery_required:CHILD_EXIT']); expect((await f.scheduler.snapshot()).active).toBe(0)
 
   const stopped = await fixture(); const active = new AgentWorkerSupervisor(stopped.runs, stopped.scheduler, stopped.launcher)
-  expect(await active.dispatch('run', 1)).toBe('started'); await Bun.sleep(10); await active.stop('run', 1); await active.stop('run', 1)
+  expect(await active.dispatch('run', 1)).toBe('started'); await waitFor(() => stopped.sent.some(message => (message as { type?: unknown }).type === 'start')); await active.stop('run', 1); await active.stop('run', 1)
   expect(stopped.sent).toEqual(expect.arrayContaining([expect.objectContaining({ type: 'stop' })])); expect(stopped.settled).toEqual(['terminal:STOPPED']); expect((await stopped.scheduler.snapshot()).active).toBe(0)
 })
 

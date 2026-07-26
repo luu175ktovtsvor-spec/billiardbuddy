@@ -189,6 +189,15 @@ jobs:
             Pop-Location
           }
 
+      - name: 安装、启动并卸载 Windows 成品
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $installers = @(Get-ChildItem ts/desktop/build-artifacts/electron/*.exe -ErrorAction Stop)
+          if ($installers.Count -ne 1) { throw '未生成唯一的 Windows 安装包' }
+          & ts/desktop/scripts/accept-windows-package.ps1 -Installer $installers[0].FullName
+          if ($LASTEXITCODE -ne 0) { throw 'Windows 安装后验收失败' }
+
       - name: 保存已审计的 Windows 安装包
         continue-on-error: true
         uses: actions/upload-artifact@v4

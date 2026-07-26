@@ -236,6 +236,8 @@ jobs:
           rmdir "${mount_dir}"
           trap - EXIT
 
+          bun run ts/desktop/scripts/accept-macos-package.ts --dmg "${dmgs[0]}"
+
       - name: 保存已审计的 macOS 安装包
         uses: actions/upload-artifact@v4
         with:

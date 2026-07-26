@@ -115,6 +115,16 @@ describe('InstallationSessionManager', () => {
     expect(JSON.parse(store.value!).refresh_token).toBe('refresh-proof')
   })
 
+  it('bounds an activation request that never settles', async () => {
+    const fetchFn = vi.fn((_url: string, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(init.signal?.reason), { once: true })
+    })) as unknown as typeof fetch
+    const sessions = manager(stored(null), fetchFn, { requestTimeoutMs: 5 })
+
+    await expect(sessions.accessToken()).rejects.toThrow()
+    expect(fetchFn).toHaveBeenCalledTimes(1)
+  })
+
   it('fails closed when secure storage is unavailable, corrupt, or unreadable after restart', async () => {
     const unavailable: InstallationSessionStore = { load: () => { throw new Error('Secure credential storage is unavailable') }, save: vi.fn(), clear: vi.fn() }
     await expect(manager(unavailable, vi.fn() as unknown as typeof fetch).accessToken()).rejects.toThrow('unavailable')

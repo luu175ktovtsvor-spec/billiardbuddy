@@ -680,11 +680,16 @@ app.whenReady().then(async () => {
   // The window is the recovery surface for activation, proxy, credential-store,
   // and sidecar failures, so establish it before constructing the backend.
   await createMainWindow()
+  writeWindowSmokeSnapshot(mainWindow, 'backend-starting')
   try {
-    void getServerRuntime().startServer().catch(error => {
-      console.error('[desktop] failed to start Electron server sidecar', error)
-    })
+    void getServerRuntime().startServer()
+      .then(() => writeWindowSmokeSnapshot(mainWindow, 'backend-ready'))
+      .catch(error => {
+        writeWindowSmokeSnapshot(mainWindow, 'backend-failed')
+        console.error('[desktop] failed to start Electron server sidecar', error)
+      })
   } catch (error) {
+    writeWindowSmokeSnapshot(mainWindow, 'backend-initialization-failed')
     console.error('[desktop] failed to initialize Electron server runtime', error)
   }
   await installApplicationMenu(app, () => mainWindow)
