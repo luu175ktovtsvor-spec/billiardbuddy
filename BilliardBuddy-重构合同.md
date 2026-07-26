@@ -368,7 +368,7 @@ Provider registry 是 model ID、能力、上下文窗口、body budget、compac
 
 ### 4.4 权限与安全
 
-产品面向用户只提供 Codex 的三档权限：
+产品面向用户的权限层级直接学习 Codex 的三档用户决策边界，不另造第四套 Agent 权限，也不把它混成业务审批：
 
 - **Ask for approval**：`workspace-write + on-request + user reviewer`；Agent 在工作区沙箱内执行，越过边界时由用户审批；
 - **Approve for me**：`workspace-write + on-request + auto-review`；沙箱不变，只把符合条件的越界请求交给独立 reviewer 判断；
