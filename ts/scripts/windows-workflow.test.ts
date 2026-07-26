@@ -85,7 +85,7 @@ describe('Desktop release workflow contract', () => {
     expect(unpack?.run).toContain('finally')
   })
 
-  test('builds the oldest supported installer before proving upgrade and rollback', () => {
+  test('proves the current installer before building the oldest upgrade baseline', () => {
     const workflowSteps = steps()
     const checkout = workflowSteps.find(step => step.uses === 'actions/checkout@v5')
     const baselineIndex = workflowSteps.findIndex(step => step.name === '构建最老支持 Windows 升级基线包')
@@ -94,8 +94,10 @@ describe('Desktop release workflow contract', () => {
     const upgradeIndex = workflowSteps.findIndex(step => step.name === '从最老支持版本升级并回退 Windows 成品')
     expect(baselineIndex).toBeGreaterThanOrEqual(0)
     expect(checkout?.with?.['fetch-depth']).toBe(0)
-    expect(currentIndex).toBeGreaterThan(baselineIndex)
-    expect(upgradeIndex).toBeGreaterThan(installIndex)
+    expect(currentIndex).toBeGreaterThanOrEqual(0)
+    expect(installIndex).toBeGreaterThan(currentIndex)
+    expect(baselineIndex).toBeGreaterThan(installIndex)
+    expect(upgradeIndex).toBeGreaterThan(baselineIndex)
     expect(workflowSteps[upgradeIndex]?.run).toContain('accept-windows-upgrade.ps1')
     expect(workflowSteps[upgradeIndex]?.run).toContain('BB_OLD_WINDOWS_INSTALLER')
     const baselineScript = readFileSync(baselineScriptPath, 'utf8')

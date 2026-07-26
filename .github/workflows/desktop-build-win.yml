@@ -148,13 +148,6 @@ jobs:
 
           "BB_MEDIA_TOOLCHAIN_SOURCE_DIR=$sourceDir" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
-      - name: 构建最老支持 Windows 升级基线包
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          & ts/desktop/scripts/build-windows-upgrade-baseline.ps1 -MediaSourceDir $env:BB_MEDIA_TOOLCHAIN_SOURCE_DIR
-          if ($LASTEXITCODE -ne 0) { throw 'Windows 最老支持版本构建失败' }
-
       - name: 构建 Windows 安装包（sidecar + renderer + Electron + 打包，脚本内置 --publish never）
         working-directory: ts/desktop
         run: bun run electron:package
@@ -210,6 +203,13 @@ jobs:
           if ($installers.Count -ne 1) { throw '未生成唯一的 Windows 安装包' }
           & ts/desktop/scripts/accept-windows-package.ps1 -Installer $installers[0].FullName
           if ($LASTEXITCODE -ne 0) { throw 'Windows 安装后验收失败' }
+
+      - name: 构建最老支持 Windows 升级基线包
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & ts/desktop/scripts/build-windows-upgrade-baseline.ps1 -MediaSourceDir $env:BB_MEDIA_TOOLCHAIN_SOURCE_DIR
+          if ($LASTEXITCODE -ne 0) { throw 'Windows 最老支持版本构建失败' }
 
       - name: 从最老支持版本升级并回退 Windows 成品
         shell: pwsh
