@@ -16,6 +16,18 @@ function envelope(approval_policy: PermissionExecutionEnvelope['approval_policy'
   }
 }
 
+function networkDeniedEnvelope(): PermissionExecutionEnvelope {
+  return {
+    version: 1,
+    mode: 'legacy_deferred',
+    sandbox_profile: 'workspace',
+    approval_policy: 'user_reviewer',
+    reviewer: 'user',
+    network_scope: 'denied',
+    digest: 'permission-test',
+  }
+}
+
 function context(): ProductToolContext {
   return {
     abortController: new AbortController(),
@@ -54,5 +66,16 @@ describe('Product Host permission decision', () => {
   test('user reviewer does not silently allow MCP reads', async () => {
     await expect(decideProductToolPermission(envelope('user_reviewer'), tool({ readOnly: true, mcp: true }), { value: 'x' }, context()))
       .resolves.toMatchObject({ behavior: 'ask' })
+  })
+
+  test('frozen network denial blocks every open-world tool before user review', async () => {
+    for (const name of ['WebFetch', 'WebSearch', 'RemotePluginTool']) {
+      await expect(decideProductToolPermission(
+        networkDeniedEnvelope(),
+        tool({ readOnly: true, openWorld: true, name }),
+        { value: 'x' },
+        context(),
+      )).resolves.toMatchObject({ behavior: 'deny', message: 'Network access is disabled for this Turn' })
+    }
   })
 })

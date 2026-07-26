@@ -12,7 +12,7 @@ export async function decideProductToolPermission(
 ): Promise<ProductPermissionDecision> {
   if (context.abortController.signal.aborted) throw new Error('PRODUCT_PERMISSION_ABORTED')
   const parsed = tool.inputSchema.parse(input)
-  if (tool.name === 'WebFetch' && envelope.network_scope === 'denied') {
+  if (envelope.network_scope === 'denied' && tool.isOpenWorld(parsed)) {
     return { behavior: 'deny', message: 'Network access is disabled for this Turn', reason: `mode:${context.permissionContext.mode}` }
   }
   const toolDecision = await tool.checkPermissions(parsed, context)

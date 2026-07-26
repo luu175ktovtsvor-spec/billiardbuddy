@@ -1,6 +1,8 @@
 import { execFile as execFileCallback } from 'node:child_process'
 import * as dns from 'node:dns/promises'
 import * as fs from 'node:fs/promises'
+import * as http from 'node:http'
+import * as https from 'node:https'
 import * as net from 'node:net'
 import * as path from 'node:path'
 import { promisify } from 'node:util'
@@ -250,24 +252,144 @@ export const ProductNotebookEditTool = buildProductTool({
   mapToolResultToToolResultBlockParam: textResult,
 } satisfies ProductToolDef<typeof notebookSchema, string>)
 
-function privateAddress(address: string): boolean {
-  if (net.isIPv4(address)) {
-    const [a, b] = address.split('.').map(Number)
-    return a === 10 || a === 127 || a === 0 || (a === 169 && b === 254) || (a === 172 && b! >= 16 && b! <= 31) || (a === 192 && b === 168)
-  }
-  const value = address.toLowerCase()
-  return value === '::1' || value === '::' || value.startsWith('fc') || value.startsWith('fd') || value.startsWith('fe8') || value.startsWith('fe9') || value.startsWith('fea') || value.startsWith('feb')
+const blockedProductWebIpv4Addresses = new net.BlockList()
+const blockedProductWebIpv6Addresses = new net.BlockList()
+const productWebDnsProxyAddresses = new net.BlockList()
+productWebDnsProxyAddresses.addSubnet('198.18.0.0', 15, 'ipv4')
+for (const [network, prefix] of [
+  ['0.0.0.0', 8], ['10.0.0.0', 8], ['100.64.0.0', 10], ['127.0.0.0', 8],
+  ['169.254.0.0', 16], ['172.16.0.0', 12], ['192.0.0.0', 24], ['192.0.2.0', 24],
+  ['192.88.99.0', 24], ['192.168.0.0', 16], ['198.51.100.0', 24],
+  ['203.0.113.0', 24], ['224.0.0.0', 4], ['240.0.0.0', 4],
+] as const) blockedProductWebIpv4Addresses.addSubnet(network, prefix, 'ipv4')
+for (const [network, prefix] of [
+  ['::', 128], ['::1', 128], ['::ffff:0:0', 96], ['64:ff9b::', 96], ['64:ff9b:1::', 48],
+  ['100::', 64], ['2001::', 32], ['2001:2::', 48], ['2001:10::', 28], ['2001:db8::', 32],
+  ['fc00::', 7], ['fe80::', 10], ['ff00::', 8],
+] as const) blockedProductWebIpv6Addresses.addSubnet(network, prefix, 'ipv6')
+
+export function isProductAllowedResolvedWebAddress(address: string): boolean {
+  const family = net.isIP(address)
+  return family === 4
+    ? !blockedProductWebIpv4Addresses.check(address, 'ipv4')
+    : family === 6 && !blockedProductWebIpv6Addresses.check(address, 'ipv6')
 }
 
-async function safeUrl(raw: string): Promise<URL> {
+export type ProductPublicWebTarget = {
+  url: URL
+  hostname: string
+  address: string
+  family: 4 | 6
+}
+
+type ProductWebLookup = (hostname: string) => Promise<Array<{ address: string; family: number }>>
+const lookupProductWebAddresses: ProductWebLookup = hostname => dns.lookup(hostname, { all: true, verbatim: true })
+
+export async function resolveProductPublicWebTarget(
+  raw: string | URL,
+  lookup: ProductWebLookup = lookupProductWebAddresses,
+): Promise<ProductPublicWebTarget> {
   let url: URL
-  try { url = new URL(raw) } catch { throw new Error('PRODUCT_WEB_URL_INVALID') }
+  try { url = raw instanceof URL ? new URL(raw) : new URL(raw) } catch { throw new Error('PRODUCT_WEB_URL_INVALID') }
   if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) throw new Error('PRODUCT_WEB_URL_INVALID')
-  const host = url.hostname.toLowerCase()
-  if (host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local')) throw new Error('PRODUCT_WEB_TARGET_BLOCKED')
-  const addresses = await dns.lookup(host, { all: true, verbatim: true })
-  if (!addresses.length || addresses.some(value => privateAddress(value.address))) throw new Error('PRODUCT_WEB_TARGET_BLOCKED')
-  return url
+  const hostname = url.hostname.replace(/^\[|\]$/g, '').toLowerCase()
+  if (!hostname || hostname === 'localhost' || hostname.endsWith('.localhost') || hostname.endsWith('.local')) throw new Error('PRODUCT_WEB_TARGET_BLOCKED')
+  const literalFamily = net.isIP(hostname)
+  if (literalFamily === 4 && productWebDnsProxyAddresses.check(hostname, 'ipv4')) throw new Error('PRODUCT_WEB_TARGET_BLOCKED')
+  const addresses = literalFamily ? [{ address: hostname, family: literalFamily }] : await lookup(hostname)
+  if (!addresses.length || addresses.some(value => (value.family !== 4 && value.family !== 6) || !isProductAllowedResolvedWebAddress(value.address))) {
+    throw new Error('PRODUCT_WEB_TARGET_BLOCKED')
+  }
+  const selected = addresses[0]!
+  return { url, hostname, address: selected.address, family: selected.family as 4 | 6 }
+}
+
+type ProductPublicWebResponse = {
+  statusCode: number
+  headers: http.IncomingHttpHeaders
+  body: Uint8Array
+}
+
+function headerValue(value: string | string[] | undefined): string | undefined {
+  return Array.isArray(value) ? value[0] : value
+}
+
+function isTextualWebContentType(value: string | undefined): boolean {
+  if (!value) return true
+  const mime = value.split(';', 1)[0]!.trim().toLowerCase()
+  return mime.startsWith('text/')
+    || mime === 'application/json'
+    || mime === 'application/xml'
+    || mime === 'application/xhtml+xml'
+    || mime === 'application/javascript'
+    || mime.endsWith('+json')
+    || mime.endsWith('+xml')
+}
+
+async function requestProductPublicWebTarget(
+  target: ProductPublicWebTarget,
+  signal: AbortSignal,
+): Promise<ProductPublicWebResponse> {
+  return new Promise((resolve, reject) => {
+    const transport = target.url.protocol === 'https:' ? https : http
+    const request = transport.request({
+      protocol: target.url.protocol,
+      hostname: target.address,
+      family: target.family,
+      port: target.url.port || undefined,
+      method: 'GET',
+      path: `${target.url.pathname}${target.url.search}`,
+      headers: {
+        Host: target.url.host,
+        'User-Agent': 'BilliardBuddy/1.0',
+        Accept: 'text/*,application/json,application/xml,application/xhtml+xml',
+        'Accept-Encoding': 'identity',
+      },
+      ...(target.url.protocol === 'https:' && !net.isIP(target.hostname) ? { servername: target.hostname } : {}),
+      signal,
+    }, response => {
+      const statusCode = response.statusCode ?? 0
+      if ((statusCode >= 300 && statusCode < 400) || statusCode < 200 || statusCode >= 300) {
+        response.resume()
+        resolve({ statusCode, headers: response.headers, body: new Uint8Array() })
+        return
+      }
+      const contentEncoding = headerValue(response.headers['content-encoding'])?.trim().toLowerCase()
+      if (contentEncoding && contentEncoding !== 'identity') {
+        response.destroy()
+        reject(new Error('PRODUCT_WEB_CONTENT_ENCODING_UNSUPPORTED'))
+        return
+      }
+      if (!isTextualWebContentType(headerValue(response.headers['content-type']))) {
+        response.destroy()
+        reject(new Error('PRODUCT_WEB_CONTENT_TYPE_UNSUPPORTED'))
+        return
+      }
+      const contentLength = Number(headerValue(response.headers['content-length']) ?? 0)
+      if (Number.isFinite(contentLength) && contentLength > MAX_FETCH_BYTES) {
+        response.destroy()
+        reject(new Error('PRODUCT_WEB_RESPONSE_TOO_LARGE'))
+        return
+      }
+      const chunks: Buffer[] = []
+      let total = 0
+      response.on('data', (chunk: Buffer | Uint8Array | string) => {
+        const bytes = typeof chunk === 'string' ? Buffer.from(chunk) : Buffer.from(chunk)
+        total += bytes.byteLength
+        if (total > MAX_FETCH_BYTES) {
+          response.destroy(new Error('PRODUCT_WEB_RESPONSE_TOO_LARGE'))
+          return
+        }
+        chunks.push(bytes)
+      })
+      response.once('end', () => resolve({ statusCode, headers: response.headers, body: Buffer.concat(chunks, total) }))
+      response.once('error', reject)
+      response.once('aborted', () => reject(new Error('PRODUCT_WEB_RESPONSE_INTERRUPTED')))
+    })
+    request.setTimeout(30_000, () => request.destroy(new Error('PRODUCT_WEB_REQUEST_TIMEOUT')))
+    request.once('error', reject)
+    request.end()
+  })
 }
 
 const fetchSchema = z.strictObject({ url: z.string().url().max(8_192), prompt: z.string().max(10_000).optional() })
@@ -279,21 +401,17 @@ export const ProductWebFetchTool = buildProductTool({
   isReadOnly() { return true }, isOpenWorld() { return true }, interruptBehavior() { return 'cancel' },
   checkPermissions: passthrough('External network access requires Host authorization.'),
   async call({ url: raw }, context) {
-    let url = await safeUrl(raw)
+    let target = await resolveProductPublicWebTarget(raw)
     for (let redirects = 0; redirects <= 5; redirects += 1) {
-      const response = await fetch(url, { redirect: 'manual', signal: context.abortController.signal, headers: { 'User-Agent': 'BilliardBuddy/1.0', Accept: 'text/*,application/json,application/xml' } })
-      if ([301, 302, 303, 307, 308].includes(response.status)) {
-        const location = response.headers.get('location')
+      const response = await requestProductPublicWebTarget(target, context.abortController.signal)
+      if ([301, 302, 303, 307, 308].includes(response.statusCode)) {
+        const location = headerValue(response.headers.location)
         if (!location || redirects === 5) throw new Error('PRODUCT_WEB_REDIRECT_INVALID')
-        url = await safeUrl(new URL(location, url).toString())
+        target = await resolveProductPublicWebTarget(new URL(location, target.url))
         continue
       }
-      if (!response.ok) throw new Error(`PRODUCT_WEB_HTTP_${response.status}`)
-      const length = Number(response.headers.get('content-length') ?? 0)
-      if (length > MAX_FETCH_BYTES) throw new Error('PRODUCT_WEB_RESPONSE_TOO_LARGE')
-      const bytes = new Uint8Array(await response.arrayBuffer())
-      if (bytes.byteLength > MAX_FETCH_BYTES) throw new Error('PRODUCT_WEB_RESPONSE_TOO_LARGE')
-      return { data: `URL: ${url.toString()}\nContent-Type: ${response.headers.get('content-type') ?? 'unknown'}\n\n${new TextDecoder().decode(bytes)}` }
+      if (response.statusCode < 200 || response.statusCode >= 300) throw new Error(`PRODUCT_WEB_HTTP_${response.statusCode}`)
+      return { data: `URL: ${target.url.toString()}\nContent-Type: ${headerValue(response.headers['content-type']) ?? 'unknown'}\n\n${new TextDecoder().decode(response.body)}` }
     }
     throw new Error('PRODUCT_WEB_REDIRECT_INVALID')
   },
