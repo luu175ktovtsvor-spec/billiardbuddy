@@ -20,9 +20,12 @@ import {
 import { probePackageRenderer } from './package-renderer-product-api'
 
 function run(command: string, args: string[]): void {
-  const result = spawnSync(command, args, { stdio: 'ignore' })
+  const result = spawnSync(command, args, { encoding: 'utf8' })
   if (result.error) throw result.error
-  if (result.status !== 0) throw new Error(`${command} 退出码为 ${String(result.status)}`)
+  if (result.status !== 0) {
+    const diagnostic = [result.stderr, result.stdout].map(value => value.trim()).filter(Boolean).join('; ')
+    throw new Error(`${command} 退出码为 ${String(result.status)}${diagnostic ? `: ${diagnostic}` : ''}`)
+  }
 }
 
 function parseArgs(argv: string[]): { oldDmg: string, newDmg: string } {

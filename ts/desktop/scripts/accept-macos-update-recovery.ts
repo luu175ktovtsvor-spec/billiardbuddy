@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
@@ -17,6 +17,21 @@ import {
   requireFailedPackageUpdate,
   requireRecoveredPackageUpdate,
 } from './package-update-renderer-probe'
+
+export type CacheEntrySnapshot = { existed: boolean, entries: Set<string> }
+
+export function snapshotCacheEntries(path: string): CacheEntrySnapshot {
+  const existed = existsSync(path)
+  return { existed, entries: new Set(existed ? readdirSync(path) : []) }
+}
+
+export function cleanupNewCacheEntries(path: string, snapshot: CacheEntrySnapshot): void {
+  if (!existsSync(path)) return
+  for (const entry of readdirSync(path)) {
+    if (!snapshot.entries.has(entry)) rmSync(join(path, entry), { recursive: true, force: true })
+  }
+  if (!snapshot.existed && readdirSync(path).length === 0) rmSync(path, { recursive: true, force: true })
+}
 
 function run(command: string, args: string[]): void {
   const result = spawnSync(command, args, { stdio: 'ignore' })
@@ -108,6 +123,8 @@ async function main() {
   const userDataDir = join(tempRoot, 'user-data')
   const updateCacheName = `billiardbuddy-updater-acceptance-${basename(tempRoot)}`
   const updateCacheDir = join(homedir(), 'Library', 'Caches', updateCacheName)
+  const shipItCacheDir = join(homedir(), 'Library', 'Caches', 'com.billiardbuddy.desktop.ShipIt')
+  const shipItCacheBefore = snapshotCacheEntries(shipItCacheDir)
   let child: ChildProcess | null = null
   let keychain: TemporaryAcceptanceKeychain | null = null
   let authGateway: PackageAuthGateway | null = null
@@ -174,6 +191,7 @@ async function main() {
     await authGateway?.close()
     keychain?.restore()
     rmSync(updateCacheDir, { recursive: true, force: true })
+    cleanupNewCacheEntries(shipItCacheDir, shipItCacheBefore)
     rmSync(tempRoot, { recursive: true, force: true })
   }
 }
