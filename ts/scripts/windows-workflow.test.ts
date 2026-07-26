@@ -32,6 +32,7 @@ const installerRunnerPath = path.resolve(
   import.meta.dir,
   '../desktop/scripts/windows-installer-runner.ps1',
 )
+const desktopPackagePath = path.resolve(import.meta.dir, '../desktop/package.json')
 
 function steps(): WorkflowStep[] {
   const workflow = parse(readFileSync(workflowPath, 'utf8')) as Workflow
@@ -103,6 +104,17 @@ describe('Desktop release workflow contract', () => {
       expect(script).toContain(". (Join-Path $PSScriptRoot 'windows-installer-runner.ps1')")
       expect(script).toContain('Invoke-BilliardBuddyWindowsInstaller')
     }
+  })
+
+  test('pins the Windows installer runtime that replaces the crashing NSIS System plugin', () => {
+    const desktopPackage = JSON.parse(readFileSync(desktopPackagePath, 'utf8')) as {
+      build?: { nsis?: { customNsisBinary?: { url?: string; checksum?: string; version?: string } } }
+    }
+    expect(desktopPackage.build?.nsis?.customNsisBinary).toEqual({
+      url: 'https://github.com/electron-userland/electron-builder-binaries/releases/download/nsis-3.0.5.0/nsis-3.0.5.0.7z',
+      checksum: 'cTeQgtymnETCMGZa89l5A790zw4otqFThfQbm52AbhUtPUD2yp2lmmu/T9Hd6fG/rDej0o6X6OTupxZB3n8HbA==',
+      version: '3.0.5.0',
+    })
   })
 
   test('proves the current installer before downloading the published upgrade baseline', () => {
