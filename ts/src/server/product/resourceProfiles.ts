@@ -1,17 +1,33 @@
-import type { ProductResourceBenchmarkEvidence, ProductResourceByteBudget, ProductResourceHardwareIdentity, ProductResourceKey, ProductResourceProfile, ProductResourceProfileLimit } from '../../../shared/product/resourceScheduler.js'
+import type { ProductResourceBenchmarkEvidence, ProductResourceByteBudget, ProductResourceHardwareIdentity, ProductResourceKey, ProductResourceProfile, ProductResourceProfileLimit } from '../../../shared/kernel/resourceScheduler.js'
 
 const HOUR = 60 * 60 * 1000
 const baselineBytes: ProductResourceByteBudget = { memory: 512 * 1024 * 1024, input: 64 * 1024 * 1024, temp: 256 * 1024 * 1024, output: 128 * 1024 * 1024 }
 
-function limit(maxActive = 1): ProductResourceProfileLimit {
-  return { max_active: maxActive, max_queued: 32, max_active_per_owner: 1, max_queued_per_owner: 8, bytes: { ...baselineBytes } }
+function limit(overrides: Partial<Omit<ProductResourceProfileLimit, 'bytes'>> = {}): ProductResourceProfileLimit {
+  return {
+    max_active: 1,
+    max_queued: 32,
+    max_active_per_owner: 1,
+    max_queued_per_owner: 8,
+    bytes: { ...baselineBytes },
+    ...overrides,
+  }
 }
 
 /** Safe, shipped baseline.  Expired device measurements always fall back here. */
 export function conservativeDesktopResourceProfile(now = new Date(), platform = process.platform, toolchain = process.version, hardware: ProductResourceHardwareIdentity = defaultHardwareIdentity()): ProductResourceProfile {
-  const limits: Partial<Record<ProductResourceKey, ProductResourceProfileLimit>> = {}
-  for (const key of ['agent.worker', 'agent.turn', 'schedule.dispatch', 'filesystem.write.workspace', 'filesystem.write.external', 'browser.session', 'browser.batch', 'content.inspect', 'content.extract', 'content.thumbnail', 'storage.attachment-temp'] as const) limits[key] = limit()
-  return { scope: 'desktop-host', revision: 'conservative-desktop-v1', expires_at: new Date(now.getTime() + 365 * 24 * HOUR).toISOString(), platform, toolchain, hardware, limits }
+  const limits: Partial<Record<ProductResourceKey, ProductResourceProfileLimit>> = {
+    // Chat turns spend most of their lifetime waiting on the model or a user-approved
+    // tool. Keep a real host-wide ceiling, but do not serialize independent tasks into
+    // a hidden one-window product limit.
+    'agent.worker': limit({ max_active: 10, max_queued: 128 }),
+    'agent.turn': limit({ max_active: 10, max_queued: 128 }),
+  }
+  for (const key of ['schedule.dispatch', 'filesystem.write.workspace', 'filesystem.write.external', 'browser.session', 'browser.batch', 'content.inspect', 'content.extract', 'content.thumbnail', 'storage.attachment-temp'] as const) limits[key] = limit()
+  limits['media.ffprobe'] = limit({ max_active: 2, max_queued: 16, max_active_per_owner: 2, max_queued_per_owner: 8 })
+  limits['media.ffmpeg.encode'] = limit({ max_active: 1, max_queued: 8, max_active_per_owner: 1, max_queued_per_owner: 4 })
+  limits['media.local-io'] = limit({ max_active: 2, max_queued: 16, max_active_per_owner: 2, max_queued_per_owner: 8 })
+  return { scope: 'desktop-host', revision: 'conservative-desktop-v2', expires_at: new Date(now.getTime() + 365 * 24 * HOUR).toISOString(), platform, toolchain, hardware, limits }
 }
 
 export function defaultHardwareIdentity(): ProductResourceHardwareIdentity {
@@ -74,7 +90,7 @@ function validLimit(value: ProductResourceProfileLimit): boolean {
   const integers = [value.max_active, value.max_queued, value.max_active_per_owner, value.max_queued_per_owner]
   const byteCeiling = 32 * 1024 * 1024 * 1024
   return integers.every(number => Number.isSafeInteger(number) && number >= 0)
-    && value.max_active <= 8 && value.max_queued <= 128
+    && value.max_active <= 16 && value.max_queued <= 128
     && value.max_active_per_owner <= value.max_active && value.max_queued_per_owner <= value.max_queued
     && Object.values(value.bytes).every(number => Number.isSafeInteger(number) && number >= 0 && number <= byteCeiling)
 }

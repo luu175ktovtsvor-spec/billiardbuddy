@@ -13,7 +13,7 @@ import {
   type ProductResourceReasonCode,
   type ProductResourceReceipt,
   type ProductResourceSnapshot,
-} from '../../../shared/product/resourceScheduler.js'
+} from '../../../shared/kernel/resourceScheduler.js'
 import { DesktopResourceProfiles } from './resourceProfiles.js'
 
 type JobState = 'queued' | 'running' | 'cancelling' | 'cancelled' | 'completed' | 'outcome_unknown'
@@ -93,6 +93,7 @@ export class ProductResourceScheduler {
   private readonly processId: string
   private readonly processGeneration: string
   private readonly leaseMs: number
+  private mutationTail: Promise<void> = Promise.resolve()
 
   constructor(private readonly options: ProductResourceSchedulerOptions) {
     this.profiles = options.profiles ?? new DesktopResourceProfiles()
@@ -113,7 +114,11 @@ export class ProductResourceScheduler {
       const duplicate = Object.values(state.jobs).find(job => job.claim.idempotency_key === claim.idempotency_key)
       if (duplicate) {
         this.dispatch(state, profile.profile)
-        return this.receipt(duplicate, 'duplicate')
+        return this.receipt(
+          duplicate,
+          'duplicate',
+          !isQueued(duplicate) && !isActive(duplicate) ? 'ALREADY_SETTLED' : undefined,
+        )
       }
       const invalid = this.validateClaim(claim, keys, profile.profile)
       if (invalid) return { job_id: claim.job_id, outcome: 'rejected', profile_revision: profile.profile.revision, resource_keys: keys, reason_code: invalid }
@@ -129,6 +134,15 @@ export class ProductResourceScheduler {
 
   /** Server-private claim builder input; consumers never select a profile revision. */
   profileRevision(): string { return this.profiles.current().profile.revision }
+
+  /** A duplicate receipt can expose a lease, but only its original process may operate it. */
+  ownsLease(lease: ProductResourceLease | undefined): boolean {
+    return Boolean(
+      lease
+      && lease.process_id === this.processId
+      && lease.process_generation === this.processGeneration,
+    )
+  }
 
   async heartbeat(jobId: string, fencingToken: number): Promise<ProductResourceReceipt> {
     return this.mutate(state => {
@@ -266,9 +280,19 @@ export class ProductResourceScheduler {
     return { status, profile_revision: profile.profile.revision, active: jobs.filter(isActive).length, queued: queued.length, bytes, oldest_wait_ms: wait, owner_rejects: 0, lease_owner: jobs.find(isActive)?.lease?.owner_id ?? null, ...(profile.status === 'degraded' ? { reason_code: 'PROFILE_DEGRADED' as const } : {}) }
   }
 
-  private async mutate<T>(operation: (state: DurableState) => T, write = true): Promise<T> {
+  private mutate<T>(operation: (state: DurableState) => T, write = true): Promise<T> {
+    const execute = () => this.mutateWithLock(operation, write)
+    const result = this.mutationTail.then(execute, execute)
+    this.mutationTail = result.then(() => undefined, () => undefined)
+    return result
+  }
+
+  private async mutateWithLock<T>(operation: (state: DurableState) => T, write: boolean): Promise<T> {
     const guard = `${this.options.statePath}.guard`; await fs.mkdir(path.dirname(guard), { recursive: true }); await fs.open(guard, 'a').then(handle => handle.close())
-    const release = await lock(guard, { stale: 30_000, retries: { retries: 100, minTimeout: 5, maxTimeout: 25 } })
+    // Mutations are tiny, but many independent chat windows may wake around
+    // the same time. Wait through ordinary contention instead of surfacing a
+    // scheduler denial for a healthy multi-window desktop session.
+    const release = await lock(guard, { stale: 30_000, retries: { retries: 200, minTimeout: 10, maxTimeout: 50 } })
     try { const state = await this.read(); const result = operation(state); if (write) await this.write(state); return result } finally { await release() }
   }
   private async read(): Promise<DurableState> { try { return validateState(JSON.parse(await fs.readFile(this.options.statePath, 'utf8')) as unknown) } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { version: 1, sequence: 0, fencing: 0, status: 'ready', last_owner: null, jobs: Object.create(null) }; throw error } }

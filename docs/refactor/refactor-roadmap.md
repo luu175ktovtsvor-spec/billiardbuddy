@@ -257,6 +257,21 @@ R11 桌面构建、自动更新与发布
 - **Constraints**：共享的是基础机制，不共享工作台状态机；renderer、Gateway、供应商和临时进程不能成为第二份业务真相。
 - **Verification**：每类身份与状态只有一个写入权威；进程中断、重复请求、迟到结果和结果未知都有确定归属；旧共享模块没有并行入口；Server/Electron 类型、生产构建和源码可达性成立。
 
+### R1.1 Shared Kernel 资源与执行合同
+
+- **Outcome**：跨 Agent、图片和视频共用一份进程无关的资源调度合同与一份持久调度实现；资源租约、fencing、幂等重复观察和队列容量不再由业务域各自定义。
+- **Evidence**：`ts/shared/kernel/resourceScheduler.ts`、`ts/src/server/product/resourceScheduler.ts`、`ts/src/server/product/resourceProfiles.ts` 及仍未迁移消费者的单一兼容转发文件 `ts/shared/product/resourceScheduler.ts`。
+- **Constraints / Non-goals**：本轮不迁移 Agent Authority、模型额度、安装身份、设置或媒体领域状态；兼容转发不得包含第二份类型、状态或实现。
+- **Allowed scope**：Shared Kernel resource scheduler、桌面 Host resource profile、其服务端实现和对应核验记录。
+- **Verification / Exit**：类型检查、生产构建、源码可达性和暂存差异证明只有 Kernel 实现拥有资源合同；旧路径只能转发；重复结果、跨进程 lease 和同进程并发 mutation 保持确定语义。
+- **Next cursor**：R1.2 — 共享身份、能力目录、设置与迁移入口。
+
+### R1.2 共享身份、能力目录、设置与迁移入口
+
+- **Outcome**：安装身份、能力快照、设置持久化、凭据边界和存储迁移由共享控制面提供单一入口，不把秘密或领域状态复制到 Renderer/Gateway/业务域。
+- **Constraints**：不改变 Agent Model Port 或媒体项目状态；个人模型与托管额度的具体执行留在 R3；桌面壳体验留在 R7。
+- **Verification**：身份轮换、能力降级、设置并发写入和迁移回滚分别有当前源码证据；下一游标再进入 R2.1。
+
 ### R2 Agent Core / Harness
 
 - **Outcome**：一个模型无关 Agent Core 持续完成 Thread / Turn / Item、模型—工具循环、上下文、权限、停止、恢复、扩展、协作和审阅；更换模型只改变适配器，不改变 Agent 行为合同。
@@ -454,13 +469,13 @@ R2 被路线图选中时，内部不按“看到一个缺口就补一个功能�
 - **已完成阶段：R0.1 重构合同与施工证据回溯核验、R1.1 共享产品内核的权威边界回溯核验、R2.1 Agent Harness 生产调用链回溯核验、R3.1 模型执行端口与使用权控制面回溯核验、R4.1 Agent 桌面客户端事件投影回溯核验、R5.1 图片工作台提交、任务与不可变资产回溯核验**。历史阶段记录已降为待源码核验的证据，不能再单独推进施工或发布。
 
 ```text
-Active work unit: R0.2 — 模块施工与提交收口
-Outcome: 现有混合工作树被拆成可审阅的模块资产；一次只完成一个模块并形成一次独立提交。
-Evidence: `docs/refactor/module-commit-protocol.md`、`docs/refactor/worktree-module-inventory.md`、当前 git status 与暂存区快照。
-Constraints / Non-goals: 不重置、覆盖或删除已有改动；本单元不改 Agent、图片、视频、部署或发布代码。
-Allowed scope: R0 文档、路线图游标、工作树归属盘点和核验账本。
-Verification / Exit: 只有 R0 文档被暂存并提交；暂存差异不含代码或其他模块；下一游标唯一指向 R1.1。
-Next cursor: R1.1 — 共享产品内核的权威边界回溯核验。
+Active work unit: R1.2 — 共享身份、能力目录、设置与迁移入口
+Outcome: 稳定安装身份、匿名安装会话、公共 Gateway 配置、能力降级、受信凭据恢复和可回滚存储升级由同一控制面负责。
+Evidence: `ts/desktop/electron/services/installationSession.ts`、`productConfig.ts`、`serverRuntime.ts`、`ts/src/server/services/gatewayAccessTokenRuntime.ts`、`productCapabilitySnapshot.ts`、`productStorageMigrations.ts`。
+Constraints / Non-goals: 不改 Agent Model Port、个人模型执行、额度账本、媒体项目状态或桌面壳体验；安装包、Renderer 和 Agent Worker 不获得任何可复用密钥。
+Allowed scope: 安装会话/身份、Gateway 公共配置与 bearer 更新、能力目录、设置凭据恢复、迁移入口和 R1.2 证据记录。
+Verification / Exit: Server/Desktop 类型检查、生产构建、源码可达性、打包配置静态检查和暂存差异审阅全部通过；下一游标唯一指向 R2.1。
+Next cursor: R2.1 — Agent Harness Authority 与 Worker/Host 生产调用链。
 ```
 - **Interrupt rule**：只有发现会造成错误结果、数据丢失、重复副作用、权限越界或无法恢复的事实才可中断；其余发现进入对应后续模块。
 

@@ -28,13 +28,21 @@
 
 ## R1 共享产品内核
 
+### R1.1 Shared Kernel 资源与执行合同
+
+- **实际入口与唯一权威**：`ts/shared/kernel/resourceScheduler.ts` 是跨进程合同；`ts/src/server/product/resourceScheduler.ts` 是唯一持久调度实现；`ts/src/server/product/resourceProfiles.ts` 是桌面 Host 的 profile 来源。`ts/shared/product/resourceScheduler.ts` 仅转发到 Kernel，不保存第二套定义。
+- **当前源码证明**：资源 claim、lease、fencing、队列、重复 operation、结果未知和 process generation 都从 Kernel 合同进入同一 JSON journal；服务端 scheduler 通过进程内 mutation tail 串行化同进程调用，再用跨进程文件锁保护持久状态；profile 将 Agent 和媒体资源限制集中到同一 Host 资源池。
+- **当前结论**：R1.1 静态边界已闭合；旧 import 仍可编译，但不存在第二个资源状态机或第二个实现入口。本模块的服务端类型检查、桌面类型检查、桌面生产构建、源码可达性审计和差异空白检查均已重新通过。
+- **未验证/待处理**：真实设备峰值、进程崩溃后的实际租约回收和多窗口压力仍未运行验证；身份、能力、设置、凭据和迁移属于 R1.2，不由本单元提前宣称完成。
+- **下一项**：R1.2 共享身份、能力目录、设置与迁移入口。
+
 - **权限合同**：`shared/kernel/permissionExecutionEnvelope.ts` 只定义跨进程不可变信封；创建、摘要和校验集中在 `server/product/permissionExecutionEnvelope.ts`，Worker 协议、Host 与 sandbox 都只消费该合同。当前源码未出现第二个信封写入者。
 - **资源调度**：`shared/kernel/resourceScheduler.ts` 只公开 claim、lease、fencing 和 `ProductResourceSchedulerPort`；唯一的持久调度实现是 `server/product/resourceScheduler.ts`。本轮发现媒体本地进程原先有独立的内存队列，已移除：`MediaProjectService` 只能从启动点注入该端口，FFmpeg、FFprobe 和流式逐帧解码都先取得同一 desktop-host 租约；媒体 API、能力快照和路由也不再各自构造服务实例。
 - **跨工作台持久化**：媒体项目由 `MediaProjectStore` 在单个 repository 写锁内校验 writer fence、资产不可变性与 CAS 后写入；图片与视频只通过各自的 mutation 串行队列进入该存储。遗留 `product_task_id` 仅在迁移 reader 中被转换为 standalone media owner，当前 Agent 不写媒体项目状态。
 - **能力、设置、凭据与迁移**：能力快照只由启动点传入当前媒体服务和调度任务服务；设置写入集中在带文件锁和原子替换的 `ProductSettingsRepository`；个人模型与 Gateway token 都由 Main 传入的一次性 capability 保护，启动时从环境移除；`ProductStorageMigrationCoordinator` 是产品任务、媒体、语音和计划存储的单一启动迁移编排器，并在回滚前保留备份 journal。
-- **当前结论**：R1 的静态退出条件已闭合：共享层只有合同和进程中立端口，领域写入权威留在各自服务；Agent 当前不导入媒体项目/任务合同，图片与视频不通过 Agent 状态写入；R1 的已确认资源调度旁路已修复。`check:server`、`audit:source`、`check:desktop`（生产构建）和本轮涉及文件的 whitespace audit 已通过。桌面构建仍有既存 `::highlight(...)` CSS 兼容性 warning，不属于本单元修改。
-- **未验证/待处理**：没有运行软件、真实设备或外部服务，因此并未把中断后实际进程清理、迁移时的真实磁盘回滚或凭据轮换结果当作已验证行为；这些必须保持为最终软件验收事实，不能用静态结论替代。
-- **下一项**：R2.1 Agent Harness 生产调用链回溯核验。
+- **当前结论**：旧 R1 总体记录只能作为历史候选证据；当前只把 R1.1 的 Shared Kernel 资源合同与调度边界视为已核验，R1.2 尚未完成。
+- **未验证/待处理**：身份、能力、设置、凭据与迁移的当前源码仍混在 R3/R7/R2 改动中，必须按 R1.2 单独拆分和提交；真实设备、磁盘回滚和凭据轮换仍不能由静态检查替代。
+- **下一项**：R1.2 共享身份、能力目录、设置与迁移入口。
 
 ## R2 Agent Harness
 
