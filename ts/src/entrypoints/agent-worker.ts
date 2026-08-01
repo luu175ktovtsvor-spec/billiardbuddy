@@ -7,7 +7,7 @@ import { productAgentHarnessProjectionPort } from '../server/product/agentHarnes
 import { productAgentHarnessModelPolicyPort } from '../server/product/agentHarnessModelPolicyPort.js'
 import { ProductSkillTool } from '../server/agent-worker/productSkillTool.js'
 import { ProductSubtaskTool } from '../server/agent-worker/productSubtaskTool.js'
-import type { ProductHostRuntimeSnapshot } from '../server/agent-worker/productAgentHostRuntime.js'
+import type { ProductHostEngineToolResult, ProductHostEngineToolSurface, ProductHostRuntimeSnapshot } from '../server/agent-worker/productAgentHostRuntime.js'
 import type { TaskRunExternalOperationKind } from '../server/product/taskRunLedgerModel.js'
 import { runProductTools } from '../server/agent-worker/productToolExecution.js'
 import type { AgentWorkerBootstrap, AgentWorkerCore, AgentWorkerCoreFactory } from '../server/product/agentWorkerService.js'
@@ -24,7 +24,7 @@ type StartResult = { identity: AgentWorkerCoreIdentity; binding: CoreBinding }
 type CoreRequest = {
   type: 'core_request'
   id: string
-  operation: 'start' | 'prepare' | 'command_prompt' | 'chat_prompt' | 'model' | 'engine_model' | 'tools' | 'approval' | 'question' | 'stop' | 'shutdown' | 'external_operation_begin' | 'external_operation_result' | 'external_operation_checkpoint' | 'external_operation_mcp_checkpoint' | 'external_operation_unknown'
+  operation: 'start' | 'prepare' | 'command_prompt' | 'chat_prompt' | 'model' | 'engine_tools' | 'engine_model' | 'engine_tool' | 'tools' | 'approval' | 'question' | 'stop' | 'shutdown' | 'external_operation_begin' | 'external_operation_result' | 'external_operation_checkpoint' | 'external_operation_mcp_checkpoint' | 'external_operation_unknown'
   execution_claim_token?: string
   value?: unknown
 }
@@ -353,7 +353,18 @@ process.on('message', (message: unknown) => {
                   recordExternalOperationResult: async operationId => { await request('external_operation_result', { operation_id: operationId }) },
                   checkpointExternalOperation: async (operationId, checkpointDigest) => { await request('external_operation_checkpoint', { operation_id: operationId, checkpoint_digest: checkpointDigest }) },
                   markExternalOperationUnknown: async operationId => { await request('external_operation_unknown', { operation_id: operationId }) },
+                  engineTools: async () => {
+                    const result = await request('engine_tools')
+                    if (!result || typeof result !== 'object' || !('operation_id' in result) || !('value' in result)) throw new Error('CODEX_ENGINE_TOOL_SURFACE_UNAVAILABLE')
+                    const operationId = parseOperationId(result)
+                    const surface = (result as ParentEffectResult<ProductHostEngineToolSurface>).value
+                    if (!operationId || !surface || typeof surface !== 'object') throw new Error('CODEX_ENGINE_TOOL_SURFACE_UNAVAILABLE')
+                    return { operation_id: operationId, surface }
+                  },
                   engineModel: (operationId, value) => requestStream('engine_model', { operation_id: operationId, ...value }) as AsyncGenerator<ProductModelEvent, void>,
+                  engineTool: async (operationId, value) => await request('engine_tool', { operation_id: operationId, ...value }) as ProductHostEngineToolResult,
+                  approve: async (requestId, approved) => { await request('approval', { requestId, approved }) },
+                  answer: async (requestId, answers) => { await request('question', { requestId, answers }) },
                   stopHost: async () => { await request('stop') },
                   shutdownHost: async () => { await request('shutdown') },
                 },

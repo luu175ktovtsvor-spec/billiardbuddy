@@ -1,13 +1,14 @@
 import { createHash } from 'node:crypto'
 import type { AgentWorkerOutbound } from '../../../shared/product/agentWorker.js'
 import type { ProductAssistantMessage, ProductModelEvent } from '../../../shared/product/harnessMessages.js'
+import type { ProductHostEngineToolResult, ProductHostEngineToolSurface } from '../agent-worker/productAgentHostRuntime.js'
 import { productTaskRunFailure } from '../product/taskRunFailure.js'
 import type { AgentWorkerCore } from '../product/agentWorkerService.js'
 import type { AgentWorkerCoreIdentity } from '../product/agentWorkerSupervisor.js'
 import { resolveManagedCodexEngineCommand } from './codexEngineCommand.js'
 import { CodexEngineRuntime, type CodexEngineAcceptedTurn } from './codexEngineRuntime.js'
 import { CodexEngineThreadStore } from './codexEngineThreadStore.js'
-import type { CodexAppServerNotification, JsonValue } from './codexAppServerClient.js'
+import type { CodexAppServerNotification, CodexAppServerRequest, JsonValue } from './codexAppServerClient.js'
 import type { CodexResponsesModelRequest } from './codexResponsesModelBridge.js'
 import type { TaskRunExternalOperationKind } from '../product/taskRunLedgerModel.js'
 
@@ -22,7 +23,11 @@ export type CodexEngineWorkerParentPort = {
   recordExternalOperationResult(operationId: string): Promise<void>
   checkpointExternalOperation(operationId: string, checkpointDigest: string): Promise<void>
   markExternalOperationUnknown(operationId: string): Promise<void>
-  engineModel(operationId: string, request: { messages: CodexResponsesModelRequest['messages']; systemPrompt: string[]; thinkingConfig: CodexResponsesModelRequest['thinking_config']; model?: string }): AsyncGenerator<ProductModelEvent, void>
+  engineTools(): Promise<{ operation_id: string; surface: ProductHostEngineToolSurface }>
+  engineModel(operationId: string, request: { messages: CodexResponsesModelRequest['messages']; systemPrompt: string[]; thinkingConfig: CodexResponsesModelRequest['thinking_config']; model?: string; engine_tool_names: string[]; engine_tool_surface_digest: string }): AsyncGenerator<ProductModelEvent, void>
+  engineTool(operationId: string, request: { tool_call_id: string; tool_name: string; arguments: Record<string, unknown>; tool_surface_digest: string }): Promise<ProductHostEngineToolResult>
+  approve(requestId: string, approved: boolean): Promise<void>
+  answer(requestId: string, answers: readonly string[]): Promise<void>
   stopHost(): Promise<void>
   shutdownHost(): Promise<void>
 }
@@ -31,6 +36,11 @@ type PendingModelReceipt = {
   operation_id: string
   assistant: ProductAssistantMessage
   result_digest: string
+}
+
+type PendingToolReceipt = {
+  operation_id: string
+  call_id: string
 }
 
 type Deferred = {
@@ -42,7 +52,7 @@ type Deferred = {
 const ENGINE_BASE_INSTRUCTIONS = [
   '你是 BilliardBuddy 的受管 Agent 执行内核。',
   '只完成用户任务；模型访问、状态、权限和最终结果均由 BilliardBuddy 管理。',
-  '当前运行没有可直接调用的工具。不要假设拥有终端、浏览器、文件或网络访问能力。',
+  '只能调用本轮由 BilliardBuddy 明确提供的工具。工具执行、权限确认、MCP 和工作区边界均由 BilliardBuddy 宿主负责。',
 ].join('\n')
 
 function record(value: JsonValue | undefined): Record<string, JsonValue | undefined> | undefined {
@@ -64,6 +74,10 @@ function assistantResultDigest(assistant: ProductAssistantMessage): string {
   return createHash('sha256').update(JSON.stringify(assistant.message)).digest('hex')
 }
 
+function toolResultDigest(value: { call_id: string; tool_name: string; result: ProductHostEngineToolResult }): string {
+  return createHash('sha256').update(JSON.stringify(value)).digest('hex')
+}
+
 function acceptedTurn(notification: CodexAppServerNotification): { thread_id: string; turn_id: string; status: string } | undefined {
   const params = record(notification.params)
   const turn = record(params?.turn)
@@ -71,6 +85,21 @@ function acceptedTurn(notification: CodexAppServerNotification): { thread_id: st
   const turnId = text(turn?.id, 512)
   const status = text(turn?.status, 128)
   return threadId && turnId && status ? { thread_id: threadId, turn_id: turnId, status } : undefined
+}
+
+function dynamicToolContent(result: ProductHostEngineToolResult): Array<Record<string, string>> {
+  const content = typeof result.content === 'string' ? [{ type: 'text' as const, text: result.content }] : result.content
+  const output: Array<Record<string, string>> = []
+  for (const block of content) {
+    if (block.type === 'text') {
+      output.push({ type: 'inputText', text: block.text.slice(0, 3_000_000) })
+      continue
+    }
+    if (block.type === 'image') {
+      output.push({ type: 'inputImage', imageUrl: `data:${block.media_type};base64,${block.data}` })
+    }
+  }
+  return output.length ? output : [{ type: 'inputText', text: '(Tool returned no content)' }]
 }
 
 /**
@@ -85,6 +114,8 @@ export class CodexEngineWorkerCore implements AgentWorkerCore {
   private activeTurn?: CodexEngineAcceptedTurn
   private turnReceipt?: Deferred
   private pendingModel?: PendingModelReceipt
+  private pendingTool?: PendingToolReceipt
+  private toolSurface?: ProductHostEngineToolSurface
   private readonly checkpointedModelOperations = new Set<string>()
   private readonly agentMessageText = new Map<string, string>()
   private modelReceiptCheckpointed = false
@@ -130,6 +161,7 @@ export class CodexEngineWorkerCore implements AgentWorkerCore {
     this.turnReceipt = receipt
     let operationId: string | undefined
     try {
+      await this.prepareToolSurface(runtime)
       operationId = await this.options.parent.beginExternalOperation('engine_turn')
       const accepted = await runtime.startTurn({ run_id: this.options.run_id, text: textInput })
       // The source can request its model immediately after returning from
@@ -146,9 +178,13 @@ export class CodexEngineWorkerCore implements AgentWorkerCore {
     }
   }
 
-  async approve(_requestId: string, _approved: boolean): Promise<void> {}
+  async approve(requestId: string, approved: boolean): Promise<void> {
+    await this.options.parent.approve(requestId, approved)
+  }
 
-  async answer(_requestId: string, _answers: readonly string[]): Promise<void> {}
+  async answer(requestId: string, answers: readonly string[]): Promise<void> {
+    await this.options.parent.answer(requestId, answers)
+  }
 
   async stop(): Promise<void> {
     if (this.stopping) return
@@ -166,6 +202,9 @@ export class CodexEngineWorkerCore implements AgentWorkerCore {
     const pendingModel = this.pendingModel
     this.pendingModel = undefined
     if (pendingModel) await this.options.parent.markExternalOperationUnknown(pendingModel.operation_id).catch(() => undefined)
+    const pendingTool = this.pendingTool
+    this.pendingTool = undefined
+    if (pendingTool) await this.options.parent.markExternalOperationUnknown(pendingTool.operation_id).catch(() => undefined)
     await this.runtime?.close().catch(() => undefined)
     this.runtime = undefined
     await this.options.parent.shutdownHost()
@@ -190,6 +229,7 @@ export class CodexEngineWorkerCore implements AgentWorkerCore {
       run_model: request => this.runModel(request),
       checkpoint_model_result: async assistant => await this.checkpointModelResult(assistant),
       on_notification: notification => this.onNotification(notification),
+      on_server_request: async request => await this.onServerRequest(request),
     })
     await runtime.start()
     this.runtime = runtime
@@ -197,6 +237,13 @@ export class CodexEngineWorkerCore implements AgentWorkerCore {
 
   private async *runModel(request: CodexResponsesModelRequest): AsyncGenerator<ProductModelEvent, void> {
     await this.turnReceipt?.promise
+    const surface = this.toolSurface
+    const toolNames = request.tools.map(tool => tool.name).sort((left, right) => left.localeCompare(right))
+    if (
+      !surface
+      || toolNames.length !== surface.tools.length
+      || toolNames.some((name, index) => name !== surface.tools[index]?.name)
+    ) throw new Error('CODEX_ENGINE_TOOL_SURFACE_MISMATCH')
     const operationId = await this.options.parent.beginExternalOperation('model')
     let final: ProductAssistantMessage | undefined
     try {
@@ -204,6 +251,8 @@ export class CodexEngineWorkerCore implements AgentWorkerCore {
         messages: request.messages,
         systemPrompt: request.system_prompt,
         thinkingConfig: request.thinking_config,
+        engine_tool_names: toolNames,
+        engine_tool_surface_digest: surface.digest,
         ...(request.model ? { model: request.model } : {}),
       })) {
         if (event.type === 'model_delta') {
@@ -243,6 +292,68 @@ export class CodexEngineWorkerCore implements AgentWorkerCore {
     } catch (error) {
       this.pendingModel = undefined
       await this.options.parent.markExternalOperationUnknown(pending.operation_id).catch(() => undefined)
+      throw error
+    }
+  }
+
+  private async prepareToolSurface(runtime: CodexEngineRuntime): Promise<void> {
+    if (this.toolSurface) return
+    const prepared = await this.options.parent.engineTools()
+    let accepted = false
+    try {
+      const digest = await runtime.checkpointToolSurface(prepared.surface)
+      await this.options.parent.checkpointExternalOperation(prepared.operation_id, digest)
+      this.toolSurface = prepared.surface
+      accepted = true
+    } finally {
+      if (!accepted) await this.options.parent.markExternalOperationUnknown(prepared.operation_id).catch(() => undefined)
+    }
+  }
+
+  private async onServerRequest(request: CodexAppServerRequest): Promise<JsonValue | undefined> {
+    if (request.method !== 'item/tool/call') throw new Error('CODEX_ENGINE_SERVER_REQUEST_UNSUPPORTED')
+    const params = record(request.params)
+    const activeTurn = this.activeTurn
+    const surface = this.toolSurface
+    const threadId = text(params?.threadId, 512)
+    const turnId = text(params?.turnId, 512)
+    const callId = text(params?.callId, 512)
+    const namespace = params?.namespace
+    const toolName = text(params?.tool, 128)
+    const argumentsValue = record(params?.arguments)
+    if (
+      !activeTurn || !surface || this.terminal || this.stopping || this.pendingTool
+      || threadId !== activeTurn.thread_id || turnId !== activeTurn.turn_id
+      || !callId || !/^[A-Za-z0-9_-]{1,512}$/.test(callId)
+      || namespace !== null && namespace !== undefined
+      || !toolName || !surface.tools.some(tool => tool.name === toolName)
+      || !argumentsValue
+    ) throw new Error('CODEX_ENGINE_DYNAMIC_TOOL_INVALID')
+    const operationId = await this.options.parent.beginExternalOperation('tools')
+    this.pendingTool = { operation_id: operationId, call_id: callId }
+    const activityId = `tool_${createHash('sha256').update(`${this.options.run_id}:${callId}`).digest('hex').slice(0, 32)}`
+    this.emit({ type: 'event', event: 'activity', activity: { id: activityId, kind: 'tool', phase: 'started', summary: '正在执行受管工具' } })
+    try {
+      const result = await this.options.parent.engineTool(operationId, {
+        tool_call_id: callId,
+        tool_name: toolName,
+        arguments: argumentsValue,
+        tool_surface_digest: surface.digest,
+      })
+      const digest = await this.runtime?.checkpointToolResult(this.options.run_id, operationId, callId, toolResultDigest({ call_id: callId, tool_name: toolName, result }))
+      if (!digest) throw new Error('CODEX_ENGINE_TOOL_RUNTIME_UNAVAILABLE')
+      await this.options.parent.recordExternalOperationResult(operationId)
+      await this.options.parent.checkpointExternalOperation(operationId, digest)
+      this.pendingTool = undefined
+      this.emit({ type: 'event', event: 'activity', activity: { id: activityId, kind: 'tool', phase: result.is_error ? 'failed' : 'completed', summary: result.is_error ? '受管工具执行失败' : '受管工具已完成' } })
+      return {
+        success: !result.is_error,
+        contentItems: dynamicToolContent(result),
+      }
+    } catch (error) {
+      this.pendingTool = undefined
+      await this.options.parent.markExternalOperationUnknown(operationId).catch(() => undefined)
+      this.emit({ type: 'event', event: 'activity', activity: { id: activityId, kind: 'tool', phase: 'failed', summary: '受管工具未能确认结果' } })
       throw error
     }
   }

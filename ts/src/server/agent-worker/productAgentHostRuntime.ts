@@ -1,6 +1,7 @@
+import { createHash, randomUUID } from 'node:crypto'
 import uniqBy from 'lodash-es/uniqBy.js'
 import type { AgentWorkerOutbound } from '../../../shared/product/agentWorker.js'
-import type { ProductAssistantMessage, ProductHarnessMessage, ProductModelEvent, ProductPrompt, ProductToolCallBlock } from '../../../shared/product/harnessMessages.js'
+import type { ProductAssistantMessage, ProductHarnessMessage, ProductModelEvent, ProductPrompt, ProductToolCallBlock, ProductToolResultBlock } from '../../../shared/product/harnessMessages.js'
 import type { PersonalModelProfile } from '../../../shared/product/personalModels.js'
 import type { TextReasoningTransport } from '../../../shared/product/providerContracts.js'
 import type { PermissionExecutionEnvelope } from '../../../shared/product/permissionExecutionEnvelope.js'
@@ -17,6 +18,7 @@ import type { ProductTaskMcpHost } from './mcpHost.js'
 import { runProductModel } from './productModelRuntime.js'
 import { runProductTools } from './productToolExecution.js'
 import { decideProductToolPermission } from './productPermissionDecision.js'
+import { zodToJsonSchema } from '../../utils/zodToJsonSchema.js'
 import { emptyProductToolPermissionContext, type ProductCommand, type ProductContentBlock, type ProductThinkingConfig, type ProductToolContext, type ProductToolPermissionContext, type ProductTools } from './productTool.js'
 import { buildProductChatPrompt } from './productChatAttachments.js'
 import { getLocalISODate } from '../../constants/common.js'
@@ -37,11 +39,42 @@ export type ProductHostRuntimeSnapshot = {
   mcp_clients: Array<{ name: string; type: 'connected' | 'failed' | 'needs-auth' | 'disabled' }>
 }
 
+/**
+ * A serializable declaration of a tool that the Codex source may request.
+ * It is intentionally a declaration only: the callable implementation and
+ * permission policy remain in this Host process.
+ */
+export type ProductHostEngineToolDescriptor = {
+  name: string
+  description: string
+  input_schema: Record<string, unknown>
+}
+
+export type ProductHostEngineToolSurface = {
+  digest: string
+  tools: ProductHostEngineToolDescriptor[]
+}
+
+export type ProductHostEngineToolRequest = {
+  tool_call_id: string
+  tool_name: string
+  arguments: Record<string, unknown>
+  tool_surface_digest: string
+}
+
+export type ProductHostEngineToolResult = {
+  is_error: boolean
+  content: string | Array<Extract<ProductContentBlock, { type: 'text' | 'image' }>>
+}
+
 export type ProductHostModelRequest = {
   messages: ProductHarnessMessage[]
   systemPrompt: string[]
   thinkingConfig: ProductThinkingConfig
   model?: string
+  /** Source-provided names only; schemas are rehydrated from the Host surface. */
+  engine_tool_names?: string[]
+  engine_tool_surface_digest?: string
 }
 
 export type ProductHostToolRequest = {
@@ -61,6 +94,10 @@ export type ProductAgentHostRuntime = {
    * into its model request before the product tool bridge is installed.
    */
   engineModel(request: ProductHostModelRequest): AsyncGenerator<ProductModelEvent, void>
+  /** The fixed tool surface that may be declared to the source Thread. */
+  engineTools(): Promise<ProductHostEngineToolSurface>
+  /** Execute one source-requested tool through the normal product Host. */
+  engineTool(request: ProductHostEngineToolRequest): Promise<ProductHostEngineToolResult>
   tools(request: ProductHostToolRequest): Promise<ProductHarnessMessage[]>
   approve(requestId: string, approved: boolean): Promise<void>
   answer(requestId: string, answers: readonly string[]): Promise<void>
@@ -82,6 +119,7 @@ export class StandardProductAgentHostRuntime implements ProductAgentHostRuntime 
   private readonly personalProfile: PersonalModelProfile | null
   private readonly managedTransport: TextReasoningTransport | null
   private modelOperationSequence = 0
+  private engineToolSurface?: Promise<ProductHostEngineToolSurface>
 
   constructor(private readonly input: {
     work_dir: string
@@ -193,12 +231,19 @@ export class StandardProductAgentHostRuntime implements ProductAgentHostRuntime 
   }
 
   async *engineModel(request: ProductHostModelRequest): AsyncGenerator<ProductModelEvent, void> {
+    const surface = await this.engineTools()
+    const requestedNames = request.engine_tool_names ?? []
+    if (
+      request.engine_tool_surface_digest !== surface.digest
+      || requestedNames.length !== surface.tools.length
+      || requestedNames.some((name, index) => name !== surface.tools[index]?.name)
+    ) throw new Error('CODEX_ENGINE_TOOL_SURFACE_MISMATCH')
     if (this.controller.signal.aborted) throw new Error('PRODUCT_AGENT_HOST_STOPPED')
     yield* runWithProductPermissionEnvelope(this.input.permission_envelope, () => runWithCwdOverride(this.input.work_dir, () => runProductModel({
       messages: request.messages,
       systemPrompt: request.systemPrompt as never,
       thinkingConfig: request.thinkingConfig,
-      tools: [],
+      tools: this.engineToolsForSurface(surface),
       signal: this.controller.signal,
       options: {
         model: this.input.model_binding.model,
@@ -210,28 +255,111 @@ export class StandardProductAgentHostRuntime implements ProductAgentHostRuntime 
     })))
   }
 
+  engineTools(): Promise<ProductHostEngineToolSurface> {
+    this.engineToolSurface ??= (async () => {
+      await this.prepare()
+      const tools = this.toolsForTurn
+        // Nested model loops require their own Run receipt protocol.  They
+        // stay off this first dynamic surface instead of being silently run
+        // inside a parent source-tool effect.
+        .filter(tool => tool.name !== 'Subtask' && tool.name !== 'TodoWrite' && !tool.name.startsWith('agent__'))
+        .filter(tool => /^[A-Za-z0-9_-]{1,128}$/.test(tool.name))
+        .sort((left, right) => left.name.localeCompare(right.name))
+      if (tools.length > 256) throw new Error('CODEX_ENGINE_TOOL_LIMIT')
+      const descriptors = await Promise.all(tools.map(async tool => {
+        const options = {
+          isNonInteractiveSession: true,
+          toolPermissionContext: this.toolPermissionContext,
+          tools: this.toolsForTurn,
+        }
+        const description = [
+          await tool.description({}, options),
+          await tool.prompt?.({ tools: this.toolsForTurn }),
+        ].filter((value): value is string => Boolean(value?.trim())).join('\n\n').slice(0, 4_000)
+        return {
+          name: tool.name,
+          description,
+          input_schema: tool.inputJSONSchema ?? zodToJsonSchema(tool.inputSchema),
+        } satisfies ProductHostEngineToolDescriptor
+      }))
+      const digest = createHash('sha256').update(JSON.stringify({ version: 1, tools: descriptors })).digest('hex')
+      return { digest, tools: descriptors }
+    })()
+    return this.engineToolSurface
+  }
+
+  async engineTool(request: ProductHostEngineToolRequest): Promise<ProductHostEngineToolResult> {
+    const surface = await this.engineTools()
+    if (
+      !/^[-A-Za-z0-9_]{1,512}$/.test(request.tool_call_id)
+      || !surface.tools.some(tool => tool.name === request.tool_name)
+      || request.tool_surface_digest !== surface.digest
+    ) throw new Error('CODEX_ENGINE_TOOL_REQUEST_INVALID')
+    const assistant: ProductAssistantMessage = {
+      type: 'assistant',
+      uuid: randomUUID(),
+      timestamp: new Date().toISOString(),
+      message: {
+        id: `engine_tool_${request.tool_call_id}`,
+        role: 'assistant',
+        content: [{ type: 'tool_call', id: request.tool_call_id, name: request.tool_name, arguments: request.arguments }],
+        model: 'billiardbuddy-engine-tool',
+        stop_reason: 'tool_call',
+        usage: { input_tokens: 0, output_tokens: 0 },
+      },
+    }
+    const output = await this.runTools({
+      blocks: assistant.message.content.filter((block): block is ProductToolCallBlock => block.type === 'tool_call'),
+      assistantMessages: [assistant],
+      messages: [],
+    })
+    const result = output
+      .flatMap(message => Array.isArray(message.message.content) ? message.message.content : [])
+      .find((block): block is ProductToolResultBlock => block.type === 'tool_result' && block.tool_call_id === request.tool_call_id)
+    if (!result) throw new Error('CODEX_ENGINE_TOOL_RESULT_MISSING')
+    return {
+      is_error: result.is_error === true,
+      content: result.content,
+    }
+  }
+
   async tools(request: ProductHostToolRequest): Promise<ProductHarnessMessage[]> {
+    return await this.runTools(request)
+  }
+
+  private engineToolsForSurface(surface: ProductHostEngineToolSurface): ProductTools {
+    const allowed = new Set(surface.tools.map(tool => tool.name))
+    const tools = this.toolsForTurn.filter(tool => allowed.has(tool.name)).sort((left, right) => left.name.localeCompare(right.name))
+    if (tools.length !== surface.tools.length || tools.some((tool, index) => tool.name !== surface.tools[index]?.name)) {
+      throw new Error('CODEX_ENGINE_TOOL_SURFACE_MISMATCH')
+    }
+    return tools
+  }
+
+  private async runTools(request: ProductHostToolRequest): Promise<ProductHarnessMessage[]> {
     await this.prepare()
     if (this.controller.signal.aborted) throw new Error('PRODUCT_AGENT_HOST_STOPPED')
     this.context!.messages = request.messages
     const output: ProductHarnessMessage[] = []
     await runWithProductPermissionEnvelope(this.input.permission_envelope, () => runWithCwdOverride(this.input.work_dir, async () => {
       for await (const update of runProductTools(request.blocks, request.assistantMessages, async (tool, toolInput, context, _assistant, toolUseId, forced) => {
-        const decision = forced ?? await decideProductToolPermission(this.input.permission_envelope, tool, toolInput, context)
-        if (decision.behavior !== 'ask') return decision
         if (tool.name === 'AskUserQuestion') {
           const questions = projectAnswerableAskUserQuestions(toolInput)
           if (questions.length === 0) return { behavior: 'deny', message: 'Question cannot be rendered safely', reason: `mode:${this.toolPermissionContext.mode}`, toolUseID: toolUseId }
+          const responsePromise = new Promise<{ approved: boolean; answers?: readonly string[] }>(resolve => this.approvals.set(toolUseId, resolve))
           this.emit({ type: 'event', event: 'question', request_id: toolUseId, questions })
-          const response = await new Promise<{ approved: boolean; answers?: readonly string[] }>(resolve => this.approvals.set(toolUseId, resolve))
+          const response = await responsePromise
           this.approvals.delete(toolUseId)
           const updatedInput = response.approved && response.answers ? buildProductTaskAskUserQuestionUpdatedInput(toolInput as Record<string, unknown>, response.answers) : null
           return updatedInput
             ? { behavior: 'allow', updatedInput, reason: `mode:${this.toolPermissionContext.mode}` }
             : { behavior: 'deny', message: 'Product question was not answered', reason: `mode:${this.toolPermissionContext.mode}`, toolUseID: toolUseId }
         }
+        const decision = forced ?? await decideProductToolPermission(this.input.permission_envelope, tool, toolInput, context)
+        if (decision.behavior !== 'ask') return decision
+        const responsePromise = new Promise<{ approved: boolean }>(resolve => this.approvals.set(toolUseId, resolve))
         this.emit({ type: 'event', event: 'approval', request_id: toolUseId, action: projectProductTaskActionApproval(tool.name), review: projectAgentWorkerApprovalReview(tool, toolInput) })
-        const response = await new Promise<{ approved: boolean }>(resolve => this.approvals.set(toolUseId, resolve))
+        const response = await responsePromise
         this.approvals.delete(toolUseId)
         return response.approved
           ? { behavior: 'allow', updatedInput: toolInput, reason: `mode:${this.toolPermissionContext.mode}` }
