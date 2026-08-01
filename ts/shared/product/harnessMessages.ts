@@ -69,7 +69,7 @@ function validText(value: unknown, limit = MAX_TEXT_CHARS): value is string {
   return typeof value === 'string' && value.length <= limit
 }
 
-function validOperationReceipt(value: unknown): value is ProductModelOperationReceipt {
+export function validProductModelOperationReceipt(value: unknown): value is ProductModelOperationReceipt {
   const receipt = record(value)
   return receipt !== null
     && (receipt.source === 'gateway' || receipt.source === 'personal')
@@ -100,7 +100,7 @@ function validContentBlock(value: unknown): value is ProductContentBlock {
       && (block.is_error === undefined || typeof block.is_error === 'boolean')
       && (block.operation_receipts === undefined || (Array.isArray(block.operation_receipts)
         && block.operation_receipts.length <= 256
-        && block.operation_receipts.every(validOperationReceipt)))
+        && block.operation_receipts.every(validProductModelOperationReceipt)))
   }
   return false
 }
@@ -121,7 +121,7 @@ export function parseProductHarnessMessage(value: unknown): ProductHarnessMessag
     && validText(message.id, 512)
     && validText(message.model, 512)
     && (message.stop_reason === null || validText(message.stop_reason, 128))
-    && (outer.operation_receipt === undefined || validOperationReceipt(outer.operation_receipt))
+    && (outer.operation_receipt === undefined || validProductModelOperationReceipt(outer.operation_receipt))
     && record(message.usage)
     && Number.isFinite((message.usage as Record<string, unknown>).input_tokens)
     && Number.isFinite((message.usage as Record<string, unknown>).output_tokens)

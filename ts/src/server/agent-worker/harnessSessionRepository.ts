@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
-import { parseProductHarnessMessages, type ProductHarnessMessage } from '../../../shared/product/harnessMessages.js'
+import { parseProductHarnessMessages, validProductModelOperationReceipt, type ProductHarnessMessage, type ProductModelOperationReceipt } from '../../../shared/product/harnessMessages.js'
 import { syncParentDirectory } from '../../utils/durableFile.js'
 import { lock } from '../../utils/lockfile.js'
 
@@ -14,7 +14,7 @@ export type ProductHarnessSessionBinding = {
 }
 
 type ProductHarnessSession = {
-  version: 3
+  version: 4
   binding_id: string
   lineage_id: string
   context_prefix: string
@@ -25,11 +25,13 @@ type ProductHarnessSession = {
   turn_state: 'preparing' | 'active' | 'completed'
   hook_context?: string
   completed_result?: string
+  operation_receipts: ProductModelOperationReceipt[]
 }
 
-type ProductHarnessSessionInput = Omit<ProductHarnessSession, 'version' | 'turn_state'> & {
-  version: 2 | 3
+type ProductHarnessSessionInput = Omit<ProductHarnessSession, 'version' | 'turn_state' | 'operation_receipts'> & {
+  version: 2 | 3 | 4
   turn_state?: ProductHarnessSession['turn_state']
+  operation_receipts?: ProductModelOperationReceipt[]
 }
 
 function sessionPath(binding: ProductHarnessSessionBinding): string {
@@ -60,7 +62,7 @@ function validateSession(value: unknown, binding: ProductHarnessSessionBinding):
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('HARNESS_SESSION_INVALID')
   const session = value as Partial<ProductHarnessSessionInput>
   if (
-    (session.version !== 2 && session.version !== 3)
+    (session.version !== 2 && session.version !== 3 && session.version !== 4)
     || session.binding_id !== binding.binding_id
     || session.lineage_id !== binding.lineage_id
     || typeof session.context_prefix !== 'string'
@@ -71,8 +73,9 @@ function validateSession(value: unknown, binding: ProductHarnessSessionBinding):
     (session.run_id !== undefined && (typeof session.run_id !== 'string' || !session.run_id))
     || (session.instruction_digest !== undefined && (typeof session.instruction_digest !== 'string' || !/^[a-f0-9]{64}$/.test(session.instruction_digest)))
     || (session.instruction_prompt !== undefined && session.instruction_prompt !== null && typeof session.instruction_prompt !== 'string')
+    || (session.operation_receipts !== undefined && (!Array.isArray(session.operation_receipts) || session.operation_receipts.length > 4_096 || !session.operation_receipts.every(validProductModelOperationReceipt)))
   ) throw new Error('HARNESS_SESSION_INVALID')
-  if (session.version === 3 && (
+  if ((session.version === 3 || session.version === 4) && (
     !['preparing', 'active', 'completed'].includes(String(session.turn_state))
     || (session.turn_state !== 'completed' && session.completed_result !== undefined)
     || (session.turn_state === 'completed' && (typeof session.completed_result !== 'string' || session.completed_result.length > 100_000))
@@ -80,10 +83,11 @@ function validateSession(value: unknown, binding: ProductHarnessSessionBinding):
   )) throw new Error('HARNESS_SESSION_INVALID')
   return {
     ...session,
-    version: 3,
+    version: 4,
     messages: parseProductHarnessMessages(session.messages),
-    turn_state: session.version === 3 ? session.turn_state! : 'active',
-    ...(session.version === 3 && session.completed_result !== undefined ? { completed_result: session.completed_result } : {}),
+    turn_state: session.version === 3 || session.version === 4 ? session.turn_state! : 'active',
+    ...((session.version === 3 || session.version === 4) && session.completed_result !== undefined ? { completed_result: session.completed_result } : {}),
+    operation_receipts: session.operation_receipts ?? [],
   } as ProductHarnessSession
 }
 
@@ -97,6 +101,7 @@ export class ProductHarnessSessionRepository {
     turn_state: 'preparing' | 'active' | 'completed'
     hook_context?: string
     completed_result?: string
+    operation_receipts: ProductModelOperationReceipt[]
   } | undefined> {
     const filePath = sessionPath(binding)
     const stat = await fs.lstat(filePath).catch(error => {
@@ -115,6 +120,7 @@ export class ProductHarnessSessionRepository {
       turn_state: session.turn_state,
       ...(session.hook_context !== undefined ? { hook_context: session.hook_context } : {}),
       ...(session.completed_result !== undefined ? { completed_result: session.completed_result } : {}),
+      operation_receipts: session.operation_receipts,
     }
   }
 
@@ -127,6 +133,7 @@ export class ProductHarnessSessionRepository {
     turn_state?: 'preparing' | 'active' | 'completed'
     hook_context?: string
     completed_result?: string
+    operation_receipts: readonly ProductModelOperationReceipt[]
   }): Promise<void> {
     const turnState = value.turn_state ?? 'active'
     if (
@@ -135,7 +142,7 @@ export class ProductHarnessSessionRepository {
       || (value.hook_context !== undefined && value.hook_context.length > 40_000)
     ) throw new Error('HARNESS_SESSION_INVALID')
     const session: ProductHarnessSession = {
-      version: 3,
+      version: 4,
       binding_id: binding.binding_id,
       lineage_id: binding.lineage_id,
       context_prefix: value.context_prefix,
@@ -146,6 +153,7 @@ export class ProductHarnessSessionRepository {
       turn_state: turnState,
       ...(value.hook_context !== undefined ? { hook_context: value.hook_context } : {}),
       ...(value.completed_result !== undefined ? { completed_result: value.completed_result } : {}),
+      operation_receipts: [...value.operation_receipts],
     }
     const serialized = JSON.stringify(session)
     if (Buffer.byteLength(serialized) > MAX_SESSION_BYTES) throw new Error('HARNESS_SESSION_TOO_LARGE')

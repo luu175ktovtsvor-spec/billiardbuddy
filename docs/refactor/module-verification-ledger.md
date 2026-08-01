@@ -94,6 +94,14 @@
 - **未验证/待处理**：Hook evaluator、compaction 与 lifecycle Hook 的直接模型调用没有父工具 result 可承接，作为 R3.5 单独处理；托管 unknown 仍没有显式新 attempt 账本。
 - **下一项**：R3.5 Hook 模型消费者的持久 receipt 边界。
 
+## R3.5 Hook 模型消费者的持久 receipt 边界
+
+- **当前源码证明**：`ProductHarnessSessionRepository` 的 v4 session 单独保存已消费、但不属于普通消息的 `operation_receipts`。`evaluateProductHook()` 先保存该 receipt，再 ACK；压缩循环收集 `runProductAgentLoop()` 的 assistant receipt，只有最终 `context_summary` 保存进主 session 后才 ACK。
+- **失败与恢复边界**：session 写入或 ACK 失败会进入 `recovery_required`，不会重新调用 Hook 或压缩模型；Hook 无效输出只阻止 Hook 条件，receipt 已按落盘后的消费顺序处理。恢复同一 Run 会先汇总 session receipt 与私有消息 receipt 并重试 ACK；完成状态也遵循这一顺序。公开任务投影不携带 receipt。
+- **当前结论**：R3.5 已完成 Hook/压缩模型消费者的 durable receipt 闭环。服务端 TypeScript 检查、源码可达性审计（496 个源文件、0 个缺失 import、322 个生产源可达）、桌面 lint/生产构建和差异空白检查通过；未运行测试、smoke、模拟请求、真实模型调用或发布。
+- **未验证/待处理**：真实 Hook 超时、压缩中断、进程崩溃与 ACK 网络失败仍未运行。托管 unknown 的显式新 attempt 账本留给 R3.6，不能自动重试任何已围栏模型调用。
+- **下一项**：R3.6 托管 TextReasoning unknown 的显式新 attempt 账本。
+
 ## R4 Agent 桌面客户端事件投影与动作回执
 
 - **事件和 snapshot hand-off**：`ProductTaskSocketManager` 只保存每个 task 的 WebSocket、连接状态与 durable `resumeCursor`；每次连接先发送 `resume`，在收到 `resume_cursor` 前拒绝所有 socket 命令。服务端 `taskWebSocket` 在同一 socket 上依次回放 Authority `event_sequence` ledger、读取当前 Run snapshot、重放待处理 approval、过滤不高于回放高水位的缓冲 live event，最后才发送 `resume_cursor` 并切换为 live。断线重连复用 cursor，Renderer 不以旧 socket 的状态继续审批或停止。
