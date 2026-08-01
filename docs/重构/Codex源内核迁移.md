@@ -60,13 +60,13 @@ Codex 会保存自己的 Thread、配置与运行资料。BilliardBuddy 启动�
 
 | 段 | 唯一交付 | 完成证据 | 不做 |
 | --- | --- | --- | --- |
-| A. 源码与构建 | 已锁定的 `third_party/codex-engine`、Apache LICENSE/NOTICE 审计，以及首次改动前建立的 BilliardBuddy 管理源码分支；macOS/Windows 可构建 `codex-app-server` | 子模块 revision 与上游来源可复现、许可证清单、两平台构建产物可启动 | 不引入 Codex CLI/TUI/品牌；不发布安装包 |
+| A. 源码与构建 | 已锁定的 `third_party/codex-engine`、Apache LICENSE/NOTICE 审计，以及 BilliardBuddy 私有目录中的 stdio 引擎客户端和 Thread 绑定存储；macOS/Windows 可构建 `codex-app-server` | 子模块 revision 与上游来源可复现、许可证清单、两平台构建产物可启动 | 不引入 Codex CLI/TUI/品牌；不发布安装包 |
 | B. 模型桥 | 引擎只接 Responses，受管与个人 Chat/Responses 都由本机桥提供同一完整 Item 语义 | 无付费替身覆盖文本、工具调用、不完整流和未知结果 | 不读取或上传真实个人 Key；不自动重试 |
 | C. Run 事件桥 | 一个 BilliardBuddy 任务会话绑定一个 Codex Thread；每次 Run 在该 Thread 上启动一次 Turn，按顺序投影 Turn/Item、审批、工具活动、terminal | 新建任务、继续、停止、重启后历史和状态一致 | 不让引擎直接写任务数据库 |
 | D. 权限与工具桥 | Codex 的工具请求受 BilliardBuddy lease 和三档权限控制 | 文件、PTY、浏览器、MCP 的许可/拒绝/停止均有可见回执 | 不让工具获得全局凭据或目录外权限 |
 | E. 正式切换 | 桌面任务页只消费引擎事件；旧 Harness 无消费者后删除 | 同一用户旅程在新路径完成，旧路径不可再启动 | 不保留双 Harness 作为“兼容” |
 
-当前只进入 **A. 源码与构建**。固定源码已经登记，`codex-engine-build.yml` 会在 GitHub 的 macOS Apple Silicon 与 Windows x64 runner 上只编译未经签名的 `codex-app-server`，不生成桌面安装包、不上传发布源。开发机已经具备 Rust/Cargo，正在对固定基线执行首次 macOS 源码构建；两端产物实际可启动之前，仍不能声称引擎可构建。在 A 有实际可启动的 BilliardBuddy 管理引擎前，不再给旧 TypeScript Harness 添加模型、工具、Hook 或 UI 功能。
+当前处于 **A. 源码与构建收口、B. 模型桥准备**。固定源码已经登记；开发机已从该基线构建 macOS arm64 `codex-app-server` 并完成 BilliardBuddy 私有目录中的无模型 stdio 初始化/退出验证。`codex-engine-build.yml` 仍会在 GitHub 的 macOS Apple Silicon 与 Windows x64 runner 上只编译未经签名的 `codex-app-server`，不生成桌面安装包、不上传发布源；由于本地 `main` 尚未安全推送，Windows 构建尚未有实际产物证据。引擎客户端目前只负责私有目录、标准协议与 BilliardBuddy Thread 绑定，尚未接管正式 Run；在模型桥、事件桥和权限桥完整之前，不再给旧 TypeScript Harness 添加模型、工具、Hook 或 UI 功能。
 
 ## 5. 许可与发布边界
 
