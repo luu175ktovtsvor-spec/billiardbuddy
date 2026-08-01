@@ -1,0 +1,1517 @@
+import { createHash, randomUUID } from 'node:crypto'
+import { copyFile, mkdir, readFile, readdir, rename, rm, stat } from 'node:fs/promises'
+import { homedir } from 'node:os'
+import { basename, dirname, extname, isAbsolute, join, resolve } from 'node:path'
+import {
+  addVideoSourceInputSchema,
+  analyzeVideoProjectInputSchema,
+  applyVideoAlternativeInputSchema,
+  createVideoProjectInputSchema,
+  lockVideoSceneInputSchema,
+  mediaTaskSchema,
+  mediaSafeError,
+  previewVideoInputSchema,
+  renderVideoInputSchema,
+  selectVideoTimelineVersionInputSchema,
+  updateVideoTimelineInputSchema,
+  videoPreviewTaskResultSchema,
+  videoRenderTaskResultSchema,
+  videoStudioProjectSchema,
+  type AddVideoSourceInput,
+  type AnalyzeVideoProjectInput,
+  type ApplyVideoAlternativeInput,
+  type CreateVideoProjectInput,
+  type LockVideoSceneInput,
+  type MediaAsset,
+  type MediaOwner,
+  type PreviewVideoInput,
+  type RenderVideoInput,
+  type SelectVideoTimelineVersionInput,
+  type UpdateVideoTimelineInput,
+  type VideoClip,
+  type VideoEvidence,
+  type VideoAlternative,
+  type VideoScene,
+  type VideoSource,
+  type VideoStudioProject,
+  type VideoTimelineVersion,
+} from '../../../shared/contracts/media.js'
+import {
+  defaultVideoProcessRunner,
+  buildVideoRenderCommand,
+  FALLBACK_VIDEO_ENCODER,
+  probeVideoSource,
+  selectVideoEncoder,
+  videoBinary,
+  videoFingerprint,
+  videoToolchainStatus,
+  verifyVideoOutput,
+  type VideoProcessRunner,
+} from './videoExecution.js'
+import {
+  analyzeVideoEvidence,
+  compileVideoBrief,
+  planVideoTimeline,
+  VideoAnalysisError,
+  type VideoAnalysisFrame,
+  type VideoPlanDraft,
+} from './videoAnalysis.js'
+import { transcribeVoiceFile } from './voiceTranscription.js'
+import { PROVIDER_GATEWAY_PROTOCOL } from '../../../shared/product/providerGateway.js'
+import {
+  VideoWorkbenchRepository,
+  VideoWorkbenchRepositoryError,
+  type VideoOperation,
+} from './videoWorkbenchRepository.js'
+
+const STANDALONE_VIDEO_OWNER: MediaOwner = {
+  kind: 'standalone',
+  owner_id: 'local_workbench',
+}
+const INITIAL_WRITER_FENCE = `fence_${'0'.repeat(32)}`
+
+type ActiveVideoExecution = {
+  controller: AbortController
+  completion: Promise<void>
+  output_path: string
+}
+
+function id(prefix: 'vid' | 'src' | 'clip' | 'task' | 'timeline' | 'evidence' | 'alternative'): string {
+  return `${prefix}_${randomUUID().replaceAll('-', '')}`
+}
+
+function evidenceRevision(evidence: VideoEvidence[]): `sha256:${string}` {
+  return `sha256:${createHash('sha256').update(JSON.stringify(evidence.map(item => ({
+    id: item.id,
+    kind: item.kind,
+    source_id: item.source_id,
+    source_fingerprint: item.source_fingerprint,
+    in_ms: item.in_ms,
+    out_ms: item.out_ms,
+    text: item.text,
+  })))).digest('hex')}`
+}
+
+function scenesFromClips(clips: VideoClip[], evidence: VideoEvidence[]): VideoScene[] {
+  return clips.map((clip, index) => ({
+    id: clip.id,
+    source_id: clip.source_id,
+    in_ms: clip.in_ms,
+    out_ms: clip.out_ms,
+    story_role: index === 0 ? 'hook' as const : index === clips.length - 1 ? 'result' as const : 'action' as const,
+    evidence_ids: evidence
+      .filter(item => item.source_id === clip.source_id && item.in_ms < clip.out_ms && item.out_ms > clip.in_ms)
+      .map(item => item.id),
+    rationale: '按当前用户时间线保留真实素材范围',
+    needs_review: true,
+    locked: false,
+  }))
+}
+
+function sameOwner(left: MediaOwner, right: MediaOwner): boolean {
+  return left.kind === right.kind && left.owner_id === right.owner_id
+}
+
+export class VideoWorkbenchServiceError extends Error {
+  constructor(
+    message: string,
+    readonly status = 400,
+    readonly code = 'VIDEO_WORKBENCH_ERROR',
+  ) {
+    super(message)
+    this.name = 'VideoWorkbenchServiceError'
+  }
+}
+
+/**
+ * The video domain owns projects, source evidence, timeline versions and local
+ * operation records. FFprobe/FFmpeg are replaceable executors: they receive a
+ * durable snapshot but never decide whether a project has completed.
+ */
+export class VideoWorkbenchService {
+  readonly repository: VideoWorkbenchRepository
+  private readonly now: () => Date
+  private readonly runProcess: VideoProcessRunner
+  private readonly fetchImpl?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
+  private readonly env: Record<string, string | undefined>
+  private readonly platform: NodeJS.Platform
+  private readonly legacyMediaRoot: string
+  private readonly projectMutations = new Map<string, Promise<unknown>>()
+  private readonly activePreviews = new Map<string, ActiveVideoExecution>()
+  private readonly activeRenders = new Map<string, ActiveVideoExecution>()
+  private readonly activeAnalyses = new Map<string, ActiveVideoExecution>()
+  /**
+   * Encoding is intentionally serialized in this desktop runtime. Rendering
+   * several timelines at once makes the machine unusable and, more
+   * importantly, makes cancellation/recovery order ambiguous. The persisted
+   * operation remains queued while it waits on this in-memory tail.
+   */
+  private renderTail: Promise<void> = Promise.resolve()
+
+  constructor(options: {
+    root?: string
+    now?: () => Date
+    runProcess?: VideoProcessRunner
+    fetchImpl?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
+    env?: Record<string, string | undefined>
+    platform?: NodeJS.Platform
+    legacyMediaRoot?: string
+  } = {}) {
+    this.now = options.now ?? (() => new Date())
+    this.repository = new VideoWorkbenchRepository({ root: options.root, now: this.now })
+    this.runProcess = options.runProcess ?? defaultVideoProcessRunner
+    this.fetchImpl = options.fetchImpl
+    this.env = options.env ?? process.env
+    this.platform = options.platform ?? process.platform
+    this.legacyMediaRoot = options.legacyMediaRoot
+      ?? join(this.env.BILLIARDBUDDY_CONFIG_DIR ?? join(homedir(), '.BilliardBuddy'), 'billiardbuddy', 'media')
+  }
+
+  private iso(): string {
+    return this.now().toISOString()
+  }
+
+  private renderQueueLimit(): number {
+    const configured = Number(this.env.BB_VIDEO_RENDER_QUEUE_LIMIT ?? '3')
+    return Number.isSafeInteger(configured) ? Math.max(1, Math.min(10, configured)) : 3
+  }
+
+  private enqueueRender(action: () => Promise<void>): Promise<void> {
+    const completion = this.renderTail.catch(() => undefined).then(action)
+    this.renderTail = completion.catch(() => undefined)
+    return completion
+  }
+
+  private async project(projectId: string): Promise<VideoStudioProject> {
+    try {
+      return await this.repository.getProject(projectId)
+    } catch (error) {
+      if (error instanceof VideoWorkbenchRepositoryError) {
+        throw new VideoWorkbenchServiceError(error.message, error.status, error.code)
+      }
+      throw error
+    }
+  }
+
+  private async mutateProject<T>(projectId: string, action: () => Promise<T>): Promise<T> {
+    const previous = this.projectMutations.get(projectId) ?? Promise.resolve()
+    let release: () => void = () => undefined
+    const gate = new Promise<void>(resolve => { release = resolve })
+    const current = previous.catch(() => undefined).then(() => gate)
+    this.projectMutations.set(projectId, current)
+    await previous.catch(() => undefined)
+    try {
+      return await action()
+    } finally {
+      release()
+      if (this.projectMutations.get(projectId) === current) this.projectMutations.delete(projectId)
+    }
+  }
+
+  private timelineVersion(
+    project: VideoStudioProject,
+    scenes: VideoScene[],
+    revision = project.evidence_revision ?? evidenceRevision(project.evidence),
+    projectRevision = project.revision + 1,
+  ): VideoTimelineVersion {
+    return {
+      id: id('timeline'),
+      parent_version_id: project.current_timeline_version_id,
+      project_revision: projectRevision,
+      evidence_revision: revision,
+      scenes,
+      created_at: this.iso(),
+    }
+  }
+
+  private operation(value: VideoOperation): VideoOperation {
+    return {
+      ...value,
+      owner: value.owner ?? STANDALONE_VIDEO_OWNER,
+      updated_at: value.updated_at ?? this.iso(),
+    }
+  }
+
+  async listProjects(owner: MediaOwner = STANDALONE_VIDEO_OWNER): Promise<VideoStudioProject[]> {
+    return await this.repository.listProjects(owner)
+  }
+
+  async getProject(projectId: string): Promise<VideoStudioProject> {
+    return await this.project(projectId)
+  }
+
+  async assertProjectOwner(projectId: string, owner: MediaOwner = STANDALONE_VIDEO_OWNER): Promise<VideoStudioProject> {
+    const project = await this.project(projectId)
+    if (!sameOwner(project.owner, owner)) {
+      throw new VideoWorkbenchServiceError('视频项目不属于当前工作台', 403, 'VIDEO_PROJECT_FORBIDDEN')
+    }
+    return project
+  }
+
+  async getOperation(operationId: string): Promise<VideoOperation> {
+    return await this.repository.getOperation(operationId)
+  }
+
+  async waitForOperationEvents(projectId: string, cursor: number, limit: number, waitMs: number) {
+    const page = await this.repository.listOperationEvents(projectId, cursor, limit)
+    if (page.events.length || page.reset_required || waitMs <= 0) return page
+    await this.repository.waitForOperationEvent(projectId, cursor, waitMs)
+    return await this.repository.listOperationEvents(projectId, cursor, limit)
+  }
+
+  async toolchainStatus() {
+    return await videoToolchainStatus(this.runProcess, this.env, this.platform)
+  }
+
+  async listDeletions(owner: MediaOwner = STANDALONE_VIDEO_OWNER) {
+    return await this.repository.listDeletions(owner)
+  }
+
+  async hasProjectHistory(projectId: string, owner: MediaOwner = STANDALONE_VIDEO_OWNER): Promise<boolean> {
+    return await this.repository.hasProjectHistory(projectId, owner)
+  }
+
+  async hasOperationHistory(operationId: string, owner: MediaOwner = STANDALONE_VIDEO_OWNER): Promise<boolean> {
+    return await this.repository.hasOperationHistory(operationId, owner)
+  }
+
+  async deleteProject(projectId: string) {
+    await this.assertProjectOwner(projectId)
+    return await this.repository.deleteProject(projectId)
+  }
+
+  async restoreProject(projectId: string, owner: MediaOwner = STANDALONE_VIDEO_OWNER) {
+    return await this.repository.restoreProject(projectId, owner)
+  }
+
+  private videoContentType(path: string): string {
+    return extname(path).toLowerCase() === '.mov' ? 'video/quicktime' : 'video/mp4'
+  }
+
+  private async videoFileResponse(path: string, request: Request): Promise<Response> {
+    const info = await stat(path).catch(() => null)
+    if (!info?.isFile()) throw new VideoWorkbenchServiceError('视频素材不可用', 404, 'VIDEO_ASSET_NOT_FOUND')
+    const range = request.headers.get('range')
+    const headers = { 'Content-Type': this.videoContentType(path), 'Accept-Ranges': 'bytes' }
+    if (!range) return new Response(Bun.file(path), { headers: { ...headers, 'Content-Length': String(info.size) } })
+    const match = /^bytes=(\d*)-(\d*)$/i.exec(range.trim())
+    if (!match || info.size <= 0) return new Response(null, { status: 416, headers: { 'Content-Range': `bytes */${info.size}` } })
+    const suffix = !match[1] && match[2] ? Number(match[2]) : 0
+    const start = suffix > 0 ? Math.max(0, info.size - suffix) : match[1] ? Number(match[1]) : 0
+    const end = suffix > 0 ? info.size - 1 : match[2] ? Math.min(Number(match[2]), info.size - 1) : info.size - 1
+    if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end < start || start >= info.size) {
+      return new Response(null, { status: 416, headers: { 'Content-Range': `bytes */${info.size}` } })
+    }
+    return new Response(Bun.file(path).slice(start, end + 1), {
+      status: 206,
+      headers: { ...headers, 'Content-Length': String(end - start + 1), 'Content-Range': `bytes ${start}-${end}/${info.size}` },
+    })
+  }
+
+  async sourceResponse(projectId: string, sourceId: string, request: Request): Promise<Response> {
+    const project = await this.requireVideoProject(projectId)
+    const source = project.sources.find(candidate => candidate.id === sourceId)
+    if (!source) throw new VideoWorkbenchServiceError('找不到视频素材', 404, 'VIDEO_SOURCE_NOT_FOUND')
+    return await this.videoFileResponse(source.path, request)
+  }
+
+  async previewResponse(projectId: string, assetId: string, request: Request): Promise<Response> {
+    const project = await this.requireVideoProject(projectId)
+    const asset = project.assets.find(candidate => candidate.id === assetId && candidate.role === 'preview')
+    const expectedLocator = join(project.id, `${assetId}.mp4`)
+    if (!asset || asset.storage.kind !== 'managed' || asset.storage.locator !== expectedLocator) {
+      throw new VideoWorkbenchServiceError('找不到视频预览', 404, 'VIDEO_ASSET_NOT_FOUND')
+    }
+    const root = resolve(this.repository.paths().assets)
+    const path = resolve(root, asset.storage.locator)
+    if (!path.startsWith(`${root}/`)) throw new VideoWorkbenchServiceError('视频预览地址无效', 404, 'VIDEO_ASSET_NOT_FOUND')
+    return await this.videoFileResponse(path, request)
+  }
+
+  /**
+   * One-way, idempotent import from the former generic media store. The old
+   * files are retained as recovery evidence; after a project is imported the
+   * video workbench is its sole writer and its preview cache lives below the
+   * new video root. No import asks MediaProjectService to keep ownership.
+   */
+  async migrateLegacyMediaStore(): Promise<{ migrated_project_ids: string[]; skipped_project_ids: string[] }> {
+    const projectsDir = join(this.legacyMediaRoot, 'projects')
+    const tasksDir = join(this.legacyMediaRoot, 'tasks')
+    const normalize = (raw: unknown): unknown => {
+      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return raw
+      const record = { ...(raw as Record<string, unknown>) }
+      const legacyOwner = 'product_task_id' in record
+        || (record.owner && typeof record.owner === 'object' && !Array.isArray(record.owner)
+          && (record.owner as Record<string, unknown>).kind === 'product_task')
+      if (legacyOwner) record.owner = STANDALONE_VIDEO_OWNER
+      delete record.product_task_id
+      delete record.data_egress_consent
+      return record
+    }
+    const taskNames = await readdir(tasksDir).catch(() => [])
+    const tasksByProject = new Map<string, VideoOperation[]>()
+    for (const name of taskNames.filter(name => name.endsWith('.json'))) {
+      const raw = await readFile(join(tasksDir, name), 'utf8').catch(() => null)
+      if (!raw) continue
+      const parsed = mediaTaskSchema.safeParse(normalize(JSON.parse(raw)))
+      if (!parsed.success || !parsed.data.kind.startsWith('video.')) continue
+      const operation = parsed.data as VideoOperation
+      tasksByProject.set(operation.project_id, [...(tasksByProject.get(operation.project_id) ?? []), operation])
+    }
+
+    const migratedProjectIds: string[] = []
+    const skippedProjectIds: string[] = []
+    const projectNames = await readdir(projectsDir).catch(() => [])
+    for (const name of projectNames.filter(name => name.endsWith('.json')).sort()) {
+      const raw = await readFile(join(projectsDir, name), 'utf8').catch(() => null)
+      if (!raw) continue
+      const parsed = videoStudioProjectSchema.safeParse(normalize(JSON.parse(raw)))
+      if (!parsed.success) continue
+      const legacy = parsed.data
+      const existing = await this.repository.getProject(legacy.id).catch(error => {
+        if (error instanceof VideoWorkbenchRepositoryError && error.code === 'VIDEO_PROJECT_NOT_FOUND') return null
+        throw error
+      })
+      if (existing) {
+        skippedProjectIds.push(legacy.id)
+        continue
+      }
+
+      const legacyTasks = tasksByProject.get(legacy.id) ?? []
+      const knownTaskIds = new Set(legacyTasks.map(task => task.id))
+      const previewAsset = legacy.preview
+        ? legacy.assets.find(asset => asset.id === legacy.preview!.asset_id && asset.role === 'preview')
+        : undefined
+      const legacyPreviewName = legacy.preview ? basename(legacy.preview.asset_path) : ''
+      const canImportPreview = Boolean(
+        legacy.preview
+        && previewAsset
+        && /^[a-z0-9][a-z0-9_.-]{2,120}\.mp4$/.test(legacyPreviewName)
+        && legacyPreviewName.startsWith(`${legacy.preview.asset_id}.`),
+      )
+      let preview: VideoStudioProject['preview']
+      let assets = legacy.assets.filter(asset => asset.role !== 'preview')
+      if (canImportPreview && legacy.preview && previewAsset) {
+        const source = join(this.legacyMediaRoot, 'assets', legacy.id, legacyPreviewName)
+        const info = await stat(source).catch(() => null)
+        if (info?.isFile() && info.size > 0) {
+          const target = join(this.repository.paths().assets, legacy.id, `${legacy.preview.asset_id}.mp4`)
+          await mkdir(dirname(target), { recursive: true, mode: 0o700 })
+          await copyFile(source, target)
+          const hash = await videoFingerprint(target)
+          assets = [...assets, {
+            id: legacy.preview.asset_id,
+            role: 'preview' as const,
+            version_id: legacy.preview.timeline_version_id,
+            storage: { kind: 'managed' as const, locator: join(legacy.id, `${legacy.preview.asset_id}.mp4`) },
+            mime_type: 'video/mp4',
+            byte_size: info.size,
+            content_hash: hash,
+            created_at: legacy.preview.created_at,
+          }]
+          preview = {
+            timeline_version_id: legacy.preview.timeline_version_id,
+            asset_id: legacy.preview.asset_id,
+            asset_path: `/api/media/videos/projects/${legacy.id}/previews/${legacy.preview.asset_id}/content`,
+            content_hash: hash,
+            created_at: legacy.preview.created_at,
+          }
+        }
+      }
+      const imported = videoStudioProjectSchema.parse({
+        ...legacy,
+        owner: STANDALONE_VIDEO_OWNER,
+        writer_fence: INITIAL_WRITER_FENCE,
+        assets,
+        preview,
+        task_id: legacy.task_id && knownTaskIds.has(legacy.task_id) ? legacy.task_id : undefined,
+        preview_task_id: legacy.preview_task_id && knownTaskIds.has(legacy.preview_task_id) ? legacy.preview_task_id : undefined,
+      })
+      await this.repository.saveProject(imported)
+      for (const task of legacyTasks) await this.repository.saveOperation(task)
+      migratedProjectIds.push(legacy.id)
+    }
+    return { migrated_project_ids: migratedProjectIds, skipped_project_ids: skippedProjectIds }
+  }
+
+  async createProject(raw: CreateVideoProjectInput): Promise<VideoStudioProject> {
+    const input = createVideoProjectInputSchema.parse(raw)
+    const now = this.iso()
+    return await this.repository.saveProject(videoStudioProjectSchema.parse({
+      schema_version: 1,
+      id: id('vid'),
+      kind: 'video',
+      title: input.title ?? '新视频',
+      workspace_root: input.workspace_root,
+      owner: STANDALONE_VIDEO_OWNER,
+      writer_fence: INITIAL_WRITER_FENCE,
+      assets: [],
+      versions: [],
+      revision: 0,
+      created_at: now,
+      updated_at: now,
+      state: 'draft',
+      sources: [],
+      timeline: [],
+      evidence: [],
+      timeline_versions: [],
+      alternatives: [],
+      output: input.output,
+    }))
+  }
+
+  private async requireVideoProject(projectId: string): Promise<VideoStudioProject> {
+    const project = await this.project(projectId)
+    if (project.kind !== 'video') throw new VideoWorkbenchServiceError('这不是视频项目', 409, 'VIDEO_PROJECT_INVALID')
+    return project
+  }
+
+  async addVideoSource(projectId: string, raw: AddVideoSourceInput): Promise<{ project: VideoStudioProject; task: VideoOperation }> {
+    return await this.mutateProject(projectId, async () => {
+      const input = addVideoSourceInputSchema.parse(raw)
+      const project = await this.requireVideoProject(projectId)
+      if (project.state === 'rendering') throw new VideoWorkbenchServiceError('正在导出，暂时不能添加素材', 409, 'VIDEO_RENDER_ACTIVE')
+      if (!isAbsolute(input.path)) throw new VideoWorkbenchServiceError('视频素材必须使用绝对路径', 400, 'SOURCE_PATH_NOT_ABSOLUTE')
+      const now = this.iso()
+      let task = await this.repository.saveOperation(this.operation({
+        schema_version: 1,
+        id: id('task'),
+        project_id: project.id,
+        kind: 'video.probe',
+        status: 'running',
+        progress: 20,
+        stage: '正在读取素材',
+        created_at: now,
+        updated_at: now,
+      } as VideoOperation))
+      try {
+        const probe = await probeVideoSource(
+          input.path,
+          this.runProcess,
+          videoBinary('ffprobe', this.env, this.platform),
+        )
+        const sourceId = id('src')
+        const source = {
+          id: sourceId,
+          path: input.path,
+          name: basename(input.path),
+          duration_ms: probe.duration_ms,
+          width: probe.width,
+          height: probe.height,
+          fps: probe.fps,
+          has_audio: probe.has_audio,
+          fingerprint: probe.content_hash,
+          rotation: probe.rotation,
+          video_stream_count: probe.video_stream_count,
+          audio_stream_count: probe.audio_stream_count,
+          missing: false,
+          content_changed: false,
+        }
+        const clip: VideoClip = {
+          id: id('clip'),
+          source_id: sourceId,
+          in_ms: 0,
+          out_ms: source.duration_ms,
+        }
+        const evidence: VideoEvidence[] = [...project.evidence, {
+          id: id('evidence'),
+          kind: 'source_role',
+          source_id: sourceId,
+          source_fingerprint: probe.content_hash,
+          in_ms: 0,
+          out_ms: source.duration_ms,
+          text: `真实视频素材：${source.name}，${source.width}×${source.height}，${source.duration_ms}ms${source.has_audio ? '，含音轨' : '，无音轨'}`,
+          confidence: 1,
+          warnings: [],
+          created_at: this.iso(),
+        }]
+        const nextEvidenceRevision = evidenceRevision(evidence)
+        const activeVersion = project.timeline_versions.find(version => version.id === project.current_timeline_version_id)
+        const nextScenes = [...(activeVersion?.scenes ?? scenesFromClips(project.timeline, project.evidence)), scenesFromClips([clip], evidence)[0]!]
+        const version = this.timelineVersion({ ...project, evidence, evidence_revision: nextEvidenceRevision }, nextScenes, nextEvidenceRevision)
+        const asset: MediaAsset = {
+          id: sourceId,
+          role: 'source',
+          version_id: sourceId,
+          storage: { kind: 'external', locator: input.path },
+          mime_type: 'video/mp4',
+          content_hash: probe.content_hash,
+          created_at: now,
+        }
+        const next = await this.repository.saveProject(videoStudioProjectSchema.parse({
+          ...project,
+          state: 'ready',
+          sources: [...project.sources, source],
+          assets: [...project.assets, asset],
+          timeline: [...project.timeline, clip],
+          evidence,
+          evidence_revision: nextEvidenceRevision,
+          timeline_versions: [...project.timeline_versions, version],
+          current_timeline_version_id: version.id,
+          alternatives: [],
+          revision: project.revision + 1,
+          error: undefined,
+          error_code: undefined,
+        }))
+        task = await this.repository.saveOperation(this.operation({
+          ...task,
+          status: 'succeeded',
+          progress: 100,
+          stage: '素材已加入',
+          result: { source_id: sourceId },
+        }))
+        return { project: next, task }
+      } catch (error) {
+        const failure = mediaSafeError('MEDIA_VIDEO_SOURCE_UNREADABLE')
+        task = await this.repository.saveOperation(this.operation({
+          ...task,
+          status: 'failed',
+          progress: 0,
+          stage: '读取失败',
+          error: failure.message,
+          error_code: failure.code,
+        }))
+        if (error instanceof VideoWorkbenchServiceError) throw error
+        throw new VideoWorkbenchServiceError(failure.message, 422, 'VIDEO_PROBE_FAILED')
+      }
+    })
+  }
+
+  async updateTimeline(projectId: string, raw: UpdateVideoTimelineInput): Promise<VideoStudioProject> {
+    return await this.mutateProject(projectId, async () => {
+      const input = updateVideoTimelineInputSchema.parse(raw)
+      const project = await this.requireVideoProject(projectId)
+      if (project.state === 'rendering') throw new VideoWorkbenchServiceError('正在导出，暂时不能修改时间线', 409, 'VIDEO_RENDER_ACTIVE')
+      if (project.revision !== input.base_revision) throw new VideoWorkbenchServiceError('视频项目已更新，请刷新后再编辑', 409, 'VIDEO_REVISION_CONFLICT')
+      const baseVersionId = input.base_timeline_version_id ?? project.current_timeline_version_id
+      if (project.current_timeline_version_id !== baseVersionId) {
+        throw new VideoWorkbenchServiceError('视频时间线已更新，请刷新后再编辑', 409, 'VIDEO_TIMELINE_CONFLICT')
+      }
+      const current = project.timeline_versions.find(version => version.id === baseVersionId)
+      if (!current) throw new VideoWorkbenchServiceError('视频时间线版本不存在', 409, 'VIDEO_TIMELINE_MISSING')
+      const sources = new Map(project.sources.map(source => [source.id, source]))
+      for (const clip of input.clips) {
+        const source = sources.get(clip.source_id)
+        if (!source) throw new VideoWorkbenchServiceError('时间线引用了不存在的素材', 400, 'VIDEO_SOURCE_NOT_FOUND')
+        if (clip.out_ms > source.duration_ms) throw new VideoWorkbenchServiceError('剪辑范围超过素材时长', 400, 'VIDEO_CLIP_OUT_OF_RANGE')
+      }
+      const scenes = input.clips.map((clip, index) => {
+        const existing = current.scenes.find(scene => scene.id === clip.id)
+        return existing ?? {
+          ...scenesFromClips([clip], project.evidence)[0]!,
+          story_role: index === 0 ? 'hook' as const : index === input.clips.length - 1 ? 'result' as const : 'action' as const,
+        }
+      }).map((scene, index) => ({
+        ...scene,
+        source_id: input.clips[index]!.source_id,
+        in_ms: input.clips[index]!.in_ms,
+        out_ms: input.clips[index]!.out_ms,
+      }))
+      for (const locked of current.scenes.filter(scene => scene.locked)) {
+        const candidate = scenes.find(scene => scene.id === locked.id)
+        if (!candidate || candidate.source_id !== locked.source_id || candidate.in_ms !== locked.in_ms || candidate.out_ms !== locked.out_ms) {
+          throw new VideoWorkbenchServiceError('锁定场景不能被移动、删除或替换', 409, 'VIDEO_LOCKED_SCENE_CONFLICT')
+        }
+      }
+      const version = this.timelineVersion(project, scenes)
+      return await this.repository.saveProject(videoStudioProjectSchema.parse({
+        ...project,
+        timeline: input.clips,
+        timeline_versions: [...project.timeline_versions, version],
+        current_timeline_version_id: version.id,
+        alternatives: [],
+        state: input.clips.length ? 'ready' : 'draft',
+        revision: project.revision + 1,
+      }))
+    })
+  }
+
+  async selectTimelineVersion(projectId: string, raw: SelectVideoTimelineVersionInput): Promise<VideoStudioProject> {
+    return await this.mutateProject(projectId, async () => {
+      const input = selectVideoTimelineVersionInputSchema.parse(raw)
+      const project = await this.requireVideoProject(projectId)
+      if (project.state === 'rendering') throw new VideoWorkbenchServiceError('正在导出，暂时不能恢复时间线', 409, 'VIDEO_RENDER_ACTIVE')
+      if (project.revision !== input.revision) throw new VideoWorkbenchServiceError('视频项目已更新，请刷新后再选择版本', 409, 'VIDEO_REVISION_CONFLICT')
+      const version = project.timeline_versions.find(candidate => candidate.id === input.version_id)
+      if (!version) throw new VideoWorkbenchServiceError('视频时间线版本不存在', 404, 'VIDEO_TIMELINE_MISSING')
+      if (project.current_timeline_version_id === version.id) return project
+      return await this.repository.saveProject(videoStudioProjectSchema.parse({
+        ...project,
+        timeline: version.scenes.map(scene => ({ id: scene.id, source_id: scene.source_id, in_ms: scene.in_ms, out_ms: scene.out_ms })),
+        current_timeline_version_id: version.id,
+        alternatives: [],
+        state: version.scenes.length ? 'ready' : 'draft',
+        revision: project.revision + 1,
+      }))
+    })
+  }
+
+  async lockScene(projectId: string, sceneId: string, raw: LockVideoSceneInput): Promise<VideoStudioProject> {
+    return await this.mutateProject(projectId, async () => {
+      const input = lockVideoSceneInputSchema.parse(raw)
+      const project = await this.requireVideoProject(projectId)
+      if (project.state === 'rendering') throw new VideoWorkbenchServiceError('正在导出，暂时不能修改时间线', 409, 'VIDEO_RENDER_ACTIVE')
+      if (project.revision !== input.base_revision || project.current_timeline_version_id !== input.timeline_version_id) {
+        throw new VideoWorkbenchServiceError('视频时间线已更新，请刷新后再编辑', 409, 'VIDEO_TIMELINE_CONFLICT')
+      }
+      const current = project.timeline_versions.find(version => version.id === input.timeline_version_id)
+      if (!current || !current.scenes.some(scene => scene.id === sceneId)) {
+        throw new VideoWorkbenchServiceError('场景不存在', 404, 'VIDEO_SCENE_NOT_FOUND')
+      }
+      const version = this.timelineVersion(project, current.scenes.map(scene => scene.id === sceneId ? { ...scene, locked: input.locked } : scene))
+      return await this.repository.saveProject(videoStudioProjectSchema.parse({
+        ...project,
+        timeline_versions: [...project.timeline_versions, version],
+        current_timeline_version_id: version.id,
+        revision: project.revision + 1,
+      }))
+    })
+  }
+
+  async applyAlternative(projectId: string, raw: ApplyVideoAlternativeInput): Promise<VideoStudioProject> {
+    return await this.mutateProject(projectId, async () => {
+      const input = applyVideoAlternativeInputSchema.parse(raw)
+      const project = await this.requireVideoProject(projectId)
+      if (project.state === 'rendering') throw new VideoWorkbenchServiceError('正在导出，暂时不能修改时间线', 409, 'VIDEO_RENDER_ACTIVE')
+      if (project.revision !== input.base_revision) throw new VideoWorkbenchServiceError('视频项目已更新，请刷新后再编辑', 409, 'VIDEO_REVISION_CONFLICT')
+      const alternative = project.alternatives.find(candidate => candidate.id === input.alternative_id)
+      if (!alternative) throw new VideoWorkbenchServiceError('备选方案不存在', 404, 'VIDEO_ALTERNATIVE_NOT_FOUND')
+      if (alternative.base_timeline_version_id !== project.current_timeline_version_id) {
+        throw new VideoWorkbenchServiceError('备选方案已经过期，请重新分析', 409, 'VIDEO_ALTERNATIVE_STALE')
+      }
+      const current = project.timeline_versions.find(version => version.id === project.current_timeline_version_id)
+      if (!current) throw new VideoWorkbenchServiceError('视频时间线版本不存在', 409, 'VIDEO_TIMELINE_MISSING')
+      for (const locked of current.scenes.filter(scene => scene.locked)) {
+        const candidate = alternative.scenes.find(scene => scene.id === locked.id)
+        if (!candidate || JSON.stringify(candidate) !== JSON.stringify(locked)) {
+          throw new VideoWorkbenchServiceError('备选方案不能覆盖锁定场景', 409, 'VIDEO_LOCKED_SCENE_CONFLICT')
+        }
+      }
+      const version = this.timelineVersion(project, alternative.scenes)
+      return await this.repository.saveProject(videoStudioProjectSchema.parse({
+        ...project,
+        timeline: alternative.scenes.map(scene => ({ id: scene.id, source_id: scene.source_id, in_ms: scene.in_ms, out_ms: scene.out_ms })),
+        timeline_versions: [...project.timeline_versions, version],
+        current_timeline_version_id: version.id,
+        alternatives: [],
+        state: 'ready',
+        revision: project.revision + 1,
+      }))
+    })
+  }
+
+  private async extractVideoAnalysisInputs(
+    project: VideoStudioProject,
+    operationId: string,
+    signal: AbortSignal,
+  ): Promise<{ frames: VideoAnalysisFrame[]; transcripts: VideoEvidence[]; gaps: string[] }> {
+    const directory = join(this.repository.paths().root, 'analysis', operationId)
+    await mkdir(directory, { recursive: true, mode: 0o700 })
+    const frames: VideoAnalysisFrame[] = []
+    const transcripts: VideoEvidence[] = []
+    const gaps: string[] = []
+    const sampled = project.sources.slice(0, 4)
+    if (project.sources.length > sampled.length) gaps.push(`仅抽取前 ${sampled.length} 个素材的画面与音频证据；其余素材保留来源证据。`)
+    try {
+      for (const source of sampled) {
+        if (signal.aborted) throw new VideoAnalysisError('视频分析已取消', 499, 'VIDEO_ANALYSIS_CANCELLED')
+        const frameTimes = [...new Set([0.1, 0.5, 0.9].map(position => (
+          Math.max(0, Math.min(source.duration_ms - 1, Math.floor(source.duration_ms * position)))
+        )))]
+        let extractedFrames = 0
+        for (const [frameIndex, frameTimeMs] of frameTimes.entries()) {
+          if (signal.aborted) throw new VideoAnalysisError('视频分析已取消', 499, 'VIDEO_ANALYSIS_CANCELLED')
+          const framePath = join(directory, `${source.id}-${frameIndex}.jpg`)
+          const frame = await this.runProcess([
+            videoBinary('ffmpeg', this.env, this.platform), '-hide_banner', '-loglevel', 'error',
+            '-ss', (frameTimeMs / 1000).toFixed(3), '-i', source.path,
+            '-frames:v', '1', '-vf', 'scale=1280:-2:force_original_aspect_ratio=decrease',
+            '-q:v', '3', '-y', framePath,
+          ], { signal }).catch(() => null)
+          const bytes = frame?.exitCode === 0 ? await readFile(framePath).catch(() => null) : null
+          if (!bytes?.length) continue
+          frames.push({ source_id: source.id, in_ms: frameTimeMs, data_url: `data:image/jpeg;base64,${bytes.toString('base64')}` })
+          extractedFrames += 1
+        }
+        if (extractedFrames === 0) gaps.push(`${source.name} 未能抽取画面证据。`)
+        else if (extractedFrames < frameTimes.length) gaps.push(`${source.name} 仅抽取到 ${extractedFrames}/${frameTimes.length} 个画面采样点。`)
+
+        if (!source.has_audio) continue
+        const audioPath = join(directory, `${source.id}.mp3`)
+        const audioDurationMs = Math.min(source.duration_ms, 10 * 60_000)
+        const audio = await this.runProcess([
+          videoBinary('ffmpeg', this.env, this.platform), '-hide_banner', '-loglevel', 'error', '-i', source.path,
+          '-t', (audioDurationMs / 1000).toFixed(3), '-vn', '-ac', '1', '-ar', '16000', '-b:a', '64k',
+          '-y', audioPath,
+        ], { signal }).catch(() => null)
+        const audioBytes = audio?.exitCode === 0 ? await readFile(audioPath).catch(() => null) : null
+        if (!audioBytes?.length) {
+          gaps.push(`${source.name} 未能抽取音频证据。`)
+          continue
+        }
+        try {
+          const transcript = await transcribeVoiceFile(
+            new File([audioBytes], `${source.id}.mp3`, { type: 'audio/mpeg' }),
+            {
+              env: this.env,
+              fetchImpl: this.fetchImpl,
+              signal,
+              providerProtocol: PROVIDER_GATEWAY_PROTOCOL.headerValue,
+              operationId: `${operationId}-speech-${source.id}`,
+            },
+          )
+          if (transcript.text.trim()) {
+            transcripts.push({
+              id: id('evidence'),
+              kind: 'transcript',
+              source_id: source.id,
+              source_fingerprint: source.fingerprint!,
+              in_ms: 0,
+              out_ms: Math.max(1, audioDurationMs),
+              text: transcript.text.trim(),
+              confidence: 0.8,
+              warnings: audioDurationMs < source.duration_ms ? ['仅转写素材前十分钟。'] : [],
+              created_at: this.iso(),
+            })
+          }
+        } catch (error) {
+          if (signal.aborted) throw error
+          gaps.push(`${source.name} 未能获得语音转写。`)
+        }
+      }
+      return { frames, transcripts, gaps }
+    } finally {
+      await rm(directory, { recursive: true, force: true }).catch(() => undefined)
+    }
+  }
+
+  private materializeVideoEvidence(
+    project: VideoStudioProject,
+    drafts: Awaited<ReturnType<typeof analyzeVideoEvidence>>['evidence'],
+  ): VideoEvidence[] {
+    const sources = new Map(project.sources.map(source => [source.id, source]))
+    return drafts.map(draft => {
+      const source = sources.get(draft.source_id)
+      if (!source?.fingerprint || draft.out_ms > source.duration_ms) {
+        throw new VideoWorkbenchServiceError('分析引用了不存在的素材时间', 502, 'VIDEO_ANALYSIS_INVALID')
+      }
+      return { id: id('evidence'), ...draft, source_fingerprint: source.fingerprint, created_at: this.iso() }
+    })
+  }
+
+  private materializeVideoScenes(
+    project: VideoStudioProject,
+    drafts: VideoPlanDraft['scenes'],
+    evidence: VideoEvidence[],
+  ): VideoScene[] {
+    const sources = new Map(project.sources.map(source => [source.id, source]))
+    const evidenceById = new Map(evidence.map(item => [item.id, item]))
+    return drafts.map(draft => {
+      const source = sources.get(draft.source_id)
+      if (!source || draft.out_ms > source.duration_ms) {
+        throw new VideoWorkbenchServiceError('视频方案引用了不存在的素材时间', 502, 'VIDEO_ANALYSIS_INVALID')
+      }
+      for (const evidenceId of draft.evidence_ids) {
+        const item = evidenceById.get(evidenceId)
+        if (!item || item.source_id !== draft.source_id || item.out_ms <= draft.in_ms || item.in_ms >= draft.out_ms) {
+          throw new VideoWorkbenchServiceError('视频方案包含无效证据引用', 502, 'VIDEO_ANALYSIS_INVALID')
+        }
+      }
+      return { id: id('clip'), ...draft, locked: false }
+    })
+  }
+
+  private preserveLockedVideoScenes(current: VideoScene[], proposed: VideoScene[]): VideoScene[] {
+    const locked = current.filter(scene => scene.locked)
+    const overlapsLocked = (scene: VideoScene) => locked.some(candidate => (
+      candidate.source_id === scene.source_id && candidate.in_ms < scene.out_ms && candidate.out_ms > scene.in_ms
+    ))
+    const available = proposed.filter(scene => !overlapsLocked(scene))
+    const result: VideoScene[] = []
+    let cursor = 0
+    for (const scene of current) {
+      if (scene.locked) result.push(scene)
+      else if (available[cursor]) result.push(available[cursor++]!)
+    }
+    return [...result, ...available.slice(cursor)]
+  }
+
+  async analyzeVideoProject(projectId: string, raw: AnalyzeVideoProjectInput): Promise<VideoOperation> {
+    const input = analyzeVideoProjectInputSchema.parse(raw)
+    const launch = await this.mutateProject(projectId, async () => {
+      let project = await this.requireVideoProject(projectId)
+      if (project.revision !== input.base_revision) throw new VideoWorkbenchServiceError('视频项目已更新，请刷新后再分析', 409, 'VIDEO_REVISION_CONFLICT')
+      if (!project.sources.length) throw new VideoWorkbenchServiceError('请先导入视频素材', 409, 'VIDEO_SOURCE_NOT_FOUND')
+      if (project.state === 'rendering') throw new VideoWorkbenchServiceError('正在导出，暂时不能分析', 409, 'VIDEO_RENDER_ACTIVE')
+      const active = project.task_id ? await this.repository.getOperation(project.task_id).catch(() => null) : null
+      if (active && ['queued', 'running', 'committing'].includes(active.status)) {
+        throw new VideoWorkbenchServiceError('当前已有视频操作在运行', 409, 'VIDEO_OPERATION_ACTIVE')
+      }
+      project = await this.assertSourcesUnchanged(project)
+      const now = this.iso()
+      const task = await this.repository.saveOperation(this.operation({
+        schema_version: 1,
+        id: id('task'),
+        project_id: project.id,
+        kind: 'video.analyze',
+        status: 'running',
+        progress: 5,
+        stage: '正在提取素材证据',
+        result: { base_revision: project.revision, base_timeline_version_id: project.current_timeline_version_id },
+        created_at: now,
+        updated_at: now,
+      } as unknown as VideoOperation))
+      await this.repository.saveProject(videoStudioProjectSchema.parse({ ...project, task_id: task.id }))
+      return { project, task, userGoal: input.user_goal }
+    })
+    const controller = new AbortController()
+    const active: ActiveVideoExecution = { controller, completion: Promise.resolve(), output_path: '' }
+    active.completion = Promise.resolve().then(() => this.runVideoAnalysis(launch.project, launch.task, launch.userGoal, controller.signal))
+    this.activeAnalyses.set(launch.task.id, active)
+    return launch.task
+  }
+
+  private async runVideoAnalysis(
+    baseProject: VideoStudioProject,
+    analyzeTask: VideoOperation,
+    userGoal: string,
+    signal: AbortSignal,
+  ): Promise<void> {
+    let activeTask = analyzeTask
+    try {
+      const extracted = await this.extractVideoAnalysisInputs(baseProject, analyzeTask.operation_id ?? analyzeTask.id, signal)
+      await this.repository.saveOperation(this.operation({ ...analyzeTask, progress: 45, stage: '正在分析画面与语音证据' }))
+      const retainedEvidenceIds = new Set(baseProject.timeline_versions
+        .find(version => version.id === baseProject.current_timeline_version_id)
+        ?.scenes.filter(scene => scene.locked).flatMap(scene => scene.evidence_ids) ?? [])
+      const retained = baseProject.evidence.filter(item => item.kind === 'source_role' || retainedEvidenceIds.has(item.id))
+      const draft = await analyzeVideoEvidence({
+        sources: baseProject.sources,
+        existingEvidence: retained,
+        transcriptEvidence: extracted.transcripts,
+        frames: extracted.frames,
+        userGoal,
+        extractionGaps: extracted.gaps,
+      }, {
+        operationId: `${analyzeTask.operation_id ?? analyzeTask.id}-evidence`,
+        signal,
+        fetchImpl: this.fetchImpl,
+        env: this.env,
+      })
+      const generated = this.materializeVideoEvidence(baseProject, draft.evidence)
+      const next = await this.mutateProject(baseProject.id, async () => {
+        const latest = await this.requireVideoProject(baseProject.id)
+        if (
+          latest.revision !== baseProject.revision
+          || latest.current_timeline_version_id !== baseProject.current_timeline_version_id
+          || JSON.stringify(latest.sources.map(source => source.fingerprint)) !== JSON.stringify(baseProject.sources.map(source => source.fingerprint))
+        ) throw new VideoWorkbenchServiceError('视频项目已更新，本次分析结果未写入', 409, 'VIDEO_ANALYSIS_STALE')
+        const evidence = [...retained, ...extracted.transcripts, ...generated]
+        const revision = evidenceRevision(evidence)
+        const evidenceProject = await this.repository.saveProject(videoStudioProjectSchema.parse({
+          ...latest,
+          evidence,
+          evidence_revision: revision,
+          revision: latest.revision + 1,
+        }))
+        const now = this.iso()
+        const planTask = await this.repository.saveOperation(this.operation({
+          schema_version: 1,
+          id: id('task'),
+          project_id: latest.id,
+          kind: 'video.plan',
+          status: 'running',
+          progress: 60,
+          stage: '正在编译剪辑方案',
+          result: { base_revision: evidenceProject.revision, base_timeline_version_id: evidenceProject.current_timeline_version_id, evidence_revision: revision },
+          created_at: now,
+          updated_at: now,
+        } as unknown as VideoOperation))
+        await this.repository.saveProject(videoStudioProjectSchema.parse({ ...evidenceProject, task_id: planTask.id }))
+        await this.repository.saveOperation(this.operation({
+          ...analyzeTask,
+          status: 'succeeded',
+          progress: 100,
+          stage: '证据分析完成',
+          result: { evidence_revision: revision, evidence_count: evidence.length, next_task_id: planTask.id },
+        }))
+        return { project: evidenceProject, planTask, evidence, gaps: [...extracted.gaps, ...draft.gaps] }
+      })
+      const active = this.activeAnalyses.get(analyzeTask.id)
+      this.activeAnalyses.delete(analyzeTask.id)
+      if (active) this.activeAnalyses.set(next.planTask.id, active)
+      activeTask = next.planTask
+      const currentScenes = next.project.timeline_versions.find(version => version.id === next.project.current_timeline_version_id)?.scenes ?? []
+      const plan = await planVideoTimeline({
+        sources: next.project.sources,
+        evidence: next.evidence,
+        currentScenes,
+        userGoal,
+        analysisGaps: next.gaps,
+      }, {
+        operationId: `${next.planTask.operation_id ?? next.planTask.id}-timeline`,
+        signal,
+        fetchImpl: this.fetchImpl,
+        env: this.env,
+      })
+      await this.mutateProject(baseProject.id, async () => {
+        const latest = await this.requireVideoProject(baseProject.id)
+        if (
+          latest.revision !== next.project.revision
+          || latest.evidence_revision !== next.project.evidence_revision
+          || latest.current_timeline_version_id !== next.project.current_timeline_version_id
+        ) throw new VideoWorkbenchServiceError('视频项目已更新，本次剪辑方案未写入', 409, 'VIDEO_ANALYSIS_STALE')
+        const proposed = this.materializeVideoScenes(latest, plan.scenes, next.evidence)
+        const scenes = this.preserveLockedVideoScenes(currentScenes, proposed)
+        const version = this.timelineVersion(latest, scenes, latest.evidence_revision)
+        const alternatives: VideoAlternative[] = plan.alternatives.map(alternative => ({
+          id: id('alternative'),
+          base_timeline_version_id: version.id,
+          label: alternative.label,
+          tradeoff: alternative.tradeoff,
+          scenes: this.preserveLockedVideoScenes(currentScenes, this.materializeVideoScenes(latest, alternative.scenes, next.evidence)),
+        }))
+        const completed = await this.repository.saveProject(videoStudioProjectSchema.parse({
+          ...latest,
+          brief: compileVideoBrief(userGoal, { ...plan.brief, gaps: [...new Set([...plan.brief.gaps, ...next.gaps])].slice(0, 20) }),
+          timeline: scenes.map(scene => ({ id: scene.id, source_id: scene.source_id, in_ms: scene.in_ms, out_ms: scene.out_ms })),
+          timeline_versions: [...latest.timeline_versions, version],
+          current_timeline_version_id: version.id,
+          alternatives,
+          state: 'ready',
+          revision: latest.revision + 1,
+        }))
+        await this.repository.saveOperation(this.operation({
+          ...next.planTask,
+          status: 'succeeded',
+          progress: 100,
+          stage: '剪辑方案已生成',
+          result: { timeline_version_id: version.id, project_revision: completed.revision, alternative_count: alternatives.length },
+        }))
+      })
+    } catch (error) {
+      const cancelled = signal.aborted || (error instanceof VideoAnalysisError && error.code === 'VIDEO_ANALYSIS_CANCELLED')
+      const stale = error instanceof VideoWorkbenchServiceError && error.code === 'VIDEO_ANALYSIS_STALE'
+      const failure = mediaSafeError(cancelled
+        ? 'MEDIA_VIDEO_ANALYSIS_CANCELLED'
+        : stale ? 'MEDIA_STATE_CONFLICT' : 'MEDIA_VIDEO_ANALYSIS_UNAVAILABLE')
+      await this.repository.saveOperation(this.operation({
+        ...activeTask,
+        status: cancelled ? 'cancelled' : 'failed',
+        progress: 0,
+        stage: cancelled ? '已取消' : stale ? '方案已过期' : '视频分析失败',
+        error: failure.message,
+        error_code: failure.code,
+      })).catch(() => undefined)
+    } finally {
+      this.activeAnalyses.delete(analyzeTask.id)
+      this.activeAnalyses.delete(activeTask.id)
+    }
+  }
+
+  private async assertSourcesUnchanged(project: VideoStudioProject): Promise<VideoStudioProject> {
+    const sources = [] as VideoStudioProject['sources']
+    let changed = false
+    for (const source of project.sources) {
+      const info = await stat(source.path).catch(() => null)
+      if (!info?.isFile()) {
+        if (!source.missing) {
+          await this.repository.saveProject(videoStudioProjectSchema.parse({
+            ...project,
+            sources: project.sources.map(candidate => candidate.id === source.id ? { ...candidate, missing: true } : candidate),
+          }))
+        }
+        throw new VideoWorkbenchServiceError('视频素材已不可用', 404, 'VIDEO_SOURCE_MISSING')
+      }
+      const fingerprint = await videoFingerprint(source.path)
+      if (source.fingerprint && source.fingerprint !== fingerprint) {
+        if (!source.content_changed) {
+          await this.repository.saveProject(videoStudioProjectSchema.parse({
+            ...project,
+            sources: project.sources.map(candidate => candidate.id === source.id
+              ? { ...candidate, missing: false, content_changed: true }
+              : candidate),
+          }))
+        }
+        throw new VideoWorkbenchServiceError('视频素材内容已经变化，请重新导入', 409, 'VIDEO_SOURCE_CHANGED')
+      }
+      changed ||= !source.fingerprint || source.missing || source.content_changed
+      sources.push({ ...source, fingerprint, missing: false, content_changed: false })
+    }
+    return changed
+      ? await this.repository.saveProject(videoStudioProjectSchema.parse({ ...project, sources }))
+      : project
+  }
+
+  private previewProject(project: VideoStudioProject): VideoStudioProject {
+    const scale = Math.min(1, 960 / Math.max(project.output.width, project.output.height))
+    const even = (value: number) => Math.max(2, Math.round(value / 2) * 2)
+    return videoStudioProjectSchema.parse({
+      ...project,
+      output: {
+        width: even(project.output.width * scale),
+        height: even(project.output.height * scale),
+        fps: Math.min(24, project.output.fps),
+      },
+    })
+  }
+
+  private async movePublishedFile(source: string, destination: string): Promise<void> {
+    await mkdir(dirname(destination), { recursive: true, mode: 0o700 })
+    try {
+      await rename(source, destination)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EXDEV') throw error
+      await copyFile(source, destination)
+      await rm(source, { force: true })
+    }
+  }
+
+  private async failOperation(
+    operation: VideoOperation,
+    code:
+      | 'MEDIA_VIDEO_SOURCE_UNREADABLE'
+      | 'MEDIA_VIDEO_PROBE_INTERRUPTED'
+      | 'MEDIA_VIDEO_ANALYSIS_INTERRUPTED'
+      | 'MEDIA_VIDEO_PREVIEW_FAILED'
+      | 'MEDIA_VIDEO_PREVIEW_CANCELLED'
+      | 'MEDIA_VIDEO_PREVIEW_INTERRUPTED'
+      | 'MEDIA_VIDEO_EXPORT_FAILED'
+      | 'MEDIA_VIDEO_EXPORT_CANCELLED'
+      | 'MEDIA_VIDEO_EXPORT_INTERRUPTED',
+    stage: string,
+  ): Promise<VideoOperation> {
+    const failure = mediaSafeError(code)
+    return await this.repository.saveOperation(this.operation({
+      ...operation,
+      status: code.endsWith('_CANCELLED') ? 'cancelled' : 'failed',
+      progress: 0,
+      stage,
+      error: failure.message,
+      error_code: failure.code,
+    }))
+  }
+
+  async previewVideo(projectId: string, raw: PreviewVideoInput): Promise<VideoOperation> {
+    return await this.mutateProject(projectId, async () => {
+      const input = previewVideoInputSchema.parse(raw)
+      let project = await this.requireVideoProject(projectId)
+      if (project.revision !== input.base_revision) throw new VideoWorkbenchServiceError('视频项目已更新，请刷新后再生成预览', 409, 'VIDEO_REVISION_CONFLICT')
+      if (project.current_timeline_version_id !== input.timeline_version_id) {
+        throw new VideoWorkbenchServiceError('视频时间线已更新，请刷新后再生成预览', 409, 'VIDEO_TIMELINE_CONFLICT')
+      }
+      if (!project.timeline.length) throw new VideoWorkbenchServiceError('时间线还是空的', 409, 'VIDEO_TIMELINE_EMPTY')
+      project = await this.assertSourcesUnchanged(project)
+      const existing = project.preview_task_id ? await this.repository.getOperation(project.preview_task_id).catch(() => null) : null
+      if (existing && ['queued', 'running', 'committing'].includes(existing.status)) return existing
+      const timeline = project.timeline_versions.find(version => version.id === input.timeline_version_id)
+      if (!timeline) throw new VideoWorkbenchServiceError('视频时间线版本不存在', 404, 'VIDEO_TIMELINE_MISSING')
+      const toolchain = await this.toolchainStatus()
+      if (!toolchain.ffmpeg.available || !toolchain.ffprobe.available) {
+        throw new VideoWorkbenchServiceError(mediaSafeError('MEDIA_VIDEO_TOOLCHAIN_UNAVAILABLE').message, 503, 'VIDEO_TOOLCHAIN_UNAVAILABLE')
+      }
+      const now = this.iso()
+      const assetId = `preview_${randomUUID().replaceAll('-', '')}`
+      const outputPath = join(this.repository.paths().assets, project.id, `${assetId}.mp4`)
+      const assetPath = `/api/media/videos/projects/${project.id}/previews/${assetId}/content`
+      const operation = await this.repository.saveOperation(this.operation({
+        schema_version: 1,
+        id: id('task'),
+        project_id: project.id,
+        kind: 'video.preview',
+        status: 'queued',
+        progress: 0,
+        stage: '等待生成预览',
+        result: {
+          preview_revision: project.revision,
+          timeline_version_id: timeline.id,
+          asset_id: assetId,
+          asset_path: assetPath,
+        },
+        created_at: now,
+        updated_at: now,
+      } as unknown as VideoOperation))
+      await this.repository.saveProject(videoStudioProjectSchema.parse({
+        ...project,
+        preview_task_id: operation.id,
+        error: undefined,
+        error_code: undefined,
+      }))
+      const controller = new AbortController()
+      const completion = Promise.resolve().then(() => this.runPreview(project, operation, outputPath, controller.signal))
+      this.activePreviews.set(operation.id, { controller, completion, output_path: outputPath })
+      return operation
+    })
+  }
+
+  private async runPreview(
+    project: VideoStudioProject,
+    operation: VideoOperation,
+    outputPath: string,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const temporary = `${outputPath}.partial-${operation.id}.mp4`
+    try {
+      await mkdir(dirname(outputPath), { recursive: true, mode: 0o700 })
+      const running = await this.repository.saveOperation(this.operation({
+        ...operation,
+        status: 'running',
+        progress: 10,
+        stage: '正在生成预览',
+        result: { ...(operation.result ?? {}), temporary_output: temporary },
+      }))
+      const result = await this.runProcess(
+        buildVideoRenderCommand(
+          videoBinary('ffmpeg', this.env, this.platform),
+          this.previewProject(project),
+          temporary,
+          { name: 'mpeg4', args: ['-q:v', '5'] },
+        ),
+        { signal },
+      )
+      if (result.exitCode !== 0 || signal.aborted) throw new Error(result.stderr || 'preview interrupted')
+      await this.assertSourcesUnchanged(project)
+      const verified = await verifyVideoOutput(temporary, this.runProcess, videoBinary('ffprobe', this.env, this.platform))
+      const committing = await this.repository.saveOperation(this.operation({
+        ...running,
+        status: 'committing',
+        progress: 95,
+        stage: '正在发布预览',
+        result: { ...(running.result ?? {}), temporary_output: temporary, content_hash: verified.content_hash },
+      }))
+      const parsed = videoPreviewTaskResultSchema.parse(committing.result)
+      await this.mutateProject(project.id, async () => {
+        const latest = await this.requireVideoProject(project.id)
+        if (
+          latest.revision !== parsed.preview_revision
+          || latest.current_timeline_version_id !== parsed.timeline_version_id
+          || latest.preview_task_id !== operation.id
+        ) throw new VideoWorkbenchServiceError('视频时间线已更新，本次预览不再发布', 409, 'VIDEO_PREVIEW_STALE')
+        await this.movePublishedFile(temporary, outputPath)
+        const asset: MediaAsset = {
+          id: parsed.asset_id,
+          role: 'preview',
+          version_id: parsed.timeline_version_id,
+          storage: { kind: 'managed', locator: join(project.id, basename(outputPath)) },
+          mime_type: 'video/mp4',
+          byte_size: verified.byte_size,
+          content_hash: verified.content_hash,
+          created_at: this.iso(),
+        }
+        await this.repository.saveProject(videoStudioProjectSchema.parse({
+          ...latest,
+          assets: [...latest.assets.filter(candidate => candidate.role !== 'preview'), asset],
+          preview: {
+            timeline_version_id: parsed.timeline_version_id,
+            asset_id: parsed.asset_id,
+            asset_path: parsed.asset_path,
+            content_hash: verified.content_hash,
+            created_at: this.iso(),
+          },
+        }))
+      })
+      await this.repository.saveOperation(this.operation({
+        ...committing,
+        status: 'succeeded',
+        progress: 100,
+        stage: '预览已就绪',
+        result: { ...(committing.result ?? {}), temporary_output: undefined, content_hash: verified.content_hash },
+      }))
+    } catch {
+      await this.failOperation(operation, signal.aborted ? 'MEDIA_VIDEO_PREVIEW_CANCELLED' : 'MEDIA_VIDEO_PREVIEW_FAILED', signal.aborted ? '已取消' : '预览生成失败').catch(() => undefined)
+    } finally {
+      await rm(temporary, { force: true }).catch(() => undefined)
+      this.activePreviews.delete(operation.id)
+    }
+  }
+
+  async renderVideo(projectId: string, raw: RenderVideoInput): Promise<VideoOperation> {
+    return await this.mutateProject(projectId, async () => {
+      const input = renderVideoInputSchema.parse(raw)
+      let project = await this.requireVideoProject(projectId)
+      if (project.state === 'rendering') {
+        const existing = project.task_id ? await this.repository.getOperation(project.task_id).catch(() => null) : null
+        if (existing && ['queued', 'running', 'committing'].includes(existing.status)) return existing
+        throw new VideoWorkbenchServiceError('导出状态异常，请刷新后重试', 409, 'VIDEO_RENDER_STATE_CONFLICT')
+      }
+      if (project.preview_task_id) {
+        const preview = await this.repository.getOperation(project.preview_task_id).catch(() => null)
+        if (preview && ['queued', 'running', 'committing'].includes(preview.status)) {
+          throw new VideoWorkbenchServiceError('请先等待视频预览完成或取消预览', 409, 'VIDEO_PREVIEW_ACTIVE')
+        }
+      }
+      if (project.revision !== input.base_revision) throw new VideoWorkbenchServiceError('视频项目已更新，请刷新后再导出', 409, 'VIDEO_REVISION_CONFLICT')
+      const timelineVersionId = input.timeline_version_id ?? project.current_timeline_version_id
+      if (project.current_timeline_version_id !== timelineVersionId || !timelineVersionId) {
+        throw new VideoWorkbenchServiceError('视频时间线已更新，请刷新后再导出', 409, 'VIDEO_TIMELINE_CONFLICT')
+      }
+      if (!project.timeline_versions.some(version => version.id === timelineVersionId)) {
+        throw new VideoWorkbenchServiceError('视频时间线版本不存在', 409, 'VIDEO_TIMELINE_MISSING')
+      }
+      if (!project.timeline.length) throw new VideoWorkbenchServiceError('时间线还是空的', 409, 'VIDEO_TIMELINE_EMPTY')
+      project = await this.assertSourcesUnchanged(project)
+      if (!isAbsolute(input.output_path)) throw new VideoWorkbenchServiceError('导出路径必须是绝对路径', 400, 'VIDEO_OUTPUT_PATH_INVALID')
+      if (!['.mp4', '.mov'].includes(extname(input.output_path).toLowerCase())) {
+        throw new VideoWorkbenchServiceError('视频只能导出为 MP4 或 MOV', 400, 'VIDEO_OUTPUT_FORMAT_INVALID')
+      }
+      const normalizedOutput = resolve(input.output_path)
+      if (project.sources.some(source => resolve(source.path) === normalizedOutput)) {
+        throw new VideoWorkbenchServiceError('导出位置不能覆盖原始视频素材', 409, 'VIDEO_OUTPUT_OVERWRITES_SOURCE')
+      }
+      const toolchain = await this.toolchainStatus()
+      if (!toolchain.ffmpeg.available || !toolchain.ffprobe.available) {
+        throw new VideoWorkbenchServiceError(mediaSafeError('MEDIA_VIDEO_TOOLCHAIN_UNAVAILABLE').message, 503, 'VIDEO_TOOLCHAIN_UNAVAILABLE')
+      }
+      if (this.activeRenders.size >= this.renderQueueLimit()) {
+        throw new VideoWorkbenchServiceError('视频导出队列已满，请等待当前导出完成后再试', 429, 'VIDEO_RENDER_QUEUE_FULL')
+      }
+      const now = this.iso()
+      const operation = await this.repository.saveOperation(this.operation({
+        schema_version: 1,
+        id: id('task'),
+        project_id: project.id,
+        kind: 'video.render',
+        status: 'queued',
+        progress: 0,
+        stage: '等待导出',
+        result: {
+          render_revision: project.revision,
+          timeline_version_id: timelineVersionId,
+          output_path: normalizedOutput,
+        },
+        created_at: now,
+        updated_at: now,
+      } as unknown as VideoOperation))
+      await this.repository.saveProject(videoStudioProjectSchema.parse({
+        ...project,
+        state: 'rendering',
+        task_id: operation.id,
+        output_path: normalizedOutput,
+        output_asset_id: undefined,
+        output_content_hash: undefined,
+        output_verification: undefined,
+        error: undefined,
+        error_code: undefined,
+      }))
+      const controller = new AbortController()
+      const completion = this.enqueueRender(() => this.runRender(project, operation, normalizedOutput, controller.signal))
+      this.activeRenders.set(operation.id, { controller, completion, output_path: normalizedOutput })
+      return operation
+    })
+  }
+
+  private async runRender(
+    project: VideoStudioProject,
+    operation: VideoOperation,
+    outputPath: string,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const extension = extname(outputPath).toLowerCase() || '.mp4'
+    const temporary = join(dirname(outputPath), `${basename(outputPath, extension)}.partial-${operation.id}${extension}`)
+    let published = false
+    try {
+      if (signal.aborted) throw new Error('render cancelled before start')
+      await mkdir(dirname(outputPath), { recursive: true, mode: 0o700 })
+      const running = await this.repository.saveOperation(this.operation({
+        ...operation,
+        status: 'running',
+        progress: 10,
+        stage: '正在导出',
+        result: { ...(operation.result ?? {}), temporary_output: temporary },
+      }))
+      let encoder = await selectVideoEncoder(this.runProcess, this.env, this.platform)
+      let result = await this.runProcess(
+        buildVideoRenderCommand(videoBinary('ffmpeg', this.env, this.platform), project, temporary, encoder),
+        { signal },
+      )
+      if (
+        result.exitCode !== 0
+        && !signal.aborted
+        && !this.env.BB_FFMPEG_VIDEO_ENCODER?.trim()
+        && encoder.name !== FALLBACK_VIDEO_ENCODER.name
+      ) {
+        await rm(temporary, { force: true }).catch(() => undefined)
+        encoder = FALLBACK_VIDEO_ENCODER
+        result = await this.runProcess(
+          buildVideoRenderCommand(videoBinary('ffmpeg', this.env, this.platform), project, temporary, encoder),
+          { signal },
+        )
+      }
+      if (result.exitCode !== 0 || signal.aborted) throw new Error(result.stderr || 'render interrupted')
+      await this.assertSourcesUnchanged(project)
+      const inspection = await verifyVideoOutput(temporary, this.runProcess, videoBinary('ffprobe', this.env, this.platform))
+      const verification = {
+        timeline_version_id: project.current_timeline_version_id!,
+        byte_size: inspection.byte_size,
+        file_mtime_ms: inspection.file_mtime_ms,
+        duration_ms: inspection.duration_ms,
+        video_stream_count: inspection.video_stream_count,
+        audio_stream_count: inspection.audio_stream_count,
+        ...(inspection.width ? { width: inspection.width } : {}),
+        ...(inspection.height ? { height: inspection.height } : {}),
+        ...(inspection.fps ? { fps: inspection.fps } : {}),
+        content_hash: inspection.content_hash,
+        verified_at: this.iso(),
+      }
+      const outputAssetId = `out_${randomUUID().replaceAll('-', '')}`
+      const committing = await this.repository.saveOperation(this.operation({
+        ...running,
+        status: 'committing',
+        progress: 95,
+        stage: '正在完成导出',
+        result: {
+          ...(running.result ?? {}),
+          temporary_output: temporary,
+          output_asset_id: outputAssetId,
+          output_content_hash: verification.content_hash,
+          output_verification: verification,
+        },
+      }))
+      const parsed = videoRenderTaskResultSchema.parse(committing.result)
+      await this.mutateProject(project.id, async () => {
+        const latest = await this.requireVideoProject(project.id)
+        if (
+          latest.revision !== parsed.render_revision
+          || latest.current_timeline_version_id !== parsed.timeline_version_id
+          || latest.task_id !== operation.id
+        ) throw new VideoWorkbenchServiceError('视频项目已更新，本次导出结果不再发布', 409, 'VIDEO_RENDER_STALE')
+        await this.movePublishedFile(temporary, outputPath)
+        published = true
+        await this.repository.saveProject(videoStudioProjectSchema.parse({
+          ...latest,
+          state: 'complete',
+          output_path: outputPath,
+          output_asset_id: outputAssetId,
+          output_content_hash: verification.content_hash,
+          output_verification: verification,
+          error: undefined,
+          error_code: undefined,
+        }))
+      })
+      await this.repository.saveOperation(this.operation({
+        ...committing,
+        status: 'succeeded',
+        progress: 100,
+        stage: '导出完成',
+        result: {
+          ...(committing.result ?? {}),
+          temporary_output: undefined,
+          output_path: outputPath,
+          output_asset_id: outputAssetId,
+          output_content_hash: verification.content_hash,
+          output_verification: verification,
+          video_encoder: encoder.name,
+        },
+      }))
+    } catch {
+      if (!published) {
+        await this.failOperation(operation, signal.aborted ? 'MEDIA_VIDEO_EXPORT_CANCELLED' : 'MEDIA_VIDEO_EXPORT_FAILED', signal.aborted ? '已取消' : '导出失败').catch(() => undefined)
+        const latest = await this.project(project.id).catch(() => null)
+        if (latest?.task_id === operation.id) {
+          const failure = mediaSafeError(signal.aborted ? 'MEDIA_VIDEO_EXPORT_CANCELLED' : 'MEDIA_VIDEO_EXPORT_FAILED')
+          await this.repository.saveProject(videoStudioProjectSchema.parse({
+            ...latest,
+            state: signal.aborted ? 'ready' : 'failed',
+            error: failure.message,
+            error_code: failure.code,
+          })).catch(() => undefined)
+        }
+      }
+    } finally {
+      await rm(temporary, { force: true }).catch(() => undefined)
+      this.activeRenders.delete(operation.id)
+    }
+  }
+
+  async cancelOperation(operationId: string): Promise<VideoOperation> {
+    const operation = await this.repository.getOperation(operationId)
+    if (!['queued', 'running', 'committing'].includes(operation.status)) {
+      throw new VideoWorkbenchServiceError('当前视频操作不能取消', 409, 'VIDEO_OPERATION_NOT_CANCELLABLE')
+    }
+    const active = operation.kind === 'video.preview'
+      ? this.activePreviews.get(operation.id)
+      : operation.kind === 'video.render'
+        ? this.activeRenders.get(operation.id)
+        : operation.kind === 'video.analyze' || operation.kind === 'video.plan'
+          ? this.activeAnalyses.get(operation.id)
+          : undefined
+    if (!active) throw new VideoWorkbenchServiceError('当前视频操作不能安全取消', 409, 'VIDEO_OPERATION_NOT_CANCELLABLE')
+    active.controller.abort(new Error('video operation cancelled'))
+    await active.completion
+    return await this.repository.getOperation(operation.id)
+  }
+
+  async recoverInterruptedOperations(): Promise<void> {
+    for (const operation of await this.repository.listOperations()) {
+      if (!['queued', 'running', 'committing'].includes(operation.status)) continue
+      if (operation.kind === 'video.render' && await this.recoverCommittedRender(operation)) continue
+      const code = operation.kind === 'video.preview'
+        ? 'MEDIA_VIDEO_PREVIEW_INTERRUPTED'
+        : operation.kind === 'video.render'
+          ? 'MEDIA_VIDEO_EXPORT_INTERRUPTED'
+          : operation.kind === 'video.analyze' || operation.kind === 'video.plan'
+            ? 'MEDIA_VIDEO_ANALYSIS_INTERRUPTED'
+            : 'MEDIA_VIDEO_PROBE_INTERRUPTED'
+      const stage = operation.kind === 'video.preview'
+        ? '预览已中断'
+        : operation.kind === 'video.render'
+          ? '导出已中断'
+          : operation.kind === 'video.analyze' || operation.kind === 'video.plan'
+            ? '分析已中断'
+            : '素材读取已中断'
+      await this.failOperation(operation, code, stage)
+      const temporary = operation.kind === 'video.preview'
+        ? videoPreviewTaskResultSchema.safeParse(operation.result).data?.temporary_output
+        : operation.kind === 'video.render'
+          ? videoRenderTaskResultSchema.safeParse(operation.result).data?.temporary_output
+          : undefined
+      if (temporary) await rm(temporary, { force: true }).catch(() => undefined)
+      const project = await this.project(operation.project_id).catch(() => null)
+      if (!project) continue
+      if (operation.kind === 'video.render' && project.task_id === operation.id) {
+        const failure = mediaSafeError(code)
+        await this.repository.saveProject(videoStudioProjectSchema.parse({ ...project, state: 'ready', error: failure.message, error_code: failure.code }))
+      }
+    }
+  }
+
+  /**
+   * A crash can happen after the atomic file publication but before the task
+   * terminal event is written. The persisted verification proof lets us
+   * distinguish that case from a genuinely interrupted encoder without
+   * rerunning FFmpeg or trusting a file merely because it exists.
+   */
+  private async recoverCommittedRender(operation: VideoOperation): Promise<boolean> {
+    if (operation.status !== 'committing') return false
+    const result = videoRenderTaskResultSchema.safeParse(operation.result)
+    if (!result.success || !result.data.output_path || !result.data.output_content_hash || !result.data.output_verification || !result.data.output_asset_id) {
+      return false
+    }
+    const project = await this.project(operation.project_id).catch(() => null)
+    if (!project || project.task_id !== operation.id) return false
+    const info = await stat(result.data.output_path).catch(() => null)
+    if (!info?.isFile() || info.size <= 0) return false
+    const hash = await videoFingerprint(result.data.output_path).catch(() => null)
+    if (hash !== result.data.output_content_hash || hash !== result.data.output_verification.content_hash) return false
+    const terminalProject = await this.repository.saveProject(videoStudioProjectSchema.parse({
+      ...project,
+      state: 'complete',
+      output_path: result.data.output_path,
+      output_asset_id: result.data.output_asset_id,
+      output_content_hash: result.data.output_content_hash,
+      output_verification: result.data.output_verification,
+      error: undefined,
+      error_code: undefined,
+    }))
+    await this.repository.saveOperation(this.operation({
+      ...operation,
+      status: 'succeeded',
+      progress: 100,
+      stage: '导出完成',
+      result: { ...result.data, temporary_output: undefined },
+      error: undefined,
+      error_code: undefined,
+    }))
+    return terminalProject.state === 'complete'
+  }
+}

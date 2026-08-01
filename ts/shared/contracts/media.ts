@@ -406,7 +406,7 @@ export const videoTimelineVersionSchema = z.object({
 export const videoPreviewSchema = z.object({
   timeline_version_id: mediaIdSchema,
   asset_id: mediaIdSchema,
-  asset_path: z.string().startsWith('/api/media/assets/'),
+  asset_path: z.string().regex(/^\/api\/media\/(?:assets\/|videos\/projects\/)/),
   content_hash: z.string().regex(/^sha256:[a-f0-9]{64}$/),
   created_at: mediaIsoDateSchema,
 })
@@ -576,7 +576,7 @@ export const videoPreviewTaskResultSchema = z.object({
   preview_revision: z.number().int().nonnegative(),
   timeline_version_id: mediaIdSchema,
   asset_id: mediaIdSchema,
-  asset_path: z.string().startsWith('/api/media/assets/'),
+  asset_path: z.string().regex(/^\/api\/media\/(?:assets\/|videos\/projects\/)/),
   content_hash: z.string().regex(/^sha256:[a-f0-9]{64}$/).optional(),
   temporary_output: z.string().min(1).max(4096).optional(),
 })
