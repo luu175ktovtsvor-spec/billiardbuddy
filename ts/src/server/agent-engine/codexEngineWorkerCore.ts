@@ -67,6 +67,7 @@ type ActiveContextCompaction = {
   generation: number
   input_tokens: number
   model_started: boolean
+  pre_compact_instructions?: string
 }
 
 type PendingToolReceipt = {
@@ -551,6 +552,7 @@ export class CodexEngineWorkerCore implements AgentWorkerCore {
           ...request.system_prompt,
           ...(activeCompaction ? [] : this.projectInstructions?.prompt ? [this.projectInstructions.prompt] : []),
           ...(activeCompaction ? [] : this.initialHookContext ? [`项目 Hook 补充指令：\n${this.initialHookContext}`] : []),
+          ...(activeCompaction?.pre_compact_instructions ? [`项目 PreCompact Hook 补充要求：\n${activeCompaction.pre_compact_instructions}`] : []),
         ],
         thinkingConfig: request.thinking_config,
         engine_tool_names: activeCompaction ? [] : toolNames,
@@ -951,6 +953,7 @@ export class CodexEngineWorkerCore implements AgentWorkerCore {
         this.activeContextCompactions.set(compaction.item_id, active)
         this.contextCompactionStartReceipt = startReceipt
         this.contextCompactionCompletionReceipt = completionReceipt
+        let startedPersisted = false
         try {
           const event: Extract<AgentWorkerOutbound, { type: 'event'; event: 'context_compaction' }> = {
             type: 'event',
@@ -961,6 +964,14 @@ export class CodexEngineWorkerCore implements AgentWorkerCore {
             input_tokens: active.input_tokens,
           }
           await this.options.parent.recordContextCompaction(event)
+          startedPersisted = true
+          const lifecycleHooks = this.lifecycleHooks
+          if (!lifecycleHooks) throw new Error('CODEX_ENGINE_HOOK_RUNTIME_UNAVAILABLE')
+          const preCompact = await lifecycleHooks.preCompact({
+            trigger: active.source === 'automatic' ? 'auto' : 'manual',
+            signal: this.hookAbortController.signal,
+          })
+          active.pre_compact_instructions = preCompact.instructions
           this.emit(event)
           startReceipt.resolve()
         } catch (error) {
@@ -968,8 +979,12 @@ export class CodexEngineWorkerCore implements AgentWorkerCore {
           this.contextCompactionStartReceipt = undefined
           this.contextCompactionCompletionReceipt = undefined
           const failure = error instanceof Error ? error : new Error('CODEX_ENGINE_CONTEXT_COMPACTION_START_FAILED')
+          if (startedPersisted) {
+            await this.recordFailedContextCompaction(active).catch(() => undefined)
+          }
           startReceipt.reject(failure)
           completionReceipt.reject(failure)
+          this.emitTerminal('recovery_required', 'task_execution_environment_failed')
           throw failure
         }
         return
@@ -996,6 +1011,13 @@ export class CodexEngineWorkerCore implements AgentWorkerCore {
         }
         await this.options.parent.recordContextCompaction(event)
         this.emit(event)
+        const lifecycleHooks = this.lifecycleHooks
+        if (!lifecycleHooks) throw new Error('CODEX_ENGINE_HOOK_RUNTIME_UNAVAILABLE')
+        await lifecycleHooks.postCompact({
+          trigger: active.source === 'automatic' ? 'auto' : 'manual',
+          summary: compaction.summary,
+          signal: this.hookAbortController.signal,
+        })
         this.contextCompactionGeneration = active.generation
         this.activeContextCompactions.delete(compaction.item_id)
         this.contextCompactionCompletionReceipt?.resolve()
@@ -1005,6 +1027,7 @@ export class CodexEngineWorkerCore implements AgentWorkerCore {
         this.activeContextCompactions.delete(compaction.item_id)
         this.contextCompactionCompletionReceipt?.reject(failure)
         this.contextCompactionCompletionReceipt = undefined
+        this.emitTerminal('recovery_required', 'task_execution_environment_failed')
         throw failure
       }
       return
@@ -1052,16 +1075,7 @@ export class CodexEngineWorkerCore implements AgentWorkerCore {
     let firstError: Error | undefined
     for (const active of activeCompactions) {
       try {
-        const event: Extract<AgentWorkerOutbound, { type: 'event'; event: 'context_compaction' }> = {
-          type: 'event',
-          event: 'context_compaction',
-          phase: 'failed',
-          source: active.source,
-          generation: active.generation,
-          input_tokens: active.input_tokens,
-        }
-        await this.options.parent.recordContextCompaction(event)
-        this.emit(event)
+        await this.recordFailedContextCompaction(active)
       } catch (error) {
         firstError ??= error instanceof Error ? error : new Error('CODEX_ENGINE_CONTEXT_COMPACTION_FAILURE_UNRECORDED')
       }
@@ -1074,6 +1088,19 @@ export class CodexEngineWorkerCore implements AgentWorkerCore {
       this.contextCompactionCompletionReceipt = undefined
     }
     if (firstError) throw firstError
+  }
+
+  private async recordFailedContextCompaction(active: ActiveContextCompaction): Promise<void> {
+    const event: Extract<AgentWorkerOutbound, { type: 'event'; event: 'context_compaction' }> = {
+      type: 'event',
+      event: 'context_compaction',
+      phase: 'failed',
+      source: active.source,
+      generation: active.generation,
+      input_tokens: active.input_tokens,
+    }
+    await this.options.parent.recordContextCompaction(event)
+    this.emit(event)
   }
 
   private emit(message: Extract<AgentWorkerOutbound, { type: 'event' | 'terminal' }>): void {
