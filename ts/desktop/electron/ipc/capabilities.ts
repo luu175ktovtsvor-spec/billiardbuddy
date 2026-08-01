@@ -39,9 +39,8 @@ const modelConfigurationSave: Validator = value =>
   && typeof value.model === 'string' && value.model.trim().length > 0 && value.model.length <= 200
   && typeof value.api_key === 'string' && value.api_key.length <= 4_096
   && personalModelProtocol(value.protocol)
-  && Array.isArray(value.capabilities) && value.capabilities.length > 0 && value.capabilities.length <= 2
-  && value.capabilities.every(personalModelCapability)
-  && new Set(value.capabilities).size === value.capabilities.length
+  && Array.isArray(value.capabilities) && value.capabilities.length === 1
+  && value.capabilities[0] === 'TextReasoning'
   && (value.supports_tool_calls === undefined || typeof value.supports_tool_calls === 'boolean')
 
 const modelConfigurationSetRoute: Validator = value =>
