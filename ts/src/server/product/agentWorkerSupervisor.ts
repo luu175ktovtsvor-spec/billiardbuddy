@@ -112,7 +112,12 @@ export class AgentWorkerSupervisor {
     const timeout = setTimeout(() => void this.fail(runId, generation, receipt.fencing_token, 'READY_TIMEOUT'), this.readyTimeoutMs)
     this.readyTimers.set(key, timeout)
     try {
-      child = await this.launcher.launch({ run_id: runId, core: identity, bootstrap, onExit: () => void this.fail(runId, generation, receipt.fencing_token, 'CHILD_EXIT'), onMessage: message => {
+      child = await this.launcher.launch({ run_id: runId, core: identity, bootstrap, onExit: () => {
+        // A worker is expected to exit immediately after it emits terminal.
+        // The terminal projection owns the outcome until its ordered write
+        // either succeeds or explicitly reports persistence failure.
+        if (!this.terminalPending.has(key)) void this.fail(runId, generation, receipt.fencing_token, 'CHILD_EXIT')
+      }, onMessage: message => {
         // A terminal transition is final. In particular, do not let buffered
         // IPC activity resurrect a completed/failed durable TaskRun.
         if (this.settled.has(key) || this.terminalPending.has(key)) return
@@ -146,7 +151,8 @@ export class AgentWorkerSupervisor {
         if (message.type === 'fatal') void this.fail(runId, generation, receipt.fencing_token, message.code)
       } })
       if (this.settled.has(key)) { await child.stop(); await this.releaseSchedulerClaim(runId, generation, receipt.fencing_token); return 'recovery_required' }
-      if (this.terminalPending.has(key) || this.stopRequested.has(key)) { await child.stop(); return this.fail(runId, generation, receipt.fencing_token, 'STOPPED', 'terminal') }
+      if (this.terminalPending.has(key)) { await child.stop(); return 'started' }
+      if (this.stopRequested.has(key)) { await child.stop(); return this.fail(runId, generation, receipt.fencing_token, 'STOPPED', 'terminal') }
       this.active.set(key, { child, fencing: receipt.fencing_token, task_id: dispatchClaim.task_id, run_id: runId, generation }); return 'started'
     } catch { clearTimeout(timeout); this.readyTimers.delete(key); return this.fail(runId, generation, receipt.fencing_token, 'LAUNCH_FAILED') }
   }
@@ -174,7 +180,7 @@ export class AgentWorkerSupervisor {
     active.child.send({ type: 'steer', queue_item_id: queueItemId, text })
     return true
   }
-  async stop(runId: string, generation: number): Promise<void> { const key = `${runId}:${generation}`; if (this.settled.has(key)) return; this.stopRequested.add(key); this.terminalPending.add(key); const active = this.active.get(key); try { if (active) active.child.send({ type: 'stop' }); else await this.scheduler.cancel(`agent-worker:${runId}:${generation}`).catch(() => undefined); await this.messages?.record(runId, generation, { type: 'terminal', state: 'stopped', run_id: runId }) } finally { await this.fail(runId, generation, active?.fencing, 'STOPPED', 'terminal') } }
+  async stop(runId: string, generation: number): Promise<void> { const key = `${runId}:${generation}`; if (this.settled.has(key) || this.terminalPending.has(key)) return; this.stopRequested.add(key); this.terminalPending.add(key); const active = this.active.get(key); try { if (active) active.child.send({ type: 'stop' }); else await this.scheduler.cancel(`agent-worker:${runId}:${generation}`).catch(() => undefined); await this.messages?.record(runId, generation, { type: 'terminal', state: 'stopped', run_id: runId }) } finally { await this.fail(runId, generation, active?.fencing, 'STOPPED', 'terminal') } }
   async shutdown(): Promise<void> {
     await Promise.all([...this.active.values()].map(active => this.stop(active.run_id, active.generation)))
   }
@@ -198,8 +204,10 @@ export class AgentWorkerSupervisor {
     const interval = Math.max(1, Math.min(10_000, Math.floor(remaining / 3)))
     const timer = setInterval(() => {
       void this.scheduler.heartbeat(`agent-worker:${run}:${generation}`, fencing).then(receipt => {
-        if (receipt.outcome !== 'admitted') void this.fail(run, generation, fencing, 'SCHEDULER_LEASE_LOST')
-      }).catch(() => this.fail(run, generation, fencing, 'SCHEDULER_HEARTBEAT_FAILED'))
+        if (!this.terminalPending.has(key) && receipt.outcome !== 'admitted') void this.fail(run, generation, fencing, 'SCHEDULER_LEASE_LOST')
+      }).catch(() => {
+        if (!this.terminalPending.has(key)) void this.fail(run, generation, fencing, 'SCHEDULER_HEARTBEAT_FAILED')
+      })
     }, interval)
     timer.unref?.()
     this.heartbeatTimers.set(key, timer)
