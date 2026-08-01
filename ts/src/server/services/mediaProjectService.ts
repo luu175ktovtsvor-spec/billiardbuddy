@@ -1973,6 +1973,7 @@ export class MediaProjectService {
       if (
         task.status === 'committing'
         && !this.activeImageRefreshes.has(task.id)
+        && !this.activeImageSubmissions.has(task.id)
         && result.success
         && result.data.outputs.length > 0
       ) {
@@ -2003,7 +2004,13 @@ export class MediaProjectService {
         }
         return await this.failImageTask(task, 'MEDIA_IMAGE_OUTCOME_UNKNOWN', true, task.provider_receipt_hash)
       }
-      if (task.status === 'succeeded' && project.state !== 'ready' && result.success && result.data.outputs.length > 0) {
+      if (
+        task.status === 'succeeded'
+        && !this.activeImageSubmissions.has(task.id)
+        && project.state !== 'ready'
+        && result.success
+        && result.data.outputs.length > 0
+      ) {
         if (!await this.recoveredImageOutputsAreValid(project, result.data.outputs)) {
           return await this.failImageTask(task, 'MEDIA_IMAGE_OUTCOME_UNKNOWN', true, task.provider_receipt_hash)
         }
