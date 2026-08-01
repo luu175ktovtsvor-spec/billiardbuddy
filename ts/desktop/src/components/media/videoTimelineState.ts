@@ -27,6 +27,7 @@ export type VideoTimelineEvent =
   | { type: 'trim_to'; milliseconds: number; source_duration_ms: number }
   | { type: 'begin_scrub' }
   | { type: 'scrub_to'; milliseconds: number; duration_ms: number }
+  | { type: 'playhead_to'; milliseconds: number; duration_ms: number }
   | { type: 'commit' }
   | { type: 'cancel' }
 
@@ -101,6 +102,10 @@ export function videoTimelineReducer(
   }
   if (event.type === 'scrub_to') {
     if (state.mode !== 'scrubbing') return state
+    return { ...state, playhead_ms: Math.max(0, Math.min(event.milliseconds, event.duration_ms)) }
+  }
+  if (event.type === 'playhead_to') {
+    if (state.mode !== 'idle') return state
     return { ...state, playhead_ms: Math.max(0, Math.min(event.milliseconds, event.duration_ms)) }
   }
   return state
