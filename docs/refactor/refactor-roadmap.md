@@ -379,6 +379,10 @@ R2 被路线图选中时，内部不按“看到一个缺口就补一个功能�
 - **R3.5 失败与恢复边界**：Hook 或压缩的 session 写入、ACK 失败会进入 `recovery_required`，不重发模型；Hook 结果解析失败发生在 receipt 已写入并 ACK 之后，只把该 Hook 判为不满足，不会重发同一模型调用。恢复同一 Run 时，Harness 会先对 session 字段及私有消息中的全部 receipt 重新 ACK，随后才继续既有 active/preparing 状态或交付已完成结果；重复 ACK 幂等。
 - **R3.5 静态验证**：服务端 TypeScript 检查、源码可达性审计、桌面 lint/生产构建和差异空白检查通过；未新增或运行测试、smoke、模拟请求、桌面试运行、真实模型调用或发布。
 - **R3.5 未验证与下一项**：真实 Hook 超时、压缩中断、进程重启与 ACK 网络失败尚未运行。下一游标为 **R3.6 — 托管 TextReasoning unknown 的显式新 attempt 账本**；不得把搜索、媒体、桌面设置、安装包或生产发布混入。
+- **R3.6 当前源码证据**：Host 的 TextReasoning operation ID 现在以 server-private `attempt:<run_id>:<dispatch_generation>` 为命名空间，再附本 Host 的模型序号。相同 Run/generation 在进程重启后重用同一 operation，Gateway 只回放已完成结果或维持 unknown 围栏；`recoverTaskRun()` 是唯一提升该 generation 的入口，并已由用户点击、Authority receipt 与 `task_run_recover` event 持久确认。
+- **R3.6 额度与失败边界**：Gateway result store 与个人 operation store 不再接受原 operation ID 的 `confirmUnknownRetry`。用户确认恢复后才会进入新 operation ID，因而产生独立 Gateway result row 和 usage reservation；恢复前的 unknown 不会静默调用上游。恢复 mutation、其新 generation 与原始 client operation 都保留在 Authority，Renderer 不接触 provider operation ID 或 usage 数据。
+- **R3.6 静态验证**：Gateway Bun 生产 bundle、服务端 TypeScript 检查、源码可达性审计（496 个源文件、0 个缺失 import、322 个生产源可达）、桌面 lint/生产构建和差异空白检查通过；未新增或运行测试、smoke、模拟请求、桌面试运行、真实模型调用或发布。
+- **R3.6 未验证与下一项**：真实 Gateway unknown、重启回放、恢复确认及独立额度结算尚未运行。下一游标为 R4.3 的公开投影与动作边界复核；不得把搜索、媒体、桌面设置、安装包或生产发布混入。
 - **已完成的当前模块证据**：R4.1 桌面 Agent 公开事件消费链审计已完成。桌面任务 runtime 只消费 Product Server 的结构化 WebSocket 事件与线程/队列快照；resume cursor 由同一 durable event ledger 驱动，重连先回放、再读取当前 run snapshot、最后交接 live 事件。页面的局部 store 只保留连接、提交、草稿、滚动、面板和其他可丢失 UI 状态，线程、活动、计划、审批、错误、恢复、模型路由与队列都能从服务端重新投影。侧任务变更以 authority revision 触发服务端 refresh，审阅/Diff 与进程面板分别从正式 API 刷新/轮询，因此不依赖聊天事件或浏览器缓存。
 - **R4.1 验证**：相关 TypeScript 源码链路和公开协议 parser 已静态审阅；R3 最终检查中的服务端类型检查、桌面 production renderer 构建、Gateway bundle、运行策略解析、源码可达性审计和 diff whitespace audit 均通过。未新增或运行测试、smoke、模拟请求、桌面试运行、安装或发布。
 - **已完成的当前模块证据**：R4.2 桌面 Agent 动作与幂等回执审计已完成。新建任务、普通消息和冻结 Review Run 都保留未知 HTTP 结果对应的原始 client operation 与精确 revision/附件请求，重试只读取同一 Authority receipt；队列编辑、删除、重试、重排、转向和恢复同样复用原 mutation。继续、改写以及任务生命周期操作走通用 durable envelope；侧任务和审阅批注各自保留可重放 operation。审批/问题以已持久化 request id 幂等结算，停止则只在当前 socket 已接收 durable replay、run snapshot 与 resume cursor 后才可送至 generation-fenced Host。服务端也拒绝尚未完成 replay hand-off 的入站动作，因此旧窗口/旧连接状态不会批准或停止未观察到的新 Run。权威 revision、receipt、event ledger 和重连 snapshot 是多窗口交接的唯一裁决，Renderer 只保留可丢失的交互 pending 状态。
@@ -459,13 +463,13 @@ R2 被路线图选中时，内部不按“看到一个缺口就补一个功能�
 - **已完成阶段：R0.1 重构合同与施工证据回溯核验、R1.1 共享产品内核的权威边界回溯核验、R2 Agent Harness Authority 与 Worker/Host 生产链回溯及物理收口**。历史阶段记录仍只是候选证据，不能替代当前源码核验或发布许可。
 
 ```text
-Active work unit: R3.6 — 托管 TextReasoning unknown 的显式新 attempt 账本
-Outcome: 对已经发起但结果未知的托管 TextReasoning，只有用户或权威 Run 明确创建的新 attempt 才能再次发送；不得以恢复、重连或同一 operation 的内部回退替代这项决定。
-Evidence: Gateway operation ledger、Host Model Port、Task/Run 失败投影及 R3.1—R3.5 的 receipt 与恢复边界。
-Constraints / Non-goals: 不改变 R2 的 Thread/Turn/Tool/恢复语义，不回写 R3.1—R3.5 已完成的 provider/receipt 链路，不进入图片、视频、WebSearch、桌面设置、安装包或生产发布；不发送真实模型或付费请求。
-Allowed scope: 托管 TextReasoning unknown outcome 的状态、显式新 attempt 身份、Authority/Host 的创建与恢复裁决，以及 R3 证据记录。
-Verification / Exit: 恢复和重连不会隐式再请求 unknown operation；显式新 attempt 具有独立 operation、额度与事件证据；类型、生产构建、源码审计和失败/恢复证据成立。
-Next cursor: R4.3 — R4 模块的后续公开投影与动作边界审计。
+Active work unit: R4.3 — Agent 公开投影与恢复动作的收口复核
+Outcome: 已有 R4.1/R4.2 的公开事件、snapshot/replay 和动作 receipt 必须以当前源码逐项复核，发现会造成状态泄漏、重复动作或恢复错误的缺口才在本单元修复。
+Evidence: Product Server API/WebSocket、桌面 runtime store、Authority operation receipt、TaskRun recovery 与 R4.1/R4.2 的既有记录。
+Constraints / Non-goals: 不回写 R2/R3 的 Host/provider/receipt 私有边界，不进入图片、视频、WebSearch、桌面设置、安装包或生产发布；不发送真实模型或付费请求。
+Allowed scope: R4 的公开协议 parser、事件/snapshot hand-off、恢复与动作 receipt 链路，以及 R4 证据记录。
+Verification / Exit: Renderer 不读取私有 Harness/provider 状态；重连、恢复、审批、停止与突变都有单一 Authority receipt 或 generation fence；类型、生产构建、源码审计和失败/恢复证据成立。
+Next cursor: R5 — 媒体工作台的路线图施工单。
 ```
 - **Interrupt rule**：只有发现会造成错误结果、数据丢失、重复副作用、权限越界或无法恢复的事实才可中断；其余发现进入对应后续模块。
 

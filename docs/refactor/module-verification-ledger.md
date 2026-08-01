@@ -102,6 +102,14 @@
 - **未验证/待处理**：真实 Hook 超时、压缩中断、进程崩溃与 ACK 网络失败仍未运行。托管 unknown 的显式新 attempt 账本留给 R3.6，不能自动重试任何已围栏模型调用。
 - **下一项**：R3.6 托管 TextReasoning unknown 的显式新 attempt 账本。
 
+## R3.6 托管 TextReasoning unknown 的显式新 attempt 账本
+
+- **当前源码证明**：`resolveTaskRunCoreBinding()` 以持久 `run_id + dispatch_generation` 生成 server-private model attempt namespace；Host 的每次 TextReasoning sample 再附本次序号。相同 generation 重启后仍命中原 operation；`recoverTaskRun()` 由用户确认、Authority receipt 与 `task_run_recover` event 记录后才提升 generation，因此恢复会使用独立 operation ID。
+- **额度与失败边界**：Gateway 与个人 operation store 都不再接受同一 unknown operation 的 retry 开关。旧 operation 持续返回 unknown，不会触发第二次上游调用；用户确认的新 generation 建立自己的 result row 与 usage reservation，可能带来新的费用，且现有桌面恢复提示已明确说明此风险。
+- **当前结论**：R3.6 已完成 unknown 到显式新 attempt 的权威链路。服务端 TypeScript 检查、源码可达性审计（496 个源文件、0 个缺失 import、322 个生产源可达）和差异空白检查通过；未运行测试、smoke、模拟请求、真实模型调用或发布。
+- **未验证/待处理**：真实上游中断、Gateway 重启、用户恢复确认与额度结算仍未运行。R4.3 只复核并收口公开投影/恢复动作，不得重新引入 provider 私有状态。
+- **下一项**：R4.3 Agent 公开投影与恢复动作的收口复核。
+
 ## R4 Agent 桌面客户端事件投影与动作回执
 
 - **事件和 snapshot hand-off**：`ProductTaskSocketManager` 只保存每个 task 的 WebSocket、连接状态与 durable `resumeCursor`；每次连接先发送 `resume`，在收到 `resume_cursor` 前拒绝所有 socket 命令。服务端 `taskWebSocket` 在同一 socket 上依次回放 Authority `event_sequence` ledger、读取当前 Run snapshot、重放待处理 approval、过滤不高于回放高水位的缓冲 live event，最后才发送 `resume_cursor` 并切换为 live。断线重连复用 cursor，Renderer 不以旧 socket 的状态继续审批或停止。

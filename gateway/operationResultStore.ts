@@ -38,7 +38,7 @@ export class GatewayOperationResultError extends Error {
 export interface GatewayOperationResultStore {
   begin(
     binding: GatewayOperationResultBinding,
-    options?: { confirmUnknownRetry?: boolean; awaitingConsumerAck?: boolean },
+    options?: { awaitingConsumerAck?: boolean },
   ): GatewayOperationStart
   complete(
     binding: GatewayOperationResultBinding,
@@ -178,7 +178,7 @@ export class SqliteGatewayOperationResultStore implements GatewayOperationResult
 
   begin(
     binding: GatewayOperationResultBinding,
-    options: { confirmUnknownRetry?: boolean; awaitingConsumerAck?: boolean } = {},
+    options: { awaitingConsumerAck?: boolean } = {},
   ): GatewayOperationStart {
     validateBinding(binding)
     this.db.exec('BEGIN IMMEDIATE')
@@ -208,16 +208,6 @@ export class SqliteGatewayOperationResultStore implements GatewayOperationResult
         return { outcome: 'in_progress' }
       }
       if (row?.state === 'outcome_unknown') {
-        if (options.confirmUnknownRetry) {
-          const token = fencingToken()
-          this.db.query(`UPDATE gateway_operation_results_v4
-            SET state='reserved',fencing_token=?,payload=NULL,created_at=?,attempt=attempt+1,expires_at=?
-            WHERE operation_key=? AND fencing_token=? AND state='outcome_unknown'`).run(
-            token, now, now + RESERVATION_LEASE_MS, operationKey(binding), row.fencing_token,
-          )
-          this.db.exec('COMMIT')
-          return { outcome: 'started', fencing_token: token }
-        }
         this.db.exec('COMMIT')
         return { outcome: 'outcome_unknown' }
       }

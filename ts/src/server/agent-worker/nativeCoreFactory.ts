@@ -18,6 +18,7 @@ export const serverPrivateNativeCoreFactory: ServerPrivateCoreFactory = {
       attachment_paths: identity.initial_attachments,
       model_binding: route.binding,
       personal_profile: route.personalProfile,
+      model_attempt_id: binding.model_attempt_id,
     })
   },
 }
