@@ -33,7 +33,7 @@ flowchart LR
 | 层 | 最终负责 | 明确不负责 |
 | --- | --- | --- |
 | Agent 域与 Run 账本 | 用户任务、Item、队列、审批、恢复判定、操作回执 | 模型循环细节、图片画布、视频时间线 |
-| Engine Adapter | 一个 BilliardBuddy 任务会话与一个 Codex Thread 的绑定；一次 Run 与该 Thread 上一次 Turn 的绑定；事件顺序、取消、服务端请求回应 | 项目索引、全局密钥、UI 状态 |
+| Engine Adapter | 一个 BilliardBuddy 任务会话与一个 Codex Thread 的绑定；一次 Run 与该 Thread 上一次 Turn 的绑定；事件顺序、取消、服务端请求回应。未开始 Turn 的新 Thread 不作持久恢复状态 | 项目索引、全局密钥、UI 状态 |
 | Codex Engine | 一次 Thread 的 Turn/Item/工具循环、上下文、指令与执行状态 | BilliardBuddy 的业务真相、额度、永久凭据、最终完成裁决 |
 | 本机模型桥 | 为引擎提供 Responses 语义，保留上游回执和不确定结果 | 伪造 Chat/Responses 等价性或自动重发不确定操作 |
 | 工具宿主 | 在权限信封内执行文件、终端、浏览器、MCP 等窄能力 | 绕过 Run lease 或直接修改领域账本 |
