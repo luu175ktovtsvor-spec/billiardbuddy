@@ -489,6 +489,11 @@ export function parseProductTaskEvent(value: unknown): ProductTaskEvent | null {
       }
     }
 
+    case 'assistant_text_snapshot':
+      return hasOnlyKeys(value, ['type', 'text']) && typeof value.text === 'string' && value.text.length <= MAX_PRODUCT_TEXT_LENGTH
+        ? { type: 'assistant_text_snapshot', text: value.text }
+        : null
+
     case 'plan_updated': {
       if (!hasOnlyKeys(value, ['type', 'plan', 'event_sequence', 'replayed']) || typeof value.event_sequence !== 'number' || !Number.isSafeInteger(value.event_sequence) || value.event_sequence < 1 || ('replayed' in value && value.replayed !== true)) return null
       const plan = parseTaskPlan(value.plan)

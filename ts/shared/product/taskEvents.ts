@@ -177,6 +177,8 @@ export type ProductTaskEvent =
     }
   | { type: 'assistant_text_start' }
   | { type: 'assistant_text_delta'; text: string }
+  /** Authoritative replacement for the currently streaming item after reconnect. */
+  | { type: 'assistant_text_snapshot'; text: string }
   | {
       type: 'assistant_text'
       id: string

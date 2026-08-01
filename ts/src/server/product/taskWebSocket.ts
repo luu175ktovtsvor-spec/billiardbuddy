@@ -167,12 +167,17 @@ async function replayDurableProductEvents(
       hasMore = page.has_more === true
     }
     if (ws.data.handoff !== 'replaying') return
-    ws.send(JSON.stringify({ type: 'run_snapshot', ...runtimeEvents.snapshot(ws.data.productTaskId) }))
+    const runSnapshot = runtimeEvents.snapshot(ws.data.productTaskId)
+    const assistantTextSnapshot = runtimeEvents.assistantTextSnapshot(ws.data.productTaskId)
+    ws.send(JSON.stringify({ type: 'run_snapshot', ...runSnapshot }))
     await replayPendingWorkerApproval(ws, tasks, runtimeEvents)
     ws.send(JSON.stringify({ type: 'resume_cursor', cursor }))
     ws.data.handoff = 'live'
     const pending = ws.data.pending_live_events.splice(0)
     for (const event of pending) ws.send(event)
+    if (assistantTextSnapshot !== undefined) {
+      ws.send(JSON.stringify({ type: 'assistant_text_snapshot', text: assistantTextSnapshot }))
+    }
   } catch {
     ws.data.pending_live_events.splice(0)
     sendProtocolError(ws, 'task_unavailable')
