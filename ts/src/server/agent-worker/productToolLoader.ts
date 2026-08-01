@@ -1,7 +1,6 @@
 import type { ProductToolPermissionContext, ProductTools } from './productTool.js'
 import { createProductSkillTool } from './productSkillTool.js'
 import type { ProductCommand } from './productTool.js'
-import { ProductSubtaskTool } from './productSubtaskTool.js'
 import { ProductBashTool } from './productBashTool.js'
 import {
   ProductAskUserQuestionTool,
@@ -17,7 +16,6 @@ import {
 } from './productWorkspaceTools.js'
 
 const PRODUCT_TOOLS: ProductTools = [
-  ProductSubtaskTool,
   ProductBashTool,
   ProductReadTool,
   ProductEditTool,

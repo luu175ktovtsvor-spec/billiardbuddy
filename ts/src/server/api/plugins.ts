@@ -8,7 +8,6 @@ type PluginTaskReloadSummary = {
   applied: boolean
   reason?: 'next_turn'
   commands: number
-  agents: number
   plugins: number
   mcpServers: number
   errors: number
@@ -107,7 +106,6 @@ function nextTurnPluginSummary(): PluginTaskReloadSummary {
     applied: false,
     reason: 'next_turn',
     commands: 0,
-    agents: 0,
     plugins: 0,
     mcpServers: 0,
     errors: 0,

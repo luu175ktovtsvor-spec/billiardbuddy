@@ -489,9 +489,6 @@ function renderGroup(
                     {plugin.componentCounts.skills > 0 && (
                       <span>{t('settings.plugins.capability.skills', { count: String(plugin.componentCounts.skills) })}</span>
                     )}
-                    {plugin.componentCounts.agents > 0 && (
-                      <span>{t('settings.plugins.capability.agents', { count: String(plugin.componentCounts.agents) })}</span>
-                    )}
                     {plugin.componentCounts.mcpServers > 0 && (
                       <span>{t('settings.plugins.capability.mcpServers', { count: String(plugin.componentCounts.mcpServers) })}</span>
                     )}

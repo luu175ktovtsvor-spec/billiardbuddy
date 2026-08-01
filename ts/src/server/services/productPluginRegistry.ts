@@ -12,7 +12,6 @@ export type ProductPluginManifest = {
   version: string
   skills?: string
   commands?: string
-  agents?: string
   hooks?: string
   mcpServers?: Record<string, unknown>
   lspServers?: Record<string, ProductPluginLspServerConfig>
@@ -47,7 +46,10 @@ function object(value: unknown): Record<string, unknown> | null {
 function manifest(value: unknown): ProductPluginManifest {
   const source = object(value)
   if (!source || typeof source.name !== 'string' || !SAFE_NAME.test(source.name) || typeof source.version !== 'string' || !source.version.trim()) throw new Error('PLUGIN_MANIFEST_INVALID')
-  for (const key of ['skills', 'commands', 'agents', 'hooks'] as const) {
+  // A named-agent bundle used to create a second local model loop. Refuse it
+  // at the manifest boundary until it has a durable Codex child-Run format.
+  if (source.agents !== undefined) throw new Error('PLUGIN_MANIFEST_INVALID')
+  for (const key of ['skills', 'commands', 'hooks'] as const) {
     if (source[key] !== undefined && (typeof source[key] !== 'string' || path.isAbsolute(source[key]) || source[key].split(/[\\/]/).includes('..'))) throw new Error('PLUGIN_MANIFEST_INVALID')
   }
   const rawMcp = source.mcpServers === undefined ? undefined : object(source.mcpServers)
@@ -77,7 +79,7 @@ function manifest(value: unknown): ProductPluginManifest {
   return {
     name: source.name,
     version: source.version.trim(),
-    ...Object.fromEntries((['skills', 'commands', 'agents', 'hooks'] as const).flatMap(key => typeof source[key] === 'string' ? [[key, source[key]]] : [])),
+    ...Object.fromEntries((['skills', 'commands', 'hooks'] as const).flatMap(key => typeof source[key] === 'string' ? [[key, source[key]]] : [])),
     ...(mcpServers ? { mcpServers } : {}),
     ...(lspServers ? { lspServers } : {}),
   } as ProductPluginManifest
@@ -350,10 +352,6 @@ export function productPluginSkillRoots(plugin: ProductPlugin): string[] {
 
 export function productPluginCommandRoots(plugin: ProductPlugin): string[] {
   return plugin.enabled && plugin.manifest.commands ? [child(plugin.root, plugin.manifest.commands)] : []
-}
-
-export function productPluginAgentRoots(plugin: ProductPlugin): string[] {
-  return plugin.enabled && plugin.manifest.agents ? [child(plugin.root, plugin.manifest.agents)] : []
 }
 
 export function productPluginHookFiles(plugin: ProductPlugin): string[] {

@@ -4,12 +4,11 @@ import uniqBy from 'lodash-es/uniqBy.js'
 import { initProductBundledSkills } from '../../skills/bundled/productIndex.js'
 import { PRODUCT_HARNESS_SKILL_NAMES } from '../../skills/bundled/productHarness.js'
 import { getProductBundledSkills } from '../../skills/productSkillRegistry.js'
-import { listProductPlugins, productPluginAgentRoots, productPluginCommandRoots, productPluginLspServers, productPluginSkillRoots } from '../services/productPluginRegistry.js'
+import { listProductPlugins, productPluginCommandRoots, productPluginLspServers, productPluginSkillRoots } from '../services/productPluginRegistry.js'
 import { findProductGitRoot } from '../product/productGit.js'
 import { loadProductSkillCommandsFromDirectory } from './productSkillLoader.js'
 import type { ProductCommand, ProductTool } from './productTool.js'
 import { loadProductPluginCommands } from './productPluginCommandLoader.js'
-import { loadProductPluginAgentTools } from './productPluginAgentLoader.js'
 import { createProductPluginLspTool } from './productPluginLspLoader.js'
 
 function isWithinRoot(root: string, candidate: string): boolean {
@@ -17,7 +16,7 @@ function isWithinRoot(root: string, candidate: string): boolean {
   return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative))
 }
 
-function productExtensionDirectories(cwd: string, kind: 'skills' | 'agents'): { root: string; directories: string[] } | null {
+function productExtensionDirectories(cwd: string, kind: 'skills'): { root: string; directories: string[] } | null {
   const discoveredRoot = findProductGitRoot(cwd) ?? cwd
   let root: string
   let active: string
@@ -94,23 +93,14 @@ export async function loadProductAgentCommands(cwd: string): Promise<ProductComm
   ].filter(command => (command.isEnabled?.() ?? true)), 'name')
 }
 
-async function loadProjectAgentTools(cwd: string): Promise<ProductTool[]> {
-  const discovered = productExtensionDirectories(cwd, 'agents')
-  if (!discovered) return []
-  const loaded = await Promise.all(discovered.directories.map(directory => (
-    loadProductPluginAgentTools(directory, discovered.root, 'project')
-  )))
-  return loaded.flat()
-}
-
+/**
+ * Codex receives project skills, commands, MCP and LSP through the Host.
+ * Historical Markdown "agents" used a second local model loop and therefore
+ * intentionally have no executable surface until they are rebuilt as durable
+ * Codex child Runs.
+ */
 export async function loadProductAgentExtensionTools(cwd: string): Promise<ProductTool[]> {
   const plugins = (await listProductPlugins(cwd)).filter(plugin => plugin.enabled)
-  const [projectAgents, pluginAgents] = await Promise.all([
-    loadProjectAgentTools(cwd),
-    Promise.all(plugins.flatMap(plugin => productPluginAgentRoots(plugin).map(directory => (
-      loadProductPluginAgentTools(directory, plugin.root, plugin.name)
-    )))),
-  ])
   const lsp = plugins.flatMap(plugin => productPluginLspServers(plugin).map(server => createProductPluginLspTool(server)))
-  return uniqBy([...projectAgents, ...pluginAgents.flat(), ...lsp], 'name')
+  return uniqBy(lsp, 'name')
 }

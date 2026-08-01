@@ -11,7 +11,6 @@ import { CopyButton } from '../../components/shared/CopyButton'
 import { DirectoryPicker } from '../../components/shared/DirectoryPicker'
 import {
   productTaskCommandsApi,
-  type ProductTaskAgentCommand,
   type ProductTaskSkillCommand,
 } from '../api/taskCommands'
 import {
@@ -271,10 +270,8 @@ export function TaskComposer({
   const [workDir, setWorkDir] = useState(() => initialWorkDir?.trim() ?? '')
   const [permissionMode, setPermissionMode] = useState<ProductTaskPermissionMode>('ask_for_approval')
   const [discoverableSkills, setDiscoverableSkills] = useState<ProductTaskSkillCommand[] | null>(null)
-  const [discoverableAgents, setDiscoverableAgents] = useState<ProductTaskAgentCommand[] | null>(null)
-  const [agentDiscoveryWorkDir, setAgentDiscoveryWorkDir] = useState<string | null>(null)
+  const [commandDiscoveryWorkDir, setCommandDiscoveryWorkDir] = useState<string | null>(null)
   const [skillDiscoveryError, setSkillDiscoveryError] = useState<string | null>(null)
-  const [agentDiscoveryError, setAgentDiscoveryError] = useState<string | null>(null)
   const chatSendBehavior = useSettingsStore((state) => state.chatSendBehavior)
   const composingRef = useRef(false)
   const commandWorkDir = workDir.trim()
@@ -284,19 +281,15 @@ export function TaskComposer({
   useEffect(() => {
     if (!isSlashInput || !commandWorkDir) {
       setDiscoverableSkills(null)
-      setDiscoverableAgents(null)
-      setAgentDiscoveryWorkDir(null)
+      setCommandDiscoveryWorkDir(null)
       setSkillDiscoveryError(null)
-      setAgentDiscoveryError(null)
       return
     }
 
     let cancelled = false
     setDiscoverableSkills(null)
-    setDiscoverableAgents(null)
-    setAgentDiscoveryWorkDir(commandWorkDir)
+    setCommandDiscoveryWorkDir(commandWorkDir)
     setSkillDiscoveryError(null)
-    setAgentDiscoveryError(null)
 
     productTaskCommandsApi.listSkills(commandWorkDir)
       .then(({ commands }) => {
@@ -309,25 +302,14 @@ export function TaskComposer({
         setSkillDiscoveryError('暂时无法读取可用命令')
       })
 
-    productTaskCommandsApi.listAgents(commandWorkDir)
-      .then(({ agents }) => {
-        if (cancelled) return
-        setDiscoverableAgents(agents)
-      })
-      .catch(() => {
-        if (cancelled) return
-        setDiscoverableAgents([])
-        setAgentDiscoveryError('暂时无法读取可用命令')
-      })
-
     return () => {
       cancelled = true
     }
   }, [commandWorkDir, isSlashInput])
 
   const taskComposerCommands = useMemo(
-    () => buildTaskComposerCommands(discoverableSkills ?? [], discoverableAgents ?? []),
-    [discoverableAgents, discoverableSkills],
+    () => buildTaskComposerCommands(discoverableSkills ?? []),
+    [discoverableSkills],
   )
   const matchingCommands = useMemo<TaskComposerSlashCommand[]>(() => {
     if (query === null) return []
@@ -338,16 +320,16 @@ export function TaskComposer({
       command.name.toLocaleLowerCase().startsWith(query)
     ))
   }, [query, taskComposerCommands])
-  const hasAgentDiscoveryForCurrentWorkDir = agentDiscoveryWorkDir === commandWorkDir
-  const visibleCommands = hasAgentDiscoveryForCurrentWorkDir ? matchingCommands : []
-  const hasPendingCommandDiscovery = discoverableSkills === null || discoverableAgents === null
-  const visibleDiscoveryError = hasAgentDiscoveryForCurrentWorkDir
+  const hasCommandDiscoveryForCurrentWorkDir = commandDiscoveryWorkDir === commandWorkDir
+  const visibleCommands = hasCommandDiscoveryForCurrentWorkDir ? matchingCommands : []
+  const hasPendingCommandDiscovery = discoverableSkills === null
+  const visibleDiscoveryError = hasCommandDiscoveryForCurrentWorkDir
     ? visibleCommands.length === 0
-      ? [skillDiscoveryError, agentDiscoveryError].filter(Boolean).join('；') || null
+      ? skillDiscoveryError
       : null
     : null
-  const isAgentDiscoveryLoading = Boolean(commandWorkDir) && (
-    !hasAgentDiscoveryForCurrentWorkDir || (
+  const isCommandDiscoveryLoading = Boolean(commandWorkDir) && (
+    !hasCommandDiscoveryForCurrentWorkDir || (
       hasPendingCommandDiscovery && visibleCommands.length === 0 && visibleDiscoveryError === null
     )
   )
@@ -395,7 +377,7 @@ export function TaskComposer({
           <TaskComposerSlashPicker
             workDir={commandWorkDir}
             commands={visibleCommands}
-            isLoading={isAgentDiscoveryLoading}
+            isLoading={isCommandDiscoveryLoading}
             error={visibleDiscoveryError}
             onSelect={(command) => setInitialText((value) => insertSlashCommand(value, command.name))}
           />

@@ -1,10 +1,5 @@
 import { productApi } from './client'
 
-export type ProductTaskAgentCommand = {
-  displayName: string
-  runtimeName: string
-}
-
 export type ProductTaskSkillCommand = {
   runtimeName: string
   displayName: string
@@ -13,22 +8,15 @@ export type ProductTaskSkillCommand = {
 
 const PRODUCT_TASK_COMMAND_TIMEOUT_MS = 120_000
 
-function commandDiscoveryPath(resource: 'agents' | 'skills', cwd: string): string {
+function commandDiscoveryPath(cwd: string): string {
   const query = new URLSearchParams({ cwd })
-  return `/api/product/task-commands/${resource}?${query.toString()}`
+  return `/api/product/task-commands/skills?${query.toString()}`
 }
 
 export const productTaskCommandsApi = {
-  listAgents(cwd: string) {
-    return productApi.get<{ agents: ProductTaskAgentCommand[] }>(
-      commandDiscoveryPath('agents', cwd),
-      { timeout: PRODUCT_TASK_COMMAND_TIMEOUT_MS },
-    )
-  },
-
   listSkills(cwd: string) {
     return productApi.get<{ commands: ProductTaskSkillCommand[] }>(
-      commandDiscoveryPath('skills', cwd),
+      commandDiscoveryPath(cwd),
       { timeout: PRODUCT_TASK_COMMAND_TIMEOUT_MS },
     )
   },
