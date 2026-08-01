@@ -496,6 +496,11 @@ export function VideoStudio() {
                   key={active.preview.asset_id}
                   src={mediaApi.assetUrl(active.preview.asset_path)}
                   controls
+                  onTimeUpdate={event => dispatchTimeline({
+                    type: 'playhead_to',
+                    milliseconds: Math.round(event.currentTarget.currentTime * 1000),
+                    duration_ms: timelineDuration,
+                  })}
                   className="min-h-0 max-h-full max-w-full bg-black object-contain"
                 />
                 {previewStale && <p className="mt-2 text-[11px] text-[var(--color-warning)]">这是旧时间线的预览，可继续观看；生成新预览后才会替换。</p>}
