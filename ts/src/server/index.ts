@@ -195,7 +195,7 @@ export function startServer(port = PORT, host = HOST) {
       coreOperationBridge,
     )
   )
-  // Don't hijack the global console / process handlers under `bun test`:
+  // Library consumers can own the global console and process handlers:
   // a test that boots the server would otherwise route every test-side
   // console.error/warn into the user's real diagnostics file.
   if (process.env.NODE_ENV !== 'test') {
