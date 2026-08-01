@@ -1779,6 +1779,31 @@ export class MediaProjectService {
     if (task.kind === 'video.preview' && project.kind === 'video') {
       if (project.preview_task_id !== task.id) return task
       const result = videoPreviewTaskResultSchema.safeParse(task.result)
+      if (
+        task.status === 'committing'
+        && !this.activeVideoPreviews.has(task.id)
+        && result.success
+        && result.data.content_hash
+        && project.preview?.asset_id === result.data.asset_id
+        && project.preview.asset_path === result.data.asset_path
+        && project.preview.content_hash === result.data.content_hash
+        && project.current_timeline_version_id === result.data.timeline_version_id
+      ) {
+        const previewPath = join(this.assetsDir, project.id, basename(result.data.asset_path))
+        const fingerprint = await this.fileFingerprint(previewPath).catch(() => null)
+        if (fingerprint === result.data.content_hash) {
+          return await this.saveTask({
+            ...task,
+            status: 'succeeded',
+            progress: 100,
+            stage: '预览完成（已恢复）',
+            result: { ...result.data, temporary_output: undefined },
+            error: undefined,
+            error_code: undefined,
+            updated_at: this.iso(),
+          })
+        }
+      }
       if (task.status === 'succeeded' && result.success && project.preview?.asset_id !== result.data.asset_id) {
         const assetExists = await stat(join(this.assetsDir, project.id, basename(result.data.asset_path)))
           .then(info => info.isFile())

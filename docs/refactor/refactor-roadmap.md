@@ -407,7 +407,7 @@ R2 被路线图选中时，内部不按“看到一个缺口就补一个功能�
 - **R5.5 未验证与下一项**：真实 Gateway/Relay 重启窗口、远端 receipt 回放、候选下载、资产磁盘故障和用户交互尚未运行。下一游标为 R5.6 图片不可变资产、候选物化与版本选择的当前源码回溯核验，不得混入视频、搜索、设置、安装包、生产发布或真实付费生成。
 - **已完成的当前模块证据**：R5.6 复核发现 `selectImageVersion()` 原先只确认 Version 记录存在。现选择、继续编辑和版本导出统一经 `imageVersionBytes()` 重新校验文件、大小、CAS/asset 哈希、实际 MIME 与尺寸；远端 ACK 也只在每个候选经过同一校验后发生。中断时，Project/Task recovery 仍要求候选已经落盘，损坏、替换或丢失的资产不能成为当前版本、编辑基础或导出来源，也不会被误 ACK。
 - **R5.6 静态验证**：服务端 TypeScript 检查、源码可达性审计（496 个源文件、0 个缺失 import、322 个生产源可达）、桌面 lint/生产构建和差异空白检查通过。未新增或运行测试、smoke、模拟请求、桌面试运行、安装、真实 Relay/模型调用、付费生成或发布。
-- **R5.6 未验证与下一项**：真实 Gateway/Relay 重启窗口、远端 receipt 回放、候选下载、资产磁盘故障和用户交互尚未运行。下一游标为 R6.2 视频项目的导入、证据、时间线与预览/导出当前源码回溯核验，不得混入图片付费授权、搜索、设置、安装包、生产发布或真实媒体请求。
+- **R5.6 未验证与下一项**：真实 Gateway/Relay 重启窗口、远端 receipt 回放、候选下载、资产磁盘故障和用户交互尚未运行。下一游标为 R6.6 视频预览发布与终态恢复的当前源码回溯核验，不得混入图片付费授权、搜索、设置、安装包、生产发布或真实媒体请求。
 - **已完成阶段：R5 生图工作台静态收口**。Brief/参考素材、独立 Project/Task/Asset/Version、模型能力目录、同项目付费围栏、候选物化/领取/ACK、未知结果、局部重绘、质检、比较、版本选择与导出均只有图片领域的正式权威链；聊天 Harness 不拥有或代理图片项目。真实模型返回、真实网络中断、付费结果、桌面 Canvas/HiDPI 和设备级恢复尚未执行，不能被上述静态证据替代。
 
 - **已完成的当前模块证据**：R6.1 已从桌面 `VideoStudio` / `mediaWorkbenchStore`、产品 media mutation/API、`MediaProjectService` 装配、视频 Source/Evidence/Timeline/Audio/Subtitle/Preview/Render 协调器、`MediaTaskCoordinator` 与 FFmpeg/Gateway 端口追踪唯一调用链。桌面只保存未提交手势草稿和项目/任务事件投影；项目 revision、时间线版本、证据、音频/字幕、Task 与 Asset 都由 Product Server 持久服务写入。`video.preview` 与 `video.render` 是分离 Task，均在校验输出后才发布；取消和中断恢复由 `MediaTaskCoordinator` 分发回各自协调器。审计发现内容 mutation 会删除已发布节目预览，现已改为只撤销当前最终导出身份，保留带 project revision/timeline version 的历史预览；桌面同时按两种身份标出音频、字幕或时间线变更后的旧预览，新预览发布成功后才替换旧资产。
@@ -472,7 +472,7 @@ R2 被路线图选中时，内部不按“看到一个缺口就补一个功能�
 - **已完成阶段：R0.1 重构合同与施工证据回溯核验、R1.1 共享产品内核的权威边界回溯核验、R2 Agent Harness Authority 与 Worker/Host 生产链回溯及物理收口**。历史阶段记录仍只是候选证据，不能替代当前源码核验或发布许可。
 
 ```text
-Active work unit: R6.2 — 视频项目的导入、证据、时间线与预览/导出当前源码回溯核验
+Active work unit: R6.7 — 视频导入、时间线、预览/导出与取消恢复的当前源码回溯核验
 Outcome: 以当前视频 Source/Evidence/Timeline、任务、预览、渲染、导出、取消和恢复为证，确认项目 revision、资产身份与最终输出由唯一服务端状态链裁决；发现数据丢失、错误导出、重复副作用或不可恢复缺口才在本单元修复。
 Evidence: VideoStudio、MediaProjectService、视频 API、MediaTaskCoordinator、FFmpeg 端口与桌面项目投影，以及 R6 既有记录。
 Constraints / Non-goals: 不进入图片付费提交、Agent 私有 Harness、WebSearch、桌面设置、安装包或生产发布；不运行 FFmpeg、真实媒体/模型请求或付费操作。
