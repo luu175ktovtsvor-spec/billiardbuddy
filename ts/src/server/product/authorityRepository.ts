@@ -48,7 +48,7 @@ export type WorkspaceRecord = {
 export type AuthorityFile = {
   version: 1
   /** v1 files predate the additive workspace capability maps. */
-  authority_schema_revision: 1 | 2 | 3 | 4 | 5 | 6 | 7
+  authority_schema_revision: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8
   revision: number
   event_sequence: number
   tasks: Record<string, unknown>
@@ -86,6 +86,8 @@ export type AuthorityFile = {
   review_comments: Record<string, unknown>
   turn_input_queue: Record<string, unknown>
   context_snapshots: Record<string, unknown>
+  product_projects: Record<string, unknown>
+  product_directories: Record<string, unknown>
 }
 
 type TransactionValue<T> = T extends { changed: false; value: infer Value } ? Value : T
@@ -103,7 +105,7 @@ function map(value: unknown): Record<string, unknown> {
 function empty(): AuthorityFile {
   return {
     version: 1,
-    authority_schema_revision: 2,
+    authority_schema_revision: 8,
     revision: 0,
     event_sequence: 0,
     tasks: Object.create(null),
@@ -127,6 +129,8 @@ function empty(): AuthorityFile {
     review_comments: Object.create(null),
     turn_input_queue: Object.create(null),
     context_snapshots: Object.create(null),
+    product_projects: Object.create(null),
+    product_directories: Object.create(null),
   }
 }
 
@@ -236,6 +240,22 @@ function validateWorkspace(value: unknown, key: string): void {
     || !['available', 'missing', 'read_only', 'identity_changed', 'relink_required'].includes(workspace.availability as string)) invalid()
 }
 
+function validateProductProject(value: unknown, key: string): void {
+  const project = object(value)
+  exactKeys(project, ['id', 'title', 'rootDir', 'createdAt', 'updatedAt'])
+  if (project.id !== key || !requiredString(project.title) || project.title.length > 500
+    || !requiredString(project.rootDir) || project.rootDir.length > 4_096
+    || !isTimestamp(project.createdAt) || !isTimestamp(project.updatedAt)) invalid()
+}
+
+function validateProductDirectory(value: unknown, key: string): void {
+  const directory = object(value)
+  exactKeys(directory, ['id', 'projectId', 'path', 'label', 'createdAt', 'updatedAt'])
+  if (directory.id !== key || !requiredString(directory.projectId) || !requiredString(directory.path)
+    || directory.path.length > 4_096 || !requiredString(directory.label) || directory.label.length > 500
+    || !isTimestamp(directory.createdAt) || !isTimestamp(directory.updatedAt)) invalid()
+}
+
 function validateDraft(value: unknown, key: string): void {
   const draft = object(value); exactKeys(draft, ['draft_id', 'installation_id', 'target_task_id', 'revision', 'last_activity', 'state', 'created_at', 'expires_at'], ['workspace_id', 'target_state'])
   if (draft.draft_id !== key || !requiredString(draft.installation_id) || !requiredString(draft.target_task_id) || (draft.target_state !== undefined && !['existing_task', 'pending_task'].includes(draft.target_state as string)) || !Number.isSafeInteger(draft.revision) || (draft.revision as number) < 0 || !['active', 'consumed', 'expired'].includes(draft.state as string) || !isTimestamp(draft.last_activity) || !isTimestamp(draft.created_at) || !isTimestamp(draft.expires_at) || (draft.workspace_id !== undefined && !requiredString(draft.workspace_id))) invalid()
@@ -325,7 +345,7 @@ function validateReviewComment(value: unknown, key: string): void {
 
 function validate(file: AuthorityFile): AuthorityFile {
   if (file.version !== 1 || !Number.isSafeInteger(file.revision) || file.revision < 0 || !Number.isSafeInteger(file.event_sequence) || file.event_sequence < 0) invalid()
-  if (![1, 2, 3, 4, 5, 6, 7].includes(file.authority_schema_revision)) throw new Error('UNSUPPORTED_SCHEMA')
+  if (![1, 2, 3, 4, 5, 6, 7, 8].includes(file.authority_schema_revision)) throw new Error('UNSUPPORTED_SCHEMA')
   const maps = ['tasks', 'side_tasks', 'bindings', 'receipts', 'events', 'outbox', 'prepared', 'provenance'] as const
   for (const name of maps) map(file[name])
   if (file.authority_schema_revision >= 2) {
@@ -339,8 +359,8 @@ function validate(file: AuthorityFile): AuthorityFile {
       for (const name of ['thread_entries', 'task_runs', 'dispatch_records', 'task_events', 'attachment_bindings'] as const) map(file[name])
       for (const [key, value] of Object.entries(file.thread_entries)) {
         const entry = object(value); assertAuthorityMapKey(key)
-        exactKeys(entry, ['entry_id', 'task_id', 'run_id', 'text', 'created_at'], ['reference_entry_ids'])
-        if (entry.entry_id !== key || !requiredString(entry.task_id) || !requiredString(entry.run_id) || typeof entry.text !== 'string' || !isTimestamp(entry.created_at) || (entry.reference_entry_ids !== undefined && (!Array.isArray(entry.reference_entry_ids) || entry.reference_entry_ids.length > 8 || new Set(entry.reference_entry_ids).size !== entry.reference_entry_ids.length || entry.reference_entry_ids.some(id => typeof id !== 'string' || !/^thread_[a-f0-9]{20}$/.test(id))))) invalid()
+        exactKeys(entry, ['entry_id', 'task_id', 'run_id', 'text', 'created_at'], ['reference_entry_ids', 'core_session_id', 'core_message_id'])
+        if (entry.entry_id !== key || !requiredString(entry.task_id) || !requiredString(entry.run_id) || typeof entry.text !== 'string' || !isTimestamp(entry.created_at) || ((entry.core_session_id !== undefined || entry.core_message_id !== undefined) && (!requiredString(entry.core_session_id) || !requiredString(entry.core_message_id))) || (entry.reference_entry_ids !== undefined && (!Array.isArray(entry.reference_entry_ids) || entry.reference_entry_ids.length > 8 || new Set(entry.reference_entry_ids).size !== entry.reference_entry_ids.length || entry.reference_entry_ids.some(id => typeof id !== 'string' || !/^thread_[a-f0-9]{20}$/.test(id))))) invalid()
       }
       for (const [key, value] of Object.entries(file.task_runs)) { const run = object(value); assertAuthorityMapKey(key); exactKeys(run, ['run_id', 'task_id', 'lineage_id', 'entry_id', 'created_at', 'execution_capability', 'permission_mode', 'provider', 'model'], ['permission_snapshot', 'core_binding', 'event_contract', 'extension_snapshot']); const binding = run.core_binding === undefined ? undefined : object(run.core_binding); if (binding) exactKeys(binding, ['resume_binding_id', 'session_id', 'work_dir', 'dispatch_generation'], ['context_event_sequence']); const extension = run.extension_snapshot === undefined ? undefined : object(run.extension_snapshot); if (extension) { exactKeys(extension, ['digest', 'tool_count', 'command_count', 'mcp_server_count']); if (typeof extension.digest !== 'string' || !/^[a-f0-9]{64}$/.test(extension.digest) || [extension.tool_count, extension.command_count, extension.mcp_server_count].some(count => !Number.isSafeInteger(count) || (count as number) < 0 || (count as number) > 10_000)) invalid() }; if (run.run_id !== key || !requiredString(run.task_id) || !requiredString(run.lineage_id) || !requiredString(run.entry_id) || !isTimestamp(run.created_at) || !['installation_default_denied', 'workspace_bound'].includes(run.execution_capability as string) || (run.permission_mode !== null && typeof run.permission_mode !== 'string') || (run.permission_snapshot !== undefined && (!isProductPermissionSnapshot(run.permission_snapshot) || run.permission_mode !== run.permission_snapshot.mode)) || (run.provider !== null && typeof run.provider !== 'string') || (run.model !== null && typeof run.model !== 'string') || (run.event_contract !== undefined && run.event_contract !== 'durable_items_v1') || (binding && (!requiredString(binding.resume_binding_id) || !requiredString(binding.session_id) || typeof binding.work_dir !== 'string' || !Number.isSafeInteger(binding.dispatch_generation) || (binding.dispatch_generation as number) < 1 || (binding.context_event_sequence !== undefined && (!Number.isSafeInteger(binding.context_event_sequence) || (binding.context_event_sequence as number) < 0))))) invalid() }
       for (const [key, value] of Object.entries(file.dispatch_records)) { const dispatch = object(value); assertAuthorityMapKey(key); exactKeys(dispatch, ['run_id', 'dispatch_generation', 'state'], ['claimed_at', 'started_at', 'completed_at', 'error', 'approvals']); if (dispatch.run_id !== key || !Number.isSafeInteger(dispatch.dispatch_generation) || (dispatch.dispatch_generation as number) < 1 || !['pending', 'claimed', 'started', 'recovery_required', 'terminal'].includes(dispatch.state as string) || (dispatch.claimed_at !== undefined && !isTimestamp(dispatch.claimed_at)) || (dispatch.started_at !== undefined && !isTimestamp(dispatch.started_at)) || (dispatch.completed_at !== undefined && !isTimestamp(dispatch.completed_at)) || (dispatch.error !== undefined && typeof dispatch.error !== 'string') || (dispatch.approvals !== undefined && (!Array.isArray(dispatch.approvals) || dispatch.approvals.length > 1_000))) invalid(); const approvals = (dispatch.approvals as unknown[] | undefined) ?? []; const requestIds = new Set<string>(); let pending = 0; for (const approval of approvals) { validateRunApproval(approval); const record = approval as { request_id: string; status: string }; if (requestIds.has(record.request_id)) invalid(); requestIds.add(record.request_id); if (record.status === 'pending') pending += 1 }; if (pending > 1) invalid() }
@@ -348,8 +368,9 @@ function validate(file: AuthorityFile): AuthorityFile {
         const event = object(value); assertAuthorityMapKey(key)
         if (!Number.isSafeInteger(event.event_sequence) || (event.event_sequence as number) < 1 || Number(key) !== event.event_sequence || !requiredString(event.task_id) || !isTimestamp(event.created_at)) invalid()
         if (event.type === 'user_text') {
-          exactKeys(event, ['event_sequence', 'task_id', 'run_id', 'type', 'entry_id', 'text', 'attachment_ids', 'created_at'], ['item_id', 'reference_entry_ids'])
-          if (!requiredString(event.run_id) || !requiredString(event.entry_id) || (event.item_id !== undefined && (typeof event.item_id !== 'string' || !/^thread_[a-f0-9]{20}$/.test(event.item_id))) || typeof event.text !== 'string' || !Array.isArray(event.attachment_ids) || event.attachment_ids.some(id => !requiredString(id)) || (event.reference_entry_ids !== undefined && (!Array.isArray(event.reference_entry_ids) || event.reference_entry_ids.length > 8 || new Set(event.reference_entry_ids).size !== event.reference_entry_ids.length || event.reference_entry_ids.some(id => typeof id !== 'string' || !/^thread_[a-f0-9]{20}$/.test(id))))) invalid()
+          exactKeys(event, ['event_sequence', 'task_id', 'run_id', 'type', 'entry_id', 'text', 'attachment_ids', 'created_at'], ['item_id', 'attachment_summaries', 'reference_entry_ids'])
+          const summaries = event.attachment_summaries
+          if (!requiredString(event.run_id) || !requiredString(event.entry_id) || (event.item_id !== undefined && (typeof event.item_id !== 'string' || !/^thread_[a-f0-9]{20}$/.test(event.item_id))) || typeof event.text !== 'string' || !Array.isArray(event.attachment_ids) || event.attachment_ids.some(id => !requiredString(id)) || (summaries !== undefined && (!Array.isArray(summaries) || summaries.length > 4 || summaries.some(summary => { const value = object(summary); return (value.type !== 'file' && value.type !== 'image') || !requiredString(value.name) || value.name.length > 500 || (value.mimeType !== undefined && (!['image/jpeg', 'image/png', 'image/webp', 'image/gif'].includes(value.mimeType as string) || value.type !== 'image')) }))) || (event.reference_entry_ids !== undefined && (!Array.isArray(event.reference_entry_ids) || event.reference_entry_ids.length > 8 || new Set(event.reference_entry_ids).size !== event.reference_entry_ids.length || event.reference_entry_ids.some(id => typeof id !== 'string' || !/^thread_[a-f0-9]{20}$/.test(id))))) invalid()
         } else if (event.type === 'assistant_text') {
           exactKeys(event, ['event_sequence', 'task_id', 'run_id', 'type', 'dispatch_generation', 'item_id', 'text', 'created_at'])
           if (!requiredString(event.run_id) || !Number.isSafeInteger(event.dispatch_generation) || (event.dispatch_generation as number) < 1 || typeof event.text !== 'string' || event.text.length < 1 || event.text.length > 100_000 || typeof event.item_id !== 'string' || !/^thread_[a-f0-9]{20}$/.test(event.item_id)) invalid()
@@ -401,6 +422,19 @@ function validate(file: AuthorityFile): AuthorityFile {
         const snapshot = value as { task_id: string; generation: number }
         const lineage = file.conversation_lineages[key] as { product_task_id?: unknown; compact_generation?: unknown } | undefined
         if (!lineage || lineage.product_task_id !== snapshot.task_id || lineage.compact_generation !== snapshot.generation) invalid()
+      }
+    }
+    if (file.authority_schema_revision >= 8) {
+      map(file.product_projects)
+      map(file.product_directories)
+      for (const [key, value] of Object.entries(file.product_projects)) {
+        assertAuthorityMapKey(key)
+        validateProductProject(value, key)
+      }
+      for (const [key, value] of Object.entries(file.product_directories)) {
+        assertAuthorityMapKey(key)
+        validateProductDirectory(value, key)
+        if (!file.product_projects[(value as { projectId: string }).projectId]) invalid()
       }
     }
   }
@@ -456,8 +490,10 @@ export class ProductTaskAuthorityRepository {
       const parsed = JSON.parse(await fs.readFile(this.authorityPath, 'utf8')) as Partial<AuthorityFile>
       const root = object(parsed)
       const revision = root.authority_schema_revision
-      if (revision !== undefined && ![1, 2, 3, 4, 5, 6, 7].includes(revision as number)) throw new Error('UNSUPPORTED_SCHEMA')
-      if (revision === 7 || revision === 6) {
+      if (revision !== undefined && ![1, 2, 3, 4, 5, 6, 7, 8].includes(revision as number)) throw new Error('UNSUPPORTED_SCHEMA')
+      if (revision === 8) {
+        exactKeys(root, ['version', 'authority_schema_revision', 'revision', 'event_sequence', 'tasks', 'side_tasks', 'bindings', 'receipts', 'events', 'outbox', 'prepared', 'provenance', 'workspaces', 'task_scopes', 'composer_drafts', 'task_attachments', 'conversation_lineages', 'thread_entries', 'task_runs', 'dispatch_records', 'task_events', 'attachment_bindings', 'review_comments', 'turn_input_queue', 'context_snapshots', 'product_projects', 'product_directories'])
+      } else if (revision === 7 || revision === 6) {
         exactKeys(root, ['version', 'authority_schema_revision', 'revision', 'event_sequence', 'tasks', 'side_tasks', 'bindings', 'receipts', 'events', 'outbox', 'prepared', 'provenance', 'workspaces', 'task_scopes', 'composer_drafts', 'task_attachments', 'conversation_lineages', 'thread_entries', 'task_runs', 'dispatch_records', 'task_events', 'attachment_bindings', 'review_comments', 'turn_input_queue', 'context_snapshots'])
       } else if (revision === 5) {
         exactKeys(root, ['version', 'authority_schema_revision', 'revision', 'event_sequence', 'tasks', 'side_tasks', 'bindings', 'receipts', 'events', 'outbox', 'prepared', 'provenance', 'workspaces', 'task_scopes', 'composer_drafts', 'task_attachments', 'conversation_lineages', 'thread_entries', 'task_runs', 'dispatch_records', 'task_events', 'attachment_bindings', 'review_comments', 'turn_input_queue'])
@@ -490,6 +526,12 @@ export class ProductTaskAuthorityRepository {
           workspaces: Object.create(null), task_scopes: Object.create(null), composer_drafts: Object.create(null),
           task_attachments: Object.create(null), conversation_lineages: Object.create(null),
           thread_entries: Object.create(null), task_runs: Object.create(null), dispatch_records: Object.create(null), task_events: Object.create(null), attachment_bindings: Object.create(null), review_comments: Object.create(null), turn_input_queue: Object.create(null), context_snapshots: Object.create(null),
+        })
+      }
+      if (revision !== 8) {
+        Object.assign(root, {
+          product_projects: Object.create(null),
+          product_directories: Object.create(null),
         })
       }
       return validate(root as AuthorityFile)
@@ -645,6 +687,67 @@ export class ProductTaskAuthorityRepository {
     })
   }
 
+  /**
+   * Side-task metadata used to live beside legacy task metadata. Import it
+   * once under a distinct provenance key so public side-task queries can
+   * retire that second read path without silently overwriting newer state.
+   */
+  async ensureLegacySideTaskProjection(sideTaskId: string, source: LegacyProductTaskSource, projection: unknown): Promise<AuthorityFile> {
+    assertAuthorityMapKey(sideTaskId)
+    const provenanceKey = `legacy_side_task:${sideTaskId}`
+    return this.lock(async () => {
+      const file = await this.read()
+      const current = {
+        version: source.version,
+        store_digest: source.storeDigest,
+        record_digest: digest(JSON.stringify(projection)),
+      }
+      const previous = file.provenance[provenanceKey]
+      if (previous && JSON.stringify(previous) !== JSON.stringify(current)) throw new Error('LEGACY_SOURCE_CHANGED')
+      if (file.side_tasks[sideTaskId]) {
+        if (!previous) throw new Error('AUTHORITY_INVALID')
+        return file
+      }
+      if (previous) throw new Error('AUTHORITY_INVALID')
+      file.provenance[provenanceKey] = current
+      file.side_tasks[sideTaskId] = projection
+      file.revision += 1
+      return this.write(file)
+    })
+  }
+
+  /**
+   * Product project and directory identities are part of the task index, not
+   * an alternate runtime store. Move the normalized legacy registry into the
+   * Authority once before retiring the registry from public queries.
+   */
+  async ensureLegacyProjectRegistryProjection(
+    source: LegacyProductTaskSource,
+    projection: { projects: Record<string, unknown>; directories: Record<string, unknown> },
+  ): Promise<AuthorityFile> {
+    const provenanceKey = 'legacy_project_registry'
+    return this.lock(async () => {
+      const file = await this.read()
+      const current = {
+        version: source.version,
+        store_digest: source.storeDigest,
+        record_digest: digest(JSON.stringify(projection)),
+      }
+      const previous = file.provenance[provenanceKey]
+      if (previous && JSON.stringify(previous) !== JSON.stringify(current)) throw new Error('LEGACY_SOURCE_CHANGED')
+      if (previous) return file
+      if (Object.keys(file.product_projects).length || Object.keys(file.product_directories).length) {
+        throw new Error('AUTHORITY_INVALID')
+      }
+      file.product_projects = structuredClone(projection.projects)
+      file.product_directories = structuredClone(projection.directories)
+      file.provenance[provenanceKey] = current
+      file.authority_schema_revision = 8
+      file.revision += 1
+      return this.write(file)
+    })
+  }
+
   async verifyLegacy(taskId: string, source: LegacyProductTaskSource): Promise<void> {
     assertAuthorityMapKey(taskId)
     return this.lock(async () => {
@@ -705,11 +808,21 @@ export class ProductTaskAuthorityRepository {
             : file.authority_schema_revision === 5 && !upgradeToSubmit
               ? (() => { const { context_snapshots: _snapshots, ...queued } = file; return queued })()
               : file
+    const persisted = file.authority_schema_revision < 8
+      ? (() => {
+          const {
+            product_projects: _projects,
+            product_directories: _directories,
+            ...legacy
+          } = output as AuthorityFile
+          return legacy
+        })()
+      : output
     await fs.mkdir(path.dirname(this.authorityPath), { recursive: true })
     const temporaryPath = `${this.authorityPath}.${process.pid}.${randomUUID()}.tmp`
     const handle = await fs.open(temporaryPath, 'wx', 0o600)
     try {
-      await handle.writeFile(`${JSON.stringify(output)}\n`, 'utf8')
+      await handle.writeFile(`${JSON.stringify(persisted)}\n`, 'utf8')
       await handle.sync()
     } finally { await handle.close() }
     await fs.rename(temporaryPath, this.authorityPath)

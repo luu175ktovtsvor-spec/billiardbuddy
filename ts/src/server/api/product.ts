@@ -62,18 +62,8 @@ export async function handleProductApi(
   segments: string[],
   tasks: Pick<
     ProductTaskService,
-    | 'listTasks'
     | 'listRecentProjects'
-    | 'createTask'
-    | 'updateTask'
-    | 'setPinned'
-    | 'setArchived'
-    | 'continueTask'
-    | 'getTask'
     | 'getTaskThread'
-    | 'listSideTasks'
-    | 'createSideTask'
-    | 'closeSideTask'
     | 'createTaskAuthoritatively'
     | 'continueTaskAuthoritatively'
     | 'createSideTaskAuthoritatively'

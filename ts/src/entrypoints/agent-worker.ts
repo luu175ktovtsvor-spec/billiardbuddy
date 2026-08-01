@@ -2,6 +2,8 @@
 import { createInterface } from 'node:readline'
 import { AgentWorkerProtocol } from '../server/agent-worker/framedProtocol.js'
 import { createProductAgentHarness } from '../server/agent-worker/productAgentHarness.js'
+import { productAgentHarnessProjectionPort } from '../server/product/agentHarnessProjectionPort.js'
+import { productAgentHarnessModelPolicyPort } from '../server/product/agentHarnessModelPolicyPort.js'
 import { ProductSkillTool } from '../server/agent-worker/productSkillTool.js'
 import { ProductSubtaskTool } from '../server/agent-worker/productSubtaskTool.js'
 import type { ProductHostRuntimeSnapshot } from '../server/agent-worker/productAgentHostRuntime.js'
@@ -114,6 +116,8 @@ async function createWorkerHarness(start: StartResult, input: Parameters<AgentWo
     session_id: start.binding.session_id,
     work_dir: start.binding.work_dir,
     permission_envelope: input.permission_envelope,
+    projection: productAgentHarnessProjectionPort,
+    model_policy: productAgentHarnessModelPolicyPort,
     mcp_host: {
       connect: async () => {
         const current = await prepare()

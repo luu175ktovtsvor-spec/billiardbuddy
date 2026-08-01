@@ -27,7 +27,6 @@ import {
   type ProductWorkspaceAvailability,
   type SubmitTaskRunInput,
   type SubmitTaskRunReceipt,
-  type UpdateProductTaskInput,
 } from '../../../shared/product/domain.js'
 import type { ProductTaskActionApproval, ProductTaskAttachmentSummary, ProductTaskEvent, ProductTaskQuestion, ProductTaskQueuedInput, ProductTaskRunFailure, ProductTaskThread, ProductTaskThreadEntry, TaskEvent } from '../../../shared/product/taskEvents.js'
 import { isProductTaskRunFailureCode, productTaskRunFailure } from './taskRunFailure.js'
@@ -40,13 +39,12 @@ import type {
 import type { AgentWorkerApprovalReviewFacts, AgentWorkerOutbound } from '../../../shared/product/agentWorker.js'
 import { ApiError } from '../middleware/errorHandler.js'
 import {
-  projectSessionTranscriptForProductTask,
-  resolveCoreMessageIdForProductThreadEntry,
+  type ProductLegacyCoreMessageEntry,
+  projectLegacyCoreThreadItems,
 } from './taskThreadProjection.js'
 import { findProductCanonicalGitRoot, findProductGitRoot } from './productGit.js'
 import {
   isRecord,
-  latestProductTimestamp,
   legacyProductTaskId,
   readStrictLegacyProductTasks,
   normalizeLegacyV1SideTasks,
@@ -60,11 +58,12 @@ import {
   type ProductCoreOperationBridge,
 } from './productCoreOperationBridge.js'
 import { ProductSettingsRepository } from './productSettingsRepository.js'
-import { ProductHarnessSessionRepository } from '../agent-worker/harnessSessionRepository.js'
 import { ProductAutoMemoryRepository } from '../services/productAutoMemory.js'
-import { productTaskWorkerRuntimeEvents } from './taskWorkerRuntimeEvents.js'
 import { productTaskActivitySummary } from './taskEventProjection.js'
 import { productTextReasoningBinding } from './productGatewayRuntime.js'
+import { productTaskPrivateArtifactPort, type ProductTaskPrivateArtifactPort } from './taskPrivateArtifactPort.js'
+import type { ProductTaskRunDispatchPort } from './taskRunDispatchPort.js'
+import { productTaskRuntimeEventPort, type ProductTaskRuntimeEventPort } from './taskRuntimeEventPort.js'
 import {
   productAttachmentStorageRoot,
   productAttachmentSummary,
@@ -233,7 +232,7 @@ export type AgentCoreSession = {
   workDir?: string
 }
 
-type MessageEntry = Parameters<typeof projectSessionTranscriptForProductTask>[1][number]
+type MessageEntry = ProductLegacyCoreMessageEntry
 
 export type AgentCoreAdapter = {
   listSessions: () => Promise<AgentCoreSession[]>
@@ -253,24 +252,10 @@ export type AgentCoreAdapter = {
     workDir: string
     title: string
   }>
-  getWorktreeLaunchState: (sessionId: string) => Promise<ProductTask['worktreeState']>
   getSessionMessages?: (sessionId: string) => Promise<MessageEntry[]>
 }
 
 const nativeCoreWorkDirs = new Map<string, string>()
-
-/**
- * Server-owned product runtime state. The Core session ID never crosses the
- * product API, but the task registry needs this narrow check to keep a live
- * task from being hidden while its stop or approval controls are still needed.
- */
-type ProductTaskRunDispatcher = {
-  dispatch(runId: string, generation: number, kind?: 'interactive' | 'scheduled'): Promise<'started' | 'queued' | 'recovery_required'>
-  stop?(runId: string, generation: number): Promise<void>
-  approve?(runId: string, generation: number, requestId: string, allowed: boolean): Promise<boolean>
-  answer?(runId: string, generation: number, requestId: string, answers: readonly string[]): Promise<boolean>
-  steer?(runId: string, generation: number, queueItemId: string, text: string): Promise<boolean>
-}
 
 type DurableTaskRunApproval = {
   request_id: string
@@ -342,6 +327,14 @@ function durableContextCompactionItemId(runId: string, dispatchGeneration: numbe
 
 function durableApprovalItemId(runId: string, dispatchGeneration: number, requestId: string): string {
   return `approval_${createHash('sha256').update(`${runId}:${dispatchGeneration}:${requestId}`).digest('hex').slice(0, 32)}`
+}
+
+function legacyAuthorityId(prefix: 'lineage' | 'run' | 'entry', taskId: string): string {
+  return `${prefix}_${createHash('sha256').update(`legacy-authority:${taskId}:${prefix}`).digest('hex').slice(0, 32)}`
+}
+
+function legacyActivityItemId(runId: string, entryId: string): string {
+  return `activity_${createHash('sha256').update(`${runId}:${entryId}:legacy-activity`).digest('hex').slice(0, 32)}`
 }
 
 function taskRunContextCursor(state: AuthorityFile, runId: string, run: Record<string, unknown>): number {
@@ -578,7 +571,6 @@ export const agentCoreAdapter: AgentCoreAdapter = {
     return { sessionId: next, workDir, title: title || '新任务' }
   },
 
-  async getWorktreeLaunchState() { return 'not_requested' },
 }
 
 function productStorePath(): string {
@@ -596,10 +588,6 @@ function resourceId(prefix: string, value: string): string {
 
 function createProductTaskId(): string {
   return `task_${randomUUID()}`
-}
-
-function createProductSideTaskId(): string {
-  return `side_task_${randomUUID()}`
 }
 
 function createProductProjectId(): string {
@@ -723,15 +711,6 @@ function validTitle(value: string | undefined): string | undefined {
   return title
 }
 
-const CORE_PERMISSION_MODE_BY_PRODUCT_MODE: Record<
-  ProductTaskPermissionMode,
-  'default' | 'bypassPermissions'
-> = {
-  ask_for_approval: 'default',
-  approve_for_me: 'default',
-  full_access: 'bypassPermissions',
-}
-
 function productTaskPermissionMode(value: unknown): ProductTaskPermissionMode {
   if (value === undefined) return 'ask_for_approval'
   if (
@@ -749,37 +728,6 @@ function taskPermissionSnapshot(value: unknown): ProductPermissionSnapshot {
   return isProductPermissionSnapshot(value)
     ? { ...value }
     : productPermissionSnapshot('ask_for_approval')
-}
-
-function optionalBoolean(value: unknown, field: string): boolean | undefined {
-  if (value === undefined) return undefined
-  if (typeof value !== 'boolean') throw ApiError.badRequest(`${field} 必须是布尔值`)
-  return value
-}
-
-function continuationTarget(value: unknown): ProductContinuationTarget {
-  if (value === undefined) return 'current_workspace'
-  if (value === 'current_workspace' || value === 'new_worktree') return value
-  throw ApiError.badRequest('target 必须是 current_workspace 或 new_worktree')
-}
-
-function requiredSourceEntryId(value: unknown): string {
-  if (typeof value !== 'string') throw ApiError.badRequest('sourceEntryId 必须是字符串')
-  const sourceEntryId = value.trim()
-  if (!/^thread_[a-f0-9]{20}$/.test(sourceEntryId)) {
-    throw ApiError.badRequest('sourceEntryId 格式不正确')
-  }
-  return sourceEntryId
-}
-
-function optionalSourceEntryId(value: unknown): string | undefined {
-  return value === undefined ? undefined : requiredSourceEntryId(value)
-}
-
-function rejectCoreSourceTurnId(input: object): void {
-  if (Object.prototype.hasOwnProperty.call(input, 'sourceTurnId')) {
-    throw ApiError.badRequest('产品接口不支持 sourceTurnId；请使用 sourceEntryId')
-  }
 }
 
 function requestedProductResourceId(value: unknown, field: 'projectId' | 'directoryId'): string | undefined {
@@ -916,9 +864,58 @@ function actionsFor(task: ProductTask, hasActiveRun: boolean): ProductTaskAction
   return actions
 }
 
-function requireTaskAction(task: ProductTaskRecord, action: ProductTaskAction): void {
-  if (task.actions.includes(action)) return
-  throw ApiError.conflict('该任务当前不能执行此操作')
+function authorityTaskIndex(authority: AuthorityFile): ProductTaskIndexResponse {
+  const sideTaskIds = new Set(
+    Object.values(authority.side_tasks)
+      .map((side) => (side as { taskId?: unknown }).taskId)
+      .filter((taskId): taskId is string => typeof taskId === 'string'),
+  )
+  const tasks = Object.values(authority.tasks)
+    .map(authorityPublicTask)
+    .filter((task) => task?.id && !sideTaskIds.has(task.id) && task.lifecycle !== 'deleted')
+    .map((task) => ({ ...task, actions: actionsFor(task, hasBlockingTaskWork(authority, task.id)) }))
+    .sort((left, right) => {
+      if (Boolean(left.pinnedAt) !== Boolean(right.pinnedAt)) return left.pinnedAt ? -1 : 1
+      return Date.parse(right.updatedAt) - Date.parse(left.updatedAt)
+    })
+
+  const registeredProjects = authority.product_projects as Record<string, ProductProjectMetadata>
+  const registeredDirectories = authority.product_directories as Record<string, ProductProjectDirectoryMetadata>
+  const activePinnedProjectIds = new Set(
+    tasks.filter((task) => task.lifecycle === 'active' && Boolean(task.pinnedAt)).map((task) => task.projectId),
+  )
+  const projects = new Map<string, ProductProject>()
+  for (const task of tasks) {
+    const registered = registeredProjects[task.projectId]
+    if (!registered) continue
+    const project = projects.get(task.projectId) ?? {
+      ...registered,
+      taskCount: 0,
+      archivedTaskCount: 0,
+    }
+    if (task.lifecycle === 'archived') project.archivedTaskCount += 1
+    else project.taskCount += 1
+    if (Date.parse(task.updatedAt) > Date.parse(project.updatedAt)) project.updatedAt = task.updatedAt
+    projects.set(task.projectId, project)
+  }
+  const publicProjects = [...projects.values()].sort((left, right) => {
+    if (activePinnedProjectIds.has(left.id) !== activePinnedProjectIds.has(right.id)) {
+      return activePinnedProjectIds.has(left.id) ? -1 : 1
+    }
+    return Date.parse(right.updatedAt) - Date.parse(left.updatedAt) || left.id.localeCompare(right.id)
+  })
+  const visibleProjectIds = new Set(publicProjects.map((project) => project.id))
+  return {
+    schemaVersion: PRODUCT_DOMAIN_VERSION,
+    projects: publicProjects,
+    directories: Object.values(registeredDirectories)
+      .filter((directory) => visibleProjectIds.has(directory.projectId))
+      .sort((left, right) => left.projectId.localeCompare(right.projectId)
+        || left.label.localeCompare(right.label) || left.path.localeCompare(right.path)),
+    tasks,
+    total: tasks.length,
+    capabilities: { createTask: true },
+  }
 }
 
 export class ProductTaskService {
@@ -934,8 +931,10 @@ export class ProductTaskService {
   private readonly lifecycleParticipants: readonly TaskLifecycleParticipant[]
   private readonly now: () => Date
   private readonly installationId: string
-  private readonly dispatcher?: ProductTaskRunDispatcher
+  private readonly dispatcher?: ProductTaskRunDispatchPort
   private readonly autoMemoryEnabled: () => Promise<boolean>
+  private readonly privateArtifacts: ProductTaskPrivateArtifactPort
+  private readonly runtimeEvents: ProductTaskRuntimeEventPort
   private taskRunQueueRecovery?: Promise<void>
 
   constructor(options: {
@@ -953,9 +952,13 @@ export class ProductTaskService {
     now?: () => Date
     installationId?: string
     /** Server-private dispatch seam. Accepted durable receipts are never rolled back on launch failure. */
-    dispatcher?: ProductTaskRunDispatcher
+    dispatcher?: ProductTaskRunDispatchPort
     /** Product AutoMem preference seam owned by the BilliardBuddy task runtime. */
     autoMemoryEnabled?: () => Promise<boolean>
+    /** Server-owned cleanup for Harness and other private task artifacts. */
+    privateArtifacts?: ProductTaskPrivateArtifactPort
+    /** Server-owned projection publisher for already durable task events. */
+    runtimeEvents?: ProductTaskRuntimeEventPort
   } = {}) {
     this.usesDefaultStoragePath = !options.storagePath
     this.storagePath = options.storagePath ?? productStorePath()
@@ -980,11 +983,6 @@ export class ProductTaskService {
         id: 'legacy_product_session_memory',
         inspectBlockers: async () => [],
         purgeCleanup: async taskId => purgeLegacyProductSessionMemory(this.sessionMemoryStorageDir(), taskId),
-      },
-      {
-        id: 'legacy_product_registry',
-        inspectBlockers: async () => [],
-        purgeCleanup: async taskId => this.purgeLegacyProductRegistry(taskId),
       },
       {
         id: 'task_run_queue',
@@ -1013,6 +1011,8 @@ export class ProductTaskService {
     this.now = options.now ?? (() => new Date())
     this.installationId = options.installationId ?? 'installation-default'
     this.dispatcher = options.dispatcher
+    this.privateArtifacts = options.privateArtifacts ?? productTaskPrivateArtifactPort
+    this.runtimeEvents = options.runtimeEvents ?? productTaskRuntimeEventPort
     this.autoMemoryEnabled = options.autoMemoryEnabled ?? (this.usesDefaultStoragePath
       ? async () => (await new ProductSettingsRepository().get()).productAutoMemoryEnabled !== false
       : async () => true)
@@ -1043,31 +1043,9 @@ export class ProductTaskService {
     }
   }
 
-  async listTasks(): Promise<ProductTaskIndexResponse> {
-    const legacy = await this.withStoreLock(() => this.listTasksUnlocked())
-    const authority = await new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps).read()
-    const byId = new Map(legacy.tasks.map(task => [task.id, task]))
-    const sideTaskIds = new Set(Object.values(authority.side_tasks).map(side => (side as { taskId?: unknown }).taskId).filter((id): id is string => typeof id === 'string'))
-    for (const value of Object.values(authority.tasks)) {
-      const task = authorityPublicTask(value)
-      if (!task?.id || sideTaskIds.has(task.id) || (task as unknown as { kind?: unknown }).kind === 'side') continue
-      if (task.lifecycle === 'deleted') {
-        byId.delete(task.id)
-        continue
-      }
-      const runtime = byId.get(task.id)
-      const hasBlockingWork = hasBlockingTaskWork(authority, task.id)
-      byId.set(task.id, runtime
-        ? { ...task, workDir: runtime.workDir, worktreeState: runtime.worktreeState, updatedAt: runtime.updatedAt, actions: actionsFor(task, hasBlockingWork || !runtime.actions.includes('archive')) }
-        : { ...task, actions: actionsFor(task, hasBlockingWork) })
-    }
-    const tasks = [...byId.values()]
-    return { ...legacy, tasks, total: tasks.length }
-  }
-
   async listTasksAuthoritatively(): Promise<ProductTaskIndexResponse> {
-    const index = await this.listTasks()
     const authority = await new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps).read()
+    const index = authorityTaskIndex(authority)
     return {
       ...index,
       tasks: index.tasks.map((task) => {
@@ -1091,83 +1069,247 @@ export class ProductTaskService {
     }
   }
 
-  async listSideTasksAuthoritatively(taskId: string): Promise<ProductSideTask[]> { return this.listSideTasks(taskId) }
+  async listSideTasksAuthoritatively(taskId: string): Promise<ProductSideTask[]> {
+    const authority = await new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps).read()
+    if (!authority.tasks[taskId]) throw ApiError.notFound(`任务不存在：${taskId}`)
+    return Object.values(authority.side_tasks)
+      .map((sideTask) => publicSideTask(sideTask as ProductSideTaskMetadata))
+      .filter((sideTask) => sideTask.parentTaskId === taskId)
+      .sort((left, right) => {
+        if (left.status !== right.status) return left.status === 'open' ? -1 : 1
+        return Date.parse(right.updatedAt) - Date.parse(left.updatedAt)
+      })
+  }
 
   /**
-   * Materialize every supported v1-v4 task record through the existing domain
-   * normalizer before the legacy reader is eligible for retirement.
+   * Materialize every supported v1-v4 task and side-task record through the
+   * existing domain normalizer before the legacy reader is eligible for
+   * retirement.
    */
   async migrateSupportedStorage(): Promise<void> {
-    const taskIds = await this.withStoreLock(async () => {
+    const legacy = await this.withStoreLock(async () => {
       const exists = await fs.access(this.storagePath).then(() => true, () => false)
-      if (!exists) return []
+      if (!exists) return { taskIds: [], sideTasks: [], projects: {}, directories: {} }
       const { store } = await this.loadRegisteredStore()
       await this.writeStore(store)
-      return Object.keys(store.tasks).sort()
+      return {
+        taskIds: Object.keys(store.tasks).sort(),
+        sideTasks: Object.values(store.sideTasks)
+          .sort((left, right) => left.id.localeCompare(right.id))
+          .map(publicSideTask),
+        projects: Object.fromEntries(Object.entries(store.projects).map(([id, project]) => [id, { ...project }])),
+        directories: Object.fromEntries(Object.entries(store.directories).map(([id, directory]) => [id, { ...directory }])),
+      }
     })
-    for (const taskId of taskIds) {
+    for (const taskId of legacy.taskIds) {
       await this.ensureAuthorityProjectionForLegacyTask(taskId, { authorityPath: this.authorityPath })
+      await this.materializeLegacyTaskThread(taskId)
+    }
+    if (legacy.taskIds.length || legacy.sideTasks.length || Object.keys(legacy.projects).length || Object.keys(legacy.directories).length) {
+      const source = await readLegacyProductTasks(this.storagePath)
+      const authority = new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps)
+      await authority.ensureLegacyProjectRegistryProjection(source, {
+        projects: legacy.projects,
+        directories: legacy.directories,
+      })
+      for (const sideTask of legacy.sideTasks) {
+        await authority.ensureLegacySideTaskProjection(sideTask.id, source, sideTask)
+      }
     }
   }
 
-  private async listTasksUnlocked(): Promise<ProductTaskIndexResponse> {
-    const { store, sessions } = await this.loadRegisteredStore()
-    const sideTaskSessionIds = new Set(
-      Object.values(store.sideTasks).map((sideTask) => sideTask.coreSessionId),
-    )
-    const records: ProductTaskRecord[] = []
-    const sessionsById = new Map(sessions.map((session) => [session.id, session]))
-    for (const metadata of Object.values(store.tasks)) {
-      if (sideTaskSessionIds.has(metadata.coreSessionId) || metadata.visibility === 'side_task') continue
-      const session = sessionsById.get(metadata.coreSessionId) ?? this.sessionFromProductBinding(store, metadata)
-      if (!session) continue
-      const record = await this.toRecord(session, metadata)
-      records.push(record)
+  /**
+   * Imports the safe, existing Core transcript once so product reads and
+   * branches use the Authority ledger rather than a second thread source.
+   */
+  private async materializeLegacyTaskThread(taskId: string): Promise<void> {
+    const authority = new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps)
+    let snapshot = await authority.read()
+    if (!snapshot.tasks[taskId]) {
+      await this.ensureAuthorityProjectionForLegacyTask(taskId, { authorityPath: this.authorityPath })
+      snapshot = await authority.read()
     }
-    records.sort((left, right) => {
-      if (Boolean(left.pinnedAt) !== Boolean(right.pinnedAt)) return left.pinnedAt ? -1 : 1
-      return Date.parse(right.updatedAt) - Date.parse(left.updatedAt)
-    })
+    const stored = snapshot.tasks[taskId] as { task?: ProductTaskRecord; binding?: { coreSessionId?: unknown } } | undefined
+    const task = stored?.task
+    if (!task) throw ApiError.notFound(`任务不存在：${taskId}`)
 
-    const activePinnedProjectIds = new Set(
-      records
-        .filter((task) => task.lifecycle === 'active' && Boolean(task.pinnedAt))
-        .map((task) => task.projectId),
-    )
-    const projects = new Map<string, ProductProject>()
-    for (const task of records) {
-      const registered = store.projects[task.projectId]
-      if (!registered) continue
-      const project = projects.get(task.projectId) ?? {
-        ...registered,
-        taskCount: 0,
-        archivedTaskCount: 0,
+    const currentLineageId = typeof task.current_lineage_id === 'string' ? task.current_lineage_id : undefined
+    const legacyRuns = Object.values(snapshot.task_runs)
+      .map(value => value as { run_id?: unknown; task_id?: unknown; lineage_id?: unknown; entry_id?: unknown; created_at?: unknown; core_binding?: { session_id?: unknown; dispatch_generation?: unknown } })
+      .filter((run): run is { run_id: string; task_id: string; lineage_id: string; entry_id: string; created_at: string; core_binding?: { session_id?: unknown; dispatch_generation?: unknown } } => (
+        run.task_id === taskId
+        && typeof run.run_id === 'string'
+        && typeof run.lineage_id === 'string'
+        && typeof run.entry_id === 'string'
+        && typeof run.created_at === 'string'
+        && (snapshot.task_runs[run.run_id] as { event_contract?: unknown }).event_contract !== 'durable_items_v1'
+      ))
+
+    const initialSessionId = typeof stored?.binding?.coreSessionId === 'string'
+      ? stored.binding.coreSessionId
+      : undefined
+    const needsSyntheticRun = legacyRuns.length === 0 && !currentLineageId && Boolean(initialSessionId)
+    if (legacyRuns.length === 0 && !needsSyntheticRun) return
+
+    const getSessionMessages = this.core.getSessionMessages
+    if (!getSessionMessages) throw new ApiError(503, '任务记录暂不可用', 'PRODUCT_TASK_THREAD_UNAVAILABLE')
+    const pendingRuns = needsSyntheticRun
+      ? [{
+          run_id: legacyAuthorityId('run', taskId),
+          task_id: taskId,
+          lineage_id: legacyAuthorityId('lineage', taskId),
+          entry_id: legacyAuthorityId('entry', taskId),
+          created_at: task.createdAt,
+          core_binding: { session_id: initialSessionId!, dispatch_generation: 1 },
+        }]
+      : legacyRuns
+    const projections = new Map<string, ReturnType<typeof projectLegacyCoreThreadItems>>()
+    for (const run of pendingRuns) {
+      const sessionId = run.core_binding?.session_id
+      if (typeof sessionId !== 'string' || !sessionId) throw new ApiError(503, '任务记录暂不可用', 'PRODUCT_TASK_THREAD_UNAVAILABLE')
+      projections.set(run.run_id, projectLegacyCoreThreadItems(await getSessionMessages(sessionId)))
+    }
+
+    await authority.transactSubmit((state) => {
+      const currentStored = state.tasks[taskId] as { task?: ProductTaskRecord } | undefined
+      const currentTask = currentStored?.task
+      if (!currentTask) throw new Error('AUTHORITY_INVALID')
+      for (const planned of pendingRuns) {
+        let run = state.task_runs[planned.run_id] as Record<string, unknown> | undefined
+        if (!run && needsSyntheticRun) {
+          const lineageId = planned.lineage_id
+          const createdAt = planned.created_at
+          const sessionId = planned.core_binding!.session_id as string
+          state.conversation_lineages[lineageId] = {
+            lineage_id: lineageId,
+            product_task_id: taskId,
+            revision: 0,
+            compact_generation: 0,
+            resume_binding_id: `resume_${createHash('sha256').update(`legacy-authority:${taskId}:resume`).digest('hex').slice(0, 32)}`,
+            execution_directory: currentTask.workDir || path.dirname(this.storagePath),
+            state: 'active',
+            created_at: createdAt,
+            updated_at: createdAt,
+          }
+          currentTask.current_lineage_id = lineageId
+          state.thread_entries[planned.entry_id] = { entry_id: planned.entry_id, task_id: taskId, run_id: planned.run_id, text: '', created_at: createdAt, core_session_id: sessionId, core_message_id: `legacy-root:${taskId}` }
+          run = {
+            run_id: planned.run_id,
+            task_id: taskId,
+            lineage_id: lineageId,
+            entry_id: planned.entry_id,
+            created_at: createdAt,
+            execution_capability: 'installation_default_denied',
+            permission_mode: null,
+            provider: null,
+            model: null,
+            core_binding: { resume_binding_id: (state.conversation_lineages[lineageId] as { resume_binding_id: string }).resume_binding_id, session_id: sessionId, work_dir: currentTask.workDir || path.dirname(this.storagePath), dispatch_generation: 1 },
+          }
+          state.task_runs[planned.run_id] = run
+          state.dispatch_records[planned.run_id] = { run_id: planned.run_id, dispatch_generation: 1, state: 'terminal', completed_at: createdAt, error: 'TERMINAL' }
+        }
+        if (!run || run.event_contract === 'durable_items_v1') continue
+        if (run.task_id !== taskId || run.lineage_id !== planned.lineage_id || run.entry_id !== planned.entry_id) throw new Error('AUTHORITY_INVALID')
+        if (Object.values(state.task_events).some(value => (value as { run_id?: unknown }).run_id === planned.run_id)) throw new Error('AUTHORITY_INVALID')
+        const coreBinding = run.core_binding as { session_id?: unknown; dispatch_generation?: unknown } | undefined
+        const sessionId = coreBinding?.session_id
+        const dispatchGeneration = Number.isSafeInteger(coreBinding?.dispatch_generation) ? coreBinding!.dispatch_generation as number : 1
+        if (typeof sessionId !== 'string' || !sessionId) throw new Error('AUTHORITY_INVALID')
+        for (const item of projections.get(planned.run_id) ?? []) {
+          const entry = item.entry
+          if (entry.type === 'user_text') {
+            state.thread_entries[entry.id] = {
+              entry_id: entry.id,
+              task_id: taskId,
+              run_id: planned.run_id,
+              text: entry.text,
+              created_at: entry.createdAt,
+              core_session_id: sessionId,
+              core_message_id: item.coreMessageId,
+              ...(entry.referenceEntryIds?.length ? { reference_entry_ids: entry.referenceEntryIds } : {}),
+            }
+            state.event_sequence += 1
+            state.task_events[String(state.event_sequence)] = {
+              event_sequence: state.event_sequence,
+              task_id: taskId,
+              run_id: planned.run_id,
+              type: 'user_text',
+              entry_id: entry.id,
+              item_id: entry.id,
+              text: entry.text,
+              attachment_ids: [],
+              ...(entry.attachments?.length ? { attachment_summaries: entry.attachments } : {}),
+              ...(entry.referenceEntryIds?.length ? { reference_entry_ids: entry.referenceEntryIds } : {}),
+              created_at: entry.createdAt,
+            }
+          } else if (entry.type === 'assistant_text') {
+            state.thread_entries[entry.id] = { entry_id: entry.id, task_id: taskId, run_id: planned.run_id, text: entry.text, created_at: entry.createdAt, core_session_id: sessionId, core_message_id: item.coreMessageId }
+            state.event_sequence += 1
+            state.task_events[String(state.event_sequence)] = { event_sequence: state.event_sequence, task_id: taskId, run_id: planned.run_id, type: 'assistant_text', dispatch_generation: dispatchGeneration, item_id: entry.id, text: entry.text, created_at: entry.createdAt }
+          } else {
+            state.event_sequence += 1
+            state.task_events[String(state.event_sequence)] = { event_sequence: state.event_sequence, task_id: taskId, run_id: planned.run_id, type: 'activity', dispatch_generation: dispatchGeneration, item_id: legacyActivityItemId(planned.run_id, entry.id), kind: entry.kind, phase: entry.phase, summary: productTaskActivitySummary(entry.kind, entry.phase), created_at: entry.createdAt }
+          }
+        }
+        run.event_contract = 'durable_items_v1'
       }
-      if (task.lifecycle === 'archived') project.archivedTaskCount += 1
-      else project.taskCount += 1
-      if (Date.parse(task.updatedAt) > Date.parse(project.updatedAt)) project.updatedAt = task.updatedAt
-      projects.set(task.projectId, project)
-    }
-
-    const publicProjects = [...projects.values()].sort((left, right) => {
-      if (activePinnedProjectIds.has(left.id) !== activePinnedProjectIds.has(right.id)) {
-        return activePinnedProjectIds.has(left.id) ? -1 : 1
-      }
-      return Date.parse(right.updatedAt) - Date.parse(left.updatedAt) || left.id.localeCompare(right.id)
     })
-    const visibleProjectIds = new Set(publicProjects.map((project) => project.id))
+  }
 
-    return {
-      schemaVersion: PRODUCT_DOMAIN_VERSION,
-      projects: publicProjects,
-      directories: Object.values(store.directories)
-        .filter((directory) => visibleProjectIds.has(directory.projectId))
-        .sort((left, right) => left.projectId.localeCompare(right.projectId)
-          || left.label.localeCompare(right.label) || left.path.localeCompare(right.path)),
-      tasks: records,
-      total: records.length,
-      capabilities: { createTask: true },
+  /**
+   * Records one current durable Item's private Core origin before a branch
+   * consumes it. Core is consulted only to create this Authority mapping;
+   * branch resolution itself never treats the transcript as product truth.
+   */
+  private async materializeTaskBranchEntryBinding(taskId: string, sourceEntryId: string): Promise<void> {
+    const authority = new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps)
+    const snapshot = await authority.read()
+    const existing = snapshot.thread_entries[sourceEntryId] as { task_id?: unknown; core_session_id?: unknown; core_message_id?: unknown } | undefined
+    if (existing?.task_id === taskId && typeof existing.core_session_id === 'string' && typeof existing.core_message_id === 'string') return
+
+    const event = Object.values(snapshot.task_events)
+      .map(value => value as TaskEvent)
+      .find((candidate): candidate is Extract<TaskEvent, { type: 'user_text' | 'assistant_text' }> => (
+        candidate.task_id === taskId
+        && (candidate.type === 'user_text' || candidate.type === 'assistant_text')
+        && (candidate.item_id ?? (candidate.type === 'user_text' ? durableUserItemId(candidate.run_id) : '')) === sourceEntryId
+      ))
+    if (!event) return
+    const run = snapshot.task_runs[event.run_id] as { task_id?: unknown; core_binding?: { session_id?: unknown } } | undefined
+    const sessionId = run?.core_binding?.session_id
+    const getSessionMessages = this.core.getSessionMessages
+    if (run?.task_id !== taskId || typeof sessionId !== 'string' || !sessionId || !getSessionMessages) {
+      throw new ApiError(503, '任务记录暂不可用', 'PRODUCT_TASK_THREAD_UNAVAILABLE')
     }
+    const matchingCoreItems = projectLegacyCoreThreadItems(await getSessionMessages(sessionId))
+      .filter(item => item.entry.type === event.type && item.entry.text === event.text)
+    const coreMessageIds = new Set(matchingCoreItems.map(item => item.coreMessageId))
+    if (coreMessageIds.size !== 1) return
+    const coreItem = matchingCoreItems[0]!
+
+    await authority.transactSubmit((state) => {
+      const currentEvent = state.task_events[String(event.event_sequence)] as TaskEvent | undefined
+      if (!currentEvent || currentEvent.task_id !== taskId || currentEvent.type !== event.type || currentEvent.run_id !== event.run_id || currentEvent.text !== event.text) throw new Error('AUTHORITY_INVALID')
+      const itemId = currentEvent.item_id ?? (currentEvent.type === 'user_text' ? durableUserItemId(currentEvent.run_id) : '')
+      if (itemId !== sourceEntryId) throw new Error('AUTHORITY_INVALID')
+      const currentRun = state.task_runs[currentEvent.run_id] as { task_id?: unknown; core_binding?: { session_id?: unknown } } | undefined
+      if (currentRun?.task_id !== taskId || currentRun.core_binding?.session_id !== sessionId) throw new Error('AUTHORITY_INVALID')
+      const entry = state.thread_entries[itemId] as { task_id?: unknown; run_id?: unknown; text?: unknown; core_session_id?: unknown; core_message_id?: unknown } | undefined
+      if (entry?.core_session_id !== undefined || entry?.core_message_id !== undefined) {
+        if (entry.task_id !== taskId || entry.run_id !== currentEvent.run_id || entry.core_session_id !== sessionId || entry.core_message_id !== coreItem.coreMessageId) throw new Error('AUTHORITY_INVALID')
+        return { changed: false as const, value: undefined }
+      }
+      state.thread_entries[itemId] = {
+        entry_id: itemId,
+        task_id: taskId,
+        run_id: currentEvent.run_id,
+        text: currentEvent.text,
+        created_at: currentEvent.created_at,
+        core_session_id: sessionId,
+        core_message_id: coreItem.coreMessageId,
+        ...(currentEvent.type === 'user_text' && currentEvent.reference_entry_ids?.length ? { reference_entry_ids: currentEvent.reference_entry_ids } : {}),
+      }
+    })
   }
 
   /**
@@ -1176,7 +1318,7 @@ export class ProductTaskService {
    * exposes their private session bindings.
    */
   async listRecentProjects(limit = 10): Promise<ProductRecentProjectList> {
-    const taskIndex = await this.listTasks()
+    const taskIndex = await this.listTasksAuthoritatively()
     const projects = [...taskIndex.projects]
       .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
       .slice(0, boundedRecentProjectLimit(limit))
@@ -1234,6 +1376,10 @@ export class ProductTaskService {
     let publicInput: Record<string, unknown> = {}
     try { publicInput = JSON.parse(input.canonical_input) as Record<string, unknown> } catch { /* bridge records invalid input as terminal */ }
     const sourceTaskId = typeof publicInput.taskId === 'string' ? publicInput.taskId : input.taskId
+    if (typeof publicInput.sourceEntryId === 'string') {
+      await this.materializeLegacyTaskThread(sourceTaskId)
+      await this.materializeTaskBranchEntryBinding(sourceTaskId, publicInput.sourceEntryId)
+    }
     const current = await authority.read()
     const source = current.tasks[sourceTaskId] as { task?: ProductTaskRecord; binding?: { coreSessionId?: string } } | undefined
     let canonicalInput = input.canonical_input
@@ -1691,13 +1837,9 @@ export class ProductTaskService {
 
   /** Durable receipt first, then best-effort server dispatch; never an API-side fake response. */
   private dispatchAcceptedRun(runId: string, generation: number, kind: 'interactive' | 'scheduled' = 'interactive'): void {
-    // Isolated authority fixtures intentionally own the dispatch claim in
-    // their assertions. The live server (default path) and any explicit
-    // server dispatcher are the only automatic consumers.
-    if (!this.usesDefaultStoragePath && !this.dispatcher) return
+    if (!this.dispatcher) return
     void (async () => {
-      const dispatcher: ProductTaskRunDispatcher = this.dispatcher ?? await import('./taskRunDispatchBridge.js').then(module => module.dispatcherFor(this))
-      await dispatcher.dispatch(runId, generation, kind)
+      await this.dispatcher!.dispatch(runId, generation, kind)
     })().catch(() => undefined)
   }
 
@@ -1763,7 +1905,7 @@ export class ProductTaskService {
         state.events[normalized.client_operation_id] = { event_sequence: state.event_sequence, client_operation_id: normalized.client_operation_id, kind: `task_input_queue_${normalized.action}`, revision: state.revision + 1, canonical_input: canonical, entity_id: taskId, product_task_id: taskId }
         return { duplicate: false, task_revision: task.revision as number, items: publicQueuedInputs(state, taskId), events }
       })
-      for (const event of result.events) productTaskWorkerRuntimeEvents.publish(taskId, event)
+      for (const event of result.events) this.runtimeEvents.publish(taskId, event)
       return { outcome: result.duplicate ? 'duplicate' : 'accepted', task_revision: result.task_revision, items: result.items }
     } catch (error) {
       const state = await authority.read()
@@ -1802,10 +1944,9 @@ export class ProductTaskService {
         state.events[input.client_operation_id] = { event_sequence: state.event_sequence, client_operation_id: input.client_operation_id, kind: 'task_input_queue_steer', revision: state.revision + 1, canonical_input: canonical, entity_id: taskId, product_task_id: taskId }
         return { duplicate: false, task_revision: task.revision as number, items: publicQueuedInputs(state, taskId), events: [event] as ProductTaskEvent[], target: { run_id: active.run_id, dispatch_generation: active.dispatch_generation, text: item.text } }
       })
-      for (const event of result.events) productTaskWorkerRuntimeEvents.publish(taskId, event)
+      for (const event of result.events) this.runtimeEvents.publish(taskId, event)
       if (result.duplicate) return { outcome: 'duplicate', task_revision: result.task_revision, items: result.items, delivery: result.target ? 'steer' : 'queued' }
-      const dispatcher: ProductTaskRunDispatcher = this.dispatcher ?? await import('./taskRunDispatchBridge.js').then(module => module.dispatcherFor(this))
-      const delivered = Boolean(result.target && dispatcher.steer && await dispatcher.steer(result.target.run_id, result.target.dispatch_generation, input.queue_item_id, result.target.text).catch(() => false))
+      const delivered = Boolean(result.target && this.dispatcher?.steer && await this.dispatcher.steer(result.target.run_id, result.target.dispatch_generation, input.queue_item_id, result.target.text).catch(() => false))
       if (delivered) return { outcome: 'accepted', task_revision: result.task_revision, items: result.items, delivery: 'steer' }
 
       const target = result.target
@@ -1824,7 +1965,7 @@ export class ProductTaskService {
         const event = appendQueuedInputEvent(state, item, 'queued')
         return { task_revision: task.revision as number, items: publicQueuedInputs(state, taskId), events: [event] as ProductTaskEvent[] }
       })
-      for (const event of released.events) productTaskWorkerRuntimeEvents.publish(taskId, event)
+      for (const event of released.events) this.runtimeEvents.publish(taskId, event)
       return { outcome: 'accepted', task_revision: released.task_revision, items: released.items, delivery: 'queued' }
     } catch (error) {
       const state = await authority.read()
@@ -1923,9 +2064,8 @@ export class ProductTaskService {
     const runId = candidates.find(id => ['claimed', 'started'].includes((state.dispatch_records[id] as DurableTaskRunDispatch).state as string)) ?? candidates[0]
     if (!runId) return false
     const dispatch = state.dispatch_records[runId] as { dispatch_generation: number }
-    const supervisor: ProductTaskRunDispatcher = this.dispatcher ?? await import('./taskRunDispatchBridge.js').then(module => module.dispatcherFor(this))
-    if (!supervisor.stop) return false
-    await supervisor.stop(runId, dispatch.dispatch_generation)
+    if (!this.dispatcher?.stop) return false
+    await this.dispatcher.stop(runId, dispatch.dispatch_generation)
     return true
   }
 
@@ -2295,14 +2435,13 @@ export class ProductTaskService {
       return { changed: false as const, value: { handled: false, duplicate: false, run_id: '', generation: 0 } }
     })
     if (!result.handled || result.duplicate) return result.handled
-    const supervisor: ProductTaskRunDispatcher = this.dispatcher ?? await import('./taskRunDispatchBridge.js').then(module => module.dispatcherFor(this))
-    const delivered = Boolean(supervisor.answer && await supervisor.answer(result.run_id, result.generation, requestId, answers))
+    const delivered = Boolean(this.dispatcher?.answer && await this.dispatcher.answer(result.run_id, result.generation, requestId, answers))
     if (delivered) {
-      productTaskWorkerRuntimeEvents.publish(taskId, { type: 'status', state: 'working' })
+      this.runtimeEvents.publish(taskId, { type: 'status', state: 'working' })
       return true
     }
     await this.settleTaskRunDispatch(result.run_id, result.generation, 'recovery_required', 'QUESTION_DELIVERY_UNAVAILABLE')
-    productTaskWorkerRuntimeEvents.publish(taskId, { type: 'error', code: 'task_unavailable', retryable: false })
+    this.runtimeEvents.publish(taskId, { type: 'error', code: 'task_unavailable', retryable: false })
     return true
   }
 
@@ -2354,14 +2493,13 @@ export class ProductTaskService {
       return { changed: false as const, value: { handled: false, duplicate: false, run_id: '', generation: 0 } }
     })
     if (!result.handled || result.duplicate) return result.handled
-    const supervisor: ProductTaskRunDispatcher = this.dispatcher ?? await import('./taskRunDispatchBridge.js').then(module => module.dispatcherFor(this))
-    const delivered = Boolean(supervisor.approve && await supervisor.approve(result.run_id, result.generation, requestId, allowed))
+    const delivered = Boolean(this.dispatcher?.approve && await this.dispatcher.approve(result.run_id, result.generation, requestId, allowed))
     if (delivered) {
-      productTaskWorkerRuntimeEvents.publish(taskId, { type: 'status', state: 'working' })
+      this.runtimeEvents.publish(taskId, { type: 'status', state: 'working' })
       return true
     }
     await this.settleTaskRunDispatch(result.run_id, result.generation, 'recovery_required', 'APPROVAL_DELIVERY_UNAVAILABLE')
-    productTaskWorkerRuntimeEvents.publish(taskId, { type: 'error', code: 'task_unavailable', retryable: false })
+    this.runtimeEvents.publish(taskId, { type: 'error', code: 'task_unavailable', retryable: false })
     return true
   }
 
@@ -2381,44 +2519,11 @@ export class ProductTaskService {
   private harnessSessionStorageDir(): string { return path.join(path.dirname(this.storagePath), 'product-harness-sessions') }
 
   private async purgeTaskPrivateArtifacts(taskId: string): Promise<void> {
-    const state = await new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps).read()
-    const lineages = Object.values(state.conversation_lineages)
-      .filter(value => (value as { product_task_id?: unknown }).product_task_id === taskId)
-      .flatMap(value => {
-        const lineage = value as { lineage_id?: unknown; resume_binding_id?: unknown }
-        return typeof lineage.lineage_id === 'string' && typeof lineage.resume_binding_id === 'string'
-          ? [{ storage_dir: this.harnessSessionStorageDir(), binding_id: lineage.resume_binding_id, lineage_id: lineage.lineage_id }]
-          : []
-      })
-    const entryIds = Object.values(state.thread_entries)
-      .filter(value => (value as { task_id?: unknown }).task_id === taskId)
-      .flatMap(value => typeof (value as { entry_id?: unknown }).entry_id === 'string' ? [(value as { entry_id: string }).entry_id] : [])
-    const draftIds = new Set(Object.values(state.composer_drafts)
-      .filter(value => (value as { target_task_id?: unknown }).target_task_id === taskId)
-      .flatMap(value => typeof (value as { draft_id?: unknown }).draft_id === 'string' ? [(value as { draft_id: string }).draft_id] : []))
-    const attachmentIds = Object.entries(state.task_attachments)
-      .filter(([, value]) => {
-        const attachment = value as { owner_kind?: unknown; owner_id?: unknown }
-        return (attachment.owner_kind === 'product_task' && attachment.owner_id === taskId)
-          || (attachment.owner_kind === 'composer_draft' && typeof attachment.owner_id === 'string' && draftIds.has(attachment.owner_id))
-      })
-      .map(([attachmentId]) => attachmentId)
-    const harnessSessions = new ProductHarnessSessionRepository()
-    await Promise.all([
-      ...lineages.map(binding => harnessSessions.purge(binding)),
-      new ProductAutoMemoryRepository().purgeTaskTurns(this.autoMemoryStorageDir(), taskId, entryIds),
-      purgeProductAttachmentCopies(productAttachmentStorageRoot(this.storagePath), attachmentIds),
-    ])
-  }
-
-  private async purgeLegacyProductRegistry(taskId: string): Promise<void> {
-    await this.withStoreLock(async () => {
-      const store = await this.readStore()
-      delete store.tasks[taskId]
-      for (const [sideId, sideTask] of Object.entries(store.sideTasks)) {
-        if (sideTask.parentTaskId === taskId || sideTask.taskId === taskId) delete store.sideTasks[sideId]
-      }
-      await this.writeStore(store)
+    await this.privateArtifacts.purge({
+      taskId,
+      storagePath: this.storagePath,
+      authorityPath: this.authorityPath,
+      authorityRepositoryDeps: this.authorityRepositoryDeps,
     })
   }
 
@@ -2525,9 +2630,8 @@ export class ProductTaskService {
     const dispatch = state.dispatch_records[runId] as DurableTaskRunDispatch | undefined
     if (typeof run?.task_id !== 'string' || dispatch?.dispatch_generation !== dispatchGeneration) throw new Error('AUTHORITY_INVALID')
     if (!['pending', 'claimed', 'started'].includes(dispatch.state as string)) return false
-    const supervisor: ProductTaskRunDispatcher = this.dispatcher ?? await import('./taskRunDispatchBridge.js').then(module => module.dispatcherFor(this))
-    if (!supervisor.stop) return false
-    await supervisor.stop(runId, dispatchGeneration)
+    if (!this.dispatcher?.stop) return false
+    await this.dispatcher.stop(runId, dispatchGeneration)
     return true
   }
 
@@ -2595,8 +2699,11 @@ export class ProductTaskService {
             : { type: 'file' as const, name: '文件附件' }
         }
       }))
-      const safeAttachments = attachments.filter((attachment): attachment is ProductTaskAttachmentSummary => attachment !== null)
-      return { ...event, item_id: event.item_id ?? durableUserItemId(event.run_id), attachment_ids: [...event.attachment_ids], ...(safeAttachments.length ? { attachments: safeAttachments } : {}) }
+      const visibleAttachments = [
+        ...attachments.filter((attachment): attachment is ProductTaskAttachmentSummary => attachment !== null),
+        ...(event.attachment_summaries ?? []),
+      ]
+      return { ...event, item_id: event.item_id ?? durableUserItemId(event.run_id), attachment_ids: [...event.attachment_ids], ...(visibleAttachments.length ? { attachments: visibleAttachments } : {}) }
     }))
     const cursor = hasMore && durableEvents.length > 0
       ? durableEvents[durableEvents.length - 1]!.event_sequence
@@ -2884,8 +2991,8 @@ export class ProductTaskService {
       return { task_id: run.task_id, queue_events: queueEvents }
     })
     if (!result) return
-    for (const event of result.queue_events) productTaskWorkerRuntimeEvents.publish(result.task_id, event)
-    if (state === 'recovery_required') productTaskWorkerRuntimeEvents.publish(result.task_id, { type: 'error', ...(failure ?? { code: 'task_failed', retryable: false }) })
+    for (const event of result.queue_events) this.runtimeEvents.publish(result.task_id, event)
+    if (state === 'recovery_required') this.runtimeEvents.publish(result.task_id, { type: 'error', ...(failure ?? { code: 'task_failed', retryable: false }) })
   }
 
   /** BB-02D two-confirmation lifecycle mutation; never deletes a workspace or source path. */
@@ -3016,53 +3123,6 @@ export class ProductTaskService {
       try { await operation(taskId, revision, fencingToken); return undefined } catch { return participant.id }
     }))
     return results.filter((id): id is string => typeof id === 'string')
-  }
-
-  async createTask(input: CreateProductTaskInput): Promise<ProductTaskRecord> {
-    return this.withStoreLock(() => this.createTaskUnlocked(input))
-  }
-
-  private async createTaskUnlocked(input: CreateProductTaskInput): Promise<ProductTaskRecord> {
-    if (!isRecord(input)) throw ApiError.badRequest('创建任务参数必须是对象')
-    const title = validTitle(input.title)
-    const permissionMode = productTaskPermissionMode(input.permissionMode)
-    const useWorktree = optionalBoolean(input.useWorktree, 'useWorktree')
-    const { store, binding } = await this.resolveCreateTaskBinding(input)
-    const created = await this.core.createSession({
-      workDir: binding.directory.path,
-      // Keep Core-specific values inside this adapter boundary. Product
-      // clients only send the safe product-facing choices above.
-      permissionMode: CORE_PERMISSION_MODE_BY_PRODUCT_MODE[permissionMode],
-      useWorktree,
-    })
-    const now = new Date().toISOString()
-    const metadata: ProductTaskMetadata = {
-      id: createProductTaskId(),
-      coreSessionId: created.sessionId,
-      projectId: binding.project.id,
-      directoryId: binding.directory.id,
-      ...(title ? { title } : {}),
-      lifecycle: 'active',
-      kind: 'main',
-      createdAt: now,
-      updatedAt: now,
-      worktreeState: useWorktree ? 'planned' : 'not_requested',
-      visibility: 'main',
-      permission_snapshot: productPermissionSnapshot(permissionMode),
-    }
-    if (title) await this.core.renameSession(created.sessionId, title)
-    store.tasks[metadata.id] = metadata
-    await this.writeStore(store)
-    return this.requireTask(metadata.id)
-  }
-
-  /**
-   * Validate and resolve a public product task without returning its private
-   * Agent Core binding. Server-side feature modules use this as their owner
-   * check instead of ever accepting a Core session id.
-   */
-  async getTask(taskId: string): Promise<ProductTaskRecord> {
-    return this.withStoreLock(() => this.requireTask(taskId))
   }
 
   /** Server-private owner check for schedules that reuse an existing task. */
@@ -3537,10 +3597,6 @@ export class ProductTaskService {
     }
   }
 
-  async setAttachmentReadyForTest(attachmentId: string, expectedRevision: number): Promise<void> {
-    const authority = new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps); await authority.mutateCapabilities((state) => { const attachment = state.task_attachments[attachmentId] as Record<string, unknown> | undefined; if (!attachment || attachment.installation_id !== this.installationId || attachment.revision !== expectedRevision || attachment.state !== 'staged') throw new Error('AUTHORITY_CONFLICT'); state.task_attachments[attachmentId] = { ...attachment, state: 'ready', revision: expectedRevision + 1, last_activity: this.now().toISOString() } })
-  }
-
   async transitionAttachment(input: { attachment_id: string; expected_revision: number; target_state: 'inspecting' | 'ready' | 'failed' | 'cancelled' | 'discarded'; client_operation_id: string; error?: string }): Promise<{ authority_revision: number; attachment_revision: number; outcome: 'accepted' | 'duplicate' | 'conflict' | 'rejected' }> {
     const authority = new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps); const initial = await authority.read(); const canonical = JSON.stringify({ kind: 'attachment_transition', attachment_id: input.attachment_id, expected_revision: input.expected_revision, target_state: input.target_state, error: input.error ?? null }); if (initial.receipts[input.client_operation_id]) { if (initial.events[input.client_operation_id]?.canonical_input !== canonical) throw new ApiError(409, '操作标识已绑定不同输入', 'AUTHORITY_CONFLICT'); return { authority_revision: initial.revision, attachment_revision: (initial.task_attachments[input.attachment_id] as { revision?: number } | undefined)?.revision ?? 0, outcome: 'duplicate' } }
     try { const { file } = await authority.mutateCapabilities((state) => { const attachment = state.task_attachments[input.attachment_id] as Record<string, unknown> | undefined; if (!attachment || attachment.installation_id !== this.installationId || attachment.revision !== input.expected_revision) throw new Error('AUTHORITY_CONFLICT'); const allowed: Record<string, readonly string[]> = { staged: ['inspecting', 'failed', 'cancelled', 'discarded'], inspecting: ['ready', 'failed', 'cancelled', 'discarded'], ready: ['failed', 'discarded'], failed: [], cancelled: [], discarded: [], accepted_bound: [] }; if (this.now().getTime() >= Date.parse(attachment.expires_at as string) && input.target_state !== 'discarded') throw new Error('ATTACHMENT_REJECTED'); if (!allowed[attachment.state as string]?.includes(input.target_state)) throw new Error('ATTACHMENT_REJECTED'); state.task_attachments[input.attachment_id] = { ...attachment, state: input.target_state, revision: input.expected_revision + 1, last_activity: this.now().toISOString() }; state.receipts[input.client_operation_id] = { client_operation_id: input.client_operation_id, expected_revision: input.expected_revision, outcome: 'accepted', revision: state.revision + 1 }; state.event_sequence += 1; state.events[input.client_operation_id] = { event_sequence: state.event_sequence, client_operation_id: input.client_operation_id, kind: 'attachment_transition', revision: state.revision + 1, canonical_input: canonical } }); return { authority_revision: file.revision, attachment_revision: (file.task_attachments[input.attachment_id] as { revision: number }).revision, outcome: 'accepted' } } catch (error) { const file = await authority.read(); return { authority_revision: file.revision, attachment_revision: (file.task_attachments[input.attachment_id] as { revision?: number } | undefined)?.revision ?? 0, outcome: (error as Error).message === 'AUTHORITY_CONFLICT' ? 'conflict' : 'rejected' } }
@@ -3602,388 +3658,40 @@ export class ProductTaskService {
   }
 
   async resolveCoreSessionId(taskId: string): Promise<string> {
-    return this.withStoreLock(async () => {
-      const authorityPath = this.usesDefaultStoragePath ? authorityStorePath(productStorePath()) : this.authorityPath
-      let authority = await new ProductTaskAuthorityRepository(authorityPath).read()
-      const record = authority.tasks[taskId] as { binding?: { coreSessionId?: unknown } } | undefined
-      if (typeof record?.binding?.coreSessionId === 'string' && record.binding.coreSessionId) return record.binding.coreSessionId
-      // Owner lookup is a strict, read-only D3 legacy projection. It must not
-      // bootstrap an authority file; the first authoritative mutation does so.
-      await readLegacyProductTasks(this.storagePath)
-      return (await this.requireTaskBinding(taskId)).metadata.coreSessionId
-    })
+    const authority = await new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps).read()
+    const record = authority.tasks[taskId] as { binding?: { coreSessionId?: unknown } } | undefined
+    if (typeof record?.binding?.coreSessionId === 'string' && record.binding.coreSessionId) return record.binding.coreSessionId
+    throw ApiError.notFound(`任务不存在：${taskId}`)
   }
 
   async getTaskThread(taskId: string): Promise<ProductTaskThread> {
-    return this.withStoreLock(async () => {
-      const getSessionMessages = this.core.getSessionMessages
-      const authority = await new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps).read()
-      const task = (authority.tasks[taskId] as { task?: { current_lineage_id?: unknown } } | undefined)?.task
-      if (typeof task?.current_lineage_id === 'string') {
-        const runSequence = new Map<string, number>()
-        for (const event of Object.values(authority.task_events)) {
-          const value = event as { task_id?: unknown; run_id?: unknown; event_sequence?: unknown }
-          if (value.task_id === taskId && typeof value.run_id === 'string' && typeof value.event_sequence === 'number') {
-            runSequence.set(value.run_id, Math.max(runSequence.get(value.run_id) ?? 0, value.event_sequence))
-          }
+    await this.materializeLegacyTaskThread(taskId)
+    const entries: ProductTaskThreadEntry[] = []
+    let cursor = 0
+    let hasMore = true
+    while (hasMore) {
+      const page = await this.listTaskEvents(taskId, cursor, 200)
+      for (const event of page.events) {
+        if (event.type === 'user_text') {
+          entries.push({
+            id: event.item_id ?? durableUserItemId(event.run_id),
+            type: 'user_text',
+            text: event.text,
+            createdAt: event.created_at,
+            ...(event.attachments?.length ? { attachments: event.attachments } : {}),
+            ...(event.reference_entry_ids?.length ? { referenceEntryIds: [...event.reference_entry_ids] } : {}),
+          })
+        } else if (event.type === 'assistant_text') {
+          entries.push({ id: event.item_id, type: 'assistant_text', text: event.text, createdAt: event.created_at })
+        } else if (event.type === 'activity' && (event.phase === 'completed' || event.phase === 'failed')) {
+          entries.push({ id: event.item_id, type: 'activity', kind: event.kind, phase: event.phase, createdAt: event.created_at })
         }
-        const lineageSegments: Array<{ lineageId: string; checkpoint?: string }> = []
-        let lineage = authority.conversation_lineages[task.current_lineage_id] as Record<string, unknown> | undefined
-        const seen = new Set<string>()
-        while (lineage && typeof lineage.lineage_id === 'string') {
-          if (seen.has(lineage.lineage_id)) throw new Error('AUTHORITY_INVALID')
-          seen.add(lineage.lineage_id)
-          lineageSegments.push({ lineageId: lineage.lineage_id })
-          if (typeof lineage.parent_lineage_id !== 'string') break
-          const parent = authority.conversation_lineages[lineage.parent_lineage_id] as Record<string, unknown> | undefined
-          if (!parent || parent.product_task_id !== taskId) throw new Error('AUTHORITY_INVALID')
-          lineageSegments[lineageSegments.length - 1]!.checkpoint = typeof lineage.fork_checkpoint_id === 'string' ? lineage.fork_checkpoint_id : undefined
-          lineage = parent
-        }
-        lineageSegments.reverse()
-        const allRuns = Object.values(authority.task_runs)
-          .map(run => run as { run_id?: unknown; task_id?: unknown; lineage_id?: unknown; entry_id?: unknown; created_at?: unknown; event_contract?: unknown; core_binding?: { session_id?: unknown } })
-          .filter(run => run.task_id === taskId && typeof run.run_id === 'string' && typeof run.created_at === 'string')
-          .sort((left, right) => (
-            (runSequence.get(left.run_id as string) ?? 0) - (runSequence.get(right.run_id as string) ?? 0)
-            || Date.parse(left.created_at as string) - Date.parse(right.created_at as string)
-          ))
-        const entries: ProductTaskThreadEntry[] = []
-        for (const [index, segment] of lineageSegments.entries()) {
-          const cutoff = index + 1 < lineageSegments.length ? lineageSegments[index + 1]!.checkpoint : undefined
-          let foundCutoff = cutoff === undefined
-          for (const run of allRuns.filter(candidate => candidate.lineage_id === segment.lineageId)) {
-            if (run.event_contract === 'durable_items_v1') {
-              const events = Object.values(authority.task_events)
-                .map(value => value as TaskEvent)
-                .filter(event => 'run_id' in event && event.run_id === run.run_id)
-                .sort((left, right) => left.event_sequence - right.event_sequence)
-              for (const event of events) {
-                if (event.type === 'user_text') {
-                  const attachmentSummaries = await Promise.all(event.attachment_ids.map(async attachmentId => {
-                    const attachment = authority.task_attachments[attachmentId] as { content_hash?: unknown; byte_size?: unknown; verified_media_type?: unknown } | undefined
-                    if (!attachment || typeof attachment.content_hash !== 'string' || typeof attachment.byte_size !== 'number' || typeof attachment.verified_media_type !== 'string') return null
-                    try {
-                      const filePath = await resolveProductAttachmentCopy(productAttachmentStorageRoot(this.storagePath), attachmentId, attachment.content_hash, attachment.byte_size)
-                      return productAttachmentSummary(filePath, attachment.verified_media_type)
-                    } catch {
-                      return attachment.verified_media_type.startsWith('image/')
-                        ? { type: 'image' as const, name: '图片附件' }
-                        : { type: 'file' as const, name: '文件附件' }
-                    }
-                  }))
-                  const attachments = attachmentSummaries.filter((attachment): attachment is ProductTaskAttachmentSummary => attachment !== null)
-                  entries.push({
-                    id: event.item_id ?? durableUserItemId(event.run_id),
-                    type: 'user_text',
-                    text: event.text,
-                    createdAt: event.created_at,
-                    ...(attachments.length ? { attachments } : {}),
-                    ...(event.reference_entry_ids?.length ? { referenceEntryIds: [...event.reference_entry_ids] } : {}),
-                  })
-                } else if (event.type === 'assistant_text') {
-                  entries.push({ id: event.item_id, type: 'assistant_text', text: event.text, createdAt: event.created_at })
-                } else if (event.type === 'activity' && (event.phase === 'completed' || event.phase === 'failed')) {
-                  entries.push({ id: event.item_id, type: 'activity', kind: event.kind, phase: event.phase, createdAt: event.created_at })
-                }
-              }
-            } else {
-              if (!getSessionMessages || typeof run.core_binding?.session_id !== 'string') throw new ApiError(503, '任务记录暂不可用', 'PRODUCT_TASK_THREAD_UNAVAILABLE')
-              const messages = await getSessionMessages(run.core_binding.session_id).catch(() => [])
-              const projected = projectSessionTranscriptForProductTask(taskId, messages).entries
-              const durableEntry = typeof run.entry_id === 'string' ? authority.thread_entries[run.entry_id] as { reference_entry_ids?: unknown } | undefined : undefined
-              const referenceEntryIds = Array.isArray(durableEntry?.reference_entry_ids) ? durableEntry.reference_entry_ids.filter((id): id is string => typeof id === 'string') : []
-              let attached = false
-              entries.push(...projected.map(entry => {
-                if (!attached && entry.type === 'user_text' && referenceEntryIds.length) {
-                  attached = true
-                  return { ...entry, referenceEntryIds }
-                }
-                return entry
-              }))
-            }
-            if (cutoff && run.entry_id === cutoff) { foundCutoff = true; break }
-          }
-          if (!foundCutoff) throw new Error('AUTHORITY_INVALID')
-        }
-        if (entries.length > 0) return { taskId, entries, ...(recoveryRequiredTaskRunId(authority, taskId) ? { recoveryRequired: true } : {}) }
       }
-      if (!getSessionMessages) throw new ApiError(503, '任务记录暂不可用', 'PRODUCT_TASK_THREAD_UNAVAILABLE')
-      const sessionId = (await this.requireTaskBinding(taskId)).metadata.coreSessionId
-      const messages = await getSessionMessages(sessionId)
-      return { ...projectSessionTranscriptForProductTask(taskId, messages), ...(recoveryRequiredTaskRunId(authority, taskId) ? { recoveryRequired: true } : {}) }
-    })
-  }
-
-  async updateTask(taskId: string, input: UpdateProductTaskInput): Promise<ProductTaskRecord> {
-    return this.withStoreLock(() => this.updateTaskUnlocked(taskId, input))
-  }
-
-  private async updateTaskUnlocked(taskId: string, input: UpdateProductTaskInput): Promise<ProductTaskRecord> {
-    if (!isRecord(input)) throw ApiError.badRequest('更新任务参数必须是对象')
-    const binding = await this.requireTaskBinding(taskId)
-    const task = binding.task
-    const title = validTitle(input.title)
-    const pinned = input.pinned
-    const hasPinnedUpdate = pinned !== undefined
-    if (hasPinnedUpdate && typeof pinned !== 'boolean') {
-      throw ApiError.badRequest('pinned 必须是布尔值')
+      cursor = page.cursor
+      hasMore = page.has_more === true
     }
-    if (title === undefined && !hasPinnedUpdate) {
-      throw ApiError.badRequest('请提供要更新的任务字段')
-    }
-    if (title !== undefined) requireTaskAction(task, 'rename')
-    if (hasPinnedUpdate) requireTaskAction(task, pinned ? 'pin' : 'unpin')
-
-    if (title) await this.core.renameSession(binding.metadata.coreSessionId, title)
-    await this.updateMetadata(taskId, (metadata) => ({
-      ...metadata,
-      ...(title ? { title } : {}),
-      ...(hasPinnedUpdate ? pinned
-        ? { pinnedAt: new Date().toISOString() }
-        : { pinnedAt: undefined } : {}),
-      updatedAt: new Date().toISOString(),
-    }))
-    return this.requireTask(taskId)
-  }
-
-  async setPinned(taskId: string, pinned: boolean): Promise<ProductTaskRecord> {
-    return this.updateTask(taskId, { pinned })
-  }
-
-  async setArchived(taskId: string, archived: boolean): Promise<ProductTaskRecord> {
-    return this.withStoreLock(() => this.setArchivedUnlocked(taskId, archived))
-  }
-
-  private async setArchivedUnlocked(taskId: string, archived: boolean): Promise<ProductTaskRecord> {
-    if (typeof archived !== 'boolean') throw ApiError.badRequest('archived 必须是布尔值')
-    const binding = await this.requireTaskBinding(taskId)
-    const task = binding.task
     const authority = await new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps).read()
-    if (archived && hasBlockingTaskWork(authority, taskId)) {
-      throw new ApiError(
-        409,
-        '任务正在运行或等待确认，请先停止任务后再归档',
-        'PRODUCT_TASK_ACTIVE_RUN',
-      )
-    }
-    requireTaskAction(task, archived ? 'archive' : 'restore')
-    const now = new Date().toISOString()
-    await this.updateMetadata(taskId, (metadata) => ({
-      ...metadata,
-      lifecycle: archived ? 'archived' : 'active',
-      archivedAt: archived ? now : undefined,
-      updatedAt: now,
-    }))
-    return this.requireTask(taskId)
-  }
-
-  async continueTask(taskId: string, input: ContinueProductTaskInput): Promise<ProductTaskRecord> {
-    return this.withStoreLock(() => this.continueTaskUnlocked(taskId, input))
-  }
-
-  private async continueTaskUnlocked(
-    taskId: string,
-    input: ContinueProductTaskInput,
-  ): Promise<ProductTaskRecord> {
-    if (!isRecord(input)) {
-      throw ApiError.badRequest('继续任务参数必须是对象')
-    }
-    rejectCoreSourceTurnId(input)
-    const sourceBinding = await this.requireTaskBinding(taskId)
-    const source = sourceBinding.task
-    requireTaskAction(source, 'continue')
-    const requestedTitle = validTitle(input.title) ?? `继续：${source.title}`
-    const target = continuationTarget(input.target)
-    const sourceEntryId = optionalSourceEntryId(input.sourceEntryId)
-    const sourceTurnId = sourceEntryId
-      ? await this.resolveSourceTurnIdForProductEntry(sourceBinding.metadata.coreSessionId, sourceEntryId)
-      : undefined
-    const created = await this.core.branchSession(
-      sourceBinding.metadata.coreSessionId,
-      requestedTitle,
-      sourceTurnId,
-      target,
-    )
-    const now = new Date().toISOString()
-    const metadata: ProductTaskMetadata = {
-      id: createProductTaskId(),
-      coreSessionId: created.sessionId,
-      projectId: source.projectId,
-      directoryId: source.directoryId,
-      title: created.title,
-      lifecycle: 'active',
-      kind: 'continuation',
-      parentTaskId: source.id,
-      ...(sourceTurnId ? { sourceTurnId } : {}),
-      createdAt: now,
-      updatedAt: now,
-      worktreeState: target === 'new_worktree'
-        ? 'materialized'
-        : source.worktreeState,
-      visibility: 'main',
-      permission_snapshot: taskPermissionSnapshot(source.permission_snapshot),
-    }
-    const { store } = await this.loadRegisteredStore()
-    store.tasks[metadata.id] = metadata
-    await this.writeStore(store)
-    return this.requireTask(metadata.id)
-  }
-
-  async listSideTasks(taskId: string): Promise<ProductSideTask[]> {
-    const legacy = await this.withStoreLock(() => this.listSideTasksUnlocked(taskId))
-    const authority = await new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps).read()
-    const byId = new Map(legacy.map(task => [task.id, task]))
-    for (const value of Object.values(authority.side_tasks)) {
-      const side = publicSideTask(value as ProductSideTaskMetadata)
-      if (side.parentTaskId === taskId) byId.set(side.id, side)
-    }
-    return [...byId.values()]
-  }
-
-  private async listSideTasksUnlocked(taskId: string): Promise<ProductSideTask[]> {
-    await this.requireTask(taskId)
-    const { store } = await this.loadRegisteredStore()
-    return Object.values(store.sideTasks)
-      .filter((sideTask) => sideTask.parentTaskId === taskId)
-      .sort((left, right) => {
-        if (left.status !== right.status) return left.status === 'open' ? -1 : 1
-        return Date.parse(right.updatedAt) - Date.parse(left.updatedAt)
-      })
-      .map(publicSideTask)
-  }
-
-  async createSideTask(
-    taskId: string,
-    input: CreateProductSideTaskInput,
-  ): Promise<ProductSideTask> {
-    return this.withStoreLock(() => this.createSideTaskUnlocked(taskId, input))
-  }
-
-  private async createSideTaskUnlocked(
-    taskId: string,
-    input: CreateProductSideTaskInput,
-  ): Promise<ProductSideTask> {
-    if (!isRecord(input)) {
-      throw ApiError.badRequest('侧边任务参数必须是对象')
-    }
-    rejectCoreSourceTurnId(input)
-    const sourceBinding = await this.requireTaskBinding(taskId)
-    const source = sourceBinding.task
-    if (source.lifecycle !== 'active') {
-      throw ApiError.conflict('归档任务不能创建侧边任务')
-    }
-    const sourceEntryId = requiredSourceEntryId(input.sourceEntryId)
-    const sourceTurnId = await this.resolveSourceTurnIdForProductEntry(
-      sourceBinding.metadata.coreSessionId,
-      sourceEntryId,
-    )
-    const requestedTitle = validTitle(input.title) ?? `侧边任务：${source.title}`
-    const created = await this.core.branchSession(
-      sourceBinding.metadata.coreSessionId,
-      requestedTitle,
-      sourceTurnId,
-    )
-    const now = new Date().toISOString()
-    const sideTaskTaskId = createProductTaskId()
-    const sideTask: ProductSideTaskMetadata = {
-      id: createProductSideTaskId(),
-      parentTaskId: source.id,
-      taskId: sideTaskTaskId,
-      sourceTurnId,
-      coreSessionId: created.sessionId,
-      title: created.title,
-      status: 'open',
-      createdAt: now,
-      updatedAt: now,
-    }
-    const { store } = await this.loadRegisteredStore()
-    store.tasks[sideTaskTaskId] = {
-      id: sideTaskTaskId,
-      coreSessionId: created.sessionId,
-      projectId: source.projectId,
-      directoryId: source.directoryId,
-      title: created.title,
-      lifecycle: 'active',
-      kind: 'continuation',
-      parentTaskId: source.id,
-      sourceTurnId,
-      createdAt: now,
-      updatedAt: now,
-      worktreeState: source.worktreeState,
-      visibility: 'side_task',
-      permission_snapshot: taskPermissionSnapshot(source.permission_snapshot),
-    }
-    store.sideTasks[sideTask.id] = sideTask
-    await this.writeStore(store)
-    return publicSideTask(sideTask)
-  }
-
-  async closeSideTask(taskId: string, sideTaskId: string): Promise<ProductSideTask> {
-    return this.withStoreLock(() => this.closeSideTaskUnlocked(taskId, sideTaskId))
-  }
-
-  private async closeSideTaskUnlocked(taskId: string, sideTaskId: string): Promise<ProductSideTask> {
-    await this.requireTask(taskId)
-    const { store } = await this.loadRegisteredStore()
-    const sideTask = store.sideTasks[sideTaskId]
-    if (!sideTask || sideTask.parentTaskId !== taskId) {
-      throw ApiError.notFound(`侧边任务不存在：${sideTaskId}`)
-    }
-    if (sideTask.status === 'closed') return publicSideTask(sideTask)
-
-    const now = new Date().toISOString()
-    const closed: ProductSideTaskMetadata = {
-      ...sideTask,
-      status: 'closed',
-      closedAt: now,
-      updatedAt: now,
-    }
-    store.sideTasks[sideTaskId] = closed
-    await this.writeStore(store)
-    return publicSideTask(closed)
-  }
-
-  private async resolveCreateTaskBinding(input: CreateProductTaskInput): Promise<{
-    store: ProductTaskStore
-    binding: ProductDirectoryBinding
-  }> {
-    const projectId = requestedProductResourceId(input.projectId, 'projectId')
-    const directoryId = requestedProductResourceId(input.directoryId, 'directoryId')
-    if (Boolean(projectId) !== Boolean(directoryId)) {
-      throw ApiError.badRequest('projectId 和 directoryId 必须同时提供')
-    }
-
-    const { store } = await this.loadRegisteredStore()
-    if (projectId && directoryId) {
-      const project = store.projects[projectId]
-      if (!project) throw ApiError.notFound(`项目不存在：${projectId}`)
-      const directory = store.directories[directoryId]
-      if (!directory || directory.projectId !== project.id) {
-        throw ApiError.badRequest('所选目录不属于当前项目')
-      }
-      if (!isSameOrChildPath(project.rootDir, directory.path)) {
-        throw new ApiError(500, '无法读取产品任务数据', 'PRODUCT_TASK_STORE_ERROR')
-      }
-      const actualDirectory = await this.canonicalizeExistingDirectory(directory.path)
-      if (!sameProductPath(actualDirectory, directory.path)) {
-        throw ApiError.conflict('所选目录的位置已变化，请重新选择')
-      }
-      return { store, binding: { project, directory } }
-    }
-
-    if (typeof input.workDir !== 'string' || !input.workDir.trim()) {
-      throw ApiError.badRequest('workDir 必须是非空字符串')
-    }
-    const directoryPath = await this.canonicalizeExistingDirectory(input.workDir)
-    const rootDir = this.projectRootForDirectory(directoryPath)
-    const now = new Date().toISOString()
-    const registered = this.registerProductDirectory(store, rootDir, directoryPath, {
-      createdAt: now,
-      updatedAt: now,
-      touch: true,
-    })
-    return { store, binding: registered }
+    return { taskId, entries, ...(recoveryRequiredTaskRunId(authority, taskId) ? { recoveryRequired: true } : {}) }
   }
 
   private async loadRegisteredStore(): Promise<{
@@ -4208,129 +3916,20 @@ export class ProductTaskService {
     return isSameOrChildPath(rootDir, workDir) ? workDir : rootDir
   }
 
-  private async requireTask(taskId: string): Promise<ProductTaskRecord> {
-    return (await this.requireTaskBinding(taskId)).task
-  }
-
-  private async resolveSourceTurnIdForProductEntry(
-    coreSessionId: string,
-    sourceEntryId: string,
-  ): Promise<string> {
-    const getSessionMessages = this.core.getSessionMessages
-    if (!getSessionMessages) {
-      throw new ApiError(503, '暂时无法读取当前任务记录', 'PRODUCT_TASK_THREAD_UNAVAILABLE')
-    }
-
-    const sourceTurnId = resolveCoreMessageIdForProductThreadEntry(
-      await getSessionMessages(coreSessionId),
-      sourceEntryId,
-    )
-    if (!sourceTurnId) {
-      throw ApiError.badRequest('请选择当前任务中的一条已保存消息')
-    }
-    return sourceTurnId
-  }
-
   private async resolveTaskBranchSource(
     taskId: string,
     sourceEntryId: string,
     authority: AuthorityFile,
   ): Promise<{ coreSessionId: string; coreTurnId: string; checkpointEntryId: string }> {
-    const getSessionMessages = this.core.getSessionMessages
-    if (!getSessionMessages) throw new ApiError(503, '暂时无法读取当前任务记录', 'PRODUCT_TASK_THREAD_UNAVAILABLE')
-    const task = (authority.tasks[taskId] as { task?: { current_lineage_id?: unknown } } | undefined)?.task
-    if (typeof task?.current_lineage_id === 'string') {
-      const lineageSegments: Array<{ lineageId: string; checkpoint?: string }> = []
-      let lineage = authority.conversation_lineages[task.current_lineage_id] as Record<string, unknown> | undefined
-      const seen = new Set<string>()
-      while (lineage && typeof lineage.lineage_id === 'string') {
-        if (seen.has(lineage.lineage_id)) throw new Error('AUTHORITY_INVALID')
-        seen.add(lineage.lineage_id)
-        lineageSegments.push({ lineageId: lineage.lineage_id })
-        if (typeof lineage.parent_lineage_id !== 'string') break
-        const parent = authority.conversation_lineages[lineage.parent_lineage_id] as Record<string, unknown> | undefined
-        if (!parent || parent.product_task_id !== taskId) throw new Error('AUTHORITY_INVALID')
-        lineageSegments[lineageSegments.length - 1]!.checkpoint = typeof lineage.fork_checkpoint_id === 'string' ? lineage.fork_checkpoint_id : undefined
-        lineage = parent
+    const durableEntry = authority.thread_entries[sourceEntryId] as { task_id?: unknown; run_id?: unknown; core_session_id?: unknown; core_message_id?: unknown } | undefined
+    if (durableEntry?.task_id === taskId && typeof durableEntry.run_id === 'string' && typeof durableEntry.core_session_id === 'string' && typeof durableEntry.core_message_id === 'string') {
+      const run = authority.task_runs[durableEntry.run_id] as { task_id?: unknown; entry_id?: unknown } | undefined
+      if (run?.task_id === taskId && typeof run.entry_id === 'string') {
+        return { coreSessionId: durableEntry.core_session_id, coreTurnId: durableEntry.core_message_id, checkpointEntryId: run.entry_id }
       }
-      lineageSegments.reverse()
-      const runSequence = new Map<string, number>()
-      for (const event of Object.values(authority.task_events)) {
-        const value = event as { run_id?: unknown; event_sequence?: unknown }
-        if (typeof value.run_id === 'string' && typeof value.event_sequence === 'number') {
-          runSequence.set(value.run_id, Math.max(runSequence.get(value.run_id) ?? 0, value.event_sequence))
-        }
-      }
-      const runs = Object.values(authority.task_runs)
-        .map(value => value as { run_id?: unknown; task_id?: unknown; lineage_id?: unknown; entry_id?: unknown; created_at?: unknown; event_contract?: unknown; core_binding?: { session_id?: unknown } })
-        .filter(run => run.task_id === taskId && typeof run.lineage_id === 'string' && typeof run.entry_id === 'string' && typeof run.created_at === 'string' && typeof run.core_binding?.session_id === 'string')
-        .sort((left, right) => (
-          (runSequence.get(left.run_id as string) ?? 0) - (runSequence.get(right.run_id as string) ?? 0)
-          || Date.parse(left.created_at as string) - Date.parse(right.created_at as string)
-        ))
-      for (const [index, segment] of lineageSegments.entries()) {
-        const cutoff = index + 1 < lineageSegments.length ? lineageSegments[index + 1]!.checkpoint : undefined
-        let foundCutoff = cutoff === undefined
-        for (const run of runs.filter(candidate => candidate.lineage_id === segment.lineageId)) {
-          const messages = await getSessionMessages(run.core_binding!.session_id as string).catch(() => [])
-          const coreTurnId = resolveCoreMessageIdForProductThreadEntry(messages, sourceEntryId)
-          if (coreTurnId) return { coreSessionId: run.core_binding!.session_id as string, coreTurnId, checkpointEntryId: run.entry_id as string }
-          if (run.event_contract === 'durable_items_v1' && typeof run.run_id === 'string') {
-            const durableMatch = Object.values(authority.task_events)
-              .map(value => value as TaskEvent)
-              .find(event => 'run_id' in event && event.run_id === run.run_id && (
-                (event.type === 'user_text' && durableUserItemId(event.run_id) === sourceEntryId) ||
-                (event.type === 'assistant_text' && event.item_id === sourceEntryId)
-              ))
-            if (durableMatch) {
-              const candidates = durableMatch.type === 'user_text' ? messages : [...messages].reverse()
-              const source = candidates.find(message => projectSessionTranscriptForProductTask(taskId, [message]).entries.some(entry => entry.type === durableMatch.type))
-              if (source) return { coreSessionId: run.core_binding!.session_id as string, coreTurnId: source.id, checkpointEntryId: run.entry_id as string }
-            }
-          }
-          if (cutoff && run.entry_id === cutoff) { foundCutoff = true; break }
-        }
-        if (!foundCutoff) throw new Error('AUTHORITY_INVALID')
-      }
+      throw new Error('AUTHORITY_INVALID')
     }
     throw ApiError.badRequest('请选择当前任务谱系中的一条已保存消息')
-  }
-
-  private async requireTaskBinding(taskId: string): Promise<{
-    task: ProductTaskRecord
-    metadata: ProductTaskMetadata
-  }> {
-    const { store, sessions } = await this.loadRegisteredStore()
-    const stored = store.tasks[taskId]
-    if (stored) {
-      const session = sessions.find((candidate) => candidate.id === stored.coreSessionId) ?? this.sessionFromProductBinding(store, stored)
-      if (!session) throw ApiError.notFound(`任务不存在：${taskId}`)
-      const task = await this.toRecord(session, stored)
-      const authority = await new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps).read()
-      return {
-        task: {
-          ...task,
-          actions: actionsFor(task, hasBlockingTaskWork(authority, taskId) || !task.actions.includes('archive')),
-        },
-        metadata: stored,
-      }
-    }
-    throw ApiError.notFound(`任务不存在：${taskId}`)
-  }
-
-  private sessionFromProductBinding(store: ProductTaskStore, metadata: ProductTaskMetadata): AgentCoreSession | undefined {
-    if (!metadata.projectId || !metadata.directoryId) return undefined
-    const project = store.projects[metadata.projectId]
-    const directory = store.directories[metadata.directoryId]
-    if (!project || !directory || directory.projectId !== project.id || !isSameOrChildPath(project.rootDir, directory.path)) return undefined
-    return {
-      id: metadata.coreSessionId,
-      ...(metadata.title ? { title: metadata.title } : {}),
-      createdAt: metadata.createdAt,
-      modifiedAt: metadata.updatedAt,
-      projectRoot: project.rootDir,
-      workDir: directory.path,
-    }
   }
 
   /**
@@ -4366,56 +3965,6 @@ export class ProductTaskService {
     store.legacyCoreSessionsImportedAt = new Date().toISOString()
     await this.writeStore(store)
     return store
-  }
-
-  private async toRecord(
-    session: AgentCoreSession,
-    saved: ProductTaskMetadata | undefined,
-  ): Promise<ProductTaskRecord> {
-    const metadata = saved ?? defaultMetadata(session)
-    const workDir = session.workDir ?? session.projectRoot ?? ''
-    if (!metadata.projectId || !metadata.directoryId) {
-      throw new ApiError(500, '无法读取产品任务数据', 'PRODUCT_TASK_STORE_ERROR')
-    }
-    const requestedWorktree = metadata.worktreeState !== 'not_requested'
-    const worktreeState = requestedWorktree
-      ? await this.resolveWorktreeState(session.id)
-      : 'not_requested'
-    const task: ProductTask = {
-      id: metadata.id,
-      projectId: metadata.projectId,
-      directoryId: metadata.directoryId,
-      workDir,
-      title: metadata.title ?? session.title ?? '',
-      lifecycle: metadata.lifecycle === 'archived' ? 'archived' : 'active',
-      kind: metadata.kind === 'continuation' ? 'continuation' : 'main',
-      ...(metadata.pinnedAt ? { pinnedAt: metadata.pinnedAt } : {}),
-      ...(metadata.archivedAt ? { archivedAt: metadata.archivedAt } : {}),
-      ...(metadata.parentTaskId ? { parentTaskId: metadata.parentTaskId } : {}),
-      permission_snapshot: taskPermissionSnapshot(metadata.permission_snapshot),
-      createdAt: metadata.createdAt || session.createdAt,
-      updatedAt: latestProductTimestamp(metadata.updatedAt, session.modifiedAt) || session.modifiedAt,
-      worktreeState,
-    }
-    return {
-      ...task,
-      actions: actionsFor(task, await this.hasBlockingTaskWork(task.id)),
-    }
-  }
-
-  private async hasBlockingTaskWork(taskId: string): Promise<boolean> {
-    const authority = await new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps).read()
-    return hasBlockingTaskWork(authority, taskId)
-  }
-
-  private async resolveWorktreeState(sessionId: string): Promise<ProductTask['worktreeState']> {
-    try {
-      return (await this.core.getWorktreeLaunchState(sessionId)) === 'materialized'
-        ? 'materialized'
-        : 'planned'
-    } catch {
-      return 'planned'
-    }
   }
 
   /**
@@ -4488,26 +4037,6 @@ export class ProductTaskService {
     }
   }
 
-  private async updateMetadata(
-    taskId: string,
-    update: (current: ProductTaskMetadata) => ProductTaskMetadata,
-  ): Promise<void> {
-    const binding = await this.requireTaskBinding(taskId)
-    const { store } = await this.loadRegisteredStore()
-    const next = update(store.tasks[taskId] ?? binding.metadata)
-    store.tasks[taskId] = next
-    if (next.projectId && store.projects[next.projectId]) {
-      store.projects[next.projectId] = {
-        ...store.projects[next.projectId],
-        updatedAt: latestProductTimestamp(
-          store.projects[next.projectId].updatedAt,
-          next.updatedAt,
-        ),
-      }
-    }
-    await this.writeStore(store)
-  }
-
   private async writeStore(store: ProductTaskStore): Promise<void> {
     await fs.mkdir(path.dirname(this.storagePath), { recursive: true })
     const temporaryPath = `${this.storagePath}.${process.pid}.${randomUUID()}.tmp`
@@ -4540,6 +4069,7 @@ export let productTaskService = new ProductTaskService()
 
 export function resetProductTaskServiceForServer(options: {
   additionalLifecycleParticipants?: readonly TaskLifecycleParticipant[]
+  dispatcher?: ProductTaskRunDispatchPort
 } = {}): ProductTaskService {
   productTaskService = new ProductTaskService(options)
   return productTaskService

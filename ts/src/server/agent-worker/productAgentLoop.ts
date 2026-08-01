@@ -1,11 +1,9 @@
 import { randomUUID } from 'node:crypto'
 import type { ProductAssistantMessage, ProductHarnessMessage, ProductPrompt, ProductToolCallBlock, ProductToolResultBlock } from '../../../shared/product/harnessMessages.js'
 import { createProductUserMessage } from './productMessages.js'
-import { runProductModel, type ProductModelRunner } from './productModelRuntime.js'
-import { runProductTools, type ProductToolMessageUpdate } from './productToolExecution.js'
+import type { ProductAgentModelRunner } from './agentModelPort.js'
 import { buildProductSystemPrompt, type ProductPromptContext } from './productSystemPrompt.js'
 import { findProductTool, type ProductCanUseTool, type ProductCommand, type ProductQueuedCommand, type ProductToolContext, type ProductToolHooks, type ProductTools } from './productTool.js'
-import { productDefaultTextModel } from '../product/productGatewayRuntime.js'
 
 const MAX_MODEL_TOOL_ITERATIONS = 128
 const MAX_PARALLEL_LOCAL_READS = 8
@@ -20,6 +18,11 @@ type ProductCommandQueue = {
   consume(commands: ProductQueuedCommand[]): void
 }
 
+export type ProductAgentToolExecutionUpdate = {
+  message?: ProductHarnessMessage
+  newContext: ProductToolContext
+}
+
 export type ProductAgentLoopInput = {
   commands: ProductCommand[]
   prompt: ProductPrompt
@@ -29,14 +32,14 @@ export type ProductAgentLoopInput = {
   mutableMessages?: ProductHarnessMessage[]
   onMessageState?: (messages: readonly ProductHarnessMessage[]) => Promise<void>
   commandQueue?: ProductCommandQueue
-  model?: string
-  runModel?: ProductModelRunner
-  executeTools?: (
+  model: string
+  runModel: ProductAgentModelRunner
+  executeTools: (
     toolUseMessages: ProductToolCallBlock[],
     assistantMessages: ProductAssistantMessage[],
     canUseTool: ProductCanUseTool,
     context: ProductToolContext,
-  ) => AsyncGenerator<ProductToolMessageUpdate, void>
+  ) => AsyncGenerator<ProductAgentToolExecutionUpdate, void>
   toolHooks?: ProductToolHooks
   promptContext: ProductPromptContext
   /** Continue a persisted Turn without appending its original user input again. */
@@ -238,14 +241,14 @@ export async function* runProductAgentLoop(input: ProductAgentLoopInput): AsyncG
       await persist()
       yield event
     } else {
-      for await (const event of (input.runModel ?? runProductModel)({
+      for await (const event of input.runModel({
         messages: [...messages],
         systemPrompt,
         thinkingConfig: context.options.thinkingConfig,
         tools: input.tools,
         signal: context.abortController.signal,
         options: {
-          model: input.model ?? productDefaultTextModel(),
+          model: input.model,
         },
         toolPermissionContext: context.permissionContext,
       })) {
@@ -267,7 +270,7 @@ export async function* runProductAgentLoop(input: ProductAgentLoopInput): AsyncG
         const updates: ProductHarnessMessage[] = []
         let nextContext = executionContext
         let observedResult: { success: boolean; content: unknown } | undefined
-        for await (const update of (input.executeTools ?? runProductTools)([block], assistantMessages, input.canUseTool, executionContext)) {
+        for await (const update of input.executeTools([block], assistantMessages, input.canUseTool, executionContext)) {
           nextContext = update.newContext
           if (!update.message) continue
           const result = productToolResult(update.message, block.id) as { is_error?: boolean; content?: unknown } | undefined

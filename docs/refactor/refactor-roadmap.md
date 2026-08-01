@@ -357,24 +357,9 @@ R2 被路线图选中时，内部不按“看到一个缺口就补一个功能�
 ## 8. 当前施工游标
 
 - **已完成的路线图工作**：R0 文档层级、全局依赖顺序、Codex 客户端—后端关系和当前运行时裁决已经写清。
-- **已完成的当前模块证据**：A0.1 正式调用链已记录在 `docs/refactor/agent-harness-construction-direction.md` 4.4；新任务、既有任务、审阅、队列、恢复和 scheduled Run 都以耐久 `TaskRun` 进入同一 Worker/Harness/Host model port/Authority event 链，HTTP、WebSocket 与桌面只消费同一账本。
-- **已完成的当前模块证据**：A0.2 状态所有权地图已记录在 `docs/refactor/agent-harness-construction-direction.md` 4.5；Authority、私有 Harness session、Host model/tool/process、实时投影和 Renderer view 的写入、读取与恢复边界已经分开，未把不同状态文件误判为双权威。
-- **已完成的当前模块证据**：A0.3 的目标分层、六个窄 Port、M1--M6 有序迁移批次和四处反向依赖已记录在 `docs/refactor/agent-harness-construction-direction.md` 4.6；后续物理收口只按单一权威边界进行。
-- **已完成的当前模块证据**：A0.4/M1 的 Agent 合同与 Shared Kernel 已记录在 `docs/refactor/agent-harness-construction-direction.md` 4.7；Agent 专属 Task/Run/Event/Review/Worker 合同迁至 `shared/agent`，跨域权限与资源合同迁至 `shared/kernel`，跨媒体与模型控制面合同没有被误迁入 Agent。
-- **已完成的当前模块证据**：A0.4/M2 的 Authority Application / Repository 入口收口已记录在 `docs/refactor/agent-harness-construction-direction.md` 4.8；API、WebSocket、启动恢复和 Worker sink 分别只经 Application Port 进入同一 Authority 原子事务，未新增 Repository、JSON 形状或 IPC 行为。
-- **已完成的当前模块证据**：A0.4/M3 的 Worker Executor 与 ingress 收口已记录在 `docs/refactor/agent-harness-construction-direction.md` 4.9；Application 显式注入 Executor，Supervisor/IPC 只消费 dispatch、ingress 与 transport Port，Worker terminal 仍先持久化再广播并以同 generation 结算。
-- **已完成的当前模块证据**：A0.4/M4 的 Core runtime 与 Harness session 收口已记录在 `docs/refactor/agent-harness-construction-direction.md` 4.10；session、model、tool、project instruction/memory 和 provider operation acknowledgement 都改为显式 Port，Core 不再反向依赖 Product Server projection/transport helper，私有 session binding 与恢复语义未变。
-- **已完成的当前模块证据**：A0.4/M5 的 Host model/tool/process adapter 收口已记录在 `docs/refactor/agent-harness-construction-direction.md` 4.11；Host 成为 provider、tool/process、MCP/plugin 与 live resource 的唯一执行宿主，Harness 删除默认 adapter 回退，命名 Agent 只保留经 Host Port 的私有嵌套编排。
-- **已完成的当前模块证据**：A0.4/M6 的 Projection 与 Desktop Feature 收口已记录在 `docs/refactor/agent-harness-construction-direction.md` 4.12；API/WebSocket/read projection 直达 Application query/Authority event，desktop 只消费公开 protocol，已删除无消费者的 Product event projection 兼容层。
-- **已完成的当前模块证据**：A1 的 Thread / Turn / Item / Event Authority 已记录在 `docs/refactor/agent-harness-construction-direction.md` 4.13；公开状态只由 Authority transaction 写入，Worker/WebSocket/Renderer 无旁路，分页与重放读取同一 ledger。
-- **已完成的当前模块证据**：A2 的 Session、Prompt、Context 与 Model Port 已记录在 `docs/refactor/agent-harness-construction-direction.md` 4.14；Run 冻结指令、上下文、附件、预算与模型 route，Provider continuation 保留在私有 Harness/Host 边界，公开协议没有回退或泄漏。
-- **已完成的当前模块证据**：A3 的 Tool Runtime、Host、权限与进程已记录在 `docs/refactor/agent-harness-construction-direction.md` 4.15；普通工具只经 Host RPC 执行，命名 Agent 的窄控制例外不拥有 adapter，Shell/进程只归 Host，未知结果保持恢复围栏。
-- **已完成的当前模块证据**：A4 的 Turn 控制与恢复已记录在 `docs/refactor/agent-harness-construction-direction.md` 4.16；转向输入以持久化消费确认，停止、child exit 与启动恢复均由 generation 围栏、终态投影和未知结果确认收敛，压缩 checkpoint 先写 Authority 再替换私有上下文。
-- **已完成的当前模块证据**：A5 的扩展与协作已记录在 `docs/refactor/agent-harness-construction-direction.md` 4.17；MCP/Skills/Plugins/Commands/Hook 只进入 Host 冻结 Run，named Agent 受父工具围栏，协作 Agent 与 Review 都使用 Authority TaskRun 而非专用聊天或会话。
-- **已完成的当前模块证据**：A6 的 App-Server-like 产品协议已记录在 `docs/refactor/agent-harness-construction-direction.md` 4.18；HTTP 只调用 Application，Worker IPC 经 Bridge 落为 Authority event，WebSocket 用 event ledger/snapshot 交接，desktop 只消费严格校验的公开合同。
-- **已完成的最终静态收口**：R2 最终入口、公开协议、源码资产与验证证据已记录在 `docs/refactor/agent-harness-construction-direction.md` 4.19；Harness/Host 只有各自唯一正式构造点，公开合同不泄漏私有 provider/model 状态，`check:server`、`check:desktop`、`audit:source` 与相关 diff whitespace audit 均通过。
-- **已完成的前置模块**：R2 / Agent Harness 全部施工单元（A0.1--A6）及最终静态收口已经完成；R3 只可在其公开 model port、Host provider receipt 与安装主体身份边界之上施工。
-- **Outcome evidence**：Thread/Turn/Item、队列、审批、问题、错误、恢复、扩展、协作、Review、工具、进程、Model Port、公开 HTTP/WebSocket/desktop projection 均已有唯一所有者和相应退出证据。
+- **R2 当前源码证据**：R2 的调用链、状态权威、依赖方向、物理端口和退出条件集中记录于 `docs/refactor/agent-harness-construction-direction.md`；细粒度追踪分别留在其四份附属记录。它们只以当前源码为证，不再引用不存在的章节或把历史提交当作完成证明。
+- **R2 静态结论**：`ProductTaskAuthorityRepository` 独占用户可见 Task/Run/event 事实；Server Composition Root 独占 Scheduler、Supervisor、IPC Launcher 和 Host factory 装配；Harness 经注入端口使用 Host model/tool；Worker sink 先持久化再投影；桌面只消费公开 HTTP/WebSocket 协议。服务端类型检查、桌面生产构建、源码可达性审计和差异空白检查均通过。
+- **R2 未验证事实**：真实模型、工具、协作、副作用、进程树与多窗口网络时序尚未运行，不能由上述静态证据替代。R3 只在 R2 的 Model Port 与 Host 边界之上施工。
 - **已完成的当前模块证据**：R3.1 托管 `TextReasoning` 用量账本准入已完成。Gateway 在调用上游前，以 verified `principal_id + installation_id`、稳定 operation 与 fencing token 预留请求体字节和请求输出预算；完整模型流先写入同一 operation result ledger，再按返回 completion token 结算。明确未执行的失败释放预留，无法确认的失败保留保守成本；Gateway 重启后的 unknown reservation 只有持有同一私有持久结果回执时才能恢复为 settled。成功回放只尝试幂等账本结算，不再次调用上游或占用额度。`/v1/status` 与 `/v1/chat/quota` 只投影公开余额，已不再把聊天声明为 unmetered。运行策略、共享合同和生产基准已同步加入 `TextReasoning`，安装会话继续无登录、无 License 门禁且不携带共享密钥。
 - **R3.1 验证**：`check:server`、`audit:source`（442 个源文件、0 缺失 import）、Gateway bundle 静态编译、生产 runtime-policy 严格解析、`check:desktop` 生产构建和相关 diff whitespace audit 均通过。未新增或运行测试、smoke、模拟请求、桌面试运行、安装或发布；桌面构建只有既有 `::highlight(...)` CSS 优化 warning。
 - **已完成的当前模块证据**：R3.2 `WebSearch` 独立成本与容量边界已完成。它共享 `TextReasoning` 的 DeepSeek 托管开关和物理容量池，却以独立 capability、原生搜索请求/结果协议、stable operation 和 fencing receipt 进入同一匿名安装日用量账本。新搜索先预留，完整搜索流持久化后以 provider 输出 token 结算（缺少可信 usage 时保留输出预算），明确拒绝释放，未知结果保守保留；成功回放只幂等结算，不重提搜索。Harness ACK 继续只确认私有结果消费。运行策略、共享合同、生产基准和公开状态投影均已同步，不暴露 provider usage、receipt 或凭据。
@@ -469,16 +454,16 @@ R2 被路线图选中时，内部不按“看到一个缺口就补一个功能�
 
 - **R0.1 回溯核验启动**：发现路线图中段仍把 R2 称作“当前唯一施工主线”，而底部同时指向 R11.3；Agent 总纲标题和一份参考—改动文档也把 Agent 模块误写成当前主线。这些冲突说明历史“已完成”记录不能直接当作当前施工许可。R11.3 暂不进入，先按合同从 R0 开始重新核验模块目标、当前源码、状态权威、消费者、失败/恢复边界和静态证据。
 - **R0.1 验证**：全库施工文档扫描只保留本路线图的一处 `Active work unit`；合同和根 `AGENTS.md` 均只将游标指向本路线图，Agent 总纲和专题参考文档只在路线图选中其所属模块时适用。相关文档差异空白检查通过。
-- **已完成阶段：R0.1 重构合同与施工证据回溯核验、R1.1 共享产品内核的权威边界回溯核验、R2.1 Agent Harness 生产调用链回溯核验、R3.1 模型执行端口与使用权控制面回溯核验、R4.1 Agent 桌面客户端事件投影回溯核验、R5.1 图片工作台提交、任务与不可变资产回溯核验**。历史阶段记录已降为待源码核验的证据，不能再单独推进施工或发布。
+- **已完成阶段：R0.1 重构合同与施工证据回溯核验、R1.1 共享产品内核的权威边界回溯核验、R2 Agent Harness Authority 与 Worker/Host 生产链回溯及物理收口**。历史阶段记录仍只是候选证据，不能替代当前源码核验或发布许可。
 
 ```text
-Active work unit: R2.1 — Agent Harness Authority 与 Worker/Host 生产调用链
-Outcome: 从公开 Run 提交到 Authority、dispatch、隔离 Worker、Host model/tool port、权威事件账本和桌面投影形成一条可追踪生产链；不存在旁路写入。
-Evidence: `docs/refactor/agent-harness-construction-direction.md` 4.4、`ts/src/server/api/product.ts`、`ts/src/server/product/`、`ts/src/server/agent-worker/`、`ts/src/entrypoints/agent-worker.ts` 与桌面公开协议。
-Constraints / Non-goals: 只回溯并裁决当前生产调用链；不在未证明缺口前迁移模型、工具、媒体、桌面壳或发布代码。
-Allowed scope: Agent Authority、Worker/Host 接线、公开 Agent 协议及 R2.1 调用链证据记录。
-Verification / Exit: 每个 Run 入口、恢复入口、Worker 消息入口、Host model/tool 调用和公开投影都有唯一所有者；发现的缺口只登记为 R2 内部后续单元；下一游标唯一指向 R2/A0.2。
-Next cursor: R2/A0.2 — Agent 状态所有权地图。
+Active work unit: R3.1 — 模型执行端口与使用权控制面回溯核验
+Outcome: 托管额度与个人 API Key 从同一 Agent Harness Model Port 进入，来源只改变凭据、成本归属和 provider adapter；Renderer、Worker 与公开协议不接触秘密或账本权威。
+Evidence: `ts/src/server/agent-worker/productModelRuntime.ts`、Host runtime、`gateway/` 账本与 operation 路径、Electron Main 凭据注入、公开 task protocol，以及 R2 的 Model Port 入口。
+Constraints / Non-goals: 不改变 R2 的 Thread/Turn/Tool/恢复语义，不进入图片、视频、桌面壳、安装包或生产发布；不发送真实模型或付费请求。
+Allowed scope: Model Execution Port、Host provider adapter、个人凭据隔离、Gateway 托管准入/回执及 R3 证据记录。
+Verification / Exit: 每一种模型来源都有唯一凭据所有者、唯一 operation/usage 写入权威和相同 Harness 结果链；不确定结果不得自动重试；发现的缺口只登记为 R3 后续单元。
+Next cursor: R3/A0.2 — 托管与个人模型的 operation、额度与恢复边界。
 ```
 - **Interrupt rule**：只有发现会造成错误结果、数据丢失、重复副作用、权限越界或无法恢复的事实才可中断；其余发现进入对应后续模块。
 

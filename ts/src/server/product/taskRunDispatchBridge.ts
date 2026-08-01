@@ -1,14 +1,8 @@
-import { IpcAgentWorkerLauncher } from '../agent-worker/ipcLauncher.js'
-import { serverPrivateNativeCoreFactory } from '../agent-worker/nativeCoreFactory.js'
-import { AgentWorkerSupervisor } from './agentWorkerSupervisor.js'
-import { ProductResourceScheduler } from './resourceScheduler.js'
 import type { ProductTaskService } from './taskService.js'
 import type { AgentWorkerOutbound } from '../../../shared/product/agentWorker.js'
 import { sanitizeProductTaskVisibleText } from './taskAttachmentProjection.js'
 import { productTaskWorkerRuntimeEvents } from './taskWorkerRuntimeEvents.js'
 import { reviewAutomaticApproval } from './automaticApprovalReviewer.js'
-
-const supervisors = new WeakMap<ProductTaskService, AgentWorkerSupervisor>()
 
 export class ProductTaskWorkerMessageSink {
   private readonly taskIds = new Map<string, string>()
@@ -178,28 +172,4 @@ export class ProductTaskWorkerMessageSink {
     }
     if (terminal) this.pendingSeparators.delete(key)
   }
-}
-
-/** One server-private bridge per live ProductTaskService/data root. */
-export function dispatcherFor(tasks: ProductTaskService): AgentWorkerSupervisor {
-  let supervisor = supervisors.get(tasks)
-  if (!supervisor) {
-    const scheduler = new ProductResourceScheduler({ statePath: tasks.workerSchedulerStatePath() })
-    supervisor = new AgentWorkerSupervisor(
-      tasks,
-      scheduler,
-      new IpcAgentWorkerLauncher(tasks, serverPrivateNativeCoreFactory),
-      5_000,
-      new ProductTaskWorkerMessageSink(tasks),
-    )
-    supervisors.set(tasks, supervisor)
-  }
-  return supervisor
-}
-
-export async function shutdownDispatcherFor(tasks: ProductTaskService): Promise<void> {
-  const supervisor = supervisors.get(tasks)
-  if (!supervisor) return
-  supervisors.delete(tasks)
-  await supervisor.shutdown()
 }
