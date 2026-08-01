@@ -75,7 +75,7 @@
 - **额度与失败边界**：Gateway 对同一 TextReasoning operation 只有一份预算 reservation。成功流优先持久 result，再用 `completion_tokens`（或在缺失时保留 reservation）结算；客户端取消、上游/stream 不确定和 ledger 写入失败都会保留 outcome unknown，明确未受理的错误才释放。不会从回放结果重新调用上游。
 - **消费边界**：共享 Gateway 协议把 result receipt 绑定到 operation、capability 与请求 fingerprint。R3.2 只提供 receipt 与有界 backlog；主 Harness 的 durable-consumer ACK 时点由 R3.3 单独持久化，不能把模型生成器 yield 当作结果已消费。
 - **当前结论**：R3.2 已完成托管 TextReasoning 的最小 result/usage 闭环。Gateway Bun 生产 bundle、服务端 TypeScript 检查、源码可达性审计（496 个源文件、0 个缺失 import、322 个生产源可达）、桌面 lint/生产构建和差异空白检查通过；未运行测试、smoke、模拟请求、真实模型调用或发布。
-- **未验证/待处理**：真实上游断流、进程重启、ACK 网络失败与 provider 不返回 usage 仍未运行。R3.3 单独收口主 Harness receipt 的 durable-consumer 边界；unknown 的显式新 attempt 留给 R3.4，不能自动重试任何已围栏模型调用。
+- **未验证/待处理**：真实上游断流、进程重启、ACK 网络失败与 provider 不返回 usage 仍未运行。R3.3—R3.5 依次收口主 Harness、父工具与 Hook consumer；unknown 的显式新 attempt 留给 R3.6，不能自动重试任何已围栏模型调用。
 - **下一项**：R3.3 主 Harness 私有 receipt 持久化与 ACK。
 
 ## R3.3 主 Harness 私有 receipt 持久化与 ACK
@@ -83,8 +83,16 @@
 - **当前源码证明**：`ProductAssistantMessage` 可携带仅用于私有 Harness trajectory 的 operation receipt，`ProductHarnessSessionRepository` 与其 parser 原子保存该 receipt 和 assistant。`ProductAgentLoop` 只在 `onMessageState` 成功后请求 ACK；恢复 active Turn 会从持久消息读取 receipt、先 ACK、后交付已保存的完成结果。
 - **失败与恢复边界**：ACK 不可达或拒绝会使主 Harness 保持 recovery_required，不重发模型；同一 receipt 的 ACK 可安全重复。Task event 与 Renderer 只消费文本/活动投影，不接触 operation receipt。
 - **当前结论**：R3.3 已完成主 Harness 的 durable-consumer ACK 闭环。服务端 TypeScript 检查、源码可达性审计（496 个源文件、0 个缺失 import、322 个生产源可达）、桌面 lint/生产构建和差异空白检查通过；未运行测试、smoke、模拟请求、真实模型调用或发布。
-- **未验证/待处理**：Subtask、Plugin agent 与 Hook 的嵌套模型消费尚无同一 private-session receipt handoff；托管 unknown 也尚未具备用户显式的新 attempt 账本。两者进入 R3.4，不能用即时 ACK 或自动重试规避。
-- **下一项**：R3.4 嵌套模型消费者 receipt handoff 与托管 unknown 的显式新 attempt 设计。
+- **后续收口**：R3.4 已将 Subtask/Plugin agent receipt 交接给父工具结果；Hook consumer 仍进入 R3.5，托管 unknown 的显式新 attempt 留给 R3.6。两者都不能用即时 ACK 或自动重试规避。
+- **下一项**：R3.4 Subtask 与 Plugin agent 的父工具 receipt handoff。
+
+## R3.4 Subtask 与 Plugin agent 的父工具 receipt handoff
+
+- **当前源码证明**：`ProductToolResult` 与私有 `ProductToolResultBlock` 可携带 `operation_receipts`，内容仍只给模型可见的 tool result。Subtask/Plugin agent 对每个 assistant 和递归子工具结果去重收集 receipt；`runProductTools()` 把它们附在父工具结果，`ProductAgentLoop` 只有在该消息写入 Harness session 后才调用主 Harness 的 ACK callback。
+- **失败与恢复边界**：没有自身 session 的嵌套 loop 不 ACK，而是继续随父工具结果上交。父 session 写入或 ACK 失败时 receipt 仍留在 Gateway/个人 store 和已写入的私有消息中，恢复会重试 ACK，不会重跑模型。
+- **当前结论**：R3.4 已完成 Subtask/Plugin agent 的 durable tool-result receipt handoff。服务端 TypeScript 检查、源码可达性审计（496 个源文件、0 个缺失 import、322 个生产源可达）、桌面 lint/生产构建和差异空白检查通过；未运行测试、smoke、模拟请求、真实模型调用或发布。
+- **未验证/待处理**：Hook evaluator、compaction 与 lifecycle Hook 的直接模型调用没有父工具 result 可承接，作为 R3.5 单独处理；托管 unknown 仍没有显式新 attempt 账本。
+- **下一项**：R3.5 Hook 模型消费者的持久 receipt 边界。
 
 ## R4 Agent 桌面客户端事件投影与动作回执
 

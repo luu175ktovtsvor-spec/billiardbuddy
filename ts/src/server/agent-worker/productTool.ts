@@ -1,5 +1,5 @@
 import type { z } from 'zod/v4'
-import type { ProductAssistantMessage, ProductHarnessMessage, ProductImageBlock, ProductTextBlock } from '../../../shared/product/harnessMessages.js'
+import type { ProductAssistantMessage, ProductHarnessMessage, ProductImageBlock, ProductModelOperationReceipt, ProductTextBlock } from '../../../shared/product/harnessMessages.js'
 import type { ProductPromptContext } from './productSystemPrompt.js'
 
 export type ProductContentBlock = ProductTextBlock | ProductImageBlock
@@ -105,6 +105,8 @@ export type ProductMappedToolResult = {
 
 export type ProductToolResult<Output> = {
   data: Output
+  /** Durable only when the parent tool-result message has been persisted. */
+  operationReceipts?: ProductModelOperationReceipt[]
   contextModifier?: (context: ProductToolContext) => ProductToolContext
   newMessages?: ProductHarnessMessage[]
 }

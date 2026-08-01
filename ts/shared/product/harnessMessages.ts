@@ -15,6 +15,8 @@ export type ProductToolResultBlock = {
   tool_call_id: string
   content: string | Array<ProductTextBlock | ProductImageBlock>
   is_error?: boolean
+  /** Private receipts carried with the durable parent tool result, never model input. */
+  operation_receipts?: ProductModelOperationReceipt[]
 }
 export type ProductContentBlock = ProductTextBlock | ProductImageBlock | ProductToolCallBlock | ProductToolResultBlock
 export type ProductPrompt = string | Array<ProductTextBlock | ProductImageBlock>
@@ -96,6 +98,9 @@ function validContentBlock(value: unknown): value is ProductContentBlock {
         return child?.type === 'text' ? validText(child.text) : child?.type === 'image' && validContentBlock(child)
       })))
       && (block.is_error === undefined || typeof block.is_error === 'boolean')
+      && (block.operation_receipts === undefined || (Array.isArray(block.operation_receipts)
+        && block.operation_receipts.length <= 256
+        && block.operation_receipts.every(validOperationReceipt)))
   }
   return false
 }
@@ -129,4 +134,18 @@ export function parseProductHarnessMessage(value: unknown): ProductHarnessMessag
 export function parseProductHarnessMessages(value: unknown): ProductHarnessMessage[] {
   if (!Array.isArray(value) || value.length > 100_000) throw new Error('HARNESS_MESSAGE_INVALID')
   return value.map(parseProductHarnessMessage)
+}
+
+export function productHarnessMessageOperationReceipts(message: ProductHarnessMessage): ProductModelOperationReceipt[] {
+  const receipts = new Map<string, ProductModelOperationReceipt>()
+  if (message.type === 'assistant' && message.operation_receipt) {
+    receipts.set(`${message.operation_receipt.source}:${message.operation_receipt.operation_id}`, message.operation_receipt)
+  }
+  for (const block of Array.isArray(message.message.content) ? message.message.content : []) {
+    if (block.type !== 'tool_result') continue
+    for (const receipt of block.operation_receipts ?? []) {
+      receipts.set(`${receipt.source}:${receipt.operation_id}`, receipt)
+    }
+  }
+  return [...receipts.values()]
 }

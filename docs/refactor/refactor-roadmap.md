@@ -366,11 +366,15 @@ R2 被路线图选中时，内部不按“看到一个缺口就补一个功能�
 - **R3.2 当前源码证据**：Gateway 的 `/v1/chat/completions` 以验证后的 installation principal、稳定 operation id 和精确请求指纹取得 `gateway_operation_results_v4` fencing。已成功的 operation 只回放已持久 SSE，不再接触 DeepSeek；进行中的 operation 返回冲突；中断、上游不确定或账本无法完成时保留 unknown 围栏，不自动重发。
 - **R3.2 结果与结算**：成功 SSE 的原始字节、内容类型和实际额度先写入 Gateway result store，随后才按上游 `usage.completion_tokens` 结算；上游未报告 usage 时保留预留输出额度，不能猜测较小消耗。结果头只交给受信 Host；ACK 的 durable-consumer 时点由 R3.3 单独裁决。ACK 前的结果受有界 backlog 保护，重复 ACK 不会产生第二次模型请求。
 - **R3.2 静态验证**：Gateway Bun 生产 bundle、服务端 TypeScript 检查、源码可达性审计（496 个源文件、0 个缺失 import、322 个生产源可达）、桌面 lint/生产构建和差异空白检查均通过；未新增或运行测试、smoke、模拟请求、桌面试运行、真实模型调用或发布。
-- **R3.2 未验证与下一项**：真实 Gateway/DeepSeek 的断流、跨进程恢复、ACK 网络失败和上游 usage 缺失仍未运行，不能由静态证据替代。R3.3 单独收口主 Harness 的 receipt durable-consumer 时点；R3.4 才处理 unknown 的显式新 attempt，不得把 WebSearch、媒体能力或桌面设置 UI 混入。
+- **R3.2 未验证与后续**：真实 Gateway/DeepSeek 的断流、跨进程恢复、ACK 网络失败和上游 usage 缺失仍未运行，不能由静态证据替代。R3.3—R3.5 依次收口各类 consumer 的 durable receipt；unknown 的显式新 attempt 留在 R3.6，不得把 WebSearch、媒体能力或桌面设置 UI 混入。
 - **R3.3 当前源码证据**：`ProductAssistantMessage.operation_receipt` 只存在于私有 Harness trajectory，包含非秘密 source、capability、operation id 和请求 fingerprint；Worker 公开帧、Task event、WebSocket 与 Renderer 都不投影该字段。`runProductAgentLoop()` 在 assistant 已由 `ProductHarnessSessionRepository` 原子写入后才调用 receipt ACK；恢复同一 active Turn 时先对持久 assistant receipt 重试 ACK，再交付既有结果。
 - **R3.3 失败与恢复边界**：Gateway 或本机个人 store 的 ACK 失败会使主 Harness 进入 `recovery_required`，而不是把已消费结果误报完成或再次请求模型。下次恢复只使用已持久的 receipt；重复 ACK 幂等。缺少同一 private-session 消费边界的嵌套模型调用仍不 ACK，其 handoff 另列后续 R3 单元，不能借此回退为运行时即时 ACK。
 - **R3.3 静态验证**：服务端 TypeScript 检查、源码可达性审计（496 个源文件、0 个缺失 import、322 个生产源可达）、桌面 lint/生产构建和差异空白检查均通过；未新增或运行测试、smoke、模拟请求、桌面试运行、真实模型调用或发布。
-- **R3.3 未验证与下一项**：真实 session 落盘、ACK 断线、Worker 崩溃与恢复时序尚未运行。下一游标为 **R3.4 — 嵌套模型消费者 receipt handoff 与托管 unknown 的显式新 attempt 设计**；不得改动 WebSearch、媒体能力或桌面设置 UI。
+- **R3.3 未验证与下一项**：真实 session 落盘、ACK 断线、Worker 崩溃与恢复时序尚未运行。R3.4 只处理 Subtask/Plugin agent 的父工具结果 handoff；Hook 与 unknown 新 attempt 继续分开，不得改动 WebSearch、媒体能力或桌面设置 UI。
+- **R3.4 当前源码证据**：Subtask 与 Plugin agent 收集自身及递归子工具结果中的私有 receipt，作为 `operation_receipts` 附在父 `tool_result` 上。`runProductTools()` 不把 receipt 放入模型可见 content；主 `runProductAgentLoop()` 先把该 tool result 写入私有 Harness session，才以同一 receipt callback ACK。嵌套循环没有 session 时只继续向上携带 receipt，不即时 ACK。
+- **R3.4 失败与恢复边界**：子循环、父工具、session 写入或 ACK 任一环节中断时，Gateway/个人 result 都保持未 ACK，可由包含该 tool result 的主 session 恢复重试；不会将子 agent 完成误作其结果已经被父任务消费，也不会重新请求模型。
+- **R3.4 静态验证**：服务端 TypeScript 检查、源码可达性审计（496 个源文件、0 个缺失 import、322 个生产源可达）、桌面 lint/生产构建和差异空白检查均通过；未新增或运行测试、smoke、模拟请求、桌面试运行、真实模型调用或发布。
+- **R3.4 未验证与下一项**：真实嵌套 worker 崩溃、递归子任务回放与 ACK 网络失败尚未运行。下一游标为 **R3.5 — Hook 模型消费者的持久 receipt 边界**；托管 unknown 的显式新 attempt 留给后续独立单元。
 - **已完成的当前模块证据**：R4.1 桌面 Agent 公开事件消费链审计已完成。桌面任务 runtime 只消费 Product Server 的结构化 WebSocket 事件与线程/队列快照；resume cursor 由同一 durable event ledger 驱动，重连先回放、再读取当前 run snapshot、最后交接 live 事件。页面的局部 store 只保留连接、提交、草稿、滚动、面板和其他可丢失 UI 状态，线程、活动、计划、审批、错误、恢复、模型路由与队列都能从服务端重新投影。侧任务变更以 authority revision 触发服务端 refresh，审阅/Diff 与进程面板分别从正式 API 刷新/轮询，因此不依赖聊天事件或浏览器缓存。
 - **R4.1 验证**：相关 TypeScript 源码链路和公开协议 parser 已静态审阅；R3 最终检查中的服务端类型检查、桌面 production renderer 构建、Gateway bundle、运行策略解析、源码可达性审计和 diff whitespace audit 均通过。未新增或运行测试、smoke、模拟请求、桌面试运行、安装或发布。
 - **已完成的当前模块证据**：R4.2 桌面 Agent 动作与幂等回执审计已完成。新建任务、普通消息和冻结 Review Run 都保留未知 HTTP 结果对应的原始 client operation 与精确 revision/附件请求，重试只读取同一 Authority receipt；队列编辑、删除、重试、重排、转向和恢复同样复用原 mutation。继续、改写以及任务生命周期操作走通用 durable envelope；侧任务和审阅批注各自保留可重放 operation。审批/问题以已持久化 request id 幂等结算，停止则只在当前 socket 已接收 durable replay、run snapshot 与 resume cursor 后才可送至 generation-fenced Host。服务端也拒绝尚未完成 replay hand-off 的入站动作，因此旧窗口/旧连接状态不会批准或停止未观察到的新 Run。权威 revision、receipt、event ledger 和重连 snapshot 是多窗口交接的唯一裁决，Renderer 只保留可丢失的交互 pending 状态。
@@ -451,13 +455,13 @@ R2 被路线图选中时，内部不按“看到一个缺口就补一个功能�
 - **已完成阶段：R0.1 重构合同与施工证据回溯核验、R1.1 共享产品内核的权威边界回溯核验、R2 Agent Harness Authority 与 Worker/Host 生产链回溯及物理收口**。历史阶段记录仍只是候选证据，不能替代当前源码核验或发布许可。
 
 ```text
-Active work unit: R3.4 — 嵌套模型消费者 receipt handoff 与托管 unknown 的显式新 attempt 设计
-Outcome: 非主 Harness 的模型消费者不丢 receipt；任何用户确认的托管重试都建立可计量的新 attempt，绝不复用旧额度或自动重发。
-Evidence: R3.2 result/usage store、R3.3 私有 Harness receipt、Subtask/Plugin/Hook 的 Model Port 消费路径，以及 TaskRun 的恢复入口。
-Constraints / Non-goals: 不改变 R2 的 Thread/Turn/Tool/恢复语义，不进入图片、视频、WebSearch、桌面设置、安装包或生产发布；不发送真实模型或付费请求。
-Allowed scope: 嵌套 Model Port receipt handoff、托管 TextReasoning unknown recovery/attempt ledger 及 R3 证据记录。
-Verification / Exit: 每个模型消费者都要么先形成其权威结果再 ACK，要么保留未 ACK receipt；明确重试只能写入新的 metered attempt；类型、生产构建、源码审计和失败/恢复证据成立。
-Next cursor: R4.1 — Agent 桌面事件投影与动作回执回溯核验。
+Active work unit: R3.5 — Hook 模型消费者的持久 receipt 边界
+Outcome: Hook 使用模型时，receipt 必须进入可恢复的主 Harness 状态，且只在该状态已持久后 ACK；不能用临时条件判断替代结果消费。
+Evidence: Hook evaluator、compaction、lifecycle Hook 的 Model Port 调用入口，以及 R3.3/R3.4 的 session 与 receipt handoff。
+Constraints / Non-goals: 不改变 R2 的 Thread/Turn/Tool/恢复语义，不进入 unknown retry、图片、视频、WebSearch、桌面设置、安装包或生产发布；不发送真实模型或付费请求。
+Allowed scope: Hook 模型调用的 receipt 载体、主 Harness session 持久化/恢复、ACK 时点及 R3 证据记录。
+Verification / Exit: Hook 的模型结果和 receipt 具有同一可恢复所有者；写入或 ACK 失败不重发模型；类型、生产构建、源码审计和失败/恢复证据成立。
+Next cursor: R3.6 — 托管 TextReasoning unknown 的显式新 attempt 账本。
 ```
 - **Interrupt rule**：只有发现会造成错误结果、数据丢失、重复副作用、权限越界或无法恢复的事实才可中断；其余发现进入对应后续模块。
 

@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import type { ProductAssistantMessage, ProductHarnessMessage, ProductPrompt, ProductToolCallBlock, ProductToolResultBlock } from '../../../shared/product/harnessMessages.js'
+import { productHarnessMessageOperationReceipts, type ProductAssistantMessage, type ProductHarnessMessage, type ProductModelOperationReceipt, type ProductPrompt, type ProductToolCallBlock, type ProductToolResultBlock } from '../../../shared/product/harnessMessages.js'
 import { createProductUserMessage } from './productMessages.js'
 import type { ProductAgentModelRunner } from './agentModelPort.js'
 import { buildProductSystemPrompt, type ProductPromptContext } from './productSystemPrompt.js'
@@ -31,8 +31,8 @@ export type ProductAgentLoopInput = {
   canUseTool: ProductCanUseTool
   mutableMessages?: ProductHarnessMessage[]
   onMessageState?: (messages: readonly ProductHarnessMessage[]) => Promise<void>
-  /** Runs only after the assistant and its private operation receipt are durable. */
-  onAssistantPersisted?: (message: ProductAssistantMessage, signal: AbortSignal) => Promise<void>
+  /** Runs only after model receipts have entered a durable private message. */
+  onOperationReceiptsPersisted?: (receipts: readonly ProductModelOperationReceipt[], signal: AbortSignal) => Promise<void>
   commandQueue?: ProductCommandQueue
   model: string
   runModel: ProductAgentModelRunner
@@ -139,6 +139,14 @@ function productToolResult(message: ProductHarnessMessage, toolUseId: string): P
   return undefined
 }
 
+function operationReceipts(messages: readonly ProductHarnessMessage[]): ProductModelOperationReceipt[] {
+  const receipts = new Map<string, ProductModelOperationReceipt>()
+  for (const message of messages) {
+    for (const receipt of productHarnessMessageOperationReceipts(message)) receipts.set(`${receipt.source}:${receipt.operation_id}`, receipt)
+  }
+  return [...receipts.values()]
+}
+
 function hookContextMessage(context: string, phase: 'PreToolUse' | 'PostToolUse'): ProductHarnessMessage {
   return createProductUserMessage({
     content: `<project_hook_context event="${phase}">\n${context.slice(0, 20_000)}\n</project_hook_context>`,
@@ -200,6 +208,10 @@ export async function* runProductAgentLoop(input: ProductAgentLoopInput): AsyncG
   const messages = input.mutableMessages ?? []
   let context = input.toolUseContext
   const persist = async () => input.onMessageState?.(messages)
+  const acknowledgePersisted = async (persisted: readonly ProductHarnessMessage[]) => {
+    const receipts = operationReceipts(persisted)
+    if (receipts.length) await input.onOperationReceiptsPersisted?.(receipts, context.abortController.signal)
+  }
   let pendingDirectAssistant: ProductAssistantMessage | undefined
   const unresolved = unresolvedPersistedToolCalls(messages)
   for (const block of unresolved) {
@@ -217,11 +229,7 @@ export async function* runProductAgentLoop(input: ProductAgentLoopInput): AsyncG
     if (messages.length === 0) throw new Error('PRODUCT_AGENT_RESUME_EMPTY')
     const completedText = unresolved.length === 0 ? resumableCompletedText(messages) : undefined
     if (completedText) {
-      for (const message of messages) {
-        if (message.type === 'assistant' && message.operation_receipt) {
-          await input.onAssistantPersisted?.(message, context.abortController.signal)
-        }
-      }
+      await acknowledgePersisted(messages)
       yield { type: 'result', subtype: 'success', is_error: false, result: completedText }
       return
     }
@@ -266,7 +274,7 @@ export async function* runProductAgentLoop(input: ProductAgentLoopInput): AsyncG
         const text = assistantText(event)
         if (text) finalText = text
         await persist()
-        if (event.operation_receipt) await input.onAssistantPersisted?.(event, context.abortController.signal)
+        await acknowledgePersisted([event])
       }
     }
 
@@ -292,6 +300,7 @@ export async function* runProductAgentLoop(input: ProductAgentLoopInput): AsyncG
         for (const message of updates) {
           messages.push(message)
           await persist()
+          await acknowledgePersisted([message])
         }
       }
       const postToolMessages = async (

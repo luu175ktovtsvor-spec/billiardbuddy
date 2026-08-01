@@ -542,8 +542,8 @@ export async function createProductAgentHarness(input: {
                 commandQueue,
                 mutableMessages: modelMessages,
                 onMessageState: persistHarnessSession,
-                onAssistantPersisted: async (message, signal) => {
-                  if (message.operation_receipt) await acknowledgeProductModelOperation(message.operation_receipt, signal)
+                onOperationReceiptsPersisted: async (receipts, signal) => {
+                  for (const receipt of receipts) await acknowledgeProductModelOperation(receipt, signal)
                 },
                 runModel: input.run_model ?? runProductModel,
                 executeTools: input.execute_tools ?? runProductTools,

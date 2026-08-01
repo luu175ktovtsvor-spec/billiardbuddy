@@ -106,6 +106,7 @@ export async function* runProductTools(
         type: 'tool_result',
         tool_call_id: block.id,
         ...(mapped.is_error ? { is_error: true } : {}),
+        ...(result.operationReceipts?.length ? { operation_receipts: result.operationReceipts } : {}),
         content: boundedContent(typeof mapped.content === 'string'
           ? mapped.content
           : mapped.content, tool.maxResultSizeChars),

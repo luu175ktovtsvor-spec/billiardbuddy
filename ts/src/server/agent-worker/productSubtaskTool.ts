@@ -1,12 +1,18 @@
 import { z } from 'zod/v4'
 import { buildProductTool, type ProductToolContext, type ProductToolDef } from './productTool.js'
-import type { ProductHarnessMessage } from '../../../shared/product/harnessMessages.js'
+import { productHarnessMessageOperationReceipts, type ProductHarnessMessage, type ProductModelOperationReceipt } from '../../../shared/product/harnessMessages.js'
 import { runProductAgentLoop } from './productAgentLoop.js'
 
 const inputSchema = z.strictObject({
   prompt: z.string().min(1).max(100_000).describe('A bounded independent subtask to solve'),
   description: z.string().min(1).max(160).describe('Short description of the subtask'),
 })
+
+type NestedAgentResult = { text: string }
+
+function receiptKey(receipt: ProductModelOperationReceipt): string {
+  return `${receipt.source}:${receipt.operation_id}`
+}
 
 export const ProductSubtaskTool = buildProductTool({
   name: 'Subtask',
@@ -28,6 +34,7 @@ export const ProductSubtaskTool = buildProductTool({
       messages,
     }
     let result = ''
+    const receipts = new Map<string, ProductModelOperationReceipt>()
     for await (const event of runProductAgentLoop({
       commands: context.options.commands,
       prompt,
@@ -42,13 +49,16 @@ export const ProductSubtaskTool = buildProductTool({
       toolHooks: context.toolHooks,
     })) {
       if (event.type === 'result') result = event.result
-      else if (event.type !== 'model_delta') context.onProductHarnessMessage?.(event, context.toolUseId)
+      else if (event.type !== 'model_delta') {
+        for (const receipt of productHarnessMessageOperationReceipts(event)) receipts.set(receiptKey(receipt), receipt)
+        context.onProductHarnessMessage?.(event, context.toolUseId)
+      }
     }
     if (!result.trim()) throw new Error('SUBTASK_EMPTY_RESULT')
-    return { data: result }
+    return { data: { text: result }, operationReceipts: [...receipts.values()] }
   },
   mapToolResultToToolResultBlockParam(result, toolUseID) {
-    return { type: 'tool_result', tool_use_id: toolUseID, content: result }
+    return { type: 'tool_result', tool_use_id: toolUseID, content: result.text }
   },
   renderToolUseMessage() { return null },
   renderToolUseProgressMessage() { return null },
@@ -56,4 +66,4 @@ export const ProductSubtaskTool = buildProductTool({
   renderToolUseRejectedMessage() { return null },
   renderToolResultMessage() { return null },
   renderToolUseErrorMessage() { return null },
-} satisfies ProductToolDef<typeof inputSchema, string>)
+} satisfies ProductToolDef<typeof inputSchema, NestedAgentResult>)

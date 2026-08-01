@@ -2,7 +2,7 @@ import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
 import { parseDocument } from 'yaml'
 import { z } from 'zod/v4'
-import type { ProductHarnessMessage } from '../../../shared/product/harnessMessages.js'
+import { productHarnessMessageOperationReceipts, type ProductHarnessMessage, type ProductModelOperationReceipt } from '../../../shared/product/harnessMessages.js'
 import { resolveProductTextModel } from '../product/productGatewayRuntime.js'
 import { runProductAgentLoop } from './productAgentLoop.js'
 import { buildProductTool, type ProductCommand, type ProductTool, type ProductToolContext } from './productTool.js'
@@ -11,6 +11,12 @@ const MAX_AGENTS = 128
 const MAX_AGENT_BYTES = 512 * 1024
 const SAFE_NAME = /^[a-z0-9][a-z0-9-]{0,63}$/
 const SAFE_TOOL_NAME = /^[A-Za-z][A-Za-z0-9:_-]{0,127}$/
+
+type NestedAgentResult = { text: string }
+
+function receiptKey(receipt: ProductModelOperationReceipt): string {
+  return `${receipt.source}:${receipt.operation_id}`
+}
 
 function isWithinRoot(root: string, candidate: string): boolean {
   const relative = path.relative(root, candidate)
@@ -61,6 +67,7 @@ function agentTool(input: { plugin: string; name: string; description: string; i
         messages,
       }
       let result = ''
+      const receipts = new Map<string, ProductModelOperationReceipt>()
       for await (const event of runProductAgentLoop({
         commands: context.options.commands,
         prompt: `<named_agent_profile name="${input.plugin}:${input.name}">\n${input.instructions}\n</named_agent_profile>\n\n<assigned_task>\n${prompt}\n</assigned_task>`,
@@ -75,12 +82,15 @@ function agentTool(input: { plugin: string; name: string; description: string; i
         toolHooks: context.toolHooks,
       })) {
         if (event.type === 'result') result = event.result
-        else if (event.type !== 'model_delta') context.onProductHarnessMessage?.(event, context.toolUseId)
+        else if (event.type !== 'model_delta') {
+          for (const receipt of productHarnessMessageOperationReceipts(event)) receipts.set(receiptKey(receipt), receipt)
+          context.onProductHarnessMessage?.(event, context.toolUseId)
+        }
       }
       if (!result.trim()) throw new Error('PLUGIN_AGENT_EMPTY_RESULT')
-      return { data: result }
+      return { data: { text: result }, operationReceipts: [...receipts.values()] }
     },
-    mapToolResultToToolResultBlockParam(result, toolUseID) { return { type: 'tool_result', tool_use_id: toolUseID, content: result } },
+    mapToolResultToToolResultBlockParam(result, toolUseID) { return { type: 'tool_result', tool_use_id: toolUseID, content: result.text } },
     renderToolUseMessage() { return null },
     renderToolUseProgressMessage() { return null },
     renderToolUseQueuedMessage() { return null },
