@@ -1,5 +1,6 @@
 import { IpcAgentWorkerLauncher } from './ipcLauncher.js'
-import { serverPrivateNativeCoreFactory } from './nativeCoreFactory.js'
+import { createServerPrivateNativeCoreFactory } from './nativeCoreFactory.js'
+import { createProductAgentSubtaskCoordinator } from './productSubtaskCoordinator.js'
 import { AgentWorkerSupervisor } from '../product/agentWorkerSupervisor.js'
 import { ProductResourceScheduler } from '../product/resourceScheduler.js'
 import { ProductTaskWorkerMessageSink } from '../product/taskRunDispatchBridge.js'
@@ -19,12 +20,20 @@ export function createProductTaskRunComposition(
   runtimeEvents: ProductTaskRuntimeEventPort,
 ): ProductTaskRunComposition {
   let supervisor: AgentWorkerSupervisor | undefined
-  const resolveSupervisor = () => {
+  const resolveSupervisor = (): AgentWorkerSupervisor => {
     if (supervisor) return supervisor
     supervisor = new AgentWorkerSupervisor(
       tasks,
       scheduler,
-      new IpcAgentWorkerLauncher(tasks, serverPrivateNativeCoreFactory),
+      new IpcAgentWorkerLauncher(
+        tasks,
+        createServerPrivateNativeCoreFactory(
+          createProductAgentSubtaskCoordinator(tasks, {
+            dispatch: (runId, generation, kind) => resolveSupervisor().dispatch(runId, generation, kind),
+            stop: (runId, generation) => resolveSupervisor().stop(runId, generation),
+          }),
+        ),
+      ),
       5_000,
       new ProductTaskWorkerMessageSink(tasks, runtimeEvents),
     )

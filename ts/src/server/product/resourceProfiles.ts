@@ -20,8 +20,11 @@ export function conservativeDesktopResourceProfile(now = new Date(), platform = 
     // Chat turns spend most of their lifetime waiting on the model or a user-approved
     // tool. Keep a real host-wide ceiling, but do not serialize independent tasks into
     // a hidden one-window product limit.
-    'agent.worker': limit({ max_active: 10, max_queued: 128 }),
-    'agent.turn': limit({ max_active: 10, max_queued: 128 }),
+    // A durable Subtask keeps its parent worker open while the child runs.
+    // Keep the host-wide ceiling, but allow those related Run receipts to be
+    // admitted together; serial user Turns are still enforced by the ledger.
+    'agent.worker': limit({ max_active: 10, max_queued: 128, max_active_per_owner: 10 }),
+    'agent.turn': limit({ max_active: 10, max_queued: 128, max_active_per_owner: 10 }),
   }
   for (const key of ['schedule.dispatch', 'filesystem.write.workspace', 'filesystem.write.external', 'browser.session', 'browser.batch', 'content.inspect', 'content.extract', 'content.thumbnail', 'storage.attachment-temp'] as const) limits[key] = limit()
   limits['media.ffprobe'] = limit({ max_active: 2, max_queued: 16, max_active_per_owner: 2, max_queued_per_owner: 8 })

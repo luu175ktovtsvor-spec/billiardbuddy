@@ -26,7 +26,14 @@ export type DurableTaskRunApproval = {
   resolved_at?: string
 }
 
-export type DurableTaskRun = { run_id?: unknown; task_id?: unknown; created_at?: unknown; event_contract?: unknown }
+export type DurableTaskRun = {
+  run_id?: unknown
+  task_id?: unknown
+  created_at?: unknown
+  event_contract?: unknown
+  /** A private child Run is not part of the user's serial input queue. */
+  parent_run_id?: unknown
+}
 /**
  * A durable fence written before a Worker is stopped or its scheduler lease is
  * released.  It never claims that the final model output was saved; on a
@@ -244,7 +251,10 @@ export function orderedTaskRunIds(state: AuthorityFile, taskId: string): string[
   }
   return Object.values(state.task_runs)
     .map(value => value as DurableTaskRun)
-    .filter(run => run.task_id === taskId && typeof run.run_id === 'string')
+    // Child Runs have their own scheduler reservation and are awaited through
+    // their parent tool effect. They must not block, or be queued behind, the
+    // user-facing conversation Run that created them.
+    .filter(run => run.task_id === taskId && typeof run.run_id === 'string' && run.parent_run_id === undefined)
     .sort((left, right) => (sequence.get(left.run_id as string) ?? Number.MAX_SAFE_INTEGER) - (sequence.get(right.run_id as string) ?? Number.MAX_SAFE_INTEGER)
       || Date.parse(left.created_at as string) - Date.parse(right.created_at as string)
       || (left.run_id as string).localeCompare(right.run_id as string))

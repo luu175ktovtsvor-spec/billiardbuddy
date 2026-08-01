@@ -51,7 +51,16 @@ export type ProductTaskRunIdentity = {
     lineage_id: string
   }
   codex_engine: CodexEnginePrivateState
+  /** Present only for an internal child Run created by the Subtask tool. */
+  subtask?: {
+    parent_run_id: string
+  }
 }
+
+export type ProductTaskRunSubtaskResult =
+  | { state: 'running' }
+  | { state: 'completed'; text: string }
+  | { state: 'stopped' | 'recovery_required' | 'outcome_unknown'; text?: string }
 
 export type ProductTaskRunCoreBinding = {
   session_id: string
@@ -70,6 +79,27 @@ export type ProductTaskRunCoreBinding = {
  */
 export type ProductTaskRunLedger = {
   readTaskRunDispatchIdentity(runId: string, dispatchGeneration: number): Promise<ProductTaskRunIdentity>
+  /**
+   * Create a private child Run from one claimed parent tool call.  This is the
+   * only Agent subtask constructor: child state never lives in a model loop.
+   */
+  createTaskRunSubtask(input: {
+    parent_run_id: string
+    parent_dispatch_generation: number
+    parent_execution_claim_token: string
+    parent_operation_id: string
+    parent_tool_call_id: string
+    prompt: string
+    description: string
+  }): Promise<{ run_id: string; dispatch_generation: number }>
+  readTaskRunSubtaskResult(input: {
+    parent_run_id: string
+    parent_dispatch_generation: number
+    parent_execution_claim_token: string
+    parent_operation_id: string
+    parent_tool_call_id: string
+    run_id: string
+  }): Promise<ProductTaskRunSubtaskResult>
   assertTaskRunExecutionClaim(runId: string, dispatchGeneration: number, executionClaimToken: string): Promise<void>
   resolveTaskRunCoreBinding(runId: string, dispatchGeneration: number, executionClaimToken: string): Promise<ProductTaskRunCoreBinding>
   beginTaskRunExternalOperation(

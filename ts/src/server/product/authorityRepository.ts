@@ -49,7 +49,7 @@ export type WorkspaceRecord = {
 export type AuthorityFile = {
   version: 1
   /** v1 files predate the additive workspace capability maps. */
-  authority_schema_revision: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9
+  authority_schema_revision: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10
   revision: number
   event_sequence: number
   tasks: Record<string, unknown>
@@ -106,7 +106,7 @@ function map(value: unknown): Record<string, unknown> {
 function empty(): AuthorityFile {
   return {
     version: 1,
-    authority_schema_revision: 9,
+    authority_schema_revision: 10,
     revision: 0,
     event_sequence: 0,
     tasks: Object.create(null),
@@ -353,7 +353,7 @@ function validateReviewComment(value: unknown, key: string): void {
 
 function validate(file: AuthorityFile): AuthorityFile {
   if (file.version !== 1 || !Number.isSafeInteger(file.revision) || file.revision < 0 || !Number.isSafeInteger(file.event_sequence) || file.event_sequence < 0) invalid()
-  if (![1, 2, 3, 4, 5, 6, 7, 8, 9].includes(file.authority_schema_revision)) throw new Error('UNSUPPORTED_SCHEMA')
+  if (![1, 2, 3, 4, 5, 6, 7, 8, 9, 10].includes(file.authority_schema_revision)) throw new Error('UNSUPPORTED_SCHEMA')
   const maps = ['tasks', 'side_tasks', 'bindings', 'receipts', 'events', 'outbox', 'prepared', 'provenance'] as const
   for (const name of maps) map(file[name])
   if (file.authority_schema_revision >= 2) {
@@ -370,7 +370,49 @@ function validate(file: AuthorityFile): AuthorityFile {
         exactKeys(entry, ['entry_id', 'task_id', 'run_id', 'text', 'created_at'], ['reference_entry_ids', 'core_session_id', 'core_message_id'])
         if (entry.entry_id !== key || !requiredString(entry.task_id) || !requiredString(entry.run_id) || typeof entry.text !== 'string' || !isTimestamp(entry.created_at) || ((entry.core_session_id !== undefined || entry.core_message_id !== undefined) && (!requiredString(entry.core_session_id) || !requiredString(entry.core_message_id))) || (entry.reference_entry_ids !== undefined && (!Array.isArray(entry.reference_entry_ids) || entry.reference_entry_ids.length > 8 || new Set(entry.reference_entry_ids).size !== entry.reference_entry_ids.length || entry.reference_entry_ids.some(id => typeof id !== 'string' || !/^thread_[a-f0-9]{20}$/.test(id))))) invalid()
       }
-      for (const [key, value] of Object.entries(file.task_runs)) { const run = object(value); assertAuthorityMapKey(key); exactKeys(run, ['run_id', 'task_id', 'lineage_id', 'entry_id', 'created_at', 'execution_capability', 'permission_mode', 'provider', 'model'], ['permission_snapshot', 'core_binding', 'event_contract', 'extension_snapshot', 'model_route_fingerprint']); const binding = run.core_binding === undefined ? undefined : object(run.core_binding); if (binding) exactKeys(binding, ['resume_binding_id', 'session_id', 'work_dir', 'dispatch_generation'], ['context_event_sequence']); const extension = run.extension_snapshot === undefined ? undefined : object(run.extension_snapshot); if (extension) { exactKeys(extension, ['digest', 'tool_count', 'command_count', 'mcp_server_count']); if (typeof extension.digest !== 'string' || !/^[a-f0-9]{64}$/.test(extension.digest) || [extension.tool_count, extension.command_count, extension.mcp_server_count].some(count => !Number.isSafeInteger(count) || (count as number) < 0 || (count as number) > 10_000)) invalid() }; if (run.run_id !== key || !requiredString(run.task_id) || !requiredString(run.lineage_id) || !requiredString(run.entry_id) || !isTimestamp(run.created_at) || !['installation_default_denied', 'workspace_bound'].includes(run.execution_capability as string) || (run.permission_mode !== null && typeof run.permission_mode !== 'string') || (run.permission_snapshot !== undefined && (!isProductPermissionSnapshot(run.permission_snapshot) || run.permission_mode !== run.permission_snapshot.mode)) || (run.provider !== null && typeof run.provider !== 'string') || (run.model !== null && typeof run.model !== 'string') || (run.model_route_fingerprint !== undefined && (typeof run.model_route_fingerprint !== 'string' || !/^[a-f0-9]{64}$/.test(run.model_route_fingerprint))) || (run.event_contract !== undefined && run.event_contract !== 'durable_items_v1') || (binding && (!requiredString(binding.resume_binding_id) || !requiredString(binding.session_id) || typeof binding.work_dir !== 'string' || !Number.isSafeInteger(binding.dispatch_generation) || (binding.dispatch_generation as number) < 1 || (binding.context_event_sequence !== undefined && (!Number.isSafeInteger(binding.context_event_sequence) || (binding.context_event_sequence as number) < 0))))) invalid() }
+      for (const [key, value] of Object.entries(file.task_runs)) {
+        const run = object(value)
+        assertAuthorityMapKey(key)
+        exactKeys(run, ['run_id', 'task_id', 'lineage_id', 'entry_id', 'created_at', 'execution_capability', 'permission_mode', 'provider', 'model'], ['permission_snapshot', 'core_binding', 'event_contract', 'extension_snapshot', 'model_route_fingerprint', 'parent_run_id', 'parent_tool_call_id', 'subtask_description', 'subtask_prompt_digest', 'subtask_result'])
+        const binding = run.core_binding === undefined ? undefined : object(run.core_binding)
+        if (binding) exactKeys(binding, ['resume_binding_id', 'session_id', 'work_dir', 'dispatch_generation'], ['context_event_sequence'])
+        const extension = run.extension_snapshot === undefined ? undefined : object(run.extension_snapshot)
+        if (extension) {
+          exactKeys(extension, ['digest', 'tool_count', 'command_count', 'mcp_server_count'])
+          if (typeof extension.digest !== 'string' || !/^[a-f0-9]{64}$/.test(extension.digest) || [extension.tool_count, extension.command_count, extension.mcp_server_count].some(count => !Number.isSafeInteger(count) || (count as number) < 0 || (count as number) > 10_000)) invalid()
+        }
+        const subtaskResult = run.subtask_result === undefined ? undefined : object(run.subtask_result)
+        if (subtaskResult) {
+          exactKeys(subtaskResult, ['state', 'text', 'completed_at'])
+          if (!['completed', 'stopped', 'recovery_required'].includes(subtaskResult.state as string) || typeof subtaskResult.text !== 'string' || (subtaskResult.text as string).length > 100_000 || !isTimestamp(subtaskResult.completed_at)) invalid()
+        }
+        const subtaskFields = [run.parent_run_id, run.parent_tool_call_id, run.subtask_description, run.subtask_prompt_digest]
+        const isSubtask = subtaskFields.some(field => field !== undefined)
+        if (
+          run.run_id !== key
+          || !requiredString(run.task_id)
+          || !requiredString(run.lineage_id)
+          || !requiredString(run.entry_id)
+          || !isTimestamp(run.created_at)
+          || !['installation_default_denied', 'workspace_bound'].includes(run.execution_capability as string)
+          || (run.permission_mode !== null && typeof run.permission_mode !== 'string')
+          || (run.permission_snapshot !== undefined && (!isProductPermissionSnapshot(run.permission_snapshot) || run.permission_mode !== run.permission_snapshot.mode))
+          || (run.provider !== null && typeof run.provider !== 'string')
+          || (run.model !== null && typeof run.model !== 'string')
+          || (run.model_route_fingerprint !== undefined && (typeof run.model_route_fingerprint !== 'string' || !/^[a-f0-9]{64}$/.test(run.model_route_fingerprint)))
+          || (run.event_contract !== undefined && run.event_contract !== 'durable_items_v1')
+          || (binding && (!requiredString(binding.resume_binding_id) || !requiredString(binding.session_id) || typeof binding.work_dir !== 'string' || !Number.isSafeInteger(binding.dispatch_generation) || (binding.dispatch_generation as number) < 1 || (binding.context_event_sequence !== undefined && (!Number.isSafeInteger(binding.context_event_sequence) || (binding.context_event_sequence as number) < 0))))
+          || (isSubtask && (
+            file.authority_schema_revision < 10
+            ||
+            typeof run.parent_run_id !== 'string' || !/^run_[a-f0-9-]{36}$/.test(run.parent_run_id)
+            || typeof run.parent_tool_call_id !== 'string' || !/^[A-Za-z0-9_-]{1,512}$/.test(run.parent_tool_call_id)
+            || typeof run.subtask_description !== 'string' || !run.subtask_description.trim() || run.subtask_description.length > 160
+            || typeof run.subtask_prompt_digest !== 'string' || !/^[a-f0-9]{64}$/.test(run.subtask_prompt_digest)
+          ))
+          || (!isSubtask && subtaskResult !== undefined)
+        ) invalid()
+      }
       for (const [key, value] of Object.entries(file.dispatch_records)) {
         const dispatch = object(value)
         assertAuthorityMapKey(key)
@@ -637,8 +679,8 @@ export class ProductTaskAuthorityRepository {
       const parsed = JSON.parse(await fs.readFile(this.authorityPath, 'utf8')) as Partial<AuthorityFile>
       const root = object(parsed)
       const revision = root.authority_schema_revision
-      if (revision !== undefined && ![1, 2, 3, 4, 5, 6, 7, 8, 9].includes(revision as number)) throw new Error('UNSUPPORTED_SCHEMA')
-      if (revision === 9 || revision === 8) {
+      if (revision !== undefined && ![1, 2, 3, 4, 5, 6, 7, 8, 9, 10].includes(revision as number)) throw new Error('UNSUPPORTED_SCHEMA')
+      if (revision === 10 || revision === 9 || revision === 8) {
         exactKeys(root, ['version', 'authority_schema_revision', 'revision', 'event_sequence', 'tasks', 'side_tasks', 'bindings', 'receipts', 'events', 'outbox', 'prepared', 'provenance', 'workspaces', 'task_scopes', 'composer_drafts', 'task_attachments', 'conversation_lineages', 'thread_entries', 'task_runs', 'dispatch_records', 'task_events', 'attachment_bindings', 'review_comments', 'turn_input_queue', 'context_snapshots', 'product_projects', 'product_directories'])
       } else if (revision === 7 || revision === 6) {
         exactKeys(root, ['version', 'authority_schema_revision', 'revision', 'event_sequence', 'tasks', 'side_tasks', 'bindings', 'receipts', 'events', 'outbox', 'prepared', 'provenance', 'workspaces', 'task_scopes', 'composer_drafts', 'task_attachments', 'conversation_lineages', 'thread_entries', 'task_runs', 'dispatch_records', 'task_events', 'attachment_bindings', 'review_comments', 'turn_input_queue', 'context_snapshots'])
@@ -675,7 +717,7 @@ export class ProductTaskAuthorityRepository {
           thread_entries: Object.create(null), task_runs: Object.create(null), dispatch_records: Object.create(null), task_events: Object.create(null), attachment_bindings: Object.create(null), review_comments: Object.create(null), turn_input_queue: Object.create(null), context_snapshots: Object.create(null),
         })
       }
-      if (revision !== 9 && revision !== 8) {
+      if (revision !== 10 && revision !== 9 && revision !== 8) {
         Object.assign(root, {
           product_projects: Object.create(null),
           product_directories: Object.create(null),
@@ -684,7 +726,7 @@ export class ProductTaskAuthorityRepository {
       // Rev9 replaces a single live effect with a bounded list.  Reads upgrade
       // only the in-memory projection; the durable shape changes on the next
       // submit transaction, never as a side effect of inspection.
-      if (revision !== 9) {
+      if (revision !== 10 && revision !== 9) {
         const dispatches = root.dispatch_records
         if (dispatches && typeof dispatches === 'object' && !Array.isArray(dispatches)) {
           for (const value of Object.values(dispatches as Record<string, unknown>)) {

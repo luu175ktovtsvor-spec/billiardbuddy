@@ -12,6 +12,7 @@ import {
 } from '../agent-worker/productLifecycleHooks.js'
 import { createProductHookSnapshot } from '../agent-worker/productHookSnapshot.js'
 import { productTaskRunFailure } from '../product/taskRunFailure.js'
+import { productTaskActivityKindForTool, productTaskActivitySummary } from '../product/taskEventProjection.js'
 import type { AgentWorkerCore } from '../product/agentWorkerService.js'
 import type { AgentWorkerCoreIdentity } from '../product/agentWorkerSupervisor.js'
 import { resolveManagedCodexEngineCommand } from './codexEngineCommand.js'
@@ -533,7 +534,8 @@ export class CodexEngineWorkerCore implements AgentWorkerCore {
       const operationId = await this.options.parent.beginExternalOperation('tools')
       this.pendingTool = { operation_id: operationId, call_id: callId }
       const activityId = `activity_${createHash('sha256').update(`${this.options.run_id}:${callId}`).digest('hex').slice(0, 32)}`
-      this.emit({ type: 'event', event: 'activity', activity: { id: activityId, kind: 'tool', phase: 'started', summary: '正在执行受管工具' } })
+      const activityKind = productTaskActivityKindForTool(toolName)
+      this.emit({ type: 'event', event: 'activity', activity: { id: activityId, kind: activityKind, phase: 'started', summary: productTaskActivitySummary(activityKind, 'started') } })
       let toolCheckpointed = false
       try {
         const result = await this.options.parent.engineTool(operationId, {
@@ -548,7 +550,8 @@ export class CodexEngineWorkerCore implements AgentWorkerCore {
         await this.options.parent.checkpointExternalOperation(operationId, digest)
         toolCheckpointed = true
         this.pendingTool = undefined
-        this.emit({ type: 'event', event: 'activity', activity: { id: activityId, kind: 'tool', phase: result.is_error ? 'failed' : 'completed', summary: result.is_error ? '受管工具执行失败' : '受管工具已完成' } })
+        const phase = result.is_error ? 'failed' as const : 'completed' as const
+        this.emit({ type: 'event', event: 'activity', activity: { id: activityId, kind: activityKind, phase, summary: productTaskActivitySummary(activityKind, phase) } })
         const postHook = await lifecycleHooks.postTool({
           toolName,
           toolInput: argumentsValue,
@@ -568,7 +571,7 @@ export class CodexEngineWorkerCore implements AgentWorkerCore {
       } catch (error) {
         this.pendingTool = undefined
         if (!toolCheckpointed) await this.options.parent.markExternalOperationUnknown(operationId).catch(() => undefined)
-        this.emit({ type: 'event', event: 'activity', activity: { id: activityId, kind: 'tool', phase: 'failed', summary: toolCheckpointed ? '项目 Hook 未能确认结果' : '受管工具未能确认结果' } })
+        this.emit({ type: 'event', event: 'activity', activity: { id: activityId, kind: activityKind, phase: 'failed', summary: productTaskActivitySummary(activityKind, 'failed') } })
         throw error
       }
     } catch (error) {
