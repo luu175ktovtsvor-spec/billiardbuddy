@@ -32,6 +32,9 @@ export type AgentWorkerCoreIdentity = {
     lineage_id: string
   }
   codex_engine: CodexEnginePrivateState
+  subtask?: {
+    parent_run_id: string
+  }
 }
 
 type DispatchStore = {

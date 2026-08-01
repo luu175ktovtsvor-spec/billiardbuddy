@@ -5,7 +5,7 @@ import type { ProductTaskRuntimeEventPort } from './taskRuntimeEventPort.js'
 import type { ProductTaskRunLedger } from './taskRunLedgerPort.js'
 
 export class ProductTaskWorkerMessageSink {
-  private readonly taskIds = new Map<string, string>()
+  private readonly taskRuns = new Map<string, { taskId: string; isSubtask: boolean }>()
   private readonly startedText = new Set<string>()
   private readonly closed = new Set<string>()
   private readonly textBuffers = new Map<string, string>()
@@ -33,18 +33,22 @@ export class ProductTaskWorkerMessageSink {
 
   private async recordOrdered(runId: string, generation: number, message: Extract<AgentWorkerOutbound, { type: 'event' | 'terminal' | 'steer_consumed' }>, executionClaimToken: string): Promise<void> {
     const key = `${runId}:${generation}`
-    let taskId = this.taskIds.get(key)
-    if (!taskId) {
-      taskId = (await this.tasks.readTaskRunDispatchIdentity(runId, generation)).task_id
-      this.taskIds.set(key, taskId)
+    let taskRun = this.taskRuns.get(key)
+    if (!taskRun) {
+      const identity = await this.tasks.readTaskRunDispatchIdentity(runId, generation)
+      taskRun = { taskId: identity.task_id, isSubtask: identity.subtask !== undefined }
+      this.taskRuns.set(key, taskRun)
     }
+    const { taskId, isSubtask } = taskRun
     if (message.type === 'terminal') {
-      this.flushText(taskId, key, true)
+      this.flushText(taskId, key, true, !isSubtask)
       const recorded = await this.tasks.recordTaskRunTerminalProjection(runId, generation, message.state, this.publishedText.get(key) ?? '', message.failure, executionClaimToken)
-      for (const event of recorded.queue_events) this.runtimeEvents.publish(taskId, event)
-      if (message.state === 'recovery_required') this.runtimeEvents.publish(taskId, { type: 'error', ...(message.failure ?? { code: 'task_failed', retryable: false }) })
-      else this.runtimeEvents.publish(taskId, { type: 'turn_complete' })
-      this.taskIds.delete(key)
+      if (!isSubtask) {
+        for (const event of recorded.queue_events) this.runtimeEvents.publish(taskId, event)
+        if (message.state === 'recovery_required') this.runtimeEvents.publish(taskId, { type: 'error', ...(message.failure ?? { code: 'task_failed', retryable: false }) })
+        else this.runtimeEvents.publish(taskId, { type: 'turn_complete' })
+      }
+      this.taskRuns.delete(key)
       this.startedText.delete(key)
       this.textBuffers.delete(key)
       this.pendingSeparators.delete(key)
@@ -58,12 +62,12 @@ export class ProductTaskWorkerMessageSink {
       return
     }
     if (message.event === 'started') {
-      this.runtimeEvents.publish(taskId, { type: 'status', state: 'working' })
+      if (!isSubtask) this.runtimeEvents.publish(taskId, { type: 'status', state: 'working' })
       return
     }
     if (message.event === 'context_compaction') {
       const recorded = await this.tasks.recordTaskRunContextCompaction(runId, generation, message, executionClaimToken)
-      this.runtimeEvents.publish(taskId, recorded.event)
+      if (!isSubtask) this.runtimeEvents.publish(taskId, recorded.event)
       return
     }
     if (message.event === 'approval') {
@@ -100,6 +104,8 @@ export class ProductTaskWorkerMessageSink {
         message.questions,
         executionClaimToken,
       )
+      // A child may legitimately need one user answer; hiding it would leave
+      // the durable child Run waiting forever behind its parent tool call.
       this.runtimeEvents.publish(taskId, recorded.event)
       return
     }
@@ -114,12 +120,12 @@ export class ProductTaskWorkerMessageSink {
     }
     if (message.event === 'activity') {
       const recorded = await this.tasks.recordTaskRunActivity(runId, generation, { type: 'activity', ...message.activity }, executionClaimToken)
-      this.runtimeEvents.publish(taskId, recorded.event)
+      if (!isSubtask) this.runtimeEvents.publish(taskId, recorded.event)
       return
     }
     if (message.event === 'plan_updated') {
       const recorded = await this.tasks.recordTaskRunPlan(runId, generation, message.plan, executionClaimToken)
-      this.runtimeEvents.publish(taskId, recorded.event)
+      if (!isSubtask) this.runtimeEvents.publish(taskId, recorded.event)
       return
     }
     if (message.event !== 'delta' || !message.data) return
@@ -128,20 +134,21 @@ export class ProductTaskWorkerMessageSink {
       if (boundary < 0) return
       this.droppingTokens.delete(key)
       this.textBuffers.set(key, message.data.slice(boundary + 1))
-      this.flushText(taskId, key, false)
+      this.flushText(taskId, key, false, !isSubtask)
       return
     }
     const buffered = `${this.textBuffers.get(key) ?? ''}${message.data}`
     this.textBuffers.set(key, buffered)
-    this.flushText(taskId, key, false)
+    this.flushText(taskId, key, false, !isSubtask)
   }
 
-  private publishText(taskId: string, key: string, text: string): void {
+  private publishText(taskId: string, key: string, text: string, publish: boolean): void {
     if (!text) return
     const current = this.publishedText.get(key) ?? ''
     const visible = text.slice(0, Math.max(0, 100_000 - current.length))
     if (!visible) return
     this.publishedText.set(key, `${current}${visible}`)
+    if (!publish) return
     if (!this.startedText.has(key)) {
       this.startedText.add(key)
       this.runtimeEvents.publish(taskId, { type: 'assistant_text_start' })
@@ -154,7 +161,7 @@ export class ProductTaskWorkerMessageSink {
     }
   }
 
-  private flushText(taskId: string, key: string, terminal: boolean): void {
+  private flushText(taskId: string, key: string, terminal: boolean, publish: boolean): void {
     const buffered = this.textBuffers.get(key) ?? ''
     let cutoff = terminal ? buffered.length : -1
     if (!terminal) {
@@ -173,7 +180,7 @@ export class ProductTaskWorkerMessageSink {
     this.textBuffers.set(key, buffered.slice(cutoff))
     const safe = sanitizeProductTaskVisibleText(raw)
     if (safe) {
-      this.publishText(taskId, key, `${this.pendingSeparators.get(key) ?? ''}${safe}`)
+      this.publishText(taskId, key, `${this.pendingSeparators.get(key) ?? ''}${safe}`, publish)
     }
     const boundary = raw.at(-1)
     if (boundary && /\s/.test(boundary)) {

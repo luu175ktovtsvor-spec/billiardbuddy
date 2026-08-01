@@ -2284,7 +2284,7 @@ export class ProductTaskService {
     if (!runId || !Number.isSafeInteger(dispatchGeneration) || dispatchGeneration < 1 || !['completed', 'stopped', 'recovery_required'].includes(terminalState) || assistantText.length > MAX_DURABLE_ASSISTANT_TEXT_LENGTH || (failure !== undefined && (!isProductTaskRunFailureCode(failure.code) || failure.retryable !== productTaskRunFailure(failure.code).retryable)) || (terminalState !== 'recovery_required' && failure !== undefined) || !isExecutionClaimToken(executionClaimToken)) throw new Error('AUTHORITY_INVALID')
     const authority = new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps)
     const { result } = await authority.transactSubmit((state) => {
-      const run = state.task_runs[runId] as { task_id?: unknown; event_contract?: unknown } | undefined
+      const run = state.task_runs[runId] as { task_id?: unknown; event_contract?: unknown; parent_run_id?: unknown; subtask_result?: unknown } | undefined
       const dispatch = state.dispatch_records[runId] as { dispatch_generation?: unknown; state?: unknown; completed_at?: unknown; error?: unknown; execution_claim?: unknown; external_operations?: unknown } | undefined
       if (!run || typeof run.task_id !== 'string' || !dispatch || dispatch.dispatch_generation !== dispatchGeneration) throw new Error('AUTHORITY_INVALID')
       const events = Object.values(state.task_events).map(value => value as TaskEvent)
@@ -2293,7 +2293,14 @@ export class ProductTaskService {
       if (priorTerminal) {
         const expectedDispatchState = terminalState === 'recovery_required' ? 'recovery_required' : 'terminal'
         const expectedError = terminalState === 'completed' ? 'TERMINAL' : terminalState === 'stopped' ? 'STOPPED' : failure?.code ?? 'task_failed'
-        if (priorTerminal.state !== terminalState || (priorAssistant?.text ?? '') !== assistantText || dispatch.state !== expectedDispatchState || dispatch.error !== expectedError) throw new Error('AUTHORITY_INVALID')
+        const priorSubtask = run.parent_run_id === undefined ? undefined : run.subtask_result as { state?: unknown; text?: unknown } | undefined
+        if (
+          priorTerminal.state !== terminalState
+          || (priorAssistant?.text ?? '') !== assistantText
+          || dispatch.state !== expectedDispatchState
+          || dispatch.error !== expectedError
+          || (run.parent_run_id !== undefined && (!priorSubtask || priorSubtask.state !== terminalState || priorSubtask.text !== assistantText))
+        ) throw new Error('AUTHORITY_INVALID')
         return { changed: false as const, value: { task_id: run.task_id as string, queue_events: [] as ProductTaskEvent[] } }
       }
       if (!['claimed', 'started'].includes(dispatch.state as string) || liveExternalOperations(dispatch).length > 0 || !executionClaimMatches(dispatch, executionClaimToken)) throw new Error('AUTHORITY_INVALID')
@@ -2347,6 +2354,9 @@ export class ProductTaskService {
       dispatch.state = terminalState === 'recovery_required' ? 'recovery_required' : 'terminal'
       dispatch.completed_at = now
       dispatch.error = terminalState === 'completed' ? 'TERMINAL' : terminalState === 'stopped' ? 'STOPPED' : failure?.code ?? 'task_failed'
+      if (typeof run.parent_run_id === 'string') {
+        run.subtask_result = { state: terminalState, text: assistantText, completed_at: now }
+      }
       delete (dispatch as { execution_claim?: unknown }).execution_claim
       delete (dispatch as { recovery_fence?: unknown }).recovery_fence
       delete (dispatch as { stop_requested_at?: unknown }).stop_requested_at
@@ -2720,9 +2730,15 @@ export class ProductTaskService {
     const authority = new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps)
     const state = await authority.read()
     if (!state.tasks[taskId]) throw ApiError.notFound('任务不存在')
+    const privateSubtaskRuns = new Set(
+      Object.values(state.task_runs)
+        .map(run => run as { run_id?: unknown; parent_run_id?: unknown })
+        .filter((run): run is { run_id: string; parent_run_id: string } => typeof run.run_id === 'string' && typeof run.parent_run_id === 'string')
+        .map(run => run.run_id),
+    )
     const matchingEvents = Object.values(state.task_events)
       .map((event) => event as TaskEvent)
-      .filter((event) => event.task_id === taskId && event.event_sequence > afterEventSequence)
+      .filter((event) => event.task_id === taskId && event.event_sequence > afterEventSequence && (!('run_id' in event) || !privateSubtaskRuns.has(event.run_id)))
       .sort((left, right) => left.event_sequence - right.event_sequence)
     const durableEvents = matchingEvents.slice(0, limit)
     const hasMore = matchingEvents.length > durableEvents.length
@@ -2770,6 +2786,7 @@ export class ProductTaskService {
     const run = state.task_runs[runId] as DurableTaskRun | undefined
     const dispatch = state.dispatch_records[runId] as DurableTaskRunDispatch | undefined
     if (typeof run?.task_id !== 'string' || dispatch?.dispatch_generation !== dispatchGeneration || dispatch.state !== 'pending') throw new Error('AUTHORITY_INVALID')
+    if (typeof run.parent_run_id === 'string') return 'ready'
     return nextTaskRunId(state, run.task_id) === runId ? 'ready' : 'queued'
   }
 
@@ -2780,7 +2797,7 @@ export class ProductTaskService {
     const binding = productTextReasoningBinding()
     const authority = new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps)
     const { result } = await authority.transactSubmit((state) => {
-      const run = state.task_runs[runId] as { task_id?: unknown; provider?: unknown; model?: unknown; model_route_fingerprint?: unknown } | undefined
+      const run = state.task_runs[runId] as { task_id?: unknown; provider?: unknown; model?: unknown; model_route_fingerprint?: unknown; parent_run_id?: unknown } | undefined
       const dispatch = state.dispatch_records[runId] as {
         dispatch_generation?: unknown
         state?: unknown
@@ -2801,7 +2818,7 @@ export class ProductTaskService {
         return { changed: false as const, value: { outcome: 'recovery_required' as const, task_id: run.task_id } }
       }
       if (dispatch.state === 'pending') {
-        if (nextTaskRunId(state, run.task_id) !== runId) return { changed: false as const, value: { outcome: 'queued' as const, task_id: run.task_id } }
+        if (run.parent_run_id === undefined && nextTaskRunId(state, run.task_id) !== runId) return { changed: false as const, value: { outcome: 'queued' as const, task_id: run.task_id } }
         run.provider = binding.provider
         run.model = binding.model
         run.model_route_fingerprint = binding.fingerprint
@@ -3174,6 +3191,172 @@ export class ProductTaskService {
     this.taskRunQueueRecoveryRetry = timer
   }
 
+  /**
+   * Materialize one bounded Agent child as its own private Run and Lineage.
+   * The parent tool call is the only creator; the child never shares the
+   * parent's Thread, execution claim, model receipt, or visible transcript.
+   */
+  async createTaskRunSubtask(input: {
+    parent_run_id: string
+    parent_dispatch_generation: number
+    parent_execution_claim_token: string
+    parent_operation_id: string
+    parent_tool_call_id: string
+    prompt: string
+    description: string
+  }): Promise<{ run_id: string; dispatch_generation: number }> {
+    if (
+      !/^run_[a-f0-9-]{36}$/.test(input.parent_run_id)
+      || !Number.isSafeInteger(input.parent_dispatch_generation)
+      || input.parent_dispatch_generation < 1
+      || !isExecutionClaimToken(input.parent_execution_claim_token)
+      || !isTaskRunExternalOperationId(input.parent_operation_id)
+      || !/^[A-Za-z0-9_-]{1,512}$/.test(input.parent_tool_call_id)
+      || !input.prompt.trim() || input.prompt.length > 100_000
+      || !input.description.trim() || input.description.length > 160
+    ) throw new Error('SUBTASK_INPUT_INVALID')
+
+    const promptDigest = createHash('sha256').update(input.prompt).digest('hex')
+    const authority = new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps)
+    const { result } = await authority.transactSubmit((state) => {
+      const parent = state.task_runs[input.parent_run_id] as Record<string, unknown> | undefined
+      const parentDispatch = state.dispatch_records[input.parent_run_id] as DurableTaskRunDispatch | undefined
+      const parentBinding = parent?.core_binding as Record<string, unknown> | undefined
+      if (
+        !parent
+        || typeof parent.task_id !== 'string'
+        || typeof parent.parent_run_id === 'string'
+        || !parentDispatch
+        || parentDispatch.dispatch_generation !== input.parent_dispatch_generation
+        || !['claimed', 'started'].includes(parentDispatch.state as string)
+        || !executionClaimMatches(parentDispatch, input.parent_execution_claim_token)
+        || parentDispatch.recovery_fence !== undefined
+        || parentDispatch.stop_requested_at !== undefined
+        || !liveExternalOperations(parentDispatch).some(operation => operation.operation_id === input.parent_operation_id && operation.kind === 'tools' && operation.state === 'in_flight')
+        || !parentBinding
+        || typeof parentBinding.work_dir !== 'string'
+        || !path.isAbsolute(parentBinding.work_dir)
+      ) throw new Error('SUBTASK_PARENT_UNAVAILABLE')
+
+      const existing = Object.values(state.task_runs)
+        .map(value => value as Record<string, unknown>)
+        .find(run => run.parent_run_id === input.parent_run_id && run.parent_tool_call_id === input.parent_tool_call_id)
+      if (existing) {
+        if (
+          typeof existing.run_id !== 'string'
+          || existing.subtask_prompt_digest !== promptDigest
+          || existing.subtask_description !== input.description
+          || (state.dispatch_records[existing.run_id] as { dispatch_generation?: unknown } | undefined)?.dispatch_generation !== 1
+        ) throw new Error('SUBTASK_CALL_CONFLICT')
+        return { changed: false as const, value: { run_id: existing.run_id, dispatch_generation: 1 } }
+      }
+      const childCount = Object.values(state.task_runs)
+        .filter(value => (value as { parent_run_id?: unknown }).parent_run_id === input.parent_run_id)
+        .length
+      if (childCount >= 16) throw new Error('SUBTASK_LIMIT_REACHED')
+
+      const now = this.now().toISOString()
+      const runId = `run_${randomUUID()}`
+      const entryId = `entry_${randomUUID()}`
+      const lineageId = `lineage_${randomUUID()}`
+      const permissionSnapshot = taskPermissionSnapshot(parent.permission_snapshot)
+      const taskId = parent.task_id
+      // The private-child fields are the rev10 authority extension. Upgrade
+      // atomically with the first child so older readers never see a new
+      // record shape under a stale revision marker.
+      state.authority_schema_revision = 10
+      state.conversation_lineages[lineageId] = {
+        lineage_id: lineageId,
+        product_task_id: taskId,
+        revision: 0,
+        compact_generation: 0,
+        resume_binding_id: `resume_${randomUUID()}`,
+        execution_directory: parentBinding.work_dir,
+        state: 'active',
+        created_at: now,
+        updated_at: now,
+      }
+      state.thread_entries[entryId] = {
+        entry_id: entryId,
+        task_id: taskId,
+        run_id: runId,
+        text: input.prompt,
+        created_at: now,
+      }
+      state.task_runs[runId] = {
+        run_id: runId,
+        task_id: taskId,
+        lineage_id: lineageId,
+        entry_id: entryId,
+        created_at: now,
+        execution_capability: 'workspace_bound',
+        permission_mode: permissionSnapshot.mode,
+        permission_snapshot: permissionSnapshot,
+        provider: null,
+        model: null,
+        event_contract: 'durable_items_v1',
+        parent_run_id: input.parent_run_id,
+        parent_tool_call_id: input.parent_tool_call_id,
+        subtask_description: input.description,
+        subtask_prompt_digest: promptDigest,
+        core_binding: {
+          resume_binding_id: (state.conversation_lineages[lineageId] as { resume_binding_id: string }).resume_binding_id,
+          session_id: randomUUID(),
+          work_dir: parentBinding.work_dir,
+          dispatch_generation: 1,
+          context_event_sequence: state.event_sequence,
+        },
+      }
+      state.dispatch_records[runId] = { run_id: runId, dispatch_generation: 1, state: 'pending' }
+      return { run_id: runId, dispatch_generation: 1 }
+    })
+    return result
+  }
+
+  /** Read one parent-owned child Run without exposing it to the public task stream. */
+  async readTaskRunSubtaskResult(input: {
+    parent_run_id: string
+    parent_dispatch_generation: number
+    parent_execution_claim_token: string
+    parent_operation_id: string
+    parent_tool_call_id: string
+    run_id: string
+  }): Promise<import('./taskRunLedgerPort.js').ProductTaskRunSubtaskResult> {
+    if (
+      !/^run_[a-f0-9-]{36}$/.test(input.parent_run_id)
+      || !/^run_[a-f0-9-]{36}$/.test(input.run_id)
+      || !Number.isSafeInteger(input.parent_dispatch_generation)
+      || input.parent_dispatch_generation < 1
+      || !isExecutionClaimToken(input.parent_execution_claim_token)
+      || !isTaskRunExternalOperationId(input.parent_operation_id)
+      || !/^[A-Za-z0-9_-]{1,512}$/.test(input.parent_tool_call_id)
+    ) throw new Error('SUBTASK_INPUT_INVALID')
+    const state = await new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps).read()
+    const parentDispatch = state.dispatch_records[input.parent_run_id] as DurableTaskRunDispatch | undefined
+    const child = state.task_runs[input.run_id] as Record<string, unknown> | undefined
+    const dispatch = state.dispatch_records[input.run_id] as DurableTaskRunDispatch | undefined
+    if (
+      !parentDispatch
+      || parentDispatch.dispatch_generation !== input.parent_dispatch_generation
+      || !['claimed', 'started'].includes(parentDispatch.state as string)
+      || !executionClaimMatches(parentDispatch, input.parent_execution_claim_token)
+      || !liveExternalOperations(parentDispatch).some(operation => operation.operation_id === input.parent_operation_id && operation.kind === 'tools' && operation.state === 'in_flight')
+      || !child
+      || child.parent_run_id !== input.parent_run_id
+      || child.parent_tool_call_id !== input.parent_tool_call_id
+      || !dispatch
+    ) throw new Error('SUBTASK_PARENT_UNAVAILABLE')
+    if (['pending', 'claimed', 'started'].includes(dispatch.state as string)) return { state: 'running' }
+    const result = child.subtask_result as { state?: unknown; text?: unknown } | undefined
+    if (dispatch.state === 'terminal') {
+      if (!result || result.state !== (dispatch.error === 'TERMINAL' ? 'completed' : 'stopped') || typeof result.text !== 'string') throw new Error('SUBTASK_RESULT_UNAVAILABLE')
+      return result.state === 'completed' ? { state: 'completed', text: result.text } : { state: 'stopped', text: result.text }
+    }
+    if (dispatch.state === 'recovery_required') return { state: 'recovery_required', ...(typeof result?.text === 'string' ? { text: result.text } : {}) }
+    if (dispatch.state === 'outcome_unknown') return { state: 'outcome_unknown' }
+    throw new Error('SUBTASK_RESULT_UNAVAILABLE')
+  }
+
   /** Server-private BB-03D/BB-05B lookup; it reads the durable hand-off only. */
   async readTaskRunDispatchIdentity(runId: string, dispatchGeneration: number): Promise<{
     task_id: string
@@ -3202,7 +3385,7 @@ export class ProductTaskService {
     }
   }> {
     const state = await new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps).read()
-    const run = state.task_runs[runId] as { task_id?: unknown; lineage_id?: unknown; entry_id?: unknown; permission_snapshot?: unknown } | undefined
+    const run = state.task_runs[runId] as { task_id?: unknown; lineage_id?: unknown; entry_id?: unknown; permission_snapshot?: unknown; parent_run_id?: unknown } | undefined
     const dispatch = state.dispatch_records[runId] as { dispatch_generation?: unknown } | undefined
     const lineage = typeof run?.lineage_id === 'string' ? state.conversation_lineages[run.lineage_id] as Record<string, unknown> | undefined : undefined
     const entry = typeof run?.entry_id === 'string' ? state.thread_entries[run.entry_id] as { task_id?: unknown; run_id?: unknown; text?: unknown } | undefined : undefined
@@ -3230,6 +3413,7 @@ export class ProductTaskService {
       session_context: sessionContext,
       harness_session: { storage_dir: this.harnessSessionStorageDir(), binding_id: resumeBindingId, lineage_id: run.lineage_id },
       codex_engine: codexEnginePrivateState(this.storagePath, resumeBindingId, run.lineage_id),
+      ...(typeof run.parent_run_id === 'string' ? { subtask: { parent_run_id: run.parent_run_id } } : {}),
     }
   }
 

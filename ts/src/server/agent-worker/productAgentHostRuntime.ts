@@ -22,6 +22,7 @@ import { zodToJsonSchema } from '../../utils/zodToJsonSchema.js'
 import { emptyProductToolPermissionContext, type ProductCommand, type ProductContentBlock, type ProductThinkingConfig, type ProductToolContext, type ProductToolPermissionContext, type ProductTools } from './productTool.js'
 import { buildProductChatPrompt } from './productChatAttachments.js'
 import { getLocalISODate } from '../../constants/common.js'
+import type { ProductAgentSubtaskCoordinator } from './productSubtaskCoordinator.js'
 
 export type ProductHostCommandDescriptor = {
   name: string
@@ -56,6 +57,8 @@ export type ProductHostEngineToolSurface = {
 }
 
 export type ProductHostEngineToolRequest = {
+  /** Server-private ledger effect that owns this source tool call. */
+  parent_operation_id: string
   tool_call_id: string
   tool_name: string
   arguments: Record<string, unknown>
@@ -124,6 +127,9 @@ export class StandardProductAgentHostRuntime implements ProductAgentHostRuntime 
   constructor(private readonly input: {
     work_dir: string
     task_id: string
+    run_id: string
+    dispatch_generation: number
+    execution_claim_token: string
     permission_envelope: PermissionExecutionEnvelope
     mcp_host: ProductTaskMcpHost
     attachment_paths?: readonly string[]
@@ -131,6 +137,9 @@ export class StandardProductAgentHostRuntime implements ProductAgentHostRuntime 
     personal_profile: PersonalModelProfile | null
     managed_transport: TextReasoningTransport | null
     model_attempt_id: string
+    /** Child Runs cannot recursively delegate again. */
+    subtask?: { parent_run_id: string }
+    subtask_coordinator?: ProductAgentSubtaskCoordinator
   }) {
     this.personalProfile = input.personal_profile
     this.managedTransport = input.managed_transport
@@ -259,10 +268,11 @@ export class StandardProductAgentHostRuntime implements ProductAgentHostRuntime 
     this.engineToolSurface ??= (async () => {
       await this.prepare()
       const tools = this.toolsForTurn
-        // Nested model loops require their own Run receipt protocol.  They
-        // stay off this first dynamic surface instead of being silently run
-        // inside a parent source-tool effect.
-        .filter(tool => tool.name !== 'Subtask' && tool.name !== 'TodoWrite' && !tool.name.startsWith('agent__'))
+        // TodoWrite and plugin-owned agent loops still have no independent
+        // Run protocol. Subtask is admitted only through the durable child
+        // Run coordinator, and never from a child Run itself.
+        .filter(tool => tool.name !== 'TodoWrite' && !tool.name.startsWith('agent__'))
+        .filter(tool => tool.name !== 'Subtask' || Boolean(this.input.subtask_coordinator && !this.input.subtask))
         .filter(tool => /^[A-Za-z0-9_-]{1,128}$/.test(tool.name))
         .sort((left, right) => left.name.localeCompare(right.name))
       if (tools.length > 256) throw new Error('CODEX_ENGINE_TOOL_LIMIT')
@@ -292,9 +302,11 @@ export class StandardProductAgentHostRuntime implements ProductAgentHostRuntime 
     const surface = await this.engineTools()
     if (
       !/^[-A-Za-z0-9_]{1,512}$/.test(request.tool_call_id)
+      || !/^effect_[a-f0-9-]{36}$/.test(request.parent_operation_id)
       || !surface.tools.some(tool => tool.name === request.tool_name)
       || request.tool_surface_digest !== surface.digest
     ) throw new Error('CODEX_ENGINE_TOOL_REQUEST_INVALID')
+    if (request.tool_name === 'Subtask') return await this.runEngineSubtask(request)
     const assistant: ProductAssistantMessage = {
       type: 'assistant',
       uuid: randomUUID(),
@@ -321,6 +333,30 @@ export class StandardProductAgentHostRuntime implements ProductAgentHostRuntime 
       is_error: result.is_error === true,
       content: result.content,
     }
+  }
+
+  private async runEngineSubtask(request: ProductHostEngineToolRequest): Promise<ProductHostEngineToolResult> {
+    const coordinator = this.input.subtask_coordinator
+    const keys = Object.keys(request.arguments).sort()
+    const prompt = request.arguments.prompt
+    const description = request.arguments.description
+    if (
+      !coordinator
+      || this.input.subtask
+      || keys.join(',') !== 'description,prompt'
+      || typeof prompt !== 'string' || !prompt.trim() || prompt.length > 100_000
+      || typeof description !== 'string' || !description.trim() || description.length > 160
+    ) throw new Error('SUBTASK_INPUT_INVALID')
+    return await coordinator.run({
+      parent_run_id: this.input.run_id,
+      parent_dispatch_generation: this.input.dispatch_generation,
+      parent_execution_claim_token: this.input.execution_claim_token,
+      parent_operation_id: request.parent_operation_id,
+      parent_tool_call_id: request.tool_call_id,
+      prompt,
+      description,
+      signal: this.controller.signal,
+    })
   }
 
   async tools(request: ProductHostToolRequest): Promise<ProductHarnessMessage[]> {

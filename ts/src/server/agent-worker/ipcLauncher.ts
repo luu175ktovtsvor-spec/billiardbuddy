@@ -361,7 +361,7 @@ export class IpcAgentWorkerLauncher implements AgentWorkerChildLauncher {
         const operationId = value.operation_id
         if (typeof operationId !== 'string' || state.external_operation_states.get(operationId) !== 'in_flight') return { ok: false }
         const { operation_id: _operationId, ...toolRequest } = value
-        return { ok: true, value: await runtime.engineTool(toolRequest as never) }
+        return { ok: true, value: await runtime.engineTool({ ...toolRequest, parent_operation_id: operationId } as never) }
       }
       if (request.operation === 'tools') return { ok: true, value: await withExternalOperation('tools', async () => await runtime.tools(request.value as never)) }
       if (request.operation === 'approval' && request.value && typeof request.value === 'object') {
