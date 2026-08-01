@@ -12,7 +12,7 @@ import {
 } from '../agent-worker/productLifecycleHooks.js'
 import { createProductHookSnapshot } from '../agent-worker/productHookSnapshot.js'
 import { productTaskRunFailure } from '../product/taskRunFailure.js'
-import { productTaskActivityKindForTool, productTaskActivitySummary } from '../product/taskEventProjection.js'
+import { productTaskActivityKindForTool, productTaskActivitySummary, projectProductTaskPlan } from '../product/taskEventProjection.js'
 import type { AgentWorkerCore } from '../product/agentWorkerService.js'
 import type { AgentWorkerCoreIdentity } from '../product/agentWorkerSupervisor.js'
 import { resolveManagedCodexEngineCommand } from './codexEngineCommand.js'
@@ -21,6 +21,7 @@ import { CodexEngineThreadStore } from './codexEngineThreadStore.js'
 import type { CodexAppServerNotification, CodexAppServerRequest, JsonValue } from './codexAppServerClient.js'
 import type { CodexResponsesModelRequest } from './codexResponsesModelBridge.js'
 import type { TaskRunExternalOperationKind } from '../product/taskRunLedgerModel.js'
+import type { ProductTaskPlan } from '../../../shared/product/taskEvents.js'
 
 type CoreBinding = {
   session_id: string
@@ -37,6 +38,8 @@ export type CodexEngineWorkerParentPort = {
   engineTools(): Promise<{ operation_id: string; surface: ProductHostEngineToolSurface }>
   engineModel(operationId: string, request: { messages: CodexResponsesModelRequest['messages']; systemPrompt: string[]; thinkingConfig: CodexResponsesModelRequest['thinking_config']; model?: string; engine_tool_names: string[]; engine_tool_surface_digest: string }): AsyncGenerator<ProductModelEvent, void>
   engineTool(operationId: string, request: { tool_call_id: string; tool_name: string; arguments: Record<string, unknown>; tool_surface_digest: string }): Promise<ProductHostEngineToolResult>
+  /** Persist a TodoWrite projection before the source receives its tool result. */
+  recordPlan(operationId: string, plan: ProductTaskPlan): Promise<void>
   approve(requestId: string, approved: boolean): Promise<void>
   answer(requestId: string, answers: readonly string[]): Promise<void>
   stopHost(): Promise<void>
@@ -506,6 +509,9 @@ export class CodexEngineWorkerCore implements AgentWorkerCore {
       ) throw new Error('CODEX_ENGINE_DYNAMIC_TOOL_INVALID')
       const lifecycleHooks = this.lifecycleHooks
       if (!lifecycleHooks) throw new Error('CODEX_ENGINE_HOOK_RUNTIME_UNAVAILABLE')
+      const activityId = `activity_${createHash('sha256').update(`${this.options.run_id}:${callId}`).digest('hex').slice(0, 32)}`
+      const activityKind = productTaskActivityKindForTool(toolName)
+      const planRelated = toolName.trim().toLowerCase() === 'todowrite'
       const preHook = await lifecycleHooks.preTool({
         toolName,
         toolInput: argumentsValue,
@@ -517,10 +523,10 @@ export class CodexEngineWorkerCore implements AgentWorkerCore {
           type: 'event',
           event: 'activity',
           activity: {
-            id: `activity_${createHash('sha256').update(`${this.options.run_id}:${callId}`).digest('hex').slice(0, 32)}`,
-            kind: 'tool',
+            id: activityId,
+            kind: activityKind,
             phase: 'failed',
-            summary: '项目 Hook 已阻止工具执行',
+            summary: productTaskActivitySummary(activityKind, 'failed', planRelated),
           },
         })
         return {
@@ -533,9 +539,7 @@ export class CodexEngineWorkerCore implements AgentWorkerCore {
       }
       const operationId = await this.options.parent.beginExternalOperation('tools')
       this.pendingTool = { operation_id: operationId, call_id: callId }
-      const activityId = `activity_${createHash('sha256').update(`${this.options.run_id}:${callId}`).digest('hex').slice(0, 32)}`
-      const activityKind = productTaskActivityKindForTool(toolName)
-      this.emit({ type: 'event', event: 'activity', activity: { id: activityId, kind: activityKind, phase: 'started', summary: productTaskActivitySummary(activityKind, 'started') } })
+      this.emit({ type: 'event', event: 'activity', activity: { id: activityId, kind: activityKind, phase: 'started', summary: productTaskActivitySummary(activityKind, 'started', planRelated) } })
       let toolCheckpointed = false
       try {
         const result = await this.options.parent.engineTool(operationId, {
@@ -544,6 +548,13 @@ export class CodexEngineWorkerCore implements AgentWorkerCore {
           arguments: argumentsValue,
           tool_surface_digest: surface.digest,
         })
+        const plan = planRelated && !result.is_error
+          ? projectProductTaskPlan(argumentsValue, this.options.run_id, callId)
+          : null
+        if (planRelated && !result.is_error && !plan) throw new Error('CODEX_ENGINE_PLAN_INVALID')
+        // The product plan must be durable before the source sees a successful
+        // TodoWrite result. It is tied to this exact in-flight tools receipt.
+        if (plan) await this.options.parent.recordPlan(operationId, plan)
         const digest = await this.runtime?.checkpointToolResult(this.options.run_id, operationId, callId, toolResultDigest({ call_id: callId, tool_name: toolName, result }))
         if (!digest) throw new Error('CODEX_ENGINE_TOOL_RUNTIME_UNAVAILABLE')
         await this.options.parent.recordExternalOperationResult(operationId)
@@ -551,7 +562,8 @@ export class CodexEngineWorkerCore implements AgentWorkerCore {
         toolCheckpointed = true
         this.pendingTool = undefined
         const phase = result.is_error ? 'failed' as const : 'completed' as const
-        this.emit({ type: 'event', event: 'activity', activity: { id: activityId, kind: activityKind, phase, summary: productTaskActivitySummary(activityKind, phase) } })
+        if (plan) this.emit({ type: 'event', event: 'plan_updated', plan })
+        this.emit({ type: 'event', event: 'activity', activity: { id: activityId, kind: activityKind, phase, summary: productTaskActivitySummary(activityKind, phase, planRelated) } })
         const postHook = await lifecycleHooks.postTool({
           toolName,
           toolInput: argumentsValue,
@@ -571,7 +583,7 @@ export class CodexEngineWorkerCore implements AgentWorkerCore {
       } catch (error) {
         this.pendingTool = undefined
         if (!toolCheckpointed) await this.options.parent.markExternalOperationUnknown(operationId).catch(() => undefined)
-        this.emit({ type: 'event', event: 'activity', activity: { id: activityId, kind: activityKind, phase: 'failed', summary: productTaskActivitySummary(activityKind, 'failed') } })
+        this.emit({ type: 'event', event: 'activity', activity: { id: activityId, kind: activityKind, phase: 'failed', summary: productTaskActivitySummary(activityKind, 'failed', planRelated) } })
         throw error
       }
     } catch (error) {
@@ -609,12 +621,16 @@ export class CodexEngineWorkerCore implements AgentWorkerCore {
 
   private onHookRun(activity: ProductHookRunActivity): void {
     const id = `activity_${createHash('sha256').update(`${this.options.run_id}:${activity.id}`).digest('hex').slice(0, 32)}`
-    const summary = activity.phase === 'started'
-      ? '正在执行项目 Hook'
-      : activity.phase === 'completed'
-        ? '项目 Hook 已完成'
-        : '项目 Hook 执行失败'
-    this.emit({ type: 'event', event: 'activity', activity: { id, kind: 'automation', phase: activity.phase, summary } })
+    this.emit({
+      type: 'event',
+      event: 'activity',
+      activity: {
+        id,
+        kind: 'automation',
+        phase: activity.phase,
+        summary: productTaskActivitySummary('automation', activity.phase),
+      },
+    })
   }
 
   private onNotification(notification: CodexAppServerNotification): void {

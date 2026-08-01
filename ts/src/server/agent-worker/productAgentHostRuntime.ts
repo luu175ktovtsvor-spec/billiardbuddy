@@ -268,10 +268,10 @@ export class StandardProductAgentHostRuntime implements ProductAgentHostRuntime 
     this.engineToolSurface ??= (async () => {
       await this.prepare()
       const tools = this.toolsForTurn
-        // TodoWrite and plugin-owned agent loops still have no independent
-        // Run protocol. Subtask is admitted only through the durable child
-        // Run coordinator, and never from a child Run itself.
-        .filter(tool => tool.name !== 'TodoWrite' && !tool.name.startsWith('agent__'))
+        // Plugin-owned agent loops still have no independent Run protocol.
+        // TodoWrite is a normal Host tool whose accepted result is projected
+        // synchronously by the source Core before that result is acknowledged.
+        .filter(tool => !tool.name.startsWith('agent__'))
         .filter(tool => tool.name !== 'Subtask' || Boolean(this.input.subtask_coordinator && !this.input.subtask))
         .filter(tool => /^[A-Za-z0-9_-]{1,128}$/.test(tool.name))
         .sort((left, right) => left.name.localeCompare(right.name))

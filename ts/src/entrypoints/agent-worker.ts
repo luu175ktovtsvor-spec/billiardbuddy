@@ -16,6 +16,7 @@ import type { AgentWorkerCoreIdentity } from '../server/product/agentWorkerSuper
 import type { ProductAgentHarnessPort } from '../server/agent-worker/productAgentHarness.js'
 import { CodexEngineWorkerCore } from '../server/agent-engine/codexEngineWorkerCore.js'
 import type { ProductAssistantMessage, ProductHarnessMessage, ProductModelEvent, ProductPrompt, ProductToolCallBlock } from '../../shared/product/harnessMessages.js'
+import type { ProductTaskPlan } from '../../shared/product/taskEvents.js'
 import type { AgentWorkerOutbound } from '../../shared/product/agentWorker.js'
 import type { ProductCanUseTool, ProductCommand, ProductContentBlock, ProductThinkingConfig, ProductTool, ProductToolContext } from '../server/agent-worker/productTool.js'
 
@@ -24,7 +25,7 @@ type StartResult = { identity: AgentWorkerCoreIdentity; binding: CoreBinding }
 type CoreRequest = {
   type: 'core_request'
   id: string
-  operation: 'start' | 'prepare' | 'command_prompt' | 'chat_prompt' | 'model' | 'engine_tools' | 'engine_model' | 'engine_tool' | 'tools' | 'approval' | 'question' | 'stop' | 'shutdown' | 'external_operation_begin' | 'external_operation_result' | 'external_operation_checkpoint' | 'external_operation_mcp_checkpoint' | 'external_operation_unknown'
+  operation: 'start' | 'prepare' | 'command_prompt' | 'chat_prompt' | 'model' | 'engine_tools' | 'engine_model' | 'engine_tool' | 'plan' | 'tools' | 'approval' | 'question' | 'stop' | 'shutdown' | 'external_operation_begin' | 'external_operation_result' | 'external_operation_checkpoint' | 'external_operation_mcp_checkpoint' | 'external_operation_unknown'
   execution_claim_token?: string
   value?: unknown
 }
@@ -372,6 +373,7 @@ process.on('message', (message: unknown) => {
                   },
                   engineModel: (operationId, value) => requestStream('engine_model', { operation_id: operationId, ...value }) as AsyncGenerator<ProductModelEvent, void>,
                   engineTool: async (operationId, value) => await request('engine_tool', { operation_id: operationId, ...value }) as ProductHostEngineToolResult,
+                  recordPlan: async (operationId, plan) => { await request('plan', { operation_id: operationId, plan } satisfies { operation_id: string; plan: ProductTaskPlan }) },
                   approve: async (requestId, approved) => { await request('approval', { requestId, approved }) },
                   answer: async (requestId, answers) => { await request('question', { requestId, answers }) },
                   stopHost: async () => { await request('stop') },
