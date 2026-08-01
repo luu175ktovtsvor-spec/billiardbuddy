@@ -59,6 +59,7 @@ const PRODUCT_TASK_ACTIVITY_KINDS = new Set<ProductTaskActivityKind>([
   'research',
   'browser',
   'media',
+  'automation',
   'subtask',
   'tool',
 ])
@@ -96,6 +97,9 @@ const PRODUCT_TASK_ACTIVITY_SUMMARIES = new Set([
   '正在处理素材',
   '已完成素材处理',
   '素材处理未完成',
+  '正在运行项目自动化',
+  '项目自动化已完成',
+  '项目自动化未完成',
   '正在协同处理事项',
   '已完成协同事项',
   '协同事项未完成',

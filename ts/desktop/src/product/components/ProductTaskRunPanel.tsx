@@ -23,6 +23,7 @@ const ACTIVE_ACTIVITY_LABEL: Record<ProductTaskActivityKind, string> = {
   research: '正在检索资料',
   browser: '正在处理浏览器内容',
   media: '正在处理媒体内容',
+  automation: '正在运行项目自动化',
   subtask: '正在协调子任务',
   tool: '正在处理任务步骤',
 }
@@ -35,6 +36,7 @@ const COMPLETED_ACTIVITY_LABEL: Record<ProductTaskActivityKind, string> = {
   research: '资料检索完成',
   browser: '浏览器步骤完成',
   media: '媒体处理完成',
+  automation: '项目自动化已完成',
   subtask: '子任务已完成',
   tool: '任务步骤完成',
 }
@@ -47,6 +49,7 @@ const FAILED_ACTIVITY_LABEL: Record<ProductTaskActivityKind, string> = {
   research: '资料检索未完成',
   browser: '浏览器步骤未完成',
   media: '媒体处理未完成',
+  automation: '项目自动化未完成',
   subtask: '子任务未完成',
   tool: '任务步骤未完成',
 }
@@ -79,6 +82,9 @@ const PRODUCT_ACTIVITY_SUMMARIES = new Set([
   '正在处理素材',
   '已完成素材处理',
   '素材处理未完成',
+  '正在运行项目自动化',
+  '项目自动化已完成',
+  '项目自动化未完成',
   '正在协同处理事项',
   '已完成协同事项',
   '协同事项未完成',

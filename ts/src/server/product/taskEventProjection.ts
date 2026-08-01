@@ -133,6 +133,7 @@ export function productTaskActivitySummary(
     research: { active: '正在查询资料', completed: '已完成资料查询', failed: '资料查询未完成' },
     browser: { active: '正在查看网页', completed: '已完成网页查看', failed: '网页查看未完成' },
     media: { active: '正在处理素材', completed: '已完成素材处理', failed: '素材处理未完成' },
+    automation: { active: '正在运行项目自动化', completed: '项目自动化已完成', failed: '项目自动化未完成' },
     subtask: { active: '正在协同处理事项', completed: '已完成协同事项', failed: '协同事项未完成' },
     tool: { active: '正在处理任务', completed: '已完成任务处理', failed: '任务处理未完成' },
   }

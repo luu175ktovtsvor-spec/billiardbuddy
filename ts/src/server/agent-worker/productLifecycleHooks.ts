@@ -17,6 +17,14 @@ export type ProductLifecycleHookResult = {
   additionalContext?: string
 }
 
+/** A product-safe lifecycle record. It intentionally excludes hook input,
+ * command, URL, output, file path, and source configuration details. */
+export type ProductHookRunActivity = {
+  id: string
+  event: ProductHookEvent
+  phase: 'started' | 'completed' | 'failed'
+}
+
 export type ProductHarnessLifecycleHookHost = {
   sessionStart(input: { source: 'startup' | 'resume'; sessionId: string; model: string; signal: AbortSignal }): Promise<ProductLifecycleHookResult>
   userPrompt(input: { prompt: string; permissionMode: string; context: ProductToolContext }): Promise<ProductLifecycleHookResult>
@@ -149,8 +157,10 @@ export function createProductHarnessLifecycleHookHost(input: {
   cwd: string
   evaluate?: (prompt: string, model: string | undefined, signal: AbortSignal) => Promise<{ ok: boolean; reason?: string }>
   run_external_operation?: <T>(kind: TaskRunExternalOperationKind, operation: () => Promise<T>) => Promise<T>
+  on_hook_run?: (activity: ProductHookRunActivity) => void
 }): ProductHarnessLifecycleHookHost {
   const completedOnceHooks = new Set<string>()
+  let hookRunSequence = 0
   const runExternalOperation = input.run_external_operation
     ?? (async <T>(_kind: TaskRunExternalOperationKind, operation: () => Promise<T>): Promise<T> => await operation())
   const run = async (event: ProductHookEvent, matcherValue: string, payload: Record<string, unknown>, signal: AbortSignal): Promise<ProductLifecycleHookResult> => {
@@ -163,44 +173,67 @@ export function createProductHarnessLifecycleHookHost(input: {
         const onceKey = `${event}:${matcherIndex}:${hookIndex}`
         if ((hook.once && completedOnceHooks.has(onceKey)) || !hookConditionMatches(hook.if, event, matcherValue, payload)) continue
         if (signal.aborted) throw new Error('PRODUCT_HOOK_ABORTED')
+        const activityId = `${event}:${matcherIndex}:${hookIndex}:${++hookRunSequence}`
+        input.on_hook_run?.({ id: activityId, event, phase: 'started' })
+        let hookFailed = false
         if (hook.type === 'unavailable_async_command') {
           reason ??= '项目配置了异步 Command Hook，但该类型尚未具备可恢复的任务账本回执，因此 BilliardBuddy 未执行它。请改用同步 Hook，或等待持久异步 Hook 能力完成后再启用。'
+          input.on_hook_run?.({ id: activityId, event, phase: 'failed' })
           continue
         }
-        const body = JSON.stringify({ hook_event_name: event, ...payload })
-        let output: HookOutput | undefined
-        let succeeded = false
-        if (hook.type === 'command') {
-          const result = await runExternalOperation('hook_command', async () => await commandHook(hook, input.cwd, body, signal))
-          output = parseOutput(result.stdout)
-          succeeded = result.code === 0
-          if (!succeeded) reason ??= bounded(result.stderr || result.stdout || `Hook command failed (${result.code})`, MAX_HOOK_REASON_CHARS)
-        } else if (hook.type === 'http') {
-          const result = await runExternalOperation('hook_http', async () => {
-            const result = await httpHook(hook, body, signal)
-            if (result.outcomeUnknown) throw new Error('PRODUCT_HOOK_HTTP_OUTCOME_UNKNOWN')
-            return result
-          })
-          succeeded = result.ok
-          if (succeeded) output = parseOutput(result.body)
-          else reason ??= bounded(result.error || `HTTP Hook failed (${result.statusCode ?? 'network'})`, MAX_HOOK_REASON_CHARS)
-        } else if (input.evaluate) {
-          const prompt = hook.prompt.replaceAll('$ARGUMENTS', body)
-          const evaluationSignal = AbortSignal.any([
-            signal,
-            AbortSignal.timeout(Math.min((hook.timeout ?? 600) * 1000, 600_000)),
-          ])
-          const result = await input.evaluate(prompt, hook.model, evaluationSignal)
-          succeeded = result.ok
-          if (!result.ok) reason ??= bounded(result.reason || 'Prompt Hook blocked execution', MAX_HOOK_REASON_CHARS)
-        } else {
-          reason ??= `${hook.type === 'agent' ? 'Agent' : 'Prompt'} Hook requires an unavailable verified evaluator`
+        try {
+          const body = JSON.stringify({ hook_event_name: event, ...payload })
+          let output: HookOutput | undefined
+          let succeeded = false
+          if (hook.type === 'command') {
+            const result = await runExternalOperation('hook_command', async () => await commandHook(hook, input.cwd, body, signal))
+            output = parseOutput(result.stdout)
+            succeeded = result.code === 0
+            if (!succeeded) {
+              hookFailed = true
+              reason ??= bounded(result.stderr || result.stdout || `Hook command failed (${result.code})`, MAX_HOOK_REASON_CHARS)
+            }
+          } else if (hook.type === 'http') {
+            const result = await runExternalOperation('hook_http', async () => {
+              const result = await httpHook(hook, body, signal)
+              if (result.outcomeUnknown) throw new Error('PRODUCT_HOOK_HTTP_OUTCOME_UNKNOWN')
+              return result
+            })
+            succeeded = result.ok
+            if (succeeded) output = parseOutput(result.body)
+            else {
+              hookFailed = true
+              reason ??= bounded(result.error || `HTTP Hook failed (${result.statusCode ?? 'network'})`, MAX_HOOK_REASON_CHARS)
+            }
+          } else if (input.evaluate) {
+            const prompt = hook.prompt.replaceAll('$ARGUMENTS', body)
+            const evaluationSignal = AbortSignal.any([
+              signal,
+              AbortSignal.timeout(Math.min((hook.timeout ?? 600) * 1000, 600_000)),
+            ])
+            const result = await input.evaluate(prompt, hook.model, evaluationSignal)
+            succeeded = result.ok
+            if (!result.ok) {
+              hookFailed = true
+              reason ??= bounded(result.reason || 'Prompt Hook blocked execution', MAX_HOOK_REASON_CHARS)
+            }
+          } else {
+            hookFailed = true
+            reason ??= `${hook.type === 'agent' ? 'Agent' : 'Prompt'} Hook requires an unavailable verified evaluator`
+          }
+          if (output?.continue === false || output?.decision === 'block') {
+            hookFailed = true
+            reason ??= bounded(output.stopReason || output.reason || 'Hook blocked execution', MAX_HOOK_REASON_CHARS)
+          }
+          const specific = output?.hookSpecificOutput
+          const context = bounded(specific?.additionalContext || specific?.initialUserMessage || output?.systemMessage, MAX_HOOK_CONTEXT_CHARS)
+          if (context) contexts.push(context)
+          if (hook.once && succeeded && output?.continue !== false && output?.decision !== 'block') completedOnceHooks.add(onceKey)
+          input.on_hook_run?.({ id: activityId, event, phase: hookFailed ? 'failed' : 'completed' })
+        } catch (error) {
+          input.on_hook_run?.({ id: activityId, event, phase: 'failed' })
+          throw error
         }
-        if (output?.continue === false || output?.decision === 'block') reason ??= bounded(output.stopReason || output.reason || 'Hook blocked execution', MAX_HOOK_REASON_CHARS)
-        const specific = output?.hookSpecificOutput
-        const context = bounded(specific?.additionalContext || specific?.initialUserMessage || output?.systemMessage, MAX_HOOK_CONTEXT_CHARS)
-        if (context) contexts.push(context)
-        if (hook.once && succeeded && output?.continue !== false && output?.decision !== 'block') completedOnceHooks.add(onceKey)
       }
     }
     return {
