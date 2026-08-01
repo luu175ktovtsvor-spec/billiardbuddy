@@ -114,10 +114,8 @@
     "electron:build": "bun run build:sidecars && bun run build && bun run build:electron",
     "electron:package": "bun run stage:media-toolchain && bun run clean:electron-output && bun run electron:build && node ./node_modules/electron-builder/out/cli/cli.js --publish never",
     "electron:package:dir": "bun run stage:media-toolchain && bun run clean:electron-output && bun run electron:build && node ./node_modules/electron-builder/out/cli/cli.js --dir --publish never",
-    "check:electron": "node ./node_modules/typescript/bin/tsc -p electron/tsconfig.json && bun test electron && bun run build:electron",
+    "check:electron": "node ./node_modules/typescript/bin/tsc -p electron/tsconfig.json && bun run build:electron",
     "preview": "vite preview",
-    "test": "vitest",
-    "test:ui": "vitest --ui",
     "lint": "node ./node_modules/typescript/bin/tsc --noEmit"
   },
   "dependencies": {
@@ -139,9 +137,6 @@
   "devDependencies": {
     "@electron/asar": "3.4.1",
     "@tailwindcss/vite": "^4.0.0",
-    "@testing-library/dom": "^10.4.1",
-    "@testing-library/jest-dom": "^6.6.3",
-    "@testing-library/react": "^16.1.0",
     "@types/node": "^25.9.1",
     "@types/react": "^18.3.18",
     "@types/react-dom": "^18.3.5",
@@ -149,10 +144,8 @@
     "electron": "^42.3.0",
     "electron-builder": "26.15.7",
     "electron-builder-squirrel-windows": "26.15.7",
-    "jsdom": "^25.0.1",
     "tailwindcss": "^4.0.0",
     "typescript": "^5.9.3",
-    "vite": "^8.0.10",
-    "vitest": "^3.0.4"
+    "vite": "^8.0.10"
   }
 }

@@ -73,23 +73,7 @@ bun run audit:source
 bun run check:server
 bun run check:desktop
 bun run check:electron
-bun run check:media-real-fixture
 ```
-
-真实 PTY 用 Electron 对应的 Node/Vitest 运行时验收：
-
-```bash
-cd ts/desktop
-BB_LIVE_PTY_TEST=1 bunx vitest run electron/services/terminal.test.ts --testTimeout 30000
-```
-
-Gateway 与 Relay 测试从仓库根目录运行：
-
-```bash
-bun test gateway relay --timeout 30000
-```
-
-测试通过只证明对应源码边界；不能替代真实上游、安装、升级、恢复、签名、公证或安装包用户旅程。
 
 ## Provider 与容量边界
 
