@@ -55,6 +55,17 @@ export type ProductTaskRunActivity = {
   progress?: ProductTaskActivityProgress
 }
 
+/** A durable, user-visible task plan. It never exposes a Core tool envelope. */
+export type ProductTaskPlanStep = {
+  content: string
+  status: 'pending' | 'in_progress' | 'completed'
+}
+
+export type ProductTaskPlan = {
+  id: string
+  steps: ProductTaskPlanStep[]
+}
+
 /**
  * The bounded, task-scoped run state replayed when a product task socket
  * connects. It has no task/session/run identifier because the websocket URL
@@ -63,6 +74,7 @@ export type ProductTaskRunActivity = {
 export type ProductTaskRunSnapshot = {
   state: ProductTaskRunState
   activities: ProductTaskRunActivity[]
+  plan?: ProductTaskPlan
 }
 
 export type ProductTaskApprovalKind =
@@ -187,6 +199,12 @@ export type ProductTaskEvent =
     }
   | ({ type: 'run_snapshot' } & ProductTaskRunSnapshot)
   | {
+      type: 'plan_updated'
+      plan: ProductTaskPlan
+      event_sequence: number
+      replayed?: true
+    }
+  | {
       type: 'activity'
       kind: ProductTaskActivityKind
       phase: ProductTaskActivityPhase
@@ -305,6 +323,13 @@ type TaskEventPayload =
       phase: ProductTaskActivityPhase
       summary: string
       progress?: ProductTaskActivityProgress
+    }
+  | {
+      type: 'plan_updated'
+      run_id: string
+      dispatch_generation: number
+      item_id: string
+      steps: ProductTaskPlanStep[]
     }
   | {
       type: 'run_terminal'

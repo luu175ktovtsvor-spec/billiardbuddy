@@ -28,7 +28,7 @@ import {
   type SubmitTaskRunInput,
   type SubmitTaskRunReceipt,
 } from '../../../shared/product/domain.js'
-import type { ProductTaskActionApproval, ProductTaskAttachmentSummary, ProductTaskEvent, ProductTaskQuestion, ProductTaskQueuedInput, ProductTaskRunFailure, ProductTaskThread, ProductTaskThreadEntry, TaskEvent } from '../../../shared/product/taskEvents.js'
+import type { ProductTaskActionApproval, ProductTaskAttachmentSummary, ProductTaskEvent, ProductTaskPlan, ProductTaskQuestion, ProductTaskQueuedInput, ProductTaskRunFailure, ProductTaskThread, ProductTaskThreadEntry, TaskEvent } from '../../../shared/product/taskEvents.js'
 import { isProductTaskRunFailureCode, productTaskRunFailure } from './taskRunFailure.js'
 import { assertAuthorityMapKey } from '../../../shared/product/authority.js'
 import type {
@@ -2153,6 +2153,48 @@ export class ProductTaskService {
       return { task_id: run.task_id }
     })
     return { task_id: result.task_id, event: { ...activity } }
+  }
+
+  /** Persist the accepted TodoWrite projection before it can reach a renderer. */
+  async recordTaskRunPlan(
+    runId: string,
+    dispatchGeneration: number,
+    plan: ProductTaskPlan,
+  ): Promise<{ task_id: string; event: Extract<ProductTaskEvent, { type: 'plan_updated' }> }> {
+    if (!runId || !Number.isSafeInteger(dispatchGeneration) || dispatchGeneration < 1 || !/^plan_[a-f0-9]{32}$/.test(plan.id) || !Array.isArray(plan.steps) || plan.steps.length < 1 || plan.steps.length > 100) throw new Error('AUTHORITY_INVALID')
+    let inProgress = 0
+    for (const step of plan.steps) {
+      if (typeof step.content !== 'string' || !step.content.trim() || step.content.length > 500 || !['pending', 'in_progress', 'completed'].includes(step.status)) throw new Error('AUTHORITY_INVALID')
+      if (step.status === 'in_progress') inProgress += 1
+    }
+    if (inProgress > 1) throw new Error('AUTHORITY_INVALID')
+    const authority = new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps)
+    const { result } = await authority.transactSubmit((state) => {
+      const run = state.task_runs[runId] as { task_id?: unknown; event_contract?: unknown } | undefined
+      const dispatch = state.dispatch_records[runId] as { dispatch_generation?: unknown; state?: unknown } | undefined
+      if (!run || typeof run.task_id !== 'string' || dispatch?.dispatch_generation !== dispatchGeneration || !['claimed', 'started'].includes(dispatch.state as string)) throw new Error('AUTHORITY_INVALID')
+      const events = Object.values(state.task_events).map(value => value as TaskEvent)
+      const prior = events.find((event): event is Extract<TaskEvent, { type: 'plan_updated' }> => event.type === 'plan_updated' && event.run_id === runId && event.dispatch_generation === dispatchGeneration && event.item_id === plan.id)
+      if (prior) {
+        if (JSON.stringify(prior.steps) !== JSON.stringify(plan.steps)) throw new Error('AUTHORITY_INVALID')
+        return { changed: false as const, value: { task_id: run.task_id, event_sequence: prior.event_sequence } }
+      }
+      if (events.some(event => event.type === 'run_terminal' && event.run_id === runId && event.dispatch_generation === dispatchGeneration)) throw new Error('AUTHORITY_INVALID')
+      run.event_contract = 'durable_items_v1'
+      state.event_sequence += 1
+      state.task_events[String(state.event_sequence)] = {
+        event_sequence: state.event_sequence,
+        task_id: run.task_id,
+        run_id: runId,
+        type: 'plan_updated',
+        dispatch_generation: dispatchGeneration,
+        item_id: plan.id,
+        steps: plan.steps.map(step => ({ ...step })),
+        created_at: this.now().toISOString(),
+      }
+      return { task_id: run.task_id, event_sequence: state.event_sequence }
+    })
+    return { task_id: result.task_id, event: { type: 'plan_updated', plan: { id: plan.id, steps: plan.steps.map(step => ({ ...step })) }, event_sequence: result.event_sequence } }
   }
 
   /** Persist compact lifecycle before the renderer can observe it; summaries remain server-private. */

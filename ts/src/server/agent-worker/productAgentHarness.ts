@@ -214,6 +214,7 @@ export async function createProductAgentHarness(input: {
   const toolActivities = new Map<string, {
     kind: ProductTaskActivityKind
     parentId?: string
+    plan?: import('../../../shared/product/taskEvents.js').ProductTaskPlan
   }>()
   const completedToolActivities = new Set<string>()
   const activityId = (toolUseId: string) => `activity_${createHash('sha256').update(`${input.run_id}:${toolUseId}`).digest('hex').slice(0, 32)}`
@@ -221,12 +222,13 @@ export async function createProductAgentHarness(input: {
     toolUseId: string,
     kind: ProductTaskActivityKind,
     parentToolUseId?: string,
+    plan?: import('../../../shared/product/taskEvents.js').ProductTaskPlan,
   ) => {
     const parentId = parentToolUseId && parentToolUseId !== toolUseId
       ? activityId(parentToolUseId)
       : undefined
     toolActivities.delete(toolUseId)
-    toolActivities.set(toolUseId, { kind, ...(parentId ? { parentId } : {}) })
+    toolActivities.set(toolUseId, { kind, ...(parentId ? { parentId } : {}), ...(plan ? { plan } : {}) })
     while (toolActivities.size > 256) {
       const oldest = toolActivities.keys().next().value
       if (typeof oldest !== 'string') break
@@ -246,7 +248,10 @@ export async function createProductAgentHarness(input: {
         const value = block as Record<string, unknown>
         if (value.type !== 'tool_call' || typeof value.id !== 'string' || !value.id || value.id.length > 512 || toolActivities.has(value.id)) continue
         const kind = input.projection.activityKindForTool(typeof value.name === 'string' ? value.name : undefined)
-        rememberToolActivity(value.id, kind, parentToolUseId)
+        const plan = typeof value.name === 'string' && value.name.trim().toLowerCase() === 'todowrite'
+          ? input.projection.projectPlan(value.arguments, input.run_id, value.id)
+          : null
+        rememberToolActivity(value.id, kind, parentToolUseId, plan ?? undefined)
         const tracked = toolActivities.get(value.id)!
         emit({ type: 'event', event: 'activity', activity: { id: activityId(value.id), ...(tracked.parentId ? { parentId: tracked.parentId } : {}), kind, phase: 'started', summary: input.projection.activitySummary(kind, 'started') } })
       }
@@ -262,6 +267,7 @@ export async function createProductAgentHarness(input: {
       const kind = tracked?.kind ?? 'tool'
       completedToolActivities.add(toolUseId)
       const phase = value.is_error === true ? 'failed' : 'completed'
+      if (phase === 'completed' && tracked?.plan) emit({ type: 'event', event: 'plan_updated', plan: tracked.plan })
       emit({ type: 'event', event: 'activity', activity: { id: activityId(toolUseId), ...(tracked?.parentId ? { parentId: tracked.parentId } : {}), kind, phase, summary: input.projection.activitySummary(kind, phase) } })
     }
   }

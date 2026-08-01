@@ -3,6 +3,8 @@ import type {
   ProductTaskActivityPhase,
   ProductTaskActivityProgress,
   ProductTaskRunActivity,
+  ProductTaskPlan,
+  ProductTaskPlanStep,
   ProductTaskAttachmentSummary,
   ProductTaskActionApproval,
   ProductTaskApprovalKind,
@@ -39,6 +41,8 @@ const MAX_ACTIVITY_SUMMARY_LENGTH = 80
 const MAX_ACTIVITY_PROGRESS_TOTAL = 10_000
 const MAX_RUN_ACTIVITY_COUNT = 256
 const MAX_APPROVAL_EXPLANATION_LENGTH = 500
+const MAX_PLAN_STEP_COUNT = 100
+const MAX_PLAN_STEP_LENGTH = 500
 
 const PRODUCT_TASK_RUN_STATES = new Set<ProductTaskRunState>([
   'idle',
@@ -248,6 +252,18 @@ function parseRunActivity(value: unknown): ProductTaskRunActivity | null {
   }
 }
 
+function parseTaskPlan(value: unknown): ProductTaskPlan | null {
+  if (!isRecord(value) || !hasOnlyKeys(value, ['id', 'steps']) || typeof value.id !== 'string' || !/^plan_[a-f0-9]{32}$/.test(value.id) || !Array.isArray(value.steps) || value.steps.length < 1 || value.steps.length > MAX_PLAN_STEP_COUNT) return null
+  let inProgress = 0
+  const steps: ProductTaskPlanStep[] = []
+  for (const candidate of value.steps) {
+    if (!isRecord(candidate) || !hasOnlyKeys(candidate, ['content', 'status']) || !isVisibleString(candidate.content, MAX_PLAN_STEP_LENGTH) || !isEnumValue(candidate.status, new Set(['pending', 'in_progress', 'completed'] as const))) return null
+    if (candidate.status === 'in_progress') inProgress += 1
+    steps.push({ content: candidate.content, status: candidate.status })
+  }
+  return inProgress > 1 ? null : { id: value.id, steps }
+}
+
 function parseQuestionOption(value: unknown): ProductTaskQuestionOption | null {
   if (!isRecord(value) || !hasOnlyKeys(value, ['label', 'description'])) return null
   if (!isVisibleString(value.label, MAX_OPTION_TEXT_LENGTH)) return null
@@ -450,7 +466,7 @@ export function parseProductTaskEvent(value: unknown): ProductTaskEvent | null {
 
     case 'run_snapshot': {
       if (
-        !hasOnlyKeys(value, ['type', 'state', 'activities']) ||
+        !hasOnlyKeys(value, ['type', 'state', 'activities', 'plan']) ||
         !isEnumValue(value.state, PRODUCT_TASK_RUN_STATES) ||
         !Array.isArray(value.activities) ||
         value.activities.length > MAX_RUN_ACTIVITY_COUNT
@@ -463,11 +479,20 @@ export function parseProductTaskEvent(value: unknown): ProductTaskEvent | null {
       const parsedActivities = activities as ProductTaskRunActivity[]
       const activityIds = new Set(parsedActivities.map((activity) => activity.id))
       if (activityIds.size !== parsedActivities.length) return null
+      const plan = 'plan' in value ? parseTaskPlan(value.plan) : undefined
+      if ('plan' in value && !plan) return null
       return {
         type: 'run_snapshot',
         state: value.state,
         activities: parsedActivities,
+        ...(plan ? { plan } : {}),
       }
+    }
+
+    case 'plan_updated': {
+      if (!hasOnlyKeys(value, ['type', 'plan', 'event_sequence', 'replayed']) || typeof value.event_sequence !== 'number' || !Number.isSafeInteger(value.event_sequence) || value.event_sequence < 1 || ('replayed' in value && value.replayed !== true)) return null
+      const plan = parseTaskPlan(value.plan)
+      return plan ? { type: 'plan_updated', plan, event_sequence: value.event_sequence, ...(value.replayed === true ? { replayed: true as const } : {}) } : null
     }
 
     case 'activity': {

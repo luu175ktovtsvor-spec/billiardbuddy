@@ -24,6 +24,7 @@ import type {
   ProductTaskContextCompaction,
   ProductTaskEvent,
   ProductTaskQuestion,
+  ProductTaskPlan,
   ProductTaskRunState,
   ProductTaskQueuedInput,
   ProductTaskInputQueueMutation,
@@ -50,6 +51,7 @@ export type ProductTaskRuntime = {
   } | null
   runActivities: ProductTaskRunActivity[]
   contextCompactions: ProductTaskContextCompaction[]
+  plan: ProductTaskPlan | null
   pendingApproval: {
     requestId: string
     kind: ProductTaskApprovalKind
@@ -109,6 +111,7 @@ const EMPTY_RUNTIME: ProductTaskRuntime = {
   activeActivity: null,
   runActivities: [],
   contextCompactions: [],
+  plan: null,
   pendingApproval: null,
   approvalResponsePending: false,
   error: null,
@@ -772,6 +775,7 @@ export const useProductTaskRuntimeStore = create<ProductTaskRuntimeStore>((set, 
           ...runtime,
           runState: event.state,
           runActivities,
+          plan: event.plan ?? runtime.plan,
           activeActivity: activeActivityFromRunActivities(runActivities),
           // Permission details are deliberately not part of a run snapshot.
           // A following approval_required replay is the sole authority for a
@@ -877,6 +881,9 @@ export const useProductTaskRuntimeStore = create<ProductTaskRuntimeStore>((set, 
               runActivities,
             }
           }
+
+          case 'plan_updated':
+            return { ...runtime, plan: event.plan }
 
           case 'approval_required':
             return {
