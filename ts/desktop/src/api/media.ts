@@ -1,17 +1,7 @@
 import type {
-  AddImageProjectReferencesInput,
-  CreateImageProjectInput,
   CreateVideoProjectInput,
   ApplyVideoAlternativeInput,
   AnalyzeVideoProjectInput,
-  CommitImageVersionInput,
-  ImageCanvasSize,
-  ImageBriefOverrides,
-  ImageLayer,
-  ImageReferenceRole,
-  ImageTextLayer,
-  PublicImageWorkbenchProject,
-  PublicImageProjectReference,
   PublicMediaJobEvent,
   PublicMediaJobEventPage,
   PublicMediaDeletionReceipt,
@@ -21,11 +11,7 @@ import type {
   LockVideoSceneInput,
   PreviewVideoInput,
   RenderVideoInput,
-  SaveImageOutputInput,
-  SelectImageVersionInput,
   SelectVideoTimelineVersionInput,
-  StartImageOperationInput,
-  UpdateImageProjectInput,
   UpdateVideoTimelineInput,
 } from '../../../shared/contracts/media'
 import { isMediaSafeErrorMessage, mediaSafeError } from '../../../shared/contracts/media'
@@ -108,39 +94,6 @@ export const mediaApi = {
   },
   cancelTask: (taskId: string) =>
     api.post<{ task: PublicMediaTask }>(`/api/media/tasks/${encodeURIComponent(taskId)}/cancel`),
-  createImageProject: (input: CreateImageProjectInput) =>
-    api.post<{ project: PublicImageWorkbenchProject }>('/api/media/images/projects', input),
-  submitImageProject: (projectId: string, confirmUnknownRetry = false) =>
-    getDesktopHost().media.submitImageProject(projectId, confirmUnknownRetry),
-  startImageOperation: (
-    projectId: string,
-    input: StartImageOperationInput,
-  ) => getDesktopHost().media.startImageOperation(projectId, input),
-  commitImageVersion: (projectId: string, input: CommitImageVersionInput) =>
-    api.post<{ project: PublicImageWorkbenchProject }>(
-      `/api/media/images/projects/${encodeURIComponent(projectId)}/versions`,
-      input,
-      { timeout: MEDIA_RESULT_REQUEST_TIMEOUT_MS },
-    ),
-  selectImageVersion: (projectId: string, input: SelectImageVersionInput) =>
-    api.post<{ project: PublicImageWorkbenchProject }>(
-      `/api/media/images/projects/${encodeURIComponent(projectId)}/versions/${encodeURIComponent(input.version_id)}/select`,
-      { revision: input.revision },
-    ),
-  saveImageOutput: (projectId: string, input: SaveImageOutputInput) =>
-    getDesktopHost().media.saveImageOutput(projectId, input),
-  updateImageProject: (projectId: string, input: UpdateImageProjectInput) =>
-    input.confirm_unknown_retry
-      ? getDesktopHost().media.updateUnknownImageProject(projectId, input)
-      : api.put<{ project: PublicImageWorkbenchProject }>(
-        `/api/media/images/projects/${encodeURIComponent(projectId)}`,
-        input,
-      ),
-  addImageProjectReferences: (projectId: string, input: AddImageProjectReferencesInput) =>
-    api.post<{ project: PublicImageWorkbenchProject }>(
-      `/api/media/images/projects/${encodeURIComponent(projectId)}/references`,
-      input,
-    ),
   createVideoProject: (input: CreateVideoProjectInput) =>
     api.post<{ project: PublicVideoStudioProject }>('/api/media/videos/projects', input),
   addVideoSource: (projectId: string, path: string) =>
@@ -192,23 +145,11 @@ export const mediaApi = {
 }
 
 export type {
-  AddImageProjectReferencesInput,
-  CreateImageProjectInput,
   CreateVideoProjectInput,
-  ImageCanvasSize,
-  ImageBriefOverrides,
-  ImageLayer,
-  ImageReferenceRole,
-  ImageTextLayer,
-  CommitImageVersionInput,
-  PublicImageWorkbenchProject as ImageWorkbenchProject,
-  PublicImageProjectReference as ImageProjectReference,
   PublicMediaProject as MediaProject,
   PublicMediaDeletionReceipt as MediaDeletionReceipt,
   PublicMediaJobEvent as MediaJobEvent,
   PublicMediaJobEventPage as MediaJobEventPage,
   PublicMediaTask as MediaTask,
   PublicVideoStudioProject as VideoStudioProject,
-  SelectImageVersionInput,
-  StartImageOperationInput,
 }

@@ -9,10 +9,10 @@ import {
   type ImageProjectReference,
   type ImageReferenceRole,
   type ImageTextLayer,
-  mediaApi,
-  mediaUserFacingError,
-} from '../../api/media'
-import { useMediaWorkbenchStore } from '../../stores/mediaWorkbenchStore'
+  imageWorkbenchApi,
+  imageUserFacingError,
+} from '../../api/imageWorkbench'
+import { useImageWorkbenchStore } from '../../stores/imageWorkbenchStore'
 import { getDesktopHost } from '../../lib/desktopHost'
 import { MediaProjectRail } from './MediaProjectRail'
 
@@ -205,7 +205,7 @@ async function renderTextLayers(url: string, sourceLayers: ImageTextLayer[]) {
 async function renderImageLayers(url: string, layers: CanvasImageLayer[]) {
   const [base, ...sources] = await Promise.all([
     loadCanvasImage(url),
-    ...layers.map(layer => loadCanvasImage(mediaApi.assetUrl(layer.image_path))),
+    ...layers.map(layer => loadCanvasImage(imageWorkbenchApi.assetUrl(layer.image_path))),
   ])
   const canvas = document.createElement('canvas')
   canvas.width = base.naturalWidth
@@ -262,7 +262,7 @@ function ImageCanvasSurface({
     let active = true
     void Promise.all([
       loadCanvasImage(url),
-      ...imageLayers.map(layer => loadCanvasImage(mediaApi.assetUrl(layer.image_path))),
+      ...imageLayers.map(layer => loadCanvasImage(imageWorkbenchApi.assetUrl(layer.image_path))),
     ]).then(([image, ...layerImages]) => {
       if (!active || !canvasRef.current) return
       const canvas = canvasRef.current
@@ -515,27 +515,27 @@ function ImageCanvasSurface({
 }
 
 export function ImageWorkbench() {
-  const projects = useMediaWorkbenchStore(state => state.imageProjects)
-  const deletions = useMediaWorkbenchStore(state => state.deletions)
-  const activeId = useMediaWorkbenchStore(state => state.activeImageId)
-  const tasks = useMediaWorkbenchStore(state => state.tasks)
-  const loading = useMediaWorkbenchStore(state => state.loading)
-  const error = useMediaWorkbenchStore(state => state.error)
-  const loadProjects = useMediaWorkbenchStore(state => state.loadProjects)
-  const loadDeletions = useMediaWorkbenchStore(state => state.loadDeletions)
-  const selectImage = useMediaWorkbenchStore(state => state.selectImage)
-  const createImage = useMediaWorkbenchStore(state => state.createImage)
-  const saveImageDraft = useMediaWorkbenchStore(state => state.saveImageDraft)
-  const addImageReferences = useMediaWorkbenchStore(state => state.addImageReferences)
-  const submitImage = useMediaWorkbenchStore(state => state.submitImage)
-  const startImageOperation = useMediaWorkbenchStore(state => state.startImageOperation)
-  const commitImageVersion = useMediaWorkbenchStore(state => state.commitImageVersion)
-  const selectImageVersion = useMediaWorkbenchStore(state => state.selectImageVersion)
-  const subscribeProjectEvents = useMediaWorkbenchStore(state => state.subscribeProjectEvents)
-  const cancelTask = useMediaWorkbenchStore(state => state.cancelTask)
-  const deleteProject = useMediaWorkbenchStore(state => state.deleteProject)
-  const restoreProject = useMediaWorkbenchStore(state => state.restoreProject)
-  const clearError = useMediaWorkbenchStore(state => state.clearError)
+  const projects = useImageWorkbenchStore(state => state.projects)
+  const deletions = useImageWorkbenchStore(state => state.deletions)
+  const activeId = useImageWorkbenchStore(state => state.activeProjectId)
+  const tasks = useImageWorkbenchStore(state => state.operations)
+  const loading = useImageWorkbenchStore(state => state.loading)
+  const error = useImageWorkbenchStore(state => state.error)
+  const loadProjects = useImageWorkbenchStore(state => state.loadProjects)
+  const loadDeletions = useImageWorkbenchStore(state => state.loadDeletions)
+  const selectImage = useImageWorkbenchStore(state => state.selectProject)
+  const createImage = useImageWorkbenchStore(state => state.createProject)
+  const saveImageDraft = useImageWorkbenchStore(state => state.saveDraft)
+  const addImageReferences = useImageWorkbenchStore(state => state.addReferences)
+  const submitImage = useImageWorkbenchStore(state => state.submitProject)
+  const startImageOperation = useImageWorkbenchStore(state => state.startOperation)
+  const commitImageVersion = useImageWorkbenchStore(state => state.commitVersion)
+  const selectImageVersion = useImageWorkbenchStore(state => state.selectVersion)
+  const subscribeProjectEvents = useImageWorkbenchStore(state => state.subscribeProjectEvents)
+  const cancelTask = useImageWorkbenchStore(state => state.cancelOperation)
+  const deleteProject = useImageWorkbenchStore(state => state.deleteProject)
+  const restoreProject = useImageWorkbenchStore(state => state.restoreProject)
+  const clearError = useImageWorkbenchStore(state => state.clearError)
   const [prompt, setPrompt] = useState('')
   const [creating, setCreating] = useState(false)
   const [size, setSize] = useState<ImageCanvasSize>('1024x1024')
@@ -576,7 +576,7 @@ export function ImageWorkbench() {
     : active?.notice ?? null
   const versions = active?.version_history ?? []
   const outputUrls = versions.map(version => version.image_path.startsWith('/api/')
-    ? mediaApi.assetUrl(version.image_path)
+    ? imageWorkbenchApi.assetUrl(version.image_path)
     : version.image_path)
   const outputUrl = outputUrls[selectedOutput] ?? outputUrls[0]
   const selectedVersion = versions[selectedOutput] ?? versions[0]
@@ -587,12 +587,12 @@ export function ImageWorkbench() {
   const redoVersion = currentVersion
     ? [...versions].reverse().find(version => version.parent_version_id === currentVersion.id)
     : undefined
-  const storeError = error ? mediaUserFacingError(new Error(error)) : null
+  const storeError = error ? imageUserFacingError(new Error(error)) : null
   const projectError = active?.error
-    ? mediaUserFacingError({ code: active.error_code })
+    ? imageUserFacingError({ code: active.error_code })
     : null
   const taskError = task?.error
-    ? mediaUserFacingError({ code: task.error_code })
+    ? imageUserFacingError({ code: task.error_code })
     : null
   const [previewWidth, previewHeight] = (active?.size ?? size).split('x').map(Number)
   const candidateGroup = selectedVersion?.operation_id
@@ -708,7 +708,7 @@ export function ImageWorkbench() {
   )
 
   useEffect(() => {
-    void loadProjects('image')
+    void loadProjects()
     void loadDeletions()
   }, [loadDeletions, loadProjects])
 
@@ -762,7 +762,7 @@ export function ImageWorkbench() {
   }, [active, creating])
 
   useEffect(() => active?.id
-    ? subscribeProjectEvents(active.id, 'image')
+    ? subscribeProjectEvents(active.id)
     : undefined, [active?.id, subscribeProjectEvents])
 
   useEffect(() => setOutputNotice(null), [active?.id])
@@ -835,7 +835,7 @@ export function ImageWorkbench() {
     if (!window.confirm(`删除“${project.title}”？此操作会同时删除本地生成结果。`)) return
     setDeletingId(project.id)
     try {
-      await deleteProject(project.id, 'image')
+      await deleteProject(project.id)
       if (project.id === activeId) setCreating(false)
     } finally {
       setDeletingId(null)
@@ -971,11 +971,11 @@ export function ImageWorkbench() {
         filters: [{ name: '图片', extensions: [extension] }],
       })
       if (!outputPath) return
-      const saved = await mediaApi.saveImageOutput(active.id, { version_id: selectedVersion.id, output_path: outputPath })
+      const saved = await imageWorkbenchApi.saveOutput(active.id, { version_id: selectedVersion.id, output_path: outputPath })
       setInputError(null)
       setOutputNotice(`已保存并校验：${saved.verification.width}×${saved.verification.height} · ${saved.verification.content_hash.slice(7, 15)}`)
     } catch (error) {
-      setInputError(mediaUserFacingError(error, '暂时无法保存图片，请检查保存位置后重试。'))
+      setInputError(imageUserFacingError(error, '暂时无法保存图片，请检查保存位置后重试。'))
     }
   }
 
@@ -1016,7 +1016,7 @@ export function ImageWorkbench() {
       })
       setInputError(null)
     } catch (error) {
-      setInputError(mediaUserFacingError(error, '无法在本机完成图片放大，请换一个版本后重试。'))
+      setInputError(imageUserFacingError(error, '无法在本机完成图片放大，请换一个版本后重试。'))
     }
   }
 
@@ -1032,14 +1032,14 @@ export function ImageWorkbench() {
       })
       setInputError(null)
     } catch (error) {
-      setInputError(mediaUserFacingError(error, '无法在本机完成文字排版，请检查文字后重试。'))
+      setInputError(imageUserFacingError(error, '无法在本机完成文字排版，请检查文字后重试。'))
     }
   }
 
   const addReferenceToCanvas = async (reference: ImageProjectReference) => {
     if (!selectedVersion || selectedVersion.id !== currentVersion?.id) return
     try {
-      const image = await loadCanvasImage(mediaApi.assetUrl(reference.image_path))
+      const image = await loadCanvasImage(imageWorkbenchApi.assetUrl(reference.image_path))
       const maxWidth = draftCanvasWidth * 0.42
       const maxHeight = draftCanvasHeight * 0.42
       const scale = Math.min(maxWidth / image.naturalWidth, maxHeight / image.naturalHeight, 1)
@@ -1058,7 +1058,7 @@ export function ImageWorkbench() {
       }].slice(-20))
       setInputError(null)
     } catch (error) {
-      setInputError(mediaUserFacingError(error, '无法读取这张参考素材，请重新导入后再试。'))
+      setInputError(imageUserFacingError(error, '无法读取这张参考素材，请重新导入后再试。'))
     }
   }
 
@@ -1103,7 +1103,7 @@ export function ImageWorkbench() {
       })
       setInputError(null)
     } catch (error) {
-      setInputError(mediaUserFacingError(error, '无法保存图片组合，请检查图层后重试。'))
+      setInputError(imageUserFacingError(error, '无法保存图片组合，请检查图层后重试。'))
     }
   }
 
@@ -1572,7 +1572,7 @@ export function ImageWorkbench() {
                       {referenceDraft.map(reference => (
                         <figure key={reference.asset_id} className="overflow-hidden rounded-[5px] border border-[var(--color-border)] bg-[var(--color-surface-container)]">
                           <img
-                            src={mediaApi.assetUrl(reference.image_path)}
+                            src={imageWorkbenchApi.assetUrl(reference.image_path)}
                             alt={reference.label ?? `${REFERENCE_ROLE_LABELS[reference.role]}参考图`}
                             className="aspect-square w-full object-cover"
                           />

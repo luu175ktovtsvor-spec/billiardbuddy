@@ -144,7 +144,7 @@ export function VideoStudio() {
     : null
 
   useEffect(() => {
-    void loadProjects('video')
+    void loadProjects()
     void loadDeletions()
     void loadToolchain()
   }, [loadDeletions, loadProjects, loadToolchain])
@@ -232,7 +232,7 @@ export function VideoStudio() {
   }, [active?.id])
 
   useEffect(() => active?.id
-    ? subscribeProjectEvents(active.id, 'video')
+    ? subscribeProjectEvents(active.id)
     : undefined, [active?.id, subscribeProjectEvents])
 
   const pickSource = async () => {
@@ -422,7 +422,7 @@ export function VideoStudio() {
     if (!window.confirm(`删除“${project.title}”？此操作不会删除原始视频素材。`)) return
     setDeletingId(project.id)
     try {
-      await deleteProject(project.id, 'video')
+      await deleteProject(project.id)
       if (project.id === activeId) setCreating(false)
     } finally {
       setDeletingId(null)

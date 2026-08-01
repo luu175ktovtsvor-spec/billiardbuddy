@@ -1,4 +1,5 @@
 export function isLongMediaRequestPath(pathname: string): boolean {
   if (pathname === '/api/media' || pathname.startsWith('/api/media/')) return true
+  if (pathname === '/api/images' || pathname.startsWith('/api/images/')) return true
   return /^\/api\/product\/tasks\/[^/]+\/media(?:\/|$)/.test(pathname)
 }

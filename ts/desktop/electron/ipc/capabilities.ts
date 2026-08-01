@@ -123,13 +123,13 @@ const mediaProjectId = (value: unknown): value is string =>
   typeof value === 'string'
   && /^[a-z0-9][a-z0-9_-]{7,79}$/.test(value)
 
-const mediaSubmitImage: Validator = value =>
+const imageSubmitProject: Validator = value =>
   isRecord(value)
   && hasOnlyKeys(value, ['projectId', 'confirmUnknownRetry'])
   && mediaProjectId(value.projectId)
   && typeof value.confirmUnknownRetry === 'boolean'
 
-const mediaUpdateUnknownImage: Validator = value => {
+const imageUpdateUnknownProject: Validator = value => {
   if (!isRecord(value) || !hasOnlyKeys(value, ['projectId', 'input'])) return false
   if (!mediaProjectId(value.projectId) || !isRecord(value.input)) return false
   const input = value.input
@@ -176,7 +176,7 @@ const mediaAnalyzeVideo: Validator = value =>
   && value.userGoal.trim().length > 0
   && value.userGoal.length <= 8000
 
-const mediaSaveImageOutput: Validator = value => {
+const imageSaveOutput: Validator = value => {
   if (!isRecord(value) || !hasOnlyKeys(value, ['projectId', 'input'])) return false
   if (!mediaProjectId(value.projectId) || !isRecord(value.input)) return false
   return hasOnlyKeys(value.input, ['output_id', 'version_id', 'output_path'])
@@ -186,7 +186,7 @@ const mediaSaveImageOutput: Validator = value => {
     && value.input.output_path.length <= 4096
 }
 
-const mediaStartImageOperation: Validator = value => {
+const imageStartOperation: Validator = value => {
   if (!isRecord(value) || !hasOnlyKeys(value, ['projectId', 'input'])) return false
   if (!mediaProjectId(value.projectId) || !isRecord(value.input)) return false
   return hasOnlyKeys(value.input, [
@@ -219,10 +219,10 @@ export const ELECTRON_IPC_VALIDATORS = {
   [ELECTRON_IPC_CHANNELS.shellOpenPath]: stringPayload,
   [ELECTRON_IPC_CHANNELS.dialogOpen]: optionalRecord,
   [ELECTRON_IPC_CHANNELS.dialogSave]: optionalRecord,
-  [ELECTRON_IPC_CHANNELS.mediaSubmitImage]: mediaSubmitImage,
-  [ELECTRON_IPC_CHANNELS.mediaStartImageOperation]: mediaStartImageOperation,
-  [ELECTRON_IPC_CHANNELS.mediaUpdateUnknownImage]: mediaUpdateUnknownImage,
-  [ELECTRON_IPC_CHANNELS.mediaSaveImageOutput]: mediaSaveImageOutput,
+  [ELECTRON_IPC_CHANNELS.imageSubmitProject]: imageSubmitProject,
+  [ELECTRON_IPC_CHANNELS.imageStartOperation]: imageStartOperation,
+  [ELECTRON_IPC_CHANNELS.imageUpdateUnknownProject]: imageUpdateUnknownProject,
+  [ELECTRON_IPC_CHANNELS.imageSaveOutput]: imageSaveOutput,
   [ELECTRON_IPC_CHANNELS.mediaAddVideoSource]: mediaAddVideoSource,
   [ELECTRON_IPC_CHANNELS.mediaRenderVideo]: mediaRenderVideo,
   [ELECTRON_IPC_CHANNELS.mediaAnalyzeVideo]: mediaAnalyzeVideo,

@@ -205,20 +205,22 @@ export type DesktopHost = {
     open(options?: DialogOpenOptions): Promise<string | string[] | null>
     save(options?: DialogSaveOptions): Promise<string | null>
   }
-  media: {
-    submitImageProject(
+  images: {
+    submitProject(
       projectId: string,
       confirmUnknownRetry?: boolean,
     ): Promise<{ task: MediaTask }>
-    startImageOperation(
+    startOperation(
       projectId: string,
       input: StartImageOperationInput,
     ): Promise<{ task: MediaTask }>
-    updateUnknownImageProject(
+    updateUnknownProject(
       projectId: string,
       input: UpdateImageProjectInput,
     ): Promise<{ project: ImageWorkbenchProject }>
-    saveImageOutput(projectId: string, input: SaveImageOutputInput): Promise<SaveImageOutputResult>
+    saveOutput(projectId: string, input: SaveImageOutputInput): Promise<SaveImageOutputResult>
+  }
+  media: {
     addVideoSource(projectId: string, path: string): Promise<{ project: VideoStudioProject; task: MediaTask }>
     renderVideo(request: MediaRenderRequest): Promise<{ task: MediaTask }>
     analyzeVideo(request: MediaAnalyzeRequest): Promise<{ task: MediaTask }>
