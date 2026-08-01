@@ -1,7 +1,7 @@
 import type { ServerWebSocket } from 'bun'
 import { diagnosticsService } from '../services/diagnosticsService.js'
 import { parseProductTaskInboundMessage } from './taskInboundPolicy.js'
-import { productTaskService } from './taskService.js'
+import type { ProductTaskService } from './taskService.js'
 import { productTaskWorkerRuntimeEvents } from './taskWorkerRuntimeEvents.js'
 
 export type ProductTaskWebSocketData = {
@@ -35,7 +35,17 @@ productTaskWorkerRuntimeEvents.subscribe((taskId, event) => {
   }
 })
 
-export const productTaskWebSocket = {
+type ProductTaskSocketAuthority = Pick<
+  ProductTaskService,
+  | 'respondToTaskApproval'
+  | 'respondToTaskQuestion'
+  | 'stopActiveTaskRun'
+  | 'listTaskEvents'
+  | 'readPendingTaskApproval'
+>
+
+export function createProductTaskWebSocket(tasks: ProductTaskSocketAuthority) {
+  return {
   open(ws: ServerWebSocket<ProductTaskWebSocketData>) {
     const taskId = ws.data.productTaskId
     const sockets = activeProductSockets.get(taskId) ?? new Set<ServerWebSocket<ProductTaskWebSocketData>>()
@@ -51,7 +61,7 @@ export const productTaskWebSocket = {
       if (cursor !== null) {
         if (ws.data.handoff !== 'awaiting_resume') return sendProtocolError(ws, 'task_unavailable')
         ws.data.handoff = 'replaying'
-        void replayDurableProductEvents(ws, cursor)
+        void replayDurableProductEvents(ws, cursor, tasks)
         return
       }
       if (isRetiredRawProductMessage(parsed)) {
@@ -60,7 +70,7 @@ export const productTaskWebSocket = {
       }
       const message = parseProductTaskInboundMessage(parsed)
       if (ws.data.handoff !== 'live') return sendProtocolError(ws, 'task_unavailable')
-      void handleProductMessage(ws, message).catch(error => {
+      void handleProductMessage(ws, message, tasks).catch(error => {
         void diagnosticsService.recordEvent({
           type: 'ws_product_message_failed',
           severity: 'error',
@@ -82,23 +92,25 @@ export const productTaskWebSocket = {
     if (sockets?.size === 0) activeProductSockets.delete(taskId)
   },
 
-  drain(_ws: ServerWebSocket<ProductTaskWebSocketData>) {},
+    drain(_ws: ServerWebSocket<ProductTaskWebSocketData>) {},
+  }
 }
 
 async function handleProductMessage(
   ws: ServerWebSocket<ProductTaskWebSocketData>,
   message: ReturnType<typeof parseProductTaskInboundMessage>,
+  tasks: ProductTaskSocketAuthority,
 ): Promise<void> {
   if (!message) return sendProtocolError(ws, 'task_unavailable')
   const taskId = ws.data.productTaskId
   if (message.type === 'permission_response' && productTaskWorkerRuntimeEvents.ownsApproval(taskId, message.requestId)) {
-    if (await productTaskService.respondToTaskApproval(taskId, message.requestId, message.allowed)) return
+    if (await tasks.respondToTaskApproval(taskId, message.requestId, message.allowed)) return
   }
   if (message.type === 'ask_user_question_response' && productTaskWorkerRuntimeEvents.ownsApproval(taskId, message.requestId)) {
-    if (await productTaskService.respondToTaskQuestion(taskId, message.requestId, message.answers)) return
+    if (await tasks.respondToTaskQuestion(taskId, message.requestId, message.answers)) return
   }
   if (message.type === 'stop_generation') {
-    await productTaskService.stopActiveTaskRun(taskId)
+    await tasks.stopActiveTaskRun(taskId)
     return
   }
   if (message.type === 'ping') return
@@ -131,12 +143,13 @@ function sendProtocolError(
 async function replayDurableProductEvents(
   ws: ServerWebSocket<ProductTaskWebSocketData>,
   afterEventSequence: number,
+  tasks: ProductTaskSocketAuthority,
 ): Promise<void> {
   try {
     let cursor = afterEventSequence
     let hasMore = true
     while (hasMore) {
-      const page = await productTaskService.listTaskEvents(ws.data.productTaskId, cursor, 200)
+      const page = await tasks.listTaskEvents(ws.data.productTaskId, cursor, 200)
       for (const event of page.events) {
         if (event.type === 'user_text') ws.send(JSON.stringify({ type: 'user_text', ...(event.item_id ? { id: event.item_id } : {}), text: event.text, replayed: true, event_sequence: event.event_sequence, ...(event.attachments?.length ? { attachments: event.attachments } : {}), ...(event.reference_entry_ids?.length ? { referenceEntryIds: event.reference_entry_ids } : {}) }))
         else if (event.type === 'assistant_text') ws.send(JSON.stringify({ type: 'assistant_text', id: event.item_id, text: event.text, replayed: true, event_sequence: event.event_sequence }))
@@ -151,7 +164,7 @@ async function replayDurableProductEvents(
     }
     if (ws.data.handoff !== 'replaying') return
     ws.send(JSON.stringify({ type: 'run_snapshot', ...productTaskWorkerRuntimeEvents.snapshot(ws.data.productTaskId) }))
-    await replayPendingWorkerApproval(ws)
+    await replayPendingWorkerApproval(ws, tasks)
     ws.send(JSON.stringify({ type: 'resume_cursor', cursor }))
     ws.data.handoff = 'live'
     const pending = ws.data.pending_live_events.splice(0)
@@ -163,8 +176,11 @@ async function replayDurableProductEvents(
   }
 }
 
-async function replayPendingWorkerApproval(ws: ServerWebSocket<ProductTaskWebSocketData>): Promise<void> {
-  const approval = await productTaskService.readPendingTaskApproval(ws.data.productTaskId).catch(() => null)
+async function replayPendingWorkerApproval(
+  ws: ServerWebSocket<ProductTaskWebSocketData>,
+  tasks: ProductTaskSocketAuthority,
+): Promise<void> {
+  const approval = await tasks.readPendingTaskApproval(ws.data.productTaskId).catch(() => null)
   if (!approval) return
   productTaskWorkerRuntimeEvents.rememberApproval(ws.data.productTaskId, approval)
   ws.send(JSON.stringify(approval))
