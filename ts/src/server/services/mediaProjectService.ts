@@ -1912,6 +1912,13 @@ export class MediaProjectService {
       const result = videoRenderTaskResultSchema.safeParse(task.result)
       if (!result.success) return task
       const outputExists = await stat(result.data.output_path).then(info => info.isFile()).catch(() => false)
+      const resultMatchesProject = (
+        result.data.render_revision === project.revision
+        && result.data.timeline_version_id === project.current_timeline_version_id
+      )
+      if (task.status === 'succeeded' && !resultMatchesProject) {
+        return await this.rejectStaleVideoRender(task)
+      }
       if (task.status === 'succeeded' && project.state !== 'complete' && outputExists) {
         await this.saveProject({
           ...project,
@@ -1961,6 +1968,7 @@ export class MediaProjectService {
       ) {
         const temporaryExists = await stat(result.data.temporary_output).then(info => info.isFile()).catch(() => false)
         if (outputExists && !temporaryExists) {
+          if (!resultMatchesProject) return await this.rejectStaleVideoRender(task)
           const succeeded = await this.saveTask({
             ...task,
             status: 'succeeded',
@@ -2018,6 +2026,30 @@ export class MediaProjectService {
     const result = videoRenderTaskResultSchema.safeParse(task.result)
     if (result.success && result.data.temporary_output) {
       await rm(result.data.temporary_output, { force: true }).catch(() => undefined)
+    }
+    return next
+  }
+
+  private async rejectStaleVideoRender(task: MediaTask): Promise<MediaTask> {
+    const failure = mediaSafeError('MEDIA_STATE_CONFLICT')
+    const next = await this.saveTask({
+      ...task,
+      status: 'cancelled',
+      progress: 0,
+      stage: '导出结果已过期',
+      error: failure.message,
+      error_code: failure.code,
+      updated_at: this.iso(),
+    })
+    const project = await this.getProject(task.project_id).catch(() => null)
+    if (project?.kind === 'video' && project.task_id === task.id) {
+      await this.saveProject({
+        ...project,
+        state: 'ready',
+        error: failure.message,
+        error_code: failure.code,
+        updated_at: this.iso(),
+      })
     }
     return next
   }
@@ -3828,6 +3860,7 @@ export class MediaProjectService {
       const input = lockVideoSceneInputSchema.parse(raw)
       const project = await this.getProject(projectId)
       if (project.kind !== 'video') throw new MediaServiceError('这不是视频项目', 409, 'WRONG_PROJECT_KIND')
+      if (project.state === 'rendering') throw new MediaServiceError('正在导出，暂时不能修改时间线', 409, 'RENDER_IN_PROGRESS')
       if (project.revision !== input.base_revision) throw new MediaServiceError('视频项目已更新，请刷新后再编辑', 409, 'REVISION_CONFLICT')
       if (project.current_timeline_version_id !== input.timeline_version_id) throw new MediaServiceError('视频时间线已更新，请刷新后再编辑', 409, 'TIMELINE_VERSION_CONFLICT')
       const current = project.timeline_versions.find(version => version.id === input.timeline_version_id)
@@ -3853,6 +3886,7 @@ export class MediaProjectService {
       const input = applyVideoAlternativeInputSchema.parse(raw)
       const project = await this.getProject(projectId)
       if (project.kind !== 'video') throw new MediaServiceError('这不是视频项目', 409, 'WRONG_PROJECT_KIND')
+      if (project.state === 'rendering') throw new MediaServiceError('正在导出，暂时不能修改时间线', 409, 'RENDER_IN_PROGRESS')
       if (project.revision !== input.base_revision) throw new MediaServiceError('视频项目已更新，请刷新后再编辑', 409, 'REVISION_CONFLICT')
       const alternative = project.alternatives.find(candidate => candidate.id === input.alternative_id)
       if (!alternative) throw new MediaServiceError('备选方案不存在', 404, 'ALTERNATIVE_NOT_FOUND')
@@ -3886,7 +3920,7 @@ export class MediaProjectService {
     })
   }
 
-  private async prepareVideoProjectForAnalysis(project: VideoStudioProject): Promise<VideoStudioProject> {
+  private async prepareVideoProjectSources(project: VideoStudioProject): Promise<VideoStudioProject> {
     let enriched = false
     const sources: VideoSource[] = []
     for (const source of project.sources) {
@@ -4065,7 +4099,7 @@ export class MediaProjectService {
       if (active && ['queued', 'running', 'committing'].includes(active.status)) {
         throw new MediaServiceError('当前已有媒体任务在运行', 409, 'TASK_IN_PROGRESS')
       }
-      project = await this.prepareVideoProjectForAnalysis(project)
+      project = await this.prepareVideoProjectSources(project)
       const now = this.iso()
       const operationId = foundationId('op', project.id, 'video.analyze', String(project.revision), input.user_goal)
       const task = await this.saveTask({
@@ -4277,7 +4311,7 @@ export class MediaProjectService {
   async previewVideo(projectId: string, raw: PreviewVideoInput): Promise<MediaTask> {
     return await this.withVideoProjectMutation(projectId, async () => {
       const input = previewVideoInputSchema.parse(raw)
-      const project = await this.getProject(projectId)
+      let project = await this.getProject(projectId)
       if (project.kind !== 'video') throw new MediaServiceError('这不是视频项目', 409, 'WRONG_PROJECT_KIND')
       if (project.state === 'rendering') throw new MediaServiceError('正在导出，暂时不能生成预览', 409, 'RENDER_IN_PROGRESS')
       if (project.revision !== input.base_revision) throw new MediaServiceError('视频项目已更新，请刷新后再生成预览', 409, 'REVISION_CONFLICT')
@@ -4288,6 +4322,7 @@ export class MediaProjectService {
         throw new MediaServiceError('视频时间线版本不存在', 409, 'TIMELINE_VERSION_MISSING')
       }
       if (!project.timeline.length) throw new MediaServiceError('时间线还是空的', 409, 'EMPTY_TIMELINE')
+      project = await this.prepareVideoProjectSources(project)
       if (project.preview_task_id) {
         const existing = await this.getTask(project.preview_task_id, false).catch(() => null)
         const existingResult = videoPreviewTaskResultSchema.safeParse(existing?.result)
@@ -4390,6 +4425,7 @@ export class MediaProjectService {
       )
       if (result.exitCode !== 0) throw new Error(result.stderr.trim() || `ffmpeg exited ${result.exitCode}`)
       if (signal.aborted) throw new Error('预览已取消')
+      await this.prepareVideoProjectSources(project)
       await this.saveTask({
         ...task,
         status: 'running',
@@ -4499,7 +4535,7 @@ export class MediaProjectService {
   private async renderVideoSerial(projectId: string, raw: RenderVideoInput): Promise<MediaTask> {
     this.startNextQueuedVideoRender()
     const input = renderVideoInputSchema.parse(raw)
-    const project = await this.getProject(projectId)
+    let project = await this.getProject(projectId)
     if (project.kind !== 'video') throw new MediaServiceError('这不是视频项目', 409, 'WRONG_PROJECT_KIND')
     if (project.state === 'rendering') {
       const existing = project.task_id ? await this.getTask(project.task_id, false).catch(() => null) : null
@@ -4521,6 +4557,7 @@ export class MediaProjectService {
       throw new MediaServiceError('视频时间线版本不存在', 409, 'TIMELINE_VERSION_MISSING')
     }
     if (!project.timeline.length) throw new MediaServiceError('时间线还是空的', 409, 'EMPTY_TIMELINE')
+    project = await this.prepareVideoProjectSources(project)
     if (!isAbsolute(input.output_path)) throw new MediaServiceError('导出路径必须是绝对路径', 400, 'OUTPUT_PATH_NOT_ABSOLUTE')
     if (!['.mp4', '.mov'].includes(extname(input.output_path).toLowerCase())) {
       throw new MediaServiceError('视频只能导出为 MP4 或 MOV', 400, 'OUTPUT_FORMAT_UNSUPPORTED')
@@ -4653,6 +4690,7 @@ export class MediaProjectService {
       }
       if (result.exitCode !== 0) throw new Error(result.stderr.trim() || `ffmpeg exited ${result.exitCode}`)
       if (signal.aborted) throw new Error('导出已取消')
+      await this.prepareVideoProjectSources(project)
       await this.saveTask({
         ...task,
         status: 'running',
@@ -4697,19 +4735,23 @@ export class MediaProjectService {
       if (signal.aborted) throw new Error('导出已取消')
       await this.moveFile(temporaryOutput, outputPath)
       const latest = await this.getProject(project.id)
-      if (latest.kind === 'video' && latest.revision === project.revision && latest.task_id === task.id) {
-        await this.saveProject({
-          ...latest,
-          state: 'complete',
-          output_path: outputPath,
-          output_asset_id: outputAssetId,
-          output_content_hash: validated.content_hash,
-          output_verification: validated,
-          error: undefined,
-          error_code: undefined,
-          updated_at: this.iso(),
-        })
-      }
+      if (
+        latest.kind !== 'video'
+        || latest.revision !== project.revision
+        || latest.current_timeline_version_id !== timelineVersionId
+        || latest.task_id !== task.id
+      ) throw new MediaServiceError('视频项目已更新，本次导出结果不再发布', 409, 'VIDEO_RENDER_STALE')
+      await this.saveProject({
+        ...latest,
+        state: 'complete',
+        output_path: outputPath,
+        output_asset_id: outputAssetId,
+        output_content_hash: validated.content_hash,
+        output_verification: validated,
+        error: undefined,
+        error_code: undefined,
+        updated_at: this.iso(),
+      })
       await this.saveTask({
         ...task,
         status: 'succeeded',
@@ -4728,17 +4770,20 @@ export class MediaProjectService {
       })
     } catch (error) {
       const cancelled = signal.aborted
-      if (!cancelled) recordMediaFailure('video_render', error)
+      const stale = error instanceof MediaServiceError && error.code === 'VIDEO_RENDER_STALE'
+      if (!cancelled && !stale) recordMediaFailure('video_render', error)
       const failure = mediaSafeError(cancelled
         ? 'MEDIA_VIDEO_EXPORT_CANCELLED'
+        : stale
+          ? 'MEDIA_STATE_CONFLICT'
         : error instanceof MediaServiceError && error.code === 'VIDEO_ENCODER_UNAVAILABLE'
           ? 'MEDIA_VIDEO_TOOLCHAIN_UNAVAILABLE'
           : 'MEDIA_VIDEO_EXPORT_FAILED')
       await this.saveTask({
         ...task,
-        status: cancelled ? 'cancelled' : 'failed',
+        status: cancelled || stale ? 'cancelled' : 'failed',
         progress: 0,
-        stage: cancelled ? '已取消' : '导出失败',
+        stage: cancelled ? '已取消' : stale ? '导出结果已过期' : '导出失败',
         error: failure.message,
         error_code: failure.code,
         updated_at: this.iso(),
@@ -4747,7 +4792,7 @@ export class MediaProjectService {
       if (latest?.kind === 'video' && latest.task_id === task.id) {
         await this.saveProject({
           ...latest,
-          state: cancelled ? 'ready' : 'failed',
+          state: cancelled || stale ? 'ready' : 'failed',
           error: failure.message,
           error_code: failure.code,
           updated_at: this.iso(),
