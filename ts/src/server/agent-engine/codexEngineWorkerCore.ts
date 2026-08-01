@@ -62,6 +62,10 @@ type PendingInputReceipt = {
   result_digest: string
 }
 
+type PendingSteerReceipt = {
+  operation_id: string
+}
+
 type Deferred = {
   promise: Promise<void>
   resolve(): void
@@ -165,10 +169,12 @@ export class CodexEngineWorkerCore implements AgentWorkerCore {
   private runtime?: CodexEngineRuntime
   private activeTurn?: CodexEngineAcceptedTurn
   private turnReceipt?: Deferred
+  private steerReceipt?: Deferred
   private pendingModel?: PendingModelReceipt
   private pendingTool?: PendingToolReceipt
   private pendingHook?: PendingHookReceipt
   private pendingInput?: PendingInputReceipt
+  private pendingSteer?: PendingSteerReceipt
   private toolSurface?: ProductHostEngineToolSurface
   private lifecycleHooks?: ProductHarnessLifecycleHookHost
   private readonly hookAbortController = new AbortController()
@@ -207,7 +213,8 @@ export class CodexEngineWorkerCore implements AgentWorkerCore {
   }
 
   async input(textInput: string, attachments: readonly string[] = [], queueItemId?: string): Promise<boolean | void> {
-    if (queueItemId || this.inputStarted || this.terminal || this.stopping || !text(textInput)) return false
+    if (queueItemId) return await this.steer(queueItemId, textInput)
+    if (this.inputStarted || this.terminal || this.stopping || !text(textInput)) return false
     const runtime = this.runtime
     if (!runtime) throw new Error('CODEX_ENGINE_RUNTIME_UNAVAILABLE')
     this.inputStarted = true
@@ -275,6 +282,7 @@ export class CodexEngineWorkerCore implements AgentWorkerCore {
   async shutdown(): Promise<void> {
     this.hookAbortController.abort()
     this.turnReceipt?.reject(new Error('CODEX_ENGINE_WORKER_SHUTDOWN'))
+    this.steerReceipt?.reject(new Error('CODEX_ENGINE_WORKER_SHUTDOWN'))
     const pendingModel = this.pendingModel
     this.pendingModel = undefined
     if (pendingModel) await this.options.parent.markExternalOperationUnknown(pendingModel.operation_id).catch(() => undefined)
@@ -287,6 +295,9 @@ export class CodexEngineWorkerCore implements AgentWorkerCore {
     const pendingInput = this.pendingInput
     this.pendingInput = undefined
     if (pendingInput) await this.options.parent.markExternalOperationUnknown(pendingInput.operation_id).catch(() => undefined)
+    const pendingSteer = this.pendingSteer
+    this.pendingSteer = undefined
+    if (pendingSteer) await this.options.parent.markExternalOperationUnknown(pendingSteer.operation_id).catch(() => undefined)
     await this.runtime?.close().catch(() => undefined)
     this.runtime = undefined
     await this.options.parent.shutdownHost()
@@ -347,8 +358,57 @@ export class CodexEngineWorkerCore implements AgentWorkerCore {
     }
   }
 
+  /** Accept one already-durable queue item into the active source Turn. */
+  private async steer(queueItemId: string, textInput: string): Promise<boolean> {
+    const runtime = this.runtime
+    const activeTurn = this.activeTurn
+    if (
+      !runtime
+      || !activeTurn
+      || !this.inputStarted
+      || this.terminal
+      || this.stopping
+      || this.pendingSteer
+      || !/^queue_[a-f0-9-]{36}$/.test(queueItemId)
+      || !text(textInput, 1 << 20)
+    ) return false
+    const receipt = deferred()
+    this.steerReceipt = receipt
+    let operationId: string | undefined
+    try {
+      operationId = await this.options.parent.beginExternalOperation('engine_steer')
+      this.pendingSteer = { operation_id: operationId }
+      const acceptedTurnId = await runtime.steerTurn({
+        run_id: this.options.run_id,
+        queue_item_id: queueItemId,
+        expected_turn_id: activeTurn.turn_id,
+        text: textInput,
+      })
+      const inputDigest = createHash('sha256').update(JSON.stringify({ queue_item_id: queueItemId, text: textInput })).digest('hex')
+      const digest = await runtime.checkpointSteerInput(
+        this.options.run_id,
+        acceptedTurnId,
+        operationId,
+        queueItemId,
+        inputDigest,
+      )
+      await this.options.parent.recordExternalOperationResult(operationId)
+      await this.options.parent.checkpointExternalOperation(operationId, digest)
+      this.pendingSteer = undefined
+      receipt.resolve()
+      return true
+    } catch (error) {
+      receipt.reject(error instanceof Error ? error : new Error('CODEX_ENGINE_STEER_FAILED'))
+      this.pendingSteer = undefined
+      if (operationId) await this.options.parent.markExternalOperationUnknown(operationId).catch(() => undefined)
+      this.emitTerminal('recovery_required', 'task_execution_environment_failed')
+      return false
+    }
+  }
+
   private async *runModel(request: CodexResponsesModelRequest): AsyncGenerator<ProductModelEvent, void> {
     await this.turnReceipt?.promise
+    await this.steerReceipt?.promise
     if (this.terminal || this.stopping) throw new Error('CODEX_ENGINE_RUN_TERMINAL')
     const surface = this.toolSurface
     const toolNames = request.tools.map(tool => tool.name).sort((left, right) => left.localeCompare(right))

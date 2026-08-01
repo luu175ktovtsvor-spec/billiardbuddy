@@ -23,6 +23,9 @@ export const PRODUCT_TASK_EXTERNAL_OPERATION_KINDS = [
   // An accepted Codex app-server Turn is an external execution boundary even
   // though the process is local: its model request can begin immediately.
   'engine_turn',
+  // A running Codex Turn may accept a user steer and immediately alter its
+  // next model/tool decision, so it has its own durable receipt.
+  'engine_steer',
   'mcp_prepare',
   'chat_prompt',
   'command_prompt',

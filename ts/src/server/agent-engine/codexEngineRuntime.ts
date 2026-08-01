@@ -57,6 +57,12 @@ function turnId(response: JsonObject): string {
   return id
 }
 
+function steeredTurnId(response: JsonObject): string {
+  const id = nonEmptyText(response.turnId)
+  if (!id) throw new Error('CODEX_ENGINE_STEER_RESPONSE_INVALID')
+  return id
+}
+
 function quoted(value: string): string {
   return JSON.stringify(value)
 }
@@ -200,6 +206,44 @@ export class CodexEngineRuntime {
   ): Promise<string> {
     if (!this.session) throw new Error('CODEX_ENGINE_RUNTIME_UNAVAILABLE')
     return await this.session.checkpointAcceptedTurn(runId, turnId, operationId, attachmentInput)
+  }
+
+  async steerTurn(input: {
+    run_id: string
+    queue_item_id: string
+    expected_turn_id: string
+    text: string
+  }): Promise<string> {
+    const client = this.client
+    const session = this.session
+    const runId = nonEmptyText(input.run_id)
+    const queueItemId = nonEmptyText(input.queue_item_id)
+    const expectedTurnId = nonEmptyText(input.expected_turn_id)
+    const text = nonEmptyText(input.text, MAX_SOURCE_INPUT_TEXT_CHARS)
+    if (!client || !session || !runId || !queueItemId || !/^queue_[a-f0-9-]{36}$/.test(queueItemId) || !expectedTurnId || !text) {
+      throw new Error('CODEX_ENGINE_STEER_INPUT_INVALID')
+    }
+    const thread = await session.ensureThread()
+    const response = await client.request<JsonObject>('turn/steer', {
+      threadId: thread.thread_id,
+      clientUserMessageId: queueItemId,
+      expectedTurnId,
+      input: [{ type: 'text', text }],
+    })
+    const acceptedTurnId = steeredTurnId(response)
+    if (acceptedTurnId !== expectedTurnId) throw new Error('CODEX_ENGINE_STEER_TURN_MISMATCH')
+    return acceptedTurnId
+  }
+
+  async checkpointSteerInput(
+    runId: string,
+    turnId: string,
+    operationId: string,
+    queueItemId: string,
+    inputDigest: string,
+  ): Promise<string> {
+    if (!this.session) throw new Error('CODEX_ENGINE_RUNTIME_UNAVAILABLE')
+    return await this.session.checkpointSteerInput(runId, turnId, operationId, queueItemId, inputDigest)
   }
 
   async checkpointModelResult(runId: string, operationId: string, resultDigest: string): Promise<string> {

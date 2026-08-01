@@ -47,6 +47,17 @@ function inputReceipt(state: CodexEngineThreadState): Pick<CodexEngineThreadStat
     : {}
 }
 
+function steerReceipt(state: CodexEngineThreadState): Pick<CodexEngineThreadState, 'last_steer_run_id' | 'last_steer_operation_id' | 'last_steer_queue_item_id' | 'last_steer_input_digest'> {
+  return state.last_steer_run_id && state.last_steer_operation_id && state.last_steer_queue_item_id && state.last_steer_input_digest
+    ? {
+        last_steer_run_id: state.last_steer_run_id,
+        last_steer_operation_id: state.last_steer_operation_id,
+        last_steer_queue_item_id: state.last_steer_queue_item_id,
+        last_steer_input_digest: state.last_steer_input_digest,
+      }
+    : {}
+}
+
 async function verifiedWorkDir(value: string): Promise<string> {
   const workDir = await fs.realpath(path.resolve(value))
   const stat = await fs.lstat(workDir)
@@ -105,6 +116,7 @@ export class CodexEngineSession {
       ...(restored?.last_turn_id ? { last_turn_id: restored.last_turn_id } : {}),
       ...(restored?.last_turn_operation_id ? { last_turn_operation_id: restored.last_turn_operation_id } : {}),
       ...(restored ? inputReceipt(restored) : {}),
+      ...(restored ? steerReceipt(restored) : {}),
       ...(restored?.last_model_run_id ? { last_model_run_id: restored.last_model_run_id } : {}),
       ...(restored?.last_model_operation_id ? { last_model_operation_id: restored.last_model_operation_id } : {}),
       ...(restored?.last_model_result_digest ? { last_model_result_digest: restored.last_model_result_digest } : {}),
@@ -152,7 +164,62 @@ export class CodexEngineSession {
         last_input_run_id: runId,
         last_input_operation_id: attachmentInput.operation_id,
         last_input_result_digest: attachmentInput.result_digest,
-      } : inputReceipt(restored ?? { source_revision: this.options.source_revision, updated_at: '' })),
+      } : {}),
+    })
+    return checkpoint.checkpoint_digest
+  }
+
+  /**
+   * A user steer mutates an already-running source Turn. Its queue identity
+   * and input digest must be written by BilliardBuddy before its operation
+   * receipt may clear or the next source model request may proceed.
+   */
+  async checkpointSteerInput(
+    runId: string,
+    turnId: string,
+    operationId: string,
+    queueItemId: string,
+    inputDigest: string,
+  ): Promise<string> {
+    const thread = await this.ensureThread()
+    if (
+      !text(runId)
+      || !text(turnId)
+      || !/^effect_[a-f0-9-]{36}$/.test(operationId)
+      || !/^queue_[a-f0-9-]{36}$/.test(queueItemId)
+      || !/^[a-f0-9]{64}$/.test(inputDigest)
+    ) throw new Error('CODEX_ENGINE_STEER_RECEIPT_INVALID')
+    const restored = await this.options.thread_store.load(this.options.binding)
+    if (
+      !restored?.thread_id
+      || restored.thread_id !== thread.thread_id
+      || restored.last_run_id !== runId
+      || restored.last_turn_id !== turnId
+      || !restored.tool_surface_digest
+    ) throw new Error('CODEX_ENGINE_STEER_TURN_MISSING')
+    const checkpoint = await this.options.thread_store.save(this.options.binding, {
+      thread_id: thread.thread_id,
+      source_revision: this.options.source_revision,
+      tool_surface_digest: restored.tool_surface_digest,
+      tool_surface_count: restored.tool_surface_count!,
+      last_run_id: restored.last_run_id,
+      last_turn_id: restored.last_turn_id,
+      ...(restored.last_turn_operation_id ? { last_turn_operation_id: restored.last_turn_operation_id } : {}),
+      ...inputReceipt(restored),
+      last_steer_run_id: runId,
+      last_steer_operation_id: operationId,
+      last_steer_queue_item_id: queueItemId,
+      last_steer_input_digest: inputDigest,
+      ...(restored.last_model_run_id ? { last_model_run_id: restored.last_model_run_id } : {}),
+      ...(restored.last_model_operation_id ? { last_model_operation_id: restored.last_model_operation_id } : {}),
+      ...(restored.last_model_result_digest ? { last_model_result_digest: restored.last_model_result_digest } : {}),
+      ...(restored.last_tool_run_id ? { last_tool_run_id: restored.last_tool_run_id } : {}),
+      ...(restored.last_tool_operation_id ? { last_tool_operation_id: restored.last_tool_operation_id } : {}),
+      ...(restored.last_tool_call_id ? { last_tool_call_id: restored.last_tool_call_id } : {}),
+      ...(restored.last_tool_result_digest ? { last_tool_result_digest: restored.last_tool_result_digest } : {}),
+      ...(restored.last_hook_run_id ? { last_hook_run_id: restored.last_hook_run_id } : {}),
+      ...(restored.last_hook_operation_id ? { last_hook_operation_id: restored.last_hook_operation_id } : {}),
+      ...(restored.last_hook_result_digest ? { last_hook_result_digest: restored.last_hook_result_digest } : {}),
     })
     return checkpoint.checkpoint_digest
   }
@@ -174,6 +241,7 @@ export class CodexEngineSession {
       last_turn_id: restored.last_turn_id,
       ...(restored.last_turn_operation_id ? { last_turn_operation_id: restored.last_turn_operation_id } : {}),
       ...inputReceipt(restored),
+      ...steerReceipt(restored),
       last_model_run_id: runId,
       last_model_operation_id: operationId,
       last_model_result_digest: resultDigest,
@@ -206,6 +274,7 @@ export class CodexEngineSession {
       last_turn_id: restored.last_turn_id,
       ...(restored.last_turn_operation_id ? { last_turn_operation_id: restored.last_turn_operation_id } : {}),
       ...inputReceipt(restored),
+      ...steerReceipt(restored),
       ...(restored.last_model_run_id ? { last_model_run_id: restored.last_model_run_id } : {}),
       ...(restored.last_model_operation_id ? { last_model_operation_id: restored.last_model_operation_id } : {}),
       ...(restored.last_model_result_digest ? { last_model_result_digest: restored.last_model_result_digest } : {}),
@@ -238,6 +307,7 @@ export class CodexEngineSession {
       last_turn_id: restored.last_turn_id,
       ...(restored.last_turn_operation_id ? { last_turn_operation_id: restored.last_turn_operation_id } : {}),
       ...inputReceipt(restored),
+      ...steerReceipt(restored),
       ...(restored.last_model_run_id ? { last_model_run_id: restored.last_model_run_id } : {}),
       ...(restored.last_model_operation_id ? { last_model_operation_id: restored.last_model_operation_id } : {}),
       ...(restored.last_model_result_digest ? { last_model_result_digest: restored.last_model_result_digest } : {}),
@@ -299,6 +369,7 @@ export class CodexEngineSession {
       ...(state.last_turn_id ? { last_turn_id: state.last_turn_id } : {}),
       ...(state.last_turn_operation_id ? { last_turn_operation_id: state.last_turn_operation_id } : {}),
       ...inputReceipt(state),
+      ...steerReceipt(state),
       ...(state.last_model_run_id ? { last_model_run_id: state.last_model_run_id } : {}),
       ...(state.last_model_operation_id ? { last_model_operation_id: state.last_model_operation_id } : {}),
       ...(state.last_model_result_digest ? { last_model_result_digest: state.last_model_result_digest } : {}),
