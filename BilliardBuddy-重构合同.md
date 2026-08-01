@@ -54,7 +54,7 @@ BilliardBuddy 是面向台球门店经营者的 Electron 桌面 Agent 产品，�
 - 网络失败、模型失败、上下文超限、工具失败、权限拒绝、进程崩溃和重启后的准确状态；
 - 运行活动、待处理输入、审批、Diff、网页、文件、终端和成果预览。
 
-Agent Harness 是 BilliardBuddy 的运行环境，不是某个供应商模型的别名。模型可以替换；会话、工具、权限、事件、持久化和恢复由 BilliardBuddy 产品拥有。执行内核可以基于许可证允许的 Codex 源码分支改造，但只能作为每个 Agent 任务会话的私有执行内核：一个 BilliardBuddy 任务会话绑定一个 Codex Thread，每次 Run 在其中发起一次 Turn。BilliardBuddy 仍拥有产品状态、模型回执、权限和最终结果；Codex 的 Thread/配置资料只可存在于产品管理的私有引擎目录，不能成为产品事实来源，也不得把 Codex 的 CLI、TUI、品牌、OpenAI 登录或云端工作树带入产品。
+Agent Harness 是 BilliardBuddy 的运行环境，不是某个供应商模型的别名。模型可以替换；但 Agent 域不再由 TypeScript 复刻会话、工具、权限、事件、持久化或恢复。执行内核基于许可证允许的 Codex Rust 源码分支改造，并作为每个 BilliardBuddy Agent 工作区的私有运行时：Thread、Turn、上下文、工具、审批、沙箱、MCP、Skills、Hooks、协作和恢复以 Codex 原生协议及其私有 Thread Store 为唯一事实来源。BilliardBuddy 只拥有桌面呈现、品牌、模型路线与调用回执，以及 Agent 以外的产品状态；不得再以 ProductTask、Run 账本、权限信封或 Tool Host 与 Codex 双写、双调度或重定义权限语义。Codex 的 CLI、TUI、品牌、OpenAI 登录或云端工作树不带入产品。
 
 ### 3.3 生图工作台
 
@@ -91,8 +91,8 @@ Agent Harness 是 BilliardBuddy 的运行环境，不是某个供应商模型的
 Agent 主线和两条创作线共享一套可信底座，包括：
 
 - Electron Main、受控 preload/IPC 和本地 Product Server；
-- 内部 Agent worker、浏览器能力、PTY、文件系统和 FFmpeg/ffprobe；
-- 安装身份、安全存储、能力可用性和权限；
+- Codex 原生 Agent 运行时、浏览器能力、PTY、文件系统、沙箱与审批，以及 FFmpeg/ffprobe；
+- 安装身份、安全存储、能力可用性；Agent 权限语义由 Codex profile、sandbox 与 approval request 定义；
 - 持久化、并发控制、任务身份、幂等、事件、取消、超时和资源释放；
 - 定时任务、运行历史、诊断、崩溃和重启恢复；
 - 数据迁移、升级连续性和自动更新。
@@ -101,7 +101,7 @@ Agent 主线和两条创作线共享一套可信底座，包括：
 
 #### 共享边界，而不是万能业务引擎
 
-共享底座只承担所有工作面确实共同需要的五类能力：桌面宿主与受控 IPC、本地命令及幂等回执、权限和远程能力访问、持久任务的取消/恢复/诊断生命周期、以及可追溯的成果引用。Renderer 只保存视图状态；每一次会改变外部世界的命令都必须由本地服务拥有操作身份、状态和最终回执。
+共享底座只承担所有工作面确实共同需要的五类能力：桌面宿主与受控 IPC、凭据和远程能力访问、持久任务的取消/恢复/诊断生命周期、以及可追溯的成果引用。Renderer 只保存视图状态；Agent 的本地命令、文件与网络权限由 Codex 原生 sandbox 和 approval request 执行与判定，图片和视频各自的外部操作由其领域服务拥有操作身份、状态和最终回执。
 
 不要把三条线的业务状态强行收编成一个泛化的 `Task`、`Project` 或工作流引擎。Agent 的会话、回合、工具和审批；图片的画布、候选、版本；视频的素材、时间线、预览和渲染，分别由各自领域拥有。共享的是上面的运行边界，不是三套业务的内部编排。
 
@@ -230,7 +230,7 @@ Anthropic、OpenAI、DeepSeek、MiMo 或其他名称只在真实协议、官方�
 
 重构不先另起一套“通用 Agent 平台”。先在现有正式入口上守住共享边界，再按用户可独立验收的工作面完成和提交：
 
-1. **Agent 工作台**：以 Codex 式项目/任务/运行工作面为交互目标，完成桌面页、本地服务、任务账本、私有 Worker、模型—工具循环、审批、恢复、技能/插件/MCP/Hook/子任务的单一路径。模型协议同时支持 Chat Completions 与 Responses；平台托管模型接受 BilliardBuddy 服务的能力与额度控制，用户明确选择的个人 Key 则只在本机直连上游。
+1. **Agent 工作台**：以 Codex 式项目/Thread/Turn/Item 工作面为交互目标，直接产品化 Codex Rust App Server、Core、Tools、sandbox、审批、恢复、Skills/Plugins/MCP/Hooks/协作；不再建设或扩张 ProductTask、Run 账本、私有 Tool Host 或权限信封的平行 Agent 路径。Codex Core 与 App Server 固定使用 Responses API；BilliardBuddy 托管的 DeepSeek 走自有薄模型网关的 `/v1/responses`。用户填写的个人 Key 必须继续支持 Responses 与 Chat Completions：前者从本机受保护存储直连，后者只经过无状态的本机协议适配器转换为 Codex 所需的 Responses 流；该适配器不拥有 Agent 状态、工具、权限或任务。
 2. **生图工作台**：把图片项目从泛媒体实现中收为独立领域服务和独立持久任务路径，完成参考、Brief、候选、画布、版本、质检和导出；不借用 Agent 会话来保存图片事实。
 3. **视频工作台**：把视频项目从泛媒体实现中收为独立领域服务和独立持久任务路径，完成素材证据、时间线、预览、渲染、版本和导出；不让模型文本替代真实媒体结果。
 4. **整体退役与发行**：三条正式路径完成后，再删除重复消费者和旧路径，最后进入安装、更新和平台发布验收。
