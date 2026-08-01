@@ -171,3 +171,10 @@
 - **R9.4 清理结论**：已跟踪文件中不存在测试目录、测试文件、runner、测试配置或测试 fixture；生产源码、脚本与包清单也不再引用 Vitest、Testing Library、jsdom、`bun test` 或已删除验收脚本。网站 lockfile 的 `jest-worker` 只是 Next 构建链的 transitive package，网站没有测试脚本或直接测试依赖。
 - **静态验证**：服务端 TypeScript 检查、源码可达性审计（324 个源文件、0 个缺失 import、323 个生产源可达）、桌面 lint/生产构建、全库测试残留检索与差异空白检查通过。未运行任何测试、smoke、真实模型/媒体、桌面、安装、发布或服务器操作。
 - **下一项**：R10 生产部署闭包只读审计；任何服务器写入、容器重启、发布或公网切换须在用户单独确认后进行。
+
+## R10 生产部署闭包
+
+- **R10.4 只读生产证据**：当前服务器 `current` 指向 `/srv/billiardbuddy/releases/f7fcdaa51202`，manifest 声明源码为 `f7fcdaa51202b98ec248d4d4734f4a1020360217`，该提交是当前本地重构分支的祖先。Gateway、Relay、Static 容器均 healthy；Gateway/Static 只绑定 `127.0.0.1:8799/8788`，Relay 只监听 Docker 网络。Nginx 语法检查和 HTTPS `/healthz`、`/gw/healthz` 均返回健康结果。
+- **R10.4 持久化与恢复边界**：Gateway 仅挂载 `/srv/billiardbuddy/data/gateway` 与 operator-owned runtime policy，Relay 仅挂载 `/srv/billiardbuddy/data/relay`；桌面更新目录只挂入 Static。线上 release 与当前本地未发布提交没有混为一谈，本轮没有写入服务器、重启容器、构建镜像、调用模型或切换路由。
+- **R10.4 风险记录**：release 中 Compose 位于 `deploy/production/compose.yml`，直接运行 `docker compose config` 会因部署环境提供的必填 `BILLIARDBUDDY_RELEASE` 变量缺失而失败；因此 release 目录不是脱离部署环境即可单独复现的闭包。该风险需在未来获准的部署模块中收口，当前只记录，不修改线上。
+- **下一项**：R11 构建、更新与发布施工单；候选构建、安装、上传或公网发布须获用户单独确认。

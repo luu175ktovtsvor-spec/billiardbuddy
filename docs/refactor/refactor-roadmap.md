@@ -472,13 +472,13 @@ R2 被路线图选中时，内部不按“看到一个缺口就补一个功能�
 - **已完成阶段：R0.1 重构合同与施工证据回溯核验、R1.1 共享产品内核的权威边界回溯核验、R2 Agent Harness Authority 与 Worker/Host 生产链回溯及物理收口**。历史阶段记录仍只是候选证据，不能替代当前源码核验或发布许可。
 
 ```text
-Active work unit: R10.4 — 生产部署闭包与恢复边界的只读核验
-Outcome: 以当前服务器 release、Compose/Nginx、持久化挂载、健康状态和本地 archive 输入为证，判断生产闭包是否可恢复、可追溯且与当前提交关系明确；发现风险只记录，不写服务器。
-Evidence: `deploy/production`、运行文档、release manifest、当前服务器 `/srv/billiardbuddy` 的只读状态及 R10 既有记录。
-Constraints / Non-goals: 不写服务器、不重启容器、不构建镜像、不调用模型、不切换路由或更新元数据；不把当前本地提交自动视为发布授权。
-Allowed scope: 本地部署配置/文档和服务器只读查询结果，以及 R10 证据记录。
-Verification / Exit: 当前 release 来源、持久化数据、网络暴露、健康与回退对象均可被明确说明；本地未发布改动和线上 release 不被混为一谈。
-Next cursor: R11 — 构建、更新与发布施工单；任何候选构建或公网发布须获用户单独确认。
+Active work unit: R11.4 — 桌面构建、更新与发布来源的当前静态审计
+Outcome: 从 Windows/macOS 原生工作流、桌面打包输入、更新元数据和官网入口证明候选构建、上传与公开下载均失败关闭且来源唯一；发现静态闭包缺口才修复。
+Evidence: GitHub workflow、桌面 package/afterPack、更新配置、发布脚本、官网路由和 R11 既有记录。
+Constraints / Non-goals: 不触发 GitHub Actions、候选构建、安装、上传、更新元数据切换、官网下载切换或生产写入；不以本机 Docker/Wine 代替原生构建。
+Allowed scope: 发布 workflow、静态构建输入/审计脚本、更新配置、官网公开入口和 R11 证据记录。
+Verification / Exit: 原生 runner、来源提交、产物唯一性、签名/哈希、先上传后原子元数据切换与回退边界都有静态证据；未确认软件不会被公开下载。
+Next cursor: main 合并准备：仅在 R11 静态证据、完整提交链与用户确认均成立后执行。
 ```
 - **Interrupt rule**：只有发现会造成错误结果、数据丢失、重复副作用、权限越界或无法恢复的事实才可中断；其余发现进入对应后续模块。
 
