@@ -126,6 +126,8 @@
 - **受理与未知结果围栏**：`ImageProjectCommandService` 在项目 mutation 内创建稳定 operation/idempotency key，并先持久化 Task 与 project pointer，才交给 `ImageSubmissionCoordinator`。已有未确认 operation 只能同步同一任务；需要重新创建远端操作时必须显式 `confirm_unknown_retry`，不能把网络不确定性自动变成第二次付费提交。`ImageRemoteTaskCoordinator` 对 Relay task ID、receipt hash、状态和 acknowledgement 分别验证；结果已落盘但 ACK 暂不可用时只重试 ACK，不重提生成。
 - **候选物化和不可变 Version**：远端成功结果先按该 Task 已冻结的 `output_count` 校验，再由 `ImageResultMaterializer` 对每个候选校验可识别 MIME、尺寸、内容哈希并原子落盘；失败会清理本次候选而不是发布半成品。`ImageArtifactRepository` 在读取 asset、输出或 Version 前校验普通文件、非符号链接、路径归属、哈希、MIME 和尺寸；`ImageVersionService` 选择 current version 前再次读取已校验的版本字节，不能把损坏、被替换或未发布资产设为当前版本。
 - **已修复的合同断点**：Gateway 与共享图片合同允许每次最多 20 个候选，但 Gateway 结果 URL、桌面可信 URL 解析及直传领取仍只接受索引 `0..3`。现统一为 `0..19` 和最多 20 条 URL，仍逐张串行获取，避免合法的第 5--20 个已提交候选被错误标为未知结果或一次性放大内存。
-- **当前结论**：R5 的静态退出条件已闭合。图片提交、未知结果、远端回执、候选物化、资产校验和 current-version 选择都有唯一状态链；Renderer 不拥有可替换资产或 receipt 权威。本轮发现的候选上限不一致已修复。
-- **未验证/待处理**：没有提交付费生成、调用 Gateway/Relay、导入图片或启动桌面，因此实际供应商结果、超大候选下载、磁盘异常和用户编辑体验仍属最终软件验收事实，不能由静态结论替代。
-- **下一项**：R6.1 视频工作台的导入、证据、时间线与导出回溯核验。
+- **R5.5 当前源码证明**：Task 在第一次 Gateway 出站前持久化仅服务端可见的 `remote_submission_started_at`。同进程内仍以 `activeImageSubmissions` 复用同一提交；进程中断后，如该标记存在但尚未持久化 `remote_task_id`，任务立即围栏为 `outcome_unknown`，不会以旧 idempotency key 再次 POST。首次从未开始出站的 queued Task 仍可恢复进入同一首次提交。
+- **R5.5 显式新操作边界**：`submitImageProject`、图片编辑和草稿修改都会先把这种中断任务转换为未知结果；只有桌面专属 capability 下的 `confirm_unknown_retry` 才能继续创建新 Task/new operation。Renderer 对任何未知结果都显示“确认后重新生成”与费用提示，不再把缺少远端 task ID 的未知状态误称为“确认上次提交”。该提交起点不投影到公开 task/event。
+- **当前结论**：R5.5 已收口“中断提交被自动再次发起”的当前源码缺口。图片提交、未知结果、远端回执与 ACK 继续由同一持久 Task/Project 链路裁决；Renderer 不拥有远端 operation、提交起点或资产事实。
+- **未验证/待处理**：没有提交付费生成、调用 Gateway/Relay、导入图片或启动桌面，因此真实服务重启窗口、供应商结果、超大候选下载、磁盘异常和用户编辑体验仍属最终软件验收事实，不能由静态结论替代。
+- **下一项**：R5.6 图片不可变资产、候选物化与版本选择的当前源码回溯核验。

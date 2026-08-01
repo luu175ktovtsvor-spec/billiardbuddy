@@ -876,7 +876,7 @@ export function ImageWorkbench() {
   const startGeneration = async () => {
     if (!active) return
     const unknownOutcome = task?.outcome_unknown === true
-    const createsNewRemoteTask = unknownOutcome && (Boolean(task.remote_task_id) || hasDraftChanges)
+    const createsNewRemoteTask = unknownOutcome
     if (createsNewRemoteTask && !window.confirm('上一次任务的结果无法确认。继续会创建新的远程操作，而不是重用原提交编号查询状态。确认继续吗？')) return
     const project = await saveActiveDraft(createsNewRemoteTask)
     if (!project) return
@@ -1607,7 +1607,7 @@ export function ImageWorkbench() {
                   >
                     {loading ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
                     {task?.outcome_unknown
-                      ? (task.remote_task_id || hasDraftChanges ? '确认后重新生成' : '确认上次提交')
+                      ? '确认后重新生成'
                       : '重新生成'}
                   </button>
                 )}

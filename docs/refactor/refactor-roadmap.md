@@ -402,6 +402,9 @@ R2 被路线图选中时，内部不按“看到一个缺口就补一个功能�
 
 - **已完成的当前模块证据**：R5.4 已审计图片 API、项目/任务 owner、公开资产 URL、桌面 consumer、持久 reader 与聊天边界。图片 API 全部以 standalone `MediaProject` owner 进入 `MediaProjectService`；聊天正式源码没有 `MediaWorkbench`、`ProductTaskMedia` 或 task-scoped 图片写入消费者。`ImageWorkbench` 只消费 `/api/media/images/projects/...` 的版本、参考图和图层 identity URL；通用 `/api/media/assets/<project>/<file>` 因仍有视频预览/音频消费者而保留，但对 image Project 明确返回 404，不能再作为图片的公开便利路径或恢复旁路。
 - **R5.4 验证**：相关正式入口、旧消费者关键字、图片 URL consumer 和 import graph 已静态审计；服务端类型检查、桌面 production renderer 构建、源码可达性审计（443 个源文件、0 缺失 import、442 个生产源可达）和相关 diff whitespace audit 均通过。桌面构建只有既有 `::highlight(...)` CSS 优化 warning。未新增或运行测试、smoke、模拟请求、桌面试运行、安装、付费生成或发布。
+- **已完成的当前模块证据**：R5.5 复核图片 Task 的第一次 Gateway 出站、进程中断和显式重试，发现先前任务在出站中断后仍可沿旧 idempotency key 自动重新提交。现首次出站前持久化 server-private `remote_submission_started_at`；同进程只复用同一 active submission，重启后若已有起点但未持久化 `remote_task_id` 即标为 `outcome_unknown`，不再自动 POST。只有桌面 capability 下的 `confirm_unknown_retry` 才会建立新的 Task/operation；公开 task/event 不携带该提交起点，桌面统一显示“确认后重新生成”。
+- **R5.5 静态验证**：服务端 TypeScript 检查、源码可达性审计（496 个源文件、0 个缺失 import、322 个生产源可达）、桌面 lint/生产构建和差异空白检查通过。未新增或运行测试、smoke、模拟请求、桌面试运行、安装、真实 Relay/模型调用、付费生成或发布。
+- **R5.5 未验证与下一项**：真实 Gateway/Relay 重启窗口、远端 receipt 回放、候选下载、资产磁盘故障和用户交互尚未运行。下一游标为 R5.6 图片不可变资产、候选物化与版本选择的当前源码回溯核验，不得混入视频、搜索、设置、安装包、生产发布或真实付费生成。
 - **已完成阶段：R5 生图工作台静态收口**。Brief/参考素材、独立 Project/Task/Asset/Version、模型能力目录、同项目付费围栏、候选物化/领取/ACK、未知结果、局部重绘、质检、比较、版本选择与导出均只有图片领域的正式权威链；聊天 Harness 不拥有或代理图片项目。真实模型返回、真实网络中断、付费结果、桌面 Canvas/HiDPI 和设备级恢复尚未执行，不能被上述静态证据替代。
 
 - **已完成的当前模块证据**：R6.1 已从桌面 `VideoStudio` / `mediaWorkbenchStore`、产品 media mutation/API、`MediaProjectService` 装配、视频 Source/Evidence/Timeline/Audio/Subtitle/Preview/Render 协调器、`MediaTaskCoordinator` 与 FFmpeg/Gateway 端口追踪唯一调用链。桌面只保存未提交手势草稿和项目/任务事件投影；项目 revision、时间线版本、证据、音频/字幕、Task 与 Asset 都由 Product Server 持久服务写入。`video.preview` 与 `video.render` 是分离 Task，均在校验输出后才发布；取消和中断恢复由 `MediaTaskCoordinator` 分发回各自协调器。审计发现内容 mutation 会删除已发布节目预览，现已改为只撤销当前最终导出身份，保留带 project revision/timeline version 的历史预览；桌面同时按两种身份标出音频、字幕或时间线变更后的旧预览，新预览发布成功后才替换旧资产。
@@ -466,13 +469,13 @@ R2 被路线图选中时，内部不按“看到一个缺口就补一个功能�
 - **已完成阶段：R0.1 重构合同与施工证据回溯核验、R1.1 共享产品内核的权威边界回溯核验、R2 Agent Harness Authority 与 Worker/Host 生产链回溯及物理收口**。历史阶段记录仍只是候选证据，不能替代当前源码核验或发布许可。
 
 ```text
-Active work unit: R5.5 — 图片提交与未知远端结果的当前源码回溯核验
-Outcome: 以当前图片 Project/Task、远端 operation、Relay receipt、资产物化和桌面提交入口为证，确认一次提交、未知结果、显式确认与恢复只存在一个权威链；发现会重复付费、丢失结果或越过项目边界的缺口才在本单元修复。
-Evidence: ImageProjectCommandService、ImageSubmissionCoordinator、ImageRemoteTaskCoordinator、MediaTaskCoordinator、图片 API/桌面提交入口与 R5 既有记录。
-Constraints / Non-goals: 不进入 Agent 私有 Harness、视频、WebSearch、桌面设置、安装包或生产发布；不发送真实模型、Relay 或付费请求。
-Allowed scope: 图片提交、远端 operation/receipt、未知结果确认、任务恢复与公开提交投影，以及 R5 证据记录。
-Verification / Exit: 同一用户操作不会自动建立第二次远端付费请求；未知结果、已完成结果与 ACK 都有持久边界；Renderer 不拥有远端 operation 或资产事实；类型、生产构建、源码审计和失败/恢复证据成立。
-Next cursor: R5 的不可变资产与版本选择边界。
+Active work unit: R5.6 — 图片不可变资产、候选物化与版本选择的当前源码回溯核验
+Outcome: 以当前候选下载、物化、Asset/Version 校验、current version 选择、导出和远端 ACK 为证，确认损坏、替换、重复回放或 ACK 中断不会发布错误资产或丢失已完成结果；发现这种缺口才在本单元修复。
+Evidence: ImageResultMaterializer、ImageArtifactRepository、ImageVersionService、MediaTaskCoordinator、图片 API/桌面版本消费者与 R5 既有记录。
+Constraints / Non-goals: 不进入图片提交/付费授权、Agent 私有 Harness、视频、WebSearch、桌面设置、安装包或生产发布；不发送真实模型、Relay 或付费请求。
+Allowed scope: 图片候选物化、Asset/Version、版本选择、导出、结果 ACK/恢复和公开版本投影，以及 R5 证据记录。
+Verification / Exit: 只有已校验不可变资产可成为当前版本或导出来源；本地持久化先于远端 ACK；重复回放、损坏和项目切换不发布错误版本；类型、生产构建、源码审计和失败/恢复证据成立。
+Next cursor: R6 — 视频工作台的路线图施工单。
 ```
 - **Interrupt rule**：只有发现会造成错误结果、数据丢失、重复副作用、权限越界或无法恢复的事实才可中断；其余发现进入对应后续模块。
 
