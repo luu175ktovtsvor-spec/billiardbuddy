@@ -23,6 +23,7 @@ import { createProductTaskReviewService } from './product/taskReviewService.js'
 import { createRuntimeTaskLifecycleParticipants } from './product/taskLifecycleParticipants.js'
 import { ProductCoreOperationBridge } from './product/productCoreOperationBridge.js'
 import { createProductTaskRunComposition, type ProductTaskRunComposition } from './agent-worker/taskRunComposition.js'
+import type { ProductTaskRunDispatchPort } from './product/taskRunDispatchPort.js'
 import { migrateSupportedScheduledTaskRuns, purgeScheduledTaskRunsForDeletedTask } from './services/cronScheduler.js'
 import {
   consumeGatewayAccessTokenCapability,
@@ -114,12 +115,20 @@ export function startServer(port = PORT, host = HOST) {
   const cronService = new CronService(configDir)
   const coreOperationBridge = new ProductCoreOperationBridge()
   let chromeSessionBridge: ReturnType<typeof configureChromeSessionBridge> | undefined
-  let desktopResourceScheduler: ProductResourceScheduler | undefined
+  let desktopResourceScheduler!: ProductResourceScheduler
   let productTaskService!: ProductTaskService
-  const taskRunComposition = createProductTaskRunComposition(() => productTaskService)
-  liveTaskRunComposition = taskRunComposition
+  let taskRunComposition: ProductTaskRunComposition | undefined
+  const dispatcher: ProductTaskRunDispatchPort = {
+    dispatch: async (...input) => taskRunComposition
+      ? await taskRunComposition.dispatcher.dispatch(...input)
+      : 'recovery_required',
+    stop: async (...input) => { await taskRunComposition?.dispatcher.stop?.(...input) },
+    approve: async (...input) => await taskRunComposition?.dispatcher.approve?.(...input) ?? false,
+    answer: async (...input) => await taskRunComposition?.dispatcher.answer?.(...input) ?? false,
+    steer: async (...input) => await taskRunComposition?.dispatcher.steer?.(...input) ?? false,
+  }
   productTaskService = createProductTaskService({
-    dispatcher: taskRunComposition.dispatcher,
+    dispatcher,
     additionalLifecycleParticipants: createRuntimeTaskLifecycleParticipants({
       schedules: cronService,
       recruiting: () => chromeSessionBridge,
@@ -130,6 +139,9 @@ export function startServer(port = PORT, host = HOST) {
       },
     }),
   })
+  desktopResourceScheduler = new ProductResourceScheduler({ statePath: productTaskService.workerSchedulerStatePath() })
+  taskRunComposition = createProductTaskRunComposition(productTaskService, desktopResourceScheduler)
+  liveTaskRunComposition = taskRunComposition
   const scheduler = new CronScheduler(cronService, productTaskService)
   liveCronScheduler = scheduler
   const scheduledTasks = new ProductScheduledTaskService(cronService, scheduler, {
@@ -137,7 +149,6 @@ export function startServer(port = PORT, host = HOST) {
   })
   const taskReview = createProductTaskReviewService(productTaskService)
   const browserRoot = path.join(getProductConfigDir(), 'billiardbuddy', 'browser')
-  desktopResourceScheduler = new ProductResourceScheduler({ statePath: productTaskService.workerSchedulerStatePath() })
   chromeSessionBridge = configureChromeSessionBridge({
     statePath: path.join(browserRoot, 'actions.json'),
     descriptorPath: path.join(browserRoot, 'native-bridge.json'),
