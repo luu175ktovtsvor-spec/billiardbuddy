@@ -106,7 +106,7 @@
     "clean:electron-output": "bun run ./scripts/clean-electron-output.ts",
     "build:macos-arm64": "bash ./scripts/build-macos-arm64.sh",
     "build:windows-x64": "powershell -ExecutionPolicy Bypass -File ./scripts/build-windows-x64.ps1",
-    "electron:dev": "bun run build:electron && bun run ./scripts/electron-dev.ts",
+    "electron:dev": "bun run build:sidecars && bun run build:electron && bun run ./scripts/electron-dev.ts",
     "electron:build": "bun run build:sidecars && bun run build && bun run build:electron",
     "electron:package": "bun run stage:media-toolchain && bun run stage:codex-engine && bun run clean:electron-output && bun run electron:build && node ./node_modules/electron-builder/out/cli/cli.js --publish never",
     "electron:package:dir": "bun run stage:media-toolchain && bun run stage:codex-engine && bun run clean:electron-output && bun run electron:build && node ./node_modules/electron-builder/out/cli/cli.js --dir --publish never",
