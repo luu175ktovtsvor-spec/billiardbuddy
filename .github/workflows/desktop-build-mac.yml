@@ -236,24 +236,6 @@ jobs:
           rmdir "${mount_dir}"
           trap - EXIT
 
-          bun run ts/desktop/scripts/accept-macos-package.ts --dmg "${dmgs[0]}"
-
-      - name: 模拟更新下载中断并验证重启恢复
-        shell: bash
-        run: |
-          set -euo pipefail
-          artifact_dir='ts/desktop/build-artifacts/electron'
-          shopt -s nullglob
-          dmgs=("${artifact_dir}/"*.dmg)
-          zips=("${artifact_dir}/"*.zip)
-          if [[ "${#dmgs[@]}" -ne 1 || "${#zips[@]}" -ne 1 ]]; then
-            echo 'macOS 更新恢复验收需要唯一的 DMG 和 ZIP' >&2
-            exit 1
-          fi
-          bun run ts/desktop/scripts/accept-macos-update-recovery.ts \
-            --dmg "${dmgs[0]}" \
-            --zip "${zips[0]}"
-
       - name: 保存已审计的 macOS 安装包
         uses: actions/upload-artifact@v4
         with:

@@ -472,13 +472,13 @@ R2 被路线图选中时，内部不按“看到一个缺口就补一个功能�
 - **已完成阶段：R0.1 重构合同与施工证据回溯核验、R1.1 共享产品内核的权威边界回溯核验、R2 Agent Harness Authority 与 Worker/Host 生产链回溯及物理收口**。历史阶段记录仍只是候选证据，不能替代当前源码核验或发布许可。
 
 ```text
-Active work unit: R11.4 — 桌面构建、更新与发布来源的当前静态审计
-Outcome: 从 Windows/macOS 原生工作流、桌面打包输入、更新元数据和官网入口证明候选构建、上传与公开下载均失败关闭且来源唯一；发现静态闭包缺口才修复。
-Evidence: GitHub workflow、桌面 package/afterPack、更新配置、发布脚本、官网路由和 R11 既有记录。
-Constraints / Non-goals: 不触发 GitHub Actions、候选构建、安装、上传、更新元数据切换、官网下载切换或生产写入；不以本机 Docker/Wine 代替原生构建。
-Allowed scope: 发布 workflow、静态构建输入/审计脚本、更新配置、官网公开入口和 R11 证据记录。
-Verification / Exit: 原生 runner、来源提交、产物唯一性、签名/哈希、先上传后原子元数据切换与回退边界都有静态证据；未确认软件不会被公开下载。
-Next cursor: main 合并准备：仅在 R11 静态证据、完整提交链与用户确认均成立后执行。
+Active work unit: main 合并准备 — 完整提交链与目标分支差异核对
+Outcome: 以当前模块提交、`origin/main` 差异、工作树和生产构建证据确认合并将只包含已裁决模块；未经用户确认不实际切换或写入 main。
+Evidence: R0—R11 独立提交、git log/diff/status、路线图与模块证据记录。
+Constraints / Non-goals: 不推送、不创建 PR、不切换 main、不执行 merge、不发布或写服务器。
+Allowed scope: 只读 Git 差异、提交链、文档记录与合并准备说明。
+Verification / Exit: 每个提交可映射唯一模块、工作树干净、main 差异没有未裁决路径；实际合并须由用户明确确认。
+Next cursor: 用户确认后合并到 main。
 ```
 - **Interrupt rule**：只有发现会造成错误结果、数据丢失、重复副作用、权限越界或无法恢复的事实才可中断；其余发现进入对应后续模块。
 
