@@ -10,6 +10,7 @@ import type {
   ProductTaskActionResponse,
   ProductTaskDeletionPhase,
   ProductTaskIndexResponse,
+  ProductTaskOutcomeUnknown,
   ProductTaskPermissionMode,
   ProductTaskRecord,
   UpdateProductTaskInput,
@@ -55,7 +56,7 @@ type ProductTaskStore = {
   unpinTask: (taskId: string) => Promise<ProductTaskRecord>
   archiveTask: (taskId: string) => Promise<ProductTaskRecord>
   restoreTask: (taskId: string) => Promise<ProductTaskRecord>
-  recoverTaskRun: (taskId: string) => Promise<ProductTaskRecord>
+  recoverTaskRun: (taskId: string, input?: { confirmOutcomeUnknown?: ProductTaskOutcomeUnknown }) => Promise<ProductTaskRecord>
   mutateTaskDeletion: (taskId: string, phase: ProductTaskDeletionPhase) => Promise<ProductTaskRecord>
   continueTask: (taskId: string, input: ContinueProductTaskInput) => Promise<ProductTaskRecord>
 }
@@ -384,10 +385,24 @@ export const useProductTaskStore = create<ProductTaskStore>((set, get) => {
     unpinTask: (taskId) => runMutation(productTaskMutationKey(taskId, 'unpin'), { taskId }, (envelope) => productTasksApi.unpin(taskId, envelope)),
     archiveTask: (taskId) => runMutation(productTaskMutationKey(taskId, 'archive'), { taskId }, (envelope) => productTasksApi.archive(taskId, envelope)),
     restoreTask: (taskId) => runMutation(productTaskMutationKey(taskId, 'restore'), { taskId }, (envelope) => productTasksApi.restore(taskId, envelope)),
-    recoverTaskRun: async (taskId) => {
+    recoverTaskRun: async (taskId, input = {}) => {
       const taskRevision = get().index.tasks.find(task => task.id === taskId)?.revision
       if (taskRevision === undefined) throw new Error('Task revision is unavailable')
-      const task = await runMutation(productTaskMutationKey(taskId, 'recover'), { taskId }, (envelope) => productTasksApi.recover(taskId, envelope), taskRevision)
+      const task = await runMutation(
+        productTaskMutationKey(taskId, 'recover'),
+        {
+          taskId,
+          ...(input.confirmOutcomeUnknown ? {
+            confirm_outcome_unknown: {
+              run_id: input.confirmOutcomeUnknown.runId,
+              generation: input.confirmOutcomeUnknown.generation,
+              operation_id: input.confirmOutcomeUnknown.operation.id,
+            },
+          } : {}),
+        },
+        (envelope) => productTasksApi.recover(taskId, envelope),
+        taskRevision,
+      )
       await get().refresh()
       return task
     },

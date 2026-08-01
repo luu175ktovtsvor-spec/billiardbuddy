@@ -19,11 +19,20 @@ function upsertSnapshotActivity(
   const activities = index === -1
     ? [...snapshot.activities, activity]
     : snapshot.activities.map((candidate, candidateIndex) => candidateIndex === index ? activity : candidate)
-  return { state: snapshot.state, activities: activities.slice(-MAX_SNAPSHOT_ACTIVITIES), ...(snapshot.plan ? { plan: { id: snapshot.plan.id, steps: snapshot.plan.steps.map(step => ({ ...step })) } } : {}) }
+  return {
+    state: snapshot.state,
+    activities: activities.slice(-MAX_SNAPSHOT_ACTIVITIES),
+    ...(snapshot.plan ? { plan: { id: snapshot.plan.id, steps: snapshot.plan.steps.map(step => ({ ...step })) } } : {}),
+    outcomeUnknown: snapshot.outcomeUnknown,
+  }
 }
 
 type Listener = (taskId: string, event: ProductTaskEvent) => void
 type ProductTaskLiveRunSnapshot = ProductTaskRunSnapshot & { assistantText?: string }
+
+function emptySnapshot(state: ProductTaskRunSnapshot['state'] = 'idle'): ProductTaskLiveRunSnapshot {
+  return { state, activities: [], outcomeUnknown: null }
+}
 
 /**
  * Ephemeral projection of already-durable task events for one Product Server.
@@ -39,11 +48,16 @@ export class ProductTaskWorkerRuntimeEvents {
 
   publish(taskId: string, event: ProductTaskEvent): void {
     if (event.type === 'status') {
-      const previous = this.snapshots.get(taskId) ?? { state: 'idle' as const, activities: [] }
+      const previous = this.snapshots.get(taskId) ?? emptySnapshot()
       this.snapshots.set(taskId, {
         state: event.state,
         activities: previous.state === 'idle' && event.state === 'working' ? [] : previous.activities,
         ...(previous.state === 'idle' && event.state === 'working' ? {} : previous.plan ? { plan: previous.plan } : {}),
+        // A new claimed Run begins only after the user-confirmed recovery
+        // transaction has replaced the old dispatch generation. Its first
+        // working status is therefore the live signal that clears any prior
+        // reconciliation block for connected clients.
+        outcomeUnknown: event.state === 'working' ? null : previous.outcomeUnknown,
         ...(event.state === 'working' && previous.state !== 'working'
           ? { assistantText: '' }
           : previous.assistantText !== undefined ? { assistantText: previous.assistantText } : {}),
@@ -51,7 +65,7 @@ export class ProductTaskWorkerRuntimeEvents {
       if (event.state !== 'awaiting_approval') this.pendingApprovals.delete(taskId)
     }
     if (event.type === 'activity') {
-      const previous = this.snapshots.get(taskId) ?? { state: 'working' as const, activities: [] }
+      const previous = this.snapshots.get(taskId) ?? emptySnapshot('working')
       const updated = upsertSnapshotActivity(previous, event)
       this.snapshots.set(taskId, {
         ...updated,
@@ -59,15 +73,15 @@ export class ProductTaskWorkerRuntimeEvents {
       })
     }
     if (event.type === 'plan_updated') {
-      const previous = this.snapshots.get(taskId) ?? { state: 'working' as const, activities: [] }
+      const previous = this.snapshots.get(taskId) ?? emptySnapshot('working')
       this.snapshots.set(taskId, { ...previous, plan: { id: event.plan.id, steps: event.plan.steps.map(step => ({ ...step })) } })
     }
     if (event.type === 'assistant_text_start') {
-      const previous = this.snapshots.get(taskId) ?? { state: 'working' as const, activities: [] }
+      const previous = this.snapshots.get(taskId) ?? emptySnapshot('working')
       this.snapshots.set(taskId, { ...previous, assistantText: '' })
     }
     if (event.type === 'assistant_text_delta') {
-      const previous = this.snapshots.get(taskId) ?? { state: 'working' as const, activities: [] }
+      const previous = this.snapshots.get(taskId) ?? emptySnapshot('working')
       this.snapshots.set(taskId, {
         ...previous,
         assistantText: `${previous.assistantText ?? ''}${event.text}`.slice(0, MAX_SNAPSHOT_ASSISTANT_TEXT),
@@ -76,11 +90,30 @@ export class ProductTaskWorkerRuntimeEvents {
     if (event.type === 'approval_required') {
       this.rememberApproval(taskId, event)
       const previous = this.snapshots.get(taskId)
-      this.snapshots.set(taskId, { state: 'awaiting_approval', activities: previous?.activities ?? [], ...(previous?.plan ? { plan: previous.plan } : {}) })
+      this.snapshots.set(taskId, { state: 'awaiting_approval', activities: previous?.activities ?? [], ...(previous?.plan ? { plan: previous.plan } : {}), outcomeUnknown: previous?.outcomeUnknown ?? null })
+    }
+    if (event.type === 'outcome_unknown') {
+      const previous = this.snapshots.get(taskId)
+      this.snapshots.set(taskId, {
+        state: 'idle',
+        activities: [],
+        ...(previous?.plan ? { plan: previous.plan } : {}),
+        outcomeUnknown: event.outcome,
+      })
+      this.pendingApprovals.delete(taskId)
+    }
+    if (event.type === 'run_snapshot') {
+      this.snapshots.set(taskId, {
+        state: event.state,
+        activities: event.activities.map(activity => ({ ...activity, ...(activity.progress ? { progress: { ...activity.progress } } : {}) })),
+        ...(event.plan ? { plan: { id: event.plan.id, steps: event.plan.steps.map(step => ({ ...step })) } } : {}),
+        outcomeUnknown: event.outcomeUnknown,
+      })
+      if (event.outcomeUnknown === null) this.pendingApprovals.delete(taskId)
     }
     if (event.type === 'turn_complete' || (event.type === 'error' && !event.retryable)) {
       const previous = this.snapshots.get(taskId)
-      this.snapshots.set(taskId, { state: 'idle', activities: [], ...(previous?.plan ? { plan: previous.plan } : {}) })
+      this.snapshots.set(taskId, { state: 'idle', activities: [], ...(previous?.plan ? { plan: previous.plan } : {}), outcomeUnknown: previous?.outcomeUnknown ?? null })
       this.pendingApprovals.delete(taskId)
     }
     for (const listener of this.listeners) {
@@ -105,14 +138,17 @@ export class ProductTaskWorkerRuntimeEvents {
     const snapshot = this.snapshots.get(taskId)
     return snapshot
       ? {
-          state: snapshot.state,
+        state: snapshot.state,
           activities: snapshot.activities.map(activity => ({
             ...activity,
             ...(activity.progress ? { progress: { ...activity.progress } } : {}),
           })),
-          ...(snapshot.plan ? { plan: { id: snapshot.plan.id, steps: snapshot.plan.steps.map(step => ({ ...step })) } } : {}),
-        }
-      : { state: 'idle', activities: [] }
+        ...(snapshot.plan ? { plan: { id: snapshot.plan.id, steps: snapshot.plan.steps.map(step => ({ ...step })) } } : {}),
+        outcomeUnknown: snapshot.outcomeUnknown
+          ? { runId: snapshot.outcomeUnknown.runId, generation: snapshot.outcomeUnknown.generation, operation: { ...snapshot.outcomeUnknown.operation } }
+          : null,
+      }
+      : emptySnapshot()
   }
 
   assistantTextSnapshot(taskId: string): string | undefined {

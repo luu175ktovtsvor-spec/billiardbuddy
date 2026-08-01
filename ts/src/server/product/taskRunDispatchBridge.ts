@@ -19,19 +19,19 @@ export class ProductTaskWorkerMessageSink {
     private readonly runtimeEvents: ProductTaskRuntimeEventPort,
   ) {}
 
-  record(runId: string, generation: number, message: Extract<AgentWorkerOutbound, { type: 'event' | 'terminal' | 'steer_consumed' }>): Promise<void> {
+  record(runId: string, generation: number, message: Extract<AgentWorkerOutbound, { type: 'event' | 'terminal' | 'steer_consumed' }>, executionClaimToken: string): Promise<void> {
     const key = `${runId}:${generation}`
     if (message.type === 'terminal') {
       if (this.closed.has(key)) return Promise.resolve()
       this.closed.add(key)
     } else if (this.closed.has(key)) return Promise.resolve()
     const previous = this.queues.get(key) ?? Promise.resolve()
-    const queued = previous.catch(() => undefined).then(() => this.recordOrdered(runId, generation, message))
+    const queued = previous.catch(() => undefined).then(() => this.recordOrdered(runId, generation, message, executionClaimToken))
     this.queues.set(key, queued)
     return queued.finally(() => { if (this.queues.get(key) === queued) this.queues.delete(key) })
   }
 
-  private async recordOrdered(runId: string, generation: number, message: Extract<AgentWorkerOutbound, { type: 'event' | 'terminal' | 'steer_consumed' }>): Promise<void> {
+  private async recordOrdered(runId: string, generation: number, message: Extract<AgentWorkerOutbound, { type: 'event' | 'terminal' | 'steer_consumed' }>, executionClaimToken: string): Promise<void> {
     const key = `${runId}:${generation}`
     let taskId = this.taskIds.get(key)
     if (!taskId) {
@@ -40,7 +40,7 @@ export class ProductTaskWorkerMessageSink {
     }
     if (message.type === 'terminal') {
       this.flushText(taskId, key, true)
-      const recorded = await this.tasks.recordTaskRunTerminalProjection(runId, generation, message.state, this.publishedText.get(key) ?? '', message.failure)
+      const recorded = await this.tasks.recordTaskRunTerminalProjection(runId, generation, message.state, this.publishedText.get(key) ?? '', message.failure, executionClaimToken)
       for (const event of recorded.queue_events) this.runtimeEvents.publish(taskId, event)
       if (message.state === 'recovery_required') this.runtimeEvents.publish(taskId, { type: 'error', ...(message.failure ?? { code: 'task_failed', retryable: false }) })
       else this.runtimeEvents.publish(taskId, { type: 'turn_complete' })
@@ -53,7 +53,7 @@ export class ProductTaskWorkerMessageSink {
       return
     }
     if (message.type === 'steer_consumed') {
-      const recorded = await this.tasks.recordQueuedInputConsumed(runId, generation, message.queue_item_id)
+      const recorded = await this.tasks.recordQueuedInputConsumed(runId, generation, message.queue_item_id, executionClaimToken)
       for (const event of recorded.events) this.runtimeEvents.publish(taskId, event)
       return
     }
@@ -62,7 +62,7 @@ export class ProductTaskWorkerMessageSink {
       return
     }
     if (message.event === 'context_compaction') {
-      const recorded = await this.tasks.recordTaskRunContextCompaction(runId, generation, message)
+      const recorded = await this.tasks.recordTaskRunContextCompaction(runId, generation, message, executionClaimToken)
       this.runtimeEvents.publish(taskId, recorded.event)
       return
     }
@@ -73,6 +73,7 @@ export class ProductTaskWorkerMessageSink {
         message.request_id,
         message.action,
         message.review,
+        executionClaimToken,
       )
       if (this.closed.has(key)) return
       if (recorded.reviewer === 'automatic') {
@@ -83,6 +84,7 @@ export class ProductTaskWorkerMessageSink {
           decision.allowed,
           'automatic',
           decision.reason,
+          executionClaimToken,
         )
         if (!resolved) throw new Error('AUTOMATIC_REVIEW_FAILED')
       } else {
@@ -96,6 +98,7 @@ export class ProductTaskWorkerMessageSink {
         generation,
         message.request_id,
         message.questions,
+        executionClaimToken,
       )
       this.runtimeEvents.publish(taskId, recorded.event)
       return
@@ -106,16 +109,16 @@ export class ProductTaskWorkerMessageSink {
         tool_count: message.tool_count,
         command_count: message.command_count,
         mcp_server_count: message.mcp_server_count,
-      })
+      }, executionClaimToken)
       return
     }
     if (message.event === 'activity') {
-      const recorded = await this.tasks.recordTaskRunActivity(runId, generation, { type: 'activity', ...message.activity })
+      const recorded = await this.tasks.recordTaskRunActivity(runId, generation, { type: 'activity', ...message.activity }, executionClaimToken)
       this.runtimeEvents.publish(taskId, recorded.event)
       return
     }
     if (message.event === 'plan_updated') {
-      const recorded = await this.tasks.recordTaskRunPlan(runId, generation, message.plan)
+      const recorded = await this.tasks.recordTaskRunPlan(runId, generation, message.plan, executionClaimToken)
       this.runtimeEvents.publish(taskId, recorded.event)
       return
     }

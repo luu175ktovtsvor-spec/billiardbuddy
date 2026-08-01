@@ -95,7 +95,13 @@ export const productTasksApi: ProductTaskApi = {
     productApi.post<ProductTaskActionResponse>(`${taskPath(taskId)}/archive`, input),
   restore: (taskId: string, input: MutationEnvelope) =>
     productApi.post<ProductTaskActionResponse>(`${taskPath(taskId)}/restore`, input),
-  recover: (taskId: string, input: MutationEnvelope) =>
+  recover: (taskId: string, input: MutationEnvelope<{
+    confirm_outcome_unknown?: {
+      run_id: string
+      generation: number
+      operation_id: string
+    }
+  }>) =>
     productApi.post<ProductTaskActionResponse>(`${taskPath(taskId)}/recover`, input),
   delete: (taskId, input) => productApi.post<ProductTaskDeletionResponse>(`${taskPath(taskId)}/delete`, input),
   continue: (taskId: string, input: MutationEnvelope<ContinueProductTaskInput>) =>

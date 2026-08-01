@@ -15,7 +15,7 @@ export type AgentWorkerCore = {
   subscribe?(listener: (message: Extract<AgentWorkerOutbound, { type: 'event' | 'terminal' }>) => void): () => void
 }
 /** Identity is closed over by the server-private factory, never serialized to the worker protocol. */
-export type AgentWorkerCoreFactory = { start(input: { run_id: string; dispatch_generation: number; envelope_digest: string; permission_envelope: PermissionExecutionEnvelope; scheduler_receipt: ProductResourceReceipt }): Promise<AgentWorkerCore> }
+export type AgentWorkerCoreFactory = { start(input: { run_id: string; dispatch_generation: number; execution_claim_token: string; envelope_digest: string; permission_envelope: PermissionExecutionEnvelope; scheduler_receipt: ProductResourceReceipt }): Promise<AgentWorkerCore> }
 export type AgentWorkerBootstrap = { capability: AgentWorkerChildStartCapability; capability_key: Buffer; cores: AgentWorkerCoreFactory }
 
 /** The launcher deliberately has no ProductTask mutation capability. */
@@ -36,8 +36,8 @@ export class AgentWorkerService {
     if (receipt.outcome !== 'admitted' || receipt.job_id !== `agent-worker:${input.run_id}:${input.dispatch_generation}` || !receipt.fencing_token || !receipt.lease || receipt.fencing_token !== receipt.lease.fencing_token || Date.parse(receipt.lease.expires_at) <= this.now().getTime() || !receipt.resource_keys.includes('agent.worker')) return { type: 'fatal', code: 'SCHEDULER_DENIED' }
     try {
       const capability = this.bootstrap.capability
-      if (capability.run_id !== input.run_id || capability.dispatch_generation !== input.dispatch_generation || capability.fencing_token !== receipt.fencing_token || capability.envelope_digest !== input.envelope.digest) return { type: 'fatal', code: 'ENVELOPE_DENIED' }
-      this.core = await this.bootstrap.cores.start({ run_id: input.run_id, dispatch_generation: input.dispatch_generation, envelope_digest: input.envelope.digest, permission_envelope: input.envelope, scheduler_receipt: receipt })
+      if (capability.run_id !== input.run_id || capability.dispatch_generation !== input.dispatch_generation || capability.fencing_token !== receipt.fencing_token || capability.envelope_digest !== input.envelope.digest || capability.execution_claim_token !== input.execution_claim_token) return { type: 'fatal', code: 'ENVELOPE_DENIED' }
+      this.core = await this.bootstrap.cores.start({ run_id: input.run_id, dispatch_generation: input.dispatch_generation, execution_claim_token: input.execution_claim_token, envelope_digest: input.envelope.digest, permission_envelope: input.envelope, scheduler_receipt: receipt })
       this.runId = input.run_id
       return { type: 'claim_receipt', outcome: 'claimed', run_id: input.run_id }
     } catch {

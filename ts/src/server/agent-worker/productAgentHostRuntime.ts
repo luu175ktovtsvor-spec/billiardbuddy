@@ -16,7 +16,7 @@ import type { ProductTaskMcpHost } from './mcpHost.js'
 import { runProductModel } from './productModelRuntime.js'
 import { runProductTools } from './productToolExecution.js'
 import { decideProductToolPermission } from './productPermissionDecision.js'
-import { emptyProductToolPermissionContext, type ProductCommand, type ProductThinkingConfig, type ProductToolContext, type ProductToolPermissionContext, type ProductTools } from './productTool.js'
+import { emptyProductToolPermissionContext, type ProductCommand, type ProductContentBlock, type ProductThinkingConfig, type ProductToolContext, type ProductToolPermissionContext, type ProductTools } from './productTool.js'
 import { buildProductChatPrompt } from './productChatAttachments.js'
 import { getLocalISODate } from '../../constants/common.js'
 
@@ -51,7 +51,7 @@ export type ProductHostToolRequest = {
 
 export type ProductAgentHostRuntime = {
   prepare(): Promise<ProductHostRuntimeSnapshot>
-  commandPrompt(name: string, args: string): Promise<ProductPrompt>
+  commandPrompt(name: string, args: string): Promise<ProductContentBlock[]>
   chatPrompt(text: string, attachments: readonly string[]): Promise<ProductPrompt>
   model(request: ProductHostModelRequest): AsyncGenerator<ProductModelEvent, void>
   tools(request: ProductHostToolRequest): Promise<ProductHarnessMessage[]>
@@ -147,7 +147,7 @@ export class StandardProductAgentHostRuntime implements ProductAgentHostRuntime 
     return this.prepared
   }
 
-  async commandPrompt(name: string, args: string): Promise<ProductPrompt> {
+  async commandPrompt(name: string, args: string): Promise<ProductContentBlock[]> {
     await this.prepare()
     const command = this.commands.find(candidate => candidate.name === name || candidate.aliases?.includes(name))
     if (!command || command.disableNonInteractive) throw new Error('PRODUCT_COMMAND_UNAVAILABLE')

@@ -17,6 +17,7 @@ export type AgentWorkerStart = {
   type: 'start'
   run_id: string
   dispatch_generation: number
+  execution_claim_token: string
   scheduler_receipt: ProductResourceReceipt
   envelope: PermissionExecutionEnvelope
 }

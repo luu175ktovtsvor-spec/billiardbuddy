@@ -14,6 +14,8 @@ import type {
   ProductTaskRunState,
   ProductTaskRunFailure,
   ProductTaskRunFailureCode,
+  ProductTaskExternalOperationKind,
+  ProductTaskOutcomeUnknown,
   ProductTaskSafeErrorCode,
   ProductTaskQueuedInput,
   ProductTaskThread,
@@ -143,6 +145,18 @@ const PRODUCT_TASK_RETRYABLE_RUN_FAILURE_CODES = new Set<ProductTaskRunFailureCo
   'task_network_unavailable',
   'task_model_response_invalid',
 ])
+const PRODUCT_TASK_EXTERNAL_OPERATION_KINDS = new Set<ProductTaskExternalOperationKind>([
+  'mcp_prepare',
+  'chat_prompt',
+  'command_prompt',
+  'model',
+  'tools',
+  'hook_command',
+  'hook_http',
+  'model_ack',
+  'workspace_init',
+  'auto_memory_append',
+])
 
 function parseRunFailure(value: unknown): ProductTaskRunFailure | undefined {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
@@ -205,6 +219,29 @@ function isProductActivityId(value: unknown): value is string {
 
 function isProductActivitySummary(value: unknown): value is string {
   return isVisibleString(value, MAX_ACTIVITY_SUMMARY_LENGTH) && PRODUCT_TASK_ACTIVITY_SUMMARIES.has(value)
+}
+
+function parseOutcomeUnknown(value: unknown): ProductTaskOutcomeUnknown | null {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ['runId', 'generation', 'operation']) ||
+    typeof value.runId !== 'string' || !/^run_[a-f0-9-]{36}$/.test(value.runId) ||
+    typeof value.generation !== 'number' || !Number.isSafeInteger(value.generation) || value.generation < 1 ||
+    !isRecord(value.operation) ||
+    !hasOnlyKeys(value.operation, ['id', 'kind', 'startedAt']) ||
+    typeof value.operation.id !== 'string' || !/^effect_[a-f0-9-]{36}$/.test(value.operation.id) ||
+    !isEnumValue(value.operation.kind, PRODUCT_TASK_EXTERNAL_OPERATION_KINDS) ||
+    !isTimestamp(value.operation.startedAt)
+  ) return null
+  return {
+    runId: value.runId,
+    generation: value.generation,
+    operation: {
+      id: value.operation.id,
+      kind: value.operation.kind,
+      startedAt: value.operation.startedAt,
+    },
+  }
 }
 
 function parseActivityProgress(value: unknown): ProductTaskActivityProgress | null {
@@ -466,7 +503,7 @@ export function parseProductTaskEvent(value: unknown): ProductTaskEvent | null {
 
     case 'run_snapshot': {
       if (
-        !hasOnlyKeys(value, ['type', 'state', 'activities', 'plan']) ||
+        !hasOnlyKeys(value, ['type', 'state', 'activities', 'plan', 'outcomeUnknown']) ||
         !isEnumValue(value.state, PRODUCT_TASK_RUN_STATES) ||
         !Array.isArray(value.activities) ||
         value.activities.length > MAX_RUN_ACTIVITY_COUNT
@@ -481,10 +518,15 @@ export function parseProductTaskEvent(value: unknown): ProductTaskEvent | null {
       if (activityIds.size !== parsedActivities.length) return null
       const plan = 'plan' in value ? parseTaskPlan(value.plan) : undefined
       if ('plan' in value && !plan) return null
+      const outcomeUnknown = value.outcomeUnknown === null
+        ? null
+        : parseOutcomeUnknown(value.outcomeUnknown)
+      if (outcomeUnknown === null && value.outcomeUnknown !== null) return null
       return {
         type: 'run_snapshot',
         state: value.state,
         activities: parsedActivities,
+        outcomeUnknown,
         ...(plan ? { plan } : {}),
       }
     }
@@ -493,6 +535,23 @@ export function parseProductTaskEvent(value: unknown): ProductTaskEvent | null {
       return hasOnlyKeys(value, ['type', 'text']) && typeof value.text === 'string' && value.text.length <= MAX_PRODUCT_TEXT_LENGTH
         ? { type: 'assistant_text_snapshot', text: value.text }
         : null
+
+    case 'outcome_unknown': {
+      if (
+        !hasOnlyKeys(value, ['type', 'outcome', 'event_sequence', 'replayed']) ||
+        typeof value.event_sequence !== 'number' || !Number.isSafeInteger(value.event_sequence) || value.event_sequence < 1 ||
+        ('replayed' in value && value.replayed !== true)
+      ) return null
+      const outcome = parseOutcomeUnknown(value.outcome)
+      return outcome
+        ? {
+            type: 'outcome_unknown',
+            outcome,
+            event_sequence: value.event_sequence,
+            ...(value.replayed === true ? { replayed: true as const } : {}),
+          }
+        : null
+    }
 
     case 'plan_updated': {
       if (!hasOnlyKeys(value, ['type', 'plan', 'event_sequence', 'replayed']) || typeof value.event_sequence !== 'number' || !Number.isSafeInteger(value.event_sequence) || value.event_sequence < 1 || ('replayed' in value && value.replayed !== true)) return null
@@ -681,9 +740,10 @@ function parseThreadEntry(value: unknown): ProductTaskThreadEntry | null {
 export function parseProductTaskThread(value: unknown, taskId: string): ProductTaskThread | null {
   if (
     !isRecord(value) ||
-    !hasOnlyKeys(value, ['taskId', 'entries', 'recoveryRequired']) ||
+    !hasOnlyKeys(value, ['taskId', 'entries', 'recoveryRequired', 'outcomeUnknown']) ||
     value.taskId !== taskId ||
     ('recoveryRequired' in value && typeof value.recoveryRequired !== 'boolean') ||
+    ('outcomeUnknown' in value && (value.outcomeUnknown === null || parseOutcomeUnknown(value.outcomeUnknown) === null)) ||
     !Array.isArray(value.entries) ||
     value.entries.length > MAX_THREAD_ENTRY_COUNT
   ) {
@@ -697,7 +757,12 @@ export function parseProductTaskThread(value: unknown, taskId: string): ProductT
   const ids = new Set(typedEntries.map((entry) => entry.id))
   if (ids.size !== typedEntries.length) return null
 
-  return { taskId, entries: typedEntries, ...(value.recoveryRequired === true ? { recoveryRequired: true } : {}) }
+  return {
+    taskId,
+    entries: typedEntries,
+    ...(value.recoveryRequired === true ? { recoveryRequired: true } : {}),
+    ...(value.outcomeUnknown ? { outcomeUnknown: parseOutcomeUnknown(value.outcomeUnknown)! } : {}),
+  }
 }
 
 

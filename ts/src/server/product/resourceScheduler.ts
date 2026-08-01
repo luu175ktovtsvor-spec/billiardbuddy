@@ -144,12 +144,33 @@ export class ProductResourceScheduler {
     )
   }
 
+  /**
+   * Recovery uses this durable, lock-protected observation before it can fence
+   * a claimed TaskRun. A lease held by another Product Server is still live;
+   * only expiry/reaping makes it eligible for recovery.
+   */
+  async hasLiveTaskRunLease(runId: string, dispatchGeneration: number): Promise<boolean> {
+    const jobId = `agent-worker:${runId}:${dispatchGeneration}`
+    return this.mutate(state => {
+      this.reapExpired(state)
+      const job = state.jobs[jobId]
+      return Boolean(
+        job
+        && isActive(job)
+        && job.claim.task_run?.run_id === runId
+        && job.claim.task_run?.dispatch_generation === dispatchGeneration
+        && job.lease
+        && Date.parse(job.lease.expires_at) > this.now().getTime(),
+      )
+    })
+  }
+
   async heartbeat(jobId: string, fencingToken: number): Promise<ProductResourceReceipt> {
     return this.mutate(state => {
       this.reapExpired(state)
       const job = state.jobs[jobId]
       if (!job) return this.missing(jobId)
-      if (!isActive(job) || job.lease?.fencing_token !== fencingToken) return this.stale(job)
+      if (!isActive(job) || job.lease?.fencing_token !== fencingToken || !this.ownsLease(job.lease)) return this.stale(job)
       job.lease.expires_at = new Date(this.now().getTime() + this.leaseMs).toISOString()
       return this.receipt(job, 'admitted')
     })
@@ -160,7 +181,7 @@ export class ProductResourceScheduler {
       this.reapExpired(state)
       const job = state.jobs[jobId]
       if (!job) return this.missing(jobId)
-      if (!isActive(job) || job.lease?.fencing_token !== fencingToken) return this.stale(job)
+      if (!isActive(job) || job.lease?.fencing_token !== fencingToken || !this.ownsLease(job.lease)) return this.stale(job)
       job.state = 'completed'; delete job.lease
       this.dispatch(state, this.profiles.current().profile)
       return this.receipt(job, 'admitted')
