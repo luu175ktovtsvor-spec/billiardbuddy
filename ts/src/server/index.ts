@@ -9,7 +9,7 @@ import { diagnosticsService } from './services/diagnosticsService.js'
 import { consumeMediaUiCapability, createMediaApiHandler } from './api/media.js'
 import { isLongMediaRequestPath } from './mediaRequestTimeout.js'
 import { handleProductApi } from './api/product.js'
-import { resetProductTaskServiceForServer, type ProductTaskService } from './product/taskService.js'
+import { createProductTaskService, type ProductTaskService } from './product/taskService.js'
 import { MediaProjectService } from './services/mediaProjectService.js'
 import { voiceOperationService } from './services/voiceOperationService.js'
 import { getProductConfigDir } from './product/productPaths.js'
@@ -118,7 +118,7 @@ export function startServer(port = PORT, host = HOST) {
   let productTaskService!: ProductTaskService
   const taskRunComposition = createProductTaskRunComposition(() => productTaskService)
   liveTaskRunComposition = taskRunComposition
-  productTaskService = resetProductTaskServiceForServer({
+  productTaskService = createProductTaskService({
     dispatcher: taskRunComposition.dispatcher,
     additionalLifecycleParticipants: createRuntimeTaskLifecycleParticipants({
       schedules: cronService,
