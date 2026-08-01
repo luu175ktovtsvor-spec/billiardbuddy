@@ -29,6 +29,11 @@ import {
   updateGatewayAccessToken,
 } from './services/gatewayAccessTokenRuntime.js'
 import { GATEWAY_ACCESS_TOKEN_UPDATE_PATH } from '../../shared/product/providerGateway.js'
+import {
+  consumePersonalModelConfigurationCapability,
+  updatePersonalModelRuntimeConfiguration,
+} from './services/personalModelRuntimeConfiguration.js'
+import { PERSONAL_MODEL_CONFIGURATION_UPDATE_PATH } from '../../shared/product/personalModels.js'
 import * as path from 'node:path'
 
 function readArgValue(flag: string): string | undefined {
@@ -103,6 +108,7 @@ export function resolveLocalServerHost(host: string): string {
 export function startServer(port = PORT, host = HOST) {
   const localHost = resolveLocalServerHost(host)
   const mediaUiCapability = consumeMediaUiCapability()
+  const personalModelConfigurationCapability = consumePersonalModelConfigurationCapability()
   const gatewayAccessTokenCapability = consumeGatewayAccessTokenCapability()
   const configDir = getProductConfigDir()
   const cronService = new CronService(configDir)
@@ -219,6 +225,9 @@ export function startServer(port = PORT, host = HOST) {
         productTaskQueueRecovery ??= productTaskService.recoverDurableTaskRunQueue()
         await productTaskQueueRecovery
         const url = new URL(req.url)
+        if (url.pathname === PERSONAL_MODEL_CONFIGURATION_UPDATE_PATH) {
+          return await updatePersonalModelRuntimeConfiguration(req, personalModelConfigurationCapability)
+        }
         if (url.pathname === GATEWAY_ACCESS_TOKEN_UPDATE_PATH) {
           return await updateGatewayAccessToken(req, gatewayAccessTokenCapability)
         }

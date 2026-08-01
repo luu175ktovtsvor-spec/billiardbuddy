@@ -2730,7 +2730,7 @@ export class ProductTaskService {
     const binding = productTextReasoningBinding()
     const authority = new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps)
     const { result } = await authority.transactSubmit((state) => {
-      const run = state.task_runs[runId] as { task_id?: unknown; provider?: unknown; model?: unknown } | undefined
+      const run = state.task_runs[runId] as { task_id?: unknown; provider?: unknown; model?: unknown; model_route_fingerprint?: unknown } | undefined
       const dispatch = state.dispatch_records[runId] as {
         dispatch_generation?: unknown
         state?: unknown
@@ -2743,12 +2743,13 @@ export class ProductTaskService {
         if (nextTaskRunId(state, run.task_id) !== runId) return { changed: false as const, value: { outcome: 'queued' as const, task_id: run.task_id } }
         run.provider = binding.provider
         run.model = binding.model
+        run.model_route_fingerprint = binding.fingerprint
         dispatch.state = 'claimed'
         dispatch.claimed_at = this.now().toISOString()
         return { outcome: 'claimed' as const, task_id: run.task_id }
       }
       if (dispatch.state === 'claimed' || dispatch.state === 'started') {
-        if (run.provider !== binding.provider || run.model !== binding.model) throw new Error('AUTHORITY_INVALID')
+        if (typeof run.provider !== 'string' || typeof run.model !== 'string' || !/^[a-f0-9]{64}$/.test(String(run.model_route_fingerprint ?? ''))) throw new Error('AUTHORITY_INVALID')
         return { changed: false as const, value: { outcome: 'duplicate' as const, task_id: run.task_id } }
       }
       return { changed: false as const, value: { outcome: 'recovery_required' as const, task_id: run.task_id } }
@@ -2937,15 +2938,15 @@ export class ProductTaskService {
   }
 
   /** The only server-private resolver for a run's durable Core launch target. */
-  async resolveTaskRunCoreBinding(runId: string, dispatchGeneration: number): Promise<{ session_id: string; work_dir: string }> {
+  async resolveTaskRunCoreBinding(runId: string, dispatchGeneration: number): Promise<{ session_id: string; work_dir: string; provider: string; model: string; model_route_fingerprint: string }> {
     const file = await new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps).read()
-    const run = file.task_runs[runId] as { lineage_id?: unknown; core_binding?: { resume_binding_id?: unknown; session_id?: unknown; work_dir?: unknown; dispatch_generation?: unknown } } | undefined
+    const run = file.task_runs[runId] as { lineage_id?: unknown; provider?: unknown; model?: unknown; model_route_fingerprint?: unknown; core_binding?: { resume_binding_id?: unknown; session_id?: unknown; work_dir?: unknown; dispatch_generation?: unknown } } | undefined
     const binding = run?.core_binding
-    if (!binding || binding.dispatch_generation !== dispatchGeneration || typeof binding.resume_binding_id !== 'string' || typeof binding.session_id !== 'string' || typeof binding.work_dir !== 'string' || !binding.work_dir) throw new Error('CORE_BINDING_UNAVAILABLE')
+    if (!binding || binding.dispatch_generation !== dispatchGeneration || typeof binding.resume_binding_id !== 'string' || typeof binding.session_id !== 'string' || typeof binding.work_dir !== 'string' || !binding.work_dir || typeof run?.provider !== 'string' || typeof run.model !== 'string' || !/^[a-f0-9]{64}$/.test(String(run.model_route_fingerprint ?? ''))) throw new Error('CORE_BINDING_UNAVAILABLE')
     const lineage = typeof run.lineage_id === 'string' ? file.conversation_lineages[run.lineage_id] as { resume_binding_id?: unknown } | undefined : undefined
     if (binding.resume_binding_id !== lineage?.resume_binding_id) throw new Error('CORE_BINDING_UNAVAILABLE')
     const workDir = await fs.realpath(binding.work_dir).catch(() => undefined); if (!workDir || !await fs.stat(workDir).then(stat => stat.isDirectory()).catch(() => false)) throw new Error('CORE_BINDING_UNAVAILABLE')
-    return { session_id: binding.session_id, work_dir: workDir }
+    return { session_id: binding.session_id, work_dir: workDir, provider: run.provider, model: run.model, model_route_fingerprint: run.model_route_fingerprint as string }
   }
 
   /** BB-03DR terminal/recovery marker; it cannot create or replay a user turn. */

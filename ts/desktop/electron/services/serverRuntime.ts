@@ -28,6 +28,10 @@ import {
   GATEWAY_ACCESS_TOKEN_CAPABILITY_HEADER,
   GATEWAY_ACCESS_TOKEN_UPDATE_PATH,
 } from '../../../shared/product/providerGateway'
+import {
+  PERSONAL_MODEL_CONFIGURATION_CAPABILITY_HEADER,
+  PERSONAL_MODEL_CONFIGURATION_UPDATE_PATH,
+} from '../../../shared/product/personalModels'
 
 type ServerRuntimeOptions = {
   desktopRoot: string
@@ -46,6 +50,10 @@ type ServerRuntimeOptions = {
   browserUiCapability?: string
   /** Electron-encrypted master key used only to encrypt MCP OAuth credentials at rest. */
   mcpOAuthCredentialKey?: string
+  /** Main-owned user provider credentials, injected only into the local Product Server. */
+  resolveProviderCredentialEnv?: () => NodeJS.ProcessEnv
+  /** Main-only capability for hot-updating provider credentials without restart. */
+  providerConfigurationCapability?: string
   /** Main-only capability for rotating the local Server's short-lived bearer. */
   gatewayAccessTokenCapability?: string
 }
@@ -62,6 +70,8 @@ export class ElectronServerRuntime {
   private readonly mediaUiCapability?: string
   private readonly browserUiCapability?: string
   private readonly mcpOAuthCredentialKey?: string
+  private readonly resolveProviderCredentialEnv?: () => NodeJS.ProcessEnv
+  private readonly providerConfigurationCapability?: string
   private readonly gatewayAccessTokenCapability?: string
   private sidecarEnvPromise: Promise<NodeJS.ProcessEnv> | null = null
   private server: { url: string, child: SidecarChild } | null = null
@@ -82,6 +92,8 @@ export class ElectronServerRuntime {
     this.mediaUiCapability = options.mediaUiCapability
     this.browserUiCapability = options.browserUiCapability
     this.mcpOAuthCredentialKey = options.mcpOAuthCredentialKey
+    this.resolveProviderCredentialEnv = options.resolveProviderCredentialEnv
+    this.providerConfigurationCapability = options.providerConfigurationCapability
     this.gatewayAccessTokenCapability = options.gatewayAccessTokenCapability
   }
 
@@ -98,9 +110,13 @@ export class ElectronServerRuntime {
     const withMcpCredentialKey = this.mcpOAuthCredentialKey
       ? { ...withBrowserCapability, BILLIARDBUDDY_MCP_OAUTH_KEY: this.mcpOAuthCredentialKey }
       : withBrowserCapability
+    const withProviderCredentials = { ...withMcpCredentialKey, ...this.resolveProviderCredentialEnv?.() }
+    const withProviderCapability = this.providerConfigurationCapability
+      ? { ...withProviderCredentials, BB_PERSONAL_MODEL_CONFIGURATION_CAPABILITY: this.providerConfigurationCapability }
+      : withProviderCredentials
     const withGatewayCapability = this.gatewayAccessTokenCapability
-      ? { ...withMcpCredentialKey, BB_GATEWAY_ACCESS_TOKEN_CAPABILITY: this.gatewayAccessTokenCapability }
-      : withMcpCredentialKey
+      ? { ...withProviderCapability, BB_GATEWAY_ACCESS_TOKEN_CAPABILITY: this.gatewayAccessTokenCapability }
+      : withProviderCapability
     if (withGatewayCapability.BB_MEDIA_BIN_DIR) return withGatewayCapability
 
     const mediaBinDir = path.join(this.desktopRoot, 'runtime-assets', 'binaries')
@@ -181,6 +197,26 @@ export class ElectronServerRuntime {
     } catch {
       await this.reconfigureServer()
     }
+  }
+
+  /** Apply a Main-owned credential update without exposing it to a Worker or renderer. */
+  async updateProviderCredentials(configuration: { models?: string }): Promise<void> {
+    if (this.closing || !this.server) return
+    const capability = this.providerConfigurationCapability
+    if (!capability || capability.length < 32) throw new Error('Provider configuration capability is unavailable')
+    const response = await fetch(`${this.server.url}${PERSONAL_MODEL_CONFIGURATION_UPDATE_PATH}`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        [PERSONAL_MODEL_CONFIGURATION_CAPABILITY_HEADER]: capability,
+      },
+      body: JSON.stringify({
+        version: 1,
+        models: JSON.parse(configuration.models ?? '{"version":1,"profiles":[],"routes":{}}'),
+      }),
+      signal: AbortSignal.timeout(10_000),
+    })
+    if (response.status !== 204) throw new Error('Provider configuration update failed')
   }
 
   private async startServerOnce(): Promise<string> {

@@ -39,6 +39,7 @@ import {
   type PortableDetection,
 } from './services/appMode'
 import { createCredentialStore } from './services/keychain'
+import { ProviderCredentialService } from './services/providerCredentials'
 import { InstallationSessionManager } from './services/installationSession'
 import { applyWindowsAppUserModelId } from './services/appIdentity'
 import {
@@ -73,6 +74,7 @@ app.setName('BilliardBuddy')
 const mediaUiCapability = randomBytes(32).toString('base64url')
 const browserUiCapability = randomBytes(32).toString('base64url')
 const gatewayAccessTokenCapability = randomBytes(32).toString('base64url')
+const providerConfigurationCapability = randomBytes(32).toString('base64url')
 
 let mainWindow: BrowserWindow | null = null
 let serverRuntime: ElectronServerRuntime | null = null
@@ -83,6 +85,7 @@ let previewService: ElectronPreviewService | null = null
 let mediaActions: ElectronMediaActions | null = null
 let browserCapability: ElectronBrowserCapability | null = null
 let mcpOAuthCredentialKey: string | null = null
+let providerCredentialService: ProviderCredentialService | null = null
 let isQuitting = false
 let trayController: TrayController | null = null
 const trustedProductWindowEntries = new Map<BrowserWindow, string>()
@@ -275,6 +278,14 @@ function getMcpOAuthCredentialKey(): string {
   return created
 }
 
+/** Main is the only desktop process allowed to read user-owned provider keys. */
+function getProviderCredentialService(): ProviderCredentialService {
+  providerCredentialService ??= new ProviderCredentialService(
+    createCredentialStore(process.platform, app.getPath('userData'), 'provider-credentials', safeStorage),
+  )
+  return providerCredentialService
+}
+
 function getServerRuntime() {
   serverRuntime ??= new ElectronServerRuntime({
     desktopRoot: unpackedRoot(),
@@ -296,6 +307,8 @@ function getServerRuntime() {
     mediaUiCapability,
     browserUiCapability,
     mcpOAuthCredentialKey: getMcpOAuthCredentialKey(),
+    resolveProviderCredentialEnv: () => getProviderCredentialService().runtimeEnvironment(),
+    providerConfigurationCapability,
     gatewayAccessTokenCapability,
   })
   return serverRuntime
