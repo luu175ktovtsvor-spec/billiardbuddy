@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import { defaultProviderModel, providerRegistryEntry } from '../../../../gateway/providerRegistry.js'
 import type { PersonalModelProfile } from '../../../shared/product/personalModels.js'
+import type { TextReasoningTransport } from '../../../shared/product/providerContracts.js'
 import {
   runtimePersonalModelProfile,
   runtimePersonalModelProfileById,
@@ -28,20 +29,32 @@ export function productDefaultTextModel(): string {
 export type ProductTextReasoningRoute = {
   binding: { provider: string; model: string }
   personalProfile: PersonalModelProfile | null
+  /** Null only for a personal route, whose profile owns its protocol. */
+  managedTransport: TextReasoningTransport | null
   fingerprint: string
 }
 
 function managedTextReasoningRoute(): ProductTextReasoningRoute {
   const model = resolveProductTextModel()
   const entry = model ? providerRegistryEntry(model) : undefined
-  if (!entry?.capabilities.includes('TextReasoning')) throw new Error('MODEL_CONFIGURATION_INVALID')
+  if (!entry?.capabilities.includes('TextReasoning') || !entry.text_reasoning_transport) throw new Error('MODEL_CONFIGURATION_INVALID')
   const binding = { provider: entry.provider, model: entry.model_id }
-  return { binding, personalProfile: null, fingerprint: routeFingerprint(binding, null) }
+  return {
+    binding,
+    personalProfile: null,
+    managedTransport: entry.text_reasoning_transport,
+    fingerprint: routeFingerprint(binding, null, entry.text_reasoning_transport),
+  }
 }
 
-function routeFingerprint(binding: { provider: string; model: string }, profile: PersonalModelProfile | null): string {
+function routeFingerprint(
+  binding: { provider: string; model: string },
+  profile: PersonalModelProfile | null,
+  managedTransport: TextReasoningTransport | null,
+): string {
   return createHash('sha256').update(JSON.stringify({
     binding,
+    managed_transport: managedTransport,
     profile: profile && {
       id: profile.id,
       base_url: profile.base_url,
@@ -64,7 +77,7 @@ export function productTextReasoningRoute(): ProductTextReasoningRoute {
     throw new Error('MODEL_CONFIGURATION_INVALID')
   }
   const binding = { provider: `personal-${profile.protocol}:${profile.id}`, model: profile.model }
-  return { binding, personalProfile: profile, fingerprint: routeFingerprint(binding, profile) }
+  return { binding, personalProfile: profile, managedTransport: null, fingerprint: routeFingerprint(binding, profile, null) }
 }
 
 /** Rebuild an already accepted route without following the current default. */
@@ -85,7 +98,7 @@ export function restoreProductTextReasoningRoute(
   if (!profile || profile.protocol !== match?.[1] || profile.model !== binding.model || !profile.supports_tool_calls || !profile.capabilities.includes('TextReasoning')) {
     throw new Error('MODEL_CONFIGURATION_INVALID')
   }
-  const route = { binding, personalProfile: profile, fingerprint: routeFingerprint(binding, profile) }
+  const route = { binding, personalProfile: profile, managedTransport: null, fingerprint: routeFingerprint(binding, profile, null) }
   if (route.fingerprint !== fingerprint) throw new Error('MODEL_CONFIGURATION_INVALID')
   return route
 }
