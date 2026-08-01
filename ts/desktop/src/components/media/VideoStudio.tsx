@@ -505,9 +505,11 @@ export function VideoStudio() {
                 <Film size={34} className="mx-auto mb-2" />
                 保存时间线并生成节目预览
               </div>
-            ) : active && selectedSource?.missing ? (
+            ) : active && (selectedSource?.missing || selectedSource?.content_changed) ? (
               <div className="text-center text-[12px] leading-5 text-[var(--color-warning)]">
-                该素材已经移动或删除。请移除对应片段，或重新添加素材。
+                {selectedSource.missing
+                  ? '该素材已经移动或删除。请移除对应片段，或重新添加素材。'
+                  : '该素材内容已经变化。请重新添加素材后再继续编辑。'}
               </div>
             ) : active && selectedSource ? (
               <video
@@ -710,8 +712,10 @@ export function VideoStudio() {
                       <span className="mt-0.5 block text-[11px] text-[var(--color-text-tertiary)]">
                         {seconds(source.duration_ms)} 秒 · {source.width}×{source.height}
                       </span>
-                      {source.missing && (
-                        <span className="mt-0.5 block text-[11px] text-[var(--color-warning)]">文件不可用</span>
+                      {(source.missing || source.content_changed) && (
+                        <span className="mt-0.5 block text-[11px] text-[var(--color-warning)]">
+                          {source.missing ? '文件不可用' : '内容已变化'}
+                        </span>
                       )}
                     </button>
                     <button

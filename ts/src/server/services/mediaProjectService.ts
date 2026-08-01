@@ -3748,6 +3748,7 @@ export class MediaProjectService {
         video_stream_count: videoStreams.length,
         audio_stream_count: audioStreams.length,
         missing: false,
+        content_changed: false,
       }
       const clip: VideoClip = {
         id: id('clip'),
@@ -3965,6 +3966,7 @@ export class MediaProjectService {
   }
 
   private async prepareVideoProjectSources(project: VideoStudioProject): Promise<VideoStudioProject> {
+    project = await this.reconcileVideoSourceAvailability(project)
     let enriched = false
     const sources: VideoSource[] = []
     for (const source of project.sources) {
@@ -3972,10 +3974,19 @@ export class MediaProjectService {
       if (!info?.isFile()) throw new MediaServiceError('视频素材已不可用', 404, 'SOURCE_MISSING')
       const fingerprint = await this.fileFingerprint(source.path)
       if (source.fingerprint && source.fingerprint !== fingerprint) {
+        if (!source.content_changed) {
+          await this.saveProject({
+            ...project,
+            sources: project.sources.map(candidate => candidate.id === source.id
+              ? { ...candidate, missing: false, content_changed: true }
+              : candidate),
+            updated_at: this.iso(),
+          })
+        }
         throw new MediaServiceError('视频素材内容已经变化，请重新导入', 409, 'SOURCE_CHANGED')
       }
-      enriched ||= !source.fingerprint || source.missing
-      sources.push({ ...source, fingerprint, missing: false })
+      enriched ||= !source.fingerprint || source.missing || source.content_changed
+      sources.push({ ...source, fingerprint, missing: false, content_changed: false })
     }
     return enriched
       ? await this.saveProject({ ...project, sources }) as VideoStudioProject
