@@ -24,6 +24,7 @@ import type {
   ProductTaskContextCompaction,
   ProductTaskEvent,
   ProductTaskQuestion,
+  ProductTaskOutcomeUnknown,
   ProductTaskPlan,
   ProductTaskRunState,
   ProductTaskQueuedInput,
@@ -66,6 +67,8 @@ export type ProductTaskRuntime = {
   streamingEntryId: string | null
   stopRequested: boolean
   recoveryRequired: boolean
+  /** Exact durable receipt that must be reconciled before another run. */
+  outcomeUnknown: ProductTaskOutcomeUnknown | null
 }
 
 export const PRODUCT_TASK_SAFE_ERROR_LABEL: Record<ProductTaskSafeErrorCode, string> = {
@@ -118,6 +121,7 @@ const EMPTY_RUNTIME: ProductTaskRuntime = {
   streamingEntryId: null,
   stopRequested: false,
   recoveryRequired: false,
+  outcomeUnknown: null,
 }
 
 const MAX_PRODUCT_TASK_TEXT_LENGTH = 32_000
@@ -427,9 +431,12 @@ export const useProductTaskRuntimeStore = create<ProductTaskRuntimeStore>((set, 
         historyStatus: 'ready',
         entries: mergeThreadSnapshot(thread, runtime, liveEntryIdsAtRequestStart),
         recoveryRequired: thread.recoveryRequired === true,
-        ...(thread.recoveryRequired === true
+        outcomeUnknown: thread.outcomeUnknown ?? null,
+        ...(thread.outcomeUnknown
+          ? { runState: 'idle', activeActivity: null, pendingApproval: null, stopRequested: false, error: null }
+          : thread.recoveryRequired === true
           ? { runState: 'idle', activeActivity: null, pendingApproval: null, stopRequested: false }
-          : runtime.recoveryRequired
+          : runtime.recoveryRequired || runtime.outcomeUnknown !== null
             ? { error: null }
             : {}),
       }))
@@ -690,7 +697,7 @@ export const useProductTaskRuntimeStore = create<ProductTaskRuntimeStore>((set, 
     resumeQueue: async (taskId) => {
       const task = useProductTaskStore.getState().index.tasks.find((candidate) => candidate.id === taskId)
       const runtime = get().tasks[taskId]
-      if (!task || !runtime?.queuedInputs.some((item) => item.state === 'queued') || runtime.runState !== 'idle') return false
+      if (!task || runtime?.outcomeUnknown || !runtime?.queuedInputs.some((item) => item.state === 'queued') || runtime.runState !== 'idle') return false
       try {
         const result = await productTasksApi.resumeQueue(taskId, {
           expected_task_revision: task.revision ?? 0,
@@ -784,6 +791,7 @@ export const useProductTaskRuntimeStore = create<ProductTaskRuntimeStore>((set, 
           streamingEntryId: null,
           stopRequested: false,
           recoveryRequired: event.state === 'recovery_required',
+          outcomeUnknown: runtime.outcomeUnknown,
           ...(event.state === 'recovery_required'
             ? { error: event.failure ?? { code: 'task_failed' as const, retryable: false } }
             : { error: null }),
@@ -801,6 +809,7 @@ export const useProductTaskRuntimeStore = create<ProductTaskRuntimeStore>((set, 
           runActivities,
           plan: event.plan ?? runtime.plan,
           activeActivity: activeActivityFromRunActivities(runActivities),
+          outcomeUnknown: event.outcomeUnknown,
           // Permission details are deliberately not part of a run snapshot.
           // A following approval_required replay is the sole authority for a
           // new approval card.
@@ -808,6 +817,26 @@ export const useProductTaskRuntimeStore = create<ProductTaskRuntimeStore>((set, 
           approvalResponsePending: false,
           ...(event.state === 'idle' ? { stopRequested: false } : {}),
         }))
+        return
+      }
+
+      if (event.type === 'outcome_unknown') {
+        updateTask(taskId, (runtime) => ({
+          ...runtime,
+          runState: 'idle',
+          activeActivity: null,
+          runActivities: [],
+          pendingApproval: null,
+          approvalResponsePending: false,
+          streamingEntryId: null,
+          stopRequested: false,
+          recoveryRequired: false,
+          outcomeUnknown: event.outcome,
+          error: null,
+        }))
+        void refreshThread(taskId, 'turn_complete')
+        void refreshQueue(taskId)
+        void useProductTaskStore.getState().refresh()
         return
       }
 
@@ -877,6 +906,7 @@ export const useProductTaskRuntimeStore = create<ProductTaskRuntimeStore>((set, 
             return {
               ...runtime,
               runState: event.state,
+              ...(event.state === 'working' ? { outcomeUnknown: null, recoveryRequired: false, error: null } : {}),
               ...(event.state === 'idle' ? { stopRequested: false } : {}),
               ...(event.state === 'awaiting_approval'
                 ? {}

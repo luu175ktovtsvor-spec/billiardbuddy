@@ -48,7 +48,16 @@ export function classifyProductTaskRunFailure(error: unknown): ProductTaskRunFai
   if (code.startsWith('CHAT_ATTACHMENT_') || code.startsWith('CHAT_VIDEO_') || code === 'ATTACHMENT_COPY_INVALID') {
     return productTaskRunFailure('task_attachment_processing_failed')
   }
-  if (code.startsWith('PRODUCT_PERMISSION_') || code.startsWith('PRODUCT_SHELL_SANDBOX_') || code === 'ENVELOPE_DENIED' || code === 'SCHEDULER_DENIED') {
+  if (
+    code.startsWith('PRODUCT_PERMISSION_')
+    || code.startsWith('PRODUCT_SHELL_SANDBOX_')
+    || code === 'ENVELOPE_DENIED'
+    || code === 'SCHEDULER_DENIED'
+    || code === 'TASK_RUN_IDENTITY_UNAVAILABLE'
+    || code === 'TASK_RUN_QUEUE_UNAVAILABLE'
+    || code === 'TASK_RUN_CLAIM_UNAVAILABLE'
+    || code === 'AUTHORITY_INVALID'
+  ) {
     return productTaskRunFailure('task_execution_environment_failed')
   }
   return productTaskRunFailure('task_failed')

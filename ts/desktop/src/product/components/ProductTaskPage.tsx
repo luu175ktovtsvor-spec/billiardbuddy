@@ -7,7 +7,7 @@ import { useSettingsStore } from '../../stores/settingsStore'
 import { PRODUCT_TASKS_TAB_ID, PRODUCT_TASK_TAB_PREFIX, SETTINGS_TAB_ID, useTabStore } from '../../stores/tabStore'
 import { useUIStore } from '../../stores/uiStore'
 import { shouldSubmitOnEnter } from '../../components/chat/sendShortcut'
-import type { ProductTaskRecord, ProductTaskThreadEntry } from '../domain/types'
+import type { ProductTaskOutcomeUnknown, ProductTaskRecord, ProductTaskThreadEntry } from '../domain/types'
 import {
   productTaskCommandsApi,
   type ProductTaskAgentCommand,
@@ -69,6 +69,37 @@ function runStateLabel(state: 'idle' | 'working' | 'awaiting_approval'): string 
     default:
       return '准备就绪'
   }
+}
+
+function outcomeUnknownKindLabel(kind: ProductTaskOutcomeUnknown['operation']['kind']): string {
+  switch (kind) {
+    case 'model': return '模型请求'
+    case 'mcp_prepare': return '扩展连接'
+    case 'chat_prompt':
+    case 'command_prompt': return '指令准备'
+    case 'tools': return '工具执行'
+    case 'hook_command':
+    case 'hook_http': return '项目自动化'
+    case 'model_ack': return '模型结果确认'
+    case 'workspace_init': return '工作区初始化'
+    case 'auto_memory_append': return '任务记忆写入'
+  }
+}
+
+function outcomeUnknownStartedAtLabel(value: string): string {
+  const timestamp = Date.parse(value)
+  return Number.isFinite(timestamp)
+    ? new Intl.DateTimeFormat('zh-CN', { dateStyle: 'short', timeStyle: 'short' }).format(timestamp)
+    : '本次运行期间'
+}
+
+function sameOutcomeUnknown(
+  left: ProductTaskOutcomeUnknown | null | undefined,
+  right: ProductTaskOutcomeUnknown | null | undefined,
+): boolean {
+  return left?.runId === right?.runId
+    && left?.generation === right?.generation
+    && left?.operation.id === right?.operation.id
 }
 
 function slashQuery(value: string): string | null {
@@ -414,6 +445,7 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
   const [queueActionError, setQueueActionError] = useState<string | null>(null)
   const [deletionDialog, setDeletionDialog] = useState<'prepare' | 'commit' | null>(null)
   const [deletionError, setDeletionError] = useState<string | null>(null)
+  const [outcomeUnknownDialog, setOutcomeUnknownDialog] = useState<ProductTaskOutcomeUnknown | null>(null)
   const composingRef = useRef(false)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const missingTaskRefreshAttemptRef = useRef<string | null>(null)
@@ -634,6 +666,10 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
 
   const submit = async () => {
     if (isSubmitting) return
+    if (runtime?.outcomeUnknown) {
+      setValidationMessage('上一次外部操作的结果尚未确认。请先在上方核对后再重新运行。')
+      return
+    }
     if (!workspaceAvailable) {
       setValidationMessage('请先关联一个可写的工作目录。')
       return
@@ -924,13 +960,15 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
     setValidationMessage(null)
   }
 
-  const recoverFailedRun = async () => {
+  const recoverFailedRun = async (confirmOutcomeUnknown?: ProductTaskOutcomeUnknown): Promise<boolean> => {
     try {
       setThreadActionError(null)
-      await recoverTaskRun(taskId)
+      await recoverTaskRun(taskId, confirmOutcomeUnknown ? { confirmOutcomeUnknown } : {})
       await refreshThread(taskId)
+      return true
     } catch {
       setThreadActionError('暂时无法恢复这次运行，请刷新后重试。')
+      return false
     }
   }
 
@@ -1136,7 +1174,15 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
 
             <RecruitingActionApproval taskId={taskId} />
 
-            {runtime?.recoveryRequired ? (
+            {runtime?.outcomeUnknown ? (
+              <div role="alert" className="mx-auto mt-5 max-w-2xl rounded-xl border border-red-500/30 bg-[var(--color-surface)] px-4 py-3 text-sm text-[var(--color-text-secondary)]">
+                <p className="font-medium text-[var(--color-text-primary)]">有一次或多次外部操作的结果待核对。</p>
+                <p className="mt-2">当前优先提示的是{outcomeUnknownKindLabel(runtime.outcomeUnknown.operation.kind)}，开始于 {outcomeUnknownStartedAtLabel(runtime.outcomeUnknown.operation.startedAt)}。为避免重复调用模型、Hook、工具或工作区写入，BilliardBuddy 不会自动继续。请先检查服务、Hook、MCP 和工作目录是否已经产生结果。</p>
+                <button type="button" disabled={isRecoveryPending} onClick={() => setOutcomeUnknownDialog(runtime.outcomeUnknown)} className="mt-3 rounded-lg bg-[var(--color-primary)] px-3 py-2 text-sm font-medium text-white disabled:opacity-50">
+                  核对后重新运行
+                </button>
+              </div>
+            ) : runtime?.recoveryRequired ? (
               <div role="alert" className="mx-auto mt-5 max-w-2xl rounded-xl border border-amber-500/30 bg-[var(--color-surface)] px-4 py-3 text-sm text-[var(--color-text-secondary)]">
                 <p className="font-medium text-[var(--color-text-primary)]">{runtime.error ? PRODUCT_TASK_SAFE_ERROR_LABEL[runtime.error.code] : '上次运行未能确认结果。'}</p>
                 <p className="mt-2">恢复会用新的执行代次重新运行这条消息，可能重复外部操作，请确认后继续。</p>
@@ -1172,6 +1218,10 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
             {isTaskReadOnly ? (
               <p className="rounded-lg bg-[var(--color-surface-container)] px-3 py-2 text-sm text-[var(--color-text-secondary)]">
                 {isArchived ? '此任务已归档。恢复后可以继续处理。' : '此任务正在删除，不能再提交新内容。'}
+              </p>
+            ) : runtime?.outcomeUnknown ? (
+              <p className="rounded-lg bg-[var(--color-surface-container)] px-3 py-2 text-sm text-[var(--color-text-secondary)]">
+                请先核对上一次外部操作的结果；确认后才能重新运行或继续提交内容。
               </p>
             ) : !workspaceAvailable ? (
               <p className="rounded-lg bg-[var(--color-surface-container)] px-3 py-2 text-sm text-[var(--color-text-secondary)]">
@@ -1409,6 +1459,25 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
         confirmLabel="永久删除"
         cancelLabel="暂不删除"
         loading={mutations[`${taskId}:delete-commit_purge`] === true || mutations[`${taskId}:delete-retry`] === true}
+      />
+      <ConfirmDialog
+        open={outcomeUnknownDialog !== null}
+        onClose={() => setOutcomeUnknownDialog(null)}
+        onConfirm={async () => {
+          if (!outcomeUnknownDialog || !sameOutcomeUnknown(runtime?.outcomeUnknown, outcomeUnknownDialog)) {
+            setOutcomeUnknownDialog(null)
+            setThreadActionError('运行状态已变化，请按当前状态继续操作。')
+            await refreshThread(taskId)
+            return
+          }
+          if (await recoverFailedRun(outcomeUnknownDialog)) setOutcomeUnknownDialog(null)
+        }}
+        title="确认重新运行结果待核对的操作？"
+        body="这会以新的执行代次再次运行同一条消息。如果本次运行中任一上一次操作实际上已经成功，可能重复模型调用、Hook、工具调用或工作区修改。"
+        confirmLabel="我已核对，重新运行"
+        cancelLabel="暂不重新运行"
+        confirmVariant="danger"
+        loading={isRecoveryPending}
       />
     </main>
   )

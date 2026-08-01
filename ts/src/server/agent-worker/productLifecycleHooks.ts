@@ -5,6 +5,7 @@ import { getProductPermissionEnvelope } from '../../utils/permissions/productPer
 import type { ProductHookCommand, ProductHookEvent, ProductHookSnapshot } from './productHookSnapshot.js'
 import { runProductShell } from './productSandboxRunner.js'
 import type { ProductToolContext } from './productTool.js'
+import type { TaskRunExternalOperationKind } from '../product/taskRunLedgerModel.js'
 
 const MAX_HOOK_CONTEXT_CHARS = 20_000
 const MAX_HOOK_REASON_CHARS = 4_000
@@ -96,7 +97,7 @@ async function commandHook(hook: Extract<ProductHookCommand, { type: 'command' }
   return { code: result.exitCode, stdout: result.stdout.slice(0, MAX_HOOK_OUTPUT_BYTES), stderr: result.stderr.slice(0, MAX_HOOK_OUTPUT_BYTES) }
 }
 
-async function httpHook(hook: Extract<ProductHookCommand, { type: 'http' }>, jsonInput: string, signal: AbortSignal): Promise<{ ok: boolean; statusCode?: number; body: string; error?: string; aborted?: boolean }> {
+async function httpHook(hook: Extract<ProductHookCommand, { type: 'http' }>, jsonInput: string, signal: AbortSignal): Promise<{ ok: boolean; statusCode?: number; body: string; error?: string; outcomeUnknown?: boolean }> {
   const envelope = getProductPermissionEnvelope()
   if (!envelope || envelope.network_scope === 'denied') return { ok: false, body: '', error: 'HTTP Hook network access is denied for this Turn' }
   let url: URL
@@ -130,8 +131,16 @@ async function httpHook(hook: Extract<ProductHookCommand, { type: 'http' }>, jso
       body: String(response.data ?? '').slice(0, MAX_HOOK_OUTPUT_BYTES),
     }
   } catch (error) {
-    if (combined.aborted) return { ok: false, body: '', aborted: true }
-    return { ok: false, body: '', error: error instanceof Error ? error.message.slice(0, MAX_HOOK_REASON_CHARS) : 'HTTP Hook failed' }
+    // Once axios owns the request, a timeout, abort, or transport failure
+    // cannot prove that the peer did not receive and act on it. Keep the
+    // durable operation open so its wrapper records an explicit unknown
+    // result instead of treating this as an ordinary Hook rejection.
+    return {
+      ok: false,
+      body: '',
+      error: error instanceof Error ? error.message.slice(0, MAX_HOOK_REASON_CHARS) : 'HTTP Hook failed',
+      outcomeUnknown: true,
+    }
   }
 }
 
@@ -139,8 +148,11 @@ export function createProductHarnessLifecycleHookHost(input: {
   snapshot: ProductHookSnapshot
   cwd: string
   evaluate?: (prompt: string, model: string | undefined, signal: AbortSignal) => Promise<{ ok: boolean; reason?: string }>
+  run_external_operation?: <T>(kind: TaskRunExternalOperationKind, operation: () => Promise<T>) => Promise<T>
 }): ProductHarnessLifecycleHookHost {
   const completedOnceHooks = new Set<string>()
+  const runExternalOperation = input.run_external_operation
+    ?? (async <T>(_kind: TaskRunExternalOperationKind, operation: () => Promise<T>): Promise<T> => await operation())
   const run = async (event: ProductHookEvent, matcherValue: string, payload: Record<string, unknown>, signal: AbortSignal): Promise<ProductLifecycleHookResult> => {
     if (input.snapshot.disableAllHooks) return {}
     const contexts: string[] = []
@@ -159,15 +171,19 @@ export function createProductHarnessLifecycleHookHost(input: {
         let output: HookOutput | undefined
         let succeeded = false
         if (hook.type === 'command') {
-          const result = await commandHook(hook, input.cwd, body, signal)
+          const result = await runExternalOperation('hook_command', async () => await commandHook(hook, input.cwd, body, signal))
           output = parseOutput(result.stdout)
           succeeded = result.code === 0
           if (!succeeded) reason ??= bounded(result.stderr || result.stdout || `Hook command failed (${result.code})`, MAX_HOOK_REASON_CHARS)
         } else if (hook.type === 'http') {
-          const result = await httpHook(hook, body, signal)
+          const result = await runExternalOperation('hook_http', async () => {
+            const result = await httpHook(hook, body, signal)
+            if (result.outcomeUnknown) throw new Error('PRODUCT_HOOK_HTTP_OUTCOME_UNKNOWN')
+            return result
+          })
           succeeded = result.ok
           if (succeeded) output = parseOutput(result.body)
-          else if (!result.aborted) reason ??= bounded(result.error || `HTTP Hook failed (${result.statusCode ?? 'network'})`, MAX_HOOK_REASON_CHARS)
+          else reason ??= bounded(result.error || `HTTP Hook failed (${result.statusCode ?? 'network'})`, MAX_HOOK_REASON_CHARS)
         } else if (input.evaluate) {
           const prompt = hook.prompt.replaceAll('$ARGUMENTS', body)
           const evaluationSignal = AbortSignal.any([

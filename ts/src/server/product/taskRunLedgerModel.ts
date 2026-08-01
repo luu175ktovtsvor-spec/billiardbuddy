@@ -2,11 +2,14 @@ import { createHash } from 'node:crypto'
 import type { AgentWorkerApprovalReviewFacts } from '../../../shared/product/agentWorker.js'
 import type {
   ProductTaskActionApproval,
+  ProductTaskExternalOperationKind,
   ProductTaskEvent,
   ProductTaskQueuedInput,
   ProductTaskQuestion,
+  ProductTaskRunFailure,
   TaskEvent,
 } from '../../../shared/product/taskEvents.js'
+import { PRODUCT_TASK_EXTERNAL_OPERATION_KINDS } from '../../../shared/product/taskEvents.js'
 import type { AuthorityFile } from './authorityRepository.js'
 
 export type DurableTaskRunApproval = {
@@ -24,7 +27,75 @@ export type DurableTaskRunApproval = {
 }
 
 export type DurableTaskRun = { run_id?: unknown; task_id?: unknown; created_at?: unknown; event_contract?: unknown }
-export type DurableTaskRunDispatch = { dispatch_generation?: unknown; state?: unknown; completed_at?: unknown; error?: unknown }
+/**
+ * A durable fence written before a Worker is stopped or its scheduler lease is
+ * released.  It never claims that the final model output was saved; on a
+ * restart it deliberately resolves to recovery_required unless a terminal
+ * projection has already committed.
+ */
+export type DurableTaskRunRecoveryFence = {
+  failure: ProductTaskRunFailure
+  created_at: string
+}
+/**
+ * A private capability issued by the authority ledger to exactly one local
+ * supervisor. Scheduler receipts decide resource ownership; this token binds
+ * durable task mutations to the supervisor that successfully claimed the run.
+ */
+export type DurableTaskRunExecutionClaim = {
+  claim_token: string
+  claimed_at: string
+}
+
+/**
+ * One effect that may have changed a system outside the TaskRun ledger.  The
+ * ledger permits only one such effect at a time: a Worker must persist the
+ * start before it crosses the process/network/workspace boundary, then clear
+ * it only after it has a definite result.  A crashed in-flight effect is never
+ * replayed automatically.
+ */
+export const TASK_RUN_EXTERNAL_OPERATION_KINDS = PRODUCT_TASK_EXTERNAL_OPERATION_KINDS
+
+export type TaskRunExternalOperationKind = ProductTaskExternalOperationKind
+
+export type DurableTaskRunExternalOperation = {
+  operation_id: string
+  kind: TaskRunExternalOperationKind
+  /** Result reception is not a checkpoint: it remains non-replayable. */
+  state: 'in_flight' | 'result_obtained' | 'outcome_unknown'
+  started_at: string
+  result_obtained_at?: string
+}
+
+/**
+ * A small authority-side audit proving that the matching operation id was
+ * present in a successfully written Harness Session or a formal Run snapshot.
+ * The effect payload stays in its owning private store, never in the ledger.
+ */
+export type DurableTaskRunExternalOperationCheckpoint = {
+  operation_id: string
+  kind: TaskRunExternalOperationKind
+  checkpoint_digest: string
+  checkpointed_at: string
+}
+
+export type DurableTaskRunDispatch = {
+  dispatch_generation?: unknown
+  state?: unknown
+  completed_at?: unknown
+  error?: unknown
+  /** A user stop is durable even before a Worker has obtained a lease. */
+  stop_requested_at?: string
+  execution_claim?: DurableTaskRunExecutionClaim
+  recovery_fence?: DurableTaskRunRecoveryFence
+  /**
+   * Effects are serial while in flight, but several definite results may wait
+   * for the same next durable Harness snapshot (for example sequential Hooks).
+   */
+  external_operations?: DurableTaskRunExternalOperation[]
+  external_operation_checkpoints?: DurableTaskRunExternalOperationCheckpoint[]
+  outcome_unknown_at?: string
+}
 export type DurableContextSnapshot = {
   lineage_id: string
   task_id: string
@@ -196,8 +267,17 @@ export function recoveryRequiredTaskRunId(state: AuthorityFile, taskId: string):
   }
 }
 
+/** A separate state from recoverable failure: replay needs explicit consent. */
+export function outcomeUnknownTaskRunId(state: AuthorityFile, taskId: string): string | undefined {
+  for (const runId of orderedTaskRunIds(state, taskId)) {
+    const status = (state.dispatch_records[runId] as DurableTaskRunDispatch | undefined)?.state
+    if (status === 'terminal') continue
+    return status === 'outcome_unknown' ? runId : undefined
+  }
+}
+
 export function hasUnsettledTaskQueue(state: AuthorityFile, taskId: string): boolean {
-  return orderedTaskRunIds(state, taskId).some(runId => ['pending', 'claimed', 'started', 'recovery_required'].includes((state.dispatch_records[runId] as DurableTaskRunDispatch | undefined)?.state as string))
+  return orderedTaskRunIds(state, taskId).some(runId => ['pending', 'claimed', 'started', 'recovery_required', 'outcome_unknown'].includes((state.dispatch_records[runId] as DurableTaskRunDispatch | undefined)?.state as string))
 }
 
 export function hasBlockingTaskWork(state: AuthorityFile, taskId: string): boolean {
@@ -207,7 +287,7 @@ export function hasBlockingTaskWork(state: AuthorityFile, taskId: string): boole
 export function hasQueuedTaskWork(state: AuthorityFile, taskId: string): boolean {
   return orderedTaskRunIds(state, taskId).some((runId) => {
     const status = (state.dispatch_records[runId] as DurableTaskRunDispatch | undefined)?.state
-    return status === 'pending' || status === 'recovery_required'
+    return status === 'pending' || status === 'recovery_required' || status === 'outcome_unknown'
   }) || orderedQueuedInputs(state, taskId).length > 0
 }
 
@@ -265,5 +345,5 @@ export function releaseQueuedInputTargets(state: AuthorityFile, runId: string, d
 }
 
 export function taskRunQueueDepth(state: AuthorityFile, taskId: string): number {
-  return orderedTaskRunIds(state, taskId).filter(runId => ['pending', 'claimed', 'started', 'recovery_required'].includes((state.dispatch_records[runId] as DurableTaskRunDispatch | undefined)?.state as string)).length + orderedQueuedInputs(state, taskId).length
+  return orderedTaskRunIds(state, taskId).filter(runId => ['pending', 'claimed', 'started', 'recovery_required', 'outcome_unknown'].includes((state.dispatch_records[runId] as DurableTaskRunDispatch | undefined)?.state as string)).length + orderedQueuedInputs(state, taskId).length
 }

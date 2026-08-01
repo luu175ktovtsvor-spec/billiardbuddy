@@ -26,7 +26,7 @@ import {
   type SubmitTaskRunInput,
   type SubmitTaskRunReceipt,
 } from '../../../shared/product/domain.js'
-import type { ProductTaskActionApproval, ProductTaskAttachmentSummary, ProductTaskEvent, ProductTaskPlan, ProductTaskQuestion, ProductTaskQueuedInput, ProductTaskRunFailure, ProductTaskThread, ProductTaskThreadEntry, TaskEvent } from '../../../shared/product/taskEvents.js'
+import type { ProductTaskActionApproval, ProductTaskAttachmentSummary, ProductTaskEvent, ProductTaskExternalOperationKind, ProductTaskOutcomeUnknown, ProductTaskPlan, ProductTaskQuestion, ProductTaskQueuedInput, ProductTaskRunFailure, ProductTaskThread, ProductTaskThreadEntry, TaskEvent } from '../../../shared/product/taskEvents.js'
 import { isProductTaskRunFailureCode, productTaskRunFailure } from './taskRunFailure.js'
 import { assertAuthorityMapKey } from '../../../shared/product/authority.js'
 import type {
@@ -78,6 +78,7 @@ import { productTaskActivitySummary } from './taskEventProjection.js'
 import {
   MAX_DURABLE_ASSISTANT_TEXT_LENGTH,
   MAX_TASK_RUN_QUEUE_DEPTH,
+  TASK_RUN_EXTERNAL_OPERATION_KINDS,
   activeTaskRun,
   appendQueuedInputEvent,
   durableApprovalItemId,
@@ -93,6 +94,7 @@ import {
   nextTaskRunId,
   orderedQueuedInputs,
   orderedTaskRunIds,
+  outcomeUnknownTaskRunId,
   publicQueuedInput,
   publicQueuedInputs,
   recoveryRequiredTaskRunId,
@@ -104,7 +106,10 @@ import {
   type DurableTaskRun,
   type DurableTaskRunApproval,
   type DurableTaskRunDispatch,
+  type DurableTaskRunExternalOperation,
+  type DurableTaskRunExternalOperationCheckpoint,
   type DurableTurnInput,
+  type TaskRunExternalOperationKind,
   taskRunContextCursor,
 } from './taskRunLedgerModel.js'
 import { productTextReasoningBinding } from './productGatewayRuntime.js'
@@ -207,8 +212,183 @@ function defaultParticipantReceipts(active: boolean, queued = false): WorkspaceB
 }
 
 export type VerifiedAttachmentMetadata = { source_fingerprint: string; content_hash: string; verified_media_type: string; storage_kind: 'external_reference' | 'app_owned_copy'; byte_size: number }
+export type ProductTaskRunRecoveryLeaseInspector = {
+  hasLiveTaskRunLease(runId: string, dispatchGeneration: number): Promise<boolean>
+}
 
 const MAX_TASK_ATTACHMENT_TOTAL_BYTES = 64 * 1024 * 1024
+
+function isExecutionClaimToken(value: unknown): value is string {
+  return typeof value === 'string' && /^[a-f0-9-]{36}$/.test(value)
+}
+
+function isTaskRunExternalOperationId(value: unknown): value is string {
+  return typeof value === 'string' && /^effect_[a-f0-9-]{36}$/.test(value)
+}
+
+function isTaskRunExternalOperationKind(value: unknown): value is TaskRunExternalOperationKind {
+  return typeof value === 'string' && (TASK_RUN_EXTERNAL_OPERATION_KINDS as readonly string[]).includes(value)
+}
+
+function executionClaimMatches(
+  dispatch: { execution_claim?: unknown },
+  token: string | undefined,
+): boolean {
+  const claim = dispatch.execution_claim
+  return Boolean(
+    isExecutionClaimToken(token)
+    && isRecord(claim)
+    && typeof claim.claim_token === 'string'
+    && claim.claim_token === token,
+  )
+}
+
+/** Normal Worker events stop the instant a stop/recovery intent is durable. */
+function executionClaimAllowsWorkerMutation(
+  dispatch: { execution_claim?: unknown; recovery_fence?: unknown; stop_requested_at?: unknown },
+  token: string,
+): boolean {
+  return dispatch.recovery_fence === undefined
+    && dispatch.stop_requested_at === undefined
+    && executionClaimMatches(dispatch, token)
+}
+
+function liveExternalOperations(dispatch: { external_operations?: unknown }): DurableTaskRunExternalOperation[] {
+  return Array.isArray(dispatch.external_operations)
+    ? dispatch.external_operations as DurableTaskRunExternalOperation[]
+    : []
+}
+
+function externalOperationForId(
+  dispatch: { external_operations?: unknown },
+  operationId: string,
+): DurableTaskRunExternalOperation | undefined {
+  return isTaskRunExternalOperationId(operationId)
+    ? liveExternalOperations(dispatch).find(operation => operation.operation_id === operationId)
+    : undefined
+}
+
+function externalOperationCheckpointForId(
+  dispatch: { external_operation_checkpoints?: unknown },
+  operationId: string,
+): DurableTaskRunExternalOperationCheckpoint | undefined {
+  const checkpoints = Array.isArray(dispatch.external_operation_checkpoints)
+    ? dispatch.external_operation_checkpoints as DurableTaskRunExternalOperationCheckpoint[]
+    : []
+  return isTaskRunExternalOperationId(operationId)
+    ? checkpoints.find(checkpoint => checkpoint.operation_id === operationId)
+    : undefined
+}
+
+function publicOutcomeUnknown(
+  runId: string,
+  generation: number,
+  operation: DurableTaskRunExternalOperation,
+): ProductTaskOutcomeUnknown {
+  return {
+    runId,
+    generation,
+    operation: {
+      id: operation.operation_id,
+      kind: operation.kind,
+      startedAt: operation.started_at,
+    },
+  }
+}
+
+function primaryUnknownExternalOperation(dispatch: { external_operations?: unknown }): DurableTaskRunExternalOperation | undefined {
+  return liveExternalOperations(dispatch)
+    .filter(operation => operation.state === 'outcome_unknown')
+    .sort((left, right) => Date.parse(right.started_at) - Date.parse(left.started_at) || right.operation_id.localeCompare(left.operation_id))[0]
+}
+
+function durableOutcomeUnknownEvent(
+  state: AuthorityFile,
+  taskId: string,
+  runId: string,
+  generation: number,
+  operation: DurableTaskRunExternalOperation,
+  now: string,
+): Extract<ProductTaskEvent, { type: 'outcome_unknown' }> {
+  const existing = Object.values(state.task_events)
+    .map(value => value as TaskEvent)
+    .find((event): event is Extract<TaskEvent, { type: 'outcome_unknown' }> => (
+      event.type === 'outcome_unknown'
+      && event.run_id === runId
+      && event.dispatch_generation === generation
+      && event.operation_id === operation.operation_id
+    ))
+  if (existing) {
+    return {
+      type: 'outcome_unknown',
+      outcome: publicOutcomeUnknown(runId, generation, operation),
+      event_sequence: existing.event_sequence,
+    }
+  }
+  state.event_sequence += 1
+  state.task_events[String(state.event_sequence)] = {
+    event_sequence: state.event_sequence,
+    task_id: taskId,
+    run_id: runId,
+    type: 'outcome_unknown',
+    dispatch_generation: generation,
+    operation_id: operation.operation_id,
+    operation_kind: operation.kind,
+    operation_started_at: operation.started_at,
+    created_at: now,
+  }
+  return {
+    type: 'outcome_unknown',
+    outcome: publicOutcomeUnknown(runId, generation, operation),
+    event_sequence: state.event_sequence,
+  }
+}
+
+/**
+ * A stop, fence, IPC loss, or failed effect cannot distinguish whether a
+ * side effect committed.  Turn every still-live receipt into one durable,
+ * user-visible reconciliation state before revoking the worker claim.
+ */
+function markDurableTaskRunOutcomeUnknown(
+  state: AuthorityFile,
+  taskId: string,
+  runId: string,
+  dispatch: DurableTaskRunDispatch,
+  now: string,
+): { event: Extract<ProductTaskEvent, { type: 'outcome_unknown' }>; changed: boolean } {
+  if (!Number.isSafeInteger(dispatch.dispatch_generation)) throw new Error('AUTHORITY_INVALID')
+  const operations = liveExternalOperations(dispatch)
+  if (operations.length === 0) throw new Error('AUTHORITY_INVALID')
+  let changed = false
+  for (const operation of operations) {
+    if (operation.state !== 'outcome_unknown') {
+      operation.state = 'outcome_unknown'
+      delete operation.result_obtained_at
+      changed = true
+    }
+  }
+  if (dispatch.state !== 'outcome_unknown') {
+    dispatch.state = 'outcome_unknown'
+    changed = true
+  }
+  if (dispatch.outcome_unknown_at === undefined) {
+    dispatch.outcome_unknown_at = now
+    changed = true
+  }
+  if (dispatch.error !== 'EXTERNAL_OPERATION_OUTCOME_UNKNOWN') {
+    dispatch.error = 'EXTERNAL_OPERATION_OUTCOME_UNKNOWN'
+    changed = true
+  }
+  if (dispatch.completed_at !== undefined) { delete dispatch.completed_at; changed = true }
+  if (dispatch.execution_claim !== undefined) { delete dispatch.execution_claim; changed = true }
+  if (dispatch.recovery_fence !== undefined) { delete dispatch.recovery_fence; changed = true }
+  if (dispatch.stop_requested_at !== undefined) { delete dispatch.stop_requested_at; changed = true }
+  const primary = primaryUnknownExternalOperation(dispatch)
+  if (!primary) throw new Error('AUTHORITY_INVALID')
+  const beforeSequence = state.event_sequence
+  const event = durableOutcomeUnknownEvent(state, taskId, runId, dispatch.dispatch_generation as number, primary, now)
+  return { event, changed: changed || state.event_sequence !== beforeSequence }
+}
 
 function productStorePath(): string {
   const configDir = process.env.BILLIARDBUDDY_CONFIG_DIR || path.join(os.homedir(), '.BilliardBuddy')
@@ -484,6 +664,7 @@ export class ProductTaskService {
   private readonly privateArtifacts: ProductTaskPrivateArtifactPort
   private readonly runtimeEvents: ProductTaskRuntimeEventPort
   private taskRunQueueRecovery?: Promise<void>
+  private taskRunQueueRecoveryRetry?: ReturnType<typeof setTimeout>
 
   constructor(options: {
     storagePath?: string
@@ -1263,13 +1444,32 @@ export class ProductTaskService {
     }
   }
 
-  async recoverTaskRun(taskId: string, input: { expected_revision: number; client_operation_id: string }): Promise<{
+  async recoverTaskRun(taskId: string, input: {
+    expected_revision: number
+    client_operation_id: string
+    /** Binds explicit human reconciliation to one exact interrupted effect. */
+    confirm_outcome_unknown?: { run_id: string; generation: number; operation_id: string }
+  }): Promise<{
     task: ProductTaskRecord
     receipt: { outcome: 'accepted' | 'duplicate' | 'conflict' | 'rejected'; revision: number }
     snapshot: { revision: number; event_sequence: number; tasks: ProductTaskRecord[]; side_tasks: ProductSideTask[] }
   }> {
     const authority = new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps)
-    const canonical = JSON.stringify({ task_id: taskId, expected_revision: input.expected_revision })
+    if (
+      input.confirm_outcome_unknown !== undefined
+      && (
+        !isTaskRunExternalOperationId(input.confirm_outcome_unknown.operation_id)
+        || !Number.isSafeInteger(input.confirm_outcome_unknown.generation)
+        || input.confirm_outcome_unknown.generation < 1
+        || typeof input.confirm_outcome_unknown.run_id !== 'string'
+        || !input.confirm_outcome_unknown.run_id
+      )
+    ) throw new Error('AUTHORITY_INVALID')
+    const canonical = JSON.stringify({
+      task_id: taskId,
+      expected_revision: input.expected_revision,
+      ...(input.confirm_outcome_unknown ? { confirm_outcome_unknown: input.confirm_outcome_unknown } : {}),
+    })
     try {
       const { file, result } = await authority.transactSubmit((state) => {
         const prior = state.receipts[input.client_operation_id]
@@ -1280,7 +1480,26 @@ export class ProductTaskService {
           return { changed: false as const, value: { duplicate: true, receipt: prior } }
         }
         if (stored.task.revision !== input.expected_revision) throw new Error('AUTHORITY_CONFLICT')
-        const runId = recoveryRequiredTaskRunId(state, taskId)
+        const recoveryRunId = recoveryRequiredTaskRunId(state, taskId)
+        const unknownOutcomeRunId = outcomeUnknownTaskRunId(state, taskId)
+        const runId = recoveryRunId ?? unknownOutcomeRunId
+        if (unknownOutcomeRunId && !recoveryRunId) {
+          const unknownDispatch = state.dispatch_records[unknownOutcomeRunId] as DurableTaskRunDispatch | undefined
+          const unknownOperation = unknownDispatch ? primaryUnknownExternalOperation(unknownDispatch) : undefined
+          const confirmation = input.confirm_outcome_unknown
+          if (!confirmation) throw new Error('OUTCOME_UNKNOWN_CONFIRMATION_REQUIRED')
+          if (
+            !unknownOperation
+            || confirmation.run_id !== unknownOutcomeRunId
+            || confirmation.generation !== unknownDispatch?.dispatch_generation
+            || confirmation.operation_id !== unknownOperation.operation_id
+          ) throw new Error('OUTCOME_UNKNOWN_CONFIRMATION_STALE')
+        } else if (input.confirm_outcome_unknown !== undefined) {
+          // A UI snapshot can become stale between opening its confirmation
+          // dialog and pressing Continue.  Never let that confirmation apply
+          // to another run or a normal recovery failure.
+          throw new Error('OUTCOME_UNKNOWN_CONFIRMATION_STALE')
+        }
         const run = runId ? state.task_runs[runId] as { entry_id?: unknown; event_contract?: unknown; core_binding?: Record<string, unknown> } | undefined : undefined
         const dispatch = runId ? state.dispatch_records[runId] as DurableTaskRunDispatch | undefined : undefined
         if (!runId || typeof run?.entry_id !== 'string' || !run.core_binding || !Number.isSafeInteger(dispatch?.dispatch_generation)) throw new Error('RECOVERY_NOT_REQUIRED')
@@ -1760,14 +1979,14 @@ export class ProductTaskService {
     return { outcome: result.duplicate ? 'duplicate' : 'accepted', task_revision: result.task_revision }
   }
 
-  async recordQueuedInputConsumed(runId: string, dispatchGeneration: number, queueItemId: string): Promise<{ task_id: string; events: ProductTaskEvent[] }> {
-    if (!runId || !Number.isSafeInteger(dispatchGeneration) || dispatchGeneration < 1 || !/^queue_[a-f0-9-]{36}$/.test(queueItemId)) throw new Error('AUTHORITY_INVALID')
+  async recordQueuedInputConsumed(runId: string, dispatchGeneration: number, queueItemId: string, executionClaimToken: string): Promise<{ task_id: string; events: ProductTaskEvent[] }> {
+    if (!runId || !Number.isSafeInteger(dispatchGeneration) || dispatchGeneration < 1 || !/^queue_[a-f0-9-]{36}$/.test(queueItemId) || !isExecutionClaimToken(executionClaimToken)) throw new Error('AUTHORITY_INVALID')
     const authority = new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps)
     const { result } = await authority.transactSubmit((state) => {
       const run = state.task_runs[runId] as { task_id?: unknown; lineage_id?: unknown; event_contract?: unknown } | undefined
       const dispatch = state.dispatch_records[runId] as DurableTaskRunDispatch | undefined
       const item = state.turn_input_queue[queueItemId] as DurableTurnInput | undefined
-      if (!run || typeof run.task_id !== 'string' || typeof run.lineage_id !== 'string' || dispatch?.dispatch_generation !== dispatchGeneration || !['claimed', 'started'].includes(dispatch.state as string) || !item || item.task_id !== run.task_id || item.lineage_id !== run.lineage_id || item.attachment_ids.length > 0) throw new Error('AUTHORITY_INVALID')
+      if (!run || typeof run.task_id !== 'string' || typeof run.lineage_id !== 'string' || dispatch?.dispatch_generation !== dispatchGeneration || !['claimed', 'started'].includes(dispatch.state as string) || !executionClaimAllowsWorkerMutation(dispatch, executionClaimToken) || !item || item.task_id !== run.task_id || item.lineage_id !== run.lineage_id || item.attachment_ids.length > 0) throw new Error('AUTHORITY_INVALID')
       if (item.state === 'injected' && item.target_run_id === runId && item.dispatch_generation === dispatchGeneration) {
         const existing = Object.values(state.task_events).map(value => value as TaskEvent).find(event => event.type === 'queue_updated' && event.queue_item_id === queueItemId && event.phase === 'injected')
         if (!existing) throw new Error('AUTHORITY_INVALID')
@@ -1797,14 +2016,50 @@ export class ProductTaskService {
   }
 
   async stopActiveTaskRun(taskId: string): Promise<boolean> {
-    const state = await new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps).read()
-    const candidates = orderedTaskRunIds(state, taskId).filter(runId => ['pending', 'claimed', 'started'].includes((state.dispatch_records[runId] as DurableTaskRunDispatch | undefined)?.state as string))
-    const runId = candidates.find(id => ['claimed', 'started'].includes((state.dispatch_records[id] as DurableTaskRunDispatch).state as string)) ?? candidates[0]
-    if (!runId) return false
-    const dispatch = state.dispatch_records[runId] as { dispatch_generation: number }
-    if (!this.dispatcher?.stop) return false
-    await this.dispatcher.stop(runId, dispatch.dispatch_generation)
+    const target = await this.persistUserTaskRunStop(taskId)
+    if (!target) return false
+    if (this.dispatcher?.stop) await this.dispatcher.stop(target.run_id, target.dispatch_generation).catch(() => undefined)
     return true
+  }
+
+  /**
+   * The user-facing stop path owns the first durable stop write.  A local or
+   * remote Worker then only consumes this intent with its private claim token;
+   * this closes the claim→launch window without granting a second server a
+   * generic stop capability.
+   */
+  private async persistUserTaskRunStop(
+    taskId: string,
+    exact?: { run_id: string; dispatch_generation: number },
+  ): Promise<{ run_id: string; dispatch_generation: number } | undefined> {
+    const authority = new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps)
+    let outcomeUnknownEvent: Extract<ProductTaskEvent, { type: 'outcome_unknown' }> | undefined
+    const { result } = await authority.transactSubmit((state) => {
+      let runId: string | undefined
+      if (exact) {
+        const run = state.task_runs[exact.run_id] as { task_id?: unknown } | undefined
+        const dispatch = state.dispatch_records[exact.run_id] as DurableTaskRunDispatch | undefined
+        if (run?.task_id !== taskId || dispatch?.dispatch_generation !== exact.dispatch_generation) throw new Error('AUTHORITY_INVALID')
+        runId = exact.run_id
+      } else {
+        const candidates = orderedTaskRunIds(state, taskId).filter(candidate => ['pending', 'claimed', 'started'].includes((state.dispatch_records[candidate] as DurableTaskRunDispatch | undefined)?.state as string))
+        runId = candidates.find(candidate => ['claimed', 'started'].includes((state.dispatch_records[candidate] as DurableTaskRunDispatch).state as string)) ?? candidates[0]
+      }
+      if (!runId) return { changed: false as const, value: undefined }
+      const run = state.task_runs[runId] as { task_id?: unknown } | undefined
+      const dispatch = state.dispatch_records[runId] as DurableTaskRunDispatch | undefined
+      if (run?.task_id !== taskId || !dispatch || !Number.isSafeInteger(dispatch.dispatch_generation)) throw new Error('AUTHORITY_INVALID')
+      if (!['pending', 'claimed', 'started'].includes(dispatch.state as string)) return { changed: false as const, value: undefined }
+      if (liveExternalOperations(dispatch).length > 0) {
+        const outcome = markDurableTaskRunOutcomeUnknown(state, taskId, runId, dispatch, this.now().toISOString())
+        outcomeUnknownEvent = outcome.event
+        return { run_id: runId, dispatch_generation: dispatch.dispatch_generation as number }
+      }
+      if (dispatch.stop_requested_at === undefined) dispatch.stop_requested_at = this.now().toISOString()
+      return { run_id: runId, dispatch_generation: dispatch.dispatch_generation as number }
+    })
+    if (outcomeUnknownEvent) this.runtimeEvents.publish(taskId, outcomeUnknownEvent)
+    return result
   }
 
   /** Freeze the exact extension/tool surface used by one Turn before sampling. */
@@ -1812,6 +2067,7 @@ export class ProductTaskService {
     runId: string,
     dispatchGeneration: number,
     snapshot: { digest: string; tool_count: number; command_count: number; mcp_server_count: number },
+    executionClaimToken: string,
   ): Promise<void> {
     if (
       !runId
@@ -1819,12 +2075,13 @@ export class ProductTaskService {
       || dispatchGeneration < 1
       || !/^[a-f0-9]{64}$/.test(snapshot.digest)
       || [snapshot.tool_count, snapshot.command_count, snapshot.mcp_server_count].some(count => !Number.isSafeInteger(count) || count < 0 || count > 10_000)
+      || !isExecutionClaimToken(executionClaimToken)
     ) throw new Error('AUTHORITY_INVALID')
     const authority = new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps)
     await authority.transactSubmit((state) => {
       const run = state.task_runs[runId] as { extension_snapshot?: typeof snapshot } | undefined
-      const dispatch = state.dispatch_records[runId] as { dispatch_generation?: unknown; state?: unknown } | undefined
-      if (!run || dispatch?.dispatch_generation !== dispatchGeneration || !['claimed', 'started'].includes(dispatch.state as string)) throw new Error('AUTHORITY_INVALID')
+      const dispatch = state.dispatch_records[runId] as { dispatch_generation?: unknown; state?: unknown; execution_claim?: unknown; recovery_fence?: unknown; stop_requested_at?: unknown } | undefined
+      if (!run || dispatch?.dispatch_generation !== dispatchGeneration || !['claimed', 'started'].includes(dispatch.state as string) || !executionClaimAllowsWorkerMutation(dispatch, executionClaimToken)) throw new Error('AUTHORITY_INVALID')
       if (run.extension_snapshot) {
         if (JSON.stringify(run.extension_snapshot) !== JSON.stringify(snapshot)) throw new Error('AUTHORITY_INVALID')
         return { changed: false as const, value: undefined }
@@ -1838,8 +2095,9 @@ export class ProductTaskService {
     runId: string,
     dispatchGeneration: number,
     activity: Extract<ProductTaskEvent, { type: 'activity' }>,
+    executionClaimToken: string,
   ): Promise<{ task_id: string; event: Extract<ProductTaskEvent, { type: 'activity' }> }> {
-    if (!runId || !Number.isSafeInteger(dispatchGeneration) || dispatchGeneration < 1 || !/^activity_[a-f0-9]{32}$/.test(activity.id)) throw new Error('AUTHORITY_INVALID')
+    if (!runId || !Number.isSafeInteger(dispatchGeneration) || dispatchGeneration < 1 || !/^activity_[a-f0-9]{32}$/.test(activity.id) || !isExecutionClaimToken(executionClaimToken)) throw new Error('AUTHORITY_INVALID')
     if (activity.event_sequence !== undefined || activity.replayed !== undefined) throw new Error('AUTHORITY_INVALID')
     if (activity.parentId !== undefined && (!/^activity_[a-f0-9]{32}$/.test(activity.parentId) || activity.parentId === activity.id)) throw new Error('AUTHORITY_INVALID')
     if (activity.progress !== undefined && (
@@ -1854,8 +2112,8 @@ export class ProductTaskService {
     const authority = new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps)
     const { result } = await authority.transactSubmit((state) => {
       const run = state.task_runs[runId] as { task_id?: unknown; event_contract?: unknown } | undefined
-      const dispatch = state.dispatch_records[runId] as { dispatch_generation?: unknown; state?: unknown } | undefined
-      if (!run || typeof run.task_id !== 'string' || !dispatch || dispatch.dispatch_generation !== dispatchGeneration || !['claimed', 'started'].includes(dispatch.state as string)) throw new Error('AUTHORITY_INVALID')
+      const dispatch = state.dispatch_records[runId] as { dispatch_generation?: unknown; state?: unknown; execution_claim?: unknown; recovery_fence?: unknown; stop_requested_at?: unknown } | undefined
+      if (!run || typeof run.task_id !== 'string' || !dispatch || dispatch.dispatch_generation !== dispatchGeneration || !['claimed', 'started'].includes(dispatch.state as string) || !executionClaimAllowsWorkerMutation(dispatch, executionClaimToken)) throw new Error('AUTHORITY_INVALID')
       const existing = Object.values(state.task_events)
         .map(value => value as TaskEvent)
         .find((event): event is Extract<TaskEvent, { type: 'activity' }> => event.type === 'activity' && event.run_id === runId && event.dispatch_generation === dispatchGeneration && event.item_id === activity.id && event.phase === activity.phase)
@@ -1898,8 +2156,9 @@ export class ProductTaskService {
     runId: string,
     dispatchGeneration: number,
     plan: ProductTaskPlan,
+    executionClaimToken: string,
   ): Promise<{ task_id: string; event: Extract<ProductTaskEvent, { type: 'plan_updated' }> }> {
-    if (!runId || !Number.isSafeInteger(dispatchGeneration) || dispatchGeneration < 1 || !/^plan_[a-f0-9]{32}$/.test(plan.id) || !Array.isArray(plan.steps) || plan.steps.length < 1 || plan.steps.length > 100) throw new Error('AUTHORITY_INVALID')
+    if (!runId || !Number.isSafeInteger(dispatchGeneration) || dispatchGeneration < 1 || !/^plan_[a-f0-9]{32}$/.test(plan.id) || !Array.isArray(plan.steps) || plan.steps.length < 1 || plan.steps.length > 100 || !isExecutionClaimToken(executionClaimToken)) throw new Error('AUTHORITY_INVALID')
     let inProgress = 0
     for (const step of plan.steps) {
       if (typeof step.content !== 'string' || !step.content.trim() || step.content.length > 500 || !['pending', 'in_progress', 'completed'].includes(step.status)) throw new Error('AUTHORITY_INVALID')
@@ -1909,8 +2168,8 @@ export class ProductTaskService {
     const authority = new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps)
     const { result } = await authority.transactSubmit((state) => {
       const run = state.task_runs[runId] as { task_id?: unknown; event_contract?: unknown } | undefined
-      const dispatch = state.dispatch_records[runId] as { dispatch_generation?: unknown; state?: unknown } | undefined
-      if (!run || typeof run.task_id !== 'string' || dispatch?.dispatch_generation !== dispatchGeneration || !['claimed', 'started'].includes(dispatch.state as string)) throw new Error('AUTHORITY_INVALID')
+      const dispatch = state.dispatch_records[runId] as { dispatch_generation?: unknown; state?: unknown; execution_claim?: unknown; recovery_fence?: unknown; stop_requested_at?: unknown } | undefined
+      if (!run || typeof run.task_id !== 'string' || dispatch?.dispatch_generation !== dispatchGeneration || !['claimed', 'started'].includes(dispatch.state as string) || !executionClaimAllowsWorkerMutation(dispatch, executionClaimToken)) throw new Error('AUTHORITY_INVALID')
       const events = Object.values(state.task_events).map(value => value as TaskEvent)
       const prior = events.find((event): event is Extract<TaskEvent, { type: 'plan_updated' }> => event.type === 'plan_updated' && event.run_id === runId && event.dispatch_generation === dispatchGeneration && event.item_id === plan.id)
       if (prior) {
@@ -1940,15 +2199,16 @@ export class ProductTaskService {
     runId: string,
     dispatchGeneration: number,
     compaction: Extract<AgentWorkerOutbound, { type: 'event'; event: 'context_compaction' }>,
+    executionClaimToken: string,
   ): Promise<{ task_id: string; event: Extract<ProductTaskEvent, { type: 'context_compaction' }> }> {
-    if (!runId || !Number.isSafeInteger(dispatchGeneration) || dispatchGeneration < 1 || !Number.isSafeInteger(compaction.generation) || compaction.generation < 1 || !Number.isSafeInteger(compaction.input_tokens) || compaction.input_tokens < 1) throw new Error('AUTHORITY_INVALID')
+    if (!runId || !Number.isSafeInteger(dispatchGeneration) || dispatchGeneration < 1 || !Number.isSafeInteger(compaction.generation) || compaction.generation < 1 || !Number.isSafeInteger(compaction.input_tokens) || compaction.input_tokens < 1 || !isExecutionClaimToken(executionClaimToken)) throw new Error('AUTHORITY_INVALID')
     if (compaction.phase === 'completed' && (!compaction.summary.trim() || compaction.summary.length > 40_000 || !Number.isSafeInteger(compaction.output_tokens) || compaction.output_tokens < 1 || !Number.isSafeInteger(compaction.compacted_through_event_sequence) || compaction.compacted_through_event_sequence < 0)) throw new Error('AUTHORITY_INVALID')
     const itemId = durableContextCompactionItemId(runId, dispatchGeneration, compaction.generation)
     const authority = new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps)
     const { result } = await authority.transactSubmit((state) => {
       const run = state.task_runs[runId] as Record<string, unknown> | undefined
-      const dispatch = state.dispatch_records[runId] as { dispatch_generation?: unknown; state?: unknown } | undefined
-      if (!run || typeof run.task_id !== 'string' || typeof run.lineage_id !== 'string' || dispatch?.dispatch_generation !== dispatchGeneration || !['claimed', 'started'].includes(dispatch.state as string)) throw new Error('AUTHORITY_INVALID')
+      const dispatch = state.dispatch_records[runId] as { dispatch_generation?: unknown; state?: unknown; execution_claim?: unknown; recovery_fence?: unknown; stop_requested_at?: unknown } | undefined
+      if (!run || typeof run.task_id !== 'string' || typeof run.lineage_id !== 'string' || dispatch?.dispatch_generation !== dispatchGeneration || !['claimed', 'started'].includes(dispatch.state as string) || !executionClaimAllowsWorkerMutation(dispatch, executionClaimToken)) throw new Error('AUTHORITY_INVALID')
       const lineage = state.conversation_lineages[run.lineage_id] as Record<string, unknown> | undefined
       if (!lineage || lineage.product_task_id !== run.task_id || !Number.isSafeInteger(lineage.compact_generation) || !Number.isSafeInteger(lineage.revision)) throw new Error('AUTHORITY_INVALID')
       const events = Object.values(state.task_events).map(value => value as TaskEvent)
@@ -2018,12 +2278,13 @@ export class ProductTaskService {
     terminalState: 'completed' | 'stopped' | 'recovery_required',
     assistantText: string,
     failure?: ProductTaskRunFailure,
+    executionClaimToken?: string,
   ): Promise<{ task_id: string; queue_events: ProductTaskEvent[] }> {
-    if (!runId || !Number.isSafeInteger(dispatchGeneration) || dispatchGeneration < 1 || !['completed', 'stopped', 'recovery_required'].includes(terminalState) || assistantText.length > MAX_DURABLE_ASSISTANT_TEXT_LENGTH || (failure !== undefined && (!isProductTaskRunFailureCode(failure.code) || failure.retryable !== productTaskRunFailure(failure.code).retryable)) || (terminalState !== 'recovery_required' && failure !== undefined)) throw new Error('AUTHORITY_INVALID')
+    if (!runId || !Number.isSafeInteger(dispatchGeneration) || dispatchGeneration < 1 || !['completed', 'stopped', 'recovery_required'].includes(terminalState) || assistantText.length > MAX_DURABLE_ASSISTANT_TEXT_LENGTH || (failure !== undefined && (!isProductTaskRunFailureCode(failure.code) || failure.retryable !== productTaskRunFailure(failure.code).retryable)) || (terminalState !== 'recovery_required' && failure !== undefined) || !isExecutionClaimToken(executionClaimToken)) throw new Error('AUTHORITY_INVALID')
     const authority = new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps)
     const { result } = await authority.transactSubmit((state) => {
       const run = state.task_runs[runId] as { task_id?: unknown; event_contract?: unknown } | undefined
-      const dispatch = state.dispatch_records[runId] as { dispatch_generation?: unknown; state?: unknown; completed_at?: unknown; error?: unknown } | undefined
+      const dispatch = state.dispatch_records[runId] as { dispatch_generation?: unknown; state?: unknown; completed_at?: unknown; error?: unknown; execution_claim?: unknown; external_operations?: unknown } | undefined
       if (!run || typeof run.task_id !== 'string' || !dispatch || dispatch.dispatch_generation !== dispatchGeneration) throw new Error('AUTHORITY_INVALID')
       const events = Object.values(state.task_events).map(value => value as TaskEvent)
       const priorTerminal = events.find((event): event is Extract<TaskEvent, { type: 'run_terminal' }> => event.type === 'run_terminal' && event.run_id === runId && event.dispatch_generation === dispatchGeneration)
@@ -2034,7 +2295,7 @@ export class ProductTaskService {
         if (priorTerminal.state !== terminalState || (priorAssistant?.text ?? '') !== assistantText || dispatch.state !== expectedDispatchState || dispatch.error !== expectedError) throw new Error('AUTHORITY_INVALID')
         return { changed: false as const, value: { task_id: run.task_id as string, queue_events: [] as ProductTaskEvent[] } }
       }
-      if (!['pending', 'claimed', 'started'].includes(dispatch.state as string)) throw new Error('AUTHORITY_INVALID')
+      if (!['claimed', 'started'].includes(dispatch.state as string) || liveExternalOperations(dispatch).length > 0 || !executionClaimMatches(dispatch, executionClaimToken)) throw new Error('AUTHORITY_INVALID')
       if (priorAssistant && priorAssistant.text !== assistantText) throw new Error('AUTHORITY_INVALID')
       run.event_contract = 'durable_items_v1'
       const now = this.now().toISOString()
@@ -2085,6 +2346,9 @@ export class ProductTaskService {
       dispatch.state = terminalState === 'recovery_required' ? 'recovery_required' : 'terminal'
       dispatch.completed_at = now
       dispatch.error = terminalState === 'completed' ? 'TERMINAL' : terminalState === 'stopped' ? 'STOPPED' : failure?.code ?? 'task_failed'
+      delete (dispatch as { execution_claim?: unknown }).execution_claim
+      delete (dispatch as { recovery_fence?: unknown }).recovery_fence
+      delete (dispatch as { stop_requested_at?: unknown }).stop_requested_at
       const queueEvents = releaseQueuedInputTargets(state, runId, dispatchGeneration, now)
       if (queueEvents.length) {
         const task = (state.tasks[run.task_id] as { task?: Record<string, unknown> } | undefined)?.task
@@ -2105,13 +2369,14 @@ export class ProductTaskService {
     requestId: string,
     action: ProductTaskActionApproval,
     review: AgentWorkerApprovalReviewFacts,
+    executionClaimToken: string,
   ): Promise<{ task_id: string; reviewer: 'user' | 'automatic'; event: Extract<ProductTaskEvent, { type: 'approval_required'; kind: 'action' }> }> {
-    if (!runId || !Number.isSafeInteger(dispatchGeneration) || dispatchGeneration < 1 || !/^[A-Za-z0-9._:-]{1,256}$/.test(requestId)) throw new Error('AUTHORITY_INVALID')
+    if (!runId || !Number.isSafeInteger(dispatchGeneration) || dispatchGeneration < 1 || !/^[A-Za-z0-9._:-]{1,256}$/.test(requestId) || !isExecutionClaimToken(executionClaimToken)) throw new Error('AUTHORITY_INVALID')
     const authority = new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps)
     const { result } = await authority.transactSubmit((state) => {
       const run = state.task_runs[runId] as { task_id?: unknown; permission_snapshot?: unknown } | undefined
-      const dispatch = state.dispatch_records[runId] as { dispatch_generation?: unknown; state?: unknown; approvals?: DurableTaskRunApproval[] } | undefined
-      if (!run || typeof run.task_id !== 'string' || !dispatch || dispatch.dispatch_generation !== dispatchGeneration || !['claimed', 'started'].includes(dispatch.state as string)) throw new Error('AUTHORITY_INVALID')
+      const dispatch = state.dispatch_records[runId] as { dispatch_generation?: unknown; state?: unknown; approvals?: DurableTaskRunApproval[]; execution_claim?: unknown } | undefined
+      if (!run || typeof run.task_id !== 'string' || !dispatch || dispatch.dispatch_generation !== dispatchGeneration || !['claimed', 'started'].includes(dispatch.state as string) || !executionClaimAllowsWorkerMutation(dispatch, executionClaimToken)) throw new Error('AUTHORITY_INVALID')
       const reviewer = taskPermissionSnapshot(run.permission_snapshot).reviewer
       if (reviewer === 'none') throw new Error('AUTHORITY_INVALID')
       const approvals = dispatch.approvals ??= []
@@ -2149,14 +2414,15 @@ export class ProductTaskService {
     dispatchGeneration: number,
     requestId: string,
     questions: ProductTaskQuestion[],
+    executionClaimToken: string,
   ): Promise<{ task_id: string; event: Extract<ProductTaskEvent, { type: 'approval_required'; kind: 'question' }> }> {
-    if (!runId || !Number.isSafeInteger(dispatchGeneration) || dispatchGeneration < 1 || !/^[A-Za-z0-9._:-]{1,256}$/.test(requestId) || questions.length < 1 || questions.length > 8 || JSON.stringify(questions).length > 32_000) throw new Error('AUTHORITY_INVALID')
+    if (!runId || !Number.isSafeInteger(dispatchGeneration) || dispatchGeneration < 1 || !/^[A-Za-z0-9._:-]{1,256}$/.test(requestId) || questions.length < 1 || questions.length > 8 || JSON.stringify(questions).length > 32_000 || !isExecutionClaimToken(executionClaimToken)) throw new Error('AUTHORITY_INVALID')
     const action: ProductTaskActionApproval = { what: '回答任务中的澄清问题', scope: '当前任务回合', consequence: '回答会作为本回合的后续输入交给 Agent。' }
     const authority = new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps)
     const { result } = await authority.transactSubmit((state) => {
       const run = state.task_runs[runId] as { task_id?: unknown } | undefined
-      const dispatch = state.dispatch_records[runId] as { dispatch_generation?: unknown; state?: unknown; approvals?: DurableTaskRunApproval[] } | undefined
-      if (!run || typeof run.task_id !== 'string' || dispatch?.dispatch_generation !== dispatchGeneration || !['claimed', 'started'].includes(dispatch.state as string)) throw new Error('AUTHORITY_INVALID')
+      const dispatch = state.dispatch_records[runId] as { dispatch_generation?: unknown; state?: unknown; approvals?: DurableTaskRunApproval[]; execution_claim?: unknown } | undefined
+      if (!run || typeof run.task_id !== 'string' || dispatch?.dispatch_generation !== dispatchGeneration || !['claimed', 'started'].includes(dispatch.state as string) || !executionClaimAllowsWorkerMutation(dispatch, executionClaimToken)) throw new Error('AUTHORITY_INVALID')
       const approvals = dispatch.approvals ??= []
       const existing = approvals.find(approval => approval.request_id === requestId)
       if (existing) {
@@ -2180,8 +2446,8 @@ export class ProductTaskService {
     let latest: DurableTaskRunApproval | undefined
     for (const [runId, value] of Object.entries(state.dispatch_records)) {
       const run = state.task_runs[runId] as { task_id?: unknown } | undefined
-      const dispatch = value as { state?: unknown; approvals?: DurableTaskRunApproval[] }
-      if (run?.task_id !== taskId || !['claimed', 'started'].includes(dispatch.state as string)) continue
+      const dispatch = value as { state?: unknown; recovery_fence?: unknown; stop_requested_at?: unknown; approvals?: DurableTaskRunApproval[] }
+      if (run?.task_id !== taskId || !['claimed', 'started'].includes(dispatch.state as string) || dispatch.recovery_fence !== undefined || dispatch.stop_requested_at !== undefined) continue
       const pending = dispatch.approvals?.find(approval => approval.status === 'pending')
       if (pending && (!latest || Date.parse(pending.requested_at) > Date.parse(latest.requested_at))) latest = pending
     }
@@ -2199,13 +2465,13 @@ export class ProductTaskService {
     const { result } = await authority.transactSubmit((state) => {
       for (const [runId, value] of Object.entries(state.dispatch_records)) {
         const run = state.task_runs[runId] as { task_id?: unknown } | undefined
-        const dispatch = value as { dispatch_generation?: unknown; state?: unknown; approvals?: DurableTaskRunApproval[] }
+        const dispatch = value as { dispatch_generation?: unknown; state?: unknown; recovery_fence?: unknown; stop_requested_at?: unknown; approvals?: DurableTaskRunApproval[] }
         if (run?.task_id !== taskId || !Number.isSafeInteger(dispatch.dispatch_generation)) continue
         const approval = dispatch.approvals?.find(candidate => candidate.request_id === requestId && candidate.questions)
         if (!approval) continue
         if (approval.questions!.length !== answers.length) return { changed: false as const, value: { handled: false, duplicate: false, run_id: runId, generation: dispatch.dispatch_generation as number } }
         if (approval.status === 'resolved') return { changed: false as const, value: { handled: JSON.stringify(approval.answers) === JSON.stringify(answers), duplicate: true, run_id: runId, generation: dispatch.dispatch_generation as number } }
-        if (!['claimed', 'started'].includes(dispatch.state as string)) return { changed: false as const, value: { handled: false, duplicate: false, run_id: runId, generation: dispatch.dispatch_generation as number } }
+        if (!['claimed', 'started'].includes(dispatch.state as string) || dispatch.recovery_fence !== undefined || dispatch.stop_requested_at !== undefined) return { changed: false as const, value: { handled: false, duplicate: false, run_id: runId, generation: dispatch.dispatch_generation as number } }
         const now = this.now().toISOString()
         approval.status = 'resolved'; approval.decision = 'allowed'; approval.reviewer = 'user'; approval.resolution_reason = 'user_decision'; approval.resolved_at = now; approval.answers = [...answers]
         state.event_sequence += 1
@@ -2220,7 +2486,6 @@ export class ProductTaskService {
       this.runtimeEvents.publish(taskId, { type: 'status', state: 'working' })
       return true
     }
-    await this.settleTaskRunDispatch(result.run_id, result.generation, 'recovery_required', 'QUESTION_DELIVERY_UNAVAILABLE')
     this.runtimeEvents.publish(taskId, { type: 'error', code: 'task_unavailable', retryable: false })
     return true
   }
@@ -2232,21 +2497,23 @@ export class ProductTaskService {
     allowed: boolean,
     reviewer: 'user' | 'automatic',
     resolutionReason: DurableTaskRunApproval['resolution_reason'] = reviewer === 'user' ? 'user_decision' : 'unknown_capability',
+    executionClaimToken?: string,
   ): Promise<boolean> {
     if (!/^[A-Za-z0-9._:-]{1,256}$/.test(requestId)) return false
     if ((reviewer === 'user') !== (resolutionReason === 'user_decision')) return false
+    if (reviewer === 'automatic' && !isExecutionClaimToken(executionClaimToken)) return false
     const authority = new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps)
     const { result } = await authority.transactSubmit((state) => {
       for (const [runId, value] of Object.entries(state.dispatch_records)) {
         const run = state.task_runs[runId] as { task_id?: unknown; permission_snapshot?: unknown } | undefined
-        const dispatch = value as { dispatch_generation?: unknown; state?: unknown; approvals?: DurableTaskRunApproval[] }
+        const dispatch = value as { dispatch_generation?: unknown; state?: unknown; recovery_fence?: unknown; stop_requested_at?: unknown; execution_claim?: unknown; approvals?: DurableTaskRunApproval[] }
         if (run?.task_id !== taskId || !Number.isSafeInteger(dispatch.dispatch_generation)) continue
         const approval = dispatch.approvals?.find(candidate => candidate.request_id === requestId)
         if (!approval) continue
         if (approval.questions) return { changed: false as const, value: { handled: false, duplicate: false, run_id: runId, generation: dispatch.dispatch_generation as number } }
         if (approval.status === 'resolved') return { changed: false as const, value: { handled: approval.decision === (allowed ? 'allowed' : 'denied'), duplicate: true, run_id: runId, generation: dispatch.dispatch_generation as number } }
         const snapshot = taskPermissionSnapshot(run.permission_snapshot)
-        if (snapshot.reviewer !== reviewer || !['claimed', 'started'].includes(dispatch.state as string)) return { changed: false as const, value: { handled: false, duplicate: false, run_id: runId, generation: dispatch.dispatch_generation as number } }
+        if (snapshot.reviewer !== reviewer || !['claimed', 'started'].includes(dispatch.state as string) || dispatch.recovery_fence !== undefined || dispatch.stop_requested_at !== undefined || (reviewer === 'automatic' && !executionClaimMatches(dispatch, executionClaimToken))) return { changed: false as const, value: { handled: false, duplicate: false, run_id: runId, generation: dispatch.dispatch_generation as number } }
         approval.status = 'resolved'
         approval.decision = allowed ? 'allowed' : 'denied'
         approval.reviewer = reviewer
@@ -2278,7 +2545,9 @@ export class ProductTaskService {
       this.runtimeEvents.publish(taskId, { type: 'status', state: 'working' })
       return true
     }
-    await this.settleTaskRunDispatch(result.run_id, result.generation, 'recovery_required', 'APPROVAL_DELIVERY_UNAVAILABLE')
+    if (reviewer === 'automatic') {
+      await this.settleTaskRunDispatch(result.run_id, result.generation, 'recovery_required', 'APPROVAL_DELIVERY_UNAVAILABLE', productTaskRunFailure('task_execution_environment_failed'), executionClaimToken)
+    }
     this.runtimeEvents.publish(taskId, { type: 'error', code: 'task_unavailable', retryable: false })
     return true
   }
@@ -2409,9 +2678,9 @@ export class ProductTaskService {
     const run = state.task_runs[runId] as { task_id?: unknown } | undefined
     const dispatch = state.dispatch_records[runId] as DurableTaskRunDispatch | undefined
     if (typeof run?.task_id !== 'string' || dispatch?.dispatch_generation !== dispatchGeneration) throw new Error('AUTHORITY_INVALID')
-    if (!['pending', 'claimed', 'started'].includes(dispatch.state as string)) return false
-    if (!this.dispatcher?.stop) return false
-    await this.dispatcher.stop(runId, dispatchGeneration)
+    const target = await this.persistUserTaskRunStop(run.task_id, { run_id: runId, dispatch_generation: dispatchGeneration })
+    if (!target) return false
+    if (this.dispatcher?.stop) await this.dispatcher.stop(target.run_id, target.dispatch_generation).catch(() => undefined)
     return true
   }
 
@@ -2432,7 +2701,7 @@ export class ProductTaskService {
         ? { state: 'completed', ...(typeof dispatch.completed_at === 'string' ? { completed_at: dispatch.completed_at } : {}) }
         : { state: 'failed', ...(typeof dispatch.completed_at === 'string' ? { completed_at: dispatch.completed_at } : {}) }
     }
-    if (dispatch.state === 'recovery_required') {
+    if (dispatch.state === 'recovery_required' || dispatch.state === 'outcome_unknown') {
       return { state: 'failed', ...(typeof dispatch.completed_at === 'string' ? { completed_at: dispatch.completed_at } : {}) }
     }
     return { state: 'running' }
@@ -2503,8 +2772,8 @@ export class ProductTaskService {
     return nextTaskRunId(state, run.task_id) === runId ? 'ready' : 'queued'
   }
 
-  async claimTaskRunDispatch(runId: string, dispatchGeneration: number): Promise<{ outcome: 'claimed' | 'duplicate' | 'queued' | 'recovery_required'; task_id: string }> {
-    if (!runId || !Number.isSafeInteger(dispatchGeneration) || dispatchGeneration < 1) {
+  async claimTaskRunDispatch(runId: string, dispatchGeneration: number, executionClaimToken: string): Promise<{ outcome: 'claimed' | 'duplicate' | 'queued' | 'recovery_required'; task_id: string }> {
+    if (!runId || !Number.isSafeInteger(dispatchGeneration) || dispatchGeneration < 1 || !isExecutionClaimToken(executionClaimToken)) {
       throw ApiError.badRequest('运行派发参数无效')
     }
     const binding = productTextReasoningBinding()
@@ -2515,9 +2784,20 @@ export class ProductTaskService {
         dispatch_generation?: unknown
         state?: unknown
         claimed_at?: unknown
+        stop_requested_at?: unknown
+        recovery_fence?: unknown
+        execution_claim?: unknown
       } | undefined
       if (!run || typeof run.task_id !== 'string' || !dispatch || dispatch.dispatch_generation !== dispatchGeneration) {
         throw new Error('AUTHORITY_INVALID')
+      }
+      if (dispatch.stop_requested_at !== undefined) {
+        return { changed: false as const, value: { outcome: 'recovery_required' as const, task_id: run.task_id } }
+      }
+      // A supervisor may have stopped the local Worker but still be writing
+      // its exact terminal projection. Never claim through that restart fence.
+      if (dispatch.recovery_fence !== undefined) {
+        return { changed: false as const, value: { outcome: 'recovery_required' as const, task_id: run.task_id } }
       }
       if (dispatch.state === 'pending') {
         if (nextTaskRunId(state, run.task_id) !== runId) return { changed: false as const, value: { outcome: 'queued' as const, task_id: run.task_id } }
@@ -2526,6 +2806,7 @@ export class ProductTaskService {
         run.model_route_fingerprint = binding.fingerprint
         dispatch.state = 'claimed'
         dispatch.claimed_at = this.now().toISOString()
+        dispatch.execution_claim = { claim_token: executionClaimToken, claimed_at: dispatch.claimed_at }
         return { outcome: 'claimed' as const, task_id: run.task_id }
       }
       if (dispatch.state === 'claimed' || dispatch.state === 'started') {
@@ -2534,6 +2815,79 @@ export class ProductTaskService {
       }
       return { changed: false as const, value: { outcome: 'recovery_required' as const, task_id: run.task_id } }
     })
+    return result
+  }
+
+  /**
+   * Write a restart-safe fence before a Worker is stopped or its scheduler
+   * lease is released.  The fence intentionally resolves to recovery_required
+   * after a restart unless an exact terminal projection commits first.
+   */
+  async prepareTaskRunRecoveryFence(runId: string, dispatchGeneration: number, failure: ProductTaskRunFailure, executionClaimToken?: string): Promise<'prepared' | 'already_settled' | 'outcome_unknown' | 'not_owner'> {
+    if (!runId || !Number.isSafeInteger(dispatchGeneration) || dispatchGeneration < 1 || !isProductTaskRunFailureCode(failure.code) || failure.retryable !== productTaskRunFailure(failure.code).retryable || (executionClaimToken !== undefined && !isExecutionClaimToken(executionClaimToken))) throw new Error('AUTHORITY_INVALID')
+    const authority = new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps)
+    let outcomeUnknownTaskId: string | undefined
+    let outcomeUnknownEvent: Extract<ProductTaskEvent, { type: 'outcome_unknown' }> | undefined
+    const { result } = await authority.transactSubmit((state) => {
+      const run = state.task_runs[runId] as { task_id?: unknown } | undefined
+      const dispatch = state.dispatch_records[runId] as DurableTaskRunDispatch | undefined
+      if (typeof run?.task_id !== 'string' || !dispatch || dispatch.dispatch_generation !== dispatchGeneration) throw new Error('AUTHORITY_INVALID')
+      if (dispatch.state === 'terminal' || dispatch.state === 'recovery_required') return { changed: false as const, value: 'already_settled' as const }
+      if (dispatch.state === 'outcome_unknown') return { changed: false as const, value: 'outcome_unknown' as const }
+      if (!['pending', 'claimed', 'started'].includes(dispatch.state as string)) throw new Error('AUTHORITY_INVALID')
+      if (dispatch.execution_claim !== undefined && !executionClaimMatches(dispatch, executionClaimToken)) return { changed: false as const, value: 'not_owner' as const }
+      if (dispatch.execution_claim === undefined && dispatch.state !== 'pending') return { changed: false as const, value: 'not_owner' as const }
+      if (dispatch.execution_claim === undefined && dispatch.stop_requested_at === undefined) return { changed: false as const, value: 'not_owner' as const }
+      if (liveExternalOperations(dispatch).length > 0) {
+        const outcome = markDurableTaskRunOutcomeUnknown(state, run.task_id, runId, dispatch, this.now().toISOString())
+        outcomeUnknownTaskId = run.task_id
+        outcomeUnknownEvent = outcome.event
+        return 'outcome_unknown' as const
+      }
+      const prior = dispatch.recovery_fence as { failure?: ProductTaskRunFailure } | undefined
+      if (prior) {
+        if (prior.failure?.code !== failure.code || prior.failure.retryable !== failure.retryable) return { changed: false as const, value: 'not_owner' as const }
+        return { changed: false as const, value: 'prepared' as const }
+      }
+      dispatch.recovery_fence = { failure, created_at: this.now().toISOString() }
+      return 'prepared' as const
+    })
+    if (outcomeUnknownEvent && outcomeUnknownTaskId) this.runtimeEvents.publish(outcomeUnknownTaskId, outcomeUnknownEvent)
+    return result
+  }
+
+  /**
+   * Executor-side acknowledgement of an already-durable user stop.  Only a
+   * matching claimed owner may create the intent; a pending run may only
+   * observe an intent that ProductTaskService persisted for the user first.
+   */
+  async requestTaskRunStop(runId: string, dispatchGeneration: number, executionClaimToken?: string): Promise<'requested' | 'already_settled' | 'not_owner'> {
+    if (!runId || !Number.isSafeInteger(dispatchGeneration) || dispatchGeneration < 1 || (executionClaimToken !== undefined && !isExecutionClaimToken(executionClaimToken))) throw new Error('AUTHORITY_INVALID')
+    const authority = new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps)
+    let outcomeUnknownTaskId: string | undefined
+    let outcomeUnknownEvent: Extract<ProductTaskEvent, { type: 'outcome_unknown' }> | undefined
+    const { result } = await authority.transactSubmit((state) => {
+      const run = state.task_runs[runId] as { task_id?: unknown } | undefined
+      const dispatch = state.dispatch_records[runId] as DurableTaskRunDispatch | undefined
+      if (typeof run?.task_id !== 'string' || !dispatch || dispatch.dispatch_generation !== dispatchGeneration) throw new Error('AUTHORITY_INVALID')
+      if (dispatch.state === 'terminal' || dispatch.state === 'recovery_required' || dispatch.state === 'outcome_unknown') return { changed: false as const, value: 'already_settled' as const }
+      if (!['pending', 'claimed', 'started'].includes(dispatch.state as string)) throw new Error('AUTHORITY_INVALID')
+      if (dispatch.execution_claim !== undefined) {
+        if (!executionClaimMatches(dispatch, executionClaimToken)) return { changed: false as const, value: 'not_owner' as const }
+      } else if (dispatch.state !== 'pending' || dispatch.stop_requested_at === undefined) {
+        return { changed: false as const, value: 'not_owner' as const }
+      }
+      if (liveExternalOperations(dispatch).length > 0) {
+        const outcome = markDurableTaskRunOutcomeUnknown(state, run.task_id, runId, dispatch, this.now().toISOString())
+        outcomeUnknownTaskId = run.task_id
+        outcomeUnknownEvent = outcome.event
+        return 'requested' as const
+      }
+      if (dispatch.stop_requested_at !== undefined) return { changed: false as const, value: 'requested' as const }
+      dispatch.stop_requested_at = this.now().toISOString()
+      return 'requested' as const
+    })
+    if (outcomeUnknownEvent && outcomeUnknownTaskId) this.runtimeEvents.publish(outcomeUnknownTaskId, outcomeUnknownEvent)
     return result
   }
 
@@ -2615,23 +2969,108 @@ export class ProductTaskService {
    * Rehydrate only never-started queue heads. Interrupted claimed runs become
    * recovery blockers so a restart cannot replay an unknown Core side effect.
    */
-  recoverDurableTaskRunQueue(): Promise<void> {
-    this.taskRunQueueRecovery ??= this.performTaskRunQueueRecovery()
-    return this.taskRunQueueRecovery
+  recoverDurableTaskRunQueue(leaseInspector?: ProductTaskRunRecoveryLeaseInspector): Promise<void> {
+    if (this.taskRunQueueRecovery) return this.taskRunQueueRecovery
+    const recovery = this.performTaskRunQueueRecovery(leaseInspector)
+    this.taskRunQueueRecovery = recovery
+    void recovery.then(
+      () => { if (this.taskRunQueueRecovery === recovery) this.taskRunQueueRecovery = undefined },
+      () => { if (this.taskRunQueueRecovery === recovery) this.taskRunQueueRecovery = undefined },
+    )
+    return recovery
   }
 
-  private async performTaskRunQueueRecovery(): Promise<void> {
+  private async performTaskRunQueueRecovery(leaseInspector?: ProductTaskRunRecoveryLeaseInspector): Promise<void> {
     const authority = new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps)
+    type RecoveryCandidate = {
+      run_id: string
+      generation: number
+      kind: 'pending_stop' | 'lost_claim'
+      execution_claim_token?: string
+    }
+    const snapshot = await authority.read()
+    const candidates = new Map<string, RecoveryCandidate>()
+    let retryAfterLiveLease = false
+    for (const [runId, value] of Object.entries(snapshot.dispatch_records)) {
+      const dispatch = value as DurableTaskRunDispatch
+      if (!Number.isSafeInteger(dispatch.dispatch_generation)) throw new Error('AUTHORITY_INVALID')
+      const generation = dispatch.dispatch_generation as number
+      const key = `${runId}:${generation}`
+      if (dispatch.state === 'pending') {
+        if (dispatch.stop_requested_at !== undefined) candidates.set(key, { run_id: runId, generation, kind: 'pending_stop' })
+        continue
+      }
+      if (!['claimed', 'started'].includes(dispatch.state as string)) continue
+      const claim = dispatch.execution_claim
+      if (!claim || !isExecutionClaimToken(claim.claim_token)) throw new Error('AUTHORITY_INVALID')
+      let liveLease = true
+      try {
+        liveLease = leaseInspector ? await leaseInspector.hasLiveTaskRunLease(runId, generation) : true
+      } catch {
+        liveLease = true
+      }
+      if (liveLease) {
+        retryAfterLiveLease = true
+        continue
+      }
+      candidates.set(key, { run_id: runId, generation, kind: 'lost_claim', execution_claim_token: claim.claim_token })
+    }
+    const outcomeUnknownEvents: Array<{ task_id: string; event: Extract<ProductTaskEvent, { type: 'outcome_unknown' }> }> = []
     const { result: recovery } = await authority.transactSubmit((state) => {
       let changed = false
       const now = this.now().toISOString()
       for (const [runId, value] of Object.entries(state.dispatch_records)) {
         const dispatch = value as DurableTaskRunDispatch
-        if (dispatch.state !== 'claimed' && dispatch.state !== 'started') continue
-        const run = state.task_runs[runId] as DurableTaskRun | undefined
         if (!Number.isSafeInteger(dispatch.dispatch_generation)) throw new Error('AUTHORITY_INVALID')
         const dispatchGeneration = dispatch.dispatch_generation as number
+        const candidate = candidates.get(`${runId}:${dispatchGeneration}`)
+        if (!candidate) continue
+        const run = state.task_runs[runId] as DurableTaskRun | undefined
         if (!run || typeof run.task_id !== 'string') throw new Error('AUTHORITY_INVALID')
+        if (candidate.kind === 'pending_stop') {
+          if (dispatch.state !== 'pending' || dispatch.stop_requested_at === undefined || dispatch.execution_claim !== undefined) continue
+          const terminalExists = Object.values(state.task_events).some(value => {
+            const event = value as TaskEvent
+            return event.type === 'run_terminal' && event.run_id === runId && event.dispatch_generation === dispatchGeneration
+          })
+          if (!terminalExists) {
+            run.event_contract = 'durable_items_v1'
+            state.event_sequence += 1
+            state.task_events[String(state.event_sequence)] = {
+              event_sequence: state.event_sequence,
+              task_id: run.task_id,
+              run_id: runId,
+              type: 'run_terminal',
+              dispatch_generation: dispatchGeneration,
+              item_id: durableTerminalItemId(runId, dispatchGeneration),
+              state: 'stopped',
+              created_at: now,
+            }
+          }
+          dispatch.state = 'terminal'
+          dispatch.completed_at = now
+          dispatch.error = 'STOPPED'
+          delete dispatch.stop_requested_at
+          delete dispatch.recovery_fence
+          const queueEvents = releaseQueuedInputTargets(state, runId, dispatchGeneration, now)
+          if (queueEvents.length) {
+            const task = (state.tasks[run.task_id] as { task?: Record<string, unknown> } | undefined)?.task
+            if (task && Number.isSafeInteger(task.revision)) {
+              task.revision = (task.revision as number) + 1
+              task.updatedAt = now
+            }
+          }
+          changed = true
+          continue
+        }
+        if (!['claimed', 'started'].includes(dispatch.state as string) || !executionClaimMatches(dispatch, candidate.execution_claim_token)) continue
+        if (liveExternalOperations(dispatch).length > 0) {
+          const outcome = markDurableTaskRunOutcomeUnknown(state, run.task_id, runId, dispatch, now)
+          outcomeUnknownEvents.push({ task_id: run.task_id, event: outcome.event })
+          changed ||= outcome.changed
+          continue
+        }
+        const recoveryFence = dispatch.recovery_fence
         const terminalExists = Object.values(state.task_events).some(value => {
           const event = value as TaskEvent
           return event.type === 'run_terminal' && event.run_id === runId && event.dispatch_generation === dispatchGeneration
@@ -2675,7 +3114,10 @@ export class ProductTaskService {
         }
         dispatch.state = 'recovery_required'
         dispatch.completed_at = now
-        dispatch.error = 'task_execution_environment_failed'
+        dispatch.error = recoveryFence?.failure.code ?? 'task_execution_environment_failed'
+        delete dispatch.execution_claim
+        delete dispatch.recovery_fence
+        delete dispatch.stop_requested_at
         const queueEvents = releaseQueuedInputTargets(state, runId, dispatchGeneration, now)
         if (queueEvents.length) {
           const task = (state.tasks[run.task_id] as { task?: Record<string, unknown> } | undefined)?.task
@@ -2708,6 +3150,7 @@ export class ProductTaskService {
       const value = { pending, promotable }
       return changed ? value : { changed: false as const, value }
     })
+    for (const outcome of outcomeUnknownEvents) this.runtimeEvents.publish(outcome.task_id, outcome.event)
     for (const taskId of recovery.promotable) {
       const promoted = await this.promoteNextQueuedInput(taskId)
       if (promoted) recovery.pending.push(promoted.run_id)
@@ -2717,6 +3160,17 @@ export class ProductTaskService {
       const dispatch = state.dispatch_records[runId] as { dispatch_generation?: unknown } | undefined
       if (Number.isSafeInteger(dispatch?.dispatch_generation)) this.dispatchAcceptedRun(runId, dispatch!.dispatch_generation as number)
     }
+    if (retryAfterLiveLease) this.scheduleTaskRunQueueRecovery(leaseInspector)
+  }
+
+  private scheduleTaskRunQueueRecovery(leaseInspector: ProductTaskRunRecoveryLeaseInspector | undefined): void {
+    if (!leaseInspector || this.taskRunQueueRecoveryRetry) return
+    const timer = setTimeout(() => {
+      if (this.taskRunQueueRecoveryRetry === timer) this.taskRunQueueRecoveryRetry = undefined
+      void this.recoverDurableTaskRunQueue(leaseInspector).catch(() => undefined)
+    }, 5_000)
+    timer.unref?.()
+    this.taskRunQueueRecoveryRetry = timer
   }
 
   /** Server-private BB-03D/BB-05B lookup; it reads the durable hand-off only. */
@@ -2770,12 +3224,254 @@ export class ProductTaskService {
     }
   }
 
+  /** Lightweight watchdog check; it revokes a live parent Runtime on a fence. */
+  async assertTaskRunExecutionClaim(runId: string, dispatchGeneration: number, executionClaimToken: string): Promise<void> {
+    if (!runId || !Number.isSafeInteger(dispatchGeneration) || dispatchGeneration < 1 || !isExecutionClaimToken(executionClaimToken)) throw new Error('CORE_BINDING_UNAVAILABLE')
+    const file = await new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps).read()
+    const dispatch = file.dispatch_records[runId] as { dispatch_generation?: unknown; state?: unknown; stop_requested_at?: unknown; recovery_fence?: unknown; execution_claim?: unknown } | undefined
+    if (dispatch?.dispatch_generation !== dispatchGeneration || !['claimed', 'started'].includes(dispatch.state as string) || dispatch.stop_requested_at !== undefined || dispatch.recovery_fence !== undefined || !executionClaimMatches(dispatch, executionClaimToken)) throw new Error('CORE_BINDING_UNAVAILABLE')
+  }
+
+  /**
+   * Atomically obtain the one permit that may cross a TaskRun's external
+   * boundary.  Claim validation and the in-flight receipt are one authority
+   * write, so a stop/fence cannot land between permission and the effect.
+   */
+  async beginTaskRunExternalOperation(
+    runId: string,
+    dispatchGeneration: number,
+    executionClaimToken: string,
+    kind: TaskRunExternalOperationKind,
+  ): Promise<{ outcome: 'started'; operation_id: string } | { outcome: 'not_owner' | 'outcome_unknown' }> {
+    if (!runId || !Number.isSafeInteger(dispatchGeneration) || dispatchGeneration < 1 || !isExecutionClaimToken(executionClaimToken) || !isTaskRunExternalOperationKind(kind)) throw new Error('AUTHORITY_INVALID')
+    const authority = new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps)
+    const { result } = await authority.transactSubmit((state) => {
+      const run = state.task_runs[runId] as { task_id?: unknown } | undefined
+      const dispatch = state.dispatch_records[runId] as DurableTaskRunDispatch | undefined
+      if (typeof run?.task_id !== 'string' || !dispatch || dispatch.dispatch_generation !== dispatchGeneration) throw new Error('AUTHORITY_INVALID')
+      if (dispatch.state === 'outcome_unknown') return { changed: false as const, value: { outcome: 'outcome_unknown' as const } }
+      if (!['claimed', 'started'].includes(dispatch.state as string) || !executionClaimAllowsWorkerMutation(dispatch, executionClaimToken)) {
+        return { changed: false as const, value: { outcome: 'not_owner' as const } }
+      }
+      const existing = liveExternalOperations(dispatch)
+      if (existing.some(operation => operation.state === 'in_flight') || existing.length >= 256) {
+        return { changed: false as const, value: { outcome: 'not_owner' as const } }
+      }
+      const operationId = `effect_${randomUUID()}`
+      dispatch.external_operations = [...existing, {
+        operation_id: operationId,
+        kind,
+        state: 'in_flight',
+        started_at: this.now().toISOString(),
+      }]
+      return { outcome: 'started' as const, operation_id: operationId }
+    })
+    return result
+  }
+
+  /**
+   * The boundary returned a definite response, but the response may still be
+   * only in worker memory.  It cannot be replayed and must wait for a matching
+   * Harness Session/Run projection checkpoint before its receipt can clear.
+   */
+  async recordTaskRunExternalOperationResult(
+    runId: string,
+    dispatchGeneration: number,
+    executionClaimToken: string,
+    operationId: string,
+  ): Promise<'result_obtained' | 'outcome_unknown' | 'not_owner'> {
+    if (!runId || !Number.isSafeInteger(dispatchGeneration) || dispatchGeneration < 1 || !isExecutionClaimToken(executionClaimToken) || !isTaskRunExternalOperationId(operationId)) throw new Error('AUTHORITY_INVALID')
+    const authority = new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps)
+    let outcomeUnknownTaskId: string | undefined
+    let outcomeUnknownEvent: Extract<ProductTaskEvent, { type: 'outcome_unknown' }> | undefined
+    const { result } = await authority.transactSubmit((state) => {
+      const run = state.task_runs[runId] as { task_id?: unknown } | undefined
+      const dispatch = state.dispatch_records[runId] as DurableTaskRunDispatch | undefined
+      if (typeof run?.task_id !== 'string' || !dispatch || dispatch.dispatch_generation !== dispatchGeneration) throw new Error('AUTHORITY_INVALID')
+      const operation = externalOperationForId(dispatch, operationId)
+      const checkpoint = externalOperationCheckpointForId(dispatch, operationId)
+      if (dispatch.state === 'outcome_unknown') {
+        return { changed: false as const, value: operation ? 'outcome_unknown' as const : 'not_owner' as const }
+      }
+      if (checkpoint) return { changed: false as const, value: 'result_obtained' as const }
+      if (!operation) return { changed: false as const, value: 'not_owner' as const }
+      if (!['claimed', 'started'].includes(dispatch.state as string) || !executionClaimMatches(dispatch, executionClaimToken) || dispatch.recovery_fence !== undefined || dispatch.stop_requested_at !== undefined) {
+        const outcome = markDurableTaskRunOutcomeUnknown(state, run.task_id, runId, dispatch, this.now().toISOString())
+        outcomeUnknownTaskId = run.task_id
+        outcomeUnknownEvent = outcome.event
+        return 'outcome_unknown' as const
+      }
+      if (operation.state === 'outcome_unknown') return { changed: false as const, value: 'outcome_unknown' as const }
+      if (operation.state === 'result_obtained') return { changed: false as const, value: 'result_obtained' as const }
+      if (operation.state !== 'in_flight') {
+        return { changed: false as const, value: 'not_owner' as const }
+      }
+      operation.state = 'result_obtained'
+      operation.result_obtained_at = this.now().toISOString()
+      return 'result_obtained' as const
+    })
+    if (outcomeUnknownEvent && outcomeUnknownTaskId) this.runtimeEvents.publish(outcomeUnknownTaskId, outcomeUnknownEvent)
+    return result
+  }
+
+  /**
+   * Clear exactly one definite effect only after its private owner has written
+   * a snapshot containing the same operation id and digest.  A repeated IPC
+   * request is idempotent through the bounded checkpoint audit.
+   */
+  async checkpointTaskRunExternalOperation(
+    runId: string,
+    dispatchGeneration: number,
+    executionClaimToken: string,
+    operationId: string,
+    checkpoint: { digest: string },
+  ): Promise<'checkpointed' | 'outcome_unknown' | 'not_owner'> {
+    if (!runId || !Number.isSafeInteger(dispatchGeneration) || dispatchGeneration < 1 || !isExecutionClaimToken(executionClaimToken) || !isTaskRunExternalOperationId(operationId) || !/^[a-f0-9]{64}$/.test(checkpoint.digest)) throw new Error('AUTHORITY_INVALID')
+    const authority = new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps)
+    let outcomeUnknownTaskId: string | undefined
+    let outcomeUnknownEvent: Extract<ProductTaskEvent, { type: 'outcome_unknown' }> | undefined
+    const { result } = await authority.transactSubmit((state) => {
+      const run = state.task_runs[runId] as { task_id?: unknown } | undefined
+      const dispatch = state.dispatch_records[runId] as DurableTaskRunDispatch | undefined
+      if (typeof run?.task_id !== 'string' || !dispatch || dispatch.dispatch_generation !== dispatchGeneration) throw new Error('AUTHORITY_INVALID')
+      const prior = externalOperationCheckpointForId(dispatch, operationId)
+      if (prior) return { changed: false as const, value: prior.checkpoint_digest === checkpoint.digest ? 'checkpointed' as const : 'not_owner' as const }
+      const operation = externalOperationForId(dispatch, operationId)
+      if (dispatch.state === 'outcome_unknown') return { changed: false as const, value: operation ? 'outcome_unknown' as const : 'not_owner' as const }
+      if (!operation) return { changed: false as const, value: 'not_owner' as const }
+      if (!['claimed', 'started'].includes(dispatch.state as string) || !executionClaimMatches(dispatch, executionClaimToken) || dispatch.recovery_fence !== undefined || dispatch.stop_requested_at !== undefined) {
+        const outcome = markDurableTaskRunOutcomeUnknown(state, run.task_id, runId, dispatch, this.now().toISOString())
+        outcomeUnknownTaskId = run.task_id
+        outcomeUnknownEvent = outcome.event
+        return 'outcome_unknown' as const
+      }
+      if (operation.state === 'outcome_unknown') return { changed: false as const, value: 'outcome_unknown' as const }
+      if (operation.state !== 'result_obtained') return { changed: false as const, value: 'not_owner' as const }
+      const now = this.now().toISOString()
+      dispatch.external_operations = liveExternalOperations(dispatch).filter(candidate => candidate.operation_id !== operationId)
+      if (dispatch.external_operations.length === 0) delete dispatch.external_operations
+      const checkpoints = Array.isArray(dispatch.external_operation_checkpoints)
+        ? dispatch.external_operation_checkpoints as DurableTaskRunExternalOperationCheckpoint[]
+        : []
+      dispatch.external_operation_checkpoints = [...checkpoints, {
+        operation_id: operation.operation_id,
+        kind: operation.kind,
+        checkpoint_digest: checkpoint.digest,
+        checkpointed_at: now,
+      }].slice(-512)
+      return 'checkpointed' as const
+    })
+    if (outcomeUnknownEvent && outcomeUnknownTaskId) this.runtimeEvents.publish(outcomeUnknownTaskId, outcomeUnknownEvent)
+    return result
+  }
+
+  /**
+   * MCP preparation is checkpointed with the authoritative extension snapshot
+   * rather than a child-local cache.  Recording both in one authority write
+   * prevents a reconnect from replaying a connection whose tool surface was
+   * already selected for this Turn.
+   */
+  async checkpointTaskRunMcpPrepare(
+    runId: string,
+    dispatchGeneration: number,
+    executionClaimToken: string,
+    operationId: string,
+    snapshot: { digest: string; tool_count: number; command_count: number; mcp_server_count: number },
+  ): Promise<'checkpointed' | 'outcome_unknown' | 'not_owner'> {
+    if (!runId || !Number.isSafeInteger(dispatchGeneration) || dispatchGeneration < 1 || !isExecutionClaimToken(executionClaimToken) || !isTaskRunExternalOperationId(operationId) || !/^[a-f0-9]{64}$/.test(snapshot.digest) || [snapshot.tool_count, snapshot.command_count, snapshot.mcp_server_count].some(value => !Number.isSafeInteger(value) || value < 0 || value > 10_000)) throw new Error('AUTHORITY_INVALID')
+    const authority = new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps)
+    let outcomeUnknownTaskId: string | undefined
+    let outcomeUnknownEvent: Extract<ProductTaskEvent, { type: 'outcome_unknown' }> | undefined
+    const { result } = await authority.transactSubmit((state) => {
+      const run = state.task_runs[runId] as { task_id?: unknown; extension_snapshot?: unknown } | undefined
+      const dispatch = state.dispatch_records[runId] as DurableTaskRunDispatch | undefined
+      if (typeof run?.task_id !== 'string' || !dispatch || dispatch.dispatch_generation !== dispatchGeneration) throw new Error('AUTHORITY_INVALID')
+      const prior = externalOperationCheckpointForId(dispatch, operationId)
+      if (prior) {
+        if (prior.kind !== 'mcp_prepare' || prior.checkpoint_digest !== snapshot.digest || JSON.stringify(run.extension_snapshot) !== JSON.stringify(snapshot)) return { changed: false as const, value: 'not_owner' as const }
+        return { changed: false as const, value: 'checkpointed' as const }
+      }
+      const operation = externalOperationForId(dispatch, operationId)
+      if (dispatch.state === 'outcome_unknown') return { changed: false as const, value: operation ? 'outcome_unknown' as const : 'not_owner' as const }
+      if (!operation || operation.kind !== 'mcp_prepare') return { changed: false as const, value: 'not_owner' as const }
+      if (!['claimed', 'started'].includes(dispatch.state as string) || !executionClaimMatches(dispatch, executionClaimToken) || dispatch.recovery_fence !== undefined || dispatch.stop_requested_at !== undefined) {
+        const outcome = markDurableTaskRunOutcomeUnknown(state, run.task_id, runId, dispatch, this.now().toISOString())
+        outcomeUnknownTaskId = run.task_id
+        outcomeUnknownEvent = outcome.event
+        return 'outcome_unknown' as const
+      }
+      if (operation.state === 'outcome_unknown') return { changed: false as const, value: 'outcome_unknown' as const }
+      if (operation.state !== 'result_obtained') return { changed: false as const, value: 'not_owner' as const }
+      if (run.extension_snapshot !== undefined && JSON.stringify(run.extension_snapshot) !== JSON.stringify(snapshot)) throw new Error('AUTHORITY_INVALID')
+      run.extension_snapshot = snapshot
+      const now = this.now().toISOString()
+      dispatch.external_operations = liveExternalOperations(dispatch).filter(candidate => candidate.operation_id !== operationId)
+      if (dispatch.external_operations.length === 0) delete dispatch.external_operations
+      const checkpoints = Array.isArray(dispatch.external_operation_checkpoints)
+        ? dispatch.external_operation_checkpoints as DurableTaskRunExternalOperationCheckpoint[]
+        : []
+      dispatch.external_operation_checkpoints = [...checkpoints, {
+        operation_id: operation.operation_id,
+        kind: operation.kind,
+        checkpoint_digest: snapshot.digest,
+        checkpointed_at: now,
+      }].slice(-512)
+      return 'checkpointed' as const
+    })
+    if (outcomeUnknownEvent && outcomeUnknownTaskId) this.runtimeEvents.publish(outcomeUnknownTaskId, outcomeUnknownEvent)
+    return result
+  }
+
+  /**
+   * An effect that threw, lost its response, or was cut off after admission is
+   * deliberately left unresolved.  This terminal ledger state blocks both
+   * queue advancement and automatic replay until the user explicitly decides.
+   */
+  async markTaskRunExternalOperationOutcomeUnknown(
+    runId: string,
+    dispatchGeneration: number,
+    executionClaimToken: string,
+    operationId: string,
+  ): Promise<'marked' | 'already_outcome_unknown' | 'not_owner'> {
+    if (!runId || !Number.isSafeInteger(dispatchGeneration) || dispatchGeneration < 1 || !isExecutionClaimToken(executionClaimToken) || !isTaskRunExternalOperationId(operationId)) throw new Error('AUTHORITY_INVALID')
+    const authority = new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps)
+    let outcomeUnknownTaskId: string | undefined
+    let outcomeUnknownEvent: Extract<ProductTaskEvent, { type: 'outcome_unknown' }> | undefined
+    const { result } = await authority.transactSubmit((state) => {
+      const run = state.task_runs[runId] as { task_id?: unknown } | undefined
+      const dispatch = state.dispatch_records[runId] as DurableTaskRunDispatch | undefined
+      if (typeof run?.task_id !== 'string' || !dispatch || dispatch.dispatch_generation !== dispatchGeneration) throw new Error('AUTHORITY_INVALID')
+      if (dispatch.state === 'outcome_unknown') {
+        const operation = externalOperationForId(dispatch, operationId)
+        if (!operation) return { changed: false as const, value: 'not_owner' as const }
+        const outcome = markDurableTaskRunOutcomeUnknown(state, run.task_id, runId, dispatch, this.now().toISOString())
+        outcomeUnknownTaskId = run.task_id
+        outcomeUnknownEvent = outcome.event
+        return outcome.changed ? 'already_outcome_unknown' as const : { changed: false as const, value: 'already_outcome_unknown' as const }
+      }
+      const operation = externalOperationForId(dispatch, operationId)
+      if (!['claimed', 'started'].includes(dispatch.state as string) || !executionClaimMatches(dispatch, executionClaimToken) || !operation) {
+        return { changed: false as const, value: 'not_owner' as const }
+      }
+      if (operation.state !== 'in_flight' && operation.state !== 'result_obtained') throw new Error('AUTHORITY_INVALID')
+      const outcome = markDurableTaskRunOutcomeUnknown(state, run.task_id, runId, dispatch, this.now().toISOString())
+      outcomeUnknownTaskId = run.task_id
+      outcomeUnknownEvent = outcome.event
+      return 'marked' as const
+    })
+    if (outcomeUnknownEvent && outcomeUnknownTaskId) this.runtimeEvents.publish(outcomeUnknownTaskId, outcomeUnknownEvent)
+    return result
+  }
+
   /** The only server-private resolver for a run's durable Core launch target. */
-  async resolveTaskRunCoreBinding(runId: string, dispatchGeneration: number): Promise<{ session_id: string; work_dir: string; provider: string; model: string; model_route_fingerprint: string; model_attempt_id: string }> {
+  async resolveTaskRunCoreBinding(runId: string, dispatchGeneration: number, executionClaimToken: string): Promise<{ session_id: string; work_dir: string; provider: string; model: string; model_route_fingerprint: string; model_attempt_id: string }> {
+    if (!isExecutionClaimToken(executionClaimToken)) throw new Error('CORE_BINDING_UNAVAILABLE')
     const file = await new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps).read()
     const run = file.task_runs[runId] as { task_id?: unknown; lineage_id?: unknown; execution_capability?: unknown; provider?: unknown; model?: unknown; model_route_fingerprint?: unknown; core_binding?: { resume_binding_id?: unknown; session_id?: unknown; work_dir?: unknown; dispatch_generation?: unknown } } | undefined
     const binding = run?.core_binding
+    const dispatch = file.dispatch_records[runId] as { dispatch_generation?: unknown; state?: unknown; stop_requested_at?: unknown; recovery_fence?: unknown; execution_claim?: unknown } | undefined
     if (!binding || run?.execution_capability !== 'workspace_bound' || typeof run.task_id !== 'string' || binding.dispatch_generation !== dispatchGeneration || typeof binding.resume_binding_id !== 'string' || typeof binding.session_id !== 'string' || typeof binding.work_dir !== 'string' || !binding.work_dir || typeof run.provider !== 'string' || typeof run.model !== 'string' || !/^[a-f0-9]{64}$/.test(String(run.model_route_fingerprint ?? ''))) throw new Error('CORE_BINDING_UNAVAILABLE')
+    if (dispatch?.dispatch_generation !== dispatchGeneration || !['claimed', 'started'].includes(dispatch.state as string) || dispatch.stop_requested_at !== undefined || dispatch.recovery_fence !== undefined || !executionClaimMatches(dispatch, executionClaimToken)) throw new Error('CORE_BINDING_UNAVAILABLE')
     const lineage = typeof run.lineage_id === 'string' ? file.conversation_lineages[run.lineage_id] as { resume_binding_id?: unknown; execution_directory?: unknown } | undefined : undefined
     if (binding.resume_binding_id !== lineage?.resume_binding_id) throw new Error('CORE_BINDING_UNAVAILABLE')
     const scope = file.task_scopes[run.task_id] as { kind?: unknown; workspace_id?: unknown } | undefined
@@ -2803,21 +3499,35 @@ export class ProductTaskService {
   }
 
   /** BB-03DR terminal/recovery marker; it cannot create or replay a user turn. */
-  async settleTaskRunDispatch(runId: string, dispatchGeneration: number, state: 'recovery_required' | 'terminal', error?: string, failure?: ProductTaskRunFailure): Promise<void> {
-    if (failure !== undefined && (!isProductTaskRunFailureCode(failure.code) || failure.retryable !== productTaskRunFailure(failure.code).retryable || state !== 'recovery_required')) throw new Error('AUTHORITY_INVALID')
+  async settleTaskRunDispatch(runId: string, dispatchGeneration: number, state: 'recovery_required' | 'terminal', error?: string, failure?: ProductTaskRunFailure, executionClaimToken?: string): Promise<'settled' | 'already_settled' | 'outcome_unknown' | 'not_owner'> {
+    if (failure !== undefined && (!isProductTaskRunFailureCode(failure.code) || failure.retryable !== productTaskRunFailure(failure.code).retryable || state !== 'recovery_required') || (executionClaimToken !== undefined && !isExecutionClaimToken(executionClaimToken))) throw new Error('AUTHORITY_INVALID')
     const authority = new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps)
+    let outcomeUnknownTaskId: string | undefined
+    let outcomeUnknownEvent: Extract<ProductTaskEvent, { type: 'outcome_unknown' }> | undefined
     const { result } = await authority.transactSubmit((file) => {
       const run = file.task_runs[runId] as { task_id?: unknown; event_contract?: unknown } | undefined
-      const dispatch = file.dispatch_records[runId] as { dispatch_generation?: unknown; state?: unknown; completed_at?: unknown; error?: unknown } | undefined
+      const dispatch = file.dispatch_records[runId] as DurableTaskRunDispatch | undefined
       if (typeof run?.task_id !== 'string' || !dispatch || dispatch.dispatch_generation !== dispatchGeneration) throw new Error('AUTHORITY_INVALID')
+      if (dispatch.state === 'outcome_unknown') return { changed: false as const, value: 'outcome_unknown' as const }
       if (dispatch.state === 'terminal' || dispatch.state === 'recovery_required') {
         const expectedState = state
         const expectedError = state === 'recovery_required' ? failure?.code ?? 'task_failed' : error
         if (dispatch.state !== expectedState || (expectedError !== undefined && dispatch.error !== expectedError)) throw new Error('AUTHORITY_INVALID')
-        return { changed: false as const, value: undefined }
+        return { changed: false as const, value: 'already_settled' as const }
       }
+      if (dispatch.execution_claim !== undefined && !executionClaimMatches(dispatch, executionClaimToken)) return { changed: false as const, value: 'not_owner' as const }
+      if (dispatch.execution_claim === undefined && dispatch.state !== 'pending') return { changed: false as const, value: 'not_owner' as const }
+      if (dispatch.execution_claim === undefined && dispatch.stop_requested_at === undefined) return { changed: false as const, value: 'not_owner' as const }
+      if (liveExternalOperations(dispatch).length > 0) {
+        const outcome = markDurableTaskRunOutcomeUnknown(file, run.task_id, runId, dispatch, this.now().toISOString())
+        outcomeUnknownTaskId = run.task_id
+        outcomeUnknownEvent = outcome.event
+        return 'outcome_unknown' as const
+      }
+      if (state === 'recovery_required' && dispatch.recovery_fence && dispatch.recovery_fence.failure?.code !== (failure?.code ?? 'task_failed')) return { changed: false as const, value: 'not_owner' as const }
       const now = this.now().toISOString()
-      if (run.event_contract === 'durable_items_v1' && !Object.values(file.task_events).some(value => {
+      run.event_contract = 'durable_items_v1'
+      if (!Object.values(file.task_events).some(value => {
         const event = value as TaskEvent
         return event.type === 'run_terminal' && event.run_id === runId && event.dispatch_generation === dispatchGeneration
       })) {
@@ -2834,6 +3544,9 @@ export class ProductTaskService {
         }
       }
       dispatch.state = state; dispatch.completed_at = now; if (state === 'recovery_required') dispatch.error = failure?.code ?? 'task_failed'; else if (error) dispatch.error = error
+      delete dispatch.execution_claim
+      delete dispatch.recovery_fence
+      delete dispatch.stop_requested_at
       const queueEvents = releaseQueuedInputTargets(file, runId, dispatchGeneration, now)
       if (queueEvents.length) {
         const task = (file.tasks[run.task_id] as { task?: Record<string, unknown> } | undefined)?.task
@@ -2844,9 +3557,11 @@ export class ProductTaskService {
       }
       return { task_id: run.task_id, queue_events: queueEvents }
     })
-    if (!result) return
+    if (outcomeUnknownEvent && outcomeUnknownTaskId) this.runtimeEvents.publish(outcomeUnknownTaskId, outcomeUnknownEvent)
+    if (result === 'already_settled' || result === 'outcome_unknown' || result === 'not_owner') return result
     for (const event of result.queue_events) this.runtimeEvents.publish(result.task_id, event)
     if (state === 'recovery_required') this.runtimeEvents.publish(result.task_id, { type: 'error', ...(failure ?? { code: 'task_failed', retryable: false }) })
+    return 'settled'
   }
 
   /** BB-02D two-confirmation lifecycle mutation; never deletes a workspace or source path. */
@@ -3718,7 +4433,21 @@ export class ProductTaskService {
       hasMore = page.has_more === true
     }
     const authority = await new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps).read()
-    return { taskId, entries, ...(recoveryRequiredTaskRunId(authority, taskId) ? { recoveryRequired: true } : {}) }
+    const unknownOutcomeRunId = outcomeUnknownTaskRunId(authority, taskId)
+    const unknownOutcomeDispatch = unknownOutcomeRunId
+      ? authority.dispatch_records[unknownOutcomeRunId] as DurableTaskRunDispatch | undefined
+      : undefined
+    const unknownOutcomeOperation = unknownOutcomeDispatch
+      ? primaryUnknownExternalOperation(unknownOutcomeDispatch)
+      : undefined
+    return {
+      taskId,
+      entries,
+      ...(recoveryRequiredTaskRunId(authority, taskId) ? { recoveryRequired: true } : {}),
+      ...(unknownOutcomeRunId && unknownOutcomeOperation && Number.isSafeInteger(unknownOutcomeDispatch?.dispatch_generation)
+        ? { outcomeUnknown: publicOutcomeUnknown(unknownOutcomeRunId, unknownOutcomeDispatch!.dispatch_generation as number, unknownOutcomeOperation) }
+        : {}),
+    }
   }
 
   private async resolveTaskBranchSource(

@@ -21,6 +21,7 @@ type ProductTaskSocketAuthority = Pick<
   | 'respondToTaskQuestion'
   | 'stopActiveTaskRun'
   | 'listTaskEvents'
+  | 'getTaskThread'
   | 'readPendingTaskApproval'
 >
 
@@ -162,12 +163,31 @@ async function replayDurableProductEvents(
         else if (event.type === 'queue_updated') ws.send(JSON.stringify({ type: 'queue_updated', item: { id: event.queue_item_id, text: event.text, state: event.phase, createdAt: event.created_at, attachmentCount: event.attachment_count, ...(event.target_run_id ? { targetRunId: event.target_run_id } : {}) }, replayed: true, event_sequence: event.event_sequence }))
         else if (event.type === 'context_compaction') ws.send(JSON.stringify({ type: 'context_compaction', item: { id: event.item_id, phase: event.phase, source: event.source, generation: event.generation }, replayed: true, event_sequence: event.event_sequence }))
         else if (event.type === 'run_terminal') ws.send(JSON.stringify({ type: 'run_terminal', id: event.item_id, state: event.state, ...(event.failure ? { failure: event.failure } : {}), replayed: true, event_sequence: event.event_sequence }))
+        else if (event.type === 'outcome_unknown') ws.send(JSON.stringify({
+          type: 'outcome_unknown',
+          outcome: {
+            runId: event.run_id,
+            generation: event.dispatch_generation,
+            operation: { id: event.operation_id, kind: event.operation_kind, startedAt: event.operation_started_at },
+          },
+          replayed: true,
+          event_sequence: event.event_sequence,
+        }))
       }
       cursor = page.cursor
       hasMore = page.has_more === true
     }
     if (ws.data.handoff !== 'replaying') return
-    const runSnapshot = runtimeEvents.snapshot(ws.data.productTaskId)
+    const liveSnapshot = runtimeEvents.snapshot(ws.data.productTaskId)
+    // Runtime snapshots are intentionally ephemeral.  After a Product Server
+    // restart they must not erase a durable `outcome_unknown` that was just
+    // replayed, nor keep one after a confirmed recovery created a new Run.
+    const thread = await tasks.getTaskThread(ws.data.productTaskId)
+    const runSnapshot = {
+      ...liveSnapshot,
+      outcomeUnknown: thread.outcomeUnknown ?? null,
+      ...(thread.outcomeUnknown ? { state: 'idle' as const, activities: [] } : {}),
+    }
     const assistantTextSnapshot = runtimeEvents.assistantTextSnapshot(ws.data.productTaskId)
     ws.send(JSON.stringify({ type: 'run_snapshot', ...runSnapshot }))
     await replayPendingWorkerApproval(ws, tasks, runtimeEvents)

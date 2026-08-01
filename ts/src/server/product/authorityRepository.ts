@@ -8,6 +8,7 @@ import {
   type ProductTaskOperationReceipt,
 } from '../../../shared/product/authority.js'
 import { isProductPermissionSnapshot } from '../../../shared/product/domain.js'
+import { isProductTaskRunFailureCode, productTaskRunFailure } from './taskRunFailure.js'
 
 export type LegacyProductTaskSource = {
   version: 1 | 3 | 4
@@ -48,7 +49,7 @@ export type WorkspaceRecord = {
 export type AuthorityFile = {
   version: 1
   /** v1 files predate the additive workspace capability maps. */
-  authority_schema_revision: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8
+  authority_schema_revision: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9
   revision: number
   event_sequence: number
   tasks: Record<string, unknown>
@@ -105,7 +106,7 @@ function map(value: unknown): Record<string, unknown> {
 function empty(): AuthorityFile {
   return {
     version: 1,
-    authority_schema_revision: 8,
+    authority_schema_revision: 9,
     revision: 0,
     event_sequence: 0,
     tasks: Object.create(null),
@@ -350,7 +351,7 @@ function validateReviewComment(value: unknown, key: string): void {
 
 function validate(file: AuthorityFile): AuthorityFile {
   if (file.version !== 1 || !Number.isSafeInteger(file.revision) || file.revision < 0 || !Number.isSafeInteger(file.event_sequence) || file.event_sequence < 0) invalid()
-  if (![1, 2, 3, 4, 5, 6, 7, 8].includes(file.authority_schema_revision)) throw new Error('UNSUPPORTED_SCHEMA')
+  if (![1, 2, 3, 4, 5, 6, 7, 8, 9].includes(file.authority_schema_revision)) throw new Error('UNSUPPORTED_SCHEMA')
   const maps = ['tasks', 'side_tasks', 'bindings', 'receipts', 'events', 'outbox', 'prepared', 'provenance'] as const
   for (const name of maps) map(file[name])
   if (file.authority_schema_revision >= 2) {
@@ -368,7 +369,101 @@ function validate(file: AuthorityFile): AuthorityFile {
         if (entry.entry_id !== key || !requiredString(entry.task_id) || !requiredString(entry.run_id) || typeof entry.text !== 'string' || !isTimestamp(entry.created_at) || ((entry.core_session_id !== undefined || entry.core_message_id !== undefined) && (!requiredString(entry.core_session_id) || !requiredString(entry.core_message_id))) || (entry.reference_entry_ids !== undefined && (!Array.isArray(entry.reference_entry_ids) || entry.reference_entry_ids.length > 8 || new Set(entry.reference_entry_ids).size !== entry.reference_entry_ids.length || entry.reference_entry_ids.some(id => typeof id !== 'string' || !/^thread_[a-f0-9]{20}$/.test(id))))) invalid()
       }
       for (const [key, value] of Object.entries(file.task_runs)) { const run = object(value); assertAuthorityMapKey(key); exactKeys(run, ['run_id', 'task_id', 'lineage_id', 'entry_id', 'created_at', 'execution_capability', 'permission_mode', 'provider', 'model'], ['permission_snapshot', 'core_binding', 'event_contract', 'extension_snapshot', 'model_route_fingerprint']); const binding = run.core_binding === undefined ? undefined : object(run.core_binding); if (binding) exactKeys(binding, ['resume_binding_id', 'session_id', 'work_dir', 'dispatch_generation'], ['context_event_sequence']); const extension = run.extension_snapshot === undefined ? undefined : object(run.extension_snapshot); if (extension) { exactKeys(extension, ['digest', 'tool_count', 'command_count', 'mcp_server_count']); if (typeof extension.digest !== 'string' || !/^[a-f0-9]{64}$/.test(extension.digest) || [extension.tool_count, extension.command_count, extension.mcp_server_count].some(count => !Number.isSafeInteger(count) || (count as number) < 0 || (count as number) > 10_000)) invalid() }; if (run.run_id !== key || !requiredString(run.task_id) || !requiredString(run.lineage_id) || !requiredString(run.entry_id) || !isTimestamp(run.created_at) || !['installation_default_denied', 'workspace_bound'].includes(run.execution_capability as string) || (run.permission_mode !== null && typeof run.permission_mode !== 'string') || (run.permission_snapshot !== undefined && (!isProductPermissionSnapshot(run.permission_snapshot) || run.permission_mode !== run.permission_snapshot.mode)) || (run.provider !== null && typeof run.provider !== 'string') || (run.model !== null && typeof run.model !== 'string') || (run.model_route_fingerprint !== undefined && (typeof run.model_route_fingerprint !== 'string' || !/^[a-f0-9]{64}$/.test(run.model_route_fingerprint))) || (run.event_contract !== undefined && run.event_contract !== 'durable_items_v1') || (binding && (!requiredString(binding.resume_binding_id) || !requiredString(binding.session_id) || typeof binding.work_dir !== 'string' || !Number.isSafeInteger(binding.dispatch_generation) || (binding.dispatch_generation as number) < 1 || (binding.context_event_sequence !== undefined && (!Number.isSafeInteger(binding.context_event_sequence) || (binding.context_event_sequence as number) < 0))))) invalid() }
-      for (const [key, value] of Object.entries(file.dispatch_records)) { const dispatch = object(value); assertAuthorityMapKey(key); exactKeys(dispatch, ['run_id', 'dispatch_generation', 'state'], ['claimed_at', 'started_at', 'completed_at', 'error', 'approvals']); if (dispatch.run_id !== key || !Number.isSafeInteger(dispatch.dispatch_generation) || (dispatch.dispatch_generation as number) < 1 || !['pending', 'claimed', 'started', 'recovery_required', 'terminal'].includes(dispatch.state as string) || (dispatch.claimed_at !== undefined && !isTimestamp(dispatch.claimed_at)) || (dispatch.started_at !== undefined && !isTimestamp(dispatch.started_at)) || (dispatch.completed_at !== undefined && !isTimestamp(dispatch.completed_at)) || (dispatch.error !== undefined && typeof dispatch.error !== 'string') || (dispatch.approvals !== undefined && (!Array.isArray(dispatch.approvals) || dispatch.approvals.length > 1_000))) invalid(); const approvals = (dispatch.approvals as unknown[] | undefined) ?? []; const requestIds = new Set<string>(); let pending = 0; for (const approval of approvals) { validateRunApproval(approval); const record = approval as { request_id: string; status: string }; if (requestIds.has(record.request_id)) invalid(); requestIds.add(record.request_id); if (record.status === 'pending') pending += 1 }; if (pending > 1) invalid() }
+      for (const [key, value] of Object.entries(file.dispatch_records)) {
+        const dispatch = object(value)
+        assertAuthorityMapKey(key)
+        exactKeys(dispatch, ['run_id', 'dispatch_generation', 'state'], ['claimed_at', 'started_at', 'completed_at', 'error', 'approvals', 'stop_requested_at', 'execution_claim', 'recovery_fence', 'external_operations', 'external_operation_checkpoints', 'outcome_unknown_at'])
+        const executionClaim = dispatch.execution_claim === undefined ? undefined : object(dispatch.execution_claim)
+        if (executionClaim) {
+          exactKeys(executionClaim, ['claim_token', 'claimed_at'])
+          if (typeof executionClaim.claim_token !== 'string' || !/^[a-f0-9-]{36}$/.test(executionClaim.claim_token) || !isTimestamp(executionClaim.claimed_at)) invalid()
+        }
+        const recoveryFence = dispatch.recovery_fence === undefined ? undefined : object(dispatch.recovery_fence)
+        if (recoveryFence) {
+          exactKeys(recoveryFence, ['failure', 'created_at'])
+          const failure = object(recoveryFence.failure)
+          exactKeys(failure, ['code', 'retryable'])
+          if (!isProductTaskRunFailureCode(failure.code) || failure.retryable !== productTaskRunFailure(failure.code).retryable || !isTimestamp(recoveryFence.created_at)) invalid()
+        }
+        const externalOperations = dispatch.external_operations === undefined ? [] : dispatch.external_operations
+        if (!Array.isArray(externalOperations) || externalOperations.length > 256) invalid()
+        const externalOperationIds = new Set<string>()
+        for (const candidate of externalOperations) {
+          const externalOperation = object(candidate)
+          exactKeys(externalOperation, ['operation_id', 'kind', 'state', 'started_at'], ['result_obtained_at'])
+          if (
+            typeof externalOperation.operation_id !== 'string'
+            || !/^effect_[a-f0-9-]{36}$/.test(externalOperation.operation_id)
+            || externalOperationIds.has(externalOperation.operation_id)
+            || !['mcp_prepare', 'chat_prompt', 'command_prompt', 'model', 'tools', 'hook_command', 'hook_http', 'model_ack', 'workspace_init', 'auto_memory_append'].includes(externalOperation.kind as string)
+            || !['in_flight', 'result_obtained', 'outcome_unknown'].includes(externalOperation.state as string)
+            || !isTimestamp(externalOperation.started_at)
+            || (externalOperation.state === 'result_obtained') !== (externalOperation.result_obtained_at !== undefined)
+            || (externalOperation.result_obtained_at !== undefined && !isTimestamp(externalOperation.result_obtained_at))
+          ) invalid()
+          externalOperationIds.add(externalOperation.operation_id)
+        }
+        const externalOperationCheckpoints = dispatch.external_operation_checkpoints === undefined ? [] : dispatch.external_operation_checkpoints
+        if (!Array.isArray(externalOperationCheckpoints) || externalOperationCheckpoints.length > 512) invalid()
+        const checkpointIds = new Set<string>()
+        for (const candidate of externalOperationCheckpoints) {
+          const checkpoint = object(candidate)
+          exactKeys(checkpoint, ['operation_id', 'kind', 'checkpoint_digest', 'checkpointed_at'])
+          if (
+            typeof checkpoint.operation_id !== 'string'
+            || !/^effect_[a-f0-9-]{36}$/.test(checkpoint.operation_id)
+            || checkpointIds.has(checkpoint.operation_id)
+            || externalOperationIds.has(checkpoint.operation_id)
+            || !['mcp_prepare', 'chat_prompt', 'command_prompt', 'model', 'tools', 'hook_command', 'hook_http', 'model_ack', 'workspace_init', 'auto_memory_append'].includes(checkpoint.kind as string)
+            || typeof checkpoint.checkpoint_digest !== 'string'
+            || !/^[a-f0-9]{64}$/.test(checkpoint.checkpoint_digest)
+            || !isTimestamp(checkpoint.checkpointed_at)
+          ) invalid()
+          checkpointIds.add(checkpoint.operation_id)
+        }
+        if (
+          dispatch.run_id !== key
+          || !Number.isSafeInteger(dispatch.dispatch_generation)
+          || (dispatch.dispatch_generation as number) < 1
+          || !['pending', 'claimed', 'started', 'recovery_required', 'outcome_unknown', 'terminal'].includes(dispatch.state as string)
+          || (dispatch.claimed_at !== undefined && !isTimestamp(dispatch.claimed_at))
+          || (dispatch.started_at !== undefined && !isTimestamp(dispatch.started_at))
+          || (dispatch.completed_at !== undefined && !isTimestamp(dispatch.completed_at))
+          || (dispatch.error !== undefined && typeof dispatch.error !== 'string')
+          || (dispatch.stop_requested_at !== undefined && !isTimestamp(dispatch.stop_requested_at))
+          || (dispatch.outcome_unknown_at !== undefined && !isTimestamp(dispatch.outcome_unknown_at))
+          || (dispatch.approvals !== undefined && (!Array.isArray(dispatch.approvals) || dispatch.approvals.length > 1_000))
+          || (dispatch.stop_requested_at !== undefined && !['pending', 'claimed', 'started'].includes(dispatch.state as string))
+          || (executionClaim !== undefined && !['claimed', 'started'].includes(dispatch.state as string))
+          || (recoveryFence !== undefined && !['pending', 'claimed', 'started'].includes(dispatch.state as string))
+        ) invalid()
+        if (
+          (externalOperations.some(operation => operation.state === 'in_flight' || operation.state === 'result_obtained') && !['claimed', 'started'].includes(dispatch.state as string))
+          || (externalOperations.some(operation => operation.state === 'outcome_unknown') && dispatch.state !== 'outcome_unknown')
+          || (dispatch.state === 'outcome_unknown' && (
+            externalOperations.length === 0
+            || externalOperations.some(operation => operation.state !== 'outcome_unknown')
+            || dispatch.outcome_unknown_at === undefined
+            || dispatch.completed_at !== undefined
+            || dispatch.error !== 'EXTERNAL_OPERATION_OUTCOME_UNKNOWN'
+            || dispatch.execution_claim !== undefined
+            || dispatch.recovery_fence !== undefined
+            || dispatch.stop_requested_at !== undefined
+          ))
+          || (dispatch.outcome_unknown_at !== undefined && dispatch.state !== 'outcome_unknown')
+        ) invalid()
+        const approvals = (dispatch.approvals as unknown[] | undefined) ?? []
+        const requestIds = new Set<string>()
+        let pending = 0
+        for (const approval of approvals) {
+          validateRunApproval(approval)
+          const record = approval as { request_id: string; status: string }
+          if (requestIds.has(record.request_id)) invalid()
+          requestIds.add(record.request_id)
+          if (record.status === 'pending') pending += 1
+        }
+        if (pending > 1) invalid()
+      }
       for (const [key, value] of Object.entries(file.task_events)) {
         const event = object(value); assertAuthorityMapKey(key)
         if (!Number.isSafeInteger(event.event_sequence) || (event.event_sequence as number) < 1 || Number(key) !== event.event_sequence || !requiredString(event.task_id) || !isTimestamp(event.created_at)) invalid()
@@ -397,6 +492,17 @@ function validate(file: AuthorityFile): AuthorityFile {
         } else if (event.type === 'run_terminal') {
           exactKeys(event, ['event_sequence', 'task_id', 'run_id', 'type', 'dispatch_generation', 'item_id', 'state', 'created_at'])
           if (!requiredString(event.run_id) || !Number.isSafeInteger(event.dispatch_generation) || (event.dispatch_generation as number) < 1 || typeof event.item_id !== 'string' || !/^turn_[a-f0-9]{32}$/.test(event.item_id) || !['completed', 'stopped', 'recovery_required'].includes(event.state as string)) invalid()
+        } else if (event.type === 'outcome_unknown') {
+          exactKeys(event, ['event_sequence', 'task_id', 'run_id', 'type', 'dispatch_generation', 'operation_id', 'operation_kind', 'operation_started_at', 'created_at'])
+          if (
+            !requiredString(event.run_id)
+            || !Number.isSafeInteger(event.dispatch_generation)
+            || (event.dispatch_generation as number) < 1
+            || typeof event.operation_id !== 'string'
+            || !/^effect_[a-f0-9-]{36}$/.test(event.operation_id)
+            || !['mcp_prepare', 'chat_prompt', 'command_prompt', 'model', 'tools', 'hook_command', 'hook_http', 'model_ack', 'workspace_init', 'auto_memory_append'].includes(event.operation_kind as string)
+            || !isTimestamp(event.operation_started_at)
+          ) invalid()
         } else if (event.type === 'queue_updated') {
           exactKeys(event, ['event_sequence', 'task_id', 'type', 'queue_item_id', 'entry_id', 'phase', 'text', 'attachment_count', 'created_at'], ['target_run_id'])
           if (typeof event.queue_item_id !== 'string' || !/^queue_[a-f0-9-]{36}$/.test(event.queue_item_id) || !requiredString(event.entry_id) || !['queued', 'injected', 'promoted', 'failed', 'cancelled'].includes(event.phase as string) || typeof event.text !== 'string' || !Number.isSafeInteger(event.attachment_count) || (event.attachment_count as number) < 0 || (event.attachment_count as number) > 4 || (requiredString(event.target_run_id) && !['queued', 'injected', 'promoted'].includes(event.phase as string)) || (['injected', 'promoted'].includes(event.phase as string) && !requiredString(event.target_run_id))) invalid()
@@ -529,8 +635,8 @@ export class ProductTaskAuthorityRepository {
       const parsed = JSON.parse(await fs.readFile(this.authorityPath, 'utf8')) as Partial<AuthorityFile>
       const root = object(parsed)
       const revision = root.authority_schema_revision
-      if (revision !== undefined && ![1, 2, 3, 4, 5, 6, 7, 8].includes(revision as number)) throw new Error('UNSUPPORTED_SCHEMA')
-      if (revision === 8) {
+      if (revision !== undefined && ![1, 2, 3, 4, 5, 6, 7, 8, 9].includes(revision as number)) throw new Error('UNSUPPORTED_SCHEMA')
+      if (revision === 9 || revision === 8) {
         exactKeys(root, ['version', 'authority_schema_revision', 'revision', 'event_sequence', 'tasks', 'side_tasks', 'bindings', 'receipts', 'events', 'outbox', 'prepared', 'provenance', 'workspaces', 'task_scopes', 'composer_drafts', 'task_attachments', 'conversation_lineages', 'thread_entries', 'task_runs', 'dispatch_records', 'task_events', 'attachment_bindings', 'review_comments', 'turn_input_queue', 'context_snapshots', 'product_projects', 'product_directories'])
       } else if (revision === 7 || revision === 6) {
         exactKeys(root, ['version', 'authority_schema_revision', 'revision', 'event_sequence', 'tasks', 'side_tasks', 'bindings', 'receipts', 'events', 'outbox', 'prepared', 'provenance', 'workspaces', 'task_scopes', 'composer_drafts', 'task_attachments', 'conversation_lineages', 'thread_entries', 'task_runs', 'dispatch_records', 'task_events', 'attachment_bindings', 'review_comments', 'turn_input_queue', 'context_snapshots'])
@@ -567,11 +673,28 @@ export class ProductTaskAuthorityRepository {
           thread_entries: Object.create(null), task_runs: Object.create(null), dispatch_records: Object.create(null), task_events: Object.create(null), attachment_bindings: Object.create(null), review_comments: Object.create(null), turn_input_queue: Object.create(null), context_snapshots: Object.create(null),
         })
       }
-      if (revision !== 8) {
+      if (revision !== 9 && revision !== 8) {
         Object.assign(root, {
           product_projects: Object.create(null),
           product_directories: Object.create(null),
         })
+      }
+      // Rev9 replaces a single live effect with a bounded list.  Reads upgrade
+      // only the in-memory projection; the durable shape changes on the next
+      // submit transaction, never as a side effect of inspection.
+      if (revision !== 9) {
+        const dispatches = root.dispatch_records
+        if (dispatches && typeof dispatches === 'object' && !Array.isArray(dispatches)) {
+          for (const value of Object.values(dispatches as Record<string, unknown>)) {
+            if (!value || typeof value !== 'object' || Array.isArray(value)) continue
+            const dispatch = value as Record<string, unknown>
+            if ('external_operation' in dispatch) {
+              const operation = dispatch.external_operation
+              delete dispatch.external_operation
+              dispatch.external_operations = operation === undefined ? [] : [operation]
+            }
+          }
+        }
       }
       return validate(root as AuthorityFile)
     } catch (error) {
@@ -781,7 +904,9 @@ export class ProductTaskAuthorityRepository {
       file.product_projects = structuredClone(projection.projects)
       file.product_directories = structuredClone(projection.directories)
       file.provenance[provenanceKey] = current
-      file.authority_schema_revision = 8
+      // Capability projection may be written after a Run-ledger upgrade; never
+      // downgrade the authority shape and silently discard rev9 invariants.
+      if (file.authority_schema_revision < 8) file.authority_schema_revision = 8
       file.revision += 1
       return this.write(file)
     })
@@ -828,7 +953,7 @@ export class ProductTaskAuthorityRepository {
   ): Promise<AuthorityFile> {
     // Rev1 remains byte-compatible for legacy/BB-02A-only writes. Only a real
     // BB-02B entity transaction may persist the additive capability maps.
-    if (upgradeToSubmit && file.authority_schema_revision < 7) file.authority_schema_revision = 7
+    if (upgradeToSubmit && file.authority_schema_revision < 9) file.authority_schema_revision = 9
     if (upgradeToReview && file.authority_schema_revision < 4) file.authority_schema_revision = 4
     if (upgradeToCapabilities && file.authority_schema_revision === 1) file.authority_schema_revision = 2
     if (file.authority_schema_revision >= 2) validate(file)

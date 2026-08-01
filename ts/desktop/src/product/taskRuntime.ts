@@ -19,6 +19,7 @@ export type ProductTaskStreamRuntime = {
   connectionState: 'disconnected' | 'connecting' | 'connected'
   runState: 'idle' | 'working' | 'awaiting_approval'
   pendingApproval: unknown | null
+  outcomeUnknown: unknown | null
   error: unknown | null
 }
 
@@ -33,6 +34,7 @@ export function getProductTaskRuntimeStateFromStream(
   if (runtime.pendingApproval != null || runtime.runState === 'awaiting_approval') {
     return 'awaiting_approval'
   }
+  if (runtime.outcomeUnknown != null) return 'needs_attention'
   if (runtime.error != null) return 'needs_attention'
   if (runtime.runState === 'working') return 'running'
   if (runtime.connectionState === 'connecting') return 'connecting'

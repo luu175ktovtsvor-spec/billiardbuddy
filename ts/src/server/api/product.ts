@@ -470,8 +470,24 @@ export async function handleProductApi(
         return Response.json({ receipt: { outcome: result.outcome, revision: result.revision }, authority: publicAuthority(operation.authority) }, { status: 201 })
       }
       case 'recover': {
-        if (!assertPlainExactObject(input, ['expected_revision', 'client_operation_id'])) throw ApiError.badRequest('recover 参数无效')
-        const result = await tasks.recoverTaskRun(taskId, envelope)
+        const confirmation = input.confirm_outcome_unknown
+        if (
+          !assertPlainExactObject(input, ['expected_revision', 'client_operation_id'], ['confirm_outcome_unknown'])
+          || (confirmation !== undefined && (
+            !assertPlainExactObject(confirmation, ['run_id', 'generation', 'operation_id'])
+            || typeof confirmation.run_id !== 'string'
+            || !confirmation.run_id
+            || typeof confirmation.generation !== 'number'
+            || !Number.isSafeInteger(confirmation.generation)
+            || confirmation.generation < 1
+            || typeof confirmation.operation_id !== 'string'
+            || !/^effect_[a-f0-9-]{36}$/.test(confirmation.operation_id)
+          ))
+        ) throw ApiError.badRequest('recover 参数无效')
+        const result = await tasks.recoverTaskRun(taskId, {
+          ...envelope,
+          ...(confirmation === undefined ? {} : { confirm_outcome_unknown: confirmation as { run_id: string; generation: number; operation_id: string } }),
+        })
         return Response.json(
           { receipt: result.receipt, authority: publicAuthority(result.snapshot), task: publicTask(result.task) },
           { status: result.receipt.outcome === 'accepted' ? 201 : result.receipt.outcome === 'duplicate' ? 200 : 409 },

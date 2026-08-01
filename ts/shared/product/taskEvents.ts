@@ -14,6 +14,42 @@ export type ProductTaskRunState =
   | 'working'
   | 'awaiting_approval'
 
+/**
+ * Product-safe classes of an Agent Run effect.  They identify the boundary a
+ * person may need to check, but never reveal a provider request, tool input,
+ * workspace path, or response body.
+ */
+export const PRODUCT_TASK_EXTERNAL_OPERATION_KINDS = [
+  'mcp_prepare',
+  'chat_prompt',
+  'command_prompt',
+  'model',
+  'tools',
+  'hook_command',
+  'hook_http',
+  'model_ack',
+  'workspace_init',
+  'auto_memory_append',
+] as const
+
+export type ProductTaskExternalOperationKind = typeof PRODUCT_TASK_EXTERNAL_OPERATION_KINDS[number]
+
+/**
+ * A durable reconciliation requirement for one interrupted Agent Run.  The
+ * identity is deliberately opaque and contains no effect payload; it binds a
+ * user confirmation to the exact run generation and effect receipt instead of
+ * treating a stale boolean confirmation as permission to replay work.
+ */
+export type ProductTaskOutcomeUnknown = {
+  runId: string
+  generation: number
+  operation: {
+    id: string
+    kind: ProductTaskExternalOperationKind
+    startedAt: string
+  }
+}
+
 export type ProductTaskActivityKind =
   | 'file_read'
   | 'file_change'
@@ -75,6 +111,8 @@ export type ProductTaskRunSnapshot = {
   state: ProductTaskRunState
   activities: ProductTaskRunActivity[]
   plan?: ProductTaskPlan
+  /** Always present so a newer authoritative snapshot can clear an old block. */
+  outcomeUnknown: ProductTaskOutcomeUnknown | null
 }
 
 export type ProductTaskApprovalKind =
@@ -247,6 +285,12 @@ export type ProductTaskEvent =
       event_sequence: number
     }
   | {
+      type: 'outcome_unknown'
+      outcome: ProductTaskOutcomeUnknown
+      event_sequence: number
+      replayed?: true
+    }
+  | {
       type: 'error'
       code: ProductTaskSafeErrorCode
       retryable: boolean
@@ -287,6 +331,8 @@ export type ProductTaskThread = {
   entries: ProductTaskThreadEntry[]
   /** A user-confirmed retry is required before the blocked queue can advance. */
   recoveryRequired?: boolean
+  /** An admitted external effect lost its final receipt; never auto-replay it. */
+  outcomeUnknown?: ProductTaskOutcomeUnknown
 }
 
 type TaskEventBase = {
@@ -339,6 +385,14 @@ type TaskEventPayload =
       dispatch_generation: number
       item_id: string
       state: 'completed' | 'stopped' | 'recovery_required'
+    }
+  | {
+      type: 'outcome_unknown'
+      run_id: string
+      dispatch_generation: number
+      operation_id: string
+      operation_kind: ProductTaskExternalOperationKind
+      operation_started_at: string
     }
   | {
       type: 'queue_updated'

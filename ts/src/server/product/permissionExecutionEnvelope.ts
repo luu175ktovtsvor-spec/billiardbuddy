@@ -28,13 +28,13 @@ export function createPolicyBoundEnvelope(
   return { ...body, digest: digest(body) }
 }
 
-export type AgentWorkerChildStartCapability = { run_id: string; dispatch_generation: number; fencing_token: number; envelope_digest: string; signature: string }
+export type AgentWorkerChildStartCapability = { run_id: string; dispatch_generation: number; fencing_token: number; envelope_digest: string; execution_claim_token: string; signature: string }
 
 function childStartPayload(value: Omit<AgentWorkerChildStartCapability, 'signature'>): string {
-  return JSON.stringify([value.run_id, value.dispatch_generation, value.fencing_token, value.envelope_digest])
+  return JSON.stringify([value.run_id, value.dispatch_generation, value.fencing_token, value.envelope_digest, value.execution_claim_token])
 }
 
-/** Server-private, signed hand-off. Its four bound values are all a child may use. */
+/** Server-private, signed hand-off. Its five bound values are all a child may use. */
 export function createAgentWorkerChildStartCapability(value: Omit<AgentWorkerChildStartCapability, 'signature'>, key: Buffer): AgentWorkerChildStartCapability {
   return { ...value, signature: createHmac('sha256', key).update(childStartPayload(value)).digest('hex') }
 }
@@ -42,7 +42,7 @@ export function createAgentWorkerChildStartCapability(value: Omit<AgentWorkerChi
 export function verifyAgentWorkerChildStartCapability(value: unknown, key: Buffer): value is AgentWorkerChildStartCapability {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false
   const capability = value as Record<string, unknown>
-  if (Object.keys(capability).sort().join(',') !== 'dispatch_generation,envelope_digest,fencing_token,run_id,signature' || typeof capability.run_id !== 'string' || !Number.isSafeInteger(capability.dispatch_generation) || (capability.dispatch_generation as number) < 1 || !Number.isSafeInteger(capability.fencing_token) || (capability.fencing_token as number) < 1 || typeof capability.envelope_digest !== 'string' || !/^[a-f0-9]{64}$/.test(capability.envelope_digest) || typeof capability.signature !== 'string' || !/^[a-f0-9]{64}$/.test(capability.signature)) return false
+  if (Object.keys(capability).sort().join(',') !== 'dispatch_generation,envelope_digest,execution_claim_token,fencing_token,run_id,signature' || typeof capability.run_id !== 'string' || !Number.isSafeInteger(capability.dispatch_generation) || (capability.dispatch_generation as number) < 1 || !Number.isSafeInteger(capability.fencing_token) || (capability.fencing_token as number) < 1 || typeof capability.envelope_digest !== 'string' || !/^[a-f0-9]{64}$/.test(capability.envelope_digest) || typeof capability.execution_claim_token !== 'string' || !/^[a-f0-9-]{36}$/.test(capability.execution_claim_token) || typeof capability.signature !== 'string' || !/^[a-f0-9]{64}$/.test(capability.signature)) return false
   const expected = Buffer.from(createHmac('sha256', key).update(childStartPayload(capability as AgentWorkerChildStartCapability)).digest('hex'), 'hex'); const actual = Buffer.from(capability.signature, 'hex')
   return expected.length === actual.length && timingSafeEqual(expected, actual)
 }

@@ -11,7 +11,7 @@ import type {
   ProductTaskOperationEnvelope,
   ProductTaskOperationReceipt,
 } from '../../../../shared/product/authority'
-import type { ProductTaskQueuedInput, ProductTaskThread } from '../../../../shared/product/taskEvents'
+import type { ProductTaskOutcomeUnknown, ProductTaskQueuedInput, ProductTaskThread } from '../../../../shared/product/taskEvents'
 import type {
   ProductTaskReviewCommentMutation,
   ProductTaskReviewComments,
@@ -70,6 +70,8 @@ export type {
   ProductTaskRunState,
   ProductTaskRunFailure,
   ProductTaskRunFailureCode,
+  ProductTaskExternalOperationKind,
+  ProductTaskOutcomeUnknown,
   ProductTaskQueuedInput,
   ProductTaskSafeErrorCode,
   ProductTaskThread,
@@ -263,7 +265,13 @@ export type ProductTaskApi = {
   unpin: (taskId: string, input: MutationEnvelope) => Promise<ProductTaskActionResponse>
   archive: (taskId: string, input: MutationEnvelope) => Promise<ProductTaskActionResponse>
   restore: (taskId: string, input: MutationEnvelope) => Promise<ProductTaskActionResponse>
-  recover: (taskId: string, input: MutationEnvelope) => Promise<ProductTaskActionResponse>
+  recover: (taskId: string, input: MutationEnvelope<{
+    confirm_outcome_unknown?: {
+      run_id: ProductTaskOutcomeUnknown['runId']
+      generation: ProductTaskOutcomeUnknown['generation']
+      operation_id: ProductTaskOutcomeUnknown['operation']['id']
+    }
+  }>) => Promise<ProductTaskActionResponse>
   delete: (taskId: string, input: { phase: ProductTaskDeletionPhase; expected_revision: number; client_operation_id: string }) => Promise<ProductTaskDeletionResponse>
   continue: (taskId: string, input: MutationEnvelope<ContinueProductTaskInput>) => Promise<ProductTaskActionResponse>
   createSideTask: (taskId: string, input: MutationEnvelope<CreateProductSideTaskInput & { sideTaskId: string }>) => Promise<ProductTaskActionResponse>

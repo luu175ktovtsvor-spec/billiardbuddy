@@ -9,7 +9,17 @@ import type {
   ProductTaskRunFailure,
 } from '../../../shared/product/taskEvents.js'
 import type { AgentWorkerApprovalReviewFacts, AgentWorkerOutbound } from '../../../shared/product/agentWorker.js'
-import type { DurableTaskRunApproval } from './taskRunLedgerModel.js'
+import type { DurableTaskRunApproval, TaskRunExternalOperationKind } from './taskRunLedgerModel.js'
+
+export type ProductTaskRunRecoveryFenceOutcome = 'prepared' | 'already_settled' | 'outcome_unknown' | 'not_owner'
+export type ProductTaskRunSettlementOutcome = 'settled' | 'already_settled' | 'outcome_unknown' | 'not_owner'
+export type ProductTaskRunStopRequestOutcome = 'requested' | 'already_settled' | 'not_owner'
+export type ProductTaskRunExternalOperationBeginOutcome =
+  | { outcome: 'started'; operation_id: string }
+  | { outcome: 'not_owner' | 'outcome_unknown' }
+export type ProductTaskRunExternalOperationResultOutcome = 'result_obtained' | 'outcome_unknown' | 'not_owner'
+export type ProductTaskRunExternalOperationCheckpointOutcome = 'checkpointed' | 'outcome_unknown' | 'not_owner'
+export type ProductTaskRunExternalOperationUnknownOutcome = 'marked' | 'already_outcome_unknown' | 'not_owner'
 
 /**
  * The Agent runtime receives only its durable Run ledger, never the whole
@@ -58,21 +68,71 @@ export type ProductTaskRunCoreBinding = {
  */
 export type ProductTaskRunLedger = {
   readTaskRunDispatchIdentity(runId: string, dispatchGeneration: number): Promise<ProductTaskRunIdentity>
-  resolveTaskRunCoreBinding(runId: string, dispatchGeneration: number): Promise<ProductTaskRunCoreBinding>
+  assertTaskRunExecutionClaim(runId: string, dispatchGeneration: number, executionClaimToken: string): Promise<void>
+  resolveTaskRunCoreBinding(runId: string, dispatchGeneration: number, executionClaimToken: string): Promise<ProductTaskRunCoreBinding>
+  beginTaskRunExternalOperation(
+    runId: string,
+    dispatchGeneration: number,
+    executionClaimToken: string,
+    kind: TaskRunExternalOperationKind,
+  ): Promise<ProductTaskRunExternalOperationBeginOutcome>
+  recordTaskRunExternalOperationResult(
+    runId: string,
+    dispatchGeneration: number,
+    executionClaimToken: string,
+    operationId: string,
+  ): Promise<ProductTaskRunExternalOperationResultOutcome>
+  checkpointTaskRunExternalOperation(
+    runId: string,
+    dispatchGeneration: number,
+    executionClaimToken: string,
+    operationId: string,
+    checkpoint: { digest: string },
+  ): Promise<ProductTaskRunExternalOperationCheckpointOutcome>
+  checkpointTaskRunMcpPrepare(
+    runId: string,
+    dispatchGeneration: number,
+    executionClaimToken: string,
+    operationId: string,
+    snapshot: { digest: string; tool_count: number; command_count: number; mcp_server_count: number },
+  ): Promise<ProductTaskRunExternalOperationCheckpointOutcome>
+  markTaskRunExternalOperationOutcomeUnknown(
+    runId: string,
+    dispatchGeneration: number,
+    executionClaimToken: string,
+    operationId: string,
+  ): Promise<ProductTaskRunExternalOperationUnknownOutcome>
   inspectTaskRunQueuePosition(runId: string, dispatchGeneration: number): Promise<'ready' | 'queued'>
-  claimTaskRunDispatch(runId: string, dispatchGeneration: number): Promise<{
+  claimTaskRunDispatch(runId: string, dispatchGeneration: number, executionClaimToken: string): Promise<{
     outcome: 'claimed' | 'duplicate' | 'queued' | 'recovery_required'
     task_id: string
   }>
+  /**
+   * Persist a recovery fence before stopping a Worker or relinquishing its
+   * scheduler reservation.  A restart consumes the fence as recovery_required
+   * instead of guessing whether the interrupted Worker already had effects.
+   */
+  prepareTaskRunRecoveryFence(
+    runId: string,
+    dispatchGeneration: number,
+    failure: ProductTaskRunFailure,
+    executionClaimToken?: string,
+  ): Promise<ProductTaskRunRecoveryFenceOutcome>
+  requestTaskRunStop(
+    runId: string,
+    dispatchGeneration: number,
+    executionClaimToken?: string,
+  ): Promise<ProductTaskRunStopRequestOutcome>
   settleTaskRunDispatch(
     runId: string,
     dispatchGeneration: number,
     state: 'recovery_required' | 'terminal',
-    error?: string,
-    failure?: ProductTaskRunFailure,
-  ): Promise<void>
+    error: string | undefined,
+    failure: ProductTaskRunFailure | undefined,
+    executionClaimToken?: string,
+  ): Promise<ProductTaskRunSettlementOutcome>
   advanceTaskRunQueue(runId: string, dispatchGeneration: number): Promise<void>
-  recordQueuedInputConsumed(runId: string, dispatchGeneration: number, queueItemId: string): Promise<{
+  recordQueuedInputConsumed(runId: string, dispatchGeneration: number, queueItemId: string, executionClaimToken: string): Promise<{
     task_id: string
     events: ProductTaskEvent[]
   }>
@@ -80,28 +140,33 @@ export type ProductTaskRunLedger = {
     runId: string,
     dispatchGeneration: number,
     snapshot: { digest: string; tool_count: number; command_count: number; mcp_server_count: number },
+    executionClaimToken: string,
   ): Promise<void>
   recordTaskRunActivity(
     runId: string,
     dispatchGeneration: number,
     activity: Extract<ProductTaskEvent, { type: 'activity' }>,
+    executionClaimToken: string,
   ): Promise<{ task_id: string; event: Extract<ProductTaskEvent, { type: 'activity' }> }>
   recordTaskRunPlan(
     runId: string,
     dispatchGeneration: number,
     plan: ProductTaskPlan,
+    executionClaimToken: string,
   ): Promise<{ task_id: string; event: Extract<ProductTaskEvent, { type: 'plan_updated' }> }>
   recordTaskRunContextCompaction(
     runId: string,
     dispatchGeneration: number,
     compaction: Extract<AgentWorkerOutbound, { type: 'event'; event: 'context_compaction' }>,
+    executionClaimToken: string,
   ): Promise<{ task_id: string; event: Extract<ProductTaskEvent, { type: 'context_compaction' }> }>
   recordTaskRunTerminalProjection(
     runId: string,
     dispatchGeneration: number,
     terminalState: 'completed' | 'stopped' | 'recovery_required',
     assistantText: string,
-    failure?: ProductTaskRunFailure,
+    failure: ProductTaskRunFailure | undefined,
+    executionClaimToken: string,
   ): Promise<{ task_id: string; queue_events: ProductTaskEvent[] }>
   recordTaskRunApprovalRequest(
     runId: string,
@@ -109,6 +174,7 @@ export type ProductTaskRunLedger = {
     requestId: string,
     action: ProductTaskActionApproval,
     review: AgentWorkerApprovalReviewFacts,
+    executionClaimToken: string,
   ): Promise<{
     task_id: string
     reviewer: 'user' | 'automatic'
@@ -119,6 +185,7 @@ export type ProductTaskRunLedger = {
     dispatchGeneration: number,
     requestId: string,
     questions: ProductTaskQuestion[],
+    executionClaimToken: string,
   ): Promise<{ task_id: string; event: Extract<ProductTaskEvent, { type: 'approval_required'; kind: 'question' }> }>
   resolveTaskRunApproval(
     taskId: string,
@@ -126,5 +193,6 @@ export type ProductTaskRunLedger = {
     allowed: boolean,
     reviewer: 'user' | 'automatic',
     resolutionReason?: DurableTaskRunApproval['resolution_reason'],
+    executionClaimToken?: string,
   ): Promise<boolean>
 }

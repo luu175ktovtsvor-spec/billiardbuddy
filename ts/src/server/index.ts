@@ -245,7 +245,9 @@ export function startServer(port = PORT, host = HOST) {
 
       async fetch(req, server) {
         await productStorageUpgrade
-        productTaskQueueRecovery ??= productTaskService.recoverDurableTaskRunQueue()
+        productTaskQueueRecovery ??= productTaskService.recoverDurableTaskRunQueue({
+          hasLiveTaskRunLease: (runId, generation) => desktopResourceScheduler.hasLiveTaskRunLease(runId, generation),
+        })
         await productTaskQueueRecovery
         const url = new URL(req.url)
         if (url.pathname === PERSONAL_MODEL_CONFIGURATION_UPDATE_PATH) {

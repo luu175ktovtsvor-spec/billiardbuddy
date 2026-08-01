@@ -31,6 +31,12 @@ export type ProductAgentLoopInput = {
   canUseTool: ProductCanUseTool
   mutableMessages?: ProductHarnessMessage[]
   onMessageState?: (messages: readonly ProductHarnessMessage[]) => Promise<void>
+  /**
+   * Runs after the model stream has ended and its parent-side operation id is
+   * known.  It must durably checkpoint the assistant message before any model
+   * receipt is acknowledged.
+   */
+  onModelStreamCheckpoint?: () => Promise<void>
   /** Runs only after model receipts have entered a durable private message. */
   onOperationReceiptsPersisted?: (receipts: readonly ProductModelOperationReceipt[], signal: AbortSignal) => Promise<void>
   commandQueue?: ProductCommandQueue
@@ -274,8 +280,13 @@ export async function* runProductAgentLoop(input: ProductAgentLoopInput): AsyncG
         const text = assistantText(event)
         if (text) finalText = text
         await persist()
-        await acknowledgePersisted([event])
       }
+      // The stream's external operation only receives its opaque id after the
+      // final frame.  Earlier `persist()` calls save the message, but cannot
+      // prove that this exact model effect was included.  Checkpoint once the
+      // stream is complete, then (and only then) ACK its receipt.
+      await input.onModelStreamCheckpoint?.()
+      await acknowledgePersisted(assistantMessages)
     }
 
     if (assistantMessages.length === 0) throw new Error('PRODUCT_MODEL_EMPTY_RESPONSE')

@@ -7,6 +7,7 @@ import { runWithProductPermissionEnvelope } from '../../utils/permissions/produc
 import { runWithCwdOverride } from '../../utils/cwd.js'
 import type { AgentWorkerOutbound } from '../../../shared/product/agentWorker.js'
 import type { PermissionExecutionEnvelope } from '../../../shared/product/permissionExecutionEnvelope.js'
+import type { TaskRunExternalOperationKind } from '../product/taskRunLedgerModel.js'
 import { ProductAutoMemoryRepository, type ProductAutoMemoryBinding } from '../services/productAutoMemory.js'
 import { createProductInstructionSnapshot } from '../services/productInstructions.js'
 import type { ProductAgentHarnessModelPolicyPort, ProductAgentHarnessProjectionPort } from './agentHarnessPorts.js'
@@ -22,6 +23,8 @@ import { buildProductChatPrompt } from './productChatAttachments.js'
 import {
   ProductHarnessSessionRepository,
   type ProductHarnessSessionBinding,
+  type ProductHarnessSessionExternalOperationCheckpoint,
+  type ProductHarnessSessionExternalOperationCheckpointInput,
 } from './harnessSessionRepository.js'
 import {
   createProductHarnessLifecycleHookHost,
@@ -41,8 +44,14 @@ export type ProductAgentHarnessPort = {
   subscribe(listener: (message: Extract<AgentWorkerOutbound, { type: 'event' | 'terminal' }>) => void): () => void
 }
 
+export type ProductHarnessExternalOperation = <T>(
+  kind: TaskRunExternalOperationKind,
+  operation: () => Promise<T>,
+) => Promise<T>
+
 export async function createProductAgentHarness(input: {
   run_id: string
+  dispatch_generation: number
   task_id?: string
   session_id: string
   work_dir: string
@@ -65,6 +74,28 @@ export async function createProductAgentHarness(input: {
   harness_session?: ProductHarnessSessionBinding
   lifecycle_hooks?: ProductHarnessLifecycleHookHost
   build_chat_prompt?: (text: string, attachments: readonly string[], signal: AbortSignal) => Promise<ProductPrompt>
+  run_external_operation?: ProductHarnessExternalOperation
+  /**
+   * The child-side owner writes its private session first, then asks the
+   * authority ledger to clear the matching external-effect receipt.  This is
+   * deliberately separate from ordinary session persistence: a Promise
+   * resolving is never evidence that its result survived a crash.
+   */
+  external_operation_checkpoints?: {
+    pending(): readonly ProductHarnessSessionExternalOperationCheckpointInput[]
+    checkpoint(records: readonly ProductHarnessSessionExternalOperationCheckpoint[]): Promise<void>
+  }
+  /** MCP preparation belongs to the formal Run extension snapshot, not just
+   * the private Harness cache. */
+  checkpoint_mcp_prepare?: (snapshot: {
+    digest: string
+    tool_count: number
+    command_count: number
+    mcp_server_count: number
+  }) => Promise<void>
+  /** Replays session-fsynced-but-not-ledger-confirmed proofs for this exact
+   * Run generation before the Harness can ACK or create a new external call. */
+  reconcile_external_operation_checkpoints?: (records: readonly ProductHarnessSessionExternalOperationCheckpoint[]) => Promise<void>
 }): Promise<ProductAgentHarnessPort> {
   const toolPermissionContext: ProductToolPermissionContext = {
     ...emptyProductToolPermissionContext(),
@@ -96,6 +127,8 @@ export async function createProductAgentHarness(input: {
     () => runWithCwdOverride(input.work_dir, fn),
   )
   const autoMemoryRepository = input.auto_memory ? new ProductAutoMemoryRepository() : undefined
+  const runExternalOperation: ProductHarnessExternalOperation = input.run_external_operation
+    ?? (async <T>(_kind: TaskRunExternalOperationKind, operation: () => Promise<T>): Promise<T> => await operation())
   let productAutoMemory = input.auto_memory ? await autoMemoryRepository!.load(input.auto_memory) : ''
   const harnessSessionRepository = input.harness_session ? new ProductHarnessSessionRepository() : undefined
   const restoredHarnessSession = input.harness_session
@@ -114,6 +147,10 @@ export async function createProductAgentHarness(input: {
   let productHookContext = restoredSameRun ? restoredHarnessSession.hook_context ?? '' : ''
   const modelMessages: ProductHarnessMessage[] = restoredHarnessSession?.messages ?? []
   const pendingOperationReceipts = new Map<string, ProductModelOperationReceipt>((restoredHarnessSession?.operation_receipts ?? []).map(receipt => [`${receipt.source}:${receipt.operation_id}`, receipt]))
+  const persistedExternalOperationCheckpoints = restoredSameRun
+    ? (restoredHarnessSession?.external_operation_checkpoints ?? []).filter(checkpoint => checkpoint.dispatch_generation === input.dispatch_generation)
+    : []
+  const acknowledgedOperationReceiptKeys = new Set(restoredHarnessSession?.acknowledged_operation_receipt_keys ?? [])
   const recoveringActiveTurn = restoredSameRun
     && restoredHarnessSession.turn_state === 'active'
     && modelMessages.length > 0
@@ -123,9 +160,15 @@ export async function createProductAgentHarness(input: {
     turnState: 'preparing' | 'active' | 'completed' = 'active',
     completedResult?: string,
   ) => {
-    if (!input.harness_session) return
+    const checkpointOperations = [...(input.external_operation_checkpoints?.pending() ?? [])]
+    if (!input.harness_session) {
+      if (checkpointOperations.length > 0) throw new Error('PRODUCT_EXTERNAL_OPERATION_CHECKPOINT_UNAVAILABLE')
+      return
+    }
     if (messages !== modelMessages) modelMessages.splice(0, modelMessages.length, ...messages)
-    await harnessSessionRepository!.save(input.harness_session, {
+    const retainedCheckpointCount = Math.max(0, 512 - checkpointOperations.length)
+    const retainedCheckpoints = persistedExternalOperationCheckpoints.slice(-retainedCheckpointCount)
+    const saved = await harnessSessionRepository!.save(input.harness_session, {
       context_prefix: productSessionContext,
       messages: modelMessages,
       run_id: input.run_id,
@@ -135,7 +178,14 @@ export async function createProductAgentHarness(input: {
       hook_context: productHookContext,
       ...(completedResult !== undefined ? { completed_result: completedResult } : {}),
       operation_receipts: [...pendingOperationReceipts.values()],
+      external_operation_checkpoints: retainedCheckpoints,
+      acknowledged_operation_receipt_keys: [...acknowledgedOperationReceiptKeys].slice(-4_096),
+      checkpoint_operations: checkpointOperations,
     })
+    if (saved.external_operation_checkpoints.length > 0) {
+      await input.external_operation_checkpoints?.checkpoint(saved.external_operation_checkpoints)
+      persistedExternalOperationCheckpoints.splice(0, persistedExternalOperationCheckpoints.length, ...[...retainedCheckpoints, ...saved.external_operation_checkpoints])
+    }
   }
   const persistedOperationReceipts = () => {
     const receipts = new Map<string, ProductModelOperationReceipt>(pendingOperationReceipts)
@@ -147,7 +197,19 @@ export async function createProductAgentHarness(input: {
     return [...receipts.values()]
   }
   const acknowledgePersistedOperationReceipts = async (signal: AbortSignal) => {
-    for (const receipt of persistedOperationReceipts()) await acknowledgeProductModelOperation(receipt, signal)
+    for (const receipt of persistedOperationReceipts()) {
+      const receiptKey = `${receipt.source}:${receipt.operation_id}`
+      if (acknowledgedOperationReceiptKeys.has(receiptKey)) continue
+      await runExternalOperation('model_ack', async () => await acknowledgeProductModelOperation(receipt, signal))
+      acknowledgedOperationReceiptKeys.add(receiptKey)
+      pendingOperationReceipts.delete(receiptKey)
+      while (acknowledgedOperationReceiptKeys.size > 4_096) {
+        const oldest = acknowledgedOperationReceiptKeys.values().next().value
+        if (typeof oldest !== 'string') break
+        acknowledgedOperationReceiptKeys.delete(oldest)
+      }
+      await persistHarnessSession()
+    }
   }
   const productPromptContext = () => ({
     workspace: input.work_dir,
@@ -310,6 +372,7 @@ export async function createProductAgentHarness(input: {
     snapshot: productHookSnapshot,
     cwd: input.work_dir,
     evaluate: evaluateProductHook,
+    run_external_operation: runExternalOperation,
   })
   const productToolHooks: ProductToolHooks = {
     before: block => lifecycleHooks.preTool({
@@ -350,6 +413,15 @@ export async function createProductAgentHarness(input: {
       }
       if ((!text && attachments.length === 0) || terminal || controller) return false
       controller = createAbortController()
+      if (restoredSameRun && persistedExternalOperationCheckpoints.length > 0) {
+        try {
+          await input.reconcile_external_operation_checkpoints?.(persistedExternalOperationCheckpoints)
+        } catch (error) {
+          finish('recovery_required', input.projection.classifyFailure(error))
+          controller = undefined
+          return
+        }
+      }
       emit({ type: 'event', event: 'started' })
       if (restoredSameRun && restoredHarnessSession) {
         try {
@@ -367,8 +439,9 @@ export async function createProductAgentHarness(input: {
         return
       }
       if (text.trim() === '/init' && input.auto_memory) {
+        const autoMemory = input.auto_memory
         try {
-          const initialized = await autoMemoryRepository!.initialize(input.auto_memory)
+          const initialized = await runExternalOperation('workspace_init', async () => await autoMemoryRepository!.initialize(autoMemory))
           const result = initialized.created || initialized.instruction_created ? '项目已初始化。' : '项目已经初始化，无需更改。'
           emit({ type: 'event', event: 'delta', data: result })
           await persistHarnessSession(modelMessages, 'completed', result)
@@ -381,6 +454,35 @@ export async function createProductAgentHarness(input: {
         if (controller.signal.aborted || terminal) return
         const model = input.model_policy.resolve()
         if (!model) throw new Error('MODEL_CONFIGURATION_INVALID')
+        const baseCommands = uniqBy([...await (input.load_commands ?? loadProductAgentCommands)(input.work_dir), ...mcpRuntime.commands], 'name')
+        const baseTools = input.load_tools ? input.load_tools(toolPermissionContext) : loadProductAgentTools(toolPermissionContext, baseCommands)
+        const extensionTools = await loadProductAgentExtensionTools(input.work_dir)
+        const tools = uniqBy([...baseTools, ...extensionTools, ...mcpRuntime.tools], 'name')
+        const commands = uniqBy([...baseCommands, ...productAgentCommands(extensionTools)], 'name')
+        const extensionSnapshotPayload = JSON.stringify({
+          commands: commands.map(command => command.name).sort(),
+          tools: tools.map(tool => tool.name).sort(),
+          mcp_servers: mcpRuntime.clients.map(client => client.name).sort(),
+          instructions: instructionSnapshot.digest,
+          hooks: productHookSnapshot.digest,
+        })
+        const extensionSnapshot = {
+          digest: createHash('sha256').update(extensionSnapshotPayload).digest('hex'),
+          tool_count: tools.length,
+          command_count: commands.length,
+          mcp_server_count: mcpRuntime.clients.length,
+        }
+        // The result of `prepare` is not safe to reuse until the exact tool
+        // surface is frozen in the authority Run record.  Do this before
+        // Hooks, which can themselves cross external boundaries.
+        if (input.checkpoint_mcp_prepare) {
+          await input.checkpoint_mcp_prepare(extensionSnapshot)
+          // The authority checkpoint above already committed this exact
+          // snapshot. Re-emitting it through the normal Worker sink would
+          // perform a second claim-guarded write and creates a stop race.
+        } else {
+          emit({ type: 'event', event: 'extension_snapshot', ...extensionSnapshot })
+        }
         if (!recoveringPreparedTurn && !recoveringActiveTurn) {
           const hookContext = createToolUseContext([], [], controller, model)
           const hookSource = restoredHarnessSession ? 'resume' as const : 'startup' as const
@@ -497,26 +599,6 @@ export async function createProductAgentHarness(input: {
             throw error
           }
         }
-        const baseCommands = uniqBy([...await (input.load_commands ?? loadProductAgentCommands)(input.work_dir), ...mcpRuntime.commands], 'name')
-        const baseTools = input.load_tools ? input.load_tools(toolPermissionContext) : loadProductAgentTools(toolPermissionContext, baseCommands)
-        const extensionTools = await loadProductAgentExtensionTools(input.work_dir)
-        const tools = uniqBy([...baseTools, ...extensionTools, ...mcpRuntime.tools], 'name')
-        const commands = uniqBy([...baseCommands, ...productAgentCommands(extensionTools)], 'name')
-        const extensionSnapshot = JSON.stringify({
-          commands: commands.map(command => command.name).sort(),
-          tools: tools.map(tool => tool.name).sort(),
-          mcp_servers: mcpRuntime.clients.map(client => client.name).sort(),
-          instructions: instructionSnapshot.digest,
-          hooks: productHookSnapshot.digest,
-        })
-        emit({
-          type: 'event',
-          event: 'extension_snapshot',
-          digest: createHash('sha256').update(extensionSnapshot).digest('hex'),
-          tool_count: tools.length,
-          command_count: commands.length,
-          mcp_server_count: mcpRuntime.clients.length,
-        })
         let completedResult: string | undefined
         let prompt = await (input.build_chat_prompt ?? ((value, files) => buildProductChatPrompt(value, files)))(text, attachments, controller.signal)
         let resumePersistedTurn = recoveringActiveTurn
@@ -564,9 +646,8 @@ export async function createProductAgentHarness(input: {
                 commandQueue,
                 mutableMessages: modelMessages,
                 onMessageState: persistHarnessSession,
-                onOperationReceiptsPersisted: async (receipts, signal) => {
-                  for (const receipt of receipts) await acknowledgeProductModelOperation(receipt, signal)
-                },
+                onModelStreamCheckpoint: persistHarnessSession,
+                onOperationReceiptsPersisted: async (_receipts, signal) => await acknowledgePersistedOperationReceipts(signal),
                 runModel: input.run_model,
                 executeTools: input.execute_tools,
                 toolHooks: productToolHooks,
@@ -598,7 +679,11 @@ export async function createProductAgentHarness(input: {
             }
           })
         ))
-        if (completedResult !== undefined && input.auto_memory) productAutoMemory = await autoMemoryRepository!.appendCompletedTurn(input.auto_memory, { task_id: input.auto_memory.task_id, entry_id: input.auto_memory.entry_id, user: text, assistant: completedResult })
+        if (completedResult !== undefined && input.auto_memory) {
+          const autoMemory = input.auto_memory
+          const assistant = completedResult
+          productAutoMemory = await runExternalOperation('auto_memory_append', async () => await autoMemoryRepository!.appendCompletedTurn(autoMemory, { task_id: autoMemory.task_id, entry_id: autoMemory.entry_id, user: text, assistant }))
+        }
         if (completedResult !== undefined) await persistHarnessSession(modelMessages, 'completed', completedResult)
         finish(controller.signal.aborted ? 'stopped' : 'completed')
       } catch (error) {
