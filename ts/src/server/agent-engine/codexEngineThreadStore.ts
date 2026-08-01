@@ -4,7 +4,8 @@ import * as path from 'node:path'
 import { syncParentDirectory } from '../../utils/durableFile.js'
 import { lock } from '../../utils/lockfile.js'
 
-const MAX_THREAD_BINDING_BYTES = 16 * 1024
+const MAX_THREAD_BINDING_BYTES = 512 * 1024
+const MAX_INSTRUCTION_PROMPT_CHARS = 100_000
 
 /**
  * BilliardBuddy owns this binding. The Codex engine may persist its own
@@ -28,6 +29,10 @@ export type CodexEngineThreadState = {
   last_turn_id?: string
   /** Product receipt for the accepted source `turn/start`, never source state. */
   last_turn_operation_id?: string
+  /** Immutable BilliardBuddy project instructions used by the accepted Run. */
+  last_instruction_run_id?: string
+  last_instruction_digest?: string
+  last_instruction_prompt?: string | null
   /** Product receipt for the attachment-derived input admitted to that Turn. */
   last_input_run_id?: string
   last_input_operation_id?: string
@@ -127,6 +132,7 @@ function validateState(value: unknown, binding: CodexEngineThreadBinding): Codex
   const hasThread = state.thread_id !== undefined
   const hasToolSurface = state.tool_surface_digest !== undefined || state.tool_surface_count !== undefined
   const hasTurnOperation = state.last_turn_operation_id !== undefined
+  const hasInstructionSnapshot = state.last_instruction_run_id !== undefined || state.last_instruction_digest !== undefined || state.last_instruction_prompt !== undefined
   const inputReceiptCount = [state.last_input_run_id, state.last_input_operation_id, state.last_input_result_digest]
     .filter(value => value !== undefined).length
   const steerReceiptCount = [state.last_steer_run_id, state.last_steer_operation_id, state.last_steer_queue_item_id, state.last_steer_input_digest]
@@ -147,6 +153,9 @@ function validateState(value: unknown, binding: CodexEngineThreadBinding): Codex
     || (state.last_run_id !== undefined && !isNonEmptyText(state.last_run_id))
     || (state.last_turn_id !== undefined && !isNonEmptyText(state.last_turn_id))
     || (state.last_turn_operation_id !== undefined && !isOperationId(state.last_turn_operation_id))
+    || (state.last_instruction_run_id !== undefined && !isNonEmptyText(state.last_instruction_run_id))
+    || (state.last_instruction_digest !== undefined && !isDigest(state.last_instruction_digest))
+    || (state.last_instruction_prompt !== undefined && state.last_instruction_prompt !== null && (typeof state.last_instruction_prompt !== 'string' || state.last_instruction_prompt.length > MAX_INSTRUCTION_PROMPT_CHARS))
     || (state.last_input_run_id !== undefined && !isNonEmptyText(state.last_input_run_id))
     || (state.last_input_operation_id !== undefined && !isOperationId(state.last_input_operation_id))
     || (state.last_input_result_digest !== undefined && !isDigest(state.last_input_result_digest))
@@ -158,6 +167,8 @@ function validateState(value: unknown, binding: CodexEngineThreadBinding): Codex
     || (state.last_model_operation_id !== undefined && !isOperationId(state.last_model_operation_id))
     || (state.last_model_result_digest !== undefined && !isDigest(state.last_model_result_digest))
     || (hasTurnOperation && (!state.last_run_id || !state.last_turn_id))
+    || (hasInstructionSnapshot && (state.last_instruction_run_id === undefined || state.last_instruction_digest === undefined || state.last_instruction_prompt === undefined))
+    || (hasInstructionSnapshot && (!hasThread || !state.last_run_id || !state.last_turn_id || state.last_instruction_run_id !== state.last_run_id))
     || (inputReceiptCount !== 0 && inputReceiptCount !== 3)
     || (inputReceiptCount === 3 && (!hasThread || !state.last_run_id || !state.last_turn_id || state.last_input_run_id !== state.last_run_id))
     || (steerReceiptCount !== 0 && steerReceiptCount !== 4)
@@ -168,7 +179,7 @@ function validateState(value: unknown, binding: CodexEngineThreadBinding): Codex
     || (toolReceiptCount === 4 && (!hasThread || !state.last_run_id || !state.last_turn_id || state.last_tool_run_id !== state.last_run_id || !isOperationId(state.last_tool_operation_id) || !isNonEmptyText(state.last_tool_call_id) || !isDigest(state.last_tool_result_digest)))
     || (hookReceiptCount !== 0 && hookReceiptCount !== 3)
     || (hookReceiptCount === 3 && (!hasThread || !state.last_run_id || !state.last_turn_id || state.last_hook_run_id !== state.last_run_id || !isOperationId(state.last_hook_operation_id) || !isDigest(state.last_hook_result_digest)))
-    || (!hasThread && (state.last_run_id !== undefined || state.last_turn_id !== undefined || state.last_turn_operation_id !== undefined || inputReceiptCount !== 0 || steerReceiptCount !== 0 || modelReceiptCount !== 0 || toolReceiptCount !== 0 || hookReceiptCount !== 0))
+    || (!hasThread && (state.last_run_id !== undefined || state.last_turn_id !== undefined || state.last_turn_operation_id !== undefined || hasInstructionSnapshot || inputReceiptCount !== 0 || steerReceiptCount !== 0 || modelReceiptCount !== 0 || toolReceiptCount !== 0 || hookReceiptCount !== 0))
     || !isNonEmptyText(state.updated_at, 128)
     || !Number.isFinite(Date.parse(state.updated_at))
   ) throw new Error('CODEX_ENGINE_THREAD_STORE_INVALID')
@@ -179,6 +190,11 @@ function validateState(value: unknown, binding: CodexEngineThreadBinding): Codex
     ...(state.last_run_id ? { last_run_id: state.last_run_id } : {}),
     ...(state.last_turn_id ? { last_turn_id: state.last_turn_id } : {}),
     ...(state.last_turn_operation_id ? { last_turn_operation_id: state.last_turn_operation_id } : {}),
+    ...(state.last_instruction_run_id ? {
+      last_instruction_run_id: state.last_instruction_run_id,
+      last_instruction_digest: state.last_instruction_digest!,
+      last_instruction_prompt: state.last_instruction_prompt ?? null,
+    } : {}),
     ...(state.last_input_run_id ? { last_input_run_id: state.last_input_run_id } : {}),
     ...(state.last_input_operation_id ? { last_input_operation_id: state.last_input_operation_id } : {}),
     ...(state.last_input_result_digest ? { last_input_result_digest: state.last_input_result_digest } : {}),
@@ -223,6 +239,7 @@ export class CodexEngineThreadStore {
     const hasThread = state.thread_id !== undefined
     const hasToolSurface = state.tool_surface_digest !== undefined || state.tool_surface_count !== undefined
     const hasTurnOperation = state.last_turn_operation_id !== undefined
+    const hasInstructionSnapshot = state.last_instruction_run_id !== undefined || state.last_instruction_digest !== undefined || state.last_instruction_prompt !== undefined
     const inputReceiptCount = [state.last_input_run_id, state.last_input_operation_id, state.last_input_result_digest]
       .filter(value => value !== undefined).length
     const steerReceiptCount = [state.last_steer_run_id, state.last_steer_operation_id, state.last_steer_queue_item_id, state.last_steer_input_digest]
@@ -240,6 +257,9 @@ export class CodexEngineThreadStore {
       || (state.last_run_id !== undefined && !isNonEmptyText(state.last_run_id))
       || (state.last_turn_id !== undefined && !isNonEmptyText(state.last_turn_id))
       || (state.last_turn_operation_id !== undefined && !isOperationId(state.last_turn_operation_id))
+      || (state.last_instruction_run_id !== undefined && !isNonEmptyText(state.last_instruction_run_id))
+      || (state.last_instruction_digest !== undefined && !isDigest(state.last_instruction_digest))
+      || (state.last_instruction_prompt !== undefined && state.last_instruction_prompt !== null && (typeof state.last_instruction_prompt !== 'string' || state.last_instruction_prompt.length > MAX_INSTRUCTION_PROMPT_CHARS))
       || (state.last_input_run_id !== undefined && !isNonEmptyText(state.last_input_run_id))
       || (state.last_input_operation_id !== undefined && !isOperationId(state.last_input_operation_id))
       || (state.last_input_result_digest !== undefined && !isDigest(state.last_input_result_digest))
@@ -251,6 +271,8 @@ export class CodexEngineThreadStore {
       || (state.last_model_operation_id !== undefined && !isOperationId(state.last_model_operation_id))
       || (state.last_model_result_digest !== undefined && !isDigest(state.last_model_result_digest))
       || (hasTurnOperation && (!state.last_run_id || !state.last_turn_id))
+      || (hasInstructionSnapshot && (state.last_instruction_run_id === undefined || state.last_instruction_digest === undefined || state.last_instruction_prompt === undefined))
+      || (hasInstructionSnapshot && (!hasThread || !state.last_run_id || !state.last_turn_id || state.last_instruction_run_id !== state.last_run_id))
       || (inputReceiptCount !== 0 && inputReceiptCount !== 3)
       || (inputReceiptCount === 3 && (!hasThread || !state.last_run_id || !state.last_turn_id || state.last_input_run_id !== state.last_run_id))
       || (steerReceiptCount !== 0 && steerReceiptCount !== 4)
@@ -261,7 +283,7 @@ export class CodexEngineThreadStore {
       || (toolReceiptCount === 4 && (!hasThread || !state.last_run_id || !state.last_turn_id || state.last_tool_run_id !== state.last_run_id || !isOperationId(state.last_tool_operation_id) || !isNonEmptyText(state.last_tool_call_id) || !isDigest(state.last_tool_result_digest)))
       || (hookReceiptCount !== 0 && hookReceiptCount !== 3)
       || (hookReceiptCount === 3 && (!hasThread || !state.last_run_id || !state.last_turn_id || state.last_hook_run_id !== state.last_run_id || !isOperationId(state.last_hook_operation_id) || !isDigest(state.last_hook_result_digest)))
-      || (!hasThread && (state.last_run_id !== undefined || state.last_turn_id !== undefined || state.last_turn_operation_id !== undefined || inputReceiptCount !== 0 || steerReceiptCount !== 0 || modelReceiptCount !== 0 || toolReceiptCount !== 0 || hookReceiptCount !== 0))
+      || (!hasThread && (state.last_run_id !== undefined || state.last_turn_id !== undefined || state.last_turn_operation_id !== undefined || hasInstructionSnapshot || inputReceiptCount !== 0 || steerReceiptCount !== 0 || modelReceiptCount !== 0 || toolReceiptCount !== 0 || hookReceiptCount !== 0))
     ) throw new Error('CODEX_ENGINE_THREAD_STORE_INVALID')
     return await withBindingLock(binding, async () => {
       const saved: StoredCodexEngineThreadState = {

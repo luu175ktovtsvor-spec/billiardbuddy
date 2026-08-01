@@ -22,6 +22,11 @@ export type CodexEngineDynamicToolSurface = {
   tools: Array<{ name: string; description: string; input_schema: Record<string, unknown> }>
 }
 
+export type CodexEngineRunInstructionSnapshot = {
+  digest: string
+  prompt: string | null
+}
+
 function text(value: unknown, limit = 512): string | undefined {
   return typeof value === 'string' && value.length > 0 && value.length <= limit ? value : undefined
 }
@@ -56,6 +61,21 @@ function steerReceipt(state: CodexEngineThreadState): Pick<CodexEngineThreadStat
         last_steer_input_digest: state.last_steer_input_digest,
       }
     : {}
+}
+
+function instructionSnapshot(state: CodexEngineThreadState): Pick<CodexEngineThreadState, 'last_instruction_run_id' | 'last_instruction_digest' | 'last_instruction_prompt'> {
+  return state.last_instruction_run_id && state.last_instruction_digest && state.last_instruction_prompt !== undefined
+    ? {
+        last_instruction_run_id: state.last_instruction_run_id,
+        last_instruction_digest: state.last_instruction_digest,
+        last_instruction_prompt: state.last_instruction_prompt,
+      }
+    : {}
+}
+
+function validInstructionSnapshot(value: CodexEngineRunInstructionSnapshot): boolean {
+  return /^[a-f0-9]{64}$/.test(value.digest)
+    && (value.prompt === null || (typeof value.prompt === 'string' && value.prompt.length <= 100_000))
 }
 
 async function verifiedWorkDir(value: string): Promise<string> {
@@ -94,6 +114,20 @@ export class CodexEngineSession {
     return thread
   }
 
+  /** Reuse the frozen instruction body only when recovering this exact Run. */
+  async resolveRunInstructionSnapshot(
+    runId: string,
+    current: CodexEngineRunInstructionSnapshot,
+  ): Promise<CodexEngineRunInstructionSnapshot> {
+    if (!text(runId) || !validInstructionSnapshot(current)) throw new Error('CODEX_ENGINE_INSTRUCTION_SNAPSHOT_INVALID')
+    const restored = await this.options.thread_store.load(this.options.binding)
+    if (restored?.last_instruction_run_id !== runId) return current
+    if (!restored.last_instruction_digest || restored.last_instruction_prompt === undefined) {
+      throw new Error('CODEX_ENGINE_INSTRUCTION_SNAPSHOT_MISSING')
+    }
+    return { digest: restored.last_instruction_digest, prompt: restored.last_instruction_prompt }
+  }
+
   /**
    * The source accepts dynamic tools only at thread/start. Persist this
    * opaque product snapshot before a Turn so mcp_prepare can be checkpointed
@@ -115,6 +149,7 @@ export class CodexEngineSession {
       ...(restored?.last_run_id ? { last_run_id: restored.last_run_id } : {}),
       ...(restored?.last_turn_id ? { last_turn_id: restored.last_turn_id } : {}),
       ...(restored?.last_turn_operation_id ? { last_turn_operation_id: restored.last_turn_operation_id } : {}),
+      ...(restored ? instructionSnapshot(restored) : {}),
       ...(restored ? inputReceipt(restored) : {}),
       ...(restored ? steerReceipt(restored) : {}),
       ...(restored?.last_model_run_id ? { last_model_run_id: restored.last_model_run_id } : {}),
@@ -141,12 +176,14 @@ export class CodexEngineSession {
     turnId: string,
     operationId: string,
     attachmentInput?: { operation_id: string; result_digest: string },
+    instructions?: CodexEngineRunInstructionSnapshot,
   ): Promise<string> {
     const thread = await this.ensureThread()
     if (!text(runId) || !text(turnId) || !/^effect_[a-f0-9-]{36}$/.test(operationId)) throw new Error('CODEX_ENGINE_TURN_BINDING_INVALID')
     if (attachmentInput && (!/^effect_[a-f0-9-]{36}$/.test(attachmentInput.operation_id) || !/^[a-f0-9]{64}$/.test(attachmentInput.result_digest))) {
       throw new Error('CODEX_ENGINE_ATTACHMENT_RECEIPT_INVALID')
     }
+    if (!instructions || !validInstructionSnapshot(instructions)) throw new Error('CODEX_ENGINE_INSTRUCTION_SNAPSHOT_INVALID')
     const restored = await this.options.thread_store.load(this.options.binding)
     if (restored?.thread_id && restored.thread_id !== thread.thread_id) throw new Error('CODEX_ENGINE_THREAD_ID_MISMATCH')
     if (!restored?.tool_surface_digest || !this.dynamicToolSurface || restored.tool_surface_digest !== this.dynamicToolSurface.digest || restored.tool_surface_count !== this.dynamicToolSurface.tools.length) {
@@ -160,6 +197,9 @@ export class CodexEngineSession {
       last_run_id: runId,
       last_turn_id: turnId,
       last_turn_operation_id: operationId,
+      last_instruction_run_id: runId,
+      last_instruction_digest: instructions.digest,
+      last_instruction_prompt: instructions.prompt,
       ...(attachmentInput ? {
         last_input_run_id: runId,
         last_input_operation_id: attachmentInput.operation_id,
@@ -205,6 +245,7 @@ export class CodexEngineSession {
       last_run_id: restored.last_run_id,
       last_turn_id: restored.last_turn_id,
       ...(restored.last_turn_operation_id ? { last_turn_operation_id: restored.last_turn_operation_id } : {}),
+      ...instructionSnapshot(restored),
       ...inputReceipt(restored),
       last_steer_run_id: runId,
       last_steer_operation_id: operationId,
@@ -240,6 +281,7 @@ export class CodexEngineSession {
       last_run_id: restored.last_run_id,
       last_turn_id: restored.last_turn_id,
       ...(restored.last_turn_operation_id ? { last_turn_operation_id: restored.last_turn_operation_id } : {}),
+      ...instructionSnapshot(restored),
       ...inputReceipt(restored),
       ...steerReceipt(restored),
       last_model_run_id: runId,
@@ -273,6 +315,7 @@ export class CodexEngineSession {
       last_run_id: restored.last_run_id,
       last_turn_id: restored.last_turn_id,
       ...(restored.last_turn_operation_id ? { last_turn_operation_id: restored.last_turn_operation_id } : {}),
+      ...instructionSnapshot(restored),
       ...inputReceipt(restored),
       ...steerReceipt(restored),
       ...(restored.last_model_run_id ? { last_model_run_id: restored.last_model_run_id } : {}),
@@ -306,6 +349,7 @@ export class CodexEngineSession {
       last_run_id: restored.last_run_id,
       last_turn_id: restored.last_turn_id,
       ...(restored.last_turn_operation_id ? { last_turn_operation_id: restored.last_turn_operation_id } : {}),
+      ...instructionSnapshot(restored),
       ...inputReceipt(restored),
       ...steerReceipt(restored),
       ...(restored.last_model_run_id ? { last_model_run_id: restored.last_model_run_id } : {}),
@@ -368,6 +412,7 @@ export class CodexEngineSession {
       ...(state.last_run_id ? { last_run_id: state.last_run_id } : {}),
       ...(state.last_turn_id ? { last_turn_id: state.last_turn_id } : {}),
       ...(state.last_turn_operation_id ? { last_turn_operation_id: state.last_turn_operation_id } : {}),
+      ...instructionSnapshot(state),
       ...inputReceipt(state),
       ...steerReceipt(state),
       ...(state.last_model_run_id ? { last_model_run_id: state.last_model_run_id } : {}),

@@ -1,5 +1,5 @@
 import { CodexAppServerClient, type CodexAppServerClientOptions, type CodexAppServerNotification, type CodexAppServerRequest, type JsonObject, type JsonValue } from './codexAppServerClient.js'
-import { CodexEngineSession, type CodexEngineDynamicToolSurface, type CodexEngineThread, type CodexEngineSessionOptions } from './codexEngineSession.js'
+import { CodexEngineSession, type CodexEngineDynamicToolSurface, type CodexEngineRunInstructionSnapshot, type CodexEngineThread, type CodexEngineSessionOptions } from './codexEngineSession.js'
 import { CodexResponsesModelBridge, type CodexResponsesModelBridgeOptions } from './codexResponsesModelBridge.js'
 
 export type CodexEngineRuntimeOptions = Omit<CodexEngineSessionOptions, 'client'> & {
@@ -162,6 +162,14 @@ export class CodexEngineRuntime {
     return await this.session.checkpointToolSurface(surface)
   }
 
+  async resolveRunInstructionSnapshot(
+    runId: string,
+    current: CodexEngineRunInstructionSnapshot,
+  ): Promise<CodexEngineRunInstructionSnapshot> {
+    if (!this.session) throw new Error('CODEX_ENGINE_RUNTIME_UNAVAILABLE')
+    return await this.session.resolveRunInstructionSnapshot(runId, current)
+  }
+
   /**
    * Starts a source Turn but deliberately does not make it durable. The
    * product Worker must record its Run intent, receive the response, write the
@@ -203,9 +211,10 @@ export class CodexEngineRuntime {
     turnId: string,
     operationId: string,
     attachmentInput?: { operation_id: string; result_digest: string },
+    instructions?: CodexEngineRunInstructionSnapshot,
   ): Promise<string> {
     if (!this.session) throw new Error('CODEX_ENGINE_RUNTIME_UNAVAILABLE')
-    return await this.session.checkpointAcceptedTurn(runId, turnId, operationId, attachmentInput)
+    return await this.session.checkpointAcceptedTurn(runId, turnId, operationId, attachmentInput, instructions)
   }
 
   async steerTurn(input: {
