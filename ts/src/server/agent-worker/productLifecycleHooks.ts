@@ -139,10 +139,8 @@ export function createProductHarnessLifecycleHookHost(input: {
   snapshot: ProductHookSnapshot
   cwd: string
   evaluate?: (prompt: string, model: string | undefined, signal: AbortSignal) => Promise<{ ok: boolean; reason?: string }>
-  onAsyncRewake?: (value: { event: ProductHookEvent; additionalContext?: string; reason?: string }) => void
 }): ProductHarnessLifecycleHookHost {
   const completedOnceHooks = new Set<string>()
-  const runningOnceHooks = new Set<string>()
   const run = async (event: ProductHookEvent, matcherValue: string, payload: Record<string, unknown>, signal: AbortSignal): Promise<ProductLifecycleHookResult> => {
     if (input.snapshot.disableAllHooks) return {}
     const contexts: string[] = []
@@ -151,30 +149,16 @@ export function createProductHarnessLifecycleHookHost(input: {
       if (!hookMatches(matcher.matcher, matcherValue)) continue
       for (const [hookIndex, hook] of matcher.hooks.entries()) {
         const onceKey = `${event}:${matcherIndex}:${hookIndex}`
-        if ((hook.once && (completedOnceHooks.has(onceKey) || runningOnceHooks.has(onceKey))) || !hookConditionMatches(hook.if, event, matcherValue, payload)) continue
+        if ((hook.once && completedOnceHooks.has(onceKey)) || !hookConditionMatches(hook.if, event, matcherValue, payload)) continue
         if (signal.aborted) throw new Error('PRODUCT_HOOK_ABORTED')
+        if (hook.type === 'unavailable_async_command') {
+          reason ??= '项目配置了异步 Command Hook，但该类型尚未具备可恢复的任务账本回执，因此 BilliardBuddy 未执行它。请改用同步 Hook，或等待持久异步 Hook 能力完成后再启用。'
+          continue
+        }
         const body = JSON.stringify({ hook_event_name: event, ...payload })
         let output: HookOutput | undefined
         let succeeded = false
         if (hook.type === 'command') {
-          if (hook.async || hook.asyncRewake) {
-            if (hook.once) runningOnceHooks.add(onceKey)
-            const detachedSignal = AbortSignal.timeout(Math.min((hook.timeout ?? 600) * 1000, 600_000))
-            void commandHook(hook, input.cwd, body, detachedSignal).then(result => {
-              const parsed = parseOutput(result.stdout)
-              if (hook.once && result.code === 0 && parsed?.continue !== false && parsed?.decision !== 'block') completedOnceHooks.add(onceKey)
-              if (hook.asyncRewake) {
-                const additionalContext = bounded(parsed?.hookSpecificOutput?.additionalContext || parsed?.hookSpecificOutput?.initialUserMessage || parsed?.systemMessage, MAX_HOOK_CONTEXT_CHARS)
-                const asyncReason = result.code === 0 && parsed?.continue !== false && parsed?.decision !== 'block'
-                  ? undefined
-                  : bounded(parsed?.stopReason || parsed?.reason || result.stderr || `Async Hook command failed (${result.code})`, MAX_HOOK_REASON_CHARS)
-                input.onAsyncRewake?.({ event, ...(additionalContext ? { additionalContext } : {}), ...(asyncReason ? { reason: asyncReason } : {}) })
-              }
-            }).catch(() => {
-              if (hook.asyncRewake) input.onAsyncRewake?.({ event, reason: 'Async Hook command failed' })
-            }).finally(() => { if (hook.once) runningOnceHooks.delete(onceKey) })
-            continue
-          }
           const result = await commandHook(hook, input.cwd, body, signal)
           output = parseOutput(result.stdout)
           succeeded = result.code === 0

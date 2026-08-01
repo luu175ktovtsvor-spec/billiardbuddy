@@ -7,7 +7,13 @@ import { listProductPlugins, productPluginHookFiles } from '../services/productP
 
 export type ProductHookEvent = 'SessionStart' | 'UserPromptSubmit' | 'PreToolUse' | 'PostToolUse' | 'PostToolUseFailure' | 'PreCompact' | 'PostCompact' | 'Stop'
 export type ProductHookCommand =
-  | { type: 'command'; command: string; shell?: 'sh' | 'powershell'; timeout?: number; async?: boolean; asyncRewake?: boolean; if?: string; once?: boolean }
+  | { type: 'command'; command: string; shell?: 'sh' | 'powershell'; timeout?: number; if?: string; once?: boolean }
+  /**
+   * A detached command has no durable TaskRun receipt yet.  Retain the
+   * matching rule in the frozen snapshot so the active task gets an explicit
+   * safe failure instead of silently running an untracked side effect.
+   */
+  | { type: 'unavailable_async_command'; if?: string; once?: boolean }
   | { type: 'http'; url: string; headers?: Record<string, string>; timeout?: number; if?: string; once?: boolean }
   | { type: 'prompt'; prompt: string; model?: string; timeout?: number; if?: string; once?: boolean }
   | { type: 'agent'; prompt: string; model?: string; timeout?: number; if?: string; once?: boolean }
@@ -92,8 +98,10 @@ function hookCommand(value: unknown): ProductHookCommand | null {
   const common = { ...(timeout ? { timeout } : {}), ...(condition ? { if: condition } : {}), ...(input.once === true ? { once: true } : {}) }
   if (input.type === 'command' && typeof input.command === 'string' && input.command.trim() && input.command.length <= 100_000) {
     if (input.shell !== undefined && input.shell !== 'sh' && input.shell !== 'powershell') return null
+    if ((input.async !== undefined && typeof input.async !== 'boolean') || (input.asyncRewake !== undefined && typeof input.asyncRewake !== 'boolean')) return null
+    if (input.async === true || input.asyncRewake === true) return { type: 'unavailable_async_command', ...common }
     const shell = input.shell as 'sh' | 'powershell' | undefined
-    return { type: 'command', command: input.command, ...(shell ? { shell } : {}), ...common, ...(input.async === true ? { async: true } : {}), ...(input.asyncRewake === true ? { asyncRewake: true } : {}) }
+    return { type: 'command', command: input.command, ...(shell ? { shell } : {}), ...common }
   }
   if (input.type === 'http' && typeof input.url === 'string' && input.url.length <= 8_192) {
     const headers = input.headers === undefined ? undefined : record(input.headers)
