@@ -18,7 +18,6 @@ import {
   CronService,
   type CronTask,
 } from './cronService.js'
-import { productTaskService } from '../product/taskService.js'
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
@@ -396,8 +395,8 @@ export class CronScheduler {
   private readonly now: () => Date
   private ticking = false
 
-  constructor(cronService?: CronService, taskRuns: ScheduledTaskRunBridge = productTaskService, now: () => Date = () => new Date()) {
-    this.cronService = cronService || new CronService()
+  constructor(cronService: CronService, taskRuns: ScheduledTaskRunBridge, now: () => Date = () => new Date()) {
+    this.cronService = cronService
     this.taskRuns = taskRuns
     this.now = now
   }
@@ -631,7 +630,3 @@ export class CronScheduler {
       .slice(0, limit)
   }
 }
-
-// ─── Singleton export ──────────────────────────────────────────────────────────
-
-export const cronScheduler = new CronScheduler()

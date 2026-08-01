@@ -1,8 +1,5 @@
 import { ApiError, errorResponse } from '../middleware/errorHandler.js'
-import {
-  productScheduledTaskService,
-  type ProductScheduledTaskService,
-} from '../product/scheduledTaskService.js'
+import type { ProductScheduledTaskService } from '../product/scheduledTaskService.js'
 
 type ProductScheduledTasksApi = Pick<
   ProductScheduledTaskService,
@@ -13,7 +10,7 @@ export async function handleProductScheduledTasksApi(
   req: Request,
   url: URL,
   segments: string[],
-  scheduledTasks: ProductScheduledTasksApi = productScheduledTaskService,
+  scheduledTasks: ProductScheduledTasksApi,
 ): Promise<Response> {
   try {
     const taskId = segments[3]
