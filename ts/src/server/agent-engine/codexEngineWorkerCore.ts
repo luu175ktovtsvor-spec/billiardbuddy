@@ -4,7 +4,7 @@ import type { ProductAssistantMessage, ProductModelEvent, ProductModelOperationR
 import type { PermissionExecutionEnvelope } from '../../../shared/product/permissionExecutionEnvelope.js'
 import { runWithCwdOverride } from '../../utils/cwd.js'
 import { runWithProductPermissionEnvelope } from '../../utils/permissions/productPermissionRuntime.js'
-import type { ProductHostEngineToolResult, ProductHostEngineToolSurface, ProductHostHookModelRequest } from '../agent-worker/productAgentHostRuntime.js'
+import type { ProductHostEngineToolResult, ProductHostEngineToolSurface, ProductHostHookModelRequest, ProductHostRuntimeSnapshot } from '../agent-worker/productAgentHostRuntime.js'
 import {
   createProductHarnessLifecycleHookHost,
   type ProductHarnessLifecycleHookHost,
@@ -39,7 +39,8 @@ export type CodexEngineWorkerParentPort = {
   checkpointExternalOperation(operationId: string, checkpointDigest: string): Promise<void>
   markExternalOperationUnknown(operationId: string): Promise<void>
   chatPrompt(text: string, attachments: readonly string[]): Promise<{ operation_id: string; prompt: ProductPrompt }>
-  engineTools(): Promise<{ operation_id: string; surface: ProductHostEngineToolSurface }>
+  engineTools(): Promise<{ operation_id: string; surface: ProductHostEngineToolSurface; snapshot: ProductHostRuntimeSnapshot }>
+  checkpointMcpPrepare(operationId: string, snapshot: { digest: string; tool_count: number; command_count: number; mcp_server_count: number }): Promise<void>
   engineModel(operationId: string, request: { messages: CodexResponsesModelRequest['messages']; systemPrompt: string[]; thinkingConfig: CodexResponsesModelRequest['thinking_config']; model?: string; engine_tool_names: string[]; engine_tool_surface_digest: string }): AsyncGenerator<ProductModelEvent, void>
   hookModel(operationId: string, request: ProductHostHookModelRequest): AsyncGenerator<ProductModelEvent, void>
   acknowledgeModelResult(operationId: string, receipt: ProductModelOperationReceipt): Promise<void>
@@ -172,6 +173,33 @@ function dynamicToolHookContext(result: ProductHostEngineToolResult, contexts: r
   ]
 }
 
+function productExtensionSnapshot(input: {
+  surface: ProductHostEngineToolSurface
+  snapshot: ProductHostRuntimeSnapshot
+  instructions: CodexEngineRunInstructionSnapshot
+  hookDigest: string
+}): { digest: string; tool_count: number; command_count: number; mcp_server_count: number } {
+  if (!/^[a-f0-9]{64}$/.test(input.instructions.digest) || !/^[a-f0-9]{64}$/.test(input.hookDigest)) {
+    throw new Error('CODEX_ENGINE_EXTENSION_SNAPSHOT_INVALID')
+  }
+  const commands = input.snapshot.commands.map(command => command.name).sort((left, right) => left.localeCompare(right))
+  const tools = input.surface.tools.map(tool => tool.name).sort((left, right) => left.localeCompare(right))
+  const mcpServers = input.snapshot.mcp_clients.map(client => client.name).sort((left, right) => left.localeCompare(right))
+  const digest = createHash('sha256').update(JSON.stringify({
+    commands,
+    tools,
+    mcp_servers: mcpServers,
+    instructions: input.instructions.digest,
+    hooks: input.hookDigest,
+  })).digest('hex')
+  return {
+    digest,
+    tool_count: tools.length,
+    command_count: commands.length,
+    mcp_server_count: mcpServers.length,
+  }
+}
+
 /**
  * Product-side C bridge.  The Codex source handles one private Thread/Turn;
  * this core owns the product receipts that make the source result admissible.
@@ -194,6 +222,7 @@ export class CodexEngineWorkerCore implements AgentWorkerCore {
   private lifecycleHooks?: ProductHarnessLifecycleHookHost
   private readonly hookAbortController = new AbortController()
   private projectInstructions?: CodexEngineRunInstructionSnapshot
+  private hookSnapshotDigest = ''
   private initialHookContext = ''
   private readonly checkpointedModelOperations = new Set<string>()
   private readonly agentMessageText = new Map<string, string>()
@@ -243,10 +272,10 @@ export class CodexEngineWorkerCore implements AgentWorkerCore {
     let inputCheckpointed = false
     let sourceTurnCheckpointed = false
     try {
-      await this.prepareToolSurface(runtime)
       const projectInstructions = this.projectInstructions
       if (!projectInstructions) throw new Error('CODEX_ENGINE_PROJECT_INSTRUCTIONS_UNAVAILABLE')
       this.projectInstructions = await runtime.resolveRunInstructionSnapshot(this.options.run_id, projectInstructions)
+      await this.prepareToolSurface(runtime)
       const sourceThread = await runtime.ensureThread()
       const sourceInput = attachments.length > 0
         ? await this.prepareAttachmentInput(textInput, attachments)
@@ -344,6 +373,7 @@ export class CodexEngineWorkerCore implements AgentWorkerCore {
     const command = await resolveManagedCodexEngineCommand()
     const state = this.options.identity.codex_engine
     const hookSnapshot = await createProductHookSnapshot(this.options.binding.work_dir)
+    this.hookSnapshotDigest = hookSnapshot.digest
     const instructionSnapshot = createProductInstructionSnapshot(this.options.binding.work_dir)
     this.projectInstructions = { digest: instructionSnapshot.digest, prompt: instructionSnapshot.prompt }
     this.lifecycleHooks = createProductHarnessLifecycleHookHost({
@@ -666,15 +696,28 @@ export class CodexEngineWorkerCore implements AgentWorkerCore {
 
   private async prepareToolSurface(runtime: CodexEngineRuntime): Promise<void> {
     if (this.toolSurface) return
-    const prepared = await this.options.parent.engineTools()
-    let accepted = false
+    const activityId = `activity_${createHash('sha256').update(`${this.options.run_id}:extension`).digest('hex').slice(0, 32)}`
+    this.emit({ type: 'event', event: 'activity', activity: { id: activityId, kind: 'extension', phase: 'started', summary: productTaskActivitySummary('extension', 'started') } })
+    let prepared: Awaited<ReturnType<CodexEngineWorkerParentPort['engineTools']>> | undefined
     try {
-      const digest = await runtime.checkpointToolSurface(prepared.surface)
-      await this.options.parent.checkpointExternalOperation(prepared.operation_id, digest)
+      const instructions = this.projectInstructions
+      if (!instructions) throw new Error('CODEX_ENGINE_PROJECT_INSTRUCTIONS_UNAVAILABLE')
+      prepared = await this.options.parent.engineTools()
+      await runtime.checkpointToolSurface(prepared.surface)
+      const extension = productExtensionSnapshot({
+        surface: prepared.surface,
+        snapshot: prepared.snapshot,
+        instructions,
+        hookDigest: this.hookSnapshotDigest,
+      })
+      await this.options.parent.checkpointMcpPrepare(prepared.operation_id, extension)
       this.toolSurface = prepared.surface
-      accepted = true
-    } finally {
-      if (!accepted) await this.options.parent.markExternalOperationUnknown(prepared.operation_id).catch(() => undefined)
+      this.emit({ type: 'event', event: 'extension_snapshot', ...extension })
+      this.emit({ type: 'event', event: 'activity', activity: { id: activityId, kind: 'extension', phase: 'completed', summary: productTaskActivitySummary('extension', 'completed') } })
+    } catch (error) {
+      if (prepared) await this.options.parent.markExternalOperationUnknown(prepared.operation_id).catch(() => undefined)
+      this.emit({ type: 'event', event: 'activity', activity: { id: activityId, kind: 'extension', phase: 'failed', summary: productTaskActivitySummary('extension', 'failed') } })
+      throw error
     }
   }
 

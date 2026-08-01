@@ -330,7 +330,13 @@ export class IpcAgentWorkerLauncher implements AgentWorkerChildLauncher {
         if (state.closed) return { ok: false }
       }
       if (request.operation === 'prepare') return { ok: true, value: await withExternalOperation('mcp_prepare', async () => await runtime.prepare()) }
-      if (request.operation === 'engine_tools') return { ok: true, value: await withExternalOperation('mcp_prepare', async () => await runtime.engineTools()) }
+      if (request.operation === 'engine_tools') return {
+        ok: true,
+        value: await withExternalOperation('mcp_prepare', async () => ({
+          surface: await runtime.engineTools(),
+          snapshot: await runtime.prepare(),
+        })),
+      }
       if (request.operation === 'chat_prompt' && request.value && typeof request.value === 'object') {
         const value = request.value as { text?: unknown; attachments?: unknown }
         const text = value.text

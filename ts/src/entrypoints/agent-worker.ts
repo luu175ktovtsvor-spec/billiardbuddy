@@ -367,9 +367,18 @@ process.on('message', (message: unknown) => {
                     const result = await request('engine_tools')
                     if (!result || typeof result !== 'object' || !('operation_id' in result) || !('value' in result)) throw new Error('CODEX_ENGINE_TOOL_SURFACE_UNAVAILABLE')
                     const operationId = parseOperationId(result)
-                    const surface = (result as ParentEffectResult<ProductHostEngineToolSurface>).value
-                    if (!operationId || !surface || typeof surface !== 'object') throw new Error('CODEX_ENGINE_TOOL_SURFACE_UNAVAILABLE')
-                    return { operation_id: operationId, surface }
+                    const value = (result as ParentEffectResult<{ surface: ProductHostEngineToolSurface; snapshot: ProductHostRuntimeSnapshot }>).value
+                    const surface = value?.surface
+                    const snapshot = value?.snapshot
+                    if (
+                      !operationId || !surface || typeof surface !== 'object'
+                      || !snapshot || typeof snapshot !== 'object'
+                      || !Array.isArray(snapshot.commands) || !Array.isArray(snapshot.tools) || !Array.isArray(snapshot.mcp_clients)
+                    ) throw new Error('CODEX_ENGINE_TOOL_SURFACE_UNAVAILABLE')
+                    return { operation_id: operationId, surface, snapshot }
+                  },
+                  checkpointMcpPrepare: async (operationId, snapshot) => {
+                    await request('external_operation_mcp_checkpoint', { operation_id: operationId, snapshot })
                   },
                   engineModel: (operationId, value) => requestStream('engine_model', { operation_id: operationId, ...value }) as AsyncGenerator<ProductModelEvent, void>,
                   hookModel: (operationId, value) => requestStream('hook_model', { operation_id: operationId, ...value } satisfies { operation_id: string } & ProductHostHookModelRequest) as AsyncGenerator<ProductModelEvent, void>,
