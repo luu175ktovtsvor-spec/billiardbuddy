@@ -63,11 +63,13 @@ Codex 会保存自己的 Thread、配置与运行资料。BilliardBuddy 启动�
 | --- | --- | --- | --- |
 | A. 源码与构建 | 已锁定的 `third_party/codex-engine`、Apache LICENSE/NOTICE 审计，以及 BilliardBuddy 私有目录中的 stdio 引擎客户端和 Thread 绑定存储；macOS/Windows 可构建 `codex-app-server` | 子模块 revision 与上游来源可复现、许可证清单、两平台构建产物可启动 | 不引入 Codex CLI/TUI/品牌；不发布安装包 |
 | B. 模型桥 | 引擎只接 Responses，受管与个人 Chat/Responses 都由本机桥提供同一完整 Item 语义 | 无付费替身覆盖文本、工具调用、不完整流和未知结果 | 不读取或上传真实个人 Key；不自动重试 |
-| C. Run 事件桥 | 一个 BilliardBuddy 任务会话绑定一个 Codex Thread；每次 Run 在该 Thread 上启动一次 Turn，按顺序投影 Turn/Item、审批、工具活动、terminal | 新建任务、继续、停止、重启后历史和状态一致 | 不让引擎直接写任务数据库 |
+| C. Run 事件桥 | 一个 BilliardBuddy 任务会话绑定一个 Codex Thread；每次 Run 在该 Thread 上启动一次 Turn，按顺序投影 Turn/Item、停止和 terminal；审批、工具活动留给 D | 新建任务、继续、停止、重启后历史和状态一致 | 不让引擎直接写任务数据库 |
 | D. 权限与工具桥 | Codex 的工具请求受 BilliardBuddy lease 和三档权限控制；引擎仅暴露 BilliardBuddy 动态工具 | 文件、PTY、浏览器、MCP 的许可/拒绝/停止均有可见回执 | 不让工具获得全局凭据或目录外权限 |
 | E. 正式切换 | 桌面任务页只消费引擎事件；旧 Harness 无消费者后删除 | 同一用户旅程在新路径完成，旧路径不可再启动 | 不保留双 Harness 作为“兼容” |
 
-当前处于 **A. 源码与构建已形成正式供给链、B. 模型桥准备**。固定源码已经登记；开发机已从该基线加受管工具补丁构建 macOS arm64 `codex-app-server`，完成 BilliardBuddy 私有目录的 stdio 初始化/退出验证，并以不访问网络、密钥或付费模型的本机假模型跑通一次 Turn：模型桥收到的上游工具数为 `0`。补丁默认不改变上游行为；只有本产品私有引擎显式传 `host_managed_tools_only=true` 时才去掉上游工具面。
+当前处于 **C. Run 事件桥施工中**。固定源码已经登记；开发机已从该基线加受管工具补丁构建 macOS arm64 `codex-app-server`。Worker 中新增一个仅由本地 Product Server 注入的迁移开关 `BB_AGENT_EXECUTION_RUNTIME=codex-engine`：它不暴露给 Renderer，也不是最终用户设置。开启后，实际 Agent Worker 会启动产品管理的 App Server、绑定私有 Thread，并把 `turn/start` 与每次模型结果分别写成 Run 账本回执；模型结果 checkpoint 成功前，本机 Responses 桥不会向引擎发送 `response.completed`。
+
+已用不访问网络、密钥或付费模型的本机假模型验证两类真实源内核路径：一次 Run 完整经过 `started → Thread/Turn → delta → terminal completed`，Turn 与模型两条操作均完成 checkpoint；随后关闭进程、以同一私有 Thread 连续启动第二个 Run，也完成并留下四条 checkpoint。这个证据只说明 C 的受管内核路径和恢复绑定成立，不等同于完整桌面用户旅程验收；默认正式消费者仍是旧 Harness，直到 D 的权限/工具/附件/运行中输入都接入同一条内核路径后才一次性切换。
 
 桌面构建不允许再从开发者的 Cargo `target/` 目录启动内核。`stage-codex-engine.ts` 必须在干净、锁定的子仓上应用补丁、从源码构建、撤回补丁，再把二进制、Apache-2.0 `LICENSE`、上游 `NOTICE` 与包含 revision、补丁 SHA-256、目标三元组和二进制哈希的 manifest 一并放进 `runtime-assets/binaries/`。macOS 使用不受代码签名变化影响的 Mach-O 哈希；Windows 使用普通 SHA-256。打包前、afterPack 与安装包审计都会重新验证该清单。Electron Main 会丢弃继承的 `BB_CODEX_ENGINE_BIN_DIR`，只在自己的 `runtime-assets/binaries/` 中存在对应目标二进制时才向本地 Product Server 注入该目录。
 
@@ -85,7 +87,7 @@ Codex 会保存自己的 Thread、配置与运行资料。BilliardBuddy 启动�
 4. **工具有唯一宿主**：Codex 的工具/审批请求只经 BilliardBuddy 权限信封和现有主进程工具宿主处理；在该桥完成前，引擎不得获得本机 Shell、文件、浏览器、MCP 或任何全局凭据。
 5. **一次性切换**：上述边界闭合并走通一条真实用户旅程后，桌面 Agent 页改为只启动新内核，旧 Harness 删除；不长期保留双执行循环。
 
-因此，当前正在写的 Responses 回环端点和运行时装配只是第 2 步的材料，尚无正式 Run 消费者，不能单独宣称“模型桥完成”。下一次代码改动进入 C：把一次产品 Run 接成一次已绑定 Thread 的 Turn，接住事件、停止、账本回执与恢复判定；权限工具桥留在其后独立闭合，图片、视频工作台不受这次内核替换牵连。
+因此，当前已不只是 Responses 回环端点：C 的受管 Run/Turn 路径有明确的产品 Worker 消费者和账本回执，但尚未成为默认消费者。下一次代码改动继续完成 D：把 Codex 的动态工具请求接进现有权限信封、审批、附件、运行中输入、MCP、Hook 和子任务宿主；图片、视频工作台不受这次内核替换牵连。
 
 ## 5. 许可与发布边界
 

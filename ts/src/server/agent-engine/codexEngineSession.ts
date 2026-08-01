@@ -72,15 +72,39 @@ export class CodexEngineSession {
    * app-server has accepted `turn/start`. Persisting before that point would
    * falsely make a no-effect, non-resumable thread look recoverable.
    */
-  async checkpointAcceptedTurn(runId: string, turnId: string): Promise<void> {
+  async checkpointAcceptedTurn(runId: string, turnId: string, operationId: string): Promise<string> {
     const thread = await this.ensureThread()
-    if (!text(runId) || !text(turnId)) throw new Error('CODEX_ENGINE_TURN_BINDING_INVALID')
-    await this.options.thread_store.save(this.options.binding, {
+    if (!text(runId) || !text(turnId) || !/^effect_[a-f0-9-]{36}$/.test(operationId)) throw new Error('CODEX_ENGINE_TURN_BINDING_INVALID')
+    const checkpoint = await this.options.thread_store.save(this.options.binding, {
       thread_id: thread.thread_id,
       source_revision: this.options.source_revision,
       last_run_id: runId,
       last_turn_id: turnId,
+      last_turn_operation_id: operationId,
     })
+    return checkpoint.checkpoint_digest
+  }
+
+  async checkpointModelResult(runId: string, operationId: string, resultDigest: string): Promise<string> {
+    const thread = await this.ensureThread()
+    if (!text(runId) || !/^effect_[a-f0-9-]{36}$/.test(operationId) || !/^[a-f0-9]{64}$/.test(resultDigest)) {
+      throw new Error('CODEX_ENGINE_MODEL_RECEIPT_INVALID')
+    }
+    const restored = await this.options.thread_store.load(this.options.binding)
+    if (!restored || restored.thread_id !== thread.thread_id || restored.last_run_id !== runId || !restored.last_turn_id) {
+      throw new Error('CODEX_ENGINE_MODEL_RECEIPT_TURN_MISSING')
+    }
+    const checkpoint = await this.options.thread_store.save(this.options.binding, {
+      thread_id: thread.thread_id,
+      source_revision: this.options.source_revision,
+      last_run_id: restored.last_run_id,
+      last_turn_id: restored.last_turn_id,
+      ...(restored.last_turn_operation_id ? { last_turn_operation_id: restored.last_turn_operation_id } : {}),
+      last_model_run_id: runId,
+      last_model_operation_id: operationId,
+      last_model_result_digest: resultDigest,
+    })
+    return checkpoint.checkpoint_digest
   }
 
   private async start(workDir: string): Promise<CodexEngineThread> {
@@ -116,6 +140,10 @@ export class CodexEngineSession {
       source_revision: this.options.source_revision,
       ...(state.last_run_id ? { last_run_id: state.last_run_id } : {}),
       ...(state.last_turn_id ? { last_turn_id: state.last_turn_id } : {}),
+      ...(state.last_turn_operation_id ? { last_turn_operation_id: state.last_turn_operation_id } : {}),
+      ...(state.last_model_run_id ? { last_model_run_id: state.last_model_run_id } : {}),
+      ...(state.last_model_operation_id ? { last_model_operation_id: state.last_model_operation_id } : {}),
+      ...(state.last_model_result_digest ? { last_model_result_digest: state.last_model_result_digest } : {}),
     })
     return { thread_id: id, restored: true }
   }

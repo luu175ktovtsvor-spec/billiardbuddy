@@ -55,6 +55,12 @@ export type ProductAgentHostRuntime = {
   commandPrompt(name: string, args: string): Promise<ProductContentBlock[]>
   chatPrompt(text: string, attachments: readonly string[]): Promise<ProductPrompt>
   model(request: ProductHostModelRequest): AsyncGenerator<ProductModelEvent, void>
+  /**
+   * The Codex source core owns its own loop.  It receives the same trusted
+   * provider routing as the Harness, but no legacy MCP/tool surface leaks
+   * into its model request before the product tool bridge is installed.
+   */
+  engineModel(request: ProductHostModelRequest): AsyncGenerator<ProductModelEvent, void>
   tools(request: ProductHostToolRequest): Promise<ProductHarnessMessage[]>
   approve(requestId: string, approved: boolean): Promise<void>
   answer(requestId: string, answers: readonly string[]): Promise<void>
@@ -181,6 +187,24 @@ export class StandardProductAgentHostRuntime implements ProductAgentHostRuntime 
         personalProfile: this.personalProfile,
         managedTransport: this.managedTransport,
         operationId: `${this.input.model_attempt_id}:model:${++this.modelOperationSequence}`,
+      },
+      toolPermissionContext: this.toolPermissionContext,
+    })))
+  }
+
+  async *engineModel(request: ProductHostModelRequest): AsyncGenerator<ProductModelEvent, void> {
+    if (this.controller.signal.aborted) throw new Error('PRODUCT_AGENT_HOST_STOPPED')
+    yield* runWithProductPermissionEnvelope(this.input.permission_envelope, () => runWithCwdOverride(this.input.work_dir, () => runProductModel({
+      messages: request.messages,
+      systemPrompt: request.systemPrompt as never,
+      thinkingConfig: request.thinkingConfig,
+      tools: [],
+      signal: this.controller.signal,
+      options: {
+        model: this.input.model_binding.model,
+        personalProfile: this.personalProfile,
+        managedTransport: this.managedTransport,
+        operationId: `${this.input.model_attempt_id}:engine-model:${++this.modelOperationSequence}`,
       },
       toolPermissionContext: this.toolPermissionContext,
     })))

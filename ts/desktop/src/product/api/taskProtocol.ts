@@ -154,6 +154,7 @@ const PRODUCT_TASK_RETRYABLE_RUN_FAILURE_CODES = new Set<ProductTaskRunFailureCo
   'task_model_response_invalid',
 ])
 const PRODUCT_TASK_EXTERNAL_OPERATION_KINDS = new Set<ProductTaskExternalOperationKind>([
+  'engine_turn',
   'mcp_prepare',
   'chat_prompt',
   'command_prompt',

@@ -19,6 +19,7 @@ type WorkerHostState = {
   claim_check_in_flight?: boolean
   on_runtime_started?: () => void
   stop_process?: () => Promise<void>
+  external_operation_states: Map<string, 'in_flight' | 'result_obtained'>
 }
 const PROVIDER_RUNTIME_ENV_KEYS = [
   'BB_GATEWAY_MODEL',
@@ -66,7 +67,7 @@ function coreExternalOperationKind(operation: unknown): TaskRunExternalOperation
 export class IpcAgentWorkerLauncher implements AgentWorkerChildLauncher {
   constructor(private readonly bindings: TaskRunCoreBindingResolver, private readonly cores: ServerPrivateCoreFactory, private readonly command: string[] = resolveAgentWorkerCommand()) {}
   async launch(input: LaunchInput): Promise<AgentWorkerChild> {
-    const state: WorkerHostState = { closed: false }
+    const state: WorkerHostState = { closed: false, external_operation_states: new Map() }
     // Snapshot all non-secret model inputs before normalizing the child env.  An
     // explicit invalid override must remain invalid; only a wholly absent model
     // configuration is allowed to receive the registry default.
@@ -206,6 +207,7 @@ export class IpcAgentWorkerLauncher implements AgentWorkerChildLauncher {
           kind,
         )
         if (started.outcome !== 'started') throw new Error('TASK_RUN_EXTERNAL_OPERATION_DENIED')
+        state.external_operation_states.set(started.operation_id, 'in_flight')
         return started.operation_id
       }
       const markExternalOperationUnknown = async (operationId: string): Promise<void> => {
@@ -216,6 +218,7 @@ export class IpcAgentWorkerLauncher implements AgentWorkerChildLauncher {
           operationId,
         )
         if (outcome !== 'marked' && outcome !== 'already_outcome_unknown') throw new Error('TASK_RUN_EXTERNAL_OPERATION_UNRESOLVED')
+        state.external_operation_states.delete(operationId)
         // Once a result is unknown, no later Hook/model/tool request may use
         // this Runtime while the child is still unwinding its exception.
         void state.stop_process?.()
@@ -228,6 +231,7 @@ export class IpcAgentWorkerLauncher implements AgentWorkerChildLauncher {
           operationId,
         )
         if (outcome !== 'result_obtained') throw new Error('TASK_RUN_EXTERNAL_OPERATION_UNRESOLVED')
+        if (state.external_operation_states.has(operationId)) state.external_operation_states.set(operationId, 'result_obtained')
       }
       const checkpointExternalOperation = async (operationId: string, digest: string): Promise<void> => {
         const outcome = await this.bindings.checkpointTaskRunExternalOperation(
@@ -238,6 +242,7 @@ export class IpcAgentWorkerLauncher implements AgentWorkerChildLauncher {
           { digest },
         )
         if (outcome !== 'checkpointed') throw new Error('TASK_RUN_EXTERNAL_OPERATION_UNRESOLVED')
+        state.external_operation_states.delete(operationId)
       }
       const checkpointMcpPrepare = async (operationId: string, snapshot: { digest: string; tool_count: number; command_count: number; mcp_server_count: number }): Promise<void> => {
         const outcome = await this.bindings.checkpointTaskRunMcpPrepare(
@@ -248,6 +253,7 @@ export class IpcAgentWorkerLauncher implements AgentWorkerChildLauncher {
           snapshot,
         )
         if (outcome !== 'checkpointed') throw new Error('TASK_RUN_EXTERNAL_OPERATION_UNRESOLVED')
+        state.external_operation_states.delete(operationId)
       }
       const withExternalOperation = async <T>(kind: TaskRunExternalOperationKind, operation: () => Promise<T>): Promise<{ value: T; operation_id: string }> => {
         const operationId = await beginExternalOperation(kind)
@@ -340,6 +346,14 @@ export class IpcAgentWorkerLauncher implements AgentWorkerChildLauncher {
           for await (const chunk of runtime.model(request.value as never)) relay({ type: 'runtime_chunk', id: request.id, value: chunk })
         })
         return { ok: true, value: { operation_id: completed.operation_id } }
+      }
+      if (request.operation === 'engine_model' && request.value && typeof request.value === 'object') {
+        const value = request.value as Record<string, unknown>
+        const operationId = value.operation_id
+        if (typeof operationId !== 'string' || state.external_operation_states.get(operationId) !== 'in_flight') return { ok: false }
+        const { operation_id: _operationId, ...modelRequest } = value
+        for await (const chunk of runtime.engineModel(modelRequest as never)) relay({ type: 'runtime_chunk', id: request.id, value: chunk })
+        return { ok: true }
       }
       if (request.operation === 'tools') return { ok: true, value: await withExternalOperation('tools', async () => await runtime.tools(request.value as never)) }
       if (request.operation === 'approval' && request.value && typeof request.value === 'object') {

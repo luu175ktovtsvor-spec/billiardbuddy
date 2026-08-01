@@ -22,6 +22,12 @@ export type CodexEngineThreadState = {
   source_revision: string
   last_run_id?: string
   last_turn_id?: string
+  /** Product receipt for the accepted source `turn/start`, never source state. */
+  last_turn_operation_id?: string
+  /** Product receipt for the last model result admitted into that Turn. */
+  last_model_run_id?: string
+  last_model_operation_id?: string
+  last_model_result_digest?: string
   updated_at: string
 }
 
@@ -29,6 +35,11 @@ type StoredCodexEngineThreadState = CodexEngineThreadState & {
   version: 1
   binding_id: string
   lineage_id: string
+}
+
+export type CodexEngineThreadCheckpoint = {
+  state: CodexEngineThreadState
+  checkpoint_digest: string
 }
 
 function isNonEmptyText(value: unknown, limit = 512): value is string {
@@ -40,6 +51,18 @@ function threadStatePath(binding: CodexEngineThreadBinding): string {
     .update(`${binding.binding_id}\0${binding.lineage_id}`)
     .digest('hex')
   return path.join(binding.storage_dir, `${identity}.json`)
+}
+
+function checkpointDigest(state: StoredCodexEngineThreadState): string {
+  return createHash('sha256').update(JSON.stringify(state)).digest('hex')
+}
+
+function isOperationId(value: unknown): value is string {
+  return typeof value === 'string' && /^effect_[a-f0-9-]{36}$/.test(value)
+}
+
+function isDigest(value: unknown): value is string {
+  return typeof value === 'string' && /^[a-f0-9]{64}$/.test(value)
 }
 
 async function ensureStorageDirectory(storageDir: string): Promise<void> {
@@ -75,6 +98,9 @@ function validateBinding(binding: CodexEngineThreadBinding): void {
 function validateState(value: unknown, binding: CodexEngineThreadBinding): CodexEngineThreadState {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('CODEX_ENGINE_THREAD_STORE_INVALID')
   const state = value as Partial<StoredCodexEngineThreadState>
+  const hasTurnOperation = state.last_turn_operation_id !== undefined
+  const modelReceiptCount = [state.last_model_run_id, state.last_model_operation_id, state.last_model_result_digest]
+    .filter(value => value !== undefined).length
   if (
     state.version !== 1
     || state.binding_id !== binding.binding_id
@@ -83,6 +109,13 @@ function validateState(value: unknown, binding: CodexEngineThreadBinding): Codex
     || !/^[a-f0-9]{40}$/.test(String(state.source_revision ?? ''))
     || (state.last_run_id !== undefined && !isNonEmptyText(state.last_run_id))
     || (state.last_turn_id !== undefined && !isNonEmptyText(state.last_turn_id))
+    || (state.last_turn_operation_id !== undefined && !isOperationId(state.last_turn_operation_id))
+    || (state.last_model_run_id !== undefined && !isNonEmptyText(state.last_model_run_id))
+    || (state.last_model_operation_id !== undefined && !isOperationId(state.last_model_operation_id))
+    || (state.last_model_result_digest !== undefined && !isDigest(state.last_model_result_digest))
+    || (hasTurnOperation && (!state.last_run_id || !state.last_turn_id))
+    || (modelReceiptCount !== 0 && modelReceiptCount !== 3)
+    || (modelReceiptCount === 3 && (!state.last_run_id || !state.last_turn_id || state.last_model_run_id !== state.last_run_id))
     || !isNonEmptyText(state.updated_at, 128)
     || !Number.isFinite(Date.parse(state.updated_at))
   ) throw new Error('CODEX_ENGINE_THREAD_STORE_INVALID')
@@ -91,6 +124,10 @@ function validateState(value: unknown, binding: CodexEngineThreadBinding): Codex
     source_revision: state.source_revision!,
     ...(state.last_run_id ? { last_run_id: state.last_run_id } : {}),
     ...(state.last_turn_id ? { last_turn_id: state.last_turn_id } : {}),
+    ...(state.last_turn_operation_id ? { last_turn_operation_id: state.last_turn_operation_id } : {}),
+    ...(state.last_model_run_id ? { last_model_run_id: state.last_model_run_id } : {}),
+    ...(state.last_model_operation_id ? { last_model_operation_id: state.last_model_operation_id } : {}),
+    ...(state.last_model_result_digest ? { last_model_result_digest: state.last_model_result_digest } : {}),
     updated_at: state.updated_at,
   }
 }
@@ -113,13 +150,23 @@ export class CodexEngineThreadStore {
     })
   }
 
-  async save(binding: CodexEngineThreadBinding, state: Omit<CodexEngineThreadState, 'updated_at'>): Promise<CodexEngineThreadState> {
+  async save(binding: CodexEngineThreadBinding, state: Omit<CodexEngineThreadState, 'updated_at'>): Promise<CodexEngineThreadCheckpoint> {
     validateBinding(binding)
+    const hasTurnOperation = state.last_turn_operation_id !== undefined
+    const modelReceiptCount = [state.last_model_run_id, state.last_model_operation_id, state.last_model_result_digest]
+      .filter(value => value !== undefined).length
     if (
       !isNonEmptyText(state.thread_id)
       || !/^[a-f0-9]{40}$/.test(state.source_revision)
       || (state.last_run_id !== undefined && !isNonEmptyText(state.last_run_id))
       || (state.last_turn_id !== undefined && !isNonEmptyText(state.last_turn_id))
+      || (state.last_turn_operation_id !== undefined && !isOperationId(state.last_turn_operation_id))
+      || (state.last_model_run_id !== undefined && !isNonEmptyText(state.last_model_run_id))
+      || (state.last_model_operation_id !== undefined && !isOperationId(state.last_model_operation_id))
+      || (state.last_model_result_digest !== undefined && !isDigest(state.last_model_result_digest))
+      || (hasTurnOperation && (!state.last_run_id || !state.last_turn_id))
+      || (modelReceiptCount !== 0 && modelReceiptCount !== 3)
+      || (modelReceiptCount === 3 && (!state.last_run_id || !state.last_turn_id || state.last_model_run_id !== state.last_run_id))
     ) throw new Error('CODEX_ENGINE_THREAD_STORE_INVALID')
     return await withBindingLock(binding, async () => {
       const saved: StoredCodexEngineThreadState = {
@@ -147,7 +194,7 @@ export class CodexEngineThreadStore {
         await fs.rm(temporaryPath, { force: true }).catch(() => undefined)
         throw error
       }
-      return validateState(saved, binding)
+      return { state: validateState(saved, binding), checkpoint_digest: checkpointDigest(saved) }
     })
   }
 
