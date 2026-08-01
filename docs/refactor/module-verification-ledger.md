@@ -69,6 +69,15 @@
 - **未验证/待处理**：真实供应商协议兼容性仍未运行。Gateway 托管 TextReasoning 的 stable operation、远端结果回放、ACK 与严格额度结算尚未重构，作为 R3.2 单独施工。
 - **下一项**：R3.2 Gateway 托管 TextReasoning operation ledger 与额度结算。
 
+## R3.2 Gateway 托管 TextReasoning operation ledger、回放与额度结算
+
+- **当前源码证明**：`gateway/app.ts` 在文本请求进入 DeepSeek 前以已验证 installation principal、stable operation id、`TextReasoning` 请求指纹和 result-store fencing 裁决结果。成功 result 以原始 SSE 字节、内容类型和精确 usage 写入 `gateway_operation_results_v4`；相同 binding 只回放已保存数据，in-progress 和 outcome-unknown 不能隐式成为第二次请求。
+- **额度与失败边界**：Gateway 对同一 TextReasoning operation 只有一份预算 reservation。成功流优先持久 result，再用 `completion_tokens`（或在缺失时保留 reservation）结算；客户端取消、上游/stream 不确定和 ledger 写入失败都会保留 outcome unknown，明确未受理的错误才释放。不会从回放结果重新调用上游。
+- **消费边界**：共享 Gateway 协议把 result receipt 绑定到 operation、capability 与请求 fingerprint。Host 只在 `runProductModel()` 已产出 assistant item 后提交 ACK；Gateway 只接受同一已认证 installation 的 TextReasoning ACK，并在 ACK 前对未消费结果实施有界 backlog。
+- **当前结论**：R3.2 已完成托管 TextReasoning 的最小 result/usage 闭环。Gateway Bun 生产 bundle、服务端 TypeScript 检查、源码可达性审计（496 个源文件、0 个缺失 import、322 个生产源可达）、桌面 lint/生产构建和差异空白检查通过；未运行测试、smoke、模拟请求、真实模型调用或发布。
+- **未验证/待处理**：真实上游断流、进程重启、ACK 网络失败与 provider 不返回 usage 仍未运行。R3.3 单独审计显式 unknown recovery 与 Task Authority 消费边界，不能自动重试任何已围栏模型调用。
+- **下一项**：R3.3 托管 TextReasoning 的显式 unknown 恢复与 ACK 消费闭环审计。
+
 ## R4 Agent 桌面客户端事件投影与动作回执
 
 - **事件和 snapshot hand-off**：`ProductTaskSocketManager` 只保存每个 task 的 WebSocket、连接状态与 durable `resumeCursor`；每次连接先发送 `resume`，在收到 `resume_cursor` 前拒绝所有 socket 命令。服务端 `taskWebSocket` 在同一 socket 上依次回放 Authority `event_sequence` ledger、读取当前 Run snapshot、重放待处理 approval、过滤不高于回放高水位的缓冲 live event，最后才发送 `resume_cursor` 并切换为 live。断线重连复用 cursor，Renderer 不以旧 socket 的状态继续审批或停止。

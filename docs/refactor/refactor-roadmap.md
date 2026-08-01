@@ -363,7 +363,10 @@ R2 被路线图选中时，内部不按“看到一个缺口就补一个功能�
 - **R3.1 当前源码证据**：`ProductTaskService` 在 Run 获得派发权时冻结非秘密 `provider/model` 与 route digest；`resolveTaskRunCoreBinding()` 只把该绑定交给 server-private Host factory。Host 使用受信本机配置重建 route 并比较 digest，个人 profile、端点、能力、模型或 Key 的变化均失败关闭。Worker 和 Renderer 不接触 Key。
 - **R3.1 当前执行链**：`StandardProductAgentHostRuntime` 通过同一个 `runProductModel()` 端口执行托管与个人模型。托管分支只请求 Gateway；个人分支直接请求已冻结的 OpenAI-compatible、Responses 或 Anthropic endpoint，并将完成的 assistant item 写入本机受信 operation store，重新进入同一 operation 时只回放已持久结果。显式可确认的客户端/上游失败释放 reservation，其余中断保留 unknown 围栏，不自动重试。
 - **R3.1 静态验证**：服务端 TypeScript 检查、桌面 lint/生产构建、差异空白检查均通过；未新增或运行测试、smoke、模拟请求、桌面试运行、安装或发布。
-- **R3.1 未验证与下一项**：个人模型的真实供应商兼容性及托管 Gateway 结果 ledger/ACK 尚未运行或改写。下一游标为 **R3.2 — Gateway 托管 TextReasoning 的 stable operation、结果回放与额度结算**；不得把 WebSearch、媒体能力或桌面设置 UI 混入该单元。
+- **R3.2 当前源码证据**：Gateway 的 `/v1/chat/completions` 以验证后的 installation principal、稳定 operation id 和精确请求指纹取得 `gateway_operation_results_v4` fencing。已成功的 operation 只回放已持久 SSE，不再接触 DeepSeek；进行中的 operation 返回冲突；中断、上游不确定或账本无法完成时保留 unknown 围栏，不自动重发。
+- **R3.2 结果、结算与 ACK**：成功 SSE 的原始字节、内容类型和实际额度先写入 Gateway result store，随后才按上游 `usage.completion_tokens` 结算；上游未报告 usage 时保留预留输出额度，不能猜测较小消耗。结果头只交给受信 Host；`runProductModel()` 在 Task Authority 已消费 assistant 后才使用同一 installation bearer 回写 ACK。ACK 前的结果受有界 backlog 保护，重复 ACK 不会产生第二次模型请求。
+- **R3.2 静态验证**：Gateway Bun 生产 bundle、服务端 TypeScript 检查、源码可达性审计（496 个源文件、0 个缺失 import、322 个生产源可达）、桌面 lint/生产构建和差异空白检查均通过；未新增或运行测试、smoke、模拟请求、桌面试运行、真实模型调用或发布。
+- **R3.2 未验证与下一项**：真实 Gateway/DeepSeek 的断流、跨进程恢复、ACK 网络失败和上游 usage 缺失仍未运行，不能由静态证据替代。下一游标为 **R3.3 — 托管 TextReasoning 的显式 unknown 恢复与 ACK 消费闭环审计**；不得把 WebSearch、媒体能力或桌面设置 UI 混入该单元。
 - **已完成的当前模块证据**：R4.1 桌面 Agent 公开事件消费链审计已完成。桌面任务 runtime 只消费 Product Server 的结构化 WebSocket 事件与线程/队列快照；resume cursor 由同一 durable event ledger 驱动，重连先回放、再读取当前 run snapshot、最后交接 live 事件。页面的局部 store 只保留连接、提交、草稿、滚动、面板和其他可丢失 UI 状态，线程、活动、计划、审批、错误、恢复、模型路由与队列都能从服务端重新投影。侧任务变更以 authority revision 触发服务端 refresh，审阅/Diff 与进程面板分别从正式 API 刷新/轮询，因此不依赖聊天事件或浏览器缓存。
 - **R4.1 验证**：相关 TypeScript 源码链路和公开协议 parser 已静态审阅；R3 最终检查中的服务端类型检查、桌面 production renderer 构建、Gateway bundle、运行策略解析、源码可达性审计和 diff whitespace audit 均通过。未新增或运行测试、smoke、模拟请求、桌面试运行、安装或发布。
 - **已完成的当前模块证据**：R4.2 桌面 Agent 动作与幂等回执审计已完成。新建任务、普通消息和冻结 Review Run 都保留未知 HTTP 结果对应的原始 client operation 与精确 revision/附件请求，重试只读取同一 Authority receipt；队列编辑、删除、重试、重排、转向和恢复同样复用原 mutation。继续、改写以及任务生命周期操作走通用 durable envelope；侧任务和审阅批注各自保留可重放 operation。审批/问题以已持久化 request id 幂等结算，停止则只在当前 socket 已接收 durable replay、run snapshot 与 resume cursor 后才可送至 generation-fenced Host。服务端也拒绝尚未完成 replay hand-off 的入站动作，因此旧窗口/旧连接状态不会批准或停止未观察到的新 Run。权威 revision、receipt、event ledger 和重连 snapshot 是多窗口交接的唯一裁决，Renderer 只保留可丢失的交互 pending 状态。
@@ -444,13 +447,13 @@ R2 被路线图选中时，内部不按“看到一个缺口就补一个功能�
 - **已完成阶段：R0.1 重构合同与施工证据回溯核验、R1.1 共享产品内核的权威边界回溯核验、R2 Agent Harness Authority 与 Worker/Host 生产链回溯及物理收口**。历史阶段记录仍只是候选证据，不能替代当前源码核验或发布许可。
 
 ```text
-Active work unit: R3.1 — 模型执行端口与使用权控制面回溯核验
-Outcome: 托管额度与个人 API Key 从同一 Agent Harness Model Port 进入，来源只改变凭据、成本归属和 provider adapter；Renderer、Worker 与公开协议不接触秘密或账本权威。
-Evidence: `ts/src/server/agent-worker/productModelRuntime.ts`、Host runtime、`gateway/` 账本与 operation 路径、Electron Main 凭据注入、公开 task protocol，以及 R2 的 Model Port 入口。
-Constraints / Non-goals: 不改变 R2 的 Thread/Turn/Tool/恢复语义，不进入图片、视频、桌面壳、安装包或生产发布；不发送真实模型或付费请求。
-Allowed scope: Model Execution Port、Host provider adapter、个人凭据隔离、Gateway 托管准入/回执及 R3 证据记录。
-Verification / Exit: 每一种模型来源都有唯一凭据所有者、唯一 operation/usage 写入权威和相同 Harness 结果链；不确定结果不得自动重试；发现的缺口只登记为 R3 后续单元。
-Next cursor: R3/A0.2 — 托管与个人模型的 operation、额度与恢复边界。
+Active work unit: R3.3 — 托管 TextReasoning 的显式 unknown 恢复与 ACK 消费闭环审计
+Outcome: 已围栏的托管模型 operation 只能由明确用户意图恢复；Task Authority 的结果消费与 Gateway ACK 必须有可审计的同一 operation 边界。
+Evidence: R3.2 的 Gateway result/usage store、`runProductModel()` 的受信 ACK、TaskRun 的恢复与 assistant event 持久化入口。
+Constraints / Non-goals: 不改变 R2 的 Thread/Turn/Tool/恢复语义，不进入图片、视频、WebSearch、桌面设置、安装包或生产发布；不发送真实模型或付费请求。
+Allowed scope: 托管 TextReasoning 的 unknown recovery、Gateway ACK 与 Task Authority 消费边界及 R3 证据记录。
+Verification / Exit: 明确恢复只能复用同一 user-visible operation 并形成新的、可计量的上游 attempt；ACK 失败不能误报完成、不能重发模型；类型、生产构建、源码审计和失败/恢复证据成立。
+Next cursor: R4.1 — Agent 桌面事件投影与动作回执回溯核验。
 ```
 - **Interrupt rule**：只有发现会造成错误结果、数据丢失、重复副作用、权限越界或无法恢复的事实才可中断；其余发现进入对应后续模块。
 

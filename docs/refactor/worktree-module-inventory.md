@@ -4,7 +4,7 @@
 
 本文件把当前脏工作树作为待审阅的施工资产，而不是把它自动认定为一个模块或一次提交。每个改动必须能对应 `BilliardBuddy-重构合同.md` 的模块结果、当前或历史施工单，或被明确标记为无关保留项；不能因为文件同时存在于工作树中就混入当前模块。
 
-本盘点不宣布任何代码模块完成，也不授权部署、打包或发布。当前唯一施工游标仍以 `refactor-roadmap.md` 的施工单为准；R3.1 已独立完成个人模型的 Model Port、凭据隔离、冻结路由与本机 operation store。下一项 R3.2 只允许收口 Gateway 托管 TextReasoning 的 operation ledger、结果回放与额度结算，不得混入搜索、媒体或桌面设置。
+本盘点不宣布任何代码模块完成，也不授权部署、打包或发布。当前唯一施工游标仍以 `refactor-roadmap.md` 的施工单为准；R3.1 已独立完成个人模型的 Model Port、凭据隔离、冻结路由与本机 operation store，R3.2 已独立完成 Gateway 托管 TextReasoning 的 operation ledger、结果回放、严格额度结算与消费 ACK。下一项 R3.3 只允许审计托管 unknown recovery 与 ACK 消费边界，不得混入搜索、媒体或桌面设置。
 
 ## 2. 当前快照
 
