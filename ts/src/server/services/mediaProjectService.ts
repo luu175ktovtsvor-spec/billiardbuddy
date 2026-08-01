@@ -3227,7 +3227,8 @@ export class MediaProjectService {
     const input = updateImageProjectInputSchema.parse(raw)
     const project = await this.getProject(projectId)
     if (project.kind !== 'image') throw new MediaServiceError('这不是生图项目', 409, 'WRONG_PROJECT_KIND')
-    if (!['draft', 'failed'].includes(project.state)) {
+    const startsNewGenerationRound = project.state === 'ready' && input.start_new_generation_round
+    if (!['draft', 'failed'].includes(project.state) && !startsNewGenerationRound) {
       throw new MediaServiceError('图片任务已经提交，当前不能修改草稿', 409, 'IMAGE_NOT_EDITABLE')
     }
     if (project.revision !== input.revision) {

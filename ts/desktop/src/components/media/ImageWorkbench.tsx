@@ -554,6 +554,8 @@ export function ImageWorkbench() {
   const [restoringId, setRestoringId] = useState<string | null>(null)
   const [zoom, setZoom] = useState(1)
   const [compareMode, setCompareMode] = useState(false)
+  const [comparisonVersionId, setComparisonVersionId] = useState<string | null>(null)
+  const [editingNextGeneration, setEditingNextGeneration] = useState(false)
   const [selectedLayerId, setSelectedLayerId] = useState<string | null>(null)
   const [briefOverrides, setBriefOverrides] = useState<ImageBriefOverrides>({})
   const [referenceDraft, setReferenceDraft] = useState<ImageProjectReference[]>([])
@@ -593,10 +595,12 @@ export function ImageWorkbench() {
     ? mediaUserFacingError({ code: task.error_code })
     : null
   const [previewWidth, previewHeight] = (active?.size ?? size).split('x').map(Number)
-  const currentVersionIndex = currentVersion
-    ? versions.findIndex(version => version.id === currentVersion.id)
-    : -1
-  const currentVersionUrl = currentVersionIndex >= 0 ? outputUrls[currentVersionIndex] : undefined
+  const candidateGroup = selectedVersion?.operation_id
+    ? versions.filter(version => (
+      version.kind === 'generated'
+      && version.operation_id === selectedVersion.operation_id
+    ))
+    : []
   const selectedParentVersion = selectedVersion?.parent_version_id
     ? versions.find(version => version.id === selectedVersion.parent_version_id)
     : undefined
@@ -613,6 +617,38 @@ export function ImageWorkbench() {
   const textBaseUrl = versionUrl(textBaseVersion)
   const compositionBaseUrl = versionUrl(compositionBaseVersion)
   const canvasBaseUrl = selectedVersion?.kind === 'text_layout' ? textBaseUrl : compositionBaseUrl
+  const explicitlyComparedVersion = comparisonVersionId
+    ? versions.find(version => version.id === comparisonVersionId)
+    : undefined
+  const defaultComparisonVersion = candidateGroup.find(version => version.id !== selectedVersion?.id)
+    ?? (currentVersion?.id !== selectedVersion?.id ? currentVersion : undefined)
+  const comparisonVersion = explicitlyComparedVersion?.id !== selectedVersion?.id
+    ? explicitlyComparedVersion
+    : defaultComparisonVersion
+  const comparisonUrl = versionUrl(comparisonVersion)
+  const candidateIndex = selectedVersion
+    ? candidateGroup.findIndex(version => version.id === selectedVersion.id)
+    : -1
+  const comparisonCandidateIndex = comparisonVersion
+    ? candidateGroup.findIndex(version => version.id === comparisonVersion.id)
+    : -1
+  const comparisonLabel = comparisonCandidateIndex >= 0
+    ? `候选 ${comparisonCandidateIndex + 1}`
+    : '当前采用版本'
+  const selectedLabel = candidateIndex >= 0
+    ? `候选 ${candidateIndex + 1}`
+    : '所选版本'
+  const canCompare = Boolean(
+    outputUrl
+    && selectedVersion
+    && comparisonVersion
+    && comparisonUrl
+    && comparisonVersion.id !== selectedVersion.id,
+  )
+  const comparisonActionLabel = candidateGroup.length > 1 ? '对比候选' : '对比当前版本'
+  const imageDraftEditable = Boolean(
+    active && (['draft', 'failed'].includes(active.state) || editingNextGeneration),
+  )
   const visibleImageLayers = selectedVersion?.id === currentVersion?.id
     ? draftImageLayers
     : selectedVersion?.image_layers ?? []
@@ -685,6 +721,7 @@ export function ImageWorkbench() {
     setMaskDataUrl(null)
     setSelectedLayerId(null)
     setCompareMode(false)
+    setComparisonVersionId(null)
     setZoom(1)
     const persistedTextLayers = currentVersion?.kind === 'text_layout' ? currentVersion.text_layers : []
     const persistedWidth = currentVersion?.width ?? (Number(active?.size.split('x')[0]) || 1024)
@@ -730,6 +767,8 @@ export function ImageWorkbench() {
 
   useEffect(() => setOutputNotice(null), [active?.id])
 
+  useEffect(() => setEditingNextGeneration(false), [activeId])
+
   const beginNew = () => {
     clearError()
     selectImage(null)
@@ -741,6 +780,7 @@ export function ImageWorkbench() {
     setBriefOverrides({})
     setReferenceDraft([])
     setPendingReferences([])
+    setEditingNextGeneration(false)
     setInputError(null)
     setCreating(true)
   }
@@ -857,20 +897,23 @@ export function ImageWorkbench() {
     ),
   )
 
-  const saveActiveDraft = async (confirmUnknownRetry = false) => {
+  const saveActiveDraft = async (
+    confirmUnknownRetry = false,
+    startNewGenerationRound = false,
+  ) => {
     if (!active || !prompt.trim()) return active
     if (pendingReferences.some(reference => reference.role === 'unclassified')) {
       setInputError('请先为每张新增参考图片选择作用')
       return null
     }
-    if (!hasDraftChanges) return active
+    if (!hasDraftChanges && !startNewGenerationRound) return active
     const saved = await saveImageDraft({
       ...active,
       brief: { ...active.brief!, user_request: prompt.trim() },
       brief_overrides: briefOverrides,
       references: referenceDraft,
       size,
-    }, confirmUnknownRetry, pendingReferences)
+    }, confirmUnknownRetry, pendingReferences, startNewGenerationRound)
     setReferenceDraft(saved.references)
     setPendingReferences([])
     return saved
@@ -881,9 +924,27 @@ export function ImageWorkbench() {
     const unknownOutcome = task?.outcome_unknown === true
     const createsNewRemoteTask = unknownOutcome
     if (createsNewRemoteTask && !window.confirm('上一次任务的结果无法确认。继续会创建新的远程操作，而不是重用原提交编号查询状态。确认继续吗？')) return
-    const project = await saveActiveDraft(createsNewRemoteTask)
+    const startsNewGenerationRound = active.state === 'ready' && editingNextGeneration
+    const project = await saveActiveDraft(createsNewRemoteTask, startsNewGenerationRound)
     if (!project) return
     await submitImage(project.id, createsNewRemoteTask)
+    setEditingNextGeneration(false)
+  }
+
+  const cancelNextGeneration = () => {
+    if (!active) return
+    const nextPrompt = active.brief?.user_request ?? ''
+    draftOwnerIdRef.current = active.id
+    draftDirtyRef.current = false
+    promptRef.current = nextPrompt
+    sizeRef.current = active.size
+    setPrompt(nextPrompt)
+    setSize(active.size)
+    setBriefOverrides(active.brief_overrides ?? {})
+    setReferenceDraft(active.references)
+    setPendingReferences([])
+    setEditingNextGeneration(false)
+    setInputError(null)
   }
 
   const saveReadyReferences = async () => {
@@ -1109,24 +1170,30 @@ export function ImageWorkbench() {
               ><Plus size={14} /></button>
               <button
                 type="button"
-                onClick={() => setCompareMode(value => !value)}
-                disabled={!outputUrl || !currentVersionUrl || currentVersionUrl === outputUrl}
+                onClick={() => {
+                  if (!compareMode && !comparisonVersionId) {
+                    setComparisonVersionId(defaultComparisonVersion?.id ?? null)
+                  }
+                  setCompareMode(value => !value)
+                }}
+                disabled={!canCompare}
                 className="ml-2 inline-flex h-7 items-center gap-1 rounded-[5px] px-2 text-[11px] text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-hover)] disabled:opacity-40"
                 aria-pressed={compareMode}
-              ><Columns2 size={14} />对比当前版本</button>
+              ><Columns2 size={14} />{comparisonActionLabel}</button>
             </div>
           </div>
 
           <div className="flex min-h-0 flex-1 items-center justify-center gap-5 overflow-auto p-6">
             {outputUrl && selectedVersion ? (
               <>
-                {compareMode && currentVersionUrl && currentVersion && (
+                {compareMode && comparisonUrl && comparisonVersion && (
                   <div className="flex min-w-0 flex-col items-center gap-2">
-                    <span className="text-[11px] text-[var(--color-text-tertiary)]">当前版本</span>
+                    <span className="text-[11px] text-[var(--color-text-tertiary)]">{comparisonLabel}</span>
                     <ImageCanvasSurface
-                      url={currentVersionUrl}
-                      title={`${active?.title ?? '图片'}当前版本`}
-                      textLayers={currentVersion.text_layers}
+                      url={comparisonUrl}
+                      title={`${active?.title ?? '图片'}${comparisonLabel}`}
+                      textLayers={comparisonVersion.text_layers}
+                      imageLayers={comparisonVersion.image_layers}
                       selectedLayerId={null}
                       onSelectLayer={() => undefined}
                       zoom={Math.min(zoom, 1)}
@@ -1134,7 +1201,7 @@ export function ImageWorkbench() {
                   </div>
                 )}
                 <div className="flex min-w-0 flex-col items-center gap-2">
-                  {compareMode && <span className="text-[11px] text-[var(--color-text-tertiary)]">所选候选</span>}
+                  {compareMode && <span className="text-[11px] text-[var(--color-text-tertiary)]">{selectedLabel}</span>}
                   <ImageCanvasSurface
                     url={canvasBaseUrl ?? outputUrl}
                     title={active?.title ?? '生成结果'}
@@ -1167,23 +1234,44 @@ export function ImageWorkbench() {
           </div>
 
           {outputUrls.length > 0 && (
-            <div className="flex h-[76px] shrink-0 items-center gap-2 border-t border-[var(--color-border)] bg-[var(--color-app-main)] px-3">
+            <div className="flex h-[88px] shrink-0 items-center gap-2 border-t border-[var(--color-border)] bg-[var(--color-app-main)] px-3">
               <span className="mr-1 text-[11px] text-[var(--color-text-tertiary)]">候选 / 版本</span>
               <div className="flex min-w-0 flex-1 gap-2 overflow-x-auto py-2">
                 {outputUrls.map((url, index) => (
-                  <button
+                  <div
                     key={versions[index]?.id ?? `${active?.id ?? 'output'}-${index}`}
-                    type="button"
-                    onClick={() => { setSelectedOutput(index); setSelectedLayerId(null) }}
-                    className="relative h-14 w-14 shrink-0 overflow-hidden border-2 bg-[var(--color-app-main)]"
-                    style={{ borderColor: index === selectedOutput ? 'var(--color-brand)' : 'var(--color-border)' }}
-                    aria-label={`查看版本 ${index + 1}`}
+                    className="flex w-14 shrink-0 flex-col gap-0.5"
                   >
-                    <img src={url} alt="" className="h-full w-full object-cover" />
-                    {versions[index]?.id === active?.current_version_id && (
-                      <span className="absolute bottom-0 left-0 right-0 bg-black/65 py-0.5 text-[8px] text-white">当前</span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSelectedOutput(index)
+                        setSelectedLayerId(null)
+                        if (versions[index]?.id === comparisonVersionId) setComparisonVersionId(null)
+                      }}
+                      className="relative h-14 w-14 overflow-hidden border-2 bg-[var(--color-app-main)]"
+                      style={{ borderColor: index === selectedOutput ? 'var(--color-brand)' : 'var(--color-border)' }}
+                      aria-label={`查看版本 ${index + 1}`}
+                    >
+                      <img src={url} alt="" className="h-full w-full object-cover" />
+                      {versions[index]?.quality_assessment && (
+                        <span className="absolute left-0 top-0 rounded-br bg-black/70 px-1 py-0.5 text-[8px] text-white">
+                          {versions[index].quality_assessment.score}
+                        </span>
+                      )}
+                      {versions[index]?.id === active?.current_version_id && (
+                        <span className="absolute bottom-0 left-0 right-0 bg-black/65 py-0.5 text-[8px] text-white">当前</span>
+                      )}
+                    </button>
+                    {compareMode && candidateGroup.length > 1 && versions[index]?.id !== selectedVersion?.id && candidateGroup.some(version => version.id === versions[index]?.id) && (
+                      <button
+                        type="button"
+                        onClick={() => setComparisonVersionId(versions[index]!.id)}
+                        className="h-4 rounded border border-[var(--color-border)] text-[9px] text-[var(--color-brand)] hover:bg-[var(--color-surface-hover)]"
+                        aria-label={`将版本 ${index + 1} 设为对比对象`}
+                      >对比</button>
                     )}
-                  </button>
+                  </div>
                 ))}
               </div>
               <button
@@ -1192,7 +1280,7 @@ export function ImageWorkbench() {
                 disabled={!selectedVersion || active?.current_version_id === selectedVersion.id || loading}
                 aria-label={active?.current_version_id === selectedVersion?.id ? '当前版本' : '切换到此版本'}
                 className="inline-flex h-8 items-center gap-1.5 rounded-[6px] border border-[var(--color-border)] px-3 text-[12px] text-[var(--color-text-secondary)] disabled:opacity-45"
-              ><Undo2 size={14} />{active?.current_version_id === selectedVersion?.id ? '当前版本' : '设为当前'}</button>
+              ><Undo2 size={14} />{active?.current_version_id === selectedVersion?.id ? '当前版本' : '采用此版本'}</button>
               <button
                 type="button"
                 onClick={() => void downloadOutput()}
@@ -1376,7 +1464,7 @@ export function ImageWorkbench() {
                     )}
                   </div>
                 )}
-                {['draft', 'failed'].includes(active.state) ? (
+                {imageDraftEditable ? (
                   <>
                     <label className="mb-1 block text-[12px] text-[var(--color-text-secondary)]" htmlFor="active-image-prompt">画面需求</label>
                     <textarea
@@ -1449,7 +1537,7 @@ export function ImageWorkbench() {
                   </div>
                 )}
                 <div className="mb-5 mt-4 grid grid-cols-2 gap-y-2 text-[12px]">
-                  {!['draft', 'failed'].includes(active.state) && (
+                  {!imageDraftEditable && (
                     <>
                       <span className="text-[var(--color-text-tertiary)]">尺寸</span>
                       <span className="text-right text-[var(--color-text-secondary)]">{active.size}</span>
@@ -1488,7 +1576,7 @@ export function ImageWorkbench() {
                             alt={reference.label ?? `${REFERENCE_ROLE_LABELS[reference.role]}参考图`}
                             className="aspect-square w-full object-cover"
                           />
-                          {['draft', 'failed'].includes(active.state) ? (
+                          {imageDraftEditable ? (
                             <div className="flex items-center border-t border-[var(--color-border)]">
                               <select
                                 aria-label={`${reference.label ?? reference.asset_id} 的参考作用`}
@@ -1550,7 +1638,7 @@ export function ImageWorkbench() {
                         </figure>
                       ))}
                     </div>
-                    {active.state === 'ready' && pendingReferences.length > 0 && (
+                    {active.state === 'ready' && !editingNextGeneration && pendingReferences.length > 0 && (
                       <button
                         type="button"
                         onClick={() => void saveReadyReferences()}
@@ -1615,10 +1703,48 @@ export function ImageWorkbench() {
                       : '重新生成'}
                   </button>
                 )}
-                {selectedVersion && active.current_version_id !== selectedVersion.id && !['queued', 'generating'].includes(active.state) && (
+                {active.state === 'ready' && !editingNextGeneration && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setEditingNextGeneration(true)
+                      setInputError(null)
+                    }}
+                    disabled={loading}
+                    className="mt-3 inline-flex h-8 w-full items-center justify-center gap-1.5 rounded-[6px] border border-[var(--color-border)] px-3 text-[13px] text-[var(--color-brand)] hover:bg-[var(--color-surface-hover)] disabled:opacity-45"
+                  >
+                    <RefreshCw size={14} />
+                    生成新一组候选
+                  </button>
+                )}
+                {active.state === 'ready' && editingNextGeneration && (
+                  <div className="mt-3 rounded-[6px] border border-[var(--color-brand)] bg-[var(--color-surface-container)] p-2">
+                    <p className="mb-2 text-[11px] leading-4 text-[var(--color-text-secondary)]">
+                      这会保留已有候选、版本和当前采用版本，并创建一项新的三图生成操作。
+                    </p>
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={cancelNextGeneration}
+                        disabled={loading}
+                        className="h-8 rounded-[6px] border border-[var(--color-border)] text-[12px] text-[var(--color-text-secondary)] disabled:opacity-45"
+                      >取消修改</button>
+                      <button
+                        type="button"
+                        onClick={() => void startGeneration()}
+                        disabled={loading || !prompt.trim()}
+                        className="inline-flex h-8 items-center justify-center gap-1 rounded-[6px] bg-[var(--color-brand)] px-2 text-[12px] text-white disabled:opacity-45"
+                      >
+                        {loading ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />}
+                        开始新一组
+                      </button>
+                    </div>
+                  </div>
+                )}
+                {selectedVersion && active.current_version_id !== selectedVersion.id && !editingNextGeneration && !['queued', 'generating'].includes(active.state) && (
                   <p className="mt-4 text-[11px] leading-4 text-[var(--color-text-tertiary)]">先在预览区将这个候选切换为当前版本，再从它继续编辑。</p>
                 )}
-                {selectedVersion && active.current_version_id === selectedVersion.id && !['queued', 'generating'].includes(active.state) && (
+                {selectedVersion && active.current_version_id === selectedVersion.id && !editingNextGeneration && !['queued', 'generating'].includes(active.state) && (
                   <div className="mt-5 border-t border-[var(--color-border)] pt-4">
                     <div className="mb-2 text-[12px] font-medium text-[var(--color-text-primary)]">从所选版本继续</div>
                     <div className="grid grid-cols-2 gap-1 rounded-[6px] bg-[var(--color-surface-container)] p-1">

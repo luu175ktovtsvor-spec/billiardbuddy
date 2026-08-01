@@ -633,6 +633,8 @@ export const updateImageProjectInputSchema = z.object({
   references: z.array(imageProjectReferenceSchema).max(8).optional(),
   new_reference_images: z.array(referenceImageDataUrlSchema).max(8).default([]),
   new_reference_roles: z.array(imageReferenceRoleSchema).max(8).default([]),
+  /** Explicitly reopen a completed project for one new candidate operation. */
+  start_new_generation_round: z.boolean().default(false),
   confirm_unknown_retry: z.boolean().default(false),
 }).superRefine((value, context) => {
   if (value.references?.some(reference => reference.role === 'unclassified')) {
