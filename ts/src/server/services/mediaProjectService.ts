@@ -1677,22 +1677,29 @@ export class MediaProjectService {
   async migrateSupportedStorage(): Promise<void> {
     await this.ensureDirs()
     for (const name of (await readdir(this.projectsDir)).filter(name => name.endsWith('.json')).sort()) {
-      await this.getProject(name.slice(0, -5))
+      const raw = JSON.parse(await readFile(join(this.projectsDir, name), 'utf8')) as unknown
+      const project = mediaProjectSchema.parse(migrateLegacyMediaOwnerRecord(raw).value)
+      // Image records are imported by ImageWorkbenchService after this
+      // coordinator completes. Do not let the legacy service rewrite them
+      // during boot, even for an in-place schema upgrade.
+      if (project.kind === 'video') await this.getProject(name.slice(0, -5))
     }
     const videoTaskIds: string[] = []
     for (const name of (await readdir(this.tasksDir)).filter(name => name.endsWith('.json')).sort()) {
       const raw = JSON.parse(await readFile(join(this.tasksDir, name), 'utf8')) as unknown
       const migrated = migrateLegacyMediaOwnerRecord(raw)
       const task = mediaTaskSchema.parse(migrated.value)
+      if (!task.kind.startsWith('video.')) continue
       const hasStatusSequence = Boolean(raw && typeof raw === 'object' && 'status_sequence' in raw)
       if (migrated.migrated || !task.operation_id || !task.owner || !hasStatusSequence) await this.saveTask(task)
-      if (task.kind.startsWith('video.')) videoTaskIds.push(task.id)
+      videoTaskIds.push(task.id)
     }
     for (const name of (await readdir(this.deletionsDir)).filter(name => name.endsWith('.json')).sort()) {
       const filePath = join(this.deletionsDir, name)
       const raw = JSON.parse(await readFile(filePath, 'utf8')) as unknown
       const migrated = migrateLegacyMediaOwnerRecord(raw)
       const receipt = mediaDeletionReceiptSchema.parse(migrated.value)
+      if (receipt.project_kind !== 'video') continue
       if (migrated.migrated || !raw || typeof raw !== 'object' || !('schema_version' in raw)) {
         await this.writeJson(filePath, receipt)
       }
