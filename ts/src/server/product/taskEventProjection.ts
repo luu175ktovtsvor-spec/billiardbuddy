@@ -3,7 +3,10 @@ import type {
   ProductTaskActivityPhase,
   ProductTaskQuestion,
   ProductTaskQuestionOption,
+  ProductTaskPlan,
+  ProductTaskPlanStep,
 } from '../../../shared/product/taskEvents.js'
+import { createHash } from 'node:crypto'
 
 type RecordValue = Record<string, unknown>
 
@@ -11,6 +14,8 @@ const MAX_QUESTION_COUNT = 8
 const MAX_OPTION_COUNT = 12
 const MAX_QUESTION_TEXT_LENGTH = 1_000
 const MAX_OPTION_TEXT_LENGTH = 500
+const MAX_PLAN_STEP_COUNT = 100
+const MAX_PLAN_STEP_LENGTH = 500
 
 function isRecord(value: unknown): value is RecordValue {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
@@ -82,6 +87,25 @@ export function projectAnswerableAskUserQuestions(input: unknown): ProductTaskQu
     questions.push(projected)
   }
   return questions
+}
+
+/** Project TodoWrite only after the tool itself has succeeded. */
+export function projectProductTaskPlan(input: unknown, runId: string, toolUseId: string): ProductTaskPlan | null {
+  if (!isRecord(input) || !Array.isArray(input.todos) || input.todos.length === 0 || input.todos.length > MAX_PLAN_STEP_COUNT) return null
+  const steps: ProductTaskPlanStep[] = []
+  let inProgress = 0
+  for (const todo of input.todos) {
+    if (!isRecord(todo) || Object.keys(todo).length !== 2) return null
+    const content = visibleString(todo.content, MAX_PLAN_STEP_LENGTH)
+    if (!content || content !== todo.content || !['pending', 'in_progress', 'completed'].includes(todo.status as string)) return null
+    if (todo.status === 'in_progress') inProgress += 1
+    steps.push({ content, status: todo.status as ProductTaskPlanStep['status'] })
+  }
+  if (inProgress > 1) return null
+  return {
+    id: `plan_${createHash('sha256').update(`${runId}:${toolUseId}`).digest('hex').slice(0, 32)}`,
+    steps,
+  }
 }
 
 export function productTaskActivitySummary(

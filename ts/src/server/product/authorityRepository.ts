@@ -379,6 +379,16 @@ function validate(file: AuthorityFile): AuthorityFile {
           const progress = event.progress === undefined ? undefined : object(event.progress)
           if (progress) exactKeys(progress, ['completed', 'total'])
           if (!requiredString(event.run_id) || !Number.isSafeInteger(event.dispatch_generation) || (event.dispatch_generation as number) < 1 || typeof event.item_id !== 'string' || !/^activity_[a-f0-9]{32}$/.test(event.item_id) || (event.parent_item_id !== undefined && (typeof event.parent_item_id !== 'string' || !/^activity_[a-f0-9]{32}$/.test(event.parent_item_id) || event.parent_item_id === event.item_id)) || !['file_read', 'file_change', 'workspace', 'command', 'research', 'browser', 'media', 'subtask', 'tool'].includes(event.kind as string) || !['started', 'running', 'completed', 'failed'].includes(event.phase as string) || typeof event.summary !== 'string' || !PRODUCT_TASK_ACTIVITY_SUMMARIES.has(event.summary) || (progress && (!Number.isSafeInteger(progress.completed) || !Number.isSafeInteger(progress.total) || (progress.total as number) < 1 || (progress.total as number) > 1_000_000 || (progress.completed as number) < 0 || (progress.completed as number) > (progress.total as number)))) invalid()
+        } else if (event.type === 'plan_updated') {
+          exactKeys(event, ['event_sequence', 'task_id', 'run_id', 'type', 'dispatch_generation', 'item_id', 'steps', 'created_at'])
+          if (!requiredString(event.run_id) || !Number.isSafeInteger(event.dispatch_generation) || (event.dispatch_generation as number) < 1 || typeof event.item_id !== 'string' || !/^plan_[a-f0-9]{32}$/.test(event.item_id) || !Array.isArray(event.steps) || event.steps.length < 1 || event.steps.length > 100) invalid()
+          let inProgress = 0
+          for (const stepValue of event.steps) {
+            const step = object(stepValue); exactKeys(step, ['content', 'status'])
+            if (!requiredString(step.content) || (step.content as string).length > 500 || !['pending', 'in_progress', 'completed'].includes(step.status as string)) invalid()
+            if (step.status === 'in_progress') inProgress += 1
+          }
+          if (inProgress > 1) invalid()
         } else if (event.type === 'run_terminal') {
           exactKeys(event, ['event_sequence', 'task_id', 'run_id', 'type', 'dispatch_generation', 'item_id', 'state', 'created_at'])
           if (!requiredString(event.run_id) || !Number.isSafeInteger(event.dispatch_generation) || (event.dispatch_generation as number) < 1 || typeof event.item_id !== 'string' || !/^turn_[a-f0-9]{32}$/.test(event.item_id) || !['completed', 'stopped', 'recovery_required'].includes(event.state as string)) invalid()

@@ -3,6 +3,7 @@ import { projectAgentWorkerApprovalReview, projectProductTaskActionApproval } fr
 import {
   productTaskActivityKindForTool,
   productTaskActivitySummary,
+  projectProductTaskPlan,
   projectAnswerableAskUserQuestions,
 } from './taskEventProjection.js'
 import { buildProductTaskAskUserQuestionUpdatedInput } from './taskInboundPolicy.js'
@@ -12,6 +13,7 @@ export const productAgentHarnessProjectionPort: ProductAgentHarnessProjectionPor
   classifyFailure: classifyProductTaskRunFailure,
   activityKindForTool: productTaskActivityKindForTool,
   activitySummary: productTaskActivitySummary,
+  projectPlan: projectProductTaskPlan,
   projectQuestions: projectAnswerableAskUserQuestions,
   updateQuestionInput: buildProductTaskAskUserQuestionUpdatedInput,
   projectApproval: projectProductTaskActionApproval,

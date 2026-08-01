@@ -44,6 +44,7 @@ import {
   productTaskActivityDisplayLabel,
   productTaskActivityLabel,
 } from './ProductTaskRunPanel'
+import { ProductTaskPlanPanel } from './ProductTaskPlanPanel'
 import { SideTaskPanel } from './SideTaskPanel'
 import { VoiceInputControl } from './VoiceInputControl'
 import { RecruitingActionApproval } from './RecruitingActionApproval'
@@ -1049,6 +1050,7 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
             ) : null}
 
             <div className="mx-auto flex max-w-4xl flex-col gap-4">
+              {runtime?.plan ? <ProductTaskPlanPanel plan={runtime.plan} /> : null}
               {runtime?.entries.map((entry) => (
                 <ProductTaskThreadEntryView
                   key={entry.id}

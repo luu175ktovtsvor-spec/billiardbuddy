@@ -1,6 +1,6 @@
 import type { PermissionExecutionEnvelope } from './permissionExecutionEnvelope.js'
 import type { ProductResourceReceipt } from './resourceScheduler.js'
-import type { ProductTaskActionApproval, ProductTaskQuestion, ProductTaskRunActivity, ProductTaskRunFailure } from './taskEvents.js'
+import type { ProductTaskActionApproval, ProductTaskPlan, ProductTaskQuestion, ProductTaskRunActivity, ProductTaskRunFailure } from './taskEvents.js'
 
 export const AGENT_WORKER_PROTOCOL_VERSION = 1 as const
 export const AGENT_WORKER_MAX_FRAME_BYTES = 64 * 1024
@@ -37,6 +37,7 @@ export type AgentWorkerOutbound =
   | { type: 'claim_receipt'; outcome: 'claimed' | 'duplicate' | 'recovery_required' | 'rejected'; run_id: string; code?: string }
   | { type: 'event'; event: 'started' | 'delta' | 'stopping'; data?: string }
   | { type: 'event'; event: 'activity'; activity: ProductTaskRunActivity }
+  | { type: 'event'; event: 'plan_updated'; plan: ProductTaskPlan }
   | { type: 'event'; event: 'extension_snapshot'; digest: string; tool_count: number; command_count: number; mcp_server_count: number }
   | { type: 'event'; event: 'approval'; request_id: string; action: ProductTaskActionApproval; review: AgentWorkerApprovalReviewFacts }
   | { type: 'event'; event: 'question'; request_id: string; questions: ProductTaskQuestion[] }

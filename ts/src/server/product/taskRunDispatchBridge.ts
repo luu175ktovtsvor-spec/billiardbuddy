@@ -111,6 +111,11 @@ export class ProductTaskWorkerMessageSink {
       productTaskWorkerRuntimeEvents.publish(taskId, recorded.event)
       return
     }
+    if (message.event === 'plan_updated') {
+      const recorded = await this.tasks.recordTaskRunPlan(runId, generation, message.plan)
+      productTaskWorkerRuntimeEvents.publish(taskId, recorded.event)
+      return
+    }
     if (message.event !== 'delta' || !message.data) return
     if (this.droppingTokens.has(key)) {
       const boundary = message.data.search(/[\s。！？；]/)

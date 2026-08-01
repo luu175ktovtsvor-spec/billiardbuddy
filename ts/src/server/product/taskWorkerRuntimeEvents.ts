@@ -18,7 +18,7 @@ function upsertSnapshotActivity(
   const activities = index === -1
     ? [...snapshot.activities, activity]
     : snapshot.activities.map((candidate, candidateIndex) => candidateIndex === index ? activity : candidate)
-  return { state: snapshot.state, activities: activities.slice(-MAX_SNAPSHOT_ACTIVITIES) }
+  return { state: snapshot.state, activities: activities.slice(-MAX_SNAPSHOT_ACTIVITIES), ...(snapshot.plan ? { plan: { id: snapshot.plan.id, steps: snapshot.plan.steps.map(step => ({ ...step })) } } : {}) }
 }
 
 type Listener = (taskId: string, event: ProductTaskEvent) => void
@@ -34,6 +34,7 @@ class ProductTaskWorkerRuntimeEvents {
       this.snapshots.set(taskId, {
         state: event.state,
         activities: previous.state === 'idle' && event.state === 'working' ? [] : previous.activities,
+        ...(previous.state === 'idle' && event.state === 'working' ? {} : previous.plan ? { plan: previous.plan } : {}),
       })
       if (event.state !== 'awaiting_approval') this.pendingApprovals.delete(taskId)
     }
@@ -43,13 +44,18 @@ class ProductTaskWorkerRuntimeEvents {
         event,
       ))
     }
+    if (event.type === 'plan_updated') {
+      const previous = this.snapshots.get(taskId) ?? { state: 'working' as const, activities: [] }
+      this.snapshots.set(taskId, { ...previous, plan: { id: event.plan.id, steps: event.plan.steps.map(step => ({ ...step })) } })
+    }
     if (event.type === 'approval_required') {
       this.rememberApproval(taskId, event)
       const previous = this.snapshots.get(taskId)
-      this.snapshots.set(taskId, { state: 'awaiting_approval', activities: previous?.activities ?? [] })
+      this.snapshots.set(taskId, { state: 'awaiting_approval', activities: previous?.activities ?? [], ...(previous?.plan ? { plan: previous.plan } : {}) })
     }
     if (event.type === 'turn_complete' || (event.type === 'error' && !event.retryable)) {
-      this.snapshots.set(taskId, { state: 'idle', activities: [] })
+      const previous = this.snapshots.get(taskId)
+      this.snapshots.set(taskId, { state: 'idle', activities: [], ...(previous?.plan ? { plan: previous.plan } : {}) })
       this.pendingApprovals.delete(taskId)
     }
     for (const listener of this.listeners) {
@@ -79,6 +85,7 @@ class ProductTaskWorkerRuntimeEvents {
             ...activity,
             ...(activity.progress ? { progress: { ...activity.progress } } : {}),
           })),
+          ...(snapshot.plan ? { plan: { id: snapshot.plan.id, steps: snapshot.plan.steps.map(step => ({ ...step })) } } : {}),
         }
       : { state: 'idle', activities: [] }
   }
