@@ -80,22 +80,7 @@ install -m 644 /tmp/validate-auth-env.ts "$APPDIR/validate-auth-env.ts"
 rm -f "$APPDIR/qwenChat.ts" "$APPDIR/webSearch.ts"
 install -m 755 /tmp/validate-mimo-capacity-env.sh "$APPDIR/validate-mimo-capacity-env.sh"
 install -m 755 /tmp/validate-production-capacity-env.sh "$APPDIR/validate-production-capacity-env.sh"
-# Upload the controlled load-test closure as one unit. Every simulated
-# installation must use its own signed token, loaded by loadtestCredentials.ts;
-# installing only part of this closure would leave an operator tool that cannot run.
-loadtest_sources=(loadtestCredentials.ts real-loadtest.ts vision-real-loadtest.ts image-real-loadtest.ts mimo-mixed-real-loadtest.ts)
-loadtest_upload=0
-for runner in "${loadtest_sources[@]}"; do
-  [ ! -f "/tmp/$runner" ] || loadtest_upload=1
-done
-if [ "$loadtest_upload" -eq 1 ]; then
-  for runner in "${loadtest_sources[@]}"; do
-    [ -f "/tmp/$runner" ] || { echo "受控压测工具必须整组上传，缺少 /tmp/$runner" >&2; exit 1; }
-    install -m 644 "/tmp/$runner" "$APPDIR/$runner"
-  done
-else
-  echo "此次未上传受控压测工具；保留现有工具版本" >&2
-fi
+rm -f "$APPDIR/loadtestCredentials.ts" "$APPDIR/real-loadtest.ts" "$APPDIR/vision-real-loadtest.ts" "$APPDIR/image-real-loadtest.ts" "$APPDIR/mimo-mixed-real-loadtest.ts"
 if [ -f /tmp/gw.env ]; then
   install -m 600 /tmp/gw.env "$APPDIR/gw.env.new"
   mv -f "$APPDIR/gw.env.new" "$APPDIR/gw.env"
