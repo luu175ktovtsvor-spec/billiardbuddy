@@ -2727,41 +2727,50 @@ export class MediaProjectService {
     const now = this.iso()
     const projectId = id('img')
     const referenceAssets = await this.persistReferenceImages(projectId, input.reference_images)
-    const references = referenceAssets.map((fileName, index) => ({
-      asset_id: fileName.slice(0, fileName.lastIndexOf('.')),
-      role: input.reference_roles[index]!,
-    }))
-    const { brief, providerPrompt } = compileImageBrief(input.user_request, references)
-    const routedModel = routedImageModel(
-      input.user_request,
-      input.size,
-      references.some(reference => reference.role === 'subject'),
-    )
-    const project = imageWorkbenchProjectSchema.parse({
-      schema_version: 1,
-      id: projectId,
-      kind: 'image',
-      title: input.title ?? defaultTitle(input.user_request, '新图片'),
-      workspace_root: input.workspace_root,
-      revision: 0,
-      created_at: now,
-      updated_at: now,
-      state: 'draft',
-      mode: referenceAssets.length > 0 ? 'edit' : 'generate',
-      model: routedModel,
-      prompt: providerPrompt,
-      size: input.size,
-      count: 3,
-      candidate_count: 3,
-      brief,
-      brief_overrides: {},
-      references,
-      reference_images: [],
-      reference_image_assets: referenceAssets,
-      reference_image_count: input.reference_images.length,
-      outputs: [],
-    })
-    return await this.saveProject(project) as ImageWorkbenchProject
+    try {
+      const references = referenceAssets.map((fileName, index) => ({
+        asset_id: fileName.slice(0, fileName.lastIndexOf('.')),
+        role: input.reference_roles[index]!,
+      }))
+      const { brief, providerPrompt } = compileImageBrief(input.user_request, references)
+      const routedModel = routedImageModel(
+        input.user_request,
+        input.size,
+        references.some(reference => reference.role === 'subject'),
+      )
+      const project = imageWorkbenchProjectSchema.parse({
+        schema_version: 1,
+        id: projectId,
+        kind: 'image',
+        title: input.title ?? defaultTitle(input.user_request, '新图片'),
+        workspace_root: input.workspace_root,
+        revision: 0,
+        created_at: now,
+        updated_at: now,
+        state: 'draft',
+        mode: referenceAssets.length > 0 ? 'edit' : 'generate',
+        model: routedModel,
+        prompt: providerPrompt,
+        size: input.size,
+        count: 3,
+        candidate_count: 3,
+        brief,
+        brief_overrides: {},
+        references,
+        reference_images: [],
+        reference_image_assets: referenceAssets,
+        reference_image_count: input.reference_images.length,
+        outputs: [],
+      })
+      return await this.saveProject(project) as ImageWorkbenchProject
+    } catch (error) {
+      // Reference bytes are written before the first project record. If that
+      // record cannot be published, this newly generated id has no durable
+      // owner and must not leave an orphaned asset directory behind.
+      const projectExists = await stat(this.projectPath(projectId)).then(info => info.isFile()).catch(() => false)
+      if (!projectExists) await rm(join(this.assetsDir, projectId), { recursive: true, force: true }).catch(() => undefined)
+      throw error
+    }
   }
 
   async submitImageProject(
