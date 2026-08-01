@@ -3,7 +3,8 @@ import { MarkdownRenderer } from '../../components/markdown/MarkdownRenderer'
 import { ConfirmDialog } from '../../components/shared/ConfirmDialog'
 import { getDesktopHost } from '../../lib/desktopHost'
 import { useSettingsStore } from '../../stores/settingsStore'
-import { PRODUCT_TASKS_TAB_ID, PRODUCT_TASK_TAB_PREFIX, useTabStore } from '../../stores/tabStore'
+import { PRODUCT_TASKS_TAB_ID, PRODUCT_TASK_TAB_PREFIX, SETTINGS_TAB_ID, useTabStore } from '../../stores/tabStore'
+import { useUIStore } from '../../stores/uiStore'
 import { shouldSubmitOnEnter } from '../../components/chat/sendShortcut'
 import type { ProductTaskRecord, ProductTaskThreadEntry } from '../domain/types'
 import {
@@ -923,6 +924,11 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
     }
   }
 
+  const openModelSettings = () => {
+    useUIStore.getState().setPendingSettingsTab('models')
+    useTabStore.getState().openTab(SETTINGS_TAB_ID, '设置', 'settings')
+  }
+
   return (
     <main className="flex h-full min-h-0 flex-col bg-[var(--color-app-main)]" data-testid="product-task-page">
       <header className="flex shrink-0 items-center gap-3 border-b border-[var(--color-border)] bg-[var(--color-surface)] px-4 py-3">
@@ -1084,13 +1090,23 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
               <div role="alert" className="mx-auto mt-5 max-w-2xl rounded-xl border border-amber-500/30 bg-[var(--color-surface)] px-4 py-3 text-sm text-[var(--color-text-secondary)]">
                 <p className="font-medium text-[var(--color-text-primary)]">{runtime.error ? PRODUCT_TASK_SAFE_ERROR_LABEL[runtime.error.code] : '上次运行未能确认结果。'}</p>
                 <p className="mt-2">恢复会用新的执行代次重新运行这条消息，可能重复外部操作，请确认后继续。</p>
+                {runtime.error?.code === 'task_model_configuration' ? (
+                  <button type="button" onClick={openModelSettings} className="mt-3 rounded-lg border border-[var(--color-border)] px-3 py-2 text-sm font-medium text-[var(--color-text-secondary)]">
+                    配置任务助手模型
+                  </button>
+                ) : null}
                 <button type="button" disabled={isRecoveryPending} onClick={() => { void recoverFailedRun() }} className="mt-3 rounded-lg bg-[var(--color-primary)] px-3 py-2 text-sm font-medium text-white disabled:opacity-50">
                   {isRecoveryPending ? '正在恢复…' : '恢复失败任务'}
                 </button>
               </div>
             ) : runtime?.error ? (
               <div role="alert" className="mx-auto mt-5 max-w-2xl rounded-xl border border-[var(--color-error)]/30 bg-[var(--color-surface)] px-4 py-3 text-sm text-[var(--color-error)]">
-                {PRODUCT_TASK_SAFE_ERROR_LABEL[runtime.error.code]}
+                <p>{PRODUCT_TASK_SAFE_ERROR_LABEL[runtime.error.code]}</p>
+                {runtime.error.code === 'task_model_configuration' ? (
+                  <button type="button" onClick={openModelSettings} className="mt-3 rounded-lg border border-[var(--color-border)] px-3 py-2 text-sm font-medium text-[var(--color-text-secondary)]">
+                    配置任务助手模型
+                  </button>
+                ) : null}
               </div>
             ) : null}
             {threadActionError ? (

@@ -83,6 +83,7 @@ export const jp: Record<TranslationKey, string> = {
   'settings.title': '設定',
   'settings.tab.general': '一般',
   'settings.tab.capabilities': '機能の状態',
+  'settings.tab.models': 'モデル',
   'settings.tab.privacy': 'プライバシー',
   'settings.tab.terminal': 'ターミナル',
   'settings.tab.skills': 'スキル',

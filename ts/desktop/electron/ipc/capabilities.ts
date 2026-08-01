@@ -21,6 +21,35 @@ const commandInvoke: Validator = value =>
   && value.command.length > 0
   && (value.args === undefined || isRecord(value.args))
 
+const personalModelProfileId = (value: unknown): value is string =>
+  typeof value === 'string' && /^[A-Za-z0-9_-]{8,80}$/.test(value)
+
+const personalModelCapability = (value: unknown): boolean =>
+  value === 'TextReasoning' || value === 'VisualEvidence'
+
+const personalModelProtocol = (value: unknown): boolean =>
+  value === 'openai-compatible' || value === 'openai-responses' || value === 'anthropic-messages'
+
+const modelConfigurationSave: Validator = value =>
+  isRecord(value)
+  && hasOnlyKeys(value, ['id', 'label', 'base_url', 'model', 'api_key', 'protocol', 'capabilities', 'supports_tool_calls'])
+  && (value.id === undefined || personalModelProfileId(value.id))
+  && typeof value.label === 'string' && value.label.trim().length > 0 && value.label.length <= 80
+  && typeof value.base_url === 'string' && value.base_url.trim().length > 0 && value.base_url.length <= 2_048
+  && typeof value.model === 'string' && value.model.trim().length > 0 && value.model.length <= 200
+  && typeof value.api_key === 'string' && value.api_key.length <= 4_096
+  && personalModelProtocol(value.protocol)
+  && Array.isArray(value.capabilities) && value.capabilities.length > 0 && value.capabilities.length <= 2
+  && value.capabilities.every(personalModelCapability)
+  && new Set(value.capabilities).size === value.capabilities.length
+  && (value.supports_tool_calls === undefined || typeof value.supports_tool_calls === 'boolean')
+
+const modelConfigurationSetRoute: Validator = value =>
+  isRecord(value)
+  && hasOnlyKeys(value, ['capability', 'profileId'])
+  && personalModelCapability(value.capability)
+  && (value.profileId === null || personalModelProfileId(value.profileId))
+
 const terminalWrite: Validator = value =>
   isRecord(value)
   && hasOnlyKeys(value, ['taskId', 'sessionId', 'data'])
@@ -180,6 +209,10 @@ const mediaStartImageOperation: Validator = value => {
 export const ELECTRON_IPC_VALIDATORS = {
   [ELECTRON_IPC_CHANNELS.appGetVersion]: noPayload,
   [ELECTRON_IPC_CHANNELS.runtimeGetServerUrl]: noPayload,
+  [ELECTRON_IPC_CHANNELS.modelConfigurationSummary]: noPayload,
+  [ELECTRON_IPC_CHANNELS.modelConfigurationSave]: modelConfigurationSave,
+  [ELECTRON_IPC_CHANNELS.modelConfigurationSetRoute]: modelConfigurationSetRoute,
+  [ELECTRON_IPC_CHANNELS.modelConfigurationRemove]: personalModelProfileId,
   [ELECTRON_IPC_CHANNELS.commandInvoke]: commandInvoke,
   [ELECTRON_IPC_CHANNELS.clipboardReadText]: noPayload,
   [ELECTRON_IPC_CHANNELS.clipboardWriteText]: stringPayload,

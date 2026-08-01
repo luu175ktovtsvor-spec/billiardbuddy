@@ -66,6 +66,7 @@ export function createElectronHost(bridge: ElectronHostBridge): DesktopHost {
       clipboard: true,
       dialogs: true,
       mediaActions: true,
+      modelConfiguration: true,
       notifications: true,
       previewWebview: true,
       recruitingBrowser: true,
@@ -126,6 +127,12 @@ export function createElectronHost(bridge: ElectronHostBridge): DesktopHost {
       ),
       renderVideo: request => invoke(ELECTRON_IPC_CHANNELS.mediaRenderVideo, request),
       analyzeVideo: request => invoke(ELECTRON_IPC_CHANNELS.mediaAnalyzeVideo, request),
+    },
+    models: {
+      summary: () => invoke(ELECTRON_IPC_CHANNELS.modelConfigurationSummary),
+      save: input => invoke(ELECTRON_IPC_CHANNELS.modelConfigurationSave, input),
+      setRoute: (capability, profileId) => invoke(ELECTRON_IPC_CHANNELS.modelConfigurationSetRoute, { capability, profileId }),
+      remove: profileId => invoke(ELECTRON_IPC_CHANNELS.modelConfigurationRemove, profileId),
     },
     recruitingBrowser: {
       status: () => invoke(ELECTRON_IPC_CHANNELS.browserStatus),

@@ -43,6 +43,7 @@ import {
 } from '../lib/desktopNotifications'
 import { ProductPrivacySettings } from '../product/components/ProductPrivacySettings'
 import { ProductCapabilitySettings } from '../product/components/ProductCapabilitySettings'
+import { ProductModelSettings } from '../product/components/ProductModelSettings'
 
 const SETTINGS_CHECKBOX_INPUT_CLASS = 'settings-checkbox-input peer'
 
@@ -57,6 +58,7 @@ const PERSONAL_SETTINGS: SettingsNavItem[] = [
 ]
 
 const CAPABILITY_SETTINGS: SettingsNavItem[] = [
+  { tab: 'models', icon: <Cpu size={16} /> },
   { tab: 'capabilities', icon: <Gauge size={16} /> },
   { tab: 'skills', icon: <Sparkles size={16} /> },
 ]
@@ -74,6 +76,7 @@ const ENVIRONMENT_SETTINGS: SettingsNavItem[] = [
 const SETTINGS_LABEL_KEYS: Record<SettingsTab, TranslationKey> = {
   general: 'settings.tab.general',
   capabilities: 'settings.tab.capabilities',
+  models: 'settings.tab.models',
   privacy: 'settings.tab.privacy',
   terminal: 'settings.tab.terminal',
   mcp: 'settings.tab.mcp',
@@ -86,6 +89,7 @@ const SETTINGS_LABEL_KEYS: Record<SettingsTab, TranslationKey> = {
 const ZH_PRODUCT_SETTINGS_LABELS: Record<SettingsTab, string> = {
   general: '常规',
   capabilities: '能力状态',
+  models: '模型',
   privacy: '隐私',
   terminal: '终端',
   mcp: 'MCP 服务',
@@ -210,6 +214,7 @@ export function Settings() {
   const content = (() => {
     if (activeTab === 'general') return <GeneralSettings />
     if (activeTab === 'capabilities') return <ProductCapabilitySettings />
+    if (activeTab === 'models') return <ProductModelSettings />
     if (activeTab === 'privacy') return <ProductPrivacySettings />
     if (activeTab === 'terminal') return <ProductTerminalPreferences />
     if (activeTab === 'mcp') return <McpSettings />

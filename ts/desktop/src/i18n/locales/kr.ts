@@ -83,6 +83,7 @@ export const kr: Record<TranslationKey, string> = {
   'settings.title': '설정',
   'settings.tab.general': '일반',
   'settings.tab.capabilities': '기능 상태',
+  'settings.tab.models': '모델',
   'settings.tab.privacy': '개인정보',
   'settings.tab.terminal': '터미널',
   'settings.tab.skills': '스킬',
