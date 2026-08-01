@@ -12,12 +12,13 @@ export type ProductTaskRunComposition = {
 }
 
 /** Server Composition Root for one Local Product Server task-runtime lifetime. */
-export function createProductTaskRunComposition(resolveTasks: () => ProductTaskService): ProductTaskRunComposition {
+export function createProductTaskRunComposition(
+  tasks: ProductTaskService,
+  scheduler: ProductResourceScheduler,
+): ProductTaskRunComposition {
   let supervisor: AgentWorkerSupervisor | undefined
   const resolveSupervisor = () => {
     if (supervisor) return supervisor
-    const tasks = resolveTasks()
-    const scheduler = new ProductResourceScheduler({ statePath: tasks.workerSchedulerStatePath() })
     supervisor = new AgentWorkerSupervisor(
       tasks,
       scheduler,
