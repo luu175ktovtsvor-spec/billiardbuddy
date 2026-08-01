@@ -57,17 +57,6 @@ export function resolveAgentWorkerCommand(
     : [executable, new URL('../../entrypoints/agent-worker.ts', import.meta.url).pathname]
 }
 
-function coreExternalOperationKind(operation: unknown): TaskRunExternalOperationKind | undefined {
-  switch (operation) {
-    case 'prepare': return 'mcp_prepare'
-    case 'chat_prompt': return 'chat_prompt'
-    case 'command_prompt': return 'command_prompt'
-    case 'model': return 'model'
-    case 'tools': return 'tools'
-    default: return undefined
-  }
-}
-
 function contextCompactionEvent(value: unknown): Extract<AgentWorkerOutbound, { type: 'event'; event: 'context_compaction' }> | undefined {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
   const event = value as Record<string, unknown>
@@ -346,8 +335,7 @@ export class IpcAgentWorkerLauncher implements AgentWorkerChildLauncher {
         return { ok: true }
       }
 
-      const effectKind = coreExternalOperationKind(request.operation)
-      if (!effectKind && request.operation !== 'stop' && request.operation !== 'shutdown') {
+      if (request.operation !== 'stop' && request.operation !== 'shutdown') {
         await this.bindings.assertTaskRunExecutionClaim(capability.run_id, capability.dispatch_generation, capability.execution_claim_token)
         if (state.closed) return { ok: false }
       }
@@ -362,7 +350,6 @@ export class IpcAgentWorkerLauncher implements AgentWorkerChildLauncher {
         )
         return { ok: true }
       }
-      if (request.operation === 'prepare') return { ok: true, value: await withExternalOperation('mcp_prepare', async () => await runtime.prepare()) }
       if (request.operation === 'engine_tools') return {
         ok: true,
         value: await withExternalOperation('mcp_prepare', async () => ({
@@ -383,12 +370,6 @@ export class IpcAgentWorkerLauncher implements AgentWorkerChildLauncher {
         const args = value.args
         if (typeof name !== 'string' || typeof args !== 'string') return { ok: false }
         return { ok: true, value: await withExternalOperation('command_prompt', async () => await runtime.commandPrompt(name, args)) }
-      }
-      if (request.operation === 'model') {
-        const completed = await withExternalOperation('model', async () => {
-          for await (const chunk of runtime.model(request.value as never)) relay({ type: 'runtime_chunk', id: request.id, value: chunk })
-        })
-        return { ok: true, value: { operation_id: completed.operation_id } }
       }
       if (request.operation === 'engine_model' && request.value && typeof request.value === 'object') {
         const value = request.value as Record<string, unknown>
@@ -448,7 +429,6 @@ export class IpcAgentWorkerLauncher implements AgentWorkerChildLauncher {
         )
         return { ok: true }
       }
-      if (request.operation === 'tools') return { ok: true, value: await withExternalOperation('tools', async () => await runtime.tools(request.value as never)) }
       if (request.operation === 'approval' && request.value && typeof request.value === 'object') {
         const value = request.value as { requestId?: unknown; approved?: unknown }
         if (typeof value.requestId !== 'string' || typeof value.approved !== 'boolean') return { ok: false }

@@ -12,7 +12,6 @@ import { projectAgentWorkerApprovalReview, projectProductTaskActionApproval } fr
 import { buildProductTaskAskUserQuestionUpdatedInput } from '../product/taskInboundPolicy.js'
 import { projectAnswerableAskUserQuestions } from '../product/taskEventProjection.js'
 import { loadProductAgentCommands, loadProductAgentExtensionTools } from './productExtensionLoader.js'
-import { productAgentCommands } from './productPluginAgentLoader.js'
 import { loadProductAgentTools } from './productToolLoader.js'
 import type { ProductTaskMcpHost } from './mcpHost.js'
 import { acknowledgeProductModelOperation, runProductModel } from './productModelRuntime.js'
@@ -95,9 +94,9 @@ export type ProductHostToolRequest = {
 
 export type ProductAgentHostRuntime = {
   prepare(): Promise<ProductHostRuntimeSnapshot>
+  /** Expand a user-invoked prompt command before the source Turn begins. */
   commandPrompt(name: string, args: string): Promise<ProductContentBlock[]>
   chatPrompt(text: string, attachments: readonly string[]): Promise<ProductPrompt>
-  model(request: ProductHostModelRequest): AsyncGenerator<ProductModelEvent, void>
   /**
    * The Codex source core owns its own loop.  It receives the same trusted
    * provider routing as the Harness, but no legacy MCP/tool surface leaks
@@ -112,7 +111,6 @@ export type ProductAgentHostRuntime = {
   engineTools(): Promise<ProductHostEngineToolSurface>
   /** Execute one source-requested tool through the normal product Host. */
   engineTool(request: ProductHostEngineToolRequest): Promise<ProductHostEngineToolResult>
-  tools(request: ProductHostToolRequest): Promise<ProductHarnessMessage[]>
   approve(requestId: string, approved: boolean): Promise<void>
   answer(requestId: string, answers: readonly string[]): Promise<void>
   stop(): Promise<void>
@@ -181,7 +179,7 @@ export class StandardProductAgentHostRuntime implements ProductAgentHostRuntime 
       const baseCommands = uniqBy([...await loadProductAgentCommands(this.input.work_dir), ...mcp.commands], 'name')
       const extensionTools = await loadProductAgentExtensionTools(this.input.work_dir)
       this.toolsForTurn = uniqBy([...loadProductAgentTools(this.toolPermissionContext, baseCommands), ...extensionTools, ...mcp.tools], 'name')
-      this.commands = uniqBy([...baseCommands, ...productAgentCommands(extensionTools)], 'name')
+      this.commands = baseCommands
       this.context = {
         productTaskId: this.input.task_id,
         productPromptContext: {
@@ -217,37 +215,17 @@ export class StandardProductAgentHostRuntime implements ProductAgentHostRuntime 
 
   async commandPrompt(name: string, args: string): Promise<ProductContentBlock[]> {
     await this.prepare()
-    const command = this.commands.find(candidate => candidate.name === name || candidate.aliases?.includes(name))
-    if (!command || command.disableNonInteractive) throw new Error('PRODUCT_COMMAND_UNAVAILABLE')
-    return runWithCwdOverride(this.input.work_dir, async () => {
-      const prompt = await command.getPromptForCommand(args, this.context!)
-      return prompt
-    })
+    const command = this.commands.find(candidate => candidate.name === name || candidate.userFacingName?.() === name || candidate.aliases?.includes(name))
+    if (!command || command.type !== 'prompt' || command.userInvocable === false || command.disableNonInteractive || command.directTool) {
+      throw new Error('PRODUCT_COMMAND_UNAVAILABLE')
+    }
+    return await runWithCwdOverride(this.input.work_dir, async () => await command.getPromptForCommand(args, this.context!))
   }
 
   async chatPrompt(text: string, attachments: readonly string[]): Promise<ProductPrompt> {
     const allowed = new Set(this.input.attachment_paths ?? [])
     if (attachments.length > allowed.size || attachments.some(file => !allowed.has(file))) throw new Error('ATTACHMENT_COPY_INVALID')
     return runWithCwdOverride(this.input.work_dir, () => buildProductChatPrompt(text, attachments, undefined, this.controller.signal))
-  }
-
-  async *model(request: ProductHostModelRequest): AsyncGenerator<ProductModelEvent, void> {
-    await this.prepare()
-    if (this.controller.signal.aborted) throw new Error('PRODUCT_AGENT_HOST_STOPPED')
-    yield* runWithProductPermissionEnvelope(this.input.permission_envelope, () => runWithCwdOverride(this.input.work_dir, () => runProductModel({
-      messages: request.messages,
-      systemPrompt: request.systemPrompt as never,
-      thinkingConfig: request.thinkingConfig,
-      tools: this.toolsForTurn,
-      signal: this.controller.signal,
-      options: {
-        model: this.input.model_binding.model,
-        personalProfile: this.personalProfile,
-        managedTransport: this.managedTransport,
-        operationId: `${this.input.model_attempt_id}:model:${++this.modelOperationSequence}`,
-      },
-      toolPermissionContext: this.toolPermissionContext,
-    })))
   }
 
   async *engineModel(request: ProductHostModelRequest): AsyncGenerator<ProductModelEvent, void> {
@@ -401,10 +379,6 @@ export class StandardProductAgentHostRuntime implements ProductAgentHostRuntime 
       description,
       signal: this.controller.signal,
     })
-  }
-
-  async tools(request: ProductHostToolRequest): Promise<ProductHarnessMessage[]> {
-    return await this.runTools(request)
   }
 
   private engineToolsForSurface(surface: ProductHostEngineToolSurface): ProductTools {

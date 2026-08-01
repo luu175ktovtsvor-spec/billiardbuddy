@@ -39,6 +39,7 @@ export type CodexEngineWorkerParentPort = {
   checkpointExternalOperation(operationId: string, checkpointDigest: string): Promise<void>
   markExternalOperationUnknown(operationId: string): Promise<void>
   chatPrompt(text: string, attachments: readonly string[]): Promise<{ operation_id: string; prompt: ProductPrompt }>
+  commandPrompt(name: string, args: string): Promise<{ operation_id: string; prompt: ProductPrompt }>
   engineTools(): Promise<{ operation_id: string; surface: ProductHostEngineToolSurface; snapshot: ProductHostRuntimeSnapshot }>
   checkpointMcpPrepare(operationId: string, snapshot: { digest: string; tool_count: number; command_count: number; mcp_server_count: number }): Promise<void>
   engineModel(operationId: string, request: { messages: CodexResponsesModelRequest['messages']; systemPrompt: string[]; thinkingConfig: CodexResponsesModelRequest['thinking_config']; model?: string; engine_tool_names: string[]; engine_tool_surface_digest: string }): AsyncGenerator<ProductModelEvent, void>
@@ -164,6 +165,11 @@ function attachmentInput(prompt: ProductPrompt): { input: CodexEngineTurnInput[]
     input,
     result_digest: createHash('sha256').update(JSON.stringify(input)).digest('hex'),
   }
+}
+
+function promptCommand(textInput: string): { name: string; args: string } | undefined {
+  const match = textInput.trim().match(/^\/([A-Za-z0-9:_-]+)(?:\s+([\s\S]*))?$/)
+  return match ? { name: match[1]!, args: match[2] ?? '' } : undefined
 }
 
 function acceptedTurn(notification: CodexAppServerNotification): { thread_id: string; turn_id: string; status: string } | undefined {
@@ -342,7 +348,7 @@ export class CodexEngineWorkerCore implements AgentWorkerCore {
       const sourceThread = await runtime.ensureThread()
       const sourceInput = attachments.length > 0
         ? await this.prepareAttachmentInput(textInput, attachments)
-        : { input: [{ type: 'text' as const, text: textInput }] }
+        : await this.prepareTextInput(textInput)
       operationId = await this.options.parent.beginExternalOperation('engine_turn')
       const accepted = await runtime.startTurn({ run_id: this.options.run_id, input: sourceInput.input })
       // The source can request its model immediately after returning from
@@ -479,8 +485,18 @@ export class CodexEngineWorkerCore implements AgentWorkerCore {
    * Host-produced bounded prompt, and the exact result digest is persisted in
    * the product Thread binding before that source Turn can invoke a model.
    */
+  private async prepareTextInput(textInput: string): Promise<{ input: CodexEngineTurnInput[] }> {
+    const command = promptCommand(textInput)
+    if (!command) return { input: [{ type: 'text' as const, text: textInput }] }
+    return await this.prepareHostPrompt(await this.options.parent.commandPrompt(command.name, command.args))
+  }
+
   private async prepareAttachmentInput(textInput: string, attachments: readonly string[]): Promise<{ input: CodexEngineTurnInput[] }> {
     const prepared = await this.options.parent.chatPrompt(textInput, attachments)
+    return await this.prepareHostPrompt(prepared)
+  }
+
+  private async prepareHostPrompt(prepared: { operation_id: string; prompt: ProductPrompt }): Promise<{ input: CodexEngineTurnInput[] }> {
     try {
       const converted = attachmentInput(prepared.prompt)
       this.pendingInput = {
@@ -489,7 +505,7 @@ export class CodexEngineWorkerCore implements AgentWorkerCore {
       }
       return { input: converted.input }
     } catch (error) {
-      // The Host already holds a definite chat_prompt result. If its bounded
+      // The Host already holds a definite prompt result. If its bounded
       // conversion cannot be admitted by this source bridge, it is not safe
       // to retry or discard that result on a later recovery.
       await this.options.parent.markExternalOperationUnknown(prepared.operation_id).catch(() => undefined)
