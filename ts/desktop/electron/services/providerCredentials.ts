@@ -7,6 +7,7 @@ import {
   type PersonalModelCapability,
   type PersonalModelConfiguration,
   type PersonalModelConfigurationSummary,
+  type PersonalModelProfile,
   type PersonalModelProfileInput,
 } from '../../../shared/product/personalModels'
 import type { CredentialStore } from './keychain'
@@ -106,6 +107,17 @@ export class ProviderCredentialService {
     return {
       ...(value.profiles.length > 0 ? { BB_PERSONAL_MODEL_CONFIGURATION: JSON.stringify(value) } : {}),
     }
+  }
+
+  /**
+   * Electron Main-only selector for the native Codex route. Unlike
+   * `runtimeEnvironment`, this exposes one encrypted profile only to the
+   * process that is about to create its short-lived App Server child.
+   */
+  agentTextReasoningProfile(): PersonalModelProfile | null {
+    const value = this.read()
+    const id = value.routes.TextReasoning
+    return id ? value.profiles.find(profile => profile.id === id) ?? null : null
   }
 
   private read(): PersonalModelConfiguration { return parsePersonalModelConfiguration(this.store.load()) }
