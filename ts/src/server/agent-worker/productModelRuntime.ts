@@ -8,7 +8,7 @@ import {
   PROVIDER_OPERATION_RESULT_FINGERPRINT_HEADER,
   PROVIDER_OPERATION_RESULT_ID_HEADER,
 } from '../../../shared/product/providerGateway.js'
-import type { ProductAssistantMessage, ProductHarnessMessage } from '../../../shared/product/harnessMessages.js'
+import type { ProductAssistantMessage, ProductHarnessMessage, ProductModelOperationReceipt } from '../../../shared/product/harnessMessages.js'
 import { zodToJsonSchema } from '../../utils/zodToJsonSchema.js'
 import { productGatewayTarget } from '../product/productGatewayRuntime.js'
 import {
@@ -133,12 +133,7 @@ async function* sseData(response: Response, signal: AbortSignal): AsyncGenerator
   }
 }
 
-type GatewayOperationReceipt = {
-  operationId: string
-  fingerprint: string
-}
-
-function gatewayOperationReceipt(response: Response): GatewayOperationReceipt {
+function gatewayOperationReceipt(response: Response): ProductModelOperationReceipt {
   const operationId = response.headers.get(PROVIDER_OPERATION_RESULT_ID_HEADER)?.trim() ?? ''
   const capability = response.headers.get(PROVIDER_OPERATION_RESULT_CAPABILITY_HEADER)?.trim() ?? ''
   const fingerprint = response.headers.get(PROVIDER_OPERATION_RESULT_FINGERPRINT_HEADER)?.trim() ?? ''
@@ -147,12 +142,12 @@ function gatewayOperationReceipt(response: Response): GatewayOperationReceipt {
     || !/^[a-f0-9]{64}$/.test(fingerprint)) {
     throw new Error('PRODUCT_GATEWAY_OPERATION_RECEIPT_MISSING')
   }
-  return { operationId, fingerprint }
+  return { source: 'gateway', capability: 'TextReasoning', operation_id: operationId, fingerprint }
 }
 
 async function acknowledgeGatewayOperation(
   target: { baseUrl: string; token: string },
-  receipt: GatewayOperationReceipt,
+  receipt: ProductModelOperationReceipt,
   signal: AbortSignal,
 ): Promise<void> {
   let response: Response
@@ -163,7 +158,7 @@ async function acknowledgeGatewayOperation(
       headers: {
         Authorization: `Bearer ${target.token}`,
         [PROVIDER_GATEWAY_PROTOCOL_HEADER]: PROVIDER_GATEWAY_PROTOCOL.headerValue,
-        [PROVIDER_OPERATION_RESULT_ID_HEADER]: receipt.operationId,
+        [PROVIDER_OPERATION_RESULT_ID_HEADER]: receipt.operation_id,
         [PROVIDER_OPERATION_RESULT_CAPABILITY_HEADER]: 'TextReasoning',
         [PROVIDER_OPERATION_RESULT_FINGERPRINT_HEADER]: receipt.fingerprint,
       },
@@ -172,6 +167,26 @@ async function acknowledgeGatewayOperation(
     throw new Error(signal.aborted ? 'PRODUCT_MODEL_ABORTED' : 'PRODUCT_GATEWAY_RESULT_ACK_UNREACHABLE')
   }
   if (!response.ok) throw new Error(`PRODUCT_GATEWAY_RESULT_ACK_HTTP_${response.status}`)
+}
+
+export async function acknowledgeProductModelOperation(
+  receipt: ProductModelOperationReceipt,
+  signal: AbortSignal,
+): Promise<void> {
+  if (receipt.source === 'personal') {
+    if (signal.aborted) throw new Error('PRODUCT_MODEL_ABORTED')
+    acknowledgePersonalModelOperation({
+      principal_id: 'billiardbuddy-local-personal-model',
+      installation_id: 'billiardbuddy-local-installation',
+      operation_id: receipt.operation_id,
+      capability: receipt.capability,
+      fingerprint: receipt.fingerprint,
+    })
+    return
+  }
+  const target = productGatewayTarget()
+  if (!target) throw new Error('PRODUCT_GATEWAY_NOT_CONFIGURED')
+  await acknowledgeGatewayOperation(target, receipt, signal)
 }
 
 export const runProductModel: ProductAgentModelRunner = async function* ({ messages, systemPrompt, thinkingConfig, tools, signal, options, toolPermissionContext }) {
@@ -208,8 +223,15 @@ export const runProductModel: ProductAgentModelRunner = async function* ({ messa
     if (!stored || typeof stored !== 'object' || Array.isArray(stored)) throw new Error('PRODUCT_MODEL_OPERATION_RESULT_UNAVAILABLE')
     const assistant = (stored as { assistant?: unknown }).assistant
     if (!assistant || typeof assistant !== 'object' || Array.isArray(assistant)) throw new Error('PRODUCT_MODEL_OPERATION_RESULT_UNAVAILABLE')
-    yield assistant as ProductAssistantMessage
-    acknowledgePersonalModelOperation(personalOperation.binding)
+    yield {
+      ...(assistant as ProductAssistantMessage),
+      operation_receipt: {
+        source: 'personal',
+        capability: 'TextReasoning',
+        operation_id: personalOperation.binding.operation_id,
+        fingerprint: personalOperation.binding.fingerprint,
+      },
+    }
     return
   }
   const personalHandle = personalOperation?.outcome === 'started' ? personalOperation.handle : null
@@ -352,11 +374,21 @@ export const runProductModel: ProductAgentModelRunner = async function* ({ messa
             : stopReason,
       usage,
     },
+    ...(personalHandle
+      ? {
+          operation_receipt: {
+            source: 'personal' as const,
+            capability: 'TextReasoning' as const,
+            operation_id: personalHandle.binding.operation_id,
+            fingerprint: personalHandle.binding.fingerprint,
+          },
+        }
+      : managedOperationReceipt
+        ? { operation_receipt: managedOperationReceipt }
+        : {}),
   }
   if (personalHandle) completePersonalModelOperation(personalHandle, JSON.stringify({ assistant }), { awaitingConsumerAck: true })
   yield assistant
-  if (personalHandle) acknowledgePersonalModelOperation(personalHandle.binding)
-  else await acknowledgeGatewayOperation(target!, managedOperationReceipt!, signal)
   } catch (error) {
     if (personalHandle) {
       try { markPersonalModelOperationOutcomeUnknown(personalHandle) } catch {}

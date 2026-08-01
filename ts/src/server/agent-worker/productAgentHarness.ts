@@ -13,7 +13,7 @@ import type { ProductAgentHarnessModelPolicyPort, ProductAgentHarnessProjectionP
 import type { ProductTaskMcpHost } from './mcpHost.js'
 import { runProductAgentLoop } from './productAgentLoop.js'
 import type { ProductAgentLoopInput } from './productAgentLoop.js'
-import { runProductModel } from './productModelRuntime.js'
+import { acknowledgeProductModelOperation, runProductModel } from './productModelRuntime.js'
 import { runProductTools } from './productToolExecution.js'
 import { createProductUserMessage } from './productMessages.js'
 import { loadProductAgentCommands, loadProductAgentExtensionTools } from './productExtensionLoader.js'
@@ -542,6 +542,9 @@ export async function createProductAgentHarness(input: {
                 commandQueue,
                 mutableMessages: modelMessages,
                 onMessageState: persistHarnessSession,
+                onAssistantPersisted: async (message, signal) => {
+                  if (message.operation_receipt) await acknowledgeProductModelOperation(message.operation_receipt, signal)
+                },
                 runModel: input.run_model ?? runProductModel,
                 executeTools: input.execute_tools ?? runProductTools,
                 toolHooks: productToolHooks,

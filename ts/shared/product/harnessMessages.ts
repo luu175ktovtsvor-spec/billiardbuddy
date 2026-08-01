@@ -19,6 +19,14 @@ export type ProductToolResultBlock = {
 export type ProductContentBlock = ProductTextBlock | ProductImageBlock | ProductToolCallBlock | ProductToolResultBlock
 export type ProductPrompt = string | Array<ProductTextBlock | ProductImageBlock>
 
+/** Private durable-consumer receipt. It is never projected as a task event or renderer payload. */
+export type ProductModelOperationReceipt = {
+  source: 'gateway' | 'personal'
+  capability: 'TextReasoning'
+  operation_id: string
+  fingerprint: string
+}
+
 type ProductMessageBase = {
   uuid: string
   timestamp: string
@@ -32,6 +40,7 @@ export type ProductUserMessage = ProductMessageBase & {
 
 export type ProductAssistantMessage = ProductMessageBase & {
   type: 'assistant'
+  operation_receipt?: ProductModelOperationReceipt
   message: {
     id: string
     role: 'assistant'
@@ -56,6 +65,17 @@ function record(value: unknown): Record<string, unknown> | null {
 
 function validText(value: unknown, limit = MAX_TEXT_CHARS): value is string {
   return typeof value === 'string' && value.length <= limit
+}
+
+function validOperationReceipt(value: unknown): value is ProductModelOperationReceipt {
+  const receipt = record(value)
+  return receipt !== null
+    && (receipt.source === 'gateway' || receipt.source === 'personal')
+    && receipt.capability === 'TextReasoning'
+    && typeof receipt.operation_id === 'string'
+    && /^[A-Za-z0-9._:-]{8,200}$/.test(receipt.operation_id)
+    && typeof receipt.fingerprint === 'string'
+    && /^[a-f0-9]{64}$/.test(receipt.fingerprint)
 }
 
 function validContentBlock(value: unknown): value is ProductContentBlock {
@@ -96,6 +116,7 @@ export function parseProductHarnessMessage(value: unknown): ProductHarnessMessag
     && validText(message.id, 512)
     && validText(message.model, 512)
     && (message.stop_reason === null || validText(message.stop_reason, 128))
+    && (outer.operation_receipt === undefined || validOperationReceipt(outer.operation_receipt))
     && record(message.usage)
     && Number.isFinite((message.usage as Record<string, unknown>).input_tokens)
     && Number.isFinite((message.usage as Record<string, unknown>).output_tokens)
