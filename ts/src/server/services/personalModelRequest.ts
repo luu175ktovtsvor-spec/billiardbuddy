@@ -174,6 +174,23 @@ function openAiResponsesBody(
   }
 }
 
+/**
+ * Build the provider-neutral Responses request used by a managed route.  It
+ * shares the same durable-history conversion as a personal Responses profile,
+ * while deliberately omitting every user-owned preference and credential.
+ */
+export function managedOpenAiResponsesBody(
+  model: string,
+  body: Record<string, unknown>,
+): Record<string, unknown> {
+  return openAiResponsesBody({
+    model,
+    reasoning_effort: 'provider-default',
+    text_verbosity: 'provider-default',
+    openai_service_tier: 'provider-default',
+  }, body)
+}
+
 function anthropicMessagesBody(
   profile: Pick<PersonalModelProfile, 'model' | 'reasoning_mode' | 'reasoning_effort' | 'anthropic_thinking_display' | 'reasoning_budget_tokens'>,
   body: Record<string, unknown>,

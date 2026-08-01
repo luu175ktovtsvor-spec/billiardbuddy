@@ -2,9 +2,10 @@ import { createHash } from 'node:crypto'
 import type {
   ProviderRegistryEntry,
   ProviderRuntimeConfigurationError,
+  TextReasoningTransport,
 } from '../ts/shared/product/providerContracts.js'
 
-export const PROVIDER_REGISTRY_CONTRACT_VERSION = 1 as const
+export const PROVIDER_REGISTRY_CONTRACT_VERSION = 2 as const
 export const PROVIDER_REGISTRY_VERIFICATION_DATE = '2026-07-23'
 export const PROVIDER_RUNTIME_CONTRACT_VERSION_ENV = 'BB_PROVIDER_CONTRACT_VERSION'
 export const PROVIDER_RUNTIME_REGISTRY_SHA256_ENV = 'BB_PROVIDER_REGISTRY_SHA256'
@@ -20,6 +21,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     model_id: 'deepseek-v4-flash',
     provider: 'deepseek',
     capabilities: ['TextReasoning'],
+    text_reasoning_transport: 'chat_completions',
     worker_env_source: { variable: 'BB_GATEWAY_MODEL', slot_aliases: [], default_model: true },
     verified_context_window: 16_000,
     body_caps: {
@@ -117,6 +119,7 @@ export function providerRegistrySha256(): string {
 type WorkerModelRegistryEntry = {
   model_id: string
   capabilities: readonly string[]
+  text_reasoning_transport?: TextReasoningTransport
   worker_env_source: { default_model?: boolean }
   verified_context_window: number
   compact_threshold: number
@@ -124,9 +127,9 @@ type WorkerModelRegistryEntry = {
 
 export function workerTextReasoningEntry(registry: readonly WorkerModelRegistryEntry[] = PROVIDER_REGISTRY): WorkerModelRegistryEntry | undefined {
   const textReasoning = registry.filter(candidate => candidate.capabilities.includes('TextReasoning'))
-  const defaults = registry.filter(candidate => candidate.worker_env_source.default_model === true)
-  if (textReasoning.length !== 1 || defaults.length !== 1 || textReasoning[0]!.model_id !== defaults[0]!.model_id) return undefined
-  return textReasoning[0]
+  const defaults = textReasoning.filter(candidate => candidate.worker_env_source.default_model === true)
+  if (defaults.length !== 1 || !defaults[0]!.text_reasoning_transport) return undefined
+  return defaults[0]
 }
 
 export function defaultProviderModel(registry: readonly WorkerModelRegistryEntry[] = PROVIDER_REGISTRY): string {
@@ -158,7 +161,7 @@ export function textReasoningRegistryEntry(model?: string): ProviderRegistryEntr
     if (model === undefined) throw new Error('provider registry has no unique TextReasoning default model')
     return undefined
   }
-  if (model === undefined) return providerRegistryEntryForCapability('TextReasoning')
+  if (model === undefined) return providerRegistryEntry(defaultEntry.model_id)
   const entry = providerRegistryEntry(model)
   return entry?.capabilities.includes('TextReasoning') ? entry : undefined
 }
@@ -182,6 +185,7 @@ export function renderProviderRuntimeManifest(): Json {
       model_id: entry.model_id,
       provider: entry.provider,
       capabilities: entry.capabilities,
+      ...(entry.text_reasoning_transport ? { text_reasoning_transport: entry.text_reasoning_transport } : {}),
       worker_env_source: entry.worker_env_source,
       verified_context_window: entry.verified_context_window,
       body_caps: entry.body_caps,
@@ -214,10 +218,13 @@ export function buildProviderRegistryRuntimeEnv(model: string | undefined): Reco
   }
 }
 
-export function validateProviderRegistryEntry(entry: Pick<ProviderRegistryEntry, 'verified_context_window' | 'verification_date' | 'body_caps' | 'resume_evidence'>): ProviderRuntimeConfigurationError | undefined {
+export function validateProviderRegistryEntry(entry: Pick<ProviderRegistryEntry, 'capabilities' | 'text_reasoning_transport' | 'verified_context_window' | 'verification_date' | 'body_caps' | 'resume_evidence'>): ProviderRuntimeConfigurationError | undefined {
   if (!entry.resume_evidence.path || entry.verification_date !== PROVIDER_REGISTRY_VERIFICATION_DATE || entry.verified_context_window >= 1_000_000) return 'MODEL_CONTRACT_STALE'
   const caps = entry.body_caps
   if (caps.CHAT_TEXT_BODY_MAX_BYTES <= 0 || caps.VISION_BODY_MAX_BYTES <= 0 || caps.IMAGE_GENERATION_BODY_MAX_BYTES <= 0) return 'MODEL_CONTRACT_STALE'
+  const needsTextTransport = entry.capabilities.includes('TextReasoning')
+  if (needsTextTransport !== Boolean(entry.text_reasoning_transport)) return 'MODEL_CONTRACT_STALE'
+  if (entry.text_reasoning_transport && !['chat_completions', 'responses'].includes(entry.text_reasoning_transport)) return 'MODEL_CONTRACT_STALE'
   return undefined
 }
 
@@ -228,9 +235,9 @@ export function validateProviderRuntimeConfiguration(env: Record<string, string 
     const error = validateProviderRegistryEntry(entry)
     if (error) return error
   }
-  const textReasoning = workerTextReasoningEntry()
-  if (!textReasoning) return 'MODEL_CONFIGURATION_INVALID'
-  if (env.BB_GATEWAY_MODEL?.trim() !== textReasoning.model_id) return 'MODEL_CONFIGURATION_INVALID'
+  const selectedModel = env.BB_GATEWAY_MODEL?.trim()
+  const textReasoning = selectedModel ? textReasoningRegistryEntry(selectedModel) : undefined
+  if (!textReasoning?.text_reasoning_transport) return 'MODEL_CONFIGURATION_INVALID'
   if (env.BILLIARDBUDDY_MODEL_CONTEXT_WINDOWS !== JSON.stringify({ [textReasoning.model_id]: textReasoning.verified_context_window })) return 'MODEL_CONFIGURATION_INVALID'
   if (env.BILLIARDBUDDY_AUTO_COMPACT_WINDOW !== String(textReasoning.compact_threshold)) return 'MODEL_CONFIGURATION_INVALID'
   return undefined

@@ -2,6 +2,7 @@ import uniqBy from 'lodash-es/uniqBy.js'
 import type { AgentWorkerOutbound } from '../../../shared/product/agentWorker.js'
 import type { ProductAssistantMessage, ProductHarnessMessage, ProductModelEvent, ProductPrompt, ProductToolCallBlock } from '../../../shared/product/harnessMessages.js'
 import type { PersonalModelProfile } from '../../../shared/product/personalModels.js'
+import type { TextReasoningTransport } from '../../../shared/product/providerContracts.js'
 import type { PermissionExecutionEnvelope } from '../../../shared/product/permissionExecutionEnvelope.js'
 import { createAbortController } from '../../utils/abortController.js'
 import { runWithCwdOverride } from '../../utils/cwd.js'
@@ -73,6 +74,7 @@ export class StandardProductAgentHostRuntime implements ProductAgentHostRuntime 
   private prepared?: Promise<ProductHostRuntimeSnapshot>
   private mcpCleanup: Array<() => Promise<void>> = []
   private readonly personalProfile: PersonalModelProfile | null
+  private readonly managedTransport: TextReasoningTransport | null
   private modelOperationSequence = 0
 
   constructor(private readonly input: {
@@ -83,9 +85,11 @@ export class StandardProductAgentHostRuntime implements ProductAgentHostRuntime 
     attachment_paths?: readonly string[]
     model_binding: { provider: string; model: string }
     personal_profile: PersonalModelProfile | null
+    managed_transport: TextReasoningTransport | null
     model_attempt_id: string
   }) {
     this.personalProfile = input.personal_profile
+    this.managedTransport = input.managed_transport
     const policy = input.permission_envelope.approval_policy
     this.toolPermissionContext = {
       ...emptyProductToolPermissionContext(),
@@ -175,6 +179,7 @@ export class StandardProductAgentHostRuntime implements ProductAgentHostRuntime 
       options: {
         model: this.input.model_binding.model,
         personalProfile: this.personalProfile,
+        managedTransport: this.managedTransport,
         operationId: `${this.input.model_attempt_id}:model:${++this.modelOperationSequence}`,
       },
       toolPermissionContext: this.toolPermissionContext,

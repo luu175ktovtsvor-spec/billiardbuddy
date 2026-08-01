@@ -58,7 +58,7 @@
 #   gw.env 是单文件,`cp -a /root/gw.env.bak-<ts> /opt/billiardbuddy-gateway/gw.env` 单文件覆盖安全、不会嵌套。
 set -euo pipefail
 APPDIR=/opt/billiardbuddy-gateway
-for source in app.ts authority.ts mimoChat.ts deepseekChat.ts modelCapacity.ts visionBridge.ts transcription.ts usageBudget.ts providerRegistry.ts validate-auth-env.ts validate-mimo-capacity-env.sh validate-production-capacity-env.sh; do
+for source in app.ts authority.ts mimoChat.ts deepseekChat.ts managedResponses.ts modelCapacity.ts visionBridge.ts transcription.ts usageBudget.ts providerRegistry.ts validate-auth-env.ts validate-mimo-capacity-env.sh validate-production-capacity-env.sh; do
   [ -f "/tmp/$source" ] || { echo "缺少 /tmp/$source" >&2; exit 1; }
 done
 mkdir -p "$APPDIR"
@@ -70,6 +70,7 @@ mkdir -p "$APPDIR/auth"
 install -m 644 /tmp/authority.ts "$APPDIR/auth/authority.ts"
 install -m 644 /tmp/mimoChat.ts "$APPDIR/mimoChat.ts"  # 显式可路由的 MiMo 上游
 install -m 644 /tmp/deepseekChat.ts "$APPDIR/deepseekChat.ts"  # 显式可路由的 DeepSeek V4 Flash 上游
+install -m 644 /tmp/managedResponses.ts "$APPDIR/managedResponses.ts"  # 受管 Responses 的无状态边界
 install -m 644 /tmp/modelCapacity.ts "$APPDIR/modelCapacity.ts"
 install -m 644 /tmp/visionBridge.ts "$APPDIR/visionBridge.ts"  # DeepSeek 带图时的 MiMo 视觉桥接
 install -m 644 /tmp/transcription.ts "$APPDIR/transcription.ts"

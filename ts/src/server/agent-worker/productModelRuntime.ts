@@ -12,6 +12,7 @@ import type { ProductAssistantMessage, ProductHarnessMessage, ProductModelOperat
 import { zodToJsonSchema } from '../../utils/zodToJsonSchema.js'
 import { productGatewayTarget } from '../product/productGatewayRuntime.js'
 import {
+  managedOpenAiResponsesBody,
   personalModelBody,
   personalModelHttpError,
   personalModelRequestTargetForProfile,
@@ -213,8 +214,11 @@ export async function acknowledgeProductModelOperation(
 
 export const runProductModel: ProductAgentModelRunner = async function* ({ messages, systemPrompt, thinkingConfig, tools, signal, options, toolPermissionContext }) {
   const personalProfile = options.personalProfile ?? null
+  const managedTransport = options.managedTransport ?? null
   const target = personalProfile ? null : productGatewayTarget()
   if (!personalProfile && !target) throw new Error('PRODUCT_GATEWAY_NOT_CONFIGURED')
+  if (!personalProfile && !managedTransport) throw new Error('PRODUCT_MODEL_TRANSPORT_UNAVAILABLE')
+  if (personalProfile && managedTransport) throw new Error('PRODUCT_MODEL_TRANSPORT_INVALID')
   const requestId = options.operationId ?? `chat:${randomUUID()}`
   const system = systemPrompt.filter(Boolean).join('\n\n')
   const gatewayBody = {
@@ -226,8 +230,13 @@ export const runProductModel: ProductAgentModelRunner = async function* ({ messa
     tools: await gatewayTools(tools, toolPermissionContext ?? emptyProductToolPermissionContext()),
     ...(thinkingConfig.type === 'disabled' ? {} : { thinking: { type: 'enabled' } }),
   }
+  const usesResponses = personalProfile?.protocol === 'openai-responses' || managedTransport === 'responses'
   const personalTarget = personalProfile ? personalModelRequestTargetForProfile(personalProfile) : null
-  const body = personalProfile ? personalModelBody(personalProfile, gatewayBody) : gatewayBody
+  const body = personalProfile
+    ? personalModelBody(personalProfile, gatewayBody)
+    : usesResponses
+      ? managedOpenAiResponsesBody(options.model, gatewayBody)
+      : gatewayBody
   const serializedBody = JSON.stringify(body)
   const personalOperation = personalProfile
     ? beginPersonalModelOperation({
@@ -267,7 +276,7 @@ export const runProductModel: ProductAgentModelRunner = async function* ({ messa
       }
   let response: Response
   try {
-    response = await fetch(personalTarget?.url ?? `${target!.baseUrl}/v1/chat/completions`, { method: 'POST', headers, body: serializedBody, signal })
+    response = await fetch(personalTarget?.url ?? `${target!.baseUrl}/v1/${usesResponses ? 'responses' : 'chat/completions'}`, { method: 'POST', headers, body: serializedBody, signal })
   } catch {
     if (personalHandle) markPersonalModelOperationOutcomeUnknown(personalHandle)
     throw new Error(signal.aborted ? 'PRODUCT_MODEL_ABORTED' : personalProfile ? 'PRODUCT_MODEL_OPERATION_OUTCOME_UNKNOWN' : 'PRODUCT_GATEWAY_UNREACHABLE')
@@ -289,7 +298,7 @@ export const runProductModel: ProductAgentModelRunner = async function* ({ messa
   let responsesTerminalState: 'completed' | 'incomplete' | null = null
   try {
   for await (const chunk of sseData(response, signal)) {
-    if (personalProfile?.protocol === 'openai-responses') {
+    if (usesResponses) {
       const event = typeof chunk.type === 'string' ? chunk.type : ''
       if (event === 'response.output_text.delta' && typeof chunk.delta === 'string') {
         text += chunk.delta
@@ -393,11 +402,11 @@ export const runProductModel: ProductAgentModelRunner = async function* ({ messa
       calls.set(0, current)
     }
   }
-  if (personalProfile?.protocol === 'openai-responses' && responsesTerminalState !== 'completed') {
+  if (usesResponses && responsesTerminalState !== 'completed') {
     throw new Error('PRODUCT_MODEL_INCOMPLETE_RESPONSE')
   }
   if (
-    (personalProfile === null || personalProfile.protocol === 'openai-compatible')
+    !usesResponses && (personalProfile === null || personalProfile.protocol === 'openai-compatible')
     && !['stop', 'tool_calls', 'function_call'].includes(stopReason ?? '')
   ) {
     throw new Error('PRODUCT_MODEL_INCOMPLETE_RESPONSE')
@@ -408,10 +417,10 @@ export const runProductModel: ProductAgentModelRunner = async function* ({ messa
   ) {
     throw new Error('PRODUCT_MODEL_INCOMPLETE_RESPONSE')
   }
-  if (personalProfile?.protocol === 'openai-responses' && [...calls.values()].some((call) => !call.complete)) {
+  if (usesResponses && [...calls.values()].some((call) => !call.complete)) {
     throw new Error('PRODUCT_MODEL_INCOMPLETE_RESPONSE')
   }
-  if (personalProfile === null || personalProfile.protocol === 'openai-compatible') {
+  if (!usesResponses && (personalProfile === null || personalProfile.protocol === 'openai-compatible')) {
     const terminalRequiresTools = stopReason === 'tool_calls' || stopReason === 'function_call'
     if (terminalRequiresTools !== (calls.size > 0)) {
       throw new Error('PRODUCT_MODEL_INCOMPLETE_RESPONSE')

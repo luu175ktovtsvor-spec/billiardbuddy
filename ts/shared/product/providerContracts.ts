@@ -8,6 +8,14 @@ export const PROVIDER_CAPABILITIES = [
 
 export type ProviderCapability = (typeof PROVIDER_CAPABILITIES)[number]
 
+/**
+ * The managed text wire shape is selected by the trusted provider registry,
+ * never by a Renderer request or an Agent prompt.  It deliberately names the
+ * product boundary rather than any one SDK.
+ */
+export const TEXT_REASONING_TRANSPORTS = ['chat_completions', 'responses'] as const
+export type TextReasoningTransport = (typeof TEXT_REASONING_TRANSPORTS)[number]
+
 export type ProviderBodyCaps = {
   CHAT_TEXT_BODY_MAX_BYTES: number
   VISION_BODY_MAX_BYTES: number
@@ -54,6 +62,8 @@ export type ProviderRegistryEntry = {
   model_id: string
   provider: string
   capabilities: ProviderCapability[]
+  /** Required exactly for TextReasoning entries; absent for other capabilities. */
+  text_reasoning_transport?: TextReasoningTransport
   worker_env_source: ProviderWorkerEnvSource
   verified_context_window: number
   body_caps: ProviderBodyCaps
