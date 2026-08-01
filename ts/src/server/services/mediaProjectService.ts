@@ -4898,7 +4898,7 @@ export class MediaProjectService {
       await active.completion
       return await this.getTask(task.id, false)
     }
-    if (task.kind === 'video.preview' && ['queued', 'running', 'committing'].includes(task.status)) {
+    if (task.kind === 'video.preview' && ['queued', 'running'].includes(task.status)) {
       const active = this.activeVideoPreviews.get(task.id)
       if (!active) throw new MediaServiceError('当前任务不能取消', 409, 'TASK_NOT_CANCELLABLE')
       active.controller.abort(new Error('video preview cancelled'))

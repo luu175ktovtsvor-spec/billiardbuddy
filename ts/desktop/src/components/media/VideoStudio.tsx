@@ -953,7 +953,7 @@ export function VideoStudio() {
                   {previewRunning ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />}
                   {previewRunning ? '正在生成节目预览' : active.preview ? '刷新节目预览' : '生成节目预览'}
                 </button>
-                {previewRunning && active.preview_task_id && (
+                {active.preview_task_id && (previewTask?.status === 'queued' || previewTask?.status === 'running') && (
                   <button
                     type="button"
                     onClick={() => void cancelTask(active.preview_task_id!)}
