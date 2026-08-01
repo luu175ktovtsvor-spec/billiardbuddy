@@ -472,13 +472,13 @@ R2 被路线图选中时，内部不按“看到一个缺口就补一个功能�
 - **已完成阶段：R0.1 重构合同与施工证据回溯核验、R1.1 共享产品内核的权威边界回溯核验、R2 Agent Harness Authority 与 Worker/Host 生产链回溯及物理收口**。历史阶段记录仍只是候选证据，不能替代当前源码核验或发布许可。
 
 ```text
-Active work unit: R7.3 — 共享桌面壳的目录同步、通知权与跨工作台导航当前源码回溯核验
-Outcome: 以当前 AppShell、目录同步、attention、通知、tab/窗口恢复和 Agent/图片/视频导航为证，确认共享壳只投影领域状态，不会因窗口、页面或陈旧通知丢失后台任务、重复通知或误导向其他项目；发现状态双写、错误消费或不可恢复缺口才在本单元修复。
-Evidence: AppShell、MainApp、ContentRouter、任务与媒体目录 runtime、attention store、通知 bridge、窗口/setting 投影，以及 R7 既有记录。
-Constraints / Non-goals: 不进入 Agent Harness、媒体服务状态机、图片付费提交、视频渲染、WebSearch、安装包或生产发布；不运行真实桌面、系统通知、模型或媒体操作。
-Allowed scope: `ts/desktop` 的共享壳、导航、tab/窗口恢复、目录同步、attention/通知投影与 R7 证据记录。
-Verification / Exit: 领域 Project/Task 只由各自服务端 Authority 持久化；主/独立窗口的通知消费唯一且可恢复；关闭页面不丢后台状态，陈旧导航不选择无关项目；类型、生产构建、源码审计和失败/恢复证据成立。
-Next cursor: R8 — 旧代码、迁移与依赖的路线图施工单。
+Active work unit: R8.3 — 旧测试资产、迁移读取者与依赖消费者的当前源码裁决
+Outcome: 从当前生产入口、包清单、构建链和迁移读者出发，删除测试资产及无消费者旧路径，保留仍有正式升级输入或生产消费者的最小代码；不能以历史文档或目录名称替代当前调用图。
+Evidence: package scripts/lockfiles、生产 import graph、Electron 打包输入、迁移协调器、旧目录和 R8 既有记录。
+Constraints / Non-goals: 不修改 Agent、图片、视频或桌面壳的产品行为；不运行任何测试、桌面、媒体、安装、发布或生产操作。
+Allowed scope: 测试文件/目录/依赖/脚本、无消费者旧路径、必要的迁移读取者和 R8 证据记录。
+Verification / Exit: 仓库开发侧不存在测试文件、目录、runner、配置或测试依赖；每个保留的迁移/依赖均有当前生产消费者；类型、生产构建、源码审计和删除范围证据成立。
+Next cursor: R9 — 软件层跨模块完成审计施工单。
 ```
 - **Interrupt rule**：只有发现会造成错误结果、数据丢失、重复副作用、权限越界或无法恢复的事实才可中断；其余发现进入对应后续模块。
 
