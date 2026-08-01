@@ -81,12 +81,10 @@ export function beginPersonalModelOperation(input: {
   operationId: string
   profile: Pick<PersonalModelProfile, 'id' | 'base_url' | 'model' | 'protocol' | 'auth_mode' | 'api_key'>
   requestBody: string
-  confirmUnknownRetry?: boolean
 }): PersonalModelOperationStart {
   try {
     const operationBinding = binding(input)
     const result = store().begin(operationBinding, {
-      confirmUnknownRetry: input.confirmUnknownRetry,
       awaitingConsumerAck: true,
     })
     if (result.outcome === 'started') {

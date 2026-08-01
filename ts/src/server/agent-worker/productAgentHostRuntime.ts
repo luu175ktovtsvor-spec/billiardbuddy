@@ -83,6 +83,7 @@ export class StandardProductAgentHostRuntime implements ProductAgentHostRuntime 
     attachment_paths?: readonly string[]
     model_binding: { provider: string; model: string }
     personal_profile: PersonalModelProfile | null
+    model_attempt_id: string
   }) {
     this.personalProfile = input.personal_profile
     const policy = input.permission_envelope.approval_policy
@@ -174,7 +175,7 @@ export class StandardProductAgentHostRuntime implements ProductAgentHostRuntime 
       options: {
         model: this.input.model_binding.model,
         personalProfile: this.personalProfile,
-        operationId: `task:${this.input.task_id}:model:${++this.modelOperationSequence}`,
+        operationId: `${this.input.model_attempt_id}:model:${++this.modelOperationSequence}`,
       },
       toolPermissionContext: this.toolPermissionContext,
     })))

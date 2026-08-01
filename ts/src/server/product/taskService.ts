@@ -2938,7 +2938,7 @@ export class ProductTaskService {
   }
 
   /** The only server-private resolver for a run's durable Core launch target. */
-  async resolveTaskRunCoreBinding(runId: string, dispatchGeneration: number): Promise<{ session_id: string; work_dir: string; provider: string; model: string; model_route_fingerprint: string }> {
+  async resolveTaskRunCoreBinding(runId: string, dispatchGeneration: number): Promise<{ session_id: string; work_dir: string; provider: string; model: string; model_route_fingerprint: string; model_attempt_id: string }> {
     const file = await new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps).read()
     const run = file.task_runs[runId] as { lineage_id?: unknown; provider?: unknown; model?: unknown; model_route_fingerprint?: unknown; core_binding?: { resume_binding_id?: unknown; session_id?: unknown; work_dir?: unknown; dispatch_generation?: unknown } } | undefined
     const binding = run?.core_binding
@@ -2946,7 +2946,10 @@ export class ProductTaskService {
     const lineage = typeof run.lineage_id === 'string' ? file.conversation_lineages[run.lineage_id] as { resume_binding_id?: unknown } | undefined : undefined
     if (binding.resume_binding_id !== lineage?.resume_binding_id) throw new Error('CORE_BINDING_UNAVAILABLE')
     const workDir = await fs.realpath(binding.work_dir).catch(() => undefined); if (!workDir || !await fs.stat(workDir).then(stat => stat.isDirectory()).catch(() => false)) throw new Error('CORE_BINDING_UNAVAILABLE')
-    return { session_id: binding.session_id, work_dir: workDir, provider: run.provider, model: run.model, model_route_fingerprint: run.model_route_fingerprint as string }
+    // A new dispatch generation is created only by the durable, user-confirmed
+    // recovery mutation. It is therefore the authoritative boundary for a new
+    // paid model attempt; a restarted process keeps the same generation/ID.
+    return { session_id: binding.session_id, work_dir: workDir, provider: run.provider, model: run.model, model_route_fingerprint: run.model_route_fingerprint as string, model_attempt_id: `attempt:${runId}:${dispatchGeneration}` }
   }
 
   /** BB-03DR terminal/recovery marker; it cannot create or replay a user turn. */
