@@ -327,7 +327,19 @@ export async function analyzeVideoEvidence(
   },
   options: VideoAnalysisGatewayOptions,
 ): Promise<VideoEvidenceDraft> {
-  const visual = await gatewayVisualEvidence(input.frames, options)
+  let visual: z.infer<typeof visualEvidenceBatchSchema>['evidence'] = []
+  const gaps = [...input.extractionGaps]
+  try {
+    visual = await gatewayVisualEvidence(input.frames, options)
+  } catch (error) {
+    if (options.signal?.aborted || (error instanceof VideoAnalysisError && error.code === 'VIDEO_ANALYSIS_CANCELLED')) {
+      throw error
+    }
+    // The Host can still make a truthful, review-required plan from source
+    // facts and locally extracted transcripts. Never replace absent visual
+    // evidence with model-shaped text merely to keep the workflow moving.
+    if (input.frames.length > 0) gaps.push('视觉证据服务暂不可用，未写入未核验的画面结论。')
+  }
   const sources = new Map(input.sources.map(source => [source.id, source]))
   const evidence = input.frames.flatMap((frame, index) => {
     const source = sources.get(frame.source_id)
@@ -351,7 +363,6 @@ export async function analyzeVideoEvidence(
       warnings: [...item.alerts, ...(facts.length ? [] : ['视觉证据为空，禁止据此补写事实。'])].slice(0, 20),
     }]
   })
-  const gaps = [...input.extractionGaps]
   if (input.frames.length === 0) gaps.push('没有可用画面采样。')
   if (input.transcriptEvidence.length === 0 && input.sources.some(source => source.has_audio)) gaps.push('素材含音轨，但没有获得可用转写。')
   return evidenceDraftSchema.parse({ evidence, gaps: [...new Set(gaps)].slice(0, 40) })
