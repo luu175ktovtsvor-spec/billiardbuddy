@@ -62,7 +62,7 @@ flowchart LR
 | D. 权限与工具桥 | Codex 的工具请求受 BilliardBuddy lease 和三档权限控制 | 文件、PTY、浏览器、MCP 的许可/拒绝/停止均有可见回执 | 不让工具获得全局凭据或目录外权限 |
 | E. 正式切换 | 桌面任务页只消费引擎事件；旧 Harness 无消费者后删除 | 同一用户旅程在新路径完成，旧路径不可再启动 | 不保留双 Harness 作为“兼容” |
 
-当前只进入 **A. 源码与构建**。固定源码已经登记，但当前开发机没有 Rust/Cargo，尚不能声称引擎可构建；在 A 有实际可启动的 BilliardBuddy 管理引擎前，不再给旧 TypeScript Harness 添加模型、工具、Hook 或 UI 功能。
+当前只进入 **A. 源码与构建**。固定源码已经登记，`codex-engine-build.yml` 会在 GitHub 的 macOS Apple Silicon 与 Windows x64 runner 上只编译未经签名的 `codex-app-server`，不生成桌面安装包、不上传发布源。当前开发机没有 Rust/Cargo，工作流真正运行并产出两端二进制前，仍不能声称引擎可构建；在 A 有实际可启动的 BilliardBuddy 管理引擎前，不再给旧 TypeScript Harness 添加模型、工具、Hook 或 UI 功能。
 
 ## 5. 许可与发布边界
 
