@@ -35,6 +35,7 @@ type MediaWorkbenchStore = {
     project: ImageWorkbenchProject,
     confirmUnknownRetry?: boolean,
     newReferences?: Array<{ dataUrl: string; role: ImageReferenceRole }>,
+    startNewGenerationRound?: boolean,
   ) => Promise<ImageWorkbenchProject>
   addImageReferences: (
     projectId: string,
@@ -320,7 +321,7 @@ export const useMediaWorkbenchStore = create<MediaWorkbenchStore>((set, get) => 
     }
   },
 
-  saveImageDraft: async (project, confirmUnknownRetry = false, newReferences = []) => {
+  saveImageDraft: async (project, confirmUnknownRetry = false, newReferences = [], startNewGenerationRound = false) => {
     const finishLoading = beginLoading(set)
     try {
       const { project: saved } = await mediaApi.updateImageProject(project.id, {
@@ -331,6 +332,7 @@ export const useMediaWorkbenchStore = create<MediaWorkbenchStore>((set, get) => 
         references: project.references,
         new_reference_images: newReferences.map(reference => reference.dataUrl),
         new_reference_roles: newReferences.map(reference => reference.role),
+        start_new_generation_round: startNewGenerationRound,
         confirm_unknown_retry: confirmUnknownRetry,
       })
       nextProjectLoadVersion('image')
