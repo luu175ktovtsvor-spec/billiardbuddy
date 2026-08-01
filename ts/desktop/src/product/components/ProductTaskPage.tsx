@@ -74,6 +74,7 @@ function runStateLabel(state: 'idle' | 'working' | 'awaiting_approval'): string 
 function outcomeUnknownKindLabel(kind: ProductTaskOutcomeUnknown['operation']['kind']): string {
   switch (kind) {
     case 'engine_turn': return '执行内核启动'
+    case 'engine_steer': return '运行中追加指令'
     case 'model': return '模型请求'
     case 'mcp_prepare': return '扩展连接'
     case 'chat_prompt':
