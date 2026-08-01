@@ -40,7 +40,12 @@ export type CodexAppServerClientOptions = {
   on_server_request?(request: CodexAppServerRequest): Promise<JsonValue | undefined>
 }
 
-const MAX_JSON_RPC_FRAME_BYTES = 4 * 1024 * 1024
+// A BilliardBuddy chat prompt can contain up to four validated 20 MiB image
+// copies. The embedded source protocol uses one JSON line for turn/start, so
+// its private transport needs to accommodate their base64 representation.
+// This is still bounded below by the Host attachment policy and the explicit
+// Engine turn-input aggregate limit.
+const MAX_JSON_RPC_FRAME_BYTES = 128 * 1024 * 1024
 const APP_SERVER_SHUTDOWN_WAIT_MS = 1_000
 
 function isNonEmptyText(value: string | undefined, limit = 512): value is string {

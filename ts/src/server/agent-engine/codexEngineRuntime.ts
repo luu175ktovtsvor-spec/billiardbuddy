@@ -18,12 +18,36 @@ export type CodexEngineAcceptedTurn = {
   turn_id: string
 }
 
+/**
+ * The only user-content forms admitted into the embedded source protocol.
+ * Local attachment paths are intentionally not representable here: the
+ * BilliardBuddy Host resolves them first and the source gets bounded content
+ * only.
+ */
+export type CodexEngineTurnInput =
+  | { type: 'text'; text: string }
+  | { type: 'image'; url: string }
+
+const MAX_SOURCE_INPUT_TEXT_CHARS = 1 << 20
+const MAX_SOURCE_INPUT_ITEMS = 64
+const MAX_SOURCE_IMAGE_URL_CHARS = 32 * 1024 * 1024
+const MAX_SOURCE_INPUT_BYTES = 112 * 1024 * 1024
+
 function record(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined
 }
 
 function nonEmptyText(value: unknown, limit = 512): string | undefined {
   return typeof value === 'string' && value.length > 0 && value.length <= limit ? value : undefined
+}
+
+function validTurnInput(value: CodexEngineTurnInput): boolean {
+  if (value.type === 'text') return typeof value.text === 'string' && value.text.length > 0
+  return value.type === 'image'
+    && typeof value.url === 'string'
+    && value.url.length > 0
+    && value.url.length <= MAX_SOURCE_IMAGE_URL_CHARS
+    && /^data:image\/(?:png|jpeg|webp|gif);base64,[A-Za-z0-9+/=]+$/.test(value.url)
 }
 
 function turnId(response: JsonObject): string {
@@ -138,17 +162,28 @@ export class CodexEngineRuntime {
    * BilliardBuddy Thread binding, and then checkpoint its own ledger before it
    * can treat this as an acknowledged product action.
    */
-  async startTurn(input: { run_id: string; text: string }): Promise<CodexEngineAcceptedTurn> {
+  async startTurn(input: { run_id: string; input: readonly CodexEngineTurnInput[] }): Promise<CodexEngineAcceptedTurn> {
     const client = this.client
     const session = this.session
     const runId = nonEmptyText(input.run_id)
-    const text = nonEmptyText(input.text, 4 * 1024 * 1024)
-    if (!client || !session || !runId || !text) throw new Error('CODEX_ENGINE_TURN_INVALID')
+    const items = [...input.input]
+    const textChars = items.reduce((total, item) => total + (item.type === 'text' ? item.text.length : 0), 0)
+    const inputBytes = Buffer.byteLength(JSON.stringify(items))
+    if (
+      !client
+      || !session
+      || !runId
+      || items.length === 0
+      || items.length > MAX_SOURCE_INPUT_ITEMS
+      || textChars > MAX_SOURCE_INPUT_TEXT_CHARS
+      || inputBytes > MAX_SOURCE_INPUT_BYTES
+      || !items.every(validTurnInput)
+    ) throw new Error('CODEX_ENGINE_TURN_INPUT_INVALID')
     const thread = await session.ensureThread()
     const response = await client.request<JsonObject>('turn/start', {
       threadId: thread.thread_id,
       clientUserMessageId: runId,
-      input: [{ type: 'text', text }],
+      input: items,
       cwd: this.options.work_dir,
       model: this.options.model,
       personality: 'none',
@@ -157,9 +192,14 @@ export class CodexEngineRuntime {
     return { thread_id: thread.thread_id, turn_id: turnId(response) }
   }
 
-  async checkpointAcceptedTurn(runId: string, turnId: string, operationId: string): Promise<string> {
+  async checkpointAcceptedTurn(
+    runId: string,
+    turnId: string,
+    operationId: string,
+    attachmentInput?: { operation_id: string; result_digest: string },
+  ): Promise<string> {
     if (!this.session) throw new Error('CODEX_ENGINE_RUNTIME_UNAVAILABLE')
-    return await this.session.checkpointAcceptedTurn(runId, turnId, operationId)
+    return await this.session.checkpointAcceptedTurn(runId, turnId, operationId, attachmentInput)
   }
 
   async checkpointModelResult(runId: string, operationId: string, resultDigest: string): Promise<string> {

@@ -15,7 +15,7 @@ import { AgentWorkerService } from '../server/product/agentWorkerService.js'
 import type { AgentWorkerCoreIdentity } from '../server/product/agentWorkerSupervisor.js'
 import type { ProductAgentHarnessPort } from '../server/agent-worker/productAgentHarness.js'
 import { CodexEngineWorkerCore } from '../server/agent-engine/codexEngineWorkerCore.js'
-import type { ProductAssistantMessage, ProductHarnessMessage, ProductModelEvent, ProductToolCallBlock } from '../../shared/product/harnessMessages.js'
+import type { ProductAssistantMessage, ProductHarnessMessage, ProductModelEvent, ProductPrompt, ProductToolCallBlock } from '../../shared/product/harnessMessages.js'
 import type { AgentWorkerOutbound } from '../../shared/product/agentWorker.js'
 import type { ProductCanUseTool, ProductCommand, ProductContentBlock, ProductThinkingConfig, ProductTool, ProductToolContext } from '../server/agent-worker/productTool.js'
 
@@ -354,6 +354,14 @@ process.on('message', (message: unknown) => {
                   recordExternalOperationResult: async operationId => { await request('external_operation_result', { operation_id: operationId }) },
                   checkpointExternalOperation: async (operationId, checkpointDigest) => { await request('external_operation_checkpoint', { operation_id: operationId, checkpoint_digest: checkpointDigest }) },
                   markExternalOperationUnknown: async operationId => { await request('external_operation_unknown', { operation_id: operationId }) },
+                  chatPrompt: async (text, attachments) => {
+                    const result = await request('chat_prompt', { text, attachments })
+                    if (!result || typeof result !== 'object' || !('operation_id' in result) || !('value' in result)) throw new Error('CODEX_ENGINE_ATTACHMENT_PROMPT_UNAVAILABLE')
+                    const operationId = parseOperationId(result)
+                    const prompt = (result as ParentEffectResult<ProductPrompt>).value
+                    if (!operationId || (typeof prompt !== 'string' && !Array.isArray(prompt))) throw new Error('CODEX_ENGINE_ATTACHMENT_PROMPT_UNAVAILABLE')
+                    return { operation_id: operationId, prompt }
+                  },
                   engineTools: async () => {
                     const result = await request('engine_tools')
                     if (!result || typeof result !== 'object' || !('operation_id' in result) || !('value' in result)) throw new Error('CODEX_ENGINE_TOOL_SURFACE_UNAVAILABLE')
@@ -371,8 +379,13 @@ process.on('message', (message: unknown) => {
                 },
               })
               const unsubscribe = engine.subscribe(message => protocol?.relayCoreMessage(message))
+              let firstInput = true
               return {
-                input: async (text, attachments, queueItemId) => await engine.input(text, attachments, queueItemId),
+                input: async (text, attachments, queueItemId) => {
+                  const initialAttachments = firstInput && !queueItemId ? start.identity.initial_attachments : attachments
+                  if (!queueItemId) firstInput = false
+                  return await engine.input(text, initialAttachments, queueItemId)
+                },
                 approve: async (requestId, approved) => { await engine.approve(requestId, approved) },
                 answer: async (requestId, answers) => { await engine.answer(requestId, answers) },
                 stop: async () => { await engine.stop() },

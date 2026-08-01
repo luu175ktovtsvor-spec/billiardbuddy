@@ -37,6 +37,16 @@ function threadId(response: JsonObject): string {
   return id
 }
 
+function inputReceipt(state: CodexEngineThreadState): Pick<CodexEngineThreadState, 'last_input_run_id' | 'last_input_operation_id' | 'last_input_result_digest'> {
+  return state.last_input_run_id && state.last_input_operation_id && state.last_input_result_digest
+    ? {
+        last_input_run_id: state.last_input_run_id,
+        last_input_operation_id: state.last_input_operation_id,
+        last_input_result_digest: state.last_input_result_digest,
+      }
+    : {}
+}
+
 async function verifiedWorkDir(value: string): Promise<string> {
   const workDir = await fs.realpath(path.resolve(value))
   const stat = await fs.lstat(workDir)
@@ -94,6 +104,7 @@ export class CodexEngineSession {
       ...(restored?.last_run_id ? { last_run_id: restored.last_run_id } : {}),
       ...(restored?.last_turn_id ? { last_turn_id: restored.last_turn_id } : {}),
       ...(restored?.last_turn_operation_id ? { last_turn_operation_id: restored.last_turn_operation_id } : {}),
+      ...(restored ? inputReceipt(restored) : {}),
       ...(restored?.last_model_run_id ? { last_model_run_id: restored.last_model_run_id } : {}),
       ...(restored?.last_model_operation_id ? { last_model_operation_id: restored.last_model_operation_id } : {}),
       ...(restored?.last_model_result_digest ? { last_model_result_digest: restored.last_model_result_digest } : {}),
@@ -113,9 +124,17 @@ export class CodexEngineSession {
    * app-server has accepted `turn/start`. Persisting before that point would
    * falsely make a no-effect, non-resumable thread look recoverable.
    */
-  async checkpointAcceptedTurn(runId: string, turnId: string, operationId: string): Promise<string> {
+  async checkpointAcceptedTurn(
+    runId: string,
+    turnId: string,
+    operationId: string,
+    attachmentInput?: { operation_id: string; result_digest: string },
+  ): Promise<string> {
     const thread = await this.ensureThread()
     if (!text(runId) || !text(turnId) || !/^effect_[a-f0-9-]{36}$/.test(operationId)) throw new Error('CODEX_ENGINE_TURN_BINDING_INVALID')
+    if (attachmentInput && (!/^effect_[a-f0-9-]{36}$/.test(attachmentInput.operation_id) || !/^[a-f0-9]{64}$/.test(attachmentInput.result_digest))) {
+      throw new Error('CODEX_ENGINE_ATTACHMENT_RECEIPT_INVALID')
+    }
     const restored = await this.options.thread_store.load(this.options.binding)
     if (restored?.thread_id && restored.thread_id !== thread.thread_id) throw new Error('CODEX_ENGINE_THREAD_ID_MISMATCH')
     if (!restored?.tool_surface_digest || !this.dynamicToolSurface || restored.tool_surface_digest !== this.dynamicToolSurface.digest || restored.tool_surface_count !== this.dynamicToolSurface.tools.length) {
@@ -129,6 +148,11 @@ export class CodexEngineSession {
       last_run_id: runId,
       last_turn_id: turnId,
       last_turn_operation_id: operationId,
+      ...(attachmentInput ? {
+        last_input_run_id: runId,
+        last_input_operation_id: attachmentInput.operation_id,
+        last_input_result_digest: attachmentInput.result_digest,
+      } : inputReceipt(restored ?? { source_revision: this.options.source_revision, updated_at: '' })),
     })
     return checkpoint.checkpoint_digest
   }
@@ -149,6 +173,7 @@ export class CodexEngineSession {
       last_run_id: restored.last_run_id,
       last_turn_id: restored.last_turn_id,
       ...(restored.last_turn_operation_id ? { last_turn_operation_id: restored.last_turn_operation_id } : {}),
+      ...inputReceipt(restored),
       last_model_run_id: runId,
       last_model_operation_id: operationId,
       last_model_result_digest: resultDigest,
@@ -180,6 +205,7 @@ export class CodexEngineSession {
       last_run_id: restored.last_run_id,
       last_turn_id: restored.last_turn_id,
       ...(restored.last_turn_operation_id ? { last_turn_operation_id: restored.last_turn_operation_id } : {}),
+      ...inputReceipt(restored),
       ...(restored.last_model_run_id ? { last_model_run_id: restored.last_model_run_id } : {}),
       ...(restored.last_model_operation_id ? { last_model_operation_id: restored.last_model_operation_id } : {}),
       ...(restored.last_model_result_digest ? { last_model_result_digest: restored.last_model_result_digest } : {}),
@@ -211,6 +237,7 @@ export class CodexEngineSession {
       last_run_id: restored.last_run_id,
       last_turn_id: restored.last_turn_id,
       ...(restored.last_turn_operation_id ? { last_turn_operation_id: restored.last_turn_operation_id } : {}),
+      ...inputReceipt(restored),
       ...(restored.last_model_run_id ? { last_model_run_id: restored.last_model_run_id } : {}),
       ...(restored.last_model_operation_id ? { last_model_operation_id: restored.last_model_operation_id } : {}),
       ...(restored.last_model_result_digest ? { last_model_result_digest: restored.last_model_result_digest } : {}),
@@ -271,6 +298,7 @@ export class CodexEngineSession {
       ...(state.last_run_id ? { last_run_id: state.last_run_id } : {}),
       ...(state.last_turn_id ? { last_turn_id: state.last_turn_id } : {}),
       ...(state.last_turn_operation_id ? { last_turn_operation_id: state.last_turn_operation_id } : {}),
+      ...inputReceipt(state),
       ...(state.last_model_run_id ? { last_model_run_id: state.last_model_run_id } : {}),
       ...(state.last_model_operation_id ? { last_model_operation_id: state.last_model_operation_id } : {}),
       ...(state.last_model_result_digest ? { last_model_result_digest: state.last_model_result_digest } : {}),

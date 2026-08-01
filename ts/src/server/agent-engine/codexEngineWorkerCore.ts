@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import type { AgentWorkerOutbound } from '../../../shared/product/agentWorker.js'
-import type { ProductAssistantMessage, ProductModelEvent } from '../../../shared/product/harnessMessages.js'
+import type { ProductAssistantMessage, ProductModelEvent, ProductPrompt } from '../../../shared/product/harnessMessages.js'
 import type { PermissionExecutionEnvelope } from '../../../shared/product/permissionExecutionEnvelope.js'
 import { runWithCwdOverride } from '../../utils/cwd.js'
 import { runWithProductPermissionEnvelope } from '../../utils/permissions/productPermissionRuntime.js'
@@ -15,7 +15,7 @@ import { productTaskRunFailure } from '../product/taskRunFailure.js'
 import type { AgentWorkerCore } from '../product/agentWorkerService.js'
 import type { AgentWorkerCoreIdentity } from '../product/agentWorkerSupervisor.js'
 import { resolveManagedCodexEngineCommand } from './codexEngineCommand.js'
-import { CodexEngineRuntime, type CodexEngineAcceptedTurn } from './codexEngineRuntime.js'
+import { CodexEngineRuntime, type CodexEngineAcceptedTurn, type CodexEngineTurnInput } from './codexEngineRuntime.js'
 import { CodexEngineThreadStore } from './codexEngineThreadStore.js'
 import type { CodexAppServerNotification, CodexAppServerRequest, JsonValue } from './codexAppServerClient.js'
 import type { CodexResponsesModelRequest } from './codexResponsesModelBridge.js'
@@ -32,6 +32,7 @@ export type CodexEngineWorkerParentPort = {
   recordExternalOperationResult(operationId: string): Promise<void>
   checkpointExternalOperation(operationId: string, checkpointDigest: string): Promise<void>
   markExternalOperationUnknown(operationId: string): Promise<void>
+  chatPrompt(text: string, attachments: readonly string[]): Promise<{ operation_id: string; prompt: ProductPrompt }>
   engineTools(): Promise<{ operation_id: string; surface: ProductHostEngineToolSurface }>
   engineModel(operationId: string, request: { messages: CodexResponsesModelRequest['messages']; systemPrompt: string[]; thinkingConfig: CodexResponsesModelRequest['thinking_config']; model?: string; engine_tool_names: string[]; engine_tool_surface_digest: string }): AsyncGenerator<ProductModelEvent, void>
   engineTool(operationId: string, request: { tool_call_id: string; tool_name: string; arguments: Record<string, unknown>; tool_surface_digest: string }): Promise<ProductHostEngineToolResult>
@@ -54,6 +55,11 @@ type PendingToolReceipt = {
 
 type PendingHookReceipt = {
   operation_id: string
+}
+
+type PendingInputReceipt = {
+  operation_id: string
+  result_digest: string
 }
 
 type Deferred = {
@@ -93,6 +99,24 @@ function toolResultDigest(value: { call_id: string; tool_name: string; result: P
 
 function hookResultDigest(kind: Extract<TaskRunExternalOperationKind, 'hook_command' | 'hook_http'>, result: unknown): string {
   return createHash('sha256').update(JSON.stringify({ kind, result }) ?? '{"result":"undefined"}').digest('hex')
+}
+
+function attachmentInput(prompt: ProductPrompt): { input: CodexEngineTurnInput[]; result_digest: string } {
+  const blocks = typeof prompt === 'string' ? [{ type: 'text' as const, text: prompt }] : prompt
+  const input: CodexEngineTurnInput[] = []
+  for (const block of blocks) {
+    if (block.type === 'text') {
+      if (!block.text) continue
+      input.push({ type: 'text', text: block.text })
+      continue
+    }
+    input.push({ type: 'image', url: `data:${block.media_type};base64,${block.data}` })
+  }
+  if (!input.length) throw new Error('CODEX_ENGINE_ATTACHMENT_INPUT_EMPTY')
+  return {
+    input,
+    result_digest: createHash('sha256').update(JSON.stringify(input)).digest('hex'),
+  }
 }
 
 function acceptedTurn(notification: CodexAppServerNotification): { thread_id: string; turn_id: string; status: string } | undefined {
@@ -144,6 +168,7 @@ export class CodexEngineWorkerCore implements AgentWorkerCore {
   private pendingModel?: PendingModelReceipt
   private pendingTool?: PendingToolReceipt
   private pendingHook?: PendingHookReceipt
+  private pendingInput?: PendingInputReceipt
   private toolSurface?: ProductHostEngineToolSurface
   private lifecycleHooks?: ProductHarnessLifecycleHookHost
   private readonly hookAbortController = new AbortController()
@@ -171,9 +196,6 @@ export class CodexEngineWorkerCore implements AgentWorkerCore {
     permission_envelope: PermissionExecutionEnvelope
     parent: CodexEngineWorkerParentPort
   }): Promise<CodexEngineWorkerCore> {
-    // C owns text Run→Turn only. Reject rather than silently dropping an
-    // attachment while the dedicated attachment bridge is still pending.
-    if (input.identity.initial_attachments?.length) throw new Error('CODEX_ENGINE_ATTACHMENTS_UNSUPPORTED')
     const core = new CodexEngineWorkerCore(input)
     await core.start()
     return core
@@ -185,7 +207,7 @@ export class CodexEngineWorkerCore implements AgentWorkerCore {
   }
 
   async input(textInput: string, attachments: readonly string[] = [], queueItemId?: string): Promise<boolean | void> {
-    if (queueItemId || this.inputStarted || this.terminal || this.stopping || attachments.length > 0 || !text(textInput)) return false
+    if (queueItemId || this.inputStarted || this.terminal || this.stopping || !text(textInput)) return false
     const runtime = this.runtime
     if (!runtime) throw new Error('CODEX_ENGINE_RUNTIME_UNAVAILABLE')
     this.inputStarted = true
@@ -193,14 +215,28 @@ export class CodexEngineWorkerCore implements AgentWorkerCore {
     const receipt = deferred()
     this.turnReceipt = receipt
     let operationId: string | undefined
+    let inputCheckpointed = false
     try {
       await this.prepareToolSurface(runtime)
+      const sourceInput = attachments.length > 0
+        ? await this.prepareAttachmentInput(textInput, attachments)
+        : { input: [{ type: 'text' as const, text: textInput }] }
       operationId = await this.options.parent.beginExternalOperation('engine_turn')
-      const accepted = await runtime.startTurn({ run_id: this.options.run_id, text: textInput })
+      const accepted = await runtime.startTurn({ run_id: this.options.run_id, input: sourceInput.input })
       // The source can request its model immediately after returning from
       // `turn/start`; retain the identity before releasing the model gate.
       this.activeTurn = accepted
-      const digest = await runtime.checkpointAcceptedTurn(this.options.run_id, accepted.turn_id, operationId)
+      const digest = await runtime.checkpointAcceptedTurn(
+        this.options.run_id,
+        accepted.turn_id,
+        operationId,
+        this.pendingInput,
+      )
+      if (this.pendingInput) {
+        await this.options.parent.checkpointExternalOperation(this.pendingInput.operation_id, digest)
+        this.pendingInput = undefined
+        inputCheckpointed = true
+      }
       await this.options.parent.recordExternalOperationResult(operationId)
       await this.options.parent.checkpointExternalOperation(operationId, digest)
       receipt.resolve()
@@ -208,6 +244,11 @@ export class CodexEngineWorkerCore implements AgentWorkerCore {
       receipt.reject(error instanceof Error ? error : new Error('CODEX_ENGINE_TURN_START_FAILED'))
       if (operationId) await this.options.parent.markExternalOperationUnknown(operationId).catch(() => undefined)
       else this.emitTerminal('recovery_required', 'task_execution_environment_failed')
+      if (!inputCheckpointed && this.pendingInput) {
+        const pendingInput = this.pendingInput
+        this.pendingInput = undefined
+        await this.options.parent.markExternalOperationUnknown(pendingInput.operation_id).catch(() => undefined)
+      }
     }
   }
 
@@ -243,6 +284,9 @@ export class CodexEngineWorkerCore implements AgentWorkerCore {
     const pendingHook = this.pendingHook
     this.pendingHook = undefined
     if (pendingHook) await this.options.parent.markExternalOperationUnknown(pendingHook.operation_id).catch(() => undefined)
+    const pendingInput = this.pendingInput
+    this.pendingInput = undefined
+    if (pendingInput) await this.options.parent.markExternalOperationUnknown(pendingInput.operation_id).catch(() => undefined)
     await this.runtime?.close().catch(() => undefined)
     this.runtime = undefined
     await this.options.parent.shutdownHost()
@@ -278,6 +322,29 @@ export class CodexEngineWorkerCore implements AgentWorkerCore {
     })
     await runtime.start()
     this.runtime = runtime
+  }
+
+  /**
+   * Attachment paths terminate in the Host. The source receives only the
+   * Host-produced bounded prompt, and the exact result digest is persisted in
+   * the product Thread binding before that source Turn can invoke a model.
+   */
+  private async prepareAttachmentInput(textInput: string, attachments: readonly string[]): Promise<{ input: CodexEngineTurnInput[] }> {
+    const prepared = await this.options.parent.chatPrompt(textInput, attachments)
+    try {
+      const converted = attachmentInput(prepared.prompt)
+      this.pendingInput = {
+        operation_id: prepared.operation_id,
+        result_digest: converted.result_digest,
+      }
+      return { input: converted.input }
+    } catch (error) {
+      // The Host already holds a definite chat_prompt result. If its bounded
+      // conversion cannot be admitted by this source bridge, it is not safe
+      // to retry or discard that result on a later recovery.
+      await this.options.parent.markExternalOperationUnknown(prepared.operation_id).catch(() => undefined)
+      throw error
+    }
   }
 
   private async *runModel(request: CodexResponsesModelRequest): AsyncGenerator<ProductModelEvent, void> {
