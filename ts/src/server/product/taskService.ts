@@ -272,7 +272,7 @@ type DurableTaskRunApproval = {
   resolved_at?: string
 }
 
-type DurableTaskRun = { run_id?: unknown; task_id?: unknown; created_at?: unknown }
+type DurableTaskRun = { run_id?: unknown; task_id?: unknown; created_at?: unknown; event_contract?: unknown }
 type DurableTaskRunDispatch = { dispatch_generation?: unknown; state?: unknown; completed_at?: unknown; error?: unknown }
 type DurableContextSnapshot = {
   lineage_id: string
@@ -2884,11 +2884,53 @@ export class ProductTaskService {
         const run = state.task_runs[runId] as DurableTaskRun | undefined
         if (!Number.isSafeInteger(dispatch.dispatch_generation)) throw new Error('AUTHORITY_INVALID')
         const dispatchGeneration = dispatch.dispatch_generation as number
+        if (!run || typeof run.task_id !== 'string') throw new Error('AUTHORITY_INVALID')
+        const terminalExists = Object.values(state.task_events).some(value => {
+          const event = value as TaskEvent
+          return event.type === 'run_terminal' && event.run_id === runId && event.dispatch_generation === dispatchGeneration
+        })
+        if (!terminalExists) {
+          run.event_contract = 'durable_items_v1'
+          const latestActivities = new Map<string, Extract<TaskEvent, { type: 'activity' }>>()
+          for (const event of Object.values(state.task_events)
+            .map(value => value as TaskEvent)
+            .filter((event): event is Extract<TaskEvent, { type: 'activity' }> => event.type === 'activity' && event.run_id === runId && event.dispatch_generation === dispatchGeneration)
+            .sort((left, right) => left.event_sequence - right.event_sequence)) {
+            latestActivities.set(event.item_id, event)
+          }
+          for (const activity of latestActivities.values()) {
+            if (activity.phase !== 'started' && activity.phase !== 'running') continue
+            state.event_sequence += 1
+            state.task_events[String(state.event_sequence)] = {
+              event_sequence: state.event_sequence,
+              task_id: run.task_id,
+              run_id: runId,
+              type: 'activity',
+              dispatch_generation: dispatchGeneration,
+              item_id: activity.item_id,
+              kind: activity.kind,
+              phase: 'failed',
+              summary: productTaskActivitySummary(activity.kind, 'failed'),
+              created_at: now,
+            }
+          }
+          state.event_sequence += 1
+          state.task_events[String(state.event_sequence)] = {
+            event_sequence: state.event_sequence,
+            task_id: run.task_id,
+            run_id: runId,
+            type: 'run_terminal',
+            dispatch_generation: dispatchGeneration,
+            item_id: durableTerminalItemId(runId, dispatchGeneration),
+            state: 'recovery_required',
+            created_at: now,
+          }
+        }
         dispatch.state = 'recovery_required'
         dispatch.completed_at = now
-        dispatch.error = 'SERVER_RESTARTED'
+        dispatch.error = 'task_execution_environment_failed'
         const queueEvents = releaseQueuedInputTargets(state, runId, dispatchGeneration, now)
-        if (queueEvents.length && run && typeof run.task_id === 'string') {
+        if (queueEvents.length) {
           const task = (state.tasks[run.task_id] as { task?: Record<string, unknown> } | undefined)?.task
           if (task && Number.isSafeInteger(task.revision)) {
             task.revision = (task.revision as number) + 1
