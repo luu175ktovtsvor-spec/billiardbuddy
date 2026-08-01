@@ -128,6 +128,8 @@
 - **已修复的合同断点**：Gateway 与共享图片合同允许每次最多 20 个候选，但 Gateway 结果 URL、桌面可信 URL 解析及直传领取仍只接受索引 `0..3`。现统一为 `0..19` 和最多 20 条 URL，仍逐张串行获取，避免合法的第 5--20 个已提交候选被错误标为未知结果或一次性放大内存。
 - **R5.5 当前源码证明**：Task 在第一次 Gateway 出站前持久化仅服务端可见的 `remote_submission_started_at`。同进程内仍以 `activeImageSubmissions` 复用同一提交；进程中断后，如该标记存在但尚未持久化 `remote_task_id`，任务立即围栏为 `outcome_unknown`，不会以旧 idempotency key 再次 POST。首次从未开始出站的 queued Task 仍可恢复进入同一首次提交。
 - **R5.5 显式新操作边界**：`submitImageProject`、图片编辑和草稿修改都会先把这种中断任务转换为未知结果；只有桌面专属 capability 下的 `confirm_unknown_retry` 才能继续创建新 Task/new operation。Renderer 对任何未知结果都显示“确认后重新生成”与费用提示，不再把缺少远端 task ID 的未知状态误称为“确认上次提交”。该提交起点不投影到公开 task/event。
-- **当前结论**：R5.5 已收口“中断提交被自动再次发起”的当前源码缺口。图片提交、未知结果、远端回执与 ACK 继续由同一持久 Task/Project 链路裁决；Renderer 不拥有远端 operation、提交起点或资产事实。
-- **未验证/待处理**：没有提交付费生成、调用 Gateway/Relay、导入图片或启动桌面，因此真实服务重启窗口、供应商结果、超大候选下载、磁盘异常和用户编辑体验仍属最终软件验收事实，不能由静态结论替代。
-- **下一项**：R5.6 图片不可变资产、候选物化与版本选择的当前源码回溯核验。
+- **R5.6 当前源码证明**：复核发现 `selectImageVersion()` 仅确认 Version 记录存在，未重新读取其 Asset；现所有版本选择、继续编辑与版本导出都经 `imageVersionBytes()` 校验普通文件/存储归属、字节大小、CAS 或持久 asset 哈希、真实 MIME 与尺寸。远端 ACK 也逐个经该入口确认已物化的候选，不能仅因文件存在就删除 Relay 结果。
+- **R5.6 失败与恢复边界**：候选在 Task `committing` 状态与 Project 发布之间中断时，既有恢复只会在本地文件全部存在时重建项目投影；最终 ACK 始终位于 Project/Version 已持久化后的最后一步。损坏、替换或丢失候选不能变成 current version、编辑基础或导出源，并会保留远端结果而非误 ACK。
+- **当前结论**：R5.6 已收口当前可静态证明的图片版本选择与 ACK 资产完整性缺口。图片提交、未知结果、候选物化、Asset/Version、当前版本和 ACK 仍由同一持久 Project/Task 链路裁决；Renderer 只消费公开版本投影。
+- **未验证/待处理**：没有提交付费生成、调用 Gateway/Relay、导入图片或启动桌面，因此真实服务重启窗口、远端 receipt 回放、候选下载、磁盘异常和用户编辑体验仍属最终软件验收事实，不能由静态结论替代。
+- **下一项**：R6.2 视频项目的导入、证据、时间线与预览/导出当前源码回溯核验。

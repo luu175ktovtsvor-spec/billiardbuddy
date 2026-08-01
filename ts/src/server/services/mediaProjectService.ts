@@ -2166,6 +2166,20 @@ export class MediaProjectService {
     }
     const bytes = await readFile(sourcePath).catch(() => null)
     if (!bytes) throw new MediaServiceError('图片版本文件已经丢失', 404, 'IMAGE_VERSION_MISSING')
+    if (record.asset.byte_size !== undefined && record.asset.byte_size !== bytes.byteLength) {
+      throw new MediaServiceError('图片版本文件大小已经变化', 409, 'IMAGE_VERSION_CORRUPT')
+    }
+    const actualHash = `sha256:${createHash('sha256').update(bytes).digest('hex')}`
+    const locatorHash = record.asset.storage.kind === 'cas'
+      ? /^sha256\/([a-f0-9]{64})$/.exec(record.asset.storage.locator)?.[1]
+      : undefined
+    const expectedHash = record.asset.content_hash ?? (locatorHash ? `sha256:${locatorHash}` : undefined)
+    if (expectedHash && actualHash !== expectedHash) {
+      throw new MediaServiceError('图片版本内容已经变化', 409, 'IMAGE_VERSION_CORRUPT')
+    }
+    if (detectedImageMime(bytes) !== mimeType) {
+      throw new MediaServiceError('图片版本格式已经变化', 409, 'IMAGE_VERSION_CORRUPT')
+    }
     const dimensions = imageDimensions(bytes, mimeType)
     if (!dimensions || dimensions.width < 1 || dimensions.height < 1 || dimensions.width > 12000 || dimensions.height > 12000) {
       throw new MediaServiceError('图片版本尺寸无法验证', 409, 'IMAGE_DIMENSIONS_INVALID')
@@ -2180,7 +2194,7 @@ export class MediaProjectService {
     if (project.revision !== input.revision) {
       throw new MediaServiceError('图片项目已更新，请刷新后再选择版本', 409, 'REVISION_CONFLICT')
     }
-    this.imageVersionRecord(project, input.version_id)
+    await this.imageVersionBytes(project, input.version_id)
     return await this.saveProject({
       ...project,
       current_version_id: input.version_id,
@@ -3112,11 +3126,12 @@ export class MediaProjectService {
     const project = await this.getProject(task.project_id).catch(() => null)
     if (project?.kind !== 'image') return task
     const localAssets = await Promise.all(result.data.outputs.map(async output => {
-      const persisted = project.outputs.find(candidate => candidate.id === output.id)
-      if (!persisted?.asset_path) return false
-      const fileName = persisted.asset_path.split('/').pop() ?? ''
-      if (!/^[a-z0-9][a-z0-9_.-]{2,120}$/.test(fileName)) return false
-      return await stat(join(this.assetsDir, project.id, fileName)).then(info => info.isFile()).catch(() => false)
+      if (!output.version_id) return false
+      try {
+        return (await this.imageVersionBytes(project, output.version_id)).asset.id === output.id
+      } catch {
+        return false
+      }
     }))
     if (localAssets.some(persisted => !persisted)) return task
 
