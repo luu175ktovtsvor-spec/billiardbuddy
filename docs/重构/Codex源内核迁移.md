@@ -95,6 +95,14 @@ Codex 会保存自己的 Thread、配置与运行资料。BilliardBuddy 启动�
 
 因此，当前已不只是 Responses 回环端点：C 的受管 Run/Turn 路径、D 的直接动态工具、首轮附件、运行中输入、正式计划投影和可恢复子任务都有明确的产品 Worker 消费者和账本回执，但尚未成为默认消费者。源码模型返回带有 Gateway 或个人 Key 的结果回执时，BilliardBuddy 会先写入私有 Thread 与 TaskRun 的模型检查点，再以独立 `model_ack` effect 由 Host 确认上游结果；确认失败绝不把模型效果伪装为完成。每个已接受的 Run 也会冻结 `.BilliardBuddy` 项目指令的 digest 和正文到同一私有 Thread 绑定，并把正文作为源码模型的受控系统指令；同一 Run 的恢复只会使用原快照，不会因文件后来被改动而悄悄换规则。首轮采样前，Host 还会把实际项目命令、源码动态工具、已连接 MCP、项目指令 digest 和 Hook digest 汇成同一份 `extension_snapshot`；它先随 `mcp_prepare` effect 原子写入 TaskRun 账本、再发出可见扩展活动，源码 Thread 也只保存该快照对应的工具面。`SessionStart` 与 `UserPromptSubmit` 现在在源码 Turn 已被账本确认、但首个 loopback 模型请求仍被阻塞的窗口运行；它们的安全补充上下文会被注入首轮模型指令，阻止结果则中断尚未开始模型的 Turn。D 已把项目 `PreToolUse`、`PostToolUse` 和 `PostToolUseFailure` 的同步 Command/HTTP Hook 接在源码动态工具调用的前后：每个 Hook 都先单独取得 `hook_command` 或 `hook_http` 操作身份、在产品权限信封中执行、写入私有引擎回执并 checkpoint，绝不嵌套在 `tools` 回执内。`prompt` 与 `agent` Hook 同样复用已确认的 Run 模型路由、零工具模型调用、私有引擎 checkpoint 和独立结果确认；它们不能中途切换模型或 Provider。Pre Hook 可阻止工具；Post Hook 只能把受控反馈交给下一次模型，不会篡改已经完成的工具结果。源码正常 inline 上下文压缩现在先发出 `contextCompaction` Item，再由 Worker 以当前 execution claim 写入 BilliardBuddy 的 `context_compaction` 生命周期：`PreCompact` 在 started 已落账、但压缩模型尚未采样时运行，其补充要求被注入该次压缩；摘要快照和完成投影先落盘，`PostCompact` 随后运行，下一次常规模型采样会等待它结束。Pre/Post Hook 阻止或失败会把当前 Run 转入恢复，而不会伪造上游已经安全续跑。`Stop` Hook 则在最终模型结果、模型回执与 `model_ack` 都已落账，但 loopback 仍未发送 `response.completed` 的窗口同步运行；它阻止时，产品把有独立 `stop_hook_*` 身份的补充输入以源码原生 `turn/steer` 接入当前 Turn，并在放行源码前持久化正文、轮次、摘要和 `engine_steer` 回执。上游自己的循环先看到 pending input，因而在同一 Turn 续跑；最多连续三次，任一 Hook 或续跑检查点无法确认时转入恢复，不伪造完成。异步 Hook 继续明确拒绝，直到产品有自己的可恢复后台 Job 语义。图片、视频工作台不受这次内核替换牵连。
 
+### 4.2 2026-08-02：默认切换已完成，遗留清理单列执行
+
+前文中“迁移开关”与“尚未成为默认消费者”的描述只记录切换前状态，现已失效。正式 Electron Main 所启动的隔离 Sidecar 已用本机假模型跑通任务、持久停止和 Sidecar 强制中断后的恢复；随后 Worker 删除 `BB_AGENT_EXECUTION_RUNTIME` 分支及旧 Harness 的 IPC 入口。重建后的 Sidecar 在**不设置该变量**时，通过与 Electron Main 相同的受管 `codex-app-server` 目录注入，完成了 `user_text → extension activity → assistant_text → run_terminal(completed)`。
+
+用户输入的提示命令没有随旧循环丢失：`/update-config` 等非 direct-tool 命令在 Product Host 按当前项目能力展开，先形成 `command_prompt` 操作回执，再作为同一个 Codex Turn 的首轮输入。隔离假模型已确认收到展开后的指令；带旧本地循环语义的命名 Agent 不在这条路径中，必须另行迁移为受控子 Run 或删除。
+
+这只证明 Codex 是唯一执行内核，不把它误说成产品总后端：Product Server 继续拥有 Run 账本、外部操作回执、权限、恢复与最终状态；模型桥、Gateway/个人 Key 路径、Electron Main、图片和视频服务也没有被交给 Codex。旧 Harness 的不可达源文件、命名 Agent 本地循环和自动记忆遗留设置仍需在下一个清理提交中物理删除或按 Codex 语义重新实现；在那之前不会把它们称为当前 Codex 能力。
+
 ## 5. 许可与发布边界
 
 Codex 的 Apache-2.0 许可允许在满足许可证与 NOTICE 要求时改造和分发。BilliardBuddy 将保留自身名称、桌面 UI、模型身份、任务数据、权限语义和远程服务；上游来源和本地修改必须在源码与发布审计中可追溯。仅把 Git 忽略的研究副本打包进 Electron、或在运行时依赖其绝对路径，都不算源码迁移，也不允许发生。
