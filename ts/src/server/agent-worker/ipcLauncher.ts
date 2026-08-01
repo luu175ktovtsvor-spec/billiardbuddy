@@ -5,6 +5,7 @@ import { stripHostOnlyGatewayEnv } from '../services/gatewayEnv.js'
 import type { ProductAgentHostRuntime } from './productAgentHostRuntime.js'
 import { getProductMcpOAuthMasterKey, PRODUCT_MCP_OAUTH_KEY_ENV } from './productMcpOAuth.js'
 import { TASK_RUN_EXTERNAL_OPERATION_KINDS, type TaskRunExternalOperationKind } from '../product/taskRunLedgerModel.js'
+import type { ProductTaskPlan } from '../../../shared/product/taskEvents.js'
 
 type LaunchInput = Parameters<AgentWorkerChildLauncher['launch']>[0]
 type CoreBinding = { session_id: string; work_dir: string; provider: string; model: string; model_route_fingerprint: string; model_attempt_id: string }
@@ -40,6 +41,7 @@ export type TaskRunCoreBindingResolver = {
   checkpointTaskRunExternalOperation(runId: string, generation: number, executionClaimToken: string, operationId: string, checkpoint: { digest: string }): Promise<'checkpointed' | 'outcome_unknown' | 'not_owner'>
   checkpointTaskRunMcpPrepare(runId: string, generation: number, executionClaimToken: string, operationId: string, snapshot: { digest: string; tool_count: number; command_count: number; mcp_server_count: number }): Promise<'checkpointed' | 'outcome_unknown' | 'not_owner'>
   markTaskRunExternalOperationOutcomeUnknown(runId: string, generation: number, executionClaimToken: string, operationId: string): Promise<'marked' | 'already_outcome_unknown' | 'not_owner'>
+  recordTaskRunPlan(runId: string, generation: number, plan: ProductTaskPlan, executionClaimToken: string): Promise<unknown>
 }
 export type ServerPrivateCoreFactory = { start(identity: AgentWorkerCoreIdentity, binding: CoreBinding, input: Parameters<AgentWorkerCoreFactory['start']>[0]): Promise<ProductAgentHostRuntime> }
 
@@ -362,6 +364,21 @@ export class IpcAgentWorkerLauncher implements AgentWorkerChildLauncher {
         if (typeof operationId !== 'string' || state.external_operation_states.get(operationId) !== 'in_flight') return { ok: false }
         const { operation_id: _operationId, ...toolRequest } = value
         return { ok: true, value: await runtime.engineTool({ ...toolRequest, parent_operation_id: operationId } as never) }
+      }
+      if (request.operation === 'plan' && request.value && typeof request.value === 'object') {
+        const value = request.value as { operation_id?: unknown; plan?: unknown }
+        if (
+          typeof value.operation_id !== 'string'
+          || state.external_operation_states.get(value.operation_id) !== 'in_flight'
+          || !value.plan || typeof value.plan !== 'object' || Array.isArray(value.plan)
+        ) return { ok: false }
+        await this.bindings.recordTaskRunPlan(
+          capability.run_id,
+          capability.dispatch_generation,
+          value.plan as ProductTaskPlan,
+          capability.execution_claim_token,
+        )
+        return { ok: true }
       }
       if (request.operation === 'tools') return { ok: true, value: await withExternalOperation('tools', async () => await runtime.tools(request.value as never)) }
       if (request.operation === 'approval' && request.value && typeof request.value === 'object') {

@@ -73,13 +73,15 @@ Codex 会保存自己的 Thread、配置与运行资料。BilliardBuddy 启动�
 
 动态 `Subtask` 现已接入同一条源码路径，但它不是在父工具中递归启动旧 TypeScript 模型循环：父 Turn 的 `tools` 操作仍保持 in-flight，BilliardBuddy 账本据此创建一个独立子 Run、独立 Lineage、私有 Codex 状态、执行 claim、模型/工具回执和 terminal 结果。子 Run 不占用户的串行输入队列，也不把内部文字、活动、计划或 terminal 投影到公开 Thread；它完成、停止、需恢复或结果未知后，只把受控结果交还给父工具调用。运行调度允许同一任务的父子 Run 同时持有有限 worker 额度，避免父 Run 等待子 Run 时自锁。已用隔离账本和真实调度器做手工闭环验证，确认子 Run 能独立 claim/terminal、结果只能由拥有父工具操作的父 Run 读取，且公开事件流不含子 Run。
 
-这些证据只说明 C 及 D 的动态工具、首轮附件、运行中输入和可恢复子任务主链成立，不等同于完整桌面用户旅程验收；默认正式消费者仍是旧 Harness，切换必须等剩余 Hook 语义、计划投影与真实桌面旅程一起验收后一次性进行。
+`TodoWrite` 也已进入源码动态工具面：Host 先按既有 schema、权限和工具执行规则返回确定结果；对于成功结果，源码 Core 必须以同一个 in-flight `tools` effect 同步写入计划 Item，之后才能 checkpoint 工具结果并向 Codex Thread 返回成功。计划写入失败会让该 effect 保持不可确认，而不是让“模型已收到成功、任务页没有计划”成为可能。公开投影仍由 Worker 事件桥幂等推送；子 Run 的计划则保持私有。
+
+这些证据只说明 C 及 D 的动态工具、首轮附件、运行中输入、计划投影和可恢复子任务主链成立，不等同于完整桌面用户旅程验收；默认正式消费者仍是旧 Harness，切换必须等剩余 Hook 语义与真实桌面旅程一起验收后一次性进行。
 
 桌面构建不允许再从开发者的 Cargo `target/` 目录启动内核。`stage-codex-engine.ts` 必须在干净、锁定的子仓上应用补丁、从源码构建、撤回补丁，再把二进制、Apache-2.0 `LICENSE`、上游 `NOTICE` 与包含 revision、补丁 SHA-256、目标三元组和二进制哈希的 manifest 一并放进 `runtime-assets/binaries/`。macOS 使用不受代码签名变化影响的 Mach-O 哈希；Windows 使用普通 SHA-256。打包前、afterPack 与安装包审计都会重新验证该清单。Electron Main 会丢弃继承的 `BB_CODEX_ENGINE_BIN_DIR`，只在自己的 `runtime-assets/binaries/` 中存在对应目标二进制时才向本地 Product Server 注入该目录。
 
 `codex-engine-build.yml` 会先核对、应用该补丁，再在 GitHub 的 macOS Apple Silicon 与 Windows x64 runner 上只编译未经签名的 `codex-app-server`，不生成桌面安装包、不上传发布源；桌面 macOS/Windows 构建工作流则递归取得子仓、安装锁定 Rust 工具链，并在 Electron 打包前执行上述 source-to-runtime-assets 步骤。当前只有 macOS arm64 已有本地真实构建与资源清单证据；由于本地 `main` 尚未安全推送，Windows 构建尚未有实际产物证据。
 
-本次 D 的第一条闭合边界是“源码动态工具 → BilliardBuddy Host”：`Read/Write/Edit/Bash/Web/MCP/Skill/AskUserQuestion` 等直接工具只作为声明交给源码，实际描述、Schema、执行、三档权限、审批与结果内容都仍由 Host 重新取回和处理；源码进程没有本机 Shell、文件、浏览器、MCP 配置或全局凭据。首轮附件也走同一个宿主边界：路径只在 Host 内部校验和读取，文本文件、视频帧与转写先变为有界文字/图片，源码仅收到文字与 data-URI 图片；`chat_prompt` 的结果摘要和操作 ID 必须先随私有 Thread/Turn 持久化，才可确认该附件操作并放行模型。运行中输入使用上游原生 `turn/steer`：既有队列项先由产品账本拥有，源码接受后 `engine_steer` 的操作 ID、队列 ID 与输入摘要必须写入私有 Thread，才会确认队列已消费；新的源码模型请求会等待该检查点。`Subtask` 例外地拥有独立的子 Run 协调器，而不是复用旧 Harness 的递归循环；命名 Agent 和需要单独投影计划的 `TodoWrite` 仍不出现在这条动态工具面。引擎尚未接管正式默认 Run；在模型桥、事件桥和权限桥完整之前，不再给旧 TypeScript Harness 添加模型、工具、Hook 或 UI 功能。
+本次 D 的第一条闭合边界是“源码动态工具 → BilliardBuddy Host”：`Read/Write/Edit/Bash/Web/MCP/Skill/AskUserQuestion/TodoWrite` 等直接工具只作为声明交给源码，实际描述、Schema、执行、三档权限、审批与结果内容都仍由 Host 重新取回和处理；源码进程没有本机 Shell、文件、浏览器、MCP 配置或全局凭据。首轮附件也走同一个宿主边界：路径只在 Host 内部校验和读取，文本文件、视频帧与转写先变为有界文字/图片，源码仅收到文字与 data-URI 图片；`chat_prompt` 的结果摘要和操作 ID 必须先随私有 Thread/Turn 持久化，才可确认该附件操作并放行模型。运行中输入使用上游原生 `turn/steer`：既有队列项先由产品账本拥有，源码接受后 `engine_steer` 的操作 ID、队列 ID 与输入摘要必须写入私有 Thread，才会确认队列已消费；新的源码模型请求会等待该检查点。`TodoWrite` 的成功结果额外要求先同步持久化计划 Item；`Subtask` 例外地拥有独立的子 Run 协调器，而不是复用旧 Harness 的递归循环。命名 Agent 仍不出现在这条动态工具面。引擎尚未接管正式默认 Run；在模型桥、事件桥和权限桥完整之前，不再给旧 TypeScript Harness 添加模型、工具、Hook 或 UI 功能。
 
 ### 4.1 当前唯一施工单元：Agent 执行内核替换
 
@@ -91,7 +93,7 @@ Codex 会保存自己的 Thread、配置与运行资料。BilliardBuddy 启动�
 4. **工具有唯一宿主**：Codex 的工具/审批请求只经 BilliardBuddy 权限信封和现有主进程工具宿主处理；在该桥完成前，引擎不得获得本机 Shell、文件、浏览器、MCP 或任何全局凭据。
 5. **一次性切换**：上述边界闭合并走通一条真实用户旅程后，桌面 Agent 页改为只启动新内核，旧 Harness 删除；不长期保留双执行循环。
 
-因此，当前已不只是 Responses 回环端点：C 的受管 Run/Turn 路径、D 的直接动态工具、首轮附件、运行中输入和可恢复子任务都有明确的产品 Worker 消费者和账本回执，但尚未成为默认消费者。D 已把项目 `PreToolUse`、`PostToolUse` 和 `PostToolUseFailure` 的同步 Command/HTTP Hook 接在源码动态工具调用的前后：每个 Hook 都先单独取得 `hook_command` 或 `hook_http` 操作身份、在产品权限信封中执行、写入私有引擎回执并 checkpoint，绝不嵌套在 `tools` 回执内。Pre Hook 可阻止工具；Post Hook 只能把受控反馈交给下一次模型，不会篡改已经完成的工具结果。Prompt/Agent Hook、异步 Hook 和 `TodoWrite` 的正式计划投影仍待各自的可恢复边界完成；图片、视频工作台不受这次内核替换牵连。
+因此，当前已不只是 Responses 回环端点：C 的受管 Run/Turn 路径、D 的直接动态工具、首轮附件、运行中输入、正式计划投影和可恢复子任务都有明确的产品 Worker 消费者和账本回执，但尚未成为默认消费者。D 已把项目 `PreToolUse`、`PostToolUse` 和 `PostToolUseFailure` 的同步 Command/HTTP Hook 接在源码动态工具调用的前后：每个 Hook 都先单独取得 `hook_command` 或 `hook_http` 操作身份、在产品权限信封中执行、写入私有引擎回执并 checkpoint，绝不嵌套在 `tools` 回执内。Pre Hook 可阻止工具；Post Hook 只能把受控反馈交给下一次模型，不会篡改已经完成的工具结果。Prompt/Agent Hook 仍待各自的可恢复边界完成；异步 Hook 继续明确拒绝，直到产品有自己的可恢复后台 Job 语义。图片、视频工作台不受这次内核替换牵连。
 
 ## 5. 许可与发布边界
 
