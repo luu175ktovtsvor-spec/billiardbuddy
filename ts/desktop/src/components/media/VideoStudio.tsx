@@ -508,7 +508,9 @@ export function VideoStudio() {
             ) : active && previewSurface === 'program' ? (
               <div className="text-center text-[12px] text-[var(--color-text-tertiary)]">
                 <Film size={34} className="mx-auto mb-2" />
-                保存时间线并生成节目预览
+                {previewTask?.status === 'succeeded'
+                  ? '历史节目预览已不可用，请重新生成'
+                  : '保存时间线并生成节目预览'}
               </div>
             ) : active && (selectedSource?.missing || selectedSource?.content_changed) ? (
               <div className="text-center text-[12px] leading-5 text-[var(--color-warning)]">
