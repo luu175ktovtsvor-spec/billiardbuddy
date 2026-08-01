@@ -387,6 +387,9 @@ R2 被路线图选中时，内部不按“看到一个缺口就补一个功能�
 - **R4.1 验证**：相关 TypeScript 源码链路和公开协议 parser 已静态审阅；R3 最终检查中的服务端类型检查、桌面 production renderer 构建、Gateway bundle、运行策略解析、源码可达性审计和 diff whitespace audit 均通过。未新增或运行测试、smoke、模拟请求、桌面试运行、安装或发布。
 - **已完成的当前模块证据**：R4.2 桌面 Agent 动作与幂等回执审计已完成。新建任务、普通消息和冻结 Review Run 都保留未知 HTTP 结果对应的原始 client operation 与精确 revision/附件请求，重试只读取同一 Authority receipt；队列编辑、删除、重试、重排、转向和恢复同样复用原 mutation。继续、改写以及任务生命周期操作走通用 durable envelope；侧任务和审阅批注各自保留可重放 operation。审批/问题以已持久化 request id 幂等结算，停止则只在当前 socket 已接收 durable replay、run snapshot 与 resume cursor 后才可送至 generation-fenced Host。服务端也拒绝尚未完成 replay hand-off 的入站动作，因此旧窗口/旧连接状态不会批准或停止未观察到的新 Run。权威 revision、receipt、event ledger 和重连 snapshot 是多窗口交接的唯一裁决，Renderer 只保留可丢失的交互 pending 状态。
 - **R4.2 验证**：动作入口、Product API/WebSocket ingress、Authority mutation 和 Host RPC 均已静态追踪；服务端 TypeScript 检查、桌面 production renderer 构建、源码可达性审计（442 个源文件、0 缺失 import、441 个生产源可达）和相关 diff whitespace audit 均通过。桌面构建只有既有 `::highlight(...)` CSS 优化 warning。未新增或运行测试、smoke、模拟请求、桌面试运行、安装或发布。
+- **已完成的当前模块证据**：R4.3 复核发现原有 WebSocket 会在 `resume` 前发送 snapshot/approval，且 replay 期间的 Worker live 帧可直接交错，服务端也没有 hand-off 状态阻断入站动作。现每条 Product socket 都从 `awaiting_resume` 进入 `replaying`，按 durable event、run snapshot、pending approval、`resume_cursor` 的顺序完成交接后才进入 `live`；replay 中的 live 帧有界缓存，达到 4096 条或 replay 出错则关闭连接，客户端以 durable cursor 重连。桌面只有收到本连接的 `resume_cursor` 才发送审批、提问、停止或 ping，服务端在 `live` 前也拒绝非 resume 动作。
+- **R4.3 静态验证**：服务端 TypeScript 检查、源码可达性审计（496 个源文件、0 个缺失 import、322 个生产源可达）、桌面 lint/生产构建和差异空白检查通过。未新增或运行测试、smoke、模拟请求、桌面试运行、安装或发布。
+- **R4.3 未验证与下一项**：真实多窗口时序、断线背压、页面卸载重连和交互体验尚未运行。下一游标为 R5.5 图片提交与未知远端结果的当前源码回溯核验，不得混入视频、搜索、设置、安装包、生产发布或真实付费生成。
 - **已完成阶段：R4 Agent 桌面客户端闭环**。项目、任务、线程、活动、计划、队列、审批、审阅、进程、Diff、侧任务、恢复、错误和动作回执均只经 Product Server/Host 的结构化权威链路进入桌面；刷新、重连和多窗口不依赖 renderer 业务状态副本。R4 的代码与静态验收范围已收口。
 - **已完成的当前模块证据**：R5.1 局部重绘的 Seedream 视觉标记输入已收回图片领域服务端。公开图片操作只接受基础 Version、透明 PNG mask 和编辑指令；服务端校验并持久化 mask 后，从该不可变 Version 的真实字节和该 mask 确定性合成红色标记参考图。Renderer 不再提交可替换的 `visual_signal_data_url`，因此不能让同一个图片操作混入另一张同尺寸图片。GPT Image 2 仍接收原始基础图和独立 mask，不改变其原生编辑合同。
 - **R5.1 验证**：服务端类型检查、桌面 production renderer 构建、源码可达性审计（443 个源文件、0 缺失 import、442 个生产源可达）和该范围 diff whitespace audit 均通过；桌面构建只有既有 `::highlight(...)` CSS 优化 warning。未新增或运行测试、smoke、模拟请求、桌面试运行、安装、付费生成或发布。
@@ -463,13 +466,13 @@ R2 被路线图选中时，内部不按“看到一个缺口就补一个功能�
 - **已完成阶段：R0.1 重构合同与施工证据回溯核验、R1.1 共享产品内核的权威边界回溯核验、R2 Agent Harness Authority 与 Worker/Host 生产链回溯及物理收口**。历史阶段记录仍只是候选证据，不能替代当前源码核验或发布许可。
 
 ```text
-Active work unit: R4.3 — Agent 公开投影与恢复动作的收口复核
-Outcome: 已有 R4.1/R4.2 的公开事件、snapshot/replay 和动作 receipt 必须以当前源码逐项复核，发现会造成状态泄漏、重复动作或恢复错误的缺口才在本单元修复。
-Evidence: Product Server API/WebSocket、桌面 runtime store、Authority operation receipt、TaskRun recovery 与 R4.1/R4.2 的既有记录。
-Constraints / Non-goals: 不回写 R2/R3 的 Host/provider/receipt 私有边界，不进入图片、视频、WebSearch、桌面设置、安装包或生产发布；不发送真实模型或付费请求。
-Allowed scope: R4 的公开协议 parser、事件/snapshot hand-off、恢复与动作 receipt 链路，以及 R4 证据记录。
-Verification / Exit: Renderer 不读取私有 Harness/provider 状态；重连、恢复、审批、停止与突变都有单一 Authority receipt 或 generation fence；类型、生产构建、源码审计和失败/恢复证据成立。
-Next cursor: R5 — 媒体工作台的路线图施工单。
+Active work unit: R5.5 — 图片提交与未知远端结果的当前源码回溯核验
+Outcome: 以当前图片 Project/Task、远端 operation、Relay receipt、资产物化和桌面提交入口为证，确认一次提交、未知结果、显式确认与恢复只存在一个权威链；发现会重复付费、丢失结果或越过项目边界的缺口才在本单元修复。
+Evidence: ImageProjectCommandService、ImageSubmissionCoordinator、ImageRemoteTaskCoordinator、MediaTaskCoordinator、图片 API/桌面提交入口与 R5 既有记录。
+Constraints / Non-goals: 不进入 Agent 私有 Harness、视频、WebSearch、桌面设置、安装包或生产发布；不发送真实模型、Relay 或付费请求。
+Allowed scope: 图片提交、远端 operation/receipt、未知结果确认、任务恢复与公开提交投影，以及 R5 证据记录。
+Verification / Exit: 同一用户操作不会自动建立第二次远端付费请求；未知结果、已完成结果与 ACK 都有持久边界；Renderer 不拥有远端 operation 或资产事实；类型、生产构建、源码审计和失败/恢复证据成立。
+Next cursor: R5 的不可变资产与版本选择边界。
 ```
 - **Interrupt rule**：只有发现会造成错误结果、数据丢失、重复副作用、权限越界或无法恢复的事实才可中断；其余发现进入对应后续模块。
 

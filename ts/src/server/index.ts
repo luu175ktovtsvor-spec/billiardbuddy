@@ -278,6 +278,8 @@ export function startServer(port = PORT, host = HOST) {
               productTaskId: taskId,
               connectedAt: Date.now(),
               channel: 'product',
+              handoff: 'awaiting_resume',
+              pending_live_events: [],
             },
           })
           if (upgraded) return undefined

@@ -4,7 +4,7 @@
 
 本文件把当前脏工作树作为待审阅的施工资产，而不是把它自动认定为一个模块或一次提交。每个改动必须能对应 `BilliardBuddy-重构合同.md` 的模块结果、当前或历史施工单，或被明确标记为无关保留项；不能因为文件同时存在于工作树中就混入当前模块。
 
-本盘点不宣布任何代码模块完成，也不授权部署、打包或发布。当前唯一施工游标仍以 `refactor-roadmap.md` 的施工单为准；R3.1 已独立完成个人模型的 Model Port、凭据隔离、冻结路由与本机 operation store，R3.2 已独立完成 Gateway 托管 TextReasoning 的 operation ledger、结果回放与额度结算，R3.3 已独立完成主 Harness 的私有 receipt 持久化与 ACK，R3.4 已独立完成 Subtask/Plugin agent 的父工具 receipt handoff，R3.5 已独立完成 Hook/压缩模型消费者的主 session receipt 持久化与 ACK，R3.6 已独立完成 unknown operation 的 generation-bound 新 attempt。下一项 R4.3 只复核 Agent 的公开投影与恢复动作边界，不得混入搜索、媒体或桌面设置。
+本盘点不宣布任何代码模块完成，也不授权部署、打包或发布。当前唯一施工游标仍以 `refactor-roadmap.md` 的施工单为准；R3.1 已独立完成个人模型的 Model Port、凭据隔离、冻结路由与本机 operation store，R3.2 已独立完成 Gateway 托管 TextReasoning 的 operation ledger、结果回放与额度结算，R3.3 已独立完成主 Harness 的私有 receipt 持久化与 ACK，R3.4 已独立完成 Subtask/Plugin agent 的父工具 receipt handoff，R3.5 已独立完成 Hook/压缩模型消费者的主 session receipt 持久化与 ACK，R3.6 已独立完成 unknown operation 的 generation-bound 新 attempt，R4.3 已独立收口公开 WebSocket hand-off 与动作围栏。下一项 R5.5 只复核图片提交与未知远端结果，不得混入 Agent、视频、搜索或桌面设置。
 
 ## 2. 当前快照
 

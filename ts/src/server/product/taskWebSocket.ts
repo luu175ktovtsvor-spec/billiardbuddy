@@ -9,16 +9,30 @@ export type ProductTaskWebSocketData = {
   productTaskId: string
   connectedAt: number
   channel: 'product'
+  handoff: 'awaiting_resume' | 'replaying' | 'live'
+  pending_live_events: string[]
 }
 
 const activeProductSockets = new Map<string, Set<ServerWebSocket<ProductTaskWebSocketData>>>()
+const MAX_PENDING_LIVE_EVENTS = 4_096
 
 export function __resetProductTaskWebSocketStateForTests(): void {
   activeProductSockets.clear()
 }
 
 productTaskWorkerRuntimeEvents.subscribe((taskId, event) => {
-  for (const socket of activeProductSockets.get(taskId) ?? []) socket.send(JSON.stringify(event))
+  const encoded = JSON.stringify(event)
+  for (const socket of activeProductSockets.get(taskId) ?? []) {
+    if (socket.data.handoff === 'live') {
+      socket.send(encoded)
+      continue
+    }
+    if (socket.data.pending_live_events.length >= MAX_PENDING_LIVE_EVENTS) {
+      socket.close(1013, 'Product task resume backlog exceeded')
+      continue
+    }
+    socket.data.pending_live_events.push(encoded)
+  }
 })
 
 export const productTaskWebSocket = {
@@ -28,8 +42,6 @@ export const productTaskWebSocket = {
     sockets.add(ws)
     activeProductSockets.set(taskId, sockets)
     ws.send(JSON.stringify({ type: 'connected' }))
-    ws.send(JSON.stringify({ type: 'run_snapshot', ...productTaskWorkerRuntimeEvents.snapshot(taskId) }))
-    void replayPendingWorkerApproval(ws)
   },
 
   message(ws: ServerWebSocket<ProductTaskWebSocketData>, rawMessage: string | Buffer) {
@@ -37,6 +49,8 @@ export const productTaskWebSocket = {
       const parsed = JSON.parse(typeof rawMessage === 'string' ? rawMessage : rawMessage.toString()) as unknown
       const cursor = productResumeCursor(parsed)
       if (cursor !== null) {
+        if (ws.data.handoff !== 'awaiting_resume') return sendProtocolError(ws, 'task_unavailable')
+        ws.data.handoff = 'replaying'
         void replayDurableProductEvents(ws, cursor)
         return
       }
@@ -45,6 +59,7 @@ export const productTaskWebSocket = {
         return
       }
       const message = parseProductTaskInboundMessage(parsed)
+      if (ws.data.handoff !== 'live') return sendProtocolError(ws, 'task_unavailable')
       void handleProductMessage(ws, message).catch(error => {
         void diagnosticsService.recordEvent({
           type: 'ws_product_message_failed',
@@ -133,9 +148,17 @@ async function replayDurableProductEvents(
       cursor = page.cursor
       hasMore = page.has_more === true
     }
+    if (ws.data.handoff !== 'replaying') return
+    ws.send(JSON.stringify({ type: 'run_snapshot', ...productTaskWorkerRuntimeEvents.snapshot(ws.data.productTaskId) }))
+    await replayPendingWorkerApproval(ws)
     ws.send(JSON.stringify({ type: 'resume_cursor', cursor }))
+    ws.data.handoff = 'live'
+    const pending = ws.data.pending_live_events.splice(0)
+    for (const event of pending) ws.send(event)
   } catch {
+    ws.data.pending_live_events.splice(0)
     sendProtocolError(ws, 'task_unavailable')
+    ws.close(1011, 'Product task replay failed')
   }
 }
 

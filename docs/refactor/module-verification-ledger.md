@@ -115,9 +115,11 @@
 - **事件和 snapshot hand-off**：`ProductTaskSocketManager` 只保存每个 task 的 WebSocket、连接状态与 durable `resumeCursor`；每次连接先发送 `resume`，在收到 `resume_cursor` 前拒绝所有 socket 命令。服务端 `taskWebSocket` 在同一 socket 上依次回放 Authority `event_sequence` ledger、读取当前 Run snapshot、重放待处理 approval、过滤不高于回放高水位的缓冲 live event，最后才发送 `resume_cursor` 并切换为 live。断线重连复用 cursor，Renderer 不以旧 socket 的状态继续审批或停止。
 - **公开协议与 Renderer 状态**：`taskProtocol` 对每个公开事件严格限制字段、枚举、长度、时间和 replay sequence；Run snapshot 与 model route 仅含公开状态。`productTaskRuntimeStore` 只把结构化事件投影成可丢失的线程、activity、approval、队列和交互 pending，并在 terminal/snapshot 后从服务端刷新 thread、queue、task index。源码扫描确认产品任务本体、Thread/Run、权限、provider、凭据和 receipt 不写入 localStorage；持久化内容限于草稿、面板/工作区布局和通知偏好等 UI 辅助状态。
 - **动作与幂等边界**：普通提交、Review、队列修改/转向/恢复以及任务生命周期动作都携带稳定 `client_operation_id`、预期 revision 或 lineage revision；HTTP 结果不明时 store 保留同一 envelope/operation identity，而非生成第二个 Turn。approval/question/stop 仅在当前 socket 的 replay/snapshot hand-off 完成后发送，服务端再以 Authority request ID 或 active Run 围栏处理。terminal、snapshot、error 和断线都会清除仅代表 Renderer 交互的 stop/approval pending，不把旧窗口的本地按钮状态提升为业务状态。
-- **当前结论**：R4 的静态退出条件已闭合。桌面没有第二份任务权威；公开协议不泄漏 Host/provider 私有状态；replay、snapshot 和 live hand-off 有固定顺序，动作通过 Authority receipt、request ID 或 generation/active-run 围栏进入服务端。未发现需要在本单元改写的生产缺口。
-- **未验证/待处理**：没有启动桌面、浏览器或真实任务，因此真实多窗口网络时序、页面卸载重连和用户交互体验仍属最终软件验收事实，不能由静态结论替代。
-- **下一项**：R5.1 图片工作台的提交、任务与不可变资产回溯核验。
+- **R4.3 当前源码证明**：复核发现此前服务端在客户端 `resume` 前即发送 snapshot/approval，且 live Worker 帧能与 durable replay 并发交错；服务端也未以 hand-off 状态阻断入站动作。现将每条 Product socket 明确置于 `awaiting_resume → replaying → live`，仅在 durable event replay、当前 snapshot、待处理 approval 与 `resume_cursor` 均发送后切换 live。replay 期间的 live 帧在服务端有界缓存；超过 4096 条或 replay 失败即关闭连接，让客户端以 durable cursor 重新建立权威交接。
+- **R4.3 动作与恢复边界**：桌面 `ProductTaskSocketManager` 只有收到当前连接的 `resume_cursor` 才将 `handoffReady` 置真并允许审批、提问、停止或 ping；服务端在 live 前拒绝所有非 `resume` 入站动作。交接结束后才依序发送缓存的 live 帧，因此旧连接和回放中的 Renderer 都不能对尚未观察到的 Run 发出状态改变。
+- **当前结论**：R4.3 已收口当前可静态证明的 hand-off 缺口。桌面没有第二份任务权威；公开协议不泄漏 Host/provider 私有状态；replay、snapshot、approval、cursor 与 live hand-off 由同一 socket 状态机裁决，动作还受 Authority receipt、request ID 或 generation/active-run 围栏约束。
+- **未验证/待处理**：没有启动桌面、浏览器或真实任务，因此真实多窗口网络时序、页面卸载重连、背压关闭和用户交互体验仍属最终软件验收事实，不能由静态结论替代。
+- **下一项**：R5.5 图片提交与未知远端结果的当前源码回溯核验。
 
 ## R5 图片工作台提交、任务与不可变资产
 
