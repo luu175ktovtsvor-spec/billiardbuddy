@@ -1,5 +1,13 @@
 import { randomUUID } from 'node:crypto'
-import { PROVIDER_GATEWAY_PROTOCOL, PROVIDER_GATEWAY_PROTOCOL_HEADER } from '../../../shared/product/providerGateway.js'
+import {
+  PROVIDER_GATEWAY_PROTOCOL,
+  PROVIDER_GATEWAY_PROTOCOL_HEADER,
+  PROVIDER_OPERATION_ACK_PATH,
+  PROVIDER_OPERATION_ID_HEADER,
+  PROVIDER_OPERATION_RESULT_CAPABILITY_HEADER,
+  PROVIDER_OPERATION_RESULT_FINGERPRINT_HEADER,
+  PROVIDER_OPERATION_RESULT_ID_HEADER,
+} from '../../../shared/product/providerGateway.js'
 import type { ProductAssistantMessage, ProductHarnessMessage } from '../../../shared/product/harnessMessages.js'
 import { zodToJsonSchema } from '../../utils/zodToJsonSchema.js'
 import { productGatewayTarget } from '../product/productGatewayRuntime.js'
@@ -125,6 +133,47 @@ async function* sseData(response: Response, signal: AbortSignal): AsyncGenerator
   }
 }
 
+type GatewayOperationReceipt = {
+  operationId: string
+  fingerprint: string
+}
+
+function gatewayOperationReceipt(response: Response): GatewayOperationReceipt {
+  const operationId = response.headers.get(PROVIDER_OPERATION_RESULT_ID_HEADER)?.trim() ?? ''
+  const capability = response.headers.get(PROVIDER_OPERATION_RESULT_CAPABILITY_HEADER)?.trim() ?? ''
+  const fingerprint = response.headers.get(PROVIDER_OPERATION_RESULT_FINGERPRINT_HEADER)?.trim() ?? ''
+  if (!/^[A-Za-z0-9._:-]{8,200}$/.test(operationId)
+    || capability !== 'TextReasoning'
+    || !/^[a-f0-9]{64}$/.test(fingerprint)) {
+    throw new Error('PRODUCT_GATEWAY_OPERATION_RECEIPT_MISSING')
+  }
+  return { operationId, fingerprint }
+}
+
+async function acknowledgeGatewayOperation(
+  target: { baseUrl: string; token: string },
+  receipt: GatewayOperationReceipt,
+  signal: AbortSignal,
+): Promise<void> {
+  let response: Response
+  try {
+    response = await fetch(`${target.baseUrl}${PROVIDER_OPERATION_ACK_PATH}`, {
+      method: 'POST',
+      signal,
+      headers: {
+        Authorization: `Bearer ${target.token}`,
+        [PROVIDER_GATEWAY_PROTOCOL_HEADER]: PROVIDER_GATEWAY_PROTOCOL.headerValue,
+        [PROVIDER_OPERATION_RESULT_ID_HEADER]: receipt.operationId,
+        [PROVIDER_OPERATION_RESULT_CAPABILITY_HEADER]: 'TextReasoning',
+        [PROVIDER_OPERATION_RESULT_FINGERPRINT_HEADER]: receipt.fingerprint,
+      },
+    })
+  } catch {
+    throw new Error(signal.aborted ? 'PRODUCT_MODEL_ABORTED' : 'PRODUCT_GATEWAY_RESULT_ACK_UNREACHABLE')
+  }
+  if (!response.ok) throw new Error(`PRODUCT_GATEWAY_RESULT_ACK_HTTP_${response.status}`)
+}
+
 export const runProductModel: ProductAgentModelRunner = async function* ({ messages, systemPrompt, thinkingConfig, tools, signal, options, toolPermissionContext }) {
   const personalProfile = options.personalProfile ?? null
   const target = personalProfile ? null : productGatewayTarget()
@@ -170,7 +219,7 @@ export const runProductModel: ProductAgentModelRunner = async function* ({ messa
         Authorization: `Bearer ${target!.token}`,
         'Content-Type': 'application/json',
         [PROVIDER_GATEWAY_PROTOCOL_HEADER]: PROVIDER_GATEWAY_PROTOCOL.headerValue,
-        'X-BB-Operation-ID': requestId,
+        [PROVIDER_OPERATION_ID_HEADER]: requestId,
       }
   let response: Response
   try {
@@ -186,6 +235,7 @@ export const runProductModel: ProductAgentModelRunner = async function* ({ messa
     }
     throw new Error(personalProfile ? personalModelHttpError(response.status) : `PRODUCT_GATEWAY_HTTP_${response.status}`)
   }
+  const managedOperationReceipt = personalProfile ? null : gatewayOperationReceipt(response)
 
   let text = ''
   let model = options.model
@@ -306,6 +356,7 @@ export const runProductModel: ProductAgentModelRunner = async function* ({ messa
   if (personalHandle) completePersonalModelOperation(personalHandle, JSON.stringify({ assistant }), { awaitingConsumerAck: true })
   yield assistant
   if (personalHandle) acknowledgePersonalModelOperation(personalHandle.binding)
+  else await acknowledgeGatewayOperation(target!, managedOperationReceipt!, signal)
   } catch (error) {
     if (personalHandle) {
       try { markPersonalModelOperationOutcomeUnknown(personalHandle) } catch {}

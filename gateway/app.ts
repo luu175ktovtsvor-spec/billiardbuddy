@@ -36,13 +36,26 @@ import {
   type UsageBudgetService,
   type UsageReceipt,
 } from './usageBudget'
+import {
+  GatewayOperationResultError,
+  SqliteGatewayOperationResultStore,
+  type GatewayOperationResultBinding,
+  type GatewayOperationResultStore,
+} from './operationResultStore'
+import {
+  PROVIDER_GATEWAY_PROTOCOL,
+  PROVIDER_GATEWAY_PROTOCOL_HEADER,
+  PROVIDER_OPERATION_ACK_PATH,
+  PROVIDER_OPERATION_RESULT_CAPABILITY_HEADER,
+  PROVIDER_OPERATION_RESULT_FINGERPRINT_HEADER,
+  PROVIDER_OPERATION_RESULT_ID_HEADER,
+} from '../ts/shared/product/providerGateway'
 
 type Env = Record<string, string | undefined>
 type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
 type RequestTimeoutController = { timeout(request: Request, seconds: number): void }
 
-export const PROVIDER_GATEWAY_PROTOCOL_VALUE = 'bb-provider-gateway/1.0'
-const PROVIDER_GATEWAY_PROTOCOL_HEADER = 'x-bb-provider-protocol'
+export const PROVIDER_GATEWAY_PROTOCOL_VALUE = PROVIDER_GATEWAY_PROTOCOL.headerValue
 export const MEDIA_RESULT_HANDOFF_HEADER = 'x-bb-media-result-handoff'
 export const MEDIA_RESULT_HANDOFF_DIRECT_V1 = 'direct-v1'
 const RELAY_RESULT_GRANT_TTL_MS = 10 * 60_000
@@ -202,6 +215,7 @@ export interface GatewayDeps {
   fetchImpl?: FetchLike
   usageStore?: UsageStore
   usageBudgetService?: UsageBudgetService
+  operationResultStore?: GatewayOperationResultStore
   transcribeImpl?: GatewayTranscriber | null
   mimoRetrySleep?: (ms: number) => Promise<void>
   mimoRetryRandom?: () => number
@@ -914,6 +928,97 @@ function requestedOutputUnits(rawBody: string): number {
   return Math.min(4_096, textReasoningRegistryEntry().verified_context_window)
 }
 
+type StoredTextReasoningResult = {
+  schema: 'bb.text-reasoning-result.v1'
+  status: number
+  content_type: string
+  sse_base64: string
+  actual: UsageAmount
+}
+
+function isUsageAmount(value: unknown): value is UsageAmount {
+  return isRecord(value)
+    && Number.isSafeInteger(value.requests) && value.requests >= 0
+    && Number.isSafeInteger(value.input_bytes) && value.input_bytes >= 0
+    && Number.isSafeInteger(value.output_units) && value.output_units >= 0
+}
+
+function parseStoredTextReasoningResult(payload: string): StoredTextReasoningResult {
+  try {
+    const parsed: unknown = JSON.parse(payload)
+    if (!isRecord(parsed)
+      || parsed.schema !== 'bb.text-reasoning-result.v1'
+      || !Number.isSafeInteger(parsed.status) || parsed.status < 200 || parsed.status > 299
+      || typeof parsed.content_type !== 'string' || !parsed.content_type.toLowerCase().startsWith('text/event-stream')
+      || typeof parsed.sse_base64 !== 'string' || !parsed.sse_base64
+      || !isUsageAmount(parsed.actual)) {
+      throw new Error('invalid')
+    }
+    const bytes = Buffer.from(parsed.sse_base64, 'base64')
+    if (!bytes.length || bytes.toString('base64') !== parsed.sse_base64) throw new Error('invalid')
+    return {
+      schema: 'bb.text-reasoning-result.v1',
+      status: parsed.status,
+      content_type: parsed.content_type,
+      sse_base64: parsed.sse_base64,
+      actual: parsed.actual,
+    }
+  } catch {
+    throw new GatewayOperationResultError(503, 'OPERATION_RESULT_UNAVAILABLE')
+  }
+}
+
+function textReasoningResultPayload(
+  response: Response,
+  chunks: Uint8Array[],
+  actual: UsageAmount,
+): string {
+  return JSON.stringify({
+    schema: 'bb.text-reasoning-result.v1',
+    status: response.status,
+    content_type: response.headers.get('content-type') ?? 'text/event-stream; charset=utf-8',
+    sse_base64: Buffer.concat(chunks.map(chunk => Buffer.from(chunk))).toString('base64'),
+    actual,
+  } satisfies StoredTextReasoningResult)
+}
+
+function textReasoningResultUsageObserver() {
+  const decoder = new TextDecoder()
+  let buffer = ''
+  let outputUnits: number | undefined
+  const observeUsage = (value: unknown) => {
+    if (!isRecord(value) || !isRecord(value.usage)) return
+    const reported = value.usage.completion_tokens ?? value.usage.output_tokens
+    if (Number.isSafeInteger(reported) && reported >= 0) outputUnits = reported
+  }
+  return {
+    push(chunk: Uint8Array): void {
+      buffer += decoder.decode(chunk, { stream: true }).replaceAll('\r\n', '\n')
+      let boundary: number
+      while ((boundary = buffer.indexOf('\n\n')) >= 0) {
+        const frame = buffer.slice(0, boundary)
+        buffer = buffer.slice(boundary + 2)
+        for (const line of frame.split('\n')) {
+          if (!line.startsWith('data:')) continue
+          const data = line.slice(5).trim()
+          if (!data || data === '[DONE]') continue
+          try { observeUsage(JSON.parse(data)) } catch { /* provider payload parsing remains owned by the adapter */ }
+        }
+      }
+    },
+    actual(inputBytes: number, reservedOutputUnits: number): UsageAmount {
+      return {
+        requests: 1,
+        input_bytes: inputBytes,
+        // The Gateway requests OpenAI-compatible usage in every managed call. If an
+        // upstream breaks that contract, retain the reservation instead of guessing
+        // a smaller billable result.
+        output_units: outputUnits ?? reservedOutputUnits,
+      }
+    },
+  }
+}
+
 function isRecord(value: unknown): value is Record<string, any> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
@@ -1168,6 +1273,8 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
   const store = deps.usageStore ?? new SqliteUsageStore(config.db)
   const usageBudget = deps.usageBudgetService
     ?? new SqliteUsageBudgetService(deps.usageStore ? ':memory:' : config.db)
+  const operationResults = deps.operationResultStore
+    ?? new SqliteGatewayOperationResultStore(deps.usageStore ? ':memory:' : config.db)
   const mimoBucket = new TokenBucket(config.mimoRpm)
   const mimoReservations = new MimoReservationScheduler({
     maxConcurrent: config.mimoConc,
@@ -1309,6 +1416,130 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
 
   function meteredFailure(receipt: UsageReceipt, status: number): void {
     completeMetered(receipt, status === 499 || status >= 500 ? 'outcome_unknown' : 'released')
+  }
+
+  function operationResultFailure(error: unknown): never {
+    if (error instanceof GatewayOperationResultError) throw new HttpError(error.status, error.code)
+    throw new HttpError(503, 'OPERATION_RESULT_UNAVAILABLE')
+  }
+
+  function textReasoningBinding(identity: VerifiedInstallation, operationId: string, rawBody: string): GatewayOperationResultBinding {
+    return {
+      principal_id: identity.principalId,
+      installation_id: identity.installationId,
+      operation_id: operationId,
+      capability: 'TextReasoning',
+      fingerprint: usageFingerprint(`TextReasoning\0${rawBody}`),
+    }
+  }
+
+  function reserveReplayableTextUsage(
+    identity: VerifiedInstallation,
+    operationId: string,
+    fingerprint: string,
+    inputBytes: number,
+    requestedOutput: number,
+  ): { receipt: UsageReceipt; duplicate: boolean } {
+    try {
+      return usageBudget.reserve({
+        operation_id: `${operationId}:text`,
+        principal_id: identity.principalId,
+        installation_id: identity.installationId,
+        capability: 'TextReasoning',
+        fingerprint,
+        amount: { requests: 1, input_bytes: inputBytes, output_units: requestedOutput },
+      })
+    } catch (error) {
+      if (error instanceof UsageBudgetError) throw new HttpError(error.status, error.code)
+      throw new HttpError(503, 'BUDGET_UNAVAILABLE')
+    }
+  }
+
+  function withTextReasoningResultHeaders(response: Response, binding: GatewayOperationResultBinding): Response {
+    const headers = new Headers(response.headers)
+    headers.set('Cache-Control', 'no-store')
+    headers.set('X-BB-Usage-Operation', binding.operation_id)
+    headers.set(PROVIDER_OPERATION_RESULT_ID_HEADER, binding.operation_id)
+    headers.set(PROVIDER_OPERATION_RESULT_CAPABILITY_HEADER, binding.capability)
+    headers.set(PROVIDER_OPERATION_RESULT_FINGERPRINT_HEADER, binding.fingerprint)
+    return new Response(response.body, { status: response.status, statusText: response.statusText, headers })
+  }
+
+  function replayTextReasoningResult(
+    binding: GatewayOperationResultBinding,
+    payload: string,
+    usageReceipt: UsageReceipt,
+  ): Response {
+    const stored = parseStoredTextReasoningResult(payload)
+    try {
+      completeMetered(usageReceipt, 'settled', stored.actual)
+    } catch {
+      // The result is already durable. Do not invoke an upstream a second time while
+      // the quota ledger is unavailable; surface a retryable ledger failure instead.
+      throw new HttpError(503, 'BUDGET_UNAVAILABLE')
+    }
+    return withTextReasoningResultHeaders(new Response(Buffer.from(stored.sse_base64, 'base64'), {
+      status: stored.status,
+      headers: { 'Content-Type': stored.content_type },
+    }), binding)
+  }
+
+  function streamTextReasoningResult(
+    response: Response,
+    binding: GatewayOperationResultBinding,
+    fencingToken: number,
+    usageReceipt: UsageReceipt,
+  ): Response {
+    if (!response.body) {
+      try { operationResults.markOutcomeUnknown(binding, fencingToken) } catch {}
+      try { completeMetered(usageReceipt, 'outcome_unknown') } catch {}
+      throw new HttpError(502, 'MODEL_RESPONSE_STREAM_MISSING')
+    }
+    const reader = response.body.getReader()
+    const chunks: Uint8Array[] = []
+    const usage = textReasoningResultUsageObserver()
+    let resultStored = false
+    let terminal = false
+    const markUnknown = () => {
+      if (terminal || resultStored) return
+      terminal = true
+      try { operationResults.markOutcomeUnknown(binding, fencingToken) } catch {}
+      try { completeMetered(usageReceipt, 'outcome_unknown') } catch {}
+    }
+    const stream = new ReadableStream<Uint8Array>({
+      async pull(controller) {
+        try {
+          const { done, value } = await reader.read()
+          if (!done) {
+            chunks.push(value)
+            usage.push(value)
+            controller.enqueue(value)
+            return
+          }
+          const actual = usage.actual(usageReceipt.reserved.input_bytes, usageReceipt.reserved.output_units)
+          operationResults.complete(binding, fencingToken, textReasoningResultPayload(response, chunks, actual), { awaitingConsumerAck: true })
+          resultStored = true
+          // Persist the replayable result before charging the exact streamed output.
+          // A ledger outage now fails closed and can only be recovered by replaying
+          // this same operation; it never triggers another provider request.
+          completeMetered(usageReceipt, 'settled', actual)
+          terminal = true
+          controller.close()
+        } catch (error) {
+          markUnknown()
+          controller.error(error)
+        }
+      },
+      async cancel(reason) {
+        try { await reader.cancel(reason) } catch {}
+        markUnknown()
+      },
+    })
+    return withTextReasoningResultHeaders(new Response(stream, {
+      status: response.status,
+      statusText: response.statusText,
+      headers: response.headers,
+    }), binding)
   }
 
   function withUsageOperationHeader(response: Response, operationId: string): Response {
@@ -1607,6 +1838,28 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
         return jsonResponse({ object: 'list', data })
       }
 
+      if (request.method === 'POST' && url.pathname === PROVIDER_OPERATION_ACK_PATH) {
+        const identity = auth(authority, request)
+        requireProviderProtocol(request)
+        const binding: GatewayOperationResultBinding = {
+          principal_id: identity.principalId,
+          installation_id: identity.installationId,
+          operation_id: request.headers.get(PROVIDER_OPERATION_RESULT_ID_HEADER)?.trim() ?? '',
+          capability: request.headers.get(PROVIDER_OPERATION_RESULT_CAPABILITY_HEADER)?.trim() as GatewayOperationResultBinding['capability'],
+          fingerprint: request.headers.get(PROVIDER_OPERATION_RESULT_FINGERPRINT_HEADER)?.trim() ?? '',
+        }
+        if (binding.capability !== 'TextReasoning') throw new HttpError(400, 'OPERATION_ACK_CAPABILITY_UNSUPPORTED')
+        try {
+          const acknowledgement = operationResults.acknowledge(binding)
+          if (acknowledgement === 'in_progress') throw new HttpError(409, 'OPERATION_IN_PROGRESS')
+          if (acknowledgement === 'outcome_unknown') throw new HttpError(409, 'OPERATION_OUTCOME_UNKNOWN')
+          return new Response(null, { status: 204, headers: { 'Cache-Control': 'no-store' } })
+        } catch (error) {
+          if (error instanceof HttpError) throw error
+          operationResultFailure(error)
+        }
+      }
+
       // DeepSeek's native Messages route remains narrow and registry-gated.
       if (request.method === 'POST' && url.pathname === '/v1/messages') {
         const identity = auth(authority, request)
@@ -1740,17 +1993,59 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
           }
           if (!deepseekChat) throw new HttpError(503, 'DeepSeek 模型服务未配置（缺 GW_DEEPSEEK_KEY）')
           const inputBytes = Buffer.byteLength(rawBody, 'utf8')
-          const textReceipt = reserveMetered(
-            identity,
-            'TextReasoning',
-            `${usageOperation}:text`,
-            usageFingerprint(`TextReasoning\0${rawBody}`),
-            { requests: 1, input_bytes: inputBytes, output_units: requestedOutputUnits(rawBody) },
-          )
+          const requestedOutput = requestedOutputUnits(rawBody)
+          const binding = textReasoningBinding(identity, usageOperation, rawBody)
+          let operation: ReturnType<GatewayOperationResultStore['begin']>
+          try {
+            // An unknown operation intentionally remains fenced. This endpoint never
+            // turns an interrupted model call into a second upstream request; an
+            // explicit recovery policy can be added only with a matching usage-attempt
+            // ledger in a later R3 unit.
+            operation = operationResults.begin(binding, { awaitingConsumerAck: true })
+          } catch (error) {
+            operationResultFailure(error)
+          }
+          if (operation.outcome === 'in_progress') throw new HttpError(409, 'OPERATION_IN_PROGRESS')
+          if (operation.outcome === 'outcome_unknown') throw new HttpError(409, 'OPERATION_OUTCOME_UNKNOWN')
+          let textReservation: { receipt: UsageReceipt; duplicate: boolean }
+          try {
+            textReservation = reserveReplayableTextUsage(
+              identity,
+              usageOperation,
+              binding.fingerprint,
+              inputBytes,
+              requestedOutput,
+            )
+          } catch (error) {
+            if (operation.outcome === 'started') {
+              try { operationResults.release(binding, operation.fencing_token) } catch {}
+            }
+            throw error
+          }
+          if (operation.outcome === 'started' && textReservation.duplicate) {
+            // Result retention may end before the immutable usage ledger. Do not let
+            // a recycled operation id turn that old receipt into a free new provider
+            // request; callers must use a new user-visible operation instead.
+            try { operationResults.release(binding, operation.fencing_token) } catch {}
+            throw new HttpError(409, 'OPERATION_USAGE_CONFLICT')
+          }
+          const textReceipt = textReservation.receipt
+          if (operation.outcome === 'succeeded') {
+            try {
+              return replayTextReasoningResult(binding, operation.payload, textReceipt)
+            } catch (error) {
+              if (error instanceof HttpError) throw error
+              operationResultFailure(error)
+            }
+          }
+          const releaseTextOperation = () => {
+            try { operationResults.release(binding, operation.fencing_token) } catch {}
+          }
           let effectiveBody = rawBody
           if (hasImages) {
             if (!visionBridge) {
               completeMetered(textReceipt, 'released')
+              releaseTextOperation()
               throw new HttpError(503, '图片理解服务未配置（缺 GW_MIMO_KEY）')
             }
             let visionReceipt: UsageReceipt
@@ -1764,6 +2059,7 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
               )
             } catch (error) {
               completeMetered(textReceipt, 'released')
+              releaseTextOperation()
               throw error
             }
             const bridgeStarted = performance.now()
@@ -1783,11 +2079,35 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
               const detail = known ? error.publicMessage : '图片理解服务暂时不可用，请稍后重试'
               meteredFailure(visionReceipt, status)
               completeMetered(textReceipt, 'released')
+              releaseTextOperation()
               await logUsage(store, { user, model: 'vision', ok: false, status, ms: elapsedMs(bridgeStarted), note: 'vision_bridge_failed' })
               throw new HttpError(status, detail)
             }
           }
-          return await runMeteredStream(textReceipt, usageOperation, () => deepseekChat(request, effectiveBody, user, identity.principalId))
+          try {
+            const response = await deepseekChat(request, effectiveBody, user, identity.principalId)
+            if (!response.ok) {
+              meteredFailure(textReceipt, response.status)
+              if (response.status === 499 || response.status >= 500) {
+                try { operationResults.markOutcomeUnknown(binding, operation.fencing_token) } catch {}
+              } else {
+                releaseTextOperation()
+              }
+              return withUsageOperationHeader(response, usageOperation)
+            }
+            return streamTextReasoningResult(response, binding, operation.fencing_token, textReceipt)
+          } catch (error) {
+            const status = error instanceof HttpError || error instanceof CapacityQueueError || error instanceof DeepSeekRequestError
+              ? error.status
+              : 500
+            meteredFailure(textReceipt, status)
+            if (status === 499 || status >= 500) {
+              try { operationResults.markOutcomeUnknown(binding, operation.fencing_token) } catch {}
+            } else {
+              releaseTextOperation()
+            }
+            throw error
+          }
         })
       }
 
