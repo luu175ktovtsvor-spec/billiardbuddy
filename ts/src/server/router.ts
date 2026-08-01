@@ -6,19 +6,17 @@ import { handleStatusApi } from './api/status.js'
 import { handlePluginsApi } from './api/plugins.js'
 import { handleMcpApi } from './api/mcp.js'
 import { handleDiagnosticsApi } from './api/diagnostics.js'
-import { handleMediaApi } from './api/media.js'
-import { handleProductApi } from './api/product.js'
 import { handleBrowserApi } from './api/browser.js'
 
 type ApiRequestHandlers = {
-  media?: typeof handleMediaApi
-  product?: (req: Request, url: URL, segments: string[]) => Promise<Response>
+  media: (req: Request, url: URL, segments: string[]) => Promise<Response>
+  product: (req: Request, url: URL, segments: string[]) => Promise<Response>
 }
 
 export async function handleApiRequest(
   req: Request,
   url: URL,
-  handlers: ApiRequestHandlers = {},
+  handlers: ApiRequestHandlers,
 ): Promise<Response> {
   const path = url.pathname
   const segments = path.split('/').filter(Boolean) // ['api', 'sessions', ...]
@@ -40,12 +38,10 @@ export async function handleApiRequest(
       return handleDiagnosticsApi(req, url, segments)
 
     case 'media':
-      return (handlers.media ?? handleMediaApi)(req, url, segments)
+      return handlers.media(req, url, segments)
 
     case 'product':
-      return handlers.product
-        ? handlers.product(req, url, segments)
-        : handleProductApi(req, url, segments)
+      return handlers.product(req, url, segments)
 
     case 'browser':
       return handleBrowserApi(req, url, segments)

@@ -11,18 +11,14 @@ import type {
 import { PRODUCT_TASK_PERMISSION_MODES } from '../../../shared/product/domain.js'
 import { errorResponse, ApiError } from '../middleware/errorHandler.js'
 import {
-  productTaskReviewService,
   type ProductTaskReviewService,
 } from '../product/taskReviewService.js'
 import { assertAuthorityMapKey, assertOperationEnvelope } from '../../../shared/product/authority.js'
 import { ProductCoreOperationBridge } from '../product/productCoreOperationBridge.js'
-import { productTaskService, type ProductTaskService } from '../product/taskService.js'
+import type { ProductTaskService } from '../product/taskService.js'
 import { MAX_MULTIPART_ATTACHMENT_BYTES } from '../product/taskAttachmentIngest.js'
 import { handleProductScheduledTasksApi } from './productScheduledTasks.js'
-import {
-  productScheduledTaskService,
-  type ProductScheduledTaskService,
-} from '../product/scheduledTaskService.js'
+import type { ProductScheduledTaskService } from '../product/scheduledTaskService.js'
 import { handleProductSettingsApi } from './productSettings.js'
 import { handleProductTaskCommandsApi } from './productTaskCommands.js'
 import { handleProductVoiceApi } from './productVoice.js'
@@ -36,8 +32,6 @@ type ProductTaskReviewApi = Pick<
 function authorityPath(): string {
   return path.join(process.env.BILLIARDBUDDY_CONFIG_DIR || path.join(os.homedir(), '.BilliardBuddy'), 'billiardbuddy', 'product-task-authority.v1.json')
 }
-
-const defaultCoreOperationBridge = new ProductCoreOperationBridge()
 
 function authoritativeEnvelope(value: unknown): { expected_revision: number; client_operation_id: string } {
   try {
@@ -103,11 +97,11 @@ export async function handleProductApi(
     | 'listTasksAuthoritatively'
     | 'listSideTasksAuthoritatively'
     | 'bindTaskWorkspace'
-  > = productTaskService,
-  review: ProductTaskReviewApi = productTaskReviewService,
-  scheduledTasks: ProductScheduledTaskService = productScheduledTaskService,
-  capabilitySnapshots: Pick<ProductCapabilitySnapshotService, 'snapshot'> = new ProductCapabilitySnapshotService(),
-  coreOperationBridge: ProductCoreOperationBridge = defaultCoreOperationBridge,
+  >,
+  review: ProductTaskReviewApi,
+  scheduledTasks: ProductScheduledTaskService,
+  capabilitySnapshots: Pick<ProductCapabilitySnapshotService, 'snapshot'>,
+  coreOperationBridge: ProductCoreOperationBridge,
 ): Promise<Response> {
   try {
     if (segments[2] === 'voice') {

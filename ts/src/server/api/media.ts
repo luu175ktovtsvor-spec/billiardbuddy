@@ -240,7 +240,7 @@ function publicToolchainStatus(status: Awaited<ReturnType<MediaProjectService['t
 }
 
 export function createMediaApiHandler(
-  service = new MediaProjectService(),
+  service: MediaProjectService,
   mediaUiCapability = '',
 ) {
   return async function handleMediaApi(
@@ -498,5 +498,3 @@ export function createMediaApiHandler(
     }
   }
 }
-
-export const handleMediaApi = createMediaApiHandler()

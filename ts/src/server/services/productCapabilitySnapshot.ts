@@ -8,8 +8,6 @@ import type { ProductScheduledTaskRun } from '../../../shared/product/scheduledT
 import { getChromeSessionBridge } from './chromeSessionBridge.js'
 import { loadNetworkSettings, getNetworkProxyFetchOptions } from './networkSettings.js'
 import { productGatewayConfigured, productGatewayTarget } from '../product/productGatewayRuntime.js'
-import { MediaProjectService } from './mediaProjectService.js'
-import { productScheduledTaskService } from '../product/scheduledTaskService.js'
 
 type MeteredCapability = 'TextReasoning' | 'VisualEvidence' | 'MediaReasoning' | 'SpeechTranscription'
 
@@ -32,6 +30,9 @@ type CapabilitySnapshotDependencies = {
   scheduledRuns: () => Promise<ProductScheduledTaskRun[]>
   now: () => Date
 }
+
+type CapabilitySnapshotOverrides = Pick<CapabilitySnapshotDependencies, 'mediaToolchainStatus' | 'scheduledRuns'>
+  & Partial<Omit<CapabilitySnapshotDependencies, 'mediaToolchainStatus' | 'scheduledRuns'>>
 
 const GATEWAY_STATUS_BODY_LIMIT = 256 * 1024
 
@@ -138,14 +139,11 @@ function unavailableRemoteCapabilities(
 export class ProductCapabilitySnapshotService {
   private readonly deps: CapabilitySnapshotDependencies
 
-  constructor(overrides: Partial<CapabilitySnapshotDependencies> = {}) {
-    const media = overrides.mediaToolchainStatus ? null : new MediaProjectService()
+  constructor(overrides: CapabilitySnapshotOverrides) {
     this.deps = {
       gatewayConfigured: productGatewayConfigured,
       gatewayStatus: fetchGatewayStatus,
-      mediaToolchainStatus: overrides.mediaToolchainStatus ?? (() => media!.toolchainStatus()),
       browserStatus: () => getChromeSessionBridge().status(),
-      scheduledRuns: () => productScheduledTaskService.listRecentRuns(100),
       now: () => new Date(),
       ...overrides,
     }
