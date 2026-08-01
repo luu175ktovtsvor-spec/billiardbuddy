@@ -5,6 +5,7 @@ import { ProductResourceScheduler } from '../product/resourceScheduler.js'
 import { ProductTaskWorkerMessageSink } from '../product/taskRunDispatchBridge.js'
 import type { ProductTaskRunDispatchPort } from '../product/taskRunDispatchPort.js'
 import type { ProductTaskService } from '../product/taskService.js'
+import type { ProductTaskRuntimeEventPort } from '../product/taskRuntimeEventPort.js'
 
 export type ProductTaskRunComposition = {
   dispatcher: ProductTaskRunDispatchPort
@@ -15,6 +16,7 @@ export type ProductTaskRunComposition = {
 export function createProductTaskRunComposition(
   tasks: ProductTaskService,
   scheduler: ProductResourceScheduler,
+  runtimeEvents: ProductTaskRuntimeEventPort,
 ): ProductTaskRunComposition {
   let supervisor: AgentWorkerSupervisor | undefined
   const resolveSupervisor = () => {
@@ -24,7 +26,7 @@ export function createProductTaskRunComposition(
       scheduler,
       new IpcAgentWorkerLauncher(tasks, serverPrivateNativeCoreFactory),
       5_000,
-      new ProductTaskWorkerMessageSink(tasks),
+      new ProductTaskWorkerMessageSink(tasks, runtimeEvents),
     )
     return supervisor
   }

@@ -24,6 +24,8 @@ import { createRuntimeTaskLifecycleParticipants } from './product/taskLifecycleP
 import { ProductCoreOperationBridge } from './product/productCoreOperationBridge.js'
 import { createProductTaskRunComposition, type ProductTaskRunComposition } from './agent-worker/taskRunComposition.js'
 import type { ProductTaskRunDispatchPort } from './product/taskRunDispatchPort.js'
+import { createProductTaskRuntimeEventPort } from './product/taskRuntimeEventPort.js'
+import { ProductTaskWorkerRuntimeEvents } from './product/taskWorkerRuntimeEvents.js'
 import { migrateSupportedScheduledTaskRuns, purgeScheduledTaskRunsForDeletedTask } from './services/cronScheduler.js'
 import {
   consumeGatewayAccessTokenCapability,
@@ -62,6 +64,7 @@ const PORT = SERVER_OPTIONS.port
 const HOST = SERVER_OPTIONS.host
 let liveCronScheduler: CronScheduler | undefined
 let liveTaskRunComposition: ProductTaskRunComposition | undefined
+let liveProductTaskWebSocket: ReturnType<typeof createProductTaskWebSocket> | undefined
 
 function withCors(response: Response, cors: CorsResolution): Response {
   const headers = new Headers(response.headers)
@@ -114,6 +117,8 @@ export function startServer(port = PORT, host = HOST) {
   const configDir = getProductConfigDir()
   const cronService = new CronService(configDir)
   const coreOperationBridge = new ProductCoreOperationBridge()
+  const taskRuntimeEvents = new ProductTaskWorkerRuntimeEvents()
+  const taskRuntimeEventPort = createProductTaskRuntimeEventPort(taskRuntimeEvents)
   let chromeSessionBridge: ReturnType<typeof configureChromeSessionBridge> | undefined
   let desktopResourceScheduler!: ProductResourceScheduler
   let productTaskService!: ProductTaskService
@@ -129,6 +134,7 @@ export function startServer(port = PORT, host = HOST) {
   }
   productTaskService = createProductTaskService({
     dispatcher,
+    runtimeEvents: taskRuntimeEventPort,
     additionalLifecycleParticipants: createRuntimeTaskLifecycleParticipants({
       schedules: cronService,
       recruiting: () => chromeSessionBridge,
@@ -140,7 +146,11 @@ export function startServer(port = PORT, host = HOST) {
     }),
   })
   desktopResourceScheduler = new ProductResourceScheduler({ statePath: productTaskService.workerSchedulerStatePath() })
-  taskRunComposition = createProductTaskRunComposition(productTaskService, desktopResourceScheduler)
+  taskRunComposition = createProductTaskRunComposition(
+    productTaskService,
+    desktopResourceScheduler,
+    taskRuntimeEventPort,
+  )
   liveTaskRunComposition = taskRunComposition
   const scheduler = new CronScheduler(cronService, productTaskService)
   liveCronScheduler = scheduler
@@ -206,7 +216,8 @@ export function startServer(port = PORT, host = HOST) {
       coreOperationBridge,
     )
   )
-  const productTaskWebSocket = createProductTaskWebSocket(productTaskService)
+  const productTaskWebSocket = createProductTaskWebSocket(productTaskService, taskRuntimeEvents)
+  liveProductTaskWebSocket = productTaskWebSocket
   // Library consumers can own the global console and process handlers:
   // a test that boots the server would otherwise route every test-side
   // console.error/warn into the user's real diagnostics file.
@@ -394,6 +405,8 @@ export async function stopServerRuntimeForShutdown(
 ): Promise<void> {
   liveCronScheduler?.stop()
   liveCronScheduler = undefined
+  liveProductTaskWebSocket?.shutdown()
+  liveProductTaskWebSocket = undefined
   try {
     await getChromeSessionBridge().deactivate()
   } catch {
