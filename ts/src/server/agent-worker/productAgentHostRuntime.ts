@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto'
 import uniqBy from 'lodash-es/uniqBy.js'
+import { z } from 'zod/v4'
 import type { AgentWorkerOutbound } from '../../../shared/product/agentWorker.js'
 import type { ProductAssistantMessage, ProductHarnessMessage, ProductModelEvent, ProductModelOperationReceipt, ProductPrompt, ProductToolCallBlock, ProductToolResultBlock } from '../../../shared/product/harnessMessages.js'
 import type { PersonalModelProfile } from '../../../shared/product/personalModels.js'
@@ -18,7 +19,7 @@ import { acknowledgeProductModelOperation, runProductModel } from './productMode
 import { runProductTools } from './productToolExecution.js'
 import { decideProductToolPermission } from './productPermissionDecision.js'
 import { zodToJsonSchema } from '../../utils/zodToJsonSchema.js'
-import { emptyProductToolPermissionContext, type ProductCommand, type ProductContentBlock, type ProductThinkingConfig, type ProductToolContext, type ProductToolPermissionContext, type ProductTools } from './productTool.js'
+import { buildProductTool, emptyProductToolPermissionContext, type ProductCommand, type ProductContentBlock, type ProductThinkingConfig, type ProductToolContext, type ProductToolPermissionContext, type ProductTools } from './productTool.js'
 import { buildProductChatPrompt } from './productChatAttachments.js'
 import { getLocalISODate } from '../../constants/common.js'
 import type { ProductAgentSubtaskCoordinator } from './productSubtaskCoordinator.js'
@@ -68,6 +69,19 @@ export type ProductHostEngineToolResult = {
   is_error: boolean
   content: string | Array<Extract<ProductContentBlock, { type: 'text' | 'image' }>>
 }
+
+const ProductEngineSubtaskTool = buildProductTool({
+  name: 'Subtask',
+  maxResultSizeChars: 100_000,
+  inputSchema: z.strictObject({
+    prompt: z.string().min(1).max(100_000).describe('A bounded independent subtask to solve'),
+    description: z.string().min(1).max(160).describe('Short description of the subtask'),
+  }),
+  async description() { return 'Delegate a bounded independent subtask through a durable child BilliardBuddy Run' },
+  async prompt() { return 'The child inherits the current workspace and permission envelope and cannot create another Subtask.' },
+  async call() { throw new Error('CODEX_ENGINE_SUBTASK_MUST_USE_ENGINE_BRIDGE') },
+  mapToolResultToToolResultBlockParam() { throw new Error('CODEX_ENGINE_SUBTASK_MUST_USE_ENGINE_BRIDGE') },
+})
 
 export type ProductHostModelRequest = {
   messages: ProductHarnessMessage[]
@@ -289,12 +303,9 @@ export class StandardProductAgentHostRuntime implements ProductAgentHostRuntime 
   engineTools(): Promise<ProductHostEngineToolSurface> {
     this.engineToolSurface ??= (async () => {
       await this.prepare()
-      const tools = this.toolsForTurn
-        // Plugin-owned agent loops still have no independent Run protocol.
+      const tools = this.engineToolsForSource()
         // TodoWrite is a normal Host tool whose accepted result is projected
         // synchronously by the source Core before that result is acknowledged.
-        .filter(tool => !tool.name.startsWith('agent__'))
-        .filter(tool => tool.name !== 'Subtask' || Boolean(this.input.subtask_coordinator && !this.input.subtask))
         .filter(tool => /^[A-Za-z0-9_-]{1,128}$/.test(tool.name))
         .sort((left, right) => left.name.localeCompare(right.name))
       if (tools.length > 256) throw new Error('CODEX_ENGINE_TOOL_LIMIT')
@@ -383,11 +394,17 @@ export class StandardProductAgentHostRuntime implements ProductAgentHostRuntime 
 
   private engineToolsForSurface(surface: ProductHostEngineToolSurface): ProductTools {
     const allowed = new Set(surface.tools.map(tool => tool.name))
-    const tools = this.toolsForTurn.filter(tool => allowed.has(tool.name)).sort((left, right) => left.name.localeCompare(right.name))
+    const tools = this.engineToolsForSource().filter(tool => allowed.has(tool.name)).sort((left, right) => left.name.localeCompare(right.name))
     if (tools.length !== surface.tools.length || tools.some((tool, index) => tool.name !== surface.tools[index]?.name)) {
       throw new Error('CODEX_ENGINE_TOOL_SURFACE_MISMATCH')
     }
     return tools
+  }
+
+  private engineToolsForSource(): ProductTools {
+    return this.input.subtask_coordinator && !this.input.subtask
+      ? [...this.toolsForTurn, ProductEngineSubtaskTool]
+      : this.toolsForTurn
   }
 
   private async runTools(request: ProductHostToolRequest): Promise<ProductHarnessMessage[]> {

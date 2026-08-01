@@ -1,19 +1,15 @@
 import { getCwd } from '../../utils/cwd.js'
 import {
-  listProductTaskAgentCommands,
   listProductTaskSkillCommands,
-  type ProductTaskAgentCommand,
   type ProductTaskSkillCommand,
 } from '../product/taskCommandDiscovery.js'
 import { ApiError, errorResponse } from '../middleware/errorHandler.js'
 
 type ProductTaskCommandDiscoveryApi = {
-  listAgents: (cwd?: string) => Promise<ProductTaskAgentCommand[]>
   listSkills: (cwd?: string) => Promise<ProductTaskSkillCommand[]>
 }
 
 const defaultDiscovery: ProductTaskCommandDiscoveryApi = {
-  listAgents: listProductTaskAgentCommands,
   listSkills: listProductTaskSkillCommands,
 }
 
@@ -24,7 +20,6 @@ function requestedCwd(url: URL): string {
 /**
  * Product task Composer command discovery.
  *
- * GET /api/product/task-commands/agents?cwd=...
  * GET /api/product/task-commands/skills?cwd=...
  */
 export async function handleProductTaskCommandsApi(
@@ -42,9 +37,6 @@ export async function handleProductTaskCommandsApi(
     }
 
     const cwd = requestedCwd(url)
-    if (segments[3] === 'agents') {
-      return Response.json({ agents: await discovery.listAgents(cwd) })
-    }
     if (segments[3] === 'skills') {
       return Response.json({ commands: await discovery.listSkills(cwd) })
     }

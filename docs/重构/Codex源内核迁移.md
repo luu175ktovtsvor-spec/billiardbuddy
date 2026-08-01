@@ -101,7 +101,9 @@ Codex 会保存自己的 Thread、配置与运行资料。BilliardBuddy 启动�
 
 用户输入的提示命令没有随旧循环丢失：`/update-config` 等非 direct-tool 命令在 Product Host 按当前项目能力展开，先形成 `command_prompt` 操作回执，再作为同一个 Codex Turn 的首轮输入。隔离假模型已确认收到展开后的指令；带旧本地循环语义的命名 Agent 不在这条路径中，必须另行迁移为受控子 Run 或删除。
 
-这只证明 Codex 是唯一执行内核，不把它误说成产品总后端：Product Server 继续拥有 Run 账本、外部操作回执、权限、恢复与最终状态；模型桥、Gateway/个人 Key 路径、Electron Main、图片和视频服务也没有被交给 Codex。旧 Harness 的执行器、端口、模型策略和投影文件已物理删除；命名 Agent 本地循环和自动记忆遗留设置仍需在独立清理提交中删除或按 Codex 语义重新实现，在那之前不会把它们称为当前 Codex 能力。
+这只证明 Codex 是唯一执行内核，不把它误说成产品总后端：Product Server 继续拥有 Run 账本、外部操作回执、权限、恢复与最终状态；模型桥、Gateway/个人 Key 路径、Electron Main、图片和视频服务也没有被交给 Codex。旧 Harness 的执行器、端口、模型策略和投影文件已物理删除。
+
+同日的第二次收口删除了旧 TypeScript `ProductAgentLoop`、命名 Agent Markdown 加载器和它在插件/任务输入/桌面选择器中的所有入口；它们曾在一个父工具内递归启动另一条模型循环，既不是 Codex 能力，也不具备独立 Run 的恢复语义。正式 `Subtask` 不受影响：它是 Codex 动态工具面中的受控声明，调用后由 Product Server 创建独立子 Run，再交回同一 Codex 内核执行。未来如果重建“命名 Agent”，只能把它定义为这种受账本管理的子 Run 预设，不能恢复本地递归 loop。自动记忆遗留设置仍是下一个单独清理项，在清理前不称为 Codex 能力。
 
 ## 5. 许可与发布边界
 

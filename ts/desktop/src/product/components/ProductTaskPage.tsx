@@ -10,7 +10,6 @@ import { shouldSubmitOnEnter } from '../../components/chat/sendShortcut'
 import type { ProductTaskOutcomeUnknown, ProductTaskRecord, ProductTaskThreadEntry } from '../domain/types'
 import {
   productTaskCommandsApi,
-  type ProductTaskAgentCommand,
   type ProductTaskSkillCommand,
 } from '../api/taskCommands'
 import {
@@ -429,10 +428,8 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
   const [draft, setDraft] = useState('')
   const [referenceEntryIds, setReferenceEntryIds] = useState<string[]>([])
   const [discoverableSkills, setDiscoverableSkills] = useState<ProductTaskSkillCommand[] | null>(null)
-  const [discoverableAgents, setDiscoverableAgents] = useState<ProductTaskAgentCommand[] | null>(null)
   const [commandDiscoveryWorkDir, setCommandDiscoveryWorkDir] = useState<string | null>(null)
   const [skillDiscoveryError, setSkillDiscoveryError] = useState<string | null>(null)
-  const [agentDiscoveryError, setAgentDiscoveryError] = useState<string | null>(null)
   const [validationMessage, setValidationMessage] = useState<string | null>(null)
   const [attachmentMessage, setAttachmentMessage] = useState<string | null>(null)
   const [attachments, setAttachments] = useState<ProductTaskAttachmentDraft[]>([])
@@ -501,27 +498,21 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
   useEffect(() => {
     if (!isSlashInput) {
       setDiscoverableSkills(null)
-      setDiscoverableAgents(null)
       setCommandDiscoveryWorkDir(null)
       setSkillDiscoveryError(null)
-      setAgentDiscoveryError(null)
       return
     }
     if (!normalizedWorkDir) {
       setDiscoverableSkills([])
-      setDiscoverableAgents([])
       setCommandDiscoveryWorkDir('')
       setSkillDiscoveryError(null)
-      setAgentDiscoveryError(null)
       return
     }
 
     let cancelled = false
     setDiscoverableSkills(null)
-    setDiscoverableAgents(null)
     setCommandDiscoveryWorkDir(normalizedWorkDir)
     setSkillDiscoveryError(null)
-    setAgentDiscoveryError(null)
 
     productTaskCommandsApi.listSkills(normalizedWorkDir)
       .then(({ commands }) => {
@@ -534,25 +525,14 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
         setSkillDiscoveryError('暂时无法读取可用命令')
       })
 
-    productTaskCommandsApi.listAgents(normalizedWorkDir)
-      .then(({ agents }) => {
-        if (cancelled) return
-        setDiscoverableAgents(agents)
-      })
-      .catch(() => {
-        if (cancelled) return
-        setDiscoverableAgents([])
-        setAgentDiscoveryError('暂时无法读取可用命令')
-      })
-
     return () => {
       cancelled = true
     }
   }, [isSlashInput, normalizedWorkDir])
 
   const taskComposerCommands = useMemo(
-    () => buildTaskComposerCommands(discoverableSkills ?? [], discoverableAgents ?? []),
-    [discoverableAgents, discoverableSkills],
+    () => buildTaskComposerCommands(discoverableSkills ?? []),
+    [discoverableSkills],
   )
   const matchingCommands = useMemo<ProductTaskComposerSlashCommand[]>(() => {
     if (commandQuery === null) return []
@@ -565,10 +545,10 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
   }, [commandQuery, taskComposerCommands])
   const hasCommandDiscoveryForCurrentWorkDir = commandDiscoveryWorkDir === normalizedWorkDir
   const visibleCommands = hasCommandDiscoveryForCurrentWorkDir ? matchingCommands : []
-  const hasPendingCommandDiscovery = discoverableSkills === null || discoverableAgents === null
+  const hasPendingCommandDiscovery = discoverableSkills === null
   const visibleCommandDiscoveryError = hasCommandDiscoveryForCurrentWorkDir
     ? visibleCommands.length === 0
-      ? [skillDiscoveryError, agentDiscoveryError].filter(Boolean).join('；') || null
+      ? skillDiscoveryError
       : null
     : null
   const isCommandDiscoveryLoading = Boolean(normalizedWorkDir) && (

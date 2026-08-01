@@ -20,7 +20,6 @@ import type {
 
 const CAPABILITIES: Array<{ key: PluginCapabilityKey; icon: string }> = [
   { key: 'skills', icon: 'auto_awesome' },
-  { key: 'agents', icon: 'smart_toy' },
   { key: 'mcpServers', icon: 'hub' },
   { key: 'hooks', icon: 'bolt' },
   { key: 'commands', icon: 'terminal' },

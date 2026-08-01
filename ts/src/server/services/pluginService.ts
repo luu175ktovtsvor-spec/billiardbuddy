@@ -6,7 +6,6 @@ import {
   hasProductPluginUpdateSource,
   installProductPluginFromDirectory,
   productPluginSkillRoots,
-  productPluginAgentRoots,
   productPluginCommandRoots,
   productPluginHookFiles,
   setProductPluginEnabled,
@@ -16,11 +15,10 @@ import {
   type ProductPluginScope,
 } from './productPluginRegistry.js'
 import { loadProductPluginCommands } from '../agent-worker/productPluginCommandLoader.js'
-import { loadProductPluginAgentTools } from '../agent-worker/productPluginAgentLoader.js'
 import { loadProductSkillCommandsFromDirectory } from '../agent-worker/productSkillLoader.js'
 import { inspectProductPluginHookFile } from '../agent-worker/productHookSnapshot.js'
 
-export type ApiPluginCapabilityKind = 'commands' | 'agents' | 'skills' | 'hooks' | 'mcpServers' | 'lspServers'
+export type ApiPluginCapabilityKind = 'commands' | 'skills' | 'hooks' | 'mcpServers' | 'lspServers'
 export type ApiPluginStatus = 'attention' | 'enabled' | 'disabled'
 export type ApiPluginDescriptionKind = 'workspace_extension'
 export type ApiPluginComponentCounts = Record<ApiPluginCapabilityKind, number>
@@ -39,41 +37,34 @@ export type ApiPluginDetail = ApiPluginSummary
 export type ApiPluginListResponse = { plugins: ApiPluginSummary[]; summary: { total: number; enabled: number; attention: number } }
 export type ApiPluginAction = 'enabled' | 'disabled' | 'installed' | 'updated' | 'uninstalled'
 export type ApiPluginActionResponse = { ok: true; action: ApiPluginAction }
-export type ApiPluginReloadResponse = { ok: true; summary: { enabled: number; disabled: number; skills: number; agents: number; hooks: number; mcpServers: number; lspServers: number; errors: number } }
-
-async function rawMarkdown(directory: string): Promise<number> {
-  const entries = await fs.readdir(directory, { withFileTypes: true }).catch(() => [])
-  return entries.filter(entry => entry.isFile() && entry.name.toLowerCase().endsWith('.md')).length
-}
+export type ApiPluginReloadResponse = { ok: true; summary: { enabled: number; disabled: number; skills: number; hooks: number; mcpServers: number; lspServers: number; errors: number } }
 
 async function counts(plugin: ProductPlugin): Promise<{ components: ApiPluginComponentCounts; errors: number }> {
   const skillRoots = productPluginSkillRoots(plugin)
   const commandRoots = productPluginCommandRoots(plugin)
-  const agentRoots = productPluginAgentRoots(plugin)
   const hookFiles = productPluginHookFiles(plugin)
-  const [skills, rawSkills, commands, rawCommands, agents, rawAgents, hooks] = await Promise.all([
+  const [skills, rawSkills, commands, rawCommands, hooks] = await Promise.all([
     Promise.all(skillRoots.map(root => loadProductSkillCommandsFromDirectory(root, plugin.root, plugin.name))),
     Promise.all(skillRoots.map(async root => {
       const entries = await fs.readdir(root, { withFileTypes: true }).catch(() => [])
       return entries.filter(entry => entry.isDirectory()).length
     })),
     Promise.all(commandRoots.map(root => loadProductPluginCommands(root, plugin.root, plugin.name))),
-    Promise.all(commandRoots.map(rawMarkdown)),
-    Promise.all(agentRoots.map(root => loadProductPluginAgentTools(root, plugin.root, plugin.name))),
-    Promise.all(agentRoots.map(rawMarkdown)),
+    Promise.all(commandRoots.map(async root => {
+      const entries = await fs.readdir(root, { withFileTypes: true }).catch(() => [])
+      return entries.filter(entry => entry.isFile() && entry.name.toLowerCase().endsWith('.md')).length
+    })),
     Promise.all(hookFiles.map(file => inspectProductPluginHookFile(file, plugin.root))),
   ])
   const components = {
     skills: skills.flat().length,
     commands: commands.flat().length,
-    agents: agents.flat().length,
     hooks: hooks.filter(Boolean).length,
     mcpServers: Object.keys(plugin.manifest.mcpServers ?? {}).length,
     lspServers: Object.keys(plugin.manifest.lspServers ?? {}).length,
   }
   const errors = Math.max(0, rawSkills.reduce((sum, value) => sum + value, 0) - components.skills)
     + Math.max(0, rawCommands.reduce((sum, value) => sum + value, 0) - components.commands)
-    + Math.max(0, rawAgents.reduce((sum, value) => sum + value, 0) - components.agents)
     + Math.max(0, hookFiles.length - components.hooks)
   return { components, errors }
 }
@@ -146,7 +137,7 @@ export class PluginService {
     return { ok: true, summary: {
       enabled: plugins.filter(value => value.enabled).length,
       disabled: plugins.filter(value => !value.enabled).length,
-      skills: total('skills'), agents: total('agents'), hooks: total('hooks'), mcpServers: total('mcpServers'), lspServers: total('lspServers'), errors: inspected.reduce((sum, value) => sum + value.errors, 0),
+      skills: total('skills'), hooks: total('hooks'), mcpServers: total('mcpServers'), lspServers: total('lspServers'), errors: inspected.reduce((sum, value) => sum + value.errors, 0),
     } }
   }
 }

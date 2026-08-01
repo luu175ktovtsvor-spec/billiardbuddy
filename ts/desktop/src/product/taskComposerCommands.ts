@@ -5,11 +5,6 @@ export type TaskComposerCommand = {
   argumentHint?: string
 }
 
-export type TaskComposerAgent = {
-  displayName: string
-  runtimeName: string
-}
-
 export type TaskComposerSkill = {
   runtimeName: string
   displayName: string
@@ -49,20 +44,13 @@ export function buildTaskComposerSkillCommands(
   return commands
 }
 
-/**
- * A task can expose bundled Skills and Agents in one slash picker. Reserve
- * their visible names together so the submitted alias always maps back to one
- * exact runtime command.
- */
 export function buildTaskComposerCommands(
   skills: ReadonlyArray<TaskComposerSkill>,
-  agents: ReadonlyArray<TaskComposerAgent>,
 ): TaskComposerCommand[] {
   const reservedNames = new Set<string>()
   return [
     ...BUILTIN_TASK_COMMANDS,
     ...buildTaskComposerSkillCommands(skills),
-    ...buildTaskComposerAgentCommands(agents),
   ].map((command) => {
     const runtimeName = command.runtimeName ?? command.name
     const name = reserveCommandName(command.name, reservedNames)
@@ -73,48 +61,6 @@ export function buildTaskComposerCommands(
       ...(runtimeName !== name ? { runtimeName } : {}),
     }
   })
-}
-
-export function buildTaskComposerAgentCommands(
-  agents: ReadonlyArray<TaskComposerAgent>,
-): TaskComposerCommand[] {
-  const seenRuntimeNames = new Set<string>()
-  const displayNames = new Set<string>()
-  const commands: TaskComposerCommand[] = []
-
-  for (const agent of agents) {
-    const runtimeAgentType = agent.runtimeName.trim()
-    const preferredDisplayAgentType = agent.displayName.trim()
-    if (!runtimeAgentType || !preferredDisplayAgentType || seenRuntimeNames.has(runtimeAgentType)) continue
-    seenRuntimeNames.add(runtimeAgentType)
-
-    const displayAgentType = reserveDisplayName(preferredDisplayAgentType, displayNames)
-    displayNames.add(displayAgentType)
-    const name = `agent ${displayAgentType}`
-    const runtimeName = `agent:${runtimeAgentType}`
-
-    commands.push({
-      name,
-      ...(runtimeName !== name ? { runtimeName } : {}),
-      description: '',
-      argumentHint: '<prompt>',
-    })
-  }
-
-  return commands
-}
-
-function reserveDisplayName(preferred: string, reserved: Set<string>): string {
-  if (!reserved.has(preferred)) return preferred
-
-  const base = `${preferred}-assistant`
-  let candidate = base
-  let suffix = 2
-  while (reserved.has(candidate)) {
-    candidate = `${base}-${suffix}`
-    suffix += 1
-  }
-  return candidate
 }
 
 function reserveSkillDisplayName(preferred: string, reserved: Set<string>): string {

@@ -2,7 +2,6 @@ export type PluginScope = 'user' | 'project' | 'local' | 'managed' | 'builtin'
 
 export type PluginCapabilityKey =
   | 'commands'
-  | 'agents'
   | 'skills'
   | 'hooks'
   | 'mcpServers'
@@ -50,7 +49,6 @@ export type PluginReloadSummary = {
   enabled: number
   disabled: number
   skills: number
-  agents: number
   hooks: number
   mcpServers: number
   lspServers: number
@@ -62,7 +60,6 @@ export type PluginTaskReloadSummary = {
   applied: boolean
   reason?: 'next_turn'
   commands: number
-  agents: number
   plugins: number
   mcpServers: number
   errors: number
