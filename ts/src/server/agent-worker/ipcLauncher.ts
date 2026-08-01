@@ -359,6 +359,24 @@ export class IpcAgentWorkerLauncher implements AgentWorkerChildLauncher {
         for await (const chunk of runtime.engineModel(modelRequest as never)) relay({ type: 'runtime_chunk', id: request.id, value: chunk })
         return { ok: true }
       }
+      if (request.operation === 'hook_model' && request.value && typeof request.value === 'object') {
+        const value = request.value as { operation_id?: unknown; prompt?: unknown; model?: unknown; timeout_ms?: unknown }
+        if (
+          typeof value.operation_id !== 'string'
+          || state.external_operation_states.get(value.operation_id) !== 'in_flight'
+          || typeof value.prompt !== 'string' || value.prompt.length === 0 || value.prompt.length > 100_000
+          || (value.model !== undefined && (typeof value.model !== 'string' || value.model.length === 0 || value.model.length > 512))
+          || (value.timeout_ms !== undefined && (typeof value.timeout_ms !== 'number' || !Number.isSafeInteger(value.timeout_ms) || value.timeout_ms < 1_000 || value.timeout_ms > 600_000))
+        ) return { ok: false }
+        for await (const chunk of runtime.hookModel({
+          prompt: value.prompt,
+          ...(typeof value.model === 'string' ? { model: value.model } : {}),
+          ...(typeof value.timeout_ms === 'number' ? { timeout_ms: value.timeout_ms } : {}),
+        })) {
+          relay({ type: 'runtime_chunk', id: request.id, value: chunk })
+        }
+        return { ok: true }
+      }
       if (request.operation === 'model_ack' && request.value && typeof request.value === 'object') {
         const value = request.value as { operation_id?: unknown; receipt?: unknown }
         if (

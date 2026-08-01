@@ -80,6 +80,13 @@ export type ProductHostModelRequest = {
   engine_tool_surface_digest?: string
 }
 
+export type ProductHostHookModelRequest = {
+  prompt: string
+  /** The accepted Run route is fixed; a Hook cannot switch providers mid-Turn. */
+  model?: string
+  timeout_ms?: number
+}
+
 export type ProductHostToolRequest = {
   blocks: ProductToolCallBlock[]
   assistantMessages: ProductAssistantMessage[]
@@ -97,6 +104,8 @@ export type ProductAgentHostRuntime = {
    * into its model request before the product tool bridge is installed.
    */
   engineModel(request: ProductHostModelRequest): AsyncGenerator<ProductModelEvent, void>
+  /** Run a no-tool project Hook evaluator on the already accepted model route. */
+  hookModel(request: ProductHostHookModelRequest): AsyncGenerator<ProductModelEvent, void>
   /** Confirm a durable provider result from the source-owned model bridge. */
   acknowledgeModelResult(receipt: ProductModelOperationReceipt): Promise<void>
   /** The fixed tool surface that may be declared to the source Thread. */
@@ -269,6 +278,34 @@ export class StandardProductAgentHostRuntime implements ProductAgentHostRuntime 
   async acknowledgeModelResult(receipt: ProductModelOperationReceipt): Promise<void> {
     if (this.controller.signal.aborted) throw new Error('PRODUCT_AGENT_HOST_STOPPED')
     await acknowledgeProductModelOperation(receipt, this.controller.signal)
+  }
+
+  async *hookModel(request: ProductHostHookModelRequest): AsyncGenerator<ProductModelEvent, void> {
+    await this.prepare()
+    if (request.model && request.model !== this.input.model_binding.model) throw new Error('PRODUCT_HOOK_MODEL_ROUTE_UNAVAILABLE')
+    if (this.controller.signal.aborted) throw new Error('PRODUCT_AGENT_HOST_STOPPED')
+    const signal = request.timeout_ms === undefined
+      ? this.controller.signal
+      : AbortSignal.any([this.controller.signal, AbortSignal.timeout(request.timeout_ms)])
+    yield* runWithProductPermissionEnvelope(this.input.permission_envelope, () => runWithCwdOverride(this.input.work_dir, () => runProductModel({
+      messages: [{
+        type: 'user',
+        uuid: `hook_${randomUUID()}`,
+        timestamp: new Date().toISOString(),
+        message: { role: 'user', content: request.prompt },
+      }],
+      systemPrompt: ['Evaluate the project Hook condition. Return exactly one JSON object: {"ok":true} or {"ok":false,"reason":"brief reason"}. Do not call tools and do not add prose.'],
+      thinkingConfig: { type: 'disabled' },
+      tools: [],
+      signal,
+      options: {
+        model: this.input.model_binding.model,
+        personalProfile: this.personalProfile,
+        managedTransport: this.managedTransport,
+        operationId: `${this.input.model_attempt_id}:hook-model:${++this.modelOperationSequence}`,
+      },
+      toolPermissionContext: this.toolPermissionContext,
+    })))
   }
 
   engineTools(): Promise<ProductHostEngineToolSurface> {

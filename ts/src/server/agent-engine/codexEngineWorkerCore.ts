@@ -4,10 +4,11 @@ import type { ProductAssistantMessage, ProductModelEvent, ProductModelOperationR
 import type { PermissionExecutionEnvelope } from '../../../shared/product/permissionExecutionEnvelope.js'
 import { runWithCwdOverride } from '../../utils/cwd.js'
 import { runWithProductPermissionEnvelope } from '../../utils/permissions/productPermissionRuntime.js'
-import type { ProductHostEngineToolResult, ProductHostEngineToolSurface } from '../agent-worker/productAgentHostRuntime.js'
+import type { ProductHostEngineToolResult, ProductHostEngineToolSurface, ProductHostHookModelRequest } from '../agent-worker/productAgentHostRuntime.js'
 import {
   createProductHarnessLifecycleHookHost,
   type ProductHarnessLifecycleHookHost,
+  type ProductLifecycleHookResult,
   type ProductHookRunActivity,
 } from '../agent-worker/productLifecycleHooks.js'
 import { createProductHookSnapshot } from '../agent-worker/productHookSnapshot.js'
@@ -22,6 +23,7 @@ import type { CodexAppServerNotification, CodexAppServerRequest, JsonValue } fro
 import type { CodexResponsesModelRequest } from './codexResponsesModelBridge.js'
 import type { TaskRunExternalOperationKind } from '../product/taskRunLedgerModel.js'
 import type { ProductTaskPlan } from '../../../shared/product/taskEvents.js'
+import type { ProductToolContext, ProductToolPermissionContext } from '../agent-worker/productTool.js'
 
 type CoreBinding = {
   session_id: string
@@ -37,6 +39,7 @@ export type CodexEngineWorkerParentPort = {
   chatPrompt(text: string, attachments: readonly string[]): Promise<{ operation_id: string; prompt: ProductPrompt }>
   engineTools(): Promise<{ operation_id: string; surface: ProductHostEngineToolSurface }>
   engineModel(operationId: string, request: { messages: CodexResponsesModelRequest['messages']; systemPrompt: string[]; thinkingConfig: CodexResponsesModelRequest['thinking_config']; model?: string; engine_tool_names: string[]; engine_tool_surface_digest: string }): AsyncGenerator<ProductModelEvent, void>
+  hookModel(operationId: string, request: ProductHostHookModelRequest): AsyncGenerator<ProductModelEvent, void>
   acknowledgeModelResult(operationId: string, receipt: ProductModelOperationReceipt): Promise<void>
   engineTool(operationId: string, request: { tool_call_id: string; tool_name: string; arguments: Record<string, unknown>; tool_surface_digest: string }): Promise<ProductHostEngineToolResult>
   /** Persist a TodoWrite projection before the source receives its tool result. */
@@ -110,7 +113,7 @@ function toolResultDigest(value: { call_id: string; tool_name: string; result: P
   return createHash('sha256').update(JSON.stringify(value)).digest('hex')
 }
 
-function hookResultDigest(kind: Extract<TaskRunExternalOperationKind, 'hook_command' | 'hook_http' | 'model_ack'>, result: unknown): string {
+function hookResultDigest(kind: Extract<TaskRunExternalOperationKind, 'hook_command' | 'hook_http' | 'model' | 'model_ack'>, result: unknown): string {
   return createHash('sha256').update(JSON.stringify({ kind, result }) ?? '{"result":"undefined"}').digest('hex')
 }
 
@@ -188,6 +191,7 @@ export class CodexEngineWorkerCore implements AgentWorkerCore {
   private toolSurface?: ProductHostEngineToolSurface
   private lifecycleHooks?: ProductHarnessLifecycleHookHost
   private readonly hookAbortController = new AbortController()
+  private initialHookContext = ''
   private readonly checkpointedModelOperations = new Set<string>()
   private readonly agentMessageText = new Map<string, string>()
   private modelReceiptCheckpointed = false
@@ -231,10 +235,13 @@ export class CodexEngineWorkerCore implements AgentWorkerCore {
     this.emit({ type: 'event', event: 'started' })
     const receipt = deferred()
     this.turnReceipt = receipt
+    void receipt.promise.catch(() => undefined)
     let operationId: string | undefined
     let inputCheckpointed = false
+    let sourceTurnCheckpointed = false
     try {
       await this.prepareToolSurface(runtime)
+      const sourceThread = await runtime.ensureThread()
       const sourceInput = attachments.length > 0
         ? await this.prepareAttachmentInput(textInput, attachments)
         : { input: [{ type: 'text' as const, text: textInput }] }
@@ -256,11 +263,21 @@ export class CodexEngineWorkerCore implements AgentWorkerCore {
       }
       await this.options.parent.recordExternalOperationResult(operationId)
       await this.options.parent.checkpointExternalOperation(operationId, digest)
+      sourceTurnCheckpointed = true
+      const initialHooks = await this.runInitialLifecycleHooks(textInput, sourceThread.restored ? 'resume' : 'startup')
+      if (initialHooks.blocked) {
+        receipt.reject(new Error('CODEX_ENGINE_INITIAL_HOOK_BLOCKED'))
+        await runtime.interruptTurn(accepted).catch(() => undefined)
+        this.emit({ type: 'event', event: 'delta', data: '项目 Hook 已阻止本次请求。请检查项目自动化规则后重试。' })
+        this.emitTerminal('completed')
+        return
+      }
       receipt.resolve()
     } catch (error) {
       receipt.reject(error instanceof Error ? error : new Error('CODEX_ENGINE_TURN_START_FAILED'))
-      if (operationId) await this.options.parent.markExternalOperationUnknown(operationId).catch(() => undefined)
-      else this.emitTerminal('recovery_required', 'task_execution_environment_failed')
+      if (operationId && !sourceTurnCheckpointed) await this.options.parent.markExternalOperationUnknown(operationId).catch(() => undefined)
+      if (sourceTurnCheckpointed && this.activeTurn) await runtime.interruptTurn(this.activeTurn).catch(() => undefined)
+      this.emitTerminal('recovery_required', 'task_execution_environment_failed')
       if (!inputCheckpointed && this.pendingInput) {
         const pendingInput = this.pendingInput
         this.pendingInput = undefined
@@ -323,6 +340,7 @@ export class CodexEngineWorkerCore implements AgentWorkerCore {
     this.lifecycleHooks = createProductHarnessLifecycleHookHost({
       snapshot: hookSnapshot,
       cwd: this.options.binding.work_dir,
+      evaluate: async (prompt, model, signal, timeoutMs) => await this.evaluateProjectHook(prompt, model, signal, timeoutMs),
       run_external_operation: async (kind, operation) => await this.runHookExternalOperation(kind, operation),
       on_hook_run: activity => this.onHookRun(activity),
     })
@@ -435,7 +453,10 @@ export class CodexEngineWorkerCore implements AgentWorkerCore {
     try {
       for await (const event of this.options.parent.engineModel(operationId, {
         messages: request.messages,
-        systemPrompt: request.system_prompt,
+        systemPrompt: [
+          ...request.system_prompt,
+          ...(this.initialHookContext ? [`项目 Hook 补充指令：\n${this.initialHookContext}`] : []),
+        ],
         thinkingConfig: request.thinking_config,
         engine_tool_names: toolNames,
         engine_tool_surface_digest: surface.digest,
@@ -511,6 +532,124 @@ export class CodexEngineWorkerCore implements AgentWorkerCore {
     } catch (error) {
       this.pendingModelAcknowledgement = undefined
       await this.options.parent.markExternalOperationUnknown(operationId).catch(() => undefined)
+      throw error
+    }
+  }
+
+  /**
+   * The source starts a Turn before lifecycle Hooks, but its loopback model
+   * bridge is held on turnReceipt. This lets project automation affect the
+   * first source model request without allowing an uncheckpointed Hook to run
+   * before the Run owns an accepted Turn.
+   */
+  private async runInitialLifecycleHooks(
+    textInput: string,
+    source: 'startup' | 'resume',
+  ): Promise<ProductLifecycleHookResult> {
+    const lifecycleHooks = this.lifecycleHooks
+    if (!lifecycleHooks) throw new Error('CODEX_ENGINE_HOOK_RUNTIME_UNAVAILABLE')
+    const context = this.lifecycleHookToolContext()
+    const sessionStart = await lifecycleHooks.sessionStart({
+      source,
+      sessionId: this.options.binding.session_id,
+      model: this.options.binding.model,
+      signal: this.hookAbortController.signal,
+    })
+    if (sessionStart.blocked) return sessionStart
+    const userPrompt = await lifecycleHooks.userPrompt({
+      prompt: textInput,
+      permissionMode: context.permissionContext.mode,
+      context,
+    })
+    this.initialHookContext = [sessionStart.additionalContext, userPrompt.additionalContext]
+      .filter((value): value is string => Boolean(value?.trim()))
+      .join('\n\n')
+      .slice(0, 40_000)
+    return userPrompt
+  }
+
+  private lifecycleHookToolContext(): ProductToolContext {
+    const policy = this.options.permission_envelope.approval_policy
+    const permissionContext: ProductToolPermissionContext = {
+      mode: policy === 'never' ? 'bypassPermissions' : policy === 'automatic_reviewer' ? 'acceptEdits' : 'default',
+      isBypassPermissionsModeAvailable: policy === 'never',
+    }
+    return {
+      productTaskId: this.options.identity.task_id,
+      options: {
+        commands: [],
+        mainLoopModel: this.options.binding.model,
+        tools: [],
+        thinkingConfig: { type: 'disabled' },
+      },
+      abortController: this.hookAbortController,
+      permissionContext,
+      messages: [],
+    }
+  }
+
+  /** Prompt and Agent Hooks use the accepted Run model route with no tools. */
+  private async evaluateProjectHook(
+    prompt: string,
+    requestedModel: string | undefined,
+    signal: AbortSignal,
+    timeoutMs?: number,
+  ): Promise<{ ok: boolean; reason?: string }> {
+    if (requestedModel && requestedModel !== this.options.binding.model) {
+      return { ok: false, reason: '项目 Hook 请求的模型不属于当前已确认的任务路由。' }
+    }
+    if (signal.aborted) throw new Error('PRODUCT_HOOK_ABORTED')
+    const runtime = this.runtime
+    if (!runtime || this.pendingHook || this.terminal || this.stopping) throw new Error('CODEX_ENGINE_HOOK_MODEL_UNAVAILABLE')
+    const operationId = await this.options.parent.beginExternalOperation('model')
+    this.pendingHook = { operation_id: operationId }
+    let modelCheckpointed = false
+    try {
+      let assistant: ProductAssistantMessage | undefined
+      for await (const event of this.options.parent.hookModel(operationId, {
+        prompt,
+        ...(requestedModel ? { model: requestedModel } : {}),
+        ...(timeoutMs ? { timeout_ms: timeoutMs } : {}),
+      })) {
+        if (event.type === 'model_delta') continue
+        if (assistant) throw new Error('CODEX_ENGINE_HOOK_MODEL_RESULT_DUPLICATED')
+        assistant = event
+      }
+      if (!assistant || assistant.message.content.some(block => block.type === 'tool_call')) {
+        throw new Error('CODEX_ENGINE_HOOK_MODEL_RESULT_INVALID')
+      }
+      const response = assistant.message.content
+        .filter((block): block is Extract<(typeof assistant.message.content)[number], { type: 'text' }> => block.type === 'text')
+        .map(block => block.text)
+        .join('')
+      const tooLarge = response.length > 8_000
+      const digest = await runtime.checkpointHookResult(
+        this.options.run_id,
+        operationId,
+        hookResultDigest('model', assistant),
+      )
+      await this.options.parent.recordExternalOperationResult(operationId)
+      await this.options.parent.checkpointExternalOperation(operationId, digest)
+      this.pendingHook = undefined
+      modelCheckpointed = true
+      if (assistant.operation_receipt) await this.acknowledgeModelResult(assistant.operation_receipt)
+      let parsed: { ok?: unknown; reason?: unknown } | undefined
+      if (!tooLarge) {
+        try { parsed = JSON.parse(response.trim()) as { ok?: unknown; reason?: unknown } } catch { parsed = undefined }
+      }
+      return parsed?.ok === true
+        ? { ok: true }
+        : {
+            ok: false,
+            reason: tooLarge
+              ? 'Hook evaluator response exceeded the limit'
+              : typeof parsed?.reason === 'string'
+                ? parsed.reason.slice(0, 4_000)
+                : 'Hook condition was not satisfied',
+          }
+    } catch (error) {
+      this.pendingHook = undefined
+      if (!modelCheckpointed) await this.options.parent.markExternalOperationUnknown(operationId).catch(() => undefined)
       throw error
     }
   }
