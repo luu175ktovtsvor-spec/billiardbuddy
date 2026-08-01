@@ -1596,6 +1596,30 @@ export class MediaProjectService {
     }) as VideoStudioProject
   }
 
+  /** A preview is a regenerable local cache, never an authoritative timeline result. */
+  private async reconcileVideoPreviewAvailability(project: VideoStudioProject): Promise<VideoStudioProject> {
+    if (!project.preview) return project
+    const fileName = basename(project.preview.asset_path)
+    const asset = project.assets.find(candidate => candidate.id === project.preview!.asset_id)
+    const expectedLocator = join(project.id, fileName)
+    const info = await stat(join(this.assetsDir, expectedLocator)).catch(() => null)
+    const available = Boolean(
+      asset
+      && asset.role === 'preview'
+      && asset.storage.kind === 'managed'
+      && asset.storage.locator === expectedLocator
+      && info?.isFile()
+      && (asset.byte_size === undefined || asset.byte_size === info.size),
+    )
+    if (available) return project
+    return await this.saveProject({
+      ...project,
+      assets: project.assets.filter(candidate => candidate.id !== project.preview!.asset_id),
+      preview: undefined,
+      updated_at: this.iso(),
+    }) as VideoStudioProject
+  }
+
   /** Upgrade every supported persisted record without swallowing a corrupt or future schema. */
   async migrateSupportedStorage(): Promise<void> {
     await this.ensureDirs()
@@ -1674,7 +1698,9 @@ export class MediaProjectService {
       }
       if (project.kind === 'video') {
         return await this.reconcileVideoOutputAvailability(
-          await this.reconcileVideoSourceAvailability(await this.migrateVideoTimeline(project)),
+          await this.reconcileVideoPreviewAvailability(
+            await this.reconcileVideoSourceAvailability(await this.migrateVideoTimeline(project)),
+          ),
         )
       }
       return await this.migrateImageMimeMetadata(await this.migrateImageVersions(
