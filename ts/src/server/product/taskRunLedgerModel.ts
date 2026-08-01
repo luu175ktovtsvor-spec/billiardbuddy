@@ -211,9 +211,12 @@ export function renderDurableSessionContext(state: AuthorityFile, runId: string,
       .map(value => value as TaskEvent)
       .find((event): event is Extract<TaskEvent, { type: 'user_text' }> => event.type === 'user_text' && event.task_id === run.task_id && event.entry_id === lineage.fork_checkpoint_id)
     if (!checkpoint) throw new Error('AUTHORITY_INVALID')
+    // A child stores the product event cursor that existed when it forked.
+    // Do not let a later parent result leak into its frozen context merely
+    // because this snapshot is rendered after the parent has continued.
     limit = Object.values(state.task_events)
       .map(value => value as TaskEvent)
-      .filter(event => 'run_id' in event && event.run_id === checkpoint.run_id)
+      .filter(event => 'run_id' in event && event.run_id === checkpoint.run_id && event.event_sequence <= limit)
       .reduce((latest, event) => Math.max(latest, event.event_sequence), checkpoint.event_sequence)
     lineageId = lineage.parent_lineage_id
   }

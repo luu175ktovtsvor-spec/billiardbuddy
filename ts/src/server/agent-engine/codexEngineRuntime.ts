@@ -28,7 +28,8 @@ export type CodexEngineTurnInput =
   | { type: 'text'; text: string }
   | { type: 'image'; url: string }
 
-const MAX_SOURCE_INPUT_TEXT_CHARS = 1 << 20
+/** Shared source-protocol ceiling for all text items in one source Turn. */
+export const MAX_CODEX_ENGINE_TURN_TEXT_CHARS = 1 << 20
 const MAX_SOURCE_INPUT_ITEMS = 64
 const MAX_SOURCE_IMAGE_URL_CHARS = 32 * 1024 * 1024
 const MAX_SOURCE_INPUT_BYTES = 112 * 1024 * 1024
@@ -193,7 +194,7 @@ export class CodexEngineRuntime {
       || !runId
       || items.length === 0
       || items.length > MAX_SOURCE_INPUT_ITEMS
-      || textChars > MAX_SOURCE_INPUT_TEXT_CHARS
+      || textChars > MAX_CODEX_ENGINE_TURN_TEXT_CHARS
       || inputBytes > MAX_SOURCE_INPUT_BYTES
       || !items.every(validTurnInput)
     ) throw new Error('CODEX_ENGINE_TURN_INPUT_INVALID')
@@ -232,7 +233,7 @@ export class CodexEngineRuntime {
     const runId = nonEmptyText(input.run_id)
     const queueItemId = nonEmptyText(input.queue_item_id)
     const expectedTurnId = nonEmptyText(input.expected_turn_id)
-    const text = nonEmptyText(input.text, MAX_SOURCE_INPUT_TEXT_CHARS)
+    const text = nonEmptyText(input.text, MAX_CODEX_ENGINE_TURN_TEXT_CHARS)
     if (!client || !session || !runId || !queueItemId || !/^queue_[a-f0-9-]{36}$/.test(queueItemId) || !expectedTurnId || !text) {
       throw new Error('CODEX_ENGINE_STEER_INPUT_INVALID')
     }
