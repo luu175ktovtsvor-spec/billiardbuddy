@@ -3,7 +3,10 @@ import { z } from 'zod/v4'
 import type { ProductAssistantMessage, ProductContentBlock, ProductHarnessMessage, ProductModelEvent, ProductTextBlock, ProductToolCallBlock, ProductToolResultBlock, ProductUserMessage } from '../../../shared/product/harnessMessages.js'
 import { buildProductTool, type ProductThinkingConfig, type ProductTools } from '../agent-worker/productTool.js'
 
-const MAX_BRIDGE_REQUEST_BYTES = 16 * 1024 * 1024
+// Must accommodate the bounded source representation of up to four Host
+// attachment images. This loopback request remains capped by the product
+// attachment policy and CodexEngineRuntime's aggregate turn-input limit.
+const MAX_BRIDGE_REQUEST_BYTES = 128 * 1024 * 1024
 const MAX_BRIDGE_INPUT_ITEMS = 32_768
 const MAX_BRIDGE_TOOLS = 256
 const MAX_BRIDGE_TEXT_CHARS = 8 * 1024 * 1024

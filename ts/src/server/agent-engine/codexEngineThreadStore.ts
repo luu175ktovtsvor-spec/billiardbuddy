@@ -28,6 +28,10 @@ export type CodexEngineThreadState = {
   last_turn_id?: string
   /** Product receipt for the accepted source `turn/start`, never source state. */
   last_turn_operation_id?: string
+  /** Product receipt for the attachment-derived input admitted to that Turn. */
+  last_input_run_id?: string
+  last_input_operation_id?: string
+  last_input_result_digest?: string
   /** Product receipt for the last model result admitted into that Turn. */
   last_model_run_id?: string
   last_model_operation_id?: string
@@ -114,6 +118,8 @@ function validateState(value: unknown, binding: CodexEngineThreadBinding): Codex
   const hasThread = state.thread_id !== undefined
   const hasToolSurface = state.tool_surface_digest !== undefined || state.tool_surface_count !== undefined
   const hasTurnOperation = state.last_turn_operation_id !== undefined
+  const inputReceiptCount = [state.last_input_run_id, state.last_input_operation_id, state.last_input_result_digest]
+    .filter(value => value !== undefined).length
   const modelReceiptCount = [state.last_model_run_id, state.last_model_operation_id, state.last_model_result_digest]
     .filter(value => value !== undefined).length
   const toolReceiptCount = [state.last_tool_run_id, state.last_tool_operation_id, state.last_tool_call_id, state.last_tool_result_digest]
@@ -130,17 +136,22 @@ function validateState(value: unknown, binding: CodexEngineThreadBinding): Codex
     || (state.last_run_id !== undefined && !isNonEmptyText(state.last_run_id))
     || (state.last_turn_id !== undefined && !isNonEmptyText(state.last_turn_id))
     || (state.last_turn_operation_id !== undefined && !isOperationId(state.last_turn_operation_id))
+    || (state.last_input_run_id !== undefined && !isNonEmptyText(state.last_input_run_id))
+    || (state.last_input_operation_id !== undefined && !isOperationId(state.last_input_operation_id))
+    || (state.last_input_result_digest !== undefined && !isDigest(state.last_input_result_digest))
     || (state.last_model_run_id !== undefined && !isNonEmptyText(state.last_model_run_id))
     || (state.last_model_operation_id !== undefined && !isOperationId(state.last_model_operation_id))
     || (state.last_model_result_digest !== undefined && !isDigest(state.last_model_result_digest))
     || (hasTurnOperation && (!state.last_run_id || !state.last_turn_id))
+    || (inputReceiptCount !== 0 && inputReceiptCount !== 3)
+    || (inputReceiptCount === 3 && (!hasThread || !state.last_run_id || !state.last_turn_id || state.last_input_run_id !== state.last_run_id))
     || (modelReceiptCount !== 0 && modelReceiptCount !== 3)
     || (modelReceiptCount === 3 && (!hasThread || !state.last_run_id || !state.last_turn_id || state.last_model_run_id !== state.last_run_id))
     || (toolReceiptCount !== 0 && toolReceiptCount !== 4)
     || (toolReceiptCount === 4 && (!hasThread || !state.last_run_id || !state.last_turn_id || state.last_tool_run_id !== state.last_run_id || !isOperationId(state.last_tool_operation_id) || !isNonEmptyText(state.last_tool_call_id) || !isDigest(state.last_tool_result_digest)))
     || (hookReceiptCount !== 0 && hookReceiptCount !== 3)
     || (hookReceiptCount === 3 && (!hasThread || !state.last_run_id || !state.last_turn_id || state.last_hook_run_id !== state.last_run_id || !isOperationId(state.last_hook_operation_id) || !isDigest(state.last_hook_result_digest)))
-    || (!hasThread && (state.last_run_id !== undefined || state.last_turn_id !== undefined || state.last_turn_operation_id !== undefined || modelReceiptCount !== 0 || toolReceiptCount !== 0 || hookReceiptCount !== 0))
+    || (!hasThread && (state.last_run_id !== undefined || state.last_turn_id !== undefined || state.last_turn_operation_id !== undefined || inputReceiptCount !== 0 || modelReceiptCount !== 0 || toolReceiptCount !== 0 || hookReceiptCount !== 0))
     || !isNonEmptyText(state.updated_at, 128)
     || !Number.isFinite(Date.parse(state.updated_at))
   ) throw new Error('CODEX_ENGINE_THREAD_STORE_INVALID')
@@ -151,6 +162,9 @@ function validateState(value: unknown, binding: CodexEngineThreadBinding): Codex
     ...(state.last_run_id ? { last_run_id: state.last_run_id } : {}),
     ...(state.last_turn_id ? { last_turn_id: state.last_turn_id } : {}),
     ...(state.last_turn_operation_id ? { last_turn_operation_id: state.last_turn_operation_id } : {}),
+    ...(state.last_input_run_id ? { last_input_run_id: state.last_input_run_id } : {}),
+    ...(state.last_input_operation_id ? { last_input_operation_id: state.last_input_operation_id } : {}),
+    ...(state.last_input_result_digest ? { last_input_result_digest: state.last_input_result_digest } : {}),
     ...(state.last_model_run_id ? { last_model_run_id: state.last_model_run_id } : {}),
     ...(state.last_model_operation_id ? { last_model_operation_id: state.last_model_operation_id } : {}),
     ...(state.last_model_result_digest ? { last_model_result_digest: state.last_model_result_digest } : {}),
@@ -188,6 +202,8 @@ export class CodexEngineThreadStore {
     const hasThread = state.thread_id !== undefined
     const hasToolSurface = state.tool_surface_digest !== undefined || state.tool_surface_count !== undefined
     const hasTurnOperation = state.last_turn_operation_id !== undefined
+    const inputReceiptCount = [state.last_input_run_id, state.last_input_operation_id, state.last_input_result_digest]
+      .filter(value => value !== undefined).length
     const modelReceiptCount = [state.last_model_run_id, state.last_model_operation_id, state.last_model_result_digest]
       .filter(value => value !== undefined).length
     const toolReceiptCount = [state.last_tool_run_id, state.last_tool_operation_id, state.last_tool_call_id, state.last_tool_result_digest]
@@ -201,17 +217,22 @@ export class CodexEngineThreadStore {
       || (state.last_run_id !== undefined && !isNonEmptyText(state.last_run_id))
       || (state.last_turn_id !== undefined && !isNonEmptyText(state.last_turn_id))
       || (state.last_turn_operation_id !== undefined && !isOperationId(state.last_turn_operation_id))
+      || (state.last_input_run_id !== undefined && !isNonEmptyText(state.last_input_run_id))
+      || (state.last_input_operation_id !== undefined && !isOperationId(state.last_input_operation_id))
+      || (state.last_input_result_digest !== undefined && !isDigest(state.last_input_result_digest))
       || (state.last_model_run_id !== undefined && !isNonEmptyText(state.last_model_run_id))
       || (state.last_model_operation_id !== undefined && !isOperationId(state.last_model_operation_id))
       || (state.last_model_result_digest !== undefined && !isDigest(state.last_model_result_digest))
       || (hasTurnOperation && (!state.last_run_id || !state.last_turn_id))
+      || (inputReceiptCount !== 0 && inputReceiptCount !== 3)
+      || (inputReceiptCount === 3 && (!hasThread || !state.last_run_id || !state.last_turn_id || state.last_input_run_id !== state.last_run_id))
       || (modelReceiptCount !== 0 && modelReceiptCount !== 3)
       || (modelReceiptCount === 3 && (!hasThread || !state.last_run_id || !state.last_turn_id || state.last_model_run_id !== state.last_run_id))
       || (toolReceiptCount !== 0 && toolReceiptCount !== 4)
       || (toolReceiptCount === 4 && (!hasThread || !state.last_run_id || !state.last_turn_id || state.last_tool_run_id !== state.last_run_id || !isOperationId(state.last_tool_operation_id) || !isNonEmptyText(state.last_tool_call_id) || !isDigest(state.last_tool_result_digest)))
       || (hookReceiptCount !== 0 && hookReceiptCount !== 3)
       || (hookReceiptCount === 3 && (!hasThread || !state.last_run_id || !state.last_turn_id || state.last_hook_run_id !== state.last_run_id || !isOperationId(state.last_hook_operation_id) || !isDigest(state.last_hook_result_digest)))
-      || (!hasThread && (state.last_run_id !== undefined || state.last_turn_id !== undefined || state.last_turn_operation_id !== undefined || modelReceiptCount !== 0 || toolReceiptCount !== 0 || hookReceiptCount !== 0))
+      || (!hasThread && (state.last_run_id !== undefined || state.last_turn_id !== undefined || state.last_turn_operation_id !== undefined || inputReceiptCount !== 0 || modelReceiptCount !== 0 || toolReceiptCount !== 0 || hookReceiptCount !== 0))
     ) throw new Error('CODEX_ENGINE_THREAD_STORE_INVALID')
     return await withBindingLock(binding, async () => {
       const saved: StoredCodexEngineThreadState = {

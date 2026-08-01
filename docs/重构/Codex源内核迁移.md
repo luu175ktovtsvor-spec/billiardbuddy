@@ -69,13 +69,13 @@ Codex 会保存自己的 Thread、配置与运行资料。BilliardBuddy 启动�
 
 当前处于 **D. 权限与工具桥施工中**。固定源码已经登记；开发机已从该基线加受管工具补丁构建 macOS arm64 `codex-app-server`。Worker 中新增一个仅由本地 Product Server 注入的迁移开关 `BB_AGENT_EXECUTION_RUNTIME=codex-engine`：它不暴露给 Renderer，也不是最终用户设置。开启后，实际 Agent Worker 会启动产品管理的 App Server、绑定私有 Thread，并把 `turn/start` 与每次模型结果分别写成 Run 账本回执；模型结果 checkpoint 成功前，本机 Responses 桥不会向引擎发送 `response.completed`。
 
-已用不访问网络、密钥或付费模型的本机假模型验证三类真实源内核路径：一次 Run 完整经过 `started → Thread/Turn → delta → terminal completed`，Turn 与模型两条操作均完成 checkpoint；随后关闭进程、以同一私有 Thread 连续启动第二个 Run，也完成并留下四条 checkpoint；最新一次则由真实源码 Core 声明 `Read` 动态工具、经 `item/tool/call` 回调 BilliardBuddy、写入工具回执后继续完成同一 Turn。工具面先由 Product Host 生成有 SHA-256 的固定声明，在 `mcp_prepare` 账本回执 checkpoint 后才能启动 Turn；每次工具调用又必须先取得 `tools` 操作 ID、由 Host 依据原有权限信封执行、写入私有 Thread 回执并 checkpoint，才会向源码返回结果。这个证据只说明 C 及 D 的动态工具主链成立，不等同于完整桌面用户旅程验收；默认正式消费者仍是旧 Harness，直到 D 的附件、运行中输入、Hook 和可恢复子任务都接入同一条内核路径后才一次性切换。
+已用不访问网络、密钥或付费模型的本机假模型验证四类真实源内核路径：一次 Run 完整经过 `started → Thread/Turn → delta → terminal completed`，Turn 与模型两条操作均完成 checkpoint；随后关闭进程、以同一私有 Thread 连续启动第二个 Run，也完成并留下四条 checkpoint；真实源码 Core 可声明 `Read` 动态工具、经 `item/tool/call` 回调 BilliardBuddy、写入工具回执后继续完成同一 Turn；真实源码还已接收 BilliardBuddy 处理后的 PNG 输入，且本机模型桥确认收到图片内容，同时该附件输入的操作 ID、摘要和 Thread/Turn 一起完成 checkpoint。工具面先由 Product Host 生成有 SHA-256 的固定声明，在 `mcp_prepare` 账本回执 checkpoint 后才能启动 Turn；每次工具调用又必须先取得 `tools` 操作 ID、由 Host 依据原有权限信封执行、写入私有 Thread 回执并 checkpoint，才会向源码返回结果。这个证据只说明 C 及 D 的动态工具和首轮附件主链成立，不等同于完整桌面用户旅程验收；默认正式消费者仍是旧 Harness，直到运行中输入和可恢复子任务也接入同一条内核路径后才一次性切换。
 
 桌面构建不允许再从开发者的 Cargo `target/` 目录启动内核。`stage-codex-engine.ts` 必须在干净、锁定的子仓上应用补丁、从源码构建、撤回补丁，再把二进制、Apache-2.0 `LICENSE`、上游 `NOTICE` 与包含 revision、补丁 SHA-256、目标三元组和二进制哈希的 manifest 一并放进 `runtime-assets/binaries/`。macOS 使用不受代码签名变化影响的 Mach-O 哈希；Windows 使用普通 SHA-256。打包前、afterPack 与安装包审计都会重新验证该清单。Electron Main 会丢弃继承的 `BB_CODEX_ENGINE_BIN_DIR`，只在自己的 `runtime-assets/binaries/` 中存在对应目标二进制时才向本地 Product Server 注入该目录。
 
 `codex-engine-build.yml` 会先核对、应用该补丁，再在 GitHub 的 macOS Apple Silicon 与 Windows x64 runner 上只编译未经签名的 `codex-app-server`，不生成桌面安装包、不上传发布源；桌面 macOS/Windows 构建工作流则递归取得子仓、安装锁定 Rust 工具链，并在 Electron 打包前执行上述 source-to-runtime-assets 步骤。当前只有 macOS arm64 已有本地真实构建与资源清单证据；由于本地 `main` 尚未安全推送，Windows 构建尚未有实际产物证据。
 
-本次 D 的第一条闭合边界是“源码动态工具 → BilliardBuddy Host”：`Read/Write/Edit/Bash/Web/MCP/Skill/AskUserQuestion` 等直接工具只作为声明交给源码，实际描述、Schema、执行、三档权限、审批与结果内容都仍由 Host 重新取回和处理；源码进程没有本机 Shell、文件、浏览器、MCP 配置或全局凭据。需要再启动模型循环的 `Subtask` 和命名 Agent、需要单独投影计划的 `TodoWrite` 暂不出现在这条动态工具面，避免在一个父工具回执内无账本地嵌套模型调用或丢失专属 UI 投影；Hook、附件和运行中输入也仍待各自的可恢复边界完成。引擎尚未接管正式默认 Run；在模型桥、事件桥和权限桥完整之前，不再给旧 TypeScript Harness 添加模型、工具、Hook 或 UI 功能。
+本次 D 的第一条闭合边界是“源码动态工具 → BilliardBuddy Host”：`Read/Write/Edit/Bash/Web/MCP/Skill/AskUserQuestion` 等直接工具只作为声明交给源码，实际描述、Schema、执行、三档权限、审批与结果内容都仍由 Host 重新取回和处理；源码进程没有本机 Shell、文件、浏览器、MCP 配置或全局凭据。首轮附件也走同一个宿主边界：路径只在 Host 内部校验和读取，文本文件、视频帧与转写先变为有界文字/图片，源码仅收到文字与 data-URI 图片；`chat_prompt` 的结果摘要和操作 ID 必须先随私有 Thread/Turn 持久化，才可确认该附件操作并放行模型。需要再启动模型循环的 `Subtask` 和命名 Agent、需要单独投影计划的 `TodoWrite` 暂不出现在这条动态工具面，避免在一个父工具回执内无账本地嵌套模型调用或丢失专属 UI 投影；运行中输入仍待自己的可恢复边界完成。引擎尚未接管正式默认 Run；在模型桥、事件桥和权限桥完整之前，不再给旧 TypeScript Harness 添加模型、工具、Hook 或 UI 功能。
 
 ### 4.1 当前唯一施工单元：Agent 执行内核替换
 
@@ -87,7 +87,7 @@ Codex 会保存自己的 Thread、配置与运行资料。BilliardBuddy 启动�
 4. **工具有唯一宿主**：Codex 的工具/审批请求只经 BilliardBuddy 权限信封和现有主进程工具宿主处理；在该桥完成前，引擎不得获得本机 Shell、文件、浏览器、MCP 或任何全局凭据。
 5. **一次性切换**：上述边界闭合并走通一条真实用户旅程后，桌面 Agent 页改为只启动新内核，旧 Harness 删除；不长期保留双执行循环。
 
-因此，当前已不只是 Responses 回环端点：C 的受管 Run/Turn 路径与 D 的直接动态工具路径都有明确的产品 Worker 消费者和账本回执，但尚未成为默认消费者。D 已把项目 `PreToolUse`、`PostToolUse` 和 `PostToolUseFailure` 的同步 Command/HTTP Hook 接在源码动态工具调用的前后：每个 Hook 都先单独取得 `hook_command` 或 `hook_http` 操作身份、在产品权限信封中执行、写入私有引擎回执并 checkpoint，绝不嵌套在 `tools` 回执内。Pre Hook 可阻止工具；Post Hook 只能把受控反馈交给下一次模型，不会篡改已经完成的工具结果。Prompt/Agent Hook、异步 Hook、可恢复子任务、附件和运行中输入仍待各自的可恢复边界完成；图片、视频工作台不受这次内核替换牵连。
+因此，当前已不只是 Responses 回环端点：C 的受管 Run/Turn 路径、D 的直接动态工具和首轮附件路径都有明确的产品 Worker 消费者和账本回执，但尚未成为默认消费者。D 已把项目 `PreToolUse`、`PostToolUse` 和 `PostToolUseFailure` 的同步 Command/HTTP Hook 接在源码动态工具调用的前后：每个 Hook 都先单独取得 `hook_command` 或 `hook_http` 操作身份、在产品权限信封中执行、写入私有引擎回执并 checkpoint，绝不嵌套在 `tools` 回执内。Pre Hook 可阻止工具；Post Hook 只能把受控反馈交给下一次模型，不会篡改已经完成的工具结果。Prompt/Agent Hook、异步 Hook、可恢复子任务和运行中输入仍待各自的可恢复边界完成；图片、视频工作台不受这次内核替换牵连。
 
 ## 5. 许可与发布边界
 
