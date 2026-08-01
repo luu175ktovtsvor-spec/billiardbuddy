@@ -63,6 +63,26 @@ function steerReceipt(state: CodexEngineThreadState): Pick<CodexEngineThreadStat
     : {}
 }
 
+function stopHookContinuation(state: CodexEngineThreadState): Pick<CodexEngineThreadState, 'last_stop_hook_run_id' | 'last_stop_hook_operation_id' | 'last_stop_hook_turn_id' | 'last_stop_hook_client_message_id' | 'last_stop_hook_prompt' | 'last_stop_hook_input_digest' | 'last_stop_hook_round'> {
+  return state.last_stop_hook_run_id
+    && state.last_stop_hook_operation_id
+    && state.last_stop_hook_turn_id
+    && state.last_stop_hook_client_message_id
+    && state.last_stop_hook_prompt
+    && state.last_stop_hook_input_digest
+    && state.last_stop_hook_round
+    ? {
+        last_stop_hook_run_id: state.last_stop_hook_run_id,
+        last_stop_hook_operation_id: state.last_stop_hook_operation_id,
+        last_stop_hook_turn_id: state.last_stop_hook_turn_id,
+        last_stop_hook_client_message_id: state.last_stop_hook_client_message_id,
+        last_stop_hook_prompt: state.last_stop_hook_prompt,
+        last_stop_hook_input_digest: state.last_stop_hook_input_digest,
+        last_stop_hook_round: state.last_stop_hook_round,
+      }
+    : {}
+}
+
 function instructionSnapshot(state: CodexEngineThreadState): Pick<CodexEngineThreadState, 'last_instruction_run_id' | 'last_instruction_digest' | 'last_instruction_prompt'> {
   return state.last_instruction_run_id && state.last_instruction_digest && state.last_instruction_prompt !== undefined
     ? {
@@ -152,6 +172,7 @@ export class CodexEngineSession {
       ...(restored ? instructionSnapshot(restored) : {}),
       ...(restored ? inputReceipt(restored) : {}),
       ...(restored ? steerReceipt(restored) : {}),
+      ...(restored ? stopHookContinuation(restored) : {}),
       ...(restored?.last_model_run_id ? { last_model_run_id: restored.last_model_run_id } : {}),
       ...(restored?.last_model_operation_id ? { last_model_operation_id: restored.last_model_operation_id } : {}),
       ...(restored?.last_model_result_digest ? { last_model_result_digest: restored.last_model_result_digest } : {}),
@@ -247,6 +268,7 @@ export class CodexEngineSession {
       ...(restored.last_turn_operation_id ? { last_turn_operation_id: restored.last_turn_operation_id } : {}),
       ...instructionSnapshot(restored),
       ...inputReceipt(restored),
+      ...stopHookContinuation(restored),
       last_steer_run_id: runId,
       last_steer_operation_id: operationId,
       last_steer_queue_item_id: queueItemId,
@@ -261,6 +283,73 @@ export class CodexEngineSession {
       ...(restored.last_hook_run_id ? { last_hook_run_id: restored.last_hook_run_id } : {}),
       ...(restored.last_hook_operation_id ? { last_hook_operation_id: restored.last_hook_operation_id } : {}),
       ...(restored.last_hook_result_digest ? { last_hook_result_digest: restored.last_hook_result_digest } : {}),
+    })
+    return checkpoint.checkpoint_digest
+  }
+
+  /**
+   * A Stop Hook continuation is a product-owned input, not a user queue item.
+   * Persist its exact bounded prompt before the source receives the preceding
+   * model completion, so the same source Turn can continue without a fake
+   * terminal/restart boundary.
+   */
+  async checkpointStopHookContinuation(
+    runId: string,
+    turnId: string,
+    operationId: string,
+    clientMessageId: string,
+    prompt: string,
+    inputDigest: string,
+    round: number,
+  ): Promise<string> {
+    const thread = await this.ensureThread()
+    if (
+      !text(runId)
+      || !text(turnId)
+      || !/^effect_[a-f0-9-]{36}$/.test(operationId)
+      || !/^stop_hook_[a-f0-9-]{36}$/.test(clientMessageId)
+      || !text(prompt, 40_000)
+      || !/^[a-f0-9]{64}$/.test(inputDigest)
+      || !Number.isSafeInteger(round)
+      || round < 1
+      || round > 3
+    ) throw new Error('CODEX_ENGINE_STOP_HOOK_RECEIPT_INVALID')
+    const restored = await this.options.thread_store.load(this.options.binding)
+    if (
+      !restored?.thread_id
+      || restored.thread_id !== thread.thread_id
+      || restored.last_run_id !== runId
+      || restored.last_turn_id !== turnId
+      || !restored.tool_surface_digest
+    ) throw new Error('CODEX_ENGINE_STOP_HOOK_TURN_MISSING')
+    const checkpoint = await this.options.thread_store.save(this.options.binding, {
+      thread_id: thread.thread_id,
+      source_revision: this.options.source_revision,
+      tool_surface_digest: restored.tool_surface_digest,
+      tool_surface_count: restored.tool_surface_count!,
+      last_run_id: restored.last_run_id,
+      last_turn_id: restored.last_turn_id,
+      ...(restored.last_turn_operation_id ? { last_turn_operation_id: restored.last_turn_operation_id } : {}),
+      ...instructionSnapshot(restored),
+      ...inputReceipt(restored),
+      ...steerReceipt(restored),
+      ...(restored.last_model_run_id ? { last_model_run_id: restored.last_model_run_id } : {}),
+      ...(restored.last_model_operation_id ? { last_model_operation_id: restored.last_model_operation_id } : {}),
+      ...(restored.last_model_result_digest ? { last_model_result_digest: restored.last_model_result_digest } : {}),
+      ...(restored.last_tool_run_id ? { last_tool_run_id: restored.last_tool_run_id } : {}),
+      ...(restored.last_tool_operation_id ? { last_tool_operation_id: restored.last_tool_operation_id } : {}),
+      ...(restored.last_tool_call_id ? { last_tool_call_id: restored.last_tool_call_id } : {}),
+      ...(restored.last_tool_result_digest ? { last_tool_result_digest: restored.last_tool_result_digest } : {}),
+      ...(restored.last_hook_run_id ? { last_hook_run_id: restored.last_hook_run_id } : {}),
+      ...(restored.last_hook_operation_id ? { last_hook_operation_id: restored.last_hook_operation_id } : {}),
+      ...(restored.last_hook_result_digest ? { last_hook_result_digest: restored.last_hook_result_digest } : {}),
+      last_stop_hook_run_id: runId,
+      last_stop_hook_operation_id: operationId,
+      last_stop_hook_turn_id: turnId,
+      last_stop_hook_client_message_id: clientMessageId,
+      last_stop_hook_prompt: prompt,
+      last_stop_hook_input_digest: inputDigest,
+      last_stop_hook_round: round,
     })
     return checkpoint.checkpoint_digest
   }
@@ -284,6 +373,7 @@ export class CodexEngineSession {
       ...instructionSnapshot(restored),
       ...inputReceipt(restored),
       ...steerReceipt(restored),
+      ...stopHookContinuation(restored),
       last_model_run_id: runId,
       last_model_operation_id: operationId,
       last_model_result_digest: resultDigest,
@@ -318,6 +408,7 @@ export class CodexEngineSession {
       ...instructionSnapshot(restored),
       ...inputReceipt(restored),
       ...steerReceipt(restored),
+      ...stopHookContinuation(restored),
       ...(restored.last_model_run_id ? { last_model_run_id: restored.last_model_run_id } : {}),
       ...(restored.last_model_operation_id ? { last_model_operation_id: restored.last_model_operation_id } : {}),
       ...(restored.last_model_result_digest ? { last_model_result_digest: restored.last_model_result_digest } : {}),
@@ -352,6 +443,7 @@ export class CodexEngineSession {
       ...instructionSnapshot(restored),
       ...inputReceipt(restored),
       ...steerReceipt(restored),
+      ...stopHookContinuation(restored),
       ...(restored.last_model_run_id ? { last_model_run_id: restored.last_model_run_id } : {}),
       ...(restored.last_model_operation_id ? { last_model_operation_id: restored.last_model_operation_id } : {}),
       ...(restored.last_model_result_digest ? { last_model_result_digest: restored.last_model_result_digest } : {}),
@@ -415,6 +507,7 @@ export class CodexEngineSession {
       ...instructionSnapshot(state),
       ...inputReceipt(state),
       ...steerReceipt(state),
+      ...stopHookContinuation(state),
       ...(state.last_model_run_id ? { last_model_run_id: state.last_model_run_id } : {}),
       ...(state.last_model_operation_id ? { last_model_operation_id: state.last_model_operation_id } : {}),
       ...(state.last_model_result_digest ? { last_model_result_digest: state.last_model_result_digest } : {}),

@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import type { AgentWorkerOutbound } from '../../../shared/product/agentWorker.js'
 import type { ProductAssistantMessage, ProductModelEvent, ProductModelOperationReceipt, ProductPrompt } from '../../../shared/product/harnessMessages.js'
 import type { PermissionExecutionEnvelope } from '../../../shared/product/permissionExecutionEnvelope.js'
@@ -103,6 +103,19 @@ const ENGINE_BASE_INSTRUCTIONS = [
   '只完成用户任务；模型访问、状态、权限和最终结果均由 BilliardBuddy 管理。',
   '只能调用本轮由 BilliardBuddy 明确提供的工具。工具执行、权限确认、MCP 和工作区边界均由 BilliardBuddy 宿主负责。',
 ].join('\n')
+
+const MAX_STOP_HOOK_CONTINUATIONS = 3
+
+function stopHookContinuationPrompt(result: ProductLifecycleHookResult): string {
+  const reason = result.reason?.trim() || '当前结果尚未满足项目自动化规则。'
+  const context = result.additionalContext?.trim()
+  return [
+    '项目 Stop Hook 要求继续处理。',
+    `原因：${reason}`,
+    ...(context ? [`补充约束：\n${context}`] : []),
+    '请依据当前任务和已确认的工具结果继续完成；不要把 Stop Hook 的阻止误报为完成。',
+  ].join('\n\n').slice(0, 40_000)
+}
 
 function record(value: JsonValue | undefined): Record<string, JsonValue | undefined> | undefined {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, JsonValue | undefined> : undefined
@@ -261,6 +274,7 @@ export class CodexEngineWorkerCore implements AgentWorkerCore {
   private pendingModelAcknowledgement?: PendingModelAcknowledgement
   private pendingInput?: PendingInputReceipt
   private pendingSteer?: PendingSteerReceipt
+  private pendingStopHookContinuation?: PendingSteerReceipt
   private contextCompactionStartReceipt?: Deferred
   private contextCompactionCompletionReceipt?: Deferred
   private toolSurface?: ProductHostEngineToolSurface
@@ -274,6 +288,8 @@ export class CodexEngineWorkerCore implements AgentWorkerCore {
   private readonly activeContextCompactions = new Map<string, ActiveContextCompaction>()
   private contextCompactionGeneration = 0
   private modelReceiptCheckpointed = false
+  private userSteerDuringSampling = false
+  private stopHookRound = 0
   private inputStarted = false
   private terminal = false
   private stopping = false
@@ -413,6 +429,9 @@ export class CodexEngineWorkerCore implements AgentWorkerCore {
     const pendingSteer = this.pendingSteer
     this.pendingSteer = undefined
     if (pendingSteer) await this.options.parent.markExternalOperationUnknown(pendingSteer.operation_id).catch(() => undefined)
+    const pendingStopHookContinuation = this.pendingStopHookContinuation
+    this.pendingStopHookContinuation = undefined
+    if (pendingStopHookContinuation) await this.options.parent.markExternalOperationUnknown(pendingStopHookContinuation.operation_id).catch(() => undefined)
     await this.runtime?.close().catch(() => undefined)
     this.runtime = undefined
     await this.options.parent.shutdownHost()
@@ -515,6 +534,7 @@ export class CodexEngineWorkerCore implements AgentWorkerCore {
       await this.options.parent.recordExternalOperationResult(operationId)
       await this.options.parent.checkpointExternalOperation(operationId, digest)
       this.pendingSteer = undefined
+      this.userSteerDuringSampling = true
       receipt.resolve()
       return true
     } catch (error) {
@@ -534,6 +554,7 @@ export class CodexEngineWorkerCore implements AgentWorkerCore {
     const surface = this.toolSurface
     const toolNames = request.tools.map(tool => tool.name).sort((left, right) => left.localeCompare(right))
     const activeCompaction = [...this.activeContextCompactions.values()].find(compaction => !compaction.model_started)
+    if (!activeCompaction) this.userSteerDuringSampling = false
     if (!activeCompaction) await this.contextCompactionCompletionReceipt?.promise
     if (!surface) throw new Error('CODEX_ENGINE_TOOL_SURFACE_MISSING')
     if (activeCompaction) {
@@ -596,7 +617,12 @@ export class CodexEngineWorkerCore implements AgentWorkerCore {
       this.checkpointedModelOperations.add(pending.operation_id)
       modelCheckpointed = true
       if (assistant.operation_receipt) await this.acknowledgeModelResult(assistant.operation_receipt)
-      if (pending.kind === 'sampling') this.modelReceiptCheckpointed = true
+      if (pending.kind === 'sampling') {
+        this.modelReceiptCheckpointed = true
+        if (!assistant.message.content.some(block => block.type === 'tool_call')) {
+          await this.continueBlockedStopHook(assistant)
+        }
+      }
     } catch (error) {
       this.pendingModel = undefined
       if (!modelCheckpointed) await this.options.parent.markExternalOperationUnknown(pending.operation_id).catch(() => undefined)
@@ -683,6 +709,73 @@ export class CodexEngineWorkerCore implements AgentWorkerCore {
       abortController: this.hookAbortController,
       permissionContext,
       messages: [],
+    }
+  }
+
+  /**
+   * Upstream checks for queued input before it reaches its own terminal Stop
+   * phase. By steering a confirmed product Hook prompt before the current
+   * response receives `response.completed`, the source keeps this exact Turn
+   * alive instead of fabricating a second Run or terminal event.
+   */
+  private async continueBlockedStopHook(assistant: ProductAssistantMessage): Promise<void> {
+    if (this.pendingSteer || this.userSteerDuringSampling) return
+    const runtime = this.runtime
+    const activeTurn = this.activeTurn
+    const lifecycleHooks = this.lifecycleHooks
+    if (!runtime || !activeTurn || !lifecycleHooks || this.terminal || this.stopping) {
+      throw new Error('CODEX_ENGINE_STOP_HOOK_RUNTIME_UNAVAILABLE')
+    }
+    const context = this.lifecycleHookToolContext()
+    const stopHook = await lifecycleHooks.stop({
+      permissionMode: context.permissionContext.mode,
+      signal: this.hookAbortController.signal,
+      context,
+      messages: [assistant],
+    })
+    if (!stopHook.blocked) return
+    // A user input accepted while a potentially slow Hook was running already
+    // keeps the source Turn alive. Do not add a redundant automation prompt.
+    if (this.pendingSteer || this.userSteerDuringSampling) return
+    const round = this.stopHookRound + 1
+    if (round > MAX_STOP_HOOK_CONTINUATIONS) throw new Error('CODEX_ENGINE_STOP_HOOK_LIMIT')
+    if (this.terminal || this.stopping) throw new Error('CODEX_ENGINE_STOP_HOOK_INTERRUPTED')
+    const prompt = stopHookContinuationPrompt(stopHook)
+    const clientMessageId = `stop_hook_${randomUUID()}`
+    const operationId = await this.options.parent.beginExternalOperation('engine_steer')
+    this.pendingStopHookContinuation = { operation_id: operationId }
+    let checkpointed = false
+    try {
+      const acceptedTurnId = await runtime.steerStopHookContinuation({
+        run_id: this.options.run_id,
+        client_message_id: clientMessageId,
+        expected_turn_id: activeTurn.turn_id,
+        text: prompt,
+      })
+      const inputDigest = createHash('sha256').update(JSON.stringify({
+        source: 'stop_hook',
+        client_message_id: clientMessageId,
+        prompt,
+        round,
+      })).digest('hex')
+      const digest = await runtime.checkpointStopHookContinuation(
+        this.options.run_id,
+        acceptedTurnId,
+        operationId,
+        clientMessageId,
+        prompt,
+        inputDigest,
+        round,
+      )
+      await this.options.parent.recordExternalOperationResult(operationId)
+      await this.options.parent.checkpointExternalOperation(operationId, digest)
+      checkpointed = true
+      this.stopHookRound = round
+      this.pendingStopHookContinuation = undefined
+    } catch (error) {
+      this.pendingStopHookContinuation = undefined
+      if (!checkpointed) await this.options.parent.markExternalOperationUnknown(operationId).catch(() => undefined)
+      throw error
     }
   }
 
