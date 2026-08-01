@@ -60,15 +60,14 @@
 - **未验证/待处理**：未运行模型、工具、协作、设备或多窗口真实路径；模型输出质量、外部副作用、进程树清理与网络时序仍须在最终软件验收确认。R3 才负责模型来源、凭据与用量控制面。
 - **下一项**：R3.1 模型执行端口与使用权控制面回溯核验。
 
-## R3 模型执行与使用权控制面
+## R3.1 模型端口、个人凭据与冻结路由
 
-- **冻结路由与同一执行端口**：`ProductTaskService` 只在 Authority 中持久化非秘密 `provider/model` binding、thinking mode 与 route fingerprint；claim 时以 `restoreProductTextReasoningRoute()` 在受信 Product Server 恢复 profile 并逐项核对 digest。`StandardProductAgentHostRuntime.model()` 是 `runProductModel()` 的唯一正式调用点，托管与个人分支都从同一 Harness/Host model port、同一工具循环和同一 provider-operation receipt 流转，不存在按模型来源分叉的 Agent loop。
-- **凭据边界**：Electron Main 的 `ProviderCredentialService` 仅向受信本地 sidecar 注入完整个人 profile；其 IPC `summary()` 明确去除 `api_key`。sidecar 启动后 `personalModelRuntimeState` 立即从环境捕获并删除该配置，更新接口另由 Main 持有的一次性 capability 保护。`IpcAgentWorkerLauncher` 启动隔离 Worker 前通过 `stripHostOnlyGatewayEnv()` 移除 Gateway token、个人模型配置及 capability；model route 只交给 server-private Host factory，不进入 child identity。桌面公开 route/protocol 仅含 model、source、thinking。
-- **托管与个人的费用/操作权威**：托管 `TextReasoning` 在 Gateway 的 `/v1/chat/completions` 中先验证安装主体、创建 stable operation 与 fencing token、预留用量，再进入视觉桥接或上游；完整流写入 Gateway operation ledger 后才以真实/保守 usage 结算。个人模型不经 Gateway，`personalModelOperationStore` 以本地私有 SQLite 对同一稳定 operation 管理 reservation、结果回放、fencing 与 consumer ACK。两种来源均把 receipt 附到已持久化的 Harness 消息，再由 `acknowledgePersistedProviderOperation(s)` 进行幂等清理，receipt 不投影给 Renderer。
-- **未知结果与配置漂移**：两条分支都把网络异常、无效/截断流和非明确失败置为 `outcome_unknown`；只有 Authority 传入的 `confirmUnknownRetry` 才能重新取得 reservation，未发现自动重投。明确未接受请求的状态才释放 reservation。个人 profile、API key、模型、能力和视觉辅助 route 都进入 fingerprint，恢复时任何漂移都会失败关闭；媒体服务与媒体 API 的当前源码不导入或读取个人模型运行配置。
-- **当前结论**：R3 的静态退出条件已闭合。Key 不进入 Renderer 或隔离 Agent Worker；托管调用在 Gateway 上游前完成准入，个人调用保持在受信 Host/本地 operation store；模型来源只改变凭据与计费归属，不改变 Harness 行为。未发现需要在本单元改写的生产缺口。
-- **未验证/待处理**：没有调用模型、Gateway、Relay 或任何付费上游，因此实际供应商响应、远端账本、网络中断和用户配置轮换的真实效果仍属最终软件验收事实，不能由静态结论替代。
-- **下一项**：R4.1 Agent 桌面客户端事件投影回溯核验。
+- **当前源码证明**：Electron Main 的 `ProviderCredentialService` 使用系统加密凭据存储个人 profile，启动和更新只通过 Main 生成的一次性 capability 注入本机 Product Server。`personalModelRuntimeState` 捕获后立即从进程环境删除配置；隔离 Worker 继承的是剥离过 Host/Gateway 凭据的环境。
+- **执行与恢复边界**：TaskRun 在取得派发权时写入非秘密 `provider/model` 和 route digest。Core binding 只传递这三项非秘密信息；server-private factory 用当前受信 profile 重建并比较 digest，端点、模型、能力或 API Key 漂移均拒绝恢复。两种来源都进入 `StandardProductAgentHostRuntime → runProductModel`，个人模型直连已冻结的 OpenAI-compatible、Responses 或 Anthropic endpoint。
+- **个人 operation**：个人请求使用本机权限收紧的 SQLite operation store；成功 assistant 先写入该 store，重复 operation 只回放结果，明确未请求失败释放 reservation，其余中断保留 unknown 围栏。结果消费后才 ACK 本机记录；Renderer、Task Authority 与 Worker 不读取 Key 或 operation payload。
+- **当前结论**：R3.1 已完成 Model Port 与个人来源的最小闭合；服务端类型检查、桌面 lint/生产构建和差异空白检查通过，未运行测试或真实模型请求。
+- **未验证/待处理**：真实供应商协议兼容性仍未运行。Gateway 托管 TextReasoning 的 stable operation、远端结果回放、ACK 与严格额度结算尚未重构，作为 R3.2 单独施工。
+- **下一项**：R3.2 Gateway 托管 TextReasoning operation ledger 与额度结算。
 
 ## R4 Agent 桌面客户端事件投影与动作回执
 

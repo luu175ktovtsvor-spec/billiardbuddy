@@ -1,6 +1,7 @@
 import uniqBy from 'lodash-es/uniqBy.js'
 import type { AgentWorkerOutbound } from '../../../shared/product/agentWorker.js'
 import type { ProductAssistantMessage, ProductHarnessMessage, ProductModelEvent, ProductPrompt, ProductToolCallBlock } from '../../../shared/product/harnessMessages.js'
+import type { PersonalModelProfile } from '../../../shared/product/personalModels.js'
 import type { PermissionExecutionEnvelope } from '../../../shared/product/permissionExecutionEnvelope.js'
 import { createAbortController } from '../../utils/abortController.js'
 import { runWithCwdOverride } from '../../utils/cwd.js'
@@ -16,7 +17,6 @@ import { runProductModel } from './productModelRuntime.js'
 import { runProductTools } from './productToolExecution.js'
 import { decideProductToolPermission } from './productPermissionDecision.js'
 import { emptyProductToolPermissionContext, type ProductCommand, type ProductThinkingConfig, type ProductToolContext, type ProductToolPermissionContext, type ProductTools } from './productTool.js'
-import { productDefaultTextModel } from '../product/productGatewayRuntime.js'
 import { buildProductChatPrompt } from './productChatAttachments.js'
 import { getLocalISODate } from '../../constants/common.js'
 
@@ -72,6 +72,8 @@ export class StandardProductAgentHostRuntime implements ProductAgentHostRuntime 
   private context?: ProductToolContext
   private prepared?: Promise<ProductHostRuntimeSnapshot>
   private mcpCleanup: Array<() => Promise<void>> = []
+  private readonly personalProfile: PersonalModelProfile | null
+  private modelOperationSequence = 0
 
   constructor(private readonly input: {
     work_dir: string
@@ -79,7 +81,10 @@ export class StandardProductAgentHostRuntime implements ProductAgentHostRuntime 
     permission_envelope: PermissionExecutionEnvelope
     mcp_host: ProductTaskMcpHost
     attachment_paths?: readonly string[]
+    model_binding: { provider: string; model: string }
+    personal_profile: PersonalModelProfile | null
   }) {
+    this.personalProfile = input.personal_profile
     const policy = input.permission_envelope.approval_policy
     this.toolPermissionContext = {
       ...emptyProductToolPermissionContext(),
@@ -116,7 +121,7 @@ export class StandardProductAgentHostRuntime implements ProductAgentHostRuntime 
         },
         options: {
           commands: this.commands,
-          mainLoopModel: productDefaultTextModel(),
+          mainLoopModel: this.input.model_binding.model,
           tools: this.toolsForTurn,
           thinkingConfig: { type: 'adaptive' },
         },
@@ -167,7 +172,9 @@ export class StandardProductAgentHostRuntime implements ProductAgentHostRuntime 
       tools: this.toolsForTurn,
       signal: this.controller.signal,
       options: {
-        model: request.model ?? productDefaultTextModel(),
+        model: this.input.model_binding.model,
+        personalProfile: this.personalProfile,
+        operationId: `task:${this.input.task_id}:model:${++this.modelOperationSequence}`,
       },
       toolPermissionContext: this.toolPermissionContext,
     })))

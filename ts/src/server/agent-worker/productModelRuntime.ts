@@ -3,6 +3,19 @@ import { PROVIDER_GATEWAY_PROTOCOL, PROVIDER_GATEWAY_PROTOCOL_HEADER } from '../
 import type { ProductAssistantMessage, ProductHarnessMessage } from '../../../shared/product/harnessMessages.js'
 import { zodToJsonSchema } from '../../utils/zodToJsonSchema.js'
 import { productGatewayTarget } from '../product/productGatewayRuntime.js'
+import {
+  personalModelBody,
+  personalModelHttpError,
+  personalModelRequestTargetForProfile,
+} from '../services/personalModelRequest.js'
+import {
+  beginPersonalModelOperation,
+  acknowledgePersonalModelOperation,
+  completePersonalModelOperation,
+  markPersonalModelOperationOutcomeUnknown,
+  personalModelStatusHasDefiniteNoResult,
+  releasePersonalModelOperation,
+} from '../services/personalModelOperationStore.js'
 import { emptyProductToolPermissionContext, type ProductThinkingConfig, type ProductToolPermissionContext, type ProductTools } from './productTool.js'
 import type { ProductAgentModelRunner } from './agentModelPort.js'
 
@@ -113,17 +126,12 @@ async function* sseData(response: Response, signal: AbortSignal): AsyncGenerator
 }
 
 export const runProductModel: ProductAgentModelRunner = async function* ({ messages, systemPrompt, thinkingConfig, tools, signal, options, toolPermissionContext }) {
-  const target = productGatewayTarget()
-  if (!target) throw new Error('PRODUCT_GATEWAY_NOT_CONFIGURED')
-  const requestId = randomUUID()
-  const headers: Record<string, string> = {
-    Authorization: `Bearer ${target.token}`,
-    'Content-Type': 'application/json',
-    [PROVIDER_GATEWAY_PROTOCOL_HEADER]: PROVIDER_GATEWAY_PROTOCOL.headerValue,
-    'X-BB-Operation-ID': `chat:${requestId}`,
-  }
+  const personalProfile = options.personalProfile ?? null
+  const target = personalProfile ? null : productGatewayTarget()
+  if (!personalProfile && !target) throw new Error('PRODUCT_GATEWAY_NOT_CONFIGURED')
+  const requestId = options.operationId ?? `chat:${randomUUID()}`
   const system = systemPrompt.filter(Boolean).join('\n\n')
-  const body = {
+  const gatewayBody = {
     model: options.model,
     stream: true,
     stream_options: { include_usage: true },
@@ -132,20 +140,122 @@ export const runProductModel: ProductAgentModelRunner = async function* ({ messa
     tools: await gatewayTools(tools, toolPermissionContext ?? emptyProductToolPermissionContext()),
     ...(thinkingConfig.type === 'disabled' ? {} : { thinking: { type: 'enabled' } }),
   }
+  const personalTarget = personalProfile ? personalModelRequestTargetForProfile(personalProfile) : null
+  const body = personalProfile ? personalModelBody(personalProfile, gatewayBody) : gatewayBody
+  const serializedBody = JSON.stringify(body)
+  const personalOperation = personalProfile
+    ? beginPersonalModelOperation({
+        capability: 'TextReasoning',
+        operationId: requestId,
+        profile: personalProfile,
+        requestBody: serializedBody,
+      })
+    : null
+  if (personalOperation?.outcome === 'in_progress') throw new Error('PRODUCT_MODEL_OPERATION_IN_PROGRESS')
+  if (personalOperation?.outcome === 'outcome_unknown') throw new Error('PRODUCT_MODEL_OPERATION_OUTCOME_UNKNOWN')
+  if (personalOperation?.outcome === 'succeeded') {
+    let stored: unknown
+    try { stored = JSON.parse(personalOperation.payload) } catch { throw new Error('PRODUCT_MODEL_OPERATION_RESULT_UNAVAILABLE') }
+    if (!stored || typeof stored !== 'object' || Array.isArray(stored)) throw new Error('PRODUCT_MODEL_OPERATION_RESULT_UNAVAILABLE')
+    const assistant = (stored as { assistant?: unknown }).assistant
+    if (!assistant || typeof assistant !== 'object' || Array.isArray(assistant)) throw new Error('PRODUCT_MODEL_OPERATION_RESULT_UNAVAILABLE')
+    yield assistant as ProductAssistantMessage
+    acknowledgePersonalModelOperation(personalOperation.binding)
+    return
+  }
+  const personalHandle = personalOperation?.outcome === 'started' ? personalOperation.handle : null
+  const headers: Record<string, string> = personalTarget
+    ? personalTarget.headers
+    : {
+        Authorization: `Bearer ${target!.token}`,
+        'Content-Type': 'application/json',
+        [PROVIDER_GATEWAY_PROTOCOL_HEADER]: PROVIDER_GATEWAY_PROTOCOL.headerValue,
+        'X-BB-Operation-ID': requestId,
+      }
   let response: Response
   try {
-    response = await fetch(`${target.baseUrl}/v1/chat/completions`, { method: 'POST', headers, body: JSON.stringify(body), signal })
+    response = await fetch(personalTarget?.url ?? `${target!.baseUrl}/v1/chat/completions`, { method: 'POST', headers, body: serializedBody, signal })
   } catch {
-    throw new Error(signal.aborted ? 'PRODUCT_MODEL_ABORTED' : 'PRODUCT_GATEWAY_UNREACHABLE')
+    if (personalHandle) markPersonalModelOperationOutcomeUnknown(personalHandle)
+    throw new Error(signal.aborted ? 'PRODUCT_MODEL_ABORTED' : personalProfile ? 'PRODUCT_MODEL_OPERATION_OUTCOME_UNKNOWN' : 'PRODUCT_GATEWAY_UNREACHABLE')
   }
-  if (!response.ok) throw new Error(`PRODUCT_GATEWAY_HTTP_${response.status}`)
+  if (!response.ok) {
+    if (personalHandle) {
+      if (personalModelStatusHasDefiniteNoResult(response.status)) releasePersonalModelOperation(personalHandle)
+      else markPersonalModelOperationOutcomeUnknown(personalHandle)
+    }
+    throw new Error(personalProfile ? personalModelHttpError(response.status) : `PRODUCT_GATEWAY_HTTP_${response.status}`)
+  }
 
   let text = ''
   let model = options.model
   let stopReason: string | null = null
   let usage = { input_tokens: 0, output_tokens: 0 }
   const calls = new Map<number, ToolAccumulator>()
+  try {
   for await (const chunk of sseData(response, signal)) {
+    if (personalProfile?.protocol === 'openai-responses') {
+      const event = typeof chunk.type === 'string' ? chunk.type : ''
+      if (event === 'response.output_text.delta' && typeof chunk.delta === 'string') {
+        text += chunk.delta
+        yield { type: 'model_delta', text: chunk.delta }
+      }
+      if (event === 'response.output_item.added') {
+        const item = chunk.item as Record<string, unknown> | undefined
+        if (item?.type === 'function_call') {
+          const index = Number(chunk.output_index ?? calls.size)
+          calls.set(index, { id: String(item.call_id ?? ''), name: String(item.name ?? ''), arguments: String(item.arguments ?? '') })
+        }
+      }
+      if (event === 'response.function_call_arguments.delta' && typeof chunk.delta === 'string') {
+        const index = Number(chunk.output_index ?? 0)
+        const current = calls.get(index) ?? { id: String(chunk.call_id ?? ''), name: '', arguments: '' }
+        current.arguments += chunk.delta
+        calls.set(index, current)
+      }
+      if (event === 'response.completed' || event === 'response.incomplete') {
+        const completed = chunk.response as Record<string, unknown> | undefined
+        if (typeof completed?.model === 'string') model = completed.model
+        const rawUsage = completed?.usage as Record<string, unknown> | undefined
+        if (rawUsage) usage = { input_tokens: Number(rawUsage.input_tokens ?? 0), output_tokens: Number(rawUsage.output_tokens ?? 0) }
+        stopReason = event === 'response.completed' ? 'stop' : 'length'
+      }
+      continue
+    }
+    if (personalProfile?.protocol === 'anthropic-messages') {
+      const event = typeof chunk.type === 'string' ? chunk.type : ''
+      if (event === 'message_start') {
+        const message = chunk.message as Record<string, unknown> | undefined
+        if (typeof message?.model === 'string') model = message.model
+        const rawUsage = message?.usage as Record<string, unknown> | undefined
+        if (rawUsage) usage.input_tokens = Number(rawUsage.input_tokens ?? 0)
+      }
+      if (event === 'content_block_start') {
+        const index = Number(chunk.index ?? calls.size)
+        const block = chunk.content_block as Record<string, unknown> | undefined
+        if (block?.type === 'tool_use') calls.set(index, { id: String(block.id ?? ''), name: String(block.name ?? ''), arguments: '' })
+      }
+      if (event === 'content_block_delta') {
+        const delta = chunk.delta as Record<string, unknown> | undefined
+        if (delta?.type === 'text_delta' && typeof delta.text === 'string') {
+          text += delta.text
+          yield { type: 'model_delta', text: delta.text }
+        }
+        if (delta?.type === 'input_json_delta' && typeof delta.partial_json === 'string') {
+          const index = Number(chunk.index ?? 0)
+          const current = calls.get(index) ?? { id: '', name: '', arguments: '' }
+          current.arguments += delta.partial_json
+          calls.set(index, current)
+        }
+      }
+      if (event === 'message_delta') {
+        const delta = chunk.delta as Record<string, unknown> | undefined
+        if (typeof delta?.stop_reason === 'string') stopReason = delta.stop_reason
+        const rawUsage = chunk.usage as Record<string, unknown> | undefined
+        if (rawUsage) usage.output_tokens = Number(rawUsage.output_tokens ?? 0)
+      }
+      continue
+    }
     if (typeof chunk.model === 'string') model = chunk.model
     const rawUsage = chunk.usage as Record<string, unknown> | undefined
     if (rawUsage) usage = { input_tokens: Number(rawUsage.prompt_tokens ?? 0), output_tokens: Number(rawUsage.completion_tokens ?? 0) }
@@ -174,7 +284,7 @@ export const runProductModel: ProductAgentModelRunner = async function* ({ messa
     content.push({ type: 'tool_call', id: call.id || `tool_${randomUUID()}`, name: call.name, arguments: parseArguments(call.arguments) })
   }
   if (!content.length) throw new Error('PRODUCT_MODEL_EMPTY_RESPONSE')
-  yield {
+  const assistant: ProductAssistantMessage = {
     type: 'assistant',
     uuid: randomUUID(),
     timestamp: new Date().toISOString(),
@@ -192,5 +302,14 @@ export const runProductModel: ProductAgentModelRunner = async function* ({ messa
             : stopReason,
       usage,
     },
+  }
+  if (personalHandle) completePersonalModelOperation(personalHandle, JSON.stringify({ assistant }), { awaitingConsumerAck: true })
+  yield assistant
+  if (personalHandle) acknowledgePersonalModelOperation(personalHandle.binding)
+  } catch (error) {
+    if (personalHandle) {
+      try { markPersonalModelOperationOutcomeUnknown(personalHandle) } catch {}
+    }
+    throw error
   }
 }

@@ -16,6 +16,8 @@ export const HOST_ONLY_GATEWAY_ENV_KEYS = [
   'BB_MEDIA_UI_CAPABILITY',
   'BB_BROWSER_UI_CAPABILITY',
   'BB_GATEWAY_ACCESS_TOKEN_CAPABILITY',
+  'BB_PERSONAL_MODEL_CONFIGURATION',
+  'BB_PERSONAL_MODEL_CONFIGURATION_CAPABILITY',
 ] as const
 
 /** Return a copy of `env` with host-only gateway credentials removed. */

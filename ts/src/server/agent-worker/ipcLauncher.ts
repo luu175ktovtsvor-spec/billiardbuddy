@@ -6,7 +6,7 @@ import type { ProductAgentHostRuntime } from './productAgentHostRuntime.js'
 import { getProductMcpOAuthMasterKey, PRODUCT_MCP_OAUTH_KEY_ENV } from './productMcpOAuth.js'
 
 type LaunchInput = Parameters<AgentWorkerChildLauncher['launch']>[0]
-type CoreBinding = { session_id: string; work_dir: string }
+type CoreBinding = { session_id: string; work_dir: string; provider: string; model: string; model_route_fingerprint: string }
 const PROVIDER_RUNTIME_ENV_KEYS = [
   'BB_GATEWAY_MODEL',
   'BILLIARDBUDDY_MODEL_CONTEXT_WINDOWS',
