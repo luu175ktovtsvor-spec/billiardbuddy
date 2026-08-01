@@ -4106,17 +4106,10 @@ async function purgeLegacyProductSessionMemory(storageDir: string, taskId: strin
   }
 }
 
-/**
- * Server tests (and Electron restarts) may change the configured data root
- * after this module has been imported.  Keep the live binding replaceable so
- * each sidecar start owns exactly the data root it was started with.
- */
-export let productTaskService = new ProductTaskService()
-
-export function resetProductTaskServiceForServer(options: {
+/** Each Local Product Server owns one explicitly composed Task Authority. */
+export function createProductTaskService(options: {
   additionalLifecycleParticipants?: readonly TaskLifecycleParticipant[]
   dispatcher?: ProductTaskRunDispatchPort
 } = {}): ProductTaskService {
-  productTaskService = new ProductTaskService(options)
-  return productTaskService
+  return new ProductTaskService(options)
 }
