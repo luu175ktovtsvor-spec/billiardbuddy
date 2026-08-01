@@ -163,3 +163,11 @@
 - **R8.3 保留边界**：没有按目录名删除正式源码、产品 Skill、媒体/Agent 工作流或升级读取者；网站 lockfile 的 transitive `jest-worker` 没有测试入口或直接 package 依赖，保留为网站构建的间接依赖。`.gitignore` 中 Playwright 缓存规则保留，因为它只隔离用户浏览器工具缓存，不构成产品测试 runner。
 - **静态验证**：服务端 TypeScript 检查、源码可达性审计（324 个源文件、0 个缺失 import、323 个生产源可达）、桌面 lint/生产构建和差异空白检查通过；生产源码、脚本和包清单中不再引用 Vitest、Testing Library、jsdom、`bun test` 或已删除验收脚本。未运行任何测试、smoke、真实桌面、媒体、安装、发布或生产操作。
 - **下一项**：R9 软件层跨模块完成审计施工单。
+
+## R9 软件层跨模块审计
+
+- **R9.4 当前源码证明**：服务端启动只装配一套 `ProductTaskService`/Worker/Authority 链和一套独立 `MediaProjectService`；桌面经各自公开 API 消费任务或媒体 Project/Task，未发现聊天 Harness 写入媒体项目的消费者。图片远端提交保留未知结果围栏和显式新操作确认；视频预览/导出以 revision、时间线版本和已验证文件闭合结果身份；共享壳只管理连接与事件订阅，页面关闭不会改写或取消服务端状态。
+- **R9.4 权限与恢复边界**：Agent 的权限、队列与恢复由 ProductTask Authority 持久化；媒体 Project/Task/Asset 独立持久化，图片付费未知结果不自动重试，视频过期输出不发布。公开 API 继续投影安全错误和公开状态，不暴露私有 Provider/Authority 数据；桌面不拥有第二份领域事实。
+- **R9.4 清理结论**：已跟踪文件中不存在测试目录、测试文件、runner、测试配置或测试 fixture；生产源码、脚本与包清单也不再引用 Vitest、Testing Library、jsdom、`bun test` 或已删除验收脚本。网站 lockfile 的 `jest-worker` 只是 Next 构建链的 transitive package，网站没有测试脚本或直接测试依赖。
+- **静态验证**：服务端 TypeScript 检查、源码可达性审计（324 个源文件、0 个缺失 import、323 个生产源可达）、桌面 lint/生产构建、全库测试残留检索与差异空白检查通过。未运行任何测试、smoke、真实模型/媒体、桌面、安装、发布或服务器操作。
+- **下一项**：R10 生产部署闭包只读审计；任何服务器写入、容器重启、发布或公网切换须在用户单独确认后进行。
