@@ -1,6 +1,7 @@
 import type { ProductTaskEvent, ProductTaskRunSnapshot } from '../../../shared/product/taskEvents.js'
 
 const MAX_SNAPSHOT_ACTIVITIES = 256
+const MAX_SNAPSHOT_ASSISTANT_TEXT = 100_000
 
 function upsertSnapshotActivity(
   snapshot: ProductTaskRunSnapshot,
@@ -22,6 +23,7 @@ function upsertSnapshotActivity(
 }
 
 type Listener = (taskId: string, event: ProductTaskEvent) => void
+type ProductTaskLiveRunSnapshot = ProductTaskRunSnapshot & { assistantText?: string }
 
 /**
  * Ephemeral projection of already-durable task events for one Product Server.
@@ -32,7 +34,7 @@ type Listener = (taskId: string, event: ProductTaskEvent) => void
  */
 export class ProductTaskWorkerRuntimeEvents {
   private readonly listeners = new Set<Listener>()
-  private readonly snapshots = new Map<string, ProductTaskRunSnapshot>()
+  private readonly snapshots = new Map<string, ProductTaskLiveRunSnapshot>()
   private readonly pendingApprovals = new Map<string, Extract<ProductTaskEvent, { type: 'approval_required' }>>()
 
   publish(taskId: string, event: ProductTaskEvent): void {
@@ -42,18 +44,34 @@ export class ProductTaskWorkerRuntimeEvents {
         state: event.state,
         activities: previous.state === 'idle' && event.state === 'working' ? [] : previous.activities,
         ...(previous.state === 'idle' && event.state === 'working' ? {} : previous.plan ? { plan: previous.plan } : {}),
+        ...(event.state === 'working' && previous.state !== 'working'
+          ? { assistantText: '' }
+          : previous.assistantText !== undefined ? { assistantText: previous.assistantText } : {}),
       })
       if (event.state !== 'awaiting_approval') this.pendingApprovals.delete(taskId)
     }
     if (event.type === 'activity') {
-      this.snapshots.set(taskId, upsertSnapshotActivity(
-        this.snapshots.get(taskId) ?? { state: 'working', activities: [] },
-        event,
-      ))
+      const previous = this.snapshots.get(taskId) ?? { state: 'working' as const, activities: [] }
+      const updated = upsertSnapshotActivity(previous, event)
+      this.snapshots.set(taskId, {
+        ...updated,
+        ...(previous.assistantText !== undefined ? { assistantText: previous.assistantText } : {}),
+      })
     }
     if (event.type === 'plan_updated') {
       const previous = this.snapshots.get(taskId) ?? { state: 'working' as const, activities: [] }
       this.snapshots.set(taskId, { ...previous, plan: { id: event.plan.id, steps: event.plan.steps.map(step => ({ ...step })) } })
+    }
+    if (event.type === 'assistant_text_start') {
+      const previous = this.snapshots.get(taskId) ?? { state: 'working' as const, activities: [] }
+      this.snapshots.set(taskId, { ...previous, assistantText: '' })
+    }
+    if (event.type === 'assistant_text_delta') {
+      const previous = this.snapshots.get(taskId) ?? { state: 'working' as const, activities: [] }
+      this.snapshots.set(taskId, {
+        ...previous,
+        assistantText: `${previous.assistantText ?? ''}${event.text}`.slice(0, MAX_SNAPSHOT_ASSISTANT_TEXT),
+      })
     }
     if (event.type === 'approval_required') {
       this.rememberApproval(taskId, event)
@@ -95,6 +113,10 @@ export class ProductTaskWorkerRuntimeEvents {
           ...(snapshot.plan ? { plan: { id: snapshot.plan.id, steps: snapshot.plan.steps.map(step => ({ ...step })) } } : {}),
         }
       : { state: 'idle', activities: [] }
+  }
+
+  assistantTextSnapshot(taskId: string): string | undefined {
+    return this.snapshots.get(taskId)?.assistantText
   }
 
   subscribe(listener: Listener): () => void {

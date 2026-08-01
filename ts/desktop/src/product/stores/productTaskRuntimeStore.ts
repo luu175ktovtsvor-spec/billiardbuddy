@@ -242,6 +242,30 @@ function appendOrReplaceStreamingText(
   return { ...runtime, entries, streamingEntryId: entryId }
 }
 
+/** The server snapshot is authoritative for an in-flight turn after reconnect. */
+function replaceStreamingText(
+  runtime: ProductTaskRuntime,
+  taskId: string,
+  text: string | undefined,
+): ProductTaskRuntime {
+  const previousId = runtime.streamingEntryId
+  const entriesWithoutPrevious = previousId
+    ? runtime.entries.filter((entry) => entry.id !== previousId)
+    : runtime.entries
+  if (!text) return { ...runtime, entries: entriesWithoutPrevious, streamingEntryId: null }
+  const entryId = previousId ?? liveEntryId(taskId, 'assistant')
+  return {
+    ...runtime,
+    entries: [...entriesWithoutPrevious, {
+      id: entryId,
+      type: 'assistant_text',
+      text,
+      createdAt: runtime.entries.find((entry) => entry.id === previousId)?.createdAt ?? createdAt(),
+    }],
+    streamingEntryId: entryId,
+  }
+}
+
 function upsertRunActivity(
   activities: readonly ProductTaskRunActivity[],
   event: Extract<ProductTaskEvent, { type: 'activity' }>,
@@ -833,6 +857,9 @@ export const useProductTaskRuntimeStore = create<ProductTaskRuntimeStore>((set, 
 
           case 'assistant_text_delta':
             return runtime.stopRequested ? runtime : appendOrReplaceStreamingText(runtime, taskId, event.text)
+
+          case 'assistant_text_snapshot':
+            return runtime.stopRequested ? runtime : replaceStreamingText(runtime, taskId, event.text)
 
           case 'assistant_text': {
             const persisted: ProductTaskThreadEntry = {
