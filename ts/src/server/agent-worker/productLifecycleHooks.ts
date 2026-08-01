@@ -155,7 +155,7 @@ async function httpHook(hook: Extract<ProductHookCommand, { type: 'http' }>, jso
 export function createProductHarnessLifecycleHookHost(input: {
   snapshot: ProductHookSnapshot
   cwd: string
-  evaluate?: (prompt: string, model: string | undefined, signal: AbortSignal) => Promise<{ ok: boolean; reason?: string }>
+  evaluate?: (prompt: string, model: string | undefined, signal: AbortSignal, timeoutMs?: number) => Promise<{ ok: boolean; reason?: string }>
   run_external_operation?: <T>(kind: TaskRunExternalOperationKind, operation: () => Promise<T>) => Promise<T>
   on_hook_run?: (activity: ProductHookRunActivity) => void
 }): ProductHarnessLifecycleHookHost {
@@ -211,7 +211,7 @@ export function createProductHarnessLifecycleHookHost(input: {
               signal,
               AbortSignal.timeout(Math.min((hook.timeout ?? 600) * 1000, 600_000)),
             ])
-            const result = await input.evaluate(prompt, hook.model, evaluationSignal)
+            const result = await input.evaluate(prompt, hook.model, evaluationSignal, Math.min((hook.timeout ?? 600) * 1000, 600_000))
             succeeded = result.ok
             if (!result.ok) {
               hookFailed = true
