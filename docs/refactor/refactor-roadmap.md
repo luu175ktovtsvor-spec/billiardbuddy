@@ -45,7 +45,7 @@ R0 文档与施工协议
 
 | 模块 | 产品结果 | 静态退出证据 | 当前提交链 |
 | --- | --- | --- | --- |
-| R0 | 合同、路线图和模块协议给出同一顺序和唯一游标 | 路线图不含施工流水；账本只记录证据；一次一个 work unit | `e36ab93a`、`eaba7606` |
+| R0 | 合同、路线图和模块协议给出同一顺序和唯一游标 | 路线图不含施工流水；账本只记录证据；一次一个 work unit | `e36ab93a`、`f022a3da` |
 | R1.1 | 一份跨域资源 claim、lease、fencing 与队列合同 | Kernel 合同、唯一持久 scheduler、旧路径仅转发 | `d239c797` |
 | R1.2 | 匿名安装会话、能力目录、受信凭据与迁移入口 | Main 持有安装/凭据能力；Renderer/Worker 不得持有刷新凭据 | `3b3033a7` |
 | R2 | 唯一 Authority—Worker—Host—Harness 链 | 单一组合根、事件账本、私有 session、公开投影和恢复边界 | `dfc281d4` |
@@ -82,13 +82,13 @@ R2 被选中时只能依次处理：
 ## 6. 当前施工游标
 
 ```text
-Active work unit: main 合并 — 已核验模块链成为 main 的正式树
-Outcome: R0—R11 的已核验提交链成为 main；旧的混杂工作保留为可恢复归档，不进入正式树。
-Evidence: 本文件的模块—提交映射、module-verification-ledger.md、git log/diff/status、目标 main 历史与当前源码静态检查。
-Constraints / Non-goals: 不推送、不创建 PR、不发布、不写服务器；不把旧混杂改动混进模块链。
-Allowed scope: Git 归档、工作树保护、main 合并、合并后静态检查和必要记录。
-Verification / Exit: 每个 R0—R11 都有产品结果、退出证据和可追溯提交；main 最终树只含已裁决模块；工作树干净；静态检查通过。
-Next cursor: 合并完成后进入用户确认的真实产品/发布验收，不以文档或静态检查替代该确认。
+Active work unit: 用户确认前的真实产品验收授权门
+Outcome: main 只保留已核验的模块链；明确静态证据的边界，并等待用户选定真实产品或发布验收范围。
+Evidence: `main@b6b68208` 包含路线图记录的 R0—R11 提交链；原混杂工作已保存在 `archive-main-dirty-before-clean-rebuild-20260801` stash；当前 main 工作树干净。2026-08-01 已重新通过服务端类型检查、生产源码可达性审计、桌面类型检查和生产构建。
+Constraints / Non-goals: 不把静态检查写成真实产品效果；不自动调用付费模型、不启动真实媒体任务、不构建安装包、不写服务器、不推送或发布。
+Allowed scope: 根据用户明确授权，选择一项真实产品或发布验收；该项必须另立施工单，注明成本、外部副作用和完成证据。
+Verification / Exit: 用户明确选定验收范围；新施工单写明实际目标、可接受副作用、所需环境和下一游标。
+Next cursor: 由用户确认选择 Agent 真实任务、图片/视频真实任务、桌面安装更新，或生产发布中的一项。
 ```
 
 ## 7. 合并规则
