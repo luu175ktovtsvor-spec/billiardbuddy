@@ -194,6 +194,7 @@ function publicTask(task: MediaTask): PublicMediaTask {
     owner: _owner,
     attempt: _attempt,
     image_operation: _imageOperation,
+    remote_submission_started_at: _remoteSubmissionStartedAt,
     result: persistedResult,
     error: _rawError,
     error_code: persistedErrorCode,

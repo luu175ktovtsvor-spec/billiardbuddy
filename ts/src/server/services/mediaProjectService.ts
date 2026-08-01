@@ -1714,6 +1714,8 @@ export class MediaProjectService {
     task = await this.reconcileTaskAndProject(task)
     if (refreshRemote && task.kind === 'image.generate' && ['queued', 'running'].includes(task.status)) {
       if (!task.remote_task_id) {
+        task = await this.fenceInterruptedImageSubmission(task)
+        if (task.outcome_unknown) return task
         const project = await this.getProject(task.project_id)
         if (project.kind !== 'image' || !task.idempotency_key) {
           return await this.failImageTask(
@@ -2529,12 +2531,13 @@ export class MediaProjectService {
       throw new MediaServiceError('这不是生图项目', 409, 'WRONG_PROJECT_KIND')
     }
     if (project.task_id) {
-      const existing = await this.getTask(project.task_id, false).catch(() => null)
+      let existing = await this.getTask(project.task_id, false).catch(() => null)
+      if (existing) existing = await this.fenceInterruptedImageSubmission(existing)
       if (
         existing?.kind === 'image.generate'
         && !existing.remote_task_id
         && existing.idempotency_key
-        && (['queued', 'running'].includes(existing.status) || existing.outcome_unknown)
+        && ['queued', 'running'].includes(existing.status)
       ) {
         return await this.submitPersistedImageTask(project, existing)
       }
@@ -2608,7 +2611,8 @@ export class MediaProjectService {
       throw new MediaServiceError('图片项目已更新，请刷新后再编辑', 409, 'REVISION_CONFLICT')
     }
     if (project.task_id) {
-      const existing = await this.getTask(project.task_id, false).catch(() => null)
+      let existing = await this.getTask(project.task_id, false).catch(() => null)
+      if (existing) existing = await this.fenceInterruptedImageSubmission(existing)
       if (existing?.outcome_unknown && !input.confirm_unknown_retry) {
         throw new MediaServiceError('上一次任务是否已被远程服务受理暂时无法确认，请明确确认后再创建新操作', 409, 'IMAGE_UNKNOWN_RETRY_CONFIRMATION_REQUIRED')
       }
@@ -2755,6 +2759,17 @@ export class MediaProjectService {
     return submission
   }
 
+  private async fenceInterruptedImageSubmission(task: MediaTask): Promise<MediaTask> {
+    if (
+      task.kind !== 'image.generate'
+      || task.remote_task_id
+      || !task.remote_submission_started_at
+      || !['queued', 'running'].includes(task.status)
+      || this.activeImageSubmissions.has(task.id)
+    ) return task
+    return await this.failImageTask(task, 'MEDIA_IMAGE_OUTCOME_UNKNOWN', true)
+  }
+
   private async performPersistedImagePipeline(
     originalProject: ImageWorkbenchProject,
     originalTask: MediaTask,
@@ -2850,6 +2865,7 @@ export class MediaProjectService {
       status: 'queued',
       progress: Math.max(originalTask.progress, 1),
       stage: originalTask.outcome_unknown ? '正在确认上次提交' : '正在提交',
+      remote_submission_started_at: originalTask.remote_submission_started_at ?? this.iso(),
       error: undefined,
       error_code: undefined,
       outcome_unknown: false,
@@ -2942,7 +2958,8 @@ export class MediaProjectService {
       throw new MediaServiceError('图片项目已更新，请刷新后再编辑', 409, 'REVISION_CONFLICT')
     }
     if (project.task_id) {
-      const existing = await this.getTask(project.task_id, false).catch(() => null)
+      let existing = await this.getTask(project.task_id, false).catch(() => null)
+      if (existing) existing = await this.fenceInterruptedImageSubmission(existing)
       if (existing?.outcome_unknown && !input.confirm_unknown_retry) {
         throw new MediaServiceError(
           '上一次任务是否已被远程服务受理暂时无法确认。修改后再生成会创建新操作，请在桌面工作台明确确认',

@@ -495,6 +495,8 @@ export const mediaTaskSchema = z.object({
   /** Server-provided status polling backoff for asynchronous image work. */
   poll_after_seconds: z.number().int().min(1).max(3600).optional(),
   idempotency_key: z.string().min(16).max(160).optional(),
+  /** Persisted before the first remote submission attempt; absent means no request has left this process. */
+  remote_submission_started_at: mediaIsoDateSchema.optional(),
   outcome_unknown: z.boolean().optional(),
   provider_receipt_hash: z.string().regex(/^[a-f0-9]{64}$/).optional(),
   /** Relay result blob was deleted only after the local Version/Asset commit succeeded. */
@@ -518,6 +520,7 @@ export const publicMediaTaskSchema = mediaTaskSchema.omit({
   attempt: true,
   image_operation: true,
   poll_after_seconds: true,
+  remote_submission_started_at: true,
   remote_result_acknowledged_at: true,
 })
 
