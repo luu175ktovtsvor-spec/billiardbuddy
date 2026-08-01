@@ -75,6 +75,12 @@ Worker 无权清除 receipt。任何 checkpoint 前的 stop、崩溃、IPC 断�
 
 确定收到的业务失败（例如非 2xx Hook 响应或非零退出码）仍按普通失败处理，不应被误标为未知结果。用户停止会先持久化 stop intent；如果外部结果此后才到达，不能清掉 receipt 并把该效果遗忘，必须按上述未知结果规则收口。
 
+### HookRun 的可见活动
+
+每个实际匹配并执行的同步 Hook 都必须形成同一 Agent Run 下的一对安全活动投影：`started -> completed` 或 `started -> failed`。活动身份由该次 Run 和 Hook 调用序号确定，父进程先写入账本再推送任务页；任务页和重连回放只能看到“项目自动化正在运行、已完成、未完成”，不展示命令、URL、输入、输出、路径、配置来源或凭据。
+
+Hook 的 Shell/HTTP 副作用仍复用本节的 EffectReceipt 和 checkpoint；HookRun 活动不另造一份效果账本。无法等待并保存结果的异步 Command Hook 必须继续明确拒绝，不能作为 Harness 中脱离账本的后台 Promise 执行。
+
 ### 迁移与执行边界
 
 历史 `product-tasks.json`（v1–v4）以及当前 `product-task-authority.v1.json` 都只可作为迁移输入或过渡读取源。它们的 schema、版本归一化和旧 Core 映射属于迁移层；新 Agent 域完成切换后，正式路径只读取 Agent 自己的账本，不能维持两份可写运行真相。

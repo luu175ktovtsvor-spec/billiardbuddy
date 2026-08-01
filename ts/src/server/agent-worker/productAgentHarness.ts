@@ -29,6 +29,7 @@ import {
 import {
   createProductHarnessLifecycleHookHost,
   type ProductHarnessLifecycleHookHost,
+  type ProductHookRunActivity,
 } from './productLifecycleHooks.js'
 import { createProductHookSnapshot } from './productHookSnapshot.js'
 import { decideProductToolPermission } from './productPermissionDecision.js'
@@ -279,6 +280,21 @@ export async function createProductAgentHarness(input: {
   }>()
   const completedToolActivities = new Set<string>()
   const activityId = (toolUseId: string) => `activity_${createHash('sha256').update(`${input.run_id}:${toolUseId}`).digest('hex').slice(0, 32)}`
+  const hookActivityId = (hookRunId: string) => activityId(`hook:${hookRunId}`)
+  const emitHookRunActivity = (hookRun: ProductHookRunActivity) => {
+    const phase = hookRun.phase
+    const kind: ProductTaskActivityKind = 'automation'
+    emit({
+      type: 'event',
+      event: 'activity',
+      activity: {
+        id: hookActivityId(hookRun.id),
+        kind,
+        phase,
+        summary: input.projection.activitySummary(kind, phase),
+      },
+    })
+  }
   const rememberToolActivity = (
     toolUseId: string,
     kind: ProductTaskActivityKind,
@@ -373,6 +389,7 @@ export async function createProductAgentHarness(input: {
     cwd: input.work_dir,
     evaluate: evaluateProductHook,
     run_external_operation: runExternalOperation,
+    on_hook_run: emitHookRunActivity,
   })
   const productToolHooks: ProductToolHooks = {
     before: block => lifecycleHooks.preTool({

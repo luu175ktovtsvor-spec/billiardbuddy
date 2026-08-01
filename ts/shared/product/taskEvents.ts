@@ -58,6 +58,7 @@ export type ProductTaskActivityKind =
   | 'research'
   | 'browser'
   | 'media'
+  | 'automation'
   | 'subtask'
   | 'tool'
 
