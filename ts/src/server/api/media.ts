@@ -27,12 +27,20 @@ import { errorResponse, ApiError } from '../middleware/errorHandler.js'
 import { MediaProjectService, MediaServiceError } from '../services/mediaProjectService.js'
 import { ImageWorkbenchService, ImageWorkbenchServiceError } from '../services/imageWorkbenchService.js'
 import { ImageWorkbenchRepositoryError } from '../services/imageWorkbenchRepository.js'
+import { VideoWorkbenchService, VideoWorkbenchServiceError } from '../services/videoWorkbenchService.js'
+import { VideoWorkbenchRepositoryError } from '../services/videoWorkbenchRepository.js'
 import {
   createImageWorkbenchApiHandler,
   publicImageEventPage,
   publicImageProject,
   publicImageTask,
 } from './imageWorkbench.js'
+import {
+  createVideoWorkbenchApiHandler,
+  publicVideoEventPage,
+  publicVideoProject,
+  publicVideoTask,
+} from './videoWorkbench.js'
 
 const STANDALONE_MEDIA_OWNER = {
   kind: 'standalone' as const,
@@ -66,6 +74,13 @@ function requireMediaUiCapability(req: Request, expected: string): void {
 
 function mediaErrorResponse(error: unknown): Response {
   if (error instanceof ImageWorkbenchServiceError) {
+    const safe = mediaSafeErrorForServiceError(error.code, error.status)
+    return Response.json(
+      { error: safe.code, message: safe.message },
+      { status: error.status },
+    )
+  }
+  if (error instanceof VideoWorkbenchServiceError || error instanceof VideoWorkbenchRepositoryError) {
     const safe = mediaSafeErrorForServiceError(error.code, error.status)
     return Response.json(
       { error: safe.code, message: safe.message },
@@ -250,9 +265,13 @@ export function createMediaApiHandler(
   service: MediaProjectService,
   mediaUiCapability = '',
   imageWorkbench?: ImageWorkbenchService,
+  videoWorkbench?: VideoWorkbenchService,
 ) {
   const imageApiHandler = imageWorkbench
     ? createImageWorkbenchApiHandler(imageWorkbench, mediaUiCapability)
+    : null
+  const videoApiHandler = videoWorkbench
+    ? createVideoWorkbenchApiHandler(videoWorkbench, mediaUiCapability)
     : null
   return async function handleMediaApi(
     req: Request,
@@ -266,6 +285,9 @@ export function createMediaApiHandler(
       // handler remains responsible only for video and migration readers.
       if (area === 'images' && imageApiHandler) {
         return await imageApiHandler(req, url, segments)
+      }
+      if (area === 'videos' && videoApiHandler) {
+        return await videoApiHandler(req, url, segments)
       }
 
       if (area === 'projects') {
@@ -293,6 +315,26 @@ export function createMediaApiHandler(
               throw new ImageWorkbenchServiceError('图片项目已移入回收站', 404, 'IMAGE_PROJECT_NOT_FOUND')
             }
           }
+          if (videoWorkbench) {
+            const videoProject = await videoWorkbench.getProject(projectId).catch(error => {
+              if (error instanceof VideoWorkbenchServiceError && error.code === 'VIDEO_PROJECT_NOT_FOUND') return null
+              throw error
+            })
+            if (videoProject) {
+              const cursor = Number(url.searchParams.get('cursor') ?? 0)
+              const limit = Number(url.searchParams.get('limit') ?? 100)
+              const waitMs = Number(url.searchParams.get('wait_ms') ?? 25_000)
+              if (!Number.isInteger(cursor) || cursor < 0) throw ApiError.badRequest('cursor 必须是非负整数')
+              if (!Number.isInteger(limit) || limit < 1 || limit > 200) throw ApiError.badRequest('limit 必须在 1 到 200 之间')
+              if (!Number.isInteger(waitMs) || waitMs < 0 || waitMs > 25_000) throw ApiError.badRequest('wait_ms 必须在 0 到 25000 之间')
+              return Response.json(publicVideoEventPage(
+                await videoWorkbench.waitForOperationEvents(videoProject.id, cursor, limit, waitMs),
+              ))
+            }
+            if (await videoWorkbench.hasProjectHistory(projectId)) {
+              throw new VideoWorkbenchServiceError('视频项目已移入回收站', 404, 'VIDEO_PROJECT_NOT_FOUND')
+            }
+          }
           await service.assertProjectOwner(projectId, STANDALONE_MEDIA_OWNER)
           const cursor = Number(url.searchParams.get('cursor') ?? 0)
           const limit = Number(url.searchParams.get('limit') ?? 100)
@@ -312,19 +354,24 @@ export function createMediaApiHandler(
           throw ApiError.badRequest('kind 只能是 image 或 video')
         }
         const kind = requestedKind === 'image' || requestedKind === 'video' ? requestedKind : undefined
-        if (imageWorkbench && kind !== 'video') {
-          const [legacyProjects, imageProjects, imageDeletions] = await Promise.all([
-            service.listProjectsForOwner(STANDALONE_MEDIA_OWNER, kind === 'image' ? 'image' : undefined),
-            imageWorkbench.listProjects(),
-            imageWorkbench.listDeletions(),
+        if (imageWorkbench || videoWorkbench) {
+          const [legacyProjects, imageProjects, imageDeletions, videoProjects, videoDeletions] = await Promise.all([
+            service.listProjectsForOwner(STANDALONE_MEDIA_OWNER, kind),
+            imageWorkbench && kind !== 'video' ? imageWorkbench.listProjects() : [],
+            imageWorkbench && kind !== 'video' ? imageWorkbench.listDeletions() : [],
+            videoWorkbench && kind !== 'image' ? videoWorkbench.listProjects() : [],
+            videoWorkbench && kind !== 'image' ? videoWorkbench.listDeletions() : [],
           ])
           const migratedIds = new Set([
             ...imageProjects.map(project => project.id),
             ...imageDeletions.map(receipt => receipt.project_id),
+            ...videoProjects.map(project => project.id),
+            ...videoDeletions.map(receipt => receipt.project_id),
           ])
           const projects = [
             ...legacyProjects.filter(project => !migratedIds.has(project.id)).map(publicProject),
             ...imageProjects.map(publicImageProject),
+            ...videoProjects.map(publicVideoProject),
           ].sort((left, right) => right.updated_at.localeCompare(left.updated_at))
           return Response.json({ projects })
         }
@@ -344,11 +391,12 @@ export function createMediaApiHandler(
 
       if (area === 'deletions') {
         if (req.method !== 'GET' || segments[3]) throw methodNotAllowed(req.method)
-        const [legacyDeletions, imageDeletions] = await Promise.all([
+        const [legacyDeletions, imageDeletions, videoDeletions] = await Promise.all([
           service.listDeletionsForOwner(STANDALONE_MEDIA_OWNER),
           imageWorkbench?.listDeletions() ?? [],
+          videoWorkbench?.listDeletions() ?? [],
         ])
-        const deletions = [...legacyDeletions, ...imageDeletions]
+        const deletions = [...legacyDeletions, ...imageDeletions, ...videoDeletions]
           .sort((left, right) => right.deleted_at.localeCompare(left.deleted_at))
         return Response.json({
           deletions: deletions.map(receipt => publicMediaDeletionReceiptSchema.parse(receipt)),
@@ -369,6 +417,16 @@ export function createMediaApiHandler(
             throw new ImageWorkbenchServiceError('图片项目已移入回收站', 404, 'IMAGE_PROJECT_NOT_FOUND')
           }
         }
+        if (!action && videoWorkbench && req.method === 'GET') {
+          const videoProject = await videoWorkbench.getProject(projectId).catch(error => {
+            if (error instanceof VideoWorkbenchServiceError && error.code === 'VIDEO_PROJECT_NOT_FOUND') return null
+            throw error
+          })
+          if (videoProject) return Response.json({ project: publicVideoProject(videoProject) })
+          if (await videoWorkbench.hasProjectHistory(projectId)) {
+            throw new VideoWorkbenchServiceError('视频项目已移入回收站', 404, 'VIDEO_PROJECT_NOT_FOUND')
+          }
+        }
         if (action === 'restore') {
           if (req.method !== 'POST' || segments[5]) throw methodNotAllowed(req.method)
           if (imageWorkbench) {
@@ -379,6 +437,13 @@ export function createMediaApiHandler(
             if (restored) {
               return Response.json({ deletion: publicMediaDeletionReceiptSchema.parse(restored) })
             }
+          }
+          if (videoWorkbench) {
+            const restored = await videoWorkbench.restoreProject(projectId).catch(error => {
+              if (error instanceof VideoWorkbenchRepositoryError && error.code === 'VIDEO_PROJECT_NOT_FOUND') return null
+              throw error
+            })
+            if (restored) return Response.json({ deletion: publicMediaDeletionReceiptSchema.parse(restored) })
           }
           const receipt = publicMediaDeletionReceiptSchema.parse(
             await service.restoreProject(projectId, STANDALONE_MEDIA_OWNER),
@@ -396,6 +461,17 @@ export function createMediaApiHandler(
           })
           if (deletion) return new Response(null, { status: 204 })
           if (await imageWorkbench.hasProjectHistory(projectId)) return new Response(null, { status: 204 })
+        }
+        if (videoWorkbench && req.method === 'DELETE') {
+          const deletion = await videoWorkbench.deleteProject(projectId).catch(error => {
+            if (
+              (error instanceof VideoWorkbenchRepositoryError || error instanceof VideoWorkbenchServiceError)
+              && error.code === 'VIDEO_PROJECT_NOT_FOUND'
+            ) return null
+            throw error
+          })
+          if (deletion) return new Response(null, { status: 204 })
+          if (await videoWorkbench.hasProjectHistory(projectId)) return new Response(null, { status: 204 })
         }
         await service.assertProjectOwner(projectId, STANDALONE_MEDIA_OWNER)
         if (req.method === 'DELETE') {
@@ -424,6 +500,23 @@ export function createMediaApiHandler(
           }
           if (await imageWorkbench.hasOperationHistory(taskId)) {
             throw new ImageWorkbenchServiceError('图片操作已随项目移入回收站', 404, 'IMAGE_OPERATION_NOT_FOUND')
+          }
+        }
+        if (videoWorkbench) {
+          const videoTask = await videoWorkbench.getOperation(taskId).catch(error => {
+            if (error instanceof VideoWorkbenchRepositoryError && error.code === 'VIDEO_OPERATION_NOT_FOUND') return null
+            throw error
+          })
+          if (videoTask) {
+            if (segments[4] === 'cancel') {
+              if (req.method !== 'POST') throw methodNotAllowed(req.method)
+              return Response.json({ task: publicVideoTask(await videoWorkbench.cancelOperation(taskId)) })
+            }
+            if (req.method !== 'GET') throw methodNotAllowed(req.method)
+            return Response.json({ task: publicVideoTask(videoTask) })
+          }
+          if (await videoWorkbench.hasOperationHistory(taskId)) {
+            throw new VideoWorkbenchServiceError('视频操作已随项目移入回收站', 404, 'VIDEO_OPERATION_NOT_FOUND')
           }
         }
         await service.assertTaskOwner(taskId, STANDALONE_MEDIA_OWNER)

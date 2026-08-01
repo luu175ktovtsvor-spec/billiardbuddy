@@ -12,6 +12,7 @@ import { handleProductApi } from './api/product.js'
 import { createProductTaskService, type ProductTaskService } from './product/taskService.js'
 import { MediaProjectService } from './services/mediaProjectService.js'
 import { ImageWorkbenchService } from './services/imageWorkbenchService.js'
+import { VideoWorkbenchService } from './services/videoWorkbenchService.js'
 import { voiceOperationService } from './services/voiceOperationService.js'
 import { getProductConfigDir } from './product/productPaths.js'
 import { configureChromeSessionBridge, getChromeSessionBridge } from './services/chromeSessionBridge.js'
@@ -166,12 +167,12 @@ export function startServer(port = PORT, host = HOST) {
     scheduler: desktopResourceScheduler,
   })
   let productTaskQueueRecovery: Promise<void> | undefined
-  // The independent image and video workbenches share one process-local media
-  // service only while legacy image records are being migrated. New image
-  // projects are owned by their dedicated service; Chat/ProductTask routes
-  // never receive either workbench service.
+  // The generic media service is now a legacy reader only. Image and video
+  // each own their state, operation journal and recovery paths; Chat and
+  // ProductTask routes receive neither workbench service.
   const mediaService = new MediaProjectService()
   const imageWorkbenchService = new ImageWorkbenchService()
+  const videoWorkbenchService = new VideoWorkbenchService()
   if (process.env.NODE_ENV !== 'test') {
     void voiceOperationService.purgeExpired().catch(error => diagnosticsService.recordEvent({
       type: 'voice_gc_failed',
@@ -184,9 +185,10 @@ export function startServer(port = PORT, host = HOST) {
     mediaService,
     mediaUiCapability,
     imageWorkbenchService,
+    videoWorkbenchService,
   )
   const productCapabilitySnapshots = new ProductCapabilitySnapshotService({
-    mediaToolchainStatus: () => mediaService.toolchainStatus(),
+    mediaToolchainStatus: () => videoWorkbenchService.toolchainStatus(),
     scheduledRuns: () => scheduledTasks.listRecentRuns(100),
   })
   const productStorageUpgrade = new ProductStorageMigrationCoordinator(
@@ -199,22 +201,18 @@ export function startServer(port = PORT, host = HOST) {
       migrateScheduledTaskRuns: () => migrateSupportedScheduledTaskRuns(configDir),
     },
   ).ensureUpgraded()
-  // Migrate only after the legacy media service has completed its video-only
-  // in-place upgrades. The importer is idempotent and never makes
-  // MediaProjectService the owner of a new image project.
-  const imageWorkbenchRecovery = productStorageUpgrade
-    .then(() => imageWorkbenchService.migrateLegacyMediaStore())
-    .then(() => imageWorkbenchService.recoverInterruptedOperations())
-  if (process.env.NODE_ENV !== 'test') {
-    void productStorageUpgrade
-      .then(() => mediaService.purgeExpiredDeletions(), () => undefined)
-      .catch(error => diagnosticsService.recordEvent({
-        type: 'media_gc_failed',
-        severity: 'error',
-        summary: 'Media retention cleanup failed',
-        details: { error },
-      }))
-  }
+  // Both importers are one-way and idempotent. They retain the former generic
+  // directory as evidence while moving all formal reads/writes to the owning
+  // workbench, then settle only local child-process operations after restart.
+  const mediaWorkbenchRecovery = productStorageUpgrade
+    .then(async () => await Promise.all([
+      imageWorkbenchService.migrateLegacyMediaStore(),
+      videoWorkbenchService.migrateLegacyMediaStore(),
+    ]))
+    .then(async () => await Promise.all([
+      imageWorkbenchService.recoverInterruptedOperations(),
+      videoWorkbenchService.recoverInterruptedOperations(),
+    ]))
   const productApiHandler = (req: Request, url: URL, segments: string[]) => (
     handleProductApi(
       req,
@@ -256,7 +254,7 @@ export function startServer(port = PORT, host = HOST) {
 
       async fetch(req, server) {
         await productStorageUpgrade
-        await imageWorkbenchRecovery
+        await mediaWorkbenchRecovery
         productTaskQueueRecovery ??= productTaskService.recoverDurableTaskRunQueue({
           hasLiveTaskRunLease: (runId, generation) => desktopResourceScheduler.hasLiveTaskRunLease(runId, generation),
         })
