@@ -1582,12 +1582,14 @@ export class MediaProjectService {
     for (const name of (await readdir(this.projectsDir)).filter(name => name.endsWith('.json')).sort()) {
       await this.getProject(name.slice(0, -5))
     }
+    const videoTaskIds: string[] = []
     for (const name of (await readdir(this.tasksDir)).filter(name => name.endsWith('.json')).sort()) {
       const raw = JSON.parse(await readFile(join(this.tasksDir, name), 'utf8')) as unknown
       const migrated = migrateLegacyMediaOwnerRecord(raw)
       const task = mediaTaskSchema.parse(migrated.value)
       const hasStatusSequence = Boolean(raw && typeof raw === 'object' && 'status_sequence' in raw)
       if (migrated.migrated || !task.operation_id || !task.owner || !hasStatusSequence) await this.saveTask(task)
+      if (task.kind.startsWith('video.')) videoTaskIds.push(task.id)
     }
     for (const name of (await readdir(this.deletionsDir)).filter(name => name.endsWith('.json')).sort()) {
       const filePath = join(this.deletionsDir, name)
@@ -1598,6 +1600,11 @@ export class MediaProjectService {
         await this.writeJson(filePath, receipt)
       }
     }
+    // Video preview/export workers are local child processes. They cannot survive a
+    // server restart, so settle their persisted state during boot rather than waiting
+    // for a client to read the project. Deliberately do not refresh image tasks here:
+    // image refresh can continue an externally billed provider submission.
+    for (const taskId of videoTaskIds) await this.getTask(taskId, false)
   }
 
   async listProjects(kind?: 'image' | 'video', owner?: MediaOwner): Promise<MediaProject[]> {
