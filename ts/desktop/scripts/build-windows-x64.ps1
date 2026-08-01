@@ -122,6 +122,18 @@ try {
   Pop-Location
 }
 
+Write-Step 'Building and staging managed Codex engine...'
+Push-Location $desktopDir
+try {
+  $env:CODEX_ENGINE_TARGET = $targetTriple
+  & bun run stage:codex-engine
+  if ($LASTEXITCODE -ne 0) {
+    throw "[build-windows-x64] stage:codex-engine failed (exit $LASTEXITCODE)"
+  }
+} finally {
+  Pop-Location
+}
+
 Write-Step 'Cleaning stale Electron outputs...'
 Remove-Item -LiteralPath (Join-Path $desktopDir 'dist') -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath (Join-Path $desktopDir 'electron-dist') -Recurse -Force -ErrorAction SilentlyContinue

@@ -123,6 +123,9 @@ fi
 echo "[build-macos-arm64] Staging audited media toolchain..."
 (cd "${DESKTOP_DIR}" && BB_MEDIA_TOOLCHAIN_PLATFORM=darwin bun run stage:media-toolchain)
 
+echo "[build-macos-arm64] Building and staging managed Codex engine..."
+(cd "${DESKTOP_DIR}" && CODEX_ENGINE_TARGET="${TARGET_TRIPLE}" bun run stage:codex-engine)
+
 echo "[build-macos-arm64] Cleaning stale Electron outputs..."
 rm -rf "${DESKTOP_DIR}/dist"
 rm -rf "${DESKTOP_DIR}/electron-dist"

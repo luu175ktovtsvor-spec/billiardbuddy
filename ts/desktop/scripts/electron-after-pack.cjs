@@ -45,7 +45,35 @@ function validatePackagedMediaToolchain(context) {
   console.log(`[media-toolchain] verified packaged FFmpeg/ffprobe for ${platform}`)
 }
 
-module.exports = validatePackagedMediaToolchain
-module.exports.afterPack = validatePackagedMediaToolchain
+function validatePackagedCodexEngine(context) {
+  const platform = packagePlatform(context)
+  const toolchainDir = packagedMediaToolchainDir(context)
+  try {
+    execFileSync('bun', [
+      path.join(__dirname, 'stage-codex-engine.ts'),
+      '--verify',
+      '--target', platform === 'darwin' ? 'aarch64-apple-darwin' : 'x86_64-pc-windows-msvc',
+      '--destination', toolchainDir,
+    ], {
+      cwd: path.join(__dirname, '..'),
+      env: process.env,
+      encoding: 'utf8',
+      stdio: 'pipe',
+    })
+  } catch (error) {
+    const detail = String(error?.stderr || error?.stdout || error?.message || 'unknown verifier error').trim()
+    throw new Error(`Cannot package BilliardBuddy: packaged Codex engine verification failed at ${toolchainDir}: ${detail}`)
+  }
+  console.log(`[codex-engine] verified packaged App Server for ${platform}`)
+}
+
+function validatePackagedRuntimeAssets(context) {
+  validatePackagedMediaToolchain(context)
+  validatePackagedCodexEngine(context)
+}
+
+module.exports = validatePackagedRuntimeAssets
+module.exports.afterPack = validatePackagedRuntimeAssets
 module.exports.packagePlatform = packagePlatform
 module.exports.packagedMediaToolchainDir = packagedMediaToolchainDir
+module.exports.validatePackagedCodexEngine = validatePackagedCodexEngine

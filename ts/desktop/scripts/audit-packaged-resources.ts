@@ -1,6 +1,7 @@
 import { extractFile, listPackage } from '@electron/asar'
 import { existsSync, readFileSync } from 'node:fs'
 import { basename, join, resolve } from 'node:path'
+import { detectCodexEngineTarget, verifyStagedCodexEngine } from './stage-codex-engine'
 import { stageMediaToolchain } from './stage-media-toolchain'
 
 type Platform = 'darwin' | 'win32'
@@ -131,6 +132,11 @@ export function auditPackagedResources(options: AuditOptions): void {
 
   const toolchainDir = join(resources, 'app.asar.unpacked', 'runtime-assets', 'binaries')
   stageMediaToolchain({ destinationDir: toolchainDir, platform: options.platform, verifyOnly: true })
+  verifyStagedCodexEngine({
+    destinationDir: toolchainDir,
+    target: detectCodexEngineTarget(options.platform, options.platform === 'darwin' ? 'arm64' : 'x64'),
+    verifyOnly: true,
+  })
   const sidecar = options.platform === 'darwin'
     ? 'billiardbuddy-sidecar-aarch64-apple-darwin'
     : 'billiardbuddy-sidecar-x86_64-pc-windows-msvc.exe'
