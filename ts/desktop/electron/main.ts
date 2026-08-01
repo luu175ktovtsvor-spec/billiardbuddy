@@ -29,8 +29,8 @@ import { ElectronUpdaterService } from './services/updater'
 import { createUpdateSmokeUpdaterFromEnv } from './services/updateSmoke'
 import { ElectronTerminalService, type TerminalSpawnInput } from './services/terminal'
 import { ElectronPreviewService, type PreviewBounds } from './services/preview'
-import { ElectronMediaActions } from './services/mediaActions'
 import { ElectronImageActions } from './services/imageActions'
+import { ElectronVideoActions } from './services/videoActions'
 import {
   applyDefaultConfigDir,
   applyStartupPortableMode,
@@ -83,8 +83,8 @@ let installationSessionManager: InstallationSessionManager | null = null
 let updaterService: ElectronUpdaterService | null = null
 let terminalService: ElectronTerminalService | null = null
 let previewService: ElectronPreviewService | null = null
-let mediaActions: ElectronMediaActions | null = null
 let imageActions: ElectronImageActions | null = null
+let videoActions: ElectronVideoActions | null = null
 let browserCapability: ElectronBrowserCapability | null = null
 let mcpOAuthCredentialKey: string | null = null
 let providerCredentialService: ProviderCredentialService | null = null
@@ -355,20 +355,20 @@ function getBrowserCapability() {
   return browserCapability
 }
 
-function getMediaActions() {
-  mediaActions ??= new ElectronMediaActions({
-    getServerUrl: () => getServerRuntime().getServerUrl(),
-    capability: mediaUiCapability,
-  })
-  return mediaActions
-}
-
 function getImageActions() {
   imageActions ??= new ElectronImageActions({
     getServerUrl: () => getServerRuntime().getServerUrl(),
     capability: mediaUiCapability,
   })
   return imageActions
+}
+
+function getVideoActions() {
+  videoActions ??= new ElectronVideoActions({
+    getServerUrl: () => getServerRuntime().getServerUrl(),
+    capability: mediaUiCapability,
+  })
+  return videoActions
 }
 
 function getUpdaterService() {
@@ -541,21 +541,21 @@ function registerIpcHandlers() {
     }
     return getImageActions().saveOutput(request.projectId, request.input)
   })
-  registerHandler(ELECTRON_IPC_CHANNELS.mediaAddVideoSource, (_event, payload) => {
+  registerHandler(ELECTRON_IPC_CHANNELS.videoAddSource, (_event, payload) => {
     const input = payload as { projectId: string; path: string }
-    return getMediaActions().addVideoSource(input.projectId, input.path)
+    return getVideoActions().addVideoSource(input.projectId, input.path)
   })
-  registerHandler(ELECTRON_IPC_CHANNELS.mediaRenderVideo, (_event, payload) => {
+  registerHandler(ELECTRON_IPC_CHANNELS.videoRender, (_event, payload) => {
     const input = payload as { projectId: string, baseRevision: number, timelineVersionId: string, outputPath: string }
-    return getMediaActions().renderVideo(input.projectId, {
+    return getVideoActions().renderVideo(input.projectId, {
       base_revision: input.baseRevision,
       timeline_version_id: input.timelineVersionId,
       output_path: input.outputPath,
     })
   })
-  registerHandler(ELECTRON_IPC_CHANNELS.mediaAnalyzeVideo, (_event, payload) => {
+  registerHandler(ELECTRON_IPC_CHANNELS.videoAnalyze, (_event, payload) => {
     const input = payload as { projectId: string, baseRevision: number, userGoal: string }
-    return getMediaActions().analyzeVideo(input.projectId, {
+    return getVideoActions().analyzeVideo(input.projectId, {
       base_revision: input.baseRevision,
       user_goal: input.userGoal,
     })

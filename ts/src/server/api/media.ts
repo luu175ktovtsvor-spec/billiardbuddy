@@ -1,22 +1,11 @@
-import { timingSafeEqual } from 'node:crypto'
 import { z } from 'zod/v4'
 import {
-  addVideoSourceInputSchema,
-  analyzeVideoProjectInputSchema,
-  applyVideoAlternativeInputSchema,
-  createVideoProjectInputSchema,
   mediaSafeError,
   mediaSafeErrorForServiceError,
   publicMediaProjectSchema,
   publicMediaDeletionReceiptSchema,
   publicMediaJobEventPageSchema,
   publicMediaTaskSchema,
-  lockVideoSceneInputSchema,
-  previewVideoInputSchema,
-  renderVideoInputSchema,
-  selectVideoTimelineVersionInputSchema,
-  updateVideoTimelineInputSchema,
-  MEDIA_UI_CAPABILITY_HEADER,
   type MediaProject,
   type MediaJobEvent,
   type MediaTask,
@@ -25,14 +14,6 @@ import {
 } from '../../../shared/contracts/media.js'
 import { errorResponse, ApiError } from '../middleware/errorHandler.js'
 import { MediaProjectService, MediaServiceError } from '../services/mediaProjectService.js'
-import { VideoWorkbenchService, VideoWorkbenchServiceError } from '../services/videoWorkbenchService.js'
-import { VideoWorkbenchRepositoryError } from '../services/videoWorkbenchRepository.js'
-import {
-  createVideoWorkbenchApiHandler,
-  publicVideoEventPage,
-  publicVideoProject,
-  publicVideoTask,
-} from './videoWorkbench.js'
 
 const STANDALONE_MEDIA_OWNER = {
   kind: 'standalone' as const,
@@ -43,35 +24,7 @@ function methodNotAllowed(method: string): ApiError {
   return new ApiError(405, `Method ${method} not allowed`, 'METHOD_NOT_ALLOWED')
 }
 
-async function parseJson(req: Request): Promise<unknown> {
-  try {
-    return await req.json()
-  } catch {
-    throw ApiError.badRequest('请求体不是合法 JSON')
-  }
-}
-
-function requireMediaUiCapability(req: Request, expected: string): void {
-  const presented = req.headers.get(MEDIA_UI_CAPABILITY_HEADER)?.trim() ?? ''
-  const expectedBytes = Buffer.from(expected)
-  const presentedBytes = Buffer.from(presented)
-  if (
-    expectedBytes.length < 32
-    || expectedBytes.length !== presentedBytes.length
-    || !timingSafeEqual(expectedBytes, presentedBytes)
-  ) {
-    throw new MediaServiceError('此操作只能从 BilliardBuddy 桌面工作台确认', 403, 'MEDIA_UI_CONFIRMATION_REQUIRED')
-  }
-}
-
 function mediaErrorResponse(error: unknown): Response {
-  if (error instanceof VideoWorkbenchServiceError || error instanceof VideoWorkbenchRepositoryError) {
-    const safe = mediaSafeErrorForServiceError(error.code, error.status)
-    return Response.json(
-      { error: safe.code, message: safe.message },
-      { status: error.status },
-    )
-  }
   if (error instanceof MediaServiceError) {
     const safe = mediaSafeErrorForServiceError(error.code, error.status)
     return Response.json(
@@ -239,21 +192,10 @@ function publicJobEvent(event: MediaJobEvent) {
   }
 }
 
-function publicToolchainStatus(status: Awaited<ReturnType<MediaProjectService['toolchainStatus']>>) {
-  return {
-    ffmpeg: { available: status.ffmpeg.available },
-    ffprobe: { available: status.ffprobe.available },
-  }
-}
-
 export function createMediaApiHandler(
   service: MediaProjectService,
-  mediaUiCapability = '',
-  videoWorkbench?: VideoWorkbenchService,
+  _mediaUiCapability = '',
 ) {
-  const videoApiHandler = videoWorkbench
-    ? createVideoWorkbenchApiHandler(videoWorkbench, mediaUiCapability)
-    : null
   return async function handleMediaApi(
     req: Request,
     url: URL,
@@ -266,35 +208,13 @@ export function createMediaApiHandler(
       // `/api/images/*`. This legacy endpoint cannot remain a second writable
       // image path while old media data is still importable.
       if (area === 'images') throw ApiError.notFound('生图接口已迁移到 /api/images')
-      if (area === 'videos' && videoApiHandler) {
-        return await videoApiHandler(req, url, segments)
-      }
+      if (area === 'videos') throw ApiError.notFound('视频接口已迁移到 /api/videos')
 
       if (area === 'projects') {
         const projectId = segments[3]
         if (projectId) {
           if (segments[4] !== 'events' || segments[5]) throw ApiError.badRequest('无效的媒体项目操作')
           if (req.method !== 'GET') throw methodNotAllowed(req.method)
-          if (videoWorkbench) {
-            const videoProject = await videoWorkbench.getProject(projectId).catch(error => {
-              if (error instanceof VideoWorkbenchServiceError && error.code === 'VIDEO_PROJECT_NOT_FOUND') return null
-              throw error
-            })
-            if (videoProject) {
-              const cursor = Number(url.searchParams.get('cursor') ?? 0)
-              const limit = Number(url.searchParams.get('limit') ?? 100)
-              const waitMs = Number(url.searchParams.get('wait_ms') ?? 25_000)
-              if (!Number.isInteger(cursor) || cursor < 0) throw ApiError.badRequest('cursor 必须是非负整数')
-              if (!Number.isInteger(limit) || limit < 1 || limit > 200) throw ApiError.badRequest('limit 必须在 1 到 200 之间')
-              if (!Number.isInteger(waitMs) || waitMs < 0 || waitMs > 25_000) throw ApiError.badRequest('wait_ms 必须在 0 到 25000 之间')
-              return Response.json(publicVideoEventPage(
-                await videoWorkbench.waitForOperationEvents(videoProject.id, cursor, limit, waitMs),
-              ))
-            }
-            if (await videoWorkbench.hasProjectHistory(projectId)) {
-              throw new VideoWorkbenchServiceError('视频项目已移入回收站', 404, 'VIDEO_PROJECT_NOT_FOUND')
-            }
-          }
           await service.assertProjectOwner(projectId, STANDALONE_MEDIA_OWNER)
           const cursor = Number(url.searchParams.get('cursor') ?? 0)
           const limit = Number(url.searchParams.get('limit') ?? 100)
@@ -314,22 +234,6 @@ export function createMediaApiHandler(
           throw ApiError.badRequest('kind 只能是 image 或 video')
         }
         const kind = requestedKind === 'image' || requestedKind === 'video' ? requestedKind : undefined
-        if (videoWorkbench) {
-          const [legacyProjects, videoProjects, videoDeletions] = await Promise.all([
-            service.listProjectsForOwner(STANDALONE_MEDIA_OWNER, kind),
-            videoWorkbench && kind !== 'image' ? videoWorkbench.listProjects() : [],
-            videoWorkbench && kind !== 'image' ? videoWorkbench.listDeletions() : [],
-          ])
-          const migratedIds = new Set([
-            ...videoProjects.map(project => project.id),
-            ...videoDeletions.map(receipt => receipt.project_id),
-          ])
-          const projects = [
-            ...legacyProjects.filter(project => !migratedIds.has(project.id)).map(publicProject),
-            ...videoProjects.map(publicVideoProject),
-          ].sort((left, right) => right.updated_at.localeCompare(left.updated_at))
-          return Response.json({ projects })
-        }
         return Response.json({
           projects: (await service.listProjectsForOwner(STANDALONE_MEDIA_OWNER, kind)).map(publicProject),
         })
@@ -346,12 +250,8 @@ export function createMediaApiHandler(
 
       if (area === 'deletions') {
         if (req.method !== 'GET' || segments[3]) throw methodNotAllowed(req.method)
-        const [legacyDeletions, videoDeletions] = await Promise.all([
-          service.listDeletionsForOwner(STANDALONE_MEDIA_OWNER),
-          videoWorkbench?.listDeletions() ?? [],
-        ])
-        const deletions = [...legacyDeletions, ...videoDeletions]
-          .sort((left, right) => right.deleted_at.localeCompare(left.deleted_at))
+        const deletions = await service.listDeletionsForOwner(STANDALONE_MEDIA_OWNER)
+        deletions.sort((left, right) => right.deleted_at.localeCompare(left.deleted_at))
         return Response.json({
           deletions: deletions.map(receipt => publicMediaDeletionReceiptSchema.parse(receipt)),
         })
@@ -361,42 +261,14 @@ export function createMediaApiHandler(
         const projectId = segments[3]
         if (!projectId) throw ApiError.badRequest('缺少媒体项目 ID')
         const action = segments[4]
-        if (!action && videoWorkbench && req.method === 'GET') {
-          const videoProject = await videoWorkbench.getProject(projectId).catch(error => {
-            if (error instanceof VideoWorkbenchServiceError && error.code === 'VIDEO_PROJECT_NOT_FOUND') return null
-            throw error
-          })
-          if (videoProject) return Response.json({ project: publicVideoProject(videoProject) })
-          if (await videoWorkbench.hasProjectHistory(projectId)) {
-            throw new VideoWorkbenchServiceError('视频项目已移入回收站', 404, 'VIDEO_PROJECT_NOT_FOUND')
-          }
-        }
         if (action === 'restore') {
           if (req.method !== 'POST' || segments[5]) throw methodNotAllowed(req.method)
-          if (videoWorkbench) {
-            const restored = await videoWorkbench.restoreProject(projectId).catch(error => {
-              if (error instanceof VideoWorkbenchRepositoryError && error.code === 'VIDEO_PROJECT_NOT_FOUND') return null
-              throw error
-            })
-            if (restored) return Response.json({ deletion: publicMediaDeletionReceiptSchema.parse(restored) })
-          }
           const receipt = publicMediaDeletionReceiptSchema.parse(
             await service.restoreProject(projectId, STANDALONE_MEDIA_OWNER),
           )
           return Response.json({ deletion: receipt })
         }
         if (action) throw ApiError.badRequest('无效的媒体项目操作')
-        if (videoWorkbench && req.method === 'DELETE') {
-          const deletion = await videoWorkbench.deleteProject(projectId).catch(error => {
-            if (
-              (error instanceof VideoWorkbenchRepositoryError || error instanceof VideoWorkbenchServiceError)
-              && error.code === 'VIDEO_PROJECT_NOT_FOUND'
-            ) return null
-            throw error
-          })
-          if (deletion) return new Response(null, { status: 204 })
-          if (await videoWorkbench.hasProjectHistory(projectId)) return new Response(null, { status: 204 })
-        }
         await service.assertProjectOwner(projectId, STANDALONE_MEDIA_OWNER)
         if (req.method === 'DELETE') {
           await service.deleteProject(projectId)
@@ -409,23 +281,6 @@ export function createMediaApiHandler(
       if (area === 'tasks') {
         const taskId = segments[3]
         if (!taskId) throw ApiError.badRequest('缺少媒体任务 ID')
-        if (videoWorkbench) {
-          const videoTask = await videoWorkbench.getOperation(taskId).catch(error => {
-            if (error instanceof VideoWorkbenchRepositoryError && error.code === 'VIDEO_OPERATION_NOT_FOUND') return null
-            throw error
-          })
-          if (videoTask) {
-            if (segments[4] === 'cancel') {
-              if (req.method !== 'POST') throw methodNotAllowed(req.method)
-              return Response.json({ task: publicVideoTask(await videoWorkbench.cancelOperation(taskId)) })
-            }
-            if (req.method !== 'GET') throw methodNotAllowed(req.method)
-            return Response.json({ task: publicVideoTask(videoTask) })
-          }
-          if (await videoWorkbench.hasOperationHistory(taskId)) {
-            throw new VideoWorkbenchServiceError('视频操作已随项目移入回收站', 404, 'VIDEO_OPERATION_NOT_FOUND')
-          }
-        }
         await service.assertTaskOwner(taskId, STANDALONE_MEDIA_OWNER)
         if (segments[4] === 'cancel') {
           if (req.method !== 'POST') throw methodNotAllowed(req.method)
@@ -433,83 +288,6 @@ export function createMediaApiHandler(
         }
         if (req.method !== 'GET') throw methodNotAllowed(req.method)
         return Response.json({ task: publicTask(await service.getTask(taskId)) })
-      }
-
-      if (area === 'videos' && segments[3] === 'toolchain') {
-        if (req.method !== 'GET') throw methodNotAllowed(req.method)
-        return Response.json(publicToolchainStatus(await service.toolchainStatus()))
-      }
-
-      if (area === 'videos' && segments[3] === 'projects') {
-        const projectId = segments[4]
-        const action = segments[5]
-        if (!projectId) {
-          if (req.method !== 'POST') throw methodNotAllowed(req.method)
-          const input = createVideoProjectInputSchema.parse(await parseJson(req))
-          return Response.json({ project: publicProject(await service.createVideoProject(input)) }, { status: 201 })
-        }
-        await service.assertProjectOwner(projectId, STANDALONE_MEDIA_OWNER)
-        if (action === 'sources') {
-          const sourceId = segments[6]
-          const sourceAction = segments[7]
-          if (sourceId && sourceAction === 'content') {
-            if (req.method !== 'GET') throw methodNotAllowed(req.method)
-            return await service.videoSourceResponse(projectId, sourceId, req)
-          }
-          if (req.method !== 'POST' || sourceId) throw methodNotAllowed(req.method)
-          requireMediaUiCapability(req, mediaUiCapability)
-          const input = addVideoSourceInputSchema.parse(await parseJson(req))
-          const result = await service.addVideoSource(projectId, input)
-          return Response.json({ ...result, project: publicProject(result.project), task: publicTask(result.task) }, { status: 201 })
-        }
-        if (action === 'timeline') {
-          const timelineArea = segments[6]
-          const versionId = segments[7]
-          const versionAction = segments[8]
-          if (timelineArea === 'versions' && versionId && versionAction === 'select') {
-            if (req.method !== 'POST' || segments[9]) throw methodNotAllowed(req.method)
-            const input = selectVideoTimelineVersionInputSchema.parse({
-              ...(await parseJson(req) as Record<string, unknown>),
-              version_id: versionId,
-            })
-            return Response.json({ project: publicProject(await service.selectVideoTimelineVersion(projectId, input)) })
-          }
-          if (req.method !== 'PUT' || timelineArea) throw methodNotAllowed(req.method)
-          const input = updateVideoTimelineInputSchema.parse(await parseJson(req))
-          return Response.json({ project: publicProject(await service.updateVideoTimeline(projectId, input)) })
-        }
-        if (action === 'analyze') {
-          if (req.method !== 'POST' || segments[6]) throw methodNotAllowed(req.method)
-          requireMediaUiCapability(req, mediaUiCapability)
-          const input = analyzeVideoProjectInputSchema.parse(await parseJson(req))
-          return Response.json({ task: publicTask(await service.analyzeVideoProject(projectId, input)) }, { status: 202 })
-        }
-        if (action === 'scenes') {
-          const sceneId = segments[6]
-          if (!sceneId || segments[7] !== 'lock' || segments[8] || req.method !== 'POST') throw methodNotAllowed(req.method)
-          const input = lockVideoSceneInputSchema.parse(await parseJson(req))
-          return Response.json({ project: publicProject(await service.lockVideoScene(projectId, sceneId, input)) })
-        }
-        if (action === 'alternatives') {
-          const alternativeId = segments[6]
-          if (!alternativeId || segments[7] !== 'apply' || segments[8] || req.method !== 'POST') throw methodNotAllowed(req.method)
-          const input = applyVideoAlternativeInputSchema.parse({
-            ...(await parseJson(req) as Record<string, unknown>),
-            alternative_id: alternativeId,
-          })
-          return Response.json({ project: publicProject(await service.applyVideoAlternative(projectId, input)) })
-        }
-        if (action === 'render') {
-          if (req.method !== 'POST') throw methodNotAllowed(req.method)
-          requireMediaUiCapability(req, mediaUiCapability)
-          const input = renderVideoInputSchema.parse(await parseJson(req))
-          return Response.json({ task: publicTask(await service.renderVideo(projectId, input)) }, { status: 202 })
-        }
-        if (action === 'preview') {
-          if (req.method !== 'POST' || segments[6]) throw methodNotAllowed(req.method)
-          const input = previewVideoInputSchema.parse(await parseJson(req))
-          return Response.json({ task: publicTask(await service.previewVideo(projectId, input)) }, { status: 202 })
-        }
       }
 
       throw ApiError.notFound('找不到媒体接口')

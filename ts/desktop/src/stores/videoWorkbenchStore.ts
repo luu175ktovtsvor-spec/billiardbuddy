@@ -1,20 +1,20 @@
 import { create, type StateCreator } from 'zustand'
 import {
-  mediaApi,
+  videoWorkbenchApi,
   type CreateVideoProjectInput,
-  type MediaDeletionReceipt,
-  type MediaTask,
-  type MediaToolchainStatus,
+  type VideoDeletionReceipt,
+  type VideoOperation,
+  type VideoToolchainStatus,
   type VideoStudioProject,
-  mediaUserFacingError,
-} from '../api/media'
+  videoUserFacingError,
+} from '../api/videoWorkbench'
 
-type MediaWorkbenchStore = {
+type VideoWorkbenchStore = {
   videoProjects: VideoStudioProject[]
-  deletions: MediaDeletionReceipt[]
-  tasks: Record<string, MediaTask | undefined>
+  deletions: VideoDeletionReceipt[]
+  tasks: Record<string, VideoOperation | undefined>
   eventCursors: Record<string, number | undefined>
-  toolchain: MediaToolchainStatus | null
+  toolchain: VideoToolchainStatus | null
   activeVideoId: string | null
   loading: boolean
   error: string | null
@@ -26,22 +26,22 @@ type MediaWorkbenchStore = {
   addVideoSource: (projectId: string, path: string) => Promise<VideoStudioProject>
   saveTimeline: (project: VideoStudioProject) => Promise<VideoStudioProject>
   selectVideoTimelineVersion: (projectId: string, revision: number, versionId: string) => Promise<VideoStudioProject>
-  analyzeVideo: (project: VideoStudioProject, userGoal: string) => Promise<MediaTask>
+  analyzeVideo: (project: VideoStudioProject, userGoal: string) => Promise<VideoOperation>
   lockVideoScene: (project: VideoStudioProject, sceneId: string, locked: boolean) => Promise<VideoStudioProject>
   applyVideoAlternative: (project: VideoStudioProject, alternativeId: string) => Promise<VideoStudioProject>
-  previewVideo: (project: VideoStudioProject) => Promise<MediaTask>
-  renderVideo: (project: VideoStudioProject, outputPath: string) => Promise<MediaTask>
-  cancelTask: (taskId: string) => Promise<MediaTask>
+  previewVideo: (project: VideoStudioProject) => Promise<VideoOperation>
+  renderVideo: (project: VideoStudioProject, outputPath: string) => Promise<VideoOperation>
+  cancelTask: (taskId: string) => Promise<VideoOperation>
   deleteProject: (projectId: string) => Promise<void>
   restoreProject: (projectId: string) => Promise<void>
   subscribeProjectEvents: (projectId: string) => () => void
   clearError: () => void
 }
 
-type MediaWorkbenchSet = Parameters<StateCreator<MediaWorkbenchStore>>[0]
+type VideoWorkbenchSet = Parameters<StateCreator<VideoWorkbenchStore>>[0]
 
 function message(error: unknown): string {
-  return mediaUserFacingError(error)
+  return videoUserFacingError(error)
 }
 
 function rendererSafeError(error: unknown): Error {
@@ -82,12 +82,12 @@ function nextTaskLoadVersion(taskId: string): number {
 let nextLoadingOperation = 0
 const pendingLoadingOperations = new Set<number>()
 
-type ActiveMediaEventSubscription = {
+type ActiveVideoEventSubscription = {
   controller: AbortController
   references: number
 }
 
-const activeMediaEventSubscriptions = new Map<string, ActiveMediaEventSubscription>()
+const activeVideoEventSubscriptions = new Map<string, ActiveVideoEventSubscription>()
 
 function isAbortError(error: unknown): boolean {
   return error instanceof DOMException && error.name === 'AbortError'
@@ -107,7 +107,7 @@ async function waitForReconnect(signal: AbortSignal, milliseconds: number): Prom
   })
 }
 
-function beginLoading(set: MediaWorkbenchSet): () => void {
+function beginLoading(set: VideoWorkbenchSet): () => void {
   const operation = ++nextLoadingOperation
   pendingLoadingOperations.add(operation)
   set({ loading: true, error: null })
@@ -119,22 +119,22 @@ function beginLoading(set: MediaWorkbenchSet): () => void {
 
 async function loadProjectTasks(
   projects: Array<{ task_id?: string; preview_task_id?: string }>,
-): Promise<Record<string, MediaTask | undefined>> {
+): Promise<Record<string, VideoOperation | undefined>> {
   const taskIds = [...new Set(projects.flatMap(project => [
     ...(project.task_id ? [project.task_id] : []),
     ...(project.preview_task_id ? [project.preview_task_id] : []),
   ]))]
   const entries = await Promise.all(taskIds.map(async taskId => {
     const version = nextTaskLoadVersion(taskId)
-    const result = await mediaApi.getTask(taskId).catch(() => null)
+    const result = await videoWorkbenchApi.getTask(taskId).catch(() => null)
     return result?.task && taskLoadVersion[taskId] === version
       ? [taskId, result.task] as const
       : null
   }))
-  return Object.fromEntries(entries.filter((entry): entry is readonly [string, MediaTask] => entry !== null))
+  return Object.fromEntries(entries.filter((entry): entry is readonly [string, VideoOperation] => entry !== null))
 }
 
-export const useMediaWorkbenchStore = create<MediaWorkbenchStore>((set, get) => ({
+export const useVideoWorkbenchStore = create<VideoWorkbenchStore>((set, get) => ({
   videoProjects: [],
   deletions: [],
   tasks: {},
@@ -148,17 +148,16 @@ export const useMediaWorkbenchStore = create<MediaWorkbenchStore>((set, get) => 
     const version = nextProjectLoadVersion()
     const finishLoading = quiet ? () => undefined : beginLoading(set)
     try {
-      const { projects } = await mediaApi.listProjects('video')
+      const { projects } = await videoWorkbenchApi.listProjects()
       if (projectLoadVersion !== version) return
       const projectTasks = await loadProjectTasks(projects)
       if (projectLoadVersion !== version) return
-      const videoProjects = projects.filter((project): project is VideoStudioProject => project.kind === 'video')
       set(state => ({
-        videoProjects,
+        videoProjects: projects,
         tasks: { ...state.tasks, ...projectTasks },
-        activeVideoId: state.activeVideoId && videoProjects.some(project => project.id === state.activeVideoId)
+        activeVideoId: state.activeVideoId && projects.some(project => project.id === state.activeVideoId)
           ? state.activeVideoId
-          : videoProjects[0]?.id ?? null,
+          : projects[0]?.id ?? null,
       }))
     } catch (error) {
       if (projectLoadVersion !== version) return
@@ -172,9 +171,9 @@ export const useMediaWorkbenchStore = create<MediaWorkbenchStore>((set, get) => 
     const version = ++deletionLoadVersion
     const finishLoading = beginLoading(set)
     try {
-      const { deletions } = await mediaApi.listDeletions()
+      const { deletions } = await videoWorkbenchApi.listDeletions()
       if (deletionLoadVersion !== version) return
-      set({ deletions: deletions.filter(deletion => deletion.project_kind !== 'image' && ['pending', 'deleted', 'restoring'].includes(deletion.status)) })
+      set({ deletions: deletions.filter(deletion => ['pending', 'deleted', 'restoring'].includes(deletion.status)) })
     } catch (error) {
       if (deletionLoadVersion !== version) return
       set({ error: message(error) })
@@ -185,7 +184,7 @@ export const useMediaWorkbenchStore = create<MediaWorkbenchStore>((set, get) => 
 
   loadToolchain: async () => {
     try {
-      set({ toolchain: await mediaApi.getToolchain() })
+      set({ toolchain: await videoWorkbenchApi.getToolchain() })
     } catch (error) {
       set({ error: message(error) })
     }
@@ -196,7 +195,7 @@ export const useMediaWorkbenchStore = create<MediaWorkbenchStore>((set, get) => 
   createVideo: async input => {
     const finishLoading = beginLoading(set)
     try {
-      const { project } = await mediaApi.createVideoProject(input ?? {})
+      const { project } = await videoWorkbenchApi.createVideoProject(input ?? {})
       nextProjectLoadVersion()
       set(state => ({ videoProjects: upsert(state.videoProjects, project), activeVideoId: project.id }))
       return project
@@ -212,7 +211,7 @@ export const useMediaWorkbenchStore = create<MediaWorkbenchStore>((set, get) => 
   addVideoSource: async (projectId, path) => {
     const finishLoading = beginLoading(set)
     try {
-      const { project, task } = await mediaApi.addVideoSource(projectId, path)
+      const { project, task } = await videoWorkbenchApi.addVideoSource(projectId, path)
       nextProjectLoadVersion()
       nextTaskLoadVersion(task.id)
       set(state => ({
@@ -232,7 +231,7 @@ export const useMediaWorkbenchStore = create<MediaWorkbenchStore>((set, get) => 
   saveTimeline: async project => {
     const finishLoading = beginLoading(set)
     try {
-      const { project: saved } = await mediaApi.updateVideoTimeline(project.id, {
+      const { project: saved } = await videoWorkbenchApi.updateVideoTimeline(project.id, {
         base_revision: project.revision,
         base_timeline_version_id: project.current_timeline_version_id!,
         clips: project.timeline,
@@ -252,7 +251,7 @@ export const useMediaWorkbenchStore = create<MediaWorkbenchStore>((set, get) => 
   selectVideoTimelineVersion: async (projectId, revision, versionId) => {
     const finishLoading = beginLoading(set)
     try {
-      const { project } = await mediaApi.selectVideoTimelineVersion(projectId, {
+      const { project } = await videoWorkbenchApi.selectVideoTimelineVersion(projectId, {
         revision,
         version_id: versionId,
       })
@@ -271,7 +270,7 @@ export const useMediaWorkbenchStore = create<MediaWorkbenchStore>((set, get) => 
   analyzeVideo: async (project, userGoal) => {
     const finishLoading = beginLoading(set)
     try {
-      const { task } = await mediaApi.analyzeVideo(project.id, {
+      const { task } = await videoWorkbenchApi.analyzeVideo(project.id, {
         base_revision: project.revision,
         user_goal: userGoal,
       })
@@ -292,7 +291,7 @@ export const useMediaWorkbenchStore = create<MediaWorkbenchStore>((set, get) => 
   lockVideoScene: async (project, sceneId, locked) => {
     const finishLoading = beginLoading(set)
     try {
-      const { project: saved } = await mediaApi.lockVideoScene(project.id, sceneId, {
+      const { project: saved } = await videoWorkbenchApi.lockVideoScene(project.id, sceneId, {
         base_revision: project.revision,
         timeline_version_id: project.current_timeline_version_id!,
         locked,
@@ -312,7 +311,7 @@ export const useMediaWorkbenchStore = create<MediaWorkbenchStore>((set, get) => 
   applyVideoAlternative: async (project, alternativeId) => {
     const finishLoading = beginLoading(set)
     try {
-      const { project: saved } = await mediaApi.applyVideoAlternative(project.id, alternativeId, {
+      const { project: saved } = await videoWorkbenchApi.applyVideoAlternative(project.id, alternativeId, {
         base_revision: project.revision,
         alternative_id: alternativeId,
       })
@@ -331,7 +330,7 @@ export const useMediaWorkbenchStore = create<MediaWorkbenchStore>((set, get) => 
   previewVideo: async project => {
     const finishLoading = beginLoading(set)
     try {
-      const { task } = await mediaApi.previewVideo(project.id, {
+      const { task } = await videoWorkbenchApi.previewVideo(project.id, {
         base_revision: project.revision,
         timeline_version_id: project.current_timeline_version_id!,
       })
@@ -352,7 +351,7 @@ export const useMediaWorkbenchStore = create<MediaWorkbenchStore>((set, get) => 
   renderVideo: async (project, outputPath) => {
     const finishLoading = beginLoading(set)
     try {
-      const { task } = await mediaApi.renderVideo(project.id, {
+      const { task } = await videoWorkbenchApi.renderVideo(project.id, {
         base_revision: project.revision,
         timeline_version_id: project.current_timeline_version_id!,
         output_path: outputPath,
@@ -374,7 +373,7 @@ export const useMediaWorkbenchStore = create<MediaWorkbenchStore>((set, get) => 
   cancelTask: async taskId => {
     const finishLoading = beginLoading(set)
     try {
-      const { task } = await mediaApi.cancelTask(taskId)
+      const { task } = await videoWorkbenchApi.cancelTask(taskId)
       nextTaskLoadVersion(task.id)
       set(state => ({ tasks: { ...state.tasks, [task.id]: task } }))
       await get().loadProjects()
@@ -391,7 +390,7 @@ export const useMediaWorkbenchStore = create<MediaWorkbenchStore>((set, get) => 
   deleteProject: async projectId => {
     const finishLoading = beginLoading(set)
     try {
-      await mediaApi.deleteProject(projectId)
+      await videoWorkbenchApi.deleteProject(projectId)
       nextProjectLoadVersion()
       set(state => {
         const videoProjects = state.videoProjects.filter(project => project.id !== projectId)
@@ -416,9 +415,8 @@ export const useMediaWorkbenchStore = create<MediaWorkbenchStore>((set, get) => 
   restoreProject: async projectId => {
     const finishLoading = beginLoading(set)
     try {
-      await mediaApi.restoreProject(projectId)
-      const { project } = await mediaApi.getProject(projectId)
-      if (project.kind !== 'video') throw new Error('视频项目不存在')
+      await videoWorkbenchApi.restoreProject(projectId)
+      const { project } = await videoWorkbenchApi.getProject(projectId)
       await Promise.all([
         get().loadProjects(true),
         get().loadDeletions(),
@@ -434,28 +432,28 @@ export const useMediaWorkbenchStore = create<MediaWorkbenchStore>((set, get) => 
   },
 
   subscribeProjectEvents: projectId => {
-    const existing = activeMediaEventSubscriptions.get(projectId)
+    const existing = activeVideoEventSubscriptions.get(projectId)
     if (existing) {
       existing.references += 1
       return () => {
         existing.references -= 1
         if (existing.references === 0) {
           existing.controller.abort()
-          activeMediaEventSubscriptions.delete(projectId)
+          activeVideoEventSubscriptions.delete(projectId)
         }
       }
     }
 
     const controller = new AbortController()
     const subscription = { controller, references: 1 }
-    activeMediaEventSubscriptions.set(projectId, subscription)
+    activeVideoEventSubscriptions.set(projectId, subscription)
     void (async () => {
       let reconnectDelay = 250
       let reconcileAfterReconnect = false
       while (!controller.signal.aborted) {
         const cursor = get().eventCursors[projectId] ?? 0
         try {
-          const page = await mediaApi.waitForProjectEvents(projectId, cursor, controller.signal)
+          const page = await videoWorkbenchApi.waitForProjectEvents(projectId, cursor, controller.signal)
           if (controller.signal.aborted) break
           reconnectDelay = 250
           let acceptedEvent = false
@@ -493,8 +491,8 @@ export const useMediaWorkbenchStore = create<MediaWorkbenchStore>((set, get) => 
         }
       }
     })().finally(() => {
-      if (activeMediaEventSubscriptions.get(projectId) === subscription) {
-        activeMediaEventSubscriptions.delete(projectId)
+      if (activeVideoEventSubscriptions.get(projectId) === subscription) {
+        activeVideoEventSubscriptions.delete(projectId)
       }
     })
 
@@ -502,7 +500,7 @@ export const useMediaWorkbenchStore = create<MediaWorkbenchStore>((set, get) => 
       subscription.references -= 1
       if (subscription.references === 0) {
         controller.abort()
-        activeMediaEventSubscriptions.delete(projectId)
+        activeVideoEventSubscriptions.delete(projectId)
       }
     }
   },

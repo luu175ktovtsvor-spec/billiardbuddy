@@ -9,6 +9,7 @@ import {
   mediaSafeError,
   mediaSafeErrorForServiceError,
   MEDIA_UI_CAPABILITY_HEADER,
+  publicMediaDeletionReceiptSchema,
   previewVideoInputSchema,
   publicMediaJobEventPageSchema,
   publicMediaTaskSchema,
@@ -211,6 +212,76 @@ export function createVideoWorkbenchApiHandler(
         return Response.json({ task: publicVideoTask(await service.renderVideo(projectId, input)) }, { status: 202 })
       }
       throw ApiError.notFound('找不到视频接口')
+    } catch (error) {
+      return apiErrorResponse(error)
+    }
+  }
+}
+
+/**
+ * The video workbench owns its public HTTP surface. Its prior parser remains
+ * private behind this adapter while callers use `/api/videos/*` directly.
+ */
+export function createVideoWorkbenchDomainApiHandler(
+  service: VideoWorkbenchService,
+  mediaUiCapability = '',
+) {
+  const projectHandler = createVideoWorkbenchApiHandler(service, mediaUiCapability)
+  return async function handleVideoWorkbenchDomainApi(
+    req: Request,
+    url: URL,
+    segments: string[],
+  ): Promise<Response> {
+    try {
+      if (segments[1] !== 'videos') throw ApiError.notFound('找不到视频接口')
+      const area = segments[2]
+      if (area === 'deletions') {
+        if (req.method !== 'GET' || segments[3]) throw methodNotAllowed(req.method)
+        return Response.json({
+          deletions: (await service.listDeletions()).map(receipt => publicMediaDeletionReceiptSchema.parse(receipt)),
+        })
+      }
+      if (area === 'operations') {
+        const operationId = segments[3]
+        if (!operationId || segments[5]) throw ApiError.badRequest('缺少视频操作 ID')
+        const operation = await service.getOperation(operationId)
+        await service.assertProjectOwner(operation.project_id)
+        if (segments[4] === 'cancel') {
+          if (req.method !== 'POST') throw methodNotAllowed(req.method)
+          return Response.json({ task: publicVideoTask(await service.cancelOperation(operationId)) })
+        }
+        if (segments[4]) throw ApiError.badRequest('无效的视频操作')
+        if (req.method !== 'GET') throw methodNotAllowed(req.method)
+        return Response.json({ task: publicVideoTask(operation) })
+      }
+      if (area !== 'projects') throw ApiError.notFound('找不到视频接口')
+      const projectId = segments[3]
+      const action = segments[4]
+      if (projectId && action === 'events') {
+        if (req.method !== 'GET' || segments[5]) throw methodNotAllowed(req.method)
+        const cursor = Number(url.searchParams.get('cursor') ?? 0)
+        const limit = Number(url.searchParams.get('limit') ?? 100)
+        const waitMs = Number(url.searchParams.get('wait_ms') ?? 25_000)
+        if (!Number.isInteger(cursor) || cursor < 0) throw ApiError.badRequest('cursor 必须是非负整数')
+        if (!Number.isInteger(limit) || limit < 1 || limit > 200) throw ApiError.badRequest('limit 必须在 1 到 200 之间')
+        if (!Number.isInteger(waitMs) || waitMs < 0 || waitMs > 25_000) throw ApiError.badRequest('wait_ms 必须在 0 到 25000 之间')
+        await service.assertProjectOwner(projectId)
+        return Response.json(publicVideoEventPage(
+          await service.waitForOperationEvents(projectId, cursor, limit, waitMs),
+        ))
+      }
+      if (projectId && action === 'restore') {
+        if (req.method !== 'POST' || segments[5]) throw methodNotAllowed(req.method)
+        return Response.json({ deletion: publicMediaDeletionReceiptSchema.parse(await service.restoreProject(projectId)) })
+      }
+      if (projectId && !action && req.method === 'DELETE') {
+        if (segments[4]) throw ApiError.badRequest('无效的视频项目操作')
+        await service.deleteProject(projectId)
+        return new Response(null, { status: 204 })
+      }
+      // Preserve the existing request validation while exposing only the
+      // video-owned route to renderer and Electron callers.
+      return await projectHandler(req, url, ['api', 'media', 'videos', ...segments.slice(2)])
     } catch (error) {
       return apiErrorResponse(error)
     }

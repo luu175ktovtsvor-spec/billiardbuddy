@@ -9,30 +9,30 @@ import {
 
 type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
 
-export type ElectronMediaActionsOptions = {
+export type ElectronVideoActionsOptions = {
   getServerUrl: () => Promise<string>
   capability: string
   fetchImpl?: FetchLike
 }
 
-export class ElectronMediaActions {
+export class ElectronVideoActions {
   private readonly fetchImpl: FetchLike
 
-  constructor(private readonly options: ElectronMediaActionsOptions) {
+  constructor(private readonly options: ElectronVideoActionsOptions) {
     if (options.capability.length < 32) throw new Error('Media UI capability is too short')
     this.fetchImpl = options.fetchImpl ?? fetch
   }
 
   renderVideo(projectId: string, input: RenderVideoInput): Promise<{ task: MediaTask }> {
-    return this.post(`/api/media/videos/projects/${encodeURIComponent(projectId)}/render`, input)
+    return this.post(`/api/videos/projects/${encodeURIComponent(projectId)}/render`, input)
   }
 
   analyzeVideo(projectId: string, input: AnalyzeVideoProjectInput): Promise<{ task: MediaTask }> {
-    return this.post(`/api/media/videos/projects/${encodeURIComponent(projectId)}/analyze`, input)
+    return this.post(`/api/videos/projects/${encodeURIComponent(projectId)}/analyze`, input)
   }
 
   addVideoSource(projectId: string, path: string): Promise<{ project: VideoStudioProject; task: MediaTask }> {
-    return this.post(`/api/media/videos/projects/${encodeURIComponent(projectId)}/sources`, { path })
+    return this.post(`/api/videos/projects/${encodeURIComponent(projectId)}/sources`, { path })
   }
 
   private async post<T>(path: string, body?: unknown): Promise<T> {

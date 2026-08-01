@@ -412,7 +412,7 @@ export class VideoWorkbenchService {
           preview = {
             timeline_version_id: legacy.preview.timeline_version_id,
             asset_id: legacy.preview.asset_id,
-            asset_path: `/api/media/videos/projects/${legacy.id}/previews/${legacy.preview.asset_id}/content`,
+            asset_path: `/api/videos/projects/${legacy.id}/previews/${legacy.preview.asset_id}/content`,
             content_hash: hash,
             created_at: legacy.preview.created_at,
           }
@@ -1113,7 +1113,7 @@ export class VideoWorkbenchService {
       const now = this.iso()
       const assetId = `preview_${randomUUID().replaceAll('-', '')}`
       const outputPath = join(this.repository.paths().assets, project.id, `${assetId}.mp4`)
-      const assetPath = `/api/media/videos/projects/${project.id}/previews/${assetId}/content`
+      const assetPath = `/api/videos/projects/${project.id}/previews/${assetId}/content`
       const operation = await this.repository.saveOperation(this.operation({
         schema_version: 1,
         id: id('task'),

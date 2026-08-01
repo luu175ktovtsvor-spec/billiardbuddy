@@ -8,6 +8,7 @@ import { CronScheduler } from './services/cronScheduler.js'
 import { diagnosticsService } from './services/diagnosticsService.js'
 import { consumeMediaUiCapability, createMediaApiHandler } from './api/media.js'
 import { createImageWorkbenchDomainApiHandler } from './api/imageWorkbench.js'
+import { createVideoWorkbenchDomainApiHandler } from './api/videoWorkbench.js'
 import { isLongMediaRequestPath } from './mediaRequestTimeout.js'
 import { handleProductApi } from './api/product.js'
 import { createProductTaskService, type ProductTaskService } from './product/taskService.js'
@@ -186,10 +187,13 @@ export function startServer(port = PORT, host = HOST) {
     imageWorkbenchService,
     mediaUiCapability,
   )
+  const videoApiHandler = createVideoWorkbenchDomainApiHandler(
+    videoWorkbenchService,
+    mediaUiCapability,
+  )
   const mediaApiHandler = createMediaApiHandler(
     mediaService,
     mediaUiCapability,
-    videoWorkbenchService,
   )
   const productCapabilitySnapshots = new ProductCapabilitySnapshotService({
     mediaToolchainStatus: () => videoWorkbenchService.toolchainStatus(),
@@ -348,6 +352,7 @@ export function startServer(port = PORT, host = HOST) {
             const response = await handleApiRequest(req, url, {
               media: mediaApiHandler,
               images: imageApiHandler,
+              videos: videoApiHandler,
               product: productApiHandler,
             })
             return withCors(response, cors)
