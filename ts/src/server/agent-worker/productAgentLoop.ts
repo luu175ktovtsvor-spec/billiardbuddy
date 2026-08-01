@@ -31,6 +31,8 @@ export type ProductAgentLoopInput = {
   canUseTool: ProductCanUseTool
   mutableMessages?: ProductHarnessMessage[]
   onMessageState?: (messages: readonly ProductHarnessMessage[]) => Promise<void>
+  /** Runs only after the assistant and its private operation receipt are durable. */
+  onAssistantPersisted?: (message: ProductAssistantMessage, signal: AbortSignal) => Promise<void>
   commandQueue?: ProductCommandQueue
   model: string
   runModel: ProductAgentModelRunner
@@ -215,6 +217,11 @@ export async function* runProductAgentLoop(input: ProductAgentLoopInput): AsyncG
     if (messages.length === 0) throw new Error('PRODUCT_AGENT_RESUME_EMPTY')
     const completedText = unresolved.length === 0 ? resumableCompletedText(messages) : undefined
     if (completedText) {
+      for (const message of messages) {
+        if (message.type === 'assistant' && message.operation_receipt) {
+          await input.onAssistantPersisted?.(message, context.abortController.signal)
+        }
+      }
       yield { type: 'result', subtype: 'success', is_error: false, result: completedText }
       return
     }
@@ -259,6 +266,7 @@ export async function* runProductAgentLoop(input: ProductAgentLoopInput): AsyncG
         const text = assistantText(event)
         if (text) finalText = text
         await persist()
+        if (event.operation_receipt) await input.onAssistantPersisted?.(event, context.abortController.signal)
       }
     }
 

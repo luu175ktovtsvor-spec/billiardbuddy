@@ -64,7 +64,7 @@
 
 - **当前源码证明**：Electron Main 的 `ProviderCredentialService` 使用系统加密凭据存储个人 profile，启动和更新只通过 Main 生成的一次性 capability 注入本机 Product Server。`personalModelRuntimeState` 捕获后立即从进程环境删除配置；隔离 Worker 继承的是剥离过 Host/Gateway 凭据的环境。
 - **执行与恢复边界**：TaskRun 在取得派发权时写入非秘密 `provider/model` 和 route digest。Core binding 只传递这三项非秘密信息；server-private factory 用当前受信 profile 重建并比较 digest，端点、模型、能力或 API Key 漂移均拒绝恢复。两种来源都进入 `StandardProductAgentHostRuntime → runProductModel`，个人模型直连已冻结的 OpenAI-compatible、Responses 或 Anthropic endpoint。
-- **个人 operation**：个人请求使用本机权限收紧的 SQLite operation store；成功 assistant 先写入该 store，重复 operation 只回放结果，明确未请求失败释放 reservation，其余中断保留 unknown 围栏。结果消费后才 ACK 本机记录；Renderer、Task Authority 与 Worker 不读取 Key 或 operation payload。
+- **个人 operation**：个人请求使用本机权限收紧的 SQLite operation store；成功 assistant 先写入该 store，重复 operation 只回放结果，明确未请求失败释放 reservation，其余中断保留 unknown 围栏。模型运行时不自行 ACK；R3.3 才为主 Harness 定义结果持久化后的消费回执。Renderer、Task Authority 与 Worker 不读取 Key 或 operation payload。
 - **当前结论**：R3.1 已完成 Model Port 与个人来源的最小闭合；服务端类型检查、桌面 lint/生产构建和差异空白检查通过，未运行测试或真实模型请求。
 - **未验证/待处理**：真实供应商协议兼容性仍未运行。Gateway 托管 TextReasoning 的 stable operation、远端结果回放、ACK 与严格额度结算尚未重构，作为 R3.2 单独施工。
 - **下一项**：R3.2 Gateway 托管 TextReasoning operation ledger 与额度结算。
@@ -73,10 +73,18 @@
 
 - **当前源码证明**：`gateway/app.ts` 在文本请求进入 DeepSeek 前以已验证 installation principal、stable operation id、`TextReasoning` 请求指纹和 result-store fencing 裁决结果。成功 result 以原始 SSE 字节、内容类型和精确 usage 写入 `gateway_operation_results_v4`；相同 binding 只回放已保存数据，in-progress 和 outcome-unknown 不能隐式成为第二次请求。
 - **额度与失败边界**：Gateway 对同一 TextReasoning operation 只有一份预算 reservation。成功流优先持久 result，再用 `completion_tokens`（或在缺失时保留 reservation）结算；客户端取消、上游/stream 不确定和 ledger 写入失败都会保留 outcome unknown，明确未受理的错误才释放。不会从回放结果重新调用上游。
-- **消费边界**：共享 Gateway 协议把 result receipt 绑定到 operation、capability 与请求 fingerprint。Host 只在 `runProductModel()` 已产出 assistant item 后提交 ACK；Gateway 只接受同一已认证 installation 的 TextReasoning ACK，并在 ACK 前对未消费结果实施有界 backlog。
+- **消费边界**：共享 Gateway 协议把 result receipt 绑定到 operation、capability 与请求 fingerprint。R3.2 只提供 receipt 与有界 backlog；主 Harness 的 durable-consumer ACK 时点由 R3.3 单独持久化，不能把模型生成器 yield 当作结果已消费。
 - **当前结论**：R3.2 已完成托管 TextReasoning 的最小 result/usage 闭环。Gateway Bun 生产 bundle、服务端 TypeScript 检查、源码可达性审计（496 个源文件、0 个缺失 import、322 个生产源可达）、桌面 lint/生产构建和差异空白检查通过；未运行测试、smoke、模拟请求、真实模型调用或发布。
-- **未验证/待处理**：真实上游断流、进程重启、ACK 网络失败与 provider 不返回 usage 仍未运行。R3.3 单独审计显式 unknown recovery 与 Task Authority 消费边界，不能自动重试任何已围栏模型调用。
-- **下一项**：R3.3 托管 TextReasoning 的显式 unknown 恢复与 ACK 消费闭环审计。
+- **未验证/待处理**：真实上游断流、进程重启、ACK 网络失败与 provider 不返回 usage 仍未运行。R3.3 单独收口主 Harness receipt 的 durable-consumer 边界；unknown 的显式新 attempt 留给 R3.4，不能自动重试任何已围栏模型调用。
+- **下一项**：R3.3 主 Harness 私有 receipt 持久化与 ACK。
+
+## R3.3 主 Harness 私有 receipt 持久化与 ACK
+
+- **当前源码证明**：`ProductAssistantMessage` 可携带仅用于私有 Harness trajectory 的 operation receipt，`ProductHarnessSessionRepository` 与其 parser 原子保存该 receipt 和 assistant。`ProductAgentLoop` 只在 `onMessageState` 成功后请求 ACK；恢复 active Turn 会从持久消息读取 receipt、先 ACK、后交付已保存的完成结果。
+- **失败与恢复边界**：ACK 不可达或拒绝会使主 Harness 保持 recovery_required，不重发模型；同一 receipt 的 ACK 可安全重复。Task event 与 Renderer 只消费文本/活动投影，不接触 operation receipt。
+- **当前结论**：R3.3 已完成主 Harness 的 durable-consumer ACK 闭环。服务端 TypeScript 检查、源码可达性审计（496 个源文件、0 个缺失 import、322 个生产源可达）、桌面 lint/生产构建和差异空白检查通过；未运行测试、smoke、模拟请求、真实模型调用或发布。
+- **未验证/待处理**：Subtask、Plugin agent 与 Hook 的嵌套模型消费尚无同一 private-session receipt handoff；托管 unknown 也尚未具备用户显式的新 attempt 账本。两者进入 R3.4，不能用即时 ACK 或自动重试规避。
+- **下一项**：R3.4 嵌套模型消费者 receipt handoff 与托管 unknown 的显式新 attempt 设计。
 
 ## R4 Agent 桌面客户端事件投影与动作回执
 
