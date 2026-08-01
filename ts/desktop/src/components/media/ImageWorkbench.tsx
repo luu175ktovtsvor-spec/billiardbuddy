@@ -549,6 +549,7 @@ export function ImageWorkbench() {
   const [textCopy, setTextCopy] = useState('')
   const [textLayoutSettings, setTextLayoutSettings] = useState<Record<number, TextLayoutSetting>>({})
   const [inputError, setInputError] = useState<string | null>(null)
+  const [outputNotice, setOutputNotice] = useState<string | null>(null)
   const [deletingId, setDeletingId] = useState<string | null>(null)
   const [restoringId, setRestoringId] = useState<string | null>(null)
   const [zoom, setZoom] = useState(1)
@@ -726,6 +727,8 @@ export function ImageWorkbench() {
   useEffect(() => active?.id
     ? subscribeProjectEvents(active.id, 'image')
     : undefined, [active?.id, subscribeProjectEvents])
+
+  useEffect(() => setOutputNotice(null), [active?.id])
 
   const beginNew = () => {
     clearError()
@@ -907,8 +910,9 @@ export function ImageWorkbench() {
         filters: [{ name: '图片', extensions: [extension] }],
       })
       if (!outputPath) return
-      await mediaApi.saveImageOutput(active.id, { version_id: selectedVersion.id, output_path: outputPath })
+      const saved = await mediaApi.saveImageOutput(active.id, { version_id: selectedVersion.id, output_path: outputPath })
       setInputError(null)
+      setOutputNotice(`已保存并校验：${saved.verification.width}×${saved.verification.height} · ${saved.verification.content_hash.slice(7, 15)}`)
     } catch (error) {
       setInputError(mediaUserFacingError(error, '暂时无法保存图片，请检查保存位置后重试。'))
     }
@@ -1751,6 +1755,9 @@ export function ImageWorkbench() {
             )}
             {fidelityRisk && (
               <p className="mt-3 text-[12px] leading-5 text-[var(--color-warning)]">{fidelityRisk}</p>
+            )}
+            {outputNotice && (
+              <p className="mt-3 text-[12px] leading-5 text-[var(--color-success)]">{outputNotice}</p>
             )}
             {(inputError || storeError || projectError || taskError) && (
               <p role="alert" className="mt-3 text-[12px] leading-5 text-[var(--color-error)]">
