@@ -1576,6 +1576,26 @@ export class MediaProjectService {
     }) as VideoStudioProject
   }
 
+  /**
+   * Source files remain outside the project store, so their availability can
+   * change while a project is closed. Keep that observation in the project's
+   * single source of truth without treating it as an edit to the timeline or
+   * its history. Content identity is still verified by prepareVideoProjectSources
+   * before analysis, preview, or export.
+   */
+  private async reconcileVideoSourceAvailability(project: VideoStudioProject): Promise<VideoStudioProject> {
+    const sources = await Promise.all(project.sources.map(async source => ({
+      ...source,
+      missing: !(await stat(source.path).catch(() => null))?.isFile(),
+    })))
+    if (sources.every((source, index) => source.missing === project.sources[index]!.missing)) return project
+    return await this.saveProject({
+      ...project,
+      sources,
+      updated_at: this.iso(),
+    }) as VideoStudioProject
+  }
+
   /** Upgrade every supported persisted record without swallowing a corrupt or future schema. */
   async migrateSupportedStorage(): Promise<void> {
     await this.ensureDirs()
@@ -1653,7 +1673,9 @@ export class MediaProjectService {
         }
       }
       if (project.kind === 'video') {
-        return await this.reconcileVideoOutputAvailability(await this.migrateVideoTimeline(project))
+        return await this.reconcileVideoOutputAvailability(
+          await this.reconcileVideoSourceAvailability(await this.migrateVideoTimeline(project)),
+        )
       }
       return await this.migrateImageMimeMetadata(await this.migrateImageVersions(
         await this.migrateImageBrief(await this.migrateLegacyReferenceImages(project)),
