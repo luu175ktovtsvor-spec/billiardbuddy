@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import uniqBy from 'lodash-es/uniqBy.js'
 import { getLocalISODate } from '../../constants/common.js'
-import type { ProductHarnessMessage, ProductPrompt } from '../../../shared/product/harnessMessages.js'
+import { productHarnessMessageOperationReceipts, type ProductHarnessMessage, type ProductModelOperationReceipt, type ProductPrompt } from '../../../shared/product/harnessMessages.js'
 import { createAbortController } from '../../utils/abortController.js'
 import { runWithProductPermissionEnvelope } from '../../utils/permissions/productPermissionRuntime.js'
 import { runWithCwdOverride } from '../../utils/cwd.js'
@@ -114,6 +114,7 @@ export async function createProductAgentHarness(input: {
   const restoredSameRun = restoredHarnessSession?.run_id === input.run_id
   let productHookContext = restoredSameRun ? restoredHarnessSession.hook_context ?? '' : ''
   const modelMessages: ProductHarnessMessage[] = restoredHarnessSession?.messages ?? []
+  const pendingOperationReceipts = new Map<string, ProductModelOperationReceipt>((restoredHarnessSession?.operation_receipts ?? []).map(receipt => [`${receipt.source}:${receipt.operation_id}`, receipt]))
   const recoveringActiveTurn = restoredSameRun
     && restoredHarnessSession.turn_state === 'active'
     && modelMessages.length > 0
@@ -134,7 +135,20 @@ export async function createProductAgentHarness(input: {
       turn_state: turnState,
       hook_context: productHookContext,
       ...(completedResult !== undefined ? { completed_result: completedResult } : {}),
+      operation_receipts: [...pendingOperationReceipts.values()],
     })
+  }
+  const persistedOperationReceipts = () => {
+    const receipts = new Map<string, ProductModelOperationReceipt>(pendingOperationReceipts)
+    for (const message of modelMessages) {
+      for (const receipt of productHarnessMessageOperationReceipts(message)) {
+        receipts.set(`${receipt.source}:${receipt.operation_id}`, receipt)
+      }
+    }
+    return [...receipts.values()]
+  }
+  const acknowledgePersistedOperationReceipts = async (signal: AbortSignal) => {
+    for (const receipt of persistedOperationReceipts()) await acknowledgeProductModelOperation(receipt, signal)
   }
   const productPromptContext = () => ({
     workspace: input.work_dir,
@@ -268,14 +282,22 @@ export async function createProductAgentHarness(input: {
         toolPermissionContext,
       })) {
         if (event.type !== 'assistant') continue
+        if (event.operation_receipt) pendingOperationReceipts.set(`${event.operation_receipt.source}:${event.operation_receipt.operation_id}`, event.operation_receipt)
         response += event.message.content.filter(block => block.type === 'text').map(block => block.text).join('')
-        if (response.length > 8_000) return { ok: false, reason: 'Hook evaluator response exceeded the limit' }
       }
-      const parsed = JSON.parse(response.trim()) as { ok?: unknown; reason?: unknown }
-      return parsed.ok === true
+      const tooLarge = response.length > 8_000
+      try {
+        await persistHarnessSession()
+        await acknowledgePersistedOperationReceipts(signal)
+      } catch (error) {
+        throw new Error('PRODUCT_HOOK_RECEIPT_DURABILITY_FAILED', { cause: error })
+      }
+      const parsed = tooLarge ? undefined : JSON.parse(response.trim()) as { ok?: unknown; reason?: unknown }
+      return parsed?.ok === true
         ? { ok: true }
-        : { ok: false, reason: typeof parsed.reason === 'string' ? parsed.reason.slice(0, 4_000) : 'Hook condition was not satisfied' }
-    } catch {
+        : { ok: false, reason: tooLarge ? 'Hook evaluator response exceeded the limit' : typeof parsed?.reason === 'string' ? parsed.reason.slice(0, 4_000) : 'Hook condition was not satisfied' }
+    } catch (error) {
+      if (error instanceof Error && error.message === 'PRODUCT_HOOK_RECEIPT_DURABILITY_FAILED') throw error
       return { ok: false, reason: signal.aborted ? 'Hook evaluation was cancelled' : 'Hook evaluator returned an invalid response' }
     }
   }
@@ -343,13 +365,19 @@ export async function createProductAgentHarness(input: {
       if ((!text && attachments.length === 0) || terminal || controller) return false
       controller = createAbortController()
       emit({ type: 'event', event: 'started' })
+      if (restoredSameRun && restoredHarnessSession) {
+        try {
+          await acknowledgePersistedOperationReceipts(controller.signal)
+        } catch (error) { finish('recovery_required', input.projection.classifyFailure(error)); controller = undefined; return }
+      }
       if (restoredSameRun && restoredHarnessSession?.turn_state === 'completed') {
-        const completedResult = restoredHarnessSession.completed_result ?? ''
-        for (let offset = 0; offset < completedResult.length; offset += 32_000) {
-          emit({ type: 'event', event: 'delta', data: completedResult.slice(offset, offset + 32_000) })
-        }
-        finish('completed')
-        controller = undefined
+        try {
+          const completedResult = restoredHarnessSession.completed_result ?? ''
+          for (let offset = 0; offset < completedResult.length; offset += 32_000) {
+            emit({ type: 'event', event: 'delta', data: completedResult.slice(offset, offset + 32_000) })
+          }
+          finish('completed')
+        } catch (error) { finish('recovery_required', input.projection.classifyFailure(error)) } finally { controller = undefined }
         return
       }
       if (text.trim() === '/init' && input.auto_memory) {
@@ -438,7 +466,14 @@ export async function createProductAgentHarness(input: {
                 runModel: input.run_model ?? runProductModel,
                 executeTools: input.execute_tools ?? runProductTools,
               })
-              for await (const message of stream) if (message.type === 'result' && message.subtype === 'success' && !message.is_error) summary = message.result
+              for await (const message of stream) {
+                if (message.type === 'assistant') {
+                  for (const receipt of productHarnessMessageOperationReceipts(message)) {
+                    pendingOperationReceipts.set(`${receipt.source}:${receipt.operation_id}`, receipt)
+                  }
+                }
+                if (message.type === 'result' && message.subtype === 'success' && !message.is_error) summary = message.result
+              }
               if (!summary?.trim()) throw new Error('CONTEXT_COMPACTION_FAILED')
               return summary.trim()
             }
@@ -461,6 +496,7 @@ export async function createProductAgentHarness(input: {
             productSessionContext = `<context_summary generation="${compactGeneration}">\n${summary}\n</context_summary>`
             modelMessages.splice(0, modelMessages.length)
             await persistHarnessSession(modelMessages, 'preparing')
+            await acknowledgePersistedOperationReceipts(controller.signal)
             await runInProductScope(() => lifecycleHooks.postCompact({ trigger: compactTrigger, summary, signal: controller!.signal }))
             emit({ type: 'event', event: 'context_compaction', phase: 'completed', source: compactSource, generation: compactGeneration, input_tokens: estimatedContextTokens, output_tokens: Math.max(1, Math.ceil(summary.length / 4)), summary, compacted_through_event_sequence: input.session_context?.event_sequence ?? 0 })
             if (manualCompaction) {
