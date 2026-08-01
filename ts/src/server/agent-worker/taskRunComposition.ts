@@ -4,8 +4,8 @@ import { AgentWorkerSupervisor } from '../product/agentWorkerSupervisor.js'
 import { ProductResourceScheduler } from '../product/resourceScheduler.js'
 import { ProductTaskWorkerMessageSink } from '../product/taskRunDispatchBridge.js'
 import type { ProductTaskRunDispatchPort } from '../product/taskRunDispatchPort.js'
-import type { ProductTaskService } from '../product/taskService.js'
 import type { ProductTaskRuntimeEventPort } from '../product/taskRuntimeEventPort.js'
+import type { ProductTaskRunLedger } from '../product/taskRunLedgerPort.js'
 
 export type ProductTaskRunComposition = {
   dispatcher: ProductTaskRunDispatchPort
@@ -14,7 +14,7 @@ export type ProductTaskRunComposition = {
 
 /** Server Composition Root for one Local Product Server task-runtime lifetime. */
 export function createProductTaskRunComposition(
-  tasks: ProductTaskService,
+  tasks: ProductTaskRunLedger,
   scheduler: ProductResourceScheduler,
   runtimeEvents: ProductTaskRuntimeEventPort,
 ): ProductTaskRunComposition {

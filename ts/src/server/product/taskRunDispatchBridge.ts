@@ -1,8 +1,8 @@
-import type { ProductTaskService } from './taskService.js'
 import type { AgentWorkerOutbound } from '../../../shared/product/agentWorker.js'
 import { sanitizeProductTaskVisibleText } from './taskAttachmentProjection.js'
 import { reviewAutomaticApproval } from './automaticApprovalReviewer.js'
 import type { ProductTaskRuntimeEventPort } from './taskRuntimeEventPort.js'
+import type { ProductTaskRunLedger } from './taskRunLedgerPort.js'
 
 export class ProductTaskWorkerMessageSink {
   private readonly taskIds = new Map<string, string>()
@@ -15,7 +15,7 @@ export class ProductTaskWorkerMessageSink {
   private readonly queues = new Map<string, Promise<void>>()
 
   constructor(
-    private readonly tasks: ProductTaskService,
+    private readonly tasks: ProductTaskRunLedger,
     private readonly runtimeEvents: ProductTaskRuntimeEventPort,
   ) {}
 
