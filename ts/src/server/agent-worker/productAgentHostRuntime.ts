@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import uniqBy from 'lodash-es/uniqBy.js'
 import type { AgentWorkerOutbound } from '../../../shared/product/agentWorker.js'
-import type { ProductAssistantMessage, ProductHarnessMessage, ProductModelEvent, ProductPrompt, ProductToolCallBlock, ProductToolResultBlock } from '../../../shared/product/harnessMessages.js'
+import type { ProductAssistantMessage, ProductHarnessMessage, ProductModelEvent, ProductModelOperationReceipt, ProductPrompt, ProductToolCallBlock, ProductToolResultBlock } from '../../../shared/product/harnessMessages.js'
 import type { PersonalModelProfile } from '../../../shared/product/personalModels.js'
 import type { TextReasoningTransport } from '../../../shared/product/providerContracts.js'
 import type { PermissionExecutionEnvelope } from '../../../shared/product/permissionExecutionEnvelope.js'
@@ -15,7 +15,7 @@ import { loadProductAgentCommands, loadProductAgentExtensionTools } from './prod
 import { productAgentCommands } from './productPluginAgentLoader.js'
 import { loadProductAgentTools } from './productToolLoader.js'
 import type { ProductTaskMcpHost } from './mcpHost.js'
-import { runProductModel } from './productModelRuntime.js'
+import { acknowledgeProductModelOperation, runProductModel } from './productModelRuntime.js'
 import { runProductTools } from './productToolExecution.js'
 import { decideProductToolPermission } from './productPermissionDecision.js'
 import { zodToJsonSchema } from '../../utils/zodToJsonSchema.js'
@@ -97,6 +97,8 @@ export type ProductAgentHostRuntime = {
    * into its model request before the product tool bridge is installed.
    */
   engineModel(request: ProductHostModelRequest): AsyncGenerator<ProductModelEvent, void>
+  /** Confirm a durable provider result from the source-owned model bridge. */
+  acknowledgeModelResult(receipt: ProductModelOperationReceipt): Promise<void>
   /** The fixed tool surface that may be declared to the source Thread. */
   engineTools(): Promise<ProductHostEngineToolSurface>
   /** Execute one source-requested tool through the normal product Host. */
@@ -262,6 +264,11 @@ export class StandardProductAgentHostRuntime implements ProductAgentHostRuntime 
       },
       toolPermissionContext: this.toolPermissionContext,
     })))
+  }
+
+  async acknowledgeModelResult(receipt: ProductModelOperationReceipt): Promise<void> {
+    if (this.controller.signal.aborted) throw new Error('PRODUCT_AGENT_HOST_STOPPED')
+    await acknowledgeProductModelOperation(receipt, this.controller.signal)
   }
 
   engineTools(): Promise<ProductHostEngineToolSurface> {

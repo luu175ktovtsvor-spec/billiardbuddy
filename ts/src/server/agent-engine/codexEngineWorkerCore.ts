@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import type { AgentWorkerOutbound } from '../../../shared/product/agentWorker.js'
-import type { ProductAssistantMessage, ProductModelEvent, ProductPrompt } from '../../../shared/product/harnessMessages.js'
+import type { ProductAssistantMessage, ProductModelEvent, ProductModelOperationReceipt, ProductPrompt } from '../../../shared/product/harnessMessages.js'
 import type { PermissionExecutionEnvelope } from '../../../shared/product/permissionExecutionEnvelope.js'
 import { runWithCwdOverride } from '../../utils/cwd.js'
 import { runWithProductPermissionEnvelope } from '../../utils/permissions/productPermissionRuntime.js'
@@ -37,6 +37,7 @@ export type CodexEngineWorkerParentPort = {
   chatPrompt(text: string, attachments: readonly string[]): Promise<{ operation_id: string; prompt: ProductPrompt }>
   engineTools(): Promise<{ operation_id: string; surface: ProductHostEngineToolSurface }>
   engineModel(operationId: string, request: { messages: CodexResponsesModelRequest['messages']; systemPrompt: string[]; thinkingConfig: CodexResponsesModelRequest['thinking_config']; model?: string; engine_tool_names: string[]; engine_tool_surface_digest: string }): AsyncGenerator<ProductModelEvent, void>
+  acknowledgeModelResult(operationId: string, receipt: ProductModelOperationReceipt): Promise<void>
   engineTool(operationId: string, request: { tool_call_id: string; tool_name: string; arguments: Record<string, unknown>; tool_surface_digest: string }): Promise<ProductHostEngineToolResult>
   /** Persist a TodoWrite projection before the source receives its tool result. */
   recordPlan(operationId: string, plan: ProductTaskPlan): Promise<void>
@@ -58,6 +59,10 @@ type PendingToolReceipt = {
 }
 
 type PendingHookReceipt = {
+  operation_id: string
+}
+
+type PendingModelAcknowledgement = {
   operation_id: string
 }
 
@@ -105,7 +110,7 @@ function toolResultDigest(value: { call_id: string; tool_name: string; result: P
   return createHash('sha256').update(JSON.stringify(value)).digest('hex')
 }
 
-function hookResultDigest(kind: Extract<TaskRunExternalOperationKind, 'hook_command' | 'hook_http'>, result: unknown): string {
+function hookResultDigest(kind: Extract<TaskRunExternalOperationKind, 'hook_command' | 'hook_http' | 'model_ack'>, result: unknown): string {
   return createHash('sha256').update(JSON.stringify({ kind, result }) ?? '{"result":"undefined"}').digest('hex')
 }
 
@@ -177,6 +182,7 @@ export class CodexEngineWorkerCore implements AgentWorkerCore {
   private pendingModel?: PendingModelReceipt
   private pendingTool?: PendingToolReceipt
   private pendingHook?: PendingHookReceipt
+  private pendingModelAcknowledgement?: PendingModelAcknowledgement
   private pendingInput?: PendingInputReceipt
   private pendingSteer?: PendingSteerReceipt
   private toolSurface?: ProductHostEngineToolSurface
@@ -296,6 +302,9 @@ export class CodexEngineWorkerCore implements AgentWorkerCore {
     const pendingHook = this.pendingHook
     this.pendingHook = undefined
     if (pendingHook) await this.options.parent.markExternalOperationUnknown(pendingHook.operation_id).catch(() => undefined)
+    const pendingModelAcknowledgement = this.pendingModelAcknowledgement
+    this.pendingModelAcknowledgement = undefined
+    if (pendingModelAcknowledgement) await this.options.parent.markExternalOperationUnknown(pendingModelAcknowledgement.operation_id).catch(() => undefined)
     const pendingInput = this.pendingInput
     this.pendingInput = undefined
     if (pendingInput) await this.options.parent.markExternalOperationUnknown(pendingInput.operation_id).catch(() => undefined)
@@ -459,16 +468,49 @@ export class CodexEngineWorkerCore implements AgentWorkerCore {
     const pending = this.pendingModel
     const runtime = this.runtime
     if (!pending || !runtime || pending.assistant !== assistant || this.terminal) throw new Error('CODEX_ENGINE_MODEL_RECEIPT_INVALID')
+    let modelCheckpointed = false
     try {
       const digest = await runtime.checkpointModelResult(this.options.run_id, pending.operation_id, pending.result_digest)
       await this.options.parent.recordExternalOperationResult(pending.operation_id)
       await this.options.parent.checkpointExternalOperation(pending.operation_id, digest)
       this.pendingModel = undefined
       this.checkpointedModelOperations.add(pending.operation_id)
+      modelCheckpointed = true
+      if (assistant.operation_receipt) await this.acknowledgeModelResult(assistant.operation_receipt)
       this.modelReceiptCheckpointed = true
     } catch (error) {
       this.pendingModel = undefined
-      await this.options.parent.markExternalOperationUnknown(pending.operation_id).catch(() => undefined)
+      if (!modelCheckpointed) await this.options.parent.markExternalOperationUnknown(pending.operation_id).catch(() => undefined)
+      throw error
+    }
+  }
+
+  /**
+   * A provider receipt cannot be acknowledged until its source-model result
+   * has been checkpointed. The acknowledgement is itself an external effect,
+   * so it owns a separate durable receipt rather than piggybacking on the
+   * model operation that produced the result.
+   */
+  private async acknowledgeModelResult(receipt: ProductModelOperationReceipt): Promise<void> {
+    const runtime = this.runtime
+    if (!runtime || this.pendingModelAcknowledgement || this.terminal || this.stopping) {
+      throw new Error('CODEX_ENGINE_MODEL_ACK_RUNTIME_UNAVAILABLE')
+    }
+    const operationId = await this.options.parent.beginExternalOperation('model_ack')
+    this.pendingModelAcknowledgement = { operation_id: operationId }
+    try {
+      await this.options.parent.acknowledgeModelResult(operationId, receipt)
+      const digest = await runtime.checkpointHookResult(
+        this.options.run_id,
+        operationId,
+        hookResultDigest('model_ack', receipt),
+      )
+      await this.options.parent.recordExternalOperationResult(operationId)
+      await this.options.parent.checkpointExternalOperation(operationId, digest)
+      this.pendingModelAcknowledgement = undefined
+    } catch (error) {
+      this.pendingModelAcknowledgement = undefined
+      await this.options.parent.markExternalOperationUnknown(operationId).catch(() => undefined)
       throw error
     }
   }
