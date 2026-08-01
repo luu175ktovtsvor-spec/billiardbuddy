@@ -286,6 +286,32 @@ function getProviderCredentialService(): ProviderCredentialService {
   return providerCredentialService
 }
 
+/**
+ * Keep credential persistence and the live Server route in lockstep. The
+ * renderer receives only summaries; keys cross this boundary only through the
+ * explicitly validated save command and are never returned over IPC.
+ */
+async function mutateProviderCredentials<T>(mutation: (service: ProviderCredentialService) => T): Promise<T> {
+  const service = getProviderCredentialService()
+  const before = service.capture()
+  try {
+    const result = mutation(service)
+    const after = service.capture()
+    // A Server started later receives this configuration during its normal
+    // launch. Do not construct a sidecar merely because a user saved settings.
+    await serverRuntime?.updateProviderCredentials({ models: JSON.stringify(after.models) })
+    return result
+  } catch (error) {
+    service.restore(before)
+    // A failed local hot update must not leave disk and the running Server on
+    // different defaults. Best-effort rollback is enough when no Server is up.
+    try {
+      await serverRuntime?.updateProviderCredentials({ models: JSON.stringify(before.models) })
+    } catch {}
+    throw error
+  }
+}
+
 function getServerRuntime() {
   serverRuntime ??= new ElectronServerRuntime({
     desktopRoot: unpackedRoot(),
@@ -462,6 +488,15 @@ function registerIpcHandlers() {
   })
   registerHandler(ELECTRON_IPC_CHANNELS.appGetVersion, () => app.getVersion())
   registerHandler(ELECTRON_IPC_CHANNELS.runtimeGetServerUrl, () => getServerRuntime().getServerUrl())
+  registerHandler(ELECTRON_IPC_CHANNELS.modelConfigurationSummary, () => getProviderCredentialService().summary())
+  registerHandler(ELECTRON_IPC_CHANNELS.modelConfigurationSave, (_event, payload) =>
+    mutateProviderCredentials(service => service.save(payload as Parameters<ProviderCredentialService['save']>[0])))
+  registerHandler(ELECTRON_IPC_CHANNELS.modelConfigurationSetRoute, (_event, payload) => {
+    const input = payload as { capability: Parameters<ProviderCredentialService['setRoute']>[0], profileId: string | null }
+    return mutateProviderCredentials(service => service.setRoute(input.capability, input.profileId))
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.modelConfigurationRemove, (_event, payload) =>
+    mutateProviderCredentials(service => service.remove(String(payload))))
   registerHandler(ELECTRON_IPC_CHANNELS.commandInvoke, (_event, payload) => handleCommandInvoke(payload))
   registerHandler(ELECTRON_IPC_CHANNELS.clipboardReadText, () => clipboard.readText())
   registerHandler(ELECTRON_IPC_CHANNELS.clipboardWriteText, (_event, payload) => clipboard.writeText(String(payload)))

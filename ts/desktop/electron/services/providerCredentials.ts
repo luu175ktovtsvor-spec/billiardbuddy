@@ -45,7 +45,11 @@ export class ProviderCredentialService {
     // Editing a profile must not require Electron Main to disclose its stored
     // secret back to the renderer. An empty key is therefore meaningful only
     // for an existing id and retains the encrypted value already on disk.
+    // The renderer only edits the fields it can safely understand. Preserve
+    // the existing protocol-specific controls (and the encrypted key when
+    // omitted) instead of silently resetting a working Agent route.
     const profile = normalizePersonalModelProfile({
+      ...existing,
       ...input,
       api_key: input.api_key.trim() || existing?.api_key || '',
     }, id)

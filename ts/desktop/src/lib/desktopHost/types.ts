@@ -12,6 +12,11 @@ import type {
   UpdateImageProjectInput,
 } from '../../../../shared/contracts/media'
 import type { PublicRecruitingAction, RecruitingBrowserSetupStatus } from '../../../../shared/product/browserCapability'
+import type {
+  PersonalModelCapability,
+  PersonalModelConfigurationSummary,
+  PersonalModelProfileInput,
+} from '../../../../shared/product/personalModels'
 
 export type DesktopHostKind = 'browser' | 'electron'
 
@@ -20,6 +25,7 @@ export type DesktopHostCapability =
   | 'clipboard'
   | 'dialogs'
   | 'mediaActions'
+  | 'modelConfiguration'
   | 'notifications'
   | 'previewWebview'
   | 'recruitingBrowser'
@@ -216,6 +222,12 @@ export type DesktopHost = {
     addVideoSource(projectId: string, path: string): Promise<{ project: VideoStudioProject; task: MediaTask }>
     renderVideo(request: MediaRenderRequest): Promise<{ task: MediaTask }>
     analyzeVideo(request: MediaAnalyzeRequest): Promise<{ task: MediaTask }>
+  }
+  models: {
+    summary(): Promise<PersonalModelConfigurationSummary>
+    save(input: PersonalModelProfileInput): Promise<PersonalModelConfigurationSummary>
+    setRoute(capability: PersonalModelCapability, profileId: string | null): Promise<PersonalModelConfigurationSummary>
+    remove(profileId: string): Promise<PersonalModelConfigurationSummary>
   }
   recruitingBrowser: {
     status(): Promise<RecruitingBrowserSetupStatus>

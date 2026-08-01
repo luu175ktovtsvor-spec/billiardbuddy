@@ -83,6 +83,7 @@ export const zh: Record<TranslationKey, string> = {
   'settings.title': '設定',
   'settings.tab.general': '通用',
   'settings.tab.capabilities': '能力狀態',
+  'settings.tab.models': '模型',
   'settings.tab.privacy': '隱私',
   'settings.tab.terminal': '終端',
   'settings.tab.skills': '技能',

@@ -81,6 +81,7 @@ export const en = {
   'settings.title': 'Settings',
   'settings.tab.general': 'General',
   'settings.tab.capabilities': 'Capability status',
+  'settings.tab.models': 'Models',
   'settings.tab.privacy': 'Privacy',
   'settings.tab.terminal': 'Terminal',
   'settings.tab.skills': 'Skills',

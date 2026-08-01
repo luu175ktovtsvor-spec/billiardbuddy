@@ -11,6 +11,7 @@ const browserCapabilities: DesktopHostCapabilities = {
   clipboard: false,
   dialogs: false,
   mediaActions: false,
+  modelConfiguration: false,
   notifications: false,
   previewWebview: false,
   recruitingBrowser: false,
@@ -123,6 +124,20 @@ export const browserHost: DesktopHost = {
     },
     async analyzeVideo() {
       unsupported('Video analysis')
+    },
+  },
+  models: {
+    async summary() {
+      unsupported('Model configuration')
+    },
+    async save() {
+      unsupported('Model configuration')
+    },
+    async setRoute() {
+      unsupported('Model configuration')
+    },
+    async remove() {
+      unsupported('Model configuration')
     },
   },
   recruitingBrowser: {

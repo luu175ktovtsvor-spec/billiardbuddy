@@ -7,6 +7,7 @@ const ACTIVE_SETTINGS_TAB_STORAGE_KEY = 'billiardbuddy-active-settings-tab'
 const SETTINGS_TABS = [
   'general',
   'capabilities',
+  'models',
   'privacy',
   'terminal',
   'mcp',
@@ -82,6 +83,7 @@ export type Toast = {
 export type SettingsTab =
   | 'general'
   | 'capabilities'
+  | 'models'
   | 'privacy'
   | 'terminal'
   | 'mcp'
