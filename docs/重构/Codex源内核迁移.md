@@ -67,7 +67,13 @@ Codex 会保存自己的 Thread、配置与运行资料。BilliardBuddy 启动�
 | D. 权限与工具桥 | Codex 的工具请求受 BilliardBuddy lease 和三档权限控制；引擎仅暴露 BilliardBuddy 动态工具 | 文件、PTY、浏览器、MCP 的许可/拒绝/停止均有可见回执 | 不让工具获得全局凭据或目录外权限 |
 | E. 正式切换 | 桌面任务页只消费引擎事件；旧 Harness 无消费者后删除 | 同一用户旅程在新路径完成，旧路径不可再启动 | 不保留双 Harness 作为“兼容” |
 
-当前处于 **A. 源码与构建收口、B. 模型桥准备**。固定源码已经登记；开发机已从该基线加受管工具补丁构建 macOS arm64 `codex-app-server`，完成 BilliardBuddy 私有目录的 stdio 初始化/退出验证，并以不访问网络、密钥或付费模型的本机假模型跑通一次 Turn：模型桥收到的上游工具数为 `0`。补丁默认不改变上游行为；只有本产品私有引擎显式传 `host_managed_tools_only=true` 时才去掉上游工具面。`codex-engine-build.yml` 会先核对、应用该补丁，再在 GitHub 的 macOS Apple Silicon 与 Windows x64 runner 上只编译未经签名的 `codex-app-server`，不生成桌面安装包、不上传发布源；由于本地 `main` 尚未安全推送，Windows 构建尚未有实际产物证据。引擎客户端目前只负责私有目录、标准协议与 BilliardBuddy Thread 绑定，尚未接管正式 Run；在模型桥、事件桥和权限桥完整之前，不再给旧 TypeScript Harness 添加模型、工具、Hook 或 UI 功能。
+当前处于 **A. 源码与构建已形成正式供给链、B. 模型桥准备**。固定源码已经登记；开发机已从该基线加受管工具补丁构建 macOS arm64 `codex-app-server`，完成 BilliardBuddy 私有目录的 stdio 初始化/退出验证，并以不访问网络、密钥或付费模型的本机假模型跑通一次 Turn：模型桥收到的上游工具数为 `0`。补丁默认不改变上游行为；只有本产品私有引擎显式传 `host_managed_tools_only=true` 时才去掉上游工具面。
+
+桌面构建不允许再从开发者的 Cargo `target/` 目录启动内核。`stage-codex-engine.ts` 必须在干净、锁定的子仓上应用补丁、从源码构建、撤回补丁，再把二进制、Apache-2.0 `LICENSE`、上游 `NOTICE` 与包含 revision、补丁 SHA-256、目标三元组和二进制哈希的 manifest 一并放进 `runtime-assets/binaries/`。macOS 使用不受代码签名变化影响的 Mach-O 哈希；Windows 使用普通 SHA-256。打包前、afterPack 与安装包审计都会重新验证该清单。Electron Main 会丢弃继承的 `BB_CODEX_ENGINE_BIN_DIR`，只在自己的 `runtime-assets/binaries/` 中存在对应目标二进制时才向本地 Product Server 注入该目录。
+
+`codex-engine-build.yml` 会先核对、应用该补丁，再在 GitHub 的 macOS Apple Silicon 与 Windows x64 runner 上只编译未经签名的 `codex-app-server`，不生成桌面安装包、不上传发布源；桌面 macOS/Windows 构建工作流则递归取得子仓、安装锁定 Rust 工具链，并在 Electron 打包前执行上述 source-to-runtime-assets 步骤。当前只有 macOS arm64 已有本地真实构建与资源清单证据；由于本地 `main` 尚未安全推送，Windows 构建尚未有实际产物证据。
+
+引擎客户端目前只负责私有目录、标准协议与 BilliardBuddy Thread 绑定，尚未接管正式 Run；在模型桥、事件桥和权限桥完整之前，不再给旧 TypeScript Harness 添加模型、工具、Hook 或 UI 功能。
 
 ### 4.1 当前唯一施工单元：Agent 执行内核替换
 
@@ -79,7 +85,7 @@ Codex 会保存自己的 Thread、配置与运行资料。BilliardBuddy 启动�
 4. **工具有唯一宿主**：Codex 的工具/审批请求只经 BilliardBuddy 权限信封和现有主进程工具宿主处理；在该桥完成前，引擎不得获得本机 Shell、文件、浏览器、MCP 或任何全局凭据。
 5. **一次性切换**：上述边界闭合并走通一条真实用户旅程后，桌面 Agent 页改为只启动新内核，旧 Harness 删除；不长期保留双执行循环。
 
-因此，当前正在写的 Responses 回环端点和运行时装配只是第 2 步的材料，尚无正式 Run 消费者，不能单独宣称“模型桥完成”。下一次代码改动只为第 1—3 步接成一条可运行、可停止、可恢复判定的产品路径；权限工具桥留在其后独立闭合，图片、视频工作台不受这次内核替换牵连。
+因此，当前正在写的 Responses 回环端点和运行时装配只是第 2 步的材料，尚无正式 Run 消费者，不能单独宣称“模型桥完成”。下一次代码改动进入 C：把一次产品 Run 接成一次已绑定 Thread 的 Turn，接住事件、停止、账本回执与恢复判定；权限工具桥留在其后独立闭合，图片、视频工作台不受这次内核替换牵连。
 
 ## 5. 许可与发布边界
 

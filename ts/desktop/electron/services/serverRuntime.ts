@@ -117,16 +117,32 @@ export class ElectronServerRuntime {
     const withGatewayCapability = this.gatewayAccessTokenCapability
       ? { ...withProviderCapability, BB_GATEWAY_ACCESS_TOKEN_CAPABILITY: this.gatewayAccessTokenCapability }
       : withProviderCapability
-    if (withGatewayCapability.BB_MEDIA_BIN_DIR) return withGatewayCapability
 
-    const mediaBinDir = path.join(this.desktopRoot, 'runtime-assets', 'binaries')
+    // The App Server command is product-controlled. Never honor an inherited
+    // path here: it would let a renderer launch a user-selected binary once the
+    // Agent execution kernel starts consuming this capability.
+    const withoutInheritedEngineDir = { ...withGatewayCapability }
+    delete withoutInheritedEngineDir.BB_CODEX_ENGINE_BIN_DIR
+
+    const runtimeBinDir = path.join(this.desktopRoot, 'runtime-assets', 'binaries')
+    const engineTriple = resolveEngineTargetTriple()
+    const engineBinary = process.platform === 'win32'
+      ? `codex-app-server-${engineTriple}.exe`
+      : `codex-app-server-${engineTriple}`
+    const withEngineCapability = existsSync(path.join(runtimeBinDir, engineBinary))
+      ? { ...withoutInheritedEngineDir, BB_CODEX_ENGINE_BIN_DIR: runtimeBinDir }
+      : withoutInheritedEngineDir
+
+    if (withEngineCapability.BB_MEDIA_BIN_DIR) return withEngineCapability
+
+    const mediaBinDir = runtimeBinDir
     const executableSuffix = process.platform === 'win32' ? '.exe' : ''
     const hasMediaToolchain = ['ffmpeg', 'ffprobe'].every(name => (
       existsSync(path.join(mediaBinDir, `${name}${executableSuffix}`))
     ))
     return hasMediaToolchain
-      ? { ...withGatewayCapability, BB_MEDIA_BIN_DIR: mediaBinDir }
-      : withGatewayCapability
+      ? { ...withEngineCapability, BB_MEDIA_BIN_DIR: mediaBinDir }
+      : withEngineCapability
   }
 
   async startServer(): Promise<string> {
@@ -334,6 +350,16 @@ export class ElectronServerRuntime {
     }
     return env
   }
+}
+
+function resolveEngineTargetTriple(
+  platform = process.platform,
+  arch = process.arch,
+): 'aarch64-apple-darwin' | 'x86_64-apple-darwin' | 'x86_64-pc-windows-msvc' | 'aarch64-pc-windows-msvc' {
+  if (platform === 'darwin' && arch === 'arm64') return 'aarch64-apple-darwin'
+  if (platform === 'darwin' && arch === 'x64') return 'x86_64-apple-darwin'
+  if (platform === 'win32' && arch === 'arm64') return 'aarch64-pc-windows-msvc'
+  return 'x86_64-pc-windows-msvc'
 }
 
 async function promiseWithTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {

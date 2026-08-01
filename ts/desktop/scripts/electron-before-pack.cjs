@@ -61,6 +61,11 @@ async function beforePack() {
     env: process.env,
     stdio: 'inherit',
   })
+  execFileSync('bun', [path.join(__dirname, 'stage-codex-engine.ts'), '--verify'], {
+    cwd: path.join(__dirname, '..'),
+    env: process.env,
+    stdio: 'inherit',
+  })
 }
 
 module.exports = beforePack
