@@ -4821,24 +4821,30 @@ export class MediaProjectService {
         updated_at: this.iso(),
       })
       if (signal.aborted) throw new Error('导出已取消')
-      await this.moveFile(temporaryOutput, outputPath)
-      const latest = await this.getProject(project.id)
-      if (
-        latest.kind !== 'video'
-        || latest.revision !== project.revision
-        || latest.current_timeline_version_id !== timelineVersionId
-        || latest.task_id !== task.id
-      ) throw new MediaServiceError('视频项目已更新，本次导出结果不再发布', 409, 'VIDEO_RENDER_STALE')
-      await this.saveProject({
-        ...latest,
-        state: 'complete',
-        output_path: outputPath,
-        output_asset_id: outputAssetId,
-        output_content_hash: validated.content_hash,
-        output_verification: validated,
-        error: undefined,
-        error_code: undefined,
-        updated_at: this.iso(),
+      // The render runs outside the project mutation lock, but publishing is a
+      // single state transition. Check the timeline while holding that lock *before*
+      // replacing the user's destination so an edit can never leave a stale export
+      // on disk after the task is rejected.
+      await this.withVideoProjectMutation(project.id, async () => {
+        const latest = await this.getProject(project.id)
+        if (
+          latest.kind !== 'video'
+          || latest.revision !== project.revision
+          || latest.current_timeline_version_id !== timelineVersionId
+          || latest.task_id !== task.id
+        ) throw new MediaServiceError('视频项目已更新，本次导出结果不再发布', 409, 'VIDEO_RENDER_STALE')
+        await this.moveFile(temporaryOutput, outputPath)
+        await this.saveProject({
+          ...latest,
+          state: 'complete',
+          output_path: outputPath,
+          output_asset_id: outputAssetId,
+          output_content_hash: validated.content_hash,
+          output_verification: validated,
+          error: undefined,
+          error_code: undefined,
+          updated_at: this.iso(),
+        })
       })
       await this.saveTask({
         ...task,
