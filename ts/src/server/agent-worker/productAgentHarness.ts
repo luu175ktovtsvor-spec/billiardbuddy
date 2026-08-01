@@ -13,8 +13,7 @@ import type { ProductAgentHarnessModelPolicyPort, ProductAgentHarnessProjectionP
 import type { ProductTaskMcpHost } from './mcpHost.js'
 import { runProductAgentLoop } from './productAgentLoop.js'
 import type { ProductAgentLoopInput } from './productAgentLoop.js'
-import { acknowledgeProductModelOperation, runProductModel } from './productModelRuntime.js'
-import { runProductTools } from './productToolExecution.js'
+import { acknowledgeProductModelOperation } from './productModelRuntime.js'
 import { createProductUserMessage } from './productMessages.js'
 import { loadProductAgentCommands, loadProductAgentExtensionTools } from './productExtensionLoader.js'
 import { productAgentCommands } from './productPluginAgentLoader.js'
@@ -52,8 +51,8 @@ export async function createProductAgentHarness(input: {
   model_policy: ProductAgentHarnessModelPolicyPort
   mcp_host?: ProductTaskMcpHost
   query?: typeof runProductAgentLoop
-  run_model?: ProductAgentLoopInput['runModel']
-  execute_tools?: ProductAgentLoopInput['executeTools']
+  run_model: ProductAgentLoopInput['runModel']
+  execute_tools: ProductAgentLoopInput['executeTools']
   load_commands?: (cwd: string) => Promise<ProductCommand[]>
   load_tools?: (permissionContext: ProductToolPermissionContext) => ProductTools
   auto_memory?: ProductAutoMemoryBinding & { task_id: string; entry_id: string }
@@ -169,8 +168,8 @@ export async function createProductAgentHarness(input: {
     productTaskId: input.task_id,
     toolHooks: productToolHooks,
     productPromptContext: productPromptContext(),
-    runProductModel: input.run_model ?? runProductModel,
-    executeProductTools: input.execute_tools ?? runProductTools,
+    runProductModel: input.run_model,
+    executeProductTools: input.execute_tools,
     options: {
       commands,
       mainLoopModel: model,
@@ -278,7 +277,7 @@ export async function createProductAgentHarness(input: {
     if (!model) return { ok: false, reason: 'Hook model is not registered for this product' }
     let response = ''
     try {
-      for await (const event of (input.run_model ?? runProductModel)({
+      for await (const event of input.run_model({
         messages: [createProductUserMessage({ content: prompt })],
         systemPrompt: ['Evaluate the project Hook condition. Return exactly one JSON object: {"ok":true} or {"ok":false,"reason":"brief reason"}. Do not call tools and do not add prose.'],
         thinkingConfig: { type: 'disabled' },
@@ -469,8 +468,8 @@ export async function createProductAgentHarness(input: {
                 promptContext: { workspace: input.work_dir, date: getLocalISODate() },
                 model,
                 canUseTool: async () => ({ behavior: 'deny', message: 'Context compaction cannot use tools', reason: 'context-compaction', toolUseID: 'context-compaction' }),
-                runModel: input.run_model ?? runProductModel,
-                executeTools: input.execute_tools ?? runProductTools,
+                runModel: input.run_model,
+                executeTools: input.execute_tools,
               })
               for await (const message of stream) {
                 if (message.type === 'assistant') {
@@ -587,8 +586,8 @@ export async function createProductAgentHarness(input: {
                 onOperationReceiptsPersisted: async (receipts, signal) => {
                   for (const receipt of receipts) await acknowledgeProductModelOperation(receipt, signal)
                 },
-                runModel: input.run_model ?? runProductModel,
-                executeTools: input.execute_tools ?? runProductTools,
+                runModel: input.run_model,
+                executeTools: input.execute_tools,
                 toolHooks: productToolHooks,
                 resume: resumePersistedTurn,
               })
