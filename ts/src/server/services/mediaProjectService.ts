@@ -3547,6 +3547,7 @@ export class MediaProjectService {
       width?: number
       height?: number
     }> = []
+    let rejectedResultCount = 0
     await mkdir(projectAssetDir, { recursive: true, mode: 0o700 })
     for (const item of body.data ?? []) {
       const outputId = id('out')
@@ -3554,8 +3555,12 @@ export class MediaProjectService {
       const versionId = foundationId('ver', task.project_id, operationId, outputId)
       if (item.b64_json) {
         const bytes = Buffer.from(item.b64_json, 'base64')
-        const mimeType = detectedImageMime(bytes) ?? item.mime_type ?? 'image/png'
-        const dimensions = imageDimensions(bytes, mimeType)
+        const mimeType = detectedImageMime(bytes)
+        const dimensions = mimeType ? imageDimensions(bytes, mimeType) : null
+        if (!mimeType || !dimensions) {
+          rejectedResultCount += 1
+          continue
+        }
         const extension = mimeType === 'image/jpeg' ? 'jpg' : mimeType === 'image/webp' ? 'webp' : 'png'
         const fileName = `${outputId}.${extension}`
         const assetPath = join(projectAssetDir, fileName)
@@ -3581,20 +3586,18 @@ export class MediaProjectService {
           revised_prompt: item.revised_prompt,
         })
       } else if (item.url) {
-        outputs.push({
-          id: outputId,
-          operation_id: operationId,
-          version_id: versionId,
-          version_kind: versionKind,
-          parent_version_id: parentVersionId,
-          mime_type: 'image/png',
-          url: item.url,
-          revised_prompt: item.revised_prompt,
-        })
+        // A provider URL is not a project asset: it can expire, cannot be
+        // content-addressed, and cannot safely become a canvas base version.
+        // The gateway's controlled result handoff supplies bytes instead.
+        rejectedResultCount += 1
       }
     }
-    if (outputs.length === 0) {
-      recordMediaFailure('image_result_empty', body)
+    if (outputs.length === 0 || rejectedResultCount > 0) {
+      await Promise.all(createdAssets.map(assetPath => rm(assetPath, { force: true })))
+      recordMediaFailure('image_result_invalid', {
+        output_count: body.data?.length ?? 0,
+        rejected_result_count: rejectedResultCount,
+      })
       return await this.failImageTask(task, 'MEDIA_IMAGE_UNAVAILABLE')
     }
     let outputsWithQuality = outputs
