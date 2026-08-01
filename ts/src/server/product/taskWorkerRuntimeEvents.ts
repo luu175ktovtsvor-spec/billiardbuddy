@@ -23,7 +23,14 @@ function upsertSnapshotActivity(
 
 type Listener = (taskId: string, event: ProductTaskEvent) => void
 
-class ProductTaskWorkerRuntimeEvents {
+/**
+ * Ephemeral projection of already-durable task events for one Product Server.
+ *
+ * This intentionally belongs to the server composition root: it carries live
+ * sockets and approval ownership, neither of which may leak across a second
+ * server lifetime or a test process.
+ */
+export class ProductTaskWorkerRuntimeEvents {
   private readonly listeners = new Set<Listener>()
   private readonly snapshots = new Map<string, ProductTaskRunSnapshot>()
   private readonly pendingApprovals = new Map<string, Extract<ProductTaskEvent, { type: 'approval_required' }>>()
@@ -95,5 +102,3 @@ class ProductTaskWorkerRuntimeEvents {
     return () => this.listeners.delete(listener)
   }
 }
-
-export const productTaskWorkerRuntimeEvents = new ProductTaskWorkerRuntimeEvents()

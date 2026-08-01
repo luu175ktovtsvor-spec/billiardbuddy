@@ -63,7 +63,8 @@ import { productTaskActivitySummary } from './taskEventProjection.js'
 import { productTextReasoningBinding } from './productGatewayRuntime.js'
 import { productTaskPrivateArtifactPort, type ProductTaskPrivateArtifactPort } from './taskPrivateArtifactPort.js'
 import type { ProductTaskRunDispatchPort } from './taskRunDispatchPort.js'
-import { productTaskRuntimeEventPort, type ProductTaskRuntimeEventPort } from './taskRuntimeEventPort.js'
+import { createProductTaskRuntimeEventPort, type ProductTaskRuntimeEventPort } from './taskRuntimeEventPort.js'
+import { ProductTaskWorkerRuntimeEvents } from './taskWorkerRuntimeEvents.js'
 import {
   productAttachmentStorageRoot,
   productAttachmentSummary,
@@ -1012,7 +1013,8 @@ export class ProductTaskService {
     this.installationId = options.installationId ?? 'installation-default'
     this.dispatcher = options.dispatcher
     this.privateArtifacts = options.privateArtifacts ?? productTaskPrivateArtifactPort
-    this.runtimeEvents = options.runtimeEvents ?? productTaskRuntimeEventPort
+    this.runtimeEvents = options.runtimeEvents
+      ?? createProductTaskRuntimeEventPort(new ProductTaskWorkerRuntimeEvents())
     this.autoMemoryEnabled = options.autoMemoryEnabled ?? (this.usesDefaultStoragePath
       ? async () => (await new ProductSettingsRepository().get()).productAutoMemoryEnabled !== false
       : async () => true)
@@ -4110,6 +4112,7 @@ async function purgeLegacyProductSessionMemory(storageDir: string, taskId: strin
 export function createProductTaskService(options: {
   additionalLifecycleParticipants?: readonly TaskLifecycleParticipant[]
   dispatcher?: ProductTaskRunDispatchPort
+  runtimeEvents?: ProductTaskRuntimeEventPort
 } = {}): ProductTaskService {
   return new ProductTaskService(options)
 }

@@ -1,8 +1,8 @@
 import type { ProductTaskService } from './taskService.js'
 import type { AgentWorkerOutbound } from '../../../shared/product/agentWorker.js'
 import { sanitizeProductTaskVisibleText } from './taskAttachmentProjection.js'
-import { productTaskWorkerRuntimeEvents } from './taskWorkerRuntimeEvents.js'
 import { reviewAutomaticApproval } from './automaticApprovalReviewer.js'
+import type { ProductTaskRuntimeEventPort } from './taskRuntimeEventPort.js'
 
 export class ProductTaskWorkerMessageSink {
   private readonly taskIds = new Map<string, string>()
@@ -14,7 +14,10 @@ export class ProductTaskWorkerMessageSink {
   private readonly publishedText = new Map<string, string>()
   private readonly queues = new Map<string, Promise<void>>()
 
-  constructor(private readonly tasks: ProductTaskService) {}
+  constructor(
+    private readonly tasks: ProductTaskService,
+    private readonly runtimeEvents: ProductTaskRuntimeEventPort,
+  ) {}
 
   record(runId: string, generation: number, message: Extract<AgentWorkerOutbound, { type: 'event' | 'terminal' | 'steer_consumed' }>): Promise<void> {
     const key = `${runId}:${generation}`
@@ -38,9 +41,9 @@ export class ProductTaskWorkerMessageSink {
     if (message.type === 'terminal') {
       this.flushText(taskId, key, true)
       const recorded = await this.tasks.recordTaskRunTerminalProjection(runId, generation, message.state, this.publishedText.get(key) ?? '', message.failure)
-      for (const event of recorded.queue_events) productTaskWorkerRuntimeEvents.publish(taskId, event)
-      if (message.state === 'recovery_required') productTaskWorkerRuntimeEvents.publish(taskId, { type: 'error', ...(message.failure ?? { code: 'task_failed', retryable: false }) })
-      else productTaskWorkerRuntimeEvents.publish(taskId, { type: 'turn_complete' })
+      for (const event of recorded.queue_events) this.runtimeEvents.publish(taskId, event)
+      if (message.state === 'recovery_required') this.runtimeEvents.publish(taskId, { type: 'error', ...(message.failure ?? { code: 'task_failed', retryable: false }) })
+      else this.runtimeEvents.publish(taskId, { type: 'turn_complete' })
       this.taskIds.delete(key)
       this.startedText.delete(key)
       this.textBuffers.delete(key)
@@ -51,16 +54,16 @@ export class ProductTaskWorkerMessageSink {
     }
     if (message.type === 'steer_consumed') {
       const recorded = await this.tasks.recordQueuedInputConsumed(runId, generation, message.queue_item_id)
-      for (const event of recorded.events) productTaskWorkerRuntimeEvents.publish(taskId, event)
+      for (const event of recorded.events) this.runtimeEvents.publish(taskId, event)
       return
     }
     if (message.event === 'started') {
-      productTaskWorkerRuntimeEvents.publish(taskId, { type: 'status', state: 'working' })
+      this.runtimeEvents.publish(taskId, { type: 'status', state: 'working' })
       return
     }
     if (message.event === 'context_compaction') {
       const recorded = await this.tasks.recordTaskRunContextCompaction(runId, generation, message)
-      productTaskWorkerRuntimeEvents.publish(taskId, recorded.event)
+      this.runtimeEvents.publish(taskId, recorded.event)
       return
     }
     if (message.event === 'approval') {
@@ -83,7 +86,7 @@ export class ProductTaskWorkerMessageSink {
         )
         if (!resolved) throw new Error('AUTOMATIC_REVIEW_FAILED')
       } else {
-        productTaskWorkerRuntimeEvents.publish(taskId, recorded.event)
+        this.runtimeEvents.publish(taskId, recorded.event)
       }
       return
     }
@@ -94,7 +97,7 @@ export class ProductTaskWorkerMessageSink {
         message.request_id,
         message.questions,
       )
-      productTaskWorkerRuntimeEvents.publish(taskId, recorded.event)
+      this.runtimeEvents.publish(taskId, recorded.event)
       return
     }
     if (message.event === 'extension_snapshot') {
@@ -108,12 +111,12 @@ export class ProductTaskWorkerMessageSink {
     }
     if (message.event === 'activity') {
       const recorded = await this.tasks.recordTaskRunActivity(runId, generation, { type: 'activity', ...message.activity })
-      productTaskWorkerRuntimeEvents.publish(taskId, recorded.event)
+      this.runtimeEvents.publish(taskId, recorded.event)
       return
     }
     if (message.event === 'plan_updated') {
       const recorded = await this.tasks.recordTaskRunPlan(runId, generation, message.plan)
-      productTaskWorkerRuntimeEvents.publish(taskId, recorded.event)
+      this.runtimeEvents.publish(taskId, recorded.event)
       return
     }
     if (message.event !== 'delta' || !message.data) return
@@ -138,10 +141,10 @@ export class ProductTaskWorkerMessageSink {
     this.publishedText.set(key, `${current}${visible}`)
     if (!this.startedText.has(key)) {
       this.startedText.add(key)
-      productTaskWorkerRuntimeEvents.publish(taskId, { type: 'assistant_text_start' })
+      this.runtimeEvents.publish(taskId, { type: 'assistant_text_start' })
     }
     for (let offset = 0; offset < visible.length; offset += 32_000) {
-      productTaskWorkerRuntimeEvents.publish(taskId, {
+      this.runtimeEvents.publish(taskId, {
         type: 'assistant_text_delta',
         text: visible.slice(offset, offset + 32_000),
       })
