@@ -1,4 +1,4 @@
 {
-  "$comment": "PUBLIC product config bundled into the installer (extraResources). No secrets here. The activation bootstrap credential and License key are supplied separately via product-secrets.json (git-ignored and injected at build time). gatewayUrl is the US HTTPS /gw entry; release requires that proxy to be deployed and health-checked.",
+  "$comment": "PUBLIC product config bundled into the installer. It contains only the HTTPS /gw endpoint; every installation creates and rotates its own anonymous session after launch.",
   "gatewayUrl": "https://zzyppz.cn/gw"
 }

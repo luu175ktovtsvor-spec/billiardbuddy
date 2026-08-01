@@ -36,13 +36,21 @@
 - **未验证/待处理**：真实设备峰值、进程崩溃后的实际租约回收和多窗口压力仍未运行验证；身份、能力、设置、凭据和迁移属于 R1.2，不由本单元提前宣称完成。
 - **下一项**：R1.2 共享身份、能力目录、设置与迁移入口。
 
+### R1.2 共享身份、能力目录、设置与迁移入口
+
+- **实际入口与唯一权威**：Electron Main 保有稳定 installation id、加密 installation session、MCP OAuth 主密钥和一次性 Gateway bearer capability；Gateway 的 `installationAuth.ts` 以 installation id 建立匿名主体和可轮换 session；本地 Product Server 只持有短期 bearer，收到 capability 更新后立即从启动环境删除该 capability。
+- **当前源码证明**：首次启动仅以随机 installation id 请求 `/v1/auth/bootstrap`；失效或损坏 session 清理后静默重建，网络失败只安排恢复而不阻断本地工作台。Gateway 以 SQLite 事务持久化匿名主体与 refresh token 哈希，并以速率限制保护 bootstrap。Renderer 和 Agent Worker 不接触 refresh proof；Main 以一次性 capability 向本机 Server 热更新 access bearer。旧 License、bootstrap credential、授权文件及其生产实现已退出该调用链。
+- **当前结论**：R1.2 的静态边界已闭合。服务端类型检查、桌面类型检查、桌面生产构建、源码可达性审计和差异空白检查均已通过；本模块直接替代的 License/身份测试资产已删除，未运行任何测试。
+- **未验证/待处理**：真实 Gateway 网络中断、系统凭据损坏和跨版本磁盘迁移仍须在最终软件验收确认；个人模型、托管用量和模型执行留给 R3，旧的打包验收脚本与其测试依赖留给 R8 清理。
+- **下一项**：R2.1 Agent Harness Authority 与 Worker/Host 生产调用链。
+
 - **权限合同**：`shared/kernel/permissionExecutionEnvelope.ts` 只定义跨进程不可变信封；创建、摘要和校验集中在 `server/product/permissionExecutionEnvelope.ts`，Worker 协议、Host 与 sandbox 都只消费该合同。当前源码未出现第二个信封写入者。
 - **资源调度**：`shared/kernel/resourceScheduler.ts` 只公开 claim、lease、fencing 和 `ProductResourceSchedulerPort`；唯一的持久调度实现是 `server/product/resourceScheduler.ts`。本轮发现媒体本地进程原先有独立的内存队列，已移除：`MediaProjectService` 只能从启动点注入该端口，FFmpeg、FFprobe 和流式逐帧解码都先取得同一 desktop-host 租约；媒体 API、能力快照和路由也不再各自构造服务实例。
 - **跨工作台持久化**：媒体项目由 `MediaProjectStore` 在单个 repository 写锁内校验 writer fence、资产不可变性与 CAS 后写入；图片与视频只通过各自的 mutation 串行队列进入该存储。遗留 `product_task_id` 仅在迁移 reader 中被转换为 standalone media owner，当前 Agent 不写媒体项目状态。
 - **能力、设置、凭据与迁移**：能力快照只由启动点传入当前媒体服务和调度任务服务；设置写入集中在带文件锁和原子替换的 `ProductSettingsRepository`；个人模型与 Gateway token 都由 Main 传入的一次性 capability 保护，启动时从环境移除；`ProductStorageMigrationCoordinator` 是产品任务、媒体、语音和计划存储的单一启动迁移编排器，并在回滚前保留备份 journal。
-- **当前结论**：旧 R1 总体记录只能作为历史候选证据；当前只把 R1.1 的 Shared Kernel 资源合同与调度边界视为已核验，R1.2 尚未完成。
-- **未验证/待处理**：身份、能力、设置、凭据与迁移的当前源码仍混在 R3/R7/R2 改动中，必须按 R1.2 单独拆分和提交；真实设备、磁盘回滚和凭据轮换仍不能由静态检查替代。
-- **下一项**：R1.2 共享身份、能力目录、设置与迁移入口。
+- **当前结论**：旧 R1 总体记录只能作为历史候选证据；当前 R1.1 与 R1.2 已按独立源码和提交边界核验，不把后续 R2/R3/R7 改动计入 R1。
+- **未验证/待处理**：真实设备、磁盘回滚和凭据轮换仍不能由静态检查替代；Agent Authority/Worker、个人模型执行、额度和桌面壳体验必须由后续模块各自证明。
+- **下一项**：R2.1 Agent Harness Authority 与 Worker/Host 生产调用链。
 
 ## R2 Agent Harness
 

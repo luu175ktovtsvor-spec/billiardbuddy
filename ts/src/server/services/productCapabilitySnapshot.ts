@@ -128,9 +128,9 @@ function remoteCapability(
 
 function unavailableRemoteCapabilities(
   state: 'configured' | 'degraded',
-  reason: 'installation_activation_required' | 'service_unreachable',
+  reason: 'installation_session_unavailable' | 'service_unreachable',
 ): ProductCapability[] {
-  const repair_action = reason === 'installation_activation_required' ? 'restart_app' : 'retry'
+  const repair_action = 'retry'
   return (['assistant', 'image_understanding', 'image_creation', 'voice_input'] as const)
     .map(id => ({ id, state, reason_code: reason, repair_action }))
 }
@@ -172,7 +172,7 @@ export class ProductCapabilitySnapshotService {
 
   private async remoteCapabilities(): Promise<ProductCapability[]> {
     if (!this.deps.gatewayConfigured()) {
-      return unavailableRemoteCapabilities('configured', 'installation_activation_required')
+      return unavailableRemoteCapabilities('configured', 'installation_session_unavailable')
     }
     try {
       const gateway = await this.deps.gatewayStatus()

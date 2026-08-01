@@ -24,6 +24,10 @@ import {
 } from './sidecarManager'
 import { readDesktopTerminalConfig, resolveDesktopTerminalShell } from './terminal'
 import { applyGatewayConfigToEnv, type ProductGatewayConfig } from './productConfig'
+import {
+  GATEWAY_ACCESS_TOKEN_CAPABILITY_HEADER,
+  GATEWAY_ACCESS_TOKEN_UPDATE_PATH,
+} from '../../../shared/product/providerGateway'
 
 type ServerRuntimeOptions = {
   desktopRoot: string
@@ -34,12 +38,16 @@ type ServerRuntimeOptions = {
   resolveGatewayConfig?: () => ProductGatewayConfig
   /** Main-process session manager returns only a current installation access bearer. */
   resolveInstallationAccessToken?: () => Promise<string>
+  /** Read an already-valid bearer without waiting for Gateway network I/O. */
+  resolveCachedInstallationAccessToken?: () => string | undefined
   /** Electron-owned capability for paid/final media actions. Never inherited by Agent worker processes. */
   mediaUiCapability?: string
   /** Electron-owned capability for confirming recruiting side effects. */
   browserUiCapability?: string
   /** Electron-encrypted master key used only to encrypt MCP OAuth credentials at rest. */
   mcpOAuthCredentialKey?: string
+  /** Main-only capability for rotating the local Server's short-lived bearer. */
+  gatewayAccessTokenCapability?: string
 }
 
 export class ElectronServerRuntime {
@@ -49,9 +57,12 @@ export class ElectronServerRuntime {
   private readonly systemProxyTimeoutMs: number
   private readonly resolveGatewayConfig?: () => ProductGatewayConfig
   private readonly resolveInstallationAccessToken?: () => Promise<string>
+  private readonly resolveCachedInstallationAccessToken?: () => string | undefined
+  private installationAccessToken: string | undefined
   private readonly mediaUiCapability?: string
   private readonly browserUiCapability?: string
   private readonly mcpOAuthCredentialKey?: string
+  private readonly gatewayAccessTokenCapability?: string
   private sidecarEnvPromise: Promise<NodeJS.ProcessEnv> | null = null
   private server: { url: string, child: SidecarChild } | null = null
   private startupError: string | null = null
@@ -67,9 +78,11 @@ export class ElectronServerRuntime {
     this.systemProxyTimeoutMs = options.systemProxyTimeoutMs ?? 5_000
     this.resolveGatewayConfig = options.resolveGatewayConfig
     this.resolveInstallationAccessToken = options.resolveInstallationAccessToken
+    this.resolveCachedInstallationAccessToken = options.resolveCachedInstallationAccessToken
     this.mediaUiCapability = options.mediaUiCapability
     this.browserUiCapability = options.browserUiCapability
     this.mcpOAuthCredentialKey = options.mcpOAuthCredentialKey
+    this.gatewayAccessTokenCapability = options.gatewayAccessTokenCapability
   }
 
   /** Build a sidecar base env after removing inherited credential material. */
@@ -85,7 +98,10 @@ export class ElectronServerRuntime {
     const withMcpCredentialKey = this.mcpOAuthCredentialKey
       ? { ...withBrowserCapability, BILLIARDBUDDY_MCP_OAUTH_KEY: this.mcpOAuthCredentialKey }
       : withBrowserCapability
-    if (withMcpCredentialKey.BB_MEDIA_BIN_DIR) return withMcpCredentialKey
+    const withGatewayCapability = this.gatewayAccessTokenCapability
+      ? { ...withMcpCredentialKey, BB_GATEWAY_ACCESS_TOKEN_CAPABILITY: this.gatewayAccessTokenCapability }
+      : withMcpCredentialKey
+    if (withGatewayCapability.BB_MEDIA_BIN_DIR) return withGatewayCapability
 
     const mediaBinDir = path.join(this.desktopRoot, 'runtime-assets', 'binaries')
     const executableSuffix = process.platform === 'win32' ? '.exe' : ''
@@ -93,8 +109,8 @@ export class ElectronServerRuntime {
       existsSync(path.join(mediaBinDir, `${name}${executableSuffix}`))
     ))
     return hasMediaToolchain
-      ? { ...withMcpCredentialKey, BB_MEDIA_BIN_DIR: mediaBinDir }
-      : withMcpCredentialKey
+      ? { ...withGatewayCapability, BB_MEDIA_BIN_DIR: mediaBinDir }
+      : withGatewayCapability
   }
 
   async startServer(): Promise<string> {
@@ -147,6 +163,26 @@ export class ElectronServerRuntime {
     }
   }
 
+  /** Main is the sole writer of the local Server's installation access bearer. */
+  async setInstallationAccessToken(accessToken: string): Promise<void> {
+    if (!accessToken.trim()) return
+    this.installationAccessToken = accessToken
+    if (!this.server) return
+    try {
+      const capability = this.gatewayAccessTokenCapability
+      if (!capability || capability.length < 32) throw new Error('Gateway access token capability is unavailable')
+      const response = await fetch(`${this.server.url}${GATEWAY_ACCESS_TOKEN_UPDATE_PATH}`, {
+        method: 'PUT',
+        headers: { [GATEWAY_ACCESS_TOKEN_CAPABILITY_HEADER]: capability, 'content-type': 'text/plain; charset=utf-8' },
+        body: accessToken,
+        signal: AbortSignal.timeout(10_000),
+      })
+      if (response.status !== 204) throw new Error('Gateway access token update failed')
+    } catch {
+      await this.reconfigureServer()
+    }
+  }
+
   private async startServerOnce(): Promise<string> {
     const generation = this.generation
     // Reuse the previous local port when available; otherwise let the OS choose
@@ -155,7 +191,7 @@ export class ElectronServerRuntime {
     const url = `http://${SERVER_CONTROL_HOST}:${port}`
     const logs: string[] = []
     const env = await this.buildServerEnv(await this.resolveSidecarBaseEnv())
-    const accessToken = this.resolveInstallationAccessToken ? await this.resolveInstallationAccessToken() : undefined
+    const accessToken = this.installationAccessToken ?? this.resolveCachedInstallationAccessToken?.()
     const plan = createServerPlan({
       desktopRoot: this.desktopRoot,
       appRoot: this.appRoot,
@@ -163,6 +199,12 @@ export class ElectronServerRuntime {
       env,
       accessToken,
     })
+
+    if (!accessToken && this.resolveInstallationAccessToken) {
+      void this.resolveInstallationAccessToken().then(token => this.setInstallationAccessToken(token)).catch(error => {
+        console.error('[desktop] failed to refresh installation session', error)
+      })
+    }
 
     let child: SidecarChild | null = null
     try {
@@ -173,6 +215,9 @@ export class ElectronServerRuntime {
       writeLastServerPort(port)
       this.server = { url, child }
       this.startupError = null
+      if (this.installationAccessToken && this.installationAccessToken !== accessToken) {
+        await this.setInstallationAccessToken(this.installationAccessToken)
+      }
       return url
     } catch (error) {
       if (child && !this.server) await stopSidecar(child).catch(() => undefined)

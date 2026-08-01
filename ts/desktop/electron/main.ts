@@ -72,6 +72,7 @@ app.setName('BilliardBuddy')
 
 const mediaUiCapability = randomBytes(32).toString('base64url')
 const browserUiCapability = randomBytes(32).toString('base64url')
+const gatewayAccessTokenCapability = randomBytes(32).toString('base64url')
 
 let mainWindow: BrowserWindow | null = null
 let serverRuntime: ElectronServerRuntime | null = null
@@ -249,11 +250,9 @@ function getInstallationSessionManager() {
     }))
     return new InstallationSessionManager({
       gatewayUrl: config.url,
-      bootstrapCredential: config.token,
-      licenseKey: config.licenseKey,
       installationId: ensureInstallationId(process.env.BILLIARDBUDDY_CONFIG_DIR || app.getPath('userData')),
-      onTokenChanged: () => serverRuntime?.reconfigureServer(),
-      onSessionFailure: () => serverRuntime?.stopServer(),
+      onTokenChanged: token => serverRuntime?.setInstallationAccessToken(token),
+      onSessionFailure: error => console.error('[desktop] installation session update failed', error),
     }, createCredentialStore(process.platform, app.getPath('userData'), 'installation-session', safeStorage))
   })()
   return installationSessionManager
@@ -281,7 +280,7 @@ function getServerRuntime() {
     desktopRoot: unpackedRoot(),
     appRoot: appRoot(),
     resolveSystemProxy: (url) => session.defaultSession.resolveProxy(url),
-    // Public packaged routing config; its bootstrap credential remains Main-only.
+    // Packaged config contains only the public Gateway route.
     resolveGatewayConfig: () => requireProductGatewayConfig(
       resolveProductGatewayConfig({
         isPackaged: app.isPackaged,
@@ -290,12 +289,14 @@ function getServerRuntime() {
         env: process.env,
       }),
     ),
-    // Only a short-lived access bearer reaches the server sidecar. Bootstrap,
-    // license, refresh proof and installation identity remain in Main.
+    // Only a short-lived access bearer reaches the local Server. Refresh proof
+    // and stable installation identity remain in Electron Main.
     resolveInstallationAccessToken: () => getInstallationSessionManager().accessToken(),
+    resolveCachedInstallationAccessToken: () => getInstallationSessionManager().cachedAccessToken(),
     mediaUiCapability,
     browserUiCapability,
     mcpOAuthCredentialKey: getMcpOAuthCredentialKey(),
+    gatewayAccessTokenCapability,
   })
   return serverRuntime
 }

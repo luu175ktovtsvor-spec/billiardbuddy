@@ -268,9 +268,12 @@ R11 桌面构建、自动更新与发布
 
 ### R1.2 共享身份、能力目录、设置与迁移入口
 
-- **Outcome**：安装身份、能力快照、设置持久化、凭据边界和存储迁移由共享控制面提供单一入口，不把秘密或领域状态复制到 Renderer/Gateway/业务域。
-- **Constraints**：不改变 Agent Model Port 或媒体项目状态；个人模型与托管额度的具体执行留在 R3；桌面壳体验留在 R7。
-- **Verification**：身份轮换、能力降级、设置并发写入和迁移回滚分别有当前源码证据；下一游标再进入 R2.1。
+- **Outcome**：稳定 installation id、可轮换匿名安装会话、能力降级、受信凭据存储和可回滚存储升级由本机共享控制面承担；公开安装包不携带激活凭据或 License。
+- **Evidence**：`gateway/installationAuth.ts`、`gateway/app.ts`、`ts/desktop/electron/services/installationSession.ts`、`productConfig.ts`、`serverRuntime.ts`、`ts/src/server/services/gatewayAccessTokenRuntime.ts`、`productCapabilitySnapshot.ts`、`productStorageMigrations.ts`。
+- **Constraints / Non-goals**：不改变 Agent Model Port、个人模型执行、额度账本、媒体项目状态或桌面壳体验；Renderer、Agent Worker 和公开安装包不得获得 refresh token、Gateway access-token capability 或任何可复用密钥。
+- **Allowed scope**：安装身份/会话、匿名 Gateway 主体、公共 Gateway 配置、受信 bearer 热更新、能力目录降级、设置凭据恢复、迁移入口和 R1.2 证据记录。
+- **Verification / Exit**：安装启动不等待 Gateway bootstrap；过期或损坏会话可静默恢复；Gateway 只从验证后的匿名 installation principal 结算；token 更新只接受 Main 注入的一次性 capability；设置/迁移保持原子写入、文件锁和 rollback journal；Server/Desktop 类型检查、生产构建、源码可达性和暂存差异全部通过。
+- **Next cursor**：R2.1 — Agent Harness Authority 与 Worker/Host 生产调用链。
 
 ### R2 Agent Core / Harness
 
@@ -469,13 +472,13 @@ R2 被路线图选中时，内部不按“看到一个缺口就补一个功能�
 - **已完成阶段：R0.1 重构合同与施工证据回溯核验、R1.1 共享产品内核的权威边界回溯核验、R2.1 Agent Harness 生产调用链回溯核验、R3.1 模型执行端口与使用权控制面回溯核验、R4.1 Agent 桌面客户端事件投影回溯核验、R5.1 图片工作台提交、任务与不可变资产回溯核验**。历史阶段记录已降为待源码核验的证据，不能再单独推进施工或发布。
 
 ```text
-Active work unit: R1.2 — 共享身份、能力目录、设置与迁移入口
-Outcome: 稳定安装身份、匿名安装会话、公共 Gateway 配置、能力降级、受信凭据恢复和可回滚存储升级由同一控制面负责。
-Evidence: `ts/desktop/electron/services/installationSession.ts`、`productConfig.ts`、`serverRuntime.ts`、`ts/src/server/services/gatewayAccessTokenRuntime.ts`、`productCapabilitySnapshot.ts`、`productStorageMigrations.ts`。
-Constraints / Non-goals: 不改 Agent Model Port、个人模型执行、额度账本、媒体项目状态或桌面壳体验；安装包、Renderer 和 Agent Worker 不获得任何可复用密钥。
-Allowed scope: 安装会话/身份、Gateway 公共配置与 bearer 更新、能力目录、设置凭据恢复、迁移入口和 R1.2 证据记录。
-Verification / Exit: Server/Desktop 类型检查、生产构建、源码可达性、打包配置静态检查和暂存差异审阅全部通过；下一游标唯一指向 R2.1。
-Next cursor: R2.1 — Agent Harness Authority 与 Worker/Host 生产调用链。
+Active work unit: R2.1 — Agent Harness Authority 与 Worker/Host 生产调用链
+Outcome: 从公开 Run 提交到 Authority、dispatch、隔离 Worker、Host model/tool port、权威事件账本和桌面投影形成一条可追踪生产链；不存在旁路写入。
+Evidence: `docs/refactor/agent-harness-construction-direction.md` 4.4、`ts/src/server/api/product.ts`、`ts/src/server/product/`、`ts/src/server/agent-worker/`、`ts/src/entrypoints/agent-worker.ts` 与桌面公开协议。
+Constraints / Non-goals: 只回溯并裁决当前生产调用链；不在未证明缺口前迁移模型、工具、媒体、桌面壳或发布代码。
+Allowed scope: Agent Authority、Worker/Host 接线、公开 Agent 协议及 R2.1 调用链证据记录。
+Verification / Exit: 每个 Run 入口、恢复入口、Worker 消息入口、Host model/tool 调用和公开投影都有唯一所有者；发现的缺口只登记为 R2 内部后续单元；下一游标唯一指向 R2/A0.2。
+Next cursor: R2/A0.2 — Agent 状态所有权地图。
 ```
 - **Interrupt rule**：只有发现会造成错误结果、数据丢失、重复副作用、权限越界或无法恢复的事实才可中断；其余发现进入对应后续模块。
 

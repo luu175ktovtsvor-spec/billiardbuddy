@@ -61,8 +61,7 @@
         "from": "build",
         "to": ".",
         "filter": [
-          "product-config.json",
-          "product-secrets.json"
+          "product-config.json"
         ]
       }
     ],

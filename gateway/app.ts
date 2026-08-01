@@ -2,7 +2,7 @@ import { Database } from 'bun:sqlite'
 import { createHash, createHmac } from 'node:crypto'
 import { dirname } from 'node:path'
 import { mkdirSync } from 'node:fs'
-import { AuthAuthority, AuthError, FileAuthorityStore, parseLicenseProvisioning, type LicenseProvisioning } from './auth/authority'
+import { AuthAuthority, AuthError } from './installationAuth'
 import {
   createGatewayTranscriber,
   GatewayTranscriptionError,
@@ -124,7 +124,7 @@ type GatewayConfig = {
   relayResultMaxBytes: number
   adminToken: string
   db: string
-  bootstrapCredentials: Set<string>
+  bootstrapRpm: number
   mimoKey: string
   mimoBase: string
   mimoRpm: number
@@ -598,25 +598,6 @@ function httpsUrlOrEmpty(value: string | undefined): string {
   }
 }
 
-function bootstrapCredentials(env: Env): Set<string> {
-  const current = env.GW_APP_CREDENTIALS?.trim()
-  if (current) return new Set(current.split(',').map(value => value.trim()).filter(Boolean))
-  const legacy = env.GW_APP_TOKENS?.trim() ?? ''
-  if (!legacy) return new Set()
-  // Old deployments stored token->owner JSON. Owner text no longer grants model
-  // access: retain only JSON keys as activation bootstrap credentials during migration.
-  if (legacy.startsWith('{')) {
-    try {
-      const parsed: unknown = JSON.parse(legacy)
-      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed) || !Object.values(parsed).every(value => typeof value === 'string')) throw new Error('invalid')
-      return new Set(Object.keys(parsed).map(value => value.trim()).filter(Boolean))
-    } catch {
-      throw new Error('GW_APP_TOKENS JSON must be an object of bootstrap credentials; migrate to GW_APP_CREDENTIALS')
-    }
-  }
-  return new Set(legacy.split(',').map(value => value.trim()).filter(Boolean))
-}
-
 function loadConfig(env: Env): GatewayConfig {
   const textModel = textReasoningRegistryEntry()
   const mimoConc = Math.max(1, intEnv(env, 'GW_MIMO_CONC', 64))
@@ -645,7 +626,7 @@ function loadConfig(env: Env): GatewayConfig {
     relayResultMaxBytes: Math.max(1, intEnv(env, 'GW_RELAY_RESULT_MAX_BYTES', 96 * 1024 * 1024)),
     adminToken: env.GW_ADMIN_TOKEN ?? 'change-me',
     db: env.GW_DB ?? '/opt/billiardbuddy-gateway/usage.db',
-    bootstrapCredentials: bootstrapCredentials(env),
+    bootstrapRpm: Math.max(1, intEnv(env, 'GW_BOOTSTRAP_RPM', 30)),
     mimoKey: env.GW_MIMO_KEY ?? '',
     mimoBase: (env.GW_MIMO_BASE ?? 'https://api.xiaomimimo.com/v1').replace(/\/+$/, ''),
     mimoRpm: intEnv(env, 'GW_MIMO_RPM', 100_000),
@@ -803,11 +784,6 @@ function auth(authority: AuthAuthority, request: Request): VerifiedInstallation 
 
 function hasInstallationAccess(authority: AuthAuthority, request: Request): boolean {
   try { auth(authority, request); return true } catch { return false }
-}
-
-function bootstrapCredential(config: GatewayConfig, request: Request): boolean {
-  const token = bearer(request)
-  return !!token && config.bootstrapCredentials.has(token)
 }
 
 /** 传给美国 relay 的受信任务归属身份只来自已验证 owner。 */
@@ -1290,6 +1266,7 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
   const imgBucket = new TokenBucket(config.imgIpm, config.imgQueueMax)
   const ingressBodyBudget = new InflightByteBudget(config.ingressInflightBodyBytes, '请求较多，请稍后重试')
   const transcribeBucket = new TokenBucket(config.transcribeRpm, config.transcribeQueueMax)
+  const bootstrapBucket = new TokenBucket(config.bootstrapRpm, 0)
   const transcribeCapacity = new FairCapacityScheduler(
     config.transcribeConc,
     1,
@@ -1583,7 +1560,7 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
         })
       }
 
-      if (request.method === 'POST' && (url.pathname === '/v1/auth/activate' || url.pathname === '/v1/auth/refresh' || url.pathname === '/v1/auth/logout')) {
+      if (request.method === 'POST' && (url.pathname === '/v1/auth/bootstrap' || url.pathname === '/v1/auth/refresh' || url.pathname === '/v1/auth/logout')) {
         const contentType = request.headers.get('content-type')
         if (!contentType || !isJsonContentType(contentType)) throw new HttpError(415, 'auth_content_type_required')
         const rawBody = await readRequestBodyBounded(request, 4096, undefined, 5_000)
@@ -1593,12 +1570,10 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
           if (!isRecord(parsed)) throw new Error('not object')
           body = parsed
         } catch { throw new HttpError(400, 'invalid_auth_body') }
-        if (url.pathname === '/v1/auth/activate') {
-          if (!bootstrapCredential(config, request)) throw new HttpError(401, 'invalid_bootstrap_credential')
-          const licenseKey = typeof body.license_key === 'string' ? body.license_key : ''
+        if (url.pathname === '/v1/auth/bootstrap') {
+          await bootstrapBucket.acquire(0, request.signal)
           const installationId = typeof body.installation_id === 'string' ? body.installation_id : ''
-          const replaceInstallationId = typeof body.replace_installation_id === 'string' ? body.replace_installation_id : undefined
-          try { return jsonResponse(authTokensResponse(authority.activate({ licenseKey, installationId, replaceInstallationId }))) }
+          try { return jsonResponse(authTokensResponse(authority.bootstrap(installationId))) }
           catch (error) { if (error instanceof AuthError) throw new HttpError(error.status, error.code); throw error }
         }
         if (url.pathname === '/v1/auth/refresh') {
@@ -2074,9 +2049,8 @@ function authTokensResponse(tokens: { accessToken: string; refreshToken: string;
 
 function createAuthorityFromEnv(env: Env): AuthAuthority {
   const signingKey = env.GW_AUTH_SIGNING_KEY
-  const authorityFile = env.GW_AUTHORITY_FILE
-  if (!signingKey || !authorityFile) throw new Error('Gateway authorization requires GW_AUTH_SIGNING_KEY and GW_AUTHORITY_FILE')
-  return new AuthAuthority({ store: new FileAuthorityStore(authorityFile), signingKey, licenses: parseLicenseProvisioning(env.GW_LICENSE_PROVISIONING) })
+  if (!signingKey) throw new Error('Gateway installation sessions require GW_AUTH_SIGNING_KEY')
+  return new AuthAuthority({ dbPath: env.GW_DB ?? '/opt/billiardbuddy-gateway/usage.db', signingKey })
 }
 
 function elapsedMs(started: number): number {
