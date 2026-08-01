@@ -3325,9 +3325,19 @@ export class ProductTaskService {
       const parent = state.task_runs[input.parent_run_id] as Record<string, unknown> | undefined
       const parentDispatch = state.dispatch_records[input.parent_run_id] as DurableTaskRunDispatch | undefined
       const parentBinding = parent?.core_binding as Record<string, unknown> | undefined
+      const parentLineage = typeof parent?.lineage_id === 'string'
+        ? state.conversation_lineages[parent.lineage_id] as Record<string, unknown> | undefined
+        : undefined
+      const forkCheckpoint = typeof parent?.entry_id === 'string'
+        ? Object.values(state.task_events)
+          .map(value => value as TaskEvent)
+          .find((event): event is Extract<TaskEvent, { type: 'user_text' }> => event.type === 'user_text' && event.run_id === input.parent_run_id && event.entry_id === parent.entry_id)
+        : undefined
       if (
         !parent
         || typeof parent.task_id !== 'string'
+        || typeof parent.lineage_id !== 'string'
+        || typeof parent.entry_id !== 'string'
         || typeof parent.parent_run_id === 'string'
         || !parentDispatch
         || parentDispatch.dispatch_generation !== input.parent_dispatch_generation
@@ -3339,6 +3349,9 @@ export class ProductTaskService {
         || !parentBinding
         || typeof parentBinding.work_dir !== 'string'
         || !path.isAbsolute(parentBinding.work_dir)
+        || !parentLineage
+        || parentLineage.product_task_id !== parent.task_id
+        || !forkCheckpoint
       ) throw new Error('SUBTASK_PARENT_UNAVAILABLE')
 
       const existing = Object.values(state.task_runs)
@@ -3371,6 +3384,8 @@ export class ProductTaskService {
       state.conversation_lineages[lineageId] = {
         lineage_id: lineageId,
         product_task_id: taskId,
+        parent_lineage_id: parent.lineage_id,
+        fork_checkpoint_id: parent.entry_id,
         revision: 0,
         compact_generation: 0,
         resume_binding_id: `resume_${randomUUID()}`,

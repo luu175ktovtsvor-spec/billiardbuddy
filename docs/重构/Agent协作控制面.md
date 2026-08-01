@@ -20,6 +20,12 @@ BilliardBuddy 的嵌入引擎开启 `host_managed_tools_only=true`。这是正�
 
 应学习上游的任务树、上下文 fork、邮箱、并发限制和可中断语义；应由 BilliardBuddy 的 Local Product Server 实现它们的产品等价物。
 
+## Rust 边界
+
+不把整个 BilliardBuddy 改写成 Rust。当前已直接复用的 Codex App Server/Core/执行隔离源码本来就是 Rust；它适合承载单一 Run 的协议、Agent Loop 与受限执行。Electron Main、Renderer、Gateway 双协议适配、图片/视频工作台以及本地 Product Server 的账本与产品 API，仍在 TypeScript 中拥有正式调用方和数据边界。
+
+此时重写 Product Server 只会制造第二条执行链，不能让 Codex 的 Rust 源码更“原生”。只有当 Product Server 被拆成独立常驻进程，并以实测证据出现跨进程账本吞吐、资源隔离或多实例调度瓶颈时，才评估把**该独立服务**迁为 Rust；迁移前必须保留同一 Run 账本、权限、operation receipt 与公开事件契约，不能把产品真相交还给 Codex 私有 Thread。
+
 ## 正式边界
 
 ```text
@@ -48,10 +54,18 @@ child 的启动和终态会写入**父 Run**的公开活动流，作为父工具
 
 当前 child 禁止再递归创建 child，并且每个父 Run 最多 16 个 child。这是第一段的明确容量策略，不把尚未有预算、邮箱和恢复规则的无限递归伪装成可用能力。
 
+## 已落地的第二段：账本 fork 到新建 Codex Thread
+
+Codex Thread 只是一次 Run 的私有执行缓存，不能作为上下文真相。每个 Run 在创建时绑定一个不可变的产品事件游标；当它启动的是**新** Codex Thread（child、未来分支，或源缓存丢失后的重建）时，Worker 将该游标对应的账本历史作为首回合的转义引用送入内核。恢复已有 Codex Thread 时不重复注入，避免把同一对话复制两遍。
+
+child Lineage 现在正式记录父 Lineage 与父用户 Entry 的 fork 锚点。渲染历史时，父链只读取到 child 创建那一刻的事件游标，父任务之后产生的文字不会倒灌进 child。历史引用会占用首回合的同一输入配额，过长时保留摘要/前段和最近内容；如果当前请求本身已用尽配额，则优先保留当前请求而不伪造不完整的历史。
+
+账本内容在进入源内核前会转义，并由基础指令明确标为非特权历史：历史里出现的命令、权限或角色要求不能改变当前工具与权限边界。私有 Thread ID、工具参数、模型回合和 Gateway 凭据仍不在这条路径上。
+
 ## 后续顺序
 
 1. **任务树（本段）**：child Run 的启动/完成/失败投影、可重连显示和父子停止语义；
-2. **上下文 fork**：`none`、压缩后的摘要、最近 N 个产品 Agent Item。快照来自 BilliardBuddy 账本，不复制私有引擎 rollout；
+2. **fork 模式**：在当前安全全量账本 fork 之上，增加显式的 `none`、压缩摘要和最近 N 个产品 Item 选择；快照仍只来自 BilliardBuddy 账本，不复制私有引擎 rollout；
 3. **协作邮箱与定向控制**：产品拥有的 `send message`、`follow-up`、`list`、`wait`、`interrupt`，每条消息有序号、投递回执与目标 Run；
 4. **并发、深度与用量预算**：以任务树为作用域，在产品资源调度和受管模型额度之上增加明确上限；角色和子模型选择仍由 BilliardBuddy 的模型路由决定，不能让 child 绕开平台额度或个人 Key 规则；
 5. **用户验收**：主任务委派、子任务中断、崩溃/重连、未知外部结果、用户追问和并发额度都走同一账本路径。
