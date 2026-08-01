@@ -405,9 +405,6 @@ export function parseProductTaskEvent(value: unknown): ProductTaskEvent | null {
   if (!isRecord(value) || typeof value.type !== 'string') return null
 
   switch (value.type) {
-    case 'connected':
-      return hasOnlyKeys(value, ['type']) ? { type: 'connected' } : null
-
     case 'user_text': {
       if (
         !hasOnlyKeys(value, ['type', 'id', 'text', 'replayed', 'event_sequence', 'attachments', 'referenceEntryIds']) ||

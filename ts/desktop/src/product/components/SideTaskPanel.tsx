@@ -226,7 +226,7 @@ export function SideTaskPanel({ parentTask }: SideTaskPanelProps) {
             </p>
             <div className="flex shrink-0 gap-2">
               {runtime?.runState === 'working' || runtime?.runState === 'awaiting_approval' ? (
-                <button type="button" onClick={() => stopTask(selectedTaskId)} className="rounded-lg border border-[var(--color-border)] px-2.5 py-1.5 text-xs text-[var(--color-text-secondary)]">停止</button>
+                <button type="button" disabled={runtime.stopRequested} onClick={() => void stopTask(selectedTaskId)} className="rounded-lg border border-[var(--color-border)] px-2.5 py-1.5 text-xs text-[var(--color-text-secondary)] disabled:opacity-50">停止</button>
               ) : null}
               <button
                 type="button"

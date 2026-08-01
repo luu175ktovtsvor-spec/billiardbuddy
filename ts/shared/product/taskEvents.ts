@@ -209,7 +209,6 @@ export type ProductTaskContextCompaction = {
 }
 
 export type ProductTaskEvent =
-  | { type: 'connected' }
   | {
       type: 'user_text'
       text: string

@@ -79,6 +79,7 @@ export async function handleProductApi(
     | 'transitionAttachment'
     | 'bindAttachment'
     | 'submitTaskRun'
+    | 'stopActiveTaskRun'
     | 'recoverTaskRun'
     | 'createAndSubmitTask'
     | 'listTaskEvents'
@@ -278,6 +279,13 @@ export async function handleProductApi(
         return Response.json({ receipt }, { status: submitReceiptStatus(receipt) })
       }
       return methodNotAllowed(req.method)
+    }
+
+    if (action === 'stop' && !segments[5]) {
+      if (req.method !== 'POST') return methodNotAllowed(req.method)
+      const input = await readJson<Record<string, unknown>>(req)
+      if (!exactKeys(input, [])) throw ApiError.badRequest('停止任务不接受额外参数')
+      return Response.json({ stopped: await tasks.stopActiveTaskRun(taskId) })
     }
 
     if (action === 'runs' && !segments[5]) {
