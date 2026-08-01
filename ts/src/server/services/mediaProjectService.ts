@@ -1976,13 +1976,7 @@ export class MediaProjectService {
         && result.success
         && result.data.outputs.length > 0
       ) {
-        const assetsExist = await Promise.all(result.data.outputs.map(async output => {
-          if (!output.asset_path) return false
-          const fileName = output.asset_path.split('/').pop() ?? ''
-          if (!/^[a-z0-9][a-z0-9_.-]{2,120}$/.test(fileName)) return false
-          return await stat(join(this.assetsDir, project.id, fileName)).then(info => info.isFile()).catch(() => false)
-        }))
-        if (assetsExist.every(Boolean)) {
+        if (await this.recoveredImageOutputsAreValid(project, result.data.outputs)) {
           const operationKind = task.image_operation?.kind ?? 'generate'
           await this.saveProject({
             ...project,
@@ -2010,6 +2004,9 @@ export class MediaProjectService {
         return await this.failImageTask(task, 'MEDIA_IMAGE_OUTCOME_UNKNOWN', true, task.provider_receipt_hash)
       }
       if (task.status === 'succeeded' && project.state !== 'ready' && result.success && result.data.outputs.length > 0) {
+        if (!await this.recoveredImageOutputsAreValid(project, result.data.outputs)) {
+          return await this.failImageTask(task, 'MEDIA_IMAGE_OUTCOME_UNKNOWN', true, task.provider_receipt_hash)
+        }
         const completedOutputs = result.data.outputs
         const operationKind = task.image_operation?.kind ?? 'generate'
         await this.saveProject({
@@ -2381,6 +2378,33 @@ export class MediaProjectService {
       throw new MediaServiceError('图片版本尺寸无法验证', 409, 'IMAGE_DIMENSIONS_INVALID')
     }
     return { ...record, bytes, mimeType, dimensions, sourcePath }
+  }
+
+  /** Validate candidate bytes before a crashed task can attach them to a project. */
+  private async recoveredImageOutputsAreValid(
+    project: ImageWorkbenchProject,
+    outputs: Array<{
+      asset_path?: string
+      mime_type: 'image/png' | 'image/jpeg' | 'image/webp'
+      width?: number
+      height?: number
+    }>,
+  ): Promise<boolean> {
+    const prefix = `/api/media/assets/${project.id}/`
+    const candidates = await Promise.all(outputs.map(async output => {
+      if (!output.asset_path?.startsWith(prefix)) return false
+      const fileName = output.asset_path.slice(prefix.length)
+      if (!/^[a-z0-9][a-z0-9_.-]{2,120}$/.test(fileName)) return false
+      const bytes = await readFile(join(this.assetsDir, project.id, fileName)).catch(() => null)
+      if (!bytes?.length || detectedImageMime(bytes) !== output.mime_type) return false
+      const dimensions = imageDimensions(bytes, output.mime_type)
+      return Boolean(
+        dimensions
+        && (output.width === undefined || dimensions.width === output.width)
+        && (output.height === undefined || dimensions.height === output.height),
+      )
+    }))
+    return candidates.every(Boolean)
   }
 
   async selectImageVersion(projectId: string, raw: SelectImageVersionInput): Promise<ImageWorkbenchProject> {
