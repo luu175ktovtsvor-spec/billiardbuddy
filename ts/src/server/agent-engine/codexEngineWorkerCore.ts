@@ -23,6 +23,7 @@ import { CodexEngineThreadStore } from './codexEngineThreadStore.js'
 import type { CodexAppServerNotification, CodexAppServerRequest, JsonValue } from './codexAppServerClient.js'
 import type { CodexResponsesModelRequest } from './codexResponsesModelBridge.js'
 import type { TaskRunExternalOperationKind } from '../product/taskRunLedgerModel.js'
+import { productRunToolActivityItemId } from '../product/taskRunLedgerModel.js'
 import type { ProductTaskPlan } from '../../../shared/product/taskEvents.js'
 import type { ProductToolContext, ProductToolPermissionContext } from '../agent-worker/productTool.js'
 import type { CodexEngineRunInstructionSnapshot } from './codexEngineSession.js'
@@ -910,7 +911,7 @@ export class CodexEngineWorkerCore implements AgentWorkerCore {
       ) throw new Error('CODEX_ENGINE_DYNAMIC_TOOL_INVALID')
       const lifecycleHooks = this.lifecycleHooks
       if (!lifecycleHooks) throw new Error('CODEX_ENGINE_HOOK_RUNTIME_UNAVAILABLE')
-      const activityId = `activity_${createHash('sha256').update(`${this.options.run_id}:${callId}`).digest('hex').slice(0, 32)}`
+      const activityId = productRunToolActivityItemId(this.options.run_id, callId)
       const activityKind = productTaskActivityKindForTool(toolName)
       const planRelated = toolName.trim().toLowerCase() === 'todowrite'
       const preHook = await lifecycleHooks.preTool({

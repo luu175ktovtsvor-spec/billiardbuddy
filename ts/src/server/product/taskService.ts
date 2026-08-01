@@ -83,6 +83,7 @@ import {
   durableApprovalItemId,
   durableAssistantItemId,
   durableContextCompactionItemId,
+  durableSubtaskActivityItemId,
   durableTerminalItemId,
   durableUserItemId,
   hasBlockingTaskWork,
@@ -93,6 +94,7 @@ import {
   nextTaskRunId,
   orderedQueuedInputs,
   orderedTaskRunIds,
+  productRunToolActivityItemId,
   outcomeUnknownTaskRunId,
   publicQueuedInput,
   publicQueuedInputs,
@@ -341,6 +343,85 @@ function durableOutcomeUnknownEvent(
     outcome: publicOutcomeUnknown(runId, generation, operation),
     event_sequence: state.event_sequence,
   }
+}
+
+/**
+ * A delegated child has its own private Run, but its lifecycle is a public
+ * fact of the parent's work. Keep that one safe projection in the parent
+ * stream so the renderer can show a real task tree without receiving child
+ * prompts, model text, tools or its private Codex Thread.
+ */
+function subtaskLifecycleActivity(
+  parentRunId: string,
+  parentToolCallId: string,
+  phase: 'started' | 'completed' | 'failed',
+): Extract<ProductTaskEvent, { type: 'activity' }> {
+  return {
+    type: 'activity',
+    id: durableSubtaskActivityItemId(parentRunId, parentToolCallId),
+    parentId: productRunToolActivityItemId(parentRunId, parentToolCallId),
+    kind: 'subtask',
+    phase,
+    summary: productTaskActivitySummary('subtask', phase),
+  }
+}
+
+function recordSubtaskLifecycleActivity(
+  state: AuthorityFile,
+  input: {
+    child: { task_id?: unknown; parent_run_id?: unknown; parent_tool_call_id?: unknown }
+    phase: 'started' | 'completed' | 'failed'
+    now: string
+  },
+): Extract<ProductTaskEvent, { type: 'activity' }> | undefined {
+  const parentRunId = input.child.parent_run_id
+  const parentToolCallId = input.child.parent_tool_call_id
+  if (typeof input.child.task_id !== 'string' || typeof parentRunId !== 'string' || typeof parentToolCallId !== 'string') return undefined
+  const parent = state.task_runs[parentRunId] as { task_id?: unknown; event_contract?: unknown } | undefined
+  const parentDispatch = state.dispatch_records[parentRunId] as { dispatch_generation?: unknown; state?: unknown } | undefined
+  const parentGeneration = parentDispatch?.dispatch_generation
+  if (
+    !parent
+    || parent.task_id !== input.child.task_id
+    || !Number.isSafeInteger(parentGeneration)
+    || (input.phase === 'started' && !['claimed', 'started'].includes(parentDispatch?.state as string))
+  ) return undefined
+
+  const activity = subtaskLifecycleActivity(parentRunId, parentToolCallId, input.phase)
+  const existing = Object.values(state.task_events)
+    .map(value => value as TaskEvent)
+    .find((event): event is Extract<TaskEvent, { type: 'activity' }> => (
+      event.type === 'activity'
+      && event.run_id === parentRunId
+      && event.dispatch_generation === parentGeneration
+      && event.item_id === activity.id
+      && event.phase === input.phase
+    ))
+  if (existing) {
+    if (
+      existing.kind !== activity.kind
+      || existing.parent_item_id !== activity.parentId
+      || existing.summary !== activity.summary
+    ) throw new Error('AUTHORITY_INVALID')
+    return activity
+  }
+
+  parent.event_contract = 'durable_items_v1'
+  state.event_sequence += 1
+  state.task_events[String(state.event_sequence)] = {
+    event_sequence: state.event_sequence,
+    task_id: input.child.task_id,
+    run_id: parentRunId,
+    type: 'activity',
+    dispatch_generation: parentGeneration,
+    item_id: activity.id,
+    parent_item_id: activity.parentId,
+    kind: activity.kind,
+    phase: activity.phase,
+    summary: activity.summary,
+    created_at: input.now,
+  }
+  return activity
 }
 
 /**
@@ -2137,6 +2218,41 @@ export class ProductTaskService {
     return { task_id: result.task_id, event: { ...activity } }
   }
 
+  /**
+   * The child Worker has actually started.  Write the parent-owned
+   * collaboration row before streaming it, so reconnects show the same task
+   * tree and a stop race cannot manufacture a child that never ran.
+   */
+  async recordTaskRunSubtaskStarted(
+    runId: string,
+    dispatchGeneration: number,
+    executionClaimToken: string,
+  ): Promise<{ task_id: string; event?: Extract<ProductTaskEvent, { type: 'activity' }> }> {
+    if (!/^run_[a-f0-9-]{36}$/.test(runId) || !Number.isSafeInteger(dispatchGeneration) || dispatchGeneration < 1 || !isExecutionClaimToken(executionClaimToken)) throw new Error('AUTHORITY_INVALID')
+    const authority = new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps)
+    const { result } = await authority.transactSubmit((state) => {
+      const child = state.task_runs[runId] as { task_id?: unknown; parent_run_id?: unknown; parent_tool_call_id?: unknown } | undefined
+      const dispatch = state.dispatch_records[runId] as { dispatch_generation?: unknown; state?: unknown; execution_claim?: unknown } | undefined
+      if (
+        !child
+        || typeof child.task_id !== 'string'
+        || typeof child.parent_run_id !== 'string'
+        || typeof child.parent_tool_call_id !== 'string'
+        || !dispatch
+        || dispatch.dispatch_generation !== dispatchGeneration
+        || !['claimed', 'started'].includes(dispatch.state as string)
+        || !executionClaimAllowsWorkerMutation(dispatch, executionClaimToken)
+      ) throw new Error('AUTHORITY_INVALID')
+      const event = recordSubtaskLifecycleActivity(state, {
+        child,
+        phase: 'started',
+        now: this.now().toISOString(),
+      })
+      return { task_id: child.task_id, ...(event ? { event } : {}) }
+    })
+    return result
+  }
+
   /** Persist the accepted TodoWrite projection before it can reach a renderer. */
   async recordTaskRunPlan(
     runId: string,
@@ -2265,11 +2381,15 @@ export class ProductTaskService {
     assistantText: string,
     failure?: ProductTaskRunFailure,
     executionClaimToken?: string,
-  ): Promise<{ task_id: string; queue_events: ProductTaskEvent[] }> {
+  ): Promise<{
+    task_id: string
+    queue_events: ProductTaskEvent[]
+    subtask_event?: Extract<ProductTaskEvent, { type: 'activity' }>
+  }> {
     if (!runId || !Number.isSafeInteger(dispatchGeneration) || dispatchGeneration < 1 || !['completed', 'stopped', 'recovery_required'].includes(terminalState) || assistantText.length > MAX_DURABLE_ASSISTANT_TEXT_LENGTH || (failure !== undefined && (!isProductTaskRunFailureCode(failure.code) || failure.retryable !== productTaskRunFailure(failure.code).retryable)) || (terminalState !== 'recovery_required' && failure !== undefined) || !isExecutionClaimToken(executionClaimToken)) throw new Error('AUTHORITY_INVALID')
     const authority = new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps)
     const { result } = await authority.transactSubmit((state) => {
-      const run = state.task_runs[runId] as { task_id?: unknown; event_contract?: unknown; parent_run_id?: unknown; subtask_result?: unknown } | undefined
+      const run = state.task_runs[runId] as { task_id?: unknown; event_contract?: unknown; parent_run_id?: unknown; parent_tool_call_id?: unknown; subtask_result?: unknown } | undefined
       const dispatch = state.dispatch_records[runId] as { dispatch_generation?: unknown; state?: unknown; completed_at?: unknown; error?: unknown; execution_claim?: unknown; external_operations?: unknown } | undefined
       if (!run || typeof run.task_id !== 'string' || !dispatch || dispatch.dispatch_generation !== dispatchGeneration) throw new Error('AUTHORITY_INVALID')
       const events = Object.values(state.task_events).map(value => value as TaskEvent)
@@ -2339,8 +2459,14 @@ export class ProductTaskService {
       dispatch.state = terminalState === 'recovery_required' ? 'recovery_required' : 'terminal'
       dispatch.completed_at = now
       dispatch.error = terminalState === 'completed' ? 'TERMINAL' : terminalState === 'stopped' ? 'STOPPED' : failure?.code ?? 'task_failed'
+      let subtaskEvent: Extract<ProductTaskEvent, { type: 'activity' }> | undefined
       if (typeof run.parent_run_id === 'string') {
         run.subtask_result = { state: terminalState, text: assistantText, completed_at: now }
+        subtaskEvent = recordSubtaskLifecycleActivity(state, {
+          child: run,
+          phase: terminalState === 'completed' ? 'completed' : 'failed',
+          now,
+        })
       }
       delete (dispatch as { execution_claim?: unknown }).execution_claim
       delete (dispatch as { recovery_fence?: unknown }).recovery_fence
@@ -2353,7 +2479,7 @@ export class ProductTaskService {
           task.updatedAt = now
         }
       }
-      return { task_id: run.task_id, queue_events: queueEvents }
+      return { task_id: run.task_id, queue_events: queueEvents, ...(subtaskEvent ? { subtask_event: subtaskEvent } : {}) }
     })
     return result
   }

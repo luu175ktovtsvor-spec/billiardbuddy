@@ -159,6 +159,20 @@ export function durableApprovalItemId(runId: string, dispatchGeneration: number,
   return `approval_${createHash('sha256').update(`${runId}:${dispatchGeneration}:${requestId}`).digest('hex').slice(0, 32)}`
 }
 
+/**
+ * The same stable activity identity is used by the Engine Tool bridge and the
+ * product collaboration projection.  A child activity can therefore nest
+ * under the exact parent tool call without exposing that call's arguments.
+ */
+export function productRunToolActivityItemId(runId: string, toolCallId: string): string {
+  return `activity_${createHash('sha256').update(`${runId}:${toolCallId}`).digest('hex').slice(0, 32)}`
+}
+
+/** One product-owned child-Run lifecycle row beneath its delegating tool. */
+export function durableSubtaskActivityItemId(parentRunId: string, parentToolCallId: string): string {
+  return `activity_${createHash('sha256').update(`${parentRunId}:${parentToolCallId}:subtask`).digest('hex').slice(0, 32)}`
+}
+
 export function legacyAuthorityId(prefix: 'lineage' | 'run' | 'entry', taskId: string): string {
   return `${prefix}_${createHash('sha256').update(`legacy-authority:${taskId}:${prefix}`).digest('hex').slice(0, 32)}`
 }
