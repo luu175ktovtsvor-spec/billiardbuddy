@@ -1,30 +1,20 @@
 # BilliardBuddy
 
-BilliardBuddy 是面向球房经营者的单一 Electron 桌面 Agent。产品由聊天 Agent、生图工作台和视频工作台三个并列板块组成；它们共享一个桌面壳、身份与资源控制面，但各自保持正确的执行链和领域真相。
+BilliardBuddy 是面向球房经营者的 Electron 桌面 Agent。产品由通用 Agent、生图工作台和视频工作台三个独立工作面组成；它们共享受控桌面运行时，但各自保持自己的领域状态和执行链。
 
 产品方向、不可变边界和完成标准以 [BilliardBuddy 产品重构合同](./BilliardBuddy-重构合同.md) 为准。
 
-## 产品结构
+## 重构模块
 
-| 板块 | 用户结果 | 权威状态 | 正式执行链 |
-|---|---|---|---|
-| 聊天 Agent | 连续对话、工具执行、Skills、Plugins、MCP、子任务、权限、恢复和定时执行 | `ProductTask`、`TaskRun`、durable event | DeepSeek `TextReasoning` ↔ Product Agent Harness ↔ Tool/MCP/Skill；聊天图片先经 MiMo `VisualEvidence` |
-| 生图工作台 | 参考图、画布、三候选、版本、编辑、比较和导出 | `MediaProject`、Operation/Job、Asset、Version | MiMo `MediaReasoning` → Gateway/Relay → GPT Image 2 或 Seedream |
-| 视频工作台 | 素材、证据、转写、场景、时间线、预览、渲染和导出 | `MediaProject`、Evidence、Timeline Version、持久 Job | 本机 FFmpeg/ffprobe + Fun-ASR + MiMo `MediaReasoning` |
+重构总纲是 [BilliardBuddy 产品重构合同](./BilliardBuddy-重构合同.md)。每个建设文档只对应一个可独立验收的大模块：
 
-Renderer 只保存视图投影；Electron Main 负责受限 IPC、窗口、安全存储和 sidecar 生命周期；本机 Product Server 是 ProductTask、MediaProject、计划任务和资源调度的唯一写入权威。远端 Gateway 只承担安装身份、模型能力、用量与容量控制，Relay 只承担图片 provider 的持久异步任务和结果 blob，不保存第二份业务项目。
+- [共享运行时与桌面壳](./docs/重构/共享运行时与桌面壳.md)
+- [通用 Agent 工作台](./docs/重构/通用Agent工作台.md)
+- [生图工作台](./docs/重构/生图工作台.md)
+- [视频工作台](./docs/重构/视频工作台.md)
+- [迁移与发行](./docs/重构/迁移与发行.md)
 
-## Agent Harness
-
-正式聊天路径位于本地 `agent-worker` 内，不经过公共 CLI。每个 Turn 由唯一的模型—工具循环推进，工具调用先经过 Host 的工作区、权限和资源校验，再把真实回执写入 durable event。桌面重开后从事件 cursor 恢复；取消、工具授权、compact、resume、MCP OAuth、Skills、Hooks、Plugins 和子任务都属于这条 Harness，而不是 renderer 临时状态。
-
-用户权限只有三档：
-
-- Ask for approval：工作区沙箱 + 按需询问。
-- Approve for me：工作区沙箱 + 本机自动策略。
-- Full access：完整本机权限，不做常规工具询问。
-
-本机终端是独立 PTY，不是 Agent Bash 回放，也不会继承产品管理的 Gateway 凭据。
+默认模型由 BilliardBuddy 服务控制能力和额度；用户明确选择的个人 API Key 只在本机直连上游。Agent 同时支持 Chat Completions 和 Responses 协议。
 
 ## 项目指令
 
@@ -42,14 +32,14 @@ Renderer 只保存视图投影；Electron Main 负责受限 IPC、窗口、安�
 
 | 路径 | 职责 |
 |---|---|
-| `ts/src/server` | 本地 Product Server、ProductTask、Agent Host、媒体、语音、计划任务和资源调度 |
-| `ts/src/server/agent-worker` | 正式 Product Agent Harness、Tool、Skill、Hook、Plugin、MCP 和子任务运行时 |
+| `ts/src/server` | 本地 Product Server、领域服务、计划任务和资源调度 |
+| `ts/src/server/agent-worker` | 正式 Agent Harness、Tool、Skill、Hook、Plugin、MCP 和子任务运行时 |
 | `ts/shared` | 桌面、本地服务和 Gateway 共用的产品契约 |
 | `ts/desktop` | React renderer、Electron Main、preload、sidecar 与发行脚本 |
 | `gateway` | 五条 provider 能力泳道、安装身份、用量、容量和 Relay 代理 |
 | `relay` | GPT Image 2 / Seedream 持久任务、幂等、结果 blob 与 ack |
 | `ts/fixtures/migrations` | 当前支持升级范围内的旧数据样本；只用于证明 reader 与迁移连续性 |
-| `docs/refactor` | 外部参考源码到本项目改动的证据链 |
+| `docs/重构` | 按用户结果划分的中文大模块建设文档 |
 
 生产服务器的真实进程、端口、路由、环境变量名称和验证结果见 [生产服务器运行文档](./docs/operations/production-servers.md)。
 
@@ -74,18 +64,6 @@ bun run check:server
 bun run check:desktop
 bun run check:electron
 ```
-
-## Provider 与容量边界
-
-Provider registry 是 model ID、能力、上下文和 body budget 的唯一来源。客户端不能选择供应商或覆盖模型：
-
-- `TextReasoning`：DeepSeek `deepseek-v4-flash`
-- `VisualEvidence`：MiMo `mimo-v2.5`，只用于聊天看图桥接
-- `MediaReasoning`：MiMo `mimo-v2.5`，只用于图片/视频工作台
-- `SpeechTranscription`：Fun-ASR
-- `ImageGeneration`：GPT Image 2 / Seedream，经 Relay 持久任务
-
-当前 MiMo 生产分区为 `GW_MIMO_CONC=64`、`GW_MIMO_MEDIA_CONC=48`、`GW_VISION_CONC=16`，三者必须满足 `48 + 16 = 64`。`gateway/validate-mimo-capacity-env.sh`、`gateway/validate-production-capacity-env.sh` 和 `relay/validate-production-env.sh` 会在重启服务前校验非敏感容量配置与持久存储条件；这些数字是准入上限，不是线上吞吐承诺。
 
 ## 发行
 
