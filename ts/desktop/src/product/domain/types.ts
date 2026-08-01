@@ -249,6 +249,8 @@ export type ProductSideTaskActionResponse =
 
 export type ProductTaskApi = {
   list: () => Promise<ProductTaskIndexResponse>
+  /** Stop is a durable Product command, not a best-effort socket message. */
+  stop: (taskId: string) => Promise<{ stopped: boolean }>
   update: (taskId: string, input: MutationEnvelope<UpdateProductTaskInput>) => Promise<ProductTaskActionResponse>
   bindWorkspace: (taskId: string, input: {
     workspace_id: string

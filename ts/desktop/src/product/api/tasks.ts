@@ -84,6 +84,7 @@ export type ProductTaskRunSubmitInput = {
 
 export const productTasksApi: ProductTaskApi = {
   list: () => productApi.get<ProductTaskIndexResponse>('/api/product/tasks'),
+  stop: (taskId: string) => productApi.post<{ stopped: boolean }>(`${taskPath(taskId)}/stop`, {}),
   update: (taskId: string, input: MutationEnvelope<UpdateProductTaskInput>) =>
     productApi.patch<ProductTaskActionResponse>(taskPath(taskId), input),
   bindWorkspace: (taskId, input) => productApi.post(`${taskPath(taskId)}/bind_workspace`, input),

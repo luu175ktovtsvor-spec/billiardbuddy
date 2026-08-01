@@ -19,7 +19,6 @@ type ProductTaskSocketAuthority = Pick<
   ProductTaskService,
   | 'respondToTaskApproval'
   | 'respondToTaskQuestion'
-  | 'stopActiveTaskRun'
   | 'listTaskEvents'
   | 'getTaskThread'
   | 'readPendingTaskApproval'
@@ -50,7 +49,6 @@ export function createProductTaskWebSocket(
     const sockets = activeProductSockets.get(taskId) ?? new Set<ServerWebSocket<ProductTaskWebSocketData>>()
     sockets.add(ws)
     activeProductSockets.set(taskId, sockets)
-    ws.send(JSON.stringify({ type: 'connected' }))
   },
 
   message(ws: ServerWebSocket<ProductTaskWebSocketData>, rawMessage: string | Buffer) {
@@ -112,10 +110,6 @@ async function handleProductMessage(
   }
   if (message.type === 'ask_user_question_response' && runtimeEvents.ownsApproval(taskId, message.requestId)) {
     if (await tasks.respondToTaskQuestion(taskId, message.requestId, message.answers)) return
-  }
-  if (message.type === 'stop_generation') {
-    await tasks.stopActiveTaskRun(taskId)
-    return
   }
   if (message.type === 'ping') return
   sendProtocolError(ws, 'task_unavailable')

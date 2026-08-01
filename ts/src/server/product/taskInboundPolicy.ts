@@ -10,7 +10,6 @@ import { projectAnswerableAskUserQuestions } from './taskEventProjection.js'
 export type ProductTaskInboundMessage =
   | { type: 'permission_response'; requestId: string; allowed: boolean }
   | { type: 'ask_user_question_response'; requestId: string; answers: string[] }
-  | { type: 'stop_generation' }
   | { type: 'ping' }
 
 const MAX_PRODUCT_REQUEST_ID_LENGTH = 200
@@ -125,7 +124,6 @@ export function parseProductTaskInboundMessage(value: unknown): ProductTaskInbou
         : null
     }
 
-    case 'stop_generation':
     case 'ping':
       return hasOnlyKeys(value, ['type']) ? { type: value.type } : null
 

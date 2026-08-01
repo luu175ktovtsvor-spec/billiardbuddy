@@ -1301,7 +1301,7 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
                   </div>
                   <div className="flex shrink-0 gap-2">
                     {hasActiveRun ? (
-                      <button type="button" disabled={!taskControlsConnected} onClick={() => stopTask(taskId)} className="rounded-lg border border-[var(--color-border)] px-3 py-2 text-sm text-[var(--color-text-secondary)] disabled:opacity-50">停止</button>
+                      <button type="button" disabled={!taskControlsConnected || runtime?.stopRequested} onClick={() => void stopTask(taskId)} className="rounded-lg border border-[var(--color-border)] px-3 py-2 text-sm text-[var(--color-text-secondary)] disabled:opacity-50">停止</button>
                     ) : null}
                     <button type="submit" disabled={isSubmitting} className="rounded-lg bg-[var(--color-primary)] px-3 py-2 text-sm font-medium text-white disabled:opacity-50">{isSubmitting ? '发送中…' : hasActiveRun ? '加入队列' : '发送'}</button>
                   </div>
@@ -1391,7 +1391,7 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
                     <p className="py-8 text-center text-sm text-[var(--color-text-tertiary)]">当前没有运行中的步骤。</p>
                   ) : null}
                   {hasActiveRun ? (
-                    <button type="button" disabled={!taskControlsConnected} onClick={() => stopTask(taskId)} className="mt-4 w-full rounded-lg border border-[var(--color-border)] px-3 py-2 text-sm text-[var(--color-text-secondary)] disabled:opacity-50">停止当前运行</button>
+                    <button type="button" disabled={!taskControlsConnected || runtime?.stopRequested} onClick={() => void stopTask(taskId)} className="mt-4 w-full rounded-lg border border-[var(--color-border)] px-3 py-2 text-sm text-[var(--color-text-secondary)] disabled:opacity-50">停止当前运行</button>
                   ) : null}
                 </div>
               </div>

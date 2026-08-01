@@ -12,7 +12,6 @@ export type ProductTaskClientMessage =
   | { type: 'resume'; cursor: number }
   | { type: 'permission_response'; requestId: string; allowed: boolean }
   | { type: 'ask_user_question_response'; requestId: string; answers: string[] }
-  | { type: 'stop_generation' }
   | { type: 'ping' }
 
 export type ProductTaskEventHandler = (event: ProductTaskEvent) => void
@@ -36,6 +35,7 @@ type Connection = {
   pingInterval: ReturnType<typeof setInterval> | null
   intentionalClose: boolean
   hasOpened: boolean
+  handshakeReconnected: boolean
   lifecycleEvent: ProductTaskSocketLifecycleEvent
   resumeCursor: number
   handoffReady: boolean
@@ -88,8 +88,8 @@ export class ProductTaskSocketManager {
 
   send(taskId: string, message: ProductTaskClientMessage): boolean {
     const connection = this.connections.get(taskId)
-    // Approval and stop controls describe the run visible on this exact live
-    // connection. Replaying one after a reconnect could target a later Turn.
+    // Approval answers describe the run visible on this exact live connection.
+    // Replaying one after a reconnect could target a later Turn.
     if (!connection || connection.intentionalClose || !connection.handoffReady || connection.ws.readyState !== WebSocket.OPEN) return false
     connection.ws.send(JSON.stringify(message))
     return true
@@ -106,6 +106,7 @@ export class ProductTaskSocketManager {
       pingInterval: null,
       intentionalClose: false,
       hasOpened: previous?.hasOpened ?? false,
+      handshakeReconnected: false,
       lifecycleEvent: previous?.hasOpened
         ? { type: 'reconnecting' }
         : { type: 'connecting' },
@@ -123,10 +124,15 @@ export class ProductTaskSocketManager {
       }
       const reconnected = connection.hasOpened
       connection.hasOpened = true
+      connection.handshakeReconnected = reconnected
       connection.handoffReady = false
       connection.reconnectAttempt = 0
       this.startPingLoop(taskId, connection)
-      this.publishLifecycle(connection, { type: 'connected', reconnected })
+      // A WebSocket transport is not yet safe for stop/approval commands at
+      // this point. The server must first replay durable history and confirm
+      // the exact cursor that this connection now owns; otherwise a click can
+      // be accepted by the UI but deliberately rejected by `send` below.
+      // Keep the public lifecycle in `connecting` until that handoff arrives.
       ws.send(JSON.stringify({ type: 'resume', cursor: connection.resumeCursor }))
     }
 
@@ -139,6 +145,10 @@ export class ProductTaskSocketManager {
         if (productEvent.type === 'resume_cursor') {
           connection.resumeCursor = Math.max(connection.resumeCursor, productEvent.cursor)
           connection.handoffReady = true
+          this.publishLifecycle(connection, {
+            type: 'connected',
+            reconnected: connection.handshakeReconnected,
+          })
         } else if ('event_sequence' in productEvent && productEvent.event_sequence !== undefined) {
           connection.resumeCursor = Math.max(connection.resumeCursor, productEvent.event_sequence)
         }

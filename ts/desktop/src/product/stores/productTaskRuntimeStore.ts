@@ -374,7 +374,7 @@ type ProductTaskRuntimeStore = {
   forgetTask: (taskId: string) => void
   sendText: (taskId: string, text: string, referenceEntryIds?: string[]) => Promise<boolean>
   sendMessage: (taskId: string, text: string, attachments?: ProductTaskAttachment[], referenceEntryIds?: string[]) => Promise<boolean>
-  stopTask: (taskId: string) => void
+  stopTask: (taskId: string) => Promise<boolean>
   editQueuedInput: (taskId: string, queueItemId: string, text: string) => Promise<boolean>
   deleteQueuedInput: (taskId: string, queueItemId: string) => Promise<boolean>
   reorderQueuedInputs: (taskId: string, queueItemIds: string[]) => Promise<boolean>
@@ -667,9 +667,21 @@ export const useProductTaskRuntimeStore = create<ProductTaskRuntimeStore>((set, 
 
     sendMessage: (taskId, text, attachments, referenceEntryIds) => submitMessage(taskId, text, attachments, referenceEntryIds),
 
-    stopTask: (taskId) => {
-      if (!productTaskSocket.send(taskId, { type: 'stop_generation' })) return
+    stopTask: async (taskId) => {
+      // Stopping a model Turn has to reach the same durable Product authority
+      // as submission. A transient socket control frame can disappear during
+      // reconnect or replay, leaving the visible button disconnected from the
+      // run ledger.
       updateTask(taskId, (runtime) => ({ ...runtime, stopRequested: true }))
+      try {
+        const result = await productTasksApi.stop(taskId)
+        if (result.stopped) return true
+      } catch {
+        // The UI must become actionable again if the Product Server did not
+        // acknowledge the durable stop intent.
+      }
+      updateTask(taskId, (runtime) => ({ ...runtime, stopRequested: false }))
+      return false
     },
 
     editQueuedInput: (taskId, queueItemId, text) => mutateQueue(taskId, { action: 'edit', queue_item_id: queueItemId, text }),
@@ -847,9 +859,6 @@ export const useProductTaskRuntimeStore = create<ProductTaskRuntimeStore>((set, 
 
       updateTask(taskId, (runtime) => {
         switch (event.type) {
-          case 'connected':
-            return { ...runtime, connectionState: 'connected' }
-
           case 'user_text': {
             const eventSignature = `${event.text}:${attachmentSignature(event.attachments)}:${(event.referenceEntryIds ?? []).join(',')}`
             if (event.id && runtime.entries.some(entry => entry.id === event.id)) return runtime
