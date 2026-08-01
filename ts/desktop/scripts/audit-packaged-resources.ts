@@ -125,12 +125,8 @@ export function auditPackagedResources(options: AuditOptions): void {
   if (typeof productConfig.gatewayUrl !== 'string' || !/^https:\/\//.test(productConfig.gatewayUrl)) {
     throw new Error('product-config.json 缺少 HTTPS Gateway 地址')
   }
-  const productSecrets = parseJsonFile(join(resources, 'product-secrets.json'))
-  requireExactKeys(productSecrets, ['gatewayBootstrapCredential', 'licenseKey'], 'product-secrets.json')
-  for (const key of ['gatewayBootstrapCredential', 'licenseKey']) {
-    if (typeof productSecrets[key] !== 'string' || !productSecrets[key].trim()) {
-      throw new Error(`product-secrets.json 缺少 ${key}`)
-    }
+  if (existsSync(join(resources, 'product-secrets.json'))) {
+    throw new Error('安装包不得包含 product-secrets.json')
   }
 
   const toolchainDir = join(resources, 'app.asar.unpacked', 'runtime-assets', 'binaries')

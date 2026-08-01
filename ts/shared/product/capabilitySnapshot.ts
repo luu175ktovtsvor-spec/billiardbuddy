@@ -20,7 +20,7 @@ export const PRODUCT_CAPABILITY_IDS = [
 export type ProductCapabilityId = (typeof PRODUCT_CAPABILITY_IDS)[number]
 
 export const PRODUCT_CAPABILITY_REASON_CODES = [
-  'installation_activation_required',
+  'installation_session_unavailable',
   'service_unreachable',
   'service_unavailable',
   'daily_quota_used',

@@ -1,4 +1,10 @@
+import {
+  PROVIDER_GATEWAY_PROTOCOL,
+  PROVIDER_GATEWAY_PROTOCOL_HEADER,
+} from '../../../shared/product/providerGateway'
+
 export type InstallationSession = {
+  schemaVersion: 2
   accessToken: string
   refreshToken: string
   expiresAt: number
@@ -12,8 +18,6 @@ export type InstallationSessionStore = {
 
 export type InstallationSessionManagerOptions = {
   gatewayUrl: string
-  bootstrapCredential: string
-  licenseKey: string
   installationId: string
   /** Refresh this far ahead of the server expiry; never serve a token in this window. */
   refreshSkewMs?: number
@@ -26,6 +30,7 @@ export type InstallationSessionManagerOptions = {
 
 const DEFAULT_REFRESH_SKEW_MS = 60_000
 const DEFAULT_REQUEST_TIMEOUT_MS = 15_000
+const SESSION_RECOVERY_DELAY_MS = 10_000
 
 type AuthResponse = { access_token: string; refresh_token: string; expires_at: number; token_type?: string }
 
@@ -43,6 +48,7 @@ export class InstallationSessionManager {
   private logoutPromise: Promise<void> | null = null
   private stateTail: Promise<void> = Promise.resolve()
   private refreshTimer: ReturnType<typeof setTimeout> | null = null
+  private recoveryTimer: ReturnType<typeof setTimeout> | null = null
 
   constructor(private readonly options: InstallationSessionManagerOptions, private readonly store: InstallationSessionStore) {
     this.refreshSkewMs = positiveDuration(options.refreshSkewMs ?? DEFAULT_REFRESH_SKEW_MS, 'refreshSkewMs')
@@ -51,13 +57,22 @@ export class InstallationSessionManager {
     this.requestTimeoutMs = positiveDuration(options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS, 'requestTimeoutMs')
   }
 
+  /** Return an already-valid proof without performing network I/O. */
+  cachedAccessToken(): string | undefined {
+    if (this.logoutIntent) return undefined
+    const session = this.loadSession()
+    return session && session.expiresAt > this.now() + this.refreshSkewMs
+      ? session.accessToken
+      : undefined
+  }
+
   async accessToken(): Promise<string> {
     if (this.logoutIntent) throw new Error('Installation session logout is in progress')
     return await this.enqueue(async () => {
       if (this.logoutIntent) throw new Error('Installation session logout is in progress')
       const session = this.loadSession()
       if (session && session.expiresAt > this.now() + this.refreshSkewMs) return session.accessToken
-      return await this.refreshOrActivate(session)
+      return await this.refreshOrBootstrap(session)
     })
   }
 
@@ -77,7 +92,9 @@ export class InstallationSessionManager {
 
   dispose(): void {
     if (this.refreshTimer) clearTimeout(this.refreshTimer)
+    if (this.recoveryTimer) clearTimeout(this.recoveryTimer)
     this.refreshTimer = null
+    this.recoveryTimer = null
   }
 
   private enqueue<T>(operation: () => Promise<T>): Promise<T> {
@@ -88,42 +105,66 @@ export class InstallationSessionManager {
 
   private loadSession(): InstallationSession | null {
     if (this.session !== undefined) return this.session
-    const encoded = this.store.load()
-    this.session = encoded === null ? null : parseSession(encoded)
+    let encoded: string | null
+    try {
+      encoded = this.store.load()
+    } catch (error) {
+      try { this.store.clear() } catch { /* An in-memory bootstrap remains valid for this run. */ }
+      encoded = null
+      void this.options.onSessionFailure?.(asError(error))
+    }
+    if (encoded === null) this.session = null
+    else {
+      try { this.session = parseSession(encoded) }
+      catch (error) {
+        try { this.store.clear() } catch (clearError) { void this.options.onSessionFailure?.(asError(clearError)) }
+        this.session = null
+        void this.options.onSessionFailure?.(asError(error))
+      }
+    }
     if (this.session && !this.logoutIntent) this.scheduleRefresh(this.session)
     return this.session
   }
 
-  private async refreshOrActivate(session: InstallationSession | null): Promise<string> {
+  private async refreshOrBootstrap(session: InstallationSession | null): Promise<string> {
     try {
-      const next = session
-        ? await this.requestTokens('refresh', { refresh_token: session.refreshToken })
-        : await this.requestTokens('activate', {
-          license_key: this.options.licenseKey,
-          installation_id: this.options.installationId,
-        })
-      // Persist the rotated proof before handling logout. If logout loses the
-      // network, the only valid retry proof survives encrypted at rest.
-      this.session = next
-      this.store.save(JSON.stringify(next))
-      if (this.logoutIntent) throw new Error('Installation session logout is in progress')
-      this.scheduleRefresh(next)
-      await this.options.onTokenChanged?.(next.accessToken)
-      return next.accessToken
+      let next: InstallationSession
+      if (session) {
+        try { next = await this.requestTokens('refresh', { refresh_token: session.refreshToken }) }
+        catch (error) {
+          if (!(error instanceof InstallationSessionRequestError) || (error.status !== 401 && error.status !== 403)) throw error
+          this.session = null
+          try { this.store.clear() } catch (clearError) { await this.options.onSessionFailure?.(asError(clearError)) }
+          next = await this.requestTokens('bootstrap', { installation_id: this.options.installationId })
+        }
+      } else next = await this.requestTokens('bootstrap', { installation_id: this.options.installationId })
+      return await this.commitSession(next)
     } catch (error) {
       const failure = asError(error)
-      // A persisted pair must never fall back to the bootstrap credential after a
-      // failed rotation. Keeping it permits an explicit later retry or logout.
-      if (failure.message !== 'Installation session logout is in progress') await this.options.onSessionFailure?.(failure)
+      if (failure.message !== 'Installation session logout is in progress') {
+        this.scheduleRecovery()
+        await this.options.onSessionFailure?.(failure)
+      }
       throw failure
     }
+  }
+
+  private async commitSession(next: InstallationSession): Promise<string> {
+    if (this.recoveryTimer) clearTimeout(this.recoveryTimer)
+    this.recoveryTimer = null
+    this.session = next
+    try { this.store.save(JSON.stringify(next)) } catch (error) { await this.options.onSessionFailure?.(asError(error)) }
+    if (this.logoutIntent) throw new Error('Installation session logout is in progress')
+    this.scheduleRefresh(next)
+    await this.options.onTokenChanged?.(next.accessToken)
+    return next.accessToken
   }
 
   private async logoutOnce(session: InstallationSession): Promise<void> {
     try {
       const response = await this.fetchFn(this.endpoint('logout'), {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: { 'content-type': 'application/json', [PROVIDER_GATEWAY_PROTOCOL_HEADER]: PROVIDER_GATEWAY_PROTOCOL.headerValue },
         body: JSON.stringify({ refresh_token: session.refreshToken }),
         signal: AbortSignal.timeout(this.requestTimeoutMs),
       })
@@ -140,20 +181,19 @@ export class InstallationSessionManager {
     }
   }
 
-  private async requestTokens(operation: 'activate' | 'refresh', body: Record<string, string>): Promise<InstallationSession> {
-    const headers: Record<string, string> = { 'content-type': 'application/json' }
-    if (operation === 'activate') headers.authorization = `Bearer ${this.options.bootstrapCredential}`
+  private async requestTokens(operation: 'bootstrap' | 'refresh', body: Record<string, string>): Promise<InstallationSession> {
+    const headers: Record<string, string> = { 'content-type': 'application/json', [PROVIDER_GATEWAY_PROTOCOL_HEADER]: PROVIDER_GATEWAY_PROTOCOL.headerValue }
     const response = await this.fetchFn(this.endpoint(operation), {
       method: 'POST',
       headers,
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(this.requestTimeoutMs),
     })
-    if (!response.ok) throw new Error(`Installation session ${operation} failed (${response.status})`)
+    if (!response.ok) throw new InstallationSessionRequestError(operation, response.status)
     return parseAuthResponse(await response.json())
   }
 
-  private endpoint(operation: 'activate' | 'refresh' | 'logout'): string {
+  private endpoint(operation: 'bootstrap' | 'refresh' | 'logout'): string {
     return `${this.options.gatewayUrl.replace(/\/+$/, '')}/v1/auth/${operation}`
   }
 
@@ -167,6 +207,15 @@ export class InstallationSessionManager {
     }, delay)
     this.refreshTimer.unref?.()
   }
+
+  private scheduleRecovery(): void {
+    if (this.logoutIntent || this.recoveryTimer) return
+    this.recoveryTimer = setTimeout(() => {
+      this.recoveryTimer = null
+      void this.accessToken().catch(() => undefined)
+    }, SESSION_RECOVERY_DELAY_MS)
+    this.recoveryTimer.unref?.()
+  }
 }
 
 function parseSession(encoded: string): InstallationSession {
@@ -174,17 +223,19 @@ function parseSession(encoded: string): InstallationSession {
   try { value = JSON.parse(encoded) } catch { throw new Error('Installation session is corrupt') }
   if (value && typeof value === 'object') {
     const stored = value as Partial<InstallationSession>
-    if (typeof stored.accessToken === 'string' && stored.accessToken.trim()
+    if (stored.schemaVersion === 2
+      && typeof stored.accessToken === 'string' && stored.accessToken.trim()
       && typeof stored.refreshToken === 'string' && stored.refreshToken.trim()
       && typeof stored.expiresAt === 'number' && Number.isSafeInteger(stored.expiresAt) && stored.expiresAt > 0) {
       return {
+        schemaVersion: 2,
         accessToken: stored.accessToken,
         refreshToken: stored.refreshToken,
         expiresAt: stored.expiresAt,
       }
     }
   }
-  return parseAuthResponse(value)
+  throw new Error('Installation session is obsolete')
 }
 
 function parseAuthResponse(value: unknown): InstallationSession {
@@ -196,11 +247,17 @@ function parseAuthResponse(value: unknown): InstallationSession {
     || typeof expiresAt !== 'number' || !Number.isSafeInteger(expiresAt) || expiresAt <= 0) {
     throw new Error('Installation session response is invalid')
   }
-  return { accessToken: tokens.access_token, refreshToken: tokens.refresh_token, expiresAt }
+  return { schemaVersion: 2, accessToken: tokens.access_token, refreshToken: tokens.refresh_token, expiresAt }
 }
 
 function positiveDuration(value: number, name: string): number {
   if (!Number.isSafeInteger(value) || value <= 0) throw new Error(`${name} must be a positive safe integer`)
   return value
+}
+class InstallationSessionRequestError extends Error {
+  constructor(operation: 'bootstrap' | 'refresh', readonly status: number) {
+    super(`Installation session ${operation} failed (${status})`)
+    this.name = 'InstallationSessionRequestError'
+  }
 }
 function asError(error: unknown): Error { return error instanceof Error ? error : new Error(String(error)) }

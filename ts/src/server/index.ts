@@ -23,6 +23,11 @@ import { createProductTaskReviewService } from './product/taskReviewService.js'
 import { createRuntimeTaskLifecycleParticipants } from './product/taskLifecycleParticipants.js'
 import { ProductCoreOperationBridge } from './product/productCoreOperationBridge.js'
 import { migrateSupportedScheduledTaskRuns, purgeScheduledTaskRunsForDeletedTask } from './services/cronScheduler.js'
+import {
+  consumeGatewayAccessTokenCapability,
+  updateGatewayAccessToken,
+} from './services/gatewayAccessTokenRuntime.js'
+import { GATEWAY_ACCESS_TOKEN_UPDATE_PATH } from '../../shared/product/providerGateway.js'
 import * as path from 'node:path'
 
 function readArgValue(flag: string): string | undefined {
@@ -96,6 +101,7 @@ export function resolveLocalServerHost(host: string): string {
 export function startServer(port = PORT, host = HOST) {
   const localHost = resolveLocalServerHost(host)
   const mediaUiCapability = consumeMediaUiCapability()
+  const gatewayAccessTokenCapability = consumeGatewayAccessTokenCapability()
   const configDir = getProductConfigDir()
   const cronService = new CronService(configDir)
   const coreOperationBridge = new ProductCoreOperationBridge()
@@ -207,6 +213,9 @@ export function startServer(port = PORT, host = HOST) {
         productTaskQueueRecovery ??= productTaskService.recoverDurableTaskRunQueue()
         await productTaskQueueRecovery
         const url = new URL(req.url)
+        if (url.pathname === GATEWAY_ACCESS_TOKEN_UPDATE_PATH) {
+          return await updateGatewayAccessToken(req, gatewayAccessTokenCapability)
+        }
         const origin = req.headers.get('Origin')
         const cors = await resolveCors(origin)
 

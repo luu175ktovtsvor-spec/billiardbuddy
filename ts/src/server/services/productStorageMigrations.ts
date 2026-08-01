@@ -1,6 +1,7 @@
 import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
 import { randomBytes } from 'node:crypto'
+import { lock } from '../../utils/lockfile.js'
 
 export const CURRENT_PRODUCT_STORAGE_MIGRATION_VERSION = 3
 export const OLDEST_SUPPORTED_PRODUCT_VERSION = '0.4.9'
@@ -298,10 +299,21 @@ export class ProductStorageMigrationCoordinator {
 
   private async run(): Promise<ProductStorageMigrationReport> {
     const productDir = path.join(this.configDir, 'billiardbuddy')
+    await fs.mkdir(productDir, { recursive: true, mode: 0o700 })
+    const guard = path.join(productDir, '.storage-migration.guard')
+    await fs.open(guard, 'a', 0o600).then(handle => handle.close())
+    const release = await lock(guard, { stale: 30_000, retries: { retries: 100, minTimeout: 5, maxTimeout: 25 } })
+    try {
+      return await this.runLocked(productDir)
+    } finally {
+      await release()
+    }
+  }
+
+  private async runLocked(productDir: string): Promise<ProductStorageMigrationReport> {
     const statePath = path.join(productDir, 'storage-migration-state.json')
     const journalPath = path.join(productDir, 'storage-migration-journal.json')
     const backupsRoot = path.join(productDir, 'storage-migration-backups')
-    await fs.mkdir(productDir, { recursive: true, mode: 0o700 })
 
     let state = parseState(await readJsonIfPresent(statePath))
     const journalValue = await readJsonIfPresent(journalPath)
