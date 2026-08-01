@@ -324,6 +324,7 @@ export const videoSourceSchema = z.object({
   video_stream_count: z.number().int().nonnegative().default(1),
   audio_stream_count: z.number().int().nonnegative().default(0),
   missing: z.boolean().default(false),
+  content_changed: z.boolean().default(false),
 })
 
 export const publicVideoSourceSchema = videoSourceSchema.omit({ path: true })

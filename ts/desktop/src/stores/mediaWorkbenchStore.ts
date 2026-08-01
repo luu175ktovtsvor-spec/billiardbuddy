@@ -513,6 +513,7 @@ export const useMediaWorkbenchStore = create<MediaWorkbenchStore>((set, get) => 
       return task
     } catch (error) {
       const safeError = rendererSafeError(error)
+      await get().loadProjects('video')
       set({ error: safeError.message })
       throw safeError
     } finally {
@@ -534,6 +535,7 @@ export const useMediaWorkbenchStore = create<MediaWorkbenchStore>((set, get) => 
       return task
     } catch (error) {
       const safeError = rendererSafeError(error)
+      await get().loadProjects('video')
       set({ error: safeError.message })
       throw safeError
     } finally {
