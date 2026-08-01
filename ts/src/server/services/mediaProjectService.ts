@@ -1209,6 +1209,51 @@ export class MediaProjectService {
     })
   }
 
+  /**
+   * A task is visible to the product only after its project points at it. If
+   * that second write loses a revision race, remove the never-published local
+   * task and its event instead of leaving an orphan that could later be read
+   * as a real paid image operation. This is intentionally limited to jobs
+   * that have not begun any remote submission.
+   */
+  private async discardUnattachedImageTask(task: MediaTask): Promise<boolean> {
+    if (
+      task.kind !== 'image.generate'
+      || task.remote_task_id
+      || task.remote_submission_started_at
+      || task.status !== 'queued'
+    ) return false
+    return await this.withEventWriteLock(task.project_id, async () => {
+      const currentTask = await readFile(this.taskPath(task.id), 'utf8')
+        .then(value => mediaTaskSchema.parse(migrateLegacyMediaOwnerRecord(JSON.parse(value)).value))
+        .catch(error => {
+          if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+          throw error
+        })
+      if (
+        !currentTask
+        || currentTask.kind !== 'image.generate'
+        || currentTask.remote_task_id
+        || currentTask.remote_submission_started_at
+        || currentTask.status !== 'queued'
+      ) return false
+      const project = await readFile(this.projectPath(task.project_id), 'utf8')
+        .then(value => mediaProjectSchema.parse(migrateLegacyMediaOwnerRecord(JSON.parse(value)).value))
+        .catch(error => {
+          if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+          throw error
+        })
+      if (project?.kind === 'image' && project.task_id === task.id) return false
+      await rm(this.taskPath(task.id), { force: true })
+      const journal = await this.readEventJournal(task.project_id)
+      const events = journal.events.filter(event => event.task_id !== task.id)
+      if (events.length !== journal.events.length) {
+        await this.writeJson(this.eventJournalPath(task.project_id), { ...journal, events })
+      }
+      return true
+    })
+  }
+
   async listJobEvents(
     projectId: string,
     afterCursor = 0,
@@ -2760,16 +2805,24 @@ export class MediaProjectService {
       updated_at: now,
     })
     task = await this.saveTask(task)
-    const submittedProject = await this.saveProject({
-      ...project,
-      state: 'queued',
-      task_id: task.id,
-      error: undefined,
-      error_code: undefined,
-      notice: undefined,
-      revision: nextRevision,
-      updated_at: this.iso(),
-    }) as ImageWorkbenchProject
+    let submittedProject: ImageWorkbenchProject
+    try {
+      submittedProject = await this.saveProject({
+        ...project,
+        state: 'queued',
+        task_id: task.id,
+        error: undefined,
+        error_code: undefined,
+        notice: undefined,
+        revision: nextRevision,
+        updated_at: this.iso(),
+      }) as ImageWorkbenchProject
+    } catch (error) {
+      await this.discardUnattachedImageTask(task).catch(cleanupError => {
+        recordMediaFailure('discard_unattached_image_task', cleanupError)
+      })
+      throw error
+    }
 
     return await this.submitPersistedImageTask(submittedProject, task)
   }
@@ -2865,8 +2918,10 @@ export class MediaProjectService {
       updated_at: now,
     })
     let projectPublished = false
+    let taskPersisted = false
     try {
       task = await this.saveTask(task)
+      taskPersisted = true
       const submittedProject = await this.saveProject({
         ...project,
         assets: maskAsset ? [...project.assets, maskAsset] : project.assets,
@@ -2881,7 +2936,14 @@ export class MediaProjectService {
       projectPublished = true
       return await this.submitPersistedImageTask(submittedProject, task)
     } catch (error) {
-      if (maskPath && !projectPublished) await rm(maskPath, { force: true }).catch(() => undefined)
+      const discarded = !projectPublished && (
+        !taskPersisted
+        || await this.discardUnattachedImageTask(task).catch(cleanupError => {
+          recordMediaFailure('discard_unattached_image_task', cleanupError)
+          return false
+        })
+      )
+      if (maskPath && discarded) await rm(maskPath, { force: true }).catch(() => undefined)
       throw error
     }
   }
