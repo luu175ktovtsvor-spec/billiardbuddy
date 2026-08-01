@@ -54,7 +54,7 @@ BilliardBuddy 是面向台球门店经营者的 Electron 桌面 Agent 产品，�
 - 网络失败、模型失败、上下文超限、工具失败、权限拒绝、进程崩溃和重启后的准确状态；
 - 运行活动、待处理输入、审批、Diff、网页、文件、终端和成果预览。
 
-Agent Harness 是 BilliardBuddy 的运行环境，不是某个供应商模型的别名。模型可以替换；会话、工具、权限、事件、持久化和恢复由 BilliardBuddy 产品拥有。执行内核可以基于许可证允许的 Codex 源码分支改造，但只能作为每次 Run 的私有执行器：BilliardBuddy 仍拥有产品状态、模型回执、权限和最终结果，且不得把 Codex 的 CLI、TUI、品牌、OpenAI 登录或云端工作树带入产品。
+Agent Harness 是 BilliardBuddy 的运行环境，不是某个供应商模型的别名。模型可以替换；会话、工具、权限、事件、持久化和恢复由 BilliardBuddy 产品拥有。执行内核可以基于许可证允许的 Codex 源码分支改造，但只能作为每个 Agent 任务会话的私有执行内核：一个 BilliardBuddy 任务会话绑定一个 Codex Thread，每次 Run 在其中发起一次 Turn。BilliardBuddy 仍拥有产品状态、模型回执、权限和最终结果；Codex 的 Thread/配置资料只可存在于产品管理的私有引擎目录，不能成为产品事实来源，也不得把 Codex 的 CLI、TUI、品牌、OpenAI 登录或云端工作树带入产品。
 
 ### 3.3 生图工作台
 
