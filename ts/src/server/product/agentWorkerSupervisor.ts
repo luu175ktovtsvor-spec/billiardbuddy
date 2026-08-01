@@ -144,7 +144,14 @@ export class AgentWorkerSupervisor {
           // projection before settling durable dispatch state.
           this.terminalPending.add(key)
           void Promise.resolve(this.messages?.record(runId, generation, message))
-            .then(() => this.fail(runId, generation, receipt.fencing_token, 'TERMINAL', message.state === 'recovery_required' ? 'recovery_required' : 'terminal', message.failure))
+            .then(() => this.fail(
+              runId,
+              generation,
+              receipt.fencing_token,
+              message.state === 'stopped' ? 'STOPPED' : 'TERMINAL',
+              message.state === 'recovery_required' ? 'recovery_required' : 'terminal',
+              message.failure,
+            ))
             .catch(() => this.fail(runId, generation, receipt.fencing_token, 'EVENT_PERSIST_FAILED', 'recovery_required'))
           return
         }
