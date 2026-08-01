@@ -7,6 +7,7 @@ import { requireAuth } from './middleware/auth.js'
 import { CronScheduler } from './services/cronScheduler.js'
 import { diagnosticsService } from './services/diagnosticsService.js'
 import { consumeMediaUiCapability, createMediaApiHandler } from './api/media.js'
+import { createImageWorkbenchDomainApiHandler } from './api/imageWorkbench.js'
 import { isLongMediaRequestPath } from './mediaRequestTimeout.js'
 import { handleProductApi } from './api/product.js'
 import { createProductTaskService, type ProductTaskService } from './product/taskService.js'
@@ -181,10 +182,13 @@ export function startServer(port = PORT, host = HOST) {
       details: { error },
     }))
   }
+  const imageApiHandler = createImageWorkbenchDomainApiHandler(
+    imageWorkbenchService,
+    mediaUiCapability,
+  )
   const mediaApiHandler = createMediaApiHandler(
     mediaService,
     mediaUiCapability,
-    imageWorkbenchService,
     videoWorkbenchService,
   )
   const productCapabilitySnapshots = new ProductCapabilitySnapshotService({
@@ -343,6 +347,7 @@ export function startServer(port = PORT, host = HOST) {
           try {
             const response = await handleApiRequest(req, url, {
               media: mediaApiHandler,
+              images: imageApiHandler,
               product: productApiHandler,
             })
             return withCors(response, cors)

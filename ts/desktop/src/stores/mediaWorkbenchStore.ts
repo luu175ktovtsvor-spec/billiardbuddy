@@ -1,54 +1,27 @@
 import { create, type StateCreator } from 'zustand'
 import {
   mediaApi,
-  type CreateImageProjectInput,
   type CreateVideoProjectInput,
-  type CommitImageVersionInput,
-  type ImageReferenceRole,
-  type ImageWorkbenchProject,
   type MediaDeletionReceipt,
   type MediaTask,
   type MediaToolchainStatus,
-  type StartImageOperationInput,
   type VideoStudioProject,
   mediaUserFacingError,
 } from '../api/media'
 
 type MediaWorkbenchStore = {
-  imageProjects: ImageWorkbenchProject[]
   videoProjects: VideoStudioProject[]
   deletions: MediaDeletionReceipt[]
   tasks: Record<string, MediaTask | undefined>
   eventCursors: Record<string, number | undefined>
   toolchain: MediaToolchainStatus | null
-  activeImageId: string | null
   activeVideoId: string | null
   loading: boolean
   error: string | null
-  loadProjects: (kind: 'image' | 'video', quiet?: boolean) => Promise<void>
+  loadProjects: (quiet?: boolean) => Promise<void>
   loadDeletions: () => Promise<void>
   loadToolchain: () => Promise<void>
-  selectImage: (id: string | null) => void
   selectVideo: (id: string | null) => void
-  createImage: (input: CreateImageProjectInput) => Promise<ImageWorkbenchProject>
-  saveImageDraft: (
-    project: ImageWorkbenchProject,
-    confirmUnknownRetry?: boolean,
-    newReferences?: Array<{ dataUrl: string; role: ImageReferenceRole }>,
-    startNewGenerationRound?: boolean,
-  ) => Promise<ImageWorkbenchProject>
-  addImageReferences: (
-    projectId: string,
-    revision: number,
-    references: Array<{ dataUrl: string; role: ImageReferenceRole }>,
-  ) => Promise<ImageWorkbenchProject>
-  submitImage: (projectId: string, confirmUnknownRetry?: boolean) => Promise<MediaTask>
-  startImageOperation: (
-    projectId: string,
-    input: StartImageOperationInput,
-  ) => Promise<MediaTask>
-  commitImageVersion: (projectId: string, input: CommitImageVersionInput) => Promise<ImageWorkbenchProject>
-  selectImageVersion: (projectId: string, revision: number, versionId: string) => Promise<ImageWorkbenchProject>
   createVideo: (input?: CreateVideoProjectInput) => Promise<VideoStudioProject>
   addVideoSource: (projectId: string, path: string) => Promise<VideoStudioProject>
   saveTimeline: (project: VideoStudioProject) => Promise<VideoStudioProject>
@@ -59,9 +32,9 @@ type MediaWorkbenchStore = {
   previewVideo: (project: VideoStudioProject) => Promise<MediaTask>
   renderVideo: (project: VideoStudioProject, outputPath: string) => Promise<MediaTask>
   cancelTask: (taskId: string) => Promise<MediaTask>
-  deleteProject: (projectId: string, kind: 'image' | 'video') => Promise<void>
+  deleteProject: (projectId: string) => Promise<void>
   restoreProject: (projectId: string) => Promise<void>
-  subscribeProjectEvents: (projectId: string, kind: 'image' | 'video') => () => void
+  subscribeProjectEvents: (projectId: string) => () => void
   clearError: () => void
 }
 
@@ -89,17 +62,14 @@ function upsert<T extends { id: string }>(items: T[], item: T): T[] {
  * newest response authoritative so an older snapshot cannot make a newly
  * created project disappear from the current editing surface.
  */
-const projectLoadVersion: Record<'image' | 'video', number> = {
-  image: 0,
-  video: 0,
-}
+let projectLoadVersion = 0
 let deletionLoadVersion = 0
 
 const taskLoadVersion: Record<string, number> = {}
 
-function nextProjectLoadVersion(kind: 'image' | 'video'): number {
-  const version = projectLoadVersion[kind] + 1
-  projectLoadVersion[kind] = version
+function nextProjectLoadVersion(): number {
+  const version = projectLoadVersion + 1
+  projectLoadVersion = version
   return version
 }
 
@@ -165,46 +135,33 @@ async function loadProjectTasks(
 }
 
 export const useMediaWorkbenchStore = create<MediaWorkbenchStore>((set, get) => ({
-  imageProjects: [],
   videoProjects: [],
   deletions: [],
   tasks: {},
   eventCursors: {},
   toolchain: null,
-  activeImageId: null,
   activeVideoId: null,
   loading: false,
   error: null,
 
-  loadProjects: async (kind, quiet = false) => {
-    const version = nextProjectLoadVersion(kind)
+  loadProjects: async (quiet = false) => {
+    const version = nextProjectLoadVersion()
     const finishLoading = quiet ? () => undefined : beginLoading(set)
     try {
-      const { projects } = await mediaApi.listProjects(kind)
-      if (projectLoadVersion[kind] !== version) return
+      const { projects } = await mediaApi.listProjects('video')
+      if (projectLoadVersion !== version) return
       const projectTasks = await loadProjectTasks(projects)
-      if (projectLoadVersion[kind] !== version) return
-      if (kind === 'image') {
-        const imageProjects = projects.filter((project): project is ImageWorkbenchProject => project.kind === 'image')
-        set(state => ({
-          imageProjects,
-          tasks: { ...state.tasks, ...projectTasks },
-          activeImageId: state.activeImageId && imageProjects.some(project => project.id === state.activeImageId)
-            ? state.activeImageId
-            : imageProjects[0]?.id ?? null,
-        }))
-      } else {
-        const videoProjects = projects.filter((project): project is VideoStudioProject => project.kind === 'video')
-        set(state => ({
-          videoProjects,
-          tasks: { ...state.tasks, ...projectTasks },
-          activeVideoId: state.activeVideoId && videoProjects.some(project => project.id === state.activeVideoId)
-            ? state.activeVideoId
-            : videoProjects[0]?.id ?? null,
-        }))
-      }
+      if (projectLoadVersion !== version) return
+      const videoProjects = projects.filter((project): project is VideoStudioProject => project.kind === 'video')
+      set(state => ({
+        videoProjects,
+        tasks: { ...state.tasks, ...projectTasks },
+        activeVideoId: state.activeVideoId && videoProjects.some(project => project.id === state.activeVideoId)
+          ? state.activeVideoId
+          : videoProjects[0]?.id ?? null,
+      }))
     } catch (error) {
-      if (projectLoadVersion[kind] !== version) return
+      if (projectLoadVersion !== version) return
       set({ error: message(error) })
     } finally {
       finishLoading()
@@ -217,7 +174,7 @@ export const useMediaWorkbenchStore = create<MediaWorkbenchStore>((set, get) => 
     try {
       const { deletions } = await mediaApi.listDeletions()
       if (deletionLoadVersion !== version) return
-      set({ deletions: deletions.filter(deletion => ['pending', 'deleted', 'restoring'].includes(deletion.status)) })
+      set({ deletions: deletions.filter(deletion => deletion.project_kind !== 'image' && ['pending', 'deleted', 'restoring'].includes(deletion.status)) })
     } catch (error) {
       if (deletionLoadVersion !== version) return
       set({ error: message(error) })
@@ -234,144 +191,13 @@ export const useMediaWorkbenchStore = create<MediaWorkbenchStore>((set, get) => 
     }
   },
 
-  selectImage: activeImageId => set({ activeImageId }),
   selectVideo: activeVideoId => set({ activeVideoId }),
-
-  createImage: async input => {
-    const finishLoading = beginLoading(set)
-    try {
-      const { project } = await mediaApi.createImageProject(input)
-      nextProjectLoadVersion('image')
-      set(state => ({ imageProjects: upsert(state.imageProjects, project), activeImageId: project.id }))
-      return project
-    } catch (error) {
-      const safeError = rendererSafeError(error)
-      set({ error: safeError.message })
-      throw safeError
-    } finally {
-      finishLoading()
-    }
-  },
-
-  submitImage: async (projectId, confirmUnknownRetry = false) => {
-    const finishLoading = beginLoading(set)
-    try {
-      const { task } = await mediaApi.submitImageProject(projectId, confirmUnknownRetry)
-      nextTaskLoadVersion(task.id)
-      set(state => ({ tasks: { ...state.tasks, [task.id]: task } }))
-      await get().loadProjects('image')
-      return task
-    } catch (error) {
-      const safeError = rendererSafeError(error)
-      await get().loadProjects('image')
-      set({ error: safeError.message })
-      throw safeError
-    } finally {
-      finishLoading()
-    }
-  },
-
-  startImageOperation: async (projectId, input) => {
-    const finishLoading = beginLoading(set)
-    try {
-      const { task } = await mediaApi.startImageOperation(projectId, input)
-      nextTaskLoadVersion(task.id)
-      set(state => ({ tasks: { ...state.tasks, [task.id]: task } }))
-      await get().loadProjects('image')
-      return task
-    } catch (error) {
-      const safeError = rendererSafeError(error)
-      await get().loadProjects('image')
-      set({ error: safeError.message })
-      throw safeError
-    } finally {
-      finishLoading()
-    }
-  },
-
-  commitImageVersion: async (projectId, input) => {
-    const finishLoading = beginLoading(set)
-    try {
-      const { project } = await mediaApi.commitImageVersion(projectId, input)
-      nextProjectLoadVersion('image')
-      set(state => ({ imageProjects: upsert(state.imageProjects, project) }))
-      return project
-    } catch (error) {
-      const safeError = rendererSafeError(error)
-      set({ error: safeError.message })
-      throw safeError
-    } finally {
-      finishLoading()
-    }
-  },
-
-  selectImageVersion: async (projectId, revision, versionId) => {
-    const finishLoading = beginLoading(set)
-    try {
-      const { project } = await mediaApi.selectImageVersion(projectId, { revision, version_id: versionId })
-      nextProjectLoadVersion('image')
-      set(state => ({ imageProjects: upsert(state.imageProjects, project) }))
-      return project
-    } catch (error) {
-      const safeError = rendererSafeError(error)
-      set({ error: safeError.message })
-      throw safeError
-    } finally {
-      finishLoading()
-    }
-  },
-
-  saveImageDraft: async (project, confirmUnknownRetry = false, newReferences = [], startNewGenerationRound = false) => {
-    const finishLoading = beginLoading(set)
-    try {
-      const { project: saved } = await mediaApi.updateImageProject(project.id, {
-        revision: project.revision,
-        user_request: project.brief?.user_request ?? project.title,
-        size: project.size,
-        brief_overrides: project.brief_overrides,
-        references: project.references,
-        new_reference_images: newReferences.map(reference => reference.dataUrl),
-        new_reference_roles: newReferences.map(reference => reference.role),
-        start_new_generation_round: startNewGenerationRound,
-        confirm_unknown_retry: confirmUnknownRetry,
-      })
-      nextProjectLoadVersion('image')
-      set(state => ({ imageProjects: upsert(state.imageProjects, saved) }))
-      return saved
-    } catch (error) {
-      const safeError = rendererSafeError(error)
-      set({ error: safeError.message })
-      throw safeError
-    } finally {
-      finishLoading()
-    }
-  },
-
-  addImageReferences: async (projectId, revision, references) => {
-    const finishLoading = beginLoading(set)
-    try {
-      const { project } = await mediaApi.addImageProjectReferences(projectId, {
-        revision,
-        reference_images: references.map(reference => reference.dataUrl),
-        reference_roles: references.map(reference => reference.role),
-      })
-      nextProjectLoadVersion('image')
-      set(state => ({ imageProjects: upsert(state.imageProjects, project) }))
-      return project
-    } catch (error) {
-      const safeError = rendererSafeError(error)
-      set({ error: safeError.message })
-      throw safeError
-    } finally {
-      finishLoading()
-    }
-  },
 
   createVideo: async input => {
     const finishLoading = beginLoading(set)
     try {
       const { project } = await mediaApi.createVideoProject(input ?? {})
-      nextProjectLoadVersion('video')
+      nextProjectLoadVersion()
       set(state => ({ videoProjects: upsert(state.videoProjects, project), activeVideoId: project.id }))
       return project
     } catch (error) {
@@ -387,7 +213,7 @@ export const useMediaWorkbenchStore = create<MediaWorkbenchStore>((set, get) => 
     const finishLoading = beginLoading(set)
     try {
       const { project, task } = await mediaApi.addVideoSource(projectId, path)
-      nextProjectLoadVersion('video')
+      nextProjectLoadVersion()
       nextTaskLoadVersion(task.id)
       set(state => ({
         videoProjects: upsert(state.videoProjects, project),
@@ -411,7 +237,7 @@ export const useMediaWorkbenchStore = create<MediaWorkbenchStore>((set, get) => 
         base_timeline_version_id: project.current_timeline_version_id!,
         clips: project.timeline,
       })
-      nextProjectLoadVersion('video')
+      nextProjectLoadVersion()
       set(state => ({ videoProjects: upsert(state.videoProjects, saved) }))
       return saved
     } catch (error) {
@@ -430,7 +256,7 @@ export const useMediaWorkbenchStore = create<MediaWorkbenchStore>((set, get) => 
         revision,
         version_id: versionId,
       })
-      nextProjectLoadVersion('video')
+      nextProjectLoadVersion()
       set(state => ({ videoProjects: upsert(state.videoProjects, project) }))
       return project
     } catch (error) {
@@ -451,11 +277,11 @@ export const useMediaWorkbenchStore = create<MediaWorkbenchStore>((set, get) => 
       })
       nextTaskLoadVersion(task.id)
       set(state => ({ tasks: { ...state.tasks, [task.id]: task } }))
-      await get().loadProjects('video')
+      await get().loadProjects()
       return task
     } catch (error) {
       const safeError = rendererSafeError(error)
-      await get().loadProjects('video')
+      await get().loadProjects()
       set({ error: safeError.message })
       throw safeError
     } finally {
@@ -471,7 +297,7 @@ export const useMediaWorkbenchStore = create<MediaWorkbenchStore>((set, get) => 
         timeline_version_id: project.current_timeline_version_id!,
         locked,
       })
-      nextProjectLoadVersion('video')
+      nextProjectLoadVersion()
       set(state => ({ videoProjects: upsert(state.videoProjects, saved) }))
       return saved
     } catch (error) {
@@ -490,7 +316,7 @@ export const useMediaWorkbenchStore = create<MediaWorkbenchStore>((set, get) => 
         base_revision: project.revision,
         alternative_id: alternativeId,
       })
-      nextProjectLoadVersion('video')
+      nextProjectLoadVersion()
       set(state => ({ videoProjects: upsert(state.videoProjects, saved) }))
       return saved
     } catch (error) {
@@ -511,11 +337,11 @@ export const useMediaWorkbenchStore = create<MediaWorkbenchStore>((set, get) => 
       })
       nextTaskLoadVersion(task.id)
       set(state => ({ tasks: { ...state.tasks, [task.id]: task } }))
-      await get().loadProjects('video')
+      await get().loadProjects()
       return task
     } catch (error) {
       const safeError = rendererSafeError(error)
-      await get().loadProjects('video')
+      await get().loadProjects()
       set({ error: safeError.message })
       throw safeError
     } finally {
@@ -533,11 +359,11 @@ export const useMediaWorkbenchStore = create<MediaWorkbenchStore>((set, get) => 
       })
       nextTaskLoadVersion(task.id)
       set(state => ({ tasks: { ...state.tasks, [task.id]: task } }))
-      await get().loadProjects('video')
+      await get().loadProjects()
       return task
     } catch (error) {
       const safeError = rendererSafeError(error)
-      await get().loadProjects('video')
+      await get().loadProjects()
       set({ error: safeError.message })
       throw safeError
     } finally {
@@ -551,7 +377,7 @@ export const useMediaWorkbenchStore = create<MediaWorkbenchStore>((set, get) => 
       const { task } = await mediaApi.cancelTask(taskId)
       nextTaskLoadVersion(task.id)
       set(state => ({ tasks: { ...state.tasks, [task.id]: task } }))
-      await get().loadProjects(task.kind === 'image.generate' ? 'image' : 'video')
+      await get().loadProjects()
       return task
     } catch (error) {
       const safeError = rendererSafeError(error)
@@ -562,34 +388,21 @@ export const useMediaWorkbenchStore = create<MediaWorkbenchStore>((set, get) => 
     }
   },
 
-  deleteProject: async (projectId, kind) => {
+  deleteProject: async projectId => {
     const finishLoading = beginLoading(set)
     try {
       await mediaApi.deleteProject(projectId)
-      nextProjectLoadVersion(kind)
-      if (kind === 'image') {
-        set(state => {
-          const imageProjects = state.imageProjects.filter(project => project.id !== projectId)
-          return {
-            imageProjects,
-            eventCursors: { ...state.eventCursors, [projectId]: undefined },
-            activeImageId: state.activeImageId === projectId
-              ? imageProjects[0]?.id ?? null
-              : state.activeImageId,
-          }
-        })
-      } else {
-        set(state => {
-          const videoProjects = state.videoProjects.filter(project => project.id !== projectId)
-          return {
-            videoProjects,
-            eventCursors: { ...state.eventCursors, [projectId]: undefined },
-            activeVideoId: state.activeVideoId === projectId
-              ? videoProjects[0]?.id ?? null
-              : state.activeVideoId,
-          }
-        })
-      }
+      nextProjectLoadVersion()
+      set(state => {
+        const videoProjects = state.videoProjects.filter(project => project.id !== projectId)
+        return {
+          videoProjects,
+          eventCursors: { ...state.eventCursors, [projectId]: undefined },
+          activeVideoId: state.activeVideoId === projectId
+            ? videoProjects[0]?.id ?? null
+            : state.activeVideoId,
+        }
+      })
       await get().loadDeletions()
     } catch (error) {
       const safeError = rendererSafeError(error)
@@ -605,12 +418,12 @@ export const useMediaWorkbenchStore = create<MediaWorkbenchStore>((set, get) => 
     try {
       await mediaApi.restoreProject(projectId)
       const { project } = await mediaApi.getProject(projectId)
+      if (project.kind !== 'video') throw new Error('视频项目不存在')
       await Promise.all([
-        get().loadProjects(project.kind, true),
+        get().loadProjects(true),
         get().loadDeletions(),
       ])
-      if (project.kind === 'image') set({ activeImageId: project.id })
-      else set({ activeVideoId: project.id })
+      set({ activeVideoId: project.id })
     } catch (error) {
       const safeError = rendererSafeError(error)
       set({ error: safeError.message })
@@ -620,7 +433,7 @@ export const useMediaWorkbenchStore = create<MediaWorkbenchStore>((set, get) => 
     }
   },
 
-  subscribeProjectEvents: (projectId, kind) => {
+  subscribeProjectEvents: projectId => {
     const existing = activeMediaEventSubscriptions.get(projectId)
     if (existing) {
       existing.references += 1
@@ -668,7 +481,7 @@ export const useMediaWorkbenchStore = create<MediaWorkbenchStore>((set, get) => 
             }
           })
           if (acceptedEvent || page.reset_required || reconcileAfterReconnect) {
-            await get().loadProjects(kind, true)
+            await get().loadProjects(true)
             reconcileAfterReconnect = false
           }
         } catch (error) {

@@ -1,5 +1,6 @@
 import { useEffect, useMemo } from 'react'
 import { useMediaWorkbenchStore } from '../stores/mediaWorkbenchStore'
+import { useImageWorkbenchStore } from '../stores/imageWorkbenchStore'
 import { useProductTaskStore } from '../product/stores/productTaskStore'
 import { useProductTaskRuntimeStore } from '../product/stores/productTaskRuntimeStore'
 
@@ -25,32 +26,37 @@ export function useDesktopProjectRuntime(): void {
   const refreshProductTasks = useProductTaskStore(state => state.refresh)
   const connectTask = useProductTaskRuntimeStore(state => state.connectTask)
   const disconnectTask = useProductTaskRuntimeStore(state => state.disconnectTask)
-  const imageProjects = useMediaWorkbenchStore(state => state.imageProjects)
+  const imageProjects = useImageWorkbenchStore(state => state.projects)
   const videoProjects = useMediaWorkbenchStore(state => state.videoProjects)
-  const mediaTasks = useMediaWorkbenchStore(state => state.tasks)
-  const loadProjects = useMediaWorkbenchStore(state => state.loadProjects)
-  const loadDeletions = useMediaWorkbenchStore(state => state.loadDeletions)
-  const subscribeProjectEvents = useMediaWorkbenchStore(state => state.subscribeProjectEvents)
+  const imageTasks = useImageWorkbenchStore(state => state.operations)
+  const videoTasks = useMediaWorkbenchStore(state => state.tasks)
+  const loadImageProjects = useImageWorkbenchStore(state => state.loadProjects)
+  const loadVideoProjects = useMediaWorkbenchStore(state => state.loadProjects)
+  const loadImageDeletions = useImageWorkbenchStore(state => state.loadDeletions)
+  const loadVideoDeletions = useMediaWorkbenchStore(state => state.loadDeletions)
+  const subscribeImageProjectEvents = useImageWorkbenchStore(state => state.subscribeProjectEvents)
+  const subscribeVideoProjectEvents = useMediaWorkbenchStore(state => state.subscribeProjectEvents)
 
   const activeProductTaskIds = useMemo(
     () => productTasks.filter(task => task.lifecycle !== 'archived').map(task => task.id),
     [productTasks],
   )
   const activeImageIds = useMemo(
-    () => activeMediaProjectIds(imageProjects, mediaTasks),
-    [imageProjects, mediaTasks],
+    () => activeMediaProjectIds(imageProjects, imageTasks),
+    [imageProjects, imageTasks],
   )
   const activeVideoIds = useMemo(
-    () => activeMediaProjectIds(videoProjects, mediaTasks),
-    [videoProjects, mediaTasks],
+    () => activeMediaProjectIds(videoProjects, videoTasks),
+    [videoProjects, videoTasks],
   )
 
   useEffect(() => {
     void refreshProductTasks()
-    void loadProjects('image', true)
-    void loadProjects('video', true)
-    void loadDeletions()
-  }, [loadDeletions, loadProjects, refreshProductTasks])
+    void loadImageProjects(true)
+    void loadVideoProjects(true)
+    void loadImageDeletions()
+    void loadVideoDeletions()
+  }, [loadImageDeletions, loadImageProjects, loadVideoDeletions, loadVideoProjects, refreshProductTasks])
 
   useEffect(() => {
     for (const taskId of activeProductTaskIds) void connectTask(taskId)
@@ -60,10 +66,10 @@ export function useDesktopProjectRuntime(): void {
   }, [activeProductTaskIds, connectTask, disconnectTask])
 
   useEffect(() => {
-    const imageUnsubscribers = activeImageIds.map(projectId => subscribeProjectEvents(projectId, 'image'))
-    const videoUnsubscribers = activeVideoIds.map(projectId => subscribeProjectEvents(projectId, 'video'))
+    const imageUnsubscribers = activeImageIds.map(projectId => subscribeImageProjectEvents(projectId))
+    const videoUnsubscribers = activeVideoIds.map(projectId => subscribeVideoProjectEvents(projectId))
     return () => {
       for (const unsubscribe of [...imageUnsubscribers, ...videoUnsubscribers]) unsubscribe()
     }
-  }, [activeImageIds, activeVideoIds, subscribeProjectEvents])
+  }, [activeImageIds, activeVideoIds, subscribeImageProjectEvents, subscribeVideoProjectEvents])
 }

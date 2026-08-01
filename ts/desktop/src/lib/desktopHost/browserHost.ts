@@ -103,19 +103,21 @@ export const browserHost: DesktopHost = {
       unsupported('Native save dialogs')
     },
   },
-  media: {
-    async submitImageProject() {
+  images: {
+    async submitProject() {
       unsupported('Image submission')
     },
-    async startImageOperation() {
+    async startOperation() {
       unsupported('Image editing')
     },
-    async updateUnknownImageProject() {
+    async updateUnknownProject() {
       unsupported('Confirming an unknown image task update')
     },
-    async saveImageOutput() {
+    async saveOutput() {
       unsupported('Saving generated images')
     },
+  },
+  media: {
     async addVideoSource() {
       unsupported('Importing local video sources')
     },

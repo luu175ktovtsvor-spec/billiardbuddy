@@ -6,6 +6,7 @@ import {
   createImageProjectInputSchema,
   mediaSafeError,
   mediaSafeErrorForServiceError,
+  publicMediaDeletionReceiptSchema,
   publicImageWorkbenchProjectSchema,
   publicMediaJobEventPageSchema,
   publicMediaTaskSchema,
@@ -78,7 +79,7 @@ export function publicImageProject(project: ImageWorkbenchProject): PublicImageW
     if (!asset || !mimeType) return []
     return [{
       ...reference,
-      image_path: `/api/media/images/projects/${project.id}/references/${reference.asset_id}/content`,
+      image_path: `/api/images/projects/${project.id}/references/${reference.asset_id}/content`,
       mime_type: mimeType,
     }]
   })
@@ -95,7 +96,7 @@ export function publicImageProject(project: ImageWorkbenchProject): PublicImageW
       if (!source || !sourceMime) return []
       return [{
         ...layer,
-        image_path: `/api/media/images/projects/${project.id}/layer-assets/${source.id}/content`,
+        image_path: `/api/images/projects/${project.id}/layer-assets/${source.id}/content`,
         mime_type: sourceMime,
       }]
     })
@@ -105,7 +106,9 @@ export function publicImageProject(project: ImageWorkbenchProject): PublicImageW
       kind: version.kind ?? output.version_kind ?? 'generated',
       operation_id: version.operation_id ?? output.operation_id,
       asset_id: asset.id,
-      image_path: output.asset_path ?? `/api/media/images/projects/${project.id}/outputs/${asset.id}/content`,
+      // The asset id and project ownership are the durable facts. Never reuse
+      // an old public URL from a migrated record as this workbench's source.
+      image_path: `/api/images/projects/${project.id}/outputs/${asset.id}/content`,
       mime_type: mimeType,
       width: version.width ?? output.width,
       height: version.height ?? output.height,
@@ -277,6 +280,70 @@ export function createImageWorkbenchApiHandler(
         throw methodNotAllowed(req.method)
       }
       throw ApiError.notFound('找不到生图接口')
+    } catch (error) {
+      return apiErrorResponse(error)
+    }
+  }
+}
+
+/**
+ * The image workbench owns its public HTTP surface.  Its internal route
+ * parser predates the split and is deliberately kept private behind this
+ * adapter, so no renderer or server composition path needs `/api/media` to
+ * reach image state, operations, assets or event replay.
+ */
+export function createImageWorkbenchDomainApiHandler(
+  service: ImageWorkbenchService,
+  mediaUiCapability = '',
+) {
+  const projectHandler = createImageWorkbenchApiHandler(service, mediaUiCapability)
+  return async function handleImageWorkbenchDomainApi(
+    req: Request,
+    url: URL,
+    segments: string[],
+  ): Promise<Response> {
+    try {
+      if (segments[1] !== 'images') throw ApiError.notFound('找不到生图接口')
+      const area = segments[2]
+      if (area === 'deletions') {
+        if (req.method !== 'GET' || segments[3]) throw methodNotAllowed(req.method)
+        return Response.json({
+          deletions: (await service.listDeletions()).map(receipt => publicMediaDeletionReceiptSchema.parse(receipt)),
+        })
+      }
+      if (area === 'operations') {
+        const operationId = segments[3]
+        if (!operationId || segments[5]) throw ApiError.badRequest('缺少图片操作 ID')
+        if (segments[4] === 'cancel') {
+          if (req.method !== 'POST') throw methodNotAllowed(req.method)
+          return Response.json({ task: publicImageTask(await service.cancelOperation(operationId)) })
+        }
+        if (segments[4]) throw ApiError.badRequest('无效的图片操作')
+        if (req.method !== 'GET') throw methodNotAllowed(req.method)
+        return Response.json({ task: publicImageTask(await service.getOperation(operationId)) })
+      }
+      if (area !== 'projects') throw ApiError.notFound('找不到生图接口')
+      const projectId = segments[3]
+      const action = segments[4]
+      if (projectId && action === 'events') {
+        if (req.method !== 'GET' || segments[5]) throw methodNotAllowed(req.method)
+        const cursor = Number(url.searchParams.get('cursor') ?? 0)
+        const limit = Number(url.searchParams.get('limit') ?? 100)
+        const waitMs = Number(url.searchParams.get('wait_ms') ?? 25_000)
+        if (!Number.isInteger(cursor) || cursor < 0) throw ApiError.badRequest('cursor 必须是非负整数')
+        if (!Number.isInteger(limit) || limit < 1 || limit > 200) throw ApiError.badRequest('limit 必须在 1 到 200 之间')
+        if (!Number.isInteger(waitMs) || waitMs < 0 || waitMs > 25_000) throw ApiError.badRequest('wait_ms 必须在 0 到 25000 之间')
+        return Response.json(publicImageEventPage(
+          await service.waitForOperationEvents(projectId, cursor, limit, waitMs),
+        ))
+      }
+      if (projectId && action === 'restore') {
+        if (req.method !== 'POST' || segments[5]) throw methodNotAllowed(req.method)
+        return Response.json({ deletion: publicMediaDeletionReceiptSchema.parse(await service.restoreProject(projectId)) })
+      }
+      // Preserve the parser's proven request validation while presenting the
+      // image-owned route to callers: /api/images/projects/*.
+      return await projectHandler(req, url, ['api', 'media', 'images', ...segments.slice(2)])
     } catch (error) {
       return apiErrorResponse(error)
     }

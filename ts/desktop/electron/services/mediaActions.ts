@@ -4,12 +4,7 @@ import {
   type PublicMediaTask as MediaTask,
   type AnalyzeVideoProjectInput,
   type RenderVideoInput,
-  type UpdateImageProjectInput,
-  type PublicImageWorkbenchProject as ImageWorkbenchProject,
   type PublicVideoStudioProject as VideoStudioProject,
-  type SaveImageOutputInput,
-  type SaveImageOutputResult,
-  type StartImageOperationInput,
 } from '../../../shared/contracts/media'
 
 type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
@@ -28,50 +23,12 @@ export class ElectronMediaActions {
     this.fetchImpl = options.fetchImpl ?? fetch
   }
 
-  submitImageProject(
-    projectId: string,
-    confirmUnknownRetry = false,
-  ): Promise<{ task: MediaTask }> {
-    return this.post(`/api/media/images/projects/${encodeURIComponent(projectId)}/submit`, {
-      confirm_unknown_retry: confirmUnknownRetry,
-    })
-  }
-
-  startImageOperation(
-    projectId: string,
-    input: StartImageOperationInput,
-  ): Promise<{ task: MediaTask }> {
-    return this.post(`/api/media/images/projects/${encodeURIComponent(projectId)}/operations`, input)
-  }
-
-  updateUnknownImageProject(
-    projectId: string,
-    input: UpdateImageProjectInput,
-  ): Promise<{ project: ImageWorkbenchProject }> {
-    return this.request(
-      `/api/media/images/projects/${encodeURIComponent(projectId)}`,
-      'PUT',
-      input,
-    )
-  }
-
   renderVideo(projectId: string, input: RenderVideoInput): Promise<{ task: MediaTask }> {
     return this.post(`/api/media/videos/projects/${encodeURIComponent(projectId)}/render`, input)
   }
 
   analyzeVideo(projectId: string, input: AnalyzeVideoProjectInput): Promise<{ task: MediaTask }> {
     return this.post(`/api/media/videos/projects/${encodeURIComponent(projectId)}/analyze`, input)
-  }
-
-  saveImageOutput(projectId: string, input: SaveImageOutputInput): Promise<SaveImageOutputResult> {
-    const resultId = input.version_id ?? input.output_id
-    if (!resultId) throw new Error(mediaSafeError('MEDIA_INVALID_REQUEST').message)
-    return this.post(
-      input.version_id
-        ? `/api/media/images/projects/${encodeURIComponent(projectId)}/versions/${encodeURIComponent(input.version_id)}/save`
-        : `/api/media/images/projects/${encodeURIComponent(projectId)}/outputs/${encodeURIComponent(resultId)}/save`,
-      { output_path: input.output_path },
-    )
   }
 
   addVideoSource(projectId: string, path: string): Promise<{ project: VideoStudioProject; task: MediaTask }> {

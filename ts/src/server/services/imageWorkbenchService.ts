@@ -520,7 +520,7 @@ export class ImageWorkbenchService {
       text_layers: input.kind === 'text_layout' ? input.text_layers : undefined,
       image_layers: input.kind === 'composite' ? input.image_layers : undefined,
       mime_type: rendered.mime_type,
-      asset_path: `/api/media/images/projects/${project.id}/outputs/${outputId}/content`,
+      asset_path: `/api/images/projects/${project.id}/outputs/${outputId}/content`,
     }
     return await this.repository.saveProject(imageWorkbenchProjectSchema.parse({
       ...project,
@@ -884,7 +884,7 @@ export class ImageWorkbenchService {
           mime_type: verified.mime_type,
           data_url: undefined,
           url: undefined,
-          asset_path: `/api/media/images/projects/${legacy.id}/outputs/${assetId}/content`,
+          asset_path: `/api/images/projects/${legacy.id}/outputs/${assetId}/content`,
         })
       }
       for (const version of legacy.versions) {
@@ -899,7 +899,7 @@ export class ImageWorkbenchService {
           version_id: version.id,
           version_kind: version.kind ?? 'generated',
           mime_type: 'image/png',
-          asset_path: `/api/media/images/projects/${legacy.id}/outputs/${asset.id}/content`,
+          asset_path: `/api/images/projects/${legacy.id}/outputs/${asset.id}/content`,
         }, version, bytes)
       }
       for (const output of legacy.outputs) {
@@ -1148,7 +1148,7 @@ export class ImageWorkbenchService {
             width: verified.width,
             height: verified.height,
             mime_type: verified.mime_type,
-            asset_path: `/api/media/images/projects/${project.id}/outputs/${outputId}/content`,
+            asset_path: `/api/images/projects/${project.id}/outputs/${outputId}/content`,
             revised_prompt: candidate.revised_prompt,
           },
           version: {

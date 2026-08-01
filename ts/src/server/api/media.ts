@@ -25,16 +25,8 @@ import {
 } from '../../../shared/contracts/media.js'
 import { errorResponse, ApiError } from '../middleware/errorHandler.js'
 import { MediaProjectService, MediaServiceError } from '../services/mediaProjectService.js'
-import { ImageWorkbenchService, ImageWorkbenchServiceError } from '../services/imageWorkbenchService.js'
-import { ImageWorkbenchRepositoryError } from '../services/imageWorkbenchRepository.js'
 import { VideoWorkbenchService, VideoWorkbenchServiceError } from '../services/videoWorkbenchService.js'
 import { VideoWorkbenchRepositoryError } from '../services/videoWorkbenchRepository.js'
-import {
-  createImageWorkbenchApiHandler,
-  publicImageEventPage,
-  publicImageProject,
-  publicImageTask,
-} from './imageWorkbench.js'
 import {
   createVideoWorkbenchApiHandler,
   publicVideoEventPage,
@@ -73,13 +65,6 @@ function requireMediaUiCapability(req: Request, expected: string): void {
 }
 
 function mediaErrorResponse(error: unknown): Response {
-  if (error instanceof ImageWorkbenchServiceError) {
-    const safe = mediaSafeErrorForServiceError(error.code, error.status)
-    return Response.json(
-      { error: safe.code, message: safe.message },
-      { status: error.status },
-    )
-  }
   if (error instanceof VideoWorkbenchServiceError || error instanceof VideoWorkbenchRepositoryError) {
     const safe = mediaSafeErrorForServiceError(error.code, error.status)
     return Response.json(
@@ -153,7 +138,7 @@ function publicProject(project: MediaProject): PublicMediaProject {
         if (!fileName) return []
         return [{
           ...reference,
-          image_path: `/api/media/images/projects/${project.id}/references/${reference.asset_id}/content`,
+      image_path: `/api/images/projects/${project.id}/references/${reference.asset_id}/content`,
           mime_type: asset.mime_type,
         }]
       }),
@@ -189,7 +174,7 @@ function publicProject(project: MediaProject): PublicMediaProject {
             if (!source.mime_type || !['image/png', 'image/jpeg', 'image/webp'].includes(source.mime_type)) return []
             return [{
               ...layer,
-              image_path: `/api/media/images/projects/${project.id}/layer-assets/${source.id}/content`,
+              image_path: `/api/images/projects/${project.id}/layer-assets/${source.id}/content`,
               mime_type: source.mime_type,
             }]
           }),
@@ -264,12 +249,8 @@ function publicToolchainStatus(status: Awaited<ReturnType<MediaProjectService['t
 export function createMediaApiHandler(
   service: MediaProjectService,
   mediaUiCapability = '',
-  imageWorkbench?: ImageWorkbenchService,
   videoWorkbench?: VideoWorkbenchService,
 ) {
-  const imageApiHandler = imageWorkbench
-    ? createImageWorkbenchApiHandler(imageWorkbench, mediaUiCapability)
-    : null
   const videoApiHandler = videoWorkbench
     ? createVideoWorkbenchApiHandler(videoWorkbench, mediaUiCapability)
     : null
@@ -281,11 +262,10 @@ export function createMediaApiHandler(
     try {
       const area = segments[2]
 
-      // Images have their own domain service and storage. The legacy media
-      // handler remains responsible only for video and migration readers.
-      if (area === 'images' && imageApiHandler) {
-        return await imageApiHandler(req, url, segments)
-      }
+      // Image projects, operations, assets and event replay now live under
+      // `/api/images/*`. This legacy endpoint cannot remain a second writable
+      // image path while old media data is still importable.
+      if (area === 'images') throw ApiError.notFound('生图接口已迁移到 /api/images')
       if (area === 'videos' && videoApiHandler) {
         return await videoApiHandler(req, url, segments)
       }
@@ -295,26 +275,6 @@ export function createMediaApiHandler(
         if (projectId) {
           if (segments[4] !== 'events' || segments[5]) throw ApiError.badRequest('无效的媒体项目操作')
           if (req.method !== 'GET') throw methodNotAllowed(req.method)
-          if (imageWorkbench) {
-            const imageProject = await imageWorkbench.getProject(projectId).catch(error => {
-              if (error instanceof ImageWorkbenchServiceError && error.code === 'IMAGE_PROJECT_NOT_FOUND') return null
-              throw error
-            })
-            if (imageProject) {
-              const cursor = Number(url.searchParams.get('cursor') ?? 0)
-              const limit = Number(url.searchParams.get('limit') ?? 100)
-              const waitMs = Number(url.searchParams.get('wait_ms') ?? 25_000)
-              if (!Number.isInteger(cursor) || cursor < 0) throw ApiError.badRequest('cursor 必须是非负整数')
-              if (!Number.isInteger(limit) || limit < 1 || limit > 200) throw ApiError.badRequest('limit 必须在 1 到 200 之间')
-              if (!Number.isInteger(waitMs) || waitMs < 0 || waitMs > 25_000) throw ApiError.badRequest('wait_ms 必须在 0 到 25000 之间')
-              return Response.json(publicImageEventPage(
-                await imageWorkbench.waitForOperationEvents(imageProject.id, cursor, limit, waitMs),
-              ))
-            }
-            if (await imageWorkbench.hasProjectHistory(projectId)) {
-              throw new ImageWorkbenchServiceError('图片项目已移入回收站', 404, 'IMAGE_PROJECT_NOT_FOUND')
-            }
-          }
           if (videoWorkbench) {
             const videoProject = await videoWorkbench.getProject(projectId).catch(error => {
               if (error instanceof VideoWorkbenchServiceError && error.code === 'VIDEO_PROJECT_NOT_FOUND') return null
@@ -354,23 +314,18 @@ export function createMediaApiHandler(
           throw ApiError.badRequest('kind 只能是 image 或 video')
         }
         const kind = requestedKind === 'image' || requestedKind === 'video' ? requestedKind : undefined
-        if (imageWorkbench || videoWorkbench) {
-          const [legacyProjects, imageProjects, imageDeletions, videoProjects, videoDeletions] = await Promise.all([
+        if (videoWorkbench) {
+          const [legacyProjects, videoProjects, videoDeletions] = await Promise.all([
             service.listProjectsForOwner(STANDALONE_MEDIA_OWNER, kind),
-            imageWorkbench && kind !== 'video' ? imageWorkbench.listProjects() : [],
-            imageWorkbench && kind !== 'video' ? imageWorkbench.listDeletions() : [],
             videoWorkbench && kind !== 'image' ? videoWorkbench.listProjects() : [],
             videoWorkbench && kind !== 'image' ? videoWorkbench.listDeletions() : [],
           ])
           const migratedIds = new Set([
-            ...imageProjects.map(project => project.id),
-            ...imageDeletions.map(receipt => receipt.project_id),
             ...videoProjects.map(project => project.id),
             ...videoDeletions.map(receipt => receipt.project_id),
           ])
           const projects = [
             ...legacyProjects.filter(project => !migratedIds.has(project.id)).map(publicProject),
-            ...imageProjects.map(publicImageProject),
             ...videoProjects.map(publicVideoProject),
           ].sort((left, right) => right.updated_at.localeCompare(left.updated_at))
           return Response.json({ projects })
@@ -391,12 +346,11 @@ export function createMediaApiHandler(
 
       if (area === 'deletions') {
         if (req.method !== 'GET' || segments[3]) throw methodNotAllowed(req.method)
-        const [legacyDeletions, imageDeletions, videoDeletions] = await Promise.all([
+        const [legacyDeletions, videoDeletions] = await Promise.all([
           service.listDeletionsForOwner(STANDALONE_MEDIA_OWNER),
-          imageWorkbench?.listDeletions() ?? [],
           videoWorkbench?.listDeletions() ?? [],
         ])
-        const deletions = [...legacyDeletions, ...imageDeletions, ...videoDeletions]
+        const deletions = [...legacyDeletions, ...videoDeletions]
           .sort((left, right) => right.deleted_at.localeCompare(left.deleted_at))
         return Response.json({
           deletions: deletions.map(receipt => publicMediaDeletionReceiptSchema.parse(receipt)),
@@ -407,16 +361,6 @@ export function createMediaApiHandler(
         const projectId = segments[3]
         if (!projectId) throw ApiError.badRequest('缺少媒体项目 ID')
         const action = segments[4]
-        if (!action && imageWorkbench && req.method === 'GET') {
-          const imageProject = await imageWorkbench.getProject(projectId).catch(error => {
-            if (error instanceof ImageWorkbenchServiceError && error.code === 'IMAGE_PROJECT_NOT_FOUND') return null
-            throw error
-          })
-          if (imageProject) return Response.json({ project: publicImageProject(imageProject) })
-          if (await imageWorkbench.hasProjectHistory(projectId)) {
-            throw new ImageWorkbenchServiceError('图片项目已移入回收站', 404, 'IMAGE_PROJECT_NOT_FOUND')
-          }
-        }
         if (!action && videoWorkbench && req.method === 'GET') {
           const videoProject = await videoWorkbench.getProject(projectId).catch(error => {
             if (error instanceof VideoWorkbenchServiceError && error.code === 'VIDEO_PROJECT_NOT_FOUND') return null
@@ -429,15 +373,6 @@ export function createMediaApiHandler(
         }
         if (action === 'restore') {
           if (req.method !== 'POST' || segments[5]) throw methodNotAllowed(req.method)
-          if (imageWorkbench) {
-            const restored = await imageWorkbench.restoreProject(projectId).catch(error => {
-              if (error instanceof ImageWorkbenchRepositoryError && error.code === 'IMAGE_PROJECT_NOT_FOUND') return null
-              throw error
-            })
-            if (restored) {
-              return Response.json({ deletion: publicMediaDeletionReceiptSchema.parse(restored) })
-            }
-          }
           if (videoWorkbench) {
             const restored = await videoWorkbench.restoreProject(projectId).catch(error => {
               if (error instanceof VideoWorkbenchRepositoryError && error.code === 'VIDEO_PROJECT_NOT_FOUND') return null
@@ -451,17 +386,6 @@ export function createMediaApiHandler(
           return Response.json({ deletion: receipt })
         }
         if (action) throw ApiError.badRequest('无效的媒体项目操作')
-        if (imageWorkbench && req.method === 'DELETE') {
-          const deletion = await imageWorkbench.deleteProject(projectId).catch(error => {
-            if (
-              (error instanceof ImageWorkbenchRepositoryError || error instanceof ImageWorkbenchServiceError)
-              && error.code === 'IMAGE_PROJECT_NOT_FOUND'
-            ) return null
-            throw error
-          })
-          if (deletion) return new Response(null, { status: 204 })
-          if (await imageWorkbench.hasProjectHistory(projectId)) return new Response(null, { status: 204 })
-        }
         if (videoWorkbench && req.method === 'DELETE') {
           const deletion = await videoWorkbench.deleteProject(projectId).catch(error => {
             if (
@@ -485,23 +409,6 @@ export function createMediaApiHandler(
       if (area === 'tasks') {
         const taskId = segments[3]
         if (!taskId) throw ApiError.badRequest('缺少媒体任务 ID')
-        if (imageWorkbench) {
-          const imageTask = await imageWorkbench.getOperation(taskId).catch(error => {
-            if (error instanceof ImageWorkbenchRepositoryError && error.code === 'IMAGE_OPERATION_NOT_FOUND') return null
-            throw error
-          })
-          if (imageTask) {
-            if (segments[4] === 'cancel') {
-              if (req.method !== 'POST') throw methodNotAllowed(req.method)
-              return Response.json({ task: publicImageTask(await imageWorkbench.cancelOperation(taskId)) })
-            }
-            if (req.method !== 'GET') throw methodNotAllowed(req.method)
-            return Response.json({ task: publicImageTask(imageTask) })
-          }
-          if (await imageWorkbench.hasOperationHistory(taskId)) {
-            throw new ImageWorkbenchServiceError('图片操作已随项目移入回收站', 404, 'IMAGE_OPERATION_NOT_FOUND')
-          }
-        }
         if (videoWorkbench) {
           const videoTask = await videoWorkbench.getOperation(taskId).catch(error => {
             if (error instanceof VideoWorkbenchRepositoryError && error.code === 'VIDEO_OPERATION_NOT_FOUND') return null

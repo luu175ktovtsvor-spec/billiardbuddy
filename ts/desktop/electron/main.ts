@@ -30,6 +30,7 @@ import { createUpdateSmokeUpdaterFromEnv } from './services/updateSmoke'
 import { ElectronTerminalService, type TerminalSpawnInput } from './services/terminal'
 import { ElectronPreviewService, type PreviewBounds } from './services/preview'
 import { ElectronMediaActions } from './services/mediaActions'
+import { ElectronImageActions } from './services/imageActions'
 import {
   applyDefaultConfigDir,
   applyStartupPortableMode,
@@ -83,6 +84,7 @@ let updaterService: ElectronUpdaterService | null = null
 let terminalService: ElectronTerminalService | null = null
 let previewService: ElectronPreviewService | null = null
 let mediaActions: ElectronMediaActions | null = null
+let imageActions: ElectronImageActions | null = null
 let browserCapability: ElectronBrowserCapability | null = null
 let mcpOAuthCredentialKey: string | null = null
 let providerCredentialService: ProviderCredentialService | null = null
@@ -361,6 +363,14 @@ function getMediaActions() {
   return mediaActions
 }
 
+function getImageActions() {
+  imageActions ??= new ElectronImageActions({
+    getServerUrl: () => getServerRuntime().getServerUrl(),
+    capability: mediaUiCapability,
+  })
+  return imageActions
+}
+
 function getUpdaterService() {
   const smokeUpdater = createUpdateSmokeUpdaterFromEnv(process.env)
   updaterService ??= new ElectronUpdaterService(smokeUpdater ?? autoUpdater, {
@@ -506,30 +516,30 @@ function registerIpcHandlers() {
     openDialog(currentWindow(event), payload as Parameters<typeof openDialog>[1]))
   registerHandler(ELECTRON_IPC_CHANNELS.dialogSave, (event, payload) =>
     saveDialog(currentWindow(event), payload as Parameters<typeof saveDialog>[1]))
-  registerHandler(ELECTRON_IPC_CHANNELS.mediaSubmitImage, (_event, payload) => {
+  registerHandler(ELECTRON_IPC_CHANNELS.imageSubmitProject, (_event, payload) => {
     const input = payload as { projectId: string, confirmUnknownRetry: boolean }
-    return getMediaActions().submitImageProject(input.projectId, input.confirmUnknownRetry)
+    return getImageActions().submitProject(input.projectId, input.confirmUnknownRetry)
   })
-  registerHandler(ELECTRON_IPC_CHANNELS.mediaStartImageOperation, (_event, payload) => {
+  registerHandler(ELECTRON_IPC_CHANNELS.imageStartOperation, (_event, payload) => {
     const request = payload as {
       projectId: string
-      input: Parameters<ElectronMediaActions['startImageOperation']>[1]
+      input: Parameters<ElectronImageActions['startOperation']>[1]
     }
-    return getMediaActions().startImageOperation(request.projectId, request.input)
+    return getImageActions().startOperation(request.projectId, request.input)
   })
-  registerHandler(ELECTRON_IPC_CHANNELS.mediaUpdateUnknownImage, (_event, payload) => {
+  registerHandler(ELECTRON_IPC_CHANNELS.imageUpdateUnknownProject, (_event, payload) => {
     const update = payload as {
       projectId: string
-      input: Parameters<ElectronMediaActions['updateUnknownImageProject']>[1]
+      input: Parameters<ElectronImageActions['updateUnknownProject']>[1]
     }
-    return getMediaActions().updateUnknownImageProject(update.projectId, update.input)
+    return getImageActions().updateUnknownProject(update.projectId, update.input)
   })
-  registerHandler(ELECTRON_IPC_CHANNELS.mediaSaveImageOutput, (_event, payload) => {
+  registerHandler(ELECTRON_IPC_CHANNELS.imageSaveOutput, (_event, payload) => {
     const request = payload as {
       projectId: string
-      input: Parameters<ElectronMediaActions['saveImageOutput']>[1]
+      input: Parameters<ElectronImageActions['saveOutput']>[1]
     }
-    return getMediaActions().saveImageOutput(request.projectId, request.input)
+    return getImageActions().saveOutput(request.projectId, request.input)
   })
   registerHandler(ELECTRON_IPC_CHANNELS.mediaAddVideoSource, (_event, payload) => {
     const input = payload as { projectId: string; path: string }

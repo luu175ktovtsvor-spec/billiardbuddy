@@ -218,8 +218,8 @@ export const imageWorkbenchOutputSchema = z.object({
   image_layers: z.array(imageLayerSchema).max(20).optional(),
   mime_type: z.enum(['image/png', 'image/jpeg', 'image/webp']).default('image/png'),
   data_url: z.string().startsWith('data:image/').optional(),
-  /** Old media paths remain readable during migration; new image projects use their own route. */
-  asset_path: z.string().regex(/^\/api\/media\/(?:assets\/|images\/projects\/)/).optional(),
+  /** Legacy media assets stay readable; formal image assets use `/api/images/*`. */
+  asset_path: z.string().regex(/^\/api\/(?:media\/assets\/|images\/projects\/)/).optional(),
   url: z.string().url().optional(),
   revised_prompt: z.string().max(8000).optional(),
   quality_assessment: imageQualityAssessmentResultSchema.optional(),
@@ -239,7 +239,7 @@ export const publicImageVersionSchema = z.object({
   height: z.number().int().positive().max(12000).optional(),
   text_layers: z.array(imageTextLayerSchema).max(80).default([]),
   image_layers: z.array(imageLayerSchema.extend({
-    image_path: z.string().startsWith('/api/media/images/projects/'),
+    image_path: z.string().startsWith('/api/images/projects/'),
     mime_type: z.enum(['image/png', 'image/jpeg', 'image/webp']),
   })).max(20).default([]),
   quality_assessment: imageQualityAssessmentResultSchema.optional(),
@@ -263,7 +263,7 @@ export const imageProjectReferenceSchema = z.object({
 })
 
 export const publicImageProjectReferenceSchema = imageProjectReferenceSchema.extend({
-  image_path: z.string().startsWith('/api/media/images/projects/'),
+  image_path: z.string().startsWith('/api/images/projects/'),
   mime_type: z.enum(['image/png', 'image/jpeg', 'image/webp']),
 })
 
