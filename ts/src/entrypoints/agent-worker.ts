@@ -25,7 +25,7 @@ type StartResult = { identity: AgentWorkerCoreIdentity; binding: CoreBinding }
 type CoreRequest = {
   type: 'core_request'
   id: string
-  operation: 'start' | 'prepare' | 'command_prompt' | 'chat_prompt' | 'model' | 'engine_tools' | 'engine_model' | 'hook_model' | 'model_ack' | 'engine_tool' | 'plan' | 'tools' | 'approval' | 'question' | 'stop' | 'shutdown' | 'external_operation_begin' | 'external_operation_result' | 'external_operation_checkpoint' | 'external_operation_mcp_checkpoint' | 'external_operation_unknown'
+  operation: 'start' | 'prepare' | 'command_prompt' | 'chat_prompt' | 'model' | 'engine_tools' | 'engine_model' | 'hook_model' | 'model_ack' | 'engine_tool' | 'plan' | 'context_compaction' | 'tools' | 'approval' | 'question' | 'stop' | 'shutdown' | 'external_operation_begin' | 'external_operation_result' | 'external_operation_checkpoint' | 'external_operation_mcp_checkpoint' | 'external_operation_unknown'
   execution_claim_token?: string
   value?: unknown
 }
@@ -385,6 +385,7 @@ process.on('message', (message: unknown) => {
                   acknowledgeModelResult: async (operationId, receipt) => { await request('model_ack', { operation_id: operationId, receipt } satisfies { operation_id: string; receipt: ProductModelOperationReceipt }) },
                   engineTool: async (operationId, value) => await request('engine_tool', { operation_id: operationId, ...value }) as ProductHostEngineToolResult,
                   recordPlan: async (operationId, plan) => { await request('plan', { operation_id: operationId, plan } satisfies { operation_id: string; plan: ProductTaskPlan }) },
+                  recordContextCompaction: async compaction => { await request('context_compaction', compaction) },
                   approve: async (requestId, approved) => { await request('approval', { requestId, approved }) },
                   answer: async (requestId, answers) => { await request('question', { requestId, answers }) },
                   stopHost: async () => { await request('stop') },

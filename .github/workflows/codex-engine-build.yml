@@ -60,13 +60,23 @@ jobs:
         with:
           toolchain: '1.95.0'
 
-      - name: 应用受管工具面源码补丁
+      - name: 应用 BilliardBuddy 源码补丁
         working-directory: third_party/codex-engine
         shell: bash
         run: |
           set -euo pipefail
           git apply --check ../codex-engine-patches/0001-host-managed-tools-only.patch
+          git apply --check ../codex-engine-patches/0002-context-compaction-ledger.patch
           git apply --whitespace=nowarn ../codex-engine-patches/0001-host-managed-tools-only.patch
+          git apply --whitespace=nowarn ../codex-engine-patches/0002-context-compaction-ledger.patch
+
+      - name: 重新生成并核对 App Server 协议类型
+        working-directory: third_party/codex-engine/codex-rs
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo run --locked -p codex-app-server-protocol --bin write_schema_fixtures
+          git diff --exit-code -- app-server-protocol/schema/typescript/v2/ThreadItem.ts
 
       - name: 仅构建 Codex App Server
         working-directory: third_party/codex-engine/codex-rs

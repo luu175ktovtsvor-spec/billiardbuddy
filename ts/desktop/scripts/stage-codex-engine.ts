@@ -59,12 +59,10 @@ const desktopRoot = resolve(import.meta.dir, '..')
 const repositoryRoot = resolve(desktopRoot, '..', '..')
 const engineRoot = join(repositoryRoot, 'third_party', 'codex-engine')
 const engineWorkspace = join(engineRoot, 'codex-rs')
-const hostManagedToolsPatch = join(
-  repositoryRoot,
-  'third_party',
-  'codex-engine-patches',
-  '0001-host-managed-tools-only.patch',
-)
+const enginePatches = [
+  join(repositoryRoot, 'third_party', 'codex-engine-patches', '0001-host-managed-tools-only.patch'),
+  join(repositoryRoot, 'third_party', 'codex-engine-patches', '0002-context-compaction-ledger.patch'),
+] as const
 
 export function parseCodexEngineCliOptions(argv: string[]): CodexEngineCliOptions {
   let destinationDir: string | undefined
@@ -129,6 +127,16 @@ function sha256(path: string): string {
   return createHash('sha256').update(readFileSync(path)).digest('hex')
 }
 
+function enginePatchSha256(): string {
+  const hash = createHash('sha256')
+  for (const patch of enginePatches) {
+    hash.update(`${basename(patch)}\0`)
+    hash.update(readFileSync(patch))
+    hash.update('\0')
+  }
+  return hash.digest('hex')
+}
+
 function isThinMachO64(path: string): boolean {
   const bytes = readFileSync(path)
   return bytes.length >= 32 && bytes.readUInt32LE(0) === 0xfeedfacf
@@ -176,8 +184,10 @@ function assertCleanSource(): void {
   for (const file of ['LICENSE', 'NOTICE']) {
     if (!existsSync(join(engineRoot, file))) throw new Error(`Codex 引擎源码缺少 ${file}`)
   }
-  if (!existsSync(hostManagedToolsPatch)) throw new Error('Codex 引擎受管工具补丁缺失')
-  run('git', ['apply', '--check', hostManagedToolsPatch], engineRoot)
+  for (const patch of enginePatches) {
+    if (!existsSync(patch)) throw new Error(`Codex 引擎源码补丁缺失: ${basename(patch)}`)
+    run('git', ['apply', '--check', patch], engineRoot)
+  }
 }
 
 function resolveCargoCommand(): string {
@@ -195,9 +205,13 @@ function resolveCargoCommand(): string {
 
 function applyPatchAndBuild(target: SupportedTarget): string {
   assertCleanSource()
-  run('git', ['apply', '--whitespace=nowarn', hostManagedToolsPatch], engineRoot)
+  const appliedPatches: string[] = []
   let buildError: unknown
   try {
+    for (const patch of enginePatches) {
+      run('git', ['apply', '--whitespace=nowarn', patch], engineRoot)
+      appliedPatches.push(patch)
+    }
     run(resolveCargoCommand(), [
       'build',
       '--locked',
@@ -211,10 +225,12 @@ function applyPatchAndBuild(target: SupportedTarget): string {
   }
 
   let revertError: unknown
-  try {
-    run('git', ['apply', '--reverse', '--whitespace=nowarn', hostManagedToolsPatch], engineRoot)
-  } catch (error) {
-    revertError = error
+  for (const patch of [...appliedPatches].reverse()) {
+    try {
+      run('git', ['apply', '--reverse', '--whitespace=nowarn', patch], engineRoot)
+    } catch (error) {
+      revertError ??= error
+    }
   }
 
   if (revertError) {
@@ -282,7 +298,7 @@ export function verifyStagedCodexEngine(options: CodexEngineStageOptions): void 
   }
   const manifest = readManifest(manifestPath)
   verifyManifest(manifest, options.target)
-  if (sha256(hostManagedToolsPatch) !== manifest.patchSha256) {
+  if (enginePatchSha256() !== manifest.patchSha256) {
     throw new Error('Codex 引擎补丁哈希不符合当前产品源码')
   }
   if (sha256(licensePath) !== manifest.licenseSha256 || sha256(noticePath) !== manifest.noticeSha256) {
@@ -328,7 +344,7 @@ export function stageCodexEngine(options: CodexEngineStageOptions): void {
     engine: ENGINE_NAME,
     sourceRepository: 'https://github.com/openai/codex',
     sourceRevision: EXPECTED_SOURCE_REVISION,
-    patchSha256: sha256(hostManagedToolsPatch),
+    patchSha256: enginePatchSha256(),
     target: options.target,
     binary: stagedCodexEngineBinaryName(options.target),
     binaryHashMode,

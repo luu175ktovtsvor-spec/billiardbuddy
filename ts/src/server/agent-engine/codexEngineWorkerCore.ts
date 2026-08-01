@@ -47,6 +47,8 @@ export type CodexEngineWorkerParentPort = {
   engineTool(operationId: string, request: { tool_call_id: string; tool_name: string; arguments: Record<string, unknown>; tool_surface_digest: string }): Promise<ProductHostEngineToolResult>
   /** Persist a TodoWrite projection before the source receives its tool result. */
   recordPlan(operationId: string, plan: ProductTaskPlan): Promise<void>
+  /** Persist source compaction before its next model sampling may begin. */
+  recordContextCompaction(compaction: Extract<AgentWorkerOutbound, { type: 'event'; event: 'context_compaction' }>): Promise<void>
   approve(requestId: string, approved: boolean): Promise<void>
   answer(requestId: string, answers: readonly string[]): Promise<void>
   stopHost(): Promise<void>
@@ -54,9 +56,17 @@ export type CodexEngineWorkerParentPort = {
 }
 
 type PendingModelReceipt = {
+  kind: 'sampling' | 'context_compaction'
   operation_id: string
   assistant: ProductAssistantMessage
   result_digest: string
+}
+
+type ActiveContextCompaction = {
+  source: 'automatic' | 'manual'
+  generation: number
+  input_tokens: number
+  model_started: boolean
 }
 
 type PendingToolReceipt = {
@@ -99,6 +109,10 @@ function record(value: JsonValue | undefined): Record<string, JsonValue | undefi
 
 function text(value: unknown, limit = 4 * 1024 * 1024): string | undefined {
   return typeof value === 'string' && value.length > 0 && value.length <= limit ? value : undefined
+}
+
+function positiveInteger(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : undefined
 }
 
 function deferred(): Deferred {
@@ -145,6 +159,34 @@ function acceptedTurn(notification: CodexAppServerNotification): { thread_id: st
   const turnId = text(turn?.id, 512)
   const status = text(turn?.status, 128)
   return threadId && turnId && status ? { thread_id: threadId, turn_id: turnId, status } : undefined
+}
+
+function sourceContextCompaction(notification: CodexAppServerNotification): {
+  phase: 'started' | 'completed'
+  thread_id: string
+  turn_id: string
+  item_id: string
+  source: 'automatic' | 'manual'
+  input_tokens: number
+  output_tokens?: number
+  summary?: string
+} | undefined {
+  const phase = notification.method === 'item/started' ? 'started' : notification.method === 'item/completed' ? 'completed' : undefined
+  if (!phase) return undefined
+  const params = record(notification.params)
+  const item = record(params?.item)
+  if (item?.type !== 'contextCompaction') return undefined
+  const threadId = text(params?.threadId, 512)
+  const turnId = text(params?.turnId, 512)
+  const itemId = text(item.id, 512)
+  const source = item.source === 'automatic' || item.source === 'manual' ? item.source : undefined
+  const inputTokens = positiveInteger(item.inputTokens)
+  if (!threadId || !turnId || !itemId || !source || !inputTokens) throw new Error('CODEX_ENGINE_CONTEXT_COMPACTION_START_INVALID')
+  if (phase === 'started') return { phase, thread_id: threadId, turn_id: turnId, item_id: itemId, source, input_tokens: inputTokens }
+  const outputTokens = positiveInteger(item.outputTokens)
+  const summary = text(item.summary, 40_000)
+  if (!outputTokens || !summary) throw new Error('CODEX_ENGINE_CONTEXT_COMPACTION_COMPLETION_INVALID')
+  return { phase, thread_id: threadId, turn_id: turnId, item_id: itemId, source, input_tokens: inputTokens, output_tokens: outputTokens, summary }
 }
 
 function dynamicToolContent(result: ProductHostEngineToolResult): Array<Record<string, string>> {
@@ -218,6 +260,8 @@ export class CodexEngineWorkerCore implements AgentWorkerCore {
   private pendingModelAcknowledgement?: PendingModelAcknowledgement
   private pendingInput?: PendingInputReceipt
   private pendingSteer?: PendingSteerReceipt
+  private contextCompactionStartReceipt?: Deferred
+  private contextCompactionCompletionReceipt?: Deferred
   private toolSurface?: ProductHostEngineToolSurface
   private lifecycleHooks?: ProductHarnessLifecycleHookHost
   private readonly hookAbortController = new AbortController()
@@ -226,6 +270,8 @@ export class CodexEngineWorkerCore implements AgentWorkerCore {
   private initialHookContext = ''
   private readonly checkpointedModelOperations = new Set<string>()
   private readonly agentMessageText = new Map<string, string>()
+  private readonly activeContextCompactions = new Map<string, ActiveContextCompaction>()
+  private contextCompactionGeneration = 0
   private modelReceiptCheckpointed = false
   private inputStarted = false
   private terminal = false
@@ -334,6 +380,7 @@ export class CodexEngineWorkerCore implements AgentWorkerCore {
     if (this.stopping) return
     this.stopping = true
     this.hookAbortController.abort()
+    await this.failActiveContextCompactions().catch(() => undefined)
     this.emit({ type: 'event', event: 'stopping' })
     const activeTurn = this.activeTurn
     await Promise.all([
@@ -346,6 +393,7 @@ export class CodexEngineWorkerCore implements AgentWorkerCore {
     this.hookAbortController.abort()
     this.turnReceipt?.reject(new Error('CODEX_ENGINE_WORKER_SHUTDOWN'))
     this.steerReceipt?.reject(new Error('CODEX_ENGINE_WORKER_SHUTDOWN'))
+    await this.failActiveContextCompactions().catch(() => undefined)
     const pendingModel = this.pendingModel
     this.pendingModel = undefined
     if (pendingModel) await this.options.parent.markExternalOperationUnknown(pendingModel.operation_id).catch(() => undefined)
@@ -376,6 +424,7 @@ export class CodexEngineWorkerCore implements AgentWorkerCore {
     this.hookSnapshotDigest = hookSnapshot.digest
     const instructionSnapshot = createProductInstructionSnapshot(this.options.binding.work_dir)
     this.projectInstructions = { digest: instructionSnapshot.digest, prompt: instructionSnapshot.prompt }
+    this.contextCompactionGeneration = this.options.identity.session_context?.compact_generation ?? 0
     this.lifecycleHooks = createProductHarnessLifecycleHookHost({
       snapshot: hookSnapshot,
       cwd: this.options.binding.work_dir,
@@ -398,7 +447,7 @@ export class CodexEngineWorkerCore implements AgentWorkerCore {
       model: this.options.binding.model,
       run_model: request => this.runModel(request),
       checkpoint_model_result: async assistant => await this.checkpointModelResult(assistant),
-      on_notification: notification => this.onNotification(notification),
+      on_notification: async notification => await this.onNotification(notification),
       on_server_request: async request => await this.onServerRequest(request),
     })
     await runtime.start()
@@ -479,12 +528,18 @@ export class CodexEngineWorkerCore implements AgentWorkerCore {
   private async *runModel(request: CodexResponsesModelRequest): AsyncGenerator<ProductModelEvent, void> {
     await this.turnReceipt?.promise
     await this.steerReceipt?.promise
+    await this.contextCompactionStartReceipt?.promise
     if (this.terminal || this.stopping) throw new Error('CODEX_ENGINE_RUN_TERMINAL')
     const surface = this.toolSurface
     const toolNames = request.tools.map(tool => tool.name).sort((left, right) => left.localeCompare(right))
-    if (
-      !surface
-      || toolNames.length !== surface.tools.length
+    const activeCompaction = [...this.activeContextCompactions.values()].find(compaction => !compaction.model_started)
+    if (!activeCompaction) await this.contextCompactionCompletionReceipt?.promise
+    if (!surface) throw new Error('CODEX_ENGINE_TOOL_SURFACE_MISSING')
+    if (activeCompaction) {
+      if (toolNames.length !== 0) throw new Error('CODEX_ENGINE_CONTEXT_COMPACTION_TOOL_SURFACE_INVALID')
+      activeCompaction.model_started = true
+    } else if (
+      toolNames.length !== surface.tools.length
       || toolNames.some((name, index) => name !== surface.tools[index]?.name)
     ) throw new Error('CODEX_ENGINE_TOOL_SURFACE_MISMATCH')
     const operationId = await this.options.parent.beginExternalOperation('model')
@@ -494,11 +549,11 @@ export class CodexEngineWorkerCore implements AgentWorkerCore {
         messages: request.messages,
         systemPrompt: [
           ...request.system_prompt,
-          ...(this.projectInstructions?.prompt ? [this.projectInstructions.prompt] : []),
-          ...(this.initialHookContext ? [`项目 Hook 补充指令：\n${this.initialHookContext}`] : []),
+          ...(activeCompaction ? [] : this.projectInstructions?.prompt ? [this.projectInstructions.prompt] : []),
+          ...(activeCompaction ? [] : this.initialHookContext ? [`项目 Hook 补充指令：\n${this.initialHookContext}`] : []),
         ],
         thinkingConfig: request.thinking_config,
-        engine_tool_names: toolNames,
+        engine_tool_names: activeCompaction ? [] : toolNames,
         engine_tool_surface_digest: surface.digest,
         ...(request.model ? { model: request.model } : {}),
       })) {
@@ -509,6 +564,7 @@ export class CodexEngineWorkerCore implements AgentWorkerCore {
         if (final) throw new Error('CODEX_ENGINE_MODEL_RESULT_DUPLICATED')
         final = event
         this.pendingModel = {
+          kind: activeCompaction ? 'context_compaction' : 'sampling',
           operation_id: operationId,
           assistant: final,
           result_digest: assistantResultDigest(final),
@@ -538,7 +594,7 @@ export class CodexEngineWorkerCore implements AgentWorkerCore {
       this.checkpointedModelOperations.add(pending.operation_id)
       modelCheckpointed = true
       if (assistant.operation_receipt) await this.acknowledgeModelResult(assistant.operation_receipt)
-      this.modelReceiptCheckpointed = true
+      if (pending.kind === 'sampling') this.modelReceiptCheckpointed = true
     } catch (error) {
       this.pendingModel = undefined
       if (!modelCheckpointed) await this.options.parent.markExternalOperationUnknown(pending.operation_id).catch(() => undefined)
@@ -867,7 +923,92 @@ export class CodexEngineWorkerCore implements AgentWorkerCore {
     })
   }
 
-  private onNotification(notification: CodexAppServerNotification): void {
+  private async onNotification(notification: CodexAppServerNotification): Promise<void> {
+    const compaction = sourceContextCompaction(notification)
+    if (compaction) {
+      const activeTurn = this.activeTurn
+      if (
+        !activeTurn
+        || this.terminal
+        || this.stopping
+        || compaction.thread_id !== activeTurn.thread_id
+        || compaction.turn_id !== activeTurn.turn_id
+      ) return
+      if (compaction.phase === 'started') {
+        if (this.activeContextCompactions.has(compaction.item_id) || this.contextCompactionCompletionReceipt) {
+          throw new Error('CODEX_ENGINE_CONTEXT_COMPACTION_OVERLAP')
+        }
+        const startReceipt = deferred()
+        const completionReceipt = deferred()
+        void startReceipt.promise.catch(() => undefined)
+        void completionReceipt.promise.catch(() => undefined)
+        const active: ActiveContextCompaction = {
+          source: compaction.source,
+          generation: this.contextCompactionGeneration + 1,
+          input_tokens: compaction.input_tokens,
+          model_started: false,
+        }
+        this.activeContextCompactions.set(compaction.item_id, active)
+        this.contextCompactionStartReceipt = startReceipt
+        this.contextCompactionCompletionReceipt = completionReceipt
+        try {
+          const event: Extract<AgentWorkerOutbound, { type: 'event'; event: 'context_compaction' }> = {
+            type: 'event',
+            event: 'context_compaction',
+            phase: 'started',
+            source: active.source,
+            generation: active.generation,
+            input_tokens: active.input_tokens,
+          }
+          await this.options.parent.recordContextCompaction(event)
+          this.emit(event)
+          startReceipt.resolve()
+        } catch (error) {
+          this.activeContextCompactions.delete(compaction.item_id)
+          this.contextCompactionStartReceipt = undefined
+          this.contextCompactionCompletionReceipt = undefined
+          const failure = error instanceof Error ? error : new Error('CODEX_ENGINE_CONTEXT_COMPACTION_START_FAILED')
+          startReceipt.reject(failure)
+          completionReceipt.reject(failure)
+          throw failure
+        }
+        return
+      }
+      const active = this.activeContextCompactions.get(compaction.item_id)
+      if (
+        !active
+        || active.source !== compaction.source
+        || active.input_tokens !== compaction.input_tokens
+        || !compaction.output_tokens
+        || !compaction.summary
+      ) throw new Error('CODEX_ENGINE_CONTEXT_COMPACTION_COMPLETION_MISMATCH')
+      try {
+        const event: Extract<AgentWorkerOutbound, { type: 'event'; event: 'context_compaction' }> = {
+          type: 'event',
+          event: 'context_compaction',
+          phase: 'completed',
+          source: active.source,
+          generation: active.generation,
+          input_tokens: active.input_tokens,
+          output_tokens: compaction.output_tokens,
+          summary: compaction.summary,
+          compacted_through_event_sequence: this.options.identity.session_context?.event_sequence ?? 0,
+        }
+        await this.options.parent.recordContextCompaction(event)
+        this.emit(event)
+        this.contextCompactionGeneration = active.generation
+        this.activeContextCompactions.delete(compaction.item_id)
+        this.contextCompactionCompletionReceipt?.resolve()
+        this.contextCompactionCompletionReceipt = undefined
+      } catch (error) {
+        const failure = error instanceof Error ? error : new Error('CODEX_ENGINE_CONTEXT_COMPACTION_COMPLETION_FAILED')
+        this.activeContextCompactions.delete(compaction.item_id)
+        this.contextCompactionCompletionReceipt?.reject(failure)
+        this.contextCompactionCompletionReceipt = undefined
+        throw failure
+      }
+      return
+    }
     if (notification.method === 'item/agentMessage/delta') {
       const params = record(notification.params)
       const itemId = text(params?.itemId, 512)
@@ -896,12 +1037,43 @@ export class CodexEngineWorkerCore implements AgentWorkerCore {
     const completed = acceptedTurn(notification)
     if (!completed || !this.activeTurn) return
     if (completed.thread_id !== this.activeTurn.thread_id || completed.turn_id !== this.activeTurn.turn_id) return
+    if (this.activeContextCompactions.size > 0) await this.failActiveContextCompactions()
     if (completed.status === 'completed' && this.modelReceiptCheckpointed) {
       this.emitTerminal('completed')
       return
     }
     if (completed.status === 'interrupted' && this.stopping) return
     this.emitTerminal('recovery_required', 'task_model_response_invalid')
+  }
+
+  private async failActiveContextCompactions(): Promise<void> {
+    const activeCompactions = [...this.activeContextCompactions.values()]
+    this.activeContextCompactions.clear()
+    let firstError: Error | undefined
+    for (const active of activeCompactions) {
+      try {
+        const event: Extract<AgentWorkerOutbound, { type: 'event'; event: 'context_compaction' }> = {
+          type: 'event',
+          event: 'context_compaction',
+          phase: 'failed',
+          source: active.source,
+          generation: active.generation,
+          input_tokens: active.input_tokens,
+        }
+        await this.options.parent.recordContextCompaction(event)
+        this.emit(event)
+      } catch (error) {
+        firstError ??= error instanceof Error ? error : new Error('CODEX_ENGINE_CONTEXT_COMPACTION_FAILURE_UNRECORDED')
+      }
+    }
+    if (activeCompactions.length) {
+      const failure = firstError ?? new Error('CODEX_ENGINE_CONTEXT_COMPACTION_INTERRUPTED')
+      this.contextCompactionStartReceipt?.reject(failure)
+      this.contextCompactionCompletionReceipt?.reject(failure)
+      this.contextCompactionStartReceipt = undefined
+      this.contextCompactionCompletionReceipt = undefined
+    }
+    if (firstError) throw firstError
   }
 
   private emit(message: Extract<AgentWorkerOutbound, { type: 'event' | 'terminal' }>): void {
