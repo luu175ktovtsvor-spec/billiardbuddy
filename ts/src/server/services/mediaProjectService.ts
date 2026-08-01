@@ -1761,6 +1761,21 @@ export class MediaProjectService {
       return await this.recoverInterruptedVideoPreview(task)
     }
     if (
+      task.kind === 'video.probe'
+      && ['queued', 'running'].includes(task.status)
+    ) {
+      const failure = mediaSafeError('MEDIA_VIDEO_PROBE_INTERRUPTED')
+      return await this.saveTask({
+        ...task,
+        status: 'failed',
+        progress: 0,
+        stage: '素材读取已中断',
+        error: failure.message,
+        error_code: failure.code,
+        updated_at: this.iso(),
+      })
+    }
+    if (
       (task.kind === 'video.analyze' || task.kind === 'video.plan')
       && ['queued', 'running'].includes(task.status)
       && !this.activeVideoAnalyses.has(task.id)
