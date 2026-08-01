@@ -3,6 +3,7 @@ import { buildProviderRegistryRuntimeEnv, validateProviderRuntimeConfiguration }
 import type { AgentWorkerCoreFactory } from '../product/agentWorkerService.js'
 import { stripHostOnlyGatewayEnv } from '../services/gatewayEnv.js'
 import type { ProductAgentHostRuntime } from './productAgentHostRuntime.js'
+import { validProductModelOperationReceipt } from '../../../shared/product/harnessMessages.js'
 import { getProductMcpOAuthMasterKey, PRODUCT_MCP_OAUTH_KEY_ENV } from './productMcpOAuth.js'
 import { TASK_RUN_EXTERNAL_OPERATION_KINDS, type TaskRunExternalOperationKind } from '../product/taskRunLedgerModel.js'
 import type { ProductTaskPlan } from '../../../shared/product/taskEvents.js'
@@ -356,6 +357,16 @@ export class IpcAgentWorkerLauncher implements AgentWorkerChildLauncher {
         if (typeof operationId !== 'string' || state.external_operation_states.get(operationId) !== 'in_flight') return { ok: false }
         const { operation_id: _operationId, ...modelRequest } = value
         for await (const chunk of runtime.engineModel(modelRequest as never)) relay({ type: 'runtime_chunk', id: request.id, value: chunk })
+        return { ok: true }
+      }
+      if (request.operation === 'model_ack' && request.value && typeof request.value === 'object') {
+        const value = request.value as { operation_id?: unknown; receipt?: unknown }
+        if (
+          typeof value.operation_id !== 'string'
+          || state.external_operation_states.get(value.operation_id) !== 'in_flight'
+          || !validProductModelOperationReceipt(value.receipt)
+        ) return { ok: false }
+        await runtime.acknowledgeModelResult(value.receipt)
         return { ok: true }
       }
       if (request.operation === 'engine_tool' && request.value && typeof request.value === 'object') {
