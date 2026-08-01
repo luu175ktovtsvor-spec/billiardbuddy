@@ -975,7 +975,14 @@ export class MediaProjectService {
         ? JSON.stringify([project.prompt, project.outputs.map(output => output.id)])
         : JSON.stringify(project.timeline),
     )
-    const existingAssets = new Map((current?.assets ?? []).map(asset => [asset.id, asset]))
+    const requestedAssetIds = new Set(project.assets.map(asset => asset.id))
+    // Preview files are regenerable caches: unlike result/source assets they
+    // are not referenced by a durable media version, so a replacement or an
+    // availability reconciliation may deliberately remove them. Every other
+    // asset remains append-only historical evidence.
+    const existingAssets = new Map((current?.assets ?? [])
+      .filter(asset => asset.role !== 'preview' || requestedAssetIds.has(asset.id))
+      .map(asset => [asset.id, asset]))
     for (const asset of project.assets) {
       const existing = existingAssets.get(asset.id)
       if (existing && JSON.stringify(existing) !== JSON.stringify(asset)) {
