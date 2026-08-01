@@ -187,7 +187,24 @@ export class AgentWorkerSupervisor {
     active.child.send({ type: 'steer', queue_item_id: queueItemId, text })
     return true
   }
-  async stop(runId: string, generation: number): Promise<void> { const key = `${runId}:${generation}`; if (this.settled.has(key) || this.terminalPending.has(key)) return; this.stopRequested.add(key); this.terminalPending.add(key); const active = this.active.get(key); try { if (active) active.child.send({ type: 'stop' }); else await this.scheduler.cancel(`agent-worker:${runId}:${generation}`).catch(() => undefined); await this.messages?.record(runId, generation, { type: 'terminal', state: 'stopped', run_id: runId }) } finally { await this.fail(runId, generation, active?.fencing, 'STOPPED', 'terminal') } }
+  async stop(runId: string, generation: number): Promise<void> {
+    const key = `${runId}:${generation}`
+    if (this.settled.has(key) || this.terminalPending.has(key)) return
+    this.stopRequested.add(key)
+    this.terminalPending.add(key)
+    const active = this.active.get(key)
+    try {
+      if (active) active.child.send({ type: 'stop' })
+      else await this.scheduler.cancel(`agent-worker:${runId}:${generation}`).catch(() => undefined)
+      await this.messages?.record(runId, generation, { type: 'terminal', state: 'stopped', run_id: runId })
+    } catch {
+      // A stop click is not enough to make a TaskRun terminal. Its durable
+      // terminal projection is the replay fence for UI and restart recovery.
+      await this.fail(runId, generation, active?.fencing, 'EVENT_PERSIST_FAILED', 'recovery_required')
+      return
+    }
+    await this.fail(runId, generation, active?.fencing, 'STOPPED', 'terminal')
+  }
   async shutdown(): Promise<void> {
     await Promise.all([...this.active.values()].map(active => this.stop(active.run_id, active.generation)))
   }
