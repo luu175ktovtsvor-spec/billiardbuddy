@@ -34,21 +34,11 @@ export type ProductTaskRunIdentity = {
   initial_input: string
   initial_attachments?: string[]
   permission_snapshot: ProductPermissionSnapshot
-  auto_memory: {
-    storage_dir: string
-    enabled: boolean
-    entry_id: string
-  }
   session_context: {
     text: string
     event_sequence: number
     estimated_tokens: number
     compact_generation: number
-  }
-  harness_session: {
-    storage_dir: string
-    binding_id: string
-    lineage_id: string
   }
   codex_engine: CodexEnginePrivateState
   /** Present only for an internal child Run created by the Subtask tool. */

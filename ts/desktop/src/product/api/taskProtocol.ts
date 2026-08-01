@@ -164,7 +164,6 @@ const PRODUCT_TASK_EXTERNAL_OPERATION_KINDS = new Set<ProductTaskExternalOperati
   'hook_http',
   'model_ack',
   'workspace_init',
-  'auto_memory_append',
 ])
 
 function parseRunFailure(value: unknown): ProductTaskRunFailure | undefined {

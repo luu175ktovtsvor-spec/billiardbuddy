@@ -43,7 +43,6 @@ function getStoredLocale(): Locale {
 }
 
 type SettingsStore = {
-  productAutoMemoryEnabled: boolean
   deepThinkingEnabled: boolean
   preventSleepWhileRunning: boolean
   locale: Locale
@@ -64,7 +63,6 @@ type SettingsStore = {
   appModeRequiresRestart: boolean
 
   fetchAll: () => Promise<void>
-  setProductAutoMemoryEnabled: (enabled: boolean) => Promise<void>
   setDeepThinkingEnabled: (enabled: boolean) => Promise<void>
   setPreventSleepWhileRunning: (enabled: boolean) => Promise<void>
   setLocale: (locale: Locale) => void
@@ -105,7 +103,6 @@ const DEFAULT_NETWORK_SETTINGS: NetworkSettings = {
 }
 
 export const useSettingsStore = create<SettingsStore>((set, get) => ({
-  productAutoMemoryEnabled: true,
   deepThinkingEnabled: true,
   preventSleepWhileRunning: false,
   locale: getStoredLocale(),
@@ -148,7 +145,6 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
       const theme = isThemeMode(userSettings.theme) ? userSettings.theme : 'system'
       useUIStore.getState().setTheme(theme)
       set({
-        productAutoMemoryEnabled: userSettings.productAutoMemoryEnabled !== false,
         deepThinkingEnabled: userSettings.deepThinkingEnabled !== false,
         preventSleepWhileRunning: userSettings.preventSleepWhileRunning === true,
         theme,
@@ -167,17 +163,6 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
       const message =
         error instanceof Error ? error.message : 'Failed to load desktop settings'
       set({ isLoading: false, error: message })
-      throw error
-    }
-  },
-
-  setProductAutoMemoryEnabled: async (enabled) => {
-    const prev = get().productAutoMemoryEnabled
-    set({ productAutoMemoryEnabled: enabled })
-    try {
-      await productSettingsApi.updateUser({ productAutoMemoryEnabled: enabled })
-    } catch (error) {
-      set({ productAutoMemoryEnabled: prev })
       throw error
     }
   },

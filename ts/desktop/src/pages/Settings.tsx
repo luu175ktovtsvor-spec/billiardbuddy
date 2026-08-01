@@ -273,8 +273,6 @@ export function Settings() {
 
 export function GeneralSettings() {
   const {
-    productAutoMemoryEnabled,
-    setProductAutoMemoryEnabled,
     deepThinkingEnabled,
     setDeepThinkingEnabled,
     preventSleepWhileRunning,
@@ -775,30 +773,6 @@ export function GeneralSettings() {
             </label>
           </div>
 
-          <div className="mt-6">
-            <h2 className="text-base font-semibold text-[var(--color-text-primary)] mb-1">{t('settings.general.productAutoMemoryTitle')}</h2>
-            <p className="text-sm text-[var(--color-text-tertiary)] mb-3">{t('settings.general.productAutoMemoryDescription')}</p>
-            <label className="relative flex items-start gap-3 rounded-xl border border-[var(--color-border)] bg-[var(--color-surface-container-low)] px-4 py-3 cursor-pointer hover:border-[var(--color-border-focus)] transition-colors">
-              <input
-                type="checkbox"
-                aria-label={t('settings.general.productAutoMemoryEnabled')}
-                checked={productAutoMemoryEnabled}
-                onChange={(e) => void setProductAutoMemoryEnabled(e.target.checked)}
-                className={SETTINGS_CHECKBOX_INPUT_CLASS}
-              />
-              <SettingsCheckboxMark checked={productAutoMemoryEnabled} />
-              <div className="min-w-0">
-                <div className="text-sm font-medium text-[var(--color-text-primary)]">
-                  {t('settings.general.productAutoMemoryEnabled')}
-                </div>
-                <div className="text-xs text-[var(--color-text-tertiary)] mt-1 leading-5">
-                  {productAutoMemoryEnabled
-                    ? t('settings.general.productAutoMemoryHintOn')
-                    : t('settings.general.productAutoMemoryHintOff')}
-                </div>
-              </div>
-            </label>
-          </div>
         </div>
       </details>
 

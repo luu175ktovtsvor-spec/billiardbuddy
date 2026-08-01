@@ -34,7 +34,6 @@ const USER_PREFERENCE_KEYS = [
   'language',
   'desktopNotificationsEnabled',
   'webSearch',
-  'productAutoMemoryEnabled',
   'deepThinkingEnabled',
   'preventSleepWhileRunning',
 ] as const
@@ -188,9 +187,6 @@ function projectUserPreferences(settings: Record<string, unknown>): Record<strin
   if (typeof settings.desktopNotificationsEnabled === 'boolean') {
     result.desktopNotificationsEnabled = settings.desktopNotificationsEnabled
   }
-  if (typeof settings.productAutoMemoryEnabled === 'boolean') {
-    result.productAutoMemoryEnabled = settings.productAutoMemoryEnabled
-  }
   if (typeof settings.deepThinkingEnabled === 'boolean') {
     result.deepThinkingEnabled = settings.deepThinkingEnabled
   }
@@ -234,10 +230,6 @@ function validateUserPreferenceUpdate(body: Record<string, unknown>): Record<str
   if (hasOwn(body, 'desktopNotificationsEnabled')) {
     assertBoolean(body.desktopNotificationsEnabled, 'desktopNotificationsEnabled')
     update.desktopNotificationsEnabled = body.desktopNotificationsEnabled
-  }
-  if (hasOwn(body, 'productAutoMemoryEnabled')) {
-    assertBoolean(body.productAutoMemoryEnabled, 'productAutoMemoryEnabled')
-    update.productAutoMemoryEnabled = body.productAutoMemoryEnabled
   }
   if (hasOwn(body, 'deepThinkingEnabled')) {
     assertBoolean(body.deepThinkingEnabled, 'deepThinkingEnabled')

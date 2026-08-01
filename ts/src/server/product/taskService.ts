@@ -72,8 +72,6 @@ import {
   ProductCoreOperationTerminalError,
   type ProductCoreOperationBridge,
 } from './productCoreOperationBridge.js'
-import { ProductSettingsRepository } from './productSettingsRepository.js'
-import { ProductAutoMemoryRepository } from '../services/productAutoMemory.js'
 import { codexEnginePrivateState } from '../agent-engine/codexEnginePrivateState.js'
 import { productTaskActivitySummary } from './taskEventProjection.js'
 import {
@@ -650,7 +648,6 @@ function authorityTaskIndex(authority: AuthorityFile): ProductTaskIndexResponse 
 export class ProductTaskService {
   private readonly storagePath: string
   private readonly authorityPath: string
-  private readonly usesDefaultStoragePath: boolean
   private readonly core: AgentCoreAdapter
   private readonly legacyRegistry: ProductTaskLegacyRegistry
   private readonly workspaceFs: WorkspaceFilesystemPort
@@ -661,7 +658,6 @@ export class ProductTaskService {
   private readonly now: () => Date
   private readonly installationId: string
   private readonly dispatcher?: ProductTaskRunDispatchPort
-  private readonly autoMemoryEnabled: () => Promise<boolean>
   private readonly privateArtifacts: ProductTaskPrivateArtifactPort
   private readonly runtimeEvents: ProductTaskRuntimeEventPort
   private taskRunQueueRecovery?: Promise<void>
@@ -683,14 +679,11 @@ export class ProductTaskService {
     installationId?: string
     /** Server-private dispatch seam. Accepted durable receipts are never rolled back on launch failure. */
     dispatcher?: ProductTaskRunDispatchPort
-    /** Product AutoMem preference seam owned by the BilliardBuddy task runtime. */
-    autoMemoryEnabled?: () => Promise<boolean>
     /** Server-owned cleanup for Harness and other private task artifacts. */
     privateArtifacts?: ProductTaskPrivateArtifactPort
     /** Server-owned projection publisher for already durable task events. */
     runtimeEvents?: ProductTaskRuntimeEventPort
   } = {}) {
-    this.usesDefaultStoragePath = !options.storagePath
     this.storagePath = options.storagePath ?? productStorePath()
     this.authorityPath = options.storagePath ? authorityStorePath(options.storagePath) : authorityStorePath(productStorePath())
     this.core = options.core ?? agentCoreAdapter
@@ -709,11 +702,6 @@ export class ProductTaskService {
             ? [{ participant: 'active_core_run', code: 'ACTIVE_RUN', action: 'stop' }]
             : []
         },
-      },
-      {
-        id: 'legacy_product_session_memory',
-        inspectBlockers: async () => [],
-        purgeCleanup: async taskId => purgeLegacyProductSessionMemory(this.sessionMemoryStorageDir(), taskId),
       },
       {
         id: 'task_run_queue',
@@ -745,9 +733,6 @@ export class ProductTaskService {
     this.privateArtifacts = options.privateArtifacts ?? productTaskPrivateArtifactPort
     this.runtimeEvents = options.runtimeEvents
       ?? createProductTaskRuntimeEventPort(new ProductTaskWorkerRuntimeEvents())
-    this.autoMemoryEnabled = options.autoMemoryEnabled ?? (this.usesDefaultStoragePath
-      ? async () => (await new ProductSettingsRepository().get()).productAutoMemoryEnabled !== false
-      : async () => true)
   }
 
   async listTasksAuthoritatively(): Promise<ProductTaskIndexResponse> {
@@ -2570,14 +2555,6 @@ export class ProductTaskService {
   /** Server-private scheduler state never crosses a product API boundary. */
   workerSchedulerStatePath(): string { return path.join(path.dirname(this.storagePath), 'product-agent-worker-scheduler.json') }
 
-  /** Private BB-05B state lives beside, not inside, ProductTask authority. */
-  private sessionMemoryStorageDir(): string { return path.join(path.dirname(this.storagePath), 'product-session-memory') }
-
-  /** Private BB-05C project memory; never aliases legacy ~/.BilliardBuddy memory. */
-  private autoMemoryStorageDir(): string { return path.join(path.dirname(this.storagePath), 'product-auto-memory') }
-
-  private harnessSessionStorageDir(): string { return path.join(path.dirname(this.storagePath), 'product-harness-sessions') }
-
   private async purgeTaskPrivateArtifacts(taskId: string): Promise<void> {
     await this.privateArtifacts.purge({
       taskId,
@@ -3365,17 +3342,7 @@ export class ProductTaskService {
     initial_input: string
     initial_attachments?: string[]
     permission_snapshot: ProductPermissionSnapshot
-    auto_memory: {
-      storage_dir: string
-      enabled: boolean
-      entry_id: string
-    }
     session_context: DurableSessionContext
-    harness_session: {
-      storage_dir: string
-      binding_id: string
-      lineage_id: string
-    }
     codex_engine: {
       engine_home: string
       thread_storage_dir: string
@@ -3409,9 +3376,7 @@ export class ProductTaskService {
       initial_input: entry.text,
       permission_snapshot: taskPermissionSnapshot(run.permission_snapshot),
       ...(initialAttachments.length ? { initial_attachments: initialAttachments } : {}),
-      auto_memory: { storage_dir: this.autoMemoryStorageDir(), enabled: await this.autoMemoryEnabled(), entry_id: run.entry_id },
       session_context: sessionContext,
-      harness_session: { storage_dir: this.harnessSessionStorageDir(), binding_id: resumeBindingId, lineage_id: run.lineage_id },
       codex_engine: codexEnginePrivateState(this.storagePath, resumeBindingId, run.lineage_id),
       ...(typeof run.parent_run_id === 'string' ? { subtask: { parent_run_id: run.parent_run_id } } : {}),
     }
@@ -4710,21 +4675,6 @@ export class ProductTaskService {
     }
   }
 
-}
-
-async function purgeLegacyProductSessionMemory(storageDir: string, taskId: string): Promise<void> {
-  const entries = await fs.readdir(storageDir, { withFileTypes: true }).catch((error) => {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []
-    throw error
-  })
-  for (const entry of entries) {
-    if (!entry.isFile() || !entry.name.endsWith('.json')) continue
-    const file = path.join(storageDir, entry.name)
-    const value = await fs.readFile(file, 'utf8').then(JSON.parse)
-    if (value && typeof value === 'object' && !Array.isArray(value) && value.task_id === taskId) {
-      await fs.unlink(file)
-    }
-  }
 }
 
 /** Each Local Product Server owns one explicitly composed Task Authority. */
