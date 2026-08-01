@@ -3,7 +3,7 @@ import * as path from 'node:path'
 import { randomBytes } from 'node:crypto'
 import { lock } from '../../utils/lockfile.js'
 
-export const CURRENT_PRODUCT_STORAGE_MIGRATION_VERSION = 3
+export const CURRENT_PRODUCT_STORAGE_MIGRATION_VERSION = 5
 export const OLDEST_SUPPORTED_PRODUCT_VERSION = '0.4.9'
 
 type MigrationState = {
@@ -61,7 +61,7 @@ const MUTABLE_JSON_ROOTS = new Set([
   'billiardbuddy/media/deletions',
   'billiardbuddy/voice/operations',
 ])
-const BACKUP_ID = /^v[123]-[0-9]{8}T[0-9]{6}Z-[a-f0-9]{8}$/
+const BACKUP_ID = /^v[1-5]-[0-9]{8}T[0-9]{6}Z-[a-f0-9]{8}$/
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
@@ -152,7 +152,7 @@ async function preflightSupportedSchemas(configDir: string): Promise<void> {
     if (!isRecord(authority)) throw new Error('AUTHORITY_INVALID')
     assertVersion(authority.version, [1], 'UNSUPPORTED_PRODUCT_TASK_AUTHORITY_SCHEMA')
     if (authority.authority_schema_revision !== undefined) {
-      assertVersion(authority.authority_schema_revision, [1, 2, 3, 4], 'UNSUPPORTED_PRODUCT_TASK_AUTHORITY_SCHEMA')
+      assertVersion(authority.authority_schema_revision, [1, 2, 3, 4, 5, 6, 7, 8], 'UNSUPPORTED_PRODUCT_TASK_AUTHORITY_SCHEMA')
     }
   }
 

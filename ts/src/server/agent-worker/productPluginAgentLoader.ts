@@ -69,7 +69,7 @@ function agentTool(input: { plugin: string; name: string; description: string; i
         canUseTool,
         mutableMessages: messages,
         promptContext: context.productPromptContext,
-        ...(input.model ? { model: input.model } : {}),
+        model: input.model ?? context.options.mainLoopModel,
         runModel: context.runProductModel as Parameters<typeof runProductAgentLoop>[0]['runModel'],
         executeTools: context.executeProductTools as Parameters<typeof runProductAgentLoop>[0]['executeTools'],
         toolHooks: context.toolHooks,

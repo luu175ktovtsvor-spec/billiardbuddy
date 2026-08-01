@@ -54,14 +54,10 @@
 
 ## R2 Agent Harness
 
-- **普通提交入口**：`POST /api/product/tasks/:id/runs` 只校验公开输入并调用 `submitTaskRun()`；后者在 `ProductTaskAuthorityRepository.transactSubmit()` 的一次事务中冻结模型/权限、写入 Thread entry、TaskRun、dispatch record、公开 user event 和幂等 receipt，提交后才请求 Supervisor 派发。
-- **派发与隔离**：`AgentWorkerSupervisor` 先以 Run/代际申请共享资源租约，再 claim 同一份 Authority dispatch；Worker 只接受带运行 ID、代际、fencing token 和权限摘要签名的 start。`createProductAgentHarness()` 目前只有 worker entrypoint 构造，`StandardProductAgentHostRuntime` 目前只有 server-private factory 构造。
-- **模型、工具与投影**：Harness 只接收冻结的 model context、Host model port 和 Host tool port；实际 `runProductModel()` 只由 Host runtime 调用，普通 `runProductTools()` 也只在 Host runtime/工具执行模块内。Worker 的安全消息经 ingress application 和 task service 写回 Authority event ledger；桌面协议按 `event_sequence` 白名单解析并保存 resume cursor。
-- **当前结论**：R2 的静态退出条件已闭合。普通提交、续写、停止、恢复、协作、审阅与重放均回到同一 Authority；Worker、Host、Renderer 与 Provider 没有直接写 ProductTask/TaskRun/event 的旁路。`check:server`、`audit:source`、`check:desktop`（生产构建）和相关文档 whitespace audit 已通过。桌面构建仍只有既存 `::highlight(...)` CSS 兼容性 warning。
-- **续写、停止、恢复与终态**：续写先经 Authority receipt 创建分支；恢复只接受 `recovery_required` Run，未知效果必须显式确认，才会轮换 session 与递增 dispatch generation。停止在未 claim 前以条件终态结算；已 claim 的 Worker 必须先停 Host/子进程并持久化 terminal，缺少该证据就记为 `recovery_required`。`ProductTaskWorkerMessageSink` 串行处理 Worker 消息，terminal 以同一 Authority 事务补齐未结束 activity、assistant item、terminal event 与队列推进，重复 terminal 必须签名一致。
-- **权限与 Host 边界**：Worker 只能通过 IPC 请求 model、tools、compaction 持久化和 approval；IPC Host 只允许对应的窄 operation。Harness 即使先作权限判定，实际工具仍由 Host 在冻结权限信封和 operation scope 下重新判定并执行；当前扫描未发现 Harness/Worker 直接改写 `task_runs`、`dispatch_records`、`thread_entries` 或 `task_events`。
-- **协作、审阅与重放**：协作工具只调用 `ProductAgentCollaborationPort`，该端口把 spawn、邮箱、follow-up、wait 和 interrupt 落到 `ProductTaskService` 的 Authority transaction；它不在父工具调用中直接运行子 Harness。审阅编译为受限的普通 TaskRun，Host 对审阅工具再次限制为本地只读。WebSocket 先以 Authority `event_sequence` 回放事件和当前 Run snapshot，再以高水位过滤缓存的 live event；桌面仅保存 resume cursor，并用白名单协议解析事件。
-- **未验证/待处理**：没有运行软件、模型、工具、协作或设备，因此实际模型质量、真实副作用、中断时的进程树清理和多窗口网络时序仍是最终软件验收事实，不能由本静态结论替代。
+- **实际入口与唯一权威**：公开 API 的 create/continue/submit/recover 命令都由 `ProductTaskService` 进入 `ProductTaskAuthorityRepository` 事务，原子持久化 TaskRun、dispatch record、thread entry、用户可见事件和幂等 receipt。Worker 只通过 `ProductTaskWorkerMessageSink` 交付消息；它先调用 Task Service 写入 Authority，再经运行时投影发布。
+- **当前源码证明**：`createProductTaskRunComposition()` 是 Server 唯一的 Supervisor、Scheduler、IPC Launcher 与 Host factory 装配点；Worker entrypoint 是 Harness 唯一构造点。Harness 仅接收模型、工具、策略和投影端口，Host 才执行模型与工具。私有 Harness session、资源租约、进程瞬态状态和 Renderer view 都各自有恢复边界，不能替代 Authority。
+- **当前结论**：R2 的静态边界已闭合。Run 的提交、恢复、Worker ingress、Host model/tool、事件账本和 WebSocket/desktop projection 形成一条无旁路生产链；类型检查、桌面生产构建、源码可达性审计和差异空白检查均已重新通过。
+- **未验证/待处理**：未运行模型、工具、协作、设备或多窗口真实路径；模型输出质量、外部副作用、进程树清理与网络时序仍须在最终软件验收确认。R3 才负责模型来源、凭据与用量控制面。
 - **下一项**：R3.1 模型执行端口与使用权控制面回溯核验。
 
 ## R3 模型执行与使用权控制面

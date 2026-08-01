@@ -9,14 +9,12 @@ import type { AgentWorkerOutbound } from '../../../shared/product/agentWorker.js
 import type { PermissionExecutionEnvelope } from '../../../shared/product/permissionExecutionEnvelope.js'
 import { ProductAutoMemoryRepository, type ProductAutoMemoryBinding } from '../services/productAutoMemory.js'
 import { createProductInstructionSnapshot } from '../services/productInstructions.js'
-import { projectAgentWorkerApprovalReview, projectProductTaskActionApproval } from '../product/taskApprovalProjection.js'
-import { productTaskActivityKindForTool, productTaskActivitySummary } from '../product/taskEventProjection.js'
-import { projectAnswerableAskUserQuestions } from '../product/taskEventProjection.js'
-import { buildProductTaskAskUserQuestionUpdatedInput } from '../product/taskInboundPolicy.js'
+import type { ProductAgentHarnessModelPolicyPort, ProductAgentHarnessProjectionPort } from './agentHarnessPorts.js'
 import type { ProductTaskMcpHost } from './mcpHost.js'
 import { runProductAgentLoop } from './productAgentLoop.js'
 import type { ProductAgentLoopInput } from './productAgentLoop.js'
 import { runProductModel } from './productModelRuntime.js'
+import { runProductTools } from './productToolExecution.js'
 import { createProductUserMessage } from './productMessages.js'
 import { loadProductAgentCommands, loadProductAgentExtensionTools } from './productExtensionLoader.js'
 import { productAgentCommands } from './productPluginAgentLoader.js'
@@ -33,9 +31,7 @@ import {
 import { createProductHookSnapshot } from './productHookSnapshot.js'
 import { decideProductToolPermission } from './productPermissionDecision.js'
 import { emptyProductToolPermissionContext, type ProductCommand, type ProductQueuedCommand, type ProductToolContext, type ProductToolHooks, type ProductToolPermissionContext, type ProductTools } from './productTool.js'
-import { productCompactThreshold, productDefaultTextModel, resolveProductTextModel } from '../product/productGatewayRuntime.js'
-import { classifyProductTaskRunFailure } from '../product/taskRunFailure.js'
-import type { ProductTaskRunFailure } from '../../../shared/product/taskEvents.js'
+import type { ProductTaskActivityKind, ProductTaskRunFailure } from '../../../shared/product/taskEvents.js'
 
 export type ProductAgentHarnessPort = {
   input(text: string, attachments?: readonly string[], queueItemId?: string): Promise<boolean | void>
@@ -52,6 +48,8 @@ export async function createProductAgentHarness(input: {
   session_id: string
   work_dir: string
   permission_envelope: PermissionExecutionEnvelope
+  projection: ProductAgentHarnessProjectionPort
+  model_policy: ProductAgentHarnessModelPolicyPort
   mcp_host?: ProductTaskMcpHost
   query?: typeof runProductAgentLoop
   run_model?: ProductAgentLoopInput['runModel']
@@ -152,15 +150,16 @@ export async function createProductAgentHarness(input: {
     commands: ProductCommand[],
     tools: ProductTools,
     abortController: AbortController,
+    model: string,
   ): ProductToolContext => ({
     productTaskId: input.task_id,
     toolHooks: productToolHooks,
     productPromptContext: productPromptContext(),
-    runProductModel: input.run_model,
-    executeProductTools: input.execute_tools,
+    runProductModel: input.run_model ?? runProductModel,
+    executeProductTools: input.execute_tools ?? runProductTools,
     options: {
       commands,
-      mainLoopModel: productDefaultTextModel(),
+      mainLoopModel: model,
       tools,
       thinkingConfig: { type: 'adaptive' },
       commandQueue,
@@ -187,7 +186,7 @@ export async function createProductAgentHarness(input: {
   }
   const listeners = new Set<(message: Extract<AgentWorkerOutbound, { type: 'event' | 'terminal' }>) => void>()
   const emit = (message: Parameters<(typeof listeners)['add']>[0] extends (message: infer Message) => void ? Message : never) => listeners.forEach(listener => listener(message))
-  const finish = (state: 'completed' | 'stopped' | 'recovery_required', failure?: ProductTaskRunFailure) => { if (terminal) return; terminal = true; for (const pending of queuedSteers.values()) pending.resolve(false); queuedSteers.clear(); emit({ type: 'terminal', state, run_id: input.run_id, ...(state === 'recovery_required' ? { failure: failure ?? classifyProductTaskRunFailure(undefined) } : {}) }) }
+  const finish = (state: 'completed' | 'stopped' | 'recovery_required', failure?: ProductTaskRunFailure) => { if (terminal) return; terminal = true; for (const pending of queuedSteers.values()) pending.resolve(false); queuedSteers.clear(); emit({ type: 'terminal', state, run_id: input.run_id, ...(state === 'recovery_required' ? { failure: failure ?? input.projection.classifyFailure(undefined) } : {}) }) }
   const emitAssistantText = (message: ProductHarnessMessage) => {
     if (message.type !== 'assistant' || !Array.isArray(message.message?.content)) return
     const text = message.message.content
@@ -199,14 +198,14 @@ export async function createProductAgentHarness(input: {
     }
   }
   const toolActivities = new Map<string, {
-    kind: ReturnType<typeof productTaskActivityKindForTool>
+    kind: ProductTaskActivityKind
     parentId?: string
   }>()
   const completedToolActivities = new Set<string>()
   const activityId = (toolUseId: string) => `activity_${createHash('sha256').update(`${input.run_id}:${toolUseId}`).digest('hex').slice(0, 32)}`
   const rememberToolActivity = (
     toolUseId: string,
-    kind: ReturnType<typeof productTaskActivityKindForTool>,
+    kind: ProductTaskActivityKind,
     parentToolUseId?: string,
   ) => {
     const parentId = parentToolUseId && parentToolUseId !== toolUseId
@@ -232,10 +231,10 @@ export async function createProductAgentHarness(input: {
         if (!block || typeof block !== 'object' || Array.isArray(block)) continue
         const value = block as Record<string, unknown>
         if (value.type !== 'tool_call' || typeof value.id !== 'string' || !value.id || value.id.length > 512 || toolActivities.has(value.id)) continue
-        const kind = productTaskActivityKindForTool(typeof value.name === 'string' ? value.name : undefined)
+        const kind = input.projection.activityKindForTool(typeof value.name === 'string' ? value.name : undefined)
         rememberToolActivity(value.id, kind, parentToolUseId)
         const tracked = toolActivities.get(value.id)!
-        emit({ type: 'event', event: 'activity', activity: { id: activityId(value.id), ...(tracked.parentId ? { parentId: tracked.parentId } : {}), kind, phase: 'started', summary: productTaskActivitySummary(kind, 'started') } })
+        emit({ type: 'event', event: 'activity', activity: { id: activityId(value.id), ...(tracked.parentId ? { parentId: tracked.parentId } : {}), kind, phase: 'started', summary: input.projection.activitySummary(kind, 'started') } })
       }
       return
     }
@@ -249,13 +248,13 @@ export async function createProductAgentHarness(input: {
       const kind = tracked?.kind ?? 'tool'
       completedToolActivities.add(toolUseId)
       const phase = value.is_error === true ? 'failed' : 'completed'
-      emit({ type: 'event', event: 'activity', activity: { id: activityId(toolUseId), ...(tracked?.parentId ? { parentId: tracked.parentId } : {}), kind, phase, summary: productTaskActivitySummary(kind, phase) } })
+      emit({ type: 'event', event: 'activity', activity: { id: activityId(toolUseId), ...(tracked?.parentId ? { parentId: tracked.parentId } : {}), kind, phase, summary: input.projection.activitySummary(kind, phase) } })
     }
   }
   observeNestedHarnessMessage = emitToolActivities
   let streamedAssistantText = false
   const evaluateProductHook = async (prompt: string, requestedModel: string | undefined, signal: AbortSignal) => {
-    const model = resolveProductTextModel(requestedModel)
+    const model = input.model_policy.resolve(requestedModel)
     if (!model) return { ok: false, reason: 'Hook model is not registered for this product' }
     let response = ''
     try {
@@ -360,16 +359,16 @@ export async function createProductAgentHarness(input: {
           emit({ type: 'event', event: 'delta', data: result })
           await persistHarnessSession(modelMessages, 'completed', result)
           finish('completed')
-        } catch (error) { finish('recovery_required', classifyProductTaskRunFailure(error)) } finally { controller = undefined }
+        } catch (error) { finish('recovery_required', input.projection.classifyFailure(error)) } finally { controller = undefined }
         return
       }
       try {
         await connectMcpHost()
         if (controller.signal.aborted || terminal) return
-        const model = resolveProductTextModel()
+        const model = input.model_policy.resolve()
         if (!model) throw new Error('MODEL_CONFIGURATION_INVALID')
         if (!recoveringPreparedTurn && !recoveringActiveTurn) {
-          const hookContext = createToolUseContext([], [], controller)
+          const hookContext = createToolUseContext([], [], controller, model)
           const hookSource = restoredHarnessSession ? 'resume' as const : 'startup' as const
           const hookResults = await runInProductScope(async () => {
             const sessionStart = await lifecycleHooks.sessionStart({
@@ -417,7 +416,7 @@ export async function createProductAgentHarness(input: {
           finish('completed')
           return
         }
-        if (compactionContext && !recoveringActiveTurn && (manualCompaction || estimatedContextTokens >= productCompactThreshold(model))) {
+        if (compactionContext && !recoveringActiveTurn && (manualCompaction || estimatedContextTokens >= input.model_policy.compactThreshold(model))) {
           const source = compactionContext
           const compactGeneration = (input.session_context?.compact_generation ?? 0) + 1
           const compactSource = manualCompaction ? 'manual' as const : 'automatic' as const
@@ -427,15 +426,17 @@ export async function createProductAgentHarness(input: {
             const preCompact = await runInProductScope(() => lifecycleHooks.preCompact({ trigger: compactTrigger, signal: controller!.signal }))
             const summarize = async (history: string): Promise<string> => {
               let summary: string | undefined
-              const toolUseContext = createToolUseContext([], [], controller!)
+              const toolUseContext = createToolUseContext([], [], controller!, model)
               const stream = (input.query ?? runProductAgentLoop)({
                 commands: [],
                 prompt: `请把下面的 BilliardBuddy 任务历史压缩为可供后续模型继续工作的事实摘要。保留用户目标、已完成结果、未完成事项、约束、关键决定和必要的验证结论；删除寒暄、重复内容和无关过程。不要执行工具，不要添加历史中不存在的事实。只输出摘要正文。${preCompact.instructions ? `\n\n项目 Hook 的额外压缩要求：\n${preCompact.instructions}` : ''}\n\n${history}`,
                 tools: [],
                 toolUseContext,
                 promptContext: { workspace: input.work_dir, date: getLocalISODate() },
+                model,
                 canUseTool: async () => ({ behavior: 'deny', message: 'Context compaction cannot use tools', reason: 'context-compaction', toolUseID: 'context-compaction' }),
-                runModel: input.run_model,
+                runModel: input.run_model ?? runProductModel,
+                executeTools: input.execute_tools ?? runProductTools,
               })
               for await (const message of stream) if (message.type === 'result' && message.subtype === 'success' && !message.is_error) summary = message.result
               if (!summary?.trim()) throw new Error('CONTEXT_COMPACTION_FAILED')
@@ -499,7 +500,7 @@ export async function createProductAgentHarness(input: {
         let resumePersistedTurn = recoveringActiveTurn
         await runWithProductPermissionEnvelope(input.permission_envelope, () => (
           runInProductScope(async () => {
-            const toolUseContext = createToolUseContext(commands, tools, controller!)
+            const toolUseContext = createToolUseContext(commands, tools, controller!, model)
             for (let stopHookRound = 0; stopHookRound < 4; stopHookRound += 1) {
               completedResult = undefined
               const stream = (input.query ?? runProductAgentLoop)({
@@ -508,17 +509,18 @@ export async function createProductAgentHarness(input: {
                 tools,
                 toolUseContext,
                 promptContext: productPromptContext(),
+                model,
                 canUseTool: async (tool, toolInput, context, _assistant, toolUseId, forced) => {
                 const decision = forced ?? await decideProductToolPermission(input.permission_envelope, tool, toolInput, context)
                 if (decision.behavior !== 'ask') return decision
                 if (tool.name === 'AskUserQuestion') {
-                  const questions = projectAnswerableAskUserQuestions(toolInput)
+                  const questions = input.projection.projectQuestions(toolInput)
                   if (questions.length === 0) return { behavior: 'deny', message: 'Question cannot be rendered safely', reason: `mode:${toolPermissionContext.mode}`, toolUseID: toolUseId }
                   emit({ type: 'event', event: 'question', request_id: toolUseId, questions })
                   const response = await new Promise<{ approved: boolean; answers?: readonly string[] }>(resolve => approvals.set(toolUseId, resolve))
                   approvals.delete(toolUseId)
                   const updatedInput = response.approved && response.answers
-                    ? buildProductTaskAskUserQuestionUpdatedInput(toolInput as Record<string, unknown>, response.answers)
+                    ? input.projection.updateQuestionInput(toolInput as Record<string, unknown>, response.answers)
                     : null
                   return updatedInput
                     ? { behavior: 'allow', updatedInput, reason: `mode:${toolPermissionContext.mode}` }
@@ -528,8 +530,8 @@ export async function createProductAgentHarness(input: {
                   type: 'event',
                   event: 'approval',
                   request_id: toolUseId,
-                  action: projectProductTaskActionApproval(tool.name),
-                  review: projectAgentWorkerApprovalReview(tool, toolInput),
+                  action: input.projection.projectApproval(tool.name),
+                  review: input.projection.projectApprovalReview(tool, toolInput),
                 })
                 const response = await new Promise<{ approved: boolean }>(resolve => approvals.set(toolUseId, resolve))
                 approvals.delete(toolUseId)
@@ -540,8 +542,8 @@ export async function createProductAgentHarness(input: {
                 commandQueue,
                 mutableMessages: modelMessages,
                 onMessageState: persistHarnessSession,
-                runModel: input.run_model,
-                executeTools: input.execute_tools,
+                runModel: input.run_model ?? runProductModel,
+                executeTools: input.execute_tools ?? runProductTools,
                 toolHooks: productToolHooks,
                 resume: resumePersistedTurn,
               })
@@ -575,7 +577,7 @@ export async function createProductAgentHarness(input: {
         if (completedResult !== undefined) await persistHarnessSession(modelMessages, 'completed', completedResult)
         finish(controller.signal.aborted ? 'stopped' : 'completed')
       } catch (error) {
-        finish(controller.signal.aborted ? 'stopped' : 'recovery_required', classifyProductTaskRunFailure(error))
+        finish(controller.signal.aborted ? 'stopped' : 'recovery_required', input.projection.classifyFailure(error))
       } finally { controller = undefined }
     },
     async approve(requestId, approved) { approvals.get(requestId)?.({ approved }) },

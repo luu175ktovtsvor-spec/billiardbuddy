@@ -20,6 +20,11 @@ export type ProductLegacyCoreMessageEntry = {
   timestamp: string
 }
 
+export type ProductLegacyCoreThreadItem = {
+  entry: ProductTaskThreadEntry
+  coreMessageId: string
+}
+
 const MAX_THREAD_TEXT_LENGTH = 100_000
 
 function isRecord(value: unknown): value is RecordValue {
@@ -184,19 +189,33 @@ export function projectSessionTranscriptForProductTask(
   taskId: string,
   messages: readonly ProductLegacyCoreMessageEntry[],
 ): ProductTaskThread {
-  const entries: ProductTaskThreadEntry[] = []
+  return {
+    taskId,
+    entries: projectLegacyCoreThreadItems(messages).map(item => item.entry),
+  }
+}
+
+/**
+ * Produces the same safe product projection as the thread reader while
+ * retaining the server-private Core message identity needed to migrate a
+ * legacy transcript into the Authority ledger.
+ */
+export function projectLegacyCoreThreadItems(
+  messages: readonly ProductLegacyCoreMessageEntry[],
+): ProductLegacyCoreThreadItem[] {
+  const entries: ProductLegacyCoreThreadItem[] = []
   for (const message of messages) {
     if (message.type === 'user') {
-      entries.push(...userEntries(message))
+      entries.push(...userEntries(message).map(entry => ({ entry, coreMessageId: message.id })))
       continue
     }
     if (message.type === 'assistant' || message.type === 'tool_use') {
-      entries.push(...assistantEntries(message))
+      entries.push(...assistantEntries(message).map(entry => ({ entry, coreMessageId: message.id })))
       continue
     }
     if (message.type === 'tool_result') {
-      entries.push(...toolResultEntries(message))
+      entries.push(...toolResultEntries(message).map(entry => ({ entry, coreMessageId: message.id })))
     }
   }
-  return { taskId, entries }
+  return entries
 }

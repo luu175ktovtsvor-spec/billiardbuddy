@@ -1,23 +1,10 @@
 import { randomUUID } from 'node:crypto'
 import { PROVIDER_GATEWAY_PROTOCOL, PROVIDER_GATEWAY_PROTOCOL_HEADER } from '../../../shared/product/providerGateway.js'
-import type { ProductAssistantMessage, ProductHarnessMessage, ProductModelEvent } from '../../../shared/product/harnessMessages.js'
+import type { ProductAssistantMessage, ProductHarnessMessage } from '../../../shared/product/harnessMessages.js'
 import { zodToJsonSchema } from '../../utils/zodToJsonSchema.js'
 import { productGatewayTarget } from '../product/productGatewayRuntime.js'
 import { emptyProductToolPermissionContext, type ProductThinkingConfig, type ProductToolPermissionContext, type ProductTools } from './productTool.js'
-
-type ProductModelOptions = {
-  model: string
-}
-
-export type ProductModelRunner = (input: {
-  messages: ProductHarnessMessage[]
-  systemPrompt: readonly string[]
-  thinkingConfig: ProductThinkingConfig
-  tools: ProductTools
-  signal: AbortSignal
-  options: ProductModelOptions
-  toolPermissionContext?: ProductToolPermissionContext
-}) => AsyncGenerator<ProductModelEvent, void>
+import type { ProductAgentModelRunner } from './agentModelPort.js'
 
 type OpenAiMessage = Record<string, unknown>
 type ToolAccumulator = { id: string; name: string; arguments: string }
@@ -125,7 +112,7 @@ async function* sseData(response: Response, signal: AbortSignal): AsyncGenerator
   }
 }
 
-export const runProductModel: ProductModelRunner = async function* ({ messages, systemPrompt, thinkingConfig, tools, signal, options, toolPermissionContext }) {
+export const runProductModel: ProductAgentModelRunner = async function* ({ messages, systemPrompt, thinkingConfig, tools, signal, options, toolPermissionContext }) {
   const target = productGatewayTarget()
   if (!target) throw new Error('PRODUCT_GATEWAY_NOT_CONFIGURED')
   const requestId = randomUUID()

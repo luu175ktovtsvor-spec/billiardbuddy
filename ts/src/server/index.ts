@@ -9,7 +9,7 @@ import { diagnosticsService } from './services/diagnosticsService.js'
 import { consumeMediaUiCapability, createMediaApiHandler } from './api/media.js'
 import { isLongMediaRequestPath } from './mediaRequestTimeout.js'
 import { handleProductApi } from './api/product.js'
-import { productTaskService as liveProductTaskService, resetProductTaskServiceForServer } from './product/taskService.js'
+import { resetProductTaskServiceForServer, type ProductTaskService } from './product/taskService.js'
 import { MediaProjectService } from './services/mediaProjectService.js'
 import { voiceOperationService } from './services/voiceOperationService.js'
 import { getProductConfigDir } from './product/productPaths.js'
@@ -22,6 +22,7 @@ import { ProductScheduledTaskService } from './product/scheduledTaskService.js'
 import { createProductTaskReviewService } from './product/taskReviewService.js'
 import { createRuntimeTaskLifecycleParticipants } from './product/taskLifecycleParticipants.js'
 import { ProductCoreOperationBridge } from './product/productCoreOperationBridge.js'
+import { createProductTaskRunComposition, type ProductTaskRunComposition } from './agent-worker/taskRunComposition.js'
 import { migrateSupportedScheduledTaskRuns, purgeScheduledTaskRunsForDeletedTask } from './services/cronScheduler.js'
 import {
   consumeGatewayAccessTokenCapability,
@@ -54,6 +55,7 @@ const SERVER_OPTIONS = resolveServerOptions()
 const PORT = SERVER_OPTIONS.port
 const HOST = SERVER_OPTIONS.host
 let liveCronScheduler: CronScheduler = cronScheduler
+let liveTaskRunComposition: ProductTaskRunComposition | undefined
 
 function withCors(response: Response, cors: CorsResolution): Response {
   const headers = new Headers(response.headers)
@@ -107,7 +109,11 @@ export function startServer(port = PORT, host = HOST) {
   const coreOperationBridge = new ProductCoreOperationBridge()
   let chromeSessionBridge: ReturnType<typeof configureChromeSessionBridge> | undefined
   let desktopResourceScheduler: ProductResourceScheduler | undefined
-  const productTaskService = resetProductTaskServiceForServer({
+  let productTaskService!: ProductTaskService
+  const taskRunComposition = createProductTaskRunComposition(() => productTaskService)
+  liveTaskRunComposition = taskRunComposition
+  productTaskService = resetProductTaskServiceForServer({
+    dispatcher: taskRunComposition.dispatcher,
     additionalLifecycleParticipants: createRuntimeTaskLifecycleParticipants({
       schedules: cronService,
       recruiting: () => chromeSessionBridge,
@@ -371,8 +377,9 @@ export async function stopServerRuntimeForShutdown(
     // is configured. There is no descriptor or live session to clean up then.
   }
 
-  const { shutdownDispatcherFor } = await import('./product/taskRunDispatchBridge.js')
-  await shutdownDispatcherFor(liveProductTaskService)
+  const composition = liveTaskRunComposition
+  liveTaskRunComposition = undefined
+  await composition?.shutdown()
 }
 
 function cleanupAllSessions() {

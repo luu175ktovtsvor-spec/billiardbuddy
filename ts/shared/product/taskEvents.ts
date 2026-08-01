@@ -284,6 +284,8 @@ type TaskEventPayload =
       item_id?: string
       text: string
       attachment_ids: string[]
+      /** Safe historic summaries when no attachment blob was retained. */
+      attachment_summaries?: ProductTaskAttachmentSummary[]
       reference_entry_ids?: string[]
     }
   | {
