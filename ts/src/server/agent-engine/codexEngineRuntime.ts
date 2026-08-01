@@ -1,5 +1,5 @@
 import { CodexAppServerClient, type CodexAppServerClientOptions, type CodexAppServerNotification, type CodexAppServerRequest, type JsonObject, type JsonValue } from './codexAppServerClient.js'
-import { CodexEngineSession, type CodexEngineThread, type CodexEngineSessionOptions } from './codexEngineSession.js'
+import { CodexEngineSession, type CodexEngineDynamicToolSurface, type CodexEngineThread, type CodexEngineSessionOptions } from './codexEngineSession.js'
 import { CodexResponsesModelBridge, type CodexResponsesModelBridgeOptions } from './codexResponsesModelBridge.js'
 
 export type CodexEngineRuntimeOptions = Omit<CodexEngineSessionOptions, 'client'> & {
@@ -127,6 +127,11 @@ export class CodexEngineRuntime {
     return await this.session.ensureThread()
   }
 
+  async checkpointToolSurface(surface: CodexEngineDynamicToolSurface): Promise<string> {
+    if (!this.session) throw new Error('CODEX_ENGINE_RUNTIME_UNAVAILABLE')
+    return await this.session.checkpointToolSurface(surface)
+  }
+
   /**
    * Starts a source Turn but deliberately does not make it durable. The
    * product Worker must record its Run intent, receive the response, write the
@@ -160,6 +165,11 @@ export class CodexEngineRuntime {
   async checkpointModelResult(runId: string, operationId: string, resultDigest: string): Promise<string> {
     if (!this.session) throw new Error('CODEX_ENGINE_RUNTIME_UNAVAILABLE')
     return await this.session.checkpointModelResult(runId, operationId, resultDigest)
+  }
+
+  async checkpointToolResult(runId: string, operationId: string, callId: string, resultDigest: string): Promise<string> {
+    if (!this.session) throw new Error('CODEX_ENGINE_RUNTIME_UNAVAILABLE')
+    return await this.session.checkpointToolResult(runId, operationId, callId, resultDigest)
   }
 
   async interruptTurn(turn: CodexEngineAcceptedTurn): Promise<void> {

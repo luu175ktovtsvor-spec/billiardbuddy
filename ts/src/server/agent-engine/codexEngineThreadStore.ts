@@ -18,8 +18,12 @@ export type CodexEngineThreadBinding = {
 }
 
 export type CodexEngineThreadState = {
-  thread_id: string
+  /** Absent only while a declared tool surface awaits the first source Turn. */
+  thread_id?: string
   source_revision: string
+  /** Product-owned identity of the declared dynamic source-tool surface. */
+  tool_surface_digest?: string
+  tool_surface_count?: number
   last_run_id?: string
   last_turn_id?: string
   /** Product receipt for the accepted source `turn/start`, never source state. */
@@ -28,6 +32,11 @@ export type CodexEngineThreadState = {
   last_model_run_id?: string
   last_model_operation_id?: string
   last_model_result_digest?: string
+  /** Product receipt for the last dynamic tool result returned to the source. */
+  last_tool_run_id?: string
+  last_tool_operation_id?: string
+  last_tool_call_id?: string
+  last_tool_result_digest?: string
   updated_at: string
 }
 
@@ -98,15 +107,20 @@ function validateBinding(binding: CodexEngineThreadBinding): void {
 function validateState(value: unknown, binding: CodexEngineThreadBinding): CodexEngineThreadState {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('CODEX_ENGINE_THREAD_STORE_INVALID')
   const state = value as Partial<StoredCodexEngineThreadState>
+  const hasThread = state.thread_id !== undefined
+  const hasToolSurface = state.tool_surface_digest !== undefined || state.tool_surface_count !== undefined
   const hasTurnOperation = state.last_turn_operation_id !== undefined
   const modelReceiptCount = [state.last_model_run_id, state.last_model_operation_id, state.last_model_result_digest]
+    .filter(value => value !== undefined).length
+  const toolReceiptCount = [state.last_tool_run_id, state.last_tool_operation_id, state.last_tool_call_id, state.last_tool_result_digest]
     .filter(value => value !== undefined).length
   if (
     state.version !== 1
     || state.binding_id !== binding.binding_id
     || state.lineage_id !== binding.lineage_id
-    || !isNonEmptyText(state.thread_id)
+    || (state.thread_id !== undefined && !isNonEmptyText(state.thread_id))
     || !/^[a-f0-9]{40}$/.test(String(state.source_revision ?? ''))
+    || (hasToolSurface && (!isDigest(state.tool_surface_digest) || !Number.isSafeInteger(state.tool_surface_count) || state.tool_surface_count! < 0 || state.tool_surface_count! > 256))
     || (state.last_run_id !== undefined && !isNonEmptyText(state.last_run_id))
     || (state.last_turn_id !== undefined && !isNonEmptyText(state.last_turn_id))
     || (state.last_turn_operation_id !== undefined && !isOperationId(state.last_turn_operation_id))
@@ -115,19 +129,27 @@ function validateState(value: unknown, binding: CodexEngineThreadBinding): Codex
     || (state.last_model_result_digest !== undefined && !isDigest(state.last_model_result_digest))
     || (hasTurnOperation && (!state.last_run_id || !state.last_turn_id))
     || (modelReceiptCount !== 0 && modelReceiptCount !== 3)
-    || (modelReceiptCount === 3 && (!state.last_run_id || !state.last_turn_id || state.last_model_run_id !== state.last_run_id))
+    || (modelReceiptCount === 3 && (!hasThread || !state.last_run_id || !state.last_turn_id || state.last_model_run_id !== state.last_run_id))
+    || (toolReceiptCount !== 0 && toolReceiptCount !== 4)
+    || (toolReceiptCount === 4 && (!hasThread || !state.last_run_id || !state.last_turn_id || state.last_tool_run_id !== state.last_run_id || !isOperationId(state.last_tool_operation_id) || !isNonEmptyText(state.last_tool_call_id) || !isDigest(state.last_tool_result_digest)))
+    || (!hasThread && (state.last_run_id !== undefined || state.last_turn_id !== undefined || state.last_turn_operation_id !== undefined || modelReceiptCount !== 0 || toolReceiptCount !== 0))
     || !isNonEmptyText(state.updated_at, 128)
     || !Number.isFinite(Date.parse(state.updated_at))
   ) throw new Error('CODEX_ENGINE_THREAD_STORE_INVALID')
   return {
-    thread_id: state.thread_id,
+    ...(state.thread_id ? { thread_id: state.thread_id } : {}),
     source_revision: state.source_revision!,
+    ...(state.tool_surface_digest ? { tool_surface_digest: state.tool_surface_digest, tool_surface_count: state.tool_surface_count! } : {}),
     ...(state.last_run_id ? { last_run_id: state.last_run_id } : {}),
     ...(state.last_turn_id ? { last_turn_id: state.last_turn_id } : {}),
     ...(state.last_turn_operation_id ? { last_turn_operation_id: state.last_turn_operation_id } : {}),
     ...(state.last_model_run_id ? { last_model_run_id: state.last_model_run_id } : {}),
     ...(state.last_model_operation_id ? { last_model_operation_id: state.last_model_operation_id } : {}),
     ...(state.last_model_result_digest ? { last_model_result_digest: state.last_model_result_digest } : {}),
+    ...(state.last_tool_run_id ? { last_tool_run_id: state.last_tool_run_id } : {}),
+    ...(state.last_tool_operation_id ? { last_tool_operation_id: state.last_tool_operation_id } : {}),
+    ...(state.last_tool_call_id ? { last_tool_call_id: state.last_tool_call_id } : {}),
+    ...(state.last_tool_result_digest ? { last_tool_result_digest: state.last_tool_result_digest } : {}),
     updated_at: state.updated_at,
   }
 }
@@ -152,12 +174,17 @@ export class CodexEngineThreadStore {
 
   async save(binding: CodexEngineThreadBinding, state: Omit<CodexEngineThreadState, 'updated_at'>): Promise<CodexEngineThreadCheckpoint> {
     validateBinding(binding)
+    const hasThread = state.thread_id !== undefined
+    const hasToolSurface = state.tool_surface_digest !== undefined || state.tool_surface_count !== undefined
     const hasTurnOperation = state.last_turn_operation_id !== undefined
     const modelReceiptCount = [state.last_model_run_id, state.last_model_operation_id, state.last_model_result_digest]
       .filter(value => value !== undefined).length
+    const toolReceiptCount = [state.last_tool_run_id, state.last_tool_operation_id, state.last_tool_call_id, state.last_tool_result_digest]
+      .filter(value => value !== undefined).length
     if (
-      !isNonEmptyText(state.thread_id)
+      (state.thread_id !== undefined && !isNonEmptyText(state.thread_id))
       || !/^[a-f0-9]{40}$/.test(state.source_revision)
+      || (hasToolSurface && (!isDigest(state.tool_surface_digest) || !Number.isSafeInteger(state.tool_surface_count) || state.tool_surface_count! < 0 || state.tool_surface_count! > 256))
       || (state.last_run_id !== undefined && !isNonEmptyText(state.last_run_id))
       || (state.last_turn_id !== undefined && !isNonEmptyText(state.last_turn_id))
       || (state.last_turn_operation_id !== undefined && !isOperationId(state.last_turn_operation_id))
@@ -166,7 +193,10 @@ export class CodexEngineThreadStore {
       || (state.last_model_result_digest !== undefined && !isDigest(state.last_model_result_digest))
       || (hasTurnOperation && (!state.last_run_id || !state.last_turn_id))
       || (modelReceiptCount !== 0 && modelReceiptCount !== 3)
-      || (modelReceiptCount === 3 && (!state.last_run_id || !state.last_turn_id || state.last_model_run_id !== state.last_run_id))
+      || (modelReceiptCount === 3 && (!hasThread || !state.last_run_id || !state.last_turn_id || state.last_model_run_id !== state.last_run_id))
+      || (toolReceiptCount !== 0 && toolReceiptCount !== 4)
+      || (toolReceiptCount === 4 && (!hasThread || !state.last_run_id || !state.last_turn_id || state.last_tool_run_id !== state.last_run_id || !isOperationId(state.last_tool_operation_id) || !isNonEmptyText(state.last_tool_call_id) || !isDigest(state.last_tool_result_digest)))
+      || (!hasThread && (state.last_run_id !== undefined || state.last_turn_id !== undefined || state.last_turn_operation_id !== undefined || modelReceiptCount !== 0 || toolReceiptCount !== 0))
     ) throw new Error('CODEX_ENGINE_THREAD_STORE_INVALID')
     return await withBindingLock(binding, async () => {
       const saved: StoredCodexEngineThreadState = {

@@ -327,6 +327,7 @@ export class IpcAgentWorkerLauncher implements AgentWorkerChildLauncher {
         if (state.closed) return { ok: false }
       }
       if (request.operation === 'prepare') return { ok: true, value: await withExternalOperation('mcp_prepare', async () => await runtime.prepare()) }
+      if (request.operation === 'engine_tools') return { ok: true, value: await withExternalOperation('mcp_prepare', async () => await runtime.engineTools()) }
       if (request.operation === 'chat_prompt' && request.value && typeof request.value === 'object') {
         const value = request.value as { text?: unknown; attachments?: unknown }
         const text = value.text
@@ -354,6 +355,13 @@ export class IpcAgentWorkerLauncher implements AgentWorkerChildLauncher {
         const { operation_id: _operationId, ...modelRequest } = value
         for await (const chunk of runtime.engineModel(modelRequest as never)) relay({ type: 'runtime_chunk', id: request.id, value: chunk })
         return { ok: true }
+      }
+      if (request.operation === 'engine_tool' && request.value && typeof request.value === 'object') {
+        const value = request.value as Record<string, unknown>
+        const operationId = value.operation_id
+        if (typeof operationId !== 'string' || state.external_operation_states.get(operationId) !== 'in_flight') return { ok: false }
+        const { operation_id: _operationId, ...toolRequest } = value
+        return { ok: true, value: await runtime.engineTool(toolRequest as never) }
       }
       if (request.operation === 'tools') return { ok: true, value: await withExternalOperation('tools', async () => await runtime.tools(request.value as never)) }
       if (request.operation === 'approval' && request.value && typeof request.value === 'object') {

@@ -17,6 +17,11 @@ export type CodexEngineThread = {
   restored: boolean
 }
 
+export type CodexEngineDynamicToolSurface = {
+  digest: string
+  tools: Array<{ name: string; description: string; input_schema: Record<string, unknown> }>
+}
+
 function text(value: unknown, limit = 512): string | undefined {
   return typeof value === 'string' && value.length > 0 && value.length <= limit ? value : undefined
 }
@@ -50,6 +55,7 @@ async function verifiedWorkDir(value: string): Promise<string> {
  */
 export class CodexEngineSession {
   private thread?: CodexEngineThread
+  private dynamicToolSurface?: CodexEngineDynamicToolSurface
 
   constructor(private readonly options: CodexEngineSessionOptions) {}
 
@@ -60,11 +66,43 @@ export class CodexEngineSession {
     }
     const workDir = await verifiedWorkDir(this.options.work_dir)
     const restored = await this.options.thread_store.load(this.options.binding)
-    const thread = restored
+    const thread = restored?.thread_id
       ? await this.resume(restored, workDir)
       : await this.start(workDir)
     this.thread = thread
     return thread
+  }
+
+  /**
+   * The source accepts dynamic tools only at thread/start. Persist this
+   * opaque product snapshot before a Turn so mcp_prepare can be checkpointed
+   * without claiming a resumable source Thread prematurely.
+   */
+  async checkpointToolSurface(surface: CodexEngineDynamicToolSurface): Promise<string> {
+    if (this.thread || !isToolSurface(surface)) throw new Error('CODEX_ENGINE_TOOL_SURFACE_INVALID')
+    const restored = await this.options.thread_store.load(this.options.binding)
+    if (restored?.source_revision && restored.source_revision !== this.options.source_revision) throw new Error('CODEX_ENGINE_THREAD_SOURCE_MISMATCH')
+    if (restored?.tool_surface_digest && (restored.tool_surface_digest !== surface.digest || restored.tool_surface_count !== surface.tools.length)) {
+      throw new Error('CODEX_ENGINE_TOOL_SURFACE_MISMATCH')
+    }
+    this.dynamicToolSurface = surface
+    const checkpoint = await this.options.thread_store.save(this.options.binding, {
+      ...(restored?.thread_id ? { thread_id: restored.thread_id } : {}),
+      source_revision: this.options.source_revision,
+      tool_surface_digest: surface.digest,
+      tool_surface_count: surface.tools.length,
+      ...(restored?.last_run_id ? { last_run_id: restored.last_run_id } : {}),
+      ...(restored?.last_turn_id ? { last_turn_id: restored.last_turn_id } : {}),
+      ...(restored?.last_turn_operation_id ? { last_turn_operation_id: restored.last_turn_operation_id } : {}),
+      ...(restored?.last_model_run_id ? { last_model_run_id: restored.last_model_run_id } : {}),
+      ...(restored?.last_model_operation_id ? { last_model_operation_id: restored.last_model_operation_id } : {}),
+      ...(restored?.last_model_result_digest ? { last_model_result_digest: restored.last_model_result_digest } : {}),
+      ...(restored?.last_tool_run_id ? { last_tool_run_id: restored.last_tool_run_id } : {}),
+      ...(restored?.last_tool_operation_id ? { last_tool_operation_id: restored.last_tool_operation_id } : {}),
+      ...(restored?.last_tool_call_id ? { last_tool_call_id: restored.last_tool_call_id } : {}),
+      ...(restored?.last_tool_result_digest ? { last_tool_result_digest: restored.last_tool_result_digest } : {}),
+    })
+    return checkpoint.checkpoint_digest
   }
 
   /**
@@ -75,9 +113,16 @@ export class CodexEngineSession {
   async checkpointAcceptedTurn(runId: string, turnId: string, operationId: string): Promise<string> {
     const thread = await this.ensureThread()
     if (!text(runId) || !text(turnId) || !/^effect_[a-f0-9-]{36}$/.test(operationId)) throw new Error('CODEX_ENGINE_TURN_BINDING_INVALID')
+    const restored = await this.options.thread_store.load(this.options.binding)
+    if (restored?.thread_id && restored.thread_id !== thread.thread_id) throw new Error('CODEX_ENGINE_THREAD_ID_MISMATCH')
+    if (!restored?.tool_surface_digest || !this.dynamicToolSurface || restored.tool_surface_digest !== this.dynamicToolSurface.digest || restored.tool_surface_count !== this.dynamicToolSurface.tools.length) {
+      throw new Error('CODEX_ENGINE_TOOL_SURFACE_MISSING')
+    }
     const checkpoint = await this.options.thread_store.save(this.options.binding, {
       thread_id: thread.thread_id,
       source_revision: this.options.source_revision,
+      tool_surface_digest: restored.tool_surface_digest,
+      tool_surface_count: restored.tool_surface_count,
       last_run_id: runId,
       last_turn_id: turnId,
       last_turn_operation_id: operationId,
@@ -97,17 +142,51 @@ export class CodexEngineSession {
     const checkpoint = await this.options.thread_store.save(this.options.binding, {
       thread_id: thread.thread_id,
       source_revision: this.options.source_revision,
+      ...(restored.tool_surface_digest ? { tool_surface_digest: restored.tool_surface_digest, tool_surface_count: restored.tool_surface_count! } : {}),
       last_run_id: restored.last_run_id,
       last_turn_id: restored.last_turn_id,
       ...(restored.last_turn_operation_id ? { last_turn_operation_id: restored.last_turn_operation_id } : {}),
       last_model_run_id: runId,
       last_model_operation_id: operationId,
       last_model_result_digest: resultDigest,
+      ...(restored.last_tool_run_id ? { last_tool_run_id: restored.last_tool_run_id } : {}),
+      ...(restored.last_tool_operation_id ? { last_tool_operation_id: restored.last_tool_operation_id } : {}),
+      ...(restored.last_tool_call_id ? { last_tool_call_id: restored.last_tool_call_id } : {}),
+      ...(restored.last_tool_result_digest ? { last_tool_result_digest: restored.last_tool_result_digest } : {}),
+    })
+    return checkpoint.checkpoint_digest
+  }
+
+  async checkpointToolResult(runId: string, operationId: string, callId: string, resultDigest: string): Promise<string> {
+    const thread = await this.ensureThread()
+    if (!text(runId) || !/^effect_[a-f0-9-]{36}$/.test(operationId) || !text(callId) || !/^[a-f0-9]{64}$/.test(resultDigest)) {
+      throw new Error('CODEX_ENGINE_TOOL_RECEIPT_INVALID')
+    }
+    const restored = await this.options.thread_store.load(this.options.binding)
+    if (!restored?.thread_id || restored.thread_id !== thread.thread_id || restored.last_run_id !== runId || !restored.last_turn_id || !restored.tool_surface_digest) {
+      throw new Error('CODEX_ENGINE_TOOL_RECEIPT_TURN_MISSING')
+    }
+    const checkpoint = await this.options.thread_store.save(this.options.binding, {
+      thread_id: thread.thread_id,
+      source_revision: this.options.source_revision,
+      tool_surface_digest: restored.tool_surface_digest,
+      tool_surface_count: restored.tool_surface_count!,
+      last_run_id: restored.last_run_id,
+      last_turn_id: restored.last_turn_id,
+      ...(restored.last_turn_operation_id ? { last_turn_operation_id: restored.last_turn_operation_id } : {}),
+      ...(restored.last_model_run_id ? { last_model_run_id: restored.last_model_run_id } : {}),
+      ...(restored.last_model_operation_id ? { last_model_operation_id: restored.last_model_operation_id } : {}),
+      ...(restored.last_model_result_digest ? { last_model_result_digest: restored.last_model_result_digest } : {}),
+      last_tool_run_id: runId,
+      last_tool_operation_id: operationId,
+      last_tool_call_id: callId,
+      last_tool_result_digest: resultDigest,
     })
     return checkpoint.checkpoint_digest
   }
 
   private async start(workDir: string): Promise<CodexEngineThread> {
+    if (!this.dynamicToolSurface) throw new Error('CODEX_ENGINE_TOOL_SURFACE_MISSING')
     const response = await this.options.client.request<JsonObject>('thread/start', {
       cwd: workDir,
       model: this.options.model,
@@ -120,13 +199,22 @@ export class CodexEngineSession {
       // Defense in depth: an embedded engine gets no upstream environment.
       // The host-managed source patch separately removes all built-in tools.
       environments: [],
+      dynamicTools: this.dynamicToolSurface.tools.map(tool => ({
+        type: 'function' as const,
+        name: tool.name,
+        description: tool.description,
+        inputSchema: tool.input_schema as JsonObject,
+      })),
     })
     const id = threadId(response)
     return { thread_id: id, restored: false }
   }
 
   private async resume(state: CodexEngineThreadState, workDir: string): Promise<CodexEngineThread> {
-    if (state.source_revision !== this.options.source_revision) throw new Error('CODEX_ENGINE_THREAD_SOURCE_MISMATCH')
+    if (!state.thread_id || state.source_revision !== this.options.source_revision) throw new Error('CODEX_ENGINE_THREAD_SOURCE_MISMATCH')
+    if (!this.dynamicToolSurface || state.tool_surface_digest !== this.dynamicToolSurface.digest || state.tool_surface_count !== this.dynamicToolSurface.tools.length) {
+      throw new Error('CODEX_ENGINE_TOOL_SURFACE_MISMATCH')
+    }
     const response = await this.options.client.request<JsonObject>('thread/resume', {
       threadId: state.thread_id,
       cwd: workDir,
@@ -138,13 +226,27 @@ export class CodexEngineSession {
     await this.options.thread_store.save(this.options.binding, {
       thread_id: id,
       source_revision: this.options.source_revision,
+      tool_surface_digest: state.tool_surface_digest,
+      tool_surface_count: state.tool_surface_count!,
       ...(state.last_run_id ? { last_run_id: state.last_run_id } : {}),
       ...(state.last_turn_id ? { last_turn_id: state.last_turn_id } : {}),
       ...(state.last_turn_operation_id ? { last_turn_operation_id: state.last_turn_operation_id } : {}),
       ...(state.last_model_run_id ? { last_model_run_id: state.last_model_run_id } : {}),
       ...(state.last_model_operation_id ? { last_model_operation_id: state.last_model_operation_id } : {}),
       ...(state.last_model_result_digest ? { last_model_result_digest: state.last_model_result_digest } : {}),
+      ...(state.last_tool_run_id ? { last_tool_run_id: state.last_tool_run_id } : {}),
+      ...(state.last_tool_operation_id ? { last_tool_operation_id: state.last_tool_operation_id } : {}),
+      ...(state.last_tool_call_id ? { last_tool_call_id: state.last_tool_call_id } : {}),
+      ...(state.last_tool_result_digest ? { last_tool_result_digest: state.last_tool_result_digest } : {}),
     })
     return { thread_id: id, restored: true }
   }
+}
+
+function isToolSurface(value: CodexEngineDynamicToolSurface): boolean {
+  return /^[a-f0-9]{64}$/.test(value.digest)
+    && value.tools.length <= 256
+    && value.tools.every(tool => /^[A-Za-z0-9_-]{1,128}$/.test(tool.name)
+      && typeof tool.description === 'string' && tool.description.length <= 4_000
+      && tool.input_schema && typeof tool.input_schema === 'object' && !Array.isArray(tool.input_schema))
 }
