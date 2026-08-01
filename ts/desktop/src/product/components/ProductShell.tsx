@@ -47,7 +47,7 @@ export function ProductShell({ page = 'task-index', initialWorkDir }: ProductShe
 
   const openExistingTask = (task: ProductTaskRecord) => openTaskTab(task)
 
-  const createAndOpenTask = async (input: { text: string; attachment_ids: string[]; permission_mode: ProductTaskPermissionMode }) => {
+  const createAndOpenTask = async (input: { text: string; attachment_ids: string[]; permission_mode: ProductTaskPermissionMode; work_dir: string }) => {
     const task = await submitNewTask(input)
     openTaskTab(task)
     void useProductTaskRuntimeStore.getState().connectTask(task.id)

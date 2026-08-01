@@ -2,7 +2,6 @@ import { productApi } from './client'
 import type {
   AuthoritySnapshot,
   ContinueProductTaskInput,
-  CreateProductTaskInput,
   CreateProductSideTaskInput,
   MutationEnvelope,
   OperationReceipt,
@@ -85,10 +84,9 @@ export type ProductTaskRunSubmitInput = {
 
 export const productTasksApi: ProductTaskApi = {
   list: () => productApi.get<ProductTaskIndexResponse>('/api/product/tasks'),
-  create: (input: MutationEnvelope<CreateProductTaskInput>) =>
-    productApi.post<ProductTaskActionResponse>('/api/product/tasks', input),
   update: (taskId: string, input: MutationEnvelope<UpdateProductTaskInput>) =>
     productApi.patch<ProductTaskActionResponse>(taskPath(taskId), input),
+  bindWorkspace: (taskId, input) => productApi.post(`${taskPath(taskId)}/bind_workspace`, input),
   pin: (taskId: string, input: MutationEnvelope) =>
     productApi.post<ProductTaskActionResponse>(`${taskPath(taskId)}/pin`, input),
   unpin: (taskId: string, input: MutationEnvelope) =>
@@ -127,9 +125,9 @@ export const productTasksApi: ProductTaskApi = {
 }
 
 export const productAtomicTaskSubmitApi = {
-  createDraft: (client_operation_id: string) => productApi.post<NewTaskDraftResponse>(
+  createDraft: (client_operation_id: string, work_dir: string) => productApi.post<NewTaskDraftResponse>(
     '/api/product/composer-drafts/new-task',
-    { ttl_ms: 7 * 24 * 60 * 60 * 1000, client_operation_id },
+    { ttl_ms: 7 * 24 * 60 * 60 * 1000, client_operation_id, work_dir },
   ),
   submit: (input: AtomicTaskSubmitInput) => productApi.post<AtomicTaskSubmitResponse>(
     '/api/product/tasks',

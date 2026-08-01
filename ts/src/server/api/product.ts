@@ -2,7 +2,6 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 import type {
   ContinueProductTaskInput,
-  CreateProductTaskInput,
   CreateProductSideTaskInput,
   ProductRecentProject,
   ProductRecentProjectList,
@@ -58,7 +57,6 @@ export async function handleProductApi(
     ProductTaskService,
     | 'listRecentProjects'
     | 'getTaskThread'
-    | 'createTaskAuthoritatively'
     | 'continueTaskAuthoritatively'
     | 'createSideTaskAuthoritatively'
     | 'closeSideTaskAuthoritatively'
@@ -170,9 +168,9 @@ export async function handleProductApi(
       if (draftId === 'new-task') {
         if (req.method !== 'POST' || segments[4]) return methodNotAllowed(req.method)
         const input = await readJson<Record<string, unknown>>(req)
-        if (!assertPlainExactObject(input, ['ttl_ms', 'client_operation_id']) || !Number.isSafeInteger(input.ttl_ms) || (input.ttl_ms as number) < 1 || typeof input.client_operation_id !== 'string' || !input.client_operation_id) throw ApiError.badRequest('new task draft 参数无效')
+        if (!assertPlainExactObject(input, ['ttl_ms', 'client_operation_id', 'work_dir']) || !Number.isSafeInteger(input.ttl_ms) || (input.ttl_ms as number) < 1 || typeof input.client_operation_id !== 'string' || !input.client_operation_id || typeof input.work_dir !== 'string' || !input.work_dir.trim()) throw ApiError.badRequest('new task draft 参数无效')
         try { assertAuthorityMapKey(input.client_operation_id) } catch { throw ApiError.badRequest('new task draft 参数无效') }
-        const created = await tasks.createNewTaskComposerDraft({ ttl_ms: input.ttl_ms as number, client_operation_id: input.client_operation_id })
+        const created = await tasks.createNewTaskComposerDraft({ ttl_ms: input.ttl_ms as number, client_operation_id: input.client_operation_id, work_dir: input.work_dir })
         return Response.json({ ...created, draft: publicDraft(created.draft) }, { status: created.outcome === 'accepted' ? 201 : 200 })
       }
       if (!draftId) {
@@ -646,6 +644,7 @@ type PublicProductTask = {
   current_lineage_id?: string
   projectId?: string
   directoryId?: string
+  workDir?: string
   title?: string
   lifecycle?: string
   kind?: string
@@ -669,12 +668,16 @@ function publicTask(task: Record<string, unknown>): PublicProductTask {
     coreSessionId: _legacyCoreSessionId,
     sourceTurnId: _privateCoreSourceTurnId,
     parentThreadId: _legacyCoreParentThreadId,
-    workDir: _workDir,
+    workDir,
     binding: _binding,
     resume_binding_id: _resumeBindingId,
     ...publicTask
   } = task
-  return publicTask
+  const workspaceCapability = publicTask.workspace_capability as { available?: unknown } | undefined
+  return {
+    ...publicTask,
+    ...(workspaceCapability?.available === true && typeof workDir === 'string' ? { workDir } : {}),
+  }
 }
 
 function publicAuthority(authority: { revision: number; event_sequence?: number; tasks: Record<string, unknown>[]; side_tasks?: Record<string, unknown>[] }): PublicAuthoritySnapshot {

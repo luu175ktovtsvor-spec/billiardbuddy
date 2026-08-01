@@ -1,6 +1,5 @@
 import type {
   ContinueProductTaskInput,
-  CreateProductTaskInput,
   CreateProductSideTaskInput,
   ProductSideTask,
   ProductTask,
@@ -34,7 +33,6 @@ export { PRODUCT_TASK_EVENT_VERSION } from '../../../../shared/product/taskEvent
 export { parseProductTaskReviewDiff } from '../../../../shared/product/taskReview'
 export type {
   ContinueProductTaskInput,
-  CreateProductTaskInput,
   CreateProductSideTaskInput,
   ProductContinuationTarget,
   ProductProject,
@@ -249,8 +247,18 @@ export type ProductSideTaskActionResponse =
 
 export type ProductTaskApi = {
   list: () => Promise<ProductTaskIndexResponse>
-  create: (input: MutationEnvelope<CreateProductTaskInput>) => Promise<ProductTaskActionResponse>
   update: (taskId: string, input: MutationEnvelope<UpdateProductTaskInput>) => Promise<ProductTaskActionResponse>
+  bindWorkspace: (taskId: string, input: {
+    workspace_id: string
+    expected_task_revision: number
+    expected_workspace_revision: number
+    client_operation_id: string
+  }) => Promise<{ receipt: {
+    authority_revision: number
+    entity_revisions: { task: number; workspace: number }
+    outcome: 'accepted' | 'duplicate' | 'conflict' | 'rejected'
+    error?: string
+  } }>
   pin: (taskId: string, input: MutationEnvelope) => Promise<ProductTaskActionResponse>
   unpin: (taskId: string, input: MutationEnvelope) => Promise<ProductTaskActionResponse>
   archive: (taskId: string, input: MutationEnvelope) => Promise<ProductTaskActionResponse>

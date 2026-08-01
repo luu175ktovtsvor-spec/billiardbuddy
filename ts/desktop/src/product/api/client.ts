@@ -15,6 +15,8 @@ const PRODUCT_API_SAFE_ERROR_MESSAGES: Record<string, string> = {
   PRODUCT_TASK_ACTIVE_RUN: '任务仍在运行或等待确认，请先停止任务后再归档。',
   PRODUCT_TASK_STORE_ERROR: '任务数据暂时无法读取，请稍后重试。',
   PRODUCT_TASK_THREAD_UNAVAILABLE: '当前任务记录暂时无法读取，请稍后重试。',
+  WORKSPACE_REQUIRED: '请先关联一个可写的工作目录。',
+  WORKSPACE_RELINK_REQUIRED: '原工作目录已变化，请重新关联一个可写目录。',
   VOICE_TRANSCRIPTION_CANCELLED: '语音转写已取消。',
   VOICE_TRANSCRIPTION_INVALID_AUDIO: '请先录制一段有效音频后重试。',
   VOICE_TRANSCRIPTION_TOO_LARGE: '录音文件过大，请缩短后重试。',
