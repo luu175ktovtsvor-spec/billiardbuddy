@@ -31,6 +31,26 @@ type OpenAiMessage = Record<string, unknown>
 type ToolAccumulator = { id: string; name: string; arguments: string }
 type OpenAiUserPart = { type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } }
 
+function responseOutputIndex(value: unknown, fallback: number): number {
+  const index = typeof value === 'number' ? value : Number(value)
+  return Number.isInteger(index) && index >= 0 ? index : fallback
+}
+
+function mergeResponseFunctionCall(
+  calls: Map<number, ToolAccumulator>,
+  index: number,
+  value: Record<string, unknown>,
+  replaceArguments = false,
+): void {
+  const current = calls.get(index) ?? { id: '', name: '', arguments: '' }
+  if (typeof value.call_id === 'string' && value.call_id) current.id = value.call_id
+  if (typeof value.name === 'string' && value.name) current.name = value.name
+  if (typeof value.arguments === 'string') {
+    current.arguments = replaceArguments ? value.arguments : current.arguments + value.arguments
+  }
+  calls.set(index, current)
+}
+
 function contentParts(content: unknown): Array<Record<string, unknown>> {
   if (typeof content === 'string') return [{ type: 'text', text: content }]
   return Array.isArray(content) ? content.filter(value => value && typeof value === 'object') as Array<Record<string, unknown>> : []
@@ -264,6 +284,7 @@ export const runProductModel: ProductAgentModelRunner = async function* ({ messa
   let stopReason: string | null = null
   let usage = { input_tokens: 0, output_tokens: 0 }
   const calls = new Map<number, ToolAccumulator>()
+  let responsesTerminalState: 'completed' | 'incomplete' | null = null
   try {
   for await (const chunk of sseData(response, signal)) {
     if (personalProfile?.protocol === 'openai-responses') {
@@ -275,21 +296,35 @@ export const runProductModel: ProductAgentModelRunner = async function* ({ messa
       if (event === 'response.output_item.added') {
         const item = chunk.item as Record<string, unknown> | undefined
         if (item?.type === 'function_call') {
-          const index = Number(chunk.output_index ?? calls.size)
-          calls.set(index, { id: String(item.call_id ?? ''), name: String(item.name ?? ''), arguments: String(item.arguments ?? '') })
+          mergeResponseFunctionCall(calls, responseOutputIndex(chunk.output_index, calls.size), item, true)
         }
       }
       if (event === 'response.function_call_arguments.delta' && typeof chunk.delta === 'string') {
-        const index = Number(chunk.output_index ?? 0)
-        const current = calls.get(index) ?? { id: String(chunk.call_id ?? ''), name: '', arguments: '' }
-        current.arguments += chunk.delta
-        calls.set(index, current)
+        mergeResponseFunctionCall(calls, responseOutputIndex(chunk.output_index, 0), {
+          call_id: chunk.call_id,
+          name: chunk.name,
+          arguments: chunk.delta,
+        })
+      }
+      if (event === 'response.function_call_arguments.done') {
+        mergeResponseFunctionCall(calls, responseOutputIndex(chunk.output_index, 0), {
+          call_id: chunk.call_id,
+          name: chunk.name,
+          arguments: chunk.arguments,
+        }, true)
+      }
+      if (event === 'response.output_item.done') {
+        const item = chunk.item as Record<string, unknown> | undefined
+        if (item?.type === 'function_call') {
+          mergeResponseFunctionCall(calls, responseOutputIndex(chunk.output_index, calls.size), item, true)
+        }
       }
       if (event === 'response.completed' || event === 'response.incomplete') {
         const completed = chunk.response as Record<string, unknown> | undefined
         if (typeof completed?.model === 'string') model = completed.model
         const rawUsage = completed?.usage as Record<string, unknown> | undefined
         if (rawUsage) usage = { input_tokens: Number(rawUsage.input_tokens ?? 0), output_tokens: Number(rawUsage.output_tokens ?? 0) }
+        responsesTerminalState = event === 'response.completed' ? 'completed' : 'incomplete'
         stopReason = event === 'response.completed' ? 'stop' : 'length'
       }
       continue
@@ -348,6 +383,12 @@ export const runProductModel: ProductAgentModelRunner = async function* ({ messa
       if (typeof fn?.arguments === 'string') current.arguments += fn.arguments
       calls.set(index, current)
     }
+  }
+  if (personalProfile?.protocol === 'openai-responses' && responsesTerminalState !== 'completed') {
+    throw new Error('PRODUCT_MODEL_INCOMPLETE_RESPONSE')
+  }
+  if (personalProfile?.protocol === 'openai-compatible' && stopReason === 'length') {
+    throw new Error('PRODUCT_MODEL_INCOMPLETE_RESPONSE')
   }
   const content: ProductAssistantMessage['message']['content'] = []
   if (text) content.push({ type: 'text', text })
