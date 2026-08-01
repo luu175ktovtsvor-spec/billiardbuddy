@@ -2,6 +2,7 @@ import { AppShell } from './components/layout/AppShell'
 import { StartupErrorView } from './components/layout/StartupErrorView'
 import { ToastContainer } from './components/shared/Toast'
 import { useScheduledTaskDesktopNotifications } from './hooks/useScheduledTaskDesktopNotifications'
+import { useDesktopProjectRuntime } from './hooks/useDesktopProjectRuntime'
 import { installDesktopNotificationNavigation } from './lib/desktopNotificationNavigation'
 import { getDesktopHost } from './lib/desktopHost'
 import { initializeDesktopServerUrl } from './lib/desktopRuntime'
@@ -12,6 +13,7 @@ import { useEffect, useState } from 'react'
 
 function MainApp() {
   useScheduledTaskDesktopNotifications()
+  useDesktopProjectRuntime()
   useEffect(() => {
     let cleanup: (() => void) | undefined
     let cancelled = false

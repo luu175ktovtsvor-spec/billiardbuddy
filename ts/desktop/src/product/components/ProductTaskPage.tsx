@@ -364,7 +364,6 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
   const mutations = useProductTaskStore((state) => state.mutations)
   const runtime = useProductTaskRuntimeStore((state) => state.tasks[taskId])
   const connectTask = useProductTaskRuntimeStore((state) => state.connectTask)
-  const disconnectTask = useProductTaskRuntimeStore((state) => state.disconnectTask)
   const forgetRuntimeTask = useProductTaskRuntimeStore((state) => state.forgetTask)
   const sendText = useProductTaskRuntimeStore((state) => state.sendText)
   const sendMessage = useProductTaskRuntimeStore((state) => state.sendMessage)
@@ -449,8 +448,7 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
   useEffect(() => {
     if (!resolvedTaskId) return
     void connectTask(resolvedTaskId)
-    return () => disconnectTask(resolvedTaskId)
-  }, [connectTask, disconnectTask, resolvedTaskId])
+  }, [connectTask, resolvedTaskId])
 
   useEffect(() => {
     if (!resolvedTaskId) return
