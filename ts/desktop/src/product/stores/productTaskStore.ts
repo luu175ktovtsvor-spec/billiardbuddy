@@ -1,12 +1,11 @@
 import { create } from 'zustand'
 import { ProductApiError, productApiUserFacingError } from '../api/client'
-import { productAtomicTaskSubmitApi, productTasksApi } from '../api/tasks'
+import { productAtomicTaskSubmitApi, productTasksApi, productWorkspaceApi } from '../api/tasks'
 import { PRODUCT_DOMAIN_VERSION } from '../domain/types'
 import { orderProductProjects, orderProductTasks } from '../taskOrdering'
 import type {
   AuthoritySnapshot,
   ContinueProductTaskInput,
-  CreateProductTaskInput,
   MutationEnvelope,
   ProductTaskActionResponse,
   ProductTaskDeletionPhase,
@@ -30,6 +29,11 @@ export function productTaskMutationKey(taskId: string, action: string): string {
 }
 
 type PendingMutation = MutationEnvelope<Record<string, unknown>>
+type WorkspaceBindEnvelope = PendingMutation & {
+  root?: unknown
+  workspace_id?: unknown
+  workspace_revision?: unknown
+}
 
 type ProductTaskStore = {
   index: ProductTaskIndexResponse
@@ -44,8 +48,8 @@ type ProductTaskStore = {
   refresh: () => Promise<void>
   clearError: () => void
   applyRuntimeTaskTitle: (taskId: string, title: string) => void
-  createTask: (input: CreateProductTaskInput) => Promise<ProductTaskRecord>
-  submitNewTask: (input: { text: string; attachment_ids: string[]; permission_mode: ProductTaskPermissionMode }) => Promise<ProductTaskRecord>
+  submitNewTask: (input: { text: string; attachment_ids: string[]; permission_mode: ProductTaskPermissionMode; work_dir: string }) => Promise<ProductTaskRecord>
+  bindTaskWorkspace: (taskId: string, root: string) => Promise<ProductTaskRecord>
   renameTask: (taskId: string, title: string) => Promise<ProductTaskRecord>
   pinTask: (taskId: string) => Promise<ProductTaskRecord>
   unpinTask: (taskId: string) => Promise<ProductTaskRecord>
@@ -100,11 +104,26 @@ export function mergeAuthority(index: ProductTaskIndexResponse, authority: Autho
   const tasks = index.tasks.map((current) => {
     const incoming = byId.get(current.id)
     if (!incoming) return current
-    const required = ['id', 'projectId', 'directoryId', 'workDir', 'title', 'lifecycle', 'kind', 'createdAt', 'updatedAt', 'worktreeState'] as const
+    const required = ['id', 'projectId', 'directoryId', 'title', 'lifecycle', 'kind', 'createdAt', 'updatedAt', 'worktreeState'] as const
     if (required.some((key) => incoming[key] === undefined || incoming[key] === null)) throw new Error('Incomplete authority task projection')
     // Authority owns every ProductTask domain field. Renderer-only view fields
     // remain intentionally outside the persisted authority schema.
-    return { ...current, id: incoming.id, projectId: incoming.projectId, directoryId: incoming.directoryId, workDir: incoming.workDir, title: incoming.title, lifecycle: incoming.lifecycle, kind: incoming.kind, pinnedAt: incoming.pinnedAt, archivedAt: incoming.archivedAt, parentTaskId: incoming.parentTaskId, createdAt: incoming.createdAt, updatedAt: incoming.updatedAt, worktreeState: incoming.worktreeState }
+    return {
+      ...current,
+      id: incoming.id,
+      projectId: incoming.projectId,
+      directoryId: incoming.directoryId,
+      ...(typeof incoming.workDir === 'string' ? { workDir: incoming.workDir } : {}),
+      title: incoming.title,
+      lifecycle: incoming.lifecycle,
+      kind: incoming.kind,
+      pinnedAt: incoming.pinnedAt,
+      archivedAt: incoming.archivedAt,
+      parentTaskId: incoming.parentTaskId,
+      createdAt: incoming.createdAt,
+      updatedAt: incoming.updatedAt,
+      worktreeState: incoming.worktreeState,
+    }
   })
   return { ...index, tasks: orderProductTasks(tasks), projects: orderProductProjects(reconcileProjectSummaries(index, tasks), tasks) }
 }
@@ -230,19 +249,16 @@ export const useProductTaskStore = create<ProductTaskStore>((set, get) => {
       })
     },
 
-    createTask: async (input) => {
-      const task = await runMutation('create', input, (envelope) => productTasksApi.create(envelope as MutationEnvelope<CreateProductTaskInput>))
-      await get().refresh()
-      return task
-    },
     submitNewTask: async (input) => {
       const intentKey = 'create'
       const text = input.text.trim()
       if (!text) throw new Error('Task text is required')
+      const workDir = input.work_dir.trim()
+      if (!workDir) throw new Error('Task workspace is required')
       const operationId = makeOperationId()
       set((state) => ({ error: null, mutations: { ...state.mutations, [intentKey]: true } }))
       try {
-        const draft = await productAtomicTaskSubmitApi.createDraft(`${operationId}-draft`)
+        const draft = await productAtomicTaskSubmitApi.createDraft(`${operationId}-draft`, workDir)
         const submitted = await productAtomicTaskSubmitApi.submit({
           draft_id: draft.draft.draft_id,
           expected_draft_revision: draft.draft.revision,
@@ -269,6 +285,96 @@ export const useProductTaskStore = create<ProductTaskStore>((set, get) => {
           error: errorMessage(error, '暂时无法提交任务，请稍后重试。'),
           mutations: { ...state.mutations, [intentKey]: false },
         }))
+        throw error
+      }
+    },
+    bindTaskWorkspace: async (taskId, root) => {
+      const requestedRoot = root.trim()
+      if (!requestedRoot) throw new Error('Task workspace is required')
+      const task = get().index.tasks.find((candidate) => candidate.id === taskId)
+      if (!task) throw new Error('Task is unavailable')
+
+      const intentKey = productTaskMutationKey(taskId, 'bind-workspace')
+      const existing = get().pending[intentKey] as WorkspaceBindEnvelope | undefined
+      if (existing && typeof existing.root === 'string' && existing.root !== requestedRoot) {
+        throw new Error('A workspace binding is already pending')
+      }
+      let envelope: WorkspaceBindEnvelope = existing ?? createEnvelope({ root: requestedRoot }, task.revision ?? 0)
+      set((state) => ({
+        error: null,
+        pending: { ...state.pending, [intentKey]: envelope },
+        mutations: { ...state.mutations, [intentKey]: true },
+      }))
+
+      let terminalFailure = false
+      try {
+        let workspaceId = typeof envelope.workspace_id === 'string' ? envelope.workspace_id : undefined
+        let workspaceRevision = typeof envelope.workspace_revision === 'number'
+          ? envelope.workspace_revision
+          : undefined
+        if (!workspaceId || typeof workspaceRevision !== 'number' || !Number.isSafeInteger(workspaceRevision)) {
+          const registered = await productWorkspaceApi.register({
+            root: requestedRoot,
+            expected_revision: 0,
+            client_operation_id: `${envelope.client_operation_id}:workspace`,
+          })
+          const inspected = await productWorkspaceApi.inspect(registered.workspace.workspace_id)
+          if (inspected.workspace.availability !== 'available') {
+            terminalFailure = true
+            throw new Error('Task workspace is unavailable')
+          }
+          workspaceId = inspected.workspace.workspace_id
+          workspaceRevision = inspected.workspace.revision
+          envelope = Object.freeze({
+            ...envelope,
+            workspace_id: workspaceId,
+            workspace_revision: workspaceRevision,
+          })
+          set((state) => ({ pending: { ...state.pending, [intentKey]: envelope } }))
+        }
+        if (!workspaceId || !Number.isSafeInteger(workspaceRevision)) {
+          terminalFailure = true
+          throw new Error('Task workspace registration is incomplete')
+        }
+
+        const response = await productTasksApi.bindWorkspace(taskId, {
+          workspace_id: workspaceId,
+          expected_task_revision: envelope.expected_revision,
+          expected_workspace_revision: workspaceRevision,
+          client_operation_id: envelope.client_operation_id,
+        })
+        if (!['accepted', 'duplicate'].includes(response.receipt.outcome)) {
+          terminalFailure = true
+          throw new Error('Task workspace binding was not accepted')
+        }
+
+        const index = await productTasksApi.list()
+        const boundTask = index.tasks.find((candidate) => candidate.id === taskId)
+        if (!boundTask) throw new Error('Bound task projection is unavailable')
+        taskIndexRequestSequence += 1
+        set((state) => {
+          const pending = { ...state.pending }
+          delete pending[intentKey]
+          return {
+            index,
+            isLoading: false,
+            confirmedAuthorityRevision: Math.max(state.confirmedAuthorityRevision, response.receipt.authority_revision),
+            pending,
+            mutations: { ...state.mutations, [intentKey]: false },
+          }
+        })
+        return boundTask
+      } catch (error) {
+        const knownTerminal = terminalFailure || error instanceof ProductApiError
+        set((state) => {
+          const pending = { ...state.pending }
+          if (knownTerminal) delete pending[intentKey]
+          return {
+            error: errorMessage(error, '暂时无法关联工作目录，请稍后重试。'),
+            pending,
+            mutations: { ...state.mutations, [intentKey]: false },
+          }
+        })
         throw error
       }
     },

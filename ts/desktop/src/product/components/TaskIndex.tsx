@@ -8,6 +8,7 @@ import type {
   ProductTaskRecord,
 } from '../domain/types'
 import { CopyButton } from '../../components/shared/CopyButton'
+import { DirectoryPicker } from '../../components/shared/DirectoryPicker'
 import {
   productTaskCommandsApi,
   type ProductTaskAgentCommand,
@@ -264,9 +265,10 @@ export function TaskComposer({
   initialWorkDir?: string
   isSubmitting: boolean
   onCancel: () => void
-  onSubmit: (input: { text: string; attachment_ids: string[]; permission_mode: ProductTaskPermissionMode }) => Promise<void>
+  onSubmit: (input: { text: string; attachment_ids: string[]; permission_mode: ProductTaskPermissionMode; work_dir: string }) => Promise<void>
 }) {
   const [initialText, setInitialText] = useState('')
+  const [workDir, setWorkDir] = useState(() => initialWorkDir?.trim() ?? '')
   const [permissionMode, setPermissionMode] = useState<ProductTaskPermissionMode>('ask_for_approval')
   const [discoverableSkills, setDiscoverableSkills] = useState<ProductTaskSkillCommand[] | null>(null)
   const [discoverableAgents, setDiscoverableAgents] = useState<ProductTaskAgentCommand[] | null>(null)
@@ -275,7 +277,7 @@ export function TaskComposer({
   const [agentDiscoveryError, setAgentDiscoveryError] = useState<string | null>(null)
   const chatSendBehavior = useSettingsStore((state) => state.chatSendBehavior)
   const composingRef = useRef(false)
-  const commandWorkDir = initialWorkDir?.trim() ?? ''
+  const commandWorkDir = workDir.trim()
   const isSlashInput = initialText.startsWith('/')
   const query = slashQuery(initialText)
 
@@ -353,8 +355,8 @@ export function TaskComposer({
   const submitTask = () => {
     if (isSubmitting) return
     const text = resolveTaskComposerRuntimeCommand(initialText.trim(), taskComposerCommands)
-    if (!text) return
-    void onSubmit({ text, attachment_ids: [], permission_mode: permissionMode })
+    if (!text || !commandWorkDir) return
+    void onSubmit({ text, attachment_ids: [], permission_mode: permissionMode, work_dir: commandWorkDir })
   }
 
   const handleInitialGoalKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -399,6 +401,11 @@ export function TaskComposer({
           />
         ) : null}
       </div>
+      <div className="flex flex-col gap-1 text-sm text-[var(--color-text-secondary)]">
+        <span>工作目录</span>
+        <DirectoryPicker value={commandWorkDir} onChange={setWorkDir} />
+        <p className="text-xs leading-5 text-[var(--color-text-tertiary)]">任务只会在这里选择并登记的目录中执行。</p>
+      </div>
       <label className="flex flex-col gap-1 text-sm text-[var(--color-text-secondary)]">
         执行权限
         <select
@@ -414,7 +421,7 @@ export function TaskComposer({
         </span>
       </label>
       <div className="flex gap-2">
-        <button type="submit" disabled={isSubmitting || !initialText.trim()} className="rounded-lg bg-[var(--color-primary)] px-3 py-2 text-sm font-medium text-white disabled:opacity-50">{isSubmitting ? '正在开始…' : '开始任务'}</button>
+        <button type="submit" disabled={isSubmitting || !initialText.trim() || !commandWorkDir} className="rounded-lg bg-[var(--color-primary)] px-3 py-2 text-sm font-medium text-white disabled:opacity-50">{isSubmitting ? '正在开始…' : '开始任务'}</button>
         <button type="button" onClick={onCancel} disabled={isSubmitting} className="rounded-lg border border-[var(--color-border)] px-3 py-2 text-sm text-[var(--color-text-secondary)]">取消</button>
       </div>
     </form>

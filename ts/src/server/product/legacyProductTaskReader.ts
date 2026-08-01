@@ -3,9 +3,16 @@ import * as path from 'node:path'
 import { isProductPermissionSnapshot, type ProductTask } from '../../../shared/product/domain.js'
 import { ApiError } from '../middleware/errorHandler.js'
 import type { ProductProject, ProductProjectDirectory, ProductSideTask } from '../../../shared/product/domain.js'
-import type { ProductTaskMetadata, ProductSideTaskMetadata, ProductProjectMetadata, ProductProjectDirectoryMetadata, ProductTaskStore } from './taskService.js'
+import {
+  LEGACY_PRODUCT_TASK_STORE_VERSION,
+  PRODUCT_TASK_STORE_VERSION,
+  type ProductTaskMetadata,
+  type ProductSideTaskMetadata,
+  type ProductProjectMetadata,
+  type ProductProjectDirectoryMetadata,
+  type ProductTaskStore,
+} from './taskLegacyStore.js'
 
-const PRODUCT_TASK_STORE_VERSION = 4 as const
 export type StrictLegacyTask = ProductTask & { coreSessionId: string }
 export const legacyProductTaskId = (id: string) => `task_${createHash('sha256').update(id).digest('hex').slice(0, 16)}`
 const record = (value: unknown): Record<string, unknown> => { if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('UNSUPPORTED_SCHEMA'); return value as Record<string, unknown> }
@@ -236,6 +243,64 @@ export function normalizeModernTaskStore(value: Record<string, unknown>): Produc
       ? { legacyCoreSessionsImportedAt: optionalString(value.legacyCoreSessionsImportedAt) }
       : {}),
   }
+}
+
+/**
+ * Normalize all supported historical task-store revisions at the migration
+ * boundary. The current Agent runtime must consume the Authority ledger, not
+ * a version-specific JSON shape.
+ */
+export function normalizeProductTaskStore(value: unknown): ProductTaskStore {
+  if (!isRecord(value) || !isRecord(value.tasks)) {
+    throw new ApiError(500, '无法读取产品任务数据', 'PRODUCT_TASK_STORE_ERROR')
+  }
+
+  if (value.version === PRODUCT_TASK_STORE_VERSION || value.version === 3 || value.version === 2) {
+    return normalizeModernTaskStore(value)
+  }
+
+  if (value.version === LEGACY_PRODUCT_TASK_STORE_VERSION) {
+    const tasks: Record<string, ProductTaskMetadata> = {}
+    for (const [coreSessionId, rawMetadata] of Object.entries(value.tasks)) {
+      const taskId = legacyProductTaskId(coreSessionId)
+      const metadata = normalizeMetadata(rawMetadata, { id: taskId, coreSessionId })
+      const raw = isRecord(rawMetadata) ? rawMetadata : {}
+      const legacyParentTaskId = optionalString(raw.parentTaskId)
+      const legacyParentThreadId = optionalString(raw.parentThreadId)
+      const legacyParentReference = legacyParentTaskId ?? legacyParentThreadId
+      tasks[taskId] = {
+        ...metadata,
+        ...(legacyParentReference ? { parentTaskId: legacyProductTaskId(legacyParentReference) } : {}),
+      }
+    }
+
+    const sideTasks = normalizeLegacyV1SideTasks(value.sideTasks)
+    for (const sideTask of Object.values(sideTasks)) {
+      if (tasks[sideTask.taskId]) continue
+      tasks[sideTask.taskId] = {
+        id: sideTask.taskId,
+        coreSessionId: sideTask.coreSessionId,
+        title: sideTask.title,
+        lifecycle: 'active',
+        kind: 'continuation',
+        parentTaskId: sideTask.parentTaskId,
+        sourceTurnId: sideTask.sourceTurnId,
+        createdAt: sideTask.createdAt,
+        updatedAt: sideTask.updatedAt,
+        worktreeState: 'not_requested',
+        visibility: 'side_task',
+      }
+    }
+    return {
+      version: PRODUCT_TASK_STORE_VERSION,
+      projects: {},
+      directories: {},
+      tasks,
+      sideTasks,
+    }
+  }
+
+  throw new ApiError(500, '无法读取产品任务数据', 'PRODUCT_TASK_STORE_ERROR')
 }
 
 

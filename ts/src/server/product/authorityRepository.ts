@@ -256,6 +256,11 @@ function validateProductDirectory(value: unknown, key: string): void {
     || !isTimestamp(directory.createdAt) || !isTimestamp(directory.updatedAt)) invalid()
 }
 
+function isSameOrChildPath(rootDir: string, candidate: string): boolean {
+  const relative = path.relative(rootDir, candidate)
+  return relative === '' || (!!relative && !relative.startsWith('..') && !path.isAbsolute(relative))
+}
+
 function validateDraft(value: unknown, key: string): void {
   const draft = object(value); exactKeys(draft, ['draft_id', 'installation_id', 'target_task_id', 'revision', 'last_activity', 'state', 'created_at', 'expires_at'], ['workspace_id', 'target_state'])
   if (draft.draft_id !== key || !requiredString(draft.installation_id) || !requiredString(draft.target_task_id) || (draft.target_state !== undefined && !['existing_task', 'pending_task'].includes(draft.target_state as string)) || !Number.isSafeInteger(draft.revision) || (draft.revision as number) < 0 || !['active', 'consumed', 'expired'].includes(draft.state as string) || !isTimestamp(draft.last_activity) || !isTimestamp(draft.created_at) || !isTimestamp(draft.expires_at) || (draft.workspace_id !== undefined && !requiredString(draft.workspace_id))) invalid()
@@ -449,6 +454,30 @@ function validate(file: AuthorityFile): AuthorityFile {
     }
   }
   for (const [key, value] of Object.entries(file.tasks)) { assertAuthorityMapKey(key); taskValue(value) }
+  if (file.authority_schema_revision >= 8) {
+    for (const [taskId, value] of Object.entries(file.tasks)) {
+      const record = object(value)
+      if (!('task' in record)) continue
+      const task = object(record.task)
+      const projectId = task.projectId
+      const directoryId = task.directoryId
+      if (typeof projectId !== 'string' || typeof directoryId !== 'string') invalid()
+      if ((projectId === '') !== (directoryId === '')) invalid()
+      if (projectId) {
+        const project = file.product_projects[projectId]
+        const directory = file.product_directories[directoryId]
+        if (!project || !directory) invalid()
+        const projectRecord = object(project)
+        const directoryRecord = object(directory)
+        if (directoryRecord.projectId !== projectId || typeof projectRecord.rootDir !== 'string' || typeof directoryRecord.path !== 'string' || !isSameOrChildPath(projectRecord.rootDir, directoryRecord.path)) invalid()
+      }
+      const scope = file.task_scopes[taskId]
+      if (scope !== undefined) {
+        const scopeRecord = object(scope)
+        if (scopeRecord.kind === 'workspace' && !file.workspaces[scopeRecord.workspace_id as string]) invalid()
+      }
+    }
+  }
   for (const [key, value] of Object.entries(file.side_tasks)) { assertAuthorityMapKey(key); sideValue(value, key) }
   for (const [key, value] of Object.entries(file.bindings)) { assertAuthorityMapKey(key); const record = object(value); if ('coreSessionId' in record) bindingRecord(record); else taskValue(record) }
   for (const [key, value] of Object.entries(file.receipts)) validateReceipt(value, key)

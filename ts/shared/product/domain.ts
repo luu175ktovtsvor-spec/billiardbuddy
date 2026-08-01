@@ -228,29 +228,6 @@ export type ProductTaskMutationEnvelope = {
   client_operation_id?: string
 }
 
-export type CreateProductTaskInput = ProductTaskMutationEnvelope & {
-  /**
-   * A previously registered project/directory pair. Both values are required
-   * together and the server resolves the actual path from its own registry.
-   */
-  projectId?: string
-  directoryId?: string
-  /**
-   * Compatibility path for selecting a new directory. The server
-   * canonicalizes it and registers or reuses a product project/directory
-   * before creating the Agent Core session.
-   */
-  workDir?: string
-  title?: string
-  useWorktree?: boolean
-  /**
-   * The safe product-facing execution choice for this new task. Omitted
-   * values keep the same per-request confirmation behavior as
-   * `ask_for_approval`.
-   */
-  permissionMode?: ProductTaskPermissionMode
-}
-
 export type UpdateProductTaskInput = ProductTaskMutationEnvelope & {
   title?: string
   pinned?: boolean

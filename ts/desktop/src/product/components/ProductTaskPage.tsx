@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent, type KeyboardEvent } from 'react'
 import { MarkdownRenderer } from '../../components/markdown/MarkdownRenderer'
 import { ConfirmDialog } from '../../components/shared/ConfirmDialog'
+import { DirectoryPicker } from '../../components/shared/DirectoryPicker'
 import { getDesktopHost } from '../../lib/desktopHost'
 import { useSettingsStore } from '../../stores/settingsStore'
 import { PRODUCT_TASKS_TAB_ID, PRODUCT_TASK_TAB_PREFIX, SETTINGS_TAB_ID, useTabStore } from '../../stores/tabStore'
@@ -24,6 +25,7 @@ import {
   type ProductTaskRuntime,
 } from '../stores/productTaskRuntimeStore'
 import { useProductTaskStore } from '../stores/productTaskStore'
+import { productApiUserFacingError } from '../api/client'
 import {
   productSideTaskMutationKey,
   useProductSideTaskStore,
@@ -360,6 +362,7 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
   const restoreTask = useProductTaskStore((state) => state.restoreTask)
   const mutateTaskDeletion = useProductTaskStore((state) => state.mutateTaskDeletion)
   const recoverTaskRun = useProductTaskStore((state) => state.recoverTaskRun)
+  const bindTaskWorkspace = useProductTaskStore((state) => state.bindTaskWorkspace)
   const pinTask = useProductTaskStore((state) => state.pinTask)
   const unpinTask = useProductTaskStore((state) => state.unpinTask)
   const continueTask = useProductTaskStore((state) => state.continueTask)
@@ -401,6 +404,9 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
   const [attachmentMessage, setAttachmentMessage] = useState<string | null>(null)
   const [attachments, setAttachments] = useState<ProductTaskAttachmentDraft[]>([])
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const [workspaceRoot, setWorkspaceRoot] = useState('')
+  const [isWorkspaceBinding, setIsWorkspaceBinding] = useState(false)
+  const [workspaceBindingError, setWorkspaceBindingError] = useState<string | null>(null)
   const [threadActionError, setThreadActionError] = useState<string | null>(null)
   const [queueEditingId, setQueueEditingId] = useState<string | null>(null)
   const [queueEditingText, setQueueEditingText] = useState('')
@@ -628,6 +634,10 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
 
   const submit = async () => {
     if (isSubmitting) return
+    if (!workspaceAvailable) {
+      setValidationMessage('请先关联一个可写的工作目录。')
+      return
+    }
     if (!canSendProductTaskMessage(draft, attachments)) {
       setValidationMessage('请输入任务内容，或添加不超过 4 个附件。')
       return
@@ -924,6 +934,25 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
     }
   }
 
+  const submitWorkspaceBinding = async () => {
+    if (isWorkspaceBinding || isTaskReadOnly) return
+    if (!workspaceRoot.trim()) {
+      setWorkspaceBindingError('请选择一个可写的工作目录。')
+      return
+    }
+    setIsWorkspaceBinding(true)
+    setWorkspaceBindingError(null)
+    try {
+      await bindTaskWorkspace(task.id, workspaceRoot)
+      setWorkspaceRoot('')
+      setValidationMessage(null)
+    } catch (error) {
+      setWorkspaceBindingError(productApiUserFacingError(error, '暂时无法关联工作目录，请稍后重试。'))
+    } finally {
+      setIsWorkspaceBinding(false)
+    }
+  }
+
   const openModelSettings = () => {
     useUIStore.getState().setPendingSettingsTab('models')
     useTabStore.getState().openTab(SETTINGS_TAB_ID, '设置', 'settings')
@@ -1040,6 +1069,27 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
       <div className="flex min-h-0 flex-1 overflow-hidden">
         <section className="flex min-w-0 flex-1 flex-col">
           <div className="min-h-0 flex-1 overflow-y-auto px-4 py-6 sm:px-6">
+            {!workspaceAvailable && !isTaskReadOnly ? (
+              <section className="mx-auto mb-5 max-w-4xl rounded-xl border border-amber-500/30 bg-[var(--color-surface)] p-4" aria-label="关联任务工作区">
+                <h2 className="text-sm font-semibold text-[var(--color-text-primary)]">先关联工作区，才能继续运行</h2>
+                <p className="mt-1 text-sm leading-6 text-[var(--color-text-secondary)]">这个任务没有可验证的执行目录。选择一个可写目录后，后续 Harness、终端、审阅和预览都会只使用这个目录。</p>
+                <div className="mt-3 flex flex-wrap items-center gap-3">
+                  <DirectoryPicker value={workspaceRoot} onChange={(value) => {
+                    setWorkspaceRoot(value)
+                    setWorkspaceBindingError(null)
+                  }} />
+                  <button
+                    type="button"
+                    disabled={isWorkspaceBinding || !workspaceRoot.trim()}
+                    onClick={() => { void submitWorkspaceBinding() }}
+                    className="rounded-lg bg-[var(--color-primary)] px-3 py-2 text-sm font-medium text-white disabled:opacity-50"
+                  >
+                    {isWorkspaceBinding ? '正在关联…' : '关联并继续'}
+                  </button>
+                </div>
+                {workspaceBindingError ? <p role="alert" className="mt-3 text-sm text-[var(--color-error)]">{workspaceBindingError}</p> : null}
+              </section>
+            ) : null}
             {runtime?.historyStatus === 'loading' && runtime.entries.length === 0 ? (
               <p role="status" className="py-12 text-center text-sm text-[var(--color-text-secondary)]">正在读取任务记录…</p>
             ) : null}
@@ -1122,6 +1172,10 @@ export function ProductTaskPage({ taskId, onReturnToTaskIndex, onOpenTask }: Pro
             {isTaskReadOnly ? (
               <p className="rounded-lg bg-[var(--color-surface-container)] px-3 py-2 text-sm text-[var(--color-text-secondary)]">
                 {isArchived ? '此任务已归档。恢复后可以继续处理。' : '此任务正在删除，不能再提交新内容。'}
+              </p>
+            ) : !workspaceAvailable ? (
+              <p className="rounded-lg bg-[var(--color-surface-container)] px-3 py-2 text-sm text-[var(--color-text-secondary)]">
+                请先在上方关联一个可写的工作目录，再继续对话或运行任务。
               </p>
             ) : (
               <>

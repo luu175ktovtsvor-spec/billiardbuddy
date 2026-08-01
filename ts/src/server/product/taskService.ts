@@ -10,9 +10,7 @@ import {
   isProductPermissionSnapshot,
   productPermissionSnapshot,
   type ContinueProductTaskInput,
-  type CreateProductTaskInput,
   type CreateProductSideTaskInput,
-  type ProductContinuationTarget,
   type ProductProject,
   type ProductProjectDirectory,
   type ProductRecentProject,
@@ -39,7 +37,6 @@ import type {
 import type { AgentWorkerApprovalReviewFacts, AgentWorkerOutbound } from '../../../shared/product/agentWorker.js'
 import { ApiError } from '../middleware/errorHandler.js'
 import {
-  type ProductLegacyCoreMessageEntry,
   projectLegacyCoreThreadItems,
 } from './taskThreadProjection.js'
 import { findProductCanonicalGitRoot, findProductGitRoot } from './productGit.js'
@@ -47,11 +44,29 @@ import {
   isRecord,
   legacyProductTaskId,
   readStrictLegacyProductTasks,
-  normalizeLegacyV1SideTasks,
-  normalizeMetadata,
-  normalizeModernTaskStore,
-  optionalString,
 } from './legacyProductTaskReader.js'
+import {
+  type ProductProjectDirectoryMetadata,
+  type ProductProjectMetadata,
+  type ProductSideTaskMetadata,
+} from './taskLegacyStore.js'
+export type {
+  ProductProjectDirectoryMetadata,
+  ProductProjectMetadata,
+  ProductSideTaskMetadata,
+  ProductTaskMetadata,
+  ProductTaskStore,
+} from './taskLegacyStore.js'
+import {
+  ProductTaskLegacyRegistry,
+  agentCoreAdapter,
+  type AgentCoreAdapter,
+} from './taskLegacyRegistry.js'
+export {
+  agentCoreAdapter,
+  type AgentCoreAdapter,
+  type AgentCoreSession,
+} from './taskLegacyRegistry.js'
 import { ProductTaskAuthorityRepository, readLegacyProductTasks, type AuthorityFile, type ProductTaskAuthorityRepositoryDeps } from './authorityRepository.js'
 import {
   ProductCoreOperationTerminalError,
@@ -151,46 +166,6 @@ export type ProductTaskIndexResponse = Omit<ProductTaskIndex, 'tasks'> & {
   }
 }
 
-export type ProductTaskMetadata = {
-  id: string
-  /** Private Agent Core binding. Never return this from a product API. */
-  coreSessionId: string
-  /** Product-owned project binding; never derived from a Core session again. */
-  projectId?: string
-  /** Product-owned source-directory binding; separate from the live workDir. */
-  directoryId?: string
-  title?: string
-  lifecycle: ProductTask['lifecycle']
-  kind: ProductTask['kind']
-  pinnedAt?: string
-  archivedAt?: string
-  parentTaskId?: string
-  sourceTurnId?: string
-  createdAt: string
-  updatedAt: string
-  worktreeState: ProductTask['worktreeState']
-  visibility?: 'main' | 'side_task'
-  permission_snapshot?: ProductPermissionSnapshot
-}
-
-export type ProductSideTaskMetadata = ProductSideTask & {
-  /** Private Agent Core binding for the temporary branch. */
-  coreSessionId: string
-  /** Private Core turn selected by the product-thread entry. */
-  sourceTurnId: string
-}
-
-export type ProductProjectMetadata = Pick<
-  ProductProject,
-  'id' | 'title' | 'rootDir' | 'createdAt' | 'updatedAt'
->
-
-export type ProductProjectDirectoryMetadata = ProductProjectDirectory
-
-const PRODUCT_TASK_STORE_VERSION = 4 as const
-// Keep persisted v1 task metadata readable even when the public product
-// response schema advances independently.
-const LEGACY_PRODUCT_TASK_STORE_VERSION = 1 as const
 const DEFAULT_PRODUCT_GIT_INFO_COMMAND_TIMEOUT_MS = 3_000
 const MAX_RECENT_PRODUCT_PROJECTS = 500
 
@@ -233,84 +208,7 @@ function defaultParticipantReceipts(active: boolean, queued = false): WorkspaceB
 
 export type VerifiedAttachmentMetadata = { source_fingerprint: string; content_hash: string; verified_media_type: string; storage_kind: 'external_reference' | 'app_owned_copy'; byte_size: number }
 
-export type ProductTaskStore = {
-  version: typeof PRODUCT_TASK_STORE_VERSION
-  projects: Record<string, ProductProjectMetadata>
-  directories: Record<string, ProductProjectDirectoryMetadata>
-  tasks: Record<string, ProductTaskMetadata>
-  sideTasks: Record<string, ProductSideTaskMetadata>
-  /**
-   * The legacy Core-session list was imported once into this product-owned
-   * registry. Future Core sessions are not automatically promoted to product
-   * tasks, so the product index has a single durable source of truth.
-   */
-  legacyCoreSessionsImportedAt?: string
-}
-
-type ProductDirectoryBinding = {
-  project: ProductProjectMetadata
-  directory: ProductProjectDirectoryMetadata
-}
-
-type RegisteredProductDirectory = ProductDirectoryBinding & {
-  changed: boolean
-}
-
-export type AgentCoreSession = {
-  id: string
-  title?: string
-  createdAt: string
-  modifiedAt: string
-  projectRoot?: string
-  workDir?: string
-}
-
-type MessageEntry = ProductLegacyCoreMessageEntry
-
-export type AgentCoreAdapter = {
-  listSessions: () => Promise<AgentCoreSession[]>
-  createSession: (input: {
-    workDir: string
-    permissionMode?: string
-    useWorktree?: boolean
-  }) => Promise<{ sessionId: string; workDir: string }>
-  renameSession: (sessionId: string, title: string) => Promise<void>
-  branchSession: (
-    sessionId: string,
-    title?: string,
-    sourceTurnId?: string,
-    target?: ProductContinuationTarget,
-  ) => Promise<{
-    sessionId: string
-    workDir: string
-    title: string
-  }>
-  getSessionMessages?: (sessionId: string) => Promise<MessageEntry[]>
-}
-
-const nativeCoreWorkDirs = new Map<string, string>()
-
 const MAX_TASK_ATTACHMENT_TOTAL_BYTES = 64 * 1024 * 1024
-
-export const agentCoreAdapter: AgentCoreAdapter = {
-  async listSessions() { return [] },
-
-  async createSession(input) {
-    const sessionId = randomUUID()
-    nativeCoreWorkDirs.set(sessionId, input.workDir)
-    return { sessionId, workDir: input.workDir }
-  },
-
-  async renameSession() {},
-
-  async branchSession(sessionId, title) {
-    const next = randomUUID()
-    const workDir = nativeCoreWorkDirs.get(sessionId) ?? process.cwd()
-    nativeCoreWorkDirs.set(next, workDir)
-    return { sessionId: next, workDir, title: title || '新任务' }
-  },
-
-}
 
 function productStorePath(): string {
   const configDir = process.env.BILLIARDBUDDY_CONFIG_DIR || path.join(os.homedir(), '.BilliardBuddy')
@@ -319,57 +217,6 @@ function productStorePath(): string {
 
 function authorityStorePath(storagePath: string): string {
   return path.join(path.dirname(storagePath), 'product-task-authority.v1.json')
-}
-
-function resourceId(prefix: string, value: string): string {
-  return `${prefix}_${createHash('sha256').update(value).digest('hex').slice(0, 16)}`
-}
-
-function createProductTaskId(): string {
-  return `task_${randomUUID()}`
-}
-
-function createProductProjectId(): string {
-  return `project_${randomUUID()}`
-}
-
-function createProductDirectoryId(): string {
-  return `directory_${randomUUID()}`
-}
-
-function legacyProductProjectId(rootDir: string): string {
-  return resourceId('project', rootDir)
-}
-
-function legacyProductDirectoryId(projectId: string, directoryPath: string): string {
-  return resourceId('directory', `${projectId}\u0000${directoryPath}`)
-}
-
-function projectTitle(rootDir: string): string {
-  const base = path.basename(rootDir.replace(/[\\/]+$/, ''))
-  return base || rootDir || '未命名项目'
-}
-
-function directoryLabel(rootDir: string, directoryPath: string): string {
-  const relative = path.relative(rootDir, directoryPath)
-  if (!relative) return '项目根目录'
-  if (!relative.startsWith('..') && !path.isAbsolute(relative)) return relative
-  return path.basename(directoryPath) || directoryPath
-}
-
-function sameProductPath(left: string, right: string): boolean {
-  return path.resolve(left).normalize('NFC') === path.resolve(right).normalize('NFC')
-}
-
-function isSameOrChildPath(rootDir: string, candidate: string): boolean {
-  const relative = path.relative(rootDir, candidate)
-  return relative === '' || (!!relative && !relative.startsWith('..') && !path.isAbsolute(relative))
-}
-
-function isDesktopWorktreeDirectory(workDir: string, rootDir: string): boolean {
-  if (!isSameOrChildPath(rootDir, workDir)) return false
-  const marker = `${path.sep}.BilliardBuddy${path.sep}worktrees${path.sep}`
-  return workDir.includes(marker)
 }
 
 function boundedRecentProjectLimit(limit: number): number {
@@ -469,25 +316,44 @@ function taskPermissionSnapshot(value: unknown): ProductPermissionSnapshot {
     : productPermissionSnapshot('ask_for_approval')
 }
 
-function requestedProductResourceId(value: unknown, field: 'projectId' | 'directoryId'): string | undefined {
-  if (value === undefined) return undefined
-  if (typeof value !== 'string' || !value.trim()) {
-    throw ApiError.badRequest(`${field} 必须是非空字符串`)
+/** Only the Core session identity belongs in the durable Authority binding. */
+function authorityCoreBinding(value: unknown): { coreSessionId: string } {
+  const coreSessionId = (value as { coreSessionId?: unknown } | null)?.coreSessionId
+  if (typeof coreSessionId !== 'string' || !coreSessionId.trim()) {
+    throw new Error('AUTHORITY_INVALID')
   }
-  return value.trim()
+  return { coreSessionId }
 }
 
-function defaultMetadata(session: AgentCoreSession): ProductTaskMetadata {
-  return {
-    id: legacyProductTaskId(session.id),
-    coreSessionId: session.id,
-    lifecycle: 'active',
-    kind: 'main',
-    createdAt: session.createdAt,
-    updatedAt: session.modifiedAt,
-    worktreeState: 'not_requested',
-    visibility: 'main',
-  }
+function workspaceIdForIdentity(
+  installationId: string,
+  identity: Pick<ProductWorkspace['root_identity'], 'volume_id' | 'file_id'>,
+): string {
+  return `workspace_${createHash('sha256').update(`${installationId}\u0000${identity.volume_id}\u0000${identity.file_id}`).digest('hex').slice(0, 16)}`
+}
+
+function projectIdForRoot(installationId: string, rootDir: string): string {
+  return `project_${createHash('sha256').update(`${installationId}\u0000${rootDir}`).digest('hex').slice(0, 16)}`
+}
+
+function directoryIdForPath(projectId: string, directoryPath: string): string {
+  return `directory_${createHash('sha256').update(`${projectId}\u0000${directoryPath}`).digest('hex').slice(0, 16)}`
+}
+
+function isSameOrChildPath(rootDir: string, candidate: string): boolean {
+  const relative = path.relative(rootDir, candidate)
+  return relative === '' || (!!relative && !relative.startsWith('..') && !path.isAbsolute(relative))
+}
+
+function productProjectTitle(rootDir: string): string {
+  return path.basename(rootDir.replace(/[\\/]+$/, '')) || rootDir || '未命名项目'
+}
+
+function productDirectoryLabel(rootDir: string, directoryPath: string): string {
+  const relative = path.relative(rootDir, directoryPath)
+  return relative && isSameOrChildPath(rootDir, directoryPath)
+    ? relative
+    : '项目根目录'
 }
 
 function publicSideTask(sideTask: ProductSideTaskMetadata): ProductSideTask {
@@ -530,63 +396,6 @@ function publicReviewComment(value: StoredReviewComment): ProductTaskReviewComme
     body: value.body,
     createdAt: value.created_at,
   }
-}
-
-function normalizeProductTaskStore(value: unknown): ProductTaskStore {
-  if (!isRecord(value) || !isRecord(value.tasks)) {
-    throw new ApiError(500, '无法读取产品任务数据', 'PRODUCT_TASK_STORE_ERROR')
-  }
-
-  if (value.version === PRODUCT_TASK_STORE_VERSION || value.version === 3 || value.version === 2) {
-    return normalizeModernTaskStore(value)
-  }
-
-  // Version 1 keyed metadata by Core session id and returned that id as the
-  // product id. Convert it in memory to stable opaque identifiers. Project
-  // and directory bindings are backfilled from the registered Core sessions
-  // before the v4 store is written.
-  if (value.version === LEGACY_PRODUCT_TASK_STORE_VERSION) {
-    const tasks: Record<string, ProductTaskMetadata> = {}
-    for (const [coreSessionId, rawMetadata] of Object.entries(value.tasks)) {
-      const taskId = legacyProductTaskId(coreSessionId)
-      const metadata = normalizeMetadata(rawMetadata, { id: taskId, coreSessionId })
-      const raw = isRecord(rawMetadata) ? rawMetadata : {}
-      const legacyParentTaskId = optionalString(raw.parentTaskId)
-      const legacyParentThreadId = optionalString(raw.parentThreadId)
-      const legacyParentReference = legacyParentTaskId ?? legacyParentThreadId
-      tasks[taskId] = {
-        ...metadata,
-        ...(legacyParentReference ? { parentTaskId: legacyProductTaskId(legacyParentReference) } : {}),
-      }
-    }
-
-    const sideTasks = normalizeLegacyV1SideTasks(value.sideTasks)
-    for (const sideTask of Object.values(sideTasks)) {
-      if (tasks[sideTask.taskId]) continue
-      tasks[sideTask.taskId] = {
-        id: sideTask.taskId,
-        coreSessionId: sideTask.coreSessionId,
-        title: sideTask.title,
-        lifecycle: 'active',
-        kind: 'continuation',
-        parentTaskId: sideTask.parentTaskId,
-        sourceTurnId: sideTask.sourceTurnId,
-        createdAt: sideTask.createdAt,
-        updatedAt: sideTask.updatedAt,
-        worktreeState: 'not_requested',
-        visibility: 'side_task',
-      }
-    }
-    return {
-      version: PRODUCT_TASK_STORE_VERSION,
-      projects: {},
-      directories: {},
-      tasks,
-      sideTasks,
-    }
-  }
-
-  throw new ApiError(500, '无法读取产品任务数据', 'PRODUCT_TASK_STORE_ERROR')
 }
 
 function actionsFor(task: ProductTask, hasActiveRun: boolean): ProductTaskAction[] {
@@ -658,11 +467,11 @@ function authorityTaskIndex(authority: AuthorityFile): ProductTaskIndexResponse 
 }
 
 export class ProductTaskService {
-  private static readonly storeLocks = new Map<string, Promise<void>>()
   private readonly storagePath: string
   private readonly authorityPath: string
   private readonly usesDefaultStoragePath: boolean
   private readonly core: AgentCoreAdapter
+  private readonly legacyRegistry: ProductTaskLegacyRegistry
   private readonly workspaceFs: WorkspaceFilesystemPort
   private readonly workspaceBindBlockers: WorkspaceBindBlockerPort
   private readonly admissionBarrier: SessionAdmissionBarrier
@@ -703,6 +512,7 @@ export class ProductTaskService {
     this.storagePath = options.storagePath ?? productStorePath()
     this.authorityPath = options.storagePath ? authorityStorePath(options.storagePath) : authorityStorePath(productStorePath())
     this.core = options.core ?? agentCoreAdapter
+    this.legacyRegistry = new ProductTaskLegacyRegistry(this.storagePath, this.core)
     this.workspaceFs = options.workspaceFs ?? workspaceFilesystem
     // BB-02B can observe active product runs. Queue/PTY/preview/write leases
     // are explicitly out-of-scope disabled participants, not synthetic unknowns.
@@ -758,31 +568,6 @@ export class ProductTaskService {
       : async () => true)
   }
 
-  /**
-   * The registry is one JSON document. Serialize operations per storage path
-   * so migration and read-modify-write actions cannot overwrite each other.
-   */
-  private async withStoreLock<T>(operation: () => Promise<T>): Promise<T> {
-    const key = path.resolve(this.storagePath)
-    const previous = ProductTaskService.storeLocks.get(key) ?? Promise.resolve()
-    let release: (() => void) | undefined
-    const gate = new Promise<void>((resolve) => {
-      release = resolve
-    })
-    const queued = previous.then(() => gate)
-    ProductTaskService.storeLocks.set(key, queued)
-
-    await previous
-    try {
-      return await operation()
-    } finally {
-      release?.()
-      if (ProductTaskService.storeLocks.get(key) === queued) {
-        ProductTaskService.storeLocks.delete(key)
-      }
-    }
-  }
-
   async listTasksAuthoritatively(): Promise<ProductTaskIndexResponse> {
     const authority = await new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps).read()
     const index = authorityTaskIndex(authority)
@@ -827,20 +612,15 @@ export class ProductTaskService {
    * retirement.
    */
   async migrateSupportedStorage(): Promise<void> {
-    const legacy = await this.withStoreLock(async () => {
-      const exists = await fs.access(this.storagePath).then(() => true, () => false)
-      if (!exists) return { taskIds: [], sideTasks: [], projects: {}, directories: {} }
-      const { store } = await this.loadRegisteredStore()
-      await this.writeStore(store)
-      return {
-        taskIds: Object.keys(store.tasks).sort(),
-        sideTasks: Object.values(store.sideTasks)
-          .sort((left, right) => left.id.localeCompare(right.id))
-          .map(publicSideTask),
-        projects: Object.fromEntries(Object.entries(store.projects).map(([id, project]) => [id, { ...project }])),
-        directories: Object.fromEntries(Object.entries(store.directories).map(([id, directory]) => [id, { ...directory }])),
-      }
-    })
+    const registered = await this.legacyRegistry.materializeSupportedStore()
+    const legacy = {
+      taskIds: registered.taskIds,
+      sideTasks: Object.values(registered.sideTasks)
+        .sort((left, right) => left.id.localeCompare(right.id))
+        .map(publicSideTask),
+      projects: registered.projects,
+      directories: registered.directories,
+    }
     for (const taskId of legacy.taskIds) {
       await this.ensureAuthorityProjectionForLegacyTask(taskId, { authorityPath: this.authorityPath })
       await this.materializeLegacyTaskThread(taskId)
@@ -1158,62 +938,22 @@ export class ProductTaskService {
       const now = new Date().toISOString()
       return { id: input.taskId, parentTaskId: parsed.taskId ?? '', taskId: input.taskId, title: parsed.title ?? '', status: 'open', createdAt: now, updatedAt: now }
     })() : undefined
-    const coreBinding = binding as { coreSessionId?: unknown; branchWorkDir?: unknown }
+    const rawBinding = binding as { branchWorkDir?: unknown }
+    const coreBinding = authorityCoreBinding(binding)
     const parentLineageId = typeof source?.task?.current_lineage_id === 'string' ? source.task.current_lineage_id : undefined
     const childLineageId = `lineage_${createHash('sha256').update(`fork\0${input.client_operation_id}`).digest('hex').slice(0, 32)}`
     const now = this.now().toISOString()
-    const executionDirectory = typeof coreBinding.branchWorkDir === 'string' ? coreBinding.branchWorkDir : source?.task?.workDir
+    const executionDirectory = typeof rawBinding.branchWorkDir === 'string' ? rawBinding.branchWorkDir : source?.task?.workDir
     const childLineage = kind === 'continue' && parentLineageId && forkCheckpointId && executionDirectory
       ? { lineage_id: childLineageId, product_task_id: input.taskId, parent_lineage_id: parentLineageId, fork_checkpoint_id: forkCheckpointId, revision: 0, compact_generation: 0, resume_binding_id: `resume_${randomUUID()}`, execution_directory: executionDirectory, state: 'active', created_at: now, updated_at: now }
       : undefined
     const finalBinding = sideTask
-      ? { id: input.taskId, kind, binding }
+      ? { id: input.taskId, kind, binding: coreBinding }
       : source?.task
-        ? { ...source, binding: { ...source.binding, ...(typeof coreBinding.coreSessionId === 'string' ? { coreSessionId: coreBinding.coreSessionId } : {}) }, task: { ...source.task, revision: (source.task.revision ?? 0) + 1, ...(childLineage ? { current_lineage_id: childLineageId, workDir: executionDirectory, worktreeState: 'materialized', updatedAt: now } : {}) } }
-        : { id: input.taskId, kind, binding }
+        ? { ...source, binding: coreBinding, task: { ...source.task, revision: (source.task.revision ?? 0) + 1, ...(childLineage ? { current_lineage_id: childLineageId, workDir: executionDirectory, worktreeState: 'materialized', updatedAt: now } : {}) } }
+        : { id: input.taskId, kind, binding: coreBinding }
     const final = await authority.finalize(input.client_operation_id, { client_operation_id: input.client_operation_id, expected_revision: input.expected_revision, outcome: 'accepted', revision: reserved.file.revision, ...(sideTask ? { result: sideTask } : {}) }, finalBinding, { ...(sideTask ? { sideTask } : {}), ...(childLineage ? { lineage: { id: childLineageId, value: childLineage } } : {}) })
     return { outcome: 'accepted', revision: final.revision }
-  }
-
-  /** Authority-backed create. The legacy registry is deliberately read-only. */
-  async createTaskAuthoritatively(input: CreateProductTaskInput, options: {
-    authorityPath: string
-    bridge: Pick<ProductCoreOperationBridge, 'ensureCreate'>
-    afterEnsure?: () => void | Promise<void>
-  }): Promise<{ task: ProductTaskRecord; receipt: { outcome: 'accepted' | 'duplicate' | 'conflict' | 'rejected'; revision: number } }> {
-    if (!isRecord(input) || !Number.isSafeInteger(input.expected_revision) || input.expected_revision! < 0 || typeof input.client_operation_id !== 'string' || !input.client_operation_id.trim()) throw ApiError.badRequest('expected_revision 和 client_operation_id 必填')
-    if (typeof input.workDir !== 'string' || !input.workDir.trim()) throw ApiError.badRequest('workDir 必须是非空字符串')
-    const title = validTitle(input.title) ?? ''
-    const operationId = input.client_operation_id
-    const taskId = `task_${createHash('sha256').update(operationId).digest('hex').slice(0, 16)}`
-    const permissionSnapshot = productPermissionSnapshot(productTaskPermissionMode(input.permissionMode))
-    const canonical = JSON.stringify({ workDir: input.workDir, title, permissionMode: permissionSnapshot.mode, useWorktree: input.useWorktree === true })
-    const expectedRevision = input.expected_revision as number
-    const authority = new ProductTaskAuthorityRepository(options.authorityPath)
-    try {
-      const reserved = await authority.reserve({ client_operation_id: operationId, product_task_id: taskId, kind: 'create', canonical_input: canonical, expected_revision: expectedRevision })
-      const receipt = reserved.file.receipts[operationId]
-      if (receipt) return { task: authorityPublicTask(reserved.file.tasks[taskId]), receipt: { outcome: 'duplicate', revision: receipt.revision } }
-      const task = { id: taskId, projectId: '', directoryId: '', workDir: input.workDir, title, lifecycle: 'active' as const, kind: 'main' as const, createdAt: new Date(0).toISOString(), updatedAt: new Date(0).toISOString(), worktreeState: input.useWorktree ? 'planned' as const : 'not_requested' as const, permission_snapshot: permissionSnapshot, actions: ['pin', 'rename', 'continue', 'archive'] as ProductTaskAction[] }
-      let binding: unknown
-      try {
-        binding = await options.bridge.ensureCreate(operationId, taskId, canonical)
-      } catch (error) {
-        if (!(error instanceof ProductCoreOperationTerminalError)) throw error
-        const final = await authority.finalize(operationId, { client_operation_id: operationId, expected_revision: expectedRevision, outcome: 'rejected', revision: reserved.file.revision, error: 'OPERATION_REJECTED' })
-        return { task, receipt: { outcome: 'rejected', revision: final.revision } }
-      }
-      await options.afterEnsure?.()
-      const workDir = typeof (binding as { branchWorkDir?: unknown }).branchWorkDir === 'string'
-        ? (binding as { branchWorkDir: string }).branchWorkDir
-        : task.workDir
-      const materializedTask = { ...task, workDir, worktreeState: input.useWorktree ? 'materialized' as const : task.worktreeState }
-      const final = await authority.finalize(operationId, { client_operation_id: operationId, expected_revision: expectedRevision, outcome: 'accepted', revision: reserved.file.revision, result: materializedTask }, { task: materializedTask, binding })
-      return { task: materializedTask, receipt: { outcome: 'accepted', revision: final.revision } }
-    } catch (error) {
-      if ((error as Error).message === 'AUTHORITY_CONFLICT') return { task: authorityPublicTask((await authority.read()).tasks[taskId]), receipt: { outcome: 'conflict', revision: (await authority.read()).revision } }
-      throw error
-    }
   }
 
   async getTaskAuthoritatively(taskId: string, options: { authorityPath: string }): Promise<ProductTaskRecord> {
@@ -1229,6 +969,18 @@ export class ProductTaskService {
   }
 
   async ensureAuthorityProjectionForLegacyTask(taskId: string, options: { authorityPath: string }): Promise<{ revision: number; task: ProductTaskRecord }> {
+    const authority = new ProductTaskAuthorityRepository(options.authorityPath)
+    const current = await authority.read()
+    const existing = current.tasks[taskId]
+    if (existing) {
+      const task = authorityPublicTask(existing)
+      if (!task?.id) throw new Error('AUTHORITY_INVALID')
+      return { revision: current.revision, task }
+    }
+
+    // A legacy JSON record is only an on-demand import source. Once a task is
+    // present in Authority, normal Agent operations must not depend on or
+    // validate against that retired second store.
     const raw = await fs.readFile(this.storagePath, 'utf8')
     let parsed: unknown
     try { parsed = JSON.parse(raw) } catch { throw new Error('AUTHORITY_INVALID') }
@@ -1242,7 +994,6 @@ export class ProductTaskService {
       : taskId
     if (!taskKey) throw ApiError.notFound(`任务不存在：${taskId}`)
     const source = await readLegacyProductTasks(this.storagePath)
-    const authority = new ProductTaskAuthorityRepository(options.authorityPath)
     const record: ProductTaskRecord = { ...task, actions: task.lifecycle === 'archived' ? ['restore', 'continue'] : [task.pinnedAt ? 'unpin' : 'pin', 'rename', 'continue', 'archive'] }
     const projected = await authority.ensureLegacyProjection(taskId, {
       ...source,
@@ -1438,6 +1189,13 @@ export class ProductTaskService {
           draft = state.composer_drafts[input.draft_id] as Record<string, unknown> | undefined
           if (!draft || draft.installation_id !== this.installationId || draft.target_task_id !== taskId || draft.revision !== input.expected_draft_revision || draft.state !== 'active' || Date.parse(draft.expires_at as string) <= this.now().getTime()) throw new Error('DRAFT_REJECTED')
         }
+        const scope = state.task_scopes[taskId] as { kind?: unknown; workspace_id?: unknown } | undefined
+        const workspace = scope?.kind === 'workspace' && typeof scope.workspace_id === 'string'
+          ? state.workspaces[scope.workspace_id] as ProductWorkspace | undefined
+          : undefined
+        if (!workspace || workspace.installation_id !== this.installationId || workspace.availability !== 'available') {
+          throw new Error('WORKSPACE_REQUIRED')
+        }
         if (hasUnsettledTaskQueue(state, taskId) || orderedQueuedInputs(state, taskId).length > 0) {
           const queueItemId = `queue_${randomUUID()}`
           const entryId = `entry_${randomUUID()}`
@@ -1476,10 +1234,10 @@ export class ProductTaskService {
         task.permission_snapshot = permissionSnapshot
         lineage.head_entry_id = entryId; lineage.revision = input.expected_lineage_revision + 1; lineage.updated_at = now
         state.thread_entries[entryId] = { entry_id: entryId, task_id: taskId, run_id: runId, text: input.text, created_at: now, ...(referenceEntryIds.length ? { reference_entry_ids: referenceEntryIds } : {}) }
-        const scope = state.task_scopes[taskId] as { kind?: unknown } | undefined
-        const execution_capability = scope?.kind === 'workspace' ? 'workspace_bound' : 'installation_default_denied'
-        const workspace = scope?.kind === 'workspace' && typeof (scope as { workspace_id?: unknown }).workspace_id === 'string' ? state.workspaces[(scope as { workspace_id: string }).workspace_id] as { canonical_root?: unknown } | undefined : undefined
-        const workDir = typeof lineage.execution_directory === 'string' ? lineage.execution_directory : typeof workspace?.canonical_root === 'string' ? workspace.canonical_root : path.dirname(this.storagePath)
+        const execution_capability = 'workspace_bound'
+        const workDir = typeof lineage.execution_directory === 'string'
+          ? lineage.execution_directory
+          : workspace.canonical_root
         state.task_runs[runId] = { run_id: runId, task_id: taskId, lineage_id: lineageId, entry_id: entryId, created_at: now, execution_capability, permission_mode: permissionSnapshot.mode, permission_snapshot: permissionSnapshot, provider: null, model: null, event_contract: 'durable_items_v1', core_binding: { resume_binding_id: lineage.resume_binding_id, session_id: randomUUID(), work_dir: workDir, dispatch_generation: 1, context_event_sequence: state.event_sequence } }
         state.dispatch_records[runId] = { run_id: runId, dispatch_generation: 1, state: 'pending' }
         state.event_sequence += 1
@@ -1555,24 +1313,264 @@ export class ProductTaskService {
 
   async createAndSubmitTask(input: import('../../../shared/product/domain.js').CreateAndSubmitTaskInput): Promise<import('../../../shared/product/domain.js').SubmitTaskRunReceipt> {
     const authority = new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps)
-    const canonical = JSON.stringify({ draft_id: input.draft_id, expected_draft_revision: input.expected_draft_revision, client_operation_id: input.client_operation_id, text: input.text, attachment_ids: input.attachment_ids, permission_mode: input.permission_mode })
-    try { const { file, result } = await authority.transactSubmit(state => {
-      const prior = state.receipts[input.client_operation_id]
-      if (prior) { if (state.events[input.client_operation_id]?.canonical_input !== canonical) throw new Error('OPERATION_INPUT_CONFLICT'); return { changed: false as const, value: { duplicate: true, receipt: prior } } }
-      if (!input.text || !Array.isArray(input.attachment_ids) || input.attachment_ids.length > 4 || new Set(input.attachment_ids).size !== input.attachment_ids.length) throw new Error('AUTHORITY_INVALID')
-      const permissionSnapshot = productPermissionSnapshot(productTaskPermissionMode(input.permission_mode))
-      const draft = state.composer_drafts[input.draft_id] as Record<string, unknown> | undefined
-      if (!draft || draft.installation_id !== this.installationId || draft.target_state !== 'pending_task' || draft.state !== 'active' || draft.revision !== input.expected_draft_revision || Date.parse(draft.expires_at as string) <= this.now().getTime()) throw new Error('DRAFT_REJECTED')
-      const taskId = draft.target_task_id as string; if (state.tasks[taskId]) throw new Error('AUTHORITY_CONFLICT')
-      const attachments = input.attachment_ids.map(id => { const a = state.task_attachments[id] as Record<string, unknown> | undefined; if (!a || a.installation_id !== this.installationId || a.owner_kind !== 'composer_draft' || a.owner_id !== input.draft_id || a.state !== 'ready' || Date.parse(a.expires_at as string) <= this.now().getTime()) throw new Error('ATTACHMENT_REJECTED'); return [id, a] as const })
-      if (attachments.reduce((total, [, attachment]) => total + (attachment.byte_size as number), 0) > MAX_TASK_ATTACHMENT_TOTAL_BYTES) throw new Error('ATTACHMENT_REJECTED')
-      const now = this.now().toISOString(), lineageId = `lineage_${randomUUID()}`, runId = `run_${randomUUID()}`, entryId = `entry_${randomUUID()}`
-      const task = { id: taskId, projectId: '', directoryId: '', workDir: '', title: input.text.slice(0, 120), lifecycle: 'active' as const, kind: 'main' as const, createdAt: now, updatedAt: now, worktreeState: 'not_requested' as const, permission_snapshot: permissionSnapshot, actions: ['pin', 'unpin', 'rename', 'continue', 'archive', 'restore'], revision: 1, task_scope: 'installation-default', current_lineage_id: lineageId }
-      const resumeBindingId = `resume_${randomUUID()}`; state.tasks[taskId] = { task, binding: { coreSessionId: 'unbound' } }; state.task_scopes[taskId] = { kind: 'installation-default' }; state.conversation_lineages[lineageId] = { lineage_id: lineageId, product_task_id: taskId, revision: 1, compact_generation: 0, resume_binding_id: resumeBindingId, state: 'active', created_at: now, updated_at: now, head_entry_id: entryId }
-      state.thread_entries[entryId] = { entry_id: entryId, task_id: taskId, run_id: runId, text: input.text, created_at: now }; state.task_runs[runId] = { run_id: runId, task_id: taskId, lineage_id: lineageId, entry_id: entryId, created_at: now, execution_capability: 'installation_default_denied', permission_mode: permissionSnapshot.mode, permission_snapshot: permissionSnapshot, provider: null, model: null, event_contract: 'durable_items_v1', core_binding: { resume_binding_id: resumeBindingId, session_id: randomUUID(), work_dir: path.dirname(this.storagePath), dispatch_generation: 1, context_event_sequence: state.event_sequence } }; state.dispatch_records[runId] = { run_id: runId, dispatch_generation: 1, state: 'pending' }; state.event_sequence += 1; state.task_events[String(state.event_sequence)] = { event_sequence: state.event_sequence, task_id: taskId, run_id: runId, type: 'user_text', entry_id: entryId, item_id: durableUserItemId(runId), text: input.text, attachment_ids: input.attachment_ids, created_at: now }
-      for (const [id, a] of attachments) { state.task_attachments[id] = { ...a, owner_kind: 'product_task', owner_id: taskId, state: 'accepted_bound', refs: [...a.refs as string[], taskId], revision: (a.revision as number) + 1, last_activity: now }; state.attachment_bindings[id] = { attachment_id: id, task_id: taskId, run_id: runId, entry_id: entryId } }
-      state.composer_drafts[input.draft_id] = { ...draft, state: 'consumed', revision: (draft.revision as number) + 1, last_activity: now }; const entity_revisions: Record<string, number> = { task: 1, lineage: 1, draft: (state.composer_drafts[input.draft_id] as { revision: number }).revision }; for (const id of input.attachment_ids) entity_revisions[id] = (state.task_attachments[id] as { revision: number }).revision; const receipt = { client_operation_id: input.client_operation_id, expected_revision: input.expected_draft_revision, outcome: 'accepted' as const, revision: state.revision + 1, result: { task_id: taskId, run_id: runId, entry_id: entryId, dispatch_generation: 1, authority_revision: state.revision + 1, entity_revisions } }; state.receipts[input.client_operation_id] = receipt; state.events[input.client_operation_id] = { event_sequence: state.event_sequence, client_operation_id: input.client_operation_id, kind: 'task_create_submit', revision: state.revision + 1, canonical_input: canonical, entity_id: taskId, product_task_id: taskId }; return { duplicate: false, receipt }
-    }); const receipt = result.receipt; const snapshot = receipt.result as { task_id: string; run_id: string; entry_id: string; dispatch_generation: number; authority_revision: number; entity_revisions: Record<string, number> }; const response: SubmitTaskRunReceipt = { client_operation_id: input.client_operation_id, outcome: result.duplicate ? 'duplicate' : 'accepted', authority_revision: snapshot.authority_revision, entity_revisions: snapshot.entity_revisions, result: { task_id: snapshot.task_id, run_id: snapshot.run_id, entry_id: snapshot.entry_id, dispatch_generation: snapshot.dispatch_generation } }; this.dispatchAcceptedRun(snapshot.run_id, snapshot.dispatch_generation); return response } catch (error) { const file = await authority.read(); return { client_operation_id: input.client_operation_id, outcome: (error as Error).message === 'AUTHORITY_CONFLICT' ? 'conflict' : 'rejected', authority_revision: file.revision, entity_revisions: {}, error: (error as Error).message } }
+    const canonical = JSON.stringify({
+      draft_id: input.draft_id,
+      expected_draft_revision: input.expected_draft_revision,
+      client_operation_id: input.client_operation_id,
+      text: input.text,
+      attachment_ids: input.attachment_ids,
+      permission_mode: input.permission_mode,
+    })
+
+    try {
+      const { result } = await authority.transactSubmitAsync(async (state) => {
+        const prior = state.receipts[input.client_operation_id]
+        if (prior) {
+          if (state.events[input.client_operation_id]?.canonical_input !== canonical) {
+            throw new Error('OPERATION_INPUT_CONFLICT')
+          }
+          return { changed: false as const, value: { duplicate: true, receipt: prior } }
+        }
+        if (!input.text || !Array.isArray(input.attachment_ids) || input.attachment_ids.length > 4 || new Set(input.attachment_ids).size !== input.attachment_ids.length) {
+          throw new Error('AUTHORITY_INVALID')
+        }
+
+        const permissionSnapshot = productPermissionSnapshot(productTaskPermissionMode(input.permission_mode))
+        const draft = state.composer_drafts[input.draft_id] as Record<string, unknown> | undefined
+        if (!draft || draft.installation_id !== this.installationId || draft.target_state !== 'pending_task' || draft.state !== 'active' || draft.revision !== input.expected_draft_revision || Date.parse(draft.expires_at as string) <= this.now().getTime()) {
+          throw new Error('DRAFT_REJECTED')
+        }
+
+        const workspaceId = typeof draft.workspace_id === 'string' ? draft.workspace_id : ''
+        const workspace = workspaceId ? state.workspaces[workspaceId] as ProductWorkspace | undefined : undefined
+        if (!workspace || workspace.installation_id !== this.installationId || workspace.availability !== 'available') {
+          throw new Error('WORKSPACE_REQUIRED')
+        }
+        let inspected: Awaited<ReturnType<WorkspaceFilesystemPort['inspect']>>
+        try {
+          inspected = await this.workspaceFs.inspect(workspace.canonical_root)
+        } catch {
+          throw new Error('WORKSPACE_REQUIRED')
+        }
+        if (
+          inspected.availability !== 'available'
+          || inspected.identity.platform !== workspace.root_identity.platform
+          || inspected.identity.volume_id !== workspace.root_identity.volume_id
+          || inspected.identity.file_id !== workspace.root_identity.file_id
+        ) {
+          throw new Error('WORKSPACE_REQUIRED')
+        }
+
+        const taskWorkDir = inspected.canonical_root
+        const checkoutRoot = findProductGitRoot(taskWorkDir)
+        const projectRoot = findProductCanonicalGitRoot(taskWorkDir) ?? taskWorkDir
+        const directoryPath = checkoutRoot && path.resolve(checkoutRoot) !== path.resolve(projectRoot)
+          ? projectRoot
+          : taskWorkDir
+        if (!isSameOrChildPath(projectRoot, directoryPath)) {
+          throw new Error('AUTHORITY_INVALID')
+        }
+        const projectId = projectIdForRoot(this.installationId, projectRoot)
+        const directoryId = directoryIdForPath(projectId, directoryPath)
+        const taskId = draft.target_task_id as string
+        if (state.tasks[taskId]) throw new Error('AUTHORITY_CONFLICT')
+
+        const attachments = input.attachment_ids.map((id) => {
+          const attachment = state.task_attachments[id] as Record<string, unknown> | undefined
+          if (!attachment || attachment.installation_id !== this.installationId || attachment.owner_kind !== 'composer_draft' || attachment.owner_id !== input.draft_id || attachment.state !== 'ready' || Date.parse(attachment.expires_at as string) <= this.now().getTime()) {
+            throw new Error('ATTACHMENT_REJECTED')
+          }
+          return [id, attachment] as const
+        })
+        if (attachments.reduce((total, [, attachment]) => total + (attachment.byte_size as number), 0) > MAX_TASK_ATTACHMENT_TOTAL_BYTES) {
+          throw new Error('ATTACHMENT_REJECTED')
+        }
+
+        const now = this.now().toISOString()
+        state.authority_schema_revision = 8
+        const existingProject = state.product_projects[projectId] as ProductProjectMetadata | undefined
+        if (existingProject && existingProject.rootDir !== projectRoot) throw new Error('AUTHORITY_INVALID')
+        if (!existingProject) {
+          state.product_projects[projectId] = {
+            id: projectId,
+            title: productProjectTitle(projectRoot),
+            rootDir: projectRoot,
+            createdAt: now,
+            updatedAt: now,
+          }
+        }
+        const existingDirectory = state.product_directories[directoryId] as ProductProjectDirectoryMetadata | undefined
+        if (existingDirectory && (existingDirectory.projectId !== projectId || existingDirectory.path !== directoryPath)) {
+          throw new Error('AUTHORITY_INVALID')
+        }
+        if (!existingDirectory) {
+          state.product_directories[directoryId] = {
+            id: directoryId,
+            projectId,
+            path: directoryPath,
+            label: productDirectoryLabel(projectRoot, directoryPath),
+            createdAt: now,
+            updatedAt: now,
+          }
+        }
+
+        const lineageId = `lineage_${randomUUID()}`
+        const runId = `run_${randomUUID()}`
+        const entryId = `entry_${randomUUID()}`
+        const resumeBindingId = `resume_${randomUUID()}`
+        const task = {
+          id: taskId,
+          projectId,
+          directoryId,
+          workDir: taskWorkDir,
+          title: input.text.slice(0, 120),
+          lifecycle: 'active' as const,
+          kind: 'main' as const,
+          createdAt: now,
+          updatedAt: now,
+          worktreeState: 'not_requested' as const,
+          permission_snapshot: permissionSnapshot,
+          actions: ['pin', 'unpin', 'rename', 'continue', 'archive', 'restore'],
+          revision: 1,
+          task_scope: 'workspace',
+          current_lineage_id: lineageId,
+        }
+        state.tasks[taskId] = { task, binding: { coreSessionId: 'unbound' } }
+        state.task_scopes[taskId] = { kind: 'workspace', workspace_id: workspaceId, generation: 1 }
+        state.conversation_lineages[lineageId] = {
+          lineage_id: lineageId,
+          product_task_id: taskId,
+          revision: 1,
+          compact_generation: 0,
+          resume_binding_id: resumeBindingId,
+          execution_directory: taskWorkDir,
+          state: 'active',
+          created_at: now,
+          updated_at: now,
+          head_entry_id: entryId,
+        }
+        state.thread_entries[entryId] = { entry_id: entryId, task_id: taskId, run_id: runId, text: input.text, created_at: now }
+        state.task_runs[runId] = {
+          run_id: runId,
+          task_id: taskId,
+          lineage_id: lineageId,
+          entry_id: entryId,
+          created_at: now,
+          execution_capability: 'workspace_bound',
+          permission_mode: permissionSnapshot.mode,
+          permission_snapshot: permissionSnapshot,
+          provider: null,
+          model: null,
+          event_contract: 'durable_items_v1',
+          core_binding: {
+            resume_binding_id: resumeBindingId,
+            session_id: randomUUID(),
+            work_dir: taskWorkDir,
+            dispatch_generation: 1,
+            context_event_sequence: state.event_sequence,
+          },
+        }
+        state.dispatch_records[runId] = { run_id: runId, dispatch_generation: 1, state: 'pending' }
+        state.event_sequence += 1
+        state.task_events[String(state.event_sequence)] = {
+          event_sequence: state.event_sequence,
+          task_id: taskId,
+          run_id: runId,
+          type: 'user_text',
+          entry_id: entryId,
+          item_id: durableUserItemId(runId),
+          text: input.text,
+          attachment_ids: input.attachment_ids,
+          created_at: now,
+        }
+        for (const [id, attachment] of attachments) {
+          state.task_attachments[id] = {
+            ...attachment,
+            owner_kind: 'product_task',
+            owner_id: taskId,
+            state: 'accepted_bound',
+            refs: [...attachment.refs as string[], taskId],
+            revision: (attachment.revision as number) + 1,
+            last_activity: now,
+          }
+          state.attachment_bindings[id] = { attachment_id: id, task_id: taskId, run_id: runId, entry_id: entryId }
+        }
+        state.composer_drafts[input.draft_id] = {
+          ...draft,
+          state: 'consumed',
+          revision: (draft.revision as number) + 1,
+          last_activity: now,
+        }
+        const entity_revisions: Record<string, number> = {
+          task: 1,
+          lineage: 1,
+          workspace: workspace.revision,
+          project: 0,
+          directory: 0,
+          draft: (state.composer_drafts[input.draft_id] as { revision: number }).revision,
+        }
+        for (const id of input.attachment_ids) {
+          entity_revisions[id] = (state.task_attachments[id] as { revision: number }).revision
+        }
+        const receipt = {
+          client_operation_id: input.client_operation_id,
+          expected_revision: input.expected_draft_revision,
+          outcome: 'accepted' as const,
+          revision: state.revision + 1,
+          result: {
+            task_id: taskId,
+            run_id: runId,
+            entry_id: entryId,
+            dispatch_generation: 1,
+            authority_revision: state.revision + 1,
+            entity_revisions,
+          },
+        }
+        state.receipts[input.client_operation_id] = receipt
+        state.events[input.client_operation_id] = {
+          event_sequence: state.event_sequence,
+          client_operation_id: input.client_operation_id,
+          kind: 'task_create_submit',
+          revision: state.revision + 1,
+          canonical_input: canonical,
+          entity_id: taskId,
+          product_task_id: taskId,
+        }
+        return { duplicate: false, receipt }
+      })
+      const receipt = result.receipt
+      const snapshot = receipt.result as {
+        task_id: string
+        run_id: string
+        entry_id: string
+        dispatch_generation: number
+        authority_revision: number
+        entity_revisions: Record<string, number>
+      }
+      const response: SubmitTaskRunReceipt = {
+        client_operation_id: input.client_operation_id,
+        outcome: result.duplicate ? 'duplicate' : 'accepted',
+        authority_revision: snapshot.authority_revision,
+        entity_revisions: snapshot.entity_revisions,
+        result: {
+          task_id: snapshot.task_id,
+          run_id: snapshot.run_id,
+          entry_id: snapshot.entry_id,
+          dispatch_generation: snapshot.dispatch_generation,
+        },
+      }
+      this.dispatchAcceptedRun(snapshot.run_id, snapshot.dispatch_generation)
+      return response
+    } catch (error) {
+      const file = await authority.read()
+      return {
+        client_operation_id: input.client_operation_id,
+        outcome: (error as Error).message === 'AUTHORITY_CONFLICT' ? 'conflict' : 'rejected',
+        authority_revision: file.revision,
+        entity_revisions: {},
+        error: (error as Error).message,
+      }
+    }
   }
 
   /** Durable receipt first, then best-effort server dispatch; never an API-side fake response. */
@@ -2584,9 +2582,20 @@ export class ProductTaskService {
       const runId = `run_${randomUUID()}`
       const permissionSnapshot = taskPermissionSnapshot(task.permission_snapshot)
       const scope = state.task_scopes[taskId] as { kind?: unknown; workspace_id?: unknown } | undefined
-      const executionCapability = scope?.kind === 'workspace' ? 'workspace_bound' : 'installation_default_denied'
-      const workspace = scope?.kind === 'workspace' && typeof scope.workspace_id === 'string' ? state.workspaces[scope.workspace_id] as { canonical_root?: unknown } | undefined : undefined
-      const workDir = typeof lineage.execution_directory === 'string' ? lineage.execution_directory : typeof workspace?.canonical_root === 'string' ? workspace.canonical_root : path.dirname(this.storagePath)
+      const workspace = scope?.kind === 'workspace' && typeof scope.workspace_id === 'string'
+        ? state.workspaces[scope.workspace_id] as ProductWorkspace | undefined
+        : undefined
+      if (!workspace || workspace.installation_id !== this.installationId || workspace.availability !== 'available') {
+        item.state = 'failed'
+        item.updated_at = now
+        state.event_sequence += 1
+        state.task_events[String(state.event_sequence)] = { event_sequence: state.event_sequence, task_id: taskId, type: 'queue_updated', queue_item_id: item.queue_item_id, entry_id: item.entry_id, phase: 'failed', text: item.text, attachment_count: item.attachment_ids.length, created_at: now }
+        return undefined
+      }
+      const executionCapability = 'workspace_bound'
+      const workDir = typeof lineage.execution_directory === 'string'
+        ? lineage.execution_directory
+        : workspace.canonical_root
       state.thread_entries[item.entry_id] = { entry_id: item.entry_id, task_id: taskId, run_id: runId, text: item.text, created_at: item.created_at, ...(item.reference_entry_ids?.length ? { reference_entry_ids: item.reference_entry_ids } : {}) }
       state.task_runs[runId] = { run_id: runId, task_id: taskId, lineage_id: item.lineage_id, entry_id: item.entry_id, created_at: now, execution_capability: executionCapability, permission_mode: permissionSnapshot.mode, permission_snapshot: permissionSnapshot, provider: null, model: null, event_contract: 'durable_items_v1', core_binding: { resume_binding_id: lineage.resume_binding_id, session_id: randomUUID(), work_dir: workDir, dispatch_generation: 1, context_event_sequence: state.event_sequence } }
       state.dispatch_records[runId] = { run_id: runId, dispatch_generation: 1, state: 'pending' }
@@ -2764,12 +2773,29 @@ export class ProductTaskService {
   /** The only server-private resolver for a run's durable Core launch target. */
   async resolveTaskRunCoreBinding(runId: string, dispatchGeneration: number): Promise<{ session_id: string; work_dir: string; provider: string; model: string; model_route_fingerprint: string; model_attempt_id: string }> {
     const file = await new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps).read()
-    const run = file.task_runs[runId] as { lineage_id?: unknown; provider?: unknown; model?: unknown; model_route_fingerprint?: unknown; core_binding?: { resume_binding_id?: unknown; session_id?: unknown; work_dir?: unknown; dispatch_generation?: unknown } } | undefined
+    const run = file.task_runs[runId] as { task_id?: unknown; lineage_id?: unknown; execution_capability?: unknown; provider?: unknown; model?: unknown; model_route_fingerprint?: unknown; core_binding?: { resume_binding_id?: unknown; session_id?: unknown; work_dir?: unknown; dispatch_generation?: unknown } } | undefined
     const binding = run?.core_binding
-    if (!binding || binding.dispatch_generation !== dispatchGeneration || typeof binding.resume_binding_id !== 'string' || typeof binding.session_id !== 'string' || typeof binding.work_dir !== 'string' || !binding.work_dir || typeof run?.provider !== 'string' || typeof run.model !== 'string' || !/^[a-f0-9]{64}$/.test(String(run.model_route_fingerprint ?? ''))) throw new Error('CORE_BINDING_UNAVAILABLE')
-    const lineage = typeof run.lineage_id === 'string' ? file.conversation_lineages[run.lineage_id] as { resume_binding_id?: unknown } | undefined : undefined
+    if (!binding || run?.execution_capability !== 'workspace_bound' || typeof run.task_id !== 'string' || binding.dispatch_generation !== dispatchGeneration || typeof binding.resume_binding_id !== 'string' || typeof binding.session_id !== 'string' || typeof binding.work_dir !== 'string' || !binding.work_dir || typeof run.provider !== 'string' || typeof run.model !== 'string' || !/^[a-f0-9]{64}$/.test(String(run.model_route_fingerprint ?? ''))) throw new Error('CORE_BINDING_UNAVAILABLE')
+    const lineage = typeof run.lineage_id === 'string' ? file.conversation_lineages[run.lineage_id] as { resume_binding_id?: unknown; execution_directory?: unknown } | undefined : undefined
     if (binding.resume_binding_id !== lineage?.resume_binding_id) throw new Error('CORE_BINDING_UNAVAILABLE')
-    const workDir = await fs.realpath(binding.work_dir).catch(() => undefined); if (!workDir || !await fs.stat(workDir).then(stat => stat.isDirectory()).catch(() => false)) throw new Error('CORE_BINDING_UNAVAILABLE')
+    const scope = file.task_scopes[run.task_id] as { kind?: unknown; workspace_id?: unknown } | undefined
+    const workspace = scope?.kind === 'workspace' && typeof scope.workspace_id === 'string'
+      ? file.workspaces[scope.workspace_id] as ProductWorkspace | undefined
+      : undefined
+    if (!workspace || workspace.installation_id !== this.installationId || workspace.availability !== 'available') throw new Error('CORE_BINDING_UNAVAILABLE')
+    let inspected: Awaited<ReturnType<WorkspaceFilesystemPort['inspect']>>
+    try {
+      inspected = await this.workspaceFs.inspect(workspace.canonical_root)
+    } catch {
+      throw new Error('CORE_BINDING_UNAVAILABLE')
+    }
+    if (inspected.availability !== 'available' || inspected.identity.platform !== workspace.root_identity.platform || inspected.identity.volume_id !== workspace.root_identity.volume_id || inspected.identity.file_id !== workspace.root_identity.file_id) throw new Error('CORE_BINDING_UNAVAILABLE')
+    const declaredWorkDir = typeof lineage.execution_directory === 'string' ? lineage.execution_directory : workspace.canonical_root
+    const [workDir, expectedWorkDir] = await Promise.all([
+      fs.realpath(binding.work_dir).catch(() => undefined),
+      fs.realpath(declaredWorkDir).catch(() => undefined),
+    ])
+    if (!workDir || !expectedWorkDir || workDir !== expectedWorkDir || !await fs.stat(workDir).then(stat => stat.isDirectory()).catch(() => false)) throw new Error('CORE_BINDING_UNAVAILABLE')
     // A new dispatch generation is created only by the durable, user-confirmed
     // recovery mutation. It is therefore the authoritative boundary for a new
     // paid model attempt; a restarted process keeps the same generation/ID.
@@ -3119,8 +3145,8 @@ export class ProductTaskService {
   async registerWorkspaceOperation(input: { root: string; expected_revision: number; client_operation_id: string }): Promise<{ workspace: ProductWorkspace; receipt: { outcome: 'accepted' | 'duplicate' | 'conflict'; revision: number } }> {
     if (!Number.isSafeInteger(input.expected_revision) || input.expected_revision < 0 || !input.client_operation_id) throw ApiError.badRequest('workspace operation 无效')
     const inspected = await this.workspaceFs.inspect(input.root)
-    if (inspected.availability === 'missing') throw ApiError.badRequest('工作区根目录不存在')
-    const id = `workspace_${createHash('sha256').update(`${this.installationId}\u0000${inspected.identity.volume_id}\u0000${inspected.identity.file_id}`).digest('hex').slice(0, 16)}`
+    if (inspected.availability !== 'available') throw ApiError.badRequest('工作区目录不存在或不可写')
+    const id = workspaceIdForIdentity(this.installationId, inspected.identity)
     const canonical = JSON.stringify({ kind: 'workspace_register', workspace_id: id, root: inspected.canonical_root, expected_revision: input.expected_revision })
     const authority = new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps)
     const before = await authority.read()
@@ -3149,8 +3175,8 @@ export class ProductTaskService {
 
   async registerWorkspace(root: string): Promise<ProductWorkspace> {
     const inspected = await this.workspaceFs.inspect(root)
-    if (inspected.availability === 'missing') throw ApiError.badRequest('工作区根目录不存在')
-    const id = `workspace_${createHash('sha256').update(`${this.installationId}\u0000${inspected.identity.volume_id}\u0000${inspected.identity.file_id}`).digest('hex').slice(0, 16)}`
+    if (inspected.availability !== 'available') throw ApiError.badRequest('工作区目录不存在或不可写')
+    const id = workspaceIdForIdentity(this.installationId, inspected.identity)
     const authority = new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps)
     const existing = await authority.read()
     const prior = existing.workspaces[id] as ProductWorkspace | undefined
@@ -3306,7 +3332,94 @@ export class ProductTaskService {
         const blocked = participants.find(receipt => receipt.status === 'BLOCKED')
         if (blocked) { const rejectedError = blockerError ?? (blocked.participant === 'queue' ? 'QUEUE' : 'ACTIVE_RUN') as WorkspaceBindBlockerCode; const receipt = { client_operation_id: input.client_operation_id, expected_revision: input.expected_task_revision, outcome: 'rejected' as const, revision: state.revision + 1, result: { participant_receipts: participants, blocker_error: rejectedError } }; state.receipts[input.client_operation_id] = receipt; state.event_sequence += 1; state.events[input.client_operation_id] = { event_sequence: state.event_sequence, client_operation_id: input.client_operation_id, kind: 'bind_workspace', revision: state.revision + 1, canonical_input: canonicalInput, participant_receipts: participants, blocker_error: rejectedError }; return { outcome: 'rejected' as const, receipt, participant_receipts: participants, error: rejectedError } }
         if (!task || !workspace || workspace.availability !== 'available' || taskRevision !== input.expected_task_revision || workspace.revision !== input.expected_workspace_revision) throw new Error('AUTHORITY_CONFLICT')
-        const priorScope = state.task_scopes[input.task_id] as { generation?: number } | undefined; state.task_scopes[input.task_id] = { kind: 'workspace', workspace_id: input.workspace_id, generation: (priorScope?.generation ?? 0) + 1 }; task.revision = taskRevision + 1; workspace.revision += 1
+
+        let inspectedWorkspace: Awaited<ReturnType<WorkspaceFilesystemPort['inspect']>>
+        try {
+          inspectedWorkspace = await this.workspaceFs.inspect(workspace.canonical_root)
+        } catch {
+          throw new ApiError(409, '任务工作区不可用，需要重新关联', 'WORKSPACE_REQUIRED')
+        }
+        if (
+          inspectedWorkspace.availability !== 'available'
+          || inspectedWorkspace.identity.platform !== workspace.root_identity.platform
+          || inspectedWorkspace.identity.volume_id !== workspace.root_identity.volume_id
+          || inspectedWorkspace.identity.file_id !== workspace.root_identity.file_id
+        ) {
+          throw new ApiError(409, '任务工作区身份已变化，需要重新关联', 'WORKSPACE_REQUIRED')
+        }
+
+        const now = this.now().toISOString()
+        const taskWorkDir = inspectedWorkspace.canonical_root
+
+        // New tasks already live in revision 8. Keep their project and
+        // directory registry aligned when a user deliberately moves the task
+        // to a different registered workspace. Historical records below that
+        // schema retain their migration boundary and still gain a safe run cwd.
+        if (state.authority_schema_revision === 8) {
+          const checkoutRoot = findProductGitRoot(taskWorkDir)
+          const projectRoot = findProductCanonicalGitRoot(taskWorkDir) ?? taskWorkDir
+          const directoryPath = checkoutRoot && path.resolve(checkoutRoot) !== path.resolve(projectRoot)
+            ? projectRoot
+            : taskWorkDir
+          if (!isSameOrChildPath(projectRoot, directoryPath)) throw new Error('AUTHORITY_INVALID')
+
+          const projectId = projectIdForRoot(this.installationId, projectRoot)
+          const directoryId = directoryIdForPath(projectId, directoryPath)
+          const existingProject = state.product_projects[projectId] as ProductProjectMetadata | undefined
+          if (existingProject && existingProject.rootDir !== projectRoot) throw new Error('AUTHORITY_INVALID')
+          if (!existingProject) {
+            state.product_projects[projectId] = {
+              id: projectId,
+              title: productProjectTitle(projectRoot),
+              rootDir: projectRoot,
+              createdAt: now,
+              updatedAt: now,
+            }
+          }
+
+          const existingDirectory = state.product_directories[directoryId] as ProductProjectDirectoryMetadata | undefined
+          if (existingDirectory && (existingDirectory.projectId !== projectId || existingDirectory.path !== directoryPath)) {
+            throw new Error('AUTHORITY_INVALID')
+          }
+          if (!existingDirectory) {
+            state.product_directories[directoryId] = {
+              id: directoryId,
+              projectId,
+              path: directoryPath,
+              label: productDirectoryLabel(projectRoot, directoryPath),
+              createdAt: now,
+              updatedAt: now,
+            }
+          }
+          task.projectId = projectId
+          task.directoryId = directoryId
+        }
+
+        const lineageId = typeof task.current_lineage_id === 'string' ? task.current_lineage_id : undefined
+        const lineage = lineageId
+          ? state.conversation_lineages[lineageId] as Record<string, unknown> | undefined
+          : undefined
+        if (lineage) {
+          if (lineage.product_task_id !== input.task_id) throw new Error('AUTHORITY_INVALID')
+          lineage.execution_directory = taskWorkDir
+          lineage.updated_at = now
+          if (typeof lineage.revision === 'number') lineage.revision += 1
+        }
+
+        const priorScope = state.task_scopes[input.task_id] as { generation?: number } | undefined
+        state.task_scopes[input.task_id] = {
+          kind: 'workspace',
+          workspace_id: input.workspace_id,
+          generation: (priorScope?.generation ?? 0) + 1,
+        }
+        task.task_scope = 'workspace'
+        task.workDir = taskWorkDir
+        task.updatedAt = now
+        task.revision = taskRevision + 1
+        workspace.canonical_root = taskWorkDir
+        workspace.availability = inspectedWorkspace.availability
+        workspace.updated_at = now
+        workspace.revision += 1
         const receipt = { client_operation_id: input.client_operation_id, expected_revision: input.expected_task_revision, outcome: 'accepted' as const, revision: state.revision + 1, result: { participant_receipts: participants } }; state.receipts[input.client_operation_id] = receipt; state.event_sequence += 1; state.events[input.client_operation_id] = { event_sequence: state.event_sequence, client_operation_id: input.client_operation_id, kind: 'bind_workspace', revision: state.revision + 1, canonical_input: canonicalInput, participant_receipts: participants }; return { outcome: 'accepted' as const, receipt, participant_receipts: participants }
       })
       const taskRevision = ((file.tasks[input.task_id] as { task?: { revision?: number } } | undefined)?.task?.revision ?? 0); const workspaceRevision = (file.workspaces[input.workspace_id] as ProductWorkspace | undefined)?.revision ?? 0
@@ -3344,16 +3457,102 @@ export class ProductTaskService {
     return { draft: result.draft, authority_revision: file.revision, outcome: result.outcome }
   }
 
-  async createNewTaskComposerDraft(input: { ttl_ms: number; client_operation_id: string }): Promise<{ draft: Record<string, unknown>; authority_revision: number; outcome: 'accepted' | 'duplicate' }> {
+  async createNewTaskComposerDraft(input: { ttl_ms: number; client_operation_id: string; work_dir: string }): Promise<{ draft: Record<string, unknown>; authority_revision: number; outcome: 'accepted' | 'duplicate' }> {
+    const selectedRoot = input.work_dir.trim()
+    if (!Number.isSafeInteger(input.ttl_ms) || input.ttl_ms < 1 || !selectedRoot) {
+      throw ApiError.badRequest('新任务草稿必须指定可用工作目录')
+    }
+
     const authority = new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps)
-    const canonical = JSON.stringify({ kind: 'new_task_draft', ttl_ms: input.ttl_ms })
-    const { file, result } = await authority.transactCapabilities((state) => {
+    // Keep the user-selected spelling in the idempotency identity. A retry of
+    // an accepted operation must still return its draft if the directory later
+    // disappears, rather than turning an unknown transport outcome into a new
+    // operation or a misleading validation error.
+    const canonical = JSON.stringify({ kind: 'new_task_draft', ttl_ms: input.ttl_ms, work_dir: selectedRoot })
+    const { file, result } = await authority.transactCapabilitiesAsync(async (state) => {
       const prior = state.receipts[input.client_operation_id]
-      if (prior) { if (state.events[input.client_operation_id]?.canonical_input !== canonical) throw new Error('OPERATION_INPUT_CONFLICT'); const id = (prior.result as { entity_id?: string } | undefined)?.entity_id; const draft = id ? state.composer_drafts[id] as Record<string, unknown> : undefined; if (!draft) throw new Error('AUTHORITY_INVALID'); return { changed: false as const, value: { draft, outcome: 'duplicate' as const } } }
-      if (!Number.isSafeInteger(input.ttl_ms) || input.ttl_ms < 1) throw new Error('AUTHORITY_INVALID')
-      const now = this.now().toISOString(), id = `draft_${randomUUID()}`, target = `task_${randomUUID()}`
-      const draft = { draft_id: id, installation_id: this.installationId, target_task_id: target, target_state: 'pending_task', revision: 0, last_activity: now, state: 'active', created_at: now, expires_at: new Date(this.now().getTime() + input.ttl_ms).toISOString() }
-      state.composer_drafts[id] = draft; state.receipts[input.client_operation_id] = { client_operation_id: input.client_operation_id, expected_revision: 0, outcome: 'accepted', revision: state.revision + 1, result: { entity_id: id } }; state.event_sequence += 1; state.events[input.client_operation_id] = { event_sequence: state.event_sequence, client_operation_id: input.client_operation_id, kind: 'new_task_draft', revision: state.revision + 1, canonical_input: canonical, entity_id: id }
+      if (prior) {
+        if (state.events[input.client_operation_id]?.canonical_input !== canonical) {
+          throw new Error('OPERATION_INPUT_CONFLICT')
+        }
+        const id = (prior.result as { entity_id?: string } | undefined)?.entity_id
+        const draft = id ? state.composer_drafts[id] as Record<string, unknown> | undefined : undefined
+        if (!draft) throw new Error('AUTHORITY_INVALID')
+        return { changed: false as const, value: { draft, outcome: 'duplicate' as const } }
+      }
+
+      let inspected: Awaited<ReturnType<WorkspaceFilesystemPort['inspect']>>
+      try {
+        inspected = await this.workspaceFs.inspect(selectedRoot)
+      } catch {
+        throw ApiError.badRequest('工作目录不可用')
+      }
+      if (inspected.availability !== 'available') {
+        throw ApiError.badRequest('工作目录不存在或不可写')
+      }
+
+      const now = this.now().toISOString()
+      const workspaceId = workspaceIdForIdentity(this.installationId, inspected.identity)
+      const previousWorkspace = state.workspaces[workspaceId] as ProductWorkspace | undefined
+      if (previousWorkspace && previousWorkspace.installation_id !== this.installationId) {
+        throw new Error('AUTHORITY_INVALID')
+      }
+      const identityMatches = previousWorkspace
+        && previousWorkspace.root_identity.platform === inspected.identity.platform
+        && previousWorkspace.root_identity.volume_id === inspected.identity.volume_id
+        && previousWorkspace.root_identity.file_id === inspected.identity.file_id
+      state.workspaces[workspaceId] = previousWorkspace && identityMatches
+        ? {
+            ...previousWorkspace,
+            canonical_root: inspected.canonical_root,
+            availability: 'available',
+            revision: previousWorkspace.availability === 'available' && previousWorkspace.canonical_root === inspected.canonical_root
+              ? previousWorkspace.revision
+              : previousWorkspace.revision + 1,
+            updated_at: now,
+          }
+        : {
+            workspace_id: workspaceId,
+            installation_id: this.installationId,
+            canonical_root: inspected.canonical_root,
+            root_identity: inspected.identity,
+            revision: 0,
+            availability: 'available',
+            created_at: now,
+            updated_at: now,
+          }
+
+      const id = `draft_${randomUUID()}`
+      const target = `task_${randomUUID()}`
+      const draft = {
+        draft_id: id,
+        installation_id: this.installationId,
+        target_task_id: target,
+        target_state: 'pending_task',
+        workspace_id: workspaceId,
+        revision: 0,
+        last_activity: now,
+        state: 'active',
+        created_at: now,
+        expires_at: new Date(this.now().getTime() + input.ttl_ms).toISOString(),
+      }
+      state.composer_drafts[id] = draft
+      state.receipts[input.client_operation_id] = {
+        client_operation_id: input.client_operation_id,
+        expected_revision: 0,
+        outcome: 'accepted',
+        revision: state.revision + 1,
+        result: { entity_id: id },
+      }
+      state.event_sequence += 1
+      state.events[input.client_operation_id] = {
+        event_sequence: state.event_sequence,
+        client_operation_id: input.client_operation_id,
+        kind: 'new_task_draft',
+        revision: state.revision + 1,
+        canonical_input: canonical,
+        entity_id: id,
+      }
       return { draft, outcome: 'accepted' as const }
     })
     return { draft: result.draft, authority_revision: file.revision, outcome: result.outcome }
@@ -3522,228 +3721,6 @@ export class ProductTaskService {
     return { taskId, entries, ...(recoveryRequiredTaskRunId(authority, taskId) ? { recoveryRequired: true } : {}) }
   }
 
-  private async loadRegisteredStore(): Promise<{
-    store: ProductTaskStore
-    sessions: AgentCoreSession[]
-  }> {
-    let [store, sessions] = await Promise.all([this.readStore(), this.core.listSessions()])
-    store = await this.importLegacyCoreSessionsOnce(store, sessions)
-    store = await this.ensureProjectStructure(store, sessions)
-    return { store, sessions }
-  }
-
-  /**
-   * v1-v3 stored only a private Core binding per task. Backfill stable product
-   * project/directory identities once the registered Core session is visible;
-   * the Core binding itself remains private and is not returned by listTasks.
-   */
-  private async ensureProjectStructure(
-    store: ProductTaskStore,
-    sessions: readonly AgentCoreSession[],
-  ): Promise<ProductTaskStore> {
-    const sessionsById = new Map(sessions.map((session) => [session.id, session]))
-    let changed = false
-
-    for (const metadata of Object.values(store.tasks)) {
-      // A registered directory is the product's durable source-directory
-      // identity. In particular, a continuation can execute in a materialized
-      // worktree while it must remain bound to the directory selected for its
-      // source task. Only legacy or invalid bindings are derived from Core.
-      if (this.existingProductDirectoryBinding(store, metadata)) continue
-
-      const session = sessionsById.get(metadata.coreSessionId)
-      if (!session) continue
-
-      const rootDir = await this.projectRootForSession(session)
-      if (!rootDir) continue
-      const directoryPath = await this.migrationDirectoryForTask(session, metadata, rootDir)
-      const registered = this.registerProductDirectory(store, rootDir, directoryPath, {
-        preferredProjectId: metadata.projectId,
-        preferredDirectoryId: metadata.directoryId,
-        legacyIds: !metadata.projectId || !metadata.directoryId,
-        createdAt: metadata.createdAt,
-        updatedAt: metadata.updatedAt,
-        touch: false,
-      })
-      changed ||= registered.changed
-      if (metadata.projectId !== registered.project.id || metadata.directoryId !== registered.directory.id) {
-        metadata.projectId = registered.project.id
-        metadata.directoryId = registered.directory.id
-        changed = true
-      }
-    }
-
-    for (const directory of Object.values(store.directories)) {
-      const project = store.projects[directory.projectId]
-      if (!project || !isSameOrChildPath(project.rootDir, directory.path)) {
-        throw new ApiError(500, '无法读取产品任务数据', 'PRODUCT_TASK_STORE_ERROR')
-      }
-    }
-
-    if (changed) await this.writeStore(store)
-    return store
-  }
-
-  private existingProductDirectoryBinding(
-    store: ProductTaskStore,
-    metadata: ProductTaskMetadata,
-  ): ProductDirectoryBinding | null {
-    if (!metadata.projectId || !metadata.directoryId) return null
-    const project = store.projects[metadata.projectId]
-    const directory = store.directories[metadata.directoryId]
-    if (
-      !project
-      || !directory
-      || directory.projectId !== project.id
-      || !isSameOrChildPath(project.rootDir, directory.path)
-    ) {
-      return null
-    }
-    return { project, directory }
-  }
-
-  private registerProductDirectory(
-    store: ProductTaskStore,
-    rootDir: string,
-    directoryPath: string,
-    options: {
-      preferredProjectId?: string
-      preferredDirectoryId?: string
-      legacyIds?: boolean
-      createdAt: string
-      updatedAt: string
-      touch: boolean
-    },
-  ): RegisteredProductDirectory {
-    if (!isSameOrChildPath(rootDir, directoryPath)) {
-      throw ApiError.badRequest('工作目录必须位于所选项目内')
-    }
-
-    let changed = false
-    let project = Object.values(store.projects).find((candidate) => sameProductPath(candidate.rootDir, rootDir))
-    if (!project) {
-      const preferred = options.preferredProjectId
-      const projectId = preferred && !store.projects[preferred]
-        ? preferred
-        : options.legacyIds
-          ? legacyProductProjectId(rootDir)
-          : createProductProjectId()
-      const existingById = store.projects[projectId]
-      if (existingById && !sameProductPath(existingById.rootDir, rootDir)) {
-        throw new ApiError(500, '无法读取产品任务数据', 'PRODUCT_TASK_STORE_ERROR')
-      }
-      project = existingById ?? {
-        id: projectId,
-        title: projectTitle(rootDir),
-        rootDir,
-        createdAt: options.createdAt,
-        updatedAt: options.updatedAt,
-      }
-      if (!existingById) {
-        store.projects[project.id] = project
-        changed = true
-      }
-    }
-    if (!project) throw new ApiError(500, '无法读取产品任务数据', 'PRODUCT_TASK_STORE_ERROR')
-    const registeredProject = project
-
-    let directory = Object.values(store.directories).find((candidate) => (
-      candidate.projectId === registeredProject.id && sameProductPath(candidate.path, directoryPath)
-    ))
-    if (!directory) {
-      const preferred = options.preferredDirectoryId
-      const directoryId = preferred && !store.directories[preferred]
-        ? preferred
-        : options.legacyIds
-          ? legacyProductDirectoryId(project.id, directoryPath)
-          : createProductDirectoryId()
-      const existingById = store.directories[directoryId]
-      if (
-        existingById
-        && (existingById.projectId !== project.id || !sameProductPath(existingById.path, directoryPath))
-      ) {
-        throw new ApiError(500, '无法读取产品任务数据', 'PRODUCT_TASK_STORE_ERROR')
-      }
-      directory = existingById ?? {
-        id: directoryId,
-        projectId: project.id,
-        path: directoryPath,
-        label: directoryLabel(project.rootDir, directoryPath),
-        createdAt: options.createdAt,
-        updatedAt: options.updatedAt,
-      }
-      if (!existingById) {
-        store.directories[directory.id] = directory
-        changed = true
-      }
-    }
-
-    if (options.touch) {
-      if (project.updatedAt !== options.updatedAt) {
-        project = { ...project, updatedAt: options.updatedAt }
-        store.projects[project.id] = project
-        changed = true
-      }
-      if (directory.updatedAt !== options.updatedAt) {
-        directory = { ...directory, updatedAt: options.updatedAt }
-        store.directories[directory.id] = directory
-        changed = true
-      }
-    }
-
-    return { project, directory, changed }
-  }
-
-  private async canonicalizeExistingDirectory(value: string): Promise<string> {
-    const resolved = path.resolve(value.trim())
-    let realPath: string
-    try {
-      realPath = (await fs.realpath(resolved)).normalize('NFC')
-    } catch {
-      // Keep the product contract compatible with the Core adapter: the Core
-      // remains the final authority for whether a launch directory is usable.
-      // Do not persist this binding until a session was created successfully.
-      return resolved.normalize('NFC')
-    }
-    const stat = await fs.stat(realPath).catch(() => null)
-    if (!stat?.isDirectory()) {
-      throw ApiError.badRequest(`工作目录不是目录：${realPath}`)
-    }
-    return realPath
-  }
-
-  private async canonicalizeKnownDirectory(value: string): Promise<string> {
-    const resolved = path.resolve(value).normalize('NFC')
-    return (await fs.realpath(resolved).catch(() => resolved)).normalize('NFC')
-  }
-
-  private projectRootForDirectory(directoryPath: string): string {
-    return findProductCanonicalGitRoot(directoryPath) ?? directoryPath
-  }
-
-  private async projectRootForSession(session: AgentCoreSession): Promise<string | null> {
-    const candidate = session.projectRoot ?? session.workDir
-    if (!candidate) return null
-    return this.projectRootForDirectory(await this.canonicalizeKnownDirectory(candidate))
-  }
-
-  private async migrationDirectoryForTask(
-    session: AgentCoreSession,
-    metadata: ProductTaskMetadata,
-    rootDir: string,
-  ): Promise<string> {
-    const workDir = session.workDir
-      ? await this.canonicalizeKnownDirectory(session.workDir)
-      : rootDir
-    if (
-      metadata.worktreeState !== 'not_requested'
-      && isDesktopWorktreeDirectory(workDir, rootDir)
-    ) {
-      return rootDir
-    }
-    return isSameOrChildPath(rootDir, workDir) ? workDir : rootDir
-  }
-
   private async resolveTaskBranchSource(
     taskId: string,
     sourceEntryId: string,
@@ -3758,41 +3735,6 @@ export class ProductTaskService {
       throw new Error('AUTHORITY_INVALID')
     }
     throw ApiError.badRequest('请选择当前任务谱系中的一条已保存消息')
-  }
-
-  /**
-   * Move the legacy Core list across the product boundary once.  After this
-   * write, only explicit product metadata participates in the task index or
-   * can resolve a public task id; Core may still execute a registered task,
-   * but it no longer defines the product's task collection.
-   */
-  private async importLegacyCoreSessionsOnce(
-    store: ProductTaskStore,
-    sessions: readonly AgentCoreSession[],
-  ): Promise<ProductTaskStore> {
-    if (store.legacyCoreSessionsImportedAt) return store
-
-    const registeredCoreSessionIds = new Set(
-      Object.values(store.tasks).map((task) => task.coreSessionId),
-    )
-    const sideTaskSessionIds = new Set(
-      Object.values(store.sideTasks).map((sideTask) => sideTask.coreSessionId),
-    )
-
-    for (const session of sessions) {
-      if (registeredCoreSessionIds.has(session.id) || sideTaskSessionIds.has(session.id)) continue
-      const taskId = legacyProductTaskId(session.id)
-      const existing = store.tasks[taskId]
-      if (existing && existing.coreSessionId !== session.id) {
-        throw new ApiError(500, '无法读取产品任务数据', 'PRODUCT_TASK_STORE_ERROR')
-      }
-      store.tasks[taskId] = defaultMetadata(session)
-      registeredCoreSessionIds.add(session.id)
-    }
-
-    store.legacyCoreSessionsImportedAt = new Date().toISOString()
-    await this.writeStore(store)
-    return store
   }
 
   /**
@@ -3846,31 +3788,6 @@ export class ProductTaskService {
     }
   }
 
-  private async readStore(): Promise<ProductTaskStore> {
-    try {
-      const raw = await fs.readFile(this.storagePath, 'utf8')
-      return normalizeProductTaskStore(JSON.parse(raw) as unknown)
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-        return {
-          version: PRODUCT_TASK_STORE_VERSION,
-          projects: {},
-          directories: {},
-          tasks: {},
-          sideTasks: {},
-        }
-      }
-      if (error instanceof ApiError) throw error
-      throw new ApiError(500, '无法读取产品任务数据', 'PRODUCT_TASK_STORE_ERROR')
-    }
-  }
-
-  private async writeStore(store: ProductTaskStore): Promise<void> {
-    await fs.mkdir(path.dirname(this.storagePath), { recursive: true })
-    const temporaryPath = `${this.storagePath}.${process.pid}.${randomUUID()}.tmp`
-    await fs.writeFile(temporaryPath, `${JSON.stringify(store, null, 2)}\n`, 'utf8')
-    await fs.rename(temporaryPath, this.storagePath)
-  }
 }
 
 async function purgeLegacyProductSessionMemory(storageDir: string, taskId: string): Promise<void> {

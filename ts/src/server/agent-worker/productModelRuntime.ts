@@ -28,7 +28,7 @@ import { emptyProductToolPermissionContext, type ProductThinkingConfig, type Pro
 import type { ProductAgentModelRunner } from './agentModelPort.js'
 
 type OpenAiMessage = Record<string, unknown>
-type ToolAccumulator = { id: string; name: string; arguments: string }
+type ToolAccumulator = { id: string; name: string; arguments: string; complete?: boolean }
 type OpenAiUserPart = { type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } }
 
 function responseOutputIndex(value: unknown, fallback: number): number {
@@ -41,6 +41,7 @@ function mergeResponseFunctionCall(
   index: number,
   value: Record<string, unknown>,
   replaceArguments = false,
+  complete = false,
 ): void {
   const current = calls.get(index) ?? { id: '', name: '', arguments: '' }
   if (typeof value.call_id === 'string' && value.call_id) current.id = value.call_id
@@ -48,6 +49,7 @@ function mergeResponseFunctionCall(
   if (typeof value.arguments === 'string') {
     current.arguments = replaceArguments ? value.arguments : current.arguments + value.arguments
   }
+  if (complete) current.complete = true
   calls.set(index, current)
 }
 
@@ -311,12 +313,12 @@ export const runProductModel: ProductAgentModelRunner = async function* ({ messa
           call_id: chunk.call_id,
           name: chunk.name,
           arguments: chunk.arguments,
-        }, true)
+        }, true, true)
       }
       if (event === 'response.output_item.done') {
         const item = chunk.item as Record<string, unknown> | undefined
         if (item?.type === 'function_call') {
-          mergeResponseFunctionCall(calls, responseOutputIndex(chunk.output_index, calls.size), item, true)
+          mergeResponseFunctionCall(calls, responseOutputIndex(chunk.output_index, calls.size), item, true, true)
         }
       }
       if (event === 'response.completed' || event === 'response.incomplete') {
@@ -383,12 +385,42 @@ export const runProductModel: ProductAgentModelRunner = async function* ({ messa
       if (typeof fn?.arguments === 'string') current.arguments += fn.arguments
       calls.set(index, current)
     }
+    const legacyFunctionCall = delta?.function_call as Record<string, unknown> | undefined
+    if (legacyFunctionCall && typeof legacyFunctionCall === 'object') {
+      const current = calls.get(0) ?? { id: '', name: '', arguments: '' }
+      if (typeof legacyFunctionCall.name === 'string') current.name += legacyFunctionCall.name
+      if (typeof legacyFunctionCall.arguments === 'string') current.arguments += legacyFunctionCall.arguments
+      calls.set(0, current)
+    }
   }
   if (personalProfile?.protocol === 'openai-responses' && responsesTerminalState !== 'completed') {
     throw new Error('PRODUCT_MODEL_INCOMPLETE_RESPONSE')
   }
-  if (personalProfile?.protocol === 'openai-compatible' && stopReason === 'length') {
+  if (
+    (personalProfile === null || personalProfile.protocol === 'openai-compatible')
+    && !['stop', 'tool_calls', 'function_call'].includes(stopReason ?? '')
+  ) {
     throw new Error('PRODUCT_MODEL_INCOMPLETE_RESPONSE')
+  }
+  if (
+    personalProfile?.protocol === 'anthropic-messages'
+    && !['end_turn', 'tool_use'].includes(stopReason ?? '')
+  ) {
+    throw new Error('PRODUCT_MODEL_INCOMPLETE_RESPONSE')
+  }
+  if (personalProfile?.protocol === 'openai-responses' && [...calls.values()].some((call) => !call.complete)) {
+    throw new Error('PRODUCT_MODEL_INCOMPLETE_RESPONSE')
+  }
+  if (personalProfile === null || personalProfile.protocol === 'openai-compatible') {
+    const terminalRequiresTools = stopReason === 'tool_calls' || stopReason === 'function_call'
+    if (terminalRequiresTools !== (calls.size > 0)) {
+      throw new Error('PRODUCT_MODEL_INCOMPLETE_RESPONSE')
+    }
+  }
+  if (personalProfile?.protocol === 'anthropic-messages') {
+    if ((stopReason === 'tool_use') !== (calls.size > 0)) {
+      throw new Error('PRODUCT_MODEL_INCOMPLETE_RESPONSE')
+    }
   }
   const content: ProductAssistantMessage['message']['content'] = []
   if (text) content.push({ type: 'text', text })
