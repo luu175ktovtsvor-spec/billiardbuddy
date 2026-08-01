@@ -67,6 +67,10 @@ codex-*.png
 
 # 仅用于本地前端调研的只读参考，不进入 Git、构建或安装包
 codex-frontend-reference/
+# 生图工作台的 InvokeAI 只读参考，不进入 Git、构建或安装包
+invokeai-reference/
+# 视频工作台的 OpenShot Qt 只读参考，不进入 Git、构建或安装包
+openshot-reference/
 
 # 网关配置(含 MiMo/中转 key)——只在服务器,绝不进 git
 gateway/*.env

@@ -1,12 +1,9 @@
 import { timingSafeEqual } from 'node:crypto'
 import { z } from 'zod/v4'
 import {
-  addImageProjectReferencesInputSchema,
   addVideoSourceInputSchema,
   analyzeVideoProjectInputSchema,
   applyVideoAlternativeInputSchema,
-  commitImageVersionInputSchema,
-  createImageProjectInputSchema,
   createVideoProjectInputSchema,
   mediaSafeError,
   mediaSafeErrorForServiceError,
@@ -17,12 +14,7 @@ import {
   lockVideoSceneInputSchema,
   previewVideoInputSchema,
   renderVideoInputSchema,
-  saveImageOutputInputSchema,
-  selectImageVersionInputSchema,
   selectVideoTimelineVersionInputSchema,
-  startImageOperationInputSchema,
-  submitImageProjectInputSchema,
-  updateImageProjectInputSchema,
   updateVideoTimelineInputSchema,
   MEDIA_UI_CAPABILITY_HEADER,
   type MediaProject,
@@ -33,6 +25,14 @@ import {
 } from '../../../shared/contracts/media.js'
 import { errorResponse, ApiError } from '../middleware/errorHandler.js'
 import { MediaProjectService, MediaServiceError } from '../services/mediaProjectService.js'
+import { ImageWorkbenchService, ImageWorkbenchServiceError } from '../services/imageWorkbenchService.js'
+import { ImageWorkbenchRepositoryError } from '../services/imageWorkbenchRepository.js'
+import {
+  createImageWorkbenchApiHandler,
+  publicImageEventPage,
+  publicImageProject,
+  publicImageTask,
+} from './imageWorkbench.js'
 
 const STANDALONE_MEDIA_OWNER = {
   kind: 'standalone' as const,
@@ -51,7 +51,27 @@ async function parseJson(req: Request): Promise<unknown> {
   }
 }
 
+function requireMediaUiCapability(req: Request, expected: string): void {
+  const presented = req.headers.get(MEDIA_UI_CAPABILITY_HEADER)?.trim() ?? ''
+  const expectedBytes = Buffer.from(expected)
+  const presentedBytes = Buffer.from(presented)
+  if (
+    expectedBytes.length < 32
+    || expectedBytes.length !== presentedBytes.length
+    || !timingSafeEqual(expectedBytes, presentedBytes)
+  ) {
+    throw new MediaServiceError('此操作只能从 BilliardBuddy 桌面工作台确认', 403, 'MEDIA_UI_CONFIRMATION_REQUIRED')
+  }
+}
+
 function mediaErrorResponse(error: unknown): Response {
+  if (error instanceof ImageWorkbenchServiceError) {
+    const safe = mediaSafeErrorForServiceError(error.code, error.status)
+    return Response.json(
+      { error: safe.code, message: safe.message },
+      { status: error.status },
+    )
+  }
   if (error instanceof MediaServiceError) {
     const safe = mediaSafeErrorForServiceError(error.code, error.status)
     return Response.json(
@@ -78,19 +98,6 @@ function mediaErrorResponse(error: unknown): Response {
   errorResponse(error)
   const safe = mediaSafeError('MEDIA_TEMPORARILY_UNAVAILABLE')
   return Response.json({ error: safe.code, message: safe.message }, { status: 500 })
-}
-
-function requireMediaUiCapability(req: Request, expected: string): void {
-  const presented = req.headers.get(MEDIA_UI_CAPABILITY_HEADER)?.trim() ?? ''
-  const expectedBytes = Buffer.from(expected)
-  const presentedBytes = Buffer.from(presented)
-  if (
-    expectedBytes.length < 32
-    || expectedBytes.length !== presentedBytes.length
-    || !timingSafeEqual(expectedBytes, presentedBytes)
-  ) {
-    throw new MediaServiceError('此操作只能从 BilliardBuddy 桌面工作台确认', 403, 'MEDIA_UI_CONFIRMATION_REQUIRED')
-  }
 }
 
 export function consumeMediaUiCapability(
@@ -242,7 +249,11 @@ function publicToolchainStatus(status: Awaited<ReturnType<MediaProjectService['t
 export function createMediaApiHandler(
   service: MediaProjectService,
   mediaUiCapability = '',
+  imageWorkbench?: ImageWorkbenchService,
 ) {
+  const imageApiHandler = imageWorkbench
+    ? createImageWorkbenchApiHandler(imageWorkbench, mediaUiCapability)
+    : null
   return async function handleMediaApi(
     req: Request,
     url: URL,
@@ -251,11 +262,37 @@ export function createMediaApiHandler(
     try {
       const area = segments[2]
 
+      // Images have their own domain service and storage. The legacy media
+      // handler remains responsible only for video and migration readers.
+      if (area === 'images' && imageApiHandler) {
+        return await imageApiHandler(req, url, segments)
+      }
+
       if (area === 'projects') {
         const projectId = segments[3]
         if (projectId) {
           if (segments[4] !== 'events' || segments[5]) throw ApiError.badRequest('无效的媒体项目操作')
           if (req.method !== 'GET') throw methodNotAllowed(req.method)
+          if (imageWorkbench) {
+            const imageProject = await imageWorkbench.getProject(projectId).catch(error => {
+              if (error instanceof ImageWorkbenchServiceError && error.code === 'IMAGE_PROJECT_NOT_FOUND') return null
+              throw error
+            })
+            if (imageProject) {
+              const cursor = Number(url.searchParams.get('cursor') ?? 0)
+              const limit = Number(url.searchParams.get('limit') ?? 100)
+              const waitMs = Number(url.searchParams.get('wait_ms') ?? 25_000)
+              if (!Number.isInteger(cursor) || cursor < 0) throw ApiError.badRequest('cursor 必须是非负整数')
+              if (!Number.isInteger(limit) || limit < 1 || limit > 200) throw ApiError.badRequest('limit 必须在 1 到 200 之间')
+              if (!Number.isInteger(waitMs) || waitMs < 0 || waitMs > 25_000) throw ApiError.badRequest('wait_ms 必须在 0 到 25000 之间')
+              return Response.json(publicImageEventPage(
+                await imageWorkbench.waitForOperationEvents(imageProject.id, cursor, limit, waitMs),
+              ))
+            }
+            if (await imageWorkbench.hasProjectHistory(projectId)) {
+              throw new ImageWorkbenchServiceError('图片项目已移入回收站', 404, 'IMAGE_PROJECT_NOT_FOUND')
+            }
+          }
           await service.assertProjectOwner(projectId, STANDALONE_MEDIA_OWNER)
           const cursor = Number(url.searchParams.get('cursor') ?? 0)
           const limit = Number(url.searchParams.get('limit') ?? 100)
@@ -275,6 +312,22 @@ export function createMediaApiHandler(
           throw ApiError.badRequest('kind 只能是 image 或 video')
         }
         const kind = requestedKind === 'image' || requestedKind === 'video' ? requestedKind : undefined
+        if (imageWorkbench && kind !== 'video') {
+          const [legacyProjects, imageProjects, imageDeletions] = await Promise.all([
+            service.listProjectsForOwner(STANDALONE_MEDIA_OWNER, kind === 'image' ? 'image' : undefined),
+            imageWorkbench.listProjects(),
+            imageWorkbench.listDeletions(),
+          ])
+          const migratedIds = new Set([
+            ...imageProjects.map(project => project.id),
+            ...imageDeletions.map(receipt => receipt.project_id),
+          ])
+          const projects = [
+            ...legacyProjects.filter(project => !migratedIds.has(project.id)).map(publicProject),
+            ...imageProjects.map(publicImageProject),
+          ].sort((left, right) => right.updated_at.localeCompare(left.updated_at))
+          return Response.json({ projects })
+        }
         return Response.json({
           projects: (await service.listProjectsForOwner(STANDALONE_MEDIA_OWNER, kind)).map(publicProject),
         })
@@ -291,7 +344,12 @@ export function createMediaApiHandler(
 
       if (area === 'deletions') {
         if (req.method !== 'GET' || segments[3]) throw methodNotAllowed(req.method)
-        const deletions = await service.listDeletionsForOwner(STANDALONE_MEDIA_OWNER)
+        const [legacyDeletions, imageDeletions] = await Promise.all([
+          service.listDeletionsForOwner(STANDALONE_MEDIA_OWNER),
+          imageWorkbench?.listDeletions() ?? [],
+        ])
+        const deletions = [...legacyDeletions, ...imageDeletions]
+          .sort((left, right) => right.deleted_at.localeCompare(left.deleted_at))
         return Response.json({
           deletions: deletions.map(receipt => publicMediaDeletionReceiptSchema.parse(receipt)),
         })
@@ -301,14 +359,44 @@ export function createMediaApiHandler(
         const projectId = segments[3]
         if (!projectId) throw ApiError.badRequest('缺少媒体项目 ID')
         const action = segments[4]
+        if (!action && imageWorkbench && req.method === 'GET') {
+          const imageProject = await imageWorkbench.getProject(projectId).catch(error => {
+            if (error instanceof ImageWorkbenchServiceError && error.code === 'IMAGE_PROJECT_NOT_FOUND') return null
+            throw error
+          })
+          if (imageProject) return Response.json({ project: publicImageProject(imageProject) })
+          if (await imageWorkbench.hasProjectHistory(projectId)) {
+            throw new ImageWorkbenchServiceError('图片项目已移入回收站', 404, 'IMAGE_PROJECT_NOT_FOUND')
+          }
+        }
         if (action === 'restore') {
           if (req.method !== 'POST' || segments[5]) throw methodNotAllowed(req.method)
+          if (imageWorkbench) {
+            const restored = await imageWorkbench.restoreProject(projectId).catch(error => {
+              if (error instanceof ImageWorkbenchRepositoryError && error.code === 'IMAGE_PROJECT_NOT_FOUND') return null
+              throw error
+            })
+            if (restored) {
+              return Response.json({ deletion: publicMediaDeletionReceiptSchema.parse(restored) })
+            }
+          }
           const receipt = publicMediaDeletionReceiptSchema.parse(
             await service.restoreProject(projectId, STANDALONE_MEDIA_OWNER),
           )
           return Response.json({ deletion: receipt })
         }
         if (action) throw ApiError.badRequest('无效的媒体项目操作')
+        if (imageWorkbench && req.method === 'DELETE') {
+          const deletion = await imageWorkbench.deleteProject(projectId).catch(error => {
+            if (
+              (error instanceof ImageWorkbenchRepositoryError || error instanceof ImageWorkbenchServiceError)
+              && error.code === 'IMAGE_PROJECT_NOT_FOUND'
+            ) return null
+            throw error
+          })
+          if (deletion) return new Response(null, { status: 204 })
+          if (await imageWorkbench.hasProjectHistory(projectId)) return new Response(null, { status: 204 })
+        }
         await service.assertProjectOwner(projectId, STANDALONE_MEDIA_OWNER)
         if (req.method === 'DELETE') {
           await service.deleteProject(projectId)
@@ -321,6 +409,23 @@ export function createMediaApiHandler(
       if (area === 'tasks') {
         const taskId = segments[3]
         if (!taskId) throw ApiError.badRequest('缺少媒体任务 ID')
+        if (imageWorkbench) {
+          const imageTask = await imageWorkbench.getOperation(taskId).catch(error => {
+            if (error instanceof ImageWorkbenchRepositoryError && error.code === 'IMAGE_OPERATION_NOT_FOUND') return null
+            throw error
+          })
+          if (imageTask) {
+            if (segments[4] === 'cancel') {
+              if (req.method !== 'POST') throw methodNotAllowed(req.method)
+              return Response.json({ task: publicImageTask(await imageWorkbench.cancelOperation(taskId)) })
+            }
+            if (req.method !== 'GET') throw methodNotAllowed(req.method)
+            return Response.json({ task: publicImageTask(imageTask) })
+          }
+          if (await imageWorkbench.hasOperationHistory(taskId)) {
+            throw new ImageWorkbenchServiceError('图片操作已随项目移入回收站', 404, 'IMAGE_OPERATION_NOT_FOUND')
+          }
+        }
         await service.assertTaskOwner(taskId, STANDALONE_MEDIA_OWNER)
         if (segments[4] === 'cancel') {
           if (req.method !== 'POST') throw methodNotAllowed(req.method)
@@ -328,91 +433,6 @@ export function createMediaApiHandler(
         }
         if (req.method !== 'GET') throw methodNotAllowed(req.method)
         return Response.json({ task: publicTask(await service.getTask(taskId)) })
-      }
-
-      if (area === 'images' && segments[3] === 'projects') {
-        const projectId = segments[4]
-        const action = segments[5]
-        if (!projectId) {
-          if (req.method !== 'POST') throw methodNotAllowed(req.method)
-          const input = createImageProjectInputSchema.parse(await parseJson(req))
-          return Response.json({ project: publicProject(await service.createImageProject(input)) }, { status: 201 })
-        }
-        await service.assertProjectOwner(projectId, STANDALONE_MEDIA_OWNER)
-        if (action === 'references') {
-          const referenceId = segments[6]
-          if (!referenceId && req.method === 'POST' && !segments[7]) {
-            const input = addImageProjectReferencesInputSchema.parse(await parseJson(req))
-            return Response.json({ project: publicProject(await service.addImageProjectReferences(projectId, input)) }, { status: 201 })
-          }
-          if (!referenceId || segments[7] !== 'content' || segments[8]) {
-            throw ApiError.badRequest('无效的图片参考素材地址')
-          }
-          if (req.method !== 'GET') throw methodNotAllowed(req.method)
-          return await service.imageReferenceResponse(projectId, referenceId, req)
-        }
-        if (action === 'layer-assets') {
-          const assetId = segments[6]
-          if (!assetId || segments[7] !== 'content' || segments[8]) {
-            throw ApiError.badRequest('无效的图片图层素材地址')
-          }
-          if (req.method !== 'GET') throw methodNotAllowed(req.method)
-          return await service.imageLayerAssetResponse(projectId, assetId, req)
-        }
-        if (!action && req.method === 'PUT') {
-          const input = updateImageProjectInputSchema.parse(await parseJson(req))
-          if (input.confirm_unknown_retry) {
-            requireMediaUiCapability(req, mediaUiCapability)
-          }
-          return Response.json({ project: publicProject(await service.updateImageProject(projectId, input)) })
-        }
-        if (action === 'operations') {
-          if (req.method !== 'POST' || segments[6]) throw methodNotAllowed(req.method)
-          requireMediaUiCapability(req, mediaUiCapability)
-          const input = startImageOperationInputSchema.parse(await parseJson(req))
-          return Response.json({ task: publicTask(await service.startImageOperation(projectId, input)) }, { status: 202 })
-        }
-        if (action === 'versions') {
-          const versionId = segments[6]
-          const versionAction = segments[7]
-          if (versionId && versionAction === 'select') {
-            if (req.method !== 'POST' || segments[8]) throw methodNotAllowed(req.method)
-            const input = selectImageVersionInputSchema.parse({
-              ...(await parseJson(req) as Record<string, unknown>),
-              version_id: versionId,
-            })
-            return Response.json({ project: publicProject(await service.selectImageVersion(projectId, input)) })
-          }
-          if (versionId && versionAction === 'save') {
-            if (req.method !== 'POST' || segments[8]) throw methodNotAllowed(req.method)
-            requireMediaUiCapability(req, mediaUiCapability)
-            const input = saveImageOutputInputSchema.parse({
-              ...(await parseJson(req) as Record<string, unknown>),
-              version_id: versionId,
-            })
-            return Response.json(await service.saveImageOutput(projectId, input))
-          }
-          if (req.method !== 'POST' || versionId) throw methodNotAllowed(req.method)
-          const input = commitImageVersionInputSchema.parse(await parseJson(req))
-          return Response.json({ project: publicProject(await service.commitImageVersion(projectId, input)) }, { status: 201 })
-        }
-        if (action === 'outputs' && segments[7] === 'save') {
-          if (req.method !== 'POST') throw methodNotAllowed(req.method)
-          const outputId = segments[6]
-          if (!outputId || segments[8]) throw ApiError.badRequest('无效的图片结果地址')
-          requireMediaUiCapability(req, mediaUiCapability)
-          const input = saveImageOutputInputSchema.parse({
-            ...(await parseJson(req) as Record<string, unknown>),
-            output_id: outputId,
-          })
-          return Response.json(await service.saveImageOutput(projectId, input))
-        }
-        if (action === 'submit') {
-          if (req.method !== 'POST') throw methodNotAllowed(req.method)
-          requireMediaUiCapability(req, mediaUiCapability)
-          const input = submitImageProjectInputSchema.parse(await parseJson(req))
-          return Response.json({ task: publicTask(await service.submitImageProject(projectId, input)) }, { status: 202 })
-        }
       }
 
       if (area === 'videos' && segments[3] === 'toolchain') {

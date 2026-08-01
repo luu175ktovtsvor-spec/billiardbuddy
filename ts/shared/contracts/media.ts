@@ -218,7 +218,8 @@ export const imageWorkbenchOutputSchema = z.object({
   image_layers: z.array(imageLayerSchema).max(20).optional(),
   mime_type: z.enum(['image/png', 'image/jpeg', 'image/webp']).default('image/png'),
   data_url: z.string().startsWith('data:image/').optional(),
-  asset_path: z.string().startsWith('/api/media/assets/').optional(),
+  /** Old media paths remain readable during migration; new image projects use their own route. */
+  asset_path: z.string().regex(/^\/api\/media\/(?:assets\/|images\/projects\/)/).optional(),
   url: z.string().url().optional(),
   revised_prompt: z.string().max(8000).optional(),
   quality_assessment: imageQualityAssessmentResultSchema.optional(),

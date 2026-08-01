@@ -11,6 +11,7 @@ import { isLongMediaRequestPath } from './mediaRequestTimeout.js'
 import { handleProductApi } from './api/product.js'
 import { createProductTaskService, type ProductTaskService } from './product/taskService.js'
 import { MediaProjectService } from './services/mediaProjectService.js'
+import { ImageWorkbenchService } from './services/imageWorkbenchService.js'
 import { voiceOperationService } from './services/voiceOperationService.js'
 import { getProductConfigDir } from './product/productPaths.js'
 import { configureChromeSessionBridge, getChromeSessionBridge } from './services/chromeSessionBridge.js'
@@ -166,8 +167,11 @@ export function startServer(port = PORT, host = HOST) {
   })
   let productTaskQueueRecovery: Promise<void> | undefined
   // The independent image and video workbenches share one process-local media
-  // service. Chat/ProductTask routes never receive this service.
+  // service only while legacy image records are being migrated. New image
+  // projects are owned by their dedicated service; Chat/ProductTask routes
+  // never receive either workbench service.
   const mediaService = new MediaProjectService()
+  const imageWorkbenchService = new ImageWorkbenchService()
   if (process.env.NODE_ENV !== 'test') {
     void voiceOperationService.purgeExpired().catch(error => diagnosticsService.recordEvent({
       type: 'voice_gc_failed',
@@ -179,6 +183,7 @@ export function startServer(port = PORT, host = HOST) {
   const mediaApiHandler = createMediaApiHandler(
     mediaService,
     mediaUiCapability,
+    imageWorkbenchService,
   )
   const productCapabilitySnapshots = new ProductCapabilitySnapshotService({
     mediaToolchainStatus: () => mediaService.toolchainStatus(),
@@ -194,6 +199,12 @@ export function startServer(port = PORT, host = HOST) {
       migrateScheduledTaskRuns: () => migrateSupportedScheduledTaskRuns(configDir),
     },
   ).ensureUpgraded()
+  // Migrate only after the legacy media service has completed its video-only
+  // in-place upgrades. The importer is idempotent and never makes
+  // MediaProjectService the owner of a new image project.
+  const imageWorkbenchRecovery = productStorageUpgrade
+    .then(() => imageWorkbenchService.migrateLegacyMediaStore())
+    .then(() => imageWorkbenchService.recoverInterruptedOperations())
   if (process.env.NODE_ENV !== 'test') {
     void productStorageUpgrade
       .then(() => mediaService.purgeExpiredDeletions(), () => undefined)
@@ -245,6 +256,7 @@ export function startServer(port = PORT, host = HOST) {
 
       async fetch(req, server) {
         await productStorageUpgrade
+        await imageWorkbenchRecovery
         productTaskQueueRecovery ??= productTaskService.recoverDurableTaskRunQueue({
           hasLiveTaskRunLease: (runId, generation) => desktopResourceScheduler.hasLiveTaskRunLease(runId, generation),
         })
