@@ -150,4 +150,11 @@ export class CodexEngineThreadStore {
       return validateState(saved, binding)
     })
   }
+
+  async purge(binding: CodexEngineThreadBinding): Promise<void> {
+    validateBinding(binding)
+    await withBindingLock(binding, async () => {
+      await fs.rm(threadStatePath(binding), { force: true })
+    })
+  }
 }

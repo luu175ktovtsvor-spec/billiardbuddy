@@ -1,0 +1,63 @@
+From ee0247f95a6fe2b094ba2253d82cae2a2b4c2dff Mon Sep 17 00:00:00 2001
+Subject: [BilliardBuddy] allow an embedding host to own the tool surface
+
+The upstream App Server normally assembles its own built-in, environment,
+MCP and extension tools. BilliardBuddy needs a narrower embedding mode: the
+product owns permission decisions, tool execution, effect receipts and crash
+recovery, while the engine keeps the Thread/Turn/Item loop. In that mode the
+engine must expose only explicit dynamic tools and send every call back to the
+host through `item/tool/call`.
+
+This patch adds the opt-in `host_managed_tools_only` configuration switch. It
+is deliberately generic and defaults to false, so it does not alter standard
+Codex behavior.
+
+---
+ codex-rs/config/src/config_toml.rs       | 4 ++++
+ codex-rs/core/src/config/mod.rs          | 6 ++++++
+ codex-rs/core/src/session/config_lock.rs | 1 +
+ codex-rs/core/src/tools/spec_plan.rs     | 9 +++++++++
+ 4 files changed, 20 insertions(+)
+
+diff --git a/codex-rs/config/src/config_toml.rs b/codex-rs/config/src/config_toml.rs
+index 5ffa42d..d79860d 100644
+--- a/codex-rs/config/src/config_toml.rs
++++ b/codex-rs/config/src/config_toml.rs
+@@ -231,0 +232,4 @@
++    /// Expose only host-provided dynamic tools. Built-in, MCP, extension and
++    /// environment tools remain unavailable to the model.
++    pub host_managed_tools_only: Option<bool>,
++
+diff --git a/codex-rs/core/src/config/mod.rs b/codex-rs/core/src/config/mod.rs
+index f6667ae..e799950 100644
+--- a/codex-rs/core/src/config/mod.rs
++++ b/codex-rs/core/src/config/mod.rs
+@@ -708,0 +709,4 @@
++    /// When true, the embedding host is the sole tool authority. The engine
++    /// exposes only explicit dynamic tools supplied by that host.
++    pub host_managed_tools_only: bool,
++
+@@ -3845,0 +3850 @@
++        let host_managed_tools_only = cfg.host_managed_tools_only.unwrap_or(false);
+@@ -4050,0 +4056 @@
++            host_managed_tools_only,
+diff --git a/codex-rs/core/src/session/config_lock.rs b/codex-rs/core/src/session/config_lock.rs
+index bbc2e20..e9831d4 100644
+--- a/codex-rs/core/src/session/config_lock.rs
++++ b/codex-rs/core/src/session/config_lock.rs
+@@ -146,0 +147 @@
++    lock_config.host_managed_tools_only = Some(config.host_managed_tools_only);
+diff --git a/codex-rs/core/src/tools/spec_plan.rs b/codex-rs/core/src/tools/spec_plan.rs
+index 157644d..08cb18b 100644
+--- a/codex-rs/core/src/tools/spec_plan.rs
++++ b/codex-rs/core/src/tools/spec_plan.rs
+@@ -138,0 +139,9 @@
++    if turn_context.config.host_managed_tools_only {
++        append_dynamic_tool_runtimes(&turn_context.dynamic_tools, &mut registry);
++        return finalize_tool_router(
++            turn_context,
++            registry,
++            Vec::new(),
++            &session.services.tool_search_handler_cache,
++        );
++    }

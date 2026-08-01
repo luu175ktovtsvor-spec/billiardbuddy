@@ -10,6 +10,7 @@ import type {
 } from '../../../shared/product/taskEvents.js'
 import type { AgentWorkerApprovalReviewFacts, AgentWorkerOutbound } from '../../../shared/product/agentWorker.js'
 import type { DurableTaskRunApproval, TaskRunExternalOperationKind } from './taskRunLedgerModel.js'
+import type { CodexEnginePrivateState } from '../agent-engine/codexEnginePrivateState.js'
 
 export type ProductTaskRunRecoveryFenceOutcome = 'prepared' | 'already_settled' | 'outcome_unknown' | 'not_owner'
 export type ProductTaskRunSettlementOutcome = 'settled' | 'already_settled' | 'outcome_unknown' | 'not_owner'
@@ -49,6 +50,7 @@ export type ProductTaskRunIdentity = {
     binding_id: string
     lineage_id: string
   }
+  codex_engine: CodexEnginePrivateState
 }
 
 export type ProductTaskRunCoreBinding = {

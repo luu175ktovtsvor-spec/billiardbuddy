@@ -6,6 +6,7 @@ on:
     paths:
       - '.gitmodules'
       - 'third_party/codex-engine'
+      - 'third_party/codex-engine-patches/**'
       - 'ts/desktop/scripts/verify-codex-engine-source.ts'
       - '.github/workflows/codex-engine-build.yml'
   push:
@@ -14,6 +15,7 @@ on:
     paths:
       - '.gitmodules'
       - 'third_party/codex-engine'
+      - 'third_party/codex-engine-patches/**'
       - 'ts/desktop/scripts/verify-codex-engine-source.ts'
       - '.github/workflows/codex-engine-build.yml'
 
@@ -57,6 +59,14 @@ jobs:
         uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582
         with:
           toolchain: '1.95.0'
+
+      - name: 应用受管工具面源码补丁
+        working-directory: third_party/codex-engine
+        shell: bash
+        run: |
+          set -euo pipefail
+          git apply --check ../codex-engine-patches/0001-host-managed-tools-only.patch
+          git apply --whitespace=nowarn ../codex-engine-patches/0001-host-managed-tools-only.patch
 
       - name: 仅构建 Codex App Server
         working-directory: third_party/codex-engine/codex-rs

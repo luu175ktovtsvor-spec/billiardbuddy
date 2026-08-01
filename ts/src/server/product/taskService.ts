@@ -74,6 +74,7 @@ import {
 } from './productCoreOperationBridge.js'
 import { ProductSettingsRepository } from './productSettingsRepository.js'
 import { ProductAutoMemoryRepository } from '../services/productAutoMemory.js'
+import { codexEnginePrivateState } from '../agent-engine/codexEnginePrivateState.js'
 import { productTaskActivitySummary } from './taskEventProjection.js'
 import {
   MAX_DURABLE_ASSISTANT_TEXT_LENGTH,
@@ -3192,6 +3193,13 @@ export class ProductTaskService {
       binding_id: string
       lineage_id: string
     }
+    codex_engine: {
+      engine_home: string
+      thread_storage_dir: string
+      binding_id: string
+      lineage_id: string
+      source_revision: string
+    }
   }> {
     const state = await new ProductTaskAuthorityRepository(this.authorityPath, this.authorityRepositoryDeps).read()
     const run = state.task_runs[runId] as { task_id?: unknown; lineage_id?: unknown; entry_id?: unknown; permission_snapshot?: unknown } | undefined
@@ -3221,6 +3229,7 @@ export class ProductTaskService {
       auto_memory: { storage_dir: this.autoMemoryStorageDir(), enabled: await this.autoMemoryEnabled(), entry_id: run.entry_id },
       session_context: sessionContext,
       harness_session: { storage_dir: this.harnessSessionStorageDir(), binding_id: resumeBindingId, lineage_id: run.lineage_id },
+      codex_engine: codexEnginePrivateState(this.storagePath, resumeBindingId, run.lineage_id),
     }
   }
 
