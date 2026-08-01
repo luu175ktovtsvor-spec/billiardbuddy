@@ -4,6 +4,7 @@ import path from 'node:path'
 const expectedRevision = 'ee0247f95a6fe2b094ba2253d82cae2a2b4c2dff'
 const repositoryRoot = path.resolve(import.meta.dir, '../../..')
 const engineRoot = path.join(repositoryRoot, 'third_party', 'codex-engine')
+const hostManagedToolsPatch = path.join(repositoryRoot, 'third_party', 'codex-engine-patches', '0001-host-managed-tools-only.patch')
 
 function requireFile(relativePath: string): string {
   const file = path.join(engineRoot, relativePath)
@@ -47,8 +48,14 @@ async function main(): Promise<void> {
     throw new Error('Codex Engine 未明确标记 Chat wire API 限制；模型桥设计需要重新复核')
   }
 
+  const patch = readFileSync(hostManagedToolsPatch, 'utf8')
+  if (!patch.includes('host_managed_tools_only') || !patch.includes('item/tool/call')) {
+    throw new Error('Codex Engine 宿主工具补丁内容不完整')
+  }
+  await gitOutput('apply', '--check', hostManagedToolsPatch)
+
   console.log(`[codex-engine] source lock passed: ${revision}`)
-  console.log('[codex-engine] app server and Apache-2.0 NOTICE verified; Chat must enter through the BilliardBuddy Responses bridge.')
+  console.log('[codex-engine] app server, Apache-2.0 NOTICE and host-managed-tools patch verified; Chat must enter through the BilliardBuddy Responses bridge.')
 }
 
 await main()

@@ -89,6 +89,13 @@ export class CodexEngineSession {
       model: this.options.model,
       personality: 'none',
       serviceName: 'billiardbuddy',
+      // Thread-scoped config is required because App Server takes a snapshot
+      // at `thread/start`; the process-level override alone is not a durable
+      // Thread capability declaration.
+      config: { host_managed_tools_only: true },
+      // Defense in depth: an embedded engine gets no upstream environment.
+      // The host-managed source patch separately removes all built-in tools.
+      environments: [],
     })
     const id = threadId(response)
     return { thread_id: id, restored: false }

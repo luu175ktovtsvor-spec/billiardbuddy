@@ -6,6 +6,7 @@ import { productPermissionSnapshot, type ProductPermissionSnapshot } from '../..
 import { createAgentWorkerChildStartCapability, createPolicyBoundEnvelope } from './permissionExecutionEnvelope.js'
 import { classifyProductTaskRunFailure, productTaskRunFailure } from './taskRunFailure.js'
 import type { ProductTaskRunFailure } from '../../../shared/product/taskEvents.js'
+import type { CodexEnginePrivateState } from '../agent-engine/codexEnginePrivateState.js'
 
 export type AgentWorkerCoreIdentity = {
   task_id: string
@@ -30,6 +31,7 @@ export type AgentWorkerCoreIdentity = {
     binding_id: string
     lineage_id: string
   }
+  codex_engine: CodexEnginePrivateState
 }
 
 type DispatchStore = {

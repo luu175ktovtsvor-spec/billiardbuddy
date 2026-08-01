@@ -6,6 +6,7 @@
 
 - 上游基线：`openai/codex` commit `ee0247f95a6fe2b094ba2253d82cae2a2b4c2dff`；正式 Git 子模块位于 `third_party/codex-engine/`，其公开来源是 `https://github.com/openai/codex.git`。本机研究副本仍位于 `codex-frontend-reference/upstream-cli-ee0247f/`。
 - 上游有成熟的 `app-server`、ThreadState、Turn/Item 事件、审批和工具执行边界；这些正是 BilliardBuddy 当前自研 Harness 最不应继续重复维护的部分。
+- 上游默认会组装自己的本机、MCP、扩展和协作工具，单独传 `environments: []` 只能关掉环境，不能关掉整套工具面。产品以 `third_party/codex-engine-patches/0001-host-managed-tools-only.patch` 增加默认关闭的 `host_managed_tools_only` 嵌入模式：此模式只暴露明确注册的动态工具，所有调用通过 `item/tool/call` 回到 BilliardBuddy。
 - 此基线的 `codex-rs/model-provider-info/src/lib.rs` 只接受 `WireApi::Responses`，明确拒绝 `wire_api = "chat"`。
 - BilliardBuddy 仍必须支持受管和个人模型的 Chat Completions 与 Responses，且个人 Key 只能在本机受控路径中直连。
 
@@ -63,10 +64,22 @@ Codex 会保存自己的 Thread、配置与运行资料。BilliardBuddy 启动�
 | A. 源码与构建 | 已锁定的 `third_party/codex-engine`、Apache LICENSE/NOTICE 审计，以及 BilliardBuddy 私有目录中的 stdio 引擎客户端和 Thread 绑定存储；macOS/Windows 可构建 `codex-app-server` | 子模块 revision 与上游来源可复现、许可证清单、两平台构建产物可启动 | 不引入 Codex CLI/TUI/品牌；不发布安装包 |
 | B. 模型桥 | 引擎只接 Responses，受管与个人 Chat/Responses 都由本机桥提供同一完整 Item 语义 | 无付费替身覆盖文本、工具调用、不完整流和未知结果 | 不读取或上传真实个人 Key；不自动重试 |
 | C. Run 事件桥 | 一个 BilliardBuddy 任务会话绑定一个 Codex Thread；每次 Run 在该 Thread 上启动一次 Turn，按顺序投影 Turn/Item、审批、工具活动、terminal | 新建任务、继续、停止、重启后历史和状态一致 | 不让引擎直接写任务数据库 |
-| D. 权限与工具桥 | Codex 的工具请求受 BilliardBuddy lease 和三档权限控制 | 文件、PTY、浏览器、MCP 的许可/拒绝/停止均有可见回执 | 不让工具获得全局凭据或目录外权限 |
+| D. 权限与工具桥 | Codex 的工具请求受 BilliardBuddy lease 和三档权限控制；引擎仅暴露 BilliardBuddy 动态工具 | 文件、PTY、浏览器、MCP 的许可/拒绝/停止均有可见回执 | 不让工具获得全局凭据或目录外权限 |
 | E. 正式切换 | 桌面任务页只消费引擎事件；旧 Harness 无消费者后删除 | 同一用户旅程在新路径完成，旧路径不可再启动 | 不保留双 Harness 作为“兼容” |
 
-当前处于 **A. 源码与构建收口、B. 模型桥准备**。固定源码已经登记；开发机已从该基线构建 macOS arm64 `codex-app-server` 并完成 BilliardBuddy 私有目录中的无模型 stdio 初始化/退出验证。`codex-engine-build.yml` 仍会在 GitHub 的 macOS Apple Silicon 与 Windows x64 runner 上只编译未经签名的 `codex-app-server`，不生成桌面安装包、不上传发布源；由于本地 `main` 尚未安全推送，Windows 构建尚未有实际产物证据。引擎客户端目前只负责私有目录、标准协议与 BilliardBuddy Thread 绑定，尚未接管正式 Run；在模型桥、事件桥和权限桥完整之前，不再给旧 TypeScript Harness 添加模型、工具、Hook 或 UI 功能。
+当前处于 **A. 源码与构建收口、B. 模型桥准备**。固定源码已经登记；开发机已从该基线加受管工具补丁构建 macOS arm64 `codex-app-server`，完成 BilliardBuddy 私有目录的 stdio 初始化/退出验证，并以不访问网络、密钥或付费模型的本机假模型跑通一次 Turn：模型桥收到的上游工具数为 `0`。补丁默认不改变上游行为；只有本产品私有引擎显式传 `host_managed_tools_only=true` 时才去掉上游工具面。`codex-engine-build.yml` 会先核对、应用该补丁，再在 GitHub 的 macOS Apple Silicon 与 Windows x64 runner 上只编译未经签名的 `codex-app-server`，不生成桌面安装包、不上传发布源；由于本地 `main` 尚未安全推送，Windows 构建尚未有实际产物证据。引擎客户端目前只负责私有目录、标准协议与 BilliardBuddy Thread 绑定，尚未接管正式 Run；在模型桥、事件桥和权限桥完整之前，不再给旧 TypeScript Harness 添加模型、工具、Hook 或 UI 功能。
+
+### 4.1 当前唯一施工单元：Agent 执行内核替换
+
+这不是把 Harness 继续扩大，也不是一次拆成多个彼此无关的“后端模块”。当前唯一的产品模块是 **Agent 执行内核**；A、B、C、D 是这个模块必须按顺序闭合的内部边界。它结束前，旧 Harness 仍是唯一正式消费者，但只保留现状，不再扩展功能。
+
+1. **产品身份先行**：每个 Run 取得独立的 BilliardBuddy 引擎目录与 Thread 绑定；产品的 Task、Run、Item、操作回执仍在既有账本中，引擎资料只是可丢弃缓存。
+2. **模型结果后确认**：Worker 中的本机 Responses 桥只能经既有主进程 IPC 调用模型；主进程继续负责 Gateway 与个人 Key 路由。模型结果完成账本 checkpoint 后，桥才可对 Codex 确认 `response.completed`。
+3. **Run 成为 Turn**：一次用户 Run 必须在已绑定 Thread 上启动一次 Codex Turn，把 `turn`、`item`、停止和 terminal 事件依次投影为现有 Agent 事件。没有这条真实调用链的适配文件不算完成，也不能切换 UI。
+4. **工具有唯一宿主**：Codex 的工具/审批请求只经 BilliardBuddy 权限信封和现有主进程工具宿主处理；在该桥完成前，引擎不得获得本机 Shell、文件、浏览器、MCP 或任何全局凭据。
+5. **一次性切换**：上述边界闭合并走通一条真实用户旅程后，桌面 Agent 页改为只启动新内核，旧 Harness 删除；不长期保留双执行循环。
+
+因此，当前正在写的 Responses 回环端点和运行时装配只是第 2 步的材料，尚无正式 Run 消费者，不能单独宣称“模型桥完成”。下一次代码改动只为第 1—3 步接成一条可运行、可停止、可恢复判定的产品路径；权限工具桥留在其后独立闭合，图片、视频工作台不受这次内核替换牵连。
 
 ## 5. 许可与发布边界
 

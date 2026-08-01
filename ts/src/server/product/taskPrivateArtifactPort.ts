@@ -1,6 +1,7 @@
 import * as path from 'node:path'
 import { ProductHarnessSessionRepository } from '../agent-worker/harnessSessionRepository.js'
 import { ProductAutoMemoryRepository } from '../services/productAutoMemory.js'
+import { purgeCodexEnginePrivateState } from '../agent-engine/codexEnginePrivateState.js'
 import { ProductTaskAuthorityRepository, type ProductTaskAuthorityRepositoryDeps } from './authorityRepository.js'
 import {
   productAttachmentStorageRoot,
@@ -53,6 +54,7 @@ export const productTaskPrivateArtifactPort: ProductTaskPrivateArtifactPort = {
     const harnessSessions = new ProductHarnessSessionRepository()
     await Promise.all([
       ...lineages.map(binding => harnessSessions.purge(binding)),
+      ...lineages.map(binding => purgeCodexEnginePrivateState(storagePath, binding.binding_id, binding.lineage_id)),
       new ProductAutoMemoryRepository().purgeTaskTurns(autoMemoryStorageDir(storagePath), taskId, entryIds),
       purgeProductAttachmentCopies(productAttachmentStorageRoot(storagePath), attachmentIds),
     ])
