@@ -2091,7 +2091,9 @@ export class MediaProjectService {
       updated_at: this.iso(),
     })
     const project = await this.getProject(task.project_id).catch(() => null)
-    if (project?.kind === 'video') {
+    // A historical interrupted task must not demote a newer render (or a
+    // completed project) when boot recovery walks every persisted task.
+    if (project?.kind === 'video' && project.task_id === task.id) {
       await this.saveProject({
         ...project,
         state: 'ready',
