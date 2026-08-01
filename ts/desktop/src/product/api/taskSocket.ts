@@ -38,6 +38,7 @@ type Connection = {
   hasOpened: boolean
   lifecycleEvent: ProductTaskSocketLifecycleEvent
   resumeCursor: number
+  handoffReady: boolean
 }
 
 export class ProductTaskSocketManager {
@@ -89,7 +90,7 @@ export class ProductTaskSocketManager {
     const connection = this.connections.get(taskId)
     // Approval and stop controls describe the run visible on this exact live
     // connection. Replaying one after a reconnect could target a later Turn.
-    if (!connection || connection.intentionalClose || connection.ws.readyState !== WebSocket.OPEN) return false
+    if (!connection || connection.intentionalClose || !connection.handoffReady || connection.ws.readyState !== WebSocket.OPEN) return false
     connection.ws.send(JSON.stringify(message))
     return true
   }
@@ -109,6 +110,7 @@ export class ProductTaskSocketManager {
         ? { type: 'reconnecting' }
         : { type: 'connecting' },
       resumeCursor: previous?.resumeCursor ?? 0,
+      handoffReady: false,
     }
     this.connections.set(taskId, connection)
 
@@ -121,6 +123,7 @@ export class ProductTaskSocketManager {
       }
       const reconnected = connection.hasOpened
       connection.hasOpened = true
+      connection.handoffReady = false
       connection.reconnectAttempt = 0
       this.startPingLoop(taskId, connection)
       this.publishLifecycle(connection, { type: 'connected', reconnected })
@@ -135,6 +138,7 @@ export class ProductTaskSocketManager {
         if (!productEvent) return
         if (productEvent.type === 'resume_cursor') {
           connection.resumeCursor = Math.max(connection.resumeCursor, productEvent.cursor)
+          connection.handoffReady = true
         } else if ('event_sequence' in productEvent && productEvent.event_sequence !== undefined) {
           connection.resumeCursor = Math.max(connection.resumeCursor, productEvent.event_sequence)
         }
