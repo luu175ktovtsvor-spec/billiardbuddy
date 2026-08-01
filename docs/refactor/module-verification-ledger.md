@@ -178,3 +178,10 @@
 - **R10.4 持久化与恢复边界**：Gateway 仅挂载 `/srv/billiardbuddy/data/gateway` 与 operator-owned runtime policy，Relay 仅挂载 `/srv/billiardbuddy/data/relay`；桌面更新目录只挂入 Static。线上 release 与当前本地未发布提交没有混为一谈，本轮没有写入服务器、重启容器、构建镜像、调用模型或切换路由。
 - **R10.4 风险记录**：release 中 Compose 位于 `deploy/production/compose.yml`，直接运行 `docker compose config` 会因部署环境提供的必填 `BILLIARDBUDDY_RELEASE` 变量缺失而失败；因此 release 目录不是脱离部署环境即可单独复现的闭包。该风险需在未来获准的部署模块中收口，当前只记录，不修改线上。
 - **下一项**：R11 构建、更新与发布施工单；候选构建、安装、上传或公网发布须获用户单独确认。
+
+## R11 构建、更新与发布
+
+- **R11.4 当前源码证明**：Windows 与 macOS workflow 分别固定 `windows-latest` 和 `macos-14`，默认 Electron 构建均使用 `--publish never`；发布只在明确 `publish` 输入或 tag 条件下进入。构建前审计发布源码已纳入 Git，构建后仍检查签名、媒体工具链哈希、产物唯一性、blockmap、更新清单和 `afterPack` 的安装资源边界。
+- **R11.4 清理**：复核发现 workflow 与 package scripts 仍保留安装、升级、更新恢复和公网更新源验收；它们会执行被仓库规则明确禁止的真实安装/升级/恢复验收。本单元删除相应脚本、辅助 gateway/probe、包命令和 workflow 步骤，保留静态来源、签名、哈希、唯一产物与打包资源审计。
+- **静态验证**：桌面 lint/生产构建和差异空白检查通过；发布配置不再引用已删除的验收脚本。未触发 GitHub Actions、候选构建、安装、上传、更新元数据切换、官网入口切换或服务器写入。
+- **下一项**：main 合并准备；需先核对完整提交链和分支差异，且仅在用户明确确认后实际合并。

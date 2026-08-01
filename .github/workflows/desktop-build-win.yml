@@ -193,44 +193,6 @@ jobs:
             Remove-Item -LiteralPath $installerAuditDir, $appAuditDir -Recurse -Force -ErrorAction SilentlyContinue
           }
 
-      - name: 安装、启动并卸载 Windows 成品
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $installers = @(Get-ChildItem ts/desktop/build-artifacts/electron/*.exe -ErrorAction Stop)
-          if ($installers.Count -ne 1) { throw '未生成唯一的 Windows 安装包' }
-          & ts/desktop/scripts/accept-windows-package.ps1 -Installer $installers[0].FullName
-          if ($LASTEXITCODE -ne 0) { throw 'Windows 安装后验收失败' }
-
-      - name: 准备已发布的 Windows 升级基线包
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          & ts/desktop/scripts/prepare-published-windows-upgrade-baseline.ps1
-
-      - name: 从最老支持版本升级并回退 Windows 成品
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          if ([string]::IsNullOrWhiteSpace($env:BB_OLD_WINDOWS_INSTALLER)) {
-            throw '缺少 Windows 最老支持版本安装包'
-          }
-          $installers = @(Get-ChildItem ts/desktop/build-artifacts/electron/*.exe -ErrorAction Stop)
-          if ($installers.Count -ne 1) { throw '未生成唯一的当前 Windows 安装包' }
-          & ts/desktop/scripts/accept-windows-upgrade.ps1 `
-            -OldInstaller $env:BB_OLD_WINDOWS_INSTALLER `
-            -NewInstaller $installers[0].FullName
-          if ($LASTEXITCODE -ne 0) { throw 'Windows 升级与回退验收失败' }
-
-      - name: 模拟更新下载中断并验证 Windows 重启恢复
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $installers = @(Get-ChildItem ts/desktop/build-artifacts/electron/*.exe -ErrorAction Stop)
-          if ($installers.Count -ne 1) { throw '未生成唯一的当前 Windows 安装包' }
-          & ts/desktop/scripts/accept-windows-update-recovery.ps1 -Installer $installers[0].FullName
-          if ($LASTEXITCODE -ne 0) { throw 'Windows 更新下载中断与重启恢复验收失败' }
-
       - name: 保存已审计的 Windows 安装包
         continue-on-error: true
         uses: actions/upload-artifact@v4
@@ -296,26 +258,6 @@ jobs:
           $publishCommands += "rmdir '$incoming'"
           & ssh @sshArgs root@zzyppz.cn ($publishCommands -join '; ')
           if ($LASTEXITCODE -ne 0) { throw 'Windows 发布文件校验或切换失败' }
-
-      - name: 验证正式 Windows 更新源
-        if: startsWith(github.ref, 'refs/tags/v') || inputs.publish == true
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $artifactDir = 'ts/desktop/build-artifacts/electron'
-          $expectedVersion = (Get-Content 'ts/desktop/package.json' -Raw | ConvertFrom-Json).version
-          $installers = @(Get-ChildItem "$artifactDir/*.exe" -ErrorAction Stop)
-          $blockmaps = @(Get-ChildItem "$artifactDir/*.blockmap" -ErrorAction Stop)
-          if ($installers.Count -ne 1 -or $blockmaps.Count -ne 1) {
-            throw 'Windows 正式更新源验收文件不完整或不唯一'
-          }
-          & bun run ts/desktop/scripts/verify-published-update.ts `
-            --base-url https://zzyppz.cn/desktop `
-            --expected-version $expectedVersion `
-            --metadata "$artifactDir/latest.yml" `
-            --artifact ($installers[0].FullName) `
-            --artifact ($blockmaps[0].FullName)
-          if ($LASTEXITCODE -ne 0) { throw 'Windows 正式更新源公网验收失败' }
 
       - name: 清理临时凭据与媒体工具链
         if: always()
