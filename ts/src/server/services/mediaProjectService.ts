@@ -4754,6 +4754,7 @@ export class MediaProjectService {
       dirname(outputPath),
       `${basename(outputPath, extension)}.partial-${task.id}${extension}`,
     )
+    let outputPublished = false
     try {
       await mkdir(dirname(outputPath), { recursive: true })
       await this.saveTask({
@@ -4850,6 +4851,7 @@ export class MediaProjectService {
           || latest.task_id !== task.id
         ) throw new MediaServiceError('视频项目已更新，本次导出结果不再发布', 409, 'VIDEO_RENDER_STALE')
         await this.moveFile(temporaryOutput, outputPath)
+        outputPublished = true
         await this.saveProject({
           ...latest,
           state: 'complete',
@@ -4882,6 +4884,11 @@ export class MediaProjectService {
       const cancelled = signal.aborted
       const stale = error instanceof MediaServiceError && error.code === 'VIDEO_RENDER_STALE'
       if (!cancelled && !stale) recordMediaFailure('video_render', error)
+      // The committing record contains the verified output identity. If moving the
+      // file succeeded but persisting the project did not, preserve that record for
+      // reconcileTaskAndProject instead of turning a recoverable publication into a
+      // false failed export.
+      if (outputPublished && !cancelled && !stale) return
       const failure = mediaSafeError(cancelled
         ? 'MEDIA_VIDEO_EXPORT_CANCELLED'
         : stale
