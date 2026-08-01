@@ -12,6 +12,7 @@ import {
   type ProductHookRunActivity,
 } from '../agent-worker/productLifecycleHooks.js'
 import { createProductHookSnapshot } from '../agent-worker/productHookSnapshot.js'
+import { createProductInstructionSnapshot } from '../services/productInstructions.js'
 import { productTaskRunFailure } from '../product/taskRunFailure.js'
 import { productTaskActivityKindForTool, productTaskActivitySummary, projectProductTaskPlan } from '../product/taskEventProjection.js'
 import type { AgentWorkerCore } from '../product/agentWorkerService.js'
@@ -24,6 +25,7 @@ import type { CodexResponsesModelRequest } from './codexResponsesModelBridge.js'
 import type { TaskRunExternalOperationKind } from '../product/taskRunLedgerModel.js'
 import type { ProductTaskPlan } from '../../../shared/product/taskEvents.js'
 import type { ProductToolContext, ProductToolPermissionContext } from '../agent-worker/productTool.js'
+import type { CodexEngineRunInstructionSnapshot } from './codexEngineSession.js'
 
 type CoreBinding = {
   session_id: string
@@ -191,6 +193,7 @@ export class CodexEngineWorkerCore implements AgentWorkerCore {
   private toolSurface?: ProductHostEngineToolSurface
   private lifecycleHooks?: ProductHarnessLifecycleHookHost
   private readonly hookAbortController = new AbortController()
+  private projectInstructions?: CodexEngineRunInstructionSnapshot
   private initialHookContext = ''
   private readonly checkpointedModelOperations = new Set<string>()
   private readonly agentMessageText = new Map<string, string>()
@@ -241,6 +244,9 @@ export class CodexEngineWorkerCore implements AgentWorkerCore {
     let sourceTurnCheckpointed = false
     try {
       await this.prepareToolSurface(runtime)
+      const projectInstructions = this.projectInstructions
+      if (!projectInstructions) throw new Error('CODEX_ENGINE_PROJECT_INSTRUCTIONS_UNAVAILABLE')
+      this.projectInstructions = await runtime.resolveRunInstructionSnapshot(this.options.run_id, projectInstructions)
       const sourceThread = await runtime.ensureThread()
       const sourceInput = attachments.length > 0
         ? await this.prepareAttachmentInput(textInput, attachments)
@@ -255,6 +261,7 @@ export class CodexEngineWorkerCore implements AgentWorkerCore {
         accepted.turn_id,
         operationId,
         this.pendingInput,
+        this.projectInstructions,
       )
       if (this.pendingInput) {
         await this.options.parent.checkpointExternalOperation(this.pendingInput.operation_id, digest)
@@ -337,6 +344,8 @@ export class CodexEngineWorkerCore implements AgentWorkerCore {
     const command = await resolveManagedCodexEngineCommand()
     const state = this.options.identity.codex_engine
     const hookSnapshot = await createProductHookSnapshot(this.options.binding.work_dir)
+    const instructionSnapshot = createProductInstructionSnapshot(this.options.binding.work_dir)
+    this.projectInstructions = { digest: instructionSnapshot.digest, prompt: instructionSnapshot.prompt }
     this.lifecycleHooks = createProductHarnessLifecycleHookHost({
       snapshot: hookSnapshot,
       cwd: this.options.binding.work_dir,
@@ -455,6 +464,7 @@ export class CodexEngineWorkerCore implements AgentWorkerCore {
         messages: request.messages,
         systemPrompt: [
           ...request.system_prompt,
+          ...(this.projectInstructions?.prompt ? [this.projectInstructions.prompt] : []),
           ...(this.initialHookContext ? [`项目 Hook 补充指令：\n${this.initialHookContext}`] : []),
         ],
         thinkingConfig: request.thinking_config,
