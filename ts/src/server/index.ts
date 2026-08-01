@@ -1,7 +1,7 @@
 /** BilliardBuddy local Product Server for the desktop GUI. */
 
 import { handleApiRequest } from './router.js'
-import { productTaskWebSocket, type ProductTaskWebSocketData } from './product/taskWebSocket.js'
+import { createProductTaskWebSocket, type ProductTaskWebSocketData } from './product/taskWebSocket.js'
 import { resolveCors, type CorsResolution } from './middleware/cors.js'
 import { requireAuth } from './middleware/auth.js'
 import { CronScheduler, cronScheduler } from './services/cronScheduler.js'
@@ -195,6 +195,7 @@ export function startServer(port = PORT, host = HOST) {
       coreOperationBridge,
     )
   )
+  const productTaskWebSocket = createProductTaskWebSocket(productTaskService)
   // Library consumers can own the global console and process handlers:
   // a test that boots the server would otherwise route every test-side
   // console.error/warn into the user's real diagnostics file.

@@ -20,7 +20,7 @@ import {
   type WorkspaceStatusResult,
   type WorkspaceTreeResult,
 } from '../services/workspaceService.js'
-import { productTaskService, type ProductTaskService } from './taskService.js'
+import type { ProductTaskService } from './taskService.js'
 
 const MAX_PRODUCT_TASK_REVIEW_IMAGE_BYTES = 8 * 1024 * 1024
 const MAX_PRODUCT_TASK_REVIEW_VIDEO_BYTES = 16 * 1024 * 1024
@@ -211,8 +211,6 @@ export function createProductTaskReviewService(tasks: TaskResolver): ProductTask
     getTaskWorkDir,
   )
 }
-
-export const productTaskReviewService = createProductTaskReviewService(productTaskService)
 
 function projectStatus(taskId: string, status: WorkspaceStatusResult): ProductTaskReviewStatus {
   if (status.state !== 'ok') {
