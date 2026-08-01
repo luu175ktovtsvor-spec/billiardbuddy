@@ -13,7 +13,6 @@ import {
   type TaskNotificationConfig,
 } from '../services/cronService.js'
 import {
-  cronScheduler,
   nextScheduledOccurrence,
   type CronScheduler,
   type TaskRun,
@@ -36,10 +35,6 @@ type RelatedTaskContextPort = {
   get(taskId: string): Promise<{ lifecycle: string; workDir: string }>
 }
 
-const unavailableRelatedTaskContext: RelatedTaskContextPort = {
-  get: async () => { throw new ApiError(503, '关联任务状态暂时不可用', 'PRODUCT_TASK_CONTEXT_UNAVAILABLE') },
-}
-
 type JsonRecord = Record<string, unknown>
 
 /**
@@ -49,9 +44,9 @@ type JsonRecord = Record<string, unknown>
  */
 export class ProductScheduledTaskService {
   constructor(
-    private readonly cronService: CronService = new CronService(),
-    private readonly scheduler: ScheduledTaskScheduler = cronScheduler,
-    private readonly relatedTaskContext: RelatedTaskContextPort = unavailableRelatedTaskContext,
+    private readonly cronService: CronService,
+    private readonly scheduler: ScheduledTaskScheduler,
+    private readonly relatedTaskContext: RelatedTaskContextPort,
   ) {}
 
   async listTasks(): Promise<ProductScheduledTask[]> {
@@ -142,8 +137,6 @@ export class ProductScheduledTaskService {
     }
   }
 }
-
-export const productScheduledTaskService = new ProductScheduledTaskService()
 
 function toStoredCreateInput(input: unknown): Omit<CronTask, 'id' | 'createdAt'> {
   const record = requireRecord(input)

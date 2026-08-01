@@ -4,7 +4,7 @@ import { handleApiRequest } from './router.js'
 import { createProductTaskWebSocket, type ProductTaskWebSocketData } from './product/taskWebSocket.js'
 import { resolveCors, type CorsResolution } from './middleware/cors.js'
 import { requireAuth } from './middleware/auth.js'
-import { CronScheduler, cronScheduler } from './services/cronScheduler.js'
+import { CronScheduler } from './services/cronScheduler.js'
 import { diagnosticsService } from './services/diagnosticsService.js'
 import { consumeMediaUiCapability, createMediaApiHandler } from './api/media.js'
 import { isLongMediaRequestPath } from './mediaRequestTimeout.js'
@@ -59,7 +59,7 @@ function resolveServerOptions() {
 const SERVER_OPTIONS = resolveServerOptions()
 const PORT = SERVER_OPTIONS.port
 const HOST = SERVER_OPTIONS.host
-let liveCronScheduler: CronScheduler = cronScheduler
+let liveCronScheduler: CronScheduler | undefined
 let liveTaskRunComposition: ProductTaskRunComposition | undefined
 
 function withCors(response: Response, cors: CorsResolution): Response {
@@ -381,7 +381,8 @@ let shutdownInProgress: Promise<void> | null = null
 export async function stopServerRuntimeForShutdown(
   _options: { waitForCli?: boolean } = {},
 ): Promise<void> {
-  liveCronScheduler.stop()
+  liveCronScheduler?.stop()
+  liveCronScheduler = undefined
   try {
     await getChromeSessionBridge().deactivate()
   } catch {
