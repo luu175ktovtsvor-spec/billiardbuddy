@@ -12,11 +12,11 @@ BilliardBuddy Agent 是通用的长期工作助手。用户在一个项目中创
 
 | 参考 | 用来学习什么 | BilliardBuddy 的边界 |
 | --- | --- | --- |
-| 官方 `openai/codex` 源码（Apache-2.0，固定 `ee0247f95a6fe2b094ba2253d82cae2a2b4c2dff`） | App Server 的 Thread / Turn / Item 协议，Core 的单会话活动回合、模型—工具循环、持久历史和执行服务分层 | 本机只读参考在 `codex-frontend-reference/upstream-cli-ee0247f/`；不继承 Rust CLI、Codex 品牌、OpenAI 认证、云端工作树或单一 Responses 实现 |
+| 官方 `openai/codex` 源码（Apache-2.0，固定 `ee0247f95a6fe2b094ba2253d82cae2a2b4c2dff`） | App Server 的 Thread / Turn / Item 协议，Core 的单会话活动回合、模型—工具循环、持久历史和执行服务分层 | 正式源码锁定在 `third_party/codex-engine/`；它将演进为 BilliardBuddy 的私有 Run 执行器，不继承 CLI、TUI、Codex 品牌、OpenAI 登录或云端工作树。上游只支持 Responses，因此 BilliardBuddy 的本机模型桥负责 Chat Completions 兼容 |
 | 本地 `codex-frontend-reference/` 解出产物 | 项目—任务—运行工作面的信息架构、活动/成果/侧栏的可见组织 | 它不是 BilliardBuddy 的源码依赖；不复制 bundle、资源、文案、内部端点或实现 |
 | 本地 WorkBuddy 安装包静态文件 | Electron 宿主、侧车、CLI/MCP、权限、沙箱和扩展协议的边界 | 只读取静态内容，不启动 UI；不复制私有代码、资产、配置或任何凭据 |
 
-参考来源帮助判断，不取代本模块的用户结果。BilliardBuddy 的正式路径必须由自己的任务账本、权限信封和公开事件合同拥有；任何外部实现都只能在这里重新定义为可验证的产品行为。
+参考来源帮助判断，不取代本模块的用户结果。BilliardBuddy 的正式路径必须由自己的任务账本、权限信封和公开事件合同拥有；Codex Engine 只能执行一个已冻结 Run，任何事件都必须重新投影为 BilliardBuddy 的可验证产品行为。具体迁移顺序见 [Codex 源内核迁移](./Codex源内核迁移.md)。
 
 ## Agent 的事实模型
 
