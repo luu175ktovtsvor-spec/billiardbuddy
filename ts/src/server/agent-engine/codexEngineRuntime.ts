@@ -152,9 +152,14 @@ export class CodexEngineRuntime {
     return { thread_id: thread.thread_id, turn_id: turnId(response) }
   }
 
-  async checkpointAcceptedTurn(runId: string, turnId: string): Promise<void> {
+  async checkpointAcceptedTurn(runId: string, turnId: string, operationId: string): Promise<string> {
     if (!this.session) throw new Error('CODEX_ENGINE_RUNTIME_UNAVAILABLE')
-    await this.session.checkpointAcceptedTurn(runId, turnId)
+    return await this.session.checkpointAcceptedTurn(runId, turnId, operationId)
+  }
+
+  async checkpointModelResult(runId: string, operationId: string, resultDigest: string): Promise<string> {
+    if (!this.session) throw new Error('CODEX_ENGINE_RUNTIME_UNAVAILABLE')
+    return await this.session.checkpointModelResult(runId, operationId, resultDigest)
   }
 
   async interruptTurn(turn: CodexEngineAcceptedTurn): Promise<void> {

@@ -14,16 +14,17 @@ import type { AgentWorkerBootstrap, AgentWorkerCore, AgentWorkerCoreFactory } fr
 import { AgentWorkerService } from '../server/product/agentWorkerService.js'
 import type { AgentWorkerCoreIdentity } from '../server/product/agentWorkerSupervisor.js'
 import type { ProductAgentHarnessPort } from '../server/agent-worker/productAgentHarness.js'
-import type { ProductAssistantMessage, ProductHarnessMessage, ProductToolCallBlock } from '../../shared/product/harnessMessages.js'
+import { CodexEngineWorkerCore } from '../server/agent-engine/codexEngineWorkerCore.js'
+import type { ProductAssistantMessage, ProductHarnessMessage, ProductModelEvent, ProductToolCallBlock } from '../../shared/product/harnessMessages.js'
 import type { AgentWorkerOutbound } from '../../shared/product/agentWorker.js'
 import type { ProductCanUseTool, ProductCommand, ProductContentBlock, ProductThinkingConfig, ProductTool, ProductToolContext } from '../server/agent-worker/productTool.js'
 
-type CoreBinding = { session_id: string; work_dir: string }
+type CoreBinding = { session_id: string; work_dir: string; provider: string; model: string; model_route_fingerprint: string; model_attempt_id: string }
 type StartResult = { identity: AgentWorkerCoreIdentity; binding: CoreBinding }
 type CoreRequest = {
   type: 'core_request'
   id: string
-  operation: 'start' | 'prepare' | 'command_prompt' | 'chat_prompt' | 'model' | 'tools' | 'approval' | 'question' | 'stop' | 'shutdown' | 'external_operation_begin' | 'external_operation_result' | 'external_operation_checkpoint' | 'external_operation_mcp_checkpoint' | 'external_operation_unknown'
+  operation: 'start' | 'prepare' | 'command_prompt' | 'chat_prompt' | 'model' | 'engine_model' | 'tools' | 'approval' | 'question' | 'stop' | 'shutdown' | 'external_operation_begin' | 'external_operation_result' | 'external_operation_checkpoint' | 'external_operation_mcp_checkpoint' | 'external_operation_unknown'
   execution_claim_token?: string
   value?: unknown
 }
@@ -314,6 +315,12 @@ async function createWorkerHarness(start: StartResult, input: Parameters<AgentWo
   return harness
 }
 
+function useCodexEngineRuntime(env: NodeJS.ProcessEnv = process.env): boolean {
+  // This is a migration-only, host-private rollout boundary. It is not a
+  // renderer setting and is removed when D/E supplies the complete consumer.
+  return env.BB_AGENT_EXECUTION_RUNTIME === 'codex-engine'
+}
+
 let protocol: AgentWorkerProtocol | undefined
 function emit(message: unknown): void {
   process.stdout.write(`${JSON.stringify(message)}\n`)
@@ -331,6 +338,35 @@ process.on('message', (message: unknown) => {
           activeExecutionClaimToken = input.execution_claim_token
           try {
             const start = await request('start', input) as StartResult
+            if (useCodexEngineRuntime()) {
+              const engine = await CodexEngineWorkerCore.create({
+                identity: start.identity,
+                binding: start.binding,
+                run_id: input.run_id,
+                parent: {
+                  beginExternalOperation: async kind => {
+                    const started = await request('external_operation_begin', { kind })
+                    const operationId = parseOperationId(started)
+                    if (!operationId) throw new Error('TASK_RUN_EXTERNAL_OPERATION_DENIED')
+                    return operationId
+                  },
+                  recordExternalOperationResult: async operationId => { await request('external_operation_result', { operation_id: operationId }) },
+                  checkpointExternalOperation: async (operationId, checkpointDigest) => { await request('external_operation_checkpoint', { operation_id: operationId, checkpoint_digest: checkpointDigest }) },
+                  markExternalOperationUnknown: async operationId => { await request('external_operation_unknown', { operation_id: operationId }) },
+                  engineModel: (operationId, value) => requestStream('engine_model', { operation_id: operationId, ...value }) as AsyncGenerator<ProductModelEvent, void>,
+                  stopHost: async () => { await request('stop') },
+                  shutdownHost: async () => { await request('shutdown') },
+                },
+              })
+              const unsubscribe = engine.subscribe(message => protocol?.relayCoreMessage(message))
+              return {
+                input: async (text, attachments, queueItemId) => await engine.input(text, attachments, queueItemId),
+                approve: async (requestId, approved) => { await engine.approve(requestId, approved) },
+                answer: async (requestId, answers) => { await engine.answer(requestId, answers) },
+                stop: async () => { await engine.stop() },
+                shutdown: async () => { unsubscribe(); await engine.shutdown() },
+              }
+            }
             const harness = await createWorkerHarness(start, input)
             const unsubscribe = harness.subscribe(message => protocol?.relayCoreMessage(message))
             let firstInput = true
