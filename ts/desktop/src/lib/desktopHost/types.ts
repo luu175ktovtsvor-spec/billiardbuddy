@@ -6,6 +6,7 @@ import type {
   PublicImageWorkbenchProject as ImageWorkbenchProject,
   PublicVideoStudioProject as VideoStudioProject,
   PublicMediaTask as MediaTask,
+  SaveImageOutputResult,
   SaveImageOutputInput,
   StartImageOperationInput,
   UpdateImageProjectInput,
@@ -211,7 +212,7 @@ export type DesktopHost = {
       projectId: string,
       input: UpdateImageProjectInput,
     ): Promise<{ project: ImageWorkbenchProject }>
-    saveImageOutput(projectId: string, input: SaveImageOutputInput): Promise<{ path: string }>
+    saveImageOutput(projectId: string, input: SaveImageOutputInput): Promise<SaveImageOutputResult>
     addVideoSource(projectId: string, path: string): Promise<{ project: VideoStudioProject; task: MediaTask }>
     renderVideo(request: MediaRenderRequest): Promise<{ task: MediaTask }>
     analyzeVideo(request: MediaAnalyzeRequest): Promise<{ task: MediaTask }>

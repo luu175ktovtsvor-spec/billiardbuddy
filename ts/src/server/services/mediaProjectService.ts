@@ -42,6 +42,7 @@ import {
   type CreateImageProjectInput,
   type CreateVideoProjectInput,
   type ImageWorkbenchProject,
+  type SaveImageOutputResult,
   type MediaAsset,
   type MediaDeletionReceipt,
   type MediaJobEvent,
@@ -2467,52 +2468,61 @@ export class MediaProjectService {
     }
   }
 
-  async saveImageOutput(projectId: string, raw: SaveImageOutputInput): Promise<{ path: string }> {
+  async saveImageOutput(projectId: string, raw: SaveImageOutputInput): Promise<SaveImageOutputResult> {
     const input = saveImageOutputInputSchema.parse(raw)
     if (!isAbsolute(input.output_path)) {
       throw new MediaServiceError('图片保存路径必须是绝对路径', 400, 'OUTPUT_PATH_NOT_ABSOLUTE')
     }
     const project = await this.getProject(projectId)
     if (project.kind !== 'image') throw new MediaServiceError('这不是图片项目', 409, 'WRONG_PROJECT_KIND')
-    const versionSource = input.version_id ? await this.imageVersionBytes(project, input.version_id) : null
     const output = input.output_id ? project.outputs.find(candidate => candidate.id === input.output_id) : undefined
-    if (!versionSource && !output) throw new MediaServiceError('找不到图片结果', 404, 'IMAGE_OUTPUT_NOT_FOUND')
-    const mimeType = versionSource?.mimeType ?? output!.mime_type
+    const versionId = input.version_id ?? output?.version_id
+    if (!versionId) throw new MediaServiceError('找不到图片版本', 404, 'IMAGE_OUTPUT_NOT_FOUND')
+    const versionSource = await this.imageVersionBytes(project, versionId)
+    const mimeType = versionSource.mimeType
     const expectedExtension = mimeType === 'image/jpeg' ? '.jpg' : mimeType === 'image/webp' ? '.webp' : '.png'
     const requestedExtension = extname(input.output_path).toLowerCase()
     if (requestedExtension !== expectedExtension && !(expectedExtension === '.jpg' && requestedExtension === '.jpeg')) {
       throw new MediaServiceError(`图片结果需要保存为 ${expectedExtension}`, 400, 'IMAGE_OUTPUT_EXTENSION_MISMATCH')
     }
 
-    let sourcePath: string | null = null
-    let bytes: Buffer | null = null
-    if (versionSource) {
-      sourcePath = versionSource.sourcePath
-    } else if (output!.asset_path) {
-      const fileName = output!.asset_path!.split('/').pop() ?? ''
-      if (!/^[a-z0-9][a-z0-9_.-]{2,120}$/.test(fileName)) {
-        throw new MediaServiceError('图片资产地址损坏', 500, 'IMAGE_OUTPUT_CORRUPT')
-      }
-      sourcePath = (await this.resolveOwnedAsset(project.id, fileName, {
-        message: '图片结果文件已经丢失',
-        code: 'IMAGE_OUTPUT_MISSING',
-      })).path
-    } else if (output!.data_url) {
-      bytes = dataUrlBytes(output!.data_url!)
-    } else {
-      throw new MediaServiceError('远程图片结果尚未保存到本机', 409, 'IMAGE_OUTPUT_NOT_LOCAL')
-    }
-
     await mkdir(dirname(input.output_path), { recursive: true })
     const temporary = `${input.output_path}.partial-${randomUUID()}`
     try {
-      if (sourcePath) await copyFile(sourcePath, temporary)
-      else await writeFile(temporary, bytes!, { mode: 0o600 })
+      await copyFile(versionSource.sourcePath, temporary)
       await this.moveFile(temporary, input.output_path)
     } finally {
       await rm(temporary, { force: true }).catch(() => undefined)
     }
-    return { path: input.output_path }
+    const exportedBytes = await readFile(input.output_path).catch(() => null)
+    const contentHash = exportedBytes
+      ? `sha256:${createHash('sha256').update(exportedBytes).digest('hex')}`
+      : null
+    const exportedMime = exportedBytes ? detectedImageMime(exportedBytes) : null
+    const dimensions = exportedBytes && exportedMime ? imageDimensions(exportedBytes, exportedMime) : null
+    const sourceHash = `sha256:${createHash('sha256').update(versionSource.bytes).digest('hex')}`
+    if (
+      !exportedBytes
+      || exportedBytes.byteLength !== versionSource.bytes.byteLength
+      || contentHash !== sourceHash
+      || exportedMime !== versionSource.mimeType
+      || !dimensions
+      || dimensions.width !== versionSource.dimensions.width
+      || dimensions.height !== versionSource.dimensions.height
+    ) {
+      throw new MediaServiceError('保存后的图片未能通过完整性校验', 500, 'IMAGE_OUTPUT_CORRUPT')
+    }
+    return {
+      path: input.output_path,
+      verification: {
+        byte_size: exportedBytes.byteLength,
+        mime_type: exportedMime,
+        width: dimensions.width,
+        height: dimensions.height,
+        content_hash: contentHash,
+        verified_at: this.iso(),
+      },
+    }
   }
 
   async videoSourceResponse(projectId: string, sourceId: string, request: Request): Promise<Response> {

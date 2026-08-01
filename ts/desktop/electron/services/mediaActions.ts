@@ -8,6 +8,7 @@ import {
   type PublicImageWorkbenchProject as ImageWorkbenchProject,
   type PublicVideoStudioProject as VideoStudioProject,
   type SaveImageOutputInput,
+  type SaveImageOutputResult,
   type StartImageOperationInput,
 } from '../../../shared/contracts/media'
 
@@ -62,7 +63,7 @@ export class ElectronMediaActions {
     return this.post(`/api/media/videos/projects/${encodeURIComponent(projectId)}/analyze`, input)
   }
 
-  saveImageOutput(projectId: string, input: SaveImageOutputInput): Promise<{ path: string }> {
+  saveImageOutput(projectId: string, input: SaveImageOutputInput): Promise<SaveImageOutputResult> {
     const resultId = input.version_id ?? input.output_id
     if (!resultId) throw new Error(mediaSafeError('MEDIA_INVALID_REQUEST').message)
     return this.post(

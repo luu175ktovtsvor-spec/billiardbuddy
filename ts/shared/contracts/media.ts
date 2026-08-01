@@ -786,6 +786,21 @@ export const saveImageOutputInputSchema = z.object({
   message: 'version_id is required',
 })
 
+/** Evidence returned only after the chosen local export has been re-read. */
+export const imageOutputVerificationSchema = z.object({
+  byte_size: z.number().int().positive(),
+  mime_type: z.enum(['image/png', 'image/jpeg', 'image/webp']),
+  width: z.number().int().positive().max(12000),
+  height: z.number().int().positive().max(12000),
+  content_hash: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+  verified_at: mediaIsoDateSchema,
+})
+
+export const saveImageOutputResultSchema = z.object({
+  path: z.string().min(1).max(4096),
+  verification: imageOutputVerificationSchema,
+})
+
 export type MediaProject = z.infer<typeof mediaProjectSchema>
 export type ImageWorkbenchProject = z.infer<typeof imageWorkbenchProjectSchema>
 export type VideoStudioProject = z.infer<typeof videoStudioProjectSchema>
@@ -822,6 +837,8 @@ export type VideoAlternative = z.infer<typeof videoAlternativeSchema>
 export type VideoTimelineVersion = z.infer<typeof videoTimelineVersionSchema>
 export type VideoPreview = z.infer<typeof videoPreviewSchema>
 export type VideoOutputVerification = z.infer<typeof videoOutputVerificationSchema>
+export type ImageOutputVerification = z.infer<typeof imageOutputVerificationSchema>
+export type SaveImageOutputResult = z.infer<typeof saveImageOutputResultSchema>
 export type CreateImageProjectInput = z.input<typeof createImageProjectInputSchema>
 export type CreateVideoProjectInput = z.input<typeof createVideoProjectInputSchema>
 export type UpdateImageProjectInput = z.input<typeof updateImageProjectInputSchema>
