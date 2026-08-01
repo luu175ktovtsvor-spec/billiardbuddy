@@ -281,6 +281,20 @@ export async function createProductAgentHarness(input: {
   const completedToolActivities = new Set<string>()
   const activityId = (toolUseId: string) => `activity_${createHash('sha256').update(`${input.run_id}:${toolUseId}`).digest('hex').slice(0, 32)}`
   const hookActivityId = (hookRunId: string) => activityId(`hook:${hookRunId}`)
+  const extensionActivityId = () => activityId('extension-prepare')
+  const emitExtensionActivity = (phase: 'started' | 'completed' | 'failed') => {
+    const kind: ProductTaskActivityKind = 'extension'
+    emit({
+      type: 'event',
+      event: 'activity',
+      activity: {
+        id: extensionActivityId(),
+        kind,
+        phase,
+        summary: input.projection.activitySummary(kind, phase),
+      },
+    })
+  }
   const emitHookRunActivity = (hookRun: ProductHookRunActivity) => {
     const phase = hookRun.phase
     const kind: ProductTaskActivityKind = 'automation'
@@ -466,7 +480,9 @@ export async function createProductAgentHarness(input: {
         } catch (error) { finish('recovery_required', input.projection.classifyFailure(error)) } finally { controller = undefined }
         return
       }
+      let extensionActivitySettled = false
       try {
+        emitExtensionActivity('started')
         await connectMcpHost()
         if (controller.signal.aborted || terminal) return
         const model = input.model_policy.resolve()
@@ -500,6 +516,9 @@ export async function createProductAgentHarness(input: {
         } else {
           emit({ type: 'event', event: 'extension_snapshot', ...extensionSnapshot })
         }
+        const hasUnavailableMcp = mcpRuntime.clients.some(client => client.type === 'failed' || client.type === 'needs-auth')
+        emitExtensionActivity(hasUnavailableMcp ? 'failed' : 'completed')
+        extensionActivitySettled = true
         if (!recoveringPreparedTurn && !recoveringActiveTurn) {
           const hookContext = createToolUseContext([], [], controller, model)
           const hookSource = restoredHarnessSession ? 'resume' as const : 'startup' as const
@@ -704,6 +723,7 @@ export async function createProductAgentHarness(input: {
         if (completedResult !== undefined) await persistHarnessSession(modelMessages, 'completed', completedResult)
         finish(controller.signal.aborted ? 'stopped' : 'completed')
       } catch (error) {
+        if (!extensionActivitySettled) emitExtensionActivity('failed')
         finish(controller.signal.aborted ? 'stopped' : 'recovery_required', input.projection.classifyFailure(error))
       } finally { controller = undefined }
     },

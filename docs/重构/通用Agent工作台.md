@@ -81,6 +81,12 @@ Worker 无权清除 receipt。任何 checkpoint 前的 stop、崩溃、IPC 断�
 
 Hook 的 Shell/HTTP 副作用仍复用本节的 EffectReceipt 和 checkpoint；HookRun 活动不另造一份效果账本。无法等待并保存结果的异步 Command Hook 必须继续明确拒绝，不能作为 Harness 中脱离账本的后台 Promise 执行。
 
+### 项目能力准备的可见状态
+
+每次普通 Agent Run 在冻结工具面前，必须先把项目指令、Skills、Plugins 和 MCP 的准备过程投影为同一账本中的一项 `extension` 活动：`started -> completed` 或 `started -> failed`。它是一次 Run 的稳定活动身份，父进程先持久化再推送或重放；任务页只显示“正在加载项目能力、项目能力已就绪、项目能力未就绪”。
+
+MCP 的 `failed` 和 `needs-auth` 会把这项活动收为“未就绪”，避免把未连通的能力伪装为可用；不展示服务器名、命令、URL、路径或凭据，也不阻止其余已准备好的本地工具继续运行。`extension_snapshot` 仍只保存工具、命令、MCP 数量和摘要 hash，不能把它替代成配置明细或第二份扩展状态源。
+
 ### 迁移与执行边界
 
 历史 `product-tasks.json`（v1–v4）以及当前 `product-task-authority.v1.json` 都只可作为迁移输入或过渡读取源。它们的 schema、版本归一化和旧 Core 映射属于迁移层；新 Agent 域完成切换后，正式路径只读取 Agent 自己的账本，不能维持两份可写运行真相。

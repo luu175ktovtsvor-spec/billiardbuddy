@@ -160,6 +160,7 @@ const PRODUCT_TASK_ACTIVITY_SUMMARIES = new Set([
   '正在查询资料', '已完成资料查询', '资料查询未完成',
   '正在查看网页', '已完成网页查看', '网页查看未完成',
   '正在处理素材', '已完成素材处理', '素材处理未完成',
+  '正在加载项目能力', '项目能力已就绪', '项目能力未就绪',
   '正在运行项目自动化', '项目自动化已完成', '项目自动化未完成',
   '正在协同处理事项', '已完成协同事项', '协同事项未完成',
   '正在处理任务', '已完成任务处理', '任务处理未完成',
@@ -479,7 +480,7 @@ function validate(file: AuthorityFile): AuthorityFile {
           exactKeys(event, ['event_sequence', 'task_id', 'run_id', 'type', 'dispatch_generation', 'item_id', 'kind', 'phase', 'summary', 'created_at'], ['parent_item_id', 'progress'])
           const progress = event.progress === undefined ? undefined : object(event.progress)
           if (progress) exactKeys(progress, ['completed', 'total'])
-          if (!requiredString(event.run_id) || !Number.isSafeInteger(event.dispatch_generation) || (event.dispatch_generation as number) < 1 || typeof event.item_id !== 'string' || !/^activity_[a-f0-9]{32}$/.test(event.item_id) || (event.parent_item_id !== undefined && (typeof event.parent_item_id !== 'string' || !/^activity_[a-f0-9]{32}$/.test(event.parent_item_id) || event.parent_item_id === event.item_id)) || !['file_read', 'file_change', 'workspace', 'command', 'research', 'browser', 'media', 'automation', 'subtask', 'tool'].includes(event.kind as string) || !['started', 'running', 'completed', 'failed'].includes(event.phase as string) || typeof event.summary !== 'string' || !PRODUCT_TASK_ACTIVITY_SUMMARIES.has(event.summary) || (progress && (!Number.isSafeInteger(progress.completed) || !Number.isSafeInteger(progress.total) || (progress.total as number) < 1 || (progress.total as number) > 1_000_000 || (progress.completed as number) < 0 || (progress.completed as number) > (progress.total as number)))) invalid()
+          if (!requiredString(event.run_id) || !Number.isSafeInteger(event.dispatch_generation) || (event.dispatch_generation as number) < 1 || typeof event.item_id !== 'string' || !/^activity_[a-f0-9]{32}$/.test(event.item_id) || (event.parent_item_id !== undefined && (typeof event.parent_item_id !== 'string' || !/^activity_[a-f0-9]{32}$/.test(event.parent_item_id) || event.parent_item_id === event.item_id)) || !['file_read', 'file_change', 'workspace', 'command', 'research', 'browser', 'media', 'extension', 'automation', 'subtask', 'tool'].includes(event.kind as string) || !['started', 'running', 'completed', 'failed'].includes(event.phase as string) || typeof event.summary !== 'string' || !PRODUCT_TASK_ACTIVITY_SUMMARIES.has(event.summary) || (progress && (!Number.isSafeInteger(progress.completed) || !Number.isSafeInteger(progress.total) || (progress.total as number) < 1 || (progress.total as number) > 1_000_000 || (progress.completed as number) < 0 || (progress.completed as number) > (progress.total as number)))) invalid()
         } else if (event.type === 'plan_updated') {
           exactKeys(event, ['event_sequence', 'task_id', 'run_id', 'type', 'dispatch_generation', 'item_id', 'steps', 'created_at'])
           if (!requiredString(event.run_id) || !Number.isSafeInteger(event.dispatch_generation) || (event.dispatch_generation as number) < 1 || typeof event.item_id !== 'string' || !/^plan_[a-f0-9]{32}$/.test(event.item_id) || !Array.isArray(event.steps) || event.steps.length < 1 || event.steps.length > 100) invalid()
