@@ -87,7 +87,7 @@ Codex 会保存自己的 Thread、配置与运行资料。BilliardBuddy 启动�
 4. **工具有唯一宿主**：Codex 的工具/审批请求只经 BilliardBuddy 权限信封和现有主进程工具宿主处理；在该桥完成前，引擎不得获得本机 Shell、文件、浏览器、MCP 或任何全局凭据。
 5. **一次性切换**：上述边界闭合并走通一条真实用户旅程后，桌面 Agent 页改为只启动新内核，旧 Harness 删除；不长期保留双执行循环。
 
-因此，当前已不只是 Responses 回环端点：C 的受管 Run/Turn 路径与 D 的直接动态工具路径都有明确的产品 Worker 消费者和账本回执，但尚未成为默认消费者。下一次代码改动继续完成 D 的剩余边界：先为 Hook 与可恢复子任务拆出不嵌套外部回执的执行链，再接附件和运行中输入；图片、视频工作台不受这次内核替换牵连。
+因此，当前已不只是 Responses 回环端点：C 的受管 Run/Turn 路径与 D 的直接动态工具路径都有明确的产品 Worker 消费者和账本回执，但尚未成为默认消费者。D 已把项目 `PreToolUse`、`PostToolUse` 和 `PostToolUseFailure` 的同步 Command/HTTP Hook 接在源码动态工具调用的前后：每个 Hook 都先单独取得 `hook_command` 或 `hook_http` 操作身份、在产品权限信封中执行、写入私有引擎回执并 checkpoint，绝不嵌套在 `tools` 回执内。Pre Hook 可阻止工具；Post Hook 只能把受控反馈交给下一次模型，不会篡改已经完成的工具结果。Prompt/Agent Hook、异步 Hook、可恢复子任务、附件和运行中输入仍待各自的可恢复边界完成；图片、视频工作台不受这次内核替换牵连。
 
 ## 5. 许可与发布边界
 

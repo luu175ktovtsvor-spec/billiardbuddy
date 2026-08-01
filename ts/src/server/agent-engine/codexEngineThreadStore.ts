@@ -37,6 +37,10 @@ export type CodexEngineThreadState = {
   last_tool_operation_id?: string
   last_tool_call_id?: string
   last_tool_result_digest?: string
+  /** Product receipt for the latest completed lifecycle Hook effect. */
+  last_hook_run_id?: string
+  last_hook_operation_id?: string
+  last_hook_result_digest?: string
   updated_at: string
 }
 
@@ -114,6 +118,8 @@ function validateState(value: unknown, binding: CodexEngineThreadBinding): Codex
     .filter(value => value !== undefined).length
   const toolReceiptCount = [state.last_tool_run_id, state.last_tool_operation_id, state.last_tool_call_id, state.last_tool_result_digest]
     .filter(value => value !== undefined).length
+  const hookReceiptCount = [state.last_hook_run_id, state.last_hook_operation_id, state.last_hook_result_digest]
+    .filter(value => value !== undefined).length
   if (
     state.version !== 1
     || state.binding_id !== binding.binding_id
@@ -132,7 +138,9 @@ function validateState(value: unknown, binding: CodexEngineThreadBinding): Codex
     || (modelReceiptCount === 3 && (!hasThread || !state.last_run_id || !state.last_turn_id || state.last_model_run_id !== state.last_run_id))
     || (toolReceiptCount !== 0 && toolReceiptCount !== 4)
     || (toolReceiptCount === 4 && (!hasThread || !state.last_run_id || !state.last_turn_id || state.last_tool_run_id !== state.last_run_id || !isOperationId(state.last_tool_operation_id) || !isNonEmptyText(state.last_tool_call_id) || !isDigest(state.last_tool_result_digest)))
-    || (!hasThread && (state.last_run_id !== undefined || state.last_turn_id !== undefined || state.last_turn_operation_id !== undefined || modelReceiptCount !== 0 || toolReceiptCount !== 0))
+    || (hookReceiptCount !== 0 && hookReceiptCount !== 3)
+    || (hookReceiptCount === 3 && (!hasThread || !state.last_run_id || !state.last_turn_id || state.last_hook_run_id !== state.last_run_id || !isOperationId(state.last_hook_operation_id) || !isDigest(state.last_hook_result_digest)))
+    || (!hasThread && (state.last_run_id !== undefined || state.last_turn_id !== undefined || state.last_turn_operation_id !== undefined || modelReceiptCount !== 0 || toolReceiptCount !== 0 || hookReceiptCount !== 0))
     || !isNonEmptyText(state.updated_at, 128)
     || !Number.isFinite(Date.parse(state.updated_at))
   ) throw new Error('CODEX_ENGINE_THREAD_STORE_INVALID')
@@ -150,6 +158,9 @@ function validateState(value: unknown, binding: CodexEngineThreadBinding): Codex
     ...(state.last_tool_operation_id ? { last_tool_operation_id: state.last_tool_operation_id } : {}),
     ...(state.last_tool_call_id ? { last_tool_call_id: state.last_tool_call_id } : {}),
     ...(state.last_tool_result_digest ? { last_tool_result_digest: state.last_tool_result_digest } : {}),
+    ...(state.last_hook_run_id ? { last_hook_run_id: state.last_hook_run_id } : {}),
+    ...(state.last_hook_operation_id ? { last_hook_operation_id: state.last_hook_operation_id } : {}),
+    ...(state.last_hook_result_digest ? { last_hook_result_digest: state.last_hook_result_digest } : {}),
     updated_at: state.updated_at,
   }
 }
@@ -181,6 +192,8 @@ export class CodexEngineThreadStore {
       .filter(value => value !== undefined).length
     const toolReceiptCount = [state.last_tool_run_id, state.last_tool_operation_id, state.last_tool_call_id, state.last_tool_result_digest]
       .filter(value => value !== undefined).length
+    const hookReceiptCount = [state.last_hook_run_id, state.last_hook_operation_id, state.last_hook_result_digest]
+      .filter(value => value !== undefined).length
     if (
       (state.thread_id !== undefined && !isNonEmptyText(state.thread_id))
       || !/^[a-f0-9]{40}$/.test(state.source_revision)
@@ -196,7 +209,9 @@ export class CodexEngineThreadStore {
       || (modelReceiptCount === 3 && (!hasThread || !state.last_run_id || !state.last_turn_id || state.last_model_run_id !== state.last_run_id))
       || (toolReceiptCount !== 0 && toolReceiptCount !== 4)
       || (toolReceiptCount === 4 && (!hasThread || !state.last_run_id || !state.last_turn_id || state.last_tool_run_id !== state.last_run_id || !isOperationId(state.last_tool_operation_id) || !isNonEmptyText(state.last_tool_call_id) || !isDigest(state.last_tool_result_digest)))
-      || (!hasThread && (state.last_run_id !== undefined || state.last_turn_id !== undefined || state.last_turn_operation_id !== undefined || modelReceiptCount !== 0 || toolReceiptCount !== 0))
+      || (hookReceiptCount !== 0 && hookReceiptCount !== 3)
+      || (hookReceiptCount === 3 && (!hasThread || !state.last_run_id || !state.last_turn_id || state.last_hook_run_id !== state.last_run_id || !isOperationId(state.last_hook_operation_id) || !isDigest(state.last_hook_result_digest)))
+      || (!hasThread && (state.last_run_id !== undefined || state.last_turn_id !== undefined || state.last_turn_operation_id !== undefined || modelReceiptCount !== 0 || toolReceiptCount !== 0 || hookReceiptCount !== 0))
     ) throw new Error('CODEX_ENGINE_THREAD_STORE_INVALID')
     return await withBindingLock(binding, async () => {
       const saved: StoredCodexEngineThreadState = {

@@ -172,6 +172,11 @@ export class CodexEngineRuntime {
     return await this.session.checkpointToolResult(runId, operationId, callId, resultDigest)
   }
 
+  async checkpointHookResult(runId: string, operationId: string, resultDigest: string): Promise<string> {
+    if (!this.session) throw new Error('CODEX_ENGINE_RUNTIME_UNAVAILABLE')
+    return await this.session.checkpointHookResult(runId, operationId, resultDigest)
+  }
+
   async interruptTurn(turn: CodexEngineAcceptedTurn): Promise<void> {
     const client = this.client
     if (!client || !nonEmptyText(turn.thread_id) || !nonEmptyText(turn.turn_id)) throw new Error('CODEX_ENGINE_TURN_INVALID')
