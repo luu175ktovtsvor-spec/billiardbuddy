@@ -376,7 +376,7 @@ export class CodexEngineSession {
       // Thread-scoped config is required because App Server takes a snapshot
       // at `thread/start`; the process-level override alone is not a durable
       // Thread capability declaration.
-      config: { host_managed_tools_only: true },
+      config: { host_managed_tools_only: true, features: { token_budget: false } },
       // Defense in depth: an embedded engine gets no upstream environment.
       // The host-managed source patch separately removes all built-in tools.
       environments: [],

@@ -7,6 +7,7 @@ import { validProductModelOperationReceipt } from '../../../shared/product/harne
 import { getProductMcpOAuthMasterKey, PRODUCT_MCP_OAUTH_KEY_ENV } from './productMcpOAuth.js'
 import { TASK_RUN_EXTERNAL_OPERATION_KINDS, type TaskRunExternalOperationKind } from '../product/taskRunLedgerModel.js'
 import type { ProductTaskPlan } from '../../../shared/product/taskEvents.js'
+import type { AgentWorkerOutbound } from '../../../shared/product/agentWorker.js'
 
 type LaunchInput = Parameters<AgentWorkerChildLauncher['launch']>[0]
 type CoreBinding = { session_id: string; work_dir: string; provider: string; model: string; model_route_fingerprint: string; model_attempt_id: string }
@@ -43,6 +44,7 @@ export type TaskRunCoreBindingResolver = {
   checkpointTaskRunMcpPrepare(runId: string, generation: number, executionClaimToken: string, operationId: string, snapshot: { digest: string; tool_count: number; command_count: number; mcp_server_count: number }): Promise<'checkpointed' | 'outcome_unknown' | 'not_owner'>
   markTaskRunExternalOperationOutcomeUnknown(runId: string, generation: number, executionClaimToken: string, operationId: string): Promise<'marked' | 'already_outcome_unknown' | 'not_owner'>
   recordTaskRunPlan(runId: string, generation: number, plan: ProductTaskPlan, executionClaimToken: string): Promise<unknown>
+  recordTaskRunContextCompaction(runId: string, generation: number, compaction: Extract<AgentWorkerOutbound, { type: 'event'; event: 'context_compaction' }>, executionClaimToken: string): Promise<unknown>
 }
 export type ServerPrivateCoreFactory = { start(identity: AgentWorkerCoreIdentity, binding: CoreBinding, input: Parameters<AgentWorkerCoreFactory['start']>[0]): Promise<ProductAgentHostRuntime> }
 
@@ -64,6 +66,26 @@ function coreExternalOperationKind(operation: unknown): TaskRunExternalOperation
     case 'tools': return 'tools'
     default: return undefined
   }
+}
+
+function contextCompactionEvent(value: unknown): Extract<AgentWorkerOutbound, { type: 'event'; event: 'context_compaction' }> | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
+  const event = value as Record<string, unknown>
+  if (
+    event.type !== 'event'
+    || event.event !== 'context_compaction'
+    || (event.phase !== 'started' && event.phase !== 'completed' && event.phase !== 'failed')
+    || (event.source !== 'automatic' && event.source !== 'manual')
+    || typeof event.generation !== 'number' || !Number.isSafeInteger(event.generation) || event.generation < 1
+    || typeof event.input_tokens !== 'number' || !Number.isSafeInteger(event.input_tokens) || event.input_tokens < 1
+  ) return undefined
+  if (event.phase !== 'completed') return event as Extract<AgentWorkerOutbound, { type: 'event'; event: 'context_compaction' }>
+  if (
+    typeof event.output_tokens !== 'number' || !Number.isSafeInteger(event.output_tokens) || event.output_tokens < 1
+    || typeof event.summary !== 'string' || !event.summary.trim() || event.summary.length > 40_000
+    || typeof event.compacted_through_event_sequence !== 'number' || !Number.isSafeInteger(event.compacted_through_event_sequence) || event.compacted_through_event_sequence < 0
+  ) return undefined
+  return event as Extract<AgentWorkerOutbound, { type: 'event'; event: 'context_compaction' }>
 }
 
 /** Bun IPC is the only transport carrying a child bootstrap; stdout remains framed protocol only. */
@@ -328,6 +350,17 @@ export class IpcAgentWorkerLauncher implements AgentWorkerChildLauncher {
       if (!effectKind && request.operation !== 'stop' && request.operation !== 'shutdown') {
         await this.bindings.assertTaskRunExecutionClaim(capability.run_id, capability.dispatch_generation, capability.execution_claim_token)
         if (state.closed) return { ok: false }
+      }
+      if (request.operation === 'context_compaction') {
+        const compaction = contextCompactionEvent(request.value)
+        if (!compaction) return { ok: false }
+        await this.bindings.recordTaskRunContextCompaction(
+          capability.run_id,
+          capability.dispatch_generation,
+          compaction,
+          capability.execution_claim_token,
+        )
+        return { ok: true }
       }
       if (request.operation === 'prepare') return { ok: true, value: await withExternalOperation('mcp_prepare', async () => await runtime.prepare()) }
       if (request.operation === 'engine_tools') return {

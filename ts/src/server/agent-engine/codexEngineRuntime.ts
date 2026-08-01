@@ -9,7 +9,7 @@ export type CodexEngineRuntimeOptions = Omit<CodexEngineSessionOptions, 'client'
   developer_instructions?: string
   run_model: CodexResponsesModelBridgeOptions['run_model']
   checkpoint_model_result: CodexResponsesModelBridgeOptions['checkpoint_model_result']
-  on_notification?(notification: CodexAppServerNotification): void
+  on_notification?(notification: CodexAppServerNotification): void | Promise<void>
   on_server_request?(request: CodexAppServerRequest): Promise<JsonValue | undefined>
 }
 
@@ -92,6 +92,10 @@ function engineConfig(input: {
     'include_collaboration_mode_instructions=false',
     'include_skill_instructions=false',
     'include_environment_context=false',
+    // This source feature replaces a context window without producing a
+    // replayable summary. BilliardBuddy uses the normal inline compaction
+    // path, whose snapshot is durably owned by the product ledger.
+    'features.token_budget=false',
     // The BilliardBuddy-owned source patch removes every upstream tool from
     // this embedded engine. Only explicit dynamic tools may re-enter through
     // the product permission host; until that bridge is supplied, there are no

@@ -36,7 +36,7 @@ export type CodexAppServerClientOptions = {
   client_info: CodexAppServerClientInfo
   config_overrides?: readonly string[]
   environment?: Readonly<Record<string, string | undefined>>
-  on_notification?(notification: CodexAppServerNotification): void
+  on_notification?(notification: CodexAppServerNotification): void | Promise<void>
   on_server_request?(request: CodexAppServerRequest): Promise<JsonValue | undefined>
 }
 
@@ -272,7 +272,7 @@ export class CodexAppServerClient {
       ...(message.params === undefined ? {} : { params: message.params }),
     }
     if (typeof message.id !== 'number' && typeof message.id !== 'string') {
-      this.options.on_notification?.(request)
+      await this.options.on_notification?.(request)
       return
     }
     const requestWithId: CodexAppServerRequest = { ...request, id: message.id }
