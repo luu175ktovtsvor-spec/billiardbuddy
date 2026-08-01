@@ -5,7 +5,6 @@ import type {
   PublicMediaJobEvent,
   PublicMediaJobEventPage,
   PublicMediaDeletionReceipt,
-  PublicMediaProject,
   PublicMediaTask,
   PublicVideoStudioProject,
   LockVideoSceneInput,
@@ -22,13 +21,13 @@ export {
 import { api, ApiError, getApiUrl } from './client'
 import { getDesktopHost } from '../lib/desktopHost'
 
-export type MediaToolchainStatus = {
+export type VideoToolchainStatus = {
   ffmpeg: { available: boolean }
   ffprobe: { available: boolean }
 }
 
 const MEDIA_WORKBENCH_FALLBACK_ERROR = '媒体服务暂时不可用，请稍后重试。'
-export const MEDIA_RESULT_REQUEST_TIMEOUT_MS = 5 * 60_000
+export const VIDEO_RESULT_REQUEST_TIMEOUT_MS = 5 * 60_000
 
 function mediaErrorCode(error: unknown): unknown {
   if (error instanceof ApiError) {
@@ -46,7 +45,7 @@ function mediaErrorCode(error: unknown): unknown {
  * error vocabulary; transport errors and malformed payloads receive a stable
  * recovery message instead of exposing their raw `Error.message`.
  */
-export function mediaUserFacingError(
+export function videoUserFacingError(
   error: unknown,
   fallback = MEDIA_WORKBENCH_FALLBACK_ERROR,
 ): string {
@@ -56,23 +55,23 @@ export function mediaUserFacingError(
   return isMediaSafeErrorMessage(message) ? message : fallback
 }
 
-export const mediaApi = {
-  listProjects: (kind?: 'image' | 'video') =>
-    api.get<{ projects: PublicMediaProject[] }>(`/api/media/projects${kind ? `?kind=${kind}` : ''}`),
+export const videoWorkbenchApi = {
+  listProjects: () =>
+    api.get<{ projects: PublicVideoStudioProject[] }>('/api/videos/projects'),
   getProject: (projectId: string) =>
-    api.get<{ project: PublicMediaProject }>(`/api/media/project/${encodeURIComponent(projectId)}`),
+    api.get<{ project: PublicVideoStudioProject }>(`/api/videos/projects/${encodeURIComponent(projectId)}`),
   deleteProject: (projectId: string) =>
-    api.delete<void>(`/api/media/project/${encodeURIComponent(projectId)}`),
+    api.delete<void>(`/api/videos/projects/${encodeURIComponent(projectId)}`),
   listDeletions: () =>
-    api.get<{ deletions: PublicMediaDeletionReceipt[] }>('/api/media/deletions'),
+    api.get<{ deletions: PublicMediaDeletionReceipt[] }>('/api/videos/deletions'),
   restoreProject: (projectId: string) =>
     api.post<{ deletion: PublicMediaDeletionReceipt }>(
-      `/api/media/project/${encodeURIComponent(projectId)}/restore`,
+      `/api/videos/projects/${encodeURIComponent(projectId)}/restore`,
     ),
   getTask: (taskId: string) =>
     api.get<{ task: PublicMediaTask }>(
-      `/api/media/tasks/${encodeURIComponent(taskId)}`,
-      { timeout: MEDIA_RESULT_REQUEST_TIMEOUT_MS },
+      `/api/videos/operations/${encodeURIComponent(taskId)}`,
+      { timeout: VIDEO_RESULT_REQUEST_TIMEOUT_MS },
     ),
   waitForProjectEvents: async (
     projectId: string,
@@ -85,7 +84,7 @@ export const mediaApi = {
       wait_ms: '25000',
     })
     const response = await fetch(getApiUrl(
-      `/api/media/projects/${encodeURIComponent(projectId)}/events?${query.toString()}`,
+      `/api/videos/projects/${encodeURIComponent(projectId)}/events?${query.toString()}`,
     ), { signal })
     if (!response.ok) {
       throw new ApiError(response.status, await response.json().catch(() => undefined))
@@ -93,63 +92,62 @@ export const mediaApi = {
     return await response.json() as PublicMediaJobEventPage
   },
   cancelTask: (taskId: string) =>
-    api.post<{ task: PublicMediaTask }>(`/api/media/tasks/${encodeURIComponent(taskId)}/cancel`),
+    api.post<{ task: PublicMediaTask }>(`/api/videos/operations/${encodeURIComponent(taskId)}/cancel`),
   createVideoProject: (input: CreateVideoProjectInput) =>
-    api.post<{ project: PublicVideoStudioProject }>('/api/media/videos/projects', input),
+    api.post<{ project: PublicVideoStudioProject }>('/api/videos/projects', input),
   addVideoSource: (projectId: string, path: string) =>
-    getDesktopHost().media.addVideoSource(projectId, path),
+    getDesktopHost().videos.addSource(projectId, path),
   updateVideoTimeline: (projectId: string, input: UpdateVideoTimelineInput) =>
     api.put<{ project: PublicVideoStudioProject }>(
-      `/api/media/videos/projects/${encodeURIComponent(projectId)}/timeline`,
+      `/api/videos/projects/${encodeURIComponent(projectId)}/timeline`,
       input,
     ),
   selectVideoTimelineVersion: (projectId: string, input: SelectVideoTimelineVersionInput) =>
     api.post<{ project: PublicVideoStudioProject }>(
-      `/api/media/videos/projects/${encodeURIComponent(projectId)}/timeline/versions/${encodeURIComponent(input.version_id)}/select`,
+      `/api/videos/projects/${encodeURIComponent(projectId)}/timeline/versions/${encodeURIComponent(input.version_id)}/select`,
       { revision: input.revision },
     ),
   analyzeVideo: (projectId: string, input: AnalyzeVideoProjectInput) =>
-    getDesktopHost().media.analyzeVideo({
+    getDesktopHost().videos.analyze({
       projectId,
       baseRevision: input.base_revision,
       userGoal: input.user_goal,
     }),
   lockVideoScene: (projectId: string, sceneId: string, input: LockVideoSceneInput) =>
     api.post<{ project: PublicVideoStudioProject }>(
-      `/api/media/videos/projects/${encodeURIComponent(projectId)}/scenes/${encodeURIComponent(sceneId)}/lock`,
+      `/api/videos/projects/${encodeURIComponent(projectId)}/scenes/${encodeURIComponent(sceneId)}/lock`,
       input,
     ),
   applyVideoAlternative: (projectId: string, alternativeId: string, input: ApplyVideoAlternativeInput) =>
     api.post<{ project: PublicVideoStudioProject }>(
-      `/api/media/videos/projects/${encodeURIComponent(projectId)}/alternatives/${encodeURIComponent(alternativeId)}/apply`,
+      `/api/videos/projects/${encodeURIComponent(projectId)}/alternatives/${encodeURIComponent(alternativeId)}/apply`,
       input,
     ),
   previewVideo: (projectId: string, input: PreviewVideoInput) =>
     api.post<{ task: PublicMediaTask }>(
-      `/api/media/videos/projects/${encodeURIComponent(projectId)}/preview`,
+      `/api/videos/projects/${encodeURIComponent(projectId)}/preview`,
       input,
-      { timeout: MEDIA_RESULT_REQUEST_TIMEOUT_MS },
+      { timeout: VIDEO_RESULT_REQUEST_TIMEOUT_MS },
     ),
   renderVideo: (projectId: string, input: RenderVideoInput) =>
-    getDesktopHost().media.renderVideo({
+    getDesktopHost().videos.render({
       projectId,
       baseRevision: input.base_revision!,
       timelineVersionId: input.timeline_version_id!,
       outputPath: input.output_path,
     }),
-  getToolchain: () => api.get<MediaToolchainStatus>('/api/media/videos/toolchain'),
+  getToolchain: () => api.get<VideoToolchainStatus>('/api/videos/toolchain'),
   assetUrl: (path: string) => getApiUrl(path),
   sourceUrl: (projectId: string, sourceId: string) => getApiUrl(
-    `/api/media/videos/projects/${encodeURIComponent(projectId)}/sources/${encodeURIComponent(sourceId)}/content`,
+    `/api/videos/projects/${encodeURIComponent(projectId)}/sources/${encodeURIComponent(sourceId)}/content`,
   ),
 }
 
 export type {
   CreateVideoProjectInput,
-  PublicMediaProject as MediaProject,
-  PublicMediaDeletionReceipt as MediaDeletionReceipt,
-  PublicMediaJobEvent as MediaJobEvent,
-  PublicMediaJobEventPage as MediaJobEventPage,
-  PublicMediaTask as MediaTask,
+  PublicMediaDeletionReceipt as VideoDeletionReceipt,
+  PublicMediaJobEvent as VideoOperationEvent,
+  PublicMediaJobEventPage as VideoOperationEventPage,
+  PublicMediaTask as VideoOperation,
   PublicVideoStudioProject as VideoStudioProject,
 }

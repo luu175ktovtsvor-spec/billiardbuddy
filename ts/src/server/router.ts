@@ -11,6 +11,7 @@ import { handleBrowserApi } from './api/browser.js'
 type ApiRequestHandlers = {
   media: (req: Request, url: URL, segments: string[]) => Promise<Response>
   images: (req: Request, url: URL, segments: string[]) => Promise<Response>
+  videos: (req: Request, url: URL, segments: string[]) => Promise<Response>
   product: (req: Request, url: URL, segments: string[]) => Promise<Response>
 }
 
@@ -43,6 +44,9 @@ export async function handleApiRequest(
 
     case 'images':
       return handlers.images(req, url, segments)
+
+    case 'videos':
+      return handlers.videos(req, url, segments)
 
     case 'product':
       return handlers.product(req, url, segments)

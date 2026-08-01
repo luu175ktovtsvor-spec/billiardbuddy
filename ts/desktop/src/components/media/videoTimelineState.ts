@@ -1,4 +1,4 @@
-import type { VideoStudioProject } from '../../api/media'
+import type { VideoStudioProject } from '../../api/videoWorkbench'
 
 export type TimelineClip = VideoStudioProject['timeline'][number]
 

@@ -24,7 +24,7 @@ export type DesktopHostCapability =
   | 'appMode'
   | 'clipboard'
   | 'dialogs'
-  | 'mediaActions'
+  | 'videoActions'
   | 'modelConfiguration'
   | 'notifications'
   | 'previewWebview'
@@ -161,14 +161,14 @@ export type PortableDirDetection = {
   hasData: boolean
 }
 
-export type MediaRenderRequest = {
+export type VideoRenderRequest = {
   projectId: string
   baseRevision: number
   timelineVersionId: string
   outputPath: string
 }
 
-export type MediaAnalyzeRequest = {
+export type VideoAnalyzeRequest = {
   projectId: string
   baseRevision: number
   userGoal: string
@@ -220,10 +220,10 @@ export type DesktopHost = {
     ): Promise<{ project: ImageWorkbenchProject }>
     saveOutput(projectId: string, input: SaveImageOutputInput): Promise<SaveImageOutputResult>
   }
-  media: {
-    addVideoSource(projectId: string, path: string): Promise<{ project: VideoStudioProject; task: MediaTask }>
-    renderVideo(request: MediaRenderRequest): Promise<{ task: MediaTask }>
-    analyzeVideo(request: MediaAnalyzeRequest): Promise<{ task: MediaTask }>
+  videos: {
+    addSource(projectId: string, path: string): Promise<{ project: VideoStudioProject; task: MediaTask }>
+    render(request: VideoRenderRequest): Promise<{ task: MediaTask }>
+    analyze(request: VideoAnalyzeRequest): Promise<{ task: MediaTask }>
   }
   models: {
     summary(): Promise<PersonalModelConfigurationSummary>

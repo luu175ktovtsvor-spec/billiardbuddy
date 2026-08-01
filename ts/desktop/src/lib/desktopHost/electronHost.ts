@@ -65,7 +65,7 @@ export function createElectronHost(bridge: ElectronHostBridge): DesktopHost {
       appMode: true,
       clipboard: true,
       dialogs: true,
-      mediaActions: true,
+      videoActions: true,
       modelConfiguration: true,
       notifications: true,
       previewWebview: true,
@@ -122,13 +122,13 @@ export function createElectronHost(bridge: ElectronHostBridge): DesktopHost {
         { projectId, input },
       ),
     },
-    media: {
-      addVideoSource: (projectId, path) => invoke(
-        ELECTRON_IPC_CHANNELS.mediaAddVideoSource,
+    videos: {
+      addSource: (projectId, path) => invoke(
+        ELECTRON_IPC_CHANNELS.videoAddSource,
         { projectId, path },
       ),
-      renderVideo: request => invoke(ELECTRON_IPC_CHANNELS.mediaRenderVideo, request),
-      analyzeVideo: request => invoke(ELECTRON_IPC_CHANNELS.mediaAnalyzeVideo, request),
+      render: request => invoke(ELECTRON_IPC_CHANNELS.videoRender, request),
+      analyze: request => invoke(ELECTRON_IPC_CHANNELS.videoAnalyze, request),
     },
     models: {
       summary: () => invoke(ELECTRON_IPC_CHANNELS.modelConfigurationSummary),

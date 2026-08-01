@@ -16,9 +16,9 @@ import {
   Unlock,
   X,
 } from 'lucide-react'
-import { mediaApi, mediaUserFacingError, type VideoStudioProject } from '../../api/media'
+import { videoWorkbenchApi, videoUserFacingError, type VideoStudioProject } from '../../api/videoWorkbench'
 import { getDesktopHost } from '../../lib/desktopHost'
-import { useMediaWorkbenchStore } from '../../stores/mediaWorkbenchStore'
+import { useVideoWorkbenchStore } from '../../stores/videoWorkbenchStore'
 import { MediaProjectRail } from './MediaProjectRail'
 import { VoiceInputControl } from '../../product/components/VoiceInputControl'
 import { productVoiceApi } from '../../product/api/voice'
@@ -64,31 +64,31 @@ function sameTimeline(
 }
 
 export function VideoStudio() {
-  const projects = useMediaWorkbenchStore(state => state.videoProjects)
-  const deletions = useMediaWorkbenchStore(state => state.deletions)
-  const activeId = useMediaWorkbenchStore(state => state.activeVideoId)
-  const tasks = useMediaWorkbenchStore(state => state.tasks)
-  const toolchain = useMediaWorkbenchStore(state => state.toolchain)
-  const loading = useMediaWorkbenchStore(state => state.loading)
-  const error = useMediaWorkbenchStore(state => state.error)
-  const loadProjects = useMediaWorkbenchStore(state => state.loadProjects)
-  const loadDeletions = useMediaWorkbenchStore(state => state.loadDeletions)
-  const loadToolchain = useMediaWorkbenchStore(state => state.loadToolchain)
-  const selectVideo = useMediaWorkbenchStore(state => state.selectVideo)
-  const createVideo = useMediaWorkbenchStore(state => state.createVideo)
-  const addVideoSource = useMediaWorkbenchStore(state => state.addVideoSource)
-  const saveTimeline = useMediaWorkbenchStore(state => state.saveTimeline)
-  const selectVideoTimelineVersion = useMediaWorkbenchStore(state => state.selectVideoTimelineVersion)
-  const analyzeVideo = useMediaWorkbenchStore(state => state.analyzeVideo)
-  const lockVideoScene = useMediaWorkbenchStore(state => state.lockVideoScene)
-  const applyVideoAlternative = useMediaWorkbenchStore(state => state.applyVideoAlternative)
-  const previewVideo = useMediaWorkbenchStore(state => state.previewVideo)
-  const renderVideo = useMediaWorkbenchStore(state => state.renderVideo)
-  const cancelTask = useMediaWorkbenchStore(state => state.cancelTask)
-  const deleteProject = useMediaWorkbenchStore(state => state.deleteProject)
-  const restoreProject = useMediaWorkbenchStore(state => state.restoreProject)
-  const subscribeProjectEvents = useMediaWorkbenchStore(state => state.subscribeProjectEvents)
-  const clearError = useMediaWorkbenchStore(state => state.clearError)
+  const projects = useVideoWorkbenchStore(state => state.videoProjects)
+  const deletions = useVideoWorkbenchStore(state => state.deletions)
+  const activeId = useVideoWorkbenchStore(state => state.activeVideoId)
+  const tasks = useVideoWorkbenchStore(state => state.tasks)
+  const toolchain = useVideoWorkbenchStore(state => state.toolchain)
+  const loading = useVideoWorkbenchStore(state => state.loading)
+  const error = useVideoWorkbenchStore(state => state.error)
+  const loadProjects = useVideoWorkbenchStore(state => state.loadProjects)
+  const loadDeletions = useVideoWorkbenchStore(state => state.loadDeletions)
+  const loadToolchain = useVideoWorkbenchStore(state => state.loadToolchain)
+  const selectVideo = useVideoWorkbenchStore(state => state.selectVideo)
+  const createVideo = useVideoWorkbenchStore(state => state.createVideo)
+  const addVideoSource = useVideoWorkbenchStore(state => state.addVideoSource)
+  const saveTimeline = useVideoWorkbenchStore(state => state.saveTimeline)
+  const selectVideoTimelineVersion = useVideoWorkbenchStore(state => state.selectVideoTimelineVersion)
+  const analyzeVideo = useVideoWorkbenchStore(state => state.analyzeVideo)
+  const lockVideoScene = useVideoWorkbenchStore(state => state.lockVideoScene)
+  const applyVideoAlternative = useVideoWorkbenchStore(state => state.applyVideoAlternative)
+  const previewVideo = useVideoWorkbenchStore(state => state.previewVideo)
+  const renderVideo = useVideoWorkbenchStore(state => state.renderVideo)
+  const cancelTask = useVideoWorkbenchStore(state => state.cancelTask)
+  const deleteProject = useVideoWorkbenchStore(state => state.deleteProject)
+  const restoreProject = useVideoWorkbenchStore(state => state.restoreProject)
+  const subscribeProjectEvents = useVideoWorkbenchStore(state => state.subscribeProjectEvents)
+  const clearError = useVideoWorkbenchStore(state => state.clearError)
   const [selectedSourceId, setSelectedSourceId] = useState<string | null>(null)
   const [draft, setDraft] = useState<VideoStudioProject | null>(null)
   const [creating, setCreating] = useState(false)
@@ -135,12 +135,12 @@ export function VideoStudio() {
     (evidenceKind === 'all' || item.kind === evidenceKind)
     && (evidenceSourceId === 'all' || item.source_id === evidenceSourceId)
   )), [active?.evidence, evidenceKind, evidenceSourceId])
-  const storeError = error ? mediaUserFacingError(new Error(error)) : null
+  const storeError = error ? videoUserFacingError(new Error(error)) : null
   const projectError = active?.error
-    ? mediaUserFacingError({ code: active.error_code })
+    ? videoUserFacingError({ code: active.error_code })
     : null
   const taskError = task?.error
-    ? mediaUserFacingError({ code: task.error_code })
+    ? videoUserFacingError({ code: task.error_code })
     : null
 
   useEffect(() => {
@@ -494,7 +494,7 @@ export function VideoStudio() {
                 <video
                   ref={programVideoRef}
                   key={active.preview.asset_id}
-                  src={mediaApi.assetUrl(active.preview.asset_path)}
+                  src={videoWorkbenchApi.assetUrl(active.preview.asset_path)}
                   controls
                   onTimeUpdate={event => dispatchTimeline({
                     type: 'playhead_to',
@@ -521,7 +521,7 @@ export function VideoStudio() {
             ) : active && selectedSource ? (
               <video
                 key={selectedSource.id}
-                src={mediaApi.sourceUrl(active.id, selectedSource.id)}
+                src={videoWorkbenchApi.sourceUrl(active.id, selectedSource.id)}
                 controls
                 className="max-h-full max-w-full bg-black object-contain"
               />
@@ -1023,7 +1023,7 @@ export function VideoStudio() {
             )}
             {(storeError || projectError || taskError || previewTask?.error) && (
               <p role="alert" className="mt-3 text-[12px] leading-5 text-[var(--color-error)]">
-                {storeError || projectError || taskError || (previewTask?.error ? mediaUserFacingError({ code: previewTask.error_code }) : null)}
+                {storeError || projectError || taskError || (previewTask?.error ? videoUserFacingError({ code: previewTask.error_code }) : null)}
               </p>
             )}
           </div>

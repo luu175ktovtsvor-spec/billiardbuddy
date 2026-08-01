@@ -1,5 +1,5 @@
 import { useEffect, useMemo } from 'react'
-import { useMediaWorkbenchStore } from '../stores/mediaWorkbenchStore'
+import { useVideoWorkbenchStore } from '../stores/videoWorkbenchStore'
 import { useImageWorkbenchStore } from '../stores/imageWorkbenchStore'
 import { useProductTaskStore } from '../product/stores/productTaskStore'
 import { useProductTaskRuntimeStore } from '../product/stores/productTaskRuntimeStore'
@@ -27,15 +27,15 @@ export function useDesktopProjectRuntime(): void {
   const connectTask = useProductTaskRuntimeStore(state => state.connectTask)
   const disconnectTask = useProductTaskRuntimeStore(state => state.disconnectTask)
   const imageProjects = useImageWorkbenchStore(state => state.projects)
-  const videoProjects = useMediaWorkbenchStore(state => state.videoProjects)
+  const videoProjects = useVideoWorkbenchStore(state => state.videoProjects)
   const imageTasks = useImageWorkbenchStore(state => state.operations)
-  const videoTasks = useMediaWorkbenchStore(state => state.tasks)
+  const videoTasks = useVideoWorkbenchStore(state => state.tasks)
   const loadImageProjects = useImageWorkbenchStore(state => state.loadProjects)
-  const loadVideoProjects = useMediaWorkbenchStore(state => state.loadProjects)
+  const loadVideoProjects = useVideoWorkbenchStore(state => state.loadProjects)
   const loadImageDeletions = useImageWorkbenchStore(state => state.loadDeletions)
-  const loadVideoDeletions = useMediaWorkbenchStore(state => state.loadDeletions)
+  const loadVideoDeletions = useVideoWorkbenchStore(state => state.loadDeletions)
   const subscribeImageProjectEvents = useImageWorkbenchStore(state => state.subscribeProjectEvents)
-  const subscribeVideoProjectEvents = useMediaWorkbenchStore(state => state.subscribeProjectEvents)
+  const subscribeVideoProjectEvents = useVideoWorkbenchStore(state => state.subscribeProjectEvents)
 
   const activeProductTaskIds = useMemo(
     () => productTasks.filter(task => task.lifecycle !== 'archived').map(task => task.id),

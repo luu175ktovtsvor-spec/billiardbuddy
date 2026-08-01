@@ -145,7 +145,7 @@ const imageUpdateUnknownProject: Validator = value => {
     && input.confirm_unknown_retry === true
 }
 
-const mediaAddVideoSource: Validator = value =>
+const videoAddSource: Validator = value =>
   isRecord(value)
   && hasOnlyKeys(value, ['projectId', 'path'])
   && mediaProjectId(value.projectId)
@@ -153,7 +153,7 @@ const mediaAddVideoSource: Validator = value =>
   && value.path.length > 0
   && value.path.length <= 4096
 
-const mediaRenderVideo: Validator = value =>
+const videoRender: Validator = value =>
   isRecord(value)
   && hasOnlyKeys(value, ['projectId', 'baseRevision', 'timelineVersionId', 'outputPath'])
   && mediaProjectId(value.projectId)
@@ -165,7 +165,7 @@ const mediaRenderVideo: Validator = value =>
   && value.outputPath.length > 0
   && value.outputPath.length <= 4096
 
-const mediaAnalyzeVideo: Validator = value =>
+const videoAnalyze: Validator = value =>
   isRecord(value)
   && hasOnlyKeys(value, ['projectId', 'baseRevision', 'userGoal'])
   && mediaProjectId(value.projectId)
@@ -223,9 +223,9 @@ export const ELECTRON_IPC_VALIDATORS = {
   [ELECTRON_IPC_CHANNELS.imageStartOperation]: imageStartOperation,
   [ELECTRON_IPC_CHANNELS.imageUpdateUnknownProject]: imageUpdateUnknownProject,
   [ELECTRON_IPC_CHANNELS.imageSaveOutput]: imageSaveOutput,
-  [ELECTRON_IPC_CHANNELS.mediaAddVideoSource]: mediaAddVideoSource,
-  [ELECTRON_IPC_CHANNELS.mediaRenderVideo]: mediaRenderVideo,
-  [ELECTRON_IPC_CHANNELS.mediaAnalyzeVideo]: mediaAnalyzeVideo,
+  [ELECTRON_IPC_CHANNELS.videoAddSource]: videoAddSource,
+  [ELECTRON_IPC_CHANNELS.videoRender]: videoRender,
+  [ELECTRON_IPC_CHANNELS.videoAnalyze]: videoAnalyze,
   [ELECTRON_IPC_CHANNELS.browserStatus]: noPayload,
   [ELECTRON_IPC_CHANNELS.browserInstall]: noPayload,
   [ELECTRON_IPC_CHANNELS.browserListActions]: productTaskId,

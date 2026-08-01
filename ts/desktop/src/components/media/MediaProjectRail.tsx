@@ -1,5 +1,5 @@
 import { Image as ImageIcon, RotateCcw, Trash2, Video } from 'lucide-react'
-import type { MediaDeletionReceipt } from '../../api/media'
+import type { VideoDeletionReceipt } from '../../api/videoWorkbench'
 
 type MediaProjectSummary = {
   id: string
@@ -14,7 +14,7 @@ type MediaProjectRailProps = {
   activeId: string | null
   onSelect: (id: string) => void
   onDelete: (project: MediaProjectSummary) => void
-  deletions?: MediaDeletionReceipt[]
+  deletions?: VideoDeletionReceipt[]
   onRestore?: (projectId: string) => void
   deletingId?: string | null
   restoringId?: string | null

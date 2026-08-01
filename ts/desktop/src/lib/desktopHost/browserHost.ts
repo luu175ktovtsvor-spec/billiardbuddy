@@ -10,7 +10,7 @@ const browserCapabilities: DesktopHostCapabilities = {
   appMode: false,
   clipboard: false,
   dialogs: false,
-  mediaActions: false,
+  videoActions: false,
   modelConfiguration: false,
   notifications: false,
   previewWebview: false,
@@ -117,14 +117,14 @@ export const browserHost: DesktopHost = {
       unsupported('Saving generated images')
     },
   },
-  media: {
-    async addVideoSource() {
+  videos: {
+    async addSource() {
       unsupported('Importing local video sources')
     },
-    async renderVideo() {
+    async render() {
       unsupported('Final video export')
     },
-    async analyzeVideo() {
+    async analyze() {
       unsupported('Video analysis')
     },
   },
