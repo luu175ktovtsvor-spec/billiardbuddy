@@ -82,6 +82,16 @@ export type ProductTaskRunLedger = {
     prompt: string
     description: string
   }): Promise<{ run_id: string; dispatch_generation: number }>
+  /**
+   * Opens the child row beneath the delegating parent Tool activity. The row
+   * belongs to the parent public task stream; child model/tool internals stay
+   * private to the child Run.
+   */
+  recordTaskRunSubtaskStarted(
+    runId: string,
+    dispatchGeneration: number,
+    executionClaimToken: string,
+  ): Promise<{ task_id: string; event?: Extract<ProductTaskEvent, { type: 'activity' }> }>
   readTaskRunSubtaskResult(input: {
     parent_run_id: string
     parent_dispatch_generation: number
@@ -189,7 +199,12 @@ export type ProductTaskRunLedger = {
     assistantText: string,
     failure: ProductTaskRunFailure | undefined,
     executionClaimToken: string,
-  ): Promise<{ task_id: string; queue_events: ProductTaskEvent[] }>
+  ): Promise<{
+    task_id: string
+    queue_events: ProductTaskEvent[]
+    /** Present when the terminal Run is a private child collaboration Run. */
+    subtask_event?: Extract<ProductTaskEvent, { type: 'activity' }>
+  }>
   recordTaskRunApprovalRequest(
     runId: string,
     dispatchGeneration: number,

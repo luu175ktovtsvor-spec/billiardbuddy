@@ -47,6 +47,8 @@ export class ProductTaskWorkerMessageSink {
         for (const event of recorded.queue_events) this.runtimeEvents.publish(taskId, event)
         if (message.state === 'recovery_required') this.runtimeEvents.publish(taskId, { type: 'error', ...(message.failure ?? { code: 'task_failed', retryable: false }) })
         else this.runtimeEvents.publish(taskId, { type: 'turn_complete' })
+      } else if (recorded.subtask_event) {
+        this.runtimeEvents.publish(taskId, recorded.subtask_event)
       }
       this.taskRuns.delete(key)
       this.startedText.delete(key)
@@ -63,6 +65,10 @@ export class ProductTaskWorkerMessageSink {
     }
     if (message.event === 'started') {
       if (!isSubtask) this.runtimeEvents.publish(taskId, { type: 'status', state: 'working' })
+      else {
+        const recorded = await this.tasks.recordTaskRunSubtaskStarted(runId, generation, executionClaimToken)
+        if (recorded.event) this.runtimeEvents.publish(taskId, recorded.event)
+      }
       return
     }
     if (message.event === 'context_compaction') {
