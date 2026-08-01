@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from 'node:crypto'
+import { createHash } from 'node:crypto'
 import uniqBy from 'lodash-es/uniqBy.js'
 import { getLocalISODate } from '../../constants/common.js'
 import { productHarnessMessageOperationReceipts, type ProductHarnessMessage, type ProductModelOperationReceipt, type ProductPrompt } from '../../../shared/product/harnessMessages.js'
@@ -310,25 +310,6 @@ export async function createProductAgentHarness(input: {
     snapshot: productHookSnapshot,
     cwd: input.work_dir,
     evaluate: evaluateProductHook,
-    onAsyncRewake: value => {
-      if (terminal || !controller) return
-      const queueItemId = `queue_${randomUUID()}`
-      const details = [value.additionalContext, value.reason].filter(Boolean).join('\n\n').slice(0, 20_000)
-      if (!details) return
-      let resolve!: (consumed: boolean) => void
-      const promise = new Promise<boolean>(next => { resolve = next })
-      queuedSteers.set(queueItemId, {
-        command: {
-          mode: 'prompt',
-          value: `<project_hook_context event="${value.event}" async="true">\n${details}\n</project_hook_context>`,
-          uuid: queueItemId,
-          priority: 'next',
-          isMeta: true,
-        },
-        promise,
-        resolve,
-      })
-    },
   })
   const productToolHooks: ProductToolHooks = {
     before: block => lifecycleHooks.preTool({
