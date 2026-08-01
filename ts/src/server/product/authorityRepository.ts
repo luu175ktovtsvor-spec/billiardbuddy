@@ -439,7 +439,7 @@ function validate(file: AuthorityFile): AuthorityFile {
             typeof externalOperation.operation_id !== 'string'
             || !/^effect_[a-f0-9-]{36}$/.test(externalOperation.operation_id)
             || externalOperationIds.has(externalOperation.operation_id)
-            || !['engine_turn', 'engine_steer', 'mcp_prepare', 'chat_prompt', 'command_prompt', 'model', 'tools', 'hook_command', 'hook_http', 'model_ack', 'workspace_init', 'auto_memory_append'].includes(externalOperation.kind as string)
+            || !['engine_turn', 'engine_steer', 'mcp_prepare', 'chat_prompt', 'command_prompt', 'model', 'tools', 'hook_command', 'hook_http', 'model_ack', 'workspace_init'].includes(externalOperation.kind as string)
             || !['in_flight', 'result_obtained', 'outcome_unknown'].includes(externalOperation.state as string)
             || !isTimestamp(externalOperation.started_at)
             || (externalOperation.state === 'result_obtained') !== (externalOperation.result_obtained_at !== undefined)
@@ -458,7 +458,7 @@ function validate(file: AuthorityFile): AuthorityFile {
             || !/^effect_[a-f0-9-]{36}$/.test(checkpoint.operation_id)
             || checkpointIds.has(checkpoint.operation_id)
             || externalOperationIds.has(checkpoint.operation_id)
-            || !['engine_turn', 'engine_steer', 'mcp_prepare', 'chat_prompt', 'command_prompt', 'model', 'tools', 'hook_command', 'hook_http', 'model_ack', 'workspace_init', 'auto_memory_append'].includes(checkpoint.kind as string)
+            || !['engine_turn', 'engine_steer', 'mcp_prepare', 'chat_prompt', 'command_prompt', 'model', 'tools', 'hook_command', 'hook_http', 'model_ack', 'workspace_init'].includes(checkpoint.kind as string)
             || typeof checkpoint.checkpoint_digest !== 'string'
             || !/^[a-f0-9]{64}$/.test(checkpoint.checkpoint_digest)
             || !isTimestamp(checkpoint.checkpointed_at)
@@ -544,7 +544,7 @@ function validate(file: AuthorityFile): AuthorityFile {
             || (event.dispatch_generation as number) < 1
             || typeof event.operation_id !== 'string'
             || !/^effect_[a-f0-9-]{36}$/.test(event.operation_id)
-            || !['engine_turn', 'engine_steer', 'mcp_prepare', 'chat_prompt', 'command_prompt', 'model', 'tools', 'hook_command', 'hook_http', 'model_ack', 'workspace_init', 'auto_memory_append'].includes(event.operation_kind as string)
+            || !['engine_turn', 'engine_steer', 'mcp_prepare', 'chat_prompt', 'command_prompt', 'model', 'tools', 'hook_command', 'hook_http', 'model_ack', 'workspace_init'].includes(event.operation_kind as string)
             || !isTimestamp(event.operation_started_at)
           ) invalid()
         } else if (event.type === 'queue_updated') {

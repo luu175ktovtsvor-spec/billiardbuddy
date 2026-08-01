@@ -35,7 +35,6 @@ export const PRODUCT_TASK_EXTERNAL_OPERATION_KINDS = [
   'hook_http',
   'model_ack',
   'workspace_init',
-  'auto_memory_append',
 ] as const
 
 export type ProductTaskExternalOperationKind = typeof PRODUCT_TASK_EXTERNAL_OPERATION_KINDS[number]

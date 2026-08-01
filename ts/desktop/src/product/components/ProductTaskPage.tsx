@@ -83,7 +83,6 @@ function outcomeUnknownKindLabel(kind: ProductTaskOutcomeUnknown['operation']['k
     case 'hook_http': return '项目自动化'
     case 'model_ack': return '模型结果确认'
     case 'workspace_init': return '工作区初始化'
-    case 'auto_memory_append': return '任务记忆写入'
   }
 }
 

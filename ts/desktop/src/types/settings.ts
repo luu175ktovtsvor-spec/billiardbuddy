@@ -53,7 +53,6 @@ export type DesktopTerminalSettings = {
 }
 
 export type UserSettings = {
-  productAutoMemoryEnabled?: boolean
   /** Product-only preference for new managed DeepSeek task processes. */
   deepThinkingEnabled?: boolean
   /** Keep the computer awake only while a task turn is actively running. */
