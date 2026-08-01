@@ -170,7 +170,10 @@
 - **R9.4 权限与恢复边界**：Agent 的权限、队列与恢复由 ProductTask Authority 持久化；媒体 Project/Task/Asset 独立持久化，图片付费未知结果不自动重试，视频过期输出不发布。公开 API 继续投影安全错误和公开状态，不暴露私有 Provider/Authority 数据；桌面不拥有第二份领域事实。
 - **R9.4 清理结论**：已跟踪文件中不存在测试目录、测试文件、runner、测试配置或测试 fixture；生产源码、脚本与包清单也不再引用 Vitest、Testing Library、jsdom、`bun test` 或已删除验收脚本。网站 lockfile 的 `jest-worker` 只是 Next 构建链的 transitive package，网站没有测试脚本或直接测试依赖。
 - **静态验证**：服务端 TypeScript 检查、源码可达性审计（324 个源文件、0 个缺失 import、323 个生产源可达）、桌面 lint/生产构建、全库测试残留检索与差异空白检查通过。未运行任何测试、smoke、真实模型/媒体、桌面、安装、发布或服务器操作。
-- **下一项**：R10 生产部署闭包只读审计；任何服务器写入、容器重启、发布或公网切换须在用户单独确认后进行。
+- **R9.5 当前源码复核与修正**：复核发现 `createMediaApiHandler()`、`handleProductApi()` 与 `ProductCapabilitySnapshotService` 曾提供默认构造入口；虽然当前启动组合根已显式注入同一 `MediaProjectService`、任务服务和能力快照，但其他调用者可绕过该入口并创建第二套进程内服务状态。现媒体和产品 API handler 均要求调用方提供已组合的依赖，Router 也要求同时提供 media/product handler；能力快照必须接收启动组合根提供的媒体工具链和计划运行查询，不能自行构造媒体服务或读取全局计划服务。
+- **R9.5 当前结论**：`startServer()` 是正式 REST 路由的唯一组合根：唯一 `MediaProjectService` 同时进入媒体 API、能力快照和存储迁移；任务 API 只接收同一 Task/Review/Scheduled/Operation 组合。类型系统会拒绝遗漏任何这些依赖的替代路由，避免形成第二条服务状态或资源调度路径。
+- **R9.5 静态验证**：服务端 TypeScript 检查、源码可达性审计（324 个源文件、0 个缺失 import、323 个生产源可达）、桌面 lint/生产构建和差异空白检查重新通过；全库生产调用点只剩 `startServer()` 对 media handler 与 capability snapshot 的实例化。未运行测试、smoke、桌面、媒体、安装、发布或服务器操作。
+- **下一项**：R0.3 路线图文档收口；将路线图中混入的历史流水迁回账本或专题记录，只保留模块依赖、模块卡片和唯一当前游标，再继续 main 合并。
 
 ## R10 生产部署闭包
 
