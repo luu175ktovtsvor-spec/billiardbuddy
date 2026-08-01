@@ -1882,16 +1882,30 @@ export class MediaProjectService {
         }
       }
       if (task.status === 'succeeded' && result.success && project.preview?.asset_id !== result.data.asset_id) {
-        const assetExists = await stat(join(this.assetsDir, project.id, basename(result.data.asset_path)))
-          .then(info => info.isFile())
-          .catch(() => false)
+        const fileName = basename(result.data.asset_path)
+        const previewPath = join(this.assetsDir, project.id, fileName)
+        const info = await stat(previewPath).catch(() => null)
+        const fingerprint = info?.isFile() ? await this.fileFingerprint(previewPath).catch(() => null) : null
         if (
-          assetExists
+          info?.isFile()
           && project.current_timeline_version_id === result.data.timeline_version_id
-          && result.data.content_hash
+          && fingerprint === result.data.content_hash
         ) {
           await this.saveProject({
             ...project,
+            assets: [
+              ...project.assets.filter(candidate => candidate.role !== 'preview'),
+              {
+                id: result.data.asset_id,
+                role: 'preview',
+                version_id: result.data.timeline_version_id,
+                storage: { kind: 'managed', locator: join(project.id, fileName) },
+                mime_type: 'video/mp4',
+                byte_size: info.size,
+                content_hash: fingerprint,
+                created_at: task.updated_at,
+              },
+            ],
             preview: {
               timeline_version_id: result.data.timeline_version_id,
               asset_id: result.data.asset_id,
