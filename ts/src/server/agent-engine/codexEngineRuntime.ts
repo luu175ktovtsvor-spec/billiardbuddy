@@ -248,6 +248,45 @@ export class CodexEngineRuntime {
     return acceptedTurnId
   }
 
+  /**
+   * The product may block a final model result with a synchronous Stop Hook.
+   * This is still an upstream `turn/steer`, but its message identity is kept
+   * separate from user queue items so a recovered Run never mistakes product
+   * automation for a user submission.
+   */
+  async steerStopHookContinuation(input: {
+    run_id: string
+    client_message_id: string
+    expected_turn_id: string
+    text: string
+  }): Promise<string> {
+    const client = this.client
+    const session = this.session
+    const runId = nonEmptyText(input.run_id)
+    const clientMessageId = nonEmptyText(input.client_message_id)
+    const expectedTurnId = nonEmptyText(input.expected_turn_id)
+    const text = nonEmptyText(input.text, 40_000)
+    if (
+      !client
+      || !session
+      || !runId
+      || !clientMessageId
+      || !/^stop_hook_[a-f0-9-]{36}$/.test(clientMessageId)
+      || !expectedTurnId
+      || !text
+    ) throw new Error('CODEX_ENGINE_STOP_HOOK_STEER_INPUT_INVALID')
+    const thread = await session.ensureThread()
+    const response = await client.request<JsonObject>('turn/steer', {
+      threadId: thread.thread_id,
+      clientUserMessageId: clientMessageId,
+      expectedTurnId,
+      input: [{ type: 'text', text }],
+    })
+    const acceptedTurnId = steeredTurnId(response)
+    if (acceptedTurnId !== expectedTurnId) throw new Error('CODEX_ENGINE_STOP_HOOK_STEER_TURN_MISMATCH')
+    return acceptedTurnId
+  }
+
   async checkpointSteerInput(
     runId: string,
     turnId: string,
@@ -257,6 +296,27 @@ export class CodexEngineRuntime {
   ): Promise<string> {
     if (!this.session) throw new Error('CODEX_ENGINE_RUNTIME_UNAVAILABLE')
     return await this.session.checkpointSteerInput(runId, turnId, operationId, queueItemId, inputDigest)
+  }
+
+  async checkpointStopHookContinuation(
+    runId: string,
+    turnId: string,
+    operationId: string,
+    clientMessageId: string,
+    prompt: string,
+    inputDigest: string,
+    round: number,
+  ): Promise<string> {
+    if (!this.session) throw new Error('CODEX_ENGINE_RUNTIME_UNAVAILABLE')
+    return await this.session.checkpointStopHookContinuation(
+      runId,
+      turnId,
+      operationId,
+      clientMessageId,
+      prompt,
+      inputDigest,
+      round,
+    )
   }
 
   async checkpointModelResult(runId: string, operationId: string, resultDigest: string): Promise<string> {
