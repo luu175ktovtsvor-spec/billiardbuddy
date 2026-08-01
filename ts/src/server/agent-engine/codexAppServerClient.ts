@@ -179,10 +179,14 @@ export class CodexAppServerClient {
       if (process.stdin && typeof process.stdin !== 'number') process.stdin.end()
     } catch {}
     const exited = process.exited.catch(() => undefined)
-    const timer = new Promise<void>(resolve => setTimeout(resolve, APP_SERVER_SHUTDOWN_WAIT_MS))
-    await Promise.race([exited, timer])
-    try { process.kill() } catch {}
-    await exited
+    const exitedNaturally = await Promise.race([
+      exited.then(() => true),
+      new Promise<boolean>(resolve => setTimeout(() => resolve(false), APP_SERVER_SHUTDOWN_WAIT_MS)),
+    ])
+    if (!exitedNaturally) {
+      try { process.kill() } catch {}
+      await exited
+    }
   }
 
   private write(frame: JsonObject): void {
