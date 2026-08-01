@@ -343,6 +343,7 @@ process.on('message', (message: unknown) => {
                 identity: start.identity,
                 binding: start.binding,
                 run_id: input.run_id,
+                permission_envelope: input.permission_envelope,
                 parent: {
                   beginExternalOperation: async kind => {
                     const started = await request('external_operation_begin', { kind })

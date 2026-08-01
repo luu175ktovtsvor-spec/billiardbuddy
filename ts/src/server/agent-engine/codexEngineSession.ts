@@ -101,6 +101,9 @@ export class CodexEngineSession {
       ...(restored?.last_tool_operation_id ? { last_tool_operation_id: restored.last_tool_operation_id } : {}),
       ...(restored?.last_tool_call_id ? { last_tool_call_id: restored.last_tool_call_id } : {}),
       ...(restored?.last_tool_result_digest ? { last_tool_result_digest: restored.last_tool_result_digest } : {}),
+      ...(restored?.last_hook_run_id ? { last_hook_run_id: restored.last_hook_run_id } : {}),
+      ...(restored?.last_hook_operation_id ? { last_hook_operation_id: restored.last_hook_operation_id } : {}),
+      ...(restored?.last_hook_result_digest ? { last_hook_result_digest: restored.last_hook_result_digest } : {}),
     })
     return checkpoint.checkpoint_digest
   }
@@ -153,6 +156,9 @@ export class CodexEngineSession {
       ...(restored.last_tool_operation_id ? { last_tool_operation_id: restored.last_tool_operation_id } : {}),
       ...(restored.last_tool_call_id ? { last_tool_call_id: restored.last_tool_call_id } : {}),
       ...(restored.last_tool_result_digest ? { last_tool_result_digest: restored.last_tool_result_digest } : {}),
+      ...(restored.last_hook_run_id ? { last_hook_run_id: restored.last_hook_run_id } : {}),
+      ...(restored.last_hook_operation_id ? { last_hook_operation_id: restored.last_hook_operation_id } : {}),
+      ...(restored.last_hook_result_digest ? { last_hook_result_digest: restored.last_hook_result_digest } : {}),
     })
     return checkpoint.checkpoint_digest
   }
@@ -181,6 +187,40 @@ export class CodexEngineSession {
       last_tool_operation_id: operationId,
       last_tool_call_id: callId,
       last_tool_result_digest: resultDigest,
+      ...(restored.last_hook_run_id ? { last_hook_run_id: restored.last_hook_run_id } : {}),
+      ...(restored.last_hook_operation_id ? { last_hook_operation_id: restored.last_hook_operation_id } : {}),
+      ...(restored.last_hook_result_digest ? { last_hook_result_digest: restored.last_hook_result_digest } : {}),
+    })
+    return checkpoint.checkpoint_digest
+  }
+
+  async checkpointHookResult(runId: string, operationId: string, resultDigest: string): Promise<string> {
+    const thread = await this.ensureThread()
+    if (!text(runId) || !/^effect_[a-f0-9-]{36}$/.test(operationId) || !/^[a-f0-9]{64}$/.test(resultDigest)) {
+      throw new Error('CODEX_ENGINE_HOOK_RECEIPT_INVALID')
+    }
+    const restored = await this.options.thread_store.load(this.options.binding)
+    if (!restored?.thread_id || restored.thread_id !== thread.thread_id || restored.last_run_id !== runId || !restored.last_turn_id || !restored.tool_surface_digest) {
+      throw new Error('CODEX_ENGINE_HOOK_RECEIPT_TURN_MISSING')
+    }
+    const checkpoint = await this.options.thread_store.save(this.options.binding, {
+      thread_id: thread.thread_id,
+      source_revision: this.options.source_revision,
+      tool_surface_digest: restored.tool_surface_digest,
+      tool_surface_count: restored.tool_surface_count!,
+      last_run_id: restored.last_run_id,
+      last_turn_id: restored.last_turn_id,
+      ...(restored.last_turn_operation_id ? { last_turn_operation_id: restored.last_turn_operation_id } : {}),
+      ...(restored.last_model_run_id ? { last_model_run_id: restored.last_model_run_id } : {}),
+      ...(restored.last_model_operation_id ? { last_model_operation_id: restored.last_model_operation_id } : {}),
+      ...(restored.last_model_result_digest ? { last_model_result_digest: restored.last_model_result_digest } : {}),
+      ...(restored.last_tool_run_id ? { last_tool_run_id: restored.last_tool_run_id } : {}),
+      ...(restored.last_tool_operation_id ? { last_tool_operation_id: restored.last_tool_operation_id } : {}),
+      ...(restored.last_tool_call_id ? { last_tool_call_id: restored.last_tool_call_id } : {}),
+      ...(restored.last_tool_result_digest ? { last_tool_result_digest: restored.last_tool_result_digest } : {}),
+      last_hook_run_id: runId,
+      last_hook_operation_id: operationId,
+      last_hook_result_digest: resultDigest,
     })
     return checkpoint.checkpoint_digest
   }
@@ -238,6 +278,9 @@ export class CodexEngineSession {
       ...(state.last_tool_operation_id ? { last_tool_operation_id: state.last_tool_operation_id } : {}),
       ...(state.last_tool_call_id ? { last_tool_call_id: state.last_tool_call_id } : {}),
       ...(state.last_tool_result_digest ? { last_tool_result_digest: state.last_tool_result_digest } : {}),
+      ...(state.last_hook_run_id ? { last_hook_run_id: state.last_hook_run_id } : {}),
+      ...(state.last_hook_operation_id ? { last_hook_operation_id: state.last_hook_operation_id } : {}),
+      ...(state.last_hook_result_digest ? { last_hook_result_digest: state.last_hook_result_digest } : {}),
     })
     return { thread_id: id, restored: true }
   }
