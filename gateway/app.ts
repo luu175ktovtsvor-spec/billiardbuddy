@@ -971,13 +971,31 @@ function requireTextReasoningModel(rawBody: string): string {
   return model
 }
 
+function managedTextOutputLimit(): number {
+  const limit = textReasoningRegistryEntry().managed_max_output_tokens
+  if (!Number.isSafeInteger(limit) || limit < 1_024) {
+    throw new HttpError(503, '受管模型输出额度未配置')
+  }
+  return limit
+}
+
 function requestedOutputUnits(rawBody: string): number {
+  const outputLimit = managedTextOutputLimit()
+  let parsed: unknown
   try {
-    const parsed = JSON.parse(rawBody) as Record<string, unknown>
-    const requested = Number(parsed.max_output_tokens ?? parsed.max_tokens)
-    if (Number.isSafeInteger(requested) && requested >= 0) return requested
-  } catch { /* body validation remains owned by the provider adapter */ }
-  return Math.min(4_096, textReasoningRegistryEntry().verified_context_window)
+    parsed = JSON.parse(rawBody)
+  } catch {
+    // Body parsing remains owned by the provider adapter; reserve the exact
+    // bounded default until it returns the public 400.
+    return outputLimit
+  }
+  if (!isRecord(parsed)) return outputLimit
+  const requested = parsed.max_output_tokens ?? parsed.max_tokens
+  if (requested === undefined) return outputLimit
+  if (!Number.isSafeInteger(requested) || requested < 1 || requested > outputLimit) {
+    throw new HttpError(400, 'max_output_tokens 超出受管模型上限')
+  }
+  return requested
 }
 
 /**
