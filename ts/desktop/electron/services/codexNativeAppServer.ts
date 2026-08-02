@@ -704,11 +704,17 @@ export class ElectronCodexNativeRuntime {
   /** Synchronous desktop-shutdown path; no persisted Agent state is deleted. */
   closeImmediately(): void {
     const client = this.client
+    const provider = this.provider
     this.client = undefined
     this.provider = undefined
     this.configuredRouteKey = undefined
     this.activeTurns.clear()
     client?.closeImmediately()
+    // A sudden Electron shutdown must revoke the per-process loopback
+    // capability as well as killing Rust. `close()` synchronously aborts its
+    // active requests and destroys sockets before awaiting the local server's
+    // close callback, so it is safe to initiate from before-quit.
+    void provider?.close().catch(() => undefined)
   }
 
   private async closeOnce(): Promise<void> {

@@ -24,6 +24,10 @@ import {
 const TURN_TIMEOUT_MS = 120_000
 const TOOL_TIMEOUT_MS = 90_000
 
+function wait(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
+
 function requiredEnvironment(name: string): string {
   const value = process.env[name]?.trim()
   if (!value) throw new Error(`missing ${name}`)
@@ -195,12 +199,45 @@ async function main(): Promise<void> {
     await runtime.interruptTurn(resumed, interruptTurn)
     await events.waitForTurn(interruptTurn)
 
+    // This models loss of the BilliardBuddy-owned App Server process while a
+    // native command is running. It must leave no loopback model bridge alive,
+    // and a fresh process must reopen the same Rust Thread Store, settle the
+    // interrupted turn and accept new work without a second Agent ledger.
+    const abruptTurn = await runtime.startTurn(resumed, [{
+      type: 'text',
+      text: 'Use a shell command to sleep for 5 seconds. Do not provide a final answer until that command finishes.',
+    }], 'live-managed-abrupt-close-turn')
+    await events.waitForCommand(abruptTurn)
+    runtime.closeImmediately()
+    runtime = undefined
+    await wait(250)
+    runtime = createRuntime()
+    const recovered = await runtime.resumeThread({ threadId: resumed.id, cwd: workspace, route })
+    if (recovered.id !== resumed.id) throw new Error('Rust Thread recovery changed the Thread id')
+    assertThreadRead(await runtime.readThread(recovered), recovered.id)
+    try {
+      await runtime.interruptTurn(recovered, abruptTurn)
+      await events.waitForTurn(abruptTurn)
+    } catch (error) {
+      // The source may already have settled the interrupted turn during
+      // restart. That precise rejection proves it did not leave a hidden
+      // active Turn that Electron now owns; any other RPC failure is unsafe.
+      if (!(error instanceof Error) || !error.message.includes('no active turn to interrupt')) throw error
+    }
+    const recoveryTurn = await runtime.startTurn(recovered, [{
+      type: 'text',
+      text: 'Reply with exactly RECOVERY-TURN-OK. Do not call tools.',
+    }], 'live-managed-recovery-turn')
+    await events.waitForTurn(recoveryTurn)
+    console.log('NATIVE_MANAGED_STAGE=abrupt_close_recovered')
+
     console.log('NATIVE_MANAGED_THREAD_TURN=passed')
     console.log(`NATIVE_MANAGED_APPROVALS=${[...events.approvalMethods].sort().join(',')}`)
     console.log('NATIVE_MANAGED_TOOL_LOOP=passed')
     console.log('NATIVE_MANAGED_FORK_ARCHIVE=passed')
     console.log('NATIVE_MANAGED_INTERRUPT=passed')
     console.log('NATIVE_MANAGED_RESUME=passed')
+    console.log('NATIVE_MANAGED_ABRUPT_CLOSE_RECOVERY=passed')
   } finally {
     await runtime?.close().catch(() => undefined)
     // Both paths were created by mkdtemp above; no user workspace or Codex Home
