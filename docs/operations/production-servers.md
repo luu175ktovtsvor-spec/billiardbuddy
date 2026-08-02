@@ -40,42 +40,55 @@
   - `SpeechTranscription`：Fun-ASR
   - `ImageGeneration`：转发美国 Relay
 - MiMo 实际配置：总并发 64，MediaReasoning 48，VisualEvidence 16。
-- 已确认 `/opt/billiardbuddy-gateway/qwenChat.ts` 与 `/opt/billiardbuddy-gateway/webSearch.ts` 不存在；DeepSeek 原生搜索由独立 `/v1/messages` 窄路由提供。
+- 7 月 27 日的部署曾确认 `/opt/billiardbuddy-gateway/qwenChat.ts` 与 `/opt/billiardbuddy-gateway/webSearch.ts` 不存在；此后源码已移除 Agent 的 `/v1/messages` 路由，目标运行时只接受受管 `/v1/responses`。该变更尚未在身份待复核的服务器上验证。
 - 旧 `/opt/qfgw`、`qfgw.service` 与 `qfgw-tunnel` 系统账户已在状态迁移和新服务健康检查后删除。
 
-Gateway 环境变量名称（只记录名称，不记录值）：
+当前源码的 Gateway 环境变量名称（只记录名称，不记录值；不是现网已核验配置）：
 
 ```text
+BB_GATEWAY_MODEL
 GW_ADMIN_TOKEN
-GW_APP_CREDENTIALS
-GW_AUTHORITY_FILE
 GW_AUTH_SIGNING_KEY
+GW_BOOTSTRAP_RPM
+GW_CHAT_INFLIGHT_BODY_BYTES
 GW_DB
+GW_DEEPSEEK_BASE
 GW_DEEPSEEK_CONC
 GW_DEEPSEEK_KEY
 GW_DEEPSEEK_MAX_RETRIES
 GW_DEEPSEEK_QUEUE_MAX
 GW_DEEPSEEK_QUEUE_MAX_WAIT
+GW_DEEPSEEK_RETRY_BASE_MS
+GW_DEEPSEEK_RETRY_MAX_MS
+GW_DEEPSEEK_RPM
 GW_DEEPSEEK_TOKEN_CONC
 GW_DEEPSEEK_USER_CONC
 GW_FUNASR_KEY
+GW_FUNASR_MODEL
+GW_FUNASR_URL
+GW_IMG_INFLIGHT_BODY_BYTES
 GW_IMG_IPM
 GW_IMG_QUEUE_MAX
 GW_IMG_TASK_BODY_READ_TIMEOUT_MS
+GW_IMG_TASK_MAX_BODY_BYTES
+GW_INGRESS_BODY_READ_TIMEOUT_MS
 GW_INGRESS_INFLIGHT_BODY_BYTES
-GW_LICENSE_PROVISIONING
 GW_MIMO_BASE
 GW_MIMO_CONC
 GW_MIMO_INFLIGHT_PER_USER
 GW_MIMO_KEY
 GW_MIMO_MAX_RETRIES
 GW_MIMO_MEDIA_CONC
+GW_MIMO_MODEL
 GW_MIMO_QUEUE_MAX
 GW_MIMO_QUEUE_MAX_WAIT
 GW_MIMO_RETRY_BASE_MS
 GW_MIMO_RETRY_MAX_MS
+GW_MIMO_RPM
 GW_MIMO_TOKEN_CONC
 GW_MIMO_USER_CONC
+GW_QUEUE_MAX_WAIT
+GW_RELAY_RESULT_MAX_BYTES
 GW_RELAY_RESULT_TIMEOUT_MS
 GW_RELAY_SUBMIT_TIMEOUT_MS
 GW_RELAY_TASKS_BASE
@@ -83,17 +96,24 @@ GW_RELAY_TOKEN
 GW_SERVER_IDLE_TIMEOUT_SECONDS
 GW_TRANSCRIBE_CONC
 GW_TRANSCRIBE_MAX_BYTES
+GW_TRANSCRIBE_PROVIDER
+GW_TRANSCRIBE_QUEUE_MAX
 GW_TRANSCRIBE_RPM
 GW_TRANSCRIBE_TIMEOUT_MS
+GW_VISION_CACHE_MAX
+GW_VISION_CACHE_TTL_MS
 GW_VISION_CONC
+GW_VISION_MAX_IMAGES
+GW_VISION_MAX_IMAGE_BYTES
 GW_VISION_MAX_INFLIGHT_PER_CLIENT
+GW_VISION_MAX_TOTAL_BYTES
 GW_VISION_PER_CLIENT_CONC
 GW_VISION_PER_REQUEST_CONC
 GW_VISION_QUEUE_MAX
 GW_VISION_QUEUE_MAX_WAIT_MS
 ```
 
-现网已显式设置 `GW_MIMO_MEDIA_CONC=48`；旧名称 `GW_MIMO_NATIVE_CONC` 已删除。
+上次部署曾显式设置 `GW_MIMO_MEDIA_CONC=48`；旧名称 `GW_MIMO_NATIVE_CONC` 已删除。重新部署前，`validate-deployment-env.js` 会先验证鉴权、数据库、上游端点及各能力密钥均存在；容量分区再由两个 shell 校验器检查。
 
 ## 美国 Relay 与 TLS 入口
 
@@ -133,7 +153,7 @@ RELAY_USER_MAX
 ## 部署与验证
 
 - Relay：上传 `relay/app.ts`、`relay/validate-production-env.sh`、`relay/deploy.sh` 后执行部署脚本。
-- Gateway：上传 `gateway/app.ts` 及其正式依赖、`ts/shared/product/authEntitlement.ts`（目标名 `authority.ts`）、校验脚本与 `gateway/deploy.sh` 后执行部署脚本。
+- Gateway：在受控构建机执行 `gateway/package-deployment.sh <空目录>`；只上传生成的 `app.js`、`validate-deployment-env.js`、两个容量校验脚本和 `deploy.sh`，再执行部署脚本。`app.js` 是完整运行闭包，服务器不得依赖遗留 TypeScript 模块或仓库相对路径。
 - 两个部署脚本都迁移已有凭据与持久状态，改写本机旧状态路径，校验非敏感容量配置，切换到唯一的当前 systemd 服务，并在新 `/healthz` 通过后删除旧目录与 unit。
 
 本次实测：
