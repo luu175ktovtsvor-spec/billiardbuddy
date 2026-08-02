@@ -39,7 +39,9 @@ import {
   type CodexNativeJsonObject,
   type CodexNativeNotification,
   type NativeCodexCollaborationMode,
+  type NativeCodexMarketplaceAddInput,
   type NativeCodexPermissionMode,
+  type NativeCodexPluginReference,
   type NativeCodexStartReviewInput,
   type CodexNativeServerRequest,
   type NativeCodexSkillSelector,
@@ -251,6 +253,32 @@ async function confirmNativeAgentFullAccess(owner: BrowserWindow): Promise<void>
     noLink: true,
   })
   if (result.response !== 1) throw new Error('CODEX_NATIVE_FULL_ACCESS_DECLINED')
+}
+
+/**
+ * Marketplace and Skill-root mutations change future Rust Agent behavior and
+ * can fetch or activate third-party instructions/tools. Keep the consent in
+ * privileged Main until the replacement renderer provides this interaction.
+ */
+async function confirmNativeAgentExtensionChange(
+  owner: BrowserWindow,
+  title: string,
+  message: string,
+  detail: string,
+): Promise<void> {
+  const { dialog } = await import('electron')
+  const preview = detail.replace(/[\u0000-\u001F\u007F]/g, ' ').slice(0, 1_000)
+  const result = await dialog.showMessageBox(owner, {
+    type: 'warning',
+    title,
+    message,
+    detail: preview,
+    buttons: ['取消', '继续'],
+    defaultId: 0,
+    cancelId: 0,
+    noLink: true,
+  })
+  if (result.response !== 1) throw new Error('CODEX_NATIVE_EXTENSION_CHANGE_DECLINED')
 }
 
 function sendNativeAgentEvent(ownerId: number, payload: unknown): boolean {
@@ -818,10 +846,97 @@ function registerIpcHandlers() {
     assertNativeAgentThreadOwner(event.sender.id, input.threadId)
     return await (await getReadyNativeAgentThreadRuntime(input.threadId)).setSkillEnabled({ id: input.threadId }, input, input.enabled)
   })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentSetExtraSkillRoots, async (event, payload) => {
+    const input = payload as { threadId: string, roots: string[] }
+    assertNativeAgentThreadOwner(event.sender.id, input.threadId)
+    const clearing = input.roots.length === 0
+    await confirmNativeAgentExtensionChange(
+      currentWindow(event),
+      clearing ? '清除额外 Agent Skills？' : '加载额外 Agent Skills？',
+      clearing
+        ? '之后的 Agent Turn 将不再从此前额外目录加载技能。'
+        : '这些目录中的 Skill 指令会影响之后的 Agent Turn；请只加载你信任的目录。',
+      clearing ? '将清除 Rust Codex 的额外 Skill 目录配置。' : input.roots.join('\n'),
+    )
+    await (await getReadyNativeAgentThreadRuntime(input.threadId)).setExtraSkillRoots({ id: input.threadId }, input.roots)
+  })
   registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentListHooks, async (event, payload) => {
     const input = payload as { threadId: string, cwd: string }
     assertNativeAgentThreadOwner(event.sender.id, input.threadId)
     return await (await getReadyNativeAgentThreadRuntime(input.threadId)).listHooks({ id: input.threadId }, input.cwd)
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentListPlugins, async (event, payload) => {
+    const input = payload as { threadId: string, cwd: string }
+    assertNativeAgentThreadOwner(event.sender.id, input.threadId)
+    return await (await getReadyNativeAgentThreadRuntime(input.threadId)).listPlugins({ id: input.threadId }, input.cwd)
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentListInstalledPlugins, async (event, payload) => {
+    const input = payload as { threadId: string, cwd: string }
+    assertNativeAgentThreadOwner(event.sender.id, input.threadId)
+    return await (await getReadyNativeAgentThreadRuntime(input.threadId)).listInstalledPlugins({ id: input.threadId }, input.cwd)
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentReadPlugin, async (event, payload) => {
+    const input = payload as { threadId: string } & NativeCodexPluginReference
+    assertNativeAgentThreadOwner(event.sender.id, input.threadId)
+    return await (await getReadyNativeAgentThreadRuntime(input.threadId)).readPlugin({ id: input.threadId }, input)
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentAddMarketplace, async (event, payload) => {
+    const input = payload as { threadId: string } & NativeCodexMarketplaceAddInput
+    assertNativeAgentThreadOwner(event.sender.id, input.threadId)
+    await confirmNativeAgentExtensionChange(
+      currentWindow(event),
+      '添加 Agent 插件市场？',
+      'BilliardBuddy 将让 Codex Rust Core 添加这个本地或 Git 插件市场。只添加你信任的来源。',
+      `来源：${input.source}${input.refName === undefined ? '' : `\n版本：${input.refName}`}`,
+    )
+    return await (await getReadyNativeAgentThreadRuntime(input.threadId)).addMarketplace({ id: input.threadId }, input)
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentRemoveMarketplace, async (event, payload) => {
+    const input = payload as { threadId: string, marketplaceName: string }
+    assertNativeAgentThreadOwner(event.sender.id, input.threadId)
+    await confirmNativeAgentExtensionChange(
+      currentWindow(event),
+      '移除 Agent 插件市场？',
+      'Codex Rust Core 将移除此市场的配置和受管缓存；已安装插件的状态由原生 Core 决定。',
+      `市场：${input.marketplaceName}`,
+    )
+    return await (await getReadyNativeAgentThreadRuntime(input.threadId)).removeMarketplace({ id: input.threadId }, input.marketplaceName)
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentUpgradeMarketplace, async (event, payload) => {
+    const input = payload as { threadId: string, marketplaceName?: string }
+    assertNativeAgentThreadOwner(event.sender.id, input.threadId)
+    await confirmNativeAgentExtensionChange(
+      currentWindow(event),
+      '更新 Agent 插件市场？',
+      'Codex Rust Core 会从已配置来源更新市场，并原子替换本地受管内容。',
+      input.marketplaceName === undefined ? '市场：全部已配置市场' : `市场：${input.marketplaceName}`,
+    )
+    return await (await getReadyNativeAgentThreadRuntime(input.threadId)).upgradeMarketplace(
+      { id: input.threadId },
+      input.marketplaceName,
+    )
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentInstallPlugin, async (event, payload) => {
+    const input = payload as { threadId: string } & NativeCodexPluginReference
+    assertNativeAgentThreadOwner(event.sender.id, input.threadId)
+    await confirmNativeAgentExtensionChange(
+      currentWindow(event),
+      '安装 Agent 插件？',
+      '插件可提供 Skills、MCP 或其他 Codex 原生能力；后续授权仍由 Rust Core 单独请求。',
+      `插件：${input.pluginName}\n市场：${input.marketplacePath}`,
+    )
+    return await (await getReadyNativeAgentThreadRuntime(input.threadId)).installPlugin({ id: input.threadId }, input)
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentUninstallPlugin, async (event, payload) => {
+    const input = payload as { threadId: string, pluginId: string }
+    assertNativeAgentThreadOwner(event.sender.id, input.threadId)
+    await confirmNativeAgentExtensionChange(
+      currentWindow(event),
+      '卸载 Agent 插件？',
+      'Codex Rust Core 将删除该插件的本地安装和启用配置。',
+      `插件：${input.pluginId}`,
+    )
+    await (await getReadyNativeAgentThreadRuntime(input.threadId)).uninstallPlugin({ id: input.threadId }, input.pluginId)
   })
   registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentListCollaborationModes, async (event, payload) => {
     const input = payload as { threadId: string }

@@ -28,7 +28,16 @@ const clientRequestMethods = [
   'mcpServer/oauth/login',
   'skills/list',
   'skills/config/write',
+  'skills/extraRoots/set',
   'hooks/list',
+  'plugin/list',
+  'plugin/installed',
+  'plugin/read',
+  'marketplace/add',
+  'marketplace/remove',
+  'marketplace/upgrade',
+  'plugin/install',
+  'plugin/uninstall',
   'collaborationMode/list',
   'review/start',
   'turn/start',
@@ -149,6 +158,12 @@ async function main(): Promise<void> {
   assertContains(runtime, 'resumeStoredThread', '撤销后原生 thread/resume 恢复')
   assertContains(runtime, 'async startReview(', '原生代码审查入口')
   assertContains(runtime, "'review/start'", '原生代码审查协议调用')
+  assertContains(runtime, "'skills/extraRoots/set'", '原生额外技能目录协议调用')
+  assertContains(runtime, "'plugin/list'", '原生插件目录协议调用')
+  assertContains(runtime, "marketplaceKinds: ['local', 'workspace-directory']", '产品插件目录只选择本地和工作区市场')
+  assertContains(runtime, "'plugin/install'", '原生插件安装协议调用')
+  assertContains(runtime, "'plugin/uninstall'", '原生插件卸载协议调用')
+  assertContains(mainProcess, 'confirmNativeAgentExtensionChange', '插件与额外技能目录由 Main 确认')
   assertContains(runtime, 'nativeCollaborationSettings', '原生协作模式参数映射')
   assertContains(runtime, 'developer_instructions: null', '协作模式使用上游内置指令')
   assertContains(runtime, 'isAvailable(): boolean', 'App Server 子进程存活状态')
@@ -186,6 +201,13 @@ async function main(): Promise<void> {
   assertContains(requireFile('codex-rs/app-server-protocol/src/protocol/v2/collaboration_mode.rs'), 'pub struct CollaborationModeMask', '原生协作模式目录')
   assertContains(requireFile('codex-rs/app-server-protocol/src/protocol/v2/review.rs'), 'pub struct ReviewStartParams', '原生代码审查参数')
   assertContains(requireFile('codex-rs/app-server-protocol/src/protocol/v2/review.rs'), 'pub enum ReviewTarget', '原生代码审查目标')
+  assertContains(requireFile('codex-rs/app-server-protocol/src/protocol/v2/plugin.rs'), 'pub struct SkillsExtraRootsSetParams', '原生额外技能目录参数')
+  assertContains(requireFile('codex-rs/app-server-protocol/src/protocol/v2/plugin.rs'), 'pub struct MarketplaceAddParams', '原生插件市场添加参数')
+  assertContains(requireFile('codex-rs/app-server-protocol/src/protocol/v2/plugin.rs'), 'pub struct MarketplaceUpgradeParams', '原生插件市场更新参数')
+  assertContains(requireFile('codex-rs/app-server-protocol/src/protocol/v2/plugin.rs'), 'pub struct PluginListParams', '原生插件目录参数')
+  assertContains(requireFile('codex-rs/app-server-protocol/src/protocol/v2/plugin.rs'), 'pub struct PluginInstalledParams', '原生已安装插件参数')
+  assertContains(requireFile('codex-rs/app-server-protocol/src/protocol/v2/plugin.rs'), 'pub struct PluginInstallParams', '原生插件安装参数')
+  assertContains(requireFile('codex-rs/app-server-protocol/src/protocol/v2/plugin.rs'), 'pub struct PluginUninstallParams', '原生插件卸载参数')
   assertContains(requireFile('codex-rs/app-server-protocol/src/protocol/v2/item.rs'), 'pub struct ToolRequestUserInputResponse', '原生用户追问响应')
   assertContains(requireFile('codex-rs/app-server-protocol/src/protocol/v2/mcp.rs'), 'pub struct McpServerElicitationRequestResponse', '原生 MCP 表单响应')
 
