@@ -9,9 +9,6 @@ type NativeProviderConfig = {
   id: string
   name: string
   baseUrl: string
-  /** Set only for the BilliardBuddy-managed route. Personal routes leave
-   * Codex Core's upstream model handling untouched. */
-  contextWindowTokens?: number
   envKey?: string
   envHeaders?: Record<string, string>
   headers?: Record<string, string>
@@ -28,8 +25,6 @@ export type ManagedCodexModelRoute = {
    */
   resolveAccessToken: () => Promise<string>
   model: string
-  /** Values come from the trusted managed provider registry. */
-  contextWindowTokens: number
 }
 
 export type PersonalCodexModelRoute = {
@@ -78,18 +73,6 @@ function tomlInlineTable(entries: Record<string, string>): string {
   return `{${Object.entries(entries).map(([key, value]) => `${quoted(key)}=${quoted(value)}`).join(',')}}`
 }
 
-function modelContextWindow(contextWindowTokens: unknown, error: string): number {
-  if (
-    typeof contextWindowTokens !== 'number'
-    || !Number.isSafeInteger(contextWindowTokens)
-    || contextWindowTokens < 8_192
-    || contextWindowTokens > 2_000_000
-  ) {
-    throw new Error(error)
-  }
-  return contextWindowTokens
-}
-
 function providerOverrides(input: NativeProviderConfig): string[] {
   const prefix = `model_providers.${input.id}`
   return [
@@ -114,11 +97,6 @@ function providerOverrides(input: NativeProviderConfig): string[] {
     `${prefix}.name=${quoted(input.name)}`,
     `${prefix}.base_url=${quoted(input.baseUrl)}`,
     `${prefix}.wire_api=${quoted('responses')}`,
-    // Only the managed Gateway provides a product-owned window. A personal
-    // key is never blocked on or modified by a guessed capacity declaration.
-    ...(input.contextWindowTokens === undefined ? [] : [
-      `model_context_window=${input.contextWindowTokens}`,
-    ]),
     ...(input.envKey ? [`${prefix}.env_key=${quoted(input.envKey)}`] : []),
     ...(input.envHeaders && Object.keys(input.envHeaders).length > 0
       ? [`${prefix}.env_http_headers=${tomlInlineTable(input.envHeaders)}`]
@@ -807,10 +785,6 @@ export async function startCodexNativeProvider(route: CodexNativeModelRoute): Pr
   if (route.kind === 'managed') {
     const model = route.model.trim()
     if (!model) throw new Error('CODEX_NATIVE_MANAGED_ROUTE_INVALID')
-    const contextWindowTokens = modelContextWindow(
-      route.contextWindowTokens,
-      'CODEX_NATIVE_MANAGED_MODEL_LIMITS_INVALID',
-    )
     const adapter = new ResponsesCredentialAdapter({
       upstreamUrl: `${managedResponsesBaseUrl(route.gatewayUrl)}/responses`,
       failurePrefix: 'CODEX_GATEWAY_ADAPTER',
@@ -841,7 +815,6 @@ export async function startCodexNativeProvider(route: CodexNativeModelRoute): Pr
         id: 'billiardbuddy',
         name: 'BilliardBuddy managed DeepSeek gateway adapter',
         baseUrl: started.baseUrl,
-        contextWindowTokens,
         envHeaders: { [ENGINE_TOKEN_HEADER]: tokenEnv },
       })
       return {

@@ -65,12 +65,6 @@ export type ProviderRegistryEntry = {
   /** Required exactly for TextReasoning entries; absent for other capabilities. */
   text_reasoning_transport?: TextReasoningTransport
   worker_env_source: ProviderWorkerEnvSource
-  /** Provider-published total model window. */
-  verified_context_window: number
-  /** Provider-published hard output ceiling; required for TextReasoning. */
-  provider_max_output_tokens?: number
-  /** Product-enforced per-turn output ceiling; independent of Core compaction. */
-  managed_max_output_tokens?: number
   body_caps: ProviderBodyCaps
   resume_evidence: { path: string; status: 'verified' | 'conservative' }
   contract_version: number
