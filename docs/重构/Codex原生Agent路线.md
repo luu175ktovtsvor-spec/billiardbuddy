@@ -123,6 +123,8 @@ Skills、Hooks 与协作模式目录也直接读取 Rust App Server 的 `skills/
 
 生图和剪辑不属于上表中的 Agent 后端。它们保留自己的领域服务和任务状态；两者与 Agent 的连接只允许成果引用或显式启动动作。
 
+个人 API Key 的密文只由 Electron Main 的系统安全存储读取；保存、修改或删除设置不再把完整模型配置注入 Bun Sidecar，也不存在 Sidecar 热更新 Key 的内部 HTTP 接口。每次原生 Agent 连接仅把所选的一份 Key 临时交给对应的 Rust App Server 子进程；个人 `TextReasoning` 路由只接受 OpenAI Responses 或 Chat Completions，不能把其他旧协议变成隐式执行路径。
+
 ## 后端优先施工顺序
 
 前端不是 Agent 的事实来源，不能先用页面替代未完成的执行域。先完成并验证后端边界，再用 Codex 的信息架构补桌面工作面；在此之前不得为了“看起来像 Codex”扩张 React 状态、模拟工具结果或新增 ProductTask 兼容层。

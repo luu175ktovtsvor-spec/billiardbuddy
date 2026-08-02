@@ -3,10 +3,6 @@ export const PERSONAL_MODEL_CAPABILITIES = [
   'VisualEvidence',
 ] as const
 
-export const PERSONAL_MODEL_CONFIGURATION_CAPABILITY_HEADER = 'X-BB-Personal-Model-Configuration-Capability'
-export const PERSONAL_MODEL_CONFIGURATION_UPDATE_PATH = '/internal/personal-model-configuration'
-export const PERSONAL_MODEL_CONFIGURATION_MAX_BYTES = 128 * 1024
-
 export type PersonalModelCapability = (typeof PERSONAL_MODEL_CAPABILITIES)[number]
 export const PERSONAL_MODEL_PROTOCOLS = [
   'openai-compatible',
@@ -383,15 +379,6 @@ export function parsePersonalModelConfiguration(raw: string | undefined | null):
     routes[capability] = profileId
   }
   return { version: 1, profiles, routes }
-}
-
-export function activePersonalModelProfile(
-  capability: PersonalModelCapability,
-  env: Record<string, string | undefined> = process.env,
-): PersonalModelProfile | null {
-  const config = parsePersonalModelConfiguration(env.BB_PERSONAL_MODEL_CONFIGURATION)
-  const id = config.routes[capability]
-  return id ? config.profiles.find(profile => profile.id === id) ?? null : null
 }
 
 export function personalModelKind(profile: Pick<PersonalModelProfile, 'capabilities'>): PersonalModelKind {

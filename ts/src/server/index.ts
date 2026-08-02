@@ -20,11 +20,6 @@ import {
   updateGatewayAccessToken,
 } from './services/gatewayAccessTokenRuntime.js'
 import { GATEWAY_ACCESS_TOKEN_UPDATE_PATH } from '../../shared/product/providerGateway.js'
-import {
-  consumePersonalModelConfigurationCapability,
-  updatePersonalModelRuntimeConfiguration,
-} from './services/personalModelRuntimeConfiguration.js'
-import { PERSONAL_MODEL_CONFIGURATION_UPDATE_PATH } from '../../shared/product/personalModels.js'
 
 function readArgValue(flag: string): string | undefined {
   const args = process.argv.slice(2)
@@ -95,7 +90,6 @@ export function resolveLocalServerHost(host: string): string {
 export function startServer(port = PORT, host = HOST) {
   const localHost = resolveLocalServerHost(host)
   const mediaUiCapability = consumeMediaUiCapability()
-  const personalModelConfigurationCapability = consumePersonalModelConfigurationCapability()
   const gatewayAccessTokenCapability = consumeGatewayAccessTokenCapability()
   // The generic media service is now a legacy reader only. Image and video
   // each own their state, operation journal and recovery paths; Chat and
@@ -173,9 +167,6 @@ export function startServer(port = PORT, host = HOST) {
         await sidecarStorageUpgrade
         await mediaWorkbenchRecovery
         const url = new URL(req.url)
-        if (url.pathname === PERSONAL_MODEL_CONFIGURATION_UPDATE_PATH) {
-          return await updatePersonalModelRuntimeConfiguration(req, personalModelConfigurationCapability)
-        }
         if (url.pathname === GATEWAY_ACCESS_TOKEN_UPDATE_PATH) {
           return await updateGatewayAccessToken(req, gatewayAccessTokenCapability)
         }
