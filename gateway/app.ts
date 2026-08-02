@@ -10,14 +10,10 @@ import {
 } from './transcription'
 import { CapacityQueueError, FairCapacityScheduler, MimoReservationScheduler, type CapacityPermit, type CapacitySnapshot } from './modelCapacity'
 import {
-  deepSeekAnthropicMessagesUrl,
-  deepseekOpaqueUserId,
-  fetchDeepSeekWithRetry,
-  prepareDeepSeekAnthropicWebSearchBody,
-  prepareDeepSeekChatBody,
-  DeepSeekRequestError,
-} from './deepseekChat'
-import { ManagedResponsesRequestError, prepareManagedResponsesBody } from './managedResponses'
+  fetchManagedResponsesWithRetry,
+  ManagedResponsesRequestError,
+  prepareManagedResponsesBody,
+} from './managedResponses'
 import { fetchMimoWithRetry, MimoRequestError, prepareMimoChatBody } from './mimoChat'
 import {
   containsImageContent,
@@ -26,7 +22,6 @@ import {
   type VisionBridge,
 } from './visionBridge'
 import { PROVIDER_REGISTRY, mediaReasoningRegistryEntry, textReasoningRegistryEntry, visualEvidenceRegistryEntry } from './providerRegistry'
-import type { TextReasoningTransport } from '../ts/shared/product/providerContracts'
 import {
   fileUsageFingerprint,
   SqliteUsageBudgetService,
@@ -110,9 +105,7 @@ type ChatProvider = {
   retryMax: number
   retryBaseMs: number
   retryMaxMs: number
-  prepareBody: (rawBody: string, allowed: ReadonlySet<string>, defaultModel: string, ctx?: { userId?: string }) => { body: string }
-  /** A verified owner-derived opaque user ID is passed only when the provider supports it. */
-  deriveUserId?: (user: string) => string | undefined
+  prepareBody: (rawBody: string, allowed: ReadonlySet<string>, defaultModel: string) => { body: string }
   fetchWithRetry: (
     doRequest: (attempt: number) => Promise<Response>,
     opts: ChatRetryOptions,
@@ -125,13 +118,6 @@ type ChatProvider = {
 // Owner is exclusively the verified principal + registration for usage, scheduling, and
 // upstream opaque identity. Untrusted client headers never influence those boundaries.
 type ChatHandler = (request: Request, rawBody: string, user: string, principalId: string) => Promise<Response>
-type NativeAnthropicWebSearchHandler = (
-  request: Request,
-  rawBody: string,
-  user: string,
-  principalId: string,
-) => Promise<Response>
-
 type GatewayConfig = {
   relayToken: string
   relayTasksBase: string
@@ -158,7 +144,6 @@ type GatewayConfig = {
   deepseekKey: string
   deepseekBase: string
   deepseekModel: string
-  textReasoningTransport: TextReasoningTransport
   deepseekRpm: number
   deepseekConc: number
   deepseekUserConc: number
@@ -169,12 +154,12 @@ type GatewayConfig = {
   deepseekRetryBaseMs: number
   deepseekRetryMaxMs: number
   deepseekAllowedModels: ReadonlySet<string>
-  // 视觉桥接：带图请求先由 Registry-owned VisualEvidence 转为结构化证据，再交给 TextReasoning。
+  // 视觉证据：图片/视频工作台把输入转为结构化证据；它不再进入 Agent TextReasoning。
   visionMaxImages: number
   visionMaxImageBytes: number
-  // 同时也是 /v1/chat/completions 的整体请求体大小闸(在任何路由/解析/许可之前生效)。
+  // 同时也是 /v1/visual/evidence 的整体请求体大小闸(在任何路由/解析/许可之前生效)。
   visionMaxTotalBytes: number
-  /** One process-wide ingress reservation for chat, native Messages and image task bodies. */
+  /** One process-wide ingress reservation for Responses, visual evidence and image task bodies. */
   ingressInflightBodyBytes: number
   /** Slowloris guard for public JSON body reads after Bun's request idle timeout is disabled. */
   ingressBodyReadTimeoutMs: number
@@ -620,7 +605,9 @@ function loadConfig(env: Env): GatewayConfig {
   const selectedModel = env.BB_GATEWAY_MODEL?.trim()
   const textModel = selectedModel ? textReasoningRegistryEntry(selectedModel) : textReasoningRegistryEntry()
   if (!textModel) throw new Error('BB_GATEWAY_MODEL must select a registered TextReasoning model')
-  if (!textModel.text_reasoning_transport) throw new Error('TextReasoning provider must declare a wire transport')
+  if (textModel.text_reasoning_transport !== 'responses') {
+    throw new Error('BilliardBuddy 托管 TextReasoning 仅支持 Responses 协议')
+  }
   const mimoConc = Math.max(1, intEnv(env, 'GW_MIMO_CONC', 64))
   // Old deployments may have only GW_MIMO_CONC. Derive a valid partition for those
   // small canary profiles instead of injecting 12 visual slots into a two-slot pool.
@@ -673,7 +660,6 @@ function loadConfig(env: Env): GatewayConfig {
     deepseekKey: env.GW_DEEPSEEK_KEY ?? '',
     deepseekBase: (env.GW_DEEPSEEK_BASE ?? 'https://api.deepseek.com').replace(/\/+$/, ''),
     deepseekModel: textModel.model_id,
-    textReasoningTransport: textModel.text_reasoning_transport,
     deepseekRpm: intEnv(env, 'GW_DEEPSEEK_RPM', 100_000),
     deepseekConc: Math.max(1, intEnv(env, 'GW_DEEPSEEK_CONC', 1_000)),
     deepseekUserConc: Math.max(1, intEnv(env, 'GW_DEEPSEEK_USER_CONC', Math.min(10, intEnv(env, 'GW_DEEPSEEK_CONC', 1_000)))),
@@ -720,7 +706,7 @@ function loadConfig(env: Env): GatewayConfig {
     visionCacheTtlMs: Math.max(1, intEnv(env, 'GW_VISION_CACHE_TTL_MS', 600_000)),
     // A valid 24/32 MB body can temporarily exist as chunks + merged bytes + decoded
     // text + parsed/rewritten JSON.  One conservative 256 MB ingress reservation spans
-    // ordinary chat, vision bridge, native Messages and image submissions so a burst
+    // managed Responses, visual-evidence and image submissions so a burst
     // fails quickly instead of multiplying into an OOM.  The two older per-route names
     // remain read-only compatibility fallbacks; a new deployment should set only GW_INGRESS_INFLIGHT_BODY_BYTES.
     ingressInflightBodyBytes: Math.max(1, intEnv(
@@ -896,21 +882,6 @@ function parseChatModel(rawBody: string): string {
   return ''
 }
 
-function containsNativeMessageImageContent(rawBody: string): boolean {
-  try {
-    const parsed = JSON.parse(rawBody)
-    if (!isRecord(parsed) || !Array.isArray(parsed.messages)) return false
-    return parsed.messages.some(message => {
-      if (!isRecord(message)) return false
-      const parts = Array.isArray(message.content) ? message.content : [message.content]
-      return parts.some(part => isRecord(part)
-        && (part.type === 'image' || part.type === 'image_url' || 'image_url' in part))
-    })
-  } catch {
-    return false
-  }
-}
-
 function textReasoningBodyCaps() {
   return textReasoningRegistryEntry().body_caps
 }
@@ -919,16 +890,14 @@ function visualEvidenceBodyCaps() {
   return visualEvidenceRegistryEntry().body_caps
 }
 
-function requireTextReasoningModel(rawBody: string, transport: TextReasoningTransport): string {
+function requireTextReasoningModel(rawBody: string): string {
   const model = parseChatModel(rawBody).trim()
   const entry = model ? textReasoningRegistryEntry(model) : undefined
   if (!entry) {
     throw new HttpError(400, '仅支持已登记的托管文本模型')
   }
-  if (entry.text_reasoning_transport !== transport) {
-    throw new HttpError(409, transport === 'responses'
-      ? '当前托管模型不支持 Responses 协议'
-      : '当前托管模型不支持 Chat Completions 协议')
+  if (entry.text_reasoning_transport !== 'responses') {
+    throw new HttpError(409, '当前托管模型不支持 Responses 协议')
   }
   return model
 }
@@ -1040,19 +1009,17 @@ function isRecord(value: unknown): value is Record<string, any> {
 }
 
 /**
- * A narrow provider handler used by the DeepSeek chat route and the separate MiMo
- * media-workbench route.
+ * A narrow provider handler used by the managed DeepSeek Responses route and the
+ * separate MiMo media-workbench route.
  * It owns authenticated capacity, rate limits, retries, SSE passthrough, redacted upstream
  * errors, and usage logging without any provider fallback.
  */
 function createChatHandler(provider: ChatProvider, fetchImpl: FetchLike, store: UsageStore): ChatHandler {
   return async function chatHandler(request: Request, rawBody: string, user: string, principalId: string): Promise<Response> {
     // prepareBody 在拿容量许可之前跑,校验失败(400/503)不会漏掉一个许可名额。
-    // DeepSeek derives a trusted opaque user ID; MiMo does not receive one.
-    const userId = provider.deriveUserId?.(user)
     let prepared: { body: string }
     try {
-      prepared = provider.prepareBody(rawBody, provider.allowedModels, provider.defaultModel, { userId })
+      prepared = provider.prepareBody(rawBody, provider.allowedModels, provider.defaultModel)
     } catch (error) {
       if (error instanceof provider.RequestError) throw new HttpError(error.status, error.publicMessage)
       throw error
@@ -1151,142 +1118,6 @@ function createChatHandler(provider: ChatProvider, fetchImpl: FetchLike, store: 
   }
 }
 
-/**
- * Narrow native Anthropic route required by DeepSeek server-side web search. Normal agent
- * chat deliberately remains on the OpenAI-compatible path so the server-side
- * image-evidence bridge remains mandatory.
- */
-function createNativeAnthropicWebSearchHandler(
-  provider: ChatProvider,
-  fetchImpl: FetchLike,
-  store: UsageStore,
-): NativeAnthropicWebSearchHandler {
-  return async function nativeAnthropicWebSearchHandler(
-    request: Request,
-    rawBody: string,
-    user: string,
-    principalId: string,
-  ): Promise<Response> {
-    const userId = provider.deriveUserId?.(user)
-    const prepared = prepareDeepSeekAnthropicWebSearchBody(
-      rawBody,
-      provider.allowedModels,
-      provider.defaultModel,
-      { userId },
-    )
-    const queuedStarted = performance.now()
-    let permit: CapacityPermit
-    try {
-      permit = await provider.capacity.acquire(user, {
-        maxWaitMs: provider.queueMaxWait * 1000,
-        signal: request.signal,
-        tokenId: principalId,
-      })
-    } catch (error) {
-      const known = error instanceof CapacityQueueError
-      const queueMs = elapsedMs(queuedStarted)
-      await logUsage(store, {
-        user,
-        model: 'deepseek_web_search',
-        ok: false,
-        status: known ? error.status : 502,
-        ms: queueMs,
-        note: `queue_ms=${queueMs};queue_rejected=1`,
-      })
-      throw error
-    }
-    const queueMs = elapsedMs(queuedStarted)
-    const started = performance.now()
-    const usageNote = (attempts: number) => `queue_ms=${queueMs};native_web_search;attempts=${attempts}`
-
-    try {
-      const { response: upstream, attempts } = await provider.fetchWithRetry(async () => {
-        try {
-          await provider.bucket.acquire(provider.queueMaxWait, request.signal)
-        } catch (error) {
-          if (error instanceof HttpError) throw new provider.RequestError(error.status, error.detail)
-          throw error
-        }
-
-        const headers: Record<string, string> = {
-          'Content-Type': 'application/json',
-          'x-api-key': provider.key,
-          'anthropic-version': request.headers.get('anthropic-version')?.trim() || '2023-06-01',
-          'Accept-Encoding': 'identity',
-        }
-        const beta = request.headers.get('anthropic-beta')?.trim()
-        if (beta) headers['anthropic-beta'] = beta
-        const accept = request.headers.get('accept')?.trim()
-        if (accept) headers.Accept = accept
-
-        return await fetchImpl(deepSeekAnthropicMessagesUrl(provider.base), {
-          method: 'POST',
-          body: prepared.body,
-          signal: request.signal,
-          headers,
-        })
-      }, {
-        maxRetries: provider.retryMax,
-        baseDelayMs: provider.retryBaseMs,
-        maxDelayMs: provider.retryMaxMs,
-        signal: request.signal,
-        sleep: provider.retrySleep,
-        random: provider.retryRandom,
-      })
-
-      if (!upstream.ok) {
-        const detail = await upstream.text().catch(() => '')
-        permit.release()
-        await logUsage(store, {
-          user,
-          model: 'deepseek_web_search',
-          ok: false,
-          status: upstream.status,
-          ms: elapsedMs(started),
-          note: usageNote(attempts),
-        })
-        return Response.json({
-          type: 'error',
-          error: {
-            type: 'api_error',
-            message: modelPublicError(upstream.status, detail),
-          },
-        }, { status: upstream.status })
-      }
-
-      let completed = false
-      const complete = async () => {
-        if (completed) return
-        completed = true
-        permit.release()
-        await logUsage(store, {
-          user,
-          model: 'deepseek_web_search',
-          ok: true,
-          status: upstream.status,
-          ms: elapsedMs(started),
-          note: usageNote(attempts),
-        })
-      }
-      return withStreamLogging(upstream, complete)
-    } catch (error) {
-      permit.release()
-      const known = error instanceof provider.RequestError
-      const status = known ? error.status : 502
-      const detail = known ? error.publicMessage : '联网资料检索暂时不可用，请稍后重试'
-      await logUsage(store, {
-        user,
-        model: 'deepseek_web_search',
-        ok: false,
-        status,
-        ms: elapsedMs(started),
-        note: `queue_ms=${queueMs};native_web_search_failed`,
-      })
-      throw new HttpError(status, detail)
-    }
-  }
-}
-
 export function createGatewayFetch(deps: GatewayDeps = {}) {
   const env = deps.env ?? process.env
   const config = loadConfig(env)
@@ -1322,7 +1153,7 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
       label: 'deepseek',
       base: config.deepseekBase,
       key: config.deepseekKey,
-      endpoint: config.textReasoningTransport === 'responses' ? 'responses' : 'chat/completions',
+      endpoint: 'responses',
       defaultModel: config.deepseekModel,
       allowedModels: config.deepseekAllowedModels,
       bucket: deepseekBucket,
@@ -1331,21 +1162,13 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
       retryMax: config.deepseekRetryMax,
       retryBaseMs: config.deepseekRetryBaseMs,
       retryMaxMs: config.deepseekRetryMaxMs,
-      prepareBody: config.textReasoningTransport === 'responses'
-        ? prepareManagedResponsesBody
-        : prepareDeepSeekChatBody,
-      fetchWithRetry: fetchDeepSeekWithRetry,
-      RequestError: config.textReasoningTransport === 'responses'
-        ? ManagedResponsesRequestError
-        : DeepSeekRequestError,
-      ...(config.textReasoningTransport === 'chat_completions' ? { deriveUserId: deepseekOpaqueUserId } : {}),
+      prepareBody: prepareManagedResponsesBody,
+      fetchWithRetry: fetchManagedResponsesWithRetry,
+      RequestError: ManagedResponsesRequestError,
     }
     : null
   const managedText: ChatHandler | null = deepseekProvider
     ? createChatHandler(deepseekProvider, fetchImpl, store)
-    : null
-  const deepseekNativeWebSearch: NativeAnthropicWebSearchHandler | null = deepseekProvider && config.textReasoningTransport === 'chat_completions'
-    ? createNativeAnthropicWebSearchHandler(deepseekProvider, fetchImpl, store)
     : null
   // The registry-selected VisualEvidence provider is available only with its server key.
   // Missing credentials make image requests fail closed rather than reaching TextReasoning.
@@ -1587,7 +1410,7 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
         completeMetered(receipt, 'settled')
       }), operationId)
     } catch (error) {
-      const status = error instanceof HttpError || error instanceof CapacityQueueError || error instanceof DeepSeekRequestError
+      const status = error instanceof HttpError || error instanceof CapacityQueueError || error instanceof ManagedResponsesRequestError
         ? error.status
         : 500
       meteredFailure(receipt, status)
@@ -1888,43 +1711,9 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
         }
       }
 
-      // DeepSeek's native Messages route remains narrow and registry-gated.
-      if (request.method === 'POST' && url.pathname === '/v1/messages') {
-        const identity = auth(authority, request)
-        requireProviderProtocol(request)
-        const user = identity.owner
-        const usageOperation = usageOperationId(request)
-        // Bun defaults to a 10 s idle timeout. Native web-search may legitimately wait
-        // in the same DeepSeek pool as chat, so disable it before body read/queue wait.
-        server?.timeout(request, 0)
-        const contentType = request.headers.get('content-type')
-        if (contentType && !isJsonContentType(contentType)) {
-          throw new HttpError(415, '联网检索请求需要 JSON')
-        }
-        return await withBufferedBodyReservation(request, textReasoningBodyCaps().CHAT_TEXT_BODY_MAX_BYTES, ingressBodyBudget, config.ingressBodyReadTimeoutMs, async rawBody => {
-          requireTextReasoningModel(rawBody, 'chat_completions')
-          if (containsNativeMessageImageContent(rawBody)) {
-            throw new HttpError(400, '图片消息仅支持 /v1/chat/completions')
-          }
-          if (!deepseekNativeWebSearch) {
-            throw new HttpError(503, 'DeepSeek 模型服务未配置（缺 GW_DEEPSEEK_KEY）')
-          }
-          const inputBytes = Buffer.byteLength(rawBody, 'utf8')
-          const receipt = reserveMetered(
-            identity,
-            'TextReasoning',
-            `${usageOperation}:text`,
-            usageFingerprint(`TextReasoning\0${rawBody}`),
-            { requests: 1, input_bytes: inputBytes, output_units: requestedOutputUnits(rawBody) },
-          )
-          return await runMeteredStream(receipt, usageOperation, () => deepseekNativeWebSearch(request, rawBody, user, identity.principalId))
-        })
-      }
-
       // Media workbenches use MiMo V2.5 directly for visual understanding and
       // evidence-based planning. This route is intentionally separate from Agent
-      // chat, whose /v1/chat/completions path remains DeepSeek-only and retains the
-      // existing MiMo visual-evidence bridge for image messages.
+      // chat, which is owned exclusively by managed DeepSeek Responses.
       if (request.method === 'POST' && url.pathname === '/v1/media/reasoning') {
         const identity = auth(authority, request)
         requireProviderProtocol(request)
@@ -1998,25 +1787,20 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
         )
       }
 
-      if (request.method === 'POST' && (url.pathname === '/v1/chat/completions' || url.pathname === '/v1/responses')) {
+      if (request.method === 'POST' && url.pathname === '/v1/responses') {
         const identity = auth(authority, request)
         requireProviderProtocol(request)
         const user = identity.owner
-        const transport: TextReasoningTransport = url.pathname === '/v1/responses' ? 'responses' : 'chat_completions'
         const usageOperation = usageOperationId(request)
         // Long DeepSeek queues and quiet SSE streams are valid product behavior. Set
-        // this before buffering/vision admission so Bun's 10 s default cannot sever it.
+        // this before buffering so Bun's 10 s default cannot sever it.
         server?.timeout(request, 0)
         const contentType = request.headers.get('content-type')
         if (contentType && !isJsonContentType(contentType)) throw new HttpError(415, '模型请求需要 JSON')
-        // 请求体大小闸在任何路由、解析或许可之前生效。Chat 的图片内容另受视觉上限，
-        // Responses 当前只接收本机运行时构造的无上游续接请求。
+        // 请求体大小闸在任何路由、解析或许可之前生效；Responses 只接收本机
+        // 运行时构造的无上游续接请求。
         return await withBufferedBodyReservation(request, textReasoningBodyCaps().CHAT_TEXT_BODY_MAX_BYTES, ingressBodyBudget, config.ingressBodyReadTimeoutMs, async rawBody => {
-          requireTextReasoningModel(rawBody, transport)
-          const hasImages = transport === 'chat_completions' && containsImageContent(rawBody)
-          if (hasImages && Buffer.byteLength(rawBody, 'utf8') > textReasoningBodyCaps().VISION_BODY_MAX_BYTES) {
-            throw new HttpError(413, '请求体过大')
-          }
+          requireTextReasoningModel(rawBody)
           if (!managedText) throw new HttpError(503, '托管文本模型服务未配置')
           const inputBytes = Buffer.byteLength(rawBody, 'utf8')
           const requestedOutput = requestedOutputUnits(rawBody)
@@ -2067,51 +1851,8 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
           const releaseTextOperation = () => {
             try { operationResults.release(binding, operation.fencing_token) } catch {}
           }
-          let effectiveBody = rawBody
-          if (hasImages) {
-            if (!visionBridge) {
-              completeMetered(textReceipt, 'released')
-              releaseTextOperation()
-              throw new HttpError(503, '图片理解服务未配置（缺 GW_MIMO_KEY）')
-            }
-            let visionReceipt: UsageReceipt
-            try {
-              visionReceipt = reserveMetered(
-                identity,
-                'VisualEvidence',
-                `${usageOperation}:vision`,
-                usageFingerprint(`VisualEvidence\0${rawBody}`),
-                { requests: 1, input_bytes: inputBytes, output_units: 4_096 },
-              )
-            } catch (error) {
-              completeMetered(textReceipt, 'released')
-              releaseTextOperation()
-              throw error
-            }
-            const bridgeStarted = performance.now()
-            try {
-              const schedulerId = user
-              const { body, metrics } = await visionBridge.transform(rawBody, {
-                signal: request.signal,
-                schedulerId,
-                tokenId: identity.principalId,
-              })
-              effectiveBody = body
-              completeMetered(visionReceipt, 'settled')
-              await logUsage(store, { user, model: 'vision', ok: true, status: 200, ms: elapsedMs(bridgeStarted), note: `cache_hit=${metrics.cacheHits > 0 ? 1 : 0};img=${metrics.imageCount}` })
-            } catch (error) {
-              const known = error instanceof VisionBridgeError
-              const status = known ? error.status : 502
-              const detail = known ? error.publicMessage : '图片理解服务暂时不可用，请稍后重试'
-              meteredFailure(visionReceipt, status)
-              completeMetered(textReceipt, 'released')
-              releaseTextOperation()
-              await logUsage(store, { user, model: 'vision', ok: false, status, ms: elapsedMs(bridgeStarted), note: 'vision_bridge_failed' })
-              throw new HttpError(status, detail)
-            }
-          }
           try {
-            const response = await managedText(request, effectiveBody, user, identity.principalId)
+            const response = await managedText(request, rawBody, user, identity.principalId)
             if (!response.ok) {
               meteredFailure(textReceipt, response.status)
               if (response.status === 499 || response.status >= 500) {
@@ -2123,7 +1864,7 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
             }
             return streamTextReasoningResult(response, binding, operation.fencing_token, textReceipt)
           } catch (error) {
-            const status = error instanceof HttpError || error instanceof CapacityQueueError || error instanceof DeepSeekRequestError
+            const status = error instanceof HttpError || error instanceof CapacityQueueError || error instanceof ManagedResponsesRequestError
               ? error.status
               : 500
             meteredFailure(textReceipt, status)
@@ -2378,7 +2119,7 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
       return jsonError(404, 'not found')
     } catch (err) {
       if (err instanceof HttpError) return jsonError(err.status, err.detail)
-      if (err instanceof CapacityQueueError || err instanceof DeepSeekRequestError) {
+      if (err instanceof CapacityQueueError || err instanceof ManagedResponsesRequestError) {
         return jsonError(err.status, err.publicMessage)
       }
       console.error('[billiardbuddy-gateway] request failed', err)
