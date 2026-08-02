@@ -143,7 +143,6 @@ echo "[build-macos-arm64] Building renderer and Electron main/preload bundles...
 if [[ "${REBUILD_NATIVE:-0}" == "1" ]]; then
   echo "[build-macos-arm64] Rebuilding native dependencies for Electron ABI..."
   (cd "${DESKTOP_DIR}" && node "${ELECTRON_BUILDER_CLI}" install-app-deps)
-  (cd "${DESKTOP_DIR}" && bun run prepare:node-pty)
 fi
 
 echo "[build-macos-arm64] Cleaning empty dmg-builder cache directories..."

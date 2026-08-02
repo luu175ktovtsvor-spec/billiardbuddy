@@ -7,7 +7,6 @@ import {
   killSidecar,
   stopSidecar,
   mergeProxyEnv,
-  POWERSHELL_PATH_OVERRIDE_ENV,
   preferredServerPorts,
   proxyUrlFromElectronProxyRules,
   pushStartupLog,
@@ -18,11 +17,9 @@ import {
   spawnSidecar,
   stripSidecarSecretEnv,
   waitForServer,
-  windowsPowerShellOverride,
   writeLastServerPort,
   type SidecarChild,
 } from './sidecarManager'
-import { readDesktopTerminalConfig, resolveDesktopTerminalShell } from './terminal'
 import { applyGatewayConfigToEnv, type ProductGatewayConfig } from './productConfig'
 import {
   GATEWAY_ACCESS_TOKEN_CAPABILITY_HEADER,
@@ -302,39 +299,24 @@ export class ElectronServerRuntime {
   }
 
   private async resolveSidecarBaseEnvOnce(): Promise<NodeJS.ProcessEnv> {
-    if (!this.resolveSystemProxy) return this.applyPowerShellOverride(process.env)
+    if (!this.resolveSystemProxy) return process.env
 
     try {
       const proxyTarget = this.resolveGatewayConfig?.().url
-      if (!proxyTarget) return this.applyPowerShellOverride(process.env)
+      if (!proxyTarget) return process.env
       const rules = await promiseWithTimeout(
         this.resolveSystemProxy(proxyTarget),
         this.systemProxyTimeoutMs,
         'Desktop system proxy resolution timed out',
       )
-      return this.applyPowerShellOverride(mergeProxyEnv(
+      return mergeProxyEnv(
         process.env,
         proxyUrlFromElectronProxyRules(rules),
-      ))
+      )
     } catch (error) {
       console.error('[desktop] failed to resolve system proxy for sidecars', error)
-      return this.applyPowerShellOverride(process.env)
+      return process.env
     }
-  }
-
-  // On Windows, forward the user's chosen PowerShell to the agent sidecar so its
-  // PowerShellTool honors the same shell as the UI terminal. Best-effort: never
-  // block sidecar startup, and never override an explicitly set env var.
-  private applyPowerShellOverride(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-    if (process.platform !== 'win32' || env[POWERSHELL_PATH_OVERRIDE_ENV]) return env
-    try {
-      const shell = resolveDesktopTerminalShell('win32', readDesktopTerminalConfig(env))
-      const override = windowsPowerShellOverride(shell, 'win32')
-      if (override) return { ...env, [POWERSHELL_PATH_OVERRIDE_ENV]: override }
-    } catch {
-      // Misconfigured custom shell etc. — fall through to the unmodified env.
-    }
-    return env
   }
 }
 

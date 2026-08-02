@@ -57,7 +57,6 @@ export function dirHasPortableData(dir: string): boolean {
     '.BilliardBuddy.json',
     '.mcp.json',
     'window-state.json',
-    'terminal-config.json',
   ].some(file => fs.existsSync(path.join(dir, file)) && fs.statSync(path.join(dir, file)).isFile())
     || [
       'Cache',
