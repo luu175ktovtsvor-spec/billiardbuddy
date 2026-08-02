@@ -72,15 +72,12 @@ jobs:
         with:
           toolchain: '1.95.0'
 
-      - name: 应用已审核的 Hook 凭据环境隔离补丁
+      - name: 按产品合同应用所有已审核内核补丁
         working-directory: third_party/codex-engine
         shell: bash
         run: |
           set -euo pipefail
-          patch='../codex-engine-patches/0001-sanitize-hook-environment.patch'
-          git apply --check "${patch}"
-          git apply --whitespace=nowarn "${patch}"
-          git diff --check
+          bun ../../ts/desktop/scripts/verify-codex-engine-source.ts --apply-product-patches
 
       - name: 重新生成并核对 App Server 协议类型
         working-directory: third_party/codex-engine/codex-rs

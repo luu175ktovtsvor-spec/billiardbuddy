@@ -165,6 +165,7 @@ async function main(): Promise<void> {
   assertContains(runtime, 'hasVerifiedNativeEngineManifest(', '原生二进制的受管补丁清单校验')
   assertContains(runtime, 'CODEX_ENGINE_PRODUCT_PATCHES', '原生二进制的受管补丁合同')
   assertContains(runtime, 'if (!await hasVerifiedNativeEngineManifest(', '未验证内核的 fail-closed 启动门')
+  assertContains(requireDesktopFile('scripts/verify-codex-engine-source.ts'), '--apply-product-patches', 'CI 按产品补丁合同应用内核改动')
   assertContains(engineContract, 'CODEX_ENGINE_MANIFEST_SCHEMA = 3', '受管补丁清单版本')
   for (const patch of CODEX_ENGINE_PRODUCT_PATCHES) {
     assertContains(engineContract, `file: '${patch.file}'`, `受管补丁 ${patch.file}`)
