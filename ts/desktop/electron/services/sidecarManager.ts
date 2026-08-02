@@ -259,23 +259,45 @@ function mergeLoopbackNoProxy(existing: string | undefined): string {
 
 export const SIDE_CAR_SECRET_ENV_KEYS = [
   'BB_GATEWAY_BOOTSTRAP_CREDENTIAL',
+  'BB_GATEWAY_ACCESS_TOKEN_CAPABILITY',
   'BB_LICENSE_KEY',
   'BB_GATEWAY_REFRESH_TOKEN',
   'BB_GATEWAY_SESSION',
   'BB_GATEWAY_SESSION_PROOF',
   'BB_GATEWAY_TOKEN',
+  'BB_GATEWAY_URL',
+  'BB_MEDIA_BIN_DIR',
+  'BB_MEDIA_UI_CAPABILITY',
+  'BB_CODEX_ENGINE_BIN_DIR',
   'BB_INSTALLATION_ID',
   'BILLIARDBUDDY_MCP_OAUTH_KEY',
 ] as const
+
+// A desktop can be launched from a developer shell, IDE or CI wrapper that
+// already contains a provider credential. The local media sidecar must never
+// inherit one of those by accident: personal model keys belong exclusively to
+// Electron Main and its short-lived native App Server child.
+const SIDE_CAR_SECRET_ENV_NAME = /(?:^|_)(?:KEY|AUTH(?:ORIZATION)?|TOKEN|SECRET|PASSWORD|CREDENTIALS?|COOKIE|SESSION)(?:_|$)/i
 
 /** Start from a clean credential boundary before injecting a single access bearer. */
 export function stripSidecarSecretEnv(baseEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...baseEnv }
   for (const key of SIDE_CAR_SECRET_ENV_KEYS) delete env[key]
+  for (const key of Object.keys(env)) {
+    if (SIDE_CAR_SECRET_ENV_NAME.test(key)) delete env[key]
+  }
   return env
 }
 
-export function buildSidecarEnv(baseEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+/**
+ * Only Electron Main may provide trusted values here after stripping the
+ * inherited process environment. Callers must never pass renderer-controlled
+ * data as `trustedEnv`.
+ */
+export function buildSidecarEnv(
+  baseEnv: NodeJS.ProcessEnv,
+  trustedEnv: NodeJS.ProcessEnv = {},
+): NodeJS.ProcessEnv {
   const env = stripSidecarSecretEnv(baseEnv)
   const configDir = baseEnv.BILLIARDBUDDY_CONFIG_DIR
   if (configDir) {
@@ -284,7 +306,7 @@ export function buildSidecarEnv(baseEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
     env.BILLIARDBUDDY_CONFIG_DIR = configDir
     env.XDG_CACHE_HOME = cacheDir
   }
-  return env
+  return { ...env, ...trustedEnv }
 }
 
 export function createServerPlan({
@@ -293,6 +315,7 @@ export function createServerPlan({
   port,
   bindHost = SERVER_BIND_HOST,
   env = process.env,
+  trustedEnv,
   accessToken,
 }: {
   desktopRoot: string
@@ -300,10 +323,12 @@ export function createServerPlan({
   port: number
   bindHost?: string
   env?: NodeJS.ProcessEnv
+  /** Electron Main-injected Gateway config and local capabilities. */
+  trustedEnv?: NodeJS.ProcessEnv
   /** Current short-lived access bearer, injected after all inherited secrets are stripped. */
   accessToken?: string
 }): SidecarPlan {
-  const cleanEnv = buildSidecarEnv(env)
+  const cleanEnv = buildSidecarEnv(env, trustedEnv)
   if (accessToken) cleanEnv.BB_GATEWAY_TOKEN = accessToken
   return {
     command: resolveSidecarExecutable(desktopRoot),
