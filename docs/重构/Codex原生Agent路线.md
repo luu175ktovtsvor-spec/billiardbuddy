@@ -78,6 +78,8 @@ Skills、Hooks 与协作模式目录也直接读取 Rust App Server 的 `skills/
 
 旧 `/api/plugins` 也已返回 `LEGACY_AGENT_BACKEND_RETIRED`。它过去会写入 BilliardBuddy 自定义插件清单，并再投影为旧 Skills、Hooks、MCP、LSP 和命令；该格式不能再成为 Agent 的旁路配置。历史插件目录和状态文件保留但不加载、不迁移、不删除。
 
+统一 Bun 侧车不再接受 `agent-worker` 内部模式；即使手动传入该参数，也不能重新启动旧 Harness。Bun 侧车仅保留媒体/设置等 Product Server 职责（以及将在前端重做时一并清理的旧浏览器宿主），Agent 的实际进程入口唯一是 Electron Main 启动的 Rust App Server。
+
 终态将新增 BilliardBuddy 的 **native Codex profile**：
 
 - 不再开启 `host_managed_tools_only`；使用上游工具、审批、沙箱、MCP、Skills、Hooks、Review 和 multi-agent；

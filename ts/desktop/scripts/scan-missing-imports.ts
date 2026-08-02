@@ -1,7 +1,7 @@
 /**
  * scan-missing-imports.ts
  *
- * 在编译正式运行入口之前，扫描 Product Server、agent-worker、renderer、Electron、
+ * 在编译正式运行入口之前，扫描 Product Server、renderer、Electron、
  * preload、预览代理与浏览器扩展里的本地 import / require / 类型 import specifier，
  * 找出磁盘上不存在的目标并停止构建；同时从全部 GUI 入口建立生产可达图，报告
  * 需要人工确认的无消费者 CLI、TUI、旧 Harness、旧页面或占位模块。

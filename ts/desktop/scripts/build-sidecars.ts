@@ -26,7 +26,7 @@ if (scanExit !== 0) {
 
 await mkdir(binariesDir, { recursive: true })
 
-// 单一 GUI sidecar：Product Server、内部 agent-worker 与 browser host 共享一份
+// 单一 GUI sidecar：Product Server 与 browser host 共享一份
 // bun runtime。详见 desktop/sidecars/billiardbuddy-sidecar.ts。
 await compileExecutable({
   entrypoint: path.join(desktopRoot, 'sidecars/billiardbuddy-sidecar.ts'),
