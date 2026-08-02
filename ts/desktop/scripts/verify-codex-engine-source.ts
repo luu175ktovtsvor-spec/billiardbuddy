@@ -11,6 +11,22 @@ const repositoryRoot = path.resolve(import.meta.dir, '../../..')
 const engineRoot = path.join(repositoryRoot, 'third_party', 'codex-engine')
 const productPatchRoot = path.join(repositoryRoot, 'third_party', 'codex-engine-patches')
 
+type CliOptions = {
+  applyProductPatches: boolean
+}
+
+function parseCliOptions(argv: string[]): CliOptions {
+  let applyProductPatches = false
+  for (const argument of argv) {
+    if (argument === '--apply-product-patches') {
+      applyProductPatches = true
+      continue
+    }
+    throw new Error(`未知 Codex Engine 源码校验参数: ${argument}`)
+  }
+  return { applyProductPatches }
+}
+
 function requireFile(relativePath: string): string {
   const file = path.join(engineRoot, relativePath)
   if (!existsSync(file)) throw new Error(`Codex Engine 源码缺少 ${relativePath}；请执行 git submodule update --init --recursive`)
@@ -73,12 +89,28 @@ async function assertProductPatches(): Promise<void> {
   }
 }
 
+/**
+ * CI uses this only after `assertProductPatches` has checked the clean pinned
+ * source. Keeping application driven by the same contract as staging prevents
+ * an added product patch from being silently skipped by the compile job.
+ */
+async function applyProductPatches(): Promise<void> {
+  for (const patch of CODEX_ENGINE_PRODUCT_PATCHES) {
+    const patchPath = path.join(productPatchRoot, patch.file)
+    await gitOutput('apply', '--check', patchPath)
+    await gitOutput('apply', '--whitespace=nowarn', patchPath)
+  }
+  await gitOutput('diff', '--check')
+}
+
 async function main(): Promise<void> {
+  const options = parseCliOptions(process.argv.slice(2))
   const revision = await gitOutput('rev-parse', 'HEAD')
   if (revision !== expectedRevision) {
     throw new Error(`Codex Engine 提交不符合产品锁定版本：期望 ${expectedRevision}，实际 ${revision}`)
   }
   await assertProductPatches()
+  if (options.applyProductPatches) await applyProductPatches()
 
   const license = requireFile('LICENSE')
   if (!license.includes('Apache License') || !license.includes('Version 2.0')) {
@@ -148,7 +180,7 @@ async function main(): Promise<void> {
   assertContains(providerInfo, 'self.is_openai() || is_azure_responses_provider(&self.name, self.base_url.as_deref())', 'Core 远程压缩 Provider 限定')
 
   console.log(`[codex-engine] source lock passed: ${revision}`)
-  console.log('[codex-engine] Rust App Server/Core/Thread/Context/Tool/Sandbox/Exec composition, Apache-2.0 NOTICE, the Responses-only provider baseline, native 90% automatic-compaction default, and the reviewed Hook credential-environment patch verified; personal model credentials remain in Electron through BilliardBuddy Responses bridges.')
+  console.log(`[codex-engine] Rust App Server/Core/Thread/Context/Tool/Sandbox/Exec composition, Apache-2.0 NOTICE, the Responses-only provider baseline, native 90% automatic-compaction default, and the reviewed product patch contract verified${options.applyProductPatches ? ' and applied' : ''}; personal model credentials remain in Electron through BilliardBuddy Responses bridges.`)
 }
 
 await main()
