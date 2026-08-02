@@ -3,9 +3,7 @@ import type {
   ProductCapabilityId,
   ProductCapabilitySnapshot,
 } from '../../../shared/product/capabilitySnapshot.js'
-import type { BrowserCapabilityStatus } from '../../../shared/product/browserCapability.js'
 import type { ProductScheduledTaskRun } from '../../../shared/product/scheduledTasks.js'
-import { getChromeSessionBridge } from './chromeSessionBridge.js'
 import { loadNetworkSettings, getNetworkProxyFetchOptions } from './networkSettings.js'
 import { productGatewayConfigured, productGatewayTarget } from '../product/productGatewayRuntime.js'
 import { runtimePersonalModelProfile } from './personalModelRuntimeState.js'
@@ -29,7 +27,6 @@ type CapabilitySnapshotDependencies = {
   personalTextRouteConfigured: () => boolean
   gatewayStatus: () => Promise<GatewayProductStatus>
   mediaToolchainStatus: () => Promise<{ ffmpeg: { available: boolean }; ffprobe: { available: boolean } }>
-  browserStatus: () => BrowserCapabilityStatus
   scheduledRuns: () => Promise<ProductScheduledTaskRun[]>
   now: () => Date
 }
@@ -149,7 +146,6 @@ export class ProductCapabilitySnapshotService {
         try { return runtimePersonalModelProfile('TextReasoning') !== null } catch { return false }
       },
       gatewayStatus: fetchGatewayStatus,
-      browserStatus: () => getChromeSessionBridge().status(),
       now: () => new Date(),
       ...overrides,
     }
@@ -211,15 +207,6 @@ export class ProductCapabilitySnapshotService {
   }
 
   private browserCapability(): ProductCapability {
-    try {
-      const status = this.deps.browserStatus()
-      if (status.state === 'connected') return { id: 'recruiting_browser', state: 'running' }
-      if (status.state === 'degraded') {
-        return { id: 'recruiting_browser', state: 'degraded', reason_code: 'browser_bridge_failed', repair_action: 'install_recruiting_browser' }
-      }
-      return { id: 'recruiting_browser', state: 'configured', reason_code: 'browser_extension_disconnected', repair_action: 'install_recruiting_browser' }
-    } catch {
-      return { id: 'recruiting_browser', state: 'degraded', reason_code: 'browser_bridge_failed', repair_action: 'install_recruiting_browser' }
-    }
+    return { id: 'recruiting_browser', state: 'degraded', reason_code: 'service_unavailable', repair_action: 'check_update' }
   }
 }
