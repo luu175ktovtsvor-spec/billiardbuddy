@@ -64,7 +64,7 @@ BilliardBuddy Electron / React（品牌与桌面工作面）
 
 ## 过渡实现与终态
 
-旧 `host_managed_tools_only=true` 补丁及 TypeScript ProductTask/Worker 链只属于历史过渡路径。它们不得进入原生 Agent 默认启动链，也不能成为 Rust Core 外层的第二个执行器；在媒体与共享设置完成脱钩后删除其实现和启动入口。
+旧 `host_managed_tools_only=true` 方案及 TypeScript ProductTask/Worker 链只属于历史过渡路径。后者已从运行与编译路径删除；前者在当前暂存内核中默认关闭，不能进入原生 Agent 启动配置或成为 Rust Core 外层的第二个执行器。后续重新构建内核时会一并移除这项无消费者的兼容补丁。
 
 当前桌面本机边车已先完成启动链切断：它只启动媒体、图片、视频、语音、设置、凭据更新与能力快照服务；不再实例化 ProductTask、Run ledger、Worker、Cron、旧 Chrome 招聘桥或 ProductTask WebSocket。`/api/product/voice`、`/api/product/settings`、`/api/product/capabilities` 和目录选择器所需的 `/api/product/projects/recent` 继续存在；最近目录只从历史 `product-tasks.json` 做只读投影，绝不触发迁移、Core session 导入或写入。其他旧 Agent HTTP 接口及 `/ws/product/tasks/*` 均返回 `LEGACY_AGENT_BACKEND_RETIRED`，使旧执行路径不能被悄悄重新启用。
 
@@ -82,7 +82,7 @@ Skills、Hooks 与协作模式目录也直接读取 Rust App Server 的 `skills/
 
 随该入口删除的还有旧 `agent-engine`、`agent-worker`、ProductTask/Run 账本、TypeScript MCP/Skill/Hook/工具 Host、旧审批信封、旧协作器和它们专用的共享协议。它们不是禁用的备份，也不再参与编译；媒体、网关、用户模型设置、网络设置和最近项目的只读历史投影保留在独立路径。后续 Agent 能力只能补入 Rust App Server 的正式协议，不恢复上述 TypeScript 执行器。
 
-终态将新增 BilliardBuddy 的 **native Codex profile**：
+正式的 BilliardBuddy **native Codex profile**：
 
 - 不再开启 `host_managed_tools_only`；使用上游工具、审批、沙箱、MCP、Skills、Hooks、Review 和 multi-agent；
 - 不把 `environments` 清空，也不手工屏蔽 Codex 的权限/项目指令/协作配置；

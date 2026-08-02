@@ -6,7 +6,6 @@ const repositoryRoot = path.resolve(import.meta.dir, '../../..')
 const engineRoot = path.join(repositoryRoot, 'third_party', 'codex-engine')
 const enginePatches = [
   path.join(repositoryRoot, 'third_party', 'codex-engine-patches', '0001-host-managed-tools-only.patch'),
-  path.join(repositoryRoot, 'third_party', 'codex-engine-patches', '0002-context-compaction-ledger.patch'),
 ] as const
 
 function requireFile(relativePath: string): string {
@@ -55,14 +54,10 @@ async function main(): Promise<void> {
   if (!hostManagedToolsPatch.includes('host_managed_tools_only') || !hostManagedToolsPatch.includes('item/tool/call')) {
     throw new Error('Codex Engine 宿主工具补丁内容不完整')
   }
-  const contextCompactionPatch = readFileSync(enginePatches[1], 'utf8')
-  if (!contextCompactionPatch.includes('ContextCompaction') || !contextCompactionPatch.includes('input_tokens') || !contextCompactionPatch.includes('summary')) {
-    throw new Error('Codex Engine 上下文压缩补丁内容不完整')
-  }
   for (const patch of enginePatches) await gitOutput('apply', '--check', patch)
 
   console.log(`[codex-engine] source lock passed: ${revision}`)
-  console.log('[codex-engine] app server, Apache-2.0 NOTICE, host-managed-tools and context-compaction patches verified; Chat must enter through the BilliardBuddy Responses bridge.')
+  console.log('[codex-engine] app server, Apache-2.0 NOTICE and the inactive host-managed-tools compatibility patch verified; Chat must enter through the BilliardBuddy Responses bridge.')
 }
 
 await main()
