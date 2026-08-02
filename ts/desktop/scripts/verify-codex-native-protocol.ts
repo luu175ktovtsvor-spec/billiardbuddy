@@ -153,9 +153,11 @@ async function main(): Promise<void> {
   const providerRegistry = requireRepositoryFile('gateway/providerRegistry.ts')
   const managedResponses = requireRepositoryFile('gateway/managedResponses.ts')
   const featureDefinitions = requireFile('codex-rs/features/src/lib.rs')
+  const engineBuildWorkflow = requireRepositoryFile('.github/workflows/codex-engine-build.yml')
   const mainProcess = requireDesktopFile('electron/main.ts')
   const credentialStore = requireDesktopFile('electron/services/keychain.ts')
   const serverRequestBridge = requireDesktopFile('electron/services/nativeServerRequest.ts')
+  const engineStaging = requireDesktopFile('scripts/stage-codex-engine.ts')
 
   assertExactMethods(staticMethodCalls(runtime, 'request'), clientRequestMethods, 'Electron → App Server 请求')
   assertExactMethods(staticMethodCalls(runtime, 'notify'), ['initialized'], 'Electron → App Server 通知')
@@ -174,6 +176,10 @@ async function main(): Promise<void> {
   assertContains(runtime, 'CODEX_ENGINE_PRODUCT_PATCHES', '原生二进制的受管补丁合同')
   assertContains(runtime, 'if (!await hasVerifiedNativeEngineManifest(', '未验证内核的 fail-closed 启动门')
   assertContains(requireDesktopFile('scripts/verify-codex-engine-source.ts'), '--apply-product-patches', 'CI 按产品补丁合同应用内核改动')
+  assertContains(engineStaging, '--prebuilt-binary', '可从 GitHub 构建产物封装受管引擎')
+  assertContains(engineStaging, 'assertPinnedSource()', '预构建引擎仍核对锁定源码版本')
+  assertContains(engineBuildWorkflow, '--prebuilt-binary', 'GitHub 内核构建产物封装为受管运行时')
+  assertContains(engineBuildWorkflow, 'runtime-assets/binaries/', 'GitHub 保存完整可校验引擎运行时')
   assertContains(engineContract, 'CODEX_ENGINE_MANIFEST_SCHEMA = 3', '受管补丁清单版本')
   for (const patch of CODEX_ENGINE_PRODUCT_PATCHES) {
     assertContains(engineContract, `file: '${patch.file}'`, `受管补丁 ${patch.file}`)
