@@ -64,6 +64,47 @@ const nativeAgentStartThread: Validator = value =>
   && nativeWorkspacePath(value.cwd)
   && (value.permissionMode === undefined || nativePermissionMode(value.permissionMode))
 
+const nativePageCursor = (value: unknown): boolean =>
+  value === undefined
+  || typeof value === 'string' && value.length > 0 && value.length <= 4_096 && !/[\u0000\r\n]/.test(value)
+
+const nativePageLimit = (value: unknown): boolean =>
+  value === undefined || typeof value === 'number' && Number.isSafeInteger(value) && value >= 1 && value <= 200
+
+const nativeSortDirection = (value: unknown): boolean =>
+  value === undefined || value === 'asc' || value === 'desc'
+
+const nativeThreadSortKey = (value: unknown): boolean =>
+  value === undefined || value === 'created_at' || value === 'updated_at' || value === 'recency_at'
+
+const nativeThreadSearchTerm = (value: unknown): boolean =>
+  typeof value === 'string' && value.trim().length > 0 && value.length <= 512 && !/[\u0000\r\n]/.test(value)
+
+const nativeTurnItemsView = (value: unknown): boolean =>
+  value === undefined || value === 'notLoaded' || value === 'summary' || value === 'full'
+
+const nativeAgentListThreads: Validator = value =>
+  isRecord(value)
+  && hasOnlyKeys(value, ['cwd', 'cursor', 'limit', 'archived', 'searchTerm', 'sortKey', 'sortDirection'])
+  && nativeWorkspacePath(value.cwd)
+  && nativePageCursor(value.cursor)
+  && nativePageLimit(value.limit)
+  && (value.archived === undefined || typeof value.archived === 'boolean')
+  && (value.searchTerm === undefined || nativeThreadSearchTerm(value.searchTerm))
+  && nativeThreadSortKey(value.sortKey)
+  && nativeSortDirection(value.sortDirection)
+
+const nativeAgentSearchThreads: Validator = value =>
+  isRecord(value)
+  && hasOnlyKeys(value, ['cwd', 'searchTerm', 'cursor', 'limit', 'archived', 'sortKey', 'sortDirection'])
+  && nativeWorkspacePath(value.cwd)
+  && nativeThreadSearchTerm(value.searchTerm)
+  && nativePageCursor(value.cursor)
+  && nativePageLimit(value.limit)
+  && (value.archived === undefined || typeof value.archived === 'boolean')
+  && nativeThreadSortKey(value.sortKey)
+  && nativeSortDirection(value.sortDirection)
+
 const nativeAgentResumeThread: Validator = value =>
   isRecord(value)
   && hasOnlyKeys(value, ['threadId', 'cwd'])
@@ -114,6 +155,48 @@ const nativeAgentThreadReference: Validator = value =>
   isRecord(value)
   && hasOnlyKeys(value, ['threadId'])
   && nativeCodexId(value.threadId)
+
+const nativeAgentStoredThreadReference: Validator = value =>
+  isRecord(value)
+  && hasOnlyKeys(value, ['threadId', 'cwd'])
+  && nativeCodexId(value.threadId)
+  && nativeWorkspacePath(value.cwd)
+
+const nativeAgentThreadName: Validator = value =>
+  isRecord(value)
+  && hasOnlyKeys(value, ['threadId', 'name'])
+  && nativeCodexId(value.threadId)
+  && typeof value.name === 'string'
+  && value.name.trim().length > 0
+  && value.name.length <= 512
+  && !/[\u0000\r\n]/.test(value.name)
+
+const nativeAgentThreadRollback: Validator = value =>
+  isRecord(value)
+  && hasOnlyKeys(value, ['threadId', 'numTurns'])
+  && nativeCodexId(value.threadId)
+  && typeof value.numTurns === 'number'
+  && Number.isSafeInteger(value.numTurns)
+  && value.numTurns >= 1
+  && value.numTurns <= 10_000
+
+const nativeAgentThreadTurnsPage: Validator = value =>
+  isRecord(value)
+  && hasOnlyKeys(value, ['threadId', 'cursor', 'limit', 'sortDirection', 'itemsView'])
+  && nativeCodexId(value.threadId)
+  && nativePageCursor(value.cursor)
+  && nativePageLimit(value.limit)
+  && nativeSortDirection(value.sortDirection)
+  && nativeTurnItemsView(value.itemsView)
+
+const nativeAgentThreadItemsPage: Validator = value =>
+  isRecord(value)
+  && hasOnlyKeys(value, ['threadId', 'turnId', 'cursor', 'limit', 'sortDirection'])
+  && nativeCodexId(value.threadId)
+  && (value.turnId === undefined || nativeCodexId(value.turnId))
+  && nativePageCursor(value.cursor)
+  && nativePageLimit(value.limit)
+  && nativeSortDirection(value.sortDirection)
 
 const nativeAgentApprovalDecision = (value: unknown): value is string =>
   value === 'accept' || value === 'acceptForSession' || value === 'decline' || value === 'cancel'
@@ -298,9 +381,18 @@ export const ELECTRON_IPC_VALIDATORS = {
   [ELECTRON_IPC_CHANNELS.modelConfigurationSetRoute]: modelConfigurationSetRoute,
   [ELECTRON_IPC_CHANNELS.modelConfigurationRemove]: personalModelProfileId,
   [ELECTRON_IPC_CHANNELS.nativeAgentStartThread]: nativeAgentStartThread,
+  [ELECTRON_IPC_CHANNELS.nativeAgentListThreads]: nativeAgentListThreads,
+  [ELECTRON_IPC_CHANNELS.nativeAgentSearchThreads]: nativeAgentSearchThreads,
   [ELECTRON_IPC_CHANNELS.nativeAgentResumeThread]: nativeAgentResumeThread,
   [ELECTRON_IPC_CHANNELS.nativeAgentReadThread]: nativeAgentThreadReference,
   [ELECTRON_IPC_CHANNELS.nativeAgentForkThread]: nativeAgentForkThread,
+  [ELECTRON_IPC_CHANNELS.nativeAgentUnarchiveThread]: nativeAgentStoredThreadReference,
+  [ELECTRON_IPC_CHANNELS.nativeAgentDeleteThread]: nativeAgentStoredThreadReference,
+  [ELECTRON_IPC_CHANNELS.nativeAgentSetThreadName]: nativeAgentThreadName,
+  [ELECTRON_IPC_CHANNELS.nativeAgentCompactThread]: nativeAgentThreadReference,
+  [ELECTRON_IPC_CHANNELS.nativeAgentRollbackThread]: nativeAgentThreadRollback,
+  [ELECTRON_IPC_CHANNELS.nativeAgentListThreadTurns]: nativeAgentThreadTurnsPage,
+  [ELECTRON_IPC_CHANNELS.nativeAgentListThreadItems]: nativeAgentThreadItemsPage,
   [ELECTRON_IPC_CHANNELS.nativeAgentUpdatePermissionMode]: nativeAgentUpdatePermissionMode,
   [ELECTRON_IPC_CHANNELS.nativeAgentStartTurn]: nativeAgentStartTurn,
   [ELECTRON_IPC_CHANNELS.nativeAgentSteerTurn]: nativeAgentSteerTurn,

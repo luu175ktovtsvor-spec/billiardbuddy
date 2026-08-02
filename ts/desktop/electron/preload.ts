@@ -20,8 +20,24 @@ const nativeAgent = {
     ELECTRON_IPC_CHANNELS.nativeAgentStartThread,
     { cwd, ...(permissionMode === undefined ? {} : { permissionMode }) },
   ),
+  listThreads: (cwd: string, options: Record<string, unknown> = {}) => invoke(
+    ELECTRON_IPC_CHANNELS.nativeAgentListThreads,
+    { ...options, cwd },
+  ),
+  searchThreads: (cwd: string, searchTerm: string, options: Record<string, unknown> = {}) => invoke(
+    ELECTRON_IPC_CHANNELS.nativeAgentSearchThreads,
+    { ...options, cwd, searchTerm },
+  ),
   resumeThread: (threadId: string, cwd: string) => invoke(
     ELECTRON_IPC_CHANNELS.nativeAgentResumeThread,
+    { threadId, cwd },
+  ),
+  unarchiveThread: (threadId: string, cwd: string) => invoke(
+    ELECTRON_IPC_CHANNELS.nativeAgentUnarchiveThread,
+    { threadId, cwd },
+  ),
+  deleteThread: (threadId: string, cwd: string) => invoke(
+    ELECTRON_IPC_CHANNELS.nativeAgentDeleteThread,
     { threadId, cwd },
   ),
   readThread: (threadId: string) => invoke(ELECTRON_IPC_CHANNELS.nativeAgentReadThread, { threadId }),
@@ -33,6 +49,23 @@ const nativeAgent = {
       ...(permissionMode === undefined ? {} : { permissionMode }),
       ...(lastTurnId === undefined ? {} : { lastTurnId }),
     },
+  ),
+  setThreadName: (threadId: string, name: string) => invoke(
+    ELECTRON_IPC_CHANNELS.nativeAgentSetThreadName,
+    { threadId, name },
+  ),
+  compactThread: (threadId: string) => invoke(ELECTRON_IPC_CHANNELS.nativeAgentCompactThread, { threadId }),
+  rollbackThread: (threadId: string, numTurns: number) => invoke(
+    ELECTRON_IPC_CHANNELS.nativeAgentRollbackThread,
+    { threadId, numTurns },
+  ),
+  listThreadTurns: (threadId: string, options: Record<string, unknown> = {}) => invoke(
+    ELECTRON_IPC_CHANNELS.nativeAgentListThreadTurns,
+    { ...options, threadId },
+  ),
+  listThreadItems: (threadId: string, options: Record<string, unknown> = {}) => invoke(
+    ELECTRON_IPC_CHANNELS.nativeAgentListThreadItems,
+    { ...options, threadId },
   ),
   updatePermissionMode: (threadId: string, permissionMode: unknown) => invoke(
     ELECTRON_IPC_CHANNELS.nativeAgentUpdatePermissionMode,

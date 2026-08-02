@@ -9,9 +9,18 @@ const engineRoot = path.join(repositoryRoot, 'third_party', 'codex-engine')
 const clientRequestMethods = [
   'initialize',
   'thread/start',
+  'thread/list',
+  'thread/search',
   'thread/resume',
   'thread/read',
   'thread/fork',
+  'thread/unarchive',
+  'thread/delete',
+  'thread/name/set',
+  'thread/compact/start',
+  'thread/rollback',
+  'thread/turns/list',
+  'thread/items/list',
   'thread/settings/update',
   'config/value/write',
   'config/mcpServer/reload',
@@ -154,6 +163,11 @@ async function main(): Promise<void> {
   assertContains(requireFile('codex-rs/app-server-protocol/src/protocol/v1.rs'), 'pub request_attestation: bool', '初始化 attestation 能力')
   assertContains(requireFile('codex-rs/app-server-protocol/src/protocol/v2/thread.rs'), '#[experimental("thread/start.runtimeWorkspaceRoots")]', 'thread/start 运行根目录字段')
   assertContains(requireFile('codex-rs/app-server-protocol/src/protocol/v2/thread.rs'), 'pub struct ThreadSettingsUpdateParams', 'thread/settings/update 参数')
+  assertContains(requireFile('codex-rs/app-server-protocol/src/protocol/v2/thread.rs'), 'pub struct ThreadListParams', 'thread/list 参数')
+  assertContains(requireFile('codex-rs/app-server-protocol/src/protocol/v2/thread.rs'), 'pub struct ThreadTurnsListParams', 'thread/turns/list 参数')
+  assertContains(requireFile('codex-rs/app-server-protocol/src/protocol/v2/thread.rs'), 'pub struct ThreadItemsListParams', 'thread/items/list 参数')
+  assertContains(requireFile('codex-rs/app-server-protocol/src/protocol/v2/thread.rs'), 'pub struct ThreadCompactStartParams', 'thread/compact/start 参数')
+  assertContains(requireFile('codex-rs/app-server-protocol/src/protocol/v2/thread.rs'), 'pub struct ThreadRollbackParams', 'thread/rollback 参数')
   assertContains(requireFile('codex-rs/app-server-protocol/src/protocol/v2/permissions.rs'), 'pub enum SandboxPolicy', '原生 SandboxPolicy')
   assertContains(requireFile('codex-rs/app-server-protocol/src/protocol/v2/turn.rs'), 'text_elements: Vec<TextElement>', '原生文本输入元素')
 
