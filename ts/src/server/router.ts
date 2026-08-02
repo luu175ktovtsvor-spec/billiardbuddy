@@ -3,7 +3,6 @@
  */
 
 import { handleStatusApi } from './api/status.js'
-import { handlePluginsApi } from './api/plugins.js'
 import { handleDiagnosticsApi } from './api/diagnostics.js'
 import { legacyAgentBackendRetiredResponse } from './api/productControl.js'
 
@@ -33,7 +32,7 @@ export async function handleApiRequest(
       return legacyAgentBackendRetiredResponse()
 
     case 'plugins':
-      return handlePluginsApi(req, url, segments)
+      return legacyAgentBackendRetiredResponse()
 
     case 'diagnostics':
       return handleDiagnosticsApi(req, url, segments)
