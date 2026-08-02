@@ -61,7 +61,6 @@ import {
 import { installPreviewCleanupOnRendererNavigation } from './services/previewLifecycle'
 import { logNotificationSmokeRendererAck, scheduleNotificationSmoke } from './services/notificationSmoke'
 import { normalizeZoomFactor } from './services/zoom'
-import { ElectronBrowserCapability } from './services/browserCapability'
 import { resolveRendererEntry } from './services/rendererEntry'
 import { writeWindowSmokeSnapshot } from './services/windowSmoke'
 import {
@@ -82,7 +81,6 @@ import {
 app.setName('BilliardBuddy')
 
 const mediaUiCapability = randomBytes(32).toString('base64url')
-const browserUiCapability = randomBytes(32).toString('base64url')
 const gatewayAccessTokenCapability = randomBytes(32).toString('base64url')
 const providerConfigurationCapability = randomBytes(32).toString('base64url')
 
@@ -94,7 +92,6 @@ let terminalService: ElectronTerminalService | null = null
 let previewService: ElectronPreviewService | null = null
 let imageActions: ElectronImageActions | null = null
 let videoActions: ElectronVideoActions | null = null
-let browserCapability: ElectronBrowserCapability | null = null
 let mcpOAuthCredentialKey: string | null = null
 let providerCredentialService: ProviderCredentialService | null = null
 let nativeAgentRuntime: ElectronCodexNativeRuntime | null = null
@@ -558,26 +555,12 @@ function getServerRuntime() {
     resolveInstallationAccessToken: () => getInstallationSessionManager().accessToken(),
     resolveCachedInstallationAccessToken: () => getInstallationSessionManager().cachedAccessToken(),
     mediaUiCapability,
-    browserUiCapability,
     mcpOAuthCredentialKey: getMcpOAuthCredentialKey(),
     resolveProviderCredentialEnv: () => getProviderCredentialService().runtimeEnvironment(),
     providerConfigurationCapability,
     gatewayAccessTokenCapability,
   })
   return serverRuntime
-}
-
-function getBrowserCapability() {
-  browserCapability ??= new ElectronBrowserCapability({
-    desktopRoot: unpackedRoot(),
-    resourcesPath: process.resourcesPath,
-    isPackaged: app.isPackaged,
-    userDataPath: app.getPath('userData'),
-    configDir: process.env.BILLIARDBUDDY_CONFIG_DIR || app.getPath('userData'),
-    getServerUrl: () => getServerRuntime().getServerUrl(),
-    uiCapability: browserUiCapability,
-  })
-  return browserCapability
 }
 
 function getImageActions() {
@@ -890,13 +873,6 @@ function registerIpcHandlers() {
       base_revision: input.baseRevision,
       user_goal: input.userGoal,
     })
-  })
-  registerHandler(ELECTRON_IPC_CHANNELS.browserStatus, () => getBrowserCapability().status())
-  registerHandler(ELECTRON_IPC_CHANNELS.browserInstall, () => getBrowserCapability().install())
-  registerHandler(ELECTRON_IPC_CHANNELS.browserListActions, (_event, payload) => getBrowserCapability().listActions(String(payload)))
-  registerHandler(ELECTRON_IPC_CHANNELS.browserResolveAction, (_event, payload) => {
-    const input = payload as { taskId: string; actionId: string; expectedRevision: number; approved: boolean }
-    return getBrowserCapability().resolveAction(input.taskId, input.actionId, input.expectedRevision, input.approved)
   })
   registerHandler(ELECTRON_IPC_CHANNELS.updateCheck, (_event, payload) =>
     getUpdaterService().checkForUpdates(payload as Parameters<ElectronUpdaterService['checkForUpdates']>[0]))

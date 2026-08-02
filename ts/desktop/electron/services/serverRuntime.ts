@@ -46,8 +46,6 @@ type ServerRuntimeOptions = {
   resolveCachedInstallationAccessToken?: () => string | undefined
   /** Electron-owned capability for paid/final media actions. Never inherited by Agent worker processes. */
   mediaUiCapability?: string
-  /** Electron-owned capability for confirming recruiting side effects. */
-  browserUiCapability?: string
   /** Electron-encrypted master key used only to encrypt MCP OAuth credentials at rest. */
   mcpOAuthCredentialKey?: string
   /** Main-owned user provider credentials, injected only into the local Product Server. */
@@ -68,7 +66,6 @@ export class ElectronServerRuntime {
   private readonly resolveCachedInstallationAccessToken?: () => string | undefined
   private installationAccessToken: string | undefined
   private readonly mediaUiCapability?: string
-  private readonly browserUiCapability?: string
   private readonly mcpOAuthCredentialKey?: string
   private readonly resolveProviderCredentialEnv?: () => NodeJS.ProcessEnv
   private readonly providerConfigurationCapability?: string
@@ -90,7 +87,6 @@ export class ElectronServerRuntime {
     this.resolveInstallationAccessToken = options.resolveInstallationAccessToken
     this.resolveCachedInstallationAccessToken = options.resolveCachedInstallationAccessToken
     this.mediaUiCapability = options.mediaUiCapability
-    this.browserUiCapability = options.browserUiCapability
     this.mcpOAuthCredentialKey = options.mcpOAuthCredentialKey
     this.resolveProviderCredentialEnv = options.resolveProviderCredentialEnv
     this.providerConfigurationCapability = options.providerConfigurationCapability
@@ -104,12 +100,9 @@ export class ElectronServerRuntime {
     const withMediaCapability = this.mediaUiCapability
       ? { ...withGateway, BB_MEDIA_UI_CAPABILITY: this.mediaUiCapability }
       : withGateway
-    const withBrowserCapability = this.browserUiCapability
-      ? { ...withMediaCapability, BB_BROWSER_UI_CAPABILITY: this.browserUiCapability }
-      : withMediaCapability
     const withMcpCredentialKey = this.mcpOAuthCredentialKey
-      ? { ...withBrowserCapability, BILLIARDBUDDY_MCP_OAUTH_KEY: this.mcpOAuthCredentialKey }
-      : withBrowserCapability
+      ? { ...withMediaCapability, BILLIARDBUDDY_MCP_OAUTH_KEY: this.mcpOAuthCredentialKey }
+      : withMediaCapability
     const withProviderCredentials = { ...withMcpCredentialKey, ...this.resolveProviderCredentialEnv?.() }
     const withProviderCapability = this.providerConfigurationCapability
       ? { ...withProviderCredentials, BB_PERSONAL_MODEL_CONFIGURATION_CAPABILITY: this.providerConfigurationCapability }
