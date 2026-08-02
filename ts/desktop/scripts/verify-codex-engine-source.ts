@@ -47,6 +47,94 @@ function assertContains(source: string, fragment: string, description: string): 
   if (!source.includes(fragment)) throw new Error(`Codex Engine 源码缺少 ${description}`)
 }
 
+function assertExactPatchTargets(
+  patch: string,
+  expectedTargets: readonly string[],
+  patchFile: string,
+): void {
+  const targets = Array.from(patch.matchAll(/^diff --git a\/(\S+) b\/(\S+)$/gm), match => {
+    const source = match[1]
+    const destination = match[2]
+    if (!source || source !== destination) {
+      throw new Error(`Codex Engine 产品补丁目标不合法: ${patchFile}`)
+    }
+    return source
+  })
+  if (
+    targets.length !== expectedTargets.length
+    || targets.some((target, index) => target !== expectedTargets[index])
+  ) {
+    throw new Error(`Codex Engine 产品补丁目标不符合审核合同: ${patchFile}`)
+  }
+}
+
+function assertHookEnvironmentPatch(patch: string, patchFile: string): void {
+  assertExactPatchTargets(patch, [
+    'codex-rs/hooks/src/engine/command_runner.rs',
+  ], patchFile)
+  assertContains(patch, '+    remove_inherited_secret_environment(&mut command);', `${patchFile} 的 Hook 密钥过滤`)
+  assertContains(patch, '+    command.envs(&handler.env);', `${patchFile} 的显式 Hook 环境恢复`)
+  assertContains(patch, '+            command.env_remove(name);', `${patchFile} 的继承密钥移除`)
+  assertContains(patch, '+    uppercase_name.contains("KEY")', `${patchFile} 的默认密钥匹配规则`)
+  assertContains(patch, '+        || uppercase_name.contains("SECRET")', `${patchFile} 的默认密钥匹配规则`)
+  assertContains(patch, '+        || uppercase_name.contains("TOKEN")', `${patchFile} 的默认密钥匹配规则`)
+}
+
+function assertNonToolChildEnvironmentPatch(patch: string, patchFile: string): void {
+  assertExactPatchTargets(patch, [
+    'codex-rs/app-server/src/request_processors/feedback_doctor_report.rs',
+    'codex-rs/core-plugins/src/lib.rs',
+    'codex-rs/core-plugins/src/loader.rs',
+    'codex-rs/core-plugins/src/marketplace_add/install.rs',
+    'codex-rs/core-plugins/src/marketplace_upgrade/git.rs',
+    'codex-rs/core-plugins/src/npm_source.rs',
+    'codex-rs/core-plugins/src/startup_sync.rs',
+    'codex-rs/core-plugins/src/subprocess_environment.rs',
+    'codex-rs/core/src/shell_snapshot.rs',
+    'codex-rs/exec-server/src/client_transport.rs',
+    'codex-rs/protocol/src/shell_environment.rs',
+  ], patchFile)
+  assertContains(patch, '+pub fn is_default_excluded_environment_variable_name', `${patchFile} 的共享密钥匹配规则`)
+  assertContains(patch, '+    uppercase_name.contains("KEY")', `${patchFile} 的默认密钥匹配规则`)
+  assertContains(patch, '+        || uppercase_name.contains("SECRET")', `${patchFile} 的默认密钥匹配规则`)
+  assertContains(patch, '+        || uppercase_name.contains("TOKEN")', `${patchFile} 的默认密钥匹配规则`)
+  assertContains(patch, '+            command.env_remove(name);', `${patchFile} 的继承密钥移除`)
+  assertContains(patch, '+    remove_inherited_secret_environment(&mut command);', `${patchFile} 的插件子进程密钥过滤`)
+}
+
+function assertLegacyNotifyEnvironmentPatch(patch: string, patchFile: string): void {
+  assertExactPatchTargets(patch, [
+    'codex-rs/hooks/src/legacy_notify.rs',
+  ], patchFile)
+  assertContains(
+    patch,
+    '+use codex_protocol::shell_environment::is_default_excluded_environment_variable_name;',
+    `${patchFile} 的共享密钥匹配规则`,
+  )
+  assertContains(
+    patch,
+    '+                    if is_default_excluded_environment_variable_name(&name) {',
+    `${patchFile} 的通知 Hook 密钥过滤`,
+  )
+  assertContains(patch, '+                        command.env_remove(name);', `${patchFile} 的继承密钥移除`)
+}
+
+function assertProductPatchContents(patchFile: string, patch: string): void {
+  if (patchFile === '0001-sanitize-hook-environment.patch') {
+    assertHookEnvironmentPatch(patch, patchFile)
+    return
+  }
+  if (patchFile === '0002-sanitize-non-tool-child-environment.patch') {
+    assertNonToolChildEnvironmentPatch(patch, patchFile)
+    return
+  }
+  if (patchFile === '0003-sanitize-legacy-notify-environment.patch') {
+    assertLegacyNotifyEnvironmentPatch(patch, patchFile)
+    return
+  }
+  throw new Error(`Codex Engine 产品补丁没有语义审核器: ${patchFile}`)
+}
+
 async function gitOutput(...args: string[]): Promise<string> {
   const child = Bun.spawn(['git', '-C', engineRoot, ...args], { stdout: 'pipe', stderr: 'pipe' })
   const [exit, stdout, stderr] = await Promise.all([
@@ -78,15 +166,14 @@ async function assertProductPatches(): Promise<void> {
     if (productPatchSha256(expectedPatch.file) !== expectedPatch.sha256) {
       throw new Error(`Codex Engine 产品补丁内容不符合发行合同: ${expectedPatch.file}`)
     }
-    assertContains(patch, 'diff --git a/codex-rs/hooks/src/engine/command_runner.rs', `${expectedPatch.file} 的 Hook 目标`)
-    assertContains(patch, '+    remove_inherited_secret_environment(&mut command);', `${expectedPatch.file} 的 Hook 密钥过滤`)
-    assertContains(patch, '+    command.envs(&handler.env);', `${expectedPatch.file} 的显式 Hook 环境恢复`)
-    assertContains(patch, '+            command.env_remove(name);', `${expectedPatch.file} 的继承密钥移除`)
-    assertContains(patch, '+    uppercase_name.contains("KEY")', `${expectedPatch.file} 的默认密钥匹配规则`)
-    assertContains(patch, '+        || uppercase_name.contains("SECRET")', `${expectedPatch.file} 的默认密钥匹配规则`)
-    assertContains(patch, '+        || uppercase_name.contains("TOKEN")', `${expectedPatch.file} 的默认密钥匹配规则`)
+    assertProductPatchContents(expectedPatch.file, patch)
     await gitOutput('apply', '--check', path.join(productPatchRoot, expectedPatch.file))
   }
+  await gitOutput(
+    'apply',
+    '--check',
+    ...expectedPatches.map(patch => path.join(productPatchRoot, patch.file)),
+  )
 }
 
 /**
@@ -146,6 +233,7 @@ async function main(): Promise<void> {
   const modelInfo = requireFile('codex-rs/protocol/src/openai_models.rs')
   const toolRouter = requireFile('codex-rs/core/src/tools/router.rs')
   const arg0Dispatch = requireFile('codex-rs/arg0/src/lib.rs')
+  const execServerClientTransport = requireFile('codex-rs/exec-server/src/client_transport.rs')
 
   assertContains(appServerMain, 'arg0_dispatch_or_else', 'App Server 的本地 sandbox helper 分派入口')
   assertContains(appServerRuntime, 'ExecServerRuntimePaths::from_optional_paths(', 'App Server 的本地 Exec Server 运行路径')
@@ -165,6 +253,7 @@ async function main(): Promise<void> {
   assertContains(toolRouter, 'pub struct ToolRouter', 'Core Tool Router')
   assertContains(arg0Dispatch, 'CODEX_ARG0_EXEC_HELPER_ARG1', '本地进程执行 helper')
   assertContains(arg0Dispatch, 'CODEX_FS_HELPER_ARG1', '本地文件系统 helper')
+  assertContains(execServerClientTransport, 'command.envs(&stdio_command.env)', '可配置 Exec Server 的显式环境入口')
   assertContains(coreConfig, 'pub model_context_window: Option<i64>', 'Core 模型上下文窗口配置')
   assertContains(coreConfig, 'pub model_auto_compact_token_limit: Option<i64>', 'Core 自动压缩阈值配置')
   assertContains(modelInfo, 'from `context_window` (90%).', 'Core 未配置阈值时的原生自动压缩默认值')
