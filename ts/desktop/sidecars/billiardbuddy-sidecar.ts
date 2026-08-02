@@ -1,14 +1,13 @@
 /**
  * BilliardBuddy 桌面端合并 sidecar 入口。
  *
- * server / agent-worker / browser-host 是 GUI 产品的三个内部运行职责，共享一份
+ * server / browser-host 是 GUI 产品的两个内部运行职责，共享一份
  * bun runtime。这不是公开 CLI；第一个位置参数只由 Electron/Product Server 使用：
  *
  *   billiardbuddy-sidecar server --app-root <path> --host 127.0.0.1 --port 12345
- *   billiardbuddy-sidecar agent-worker --app-root <path>
  *
  * 任何模式都必须先做 process.env / process.argv 设置，再 await 进入相应的
- * 子模块树。原因：server 与 worker 顶层都会立即
+ * 子模块树。原因：server 顶层会立即
  * 读 process.argv / process.env，必须在它们求值前 splice 掉 --app-root、mode
  * 这些 launcher-only 参数。
  */
@@ -38,8 +37,6 @@ if (mode === 'browser-host') {
     console.log(`[billiardbuddy-sidecar] starting server mode (${process.platform}/${process.arch})`)
     const { startServer } = await import('../../src/server/index.ts')
     startServer()
-  } else if (mode === 'agent-worker') {
-    await import('../../src/entrypoints/agent-worker.ts')
   } else {
     console.error(`billiardbuddy-sidecar: unknown internal mode "${mode}"`)
     process.exit(2)

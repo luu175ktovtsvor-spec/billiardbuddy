@@ -1,6 +1,6 @@
-export type SidecarMode = 'server' | 'agent-worker' | 'browser-host'
+export type SidecarMode = 'server' | 'browser-host'
 
-const EXPLICIT_MODES = new Set<SidecarMode>(['server', 'agent-worker', 'browser-host'])
+const EXPLICIT_MODES = new Set<SidecarMode>(['server', 'browser-host'])
 
 export function resolveSidecarInvocation(
   rawArgs: string[],
