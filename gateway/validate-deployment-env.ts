@@ -73,8 +73,8 @@ function requireRelayTasksUrl(environment: DeploymentEnvironment): void {
 export function validateDeploymentEnvironment(environment: DeploymentEnvironment): void {
   const selectedModel = environment.BB_GATEWAY_MODEL?.trim()
   const textModel = selectedModel ? textReasoningRegistryEntry(selectedModel) : textReasoningRegistryEntry()
-  if (!textModel || textModel.text_reasoning_transport !== 'responses') {
-    fail('BB_GATEWAY_MODEL must select a registered Responses TextReasoning model')
+  if (!textModel || textModel.provider !== 'deepseek' || textModel.text_reasoning_transport !== 'responses') {
+    fail('BB_GATEWAY_MODEL must select a registered DeepSeek Responses TextReasoning model')
   }
 
   const signingKey = requireValue(environment, 'GW_AUTH_SIGNING_KEY')

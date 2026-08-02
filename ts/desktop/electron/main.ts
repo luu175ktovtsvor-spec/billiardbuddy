@@ -335,7 +335,13 @@ async function requestNativeAgentApproval(request: CodexNativeServerRequest): Pr
 
 function managedNativeAgentModel(): string {
   const model = process.env.BB_GATEWAY_MODEL?.trim() || defaultProviderModel()
-  if (!textReasoningRegistryEntry(model)) throw new Error('CODEX_NATIVE_MANAGED_MODEL_INVALID')
+  const entry = textReasoningRegistryEntry(model)
+  // The built-in Agent route is deliberately pinned to the managed DeepSeek
+  // Responses provider. MiMo remains a visual/media capability and cannot be
+  // turned into a second Agent model by an environment override.
+  if (!entry || entry.provider !== 'deepseek' || entry.text_reasoning_transport !== 'responses') {
+    throw new Error('CODEX_NATIVE_MANAGED_MODEL_INVALID')
+  }
   return model
 }
 

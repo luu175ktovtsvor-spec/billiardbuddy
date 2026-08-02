@@ -84,7 +84,14 @@ export type ProviderUsageAmount = {
   requests: number
   input_bytes: number
   output_units: number
+  /**
+   * Provider-reported total model tokens.  This is intentionally distinct from
+   * request bytes and output units: a managed Agent entitlement is charged by
+   * the upstream's input + output token total, not by an approximation of it.
+   */
+  total_tokens: number
 }
+
 export type ProviderUsageBudgetPolicy = {
   revision: string
   period: 'utc_day'
