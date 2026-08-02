@@ -74,7 +74,7 @@
   "scripts": {
     "dev": "vite",
     "build": "node ./node_modules/typescript/bin/tsc -b && node ./node_modules/vite/bin/vite.js build",
-    "build:electron": "bun build ./electron/main.ts --outfile ./electron-dist/main.cjs --target node --format cjs --external electron && bun build ./electron/preload.ts --outfile ./electron-dist/preload.cjs --target node --format cjs --external electron",
+    "build:electron": "bun run clean:electron-dist && bun build ./electron/main.ts --outfile ./electron-dist/main.cjs --target node --format cjs --external electron && bun build ./electron/preload.ts --outfile ./electron-dist/preload.cjs --target node --format cjs --external electron",
     "build:sidecars": "bun run ./scripts/build-sidecars.ts",
     "stage:media-toolchain": "bun run ./scripts/stage-media-toolchain.ts",
     "verify:media-toolchain": "bun run ./scripts/stage-media-toolchain.ts --verify",
@@ -83,6 +83,7 @@
     "verify:codex-native-protocol": "bun run ./scripts/verify-codex-native-protocol.ts",
     "verify:codex-managed-live": "bun run ./scripts/verify-codex-managed-live.ts",
     "audit:package": "bun run ./scripts/audit-packaged-resources.ts",
+    "clean:electron-dist": "bun run ./scripts/clean-electron-dist.ts",
     "clean:electron-output": "bun run ./scripts/clean-electron-output.ts",
     "build:macos-arm64": "bash ./scripts/build-macos-arm64.sh",
     "build:windows-x64": "powershell -ExecutionPolicy Bypass -File ./scripts/build-windows-x64.ps1",

@@ -4,13 +4,6 @@
     "module": "ESNext",
     "moduleResolution": "bundler",
     "allowJs": true,
-    "jsx": "react-jsx",
-    "baseUrl": ".",
-    "paths": {
-      "src/*": [
-        "./src/*"
-      ]
-    },
     "types": [
       "bun-types"
     ]

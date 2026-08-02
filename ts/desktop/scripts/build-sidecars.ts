@@ -26,8 +26,8 @@ if (scanExit !== 0) {
 
 await mkdir(binariesDir, { recursive: true })
 
-// 单一 GUI sidecar：Product Server 与 browser host 共享一份
-// bun runtime。详见 desktop/sidecars/billiardbuddy-sidecar.ts。
+// 单一 GUI sidecar：图片、视频、语音和设置领域共享一份 Bun runtime。
+// Agent 执行由独立的 Rust Codex App Server 负责。
 await compileExecutable({
   entrypoint: path.join(desktopRoot, 'sidecars/billiardbuddy-sidecar.ts'),
   outfileBase: path.join(binariesDir, `billiardbuddy-sidecar-${targetTriple}`),
