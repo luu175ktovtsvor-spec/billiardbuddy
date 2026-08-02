@@ -190,6 +190,7 @@ async function main(): Promise<void> {
   assertContains(serverRequestBridge, 'validateNativeServerRequestResponse', '按 source request 校验回填结果')
   assertContains(serverRequestBridge, "request.method === 'item/tool/call'", '未注册动态工具的 fail-closed 回退')
   assertContains(provider, "${prefix}.wire_api=${quoted('responses')}", '所有 App Server provider 固定使用 Responses wire API')
+  assertContains(provider, "'shell_environment_policy.ignore_default_excludes=false'", 'Core shell 子进程必须排除注入的 Key、Secret 与 Token')
   assertContains(provider, 'model_context_window=${input.contextWindowTokens}', 'Provider 上下文窗口传入 Core')
   assertNotContains(provider, 'model_auto_compact_token_limit=', 'Provider 覆盖 Core 原生自动压缩阈值')
   assertContains(provider, "profile.context_limits_source === 'legacy-unverified'", '未验证个人模型限制不得进入 Core')
@@ -248,6 +249,9 @@ async function main(): Promise<void> {
   assertContains(requireFile('codex-rs/app-server-protocol/src/protocol/v2/plugin.rs'), 'pub struct PluginUninstallParams', '原生插件卸载参数')
   assertContains(requireFile('codex-rs/app-server-protocol/src/protocol/v2/item.rs'), 'pub struct ToolRequestUserInputResponse', '原生用户追问响应')
   assertContains(requireFile('codex-rs/app-server-protocol/src/protocol/v2/mcp.rs'), 'pub struct McpServerElicitationRequestResponse', '原生 MCP 表单响应')
+  assertContains(requireFile('codex-rs/protocol/src/shell_environment.rs'), 'EnvironmentVariablePattern::new_case_insensitive("*KEY*")', 'Core shell 默认 Key 排除规则')
+  assertContains(requireFile('codex-rs/protocol/src/shell_environment.rs'), 'EnvironmentVariablePattern::new_case_insensitive("*SECRET*")', 'Core shell默认 Secret 排除规则')
+  assertContains(requireFile('codex-rs/protocol/src/shell_environment.rs'), 'EnvironmentVariablePattern::new_case_insensitive("*TOKEN*")', 'Core shell默认 Token 排除规则')
 
   console.log(`[codex-native-protocol] ${clientRequestMethods.length} client requests, ${serverRequestMethods.length} server-request contracts, provider revocation, crash recovery and initialized notification verified against ${revision}`)
 }
