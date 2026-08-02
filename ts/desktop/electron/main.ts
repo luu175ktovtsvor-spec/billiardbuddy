@@ -39,6 +39,7 @@ import {
   type CodexNativeJsonObject,
   type CodexNativeNotification,
   type NativeCodexPermissionMode,
+  type NativeCodexStartReviewInput,
   type CodexNativeServerRequest,
   type NativeCodexSkillSelector,
 } from './services/codexNativeAppServer'
@@ -710,6 +711,17 @@ function registerIpcHandlers() {
     )
     nativeAgentTurnOwners.set(turn.id, event.sender.id)
     return turn
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentStartReview, async (event, payload) => {
+    const input = payload as { threadId: string } & NativeCodexStartReviewInput
+    assertNativeAgentThreadOwner(event.sender.id, input.threadId)
+    const review = await (await getReadyNativeAgentThreadRuntime(input.threadId)).startReview(
+      { id: input.threadId },
+      input,
+    )
+    claimNativeAgentThread(event.sender.id, review.reviewThreadId)
+    nativeAgentTurnOwners.set(review.turn.id, event.sender.id)
+    return review
   })
   registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentSteerTurn, async (event, payload) => {
     const input = payload as { threadId: string, turnId: string, text: string, clientUserMessageId?: string }

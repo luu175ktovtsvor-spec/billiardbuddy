@@ -135,6 +135,39 @@ const nativeAgentStartTurn: Validator = value =>
   && value.input.every(nativeTurnInput)
   && (value.clientUserMessageId === undefined || nativeMessageId(value.clientUserMessageId))
 
+const nativeReviewLine = (value: unknown): boolean =>
+  typeof value === 'string'
+  && value.trim().length > 0
+  && value.length <= 512
+  && !/[\u0000\r\n]/.test(value)
+
+const nativeReviewTarget = (value: unknown): boolean =>
+  isRecord(value)
+  && (
+    value.type === 'uncommittedChanges'
+      ? hasOnlyKeys(value, ['type'])
+      : value.type === 'baseBranch'
+        ? hasOnlyKeys(value, ['type', 'branch']) && nativeReviewLine(value.branch)
+        : value.type === 'commit'
+          ? hasOnlyKeys(value, ['type', 'sha', 'title'])
+            && nativeReviewLine(value.sha)
+            && (value.title === undefined || nativeReviewLine(value.title))
+          : value.type === 'custom'
+            ? hasOnlyKeys(value, ['type', 'instructions'])
+              && typeof value.instructions === 'string'
+              && value.instructions.trim().length > 0
+              && value.instructions.length <= 1_048_576
+              && !value.instructions.includes('\u0000')
+            : false
+  )
+
+const nativeAgentStartReview: Validator = value =>
+  isRecord(value)
+  && hasOnlyKeys(value, ['threadId', 'target', 'delivery'])
+  && nativeCodexId(value.threadId)
+  && nativeReviewTarget(value.target)
+  && (value.delivery === undefined || value.delivery === 'inline' || value.delivery === 'detached')
+
 const nativeAgentSteerTurn: Validator = value =>
   isRecord(value)
   && hasOnlyKeys(value, ['threadId', 'turnId', 'text', 'clientUserMessageId'])
@@ -394,6 +427,7 @@ export const ELECTRON_IPC_VALIDATORS = {
   [ELECTRON_IPC_CHANNELS.nativeAgentListThreadItems]: nativeAgentThreadItemsPage,
   [ELECTRON_IPC_CHANNELS.nativeAgentUpdatePermissionMode]: nativeAgentUpdatePermissionMode,
   [ELECTRON_IPC_CHANNELS.nativeAgentStartTurn]: nativeAgentStartTurn,
+  [ELECTRON_IPC_CHANNELS.nativeAgentStartReview]: nativeAgentStartReview,
   [ELECTRON_IPC_CHANNELS.nativeAgentSteerTurn]: nativeAgentSteerTurn,
   [ELECTRON_IPC_CHANNELS.nativeAgentInterruptTurn]: nativeAgentTurnReference,
   [ELECTRON_IPC_CHANNELS.nativeAgentArchiveThread]: nativeAgentThreadReference,

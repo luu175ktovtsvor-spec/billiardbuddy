@@ -75,6 +75,10 @@ const nativeAgent = {
     ELECTRON_IPC_CHANNELS.nativeAgentStartTurn,
     { threadId, input, ...(clientUserMessageId === undefined ? {} : { clientUserMessageId }) },
   ),
+  startReview: (threadId: string, target: Record<string, unknown>, delivery?: 'inline' | 'detached') => invoke(
+    ELECTRON_IPC_CHANNELS.nativeAgentStartReview,
+    { threadId, target, ...(delivery === undefined ? {} : { delivery }) },
+  ),
   steerTurn: (threadId: string, turnId: string, text: string, clientUserMessageId?: string) => invoke(
     ELECTRON_IPC_CHANNELS.nativeAgentSteerTurn,
     { threadId, turnId, text, ...(clientUserMessageId === undefined ? {} : { clientUserMessageId }) },

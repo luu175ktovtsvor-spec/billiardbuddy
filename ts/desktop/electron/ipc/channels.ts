@@ -32,6 +32,7 @@ export const ELECTRON_IPC_CHANNELS = {
   nativeAgentSetSkillEnabled: 'desktop:native-agent:set-skill-enabled',
   nativeAgentListHooks: 'desktop:native-agent:list-hooks',
   nativeAgentListCollaborationModes: 'desktop:native-agent:list-collaboration-modes',
+  nativeAgentStartReview: 'desktop:native-agent:start-review',
   commandInvoke: 'desktop:command:invoke',
   clipboardReadText: 'desktop:clipboard:read-text',
   clipboardWriteText: 'desktop:clipboard:write-text',

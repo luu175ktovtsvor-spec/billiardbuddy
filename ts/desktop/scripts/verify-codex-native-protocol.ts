@@ -30,6 +30,7 @@ const clientRequestMethods = [
   'skills/config/write',
   'hooks/list',
   'collaborationMode/list',
+  'review/start',
   'turn/start',
   'turn/steer',
   'turn/interrupt',
@@ -146,6 +147,8 @@ async function main(): Promise<void> {
   assertContains(runtime, 'CODEX_NATIVE_ROUTE_CHANGE_REQUIRES_IDLE', '原生 Turn 期间的模型路由变更拦截')
   assertContains(runtime, 'async ensureThread(', '撤销后由原生 Thread Store 重新加载线程')
   assertContains(runtime, 'resumeStoredThread', '撤销后原生 thread/resume 恢复')
+  assertContains(runtime, 'async startReview(', '原生代码审查入口')
+  assertContains(runtime, "'review/start'", '原生代码审查协议调用')
   assertContains(runtime, 'isAvailable(): boolean', 'App Server 子进程存活状态')
   assertContains(runtime, 'markUnavailable', 'App Server 异常退出标记')
   assertContains(runtime, 'onAppServerUnavailable', 'App Server 失效时释放产品交互等待')
@@ -177,6 +180,8 @@ async function main(): Promise<void> {
   assertContains(requireFile('codex-rs/app-server-protocol/src/protocol/v2/permissions.rs'), 'pub enum SandboxPolicy', '原生 SandboxPolicy')
   assertContains(requireFile('codex-rs/app-server-protocol/src/protocol/v2/permissions.rs'), 'pub struct PermissionsRequestApprovalResponse', '原生权限申请响应')
   assertContains(requireFile('codex-rs/app-server-protocol/src/protocol/v2/turn.rs'), 'text_elements: Vec<TextElement>', '原生文本输入元素')
+  assertContains(requireFile('codex-rs/app-server-protocol/src/protocol/v2/review.rs'), 'pub struct ReviewStartParams', '原生代码审查参数')
+  assertContains(requireFile('codex-rs/app-server-protocol/src/protocol/v2/review.rs'), 'pub enum ReviewTarget', '原生代码审查目标')
   assertContains(requireFile('codex-rs/app-server-protocol/src/protocol/v2/item.rs'), 'pub struct ToolRequestUserInputResponse', '原生用户追问响应')
   assertContains(requireFile('codex-rs/app-server-protocol/src/protocol/v2/mcp.rs'), 'pub struct McpServerElicitationRequestResponse', '原生 MCP 表单响应')
 
