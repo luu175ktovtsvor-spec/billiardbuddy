@@ -54,6 +54,13 @@ export type NativeCodexTurn = {
   id: string
 }
 
+/**
+ * The value is passed unchanged to Codex's `mcp_servers.<name>` schema. Rust
+ * validates the transport and owns the persisted configuration; Electron only
+ * fixes the writable key-space and the caller's Thread ownership.
+ */
+export type NativeCodexMcpServerConfig = CodexNativeJsonObject
+
 export type NativeCodexStartThreadInput = {
   cwd: string
   route: CodexNativeModelRoute
@@ -86,6 +93,7 @@ export type ElectronCodexNativeRuntimeOptions = {
 const MAX_JSON_RPC_FRAME_BYTES = 128 * 1024 * 1024
 const APP_SERVER_SHUTDOWN_WAIT_MS = 1_000
 const NATIVE_PROVIDER_ID = 'billiardbuddy'
+const NATIVE_MCP_SERVER_NAME = /^[A-Za-z0-9_-]{1,128}$/
 
 function engineError(message: string, detail?: string): Error {
   return new Error(detail ? `${message}: ${detail}` : message)
@@ -217,6 +225,37 @@ function validateTurnInput(value: NativeCodexTurnInput): boolean {
   if (value.type === 'text') return nonEmptyText(value.text, 1 << 20)
   return nonEmptyText(value.url, 32 * 1024 * 1024)
     && /^data:image\/(?:png|jpeg|webp|gif);base64,[A-Za-z0-9+/=]+$/.test(value.url)
+}
+
+function nativeMcpServerName(value: string): string {
+  if (!NATIVE_MCP_SERVER_NAME.test(value)) throw new Error('CODEX_NATIVE_MCP_SERVER_NAME_INVALID')
+  return value
+}
+
+function nativeJsonValue(value: unknown, depth = 0): value is CodexNativeJsonValue {
+  if (depth > 16 || value === null || typeof value === 'string' || typeof value === 'boolean') return depth <= 16
+  if (typeof value === 'number') return Number.isFinite(value)
+  if (Array.isArray(value)) return value.length <= 256 && value.every(item => nativeJsonValue(item, depth + 1))
+  if (!value || typeof value !== 'object') return false
+  const record = value as Record<string, unknown>
+  const entries = Object.entries(record)
+  return entries.length <= 256
+    && entries.every(([key, item]) => (
+      key.length > 0
+      && key.length <= 256
+      && key !== '__proto__'
+      && key !== 'constructor'
+      && key !== 'prototype'
+      && nativeJsonValue(item, depth + 1)
+    ))
+}
+
+function nativeMcpConfig(value: unknown): NativeCodexMcpServerConfig {
+  const config = jsonObject(value)
+  if (!config || !nativeJsonValue(config) || Buffer.byteLength(JSON.stringify(config)) > 512 * 1024) {
+    throw new Error('CODEX_NATIVE_MCP_CONFIGURATION_INVALID')
+  }
+  return config
 }
 
 /**
@@ -499,6 +538,58 @@ export class ElectronCodexNativeRuntime {
       approvalsReviewer: settings.approvalsReviewer,
     })
     return mode
+  }
+
+  /**
+   * Writes only one source-native MCP server configuration under this private
+   * Codex Home, then asks the App Server to apply it to loaded Threads.
+   */
+  async configureMcpServer(
+    thread: Pick<NativeCodexThread, 'id'>,
+    name: string,
+    config: NativeCodexMcpServerConfig,
+  ): Promise<void> {
+    if (!nonEmptyText(thread.id)) throw new Error('CODEX_NATIVE_THREAD_ID_INVALID')
+    const serverName = nativeMcpServerName(name)
+    const value = nativeMcpConfig(config)
+    const client = this.requireClient()
+    await client.request('config/value/write', {
+      keyPath: `mcp_servers.${serverName}`,
+      value,
+      mergeStrategy: 'replace',
+    })
+    await client.request('config/mcpServer/reload')
+  }
+
+  /** Remove one source-native MCP server and refresh the active Rust sessions. */
+  async removeMcpServer(thread: Pick<NativeCodexThread, 'id'>, name: string): Promise<void> {
+    if (!nonEmptyText(thread.id)) throw new Error('CODEX_NATIVE_THREAD_ID_INVALID')
+    const serverName = nativeMcpServerName(name)
+    const client = this.requireClient()
+    await client.request('config/value/write', {
+      keyPath: `mcp_servers.${serverName}`,
+      value: null,
+      mergeStrategy: 'replace',
+    })
+    await client.request('config/mcpServer/reload')
+  }
+
+  /** Query the authoritative App Server MCP startup/auth/tool snapshot. */
+  async listMcpServerStatuses(thread: Pick<NativeCodexThread, 'id'>): Promise<CodexNativeJsonObject> {
+    if (!nonEmptyText(thread.id)) throw new Error('CODEX_NATIVE_THREAD_ID_INVALID')
+    return await this.requireClient().request<CodexNativeJsonObject>('mcpServerStatus/list', {
+      threadId: thread.id,
+      detail: 'toolsAndAuthOnly',
+    })
+  }
+
+  /** Starts Codex's own OAuth flow; credentials stay in its configured store. */
+  async startMcpOAuth(thread: Pick<NativeCodexThread, 'id'>, name: string): Promise<CodexNativeJsonObject> {
+    if (!nonEmptyText(thread.id)) throw new Error('CODEX_NATIVE_THREAD_ID_INVALID')
+    return await this.requireClient().request<CodexNativeJsonObject>('mcpServer/oauth/login', {
+      name: nativeMcpServerName(name),
+      threadId: thread.id,
+    })
   }
 
   async startTurn(thread: Pick<NativeCodexThread, 'id'>, input: readonly NativeCodexTurnInput[], clientUserMessageId?: string): Promise<NativeCodexTurn> {

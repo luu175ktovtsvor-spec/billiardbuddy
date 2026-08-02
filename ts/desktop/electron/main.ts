@@ -821,6 +821,26 @@ function registerIpcHandlers() {
     }
     releaseNativeAgentApproval(input.requestId)?.resolve({ decision: input.decision })
   })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentConfigureMcpServer, async (event, payload) => {
+    const input = payload as { threadId: string, name: string, config: CodexNativeJsonObject }
+    assertNativeAgentThreadOwner(event.sender.id, input.threadId)
+    await getNativeAgentRuntime().configureMcpServer({ id: input.threadId }, input.name, input.config)
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentRemoveMcpServer, async (event, payload) => {
+    const input = payload as { threadId: string, name: string }
+    assertNativeAgentThreadOwner(event.sender.id, input.threadId)
+    await getNativeAgentRuntime().removeMcpServer({ id: input.threadId }, input.name)
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentListMcpServerStatuses, async (event, payload) => {
+    const input = payload as { threadId: string }
+    assertNativeAgentThreadOwner(event.sender.id, input.threadId)
+    return await getNativeAgentRuntime().listMcpServerStatuses({ id: input.threadId })
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentStartMcpOAuth, async (event, payload) => {
+    const input = payload as { threadId: string, name: string }
+    assertNativeAgentThreadOwner(event.sender.id, input.threadId)
+    return await getNativeAgentRuntime().startMcpOAuth({ id: input.threadId }, input.name)
+  })
   registerHandler(ELECTRON_IPC_CHANNELS.commandInvoke, (_event, payload) => handleCommandInvoke(payload))
   registerHandler(ELECTRON_IPC_CHANNELS.clipboardReadText, () => clipboard.readText())
   registerHandler(ELECTRON_IPC_CHANNELS.clipboardWriteText, (_event, payload) => clipboard.writeText(String(payload)))

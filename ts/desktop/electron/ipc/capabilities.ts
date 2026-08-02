@@ -129,6 +129,40 @@ const nativeAgentResolveApproval: Validator = value =>
   && nativeCodexId(value.requestId)
   && nativeAgentApprovalDecision(value.decision)
 
+const nativeMcpServerName = (value: unknown): value is string =>
+  typeof value === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(value)
+
+const nativeJsonValue = (value: unknown, depth = 0): boolean => {
+  if (depth > 16 || value === null || typeof value === 'string' || typeof value === 'boolean') return depth <= 16
+  if (typeof value === 'number') return Number.isFinite(value)
+  if (Array.isArray(value)) return value.length <= 256 && value.every(item => nativeJsonValue(item, depth + 1))
+  if (!isRecord(value)) return false
+  const entries = Object.entries(value)
+  return entries.length <= 256 && entries.every(([key, item]) => (
+    key.length > 0
+    && key.length <= 256
+    && key !== '__proto__'
+    && key !== 'constructor'
+    && key !== 'prototype'
+    && nativeJsonValue(item, depth + 1)
+  ))
+}
+
+const nativeAgentConfigureMcpServer: Validator = value =>
+  isRecord(value)
+  && hasOnlyKeys(value, ['threadId', 'name', 'config'])
+  && nativeCodexId(value.threadId)
+  && nativeMcpServerName(value.name)
+  && isRecord(value.config)
+  && nativeJsonValue(value.config)
+  && Buffer.byteLength(JSON.stringify(value.config)) <= 512 * 1024
+
+const nativeAgentMcpServerReference: Validator = value =>
+  isRecord(value)
+  && hasOnlyKeys(value, ['threadId', 'name'])
+  && nativeCodexId(value.threadId)
+  && nativeMcpServerName(value.name)
+
 const modelConfigurationSave: Validator = value =>
   isRecord(value)
   && hasOnlyKeys(value, ['id', 'label', 'base_url', 'model', 'api_key', 'protocol', 'capabilities', 'supports_tool_calls'])
@@ -321,6 +355,10 @@ export const ELECTRON_IPC_VALIDATORS = {
   [ELECTRON_IPC_CHANNELS.nativeAgentInterruptTurn]: nativeAgentTurnReference,
   [ELECTRON_IPC_CHANNELS.nativeAgentArchiveThread]: nativeAgentThreadReference,
   [ELECTRON_IPC_CHANNELS.nativeAgentResolveApproval]: nativeAgentResolveApproval,
+  [ELECTRON_IPC_CHANNELS.nativeAgentConfigureMcpServer]: nativeAgentConfigureMcpServer,
+  [ELECTRON_IPC_CHANNELS.nativeAgentRemoveMcpServer]: nativeAgentMcpServerReference,
+  [ELECTRON_IPC_CHANNELS.nativeAgentListMcpServerStatuses]: nativeAgentThreadReference,
+  [ELECTRON_IPC_CHANNELS.nativeAgentStartMcpOAuth]: nativeAgentMcpServerReference,
   [ELECTRON_IPC_CHANNELS.commandInvoke]: commandInvoke,
   [ELECTRON_IPC_CHANNELS.clipboardReadText]: noPayload,
   [ELECTRON_IPC_CHANNELS.clipboardWriteText]: stringPayload,
