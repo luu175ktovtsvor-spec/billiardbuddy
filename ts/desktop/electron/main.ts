@@ -339,7 +339,6 @@ function managedNativeAgentModel(): string {
 async function resolveNativeAgentRoute(): Promise<CodexNativeModelRoute> {
   const profile = getProviderCredentialService().agentTextReasoningProfile()
   if (profile) {
-    if (profile.protocol === 'anthropic-messages') throw new Error('CODEX_NATIVE_PROVIDER_PROTOCOL_UNSUPPORTED')
     return { kind: 'personal', profile }
   }
   const config = requireProductGatewayConfig(resolveProductGatewayConfig({

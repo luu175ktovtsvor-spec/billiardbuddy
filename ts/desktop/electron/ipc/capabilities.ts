@@ -28,7 +28,7 @@ const personalModelCapability = (value: unknown): boolean =>
   value === 'TextReasoning' || value === 'VisualEvidence'
 
 const personalModelProtocol = (value: unknown): boolean =>
-  value === 'openai-compatible' || value === 'openai-responses' || value === 'anthropic-messages'
+  value === 'openai-compatible' || value === 'openai-responses'
 
 const nativeCodexId = (value: unknown): value is string =>
   typeof value === 'string' && /^[A-Za-z0-9_-]{1,200}$/.test(value)
