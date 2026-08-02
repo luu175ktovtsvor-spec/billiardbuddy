@@ -10,7 +10,6 @@ import {
 } from './transcription'
 import { CapacityQueueError, FairCapacityScheduler, MimoReservationScheduler, type CapacityPermit, type CapacitySnapshot } from './modelCapacity'
 import {
-  fetchManagedResponsesWithRetry,
   ManagedResponsesRequestError,
   prepareManagedResponsesBody,
 } from './managedResponses'
@@ -103,12 +102,12 @@ type ChatProvider = {
   bucket: TokenBucket
   capacity: CapacityPool
   queueMaxWait: number
-  retryMax: number
-  retryBaseMs: number
-  retryMaxMs: number
+  retryMax?: number
+  retryBaseMs?: number
+  retryMaxMs?: number
   responseTimeoutMs?: number
   prepareBody: (rawBody: string, allowed: ReadonlySet<string>, defaultModel: string) => { body: string }
-  fetchWithRetry: (
+  fetchWithRetry?: (
     doRequest: (attempt: number) => Promise<Response>,
     opts: ChatRetryOptions,
   ) => Promise<{ response: Response; attempts: number }>
@@ -152,9 +151,6 @@ type GatewayConfig = {
   deepseekTokenConc: number
   deepseekQueueMax: number
   deepseekQueueMaxWait: number
-  deepseekRetryMax: number
-  deepseekRetryBaseMs: number
-  deepseekRetryMaxMs: number
   /** Hard deadline spanning the managed model request and its SSE body. */
   deepseekResponseTimeoutMs: number
   deepseekAllowedModels: ReadonlySet<string>
@@ -670,11 +666,6 @@ function loadConfig(env: Env): GatewayConfig {
     deepseekTokenConc: Math.max(1, intEnv(env, 'GW_DEEPSEEK_TOKEN_CONC', intEnv(env, 'GW_DEEPSEEK_CONC', 1_000))),
     deepseekQueueMax: Math.max(0, intEnv(env, 'GW_DEEPSEEK_QUEUE_MAX', 200)),
     deepseekQueueMaxWait: Math.max(0, floatEnv(env, 'GW_DEEPSEEK_QUEUE_MAX_WAIT', 15)),
-    // DeepSeek retries permit at most one extra attempt and are independently bounded
-    // to avoid multiplying client retries.
-    deepseekRetryMax: Math.max(0, Math.min(1, intEnv(env, 'GW_DEEPSEEK_MAX_RETRIES', 1))),
-    deepseekRetryBaseMs: Math.max(1, intEnv(env, 'GW_DEEPSEEK_RETRY_BASE_MS', 500)),
-    deepseekRetryMaxMs: Math.max(1, intEnv(env, 'GW_DEEPSEEK_RETRY_MAX_MS', 8000)),
     // The HTTP idle timeout is disabled for agent SSE. This owns the separate
     // total upstream deadline, including a quiet stream after response headers.
     deepseekResponseTimeoutMs: Math.max(1, intEnv(env, 'GW_DEEPSEEK_RESPONSE_TIMEOUT_MS', 5 * 60_000)),
@@ -971,31 +962,18 @@ function requireTextReasoningModel(rawBody: string): string {
   return model
 }
 
-function managedTextOutputLimit(): number {
-  const limit = textReasoningRegistryEntry().managed_max_output_tokens
-  if (!Number.isSafeInteger(limit) || limit < 1_024) {
-    throw new HttpError(503, '受管模型输出额度未配置')
-  }
-  return limit
-}
-
-function requestedOutputUnits(rawBody: string): number {
-  const outputLimit = managedTextOutputLimit()
+function requestedOutputUnits(rawBody: string, fallback = 0): number {
   let parsed: unknown
   try {
     parsed = JSON.parse(rawBody)
   } catch {
-    // Body parsing remains owned by the provider adapter; reserve the exact
-    // bounded default until it returns the public 400.
-    return outputLimit
+    // Body parsing remains owned by the provider adapter. This is only a
+    // provisional quota reservation and never changes the Core request.
+    return fallback
   }
-  if (!isRecord(parsed)) return outputLimit
+  if (!isRecord(parsed)) return fallback
   const requested = parsed.max_output_tokens ?? parsed.max_tokens
-  if (requested === undefined) return outputLimit
-  if (!Number.isSafeInteger(requested) || requested < 1 || requested > outputLimit) {
-    throw new HttpError(400, 'max_output_tokens 超出受管模型上限')
-  }
-  return requested
+  return Number.isSafeInteger(requested) && requested > 0 ? requested : fallback
 }
 
 /**
@@ -1186,7 +1164,7 @@ function createChatHandler(provider: ChatProvider, fetchImpl: FetchLike, store: 
       ? createUpstreamResponseDeadline(request, provider.responseTimeoutMs)
       : undefined
     try {
-      const { response: upstream, attempts } = await provider.fetchWithRetry(async () => {
+      const requestUpstream = async () => {
         try {
           await provider.bucket.acquire(provider.queueMaxWait, deadline?.signal ?? request.signal)
         } catch (error) {
@@ -1203,14 +1181,17 @@ function createChatHandler(provider: ChatProvider, fetchImpl: FetchLike, store: 
             'Accept-Encoding': 'identity',
           },
         })
-      }, {
-        maxRetries: provider.retryMax,
-        baseDelayMs: provider.retryBaseMs,
-        maxDelayMs: provider.retryMaxMs,
-        signal: deadline?.signal ?? request.signal,
-        sleep: provider.retrySleep,
-        random: provider.retryRandom,
-      })
+      }
+      const { response: upstream, attempts } = provider.fetchWithRetry
+        ? await provider.fetchWithRetry(requestUpstream, {
+          maxRetries: provider.retryMax ?? 0,
+          baseDelayMs: provider.retryBaseMs ?? 1,
+          maxDelayMs: provider.retryMaxMs ?? 1,
+          signal: deadline?.signal ?? request.signal,
+          sleep: provider.retrySleep,
+          random: provider.retryRandom,
+        })
+        : { response: await requestUpstream(), attempts: 1 }
 
       if (!upstream.ok) {
         const upstreamDetail = await upstream.text().catch(() => '')
@@ -1306,12 +1287,8 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
       bucket: deepseekBucket,
       capacity: deepseekCapacity,
       queueMaxWait: config.deepseekQueueMaxWait,
-      retryMax: config.deepseekRetryMax,
-      retryBaseMs: config.deepseekRetryBaseMs,
-      retryMaxMs: config.deepseekRetryMaxMs,
       responseTimeoutMs: config.deepseekResponseTimeoutMs,
       prepareBody: prepareManagedResponsesBody,
-      fetchWithRetry: fetchManagedResponsesWithRetry,
       RequestError: ManagedResponsesRequestError,
     }
     : null
@@ -1897,7 +1874,7 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
               {
                 requests: 1,
                 input_bytes: inputBytes,
-                output_units: requestedOutputUnits(rawBody),
+                output_units: requestedOutputUnits(rawBody, 4_096),
                 total_tokens: 0,
               },
             )

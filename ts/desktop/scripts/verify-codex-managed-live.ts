@@ -133,7 +133,6 @@ async function main(): Promise<void> {
     gatewayUrl,
     resolveAccessToken: async () => accessToken,
     model,
-    contextWindowTokens: entry.verified_context_window,
   }
   const createRuntime = () => new ElectronCodexNativeRuntime({
     desktopRoot,

@@ -240,7 +240,7 @@ function absoluteDirectory(value: string): string {
 
 function routeKey(route: CodexNativeModelRoute): string {
   if (route.kind === 'managed') {
-    return `managed\0${route.gatewayUrl}\0${route.model}\0${route.contextWindowTokens}`
+    return `managed\0${route.gatewayUrl}\0${route.model}`
   }
   // A profile can keep its id, endpoint and model while the user rotates its
   // secret or changes a Chat-adapter option. Keep only a non-reversible route
