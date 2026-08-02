@@ -255,9 +255,21 @@ async function nativeAppServerCommand(desktopRoot: string): Promise<string[]> {
 }
 
 function childEnvironment(input: Readonly<Record<string, string>>): Record<string, string> {
+  // This is the same non-secret ambient set that the pinned Rust Core calls
+  // its `ShellEnvironmentPolicyInherit::Core` environment.  The App Server
+  // itself deliberately does not inherit Electron's complete environment,
+  // but its native shell tools still need a real user home/profile, shell and
+  // platform tool locations for ordinary git, package-manager and PowerShell
+  // workflows.  Model credentials remain explicit `input` capabilities and
+  // are removed again by the Core shell KEY/SECRET/TOKEN exclusion policy.
   const inheritedKeys = process.platform === 'win32'
-    ? ['PATH', 'PATHEXT', 'SystemRoot', 'WINDIR', 'ComSpec', 'TEMP', 'TMP']
-    : ['PATH', 'TMPDIR', 'TMP', 'TEMP', 'LANG', 'LC_ALL']
+    ? [
+      'PATH', 'PATHEXT', 'SHELL', 'ComSpec', 'SystemRoot', 'SystemDrive',
+      'USERNAME', 'USERDOMAIN', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH',
+      'ProgramFiles', 'ProgramFiles(x86)', 'ProgramW6432', 'ProgramData',
+      'LOCALAPPDATA', 'APPDATA', 'TEMP', 'TMP', 'TMPDIR', 'POWERSHELL', 'PWSH',
+    ]
+    : ['PATH', 'SHELL', 'TMPDIR', 'TEMP', 'TMP', 'HOME', 'LANG', 'LC_ALL', 'LC_CTYPE', 'LOGNAME', 'USER']
   const environment: Record<string, string> = {}
   for (const key of inheritedKeys) {
     const value = process.env[key]
