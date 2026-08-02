@@ -111,6 +111,12 @@ function providerOverrides(input: NativeProviderConfig): string[] {
     'analytics.enabled=false',
     'feedback.enabled=false',
     'check_for_update_on_startup=false',
+    // A private provider credential reaches the short-lived Core only through
+    // its process environment. Preserve Codex's native tool/runtime model,
+    // but make its built-in KEY/SECRET/TOKEN exclusion mandatory for every
+    // shell child so a tool, hook or project command cannot read that secret.
+    // This is a CLI override, and therefore wins over a project config file.
+    'shell_environment_policy.ignore_default_excludes=false',
     `model_provider=${quoted(input.id)}`,
     `${prefix}.name=${quoted(input.name)}`,
     `${prefix}.base_url=${quoted(input.baseUrl)}`,
