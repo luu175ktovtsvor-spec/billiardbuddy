@@ -198,15 +198,6 @@ const nativeAgentThreadItemsPage: Validator = value =>
   && nativePageLimit(value.limit)
   && nativeSortDirection(value.sortDirection)
 
-const nativeAgentApprovalDecision = (value: unknown): value is string =>
-  value === 'accept' || value === 'acceptForSession' || value === 'decline' || value === 'cancel'
-
-const nativeAgentResolveApproval: Validator = value =>
-  isRecord(value)
-  && hasOnlyKeys(value, ['requestId', 'decision'])
-  && nativeCodexId(value.requestId)
-  && nativeAgentApprovalDecision(value.decision)
-
 const nativeMcpServerName = (value: unknown): value is string =>
   typeof value === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(value)
 
@@ -225,6 +216,14 @@ const nativeJsonValue = (value: unknown, depth = 0): boolean => {
     && nativeJsonValue(item, depth + 1)
   ))
 }
+
+const nativeAgentResolveServerRequest: Validator = value =>
+  isRecord(value)
+  && hasOnlyKeys(value, ['requestId', 'response'])
+  && nativeCodexId(value.requestId)
+  && isRecord(value.response)
+  && nativeJsonValue(value.response)
+  && Buffer.byteLength(JSON.stringify(value.response)) <= 512 * 1024
 
 const nativeAgentConfigureMcpServer: Validator = value =>
   isRecord(value)
@@ -398,7 +397,7 @@ export const ELECTRON_IPC_VALIDATORS = {
   [ELECTRON_IPC_CHANNELS.nativeAgentSteerTurn]: nativeAgentSteerTurn,
   [ELECTRON_IPC_CHANNELS.nativeAgentInterruptTurn]: nativeAgentTurnReference,
   [ELECTRON_IPC_CHANNELS.nativeAgentArchiveThread]: nativeAgentThreadReference,
-  [ELECTRON_IPC_CHANNELS.nativeAgentResolveApproval]: nativeAgentResolveApproval,
+  [ELECTRON_IPC_CHANNELS.nativeAgentResolveServerRequest]: nativeAgentResolveServerRequest,
   [ELECTRON_IPC_CHANNELS.nativeAgentConfigureMcpServer]: nativeAgentConfigureMcpServer,
   [ELECTRON_IPC_CHANNELS.nativeAgentRemoveMcpServer]: nativeAgentMcpServerReference,
   [ELECTRON_IPC_CHANNELS.nativeAgentListMcpServerStatuses]: nativeAgentThreadReference,

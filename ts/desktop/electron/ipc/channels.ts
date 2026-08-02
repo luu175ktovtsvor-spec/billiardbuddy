@@ -23,7 +23,7 @@ export const ELECTRON_IPC_CHANNELS = {
   nativeAgentSteerTurn: 'desktop:native-agent:steer-turn',
   nativeAgentInterruptTurn: 'desktop:native-agent:interrupt-turn',
   nativeAgentArchiveThread: 'desktop:native-agent:archive-thread',
-  nativeAgentResolveApproval: 'desktop:native-agent:resolve-approval',
+  nativeAgentResolveServerRequest: 'desktop:native-agent:resolve-server-request',
   nativeAgentConfigureMcpServer: 'desktop:native-agent:configure-mcp-server',
   nativeAgentRemoveMcpServer: 'desktop:native-agent:remove-mcp-server',
   nativeAgentListMcpServerStatuses: 'desktop:native-agent:list-mcp-server-statuses',

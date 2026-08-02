@@ -122,14 +122,14 @@ async function main(): Promise<void> {
   const ipcCapabilities = requireDesktopFile('electron/ipc/capabilities.ts')
   const personalModels = requireRepositoryFile('ts/shared/product/personalModels.ts')
   const mainProcess = requireDesktopFile('electron/main.ts')
-  const fallback = requireDesktopFile('electron/services/nativeServerRequestFallback.ts')
+  const serverRequestBridge = requireDesktopFile('electron/services/nativeServerRequest.ts')
 
   assertExactMethods(staticMethodCalls(runtime, 'request'), clientRequestMethods, 'Electron → App Server 请求')
   assertExactMethods(staticMethodCalls(runtime, 'notify'), ['initialized'], 'Electron → App Server 通知')
   for (const method of clientRequestMethods) assertRustMethod(protocol, method)
   for (const method of serverRequestMethods) {
     assertRustMethod(protocol, method)
-    if (!mainProcess.includes(`'${method}'`) && !fallback.includes(`'${method}'`)) {
+    if (!mainProcess.includes(`'${method}'`) && !serverRequestBridge.includes(`'${method}'`)) {
       throw new Error(`原生 server request ${method} 未被 Electron 后端明确处理`)
     }
   }
@@ -148,9 +148,15 @@ async function main(): Promise<void> {
   assertContains(runtime, 'resumeStoredThread', '撤销后原生 thread/resume 恢复')
   assertContains(runtime, 'isAvailable(): boolean', 'App Server 子进程存活状态')
   assertContains(runtime, 'markUnavailable', 'App Server 异常退出标记')
+  assertContains(runtime, 'onAppServerUnavailable', 'App Server 失效时释放产品交互等待')
+  assertContains(runtime, 'void this.handleServerRequest', 'server request 不阻塞原生 stdout 事件流')
   assertContains(runtime, 'this.client.isAvailable()', '异常退出后的原生 Thread 重连分支')
   assertContains(mainProcess, 'await nativeAgentRuntime?.invalidateModelRoute()', '凭据写入后撤销旧原生子进程')
   assertContains(mainProcess, 'getReadyNativeAgentThreadRuntime', '线程操作前重新接入当前原生模型路由')
+  assertContains(mainProcess, 'nativeAgentResolveServerRequest', '原生 server request 回填 IPC')
+  assertContains(mainProcess, 'rejectNativeAgentServerRequests', '原生子进程失效时清理交互请求')
+  assertContains(serverRequestBridge, 'validateNativeServerRequestResponse', '按 source request 校验回填结果')
+  assertContains(serverRequestBridge, "request.method === 'item/tool/call'", '未注册动态工具的 fail-closed 回退')
   assertContains(provider, "${prefix}.wire_api=${quoted('responses')}", '所有 App Server provider 固定使用 Responses wire API')
   assertContains(provider, "if (profile.protocol === 'openai-responses')", '个人 Responses Key 直连分支')
   assertContains(provider, "if (profile.protocol !== 'openai-compatible')", '未知个人协议 fail-closed')
@@ -169,7 +175,10 @@ async function main(): Promise<void> {
   assertContains(requireFile('codex-rs/app-server-protocol/src/protocol/v2/thread.rs'), 'pub struct ThreadCompactStartParams', 'thread/compact/start 参数')
   assertContains(requireFile('codex-rs/app-server-protocol/src/protocol/v2/thread.rs'), 'pub struct ThreadRollbackParams', 'thread/rollback 参数')
   assertContains(requireFile('codex-rs/app-server-protocol/src/protocol/v2/permissions.rs'), 'pub enum SandboxPolicy', '原生 SandboxPolicy')
+  assertContains(requireFile('codex-rs/app-server-protocol/src/protocol/v2/permissions.rs'), 'pub struct PermissionsRequestApprovalResponse', '原生权限申请响应')
   assertContains(requireFile('codex-rs/app-server-protocol/src/protocol/v2/turn.rs'), 'text_elements: Vec<TextElement>', '原生文本输入元素')
+  assertContains(requireFile('codex-rs/app-server-protocol/src/protocol/v2/item.rs'), 'pub struct ToolRequestUserInputResponse', '原生用户追问响应')
+  assertContains(requireFile('codex-rs/app-server-protocol/src/protocol/v2/mcp.rs'), 'pub struct McpServerElicitationRequestResponse', '原生 MCP 表单响应')
 
   console.log(`[codex-native-protocol] ${clientRequestMethods.length} client requests, ${serverRequestMethods.length} server-request contracts, provider revocation, crash recovery and initialized notification verified against ${revision}`)
 }

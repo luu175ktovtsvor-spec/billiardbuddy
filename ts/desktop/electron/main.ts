@@ -54,7 +54,13 @@ import {
 import { logNotificationSmokeRendererAck, scheduleNotificationSmoke } from './services/notificationSmoke'
 import { normalizeZoomFactor } from './services/zoom'
 import { resolveRendererEntry } from './services/rendererEntry'
-import { nativeServerRequestSafeFallback } from './services/nativeServerRequestFallback'
+import {
+  nativeInteractiveServerRequest,
+  nativeServerRequestKey,
+  unsupportedNativeServerRequestFallback,
+  validateNativeServerRequestResponse,
+  type NativeInteractiveServerRequestMethod,
+} from './services/nativeServerRequest'
 import { writeWindowSmokeSnapshot } from './services/windowSmoke'
 import {
   installWindowLifecycle,
@@ -88,14 +94,11 @@ let isQuitting = false
 let trayController: TrayController | null = null
 const trustedProductWindowEntries = new Map<BrowserWindow, string>()
 
-type NativeAgentApprovalMethod =
-  | 'item/commandExecution/requestApproval'
-  | 'item/fileChange/requestApproval'
-type NativeAgentApprovalDecision = 'accept' | 'acceptForSession' | 'decline' | 'cancel'
-type PendingNativeAgentApproval = {
+type PendingNativeAgentServerRequest = {
   ownerId: number
-  method: NativeAgentApprovalMethod
-  availableDecisions: readonly NativeAgentApprovalDecision[]
+  sourceRequestKey: string
+  method: NativeInteractiveServerRequestMethod
+  params: CodexNativeJsonObject
   resolve(value: CodexNativeJsonObject): void
   reject(error: Error): void
   cleanup(): void
@@ -103,7 +106,7 @@ type PendingNativeAgentApproval = {
 
 const nativeAgentThreadOwners = new Map<string, number>()
 const nativeAgentTurnOwners = new Map<string, number>()
-const nativeAgentApprovals = new Map<string, PendingNativeAgentApproval>()
+const nativeAgentServerRequests = new Map<string, PendingNativeAgentServerRequest>()
 
 function appRoot() {
   return app.isPackaged ? app.getAppPath() : process.cwd()
@@ -193,12 +196,6 @@ function nativeTurnId(params: unknown): string | undefined {
   return nativeProtocolText(value?.turnId) ?? nativeProtocolText(nativeProtocolObject(value?.turn)?.id)
 }
 
-function nativeApprovalMethod(value: string): NativeAgentApprovalMethod | undefined {
-  return value === 'item/commandExecution/requestApproval' || value === 'item/fileChange/requestApproval'
-    ? value
-    : undefined
-}
-
 function nativeAgentPermissionMode(value: unknown): NativeCodexPermissionMode {
   if (value === undefined) return 'ask'
   if (value === 'ask' || value === 'approve-for-me' || value === 'full-access') return value
@@ -225,25 +222,6 @@ async function confirmNativeAgentFullAccess(owner: BrowserWindow): Promise<void>
   if (result.response !== 1) throw new Error('CODEX_NATIVE_FULL_ACCESS_DECLINED')
 }
 
-function nativeApprovalDecisions(
-  method: NativeAgentApprovalMethod,
-  params: unknown,
-): NativeAgentApprovalDecision[] {
-  const values = nativeProtocolObject(params)?.availableDecisions
-  const available = Array.isArray(values) ? values.filter((value): value is NativeAgentApprovalDecision =>
-    value === 'accept' || value === 'acceptForSession' || value === 'decline' || value === 'cancel')
-    : []
-  if (available.length > 0) return available
-
-  // File-change approvals intentionally use the stable legacy enum and do not
-  // expose availableDecisions. Mirror Codex's complete legacy choices. A
-  // command request without the experimental field gets the conservative
-  // subset: allow once or stop the turn, never a guessed policy amendment.
-  return method === 'item/fileChange/requestApproval'
-    ? ['accept', 'acceptForSession', 'decline', 'cancel']
-    : ['accept', 'cancel']
-}
-
 function sendNativeAgentEvent(ownerId: number, payload: unknown): boolean {
   const owner = webContents.fromId(ownerId)
   if (!owner || owner.isDestroyed()) return false
@@ -251,24 +229,45 @@ function sendNativeAgentEvent(ownerId: number, payload: unknown): boolean {
   return true
 }
 
-function releaseNativeAgentApproval(requestId: string): PendingNativeAgentApproval | undefined {
-  const pending = nativeAgentApprovals.get(requestId)
+function releaseNativeAgentServerRequest(requestId: string): PendingNativeAgentServerRequest | undefined {
+  const pending = nativeAgentServerRequests.get(requestId)
   if (!pending) return undefined
-  nativeAgentApprovals.delete(requestId)
+  nativeAgentServerRequests.delete(requestId)
   pending.cleanup()
   return pending
 }
 
-function rejectNativeAgentApprovals(error: Error): void {
-  for (const requestId of [...nativeAgentApprovals.keys()]) {
-    releaseNativeAgentApproval(requestId)?.reject(error)
+function rejectNativeAgentServerRequests(error: Error): void {
+  for (const requestId of [...nativeAgentServerRequests.keys()]) {
+    releaseNativeAgentServerRequest(requestId)?.reject(error)
   }
+}
+
+function sourceRequestKeyFromResolvedNotification(params: unknown): string | undefined {
+  const requestId = nativeProtocolObject(params)?.requestId
+  return typeof requestId === 'string' || typeof requestId === 'number'
+    ? nativeServerRequestKey(requestId)
+    : undefined
 }
 
 function forwardNativeAgentNotification(notification: CodexNativeNotification): void {
   const threadId = nativeThreadId(notification.params)
   const turnId = nativeTurnId(notification.params)
   const ownerId = threadId ? nativeAgentThreadOwners.get(threadId) : turnId ? nativeAgentTurnOwners.get(turnId) : undefined
+  if (notification.method === 'serverRequest/resolved') {
+    const sourceRequestKey = sourceRequestKeyFromResolvedNotification(notification.params)
+    if (sourceRequestKey) {
+      for (const [requestId, pending] of nativeAgentServerRequests) {
+        if (pending.sourceRequestKey !== sourceRequestKey) continue
+        releaseNativeAgentServerRequest(requestId)?.reject(new Error('CODEX_NATIVE_SERVER_REQUEST_RESOLVED'))
+        sendNativeAgentEvent(pending.ownerId, {
+          type: 'server-request-resolved',
+          requestId,
+          method: pending.method,
+        })
+      }
+    }
+  }
   if (ownerId !== undefined) {
     sendNativeAgentEvent(ownerId, {
       type: 'notification',
@@ -282,41 +281,42 @@ function forwardNativeAgentNotification(notification: CodexNativeNotification): 
   }
 }
 
-async function requestNativeAgentApproval(request: CodexNativeServerRequest): Promise<CodexNativeJsonObject> {
-  const safeFallback = nativeServerRequestSafeFallback(request)
+async function requestNativeAgentServerRequest(request: CodexNativeServerRequest): Promise<CodexNativeJsonObject> {
+  const safeFallback = unsupportedNativeServerRequestFallback(request)
   if (safeFallback) return safeFallback
-  const method = nativeApprovalMethod(request.method)
+  const method = nativeInteractiveServerRequest(request.method)
+  const params = nativeProtocolObject(request.params)
   const threadId = nativeThreadId(request.params)
-  if (!method || !threadId) throw new Error('CODEX_NATIVE_APPROVAL_REQUEST_UNSUPPORTED')
+  if (!method || !params || !threadId) throw new Error('CODEX_NATIVE_SERVER_REQUEST_UNSUPPORTED')
   const ownerId = nativeAgentThreadOwners.get(threadId)
   const owner = ownerId === undefined ? undefined : webContents.fromId(ownerId)
   if (ownerId === undefined || !owner || owner.isDestroyed()) {
-    throw new Error('CODEX_NATIVE_APPROVAL_OWNER_UNAVAILABLE')
+    throw new Error('CODEX_NATIVE_SERVER_REQUEST_OWNER_UNAVAILABLE')
   }
   const requestId = randomBytes(18).toString('base64url')
-  const availableDecisions = nativeApprovalDecisions(method, request.params)
+  const sourceRequestKey = nativeServerRequestKey(request.id)
   return await new Promise<CodexNativeJsonObject>((resolve, reject) => {
     const cleanup = () => owner.removeListener('destroyed', onOwnerDestroyed)
     const onOwnerDestroyed = () => {
-      releaseNativeAgentApproval(requestId)?.reject(new Error('CODEX_NATIVE_APPROVAL_OWNER_UNAVAILABLE'))
+      releaseNativeAgentServerRequest(requestId)?.reject(new Error('CODEX_NATIVE_SERVER_REQUEST_OWNER_UNAVAILABLE'))
     }
-    nativeAgentApprovals.set(requestId, {
+    nativeAgentServerRequests.set(requestId, {
       ownerId,
+      sourceRequestKey,
       method,
-      availableDecisions,
+      params: params as CodexNativeJsonObject,
       resolve,
       reject,
       cleanup,
     })
     owner.once('destroyed', onOwnerDestroyed)
     if (!sendNativeAgentEvent(ownerId, {
-      type: 'approval',
+      type: 'server-request',
       requestId,
       method,
-      params: request.params ?? {},
-      availableDecisions,
+      params,
     })) {
-      releaseNativeAgentApproval(requestId)?.reject(new Error('CODEX_NATIVE_APPROVAL_OWNER_UNAVAILABLE'))
+      releaseNativeAgentServerRequest(requestId)?.reject(new Error('CODEX_NATIVE_SERVER_REQUEST_OWNER_UNAVAILABLE'))
     }
   })
 }
@@ -357,7 +357,8 @@ function getNativeAgentRuntime(): ElectronCodexNativeRuntime {
     desktopRoot: unpackedRoot(),
     userDataPath: app.getPath('userData'),
     onNotification: forwardNativeAgentNotification,
-    onServerRequest: requestNativeAgentApproval,
+    onServerRequest: requestNativeAgentServerRequest,
+    onAppServerUnavailable: rejectNativeAgentServerRequests,
   })
   return nativeAgentRuntime
 }
@@ -734,14 +735,12 @@ function registerIpcHandlers() {
     await (await getReadyNativeAgentThreadRuntime(input.threadId)).archiveThread({ id: input.threadId })
     nativeAgentThreadOwners.delete(input.threadId)
   })
-  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentResolveApproval, (event, payload) => {
-    const input = payload as { requestId: string, decision: NativeAgentApprovalDecision }
-    const pending = nativeAgentApprovals.get(input.requestId)
-    if (!pending || pending.ownerId !== event.sender.id) throw new Error('CODEX_NATIVE_APPROVAL_OWNER_REQUIRED')
-    if (!pending.availableDecisions.includes(input.decision)) {
-      throw new Error('CODEX_NATIVE_APPROVAL_DECISION_UNAVAILABLE')
-    }
-    releaseNativeAgentApproval(input.requestId)?.resolve({ decision: input.decision })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentResolveServerRequest, (event, payload) => {
+    const input = payload as { requestId: string, response: unknown }
+    const pending = nativeAgentServerRequests.get(input.requestId)
+    if (!pending || pending.ownerId !== event.sender.id) throw new Error('CODEX_NATIVE_SERVER_REQUEST_OWNER_REQUIRED')
+    const response = validateNativeServerRequestResponse(pending.method, pending.params, input.response)
+    releaseNativeAgentServerRequest(input.requestId)?.resolve(response)
   })
   registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentConfigureMcpServer, async (event, payload) => {
     const input = payload as { threadId: string, name: string, config: CodexNativeJsonObject }
@@ -1006,7 +1005,7 @@ app.on('before-quit', () => {
   trayController?.dispose()
   trayController = null
   installationSessionManager?.dispose()
-  rejectNativeAgentApprovals(new Error('CODEX_NATIVE_APP_QUITTING'))
+  rejectNativeAgentServerRequests(new Error('CODEX_NATIVE_APP_QUITTING'))
   nativeAgentRuntime?.closeImmediately()
   nativeAgentRuntime = null
   nativeAgentThreadOwners.clear()
