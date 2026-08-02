@@ -153,6 +153,8 @@ bootstrap，并在结束后注销 bearer。
 - 原生工具写入临时文件；网络升级通过
   `item/commandExecution/requestApproval` 走 JSON-RPC `accept`；
 - 命令启动后由 `turn/interrupt` 中断，随后所有临时目录、子进程和 bearer 均被清理。
+- 命令运行中立即关闭 BilliardBuddy 拥有的 App Server 后，本机模型 capability 也会关闭；新
+  实例可恢复同一 Thread，源端会把旧 Turn 收敛为非活跃，并可继续新的 Turn。
 
 运行前必须取得短生命周期测试 bearer，随后执行：
 
@@ -163,5 +165,5 @@ BB_LIVE_GATEWAY_ACCESS_TOKEN=YOUR_SHORT_LIVED_TOKEN \
 bun run verify:codex-managed-live
 ```
 
-它不证明异常杀死中的恢复、用户自填 Key、MCP、Skills、Hooks、Review、协作或完整 Electron
-窗口旅程；这些仍需按相同的正式路径单独验收。
+它不证明整个 Electron 进程被操作系统异常终止后的恢复、用户自填 Key、MCP、Skills、Hooks、
+Review、协作或完整 Electron 窗口旅程；这些仍需按相同的正式路径单独验收。
