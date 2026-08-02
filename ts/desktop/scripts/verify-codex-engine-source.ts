@@ -10,6 +10,10 @@ function requireFile(relativePath: string): string {
   return readFileSync(file, 'utf8')
 }
 
+function assertContains(source: string, fragment: string, description: string): void {
+  if (!source.includes(fragment)) throw new Error(`Codex Engine 源码缺少 ${description}`)
+}
+
 async function gitOutput(...args: string[]): Promise<string> {
   const child = Bun.spawn(['git', '-C', engineRoot, ...args], { stdout: 'pipe', stderr: 'pipe' })
   const [exit, stdout, stderr] = await Promise.all([
@@ -38,6 +42,45 @@ async function main(): Promise<void> {
   if (!/^name = "codex-app-server"$/m.test(appServerManifest)) {
     throw new Error('Codex Engine 源码缺少 codex-app-server 构建入口')
   }
+  for (const dependency of [
+    'codex-core',
+    'codex-exec-server',
+    'codex-sandboxing',
+    'codex-thread-store',
+    'codex-tools',
+    'codex-skills',
+    'codex-hooks',
+    'codex-mcp',
+  ]) {
+    assertContains(appServerManifest, `${dependency} = { workspace = true }`, `App Server 的 ${dependency} Rust 依赖`)
+  }
+
+  const appServerMain = requireFile('codex-rs/app-server/src/main.rs')
+  const appServerRuntime = requireFile('codex-rs/app-server/src/lib.rs')
+  const coreRoot = requireFile('codex-rs/core/src/lib.rs')
+  const coreSession = requireFile('codex-rs/core/src/session/mod.rs')
+  const coreTurn = requireFile('codex-rs/core/src/session/turn.rs')
+  const toolRouter = requireFile('codex-rs/core/src/tools/router.rs')
+  const arg0Dispatch = requireFile('codex-rs/arg0/src/lib.rs')
+
+  assertContains(appServerMain, 'arg0_dispatch_or_else', 'App Server 的本地 sandbox helper 分派入口')
+  assertContains(appServerRuntime, 'ExecServerRuntimePaths::from_optional_paths(', 'App Server 的本地 Exec Server 运行路径')
+  assertContains(appServerRuntime, 'EnvironmentManager::from_codex_home(', 'App Server 的本地执行环境管理器')
+  assertContains(appServerRuntime, 'MessageProcessor::new(MessageProcessorArgs', 'App Server 的 JSON-RPC 消息处理器')
+  assertContains(coreRoot, 'pub mod context;', 'Core 上下文模块')
+  assertContains(coreRoot, 'pub mod exec;', 'Core 执行模块')
+  assertContains(coreRoot, 'pub mod sandboxing;', 'Core 沙箱模块')
+  assertContains(coreRoot, 'pub use thread_manager::ThreadManager;', 'Core Thread Manager')
+  assertContains(coreRoot, 'pub use mcp::McpManager;', 'Core MCP 管理器')
+  assertContains(coreRoot, 'pub(crate) use skills::SkillsService;', 'Core Skills 服务')
+  assertContains(coreRoot, 'pub(crate) mod agents_md;', 'Core 项目 AGENTS.md 加载器')
+  assertContains(coreSession, 'use crate::context_manager::ContextManager;', 'Core Context Manager 连接')
+  assertContains(coreSession, 'use crate::tools::sandboxing::ApprovalStore;', 'Core 原生审批存储')
+  assertContains(coreTurn, 'pub(crate) async fn run_turn(', 'Core Agent Turn 循环')
+  assertContains(toolRouter, 'pub struct ToolRouter', 'Core Tool Router')
+  assertContains(arg0Dispatch, 'CODEX_ARG0_EXEC_HELPER_ARG1', '本地进程执行 helper')
+  assertContains(arg0Dispatch, 'CODEX_FS_HELPER_ARG1', '本地文件系统 helper')
+
   const providerInfo = requireFile('codex-rs/model-provider-info/src/lib.rs')
   if (!providerInfo.includes('pub enum WireApi') || !providerInfo.includes('Responses')) {
     throw new Error('Codex Engine 模型协议基线与预期不一致')
@@ -47,7 +90,7 @@ async function main(): Promise<void> {
   }
 
   console.log(`[codex-engine] source lock passed: ${revision}`)
-  console.log('[codex-engine] app server, Apache-2.0 NOTICE and the Responses-only provider baseline verified; Chat must enter through the BilliardBuddy Responses bridge.')
+  console.log('[codex-engine] Rust App Server/Core/Thread/Context/Tool/Sandbox/Exec composition, Apache-2.0 NOTICE and the Responses-only provider baseline verified; Chat must enter through the BilliardBuddy Responses bridge.')
 }
 
 await main()
