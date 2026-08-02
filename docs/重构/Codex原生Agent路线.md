@@ -137,3 +137,31 @@ Skills、Hooks 与协作模式目录也直接读取 Rust App Server 的 `skills/
 6. **前端产品化**：后端协议与状态所有权稳定后，再从本地 Codex 前端行为推导 BilliardBuddy 的 Thread/Turn/Item、审批、Diff、终端、网页、队列和历史界面；前端只投影 Rust 状态，不新建 Agent 账本。
 
 每一步都必须是一个独立、可构建的提交。图片、剪辑和发布不在 Agent 后端切除范围内。
+
+## 受控真实验收入口
+
+`ts/desktop/scripts/verify-codex-managed-live.ts` 是显式付费的后端验收工具，不属于
+CI 或打包流程。它只接受调用方临时注入的 `BB_LIVE_GATEWAY_URL` 和
+`BB_LIVE_GATEWAY_ACCESS_TOKEN`，不自行创建或保存密钥；桌面安装会话在外层完成
+bootstrap，并在结束后注销 bearer。
+
+该脚本使用正式 `ElectronCodexNativeRuntime`，在一次临时工作区中验证：
+
+- Rust App Server 创建 Thread，并通过本机 Gateway capability 调用受管 DeepSeek
+  Responses 完成 Turn；
+- 关闭第一个 App Server 后，由第二个实例恢复同一个 Rust Thread；
+- 原生工具写入临时文件；网络升级通过
+  `item/commandExecution/requestApproval` 走 JSON-RPC `accept`；
+- 命令启动后由 `turn/interrupt` 中断，随后所有临时目录、子进程和 bearer 均被清理。
+
+运行前必须取得短生命周期测试 bearer，随后执行：
+
+```bash
+cd ts/desktop
+BB_LIVE_GATEWAY_URL=https://example.com/gw \
+BB_LIVE_GATEWAY_ACCESS_TOKEN=YOUR_SHORT_LIVED_TOKEN \
+bun run verify:codex-managed-live
+```
+
+它不证明异常杀死中的恢复、用户自填 Key、MCP、Skills、Hooks、Review、协作或完整 Electron
+窗口旅程；这些仍需按相同的正式路径单独验收。
