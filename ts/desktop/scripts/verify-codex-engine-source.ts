@@ -148,7 +148,7 @@ async function main(): Promise<void> {
   assertContains(providerInfo, 'self.is_openai() || is_azure_responses_provider(&self.name, self.base_url.as_deref())', 'Core 远程压缩 Provider 限定')
 
   console.log(`[codex-engine] source lock passed: ${revision}`)
-  console.log('[codex-engine] Rust App Server/Core/Thread/Context/Tool/Sandbox/Exec composition, Apache-2.0 NOTICE, the Responses-only provider baseline, native 90% automatic-compaction default, and the reviewed Hook credential-environment patch verified; Chat must enter through the BilliardBuddy Responses bridge.')
+  console.log('[codex-engine] Rust App Server/Core/Thread/Context/Tool/Sandbox/Exec composition, Apache-2.0 NOTICE, the Responses-only provider baseline, native 90% automatic-compaction default, and the reviewed Hook credential-environment patch verified; personal model credentials remain in Electron through BilliardBuddy Responses bridges.')
 }
 
 await main()

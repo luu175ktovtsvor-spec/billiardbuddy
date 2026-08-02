@@ -111,11 +111,11 @@ function providerOverrides(input: NativeProviderConfig): string[] {
     'analytics.enabled=false',
     'feedback.enabled=false',
     'check_for_update_on_startup=false',
-    // A private provider credential reaches the short-lived Core only through
-    // its process environment. Preserve Codex's native tool/runtime model,
-    // but make its built-in KEY/SECRET/TOKEN exclusion mandatory for every
-    // shell child so a tool, hook or project command cannot read that secret.
-    // This is a CLI override, and therefore wins over a project config file.
+    // The App Server receives only a revocable loopback capability token.
+    // Preserve Codex's native tool/runtime model, but make its built-in
+    // KEY/SECRET/TOKEN exclusion mandatory for every shell child so a tool,
+    // hook or project command cannot read that capability. This is a CLI
+    // override, and therefore wins over a project config file.
     'shell_environment_policy.ignore_default_excludes=false',
     `model_provider=${quoted(input.id)}`,
     `${prefix}.name=${quoted(input.name)}`,
@@ -458,6 +458,7 @@ export class ChatCompletionsResponsesAdapter {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify(upstreamBody),
+        redirect: 'error',
         signal: controller.signal,
       })
       if (!upstream.ok || !upstream.body) {
@@ -622,28 +623,35 @@ export class ChatCompletionsResponsesAdapter {
   }
 }
 
+type ResponsesCredentialAdapterOptions = {
+  upstreamUrl: string
+  failurePrefix: 'CODEX_GATEWAY_ADAPTER' | 'CODEX_PERSONAL_RESPONSES_ADAPTER'
+  resolveHeaders(request: IncomingMessage): Promise<Record<string, string>>
+}
+
 /**
- * Loopback-only Gateway credential bridge for the managed Responses route.
+ * Loopback-only credential bridge for one Responses endpoint.
  *
  * It is intentionally not an Agent service: it owns neither Thread data,
  * turns, tool calls, approvals, retries, result cache nor a durable queue.
- * Its only job is to obtain one current Electron-held bearer and transparently
- * forward one Responses request/stream to BilliardBuddy Gateway.
+ * Electron Main retains the real credential; the App Server receives only a
+ * short-lived capability token. Refusing redirects is deliberate: a provider
+ * endpoint is part of the saved user contract, not an unverified discovery
+ * redirect that may receive its credential.
  */
-export class ManagedResponsesGatewayAdapter {
+class ResponsesCredentialAdapter {
   private readonly capabilityToken = randomBytes(32).toString('base64url')
   private readonly sockets = new Set<Socket>()
   private readonly activeRequests = new Set<AbortController>()
   private server?: Server
   private closed = false
 
-  constructor(
-    private readonly gatewayBaseUrl: string,
-    private readonly resolveAccessToken: () => Promise<string>,
-  ) {}
+  constructor(private readonly options: ResponsesCredentialAdapterOptions) {}
+
+  private code(suffix: string): string { return `${this.options.failurePrefix}_${suffix}` }
 
   async start(): Promise<{ baseUrl: string; capabilityToken: string }> {
-    if (this.server || this.closed) throw new Error('CODEX_GATEWAY_ADAPTER_UNAVAILABLE')
+    if (this.server || this.closed) throw new Error(this.code('UNAVAILABLE'))
     const server = createServer((request, response) => { void this.handle(request, response) })
     server.on('connection', socket => {
       this.sockets.add(socket)
@@ -660,7 +668,7 @@ export class ManagedResponsesGatewayAdapter {
     const address = server.address()
     if (!address || typeof address === 'string') {
       await this.close()
-      throw new Error('CODEX_GATEWAY_ADAPTER_LISTEN_FAILED')
+      throw new Error(this.code('LISTEN_FAILED'))
     }
     return { baseUrl: `http://127.0.0.1:${address.port}/v1`, capabilityToken: this.capabilityToken }
   }
@@ -676,19 +684,19 @@ export class ManagedResponsesGatewayAdapter {
   }
 
   private async handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
-    if (!loopbackAddress(request.socket.remoteAddress)) return adapterFailure(response, 403, 'CODEX_GATEWAY_ADAPTER_LOOPBACK_REQUIRED')
+    if (!loopbackAddress(request.socket.remoteAddress)) return adapterFailure(response, 403, this.code('LOOPBACK_REQUIRED'))
     const url = new URL(request.url ?? '/', 'http://127.0.0.1')
     if (request.method !== 'POST' || url.pathname !== '/v1/responses' || url.search) {
-      return adapterFailure(response, 404, 'CODEX_GATEWAY_ADAPTER_ROUTE_NOT_FOUND')
+      return adapterFailure(response, 404, this.code('ROUTE_NOT_FOUND'))
     }
     if (request.headers[ENGINE_TOKEN_HEADER.toLowerCase()] !== this.capabilityToken) {
-      return adapterFailure(response, 401, 'CODEX_GATEWAY_ADAPTER_UNAUTHORIZED')
+      return adapterFailure(response, 401, this.code('UNAUTHORIZED'))
     }
     let body: string
     try {
       body = await requestText(request)
     } catch {
-      return adapterFailure(response, 413, 'CODEX_GATEWAY_ADAPTER_REQUEST_TOO_LARGE')
+      return adapterFailure(response, 413, this.code('REQUEST_TOO_LARGE'))
     }
     const controller = new AbortController()
     const abort = () => controller.abort()
@@ -696,26 +704,11 @@ export class ManagedResponsesGatewayAdapter {
     response.once('close', abort)
     this.activeRequests.add(controller)
     try {
-      const accessToken = await this.resolveAccessToken()
-      if (!accessToken.trim()) throw new Error('CODEX_GATEWAY_ADAPTER_ACCESS_TOKEN_INVALID')
-      const operationId = typeof request.headers['x-bb-operation-id'] === 'string'
-        && /^[A-Za-z0-9._:-]{8,200}$/.test(request.headers['x-bb-operation-id'])
-        ? request.headers['x-bb-operation-id']
-        : undefined
-      const idempotencyKey = typeof request.headers['idempotency-key'] === 'string'
-        && request.headers['idempotency-key'].length <= 160
-        ? request.headers['idempotency-key']
-        : undefined
-      const upstream = await fetch(`${this.gatewayBaseUrl}/responses`, {
+      const upstream = await fetch(this.options.upstreamUrl, {
         method: 'POST',
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          'Content-Type': 'application/json',
-          'X-BB-Provider-Protocol': 'bb-provider-gateway/1.0',
-          ...(operationId ? { 'X-BB-Operation-Id': operationId } : {}),
-          ...(idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : {}),
-        },
+        headers: await this.options.resolveHeaders(request),
         body,
+        redirect: 'error',
         signal: controller.signal,
       })
       const headers: Record<string, string> = {}
@@ -742,7 +735,7 @@ export class ManagedResponsesGatewayAdapter {
       }
       response.end()
     } catch {
-      if (!response.headersSent) adapterFailure(response, 502, 'CODEX_GATEWAY_ADAPTER_UPSTREAM_UNAVAILABLE')
+      if (!response.headersSent) adapterFailure(response, 502, this.code('UPSTREAM_UNAVAILABLE'))
       else if (!response.writableEnded) response.destroy()
     } finally {
       this.activeRequests.delete(controller)
@@ -761,10 +754,29 @@ export async function startCodexNativeProvider(route: CodexNativeModelRoute): Pr
       route.contextWindowTokens,
       'CODEX_NATIVE_MANAGED_MODEL_LIMITS_INVALID',
     )
-    const adapter = new ManagedResponsesGatewayAdapter(
-      managedResponsesBaseUrl(route.gatewayUrl),
-      route.resolveAccessToken,
-    )
+    const adapter = new ResponsesCredentialAdapter({
+      upstreamUrl: `${managedResponsesBaseUrl(route.gatewayUrl)}/responses`,
+      failurePrefix: 'CODEX_GATEWAY_ADAPTER',
+      resolveHeaders: async request => {
+        const accessToken = await route.resolveAccessToken()
+        if (!accessToken.trim()) throw new Error('CODEX_GATEWAY_ADAPTER_ACCESS_TOKEN_INVALID')
+        const operationId = typeof request.headers['x-bb-operation-id'] === 'string'
+          && /^[A-Za-z0-9._:-]{8,200}$/.test(request.headers['x-bb-operation-id'])
+          ? request.headers['x-bb-operation-id']
+          : undefined
+        const idempotencyKey = typeof request.headers['idempotency-key'] === 'string'
+          && request.headers['idempotency-key'].length <= 160
+          ? request.headers['idempotency-key']
+          : undefined
+        return {
+          Authorization: `Bearer ${accessToken}`,
+          'Content-Type': 'application/json',
+          'X-BB-Provider-Protocol': 'bb-provider-gateway/1.0',
+          ...(operationId ? { 'X-BB-Operation-Id': operationId } : {}),
+          ...(idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : {}),
+        }
+      },
+    })
     try {
       const started = await adapter.start()
       const tokenEnv = 'BB_CODEX_GATEWAY_ADAPTER_TOKEN'
@@ -790,18 +802,35 @@ export async function startCodexNativeProvider(route: CodexNativeModelRoute): Pr
   const { profile } = route
   const contextWindowTokens = personalModelContextWindow(profile)
   if (profile.protocol === 'openai-responses') {
-    const keyEnv = 'BB_CODEX_PERSONAL_RESPONSES_KEY'
-    const auth = profile.auth_mode === 'bearer'
-      ? { envKey: keyEnv }
-      : { envHeaders: { [profile.auth_mode]: keyEnv } }
-    const config = providerOverrides({
-      id: 'billiardbuddy',
-      name: 'BilliardBuddy personal Responses provider',
-      baseUrl: profile.base_url,
-      contextWindowTokens,
-      ...auth,
+    const adapter = new ResponsesCredentialAdapter({
+      upstreamUrl: personalModelEndpoint(profile.base_url, 'responses'),
+      failurePrefix: 'CODEX_PERSONAL_RESPONSES_ADAPTER',
+      resolveHeaders: async () => ({
+        ...personalModelAuthHeader(profile),
+        Accept: 'text/event-stream',
+        'Content-Type': 'application/json',
+      }),
     })
-    return { model: profile.model, configOverrides: config, environment: { [keyEnv]: profile.api_key }, close: async () => {} }
+    try {
+      const started = await adapter.start()
+      const tokenEnv = 'BB_CODEX_PERSONAL_RESPONSES_ADAPTER_TOKEN'
+      const config = providerOverrides({
+        id: 'billiardbuddy',
+        name: 'BilliardBuddy local personal Responses adapter',
+        baseUrl: started.baseUrl,
+        contextWindowTokens,
+        envHeaders: { [ENGINE_TOKEN_HEADER]: tokenEnv },
+      })
+      return {
+        model: profile.model,
+        configOverrides: config,
+        environment: { [tokenEnv]: started.capabilityToken },
+        close: async () => await adapter.close(),
+      }
+    } catch (error) {
+      await adapter.close()
+      throw error
+    }
   }
 
   if (profile.protocol !== 'openai-compatible') {

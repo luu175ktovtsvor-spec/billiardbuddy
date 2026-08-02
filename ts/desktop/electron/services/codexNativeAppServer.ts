@@ -307,8 +307,9 @@ function childEnvironment(input: Readonly<Record<string, string>>): Record<strin
   // itself deliberately does not inherit Electron's complete environment,
   // but its native shell tools still need a real user home/profile, shell and
   // platform tool locations for ordinary git, package-manager and PowerShell
-  // workflows.  Model credentials remain explicit `input` capabilities and
-  // are removed again by the Core shell KEY/SECRET/TOKEN exclusion policy.
+  // workflows. Loopback model capability tokens remain explicit `input`
+  // values and are removed again by the Core shell KEY/SECRET/TOKEN exclusion
+  // policy.
   const inheritedKeys = process.platform === 'win32'
     ? [
       'PATH', 'PATHEXT', 'SHELL', 'ComSpec', 'SystemRoot', 'SystemDrive',
