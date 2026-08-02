@@ -80,11 +80,11 @@ export type PersonalModelProfile = {
    * sent to Codex Core.
    */
   context_limits_source: PersonalModelContextLimitSource
-  /** Provider-documented total context window used for compaction and admission. */
+  /** Provider-documented total context window passed to Codex Core. */
   context_window_tokens: number
   /**
-   * Provider-documented maximum output capacity reserved while calculating
-   * compaction. Codex Core does not infer or invent an upstream output cap.
+   * Provider-documented maximum output capacity. It validates the selected
+   * model contract but does not override Codex Core's compaction policy.
    */
   max_output_tokens: number
   capabilities: PersonalModelCapability[]

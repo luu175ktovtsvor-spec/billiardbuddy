@@ -9,17 +9,10 @@ type NativeProviderConfig = {
   id: string
   name: string
   baseUrl: string
-  limits: ModelContextLimits
+  contextWindowTokens: number
   envKey?: string
   envHeaders?: Record<string, string>
   headers?: Record<string, string>
-}
-
-type ModelContextLimits = {
-  /** Declared full context window, validated locally before passing it to Core. */
-  contextWindowTokens: number
-  /** Compaction threshold after reserving the configured maximum model output. */
-  autoCompactTokenLimit: number
 }
 
 export type ManagedCodexModelRoute = {
@@ -35,7 +28,6 @@ export type ManagedCodexModelRoute = {
   model: string
   /** Values come from the trusted managed provider registry. */
   contextWindowTokens: number
-  autoCompactTokenLimit: number
 }
 
 export type PersonalCodexModelRoute = {
@@ -84,38 +76,28 @@ function tomlInlineTable(entries: Record<string, string>): string {
   return `{${Object.entries(entries).map(([key, value]) => `${quoted(key)}=${quoted(value)}`).join(',')}}`
 }
 
-function modelContextLimits(
-  contextWindowTokens: unknown,
-  autoCompactTokenLimit: unknown,
-  error: string,
-): ModelContextLimits {
+function modelContextWindow(contextWindowTokens: unknown, error: string): number {
   if (
     typeof contextWindowTokens !== 'number'
-    || typeof autoCompactTokenLimit !== 'number'
     || !Number.isSafeInteger(contextWindowTokens)
-    || !Number.isSafeInteger(autoCompactTokenLimit)
     || contextWindowTokens < 8_192
     || contextWindowTokens > 2_000_000
-    || autoCompactTokenLimit < 1
-    || autoCompactTokenLimit >= contextWindowTokens
   ) {
     throw new Error(error)
   }
-  return { contextWindowTokens, autoCompactTokenLimit }
+  return contextWindowTokens
 }
 
-function personalModelContextLimits(profile: PersonalModelProfile): ModelContextLimits {
+function personalModelContextWindow(profile: PersonalModelProfile): number {
   if (profile.context_limits_source !== 'user-declared') {
     throw new Error('CODEX_NATIVE_PERSONAL_MODEL_CONTEXT_CONTRACT_REQUIRED')
   }
   // The user declares this provider contract from its documentation when
-  // configuring the Key. Core learns the full window and compacts before the
-  // declared output reserve instead of falling back to Codex's unknown-model
-  // 272k default. This setting is a compaction reserve, not an invented
-  // upstream output limit.
-  return modelContextLimits(
+  // configuring the Key. Core learns the actual full window instead of
+  // falling back to its unknown-model default; the native Core keeps sole
+  // ownership of output headroom and automatic compaction.
+  return modelContextWindow(
     profile.context_window_tokens,
-    profile.context_window_tokens - profile.max_output_tokens,
     'CODEX_NATIVE_PERSONAL_MODEL_LIMITS_INVALID',
   )
 }
@@ -133,11 +115,10 @@ function providerOverrides(input: NativeProviderConfig): string[] {
     `${prefix}.name=${quoted(input.name)}`,
     `${prefix}.base_url=${quoted(input.baseUrl)}`,
     `${prefix}.wire_api=${quoted('responses')}`,
-    // These are Core's own context and compaction controls. They carry the
-    // selected provider contract into the Rust Thread/Context manager; no
-    // Electron history or second compaction loop is introduced.
-    `model_context_window=${input.limits.contextWindowTokens}`,
-    `model_auto_compact_token_limit=${input.limits.autoCompactTokenLimit}`,
+    // Only the provider's real window crosses this boundary. Leaving the
+    // compaction threshold unset preserves the Rust Core's native model
+    // defaults, headroom and automatic-compaction lifecycle.
+    `model_context_window=${input.contextWindowTokens}`,
     ...(input.envKey ? [`${prefix}.env_key=${quoted(input.envKey)}`] : []),
     ...(input.envHeaders && Object.keys(input.envHeaders).length > 0
       ? [`${prefix}.env_http_headers=${tomlInlineTable(input.envHeaders)}`]
@@ -770,9 +751,8 @@ export async function startCodexNativeProvider(route: CodexNativeModelRoute): Pr
   if (route.kind === 'managed') {
     const model = route.model.trim()
     if (!model) throw new Error('CODEX_NATIVE_MANAGED_ROUTE_INVALID')
-    const limits = modelContextLimits(
+    const contextWindowTokens = modelContextWindow(
       route.contextWindowTokens,
-      route.autoCompactTokenLimit,
       'CODEX_NATIVE_MANAGED_MODEL_LIMITS_INVALID',
     )
     const adapter = new ManagedResponsesGatewayAdapter(
@@ -786,7 +766,7 @@ export async function startCodexNativeProvider(route: CodexNativeModelRoute): Pr
         id: 'billiardbuddy',
         name: 'BilliardBuddy managed DeepSeek gateway adapter',
         baseUrl: started.baseUrl,
-        limits,
+        contextWindowTokens,
         envHeaders: { [ENGINE_TOKEN_HEADER]: tokenEnv },
       })
       return {
@@ -802,7 +782,7 @@ export async function startCodexNativeProvider(route: CodexNativeModelRoute): Pr
   }
 
   const { profile } = route
-  const limits = personalModelContextLimits(profile)
+  const contextWindowTokens = personalModelContextWindow(profile)
   if (profile.protocol === 'openai-responses') {
     const keyEnv = 'BB_CODEX_PERSONAL_RESPONSES_KEY'
     const auth = profile.auth_mode === 'bearer'
@@ -812,7 +792,7 @@ export async function startCodexNativeProvider(route: CodexNativeModelRoute): Pr
       id: 'billiardbuddy',
       name: 'BilliardBuddy personal Responses provider',
       baseUrl: profile.base_url,
-      limits,
+      contextWindowTokens,
       ...auth,
     })
     return { model: profile.model, configOverrides: config, environment: { [keyEnv]: profile.api_key }, close: async () => {} }
@@ -830,7 +810,7 @@ export async function startCodexNativeProvider(route: CodexNativeModelRoute): Pr
       id: 'billiardbuddy',
       name: 'BilliardBuddy local Chat Completions adapter',
       baseUrl: started.baseUrl,
-      limits,
+      contextWindowTokens,
       envHeaders: { [ENGINE_TOKEN_HEADER]: tokenEnv },
     })
     return {
