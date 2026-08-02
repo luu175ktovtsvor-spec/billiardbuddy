@@ -80,8 +80,10 @@ Chat Completions 假装成 Responses。那会减少表面层数，却破坏凭�
 
 ## 最小施工顺序
 
-1. **运行时源码卫生**：移除默认关闭、无消费者的 `host_managed_tools_only` 历史补丁；
-   在低负载环境完成 Rust 重建、签名、清单和正式路径验证。不得只改文档或清单。
+1. **运行时源码卫生（已完成）**：已移除默认关闭、无消费者的
+   `host_managed_tools_only` 历史补丁，并从干净锁定源码重新构建、签名和验证
+   `codex-app-server`。发行清单升为 `schemaVersion: 2`，不再记录补丁哈希；
+   源码锁、LICENSE/NOTICE、二进制哈希和正式桌面构建均已验证，不能只改文档或清单。
 2. **App Server 协议收口**：将当前手写 JSON 对象收敛到由锁定源码生成、纳入仓库的
    TypeScript 协议类型；保留一个通用 stdio client，不再按页面或旧 ProductTask 复制状态。
 3. **原生执行证据**：按 Rust 正式链路验证工具、审批、取消、进程退出与恢复；用户界面
