@@ -32,7 +32,15 @@ const personalModelContextWindow = (value: unknown): boolean =>
   typeof value === 'number' && Number.isSafeInteger(value) && value >= 8_192 && value <= 2_000_000
 
 const personalModelMaxOutputTokens = (value: unknown): boolean =>
-  typeof value === 'number' && Number.isSafeInteger(value) && value >= 1_024 && value <= 262_144
+  typeof value === 'number' && Number.isSafeInteger(value) && value >= 1_024 && value <= 1_000_000
+
+const personalModelContextContract = (contextWindowTokens: unknown, maxOutputTokens: unknown): boolean =>
+  contextWindowTokens === undefined && maxOutputTokens === undefined
+  || typeof contextWindowTokens === 'number'
+    && typeof maxOutputTokens === 'number'
+    && personalModelContextWindow(contextWindowTokens)
+    && personalModelMaxOutputTokens(maxOutputTokens)
+    && maxOutputTokens < contextWindowTokens
 
 const nativeCodexId = (value: unknown): value is string =>
   typeof value === 'string' && /^[A-Za-z0-9_-]{1,200}$/.test(value)
@@ -385,8 +393,7 @@ const modelConfigurationSave: Validator = value =>
   && value.capabilities[0] === 'TextReasoning'
   && (value.supports_tool_calls === undefined || typeof value.supports_tool_calls === 'boolean')
   && (value.supports_parallel_tool_calls === undefined || typeof value.supports_parallel_tool_calls === 'boolean')
-  && (value.context_window_tokens === undefined || personalModelContextWindow(value.context_window_tokens))
-  && (value.max_output_tokens === undefined || personalModelMaxOutputTokens(value.max_output_tokens))
+  && personalModelContextContract(value.context_window_tokens, value.max_output_tokens)
 
 const modelConfigurationSetRoute: Validator = value =>
   isRecord(value)

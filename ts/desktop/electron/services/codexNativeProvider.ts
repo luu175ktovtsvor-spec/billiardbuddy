@@ -105,9 +105,14 @@ function modelContextLimits(
 }
 
 function personalModelContextLimits(profile: PersonalModelProfile): ModelContextLimits {
-  // The user declares this provider contract when configuring the Key. Core
-  // learns the full window and compacts before consuming the configured output
-  // reserve instead of falling back to Codex's unknown-model 272k default.
+  if (profile.context_limits_source !== 'user-declared') {
+    throw new Error('CODEX_NATIVE_PERSONAL_MODEL_CONTEXT_CONTRACT_REQUIRED')
+  }
+  // The user declares this provider contract from its documentation when
+  // configuring the Key. Core learns the full window and compacts before the
+  // declared output reserve instead of falling back to Codex's unknown-model
+  // 272k default. This setting is a compaction reserve, not an invented
+  // upstream output limit.
   return modelContextLimits(
     profile.context_window_tokens,
     profile.context_window_tokens - profile.max_output_tokens,

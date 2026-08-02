@@ -32,6 +32,9 @@ export class ProviderCredentialService {
     const id = input.id ?? `model_${randomBytes(12).toString('hex')}`
     const index = value.profiles.findIndex(candidate => candidate.id === id)
     const existing = index >= 0 ? value.profiles[index] : undefined
+    const hasContextWindow = input.context_window_tokens !== undefined
+    const hasMaxOutput = input.max_output_tokens !== undefined
+    if (hasContextWindow !== hasMaxOutput) throw new Error('PERSONAL_MODEL_CONTEXT_CONTRACT_REQUIRED')
     // Editing a profile must not require Electron Main to disclose its stored
     // secret back to the renderer. An empty key is therefore meaningful only
     // for an existing id and retains the encrypted value already on disk.
@@ -42,7 +45,12 @@ export class ProviderCredentialService {
       ...existing,
       ...input,
       api_key: input.api_key.trim() || existing?.api_key || '',
-    }, id)
+    }, id, {
+      // A new declaration upgrades an old profile. Omitting both values while
+      // editing retains the existing declaration state; it cannot bless a
+      // historical default by accident.
+      contextLimitsSource: hasContextWindow ? 'user-declared' : existing?.context_limits_source,
+    })
     if (index >= 0) value.profiles[index] = profile
     else {
       if (value.profiles.length >= 20) throw new Error('PERSONAL_MODEL_PROFILE_LIMIT')
@@ -71,6 +79,9 @@ export class ProviderCredentialService {
       const profile = value.profiles.find(candidate => candidate.id === profileId)
       if (!profile?.capabilities.includes(capability)) throw new Error('PERSONAL_MODEL_CAPABILITY_UNAVAILABLE')
       if (capability === 'TextReasoning' && !profile.supports_tool_calls) throw new Error('PERSONAL_MODEL_TOOL_CALLS_REQUIRED')
+      if (capability === 'TextReasoning' && profile.context_limits_source !== 'user-declared') {
+        throw new Error('PERSONAL_MODEL_CONTEXT_CONTRACT_REQUIRED')
+      }
       value.routes[capability] = profile.id
     }
     this.write(value)
@@ -97,6 +108,11 @@ export class ProviderCredentialService {
     const value = this.read()
     const id = value.routes.TextReasoning
     const profile = id ? value.profiles.find(candidate => candidate.id === id) ?? null : null
+    if (profile && profile.context_limits_source !== 'user-declared') {
+      // Never silently fall back to the managed route: a user-selected BYOK
+      // route with unknown limits must be repaired explicitly.
+      throw new Error('PERSONAL_MODEL_CONTEXT_CONTRACT_REQUIRED')
+    }
     return profile
   }
 

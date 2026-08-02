@@ -1,3 +1,5 @@
+import { textReasoningRegistryEntry } from './providerRegistry'
+
 const MODEL_PATTERN = /^[A-Za-z0-9._:-]{1,120}$/
 
 export class ManagedResponsesRequestError extends Error {
@@ -18,6 +20,14 @@ export type ManagedResponsesRetryOptions = {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function managedOutputLimit(model: string): number {
+  const limit = textReasoningRegistryEntry(model)?.managed_max_output_tokens
+  if (!Number.isSafeInteger(limit) || limit < 1_024) {
+    throw new ManagedResponsesRequestError(503, '模型输出额度未配置')
+  }
+  return limit
 }
 
 /**
@@ -50,10 +60,34 @@ export function prepareManagedResponsesBody(
   const requested = typeof parsed.model === 'string' ? parsed.model : ''
   const model = allowedModels.has(requested) ? requested : defaultModel
   if (!MODEL_PATTERN.test(model)) throw new ManagedResponsesRequestError(503, '模型服务未配置')
+  const outputLimit = managedOutputLimit(model)
+  // Older local callers may still use the Chat Completions spelling. Normalize
+  // it at the Gateway boundary so quota reservation and the upstream Responses
+  // request use one explicit value.
+  const requestedOutput = parsed.max_output_tokens ?? parsed.max_tokens
+  if (
+    requestedOutput !== undefined
+    && (typeof requestedOutput !== 'number'
+      || !Number.isSafeInteger(requestedOutput)
+      || requestedOutput < 1
+      || requestedOutput > outputLimit)
+  ) {
+    throw new ManagedResponsesRequestError(400, 'max_output_tokens 超出受管模型上限')
+  }
+  const maxOutputTokens = requestedOutput ?? outputLimit
 
   // Force this even if the caller sent true: provider-side storage would make
-  // the remote account a second source of conversation truth.
-  const next: Record<string, unknown> = { ...parsed, model, stream: true, store: false }
+  // the remote account a second source of conversation truth. Core currently
+  // does not expose a generic output-cap config, so the Gateway owns the
+  // explicit bounded request value that also backs quota reservation.
+  const { max_tokens: _legacyMaxTokens, ...responsesBody } = parsed
+  const next: Record<string, unknown> = {
+    ...responsesBody,
+    model,
+    stream: true,
+    store: false,
+    max_output_tokens: maxOutputTokens,
+  }
   return { body: JSON.stringify(next) }
 }
 

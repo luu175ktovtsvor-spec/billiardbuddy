@@ -5,17 +5,21 @@ import type {
   TextReasoningTransport,
 } from '../ts/shared/product/providerContracts.js'
 
-export const PROVIDER_REGISTRY_CONTRACT_VERSION = 2 as const
+export const PROVIDER_REGISTRY_CONTRACT_VERSION = 3 as const
 export const PROVIDER_REGISTRY_VERIFICATION_DATE = '2026-07-23'
 export const PROVIDER_RUNTIME_CONTRACT_VERSION_ENV = 'BB_PROVIDER_CONTRACT_VERSION'
 export const PROVIDER_RUNTIME_REGISTRY_SHA256_ENV = 'BB_PROVIDER_REGISTRY_SHA256'
 export const PROVIDER_RUNTIME_MANIFEST_SHA256_ENV = 'BB_PROVIDER_WORKER_MANIFEST_SHA256'
 
-/**
- * The one canonical, non-secret model registry.  Windows are deliberately the
- * project-wide lower bound (16k): repository evidence records larger advertised
- * limits but no end-to-end worker verification of them.
- */
+// DeepSeek published these V4 Flash capacities in Models & Pricing, checked
+// 2026-08-02: https://api-docs.deepseek.com/quick_start/pricing/
+// The managed ceiling is intentionally smaller than the provider hard maximum:
+// it is the platform's bounded per-turn allowance, not a claim about the model.
+const DEEPSEEK_V4_FLASH_CONTEXT_WINDOW = 1_000_000
+const DEEPSEEK_V4_FLASH_PROVIDER_MAX_OUTPUT_TOKENS = 384_000
+const DEEPSEEK_V4_FLASH_MANAGED_MAX_OUTPUT_TOKENS = 32_768
+
+/** The one canonical, non-secret model registry. */
 export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
   {
     model_id: 'deepseek-v4-flash',
@@ -23,13 +27,15 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     capabilities: ['TextReasoning'],
     text_reasoning_transport: 'responses',
     worker_env_source: { variable: 'BB_GATEWAY_MODEL', slot_aliases: [], default_model: true },
-    verified_context_window: 16_000,
+    verified_context_window: DEEPSEEK_V4_FLASH_CONTEXT_WINDOW,
+    provider_max_output_tokens: DEEPSEEK_V4_FLASH_PROVIDER_MAX_OUTPUT_TOKENS,
+    managed_max_output_tokens: DEEPSEEK_V4_FLASH_MANAGED_MAX_OUTPUT_TOKENS,
     body_caps: {
       CHAT_TEXT_BODY_MAX_BYTES: 24 * 1024 * 1024,
       VISION_BODY_MAX_BYTES: 24 * 1024 * 1024,
       IMAGE_GENERATION_BODY_MAX_BYTES: 32 * 1024 * 1024,
     },
-    compact_threshold: 12_000,
+    compact_threshold: DEEPSEEK_V4_FLASH_CONTEXT_WINDOW - DEEPSEEK_V4_FLASH_MANAGED_MAX_OUTPUT_TOKENS,
     resume_evidence: { path: 'ts/desktop/electron/services/codexNativeAppServer.ts', status: 'conservative' },
     contract_version: PROVIDER_REGISTRY_CONTRACT_VERSION,
     verification_date: PROVIDER_REGISTRY_VERIFICATION_DATE,
@@ -122,6 +128,8 @@ type WorkerModelRegistryEntry = {
   text_reasoning_transport?: TextReasoningTransport
   worker_env_source: { default_model?: boolean }
   verified_context_window: number
+  provider_max_output_tokens?: number
+  managed_max_output_tokens?: number
   compact_threshold: number
 }
 
@@ -188,6 +196,8 @@ export function renderProviderRuntimeManifest(): Json {
       ...(entry.text_reasoning_transport ? { text_reasoning_transport: entry.text_reasoning_transport } : {}),
       worker_env_source: entry.worker_env_source,
       verified_context_window: entry.verified_context_window,
+      ...(entry.provider_max_output_tokens !== undefined ? { provider_max_output_tokens: entry.provider_max_output_tokens } : {}),
+      ...(entry.managed_max_output_tokens !== undefined ? { managed_max_output_tokens: entry.managed_max_output_tokens } : {}),
       body_caps: entry.body_caps,
       compact_threshold: entry.compact_threshold,
       resume_evidence: entry.resume_evidence,
@@ -218,13 +228,37 @@ export function buildProviderRegistryRuntimeEnv(model: string | undefined): Reco
   }
 }
 
-export function validateProviderRegistryEntry(entry: Pick<ProviderRegistryEntry, 'capabilities' | 'text_reasoning_transport' | 'verified_context_window' | 'verification_date' | 'body_caps' | 'resume_evidence'>): ProviderRuntimeConfigurationError | undefined {
-  if (!entry.resume_evidence.path || entry.verification_date !== PROVIDER_REGISTRY_VERIFICATION_DATE || entry.verified_context_window >= 1_000_000) return 'MODEL_CONTRACT_STALE'
+export function validateProviderRegistryEntry(entry: Pick<ProviderRegistryEntry, 'capabilities' | 'text_reasoning_transport' | 'verified_context_window' | 'provider_max_output_tokens' | 'managed_max_output_tokens' | 'compact_threshold' | 'verification_date' | 'body_caps' | 'resume_evidence'>): ProviderRuntimeConfigurationError | undefined {
+  if (
+    !entry.resume_evidence.path
+    || entry.verification_date !== PROVIDER_REGISTRY_VERIFICATION_DATE
+    || !Number.isSafeInteger(entry.verified_context_window)
+    || entry.verified_context_window < 8_192
+    || entry.verified_context_window > 2_000_000
+    || !Number.isSafeInteger(entry.compact_threshold)
+    || entry.compact_threshold < 1
+    || entry.compact_threshold >= entry.verified_context_window
+  ) return 'MODEL_CONTRACT_STALE'
   const caps = entry.body_caps
   if (caps.CHAT_TEXT_BODY_MAX_BYTES <= 0 || caps.VISION_BODY_MAX_BYTES <= 0 || caps.IMAGE_GENERATION_BODY_MAX_BYTES <= 0) return 'MODEL_CONTRACT_STALE'
   const needsTextTransport = entry.capabilities.includes('TextReasoning')
   if (needsTextTransport !== Boolean(entry.text_reasoning_transport)) return 'MODEL_CONTRACT_STALE'
   if (entry.text_reasoning_transport && !['chat_completions', 'responses'].includes(entry.text_reasoning_transport)) return 'MODEL_CONTRACT_STALE'
+  if (needsTextTransport) {
+    const providerMaximum = entry.provider_max_output_tokens
+    const managedMaximum = entry.managed_max_output_tokens
+    if (
+      typeof providerMaximum !== 'number'
+      || !Number.isSafeInteger(providerMaximum)
+      || providerMaximum < 1_024
+      || providerMaximum >= entry.verified_context_window
+      || typeof managedMaximum !== 'number'
+      || !Number.isSafeInteger(managedMaximum)
+      || managedMaximum < 1_024
+      || managedMaximum > providerMaximum
+      || entry.compact_threshold !== entry.verified_context_window - managedMaximum
+    ) return 'MODEL_CONTRACT_STALE'
+  }
   return undefined
 }
 

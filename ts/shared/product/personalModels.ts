@@ -25,6 +25,11 @@ export const PERSONAL_MODEL_OPENAI_SERVICE_TIERS = ['provider-default', 'auto', 
 export type PersonalModelOpenAiServiceTier = (typeof PERSONAL_MODEL_OPENAI_SERVICE_TIERS)[number]
 export const PERSONAL_MODEL_CHAT_COMPLETION_TOKEN_LIMIT_FIELDS = ['max_tokens', 'max_completion_tokens', 'provider-default'] as const
 export type PersonalModelChatCompletionTokenLimitField = (typeof PERSONAL_MODEL_CHAT_COMPLETION_TOKEN_LIMIT_FIELDS)[number]
+export const PERSONAL_MODEL_CONTEXT_LIMIT_SOURCES = ['user-declared', 'legacy-unverified'] as const
+export type PersonalModelContextLimitSource = (typeof PERSONAL_MODEL_CONTEXT_LIMIT_SOURCES)[number]
+// These values exist solely to retain profiles saved before explicit model
+// limits became mandatory. They are never used to create or activate a new
+// personal Agent route.
 export const DEFAULT_PERSONAL_MODEL_CONTEXT_WINDOW = 128_000
 export const DEFAULT_PERSONAL_MODEL_MAX_OUTPUT_TOKENS = 8_192
 export const DEFAULT_PERSONAL_MODEL_REASONING_BUDGET_TOKENS = 4_096
@@ -69,15 +74,24 @@ export type PersonalModelProfile = {
   chat_completion_token_limit_field: PersonalModelChatCompletionTokenLimitField
   /** Anthropic manual-thinking budget; used only when reasoning_mode is enabled. */
   reasoning_budget_tokens: number
+  /**
+   * New profiles must be declared by the user from the selected provider's
+   * documentation. Legacy values are retained for editing only and cannot be
+   * sent to Codex Core.
+   */
+  context_limits_source: PersonalModelContextLimitSource
   /** Provider-documented total context window used for compaction and admission. */
   context_window_tokens: number
-  /** Provider-documented maximum output requested for each model turn. */
+  /**
+   * Provider-documented maximum output capacity reserved while calculating
+   * compaction. Codex Core does not infer or invent an upstream output cap.
+   */
   max_output_tokens: number
   capabilities: PersonalModelCapability[]
   api_key: string
 }
 
-export type PersonalModelProfileInput = Omit<PersonalModelProfile, 'id' | 'auth_mode' | 'supports_tool_calls' | 'supports_parallel_tool_calls' | 'supports_openai_prompt_cache_key' | 'supports_openai_assistant_phase' | 'supports_chat_completion_stream_usage' | 'supports_reasoning' | 'reasoning_mode' | 'reasoning_effort' | 'reasoning_summary' | 'anthropic_thinking_display' | 'text_verbosity' | 'openai_service_tier' | 'chat_completion_token_limit_field' | 'reasoning_budget_tokens' | 'context_window_tokens' | 'max_output_tokens'> & {
+export type PersonalModelProfileInput = Omit<PersonalModelProfile, 'id' | 'auth_mode' | 'supports_tool_calls' | 'supports_parallel_tool_calls' | 'supports_openai_prompt_cache_key' | 'supports_openai_assistant_phase' | 'supports_chat_completion_stream_usage' | 'supports_reasoning' | 'reasoning_mode' | 'reasoning_effort' | 'reasoning_summary' | 'anthropic_thinking_display' | 'text_verbosity' | 'openai_service_tier' | 'chat_completion_token_limit_field' | 'reasoning_budget_tokens' | 'context_limits_source' | 'context_window_tokens' | 'max_output_tokens'> & {
   id?: string
   auth_mode?: PersonalModelAuthMode
   supports_tool_calls?: boolean
@@ -165,6 +179,10 @@ export function validPersonalModelChatCompletionTokenLimitField(value: unknown):
   return typeof value === 'string' && (PERSONAL_MODEL_CHAT_COMPLETION_TOKEN_LIMIT_FIELDS as readonly string[]).includes(value)
 }
 
+export function validPersonalModelContextLimitSource(value: unknown): value is PersonalModelContextLimitSource {
+  return typeof value === 'string' && (PERSONAL_MODEL_CONTEXT_LIMIT_SOURCES as readonly string[]).includes(value)
+}
+
 export function defaultPersonalModelAuthMode(): PersonalModelAuthMode {
   return 'bearer'
 }
@@ -187,7 +205,15 @@ export function safePersonalModelBaseUrl(value: string, protocol: PersonalModelP
   return url.toString().replace(/\/$/, '')
 }
 
-export function normalizePersonalModelProfile(input: PersonalModelProfileInput, id: string): PersonalModelProfile {
+type PersonalModelNormalizationOptions = {
+  contextLimitsSource?: PersonalModelContextLimitSource
+}
+
+export function normalizePersonalModelProfile(
+  input: PersonalModelProfileInput,
+  id: string,
+  options: PersonalModelNormalizationOptions = {},
+): PersonalModelProfile {
   if (!validPersonalModelProfileId(id)) throw new Error('PERSONAL_MODEL_PROFILE_ID_INVALID')
   const label = input.label.trim()
   const model = input.model.trim()
@@ -253,15 +279,32 @@ export function normalizePersonalModelProfile(input: PersonalModelProfileInput, 
   if (!validPersonalModelChatCompletionTokenLimitField(chatCompletionTokenLimitField)) {
     throw new Error('PERSONAL_MODEL_CHAT_COMPLETION_TOKEN_LIMIT_FIELD_INVALID')
   }
-  const contextWindowTokens = input.context_window_tokens ?? DEFAULT_PERSONAL_MODEL_CONTEXT_WINDOW
-  const maxOutputTokens = input.max_output_tokens ?? DEFAULT_PERSONAL_MODEL_MAX_OUTPUT_TOKENS
+  const contextLimitsSource = options.contextLimitsSource ?? 'user-declared'
+  if (!validPersonalModelContextLimitSource(contextLimitsSource)) {
+    throw new Error('PERSONAL_MODEL_CONFIGURATION_CORRUPT')
+  }
+  const hasContextWindow = input.context_window_tokens !== undefined
+  const hasMaxOutput = input.max_output_tokens !== undefined
+  if (hasContextWindow !== hasMaxOutput) throw new Error('PERSONAL_MODEL_CONTEXT_CONTRACT_REQUIRED')
+  const contextWindowTokens = hasContextWindow
+    ? input.context_window_tokens
+    : contextLimitsSource === 'legacy-unverified'
+      ? DEFAULT_PERSONAL_MODEL_CONTEXT_WINDOW
+      : undefined
+  const maxOutputTokens = hasMaxOutput
+    ? input.max_output_tokens
+    : contextLimitsSource === 'legacy-unverified'
+      ? DEFAULT_PERSONAL_MODEL_MAX_OUTPUT_TOKENS
+      : undefined
   if (
-    !Number.isSafeInteger(contextWindowTokens)
+    contextWindowTokens === undefined
+    || maxOutputTokens === undefined
+    || !Number.isSafeInteger(contextWindowTokens)
     || contextWindowTokens < 8_192
     || contextWindowTokens > 2_000_000
     || !Number.isSafeInteger(maxOutputTokens)
     || maxOutputTokens < 1_024
-    || maxOutputTokens > 262_144
+    || maxOutputTokens > 1_000_000
     || maxOutputTokens >= contextWindowTokens
   ) throw new Error('PERSONAL_MODEL_TOKEN_BUDGET_INVALID')
   if (
@@ -318,6 +361,7 @@ export function normalizePersonalModelProfile(input: PersonalModelProfileInput, 
     openai_service_tier: openAiServiceTier,
     chat_completion_token_limit_field: chatCompletionTokenLimitField,
     reasoning_budget_tokens: reasoningBudgetTokens,
+    context_limits_source: contextLimitsSource,
     context_window_tokens: contextWindowTokens,
     max_output_tokens: maxOutputTokens,
     capabilities,
@@ -337,7 +381,7 @@ export function parsePersonalModelConfiguration(raw: string | undefined | null):
   const profiles = record.profiles.flatMap(rawProfile => {
     if (!rawProfile || typeof rawProfile !== 'object' || Array.isArray(rawProfile)) throw new Error('PERSONAL_MODEL_CONFIGURATION_CORRUPT')
     const rawProtocol = (rawProfile as { protocol?: unknown }).protocol
-    const profile = rawProfile as PersonalModelProfile & { capabilities?: unknown }
+    const profile = rawProfile as PersonalModelProfile & { capabilities?: unknown; context_limits_source?: unknown }
     // A historical Anthropic profile never entered the native Codex route.
     // Ignore it at this boundary rather than letting a legacy saved setting
     // make the two supported user-key protocols unavailable.
@@ -345,8 +389,16 @@ export function parsePersonalModelConfiguration(raw: string | undefined | null):
     if (!Array.isArray(profile.capabilities) || !profile.capabilities.every(validPersonalModelCapability)) {
       throw new Error('PERSONAL_MODEL_CONFIGURATION_CORRUPT')
     }
+    // Saved profiles from before this field existed may contain numerical
+    // defaults, but those numbers were never an explicit user declaration.
+    // Preserve the encrypted profile for editing while making the Agent route
+    // fail closed until both values are saved again.
+    let contextLimitsSource: PersonalModelContextLimitSource
+    if (profile.context_limits_source === undefined) contextLimitsSource = 'legacy-unverified'
+    else if (validPersonalModelContextLimitSource(profile.context_limits_source)) contextLimitsSource = profile.context_limits_source
+    else throw new Error('PERSONAL_MODEL_CONFIGURATION_CORRUPT')
     const capabilities = profile.capabilities
-    return [normalizePersonalModelProfile({ ...profile, capabilities }, profile.id)]
+    return [normalizePersonalModelProfile({ ...profile, capabilities }, profile.id, { contextLimitsSource })]
   })
   if (profiles.length > 20 || new Set(profiles.map(profile => profile.id)).size !== profiles.length) throw new Error('PERSONAL_MODEL_CONFIGURATION_CORRUPT')
   const routes: PersonalModelConfiguration['routes'] = {}
