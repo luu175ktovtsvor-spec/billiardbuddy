@@ -164,6 +164,31 @@ export type NativeCodexThreadItemsPageInput = NativeCodexThreadPageInput & {
   turnId?: string
 }
 
+/** Source-native durable goal statuses. Electron does not invent a parallel task state. */
+export type NativeCodexThreadGoalStatus =
+  | 'active'
+  | 'paused'
+  | 'blocked'
+  | 'usageLimited'
+  | 'budgetLimited'
+  | 'complete'
+
+/**
+ * Patch input for Codex's durable Thread Goal. `null` clears only the native
+ * token budget; omitting it leaves the existing source-owned value unchanged.
+ */
+export type NativeCodexThreadGoalSetInput = {
+  objective?: string
+  status?: NativeCodexThreadGoalStatus
+  tokenBudget?: number | null
+}
+
+/** Opaque source-native pagination over background unified-exec terminals. */
+export type NativeCodexBackgroundTerminalsPageInput = {
+  cursor?: string
+  limit?: number
+}
+
 export type NativeCodexTurnInput =
   | { type: 'text'; text: string }
   | { type: 'image'; url: string }
@@ -415,6 +440,65 @@ function nativeTurnItemsView(value: unknown): 'notLoaded' | 'summary' | 'full' |
   if (value === undefined) return undefined
   if (value !== 'notLoaded' && value !== 'summary' && value !== 'full') {
     throw new Error('CODEX_NATIVE_TURN_ITEMS_VIEW_INVALID')
+  }
+  return value
+}
+
+function nativeThreadGoalStatus(value: unknown): NativeCodexThreadGoalStatus | undefined {
+  if (value === undefined) return undefined
+  if (
+    value === 'active'
+    || value === 'paused'
+    || value === 'blocked'
+    || value === 'usageLimited'
+    || value === 'budgetLimited'
+    || value === 'complete'
+  ) return value
+  throw new Error('CODEX_NATIVE_THREAD_GOAL_STATUS_INVALID')
+}
+
+function nativeThreadGoalObjective(value: unknown): string {
+  if (typeof value !== 'string' || value.length === 0 || value.length > 4_000 || value.includes('\u0000')) {
+    throw new Error('CODEX_NATIVE_THREAD_GOAL_INVALID')
+  }
+  const trimmed = value.trim()
+  if (!trimmed) throw new Error('CODEX_NATIVE_THREAD_GOAL_INVALID')
+  return trimmed
+}
+
+function nativeThreadGoalSetInput(value: NativeCodexThreadGoalSetInput): NativeCodexThreadGoalSetInput {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('CODEX_NATIVE_THREAD_GOAL_INVALID')
+  }
+  const objective = value.objective === undefined
+    ? undefined
+    : nativeThreadGoalObjective(value.objective)
+  const status = nativeThreadGoalStatus(value.status)
+  let tokenBudget: number | null | undefined
+  if (value.tokenBudget === undefined) tokenBudget = undefined
+  else if (value.tokenBudget === null) tokenBudget = null
+  else if (typeof value.tokenBudget === 'number' && Number.isSafeInteger(value.tokenBudget) && value.tokenBudget >= 0) {
+    tokenBudget = value.tokenBudget
+  } else {
+    throw new Error('CODEX_NATIVE_THREAD_GOAL_TOKEN_BUDGET_INVALID')
+  }
+  if (objective === undefined && status === undefined && tokenBudget === undefined) {
+    throw new Error('CODEX_NATIVE_THREAD_GOAL_INVALID')
+  }
+  return {
+    ...(objective === undefined ? {} : { objective }),
+    ...(status === undefined ? {} : { status }),
+    ...(tokenBudget === undefined ? {} : { tokenBudget }),
+  }
+}
+
+function nativeBackgroundTerminalProcessId(value: unknown): string {
+  if (typeof value !== 'string' || !/^[1-9][0-9]{0,9}$/.test(value)) {
+    throw new Error('CODEX_NATIVE_BACKGROUND_TERMINAL_ID_INVALID')
+  }
+  const parsed = Number(value)
+  if (!Number.isSafeInteger(parsed) || parsed > 2_147_483_647) {
+    throw new Error('CODEX_NATIVE_BACKGROUND_TERMINAL_ID_INVALID')
   }
   return value
 }
@@ -937,6 +1021,64 @@ export class ElectronCodexNativeRuntime {
       ...(nativePageLimit(input.limit) ? { limit: nativePageLimit(input.limit) } : {}),
       ...(nativeSortDirection(input.sortDirection) ? { sortDirection: nativeSortDirection(input.sortDirection) } : {}),
     })
+  }
+
+  /** Read the durable Goal stored by the Rust Thread Store, if this Thread has one. */
+  async getThreadGoal(thread: Pick<NativeCodexThread, 'id'>): Promise<CodexNativeJsonObject> {
+    if (!nonEmptyText(thread.id)) throw new Error('CODEX_NATIVE_THREAD_ID_INVALID')
+    return await this.requireClient().request<CodexNativeJsonObject>('thread/goal/get', { threadId: thread.id })
+  }
+
+  /** Patch one source-native Goal without mirroring it into Electron or the renderer. */
+  async setThreadGoal(
+    thread: Pick<NativeCodexThread, 'id'>,
+    input: NativeCodexThreadGoalSetInput,
+  ): Promise<CodexNativeJsonObject> {
+    if (!nonEmptyText(thread.id)) throw new Error('CODEX_NATIVE_THREAD_ID_INVALID')
+    const patch = nativeThreadGoalSetInput(input)
+    return await this.requireClient().request<CodexNativeJsonObject>('thread/goal/set', {
+      threadId: thread.id,
+      ...(patch.objective === undefined ? {} : { objective: patch.objective }),
+      ...(patch.status === undefined ? {} : { status: patch.status }),
+      ...(patch.tokenBudget === undefined ? {} : { tokenBudget: patch.tokenBudget }),
+    })
+  }
+
+  /** Remove the source-owned Goal. Rust emits `thread/goal/cleared` on success. */
+  async clearThreadGoal(thread: Pick<NativeCodexThread, 'id'>): Promise<CodexNativeJsonObject> {
+    if (!nonEmptyText(thread.id)) throw new Error('CODEX_NATIVE_THREAD_ID_INVALID')
+    return await this.requireClient().request<CodexNativeJsonObject>('thread/goal/clear', { threadId: thread.id })
+  }
+
+  /** List only background terminals that this native Thread owns. */
+  async listBackgroundTerminals(
+    thread: Pick<NativeCodexThread, 'id'>,
+    input: NativeCodexBackgroundTerminalsPageInput = {},
+  ): Promise<CodexNativeJsonObject> {
+    if (!nonEmptyText(thread.id)) throw new Error('CODEX_NATIVE_THREAD_ID_INVALID')
+    return await this.requireClient().request<CodexNativeJsonObject>('thread/backgroundTerminals/list', {
+      threadId: thread.id,
+      ...(nativeCursor(input.cursor) ? { cursor: nativeCursor(input.cursor) } : {}),
+      ...(nativePageLimit(input.limit) ? { limit: nativePageLimit(input.limit) } : {}),
+    })
+  }
+
+  /** Stop exactly one process id returned by `thread/backgroundTerminals/list`. */
+  async terminateBackgroundTerminal(
+    thread: Pick<NativeCodexThread, 'id'>,
+    processId: string,
+  ): Promise<CodexNativeJsonObject> {
+    if (!nonEmptyText(thread.id)) throw new Error('CODEX_NATIVE_THREAD_ID_INVALID')
+    return await this.requireClient().request<CodexNativeJsonObject>('thread/backgroundTerminals/terminate', {
+      threadId: thread.id,
+      processId: nativeBackgroundTerminalProcessId(processId),
+    })
+  }
+
+  /** Stop all source-native background terminals attached to this Thread. */
+  async cleanBackgroundTerminals(thread: Pick<NativeCodexThread, 'id'>): Promise<void> {
+    if (!nonEmptyText(thread.id)) throw new Error('CODEX_NATIVE_THREAD_ID_INVALID')
+    await this.requireClient().request('thread/backgroundTerminals/clean', { threadId: thread.id })
   }
 
   /** Ask Rust Core to compact a Thread's context; Core owns the resulting history. */

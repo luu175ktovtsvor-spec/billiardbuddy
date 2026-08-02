@@ -45,6 +45,7 @@ import {
   type NativeCodexStartReviewInput,
   type CodexNativeServerRequest,
   type NativeCodexSkillSelector,
+  type NativeCodexThreadGoalSetInput,
 } from './services/codexNativeAppServer'
 import type { CodexNativeModelRoute } from './services/codexNativeProvider'
 import { InstallationSessionManager } from './services/installationSession'
@@ -279,6 +280,32 @@ async function confirmNativeAgentExtensionChange(
     noLink: true,
   })
   if (result.response !== 1) throw new Error('CODEX_NATIVE_EXTENSION_CHANGE_DECLINED')
+}
+
+/**
+ * A background terminal is a process Rust Core started for this Thread. It is
+ * never an arbitrary operating-system pid, but stopping one still ends a
+ * user-visible command, so consent stays in privileged Main.
+ */
+async function confirmNativeAgentBackgroundTerminalChange(
+  owner: BrowserWindow,
+  title: string,
+  message: string,
+  detail: string,
+): Promise<void> {
+  const { dialog } = await import('electron')
+  const preview = detail.replace(/[\u0000-\u001F\u007F]/g, ' ').slice(0, 1_000)
+  const result = await dialog.showMessageBox(owner, {
+    type: 'warning',
+    title,
+    message,
+    detail: preview,
+    buttons: ['取消', '停止终端'],
+    defaultId: 0,
+    cancelId: 0,
+    noLink: true,
+  })
+  if (result.response !== 1) throw new Error('CODEX_NATIVE_BACKGROUND_TERMINAL_CHANGE_DECLINED')
 }
 
 function sendNativeAgentEvent(ownerId: number, payload: unknown): boolean {
@@ -766,6 +793,53 @@ function registerIpcHandlers() {
     assertNativeAgentThreadOwner(event.sender.id, input.threadId)
     const { threadId, ...page } = input
     return await (await getReadyNativeAgentThreadRuntime(threadId)).listThreadItems({ id: threadId }, page)
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentGetThreadGoal, async (event, payload) => {
+    const input = payload as { threadId: string }
+    assertNativeAgentThreadOwner(event.sender.id, input.threadId)
+    return await (await getReadyNativeAgentThreadRuntime(input.threadId)).getThreadGoal({ id: input.threadId })
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentSetThreadGoal, async (event, payload) => {
+    const input = payload as { threadId: string } & NativeCodexThreadGoalSetInput
+    assertNativeAgentThreadOwner(event.sender.id, input.threadId)
+    const { threadId, ...goal } = input
+    return await (await getReadyNativeAgentThreadRuntime(threadId)).setThreadGoal({ id: threadId }, goal)
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentClearThreadGoal, async (event, payload) => {
+    const input = payload as { threadId: string }
+    assertNativeAgentThreadOwner(event.sender.id, input.threadId)
+    return await (await getReadyNativeAgentThreadRuntime(input.threadId)).clearThreadGoal({ id: input.threadId })
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentListBackgroundTerminals, async (event, payload) => {
+    const input = payload as { threadId: string, cursor?: string, limit?: number }
+    assertNativeAgentThreadOwner(event.sender.id, input.threadId)
+    const { threadId, ...page } = input
+    return await (await getReadyNativeAgentThreadRuntime(threadId)).listBackgroundTerminals({ id: threadId }, page)
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentTerminateBackgroundTerminal, async (event, payload) => {
+    const input = payload as { threadId: string, processId: string }
+    assertNativeAgentThreadOwner(event.sender.id, input.threadId)
+    await confirmNativeAgentBackgroundTerminalChange(
+      currentWindow(event),
+      '停止 Agent 后台终端？',
+      'BilliardBuddy 将让 Codex Rust Core 停止这个 Thread 启动的后台终端。',
+      `后台终端 ID：${input.processId}\n只会停止 Rust Core 已跟踪的这个 Thread 进程，不会终止任意系统进程。`,
+    )
+    return await (await getReadyNativeAgentThreadRuntime(input.threadId)).terminateBackgroundTerminal(
+      { id: input.threadId },
+      input.processId,
+    )
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentCleanBackgroundTerminals, async (event, payload) => {
+    const input = payload as { threadId: string }
+    assertNativeAgentThreadOwner(event.sender.id, input.threadId)
+    await confirmNativeAgentBackgroundTerminalChange(
+      currentWindow(event),
+      '停止全部 Agent 后台终端？',
+      'BilliardBuddy 将让 Codex Rust Core 停止这个 Thread 的全部后台终端。',
+      '仍在运行的该 Thread 后台命令会结束；不会影响未被 Rust Core 跟踪的系统进程。',
+    )
+    await (await getReadyNativeAgentThreadRuntime(input.threadId)).cleanBackgroundTerminals({ id: input.threadId })
   })
   registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentUpdatePermissionMode, async (event, payload) => {
     const input = payload as { threadId: string, permissionMode: unknown }
