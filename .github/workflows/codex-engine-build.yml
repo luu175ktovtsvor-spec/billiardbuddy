@@ -84,8 +84,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo run --locked -p codex-app-server-protocol --bin write_schema_fixtures
-          git diff --exit-code -- app-server-protocol/schema/typescript/v2/ThreadItem.ts
+          python3 app-server-protocol/scripts/write_schema_fixtures.py
+          git diff --exit-code -- app-server-protocol/schema/
 
       - name: 仅构建 Codex App Server
         working-directory: third_party/codex-engine/codex-rs
