@@ -84,8 +84,10 @@ Chat Completions 假装成 Responses。那会减少表面层数，却破坏凭�
    `host_managed_tools_only` 历史补丁，并从干净锁定源码重新构建、签名和验证
    `codex-app-server`。发行清单升为 `schemaVersion: 2`，不再记录补丁哈希；
    源码锁、LICENSE/NOTICE、二进制哈希和正式桌面构建均已验证，不能只改文档或清单。
-2. **App Server 协议收口**：将当前手写 JSON 对象收敛到由锁定源码生成、纳入仓库的
-   TypeScript 协议类型；保留一个通用 stdio client，不再按页面或旧 ProductTask 复制状态。
+2. **App Server 协议收口**：将当前实际调用收敛到直接从锁定 Rust 协议源码审计的
+   方法和字段清单。上游导出的 TypeScript 类型没有覆盖全部实验性方法，且会把 Rust
+   `serde(default)` 输入误标为必填，不能把它误当完整合同；保留一个通用 stdio client，
+   以 Rust 定义和自动协议校验防止静默漂移，不再按页面或旧 ProductTask 复制状态。
 3. **原生执行证据**：按 Rust 正式链路验证工具、审批、取消、进程退出与恢复；用户界面
    尚未具备的 server request 必须继续 fail-closed，而不是由 Main 猜测允许。
 4. **模型/凭据证据**：分别验证托管 DeepSeek、个人 Responses、个人 Chat 三路，但三者
