@@ -156,6 +156,9 @@ export const browserHost: DesktopHost = {
     async forkThread() {
       unsupported('Native Agent')
     },
+    async updatePermissionMode() {
+      unsupported('Native Agent')
+    },
     async startTurn() {
       unsupported('Native Agent')
     },

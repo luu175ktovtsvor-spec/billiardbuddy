@@ -9,6 +9,7 @@ export const ELECTRON_IPC_CHANNELS = {
   nativeAgentResumeThread: 'desktop:native-agent:resume-thread',
   nativeAgentReadThread: 'desktop:native-agent:read-thread',
   nativeAgentForkThread: 'desktop:native-agent:fork-thread',
+  nativeAgentUpdatePermissionMode: 'desktop:native-agent:update-permission-mode',
   nativeAgentStartTurn: 'desktop:native-agent:start-turn',
   nativeAgentSteerTurn: 'desktop:native-agent:steer-turn',
   nativeAgentInterruptTurn: 'desktop:native-agent:interrupt-turn',

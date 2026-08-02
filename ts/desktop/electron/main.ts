@@ -45,6 +45,7 @@ import {
   ElectronCodexNativeRuntime,
   type CodexNativeJsonObject,
   type CodexNativeNotification,
+  type NativeCodexPermissionMode,
   type CodexNativeServerRequest,
 } from './services/codexNativeAppServer'
 import type { CodexNativeModelRoute } from './services/codexNativeProvider'
@@ -336,6 +337,32 @@ function nativeApprovalMethod(value: string): NativeAgentApprovalMethod | undefi
   return value === 'item/commandExecution/requestApproval' || value === 'item/fileChange/requestApproval'
     ? value
     : undefined
+}
+
+function nativeAgentPermissionMode(value: unknown): NativeCodexPermissionMode {
+  if (value === undefined) return 'ask'
+  if (value === 'ask' || value === 'approve-for-me' || value === 'full-access') return value
+  throw new Error('CODEX_NATIVE_PERMISSION_MODE_INVALID')
+}
+
+/**
+ * `danger-full-access` means the source Rust sandbox stops mediating disk and
+ * network operations. Keep its confirmation in privileged Main, rather than
+ * trusting a renderer-only modal or a legacy ProductTask permission envelope.
+ */
+async function confirmNativeAgentFullAccess(owner: BrowserWindow): Promise<void> {
+  const { dialog } = await import('electron')
+  const result = await dialog.showMessageBox(owner, {
+    type: 'warning',
+    title: '启用 Agent 完全访问？',
+    message: 'Agent 将可读取和修改这台电脑上的任意文件，并执行带网络的命令。',
+    detail: '此模式不再逐项请求批准。你可以随时在 Agent 权限中切回受限模式。',
+    buttons: ['取消', '启用完全访问'],
+    defaultId: 0,
+    cancelId: 0,
+    noLink: true,
+  })
+  if (result.response !== 1) throw new Error('CODEX_NATIVE_FULL_ACCESS_DECLINED')
 }
 
 function nativeApprovalDecisions(
@@ -706,10 +733,13 @@ function registerIpcHandlers() {
   registerHandler(ELECTRON_IPC_CHANNELS.modelConfigurationRemove, (_event, payload) =>
     mutateProviderCredentials(service => service.remove(String(payload))))
   registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentStartThread, async (event, payload) => {
-    const input = payload as { cwd: string }
+    const input = payload as { cwd: string, permissionMode: unknown }
+    const permissionMode = nativeAgentPermissionMode(input.permissionMode)
+    if (permissionMode === 'full-access') await confirmNativeAgentFullAccess(currentWindow(event))
     const thread = await getNativeAgentRuntime().startThread({
       cwd: input.cwd,
       route: await resolveNativeAgentRoute(),
+      permissionMode,
     })
     claimNativeAgentThread(event.sender.id, thread.id)
     return thread
@@ -736,16 +766,29 @@ function registerIpcHandlers() {
     return await getNativeAgentRuntime().readThread({ id: input.threadId })
   })
   registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentForkThread, async (event, payload) => {
-    const input = payload as { threadId: string, cwd: string, lastTurnId?: string }
+    const input = payload as { threadId: string, cwd: string, permissionMode: unknown, lastTurnId?: string }
     assertNativeAgentThreadOwner(event.sender.id, input.threadId)
+    const permissionMode = nativeAgentPermissionMode(input.permissionMode)
+    if (permissionMode === 'full-access') await confirmNativeAgentFullAccess(currentWindow(event))
     const thread = await getNativeAgentRuntime().forkThread({
       threadId: input.threadId,
       cwd: input.cwd,
       ...(input.lastTurnId === undefined ? {} : { lastTurnId: input.lastTurnId }),
       route: await resolveNativeAgentRoute(),
+      permissionMode,
     })
     claimNativeAgentThread(event.sender.id, thread.id)
     return thread
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentUpdatePermissionMode, async (event, payload) => {
+    const input = payload as { threadId: string, permissionMode: unknown }
+    assertNativeAgentThreadOwner(event.sender.id, input.threadId)
+    const permissionMode = nativeAgentPermissionMode(input.permissionMode)
+    if (permissionMode === 'full-access') await confirmNativeAgentFullAccess(currentWindow(event))
+    return await getNativeAgentRuntime().updatePermissionMode(
+      { id: input.threadId },
+      permissionMode,
+    )
   })
   registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentStartTurn, async (event, payload) => {
     const input = payload as {

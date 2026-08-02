@@ -124,8 +124,12 @@ export type TerminalExitEvent = {
   signal?: string | null
 }
 
+export type NativeAgentPermissionMode = 'ask' | 'approve-for-me' | 'full-access'
+
 export type NativeAgentThread = {
   id: string
+  /** Effective Rust/App Server policy, projected for display only. */
+  permissionMode: NativeAgentPermissionMode
 }
 
 export type NativeAgentTurn = {
@@ -267,10 +271,11 @@ export type DesktopHost = {
     remove(profileId: string): Promise<PersonalModelConfigurationSummary>
   }
   nativeAgent: {
-    startThread(cwd: string): Promise<NativeAgentThread>
+    startThread(cwd: string, permissionMode?: NativeAgentPermissionMode): Promise<NativeAgentThread>
     resumeThread(threadId: string, cwd: string): Promise<NativeAgentThread>
     readThread(threadId: string): Promise<NativeAgentThreadSnapshot>
-    forkThread(threadId: string, cwd: string, lastTurnId?: string): Promise<NativeAgentThread>
+    forkThread(threadId: string, cwd: string, permissionMode?: NativeAgentPermissionMode, lastTurnId?: string): Promise<NativeAgentThread>
+    updatePermissionMode(threadId: string, permissionMode: NativeAgentPermissionMode): Promise<NativeAgentPermissionMode>
     startTurn(
       threadId: string,
       input: NativeAgentTurnInput[],
