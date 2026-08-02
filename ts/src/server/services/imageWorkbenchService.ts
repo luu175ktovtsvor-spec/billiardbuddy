@@ -611,10 +611,53 @@ export class ImageWorkbenchService {
     cursor: number
     reset_required: boolean
   }> {
-    const page = await this.listOperationEvents(projectId, after, limit)
+    let page = await this.listOperationEvents(projectId, after, limit)
     if (page.events.length > 0 || page.reset_required || waitMs <= 0) return page
-    await this.repository.waitForOperationEvent(projectId, after, waitMs)
+
+    // Event long-polling is also this workbench's reconciliation clock for a
+    // persisted remote image operation. Keep that responsibility here rather
+    // than adding a renderer timer or coupling image work to an Agent Thread.
+    let remoteRefreshDelay = await this.remoteRefreshDelay(projectId)
+    if (remoteRefreshDelay === 0) {
+      await this.refreshActiveRemoteOperation(projectId)
+      page = await this.listOperationEvents(projectId, after, limit)
+      if (page.events.length > 0 || page.reset_required) return page
+      remoteRefreshDelay = await this.remoteRefreshDelay(projectId)
+    }
+
+    const boundedWaitMs = Math.max(1, Math.min(
+      25_000,
+      Math.trunc(waitMs),
+      remoteRefreshDelay ?? 25_000,
+    ))
+    await this.repository.waitForOperationEvent(projectId, after, boundedWaitMs)
+    page = await this.listOperationEvents(projectId, after, limit)
+    if (page.events.length > 0 || page.reset_required) return page
+
+    // A timeout may have reached the Relay-provided polling deadline. Re-read
+    // it because a concurrent local event can have moved that deadline.
+    if (await this.remoteRefreshDelay(projectId) === 0) {
+      await this.refreshActiveRemoteOperation(projectId)
+    }
     return await this.listOperationEvents(projectId, after, limit)
+  }
+
+  private async remoteRefreshDelay(projectId: string): Promise<number | null> {
+    const project = await this.project(projectId).catch(() => null)
+    if (!project?.task_id) return null
+    const operation = await this.repository.getOperation(project.task_id).catch(() => null)
+    if (!operation || !['queued', 'running'].includes(operation.status)) return null
+    const interval = (operation.poll_after_seconds ?? (operation.status === 'running' ? 3 : 15)) * 1_000
+    return Math.max(0, interval - Math.max(0, this.now().getTime() - Date.parse(operation.updated_at)))
+  }
+
+  private async refreshActiveRemoteOperation(projectId: string): Promise<void> {
+    const project = await this.project(projectId).catch(() => null)
+    if (!project?.task_id) return
+    const operation = await this.repository.getOperation(project.task_id).catch(() => null)
+    if (operation && ['queued', 'running'].includes(operation.status)) {
+      await this.getOperation(operation.id)
+    }
   }
 
   private async fetchGatewayJson(input: RequestInfo | URL, init: RequestInit): Promise<{
