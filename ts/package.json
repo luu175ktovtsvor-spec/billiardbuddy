@@ -10,7 +10,7 @@
     "check:electron": "cd desktop && bun run check:electron",
     "check:native": "cd desktop && bun run build:sidecars && bun run check:electron && CSC_IDENTITY_AUTO_DISCOVERY=false bun run electron:package:dir",
     "audit:source": "bun desktop/scripts/scan-missing-imports.ts",
-    "verify:codex-engine-source": "bun desktop/scripts/verify-codex-engine-source.ts"
+    "verify:codex-engine-source": "bun desktop/scripts/verify-codex-engine-source.ts && bun desktop/scripts/verify-codex-native-protocol.ts"
   },
   "dependencies": {
     "@anthropic-ai/sandbox-runtime": "^0.0.44",

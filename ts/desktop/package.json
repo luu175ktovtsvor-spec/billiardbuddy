@@ -82,6 +82,7 @@
     "verify:media-toolchain": "bun run ./scripts/stage-media-toolchain.ts --verify",
     "stage:codex-engine": "bun run ./scripts/stage-codex-engine.ts",
     "verify:codex-engine": "bun run ./scripts/stage-codex-engine.ts --verify",
+    "verify:codex-native-protocol": "bun run ./scripts/verify-codex-native-protocol.ts",
     "verify:codex-managed-live": "bun run ./scripts/verify-codex-managed-live.ts",
     "audit:package": "bun run ./scripts/audit-packaged-resources.ts",
     "clean:electron-output": "bun run ./scripts/clean-electron-output.ts",

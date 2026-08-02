@@ -322,7 +322,7 @@ export class CodexNativeAppServerClient {
     try {
       const initialized = await this.request<CodexNativeJsonObject>('initialize', {
         clientInfo: { name: 'billiardbuddy', title: 'BilliardBuddy', version: '1.0.0' },
-        capabilities: { experimentalApi: true },
+        capabilities: { experimentalApi: true, requestAttestation: false },
       })
       if (initialized.codexHome !== engineHome) throw new Error('CODEX_NATIVE_APP_SERVER_HOME_MISMATCH')
       this.notify('initialized', {})
@@ -657,7 +657,9 @@ export class ElectronCodexNativeRuntime {
     const response = await client.request<CodexNativeJsonObject>('turn/start', {
       threadId: thread.id,
       ...(clientUserMessageId ? { clientUserMessageId } : {}),
-      input: [...input],
+      input: input.map(item => item.type === 'text'
+        ? { type: 'text', text: item.text, textElements: [] }
+        : { type: 'image', url: item.url }),
     })
     const id = turnId(response)
     this.activeTurns.add(id)
@@ -675,7 +677,7 @@ export class ElectronCodexNativeRuntime {
       threadId: thread.id,
       expectedTurnId: turn.id,
       ...(clientUserMessageId ? { clientUserMessageId } : {}),
-      input: [{ type: 'text', text }],
+      input: [{ type: 'text', text, textElements: [] }],
     })
   }
 
