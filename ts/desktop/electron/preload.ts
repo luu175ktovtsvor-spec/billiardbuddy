@@ -67,6 +67,30 @@ const nativeAgent = {
     ELECTRON_IPC_CHANNELS.nativeAgentListThreadItems,
     { ...options, threadId },
   ),
+  getThreadGoal: (threadId: string) => invoke(
+    ELECTRON_IPC_CHANNELS.nativeAgentGetThreadGoal,
+    { threadId },
+  ),
+  setThreadGoal: (threadId: string, goal: Record<string, unknown>) => invoke(
+    ELECTRON_IPC_CHANNELS.nativeAgentSetThreadGoal,
+    { threadId, ...goal },
+  ),
+  clearThreadGoal: (threadId: string) => invoke(
+    ELECTRON_IPC_CHANNELS.nativeAgentClearThreadGoal,
+    { threadId },
+  ),
+  listBackgroundTerminals: (threadId: string, options: Record<string, unknown> = {}) => invoke(
+    ELECTRON_IPC_CHANNELS.nativeAgentListBackgroundTerminals,
+    { ...options, threadId },
+  ),
+  terminateBackgroundTerminal: (threadId: string, processId: string) => invoke(
+    ELECTRON_IPC_CHANNELS.nativeAgentTerminateBackgroundTerminal,
+    { threadId, processId },
+  ),
+  cleanBackgroundTerminals: (threadId: string) => invoke(
+    ELECTRON_IPC_CHANNELS.nativeAgentCleanBackgroundTerminals,
+    { threadId },
+  ),
   updatePermissionMode: (threadId: string, permissionMode: unknown) => invoke(
     ELECTRON_IPC_CHANNELS.nativeAgentUpdatePermissionMode,
     { threadId, permissionMode },

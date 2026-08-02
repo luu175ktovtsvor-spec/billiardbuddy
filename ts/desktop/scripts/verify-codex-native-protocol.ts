@@ -25,6 +25,12 @@ const clientRequestMethods = [
   'thread/rollback',
   'thread/turns/list',
   'thread/items/list',
+  'thread/goal/get',
+  'thread/goal/set',
+  'thread/goal/clear',
+  'thread/backgroundTerminals/list',
+  'thread/backgroundTerminals/terminate',
+  'thread/backgroundTerminals/clean',
   'thread/settings/update',
   'config/value/write',
   'config/mcpServer/reload',
@@ -146,6 +152,7 @@ async function main(): Promise<void> {
   const personalModelProviderCatalog = requireRepositoryFile('ts/shared/product/personalModelProviderCatalog.ts')
   const providerRegistry = requireRepositoryFile('gateway/providerRegistry.ts')
   const managedResponses = requireRepositoryFile('gateway/managedResponses.ts')
+  const featureDefinitions = requireFile('codex-rs/features/src/lib.rs')
   const mainProcess = requireDesktopFile('electron/main.ts')
   const credentialStore = requireDesktopFile('electron/services/keychain.ts')
   const serverRequestBridge = requireDesktopFile('electron/services/nativeServerRequest.ts')
@@ -183,6 +190,20 @@ async function main(): Promise<void> {
   assertContains(runtime, 'resumeStoredThread', '撤销后原生 thread/resume 恢复')
   assertContains(runtime, 'async startReview(', '原生代码审查入口')
   assertContains(runtime, "'review/start'", '原生代码审查协议调用')
+  assertContains(runtime, "'thread/goal/get'", '原生 Thread Goal 查询协议调用')
+  assertContains(runtime, "'thread/goal/set'", '原生 Thread Goal 更新协议调用')
+  assertContains(runtime, "'thread/goal/clear'", '原生 Thread Goal 清除协议调用')
+  assertContains(runtime, "'thread/backgroundTerminals/list'", '原生后台终端查询协议调用')
+  assertContains(runtime, "'thread/backgroundTerminals/terminate'", '原生后台终端停止协议调用')
+  assertContains(runtime, "'thread/backgroundTerminals/clean'", '原生后台终端批量停止协议调用')
+  assertNotContains(runtime, "'thread/shellCommand'", '绕过沙箱的 App Server shellCommand 接口')
+  assertContains(protocol, '#[experimental("thread/backgroundTerminals/list")]', '后台终端查询的上游实验性标记')
+  assertContains(protocol, 'ThreadGoalUpdated => "thread/goal/updated"', '原生 Thread Goal 更新通知')
+  assertContains(protocol, 'ThreadGoalCleared => "thread/goal/cleared"', '原生 Thread Goal 清除通知')
+  assertContains(featureDefinitions, 'id: Feature::Goals,\n        key: "goals",\n        stage: Stage::Stable,\n        default_enabled: true,', '原生 Thread Goal 默认启用')
+  assertContains(mainProcess, 'confirmNativeAgentBackgroundTerminalChange', '后台终端停止由 Main 确认')
+  assertContains(ipcCapabilities, 'nativeAgentSetThreadGoal', 'Thread Goal 的受限 IPC 校验')
+  assertContains(ipcCapabilities, 'nativeAgentBackgroundTerminalReference', '后台终端进程标识受限 IPC 校验')
   assertContains(runtime, "'skills/extraRoots/set'", '原生额外技能目录协议调用')
   assertContains(runtime, "'plugin/list'", '原生插件目录协议调用')
   assertContains(runtime, "marketplaceKinds: ['local', 'workspace-directory']", '产品插件目录只选择本地和工作区市场')

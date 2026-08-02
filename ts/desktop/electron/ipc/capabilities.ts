@@ -255,6 +255,53 @@ const nativeAgentThreadItemsPage: Validator = value =>
   && nativePageLimit(value.limit)
   && nativeSortDirection(value.sortDirection)
 
+const nativeThreadGoalStatus = (value: unknown): boolean =>
+  value === undefined
+  || value === 'active'
+  || value === 'paused'
+  || value === 'blocked'
+  || value === 'usageLimited'
+  || value === 'budgetLimited'
+  || value === 'complete'
+
+const nativeThreadGoalObjective = (value: unknown): boolean =>
+  typeof value === 'string'
+  && value.trim().length > 0
+  && value.length <= 4_000
+  && !value.includes('\u0000')
+
+const nativeThreadGoalTokenBudget = (value: unknown): boolean =>
+  value === undefined
+  || value === null
+  || typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
+
+const nativeAgentThreadGoalSet: Validator = value =>
+  isRecord(value)
+  && hasOnlyKeys(value, ['threadId', 'objective', 'status', 'tokenBudget'])
+  && nativeCodexId(value.threadId)
+  && (value.objective === undefined || nativeThreadGoalObjective(value.objective))
+  && nativeThreadGoalStatus(value.status)
+  && nativeThreadGoalTokenBudget(value.tokenBudget)
+  && (value.objective !== undefined || value.status !== undefined || value.tokenBudget !== undefined)
+
+const nativeAgentBackgroundTerminalsPage: Validator = value =>
+  isRecord(value)
+  && hasOnlyKeys(value, ['threadId', 'cursor', 'limit'])
+  && nativeCodexId(value.threadId)
+  && nativePageCursor(value.cursor)
+  && nativePageLimit(value.limit)
+
+const nativeBackgroundTerminalProcessId = (value: unknown): boolean =>
+  typeof value === 'string'
+  && /^[1-9][0-9]{0,9}$/.test(value)
+  && Number(value) <= 2_147_483_647
+
+const nativeAgentBackgroundTerminalReference: Validator = value =>
+  isRecord(value)
+  && hasOnlyKeys(value, ['threadId', 'processId'])
+  && nativeCodexId(value.threadId)
+  && nativeBackgroundTerminalProcessId(value.processId)
+
 const nativeMcpServerName = (value: unknown): value is string =>
   typeof value === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(value)
 
@@ -581,6 +628,12 @@ export const ELECTRON_IPC_VALIDATORS = {
   [ELECTRON_IPC_CHANNELS.nativeAgentRollbackThread]: nativeAgentThreadRollback,
   [ELECTRON_IPC_CHANNELS.nativeAgentListThreadTurns]: nativeAgentThreadTurnsPage,
   [ELECTRON_IPC_CHANNELS.nativeAgentListThreadItems]: nativeAgentThreadItemsPage,
+  [ELECTRON_IPC_CHANNELS.nativeAgentGetThreadGoal]: nativeAgentThreadReference,
+  [ELECTRON_IPC_CHANNELS.nativeAgentSetThreadGoal]: nativeAgentThreadGoalSet,
+  [ELECTRON_IPC_CHANNELS.nativeAgentClearThreadGoal]: nativeAgentThreadReference,
+  [ELECTRON_IPC_CHANNELS.nativeAgentListBackgroundTerminals]: nativeAgentBackgroundTerminalsPage,
+  [ELECTRON_IPC_CHANNELS.nativeAgentTerminateBackgroundTerminal]: nativeAgentBackgroundTerminalReference,
+  [ELECTRON_IPC_CHANNELS.nativeAgentCleanBackgroundTerminals]: nativeAgentThreadReference,
   [ELECTRON_IPC_CHANNELS.nativeAgentUpdatePermissionMode]: nativeAgentUpdatePermissionMode,
   [ELECTRON_IPC_CHANNELS.nativeAgentStartTurn]: nativeAgentStartTurn,
   [ELECTRON_IPC_CHANNELS.nativeAgentStartReview]: nativeAgentStartReview,
