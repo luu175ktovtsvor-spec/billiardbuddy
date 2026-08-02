@@ -9,6 +9,7 @@ import {
   type PersonalModelCapability,
   type PersonalModelConfiguration,
   type PersonalModelConfigurationSummary,
+  type PersonalModelCatalogSelectionInput,
   type PersonalModelProfile,
   type PersonalModelProfileInput,
 } from '../../../shared/product/personalModels'
@@ -81,6 +82,41 @@ export class ProviderCredentialService {
 
   async discover(input: PersonalModelDiscoveryInput): Promise<PersonalModelDiscoveryResult> {
     return await discoverPersonalModels(input)
+  }
+
+  /**
+   * Save an official catalog preset without making the caller repeat its
+   * technical contract. This is deliberately separate from `save`: a custom
+   * endpoint remains an explicit, advanced user declaration, while every
+   * bundled preset is reconstructed from its checked product catalog entry.
+   */
+  saveCatalog(input: PersonalModelCatalogSelectionInput): ProviderCredentialConfigurationSummary {
+    if (
+      !input
+      || typeof input !== 'object'
+      || typeof input.catalog_entry_id !== 'string'
+      || typeof input.api_key !== 'string'
+      || (input.id !== undefined && !validPersonalModelProfileId(input.id))
+      || (input.label !== undefined && (typeof input.label !== 'string' || input.label.trim().length === 0 || input.label.length > 80))
+    ) throw new Error('PERSONAL_MODEL_CATALOG_SELECTION_INVALID')
+    const entry = personalModelCatalogEntry(input.catalog_entry_id)
+    if (!entry) throw new Error('PERSONAL_MODEL_CATALOG_ENTRY_UNAVAILABLE')
+    const existing = input.id
+      ? this.read().profiles.find(profile => profile.id === input.id)
+      : undefined
+    return this.save({
+      id: input.id,
+      label: input.label?.trim() || existing?.label || entry.label,
+      base_url: entry.base_url,
+      model: entry.model,
+      api_key: input.api_key,
+      protocol: entry.protocol,
+      auth_mode: entry.auth_mode,
+      capabilities: [...entry.capabilities],
+      supports_tool_calls: entry.supports_tool_calls,
+      supports_parallel_tool_calls: entry.supports_parallel_tool_calls,
+      catalog_entry_id: entry.id,
+    })
   }
 
   save(input: PersonalModelProfileInput): ProviderCredentialConfigurationSummary {

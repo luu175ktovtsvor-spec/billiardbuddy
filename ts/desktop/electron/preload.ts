@@ -212,6 +212,7 @@ if (process.isMainFrame) {
       summary: () => invoke(ELECTRON_IPC_CHANNELS.modelConfigurationSummary),
       catalog: () => invoke(ELECTRON_IPC_CHANNELS.modelConfigurationCatalog),
       discover: (input: unknown) => invoke(ELECTRON_IPC_CHANNELS.modelConfigurationDiscover, input),
+      saveCatalog: (input: unknown) => invoke(ELECTRON_IPC_CHANNELS.modelConfigurationSaveCatalog, input),
       save: (input: unknown) => invoke(ELECTRON_IPC_CHANNELS.modelConfigurationSave, input),
       setRoute: (capability: unknown, profileId: string | null) => invoke(
         ELECTRON_IPC_CHANNELS.modelConfigurationSetRoute,

@@ -4,6 +4,7 @@ export const ELECTRON_IPC_CHANNELS = {
   modelConfigurationSummary: 'desktop:model-configuration:summary',
   modelConfigurationCatalog: 'desktop:model-configuration:catalog',
   modelConfigurationDiscover: 'desktop:model-configuration:discover',
+  modelConfigurationSaveCatalog: 'desktop:model-configuration:save-catalog',
   modelConfigurationSave: 'desktop:model-configuration:save',
   modelConfigurationSetRoute: 'desktop:model-configuration:set-route',
   modelConfigurationRemove: 'desktop:model-configuration:remove',
