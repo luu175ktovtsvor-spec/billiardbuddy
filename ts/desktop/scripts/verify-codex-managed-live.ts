@@ -163,6 +163,18 @@ async function main(): Promise<void> {
     const proof = await readFile(path.join(approvalWorkspace, 'approval-proof.txt'), 'utf8')
     if (proof.trim() !== 'approved') throw new Error('native tool did not create the expected workspace file')
 
+    const fork = await runtime.forkThread({
+      threadId: resumed.id,
+      cwd: workspace,
+      route,
+      permissionMode: 'ask',
+      lastTurnId: toolTurn.id,
+    })
+    if (fork.id === resumed.id) throw new Error('Rust Thread fork reused the source Thread id')
+    assertThreadRead(await runtime.readThread(fork), fork.id)
+    await runtime.archiveThread(fork)
+    console.log('NATIVE_MANAGED_STAGE=thread_forked_and_archived')
+
     // The Mac workspace sandbox permits its private temporary directory, so a
     // file write is correctly not an escalation. Network is disabled for this
     // source-native Ask profile and must travel through an approval request.
@@ -186,6 +198,7 @@ async function main(): Promise<void> {
     console.log('NATIVE_MANAGED_THREAD_TURN=passed')
     console.log(`NATIVE_MANAGED_APPROVALS=${[...events.approvalMethods].sort().join(',')}`)
     console.log('NATIVE_MANAGED_TOOL_LOOP=passed')
+    console.log('NATIVE_MANAGED_FORK_ARCHIVE=passed')
     console.log('NATIVE_MANAGED_INTERRUPT=passed')
     console.log('NATIVE_MANAGED_RESUME=passed')
   } finally {
