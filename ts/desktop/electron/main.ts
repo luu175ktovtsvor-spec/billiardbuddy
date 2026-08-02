@@ -620,7 +620,6 @@ function registerIpcHandlers() {
   registerHandler(ELECTRON_IPC_CHANNELS.appGetVersion, () => app.getVersion())
   registerHandler(ELECTRON_IPC_CHANNELS.runtimeGetServerUrl, () => getServerRuntime().getServerUrl())
   registerHandler(ELECTRON_IPC_CHANNELS.modelConfigurationSummary, () => getProviderCredentialService().summary())
-  registerHandler(ELECTRON_IPC_CHANNELS.modelConfigurationCatalog, () => getProviderCredentialService().catalog())
   registerHandler(ELECTRON_IPC_CHANNELS.modelConfigurationProviderPresets, () =>
     getProviderCredentialService().providerPresets())
   registerHandler(ELECTRON_IPC_CHANNELS.modelConfigurationOpenProviderPortal, async (_event, payload) => {
@@ -631,16 +630,10 @@ function registerIpcHandlers() {
     await getProviderCredentialService().discover(payload as Parameters<ProviderCredentialService['discover']>[0]))
   registerHandler(ELECTRON_IPC_CHANNELS.modelConfigurationDiscoverPreset, async (_event, payload) =>
     await getProviderCredentialService().discoverPreset(payload as Parameters<ProviderCredentialService['discoverPreset']>[0]))
-  registerHandler(ELECTRON_IPC_CHANNELS.modelConfigurationSaveCatalog, (_event, payload) =>
-    mutateProviderCredentials(service => service.saveCatalog(payload as Parameters<ProviderCredentialService['saveCatalog']>[0])))
   registerHandler(ELECTRON_IPC_CHANNELS.modelConfigurationSavePreset, (_event, payload) =>
     mutateProviderCredentials(service => service.savePreset(payload as Parameters<ProviderCredentialService['savePreset']>[0])))
   registerHandler(ELECTRON_IPC_CHANNELS.modelConfigurationSave, (_event, payload) =>
     mutateProviderCredentials(service => service.save(payload as Parameters<ProviderCredentialService['save']>[0])))
-  registerHandler(ELECTRON_IPC_CHANNELS.modelConfigurationSetRoute, (_event, payload) => {
-    const input = payload as { capability: Parameters<ProviderCredentialService['setRoute']>[0], profileId: string | null }
-    return mutateProviderCredentials(service => service.setRoute(input.capability, input.profileId))
-  })
   registerHandler(ELECTRON_IPC_CHANNELS.modelConfigurationRemove, (_event, payload) =>
     mutateProviderCredentials(service => service.remove(String(payload))))
   registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentStartThread, async (event, payload) => {

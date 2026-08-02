@@ -19,34 +19,14 @@ const commandInvoke: Validator = value =>
 const personalModelProfileId = (value: unknown): value is string =>
   typeof value === 'string' && /^[A-Za-z0-9_-]{8,80}$/.test(value)
 
-const personalModelCatalogEntryId = (value: unknown): value is string =>
-  typeof value === 'string' && /^[a-z0-9][a-z0-9._:/-]{2,160}$/i.test(value)
-
 const personalModelProviderPresetId = (value: unknown): value is string =>
   typeof value === 'string' && /^[a-z0-9][a-z0-9._-]{1,80}$/i.test(value)
-
-const personalModelCapability = (value: unknown): boolean =>
-  value === 'TextReasoning' || value === 'VisualEvidence'
 
 const personalModelProtocol = (value: unknown): boolean =>
   value === 'openai-compatible' || value === 'openai-responses'
 
 const personalModelAuthMode = (value: unknown): boolean =>
   value === 'bearer' || value === 'x-api-key' || value === 'api-key'
-
-const personalModelContextWindow = (value: unknown): boolean =>
-  typeof value === 'number' && Number.isSafeInteger(value) && value >= 8_192 && value <= 2_000_000
-
-const personalModelMaxOutputTokens = (value: unknown): boolean =>
-  typeof value === 'number' && Number.isSafeInteger(value) && value >= 1_024 && value <= 1_000_000
-
-const personalModelContextContract = (contextWindowTokens: unknown, maxOutputTokens: unknown): boolean =>
-  contextWindowTokens === undefined && maxOutputTokens === undefined
-  || typeof contextWindowTokens === 'number'
-    && typeof maxOutputTokens === 'number'
-    && personalModelContextWindow(contextWindowTokens)
-    && personalModelMaxOutputTokens(maxOutputTokens)
-    && maxOutputTokens < contextWindowTokens
 
 const nativeCodexId = (value: unknown): value is string =>
   typeof value === 'string' && /^[A-Za-z0-9_-]{1,200}$/.test(value)
@@ -429,12 +409,6 @@ const modelConfigurationSave: Validator = value =>
     'api_key',
     'protocol',
     'auth_mode',
-    'capabilities',
-    'supports_tool_calls',
-    'supports_parallel_tool_calls',
-    'catalog_entry_id',
-    'context_window_tokens',
-    'max_output_tokens',
   ])
   && (value.id === undefined || personalModelProfileId(value.id))
   && typeof value.label === 'string' && value.label.trim().length > 0 && value.label.length <= 80
@@ -443,12 +417,6 @@ const modelConfigurationSave: Validator = value =>
   && typeof value.api_key === 'string' && value.api_key.length <= 4_096
   && personalModelProtocol(value.protocol)
   && (value.auth_mode === undefined || personalModelAuthMode(value.auth_mode))
-  && Array.isArray(value.capabilities) && value.capabilities.length === 1
-  && value.capabilities[0] === 'TextReasoning'
-  && (value.supports_tool_calls === undefined || typeof value.supports_tool_calls === 'boolean')
-  && (value.supports_parallel_tool_calls === undefined || typeof value.supports_parallel_tool_calls === 'boolean')
-  && (value.catalog_entry_id === undefined || value.catalog_entry_id === null || personalModelCatalogEntryId(value.catalog_entry_id))
-  && personalModelContextContract(value.context_window_tokens, value.max_output_tokens)
 
 const modelConfigurationDiscover: Validator = value =>
   isRecord(value)
@@ -465,14 +433,6 @@ const modelConfigurationDiscoverPreset: Validator = value =>
   && typeof value.api_key === 'string' && value.api_key.length >= 8 && value.api_key.length <= 4_096
   && (value.base_url === undefined || typeof value.base_url === 'string' && value.base_url.trim().length > 0 && value.base_url.length <= 2_048)
 
-const modelConfigurationSaveCatalog: Validator = value =>
-  isRecord(value)
-  && hasOnlyKeys(value, ['id', 'catalog_entry_id', 'api_key', 'label'])
-  && (value.id === undefined || personalModelProfileId(value.id))
-  && personalModelCatalogEntryId(value.catalog_entry_id)
-  && typeof value.api_key === 'string' && value.api_key.length <= 4_096
-  && (value.label === undefined || typeof value.label === 'string' && value.label.trim().length > 0 && value.label.length <= 80)
-
 const modelConfigurationSavePreset: Validator = value =>
   isRecord(value)
   && hasOnlyKeys(value, [
@@ -483,10 +443,6 @@ const modelConfigurationSavePreset: Validator = value =>
     'label',
     'base_url',
     'protocol',
-    'supports_tool_calls',
-    'supports_parallel_tool_calls',
-    'context_window_tokens',
-    'max_output_tokens',
     'provider_terms_confirmed',
   ])
   && (value.id === undefined || personalModelProfileId(value.id))
@@ -496,16 +452,7 @@ const modelConfigurationSavePreset: Validator = value =>
   && (value.label === undefined || typeof value.label === 'string' && value.label.trim().length > 0 && value.label.length <= 80)
   && (value.base_url === undefined || typeof value.base_url === 'string' && value.base_url.trim().length > 0 && value.base_url.length <= 2_048)
   && (value.protocol === undefined || personalModelProtocol(value.protocol))
-  && (value.supports_tool_calls === undefined || typeof value.supports_tool_calls === 'boolean')
-  && (value.supports_parallel_tool_calls === undefined || typeof value.supports_parallel_tool_calls === 'boolean')
-  && personalModelContextContract(value.context_window_tokens, value.max_output_tokens)
   && (value.provider_terms_confirmed === undefined || typeof value.provider_terms_confirmed === 'boolean')
-
-const modelConfigurationSetRoute: Validator = value =>
-  isRecord(value)
-  && hasOnlyKeys(value, ['capability', 'profileId'])
-  && personalModelCapability(value.capability)
-  && (value.profileId === null || personalModelProfileId(value.profileId))
 
 const zoomPayload: Validator = value => typeof value === 'number' && Number.isFinite(value)
 
@@ -605,15 +552,12 @@ export const ELECTRON_IPC_VALIDATORS = {
   [ELECTRON_IPC_CHANNELS.appGetVersion]: noPayload,
   [ELECTRON_IPC_CHANNELS.runtimeGetServerUrl]: noPayload,
   [ELECTRON_IPC_CHANNELS.modelConfigurationSummary]: noPayload,
-  [ELECTRON_IPC_CHANNELS.modelConfigurationCatalog]: noPayload,
   [ELECTRON_IPC_CHANNELS.modelConfigurationProviderPresets]: noPayload,
   [ELECTRON_IPC_CHANNELS.modelConfigurationOpenProviderPortal]: personalModelProviderPresetId,
   [ELECTRON_IPC_CHANNELS.modelConfigurationDiscover]: modelConfigurationDiscover,
   [ELECTRON_IPC_CHANNELS.modelConfigurationDiscoverPreset]: modelConfigurationDiscoverPreset,
-  [ELECTRON_IPC_CHANNELS.modelConfigurationSaveCatalog]: modelConfigurationSaveCatalog,
   [ELECTRON_IPC_CHANNELS.modelConfigurationSavePreset]: modelConfigurationSavePreset,
   [ELECTRON_IPC_CHANNELS.modelConfigurationSave]: modelConfigurationSave,
-  [ELECTRON_IPC_CHANNELS.modelConfigurationSetRoute]: modelConfigurationSetRoute,
   [ELECTRON_IPC_CHANNELS.modelConfigurationRemove]: personalModelProfileId,
   [ELECTRON_IPC_CHANNELS.nativeAgentStartThread]: nativeAgentStartThread,
   [ELECTRON_IPC_CHANNELS.nativeAgentListThreads]: nativeAgentListThreads,

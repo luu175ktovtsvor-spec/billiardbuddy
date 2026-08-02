@@ -56,6 +56,144 @@ const clientRequestMethods = [
   'thread/archive',
 ] as const
 
+/**
+ * The upstream App Server has a wider client protocol than BilliardBuddy's
+ * current desktop backend.  This is an explicit product-boundary review, not
+ * an allow-by-omission list: a new upstream request makes this verifier fail
+ * until it is either connected through a typed Main-process capability or
+ * classified here with a concrete reason.
+ *
+ * Native Agent execution is not in this list. Threads, turns, context,
+ * sandboxed tools, approvals, recovery, MCP, Skills, Hooks, review and
+ * collaboration are all driven by the direct requests above and source
+ * notifications.  These entries are controls around an OpenAI account/cloud
+ * product, unsafe raw IPC bypasses, source-internal migration/debug paths, or
+ * UI surfaces deliberately deferred until the product frontend is rebuilt.
+ */
+const reviewedNonExposedClientRequestMethods = {
+  /** Not part of a BYOK/managed-model BilliardBuddy account. */
+  upstreamOpenAiAccountAndCloud: [
+    'account/login/cancel',
+    'account/login/start',
+    'account/logout',
+    'account/rateLimitResetCredit/consume',
+    'account/rateLimits/read',
+    'account/read',
+    'account/sendAddCreditsNudgeEmail',
+    'account/usage/read',
+    'account/workspaceMessages/read',
+    'app/installed',
+    'app/list',
+    'app/read',
+    'feedback/upload',
+    'getAuthStatus',
+    'getConversationSummary',
+    'gitDiffToRemote',
+  ],
+  /**
+   * Must never become generic Renderer IPC: Rust turns invoke equivalent
+   * sandboxed tools under native approval policy instead.
+   */
+  rawProcessAndFilesystemBypasses: [
+    'command/exec',
+    'command/exec/resize',
+    'command/exec/terminate',
+    'command/exec/write',
+    'fs/copy',
+    'fs/createDirectory',
+    'fs/getMetadata',
+    'fs/readDirectory',
+    'fs/readFile',
+    'fs/remove',
+    'fs/unwatch',
+    'fs/watch',
+    'fs/writeFile',
+    'fuzzyFileSearch',
+    'fuzzyFileSearch/sessionStart',
+    'fuzzyFileSearch/sessionStop',
+    'fuzzyFileSearch/sessionUpdate',
+    'process/kill',
+    'process/resizePty',
+    'process/spawn',
+    'process/writeStdin',
+    'thread/shellCommand',
+  ],
+  /** Source diagnostics, import helpers and experimental switches, not product APIs. */
+  sourceOnlyConfigurationAndMigration: [
+    'config/batchWrite',
+    'config/read',
+    'configRequirements/read',
+    'experimentalFeature/enablement/set',
+    'experimentalFeature/list',
+    'externalAgentConfig/detect',
+    'externalAgentConfig/import',
+    'externalAgentConfig/import/readHistories',
+    'externalAgentConfig/import/recordHistory',
+    'mock/experimentalMethod',
+  ],
+  /**
+   * Requires a separate product pairing/remote-environment policy; it cannot
+   * be inferred from local workspace permission or an arbitrary user key.
+   */
+  remoteEnvironmentAndDeviceControl: [
+    'environment/add',
+    'environment/info',
+    'environment/status',
+    'remoteControl/client/list',
+    'remoteControl/client/revoke',
+    'remoteControl/disable',
+    'remoteControl/enable',
+    'remoteControl/pairing/start',
+    'remoteControl/pairing/status',
+    'remoteControl/status/read',
+    'windowsSandbox/readiness',
+    'windowsSandbox/setupStart',
+  ],
+  /**
+   * Native backend methods whose product UI/typed IPC is intentionally later:
+   * model picker, direct resource explorer, plugin sharing, sections/memory,
+   * realtime voice and guardian controls.  They remain source-backed future
+   * work, rather than being misrepresented as already exposed product APIs.
+   */
+  deferredProductSurfaces: [
+    'mcpServer/resource/read',
+    'mcpServer/tool/call',
+    'memory/reset',
+    'model/list',
+    'modelProvider/capabilities/read',
+    'permissionProfile/list',
+    'plugin/search',
+    'plugin/share/checkout',
+    'plugin/share/delete',
+    'plugin/share/list',
+    'plugin/share/save',
+    'plugin/share/updateTargets',
+    'plugin/skill/read',
+    'thread/approveGuardianDeniedAction',
+    'thread/decrement_elicitation',
+    'thread/increment_elicitation',
+    'thread/inject_items',
+    'thread/loaded/list',
+    'thread/memoryMode/set',
+    'thread/metadata/update',
+    'thread/realtime/appendAudio',
+    'thread/realtime/appendSpeech',
+    'thread/realtime/appendText',
+    'thread/realtime/listVoices',
+    'thread/realtime/start',
+    'thread/realtime/stop',
+    'thread/searchOccurrences',
+    'thread/section/move',
+    'thread/unsubscribe',
+    'threadSection/create',
+    'threadSection/delete',
+    'threadSection/list',
+    'threadSection/update',
+  ],
+} as const
+
+const reviewedNonExposedMethods = Object.values(reviewedNonExposedClientRequestMethods).flat()
+
 const serverRequestMethods = [
   'item/commandExecution/requestApproval',
   'item/fileChange/requestApproval',
@@ -70,19 +208,19 @@ function requireFile(relativePath: string): string {
   if (!existsSync(file)) {
     throw new Error(`Codex Engine 源码缺少 ${relativePath}；请执行 git submodule update --init --recursive`)
   }
-  return readFileSync(file, 'utf8')
+  return readFileSync(file, 'utf8').replace(/\r\n/g, '\n')
 }
 
 function requireDesktopFile(relativePath: string): string {
   const file = path.join(desktopRoot, relativePath)
   if (!existsSync(file)) throw new Error(`桌面原生协议边界缺少 ${relativePath}`)
-  return readFileSync(file, 'utf8')
+  return readFileSync(file, 'utf8').replace(/\r\n/g, '\n')
 }
 
 function requireRepositoryFile(relativePath: string): string {
   const file = path.join(repositoryRoot, relativePath)
   if (!existsSync(file)) throw new Error(`产品协议边界缺少 ${relativePath}`)
-  return readFileSync(file, 'utf8')
+  return readFileSync(file, 'utf8').replace(/\r\n/g, '\n')
 }
 
 async function gitOutput(...args: string[]): Promise<string> {
@@ -121,6 +259,22 @@ function assertExactMethods(actual: readonly string[], expected: readonly string
   }
 }
 
+function assertUniqueMethods(methods: readonly string[], label: string): void {
+  const duplicates = methods.filter((method, index) => methods.indexOf(method) !== index)
+  if (duplicates.length > 0) {
+    throw new Error(`${label} 存在重复条目：${[...new Set(duplicates)].join(', ')}`)
+  }
+}
+
+function sourceClientRequestMethods(protocol: string): string[] {
+  const start = protocol.indexOf('client_request_definitions! {')
+  const end = protocol.indexOf('/// Generates an `enum ServerRequest`', start)
+  if (start < 0 || end < 0 || end <= start) {
+    throw new Error('无法定位锁定 Codex Rust ClientRequest 协议定义')
+  }
+  return [...protocol.slice(start, end).matchAll(/=>\s*"([^"]+)"\s*\{/g)].map(match => match[1]!)
+}
+
 function assertRustMethod(protocol: string, method: string): void {
   const pattern = new RegExp(`=>\\s*"${escapeRegex(method)}"\\s*\\{`)
   if (!pattern.test(protocol)) throw new Error(`锁定 Codex Rust 协议未声明方法 ${method}`)
@@ -148,7 +302,6 @@ async function main(): Promise<void> {
   const ipcCapabilities = requireDesktopFile('electron/ipc/capabilities.ts')
   const personalModelDiscovery = requireDesktopFile('electron/services/personalModelDiscovery.ts')
   const personalModels = requireRepositoryFile('ts/shared/product/personalModels.ts')
-  const personalModelCatalog = requireRepositoryFile('ts/shared/product/personalModelCatalog.ts')
   const personalModelProviderCatalog = requireRepositoryFile('ts/shared/product/personalModelProviderCatalog.ts')
   const providerRegistry = requireRepositoryFile('gateway/providerRegistry.ts')
   const managedResponses = requireRepositoryFile('gateway/managedResponses.ts')
@@ -159,6 +312,13 @@ async function main(): Promise<void> {
   const serverRequestBridge = requireDesktopFile('electron/services/nativeServerRequest.ts')
   const engineStaging = requireDesktopFile('scripts/stage-codex-engine.ts')
 
+  assertUniqueMethods(clientRequestMethods, '已接入 App Server client request')
+  assertUniqueMethods(reviewedNonExposedMethods, '已审计但未暴露的 App Server client request')
+  assertExactMethods(
+    sourceClientRequestMethods(protocol),
+    [...clientRequestMethods, ...reviewedNonExposedMethods],
+    '锁定 Codex Rust ClientRequest 全量协议审计',
+  )
   assertExactMethods(staticMethodCalls(runtime, 'request'), clientRequestMethods, 'Electron → App Server 请求')
   assertExactMethods(staticMethodCalls(runtime, 'notify'), ['initialized'], 'Electron → App Server 通知')
   for (const method of clientRequestMethods) assertRustMethod(protocol, method)
@@ -235,10 +395,12 @@ async function main(): Promise<void> {
   assertContains(serverRequestBridge, 'validateNativeServerRequestResponse', '按 source request 校验回填结果')
   assertContains(serverRequestBridge, "request.method === 'item/tool/call'", '未注册动态工具的 fail-closed 回退')
   assertContains(provider, "${prefix}.wire_api=${quoted('responses')}", '所有 App Server provider 固定使用 Responses wire API')
+  assertContains(provider, "'features.image_generation=false'", 'Codex 托管生图不会越过 BilliardBuddy 独立生图工作台')
+  assertNotContains(provider, "'web_search=\"disabled\"'", '已验证的原生网页搜索被全局禁用')
   assertContains(provider, "'shell_environment_policy.ignore_default_excludes=false'", 'Core shell 子进程必须排除注入的 Key、Secret 与 Token')
-  assertContains(provider, 'model_context_window=${input.contextWindowTokens}', 'Provider 上下文窗口传入 Core')
+  assertContains(provider, 'model_context_window=${input.contextWindowTokens}', '托管 Gateway 的受信上下文窗口传入 Core')
   assertNotContains(provider, 'model_auto_compact_token_limit=', 'Provider 覆盖 Core 原生自动压缩阈值')
-  assertContains(provider, "profile.context_limits_source === 'legacy-unverified'", '未验证个人模型限制不得进入 Core')
+  assertNotContains(provider, 'CODEX_NATIVE_PERSONAL_MODEL_CONTEXT_CONTRACT_REQUIRED', '个人 Key 被产品容量契约拦截')
   assertContains(provider, "if (profile.protocol === 'openai-responses')", '个人 Responses 本机凭据桥分支')
   assertContains(provider, "if (profile.protocol !== 'openai-compatible')", '未知个人协议 fail-closed')
   assertContains(provider, 'class ResponsesCredentialAdapter', '所有 Responses 路线共用本机凭据桥')
@@ -251,28 +413,24 @@ async function main(): Promise<void> {
   assertContains(provider, "url.pathname !== '/v1/responses'", 'Chat 转换器对 Rust 暴露的唯一 Responses 路由')
   assertContains(provider, "personalModelEndpoint(this.profile.base_url, 'chat/completions')", 'Chat 转换器唯一上游 Chat Completions 调用')
   assertContains(ipcCapabilities, "value === 'openai-compatible' || value === 'openai-responses'", 'IPC 只接受两种个人 Key 协议')
-  assertContains(ipcCapabilities, 'context_window_tokens', '个人 Key 上下文窗口配置入口')
-  assertContains(ipcCapabilities, 'max_output_tokens', '个人 Key 输出预留配置入口')
-  assertContains(ipcCapabilities, 'catalog_entry_id', '个人 Key 官方模型目录配置入口')
+  assertNotContains(ipcCapabilities, 'context_window_tokens', '个人 Key 上下文窗口填写入口')
+  assertNotContains(ipcCapabilities, 'max_output_tokens', '个人 Key 最大输出填写入口')
+  assertNotContains(ipcCapabilities, 'catalog_entry_id', '个人 Key 模型容量目录入口')
   assertContains(ipcCapabilities, 'modelConfigurationProviderPresets', '个人 Key 供应商预置 IPC')
   assertContains(ipcCapabilities, 'modelConfigurationOpenProviderPortal', '个人 Key 官方申请入口 IPC')
   assertContains(ipcCapabilities, 'modelConfigurationDiscover', '个人 Key 模型发现 IPC')
   assertContains(ipcCapabilities, 'modelConfigurationDiscoverPreset', '供应商预设模型发现 IPC')
-  assertContains(ipcCapabilities, 'modelConfigurationSaveCatalog', '个人 Key 官方模型目录简化保存入口')
   assertContains(ipcCapabilities, 'modelConfigurationSavePreset', '供应商预设模型保存 IPC')
-  assertContains(ipcCapabilities, 'personalModelContextContract', '个人模型窗口与输出预留必须成对声明')
   assertContains(ipcCapabilities, 'auth_mode', '个人 Key 认证头配置入口')
   assertContains(personalModels, "export const PERSONAL_MODEL_PROTOCOLS = [\n  'openai-compatible',\n  'openai-responses',", '个人模型配置只声明两种正式协议')
-  assertContains(personalModels, "if (rawProtocol === 'anthropic-messages') return []", '历史第三方配置只迁移丢弃，不进入原生 Agent 路由')
-  assertContains(personalModels, "'product-catalog'", '官方模型目录限制来源')
-  assertContains(personalModels, 'PersonalModelCatalogSelectionInput', '官方模型目录的简化配置契约')
   assertContains(personalModels, 'PersonalModelProviderPresetSelectionInput', '供应商与 Coding Plan 的简化配置契约')
   assertContains(personalModels, 'provider_preset_id', '个人模型保留所选供应商或套餐来源')
-  assertContains(personalModels, "'legacy-unverified'", '历史个人模型限制标记为未验证')
-  assertContains(personalModels, 'PERSONAL_MODEL_CONTEXT_CONTRACT_REQUIRED', '新个人模型必须声明窗口与输出预留')
-  assertContains(personalModelCatalog, "id: 'deepseek/deepseek-v4-flash/responses'", 'DeepSeek Responses 官方模型目录')
-  assertContains(personalModelCatalog, "id: 'openai/gpt-5.6-terra/responses'", 'OpenAI Responses 官方模型目录')
-  assertContains(personalModelCatalog, 'max_output_tokens: DEEPSEEK_MAX_OUTPUT_TOKENS', '官方模型目录保留最大输出能力')
+  assertNotContains(personalModels, 'PERSONAL_MODEL_CONTEXT_CONTRACT_REQUIRED', '个人模型容量必填限制')
+  assertNotContains(personalModels, 'context_window_tokens', '个人模型上下文容量配置')
+  assertNotContains(personalModels, 'max_output_tokens', '个人模型最大输出配置')
+  assertNotContains(personalModels, 'supports_tool_calls', '个人模型能力开关')
+  assertNotContains(providerCredentials, 'PersonalModelCapability', '个人模型能力路由')
+  assertNotContains(provider, 'profile.supports_', 'Chat 转换器依赖产品模型能力开关')
   assertContains(personalModelProviderCatalog, "id: 'deepseek'", 'DeepSeek 官方供应商预置')
   assertContains(personalModelProviderCatalog, "id: 'openai'", 'OpenAI 官方供应商预置')
   assertContains(personalModelProviderCatalog, "id: 'kimi-api'", 'Kimi 官方供应商预置')
@@ -284,24 +442,20 @@ async function main(): Promise<void> {
   assertContains(personalModelProviderCatalog, 'is_coding_plan:', '供应商预置区分普通 API 和 Coding Plan')
   assertContains(personalModelProviderCatalog, 'requires_provider_compatibility_confirmation:', '受限 Coding Plan 必须声明兼容性确认')
   assertContains(personalModelProviderCatalog, "model_discovery: 'openai-compatible'", '供应商预置声明自动模型发现路径')
-  assertContains(personalModelProviderCatalog, 'catalog_entries: readonly PersonalModelCatalogEntry[]', '供应商预置返回已验证模型选择')
-  assertContains(personalModelProviderCatalog, 'personalModelCatalogEntries().filter', '供应商预置从唯一模型目录派生选择')
-  assertContains(personalModelProviderCatalog, 'Provider onboarding and model capability evidence are intentionally', '供应商接入与模型能力合同分离')
+  assertNotContains(personalModelProviderCatalog, 'catalog_entries:', '供应商预置夹带模型容量目录')
   assertContains(personalModelProviderCatalog, 'PERSONAL_MODEL_PROVIDER_SETUP_CATALOG_CORRUPT', '供应商预置目录必须校验唯一性和安全链接')
   assertContains(personalModelDiscovery, "redirect: 'error'", '模型发现不向重定向泄露用户 Key')
   assertContains(personalModelDiscovery, 'modelDiscoveryEndpoints', '模型发现兼容 Coding Plan 的同源备用路径')
-  assertContains(personalModelDiscovery, 'personalModelCatalogEntryForEndpoint', '模型发现仅匹配受信官方目录')
+  assertContains(personalModelDiscovery, 'models: modelIds.map(id => ({ id }))', '模型发现只返回上游可用模型 ID')
   assertContains(personalModelDiscovery, 'PERSONAL_MODEL_DISCOVERY_AUTH_FAILED', '模型发现明确反馈 Key 或权限错误')
   assertContains(personalModelDiscovery, 'PERSONAL_MODEL_DISCOVERY_ENDPOINT_UNSUPPORTED', '模型发现明确反馈不支持 models 接口')
   assertContains(personalModelDiscovery, 'PERSONAL_MODEL_DISCOVERY_TIMEOUT', '模型发现明确反馈超时')
   assertContains(personalModelDiscovery, 'PERSONAL_MODEL_DISCOVERY_RATE_LIMITED', '模型发现明确反馈限流')
   assertContains(personalModelDiscovery, 'PERSONAL_MODEL_DISCOVERY_INVALID_RESPONSE', '模型发现明确反馈无效响应')
-  assertContains(providerCredentials, "profile.context_limits_source === 'product-catalog' || profile.context_limits_source === 'user-declared'", '已验证个人模型路由允许官方目录或用户声明')
-  assertContains(providerCredentials, 'saveCatalog(input: PersonalModelCatalogSelectionInput)', '官方模型目录由 Main 自动展开配置')
   assertContains(providerCredentials, 'discoverPreset(', '预设模型发现由 Main 解析路由')
   assertContains(providerCredentials, 'savePreset(', '预设模型保存由 Main 解析路由')
   assertContains(providerCredentials, 'PERSONAL_MODEL_PROVIDER_COMPATIBILITY_CONFIRMATION_REQUIRED', '受限 Coding Plan 需确认兼容性')
-  assertContains(providerCredentials, 'PERSONAL_MODEL_PROVIDER_MODEL_CONTRACT_REQUIRED', '未知预设模型不得猜测能力合同')
+  assertNotContains(providerCredentials, 'PERSONAL_MODEL_PROVIDER_MODEL_CONTRACT_REQUIRED', '未知模型要求用户填写容量合同')
   assertContains(providerCredentials, 'providerPresets(): readonly PersonalModelProviderPreset[]', '供应商预置只从主进程安全返回')
   assertContains(providerCredentials, "PERSONAL_MODEL_PROVIDER_PRESET_UNAVAILABLE", '未知供应商预置 fail-closed')
   assertContains(mainProcess, 'modelConfigurationProviderPresets', '主进程提供个人 Key 供应商预置')
@@ -309,7 +463,6 @@ async function main(): Promise<void> {
   assertContains(mainProcess, 'modelConfigurationDiscoverPreset', '主进程处理预设模型发现')
   assertContains(mainProcess, 'modelConfigurationSavePreset', '主进程处理预设模型保存')
   assertContains(mainProcess, 'openExternalUrl(preset.api_key_url)', '官方申请入口只打开受信供应商目录链接')
-  assertContains(providerCredentials, 'catalog_entry_id: entry.id', '官方模型目录保存时固定受信条目')
   assertContains(providerRegistry, 'DEEPSEEK_V4_FLASH_CONTEXT_WINDOW = 1_000_000', '托管 DeepSeek 使用已验证的一百万上下文窗口')
   assertContains(providerRegistry, 'DEEPSEEK_V4_FLASH_PROVIDER_MAX_OUTPUT_TOKENS = 384_000', '托管 DeepSeek 保留官方最大输出规格')
   assertContains(managedResponses, 'max_output_tokens: maxOutputTokens', 'Gateway 为托管请求写入受管输出上限')
@@ -349,7 +502,7 @@ async function main(): Promise<void> {
   assertContains(requireFile('codex-rs/protocol/src/shell_environment.rs'), '"PATH", "SHELL", "TMPDIR", "TEMP", "TMP", "HOME"', 'Core Unix 标准工具环境定义')
   assertContains(requireFile('codex-rs/protocol/src/shell_environment.rs'), '"USERPROFILE",\n    "HOMEDRIVE",\n    "HOMEPATH"', 'Core Windows 用户目录环境定义')
 
-  console.log(`[codex-native-protocol] ${clientRequestMethods.length} client requests, ${serverRequestMethods.length} server-request contracts, provider revocation, crash recovery and initialized notification verified against ${revision}`)
+  console.log(`[codex-native-protocol] ${clientRequestMethods.length} direct client requests, ${reviewedNonExposedMethods.length} reviewed non-exposed source requests, ${serverRequestMethods.length} server-request contracts, provider revocation, crash recovery and initialized notification verified against ${revision}`)
 }
 
 await main()

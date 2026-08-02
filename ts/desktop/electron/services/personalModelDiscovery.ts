@@ -6,7 +6,6 @@ import {
   type PersonalModelAuthMode,
   type PersonalModelProtocol,
 } from '../../../shared/product/personalModels'
-import { personalModelCatalogEntryForEndpoint } from '../../../shared/product/personalModelCatalog'
 
 const DISCOVERY_TIMEOUT_MS = 10_000
 const MAX_DISCOVERY_RESPONSE_BYTES = 2 * 1024 * 1024
@@ -31,8 +30,6 @@ export type PersonalModelDiscoveryInput = {
 
 export type DiscoveredPersonalModel = {
   id: string
-  /** Present only for an exact, direct upstream catalog match. */
-  catalog_entry_id?: string
 }
 
 export type PersonalModelDiscoveryResult = {
@@ -140,8 +137,7 @@ function parseDiscoveredModelIds(raw: string): string[] {
 
 /**
  * This request is a discovery hint only.  It never saves the Key and it never
- * upgrades a returned model ID into a capacity contract; exact matches are
- * cross-referenced with the independently verified product catalog.
+ * upgrades a returned model ID into a capacity contract.
  */
 export async function discoverPersonalModels(
   input: PersonalModelDiscoveryInput,
@@ -192,16 +188,7 @@ export async function discoverPersonalModels(
           ? error
           : discoveryFailure('PERSONAL_MODEL_DISCOVERY_INVALID_RESPONSE')
       }
-      return {
-        models: modelIds.map(id => {
-          const catalogEntry = personalModelCatalogEntryForEndpoint({
-            base_url: baseUrl,
-            model: id,
-            protocol: input.protocol,
-          })
-          return catalogEntry ? { id, catalog_entry_id: catalogEntry.id } : { id }
-        }),
-      }
+      return { models: modelIds.map(id => ({ id })) }
     }
   } finally {
     clearTimeout(timeout)
