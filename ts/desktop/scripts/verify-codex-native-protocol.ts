@@ -179,6 +179,9 @@ async function main(): Promise<void> {
   assertContains(runtime, 'isAvailable(): boolean', 'App Server 子进程存活状态')
   assertContains(runtime, 'markUnavailable', 'App Server 异常退出标记')
   assertContains(runtime, 'onAppServerUnavailable', 'App Server 失效时释放产品交互等待')
+  assertContains(runtime, "'HOME', 'LANG', 'LC_ALL', 'LC_CTYPE', 'LOGNAME', 'USER'", 'macOS 原生工具的 Core 环境白名单')
+  assertContains(runtime, "'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH'", 'Windows 原生工具的用户目录环境白名单')
+  assertContains(runtime, "'ProgramFiles', 'ProgramFiles(x86)', 'ProgramW6432', 'ProgramData'", 'Windows 原生工具的位置环境白名单')
   assertContains(runtime, 'void this.handleServerRequest', 'server request 不阻塞原生 stdout 事件流')
   assertContains(runtime, 'this.client.isAvailable()', '异常退出后的原生 Thread 重连分支')
   assertContains(mainProcess, 'await nativeAgentRuntime?.invalidateModelRoute()', '凭据写入后撤销旧原生子进程')
@@ -252,6 +255,8 @@ async function main(): Promise<void> {
   assertContains(requireFile('codex-rs/protocol/src/shell_environment.rs'), 'EnvironmentVariablePattern::new_case_insensitive("*KEY*")', 'Core shell 默认 Key 排除规则')
   assertContains(requireFile('codex-rs/protocol/src/shell_environment.rs'), 'EnvironmentVariablePattern::new_case_insensitive("*SECRET*")', 'Core shell默认 Secret 排除规则')
   assertContains(requireFile('codex-rs/protocol/src/shell_environment.rs'), 'EnvironmentVariablePattern::new_case_insensitive("*TOKEN*")', 'Core shell默认 Token 排除规则')
+  assertContains(requireFile('codex-rs/protocol/src/shell_environment.rs'), '"PATH", "SHELL", "TMPDIR", "TEMP", "TMP", "HOME"', 'Core Unix 标准工具环境定义')
+  assertContains(requireFile('codex-rs/protocol/src/shell_environment.rs'), '"USERPROFILE",\n    "HOMEDRIVE",\n    "HOMEPATH"', 'Core Windows 用户目录环境定义')
 
   console.log(`[codex-native-protocol] ${clientRequestMethods.length} client requests, ${serverRequestMethods.length} server-request contracts, provider revocation, crash recovery and initialized notification verified against ${revision}`)
 }
