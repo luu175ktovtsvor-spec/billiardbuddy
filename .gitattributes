@@ -1,0 +1,3 @@
+# Unified diff syntax represents blank context lines with one leading space.
+# Keep that structural marker while still checking nonblank trailing whitespace.
+third_party/codex-engine-patches/*.patch whitespace=-blank-at-eol

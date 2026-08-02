@@ -1,0 +1,174 @@
+diff --git a/codex-rs/app-server/src/request_processors/feedback_doctor_report.rs b/codex-rs/app-server/src/request_processors/feedback_doctor_report.rs
+index 2c157b5..f842d36 100644
+--- a/codex-rs/app-server/src/request_processors/feedback_doctor_report.rs
++++ b/codex-rs/app-server/src/request_processors/feedback_doctor_report.rs
+@@ -16,2 +16,3 @@ use codex_feedback::DOCTOR_REPORT_ATTACHMENT_FILENAME;
+ use codex_feedback::FeedbackAttachment;
++use codex_protocol::shell_environment::is_default_excluded_environment_variable_name;
+ use serde_json::Value;
+@@ -44,2 +45,7 @@ pub(crate) async fn doctor_feedback_report(config: &Config) -> Option<DoctorFeed
+     let mut command = Command::new(&executable);
++    for (name, _) in std::env::vars_os() {
++        if is_default_excluded_environment_variable_name(&name) {
++            command.env_remove(name);
++        }
++    }
+     command.arg("doctor").arg("--json");
+diff --git a/codex-rs/core-plugins/src/lib.rs b/codex-rs/core-plugins/src/lib.rs
+index 5ab8f7f..963131c 100644
+--- a/codex-rs/core-plugins/src/lib.rs
++++ b/codex-rs/core-plugins/src/lib.rs
+@@ -23,2 +23,3 @@ pub mod startup_sync;
+ pub mod store;
++mod subprocess_environment;
+ #[cfg(test)]
+diff --git a/codex-rs/core-plugins/src/loader.rs b/codex-rs/core-plugins/src/loader.rs
+index 5371327..a73168f 100644
+--- a/codex-rs/core-plugins/src/loader.rs
++++ b/codex-rs/core-plugins/src/loader.rs
+@@ -22,2 +22,3 @@ use crate::store::plugin_version_for_source;
+ use crate::store::plugin_version_for_source_with_fallback_manifest;
++use crate::subprocess_environment::remove_inherited_secret_environment;
+ use codex_config::ConfigLayerStack;
+@@ -1677,2 +1678,3 @@ fn run_git_output(args: &[&str], cwd: Option<&Path>) -> Result<String, String> {
+     let mut command = Command::new("git");
++    remove_inherited_secret_environment(&mut command);
+     command.args(args);
+diff --git a/codex-rs/core-plugins/src/marketplace_add/install.rs b/codex-rs/core-plugins/src/marketplace_add/install.rs
+index 1ecfa05..313e80d 100644
+--- a/codex-rs/core-plugins/src/marketplace_add/install.rs
++++ b/codex-rs/core-plugins/src/marketplace_add/install.rs
+@@ -1,2 +1,3 @@
+ use super::MarketplaceAddError;
++use crate::subprocess_environment::remove_inherited_secret_environment;
+ use std::fs;
+@@ -114,2 +115,3 @@ fn run_git(args: &[&str], cwd: Option<&Path>) -> Result<(), MarketplaceAddError>
+     let mut command = Command::new("git");
++    remove_inherited_secret_environment(&mut command);
+     command.args(args);
+diff --git a/codex-rs/core-plugins/src/marketplace_upgrade/git.rs b/codex-rs/core-plugins/src/marketplace_upgrade/git.rs
+index 9a46465..9151439 100644
+--- a/codex-rs/core-plugins/src/marketplace_upgrade/git.rs
++++ b/codex-rs/core-plugins/src/marketplace_upgrade/git.rs
+@@ -7,2 +7,4 @@ use std::time::Duration;
+ 
++use crate::subprocess_environment::remove_inherited_secret_environment;
++
+ pub(super) fn git_remote_revision(
+@@ -137,2 +139,3 @@ fn git_command() -> Command {
+     let mut command = Command::new("git");
++    remove_inherited_secret_environment(&mut command);
+     command
+diff --git a/codex-rs/core-plugins/src/npm_source.rs b/codex-rs/core-plugins/src/npm_source.rs
+index 3d728bd..e9d6e71 100644
+--- a/codex-rs/core-plugins/src/npm_source.rs
++++ b/codex-rs/core-plugins/src/npm_source.rs
+@@ -1,2 +1,3 @@
+ use crate::plugin_bundle_archive::unpack_plugin_bundle_tar_gz;
++use crate::subprocess_environment::remove_inherited_secret_environment;
+ use codex_utils_absolute_path::AbsolutePathBuf;
+@@ -90,2 +91,3 @@ fn pack_npm_package(
+     let mut command = Command::new(npm_command);
++    remove_inherited_secret_environment(&mut command);
+     command
+diff --git a/codex-rs/core-plugins/src/startup_sync.rs b/codex-rs/core-plugins/src/startup_sync.rs
+index 69fe045..60eaf9f 100644
+--- a/codex-rs/core-plugins/src/startup_sync.rs
++++ b/codex-rs/core-plugins/src/startup_sync.rs
+@@ -10,2 +10,3 @@ use self::http_client::StartupSyncHttpClient;
+ use self::http_client::StartupSyncRequestBuilder;
++use crate::subprocess_environment::remove_inherited_secret_environment;
+ use codex_http_client::HttpClientFactory;
+@@ -686,2 +687,3 @@ fn git_command(git_binary: &Path) -> Command {
+     let mut command = Command::new(git_binary);
++    remove_inherited_secret_environment(&mut command);
+     command.env("GIT_OPTIONAL_LOCKS", "0");
+@@ -707,3 +709,5 @@ fn macos_git_binary_from_path(
+ fn apple_developer_tools_available() -> bool {
+-    Command::new("/usr/bin/xcode-select")
++    let mut command = Command::new("/usr/bin/xcode-select");
++    remove_inherited_secret_environment(&mut command);
++    command
+         .arg("-p")
+diff --git a/codex-rs/core-plugins/src/subprocess_environment.rs b/codex-rs/core-plugins/src/subprocess_environment.rs
+new file mode 100644
+index 0000000..af771e1
+--- /dev/null
++++ b/codex-rs/core-plugins/src/subprocess_environment.rs
+@@ -0,0 +1,14 @@
++use std::process::Command;
++
++use codex_protocol::shell_environment::is_default_excluded_environment_variable_name;
++
++/// Removes inherited credential-like variables before a plugin-management
++/// subprocess is launched. Callers may add their explicit command environment
++/// afterwards.
++pub(crate) fn remove_inherited_secret_environment(command: &mut Command) {
++    for (name, _) in std::env::vars_os() {
++        if is_default_excluded_environment_variable_name(&name) {
++            command.env_remove(name);
++        }
++    }
++}
+diff --git a/codex-rs/core/src/shell_snapshot.rs b/codex-rs/core/src/shell_snapshot.rs
+index eed1198..c5f2a31 100644
+--- a/codex-rs/core/src/shell_snapshot.rs
++++ b/codex-rs/core/src/shell_snapshot.rs
+@@ -19,2 +19,3 @@ use codex_otel::SessionTelemetry;
+ use codex_protocol::ThreadId;
++use codex_protocol::shell_environment::is_default_excluded_environment_variable_name;
+ use codex_utils_absolute_path::AbsolutePathBuf;
+@@ -288,2 +289,7 @@ async fn run_script_with_timeout(
+     let mut handler = Command::new(&args[0]);
++    for (name, _) in std::env::vars_os() {
++        if is_default_excluded_environment_variable_name(&name) {
++            handler.env_remove(name);
++        }
++    }
+     handler.args(&args[1..]);
+diff --git a/codex-rs/exec-server/src/client_transport.rs b/codex-rs/exec-server/src/client_transport.rs
+index d699188..dedf917 100644
+--- a/codex-rs/exec-server/src/client_transport.rs
++++ b/codex-rs/exec-server/src/client_transport.rs
+@@ -13,2 +13,3 @@ use tracing::warn;
+ use codex_http_client::HttpClientFactory;
++use codex_protocol::shell_environment::is_default_excluded_environment_variable_name;
+ use codex_utils_rustls_provider::ensure_rustls_crypto_provider;
+@@ -430,2 +431,7 @@ fn stdio_command_process(stdio_command: &StdioExecServerCommand) -> Command {
+     let mut command = Command::new(&stdio_command.program);
++    for (name, _) in std::env::vars_os() {
++        if is_default_excluded_environment_variable_name(&name) {
++            command.env_remove(name);
++        }
++    }
+     command.args(&stdio_command.args);
+diff --git a/codex-rs/protocol/src/shell_environment.rs b/codex-rs/protocol/src/shell_environment.rs
+index 9edb91c..e709ca2 100644
+--- a/codex-rs/protocol/src/shell_environment.rs
++++ b/codex-rs/protocol/src/shell_environment.rs
+@@ -4,2 +4,3 @@ use crate::config_types::ShellEnvironmentPolicyInherit;
+ use std::collections::HashMap;
++use std::ffi::OsStr;
+ 
+@@ -7,2 +8,11 @@ pub const CODEX_THREAD_ID_ENV_VAR: &str = "CODEX_THREAD_ID";
+ 
++/// Returns whether an environment variable name matches the default secret
++/// exclusions shared by shell tools and non-tool subprocesses.
++pub fn is_default_excluded_environment_variable_name(name: &OsStr) -> bool {
++    let uppercase_name = name.to_string_lossy().to_ascii_uppercase();
++    uppercase_name.contains("KEY")
++        || uppercase_name.contains("SECRET")
++        || uppercase_name.contains("TOKEN")
++}
++
+ /// Construct a shell environment from the supplied process environment and
+@@ -80,8 +90,3 @@ where
+     if !policy.ignore_default_excludes {
+-        let default_excludes = vec![
+-            EnvironmentVariablePattern::new_case_insensitive("*KEY*"),
+-            EnvironmentVariablePattern::new_case_insensitive("*SECRET*"),
+-            EnvironmentVariablePattern::new_case_insensitive("*TOKEN*"),
+-        ];
+-        env_map.retain(|k, _| !matches_any(k, &default_excludes));
++        env_map.retain(|key, _| !is_default_excluded_environment_variable_name(OsStr::new(key)));
+     }
