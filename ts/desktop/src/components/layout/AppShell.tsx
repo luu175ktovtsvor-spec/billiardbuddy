@@ -39,16 +39,19 @@ export function AppShell() {
       try {
         await initializeDesktopServerUrl()
         await fetchSettings()
-
-        if (!cancelled) setReady(true)
-
-        void useTabStore.getState().restoreTabs().catch(() => {})
       } catch (error) {
-        if (!cancelled) {
+        // The Rust Agent route owns its own App Server, Thread Store and model
+        // adapter. A legacy media sidecar outage must not prevent opening or
+        // recovering an Agent Thread.
+        if (!getDesktopHost().capabilities.nativeAgent && !cancelled) {
           setStartupError(error instanceof Error ? error.message : String(error))
           setReady(false)
+          return
         }
       }
+
+      if (!cancelled) setReady(true)
+      void useTabStore.getState().restoreTabs().catch(() => {})
     }
 
     void bootstrap()

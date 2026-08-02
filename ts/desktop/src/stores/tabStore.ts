@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 
 const TAB_STORAGE_KEY = 'billiardbuddy-open-tabs'
-let nextNewProductTaskRequestId = 0
+let nextTransientTabRequestId = 0
 
 export const SETTINGS_TAB_ID = '__settings__'
 export const SCHEDULED_TAB_ID = '__scheduled__'
@@ -10,6 +10,7 @@ export const VIDEO_STUDIO_TAB_ID = '__video_studio__'
 export const PRODUCT_TASKS_TAB_ID = '__product_tasks__'
 export const NEW_PRODUCT_TASK_TAB_ID = '__new_product_task__'
 export const PRODUCT_TASK_TAB_PREFIX = '__product_task__'
+export const NATIVE_AGENT_TAB_PREFIX = '__native_agent__'
 
 const LEGACY_CREATION_TAB_ID = '__creation__'
 const LEGACY_OPERATIONS_TAB_ID = '__operations__'
@@ -19,6 +20,7 @@ export type TabType =
   | 'scheduled'
   | 'image-workbench'
   | 'video-studio'
+  | 'native-agent'
   | 'product-tasks'
   | 'new-product-task'
   | 'product-task'
@@ -41,10 +43,22 @@ export type Tab = {
   newTaskWorkDir?: string
   newTaskRequestId?: number
   taskId?: string
+  /** Rust-owned durable thread identity. Never a ProductTask or model key. */
+  nativeAgentThreadId?: string
+  nativeAgentWorkDir?: string
+  /** Empty native tabs are transient until Rust creates their Thread. */
+  nativeAgentRequestId?: number
 }
 
 type TabPersistence = {
-  openTabs: Array<{ sessionId: string; title: string; type?: string; taskId?: string }>
+  openTabs: Array<{
+    sessionId: string
+    title: string
+    type?: string
+    taskId?: string
+    nativeAgentThreadId?: string
+    nativeAgentWorkDir?: string
+  }>
   activeTabId: string | null
   lastActiveProductTaskId?: string
 }
@@ -59,6 +73,8 @@ type TabStore = {
   lastActiveProductTaskId: string | null
 
   openTab: (sessionId: string, title: string, type: OpenTabType) => void
+  openNewNativeAgent: (workDir?: string) => void
+  bindNativeAgentThread: (sessionId: string | undefined, threadId: string, workDir: string, title: string) => void
   openNewProductTask: (workDir?: string) => void
   openProductTaskTab: (taskId: string, title: string) => string
   closeTab: (sessionId: string) => void
@@ -78,6 +94,16 @@ function isOpenTabType(value: unknown): value is OpenTabType {
 }
 
 function normalizeProductTaskId(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  return value.trim() || null
+}
+
+function normalizeNativeAgentThreadId(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  return value.trim() || null
+}
+
+function normalizeNativeAgentWorkDir(value: unknown): string | null {
   if (typeof value !== 'string') return null
   return value.trim() || null
 }
@@ -155,9 +181,67 @@ export const useTabStore = create<TabStore>((set, get) => ({
     get().saveTabs()
   },
 
+  openNewNativeAgent: (workDir) => {
+    const normalizedWorkDir = workDir?.trim() || undefined
+    const requestId = ++nextTransientTabRequestId
+    const sessionId = `${NATIVE_AGENT_TAB_PREFIX}:new:${requestId}`
+    const { tabs, lastActiveProductTaskId } = get()
+    set({
+      tabs: [...tabs, {
+        sessionId,
+        title: '新 Agent 会话',
+        type: 'native-agent',
+        ...(normalizedWorkDir ? { nativeAgentWorkDir: normalizedWorkDir } : {}),
+        nativeAgentRequestId: requestId,
+      }],
+      activeTabId: sessionId,
+      lastActiveProductTaskId: getOpenProductTaskId(tabs, lastActiveProductTaskId),
+    })
+    get().saveTabs()
+  },
+
+  bindNativeAgentThread: (sessionId, threadId, workDir, title) => {
+    const normalizedThreadId = normalizeNativeAgentThreadId(threadId)
+    const normalizedWorkDir = normalizeNativeAgentWorkDir(workDir)
+    const normalizedTitle = title.trim() || '新 Agent 会话'
+    if (!normalizedThreadId || !normalizedWorkDir) return
+
+    const durableSessionId = `${NATIVE_AGENT_TAB_PREFIX}:${normalizedThreadId}`
+    const { tabs, lastActiveProductTaskId } = get()
+    const existingThread = tabs.find((tab) => tab.sessionId === durableSessionId)
+    const source = sessionId
+      ? tabs.find((tab) => tab.sessionId === sessionId && tab.type === 'native-agent')
+      : undefined
+    const durableTab: Tab = {
+      sessionId: durableSessionId,
+      title: normalizedTitle,
+      type: 'native-agent',
+      nativeAgentThreadId: normalizedThreadId,
+      nativeAgentWorkDir: normalizedWorkDir,
+    }
+
+    const withoutSource = source
+      ? tabs.filter((tab) => tab.sessionId !== source.sessionId)
+      : tabs
+    const nextTabs = existingThread
+      ? withoutSource.map((tab) => tab.sessionId === durableSessionId ? durableTab : tab)
+      : [...withoutSource, durableTab]
+
+    set({
+      tabs: nextTabs,
+      activeTabId: durableSessionId,
+      lastActiveProductTaskId: resolveLastActiveProductTaskId(
+        nextTabs,
+        durableSessionId,
+        lastActiveProductTaskId,
+      ),
+    })
+    get().saveTabs()
+  },
+
   openNewProductTask: (workDir) => {
     const normalizedWorkDir = workDir?.trim() || undefined
-    const requestId = ++nextNewProductTaskRequestId
+    const requestId = ++nextTransientTabRequestId
     const { tabs, lastActiveProductTaskId } = get()
     const tab: Tab = {
       sessionId: NEW_PRODUCT_TASK_TAB_ID,
@@ -280,6 +364,8 @@ export const useTabStore = create<TabStore>((set, get) => ({
         title: t.title,
         type: t.type,
         ...(t.taskId ? { taskId: t.taskId } : {}),
+        ...(t.nativeAgentThreadId ? { nativeAgentThreadId: t.nativeAgentThreadId } : {}),
+        ...(t.nativeAgentWorkDir ? { nativeAgentWorkDir: t.nativeAgentWorkDir } : {}),
       })),
       activeTabId: activeTabId && persistableTabs.some((tab) => tab.sessionId === activeTabId)
         ? activeTabId
@@ -341,6 +427,11 @@ function isPersistableTab(tab: Tab): boolean {
     || tab.type === 'scheduled'
     || tab.type === 'image-workbench'
     || tab.type === 'video-studio'
+    || (
+      tab.type === 'native-agent' &&
+      typeof tab.nativeAgentThreadId === 'string' && tab.nativeAgentThreadId.trim().length > 0 &&
+      typeof tab.nativeAgentWorkDir === 'string' && tab.nativeAgentWorkDir.trim().length > 0
+    )
     || tab.type === 'product-tasks'
     || (tab.type === 'product-task' && typeof tab.taskId === 'string' && tab.taskId.trim().length > 0)
   )
@@ -365,6 +456,20 @@ function toRestoredTab(tab: TabPersistence['openTabs'][number]): Tab[] {
     || tab.type === 'product-tasks'
   ) {
     return [{ sessionId: tab.sessionId, title: tab.title, type: tab.type }]
+  }
+
+  if (
+    tab.type === 'native-agent' &&
+    typeof tab.nativeAgentThreadId === 'string' && tab.nativeAgentThreadId.trim() &&
+    typeof tab.nativeAgentWorkDir === 'string' && tab.nativeAgentWorkDir.trim()
+  ) {
+    return [{
+      sessionId: tab.sessionId,
+      title: tab.title,
+      type: 'native-agent',
+      nativeAgentThreadId: tab.nativeAgentThreadId.trim(),
+      nativeAgentWorkDir: tab.nativeAgentWorkDir.trim(),
+    }]
   }
 
   if (tab.type === 'product-task' && typeof tab.taskId === 'string' && tab.taskId.trim()) {

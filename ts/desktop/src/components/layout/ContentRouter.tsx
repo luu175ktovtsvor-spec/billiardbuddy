@@ -7,6 +7,7 @@ import { ProductShell } from '../../product/components/ProductShell'
 import { ProductTaskPage } from '../../product/components/ProductTaskPage'
 import { ProductScheduledTasksPage } from '../../product/components/ProductScheduledTasksPage'
 import { previewBridge } from '../../lib/previewBridge'
+import { NativeAgentPage } from '../../agent/components/NativeAgentPage'
 
 export function ContentRouter() {
   const activeTabId = useTabStore((s) => s.activeTabId)
@@ -21,7 +22,18 @@ export function ContentRouter() {
 
   let page: ReactNode = null
   if (!activeTabId || !activeTabType) {
-    page = <ProductShell page="new-task" />
+    page = <NativeAgentPage />
+  } else if (activeTabType === 'native-agent') {
+    page = (
+      <NativeAgentPage
+        key={activeTab.sessionId}
+        threadId={activeTab.nativeAgentThreadId}
+        workDir={activeTab.nativeAgentWorkDir}
+        onThreadReady={(threadId, workDir, title) => {
+          useTabStore.getState().bindNativeAgentThread(activeTab.sessionId, threadId, workDir, title)
+        }}
+      />
+    )
   } else if (activeTabType === 'settings') {
     page = <Settings />
   } else if (activeTabType === 'scheduled') {
@@ -47,7 +59,7 @@ export function ContentRouter() {
   } else {
     // A persisted or plugin-provided unknown tab must not select a task
     // runtime by treating its tab id as public task identity.
-    page = <ProductShell page="new-task" />
+    page = <NativeAgentPage />
   }
 
   return (

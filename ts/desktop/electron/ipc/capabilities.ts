@@ -30,6 +30,94 @@ const personalModelCapability = (value: unknown): boolean =>
 const personalModelProtocol = (value: unknown): boolean =>
   value === 'openai-compatible' || value === 'openai-responses' || value === 'anthropic-messages'
 
+const nativeCodexId = (value: unknown): value is string =>
+  typeof value === 'string' && /^[A-Za-z0-9_-]{1,200}$/.test(value)
+
+const nativeWorkspacePath = (value: unknown): value is string =>
+  typeof value === 'string'
+  && value.length > 0
+  && value.length <= 4_096
+  && !/[\u0000\r\n]/.test(value)
+
+const nativeMessageId = (value: unknown): value is string =>
+  typeof value === 'string'
+  && value.length > 0
+  && value.length <= 512
+  && !/[\u0000\r\n]/.test(value)
+
+const nativeTurnInput = (value: unknown): boolean =>
+  isRecord(value)
+  && hasOnlyKeys(value, ['type', 'text', 'url'])
+  && (
+    value.type === 'text'
+      ? typeof value.text === 'string' && value.text.length > 0 && value.text.length <= 1_048_576 && value.url === undefined
+      : value.type === 'image'
+        ? typeof value.url === 'string'
+        && value.url.length > 0
+        && value.url.length <= 32 * 1024 * 1024
+        && /^data:image\/(?:png|jpeg|webp|gif);base64,[A-Za-z0-9+/=]+$/.test(value.url)
+        && value.text === undefined
+        : false
+  )
+
+const nativeAgentStartThread: Validator = value =>
+  isRecord(value)
+  && hasOnlyKeys(value, ['cwd'])
+  && nativeWorkspacePath(value.cwd)
+
+const nativeAgentResumeThread: Validator = value =>
+  isRecord(value)
+  && hasOnlyKeys(value, ['threadId', 'cwd'])
+  && nativeCodexId(value.threadId)
+  && nativeWorkspacePath(value.cwd)
+
+const nativeAgentForkThread: Validator = value =>
+  isRecord(value)
+  && hasOnlyKeys(value, ['threadId', 'cwd', 'lastTurnId'])
+  && nativeCodexId(value.threadId)
+  && nativeWorkspacePath(value.cwd)
+  && (value.lastTurnId === undefined || nativeCodexId(value.lastTurnId))
+
+const nativeAgentStartTurn: Validator = value =>
+  isRecord(value)
+  && hasOnlyKeys(value, ['threadId', 'input', 'clientUserMessageId'])
+  && nativeCodexId(value.threadId)
+  && Array.isArray(value.input)
+  && value.input.length > 0
+  && value.input.length <= 64
+  && value.input.every(nativeTurnInput)
+  && (value.clientUserMessageId === undefined || nativeMessageId(value.clientUserMessageId))
+
+const nativeAgentSteerTurn: Validator = value =>
+  isRecord(value)
+  && hasOnlyKeys(value, ['threadId', 'turnId', 'text', 'clientUserMessageId'])
+  && nativeCodexId(value.threadId)
+  && nativeCodexId(value.turnId)
+  && typeof value.text === 'string'
+  && value.text.length > 0
+  && value.text.length <= 1_048_576
+  && (value.clientUserMessageId === undefined || nativeMessageId(value.clientUserMessageId))
+
+const nativeAgentTurnReference: Validator = value =>
+  isRecord(value)
+  && hasOnlyKeys(value, ['threadId', 'turnId'])
+  && nativeCodexId(value.threadId)
+  && nativeCodexId(value.turnId)
+
+const nativeAgentThreadReference: Validator = value =>
+  isRecord(value)
+  && hasOnlyKeys(value, ['threadId'])
+  && nativeCodexId(value.threadId)
+
+const nativeAgentApprovalDecision = (value: unknown): value is string =>
+  value === 'accept' || value === 'acceptForSession' || value === 'decline' || value === 'cancel'
+
+const nativeAgentResolveApproval: Validator = value =>
+  isRecord(value)
+  && hasOnlyKeys(value, ['requestId', 'decision'])
+  && nativeCodexId(value.requestId)
+  && nativeAgentApprovalDecision(value.decision)
+
 const modelConfigurationSave: Validator = value =>
   isRecord(value)
   && hasOnlyKeys(value, ['id', 'label', 'base_url', 'model', 'api_key', 'protocol', 'capabilities', 'supports_tool_calls'])
@@ -212,6 +300,15 @@ export const ELECTRON_IPC_VALIDATORS = {
   [ELECTRON_IPC_CHANNELS.modelConfigurationSave]: modelConfigurationSave,
   [ELECTRON_IPC_CHANNELS.modelConfigurationSetRoute]: modelConfigurationSetRoute,
   [ELECTRON_IPC_CHANNELS.modelConfigurationRemove]: personalModelProfileId,
+  [ELECTRON_IPC_CHANNELS.nativeAgentStartThread]: nativeAgentStartThread,
+  [ELECTRON_IPC_CHANNELS.nativeAgentResumeThread]: nativeAgentResumeThread,
+  [ELECTRON_IPC_CHANNELS.nativeAgentReadThread]: nativeAgentThreadReference,
+  [ELECTRON_IPC_CHANNELS.nativeAgentForkThread]: nativeAgentForkThread,
+  [ELECTRON_IPC_CHANNELS.nativeAgentStartTurn]: nativeAgentStartTurn,
+  [ELECTRON_IPC_CHANNELS.nativeAgentSteerTurn]: nativeAgentSteerTurn,
+  [ELECTRON_IPC_CHANNELS.nativeAgentInterruptTurn]: nativeAgentTurnReference,
+  [ELECTRON_IPC_CHANNELS.nativeAgentArchiveThread]: nativeAgentThreadReference,
+  [ELECTRON_IPC_CHANNELS.nativeAgentResolveApproval]: nativeAgentResolveApproval,
   [ELECTRON_IPC_CHANNELS.commandInvoke]: commandInvoke,
   [ELECTRON_IPC_CHANNELS.clipboardReadText]: noPayload,
   [ELECTRON_IPC_CHANNELS.clipboardWriteText]: stringPayload,

@@ -6,9 +6,9 @@ import {
   normalizeAppZoomLevel,
 } from './appZoom'
 
-export const CURRENT_DESKTOP_PERSISTENCE_SCHEMA_VERSION = 8
+export const CURRENT_DESKTOP_PERSISTENCE_SCHEMA_VERSION = 9
 export const DESKTOP_PERSISTENCE_VERSION_KEY = 'billiardbuddy.persistence.schemaVersion'
-export const DESKTOP_PERSISTENCE_BACKUP_KEY = 'billiardbuddy.persistence.backup.v8'
+export const DESKTOP_PERSISTENCE_BACKUP_KEY = 'billiardbuddy.persistence.backup.v9'
 
 type DesktopMigrationReport = {
   migratedKeys: string[]
@@ -162,6 +162,20 @@ function migrateTabs(storage: StorageLike, report: DesktopMigrationReport): void
           || tab.type === 'product-tasks'
         ) {
           return [{ sessionId, title, type: tab.type }]
+        }
+
+        if (
+          tab.type === 'native-agent' &&
+          typeof tab.nativeAgentThreadId === 'string' && tab.nativeAgentThreadId.trim() &&
+          typeof tab.nativeAgentWorkDir === 'string' && tab.nativeAgentWorkDir.trim()
+        ) {
+          return [{
+            sessionId,
+            title,
+            type: 'native-agent',
+            nativeAgentThreadId: tab.nativeAgentThreadId.trim(),
+            nativeAgentWorkDir: tab.nativeAgentWorkDir.trim(),
+          }]
         }
 
         if (tab.type === 'product-task' && typeof tab.taskId === 'string' && tab.taskId.trim()) {
