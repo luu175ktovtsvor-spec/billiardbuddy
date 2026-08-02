@@ -92,7 +92,10 @@ export const PERSONAL_MODEL_CAPABILITY_CATALOG: readonly PersonalModelCatalogEnt
     auth_mode: 'bearer',
     capabilities: ['TextReasoning'],
     supports_tool_calls: true,
-    supports_parallel_tool_calls: true,
+    // DeepSeek documents Tool Calls but does not publish a model-specific
+    // parallel-call contract. Keep Codex's loop serial until that evidence is
+    // available; a missing optimization must not become a guessed capability.
+    supports_parallel_tool_calls: false,
     context_window_tokens: DEEPSEEK_CONTEXT_WINDOW_TOKENS,
     max_output_tokens: DEEPSEEK_MAX_OUTPUT_TOKENS,
     documentation_url: DEEPSEEK_DOCUMENTATION_URL,
@@ -109,7 +112,10 @@ export const PERSONAL_MODEL_CAPABILITY_CATALOG: readonly PersonalModelCatalogEnt
     auth_mode: 'bearer',
     capabilities: ['TextReasoning'],
     supports_tool_calls: true,
-    supports_parallel_tool_calls: true,
+    // DeepSeek documents Tool Calls but does not publish a model-specific
+    // parallel-call contract. Keep Codex's loop serial until that evidence is
+    // available; a missing optimization must not become a guessed capability.
+    supports_parallel_tool_calls: false,
     context_window_tokens: DEEPSEEK_CONTEXT_WINDOW_TOKENS,
     max_output_tokens: DEEPSEEK_MAX_OUTPUT_TOKENS,
     documentation_url: DEEPSEEK_DOCUMENTATION_URL,
