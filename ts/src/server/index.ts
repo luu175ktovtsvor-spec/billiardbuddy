@@ -1,36 +1,20 @@
 /** BilliardBuddy local Product Server for the desktop GUI. */
 
 import { handleApiRequest } from './router.js'
-import { createProductTaskWebSocket, type ProductTaskWebSocketData } from './product/taskWebSocket.js'
 import { resolveCors, type CorsResolution } from './middleware/cors.js'
 import { requireAuth } from './middleware/auth.js'
-import { CronScheduler } from './services/cronScheduler.js'
 import { diagnosticsService } from './services/diagnosticsService.js'
 import { consumeMediaUiCapability, createMediaApiHandler } from './api/media.js'
 import { createImageWorkbenchDomainApiHandler } from './api/imageWorkbench.js'
 import { createVideoWorkbenchDomainApiHandler } from './api/videoWorkbench.js'
 import { isLongMediaRequestPath } from './mediaRequestTimeout.js'
-import { handleProductApi } from './api/product.js'
-import { createProductTaskService, type ProductTaskService } from './product/taskService.js'
+import { handleProductControlApi, legacyAgentBackendRetiredResponse } from './api/productControl.js'
 import { MediaProjectService } from './services/mediaProjectService.js'
 import { ImageWorkbenchService } from './services/imageWorkbenchService.js'
 import { VideoWorkbenchService } from './services/videoWorkbenchService.js'
 import { voiceOperationService } from './services/voiceOperationService.js'
-import { getProductConfigDir } from './product/productPaths.js'
-import { configureChromeSessionBridge, getChromeSessionBridge } from './services/chromeSessionBridge.js'
 import { ProductCapabilitySnapshotService } from './services/productCapabilitySnapshot.js'
-import { ProductResourceScheduler } from './product/resourceScheduler.js'
-import { ProductStorageMigrationCoordinator } from './services/productStorageMigrations.js'
-import { CronService } from './services/cronService.js'
-import { ProductScheduledTaskService } from './product/scheduledTaskService.js'
-import { createProductTaskReviewService } from './product/taskReviewService.js'
-import { createRuntimeTaskLifecycleParticipants } from './product/taskLifecycleParticipants.js'
-import { ProductCoreOperationBridge } from './product/productCoreOperationBridge.js'
-import { createProductTaskRunComposition, type ProductTaskRunComposition } from './agent-worker/taskRunComposition.js'
-import type { ProductTaskRunDispatchPort } from './product/taskRunDispatchPort.js'
-import { createProductTaskRuntimeEventPort } from './product/taskRuntimeEventPort.js'
-import { ProductTaskWorkerRuntimeEvents } from './product/taskWorkerRuntimeEvents.js'
-import { migrateSupportedScheduledTaskRuns, purgeScheduledTaskRunsForDeletedTask } from './services/cronScheduler.js'
+import { listLegacyRecentProjects } from './services/legacyWorkspaceHistory.js'
 import {
   consumeGatewayAccessTokenCapability,
   updateGatewayAccessToken,
@@ -41,7 +25,6 @@ import {
   updatePersonalModelRuntimeConfiguration,
 } from './services/personalModelRuntimeConfiguration.js'
 import { PERSONAL_MODEL_CONFIGURATION_UPDATE_PATH } from '../../shared/product/personalModels.js'
-import * as path from 'node:path'
 
 function readArgValue(flag: string): string | undefined {
   const args = process.argv.slice(2)
@@ -66,10 +49,6 @@ function resolveServerOptions() {
 const SERVER_OPTIONS = resolveServerOptions()
 const PORT = SERVER_OPTIONS.port
 const HOST = SERVER_OPTIONS.host
-let liveCronScheduler: CronScheduler | undefined
-let liveTaskRunComposition: ProductTaskRunComposition | undefined
-let liveProductTaskWebSocket: ReturnType<typeof createProductTaskWebSocket> | undefined
-
 function withCors(response: Response, cors: CorsResolution): Response {
   const headers = new Headers(response.headers)
   for (const [key, value] of Object.entries(cors.headers)) {
@@ -118,57 +97,6 @@ export function startServer(port = PORT, host = HOST) {
   const mediaUiCapability = consumeMediaUiCapability()
   const personalModelConfigurationCapability = consumePersonalModelConfigurationCapability()
   const gatewayAccessTokenCapability = consumeGatewayAccessTokenCapability()
-  const configDir = getProductConfigDir()
-  const cronService = new CronService(configDir)
-  const coreOperationBridge = new ProductCoreOperationBridge()
-  const taskRuntimeEvents = new ProductTaskWorkerRuntimeEvents()
-  const taskRuntimeEventPort = createProductTaskRuntimeEventPort(taskRuntimeEvents)
-  let chromeSessionBridge: ReturnType<typeof configureChromeSessionBridge> | undefined
-  let desktopResourceScheduler!: ProductResourceScheduler
-  let productTaskService!: ProductTaskService
-  let taskRunComposition: ProductTaskRunComposition | undefined
-  const dispatcher: ProductTaskRunDispatchPort = {
-    dispatch: async (...input) => taskRunComposition
-      ? await taskRunComposition.dispatcher.dispatch(...input)
-      : 'recovery_required',
-    stop: async (...input) => { await taskRunComposition?.dispatcher.stop?.(...input) },
-    approve: async (...input) => await taskRunComposition?.dispatcher.approve?.(...input) ?? false,
-    answer: async (...input) => await taskRunComposition?.dispatcher.answer?.(...input) ?? false,
-    steer: async (...input) => await taskRunComposition?.dispatcher.steer?.(...input) ?? false,
-  }
-  productTaskService = createProductTaskService({
-    dispatcher,
-    runtimeEvents: taskRuntimeEventPort,
-    additionalLifecycleParticipants: createRuntimeTaskLifecycleParticipants({
-      schedules: cronService,
-      recruiting: () => chromeSessionBridge,
-      resources: () => desktopResourceScheduler,
-      operationJournal: coreOperationBridge,
-      scheduledRuns: {
-        purgeTaskRuns: (taskId, scheduleIds) => purgeScheduledTaskRunsForDeletedTask(taskId, scheduleIds, configDir),
-      },
-    }),
-  })
-  desktopResourceScheduler = new ProductResourceScheduler({ statePath: productTaskService.workerSchedulerStatePath() })
-  taskRunComposition = createProductTaskRunComposition(
-    productTaskService,
-    desktopResourceScheduler,
-    taskRuntimeEventPort,
-  )
-  liveTaskRunComposition = taskRunComposition
-  const scheduler = new CronScheduler(cronService, productTaskService)
-  liveCronScheduler = scheduler
-  const scheduledTasks = new ProductScheduledTaskService(cronService, scheduler, {
-    get: taskId => productTaskService.getScheduledTaskContext(taskId),
-  })
-  const taskReview = createProductTaskReviewService(productTaskService)
-  const browserRoot = path.join(getProductConfigDir(), 'billiardbuddy', 'browser')
-  chromeSessionBridge = configureChromeSessionBridge({
-    statePath: path.join(browserRoot, 'actions.json'),
-    descriptorPath: path.join(browserRoot, 'native-bridge.json'),
-    scheduler: desktopResourceScheduler,
-  })
-  let productTaskQueueRecovery: Promise<void> | undefined
   // The generic media service is now a legacy reader only. Image and video
   // each own their state, operation journal and recovery paths; Chat and
   // ProductTask routes receive neither workbench service.
@@ -197,22 +125,19 @@ export function startServer(port = PORT, host = HOST) {
   )
   const productCapabilitySnapshots = new ProductCapabilitySnapshotService({
     mediaToolchainStatus: () => videoWorkbenchService.toolchainStatus(),
-    scheduledRuns: () => scheduledTasks.listRecentRuns(100),
+    // The old scheduler was owned by ProductTask. It is intentionally not
+    // started while Rust Codex native scheduling is built, so capability reads
+    // surface the transition as unavailable instead of reporting a fake queue.
+    scheduledRuns: async () => { throw new Error('LEGACY_AGENT_BACKEND_RETIRED') },
   })
-  const productStorageUpgrade = new ProductStorageMigrationCoordinator(
-    configDir,
-    {
-      migrateProductTasks: () => productTaskService.migrateSupportedStorage(),
-      migrateMedia: () => mediaService.migrateSupportedStorage(),
-      migrateVoice: () => voiceOperationService.migrateSupportedStorage(),
-      migrateScheduledTasks: () => new CronService(configDir).migrateSupportedStorage(),
-      migrateScheduledTaskRuns: () => migrateSupportedScheduledTaskRuns(configDir),
-    },
-  ).ensureUpgraded()
+  const sidecarStorageUpgrade = Promise.all([
+    mediaService.migrateSupportedStorage(),
+    voiceOperationService.migrateSupportedStorage(),
+  ])
   // Both importers are one-way and idempotent. They retain the former generic
   // directory as evidence while moving all formal reads/writes to the owning
   // workbench, then settle only local child-process operations after restart.
-  const mediaWorkbenchRecovery = productStorageUpgrade
+  const mediaWorkbenchRecovery = sidecarStorageUpgrade
     .then(async () => await Promise.all([
       imageWorkbenchService.migrateLegacyMediaStore(),
       videoWorkbenchService.migrateLegacyMediaStore(),
@@ -222,19 +147,11 @@ export function startServer(port = PORT, host = HOST) {
       videoWorkbenchService.recoverInterruptedOperations(),
     ]))
   const productApiHandler = (req: Request, url: URL, segments: string[]) => (
-    handleProductApi(
-      req,
-      url,
-      segments,
-      productTaskService,
-      taskReview,
-      scheduledTasks,
-      productCapabilitySnapshots,
-      coreOperationBridge,
-    )
+    handleProductControlApi(req, url, segments, {
+      capabilitySnapshots: productCapabilitySnapshots,
+      listRecentProjects: listLegacyRecentProjects,
+    })
   )
-  const productTaskWebSocket = createProductTaskWebSocket(productTaskService, taskRuntimeEvents)
-  liveProductTaskWebSocket = productTaskWebSocket
   // Library consumers can own the global console and process handlers:
   // a test that boots the server would otherwise route every test-side
   // console.error/warn into the user's real diagnostics file.
@@ -242,31 +159,19 @@ export function startServer(port = PORT, host = HOST) {
     diagnosticsService.installConsoleCapture()
     diagnosticsService.installProcessCapture()
   }
-  let serverPort = port
-  const localConnectHost =
-    localHost === '127.0.0.1' || localHost === 'localhost'
-      ? '127.0.0.1'
-      : localHost
-
   const forceAuth =
     SERVER_OPTIONS.authRequired ||
     process.env.SERVER_AUTH_REQUIRED === '1'
 
-  let server: ReturnType<typeof Bun.serve<ProductTaskWebSocketData>>
-
   try {
-    server = Bun.serve<ProductTaskWebSocketData>({
+    const server = Bun.serve({
       port,
       hostname: localHost,
       idleTimeout: 60,
 
       async fetch(req, server) {
-        await productStorageUpgrade
+        await sidecarStorageUpgrade
         await mediaWorkbenchRecovery
-        productTaskQueueRecovery ??= productTaskService.recoverDurableTaskRunQueue({
-          hasLiveTaskRunLease: (runId, generation) => desktopResourceScheduler.hasLiveTaskRunLease(runId, generation),
-        })
-        await productTaskQueueRecovery
         const url = new URL(req.url)
         if (url.pathname === PERSONAL_MODEL_CONFIGURATION_UPDATE_PATH) {
           return await updatePersonalModelRuntimeConfiguration(req, personalModelConfigurationCapability)
@@ -285,48 +190,13 @@ export function startServer(port = PORT, host = HOST) {
           return new Response(null, { status: 204, headers: cors.headers })
         }
 
-        // Product task websocket. The URL and browser-visible protocol are
-        // task-scoped; only this server-side adapter resolves the Core session.
+        // ProductTask websocket ownership ended with the TypeScript Agent
+        // runtime. Native Codex owns its own App Server transport instead.
         if (url.pathname.startsWith('/ws/product/tasks/')) {
           if (cors.rejected) {
             return corsRejectedResponse(cors)
           }
-
-          if (forceAuth) {
-            const authError = await requireAuth(req, url.searchParams.get('token'))
-            if (authError) {
-              return withCors(authError, cors)
-            }
-          }
-
-          const parts = url.pathname.split('/').filter(Boolean)
-          const taskId = parts.length === 4 ? parts[3] || '' : ''
-          if (!taskId || !/^[0-9a-zA-Z_-]{1,64}$/.test(taskId)) {
-            return new Response('Invalid product task ID', { status: 400 })
-          }
-
-          let sessionId: string
-          try {
-            sessionId = await productTaskService.resolveCoreSessionId(taskId)
-          } catch {
-            return new Response('Product task not found', { status: 404 })
-          }
-          if (!/^[0-9a-zA-Z_-]{1,64}$/.test(sessionId)) {
-            return new Response('Product task not found', { status: 404 })
-          }
-
-          const upgraded = server.upgrade(req, {
-            data: {
-              sessionId,
-              productTaskId: taskId,
-              connectedAt: Date.now(),
-              channel: 'product',
-              handoff: 'awaiting_resume',
-              pending_live_events: [],
-            },
-          })
-          if (upgraded) return undefined
-          return new Response('WebSocket upgrade failed', { status: 400 })
+          return withCors(legacyAgentBackendRetiredResponse(), cors)
         }
 
         // REST API
@@ -390,11 +260,11 @@ export function startServer(port = PORT, host = HOST) {
         return new Response('Not Found', { status: 404 })
       },
 
-      websocket: productTaskWebSocket,
     })
     if (typeof server.port !== 'number') throw new Error('SERVER_PORT_UNAVAILABLE')
-    serverPort = server.port
-    void chromeSessionBridge.activate(`http://${localConnectHost}:${serverPort}`).catch(() => undefined)
+    const serverPort = server.port
+    console.log(`[Server] BilliardBuddy local services running at http://${localHost}:${serverPort}`)
+    return server
   } catch (error) {
     const originalMessage = error instanceof Error ? error.message.trim() : ''
     const message = originalMessage && originalMessage !== 'Error'
@@ -411,72 +281,7 @@ export function startServer(port = PORT, host = HOST) {
     throw startupError
   }
 
-  // Never execute an unattended task against a partially migrated store.
-  void productStorageUpgrade.then(() => scheduler.start()).catch(() => undefined)
-
-  console.log(`[Server] BilliardBuddy Agent service running at http://${localHost}:${serverPort}`)
-  return server
 }
-
-// ─── Graceful shutdown: stop product workers and local services ──────────────
-
-let shutdownInProgress: Promise<void> | null = null
-
-export async function stopServerRuntimeForShutdown(
-  _options: { waitForCli?: boolean } = {},
-): Promise<void> {
-  liveCronScheduler?.stop()
-  liveCronScheduler = undefined
-  liveProductTaskWebSocket?.shutdown()
-  liveProductTaskWebSocket = undefined
-  try {
-    await getChromeSessionBridge().deactivate()
-  } catch {
-    // Tests and failed early startups may shut down before the browser bridge
-    // is configured. There is no descriptor or live session to clean up then.
-  }
-
-  const composition = liveTaskRunComposition
-  liveTaskRunComposition = undefined
-  await composition?.shutdown()
-}
-
-function cleanupAllSessions() {
-  void stopServerRuntimeForShutdown({ waitForCli: false })
-}
-
-async function cleanupAllSessionsAndWait() {
-  await stopServerRuntimeForShutdown({ waitForCli: true })
-}
-
-function shutdownAndExit(signal: 'SIGTERM' | 'SIGINT', exitCode: number) {
-  if (shutdownInProgress) return
-
-  shutdownInProgress = (async () => {
-    console.log(`[Server] Received ${signal}`)
-    await cleanupAllSessionsAndWait()
-    process.exit(exitCode)
-  })().catch((error) => {
-    console.error(
-      `[Server] ${signal} shutdown cleanup failed:`,
-      error instanceof Error ? error.message : error,
-    )
-    process.exit(1)
-  })
-}
-
-process.on('SIGTERM', () => {
-  shutdownAndExit('SIGTERM', 0)
-})
-
-process.on('SIGINT', () => {
-  shutdownAndExit('SIGINT', 0)
-})
-
-process.on('exit', () => {
-  cleanupAllSessions()
-})
-
 // Direct execution
 if (import.meta.main) {
   startServer()
