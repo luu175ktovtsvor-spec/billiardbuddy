@@ -594,6 +594,12 @@ function registerIpcHandlers() {
   registerHandler(ELECTRON_IPC_CHANNELS.runtimeGetServerUrl, () => getServerRuntime().getServerUrl())
   registerHandler(ELECTRON_IPC_CHANNELS.modelConfigurationSummary, () => getProviderCredentialService().summary())
   registerHandler(ELECTRON_IPC_CHANNELS.modelConfigurationCatalog, () => getProviderCredentialService().catalog())
+  registerHandler(ELECTRON_IPC_CHANNELS.modelConfigurationProviderPresets, () =>
+    getProviderCredentialService().providerPresets())
+  registerHandler(ELECTRON_IPC_CHANNELS.modelConfigurationOpenProviderPortal, async (_event, payload) => {
+    const preset = getProviderCredentialService().providerPreset(String(payload))
+    await openExternalUrl(preset.api_key_url)
+  })
   registerHandler(ELECTRON_IPC_CHANNELS.modelConfigurationDiscover, async (_event, payload) =>
     await getProviderCredentialService().discover(payload as Parameters<ProviderCredentialService['discover']>[0]))
   registerHandler(ELECTRON_IPC_CHANNELS.modelConfigurationSaveCatalog, (_event, payload) =>

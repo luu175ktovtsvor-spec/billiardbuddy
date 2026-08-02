@@ -211,6 +211,11 @@ if (process.isMainFrame) {
     models: {
       summary: () => invoke(ELECTRON_IPC_CHANNELS.modelConfigurationSummary),
       catalog: () => invoke(ELECTRON_IPC_CHANNELS.modelConfigurationCatalog),
+      providerPresets: () => invoke(ELECTRON_IPC_CHANNELS.modelConfigurationProviderPresets),
+      openProviderPortal: (providerPresetId: string) => invoke(
+        ELECTRON_IPC_CHANNELS.modelConfigurationOpenProviderPortal,
+        providerPresetId,
+      ),
       discover: (input: unknown) => invoke(ELECTRON_IPC_CHANNELS.modelConfigurationDiscover, input),
       saveCatalog: (input: unknown) => invoke(ELECTRON_IPC_CHANNELS.modelConfigurationSaveCatalog, input),
       save: (input: unknown) => invoke(ELECTRON_IPC_CHANNELS.modelConfigurationSave, input),

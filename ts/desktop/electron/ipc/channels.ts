@@ -3,6 +3,8 @@ export const ELECTRON_IPC_CHANNELS = {
   runtimeGetServerUrl: 'desktop:runtime:get-server-url',
   modelConfigurationSummary: 'desktop:model-configuration:summary',
   modelConfigurationCatalog: 'desktop:model-configuration:catalog',
+  modelConfigurationProviderPresets: 'desktop:model-configuration:provider-presets',
+  modelConfigurationOpenProviderPortal: 'desktop:model-configuration:open-provider-portal',
   modelConfigurationDiscover: 'desktop:model-configuration:discover',
   modelConfigurationSaveCatalog: 'desktop:model-configuration:save-catalog',
   modelConfigurationSave: 'desktop:model-configuration:save',

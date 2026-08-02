@@ -14,7 +14,7 @@ import type {
  * upstream provider's own documentation.  A discovered but unlisted model
  * remains a user-declared configuration instead of inheriting a guess.
  */
-export const PERSONAL_MODEL_CAPABILITY_CATALOG_REVISION = 1 as const
+export const PERSONAL_MODEL_CAPABILITY_CATALOG_REVISION = 2 as const
 
 export type PersonalModelCatalogEntry = {
   /** Stable BilliardBuddy id; never derive trust from a display name. */
@@ -48,12 +48,39 @@ const DEEPSEEK_BASE_URL = 'https://api.deepseek.com/v1'
 const DEEPSEEK_CONTEXT_WINDOW_TOKENS = 1_000_000
 const DEEPSEEK_MAX_OUTPUT_TOKENS = 384_000
 
+// OpenAI documents this exact model's identifiers, Responses support,
+// function-calling support, 1,050,000-token context and 128,000-token output
+// ceiling. Verified 2026-08-02:
+// https://developers.openai.com/api/docs/models/gpt-5.6-terra.md
+const OPENAI_DOCUMENTATION_URL = 'https://developers.openai.com/api/docs/models/gpt-5.6-terra.md'
+const OPENAI_VERIFIED_AT = '2026-08-02'
+const OPENAI_BASE_URL = 'https://api.openai.com/v1'
+const OPENAI_GPT_56_TERRA_CONTEXT_WINDOW_TOKENS = 1_050_000
+const OPENAI_GPT_56_TERRA_MAX_OUTPUT_TOKENS = 128_000
+
 /**
  * The bundled catalog is deliberately small and evidence-backed.  Add a new
  * provider/model only with its official capacity source and protocol facts;
  * do not turn a model ID returned by `/v1/models` into a presumed contract.
  */
 export const PERSONAL_MODEL_CAPABILITY_CATALOG: readonly PersonalModelCatalogEntry[] = [
+  {
+    id: 'openai/gpt-5.6-terra/responses',
+    provider_id: 'openai',
+    provider_label: 'OpenAI',
+    label: 'GPT-5.6 Terra',
+    base_url: OPENAI_BASE_URL,
+    model: 'gpt-5.6-terra',
+    protocol: 'openai-responses',
+    auth_mode: 'bearer',
+    capabilities: ['TextReasoning'],
+    supports_tool_calls: true,
+    supports_parallel_tool_calls: true,
+    context_window_tokens: OPENAI_GPT_56_TERRA_CONTEXT_WINDOW_TOKENS,
+    max_output_tokens: OPENAI_GPT_56_TERRA_MAX_OUTPUT_TOKENS,
+    documentation_url: OPENAI_DOCUMENTATION_URL,
+    verified_at: OPENAI_VERIFIED_AT,
+  },
   {
     id: 'deepseek/deepseek-v4-flash/responses',
     provider_id: 'deepseek',
