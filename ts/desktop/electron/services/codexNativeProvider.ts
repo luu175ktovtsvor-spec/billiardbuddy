@@ -76,6 +76,12 @@ function tomlInlineTable(entries: Record<string, string>): string {
 function providerOverrides(input: NativeProviderConfig): string[] {
   const prefix = `model_providers.${input.id}`
   return [
+    // BilliardBuddy owns product telemetry and release checks. The embedded
+    // App Server must never create an undeclared upstream network path before
+    // the selected model route is used.
+    'analytics.enabled=false',
+    'feedback.enabled=false',
+    'check_for_update_on_startup=false',
     `model_provider=${quoted(input.id)}`,
     `${prefix}.name=${quoted(input.name)}`,
     `${prefix}.base_url=${quoted(input.baseUrl)}`,
