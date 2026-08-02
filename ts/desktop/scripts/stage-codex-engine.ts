@@ -6,12 +6,22 @@ import {
   existsSync,
   lstatSync,
   mkdirSync,
+  mkdtempSync,
   readFileSync,
+  readdirSync,
   rmSync,
   writeFileSync,
 } from 'node:fs'
-import { homedir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { basename, join, resolve } from 'node:path'
+import {
+  CODEX_ENGINE_MANIFEST_SCHEMA,
+  CODEX_ENGINE_NAME,
+  CODEX_ENGINE_PRODUCT_PATCHES,
+  CODEX_ENGINE_SOURCE_REPOSITORY,
+  CODEX_ENGINE_SOURCE_REVISION,
+  type CodexEngineProductPatch,
+} from '../../shared/product/codexEngineContract'
 import { machOCodeSignatureNeutralSha256 } from './stage-media-toolchain'
 
 type SupportedTarget =
@@ -23,10 +33,11 @@ type SupportedTarget =
 type BinaryHashMode = 'sha256' | 'mach-o-code-signature-neutral-sha256'
 
 type EngineManifest = {
-  schemaVersion: 2
-  engine: 'codex-app-server'
-  sourceRepository: 'https://github.com/openai/codex'
+  schemaVersion: typeof CODEX_ENGINE_MANIFEST_SCHEMA
+  engine: typeof CODEX_ENGINE_NAME
+  sourceRepository: typeof CODEX_ENGINE_SOURCE_REPOSITORY
   sourceRevision: string
+  productPatches: CodexEngineProductPatch[]
   target: SupportedTarget
   binary: string
   binaryHashMode: BinaryHashMode
@@ -49,15 +60,13 @@ export type CodexEngineCliOptions = {
   verifyOnly: boolean
 }
 
-const EXPECTED_SOURCE_REVISION = '2b5bdcf67547860f2e5c5a605009a70026796b2b'
-const ENGINE_NAME = 'codex-app-server'
 const LICENSE_FILE = 'codex-engine-LICENSE.txt'
 const NOTICE_FILE = 'codex-engine-NOTICE.txt'
 
 const desktopRoot = resolve(import.meta.dir, '..')
 const repositoryRoot = resolve(desktopRoot, '..', '..')
 const engineRoot = join(repositoryRoot, 'third_party', 'codex-engine')
-const engineWorkspace = join(engineRoot, 'codex-rs')
+const productPatchRoot = join(repositoryRoot, 'third_party', 'codex-engine-patches')
 
 export function parseCodexEngineCliOptions(argv: string[]): CodexEngineCliOptions {
   let destinationDir: string | undefined
@@ -105,13 +114,13 @@ export function isSupportedCodexEngineTarget(value: string): value is SupportedT
 }
 
 export function codexEngineBinaryName(target: SupportedTarget): string {
-  return target.includes('windows') ? `${ENGINE_NAME}.exe` : ENGINE_NAME
+  return target.includes('windows') ? `${CODEX_ENGINE_NAME}.exe` : CODEX_ENGINE_NAME
 }
 
 export function stagedCodexEngineBinaryName(target: SupportedTarget): string {
   return target.includes('windows')
-    ? `${ENGINE_NAME}-${target}.exe`
-    : `${ENGINE_NAME}-${target}`
+    ? `${CODEX_ENGINE_NAME}-${target}.exe`
+    : `${CODEX_ENGINE_NAME}-${target}`
 }
 
 export function codexEngineManifestName(target: SupportedTarget): string {
@@ -120,6 +129,46 @@ export function codexEngineManifestName(target: SupportedTarget): string {
 
 function sha256(path: string): string {
   return createHash('sha256').update(readFileSync(path)).digest('hex')
+}
+
+function expectedProductPatches(): CodexEngineProductPatch[] {
+  if (!existsSync(productPatchRoot) || !lstatSync(productPatchRoot).isDirectory()) {
+    throw new Error(`缺少 Codex 引擎产品补丁目录: ${productPatchRoot}`)
+  }
+
+  const expectedPatches = [...CODEX_ENGINE_PRODUCT_PATCHES]
+    .sort((left, right) => left.file.localeCompare(right.file))
+  const expectedFiles = expectedPatches.map(patch => patch.file)
+  const actualFiles = readdirSync(productPatchRoot, { withFileTypes: true })
+    .map(entry => entry.name)
+    .sort()
+  if (actualFiles.length !== expectedFiles.length || actualFiles.some((file, index) => file !== expectedFiles[index])) {
+    throw new Error(`Codex 引擎产品补丁清单不完整或包含未审核文件: ${actualFiles.join(', ') || '（空）'}`)
+  }
+
+  return expectedPatches.map(patch => {
+    const path = join(productPatchRoot, patch.file)
+    if (!lstatSync(path).isFile() || lstatSync(path).isSymbolicLink()) {
+      throw new Error(`Codex 引擎产品补丁不是普通文件: ${path}`)
+    }
+    if (sha256(path) !== patch.sha256) {
+      throw new Error(`Codex 引擎产品补丁内容不符合发行合同: ${patch.file}`)
+    }
+    return { file: patch.file, sha256: patch.sha256 }
+  })
+}
+
+function matchesExpectedProductPatches(value: unknown, expected: readonly CodexEngineProductPatch[]): boolean {
+  return Array.isArray(value)
+    && value.length === expected.length
+    && value.every((patch, index) => {
+      const expectedPatch = expected[index]
+      if (!expectedPatch || !patch || typeof patch !== 'object') return false
+      return !Array.isArray(patch)
+        && Object.keys(patch).length === 2
+        && (patch as CodexEngineProductPatch).file === expectedPatch.file
+        && (patch as CodexEngineProductPatch).sha256 === expectedPatch.sha256
+    })
 }
 
 function isThinMachO64(path: string): boolean {
@@ -161,8 +210,8 @@ function run(command: string, args: string[], cwd?: string): string {
 
 function assertCleanSource(): void {
   const revision = run('git', ['rev-parse', 'HEAD'], engineRoot)
-  if (revision !== EXPECTED_SOURCE_REVISION) {
-    throw new Error(`Codex 引擎源码版本不符合产品锁定：期望 ${EXPECTED_SOURCE_REVISION}，实际 ${revision}`)
+  if (revision !== CODEX_ENGINE_SOURCE_REVISION) {
+    throw new Error(`Codex 引擎源码版本不符合产品锁定：期望 ${CODEX_ENGINE_SOURCE_REVISION}，实际 ${revision}`)
   }
   const status = run('git', ['status', '--short'], engineRoot)
   if (status) throw new Error('Codex 引擎源码目录存在未提交改动，拒绝以不确定源码构建安装包')
@@ -184,19 +233,56 @@ function resolveCargoCommand(): string {
   throw new Error('缺少 Rust Cargo；无法从锁定 Codex 源码构建产品内核')
 }
 
-function buildLockedSource(target: SupportedTarget): string {
-  assertCleanSource()
+function applyProductPatches(sourceRoot: string, patches: readonly CodexEngineProductPatch[]): void {
+  for (const patch of patches) {
+    const patchPath = join(productPatchRoot, patch.file)
+    if (sha256(patchPath) !== patch.sha256) {
+      throw new Error(`Codex 引擎产品补丁在构建前发生变化: ${patch.file}`)
+    }
+    run('git', ['apply', '--check', patchPath], sourceRoot)
+    run('git', ['apply', '--whitespace=nowarn', patchPath], sourceRoot)
+  }
+  run('git', ['diff', '--check'], sourceRoot)
+}
+
+function withPatchedEngineSource<T>(
+  patches: readonly CodexEngineProductPatch[],
+  action: (sourceRoot: string) => T,
+): T {
+  const temporaryRoot = mkdtempSync(join(tmpdir(), 'billiardbuddy-codex-engine-'))
+  const sourceRoot = join(temporaryRoot, 'source')
+  let worktreeCreated = false
+
+  try {
+    run('git', ['worktree', 'add', '--detach', sourceRoot, CODEX_ENGINE_SOURCE_REVISION], engineRoot)
+    worktreeCreated = true
+    applyProductPatches(sourceRoot, patches)
+    return action(sourceRoot)
+  } finally {
+    if (worktreeCreated) {
+      try {
+        run('git', ['worktree', 'remove', '--force', sourceRoot], engineRoot)
+      } finally {
+        rmSync(temporaryRoot, { recursive: true, force: true })
+      }
+    } else {
+      rmSync(temporaryRoot, { recursive: true, force: true })
+    }
+  }
+}
+
+function buildPatchedSource(target: SupportedTarget, sourceRoot: string): string {
+  const sourceWorkspace = join(sourceRoot, 'codex-rs')
   run(resolveCargoCommand(), [
     'build',
     '--locked',
     '--release',
     '--target', target,
-    '--package', ENGINE_NAME,
-    '--bin', ENGINE_NAME,
-  ], engineWorkspace)
-  assertCleanSource()
+    '--package', CODEX_ENGINE_NAME,
+    '--bin', CODEX_ENGINE_NAME,
+  ], sourceWorkspace)
 
-  const builtBinary = join(engineWorkspace, 'target', target, 'release', codexEngineBinaryName(target))
+  const builtBinary = join(sourceWorkspace, 'target', target, 'release', codexEngineBinaryName(target))
   if (!existsSync(builtBinary) || !lstatSync(builtBinary).isFile() || lstatSync(builtBinary).size < 1_000_000) {
     throw new Error(`Codex 引擎构建产物无效: ${builtBinary}`)
   }
@@ -216,11 +302,13 @@ function adHocSignMacBinary(path: string): void {
 
 function verifyManifest(manifest: EngineManifest, target: SupportedTarget): void {
   const expectedBinary = stagedCodexEngineBinaryName(target)
+  const expectedPatches = expectedProductPatches()
   if (
-    manifest.schemaVersion !== 2
-    || manifest.engine !== ENGINE_NAME
-    || manifest.sourceRepository !== 'https://github.com/openai/codex'
-    || manifest.sourceRevision !== EXPECTED_SOURCE_REVISION
+    manifest.schemaVersion !== CODEX_ENGINE_MANIFEST_SCHEMA
+    || manifest.engine !== CODEX_ENGINE_NAME
+    || manifest.sourceRepository !== CODEX_ENGINE_SOURCE_REPOSITORY
+    || manifest.sourceRevision !== CODEX_ENGINE_SOURCE_REVISION
+    || !matchesExpectedProductPatches(manifest.productPatches, expectedPatches)
     || manifest.target !== target
     || manifest.binary !== expectedBinary
     || manifest.license !== 'Apache-2.0'
@@ -276,12 +364,16 @@ export function stageCodexEngine(options: CodexEngineStageOptions): void {
   if (options.verifyOnly) return verifyStagedCodexEngine(options)
 
   const destination = resolve(options.destinationDir)
-  const builtBinary = buildLockedSource(options.target)
+  assertCleanSource()
+  const patches = expectedProductPatches()
   mkdirSync(destination, { recursive: true })
 
   const stagedBinary = join(destination, stagedCodexEngineBinaryName(options.target))
   const manifestPath = join(destination, codexEngineManifestName(options.target))
-  copyFileSync(builtBinary, stagedBinary)
+  withPatchedEngineSource(patches, sourceRoot => {
+    copyFileSync(buildPatchedSource(options.target, sourceRoot), stagedBinary)
+  })
+  assertCleanSource()
   if (!options.target.includes('windows')) {
     chmodSync(stagedBinary, 0o755)
     adHocSignMacBinary(stagedBinary)
@@ -293,10 +385,11 @@ export function stageCodexEngine(options: CodexEngineStageOptions): void {
     ? 'mach-o-code-signature-neutral-sha256'
     : 'sha256'
   const manifest: EngineManifest = {
-    schemaVersion: 2,
-    engine: ENGINE_NAME,
-    sourceRepository: 'https://github.com/openai/codex',
-    sourceRevision: EXPECTED_SOURCE_REVISION,
+    schemaVersion: CODEX_ENGINE_MANIFEST_SCHEMA,
+    engine: CODEX_ENGINE_NAME,
+    sourceRepository: CODEX_ENGINE_SOURCE_REPOSITORY,
+    sourceRevision: CODEX_ENGINE_SOURCE_REVISION,
+    productPatches: patches,
     target: options.target,
     binary: stagedCodexEngineBinaryName(options.target),
     binaryHashMode,
