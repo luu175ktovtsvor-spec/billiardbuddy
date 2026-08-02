@@ -1,3 +1,5 @@
+import { personalModelCatalogEntry } from './personalModelCatalog'
+
 export const PERSONAL_MODEL_CAPABILITIES = [
   'TextReasoning',
   'VisualEvidence',
@@ -25,7 +27,7 @@ export const PERSONAL_MODEL_OPENAI_SERVICE_TIERS = ['provider-default', 'auto', 
 export type PersonalModelOpenAiServiceTier = (typeof PERSONAL_MODEL_OPENAI_SERVICE_TIERS)[number]
 export const PERSONAL_MODEL_CHAT_COMPLETION_TOKEN_LIMIT_FIELDS = ['max_tokens', 'max_completion_tokens', 'provider-default'] as const
 export type PersonalModelChatCompletionTokenLimitField = (typeof PERSONAL_MODEL_CHAT_COMPLETION_TOKEN_LIMIT_FIELDS)[number]
-export const PERSONAL_MODEL_CONTEXT_LIMIT_SOURCES = ['user-declared', 'legacy-unverified'] as const
+export const PERSONAL_MODEL_CONTEXT_LIMIT_SOURCES = ['product-catalog', 'user-declared', 'legacy-unverified'] as const
 export type PersonalModelContextLimitSource = (typeof PERSONAL_MODEL_CONTEXT_LIMIT_SOURCES)[number]
 // These values exist solely to retain profiles saved before explicit model
 // limits became mandatory. They are never used to create or activate a new
@@ -75,11 +77,13 @@ export type PersonalModelProfile = {
   /** Anthropic manual-thinking budget; used only when reasoning_mode is enabled. */
   reasoning_budget_tokens: number
   /**
-   * New profiles must be declared by the user from the selected provider's
-   * documentation. Legacy values are retained for editing only and cannot be
-   * sent to Codex Core.
+   * A product-catalog entry is checked against a provider's official
+   * documentation. New custom profiles are explicitly declared by the user.
+   * Legacy values are retained for editing only and cannot reach Codex Core.
    */
   context_limits_source: PersonalModelContextLimitSource
+  /** Present only when BilliardBuddy supplied the verified model contract. */
+  catalog_entry_id?: string
   /** Provider-documented total context window passed to Codex Core. */
   context_window_tokens: number
   /**
@@ -91,7 +95,7 @@ export type PersonalModelProfile = {
   api_key: string
 }
 
-export type PersonalModelProfileInput = Omit<PersonalModelProfile, 'id' | 'auth_mode' | 'supports_tool_calls' | 'supports_parallel_tool_calls' | 'supports_openai_prompt_cache_key' | 'supports_openai_assistant_phase' | 'supports_chat_completion_stream_usage' | 'supports_reasoning' | 'reasoning_mode' | 'reasoning_effort' | 'reasoning_summary' | 'anthropic_thinking_display' | 'text_verbosity' | 'openai_service_tier' | 'chat_completion_token_limit_field' | 'reasoning_budget_tokens' | 'context_limits_source' | 'context_window_tokens' | 'max_output_tokens'> & {
+export type PersonalModelProfileInput = Omit<PersonalModelProfile, 'id' | 'auth_mode' | 'supports_tool_calls' | 'supports_parallel_tool_calls' | 'supports_openai_prompt_cache_key' | 'supports_openai_assistant_phase' | 'supports_chat_completion_stream_usage' | 'supports_reasoning' | 'reasoning_mode' | 'reasoning_effort' | 'reasoning_summary' | 'anthropic_thinking_display' | 'text_verbosity' | 'openai_service_tier' | 'chat_completion_token_limit_field' | 'reasoning_budget_tokens' | 'context_limits_source' | 'catalog_entry_id' | 'context_window_tokens' | 'max_output_tokens'> & {
   id?: string
   auth_mode?: PersonalModelAuthMode
   supports_tool_calls?: boolean
@@ -108,6 +112,8 @@ export type PersonalModelProfileInput = Omit<PersonalModelProfile, 'id' | 'auth_
   openai_service_tier?: PersonalModelOpenAiServiceTier
   chat_completion_token_limit_field?: PersonalModelChatCompletionTokenLimitField
   reasoning_budget_tokens?: number
+  /** `null` deliberately converts an existing catalog profile to custom. */
+  catalog_entry_id?: string | null
   context_window_tokens?: number
   max_output_tokens?: number
 }
@@ -137,6 +143,10 @@ function canonicalPersonalModelCapabilities(
 
 export function validPersonalModelProfileId(value: unknown): value is string {
   return typeof value === 'string' && /^[a-zA-Z0-9_-]{8,80}$/.test(value)
+}
+
+export function validPersonalModelCatalogEntryId(value: unknown): value is string {
+  return typeof value === 'string' && /^[a-z0-9][a-z0-9._:/-]{2,160}$/i.test(value)
 }
 
 export function validPersonalModelCapability(value: unknown): value is PersonalModelCapability {
@@ -207,6 +217,7 @@ export function safePersonalModelBaseUrl(value: string, protocol: PersonalModelP
 
 type PersonalModelNormalizationOptions = {
   contextLimitsSource?: PersonalModelContextLimitSource
+  catalogEntryId?: string
 }
 
 export function normalizePersonalModelProfile(
@@ -241,6 +252,7 @@ export function normalizePersonalModelProfile(
     throw new Error('PERSONAL_MODEL_PROFILE_INVALID')
   }
   if (!validPersonalModelProtocol(input.protocol)) throw new Error('PERSONAL_MODEL_PROTOCOL_UNSUPPORTED')
+  const baseUrl = safePersonalModelBaseUrl(input.base_url, input.protocol)
   const authMode = input.auth_mode ?? defaultPersonalModelAuthMode()
   if (!validPersonalModelAuthMode(authMode)) throw new Error('PERSONAL_MODEL_AUTH_MODE_UNSUPPORTED')
   if (input.supports_tool_calls !== undefined && typeof input.supports_tool_calls !== 'boolean') {
@@ -283,19 +295,42 @@ export function normalizePersonalModelProfile(
   if (!validPersonalModelContextLimitSource(contextLimitsSource)) {
     throw new Error('PERSONAL_MODEL_CONFIGURATION_CORRUPT')
   }
+  if (options.catalogEntryId !== undefined && !validPersonalModelCatalogEntryId(options.catalogEntryId)) {
+    throw new Error('PERSONAL_MODEL_CONFIGURATION_CORRUPT')
+  }
+  const catalogEntry = contextLimitsSource === 'product-catalog'
+    ? personalModelCatalogEntry(options.catalogEntryId)
+    : undefined
+  if (contextLimitsSource === 'product-catalog' && !catalogEntry) {
+    throw new Error('PERSONAL_MODEL_CATALOG_ENTRY_REQUIRED')
+  }
+  if (contextLimitsSource !== 'product-catalog' && options.catalogEntryId !== undefined) {
+    throw new Error('PERSONAL_MODEL_CONFIGURATION_CORRUPT')
+  }
   const hasContextWindow = input.context_window_tokens !== undefined
   const hasMaxOutput = input.max_output_tokens !== undefined
   if (hasContextWindow !== hasMaxOutput) throw new Error('PERSONAL_MODEL_CONTEXT_CONTRACT_REQUIRED')
-  const contextWindowTokens = hasContextWindow
-    ? input.context_window_tokens
-    : contextLimitsSource === 'legacy-unverified'
-      ? DEFAULT_PERSONAL_MODEL_CONTEXT_WINDOW
-      : undefined
-  const maxOutputTokens = hasMaxOutput
-    ? input.max_output_tokens
-    : contextLimitsSource === 'legacy-unverified'
-      ? DEFAULT_PERSONAL_MODEL_MAX_OUTPUT_TOKENS
-      : undefined
+  if (
+    catalogEntry
+    && (
+      (hasContextWindow && input.context_window_tokens !== catalogEntry.context_window_tokens)
+      || (hasMaxOutput && input.max_output_tokens !== catalogEntry.max_output_tokens)
+    )
+  ) throw new Error('PERSONAL_MODEL_CATALOG_CONTRACT_MISMATCH')
+  const contextWindowTokens = catalogEntry
+    ? catalogEntry.context_window_tokens
+    : hasContextWindow
+      ? input.context_window_tokens
+      : contextLimitsSource === 'legacy-unverified'
+        ? DEFAULT_PERSONAL_MODEL_CONTEXT_WINDOW
+        : undefined
+  const maxOutputTokens = catalogEntry
+    ? catalogEntry.max_output_tokens
+    : hasMaxOutput
+      ? input.max_output_tokens
+      : contextLimitsSource === 'legacy-unverified'
+        ? DEFAULT_PERSONAL_MODEL_MAX_OUTPUT_TOKENS
+        : undefined
   if (
     contextWindowTokens === undefined
     || maxOutputTokens === undefined
@@ -333,18 +368,33 @@ export function normalizePersonalModelProfile(
   if (input.protocol !== 'openai-compatible' && chatCompletionTokenLimitField !== 'provider-default') {
     throw new Error('PERSONAL_MODEL_CHAT_COMPLETION_TOKEN_LIMIT_FIELD_UNSUPPORTED')
   }
+  const supportsToolCalls = input.supports_tool_calls ?? true
+  const supportsParallelToolCalls = supportsToolCalls && (input.supports_parallel_tool_calls ?? true)
+  if (
+    catalogEntry
+    && (
+      catalogEntry.model !== model
+      || catalogEntry.base_url !== baseUrl
+      || catalogEntry.protocol !== input.protocol
+      || catalogEntry.auth_mode !== authMode
+      || catalogEntry.supports_tool_calls !== supportsToolCalls
+      || catalogEntry.supports_parallel_tool_calls !== supportsParallelToolCalls
+      || catalogEntry.capabilities.length !== capabilities.length
+      || catalogEntry.capabilities.some((capability, index) => capability !== capabilities[index])
+    )
+  ) throw new Error('PERSONAL_MODEL_CATALOG_CONTRACT_MISMATCH')
   return {
     id,
     label,
-    base_url: safePersonalModelBaseUrl(input.base_url, input.protocol),
+    base_url: baseUrl,
     model,
     ...(modelInstructions ? { model_instructions: modelInstructions } : {}),
     protocol: input.protocol,
     auth_mode: authMode,
     // Profiles saved before model feature declarations were introduced already
     // powered the full Agent loop, so preserve that established tool behavior.
-    supports_tool_calls: input.supports_tool_calls ?? true,
-    supports_parallel_tool_calls: (input.supports_tool_calls ?? true) && (input.supports_parallel_tool_calls ?? true),
+    supports_tool_calls: supportsToolCalls,
+    supports_parallel_tool_calls: supportsParallelToolCalls,
     // Existing Responses profiles already received this field before the
     // endpoint capability became configurable, so preserve their behavior.
     supports_openai_prompt_cache_key: input.supports_openai_prompt_cache_key ?? input.protocol === 'openai-responses',
@@ -362,6 +412,7 @@ export function normalizePersonalModelProfile(
     chat_completion_token_limit_field: chatCompletionTokenLimitField,
     reasoning_budget_tokens: reasoningBudgetTokens,
     context_limits_source: contextLimitsSource,
+    ...(catalogEntry ? { catalog_entry_id: catalogEntry.id } : {}),
     context_window_tokens: contextWindowTokens,
     max_output_tokens: maxOutputTokens,
     capabilities,
@@ -381,7 +432,7 @@ export function parsePersonalModelConfiguration(raw: string | undefined | null):
   const profiles = record.profiles.flatMap(rawProfile => {
     if (!rawProfile || typeof rawProfile !== 'object' || Array.isArray(rawProfile)) throw new Error('PERSONAL_MODEL_CONFIGURATION_CORRUPT')
     const rawProtocol = (rawProfile as { protocol?: unknown }).protocol
-    const profile = rawProfile as PersonalModelProfile & { capabilities?: unknown; context_limits_source?: unknown }
+    const profile = rawProfile as PersonalModelProfile & { capabilities?: unknown; context_limits_source?: unknown; catalog_entry_id?: unknown }
     // A historical Anthropic profile never entered the native Codex route.
     // Ignore it at this boundary rather than letting a legacy saved setting
     // make the two supported user-key protocols unavailable.
@@ -397,8 +448,21 @@ export function parsePersonalModelConfiguration(raw: string | undefined | null):
     if (profile.context_limits_source === undefined) contextLimitsSource = 'legacy-unverified'
     else if (validPersonalModelContextLimitSource(profile.context_limits_source)) contextLimitsSource = profile.context_limits_source
     else throw new Error('PERSONAL_MODEL_CONFIGURATION_CORRUPT')
+    const candidateCatalogEntryId = contextLimitsSource === 'product-catalog'
+      && validPersonalModelCatalogEntryId(profile.catalog_entry_id)
+      ? profile.catalog_entry_id
+      : undefined
+    const catalogEntryId = personalModelCatalogEntry(candidateCatalogEntryId)?.id
+    if (contextLimitsSource === 'product-catalog' && !catalogEntryId) {
+      // Keep an old/corrupt catalog profile visible for repair, but never let
+      // it activate as though its limits had been verified.
+      contextLimitsSource = 'legacy-unverified'
+    }
     const capabilities = profile.capabilities
-    return [normalizePersonalModelProfile({ ...profile, capabilities }, profile.id, { contextLimitsSource })]
+    return [normalizePersonalModelProfile({ ...profile, capabilities }, profile.id, {
+      contextLimitsSource,
+      ...(catalogEntryId && contextLimitsSource === 'product-catalog' ? { catalogEntryId } : {}),
+    })]
   })
   if (profiles.length > 20 || new Set(profiles.map(profile => profile.id)).size !== profiles.length) throw new Error('PERSONAL_MODEL_CONFIGURATION_CORRUPT')
   const routes: PersonalModelConfiguration['routes'] = {}

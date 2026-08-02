@@ -19,6 +19,9 @@ const commandInvoke: Validator = value =>
 const personalModelProfileId = (value: unknown): value is string =>
   typeof value === 'string' && /^[A-Za-z0-9_-]{8,80}$/.test(value)
 
+const personalModelCatalogEntryId = (value: unknown): value is string =>
+  typeof value === 'string' && /^[a-z0-9][a-z0-9._:/-]{2,160}$/i.test(value)
+
 const personalModelCapability = (value: unknown): boolean =>
   value === 'TextReasoning' || value === 'VisualEvidence'
 
@@ -379,6 +382,7 @@ const modelConfigurationSave: Validator = value =>
     'capabilities',
     'supports_tool_calls',
     'supports_parallel_tool_calls',
+    'catalog_entry_id',
     'context_window_tokens',
     'max_output_tokens',
   ])
@@ -393,7 +397,16 @@ const modelConfigurationSave: Validator = value =>
   && value.capabilities[0] === 'TextReasoning'
   && (value.supports_tool_calls === undefined || typeof value.supports_tool_calls === 'boolean')
   && (value.supports_parallel_tool_calls === undefined || typeof value.supports_parallel_tool_calls === 'boolean')
+  && (value.catalog_entry_id === undefined || value.catalog_entry_id === null || personalModelCatalogEntryId(value.catalog_entry_id))
   && personalModelContextContract(value.context_window_tokens, value.max_output_tokens)
+
+const modelConfigurationDiscover: Validator = value =>
+  isRecord(value)
+  && hasOnlyKeys(value, ['base_url', 'api_key', 'protocol', 'auth_mode'])
+  && typeof value.base_url === 'string' && value.base_url.trim().length > 0 && value.base_url.length <= 2_048
+  && typeof value.api_key === 'string' && value.api_key.length >= 8 && value.api_key.length <= 4_096
+  && personalModelProtocol(value.protocol)
+  && (value.auth_mode === undefined || personalModelAuthMode(value.auth_mode))
 
 const modelConfigurationSetRoute: Validator = value =>
   isRecord(value)
@@ -499,6 +512,8 @@ export const ELECTRON_IPC_VALIDATORS = {
   [ELECTRON_IPC_CHANNELS.appGetVersion]: noPayload,
   [ELECTRON_IPC_CHANNELS.runtimeGetServerUrl]: noPayload,
   [ELECTRON_IPC_CHANNELS.modelConfigurationSummary]: noPayload,
+  [ELECTRON_IPC_CHANNELS.modelConfigurationCatalog]: noPayload,
+  [ELECTRON_IPC_CHANNELS.modelConfigurationDiscover]: modelConfigurationDiscover,
   [ELECTRON_IPC_CHANNELS.modelConfigurationSave]: modelConfigurationSave,
   [ELECTRON_IPC_CHANNELS.modelConfigurationSetRoute]: modelConfigurationSetRoute,
   [ELECTRON_IPC_CHANNELS.modelConfigurationRemove]: personalModelProfileId,
