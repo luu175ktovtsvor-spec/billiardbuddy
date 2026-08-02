@@ -6,7 +6,6 @@ import type {
 import type { ProductScheduledTaskRun } from '../../../shared/product/scheduledTasks.js'
 import { loadNetworkSettings, getNetworkProxyFetchOptions } from './networkSettings.js'
 import { productGatewayConfigured, productGatewayTarget } from '../product/productGatewayRuntime.js'
-import { runtimePersonalModelProfile } from './personalModelRuntimeState.js'
 
 type MeteredCapability = 'TextReasoning' | 'VisualEvidence' | 'MediaReasoning' | 'SpeechTranscription'
 
@@ -23,8 +22,6 @@ type GatewayProductStatus = {
 
 type CapabilitySnapshotDependencies = {
   gatewayConfigured: () => boolean
-  /** A deliberate BYOK Agent route bypasses Gateway quota accounting. */
-  personalTextRouteConfigured: () => boolean
   gatewayStatus: () => Promise<GatewayProductStatus>
   mediaToolchainStatus: () => Promise<{ ffmpeg: { available: boolean }; ffprobe: { available: boolean } }>
   scheduledRuns: () => Promise<ProductScheduledTaskRun[]>
@@ -142,9 +139,6 @@ export class ProductCapabilitySnapshotService {
   constructor(overrides: CapabilitySnapshotOverrides) {
     this.deps = {
       gatewayConfigured: productGatewayConfigured,
-      personalTextRouteConfigured: () => {
-        try { return runtimePersonalModelProfile('TextReasoning') !== null } catch { return false }
-      },
       gatewayStatus: fetchGatewayStatus,
       now: () => new Date(),
       ...overrides,
@@ -171,27 +165,19 @@ export class ProductCapabilitySnapshotService {
   }
 
   private async remoteCapabilities(): Promise<ProductCapability[]> {
-    const personalTextRoute = this.deps.personalTextRouteConfigured()
-    const withTextRoute = (capabilities: ProductCapability[]): ProductCapability[] => personalTextRoute
-      ? capabilities.map(capability => capability.id === 'assistant'
-        // A personal key is intentionally direct-to-provider. Do not display
-        // BilliardBuddy Gateway quota as if it governed this Agent route.
-        ? { id: 'assistant', state: 'available' }
-        : capability)
-      : capabilities
     if (!this.deps.gatewayConfigured()) {
-      return withTextRoute(unavailableRemoteCapabilities('configured', 'installation_session_unavailable'))
+      return unavailableRemoteCapabilities('configured', 'installation_session_unavailable')
     }
     try {
       const gateway = await this.deps.gatewayStatus()
-      return withTextRoute([
+      return [
         remoteCapability('assistant', gateway, 'assistant', 'TextReasoning'),
         remoteCapability('image_understanding', gateway, 'image_understanding', 'VisualEvidence'),
         remoteCapability('image_creation', gateway, 'image_creation', null),
         remoteCapability('voice_input', gateway, 'voice_input', 'SpeechTranscription'),
-      ])
+      ]
     } catch {
-      return withTextRoute(unavailableRemoteCapabilities('degraded', 'service_unreachable'))
+      return unavailableRemoteCapabilities('degraded', 'service_unreachable')
     }
   }
 

@@ -77,7 +77,6 @@ app.setName('BilliardBuddy')
 
 const mediaUiCapability = randomBytes(32).toString('base64url')
 const gatewayAccessTokenCapability = randomBytes(32).toString('base64url')
-const providerConfigurationCapability = randomBytes(32).toString('base64url')
 
 let mainWindow: BrowserWindow | null = null
 let serverRuntime: ElectronServerRuntime | null = null
@@ -385,30 +384,9 @@ function assertNativeAgentTurnOwner(ownerId: number, turnId: string): void {
   if (existingOwnerId !== ownerId) throw new Error('CODEX_NATIVE_TURN_OWNER_REQUIRED')
 }
 
-/**
- * Keep credential persistence and the live Server route in lockstep. The
- * renderer receives only summaries; keys cross this boundary only through the
- * explicitly validated save command and are never returned over IPC.
- */
+/** The renderer receives only summaries; user keys never leave Electron Main. */
 async function mutateProviderCredentials<T>(mutation: (service: ProviderCredentialService) => T): Promise<T> {
-  const service = getProviderCredentialService()
-  const before = service.capture()
-  try {
-    const result = mutation(service)
-    const after = service.capture()
-    // A Server started later receives this configuration during its normal
-    // launch. Do not construct a sidecar merely because a user saved settings.
-    await serverRuntime?.updateProviderCredentials({ models: JSON.stringify(after.models) })
-    return result
-  } catch (error) {
-    service.restore(before)
-    // A failed local hot update must not leave disk and the running Server on
-    // different defaults. Best-effort rollback is enough when no Server is up.
-    try {
-      await serverRuntime?.updateProviderCredentials({ models: JSON.stringify(before.models) })
-    } catch {}
-    throw error
-  }
+  return mutation(getProviderCredentialService())
 }
 
 function getServerRuntime() {
@@ -430,8 +408,6 @@ function getServerRuntime() {
     resolveInstallationAccessToken: () => getInstallationSessionManager().accessToken(),
     resolveCachedInstallationAccessToken: () => getInstallationSessionManager().cachedAccessToken(),
     mediaUiCapability,
-    resolveProviderCredentialEnv: () => getProviderCredentialService().runtimeEnvironment(),
-    providerConfigurationCapability,
     gatewayAccessTokenCapability,
   })
   return serverRuntime

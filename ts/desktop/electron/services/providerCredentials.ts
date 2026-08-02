@@ -14,10 +14,6 @@ import type { CredentialStore } from './keychain'
 
 export type ProviderCredentialConfigurationSummary = PersonalModelConfigurationSummary
 
-type ProviderCredentialSnapshot = {
-  models: PersonalModelConfiguration
-}
-
 function summary(value: PersonalModelConfiguration): ProviderCredentialConfigurationSummary {
   return {
     managed_model: 'BilliardBuddy 托管模型',
@@ -30,13 +26,6 @@ export class ProviderCredentialService {
   constructor(private readonly store: CredentialStore) {}
 
   summary(): ProviderCredentialConfigurationSummary { return summary(this.read()) }
-
-  /** Electron Main-only rollback snapshot; never return this through IPC. */
-  capture(): ProviderCredentialSnapshot { return { models: this.read() } }
-
-  restore(value: ProviderCredentialSnapshot): void {
-    this.write(value.models)
-  }
 
   save(input: PersonalModelProfileInput): ProviderCredentialConfigurationSummary {
     const value = this.read()
@@ -65,7 +54,7 @@ export class ProviderCredentialService {
     // requires tool calls; an auxiliary visual route does not.
     for (const capability of Object.keys(value.routes) as PersonalModelCapability[]) {
       if (value.routes[capability] !== id) continue
-      if (!profile.capabilities.includes(capability) || (capability === 'TextReasoning' && !profile.supports_tool_calls)) {
+      if (!profile.capabilities.includes(capability) || (capability === 'TextReasoning' && (!profile.supports_tool_calls || profile.protocol === 'anthropic-messages'))) {
         delete value.routes[capability]
       }
     }
@@ -82,6 +71,7 @@ export class ProviderCredentialService {
       const profile = value.profiles.find(candidate => candidate.id === profileId)
       if (!profile?.capabilities.includes(capability)) throw new Error('PERSONAL_MODEL_CAPABILITY_UNAVAILABLE')
       if (capability === 'TextReasoning' && !profile.supports_tool_calls) throw new Error('PERSONAL_MODEL_TOOL_CALLS_REQUIRED')
+      if (capability === 'TextReasoning' && profile.protocol === 'anthropic-messages') throw new Error('PERSONAL_MODEL_PROTOCOL_UNSUPPORTED')
       value.routes[capability] = profile.id
     }
     this.write(value)
@@ -99,16 +89,6 @@ export class ProviderCredentialService {
     return summary(value)
   }
 
-  runtimeEnvironment(): NodeJS.ProcessEnv {
-    // The trusted Product Server needs every configured profile because a
-    // Composer can choose a non-default model for one task. Routes remain only
-    // the defaults used by new tasks; no secret is exposed to the renderer.
-    const value = this.read()
-    return {
-      ...(value.profiles.length > 0 ? { BB_PERSONAL_MODEL_CONFIGURATION: JSON.stringify(value) } : {}),
-    }
-  }
-
   /**
    * Electron Main-only selector for the native Codex route. Unlike
    * `runtimeEnvironment`, this exposes one encrypted profile only to the
@@ -117,7 +97,8 @@ export class ProviderCredentialService {
   agentTextReasoningProfile(): PersonalModelProfile | null {
     const value = this.read()
     const id = value.routes.TextReasoning
-    return id ? value.profiles.find(profile => profile.id === id) ?? null : null
+    const profile = id ? value.profiles.find(candidate => candidate.id === id) ?? null : null
+    return profile?.protocol === 'anthropic-messages' ? null : profile
   }
 
   private read(): PersonalModelConfiguration { return parsePersonalModelConfiguration(this.store.load()) }

@@ -26,8 +26,6 @@ import {
   GATEWAY_ACCESS_TOKEN_UPDATE_PATH,
 } from '../../../shared/product/providerGateway'
 import {
-  PERSONAL_MODEL_CONFIGURATION_CAPABILITY_HEADER,
-  PERSONAL_MODEL_CONFIGURATION_UPDATE_PATH,
 } from '../../../shared/product/personalModels'
 
 type ServerRuntimeOptions = {
@@ -41,12 +39,8 @@ type ServerRuntimeOptions = {
   resolveInstallationAccessToken?: () => Promise<string>
   /** Read an already-valid bearer without waiting for Gateway network I/O. */
   resolveCachedInstallationAccessToken?: () => string | undefined
-  /** Electron-owned capability for paid/final media actions. Never inherited by Agent worker processes. */
+  /** Electron-owned capability for paid/final media actions. Never inherited by non-media processes. */
   mediaUiCapability?: string
-  /** Main-owned user provider credentials, injected only into the local Product Server. */
-  resolveProviderCredentialEnv?: () => NodeJS.ProcessEnv
-  /** Main-only capability for hot-updating provider credentials without restart. */
-  providerConfigurationCapability?: string
   /** Main-only capability for rotating the local Server's short-lived bearer. */
   gatewayAccessTokenCapability?: string
 }
@@ -61,8 +55,6 @@ export class ElectronServerRuntime {
   private readonly resolveCachedInstallationAccessToken?: () => string | undefined
   private installationAccessToken: string | undefined
   private readonly mediaUiCapability?: string
-  private readonly resolveProviderCredentialEnv?: () => NodeJS.ProcessEnv
-  private readonly providerConfigurationCapability?: string
   private readonly gatewayAccessTokenCapability?: string
   private sidecarEnvPromise: Promise<NodeJS.ProcessEnv> | null = null
   private server: { url: string, child: SidecarChild } | null = null
@@ -81,8 +73,6 @@ export class ElectronServerRuntime {
     this.resolveInstallationAccessToken = options.resolveInstallationAccessToken
     this.resolveCachedInstallationAccessToken = options.resolveCachedInstallationAccessToken
     this.mediaUiCapability = options.mediaUiCapability
-    this.resolveProviderCredentialEnv = options.resolveProviderCredentialEnv
-    this.providerConfigurationCapability = options.providerConfigurationCapability
     this.gatewayAccessTokenCapability = options.gatewayAccessTokenCapability
   }
 
@@ -93,13 +83,9 @@ export class ElectronServerRuntime {
     const withMediaCapability = this.mediaUiCapability
       ? { ...withGateway, BB_MEDIA_UI_CAPABILITY: this.mediaUiCapability }
       : withGateway
-    const withProviderCredentials = { ...withMediaCapability, ...this.resolveProviderCredentialEnv?.() }
-    const withProviderCapability = this.providerConfigurationCapability
-      ? { ...withProviderCredentials, BB_PERSONAL_MODEL_CONFIGURATION_CAPABILITY: this.providerConfigurationCapability }
-      : withProviderCredentials
     const withGatewayCapability = this.gatewayAccessTokenCapability
-      ? { ...withProviderCapability, BB_GATEWAY_ACCESS_TOKEN_CAPABILITY: this.gatewayAccessTokenCapability }
-      : withProviderCapability
+      ? { ...withMediaCapability, BB_GATEWAY_ACCESS_TOKEN_CAPABILITY: this.gatewayAccessTokenCapability }
+      : withMediaCapability
 
     // The App Server command is product-controlled. Never honor an inherited
     // path here: it would let a renderer launch a user-selected binary once the
@@ -196,26 +182,6 @@ export class ElectronServerRuntime {
     } catch {
       await this.reconfigureServer()
     }
-  }
-
-  /** Apply a Main-owned credential update without exposing it to a Worker or renderer. */
-  async updateProviderCredentials(configuration: { models?: string }): Promise<void> {
-    if (this.closing || !this.server) return
-    const capability = this.providerConfigurationCapability
-    if (!capability || capability.length < 32) throw new Error('Provider configuration capability is unavailable')
-    const response = await fetch(`${this.server.url}${PERSONAL_MODEL_CONFIGURATION_UPDATE_PATH}`, {
-      method: 'PUT',
-      headers: {
-        'Content-Type': 'application/json',
-        [PERSONAL_MODEL_CONFIGURATION_CAPABILITY_HEADER]: capability,
-      },
-      body: JSON.stringify({
-        version: 1,
-        models: JSON.parse(configuration.models ?? '{"version":1,"profiles":[],"routes":{}}'),
-      }),
-      signal: AbortSignal.timeout(10_000),
-    })
-    if (response.status !== 204) throw new Error('Provider configuration update failed')
   }
 
   private async startServerOnce(): Promise<string> {
