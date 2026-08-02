@@ -8,7 +8,6 @@
 import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
 import type { ProductRecentProject, ProductRecentProjectList } from '../../../shared/product/domain.js'
-import { normalizeProductTaskStore } from '../product/legacyProductTaskReader.js'
 import { findProductGitRoot } from '../product/productGit.js'
 import { getProductConfigDir } from '../product/productPaths.js'
 
@@ -38,9 +37,51 @@ function latestTimestamp(...values: Array<string | undefined>): string {
   return latest
 }
 
+type LegacyProject = { id: string; rootDir: string; title: string; updatedAt?: string }
+type LegacyTask = { projectId: string; updatedAt?: string }
+
+function record(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null
+}
+
+function text(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined
+}
+
 /**
- * Project history is derived only from the old, public task index. The
- * original Core bindings never cross this boundary.
+ * Read only the public directory fields needed by the picker. Core-session
+ * identifiers, permission snapshots, side tasks and every task lifecycle
+ * field deliberately stay outside this projection.
+ */
+export function readLegacyRecentProjectMetadata(value: unknown): {
+  projects: LegacyProject[]
+  tasks: LegacyTask[]
+} {
+  const root = record(value)
+  const rawProjects = record(root?.projects)
+  const rawTasks = record(root?.tasks)
+  if (!root || !rawProjects || !rawTasks) return { projects: [], tasks: [] }
+
+  const projects = Object.entries(rawProjects).flatMap(([id, raw]) => {
+    const project = record(raw)
+    const rootDir = text(project?.rootDir)
+    if (!id || !rootDir) return []
+    return [{ id, rootDir, title: text(project?.title) ?? (path.basename(rootDir) || rootDir), updatedAt: text(project?.updatedAt) }]
+  })
+  const tasks = Object.values(rawTasks).flatMap(raw => {
+    const task = record(raw)
+    const projectId = text(task?.projectId)
+    if (!projectId || task?.visibility === 'side_task') return []
+    return [{ projectId, updatedAt: text(task?.updatedAt) }]
+  })
+  return { projects, tasks }
+}
+
+/**
+ * Project history is derived only from the old public project/directory index.
+ * Core bindings never cross this boundary.
  */
 export async function listLegacyRecentProjects(limit = 10): Promise<ProductRecentProjectList> {
   let raw: string
@@ -52,17 +93,16 @@ export async function listLegacyRecentProjects(limit = 10): Promise<ProductRecen
   }
 
   try {
-    const store = normalizeProductTaskStore(JSON.parse(raw) as unknown)
+    const store = readLegacyRecentProjectMetadata(JSON.parse(raw) as unknown)
     const tasksByProject = new Map<string, Array<{ updatedAt: string }>>()
-    for (const task of Object.values(store.tasks)) {
-      if (!task.projectId || task.visibility === 'side_task') continue
+    for (const task of store.tasks) {
       const tasks = tasksByProject.get(task.projectId) ?? []
-      tasks.push(task)
+      tasks.push({ updatedAt: task.updatedAt ?? new Date(0).toISOString() })
       tasksByProject.set(task.projectId, tasks)
     }
 
     const projects = await Promise.all(
-      Object.values(store.projects)
+      store.projects
         .filter(project => tasksByProject.has(project.id))
         .map(async (project): Promise<ProductRecentProject> => {
           const realPath = await fs.realpath(project.rootDir).catch(() => project.rootDir)
