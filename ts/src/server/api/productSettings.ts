@@ -2,7 +2,7 @@
  * Product settings REST API
  *
  * GET/PATCH /api/product/settings/user    — 普通产品偏好
- * GET/PATCH /api/product/settings/runtime — Agent 运行时偏好
+ * GET/PATCH /api/product/settings/runtime — 网络运行时偏好
  * GET/PATCH /api/product/settings/desktop — 桌面宿主偏好
  */
 
@@ -18,13 +18,6 @@ const settingsService = new ProductSettingsRepository()
 
 const PRODUCT_THEME_MODES = ['light', 'dark', 'system'] as const
 const CHAT_SEND_BEHAVIORS = ['enter', 'modifierEnter'] as const
-const DESKTOP_TERMINAL_SHELLS = [
-  'system',
-  'pwsh',
-  'powershell',
-  'cmd',
-  'custom',
-] as const
 const NETWORK_PROXY_MODES = ['direct', 'system', 'manual'] as const
 const UPDATE_PROXY_MODES = ['system', 'manual'] as const
 
@@ -38,10 +31,9 @@ const USER_PREFERENCE_KEYS = [
   'preventSleepWhileRunning',
 ] as const
 const RUNTIME_SETTING_KEYS = [
-  'skipWebFetchPreflight',
   'network',
 ] as const
-const DESKTOP_SETTING_KEYS = ['desktopTerminal', 'updateProxy'] as const
+const DESKTOP_SETTING_KEYS = ['updateProxy'] as const
 
 export async function handleProductSettingsApi(
   req: Request,
@@ -271,9 +263,6 @@ function mergeUserPreferenceUpdate(
 
 function projectRuntimeSettings(settings: Record<string, unknown>): Record<string, unknown> {
   const result: Record<string, unknown> = {}
-  if (typeof settings.skipWebFetchPreflight === 'boolean') {
-    result.skipWebFetchPreflight = settings.skipWebFetchPreflight
-  }
   if (hasOwn(settings, 'network')) {
     result.network = normalizeNetworkSettings(settings)
   }
@@ -284,10 +273,6 @@ function validateRuntimeSettingsUpdate(body: Record<string, unknown>): Record<st
   assertKnownKeys(body, RUNTIME_SETTING_KEYS, 'runtime')
   const update: Record<string, unknown> = {}
 
-  if (hasOwn(body, 'skipWebFetchPreflight')) {
-    assertBoolean(body.skipWebFetchPreflight, 'skipWebFetchPreflight')
-    update.skipWebFetchPreflight = body.skipWebFetchPreflight
-  }
   if (hasOwn(body, 'network')) {
     update.network = validateNetworkSettingsUpdate(body.network)
   }
@@ -357,15 +342,6 @@ function mergeRuntimeSettingsUpdate(
 
 function projectDesktopSettings(settings: Record<string, unknown>): Record<string, unknown> {
   const result: Record<string, unknown> = {}
-  const terminal = copyRecord(settings.desktopTerminal)
-  if (isOneOf(terminal.startupShell, DESKTOP_TERMINAL_SHELLS)) {
-    result.desktopTerminal = {
-      startupShell: terminal.startupShell,
-      customShellPath: typeof terminal.customShellPath === 'string'
-        ? terminal.customShellPath
-        : '',
-    }
-  }
   const updateProxy = copyRecord(settings.updateProxy)
   if (isOneOf(updateProxy.mode, UPDATE_PROXY_MODES)) {
     result.updateProxy = {
@@ -379,23 +355,6 @@ function projectDesktopSettings(settings: Record<string, unknown>): Record<strin
 function validateDesktopSettingsUpdate(body: Record<string, unknown>): Record<string, unknown> {
   assertKnownKeys(body, DESKTOP_SETTING_KEYS, 'desktop')
   const update: Record<string, unknown> = {}
-
-  if (hasOwn(body, 'desktopTerminal')) {
-    assertRecord(body.desktopTerminal, 'desktopTerminal')
-    assertKnownKeys(body.desktopTerminal, ['startupShell', 'customShellPath'], 'desktop terminal')
-    const terminal: Record<string, unknown> = {}
-    if (hasOwn(body.desktopTerminal, 'startupShell')) {
-      if (!isOneOf(body.desktopTerminal.startupShell, DESKTOP_TERMINAL_SHELLS)) {
-        throw ApiError.badRequest('Invalid "desktopTerminal.startupShell" setting')
-      }
-      terminal.startupShell = body.desktopTerminal.startupShell
-    }
-    if (hasOwn(body.desktopTerminal, 'customShellPath')) {
-      assertString(body.desktopTerminal.customShellPath, 'desktopTerminal.customShellPath')
-      terminal.customShellPath = body.desktopTerminal.customShellPath.trim()
-    }
-    update.desktopTerminal = terminal
-  }
 
   if (hasOwn(body, 'updateProxy')) {
     assertRecord(body.updateProxy, 'updateProxy')
@@ -422,20 +381,6 @@ function mergeDesktopSettingsUpdate(
   update: Record<string, unknown>,
 ): Record<string, unknown> {
   const next = { ...current, ...update }
-
-  if (hasOwn(update, 'desktopTerminal')) {
-    const terminal = {
-      ...copyRecord(current.desktopTerminal),
-      ...copyRecord(update.desktopTerminal),
-    }
-    if (terminal.startupShell === 'custom' && typeof terminal.customShellPath !== 'string') {
-      throw ApiError.badRequest('A custom desktop terminal requires "customShellPath"')
-    }
-    if (terminal.startupShell === 'custom' && typeof terminal.customShellPath === 'string' && terminal.customShellPath.trim().length === 0) {
-      throw ApiError.badRequest('A custom desktop terminal requires "customShellPath"')
-    }
-    next.desktopTerminal = terminal
-  }
 
   if (hasOwn(update, 'updateProxy')) {
     const updateProxy = {

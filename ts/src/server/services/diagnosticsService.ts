@@ -32,7 +32,6 @@ const SENSITIVE_KEY_RE = /(api[_-]?key|auth[_-]?token|access[_-]?token|refresh[_
 const CLIENT_EVENT_TYPES = new Set([
   'client_window_error',
   'client_unhandled_rejection',
-  'client_react_error_boundary',
   'client_api_request_failed',
 ])
 
@@ -288,7 +287,6 @@ export class DiagnosticsService {
     switch (type) {
       case 'client_window_error':
       case 'client_unhandled_rejection':
-      case 'client_react_error_boundary':
         return 'A desktop application issue was recorded.'
       case 'client_api_request_failed':
         return 'A desktop service request issue was recorded.'

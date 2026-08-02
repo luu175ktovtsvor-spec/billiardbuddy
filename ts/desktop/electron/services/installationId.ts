@@ -11,7 +11,7 @@ import path from 'node:path'
  * never send a caller-asserted installation header.
  *
  * Boundary: the ID belongs to Electron Main and the activation service. It never
- * reaches the renderer, Agent worker, provider files, model prompt, or logs. It is
+ * reaches the renderer, Rust App Server process, provider files, model prompt, or logs. It is
  * identity metadata, not a permission or provider credential.
  */
 

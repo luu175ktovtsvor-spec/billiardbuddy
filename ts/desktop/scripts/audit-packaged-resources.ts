@@ -18,6 +18,11 @@ const requiredEntries = [
   '/package.json',
 ]
 
+const allowedElectronEntries = new Set([
+  '/electron-dist/main.cjs',
+  '/electron-dist/preload.cjs',
+])
+
 const forbiddenProductStrings = [
   'attachMediaProject',
   'Claude Code',
@@ -30,8 +35,19 @@ const forbiddenProductStrings = [
   'qwenChat',
   '/api/v1/chat',
   '/api/v1/qwen',
+  '/api/product/tasks/',
+  '/ws/product/tasks/',
   'src-tauri',
   'computer-use',
+  'ProductTask',
+  'agent-worker',
+  'agent-engine',
+  'preview-agent',
+  'desktop:browser:',
+  'desktop:preview:',
+  'desktop:terminal:',
+  'client_react_error_boundary',
+  'node-pty',
 ]
 
 function parseArgs(argv: string[]): AuditOptions {
@@ -73,6 +89,12 @@ function auditProductArchive(archive: string): void {
   const entries = [...archiveEntryByPortablePath.keys()]
   for (const entry of requiredEntries) {
     if (!entries.includes(entry)) throw new Error(`app.asar 缺少正式运行文件: ${entry}`)
+  }
+  const unexpectedElectronEntry = entries.find((entry) => (
+    entry.startsWith('/electron-dist/') && !allowedElectronEntries.has(entry)
+  ))
+  if (unexpectedElectronEntry) {
+    throw new Error(`app.asar 残留非正式 Electron 产物: ${unexpectedElectronEntry}`)
   }
   const forbiddenPath = entries.find((entry) =>
     !entry.startsWith('/node_modules/')

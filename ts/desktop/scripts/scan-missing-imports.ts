@@ -1,8 +1,8 @@
 /**
  * scan-missing-imports.ts
  *
- * 在编译正式运行入口之前，扫描 Product Server、renderer、Electron、
- * preload 与预览代理里的本地 import / require / 类型 import specifier，
+ * 在编译正式运行入口之前，扫描 Product Server、renderer 装配点、Electron、
+ * preload 与本机 sidecar 里的本地 import / require / 类型 import specifier，
  * 找出磁盘上不存在的目标并停止构建；同时从全部 GUI 入口建立生产可达图，报告
  * 需要人工确认的无消费者 CLI、TUI、旧 Harness、旧页面或占位模块。
  *
@@ -18,7 +18,6 @@ import path from 'node:path'
 const repoRoot = path.resolve(import.meta.dir, '../..')
 const workspaceRoot = path.resolve(repoRoot, '..')
 const srcRoot = path.join(repoRoot, 'src')
-const adaptersRoot = path.join(repoRoot, 'adapters')
 const sharedRoot = path.join(repoRoot, 'shared')
 const desktopRendererRoot = path.join(repoRoot, 'desktop', 'src')
 const desktopElectronRoot = path.join(repoRoot, 'desktop', 'electron')
@@ -26,7 +25,6 @@ const desktopSidecarsRoot = path.join(repoRoot, 'desktop', 'sidecars')
 
 const runtimeRoots = [
   srcRoot,
-  adaptersRoot,
   sharedRoot,
   desktopRendererRoot,
   desktopElectronRoot,

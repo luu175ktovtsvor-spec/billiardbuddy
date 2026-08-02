@@ -208,7 +208,7 @@ function nativeAgentPermissionMode(value: unknown): NativeCodexPermissionMode {
 /**
  * `danger-full-access` means the source Rust sandbox stops mediating disk and
  * network operations. Keep its confirmation in privileged Main, rather than
- * trusting a renderer-only modal or a retired custom permission envelope.
+ * trusting a renderer-only modal or a legacy renderer-side permission prompt.
  */
 async function confirmNativeAgentFullAccess(owner: BrowserWindow): Promise<void> {
   const { dialog } = await import('electron')

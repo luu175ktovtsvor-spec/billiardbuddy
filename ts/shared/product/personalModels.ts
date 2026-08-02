@@ -28,9 +28,8 @@ export type PersonalModelChatCompletionTokenLimitField = (typeof PERSONAL_MODEL_
 export const DEFAULT_PERSONAL_MODEL_CONTEXT_WINDOW = 128_000
 export const DEFAULT_PERSONAL_MODEL_MAX_OUTPUT_TOKENS = 8_192
 export const DEFAULT_PERSONAL_MODEL_REASONING_BUDGET_TOKENS = 4_096
-// Model-specific instructions travel with the frozen Worker route. Keep the
-// field comfortably below the private IPC frame and configuration-envelope
-// ceilings instead of accepting a value that cannot be launched reliably.
+// Provider-specific instructions are bounded before they enter the private
+// App Server process configuration.
 export const PERSONAL_MODEL_INSTRUCTIONS_MAX_CHARS = 32_000
 
 export type PersonalModelProfile = {
