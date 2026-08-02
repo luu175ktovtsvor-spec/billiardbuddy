@@ -127,13 +127,14 @@ const nativeAgentUpdatePermissionMode: Validator = value =>
 
 const nativeAgentStartTurn: Validator = value =>
   isRecord(value)
-  && hasOnlyKeys(value, ['threadId', 'input', 'clientUserMessageId'])
+  && hasOnlyKeys(value, ['threadId', 'input', 'clientUserMessageId', 'collaborationMode'])
   && nativeCodexId(value.threadId)
   && Array.isArray(value.input)
   && value.input.length > 0
   && value.input.length <= 64
   && value.input.every(nativeTurnInput)
   && (value.clientUserMessageId === undefined || nativeMessageId(value.clientUserMessageId))
+  && (value.collaborationMode === undefined || value.collaborationMode === 'default' || value.collaborationMode === 'plan')
 
 const nativeReviewLine = (value: unknown): boolean =>
   typeof value === 'string'

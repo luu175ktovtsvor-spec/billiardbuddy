@@ -71,9 +71,19 @@ const nativeAgent = {
     ELECTRON_IPC_CHANNELS.nativeAgentUpdatePermissionMode,
     { threadId, permissionMode },
   ),
-  startTurn: (threadId: string, input: unknown[], clientUserMessageId?: string) => invoke(
+  startTurn: (
+    threadId: string,
+    input: unknown[],
+    clientUserMessageId?: string,
+    collaborationMode?: 'default' | 'plan',
+  ) => invoke(
     ELECTRON_IPC_CHANNELS.nativeAgentStartTurn,
-    { threadId, input, ...(clientUserMessageId === undefined ? {} : { clientUserMessageId }) },
+    {
+      threadId,
+      input,
+      ...(clientUserMessageId === undefined ? {} : { clientUserMessageId }),
+      ...(collaborationMode === undefined ? {} : { collaborationMode }),
+    },
   ),
   startReview: (threadId: string, target: Record<string, unknown>, delivery?: 'inline' | 'detached') => invoke(
     ELECTRON_IPC_CHANNELS.nativeAgentStartReview,

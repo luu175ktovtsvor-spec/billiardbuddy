@@ -78,6 +78,9 @@ export type NativeCodexReview = {
   reviewThreadId: string
 }
 
+/** The two collaboration presets published by the pinned App Server. */
+export type NativeCodexCollaborationMode = 'default' | 'plan'
+
 /**
  * The value is passed unchanged to Codex's `mcp_servers.<name>` schema. Rust
  * validates the transport and owns the persisted configuration; Electron only
@@ -377,6 +380,28 @@ function nativeReviewTarget(value: NativeCodexReviewTarget): NativeCodexReviewTa
 function nativeReviewDelivery(value: NativeCodexReviewDelivery | undefined): NativeCodexReviewDelivery | undefined {
   if (value === undefined || value === 'inline' || value === 'detached') return value
   throw new Error('CODEX_NATIVE_REVIEW_DELIVERY_INVALID')
+}
+
+function nativeCollaborationMode(value: NativeCodexCollaborationMode | undefined): NativeCodexCollaborationMode | undefined {
+  if (value === undefined || value === 'default' || value === 'plan') return value
+  throw new Error('CODEX_NATIVE_COLLABORATION_MODE_INVALID')
+}
+
+function nativeCollaborationSettings(
+  mode: NativeCodexCollaborationMode,
+  model: string,
+): CodexNativeJsonObject {
+  if (!nonEmptyText(model, 200)) throw new Error('CODEX_NATIVE_COLLABORATION_MODEL_INVALID')
+  return {
+    mode,
+    settings: {
+      model,
+      // This is deliberately null instead of a BilliardBuddy prompt. The
+      // upstream App Server expands it to its own built-in mode instructions.
+      developer_instructions: null,
+      reasoning_effort: mode === 'plan' ? 'medium' : null,
+    },
+  }
 }
 
 function validateTurnInput(value: NativeCodexTurnInput): boolean {
@@ -991,19 +1016,26 @@ export class ElectronCodexNativeRuntime {
     return { turn: { id }, reviewThreadId }
   }
 
-  async startTurn(thread: Pick<NativeCodexThread, 'id'>, input: readonly NativeCodexTurnInput[], clientUserMessageId?: string): Promise<NativeCodexTurn> {
+  async startTurn(
+    thread: Pick<NativeCodexThread, 'id'>,
+    input: readonly NativeCodexTurnInput[],
+    clientUserMessageId?: string,
+    collaborationMode?: NativeCodexCollaborationMode,
+  ): Promise<NativeCodexTurn> {
     if (!nonEmptyText(thread.id) || input.length === 0 || input.length > 64 || !input.every(validateTurnInput)) {
       throw new Error('CODEX_NATIVE_TURN_INPUT_INVALID')
     }
     if (clientUserMessageId !== undefined && !nonEmptyText(clientUserMessageId, 512)) {
       throw new Error('CODEX_NATIVE_CLIENT_MESSAGE_ID_INVALID')
     }
+    const nativeMode = nativeCollaborationMode(collaborationMode)
     const client = this.requireClient()
     this.pendingTurnStarts += 1
     try {
       const response = await client.request<CodexNativeJsonObject>('turn/start', {
         threadId: thread.id,
         ...(clientUserMessageId ? { clientUserMessageId } : {}),
+        ...(nativeMode === undefined ? {} : { collaborationMode: nativeCollaborationSettings(nativeMode, this.provider!.model) }),
         input: input.map(item => item.type === 'text'
           ? { type: 'text', text: item.text, textElements: [] }
           : { type: 'image', url: item.url }),
