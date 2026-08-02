@@ -128,6 +128,9 @@ async function main(): Promise<void> {
   assertContains(runtime, 'CODEX_NATIVE_ROUTE_CHANGE_REQUIRES_IDLE', '原生 Turn 期间的模型路由变更拦截')
   assertContains(runtime, 'async ensureThread(', '撤销后由原生 Thread Store 重新加载线程')
   assertContains(runtime, 'resumeStoredThread', '撤销后原生 thread/resume 恢复')
+  assertContains(runtime, 'isAvailable(): boolean', 'App Server 子进程存活状态')
+  assertContains(runtime, 'markUnavailable', 'App Server 异常退出标记')
+  assertContains(runtime, 'this.client.isAvailable()', '异常退出后的原生 Thread 重连分支')
   assertContains(mainProcess, 'await nativeAgentRuntime?.invalidateModelRoute()', '凭据写入后撤销旧原生子进程')
   assertContains(mainProcess, 'getReadyNativeAgentThreadRuntime', '线程操作前重新接入当前原生模型路由')
   assertContains(requireFile('codex-rs/app-server-protocol/src/protocol/v1.rs'), 'pub request_attestation: bool', '初始化 attestation 能力')
@@ -136,7 +139,7 @@ async function main(): Promise<void> {
   assertContains(requireFile('codex-rs/app-server-protocol/src/protocol/v2/permissions.rs'), 'pub enum SandboxPolicy', '原生 SandboxPolicy')
   assertContains(requireFile('codex-rs/app-server-protocol/src/protocol/v2/turn.rs'), 'text_elements: Vec<TextElement>', '原生文本输入元素')
 
-  console.log(`[codex-native-protocol] ${clientRequestMethods.length} client requests, ${serverRequestMethods.length} server-request contracts, provider revocation and initialized notification verified against ${revision}`)
+  console.log(`[codex-native-protocol] ${clientRequestMethods.length} client requests, ${serverRequestMethods.length} server-request contracts, provider revocation, crash recovery and initialized notification verified against ${revision}`)
 }
 
 await main()
