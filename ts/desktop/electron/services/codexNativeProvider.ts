@@ -9,7 +9,9 @@ type NativeProviderConfig = {
   id: string
   name: string
   baseUrl: string
-  contextWindowTokens: number
+  /** Set only for the BilliardBuddy-managed route. Personal routes leave
+   * Codex Core's upstream model handling untouched. */
+  contextWindowTokens?: number
   envKey?: string
   envHeaders?: Record<string, string>
   headers?: Record<string, string>
@@ -88,20 +90,6 @@ function modelContextWindow(contextWindowTokens: unknown, error: string): number
   return contextWindowTokens
 }
 
-function personalModelContextWindow(profile: PersonalModelProfile): number {
-  if (profile.context_limits_source === 'legacy-unverified') {
-    throw new Error('CODEX_NATIVE_PERSONAL_MODEL_CONTEXT_CONTRACT_REQUIRED')
-  }
-  // Either BilliardBuddy's checked catalog or the user's explicit provider
-  // declaration supplies this contract. Core learns the actual full window
-  // instead of falling back to its unknown-model default; the native Core
-  // keeps sole ownership of output headroom and automatic compaction.
-  return modelContextWindow(
-    profile.context_window_tokens,
-    'CODEX_NATIVE_PERSONAL_MODEL_LIMITS_INVALID',
-  )
-}
-
 function providerOverrides(input: NativeProviderConfig): string[] {
   const prefix = `model_providers.${input.id}`
   return [
@@ -111,6 +99,11 @@ function providerOverrides(input: NativeProviderConfig): string[] {
     'analytics.enabled=false',
     'feedback.enabled=false',
     'check_for_update_on_startup=false',
+    // Image creation belongs to BilliardBuddy's independent image workbench.
+    // Web search stays on: the native Core emits its source-defined Responses
+    // tool and the managed DeepSeek route has been live-verified to stream
+    // `response.web_search_call.*` lifecycle events through this boundary.
+    'features.image_generation=false',
     // The App Server receives only a revocable loopback capability token.
     // Preserve Codex's native tool/runtime model, but make its built-in
     // KEY/SECRET/TOKEN exclusion mandatory for every shell child so a tool,
@@ -121,10 +114,11 @@ function providerOverrides(input: NativeProviderConfig): string[] {
     `${prefix}.name=${quoted(input.name)}`,
     `${prefix}.base_url=${quoted(input.baseUrl)}`,
     `${prefix}.wire_api=${quoted('responses')}`,
-    // Only the provider's real window crosses this boundary. Leaving the
-    // compaction threshold unset preserves the Rust Core's native model
-    // defaults, headroom and automatic-compaction lifecycle.
-    `model_context_window=${input.contextWindowTokens}`,
+    // Only the managed Gateway provides a product-owned window. A personal
+    // key is never blocked on or modified by a guessed capacity declaration.
+    ...(input.contextWindowTokens === undefined ? [] : [
+      `model_context_window=${input.contextWindowTokens}`,
+    ]),
     ...(input.envKey ? [`${prefix}.env_key=${quoted(input.envKey)}`] : []),
     ...(input.envHeaders && Object.keys(input.envHeaders).length > 0
       ? [`${prefix}.env_http_headers=${tomlInlineTable(input.envHeaders)}`]
@@ -132,10 +126,6 @@ function providerOverrides(input: NativeProviderConfig): string[] {
     ...(input.headers && Object.keys(input.headers).length > 0
       ? [`${prefix}.http_headers=${tomlInlineTable(input.headers)}`]
       : []),
-    // Model submissions can incur a charge. The Gateway supplies its own
-    // idempotent replay; a child process must not silently issue a second one.
-    `${prefix}.request_max_retries=0`,
-    `${prefix}.stream_max_retries=0`,
   ]
 }
 
@@ -237,8 +227,52 @@ function toolOutputText(value: unknown): string {
   return parts || JSON.stringify(value ?? '')
 }
 
+function reasoningContent(item: JsonObject): string {
+  return contentParts(item.content)
+    .filter(part => part.type === 'reasoning_text')
+    .map(part => string(part.text, 8 * 1024 * 1024) ?? '')
+    .join('')
+}
+
+/**
+ * Converts a native Responses history into Chat messages without creating a
+ * second conversation store.  A Responses turn represents reasoning, text
+ * and function calls as separate items, whereas Chat requires the reasoning
+ * continuation and tool calls to share one assistant message.
+ */
 function responseInputToChatMessages(input: unknown, instructions: unknown): JsonObject[] {
   const messages: JsonObject[] = []
+  let pendingReasoning = ''
+  let pendingAssistant: JsonObject | undefined
+
+  const flushPendingAssistant = () => {
+    if (!pendingAssistant) return
+    if (pendingReasoning) {
+      pendingAssistant.reasoning_content = pendingReasoning
+    }
+    messages.push(pendingAssistant)
+    pendingAssistant = undefined
+    pendingReasoning = ''
+  }
+
+  const appendAssistantMessage = (content: string | JsonObject[]) => {
+    flushPendingAssistant()
+    pendingAssistant = { role: 'assistant', content }
+  }
+
+  const appendFunctionCall = (callId: string, name: string, argumentsValue: string) => {
+    if (!pendingAssistant) {
+      // DeepSeek's documented thinking/tool continuation contract requires a
+      // non-null assistant content value even when the visible text is empty.
+      pendingAssistant = { role: 'assistant', content: '' }
+    }
+    const toolCalls = Array.isArray(pendingAssistant.tool_calls)
+      ? pendingAssistant.tool_calls as JsonObject[]
+      : []
+    toolCalls.push({ id: callId, type: 'function', function: { name, arguments: argumentsValue } })
+    pendingAssistant.tool_calls = toolCalls
+  }
+
   const instructionText = string(instructions, 8 * 1024 * 1024)
   if (instructionText?.trim()) messages.push({ role: 'system', content: instructionText })
   const items = typeof input === 'string'
@@ -258,7 +292,12 @@ function responseInputToChatMessages(input: unknown, instructions: unknown): Jso
       // broadly supported system role instead of letting compatible Chat
       // providers silently interpret it as an ordinary user message.
       const role = rawRole === 'developer' ? 'system' : rawRole
-      messages.push({ role, content: chatContent(item.content) })
+      const content = chatContent(item.content)
+      if (role === 'assistant') appendAssistantMessage(content)
+      else {
+        flushPendingAssistant()
+        messages.push({ role, content })
+      }
       continue
     }
     if (type === 'function_call') {
@@ -266,25 +305,29 @@ function responseInputToChatMessages(input: unknown, instructions: unknown): Jso
       const name = nonEmptyString(item.name, 512)
       const argumentsValue = string(item.arguments, 8 * 1024 * 1024)
       if (!callId || !name || argumentsValue === undefined) throw new Error('CODEX_CHAT_ADAPTER_FUNCTION_CALL_INVALID')
-      messages.push({
-        role: 'assistant',
-        content: null,
-        tool_calls: [{ id: callId, type: 'function', function: { name, arguments: argumentsValue } }],
-      })
+      appendFunctionCall(callId, name, argumentsValue)
       continue
     }
     if (type === 'function_call_output') {
       const callId = nonEmptyString(item.call_id, 512)
       if (!callId) throw new Error('CODEX_CHAT_ADAPTER_FUNCTION_OUTPUT_INVALID')
+      flushPendingAssistant()
       messages.push({ role: 'tool', tool_call_id: callId, content: toolOutputText(item.output) })
+      continue
+    }
+    if (type === 'reasoning') {
+      // `reasoning_text` is the only source-defined raw reasoning part. Do
+      // not derive a continuation from summaries or encrypted Codex content.
+      pendingReasoning += reasoningContent(item)
       continue
     }
     // These are native Core bookkeeping items. A Chat Completions endpoint has
     // no equivalent encrypted continuation format; durable history remains in
     // the local Codex Thread Store and the visible/tool parts are above.
-    if (['reasoning', 'compaction', 'context_compaction', 'compaction_trigger', 'additional_tools'].includes(type)) continue
+    if (['compaction', 'context_compaction', 'compaction_trigger', 'additional_tools'].includes(type)) continue
     throw new Error('CODEX_CHAT_ADAPTER_INPUT_UNSUPPORTED')
   }
+  flushPendingAssistant()
   return messages
 }
 
@@ -337,15 +380,11 @@ function chatRequest(profile: PersonalModelProfile, request: JsonObject): JsonOb
     ...(tools?.length ? { tools } : {}),
     ...(request.tool_choice !== undefined ? { tool_choice: request.tool_choice } : {}),
     ...(typeof request.parallel_tool_calls === 'boolean'
-      ? { parallel_tool_calls: profile.supports_parallel_tool_calls ? request.parallel_tool_calls : false }
-      : profile.supports_parallel_tool_calls ? {} : { parallel_tool_calls: false }),
-    ...(maxOutputTokens !== undefined && profile.chat_completion_token_limit_field !== 'provider-default'
-      ? { [profile.chat_completion_token_limit_field]: maxOutputTokens }
+      ? { parallel_tool_calls: request.parallel_tool_calls }
       : {}),
+    ...(maxOutputTokens !== undefined ? { max_tokens: maxOutputTokens } : {}),
     ...(typeof request.temperature === 'number' ? { temperature: request.temperature } : {}),
-    ...(profile.reasoning_effort !== 'provider-default'
-      ? { reasoning_effort: profile.reasoning_effort }
-      : typeof reasoning?.effort === 'string' ? { reasoning_effort: reasoning.effort } : {}),
+    ...(typeof reasoning?.effort === 'string' ? { reasoning_effort: reasoning.effort } : {}),
     ...(chatResponseFormat(request.text) ? { response_format: chatResponseFormat(request.text) } : {}),
   }
 }
@@ -499,6 +538,7 @@ export class ChatCompletionsResponsesAdapter {
     const textItem = { id: `msg_${randomUUID()}`, type: 'message', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: '' }] }
     let textStarted = false
     let text = ''
+    let reasoning = ''
     let result: ChatStreamResult = {}
     sse(response, 'response.created', { response: { ...base, status: 'in_progress', output: [] } })
     sse(response, 'response.in_progress', { response: { ...base, status: 'in_progress', output: [] } })
@@ -511,6 +551,10 @@ export class ChatCompletionsResponsesAdapter {
         return
       }
       const delta = record(choice.delta)
+      const reasoningDelta = string(delta?.reasoning_content, 8 * 1024 * 1024)
+      if (reasoningDelta) {
+        reasoning += reasoningDelta
+      }
       const content = string(delta?.content)
       if (content) {
         if (!textStarted) {
@@ -551,6 +595,19 @@ export class ChatCompletionsResponsesAdapter {
       const reason = result.finishReason === 'length' ? 'max_output_tokens' : result.finishReason === 'content_filter' ? 'content_filter' : 'unknown'
       sse(response, 'response.incomplete', { response: { ...base, status: 'incomplete', incomplete_details: { reason } } })
       return
+    }
+    if (reasoning) {
+      const item = {
+        id: `rs_${randomUUID()}`,
+        type: 'reasoning',
+        summary: [],
+        // This exact upstream Responses representation ensures native Core
+        // persists the raw continuation and includes it in the next request.
+        content: [{ type: 'reasoning_text', text: reasoning }],
+        encrypted_content: null,
+      }
+      sse(response, 'response.output_item.done', { output_index: output.length, item })
+      output.push(item)
     }
     if (textStarted) {
       textItem.content = [{ type: 'output_text', text }]
@@ -800,7 +857,6 @@ export async function startCodexNativeProvider(route: CodexNativeModelRoute): Pr
   }
 
   const { profile } = route
-  const contextWindowTokens = personalModelContextWindow(profile)
   if (profile.protocol === 'openai-responses') {
     const adapter = new ResponsesCredentialAdapter({
       upstreamUrl: personalModelEndpoint(profile.base_url, 'responses'),
@@ -818,7 +874,6 @@ export async function startCodexNativeProvider(route: CodexNativeModelRoute): Pr
         id: 'billiardbuddy',
         name: 'BilliardBuddy local personal Responses adapter',
         baseUrl: started.baseUrl,
-        contextWindowTokens,
         envHeaders: { [ENGINE_TOKEN_HEADER]: tokenEnv },
       })
       return {
@@ -845,7 +900,6 @@ export async function startCodexNativeProvider(route: CodexNativeModelRoute): Pr
       id: 'billiardbuddy',
       name: 'BilliardBuddy local Chat Completions adapter',
       baseUrl: started.baseUrl,
-      contextWindowTokens,
       envHeaders: { [ENGINE_TOKEN_HEADER]: tokenEnv },
     })
     return {

@@ -2,19 +2,15 @@ import type {
   PersonalModelAuthMode,
   PersonalModelProtocol,
 } from './personalModels'
-import {
-  personalModelCatalogEntries,
-  type PersonalModelCatalogEntry,
-} from './personalModelCatalog'
 
 /**
  * Product-owned onboarding facts for user-supplied model credentials.
  *
  * These records deliberately describe only a provider's public setup path:
  * where to obtain a Key, its canonical API base URL, and the wire protocols
- * that BilliardBuddy can route.  They do not claim model capacity.  Exact
- * context and output limits remain in `personalModelCatalog.ts`, where each
- * model must have its own official evidence.
+ * that BilliardBuddy can route. They deliberately do not claim model capacity:
+ * Codex's native model/context handling must not be replaced by a product
+ * capacity table or a user-entered token contract.
  */
 export const PERSONAL_MODEL_PROVIDER_SETUP_CATALOG_REVISION = 3 as const
 
@@ -61,14 +57,7 @@ type PersonalModelProviderSetupPreset = {
   model_discovery: PersonalModelDiscoveryMode
 }
 
-/**
- * A setup preset plus only the verified model contracts that exactly match its
- * direct upstream route.  Keeping this derived prevents the provider list and
- * the model-capability list from becoming two competing sources of truth.
- */
-export type PersonalModelProviderPreset = PersonalModelProviderSetupPreset & {
-  catalog_entries: readonly PersonalModelCatalogEntry[]
-}
+export type PersonalModelProviderPreset = PersonalModelProviderSetupPreset
 
 // These URLs are onboarding links only. They are sent to the Renderer as
 // immutable catalog data; the user Key is never part of this catalog or URL.
@@ -471,7 +460,7 @@ function normalizedProviderPresetId(value: string | undefined | null): string | 
 }
 
 export function personalModelProviderPresets(): readonly PersonalModelProviderPreset[] {
-  return PERSONAL_MODEL_PROVIDER_SETUP_CATALOG.map(providerPresetWithCatalogEntries)
+  return PERSONAL_MODEL_PROVIDER_SETUP_CATALOG
 }
 
 export function personalModelProviderPreset(
@@ -481,21 +470,5 @@ export function personalModelProviderPreset(
   const preset = normalized
     ? PERSONAL_MODEL_PROVIDER_SETUP_CATALOG.find(entry => entry.id === normalized)
     : undefined
-  return preset ? providerPresetWithCatalogEntries(preset) : undefined
-}
-
-function providerPresetWithCatalogEntries(
-  preset: PersonalModelProviderSetupPreset,
-): PersonalModelProviderPreset {
-  const catalogEntries = personalModelCatalogEntries().filter(entry =>
-    entry.provider_id === preset.provider_id
-    && entry.base_url === preset.base_url
-    && entry.auth_mode === preset.auth_mode
-    && preset.supported_protocols.includes(entry.protocol))
-  // Provider onboarding and model capability evidence are intentionally
-  // separate. `/models` tells us what a particular Key can access, but not a
-  // model's context or output contract. A newly added provider therefore
-  // remains usable for secure discovery before BilliardBuddy has shipped an
-  // evidence-backed one-click model entry for it.
-  return { ...preset, catalog_entries: catalogEntries }
+  return preset
 }

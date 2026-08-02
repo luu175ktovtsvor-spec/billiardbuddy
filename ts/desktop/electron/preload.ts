@@ -234,7 +234,6 @@ if (process.isMainFrame) {
     media,
     models: {
       summary: () => invoke(ELECTRON_IPC_CHANNELS.modelConfigurationSummary),
-      catalog: () => invoke(ELECTRON_IPC_CHANNELS.modelConfigurationCatalog),
       providerPresets: () => invoke(ELECTRON_IPC_CHANNELS.modelConfigurationProviderPresets),
       openProviderPortal: (providerPresetId: string) => invoke(
         ELECTRON_IPC_CHANNELS.modelConfigurationOpenProviderPortal,
@@ -242,13 +241,8 @@ if (process.isMainFrame) {
       ),
       discover: (input: unknown) => invoke(ELECTRON_IPC_CHANNELS.modelConfigurationDiscover, input),
       discoverPreset: (input: unknown) => invoke(ELECTRON_IPC_CHANNELS.modelConfigurationDiscoverPreset, input),
-      saveCatalog: (input: unknown) => invoke(ELECTRON_IPC_CHANNELS.modelConfigurationSaveCatalog, input),
       savePreset: (input: unknown) => invoke(ELECTRON_IPC_CHANNELS.modelConfigurationSavePreset, input),
       save: (input: unknown) => invoke(ELECTRON_IPC_CHANNELS.modelConfigurationSave, input),
-      setRoute: (capability: unknown, profileId: string | null) => invoke(
-        ELECTRON_IPC_CHANNELS.modelConfigurationSetRoute,
-        { capability, profileId },
-      ),
       remove: (profileId: string) => invoke(ELECTRON_IPC_CHANNELS.modelConfigurationRemove, profileId),
     },
   })
