@@ -23,11 +23,10 @@ type SupportedTarget =
 type BinaryHashMode = 'sha256' | 'mach-o-code-signature-neutral-sha256'
 
 type EngineManifest = {
-  schemaVersion: 1
+  schemaVersion: 2
   engine: 'codex-app-server'
   sourceRepository: 'https://github.com/openai/codex'
   sourceRevision: string
-  patchSha256: string
   target: SupportedTarget
   binary: string
   binaryHashMode: BinaryHashMode
@@ -59,9 +58,6 @@ const desktopRoot = resolve(import.meta.dir, '..')
 const repositoryRoot = resolve(desktopRoot, '..', '..')
 const engineRoot = join(repositoryRoot, 'third_party', 'codex-engine')
 const engineWorkspace = join(engineRoot, 'codex-rs')
-const enginePatches = [
-  join(repositoryRoot, 'third_party', 'codex-engine-patches', '0001-host-managed-tools-only.patch'),
-] as const
 
 export function parseCodexEngineCliOptions(argv: string[]): CodexEngineCliOptions {
   let destinationDir: string | undefined
@@ -126,13 +122,6 @@ function sha256(path: string): string {
   return createHash('sha256').update(readFileSync(path)).digest('hex')
 }
 
-function enginePatchSha256(): string {
-  // The staged binary was built with exactly this one compatibility patch.
-  // Keep its manifest value the SHA-256 of that exact build input rather than
-  // inventing a new aggregate format and invalidating a sound signed asset.
-  return sha256(enginePatches[0])
-}
-
 function isThinMachO64(path: string): boolean {
   const bytes = readFileSync(path)
   return bytes.length >= 32 && bytes.readUInt32LE(0) === 0xfeedfacf
@@ -180,10 +169,6 @@ function assertCleanSource(): void {
   for (const file of ['LICENSE', 'NOTICE']) {
     if (!existsSync(join(engineRoot, file))) throw new Error(`Codex 引擎源码缺少 ${file}`)
   }
-  for (const patch of enginePatches) {
-    if (!existsSync(patch)) throw new Error(`Codex 引擎源码补丁缺失: ${basename(patch)}`)
-    run('git', ['apply', '--check', patch], engineRoot)
-  }
 }
 
 function resolveCargoCommand(): string {
@@ -199,40 +184,16 @@ function resolveCargoCommand(): string {
   throw new Error('缺少 Rust Cargo；无法从锁定 Codex 源码构建产品内核')
 }
 
-function applyPatchAndBuild(target: SupportedTarget): string {
+function buildLockedSource(target: SupportedTarget): string {
   assertCleanSource()
-  const appliedPatches: string[] = []
-  let buildError: unknown
-  try {
-    for (const patch of enginePatches) {
-      run('git', ['apply', '--whitespace=nowarn', patch], engineRoot)
-      appliedPatches.push(patch)
-    }
-    run(resolveCargoCommand(), [
-      'build',
-      '--locked',
-      '--release',
-      '--target', target,
-      '--package', ENGINE_NAME,
-      '--bin', ENGINE_NAME,
-    ], engineWorkspace)
-  } catch (error) {
-    buildError = error
-  }
-
-  let revertError: unknown
-  for (const patch of [...appliedPatches].reverse()) {
-    try {
-      run('git', ['apply', '--reverse', '--whitespace=nowarn', patch], engineRoot)
-    } catch (error) {
-      revertError ??= error
-    }
-  }
-
-  if (revertError) {
-    throw new Error(`Codex 引擎补丁无法恢复；源码目录已保留供排查：${String(revertError)}`)
-  }
-  if (buildError) throw buildError
+  run(resolveCargoCommand(), [
+    'build',
+    '--locked',
+    '--release',
+    '--target', target,
+    '--package', ENGINE_NAME,
+    '--bin', ENGINE_NAME,
+  ], engineWorkspace)
   assertCleanSource()
 
   const builtBinary = join(engineWorkspace, 'target', target, 'release', codexEngineBinaryName(target))
@@ -256,7 +217,7 @@ function adHocSignMacBinary(path: string): void {
 function verifyManifest(manifest: EngineManifest, target: SupportedTarget): void {
   const expectedBinary = stagedCodexEngineBinaryName(target)
   if (
-    manifest.schemaVersion !== 1
+    manifest.schemaVersion !== 2
     || manifest.engine !== ENGINE_NAME
     || manifest.sourceRepository !== 'https://github.com/openai/codex'
     || manifest.sourceRevision !== EXPECTED_SOURCE_REVISION
@@ -266,8 +227,7 @@ function verifyManifest(manifest: EngineManifest, target: SupportedTarget): void
   ) {
     throw new Error('Codex 引擎清单不符合产品发行合同')
   }
-  if (!/^[a-f0-9]{64}$/.test(manifest.patchSha256)
-    || !/^[a-f0-9]{64}$/.test(manifest.binarySha256)
+  if (!/^[a-f0-9]{64}$/.test(manifest.binarySha256)
     || !/^[a-f0-9]{64}$/.test(manifest.licenseSha256)
     || !/^[a-f0-9]{64}$/.test(manifest.noticeSha256)) {
     throw new Error('Codex 引擎清单缺少 SHA-256')
@@ -294,9 +254,6 @@ export function verifyStagedCodexEngine(options: CodexEngineStageOptions): void 
   }
   const manifest = readManifest(manifestPath)
   verifyManifest(manifest, options.target)
-  if (enginePatchSha256() !== manifest.patchSha256) {
-    throw new Error('Codex 引擎补丁哈希不符合当前产品源码')
-  }
   if (sha256(licensePath) !== manifest.licenseSha256 || sha256(noticePath) !== manifest.noticeSha256) {
     throw new Error('Codex 引擎 LICENSE 或 NOTICE 哈希不匹配')
   }
@@ -319,7 +276,7 @@ export function stageCodexEngine(options: CodexEngineStageOptions): void {
   if (options.verifyOnly) return verifyStagedCodexEngine(options)
 
   const destination = resolve(options.destinationDir)
-  const builtBinary = applyPatchAndBuild(options.target)
+  const builtBinary = buildLockedSource(options.target)
   mkdirSync(destination, { recursive: true })
 
   const stagedBinary = join(destination, stagedCodexEngineBinaryName(options.target))
@@ -336,11 +293,10 @@ export function stageCodexEngine(options: CodexEngineStageOptions): void {
     ? 'mach-o-code-signature-neutral-sha256'
     : 'sha256'
   const manifest: EngineManifest = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     engine: ENGINE_NAME,
     sourceRepository: 'https://github.com/openai/codex',
     sourceRevision: EXPECTED_SOURCE_REVISION,
-    patchSha256: enginePatchSha256(),
     target: options.target,
     binary: stagedCodexEngineBinaryName(options.target),
     binaryHashMode,

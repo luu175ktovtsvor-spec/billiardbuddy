@@ -4,10 +4,6 @@ import path from 'node:path'
 const expectedRevision = 'ee0247f95a6fe2b094ba2253d82cae2a2b4c2dff'
 const repositoryRoot = path.resolve(import.meta.dir, '../../..')
 const engineRoot = path.join(repositoryRoot, 'third_party', 'codex-engine')
-const enginePatches = [
-  path.join(repositoryRoot, 'third_party', 'codex-engine-patches', '0001-host-managed-tools-only.patch'),
-] as const
-
 function requireFile(relativePath: string): string {
   const file = path.join(engineRoot, relativePath)
   if (!existsSync(file)) throw new Error(`Codex Engine 源码缺少 ${relativePath}；请执行 git submodule update --init --recursive`)
@@ -50,14 +46,8 @@ async function main(): Promise<void> {
     throw new Error('Codex Engine 未明确标记 Chat wire API 限制；模型桥设计需要重新复核')
   }
 
-  const hostManagedToolsPatch = readFileSync(enginePatches[0], 'utf8')
-  if (!hostManagedToolsPatch.includes('host_managed_tools_only') || !hostManagedToolsPatch.includes('item/tool/call')) {
-    throw new Error('Codex Engine 宿主工具补丁内容不完整')
-  }
-  for (const patch of enginePatches) await gitOutput('apply', '--check', patch)
-
   console.log(`[codex-engine] source lock passed: ${revision}`)
-  console.log('[codex-engine] app server, Apache-2.0 NOTICE and the inactive host-managed-tools compatibility patch verified; Chat must enter through the BilliardBuddy Responses bridge.')
+  console.log('[codex-engine] app server, Apache-2.0 NOTICE and the Responses-only provider baseline verified; Chat must enter through the BilliardBuddy Responses bridge.')
 }
 
 await main()
