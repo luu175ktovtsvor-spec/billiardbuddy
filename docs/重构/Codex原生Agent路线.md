@@ -68,6 +68,8 @@ BilliardBuddy Electron / React（品牌与桌面工作面）
 
 当前桌面本机边车已先完成启动链切断：它只启动媒体、图片、视频、语音、设置、凭据更新与能力快照服务；不再实例化 ProductTask、Run ledger、Worker、Cron、旧 Chrome 招聘桥或 ProductTask WebSocket。`/api/product/voice`、`/api/product/settings`、`/api/product/capabilities` 和目录选择器所需的 `/api/product/projects/recent` 继续存在；最近目录只从历史 `product-tasks.json` 做只读投影，绝不触发迁移、Core session 导入或写入。其他旧 Agent HTTP 接口及 `/ws/product/tasks/*` 均返回 `LEGACY_AGENT_BACKEND_RETIRED`，使旧执行路径不能被悄悄重新启用。
 
+Electron Main 中旧 ProductTask 深链/独立窗口、node-pty PTY 终端及其打包依赖也已移除；遗留 IPC 名仅为冻结 Renderer 保留编译协议，任何调用都会明确返回 `LEGACY_AGENT_BACKEND_RETIRED`，不会启动 shell 或重新打开旧任务状态。之后的前端重做应只接 Rust App Server 的原生 Thread、Item 与工具事件。
+
 招聘网站专用的 Chrome 扩展、Native Messaging、候选人操作账本及其 Electron IPC 也已从运行路径退役；`/api/browser` 同样明确返回 `LEGACY_AGENT_BACKEND_RETIRED`。这不削减 Codex 的浏览器/网页能力：正式路径将使用 Rust Core 的原生工具、Exec/sandbox 和 approval request，而不会把旧招聘桥改名后继续作为 Agent 工具。
 
 MCP 的正式控制面同样不再经 Bun 侧车探测或连接。Electron Main 只能代表已拥有的 Rust Thread 调用上游 `config/value/write`（固定在 `mcp_servers.<name>`）、`config/mcpServer/reload`、`mcpServerStatus/list` 和 `mcpServer/oauth/login`；配置、工具清单、启动状态和 OAuth 凭据分别由 Codex 私有 Home、MCP runtime 与其配置的凭据存储拥有。前端冻结期间不复用旧 MCP 设置页，后续页面只接这些原生 RPC。

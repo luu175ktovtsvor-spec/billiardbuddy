@@ -2,11 +2,6 @@ import { app, BrowserWindow, clipboard, ipcMain, Notification, safeStorage, scre
 import { autoUpdater } from 'electron-updater'
 import { randomBytes } from 'node:crypto'
 import path from 'node:path'
-import {
-  parseProductTaskLink,
-  PRODUCT_TASK_LINK_SCHEME,
-  PRODUCT_TASK_WINDOW_QUERY_KEY,
-} from '../../shared/product/taskLinks'
 import { ELECTRON_EVENT_CHANNELS, ELECTRON_INTERNAL_CHANNELS, ELECTRON_IPC_CHANNELS, type ElectronIpcChannel } from './ipc/channels'
 import { isElectronIpcChannel, validateElectronIpcPayload } from './ipc/capabilities'
 import { ElectronServerRuntime } from './services/serverRuntime'
@@ -27,7 +22,6 @@ import {
 import { ensureInstallationId } from './services/installationId'
 import { ElectronUpdaterService } from './services/updater'
 import { createUpdateSmokeUpdaterFromEnv } from './services/updateSmoke'
-import { ElectronTerminalService, type TerminalSpawnInput } from './services/terminal'
 import { ElectronPreviewService, type PreviewBounds } from './services/preview'
 import { ElectronImageActions } from './services/imageActions'
 import { ElectronVideoActions } from './services/videoActions'
@@ -89,7 +83,6 @@ let mainWindow: BrowserWindow | null = null
 let serverRuntime: ElectronServerRuntime | null = null
 let installationSessionManager: InstallationSessionManager | null = null
 let updaterService: ElectronUpdaterService | null = null
-let terminalService: ElectronTerminalService | null = null
 let previewService: ElectronPreviewService | null = null
 let imageActions: ElectronImageActions | null = null
 let videoActions: ElectronVideoActions | null = null
@@ -98,8 +91,6 @@ let nativeAgentRuntime: ElectronCodexNativeRuntime | null = null
 let isQuitting = false
 let trayController: TrayController | null = null
 const trustedProductWindowEntries = new Map<BrowserWindow, string>()
-const productTaskWindows = new Map<string, BrowserWindow>()
-let pendingProductTaskId: string | null = null
 
 type NativeAgentApprovalMethod =
   | 'item/commandExecution/requestApproval'
@@ -164,109 +155,10 @@ async function loadRendererEntry(
 }
 
 function registerTrustedProductWindow(window: BrowserWindow, entry: string) {
-  const terminalOwnerId = window.webContents.id
   trustedProductWindowEntries.set(window, entry)
-  window.webContents.once('render-process-gone', () => {
-    terminalService?.killOwner(terminalOwnerId)
-  })
   window.once('closed', () => {
-    terminalService?.killOwner(terminalOwnerId)
     trustedProductWindowEntries.delete(window)
   })
-}
-
-function existingProductTaskWindow(taskId: string): BrowserWindow | null {
-  const window = productTaskWindows.get(taskId)
-  if (!window || window.isDestroyed()) {
-    productTaskWindows.delete(taskId)
-    return null
-  }
-  return window
-}
-
-async function openProductTaskWindow(taskId: string): Promise<void> {
-  const existing = existingProductTaskWindow(taskId)
-  if (existing) {
-    if (existing.isMinimized()) existing.restore()
-    existing.show()
-    existing.focus()
-    return
-  }
-
-  const entry = rendererEntry()
-  const taskWindow = new BrowserWindow({
-    width: 1080,
-    height: 820,
-    minWidth: MIN_WINDOW_WIDTH,
-    minHeight: MIN_WINDOW_HEIGHT,
-    show: false,
-    ...windowChromeOptionsForPlatform(process.platform),
-    webPreferences: {
-      preload: preloadPath(),
-      contextIsolation: true,
-      nodeIntegration: false,
-      nodeIntegrationInSubFrames: false,
-      sandbox: true,
-      webSecurity: true,
-      webviewTag: false,
-    },
-  })
-  productTaskWindows.set(taskId, taskWindow)
-  registerTrustedProductWindow(taskWindow, entry)
-
-  taskWindow.once('closed', () => {
-    if (productTaskWindows.get(taskId) === taskWindow) {
-      productTaskWindows.delete(taskId)
-    }
-    previewService?.closeForParent(taskWindow)
-  })
-  taskWindow.on('resize', () => {
-    taskWindow.webContents.send(ELECTRON_EVENT_CHANNELS.windowResized)
-  })
-  installMainWindowNavigationGuards(taskWindow.webContents, {
-    openExternal: openExternalUrl,
-    rendererEntry: entry,
-  })
-  installPreviewCleanupOnRendererNavigation(taskWindow.webContents, () => {
-    previewService?.close()
-  })
-
-  try {
-    await loadRendererEntry(taskWindow, entry, { [PRODUCT_TASK_WINDOW_QUERY_KEY]: taskId })
-    taskWindow.show()
-    taskWindow.focus()
-    refreshWindowsDragHitTest(taskWindow, process.platform)
-  } catch (error) {
-    taskWindow.destroy()
-    throw error
-  }
-}
-
-function queueOrOpenProductTaskLink(value: string) {
-  const taskId = parseProductTaskLink(value)
-  if (!taskId) return
-
-  if (!app.isReady()) {
-    pendingProductTaskId = taskId
-    return
-  }
-
-  void openProductTaskWindow(taskId).catch(error => {
-    console.error('[desktop] failed to open product task link:', error)
-  })
-}
-
-function registerProductTaskProtocol() {
-  const defaultApp = (process as NodeJS.Process & { defaultApp?: boolean }).defaultApp === true
-  if (defaultApp && process.argv[1]) {
-    app.setAsDefaultProtocolClient(
-      PRODUCT_TASK_LINK_SCHEME,
-      process.execPath,
-      [path.resolve(process.argv[1])],
-    )
-    return
-  }
-  app.setAsDefaultProtocolClient(PRODUCT_TASK_LINK_SCHEME)
 }
 
 function getInstallationSessionManager() {
@@ -580,20 +472,6 @@ function getUpdaterService() {
   return updaterService
 }
 
-function nodePtyRuntimeCacheDir() {
-  if (!app.isPackaged || process.platform !== 'darwin') return undefined
-  return path.join(app.getPath('userData'), 'native', `node-pty-${process.platform}-${process.arch}-${app.getVersion()}`)
-}
-
-function getTerminalService() {
-  terminalService ??= new ElectronTerminalService({
-    app,
-    nodePtySourceDir: app.isPackaged ? path.join(unpackedRoot(), 'node_modules', 'node-pty') : undefined,
-    nodePtyCacheDir: nodePtyRuntimeCacheDir(),
-  })
-  return terminalService
-}
-
 function getPreviewService() {
   previewService ??= new ElectronPreviewService({
     previewScriptPath: previewAgentPath(),
@@ -619,15 +497,6 @@ function currentWindow(event: Electron.IpcMainInvokeEvent) {
   return window
 }
 
-function assertTerminalTaskAccess(event: Electron.IpcMainInvokeEvent, taskId: string): void {
-  const window = currentWindow(event)
-  for (const [ownedTaskId, taskWindow] of productTaskWindows) {
-    if (taskWindow === window && ownedTaskId !== taskId) {
-      throw new Error('terminal task does not match the owning task window')
-    }
-  }
-}
-
 function isTrustedMainWindowIpcSender(event: Electron.IpcMainInvokeEvent): boolean {
   const window = BrowserWindow.fromWebContents(event.sender)
   const entry = window ? trustedProductWindowEntries.get(window) : undefined
@@ -649,6 +518,10 @@ function registerHandler<T>(
     }
     return handler(event, payload)
   })
+}
+
+function legacyAgentBackendRetired(): never {
+  throw new Error('LEGACY_AGENT_BACKEND_RETIRED')
 }
 
 function emitNotificationAction(payload: unknown) {
@@ -933,30 +806,13 @@ function registerIpcHandlers() {
   registerHandler(ELECTRON_IPC_CHANNELS.windowRequestAttention, event => currentWindow(event).flashFrame(true))
   registerHandler(ELECTRON_IPC_CHANNELS.windowFocus, event => currentWindow(event).focus())
   registerHandler(ELECTRON_IPC_CHANNELS.windowIsMaximized, event => currentWindow(event).isMaximized())
-  registerHandler(ELECTRON_IPC_CHANNELS.windowOpenProductTask, (_event, payload) =>
-    openProductTaskWindow(String(payload)))
-  registerHandler(ELECTRON_IPC_CHANNELS.terminalSpawn, (event, payload) => {
-    const input = payload as TerminalSpawnInput
-    assertTerminalTaskAccess(event, input.taskId)
-    return getTerminalService().spawn(input, event.sender)
-  })
-  registerHandler(ELECTRON_IPC_CHANNELS.terminalWrite, (event, payload) => {
-    const { taskId, sessionId, data } = payload as { taskId: string, sessionId: number, data: string }
-    assertTerminalTaskAccess(event, taskId)
-    return getTerminalService().write(event.sender.id, taskId, sessionId, data)
-  })
-  registerHandler(ELECTRON_IPC_CHANNELS.terminalResize, (event, payload) => {
-    const { taskId, sessionId, cols, rows } = payload as { taskId: string, sessionId: number, cols: number, rows: number }
-    assertTerminalTaskAccess(event, taskId)
-    return getTerminalService().resize(event.sender.id, taskId, sessionId, cols, rows)
-  })
-  registerHandler(ELECTRON_IPC_CHANNELS.terminalKill, (event, payload) => {
-    const { taskId, sessionId } = payload as { taskId: string, sessionId: number }
-    assertTerminalTaskAccess(event, taskId)
-    return getTerminalService().kill(event.sender.id, taskId, sessionId)
-  })
-  registerHandler(ELECTRON_IPC_CHANNELS.terminalGetBashPath, () => getTerminalService().getBashPath())
-  registerHandler(ELECTRON_IPC_CHANNELS.terminalSetBashPath, (_event, payload) => getTerminalService().setBashPath(payload as string | null))
+  registerHandler(ELECTRON_IPC_CHANNELS.windowOpenProductTask, legacyAgentBackendRetired)
+  registerHandler(ELECTRON_IPC_CHANNELS.terminalSpawn, legacyAgentBackendRetired)
+  registerHandler(ELECTRON_IPC_CHANNELS.terminalWrite, legacyAgentBackendRetired)
+  registerHandler(ELECTRON_IPC_CHANNELS.terminalResize, legacyAgentBackendRetired)
+  registerHandler(ELECTRON_IPC_CHANNELS.terminalKill, legacyAgentBackendRetired)
+  registerHandler(ELECTRON_IPC_CHANNELS.terminalGetBashPath, legacyAgentBackendRetired)
+  registerHandler(ELECTRON_IPC_CHANNELS.terminalSetBashPath, legacyAgentBackendRetired)
   registerHandler(ELECTRON_IPC_CHANNELS.previewOpen, (event, payload) => {
     const { url, bounds } = payload as { url: string, bounds?: PreviewBounds }
     return getPreviewService().open(
@@ -1040,20 +896,7 @@ async function createMainWindow() {
   writeWindowSmokeSnapshot(mainWindow, 'after-final-show')
 }
 
-registerProductTaskProtocol()
-
-app.on('open-url', (event, url) => {
-  event.preventDefault()
-  queueOrOpenProductTaskLink(url)
-})
-
-const launchProductTaskLink = process.argv.find(value => parseProductTaskLink(value) !== null)
-if (launchProductTaskLink) queueOrOpenProductTaskLink(launchProductTaskLink)
-
-if (!acquireSingleInstanceLock(app, () => mainWindow, process.env, commandLine => {
-  const taskLink = commandLine.find(value => parseProductTaskLink(value) !== null)
-  if (taskLink) queueOrOpenProductTaskLink(taskLink)
-})) {
+if (!acquireSingleInstanceLock(app, () => mainWindow, process.env)) {
   process.exit(0)
 }
 
@@ -1095,13 +938,6 @@ app.whenReady().then(async () => {
       return null
     })
   }
-  if (pendingProductTaskId) {
-    const taskId = pendingProductTaskId
-    pendingProductTaskId = null
-    await openProductTaskWindow(taskId).catch(error => {
-      console.error('[desktop] failed to open initial product task link:', error)
-    })
-  }
   scheduleNotificationSmoke({
     env: process.env,
     NotificationClass: Notification,
@@ -1128,7 +964,6 @@ app.on('before-quit', () => {
   if (mainWindow) saveWindowState(app, mainWindow)
   trayController?.dispose()
   trayController = null
-  terminalService?.killAll()
   previewService?.close()
   installationSessionManager?.dispose()
   rejectNativeAgentApprovals(new Error('CODEX_NATIVE_APP_QUITTING'))

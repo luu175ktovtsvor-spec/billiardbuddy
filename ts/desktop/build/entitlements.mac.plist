@@ -10,9 +10,8 @@
   <!-- The server sidecar receives product runtime and proxy settings through its environment. -->
   <key>com.apple.security.cs.allow-dyld-environment-variables</key>
   <true/>
-  <!-- Allow loading the node-pty native module and spawning the Bun sidecar binary,
-       which are not signed with this app's Developer ID. Required for the terminal
-       and server runtime to work under a notarized hardened-runtime build. -->
+  <!-- Allow the unsigned Bun sidecar binary to run under the notarized
+       hardened-runtime build. -->
   <key>com.apple.security.cs.disable-library-validation</key>
   <true/>
 </dict>

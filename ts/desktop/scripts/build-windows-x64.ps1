@@ -166,10 +166,6 @@ try {
     if ($LASTEXITCODE -ne 0) {
       throw "[build-windows-x64] electron-builder install-app-deps failed (exit $LASTEXITCODE)"
     }
-    & bun run prepare:node-pty
-    if ($LASTEXITCODE -ne 0) {
-      throw "[build-windows-x64] prepare:node-pty failed (exit $LASTEXITCODE)"
-    }
   }
 
   $args = @('electron-builder', '--win', 'nsis', '--x64', '--publish', 'never')

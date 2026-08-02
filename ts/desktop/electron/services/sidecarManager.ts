@@ -257,28 +257,6 @@ function mergeLoopbackNoProxy(existing: string | undefined): string {
   return entries.join(',')
 }
 
-// The agent's PowerShellTool reads this env var to honor the user's chosen shell
-// (mirrors src/utils/shell/powershellDetection.ts). Without it the agent would
-// re-autodetect PowerShell instead of using the shell the user picked in the UI.
-export const POWERSHELL_PATH_OVERRIDE_ENV = 'BILLIARDBUDDY_POWERSHELL_PATH'
-
-/**
- * Map a resolved Windows shell path to a PowerShell override for the sidecar env.
- * Returns the path only on Windows when it points at pwsh/powershell, so that a
- * cmd.exe or non-PowerShell custom shell selection does not get misreported as a
- * PowerShell override. Matches the consumer's isPowerShellExecutablePath check.
- */
-export function windowsPowerShellOverride(
-  shellPath: string | null | undefined,
-  platform: NodeJS.Platform = process.platform,
-): string | null {
-  if (platform !== 'win32') return null
-  const trimmed = shellPath?.trim()
-  if (!trimmed) return null
-  const base = trimmed.split(/[\\/]/).pop()?.toLowerCase().replace(/\.exe$/, '')
-  return base === 'pwsh' || base === 'powershell' ? trimmed : null
-}
-
 export const SIDE_CAR_SECRET_ENV_KEYS = [
   'BB_GATEWAY_BOOTSTRAP_CREDENTIAL',
   'BB_LICENSE_KEY',
