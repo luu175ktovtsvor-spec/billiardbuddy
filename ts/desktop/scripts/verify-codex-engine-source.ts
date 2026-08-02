@@ -58,6 +58,7 @@ async function main(): Promise<void> {
   const appServerMain = requireFile('codex-rs/app-server/src/main.rs')
   const appServerRuntime = requireFile('codex-rs/app-server/src/lib.rs')
   const coreRoot = requireFile('codex-rs/core/src/lib.rs')
+  const coreConfig = requireFile('codex-rs/core/src/config/mod.rs')
   const coreSession = requireFile('codex-rs/core/src/session/mod.rs')
   const coreTurn = requireFile('codex-rs/core/src/session/turn.rs')
   const toolRouter = requireFile('codex-rs/core/src/tools/router.rs')
@@ -80,6 +81,8 @@ async function main(): Promise<void> {
   assertContains(toolRouter, 'pub struct ToolRouter', 'Core Tool Router')
   assertContains(arg0Dispatch, 'CODEX_ARG0_EXEC_HELPER_ARG1', '本地进程执行 helper')
   assertContains(arg0Dispatch, 'CODEX_FS_HELPER_ARG1', '本地文件系统 helper')
+  assertContains(coreConfig, 'pub model_context_window: Option<i64>', 'Core 模型上下文窗口配置')
+  assertContains(coreConfig, 'pub model_auto_compact_token_limit: Option<i64>', 'Core 自动压缩阈值配置')
 
   const providerInfo = requireFile('codex-rs/model-provider-info/src/lib.rs')
   if (!providerInfo.includes('pub enum WireApi') || !providerInfo.includes('Responses')) {

@@ -403,11 +403,19 @@ async function resolveNativeAgentRoute(): Promise<CodexNativeModelRoute> {
     devBuildDir: path.join(unpackedRoot(), 'build'),
     env: process.env,
   }))
+  const model = managedNativeAgentModel()
+  const entry = textReasoningRegistryEntry(model)
+  // `managedNativeAgentModel` already rejects every non-DeepSeek Responses
+  // entry. Keeping the registry object here makes the Rust Context Manager use
+  // the same verified window/compaction contract as the Gateway.
+  if (!entry) throw new Error('CODEX_NATIVE_MANAGED_MODEL_INVALID')
   return {
     kind: 'managed',
     gatewayUrl: config.url,
     resolveAccessToken: () => getInstallationSessionManager().accessToken(),
-    model: managedNativeAgentModel(),
+    model,
+    contextWindowTokens: entry.verified_context_window,
+    autoCompactTokenLimit: entry.compact_threshold,
   }
 }
 

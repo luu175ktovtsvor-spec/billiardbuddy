@@ -20,6 +20,7 @@ import {
   type CodexNativeServerRequest,
   type NativeCodexTurn,
 } from '../electron/services/codexNativeAppServer'
+import { textReasoningRegistryEntry } from '../../../gateway/providerRegistry'
 
 const TURN_TIMEOUT_MS = 120_000
 const TOOL_TIMEOUT_MS = 90_000
@@ -118,6 +119,10 @@ async function main(): Promise<void> {
   const gatewayUrl = requiredEnvironment('BB_LIVE_GATEWAY_URL')
   const accessToken = requiredEnvironment('BB_LIVE_GATEWAY_ACCESS_TOKEN')
   const model = process.env.BB_LIVE_MODEL?.trim() || 'deepseek-v4-flash'
+  const entry = textReasoningRegistryEntry(model)
+  if (!entry || entry.provider !== 'deepseek' || entry.text_reasoning_transport !== 'responses') {
+    throw new Error('BB_LIVE_MODEL must be a managed DeepSeek Responses model')
+  }
   const desktopRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
   const workspace = await mkdtemp(path.join(tmpdir(), 'billiardbuddy-native-live-workspace-'))
   const approvalWorkspace = await mkdtemp(path.join(tmpdir(), 'billiardbuddy-native-live-approval-'))
@@ -128,6 +133,8 @@ async function main(): Promise<void> {
     gatewayUrl,
     resolveAccessToken: async () => accessToken,
     model,
+    contextWindowTokens: entry.verified_context_window,
+    autoCompactTokenLimit: entry.compact_threshold,
   }
   const createRuntime = () => new ElectronCodexNativeRuntime({
     desktopRoot,
