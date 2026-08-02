@@ -546,6 +546,36 @@ function registerIpcHandlers() {
     claimNativeAgentThread(event.sender.id, thread.id)
     return thread
   })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentListThreads, async (_event, payload) => {
+    const input = payload as {
+      cwd: string
+      cursor?: string
+      limit?: number
+      archived?: boolean
+      searchTerm?: string
+      sortKey?: 'created_at' | 'updated_at' | 'recency_at'
+      sortDirection?: 'asc' | 'desc'
+    }
+    return await getNativeAgentRuntime().listThreads({
+      ...input,
+      route: await resolveNativeAgentRoute(),
+    })
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentSearchThreads, async (_event, payload) => {
+    const input = payload as {
+      cwd: string
+      searchTerm: string
+      cursor?: string
+      limit?: number
+      archived?: boolean
+      sortKey?: 'created_at' | 'updated_at' | 'recency_at'
+      sortDirection?: 'asc' | 'desc'
+    }
+    return await getNativeAgentRuntime().searchThreads({
+      ...input,
+      route: await resolveNativeAgentRoute(),
+    })
+  })
   registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentResumeThread, async (event, payload) => {
     const input = payload as { threadId: string, cwd: string }
     const previousOwnerId = nativeAgentThreadOwners.get(input.threadId)
@@ -556,6 +586,37 @@ function registerIpcHandlers() {
         cwd: input.cwd,
         route: await resolveNativeAgentRoute(),
       })
+    } catch (error) {
+      if (previousOwnerId === undefined) nativeAgentThreadOwners.delete(input.threadId)
+      else nativeAgentThreadOwners.set(input.threadId, previousOwnerId)
+      throw error
+    }
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentUnarchiveThread, async (event, payload) => {
+    const input = payload as { threadId: string, cwd: string }
+    const previousOwnerId = nativeAgentThreadOwners.get(input.threadId)
+    claimNativeAgentThread(event.sender.id, input.threadId)
+    try {
+      return await getNativeAgentRuntime().unarchiveThread({
+        ...input,
+        route: await resolveNativeAgentRoute(),
+      })
+    } catch (error) {
+      if (previousOwnerId === undefined) nativeAgentThreadOwners.delete(input.threadId)
+      else nativeAgentThreadOwners.set(input.threadId, previousOwnerId)
+      throw error
+    }
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentDeleteThread, async (event, payload) => {
+    const input = payload as { threadId: string, cwd: string }
+    const previousOwnerId = nativeAgentThreadOwners.get(input.threadId)
+    claimNativeAgentThread(event.sender.id, input.threadId)
+    try {
+      await getNativeAgentRuntime().deleteThread({
+        ...input,
+        route: await resolveNativeAgentRoute(),
+      })
+      nativeAgentThreadOwners.delete(input.threadId)
     } catch (error) {
       if (previousOwnerId === undefined) nativeAgentThreadOwners.delete(input.threadId)
       else nativeAgentThreadOwners.set(input.threadId, previousOwnerId)
@@ -581,6 +642,48 @@ function registerIpcHandlers() {
     })
     claimNativeAgentThread(event.sender.id, thread.id)
     return thread
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentSetThreadName, async (event, payload) => {
+    const input = payload as { threadId: string, name: string }
+    assertNativeAgentThreadOwner(event.sender.id, input.threadId)
+    await (await getReadyNativeAgentThreadRuntime(input.threadId)).setThreadName({ id: input.threadId }, input.name)
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentCompactThread, async (event, payload) => {
+    const input = payload as { threadId: string }
+    assertNativeAgentThreadOwner(event.sender.id, input.threadId)
+    await (await getReadyNativeAgentThreadRuntime(input.threadId)).compactThread({ id: input.threadId })
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentRollbackThread, async (event, payload) => {
+    const input = payload as { threadId: string, numTurns: number }
+    assertNativeAgentThreadOwner(event.sender.id, input.threadId)
+    return await (await getReadyNativeAgentThreadRuntime(input.threadId)).rollbackThread(
+      { id: input.threadId },
+      input.numTurns,
+    )
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentListThreadTurns, async (event, payload) => {
+    const input = payload as {
+      threadId: string
+      cursor?: string
+      limit?: number
+      sortDirection?: 'asc' | 'desc'
+      itemsView?: 'notLoaded' | 'summary' | 'full'
+    }
+    assertNativeAgentThreadOwner(event.sender.id, input.threadId)
+    const { threadId, ...page } = input
+    return await (await getReadyNativeAgentThreadRuntime(threadId)).listThreadTurns({ id: threadId }, page)
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentListThreadItems, async (event, payload) => {
+    const input = payload as {
+      threadId: string
+      turnId?: string
+      cursor?: string
+      limit?: number
+      sortDirection?: 'asc' | 'desc'
+    }
+    assertNativeAgentThreadOwner(event.sender.id, input.threadId)
+    const { threadId, ...page } = input
+    return await (await getReadyNativeAgentThreadRuntime(threadId)).listThreadItems({ id: threadId }, page)
   })
   registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentUpdatePermissionMode, async (event, payload) => {
     const input = payload as { threadId: string, permissionMode: unknown }

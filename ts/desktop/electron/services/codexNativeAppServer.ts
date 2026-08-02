@@ -80,6 +80,44 @@ export type NativeCodexResumeThreadInput = {
   route: CodexNativeModelRoute
 }
 
+export type NativeCodexThreadListInput = {
+  /** A verified directory used only to start the private App Server process. */
+  cwd: string
+  route: CodexNativeModelRoute
+  cursor?: string
+  limit?: number
+  archived?: boolean
+  searchTerm?: string
+  sortKey?: 'created_at' | 'updated_at' | 'recency_at'
+  sortDirection?: 'asc' | 'desc'
+}
+
+export type NativeCodexThreadSearchInput = {
+  /** A verified directory used only to start the private App Server process. */
+  cwd: string
+  route: CodexNativeModelRoute
+  searchTerm: string
+  cursor?: string
+  limit?: number
+  archived?: boolean
+  sortKey?: 'created_at' | 'updated_at' | 'recency_at'
+  sortDirection?: 'asc' | 'desc'
+}
+
+export type NativeCodexThreadPageInput = {
+  cursor?: string
+  limit?: number
+  sortDirection?: 'asc' | 'desc'
+}
+
+export type NativeCodexThreadTurnsPageInput = NativeCodexThreadPageInput & {
+  itemsView?: 'notLoaded' | 'summary' | 'full'
+}
+
+export type NativeCodexThreadItemsPageInput = NativeCodexThreadPageInput & {
+  turnId?: string
+}
+
 export type NativeCodexTurnInput =
   | { type: 'text'; text: string }
   | { type: 'image'; url: string }
@@ -233,6 +271,48 @@ function nativeSandboxPolicy(mode: NativeCodexPermissionMode): CodexNativeJsonOb
   return mode === 'full-access'
     ? { type: 'dangerFullAccess' }
     : { type: 'workspaceWrite' }
+}
+
+function nativeCursor(value: unknown): string | undefined {
+  if (value === undefined) return undefined
+  if (!nonEmptyText(value, 4_096) || /[\u0000\r\n]/.test(value)) throw new Error('CODEX_NATIVE_CURSOR_INVALID')
+  return value
+}
+
+function nativePageLimit(value: unknown): number | undefined {
+  if (value === undefined) return undefined
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 1 || value > 200) {
+    throw new Error('CODEX_NATIVE_PAGE_LIMIT_INVALID')
+  }
+  return value
+}
+
+function nativeSortDirection(value: unknown): 'asc' | 'desc' | undefined {
+  if (value === undefined) return undefined
+  if (value !== 'asc' && value !== 'desc') throw new Error('CODEX_NATIVE_SORT_DIRECTION_INVALID')
+  return value
+}
+
+function nativeThreadListSortKey(value: unknown): 'created_at' | 'updated_at' | 'recency_at' | undefined {
+  if (value === undefined) return undefined
+  if (value !== 'created_at' && value !== 'updated_at' && value !== 'recency_at') {
+    throw new Error('CODEX_NATIVE_THREAD_SORT_KEY_INVALID')
+  }
+  return value
+}
+
+function nativeThreadSearchTerm(value: unknown): string | undefined {
+  if (value === undefined) return undefined
+  if (!nonEmptyText(value, 512) || /[\u0000\r\n]/.test(value)) throw new Error('CODEX_NATIVE_THREAD_SEARCH_INVALID')
+  return value.trim()
+}
+
+function nativeTurnItemsView(value: unknown): 'notLoaded' | 'summary' | 'full' | undefined {
+  if (value === undefined) return undefined
+  if (value !== 'notLoaded' && value !== 'summary' && value !== 'full') {
+    throw new Error('CODEX_NATIVE_TURN_ITEMS_VIEW_INVALID')
+  }
+  return value
 }
 
 function validateTurnInput(value: NativeCodexTurnInput): boolean {
@@ -539,6 +619,61 @@ export class ElectronCodexNativeRuntime {
   }
 
   /**
+   * Lists durable Rust Thread Store records without creating a BilliardBuddy
+   * mirror. `cwd` only gives the child a verified process working directory;
+   * it does not implicitly filter the source-owned history.
+   */
+  async listThreads(input: NativeCodexThreadListInput): Promise<CodexNativeJsonObject> {
+    const cwd = await this.workspace(input.cwd)
+    const client = await this.ensureClient(input.route, cwd)
+    return await client.request<CodexNativeJsonObject>('thread/list', {
+      ...(nativeCursor(input.cursor) ? { cursor: nativeCursor(input.cursor) } : {}),
+      ...(nativePageLimit(input.limit) ? { limit: nativePageLimit(input.limit) } : {}),
+      ...(input.archived === undefined ? {} : { archived: input.archived }),
+      ...(nativeThreadSearchTerm(input.searchTerm) ? { searchTerm: nativeThreadSearchTerm(input.searchTerm) } : {}),
+      ...(nativeThreadListSortKey(input.sortKey) ? { sortKey: nativeThreadListSortKey(input.sortKey) } : {}),
+      ...(nativeSortDirection(input.sortDirection) ? { sortDirection: nativeSortDirection(input.sortDirection) } : {}),
+    })
+  }
+
+  /** Source-native full-text thread search; results stay in the Rust state database. */
+  async searchThreads(input: NativeCodexThreadSearchInput): Promise<CodexNativeJsonObject> {
+    const cwd = await this.workspace(input.cwd)
+    const client = await this.ensureClient(input.route, cwd)
+    const searchTerm = nativeThreadSearchTerm(input.searchTerm)
+    if (!searchTerm) throw new Error('CODEX_NATIVE_THREAD_SEARCH_INVALID')
+    return await client.request<CodexNativeJsonObject>('thread/search', {
+      searchTerm,
+      ...(nativeCursor(input.cursor) ? { cursor: nativeCursor(input.cursor) } : {}),
+      ...(nativePageLimit(input.limit) ? { limit: nativePageLimit(input.limit) } : {}),
+      ...(input.archived === undefined ? {} : { archived: input.archived }),
+      ...(nativeThreadListSortKey(input.sortKey) ? { sortKey: nativeThreadListSortKey(input.sortKey) } : {}),
+      ...(nativeSortDirection(input.sortDirection) ? { sortDirection: nativeSortDirection(input.sortDirection) } : {}),
+    })
+  }
+
+  /** Restore an archived source Thread, then attach it to the current private process. */
+  async unarchiveThread(input: NativeCodexResumeThreadInput): Promise<NativeCodexThread> {
+    if (!nonEmptyText(input.threadId)) throw new Error('CODEX_NATIVE_THREAD_ID_INVALID')
+    const cwd = await this.workspace(input.cwd)
+    const client = await this.ensureClient(input.route, cwd)
+    await client.request('thread/unarchive', { threadId: input.threadId })
+    this.threadWorkspaces.set(input.threadId, cwd)
+    this.loadedThreads.delete(input.threadId)
+    return await this.resumeStoredThread(input.threadId, input.route)
+  }
+
+  /** Permanently remove one Rust Thread Store record; Electron keeps no copy. */
+  async deleteThread(input: NativeCodexResumeThreadInput): Promise<void> {
+    if (!nonEmptyText(input.threadId)) throw new Error('CODEX_NATIVE_THREAD_ID_INVALID')
+    const cwd = await this.workspace(input.cwd)
+    const client = await this.ensureClient(input.route, cwd)
+    await client.request('thread/delete', { threadId: input.threadId })
+    this.threadWorkspaces.delete(input.threadId)
+    this.loadedThreads.delete(input.threadId)
+  }
+
+  /**
    * Re-open an already owned Rust Thread after a local provider process was
    * deliberately revoked. The workspace is an in-memory reconnect hint, not
    * a replacement Thread record; the source Thread Store validates and owns
@@ -560,6 +695,66 @@ export class ElectronCodexNativeRuntime {
       threadId: thread.id,
       includeTurns: true,
     })
+  }
+
+  /** Source-native paginated Turn history; no Electron history cache is created. */
+  async listThreadTurns(
+    thread: Pick<NativeCodexThread, 'id'>,
+    input: NativeCodexThreadTurnsPageInput = {},
+  ): Promise<CodexNativeJsonObject> {
+    if (!nonEmptyText(thread.id)) throw new Error('CODEX_NATIVE_THREAD_ID_INVALID')
+    return await this.requireClient().request<CodexNativeJsonObject>('thread/turns/list', {
+      threadId: thread.id,
+      ...(nativeCursor(input.cursor) ? { cursor: nativeCursor(input.cursor) } : {}),
+      ...(nativePageLimit(input.limit) ? { limit: nativePageLimit(input.limit) } : {}),
+      ...(nativeSortDirection(input.sortDirection) ? { sortDirection: nativeSortDirection(input.sortDirection) } : {}),
+      ...(nativeTurnItemsView(input.itemsView) ? { itemsView: nativeTurnItemsView(input.itemsView) } : {}),
+    })
+  }
+
+  /** Source-native paginated Item history across one Thread or a selected Turn. */
+  async listThreadItems(
+    thread: Pick<NativeCodexThread, 'id'>,
+    input: NativeCodexThreadItemsPageInput = {},
+  ): Promise<CodexNativeJsonObject> {
+    if (!nonEmptyText(thread.id)) throw new Error('CODEX_NATIVE_THREAD_ID_INVALID')
+    if (input.turnId !== undefined && !nonEmptyText(input.turnId)) throw new Error('CODEX_NATIVE_TURN_ID_INVALID')
+    return await this.requireClient().request<CodexNativeJsonObject>('thread/items/list', {
+      threadId: thread.id,
+      ...(input.turnId ? { turnId: input.turnId } : {}),
+      ...(nativeCursor(input.cursor) ? { cursor: nativeCursor(input.cursor) } : {}),
+      ...(nativePageLimit(input.limit) ? { limit: nativePageLimit(input.limit) } : {}),
+      ...(nativeSortDirection(input.sortDirection) ? { sortDirection: nativeSortDirection(input.sortDirection) } : {}),
+    })
+  }
+
+  /** Ask Rust Core to compact a Thread's context; Core owns the resulting history. */
+  async compactThread(thread: Pick<NativeCodexThread, 'id'>): Promise<void> {
+    if (!nonEmptyText(thread.id)) throw new Error('CODEX_NATIVE_THREAD_ID_INVALID')
+    await this.requireClient().request('thread/compact/start', { threadId: thread.id })
+  }
+
+  /**
+   * The pinned source still provides Thread rollback. It is source-deprecated,
+   * so future UI should prefer fork for a non-destructive branch, but this
+   * method keeps current native history recovery available without a mirror.
+   */
+  async rollbackThread(thread: Pick<NativeCodexThread, 'id'>, numTurns: number): Promise<CodexNativeJsonObject> {
+    if (!nonEmptyText(thread.id)) throw new Error('CODEX_NATIVE_THREAD_ID_INVALID')
+    if (!Number.isSafeInteger(numTurns) || numTurns < 1 || numTurns > 10_000) {
+      throw new Error('CODEX_NATIVE_THREAD_ROLLBACK_INVALID')
+    }
+    return await this.requireClient().request<CodexNativeJsonObject>('thread/rollback', {
+      threadId: thread.id,
+      numTurns,
+    })
+  }
+
+  /** Persist a source Thread title in the Rust Thread Store. */
+  async setThreadName(thread: Pick<NativeCodexThread, 'id'>, name: string): Promise<void> {
+    if (!nonEmptyText(thread.id)) throw new Error('CODEX_NATIVE_THREAD_ID_INVALID')
+    if (!nonEmptyText(name, 512) || /[\u0000\r\n]/.test(name)) throw new Error('CODEX_NATIVE_THREAD_NAME_INVALID')
+    await this.requireClient().request('thread/name/set', { threadId: thread.id, name: name.trim() })
   }
 
   async forkThread(input: NativeCodexResumeThreadInput & { lastTurnId?: string, permissionMode: NativeCodexPermissionMode }): Promise<NativeCodexThread> {
