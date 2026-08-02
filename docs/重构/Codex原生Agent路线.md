@@ -66,6 +66,8 @@ BilliardBuddy Electron / React（品牌与桌面工作面）
 
 旧 `host_managed_tools_only=true` 补丁及 TypeScript ProductTask/Worker 链只属于历史过渡路径。它们不得进入原生 Agent 默认启动链，也不能成为 Rust Core 外层的第二个执行器；在媒体与共享设置完成脱钩后删除其实现和启动入口。
 
+当前桌面本机边车已先完成启动链切断：它只启动媒体、图片、视频、语音、设置、凭据更新与能力快照服务；不再实例化 ProductTask、Run ledger、Worker、Cron、旧 Chrome 招聘桥或 ProductTask WebSocket。`/api/product/voice`、`/api/product/settings`、`/api/product/capabilities` 和目录选择器所需的 `/api/product/projects/recent` 继续存在；最近目录只从历史 `product-tasks.json` 做只读投影，绝不触发迁移、Core session 导入或写入。其他旧 Agent HTTP 接口及 `/ws/product/tasks/*` 均返回 `LEGACY_AGENT_BACKEND_RETIRED`，使旧执行路径不能被悄悄重新启用。
+
 终态将新增 BilliardBuddy 的 **native Codex profile**：
 
 - 不再开启 `host_managed_tools_only`；使用上游工具、审批、沙箱、MCP、Skills、Hooks、Review 和 multi-agent；
