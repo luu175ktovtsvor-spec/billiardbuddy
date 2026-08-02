@@ -288,7 +288,7 @@ function nativeSkillSelector(value: NativeCodexSkillSelector): NativeCodexSkillS
  * Electron-Main JSON-RPC client for the official Codex App Server.
  *
  * It speaks the source's JSONL stdio transport directly. There is no Bun
- * Product Server, local HTTP bridge, ProductTask state, or legacy permission
+ * Product Server, local HTTP bridge, retired task state, or legacy permission
  * envelope on this path.
  */
 export class CodexNativeAppServerClient {

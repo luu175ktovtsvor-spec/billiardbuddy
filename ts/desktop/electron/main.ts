@@ -1,8 +1,8 @@
-import { app, BrowserWindow, clipboard, ipcMain, Notification, safeStorage, screen, session, webContents, WebContentsView } from 'electron'
+import { app, BrowserWindow, clipboard, ipcMain, Notification, safeStorage, screen, session, webContents } from 'electron'
 import { autoUpdater } from 'electron-updater'
 import { randomBytes } from 'node:crypto'
 import path from 'node:path'
-import { ELECTRON_EVENT_CHANNELS, ELECTRON_INTERNAL_CHANNELS, ELECTRON_IPC_CHANNELS, type ElectronIpcChannel } from './ipc/channels'
+import { ELECTRON_EVENT_CHANNELS, ELECTRON_IPC_CHANNELS, type ElectronIpcChannel } from './ipc/channels'
 import { isElectronIpcChannel, validateElectronIpcPayload } from './ipc/capabilities'
 import { ElectronServerRuntime } from './services/serverRuntime'
 import { openDialog, saveDialog } from './services/dialogs'
@@ -22,7 +22,6 @@ import {
 import { ensureInstallationId } from './services/installationId'
 import { ElectronUpdaterService } from './services/updater'
 import { createUpdateSmokeUpdaterFromEnv } from './services/updateSmoke'
-import { ElectronPreviewService, type PreviewBounds } from './services/preview'
 import { ElectronImageActions } from './services/imageActions'
 import { ElectronVideoActions } from './services/videoActions'
 import {
@@ -49,11 +48,9 @@ import { defaultProviderModel, textReasoningRegistryEntry } from '../../../gatew
 import { applyWindowsAppUserModelId } from './services/appIdentity'
 import {
   installMainWindowNavigationGuards,
-  installPreviewNavigationGuards,
   isTrustedMainWindowFrame,
   isTrustedMainWindowNavigationUrl,
 } from './services/navigationGuards'
-import { installPreviewCleanupOnRendererNavigation } from './services/previewLifecycle'
 import { logNotificationSmokeRendererAck, scheduleNotificationSmoke } from './services/notificationSmoke'
 import { normalizeZoomFactor } from './services/zoom'
 import { resolveRendererEntry } from './services/rendererEntry'
@@ -83,7 +80,6 @@ let mainWindow: BrowserWindow | null = null
 let serverRuntime: ElectronServerRuntime | null = null
 let installationSessionManager: InstallationSessionManager | null = null
 let updaterService: ElectronUpdaterService | null = null
-let previewService: ElectronPreviewService | null = null
 let imageActions: ElectronImageActions | null = null
 let videoActions: ElectronVideoActions | null = null
 let providerCredentialService: ProviderCredentialService | null = null
@@ -120,14 +116,6 @@ function unpackedRoot() {
 
 function preloadPath() {
   return path.join(appRoot(), 'electron-dist', 'preload.cjs')
-}
-
-function previewPreloadPath() {
-  return path.join(appRoot(), 'electron-dist', 'preview-preload.cjs')
-}
-
-function previewAgentPath() {
-  return path.join(appRoot(), 'runtime-assets', 'resources', 'preview-agent.js')
 }
 
 function rendererEntry() {
@@ -220,7 +208,7 @@ function nativeAgentPermissionMode(value: unknown): NativeCodexPermissionMode {
 /**
  * `danger-full-access` means the source Rust sandbox stops mediating disk and
  * network operations. Keep its confirmation in privileged Main, rather than
- * trusting a renderer-only modal or a legacy ProductTask permission envelope.
+ * trusting a renderer-only modal or a retired custom permission envelope.
  */
 async function confirmNativeAgentFullAccess(owner: BrowserWindow): Promise<void> {
   const { dialog } = await import('electron')
@@ -474,25 +462,6 @@ function getUpdaterService() {
   return updaterService
 }
 
-function getPreviewService() {
-  previewService ??= new ElectronPreviewService({
-    previewScriptPath: previewAgentPath(),
-    createView: () => {
-      const view = new WebContentsView({
-        webPreferences: {
-          preload: previewPreloadPath(),
-          contextIsolation: true,
-          nodeIntegration: false,
-          sandbox: true,
-        },
-      })
-      installPreviewNavigationGuards(view.webContents, { openExternal: openExternalUrl })
-      return view
-    },
-  })
-  return previewService
-}
-
 function currentWindow(event: Electron.IpcMainInvokeEvent) {
   const window = BrowserWindow.fromWebContents(event.sender)
   if (!window) throw new Error('No BrowserWindow for Electron IPC event')
@@ -520,10 +489,6 @@ function registerHandler<T>(
     }
     return handler(event, payload)
   })
-}
-
-function legacyAgentBackendRetired(): never {
-  throw new Error('LEGACY_AGENT_BACKEND_RETIRED')
 }
 
 function emitNotificationAction(payload: unknown) {
@@ -558,9 +523,6 @@ async function handleCommandInvoke(payload: unknown): Promise<unknown> {
 }
 
 function registerIpcHandlers() {
-  ipcMain.on(ELECTRON_INTERNAL_CHANNELS.previewMessageFromView, (event, raw) => {
-    void getPreviewService().sendMessageToRenderer(event.sender, raw)
-  })
   registerHandler(ELECTRON_IPC_CHANNELS.appGetVersion, () => app.getVersion())
   registerHandler(ELECTRON_IPC_CHANNELS.runtimeGetServerUrl, () => getServerRuntime().getServerUrl())
   registerHandler(ELECTRON_IPC_CHANNELS.modelConfigurationSummary, () => getProviderCredentialService().summary())
@@ -808,28 +770,6 @@ function registerIpcHandlers() {
   registerHandler(ELECTRON_IPC_CHANNELS.windowRequestAttention, event => currentWindow(event).flashFrame(true))
   registerHandler(ELECTRON_IPC_CHANNELS.windowFocus, event => currentWindow(event).focus())
   registerHandler(ELECTRON_IPC_CHANNELS.windowIsMaximized, event => currentWindow(event).isMaximized())
-  registerHandler(ELECTRON_IPC_CHANNELS.windowOpenProductTask, legacyAgentBackendRetired)
-  registerHandler(ELECTRON_IPC_CHANNELS.terminalSpawn, legacyAgentBackendRetired)
-  registerHandler(ELECTRON_IPC_CHANNELS.terminalWrite, legacyAgentBackendRetired)
-  registerHandler(ELECTRON_IPC_CHANNELS.terminalResize, legacyAgentBackendRetired)
-  registerHandler(ELECTRON_IPC_CHANNELS.terminalKill, legacyAgentBackendRetired)
-  registerHandler(ELECTRON_IPC_CHANNELS.terminalGetBashPath, legacyAgentBackendRetired)
-  registerHandler(ELECTRON_IPC_CHANNELS.terminalSetBashPath, legacyAgentBackendRetired)
-  registerHandler(ELECTRON_IPC_CHANNELS.previewOpen, (event, payload) => {
-    const { url, bounds } = payload as { url: string, bounds?: PreviewBounds }
-    return getPreviewService().open(
-      currentWindow(event),
-      url,
-      bounds ?? { x: 0, y: 0, width: 0, height: 0 },
-      event.sender,
-    )
-  })
-  registerHandler(ELECTRON_IPC_CHANNELS.previewNavigate, (_event, payload) => getPreviewService().navigate(String(payload)))
-  registerHandler(ELECTRON_IPC_CHANNELS.previewSetBounds, (_event, payload) => getPreviewService().setBounds(payload as PreviewBounds))
-  registerHandler(ELECTRON_IPC_CHANNELS.previewSetVisible, (_event, payload) => getPreviewService().setVisible(Boolean(payload)))
-  registerHandler(ELECTRON_IPC_CHANNELS.previewSetZoom, (_event, payload) => getPreviewService().setZoomFactor(payload))
-  registerHandler(ELECTRON_IPC_CHANNELS.previewClose, () => getPreviewService().close())
-  registerHandler(ELECTRON_IPC_CHANNELS.previewMessage, (event, payload) => getPreviewService().message(payload, event.sender))
   registerHandler(ELECTRON_IPC_CHANNELS.appModeGet, () => getAppMode(app))
   registerHandler(ELECTRON_IPC_CHANNELS.appModeSet, (_event, payload) => setAppMode(app, payload as Parameters<typeof setAppMode>[1]))
   registerHandler(ELECTRON_IPC_CHANNELS.appModeDetectPortableDir, () => detectPortableDir(app) as PortableDetection)
@@ -868,10 +808,6 @@ async function createMainWindow() {
     openExternal: openExternalUrl,
     rendererEntry: entry,
   })
-  installPreviewCleanupOnRendererNavigation(mainWindow.webContents, () => {
-    previewService?.close()
-  })
-
   installWindowLifecycle({
     app,
     window: mainWindow,
@@ -966,7 +902,6 @@ app.on('before-quit', () => {
   if (mainWindow) saveWindowState(app, mainWindow)
   trayController?.dispose()
   trayController = null
-  previewService?.close()
   installationSessionManager?.dispose()
   rejectNativeAgentApprovals(new Error('CODEX_NATIVE_APP_QUITTING'))
   nativeAgentRuntime?.closeImmediately()

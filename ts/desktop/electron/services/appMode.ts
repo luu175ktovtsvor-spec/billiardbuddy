@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import process from 'node:process'
-import type { AppModeConfig, AppModeSetInput } from '../../src/lib/desktopHost/types'
+import type { AppModeConfig, AppModeSetInput } from '../ipc/desktopShellTypes'
 
 const APP_MODE_FILE = 'app-mode.json'
 

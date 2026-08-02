@@ -8,13 +8,11 @@ import { consumeMediaUiCapability, createMediaApiHandler } from './api/media.js'
 import { createImageWorkbenchDomainApiHandler } from './api/imageWorkbench.js'
 import { createVideoWorkbenchDomainApiHandler } from './api/videoWorkbench.js'
 import { isLongMediaRequestPath } from './mediaRequestTimeout.js'
-import { handleProductControlApi, legacyAgentBackendRetiredResponse } from './api/productControl.js'
+import { handleProductControlApi } from './api/productControl.js'
 import { MediaProjectService } from './services/mediaProjectService.js'
 import { ImageWorkbenchService } from './services/imageWorkbenchService.js'
 import { VideoWorkbenchService } from './services/videoWorkbenchService.js'
 import { voiceOperationService } from './services/voiceOperationService.js'
-import { ProductCapabilitySnapshotService } from './services/productCapabilitySnapshot.js'
-import { listLegacyRecentProjects } from './services/legacyWorkspaceHistory.js'
 import {
   consumeGatewayAccessTokenCapability,
   updateGatewayAccessToken,
@@ -92,8 +90,7 @@ export function startServer(port = PORT, host = HOST) {
   const mediaUiCapability = consumeMediaUiCapability()
   const gatewayAccessTokenCapability = consumeGatewayAccessTokenCapability()
   // The generic media service is now a legacy reader only. Image and video
-  // each own their state, operation journal and recovery paths; Chat and
-  // ProductTask routes receive neither workbench service.
+  // each own their state, operation journal and recovery paths.
   const mediaService = new MediaProjectService()
   const imageWorkbenchService = new ImageWorkbenchService()
   const videoWorkbenchService = new VideoWorkbenchService()
@@ -117,9 +114,6 @@ export function startServer(port = PORT, host = HOST) {
     mediaService,
     mediaUiCapability,
   )
-  const productCapabilitySnapshots = new ProductCapabilitySnapshotService({
-    mediaToolchainStatus: () => videoWorkbenchService.toolchainStatus(),
-  })
   const sidecarStorageUpgrade = Promise.all([
     mediaService.migrateSupportedStorage(),
     voiceOperationService.migrateSupportedStorage(),
@@ -136,12 +130,8 @@ export function startServer(port = PORT, host = HOST) {
       imageWorkbenchService.recoverInterruptedOperations(),
       videoWorkbenchService.recoverInterruptedOperations(),
     ]))
-  const productApiHandler = (req: Request, url: URL, segments: string[]) => (
-    handleProductControlApi(req, url, segments, {
-      capabilitySnapshots: productCapabilitySnapshots,
-      listRecentProjects: listLegacyRecentProjects,
-    })
-  )
+  const productApiHandler = (req: Request, url: URL, segments: string[]) =>
+    handleProductControlApi(req, url, segments)
   // Library consumers can own the global console and process handlers:
   // a test that boots the server would otherwise route every test-side
   // console.error/warn into the user's real diagnostics file.
@@ -175,15 +165,6 @@ export function startServer(port = PORT, host = HOST) {
             return corsRejectedResponse(cors)
           }
           return new Response(null, { status: 204, headers: cors.headers })
-        }
-
-        // ProductTask websocket ownership ended with the TypeScript Agent
-        // runtime. Native Codex owns its own App Server transport instead.
-        if (url.pathname.startsWith('/ws/product/tasks/')) {
-          if (cors.rejected) {
-            return corsRejectedResponse(cors)
-          }
-          return withCors(legacyAgentBackendRetiredResponse(), cors)
         }
 
         // REST API

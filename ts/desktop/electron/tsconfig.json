@@ -9,5 +9,5 @@
     "noEmit": true,
     "allowImportingTsExtensions": false
   },
-  "include": ["./**/*.ts", "../src/lib/desktopHost/types.ts"]
+  "include": ["./**/*.ts"]
 }

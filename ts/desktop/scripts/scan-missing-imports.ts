@@ -35,11 +35,9 @@ const runtimeRoots = [
 
 const runtimeEntrypoints = [
   path.join(desktopSidecarsRoot, 'billiardbuddy-sidecar.ts'),
-  path.join(desktopRendererRoot, 'main.tsx'),
-  path.join(desktopRendererRoot, 'preview-agent', 'index.ts'),
+  path.join(desktopRendererRoot, 'main.ts'),
   path.join(desktopElectronRoot, 'main.ts'),
   path.join(desktopElectronRoot, 'preload.ts'),
-  path.join(desktopElectronRoot, 'preview-preload.ts'),
   path.join(workspaceRoot, 'gateway', 'app.ts'),
   path.join(workspaceRoot, 'relay', 'app.ts'),
 ]

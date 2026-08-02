@@ -37,10 +37,6 @@ export const ELECTRON_IPC_CHANNELS = {
   videoAddSource: 'desktop:video:add-source',
   videoRender: 'desktop:video:render',
   videoAnalyze: 'desktop:video:analyze',
-  browserStatus: 'desktop:browser:status',
-  browserInstall: 'desktop:browser:install',
-  browserListActions: 'desktop:browser:list-actions',
-  browserResolveAction: 'desktop:browser:resolve-action',
   updateCheck: 'desktop:update:check',
   updateDownload: 'desktop:update:download',
   updateInstall: 'desktop:update:install',
@@ -58,20 +54,6 @@ export const ELECTRON_IPC_CHANNELS = {
   windowRequestAttention: 'desktop:window:request-attention',
   windowFocus: 'desktop:window:focus',
   windowIsMaximized: 'desktop:window:is-maximized',
-  windowOpenProductTask: 'desktop:window:open-product-task',
-  terminalSpawn: 'desktop:terminal:spawn',
-  terminalWrite: 'desktop:terminal:write',
-  terminalResize: 'desktop:terminal:resize',
-  terminalKill: 'desktop:terminal:kill',
-  terminalGetBashPath: 'desktop:terminal:get-bash-path',
-  terminalSetBashPath: 'desktop:terminal:set-bash-path',
-  previewOpen: 'desktop:preview:open',
-  previewNavigate: 'desktop:preview:navigate',
-  previewSetBounds: 'desktop:preview:set-bounds',
-  previewSetVisible: 'desktop:preview:set-visible',
-  previewSetZoom: 'desktop:preview:set-zoom',
-  previewClose: 'desktop:preview:close',
-  previewMessage: 'desktop:preview:message',
   appModeGet: 'desktop:app-mode:get',
   appModeSet: 'desktop:app-mode:set',
   appModeDetectPortableDir: 'desktop:app-mode:detect-portable-dir',
@@ -82,21 +64,12 @@ export const ELECTRON_IPC_CHANNELS = {
 
 export const ELECTRON_EVENT_CHANNELS = {
   event: 'desktop:event',
-  webviewDragDrop: 'desktop:webview:drag-drop',
   notificationAction: 'desktop:notification:action',
   updateDownloadEvent: 'desktop:update:download-event',
   windowResized: 'desktop:window:resized',
   nativeMenuNavigate: 'desktop:window:native-menu-navigate',
-  terminalOutput: 'desktop:terminal:output',
-  terminalExit: 'desktop:terminal:exit',
-  previewEvent: 'desktop:preview:event',
   nativeAgentEvent: 'desktop:native-agent:event',
-} as const
-
-export const ELECTRON_INTERNAL_CHANNELS = {
-  previewMessageFromView: 'desktop:preview:message-from-view',
 } as const
 
 export type ElectronIpcChannel = typeof ELECTRON_IPC_CHANNELS[keyof typeof ELECTRON_IPC_CHANNELS]
 export type ElectronEventChannel = typeof ELECTRON_EVENT_CHANNELS[keyof typeof ELECTRON_EVENT_CHANNELS]
-export type ElectronInternalChannel = typeof ELECTRON_INTERNAL_CHANNELS[keyof typeof ELECTRON_INTERNAL_CHANNELS]
