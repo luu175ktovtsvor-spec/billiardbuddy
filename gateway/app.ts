@@ -24,6 +24,7 @@ import {
 import { PROVIDER_REGISTRY, mediaReasoningRegistryEntry, textReasoningRegistryEntry, visualEvidenceRegistryEntry } from './providerRegistry'
 import {
   fileUsageFingerprint,
+  MANAGED_AGENT_INSTALLATION_DAILY_TOKEN_LIMIT,
   SqliteUsageBudgetService,
   UsageBudgetError,
   usageFingerprint,
@@ -608,8 +609,8 @@ function loadConfig(env: Env): GatewayConfig {
   const selectedModel = env.BB_GATEWAY_MODEL?.trim()
   const textModel = selectedModel ? textReasoningRegistryEntry(selectedModel) : textReasoningRegistryEntry()
   if (!textModel) throw new Error('BB_GATEWAY_MODEL must select a registered TextReasoning model')
-  if (textModel.text_reasoning_transport !== 'responses') {
-    throw new Error('BilliardBuddy 托管 TextReasoning 仅支持 Responses 协议')
+  if (textModel.provider !== 'deepseek' || textModel.text_reasoning_transport !== 'responses') {
+    throw new Error('BilliardBuddy 托管 Agent 仅支持 DeepSeek Responses 协议')
   }
   const mimoConc = Math.max(1, intEnv(env, 'GW_MIMO_CONC', 64))
   // Old deployments may have only GW_MIMO_CONC. Derive a valid partition for those
@@ -961,11 +962,11 @@ function visualEvidenceBodyCaps() {
 function requireTextReasoningModel(rawBody: string): string {
   const model = parseChatModel(rawBody).trim()
   const entry = model ? textReasoningRegistryEntry(model) : undefined
-  if (!entry) {
-    throw new HttpError(400, '仅支持已登记的托管文本模型')
+  if (!entry || entry.provider !== 'deepseek') {
+    throw new HttpError(400, '内置 Agent 仅支持已登记的 DeepSeek 文本模型')
   }
   if (entry.text_reasoning_transport !== 'responses') {
-    throw new HttpError(409, '当前托管模型不支持 Responses 协议')
+    throw new HttpError(409, '内置 Agent 模型不支持 Responses 协议')
   }
   return model
 }
@@ -979,6 +980,21 @@ function requestedOutputUnits(rawBody: string): number {
   return Math.min(4_096, textReasoningRegistryEntry().verified_context_window)
 }
 
+/**
+ * Before the upstream finishes, its exact input-token count is unavailable.
+ * A UTF-8 request byte is a conservative upper bound for one input token, so
+ * this reservation keeps a daily installation quota hard even while a long
+ * SSE request is in flight. It is replaced by upstream `total_tokens` once the
+ * final Responses event arrives.
+ */
+function reservedTextTokenUpperBound(inputBytes: number, requestedOutput: number): number {
+  const total = inputBytes + requestedOutput
+  if (!Number.isSafeInteger(total) || total < 0) {
+    throw new HttpError(400, 'max_output_tokens 超出受管额度范围')
+  }
+  return total
+}
+
 type StoredTextReasoningResult = {
   schema: 'bb.text-reasoning-result.v1'
   status: number
@@ -987,22 +1003,37 @@ type StoredTextReasoningResult = {
   actual: UsageAmount
 }
 
-function isUsageAmount(value: unknown): value is UsageAmount {
-  return isRecord(value)
-    && Number.isSafeInteger(value.requests) && value.requests >= 0
-    && Number.isSafeInteger(value.input_bytes) && value.input_bytes >= 0
-    && Number.isSafeInteger(value.output_units) && value.output_units >= 0
+function parseUsageAmount(value: unknown): UsageAmount | undefined {
+  if (!isRecord(value)
+    || !Number.isSafeInteger(value.requests) || value.requests < 0
+    || !Number.isSafeInteger(value.input_bytes) || value.input_bytes < 0
+    || !Number.isSafeInteger(value.output_units) || value.output_units < 0) return undefined
+  // Result payloads written before the total-token migration are still safe to
+  // replay. Their output count was the only model-token datum retained then.
+  const totalTokens = value.total_tokens === undefined
+    ? value.output_units
+    : Number.isSafeInteger(value.total_tokens) && value.total_tokens >= 0
+      ? value.total_tokens
+      : undefined
+  if (totalTokens === undefined) return undefined
+  return {
+    requests: value.requests,
+    input_bytes: value.input_bytes,
+    output_units: value.output_units,
+    total_tokens: totalTokens,
+  }
 }
 
 function parseStoredTextReasoningResult(payload: string): StoredTextReasoningResult {
   try {
     const parsed: unknown = JSON.parse(payload)
+    const actual = isRecord(parsed) ? parseUsageAmount(parsed.actual) : undefined
     if (!isRecord(parsed)
       || parsed.schema !== 'bb.text-reasoning-result.v1'
       || !Number.isSafeInteger(parsed.status) || parsed.status < 200 || parsed.status > 299
       || typeof parsed.content_type !== 'string' || !parsed.content_type.toLowerCase().startsWith('text/event-stream')
       || typeof parsed.sse_base64 !== 'string' || !parsed.sse_base64
-      || !isUsageAmount(parsed.actual)) {
+      || !actual) {
       throw new Error('invalid')
     }
     const bytes = Buffer.from(parsed.sse_base64, 'base64')
@@ -1012,7 +1043,7 @@ function parseStoredTextReasoningResult(payload: string): StoredTextReasoningRes
       status: parsed.status,
       content_type: parsed.content_type,
       sse_base64: parsed.sse_base64,
-      actual: parsed.actual,
+      actual,
     }
   } catch {
     throw new GatewayOperationResultError(503, 'OPERATION_RESULT_UNAVAILABLE')
@@ -1037,12 +1068,22 @@ function textReasoningResultUsageObserver() {
   const decoder = new TextDecoder()
   let buffer = ''
   let outputUnits: number | undefined
+  let totalTokens: number | undefined
   const observeUsage = (value: unknown) => {
     if (!isRecord(value)) return
     const envelope = isRecord(value.response) ? value.response : value
     if (!isRecord(envelope.usage)) return
-    const reported = envelope.usage.completion_tokens ?? envelope.usage.output_tokens
-    if (Number.isSafeInteger(reported) && reported >= 0) outputUnits = reported
+    const output = envelope.usage.completion_tokens ?? envelope.usage.output_tokens
+    if (Number.isSafeInteger(output) && output >= 0) outputUnits = output
+    const reportedTotal = envelope.usage.total_tokens
+    if (Number.isSafeInteger(reportedTotal) && reportedTotal >= 0) totalTokens = reportedTotal
+    else {
+      const input = envelope.usage.prompt_tokens ?? envelope.usage.input_tokens
+      if (Number.isSafeInteger(input) && input >= 0 && Number.isSafeInteger(output) && output >= 0) {
+        const total = input + output
+        if (Number.isSafeInteger(total)) totalTokens = total
+      }
+    }
   }
   return {
     push(chunk: Uint8Array): void {
@@ -1059,7 +1100,10 @@ function textReasoningResultUsageObserver() {
         }
       }
     },
-    actual(inputBytes: number, reservedOutputUnits: number): UsageAmount {
+    actual(inputBytes: number, reservedOutputUnits: number, reservedTotalTokens: number): UsageAmount {
+      const reportedTotal = totalTokens !== undefined && totalTokens >= (outputUnits ?? 0)
+        ? totalTokens
+        : undefined
       return {
         requests: 1,
         input_bytes: inputBytes,
@@ -1067,6 +1111,7 @@ function textReasoningResultUsageObserver() {
         // upstream breaks that contract, retain the reservation instead of guessing
         // a smaller billable result.
         output_units: outputUnits ?? reservedOutputUnits,
+        total_tokens: reportedTotal ?? reservedTotalTokens,
       }
     },
   }
@@ -1383,7 +1428,12 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
         installation_id: identity.installationId,
         capability: 'TextReasoning',
         fingerprint,
-        amount: { requests: 1, input_bytes: inputBytes, output_units: requestedOutput },
+        amount: {
+          requests: 1,
+          input_bytes: inputBytes,
+          output_units: requestedOutput,
+          total_tokens: reservedTextTokenUpperBound(inputBytes, requestedOutput),
+        },
       })
     } catch (error) {
       if (error instanceof UsageBudgetError) throw new HttpError(error.status, error.code)
@@ -1452,7 +1502,11 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
             controller.enqueue(value)
             return
           }
-          const actual = usage.actual(usageReceipt.reserved.input_bytes, usageReceipt.reserved.output_units)
+          const actual = usage.actual(
+            usageReceipt.reserved.input_bytes,
+            usageReceipt.reserved.output_units,
+            usageReceipt.reserved.total_tokens,
+          )
           operationResults.complete(binding, fencingToken, textReasoningResultPayload(response, chunks, actual), { awaitingConsumerAck: true })
           resultStored = true
           // Persist the replayable result before charging the exact streamed output.
@@ -1695,6 +1749,7 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
           usage_budget: {
             policy_revision: usageBudget.policyRevision(),
             metered_capabilities: ['TextReasoning', 'VisualEvidence', 'MediaReasoning', 'SpeechTranscription'],
+            managed_agent_installation_daily_total_tokens: MANAGED_AGENT_INSTALLATION_DAILY_TOKEN_LIMIT,
           },
           usage_summary: usageBudget.summary(identity.principalId, identity.installationId),
           capacity: {
@@ -1769,7 +1824,9 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
       if (request.method === 'GET' && url.pathname === '/v1/models') {
         auth(authority, request)
         const data = PROVIDER_REGISTRY
-          .filter(entry => entry.capabilities.includes('TextReasoning'))
+          .filter(entry => entry.provider === 'deepseek'
+            && entry.capabilities.includes('TextReasoning')
+            && entry.text_reasoning_transport === 'responses')
           .map(entry => ({ id: entry.model_id, object: 'model' as const, created: 0, owned_by: entry.provider }))
         return jsonResponse({ object: 'list', data })
       }
@@ -1819,7 +1876,12 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
               'MediaReasoning',
               `${usageOperation}:media`,
               usageFingerprint(`MediaReasoning\0${rawBody}`),
-              { requests: 1, input_bytes: inputBytes, output_units: requestedOutputUnits(rawBody) },
+              {
+                requests: 1,
+                input_bytes: inputBytes,
+                output_units: requestedOutputUnits(rawBody),
+                total_tokens: 0,
+              },
             )
             return await runMeteredStream(
               receipt,
@@ -1854,7 +1916,7 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
               'VisualEvidence',
               `${usageOperation}:vision`,
               usageFingerprint(`VisualEvidence\0${rawBody}`),
-              { requests: 1, input_bytes: inputBytes, output_units: 4_096 },
+              { requests: 1, input_bytes: inputBytes, output_units: 4_096, total_tokens: 0 },
             )
             return await runMeteredStream(receipt, usageOperation, async () => {
               const result = await visionBridge.transform(rawBody, {
@@ -1990,7 +2052,7 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
           'SpeechTranscription',
           `${usageOperation}:speech`,
           usageFingerprint(`SpeechTranscription\0${await fileUsageFingerprint(file)}\0${language}\0${responseFormat}`),
-          { requests: 1, input_bytes: file.size, output_units: 0 },
+          { requests: 1, input_bytes: file.size, output_units: 0, total_tokens: 0 },
         )
         const started = performance.now()
         const capacityPermit = await transcribeCapacity.acquire(user, {
@@ -2017,6 +2079,7 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
               requests: 1,
               input_bytes: file.size,
               output_units: Number.isFinite(audioSeconds) && audioSeconds >= 0 ? Math.round(audioSeconds * 1_000) : 0,
+              total_tokens: 0,
             })
             const note = [
               `queue_ms=${queueMs}`,

@@ -32,25 +32,37 @@ export type UsageReserveInput = {
   amount: UsageAmount
 }
 
+export const MANAGED_AGENT_INSTALLATION_DAILY_TOKEN_LIMIT = 50_000_000
+
+const UNBOUNDED_USAGE_LIMIT: UsageAmount = {
+  requests: 1_000_000_000,
+  input_bytes: 1_000_000_000_000,
+  output_units: 1_000_000_000_000,
+  total_tokens: 1_000_000_000_000,
+}
+
 export const DEFAULT_GATEWAY_USAGE_POLICY: UsageBudgetPolicy = {
-  revision: 'bb-04d-gateway-v1',
+  revision: 'bb-agent-daily-token-v1',
   period: 'utc_day',
   capabilities: {
     TextReasoning: {
-      principal: { requests: 100_000, input_bytes: 4 * 1024 ** 3, output_units: 100_000_000 },
-      installation: { requests: 10_000, input_bytes: 1024 ** 3, output_units: 10_000_000 },
+      // This is the product-owned managed Agent key. Each verified installation
+      // gets a fresh 50M-token allowance at UTC midnight; a user's own provider
+      // key never enters this Gateway ledger.
+      principal: { ...UNBOUNDED_USAGE_LIMIT },
+      installation: { ...UNBOUNDED_USAGE_LIMIT, total_tokens: MANAGED_AGENT_INSTALLATION_DAILY_TOKEN_LIMIT },
     },
     VisualEvidence: {
-      principal: { requests: 20_000, input_bytes: 500 * 1024 ** 3, output_units: 20_000_000 },
-      installation: { requests: 2_000, input_bytes: 50 * 1024 ** 3, output_units: 2_000_000 },
+      principal: { requests: 20_000, input_bytes: 500 * 1024 ** 3, output_units: 20_000_000, total_tokens: UNBOUNDED_USAGE_LIMIT.total_tokens },
+      installation: { requests: 2_000, input_bytes: 50 * 1024 ** 3, output_units: 2_000_000, total_tokens: UNBOUNDED_USAGE_LIMIT.total_tokens },
     },
     MediaReasoning: {
-      principal: { requests: 20_000, input_bytes: 500 * 1024 ** 3, output_units: 20_000_000 },
-      installation: { requests: 2_000, input_bytes: 50 * 1024 ** 3, output_units: 2_000_000 },
+      principal: { requests: 20_000, input_bytes: 500 * 1024 ** 3, output_units: 20_000_000, total_tokens: UNBOUNDED_USAGE_LIMIT.total_tokens },
+      installation: { requests: 2_000, input_bytes: 50 * 1024 ** 3, output_units: 2_000_000, total_tokens: UNBOUNDED_USAGE_LIMIT.total_tokens },
     },
     SpeechTranscription: {
-      principal: { requests: 20_000, input_bytes: 500 * 1024 ** 3, output_units: 200_000_000 },
-      installation: { requests: 2_000, input_bytes: 50 * 1024 ** 3, output_units: 20_000_000 },
+      principal: { requests: 20_000, input_bytes: 500 * 1024 ** 3, output_units: 200_000_000, total_tokens: UNBOUNDED_USAGE_LIMIT.total_tokens },
+      installation: { requests: 2_000, input_bytes: 50 * 1024 ** 3, output_units: 20_000_000, total_tokens: UNBOUNDED_USAGE_LIMIT.total_tokens },
     },
   },
 }
@@ -78,7 +90,8 @@ function validInteger(value: number): boolean {
 }
 
 function validateAmount(amount: UsageAmount): void {
-  if (!validInteger(amount.requests) || !validInteger(amount.input_bytes) || !validInteger(amount.output_units)) {
+  if (!validInteger(amount.requests) || !validInteger(amount.input_bytes)
+    || !validInteger(amount.output_units) || !validInteger(amount.total_tokens)) {
     throw new UsageBudgetError(503, 'BUDGET_UNAVAILABLE')
   }
 }
@@ -112,6 +125,7 @@ function add(left: UsageAmount, right: UsageAmount): UsageAmount {
     requests: left.requests + right.requests,
     input_bytes: left.input_bytes + right.input_bytes,
     output_units: left.output_units + right.output_units,
+    total_tokens: left.total_tokens + right.total_tokens,
   }
 }
 
@@ -119,16 +133,18 @@ function exceeds(value: UsageAmount, limit: UsageLimit): boolean {
   return value.requests > limit.requests
     || value.input_bytes > limit.input_bytes
     || value.output_units > limit.output_units
+    || value.total_tokens > limit.total_tokens
 }
 
 function reached(value: UsageAmount, limit: UsageLimit): boolean {
   return value.requests >= limit.requests
     || value.input_bytes >= limit.input_bytes
     || value.output_units >= limit.output_units
+    || value.total_tokens >= limit.total_tokens
 }
 
 function remainingPercent(value: UsageAmount, limit: UsageLimit): number {
-  const ratios = (['requests', 'input_bytes', 'output_units'] as const).map((key) => {
+  const ratios = (['requests', 'input_bytes', 'output_units', 'total_tokens'] as const).map((key) => {
     if (limit[key] === 0) return 0
     return ((limit[key] - value[key]) / limit[key]) * 100
   })
@@ -155,8 +171,8 @@ function publicReceipt(row: StoredUsage): UsageReceipt {
 type SqlRow = {
   operation_key: string; operation_id: string; principal_id: string; installation_id: string; capability: MeteredCapability
   policy_revision: string; period: string; state: UsageState; reserved_requests: number
-  reserved_input_bytes: number; reserved_output_units: number; actual_requests: number
-  actual_input_bytes: number; actual_output_units: number; fencing_token: number
+  reserved_input_bytes: number; reserved_output_units: number; reserved_total_tokens: number; actual_requests: number
+  actual_input_bytes: number; actual_output_units: number; actual_total_tokens: number; fencing_token: number
   fingerprint: string; upstream_receipt_hash: string | null
 }
 
@@ -164,8 +180,18 @@ function fromSql(row: SqlRow): StoredUsage {
   return {
     operation_id: row.operation_id, principal_id: row.principal_id, installation_id: row.installation_id,
     capability: row.capability, policy_revision: row.policy_revision, period: row.period, state: row.state,
-    reserved: { requests: row.reserved_requests, input_bytes: row.reserved_input_bytes, output_units: row.reserved_output_units },
-    actual: { requests: row.actual_requests, input_bytes: row.actual_input_bytes, output_units: row.actual_output_units },
+    reserved: {
+      requests: row.reserved_requests,
+      input_bytes: row.reserved_input_bytes,
+      output_units: row.reserved_output_units,
+      total_tokens: row.reserved_total_tokens,
+    },
+    actual: {
+      requests: row.actual_requests,
+      input_bytes: row.actual_input_bytes,
+      output_units: row.actual_output_units,
+      total_tokens: row.actual_total_tokens,
+    },
     fencing_token: row.fencing_token, fingerprint: row.fingerprint,
     ...(row.upstream_receipt_hash ? { upstream_receipt_hash: row.upstream_receipt_hash } : {}),
   }
@@ -192,11 +218,25 @@ export class SqliteUsageBudgetService implements UsageBudgetService {
       reserved_requests INTEGER NOT NULL,
       reserved_input_bytes INTEGER NOT NULL,
       reserved_output_units INTEGER NOT NULL,
+      reserved_total_tokens INTEGER NOT NULL DEFAULT 0,
       actual_requests INTEGER NOT NULL DEFAULT 0,
       actual_input_bytes INTEGER NOT NULL DEFAULT 0,
       actual_output_units INTEGER NOT NULL DEFAULT 0,
+      actual_total_tokens INTEGER NOT NULL DEFAULT 0,
       upstream_receipt_hash TEXT
     )`)
+    // Existing installations have the prior three-axis ledger.  Upgrade it in
+    // place so an app update never drops historical reservations or makes a
+    // half-upgraded Gateway fail at first managed Agent turn.
+    const columns = this.db.query('PRAGMA table_info(usage_budget_reservations)').all() as Array<{ name: string }>
+    if (!columns.some(column => column.name === 'reserved_total_tokens')) {
+      this.db.exec('ALTER TABLE usage_budget_reservations ADD COLUMN reserved_total_tokens INTEGER NOT NULL DEFAULT 0')
+      this.db.exec('UPDATE usage_budget_reservations SET reserved_total_tokens=reserved_output_units')
+    }
+    if (!columns.some(column => column.name === 'actual_total_tokens')) {
+      this.db.exec('ALTER TABLE usage_budget_reservations ADD COLUMN actual_total_tokens INTEGER NOT NULL DEFAULT 0')
+      this.db.exec('UPDATE usage_budget_reservations SET actual_total_tokens=actual_output_units')
+    }
     this.db.exec('CREATE INDEX IF NOT EXISTS usage_budget_period_principal ON usage_budget_reservations(period, principal_id)')
   }
 
@@ -210,8 +250,9 @@ export class SqliteUsageBudgetService implements UsageBudgetService {
     ).all(period, principalId) as SqlRow[]).map(fromSql)
     const capabilities = Object.fromEntries(
       (['TextReasoning', 'VisualEvidence', 'MediaReasoning', 'SpeechTranscription'] as const).map((capability) => {
-        const principal = { requests: 0, input_bytes: 0, output_units: 0 }
-        const installation = { requests: 0, input_bytes: 0, output_units: 0 }
+        const limits = this.policy.capabilities[capability]
+        const principal: UsageAmount = { requests: 0, input_bytes: 0, output_units: 0, total_tokens: 0 }
+        const installation: UsageAmount = { requests: 0, input_bytes: 0, output_units: 0, total_tokens: 0 }
         for (const row of rows) {
           if (row.capability !== capability) continue
           const counted = row.state === 'settled' ? row.actual : row.reserved
@@ -220,7 +261,6 @@ export class SqliteUsageBudgetService implements UsageBudgetService {
             Object.assign(installation, add(installation, counted))
           }
         }
-        const limits = this.policy.capabilities[capability]
         return [capability, {
           remaining_percent: Math.min(
             remainingPercent(principal, limits.principal),
@@ -244,15 +284,16 @@ export class SqliteUsageBudgetService implements UsageBudgetService {
         this.db.exec('COMMIT')
         return { duplicate: true, receipt: publicReceipt(existing) }
       }
-      const rows = this.db.query('SELECT * FROM usage_budget_reservations WHERE period=? AND capability=? AND state<>\'released\'').all(periodAt(this.now()), input.capability) as SqlRow[]
+      const period = periodAt(this.now())
+      const rows = this.db.query('SELECT * FROM usage_budget_reservations WHERE period=? AND capability=? AND state<>\'released\'').all(period, input.capability) as SqlRow[]
       this.assertWithinBudget(rows.map(fromSql), input)
       this.db.query(`INSERT INTO usage_budget_reservations(
         operation_key,operation_id,principal_id,installation_id,capability,policy_revision,period,state,fingerprint,
-        reserved_requests,reserved_input_bytes,reserved_output_units
-      ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+        reserved_requests,reserved_input_bytes,reserved_output_units,reserved_total_tokens
+      ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
         operationKey(input.principal_id, input.operation_id), input.operation_id, input.principal_id, input.installation_id, input.capability,
-        this.policy.revision, periodAt(this.now()), 'reserved', input.fingerprint,
-        input.amount.requests, input.amount.input_bytes, input.amount.output_units,
+        this.policy.revision, period, 'reserved', input.fingerprint,
+        input.amount.requests, input.amount.input_bytes, input.amount.output_units, input.amount.total_tokens,
       )
       const row = this.getForReserve(input)!
       this.db.exec('COMMIT')
@@ -282,8 +323,8 @@ export class SqliteUsageBudgetService implements UsageBudgetService {
   }
   private assertWithinBudget(rows: Iterable<StoredUsage>, input: UsageReserveInput): void {
     const period = periodAt(this.now())
-    const principal = { requests: 0, input_bytes: 0, output_units: 0 }
-    const installation = { requests: 0, input_bytes: 0, output_units: 0 }
+    const principal: UsageAmount = { requests: 0, input_bytes: 0, output_units: 0, total_tokens: 0 }
+    const installation: UsageAmount = { requests: 0, input_bytes: 0, output_units: 0, total_tokens: 0 }
     for (const row of rows) {
       if (row.period !== period || row.capability !== input.capability || row.state === 'released') continue
       const counted = row.state === 'settled' ? row.actual : row.reserved
@@ -303,7 +344,11 @@ export class SqliteUsageBudgetService implements UsageBudgetService {
     if (row.state !== 'reserved') return publicReceipt(row)
     if (actual) validateAmount(actual)
     row.state = state
-    row.actual = actual ? structuredClone(actual) : state === 'released' ? { requests: 0, input_bytes: 0, output_units: 0 } : structuredClone(row.reserved)
+    row.actual = actual
+      ? structuredClone(actual)
+      : state === 'released'
+        ? { requests: 0, input_bytes: 0, output_units: 0, total_tokens: 0 }
+        : structuredClone(row.reserved)
     if (upstreamReceiptHash) {
       if (!/^[a-f0-9]{64}$/.test(upstreamReceiptHash)) throw new UsageBudgetError(503, 'BUDGET_UNAVAILABLE')
       row.upstream_receipt_hash = upstreamReceiptHash
@@ -316,8 +361,8 @@ export class SqliteUsageBudgetService implements UsageBudgetService {
       const row = this.getForFinalize(operationId, fencingToken)
       if (!row) throw new UsageBudgetError(409, 'STALE_FENCING')
       const receipt = this.finalizeRow(row, fencingToken, state, actual, upstreamReceiptHash)
-      this.db.query(`UPDATE usage_budget_reservations SET state=?,actual_requests=?,actual_input_bytes=?,actual_output_units=?,upstream_receipt_hash=? WHERE operation_id=? AND fencing_token=?`).run(
-        receipt.state, receipt.actual.requests, receipt.actual.input_bytes, receipt.actual.output_units,
+      this.db.query(`UPDATE usage_budget_reservations SET state=?,actual_requests=?,actual_input_bytes=?,actual_output_units=?,actual_total_tokens=?,upstream_receipt_hash=? WHERE operation_id=? AND fencing_token=?`).run(
+        receipt.state, receipt.actual.requests, receipt.actual.input_bytes, receipt.actual.output_units, receipt.actual.total_tokens,
         receipt.upstream_receipt_hash ?? null, operationId, fencingToken,
       )
       this.db.exec('COMMIT')
