@@ -42,6 +42,8 @@ export const PERSONAL_MODEL_INSTRUCTIONS_MAX_CHARS = 32_000
 export type PersonalModelProfile = {
   id: string
   label: string
+  /** The bundled provider/plan route used to create this profile, when any. */
+  provider_preset_id?: string
   base_url: string
   model: string
   /** Optional provider/model-specific Agent instructions; the product default is used when omitted. */
@@ -132,6 +134,42 @@ export type PersonalModelCatalogSelectionInput = {
   label?: string
 }
 
+/**
+ * Simple onboarding path for a fixed BilliardBuddy provider or Coding Plan.
+ * Electron Main resolves all endpoint and protocol details from the bundled
+ * catalog; the renderer never needs to construct an upstream route itself.
+ */
+export type PersonalModelProviderPresetSelectionInput = {
+  id?: string
+  provider_preset_id: string
+  /** An empty value retains an existing encrypted Key during edits. */
+  api_key: string
+  model: string
+  label?: string
+  /** Required only by a preset with a provider-specific resource hostname. */
+  base_url?: string
+  /** Omit to use the plan's default protocol. */
+  protocol?: PersonalModelProtocol
+  /** Required for a discovered model without a bundled capability contract. */
+  supports_tool_calls?: boolean
+  /** Required for a discovered model without a bundled capability contract. */
+  supports_parallel_tool_calls?: boolean
+  /** Required together with max_output_tokens when no catalog contract exists. */
+  context_window_tokens?: number
+  /** Required together with context_window_tokens when no catalog contract exists. */
+  max_output_tokens?: number
+  /** Required only by a provider plan marked as compatibility-gated. */
+  provider_terms_confirmed?: boolean
+}
+
+/** A Key is supplied transiently; Electron Main resolves the preset route. */
+export type PersonalModelProviderPresetDiscoveryInput = {
+  provider_preset_id: string
+  api_key: string
+  /** Required only by a preset with a provider-specific resource hostname. */
+  base_url?: string
+}
+
 export type PersonalModelKind = 'text' | 'multimodal'
 
 export type PersonalModelConfiguration = {
@@ -161,6 +199,10 @@ export function validPersonalModelProfileId(value: unknown): value is string {
 
 export function validPersonalModelCatalogEntryId(value: unknown): value is string {
   return typeof value === 'string' && /^[a-z0-9][a-z0-9._:/-]{2,160}$/i.test(value)
+}
+
+export function validPersonalModelProviderPresetId(value: unknown): value is string {
+  return typeof value === 'string' && /^[a-z0-9][a-z0-9._-]{1,80}$/i.test(value)
 }
 
 export function validPersonalModelCapability(value: unknown): value is PersonalModelCapability {
@@ -241,6 +283,7 @@ export function normalizePersonalModelProfile(
 ): PersonalModelProfile {
   if (!validPersonalModelProfileId(id)) throw new Error('PERSONAL_MODEL_PROFILE_ID_INVALID')
   const label = input.label.trim()
+  const providerPresetId = input.provider_preset_id?.trim()
   const model = input.model.trim()
   const modelInstructions = input.model_instructions?.normalize('NFC').trim() ?? ''
   const apiKey = input.api_key.trim()
@@ -250,6 +293,7 @@ export function normalizePersonalModelProfile(
   if (
     !label
     || label.length > 80
+    || (input.provider_preset_id !== undefined && !validPersonalModelProviderPresetId(providerPresetId))
     || !model
     || model.length > 200
     || modelInstructions.length > PERSONAL_MODEL_INSTRUCTIONS_MAX_CHARS
@@ -400,6 +444,7 @@ export function normalizePersonalModelProfile(
   return {
     id,
     label,
+    ...(providerPresetId ? { provider_preset_id: providerPresetId } : {}),
     base_url: baseUrl,
     model,
     ...(modelInstructions ? { model_instructions: modelInstructions } : {}),

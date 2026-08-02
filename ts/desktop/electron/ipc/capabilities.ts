@@ -411,6 +411,13 @@ const modelConfigurationDiscover: Validator = value =>
   && personalModelProtocol(value.protocol)
   && (value.auth_mode === undefined || personalModelAuthMode(value.auth_mode))
 
+const modelConfigurationDiscoverPreset: Validator = value =>
+  isRecord(value)
+  && hasOnlyKeys(value, ['provider_preset_id', 'api_key', 'base_url'])
+  && personalModelProviderPresetId(value.provider_preset_id)
+  && typeof value.api_key === 'string' && value.api_key.length >= 8 && value.api_key.length <= 4_096
+  && (value.base_url === undefined || typeof value.base_url === 'string' && value.base_url.trim().length > 0 && value.base_url.length <= 2_048)
+
 const modelConfigurationSaveCatalog: Validator = value =>
   isRecord(value)
   && hasOnlyKeys(value, ['id', 'catalog_entry_id', 'api_key', 'label'])
@@ -418,6 +425,34 @@ const modelConfigurationSaveCatalog: Validator = value =>
   && personalModelCatalogEntryId(value.catalog_entry_id)
   && typeof value.api_key === 'string' && value.api_key.length <= 4_096
   && (value.label === undefined || typeof value.label === 'string' && value.label.trim().length > 0 && value.label.length <= 80)
+
+const modelConfigurationSavePreset: Validator = value =>
+  isRecord(value)
+  && hasOnlyKeys(value, [
+    'id',
+    'provider_preset_id',
+    'api_key',
+    'model',
+    'label',
+    'base_url',
+    'protocol',
+    'supports_tool_calls',
+    'supports_parallel_tool_calls',
+    'context_window_tokens',
+    'max_output_tokens',
+    'provider_terms_confirmed',
+  ])
+  && (value.id === undefined || personalModelProfileId(value.id))
+  && personalModelProviderPresetId(value.provider_preset_id)
+  && typeof value.api_key === 'string' && value.api_key.length <= 4_096
+  && typeof value.model === 'string' && value.model.trim().length > 0 && value.model.length <= 200
+  && (value.label === undefined || typeof value.label === 'string' && value.label.trim().length > 0 && value.label.length <= 80)
+  && (value.base_url === undefined || typeof value.base_url === 'string' && value.base_url.trim().length > 0 && value.base_url.length <= 2_048)
+  && (value.protocol === undefined || personalModelProtocol(value.protocol))
+  && (value.supports_tool_calls === undefined || typeof value.supports_tool_calls === 'boolean')
+  && (value.supports_parallel_tool_calls === undefined || typeof value.supports_parallel_tool_calls === 'boolean')
+  && personalModelContextContract(value.context_window_tokens, value.max_output_tokens)
+  && (value.provider_terms_confirmed === undefined || typeof value.provider_terms_confirmed === 'boolean')
 
 const modelConfigurationSetRoute: Validator = value =>
   isRecord(value)
@@ -527,7 +562,9 @@ export const ELECTRON_IPC_VALIDATORS = {
   [ELECTRON_IPC_CHANNELS.modelConfigurationProviderPresets]: noPayload,
   [ELECTRON_IPC_CHANNELS.modelConfigurationOpenProviderPortal]: personalModelProviderPresetId,
   [ELECTRON_IPC_CHANNELS.modelConfigurationDiscover]: modelConfigurationDiscover,
+  [ELECTRON_IPC_CHANNELS.modelConfigurationDiscoverPreset]: modelConfigurationDiscoverPreset,
   [ELECTRON_IPC_CHANNELS.modelConfigurationSaveCatalog]: modelConfigurationSaveCatalog,
+  [ELECTRON_IPC_CHANNELS.modelConfigurationSavePreset]: modelConfigurationSavePreset,
   [ELECTRON_IPC_CHANNELS.modelConfigurationSave]: modelConfigurationSave,
   [ELECTRON_IPC_CHANNELS.modelConfigurationSetRoute]: modelConfigurationSetRoute,
   [ELECTRON_IPC_CHANNELS.modelConfigurationRemove]: personalModelProfileId,

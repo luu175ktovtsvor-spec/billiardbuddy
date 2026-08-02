@@ -52,10 +52,27 @@ function discoveryAuthHeader(apiKey: string, authMode: PersonalModelAuthMode): R
   return { Authorization: `Bearer ${apiKey}` }
 }
 
-function modelsEndpoint(baseUrl: string): string {
+function modelsEndpoint(baseUrl: string, suffix = 'models'): string {
   const url = new URL(baseUrl)
-  url.pathname = `${url.pathname.replace(/\/+$/, '')}/models`
+  url.pathname = `${url.pathname.replace(/\/+$/, '')}/${suffix}`
   return url.toString()
+}
+
+/**
+ * Mirror the resilient part of CC Switch's model fetcher without inheriting
+ * its cross-application configuration behavior. Most OpenAI-compatible
+ * routes use `{base}/models`; coding-plan routes with a non-v1 version suffix
+ * occasionally expose `{base}/v1/models`, so that same-origin fallback is
+ * tried only after a 404/405. The entered Key never follows a redirect.
+ */
+function modelDiscoveryEndpoints(baseUrl: string): readonly string[] {
+  const primary = modelsEndpoint(baseUrl)
+  const url = new URL(baseUrl)
+  const normalizedPath = url.pathname.replace(/\/+$/, '')
+  const fallback = /\/v[2-9][0-9]*$/.test(normalizedPath)
+    ? modelsEndpoint(baseUrl, 'v1/models')
+    : undefined
+  return fallback && fallback !== primary ? [primary, fallback] : [primary]
 }
 
 function discoveryFailure(code: DiscoveryFailureCode): Error { return new Error(code) }
@@ -143,45 +160,51 @@ export async function discoverPersonalModels(
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), DISCOVERY_TIMEOUT_MS)
   ;(timeout as unknown as { unref?: () => void }).unref?.()
-  let response: Response
   try {
-    response = await fetch(modelsEndpoint(baseUrl), {
-      method: 'GET',
-      headers: {
-        Accept: 'application/json',
-        ...discoveryAuthHeader(apiKey, authMode),
-      },
-      cache: 'no-store',
-      redirect: 'error',
-      signal: controller.signal,
-    })
-  } catch (error) {
-    throw discoveryFailure(isAbortError(error)
-      ? 'PERSONAL_MODEL_DISCOVERY_TIMEOUT'
-      : 'PERSONAL_MODEL_DISCOVERY_NETWORK_FAILED')
+    for (const endpoint of modelDiscoveryEndpoints(baseUrl)) {
+      let response: Response
+      try {
+        response = await fetch(endpoint, {
+          method: 'GET',
+          headers: {
+            Accept: 'application/json',
+            ...discoveryAuthHeader(apiKey, authMode),
+          },
+          cache: 'no-store',
+          redirect: 'error',
+          signal: controller.signal,
+        })
+      } catch (error) {
+        throw discoveryFailure(isAbortError(error)
+          ? 'PERSONAL_MODEL_DISCOVERY_TIMEOUT'
+          : 'PERSONAL_MODEL_DISCOVERY_NETWORK_FAILED')
+      }
+      if (!response.ok) {
+        await response.body?.cancel()
+        if (response.status === 404 || response.status === 405) continue
+        throw discoveryFailure(responseFailure(response))
+      }
+      let modelIds: string[]
+      try {
+        modelIds = parseDiscoveredModelIds(await readDiscoveryBody(response))
+      } catch (error) {
+        throw isDiscoveryFailure(error)
+          ? error
+          : discoveryFailure('PERSONAL_MODEL_DISCOVERY_INVALID_RESPONSE')
+      }
+      return {
+        models: modelIds.map(id => {
+          const catalogEntry = personalModelCatalogEntryForEndpoint({
+            base_url: baseUrl,
+            model: id,
+            protocol: input.protocol,
+          })
+          return catalogEntry ? { id, catalog_entry_id: catalogEntry.id } : { id }
+        }),
+      }
+    }
   } finally {
     clearTimeout(timeout)
   }
-  if (!response.ok) {
-    await response.body?.cancel()
-    throw discoveryFailure(responseFailure(response))
-  }
-  let modelIds: string[]
-  try {
-    modelIds = parseDiscoveredModelIds(await readDiscoveryBody(response))
-  } catch (error) {
-    throw isDiscoveryFailure(error)
-      ? error
-      : discoveryFailure('PERSONAL_MODEL_DISCOVERY_INVALID_RESPONSE')
-  }
-  return {
-    models: modelIds.map(id => {
-      const catalogEntry = personalModelCatalogEntryForEndpoint({
-        base_url: baseUrl,
-        model: id,
-        protocol: input.protocol,
-      })
-      return catalogEntry ? { id, catalog_entry_id: catalogEntry.id } : { id }
-    }),
-  }
+  throw discoveryFailure('PERSONAL_MODEL_DISCOVERY_ENDPOINT_UNSUPPORTED')
 }
