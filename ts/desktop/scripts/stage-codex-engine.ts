@@ -49,7 +49,7 @@ export type CodexEngineCliOptions = {
   verifyOnly: boolean
 }
 
-const EXPECTED_SOURCE_REVISION = 'ee0247f95a6fe2b094ba2253d82cae2a2b4c2dff'
+const EXPECTED_SOURCE_REVISION = '2b5bdcf67547860f2e5c5a605009a70026796b2b'
 const ENGINE_NAME = 'codex-app-server'
 const LICENSE_FILE = 'codex-engine-LICENSE.txt'
 const NOTICE_FILE = 'codex-engine-NOTICE.txt'

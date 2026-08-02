@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 
-const expectedRevision = 'ee0247f95a6fe2b094ba2253d82cae2a2b4c2dff'
+const expectedRevision = '2b5bdcf67547860f2e5c5a605009a70026796b2b'
 const repositoryRoot = path.resolve(import.meta.dir, '../../..')
 const engineRoot = path.join(repositoryRoot, 'third_party', 'codex-engine')
 function requireFile(relativePath: string): string {
