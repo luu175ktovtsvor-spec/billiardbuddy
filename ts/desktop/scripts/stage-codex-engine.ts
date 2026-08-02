@@ -52,11 +52,18 @@ export type CodexEngineStageOptions = {
   destinationDir: string
   target: SupportedTarget
   verifyOnly?: boolean
+  /**
+   * A CI-built App Server binary from the same pinned source and reviewed
+   * patch set. This avoids recompiling Cargo on a developer machine; callers
+   * must still pass the resulting staged directory through `verify`.
+   */
+  prebuiltBinary?: string
 }
 
 export type CodexEngineCliOptions = {
   destinationDir?: string
   target?: string
+  prebuiltBinary?: string
   verifyOnly: boolean
 }
 
@@ -71,6 +78,7 @@ const productPatchRoot = join(repositoryRoot, 'third_party', 'codex-engine-patch
 export function parseCodexEngineCliOptions(argv: string[]): CodexEngineCliOptions {
   let destinationDir: string | undefined
   let target: string | undefined
+  let prebuiltBinary: string | undefined
   let verifyOnly = false
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -79,18 +87,22 @@ export function parseCodexEngineCliOptions(argv: string[]): CodexEngineCliOption
       verifyOnly = true
       continue
     }
-    if (argument === '--destination' || argument === '--target') {
+    if (argument === '--destination' || argument === '--target' || argument === '--prebuilt-binary') {
       const value = argv[index + 1]
       if (!value || value.startsWith('--')) throw new Error(`${argument} 需要一个值`)
       if (argument === '--destination') destinationDir = value
-      else target = value
+      else if (argument === '--target') target = value
+      else prebuiltBinary = value
       index += 1
       continue
     }
     throw new Error(`未知 Codex 引擎参数: ${argument}`)
   }
 
-  return { destinationDir, target, verifyOnly }
+  if (verifyOnly && prebuiltBinary !== undefined) {
+    throw new Error('--verify 不能与 --prebuilt-binary 同时使用')
+  }
+  return { destinationDir, target, prebuiltBinary, verifyOnly }
 }
 
 export function detectCodexEngineTarget(
@@ -208,16 +220,20 @@ function run(command: string, args: string[], cwd?: string): string {
   return result.stdout.trim()
 }
 
-function assertCleanSource(): void {
+function assertPinnedSource(): void {
   const revision = run('git', ['rev-parse', 'HEAD'], engineRoot)
   if (revision !== CODEX_ENGINE_SOURCE_REVISION) {
     throw new Error(`Codex 引擎源码版本不符合产品锁定：期望 ${CODEX_ENGINE_SOURCE_REVISION}，实际 ${revision}`)
   }
-  const status = run('git', ['status', '--short'], engineRoot)
-  if (status) throw new Error('Codex 引擎源码目录存在未提交改动，拒绝以不确定源码构建安装包')
   for (const file of ['LICENSE', 'NOTICE']) {
     if (!existsSync(join(engineRoot, file))) throw new Error(`Codex 引擎源码缺少 ${file}`)
   }
+}
+
+function assertCleanSource(): void {
+  assertPinnedSource()
+  const status = run('git', ['status', '--short'], engineRoot)
+  if (status) throw new Error('Codex 引擎源码目录存在未提交改动，拒绝以不确定源码构建安装包')
 }
 
 function resolveCargoCommand(): string {
@@ -287,6 +303,16 @@ function buildPatchedSource(target: SupportedTarget, sourceRoot: string): string
     throw new Error(`Codex 引擎构建产物无效: ${builtBinary}`)
   }
   return builtBinary
+}
+
+function prebuiltBinary(path: string): string {
+  const binary = resolve(path)
+  if (!existsSync(binary)) throw new Error(`预构建 Codex 引擎不存在: ${binary}`)
+  const stat = lstatSync(binary)
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.size < 1_000_000) {
+    throw new Error(`预构建 Codex 引擎无效: ${binary}`)
+  }
+  return binary
 }
 
 function adHocSignMacBinary(path: string): void {
@@ -360,20 +386,17 @@ export function verifyStagedCodexEngine(options: CodexEngineStageOptions): void 
   }
 }
 
-export function stageCodexEngine(options: CodexEngineStageOptions): void {
-  if (options.verifyOnly) return verifyStagedCodexEngine(options)
-
+function stagePreparedCodexEngine(
+  options: CodexEngineStageOptions,
+  sourceBinary: string,
+  patches: readonly CodexEngineProductPatch[],
+): void {
   const destination = resolve(options.destinationDir)
-  assertCleanSource()
-  const patches = expectedProductPatches()
   mkdirSync(destination, { recursive: true })
 
   const stagedBinary = join(destination, stagedCodexEngineBinaryName(options.target))
   const manifestPath = join(destination, codexEngineManifestName(options.target))
-  withPatchedEngineSource(patches, sourceRoot => {
-    copyFileSync(buildPatchedSource(options.target, sourceRoot), stagedBinary)
-  })
-  assertCleanSource()
+  copyFileSync(sourceBinary, stagedBinary)
   if (!options.target.includes('windows')) {
     chmodSync(stagedBinary, 0o755)
     adHocSignMacBinary(stagedBinary)
@@ -404,6 +427,27 @@ export function stageCodexEngine(options: CodexEngineStageOptions): void {
   verifyStagedCodexEngine(options)
 }
 
+export function stageCodexEngine(options: CodexEngineStageOptions): void {
+  if (options.verifyOnly) return verifyStagedCodexEngine(options)
+
+  const patches = expectedProductPatches()
+  if (options.prebuiltBinary !== undefined) {
+    // GitHub's build job applies this same reviewed patch set before Cargo
+    // produces the binary. It leaves that checkout dirty by design, so only
+    // require the pinned revision and legal files here—not a clean worktree.
+    assertPinnedSource()
+    stagePreparedCodexEngine(options, prebuiltBinary(options.prebuiltBinary), patches)
+    assertPinnedSource()
+    return
+  }
+
+  assertCleanSource()
+  withPatchedEngineSource(patches, sourceRoot => {
+    stagePreparedCodexEngine(options, buildPatchedSource(options.target, sourceRoot), patches)
+  })
+  assertCleanSource()
+}
+
 if (import.meta.main) {
   const cli = parseCodexEngineCliOptions(process.argv.slice(2))
   const requestedTarget = cli.target ?? process.env.CODEX_ENGINE_TARGET ?? detectCodexEngineTarget()
@@ -411,6 +455,11 @@ if (import.meta.main) {
     throw new Error(`不支持的 Codex 引擎 target: ${requestedTarget}`)
   }
   const destinationDir = cli.destinationDir ?? join(desktopRoot, 'runtime-assets', 'binaries')
-  stageCodexEngine({ destinationDir, target: requestedTarget, verifyOnly: cli.verifyOnly })
+  stageCodexEngine({
+    destinationDir,
+    target: requestedTarget,
+    verifyOnly: cli.verifyOnly,
+    ...(cli.prebuiltBinary === undefined ? {} : { prebuiltBinary: cli.prebuiltBinary }),
+  })
   console.log(`[codex-engine] ${cli.verifyOnly ? 'verified' : 'staged'} for ${requestedTarget}`)
 }

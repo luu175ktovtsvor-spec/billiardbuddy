@@ -102,10 +102,25 @@ jobs:
           artifact="third_party/codex-engine/codex-rs/target/${{ matrix.target }}/release/${{ matrix.binary }}"
           test -s "${artifact}"
 
-      - name: 保存未签名引擎构建产物供后续适配审阅
+      # Cargo only runs on the GitHub runner. Convert its output into the
+      # exact binary + manifest + license bundle Electron accepts, so local
+      # development machines can consume the reviewed artifact without a
+      # second hot Cargo build.
+      - name: 封装受管 Codex 引擎运行时
+        working-directory: ts/desktop
+        shell: bash
+        run: |
+          set -euo pipefail
+          binary="../../third_party/codex-engine/codex-rs/target/${{ matrix.target }}/release/${{ matrix.binary }}"
+          bun ./scripts/stage-codex-engine.ts \
+            --target '${{ matrix.target }}' \
+            --prebuilt-binary "${binary}"
+          bun ./scripts/stage-codex-engine.ts --target '${{ matrix.target }}' --verify
+
+      - name: 保存可校验的引擎运行时供桌面构建使用
         uses: actions/upload-artifact@v4
         with:
-          name: codex-engine-${{ matrix.target }}-${{ github.sha }}
+          name: codex-engine-runtime-${{ matrix.target }}-${{ github.sha }}
           if-no-files-found: error
           retention-days: 7
-          path: third_party/codex-engine/codex-rs/target/${{ matrix.target }}/release/${{ matrix.binary }}
+          path: ts/desktop/runtime-assets/binaries/
