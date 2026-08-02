@@ -54,6 +54,21 @@ function requireHttpsUrl(environment: DeploymentEnvironment, name: string): void
   }
 }
 
+/** Relay is HTTPS in every cross-host deployment, but Compose uses this fixed private hop. */
+function requireRelayTasksUrl(environment: DeploymentEnvironment): void {
+  const value = requireValue(environment, 'GW_RELAY_TASKS_BASE')
+  try {
+    const url = new URL(value)
+    if (url.username || url.password || url.search || url.hash) fail('GW_RELAY_TASKS_BASE must not contain credentials or query data')
+    if (url.protocol === 'https:') return
+    if (url.protocol === 'http:' && url.hostname === 'relay' && (url.port === '' || url.port === '8790')) return
+    fail('GW_RELAY_TASKS_BASE must use https outside the private Compose relay service')
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith('Gateway deployment environment invalid:')) throw error
+    fail('GW_RELAY_TASKS_BASE must be a valid URL')
+  }
+}
+
 /** Validate startup-critical values without opening the production database. */
 export function validateDeploymentEnvironment(environment: DeploymentEnvironment): void {
   const selectedModel = environment.BB_GATEWAY_MODEL?.trim()
@@ -74,14 +89,23 @@ export function validateDeploymentEnvironment(environment: DeploymentEnvironment
     'GW_FUNASR_KEY',
   ]) requireValue(environment, name)
 
-  requireHttpsUrl(environment, 'GW_RELAY_TASKS_BASE')
+  requireRelayTasksUrl(environment)
   for (const name of ['GW_DEEPSEEK_BASE', 'GW_MIMO_BASE']) {
     if (environment[name]?.trim()) requireHttpsUrl(environment, name)
   }
 }
 
 if (import.meta.main) {
-  if (process.argv.length !== 3) fail('usage: bun validate-deployment-env.ts /path/to/gw.env')
-  validateDeploymentEnvironment(readDeploymentEnvironment(process.argv[2]))
+  if (process.argv.length !== 3) fail('usage: bun validate-deployment-env.ts /path/to/gw.env | --process-env')
+  const input = process.argv[2]
+  if (input === '--process-env') {
+    const environment: DeploymentEnvironment = {}
+    for (const [name, value] of Object.entries(process.env)) {
+      if (typeof value === 'string') environment[name] = value
+    }
+    validateDeploymentEnvironment(environment)
+  } else {
+    validateDeploymentEnvironment(readDeploymentEnvironment(input))
+  }
   console.log('Gateway deployment environment passed static validation.')
 }

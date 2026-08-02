@@ -1,0 +1,82 @@
+name: billiardbuddy
+
+# This Compose file owns only the product backends. The public nginx site and
+# static update service remain independent so a Gateway/Relay release cannot
+# accidentally replace the website or desktop-update artifacts.
+services:
+  relay:
+    image: billiardbuddy/relay:${BILLIARDBUDDY_RELEASE:?BILLIARDBUDDY_RELEASE is required}
+    build:
+      context: ../..
+      dockerfile: deploy/production/Dockerfile.relay
+    restart: unless-stopped
+    mem_limit: 2g
+    pids_limit: 256
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+    env_file:
+      - /srv/billiardbuddy/secrets/relay.env
+    environment:
+      RELAY_HOST: 0.0.0.0
+      RELAY_PORT: "8790"
+      RELAY_DB: /data/relay.db
+      RELAY_BLOB_DIR: /data/blobs
+    volumes:
+      - /srv/billiardbuddy/data/relay:/data
+    expose:
+      - "8790"
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "bun", "-e", "const r = await fetch('http://127.0.0.1:8790/healthz'); if (!r.ok) process.exit(1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  gateway:
+    image: billiardbuddy/gateway:${BILLIARDBUDDY_RELEASE:?BILLIARDBUDDY_RELEASE is required}
+    build:
+      context: ../..
+      dockerfile: deploy/production/Dockerfile.gateway
+    restart: unless-stopped
+    mem_limit: 1g
+    pids_limit: 256
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+    depends_on:
+      relay:
+        condition: service_healthy
+    env_file:
+      - /srv/billiardbuddy/secrets/gateway.env
+    environment:
+      GW_DB: /data/usage.db
+      GW_RELAY_TASKS_BASE: http://relay:8790
+    volumes:
+      - /srv/billiardbuddy/data/gateway:/data
+    ports:
+      - 127.0.0.1:8799:8799
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "bun", "-e", "const r = await fetch('http://127.0.0.1:8799/healthz'); if (!r.ok) process.exit(1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
