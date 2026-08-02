@@ -72,6 +72,8 @@ BilliardBuddy Electron / React（品牌与桌面工作面）
 
 MCP 的正式控制面同样不再经 Bun 侧车探测或连接。Electron Main 只能代表已拥有的 Rust Thread 调用上游 `config/value/write`（固定在 `mcp_servers.<name>`）、`config/mcpServer/reload`、`mcpServerStatus/list` 和 `mcpServer/oauth/login`；配置、工具清单、启动状态和 OAuth 凭据分别由 Codex 私有 Home、MCP runtime 与其配置的凭据存储拥有。前端冻结期间不复用旧 MCP 设置页，后续页面只接这些原生 RPC。
 
+旧 `/api/mcp` 已返回 `LEGACY_AGENT_BACKEND_RETIRED`，Electron 也不再为它生成或向 Bun 侧车注入 OAuth 主密钥。历史 JSON 配置和历史加密凭据只保留在磁盘上、不执行、不迁移、不删除；之后由用户明确决定是否手工重建为 Rust 原生 MCP 配置。
+
 终态将新增 BilliardBuddy 的 **native Codex profile**：
 
 - 不再开启 `host_managed_tools_only`；使用上游工具、审批、沙箱、MCP、Skills、Hooks、Review 和 multi-agent；

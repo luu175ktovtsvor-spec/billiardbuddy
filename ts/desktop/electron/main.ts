@@ -92,7 +92,6 @@ let terminalService: ElectronTerminalService | null = null
 let previewService: ElectronPreviewService | null = null
 let imageActions: ElectronImageActions | null = null
 let videoActions: ElectronVideoActions | null = null
-let mcpOAuthCredentialKey: string | null = null
 let providerCredentialService: ProviderCredentialService | null = null
 let nativeAgentRuntime: ElectronCodexNativeRuntime | null = null
 let isQuitting = false
@@ -285,23 +284,6 @@ function getInstallationSessionManager() {
     }, createCredentialStore(process.platform, app.getPath('userData'), 'installation-session', safeStorage))
   })()
   return installationSessionManager
-}
-
-function getMcpOAuthCredentialKey(): string {
-  if (mcpOAuthCredentialKey) return mcpOAuthCredentialKey
-  const store = createCredentialStore(process.platform, app.getPath('userData'), 'mcp-oauth-master-key', safeStorage)
-  const existing = store.load()
-  if (existing) {
-    let decoded: Buffer
-    try { decoded = Buffer.from(existing, 'base64url') } catch { throw new Error('MCP OAuth credential storage is corrupt') }
-    if (decoded.length !== 32) throw new Error('MCP OAuth credential storage is corrupt')
-    mcpOAuthCredentialKey = existing
-    return existing
-  }
-  const created = randomBytes(32).toString('base64url')
-  store.save(created)
-  mcpOAuthCredentialKey = created
-  return created
 }
 
 /** Main is the only desktop process allowed to read user-owned provider keys. */
@@ -555,7 +537,6 @@ function getServerRuntime() {
     resolveInstallationAccessToken: () => getInstallationSessionManager().accessToken(),
     resolveCachedInstallationAccessToken: () => getInstallationSessionManager().cachedAccessToken(),
     mediaUiCapability,
-    mcpOAuthCredentialKey: getMcpOAuthCredentialKey(),
     resolveProviderCredentialEnv: () => getProviderCredentialService().runtimeEnvironment(),
     providerConfigurationCapability,
     gatewayAccessTokenCapability,
