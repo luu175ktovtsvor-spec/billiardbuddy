@@ -139,12 +139,24 @@ export function createElectronHost(bridge: ElectronHostBridge): DesktopHost {
       remove: profileId => invoke(ELECTRON_IPC_CHANNELS.modelConfigurationRemove, profileId),
     },
     nativeAgent: {
-      startThread: cwd => invoke(ELECTRON_IPC_CHANNELS.nativeAgentStartThread, { cwd }),
+      startThread: (cwd, permissionMode) => invoke(
+        ELECTRON_IPC_CHANNELS.nativeAgentStartThread,
+        { cwd, ...(permissionMode === undefined ? {} : { permissionMode }) },
+      ),
       resumeThread: (threadId, cwd) => invoke(ELECTRON_IPC_CHANNELS.nativeAgentResumeThread, { threadId, cwd }),
       readThread: threadId => invoke(ELECTRON_IPC_CHANNELS.nativeAgentReadThread, { threadId }),
-      forkThread: (threadId, cwd, lastTurnId) => invoke(
+      forkThread: (threadId, cwd, permissionMode, lastTurnId) => invoke(
         ELECTRON_IPC_CHANNELS.nativeAgentForkThread,
-        { threadId, cwd, ...(lastTurnId === undefined ? {} : { lastTurnId }) },
+        {
+          threadId,
+          cwd,
+          ...(permissionMode === undefined ? {} : { permissionMode }),
+          ...(lastTurnId === undefined ? {} : { lastTurnId }),
+        },
+      ),
+      updatePermissionMode: (threadId, permissionMode) => invoke(
+        ELECTRON_IPC_CHANNELS.nativeAgentUpdatePermissionMode,
+        { threadId, permissionMode },
       ),
       startTurn: (threadId, input, clientUserMessageId) => invoke(
         ELECTRON_IPC_CHANNELS.nativeAgentStartTurn,

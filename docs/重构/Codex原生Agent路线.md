@@ -64,7 +64,7 @@ BilliardBuddy Electron / React（品牌与桌面工作面）
 
 ## 过渡实现与终态
 
-现有 `host_managed_tools_only=true` 补丁及 TypeScript ProductTask/Worker 链只作为已验证的过渡路径。补丁默认关闭，不会改变正常 Codex；当前运行时显式打开它，才把源内核缩成由宿主提供动态工具的单 Run 引擎。
+旧 `host_managed_tools_only=true` 补丁及 TypeScript ProductTask/Worker 链只属于历史过渡路径。它们不得进入原生 Agent 默认启动链，也不能成为 Rust Core 外层的第二个执行器；在媒体与共享设置完成脱钩后删除其实现和启动入口。
 
 终态将新增 BilliardBuddy 的 **native Codex profile**：
 
@@ -82,9 +82,9 @@ BilliardBuddy Electron / React（品牌与桌面工作面）
 
 | BilliardBuddy 显示的选择 | Codex 原生配置与行为 | 不做的事 |
 | --- | --- | --- |
-| Ask for approval | 受限 sandbox（默认 `workspace-write`）配合 `on-request`；命令、文件改动、网络或额外路径都按 App Server 的原生 approval request 显示 | 不转换成旧 PermissionExecutionEnvelope，也不在 renderer 直接放行 |
-| Approve for me | 只使用当前锁定源码实际提供且已验证的原生 approval reviewer / session decision；具体可见选项以请求中的 `availableDecisions` 为准 | 不伪造“自动批准”来绕开 Codex 的 sandbox、MCP 或 Hook 规则 |
-| Full Access | 明确二次确认后才创建 `danger-full-access` 与相应原生 approval policy 的 Thread；完整风险提示与最终执行结果都来自 Codex Item | 不把全权限解释成 Gateway、图片或视频服务的额外权限 |
+| Ask for approval | `workspace-write`、`on-request`、`user`；工作目录内按 Codex 默认运行，越界、联网及其他升级由原生请求交给用户 | 不转换成旧 PermissionExecutionEnvelope，也不在 renderer 直接放行 |
+| Approve for me | 相同 `workspace-write` 与 `on-request`，但使用 Codex `auto_review` reviewer；审查子流程仍受 Rust sandbox、MCP 与 Hook 规则约束 | 不伪造“自动批准”来绕开 Codex 的安全边界 |
+| Full Access | Electron Main 的受信任原生确认后，才向 Rust Thread 写入 `danger-full-access` 与 `never`；完整风险提示与最终结果仍来自 Codex Item | 不把全权限解释成 Gateway、图片或视频服务的额外权限 |
 
 `item/commandExecution/requestApproval`、`item/fileChange/requestApproval`、`item/permissions/requestApproval`、MCP 表单追问和 `request_user_input` 都要由同一个 App Server 连接处理；`item/completed` 是命令和文件改动是否实际完成的唯一结果。BilliardBuddy 可以保存用于界面恢复的事件投影，但不得据此重建另一套授权或执行状态机。
 
@@ -103,13 +103,15 @@ BilliardBuddy Electron / React（品牌与桌面工作面）
 
 生图和剪辑不属于上表中的 Agent 后端。它们保留自己的领域服务和任务状态；两者与 Agent 的连接只允许成果引用或显式启动动作。
 
-## 施工顺序
+## 后端优先施工顺序
 
-1. **原生构建 Profile**：以相同锁定 revision 构建不启用宿主工具限制的 `codex-app-server`，保留 Apache-2.0 NOTICE 审计；不改变当前默认路径。
-2. **原生模型 Provider 配置**：以 Codex 的 `model_providers` 和 `wire_api = "responses"` 配置 BilliardBuddy 托管 DeepSeek、用户 Responses Key 直连，及用户 Chat Completions Key 的无状态本机适配器；删除旧 Gateway/个人 Key bridge，不保留其 Agent 状态或工具耦合。
-3. **Thread 协议直连**：Electron Main 管理一个原生 App Server 连接，Renderer 直接消费 Thread/Turn/Item/approval JSON-RPC 映射；不再投影成旧 ProductTask 事件。
-4. **原生权限与工具**：以 Codex permission profile、sandbox、审批请求、MCP/Skill/Hook 为唯一 Agent 工具面；不迁移旧 Billiard 权限模式，关闭过渡动态工具 Host。
-5. **原生协作与恢复**：开启 Codex 上游 multi-agent、fork、消息、follow-up、wait、interrupt 和 Thread Store；不再保留 TypeScript `Subtask` 协调器。
-6. **一次性切换与删除**：完整 Electron 实跑验证后切换默认路径，删除过渡 Agent Worker、Run ledger、host-managed 补丁依赖和旧 UI 投影。图片、剪辑和发布均不在这次删除范围内。
+前端不是 Agent 的事实来源，不能先用页面替代未完成的执行域。先完成并验证后端边界，再用 Codex 的信息架构补桌面工作面；在此之前不得为了“看起来像 Codex”扩张 React 状态、模拟工具结果或新增 ProductTask 兼容层。
 
-每一步都必须是一个独立、可构建的提交。第一步只建立并验证 native Codex build/profile，不假装它已经接通模型或成为默认用户路径。
+1. **原生构建与 App Server**：以锁定 revision 构建不启用宿主工具限制的 `codex-app-server`，完成 stdio/WebSocket JSON-RPC、连接生命周期、Thread Store、恢复、背压和超时；保留 Apache-2.0 NOTICE 审计。
+2. **模型与凭据边界**：以 Codex `model_providers` 和 `wire_api = "responses"` 配置 BilliardBuddy 托管 DeepSeek、用户 Responses Key 直连，以及用户 Chat Completions Key 的无状态本机适配器；删除旧 Gateway/个人 Key bridge 的 Agent 状态或工具耦合。
+3. **原生执行、权限与扩展**：完成 Core、Exec/sandbox、permission profile、原生审批、Workspace/AGENTS.md、MCP、Skills、Hooks、Review、multi-agent 和 Thread Store 恢复的正式后端链；Electron Main 只做受控 JSON-RPC 客户端与凭据边界。
+4. **旧 Agent 后端切除**：从本地 Product Server 启动链中拆除 ProductTask、Run ledger、Worker、Tool Host、权限信封、旧任务 HTTP/WebSocket API 与恢复队列；保留并独立验证图片、剪辑及真正共享的设置/凭据服务。
+5. **后端实跑验收**：只针对 Rust App Server 的正式路径验证创建/恢复/fork、模型流、工具循环、审批、停止、崩溃恢复、幂等和错误边界。真实模型调用按产品成本规则受控进行，不用静态检查冒充验收。
+6. **前端产品化**：后端协议与状态所有权稳定后，再从本地 Codex 前端行为推导 BilliardBuddy 的 Thread/Turn/Item、审批、Diff、终端、网页、队列和历史界面；前端只投影 Rust 状态，不新建 Agent 账本。
+
+每一步都必须是一个独立、可构建的提交。图片、剪辑和发布不在 Agent 后端切除范围内。

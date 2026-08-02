@@ -38,8 +38,16 @@ export type CodexNativeAppServerClientOptions = {
   onServerRequest?(request: CodexNativeServerRequest): Promise<CodexNativeJsonValue | undefined>
 }
 
+/**
+ * BilliardBuddy names the three source-native Codex permission experiences.
+ * These are inputs to Rust, never a second permission engine in Electron.
+ */
+export type NativeCodexPermissionMode = 'ask' | 'approve-for-me' | 'full-access'
+
 export type NativeCodexThread = {
   id: string
+  /** Projected from the authoritative App Server Thread settings response. */
+  permissionMode: NativeCodexPermissionMode
 }
 
 export type NativeCodexTurn = {
@@ -49,6 +57,7 @@ export type NativeCodexTurn = {
 export type NativeCodexStartThreadInput = {
   cwd: string
   route: CodexNativeModelRoute
+  permissionMode: NativeCodexPermissionMode
 }
 
 export type NativeCodexResumeThreadInput = {
@@ -166,6 +175,42 @@ function turnId(value: CodexNativeJsonObject): string {
   const turn = jsonObject(value.turn)
   if (!nonEmptyText(turn?.id)) throw new Error('CODEX_NATIVE_TURN_RESPONSE_INVALID')
   return turn.id
+}
+
+function permissionModeFromThreadResponse(value: CodexNativeJsonObject): NativeCodexPermissionMode {
+  // The App Server serializes the effective legacy policy alongside the
+  // canonical permission profile. Use the effective policy because that is
+  // what the Rust Core will actually enforce for the next turn.
+  const sandboxType = jsonObject(value.sandbox)?.type
+  if (sandboxType === 'dangerFullAccess' && value.approvalPolicy === 'never') return 'full-access'
+  if (
+    sandboxType === 'workspaceWrite'
+    && value.approvalPolicy === 'on-request'
+    && value.approvalsReviewer === 'auto_review'
+  ) return 'approve-for-me'
+  return 'ask'
+}
+
+function nativePermissionSettings(mode: NativeCodexPermissionMode): {
+  sandbox: 'workspace-write' | 'danger-full-access'
+  approvalPolicy: 'on-request' | 'never'
+  approvalsReviewer: 'user' | 'auto_review'
+} {
+  switch (mode) {
+    case 'ask':
+      return { sandbox: 'workspace-write', approvalPolicy: 'on-request', approvalsReviewer: 'user' }
+    case 'approve-for-me':
+      return { sandbox: 'workspace-write', approvalPolicy: 'on-request', approvalsReviewer: 'auto_review' }
+    case 'full-access':
+      return { sandbox: 'danger-full-access', approvalPolicy: 'never', approvalsReviewer: 'user' }
+  }
+}
+
+/** `thread/settings/update` uses the v2 tagged SandboxPolicy, not SandboxMode. */
+function nativeSandboxPolicy(mode: NativeCodexPermissionMode): CodexNativeJsonObject {
+  return mode === 'full-access'
+    ? { type: 'dangerFullAccess' }
+    : { type: 'workspaceWrite' }
 }
 
 function validateTurnInput(value: NativeCodexTurnInput): boolean {
@@ -382,16 +427,15 @@ export class ElectronCodexNativeRuntime {
   async startThread(input: NativeCodexStartThreadInput): Promise<NativeCodexThread> {
     const cwd = await this.workspace(input.cwd)
     const client = await this.ensureClient(input.route, cwd)
+    const permissions = nativePermissionSettings(input.permissionMode)
     const response = await client.request<CodexNativeJsonObject>('thread/start', {
       cwd,
       runtimeWorkspaceRoots: [cwd],
       model: this.provider!.model,
       modelProvider: NATIVE_PROVIDER_ID,
-      sandbox: 'workspace-write',
-      approvalPolicy: 'on-request',
-      approvalsReviewer: 'user',
+      ...permissions,
     })
-    return { id: threadId(response) }
+    return { id: threadId(response), permissionMode: permissionModeFromThreadResponse(response) }
   }
 
   async resumeThread(input: NativeCodexResumeThreadInput): Promise<NativeCodexThread> {
@@ -409,11 +453,11 @@ export class ElectronCodexNativeRuntime {
       modelProvider: NATIVE_PROVIDER_ID,
       model: this.provider!.model,
     })
-    return { id: threadId(response) }
+    return { id: threadId(response), permissionMode: permissionModeFromThreadResponse(response) }
   }
 
   /** Read durable history from the Rust Thread Store; Electron never caches it as authority. */
-  async readThread(thread: NativeCodexThread): Promise<CodexNativeJsonObject> {
+  async readThread(thread: Pick<NativeCodexThread, 'id'>): Promise<CodexNativeJsonObject> {
     if (!nonEmptyText(thread.id)) throw new Error('CODEX_NATIVE_THREAD_ID_INVALID')
     return await this.requireClient().request<CodexNativeJsonObject>('thread/read', {
       threadId: thread.id,
@@ -421,28 +465,43 @@ export class ElectronCodexNativeRuntime {
     })
   }
 
-  async forkThread(input: NativeCodexResumeThreadInput & { lastTurnId?: string }): Promise<NativeCodexThread> {
+  async forkThread(input: NativeCodexResumeThreadInput & { lastTurnId?: string, permissionMode: NativeCodexPermissionMode }): Promise<NativeCodexThread> {
     if (!nonEmptyText(input.threadId)) throw new Error('CODEX_NATIVE_THREAD_ID_INVALID')
     const cwd = await this.workspace(input.cwd)
     const client = await this.ensureClient(input.route, cwd)
+    const permissions = nativePermissionSettings(input.permissionMode)
     const response = await client.request<CodexNativeJsonObject>('thread/fork', {
       threadId: input.threadId,
       cwd,
       runtimeWorkspaceRoots: [cwd],
-      // Apply the same explicit route and native permission policy as a new
-      // Thread. This keeps a fork from silently inheriting a prior selected
-      // model after the user changes their managed/personal route.
+      // Apply the selected source-native permissions explicitly, so a fork
+      // never inherits an old privilege level after the user changed it.
       model: this.provider!.model,
       modelProvider: NATIVE_PROVIDER_ID,
-      sandbox: 'workspace-write',
-      approvalPolicy: 'on-request',
-      approvalsReviewer: 'user',
+      ...permissions,
       ...(input.lastTurnId ? { lastTurnId: input.lastTurnId } : {}),
     })
-    return { id: threadId(response) }
+    return { id: threadId(response), permissionMode: permissionModeFromThreadResponse(response) }
   }
 
-  async startTurn(thread: NativeCodexThread, input: readonly NativeCodexTurnInput[], clientUserMessageId?: string): Promise<NativeCodexTurn> {
+  /**
+   * Changes the active Rust Thread settings for subsequent turns. The Thread
+   * Store records the applied settings and emits `thread/settings/updated`;
+   * no Electron or renderer permission record is written.
+   */
+  async updatePermissionMode(thread: Pick<NativeCodexThread, 'id'>, mode: NativeCodexPermissionMode): Promise<NativeCodexPermissionMode> {
+    if (!nonEmptyText(thread.id)) throw new Error('CODEX_NATIVE_THREAD_ID_INVALID')
+    const settings = nativePermissionSettings(mode)
+    await this.requireClient().request('thread/settings/update', {
+      threadId: thread.id,
+      sandboxPolicy: nativeSandboxPolicy(mode),
+      approvalPolicy: settings.approvalPolicy,
+      approvalsReviewer: settings.approvalsReviewer,
+    })
+    return mode
+  }
+
+  async startTurn(thread: Pick<NativeCodexThread, 'id'>, input: readonly NativeCodexTurnInput[], clientUserMessageId?: string): Promise<NativeCodexTurn> {
     if (!nonEmptyText(thread.id) || input.length === 0 || input.length > 64 || !input.every(validateTurnInput)) {
       throw new Error('CODEX_NATIVE_TURN_INPUT_INVALID')
     }
@@ -460,7 +519,7 @@ export class ElectronCodexNativeRuntime {
     return { id }
   }
 
-  async steerTurn(thread: NativeCodexThread, turn: NativeCodexTurn, text: string, clientUserMessageId?: string): Promise<void> {
+  async steerTurn(thread: Pick<NativeCodexThread, 'id'>, turn: NativeCodexTurn, text: string, clientUserMessageId?: string): Promise<void> {
     if (!nonEmptyText(thread.id) || !nonEmptyText(turn.id) || !nonEmptyText(text, 1 << 20)) {
       throw new Error('CODEX_NATIVE_STEER_INPUT_INVALID')
     }
@@ -475,13 +534,13 @@ export class ElectronCodexNativeRuntime {
     })
   }
 
-  async interruptTurn(thread: NativeCodexThread, turn: NativeCodexTurn): Promise<void> {
+  async interruptTurn(thread: Pick<NativeCodexThread, 'id'>, turn: NativeCodexTurn): Promise<void> {
     if (!nonEmptyText(thread.id) || !nonEmptyText(turn.id)) throw new Error('CODEX_NATIVE_TURN_ID_INVALID')
     await this.requireClient().request('turn/interrupt', { threadId: thread.id, turnId: turn.id })
     this.activeTurns.delete(turn.id)
   }
 
-  async archiveThread(thread: NativeCodexThread): Promise<void> {
+  async archiveThread(thread: Pick<NativeCodexThread, 'id'>): Promise<void> {
     if (!nonEmptyText(thread.id)) throw new Error('CODEX_NATIVE_THREAD_ID_INVALID')
     await this.requireClient().request('thread/archive', { threadId: thread.id })
   }

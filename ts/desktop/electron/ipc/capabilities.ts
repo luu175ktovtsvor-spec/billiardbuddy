@@ -45,6 +45,9 @@ const nativeMessageId = (value: unknown): value is string =>
   && value.length <= 512
   && !/[\u0000\r\n]/.test(value)
 
+const nativePermissionMode = (value: unknown): value is string =>
+  value === 'ask' || value === 'approve-for-me' || value === 'full-access'
+
 const nativeTurnInput = (value: unknown): boolean =>
   isRecord(value)
   && hasOnlyKeys(value, ['type', 'text', 'url'])
@@ -62,8 +65,9 @@ const nativeTurnInput = (value: unknown): boolean =>
 
 const nativeAgentStartThread: Validator = value =>
   isRecord(value)
-  && hasOnlyKeys(value, ['cwd'])
+  && hasOnlyKeys(value, ['cwd', 'permissionMode'])
   && nativeWorkspacePath(value.cwd)
+  && (value.permissionMode === undefined || nativePermissionMode(value.permissionMode))
 
 const nativeAgentResumeThread: Validator = value =>
   isRecord(value)
@@ -73,10 +77,17 @@ const nativeAgentResumeThread: Validator = value =>
 
 const nativeAgentForkThread: Validator = value =>
   isRecord(value)
-  && hasOnlyKeys(value, ['threadId', 'cwd', 'lastTurnId'])
+  && hasOnlyKeys(value, ['threadId', 'cwd', 'lastTurnId', 'permissionMode'])
   && nativeCodexId(value.threadId)
   && nativeWorkspacePath(value.cwd)
+  && (value.permissionMode === undefined || nativePermissionMode(value.permissionMode))
   && (value.lastTurnId === undefined || nativeCodexId(value.lastTurnId))
+
+const nativeAgentUpdatePermissionMode: Validator = value =>
+  isRecord(value)
+  && hasOnlyKeys(value, ['threadId', 'permissionMode'])
+  && nativeCodexId(value.threadId)
+  && nativePermissionMode(value.permissionMode)
 
 const nativeAgentStartTurn: Validator = value =>
   isRecord(value)
@@ -304,6 +315,7 @@ export const ELECTRON_IPC_VALIDATORS = {
   [ELECTRON_IPC_CHANNELS.nativeAgentResumeThread]: nativeAgentResumeThread,
   [ELECTRON_IPC_CHANNELS.nativeAgentReadThread]: nativeAgentThreadReference,
   [ELECTRON_IPC_CHANNELS.nativeAgentForkThread]: nativeAgentForkThread,
+  [ELECTRON_IPC_CHANNELS.nativeAgentUpdatePermissionMode]: nativeAgentUpdatePermissionMode,
   [ELECTRON_IPC_CHANNELS.nativeAgentStartTurn]: nativeAgentStartTurn,
   [ELECTRON_IPC_CHANNELS.nativeAgentSteerTurn]: nativeAgentSteerTurn,
   [ELECTRON_IPC_CHANNELS.nativeAgentInterruptTurn]: nativeAgentTurnReference,
