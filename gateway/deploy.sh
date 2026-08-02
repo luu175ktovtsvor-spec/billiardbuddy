@@ -1,6 +1,10 @@
 #!/bin/bash
 # 在大陆机 39.106.214.21 上部署唯一的 BilliardBuddy Gateway。
 #
+# 先在受控构建机执行 `gateway/package-deployment.sh <空目录>`，将该目录中的
+# app.js、validate-deployment-env.js、两个容量校验脚本和本脚本上传到 /tmp。
+# app.js 是 Bun target 的自包含包；部署绝不依赖服务器遗留的 TypeScript 模块。
+#
 # gw.env(600)保存启动授权、MiMo、DeepSeek、Fun-ASR 与 Relay 配置。DeepSeek V4 Flash 需要:
 #   GW_DEEPSEEK_KEY   (真 key,只在本机 gw.env) / GW_DEEPSEEK_BASE(默认 https://api.deepseek.com)
 #   GW_DEEPSEEK_CONC / GW_DEEPSEEK_USER_CONC / GW_DEEPSEEK_TOKEN_CONC /
@@ -58,24 +62,13 @@
 #   gw.env 是单文件,`cp -a /root/gw.env.bak-<ts> /opt/billiardbuddy-gateway/gw.env` 单文件覆盖安全、不会嵌套。
 set -euo pipefail
 APPDIR=/opt/billiardbuddy-gateway
-for source in app.ts authority.ts mimoChat.ts managedResponses.ts modelCapacity.ts visionBridge.ts transcription.ts usageBudget.ts providerRegistry.ts validate-auth-env.ts validate-mimo-capacity-env.sh validate-production-capacity-env.sh; do
+for source in app.js validate-deployment-env.js validate-mimo-capacity-env.sh validate-production-capacity-env.sh; do
   [ -f "/tmp/$source" ] || { echo "缺少 /tmp/$source" >&2; exit 1; }
 done
 mkdir -p "$APPDIR"
 chmod 700 "$APPDIR"
-install -m 644 /tmp/app.ts "$APPDIR/app.ts"
-mkdir -p "$APPDIR/auth"
-# authority.ts is uploaded from ts/shared/product/authEntitlement.ts so the
-# deployed gateway has no repository-relative runtime dependency.
-install -m 644 /tmp/authority.ts "$APPDIR/auth/authority.ts"
-install -m 644 /tmp/mimoChat.ts "$APPDIR/mimoChat.ts"  # 显式可路由的 MiMo 上游
-install -m 644 /tmp/managedResponses.ts "$APPDIR/managedResponses.ts"  # 受管 Responses 的无状态边界
-install -m 644 /tmp/modelCapacity.ts "$APPDIR/modelCapacity.ts"
-install -m 644 /tmp/visionBridge.ts "$APPDIR/visionBridge.ts"  # 图片/视频工作台的 MiMo 视觉证据桥接
-install -m 644 /tmp/transcription.ts "$APPDIR/transcription.ts"
-install -m 644 /tmp/usageBudget.ts "$APPDIR/usageBudget.ts"
-install -m 644 /tmp/providerRegistry.ts "$APPDIR/providerRegistry.ts"
-install -m 644 /tmp/validate-auth-env.ts "$APPDIR/validate-auth-env.ts"
+install -m 644 /tmp/app.js "$APPDIR/app.js"
+install -m 644 /tmp/validate-deployment-env.js "$APPDIR/validate-deployment-env.js"
 # Retired provider/search modules are not part of the deployed runtime closure.
 rm -f "$APPDIR/qwenChat.ts" "$APPDIR/webSearch.ts" "$APPDIR/deepseekChat.ts"
 install -m 755 /tmp/validate-mimo-capacity-env.sh "$APPDIR/validate-mimo-capacity-env.sh"
@@ -135,7 +128,7 @@ fi
 
 # Validate the complete authorization input before replacing a healthy process.
 # The validator reads the EnvironmentFile as data and never prints credentials.
-"$BUN_BIN" "$APPDIR/validate-auth-env.ts" "$APPDIR/gw.env"
+"$BUN_BIN" "$APPDIR/validate-deployment-env.js" "$APPDIR/gw.env"
 
 echo "=== systemd 服务 ==="
 if systemctl is-active --quiet qfgw 2>/dev/null; then
@@ -153,7 +146,7 @@ After=network.target
 [Service]
 EnvironmentFile=/opt/billiardbuddy-gateway/gw.env
 WorkingDirectory=/opt/billiardbuddy-gateway
-ExecStart=__BUN_BIN__ /opt/billiardbuddy-gateway/app.ts --host 127.0.0.1 --port 8799
+ExecStart=__BUN_BIN__ /opt/billiardbuddy-gateway/app.js --host 127.0.0.1 --port 8799
 Restart=always
 RestartSec=2
 # 一条代理 SSE 通常会同时占用入站和上游出站连接。100 人 × 10 窗口时最多约 1,000 个
