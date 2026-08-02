@@ -115,12 +115,6 @@ export function auditPackagedResources(options: AuditOptions): void {
   const resources = resolve(options.resourcesDir)
   auditProductArchive(join(resources, 'app.asar'))
 
-  for (const extensionFile of ['manifest.json', 'service-worker.js', 'content-script.js']) {
-    if (!existsSync(join(resources, 'browser-extension', extensionFile))) {
-      throw new Error(`安装包缺少受控浏览器扩展文件: ${extensionFile}`)
-    }
-  }
-
   const productConfig = parseJsonFile(join(resources, 'product-config.json'))
   requireExactKeys(productConfig, ['$comment', 'gatewayUrl'], 'product-config.json')
   if (typeof productConfig.gatewayUrl !== 'string' || !/^https:\/\//.test(productConfig.gatewayUrl)) {

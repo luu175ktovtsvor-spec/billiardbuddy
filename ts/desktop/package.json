@@ -39,15 +39,6 @@
     ],
     "extraResources": [
       {
-        "from": "browser-extension",
-        "to": "browser-extension",
-        "filter": [
-          "manifest.json",
-          "service-worker.js",
-          "content-script.js"
-        ]
-      },
-      {
         "from": "build",
         "to": ".",
         "filter": [
