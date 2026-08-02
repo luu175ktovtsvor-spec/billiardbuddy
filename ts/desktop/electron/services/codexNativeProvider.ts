@@ -340,7 +340,14 @@ export class ChatCompletionsResponsesAdapter {
   private server?: Server
   private closed = false
 
-  constructor(private readonly profile: PersonalModelProfile) {}
+  constructor(private readonly profile: PersonalModelProfile) {
+    // This is a protocol converter, not a fallback provider. A malformed or
+    // future profile must not silently turn into a Chat request merely because
+    // it is not the direct Responses variant.
+    if (profile.protocol !== 'openai-compatible') {
+      throw new Error('CODEX_NATIVE_CHAT_ADAPTER_PROTOCOL_INVALID')
+    }
+  }
 
   async start(): Promise<{ baseUrl: string; capabilityToken: string }> {
     if (this.server || this.closed) throw new Error('CODEX_CHAT_ADAPTER_UNAVAILABLE')
@@ -749,6 +756,10 @@ export async function startCodexNativeProvider(route: CodexNativeModelRoute): Pr
       ...auth,
     })
     return { model: profile.model, configOverrides: config, environment: { [keyEnv]: profile.api_key }, close: async () => {} }
+  }
+
+  if (profile.protocol !== 'openai-compatible') {
+    throw new Error('CODEX_NATIVE_PROVIDER_PROTOCOL_UNSUPPORTED')
   }
 
   const adapter = new ChatCompletionsResponsesAdapter(profile)
