@@ -2,6 +2,10 @@ import type {
   PersonalModelAuthMode,
   PersonalModelProtocol,
 } from './personalModels'
+import {
+  personalModelCatalogEntries,
+  type PersonalModelCatalogEntry,
+} from './personalModelCatalog'
 
 /**
  * Product-owned onboarding facts for user-supplied model credentials.
@@ -12,9 +16,9 @@ import type {
  * context and output limits remain in `personalModelCatalog.ts`, where each
  * model must have its own official evidence.
  */
-export const PERSONAL_MODEL_PROVIDER_SETUP_CATALOG_REVISION = 1 as const
+export const PERSONAL_MODEL_PROVIDER_SETUP_CATALOG_REVISION = 2 as const
 
-export type PersonalModelProviderPreset = {
+type PersonalModelProviderSetupPreset = {
   /** Stable BilliardBuddy identifier, never derived from the display label. */
   id: string
   provider_id: string
@@ -28,13 +32,20 @@ export type PersonalModelProviderPreset = {
   api_key_url: string
   /** Official provider documentation, not a community compatibility guide. */
   documentation_url: string
-  /** Verified model contracts belonging to this provider, if any. */
-  catalog_entry_ids: readonly string[]
+}
+
+/**
+ * A setup preset plus only the verified model contracts that exactly match its
+ * direct upstream route.  Keeping this derived prevents the provider list and
+ * the model-capability list from becoming two competing sources of truth.
+ */
+export type PersonalModelProviderPreset = PersonalModelProviderSetupPreset & {
+  catalog_entries: readonly PersonalModelCatalogEntry[]
 }
 
 // These URLs are onboarding links only. They are sent to the Renderer as
 // immutable catalog data; the user Key is never part of this catalog or URL.
-export const PERSONAL_MODEL_PROVIDER_SETUP_CATALOG: readonly PersonalModelProviderPreset[] = [
+const PERSONAL_MODEL_PROVIDER_SETUP_CATALOG: readonly PersonalModelProviderSetupPreset[] = [
   {
     id: 'deepseek',
     provider_id: 'deepseek',
@@ -45,10 +56,6 @@ export const PERSONAL_MODEL_PROVIDER_SETUP_CATALOG: readonly PersonalModelProvid
     auth_mode: 'bearer',
     api_key_url: 'https://platform.deepseek.com/api_keys',
     documentation_url: 'https://api-docs.deepseek.com/quick_start/pricing/',
-    catalog_entry_ids: [
-      'deepseek/deepseek-v4-flash/responses',
-      'deepseek/deepseek-v4-pro/chat-completions',
-    ],
   },
   {
     id: 'openai',
@@ -60,7 +67,6 @@ export const PERSONAL_MODEL_PROVIDER_SETUP_CATALOG: readonly PersonalModelProvid
     auth_mode: 'bearer',
     api_key_url: 'https://platform.openai.com/api-keys',
     documentation_url: 'https://developers.openai.com/api/docs/models',
-    catalog_entry_ids: ['openai/gpt-5.6-terra/responses'],
   },
 ] as const
 
@@ -70,12 +76,29 @@ function normalizedProviderPresetId(value: string | undefined | null): string | 
 }
 
 export function personalModelProviderPresets(): readonly PersonalModelProviderPreset[] {
-  return PERSONAL_MODEL_PROVIDER_SETUP_CATALOG
+  return PERSONAL_MODEL_PROVIDER_SETUP_CATALOG.map(providerPresetWithCatalogEntries)
 }
 
 export function personalModelProviderPreset(
   id: string | undefined | null,
 ): PersonalModelProviderPreset | undefined {
   const normalized = normalizedProviderPresetId(id)
-  return normalized ? PERSONAL_MODEL_PROVIDER_SETUP_CATALOG.find(entry => entry.id === normalized) : undefined
+  const preset = normalized
+    ? PERSONAL_MODEL_PROVIDER_SETUP_CATALOG.find(entry => entry.id === normalized)
+    : undefined
+  return preset ? providerPresetWithCatalogEntries(preset) : undefined
+}
+
+function providerPresetWithCatalogEntries(
+  preset: PersonalModelProviderSetupPreset,
+): PersonalModelProviderPreset {
+  const catalogEntries = personalModelCatalogEntries().filter(entry =>
+    entry.provider_id === preset.provider_id
+    && entry.base_url === preset.base_url
+    && entry.auth_mode === preset.auth_mode
+    && preset.supported_protocols.includes(entry.protocol))
+  if (catalogEntries.length === 0) {
+    throw new Error('PERSONAL_MODEL_PROVIDER_PRESET_CATALOG_CORRUPT')
+  }
+  return { ...preset, catalog_entries: catalogEntries }
 }
