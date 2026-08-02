@@ -25,6 +25,15 @@ const personalModelCapability = (value: unknown): boolean =>
 const personalModelProtocol = (value: unknown): boolean =>
   value === 'openai-compatible' || value === 'openai-responses'
 
+const personalModelAuthMode = (value: unknown): boolean =>
+  value === 'bearer' || value === 'x-api-key' || value === 'api-key'
+
+const personalModelContextWindow = (value: unknown): boolean =>
+  typeof value === 'number' && Number.isSafeInteger(value) && value >= 8_192 && value <= 2_000_000
+
+const personalModelMaxOutputTokens = (value: unknown): boolean =>
+  typeof value === 'number' && Number.isSafeInteger(value) && value >= 1_024 && value <= 262_144
+
 const nativeCodexId = (value: unknown): value is string =>
   typeof value === 'string' && /^[A-Za-z0-9_-]{1,200}$/.test(value)
 
@@ -351,16 +360,33 @@ const nativeAgentPluginUninstall: Validator = value =>
 
 const modelConfigurationSave: Validator = value =>
   isRecord(value)
-  && hasOnlyKeys(value, ['id', 'label', 'base_url', 'model', 'api_key', 'protocol', 'capabilities', 'supports_tool_calls'])
+  && hasOnlyKeys(value, [
+    'id',
+    'label',
+    'base_url',
+    'model',
+    'api_key',
+    'protocol',
+    'auth_mode',
+    'capabilities',
+    'supports_tool_calls',
+    'supports_parallel_tool_calls',
+    'context_window_tokens',
+    'max_output_tokens',
+  ])
   && (value.id === undefined || personalModelProfileId(value.id))
   && typeof value.label === 'string' && value.label.trim().length > 0 && value.label.length <= 80
   && typeof value.base_url === 'string' && value.base_url.trim().length > 0 && value.base_url.length <= 2_048
   && typeof value.model === 'string' && value.model.trim().length > 0 && value.model.length <= 200
   && typeof value.api_key === 'string' && value.api_key.length <= 4_096
   && personalModelProtocol(value.protocol)
+  && (value.auth_mode === undefined || personalModelAuthMode(value.auth_mode))
   && Array.isArray(value.capabilities) && value.capabilities.length === 1
   && value.capabilities[0] === 'TextReasoning'
   && (value.supports_tool_calls === undefined || typeof value.supports_tool_calls === 'boolean')
+  && (value.supports_parallel_tool_calls === undefined || typeof value.supports_parallel_tool_calls === 'boolean')
+  && (value.context_window_tokens === undefined || personalModelContextWindow(value.context_window_tokens))
+  && (value.max_output_tokens === undefined || personalModelMaxOutputTokens(value.max_output_tokens))
 
 const modelConfigurationSetRoute: Validator = value =>
   isRecord(value)
