@@ -126,9 +126,45 @@ const nativeAgent = {
     ELECTRON_IPC_CHANNELS.nativeAgentSetSkillEnabled,
     { threadId, ...selector, enabled },
   ),
+  setExtraSkillRoots: (threadId: string, roots: string[]) => invoke(
+    ELECTRON_IPC_CHANNELS.nativeAgentSetExtraSkillRoots,
+    { threadId, roots },
+  ),
   listHooks: (threadId: string, cwd: string) => invoke(
     ELECTRON_IPC_CHANNELS.nativeAgentListHooks,
     { threadId, cwd },
+  ),
+  listPlugins: (threadId: string, cwd: string) => invoke(
+    ELECTRON_IPC_CHANNELS.nativeAgentListPlugins,
+    { threadId, cwd },
+  ),
+  listInstalledPlugins: (threadId: string, cwd: string) => invoke(
+    ELECTRON_IPC_CHANNELS.nativeAgentListInstalledPlugins,
+    { threadId, cwd },
+  ),
+  readPlugin: (threadId: string, marketplacePath: string, pluginName: string) => invoke(
+    ELECTRON_IPC_CHANNELS.nativeAgentReadPlugin,
+    { threadId, marketplacePath, pluginName },
+  ),
+  addMarketplace: (threadId: string, input: Record<string, unknown>) => invoke(
+    ELECTRON_IPC_CHANNELS.nativeAgentAddMarketplace,
+    { threadId, ...input },
+  ),
+  removeMarketplace: (threadId: string, marketplaceName: string) => invoke(
+    ELECTRON_IPC_CHANNELS.nativeAgentRemoveMarketplace,
+    { threadId, marketplaceName },
+  ),
+  upgradeMarketplace: (threadId: string, marketplaceName?: string) => invoke(
+    ELECTRON_IPC_CHANNELS.nativeAgentUpgradeMarketplace,
+    { threadId, ...(marketplaceName === undefined ? {} : { marketplaceName }) },
+  ),
+  installPlugin: (threadId: string, marketplacePath: string, pluginName: string) => invoke(
+    ELECTRON_IPC_CHANNELS.nativeAgentInstallPlugin,
+    { threadId, marketplacePath, pluginName },
+  ),
+  uninstallPlugin: (threadId: string, pluginId: string) => invoke(
+    ELECTRON_IPC_CHANNELS.nativeAgentUninstallPlugin,
+    { threadId, pluginId },
   ),
   listCollaborationModes: (threadId: string) => invoke(
     ELECTRON_IPC_CHANNELS.nativeAgentListCollaborationModes,

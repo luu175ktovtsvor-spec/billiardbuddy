@@ -94,6 +94,19 @@ export type NativeCodexSkillSelector = {
   path?: string
 }
 
+/** Source-native marketplace input. Electron never clones or parses plugins itself. */
+export type NativeCodexMarketplaceAddInput = {
+  source: string
+  refName?: string
+  sparsePaths?: string[]
+}
+
+/** Local marketplace reference returned by Codex's own plugin catalog. */
+export type NativeCodexPluginReference = {
+  marketplacePath: string
+  pluginName: string
+}
+
 export type NativeCodexStartThreadInput = {
   cwd: string
   route: CodexNativeModelRoute
@@ -451,6 +464,37 @@ function nativeSkillSelector(value: NativeCodexSkillSelector): NativeCodexSkillS
     return name === undefined ? { path: skillPath } : { name: name.trim() }
   }
   throw new Error('CODEX_NATIVE_SKILL_SELECTOR_INVALID')
+}
+
+function nativePluginText(value: string, maximum: number, error: string): string {
+  if (typeof value !== 'string' || value.length > maximum || /[\u0000\r\n]/.test(value) || !value.trim()) {
+    throw new Error(error)
+  }
+  return value.trim()
+}
+
+function nativeMarketplaceAddInput(value: NativeCodexMarketplaceAddInput): NativeCodexMarketplaceAddInput {
+  const source = nativePluginText(value.source, 4_096, 'CODEX_NATIVE_MARKETPLACE_SOURCE_INVALID')
+  const refName = value.refName === undefined
+    ? undefined
+    : nativePluginText(value.refName, 512, 'CODEX_NATIVE_MARKETPLACE_REF_INVALID')
+  if (value.sparsePaths === undefined) return { source, ...(refName === undefined ? {} : { refName }) }
+  if (!Array.isArray(value.sparsePaths) || value.sparsePaths.length > 64) {
+    throw new Error('CODEX_NATIVE_MARKETPLACE_SPARSE_PATHS_INVALID')
+  }
+  return {
+    source,
+    ...(refName === undefined ? {} : { refName }),
+    sparsePaths: value.sparsePaths.map(item => nativePluginText(item, 4_096, 'CODEX_NATIVE_MARKETPLACE_SPARSE_PATHS_INVALID')),
+  }
+}
+
+function nativePluginReference(value: NativeCodexPluginReference): NativeCodexPluginReference {
+  if (!path.isAbsolute(value.marketplacePath)) throw new Error('CODEX_NATIVE_PLUGIN_MARKETPLACE_PATH_INVALID')
+  return {
+    marketplacePath: nativePluginText(value.marketplacePath, 4_096, 'CODEX_NATIVE_PLUGIN_MARKETPLACE_PATH_INVALID'),
+    pluginName: nativePluginText(value.pluginName, 512, 'CODEX_NATIVE_PLUGIN_NAME_INVALID'),
+  }
 }
 
 /**
@@ -963,6 +1007,16 @@ export class ElectronCodexNativeRuntime {
     })
   }
 
+  /**
+   * Sets Codex's own extra Skill roots. The Rust configuration remains the
+   * only registry; Electron merely canonicalizes directories before forwarding.
+   */
+  async setExtraSkillRoots(thread: Pick<NativeCodexThread, 'id'>, roots: readonly string[]): Promise<void> {
+    if (!nonEmptyText(thread.id) || roots.length > 64) throw new Error('CODEX_NATIVE_SKILL_ROOTS_INVALID')
+    const extraRoots = [...new Set(await Promise.all(roots.map(root => this.workspace(root))))]
+    await this.requireClient().request('skills/extraRoots/set', { extraRoots })
+  }
+
   /** Enable or disable a source-native skill without maintaining a second registry. */
   async setSkillEnabled(
     thread: Pick<NativeCodexThread, 'id'>,
@@ -981,6 +1035,94 @@ export class ElectronCodexNativeRuntime {
     if (!nonEmptyText(thread.id)) throw new Error('CODEX_NATIVE_THREAD_ID_INVALID')
     const workspace = await this.workspace(cwd)
     return await this.requireClient().request<CodexNativeJsonObject>('hooks/list', { cwds: [workspace] })
+  }
+
+  /**
+   * Query only local and workspace Codex marketplaces. OpenAI account-backed
+   * remote marketplaces are intentionally outside BilliardBuddy's provider
+   * model and are never selected by this product boundary.
+   */
+  async listPlugins(thread: Pick<NativeCodexThread, 'id'>, cwd: string): Promise<CodexNativeJsonObject> {
+    if (!nonEmptyText(thread.id)) throw new Error('CODEX_NATIVE_THREAD_ID_INVALID')
+    const workspace = await this.workspace(cwd)
+    return await this.requireClient().request<CodexNativeJsonObject>('plugin/list', {
+      cwds: [workspace],
+      marketplaceKinds: ['local', 'workspace-directory'],
+      forceRefetch: false,
+    })
+  }
+
+  /** Read the native catalog's installed plugin projection for one workspace. */
+  async listInstalledPlugins(thread: Pick<NativeCodexThread, 'id'>, cwd: string): Promise<CodexNativeJsonObject> {
+    if (!nonEmptyText(thread.id)) throw new Error('CODEX_NATIVE_THREAD_ID_INVALID')
+    const workspace = await this.workspace(cwd)
+    return await this.requireClient().request<CodexNativeJsonObject>('plugin/installed', { cwds: [workspace] })
+  }
+
+  /** Read a local plugin directly through the Rust App Server. */
+  async readPlugin(
+    thread: Pick<NativeCodexThread, 'id'>,
+    input: NativeCodexPluginReference,
+  ): Promise<CodexNativeJsonObject> {
+    if (!nonEmptyText(thread.id)) throw new Error('CODEX_NATIVE_THREAD_ID_INVALID')
+    const reference = nativePluginReference(input)
+    const marketplacePath = await this.workspace(reference.marketplacePath)
+    return await this.requireClient().request<CodexNativeJsonObject>('plugin/read', {
+      marketplacePath,
+      pluginName: reference.pluginName,
+    })
+  }
+
+  /** Add a local or Git marketplace through the source-native installer. */
+  async addMarketplace(
+    thread: Pick<NativeCodexThread, 'id'>,
+    input: NativeCodexMarketplaceAddInput,
+  ): Promise<CodexNativeJsonObject> {
+    if (!nonEmptyText(thread.id)) throw new Error('CODEX_NATIVE_THREAD_ID_INVALID')
+    return await this.requireClient().request<CodexNativeJsonObject>('marketplace/add', nativeMarketplaceAddInput(input))
+  }
+
+  /** Remove one marketplace through the Rust-owned configuration and cache. */
+  async removeMarketplace(thread: Pick<NativeCodexThread, 'id'>, marketplaceName: string): Promise<CodexNativeJsonObject> {
+    if (!nonEmptyText(thread.id)) throw new Error('CODEX_NATIVE_THREAD_ID_INVALID')
+    return await this.requireClient().request<CodexNativeJsonObject>('marketplace/remove', {
+      marketplaceName: nativePluginText(marketplaceName, 512, 'CODEX_NATIVE_MARKETPLACE_NAME_INVALID'),
+    })
+  }
+
+  /** Upgrade one or all Rust-managed marketplaces; source owns atomic replacement. */
+  async upgradeMarketplace(
+    thread: Pick<NativeCodexThread, 'id'>,
+    marketplaceName?: string,
+  ): Promise<CodexNativeJsonObject> {
+    if (!nonEmptyText(thread.id)) throw new Error('CODEX_NATIVE_THREAD_ID_INVALID')
+    return await this.requireClient().request<CodexNativeJsonObject>('marketplace/upgrade', {
+      ...(marketplaceName === undefined
+        ? {}
+        : { marketplaceName: nativePluginText(marketplaceName, 512, 'CODEX_NATIVE_MARKETPLACE_NAME_INVALID') }),
+    })
+  }
+
+  /** Install a local marketplace plugin; any bundled MCP auth remains a Rust server request. */
+  async installPlugin(
+    thread: Pick<NativeCodexThread, 'id'>,
+    input: NativeCodexPluginReference,
+  ): Promise<CodexNativeJsonObject> {
+    if (!nonEmptyText(thread.id)) throw new Error('CODEX_NATIVE_THREAD_ID_INVALID')
+    const reference = nativePluginReference(input)
+    const marketplacePath = await this.workspace(reference.marketplacePath)
+    return await this.requireClient().request<CodexNativeJsonObject>('plugin/install', {
+      marketplacePath,
+      pluginName: reference.pluginName,
+    })
+  }
+
+  /** Uninstall one native plugin without maintaining a BilliardBuddy copy of plugin state. */
+  async uninstallPlugin(thread: Pick<NativeCodexThread, 'id'>, pluginId: string): Promise<void> {
+    if (!nonEmptyText(thread.id)) throw new Error('CODEX_NATIVE_THREAD_ID_INVALID')
+    await this.requireClient().request('plugin/uninstall', {
+      pluginId: nativePluginText(pluginId, 512, 'CODEX_NATIVE_PLUGIN_ID_INVALID'),
+    })
   }
 
   /** Read available Codex collaboration presets; Rust owns spawned Agent state. */

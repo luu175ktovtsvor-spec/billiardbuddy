@@ -293,6 +293,62 @@ const nativeAgentSetSkillEnabled: Validator = value =>
         : false
   )
 
+const nativePluginText = (value: unknown, maximum = 512): value is string =>
+  typeof value === 'string'
+  && value.trim().length > 0
+  && value.length <= maximum
+  && !/[\u0000\r\n]/.test(value)
+
+const nativeAgentSetExtraSkillRoots: Validator = value =>
+  isRecord(value)
+  && hasOnlyKeys(value, ['threadId', 'roots'])
+  && nativeCodexId(value.threadId)
+  && Array.isArray(value.roots)
+  && value.roots.length <= 64
+  && value.roots.every(nativeWorkspacePath)
+
+const nativeAgentPluginCatalog: Validator = value =>
+  isRecord(value)
+  && hasOnlyKeys(value, ['threadId', 'cwd'])
+  && nativeCodexId(value.threadId)
+  && nativeWorkspacePath(value.cwd)
+
+const nativeAgentPluginReference: Validator = value =>
+  isRecord(value)
+  && hasOnlyKeys(value, ['threadId', 'marketplacePath', 'pluginName'])
+  && nativeCodexId(value.threadId)
+  && nativeWorkspacePath(value.marketplacePath)
+  && nativePluginText(value.pluginName)
+
+const nativeAgentMarketplaceAdd: Validator = value =>
+  isRecord(value)
+  && hasOnlyKeys(value, ['threadId', 'source', 'refName', 'sparsePaths'])
+  && nativeCodexId(value.threadId)
+  && nativePluginText(value.source, 4_096)
+  && (value.refName === undefined || nativePluginText(value.refName))
+  && (value.sparsePaths === undefined
+    || Array.isArray(value.sparsePaths)
+      && value.sparsePaths.length <= 64
+      && value.sparsePaths.every(item => nativePluginText(item, 4_096)))
+
+const nativeAgentMarketplaceReference: Validator = value =>
+  isRecord(value)
+  && hasOnlyKeys(value, ['threadId', 'marketplaceName'])
+  && nativeCodexId(value.threadId)
+  && nativePluginText(value.marketplaceName)
+
+const nativeAgentMarketplaceUpgrade: Validator = value =>
+  isRecord(value)
+  && hasOnlyKeys(value, ['threadId', 'marketplaceName'])
+  && nativeCodexId(value.threadId)
+  && (value.marketplaceName === undefined || nativePluginText(value.marketplaceName))
+
+const nativeAgentPluginUninstall: Validator = value =>
+  isRecord(value)
+  && hasOnlyKeys(value, ['threadId', 'pluginId'])
+  && nativeCodexId(value.threadId)
+  && nativePluginText(value.pluginId)
+
 const modelConfigurationSave: Validator = value =>
   isRecord(value)
   && hasOnlyKeys(value, ['id', 'label', 'base_url', 'model', 'api_key', 'protocol', 'capabilities', 'supports_tool_calls'])
@@ -439,7 +495,16 @@ export const ELECTRON_IPC_VALIDATORS = {
   [ELECTRON_IPC_CHANNELS.nativeAgentStartMcpOAuth]: nativeAgentMcpServerReference,
   [ELECTRON_IPC_CHANNELS.nativeAgentListSkills]: nativeAgentCatalogReference,
   [ELECTRON_IPC_CHANNELS.nativeAgentSetSkillEnabled]: nativeAgentSetSkillEnabled,
+  [ELECTRON_IPC_CHANNELS.nativeAgentSetExtraSkillRoots]: nativeAgentSetExtraSkillRoots,
   [ELECTRON_IPC_CHANNELS.nativeAgentListHooks]: nativeAgentCatalogReference,
+  [ELECTRON_IPC_CHANNELS.nativeAgentListPlugins]: nativeAgentPluginCatalog,
+  [ELECTRON_IPC_CHANNELS.nativeAgentListInstalledPlugins]: nativeAgentPluginCatalog,
+  [ELECTRON_IPC_CHANNELS.nativeAgentReadPlugin]: nativeAgentPluginReference,
+  [ELECTRON_IPC_CHANNELS.nativeAgentAddMarketplace]: nativeAgentMarketplaceAdd,
+  [ELECTRON_IPC_CHANNELS.nativeAgentRemoveMarketplace]: nativeAgentMarketplaceReference,
+  [ELECTRON_IPC_CHANNELS.nativeAgentUpgradeMarketplace]: nativeAgentMarketplaceUpgrade,
+  [ELECTRON_IPC_CHANNELS.nativeAgentInstallPlugin]: nativeAgentPluginReference,
+  [ELECTRON_IPC_CHANNELS.nativeAgentUninstallPlugin]: nativeAgentPluginUninstall,
   [ELECTRON_IPC_CHANNELS.nativeAgentListCollaborationModes]: nativeAgentThreadReference,
   [ELECTRON_IPC_CHANNELS.commandInvoke]: commandInvoke,
   [ELECTRON_IPC_CHANNELS.clipboardReadText]: noPayload,
