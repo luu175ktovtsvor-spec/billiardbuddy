@@ -57,6 +57,7 @@ import { installPreviewCleanupOnRendererNavigation } from './services/previewLif
 import { logNotificationSmokeRendererAck, scheduleNotificationSmoke } from './services/notificationSmoke'
 import { normalizeZoomFactor } from './services/zoom'
 import { resolveRendererEntry } from './services/rendererEntry'
+import { nativeServerRequestSafeFallback } from './services/nativeServerRequestFallback'
 import { writeWindowSmokeSnapshot } from './services/windowSmoke'
 import {
   installWindowLifecycle,
@@ -294,6 +295,8 @@ function forwardNativeAgentNotification(notification: CodexNativeNotification): 
 }
 
 async function requestNativeAgentApproval(request: CodexNativeServerRequest): Promise<CodexNativeJsonObject> {
+  const safeFallback = nativeServerRequestSafeFallback(request)
+  if (safeFallback) return safeFallback
   const method = nativeApprovalMethod(request.method)
   const threadId = nativeThreadId(request.params)
   if (!method || !threadId) throw new Error('CODEX_NATIVE_APPROVAL_REQUEST_UNSUPPORTED')
