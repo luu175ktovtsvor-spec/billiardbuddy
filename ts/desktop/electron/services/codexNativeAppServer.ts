@@ -323,9 +323,11 @@ export class CodexNativeAppServerClient {
     this.process = child
     void this.readStdout(child)
     void this.drainStderr(child).catch(() => undefined)
-    child.once('error', error => this.failAllPending(engineError('CODEX_NATIVE_APP_SERVER_SPAWN_FAILED', error.message)))
+    child.once('error', error => {
+      this.markUnavailable(child, engineError('CODEX_NATIVE_APP_SERVER_SPAWN_FAILED', error.message))
+    })
     child.once('exit', (code, signal) => {
-      this.failAllPending(engineError('CODEX_NATIVE_APP_SERVER_EXITED', `code=${code ?? 'null'} signal=${signal ?? 'null'}`))
+      this.markUnavailable(child, engineError('CODEX_NATIVE_APP_SERVER_EXITED', `code=${code ?? 'null'} signal=${signal ?? 'null'}`))
     })
     try {
       const initialized = await this.request<CodexNativeJsonObject>('initialize', {
@@ -352,6 +354,11 @@ export class CodexNativeAppServerClient {
       throw error
     }
     return await result as T
+  }
+
+  /** True only while the BilliardBuddy-owned stdio child can accept RPC. */
+  isAvailable(): boolean {
+    return !this.closed && this.process !== undefined
   }
 
   notify(method: string, params?: CodexNativeJsonValue): void {
@@ -421,7 +428,7 @@ export class CodexNativeAppServerClient {
       }
       if (buffer.trim()) throw new Error('CODEX_NATIVE_APP_SERVER_PROTOCOL_INVALID')
     } catch (error) {
-      this.failAllPending(error instanceof Error ? error : engineError('CODEX_NATIVE_APP_SERVER_PROTOCOL_INVALID'))
+      this.markUnavailable(child, error instanceof Error ? error : engineError('CODEX_NATIVE_APP_SERVER_PROTOCOL_INVALID'))
       try { child.kill() } catch {}
     }
   }
@@ -470,6 +477,12 @@ export class CodexNativeAppServerClient {
   private failAllPending(error: Error): void {
     for (const pending of this.pending.values()) pending.reject(error)
     this.pending.clear()
+  }
+
+  private markUnavailable(child: ChildProcessWithoutNullStreams, error: Error): void {
+    if (this.process === child) this.process = undefined
+    this.closed = true
+    this.failAllPending(error)
   }
 }
 
@@ -736,6 +749,10 @@ export class ElectronCodexNativeRuntime {
 
   /** A provider mutation must not interrupt or split a source-native Turn. */
   assertModelRouteMayChange(): void {
+    // Once the only App Server child is gone, no source-native Turn is still
+    // running in this process. Its durable status must instead be reconciled
+    // by a fresh `thread/resume`, so stale local ids cannot block recovery.
+    if (this.client && !this.client.isAvailable()) return
     if (this.activeTurns.size > 0 || this.pendingTurnStarts > 0) {
       throw new Error('CODEX_NATIVE_ROUTE_CHANGE_REQUIRES_IDLE')
     }
@@ -815,8 +832,11 @@ export class ElectronCodexNativeRuntime {
 
   private async ensureClient(route: CodexNativeModelRoute, cwd: string): Promise<CodexNativeAppServerClient> {
     const nextRouteKey = routeKey(route)
-    if (this.client && this.configuredRouteKey === nextRouteKey) return this.client
-    this.assertModelRouteMayChange()
+    if (this.client && this.configuredRouteKey === nextRouteKey && this.client.isAvailable()) return this.client
+    // An unexpected child exit invalidates only the process connection. It
+    // must not be treated as a live Turn or prevent the Rust Thread Store from
+    // reconciling the prior turn under a fresh App Server process.
+    if (!this.client || this.client.isAvailable()) this.assertModelRouteMayChange()
     const generation = ++this.routeGeneration
     await this.closeCurrentProcess()
     const provider = await startCodexNativeProvider(route)
