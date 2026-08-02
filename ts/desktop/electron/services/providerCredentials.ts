@@ -54,7 +54,7 @@ export class ProviderCredentialService {
     // requires tool calls; an auxiliary visual route does not.
     for (const capability of Object.keys(value.routes) as PersonalModelCapability[]) {
       if (value.routes[capability] !== id) continue
-      if (!profile.capabilities.includes(capability) || (capability === 'TextReasoning' && (!profile.supports_tool_calls || profile.protocol === 'anthropic-messages'))) {
+      if (!profile.capabilities.includes(capability) || (capability === 'TextReasoning' && !profile.supports_tool_calls)) {
         delete value.routes[capability]
       }
     }
@@ -71,7 +71,6 @@ export class ProviderCredentialService {
       const profile = value.profiles.find(candidate => candidate.id === profileId)
       if (!profile?.capabilities.includes(capability)) throw new Error('PERSONAL_MODEL_CAPABILITY_UNAVAILABLE')
       if (capability === 'TextReasoning' && !profile.supports_tool_calls) throw new Error('PERSONAL_MODEL_TOOL_CALLS_REQUIRED')
-      if (capability === 'TextReasoning' && profile.protocol === 'anthropic-messages') throw new Error('PERSONAL_MODEL_PROTOCOL_UNSUPPORTED')
       value.routes[capability] = profile.id
     }
     this.write(value)
@@ -98,7 +97,7 @@ export class ProviderCredentialService {
     const value = this.read()
     const id = value.routes.TextReasoning
     const profile = id ? value.profiles.find(candidate => candidate.id === id) ?? null : null
-    return profile?.protocol === 'anthropic-messages' ? null : profile
+    return profile
   }
 
   private read(): PersonalModelConfiguration { return parsePersonalModelConfiguration(this.store.load()) }

@@ -737,7 +737,6 @@ export async function startCodexNativeProvider(route: CodexNativeModelRoute): Pr
   }
 
   const { profile } = route
-  if (profile.protocol === 'anthropic-messages') throw new Error('CODEX_NATIVE_PROVIDER_PROTOCOL_UNSUPPORTED')
   if (profile.protocol === 'openai-responses') {
     const keyEnv = 'BB_CODEX_PERSONAL_RESPONSES_KEY'
     const auth = profile.auth_mode === 'bearer'

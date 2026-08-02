@@ -7,7 +7,6 @@ export type PersonalModelCapability = (typeof PERSONAL_MODEL_CAPABILITIES)[numbe
 export const PERSONAL_MODEL_PROTOCOLS = [
   'openai-compatible',
   'openai-responses',
-  'anthropic-messages',
 ] as const
 export type PersonalModelProtocol = (typeof PERSONAL_MODEL_PROTOCOLS)[number]
 export const PERSONAL_MODEL_AUTH_MODES = ['bearer', 'x-api-key', 'api-key'] as const
@@ -167,8 +166,8 @@ export function validPersonalModelChatCompletionTokenLimitField(value: unknown):
   return typeof value === 'string' && (PERSONAL_MODEL_CHAT_COMPLETION_TOKEN_LIMIT_FIELDS as readonly string[]).includes(value)
 }
 
-export function defaultPersonalModelAuthMode(protocol: PersonalModelProtocol): PersonalModelAuthMode {
-  return protocol === 'anthropic-messages' ? 'x-api-key' : 'bearer'
+export function defaultPersonalModelAuthMode(): PersonalModelAuthMode {
+  return 'bearer'
 }
 
 export function safePersonalModelBaseUrl(value: string, protocol: PersonalModelProtocol): string {
@@ -183,11 +182,7 @@ export function safePersonalModelBaseUrl(value: string, protocol: PersonalModelP
     }
   }
   let pathname = url.pathname.replace(/\/+$/, '')
-  const endpointSuffix = protocol === 'openai-compatible'
-    ? '/chat/completions'
-    : protocol === 'openai-responses'
-      ? '/responses'
-      : '/messages'
+  const endpointSuffix = protocol === 'openai-compatible' ? '/chat/completions' : '/responses'
   if (pathname.endsWith(endpointSuffix)) pathname = pathname.slice(0, -endpointSuffix.length)
   url.pathname = pathname || '/v1'
   return url.toString().replace(/\/$/, '')
@@ -221,7 +216,7 @@ export function normalizePersonalModelProfile(input: PersonalModelProfileInput, 
     throw new Error('PERSONAL_MODEL_PROFILE_INVALID')
   }
   if (!validPersonalModelProtocol(input.protocol)) throw new Error('PERSONAL_MODEL_PROTOCOL_UNSUPPORTED')
-  const authMode = input.auth_mode ?? defaultPersonalModelAuthMode(input.protocol)
+  const authMode = input.auth_mode ?? defaultPersonalModelAuthMode()
   if (!validPersonalModelAuthMode(authMode)) throw new Error('PERSONAL_MODEL_AUTH_MODE_UNSUPPORTED')
   if (input.supports_tool_calls !== undefined && typeof input.supports_tool_calls !== 'boolean') {
     throw new Error('PERSONAL_MODEL_PROFILE_INVALID')
@@ -284,23 +279,8 @@ export function normalizePersonalModelProfile(input: PersonalModelProfileInput, 
   if (input.protocol === 'openai-responses' && (reasoningMode !== 'provider-default' || anthropicThinkingDisplay !== 'provider-default')) {
     throw new Error('PERSONAL_MODEL_REASONING_CONFIGURATION_UNSUPPORTED')
   }
-  if (input.protocol === 'anthropic-messages' && (['none', 'minimal'].includes(reasoningEffort) || reasoningSummary !== 'provider-default')) {
-    throw new Error('PERSONAL_MODEL_REASONING_CONFIGURATION_UNSUPPORTED')
-  }
-  if (input.protocol === 'anthropic-messages' && anthropicThinkingDisplay !== 'provider-default' && !['adaptive', 'enabled'].includes(reasoningMode)) {
-    throw new Error('PERSONAL_MODEL_REASONING_CONFIGURATION_INVALID')
-  }
   if (!supportsReasoning && (reasoningMode !== 'provider-default' || reasoningEffort !== 'provider-default' || reasoningSummary !== 'provider-default' || anthropicThinkingDisplay !== 'provider-default')) {
     throw new Error('PERSONAL_MODEL_REASONING_CONFIGURATION_INVALID')
-  }
-  if (input.protocol === 'anthropic-messages' && textVerbosity !== 'provider-default') {
-    throw new Error('PERSONAL_MODEL_TEXT_VERBOSITY_UNSUPPORTED')
-  }
-  if (input.protocol === 'anthropic-messages' && openAiServiceTier !== 'provider-default') {
-    throw new Error('PERSONAL_MODEL_OPENAI_SERVICE_TIER_UNSUPPORTED')
-  }
-  if (input.protocol === 'anthropic-messages' && input.supports_openai_prompt_cache_key === true) {
-    throw new Error('PERSONAL_MODEL_OPENAI_PROMPT_CACHE_KEY_UNSUPPORTED')
   }
   if (input.protocol !== 'openai-responses' && input.supports_openai_assistant_phase === true) {
     throw new Error('PERSONAL_MODEL_OPENAI_ASSISTANT_PHASE_UNSUPPORTED')
@@ -355,23 +335,28 @@ export function parsePersonalModelConfiguration(raw: string | undefined | null):
   if (record.version !== 1 || !Array.isArray(record.profiles) || !record.routes || typeof record.routes !== 'object' || Array.isArray(record.routes)) {
     throw new Error('PERSONAL_MODEL_CONFIGURATION_CORRUPT')
   }
-  const profiles = record.profiles.map(rawProfile => {
+  const profiles = record.profiles.flatMap(rawProfile => {
     if (!rawProfile || typeof rawProfile !== 'object' || Array.isArray(rawProfile)) throw new Error('PERSONAL_MODEL_CONFIGURATION_CORRUPT')
+    const rawProtocol = (rawProfile as { protocol?: unknown }).protocol
     const profile = rawProfile as PersonalModelProfile & { capabilities?: unknown }
+    // A historical Anthropic profile never entered the native Codex route.
+    // Ignore it at this boundary rather than letting a legacy saved setting
+    // make the two supported user-key protocols unavailable.
+    if (rawProtocol === 'anthropic-messages') return []
     if (!Array.isArray(profile.capabilities) || !profile.capabilities.every(validPersonalModelCapability)) {
       throw new Error('PERSONAL_MODEL_CONFIGURATION_CORRUPT')
     }
     const capabilities = profile.capabilities
-    return normalizePersonalModelProfile({ ...profile, capabilities }, profile.id)
+    return [normalizePersonalModelProfile({ ...profile, capabilities }, profile.id)]
   })
   if (profiles.length > 20 || new Set(profiles.map(profile => profile.id)).size !== profiles.length) throw new Error('PERSONAL_MODEL_CONFIGURATION_CORRUPT')
-  const ids = new Set(profiles.map(profile => profile.id))
   const routes: PersonalModelConfiguration['routes'] = {}
   for (const [capability, profileId] of Object.entries(record.routes)) {
-    if (!validPersonalModelCapability(capability) || !validPersonalModelProfileId(profileId) || !ids.has(profileId)) {
+    if (!validPersonalModelCapability(capability) || !validPersonalModelProfileId(profileId)) {
       throw new Error('PERSONAL_MODEL_CONFIGURATION_CORRUPT')
     }
-    const profile = profiles.find(candidate => candidate.id === profileId)!
+    const profile = profiles.find(candidate => candidate.id === profileId)
+    if (!profile) continue
     if (
       !profile.capabilities.includes(capability)
       || (capability === 'TextReasoning' && !profile.supports_tool_calls)
