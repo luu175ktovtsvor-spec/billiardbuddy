@@ -1,8 +1,8 @@
 /**
  * BilliardBuddy 桌面端合并 sidecar 入口。
  *
- * server / browser-host 是 GUI 产品的两个内部运行职责，共享一份
- * bun runtime。这不是公开 CLI；第一个位置参数只由 Electron/Product Server 使用：
+ * 这是 GUI 产品的本机 Product Server 入口，不是公开 CLI；第一个位置参数
+ * 只由 Electron 使用：
  *
  *   billiardbuddy-sidecar server --app-root <path> --host 127.0.0.1 --port 12345
  *
@@ -23,22 +23,12 @@ if (!invocation.mode) {
 const mode = invocation.mode
 const restArgs = invocation.restArgs
 
-if (mode === 'browser-host') {
-  const { runBrowserNativeHost } = await import('./browser-native-host')
-  runBrowserNativeHost({ argv: restArgs })
-} else {
-  const { appRoot, args } = parseLauncherArgs(restArgs, invocation.defaultAppRoot)
+const { appRoot, args } = parseLauncherArgs(restArgs, invocation.defaultAppRoot)
 
-  process.env.BILLIARDBUDDY_APP_ROOT = appRoot
-  process.env.BB_COMPILED_SIDECAR = '1'
-  process.argv = [process.argv[0]!, process.argv[1]!, ...args]
+process.env.BILLIARDBUDDY_APP_ROOT = appRoot
+process.env.BB_COMPILED_SIDECAR = '1'
+process.argv = [process.argv[0]!, process.argv[1]!, ...args]
 
-  if (mode === 'server') {
-    console.log(`[billiardbuddy-sidecar] starting server mode (${process.platform}/${process.arch})`)
-    const { startServer } = await import('../../src/server/index.ts')
-    startServer()
-  } else {
-    console.error(`billiardbuddy-sidecar: unknown internal mode "${mode}"`)
-    process.exit(2)
-  }
-}
+console.log(`[billiardbuddy-sidecar] starting server mode (${process.platform}/${process.arch})`)
+const { startServer } = await import('../../src/server/index.ts')
+startServer()

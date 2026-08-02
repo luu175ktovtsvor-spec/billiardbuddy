@@ -1,6 +1,6 @@
-export type SidecarMode = 'server' | 'browser-host'
+export type SidecarMode = 'server'
 
-const EXPLICIT_MODES = new Set<SidecarMode>(['server', 'browser-host'])
+const EXPLICIT_MODES = new Set<SidecarMode>(['server'])
 
 export function resolveSidecarInvocation(
   rawArgs: string[],
@@ -15,14 +15,6 @@ export function resolveSidecarInvocation(
     return {
       mode: explicitMode as SidecarMode,
       restArgs: rawArgs.slice(1),
-      defaultAppRoot: envAppRoot,
-    }
-  }
-
-  if (rawArgs.some(arg => arg.startsWith('chrome-extension://'))) {
-    return {
-      mode: 'browser-host',
-      restArgs: rawArgs,
       defaultAppRoot: envAppRoot,
     }
   }

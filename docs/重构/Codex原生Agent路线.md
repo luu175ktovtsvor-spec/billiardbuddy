@@ -72,6 +72,8 @@ Electron Main 中旧 ProductTask 深链/独立窗口、node-pty PTY 终端及其
 
 招聘网站专用的 Chrome 扩展、Native Messaging、候选人操作账本、资源调度器及其 Electron IPC 也已从运行与编译路径退役；`/api/browser` 同样明确返回 `LEGACY_AGENT_BACKEND_RETIRED`。这不削减 Codex 的浏览器/网页能力：正式路径将使用 Rust Core 的原生工具、Exec/sandbox 和 approval request，而不会把旧招聘桥改名后继续作为 Agent 工具。
 
+统一 Bun Sidecar 现在只接受 `server` 内部模式，安装包不再携带招聘浏览器扩展或原生消息宿主；本机重编后的二进制拒绝 `browser-host` 参数。冻结 Renderer 中遗留的浏览器协议名不能重新触发该路径。
+
 MCP 的正式控制面同样不再经 Bun 侧车探测或连接。Electron Main 只能代表已拥有的 Rust Thread 调用上游 `config/value/write`（固定在 `mcp_servers.<name>`）、`config/mcpServer/reload`、`mcpServerStatus/list` 和 `mcpServer/oauth/login`；配置、工具清单、启动状态和 OAuth 凭据分别由 Codex 私有 Home、MCP runtime 与其配置的凭据存储拥有。前端冻结期间不复用旧 MCP 设置页，后续页面只接这些原生 RPC。
 
 旧 `/api/mcp` 已返回 `LEGACY_AGENT_BACKEND_RETIRED`，Electron 也不再为它生成或向 Bun 侧车注入 OAuth 主密钥。历史 JSON 配置和历史加密凭据只保留在磁盘上、不执行、不迁移、不删除；之后由用户明确决定是否手工重建为 Rust 原生 MCP 配置。
