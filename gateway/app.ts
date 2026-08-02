@@ -105,6 +105,7 @@ type ChatProvider = {
   retryMax: number
   retryBaseMs: number
   retryMaxMs: number
+  responseTimeoutMs?: number
   prepareBody: (rawBody: string, allowed: ReadonlySet<string>, defaultModel: string) => { body: string }
   fetchWithRetry: (
     doRequest: (attempt: number) => Promise<Response>,
@@ -153,6 +154,8 @@ type GatewayConfig = {
   deepseekRetryMax: number
   deepseekRetryBaseMs: number
   deepseekRetryMaxMs: number
+  /** Hard deadline spanning the managed model request and its SSE body. */
+  deepseekResponseTimeoutMs: number
   deepseekAllowedModels: ReadonlySet<string>
   // 视觉证据：图片/视频工作台把输入转为结构化证据；它不再进入 Agent TextReasoning。
   visionMaxImages: number
@@ -671,6 +674,9 @@ function loadConfig(env: Env): GatewayConfig {
     deepseekRetryMax: Math.max(0, Math.min(1, intEnv(env, 'GW_DEEPSEEK_MAX_RETRIES', 1))),
     deepseekRetryBaseMs: Math.max(1, intEnv(env, 'GW_DEEPSEEK_RETRY_BASE_MS', 500)),
     deepseekRetryMaxMs: Math.max(1, intEnv(env, 'GW_DEEPSEEK_RETRY_MAX_MS', 8000)),
+    // The HTTP idle timeout is disabled for agent SSE. This owns the separate
+    // total upstream deadline, including a quiet stream after response headers.
+    deepseekResponseTimeoutMs: Math.max(1, intEnv(env, 'GW_DEEPSEEK_RESPONSE_TIMEOUT_MS', 5 * 60_000)),
     deepseekAllowedModels: new Set([textModel.model_id]),
     // 视觉桥接上限：超限在调用 Registry-owned VisualEvidence 之前失败关闭。visionMaxTotalBytes 同时也是整个聊天请求体
     // (含非图片请求)的大小闸,在任何路由/许可之前生效——图片 base64 是拖垮请求体积的主因。
@@ -831,6 +837,7 @@ function withStreamLogging(
   resp: Response,
   onDone: () => Promise<void>,
   onChunk?: (chunk: Uint8Array) => void,
+  abortSignal?: AbortSignal,
 ): Response {
   const headers = new Headers()
   const contentType = resp.headers.get('content-type')
@@ -844,13 +851,39 @@ function withStreamLogging(
   }
 
   const reader = resp.body.getReader()
+  let finalized = false
+  const abortError = () => {
+    const reason = abortSignal?.reason
+    return reason instanceof Error ? reason : new Error('upstream response cancelled')
+  }
+  const finish = async () => {
+    if (finalized) return
+    finalized = true
+    abortSignal?.removeEventListener('abort', abortUpstream)
+    await onDone()
+  }
+  const abortUpstream = () => {
+    void reader.cancel(abortSignal?.reason).catch(() => undefined)
+  }
+  if (abortSignal?.aborted) abortUpstream()
+  else abortSignal?.addEventListener('abort', abortUpstream, { once: true })
   const stream = new ReadableStream<Uint8Array>({
     async pull(controller) {
       try {
+        if (abortSignal?.aborted) {
+          controller.error(abortError())
+          await finish()
+          return
+        }
         const { done, value } = await reader.read()
+        if (abortSignal?.aborted) {
+          controller.error(abortError())
+          await finish()
+          return
+        }
         if (done) {
           controller.close()
-          await onDone()
+          await finish()
           return
         }
         onChunk?.(value)
@@ -859,16 +892,51 @@ function withStreamLogging(
         // 上游中途断流(reader.read 抛错):既有实现只在 done/cancel 调 onDone,此路径会漏放许可。
         // 显式在这里 error + 释放许可,保证任何终止路径 active/queued 都回落,不泄漏并发名额。
         controller.error(error)
-        await onDone()
+        await finish()
       }
     },
     async cancel(reason) {
       // 客户端断开:释放许可。cancel body 本身失败不应吞掉许可释放。
       try { await reader.cancel(reason) } catch { /* ignore */ }
-      await onDone()
+      await finish()
     },
   })
   return new Response(stream, { status: resp.status, headers })
+}
+
+type UpstreamResponseDeadline = {
+  signal: AbortSignal
+  timedOut(): boolean
+  cleanup(): void
+}
+
+/**
+ * Bun's per-request HTTP timeout is disabled for valid long SSE traffic. Keep a
+ * separate provider deadline so an upstream that never answers cannot retain a
+ * DeepSeek capacity permit or a fenced operation forever.
+ */
+function createUpstreamResponseDeadline(request: Request, timeoutMs: number): UpstreamResponseDeadline {
+  const controller = new AbortController()
+  let timedOut = false
+  const abortForClient = () => controller.abort(request.signal.reason)
+  if (request.signal.aborted) abortForClient()
+  else request.signal.addEventListener('abort', abortForClient, { once: true })
+  const timer = setTimeout(() => {
+    timedOut = true
+    controller.abort(new Error('upstream model response deadline exceeded'))
+  }, timeoutMs)
+  ;(timer as unknown as { unref?: () => void }).unref?.()
+  let cleaned = false
+  return {
+    signal: controller.signal,
+    timedOut: () => timedOut,
+    cleanup: () => {
+      if (cleaned) return
+      cleaned = true
+      clearTimeout(timer)
+      request.signal.removeEventListener('abort', abortForClient)
+    },
+  }
 }
 
 // 仅用于路由决策:宽松解析 model 名,解析失败返回空串(交由 handler 的 prepareBody 兜底 400)。
@@ -1051,10 +1119,13 @@ function createChatHandler(provider: ChatProvider, fetchImpl: FetchLike, store: 
     const queueMs = elapsedMs(queuedStarted)
     const usageNote = (attempts: number) => `queue_ms=${queueMs};attempts=${attempts}`
     const started = performance.now()
+    const deadline = provider.responseTimeoutMs
+      ? createUpstreamResponseDeadline(request, provider.responseTimeoutMs)
+      : undefined
     try {
       const { response: upstream, attempts } = await provider.fetchWithRetry(async () => {
         try {
-          await provider.bucket.acquire(provider.queueMaxWait, request.signal)
+          await provider.bucket.acquire(provider.queueMaxWait, deadline?.signal ?? request.signal)
         } catch (error) {
           if (error instanceof HttpError) throw new provider.RequestError(error.status, error.detail)
           throw error
@@ -1062,7 +1133,7 @@ function createChatHandler(provider: ChatProvider, fetchImpl: FetchLike, store: 
         return await fetchImpl(`${provider.base}/${provider.endpoint}`, {
           method: 'POST',
           body: prepared.body,
-          signal: request.signal,
+          signal: deadline?.signal ?? request.signal,
           headers: {
             Authorization: `Bearer ${provider.key}`,
             'Content-Type': 'application/json',
@@ -1073,13 +1144,14 @@ function createChatHandler(provider: ChatProvider, fetchImpl: FetchLike, store: 
         maxRetries: provider.retryMax,
         baseDelayMs: provider.retryBaseMs,
         maxDelayMs: provider.retryMaxMs,
-        signal: request.signal,
+        signal: deadline?.signal ?? request.signal,
         sleep: provider.retrySleep,
         random: provider.retryRandom,
       })
 
       if (!upstream.ok) {
         const upstreamDetail = await upstream.text().catch(() => '')
+        deadline?.cleanup()
         permit?.release()
         await logUsage(store, {
           user,
@@ -1096,22 +1168,34 @@ function createChatHandler(provider: ChatProvider, fetchImpl: FetchLike, store: 
       const complete = async () => {
         if (completed) return
         completed = true
+        deadline?.cleanup()
         permit?.release()
-        await logUsage(store, { user, model: provider.label, ok: true, status: upstream.status, ms: elapsedMs(started), note: usageNote(attempts) })
+        const timedOut = deadline?.timedOut() ?? false
+        await logUsage(store, {
+          user,
+          model: provider.label,
+          ok: !timedOut,
+          status: timedOut ? 504 : upstream.status,
+          ms: elapsedMs(started),
+          note: `${usageNote(attempts)}${timedOut ? ';upstream_timeout=1' : ''}`,
+        })
       }
-      return withStreamLogging(upstream, complete)
+      return withStreamLogging(upstream, complete, undefined, deadline?.signal)
     } catch (error) {
+      deadline?.cleanup()
       permit?.release()
+      const timedOut = deadline?.timedOut() ?? false
       const known = error instanceof provider.RequestError
-      const status = known ? error.status : 502
-      const detail = known ? error.publicMessage : '模型服务暂时不可用，请稍后重试'
+      const cancelled = request.signal.aborted
+      const status = cancelled ? 499 : timedOut ? 504 : known ? error.status : 502
+      const detail = cancelled ? '请求已取消' : timedOut ? '模型响应超时，请稍后重试' : known ? error.publicMessage : '模型服务暂时不可用，请稍后重试'
       await logUsage(store, {
         user,
         model: provider.label,
         ok: false,
         status,
         ms: elapsedMs(started),
-        note: `queue_ms=${queueMs};upstream_request_failed`,
+        note: `queue_ms=${queueMs};upstream_request_failed${timedOut ? ';upstream_timeout=1' : ''}`,
       })
       throw new HttpError(status, detail)
     }
@@ -1162,6 +1246,7 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
       retryMax: config.deepseekRetryMax,
       retryBaseMs: config.deepseekRetryBaseMs,
       retryMaxMs: config.deepseekRetryMaxMs,
+      responseTimeoutMs: config.deepseekResponseTimeoutMs,
       prepareBody: prepareManagedResponsesBody,
       fetchWithRetry: fetchManagedResponsesWithRetry,
       RequestError: ManagedResponsesRequestError,
