@@ -57,6 +57,27 @@ export type NativeCodexTurn = {
   id: string
 }
 
+/** A source-native Codex review target; Electron never synthesizes review prompts. */
+export type NativeCodexReviewTarget =
+  | { type: 'uncommittedChanges' }
+  | { type: 'baseBranch', branch: string }
+  | { type: 'commit', sha: string, title?: string }
+  | { type: 'custom', instructions: string }
+
+export type NativeCodexReviewDelivery = 'inline' | 'detached'
+
+export type NativeCodexStartReviewInput = {
+  target: NativeCodexReviewTarget
+  /** Omitted keeps the upstream App Server default: inline. */
+  delivery?: NativeCodexReviewDelivery
+}
+
+export type NativeCodexReview = {
+  turn: NativeCodexTurn
+  /** Equals the parent Thread for inline reviews; a source-forked Thread otherwise. */
+  reviewThreadId: string
+}
+
 /**
  * The value is passed unchanged to Codex's `mcp_servers.<name>` schema. Rust
  * validates the transport and owns the persisted configuration; Electron only
@@ -318,6 +339,44 @@ function nativeTurnItemsView(value: unknown): 'notLoaded' | 'summary' | 'full' |
     throw new Error('CODEX_NATIVE_TURN_ITEMS_VIEW_INVALID')
   }
   return value
+}
+
+function nativeReviewLine(value: unknown, limit: number, error: string): string {
+  if (typeof value !== 'string' || value.length === 0 || value.length > limit || /[\u0000\r\n]/.test(value)) {
+    throw new Error(error)
+  }
+  const trimmed = value.trim()
+  if (!trimmed) throw new Error(error)
+  return trimmed
+}
+
+function nativeReviewTarget(value: NativeCodexReviewTarget): NativeCodexReviewTarget {
+  if (!value || typeof value !== 'object') throw new Error('CODEX_NATIVE_REVIEW_TARGET_INVALID')
+  switch (value.type) {
+    case 'uncommittedChanges':
+      return { type: 'uncommittedChanges' }
+    case 'baseBranch':
+      return { type: 'baseBranch', branch: nativeReviewLine(value.branch, 512, 'CODEX_NATIVE_REVIEW_TARGET_INVALID') }
+    case 'commit':
+      return {
+        type: 'commit',
+        sha: nativeReviewLine(value.sha, 512, 'CODEX_NATIVE_REVIEW_TARGET_INVALID'),
+        ...(value.title === undefined ? {} : { title: nativeReviewLine(value.title, 512, 'CODEX_NATIVE_REVIEW_TARGET_INVALID') }),
+      }
+    case 'custom':
+      if (typeof value.instructions !== 'string' || value.instructions.length === 0 || value.instructions.length > (1 << 20) || value.instructions.includes('\u0000')) {
+        throw new Error('CODEX_NATIVE_REVIEW_TARGET_INVALID')
+      }
+      if (!value.instructions.trim()) throw new Error('CODEX_NATIVE_REVIEW_TARGET_INVALID')
+      return { type: 'custom', instructions: value.instructions.trim() }
+    default:
+      throw new Error('CODEX_NATIVE_REVIEW_TARGET_INVALID')
+  }
+}
+
+function nativeReviewDelivery(value: NativeCodexReviewDelivery | undefined): NativeCodexReviewDelivery | undefined {
+  if (value === undefined || value === 'inline' || value === 'detached') return value
+  throw new Error('CODEX_NATIVE_REVIEW_DELIVERY_INVALID')
 }
 
 function validateTurnInput(value: NativeCodexTurnInput): boolean {
@@ -903,6 +962,33 @@ export class ElectronCodexNativeRuntime {
   async listCollaborationModes(thread: Pick<NativeCodexThread, 'id'>): Promise<CodexNativeJsonObject> {
     if (!nonEmptyText(thread.id)) throw new Error('CODEX_NATIVE_THREAD_ID_INVALID')
     return await this.requireClient().request<CodexNativeJsonObject>('collaborationMode/list', {})
+  }
+
+  /**
+   * Starts the upstream Rust reviewer. Detached delivery forks a native Rust
+   * Thread; this method records only its ephemeral workspace reconnect hint.
+   */
+  async startReview(
+    thread: Pick<NativeCodexThread, 'id'>,
+    input: NativeCodexStartReviewInput,
+  ): Promise<NativeCodexReview> {
+    if (!nonEmptyText(thread.id)) throw new Error('CODEX_NATIVE_THREAD_ID_INVALID')
+    const target = nativeReviewTarget(input.target)
+    const delivery = nativeReviewDelivery(input.delivery)
+    const response = await this.requireClient().request<CodexNativeJsonObject>('review/start', {
+      threadId: thread.id,
+      target,
+      ...(delivery === undefined ? {} : { delivery }),
+    })
+    const id = turnId(response)
+    const reviewThreadId = response.reviewThreadId
+    if (!nonEmptyText(reviewThreadId)) throw new Error('CODEX_NATIVE_REVIEW_RESPONSE_INVALID')
+    const workspace = this.threadWorkspaces.get(thread.id)
+    if (!workspace) throw new Error('CODEX_NATIVE_THREAD_WORKSPACE_UNAVAILABLE')
+    this.threadWorkspaces.set(reviewThreadId, workspace)
+    this.loadedThreads.add(reviewThreadId)
+    this.activeTurns.add(id)
+    return { turn: { id }, reviewThreadId }
   }
 
   async startTurn(thread: Pick<NativeCodexThread, 'id'>, input: readonly NativeCodexTurnInput[], clientUserMessageId?: string): Promise<NativeCodexTurn> {
