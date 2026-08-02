@@ -50,6 +50,12 @@ function requireDesktopFile(relativePath: string): string {
   return readFileSync(file, 'utf8')
 }
 
+function requireRepositoryFile(relativePath: string): string {
+  const file = path.join(repositoryRoot, relativePath)
+  if (!existsSync(file)) throw new Error(`产品协议边界缺少 ${relativePath}`)
+  return readFileSync(file, 'utf8')
+}
+
 async function gitOutput(...args: string[]): Promise<string> {
   const child = Bun.spawn(['git', '-C', engineRoot, ...args], { stdout: 'pipe', stderr: 'pipe' })
   const [exit, stdout, stderr] = await Promise.all([
@@ -103,6 +109,9 @@ async function main(): Promise<void> {
 
   const protocol = requireFile('codex-rs/app-server-protocol/src/protocol/common.rs')
   const runtime = requireDesktopFile('electron/services/codexNativeAppServer.ts')
+  const provider = requireDesktopFile('electron/services/codexNativeProvider.ts')
+  const ipcCapabilities = requireDesktopFile('electron/ipc/capabilities.ts')
+  const personalModels = requireRepositoryFile('ts/shared/product/personalModels.ts')
   const mainProcess = requireDesktopFile('electron/main.ts')
   const fallback = requireDesktopFile('electron/services/nativeServerRequestFallback.ts')
 
@@ -133,6 +142,15 @@ async function main(): Promise<void> {
   assertContains(runtime, 'this.client.isAvailable()', '异常退出后的原生 Thread 重连分支')
   assertContains(mainProcess, 'await nativeAgentRuntime?.invalidateModelRoute()', '凭据写入后撤销旧原生子进程')
   assertContains(mainProcess, 'getReadyNativeAgentThreadRuntime', '线程操作前重新接入当前原生模型路由')
+  assertContains(provider, "${prefix}.wire_api=${quoted('responses')}", '所有 App Server provider 固定使用 Responses wire API')
+  assertContains(provider, "if (profile.protocol === 'openai-responses')", '个人 Responses Key 直连分支')
+  assertContains(provider, "if (profile.protocol !== 'openai-compatible')", '未知个人协议 fail-closed')
+  assertContains(provider, 'class ChatCompletionsResponsesAdapter', '个人 Chat Completions 本机转换器')
+  assertContains(provider, "url.pathname !== '/v1/responses'", 'Chat 转换器对 Rust 暴露的唯一 Responses 路由')
+  assertContains(provider, "personalModelEndpoint(this.profile.base_url, 'chat/completions')", 'Chat 转换器唯一上游 Chat Completions 调用')
+  assertContains(ipcCapabilities, "value === 'openai-compatible' || value === 'openai-responses'", 'IPC 只接受两种个人 Key 协议')
+  assertContains(personalModels, "export const PERSONAL_MODEL_PROTOCOLS = [\n  'openai-compatible',\n  'openai-responses',", '个人模型配置只声明两种正式协议')
+  assertContains(personalModels, "if (rawProtocol === 'anthropic-messages') return []", '历史第三方配置只迁移丢弃，不进入原生 Agent 路由')
   assertContains(requireFile('codex-rs/app-server-protocol/src/protocol/v1.rs'), 'pub request_attestation: bool', '初始化 attestation 能力')
   assertContains(requireFile('codex-rs/app-server-protocol/src/protocol/v2/thread.rs'), '#[experimental("thread/start.runtimeWorkspaceRoots")]', 'thread/start 运行根目录字段')
   assertContains(requireFile('codex-rs/app-server-protocol/src/protocol/v2/thread.rs'), 'pub struct ThreadSettingsUpdateParams', 'thread/settings/update 参数')
