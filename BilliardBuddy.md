@@ -1,7 +1,7 @@
 # BilliardBuddy 项目指令
 
-这是 BilliardBuddy 的项目指令文件。在用户项目中，它与 `AGENTS.md` 属于同一指令层：Harness 从仓库根目录到当前工作目录逐层收集并冻结为当前 Turn 的任务上下文，路径更深、后加载的规则优先。目录化入口为 `.BilliardBuddy/BilliardBuddy.md`、`.BilliardBuddy/rules/*.md` 与 `.BilliardBuddy/BilliardBuddy.local.md`。本仓库根目录的 `AGENTS.md` 仅是本仓库开发智能体的约束，不能与用户项目中的同名文件混淆。
+这是用户项目可以放置的 BilliardBuddy 指令文件。Codex Rust Core 会按其原生工作区规则加载项目指令；本文件描述产品指令，不是本仓库开发规则。仓库开发规则见根目录 `AGENTS.md`。
 
-本仓库的产品重构目标、架构边界和验收标准见 [BilliardBuddy-重构合同.md](./BilliardBuddy-重构合同.md)。执行任何架构或前端重构前，先阅读其中的源码研究方法与对应工作流合同。
+建议只写对当前项目长期有效的目标、技术约束、验证方式和安全边界。不要写入密钥、访问令牌、临时运行日志或一次性施工计划。
 
-本文件只放本项目的长期 Agent 指令；不要把临时任务、密钥、供应商配置、运行日志或大篇施工记录写入这里。
+BilliardBuddy 不会把本文件变成第二套 Agent Harness：Thread、上下文、工具、审批和恢复仍由打包的 Codex Rust App Server 原生处理。

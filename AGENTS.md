@@ -6,7 +6,7 @@ This repository is built for agent-assisted development. Keep the root `AGENTS.m
 
 ## Working Principles
 
-- `BilliardBuddy-重构合同.md` 记录产品愿景、模块关系和完成结果。本仓库根目录的 `AGENTS.md` 只约束本仓库开发；BilliardBuddy 面向用户项目的指令语义与加载结果以产品合同为目标。
+- 当前产品边界、模块关系与运行架构见 `README.md` 和 `docs/重构/`。本仓库根目录的 `AGENTS.md` 只约束本仓库开发；BilliardBuddy 面向用户项目的指令语义与加载结果以锁定的 Codex Rust 运行时为目标。
 - Think from first principles. Start from the user's real intent, the expected product result, current code facts, and verification results.
 - If the goal or boundary is unclear, clarify it with the user before implementation.
 - Treat the user's current task and designated construction document as the source of truth for product direction. Treat live code and tests as the source of truth for the current implementation.
