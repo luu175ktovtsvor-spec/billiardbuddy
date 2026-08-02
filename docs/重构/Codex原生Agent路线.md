@@ -80,6 +80,8 @@ Skills、Hooks 与协作模式目录也直接读取 Rust App Server 的 `skills/
 
 统一 Bun 侧车不再接受 `agent-worker` 内部模式；即使手动传入该参数，也不能重新启动旧 Harness。Bun 侧车仅保留媒体/设置等 Product Server 职责（以及将在前端重做时一并清理的旧浏览器宿主），Agent 的实际进程入口唯一是 Electron Main 启动的 Rust App Server。
 
+随该入口删除的还有旧 `agent-engine`、`agent-worker`、ProductTask/Run 账本、TypeScript MCP/Skill/Hook/工具 Host、旧审批信封、旧协作器和它们专用的共享协议。它们不是禁用的备份，也不再参与编译；媒体、网关、用户模型设置、网络设置和最近项目的只读历史投影保留在独立路径。后续 Agent 能力只能补入 Rust App Server 的正式协议，不恢复上述 TypeScript 执行器。
+
 终态将新增 BilliardBuddy 的 **native Codex profile**：
 
 - 不再开启 `host_managed_tools_only`；使用上游工具、审批、沙箱、MCP、Skills、Hooks、Review 和 multi-agent；
