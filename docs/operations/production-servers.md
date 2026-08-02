@@ -19,7 +19,7 @@
 Gateway 与 Relay 是同一个 Compose 项目 `billiardbuddy`：
 
 - 发布目录：`/srv/billiardbuddy/releases/<release-id>`
-- 当前发布：`2323409abc8e`，源码 revision `2323409abc8e8c6f8eec07b0b87525d43d5d6aed`
+- 当前发布：`8f0000c84548`，源码 revision `8f0000c845482cd34aa9f30fa02cb7fe768bd6f0`
 - 当前目录软链接：`/srv/billiardbuddy/current`
 - Compose 文件：`deploy/production/compose.yml`
 - 密钥文件：`/srv/billiardbuddy/secrets/gateway.env`、`/srv/billiardbuddy/secrets/relay.env`，只记录在服务器，权限为 `0600`
@@ -43,21 +43,26 @@ Gateway/Relay 时不得使用 `--remove-orphans`，避免影响站点和桌面�
 
 ## 本次已验证的运行事实
 
-- `billiardbuddy-gateway-1` 运行镜像为 `billiardbuddy/gateway:2323409abc8e`，健康。
-- `billiardbuddy-relay-1` 运行镜像为 `billiardbuddy/relay:2323409abc8e`，健康。
+- `billiardbuddy-gateway-1` 运行镜像为 `billiardbuddy/gateway:8f0000c84548`，健康。
+- `billiardbuddy-relay-1` 运行镜像为 `billiardbuddy/relay:8f0000c84548`，健康。
 - 容器内 `/app/gateway/app.ts` SHA-256 与候选发布目录一致：
-  `24f4950026290df39f6f3dc66f7716a2058aa38e47b77ce032f9c20c2e4d0b19`；旧
+  `ec2bf039fbeb98060e655ee47833e519f43fef7fab99252b3d3e365d178566b2`；旧
   `deepseekChat.ts` 不在镜像中。
 - 本机与公网 `https://zzyppz.cn/gw/healthz` 均返回 200，并声明
   `bb-provider-gateway/1.0`。
 - 真实临时安装身份经 `/v1/auth/bootstrap` 调用 DeepSeek `deepseek-v4-flash` 的
   `/v1/responses`，收到 `response.created`、文本/推理增量及 `response.completed`；测试
   会话已注销，输出和令牌未记录。
+- 发布后以同一受管入口运行 `bun run verify:codex-managed-live`：原生 Rust App Server 的
+  Thread 创建、正常关闭后的恢复、工具写入、fork/归档、命令网络审批和中断均通过；临时安装
+  会话已注销。该探针不启动 Electron Renderer，也不覆盖 Windows、个人 Key、MCP、Skill、Hook
+  或异常退出后的恢复。
 - 发布前静态容量校验通过：Gateway 1000 窗口，Relay 队列 2000；MiMo 总并发 64，拆分为
   Media 48 与 Vision 16。它们是配置上限检查，不是 1000 用户真实上游压测。
 
-这证明当前的 Gateway/Relay 发布闭包、公开健康入口及托管 Responses 主路径可用；它不替代
-桌面 Rust App Server 的真实 Thread、工具、审批、恢复与 Windows/macOS 用户旅程验收。
+这证明当前的 Gateway/Relay 发布闭包、公开健康入口、托管 Responses 主路径及非 Renderer 的
+桌面 Rust App Server 受管链路可用；它仍不替代完整 Electron Renderer、Windows/macOS 用户旅程
+及上述未覆盖能力的验收。
 
 ## 发布流程
 
