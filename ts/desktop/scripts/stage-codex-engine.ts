@@ -143,6 +143,13 @@ function sha256(path: string): string {
   return createHash('sha256').update(readFileSync(path)).digest('hex')
 }
 
+function productPatchSha256(path: string): string {
+  // Match Git's LF canonicalization so a Windows checkout cannot alter the
+  // identity recorded in the reviewed product-patch contract.
+  const canonicalPatch = readFileSync(path, 'utf8').replace(/\r\n/g, '\n')
+  return createHash('sha256').update(canonicalPatch, 'utf8').digest('hex')
+}
+
 function expectedProductPatches(): CodexEngineProductPatch[] {
   if (!existsSync(productPatchRoot) || !lstatSync(productPatchRoot).isDirectory()) {
     throw new Error(`缺少 Codex 引擎产品补丁目录: ${productPatchRoot}`)
@@ -163,7 +170,7 @@ function expectedProductPatches(): CodexEngineProductPatch[] {
     if (!lstatSync(path).isFile() || lstatSync(path).isSymbolicLink()) {
       throw new Error(`Codex 引擎产品补丁不是普通文件: ${path}`)
     }
-    if (sha256(path) !== patch.sha256) {
+    if (productPatchSha256(path) !== patch.sha256) {
       throw new Error(`Codex 引擎产品补丁内容不符合发行合同: ${patch.file}`)
     }
     return { file: patch.file, sha256: patch.sha256 }
@@ -252,7 +259,7 @@ function resolveCargoCommand(): string {
 function applyProductPatches(sourceRoot: string, patches: readonly CodexEngineProductPatch[]): void {
   for (const patch of patches) {
     const patchPath = join(productPatchRoot, patch.file)
-    if (sha256(patchPath) !== patch.sha256) {
+    if (productPatchSha256(patchPath) !== patch.sha256) {
       throw new Error(`Codex 引擎产品补丁在构建前发生变化: ${patch.file}`)
     }
     run('git', ['apply', '--check', patchPath], sourceRoot)

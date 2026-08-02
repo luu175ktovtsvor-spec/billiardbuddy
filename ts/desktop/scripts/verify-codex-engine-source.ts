@@ -40,7 +40,11 @@ function requireProductPatch(file: string): string {
 }
 
 function productPatchSha256(file: string): string {
-  return createHash('sha256').update(readFileSync(path.join(productPatchRoot, file))).digest('hex')
+  // Git's canonical text form uses LF. Windows may materialize a text patch
+  // with CRLF in its working directory, which must not change the reviewed
+  // patch identity or make the cross-platform build reject the same commit.
+  const canonicalPatch = readFileSync(path.join(productPatchRoot, file), 'utf8').replace(/\r\n/g, '\n')
+  return createHash('sha256').update(canonicalPatch, 'utf8').digest('hex')
 }
 
 function assertContains(source: string, fragment: string, description: string): void {
