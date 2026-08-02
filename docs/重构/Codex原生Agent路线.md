@@ -68,6 +68,8 @@ BilliardBuddy Electron / React（品牌与桌面工作面）
 
 当前桌面本机边车已先完成启动链切断：它只启动媒体、图片、视频、语音、设置、凭据更新与能力快照服务；不再实例化 ProductTask、Run ledger、Worker、Cron、旧 Chrome 招聘桥或 ProductTask WebSocket。`/api/product/voice`、`/api/product/settings`、`/api/product/capabilities` 和目录选择器所需的 `/api/product/projects/recent` 继续存在；最近目录只从历史 `product-tasks.json` 做只读投影，绝不触发迁移、Core session 导入或写入。其他旧 Agent HTTP 接口及 `/ws/product/tasks/*` 均返回 `LEGACY_AGENT_BACKEND_RETIRED`，使旧执行路径不能被悄悄重新启用。
 
+招聘网站专用的 Chrome 扩展、Native Messaging、候选人操作账本及其 Electron IPC 也已从运行路径退役；`/api/browser` 同样明确返回 `LEGACY_AGENT_BACKEND_RETIRED`。这不削减 Codex 的浏览器/网页能力：正式路径将使用 Rust Core 的原生工具、Exec/sandbox 和 approval request，而不会把旧招聘桥改名后继续作为 Agent 工具。
+
 终态将新增 BilliardBuddy 的 **native Codex profile**：
 
 - 不再开启 `host_managed_tools_only`；使用上游工具、审批、沙箱、MCP、Skills、Hooks、Review 和 multi-agent；

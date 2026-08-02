@@ -6,7 +6,7 @@ import { handleStatusApi } from './api/status.js'
 import { handlePluginsApi } from './api/plugins.js'
 import { handleMcpApi } from './api/mcp.js'
 import { handleDiagnosticsApi } from './api/diagnostics.js'
-import { handleBrowserApi } from './api/browser.js'
+import { legacyAgentBackendRetiredResponse } from './api/productControl.js'
 
 type ApiRequestHandlers = {
   media: (req: Request, url: URL, segments: string[]) => Promise<Response>
@@ -52,7 +52,7 @@ export async function handleApiRequest(
       return handlers.product(req, url, segments)
 
     case 'browser':
-      return handleBrowserApi(req, url, segments)
+      return legacyAgentBackendRetiredResponse()
 
     default:
       return Response.json(
