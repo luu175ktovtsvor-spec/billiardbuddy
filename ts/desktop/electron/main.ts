@@ -38,6 +38,7 @@ import {
   ElectronCodexNativeRuntime,
   type CodexNativeJsonObject,
   type CodexNativeNotification,
+  type NativeCodexCollaborationMode,
   type NativeCodexPermissionMode,
   type NativeCodexStartReviewInput,
   type CodexNativeServerRequest,
@@ -201,6 +202,35 @@ function nativeAgentPermissionMode(value: unknown): NativeCodexPermissionMode {
   if (value === undefined) return 'ask'
   if (value === 'ask' || value === 'approve-for-me' || value === 'full-access') return value
   throw new Error('CODEX_NATIVE_PERMISSION_MODE_INVALID')
+}
+
+function nativeAgentCollaborationMode(value: unknown): NativeCodexCollaborationMode | undefined {
+  if (value === undefined || value === 'default' || value === 'plan') return value
+  throw new Error('CODEX_NATIVE_COLLABORATION_MODE_INVALID')
+}
+
+/**
+ * Collaboration mode changes subsequent native Agent behavior. Until the new
+ * renderer owns this selection, keep the acknowledgement in privileged Main
+ * instead of letting an IPC caller silently enable the planning preset.
+ */
+async function confirmNativeAgentCollaborationMode(
+  owner: BrowserWindow,
+  mode: NativeCodexCollaborationMode | undefined,
+): Promise<void> {
+  if (mode === undefined || mode === 'default') return
+  const { dialog } = await import('electron')
+  const result = await dialog.showMessageBox(owner, {
+    type: 'question',
+    title: '切换到 Agent 规划模式？',
+    message: '本次及后续 Turn 将采用 Codex Rust Core 的内置规划协作指令。',
+    detail: '不会安装第三方插件或加载额外技能目录；工具、沙箱和审批仍由原生 Codex 规则控制。',
+    buttons: ['取消', '继续'],
+    defaultId: 0,
+    cancelId: 0,
+    noLink: true,
+  })
+  if (result.response !== 1) throw new Error('CODEX_NATIVE_COLLABORATION_MODE_DECLINED')
 }
 
 /**
@@ -702,12 +732,16 @@ function registerIpcHandlers() {
       threadId: string
       input: Parameters<ElectronCodexNativeRuntime['startTurn']>[1]
       clientUserMessageId?: string
+      collaborationMode?: NativeCodexCollaborationMode
     }
     assertNativeAgentThreadOwner(event.sender.id, input.threadId)
+    const collaborationMode = nativeAgentCollaborationMode(input.collaborationMode)
+    await confirmNativeAgentCollaborationMode(currentWindow(event), collaborationMode)
     const turn = await (await getReadyNativeAgentThreadRuntime(input.threadId)).startTurn(
       { id: input.threadId },
       input.input,
       input.clientUserMessageId,
+      collaborationMode,
     )
     nativeAgentTurnOwners.set(turn.id, event.sender.id)
     return turn
