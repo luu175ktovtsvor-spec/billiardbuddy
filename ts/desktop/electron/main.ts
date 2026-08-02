@@ -368,6 +368,17 @@ function getNativeAgentRuntime(): ElectronCodexNativeRuntime {
   return nativeAgentRuntime
 }
 
+/**
+ * A credential change revokes the local App Server process, not the durable
+ * Rust Thread. Re-open that owned Thread through the current route before a
+ * subsequent thread-scoped operation reaches Core.
+ */
+async function getReadyNativeAgentThreadRuntime(threadId: string): Promise<ElectronCodexNativeRuntime> {
+  const runtime = getNativeAgentRuntime()
+  await runtime.ensureThread({ id: threadId }, await resolveNativeAgentRoute())
+  return runtime
+}
+
 function claimNativeAgentThread(ownerId: number, threadId: string): void {
   const existingOwnerId = nativeAgentThreadOwners.get(threadId)
   if (existingOwnerId !== undefined && existingOwnerId !== ownerId) {
@@ -388,7 +399,14 @@ function assertNativeAgentTurnOwner(ownerId: number, turnId: string): void {
 
 /** The renderer receives only summaries; user keys never leave Electron Main. */
 async function mutateProviderCredentials<T>(mutation: (service: ProviderCredentialService) => T): Promise<T> {
-  return mutation(getProviderCredentialService())
+  // A personal profile's raw key reaches only a single short-lived child.
+  // Do not allow a settings write to silently leave that old child usable.
+  // An active or starting Turn is intentionally rejected by the runtime: it
+  // must finish or be interrupted before its model capability can change.
+  nativeAgentRuntime?.assertModelRouteMayChange()
+  const result = mutation(getProviderCredentialService())
+  await nativeAgentRuntime?.invalidateModelRoute()
+  return result
 }
 
 function getServerRuntime() {
@@ -579,7 +597,7 @@ function registerIpcHandlers() {
   registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentReadThread, async (event, payload) => {
     const input = payload as { threadId: string }
     assertNativeAgentThreadOwner(event.sender.id, input.threadId)
-    return await getNativeAgentRuntime().readThread({ id: input.threadId })
+    return await (await getReadyNativeAgentThreadRuntime(input.threadId)).readThread({ id: input.threadId })
   })
   registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentForkThread, async (event, payload) => {
     const input = payload as { threadId: string, cwd: string, permissionMode: unknown, lastTurnId?: string }
@@ -601,7 +619,7 @@ function registerIpcHandlers() {
     assertNativeAgentThreadOwner(event.sender.id, input.threadId)
     const permissionMode = nativeAgentPermissionMode(input.permissionMode)
     if (permissionMode === 'full-access') await confirmNativeAgentFullAccess(currentWindow(event))
-    return await getNativeAgentRuntime().updatePermissionMode(
+    return await (await getReadyNativeAgentThreadRuntime(input.threadId)).updatePermissionMode(
       { id: input.threadId },
       permissionMode,
     )
@@ -613,7 +631,7 @@ function registerIpcHandlers() {
       clientUserMessageId?: string
     }
     assertNativeAgentThreadOwner(event.sender.id, input.threadId)
-    const turn = await getNativeAgentRuntime().startTurn(
+    const turn = await (await getReadyNativeAgentThreadRuntime(input.threadId)).startTurn(
       { id: input.threadId },
       input.input,
       input.clientUserMessageId,
@@ -642,7 +660,7 @@ function registerIpcHandlers() {
   registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentArchiveThread, async (event, payload) => {
     const input = payload as { threadId: string }
     assertNativeAgentThreadOwner(event.sender.id, input.threadId)
-    await getNativeAgentRuntime().archiveThread({ id: input.threadId })
+    await (await getReadyNativeAgentThreadRuntime(input.threadId)).archiveThread({ id: input.threadId })
     nativeAgentThreadOwners.delete(input.threadId)
   })
   registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentResolveApproval, (event, payload) => {
@@ -657,42 +675,42 @@ function registerIpcHandlers() {
   registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentConfigureMcpServer, async (event, payload) => {
     const input = payload as { threadId: string, name: string, config: CodexNativeJsonObject }
     assertNativeAgentThreadOwner(event.sender.id, input.threadId)
-    await getNativeAgentRuntime().configureMcpServer({ id: input.threadId }, input.name, input.config)
+    await (await getReadyNativeAgentThreadRuntime(input.threadId)).configureMcpServer({ id: input.threadId }, input.name, input.config)
   })
   registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentRemoveMcpServer, async (event, payload) => {
     const input = payload as { threadId: string, name: string }
     assertNativeAgentThreadOwner(event.sender.id, input.threadId)
-    await getNativeAgentRuntime().removeMcpServer({ id: input.threadId }, input.name)
+    await (await getReadyNativeAgentThreadRuntime(input.threadId)).removeMcpServer({ id: input.threadId }, input.name)
   })
   registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentListMcpServerStatuses, async (event, payload) => {
     const input = payload as { threadId: string }
     assertNativeAgentThreadOwner(event.sender.id, input.threadId)
-    return await getNativeAgentRuntime().listMcpServerStatuses({ id: input.threadId })
+    return await (await getReadyNativeAgentThreadRuntime(input.threadId)).listMcpServerStatuses({ id: input.threadId })
   })
   registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentStartMcpOAuth, async (event, payload) => {
     const input = payload as { threadId: string, name: string }
     assertNativeAgentThreadOwner(event.sender.id, input.threadId)
-    return await getNativeAgentRuntime().startMcpOAuth({ id: input.threadId }, input.name)
+    return await (await getReadyNativeAgentThreadRuntime(input.threadId)).startMcpOAuth({ id: input.threadId }, input.name)
   })
   registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentListSkills, async (event, payload) => {
     const input = payload as { threadId: string, cwd: string }
     assertNativeAgentThreadOwner(event.sender.id, input.threadId)
-    return await getNativeAgentRuntime().listSkills({ id: input.threadId }, input.cwd)
+    return await (await getReadyNativeAgentThreadRuntime(input.threadId)).listSkills({ id: input.threadId }, input.cwd)
   })
   registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentSetSkillEnabled, async (event, payload) => {
     const input = payload as { threadId: string, enabled: boolean } & NativeCodexSkillSelector
     assertNativeAgentThreadOwner(event.sender.id, input.threadId)
-    return await getNativeAgentRuntime().setSkillEnabled({ id: input.threadId }, input, input.enabled)
+    return await (await getReadyNativeAgentThreadRuntime(input.threadId)).setSkillEnabled({ id: input.threadId }, input, input.enabled)
   })
   registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentListHooks, async (event, payload) => {
     const input = payload as { threadId: string, cwd: string }
     assertNativeAgentThreadOwner(event.sender.id, input.threadId)
-    return await getNativeAgentRuntime().listHooks({ id: input.threadId }, input.cwd)
+    return await (await getReadyNativeAgentThreadRuntime(input.threadId)).listHooks({ id: input.threadId }, input.cwd)
   })
   registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentListCollaborationModes, async (event, payload) => {
     const input = payload as { threadId: string }
     assertNativeAgentThreadOwner(event.sender.id, input.threadId)
-    return await getNativeAgentRuntime().listCollaborationModes({ id: input.threadId })
+    return await (await getReadyNativeAgentThreadRuntime(input.threadId)).listCollaborationModes({ id: input.threadId })
   })
   registerHandler(ELECTRON_IPC_CHANNELS.commandInvoke, (_event, payload) => handleCommandInvoke(payload))
   registerHandler(ELECTRON_IPC_CHANNELS.clipboardReadText, () => clipboard.readText())

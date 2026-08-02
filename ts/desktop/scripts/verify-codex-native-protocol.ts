@@ -123,13 +123,20 @@ async function main(): Promise<void> {
   assertContains(runtime, 'runtimeWorkspaceRoots', '受控运行工作区根目录')
   assertContains(runtime, 'sandboxPolicy', '原生沙箱策略字段')
   assertContains(runtime, 'textElements: []', '原生文本输入元素默认值')
+  assertContains(runtime, "createHash('sha256')", '个人模型路由无明文凭据指纹')
+  assertContains(runtime, 'async invalidateModelRoute()', '个人模型变更后的子进程能力撤销')
+  assertContains(runtime, 'CODEX_NATIVE_ROUTE_CHANGE_REQUIRES_IDLE', '原生 Turn 期间的模型路由变更拦截')
+  assertContains(runtime, 'async ensureThread(', '撤销后由原生 Thread Store 重新加载线程')
+  assertContains(runtime, 'resumeStoredThread', '撤销后原生 thread/resume 恢复')
+  assertContains(mainProcess, 'await nativeAgentRuntime?.invalidateModelRoute()', '凭据写入后撤销旧原生子进程')
+  assertContains(mainProcess, 'getReadyNativeAgentThreadRuntime', '线程操作前重新接入当前原生模型路由')
   assertContains(requireFile('codex-rs/app-server-protocol/src/protocol/v1.rs'), 'pub request_attestation: bool', '初始化 attestation 能力')
   assertContains(requireFile('codex-rs/app-server-protocol/src/protocol/v2/thread.rs'), '#[experimental("thread/start.runtimeWorkspaceRoots")]', 'thread/start 运行根目录字段')
   assertContains(requireFile('codex-rs/app-server-protocol/src/protocol/v2/thread.rs'), 'pub struct ThreadSettingsUpdateParams', 'thread/settings/update 参数')
   assertContains(requireFile('codex-rs/app-server-protocol/src/protocol/v2/permissions.rs'), 'pub enum SandboxPolicy', '原生 SandboxPolicy')
   assertContains(requireFile('codex-rs/app-server-protocol/src/protocol/v2/turn.rs'), 'text_elements: Vec<TextElement>', '原生文本输入元素')
 
-  console.log(`[codex-native-protocol] ${clientRequestMethods.length} client requests, ${serverRequestMethods.length} server-request contracts and initialized notification verified against ${revision}`)
+  console.log(`[codex-native-protocol] ${clientRequestMethods.length} client requests, ${serverRequestMethods.length} server-request contracts, provider revocation and initialized notification verified against ${revision}`)
 }
 
 await main()

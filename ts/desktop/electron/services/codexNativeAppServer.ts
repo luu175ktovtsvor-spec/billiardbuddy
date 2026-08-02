@@ -1,4 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
 import {
@@ -127,7 +128,14 @@ function absoluteDirectory(value: string): string {
 
 function routeKey(route: CodexNativeModelRoute): string {
   if (route.kind === 'managed') return `managed\0${route.gatewayUrl}\0${route.model}`
-  return `personal\0${route.profile.id}\0${route.profile.protocol}\0${route.profile.base_url}\0${route.profile.model}`
+  // A profile can keep its id, endpoint and model while the user rotates its
+  // secret or changes a Chat-adapter option. Keep only a non-reversible route
+  // fingerprint in process memory, never the raw key, so the next idle use
+  // cannot reuse a child started with stale provider capability.
+  const fingerprint = createHash('sha256')
+    .update(JSON.stringify(route.profile))
+    .digest('base64url')
+  return `personal\0${fingerprint}`
 }
 
 function supportedEngineTarget(
@@ -477,6 +485,17 @@ export class ElectronCodexNativeRuntime {
   private provider?: StartedCodexNativeProvider
   private configuredRouteKey?: string
   private activeTurns = new Set<string>()
+  private pendingTurnStarts = 0
+  /**
+   * Ephemeral Main-process reconnect hints only. Rust remains the durable
+   * Thread owner; these paths are never persisted or used as Agent history.
+   */
+  private readonly threadWorkspaces = new Map<string, string>()
+  private readonly loadedThreads = new Set<string>()
+  /** Clients/providers launched before they become current must also be revocable. */
+  private readonly startingClients = new Set<CodexNativeAppServerClient>()
+  private readonly startingProviders = new Set<StartedCodexNativeProvider>()
+  private routeGeneration = 0
   private closePromise?: Promise<void>
 
   constructor(private readonly options: ElectronCodexNativeRuntimeOptions) {}
@@ -492,25 +511,33 @@ export class ElectronCodexNativeRuntime {
       modelProvider: NATIVE_PROVIDER_ID,
       ...permissions,
     })
-    return { id: threadId(response), permissionMode: permissionModeFromThreadResponse(response) }
+    const id = threadId(response)
+    this.threadWorkspaces.set(id, cwd)
+    this.loadedThreads.add(id)
+    return { id, permissionMode: permissionModeFromThreadResponse(response) }
   }
 
   async resumeThread(input: NativeCodexResumeThreadInput): Promise<NativeCodexThread> {
     if (!nonEmptyText(input.threadId)) throw new Error('CODEX_NATIVE_THREAD_ID_INVALID')
     const cwd = await this.workspace(input.cwd)
-    const client = await this.ensureClient(input.route, cwd)
-    const response = await client.request<CodexNativeJsonObject>('thread/resume', {
-      threadId: input.threadId,
-      cwd,
-      runtimeWorkspaceRoots: [cwd],
-      // The provider id stays fixed across managed and personal routes, so
-      // Rust remains the only durable owner of Thread metadata. Sending the
-      // selected model turns a changed credential route into a safe resume
-      // mismatch instead of silently sending an old Thread to a new model.
-      modelProvider: NATIVE_PROVIDER_ID,
-      model: this.provider!.model,
-    })
-    return { id: threadId(response), permissionMode: permissionModeFromThreadResponse(response) }
+    this.threadWorkspaces.set(input.threadId, cwd)
+    this.loadedThreads.delete(input.threadId)
+    return await this.resumeStoredThread(input.threadId, input.route)
+  }
+
+  /**
+   * Re-open an already owned Rust Thread after a local provider process was
+   * deliberately revoked. The workspace is an in-memory reconnect hint, not
+   * a replacement Thread record; the source Thread Store validates and owns
+   * the returned session.
+   */
+  async ensureThread(thread: Pick<NativeCodexThread, 'id'>, route: CodexNativeModelRoute): Promise<void> {
+    if (!nonEmptyText(thread.id)) throw new Error('CODEX_NATIVE_THREAD_ID_INVALID')
+    const cwd = this.threadWorkspaces.get(thread.id)
+    if (!cwd) throw new Error('CODEX_NATIVE_THREAD_WORKSPACE_UNAVAILABLE')
+    await this.ensureClient(route, cwd)
+    if (this.loadedThreads.has(thread.id)) return
+    await this.resumeStoredThread(thread.id, route)
   }
 
   /** Read durable history from the Rust Thread Store; Electron never caches it as authority. */
@@ -538,7 +565,10 @@ export class ElectronCodexNativeRuntime {
       ...permissions,
       ...(input.lastTurnId ? { lastTurnId: input.lastTurnId } : {}),
     })
-    return { id: threadId(response), permissionMode: permissionModeFromThreadResponse(response) }
+    const id = threadId(response)
+    this.threadWorkspaces.set(id, cwd)
+    this.loadedThreads.add(id)
+    return { id, permissionMode: permissionModeFromThreadResponse(response) }
   }
 
   /**
@@ -654,16 +684,21 @@ export class ElectronCodexNativeRuntime {
       throw new Error('CODEX_NATIVE_CLIENT_MESSAGE_ID_INVALID')
     }
     const client = this.requireClient()
-    const response = await client.request<CodexNativeJsonObject>('turn/start', {
-      threadId: thread.id,
-      ...(clientUserMessageId ? { clientUserMessageId } : {}),
-      input: input.map(item => item.type === 'text'
-        ? { type: 'text', text: item.text, textElements: [] }
-        : { type: 'image', url: item.url }),
-    })
-    const id = turnId(response)
-    this.activeTurns.add(id)
-    return { id }
+    this.pendingTurnStarts += 1
+    try {
+      const response = await client.request<CodexNativeJsonObject>('turn/start', {
+        threadId: thread.id,
+        ...(clientUserMessageId ? { clientUserMessageId } : {}),
+        input: input.map(item => item.type === 'text'
+          ? { type: 'text', text: item.text, textElements: [] }
+          : { type: 'image', url: item.url }),
+      })
+      const id = turnId(response)
+      this.activeTurns.add(id)
+      return { id }
+    } finally {
+      this.pendingTurnStarts = Math.max(0, this.pendingTurnStarts - 1)
+    }
   }
 
   async steerTurn(thread: Pick<NativeCodexThread, 'id'>, turn: NativeCodexTurn, text: string, clientUserMessageId?: string): Promise<void> {
@@ -690,6 +725,8 @@ export class ElectronCodexNativeRuntime {
   async archiveThread(thread: Pick<NativeCodexThread, 'id'>): Promise<void> {
     if (!nonEmptyText(thread.id)) throw new Error('CODEX_NATIVE_THREAD_ID_INVALID')
     await this.requireClient().request('thread/archive', { threadId: thread.id })
+    this.threadWorkspaces.delete(thread.id)
+    this.loadedThreads.delete(thread.id)
   }
 
   /** Called by the UI projection after an authoritative `turn/completed` event. */
@@ -697,7 +734,30 @@ export class ElectronCodexNativeRuntime {
     this.activeTurns.delete(turnId)
   }
 
+  /** A provider mutation must not interrupt or split a source-native Turn. */
+  assertModelRouteMayChange(): void {
+    if (this.activeTurns.size > 0 || this.pendingTurnStarts > 0) {
+      throw new Error('CODEX_NATIVE_ROUTE_CHANGE_REQUIRES_IDLE')
+    }
+  }
+
+  /**
+   * Revoke the current process-local provider capability after credential or
+   * route settings change. The durable Rust Thread Store is intentionally
+   * retained and idle Threads are source-resumed by `ensureThread`.
+   */
+  async invalidateModelRoute(): Promise<void> {
+    this.assertModelRouteMayChange()
+    this.routeGeneration += 1
+    await this.closeCurrentProcess()
+  }
+
   async close(): Promise<void> {
+    this.routeGeneration += 1
+    await this.closeCurrentProcess()
+  }
+
+  private async closeCurrentProcess(): Promise<void> {
     if (this.closePromise) return await this.closePromise
     this.closePromise = this.closeOnce()
     try { await this.closePromise } finally { this.closePromise = undefined }
@@ -707,27 +767,45 @@ export class ElectronCodexNativeRuntime {
   closeImmediately(): void {
     const client = this.client
     const provider = this.provider
+    const startingClients = [...this.startingClients]
+    const startingProviders = [...this.startingProviders]
     this.client = undefined
     this.provider = undefined
     this.configuredRouteKey = undefined
     this.activeTurns.clear()
+    this.pendingTurnStarts = 0
+    this.loadedThreads.clear()
+    this.threadWorkspaces.clear()
+    this.startingClients.clear()
+    this.startingProviders.clear()
+    this.routeGeneration += 1
     client?.closeImmediately()
+    for (const pendingClient of startingClients) pendingClient.closeImmediately()
     // A sudden Electron shutdown must revoke the per-process loopback
     // capability as well as killing Rust. `close()` synchronously aborts its
     // active requests and destroys sockets before awaiting the local server's
     // close callback, so it is safe to initiate from before-quit.
     void provider?.close().catch(() => undefined)
+    for (const pendingProvider of startingProviders) void pendingProvider.close().catch(() => undefined)
   }
 
   private async closeOnce(): Promise<void> {
     const client = this.client
     const provider = this.provider
+    const startingClients = [...this.startingClients]
+    const startingProviders = [...this.startingProviders]
     this.client = undefined
     this.provider = undefined
     this.configuredRouteKey = undefined
     this.activeTurns.clear()
+    this.pendingTurnStarts = 0
+    this.loadedThreads.clear()
+    this.startingClients.clear()
+    this.startingProviders.clear()
     await client?.close().catch(() => undefined)
     await provider?.close().catch(() => undefined)
+    await Promise.all(startingClients.map(pendingClient => pendingClient.close().catch(() => undefined)))
+    await Promise.all(startingProviders.map(pendingProvider => pendingProvider.close().catch(() => undefined)))
   }
 
   private requireClient(): CodexNativeAppServerClient {
@@ -738,12 +816,15 @@ export class ElectronCodexNativeRuntime {
   private async ensureClient(route: CodexNativeModelRoute, cwd: string): Promise<CodexNativeAppServerClient> {
     const nextRouteKey = routeKey(route)
     if (this.client && this.configuredRouteKey === nextRouteKey) return this.client
-    if (this.activeTurns.size > 0) throw new Error('CODEX_NATIVE_ROUTE_CHANGE_REQUIRES_IDLE')
-    await this.close()
+    this.assertModelRouteMayChange()
+    const generation = ++this.routeGeneration
+    await this.closeCurrentProcess()
     const provider = await startCodexNativeProvider(route)
+    this.startingProviders.add(provider)
+    let client: CodexNativeAppServerClient | undefined
     try {
       const engineHome = path.join(absoluteDirectory(this.options.userDataPath), 'codex-native')
-      const client = new CodexNativeAppServerClient({
+      client = new CodexNativeAppServerClient({
         command: await nativeAppServerCommand(this.options.desktopRoot),
         engineHome,
         cwd,
@@ -761,15 +842,48 @@ export class ElectronCodexNativeRuntime {
         },
         onServerRequest: this.options.onServerRequest,
       })
+      this.startingClients.add(client)
       await client.start()
+      this.startingClients.delete(client)
+      if (generation !== this.routeGeneration) {
+        await client.close().catch(() => undefined)
+        throw new Error('CODEX_NATIVE_ROUTE_CHANGED')
+      }
+      this.startingProviders.delete(provider)
       this.client = client
       this.provider = provider
       this.configuredRouteKey = nextRouteKey
       return client
     } catch (error) {
+      if (client) {
+        this.startingClients.delete(client)
+        await client.close().catch(() => undefined)
+      }
+      this.startingProviders.delete(provider)
       await provider.close().catch(() => undefined)
       throw error
     }
+  }
+
+  private async resumeStoredThread(threadIdValue: string, route: CodexNativeModelRoute): Promise<NativeCodexThread> {
+    const cwd = this.threadWorkspaces.get(threadIdValue)
+    if (!cwd) throw new Error('CODEX_NATIVE_THREAD_WORKSPACE_UNAVAILABLE')
+    const client = await this.ensureClient(route, cwd)
+    const response = await client.request<CodexNativeJsonObject>('thread/resume', {
+      threadId: threadIdValue,
+      cwd,
+      runtimeWorkspaceRoots: [cwd],
+      // The provider id stays fixed across managed and personal routes, so
+      // Rust remains the only durable owner of Thread metadata. Sending the
+      // selected model turns a changed credential route into a safe resume
+      // mismatch instead of silently sending an old Thread to a new model.
+      modelProvider: NATIVE_PROVIDER_ID,
+      model: this.provider!.model,
+    })
+    const id = threadId(response)
+    if (id !== threadIdValue) throw new Error('CODEX_NATIVE_THREAD_RESPONSE_INVALID')
+    this.loadedThreads.add(id)
+    return { id, permissionMode: permissionModeFromThreadResponse(response) }
   }
 
   private async workspace(value: string): Promise<string> {
