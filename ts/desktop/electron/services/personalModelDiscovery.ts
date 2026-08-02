@@ -12,6 +12,16 @@ const DISCOVERY_TIMEOUT_MS = 10_000
 const MAX_DISCOVERY_RESPONSE_BYTES = 2 * 1024 * 1024
 const MAX_DISCOVERED_MODELS = 500
 
+type DiscoveryFailureCode =
+  | 'PERSONAL_MODEL_DISCOVERY_AUTH_FAILED'
+  | 'PERSONAL_MODEL_DISCOVERY_ENDPOINT_UNSUPPORTED'
+  | 'PERSONAL_MODEL_DISCOVERY_TIMEOUT'
+  | 'PERSONAL_MODEL_DISCOVERY_RATE_LIMITED'
+  | 'PERSONAL_MODEL_DISCOVERY_NETWORK_FAILED'
+  | 'PERSONAL_MODEL_DISCOVERY_UPSTREAM_FAILED'
+  | 'PERSONAL_MODEL_DISCOVERY_RESPONSE_TOO_LARGE'
+  | 'PERSONAL_MODEL_DISCOVERY_INVALID_RESPONSE'
+
 export type PersonalModelDiscoveryInput = {
   base_url: string
   api_key: string
@@ -48,14 +58,32 @@ function modelsEndpoint(baseUrl: string): string {
   return url.toString()
 }
 
+function discoveryFailure(code: DiscoveryFailureCode): Error { return new Error(code) }
+
+function isDiscoveryFailure(error: unknown): error is Error {
+  return error instanceof Error && error.message.startsWith('PERSONAL_MODEL_DISCOVERY_')
+}
+
+function responseFailure(response: Response): DiscoveryFailureCode {
+  if (response.status === 401 || response.status === 403) return 'PERSONAL_MODEL_DISCOVERY_AUTH_FAILED'
+  if (response.status === 404 || response.status === 405) return 'PERSONAL_MODEL_DISCOVERY_ENDPOINT_UNSUPPORTED'
+  if (response.status === 408 || response.status === 504) return 'PERSONAL_MODEL_DISCOVERY_TIMEOUT'
+  if (response.status === 429) return 'PERSONAL_MODEL_DISCOVERY_RATE_LIMITED'
+  return 'PERSONAL_MODEL_DISCOVERY_UPSTREAM_FAILED'
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === 'AbortError'
+}
+
 async function readDiscoveryBody(response: Response): Promise<string> {
   const declaredLength = Number(response.headers.get('content-length') ?? 0)
   if (!Number.isFinite(declaredLength) || declaredLength > MAX_DISCOVERY_RESPONSE_BYTES) {
     await response.body?.cancel()
-    throw new Error('PERSONAL_MODEL_DISCOVERY_FAILED')
+    throw discoveryFailure('PERSONAL_MODEL_DISCOVERY_RESPONSE_TOO_LARGE')
   }
   const reader = response.body?.getReader()
-  if (!reader) throw new Error('PERSONAL_MODEL_DISCOVERY_FAILED')
+  if (!reader) throw discoveryFailure('PERSONAL_MODEL_DISCOVERY_INVALID_RESPONSE')
   const decoder = new TextDecoder()
   let bytes = 0
   let text = ''
@@ -66,7 +94,7 @@ async function readDiscoveryBody(response: Response): Promise<string> {
       bytes += value.byteLength
       if (bytes > MAX_DISCOVERY_RESPONSE_BYTES) {
         await reader.cancel()
-        throw new Error('PERSONAL_MODEL_DISCOVERY_FAILED')
+        throw discoveryFailure('PERSONAL_MODEL_DISCOVERY_RESPONSE_TOO_LARGE')
       }
       text += decoder.decode(value, { stream: true })
     }
@@ -78,12 +106,12 @@ async function readDiscoveryBody(response: Response): Promise<string> {
 
 function parseDiscoveredModelIds(raw: string): string[] {
   let value: unknown
-  try { value = JSON.parse(raw) } catch { throw new Error('PERSONAL_MODEL_DISCOVERY_FAILED') }
+  try { value = JSON.parse(raw) } catch { throw discoveryFailure('PERSONAL_MODEL_DISCOVERY_INVALID_RESPONSE') }
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    throw new Error('PERSONAL_MODEL_DISCOVERY_FAILED')
+    throw discoveryFailure('PERSONAL_MODEL_DISCOVERY_INVALID_RESPONSE')
   }
   const data = (value as { data?: unknown }).data
-  if (!Array.isArray(data)) throw new Error('PERSONAL_MODEL_DISCOVERY_FAILED')
+  if (!Array.isArray(data)) throw discoveryFailure('PERSONAL_MODEL_DISCOVERY_INVALID_RESPONSE')
   return [...new Set(data.flatMap(item => {
     if (!item || typeof item !== 'object' || Array.isArray(item)) return []
     const id = (item as { id?: unknown }).id
@@ -127,18 +155,25 @@ export async function discoverPersonalModels(
       redirect: 'error',
       signal: controller.signal,
     })
-  } catch {
-    throw new Error('PERSONAL_MODEL_DISCOVERY_FAILED')
+  } catch (error) {
+    throw discoveryFailure(isAbortError(error)
+      ? 'PERSONAL_MODEL_DISCOVERY_TIMEOUT'
+      : 'PERSONAL_MODEL_DISCOVERY_NETWORK_FAILED')
   } finally {
     clearTimeout(timeout)
   }
   if (!response.ok) {
     await response.body?.cancel()
-    throw new Error('PERSONAL_MODEL_DISCOVERY_FAILED')
+    throw discoveryFailure(responseFailure(response))
   }
-  const modelIds = await readDiscoveryBody(response)
-    .then(parseDiscoveredModelIds)
-    .catch(() => { throw new Error('PERSONAL_MODEL_DISCOVERY_FAILED') })
+  let modelIds: string[]
+  try {
+    modelIds = parseDiscoveredModelIds(await readDiscoveryBody(response))
+  } catch (error) {
+    throw isDiscoveryFailure(error)
+      ? error
+      : discoveryFailure('PERSONAL_MODEL_DISCOVERY_INVALID_RESPONSE')
+  }
   return {
     models: modelIds.map(id => {
       const catalogEntry = personalModelCatalogEntryForEndpoint({
