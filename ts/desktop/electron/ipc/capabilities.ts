@@ -22,6 +22,9 @@ const personalModelProfileId = (value: unknown): value is string =>
 const personalModelCatalogEntryId = (value: unknown): value is string =>
   typeof value === 'string' && /^[a-z0-9][a-z0-9._:/-]{2,160}$/i.test(value)
 
+const personalModelProviderPresetId = (value: unknown): value is string =>
+  typeof value === 'string' && /^[a-z0-9][a-z0-9._-]{1,80}$/i.test(value)
+
 const personalModelCapability = (value: unknown): boolean =>
   value === 'TextReasoning' || value === 'VisualEvidence'
 
@@ -521,6 +524,8 @@ export const ELECTRON_IPC_VALIDATORS = {
   [ELECTRON_IPC_CHANNELS.runtimeGetServerUrl]: noPayload,
   [ELECTRON_IPC_CHANNELS.modelConfigurationSummary]: noPayload,
   [ELECTRON_IPC_CHANNELS.modelConfigurationCatalog]: noPayload,
+  [ELECTRON_IPC_CHANNELS.modelConfigurationProviderPresets]: noPayload,
+  [ELECTRON_IPC_CHANNELS.modelConfigurationOpenProviderPortal]: personalModelProviderPresetId,
   [ELECTRON_IPC_CHANNELS.modelConfigurationDiscover]: modelConfigurationDiscover,
   [ELECTRON_IPC_CHANNELS.modelConfigurationSaveCatalog]: modelConfigurationSaveCatalog,
   [ELECTRON_IPC_CHANNELS.modelConfigurationSave]: modelConfigurationSave,

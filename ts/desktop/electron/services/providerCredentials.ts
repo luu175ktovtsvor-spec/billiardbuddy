@@ -18,6 +18,11 @@ import {
   personalModelCatalogEntry,
   type PersonalModelCatalogEntry,
 } from '../../../shared/product/personalModelCatalog'
+import {
+  personalModelProviderPreset,
+  personalModelProviderPresets,
+  type PersonalModelProviderPreset,
+} from '../../../shared/product/personalModelProviderCatalog'
 import type { CredentialStore } from './keychain'
 import {
   discoverPersonalModels,
@@ -79,6 +84,20 @@ export class ProviderCredentialService {
   summary(): ProviderCredentialConfigurationSummary { return summary(this.read()) }
 
   catalog(): readonly PersonalModelCatalogEntry[] { return personalModelCatalogEntries() }
+
+  /**
+   * Safe public onboarding metadata only: URLs and prefilled endpoint facts,
+   * never a saved credential or a model-capacity guess.
+   */
+  providerPresets(): readonly PersonalModelProviderPreset[] {
+    return personalModelProviderPresets()
+  }
+
+  providerPreset(id: string): PersonalModelProviderPreset {
+    const preset = personalModelProviderPreset(id)
+    if (!preset) throw new Error('PERSONAL_MODEL_PROVIDER_PRESET_UNAVAILABLE')
+    return preset
+  }
 
   async discover(input: PersonalModelDiscoveryInput): Promise<PersonalModelDiscoveryResult> {
     return await discoverPersonalModels(input)
