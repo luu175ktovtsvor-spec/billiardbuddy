@@ -3,7 +3,6 @@ import type {
   ProductCapabilityId,
   ProductCapabilitySnapshot,
 } from '../../../shared/product/capabilitySnapshot.js'
-import type { ProductScheduledTaskRun } from '../../../shared/product/scheduledTasks.js'
 import { loadNetworkSettings, getNetworkProxyFetchOptions } from './networkSettings.js'
 import { productGatewayConfigured, productGatewayTarget } from '../product/productGatewayRuntime.js'
 
@@ -24,12 +23,11 @@ type CapabilitySnapshotDependencies = {
   gatewayConfigured: () => boolean
   gatewayStatus: () => Promise<GatewayProductStatus>
   mediaToolchainStatus: () => Promise<{ ffmpeg: { available: boolean }; ffprobe: { available: boolean } }>
-  scheduledRuns: () => Promise<ProductScheduledTaskRun[]>
   now: () => Date
 }
 
-type CapabilitySnapshotOverrides = Pick<CapabilitySnapshotDependencies, 'mediaToolchainStatus' | 'scheduledRuns'>
-  & Partial<Omit<CapabilitySnapshotDependencies, 'mediaToolchainStatus' | 'scheduledRuns'>>
+type CapabilitySnapshotOverrides = Pick<CapabilitySnapshotDependencies, 'mediaToolchainStatus'>
+  & Partial<Omit<CapabilitySnapshotDependencies, 'mediaToolchainStatus'>>
 
 const GATEWAY_STATUS_BODY_LIMIT = 256 * 1024
 
@@ -146,17 +144,19 @@ export class ProductCapabilitySnapshotService {
   }
 
   async snapshot(): Promise<ProductCapabilitySnapshot> {
-    const [remote, media, browser, scheduledRuns] = await Promise.all([
+    const [remote, media, browser] = await Promise.all([
       this.remoteCapabilities(),
       this.mediaCapability(),
       this.browserCapability(),
-      this.deps.scheduledRuns().catch(() => null),
     ])
-    const scheduled: ProductCapability = scheduledRuns === null
-      ? { id: 'scheduled_tasks', state: 'degraded', reason_code: 'service_unavailable', repair_action: 'retry' }
-      : scheduledRuns.some(run => run.status === 'running')
-        ? { id: 'scheduled_tasks', state: 'running' }
-        : { id: 'scheduled_tasks', state: 'available' }
+    // The ProductTask scheduler was retired with the TypeScript Agent. Native
+    // Codex scheduling, if added, will expose its own explicit capability.
+    const scheduled: ProductCapability = {
+      id: 'scheduled_tasks',
+      state: 'degraded',
+      reason_code: 'service_unavailable',
+      repair_action: 'check_update',
+    }
     return {
       schema_version: 1,
       observed_at: this.deps.now().toISOString(),

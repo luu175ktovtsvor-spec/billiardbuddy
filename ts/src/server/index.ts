@@ -119,10 +119,6 @@ export function startServer(port = PORT, host = HOST) {
   )
   const productCapabilitySnapshots = new ProductCapabilitySnapshotService({
     mediaToolchainStatus: () => videoWorkbenchService.toolchainStatus(),
-    // The old scheduler was owned by ProductTask. It is intentionally not
-    // started while Rust Codex native scheduling is built, so capability reads
-    // surface the transition as unavailable instead of reporting a fake queue.
-    scheduledRuns: async () => { throw new Error('LEGACY_AGENT_BACKEND_RETIRED') },
   })
   const sidecarStorageUpgrade = Promise.all([
     mediaService.migrateSupportedStorage(),
