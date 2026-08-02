@@ -2,17 +2,67 @@ import { randomBytes } from 'node:crypto'
 import {
   normalizePersonalModelProfile,
   parsePersonalModelConfiguration,
+  safePersonalModelBaseUrl,
   validPersonalModelCapability,
   validPersonalModelProfileId,
+  type PersonalModelContextLimitSource,
   type PersonalModelCapability,
   type PersonalModelConfiguration,
   type PersonalModelConfigurationSummary,
   type PersonalModelProfile,
   type PersonalModelProfileInput,
 } from '../../../shared/product/personalModels'
+import {
+  personalModelCatalogEntries,
+  personalModelCatalogEntry,
+  type PersonalModelCatalogEntry,
+} from '../../../shared/product/personalModelCatalog'
 import type { CredentialStore } from './keychain'
+import {
+  discoverPersonalModels,
+  type PersonalModelDiscoveryInput,
+  type PersonalModelDiscoveryResult,
+} from './personalModelDiscovery'
 
 export type ProviderCredentialConfigurationSummary = PersonalModelConfigurationSummary
+
+function verifiedContextLimits(profile: Pick<PersonalModelProfile, 'context_limits_source'>): boolean {
+  return profile.context_limits_source === 'product-catalog' || profile.context_limits_source === 'user-declared'
+}
+
+function sameCapabilities(actual: unknown, expected: readonly PersonalModelCapability[]): boolean {
+  return Array.isArray(actual)
+    && actual.length === expected.length
+    && actual.every((capability, index) => capability === expected[index])
+}
+
+function resolveCatalogEntry(
+  input: PersonalModelProfileInput,
+  existing: PersonalModelProfile | undefined,
+): PersonalModelCatalogEntry | undefined {
+  const requested = input.catalog_entry_id
+  if (requested === null) return undefined
+  const id = requested ?? existing?.catalog_entry_id
+  if (id === undefined) return undefined
+  const entry = personalModelCatalogEntry(id)
+  if (!entry) throw new Error('PERSONAL_MODEL_CATALOG_ENTRY_UNAVAILABLE')
+  return entry
+}
+
+function assertCatalogContract(input: PersonalModelProfileInput, entry: PersonalModelCatalogEntry): void {
+  const authMode = input.auth_mode ?? 'bearer'
+  const supportsToolCalls = input.supports_tool_calls ?? true
+  const supportsParallelToolCalls = supportsToolCalls && (input.supports_parallel_tool_calls ?? true)
+  if (
+    input.model.trim() !== entry.model
+    || input.protocol !== entry.protocol
+    || safePersonalModelBaseUrl(input.base_url, input.protocol) !== entry.base_url
+    || authMode !== entry.auth_mode
+    || !sameCapabilities(input.capabilities, entry.capabilities)
+    || supportsToolCalls !== entry.supports_tool_calls
+    || supportsParallelToolCalls !== entry.supports_parallel_tool_calls
+  ) throw new Error('PERSONAL_MODEL_CATALOG_CONTRACT_MISMATCH')
+}
 
 function summary(value: PersonalModelConfiguration): ProviderCredentialConfigurationSummary {
   return {
@@ -27,6 +77,12 @@ export class ProviderCredentialService {
 
   summary(): ProviderCredentialConfigurationSummary { return summary(this.read()) }
 
+  catalog(): readonly PersonalModelCatalogEntry[] { return personalModelCatalogEntries() }
+
+  async discover(input: PersonalModelDiscoveryInput): Promise<PersonalModelDiscoveryResult> {
+    return await discoverPersonalModels(input)
+  }
+
   save(input: PersonalModelProfileInput): ProviderCredentialConfigurationSummary {
     const value = this.read()
     const id = input.id ?? `model_${randomBytes(12).toString('hex')}`
@@ -35,6 +91,23 @@ export class ProviderCredentialService {
     const hasContextWindow = input.context_window_tokens !== undefined
     const hasMaxOutput = input.max_output_tokens !== undefined
     if (hasContextWindow !== hasMaxOutput) throw new Error('PERSONAL_MODEL_CONTEXT_CONTRACT_REQUIRED')
+    if (input.catalog_entry_id === null && !hasContextWindow) {
+      // Switching away from a catalog route is deliberate.  The same retained
+      // numbers cannot silently become a user declaration for a new endpoint.
+      throw new Error('PERSONAL_MODEL_CONTEXT_CONTRACT_REQUIRED')
+    }
+    const catalogEntry = resolveCatalogEntry(input, existing)
+    const merged = {
+      ...existing,
+      ...input,
+      api_key: input.api_key.trim() || existing?.api_key || '',
+    }
+    if (catalogEntry) assertCatalogContract(merged, catalogEntry)
+    const contextLimitsSource: PersonalModelContextLimitSource = catalogEntry
+      ? 'product-catalog'
+      : hasContextWindow
+        ? 'user-declared'
+        : existing?.context_limits_source ?? 'user-declared'
     // Editing a profile must not require Electron Main to disclose its stored
     // secret back to the renderer. An empty key is therefore meaningful only
     // for an existing id and retains the encrypted value already on disk.
@@ -42,14 +115,19 @@ export class ProviderCredentialService {
     // the existing protocol-specific controls (and the encrypted key when
     // omitted) instead of silently resetting a working Agent route.
     const profile = normalizePersonalModelProfile({
-      ...existing,
-      ...input,
-      api_key: input.api_key.trim() || existing?.api_key || '',
+      ...merged,
+      ...(catalogEntry
+        ? {
+          context_window_tokens: catalogEntry.context_window_tokens,
+          max_output_tokens: catalogEntry.max_output_tokens,
+        }
+        : {}),
     }, id, {
-      // A new declaration upgrades an old profile. Omitting both values while
-      // editing retains the existing declaration state; it cannot bless a
-      // historical default by accident.
-      contextLimitsSource: hasContextWindow ? 'user-declared' : existing?.context_limits_source,
+      // A catalog entry is itself the declaration.  Otherwise only an
+      // explicitly submitted number pair upgrades an old profile; retained
+      // historical defaults never become an active Agent route by accident.
+      contextLimitsSource,
+      ...(catalogEntry ? { catalogEntryId: catalogEntry.id } : {}),
     })
     if (index >= 0) value.profiles[index] = profile
     else {
@@ -79,7 +157,7 @@ export class ProviderCredentialService {
       const profile = value.profiles.find(candidate => candidate.id === profileId)
       if (!profile?.capabilities.includes(capability)) throw new Error('PERSONAL_MODEL_CAPABILITY_UNAVAILABLE')
       if (capability === 'TextReasoning' && !profile.supports_tool_calls) throw new Error('PERSONAL_MODEL_TOOL_CALLS_REQUIRED')
-      if (capability === 'TextReasoning' && profile.context_limits_source !== 'user-declared') {
+      if (capability === 'TextReasoning' && !verifiedContextLimits(profile)) {
         throw new Error('PERSONAL_MODEL_CONTEXT_CONTRACT_REQUIRED')
       }
       value.routes[capability] = profile.id
@@ -108,7 +186,7 @@ export class ProviderCredentialService {
     const value = this.read()
     const id = value.routes.TextReasoning
     const profile = id ? value.profiles.find(candidate => candidate.id === id) ?? null : null
-    if (profile && profile.context_limits_source !== 'user-declared') {
+    if (profile && !verifiedContextLimits(profile)) {
       // Never silently fall back to the managed route: a user-selected BYOK
       // route with unknown limits must be repaired explicitly.
       throw new Error('PERSONAL_MODEL_CONTEXT_CONTRACT_REQUIRED')

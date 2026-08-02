@@ -89,13 +89,13 @@ function modelContextWindow(contextWindowTokens: unknown, error: string): number
 }
 
 function personalModelContextWindow(profile: PersonalModelProfile): number {
-  if (profile.context_limits_source !== 'user-declared') {
+  if (profile.context_limits_source === 'legacy-unverified') {
     throw new Error('CODEX_NATIVE_PERSONAL_MODEL_CONTEXT_CONTRACT_REQUIRED')
   }
-  // The user declares this provider contract from its documentation when
-  // configuring the Key. Core learns the actual full window instead of
-  // falling back to its unknown-model default; the native Core keeps sole
-  // ownership of output headroom and automatic compaction.
+  // Either BilliardBuddy's checked catalog or the user's explicit provider
+  // declaration supplies this contract. Core learns the actual full window
+  // instead of falling back to its unknown-model default; the native Core
+  // keeps sole ownership of output headroom and automatic compaction.
   return modelContextWindow(
     profile.context_window_tokens,
     'CODEX_NATIVE_PERSONAL_MODEL_LIMITS_INVALID',
