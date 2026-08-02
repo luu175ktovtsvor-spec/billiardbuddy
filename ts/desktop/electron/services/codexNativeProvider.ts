@@ -574,7 +574,7 @@ export async function startCodexNativeProvider(route: CodexNativeModelRoute): Pr
     if (!accessToken || !model) throw new Error('CODEX_NATIVE_MANAGED_ROUTE_INVALID')
     const envKey = 'BB_CODEX_GATEWAY_ACCESS_TOKEN'
     const config = providerOverrides({
-      id: 'billiardbuddy_managed',
+      id: 'billiardbuddy',
       name: 'BilliardBuddy managed DeepSeek',
       baseUrl: managedResponsesBaseUrl(route.gatewayUrl),
       envKey,
@@ -591,7 +591,7 @@ export async function startCodexNativeProvider(route: CodexNativeModelRoute): Pr
       ? { envKey: keyEnv }
       : { envHeaders: { [profile.auth_mode]: keyEnv } }
     const config = providerOverrides({
-      id: 'billiardbuddy_personal_responses',
+      id: 'billiardbuddy',
       name: 'BilliardBuddy personal Responses provider',
       baseUrl: profile.base_url,
       ...auth,
@@ -604,7 +604,7 @@ export async function startCodexNativeProvider(route: CodexNativeModelRoute): Pr
     const started = await adapter.start()
     const tokenEnv = 'BB_CODEX_CHAT_ADAPTER_TOKEN'
     const config = providerOverrides({
-      id: 'billiardbuddy_personal_chat',
+      id: 'billiardbuddy',
       name: 'BilliardBuddy local Chat Completions adapter',
       baseUrl: started.baseUrl,
       envHeaders: { [ENGINE_TOKEN_HEADER]: tokenEnv },

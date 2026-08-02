@@ -1,0 +1,526 @@
+import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
+import * as fs from 'node:fs/promises'
+import * as path from 'node:path'
+import {
+  startCodexNativeProvider,
+  type CodexNativeModelRoute,
+  type StartedCodexNativeProvider,
+} from './codexNativeProvider'
+
+type JsonPrimitive = string | number | boolean | null
+export type CodexNativeJsonValue = JsonPrimitive | CodexNativeJsonObject | CodexNativeJsonValue[]
+export type CodexNativeJsonObject = { [key: string]: CodexNativeJsonValue | undefined }
+
+type PendingRequest = {
+  resolve(value: CodexNativeJsonValue): void
+  reject(error: Error): void
+}
+
+export type CodexNativeNotification = {
+  method: string
+  params?: CodexNativeJsonValue
+}
+
+export type CodexNativeServerRequest = CodexNativeNotification & {
+  id: string | number
+}
+
+export type CodexNativeAppServerClientOptions = {
+  /** Resolved BilliardBuddy-owned binary; never a renderer-provided command. */
+  command: readonly string[]
+  /** BilliardBuddy's private Codex home. This is the sole Agent Thread Store. */
+  engineHome: string
+  /** Do not let process start-up implicitly enter an untrusted workspace. */
+  cwd?: string
+  configOverrides: readonly string[]
+  environment: Readonly<Record<string, string>>
+  onNotification?(notification: CodexNativeNotification): void | Promise<void>
+  onServerRequest?(request: CodexNativeServerRequest): Promise<CodexNativeJsonValue | undefined>
+}
+
+export type NativeCodexThread = {
+  id: string
+}
+
+export type NativeCodexTurn = {
+  id: string
+}
+
+export type NativeCodexStartThreadInput = {
+  cwd: string
+  route: CodexNativeModelRoute
+}
+
+export type NativeCodexResumeThreadInput = {
+  threadId: string
+  cwd: string
+  route: CodexNativeModelRoute
+}
+
+export type NativeCodexTurnInput =
+  | { type: 'text'; text: string }
+  | { type: 'image'; url: string }
+
+export type ElectronCodexNativeRuntimeOptions = {
+  /** The unpacked desktop root, where verified staged binaries are stored. */
+  desktopRoot: string
+  /** Electron app userData; never the user's standalone Codex home. */
+  userDataPath: string
+  onNotification?(notification: CodexNativeNotification): void | Promise<void>
+  /**
+   * App Server issues approvals as server requests. The UI bridge supplies the
+   * exact source-approved decision; no BilliardBuddy code invents one.
+   */
+  onServerRequest?(request: CodexNativeServerRequest): Promise<CodexNativeJsonValue | undefined>
+}
+
+const MAX_JSON_RPC_FRAME_BYTES = 128 * 1024 * 1024
+const APP_SERVER_SHUTDOWN_WAIT_MS = 1_000
+const NATIVE_PROVIDER_ID = 'billiardbuddy'
+
+function engineError(message: string, detail?: string): Error {
+  return new Error(detail ? `${message}: ${detail}` : message)
+}
+
+function jsonObject(value: unknown): CodexNativeJsonObject | undefined {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as CodexNativeJsonObject : undefined
+}
+
+function jsonRpcError(value: unknown): { code: number; message: string } | undefined {
+  const error = jsonObject(value)
+  return error && typeof error.code === 'number' && typeof error.message === 'string'
+    ? { code: error.code, message: error.message }
+    : undefined
+}
+
+function nonEmptyText(value: unknown, limit = 512): value is string {
+  return typeof value === 'string' && value.length > 0 && value.length <= limit
+}
+
+function absoluteDirectory(value: string): string {
+  if (!path.isAbsolute(value)) throw new Error('CODEX_NATIVE_PATH_INVALID')
+  return path.resolve(value)
+}
+
+function routeKey(route: CodexNativeModelRoute): string {
+  if (route.kind === 'managed') return `managed\0${route.gatewayUrl}\0${route.model}`
+  return `personal\0${route.profile.id}\0${route.profile.protocol}\0${route.profile.base_url}\0${route.profile.model}`
+}
+
+function supportedEngineTarget(
+  platform = process.platform,
+  arch = process.arch,
+): 'aarch64-apple-darwin' | 'x86_64-apple-darwin' | 'x86_64-pc-windows-msvc' | 'aarch64-pc-windows-msvc' {
+  if (platform === 'darwin' && arch === 'arm64') return 'aarch64-apple-darwin'
+  if (platform === 'darwin' && arch === 'x64') return 'x86_64-apple-darwin'
+  if (platform === 'win32' && arch === 'arm64') return 'aarch64-pc-windows-msvc'
+  if (platform === 'win32' && arch === 'x64') return 'x86_64-pc-windows-msvc'
+  throw new Error(`CODEX_NATIVE_PLATFORM_UNSUPPORTED:${platform}/${arch}`)
+}
+
+async function privateDirectory(directory: string): Promise<string> {
+  const resolved = path.resolve(directory)
+  await fs.mkdir(resolved, { recursive: true, mode: 0o700 })
+  const stat = await fs.lstat(resolved)
+  if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error('CODEX_NATIVE_HOME_INVALID')
+  return await fs.realpath(resolved)
+}
+
+async function nativeAppServerCommand(desktopRoot: string): Promise<string[]> {
+  const target = supportedEngineTarget()
+  const extension = process.platform === 'win32' ? '.exe' : ''
+  const binaryDirectory = path.join(absoluteDirectory(desktopRoot), 'runtime-assets', 'binaries')
+  const directory = await fs.realpath(binaryDirectory)
+  const binary = path.join(directory, `codex-app-server-${target}${extension}`)
+  const stat = await fs.lstat(binary)
+  if (!stat.isFile() || stat.isSymbolicLink() || (process.platform !== 'win32' && (stat.mode & 0o111) === 0)) {
+    throw new Error('CODEX_NATIVE_BINARY_UNAVAILABLE')
+  }
+  const resolved = await fs.realpath(binary)
+  if (path.dirname(resolved) !== directory) throw new Error('CODEX_NATIVE_BINARY_UNAVAILABLE')
+  return [resolved]
+}
+
+function childEnvironment(input: Readonly<Record<string, string>>): Record<string, string> {
+  const inheritedKeys = process.platform === 'win32'
+    ? ['PATH', 'PATHEXT', 'SystemRoot', 'WINDIR', 'ComSpec', 'TEMP', 'TMP']
+    : ['PATH', 'TMPDIR', 'TMP', 'TEMP', 'LANG', 'LC_ALL']
+  const environment: Record<string, string> = {}
+  for (const key of inheritedKeys) {
+    const value = process.env[key]
+    if (value) environment[key] = value
+  }
+  for (const [key, value] of Object.entries(input)) {
+    if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) && value) environment[key] = value
+  }
+  return environment
+}
+
+function threadId(value: CodexNativeJsonObject): string {
+  const thread = jsonObject(value.thread)
+  if (!nonEmptyText(thread?.id)) throw new Error('CODEX_NATIVE_THREAD_RESPONSE_INVALID')
+  return thread.id
+}
+
+function turnId(value: CodexNativeJsonObject): string {
+  const turn = jsonObject(value.turn)
+  if (!nonEmptyText(turn?.id)) throw new Error('CODEX_NATIVE_TURN_RESPONSE_INVALID')
+  return turn.id
+}
+
+function validateTurnInput(value: NativeCodexTurnInput): boolean {
+  if (value.type === 'text') return nonEmptyText(value.text, 1 << 20)
+  return nonEmptyText(value.url, 32 * 1024 * 1024)
+    && /^data:image\/(?:png|jpeg|webp|gif);base64,[A-Za-z0-9+/=]+$/.test(value.url)
+}
+
+/**
+ * Electron-Main JSON-RPC client for the official Codex App Server.
+ *
+ * It speaks the source's JSONL stdio transport directly. There is no Bun
+ * Product Server, local HTTP bridge, ProductTask state, or legacy permission
+ * envelope on this path.
+ */
+export class CodexNativeAppServerClient {
+  private process?: ChildProcessWithoutNullStreams
+  private readonly pending = new Map<number, PendingRequest>()
+  private nextRequestId = 0
+  private closed = false
+
+  constructor(private readonly options: CodexNativeAppServerClientOptions) {}
+
+  async start(): Promise<void> {
+    if (this.process || this.closed) throw new Error('CODEX_NATIVE_APP_SERVER_ALREADY_STARTED')
+    if (this.options.command.length === 0 || this.options.command.some(value => !nonEmptyText(value, 4_096))) {
+      throw new Error('CODEX_NATIVE_APP_SERVER_COMMAND_INVALID')
+    }
+    const engineHome = await privateDirectory(this.options.engineHome)
+    const environment = childEnvironment({ ...this.options.environment, CODEX_HOME: engineHome })
+    const command = this.options.command[0]!
+    const args = [
+      ...this.options.command.slice(1),
+      ...this.options.configOverrides.flatMap(value => ['--config', value]),
+      '--listen',
+      'stdio://',
+    ]
+    const child = spawn(command, args, {
+      cwd: this.options.cwd ? absoluteDirectory(this.options.cwd) : engineHome,
+      env: environment,
+      shell: false,
+      stdio: 'pipe',
+      windowsHide: true,
+    })
+    this.process = child
+    void this.readStdout(child)
+    void this.drainStderr(child).catch(() => undefined)
+    child.once('error', error => this.failAllPending(engineError('CODEX_NATIVE_APP_SERVER_SPAWN_FAILED', error.message)))
+    child.once('exit', (code, signal) => {
+      this.failAllPending(engineError('CODEX_NATIVE_APP_SERVER_EXITED', `code=${code ?? 'null'} signal=${signal ?? 'null'}`))
+    })
+    try {
+      const initialized = await this.request<CodexNativeJsonObject>('initialize', {
+        clientInfo: { name: 'billiardbuddy', title: 'BilliardBuddy', version: '1.0.0' },
+        capabilities: { experimentalApi: true },
+      })
+      if (initialized.codexHome !== engineHome) throw new Error('CODEX_NATIVE_APP_SERVER_HOME_MISMATCH')
+      this.notify('initialized', {})
+    } catch (error) {
+      await this.close()
+      throw error
+    }
+  }
+
+  async request<T extends CodexNativeJsonValue = CodexNativeJsonValue>(method: string, params?: CodexNativeJsonValue): Promise<T> {
+    if (!nonEmptyText(method)) throw new Error('CODEX_NATIVE_APP_SERVER_METHOD_INVALID')
+    if (!this.process || this.closed) throw new Error('CODEX_NATIVE_APP_SERVER_UNAVAILABLE')
+    const id = ++this.nextRequestId
+    const result = new Promise<CodexNativeJsonValue>((resolve, reject) => this.pending.set(id, { resolve, reject }))
+    try {
+      this.write({ jsonrpc: '2.0', id, method, ...(params === undefined ? {} : { params }) })
+    } catch (error) {
+      this.pending.delete(id)
+      throw error
+    }
+    return await result as T
+  }
+
+  notify(method: string, params?: CodexNativeJsonValue): void {
+    if (!nonEmptyText(method)) throw new Error('CODEX_NATIVE_APP_SERVER_METHOD_INVALID')
+    if (!this.process || this.closed) throw new Error('CODEX_NATIVE_APP_SERVER_UNAVAILABLE')
+    this.write({ jsonrpc: '2.0', method, ...(params === undefined ? {} : { params }) })
+  }
+
+  async close(): Promise<void> {
+    if (this.closed) return
+    this.closed = true
+    const child = this.process
+    this.process = undefined
+    this.failAllPending(engineError('CODEX_NATIVE_APP_SERVER_CLOSED'))
+    if (!child) return
+    try { child.stdin.end() } catch {}
+    const exited = await Promise.race([
+      new Promise<boolean>(resolve => child.once('exit', () => resolve(true))),
+      new Promise<boolean>(resolve => setTimeout(() => resolve(false), APP_SERVER_SHUTDOWN_WAIT_MS)),
+    ])
+    if (!exited) {
+      try { child.kill() } catch {}
+    }
+  }
+
+  private write(frame: CodexNativeJsonObject): void {
+    const stdin = this.process?.stdin
+    if (!stdin || stdin.destroyed) throw new Error('CODEX_NATIVE_APP_SERVER_STDIN_UNAVAILABLE')
+    const serialized = `${JSON.stringify(frame)}\n`
+    if (Buffer.byteLength(serialized) > MAX_JSON_RPC_FRAME_BYTES) throw new Error('CODEX_NATIVE_APP_SERVER_FRAME_TOO_LARGE')
+    stdin.write(serialized)
+  }
+
+  private async readStdout(child: ChildProcessWithoutNullStreams): Promise<void> {
+    let buffer = ''
+    child.stdout.setEncoding('utf8')
+    try {
+      for await (const chunk of child.stdout) {
+        buffer += String(chunk)
+        if (Buffer.byteLength(buffer) > MAX_JSON_RPC_FRAME_BYTES) throw new Error('CODEX_NATIVE_APP_SERVER_FRAME_TOO_LARGE')
+        let boundary: number
+        while ((boundary = buffer.indexOf('\n')) >= 0) {
+          const line = buffer.slice(0, boundary).trim()
+          buffer = buffer.slice(boundary + 1)
+          if (!line) continue
+          if (Buffer.byteLength(line) > MAX_JSON_RPC_FRAME_BYTES) throw new Error('CODEX_NATIVE_APP_SERVER_FRAME_TOO_LARGE')
+          let message: unknown
+          try { message = JSON.parse(line) } catch { throw new Error('CODEX_NATIVE_APP_SERVER_PROTOCOL_INVALID') }
+          await this.handleMessage(message)
+        }
+      }
+      if (buffer.trim()) throw new Error('CODEX_NATIVE_APP_SERVER_PROTOCOL_INVALID')
+    } catch (error) {
+      this.failAllPending(error instanceof Error ? error : engineError('CODEX_NATIVE_APP_SERVER_PROTOCOL_INVALID'))
+      try { child.kill() } catch {}
+    }
+  }
+
+  private async drainStderr(child: ChildProcessWithoutNullStreams): Promise<void> {
+    child.stderr.setEncoding('utf8')
+    // Rust diagnostics can contain user-path or provider messages. Drain them
+    // so the child cannot block, but do not retain or forward them as Agent
+    // state or a renderer-visible error channel.
+    for await (const _chunk of child.stderr) {}
+  }
+
+  private async handleMessage(value: unknown): Promise<void> {
+    const message = jsonObject(value)
+    if (!message || (message.jsonrpc !== undefined && message.jsonrpc !== '2.0')) {
+      throw new Error('CODEX_NATIVE_APP_SERVER_PROTOCOL_INVALID')
+    }
+    if (typeof message.id === 'number' && (message.result !== undefined || message.error !== undefined)) {
+      const pending = this.pending.get(message.id)
+      if (!pending) return
+      this.pending.delete(message.id)
+      const error = message.error === undefined ? undefined : jsonRpcError(message.error)
+      if (message.error !== undefined && !error) return pending.reject(engineError('CODEX_NATIVE_APP_SERVER_PROTOCOL_INVALID'))
+      if (error) return pending.reject(engineError('CODEX_NATIVE_APP_SERVER_REQUEST_FAILED', `${error.code} ${error.message}`))
+      return pending.resolve(message.result ?? null)
+    }
+    if (!nonEmptyText(message.method)) throw new Error('CODEX_NATIVE_APP_SERVER_PROTOCOL_INVALID')
+    const notification: CodexNativeNotification = {
+      method: message.method,
+      ...(message.params === undefined ? {} : { params: message.params }),
+    }
+    if (typeof message.id !== 'number' && typeof message.id !== 'string') {
+      await this.options.onNotification?.(notification)
+      return
+    }
+    try {
+      if (!this.options.onServerRequest) throw new Error('CODEX_NATIVE_APP_SERVER_REQUEST_UNHANDLED')
+      const result = await this.options.onServerRequest({ ...notification, id: message.id })
+      this.write({ jsonrpc: '2.0', id: message.id, result: result ?? {} })
+    } catch (error) {
+      const description = error instanceof Error ? error.message : 'CODEX_NATIVE_APP_SERVER_REQUEST_FAILED'
+      this.write({ jsonrpc: '2.0', id: message.id, error: { code: -32000, message: description } })
+    }
+  }
+
+  private failAllPending(error: Error): void {
+    for (const pending of this.pending.values()) pending.reject(error)
+    this.pending.clear()
+  }
+}
+
+/**
+ * Direct Thread/Turn owner for BilliardBuddy Agent.
+ *
+ * The upstream Rust Core persists Threads, Items, compactions, approvals,
+ * forks and recovery below this object's private `CODEX_HOME`. This manager
+ * holds only process handles and a non-secret route identity while alive.
+ */
+export class ElectronCodexNativeRuntime {
+  private client?: CodexNativeAppServerClient
+  private provider?: StartedCodexNativeProvider
+  private configuredRouteKey?: string
+  private activeTurns = new Set<string>()
+  private closePromise?: Promise<void>
+
+  constructor(private readonly options: ElectronCodexNativeRuntimeOptions) {}
+
+  async startThread(input: NativeCodexStartThreadInput): Promise<NativeCodexThread> {
+    const cwd = await this.workspace(input.cwd)
+    const client = await this.ensureClient(input.route, cwd)
+    const response = await client.request<CodexNativeJsonObject>('thread/start', {
+      cwd,
+      runtimeWorkspaceRoots: [cwd],
+      model: this.provider!.model,
+      modelProvider: NATIVE_PROVIDER_ID,
+      sandbox: 'workspace-write',
+      approvalPolicy: 'on-request',
+      approvalsReviewer: 'user',
+    })
+    return { id: threadId(response) }
+  }
+
+  async resumeThread(input: NativeCodexResumeThreadInput): Promise<NativeCodexThread> {
+    if (!nonEmptyText(input.threadId)) throw new Error('CODEX_NATIVE_THREAD_ID_INVALID')
+    const cwd = await this.workspace(input.cwd)
+    const client = await this.ensureClient(input.route, cwd)
+    const response = await client.request<CodexNativeJsonObject>('thread/resume', {
+      threadId: input.threadId,
+      cwd,
+      runtimeWorkspaceRoots: [cwd],
+      // The provider id stays fixed across managed and personal routes, so
+      // Rust remains the only durable owner of Thread metadata. Sending the
+      // selected model turns a changed credential route into a safe resume
+      // mismatch instead of silently sending an old Thread to a new model.
+      modelProvider: NATIVE_PROVIDER_ID,
+      model: this.provider!.model,
+    })
+    return { id: threadId(response) }
+  }
+
+  async forkThread(input: NativeCodexResumeThreadInput & { lastTurnId?: string }): Promise<NativeCodexThread> {
+    if (!nonEmptyText(input.threadId)) throw new Error('CODEX_NATIVE_THREAD_ID_INVALID')
+    const cwd = await this.workspace(input.cwd)
+    const client = await this.ensureClient(input.route, cwd)
+    const response = await client.request<CodexNativeJsonObject>('thread/fork', {
+      threadId: input.threadId,
+      cwd,
+      runtimeWorkspaceRoots: [cwd],
+      ...(input.lastTurnId ? { lastTurnId: input.lastTurnId } : {}),
+    })
+    return { id: threadId(response) }
+  }
+
+  async startTurn(thread: NativeCodexThread, input: readonly NativeCodexTurnInput[], clientUserMessageId?: string): Promise<NativeCodexTurn> {
+    if (!nonEmptyText(thread.id) || input.length === 0 || input.length > 64 || !input.every(validateTurnInput)) {
+      throw new Error('CODEX_NATIVE_TURN_INPUT_INVALID')
+    }
+    if (clientUserMessageId !== undefined && !nonEmptyText(clientUserMessageId, 512)) {
+      throw new Error('CODEX_NATIVE_CLIENT_MESSAGE_ID_INVALID')
+    }
+    const client = this.requireClient()
+    const response = await client.request<CodexNativeJsonObject>('turn/start', {
+      threadId: thread.id,
+      ...(clientUserMessageId ? { clientUserMessageId } : {}),
+      input: [...input],
+    })
+    const id = turnId(response)
+    this.activeTurns.add(id)
+    return { id }
+  }
+
+  async steerTurn(thread: NativeCodexThread, turn: NativeCodexTurn, text: string, clientUserMessageId?: string): Promise<void> {
+    if (!nonEmptyText(thread.id) || !nonEmptyText(turn.id) || !nonEmptyText(text, 1 << 20)) {
+      throw new Error('CODEX_NATIVE_STEER_INPUT_INVALID')
+    }
+    if (clientUserMessageId !== undefined && !nonEmptyText(clientUserMessageId, 512)) {
+      throw new Error('CODEX_NATIVE_CLIENT_MESSAGE_ID_INVALID')
+    }
+    await this.requireClient().request('turn/steer', {
+      threadId: thread.id,
+      expectedTurnId: turn.id,
+      ...(clientUserMessageId ? { clientUserMessageId } : {}),
+      input: [{ type: 'text', text }],
+    })
+  }
+
+  async interruptTurn(thread: NativeCodexThread, turn: NativeCodexTurn): Promise<void> {
+    if (!nonEmptyText(thread.id) || !nonEmptyText(turn.id)) throw new Error('CODEX_NATIVE_TURN_ID_INVALID')
+    await this.requireClient().request('turn/interrupt', { threadId: thread.id, turnId: turn.id })
+    this.activeTurns.delete(turn.id)
+  }
+
+  async archiveThread(thread: NativeCodexThread): Promise<void> {
+    if (!nonEmptyText(thread.id)) throw new Error('CODEX_NATIVE_THREAD_ID_INVALID')
+    await this.requireClient().request('thread/archive', { threadId: thread.id })
+  }
+
+  /** Called by the UI projection after an authoritative `turn/completed` event. */
+  markTurnCompleted(turnId: string): void {
+    this.activeTurns.delete(turnId)
+  }
+
+  async close(): Promise<void> {
+    if (this.closePromise) return await this.closePromise
+    this.closePromise = this.closeOnce()
+    try { await this.closePromise } finally { this.closePromise = undefined }
+  }
+
+  private async closeOnce(): Promise<void> {
+    const client = this.client
+    const provider = this.provider
+    this.client = undefined
+    this.provider = undefined
+    this.configuredRouteKey = undefined
+    this.activeTurns.clear()
+    await client?.close().catch(() => undefined)
+    await provider?.close().catch(() => undefined)
+  }
+
+  private requireClient(): CodexNativeAppServerClient {
+    if (!this.client || !this.provider) throw new Error('CODEX_NATIVE_RUNTIME_UNAVAILABLE')
+    return this.client
+  }
+
+  private async ensureClient(route: CodexNativeModelRoute, cwd: string): Promise<CodexNativeAppServerClient> {
+    const nextRouteKey = routeKey(route)
+    if (this.client && this.configuredRouteKey === nextRouteKey) return this.client
+    if (this.activeTurns.size > 0) throw new Error('CODEX_NATIVE_ROUTE_CHANGE_REQUIRES_IDLE')
+    await this.close()
+    const provider = await startCodexNativeProvider(route)
+    try {
+      const engineHome = path.join(absoluteDirectory(this.options.userDataPath), 'codex-native')
+      const client = new CodexNativeAppServerClient({
+        command: await nativeAppServerCommand(this.options.desktopRoot),
+        engineHome,
+        cwd,
+        configOverrides: provider.configOverrides,
+        environment: provider.environment,
+        onNotification: async notification => {
+          const completedTurn = jsonObject(jsonObject(notification.params)?.turn)?.id
+          if (notification.method === 'turn/completed' && typeof completedTurn === 'string') this.markTurnCompleted(completedTurn)
+          try {
+            await this.options.onNotification?.(notification)
+          } catch {
+            // A renderer projection may disappear during navigation. It must
+            // not terminate the authoritative Rust session or strand a tool.
+          }
+        },
+        onServerRequest: this.options.onServerRequest,
+      })
+      await client.start()
+      this.client = client
+      this.provider = provider
+      this.configuredRouteKey = nextRouteKey
+      return client
+    } catch (error) {
+      await provider.close().catch(() => undefined)
+      throw error
+    }
+  }
+
+  private async workspace(value: string): Promise<string> {
+    const resolved = absoluteDirectory(value)
+    const stat = await fs.lstat(resolved)
+    if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error('CODEX_NATIVE_WORKSPACE_INVALID')
+    return await fs.realpath(resolved)
+  }
+}
