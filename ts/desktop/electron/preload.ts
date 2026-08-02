@@ -217,7 +217,9 @@ if (process.isMainFrame) {
         providerPresetId,
       ),
       discover: (input: unknown) => invoke(ELECTRON_IPC_CHANNELS.modelConfigurationDiscover, input),
+      discoverPreset: (input: unknown) => invoke(ELECTRON_IPC_CHANNELS.modelConfigurationDiscoverPreset, input),
       saveCatalog: (input: unknown) => invoke(ELECTRON_IPC_CHANNELS.modelConfigurationSaveCatalog, input),
+      savePreset: (input: unknown) => invoke(ELECTRON_IPC_CHANNELS.modelConfigurationSavePreset, input),
       save: (input: unknown) => invoke(ELECTRON_IPC_CHANNELS.modelConfigurationSave, input),
       setRoute: (capability: unknown, profileId: string | null) => invoke(
         ELECTRON_IPC_CHANNELS.modelConfigurationSetRoute,

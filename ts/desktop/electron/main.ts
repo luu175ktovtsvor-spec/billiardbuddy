@@ -602,8 +602,12 @@ function registerIpcHandlers() {
   })
   registerHandler(ELECTRON_IPC_CHANNELS.modelConfigurationDiscover, async (_event, payload) =>
     await getProviderCredentialService().discover(payload as Parameters<ProviderCredentialService['discover']>[0]))
+  registerHandler(ELECTRON_IPC_CHANNELS.modelConfigurationDiscoverPreset, async (_event, payload) =>
+    await getProviderCredentialService().discoverPreset(payload as Parameters<ProviderCredentialService['discoverPreset']>[0]))
   registerHandler(ELECTRON_IPC_CHANNELS.modelConfigurationSaveCatalog, (_event, payload) =>
     mutateProviderCredentials(service => service.saveCatalog(payload as Parameters<ProviderCredentialService['saveCatalog']>[0])))
+  registerHandler(ELECTRON_IPC_CHANNELS.modelConfigurationSavePreset, (_event, payload) =>
+    mutateProviderCredentials(service => service.savePreset(payload as Parameters<ProviderCredentialService['savePreset']>[0])))
   registerHandler(ELECTRON_IPC_CHANNELS.modelConfigurationSave, (_event, payload) =>
     mutateProviderCredentials(service => service.save(payload as Parameters<ProviderCredentialService['save']>[0])))
   registerHandler(ELECTRON_IPC_CHANNELS.modelConfigurationSetRoute, (_event, payload) => {
