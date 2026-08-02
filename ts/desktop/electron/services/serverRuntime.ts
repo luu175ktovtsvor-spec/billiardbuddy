@@ -15,7 +15,6 @@ import {
   SERVER_CONTROL_HOST,
   SERVER_STARTUP_TIMEOUT_MS,
   spawnSidecar,
-  stripSidecarSecretEnv,
   waitForServer,
   writeLastServerPort,
   type SidecarChild,
@@ -76,10 +75,9 @@ export class ElectronServerRuntime {
     this.gatewayAccessTokenCapability = options.gatewayAccessTokenCapability
   }
 
-  /** Build a sidecar base env after removing inherited credential material. */
-  private async buildServerEnv(baseEnv: NodeJS.ProcessEnv): Promise<NodeJS.ProcessEnv> {
-    const cleanBase = stripSidecarSecretEnv(baseEnv)
-    const withGateway = applyGatewayConfigToEnv(cleanBase, this.resolveGatewayConfig?.())
+  /** Build only Main-owned values that may cross the sidecar credential boundary. */
+  private async buildTrustedServerEnv(): Promise<NodeJS.ProcessEnv> {
+    const withGateway = applyGatewayConfigToEnv({}, this.resolveGatewayConfig?.())
     const withMediaCapability = this.mediaUiCapability
       ? { ...withGateway, BB_MEDIA_UI_CAPABILITY: this.mediaUiCapability }
       : withGateway
@@ -87,22 +85,16 @@ export class ElectronServerRuntime {
       ? { ...withMediaCapability, BB_GATEWAY_ACCESS_TOKEN_CAPABILITY: this.gatewayAccessTokenCapability }
       : withMediaCapability
 
-    // The App Server command is product-controlled. Never honor an inherited
-    // path here: it would let a renderer launch a user-selected binary once the
-    // Agent execution kernel starts consuming this capability.
-    const withoutInheritedEngineDir = { ...withGatewayCapability }
-    delete withoutInheritedEngineDir.BB_CODEX_ENGINE_BIN_DIR
-
+    // The App Server command is product-controlled. Never inherit a path here:
+    // it would let a user shell or renderer redirect the execution kernel.
     const runtimeBinDir = path.join(this.desktopRoot, 'runtime-assets', 'binaries')
     const engineTriple = resolveEngineTargetTriple()
     const engineBinary = process.platform === 'win32'
       ? `codex-app-server-${engineTriple}.exe`
       : `codex-app-server-${engineTriple}`
     const withEngineCapability = existsSync(path.join(runtimeBinDir, engineBinary))
-      ? { ...withoutInheritedEngineDir, BB_CODEX_ENGINE_BIN_DIR: runtimeBinDir }
-      : withoutInheritedEngineDir
-
-    if (withEngineCapability.BB_MEDIA_BIN_DIR) return withEngineCapability
+      ? { ...withGatewayCapability, BB_CODEX_ENGINE_BIN_DIR: runtimeBinDir }
+      : withGatewayCapability
 
     const mediaBinDir = runtimeBinDir
     const executableSuffix = process.platform === 'win32' ? '.exe' : ''
@@ -191,13 +183,15 @@ export class ElectronServerRuntime {
     const port = await reserveServerPort(SERVER_BIND_HOST, preferredServerPorts())
     const url = `http://${SERVER_CONTROL_HOST}:${port}`
     const logs: string[] = []
-    const env = await this.buildServerEnv(await this.resolveSidecarBaseEnv())
+    const baseEnv = await this.resolveSidecarBaseEnv()
+    const trustedEnv = await this.buildTrustedServerEnv()
     const accessToken = this.installationAccessToken ?? this.resolveCachedInstallationAccessToken?.()
     const plan = createServerPlan({
       desktopRoot: this.desktopRoot,
       appRoot: this.appRoot,
       port,
-      env,
+      env: baseEnv,
+      trustedEnv,
       accessToken,
     })
 
