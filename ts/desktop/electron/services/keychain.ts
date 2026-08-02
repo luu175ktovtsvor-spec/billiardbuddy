@@ -5,6 +5,7 @@ import {
   fsyncSync,
   mkdirSync,
   openSync,
+  readdirSync,
   readFileSync,
   renameSync,
   unlinkSync,
@@ -13,12 +14,34 @@ import {
 import { basename, dirname, join } from 'node:path'
 import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto'
 
-export type SafeStorageLike = { isEncryptionAvailable(): boolean; encryptString(value: string): Buffer; decryptString(value: Buffer): string }
+export type SafeStorageLike = {
+  isEncryptionAvailable(): boolean
+  encryptString(value: string): Buffer
+  decryptString(value: Buffer): string
+  /** Electron exposes this only as meaningful on Linux. */
+  getSelectedStorageBackend?(): string
+}
 
 export type CredentialStore = {
   load(): string | null
   save(value: string): void
   clear(): void
+}
+
+function assertSecureStorageAvailable(safeStorage: SafeStorageLike, platform: NodeJS.Platform): void {
+  if (!safeStorage.isEncryptionAvailable()) throw new Error('Secure credential storage is unavailable')
+  // Electron reports basic_text as available on Linux, but it is explicitly not
+  // an OS credential vault. Do not downgrade a user-owned provider Key to
+  // plaintext merely because the desktop has no secret-service integration.
+  if (platform === 'linux') {
+    const backend = safeStorage.getSelectedStorageBackend?.()
+    if (!backend || backend === 'basic_text' || backend === 'unknown') {
+      const failure = Object.assign(new Error('Secure credential storage requires a Linux secret-service backend'), {
+        code: 'SECURE_CREDENTIAL_STORAGE_UNAVAILABLE',
+      })
+      throw failure
+    }
+  }
 }
 
 type LocalCredentialEnvelope = {
@@ -29,9 +52,13 @@ type LocalCredentialEnvelope = {
 }
 
 export class SecureSessionStore {
-  constructor(private readonly file: string, private readonly safeStorage: SafeStorageLike) {}
+  constructor(
+    private readonly file: string,
+    private readonly safeStorage: SafeStorageLike,
+    private readonly platform: NodeJS.Platform = process.platform,
+  ) {}
   load(): string | null {
-    if (!this.safeStorage.isEncryptionAvailable()) throw new Error('Secure credential storage is unavailable')
+    assertSecureStorageAvailable(this.safeStorage, this.platform)
     if (!existsSync(this.file)) return null
     try { return this.safeStorage.decryptString(Buffer.from(readFileSync(this.file, 'utf8'), 'base64')) }
     catch (error) {
@@ -48,7 +75,7 @@ export class SecureSessionStore {
     }
   }
   save(value: string): void {
-    if (!this.safeStorage.isEncryptionAvailable()) throw new Error('Secure credential storage is unavailable')
+    assertSecureStorageAvailable(this.safeStorage, this.platform)
     const dir = dirname(this.file); mkdirSync(dir, { recursive: true, mode: 0o700 })
     const tmp = `${this.file}.${randomBytes(6).toString('hex')}.tmp`
     try {
@@ -64,7 +91,7 @@ export class SecureSessionStore {
       if (existsSync(tmp)) unlinkSync(tmp)
     }
     try { chmodSync(this.file, 0o600) } catch { /* Windows DPAPI applies user-scoped encryption */ }
-    if (process.platform !== 'win32') {
+    if (this.platform !== 'win32') {
       const directory = openSync(dir, 'r')
       try { fsyncSync(directory) } finally { closeSync(directory) }
     }
@@ -72,7 +99,7 @@ export class SecureSessionStore {
   clear(): void { if (existsSync(this.file)) unlinkSync(this.file) }
 }
 
-export class LocalEncryptedSessionStore implements CredentialStore {
+class LocalEncryptedSessionStore implements CredentialStore {
   constructor(private readonly file: string, private readonly keyFile: string) {}
 
   load(): string | null {
@@ -145,15 +172,75 @@ export class LocalEncryptedSessionStore implements CredentialStore {
   }
 }
 
+/**
+ * macOS builds before the credential-vault migration used an AES key beside
+ * the encrypted data. Keep that reader only long enough to move existing user
+ * data into Electron safeStorage (Keychain on macOS), never as a new-store
+ * choice. The old ciphertext is retained until the new value has been written
+ * and decrypted successfully.
+ */
+export class MigratingCredentialStore implements CredentialStore {
+  constructor(
+    private readonly current: SecureSessionStore,
+    private readonly legacy: LocalEncryptedSessionStore,
+    private readonly legacyKeyFile: string,
+  ) {}
+
+  load(): string | null {
+    const currentValue = this.current.load()
+    if (currentValue !== null) {
+      this.removeLegacyArtifacts()
+      return currentValue
+    }
+    const legacyValue = this.legacy.load()
+    if (legacyValue === null) return null
+    this.current.save(legacyValue)
+    const verified = this.current.load()
+    if (verified !== legacyValue) throw new Error('Secure credential migration verification failed')
+    this.removeLegacyArtifacts()
+    return verified
+  }
+
+  save(value: string): void {
+    this.current.save(value)
+    if (this.current.load() !== value) throw new Error('Secure credential write verification failed')
+    this.removeLegacyArtifacts()
+  }
+
+  clear(): void {
+    let failure: unknown
+    try { this.current.clear() } catch (error) { failure = error }
+    try { this.removeLegacyArtifacts() } catch (error) { failure ??= error }
+    if (failure) throw failure
+  }
+
+  private removeLegacyArtifacts(): void {
+    this.legacy.clear()
+    const legacyDir = dirname(this.legacyKeyFile)
+    if (!existsSync(this.legacyKeyFile) || !existsSync(legacyDir)) return
+    // installation-session and provider-credentials historically shared one
+    // local key. Remove it only after the last legacy ciphertext is gone.
+    if (readdirSync(legacyDir).some(name => name.endsWith('.enc'))) return
+    unlinkSync(this.legacyKeyFile)
+    const directory = openSync(legacyDir, 'r')
+    try { fsyncSync(directory) } finally { closeSync(directory) }
+  }
+}
+
 export function createCredentialStore(
   platform: NodeJS.Platform,
   userDataPath: string,
   name: string,
   safeStorage: SafeStorageLike,
 ): CredentialStore {
+  const current = new SecureSessionStore(join(userDataPath, name), safeStorage, platform)
   if (platform === 'darwin') {
     const dir = join(userDataPath, 'local-credentials')
-    return new LocalEncryptedSessionStore(join(dir, `${name}.enc`), join(dir, 'master-key'))
+    return new MigratingCredentialStore(
+      current,
+      new LocalEncryptedSessionStore(join(dir, `${name}.enc`), join(dir, 'master-key')),
+      join(dir, 'master-key'),
+    )
   }
-  return new SecureSessionStore(join(userDataPath, name), safeStorage)
+  return current
 }
