@@ -78,5 +78,5 @@ Gateway/Relay 时不得使用 `--remove-orphans`，避免影响站点和桌面�
 4. 复核本机及公网 `/gw/healthz`、运行镜像 tag、容器内源码哈希和托管
    `/v1/responses` 的受控调用。测试产生的临时安装会话必须注销。
 
-不要执行遗留的 `gateway/deploy.sh`、旧 systemd unit 或双主机/隧道脚本；它们不是当前生产
-运行路径。
+旧双主机/systemd/SSH 隧道发布脚本已从仓库及当前服务器清理；生产环境唯一发布路径就是
+本节的 Compose 流程。
