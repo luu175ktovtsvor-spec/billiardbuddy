@@ -5,6 +5,15 @@ export const ELECTRON_IPC_CHANNELS = {
   modelConfigurationSave: 'desktop:model-configuration:save',
   modelConfigurationSetRoute: 'desktop:model-configuration:set-route',
   modelConfigurationRemove: 'desktop:model-configuration:remove',
+  nativeAgentStartThread: 'desktop:native-agent:start-thread',
+  nativeAgentResumeThread: 'desktop:native-agent:resume-thread',
+  nativeAgentReadThread: 'desktop:native-agent:read-thread',
+  nativeAgentForkThread: 'desktop:native-agent:fork-thread',
+  nativeAgentStartTurn: 'desktop:native-agent:start-turn',
+  nativeAgentSteerTurn: 'desktop:native-agent:steer-turn',
+  nativeAgentInterruptTurn: 'desktop:native-agent:interrupt-turn',
+  nativeAgentArchiveThread: 'desktop:native-agent:archive-thread',
+  nativeAgentResolveApproval: 'desktop:native-agent:resolve-approval',
   commandInvoke: 'desktop:command:invoke',
   clipboardReadText: 'desktop:clipboard:read-text',
   clipboardWriteText: 'desktop:clipboard:write-text',
@@ -72,6 +81,7 @@ export const ELECTRON_EVENT_CHANNELS = {
   terminalOutput: 'desktop:terminal:output',
   terminalExit: 'desktop:terminal:exit',
   previewEvent: 'desktop:preview:event',
+  nativeAgentEvent: 'desktop:native-agent:event',
 } as const
 
 export const ELECTRON_INTERNAL_CHANNELS = {

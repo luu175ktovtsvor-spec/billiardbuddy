@@ -3,6 +3,7 @@ import type {
   DesktopHostUnlisten,
   DesktopUpdate,
   DesktopUpdateDownloadEvent,
+  NativeAgentEvent,
 } from './types'
 import {
   ELECTRON_EVENT_CHANNELS,
@@ -67,6 +68,7 @@ export function createElectronHost(bridge: ElectronHostBridge): DesktopHost {
       dialogs: true,
       videoActions: true,
       modelConfiguration: true,
+      nativeAgent: true,
       notifications: true,
       previewWebview: true,
       recruitingBrowser: true,
@@ -135,6 +137,30 @@ export function createElectronHost(bridge: ElectronHostBridge): DesktopHost {
       save: input => invoke(ELECTRON_IPC_CHANNELS.modelConfigurationSave, input),
       setRoute: (capability, profileId) => invoke(ELECTRON_IPC_CHANNELS.modelConfigurationSetRoute, { capability, profileId }),
       remove: profileId => invoke(ELECTRON_IPC_CHANNELS.modelConfigurationRemove, profileId),
+    },
+    nativeAgent: {
+      startThread: cwd => invoke(ELECTRON_IPC_CHANNELS.nativeAgentStartThread, { cwd }),
+      resumeThread: (threadId, cwd) => invoke(ELECTRON_IPC_CHANNELS.nativeAgentResumeThread, { threadId, cwd }),
+      readThread: threadId => invoke(ELECTRON_IPC_CHANNELS.nativeAgentReadThread, { threadId }),
+      forkThread: (threadId, cwd, lastTurnId) => invoke(
+        ELECTRON_IPC_CHANNELS.nativeAgentForkThread,
+        { threadId, cwd, ...(lastTurnId === undefined ? {} : { lastTurnId }) },
+      ),
+      startTurn: (threadId, input, clientUserMessageId) => invoke(
+        ELECTRON_IPC_CHANNELS.nativeAgentStartTurn,
+        { threadId, input, ...(clientUserMessageId === undefined ? {} : { clientUserMessageId }) },
+      ),
+      steerTurn: (threadId, turnId, text, clientUserMessageId) => invoke(
+        ELECTRON_IPC_CHANNELS.nativeAgentSteerTurn,
+        { threadId, turnId, text, ...(clientUserMessageId === undefined ? {} : { clientUserMessageId }) },
+      ),
+      interruptTurn: (threadId, turnId) => invoke(ELECTRON_IPC_CHANNELS.nativeAgentInterruptTurn, { threadId, turnId }),
+      archiveThread: threadId => invoke(ELECTRON_IPC_CHANNELS.nativeAgentArchiveThread, { threadId }),
+      resolveApproval: (requestId, decision) => invoke(
+        ELECTRON_IPC_CHANNELS.nativeAgentResolveApproval,
+        { requestId, decision },
+      ),
+      onEvent: handler => subscribe<NativeAgentEvent>(ELECTRON_EVENT_CHANNELS.nativeAgentEvent, handler),
     },
     recruitingBrowser: {
       status: () => invoke(ELECTRON_IPC_CHANNELS.browserStatus),

@@ -26,6 +26,7 @@ export type DesktopHostCapability =
   | 'dialogs'
   | 'videoActions'
   | 'modelConfiguration'
+  | 'nativeAgent'
   | 'notifications'
   | 'previewWebview'
   | 'recruitingBrowser'
@@ -122,6 +123,40 @@ export type TerminalExitEvent = {
   code: number
   signal?: string | null
 }
+
+export type NativeAgentThread = {
+  id: string
+}
+
+export type NativeAgentTurn = {
+  id: string
+}
+
+/** The Rust protocol response is intentionally opaque until the UI projects its Items. */
+export type NativeAgentThreadSnapshot = {
+  thread: unknown
+}
+
+export type NativeAgentTurnInput =
+  | { type: 'text'; text: string }
+  | { type: 'image'; url: string }
+
+/** The source protocol's basic, directly selectable approval choices. */
+export type NativeAgentApprovalDecision = 'accept' | 'acceptForSession' | 'decline' | 'cancel'
+
+export type NativeAgentEvent =
+  | {
+      type: 'notification'
+      method: string
+      params?: unknown
+    }
+  | {
+      type: 'approval'
+      requestId: string
+      method: 'item/commandExecution/requestApproval' | 'item/fileChange/requestApproval'
+      params: unknown
+      availableDecisions: NativeAgentApprovalDecision[]
+    }
 
 export type PreviewBounds = {
   x: number
@@ -230,6 +265,22 @@ export type DesktopHost = {
     save(input: PersonalModelProfileInput): Promise<PersonalModelConfigurationSummary>
     setRoute(capability: PersonalModelCapability, profileId: string | null): Promise<PersonalModelConfigurationSummary>
     remove(profileId: string): Promise<PersonalModelConfigurationSummary>
+  }
+  nativeAgent: {
+    startThread(cwd: string): Promise<NativeAgentThread>
+    resumeThread(threadId: string, cwd: string): Promise<NativeAgentThread>
+    readThread(threadId: string): Promise<NativeAgentThreadSnapshot>
+    forkThread(threadId: string, cwd: string, lastTurnId?: string): Promise<NativeAgentThread>
+    startTurn(
+      threadId: string,
+      input: NativeAgentTurnInput[],
+      clientUserMessageId?: string,
+    ): Promise<NativeAgentTurn>
+    steerTurn(threadId: string, turnId: string, text: string, clientUserMessageId?: string): Promise<void>
+    interruptTurn(threadId: string, turnId: string): Promise<void>
+    archiveThread(threadId: string): Promise<void>
+    resolveApproval(requestId: string, decision: NativeAgentApprovalDecision): Promise<void>
+    onEvent(handler: (event: NativeAgentEvent) => void): Promise<DesktopHostUnlisten>
   }
   recruitingBrowser: {
     status(): Promise<RecruitingBrowserSetupStatus>

@@ -6,7 +6,6 @@ import {
   nextAppZoomLevel,
 } from '../lib/appZoom'
 import { useSettingsStore } from '../stores/settingsStore'
-import { openProductTaskComposer } from '../product/openTaskComposer'
 import { useProductTaskRuntimeStore } from '../product/stores/productTaskRuntimeStore'
 
 export function useKeyboardShortcuts() {
@@ -50,10 +49,10 @@ export function useKeyboardShortcuts() {
 
       const meta = e.metaKey || e.ctrlKey
 
-      // Cmd+N — New task
+      // Cmd+N — A new local Rust Thread, never a legacy ProductTask.
       if (meta && e.key === 'n') {
         e.preventDefault()
-        openProductTaskComposer()
+        useTabStore.getState().openNewNativeAgent()
       }
 
       // Cmd+K — Open product task search.

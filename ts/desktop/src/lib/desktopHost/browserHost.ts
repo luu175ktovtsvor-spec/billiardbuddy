@@ -12,6 +12,7 @@ const browserCapabilities: DesktopHostCapabilities = {
   dialogs: false,
   videoActions: false,
   modelConfiguration: false,
+  nativeAgent: false,
   notifications: false,
   previewWebview: false,
   recruitingBrowser: false,
@@ -140,6 +141,38 @@ export const browserHost: DesktopHost = {
     },
     async remove() {
       unsupported('Model configuration')
+    },
+  },
+  nativeAgent: {
+    async startThread() {
+      unsupported('Native Agent')
+    },
+    async resumeThread() {
+      unsupported('Native Agent')
+    },
+    async readThread() {
+      unsupported('Native Agent')
+    },
+    async forkThread() {
+      unsupported('Native Agent')
+    },
+    async startTurn() {
+      unsupported('Native Agent')
+    },
+    async steerTurn() {
+      unsupported('Native Agent')
+    },
+    async interruptTurn() {
+      unsupported('Native Agent')
+    },
+    async archiveThread() {
+      unsupported('Native Agent')
+    },
+    async resolveApproval() {
+      unsupported('Native Agent')
+    },
+    async onEvent() {
+      return noopUnlisten
     },
   },
   recruitingBrowser: {

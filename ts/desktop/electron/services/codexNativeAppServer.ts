@@ -267,6 +267,22 @@ export class CodexNativeAppServerClient {
     }
   }
 
+  /**
+   * Electron's `before-quit` hook cannot await JSON-RPC. Kill only the
+   * BilliardBuddy-owned child synchronously so closing the desktop app never
+   * leaves an App Server process running against its private CODEX_HOME.
+   */
+  closeImmediately(): void {
+    if (this.closed) return
+    this.closed = true
+    const child = this.process
+    this.process = undefined
+    this.failAllPending(engineError('CODEX_NATIVE_APP_SERVER_CLOSED'))
+    if (!child) return
+    try { child.stdin.destroy() } catch {}
+    try { child.kill() } catch {}
+  }
+
   private write(frame: CodexNativeJsonObject): void {
     const stdin = this.process?.stdin
     if (!stdin || stdin.destroyed) throw new Error('CODEX_NATIVE_APP_SERVER_STDIN_UNAVAILABLE')
@@ -396,6 +412,15 @@ export class ElectronCodexNativeRuntime {
     return { id: threadId(response) }
   }
 
+  /** Read durable history from the Rust Thread Store; Electron never caches it as authority. */
+  async readThread(thread: NativeCodexThread): Promise<CodexNativeJsonObject> {
+    if (!nonEmptyText(thread.id)) throw new Error('CODEX_NATIVE_THREAD_ID_INVALID')
+    return await this.requireClient().request<CodexNativeJsonObject>('thread/read', {
+      threadId: thread.id,
+      includeTurns: true,
+    })
+  }
+
   async forkThread(input: NativeCodexResumeThreadInput & { lastTurnId?: string }): Promise<NativeCodexThread> {
     if (!nonEmptyText(input.threadId)) throw new Error('CODEX_NATIVE_THREAD_ID_INVALID')
     const cwd = await this.workspace(input.cwd)
@@ -404,6 +429,14 @@ export class ElectronCodexNativeRuntime {
       threadId: input.threadId,
       cwd,
       runtimeWorkspaceRoots: [cwd],
+      // Apply the same explicit route and native permission policy as a new
+      // Thread. This keeps a fork from silently inheriting a prior selected
+      // model after the user changes their managed/personal route.
+      model: this.provider!.model,
+      modelProvider: NATIVE_PROVIDER_ID,
+      sandbox: 'workspace-write',
+      approvalPolicy: 'on-request',
+      approvalsReviewer: 'user',
       ...(input.lastTurnId ? { lastTurnId: input.lastTurnId } : {}),
     })
     return { id: threadId(response) }
@@ -462,6 +495,16 @@ export class ElectronCodexNativeRuntime {
     if (this.closePromise) return await this.closePromise
     this.closePromise = this.closeOnce()
     try { await this.closePromise } finally { this.closePromise = undefined }
+  }
+
+  /** Synchronous desktop-shutdown path; no persisted Agent state is deleted. */
+  closeImmediately(): void {
+    const client = this.client
+    this.client = undefined
+    this.provider = undefined
+    this.configuredRouteKey = undefined
+    this.activeTurns.clear()
+    client?.closeImmediately()
   }
 
   private async closeOnce(): Promise<void> {

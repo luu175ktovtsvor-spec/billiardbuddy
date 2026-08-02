@@ -40,11 +40,11 @@ BilliardBuddy Electron / React（品牌与桌面工作面）
   └─ 剪辑工作台（独立领域）
 ```
 
-锁定的 Codex Rust 源码已将 `wire_api = "chat"` 明确移除，Codex provider 只接受 `wire_api = "responses"`；这是 Core 的内部边界，不是 BilliardBuddy 对用户模型协议的删减。用户仍可在设置中配置 Responses 或 Chat Completions。BilliardBuddy 在每个私有 Codex Home 写入临时 provider 配置：`base_url`、`env_key`、`wire_api = "responses"`、模型与重试策略；Key 只由 Electron Main 从系统安全存储取出，作为该 App Server 子进程的短生命周期环境变量。`config.toml`、Thread 事件、Renderer、日志与 Gateway 请求体都不保存用户明文 Key。
+锁定的 Codex Rust 源码已将 `wire_api = "chat"` 明确移除，Codex provider 只接受 `wire_api = "responses"`；这是 Core 的内部边界，不是 BilliardBuddy 对用户模型协议的删减。用户仍可在设置中配置 Responses 或 Chat Completions。BilliardBuddy 在每个私有 Codex Home 写入临时 provider 配置：`base_url`、`env_key`、`wire_api = "responses"`、模型与重试策略；Key 只由 Electron Main 从系统安全存储取出。个人 Responses Key 仅作为该 App Server 子进程的短生命周期环境变量；Chat Completions Key 则只留在 Electron Main 内存，由本机适配器持有，子进程仅得到不可复用的 loopback capability。`config.toml`、Thread 事件、Renderer、日志与 Gateway 请求体都不保存用户明文 Key。
 
-托管路线使用 BilliardBuddy 自己控制的 DeepSeek 模型，但网关收敛为标准 `/v1/responses` 的模型控制面：鉴权、套餐/额度、限流、上游路由、用量、幂等和模型操作回放。它必须持久化账户与授权、用量预约/结算、操作 ID 与请求指纹、终态 Responses SSE 回放结果及安全审计，以便断线、重试或结算中断后绝不再发起第二次上游调用。它不保存 Codex Thread、Turn、工具执行、权限决定、沙箱状态或 Agent 恢复状态，也不能据此重建一套 Agent 会话。用户 Key 的 Responses 路线绕过该网关、由原生 Codex Core 直连；Chat Completions 路线也绕过网关，但连接到 BilliardBuddy 本机的无状态适配器，由它把源 Responses 请求和 SSE 结果转换为用户选择的 Chat Completions provider。
+托管路线使用 BilliardBuddy 自己控制的 DeepSeek 模型，但网关收敛为标准 `/v1/responses` 的模型控制面：鉴权、套餐/额度、限流、上游路由、用量、幂等和模型操作回放。它必须持久化账户与授权、用量预约/结算、操作 ID 与请求指纹、终态 Responses SSE 回放结果及安全审计，以便断线、重试或结算中断后绝不再发起第二次上游调用。它不保存 Codex Thread、Turn、工具执行、权限决定、沙箱状态或 Agent 恢复状态，也不能据此重建一套 Agent 会话。托管 App Server 也不持有会过期的 Gateway bearer：它只拿本机 loopback capability，受限转发器在每一次模型请求时从 Electron Main 取得最新短令牌并原样转发 Responses 流。用户 Key 的 Responses 路线绕过该网关、由原生 Codex Core 直连；Chat Completions 路线也绕过网关，但连接到 BilliardBuddy 本机的无状态适配器，由它把源 Responses 请求和 SSE 结果转换为用户选择的 Chat Completions provider。
 
-这个本机适配器是保留用户协议选择的最小边界，不能演变为旧后端：它只接受来自同一 App Server 子进程的受限 loopback 请求、读取一次性环境变量中的 Key、转换消息/函数定义/函数结果/流式文本和 tool call、再返回标准 Responses SSE。它不写 Thread、数据库、任务账本或审批记录；不执行工具、文件、终端、浏览器或 MCP；退出 App Server 时一并退出。
+这些本机适配器是保留用户协议选择和令牌轮换的最小边界，不能演变为旧后端：它们只接受来自同一 App Server 子进程的受限 loopback 请求；Chat 适配器转换消息/函数定义/函数结果/流式文本和 tool call，托管 Gateway 适配器只取得当前短令牌并转发原始 Responses 流。子进程拿到的都是一次性 capability，不是用户 Key 或 Gateway bearer。它们不写 Thread、数据库、任务账本或审批记录；不执行工具、文件、终端、浏览器或 MCP；退出 App Server 时一并退出。
 
 ## 状态分层与恢复
 

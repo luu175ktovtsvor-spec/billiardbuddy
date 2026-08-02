@@ -140,11 +140,13 @@ export function TopBar() {
     }
   }, [menuAt])
 
-  const title = activeTab?.type === 'settings'
+  const title = activeTab?.type === 'native-agent'
+    ? activeTab.title
+    : activeTab?.type === 'settings'
     ? t('sidebar.settings')
     : activeTab?.type === 'scheduled'
       ? t('sidebar.scheduled')
-      : activeTab?.title || t('sidebar.newTask')
+      : activeTab?.title || 'BilliardBuddy Agent'
 
   async function handleCopy(text: string) {
     const copied = await copyTextToClipboard(text)
@@ -269,14 +271,16 @@ export function TopBar() {
         </div>
 
         <div className="flex h-full shrink-0 items-center">
-          <div className="flex items-center gap-0.5">
-            <IconBtn label={t('search.global.trigger')} onClick={() => openModal('task-search')}>
-              <Search size={18} />
-            </IconBtn>
-            <IconBtn label={t('search.global.recentTitle')} onClick={() => openModal('task-search')}>
-              <Clock size={18} />
-            </IconBtn>
-          </div>
+          {isProductTask ? (
+            <div className="flex items-center gap-0.5">
+              <IconBtn label={t('search.global.trigger')} onClick={() => openModal('task-search')}>
+                <Search size={18} />
+              </IconBtn>
+              <IconBtn label={t('search.global.recentTitle')} onClick={() => openModal('task-search')}>
+                <Clock size={18} />
+              </IconBtn>
+            </div>
+          ) : null}
           <WindowControls />
         </div>
       </header>

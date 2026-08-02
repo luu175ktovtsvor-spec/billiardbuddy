@@ -1,4 +1,4 @@
-import { app, BrowserWindow, clipboard, ipcMain, Notification, safeStorage, screen, session, WebContentsView } from 'electron'
+import { app, BrowserWindow, clipboard, ipcMain, Notification, safeStorage, screen, session, webContents, WebContentsView } from 'electron'
 import { autoUpdater } from 'electron-updater'
 import { randomBytes } from 'node:crypto'
 import path from 'node:path'
@@ -41,7 +41,15 @@ import {
 } from './services/appMode'
 import { createCredentialStore } from './services/keychain'
 import { ProviderCredentialService } from './services/providerCredentials'
+import {
+  ElectronCodexNativeRuntime,
+  type CodexNativeJsonObject,
+  type CodexNativeNotification,
+  type CodexNativeServerRequest,
+} from './services/codexNativeAppServer'
+import type { CodexNativeModelRoute } from './services/codexNativeProvider'
 import { InstallationSessionManager } from './services/installationSession'
+import { defaultProviderModel, textReasoningRegistryEntry } from '../../../gateway/providerRegistry'
 import { applyWindowsAppUserModelId } from './services/appIdentity'
 import {
   installMainWindowNavigationGuards,
@@ -88,11 +96,29 @@ let videoActions: ElectronVideoActions | null = null
 let browserCapability: ElectronBrowserCapability | null = null
 let mcpOAuthCredentialKey: string | null = null
 let providerCredentialService: ProviderCredentialService | null = null
+let nativeAgentRuntime: ElectronCodexNativeRuntime | null = null
 let isQuitting = false
 let trayController: TrayController | null = null
 const trustedProductWindowEntries = new Map<BrowserWindow, string>()
 const productTaskWindows = new Map<string, BrowserWindow>()
 let pendingProductTaskId: string | null = null
+
+type NativeAgentApprovalMethod =
+  | 'item/commandExecution/requestApproval'
+  | 'item/fileChange/requestApproval'
+type NativeAgentApprovalDecision = 'accept' | 'acceptForSession' | 'decline' | 'cancel'
+type PendingNativeAgentApproval = {
+  ownerId: number
+  method: NativeAgentApprovalMethod
+  availableDecisions: readonly NativeAgentApprovalDecision[]
+  resolve(value: CodexNativeJsonObject): void
+  reject(error: Error): void
+  cleanup(): void
+}
+
+const nativeAgentThreadOwners = new Map<string, number>()
+const nativeAgentTurnOwners = new Map<string, number>()
+const nativeAgentApprovals = new Map<string, PendingNativeAgentApproval>()
 
 function appRoot() {
   return app.isPackaged ? app.getAppPath() : process.cwd()
@@ -286,6 +312,178 @@ function getProviderCredentialService(): ProviderCredentialService {
     createCredentialStore(process.platform, app.getPath('userData'), 'provider-credentials', safeStorage),
   )
   return providerCredentialService
+}
+
+function nativeProtocolObject(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined
+}
+
+function nativeProtocolText(value: unknown): string | undefined {
+  return typeof value === 'string' && value.length > 0 && value.length <= 200 ? value : undefined
+}
+
+function nativeThreadId(params: unknown): string | undefined {
+  const value = nativeProtocolObject(params)
+  return nativeProtocolText(value?.threadId) ?? nativeProtocolText(nativeProtocolObject(value?.thread)?.id)
+}
+
+function nativeTurnId(params: unknown): string | undefined {
+  const value = nativeProtocolObject(params)
+  return nativeProtocolText(value?.turnId) ?? nativeProtocolText(nativeProtocolObject(value?.turn)?.id)
+}
+
+function nativeApprovalMethod(value: string): NativeAgentApprovalMethod | undefined {
+  return value === 'item/commandExecution/requestApproval' || value === 'item/fileChange/requestApproval'
+    ? value
+    : undefined
+}
+
+function nativeApprovalDecisions(
+  method: NativeAgentApprovalMethod,
+  params: unknown,
+): NativeAgentApprovalDecision[] {
+  const values = nativeProtocolObject(params)?.availableDecisions
+  const available = Array.isArray(values) ? values.filter((value): value is NativeAgentApprovalDecision =>
+    value === 'accept' || value === 'acceptForSession' || value === 'decline' || value === 'cancel')
+    : []
+  if (available.length > 0) return available
+
+  // File-change approvals intentionally use the stable legacy enum and do not
+  // expose availableDecisions. Mirror Codex's complete legacy choices. A
+  // command request without the experimental field gets the conservative
+  // subset: allow once or stop the turn, never a guessed policy amendment.
+  return method === 'item/fileChange/requestApproval'
+    ? ['accept', 'acceptForSession', 'decline', 'cancel']
+    : ['accept', 'cancel']
+}
+
+function sendNativeAgentEvent(ownerId: number, payload: unknown): boolean {
+  const owner = webContents.fromId(ownerId)
+  if (!owner || owner.isDestroyed()) return false
+  owner.send(ELECTRON_EVENT_CHANNELS.nativeAgentEvent, payload)
+  return true
+}
+
+function releaseNativeAgentApproval(requestId: string): PendingNativeAgentApproval | undefined {
+  const pending = nativeAgentApprovals.get(requestId)
+  if (!pending) return undefined
+  nativeAgentApprovals.delete(requestId)
+  pending.cleanup()
+  return pending
+}
+
+function rejectNativeAgentApprovals(error: Error): void {
+  for (const requestId of [...nativeAgentApprovals.keys()]) {
+    releaseNativeAgentApproval(requestId)?.reject(error)
+  }
+}
+
+function forwardNativeAgentNotification(notification: CodexNativeNotification): void {
+  const threadId = nativeThreadId(notification.params)
+  const turnId = nativeTurnId(notification.params)
+  const ownerId = threadId ? nativeAgentThreadOwners.get(threadId) : turnId ? nativeAgentTurnOwners.get(turnId) : undefined
+  if (ownerId !== undefined) {
+    sendNativeAgentEvent(ownerId, {
+      type: 'notification',
+      method: notification.method,
+      ...(notification.params === undefined ? {} : { params: notification.params }),
+    })
+  }
+  if (notification.method === 'turn/completed' && turnId) nativeAgentTurnOwners.delete(turnId)
+  if ((notification.method === 'thread/archived' || notification.method === 'thread/deleted') && threadId) {
+    nativeAgentThreadOwners.delete(threadId)
+  }
+}
+
+async function requestNativeAgentApproval(request: CodexNativeServerRequest): Promise<CodexNativeJsonObject> {
+  const method = nativeApprovalMethod(request.method)
+  const threadId = nativeThreadId(request.params)
+  if (!method || !threadId) throw new Error('CODEX_NATIVE_APPROVAL_REQUEST_UNSUPPORTED')
+  const ownerId = nativeAgentThreadOwners.get(threadId)
+  const owner = ownerId === undefined ? undefined : webContents.fromId(ownerId)
+  if (ownerId === undefined || !owner || owner.isDestroyed()) {
+    throw new Error('CODEX_NATIVE_APPROVAL_OWNER_UNAVAILABLE')
+  }
+  const requestId = randomBytes(18).toString('base64url')
+  const availableDecisions = nativeApprovalDecisions(method, request.params)
+  return await new Promise<CodexNativeJsonObject>((resolve, reject) => {
+    const cleanup = () => owner.removeListener('destroyed', onOwnerDestroyed)
+    const onOwnerDestroyed = () => {
+      releaseNativeAgentApproval(requestId)?.reject(new Error('CODEX_NATIVE_APPROVAL_OWNER_UNAVAILABLE'))
+    }
+    nativeAgentApprovals.set(requestId, {
+      ownerId,
+      method,
+      availableDecisions,
+      resolve,
+      reject,
+      cleanup,
+    })
+    owner.once('destroyed', onOwnerDestroyed)
+    if (!sendNativeAgentEvent(ownerId, {
+      type: 'approval',
+      requestId,
+      method,
+      params: request.params ?? {},
+      availableDecisions,
+    })) {
+      releaseNativeAgentApproval(requestId)?.reject(new Error('CODEX_NATIVE_APPROVAL_OWNER_UNAVAILABLE'))
+    }
+  })
+}
+
+function managedNativeAgentModel(): string {
+  const model = process.env.BB_GATEWAY_MODEL?.trim() || defaultProviderModel()
+  if (!textReasoningRegistryEntry(model)) throw new Error('CODEX_NATIVE_MANAGED_MODEL_INVALID')
+  return model
+}
+
+async function resolveNativeAgentRoute(): Promise<CodexNativeModelRoute> {
+  const profile = getProviderCredentialService().agentTextReasoningProfile()
+  if (profile) {
+    if (profile.protocol === 'anthropic-messages') throw new Error('CODEX_NATIVE_PROVIDER_PROTOCOL_UNSUPPORTED')
+    return { kind: 'personal', profile }
+  }
+  const config = requireProductGatewayConfig(resolveProductGatewayConfig({
+    isPackaged: app.isPackaged,
+    resourcesPath: process.resourcesPath,
+    devBuildDir: path.join(unpackedRoot(), 'build'),
+    env: process.env,
+  }))
+  return {
+    kind: 'managed',
+    gatewayUrl: config.url,
+    resolveAccessToken: () => getInstallationSessionManager().accessToken(),
+    model: managedNativeAgentModel(),
+  }
+}
+
+function getNativeAgentRuntime(): ElectronCodexNativeRuntime {
+  nativeAgentRuntime ??= new ElectronCodexNativeRuntime({
+    desktopRoot: unpackedRoot(),
+    userDataPath: app.getPath('userData'),
+    onNotification: forwardNativeAgentNotification,
+    onServerRequest: requestNativeAgentApproval,
+  })
+  return nativeAgentRuntime
+}
+
+function claimNativeAgentThread(ownerId: number, threadId: string): void {
+  const existingOwnerId = nativeAgentThreadOwners.get(threadId)
+  if (existingOwnerId !== undefined && existingOwnerId !== ownerId) {
+    throw new Error('CODEX_NATIVE_THREAD_OWNED_BY_ANOTHER_WINDOW')
+  }
+  nativeAgentThreadOwners.set(threadId, ownerId)
+}
+
+function assertNativeAgentThreadOwner(ownerId: number, threadId: string): void {
+  const existingOwnerId = nativeAgentThreadOwners.get(threadId)
+  if (existingOwnerId !== ownerId) throw new Error('CODEX_NATIVE_THREAD_OWNER_REQUIRED')
+}
+
+function assertNativeAgentTurnOwner(ownerId: number, turnId: string): void {
+  const existingOwnerId = nativeAgentTurnOwners.get(turnId)
+  if (existingOwnerId !== ownerId) throw new Error('CODEX_NATIVE_TURN_OWNER_REQUIRED')
 }
 
 /**
@@ -507,6 +705,96 @@ function registerIpcHandlers() {
   })
   registerHandler(ELECTRON_IPC_CHANNELS.modelConfigurationRemove, (_event, payload) =>
     mutateProviderCredentials(service => service.remove(String(payload))))
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentStartThread, async (event, payload) => {
+    const input = payload as { cwd: string }
+    const thread = await getNativeAgentRuntime().startThread({
+      cwd: input.cwd,
+      route: await resolveNativeAgentRoute(),
+    })
+    claimNativeAgentThread(event.sender.id, thread.id)
+    return thread
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentResumeThread, async (event, payload) => {
+    const input = payload as { threadId: string, cwd: string }
+    const previousOwnerId = nativeAgentThreadOwners.get(input.threadId)
+    claimNativeAgentThread(event.sender.id, input.threadId)
+    try {
+      return await getNativeAgentRuntime().resumeThread({
+        threadId: input.threadId,
+        cwd: input.cwd,
+        route: await resolveNativeAgentRoute(),
+      })
+    } catch (error) {
+      if (previousOwnerId === undefined) nativeAgentThreadOwners.delete(input.threadId)
+      else nativeAgentThreadOwners.set(input.threadId, previousOwnerId)
+      throw error
+    }
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentReadThread, async (event, payload) => {
+    const input = payload as { threadId: string }
+    assertNativeAgentThreadOwner(event.sender.id, input.threadId)
+    return await getNativeAgentRuntime().readThread({ id: input.threadId })
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentForkThread, async (event, payload) => {
+    const input = payload as { threadId: string, cwd: string, lastTurnId?: string }
+    assertNativeAgentThreadOwner(event.sender.id, input.threadId)
+    const thread = await getNativeAgentRuntime().forkThread({
+      threadId: input.threadId,
+      cwd: input.cwd,
+      ...(input.lastTurnId === undefined ? {} : { lastTurnId: input.lastTurnId }),
+      route: await resolveNativeAgentRoute(),
+    })
+    claimNativeAgentThread(event.sender.id, thread.id)
+    return thread
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentStartTurn, async (event, payload) => {
+    const input = payload as {
+      threadId: string
+      input: Parameters<ElectronCodexNativeRuntime['startTurn']>[1]
+      clientUserMessageId?: string
+    }
+    assertNativeAgentThreadOwner(event.sender.id, input.threadId)
+    const turn = await getNativeAgentRuntime().startTurn(
+      { id: input.threadId },
+      input.input,
+      input.clientUserMessageId,
+    )
+    nativeAgentTurnOwners.set(turn.id, event.sender.id)
+    return turn
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentSteerTurn, async (event, payload) => {
+    const input = payload as { threadId: string, turnId: string, text: string, clientUserMessageId?: string }
+    assertNativeAgentThreadOwner(event.sender.id, input.threadId)
+    assertNativeAgentTurnOwner(event.sender.id, input.turnId)
+    await getNativeAgentRuntime().steerTurn(
+      { id: input.threadId },
+      { id: input.turnId },
+      input.text,
+      input.clientUserMessageId,
+    )
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentInterruptTurn, async (event, payload) => {
+    const input = payload as { threadId: string, turnId: string }
+    assertNativeAgentThreadOwner(event.sender.id, input.threadId)
+    assertNativeAgentTurnOwner(event.sender.id, input.turnId)
+    await getNativeAgentRuntime().interruptTurn({ id: input.threadId }, { id: input.turnId })
+    nativeAgentTurnOwners.delete(input.turnId)
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentArchiveThread, async (event, payload) => {
+    const input = payload as { threadId: string }
+    assertNativeAgentThreadOwner(event.sender.id, input.threadId)
+    await getNativeAgentRuntime().archiveThread({ id: input.threadId })
+    nativeAgentThreadOwners.delete(input.threadId)
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentResolveApproval, (event, payload) => {
+    const input = payload as { requestId: string, decision: NativeAgentApprovalDecision }
+    const pending = nativeAgentApprovals.get(input.requestId)
+    if (!pending || pending.ownerId !== event.sender.id) throw new Error('CODEX_NATIVE_APPROVAL_OWNER_REQUIRED')
+    if (!pending.availableDecisions.includes(input.decision)) {
+      throw new Error('CODEX_NATIVE_APPROVAL_DECISION_UNAVAILABLE')
+    }
+    releaseNativeAgentApproval(input.requestId)?.resolve({ decision: input.decision })
+  })
   registerHandler(ELECTRON_IPC_CHANNELS.commandInvoke, (_event, payload) => handleCommandInvoke(payload))
   registerHandler(ELECTRON_IPC_CHANNELS.clipboardReadText, () => clipboard.readText())
   registerHandler(ELECTRON_IPC_CHANNELS.clipboardWriteText, (_event, payload) => clipboard.writeText(String(payload)))
@@ -802,6 +1090,11 @@ app.on('before-quit', () => {
   terminalService?.killAll()
   previewService?.close()
   installationSessionManager?.dispose()
+  rejectNativeAgentApprovals(new Error('CODEX_NATIVE_APP_QUITTING'))
+  nativeAgentRuntime?.closeImmediately()
+  nativeAgentRuntime = null
+  nativeAgentThreadOwners.clear()
+  nativeAgentTurnOwners.clear()
   // Synchronous on quit so the Windows taskkill completes before the process
   // exits, otherwise the fire-and-forget kill can leave orphaned sidecars.
   getServerRuntime().stopAll(true)

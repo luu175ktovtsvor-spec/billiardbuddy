@@ -18,8 +18,12 @@ export type ManagedCodexModelRoute = {
   kind: 'managed'
   /** The public Billiard Gateway URL, ending at its fixed `/gw` path. */
   gatewayUrl: string
-  /** Installation-scoped, short-lived bearer obtained by Electron Main. */
-  accessToken: string
+  /**
+   * Electron Main supplies the current installation bearer for each upstream
+   * request. The Rust child receives only a loopback capability token, so a
+   * rotating Gateway session never becomes persisted Agent configuration.
+   */
+  resolveAccessToken: () => Promise<string>
   model: string
 }
 
@@ -566,21 +570,164 @@ export class ChatCompletionsResponsesAdapter {
   }
 }
 
+/**
+ * Loopback-only Gateway credential bridge for the managed Responses route.
+ *
+ * It is intentionally not an Agent service: it owns neither Thread data,
+ * turns, tool calls, approvals, retries, result cache nor a durable queue.
+ * Its only job is to obtain one current Electron-held bearer and transparently
+ * forward one Responses request/stream to BilliardBuddy Gateway.
+ */
+export class ManagedResponsesGatewayAdapter {
+  private readonly capabilityToken = randomBytes(32).toString('base64url')
+  private readonly sockets = new Set<Socket>()
+  private readonly activeRequests = new Set<AbortController>()
+  private server?: Server
+  private closed = false
+
+  constructor(
+    private readonly gatewayBaseUrl: string,
+    private readonly resolveAccessToken: () => Promise<string>,
+  ) {}
+
+  async start(): Promise<{ baseUrl: string; capabilityToken: string }> {
+    if (this.server || this.closed) throw new Error('CODEX_GATEWAY_ADAPTER_UNAVAILABLE')
+    const server = createServer((request, response) => { void this.handle(request, response) })
+    server.on('connection', socket => {
+      this.sockets.add(socket)
+      socket.once('close', () => this.sockets.delete(socket))
+    })
+    this.server = server
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject)
+      server.listen(0, '127.0.0.1', () => {
+        server.off('error', reject)
+        resolve()
+      })
+    })
+    const address = server.address()
+    if (!address || typeof address === 'string') {
+      await this.close()
+      throw new Error('CODEX_GATEWAY_ADAPTER_LISTEN_FAILED')
+    }
+    return { baseUrl: `http://127.0.0.1:${address.port}/v1`, capabilityToken: this.capabilityToken }
+  }
+
+  async close(): Promise<void> {
+    if (this.closed) return
+    this.closed = true
+    for (const controller of this.activeRequests) controller.abort()
+    for (const socket of this.sockets) socket.destroy()
+    const server = this.server
+    this.server = undefined
+    if (server) await new Promise<void>(resolve => server.close(() => resolve()))
+  }
+
+  private async handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
+    if (!loopbackAddress(request.socket.remoteAddress)) return adapterFailure(response, 403, 'CODEX_GATEWAY_ADAPTER_LOOPBACK_REQUIRED')
+    const url = new URL(request.url ?? '/', 'http://127.0.0.1')
+    if (request.method !== 'POST' || url.pathname !== '/v1/responses' || url.search) {
+      return adapterFailure(response, 404, 'CODEX_GATEWAY_ADAPTER_ROUTE_NOT_FOUND')
+    }
+    if (request.headers[ENGINE_TOKEN_HEADER.toLowerCase()] !== this.capabilityToken) {
+      return adapterFailure(response, 401, 'CODEX_GATEWAY_ADAPTER_UNAUTHORIZED')
+    }
+    let body: string
+    try {
+      body = await requestText(request)
+    } catch {
+      return adapterFailure(response, 413, 'CODEX_GATEWAY_ADAPTER_REQUEST_TOO_LARGE')
+    }
+    const controller = new AbortController()
+    const abort = () => controller.abort()
+    request.once('aborted', abort)
+    response.once('close', abort)
+    this.activeRequests.add(controller)
+    try {
+      const accessToken = await this.resolveAccessToken()
+      if (!accessToken.trim()) throw new Error('CODEX_GATEWAY_ADAPTER_ACCESS_TOKEN_INVALID')
+      const operationId = typeof request.headers['x-bb-operation-id'] === 'string'
+        && /^[A-Za-z0-9._:-]{8,200}$/.test(request.headers['x-bb-operation-id'])
+        ? request.headers['x-bb-operation-id']
+        : undefined
+      const idempotencyKey = typeof request.headers['idempotency-key'] === 'string'
+        && request.headers['idempotency-key'].length <= 160
+        ? request.headers['idempotency-key']
+        : undefined
+      const upstream = await fetch(`${this.gatewayBaseUrl}/responses`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'Content-Type': 'application/json',
+          'X-BB-Provider-Protocol': 'bb-provider-gateway/1.0',
+          ...(operationId ? { 'X-BB-Operation-Id': operationId } : {}),
+          ...(idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : {}),
+        },
+        body,
+        signal: controller.signal,
+      })
+      const headers: Record<string, string> = {}
+      const contentType = upstream.headers.get('content-type')
+      const cacheControl = upstream.headers.get('cache-control')
+      if (contentType) headers['Content-Type'] = contentType
+      if (cacheControl) headers['Cache-Control'] = cacheControl
+      response.writeHead(upstream.status, headers)
+      if (!upstream.body) {
+        response.end()
+        return
+      }
+      const reader = upstream.body.getReader()
+      try {
+        while (true) {
+          const next = await reader.read()
+          if (next.done) break
+          if (!response.write(Buffer.from(next.value))) {
+            await new Promise<void>(resolve => response.once('drain', resolve))
+          }
+        }
+      } finally {
+        reader.releaseLock()
+      }
+      response.end()
+    } catch {
+      if (!response.headersSent) adapterFailure(response, 502, 'CODEX_GATEWAY_ADAPTER_UPSTREAM_UNAVAILABLE')
+      else if (!response.writableEnded) response.destroy()
+    } finally {
+      this.activeRequests.delete(controller)
+      request.removeListener('aborted', abort)
+      response.removeListener('close', abort)
+    }
+  }
+}
+
 /** Build the exact source-provider configuration for one private App Server. */
 export async function startCodexNativeProvider(route: CodexNativeModelRoute): Promise<StartedCodexNativeProvider> {
   if (route.kind === 'managed') {
-    const accessToken = route.accessToken.trim()
     const model = route.model.trim()
-    if (!accessToken || !model) throw new Error('CODEX_NATIVE_MANAGED_ROUTE_INVALID')
-    const envKey = 'BB_CODEX_GATEWAY_ACCESS_TOKEN'
-    const config = providerOverrides({
-      id: 'billiardbuddy',
-      name: 'BilliardBuddy managed DeepSeek',
-      baseUrl: managedResponsesBaseUrl(route.gatewayUrl),
-      envKey,
-      headers: { 'X-BB-Provider-Protocol': 'bb-provider-gateway/1.0' },
-    })
-    return { model, configOverrides: config, environment: { [envKey]: accessToken }, close: async () => {} }
+    if (!model) throw new Error('CODEX_NATIVE_MANAGED_ROUTE_INVALID')
+    const adapter = new ManagedResponsesGatewayAdapter(
+      managedResponsesBaseUrl(route.gatewayUrl),
+      route.resolveAccessToken,
+    )
+    try {
+      const started = await adapter.start()
+      const tokenEnv = 'BB_CODEX_GATEWAY_ADAPTER_TOKEN'
+      const config = providerOverrides({
+        id: 'billiardbuddy',
+        name: 'BilliardBuddy managed DeepSeek gateway adapter',
+        baseUrl: started.baseUrl,
+        envHeaders: { [ENGINE_TOKEN_HEADER]: tokenEnv },
+      })
+      return {
+        model,
+        configOverrides: config,
+        environment: { [tokenEnv]: started.capabilityToken },
+        close: async () => await adapter.close(),
+      }
+    } catch (error) {
+      await adapter.close()
+      throw error
+    }
   }
 
   const { profile } = route
