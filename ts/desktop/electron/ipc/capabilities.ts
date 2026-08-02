@@ -408,6 +408,14 @@ const modelConfigurationDiscover: Validator = value =>
   && personalModelProtocol(value.protocol)
   && (value.auth_mode === undefined || personalModelAuthMode(value.auth_mode))
 
+const modelConfigurationSaveCatalog: Validator = value =>
+  isRecord(value)
+  && hasOnlyKeys(value, ['id', 'catalog_entry_id', 'api_key', 'label'])
+  && (value.id === undefined || personalModelProfileId(value.id))
+  && personalModelCatalogEntryId(value.catalog_entry_id)
+  && typeof value.api_key === 'string' && value.api_key.length <= 4_096
+  && (value.label === undefined || typeof value.label === 'string' && value.label.trim().length > 0 && value.label.length <= 80)
+
 const modelConfigurationSetRoute: Validator = value =>
   isRecord(value)
   && hasOnlyKeys(value, ['capability', 'profileId'])
@@ -514,6 +522,7 @@ export const ELECTRON_IPC_VALIDATORS = {
   [ELECTRON_IPC_CHANNELS.modelConfigurationSummary]: noPayload,
   [ELECTRON_IPC_CHANNELS.modelConfigurationCatalog]: noPayload,
   [ELECTRON_IPC_CHANNELS.modelConfigurationDiscover]: modelConfigurationDiscover,
+  [ELECTRON_IPC_CHANNELS.modelConfigurationSaveCatalog]: modelConfigurationSaveCatalog,
   [ELECTRON_IPC_CHANNELS.modelConfigurationSave]: modelConfigurationSave,
   [ELECTRON_IPC_CHANNELS.modelConfigurationSetRoute]: modelConfigurationSetRoute,
   [ELECTRON_IPC_CHANNELS.modelConfigurationRemove]: personalModelProfileId,

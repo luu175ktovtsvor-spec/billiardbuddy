@@ -118,6 +118,20 @@ export type PersonalModelProfileInput = Omit<PersonalModelProfile, 'id' | 'auth_
   max_output_tokens?: number
 }
 
+/**
+ * The simple, catalog-first setup path. Electron Main expands this selection
+ * into the complete verified provider contract, so callers never supply token
+ * limits, protocol details, or tool declarations for a bundled preset.
+ */
+export type PersonalModelCatalogSelectionInput = {
+  id?: string
+  catalog_entry_id: string
+  /** An empty value retains an existing encrypted Key during edits. */
+  api_key: string
+  /** Optional account nickname; the official model label is the default. */
+  label?: string
+}
+
 export type PersonalModelKind = 'text' | 'multimodal'
 
 export type PersonalModelConfiguration = {
