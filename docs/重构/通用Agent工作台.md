@@ -16,7 +16,7 @@ BilliardBuddy Agent 是通用的长期工作助手。用户在一个项目中创
 | 本地 `codex-frontend-reference/` 解出产物 | 项目—任务—运行工作面的信息架构、活动/成果/侧栏的可见组织 | 它不是 BilliardBuddy 的源码依赖；不复制 bundle、资源、文案、内部端点或实现 |
 | 本地 WorkBuddy 安装包静态文件 | Electron 宿主、侧车、CLI/MCP、权限、沙箱和扩展协议的边界 | 只读取静态内容，不启动 UI；不复制私有代码、资产、配置或任何凭据 |
 
-参考来源帮助判断，不取代本模块的用户结果。BilliardBuddy 的正式路径必须由自己的任务账本、权限信封和公开事件合同拥有；Codex Engine 只能执行一个已冻结 Run，任何事件都必须重新投影为 BilliardBuddy 的可验证产品行为。具体迁移顺序见 [Codex 源内核迁移](./Codex源内核迁移.md)。
+参考来源帮助判断，不取代本模块的用户结果。此文记录的是已退役的 TypeScript Agent 方案，不再规定正式实现；当前唯一 Agent 施工与状态归属以 [Codex 原生 Agent 路线](./Codex原生Agent路线.md) 为准。
 
 ## Agent 的事实模型
 

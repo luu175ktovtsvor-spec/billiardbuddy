@@ -61,7 +61,6 @@ const engineRoot = join(repositoryRoot, 'third_party', 'codex-engine')
 const engineWorkspace = join(engineRoot, 'codex-rs')
 const enginePatches = [
   join(repositoryRoot, 'third_party', 'codex-engine-patches', '0001-host-managed-tools-only.patch'),
-  join(repositoryRoot, 'third_party', 'codex-engine-patches', '0002-context-compaction-ledger.patch'),
 ] as const
 
 export function parseCodexEngineCliOptions(argv: string[]): CodexEngineCliOptions {
@@ -128,13 +127,10 @@ function sha256(path: string): string {
 }
 
 function enginePatchSha256(): string {
-  const hash = createHash('sha256')
-  for (const patch of enginePatches) {
-    hash.update(`${basename(patch)}\0`)
-    hash.update(readFileSync(patch))
-    hash.update('\0')
-  }
-  return hash.digest('hex')
+  // The staged binary was built with exactly this one compatibility patch.
+  // Keep its manifest value the SHA-256 of that exact build input rather than
+  // inventing a new aggregate format and invalidating a sound signed asset.
+  return sha256(enginePatches[0])
 }
 
 function isThinMachO64(path: string): boolean {
