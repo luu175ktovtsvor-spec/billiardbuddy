@@ -1,7 +1,11 @@
 import { existsSync, readFileSync } from 'node:fs'
 import path from 'node:path'
+import {
+  CODEX_ENGINE_PRODUCT_PATCHES,
+  CODEX_ENGINE_SOURCE_REVISION,
+} from '../../shared/product/codexEngineContract'
 
-const expectedRevision = '2b5bdcf67547860f2e5c5a605009a70026796b2b'
+const expectedRevision = CODEX_ENGINE_SOURCE_REVISION
 const desktopRoot = path.resolve(import.meta.dir, '..')
 const repositoryRoot = path.resolve(desktopRoot, '..', '..')
 const engineRoot = path.join(repositoryRoot, 'third_party', 'codex-engine')
@@ -132,6 +136,7 @@ async function main(): Promise<void> {
 
   const protocol = requireFile('codex-rs/app-server-protocol/src/protocol/common.rs')
   const runtime = requireDesktopFile('electron/services/codexNativeAppServer.ts')
+  const engineContract = requireRepositoryFile('ts/shared/product/codexEngineContract.ts')
   const provider = requireDesktopFile('electron/services/codexNativeProvider.ts')
   const providerCredentials = requireDesktopFile('electron/services/providerCredentials.ts')
   const ipcCapabilities = requireDesktopFile('electron/ipc/capabilities.ts')
@@ -157,6 +162,14 @@ async function main(): Promise<void> {
   assertContains(protocol, 'client_notification_definitions! {\n    Initialized,', 'initialized 客户端通知定义')
   assertContains(protocol, '"method": "initialized"', 'initialized 客户端通知序列化')
   assertContains(runtime, 'experimentalApi: true', '实验性 App Server 协议能力声明')
+  assertContains(runtime, 'hasVerifiedNativeEngineManifest(', '原生二进制的受管补丁清单校验')
+  assertContains(runtime, 'CODEX_ENGINE_PRODUCT_PATCHES', '原生二进制的受管补丁合同')
+  assertContains(runtime, 'if (!await hasVerifiedNativeEngineManifest(', '未验证内核的 fail-closed 启动门')
+  assertContains(engineContract, 'CODEX_ENGINE_MANIFEST_SCHEMA = 3', '受管补丁清单版本')
+  for (const patch of CODEX_ENGINE_PRODUCT_PATCHES) {
+    assertContains(engineContract, `file: '${patch.file}'`, `受管补丁 ${patch.file}`)
+    assertContains(engineContract, `sha256: '${patch.sha256}'`, `受管补丁 ${patch.file} 的 SHA-256`)
+  }
   assertContains(runtime, 'requestAttestation: false', '禁用未接入的上游 attestation 请求')
   assertContains(runtime, 'runtimeWorkspaceRoots', '受控运行工作区根目录')
   assertContains(runtime, 'sandboxPolicy', '原生沙箱策略字段')

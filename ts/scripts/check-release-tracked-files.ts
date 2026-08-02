@@ -8,6 +8,7 @@ const repositoryRoot = path.resolve(root, '..')
 export const RELEASE_SOURCE_PATHS = [
   '.github/workflows/desktop-build-mac.yml',
   '.github/workflows/desktop-build-win.yml',
+  'third_party/codex-engine-patches',
   'ts/desktop',
   'ts/shared',
   'ts/src',

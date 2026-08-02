@@ -1,13 +1,30 @@
-import { existsSync, readFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import path from 'node:path'
+import {
+  CODEX_ENGINE_PRODUCT_PATCHES,
+  CODEX_ENGINE_SOURCE_REVISION,
+} from '../../shared/product/codexEngineContract'
 
-const expectedRevision = '2b5bdcf67547860f2e5c5a605009a70026796b2b'
+const expectedRevision = CODEX_ENGINE_SOURCE_REVISION
 const repositoryRoot = path.resolve(import.meta.dir, '../../..')
 const engineRoot = path.join(repositoryRoot, 'third_party', 'codex-engine')
+const productPatchRoot = path.join(repositoryRoot, 'third_party', 'codex-engine-patches')
+
 function requireFile(relativePath: string): string {
   const file = path.join(engineRoot, relativePath)
   if (!existsSync(file)) throw new Error(`Codex Engine 源码缺少 ${relativePath}；请执行 git submodule update --init --recursive`)
   return readFileSync(file, 'utf8')
+}
+
+function requireProductPatch(file: string): string {
+  const patch = path.join(productPatchRoot, file)
+  if (!existsSync(patch)) throw new Error(`Codex Engine 产品补丁缺少 ${file}`)
+  return readFileSync(patch, 'utf8')
+}
+
+function productPatchSha256(file: string): string {
+  return createHash('sha256').update(readFileSync(path.join(productPatchRoot, file))).digest('hex')
 }
 
 function assertContains(source: string, fragment: string, description: string): void {
@@ -25,11 +42,43 @@ async function gitOutput(...args: string[]): Promise<string> {
   return stdout.trim()
 }
 
+async function assertProductPatches(): Promise<void> {
+  if (!existsSync(productPatchRoot)) throw new Error('Codex Engine 产品补丁目录缺失')
+  const expectedPatches = [...CODEX_ENGINE_PRODUCT_PATCHES]
+    .sort((left, right) => left.file.localeCompare(right.file))
+  const expectedFiles = expectedPatches.map(patch => patch.file)
+  const actualFiles = readdirSync(productPatchRoot, { withFileTypes: true })
+    .map(entry => entry.name)
+    .sort()
+  if (actualFiles.length !== expectedFiles.length || actualFiles.some((file, index) => file !== expectedFiles[index])) {
+    throw new Error(`Codex Engine 产品补丁清单不完整或包含未审核文件: ${actualFiles.join(', ') || '（空）'}`)
+  }
+
+  const sourceStatus = await gitOutput('status', '--short')
+  if (sourceStatus) throw new Error('Codex Engine 源码目录存在未提交改动，无法验证产品补丁基线')
+
+  for (const expectedPatch of expectedPatches) {
+    const patch = requireProductPatch(expectedPatch.file)
+    if (productPatchSha256(expectedPatch.file) !== expectedPatch.sha256) {
+      throw new Error(`Codex Engine 产品补丁内容不符合发行合同: ${expectedPatch.file}`)
+    }
+    assertContains(patch, 'diff --git a/codex-rs/hooks/src/engine/command_runner.rs', `${expectedPatch.file} 的 Hook 目标`)
+    assertContains(patch, '+    remove_inherited_secret_environment(&mut command);', `${expectedPatch.file} 的 Hook 密钥过滤`)
+    assertContains(patch, '+    command.envs(&handler.env);', `${expectedPatch.file} 的显式 Hook 环境恢复`)
+    assertContains(patch, '+            command.env_remove(name);', `${expectedPatch.file} 的继承密钥移除`)
+    assertContains(patch, '+    uppercase_name.contains("KEY")', `${expectedPatch.file} 的默认密钥匹配规则`)
+    assertContains(patch, '+        || uppercase_name.contains("SECRET")', `${expectedPatch.file} 的默认密钥匹配规则`)
+    assertContains(patch, '+        || uppercase_name.contains("TOKEN")', `${expectedPatch.file} 的默认密钥匹配规则`)
+    await gitOutput('apply', '--check', path.join(productPatchRoot, expectedPatch.file))
+  }
+}
+
 async function main(): Promise<void> {
   const revision = await gitOutput('rev-parse', 'HEAD')
   if (revision !== expectedRevision) {
     throw new Error(`Codex Engine 提交不符合产品锁定版本：期望 ${expectedRevision}，实际 ${revision}`)
   }
+  await assertProductPatches()
 
   const license = requireFile('LICENSE')
   if (!license.includes('Apache License') || !license.includes('Version 2.0')) {
@@ -57,6 +106,7 @@ async function main(): Promise<void> {
 
   const appServerMain = requireFile('codex-rs/app-server/src/main.rs')
   const appServerRuntime = requireFile('codex-rs/app-server/src/lib.rs')
+  const hookCommandRunner = requireFile('codex-rs/hooks/src/engine/command_runner.rs')
   const coreRoot = requireFile('codex-rs/core/src/lib.rs')
   const coreConfig = requireFile('codex-rs/core/src/config/mod.rs')
   const coreSession = requireFile('codex-rs/core/src/session/mod.rs')
@@ -69,6 +119,7 @@ async function main(): Promise<void> {
   assertContains(appServerRuntime, 'ExecServerRuntimePaths::from_optional_paths(', 'App Server 的本地 Exec Server 运行路径')
   assertContains(appServerRuntime, 'EnvironmentManager::from_codex_home(', 'App Server 的本地执行环境管理器')
   assertContains(appServerRuntime, 'MessageProcessor::new(MessageProcessorArgs', 'App Server 的 JSON-RPC 消息处理器')
+  assertContains(hookCommandRunner, 'fn build_command(', 'Core Hook 命令启动点')
   assertContains(coreRoot, 'pub mod context;', 'Core 上下文模块')
   assertContains(coreRoot, 'pub mod exec;', 'Core 执行模块')
   assertContains(coreRoot, 'pub mod sandboxing;', 'Core 沙箱模块')
@@ -97,7 +148,7 @@ async function main(): Promise<void> {
   assertContains(providerInfo, 'self.is_openai() || is_azure_responses_provider(&self.name, self.base_url.as_deref())', 'Core 远程压缩 Provider 限定')
 
   console.log(`[codex-engine] source lock passed: ${revision}`)
-  console.log('[codex-engine] Rust App Server/Core/Thread/Context/Tool/Sandbox/Exec composition, Apache-2.0 NOTICE, the Responses-only provider baseline and native 90% automatic-compaction default verified; Chat must enter through the BilliardBuddy Responses bridge.')
+  console.log('[codex-engine] Rust App Server/Core/Thread/Context/Tool/Sandbox/Exec composition, Apache-2.0 NOTICE, the Responses-only provider baseline, native 90% automatic-compaction default, and the reviewed Hook credential-environment patch verified; Chat must enter through the BilliardBuddy Responses bridge.')
 }
 
 await main()

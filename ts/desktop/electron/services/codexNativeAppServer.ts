@@ -3,6 +3,13 @@ import { createHash } from 'node:crypto'
 import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
 import {
+  CODEX_ENGINE_MANIFEST_SCHEMA,
+  CODEX_ENGINE_NAME,
+  CODEX_ENGINE_PRODUCT_PATCHES,
+  CODEX_ENGINE_SOURCE_REPOSITORY,
+  CODEX_ENGINE_SOURCE_REVISION,
+} from '../../../shared/product/codexEngineContract'
+import {
   startCodexNativeProvider,
   type CodexNativeModelRoute,
   type StartedCodexNativeProvider,
@@ -239,6 +246,43 @@ async function privateDirectory(directory: string): Promise<string> {
   return await fs.realpath(resolved)
 }
 
+function matchesEngineProductPatches(value: unknown): boolean {
+  return Array.isArray(value)
+    && value.length === CODEX_ENGINE_PRODUCT_PATCHES.length
+    && value.every((patch, index) => {
+      const expected = CODEX_ENGINE_PRODUCT_PATCHES[index]
+      const object = jsonObject(patch)
+      if (!expected) return false
+      return Object.keys(object ?? {}).length === 2
+        && object?.file === expected.file
+        && object?.sha256 === expected.sha256
+    })
+}
+
+async function hasVerifiedNativeEngineManifest(
+  directory: string,
+  target: ReturnType<typeof supportedEngineTarget>,
+  binaryName: string,
+): Promise<boolean> {
+  const manifestPath = path.join(directory, `codex-engine-manifest-${target}.json`)
+  try {
+    const stat = await fs.lstat(manifestPath)
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 256 * 1024) return false
+    const resolved = await fs.realpath(manifestPath)
+    if (path.dirname(resolved) !== directory) return false
+    const manifest = jsonObject(JSON.parse(await fs.readFile(resolved, 'utf8')))
+    return manifest?.schemaVersion === CODEX_ENGINE_MANIFEST_SCHEMA
+      && manifest.engine === CODEX_ENGINE_NAME
+      && manifest.sourceRepository === CODEX_ENGINE_SOURCE_REPOSITORY
+      && manifest.sourceRevision === CODEX_ENGINE_SOURCE_REVISION
+      && manifest.target === target
+      && manifest.binary === binaryName
+      && matchesEngineProductPatches(manifest.productPatches)
+  } catch {
+    return false
+  }
+}
+
 async function nativeAppServerCommand(desktopRoot: string): Promise<string[]> {
   const target = supportedEngineTarget()
   const extension = process.platform === 'win32' ? '.exe' : ''
@@ -251,6 +295,9 @@ async function nativeAppServerCommand(desktopRoot: string): Promise<string[]> {
   }
   const resolved = await fs.realpath(binary)
   if (path.dirname(resolved) !== directory) throw new Error('CODEX_NATIVE_BINARY_UNAVAILABLE')
+  if (!await hasVerifiedNativeEngineManifest(directory, target, path.basename(binary))) {
+    throw new Error('CODEX_NATIVE_BINARY_UNAVAILABLE')
+  }
   return [resolved]
 }
 

@@ -6,7 +6,14 @@ on:
     paths:
       - '.gitmodules'
       - 'third_party/codex-engine'
+      - 'third_party/codex-engine-patches/**'
+      - 'ts/shared/product/codexEngineContract.ts'
+      - 'ts/desktop/electron/services/codexNativeAppServer.ts'
+      - 'ts/desktop/package.json'
+      - 'ts/desktop/scripts/stage-codex-engine.ts'
       - 'ts/desktop/scripts/verify-codex-engine-source.ts'
+      - 'ts/desktop/scripts/verify-codex-native-protocol.ts'
+      - 'ts/scripts/check-release-tracked-files.ts'
       - '.github/workflows/codex-engine-build.yml'
   push:
     branches:
@@ -14,7 +21,14 @@ on:
     paths:
       - '.gitmodules'
       - 'third_party/codex-engine'
+      - 'third_party/codex-engine-patches/**'
+      - 'ts/shared/product/codexEngineContract.ts'
+      - 'ts/desktop/electron/services/codexNativeAppServer.ts'
+      - 'ts/desktop/package.json'
+      - 'ts/desktop/scripts/stage-codex-engine.ts'
       - 'ts/desktop/scripts/verify-codex-engine-source.ts'
+      - 'ts/desktop/scripts/verify-codex-native-protocol.ts'
+      - 'ts/scripts/check-release-tracked-files.ts'
       - '.github/workflows/codex-engine-build.yml'
 
 permissions:
@@ -57,6 +71,16 @@ jobs:
         uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582
         with:
           toolchain: '1.95.0'
+
+      - name: 应用已审核的 Hook 凭据环境隔离补丁
+        working-directory: third_party/codex-engine
+        shell: bash
+        run: |
+          set -euo pipefail
+          patch='../codex-engine-patches/0001-sanitize-hook-environment.patch'
+          git apply --check "${patch}"
+          git apply --whitespace=nowarn "${patch}"
+          git diff --check
 
       - name: 重新生成并核对 App Server 协议类型
         working-directory: third_party/codex-engine/codex-rs
