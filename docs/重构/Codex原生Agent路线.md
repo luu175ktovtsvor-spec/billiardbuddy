@@ -74,6 +74,8 @@ MCP 的正式控制面同样不再经 Bun 侧车探测或连接。Electron Main 
 
 旧 `/api/mcp` 已返回 `LEGACY_AGENT_BACKEND_RETIRED`，Electron 也不再为它生成或向 Bun 侧车注入 OAuth 主密钥。历史 JSON 配置和历史加密凭据只保留在磁盘上、不执行、不迁移、不删除；之后由用户明确决定是否手工重建为 Rust 原生 MCP 配置。
 
+Skills、Hooks 与协作模式目录也直接读取 Rust App Server 的 `skills/list`、`skills/config/write`、`hooks/list` 和 `collaborationMode/list`。技能启停由上游私有 Home 保存；Hook 的发现、信任、执行和事件由 Rust Core 负责；协作子 Agent 的创建、状态和恢复仍在 Rust Thread Store 中。Electron 不维护插件/Hook/子 Agent 的镜像状态。安装第三方插件、加载额外 Skill 根目录和切换协作模式会引入外部代码或改写后续执行策略，必须与新的界面确认流一起单独接入。
+
 终态将新增 BilliardBuddy 的 **native Codex profile**：
 
 - 不再开启 `host_managed_tools_only`；使用上游工具、审批、沙箱、MCP、Skills、Hooks、Review 和 multi-agent；

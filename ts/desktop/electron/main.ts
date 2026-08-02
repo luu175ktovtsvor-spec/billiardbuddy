@@ -47,6 +47,7 @@ import {
   type CodexNativeNotification,
   type NativeCodexPermissionMode,
   type CodexNativeServerRequest,
+  type NativeCodexSkillSelector,
 } from './services/codexNativeAppServer'
 import type { CodexNativeModelRoute } from './services/codexNativeProvider'
 import { InstallationSessionManager } from './services/installationSession'
@@ -821,6 +822,26 @@ function registerIpcHandlers() {
     const input = payload as { threadId: string, name: string }
     assertNativeAgentThreadOwner(event.sender.id, input.threadId)
     return await getNativeAgentRuntime().startMcpOAuth({ id: input.threadId }, input.name)
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentListSkills, async (event, payload) => {
+    const input = payload as { threadId: string, cwd: string }
+    assertNativeAgentThreadOwner(event.sender.id, input.threadId)
+    return await getNativeAgentRuntime().listSkills({ id: input.threadId }, input.cwd)
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentSetSkillEnabled, async (event, payload) => {
+    const input = payload as { threadId: string, enabled: boolean } & NativeCodexSkillSelector
+    assertNativeAgentThreadOwner(event.sender.id, input.threadId)
+    return await getNativeAgentRuntime().setSkillEnabled({ id: input.threadId }, input, input.enabled)
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentListHooks, async (event, payload) => {
+    const input = payload as { threadId: string, cwd: string }
+    assertNativeAgentThreadOwner(event.sender.id, input.threadId)
+    return await getNativeAgentRuntime().listHooks({ id: input.threadId }, input.cwd)
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentListCollaborationModes, async (event, payload) => {
+    const input = payload as { threadId: string }
+    assertNativeAgentThreadOwner(event.sender.id, input.threadId)
+    return await getNativeAgentRuntime().listCollaborationModes({ id: input.threadId })
   })
   registerHandler(ELECTRON_IPC_CHANNELS.commandInvoke, (_event, payload) => handleCommandInvoke(payload))
   registerHandler(ELECTRON_IPC_CHANNELS.clipboardReadText, () => clipboard.readText())

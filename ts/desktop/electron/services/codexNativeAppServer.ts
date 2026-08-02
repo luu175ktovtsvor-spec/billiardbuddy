@@ -61,6 +61,12 @@ export type NativeCodexTurn = {
  */
 export type NativeCodexMcpServerConfig = CodexNativeJsonObject
 
+/** Exactly one source-native skill selector: its display name or SKILL.md path. */
+export type NativeCodexSkillSelector = {
+  name?: string
+  path?: string
+}
+
 export type NativeCodexStartThreadInput = {
   cwd: string
   route: CodexNativeModelRoute
@@ -256,6 +262,18 @@ function nativeMcpConfig(value: unknown): NativeCodexMcpServerConfig {
     throw new Error('CODEX_NATIVE_MCP_CONFIGURATION_INVALID')
   }
   return config
+}
+
+function nativeSkillSelector(value: NativeCodexSkillSelector): NativeCodexSkillSelector {
+  const name = value.name
+  const skillPath = value.path
+  if (
+    (typeof name === 'string' && nonEmptyText(name.trim(), 512) && skillPath === undefined)
+    || (typeof skillPath === 'string' && nonEmptyText(skillPath, 4_096) && path.isAbsolute(skillPath) && !/[\u0000\r\n]/.test(skillPath) && name === undefined)
+  ) {
+    return name === undefined ? { path: skillPath } : { name: name.trim() }
+  }
+  throw new Error('CODEX_NATIVE_SKILL_SELECTOR_INVALID')
 }
 
 /**
@@ -590,6 +608,42 @@ export class ElectronCodexNativeRuntime {
       name: nativeMcpServerName(name),
       threadId: thread.id,
     })
+  }
+
+  /** Read the source-owned skill catalog for one verified workspace. */
+  async listSkills(thread: Pick<NativeCodexThread, 'id'>, cwd: string): Promise<CodexNativeJsonObject> {
+    if (!nonEmptyText(thread.id)) throw new Error('CODEX_NATIVE_THREAD_ID_INVALID')
+    const workspace = await this.workspace(cwd)
+    return await this.requireClient().request<CodexNativeJsonObject>('skills/list', {
+      cwds: [workspace],
+      forceReload: true,
+    })
+  }
+
+  /** Enable or disable a source-native skill without maintaining a second registry. */
+  async setSkillEnabled(
+    thread: Pick<NativeCodexThread, 'id'>,
+    selector: NativeCodexSkillSelector,
+    enabled: boolean,
+  ): Promise<CodexNativeJsonObject> {
+    if (!nonEmptyText(thread.id) || typeof enabled !== 'boolean') throw new Error('CODEX_NATIVE_SKILL_CONFIGURATION_INVALID')
+    return await this.requireClient().request<CodexNativeJsonObject>('skills/config/write', {
+      ...nativeSkillSelector(selector),
+      enabled,
+    })
+  }
+
+  /** Read resolved source-native Hook metadata; execution remains in Rust Core. */
+  async listHooks(thread: Pick<NativeCodexThread, 'id'>, cwd: string): Promise<CodexNativeJsonObject> {
+    if (!nonEmptyText(thread.id)) throw new Error('CODEX_NATIVE_THREAD_ID_INVALID')
+    const workspace = await this.workspace(cwd)
+    return await this.requireClient().request<CodexNativeJsonObject>('hooks/list', { cwds: [workspace] })
+  }
+
+  /** Read available Codex collaboration presets; Rust owns spawned Agent state. */
+  async listCollaborationModes(thread: Pick<NativeCodexThread, 'id'>): Promise<CodexNativeJsonObject> {
+    if (!nonEmptyText(thread.id)) throw new Error('CODEX_NATIVE_THREAD_ID_INVALID')
+    return await this.requireClient().request<CodexNativeJsonObject>('collaborationMode/list', {})
   }
 
   async startTurn(thread: Pick<NativeCodexThread, 'id'>, input: readonly NativeCodexTurnInput[], clientUserMessageId?: string): Promise<NativeCodexTurn> {
