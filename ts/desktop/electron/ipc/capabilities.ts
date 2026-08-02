@@ -163,6 +163,25 @@ const nativeAgentMcpServerReference: Validator = value =>
   && nativeCodexId(value.threadId)
   && nativeMcpServerName(value.name)
 
+const nativeAgentCatalogReference: Validator = value =>
+  isRecord(value)
+  && hasOnlyKeys(value, ['threadId', 'cwd'])
+  && nativeCodexId(value.threadId)
+  && nativeWorkspacePath(value.cwd)
+
+const nativeAgentSetSkillEnabled: Validator = value =>
+  isRecord(value)
+  && hasOnlyKeys(value, ['threadId', 'name', 'path', 'enabled'])
+  && nativeCodexId(value.threadId)
+  && typeof value.enabled === 'boolean'
+  && (
+    typeof value.name === 'string'
+      ? value.name.length > 0 && value.name.length <= 512 && value.path === undefined && !/[\u0000\r\n]/.test(value.name)
+      : typeof value.path === 'string'
+        ? value.path.length > 0 && value.path.length <= 4_096 && value.name === undefined && !/[\u0000\r\n]/.test(value.path)
+        : false
+  )
+
 const modelConfigurationSave: Validator = value =>
   isRecord(value)
   && hasOnlyKeys(value, ['id', 'label', 'base_url', 'model', 'api_key', 'protocol', 'capabilities', 'supports_tool_calls'])
@@ -359,6 +378,10 @@ export const ELECTRON_IPC_VALIDATORS = {
   [ELECTRON_IPC_CHANNELS.nativeAgentRemoveMcpServer]: nativeAgentMcpServerReference,
   [ELECTRON_IPC_CHANNELS.nativeAgentListMcpServerStatuses]: nativeAgentThreadReference,
   [ELECTRON_IPC_CHANNELS.nativeAgentStartMcpOAuth]: nativeAgentMcpServerReference,
+  [ELECTRON_IPC_CHANNELS.nativeAgentListSkills]: nativeAgentCatalogReference,
+  [ELECTRON_IPC_CHANNELS.nativeAgentSetSkillEnabled]: nativeAgentSetSkillEnabled,
+  [ELECTRON_IPC_CHANNELS.nativeAgentListHooks]: nativeAgentCatalogReference,
+  [ELECTRON_IPC_CHANNELS.nativeAgentListCollaborationModes]: nativeAgentThreadReference,
   [ELECTRON_IPC_CHANNELS.commandInvoke]: commandInvoke,
   [ELECTRON_IPC_CHANNELS.clipboardReadText]: noPayload,
   [ELECTRON_IPC_CHANNELS.clipboardWriteText]: stringPayload,
