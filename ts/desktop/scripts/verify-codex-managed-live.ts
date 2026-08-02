@@ -134,7 +134,6 @@ async function main(): Promise<void> {
     resolveAccessToken: async () => accessToken,
     model,
     contextWindowTokens: entry.verified_context_window,
-    autoCompactTokenLimit: entry.compact_threshold,
   }
   const createRuntime = () => new ElectronCodexNativeRuntime({
     desktopRoot,

@@ -5,7 +5,7 @@ import type {
   TextReasoningTransport,
 } from '../ts/shared/product/providerContracts.js'
 
-export const PROVIDER_REGISTRY_CONTRACT_VERSION = 3 as const
+export const PROVIDER_REGISTRY_CONTRACT_VERSION = 4 as const
 export const PROVIDER_REGISTRY_VERIFICATION_DATE = '2026-07-23'
 export const PROVIDER_RUNTIME_CONTRACT_VERSION_ENV = 'BB_PROVIDER_CONTRACT_VERSION'
 export const PROVIDER_RUNTIME_REGISTRY_SHA256_ENV = 'BB_PROVIDER_REGISTRY_SHA256'
@@ -35,7 +35,6 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
       VISION_BODY_MAX_BYTES: 24 * 1024 * 1024,
       IMAGE_GENERATION_BODY_MAX_BYTES: 32 * 1024 * 1024,
     },
-    compact_threshold: DEEPSEEK_V4_FLASH_CONTEXT_WINDOW - DEEPSEEK_V4_FLASH_MANAGED_MAX_OUTPUT_TOKENS,
     resume_evidence: { path: 'ts/desktop/electron/services/codexNativeAppServer.ts', status: 'conservative' },
     contract_version: PROVIDER_REGISTRY_CONTRACT_VERSION,
     verification_date: PROVIDER_REGISTRY_VERIFICATION_DATE,
@@ -51,7 +50,6 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
       VISION_BODY_MAX_BYTES: 24 * 1024 * 1024,
       IMAGE_GENERATION_BODY_MAX_BYTES: 32 * 1024 * 1024,
     },
-    compact_threshold: 12_000,
     resume_evidence: { path: 'gateway/visionBridge.ts', status: 'conservative' },
     contract_version: PROVIDER_REGISTRY_CONTRACT_VERSION,
     verification_date: PROVIDER_REGISTRY_VERIFICATION_DATE,
@@ -67,7 +65,6 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
       VISION_BODY_MAX_BYTES: 24 * 1024 * 1024,
       IMAGE_GENERATION_BODY_MAX_BYTES: 32 * 1024 * 1024,
     },
-    compact_threshold: 12_000,
     resume_evidence: { path: 'relay/app.ts', status: 'verified' },
     contract_version: PROVIDER_REGISTRY_CONTRACT_VERSION,
     verification_date: PROVIDER_REGISTRY_VERIFICATION_DATE,
@@ -83,7 +80,6 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
       VISION_BODY_MAX_BYTES: 24 * 1024 * 1024,
       IMAGE_GENERATION_BODY_MAX_BYTES: 32 * 1024 * 1024,
     },
-    compact_threshold: 12_000,
     resume_evidence: { path: 'relay/app.ts', status: 'verified' },
     contract_version: PROVIDER_REGISTRY_CONTRACT_VERSION,
     verification_date: PROVIDER_REGISTRY_VERIFICATION_DATE,
@@ -99,7 +95,6 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
       VISION_BODY_MAX_BYTES: 24 * 1024 * 1024,
       IMAGE_GENERATION_BODY_MAX_BYTES: 32 * 1024 * 1024,
     },
-    compact_threshold: 12_000,
     resume_evidence: { path: 'gateway/transcription.ts', status: 'verified' },
     contract_version: PROVIDER_REGISTRY_CONTRACT_VERSION,
     verification_date: PROVIDER_REGISTRY_VERIFICATION_DATE,
@@ -130,7 +125,6 @@ type WorkerModelRegistryEntry = {
   verified_context_window: number
   provider_max_output_tokens?: number
   managed_max_output_tokens?: number
-  compact_threshold: number
 }
 
 export function workerTextReasoningEntry(registry: readonly WorkerModelRegistryEntry[] = PROVIDER_REGISTRY): WorkerModelRegistryEntry | undefined {
@@ -199,7 +193,6 @@ export function renderProviderRuntimeManifest(): Json {
       ...(entry.provider_max_output_tokens !== undefined ? { provider_max_output_tokens: entry.provider_max_output_tokens } : {}),
       ...(entry.managed_max_output_tokens !== undefined ? { managed_max_output_tokens: entry.managed_max_output_tokens } : {}),
       body_caps: entry.body_caps,
-      compact_threshold: entry.compact_threshold,
       resume_evidence: entry.resume_evidence,
       contract_version: entry.contract_version,
       verification_date: entry.verification_date,
@@ -224,20 +217,16 @@ export function buildProviderRegistryRuntimeEnv(model: string | undefined): Reco
   return {
     ...contract,
     BILLIARDBUDDY_MODEL_CONTEXT_WINDOWS: JSON.stringify({ [selected]: entry.verified_context_window }),
-    BILLIARDBUDDY_AUTO_COMPACT_WINDOW: String(entry.compact_threshold),
   }
 }
 
-export function validateProviderRegistryEntry(entry: Pick<ProviderRegistryEntry, 'capabilities' | 'text_reasoning_transport' | 'verified_context_window' | 'provider_max_output_tokens' | 'managed_max_output_tokens' | 'compact_threshold' | 'verification_date' | 'body_caps' | 'resume_evidence'>): ProviderRuntimeConfigurationError | undefined {
+export function validateProviderRegistryEntry(entry: Pick<ProviderRegistryEntry, 'capabilities' | 'text_reasoning_transport' | 'verified_context_window' | 'provider_max_output_tokens' | 'managed_max_output_tokens' | 'verification_date' | 'body_caps' | 'resume_evidence'>): ProviderRuntimeConfigurationError | undefined {
   if (
     !entry.resume_evidence.path
     || entry.verification_date !== PROVIDER_REGISTRY_VERIFICATION_DATE
     || !Number.isSafeInteger(entry.verified_context_window)
     || entry.verified_context_window < 8_192
     || entry.verified_context_window > 2_000_000
-    || !Number.isSafeInteger(entry.compact_threshold)
-    || entry.compact_threshold < 1
-    || entry.compact_threshold >= entry.verified_context_window
   ) return 'MODEL_CONTRACT_STALE'
   const caps = entry.body_caps
   if (caps.CHAT_TEXT_BODY_MAX_BYTES <= 0 || caps.VISION_BODY_MAX_BYTES <= 0 || caps.IMAGE_GENERATION_BODY_MAX_BYTES <= 0) return 'MODEL_CONTRACT_STALE'
@@ -256,7 +245,6 @@ export function validateProviderRegistryEntry(entry: Pick<ProviderRegistryEntry,
       || !Number.isSafeInteger(managedMaximum)
       || managedMaximum < 1_024
       || managedMaximum > providerMaximum
-      || entry.compact_threshold !== entry.verified_context_window - managedMaximum
     ) return 'MODEL_CONTRACT_STALE'
   }
   return undefined
@@ -273,6 +261,5 @@ export function validateProviderRuntimeConfiguration(env: Record<string, string 
   const textReasoning = selectedModel ? textReasoningRegistryEntry(selectedModel) : undefined
   if (!textReasoning?.text_reasoning_transport) return 'MODEL_CONFIGURATION_INVALID'
   if (env.BILLIARDBUDDY_MODEL_CONTEXT_WINDOWS !== JSON.stringify({ [textReasoning.model_id]: textReasoning.verified_context_window })) return 'MODEL_CONFIGURATION_INVALID'
-  if (env.BILLIARDBUDDY_AUTO_COMPACT_WINDOW !== String(textReasoning.compact_threshold)) return 'MODEL_CONFIGURATION_INVALID'
   return undefined
 }

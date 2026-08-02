@@ -69,10 +69,9 @@ export type ProviderRegistryEntry = {
   verified_context_window: number
   /** Provider-published hard output ceiling; required for TextReasoning. */
   provider_max_output_tokens?: number
-  /** Product-enforced per-turn output ceiling and Core compaction reserve. */
+  /** Product-enforced per-turn output ceiling; independent of Core compaction. */
   managed_max_output_tokens?: number
   body_caps: ProviderBodyCaps
-  compact_threshold: number
   resume_evidence: { path: string; status: 'verified' | 'conservative' }
   contract_version: number
   verification_date: string

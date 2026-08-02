@@ -61,6 +61,7 @@ async function main(): Promise<void> {
   const coreConfig = requireFile('codex-rs/core/src/config/mod.rs')
   const coreSession = requireFile('codex-rs/core/src/session/mod.rs')
   const coreTurn = requireFile('codex-rs/core/src/session/turn.rs')
+  const modelInfo = requireFile('codex-rs/protocol/src/openai_models.rs')
   const toolRouter = requireFile('codex-rs/core/src/tools/router.rs')
   const arg0Dispatch = requireFile('codex-rs/arg0/src/lib.rs')
 
@@ -83,6 +84,8 @@ async function main(): Promise<void> {
   assertContains(arg0Dispatch, 'CODEX_FS_HELPER_ARG1', '本地文件系统 helper')
   assertContains(coreConfig, 'pub model_context_window: Option<i64>', 'Core 模型上下文窗口配置')
   assertContains(coreConfig, 'pub model_auto_compact_token_limit: Option<i64>', 'Core 自动压缩阈值配置')
+  assertContains(modelInfo, 'from `context_window` (90%).', 'Core 未配置阈值时的原生自动压缩默认值')
+  assertContains(modelInfo, '.map(|context_window| (context_window * 9) / 10);', 'Core 原生自动压缩阈值算法')
 
   const providerInfo = requireFile('codex-rs/model-provider-info/src/lib.rs')
   if (!providerInfo.includes('pub enum WireApi') || !providerInfo.includes('Responses')) {
@@ -91,9 +94,10 @@ async function main(): Promise<void> {
   if (!providerInfo.includes('CHAT_WIRE_API_REMOVED_ERROR')) {
     throw new Error('Codex Engine 未明确标记 Chat wire API 限制；模型桥设计需要重新复核')
   }
+  assertContains(providerInfo, 'self.is_openai() || is_azure_responses_provider(&self.name, self.base_url.as_deref())', 'Core 远程压缩 Provider 限定')
 
   console.log(`[codex-engine] source lock passed: ${revision}`)
-  console.log('[codex-engine] Rust App Server/Core/Thread/Context/Tool/Sandbox/Exec composition, Apache-2.0 NOTICE and the Responses-only provider baseline verified; Chat must enter through the BilliardBuddy Responses bridge.')
+  console.log('[codex-engine] Rust App Server/Core/Thread/Context/Tool/Sandbox/Exec composition, Apache-2.0 NOTICE, the Responses-only provider baseline and native 90% automatic-compaction default verified; Chat must enter through the BilliardBuddy Responses bridge.')
 }
 
 await main()

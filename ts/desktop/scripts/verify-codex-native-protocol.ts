@@ -120,6 +120,10 @@ function assertContains(source: string, fragment: string, description: string): 
   if (!source.includes(fragment)) throw new Error(`锁定 Codex Rust 协议缺少 ${description}`)
 }
 
+function assertNotContains(source: string, fragment: string, description: string): void {
+  if (source.includes(fragment)) throw new Error(`产品协议边界不应包含 ${description}`)
+}
+
 async function main(): Promise<void> {
   const revision = await gitOutput('rev-parse', 'HEAD')
   if (revision !== expectedRevision) {
@@ -176,15 +180,15 @@ async function main(): Promise<void> {
   assertContains(runtime, 'this.client.isAvailable()', '异常退出后的原生 Thread 重连分支')
   assertContains(mainProcess, 'await nativeAgentRuntime?.invalidateModelRoute()', '凭据写入后撤销旧原生子进程')
   assertContains(mainProcess, 'contextWindowTokens: entry.verified_context_window', '托管模型窗口来自受信 Gateway 注册表')
-  assertContains(mainProcess, 'autoCompactTokenLimit: entry.compact_threshold', '托管模型压缩阈值来自受信 Gateway 注册表')
+  assertNotContains(mainProcess, 'autoCompactTokenLimit:', 'Electron 覆盖 Core 自动压缩阈值')
   assertContains(mainProcess, 'getReadyNativeAgentThreadRuntime', '线程操作前重新接入当前原生模型路由')
   assertContains(mainProcess, 'nativeAgentResolveServerRequest', '原生 server request 回填 IPC')
   assertContains(mainProcess, 'rejectNativeAgentServerRequests', '原生子进程失效时清理交互请求')
   assertContains(serverRequestBridge, 'validateNativeServerRequestResponse', '按 source request 校验回填结果')
   assertContains(serverRequestBridge, "request.method === 'item/tool/call'", '未注册动态工具的 fail-closed 回退')
   assertContains(provider, "${prefix}.wire_api=${quoted('responses')}", '所有 App Server provider 固定使用 Responses wire API')
-  assertContains(provider, 'model_context_window=${input.limits.contextWindowTokens}', 'Provider 上下文窗口传入 Core')
-  assertContains(provider, 'model_auto_compact_token_limit=${input.limits.autoCompactTokenLimit}', 'Provider 压缩阈值传入 Core')
+  assertContains(provider, 'model_context_window=${input.contextWindowTokens}', 'Provider 上下文窗口传入 Core')
+  assertNotContains(provider, 'model_auto_compact_token_limit=', 'Provider 覆盖 Core 原生自动压缩阈值')
   assertContains(provider, "profile.context_limits_source !== 'user-declared'", '未声明个人模型限制不得进入 Core')
   assertContains(provider, "if (profile.protocol === 'openai-responses')", '个人 Responses Key 直连分支')
   assertContains(provider, "if (profile.protocol !== 'openai-compatible')", '未知个人协议 fail-closed')
