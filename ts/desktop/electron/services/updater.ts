@@ -1,4 +1,4 @@
-import type { DesktopUpdateDownloadEvent } from '../../src/lib/desktopHost/types'
+import type { DesktopUpdateDownloadEvent } from '../ipc/desktopShellTypes'
 import { existsSync } from 'node:fs'
 
 export type ElectronUpdateInfo = {

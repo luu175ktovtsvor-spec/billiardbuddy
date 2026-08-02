@@ -1,5 +1,5 @@
 import type { BrowserWindow, OpenDialogOptions, SaveDialogOptions } from 'electron'
-import type { DialogOpenOptions, DialogSaveOptions } from '../../src/lib/desktopHost/types'
+import type { DialogOpenOptions, DialogSaveOptions } from '../ipc/desktopShellTypes'
 
 export function toElectronOpenDialogOptions(options: DialogOpenOptions = {}): OpenDialogOptions {
   return {

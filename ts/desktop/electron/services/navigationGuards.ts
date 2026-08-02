@@ -177,23 +177,3 @@ export function installMainWindowNavigationGuards(
     blockUntrustedNavigation(event, url, false)
   })
 }
-
-/**
- * Preview (WebContentsView) guard. The preview renders untrusted remote pages,
- * so it must keep working as a browser: in-page http(s) navigation is allowed.
- * Popups are denied (http(s) ones handed to the system browser), and navigation
- * to any non-http(s) scheme (file:, custom schemes) is blocked outright.
- */
-export function installPreviewNavigationGuards(
-  webContents: NavigationGuardWebContents,
-  { openExternal }: NavigationGuardOptions,
-): void {
-  webContents.setWindowOpenHandler(({ url }) => {
-    if (isHttpUrl(url)) openExternal(url)
-    return { action: 'deny' }
-  })
-  webContents.on('will-navigate', (event, url) => {
-    const target = navigationUrl(event, url)
-    if (!target || !isHttpUrl(target)) event.preventDefault()
-  })
-}

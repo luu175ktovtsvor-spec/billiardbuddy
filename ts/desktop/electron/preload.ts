@@ -1,26 +1,138 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import { createElectronHost } from '../src/lib/desktopHost/electronHost'
-import type { DesktopHostUnlisten } from '../src/lib/desktopHost/types'
-import type { ElectronEventChannel, ElectronIpcChannel } from './ipc/channels'
+import { ELECTRON_EVENT_CHANNELS, ELECTRON_IPC_CHANNELS, type ElectronIpcChannel } from './ipc/channels'
 
-const electronHost = createElectronHost({
-  invoke<T>(channel: ElectronIpcChannel, payload?: unknown): Promise<T> {
-    return ipcRenderer.invoke(channel, payload) as Promise<T>
-  },
-  subscribe<T>(
-    channel: ElectronEventChannel,
-    handler: (payload: T) => void,
-  ): Promise<DesktopHostUnlisten> {
-    const listener = (_event: Electron.IpcRendererEvent, payload: T) => handler(payload)
-    ipcRenderer.on(channel, listener)
-    return Promise.resolve(() => {
-      ipcRenderer.removeListener(channel, listener)
-    })
-  },
-})
+function invoke<T>(channel: ElectronIpcChannel, payload?: unknown): Promise<T> {
+  return ipcRenderer.invoke(channel, payload) as Promise<T>
+}
 
-// Do not give an embedded frame access to the desktop IPC bridge. The main
-// process separately validates the top-level sender and renderer origin.
+function nativeAgentEventListener(handler: (event: unknown) => void): () => void {
+  const listener = (_event: Electron.IpcRendererEvent, payload: unknown) => handler(payload)
+  ipcRenderer.on(ELECTRON_EVENT_CHANNELS.nativeAgentEvent, listener)
+  return () => ipcRenderer.removeListener(ELECTRON_EVENT_CHANNELS.nativeAgentEvent, listener)
+}
+
+/**
+ * Keep only the narrow native Codex boundary that the replacement UI will
+ * project; Main validates every call.
+ */
+const nativeAgent = {
+  startThread: (cwd: string, permissionMode?: unknown) => invoke(
+    ELECTRON_IPC_CHANNELS.nativeAgentStartThread,
+    { cwd, ...(permissionMode === undefined ? {} : { permissionMode }) },
+  ),
+  resumeThread: (threadId: string, cwd: string) => invoke(
+    ELECTRON_IPC_CHANNELS.nativeAgentResumeThread,
+    { threadId, cwd },
+  ),
+  readThread: (threadId: string) => invoke(ELECTRON_IPC_CHANNELS.nativeAgentReadThread, { threadId }),
+  forkThread: (threadId: string, cwd: string, permissionMode?: unknown, lastTurnId?: string) => invoke(
+    ELECTRON_IPC_CHANNELS.nativeAgentForkThread,
+    {
+      threadId,
+      cwd,
+      ...(permissionMode === undefined ? {} : { permissionMode }),
+      ...(lastTurnId === undefined ? {} : { lastTurnId }),
+    },
+  ),
+  updatePermissionMode: (threadId: string, permissionMode: unknown) => invoke(
+    ELECTRON_IPC_CHANNELS.nativeAgentUpdatePermissionMode,
+    { threadId, permissionMode },
+  ),
+  startTurn: (threadId: string, input: unknown[], clientUserMessageId?: string) => invoke(
+    ELECTRON_IPC_CHANNELS.nativeAgentStartTurn,
+    { threadId, input, ...(clientUserMessageId === undefined ? {} : { clientUserMessageId }) },
+  ),
+  steerTurn: (threadId: string, turnId: string, text: string, clientUserMessageId?: string) => invoke(
+    ELECTRON_IPC_CHANNELS.nativeAgentSteerTurn,
+    { threadId, turnId, text, ...(clientUserMessageId === undefined ? {} : { clientUserMessageId }) },
+  ),
+  interruptTurn: (threadId: string, turnId: string) => invoke(
+    ELECTRON_IPC_CHANNELS.nativeAgentInterruptTurn,
+    { threadId, turnId },
+  ),
+  archiveThread: (threadId: string) => invoke(ELECTRON_IPC_CHANNELS.nativeAgentArchiveThread, { threadId }),
+  resolveApproval: (requestId: string, decision: unknown) => invoke(
+    ELECTRON_IPC_CHANNELS.nativeAgentResolveApproval,
+    { requestId, decision },
+  ),
+  configureMcpServer: (threadId: string, name: string, config: unknown) => invoke(
+    ELECTRON_IPC_CHANNELS.nativeAgentConfigureMcpServer,
+    { threadId, name, config },
+  ),
+  removeMcpServer: (threadId: string, name: string) => invoke(
+    ELECTRON_IPC_CHANNELS.nativeAgentRemoveMcpServer,
+    { threadId, name },
+  ),
+  listMcpServerStatuses: (threadId: string) => invoke(
+    ELECTRON_IPC_CHANNELS.nativeAgentListMcpServerStatuses,
+    { threadId },
+  ),
+  startMcpOAuth: (threadId: string, name: string) => invoke(
+    ELECTRON_IPC_CHANNELS.nativeAgentStartMcpOAuth,
+    { threadId, name },
+  ),
+  listSkills: (threadId: string, cwd: string) => invoke(
+    ELECTRON_IPC_CHANNELS.nativeAgentListSkills,
+    { threadId, cwd },
+  ),
+  setSkillEnabled: (threadId: string, selector: Record<string, unknown>, enabled: boolean) => invoke(
+    ELECTRON_IPC_CHANNELS.nativeAgentSetSkillEnabled,
+    { threadId, ...selector, enabled },
+  ),
+  listHooks: (threadId: string, cwd: string) => invoke(
+    ELECTRON_IPC_CHANNELS.nativeAgentListHooks,
+    { threadId, cwd },
+  ),
+  listCollaborationModes: (threadId: string) => invoke(
+    ELECTRON_IPC_CHANNELS.nativeAgentListCollaborationModes,
+    { threadId },
+  ),
+  onEvent: nativeAgentEventListener,
+}
+
+// These are product-owned capabilities, not Agent tools. The future renderer
+// uses this narrow bridge to reach the existing image and video backends.
+const media = {
+  images: {
+    submitProject: (projectId: string, confirmUnknownRetry = false) => invoke(
+      ELECTRON_IPC_CHANNELS.imageSubmitProject,
+      { projectId, confirmUnknownRetry },
+    ),
+    startOperation: (projectId: string, input: unknown) => invoke(
+      ELECTRON_IPC_CHANNELS.imageStartOperation,
+      { projectId, input },
+    ),
+    updateUnknownProject: (projectId: string, input: unknown) => invoke(
+      ELECTRON_IPC_CHANNELS.imageUpdateUnknownProject,
+      { projectId, input },
+    ),
+    saveOutput: (projectId: string, input: unknown) => invoke(
+      ELECTRON_IPC_CHANNELS.imageSaveOutput,
+      { projectId, input },
+    ),
+  },
+  videos: {
+    addSource: (projectId: string, path: string) => invoke(
+      ELECTRON_IPC_CHANNELS.videoAddSource,
+      { projectId, path },
+    ),
+    render: (input: unknown) => invoke(ELECTRON_IPC_CHANNELS.videoRender, input),
+    analyze: (input: unknown) => invoke(ELECTRON_IPC_CHANNELS.videoAnalyze, input),
+  },
+}
+
 if (process.isMainFrame) {
-  contextBridge.exposeInMainWorld('desktopHost', electronHost)
+  contextBridge.exposeInMainWorld('billiardBuddyNative', {
+    nativeAgent,
+    media,
+    models: {
+      summary: () => invoke(ELECTRON_IPC_CHANNELS.modelConfigurationSummary),
+      save: (input: unknown) => invoke(ELECTRON_IPC_CHANNELS.modelConfigurationSave, input),
+      setRoute: (capability: unknown, profileId: string | null) => invoke(
+        ELECTRON_IPC_CHANNELS.modelConfigurationSetRoute,
+        { capability, profileId },
+      ),
+      remove: (profileId: string) => invoke(ELECTRON_IPC_CHANNELS.modelConfigurationRemove, profileId),
+    },
+  })
 }

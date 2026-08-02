@@ -1,4 +1,4 @@
-import type { DesktopNotificationOptions, NotificationPermissionState } from '../../src/lib/desktopHost/types'
+import type { DesktopNotificationOptions, NotificationPermissionState } from '../ipc/desktopShellTypes'
 
 export type ElectronNotificationInstance = {
   show(): void

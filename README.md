@@ -32,10 +32,10 @@ BilliardBuddy 是面向球房经营者的 Electron 桌面 Agent。产品由通�
 
 | 路径 | 职责 |
 |---|---|
-| `ts/src/server` | 本地 Product Server、领域服务、计划任务和资源调度 |
-| `ts/src/server/agent-worker` | 正式 Agent Harness、Tool、Skill、Hook、Plugin、MCP 和子任务运行时 |
+| `ts/src/server` | 本地 Product Server 与图片、视频、语音、设置等独立领域服务；不承载 Agent 执行 |
+| `ts/desktop/electron` + `third_party/codex-engine` | Electron Main 连接并随包分发的 Codex Rust App Server；它拥有 Agent Harness、Tool、Skill、Hook、Plugin、MCP、审批和会话恢复 |
 | `ts/shared` | 桌面、本地服务和 Gateway 共用的产品契约 |
-| `ts/desktop` | React renderer、Electron Main、preload、sidecar 与发行脚本 |
+| `ts/desktop` | 空的 renderer 装配点、Electron Main、preload、sidecar 与发行脚本；新的产品界面将在此重建 |
 | `gateway` | 五条 provider 能力泳道、安装身份、用量、容量和 Relay 代理 |
 | `relay` | GPT Image 2 / Seedream 持久任务、幂等、结果 blob 与 ack |
 | `ts/fixtures/migrations` | 当前支持升级范围内的旧数据样本；只用于证明 reader 与迁移连续性 |
@@ -45,7 +45,7 @@ BilliardBuddy 是面向球房经营者的 Electron 桌面 Agent。产品由通�
 
 ## 本地开发
 
-需要 Bun、Node.js，以及 Electron/node-pty 支持的本机工具链。
+需要 Bun、Node.js，以及 Electron 所需的本机工具链。
 
 ```bash
 cd ts

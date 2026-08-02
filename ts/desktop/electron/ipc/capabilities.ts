@@ -8,13 +8,8 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 const noPayload: Validator = value => value === undefined
 const optionalRecord: Validator = value => value === undefined || isRecord(value)
 const stringPayload: Validator = value => typeof value === 'string'
-const booleanPayload: Validator = value => typeof value === 'boolean'
 const hasOnlyKeys = (value: Record<string, unknown>, allowedKeys: string[]) =>
   Object.keys(value).every(key => allowedKeys.includes(key))
-const productTaskId = (value: unknown): value is string =>
-  typeof value === 'string'
-  && /^[0-9a-zA-Z_-]{1,64}$/.test(value)
-
 const commandInvoke: Validator = value =>
   isRecord(value)
   && typeof value.command === 'string'
@@ -201,69 +196,7 @@ const modelConfigurationSetRoute: Validator = value =>
   && personalModelCapability(value.capability)
   && (value.profileId === null || personalModelProfileId(value.profileId))
 
-const terminalWrite: Validator = value =>
-  isRecord(value)
-  && hasOnlyKeys(value, ['taskId', 'sessionId', 'data'])
-  && productTaskId(value.taskId)
-  && Number.isSafeInteger(value.sessionId)
-  && Number(value.sessionId) > 0
-  && typeof value.data === 'string'
-  && value.data.length <= 65_536
-
-const terminalSpawn: Validator = value =>
-  value === undefined
-  || (
-    isRecord(value)
-    && productTaskId(value.taskId)
-    && (value.cols === undefined || typeof value.cols === 'number')
-    && (value.rows === undefined || typeof value.rows === 'number')
-    && (value.cols === undefined || Number.isFinite(value.cols))
-    && (value.rows === undefined || Number.isFinite(value.rows))
-    && (value.cwd === undefined || typeof value.cwd === 'string')
-    && hasOnlyKeys(value, ['taskId', 'cols', 'rows', 'cwd'])
-  )
-
-const terminalResize: Validator = value =>
-  isRecord(value)
-  && hasOnlyKeys(value, ['taskId', 'sessionId', 'cols', 'rows'])
-  && productTaskId(value.taskId)
-  && Number.isSafeInteger(value.sessionId)
-  && Number(value.sessionId) > 0
-  && typeof value.cols === 'number'
-  && Number.isFinite(value.cols)
-  && typeof value.rows === 'number'
-  && Number.isFinite(value.rows)
-
-const terminalSessionId: Validator = value =>
-  isRecord(value)
-  && hasOnlyKeys(value, ['taskId', 'sessionId'])
-  && productTaskId(value.taskId)
-  && Number.isSafeInteger(value.sessionId)
-  && Number(value.sessionId) > 0
-
-const boundsPayload: Validator = value =>
-  isRecord(value)
-  && typeof value.x === 'number'
-  && typeof value.y === 'number'
-  && typeof value.width === 'number'
-  && typeof value.height === 'number'
-
-const urlWithOptionalBounds: Validator = value =>
-  isRecord(value)
-  && typeof value.url === 'string'
-  && (value.bounds === undefined || boundsPayload(value.bounds))
-
 const zoomPayload: Validator = value => typeof value === 'number' && Number.isFinite(value)
-
-const browserResolveAction: Validator = value =>
-  isRecord(value)
-  && hasOnlyKeys(value, ['taskId', 'actionId', 'expectedRevision', 'approved'])
-  && productTaskId(value.taskId)
-  && typeof value.actionId === 'string'
-  && /^[0-9a-zA-Z_-]{8,128}$/.test(value.actionId)
-  && Number.isSafeInteger(value.expectedRevision)
-  && Number(value.expectedRevision) >= 0
-  && typeof value.approved === 'boolean'
 
 const updateCheckOptions: Validator = value => {
   if (value === undefined) return true
@@ -396,10 +329,6 @@ export const ELECTRON_IPC_VALIDATORS = {
   [ELECTRON_IPC_CHANNELS.videoAddSource]: videoAddSource,
   [ELECTRON_IPC_CHANNELS.videoRender]: videoRender,
   [ELECTRON_IPC_CHANNELS.videoAnalyze]: videoAnalyze,
-  [ELECTRON_IPC_CHANNELS.browserStatus]: noPayload,
-  [ELECTRON_IPC_CHANNELS.browserInstall]: noPayload,
-  [ELECTRON_IPC_CHANNELS.browserListActions]: productTaskId,
-  [ELECTRON_IPC_CHANNELS.browserResolveAction]: browserResolveAction,
   [ELECTRON_IPC_CHANNELS.updateCheck]: updateCheckOptions,
   [ELECTRON_IPC_CHANNELS.updateDownload]: noPayload,
   [ELECTRON_IPC_CHANNELS.updateInstall]: noPayload,
@@ -417,20 +346,6 @@ export const ELECTRON_IPC_VALIDATORS = {
   [ELECTRON_IPC_CHANNELS.windowRequestAttention]: noPayload,
   [ELECTRON_IPC_CHANNELS.windowFocus]: noPayload,
   [ELECTRON_IPC_CHANNELS.windowIsMaximized]: noPayload,
-  [ELECTRON_IPC_CHANNELS.windowOpenProductTask]: productTaskId,
-  [ELECTRON_IPC_CHANNELS.terminalSpawn]: terminalSpawn,
-  [ELECTRON_IPC_CHANNELS.terminalWrite]: terminalWrite,
-  [ELECTRON_IPC_CHANNELS.terminalResize]: terminalResize,
-  [ELECTRON_IPC_CHANNELS.terminalKill]: terminalSessionId,
-  [ELECTRON_IPC_CHANNELS.terminalGetBashPath]: noPayload,
-  [ELECTRON_IPC_CHANNELS.terminalSetBashPath]: value => value === null || stringPayload(value),
-  [ELECTRON_IPC_CHANNELS.previewOpen]: urlWithOptionalBounds,
-  [ELECTRON_IPC_CHANNELS.previewNavigate]: stringPayload,
-  [ELECTRON_IPC_CHANNELS.previewSetBounds]: boundsPayload,
-  [ELECTRON_IPC_CHANNELS.previewSetVisible]: booleanPayload,
-  [ELECTRON_IPC_CHANNELS.previewSetZoom]: zoomPayload,
-  [ELECTRON_IPC_CHANNELS.previewClose]: noPayload,
-  [ELECTRON_IPC_CHANNELS.previewMessage]: () => true,
   [ELECTRON_IPC_CHANNELS.appModeGet]: noPayload,
   [ELECTRON_IPC_CHANNELS.appModeSet]: optionalRecord,
   [ELECTRON_IPC_CHANNELS.appModeDetectPortableDir]: noPayload,

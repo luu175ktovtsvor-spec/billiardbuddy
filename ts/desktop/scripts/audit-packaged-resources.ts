@@ -15,9 +15,7 @@ const requiredEntries = [
   '/dist/index.html',
   '/electron-dist/main.cjs',
   '/electron-dist/preload.cjs',
-  '/electron-dist/preview-preload.cjs',
   '/package.json',
-  '/runtime-assets/resources/preview-agent.js',
 ]
 
 const forbiddenProductStrings = [
@@ -85,8 +83,7 @@ function auditProductArchive(archive: string): void {
     entry === '/dist/index.html'
     || entry === '/package.json'
     || /^\/dist\/assets\/.*\.js$/.test(entry)
-    || /^\/electron-dist\/.*\.cjs$/.test(entry)
-    || entry === '/runtime-assets/resources/preview-agent.js')
+    || /^\/electron-dist\/.*\.cjs$/.test(entry))
   for (const entry of productTextEntries) {
     const archiveEntry = archiveEntryByPortablePath.get(entry)
     if (!archiveEntry) throw new Error(`app.asar 无法解析正式运行文件: ${entry}`)
