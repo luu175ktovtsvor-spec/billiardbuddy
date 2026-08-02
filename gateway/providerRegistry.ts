@@ -21,7 +21,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
     model_id: 'deepseek-v4-flash',
     provider: 'deepseek',
     capabilities: ['TextReasoning'],
-    text_reasoning_transport: 'chat_completions',
+    text_reasoning_transport: 'responses',
     worker_env_source: { variable: 'BB_GATEWAY_MODEL', slot_aliases: [], default_model: true },
     verified_context_window: 16_000,
     body_caps: {
@@ -30,7 +30,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
       IMAGE_GENERATION_BODY_MAX_BYTES: 32 * 1024 * 1024,
     },
     compact_threshold: 12_000,
-    resume_evidence: { path: 'ts/src/server/product/agentWorkerSupervisor.ts', status: 'verified' },
+    resume_evidence: { path: 'ts/desktop/electron/services/codexNativeAppServer.ts', status: 'conservative' },
     contract_version: PROVIDER_REGISTRY_CONTRACT_VERSION,
     verification_date: PROVIDER_REGISTRY_VERIFICATION_DATE,
   },

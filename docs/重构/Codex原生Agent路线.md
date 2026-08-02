@@ -114,7 +114,7 @@ Skills、Hooks 与协作模式目录也直接读取 Rust App Server 的 `skills/
 | 会话与协作 | Codex App Server Thread Manager、Thread Store、fork/archive、Core Session、背压与超时 | 删除 Run 账本、子任务协调器和 TypeScript 的恢复/分叉状态 |
 | Agent 执行 | Codex Core 的 Agent Loop、Context、Tool Router、Workspace、AGENTS.md、Hooks、MCP、Skills、Review 与 multi-agent | 删除 Harness、Tool Host、动态工具桥、旧 prompt/compaction/hook 编排 |
 | 本机执行与权限 | Codex Exec/Tools/sandboxing/execpolicy 及原生 approval request | 删除 PermissionExecutionEnvelope 与旧 shell/文件/PTY/browser 授权实现 |
-| 模型调用 | Codex 原生 Responses client；托管 DeepSeek、个人 Responses 直连，或个人 Chat Completions 经无状态本机适配器 | 删除旧 `CodexResponsesModelBridge`、`runProductModel`；保留新适配器但不允许它获得 Agent 状态或工具权限 |
+| 模型调用 | Codex 原生 Responses client；托管 DeepSeek 只经薄 Gateway 的 `/v1/responses`，个人 Responses 直连，个人 Chat Completions 经无状态本机适配器 | 删除旧 `CodexResponsesModelBridge`、`runProductModel`；保留新适配器但不允许它获得 Agent 状态或工具权限 |
 | 平台服务 | 独立的 DeepSeek 模型网关、身份/套餐/额度/用量、幂等回放与运维 | 不保存或调度任何 Agent Thread、工具、权限或恢复状态 |
 
 生图和剪辑不属于上表中的 Agent 后端。它们保留自己的领域服务和任务状态；两者与 Agent 的连接只允许成果引用或显式启动动作。

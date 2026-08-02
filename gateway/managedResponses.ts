@@ -13,7 +13,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 /**
  * The Gateway accepts only a streamable, stateless subset of Responses.  The
- * Local Product Server owns history and operation recovery, so provider-side
+ * The local Rust Codex App Server owns history and recovery, so provider-side
  * continuation IDs are intentionally rejected instead of becoming a second
  * hidden session store.
  */
