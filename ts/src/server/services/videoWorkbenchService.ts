@@ -74,6 +74,9 @@ type ActiveVideoExecution = {
   controller: AbortController
   completion: Promise<void>
   output_path: string
+  /** A queued render can be cancelled before it reaches the serialized encoder. */
+  started?: boolean
+  cancelledBeforeStart?: boolean
 }
 
 function id(prefix: 'vid' | 'src' | 'clip' | 'task' | 'timeline' | 'evidence' | 'alternative'): string {
@@ -1294,8 +1297,17 @@ export class VideoWorkbenchService {
         error_code: undefined,
       }))
       const controller = new AbortController()
-      const completion = this.enqueueRender(() => this.runRender(project, operation, normalizedOutput, controller.signal))
-      this.activeRenders.set(operation.id, { controller, completion, output_path: normalizedOutput })
+      const active: ActiveVideoExecution = {
+        controller,
+        completion: Promise.resolve(),
+        output_path: normalizedOutput,
+      }
+      active.completion = this.enqueueRender(async () => {
+        active.started = true
+        if (active.cancelledBeforeStart) return
+        await this.runRender(project, operation, normalizedOutput, controller.signal)
+      })
+      this.activeRenders.set(operation.id, active)
       return operation
     })
   }
@@ -1437,6 +1449,28 @@ export class VideoWorkbenchService {
           : undefined
     if (!active) throw new VideoWorkbenchServiceError('当前视频操作不能安全取消', 409, 'VIDEO_OPERATION_NOT_CANCELLABLE')
     active.controller.abort(new Error('video operation cancelled'))
+
+    // A render that has not reached the serialized encoder has no child
+    // process to wait for. Persist its cancellation now so a user is never
+    // held behind unrelated long-running exports. Its queued completion will
+    // later reach the queue head and exit without starting FFmpeg.
+    if (operation.kind === 'video.render' && !active.started) {
+      active.cancelledBeforeStart = true
+      const cancelled = await this.failOperation(operation, 'MEDIA_VIDEO_EXPORT_CANCELLED', '已取消')
+      const project = await this.project(operation.project_id).catch(() => null)
+      if (project?.task_id === operation.id) {
+        const failure = mediaSafeError('MEDIA_VIDEO_EXPORT_CANCELLED')
+        await this.repository.saveProject(videoStudioProjectSchema.parse({
+          ...project,
+          state: 'ready',
+          error: failure.message,
+          error_code: failure.code,
+        }))
+      }
+      this.activeRenders.delete(operation.id)
+      return cancelled
+    }
+
     await active.completion
     return await this.repository.getOperation(operation.id)
   }
