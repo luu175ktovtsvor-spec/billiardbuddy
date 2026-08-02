@@ -84,9 +84,9 @@ const nativeAgent = {
     { threadId, turnId },
   ),
   archiveThread: (threadId: string) => invoke(ELECTRON_IPC_CHANNELS.nativeAgentArchiveThread, { threadId }),
-  resolveApproval: (requestId: string, decision: unknown) => invoke(
-    ELECTRON_IPC_CHANNELS.nativeAgentResolveApproval,
-    { requestId, decision },
+  resolveServerRequest: (requestId: string, response: unknown) => invoke(
+    ELECTRON_IPC_CHANNELS.nativeAgentResolveServerRequest,
+    { requestId, response },
   ),
   configureMcpServer: (threadId: string, name: string, config: unknown) => invoke(
     ELECTRON_IPC_CHANNELS.nativeAgentConfigureMcpServer,

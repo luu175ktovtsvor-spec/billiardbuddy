@@ -37,6 +37,8 @@ export type CodexNativeAppServerClientOptions = {
   environment: Readonly<Record<string, string>>
   onNotification?(notification: CodexNativeNotification): void | Promise<void>
   onServerRequest?(request: CodexNativeServerRequest): Promise<CodexNativeJsonValue | undefined>
+  /** Release product UI waiters when this specific Rust child is no longer usable. */
+  onUnavailable?(error: Error): void
 }
 
 /**
@@ -129,10 +131,13 @@ export type ElectronCodexNativeRuntimeOptions = {
   userDataPath: string
   onNotification?(notification: CodexNativeNotification): void | Promise<void>
   /**
-   * App Server issues approvals as server requests. The UI bridge supplies the
-   * exact source-approved decision; no BilliardBuddy code invents one.
+   * App Server issues approvals, user questions and MCP forms as server
+   * requests. The UI bridge supplies a source-shaped response; it never
+   * invents Agent state, tools, or a permission grant.
    */
   onServerRequest?(request: CodexNativeServerRequest): Promise<CodexNativeJsonValue | undefined>
+  /** Product-owned projection state must not outlive a failed Rust child. */
+  onAppServerUnavailable?(error: Error): void
 }
 
 const MAX_JSON_RPC_FRAME_BYTES = 128 * 1024 * 1024
@@ -376,6 +381,7 @@ export class CodexNativeAppServerClient {
   private readonly pending = new Map<number, PendingRequest>()
   private nextRequestId = 0
   private closed = false
+  private unavailableSignaled = false
 
   constructor(private readonly options: CodexNativeAppServerClientOptions) {}
 
@@ -544,13 +550,24 @@ export class CodexNativeAppServerClient {
       await this.options.onNotification?.(notification)
       return
     }
+    // Server requests are intentionally not awaited from the stdout reader.
+    // A user can interrupt a Turn while an approval/input form is open; Rust
+    // then emits `serverRequest/resolved`. Keeping the reader live is what
+    // lets Main discard the pending UI request and continue streaming the
+    // source-native lifecycle instead of deadlocking behind that form.
+    void this.handleServerRequest({ ...notification, id: message.id })
+  }
+
+  private async handleServerRequest(request: CodexNativeServerRequest): Promise<void> {
     try {
       if (!this.options.onServerRequest) throw new Error('CODEX_NATIVE_APP_SERVER_REQUEST_UNHANDLED')
-      const result = await this.options.onServerRequest({ ...notification, id: message.id })
-      this.write({ jsonrpc: '2.0', id: message.id, result: result ?? {} })
+      const result = await this.options.onServerRequest(request)
+      this.write({ jsonrpc: '2.0', id: request.id, result: result ?? {} })
     } catch (error) {
       const description = error instanceof Error ? error.message : 'CODEX_NATIVE_APP_SERVER_REQUEST_FAILED'
-      this.write({ jsonrpc: '2.0', id: message.id, error: { code: -32000, message: description } })
+      try {
+        this.write({ jsonrpc: '2.0', id: request.id, error: { code: -32000, message: description } })
+      } catch {}
     }
   }
 
@@ -563,6 +580,10 @@ export class CodexNativeAppServerClient {
     if (this.process === child) this.process = undefined
     this.closed = true
     this.failAllPending(error)
+    if (!this.unavailableSignaled) {
+      this.unavailableSignaled = true
+      try { this.options.onUnavailable?.(error) } catch {}
+    }
   }
 }
 
@@ -1056,6 +1077,7 @@ export class ElectronCodexNativeRuntime {
           }
         },
         onServerRequest: this.options.onServerRequest,
+        onUnavailable: error => this.options.onAppServerUnavailable?.(error),
       })
       this.startingClients.add(client)
       await client.start()
