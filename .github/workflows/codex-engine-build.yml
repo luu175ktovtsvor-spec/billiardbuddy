@@ -47,12 +47,17 @@ jobs:
             runner: macos-14
             target: aarch64-apple-darwin
             binary: codex-app-server
+            timeout_minutes: 90
           - label: Windows x64
             runner: windows-latest
             target: x86_64-pc-windows-msvc
             binary: codex-app-server.exe
+            # Windows cold linking reached the final App Server crate but did
+            # not finish within the former 90-minute cap. Keep macOS tight
+            # while allowing this one source build to complete.
+            timeout_minutes: 150
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 90
+    timeout-minutes: ${{ matrix.timeout_minutes }}
     steps:
       - uses: actions/checkout@v5
         with:
