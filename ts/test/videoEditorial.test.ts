@@ -1,12 +1,13 @@
 import { afterEach, expect, test } from 'bun:test'
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { createVideoWorkbenchDomainApiHandler } from '../src/server/api/videoWorkbench.js'
 import { fastVideoIdentity, videoFingerprint } from '../src/server/services/videoExecution.js'
 import { VideoWorkbenchService } from '../src/server/services/videoWorkbenchService.js'
 import { EditorialApplication } from '../src/server/video/domain/editorial/editorialApplication.js'
 import { mediaTimeBase, rationalTime, tickRateForTimeBase } from '../src/server/video/domain/mediaFacts/time.js'
+import { MEDIA_UI_CAPABILITY_HEADER } from '../shared/contracts/media.js'
 
 const roots: string[] = []
 const at = '2026-08-03T00:00:00.000Z'
@@ -23,6 +24,15 @@ afterEach(async () => {
 
 function requestSegments(url: URL): string[] {
   return url.pathname.split('/').filter(Boolean).map((part, index) => index === 0 ? 'api' : part)
+}
+
+async function waitForTerminalOperation(service: VideoWorkbenchService, operationId: string) {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const operation = await service.getOperation(operationId)
+    if (['succeeded', 'failed', 'cancelled'].includes(operation.status)) return operation
+    await new Promise(resolve => setTimeout(resolve, 5))
+  }
+  throw new Error(`operation ${operationId} did not settle`)
 }
 
 test('Editorial v2 API 以单一 CommandSet 写入草稿、版本、变体和受管执行计划', async () => {
@@ -475,5 +485,211 @@ test('无音轨的多场景 Draft 按场景标识保留证据，而非按 A/V �
     expect.objectContaining({ legacy_scene_id: 'scene_00000012', kind: 'video', evidence_ids: ['evidence_00000012'] }),
   ]))
   expect(draft.items.filter(item => item.kind === 'audio')).toHaveLength(0)
+  service.repository.close()
+})
+
+test('编辑 API 拒绝越界素材与锁定目标轨道，并让旧 Timeline Version 驱动 Preview/Render', async () => {
+  const root = await testRoot('editorial-bounds-and-legacy-preview')
+  const sourcePath = join(root, 'source.mp4')
+  const outputPath = join(root, 'export.mp4')
+  await writeFile(sourcePath, 'editorial bounds fixture')
+  const renderCommands: string[][] = []
+  const runProcess = async (command: string[]) => {
+    if (command.includes('-version') || command.includes('-encoders')) {
+      return { exitCode: 0, stdout: 'mpeg4', stderr: '' }
+    }
+    if (command.includes('-show_format') && command.includes('-show_streams')) {
+      return {
+        exitCode: 0,
+        stdout: JSON.stringify({
+          format: { duration: '2.000' },
+          streams: [{ codec_type: 'video', width: 640, height: 360, avg_frame_rate: '30/1' }, { codec_type: 'audio' }],
+        }),
+        stderr: '',
+      }
+    }
+    if (command.includes('-filter_complex')) renderCommands.push(command)
+    const output = command.at(-1)
+    if (!output) return { exitCode: 1, stdout: '', stderr: 'missing output' }
+    await mkdir(dirname(output), { recursive: true })
+    await writeFile(output, 'simulated output')
+    return { exitCode: 0, stdout: '', stderr: '' }
+  }
+  const service = new VideoWorkbenchService({ root, now: () => new Date(at), platform: 'linux', runProcess })
+  const created = await service.createProject({ title: '范围与正式投影 API' })
+  const fingerprint = await videoFingerprint(sourcePath)
+  const identity = await fastVideoIdentity(sourcePath)
+  const timeBase = mediaTimeBase(1, 1000)
+  const tickRate = tickRateForTimeBase(timeBase)
+  const sourceId = 'src_00000021'
+  const firstClip = { id: 'clip_00000021', source_id: sourceId, in_ms: 0, out_ms: 1_000 }
+  const secondClip = { id: 'clip_00000022', source_id: sourceId, in_ms: 1_000, out_ms: 2_000 }
+  const initialVersionId = 'timeline_00000021'
+  await service.repository.saveFact({
+    id: sourceId,
+    project_id: created.id,
+    path: sourcePath,
+    name: 'source.mp4',
+    fast_identity: identity,
+    fingerprint,
+    fingerprint_state: 'ready',
+    primary_video_stream: {
+      stream_index: 0,
+      time_base: timeBase,
+      start_time: rationalTime('100', tickRate),
+      duration: rationalTime('10000', tickRate),
+      codec: 'h264',
+      width: 1920,
+      height: 1080,
+      rotation: 0,
+      variable_frame_rate: false,
+    },
+    presentation_duration: rationalTime('10000', tickRate),
+    audio_tracks: [],
+    state: 'ready',
+    created_at: at,
+    updated_at: at,
+  })
+  await service.repository.saveProject({
+    ...created,
+    state: 'ready',
+    revision: 1,
+    evidence_revision: `sha256:${'b'.repeat(64)}`,
+    sources: [{
+      id: sourceId,
+      path: sourcePath,
+      name: 'source.mp4',
+      duration_ms: 10_000,
+      width: 1920,
+      height: 1080,
+      fps: 30,
+      has_audio: true,
+      fingerprint,
+      rotation: 0,
+      video_stream_count: 1,
+      audio_stream_count: 1,
+      missing: false,
+      content_changed: false,
+    }],
+    timeline: [firstClip, secondClip],
+    timeline_versions: [{
+      id: initialVersionId,
+      project_revision: 1,
+      evidence_revision: `sha256:${'b'.repeat(64)}`,
+      scenes: [
+        { ...firstClip, story_role: 'hook', evidence_ids: [], rationale: '第一段', needs_review: false, locked: false },
+        { ...secondClip, story_role: 'result', evidence_ids: [], rationale: '第二段', needs_review: false, locked: false },
+      ],
+      created_at: at,
+    }],
+    current_timeline_version_id: initialVersionId,
+  })
+
+  await expect(service.getEditorialTimeline(created.id, 'timeline_missing')).rejects.toMatchObject({ code: 'VIDEO_TIMELINE_MISSING' })
+  let project = await service.getProject(created.id)
+  const baseTimeline = project.editorial_timeline_versions.find(version => version.id === project.current_editorial_timeline_version_id)!
+  const lockedMusicTrack = { id: 'track_music_00000021', kind: 'music' as const, order: 2, locked: true, muted: false }
+  await service.repository.saveProject({
+    ...project,
+    editorial_timeline_versions: project.editorial_timeline_versions.map(version => version.id === baseTimeline.id
+      ? { ...version, tracks: [...version.tracks, lockedMusicTrack] }
+      : version),
+  })
+  project = await service.getProject(created.id)
+  const timeline = project.editorial_timeline_versions.find(version => version.id === project.current_editorial_timeline_version_id)!
+  const videoItem = timeline.items.find(item => item.kind === 'video')!
+  const audioItem = timeline.items.find(item => item.kind === 'audio')!
+  if (videoItem.binding.kind !== 'source') throw new Error('fixture must create a source-bound video item')
+
+  const capability = 'capability_0123456789abcdef0123456789'
+  const handler = createVideoWorkbenchDomainApiHandler(service, capability)
+  const request = async (url: URL, init: RequestInit = {}) => await handler(new Request(url, init), url, requestSegments(url))
+  const commandsUrl = new URL(`http://localhost/api/videos/projects/${created.id}/timelines/${timeline.id}/commands`)
+  const outOfBounds = await request(commandsUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Idempotency-Key': 'out-of-bounds-source-command-0001' },
+    body: JSON.stringify({
+      commands: [{
+        kind: 'trim',
+        item_id: videoItem.id,
+        source_range: { start: { ticks: '10100', tick_rate: tickRate }, duration: { ticks: '1', tick_rate: tickRate } },
+        timeline_range: videoItem.timeline_range,
+      }],
+    }),
+  })
+  expect(outOfBounds.status).toBe(400)
+  const beforeStart = await request(commandsUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Idempotency-Key': 'before-source-start-command-0001' },
+    body: JSON.stringify({
+      commands: [{
+        kind: 'trim',
+        item_id: videoItem.id,
+        source_range: { start: { ticks: '99', tick_rate: tickRate }, duration: { ticks: '1', tick_rate: tickRate } },
+        timeline_range: videoItem.timeline_range,
+      }],
+    }),
+  })
+  expect(beforeStart.status).toBe(400)
+
+  const moveToLocked = await request(commandsUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Idempotency-Key': 'move-to-locked-track-command-0001' },
+    body: JSON.stringify({
+      commands: [{ kind: 'reorder', item_id: audioItem.id, track_id: lockedMusicTrack.id, timeline_start: audioItem.timeline_range.start }],
+    }),
+  })
+  expect(moveToLocked.status).toBe(409)
+
+  const replaceToLocked = await request(commandsUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Idempotency-Key': 'replace-to-locked-track-command-0001' },
+    body: JSON.stringify({
+      commands: [{ kind: 'replace', item_id: audioItem.id, replacement: { ...audioItem, track_id: lockedMusicTrack.id } }],
+    }),
+  })
+  expect(replaceToLocked.status).toBe(409)
+
+  const updatedClips = [
+    { id: secondClip.id, source_id: sourceId, in_ms: 2_000, out_ms: 3_000 },
+    firstClip,
+  ]
+  const updated = await request(new URL(`http://localhost/api/videos/projects/${created.id}/timeline`), {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ base_revision: project.revision, base_timeline_version_id: initialVersionId, clips: updatedClips }),
+  })
+  expect(updated.status).toBe(200)
+  const afterUpdate = await service.getProject(created.id)
+  const formalVersion = afterUpdate.timeline_versions.find(version => version.id === afterUpdate.current_timeline_version_id)!
+  expect(formalVersion.id).not.toBe(initialVersionId)
+  expect(formalVersion.scenes.map(scene => [scene.id, scene.in_ms, scene.out_ms])).toEqual([
+    [secondClip.id, 2_000, 3_000],
+    [firstClip.id, 0, 1_000],
+  ])
+  expect(afterUpdate.timeline).toEqual(updatedClips)
+
+  const preview = await request(new URL(`http://localhost/api/videos/projects/${created.id}/preview`), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ base_revision: afterUpdate.revision, timeline_version_id: formalVersion.id }),
+  })
+  expect(preview.status).toBe(202)
+  const previewTask = await preview.json() as { task: { id: string } }
+  expect((await waitForTerminalOperation(service, previewTask.task.id)).status).toBe('succeeded')
+
+  const render = await request(new URL(`http://localhost/api/videos/projects/${created.id}/render`), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', [MEDIA_UI_CAPABILITY_HEADER]: capability },
+    body: JSON.stringify({ base_revision: afterUpdate.revision, timeline_version_id: formalVersion.id, output_path: outputPath }),
+  })
+  expect(render.status).toBe(202)
+  const renderTask = await render.json() as { task: { id: string } }
+  expect((await waitForTerminalOperation(service, renderTask.task.id)).status).toBe('succeeded')
+  expect(renderCommands).toHaveLength(2)
+  for (const command of renderCommands) {
+    const sourceOffsets = command.flatMap((value, index) => value === '-ss' ? [command[index + 1]!] : [])
+    expect(sourceOffsets).toEqual(['2.000', '0.000'])
+  }
   service.repository.close()
 })

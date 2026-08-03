@@ -99,7 +99,13 @@ import {
   type VideoOperation,
 } from './videoWorkbenchRepository.js'
 import { JobOrchestrator } from '../media/kernel/operations/jobOrchestrator.js'
-import { EditorialApplication, EditorialValidationError, editorialFactsBasisHash, type EditorialSourceTiming } from '../video/domain/editorial/editorialApplication.js'
+import {
+  EditorialApplication,
+  EditorialValidationError,
+  editorialFactsBasisHash,
+  type EditorialSourceBounds,
+  type EditorialSourceTiming,
+} from '../video/domain/editorial/editorialApplication.js'
 
 const STANDALONE_VIDEO_OWNER: MediaOwner = {
   kind: 'standalone',
@@ -317,9 +323,35 @@ export class VideoWorkbenchService {
     return timings
   }
 
+  private async editorialSourceBounds(project: VideoStudioProject): Promise<Map<string, EditorialSourceBounds>> {
+    const bounds = new Map<string, EditorialSourceBounds>()
+    for (const source of project.sources) {
+      const fact = await this.repository.getFact('source', source.id).catch(() => null)
+      if (fact && 'fast_identity' in fact) {
+        bounds.set(source.id, {
+          start: fact.primary_video_stream.start_time,
+          duration: fact.presentation_duration,
+        })
+        continue
+      }
+      // Compatibility fixtures and pre-fact imports have no exact PTS origin.
+      // Their legacy clip coordinates are milliseconds from zero; once a source
+      // fact exists, the branch above is the authoritative bound.
+      bounds.set(source.id, {
+        start: rationalTime('0', { num: 1000, den: 1 }),
+        duration: rationalTime(BigInt(source.duration_ms), { num: 1000, den: 1 }),
+      })
+    }
+    return bounds
+  }
+
   private async ensureEditorialState(project: VideoStudioProject): Promise<VideoStudioProject> {
     try {
-      const next = this.editorial.ensureState(project, await this.editorialTimings(project))
+      const [timing, sourceBounds] = await Promise.all([
+        this.editorialTimings(project),
+        this.editorialSourceBounds(project),
+      ])
+      const next = this.editorial.ensureState(project, timing, sourceBounds)
       return next === project ? project : await this.repository.saveProject(videoStudioProjectSchema.parse(next))
     } catch (error) {
       return this.editorialError(error)
@@ -432,7 +464,7 @@ export class VideoWorkbenchService {
           target: { kind: 'editorial', base_timeline_version_id: input.base_timeline_version_id },
           commands: input.commands,
         })
-        const applied = this.editorial.applyCommandSet(project, commandSet)
+        const applied = this.editorial.applyCommandSet(project, commandSet, await this.editorialSourceBounds(project))
         const saved = applied.reused ? project : await this.repository.saveProject(videoStudioProjectSchema.parse(applied.project))
         return { project: saved, version: applied.version as EditorialTimelineVersion, reused: applied.reused }
       } catch (error) {
@@ -488,7 +520,7 @@ export class VideoWorkbenchService {
             ...draft.items.map(item => ({ kind: 'insert' as const, track_id: item.track_id, item })),
           ],
         })
-        const applied = this.editorial.applyCommandSet(project, commandSet)
+        const applied = this.editorial.applyCommandSet(project, commandSet, await this.editorialSourceBounds(project))
         const next = applied.reused ? project : {
           ...applied.project,
           timeline_drafts: applied.project.timeline_drafts.map(candidate => candidate.id === draft.id
@@ -559,7 +591,7 @@ export class VideoWorkbenchService {
           target: { kind: 'delivery_variant', variant_id: variantId, base_variant_version_id: input.base_variant_version_id },
           commands: input.commands,
         })
-        const applied = this.editorial.applyCommandSet(project, commandSet)
+        const applied = this.editorial.applyCommandSet(project, commandSet, await this.editorialSourceBounds(project))
         const saved = applied.reused ? project : await this.repository.saveProject(videoStudioProjectSchema.parse(applied.project))
         return { project: saved, version: applied.version as DeliveryVariantVersion, reused: applied.reused }
       } catch (error) {
@@ -572,7 +604,7 @@ export class VideoWorkbenchService {
     return await this.mutateProject(projectId, async () => {
       const project = await this.prepareEditorialProject(projectId)
       try {
-        const compiled = this.editorial.compile(project, variantId)
+        const compiled = this.editorial.compile(project, variantId, await this.editorialSourceBounds(project))
         const saved = await this.repository.saveProject(videoStudioProjectSchema.parse(compiled.project))
         return { project: saved, plan: compiled.plan }
       } catch (error) {
@@ -964,14 +996,22 @@ export class VideoWorkbenchService {
           items,
           `legacy-update-${factBasisHash({ base_revision: input.base_revision, base_timeline_version_id: baseVersionId, clips: input.clips })}`,
         )
-        const applied = this.editorial.applyCommandSet(project, commandSet)
+        const applied = this.editorial.applyCommandSet(project, commandSet, await this.editorialSourceBounds(project))
         if (applied.reused) return project
-        // `timeline` is retained solely as the old API/render projection.  It
-        // is deterministically derived from the command set, never accepted
-        // as an independent v1 version write.
+        // The formal v1 Version is a read-only projection of the accepted
+        // CommandSet target. Preview/Render consume this exact projection, so
+        // the legacy version ID can never describe different clip contents.
+        const formalVersion = this.timelineVersion(
+          applied.project,
+          scenesFromClips(input.clips, applied.project.evidence),
+          applied.project.evidence_revision ?? evidenceRevision(applied.project.evidence),
+          applied.project.revision,
+        )
         return await this.repository.saveProject(videoStudioProjectSchema.parse({
           ...applied.project,
           timeline: input.clips,
+          timeline_versions: [...applied.project.timeline_versions, formalVersion],
+          current_timeline_version_id: formalVersion.id,
           alternatives: [],
           state: input.clips.length ? 'ready' : 'draft',
         }))
@@ -998,7 +1038,7 @@ export class VideoWorkbenchService {
           items,
           `legacy-select-${factBasisHash({ revision: input.revision, version_id: version.id })}`,
         )
-        const applied = this.editorial.applyCommandSet(project, commandSet)
+        const applied = this.editorial.applyCommandSet(project, commandSet, await this.editorialSourceBounds(project))
         if (applied.reused) return project
         return await this.repository.saveProject(videoStudioProjectSchema.parse({
           ...applied.project,
@@ -1041,7 +1081,7 @@ export class VideoWorkbenchService {
           target: { kind: 'editorial', base_timeline_version_id: current.id },
           commands: [{ kind: 'lock', item_ids: itemIds, locked: input.locked }],
         })
-        const applied = this.editorial.applyCommandSet(project, commandSet)
+        const applied = this.editorial.applyCommandSet(project, commandSet, await this.editorialSourceBounds(project))
         return applied.reused ? project : await this.repository.saveProject(videoStudioProjectSchema.parse(applied.project))
       } catch (error) {
         return this.editorialError(error)
@@ -1069,7 +1109,7 @@ export class VideoWorkbenchService {
           items,
           `legacy-alternative-${factBasisHash({ base_revision: input.base_revision, alternative_id: alternative.id })}`,
         )
-        const applied = this.editorial.applyCommandSet(project, commandSet)
+        const applied = this.editorial.applyCommandSet(project, commandSet, await this.editorialSourceBounds(project))
         if (applied.reused) return project
         return await this.repository.saveProject(videoStudioProjectSchema.parse({
           ...applied.project,
@@ -1486,7 +1526,13 @@ export class VideoWorkbenchService {
         const proposed = this.materializeVideoScenes(latest, plan.scenes, next.evidence)
         const scenes = this.preserveLockedVideoScenes(currentScenes, proposed)
         const editorialProject = await this.ensureEditorialState(latest)
-        const timelineDraft = this.editorial.createDraft(editorialProject, scenes, await this.editorialTimings(editorialProject))
+        const timelineDraft = this.editorial.createDraft(
+          editorialProject,
+          scenes,
+          await this.editorialTimings(editorialProject),
+          [],
+          await this.editorialSourceBounds(editorialProject),
+        )
         const completed = await this.repository.saveProject(videoStudioProjectSchema.parse({
           ...editorialProject,
           brief: compileVideoBrief(userGoal, { ...plan.brief, gaps: [...new Set([...plan.brief.gaps, ...next.gaps])].slice(0, 20) }),
@@ -1901,6 +1947,18 @@ export class VideoWorkbenchService {
     })
   }
 
+  private projectForLegacyTimelineVersion(project: VideoStudioProject, timeline: VideoTimelineVersion): VideoStudioProject {
+    return {
+      ...project,
+      timeline: timeline.scenes.map(scene => ({
+        id: scene.id,
+        source_id: scene.source_id,
+        in_ms: scene.in_ms,
+        out_ms: scene.out_ms,
+      })),
+    }
+  }
+
   private async movePublishedFile(source: string, destination: string): Promise<void> {
     await mkdir(dirname(destination), { recursive: true, mode: 0o700 })
     try {
@@ -1945,12 +2003,12 @@ export class VideoWorkbenchService {
       if (project.current_timeline_version_id !== input.timeline_version_id) {
         throw new VideoWorkbenchServiceError('视频时间线已更新，请刷新后再生成预览', 409, 'VIDEO_TIMELINE_CONFLICT')
       }
-      if (!project.timeline.length) throw new VideoWorkbenchServiceError('时间线还是空的', 409, 'VIDEO_TIMELINE_EMPTY')
+      const timeline = project.timeline_versions.find(version => version.id === input.timeline_version_id)
+      if (!timeline) throw new VideoWorkbenchServiceError('视频时间线版本不存在', 404, 'VIDEO_TIMELINE_MISSING')
+      if (!timeline.scenes.length) throw new VideoWorkbenchServiceError('时间线还是空的', 409, 'VIDEO_TIMELINE_EMPTY')
       project = await this.assertSourcesUnchanged(project)
       const existing = project.preview_task_id ? await this.repository.getOperation(project.preview_task_id).catch(() => null) : null
       if (existing && ['queued', 'running', 'committing'].includes(existing.status)) return existing
-      const timeline = project.timeline_versions.find(version => version.id === input.timeline_version_id)
-      if (!timeline) throw new VideoWorkbenchServiceError('视频时间线版本不存在', 404, 'VIDEO_TIMELINE_MISSING')
       const toolchain = await this.toolchainStatus()
       if (!toolchain.ffmpeg.available || !toolchain.ffprobe.available) {
         throw new VideoWorkbenchServiceError(mediaSafeError('MEDIA_VIDEO_TOOLCHAIN_UNAVAILABLE').message, 503, 'VIDEO_TOOLCHAIN_UNAVAILABLE')
@@ -1983,7 +2041,8 @@ export class VideoWorkbenchService {
         error_code: undefined,
       }))
       const controller = new AbortController()
-      const completion = Promise.resolve().then(() => this.runPreview(project, operation, outputPath, controller.signal))
+      const executionProject = this.projectForLegacyTimelineVersion(project, timeline)
+      const completion = Promise.resolve().then(() => this.runPreview(executionProject, operation, outputPath, controller.signal))
       this.activePreviews.set(operation.id, { controller, completion, output_path: outputPath })
       return operation
     })
@@ -2090,10 +2149,11 @@ export class VideoWorkbenchService {
       if (project.current_timeline_version_id !== timelineVersionId || !timelineVersionId) {
         throw new VideoWorkbenchServiceError('视频时间线已更新，请刷新后再导出', 409, 'VIDEO_TIMELINE_CONFLICT')
       }
-      if (!project.timeline_versions.some(version => version.id === timelineVersionId)) {
+      const timeline = project.timeline_versions.find(version => version.id === timelineVersionId)
+      if (!timeline) {
         throw new VideoWorkbenchServiceError('视频时间线版本不存在', 409, 'VIDEO_TIMELINE_MISSING')
       }
-      if (!project.timeline.length) throw new VideoWorkbenchServiceError('时间线还是空的', 409, 'VIDEO_TIMELINE_EMPTY')
+      if (!timeline.scenes.length) throw new VideoWorkbenchServiceError('时间线还是空的', 409, 'VIDEO_TIMELINE_EMPTY')
       project = await this.assertSourcesUnchanged(project)
       if (!isAbsolute(input.output_path)) throw new VideoWorkbenchServiceError('导出路径必须是绝对路径', 400, 'VIDEO_OUTPUT_PATH_INVALID')
       if (!['.mp4', '.mov'].includes(extname(input.output_path).toLowerCase())) {
@@ -2147,7 +2207,7 @@ export class VideoWorkbenchService {
       active.completion = this.enqueueRender(async () => {
         active.started = true
         if (active.cancelledBeforeStart) return
-        await this.runRender(project, operation, normalizedOutput, controller.signal)
+        await this.runRender(this.projectForLegacyTimelineVersion(project, timeline), operation, normalizedOutput, controller.signal)
       })
       this.activeRenders.set(operation.id, active)
       return operation

@@ -31,6 +31,11 @@ export type EditorialSourceTiming = {
   start_ticks: string
 }
 
+export type EditorialSourceBounds = {
+  start: RationalTime
+  duration: RationalTime
+}
+
 export class EditorialValidationError extends Error {
   constructor(
     message: string,
@@ -278,7 +283,11 @@ function itemTrackKindValid(item: VideoTimelineItem, track: VideoTimelineTrack):
   return item.kind === 'overlay'
 }
 
-export function validateEditorialTimeline(project: VideoStudioProject, timeline: EditorialTimelineVersion): void {
+export function validateEditorialTimeline(
+  project: VideoStudioProject,
+  timeline: EditorialTimelineVersion,
+  sourceBounds: Map<string, EditorialSourceBounds> = new Map(),
+): void {
   const tracks = new Map(timeline.tracks.map(track => [track.id, track]))
   if (tracks.size !== timeline.tracks.length || new Set(timeline.tracks.map(track => track.order)).size !== timeline.tracks.length) {
     throw new EditorialValidationError('时间线轨道必须具有唯一 ID 和顺序', 'VIDEO_EDITORIAL_INVALID')
@@ -302,6 +311,13 @@ export function validateEditorialTimeline(project: VideoStudioProject, timeline:
       }
       if (BigInt(item.binding.source_range.duration.ticks) <= 0n || durationMilliseconds(item.binding.source_range) > source.duration_ms + 1) {
         throw new EditorialValidationError('素材剪辑范围无效', 'VIDEO_EDITORIAL_INVALID')
+      }
+      const bounds = sourceBounds.get(source.id)
+      if (bounds && (
+        compare(item.binding.source_range.start, bounds.start) < 0
+        || compare(end(item.binding.source_range), end(bounds)) > 0
+      )) {
+        throw new EditorialValidationError('素材剪辑范围超出原始素材边界', 'VIDEO_EDITORIAL_INVALID')
       }
     }
   }
@@ -382,6 +398,7 @@ function applyEditorialCommands(
       assertEditable(item, tracks)
       const track = tracks.find(candidate => candidate.id === command.track_id)
       if (!track || !itemTrackKindValid(item, track)) throw new EditorialValidationError('移动目标轨道无效', 'VIDEO_EDITORIAL_INVALID')
+      if (track.locked) throw new EditorialValidationError('锁定的轨道不能接收移动条目', 'VIDEO_EDITORIAL_LOCKED')
       item.track_id = track.id
       item.timeline_range.start = clone(command.timeline_start)
       continue
@@ -390,6 +407,11 @@ function applyEditorialCommands(
       const index = items.findIndex(item => item.id === command.item_id)
       if (index < 0) throw new EditorialValidationError('时间线条目不存在', 'VIDEO_EDITORIAL_INVALID')
       assertEditable(items[index]!, tracks)
+      const track = tracks.find(candidate => candidate.id === command.replacement.track_id)
+      if (!track || !itemTrackKindValid(command.replacement, track)) {
+        throw new EditorialValidationError('替换条目的目标轨道无效', 'VIDEO_EDITORIAL_INVALID')
+      }
+      if (track.locked) throw new EditorialValidationError('锁定的轨道不能接收替换条目', 'VIDEO_EDITORIAL_LOCKED')
       if (command.replacement.id !== command.item_id && items.some(item => item.id === command.replacement.id)) {
         throw new EditorialValidationError('替换条目 ID 已存在', 'VIDEO_EDITORIAL_INVALID')
       }
@@ -485,7 +507,11 @@ export class EditorialApplication {
     return this.now().toISOString()
   }
 
-  ensureState(project: VideoStudioProject, timing: Map<string, EditorialSourceTiming>): VideoStudioProject {
+  ensureState(
+    project: VideoStudioProject,
+    timing: Map<string, EditorialSourceTiming>,
+    sourceBounds: Map<string, EditorialSourceBounds> = new Map(),
+  ): VideoStudioProject {
     const existing = project.current_editorial_timeline_version_id
       ? project.editorial_timeline_versions.find(version => version.id === project.current_editorial_timeline_version_id)
       : undefined
@@ -511,7 +537,7 @@ export class EditorialApplication {
         legacyItems(project, timeline.tracks, timing),
         legacyCurrent?.scenes ?? [],
       )
-      validateEditorialTimeline(project, timeline)
+      validateEditorialTimeline(project, timeline, sourceBounds)
     }
     const defaults = project.export_profile_revisions.length ? undefined : defaultProfile(project, now)
     const profile = project.export_profile_revisions[0] ?? defaults!.revision
@@ -542,7 +568,13 @@ export class EditorialApplication {
     }
   }
 
-  createDraft(project: VideoStudioProject, scenes: VideoScene[], timing: Map<string, EditorialSourceTiming>, planIds: string[] = []): TimelineDraft {
+  createDraft(
+    project: VideoStudioProject,
+    scenes: VideoScene[],
+    timing: Map<string, EditorialSourceTiming>,
+    planIds: string[] = [],
+    sourceBounds: Map<string, EditorialSourceBounds> = new Map(),
+  ): TimelineDraft {
     const current = this.currentTimeline(project)
     const clips = scenes.map(scene => ({ id: scene.id, source_id: scene.source_id, in_ms: scene.in_ms, out_ms: scene.out_ms }))
     const draftProject = { ...project, timeline: clips }
@@ -561,7 +593,7 @@ export class EditorialApplication {
       status: 'proposed',
       created_at: this.iso(),
     })
-    validateEditorialTimeline(project, { ...current, tracks: draft.tracks, items: draft.items })
+    validateEditorialTimeline(project, { ...current, tracks: draft.tracks, items: draft.items }, sourceBounds)
     return draft
   }
 
@@ -586,7 +618,11 @@ export class EditorialApplication {
     )
   }
 
-  applyCommandSet(project: VideoStudioProject, commandSet: TimelineCommandSet): { project: VideoStudioProject; version: EditorialTimelineVersion | DeliveryVariantVersion; reused: boolean } {
+  applyCommandSet(
+    project: VideoStudioProject,
+    commandSet: TimelineCommandSet,
+    sourceBounds: Map<string, EditorialSourceBounds> = new Map(),
+  ): { project: VideoStudioProject; version: EditorialTimelineVersion | DeliveryVariantVersion; reused: boolean } {
     if (commandSet.project_id !== project.id) throw new EditorialValidationError('命令集不属于当前视频项目', 'VIDEO_EDITORIAL_INVALID')
     const existing = project.editorial_command_receipts.find(receipt => receipt.idempotency_key === commandSet.idempotency_key)
     const request = requestHash(commandSet)
@@ -615,7 +651,7 @@ export class EditorialApplication {
         created_by_command_set_id: commandSet.id,
         created_at: this.iso(),
       })
-      validateEditorialTimeline(project, version)
+      validateEditorialTimeline(project, version, sourceBounds)
       return {
         project: {
           ...project,
@@ -738,14 +774,18 @@ export class EditorialApplication {
     }
   }
 
-  compile(project: VideoStudioProject, variantId: string): { project: VideoStudioProject; plan: VideoExecutionPlan } {
+  compile(
+    project: VideoStudioProject,
+    variantId: string,
+    sourceBounds: Map<string, EditorialSourceBounds> = new Map(),
+  ): { project: VideoStudioProject; plan: VideoExecutionPlan } {
     const variant = project.delivery_variants.find(candidate => candidate.id === variantId)
     const version = variant && project.delivery_variant_versions.find(candidate => candidate.id === variant.current_version_id)
     if (!variant || !version) throw new EditorialValidationError('交付变体不存在', 'VIDEO_EDITORIAL_INVALID')
     const timeline = project.editorial_timeline_versions.find(candidate => candidate.id === version.editorial_timeline_version_id)
     const profile = project.export_profile_revisions.find(candidate => candidate.id === version.export_profile_revision_id)
     if (!timeline || !profile || version.export_profile_hash !== profile.content_hash) throw new EditorialValidationError('交付变体引用的版本已失效', 'VIDEO_EDITORIAL_STALE')
-    validateEditorialTimeline(project, timeline)
+    validateEditorialTimeline(project, timeline, sourceBounds)
     validateOverrides(timeline, version.item_overrides)
     assertExportProfile(profile)
     const planId = id('execution_plan')
