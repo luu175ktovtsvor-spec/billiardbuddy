@@ -150,6 +150,24 @@ type TextLayout = {
 type RenderTransform = { x: number; y: number; width: number; height: number; rotation_degrees: number; scale_x: number; scale_y: number }
 type RenderedLayer = { bytes: Buffer; left: number; top: number; width: number; height: number }
 
+/**
+ * The renderer rotates an already scaled bitmap around the scaled frame's
+ * centre.  Preflight must use that same raster frame, not the unrotated source
+ * rectangle, because a 45 degree QR or logo can cross a delivery safe area.
+ */
+export async function renderedTransformBounds(transform: RenderTransform): Promise<{ left: number; top: number; width: number; height: number; right: number; bottom: number }> {
+  const targetWidth = bounded(transform.width * transform.scale_x)
+  const targetHeight = bounded(transform.height * transform.scale_y)
+  const rotated = await sharp({
+    create: { width: targetWidth, height: targetHeight, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } },
+  }).rotate(transform.rotation_degrees, { background: { r: 0, g: 0, b: 0, alpha: 0 } }).raw().toBuffer({ resolveWithObject: true })
+  const width = rotated.info.width
+  const height = rotated.info.height
+  const left = Math.round(transform.x + (targetWidth - width) / 2)
+  const top = Math.round(transform.y + (targetHeight - height) / 2)
+  return { left, top, width, height, right: left + width, bottom: top + height }
+}
+
 function textWidth(face: FormalFontFace, text: string, fontSize: number, letterSpacing: number): number {
   if (!text) return 0
   const advance = face.layout(text).positions.reduce((total, position) => total + position.xAdvance, 0)
@@ -240,13 +258,31 @@ async function transformRenderedImage(source: Buffer, transform: RenderTransform
   const bytes = Buffer.from(await sharp(scaled).rotate(transform.rotation_degrees, { background: { r: 0, g: 0, b: 0, alpha: 0 } }).png().toBuffer())
   const metadata = await sharp(bytes).metadata()
   if (!metadata.width || !metadata.height) throw new ImageCanvasRendererError('变换后的图层缺少有效尺寸', 'CANVAS_RENDER_INVALID')
+  const frame = await renderedTransformBounds(transform)
+  if (frame.width !== metadata.width || frame.height !== metadata.height) {
+    throw new ImageCanvasRendererError('变换后的图层尺寸与预检模型不一致', 'CANVAS_RENDER_INVALID')
+  }
   return {
     bytes,
-    left: Math.round(transform.x + (targetWidth - metadata.width) / 2),
-    top: Math.round(transform.y + (targetHeight - metadata.height) / 2),
+    left: frame.left,
+    top: frame.top,
     width: metadata.width,
     height: metadata.height,
   }
+}
+
+/** The exact transformed text frame used by safe-area and artboard preflight. */
+export async function renderedTextBounds(layer: Extract<ImageCanvasLayer, { kind: 'text' }>): Promise<{ left: number; top: number; width: number; height: number; right: number; bottom: number }> {
+  const layout = layoutText(layer)
+  return renderedTransformBounds({
+    x: layer.position.x,
+    y: layer.position.y,
+    width: layout.width,
+    height: layout.height,
+    rotation_degrees: layer.rotation_degrees,
+    scale_x: layer.scale_x ?? 1,
+    scale_y: layer.scale_y ?? 1,
+  })
 }
 
 async function opaquePixelBounds(layer: RenderedLayer): Promise<{ left: number; top: number; width: number; height: number; empty: boolean }> {
