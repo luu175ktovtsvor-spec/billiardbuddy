@@ -55,7 +55,7 @@ fn tool_call(id: &str, message: &str) -> String {
     let result: Result<String, String> = match name.as_str() {
         "status" | "list_tabs" => bridge(&name, "{}"),
         "open_tab" => (|| { let url = required_string(&arguments, "url")?; valid_url(&url)?; bridge(&name, &format!(r#"{{"url":"{}"}}"#, escape(&url))) })(),
-        "close_tab" | "inspect_page" | "capture_page" => with_tab(&arguments, |tab| bridge(&name, &format!(r#"{{"tabId":{tab}}"#))),
+        "close_tab" | "inspect_page" | "capture_page" => with_tab(&arguments, |tab| bridge(&name, &format!(r#"{{"tabId":{tab}}}"#))),
         "navigate" => with_tab(&arguments, |tab| { let url = required_string(&arguments, "url")?; valid_url(&url)?; bridge(&name, &format!(r#"{{"tabId":{tab},"url":"{}"}}"#, escape(&url))) }),
         "click_element" => with_tab(&arguments, |tab| { let element = valid_element(&arguments)?; bridge(&name, &format!(r#"{{"tabId":{tab},"elementId":"{element}"}}"#)) }),
         "type_text" => with_tab(&arguments, |tab| { let element = valid_element(&arguments)?; let text = required_string(&arguments, "text")?; if text.is_empty() || text.chars().count() > 4096 { return Err("text must contain 1-4096 characters".to_owned()) }; bridge(&name, &format!(r#"{{"tabId":{tab},"elementId":"{element}","text":"{}"}}"#, escape(&text))) }),
