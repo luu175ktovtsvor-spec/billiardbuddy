@@ -15,6 +15,7 @@ import {
 import { homedir, tmpdir } from 'node:os'
 import { basename, join, resolve } from 'node:path'
 import {
+  BILLIARDBUDDY_AGENT_ENGINE_NAME,
   CODEX_ENGINE_MANIFEST_SCHEMA,
   CODEX_ENGINE_NAME,
   CODEX_ENGINE_PRODUCT_PATCHES,
@@ -34,7 +35,7 @@ type BinaryHashMode = 'sha256' | 'mach-o-code-signature-neutral-sha256'
 
 type EngineManifest = {
   schemaVersion: typeof CODEX_ENGINE_MANIFEST_SCHEMA
-  engine: typeof CODEX_ENGINE_NAME
+  engine: typeof BILLIARDBUDDY_AGENT_ENGINE_NAME
   sourceRepository: typeof CODEX_ENGINE_SOURCE_REPOSITORY
   sourceRevision: string
   productPatches: CodexEngineProductPatch[]
@@ -67,8 +68,14 @@ export type CodexEngineCliOptions = {
   verifyOnly: boolean
 }
 
-const LICENSE_FILE = 'codex-engine-LICENSE.txt'
-const NOTICE_FILE = 'codex-engine-NOTICE.txt'
+// These are product resources, not upstream executable names. Their contents
+// retain the upstream Apache-2.0 license and NOTICE attribution verbatim.
+const LICENSE_FILE = 'THIRD_PARTY_LICENSES.txt'
+const NOTICE_FILE = 'THIRD_PARTY_NOTICES.txt'
+const LEGACY_STAGED_FILES = [
+  'codex-engine-LICENSE.txt',
+  'codex-engine-NOTICE.txt',
+]
 
 const desktopRoot = resolve(import.meta.dir, '..')
 const repositoryRoot = resolve(desktopRoot, '..', '..')
@@ -131,12 +138,12 @@ export function codexEngineBinaryName(target: SupportedTarget): string {
 
 export function stagedCodexEngineBinaryName(target: SupportedTarget): string {
   return target.includes('windows')
-    ? `${CODEX_ENGINE_NAME}-${target}.exe`
-    : `${CODEX_ENGINE_NAME}-${target}`
+    ? `${BILLIARDBUDDY_AGENT_ENGINE_NAME}-${target}.exe`
+    : `${BILLIARDBUDDY_AGENT_ENGINE_NAME}-${target}`
 }
 
 export function codexEngineManifestName(target: SupportedTarget): string {
-  return `codex-engine-manifest-${target}.json`
+  return `agent-engine-manifest-${target}.json`
 }
 
 function sha256(path: string): string {
@@ -338,7 +345,7 @@ function verifyManifest(manifest: EngineManifest, target: SupportedTarget): void
   const expectedPatches = expectedProductPatches()
   if (
     manifest.schemaVersion !== CODEX_ENGINE_MANIFEST_SCHEMA
-    || manifest.engine !== CODEX_ENGINE_NAME
+    || manifest.engine !== BILLIARDBUDDY_AGENT_ENGINE_NAME
     || manifest.sourceRepository !== CODEX_ENGINE_SOURCE_REPOSITORY
     || manifest.sourceRevision !== CODEX_ENGINE_SOURCE_REVISION
     || !matchesExpectedProductPatches(manifest.productPatches, expectedPatches)
@@ -403,7 +410,17 @@ function stagePreparedCodexEngine(
 
   const stagedBinary = join(destination, stagedCodexEngineBinaryName(options.target))
   const manifestPath = join(destination, codexEngineManifestName(options.target))
+  // Copy first: a CI prebuilt binary may be the previous staged resource in
+  // this same directory. Removing the legacy name before the copy would make
+  // that valid upgrade input disappear.
   copyFileSync(sourceBinary, stagedBinary)
+  for (const legacy of [
+    ...LEGACY_STAGED_FILES,
+    `codex-app-server-${options.target}${options.target.includes('windows') ? '.exe' : ''}`,
+    `codex-engine-manifest-${options.target}.json`,
+  ]) {
+    rmSync(join(destination, legacy), { force: true })
+  }
   if (!options.target.includes('windows')) {
     chmodSync(stagedBinary, 0o755)
     adHocSignMacBinary(stagedBinary)
@@ -416,7 +433,7 @@ function stagePreparedCodexEngine(
     : 'sha256'
   const manifest: EngineManifest = {
     schemaVersion: CODEX_ENGINE_MANIFEST_SCHEMA,
-    engine: CODEX_ENGINE_NAME,
+    engine: BILLIARDBUDDY_AGENT_ENGINE_NAME,
     sourceRepository: CODEX_ENGINE_SOURCE_REPOSITORY,
     sourceRevision: CODEX_ENGINE_SOURCE_REVISION,
     productPatches: patches,

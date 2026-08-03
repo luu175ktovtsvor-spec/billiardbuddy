@@ -1,4 +1,4 @@
-import { app, BrowserWindow, clipboard, ipcMain, Notification, safeStorage, screen, session, webContents } from 'electron'
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Notification, powerMonitor, safeStorage, screen, session, webContents } from 'electron'
 import { autoUpdater } from 'electron-updater'
 import { randomBytes } from 'node:crypto'
 import path from 'node:path'
@@ -40,6 +40,7 @@ import {
   type CodexNativeNotification,
   type NativeCodexCollaborationMode,
   type NativeCodexMarketplaceAddInput,
+  type NativeExternalAgentMigrationItem,
   type NativeCodexPermissionMode,
   type NativeCodexPluginReference,
   type NativeCodexStartReviewInput,
@@ -58,6 +59,11 @@ import {
 } from './services/navigationGuards'
 import { logNotificationSmokeRendererAck, scheduleNotificationSmoke } from './services/notificationSmoke'
 import { normalizeZoomFactor } from './services/zoom'
+import { readComputerUseConfiguration, writeComputerUseConfiguration } from './services/computerUseConfiguration'
+import { InAppBrowserHost } from './services/inAppBrowserHost'
+import { requestRecordReplayStop } from './services/recordReplayLifecycle'
+import { ScheduledAgentTaskService, type ScheduledAgentTask, type ScheduledAgentTaskInput } from './services/scheduledAgentTasks'
+import { RemoteHostControllerClient, RemoteHostService } from './services/remoteHost'
 import { resolveRendererEntry } from './services/rendererEntry'
 import {
   nativeInteractiveServerRequest,
@@ -95,6 +101,10 @@ let imageActions: ElectronImageActions | null = null
 let videoActions: ElectronVideoActions | null = null
 let providerCredentialService: ProviderCredentialService | null = null
 let nativeAgentRuntime: ElectronCodexNativeRuntime | null = null
+let inAppBrowserHost: InAppBrowserHost | null = null
+let scheduledAgentTasks: ScheduledAgentTaskService | null = null
+let remoteHostService: RemoteHostService | null = null
+let systemScreenLocked = false
 let isQuitting = false
 let trayController: TrayController | null = null
 const trustedProductWindowEntries = new Map<BrowserWindow, string>()
@@ -113,6 +123,36 @@ const nativeAgentThreadOwners = new Map<string, number>()
 const nativeAgentTurnOwners = new Map<string, number>()
 const nativeAgentServerRequests = new Map<string, PendingNativeAgentServerRequest>()
 
+type PendingExternalAgentDetection = {
+  ownerId: number
+  threadId: string
+  migrationSource?: string
+  items: readonly NativeExternalAgentMigrationItem[]
+}
+
+const pendingExternalAgentDetections = new Map<string, PendingExternalAgentDetection>()
+const permittedExternalAgentMigrationTypes = new Set(['AGENTS_MD', 'SKILLS', 'SUBAGENTS', 'COMMANDS'])
+
+function externalAgentMigrationItemType(item: NativeExternalAgentMigrationItem): string | undefined {
+  const itemType = item.itemType
+  return typeof itemType === 'string' ? itemType : undefined
+}
+
+function safeExternalAgentMigrationItems(response: CodexNativeJsonObject): readonly NativeExternalAgentMigrationItem[] {
+  const items = response.items
+  if (!Array.isArray(items)) return []
+  return items.filter((item): item is NativeExternalAgentMigrationItem => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return false
+    return permittedExternalAgentMigrationTypes.has(externalAgentMigrationItemType(item as NativeExternalAgentMigrationItem) ?? '')
+  })
+}
+
+function externalAgentMigrationSummary(item: NativeExternalAgentMigrationItem): string {
+  const type = externalAgentMigrationItemType(item) ?? 'UNKNOWN'
+  const description = typeof item.description === 'string' ? item.description.replace(/[\r\n]+/g, ' ').slice(0, 240) : ''
+  return description ? `${type}: ${description}` : type
+}
+
 function appRoot() {
   return app.isPackaged ? app.getAppPath() : process.cwd()
 }
@@ -120,6 +160,11 @@ function appRoot() {
 function unpackedRoot() {
   const root = appRoot()
   return app.isPackaged ? root.replace(/\.asar$/, '.asar.unpacked') : root
+}
+
+/** The only built-in marketplace source; Rust remains its installer and registry. */
+function bundledAgentMarketplaceRoot() {
+  return path.join(unpackedRoot(), 'runtime-assets', 'agent-marketplace')
 }
 
 function preloadPath() {
@@ -280,6 +325,48 @@ async function confirmNativeAgentExtensionChange(
     noLink: true,
   })
   if (result.response !== 1) throw new Error('CODEX_NATIVE_EXTENSION_CHANGE_DECLINED')
+}
+
+function scheduledTaskDescription(task: Pick<ScheduledAgentTask, 'schedule'>): string {
+  const schedule = task.schedule
+  if (schedule.kind === 'once') return `一次：${new Date(schedule.at).toLocaleString()}`
+  if (schedule.kind === 'interval') return `每 ${Math.round(schedule.everyMs / 60_000)} 分钟`
+  const clock = `${String(schedule.hour).padStart(2, '0')}:${String(schedule.minute).padStart(2, '0')}`
+  if (schedule.kind === 'daily') return `每天 ${clock}`
+  return `每周 ${schedule.days.join(', ')} ${clock}`
+}
+
+/** A schedule starts an unattended native Turn, so enabling it is privileged. */
+async function confirmNativeAgentScheduledTask(
+  owner: BrowserWindow,
+  task: Pick<ScheduledAgentTaskInput | ScheduledAgentTask, 'prompt' | 'schedule'>,
+): Promise<void> {
+  const result = await dialog.showMessageBox(owner, {
+    type: 'warning',
+    title: '启用 Agent 计划任务？',
+    message: '到期时，BilliardBuddy 会在应用仍运行的前提下恢复原生 Codex Thread 并启动一个普通 Turn。',
+    detail: `频率：${scheduledTaskDescription(task)}\n任务：${task.prompt.replace(/[\r\n]+/g, ' ').slice(0, 600)}\n\n任务仍遵循该 Thread 的 Rust Core 沙箱、插件与审批；没有窗口或应用退出时不会在后台启动。`,
+    buttons: ['取消', '启用计划任务'],
+    defaultId: 0,
+    cancelId: 0,
+    noLink: true,
+  })
+  if (result.response !== 1) throw new Error('BILLIARDBUDDY_SCHEDULED_TASK_DECLINED')
+}
+
+/** Remote pairing authorizes only typed Turn requests; Core approvals remain local. */
+async function confirmRemoteHostEnable(owner: BrowserWindow): Promise<void> {
+  const result = await dialog.showMessageBox(owner, {
+    type: 'warning',
+    title: '启用远程 Agent 宿主？',
+    message: '已配对的另一台 BilliardBuddy 设备可以向这台电脑发送“启动任务”和“追加追问”。',
+    detail: '不会共享模型 Key、文件、屏幕、浏览器 Cookie 或 Rust Thread 历史。任务仍在本机 Codex Core 中执行，并继续遵循原有沙箱、插件与审批；远程配对不会自动授予 Computer Use 等桌面权限。',
+    buttons: ['取消', '启用远程宿主'],
+    defaultId: 0,
+    cancelId: 0,
+    noLink: true,
+  })
+  if (result.response !== 1) throw new Error('BILLIARDBUDDY_REMOTE_HOST_DECLINED')
 }
 
 /**
@@ -448,6 +535,111 @@ function getNativeAgentRuntime(): ElectronCodexNativeRuntime {
     onAppServerUnavailable: rejectNativeAgentServerRequests,
   })
   return nativeAgentRuntime
+}
+
+/** Start the dedicated Browser bridge before Core can launch its Browser MCP. */
+function getInAppBrowserHost(): InAppBrowserHost {
+  inAppBrowserHost ??= new InAppBrowserHost({
+    userDataPath: app.getPath('userData'),
+    mainWindow: () => mainWindow,
+  })
+  return inAppBrowserHost
+}
+
+/**
+ * Scheduled work deliberately re-enters a durable Rust Thread.  There is no
+ * second Agent loop in Electron: the host only persists cadence and starts a
+ * normal native Turn when the desktop app is still running.
+ */
+function getScheduledAgentTasks(): ScheduledAgentTaskService {
+  scheduledAgentTasks ??= new ScheduledAgentTaskService({
+    userDataPath: app.getPath('userData'),
+    run: async task => {
+      const owner = mainWindow?.webContents
+      if (!owner || owner.isDestroyed()) throw new Error('BILLIARDBUDDY_SCHEDULED_TASK_HOST_UNAVAILABLE')
+      claimNativeAgentThread(owner.id, task.threadId)
+      const runtime = getNativeAgentRuntime()
+      await runtime.resumeThread({
+        threadId: task.threadId,
+        cwd: task.cwd,
+        route: await resolveNativeAgentRoute(),
+      })
+      const turn = await runtime.startTurn(
+        { id: task.threadId },
+        [{ type: 'text', text: task.prompt }],
+        `scheduled-${task.id}-${task.lastRunAt ?? task.nextRunAt}`,
+      )
+      nativeAgentTurnOwners.set(turn.id, owner.id)
+      return { turnId: turn.id }
+    },
+    onEvent: event => {
+      const owner = mainWindow?.webContents
+      if (owner && !owner.isDestroyed()) sendNativeAgentEvent(owner.id, event)
+    },
+  })
+  return scheduledAgentTasks
+}
+
+function productGatewayUrl(): string {
+  return requireProductGatewayConfig(resolveProductGatewayConfig({
+    isPackaged: app.isPackaged,
+    resourcesPath: process.resourcesPath,
+    devBuildDir: path.join(unpackedRoot(), 'build'),
+    env: process.env,
+  })).url
+}
+
+/**
+ * Remote Host is deliberately a typed BilliardBuddy relay, not an exposed
+ * Codex App Server socket. It re-enters the existing Core Thread/Turn path.
+ */
+function getRemoteHostService(): RemoteHostService {
+  remoteHostService ??= new RemoteHostService({
+    userDataPath: app.getPath('userData'),
+    gatewayUrl: productGatewayUrl,
+    accessToken: () => getInstallationSessionManager().accessToken(),
+    canAccept: () => !systemScreenLocked && Boolean(mainWindow && !mainWindow.isDestroyed()),
+    execute: async command => {
+      const owner = mainWindow?.webContents
+      if (!owner || owner.isDestroyed()) throw new Error('BILLIARDBUDDY_REMOTE_HOST_UNAVAILABLE')
+      if (command.type === 'start_turn') {
+        claimNativeAgentThread(owner.id, command.threadId)
+        const runtime = getNativeAgentRuntime()
+        await runtime.resumeThread({
+          threadId: command.threadId,
+          cwd: command.cwd,
+          route: await resolveNativeAgentRoute(),
+        })
+        const turn = await runtime.startTurn(
+          { id: command.threadId },
+          [{ type: 'text', text: command.text }],
+          `remote-${command.id}`,
+        )
+        nativeAgentTurnOwners.set(turn.id, owner.id)
+        return
+      }
+      assertNativeAgentThreadOwner(owner.id, command.threadId)
+      assertNativeAgentTurnOwner(owner.id, command.turnId)
+      await getNativeAgentRuntime().steerTurn(
+        { id: command.threadId },
+        { id: command.turnId },
+        command.text,
+        `remote-${command.id}`,
+      )
+    },
+    onStatus: status => {
+      const owner = mainWindow?.webContents
+      if (owner && !owner.isDestroyed()) sendNativeAgentEvent(owner.id, { type: 'remote-host-status', ...status })
+    },
+  })
+  return remoteHostService
+}
+
+function getRemoteHostController(): RemoteHostControllerClient {
+  return new RemoteHostControllerClient({
+    gatewayUrl: productGatewayUrl,
+    accessToken: () => getInstallationSessionManager().accessToken(),
+  })
 }
 
 /**
@@ -943,6 +1135,125 @@ function registerIpcHandlers() {
     )
     await (await getReadyNativeAgentThreadRuntime(input.threadId)).setExtraSkillRoots({ id: input.threadId }, input.roots)
   })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentDetectExternalConfig, async (event, payload) => {
+    const input = payload as { threadId: string, cwd: string, includeHome: boolean, migrationSource?: string }
+    assertNativeAgentThreadOwner(event.sender.id, input.threadId)
+    const runtime = await getReadyNativeAgentThreadRuntime(input.threadId)
+    const result = await runtime.detectExternalAgentConfig({ id: input.threadId }, input)
+    const items = safeExternalAgentMigrationItems(result)
+    const detectionId = randomBytes(18).toString('base64url')
+    pendingExternalAgentDetections.set(detectionId, {
+      ownerId: event.sender.id,
+      threadId: input.threadId,
+      ...(input.migrationSource === undefined ? {} : { migrationSource: input.migrationSource }),
+      items,
+    })
+    while (pendingExternalAgentDetections.size > 32) {
+      const oldest = pendingExternalAgentDetections.keys().next().value
+      if (oldest === undefined) break
+      pendingExternalAgentDetections.delete(oldest)
+    }
+    return {
+      detectionId,
+      items: items.map((item, index) => ({
+        index,
+        itemType: externalAgentMigrationItemType(item),
+        description: typeof item.description === 'string' ? item.description : '',
+        cwd: typeof item.cwd === 'string' ? item.cwd : undefined,
+      })),
+    }
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentImportExternalConfig, async (event, payload) => {
+    const input = payload as { threadId: string, detectionId: string, itemIndexes: number[] }
+    assertNativeAgentThreadOwner(event.sender.id, input.threadId)
+    const detected = pendingExternalAgentDetections.get(input.detectionId)
+    if (!detected || detected.ownerId !== event.sender.id || detected.threadId !== input.threadId) {
+      throw new Error('CODEX_NATIVE_EXTERNAL_AGENT_DETECTION_REQUIRED')
+    }
+    const selected = input.itemIndexes
+      .map(index => detected.items[index])
+      .filter((item): item is NativeExternalAgentMigrationItem => item !== undefined)
+    if (selected.length !== input.itemIndexes.length || selected.some(item => !permittedExternalAgentMigrationTypes.has(externalAgentMigrationItemType(item) ?? ''))) {
+      throw new Error('CODEX_NATIVE_EXTERNAL_AGENT_IMPORT_SELECTION_INVALID')
+    }
+    const response = await dialog.showMessageBox(currentWindow(event), {
+      type: 'warning',
+      buttons: ['取消', '导入已选项目'],
+      defaultId: 0,
+      cancelId: 0,
+      noLink: true,
+      title: '导入其他智能体配置',
+      message: '只会导入你已选择的指令、Skill、子智能体或命令。',
+      detail: `${selected.map(externalAgentMigrationSummary).join('\n')}\n\n不会导入 API Key、完整配置、MCP、Hook、插件、记忆或历史会话。`,
+    })
+    if (response.response !== 1) return { cancelled: true }
+    pendingExternalAgentDetections.delete(input.detectionId)
+    const runtime = await getReadyNativeAgentThreadRuntime(input.threadId)
+    return await runtime.importExternalAgentConfig(
+      { id: input.threadId },
+      selected,
+      detected.migrationSource,
+    )
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentListScheduledTasks, async (event, payload) => {
+    const input = payload as { threadId?: string }
+    if (input.threadId !== undefined) assertNativeAgentThreadOwner(event.sender.id, input.threadId)
+    return getScheduledAgentTasks().list(input.threadId)
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentCreateScheduledTask, async (event, payload) => {
+    const input = payload as ScheduledAgentTaskInput
+    assertNativeAgentThreadOwner(event.sender.id, input.threadId)
+    await confirmNativeAgentScheduledTask(currentWindow(event), input)
+    return await getScheduledAgentTasks().create(input)
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentSetScheduledTaskEnabled, async (event, payload) => {
+    const input = payload as { threadId: string, taskId: string, enabled: boolean }
+    assertNativeAgentThreadOwner(event.sender.id, input.threadId)
+    const task = getScheduledAgentTasks().list(input.threadId).find(candidate => candidate.id === input.taskId)
+    if (!task) throw new Error('BILLIARDBUDDY_SCHEDULED_TASK_NOT_FOUND')
+    if (input.enabled) await confirmNativeAgentScheduledTask(currentWindow(event), task)
+    return await getScheduledAgentTasks().setEnabled(input.taskId, input.enabled)
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentRemoveScheduledTask, async (event, payload) => {
+    const input = payload as { threadId: string, taskId: string }
+    assertNativeAgentThreadOwner(event.sender.id, input.threadId)
+    const task = getScheduledAgentTasks().list(input.threadId).find(candidate => candidate.id === input.taskId)
+    if (!task) throw new Error('BILLIARDBUDDY_SCHEDULED_TASK_NOT_FOUND')
+    await getScheduledAgentTasks().remove(input.taskId)
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.remoteHostGetStatus, async () =>
+    getRemoteHostService().status(),
+  )
+  registerHandler(ELECTRON_IPC_CHANNELS.remoteHostSetEnabled, async (event, payload) => {
+    const input = payload as { enabled: boolean }
+    const host = getRemoteHostService()
+    if (input.enabled && !host.status().enabled) await confirmRemoteHostEnable(currentWindow(event))
+    await host.setEnabled(input.enabled)
+    return host.status()
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.remoteHostCreatePairing, async (_event, payload) => {
+    const input = payload as { ttlSeconds?: number }
+    return await getRemoteHostService().createPairing(input.ttlSeconds)
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.remoteHostListControllers, async () =>
+    await getRemoteHostService().listControllers(),
+  )
+  registerHandler(ELECTRON_IPC_CHANNELS.remoteHostRevokeController, async (_event, payload) => {
+    const input = payload as { installationId: string }
+    await getRemoteHostService().revokeController(input.installationId)
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.remoteControllerClaim, async (_event, payload) => {
+    const input = payload as { pairingCode: string }
+    return await getRemoteHostController().claim(input.pairingCode)
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.remoteControllerStartTurn, async (_event, payload) => {
+    const input = payload as { hostInstallationId: string, threadId: string, cwd: string, text: string }
+    return await getRemoteHostController().startTurn(input.hostInstallationId, input)
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.remoteControllerSteerTurn, async (_event, payload) => {
+    const input = payload as { hostInstallationId: string, threadId: string, turnId: string, text: string }
+    return await getRemoteHostController().steerTurn(input.hostInstallationId, input)
+  })
   registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentListHooks, async (event, payload) => {
     const input = payload as { threadId: string, cwd: string }
     assertNativeAgentThreadOwner(event.sender.id, input.threadId)
@@ -973,6 +1284,20 @@ function registerIpcHandlers() {
       `来源：${input.source}${input.refName === undefined ? '' : `\n版本：${input.refName}`}`,
     )
     return await (await getReadyNativeAgentThreadRuntime(input.threadId)).addMarketplace({ id: input.threadId }, input)
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentAddBundledMarketplace, async (event, payload) => {
+    const input = payload as { threadId: string }
+    assertNativeAgentThreadOwner(event.sender.id, input.threadId)
+    await confirmNativeAgentExtensionChange(
+      currentWindow(event),
+      '启用 BilliardBuddy 本地扩展？',
+      'Codex Rust Core 将添加随 BilliardBuddy 安装的本地插件市场。每个插件仍须单独安装、启用并按原生规则授权。',
+      '来源：BilliardBuddy 本地扩展',
+    )
+    return await (await getReadyNativeAgentThreadRuntime(input.threadId)).addMarketplace(
+      { id: input.threadId },
+      { source: bundledAgentMarketplaceRoot() },
+    )
   })
   registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentRemoveMarketplace, async (event, payload) => {
     const input = payload as { threadId: string, marketplaceName: string }
@@ -1025,6 +1350,19 @@ function registerIpcHandlers() {
     const input = payload as { threadId: string }
     assertNativeAgentThreadOwner(event.sender.id, input.threadId)
     return await (await getReadyNativeAgentThreadRuntime(input.threadId)).listCollaborationModes({ id: input.threadId })
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.computerUseConfigurationGet, async () =>
+    await readComputerUseConfiguration(process.platform, app.getPath('userData')),
+  )
+  registerHandler(ELECTRON_IPC_CHANNELS.computerUseConfigurationSet, async (event, payload) => {
+    const input = payload as { allowedAppIds: string[] }
+    await confirmNativeAgentExtensionChange(
+      currentWindow(event),
+      '更新 Computer Use 允许的应用？',
+      '只有列表中的应用可被 Computer Use 观察或操作。系统屏幕录制、辅助功能和 Codex 工具审批仍会单独生效。',
+      input.allowedAppIds.length === 0 ? '将移除全部允许的应用。' : input.allowedAppIds.join('\n'),
+    )
+    return await writeComputerUseConfiguration(process.platform, app.getPath('userData'), input)
   })
   registerHandler(ELECTRON_IPC_CHANNELS.commandInvoke, (_event, payload) => handleCommandInvoke(payload))
   registerHandler(ELECTRON_IPC_CHANNELS.clipboardReadText, () => clipboard.readText())
@@ -1192,9 +1530,19 @@ app.whenReady().then(async () => {
   // After portable/ops override is resolved, default the kernel config dir to
   // BilliardBuddy's own data root keeps the sidecar isolated from other products.
   applyDefaultConfigDir(app)
+  await getInAppBrowserHost().start()
   // The window is the recovery surface for activation, proxy, credential-store,
   // and sidecar failures, so establish it before constructing the backend.
   await createMainWindow()
+  await getScheduledAgentTasks().start()
+  await getRemoteHostService().start()
+  powerMonitor.on('lock-screen', () => {
+    systemScreenLocked = true
+  })
+  powerMonitor.on('unlock-screen', () => {
+    systemScreenLocked = false
+    remoteHostService?.refresh()
+  })
   writeWindowSmokeSnapshot(mainWindow, 'backend-starting')
   try {
     void getServerRuntime().startServer()
@@ -1249,11 +1597,19 @@ app.on('before-quit', () => {
   trayController?.dispose()
   trayController = null
   installationSessionManager?.dispose()
+  void inAppBrowserHost?.stop()
+  inAppBrowserHost = null
+  requestRecordReplayStop(app.getPath('userData'))
+  scheduledAgentTasks?.stop()
+  scheduledAgentTasks = null
+  remoteHostService?.stop()
+  remoteHostService = null
   rejectNativeAgentServerRequests(new Error('CODEX_NATIVE_APP_QUITTING'))
   nativeAgentRuntime?.closeImmediately()
   nativeAgentRuntime = null
   nativeAgentThreadOwners.clear()
   nativeAgentTurnOwners.clear()
+  pendingExternalAgentDetections.clear()
   // Synchronous on quit so the Windows taskkill completes before the process
   // exits, otherwise the fire-and-forget kill can leave orphaned sidecars.
   getServerRuntime().stopAll(true)

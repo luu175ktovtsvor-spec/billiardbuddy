@@ -82,6 +82,13 @@ ts/desktop/build/product-secrets.json
 # 桌面打包生成物：平台图标入库，sidecar 和媒体工具链不入库
 ts/desktop/runtime-assets/binaries/
 ts/desktop/runtime-assets/.DS_Store
+ts/desktop/runtime-assets/plugins/**/bin/
+ts/desktop/runtime-assets/agent-marketplace/
+native/billiardbuddy-computer-use/target/
+native/billiardbuddy-computer-use/.swift-build/
+native/billiardbuddy-chrome/target/
+native/billiardbuddy-browser-use/target/
+native/billiardbuddy-record-replay/target/
 
 # Bun/MCP 单测在包目录旁创建的临时 fixture(中断时可能来不及清理)
 **/.agent-plugin-wired-*/

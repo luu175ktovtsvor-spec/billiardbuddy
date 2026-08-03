@@ -1,0 +1,12 @@
+[package]
+name = "billiardbuddy-browser-use"
+version = "0.1.0"
+edition = "2024"
+license = "Proprietary"
+publish = false
+
+[[bin]]
+name = "billiardbuddy-browser-use"
+path = "src/main.rs"
+
+[dependencies]

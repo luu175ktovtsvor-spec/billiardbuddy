@@ -67,9 +67,35 @@ function validatePackagedCodexEngine(context) {
   console.log(`[codex-engine] verified packaged App Server for ${platform}`)
 }
 
+function validatePackagedAgentPlugins(context) {
+  const platform = packagePlatform(context)
+  const target = platform === 'darwin' ? 'aarch64-apple-darwin' : 'x86_64-pc-windows-msvc'
+  const destination = path.join(path.dirname(packagedMediaToolchainDir(context)), 'agent-marketplace', 'plugins')
+  for (const script of ['stage-agent-plugins.ts', 'stage-chrome-plugin.ts', 'stage-browser-plugin.ts', 'stage-record-replay-plugin.ts']) {
+    try {
+      execFileSync('bun', [
+        path.join(__dirname, script),
+        '--verify',
+        '--target', target,
+        '--destination', destination,
+      ], {
+        cwd: path.join(__dirname, '..'),
+        env: process.env,
+        encoding: 'utf8',
+        stdio: 'pipe',
+      })
+    } catch (error) {
+      const detail = String(error?.stderr || error?.stdout || error?.message || 'unknown verifier error').trim()
+      throw new Error(`Cannot package BilliardBuddy: packaged local plugin verification failed (${script}) at ${destination}: ${detail}`)
+    }
+  }
+  console.log(`[agent-plugins] verified packaged local plugins for ${platform}`)
+}
+
 function validatePackagedRuntimeAssets(context) {
   validatePackagedMediaToolchain(context)
   validatePackagedCodexEngine(context)
+  validatePackagedAgentPlugins(context)
 }
 
 module.exports = validatePackagedRuntimeAssets
@@ -77,3 +103,4 @@ module.exports.afterPack = validatePackagedRuntimeAssets
 module.exports.packagePlatform = packagePlatform
 module.exports.packagedMediaToolchainDir = packagedMediaToolchainDir
 module.exports.validatePackagedCodexEngine = validatePackagedCodexEngine
+module.exports.validatePackagedAgentPlugins = validatePackagedAgentPlugins

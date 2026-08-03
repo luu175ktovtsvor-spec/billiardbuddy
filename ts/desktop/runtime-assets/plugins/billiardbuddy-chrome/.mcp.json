@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "billiardbuddy-chrome": {
+      "command": "./bin/billiardbuddy-chrome",
+      "args": [],
+      "cwd": ".",
+      "env_vars": [
+        "CODEX_HOME"
+      ]
+    }
+  }
+}

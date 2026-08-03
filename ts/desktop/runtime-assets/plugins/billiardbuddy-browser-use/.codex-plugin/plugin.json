@@ -1,0 +1,15 @@
+{
+  "name": "billiardbuddy-browser-use",
+  "version": "0.1.0",
+  "description": "Use BilliardBuddy's isolated in-app Browser for opening, inspecting and testing approved HTTP(S) pages. It never reads the user's Chrome profile or browser data.",
+  "author": { "name": "BilliardBuddy" },
+  "license": "Proprietary",
+  "mcpServers": "./.mcp.json",
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "BilliardBuddy Browser",
+    "shortDescription": "Control BilliardBuddy's isolated browser",
+    "category": "Engineering",
+    "capabilities": ["Interactive", "Read", "Write"]
+  }
+}

@@ -1,0 +1,12 @@
+[package]
+name = "billiardbuddy-record-replay"
+version = "0.1.0"
+edition = "2024"
+license = "Proprietary"
+publish = false
+
+[[bin]]
+name = "billiardbuddy-record-replay"
+path = "src/main.rs"
+
+[dependencies]

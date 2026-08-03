@@ -1,0 +1,27 @@
+{
+  "name": "billiardbuddy-chrome",
+  "version": "0.1.0",
+  "description": "Use user-selected Chrome tabs through BilliardBuddy. Prefer APIs and dedicated connectors when they are available.",
+  "author": {
+    "name": "BilliardBuddy"
+  },
+  "license": "Proprietary",
+  "keywords": [
+    "browser",
+    "chrome",
+    "browser-control"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "BilliardBuddy Chrome",
+    "shortDescription": "Use Chrome tabs you explicitly connect",
+    "longDescription": "BilliardBuddy Chrome lets the agent use only tabs that you explicitly connect from Chrome. It can inspect pages and perform structured browser actions while preserving your control over websites and sensitive actions.",
+    "developerName": "BilliardBuddy",
+    "category": "Productivity",
+    "capabilities": ["Interactive", "Read"],
+    "defaultPrompt": [
+      "Help me with the Chrome tab I connected."
+    ]
+  },
+  "mcpServers": "./.mcp.json"
+}

@@ -8,6 +8,12 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 const noPayload: Validator = value => value === undefined
 const optionalRecord: Validator = value => value === undefined || isRecord(value)
 const stringPayload: Validator = value => typeof value === 'string'
+const computerUseConfiguration: Validator = value =>
+  isRecord(value)
+  && hasOnlyKeys(value, ['allowedAppIds'])
+  && Array.isArray(value.allowedAppIds)
+  && value.allowedAppIds.length <= 64
+  && value.allowedAppIds.every(item => typeof item === 'string' && item.length > 0 && item.length <= 32_767 && !/[\u0000\r\n]/.test(item))
 const hasOnlyKeys = (value: Record<string, unknown>, allowedKeys: string[]) =>
   Object.keys(value).every(key => allowedKeys.includes(key))
 const commandInvoke: Validator = value =>
@@ -357,6 +363,119 @@ const nativeAgentSetExtraSkillRoots: Validator = value =>
   && value.roots.length <= 64
   && value.roots.every(nativeWorkspacePath)
 
+const nativeAgentMigrationSource = (value: unknown): value is string =>
+  typeof value === 'string'
+  && value.length > 0
+  && value.length <= 128
+  && !/[\u0000\r\n]/.test(value)
+
+const nativeAgentDetectExternalConfig: Validator = value =>
+  isRecord(value)
+  && hasOnlyKeys(value, ['threadId', 'cwd', 'includeHome', 'migrationSource'])
+  && nativeCodexId(value.threadId)
+  && nativeWorkspacePath(value.cwd)
+  && typeof value.includeHome === 'boolean'
+  && (value.migrationSource === undefined || nativeAgentMigrationSource(value.migrationSource))
+
+const nativeAgentImportExternalConfig: Validator = value =>
+  isRecord(value)
+  && hasOnlyKeys(value, ['threadId', 'detectionId', 'itemIndexes'])
+  && nativeCodexId(value.threadId)
+  && nativeCodexId(value.detectionId)
+  && Array.isArray(value.itemIndexes)
+  && value.itemIndexes.length > 0
+  && value.itemIndexes.length <= 64
+  && value.itemIndexes.every(item => typeof item === 'number' && Number.isSafeInteger(item) && item >= 0 && item < 256)
+  && new Set(value.itemIndexes).size === value.itemIndexes.length
+
+const nativeScheduledTaskId = (value: unknown): value is string =>
+  typeof value === 'string' && /^[A-Za-z0-9_-]{8,80}$/.test(value)
+
+const nativeIntegerBetween = (value: unknown, minimum: number, maximum: number): value is number =>
+  typeof value === 'number' && Number.isSafeInteger(value) && value >= minimum && value <= maximum
+
+const nativeScheduledTaskSchedule = (value: unknown): boolean => {
+  if (!isRecord(value)) return false
+  if (value.kind === 'once') return hasOnlyKeys(value, ['kind', 'at']) && typeof value.at === 'number' && Number.isFinite(value.at) && value.at >= 0
+  if (value.kind === 'interval') return hasOnlyKeys(value, ['kind', 'everyMs']) && nativeIntegerBetween(value.everyMs, 60_000, 31 * 24 * 60 * 60_000)
+  const validClock = nativeIntegerBetween(value.hour, 0, 23) && nativeIntegerBetween(value.minute, 0, 59)
+  if (value.kind === 'daily') return hasOnlyKeys(value, ['kind', 'hour', 'minute']) && validClock
+  return value.kind === 'weekly' && hasOnlyKeys(value, ['kind', 'days', 'hour', 'minute']) && validClock
+    && Array.isArray(value.days) && value.days.length > 0 && value.days.length <= 7
+    && value.days.every(day => nativeIntegerBetween(day, 0, 6)) && new Set(value.days).size === value.days.length
+}
+
+const nativeAgentListScheduledTasks: Validator = value =>
+  isRecord(value)
+  && hasOnlyKeys(value, ['threadId'])
+  && (value.threadId === undefined || nativeCodexId(value.threadId))
+
+const nativeAgentCreateScheduledTask: Validator = value =>
+  isRecord(value)
+  && hasOnlyKeys(value, ['threadId', 'cwd', 'prompt', 'schedule', 'enabled'])
+  && nativeCodexId(value.threadId)
+  && nativeWorkspacePath(value.cwd)
+  && typeof value.prompt === 'string' && value.prompt.trim().length > 0 && value.prompt.length <= 32_000 && !value.prompt.includes('\u0000')
+  && nativeScheduledTaskSchedule(value.schedule)
+  && typeof value.enabled === 'boolean'
+
+const nativeAgentScheduledTaskReference: Validator = value =>
+  isRecord(value)
+  && hasOnlyKeys(value, ['threadId', 'taskId'])
+  && nativeCodexId(value.threadId)
+  && nativeScheduledTaskId(value.taskId)
+
+const nativeAgentSetScheduledTaskEnabled: Validator = value =>
+  isRecord(value)
+  && hasOnlyKeys(value, ['threadId', 'taskId', 'enabled'])
+  && nativeCodexId(value.threadId)
+  && nativeScheduledTaskId(value.taskId)
+  && typeof value.enabled === 'boolean'
+
+const remoteInstallationId = (value: unknown): value is string =>
+  typeof value === 'string' && /^[A-Za-z0-9._-]{8,128}$/.test(value)
+
+const remoteHostSetEnabled: Validator = value =>
+  isRecord(value) && hasOnlyKeys(value, ['enabled']) && typeof value.enabled === 'boolean'
+
+const remoteHostCreatePairing: Validator = value =>
+  isRecord(value)
+  && hasOnlyKeys(value, ['ttlSeconds'])
+  && (value.ttlSeconds === undefined || nativeIntegerBetween(value.ttlSeconds, 60, 600))
+
+const remoteHostRevokeController: Validator = value =>
+  isRecord(value)
+  && hasOnlyKeys(value, ['installationId'])
+  && remoteInstallationId(value.installationId)
+
+const remoteControllerClaim: Validator = value =>
+  isRecord(value)
+  && hasOnlyKeys(value, ['pairingCode'])
+  && typeof value.pairingCode === 'string'
+  && /^[A-Za-z0-9_-]{20,80}$/.test(value.pairingCode)
+
+const remoteControllerStartTurn: Validator = value =>
+  isRecord(value)
+  && hasOnlyKeys(value, ['hostInstallationId', 'threadId', 'cwd', 'text'])
+  && remoteInstallationId(value.hostInstallationId)
+  && nativeCodexId(value.threadId)
+  && nativeWorkspacePath(value.cwd)
+  && typeof value.text === 'string'
+  && value.text.trim().length > 0
+  && value.text.length <= 32_000
+  && !value.text.includes('\u0000')
+
+const remoteControllerSteerTurn: Validator = value =>
+  isRecord(value)
+  && hasOnlyKeys(value, ['hostInstallationId', 'threadId', 'turnId', 'text'])
+  && remoteInstallationId(value.hostInstallationId)
+  && nativeCodexId(value.threadId)
+  && nativeCodexId(value.turnId)
+  && typeof value.text === 'string'
+  && value.text.trim().length > 0
+  && value.text.length <= 32_000
+  && !value.text.includes('\u0000')
+
 const nativeAgentPluginCatalog: Validator = value =>
   isRecord(value)
   && hasOnlyKeys(value, ['threadId', 'cwd'])
@@ -592,16 +711,33 @@ export const ELECTRON_IPC_VALIDATORS = {
   [ELECTRON_IPC_CHANNELS.nativeAgentListSkills]: nativeAgentCatalogReference,
   [ELECTRON_IPC_CHANNELS.nativeAgentSetSkillEnabled]: nativeAgentSetSkillEnabled,
   [ELECTRON_IPC_CHANNELS.nativeAgentSetExtraSkillRoots]: nativeAgentSetExtraSkillRoots,
+  [ELECTRON_IPC_CHANNELS.nativeAgentDetectExternalConfig]: nativeAgentDetectExternalConfig,
+  [ELECTRON_IPC_CHANNELS.nativeAgentImportExternalConfig]: nativeAgentImportExternalConfig,
+  [ELECTRON_IPC_CHANNELS.nativeAgentListScheduledTasks]: nativeAgentListScheduledTasks,
+  [ELECTRON_IPC_CHANNELS.nativeAgentCreateScheduledTask]: nativeAgentCreateScheduledTask,
+  [ELECTRON_IPC_CHANNELS.nativeAgentSetScheduledTaskEnabled]: nativeAgentSetScheduledTaskEnabled,
+  [ELECTRON_IPC_CHANNELS.nativeAgentRemoveScheduledTask]: nativeAgentScheduledTaskReference,
+  [ELECTRON_IPC_CHANNELS.remoteHostGetStatus]: noPayload,
+  [ELECTRON_IPC_CHANNELS.remoteHostSetEnabled]: remoteHostSetEnabled,
+  [ELECTRON_IPC_CHANNELS.remoteHostCreatePairing]: remoteHostCreatePairing,
+  [ELECTRON_IPC_CHANNELS.remoteHostListControllers]: noPayload,
+  [ELECTRON_IPC_CHANNELS.remoteHostRevokeController]: remoteHostRevokeController,
+  [ELECTRON_IPC_CHANNELS.remoteControllerClaim]: remoteControllerClaim,
+  [ELECTRON_IPC_CHANNELS.remoteControllerStartTurn]: remoteControllerStartTurn,
+  [ELECTRON_IPC_CHANNELS.remoteControllerSteerTurn]: remoteControllerSteerTurn,
   [ELECTRON_IPC_CHANNELS.nativeAgentListHooks]: nativeAgentCatalogReference,
   [ELECTRON_IPC_CHANNELS.nativeAgentListPlugins]: nativeAgentPluginCatalog,
   [ELECTRON_IPC_CHANNELS.nativeAgentListInstalledPlugins]: nativeAgentPluginCatalog,
   [ELECTRON_IPC_CHANNELS.nativeAgentReadPlugin]: nativeAgentPluginReference,
   [ELECTRON_IPC_CHANNELS.nativeAgentAddMarketplace]: nativeAgentMarketplaceAdd,
+  [ELECTRON_IPC_CHANNELS.nativeAgentAddBundledMarketplace]: nativeAgentThreadReference,
   [ELECTRON_IPC_CHANNELS.nativeAgentRemoveMarketplace]: nativeAgentMarketplaceReference,
   [ELECTRON_IPC_CHANNELS.nativeAgentUpgradeMarketplace]: nativeAgentMarketplaceUpgrade,
   [ELECTRON_IPC_CHANNELS.nativeAgentInstallPlugin]: nativeAgentPluginReference,
   [ELECTRON_IPC_CHANNELS.nativeAgentUninstallPlugin]: nativeAgentPluginUninstall,
   [ELECTRON_IPC_CHANNELS.nativeAgentListCollaborationModes]: nativeAgentThreadReference,
+  [ELECTRON_IPC_CHANNELS.computerUseConfigurationGet]: noPayload,
+  [ELECTRON_IPC_CHANNELS.computerUseConfigurationSet]: computerUseConfiguration,
   [ELECTRON_IPC_CHANNELS.commandInvoke]: commandInvoke,
   [ELECTRON_IPC_CHANNELS.clipboardReadText]: noPayload,
   [ELECTRON_IPC_CHANNELS.clipboardWriteText]: stringPayload,

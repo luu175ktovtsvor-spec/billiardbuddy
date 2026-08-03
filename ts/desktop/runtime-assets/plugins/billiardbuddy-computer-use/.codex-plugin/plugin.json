@@ -1,0 +1,28 @@
+{
+  "name": "billiardbuddy-computer-use",
+  "version": "0.1.0",
+  "description": "Control local desktop apps through BilliardBuddy Computer Use. Prefer purpose-built connectors, APIs, or CLIs when available.",
+  "author": {
+    "name": "BilliardBuddy"
+  },
+  "license": "Proprietary",
+  "keywords": [
+    "computer-use",
+    "desktop-control",
+    "automation",
+    "accessibility"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "BilliardBuddy Computer Use",
+    "shortDescription": "Control local desktop apps through BilliardBuddy",
+    "longDescription": "BilliardBuddy Computer Use lets the agent interact with local apps that you choose to allow. It may use visual information while working. You stay in control: you choose which apps can be accessed and can stop actions at any time.",
+    "developerName": "BilliardBuddy",
+    "category": "Productivity",
+    "capabilities": ["Interactive"],
+    "defaultPrompt": [
+      "Help me use an app on my computer."
+    ]
+  },
+  "mcpServers": "./.mcp.json"
+}
