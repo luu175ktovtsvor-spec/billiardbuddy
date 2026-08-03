@@ -477,7 +477,7 @@ test('Media Facts 正式 API 返回带来源、范围、generation 与 cursor �
   service.repository.close()
 })
 
-test('768 维文本 embedding 与 FTS 同代持久化，并只重排当前 FTS 页', async () => {
+test('768 维文本 embedding 与 FTS 同代持久化，并融合非词法命中的语义候选', async () => {
   const root = await testRoot('hybrid-search')
   const repository = new VideoWorkbenchRepository({ root, now: () => new Date(at) })
   const created = await repository.saveProject(project())
@@ -485,15 +485,20 @@ test('768 维文本 embedding 与 FTS 同代持久化，并只重排当前 FTS �
   await repository.saveFact(videoSource)
   const first = await repository.saveFact(createHostedEvidence({ kind: 'visual', projectId: created.id, source: videoSource, range: sourceTimeRange(videoSource.primary_video_stream.start_time, rationalTime('90000', videoSource.primary_video_stream.start_time.tick_rate)), promptVersion: 'embedding-v1', createdAt: at, payload: { summary: '精彩进球', subjects: ['球'], warnings: [] } }))
   const second = await repository.saveFact(createHostedEvidence({ kind: 'visual', projectId: created.id, source: videoSource, range: sourceTimeRange(rationalTime('90000', videoSource.primary_video_stream.start_time.tick_rate), rationalTime('90000', videoSource.primary_video_stream.start_time.tick_rate)), promptVersion: 'embedding-v1', createdAt: at, payload: { summary: '精彩开球', subjects: ['球'], warnings: [] } }))
+  const semanticOnly = await repository.saveFact(createHostedEvidence({ kind: 'visual', projectId: created.id, source: videoSource, range: sourceTimeRange(rationalTime('180000', videoSource.primary_video_stream.start_time.tick_rate), rationalTime('90000', videoSource.primary_video_stream.start_time.tick_rate)), promptVersion: 'embedding-v1', createdAt: at, payload: { summary: '反弹角度控制', subjects: ['球'], warnings: [] } }))
   const vector = (index: number) => Array.from({ length: 768 }, (_, value) => value === index ? 1 : 0)
   const contentHash = (index: number) => `sha256:${createHash('sha256').update(JSON.stringify(vector(index))).digest('hex')}` as `sha256:${string}`
   const generation = await repository.saveFactEmbeddings(created.id, [
     { entry_id: first.id, vector: vector(1), model_snapshot: 'text-embedding-v4', instruction_version: 'v1', content_hash: contentHash(1) },
     { entry_id: second.id, vector: vector(0), model_snapshot: 'text-embedding-v4', instruction_version: 'v1', content_hash: contentHash(0) },
+    { entry_id: semanticOnly.id, vector: vector(0), model_snapshot: 'text-embedding-v4', instruction_version: 'v1', content_hash: contentHash(0) },
   ])
-  const page = await repository.hybridSearchFactsPage(created.id, '精彩', vector(0), { limit: 10 })
+  const page = await repository.hybridSearchFactsPage(created.id, '精彩', vector(0), { limit: 2 })
   expect(page.generation).toBe(generation)
   expect(page.items.map(item => item.id)).toEqual([second.id, first.id])
+  expect(page.next_cursor).toBeDefined()
+  const secondPage = await repository.hybridSearchFactsPage(created.id, '精彩', vector(0), { limit: 2, cursor: page.next_cursor })
+  expect(secondPage.items.map(item => item.id)).toEqual([semanticOnly.id])
   repository.close()
 })
 

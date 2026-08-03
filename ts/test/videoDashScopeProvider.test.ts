@@ -33,5 +33,6 @@ test('DashScope Fun-ASR long task submits once and polls a persisted task id', a
   expect(submitted).toMatchObject({ state: 'submitted', provider_task_id: 'task-remote-1' })
   const complete = await provider.poll(input, submitted.provider_task_id!, identity)
   expect(complete).toMatchObject({ state: 'succeeded', result: { kind: 'asr', text: '长文件转写' } })
+  expect(complete.receipt.usage.asr_seconds).toBe(1)
   expect(calls).toEqual(['POST https://dashscope.aliyuncs.com/api/v1/services/audio/asr/transcription', 'GET https://dashscope.aliyuncs.com/api/v1/tasks/task-remote-1', 'GET https://dashscope-result-bj.oss-cn-beijing.aliyuncs.com/transcript.json'])
 })

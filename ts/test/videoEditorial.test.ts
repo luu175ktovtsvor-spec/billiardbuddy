@@ -265,20 +265,58 @@ test('Editorial v2 API 以单一 CommandSet 写入草稿、版本、变体和受
   expect(acceptedAgain.status).toBe(200)
   expect(await acceptedAgain.json()).toMatchObject({ reused: true })
 
-  const compiled = await service.compileDeliveryVariant(created.id, variantBody.variant.id)
+  await expect(service.compileDeliveryVariant(created.id, variantBody.variant.id)).rejects.toMatchObject({ code: 'VIDEO_EDITORIAL_UNSUPPORTED' })
+  const executableVariant = await service.createDeliveryVariant(created.id, {
+    name: '无关键帧的正式交付', editorial_timeline_version_id: firstCommandBody.timeline.id,
+  }, 'delivery-variant-executable-key-0001')
+  const compiled = await service.compileDeliveryVariant(created.id, executableVariant.variant.id)
   expect(compiled.plan).toMatchObject({
     editorial_timeline_version_id: firstCommandBody.timeline.id,
-    delivery_variant_version_id: fadedVariantBody.version.id,
+    delivery_variant_version_id: executableVariant.version.id,
     output_target: { kind: 'managed' },
     compiler_version: 'editorial-compiler-v1',
   })
   expect(compiled.plan.timeline_items).toEqual(expect.arrayContaining([
     expect.objectContaining({ order: 0, item_id: item.id, timeline_range: item.timeline_range }),
   ]))
-  expect(compiled.plan.filters).toEqual(expect.arrayContaining([
-    expect.objectContaining({ kind: 'audio_fade', item_id: audioItem.id }),
-  ]))
+  expect(compiled.plan.filters).not.toEqual(expect.arrayContaining([expect.objectContaining({ kind: 'audio_fade' })]))
   expect(JSON.stringify(compiled.plan)).not.toContain(sourcePath)
+
+  // A/V is a structural invariant, not merely a ripple-delete convenience:
+  // time-warping one side must fail, while an explicitly equal paired speed
+  // reaches the immutable compiler input.
+  const latestEditorialProject = await service.getProject(created.id)
+  const latestTimeline = latestEditorialProject.editorial_timeline_versions.find(version => version.id === latestEditorialProject.current_editorial_timeline_version_id)!
+  const latestVideo = latestTimeline.items.find(candidate => candidate.kind === 'video')!
+  const latestAudio = latestTimeline.items.find(candidate => candidate.kind === 'audio')!
+  if (latestVideo.binding.kind !== 'source') throw new Error('source expected')
+  const sourceRange = { ...latestVideo.binding.source_range, duration: { ticks: '4000', tick_rate: tickRate } }
+  const timelineRange = { ...latestVideo.timeline_range, duration: { ticks: '180000', tick_rate: { num: 90000, den: 1 } } }
+  expect(() => editorial.applyCommandSet(latestEditorialProject, {
+    id: 'command_speed_implicit_0001', project_id: created.id, actor_id: 'local', idempotency_key: 'speed-implicit-command-key-0001', created_at: at,
+    target: { kind: 'editorial', base_timeline_version_id: latestTimeline.id },
+    commands: [
+      { kind: 'trim', item_id: latestVideo.id, source_range: sourceRange, timeline_range: timelineRange },
+      { kind: 'trim', item_id: latestAudio.id, source_range: sourceRange, timeline_range: timelineRange },
+    ],
+  })).toThrow('必须显式声明 speed')
+  expect(() => editorial.applyCommandSet(latestEditorialProject, {
+    id: 'command_speed_unpaired_0001', project_id: created.id, actor_id: 'local', idempotency_key: 'speed-unpaired-command-key-0001', created_at: at,
+    target: { kind: 'editorial', base_timeline_version_id: latestTimeline.id },
+    commands: [{ kind: 'trim', item_id: latestVideo.id, source_range: sourceRange, timeline_range: timelineRange, speed: { num: 2, den: 1 } }],
+  })).toThrow('A/V link')
+  const paired = editorial.applyCommandSet(latestEditorialProject, {
+    id: 'command_speed_paired_0001', project_id: created.id, actor_id: 'local', idempotency_key: 'speed-paired-command-key-0001', created_at: at,
+    target: { kind: 'editorial', base_timeline_version_id: latestTimeline.id },
+    commands: [
+      { kind: 'trim', item_id: latestVideo.id, source_range: sourceRange, timeline_range: timelineRange, speed: { num: 2, den: 1 } },
+      { kind: 'trim', item_id: latestAudio.id, source_range: sourceRange, timeline_range: timelineRange, speed: { num: 2, den: 1 } },
+    ],
+  })
+  expect((paired.version as { items: Array<{ id: string; speed?: { num: number; den: number } }> }).items).toEqual(expect.arrayContaining([
+    expect.objectContaining({ id: latestVideo.id, speed: { num: 2, den: 1 } }),
+    expect.objectContaining({ id: latestAudio.id, speed: { num: 2, den: 1 } }),
+  ]))
   service.repository.close()
 })
 
