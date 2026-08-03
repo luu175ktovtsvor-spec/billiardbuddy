@@ -47,12 +47,20 @@ test('official OSS V4 documented signing vector includes the bucket in Canonical
 test('OSS response contract reads real HTTP headers, streams bytes, and uses ali-oss pagination arguments', async () => {
   const calls: Array<Record<string, unknown>> = []
   const signedCalls: Array<{ method: string; key: string; additionalHeaders: string[] | undefined }> = []
+  const resultWrites: Array<{ key: string; body: Uint8Array; options: Record<string, unknown> }> = []
   const bytes = new TextEncoder().encode('actual OSS body')
   const client = {
     async signatureUrlV4(method: string, _expires: number, _request: unknown, key: string, additionalHeaders?: string[]) { signedCalls.push({ method, key, additionalHeaders }); return `https://bb-video-media-contract.oss-cn-beijing.aliyuncs.com/${key}?x-oss-signature-version=OSS4-HMAC-SHA256` },
     async head() { return { res: { headers: { 'content-type': 'video/mp4; charset=binary' } } } },
     async getStream() { return { stream: Readable.from([bytes]) } },
-    async putStream() {}, async delete() {},
+    async putStream(key: string, stream: Readable, options: Record<string, unknown>) {
+      const chunks: Uint8Array[] = []
+      for await (const chunk of stream) {
+        expect(typeof chunk).not.toBe('number')
+        chunks.push(Buffer.from(chunk))
+      }
+      resultWrites.push({ key, body: Buffer.concat(chunks), options })
+    }, async delete() {},
     async listParts(_name: string, _uploadId: string, query: Record<string, unknown>) {
       calls.push(query)
       return query['part-number-marker'] ? { isTruncated: false, parts: [{ PartNumber: '1001', ETag: 'etag-1001' }] } : { isTruncated: true, nextPartNumberMarker: '1000', parts: [{ PartNumber: '1', ETag: 'etag-1' }] }
@@ -67,6 +75,11 @@ test('OSS response contract reads real HTTP headers, streams bytes, and uses ali
   expect(await store.listMultipartParts({ leaseId: 'lease_12345678', uploadId: 'upload-123' })).toEqual([{ part_number: 1, etag: 'etag-1' }, { part_number: 1001, etag: 'etag-1001' }])
   expect(calls).toEqual([{ 'max-parts': 1000 }, { 'max-parts': 1000, 'part-number-marker': 1000 }])
   expect(await store.head('lease_12345678')).toEqual({ byte_size: bytes.byteLength, content_hash: hash(bytes), content_type: 'video/mp4' })
+  await store.putResult({ objectRef: 'result_12345678', body: bytes, contentHash: hash(bytes), contentType: 'application/json' })
+  expect(resultWrites).toEqual([{
+    key: 'video-media/result/result_12345678', body: bytes,
+    options: { contentLength: bytes.byteLength, mime: 'application/json', meta: { sha256: hash(bytes), size: String(bytes.byteLength) } },
+  }])
 })
 
 const live = process.env.VIDEO_MEDIA_OSS_CONTRACT === '1'
