@@ -619,3 +619,48 @@ test('正式 ASR 只在完整授权范围内流式上传，并持久化原始 PT
   expect((await service.getProject(created.id)).remote_analysis_budgets[0]?.settlements).toMatchObject([{ operation_id: 'operation_00000001', capability: 'speech_transcription', asr_seconds: 0.8 }])
   service.repository.close()
 })
+
+test('正式混合检索在零词法命中时仍索引完整授权 Transcript 语料并返回语义结果', async () => {
+  const root = await testRoot('relay-hybrid')
+  const resultPayloads = new Map<string, Uint8Array>()
+  let operation = 0
+  const service = new VideoWorkbenchService({
+    root,
+    now: () => new Date(at),
+    env: { BB_VIDEO_MEDIA_RELAY_URL: 'https://relay.example.test', BB_GATEWAY_TOKEN: 'relay-test-token-1234' },
+    fetchImpl: async (input, init) => {
+      const url = new URL(String(input))
+      if (url.hostname === 'result.example.test') return new Response(resultPayloads.get(url.pathname)!, { status: 200 })
+      if (url.pathname.endsWith('/ack')) return new Response(null, { status: 204 })
+      if (!url.pathname.endsWith('/operations')) throw new Error(`unexpected relay request ${url}`)
+      const request = JSON.parse(String(init?.body)) as { input: { embedding_role: 'document' | 'query'; items: Array<{ id: string; text: string }> } }
+      const vectors = request.input.embedding_role === 'query'
+        ? [{ id: request.input.items[0]!.id, vector: Array.from({ length: 768 }, (_, index) => index === 0 ? 1 : 0) }]
+        : request.input.items.map(item => ({ id: item.id, vector: Array.from({ length: 768 }, (_, index) => index === (item.text.includes('反弹') ? 0 : 1) ? 1 : 0) }))
+      const payload = new TextEncoder().encode(JSON.stringify({ kind: 'embedding', vectors }))
+      const path = `/embedding-${operation}.json`; const receiptId = `receipt_0000000${operation + 1}`; const operationId = `operation_0000000${operation + 1}`; operation += 1
+      resultPayloads.set(path, payload)
+      return Response.json({
+        id: operationId, state: 'succeeded', account_quota_reservation_id: `quota_0000000${operation}`,
+        result_object_refs: [`result_0000000${operation}`], result_objects: [{ object_ref: `result_0000000${operation}`, content_hash: `sha256:${createHash('sha256').update(payload).digest('hex')}`, byte_size: payload.byteLength, content_type: 'application/json', get_url: `https://result.example.test${path}`, expires_at: '2026-08-03T01:00:00.000Z' }],
+        provider_receipt: { id: receiptId, capability: 'semantic_embedding', model_snapshot: 'text-embedding-v4', region: 'cn-beijing', request_schema_version: 1, prompt_version: 'v1', input_basis_hash: hash('a'), usage: { requests: 1, total_tokens: 0, input_bytes: 0, visual_frames: 0, proxy_seconds: 0, asr_seconds: 0, estimated_amount_micros: 0 }, cache_hit: false, created_at: at }, created_at: at, updated_at: at,
+      })
+    },
+  })
+  const created = await service.createProject({ title: '语义检索' })
+  const sourceFact = source(created.id)
+  await service.repository.saveFact(sourceFact)
+  for (const [id, text, start] of [['transcript_00000001', '普通开球描述', '0'], ['transcript_00000002', '反弹角度的控制技巧', '90000']] as const) {
+    await service.repository.saveFact({ id, project_id: created.id, source_id: sourceFact.id, source_fingerprint: sourceFact.fingerprint, model_receipt_id: 'receipt_00000001', source_offset: sourceFact.primary_video_stream.start_time, language: 'zh', segments: [{ id: `segment_${id.slice(-8)}`, source_id: sourceFact.id, start: rationalTime(start, { num: 90_000, den: 1 }), duration: rationalTime('90000', { num: 90_000, den: 1 }), text, words: [] }], created_at: at })
+  }
+  await service.repository.saveProject({
+    ...created,
+    sources: [{ id: sourceFact.id, path: sourceFact.path, name: sourceFact.name, duration_ms: 30_000, width: 1920, height: 1080, fps: 30, has_audio: true, fingerprint: sourceFact.fingerprint, rotation: 0, video_stream_count: 1, audio_stream_count: 1, missing: false, content_changed: false }],
+    remote_analysis_consents: [{ id: 'consent_00000001', project_id: created.id, revision: 1, state: 'active', provider: 'aliyun_bailian', region: 'cn-beijing', purposes: ['semantic_search'], data_kinds: ['transcript'], coverage: [{ source_id: sourceFact.id, ranges: [{ start: sourceFact.primary_video_stream.start_time, duration: sourceFact.primary_video_stream.duration! }] }], acknowledged_estimate_hash: hash('e'), granted_by_actor_id: 'local', granted_at: at }],
+    remote_analysis_budgets: [{ id: 'budget_00000001', estimate_hash: hash('e'), state: 'reserved', requests: 6, total_tokens: 100, input_bytes: 10_000, visual_frames: 0, proxy_seconds: 0, asr_seconds: 0, estimated_amount_micros: 1_000, settlements: [], created_at: at, updated_at: at }],
+  })
+  const page = await service.searchMediaFacts(created.id, '完全不同的查询词', { limit: 10 })
+  expect(page.items[0]).toMatchObject({ id: 'transcript_00000002', text: '反弹角度的控制技巧' })
+  expect((await service.getProject(created.id)).remote_analysis_budgets[0]?.settlements).toHaveLength(2)
+  service.repository.close()
+})

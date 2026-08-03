@@ -796,7 +796,7 @@ export class VideoWorkbenchService {
     if (!consent || !budget || !relay) return lexical
     const scopeHash = factBasisHash({ revision: consent.revision, coverage: consent.coverage, purposes: consent.purposes, data_kinds: consent.data_kinds })
     const candidates = await this.repository.listCurrentSearchCandidates(projectId)
-    const eligible = candidates.filter(item => consent.coverage.some(coverage => coverage.source_id === item.source_id && coverage.ranges.some(range => compareRationalTime(item.range.start, range.start) >= 0 && compareRationalTime(endOfRange(item.range), endOfRange(range)) <= 0)))
+    const eligible = candidates.filter(item => item.kind === 'transcript' && consent.coverage.some(coverage => coverage.source_id === item.source_id && coverage.ranges.some(range => compareRationalTime(item.range.start, range.start) >= 0 && compareRationalTime(endOfRange(item.range), endOfRange(range)) <= 0)))
     if (!eligible.length) return lexical
     const nonce = createHash('sha256').update(JSON.stringify({ projectId, generation: lexical.generation, query, cursor: options?.cursor })).digest('hex').slice(0, 24)
     const allDocumentItems = eligible.map((item, index) => ({ id: `embed_${nonce.slice(0, 12)}${index.toString(16).padStart(4, '0')}`, text: item.text, entry_id: item.kind === 'transcript' ? `${item.id}\u001f${item.segment_ids.join(',')}` : item.id }))
