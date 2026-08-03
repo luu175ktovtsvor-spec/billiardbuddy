@@ -9,7 +9,7 @@ export class SqliteUnitOfWorkError extends Error {
   }
 }
 
-const MEDIA_KERNEL_SCHEMA_VERSION = 1
+const MEDIA_KERNEL_SCHEMA_VERSION = 2
 
 /**
  * The Media Kernel is the only owner of the SQLite connection and schema
@@ -23,8 +23,10 @@ export class SqliteUnitOfWork {
   constructor(root: string) {
     mkdirSync(root, { recursive: true, mode: 0o700 })
     this.path = join(root, 'metadata.sqlite')
+    let opened: Database | undefined
     try {
-      this.database = new Database(this.path)
+      opened = new Database(this.path)
+      this.database = opened
       this.database.exec('PRAGMA foreign_keys=ON')
       this.database.exec('PRAGMA busy_timeout=5000')
       this.database.exec('PRAGMA journal_mode=WAL')
@@ -32,9 +34,14 @@ export class SqliteUnitOfWork {
       this.assertHealthy()
       this.migrate()
     } catch (error) {
+      opened?.close(false)
       if (error instanceof SqliteUnitOfWorkError) throw error
+      const message = error instanceof Error ? error.message : '无法打开媒体 SQLite 存储'
       throw new SqliteUnitOfWorkError(
-        error instanceof Error ? error.message : '无法打开媒体 SQLite 存储',
+        message,
+        /database disk image is malformed|file is not a database|database corrupt|malformed/i.test(message)
+          ? 'MEDIA_SQLITE_CORRUPT'
+          : 'MEDIA_SQLITE_UNAVAILABLE',
       )
     }
   }
@@ -94,11 +101,17 @@ export class SqliteUnitOfWork {
       version INTEGER PRIMARY KEY,
       applied_at TEXT NOT NULL
     )`)
-    const applied = this.database.query('SELECT version FROM media_kernel_schema_migrations WHERE version=?')
-      .get(MEDIA_KERNEL_SCHEMA_VERSION) as { version: number } | null
-    if (applied) return
+    for (let version = 1; version <= MEDIA_KERNEL_SCHEMA_VERSION; version += 1) {
+      const applied = this.database.query('SELECT version FROM media_kernel_schema_migrations WHERE version=?')
+        .get(version) as { version: number } | null
+      if (applied) continue
+      this.backupBeforeMigration(version)
+      if (version === 1) this.migrateV1()
+      else if (version === 2) this.migrateV2()
+    }
+  }
 
-    this.backupBeforeMigration(MEDIA_KERNEL_SCHEMA_VERSION)
+  private migrateV1(): void {
     this.transaction(() => {
       this.database.exec(`CREATE TABLE IF NOT EXISTS media_commit_intents(
         id TEXT PRIMARY KEY,
@@ -205,7 +218,50 @@ export class SqliteUnitOfWork {
         completed_at TEXT NOT NULL
       )`)
       this.database.query('INSERT INTO media_kernel_schema_migrations(version,applied_at) VALUES(?,?)')
-        .run(MEDIA_KERNEL_SCHEMA_VERSION, new Date().toISOString())
+        .run(1, new Date().toISOString())
+    })
+  }
+
+  /**
+   * v1 used one SQLite AUTOINCREMENT value as the public cursor. Legacy JSON
+   * journals own a cursor per project, so importing their cursor verbatim
+   * requires an internal row id and a separate per-project cursor sequence.
+   */
+  private migrateV2(): void {
+    this.transaction(() => {
+      this.database.exec('ALTER TABLE media_outbox_events RENAME TO media_outbox_events_v1')
+      this.database.exec(`CREATE TABLE media_outbox_events(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        cursor INTEGER NOT NULL,
+        intent_id TEXT NOT NULL UNIQUE REFERENCES media_commit_intents(id),
+        project_id TEXT NOT NULL,
+        operation_id TEXT NOT NULL,
+        status_sequence INTEGER NOT NULL,
+        occurred_at TEXT NOT NULL,
+        payload_hash TEXT NOT NULL,
+        payload_locator TEXT NOT NULL,
+        legacy_key TEXT UNIQUE,
+        state TEXT NOT NULL CHECK(state IN ('prepared','committed','abandoned')),
+        UNIQUE(project_id, cursor)
+      )`)
+      this.database.exec(`INSERT INTO media_outbox_events(
+        cursor,intent_id,project_id,operation_id,status_sequence,occurred_at,payload_hash,payload_locator,legacy_key,state
+      ) SELECT
+        cursor,intent_id,project_id,operation_id,status_sequence,occurred_at,payload_hash,payload_locator,legacy_key,state
+      FROM media_outbox_events_v1`)
+      this.database.exec('DROP TABLE media_outbox_events_v1')
+      this.database.exec('CREATE INDEX IF NOT EXISTS media_outbox_events_project_cursor ON media_outbox_events(project_id, state, cursor)')
+      this.database.exec(`CREATE TABLE media_event_cursors(
+        project_id TEXT PRIMARY KEY,
+        next_cursor INTEGER NOT NULL CHECK(next_cursor >= 1),
+        retained_from_cursor INTEGER NOT NULL CHECK(retained_from_cursor >= 1)
+      )`)
+      this.database.exec(`INSERT INTO media_event_cursors(project_id,next_cursor,retained_from_cursor)
+        SELECT project_id, MAX(cursor) + 1, MIN(cursor)
+        FROM media_outbox_events
+        GROUP BY project_id`)
+      this.database.query('INSERT INTO media_kernel_schema_migrations(version,applied_at) VALUES(?,?)')
+        .run(2, new Date().toISOString())
     })
   }
 }

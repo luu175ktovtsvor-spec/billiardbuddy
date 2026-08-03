@@ -70,6 +70,18 @@ type OperationRow = {
   deleted: number
 }
 
+type LegacyEventJournal = {
+  next_cursor: number
+  events: VideoOperationEvent[]
+}
+
+type LegacyDeletedProject = {
+  receipt: MediaDeletionReceipt
+  project: VideoStudioProject | null
+  operations: VideoOperation[]
+  journal: LegacyEventJournal | null
+}
+
 export class VideoWorkbenchRepositoryError extends Error {
   constructor(
     message: string,
@@ -100,11 +112,20 @@ function sameOwner(left: MediaOwner, right: MediaOwner): boolean {
   return left.kind === right.kind && left.owner_id === right.owner_id
 }
 
+function isPositiveSafeInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 1
+}
+
+function isNonnegativeSafeInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
+}
+
 /**
  * Video is the first Media Kernel consumer. SQLite owns all project, operation,
  * event and deletion indices; immutable payloads only hold the full documents.
- * The former JSON directories are read once and then archived as migration
- * evidence, never written by this repository again.
+ * The former JSON directories are a strictly read-only migration source until
+ * the contract's independent reconciliation and retirement exit conditions
+ * have been met. This repository never writes, moves or deletes them.
  */
 export class VideoWorkbenchRepository {
   private readonly root: string
@@ -113,6 +134,9 @@ export class VideoWorkbenchRepository {
   private readonly exportsDir: string
   private readonly trashDir: string
   private readonly legacyImportDir: string
+  private readonly legacyOperationsDir: string
+  private readonly legacyEventsDir: string
+  private readonly legacyDeletionsDir: string
   private readonly locksDir: string
   private readonly now: () => Date
   private readonly unitOfWork: SqliteUnitOfWork
@@ -133,6 +157,9 @@ export class VideoWorkbenchRepository {
     this.exportsDir = join(this.root, 'exports')
     this.trashDir = join(this.root, 'trash')
     this.legacyImportDir = join(this.root, 'legacy-import')
+    this.legacyOperationsDir = join(this.root, 'operations')
+    this.legacyEventsDir = join(this.root, 'events')
+    this.legacyDeletionsDir = join(this.root, 'deletions')
     this.locksDir = join(this.root, 'locks')
     this.now = options.now ?? (() => new Date())
     this.unitOfWork = new SqliteUnitOfWork(this.root)
@@ -152,10 +179,10 @@ export class VideoWorkbenchRepository {
     return {
       root: this.root,
       projects: this.projectsDir,
-      // Kept as a read-only compatibility projection for callers that only
-      // need a stable root; Operations and Events now live in metadata.sqlite.
-      operations: join(this.legacyImportDir, 'operations'),
-      events: join(this.legacyImportDir, 'events'),
+      // Legacy directories are retained as read-only migration inputs. SQLite
+      // remains the authority for all new operations and events.
+      operations: this.legacyOperationsDir,
+      events: this.legacyEventsDir,
       assets: this.assetsDir,
       exports: this.exportsDir,
     }
@@ -316,6 +343,18 @@ export class VideoWorkbenchRepository {
       writer_fence: `fence_${randomUUID().replaceAll('-', '')}`,
       updated_at: this.iso(),
     })
+    return await this.persistProject(next)
+  }
+
+  private async importLegacyProject(project: VideoStudioProject): Promise<void> {
+    if (this.projectRow(project.id, true)) return
+    // Migration is a copy into immutable payloads, not a user update. Keep the
+    // old project document verbatim so current Timeline/Export projections can
+    // be reconciled before the old reader is ever retired.
+    await this.persistProject(videoStudioProjectSchema.parse(project))
+  }
+
+  private async persistProject(next: VideoStudioProject): Promise<VideoStudioProject> {
     const intent = await this.payloads.stage({
       entityKind: 'video_project',
       aggregateId: next.id,
@@ -439,6 +478,19 @@ export class VideoWorkbenchRepository {
     return await this.persistOperation(candidate, emitsEvent && changed)
   }
 
+  private async importLegacyOperation(operation: VideoOperation): Promise<void> {
+    const canonical = canonicalOperation({
+      ...operation,
+      operation_id: operation.operation_id ?? operationId(operation.project_id, operation),
+    })
+    const existing = this.operationRow(operation.id, true)
+    if (existing && JSON.stringify(await this.loadOperation(existing)) === JSON.stringify(canonical)) return
+    // Do not route a legacy value through saveOperationLocked(): that method
+    // intentionally generates the next sequence for a new write. Import must
+    // retain the original status_sequence and timestamps exactly.
+    await this.persistOperation(canonical, false)
+  }
+
   private async persistOperation(candidate: VideoOperation, emitsEvent: boolean): Promise<VideoOperation> {
     const intent = await this.payloads.stage({
       entityKind: 'video_operation',
@@ -529,9 +581,9 @@ export class VideoWorkbenchRepository {
   async listOperationEvents(projectId: string, after = 0, limit = 200): Promise<{ events: VideoOperationEvent[]; cursor: number; reset_required: boolean }> {
     await this.ready()
     this.assertId(projectId, 'project')
-    const rows = this.events.list(projectId, after, limit)
-    const events = await Promise.all(rows.map(async row => await this.eventFromRow(row)))
-    return { events, cursor: events.at(-1)?.cursor ?? after, reset_required: false }
+    const page = this.events.list(projectId, after, limit)
+    const events = await Promise.all(page.events.map(async row => await this.eventFromRow(row)))
+    return { events, cursor: page.cursor, reset_required: page.reset_required }
   }
 
   private async eventFromRow(row: PersistedOutboxEvent): Promise<VideoOperationEvent> {
@@ -641,7 +693,11 @@ export class VideoWorkbenchRepository {
 
   private async resumeDeletion(receipt: MediaDeletionReceipt): Promise<MediaDeletionReceipt> {
     const trash = this.trashPath(receipt.trash_key)
-    await this.moveIfPresent(this.projectDirectory(receipt.project_id), join(trash, 'project'))
+    // SQLite locators deliberately keep addressing immutable project payloads
+    // below projects/<id>. Moving that directory would make a deleted project's
+    // history unverifiable until restore. Deletion hides the rows in SQLite and
+    // moves mutable managed assets only; payload collection is a later,
+    // explicit retention operation after references have expired.
     await this.moveIfPresent(join(this.assetsDir, receipt.project_id), join(trash, 'assets'))
     const deleted = mediaDeletionReceiptSchema.parse({ ...receipt, status: 'deleted' })
     this.unitOfWork.transaction(() => {
@@ -660,7 +716,10 @@ export class VideoWorkbenchRepository {
       throw new VideoWorkbenchRepositoryError('视频项目 ID 已被占用，不能恢复', 409, 'VIDEO_STORAGE_INVALID')
     }
     await this.moveIfPresent(join(trash, 'assets'), join(this.assetsDir, receipt.project_id))
-    await this.moveIfPresent(trashedProject, activeProject)
+    // A pre-fix deletion may have moved immutable payloads to trash/project;
+    // keep this compatibility move for recovery, while new deletions leave the
+    // payload directory in place so locators remain valid.
+    if (await this.exists(trashedProject)) await this.moveIfPresent(trashedProject, activeProject)
     if (!(await this.exists(activeProject))) {
       throw new VideoWorkbenchRepositoryError('视频项目恢复不完整，可安全重试', 503, 'VIDEO_STORAGE_INVALID')
     }
@@ -797,8 +856,26 @@ export class VideoWorkbenchRepository {
   }
 
   private async importLegacyEvent(event: VideoOperationEvent, legacyKey: string): Promise<void> {
-    const existing = this.unitOfWork.database.query('SELECT cursor FROM media_outbox_events WHERE legacy_key=?').get(legacyKey)
-    if (existing) return
+    const existing = this.unitOfWork.database.query('SELECT cursor FROM media_outbox_events WHERE legacy_key=?').get(legacyKey) as { cursor: number } | null
+    if (existing) {
+      // Repair databases written by the initial v1 importer, which allocated a
+      // fresh SQLite cursor instead of retaining the legacy journal cursor.
+      // The immutable event payload is already the same source document; only
+      // its index needs to be corrected before reconciliation can proceed.
+      this.unitOfWork.transaction(() => {
+        this.unitOfWork.database.query(`UPDATE media_outbox_events
+          SET cursor=?,project_id=?,operation_id=?,status_sequence=?,occurred_at=?
+          WHERE legacy_key=?`).run(
+          event.cursor,
+          event.project_id,
+          event.operation_id,
+          event.status_sequence,
+          event.occurred_at,
+          legacyKey,
+        )
+      })
+      return
+    }
     const operation = canonicalOperation(event.operation)
     const intent = await this.payloads.stage({
       entityKind: 'video_operation_event',
@@ -821,7 +898,7 @@ export class VideoWorkbenchRepository {
         payload_hash: preparedIntent.expected_hash,
         payload_locator: preparedIntent.final_locator,
         legacy_key: legacyKey,
-      })
+      }, event.cursor)
     })
     try {
       await this.payloads.publish(prepared)
@@ -836,145 +913,284 @@ export class VideoWorkbenchRepository {
   }
 
   private async migrateLegacyJson(): Promise<void> {
-    const migrationKey = 'video-json-to-sqlite-v1'
+    const migrationKey = 'video-json-to-sqlite-v1-imported'
+    // Always open and validate the retained reader. It remains deliberately
+    // read-only after import, so legacy projects can be audited before a
+    // separate retirement change proves the contract exit conditions.
+    const legacy = await this.readLegacyJson()
     const complete = this.unitOfWork.database.query('SELECT migration_key FROM media_legacy_imports WHERE migration_key=?').get(migrationKey)
     if (complete) return
-    const oldOperationsDir = join(this.root, 'operations')
-    const oldEventsDir = join(this.root, 'events')
-    const oldDeletionsDir = join(this.root, 'deletions')
-    const projectNames = (await readdir(this.projectsDir).catch(() => [])).filter(name => name.endsWith('.json')).sort()
-    const operationNames = (await readdir(oldOperationsDir).catch(() => [])).filter(name => name.endsWith('.json')).sort()
-    const eventNames = (await readdir(oldEventsDir).catch(() => [])).filter(name => name.endsWith('.json')).sort()
-    const deletionNames = (await readdir(oldDeletionsDir).catch(() => [])).filter(name => name.endsWith('.json')).sort()
-    const legacyEvents = new Map<string, VideoOperationEvent[]>()
-    for (const name of eventNames) {
-      const projectId = name.slice(0, -'.json'.length)
-      const raw = await readFile(join(oldEventsDir, name), 'utf8').catch(() => null)
-      if (!raw) continue
-      try {
-        const journal = JSON.parse(raw) as { events?: VideoOperationEvent[] }
-        if (!Array.isArray(journal.events)) continue
-        legacyEvents.set(projectId, journal.events
-          .map(event => ({ ...event, operation: canonicalOperation(event.operation) }))
-          .sort((left, right) => left.cursor - right.cursor))
-      } catch {
-        throw new VideoWorkbenchRepositoryError('旧视频操作日志损坏，无法安全迁移', 500, 'VIDEO_STORAGE_INVALID')
+
+    for (const project of legacy.projects) {
+      await this.fences.run(`project-${project.id}`, async () => await this.importLegacyProject(project))
+    }
+    for (const operation of legacy.operations) {
+      await this.fences.run(`project-${operation.project_id}`, async () => await this.importLegacyOperation(operation))
+    }
+    for (const [projectId, journal] of legacy.journals) {
+      await this.importLegacyJournal(projectId, journal, `legacy-events/${projectId}.json`)
+    }
+    for (const item of legacy.deletedProjects) {
+      if (!this.storedDeletions().some(candidate => candidate.deletion_id === item.receipt.deletion_id)) {
+        this.unitOfWork.transaction(() => this.writeDeletion(item.receipt))
       }
+      await this.migrateLegacyDeletedProject(item)
     }
-    for (const name of projectNames) {
-      const raw = await readFile(join(this.projectsDir, name), 'utf8').catch(() => null)
-      if (!raw) continue
-      const project = videoStudioProjectSchema.parse(JSON.parse(raw))
-      if (this.projectRow(project.id, true)) continue
-      await this.fences.run(`project-${project.id}`, async () => await this.saveProjectLocked(videoStudioProjectSchema.parse({
-        ...project,
-        writer_fence: INITIAL_WRITER_FENCE,
-      })))
-    }
-    for (const name of operationNames) {
-      const raw = await readFile(join(oldOperationsDir, name), 'utf8').catch(() => null)
-      if (!raw) continue
-      const operation = canonicalOperation(JSON.parse(raw))
-      if (this.operationRow(operation.id, true)) continue
-      await this.fences.run(`project-${operation.project_id}`, async () => await this.saveOperationLocked(operation, false))
-    }
-    for (const [projectId, events] of legacyEvents) {
-      for (const event of events) {
-        await this.fences.run(`project-${projectId}`, async () => await this.importLegacyEvent(
-          event,
-          `legacy-events/${projectId}.json#${event.cursor}`,
-        ))
-      }
-    }
-    for (const name of deletionNames) {
-      const raw = await readFile(join(oldDeletionsDir, name), 'utf8').catch(() => null)
-      if (!raw) continue
-      const receipt = mediaDeletionReceiptSchema.parse(JSON.parse(raw))
-      if (!this.storedDeletions().some(item => item.deletion_id === receipt.deletion_id)) {
-        this.unitOfWork.transaction(() => this.writeDeletion(receipt))
-      }
-    }
-    for (const item of this.storedDeletions()) {
-      await this.migrateLegacyDeletedProject(item.receipt)
-    }
-    for (const name of [...projectNames.map(name => join('projects', name)), ...operationNames.map(name => join('operations', name)), ...eventNames.map(name => join('events', name)), ...deletionNames.map(name => join('deletions', name))]) {
-      await this.archiveLegacyFile(name)
-    }
+
+    await this.reconcileLegacyImport(legacy)
     this.unitOfWork.transaction(() => {
-      this.unitOfWork.database.query('INSERT OR REPLACE INTO media_legacy_imports(migration_key,completed_at) VALUES(?,?)')
+      this.unitOfWork.database.query('INSERT INTO media_legacy_imports(migration_key,completed_at) VALUES(?,?)')
         .run(migrationKey, this.iso())
     })
   }
 
   /**
-   * The old deletion store moved JSON documents below trash/<key>/project.json
-   * before SQLite existed. Import those documents, then move the new immutable
-   * payload directory to the new trash shape so a later restore remains a
-   * normal SQLite/file recovery instead of a special legacy branch.
+   * The former deletion store keeps JSON below trash/<key>/project.json. The
+   * documents stay there as a read-only source. SQLite hides their copied
+   * payloads without moving them, so their content-addressed locators remain
+   * verifiable while the project is deleted.
    */
-  private async migrateLegacyDeletedProject(receipt: MediaDeletionReceipt): Promise<void> {
-    if (receipt.status === 'purged' || receipt.status === 'restored') return
-    const trash = this.trashPath(receipt.trash_key)
-    const oldProjectPath = join(trash, 'project.json')
-    const oldOperationsDirectory = join(trash, 'operations')
-    const oldEventsPath = join(trash, 'events.json')
-    const newProjectTrash = join(trash, 'project')
-    const oldProjectRaw = await readFile(oldProjectPath, 'utf8').catch(() => null)
-    if (oldProjectRaw && !this.projectRow(receipt.project_id, true)) {
-      const oldProject = videoStudioProjectSchema.parse(JSON.parse(oldProjectRaw))
-      await this.fences.run(`project-${oldProject.id}`, async () => await this.saveProjectLocked(videoStudioProjectSchema.parse({
-        ...oldProject,
-        writer_fence: INITIAL_WRITER_FENCE,
-      })))
-      const operationNames = (await readdir(oldOperationsDirectory).catch(() => [])).filter(name => name.endsWith('.json')).sort()
-      for (const name of operationNames) {
-        const raw = await readFile(join(oldOperationsDirectory, name), 'utf8').catch(() => null)
-        if (!raw) continue
-        const operation = canonicalOperation(JSON.parse(raw))
-        if (this.operationRow(operation.id, true)) continue
-        await this.fences.run(`project-${operation.project_id}`, async () => await this.saveOperationLocked(operation, false))
-      }
-      const eventsRaw = await readFile(oldEventsPath, 'utf8').catch(() => null)
-      if (eventsRaw) {
-        const journal = JSON.parse(eventsRaw) as { events?: VideoOperationEvent[] }
-        if (!Array.isArray(journal.events)) {
-          throw new VideoWorkbenchRepositoryError('旧回收区视频操作日志损坏，无法安全迁移', 500, 'VIDEO_STORAGE_INVALID')
-        }
-        for (const event of journal.events
-          .map(candidate => ({ ...candidate, operation: canonicalOperation(candidate.operation) }))
-          .sort((left, right) => left.cursor - right.cursor)) {
-          await this.fences.run(`project-${event.project_id}`, async () => await this.importLegacyEvent(
-            event,
-            `legacy-trash-events/${receipt.trash_key}/events.json#${event.cursor}`,
-          ))
-        }
-      }
+  private async migrateLegacyDeletedProject(legacy: LegacyDeletedProject): Promise<void> {
+    const { receipt } = legacy
+    const persisted = this.storedDeletions().find(item => item.deletion_id === receipt.deletion_id)?.receipt
+    if (receipt.status === 'purged' || receipt.status === 'restored' || persisted?.status === 'purged' || persisted?.status === 'restored') return
+    const activeProject = this.projectDirectory(receipt.project_id)
+    const misplacedPayloads = join(this.trashPath(receipt.trash_key), 'project')
+    // Repair the first v1 implementation, which moved immutable payloads but
+    // left SQLite locators under projects/<id>. This relocation touches only
+    // the new payload tree; the old project.json remains a read-only source.
+    if (!(await this.exists(activeProject)) && await this.exists(misplacedPayloads)) {
+      await this.moveIfPresent(misplacedPayloads, activeProject)
     }
+    if (legacy.project) await this.fences.run(`project-${legacy.project.id}`, async () => await this.importLegacyProject(legacy.project!))
+    for (const operation of legacy.operations) {
+      await this.fences.run(`project-${operation.project_id}`, async () => await this.importLegacyOperation(operation))
+    }
+    if (legacy.journal) await this.importLegacyJournal(
+      receipt.project_id,
+      legacy.journal,
+      `legacy-trash-events/${receipt.trash_key}/events.json`,
+    )
     const row = this.projectRow(receipt.project_id, true)
     if (row && !row.deleted) {
-      if (!(await this.exists(newProjectTrash))) {
-        await this.moveIfPresent(this.projectDirectory(receipt.project_id), newProjectTrash)
-      }
       this.unitOfWork.transaction(() => {
         this.unitOfWork.database.query('UPDATE video_projects SET deleted=1 WHERE id=?').run(receipt.project_id)
         this.unitOfWork.database.query('UPDATE video_operations SET deleted=1 WHERE project_id=?').run(receipt.project_id)
       })
     }
-    await this.archiveLegacyFile(join('trash', receipt.trash_key, 'project.json'))
-    await this.archiveLegacyFile(join('trash', receipt.trash_key, 'events.json'))
-    for (const name of (await readdir(oldOperationsDirectory).catch(() => [])).filter(name => name.endsWith('.json'))) {
-      await this.archiveLegacyFile(join('trash', receipt.trash_key, 'operations', name))
+  }
+
+  private async importLegacyJournal(projectId: string, journal: LegacyEventJournal, legacyPath: string): Promise<void> {
+    for (const event of journal.events) {
+      await this.fences.run(`project-${projectId}`, async () => await this.importLegacyEvent(
+        event,
+        `${legacyPath}#${event.cursor}`,
+      ))
+    }
+    this.unitOfWork.transaction(() => this.events.preserveLegacyCursorState(
+      projectId,
+      journal.next_cursor,
+      journal.events[0]?.cursor ?? journal.next_cursor,
+    ))
+  }
+
+  private async readLegacyJson(): Promise<{
+    projects: VideoStudioProject[]
+    operations: VideoOperation[]
+    journals: Map<string, LegacyEventJournal>
+    deletedProjects: LegacyDeletedProject[]
+  }> {
+    // `legacy-import/` is read only for a short-lived compatibility upgrade:
+    // the first revision of this branch moved files there. New code never puts
+    // files in that directory, but retaining this fallback repairs any such
+    // early database without abandoning its historical reader.
+    const projectFiles = await this.legacyJsonFiles(this.projectsDir, join(this.legacyImportDir, 'projects'))
+    const operationFiles = await this.legacyJsonFiles(this.legacyOperationsDir, join(this.legacyImportDir, 'operations'))
+    const eventFiles = await this.legacyJsonFiles(this.legacyEventsDir, join(this.legacyImportDir, 'events'))
+    const deletionFiles = await this.legacyJsonFiles(this.legacyDeletionsDir, join(this.legacyImportDir, 'deletions'))
+    const projects = await Promise.all(projectFiles.map(async ([name, path]) => {
+      const item = videoStudioProjectSchema.parse(await this.readLegacyValue(path, '项目'))
+      if (name !== `${item.id}.json`) throw new VideoWorkbenchRepositoryError('旧视频项目文件名与内容不匹配', 500, 'VIDEO_STORAGE_INVALID')
+      return item
+    }))
+    const operations = await Promise.all(operationFiles.map(async ([name, path]) => {
+      const item = canonicalOperation(await this.readLegacyValue(path, '操作'))
+      if (name !== `${item.id}.json`) throw new VideoWorkbenchRepositoryError('旧视频操作文件名与内容不匹配', 500, 'VIDEO_STORAGE_INVALID')
+      return item
+    }))
+    const journals = new Map<string, LegacyEventJournal>()
+    for (const [name, path] of eventFiles) {
+      const projectId = name.slice(0, -'.json'.length)
+      this.assertId(projectId, 'project')
+      journals.set(projectId, this.parseLegacyJournal(await this.readLegacyValue(path, '操作日志'), projectId))
+    }
+    const deletedProjects: LegacyDeletedProject[] = []
+    for (const [name, path] of deletionFiles) {
+      const receipt = mediaDeletionReceiptSchema.parse(await this.readLegacyValue(path, '删除记录'))
+      if (name !== `${receipt.deletion_id}.json`) throw new VideoWorkbenchRepositoryError('旧视频删除记录文件名与内容不匹配', 500, 'VIDEO_STORAGE_INVALID')
+      const trash = this.trashPath(receipt.trash_key)
+      const archivedTrash = join(this.legacyImportDir, 'trash', receipt.trash_key)
+      const projectPath = await this.legacyFilePath(join(trash, 'project.json'), join(archivedTrash, 'project.json'))
+      const project = await this.exists(projectPath)
+        ? videoStudioProjectSchema.parse(await this.readLegacyValue(projectPath, '回收区项目'))
+        : null
+      const operationsDirectory = join(trash, 'operations')
+      const trashOperations = await Promise.all((await this.legacyJsonFiles(operationsDirectory, join(archivedTrash, 'operations'))).map(async ([, operationPath]) => (
+        canonicalOperation(await this.readLegacyValue(operationPath, '回收区操作'))
+      )))
+      const eventsPath = await this.legacyFilePath(join(trash, 'events.json'), join(archivedTrash, 'events.json'))
+      const journal = await this.exists(eventsPath)
+        ? this.parseLegacyJournal(await this.readLegacyValue(eventsPath, '回收区操作日志'), receipt.project_id)
+        : null
+      if (project && project.id !== receipt.project_id) {
+        throw new VideoWorkbenchRepositoryError('旧回收区项目与删除记录不匹配', 500, 'VIDEO_STORAGE_INVALID')
+      }
+      if (trashOperations.some(operation => operation.project_id !== receipt.project_id)) {
+        throw new VideoWorkbenchRepositoryError('旧回收区操作与删除记录不匹配', 500, 'VIDEO_STORAGE_INVALID')
+      }
+      deletedProjects.push({ receipt, project, operations: trashOperations, journal })
+    }
+    return { projects, operations, journals, deletedProjects }
+  }
+
+  private async legacyJsonNames(directory: string): Promise<string[]> {
+    return (await readdir(directory).catch(error => {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []
+      throw error
+    })).filter(name => name.endsWith('.json')).sort()
+  }
+
+  private async legacyJsonFiles(primary: string, archived: string): Promise<Array<[string, string]>> {
+    const files = new Map<string, string>()
+    for (const directory of [primary, archived]) {
+      for (const name of await this.legacyJsonNames(directory)) {
+        if (!files.has(name)) files.set(name, join(directory, name))
+      }
+    }
+    return [...files.entries()].sort(([left], [right]) => left.localeCompare(right))
+  }
+
+  private async legacyFilePath(primary: string, archived: string): Promise<string> {
+    return await this.exists(primary) ? primary : archived
+  }
+
+  private async readLegacyValue(path: string, label: string): Promise<unknown> {
+    try {
+      return JSON.parse(await readFile(path, 'utf8'))
+    } catch {
+      throw new VideoWorkbenchRepositoryError(`旧视频${label}损坏，无法安全迁移`, 500, 'VIDEO_STORAGE_INVALID')
     }
   }
 
-  private async archiveLegacyFile(locator: string): Promise<void> {
-    const source = join(this.root, locator)
-    const target = join(this.legacyImportDir, locator)
-    if (!(await this.exists(source))) return
-    if (await this.exists(target)) {
-      throw new VideoWorkbenchRepositoryError('旧视频迁移归档存在冲突', 409, 'VIDEO_STORAGE_INVALID')
+  private parseLegacyJournal(value: unknown, expectedProjectId: string): LegacyEventJournal {
+    if (!value || typeof value !== 'object') throw new VideoWorkbenchRepositoryError('旧视频操作日志损坏，无法安全迁移', 500, 'VIDEO_STORAGE_INVALID')
+    const journal = value as { schema_version?: unknown; next_cursor?: unknown; events?: unknown }
+    if (journal.schema_version !== 1 || !isPositiveSafeInteger(journal.next_cursor) || !Array.isArray(journal.events)) {
+      throw new VideoWorkbenchRepositoryError('旧视频操作日志损坏，无法安全迁移', 500, 'VIDEO_STORAGE_INVALID')
     }
-    await mkdir(dirname(target), { recursive: true, mode: 0o700 })
-    await rename(source, target)
+    const nextCursor = journal.next_cursor
+    const seen = new Set<number>()
+    const events = journal.events.map(raw => {
+      if (!raw || typeof raw !== 'object') throw new VideoWorkbenchRepositoryError('旧视频操作日志损坏，无法安全迁移', 500, 'VIDEO_STORAGE_INVALID')
+      const event = raw as Partial<VideoOperationEvent>
+      const operation = canonicalOperation(event.operation)
+      const cursor = event.cursor
+      const statusSequence = event.status_sequence
+      if (event.schema_version !== 1 || !isPositiveSafeInteger(cursor) || cursor >= nextCursor) {
+        throw new VideoWorkbenchRepositoryError('旧视频操作日志损坏，无法安全迁移', 500, 'VIDEO_STORAGE_INVALID')
+      }
+      if (event.project_id !== expectedProjectId || typeof event.operation_id !== 'string' || event.operation_id !== (operation.operation_id ?? operation.id)) {
+        throw new VideoWorkbenchRepositoryError('旧视频操作日志损坏，无法安全迁移', 500, 'VIDEO_STORAGE_INVALID')
+      }
+      if (!isNonnegativeSafeInteger(statusSequence)) {
+        throw new VideoWorkbenchRepositoryError('旧视频操作日志损坏，无法安全迁移', 500, 'VIDEO_STORAGE_INVALID')
+      }
+      if (typeof event.occurred_at !== 'string' || !Number.isFinite(Date.parse(event.occurred_at)) || seen.has(cursor)) {
+        throw new VideoWorkbenchRepositoryError('旧视频操作日志损坏，无法安全迁移', 500, 'VIDEO_STORAGE_INVALID')
+      }
+      seen.add(cursor)
+      return {
+        schema_version: 1 as const,
+        cursor,
+        project_id: expectedProjectId,
+        operation_id: event.operation_id,
+        status_sequence: statusSequence,
+        occurred_at: event.occurred_at,
+        operation,
+      }
+    }).sort((left, right) => left.cursor - right.cursor)
+    return { next_cursor: nextCursor, events }
+  }
+
+  private async reconcileLegacyImport(legacy: Awaited<ReturnType<VideoWorkbenchRepository['readLegacyJson']>>): Promise<void> {
+    const projects = [...legacy.projects, ...legacy.deletedProjects.flatMap(item => item.project ? [item.project] : [])]
+    const operations = [...legacy.operations, ...legacy.deletedProjects.flatMap(item => item.operations)]
+    if (new Set(projects.map(project => project.id)).size !== projects.length || new Set(operations.map(operation => operation.id)).size !== operations.length) {
+      throw new VideoWorkbenchRepositoryError('旧视频迁移记录存在重复 ID，无法安全对账', 500, 'VIDEO_STORAGE_INVALID')
+    }
+    for (const project of projects) {
+      const row = this.projectRow(project.id, true)
+      if (!row || !this.sameMigrationProject(project, await this.loadProject(row))) {
+        throw new VideoWorkbenchRepositoryError('旧视频项目数量、Timeline 或 Export 对账失败', 500, 'VIDEO_STORAGE_INVALID')
+      }
+    }
+    for (const operation of operations) {
+      const row = this.operationRow(operation.id, true)
+      if (!row || JSON.stringify(operation) !== JSON.stringify(await this.loadOperation(row))) {
+        throw new VideoWorkbenchRepositoryError('旧视频操作 status_sequence 对账失败', 500, 'VIDEO_STORAGE_INVALID')
+      }
+    }
+    for (const [projectId, journal] of legacy.journals) await this.reconcileLegacyJournal(projectId, journal)
+    for (const item of legacy.deletedProjects) {
+      if (!this.storedDeletions().some(candidate => candidate.deletion_id === item.receipt.deletion_id)) {
+        throw new VideoWorkbenchRepositoryError('旧视频删除记录对账失败', 500, 'VIDEO_STORAGE_INVALID')
+      }
+      if (item.journal) await this.reconcileLegacyJournal(item.receipt.project_id, item.journal)
+    }
+  }
+
+  private sameMigrationProject(left: VideoStudioProject, right: VideoStudioProject): boolean {
+    return JSON.stringify({
+      id: left.id,
+      sources: left.sources,
+      timeline: left.timeline,
+      timeline_versions: left.timeline_versions,
+      current_timeline_version_id: left.current_timeline_version_id,
+      output: left.output,
+      output_path: left.output_path,
+      output_asset_id: left.output_asset_id,
+      output_content_hash: left.output_content_hash,
+      output_verification: left.output_verification,
+      assets: left.assets,
+      versions: left.versions,
+    }) === JSON.stringify({
+      id: right.id,
+      sources: right.sources,
+      timeline: right.timeline,
+      timeline_versions: right.timeline_versions,
+      current_timeline_version_id: right.current_timeline_version_id,
+      output: right.output,
+      output_path: right.output_path,
+      output_asset_id: right.output_asset_id,
+      output_content_hash: right.output_content_hash,
+      output_verification: right.output_verification,
+      assets: right.assets,
+      versions: right.versions,
+    })
+  }
+
+  private async reconcileLegacyJournal(projectId: string, journal: LegacyEventJournal): Promise<void> {
+    const actualRows = this.events.listAll(projectId)
+    if (actualRows.length !== journal.events.length) {
+      throw new VideoWorkbenchRepositoryError('旧视频 Event 数量对账失败', 500, 'VIDEO_STORAGE_INVALID')
+    }
+    const actual = await Promise.all(actualRows.map(async row => await this.eventFromRow(row)))
+    if (actual.some((event, index) => JSON.stringify(event) !== JSON.stringify(journal.events[index]))) {
+      throw new VideoWorkbenchRepositoryError('旧视频 Event cursor 或内容对账失败', 500, 'VIDEO_STORAGE_INVALID')
+    }
+    const state = this.events.cursorState(projectId)
+    if (!state || state.next_cursor !== journal.next_cursor) {
+      throw new VideoWorkbenchRepositoryError('旧视频 Event next_cursor 对账失败', 500, 'VIDEO_STORAGE_INVALID')
+    }
   }
 }
