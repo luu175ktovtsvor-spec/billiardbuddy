@@ -223,7 +223,7 @@ export class ImageAssetStore {
   async persist(
     projectId: string,
     assetId: string,
-    role: Extract<MediaAsset['role'], 'reference' | 'mask' | 'result'>,
+    role: Extract<MediaAsset['role'], 'reference' | 'mask' | 'result' | 'export'>,
     verified: VerifiedImageBytes,
     versionId: string,
     createdAt: string,
@@ -233,7 +233,7 @@ export class ImageAssetStore {
     }
     await this.writeCas(verified)
     const extension = extensionForMime(verified.mime_type)
-    const section = role === 'reference' ? 'references' : role === 'mask' ? 'masks' : 'results'
+    const section = role === 'reference' ? 'references' : role === 'mask' ? 'masks' : role === 'export' ? 'exports' : 'results'
     const fileName = `${assetId}.${extension}`
     const target = join(this.assetsDir, projectId, section, fileName)
     await mkdir(dirname(target), { recursive: true, mode: 0o700 })
@@ -262,7 +262,7 @@ export class ImageAssetStore {
     }
   }
 
-  private async ownedFile(projectId: string, section: 'references' | 'masks' | 'results', fileName: string): Promise<{ path: string; size: number }> {
+  private async ownedFile(projectId: string, section: 'references' | 'masks' | 'results' | 'exports', fileName: string): Promise<{ path: string; size: number }> {
     if (!safeId(projectId) || !/^[a-z0-9][a-z0-9_.-]{2,120}$/.test(fileName)) {
       throw new ImageAssetStoreError('图片资产名无效', 400, 'IMAGE_ASSET_INVALID')
     }
@@ -283,7 +283,7 @@ export class ImageAssetStore {
     return { path: canonicalPath, size: info.size }
   }
 
-  async response(projectId: string, section: 'references' | 'masks' | 'results', fileName: string): Promise<Response> {
+  async response(projectId: string, section: 'references' | 'masks' | 'results' | 'exports', fileName: string): Promise<Response> {
     const asset = await this.ownedFile(projectId, section, fileName)
     const extension = extname(fileName).toLowerCase()
     const contentType: SupportedImageMime = extension === '.jpg' || extension === '.jpeg'

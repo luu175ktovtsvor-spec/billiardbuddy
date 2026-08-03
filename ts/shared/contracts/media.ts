@@ -47,6 +47,8 @@ export const imageVersionKindSchema = z.enum([
   'upscale',
   'text_layout',
   'composite',
+  /** Pixels were produced by the 15.3 backend canvas renderer. */
+  'canvas',
 ])
 export const imageLayerSchema = z.object({
   id: mediaIdSchema,
@@ -81,6 +83,13 @@ export const mediaVersionSchema = z.object({
   height: z.number().int().positive().max(12000).optional(),
   text_layers: z.array(imageTextLayerSchema).max(80).optional(),
   image_layers: z.array(imageLayerSchema).max(20).optional(),
+  /** The immutable Canvas input that produced a formal rendered Version. */
+  artboard_id: mediaIdSchema.optional(),
+  canvas_id: mediaIdSchema.optional(),
+  canvas_revision: z.number().int().nonnegative().optional(),
+  canvas_document_hash: z.string().regex(/^sha256:[a-f0-9]{64}$/).optional(),
+  render_receipt_id: mediaIdSchema.optional(),
+  content_hash: z.string().regex(/^sha256:[a-f0-9]{64}$/).optional(),
   created_at: mediaIsoDateSchema,
 })
 export const mediaDeletionReceiptSchema = z.object({
@@ -314,6 +323,8 @@ export const imageWorkbenchProjectSchema = mediaProjectBaseSchema.extend({
   current_version_id: mediaIdSchema.optional(),
   /** 15.2 working pointers are per delivery Artboard; the legacy single pointer remains readable. */
   current_versions_by_artboard: z.record(mediaIdSchema, mediaIdSchema).default({}),
+  /** Immutable delivery set produced by the last successful controlled export. */
+  latest_delivery_set_id: mediaIdSchema.optional(),
   current_brief_id: mediaIdSchema.optional(),
   current_delivery_spec_id: mediaIdSchema.optional(),
   current_delivery_spec_revision: z.number().int().nonnegative().optional(),

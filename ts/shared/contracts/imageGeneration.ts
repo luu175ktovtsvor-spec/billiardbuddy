@@ -330,6 +330,233 @@ export const imageReferenceControlResponseSchema = z.object({
   project: publicImageWorkbenchProjectSchema,
 }).strict()
 
+/** 15.3 Canvas facts. Coordinates are artboard pixels with a top-left origin. */
+export const imageCanvasColorSchema = z.string().regex(/^#[0-9A-Fa-f]{6}(?:[0-9A-Fa-f]{2})?$/)
+export const imageCanvasTransformSchema = z.object({
+  x: z.number().finite(),
+  y: z.number().finite(),
+  width: z.number().finite().positive().max(12_000),
+  height: z.number().finite().positive().max(12_000),
+  rotation_degrees: z.number().finite().min(-360).max(360),
+  scale_x: z.number().finite().positive().max(100),
+  scale_y: z.number().finite().positive().max(100),
+}).strict()
+export const imageCanvasCropSchema = z.object({
+  x: z.number().finite().nonnegative(),
+  y: z.number().finite().nonnegative(),
+  width: z.number().finite().positive().max(12_000),
+  height: z.number().finite().positive().max(12_000),
+}).strict()
+export const imageCanvasBackgroundSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('solid'), color: imageCanvasColorSchema }).strict(),
+  z.object({ kind: z.literal('transparent') }).strict(),
+])
+
+type ImageCanvasLayerBase = { id: string }
+export type ImageCanvasLayer = ImageCanvasLayerBase & (
+  | {
+      kind: 'raster'
+      source_asset_id: string
+      transform: { x: number; y: number; width: number; height: number; rotation_degrees: number; scale_x: number; scale_y: number }
+      source_crop?: { x: number; y: number; width: number; height: number }
+      opacity: number
+      blend_mode: 'normal' | 'multiply' | 'screen'
+      clip_to_artboard?: boolean
+    }
+  | {
+      kind: 'text'
+      requirement_id?: string
+      text: string
+      font_family: string
+      font_asset_id: string
+      font_size: number
+      min_font_size?: number
+      font_weight: number
+      font_style: 'normal' | 'italic'
+      line_height: number
+      letter_spacing: number
+      fill: string
+      stroke?: string
+      position: { x: number; y: number }
+      rotation_degrees: number
+      max_width?: number
+      max_height?: number
+      overflow: 'error' | 'shrink_to_fit' | 'clip'
+      locale: string
+      align: 'left' | 'center' | 'right'
+      opacity: number
+    }
+  | {
+      kind: 'logo'
+      source_asset_id: string
+      transform: { x: number; y: number; width: number; height: number; rotation_degrees: number; scale_x: number; scale_y: number }
+      preserve_exact_source: true
+      render_mode: 'vector_exact' | 'raster_exact'
+    }
+  | {
+      kind: 'qrcode'
+      source: { kind: 'asset'; asset_id: string } | { kind: 'payload'; value: string }
+      transform: { x: number; y: number; width: number; height: number; rotation_degrees: number; scale_x: number; scale_y: number }
+      error_correction: 'M' | 'Q' | 'H'
+      quiet_zone_modules: number
+      verify_after_render: true
+    }
+  | {
+      kind: 'shape'
+      shape: 'rectangle' | 'ellipse' | 'line'
+      transform: { x: number; y: number; width: number; height: number; rotation_degrees: number; scale_x: number; scale_y: number }
+      fill?: string
+      stroke?: string
+      stroke_width?: number
+      opacity: number
+    }
+  | { kind: 'group'; children: ImageCanvasLayer[] }
+  | { kind: 'mask'; source_asset_id: string; target_layer_id: string; mode: 'alpha' | 'luminance' }
+)
+
+const imageCanvasRasterLayerSchema = z.object({
+  id: mediaIdSchema, kind: z.literal('raster'), source_asset_id: mediaIdSchema,
+  transform: imageCanvasTransformSchema, source_crop: imageCanvasCropSchema.optional(),
+  opacity: z.number().min(0).max(1), blend_mode: z.enum(['normal', 'multiply', 'screen']),
+  clip_to_artboard: z.boolean().optional(),
+}).strict()
+const imageCanvasTextLayerSchema = z.object({
+  id: mediaIdSchema, kind: z.literal('text'), requirement_id: mediaIdSchema.optional(), text: z.string().min(1).max(2_000),
+  font_family: z.string().min(1).max(120), font_asset_id: mediaIdSchema, font_size: z.number().finite().positive().max(1_024),
+  min_font_size: z.number().finite().positive().max(1_024).optional(), font_weight: z.number().int().min(100).max(900),
+  font_style: z.enum(['normal', 'italic']), line_height: z.number().finite().positive().max(20), letter_spacing: z.number().finite().min(-200).max(200),
+  fill: imageCanvasColorSchema, stroke: imageCanvasColorSchema.optional(), position: z.object({ x: z.number().finite(), y: z.number().finite() }).strict(),
+  rotation_degrees: z.number().finite().min(-360).max(360), max_width: z.number().finite().positive().max(12_000).optional(),
+  max_height: z.number().finite().positive().max(12_000).optional(), overflow: z.enum(['error', 'shrink_to_fit', 'clip']),
+  locale: z.string().min(2).max(35), align: z.enum(['left', 'center', 'right']), opacity: z.number().min(0).max(1),
+}).strict().superRefine((layer, context) => {
+  if (layer.overflow === 'shrink_to_fit' && !layer.min_font_size) {
+    context.addIssue({ code: 'custom', message: 'shrink_to_fit requires min_font_size' })
+  }
+})
+const imageCanvasLogoLayerSchema = z.object({
+  id: mediaIdSchema, kind: z.literal('logo'), source_asset_id: mediaIdSchema, transform: imageCanvasTransformSchema,
+  preserve_exact_source: z.literal(true), render_mode: z.enum(['vector_exact', 'raster_exact']),
+}).strict()
+const imageCanvasQrLayerSchema = z.object({
+  id: mediaIdSchema, kind: z.literal('qrcode'),
+  source: z.discriminatedUnion('kind', [
+    z.object({ kind: z.literal('asset'), asset_id: mediaIdSchema }).strict(),
+    z.object({ kind: z.literal('payload'), value: z.string().min(1).max(2_048) }).strict(),
+  ]),
+  transform: imageCanvasTransformSchema, error_correction: z.enum(['M', 'Q', 'H']),
+  quiet_zone_modules: z.number().int().min(1).max(16), verify_after_render: z.literal(true),
+}).strict()
+const imageCanvasShapeLayerSchema = z.object({
+  id: mediaIdSchema, kind: z.literal('shape'), shape: z.enum(['rectangle', 'ellipse', 'line']), transform: imageCanvasTransformSchema,
+  fill: imageCanvasColorSchema.optional(), stroke: imageCanvasColorSchema.optional(), stroke_width: z.number().finite().positive().max(1_024).optional(),
+  opacity: z.number().min(0).max(1),
+}).strict()
+const imageCanvasMaskLayerSchema = z.object({
+  id: mediaIdSchema, kind: z.literal('mask'), source_asset_id: mediaIdSchema, target_layer_id: mediaIdSchema, mode: z.enum(['alpha', 'luminance']),
+}).strict()
+export const imageCanvasLayerSchema: z.ZodType<ImageCanvasLayer> = z.lazy(() => z.discriminatedUnion('kind', [
+  imageCanvasRasterLayerSchema,
+  imageCanvasTextLayerSchema,
+  imageCanvasLogoLayerSchema,
+  imageCanvasQrLayerSchema,
+  imageCanvasShapeLayerSchema,
+  z.object({ id: mediaIdSchema, kind: z.literal('group'), children: z.array(imageCanvasLayerSchema).max(80) }).strict(),
+  imageCanvasMaskLayerSchema,
+]))
+
+export const imageCanvasDocumentSchema = z.object({
+  schema_version: z.literal(1), id: mediaIdSchema, project_id: mediaIdSchema, artboard_id: mediaIdSchema,
+  delivery_spec_id: mediaIdSchema, delivery_spec_revision: z.number().int().nonnegative(),
+  brand_kit_revision_id: mediaIdSchema.optional(), template_revision_id: mediaIdSchema.optional(),
+  width: z.number().int().positive().max(12_000), height: z.number().int().positive().max(12_000), color_space: z.literal('srgb'),
+  background: imageCanvasBackgroundSchema, layers: z.array(imageCanvasLayerSchema).max(80), created_at: mediaIsoDateSchema,
+}).strict()
+export const imageCanvasRevisionSchema = z.object({
+  canvas_id: mediaIdSchema, revision: z.number().int().nonnegative(), document_hash: imageHashSchema,
+  document: imageCanvasDocumentSchema, parent_revision: z.number().int().nonnegative().optional(), created_at: mediaIsoDateSchema,
+}).strict()
+
+const imageCanvasCommandBaseSchema = z.object({
+  idempotency_key: z.string().min(16).max(160), base_revision: z.number().int().nonnegative(),
+}).strict()
+export const imageCanvasCommandInputSchema = z.discriminatedUnion('kind', [
+  imageCanvasCommandBaseSchema.extend({ kind: z.literal('add_layer'), payload: z.object({ parent_group_id: mediaIdSchema.optional(), layer: imageCanvasLayerSchema, index: z.number().int().nonnegative().optional() }).strict() }),
+  imageCanvasCommandBaseSchema.extend({ kind: z.literal('replace_layer'), payload: z.object({ layer: imageCanvasLayerSchema }).strict() }),
+  imageCanvasCommandBaseSchema.extend({ kind: z.literal('remove_layer'), payload: z.object({ layer_id: mediaIdSchema }).strict() }),
+  imageCanvasCommandBaseSchema.extend({ kind: z.literal('reorder_layers'), payload: z.object({ parent_group_id: mediaIdSchema.optional(), ordered_layer_ids: z.array(mediaIdSchema).min(1).max(80) }).strict() }),
+  imageCanvasCommandBaseSchema.extend({ kind: z.literal('apply_template'), payload: z.object({ template_id: mediaIdSchema, template_revision_id: mediaIdSchema, slot_bindings: z.array(z.object({ slot_id: z.string().min(1).max(120), asset_id: mediaIdSchema.optional(), text: z.string().min(1).max(2_000).optional(), qr_payload: z.string().min(1).max(2_048).optional() }).strict()).max(80) }).strict() }),
+  imageCanvasCommandBaseSchema.extend({ kind: z.literal('apply_brand_kit'), payload: z.object({ brand_kit_id: mediaIdSchema, brand_kit_revision_id: mediaIdSchema }).strict() }),
+  imageCanvasCommandBaseSchema.extend({ kind: z.literal('sync_delivery_spec'), payload: z.object({ delivery_spec_id: mediaIdSchema, delivery_spec_revision: z.number().int().nonnegative(), layout_policy: z.enum(['preserve_position', 'fit_safe_area']) }).strict() }),
+])
+export const imageCanvasCreateInputSchema = z.object({
+  artboard_id: mediaIdSchema, base_revision: z.number().int().nonnegative(), idempotency_key: z.string().min(16).max(160),
+  background: imageCanvasBackgroundSchema.optional(),
+}).strict()
+export const imageCanvasPreflightInputSchema = z.object({ revision: z.number().int().nonnegative() }).strict()
+export const imageCanvasRenderInputSchema = z.object({
+  base_revision: z.number().int().nonnegative(), idempotency_key: z.string().min(16).max(160), canvas_revision: z.number().int().nonnegative(),
+  activate_on_success: z.boolean(), expected_current_version_id: mediaIdSchema.optional(),
+}).strict()
+export const imageCanvasCommandRequestInputSchema = z.object({
+  base_project_revision: z.number().int().nonnegative(),
+  command: imageCanvasCommandInputSchema,
+}).strict()
+export const imageDeliverySpecRevisionInputSchema = z.object({
+  base_revision: z.number().int().nonnegative(), idempotency_key: z.string().min(16).max(160),
+  purpose: z.enum(['social_cover', 'product_marketing', 'poster', 'custom']),
+  artboards: imageDeliverySpecSchema.shape.artboards,
+}).strict()
+export const imageExportInputSchema = z.object({
+  base_revision: z.number().int().nonnegative(), idempotency_key: z.string().min(16).max(160),
+  version_ids_by_artboard: z.record(mediaIdSchema, mediaIdSchema),
+}).strict()
+export const imageArtboardSelectVersionInputSchema = z.object({
+  base_revision: z.number().int().nonnegative(),
+  idempotency_key: z.string().min(16).max(160),
+  version_id: mediaIdSchema,
+}).strict()
+
+export const imageCanvasPreflightSchema = z.object({
+  id: mediaIdSchema, project_id: mediaIdSchema, canvas_id: mediaIdSchema, canvas_revision: z.number().int().nonnegative(),
+  document_hash: imageHashSchema, passed: z.boolean(), checks: z.array(z.object({ id: z.string().min(1).max(120), status: z.enum(['pass', 'warn', 'fail']), evidence: z.string().min(1).max(500), waivable: z.boolean() }).strict()).max(120),
+  created_at: mediaIsoDateSchema,
+}).strict()
+export const imageRenderReceiptSchema = z.object({
+  id: mediaIdSchema, version_id: mediaIdSchema, canvas_id: mediaIdSchema, canvas_revision: z.number().int().nonnegative(), document_hash: imageHashSchema,
+  delivery_spec_id: mediaIdSchema, delivery_spec_revision: z.number().int().nonnegative(), brand_kit_revision_id: mediaIdSchema.optional(), template_revision_id: mediaIdSchema.optional(),
+  renderer_version: z.string().min(1).max(120), text_layout_engine_version: z.string().min(1).max(120), dependency_asset_hashes: z.array(imageHashSchema).max(80),
+  font_asset_hashes: z.array(imageHashSchema).max(32), output_hash: imageHashSchema, text_manifest_hash: imageHashSchema, created_at: mediaIsoDateSchema,
+}).strict()
+export const imageReleaseCheckResultSchema = z.object({
+  id: mediaIdSchema, project_id: mediaIdSchema, version_id: mediaIdSchema, export_asset_id: mediaIdSchema,
+  checks: z.array(z.object({ id: z.string().min(1).max(120), name: z.string().min(1).max(120), status: z.enum(['pass', 'warn', 'fail']), waivable: z.boolean(), evidence: z.string().min(1).max(500), evidence_hash: imageHashSchema }).strict()).max(120),
+  accepted_warning_receipt_ids: z.array(mediaIdSchema).max(120), passed: z.boolean(), created_at: mediaIsoDateSchema,
+}).strict()
+export const imageExportReceiptSchema = z.object({
+  id: mediaIdSchema, project_id: mediaIdSchema, artboard_id: mediaIdSchema, version_id: mediaIdSchema, source_hash: imageHashSchema,
+  output_asset_id: mediaIdSchema, output_format: z.enum(['png', 'jpeg', 'webp']), output_hash: imageHashSchema,
+  width: z.number().int().positive().max(12_000), height: z.number().int().positive().max(12_000), byte_size: z.number().int().positive(),
+  release_check_result_id: mediaIdSchema, created_at: mediaIsoDateSchema,
+}).strict()
+export const imageDeliverySetSchema = z.object({
+  id: mediaIdSchema, project_id: mediaIdSchema, delivery_spec_id: mediaIdSchema, delivery_spec_revision: z.number().int().nonnegative(),
+  version_ids_by_artboard: z.record(mediaIdSchema, mediaIdSchema), export_receipt_ids_by_artboard: z.record(mediaIdSchema, mediaIdSchema), created_at: mediaIsoDateSchema,
+}).strict()
+export const imageCanvasCommandResponseSchema = z.object({ canvas: imageCanvasRevisionSchema, project_revision: z.number().int().nonnegative() }).strict()
+export const imageDeliverySpecRevisionResponseSchema = z.object({
+  project: publicImageWorkbenchProjectSchema,
+  delivery_spec: imageDeliverySpecSchema,
+}).strict()
+export const imageCanvasPreflightResponseSchema = z.object({ preflight: imageCanvasPreflightSchema }).strict()
+export const imageCanvasRenderResponseSchema = z.object({
+  operation: publicImageOperationV2Schema, version_id: mediaIdSchema, render_receipt: imageRenderReceiptSchema, release_check: imageReleaseCheckResultSchema,
+}).strict()
+export const imageExportResponseSchema = z.object({
+  export_receipts: z.array(imageExportReceiptSchema).min(1).max(32), delivery_set: imageDeliverySetSchema.optional(), project_revision: z.number().int().nonnegative(),
+}).strict()
+export const imageArtboardSelectVersionResponseSchema = z.object({ project: publicImageWorkbenchProjectSchema }).strict()
+
 const commandEnvelopeFields = {
   idempotency_key: z.string().min(16).max(160),
   base_revision: z.number().int().nonnegative(),
@@ -404,6 +631,27 @@ export type ImageCandidateAdoptionResponse = z.infer<typeof imageCandidateAdopti
 export type ImageCandidateDerivationResponse = z.infer<typeof imageCandidateDerivationResponseSchema>
 export type ImageGenerationCancelResponse = z.infer<typeof imageGenerationCancelResponseSchema>
 export type ImageReferenceControlResponse = z.infer<typeof imageReferenceControlResponseSchema>
+export type ImageCanvasDocument = z.infer<typeof imageCanvasDocumentSchema>
+export type ImageCanvasRevision = z.infer<typeof imageCanvasRevisionSchema>
+export type ImageCanvasCommandInput = z.input<typeof imageCanvasCommandInputSchema>
+export type ImageCanvasCommandRequestInput = z.input<typeof imageCanvasCommandRequestInputSchema>
+export type ImageCanvasCreateInput = z.input<typeof imageCanvasCreateInputSchema>
+export type ImageCanvasPreflightInput = z.input<typeof imageCanvasPreflightInputSchema>
+export type ImageCanvasRenderInput = z.input<typeof imageCanvasRenderInputSchema>
+export type ImageDeliverySpecRevisionInput = z.input<typeof imageDeliverySpecRevisionInputSchema>
+export type ImageExportInput = z.input<typeof imageExportInputSchema>
+export type ImageArtboardSelectVersionInput = z.input<typeof imageArtboardSelectVersionInputSchema>
+export type ImageCanvasPreflight = z.infer<typeof imageCanvasPreflightSchema>
+export type ImageRenderReceipt = z.infer<typeof imageRenderReceiptSchema>
+export type ImageReleaseCheckResult = z.infer<typeof imageReleaseCheckResultSchema>
+export type ImageExportReceipt = z.infer<typeof imageExportReceiptSchema>
+export type ImageDeliverySet = z.infer<typeof imageDeliverySetSchema>
+export type ImageCanvasCommandResponse = z.infer<typeof imageCanvasCommandResponseSchema>
+export type ImageDeliverySpecRevisionResponse = z.infer<typeof imageDeliverySpecRevisionResponseSchema>
+export type ImageCanvasPreflightResponse = z.infer<typeof imageCanvasPreflightResponseSchema>
+export type ImageCanvasRenderResponse = z.infer<typeof imageCanvasRenderResponseSchema>
+export type ImageExportResponse = z.infer<typeof imageExportResponseSchema>
+export type ImageArtboardSelectVersionResponse = z.infer<typeof imageArtboardSelectVersionResponseSchema>
 export type CreateCreativePlanInput = z.input<typeof createCreativePlanInputSchema>
 export type UpdateImageReferenceControlInput = z.input<typeof updateImageReferenceControlInputSchema>
 export type EstimateGenerationRoundInput = z.input<typeof estimateGenerationRoundInputSchema>

@@ -1,6 +1,13 @@
 import { z } from 'zod/v4'
 import {
   adoptImageCandidateInputSchema,
+  imageCanvasCommandRequestInputSchema,
+  imageArtboardSelectVersionInputSchema,
+  imageCanvasCreateInputSchema,
+  imageCanvasPreflightInputSchema,
+  imageCanvasRenderInputSchema,
+  imageDeliverySpecRevisionInputSchema,
+  imageExportInputSchema,
   createCreativePlanInputSchema,
   createGenerationRoundInputSchema,
   decideImageCandidateInputSchema,
@@ -788,6 +795,38 @@ export const imageUpdateReferenceControlIpcPayloadSchema = z.object({
   referenceId: mediaIdSchema,
   input: updateImageReferenceControlInputSchema,
 }).strict()
+export const imageCreateDeliverySpecRevisionIpcPayloadSchema = z.object({
+  projectId: mediaIdSchema,
+  input: imageDeliverySpecRevisionInputSchema,
+}).strict()
+export const imageCreateCanvasIpcPayloadSchema = z.object({
+  projectId: mediaIdSchema,
+  input: imageCanvasCreateInputSchema,
+}).strict()
+export const imageApplyCanvasCommandIpcPayloadSchema = z.object({
+  projectId: mediaIdSchema,
+  canvasId: mediaIdSchema,
+  input: imageCanvasCommandRequestInputSchema,
+}).strict()
+export const imagePreflightCanvasIpcPayloadSchema = z.object({
+  projectId: mediaIdSchema,
+  canvasId: mediaIdSchema,
+  input: imageCanvasPreflightInputSchema,
+}).strict()
+export const imageRenderCanvasIpcPayloadSchema = z.object({
+  projectId: mediaIdSchema,
+  canvasId: mediaIdSchema,
+  input: imageCanvasRenderInputSchema,
+}).strict()
+export const imageExportDeliveryIpcPayloadSchema = z.object({
+  projectId: mediaIdSchema,
+  input: imageExportInputSchema,
+}).strict()
+export const imageSelectArtboardVersionIpcPayloadSchema = z.object({
+  projectId: mediaIdSchema,
+  artboardId: mediaIdSchema,
+  input: imageArtboardSelectVersionInputSchema,
+}).strict()
 
 const imageSubmitProject: Validator = value => imageSubmitProjectIpcPayloadSchema.safeParse(value).success
 const imageStartOperation: Validator = value => imageStartOperationIpcPayloadSchema.safeParse(value).success
@@ -802,6 +841,13 @@ const imageAdoptCandidate: Validator = value => imageAdoptCandidateIpcPayloadSch
 const imageDeriveCandidate: Validator = value => imageDeriveCandidateIpcPayloadSchema.safeParse(value).success
 const imageCancelGenerationOperation: Validator = value => imageCancelGenerationOperationIpcPayloadSchema.safeParse(value).success
 const imageUpdateReferenceControl: Validator = value => imageUpdateReferenceControlIpcPayloadSchema.safeParse(value).success
+const imageCreateDeliverySpecRevision: Validator = value => imageCreateDeliverySpecRevisionIpcPayloadSchema.safeParse(value).success
+const imageCreateCanvas: Validator = value => imageCreateCanvasIpcPayloadSchema.safeParse(value).success
+const imageApplyCanvasCommand: Validator = value => imageApplyCanvasCommandIpcPayloadSchema.safeParse(value).success
+const imagePreflightCanvas: Validator = value => imagePreflightCanvasIpcPayloadSchema.safeParse(value).success
+const imageRenderCanvas: Validator = value => imageRenderCanvasIpcPayloadSchema.safeParse(value).success
+const imageExportDelivery: Validator = value => imageExportDeliveryIpcPayloadSchema.safeParse(value).success
+const imageSelectArtboardVersion: Validator = value => imageSelectArtboardVersionIpcPayloadSchema.safeParse(value).success
 
 export const ELECTRON_IPC_VALIDATORS = {
   [ELECTRON_IPC_CHANNELS.appGetVersion]: noPayload,
@@ -907,6 +953,13 @@ export const ELECTRON_IPC_VALIDATORS = {
   [ELECTRON_IPC_CHANNELS.imageDeriveCandidate]: imageDeriveCandidate,
   [ELECTRON_IPC_CHANNELS.imageCancelGenerationOperation]: imageCancelGenerationOperation,
   [ELECTRON_IPC_CHANNELS.imageUpdateReferenceControl]: imageUpdateReferenceControl,
+  [ELECTRON_IPC_CHANNELS.imageCreateDeliverySpecRevision]: imageCreateDeliverySpecRevision,
+  [ELECTRON_IPC_CHANNELS.imageCreateCanvas]: imageCreateCanvas,
+  [ELECTRON_IPC_CHANNELS.imageApplyCanvasCommand]: imageApplyCanvasCommand,
+  [ELECTRON_IPC_CHANNELS.imagePreflightCanvas]: imagePreflightCanvas,
+  [ELECTRON_IPC_CHANNELS.imageRenderCanvas]: imageRenderCanvas,
+  [ELECTRON_IPC_CHANNELS.imageExportDelivery]: imageExportDelivery,
+  [ELECTRON_IPC_CHANNELS.imageSelectArtboardVersion]: imageSelectArtboardVersion,
   [ELECTRON_IPC_CHANNELS.videoAddSource]: videoAddSource,
   [ELECTRON_IPC_CHANNELS.videoRender]: videoRender,
   [ELECTRON_IPC_CHANNELS.videoAnalyze]: videoAnalyze,

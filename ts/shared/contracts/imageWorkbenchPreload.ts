@@ -25,6 +25,19 @@ import type {
   ImageGenerationRoundEstimateResponse,
   ImageGenerationRoundResponse,
   ImageReferenceControlResponse,
+  ImageCanvasCommandRequestInput,
+  ImageCanvasCommandResponse,
+  ImageCanvasCreateInput,
+  ImageCanvasPreflightInput,
+  ImageCanvasPreflightResponse,
+  ImageCanvasRenderInput,
+  ImageCanvasRenderResponse,
+  ImageDeliverySpecRevisionInput,
+  ImageExportInput,
+  ImageExportResponse,
+  ImageArtboardSelectVersionInput,
+  ImageArtboardSelectVersionResponse,
+  ImageDeliverySpecRevisionResponse,
   UpdateImageReferenceControlInput,
 } from './imageGeneration.js'
 
@@ -52,6 +65,13 @@ export type ImageWorkbenchPreloadBridge = {
   deriveCandidate(projectId: string, candidateId: string, input: DeriveImageCandidateInput): Promise<ImageWorkbenchIpcResponse<ImageCandidateDerivationResponse>>
   cancelGenerationOperation(operationId: string): Promise<ImageWorkbenchIpcResponse<ImageGenerationCancelResponse>>
   updateReferenceControl(projectId: string, referenceId: string, input: UpdateImageReferenceControlInput): Promise<ImageWorkbenchIpcResponse<ImageReferenceControlResponse>>
+  createDeliverySpecRevision(projectId: string, input: ImageDeliverySpecRevisionInput): Promise<ImageWorkbenchIpcResponse<ImageDeliverySpecRevisionResponse>>
+  createCanvas(projectId: string, input: ImageCanvasCreateInput): Promise<ImageWorkbenchIpcResponse<ImageCanvasCommandResponse>>
+  applyCanvasCommand(projectId: string, canvasId: string, input: ImageCanvasCommandRequestInput): Promise<ImageWorkbenchIpcResponse<ImageCanvasCommandResponse>>
+  preflightCanvas(projectId: string, canvasId: string, input: ImageCanvasPreflightInput): Promise<ImageWorkbenchIpcResponse<ImageCanvasPreflightResponse>>
+  renderCanvas(projectId: string, canvasId: string, input: ImageCanvasRenderInput): Promise<ImageWorkbenchIpcResponse<ImageCanvasRenderResponse>>
+  exportDelivery(projectId: string, input: ImageExportInput): Promise<ImageWorkbenchIpcResponse<ImageExportResponse>>
+  selectArtboardVersion(projectId: string, artboardId: string, input: ImageArtboardSelectVersionInput): Promise<ImageWorkbenchIpcResponse<ImageArtboardSelectVersionResponse>>
 }
 
 export type BilliardBuddyMediaPreloadBridge = {

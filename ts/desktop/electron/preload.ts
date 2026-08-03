@@ -363,6 +363,34 @@ const images: ImageWorkbenchPreloadBridge = {
     ELECTRON_IPC_CHANNELS.imageUpdateReferenceControl,
     { projectId, referenceId, input },
   ),
+  createDeliverySpecRevision: (projectId, input) => invoke<ImageBridgeResult<'createDeliverySpecRevision'>>(
+    ELECTRON_IPC_CHANNELS.imageCreateDeliverySpecRevision,
+    { projectId, input },
+  ),
+  createCanvas: (projectId, input) => invoke<ImageBridgeResult<'createCanvas'>>(
+    ELECTRON_IPC_CHANNELS.imageCreateCanvas,
+    { projectId, input },
+  ),
+  applyCanvasCommand: (projectId, canvasId, input) => invoke<ImageBridgeResult<'applyCanvasCommand'>>(
+    ELECTRON_IPC_CHANNELS.imageApplyCanvasCommand,
+    { projectId, canvasId, input },
+  ),
+  preflightCanvas: (projectId, canvasId, input) => invoke<ImageBridgeResult<'preflightCanvas'>>(
+    ELECTRON_IPC_CHANNELS.imagePreflightCanvas,
+    { projectId, canvasId, input },
+  ),
+  renderCanvas: (projectId, canvasId, input) => invoke<ImageBridgeResult<'renderCanvas'>>(
+    ELECTRON_IPC_CHANNELS.imageRenderCanvas,
+    { projectId, canvasId, input },
+  ),
+  exportDelivery: (projectId, input) => invoke<ImageBridgeResult<'exportDelivery'>>(
+    ELECTRON_IPC_CHANNELS.imageExportDelivery,
+    { projectId, input },
+  ),
+  selectArtboardVersion: (projectId, artboardId, input) => invoke<ImageBridgeResult<'selectArtboardVersion'>>(
+    ELECTRON_IPC_CHANNELS.imageSelectArtboardVersion,
+    { projectId, artboardId, input },
+  ),
 }
 
 const media = {

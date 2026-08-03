@@ -6,13 +6,20 @@ import { ELECTRON_EVENT_CHANNELS, ELECTRON_IPC_CHANNELS, type ElectronIpcChannel
 import { imageWorkbenchIpcResponse } from './ipc/imageResponse'
 import {
   imageAdoptCandidateIpcPayloadSchema,
+  imageSelectArtboardVersionIpcPayloadSchema,
+  imageApplyCanvasCommandIpcPayloadSchema,
   imageCancelGenerationOperationIpcPayloadSchema,
+  imageCreateCanvasIpcPayloadSchema,
   imageCreateCreativePlanIpcPayloadSchema,
+  imageCreateDeliverySpecRevisionIpcPayloadSchema,
   imageCreateGenerationRoundIpcPayloadSchema,
   imageDecideCandidateIpcPayloadSchema,
   imageDeriveCandidateIpcPayloadSchema,
   imageEstimateDerivationIpcPayloadSchema,
   imageEstimateGenerationRoundIpcPayloadSchema,
+  imageExportDeliveryIpcPayloadSchema,
+  imagePreflightCanvasIpcPayloadSchema,
+  imageRenderCanvasIpcPayloadSchema,
   imageSaveOutputIpcPayloadSchema,
   imageStartOperationIpcPayloadSchema,
   imageSubmitProjectIpcPayloadSchema,
@@ -1561,6 +1568,34 @@ function registerIpcHandlers() {
   registerImageHandler(ELECTRON_IPC_CHANNELS.imageUpdateReferenceControl, (_event, payload) => {
     const request = imageUpdateReferenceControlIpcPayloadSchema.parse(payload)
     return getImageActions().updateReferenceControl(request.projectId, request.referenceId, request.input)
+  })
+  registerImageHandler(ELECTRON_IPC_CHANNELS.imageCreateDeliverySpecRevision, (_event, payload) => {
+    const request = imageCreateDeliverySpecRevisionIpcPayloadSchema.parse(payload)
+    return getImageActions().createDeliverySpecRevision(request.projectId, request.input)
+  })
+  registerImageHandler(ELECTRON_IPC_CHANNELS.imageCreateCanvas, (_event, payload) => {
+    const request = imageCreateCanvasIpcPayloadSchema.parse(payload)
+    return getImageActions().createCanvas(request.projectId, request.input)
+  })
+  registerImageHandler(ELECTRON_IPC_CHANNELS.imageApplyCanvasCommand, (_event, payload) => {
+    const request = imageApplyCanvasCommandIpcPayloadSchema.parse(payload)
+    return getImageActions().applyCanvasCommand(request.projectId, request.canvasId, request.input)
+  })
+  registerImageHandler(ELECTRON_IPC_CHANNELS.imagePreflightCanvas, (_event, payload) => {
+    const request = imagePreflightCanvasIpcPayloadSchema.parse(payload)
+    return getImageActions().preflightCanvas(request.projectId, request.canvasId, request.input)
+  })
+  registerImageHandler(ELECTRON_IPC_CHANNELS.imageRenderCanvas, (_event, payload) => {
+    const request = imageRenderCanvasIpcPayloadSchema.parse(payload)
+    return getImageActions().renderCanvas(request.projectId, request.canvasId, request.input)
+  })
+  registerImageHandler(ELECTRON_IPC_CHANNELS.imageExportDelivery, (_event, payload) => {
+    const request = imageExportDeliveryIpcPayloadSchema.parse(payload)
+    return getImageActions().exportDelivery(request.projectId, request.input)
+  })
+  registerImageHandler(ELECTRON_IPC_CHANNELS.imageSelectArtboardVersion, (_event, payload) => {
+    const request = imageSelectArtboardVersionIpcPayloadSchema.parse(payload)
+    return getImageActions().selectArtboardVersion(request.projectId, request.artboardId, request.input)
   })
   registerHandler(ELECTRON_IPC_CHANNELS.videoAddSource, (_event, payload) => {
     const input = payload as { projectId: string; path: string }

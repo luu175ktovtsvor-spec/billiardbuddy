@@ -1004,6 +1004,15 @@ test('15.2 rejects capability gaps before paid submission, permits partial candi
     const replayedAdoption = await service.adoptCandidate(project.id, group.candidates[0]!.id, adoptionInput)
     expect(replayedAdoption.adoptions).toEqual(adopted.adoptions)
     expect((await service.getProject(project.id)).versions).toHaveLength(2)
+    expect((await service.repository.listCanvasRevisions(project.id)).map(canvas => ({
+      artboard_id: canvas.document.artboard_id,
+      revision: canvas.revision,
+      source_asset_id: canvas.document.layers[0]?.kind === 'raster' ? canvas.document.layers[0].source_asset_id : undefined,
+    }))).toEqual(delivery.artboards.map(artboard => ({
+      artboard_id: artboard.id,
+      revision: 0,
+      source_asset_id: group.candidates[0]!.asset_id,
+    })))
   })
 })
 

@@ -15,10 +15,16 @@ import {
 } from '../../../shared/contracts/media'
 import {
   imageCandidateAdoptionResponseSchema,
+  imageCanvasCommandResponseSchema,
+  imageArtboardSelectVersionResponseSchema,
+  imageCanvasPreflightResponseSchema,
+  imageCanvasRenderResponseSchema,
   imageCandidateDecisionResponseSchema,
   imageCandidateDerivationResponseSchema,
   imageCreativePlanResponseSchema,
   imageDerivationEstimateResponseSchema,
+  imageDeliverySpecRevisionResponseSchema,
+  imageExportResponseSchema,
   imageGenerationCancelResponseSchema,
   imageGenerationRoundEstimateResponseSchema,
   imageGenerationRoundResponseSchema,
@@ -42,6 +48,19 @@ import type {
   EstimateDeriveImageCandidateInput,
   EstimateGenerationRoundInput,
   UpdateImageReferenceControlInput,
+  ImageCanvasCommandRequestInput,
+  ImageArtboardSelectVersionInput,
+  ImageArtboardSelectVersionResponse,
+  ImageCanvasCommandResponse,
+  ImageCanvasCreateInput,
+  ImageCanvasPreflightInput,
+  ImageCanvasPreflightResponse,
+  ImageCanvasRenderInput,
+  ImageCanvasRenderResponse,
+  ImageDeliverySpecRevisionInput,
+  ImageDeliverySpecRevisionResponse,
+  ImageExportInput,
+  ImageExportResponse,
 } from '../../../shared/contracts/imageGeneration'
 
 type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
@@ -137,6 +156,34 @@ export class ElectronImageActions {
 
   updateReferenceControl(projectId: string, referenceId: string, input: UpdateImageReferenceControlInput): Promise<ImageReferenceControlResponse> {
     return this.post(`/api/images/projects/${encodeURIComponent(projectId)}/references/${encodeURIComponent(referenceId)}/commands/update-control`, input, imageReferenceControlResponseSchema)
+  }
+
+  createDeliverySpecRevision(projectId: string, input: ImageDeliverySpecRevisionInput): Promise<ImageDeliverySpecRevisionResponse> {
+    return this.post(`/api/images/projects/${encodeURIComponent(projectId)}/delivery-spec/revisions`, input, imageDeliverySpecRevisionResponseSchema)
+  }
+
+  createCanvas(projectId: string, input: ImageCanvasCreateInput): Promise<ImageCanvasCommandResponse> {
+    return this.post(`/api/images/projects/${encodeURIComponent(projectId)}/canvases`, input, imageCanvasCommandResponseSchema)
+  }
+
+  applyCanvasCommand(projectId: string, canvasId: string, input: ImageCanvasCommandRequestInput): Promise<ImageCanvasCommandResponse> {
+    return this.post(`/api/images/projects/${encodeURIComponent(projectId)}/canvases/${encodeURIComponent(canvasId)}/commands`, input, imageCanvasCommandResponseSchema)
+  }
+
+  preflightCanvas(projectId: string, canvasId: string, input: ImageCanvasPreflightInput): Promise<ImageCanvasPreflightResponse> {
+    return this.post(`/api/images/projects/${encodeURIComponent(projectId)}/canvases/${encodeURIComponent(canvasId)}/preflights`, input, imageCanvasPreflightResponseSchema)
+  }
+
+  renderCanvas(projectId: string, canvasId: string, input: ImageCanvasRenderInput): Promise<ImageCanvasRenderResponse> {
+    return this.post(`/api/images/projects/${encodeURIComponent(projectId)}/canvases/${encodeURIComponent(canvasId)}/renders`, input, imageCanvasRenderResponseSchema)
+  }
+
+  exportDelivery(projectId: string, input: ImageExportInput): Promise<ImageExportResponse> {
+    return this.post(`/api/images/projects/${encodeURIComponent(projectId)}/exports`, input, imageExportResponseSchema)
+  }
+
+  selectArtboardVersion(projectId: string, artboardId: string, input: ImageArtboardSelectVersionInput): Promise<ImageArtboardSelectVersionResponse> {
+    return this.post(`/api/images/projects/${encodeURIComponent(projectId)}/artboards/${encodeURIComponent(artboardId)}/commands/select-version`, input, imageArtboardSelectVersionResponseSchema)
   }
 
   private async post<T>(path: string, body: unknown, responseSchema: ResponseSchema<T>): Promise<T> {
