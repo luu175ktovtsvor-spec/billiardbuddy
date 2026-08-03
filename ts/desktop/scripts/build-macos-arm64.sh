@@ -126,6 +126,12 @@ echo "[build-macos-arm64] Staging audited media toolchain..."
 echo "[build-macos-arm64] Building and staging managed Codex engine..."
 (cd "${DESKTOP_DIR}" && CODEX_ENGINE_TARGET="${TARGET_TRIPLE}" bun run stage:codex-engine)
 
+echo "[build-macos-arm64] Building and staging local Agent plugins..."
+(cd "${DESKTOP_DIR}" && bun run stage:agent-plugins -- --target "${TARGET_TRIPLE}")
+(cd "${DESKTOP_DIR}" && bun run stage:chrome-plugin -- --target "${TARGET_TRIPLE}")
+(cd "${DESKTOP_DIR}" && bun run stage:browser-plugin -- --target "${TARGET_TRIPLE}")
+(cd "${DESKTOP_DIR}" && bun run stage:record-replay-plugin -- --target "${TARGET_TRIPLE}")
+
 echo "[build-macos-arm64] Cleaning stale Electron outputs..."
 rm -rf "${DESKTOP_DIR}/dist"
 rm -rf "${DESKTOP_DIR}/electron-dist"

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, clipboard, dialog, ipcMain, Notification, powerMonitor, safeStorage, screen, session, webContents } from 'electron'
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Notification, safeStorage, screen, session, webContents } from 'electron'
 import { autoUpdater } from 'electron-updater'
 import { randomBytes } from 'node:crypto'
 import path from 'node:path'
@@ -47,6 +47,7 @@ import {
   type CodexNativeServerRequest,
   type NativeCodexSkillSelector,
   type NativeCodexThreadGoalSetInput,
+  type NativeCodexTurnInput,
 } from './services/codexNativeAppServer'
 import type { CodexNativeModelRoute } from './services/codexNativeProvider'
 import { InstallationSessionManager } from './services/installationSession'
@@ -60,10 +61,19 @@ import {
 import { logNotificationSmokeRendererAck, scheduleNotificationSmoke } from './services/notificationSmoke'
 import { normalizeZoomFactor } from './services/zoom'
 import { readComputerUseConfiguration, writeComputerUseConfiguration } from './services/computerUseConfiguration'
+import {
+  getChromeNativeMessagingHostStatus,
+  installChromeNativeMessagingHost,
+  uninstallChromeNativeMessagingHost,
+} from './services/chromeNativeMessaging'
+import {
+  readBrowserPolicyConfiguration,
+  writeBrowserPolicyConfiguration,
+  type BrowserPolicyConfiguration,
+} from './services/browserPolicyConfiguration'
 import { InAppBrowserHost } from './services/inAppBrowserHost'
 import { requestRecordReplayStop } from './services/recordReplayLifecycle'
 import { ScheduledAgentTaskService, type ScheduledAgentTask, type ScheduledAgentTaskInput } from './services/scheduledAgentTasks'
-import { RemoteHostControllerClient, RemoteHostService } from './services/remoteHost'
 import { resolveRendererEntry } from './services/rendererEntry'
 import {
   nativeInteractiveServerRequest,
@@ -103,8 +113,6 @@ let providerCredentialService: ProviderCredentialService | null = null
 let nativeAgentRuntime: ElectronCodexNativeRuntime | null = null
 let inAppBrowserHost: InAppBrowserHost | null = null
 let scheduledAgentTasks: ScheduledAgentTaskService | null = null
-let remoteHostService: RemoteHostService | null = null
-let systemScreenLocked = false
 let isQuitting = false
 let trayController: TrayController | null = null
 const trustedProductWindowEntries = new Map<BrowserWindow, string>()
@@ -284,8 +292,8 @@ async function confirmNativeAgentCollaborationMode(
   const result = await dialog.showMessageBox(owner, {
     type: 'question',
     title: '切换到 Agent 规划模式？',
-    message: '本次及后续 Turn 将采用 Codex Rust Core 的内置规划协作指令。',
-    detail: '不会安装第三方插件或加载额外技能目录；工具、沙箱和审批仍由原生 Codex 规则控制。',
+    message: '本次及后续任务将使用 BilliardBuddy 的内置规划模式。',
+    detail: '不会安装第三方插件或加载额外技能目录；现有工具、文件、网络和确认设置保持不变。',
     buttons: ['取消', '继续'],
     defaultId: 0,
     cancelId: 0,
@@ -328,11 +336,9 @@ async function confirmNativeAgentWindowsSandboxSetup(
     type: 'warning',
     title: '初始化 Windows Agent 沙箱？',
     message: elevated
-      ? 'BilliardBuddy 将启动原生 Windows Sandbox 初始化，Windows 会要求管理员确认。'
-      : 'BilliardBuddy 将启动原生 Windows Sandbox 初始化。',
-    detail: elevated
-      ? '这不是“完全访问”。初始化由 BilliardBuddy 内置 Rust Agent 内核执行，并只为本应用的私有 Agent runtime 保存原生沙箱配置。'
-      : '这不是“完全访问”。初始化由 BilliardBuddy 内置 Rust Agent 内核执行，并只为本应用的私有 Agent runtime 保存原生沙箱配置。',
+      ? 'BilliardBuddy 将配置 Windows Agent 沙箱，Windows 会要求管理员确认。'
+      : 'BilliardBuddy 将配置 Windows Agent 沙箱。',
+    detail: '这不是“完全访问”。沙箱配置只用于 BilliardBuddy，并保存在本应用的私有数据目录中。',
     buttons: ['取消', '继续初始化'],
     defaultId: 0,
     cancelId: 0,
@@ -384,29 +390,14 @@ async function confirmNativeAgentScheduledTask(
   const result = await dialog.showMessageBox(owner, {
     type: 'warning',
     title: '启用 Agent 计划任务？',
-    message: '到期时，BilliardBuddy 会在应用仍运行的前提下恢复原生 Codex Thread 并启动一个普通 Turn。',
-    detail: `频率：${scheduledTaskDescription(task)}\n任务：${task.prompt.replace(/[\r\n]+/g, ' ').slice(0, 600)}\n\n任务仍遵循该 Thread 的 Rust Core 沙箱、插件与审批；没有窗口或应用退出时不会在后台启动。`,
+    message: '到期时，BilliardBuddy 会在应用仍运行的前提下恢复这个任务并继续执行。',
+    detail: `频率：${scheduledTaskDescription(task)}\n任务：${task.prompt.replace(/[\r\n]+/g, ' ').slice(0, 600)}\n\n任务仍遵循当前的文件、网络、插件和确认设置；没有可用窗口或应用已退出时不会启动。`,
     buttons: ['取消', '启用计划任务'],
     defaultId: 0,
     cancelId: 0,
     noLink: true,
   })
   if (result.response !== 1) throw new Error('BILLIARDBUDDY_SCHEDULED_TASK_DECLINED')
-}
-
-/** Remote pairing authorizes only typed Turn requests; Core approvals remain local. */
-async function confirmRemoteHostEnable(owner: BrowserWindow): Promise<void> {
-  const result = await dialog.showMessageBox(owner, {
-    type: 'warning',
-    title: '启用远程 Agent 宿主？',
-    message: '已配对的另一台 BilliardBuddy 设备可以向这台电脑发送“启动任务”和“追加追问”。',
-    detail: '不会共享模型 Key、文件、屏幕、浏览器 Cookie 或 Rust Thread 历史。任务仍在本机 Codex Core 中执行，并继续遵循原有沙箱、插件与审批；远程配对不会自动授予 Computer Use 等桌面权限。',
-    buttons: ['取消', '启用远程宿主'],
-    defaultId: 0,
-    cancelId: 0,
-    noLink: true,
-  })
-  if (result.response !== 1) throw new Error('BILLIARDBUDDY_REMOTE_HOST_DECLINED')
 }
 
 /**
@@ -630,68 +621,6 @@ function getScheduledAgentTasks(): ScheduledAgentTaskService {
     },
   })
   return scheduledAgentTasks
-}
-
-function productGatewayUrl(): string {
-  return requireProductGatewayConfig(resolveProductGatewayConfig({
-    isPackaged: app.isPackaged,
-    resourcesPath: process.resourcesPath,
-    devBuildDir: path.join(unpackedRoot(), 'build'),
-    env: process.env,
-  })).url
-}
-
-/**
- * Remote Host is deliberately a typed BilliardBuddy relay, not an exposed
- * Codex App Server socket. It re-enters the existing Core Thread/Turn path.
- */
-function getRemoteHostService(): RemoteHostService {
-  remoteHostService ??= new RemoteHostService({
-    userDataPath: app.getPath('userData'),
-    gatewayUrl: productGatewayUrl,
-    accessToken: () => getInstallationSessionManager().accessToken(),
-    canAccept: () => !systemScreenLocked && Boolean(mainWindow && !mainWindow.isDestroyed()),
-    execute: async command => {
-      const owner = mainWindow?.webContents
-      if (!owner || owner.isDestroyed()) throw new Error('BILLIARDBUDDY_REMOTE_HOST_UNAVAILABLE')
-      if (command.type === 'start_turn') {
-        claimNativeAgentThread(owner.id, command.threadId)
-        const runtime = getNativeAgentRuntime()
-        await runtime.resumeThread({
-          threadId: command.threadId,
-          cwd: command.cwd,
-          route: await resolveNativeAgentRoute(),
-        })
-        const turn = await runtime.startTurn(
-          { id: command.threadId },
-          [{ type: 'text', text: command.text }],
-          `remote-${command.id}`,
-        )
-        nativeAgentTurnOwners.set(turn.id, owner.id)
-        return
-      }
-      assertNativeAgentThreadOwner(owner.id, command.threadId)
-      assertNativeAgentTurnOwner(owner.id, command.turnId)
-      await getNativeAgentRuntime().steerTurn(
-        { id: command.threadId },
-        { id: command.turnId },
-        command.text,
-        `remote-${command.id}`,
-      )
-    },
-    onStatus: status => {
-      const owner = mainWindow?.webContents
-      if (owner && !owner.isDestroyed()) sendNativeAgentEvent(owner.id, { type: 'remote-host-status', ...status })
-    },
-  })
-  return remoteHostService
-}
-
-function getRemoteHostController(): RemoteHostControllerClient {
-  return new RemoteHostControllerClient({
-    gatewayUrl: productGatewayUrl,
-    accessToken: () => getInstallationSessionManager().accessToken(),
-  })
 }
 
 /**
@@ -1051,6 +980,93 @@ function registerIpcHandlers() {
     const { threadId, ...page } = input
     return await (await getReadyNativeAgentThreadRuntime(threadId)).listThreadItems({ id: threadId }, page)
   })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentSearchThreadOccurrences, async (event, payload) => {
+    const input = payload as { threadId: string, searchTerm: string, cursor?: string, limit?: number }
+    assertNativeAgentThreadOwner(event.sender.id, input.threadId)
+    const { threadId, ...search } = input
+    return await (await getReadyNativeAgentThreadRuntime(threadId)).searchThreadOccurrences({ id: threadId }, search)
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentListModels, async (event, payload) => {
+    const input = payload as { threadId: string, cursor?: string, limit?: number, includeHidden?: boolean }
+    assertNativeAgentThreadOwner(event.sender.id, input.threadId)
+    const { threadId, ...page } = input
+    return await (await getReadyNativeAgentThreadRuntime(threadId)).listModels({ id: threadId }, page)
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentReadModelProviderCapabilities, async (event, payload) => {
+    const input = payload as { threadId: string }
+    assertNativeAgentThreadOwner(event.sender.id, input.threadId)
+    return await (await getReadyNativeAgentThreadRuntime(input.threadId)).readModelProviderCapabilities({ id: input.threadId })
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentListPermissionProfiles, async (event, payload) => {
+    const input = payload as { threadId: string, cwd: string, cursor?: string, limit?: number }
+    assertNativeAgentThreadOwner(event.sender.id, input.threadId)
+    const { threadId, ...page } = input
+    return await (await getReadyNativeAgentThreadRuntime(threadId)).listPermissionProfiles({ id: threadId }, page)
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentReadConfigRequirements, async (event, payload) => {
+    const input = payload as { threadId: string }
+    assertNativeAgentThreadOwner(event.sender.id, input.threadId)
+    return await (await getReadyNativeAgentThreadRuntime(input.threadId)).readConfigRequirements({ id: input.threadId })
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentSetThreadMemoryMode, async (event, payload) => {
+    const input = payload as { threadId: string, mode: 'enabled' | 'disabled' }
+    assertNativeAgentThreadOwner(event.sender.id, input.threadId)
+    await (await getReadyNativeAgentThreadRuntime(input.threadId)).setThreadMemoryMode({ id: input.threadId }, input.mode)
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentResetMemory, async (event, payload) => {
+    const input = payload as { threadId: string }
+    assertNativeAgentThreadOwner(event.sender.id, input.threadId)
+    await confirmNativeAgentExtensionChange(
+      currentWindow(event),
+      '清除 Agent 记忆？',
+      'BilliardBuddy 将删除 Agent 保存的本地记忆。',
+      '会话历史不会删除；本地记忆清除后无法恢复。',
+    )
+    await (await getReadyNativeAgentThreadRuntime(input.threadId)).resetMemory({ id: input.threadId })
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentListThreadSections, async (event, payload) => {
+    const input = payload as { threadId: string, cursor?: string, limit?: number }
+    assertNativeAgentThreadOwner(event.sender.id, input.threadId)
+    const { threadId, ...page } = input
+    return await (await getReadyNativeAgentThreadRuntime(threadId)).listThreadSections({ id: threadId }, page)
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentCreateThreadSection, async (event, payload) => {
+    const input = payload as { threadId: string, name: string }
+    assertNativeAgentThreadOwner(event.sender.id, input.threadId)
+    return await (await getReadyNativeAgentThreadRuntime(input.threadId)).createThreadSection({ id: input.threadId }, input.name)
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentUpdateThreadSection, async (event, payload) => {
+    const input = payload as { threadId: string, sectionId: string, name: string }
+    assertNativeAgentThreadOwner(event.sender.id, input.threadId)
+    return await (await getReadyNativeAgentThreadRuntime(input.threadId)).updateThreadSection(
+      { id: input.threadId },
+      input.sectionId,
+      input.name,
+    )
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentDeleteThreadSection, async (event, payload) => {
+    const input = payload as { threadId: string, sectionId: string }
+    assertNativeAgentThreadOwner(event.sender.id, input.threadId)
+    await confirmNativeAgentExtensionChange(
+      currentWindow(event),
+      '删除 Agent 会话分组？',
+      'BilliardBuddy 将删除这个会话分组。',
+      `分组 ID：${input.sectionId}\n分组中的会话不会被删除。`,
+    )
+    await (await getReadyNativeAgentThreadRuntime(input.threadId)).deleteThreadSection(
+      { id: input.threadId },
+      input.sectionId,
+    )
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentMoveThreadToSection, async (event, payload) => {
+    const input = payload as { threadId: string, sectionId: string | null, beforeThreadId?: string }
+    assertNativeAgentThreadOwner(event.sender.id, input.threadId)
+    await (await getReadyNativeAgentThreadRuntime(input.threadId)).moveThreadToSection(
+      { id: input.threadId },
+      input.sectionId,
+      input.beforeThreadId,
+    )
+  })
   registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentGetThreadGoal, async (event, payload) => {
     const input = payload as { threadId: string }
     assertNativeAgentThreadOwner(event.sender.id, input.threadId)
@@ -1079,8 +1095,8 @@ function registerIpcHandlers() {
     await confirmNativeAgentBackgroundTerminalChange(
       currentWindow(event),
       '停止 Agent 后台终端？',
-      'BilliardBuddy 将让 Codex Rust Core 停止这个 Thread 启动的后台终端。',
-      `后台终端 ID：${input.processId}\n只会停止 Rust Core 已跟踪的这个 Thread 进程，不会终止任意系统进程。`,
+      'BilliardBuddy 将停止这个会话启动的后台终端。',
+      `后台终端 ID：${input.processId}\n只会停止这个会话记录的进程，不会终止任意系统进程。`,
     )
     return await (await getReadyNativeAgentThreadRuntime(input.threadId)).terminateBackgroundTerminal(
       { id: input.threadId },
@@ -1093,8 +1109,8 @@ function registerIpcHandlers() {
     await confirmNativeAgentBackgroundTerminalChange(
       currentWindow(event),
       '停止全部 Agent 后台终端？',
-      'BilliardBuddy 将让 Codex Rust Core 停止这个 Thread 的全部后台终端。',
-      '仍在运行的该 Thread 后台命令会结束；不会影响未被 Rust Core 跟踪的系统进程。',
+      'BilliardBuddy 将停止这个会话的全部后台终端。',
+      '仍在运行的后台命令会结束；不会影响不属于这个会话的系统进程。',
     )
     await (await getReadyNativeAgentThreadRuntime(input.threadId)).cleanBackgroundTerminals({ id: input.threadId })
   })
@@ -1139,13 +1155,13 @@ function registerIpcHandlers() {
     return review
   })
   registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentSteerTurn, async (event, payload) => {
-    const input = payload as { threadId: string, turnId: string, text: string, clientUserMessageId?: string }
+    const input = payload as { threadId: string, turnId: string, input: NativeCodexTurnInput[], clientUserMessageId?: string }
     assertNativeAgentThreadOwner(event.sender.id, input.threadId)
     assertNativeAgentTurnOwner(event.sender.id, input.turnId)
     await getNativeAgentRuntime().steerTurn(
       { id: input.threadId },
       { id: input.turnId },
-      input.text,
+      input.input,
       input.clientUserMessageId,
     )
   })
@@ -1209,7 +1225,7 @@ function registerIpcHandlers() {
       clearing
         ? '之后的 Agent Turn 将不再从此前额外目录加载技能。'
         : '这些目录中的 Skill 指令会影响之后的 Agent Turn；请只加载你信任的目录。',
-      clearing ? '将清除 Rust Codex 的额外 Skill 目录配置。' : input.roots.join('\n'),
+      clearing ? '将清除额外 Skill 目录配置。' : input.roots.join('\n'),
     )
     await (await getReadyNativeAgentThreadRuntime(input.threadId)).setExtraSkillRoots({ id: input.threadId }, input.roots)
   })
@@ -1299,39 +1315,6 @@ function registerIpcHandlers() {
     if (!task) throw new Error('BILLIARDBUDDY_SCHEDULED_TASK_NOT_FOUND')
     await getScheduledAgentTasks().remove(input.taskId)
   })
-  registerHandler(ELECTRON_IPC_CHANNELS.remoteHostGetStatus, async () =>
-    getRemoteHostService().status(),
-  )
-  registerHandler(ELECTRON_IPC_CHANNELS.remoteHostSetEnabled, async (event, payload) => {
-    const input = payload as { enabled: boolean }
-    const host = getRemoteHostService()
-    if (input.enabled && !host.status().enabled) await confirmRemoteHostEnable(currentWindow(event))
-    await host.setEnabled(input.enabled)
-    return host.status()
-  })
-  registerHandler(ELECTRON_IPC_CHANNELS.remoteHostCreatePairing, async (_event, payload) => {
-    const input = payload as { ttlSeconds?: number }
-    return await getRemoteHostService().createPairing(input.ttlSeconds)
-  })
-  registerHandler(ELECTRON_IPC_CHANNELS.remoteHostListControllers, async () =>
-    await getRemoteHostService().listControllers(),
-  )
-  registerHandler(ELECTRON_IPC_CHANNELS.remoteHostRevokeController, async (_event, payload) => {
-    const input = payload as { installationId: string }
-    await getRemoteHostService().revokeController(input.installationId)
-  })
-  registerHandler(ELECTRON_IPC_CHANNELS.remoteControllerClaim, async (_event, payload) => {
-    const input = payload as { pairingCode: string }
-    return await getRemoteHostController().claim(input.pairingCode)
-  })
-  registerHandler(ELECTRON_IPC_CHANNELS.remoteControllerStartTurn, async (_event, payload) => {
-    const input = payload as { hostInstallationId: string, threadId: string, cwd: string, text: string }
-    return await getRemoteHostController().startTurn(input.hostInstallationId, input)
-  })
-  registerHandler(ELECTRON_IPC_CHANNELS.remoteControllerSteerTurn, async (_event, payload) => {
-    const input = payload as { hostInstallationId: string, threadId: string, turnId: string, text: string }
-    return await getRemoteHostController().steerTurn(input.hostInstallationId, input)
-  })
   registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentListHooks, async (event, payload) => {
     const input = payload as { threadId: string, cwd: string }
     assertNativeAgentThreadOwner(event.sender.id, input.threadId)
@@ -1358,7 +1341,7 @@ function registerIpcHandlers() {
     await confirmNativeAgentExtensionChange(
       currentWindow(event),
       '添加 Agent 插件市场？',
-      'BilliardBuddy 将让 Codex Rust Core 添加这个本地或 Git 插件市场。只添加你信任的来源。',
+      'BilliardBuddy 将添加这个本地或 Git 插件来源。只添加你信任的来源。',
       `来源：${input.source}${input.refName === undefined ? '' : `\n版本：${input.refName}`}`,
     )
     return await (await getReadyNativeAgentThreadRuntime(input.threadId)).addMarketplace({ id: input.threadId }, input)
@@ -1369,7 +1352,7 @@ function registerIpcHandlers() {
     await confirmNativeAgentExtensionChange(
       currentWindow(event),
       '启用 BilliardBuddy 本地扩展？',
-      'Codex Rust Core 将添加随 BilliardBuddy 安装的本地插件市场。每个插件仍须单独安装、启用并按原生规则授权。',
+      'BilliardBuddy 将添加随应用安装的本地扩展来源。每个扩展仍须单独安装和启用。',
       '来源：BilliardBuddy 本地扩展',
     )
     return await (await getReadyNativeAgentThreadRuntime(input.threadId)).addMarketplace(
@@ -1383,7 +1366,7 @@ function registerIpcHandlers() {
     await confirmNativeAgentExtensionChange(
       currentWindow(event),
       '移除 Agent 插件市场？',
-      'Codex Rust Core 将移除此市场的配置和受管缓存；已安装插件的状态由原生 Core 决定。',
+      'BilliardBuddy 将移除此扩展来源的配置和本地缓存；已安装的扩展不会因此自动卸载。',
       `市场：${input.marketplaceName}`,
     )
     return await (await getReadyNativeAgentThreadRuntime(input.threadId)).removeMarketplace({ id: input.threadId }, input.marketplaceName)
@@ -1394,7 +1377,7 @@ function registerIpcHandlers() {
     await confirmNativeAgentExtensionChange(
       currentWindow(event),
       '更新 Agent 插件市场？',
-      'Codex Rust Core 会从已配置来源更新市场，并原子替换本地受管内容。',
+      'BilliardBuddy 将从已配置来源检查更新并替换本地缓存。',
       input.marketplaceName === undefined ? '市场：全部已配置市场' : `市场：${input.marketplaceName}`,
     )
     return await (await getReadyNativeAgentThreadRuntime(input.threadId)).upgradeMarketplace(
@@ -1408,7 +1391,7 @@ function registerIpcHandlers() {
     await confirmNativeAgentExtensionChange(
       currentWindow(event),
       '安装 Agent 插件？',
-      '插件可提供 Skills、MCP 或其他 Codex 原生能力；后续授权仍由 Rust Core 单独请求。',
+      '插件可以提供 Skills 和新工具。安装后仍需按实际用途启用并确认所需权限。',
       `插件：${input.pluginName}\n市场：${input.marketplacePath}`,
     )
     return await (await getReadyNativeAgentThreadRuntime(input.threadId)).installPlugin({ id: input.threadId }, input)
@@ -1419,7 +1402,7 @@ function registerIpcHandlers() {
     await confirmNativeAgentExtensionChange(
       currentWindow(event),
       '卸载 Agent 插件？',
-      'Codex Rust Core 将删除该插件的本地安装和启用配置。',
+      'BilliardBuddy 将删除该插件的本地安装和启用配置。',
       `插件：${input.pluginId}`,
     )
     await (await getReadyNativeAgentThreadRuntime(input.threadId)).uninstallPlugin({ id: input.threadId }, input.pluginId)
@@ -1437,10 +1420,62 @@ function registerIpcHandlers() {
     await confirmNativeAgentExtensionChange(
       currentWindow(event),
       '更新 Computer Use 允许的应用？',
-      '只有列表中的应用可被 Computer Use 观察或操作。系统屏幕录制、辅助功能和 Codex 工具审批仍会单独生效。',
+      '只有列表中的应用可被 Computer Use 观察或操作。系统屏幕录制、辅助功能和操作确认仍会单独生效。',
       input.allowedAppIds.length === 0 ? '将移除全部允许的应用。' : input.allowedAppIds.join('\n'),
     )
     return await writeComputerUseConfiguration(process.platform, app.getPath('userData'), input)
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.chromeNativeMessagingGetStatus, async () =>
+    await getChromeNativeMessagingHostStatus({ platform: process.platform, desktopRoot: unpackedRoot() }),
+  )
+  registerHandler(ELECTRON_IPC_CHANNELS.chromeNativeMessagingInstall, async (event) => {
+    await confirmNativeAgentExtensionChange(
+      currentWindow(event),
+      '连接 BilliardBuddy Chrome 扩展？',
+      '这会为固定的 BilliardBuddy 扩展注册本机消息通道。不会读取 Cookie、密码或 Chrome Profile 文件。',
+      'Chrome 会把扩展发起的受限请求交给随应用签名的本机 Host。',
+    )
+    const registration = { platform: process.platform, desktopRoot: unpackedRoot() }
+    await installChromeNativeMessagingHost(registration)
+    return await getChromeNativeMessagingHostStatus(registration)
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.chromeNativeMessagingUninstall, async (event) => {
+    await confirmNativeAgentExtensionChange(
+      currentWindow(event),
+      '断开 BilliardBuddy Chrome 扩展？',
+      '这会删除 BilliardBuddy 与 Chrome 的本机连接配置，不会改动浏览器资料。',
+      '断开后，Agent 无法通过该扩展控制 Chrome。',
+    )
+    const registration = { platform: process.platform, desktopRoot: unpackedRoot() }
+    await uninstallChromeNativeMessagingHost(registration)
+    return await getChromeNativeMessagingHostStatus(registration)
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.browserUsePolicyGet, async () =>
+    await readBrowserPolicyConfiguration(app.getPath('userData'), 'browser-use'),
+  )
+  registerHandler(ELECTRON_IPC_CHANNELS.browserUsePolicySet, async (event, payload) => {
+    const input = payload as BrowserPolicyConfiguration
+    await confirmNativeAgentExtensionChange(
+      currentWindow(event),
+      '更新 BilliardBuddy Browser 网站范围？',
+      '允许列表控制无需逐站确认即可访问的网站，阻止列表始终优先。更新会清除当前会话的临时网站授权。',
+      `允许：${input.allowedHosts.join(', ') || '无'}\n阻止：${input.blockedHosts.join(', ') || '无'}`,
+    )
+    await writeBrowserPolicyConfiguration(app.getPath('userData'), 'browser-use', input)
+    return await getInAppBrowserHost().reloadPolicy()
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.chromeControlPolicyGet, async () =>
+    await readBrowserPolicyConfiguration(app.getPath('userData'), 'chrome-control'),
+  )
+  registerHandler(ELECTRON_IPC_CHANNELS.chromeControlPolicySet, async (event, payload) => {
+    const input = payload as BrowserPolicyConfiguration
+    await confirmNativeAgentExtensionChange(
+      currentWindow(event),
+      '更新 BilliardBuddy Chrome 网站范围？',
+      '只有允许列表内且由用户主动连接的标签页可被扩展使用；阻止列表始终优先。更新会在下一次工具操作前生效，并断开已不再允许的标签页。',
+      `允许：${input.allowedHosts.join(', ') || '无'}\n阻止：${input.blockedHosts.join(', ') || '无'}`,
+    )
+    return await writeBrowserPolicyConfiguration(app.getPath('userData'), 'chrome-control', input)
   })
   registerHandler(ELECTRON_IPC_CHANNELS.commandInvoke, (_event, payload) => handleCommandInvoke(payload))
   registerHandler(ELECTRON_IPC_CHANNELS.clipboardReadText, () => clipboard.readText())
@@ -1613,14 +1648,6 @@ app.whenReady().then(async () => {
   // and sidecar failures, so establish it before constructing the backend.
   await createMainWindow()
   await getScheduledAgentTasks().start()
-  await getRemoteHostService().start()
-  powerMonitor.on('lock-screen', () => {
-    systemScreenLocked = true
-  })
-  powerMonitor.on('unlock-screen', () => {
-    systemScreenLocked = false
-    remoteHostService?.refresh()
-  })
   writeWindowSmokeSnapshot(mainWindow, 'backend-starting')
   try {
     void getServerRuntime().startServer()
@@ -1680,8 +1707,6 @@ app.on('before-quit', () => {
   requestRecordReplayStop(app.getPath('userData'))
   scheduledAgentTasks?.stop()
   scheduledAgentTasks = null
-  remoteHostService?.stop()
-  remoteHostService = null
   rejectNativeAgentServerRequests(new Error('CODEX_NATIVE_APP_QUITTING'))
   nativeAgentRuntime?.closeImmediately()
   nativeAgentRuntime = null

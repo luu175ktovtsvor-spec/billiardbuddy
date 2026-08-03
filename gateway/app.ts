@@ -3,7 +3,6 @@ import { createHash, createHmac } from 'node:crypto'
 import { dirname } from 'node:path'
 import { mkdirSync } from 'node:fs'
 import { AuthAuthority, AuthError } from './installationAuth'
-import { RemoteHostError, SqliteRemoteHostRegistry, type RemoteHostCommandInput } from './remoteHost'
 import {
   createGatewayTranscriber,
   GatewayTranscriptionError,
@@ -793,36 +792,6 @@ function hasInstallationAccess(authority: AuthAuthority, request: Request): bool
   try { auth(authority, request); return true } catch { return false }
 }
 
-async function remoteJsonBody(request: Request): Promise<Record<string, unknown>> {
-  if (!isJsonContentType(request.headers.get('content-type'))) throw new HttpError(415, 'remote_content_type_required')
-  const raw = await readRequestBodyBounded(request, 40_000, undefined, 5_000)
-  try {
-    const parsed: unknown = JSON.parse(raw)
-    if (!isRecord(parsed)) throw new Error('not object')
-    return parsed
-  } catch { throw new HttpError(400, 'remote_body_invalid') }
-}
-
-function remoteString(value: unknown, maximum: number): string | undefined {
-  return typeof value === 'string' && value.length > 0 && value.length <= maximum && !value.includes('\u0000') ? value : undefined
-}
-
-function remoteCommandFromBody(body: Record<string, unknown>): RemoteHostCommandInput {
-  if (body.type === 'start_turn' && Object.keys(body).every(key => ['type', 'thread_id', 'cwd', 'text'].includes(key))) {
-    const threadId = remoteString(body.thread_id, 200)
-    const cwd = remoteString(body.cwd, 4_096)
-    const text = remoteString(body.text, 32_000)
-    if (threadId && cwd && text) return { type: 'start_turn', threadId, cwd, text }
-  }
-  if (body.type === 'steer_turn' && Object.keys(body).every(key => ['type', 'thread_id', 'turn_id', 'text'].includes(key))) {
-    const threadId = remoteString(body.thread_id, 200)
-    const turnId = remoteString(body.turn_id, 200)
-    const text = remoteString(body.text, 32_000)
-    if (threadId && turnId && text) return { type: 'steer_turn', threadId, turnId, text }
-  }
-  throw new HttpError(400, 'remote_command_invalid')
-}
-
 /** 传给美国 relay 的受信任务归属身份只来自已验证 owner。 */
 function relayOwner(owner: string): string {
   return owner
@@ -1287,7 +1256,6 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
     ?? new SqliteUsageBudgetService(deps.usageStore ? ':memory:' : config.db)
   const operationResults = deps.operationResultStore
     ?? new SqliteGatewayOperationResultStore(deps.usageStore ? ':memory:' : config.db)
-  const remoteHosts = new SqliteRemoteHostRegistry({ dbPath: deps.usageStore ? ':memory:' : config.db })
   const mimoBucket = new TokenBucket(config.mimoRpm)
   const mimoReservations = new MimoReservationScheduler({
     maxConcurrent: config.mimoConc,
@@ -1858,77 +1826,6 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
         return jsonResponse({ object: 'list', data })
       }
 
-      // Remote Host is BilliardBuddy's own paired-device relay boundary. It is
-      // intentionally independent of OpenAI's account-bound remote-control
-      // service and carries only typed Turn/Steer commands, never files, keys,
-      // screenshots, cookies or generic App Server JSON-RPC.
-      if (request.method === 'POST' && url.pathname === '/v1/remote/host/pairings') {
-        const identity = auth(authority, request)
-        requireProviderProtocol(request)
-        const body = await remoteJsonBody(request)
-        if (!Object.keys(body).every(key => key === 'ttl_seconds')) throw new HttpError(400, 'remote_body_invalid')
-        const ttlSeconds = body.ttl_seconds === undefined ? undefined : body.ttl_seconds
-        if (ttlSeconds !== undefined && (typeof ttlSeconds !== 'number' || !Number.isSafeInteger(ttlSeconds) || ttlSeconds < 60 || ttlSeconds > 600)) throw new HttpError(400, 'remote_pairing_ttl_invalid')
-        const pairing = remoteHosts.createPairing(identity, typeof ttlSeconds === 'number' ? ttlSeconds * 1000 : undefined)
-        return jsonResponse({ pairing_code: pairing.pairingCode, expires_at: pairing.expiresAt })
-      }
-
-      if (request.method === 'POST' && url.pathname === '/v1/remote/pairings/claim') {
-        const identity = auth(authority, request)
-        requireProviderProtocol(request)
-        const body = await remoteJsonBody(request)
-        if (!Object.keys(body).every(key => key === 'pairing_code')) throw new HttpError(400, 'remote_body_invalid')
-        const pairingCode = remoteString(body.pairing_code, 80)
-        if (!pairingCode) throw new HttpError(400, 'remote_pairing_code_invalid')
-        const claimed = remoteHosts.claimPairing(identity, pairingCode)
-        return jsonResponse({ host_installation_id: claimed.hostInstallationId })
-      }
-
-      if (request.method === 'GET' && url.pathname === '/v1/remote/host/controllers') {
-        const identity = auth(authority, request)
-        requireProviderProtocol(request)
-        return jsonResponse({ data: remoteHosts.listControllers(identity).map(item => ({ installation_id: item.installationId, created_at: item.createdAt })) })
-      }
-
-      if (request.method === 'DELETE' && url.pathname.startsWith('/v1/remote/host/controllers/')) {
-        const identity = auth(authority, request)
-        requireProviderProtocol(request)
-        const controllerInstallationId = decodeURIComponent(url.pathname.slice('/v1/remote/host/controllers/'.length))
-        if (!controllerInstallationId || controllerInstallationId.includes('/')) throw new HttpError(400, 'remote_controller_invalid')
-        remoteHosts.revokeController(identity, controllerInstallationId)
-        return new Response(null, { status: 204 })
-      }
-
-      if (request.method === 'POST' && url.pathname.startsWith('/v1/remote/hosts/') && url.pathname.endsWith('/commands')) {
-        const identity = auth(authority, request)
-        requireProviderProtocol(request)
-        const hostInstallationId = decodeURIComponent(url.pathname.slice('/v1/remote/hosts/'.length, -'/commands'.length))
-        if (!hostInstallationId || hostInstallationId.includes('/')) throw new HttpError(400, 'remote_host_invalid')
-        const queued = remoteHosts.enqueue(identity, hostInstallationId, remoteCommandFromBody(await remoteJsonBody(request)))
-        return jsonResponse({ command_id: queued.commandId }, { status: 202 })
-      }
-
-      if (request.method === 'GET' && url.pathname === '/v1/remote/host/commands') {
-        const identity = auth(authority, request)
-        requireProviderProtocol(request)
-        const limit = url.searchParams.has('limit') ? Number.parseInt(url.searchParams.get('limit') ?? '', 10) : undefined
-        const commands = remoteHosts.claimCommands(identity, limit)
-        return jsonResponse({ data: commands.map(command => command.type === 'start_turn'
-          ? { id: command.id, type: command.type, thread_id: command.threadId, cwd: command.cwd, text: command.text, created_at: command.createdAt }
-          : { id: command.id, type: command.type, thread_id: command.threadId, turn_id: command.turnId, text: command.text, created_at: command.createdAt }) })
-      }
-
-      if (request.method === 'POST' && url.pathname.startsWith('/v1/remote/host/commands/') && url.pathname.endsWith('/complete')) {
-        const identity = auth(authority, request)
-        requireProviderProtocol(request)
-        const commandId = decodeURIComponent(url.pathname.slice('/v1/remote/host/commands/'.length, -'/complete'.length))
-        if (!commandId || commandId.includes('/')) throw new HttpError(400, 'remote_command_invalid')
-        const body = await remoteJsonBody(request)
-        if (!Object.keys(body).every(key => key === 'status') || !['completed', 'rejected', 'failed'].includes(String(body.status))) throw new HttpError(400, 'remote_completion_invalid')
-        remoteHosts.completeCommand(identity, commandId, body.status as 'completed' | 'rejected' | 'failed')
-        return new Response(null, { status: 204 })
-      }
-
       if (request.method === 'POST' && url.pathname === PROVIDER_OPERATION_ACK_PATH) {
         const identity = auth(authority, request)
         requireProviderProtocol(request)
@@ -2365,7 +2262,6 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
       return jsonError(404, 'not found')
     } catch (err) {
       if (err instanceof HttpError) return jsonError(err.status, err.detail)
-      if (err instanceof RemoteHostError) return jsonError(err.status, err.code)
       if (err instanceof CapacityQueueError || err instanceof ManagedResponsesRequestError) {
         return jsonError(err.status, err.publicMessage)
       }

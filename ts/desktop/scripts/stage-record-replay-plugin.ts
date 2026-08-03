@@ -1,6 +1,7 @@
 import { spawnSync } from 'node:child_process'
 import { chmodSync, copyFileSync, cpSync, existsSync, lstatSync, mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { join, resolve } from 'node:path'
+import { resolveCargoCommand, verifyProductContent, verifyProductSkill, verifyStdioMcpHandshake } from './native-build-tools'
 
 type Target = 'aarch64-apple-darwin' | 'x86_64-apple-darwin' | 'x86_64-pc-windows-msvc' | 'aarch64-pc-windows-msvc'
 type Options = { destinationDir: string, target: Target, verifyOnly?: boolean }
@@ -29,7 +30,7 @@ function run(command: string, arguments_: string[], cwd?: string) {
     throw new Error(`Record and Replay 构建命令失败: ${command} ${arguments_.join(' ')}${detail ? `\n${detail}` : ''}`)
   }
 }
-function cargo() { const configured = process.env.CARGO?.trim(); if (configured && existsSync(configured)) return configured; const found = Bun.which('cargo'); if (!found) throw new Error('缺少 Rust Cargo；请在原生构建机或 GitHub Actions 上构建 Record and Replay 插件'); return found }
+function cargo() { return resolveCargoCommand('缺少 Rust Cargo；请在原生构建机或 GitHub Actions 上构建 Record and Replay 插件') }
 function macService(destination: string, target: Target) {
   const source = join(sourceRoot, 'macos', 'BilliardBuddyRecordReplayService.swift'); const info = join(sourceRoot, 'macos', 'Info.plist'); file(source); file(info)
   const swiftc = process.env.SWIFTC?.trim() || Bun.which('swiftc'); if (!swiftc) throw new Error('缺少 Swift 编译器')
@@ -53,11 +54,15 @@ export function verifyStagedRecordReplayPlugin(options: Options) {
   for (const path of [join(root, '.codex-plugin', 'plugin.json'), join(root, '.mcp.json'), join(root, 'skills', 'record-and-replay', 'SKILL.md'), join(root, 'bin', binary(options.target))]) file(path)
   const manifest = JSON.parse(readFileSync(join(root, '.codex-plugin', 'plugin.json'), 'utf8')) as { name?: unknown, mcpServers?: unknown, skills?: unknown }
   if (manifest.name !== PLUGIN || manifest.mcpServers !== './.mcp.json' || manifest.skills !== './skills/') throw new Error('Record and Replay 插件 manifest 无效')
+  verifyProductContent(join(root, '.codex-plugin', 'plugin.json'))
+  verifyProductSkill(join(root, 'skills', 'record-and-replay', 'SKILL.md'))
   const mcp = JSON.parse(readFileSync(join(root, '.mcp.json'), 'utf8')) as { mcpServers?: Record<string, { command?: unknown, cwd?: unknown, env_vars?: unknown }> }; const server = mcp.mcpServers?.[PLUGIN]
   if (server?.command !== `./bin/${PLUGIN}` || server.cwd !== '.' || !Array.isArray(server.env_vars) || !server.env_vars.includes('CODEX_HOME')) throw new Error('Record and Replay MCP 配置无效')
   const marketplace = JSON.parse(readFileSync(join(resolve(options.destinationDir), '..', '.agents', 'plugins', 'marketplace.json'), 'utf8')) as { plugins?: Array<{ name?: unknown, source?: { path?: unknown } }> }
   if (!marketplace.plugins?.some(entry => entry.name === PLUGIN && entry.source?.path === `./plugins/${PLUGIN}`)) throw new Error('本地市场缺少 Record and Replay 插件')
-  if (lstatSync(join(root, 'bin', binary(options.target))).size < 100_000) throw new Error('Record and Replay MCP 二进制大小无效')
+  const staged = join(root, 'bin', binary(options.target))
+  if (lstatSync(staged).size < 100_000) throw new Error('Record and Replay MCP 二进制大小无效')
+  verifyStdioMcpHandshake(staged, options.target, PLUGIN)
   const service = options.target.includes('windows') ? join(root, 'bin', WINDOWS_SERVICE) : join(root, 'bin', MAC_APP, 'Contents', 'MacOS', 'BilliardBuddyRecordReplayService')
   file(service); if (lstatSync(service).size < 100_000) throw new Error('Record and Replay 原生录制器二进制大小无效')
 }
@@ -65,6 +70,7 @@ export function verifyStagedRecordReplayPlugin(options: Options) {
 export function stageRecordReplayPlugin(options: Options) {
   if (options.verifyOnly) return verifyStagedRecordReplayPlugin(options)
   for (const path of [join(sourceRoot, 'Cargo.toml'), join(sourceRoot, 'Cargo.lock'), join(sourceRoot, 'src', 'main.rs'), join(sourceRoot, 'macos', 'BilliardBuddyRecordReplayService.swift'), join(sourceRoot, 'windows', 'BilliardBuddyRecordReplayService.cpp'), join(pluginSource, '.codex-plugin', 'plugin.json'), join(pluginSource, '.mcp.json'), join(pluginSource, 'skills', 'record-and-replay', 'SKILL.md')]) file(path)
+  if (readFileSync(join(sourceRoot, 'windows', 'BilliardBuddyRecordReplayService.cpp'), 'utf8').includes('windowTitle')) throw new Error('Record and Replay 不得记录 Windows 窗口标题')
   const destination = resolve(options.destinationDir); const market = join(destination, '..'); mkdirSync(join(market, '.agents', 'plugins'), { recursive: true }); copyFileSync(join(desktopRoot, 'runtime-assets', 'marketplace.json'), join(market, '.agents', 'plugins', 'marketplace.json'))
   const root = join(destination, PLUGIN); rmSync(root, { recursive: true, force: true }); mkdirSync(destination, { recursive: true }); cpSync(pluginSource, root, { recursive: true, dereference: false, filter: source => !source.endsWith('/bin') && !source.endsWith('\\bin') }); const bin = join(root, 'bin'); mkdirSync(bin, { recursive: true })
   run(cargo(), ['build', '--locked', '--release', '--target', options.target, '--manifest-path', join(sourceRoot, 'Cargo.toml')], sourceRoot); const built = join(sourceRoot, 'target', options.target, 'release', binary(options.target)); file(built); const staged = join(bin, binary(options.target)); copyFileSync(built, staged); if (!options.target.includes('windows')) { chmodSync(staged, 0o755); macService(bin, options.target) } else windowsService(bin)

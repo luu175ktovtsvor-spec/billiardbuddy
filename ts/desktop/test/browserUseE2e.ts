@@ -6,7 +6,7 @@ import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import * as path from 'node:path'
 import { app } from 'electron'
-import { InAppBrowserHost } from './services/inAppBrowserHost'
+import { InAppBrowserHost } from '../electron/services/inAppBrowserHost'
 
 type Json = Record<string, unknown>
 
@@ -158,11 +158,19 @@ async function main() {
     assert.equal(image.mimeType, 'image/png')
     assert.ok(typeof image.data === 'string' && image.data.length > 100, 'Browser screenshot is empty')
 
+    await fs.writeFile(
+      path.join(userData, 'agent-runtime', 'browser-use', 'config.json'),
+      JSON.stringify({ allowedHosts: [], blockedHosts: ['127.0.0.1'] }),
+    )
+    await host.reloadPolicy()
+    const tabsAfterRevocation = JSON.parse(toolText(await tool(client, 'list_tabs'))) as Json
+    assert.deepEqual(tabsAfterRevocation.tabs, [], 'Browser policy revocation left a blocked tab available')
+
     await host.stop()
     host = undefined
     const unavailable = await tool(client, 'status')
     assert.equal(unavailable.isError, true, 'Browser MCP did not fail closed after its host stopped')
-    assert.match(String(record((unavailable.content as unknown[])[0], 'Browser unavailable result is invalid').text), /host is not running/)
+    assert.match(String(record((unavailable.content as unknown[])[0], 'Browser unavailable result is invalid').text), /not ready/)
     console.log('Browser Use Electron host E2E passed')
   } finally {
     await stop(child)

@@ -9,6 +9,7 @@ type NativeProviderConfig = {
   id: string
   name: string
   baseUrl: string
+  hostedWebSearch?: 'native' | 'disabled'
   envKey?: string
   envHeaders?: Record<string, string>
   headers?: Record<string, string>
@@ -83,10 +84,12 @@ function providerOverrides(input: NativeProviderConfig): string[] {
     'feedback.enabled=false',
     'check_for_update_on_startup=false',
     // Image creation belongs to BilliardBuddy's independent image workbench.
-    // Web search stays on: the native Core emits its source-defined Responses
-    // tool and the managed DeepSeek route has been live-verified to stream
-    // `response.web_search_call.*` lifecycle events through this boundary.
     'features.image_generation=false',
+    // A legacy Chat Completions endpoint has no standard representation for
+    // the Responses hosted web-search tool. Disable only that provider
+    // capability before Core plans a turn; native Responses routes keep the
+    // source-defined hosted tool and event stream unchanged.
+    ...(input.hostedWebSearch === 'disabled' ? ['web_search="disabled"'] : []),
     // The App Server receives only a revocable loopback capability token.
     // Preserve Codex's native tool/runtime model, but make its built-in
     // KEY/SECRET/TOKEN exclusion mandatory for every shell child so a tool,
@@ -191,18 +194,59 @@ function chatContent(value: unknown): string | JsonObject[] {
           },
         })
       }
+      continue
     }
+    if (kind === 'input_audio') {
+      const audioUrl = string(part.audio_url ?? part.url, 64 * 1024 * 1024)
+      const match = audioUrl?.match(/^data:audio\/(wav|mpeg);base64,([A-Za-z0-9+/=]+)$/)
+      if (!match) throw new Error('CODEX_CHAT_ADAPTER_AUDIO_UNSUPPORTED')
+      parts.push({
+        type: 'input_audio',
+        input_audio: { data: match[2], format: match[1] === 'mpeg' ? 'mp3' : 'wav' },
+      })
+      continue
+    }
+    throw new Error('CODEX_CHAT_ADAPTER_CONTENT_UNSUPPORTED')
   }
   return parts
 }
 
-function toolOutputText(value: unknown): string {
-  if (typeof value === 'string') return value
-  const parts = contentParts(value)
-    .filter(part => ['input_text', 'output_text', 'text'].includes(String(part.type)))
-    .map(part => string(part.text) ?? '')
-    .join('')
-  return parts || JSON.stringify(value ?? '')
+function chatToolOutputMessages(callId: string, value: unknown): JsonObject[] {
+  if (typeof value === 'string') {
+    return [{ role: 'tool', tool_call_id: callId, content: value }]
+  }
+  const text: string[] = []
+  const media: JsonObject[] = []
+  for (const part of contentParts(value)) {
+    const kind = string(part.type, 128)
+    if (kind === 'input_text' || kind === 'output_text' || kind === 'text') {
+      const value = string(part.text)
+      if (value !== undefined) text.push(value)
+      continue
+    }
+    if (kind === 'input_image' || kind === 'input_audio') {
+      const converted = chatContent([part])
+      if (!Array.isArray(converted)) throw new Error('CODEX_CHAT_ADAPTER_TOOL_MEDIA_UNSUPPORTED')
+      media.push(...converted)
+      continue
+    }
+    throw new Error('CODEX_CHAT_ADAPTER_TOOL_OUTPUT_UNSUPPORTED')
+  }
+  const messages: JsonObject[] = [{
+    role: 'tool',
+    tool_call_id: callId,
+    content: text.join('') || (media.length > 0 ? 'The tool returned media output.' : JSON.stringify(value ?? '')),
+  }]
+  // Standard Chat tool messages accept text only. Preserve a visual/audio
+  // tool result through the standard multimodal user-message shape rather
+  // than silently discarding it or inventing provider-specific fields.
+  if (media.length > 0) {
+    messages.push({
+      role: 'user',
+      content: [{ type: 'text', text: 'Media returned by the preceding tool call.' }, ...media],
+    })
+  }
+  return messages
 }
 
 function reasoningContent(item: JsonObject): string {
@@ -290,7 +334,7 @@ function responseInputToChatMessages(input: unknown, instructions: unknown): Jso
       const callId = nonEmptyString(item.call_id, 512)
       if (!callId) throw new Error('CODEX_CHAT_ADAPTER_FUNCTION_OUTPUT_INVALID')
       flushPendingAssistant()
-      messages.push({ role: 'tool', tool_call_id: callId, content: toolOutputText(item.output) })
+      messages.push(...chatToolOutputMessages(callId, item.output))
       continue
     }
     if (type === 'reasoning') {
@@ -299,9 +343,11 @@ function responseInputToChatMessages(input: unknown, instructions: unknown): Jso
       pendingReasoning += reasoningContent(item)
       continue
     }
-    // These are native Core bookkeeping items. A Chat Completions endpoint has
-    // no equivalent encrypted continuation format; durable history remains in
-    // the local Codex Thread Store and the visible/tool parts are above.
+    // All BilliardBuddy routes use a non-OpenAI, non-Azure provider identity,
+    // so the locked Core uses its native local compaction path. That path
+    // reinserts the generated summary as an ordinary user message, which is
+    // converted above. These encrypted remote-compaction controls have no Chat
+    // equivalent and are not produced by the normal BilliardBuddy route.
     if (['compaction', 'context_compaction', 'compaction_trigger', 'additional_tools'].includes(type)) continue
     throw new Error('CODEX_CHAT_ADAPTER_INPUT_UNSUPPORTED')
   }
@@ -873,6 +919,7 @@ export async function startCodexNativeProvider(route: CodexNativeModelRoute): Pr
       id: 'billiardbuddy',
       name: 'BilliardBuddy local Chat Completions adapter',
       baseUrl: started.baseUrl,
+      hostedWebSearch: 'disabled',
       envHeaders: { [ENGINE_TOKEN_HEADER]: tokenEnv },
     })
     return {

@@ -27,8 +27,18 @@ type ChromeHostManifest = {
   allowed_origins: string[]
 }
 
+export type ChromeNativeMessagingHostStatus = {
+  supported: boolean
+  installed: boolean
+  manifestPath?: string
+}
+
 function manifestFileName(): string {
   return `${BILLIARDBUDDY_CHROME_NATIVE_HOST}.json`
+}
+
+function windowsRegistryKey(): string {
+  return `HKCU\\Software\\Google\\Chrome\\NativeMessagingHosts\\${BILLIARDBUDDY_CHROME_NATIVE_HOST}`
 }
 
 export function chromeNativeHostExecutable(registration: ChromeNativeMessagingRegistration): string {
@@ -66,14 +76,58 @@ async function writeManifest(file: string, manifest: ChromeHostManifest, platfor
   if (platform !== 'win32') await fs.chmod(file, 0o600)
 }
 
+function sameManifest(value: unknown, expected: ChromeHostManifest): boolean {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const candidate = value as Partial<ChromeHostManifest>
+  return candidate.name === expected.name
+    && candidate.description === expected.description
+    && candidate.path === expected.path
+    && candidate.type === expected.type
+    && Array.isArray(candidate.allowed_origins)
+    && candidate.allowed_origins.length === 1
+    && candidate.allowed_origins[0] === expected.allowed_origins[0]
+    && Object.keys(candidate).length === 5
+}
+
+export async function getChromeNativeMessagingHostStatus(
+  registration: ChromeNativeMessagingRegistration,
+): Promise<ChromeNativeMessagingHostStatus> {
+  if (registration.platform !== 'darwin' && registration.platform !== 'win32') {
+    return { supported: false, installed: false }
+  }
+  const executable = chromeNativeHostExecutable(registration)
+  const executableDetails = await fs.lstat(executable).catch(() => undefined)
+  if (!executableDetails?.isFile() || executableDetails.isSymbolicLink()) {
+    return { supported: true, installed: false }
+  }
+  const manifestPath = registration.platform === 'darwin'
+    ? macosChromeNativeHostManifestPath(registration)
+    : windowsChromeNativeHostManifestPath(registration)
+  const raw = await fs.readFile(manifestPath, 'utf8').catch(() => undefined)
+  if (!raw) return { supported: true, installed: false, manifestPath }
+  let manifestMatches = false
+  try {
+    manifestMatches = sameManifest(JSON.parse(raw), chromeNativeHostManifest(executable))
+  } catch {
+    manifestMatches = false
+  }
+  if (!manifestMatches) return { supported: true, installed: false, manifestPath }
+  if (registration.platform === 'win32') {
+    const registry = await execFileAsync('reg.exe', ['query', windowsRegistryKey(), '/ve'], { windowsHide: true })
+      .catch(() => undefined)
+    if (!registry?.stdout.includes(manifestPath)) return { supported: true, installed: false, manifestPath }
+  }
+  return { supported: true, installed: true, manifestPath }
+}
+
 /**
  * Register only BilliardBuddy's fixed, signed Chrome extension ID. This is a
  * user-initiated setup operation; it is deliberately not run during app start.
  */
 export async function installChromeNativeMessagingHost(registration: ChromeNativeMessagingRegistration): Promise<string> {
   const executable = chromeNativeHostExecutable(registration)
-  const details = await fs.stat(executable).catch(() => undefined)
-  if (!details?.isFile()) throw new Error('BILLIARDBUDDY_CHROME_NATIVE_HOST_MISSING')
+  const details = await fs.lstat(executable).catch(() => undefined)
+  if (!details?.isFile() || details.isSymbolicLink()) throw new Error('BILLIARDBUDDY_CHROME_NATIVE_HOST_MISSING')
   const manifest = chromeNativeHostManifest(executable)
   if (registration.platform === 'darwin') {
     const file = macosChromeNativeHostManifestPath(registration)
@@ -83,8 +137,7 @@ export async function installChromeNativeMessagingHost(registration: ChromeNativ
   if (registration.platform === 'win32') {
     const file = windowsChromeNativeHostManifestPath(registration)
     await writeManifest(file, manifest, registration.platform)
-    const key = `HKCU\\Software\\Google\\Chrome\\NativeMessagingHosts\\${BILLIARDBUDDY_CHROME_NATIVE_HOST}`
-    await execFileAsync('reg.exe', ['add', key, '/ve', '/t', 'REG_SZ', '/d', file, '/f'], { windowsHide: true })
+    await execFileAsync('reg.exe', ['add', windowsRegistryKey(), '/ve', '/t', 'REG_SZ', '/d', file, '/f'], { windowsHide: true })
     return file
   }
   throw new Error(`BILLIARDBUDDY_CHROME_PLATFORM_UNSUPPORTED:${registration.platform}`)
@@ -98,9 +151,8 @@ export async function uninstallChromeNativeMessagingHost(registration: ChromeNat
   }
   if (registration.platform === 'win32') {
     const file = windowsChromeNativeHostManifestPath(registration)
-    const key = `HKCU\\Software\\Google\\Chrome\\NativeMessagingHosts\\${BILLIARDBUDDY_CHROME_NATIVE_HOST}`
     await fs.rm(file, { force: true })
-    await execFileAsync('reg.exe', ['delete', key, '/f'], { windowsHide: true }).catch(() => undefined)
+    await execFileAsync('reg.exe', ['delete', windowsRegistryKey(), '/f'], { windowsHide: true }).catch(() => undefined)
     return
   }
   throw new Error(`BILLIARDBUDDY_CHROME_PLATFORM_UNSUPPORTED:${registration.platform}`)

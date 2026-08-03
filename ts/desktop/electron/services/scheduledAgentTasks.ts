@@ -114,8 +114,8 @@ export class ScheduledAgentTaskService {
 
   async start(): Promise<void> {
     if (this.started) return
-    this.started = true
     await this.load()
+    this.started = true
     this.arm()
   }
 
@@ -190,8 +190,17 @@ export class ScheduledAgentTaskService {
     const file = tasksPath(this.options.userDataPath)
     await fs.mkdir(path.dirname(file), { recursive: true, mode: 0o700 })
     const temporary = `${file}.${process.pid}.${Math.random().toString(16).slice(2)}.tmp`
-    await fs.writeFile(temporary, `${JSON.stringify({ version: 1, tasks: this.list() satisfies ScheduledAgentTask[] }, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 })
-    await fs.rename(temporary, file)
+    try {
+      await fs.writeFile(temporary, `${JSON.stringify({ version: 1, tasks: this.list() satisfies ScheduledAgentTask[] }, null, 2)}\n`, {
+        encoding: 'utf8',
+        mode: 0o600,
+        flag: 'wx',
+      })
+      await fs.rename(temporary, file)
+    } catch (error) {
+      await fs.rm(temporary, { force: true }).catch(() => undefined)
+      throw error
+    }
   }
 
   private arm(): void {
@@ -201,33 +210,46 @@ export class ScheduledAgentTaskService {
     const due = this.list().find(task => task.enabled)
     if (!due) return
     const delay = Math.max(0, due.nextRunAt - this.now())
-    this.timer = setTimeout(() => void this.runDue(), Math.min(delay, MAX_TIMEOUT_MS))
+    this.timer = setTimeout(() => {
+      void this.runDue().catch(error => {
+        console.error('BilliardBuddy scheduled task service failed', error)
+      })
+    }, Math.min(delay, MAX_TIMEOUT_MS))
     this.timer.unref?.()
   }
 
   private async runDue(): Promise<void> {
     if (!this.started) return
-    const now = this.now()
-    const due = this.list().filter(task => task.enabled && task.nextRunAt <= now)
-    for (const snapshot of due) {
-      const task = this.tasks.get(snapshot.id)
-      if (!task || !task.enabled || task.nextRunAt > now) continue
-      task.lastRunAt = now
-      const next = nextScheduledAgentTaskRun(task.schedule, now)
-      if (next === undefined) task.enabled = false
-      else task.nextRunAt = next
-      this.options.onEvent?.({ type: 'scheduled-task-started', task: structuredClone(task) })
-      try {
-        const result = await this.options.run(structuredClone(task))
-        task.lastError = undefined
-        this.options.onEvent?.({ type: 'scheduled-task-completed', task: structuredClone(task), turnId: result.turnId })
-      } catch (error) {
-        task.lastError = error instanceof Error ? error.message.slice(0, 1_024) : 'scheduled task failed'
-        this.options.onEvent?.({ type: 'scheduled-task-failed', task: structuredClone(task), error: task.lastError })
+    try {
+      const now = this.now()
+      const due = this.list().filter(task => task.enabled && task.nextRunAt <= now)
+      for (const snapshot of due) {
+        const task = this.tasks.get(snapshot.id)
+        if (!task || !task.enabled || task.nextRunAt > now) continue
+        task.lastRunAt = now
+        const next = nextScheduledAgentTaskRun(task.schedule, now)
+        if (next === undefined) task.enabled = false
+        else task.nextRunAt = next
+        this.emit({ type: 'scheduled-task-started', task: structuredClone(task) })
+        try {
+          const result = await this.options.run(structuredClone(task))
+          task.lastError = undefined
+          this.emit({ type: 'scheduled-task-completed', task: structuredClone(task), turnId: result.turnId })
+        } catch (error) {
+          task.lastError = error instanceof Error ? error.message.slice(0, 1_024) : 'scheduled task failed'
+          this.emit({ type: 'scheduled-task-failed', task: structuredClone(task), error: task.lastError })
+        }
+        await this.persist()
       }
-      await this.persist()
+    } finally {
+      this.arm()
     }
-    this.arm()
+  }
+
+  private emit(event: ScheduledAgentTaskEvent): void {
+    try { this.options.onEvent?.(event) } catch (error) {
+      console.error('BilliardBuddy scheduled task event handler failed', error)
+    }
   }
 }
 
