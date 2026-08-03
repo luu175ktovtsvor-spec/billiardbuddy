@@ -14,6 +14,7 @@ import type {
   CreateGenerationRoundInput,
   DecideImageCandidateInput,
   DeriveImageCandidateInput,
+  EstimateDeriveImageCandidateInput,
   EstimateGenerationRoundInput,
   ImageCreativePlan,
   ImageGenerationRound,
@@ -77,8 +78,20 @@ export class ElectronImageActions {
     candidate_count_per_operation: number
     concurrency: number
     price_upper_bound: null
+    expires_at: string
   }> {
     return this.post(`/api/images/projects/${encodeURIComponent(projectId)}/generation-rounds/estimate`, input)
+  }
+
+  estimateDerivation(projectId: string, candidateId: string, input: EstimateDeriveImageCandidateInput): Promise<{
+    estimate_hash: string
+    paid_operation_count: number
+    candidate_count_per_operation: number
+    concurrency: number
+    price_upper_bound: null
+    expires_at: string
+  }> {
+    return this.post(`/api/images/projects/${encodeURIComponent(projectId)}/candidates/${encodeURIComponent(candidateId)}/derivations/estimate`, input)
   }
 
   createGenerationRound(projectId: string, input: CreateGenerationRoundInput): Promise<{ round: ImageGenerationRound; operations: PublicImageOperationV2[] }> {

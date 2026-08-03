@@ -26,6 +26,7 @@ import {
   createGenerationRoundInputSchema,
   decideImageCandidateInputSchema,
   deriveImageCandidateInputSchema,
+  estimateDeriveImageCandidateInputSchema,
   estimateGenerationRoundInputSchema,
   publicImageCandidateGroupSchema,
   publicImageCandidateSchema,
@@ -436,6 +437,11 @@ export function createImageWorkbenchDomainApiHandler(
           const input = deriveImageCandidateInputSchema.parse(await parseJson(req))
           const derived = await service.deriveCandidate(projectId, candidateId, input)
           return Response.json({ round: derived.round, operation: publicGenerationOperation(derived.operation) }, { status: 202 })
+        }
+        if (candidateAction === 'derivations' && segments[7] === 'estimate' && !segments[8] && req.method === 'POST') {
+          requireMediaUiCapability(req, mediaUiCapability)
+          const input = estimateDeriveImageCandidateInputSchema.parse(await parseJson(req))
+          return Response.json(await service.estimateDerivation(projectId, candidateId, input))
         }
         throw methodNotAllowed(req.method)
       }

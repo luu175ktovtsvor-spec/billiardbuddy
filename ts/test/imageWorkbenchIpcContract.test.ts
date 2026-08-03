@@ -15,6 +15,7 @@ test('15.2 image IPC validators expose only typed paid-generation and candidate 
     ELECTRON_IPC_CHANNELS.imageSaveOutput,
     ELECTRON_IPC_CHANNELS.imageCreateCreativePlan,
     ELECTRON_IPC_CHANNELS.imageEstimateGenerationRound,
+    ELECTRON_IPC_CHANNELS.imageEstimateDerivation,
     ELECTRON_IPC_CHANNELS.imageCreateGenerationRound,
     ELECTRON_IPC_CHANNELS.imageDecideCandidate,
     ELECTRON_IPC_CHANNELS.imageAdoptCandidate,
@@ -29,6 +30,7 @@ test('15.2 image IPC validators expose only typed paid-generation and candidate 
     'desktop:image:save-output',
     'desktop:image:create-creative-plan',
     'desktop:image:estimate-generation-round',
+    'desktop:image:estimate-derivation',
     'desktop:image:create-generation-round',
     'desktop:image:decide-candidate',
     'desktop:image:adopt-candidate',
@@ -60,6 +62,31 @@ test('15.2 image IPC validators expose only typed paid-generation and candidate 
       confirm: true,
     },
   })).toBeTrue()
+  expect(validateElectronIpcPayload(ELECTRON_IPC_CHANNELS.imageEstimateDerivation, {
+    projectId,
+    candidateId: 'cand_00000001',
+    input: { base_revision: 0, instruction: '只修改背景光线' },
+  })).toBeTrue()
+  expect(validateElectronIpcPayload(ELECTRON_IPC_CHANNELS.imageDeriveCandidate, {
+    projectId,
+    candidateId: 'cand_00000001',
+    input: {
+      base_revision: 0,
+      idempotency_key: 'bb-image-ipc-derivation-0001',
+      instruction: '只修改背景光线',
+      estimate_hash: `sha256:${'b'.repeat(64)}`,
+      confirm: true,
+    },
+  })).toBeTrue()
+  expect(validateElectronIpcPayload(ELECTRON_IPC_CHANNELS.imageDeriveCandidate, {
+    projectId,
+    candidateId: 'cand_00000001',
+    input: {
+      base_revision: 0,
+      idempotency_key: 'bb-image-ipc-derivation-0001',
+      instruction: '只修改背景光线',
+    },
+  })).toBeFalse()
   expect(validateElectronIpcPayload(ELECTRON_IPC_CHANNELS.imageAdoptCandidate, {
     projectId,
     candidateId: 'cand_00000001',
@@ -98,10 +125,15 @@ test('current Main-only image action bridge sends the desktop capability through
     estimate_hash: `sha256:${'a'.repeat(64)}`,
     confirm: true,
   })
+  await actions.estimateDerivation(projectId, 'cand_00000001', {
+    base_revision: 0,
+    instruction: '只修改背景光线',
+  })
   expect(requests.map(request => new URL(request.url).pathname)).toEqual([
     `/api/images/projects/${projectId}/submit`,
     `/api/images/projects/${projectId}/operations`,
     `/api/images/projects/${projectId}/generation-rounds`,
+    `/api/images/projects/${projectId}/candidates/cand_00000001/derivations/estimate`,
   ])
   expect(new Headers(requests[0]!.init?.headers).get('x-billiardbuddy-media-capability')).toBe(capability)
   expect(() => new ElectronImageActions({ getServerUrl: async () => '', capability: 'too-short' })).toThrow('Image UI capability is too short')
