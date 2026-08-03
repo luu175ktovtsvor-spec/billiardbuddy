@@ -63,6 +63,7 @@ import {
   VideoWorkbenchRepositoryError,
   type VideoOperation,
 } from './videoWorkbenchRepository.js'
+import { JobOrchestrator } from '../media/kernel/operations/jobOrchestrator.js'
 
 const STANDALONE_VIDEO_OWNER: MediaOwner = {
   kind: 'standalone',
@@ -1476,36 +1477,42 @@ export class VideoWorkbenchService {
   }
 
   async recoverInterruptedOperations(): Promise<void> {
-    for (const operation of await this.repository.listOperations()) {
-      if (!['queued', 'running', 'committing'].includes(operation.status)) continue
-      if (operation.kind === 'video.render' && await this.recoverCommittedRender(operation)) continue
-      const code = operation.kind === 'video.preview'
-        ? 'MEDIA_VIDEO_PREVIEW_INTERRUPTED'
-        : operation.kind === 'video.render'
-          ? 'MEDIA_VIDEO_EXPORT_INTERRUPTED'
-          : operation.kind === 'video.analyze' || operation.kind === 'video.plan'
-            ? 'MEDIA_VIDEO_ANALYSIS_INTERRUPTED'
-            : 'MEDIA_VIDEO_PROBE_INTERRUPTED'
-      const stage = operation.kind === 'video.preview'
-        ? '预览已中断'
-        : operation.kind === 'video.render'
-          ? '导出已中断'
-          : operation.kind === 'video.analyze' || operation.kind === 'video.plan'
-            ? '分析已中断'
-            : '素材读取已中断'
-      await this.failOperation(operation, code, stage)
-      const temporary = operation.kind === 'video.preview'
-        ? videoPreviewTaskResultSchema.safeParse(operation.result).data?.temporary_output
-        : operation.kind === 'video.render'
-          ? videoRenderTaskResultSchema.safeParse(operation.result).data?.temporary_output
-          : undefined
-      if (temporary) await rm(temporary, { force: true }).catch(() => undefined)
-      const project = await this.project(operation.project_id).catch(() => null)
-      if (!project) continue
-      if (operation.kind === 'video.render' && project.task_id === operation.id) {
-        const failure = mediaSafeError(code)
-        await this.repository.saveProject(videoStudioProjectSchema.parse({ ...project, state: 'ready', error: failure.message, error_code: failure.code }))
-      }
+    const orchestrator = new JobOrchestrator(
+      async () => (await this.repository.listOperations())
+        .filter(operation => ['queued', 'running', 'committing'].includes(operation.status)),
+      async operation => await this.recoverInterruptedOperation(operation),
+    )
+    await orchestrator.recover()
+  }
+
+  private async recoverInterruptedOperation(operation: VideoOperation): Promise<void> {
+    if (operation.kind === 'video.render' && await this.recoverCommittedRender(operation)) return
+    const code = operation.kind === 'video.preview'
+      ? 'MEDIA_VIDEO_PREVIEW_INTERRUPTED'
+      : operation.kind === 'video.render'
+        ? 'MEDIA_VIDEO_EXPORT_INTERRUPTED'
+        : operation.kind === 'video.analyze' || operation.kind === 'video.plan'
+          ? 'MEDIA_VIDEO_ANALYSIS_INTERRUPTED'
+          : 'MEDIA_VIDEO_PROBE_INTERRUPTED'
+    const stage = operation.kind === 'video.preview'
+      ? '预览已中断'
+      : operation.kind === 'video.render'
+        ? '导出已中断'
+        : operation.kind === 'video.analyze' || operation.kind === 'video.plan'
+          ? '分析已中断'
+          : '素材读取已中断'
+    await this.failOperation(operation, code, stage)
+    const temporary = operation.kind === 'video.preview'
+      ? videoPreviewTaskResultSchema.safeParse(operation.result).data?.temporary_output
+      : operation.kind === 'video.render'
+        ? videoRenderTaskResultSchema.safeParse(operation.result).data?.temporary_output
+        : undefined
+    if (temporary) await rm(temporary, { force: true }).catch(() => undefined)
+    const project = await this.project(operation.project_id).catch(() => null)
+    if (!project) return
+    if (operation.kind === 'video.render' && project.task_id === operation.id) {
+      const failure = mediaSafeError(code)
+      await this.repository.saveProject(videoStudioProjectSchema.parse({ ...project, state: 'ready', error: failure.message, error_code: failure.code }))
     }
   }
 
