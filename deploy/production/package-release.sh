@@ -43,6 +43,8 @@ bb_runtime_paths=(
   video-media-relay/validate-deployment-env.ts
   video-media-relay/contracts/relayApi.ts
   video-media-relay/providers/dashscope.ts
+  ts/package.json
+  ts/bun.lock
   ts/shared/product/providerContracts.ts
   ts/shared/product/providerGateway.ts
 )
@@ -65,6 +67,8 @@ for bb_required in \
   relay/app.ts \
   video-media-relay/app.ts \
   video-media-relay/contracts/relayApi.ts \
+  ts/package.json \
+  ts/bun.lock \
   release-manifest.json; do
   tar -tzf "$bb_output" "$bb_required" >/dev/null
 done

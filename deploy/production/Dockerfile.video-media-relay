@@ -4,9 +4,11 @@ WORKDIR /app/video-media-relay
 COPY --chown=bun:bun video-media-relay/app.ts video-media-relay/objectStore.ts video-media-relay/providerRegistry.ts video-media-relay/validate-deployment-env.ts ./
 COPY --chown=bun:bun video-media-relay/contracts /app/video-media-relay/contracts
 COPY --chown=bun:bun video-media-relay/providers /app/video-media-relay/providers
-# The shared Relay contract uses the repository's locked zod runtime. Keep the
-# image closure explicit; no desktop dependency or credential is copied.
-COPY --chown=bun:bun ts/node_modules/zod /app/ts/node_modules/zod
+# The Relay imports the locked zod contract and the official Alibaba OSS SDK
+# through the repository's TypeScript runtime path. Install only production
+# dependencies; credentials are supplied only through the mounted env file.
+COPY --chown=bun:bun ts/package.json ts/bun.lock /app/ts/
+RUN cd /app/ts && bun install --production --frozen-lockfile
 
 USER bun
 EXPOSE 8791

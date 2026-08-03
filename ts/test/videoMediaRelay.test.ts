@@ -1,4 +1,9 @@
 import { expect, test } from 'bun:test'
+import { createHash } from 'node:crypto'
+import { unlinkSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { Database } from 'bun:sqlite'
 import { createVideoMediaRelayFetch, type MediaObjectStore, type VideoMediaProvider } from '../../video-media-relay/app.ts'
 import type { ProviderExecutionReceipt } from '../../video-media-relay/contracts/relayApi.ts'
 import { VideoMediaRelayClient } from '../src/server/video/infrastructure/providers/videoMediaRelayClient.ts'
@@ -83,14 +88,16 @@ test('Relay keeps a submitted long ASR task and only advances it through GET pol
 
 test('Relay keeps multipart upload state across a lease replay and verifies every OSS part before completion', async () => {
   const completed: Array<{ part_number: number; etag: string }> = []
+  let objectCompleted = false
+  let crashAfterOssCompletion = true
   const objectStore: MediaObjectStore = {
     async createPutUrl() { throw new Error('single_put_not_expected') },
-    async head() { return { byte_size: 6 * 1024 * 1024, content_hash: hash, content_type: 'video/mp4' } },
+    async head() { return objectCompleted ? { byte_size: 6 * 1024 * 1024, content_hash: hash, content_type: 'video/mp4' } : null },
     async delete() {}, async createReadUrl() { return 'https://oss.example.test/read' }, async putResult() {}, async createResultReadUrl() { return 'https://oss.example.test/result' }, async deleteResult() {},
     async createMultipartUpload() { return { uploadId: 'upload-123' } },
     async createMultipartPartPutUrl(input) { return { put_url: `https://oss.example.test/part/${input.partNumber}` } },
     async listMultipartParts() { return [{ part_number: 1, etag: 'etag-one' }, { part_number: 2, etag: 'etag-two' }] },
-    async completeMultipartUpload(input) { completed.push(...input.parts) },
+    async completeMultipartUpload(input) { completed.push(...input.parts); objectCompleted = true; if (crashAfterOssCompletion) { crashAfterOssCompletion = false; throw new Error('crash_after_oss_completion') } },
     async abortMultipartUpload() {},
   }
   const handler = createVideoMediaRelayFetch({ env: {
@@ -107,7 +114,10 @@ test('Relay keeps multipart upload state across a lease replay and verifies ever
   expect(await replay.json()).toMatchObject({ lease_id: lease.lease_id, multipart_upload: { upload_id: 'upload-123' } })
   const incomplete = await handler(new Request(`http://relay/v1/video-media/object-leases/${lease.lease_id}/complete`, { method: 'POST', headers: headers('multipart-complete-key-1'), body: JSON.stringify({ parts: [{ part_number: 1, etag: 'etag-one' }] }) }))
   expect(incomplete.status).toBe(422)
-  const complete = await handler(new Request(`http://relay/v1/video-media/object-leases/${lease.lease_id}/complete`, { method: 'POST', headers: headers('multipart-complete-key-2'), body: JSON.stringify({ parts: [{ part_number: 1, etag: 'etag-one' }, { part_number: 2, etag: 'etag-two' }] }) }))
+  const completionPayload = { parts: [{ part_number: 1, etag: 'etag-one' }, { part_number: 2, etag: 'etag-two' }] }
+  const interrupted = await handler(new Request(`http://relay/v1/video-media/object-leases/${lease.lease_id}/complete`, { method: 'POST', headers: headers('multipart-complete-key-2'), body: JSON.stringify(completionPayload) }))
+  expect(interrupted.status).toBe(500)
+  const complete = await handler(new Request(`http://relay/v1/video-media/object-leases/${lease.lease_id}/complete`, { method: 'POST', headers: headers('multipart-complete-key-3'), body: JSON.stringify(completionPayload) }))
   expect(complete.status).toBe(200)
   expect(completed).toEqual([{ part_number: 1, etag: 'etag-one' }, { part_number: 2, etag: 'etag-two' }])
 })
@@ -137,4 +147,45 @@ test('Sidecar resumes only missing multipart parts and retries a timed-out cross
   expect(ref).toBe('object_12345678')
   expect(partTwoAttempts).toBe(2)
   expect(completed).toEqual({ parts: [{ part_number: 1, etag: 'etag-one' }, { part_number: 2, etag: 'etag-two' }] })
+})
+
+test('Sidecar streams a large source by fixed parts without materializing cross-part chunks', async () => {
+  let uploadedPartTwo = 0
+  const client = new VideoMediaRelayClient({
+    baseUrl: 'https://relay.example.test', accessToken: 'installation-token',
+    fetchImpl: async (input, init) => {
+      const url = String(input)
+      if (url === 'https://relay.example.test/v1/video-media/object-leases') return Response.json({ lease_id: 'lease_12345678', state: 'awaiting_upload', expires_at: '2026-08-03T01:00:00.000Z', multipart_upload: { upload_id: 'upload-123', part_size: 3, uploaded_parts: [{ part_number: 1, etag: 'etag-one' }], parts: [{ part_number: 1, put_url: 'https://oss.example.test/part/1' }, { part_number: 2, put_url: 'https://oss.example.test/part/2' }] } })
+      if (url.endsWith('/complete')) return Response.json({ lease_id: 'lease_12345678', state: 'ready', object_ref: 'object_12345678', expires_at: '2026-08-03T01:00:00.000Z' })
+      if (url.endsWith('/part/1')) throw new Error('completed part must only be read from source')
+      uploadedPartTwo += 1
+      expect(new Uint8Array(init?.body as ArrayBuffer)).toEqual(new Uint8Array([4, 5, 6]))
+      return new Response(null, { status: 200, headers: { ETag: 'etag-two' } })
+    },
+  })
+  const bytes = new Uint8Array([1, 2, 3, 4, 5, 6])
+  const ref = await client.uploadObjectStream({ local_operation_id: 'task_12345678', purpose: 'proxy_video', content_hash: `sha256:${createHash('sha256').update(bytes).digest('hex')}`, byte_size: bytes.byteLength, content_type: 'video/mp4', consent_revision_id: 'consent_12345678', consent_scope_hash: hash }, () => new ReadableStream({ start(controller) { controller.enqueue(bytes.subarray(0, 4)); controller.enqueue(bytes.subarray(4)); controller.close() } }))
+  expect(ref).toBe('object_12345678')
+  expect(uploadedPartTwo).toBe(1)
+})
+
+test('Relay recovers a multipart initialization committed before the OSS upload id was persisted', async () => {
+  const dbPath = join(tmpdir(), `video-relay-init-recovery-${crypto.randomUUID()}.sqlite`)
+  const objectStore: MediaObjectStore = {
+    async createPutUrl() { throw new Error('single_put_not_expected') }, async head() { return null }, async delete() {}, async createReadUrl() { return 'https://oss.example.test/read' }, async putResult() {}, async createResultReadUrl() { return 'https://oss.example.test/result' }, async deleteResult() {},
+    async createMultipartUpload() { return { uploadId: 'upload-created-before-crash' } },
+    async findMultipartUploads() { return [{ uploadId: 'upload-recovered-after-crash', initiatedAt: '2026-08-03T00:00:00.000Z' }] },
+    async createMultipartPartPutUrl(input) { return { put_url: `https://oss.example.test/part/${input.partNumber}` } }, async listMultipartParts() { return [] }, async completeMultipartUpload() {}, async abortMultipartUpload() {},
+  }
+  const env = { GW_VIDEO_MEDIA_INTROSPECTION_TOKEN: token, VIDEO_MEDIA_GATEWAY_INTROSPECTION_BASE: 'http://gateway', VIDEO_MEDIA_RELAY_DB: dbPath, VIDEO_MEDIA_MULTIPART_THRESHOLD_BYTES: String(5 * 1024 * 1024), VIDEO_MEDIA_MULTIPART_PART_SIZE_BYTES: String(3 * 1024 * 1024) }
+  const payload = { local_operation_id: 'task_12345678', purpose: 'proxy_video', content_hash: hash, byte_size: 6 * 1024 * 1024, content_type: 'video/mp4', consent_revision_id: 'consent_12345678', consent_scope_hash: hash }
+  try {
+    const first = createVideoMediaRelayFetch({ env, fetchImpl: identityFetch, objectStore, now })
+    const created = await first(new Request('http://relay/v1/video-media/object-leases', { method: 'POST', headers: headers('init-recovery-lease-001'), body: JSON.stringify(payload) }))
+    const lease = await created.json() as { lease_id: string }
+    const db = new Database(dbPath); db.query("UPDATE video_media_leases_v1 SET multipart_upload_id=NULL,multipart_phase='initializing' WHERE id=?").run(lease.lease_id); db.close()
+    const restarted = createVideoMediaRelayFetch({ env, fetchImpl: identityFetch, objectStore, now })
+    const resumed = await restarted(new Request('http://relay/v1/video-media/object-leases', { method: 'POST', headers: headers('init-recovery-lease-001'), body: JSON.stringify(payload) }))
+    expect(await resumed.json()).toMatchObject({ lease_id: lease.lease_id, multipart_upload: { upload_id: 'upload-recovered-after-crash' } })
+  } finally { try { unlinkSync(dbPath) } catch {} }
 })

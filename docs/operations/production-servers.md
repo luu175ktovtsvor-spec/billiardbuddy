@@ -26,6 +26,8 @@ Video Media Relay -> 北京临时对象存储与阿里云百炼
 
 部署只接受已提交且审核通过的 revision。`video-media-relay` 使用独立 `/srv/billiardbuddy/data/video-media-relay` 与 `/srv/billiardbuddy/secrets/video-media-relay.env`，前者保存短期 lease/request/receipt SQLite 元数据，后者只包含变量值而不进入日志；Gateway 与 Relay 现有数据目录和端口不变。部署前后必须实测 `:8791`、Nginx TLS `/video-media/`、公网拒绝 `/gw/internal/*`、对象租约、Provider receipt、ACK 清理和日志脱敏，再将实测 revision/容器状态写回本文。
 
+北京 OSS RAM 凭据只限私有 Bucket 的 `video-media/input/*` 与 `video-media/result/*`：`oss:PutObject`、`oss:GetObject`、`oss:HeadObject`、`oss:DeleteObject`、`oss:ListParts`、`oss:ListMultipartUploads`、`oss:AbortMultipartUpload`、`oss:CompleteMultipartUpload`。后四项用于崩溃后的 multipart 初始化、分页续传和完成恢复；不得授予其他 Bucket、ACL、RAM 或账户管理权限。
+
 ## 协议边界
 
 - 托管文本入口为 `POST /gw/v1/responses`，不提供 `/v1/chat/completions`。
