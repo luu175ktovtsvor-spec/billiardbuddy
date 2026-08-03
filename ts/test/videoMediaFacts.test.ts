@@ -327,12 +327,25 @@ test('完整指纹独立恢复，素材改变会阻止正式路径并使派生�
     state: 'ready',
   })
   await writeFile(sourcePath, 'changed simulated video bytes with a different length')
-  await expect(service.previewVideo(created.id, {
+  const handler = createVideoWorkbenchDomainApiHandler(service)
+  const previewUrl = new URL(`http://localhost/api/videos/projects/${created.id}/preview`)
+  const previewInput = {
     base_revision: current.revision,
     timeline_version_id: current.current_timeline_version_id!,
-  })).rejects.toMatchObject({ code: 'VIDEO_SOURCE_CHANGED' })
+  }
+  const requestPreview = async () => await handler(
+    new Request(previewUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(previewInput) }),
+    previewUrl,
+    previewUrl.pathname.split('/').filter(Boolean).map((part, index) => index === 0 ? 'api' : part),
+  )
+  const changed = await requestPreview()
+  expect(changed.status).toBe(409)
+  expect(await changed.json()).toMatchObject({ error: 'MEDIA_VIDEO_SOURCE_CHANGED' })
   expect(await service.repository.getFact('source', sourceFact.id)).toMatchObject({ state: 'changed', fingerprint_state: 'failed' })
   expect(await service.repository.getFact('derivative', 'derivative_00000002')).toMatchObject({ state: 'stale' })
+  const repeated = await requestPreview()
+  expect(repeated.status).toBe(409)
+  expect(await repeated.json()).toMatchObject({ error: 'MEDIA_VIDEO_SOURCE_CHANGED' })
   service.repository.close()
 })
 
@@ -452,6 +465,14 @@ test('Media Facts 正式 API 返回带来源、范围、generation 与 cursor �
   const factPage = await facts.json() as { schema_version: number; items: Array<Record<string, unknown>> }
   expect(factPage).toMatchObject({ schema_version: 1, items: [{ id: videoSource.id, fingerprint_state: 'ready' }] })
   expect(factPage.items[0]?.path).toBeUndefined()
+  for (const invalidUrl of [
+    new URL(`http://localhost/api/videos/projects/${created.id}/facts/source?cursor=not-a-valid-cursor`),
+    new URL(`http://localhost/api/videos/projects/${created.id}/search?q=%E7%90%83&cursor=not-a-valid-cursor`),
+  ]) {
+    const invalid = await handler(new Request(invalidUrl), invalidUrl, invalidUrl.pathname.split('/').filter(Boolean).map((part, index) => index === 0 ? 'api' : part))
+    expect(invalid.status).toBe(400)
+    expect(await invalid.json()).toMatchObject({ error: 'MEDIA_INVALID_REQUEST' })
+  }
   service.repository.close()
 })
 
