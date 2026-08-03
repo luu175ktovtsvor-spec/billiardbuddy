@@ -216,6 +216,29 @@ test('15.3 Template 会展开受控蓝图、填充 Slot，并以锁定 Brand rev
   expect(rendered.render_receipt).toMatchObject({ brand_kit_revision_id: brand.id, template_revision_id: template.id })
 })
 
+test('15.3 未显式 CAS 指针的后续 Canvas revision 会在受理时锁定 current pointer 并正常激活', async () => {
+  const workbench = await service('late-revision-activation')
+  const setup = await projectWithCanvas(workbench)
+  const firstEdit = await workbench.applyCanvasCommand(setup.project.id, setup.canvas.canvas_id, setup.project.revision, {
+    idempotency_key: 'bb-image-late-activation-edit-0001', base_revision: 0, kind: 'add_layer',
+    payload: { layer: { id: 'shape_late_activation_0001', kind: 'shape', shape: 'rectangle', transform: { x: 30, y: 30, width: 400, height: 200, rotation_degrees: 0, scale_x: 1, scale_y: 1 }, fill: '#113355', opacity: 1 } },
+  })
+  const first = await completedRender(workbench, setup.project.id, setup.canvas.canvas_id, {
+    base_revision: firstEdit.project.revision, idempotency_key: 'bb-image-late-activation-render-0001', canvas_revision: firstEdit.canvas.revision, activate_on_success: true,
+  })
+  expect((await workbench.getProject(setup.project.id)).current_versions_by_artboard[setup.artboard.id]).toBe(first.version_id)
+  const nextProject = await workbench.getProject(setup.project.id)
+  const secondEdit = await workbench.applyCanvasCommand(setup.project.id, setup.canvas.canvas_id, nextProject.revision, {
+    idempotency_key: 'bb-image-late-activation-edit-0002', base_revision: firstEdit.canvas.revision, kind: 'add_layer',
+    payload: { layer: { id: 'shape_late_activation_0002', kind: 'shape', shape: 'ellipse', transform: { x: 500, y: 500, width: 160, height: 160, rotation_degrees: 0, scale_x: 1, scale_y: 1 }, fill: '#cc8844', opacity: 1 } },
+  })
+  const second = await completedRender(workbench, setup.project.id, setup.canvas.canvas_id, {
+    base_revision: secondEdit.project.revision, idempotency_key: 'bb-image-late-activation-render-0002', canvas_revision: secondEdit.canvas.revision, activate_on_success: true,
+  })
+  expect(second.operation.completion_freshness).toBe('current')
+  expect((await workbench.getProject(setup.project.id)).current_versions_by_artboard[setup.artboard.id]).toBe(second.version_id)
+}, 15_000)
+
 test('15.3 后端渲染、QR 解码、陈旧完成、可验证导出和崩溃重跑都不接受 Renderer PNG', async () => {
   const workbench = await service('renderer')
   const setup = await projectWithCanvas(workbench)

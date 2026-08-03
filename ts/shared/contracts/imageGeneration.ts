@@ -193,7 +193,15 @@ export const imageOperationV2Schema = z.object({
   /** Durable local work descriptor.  It lets startup resume the exact Canvas
    * revision or frozen export map without asking a renderer to re-submit. */
   local_delivery: z.discriminatedUnion('kind', [
-    z.object({ kind: z.literal('canvas_render'), canvas_id: mediaIdSchema, canvas_revision: z.number().int().nonnegative(), expected_current_version_id: mediaIdSchema.optional(), activate_on_success: z.boolean() }).strict(),
+    z.object({
+      kind: z.literal('canvas_render'), canvas_id: mediaIdSchema, canvas_revision: z.number().int().nonnegative(),
+      /** Pointer observed at acceptance; completion may activate only if it still matches. */
+      expected_current_version_id: mediaIdSchema.optional(),
+      /** Exact client intent, retained so retry/recovery preserves the idempotency request hash. */
+      requested_expected_current_version_id: mediaIdSchema.optional(),
+      expected_current_version_id_source: z.enum(['client', 'acceptance']).optional(),
+      activate_on_success: z.boolean(),
+    }).strict(),
     z.object({ kind: z.literal('export'), version_ids_by_artboard: z.record(mediaIdSchema, mediaIdSchema) }).strict(),
   ]).optional(),
   submitted_at: mediaIsoDateSchema.optional(),
