@@ -10,8 +10,8 @@ import { createVideoWorkbenchDomainApiHandler } from './api/videoWorkbench.js'
 import { isLongMediaRequestPath } from './mediaRequestTimeout.js'
 import { handleProductControlApi } from './api/productControl.js'
 import { MediaProjectService } from './services/mediaProjectService.js'
-import { ImageWorkbenchService } from './services/imageWorkbenchService.js'
 import { VideoWorkbenchService } from './services/videoWorkbenchService.js'
+import { createMediaRuntime } from './media/runtime/createMediaRuntime.js'
 import { voiceOperationService } from './services/voiceOperationService.js'
 import {
   consumeGatewayAccessTokenCapability,
@@ -92,7 +92,8 @@ export function startServer(port = PORT, host = HOST) {
   // The generic media service is now a legacy reader only. Image and video
   // each own their state, operation journal and recovery paths.
   const mediaService = new MediaProjectService()
-  const imageWorkbenchService = new ImageWorkbenchService()
+  const mediaRuntime = createMediaRuntime()
+  const imageWorkbenchService = mediaRuntime.imageWorkbench
   const videoWorkbenchService = new VideoWorkbenchService()
   if (process.env.NODE_ENV !== 'test') {
     void voiceOperationService.purgeExpired().catch(error => diagnosticsService.recordEvent({

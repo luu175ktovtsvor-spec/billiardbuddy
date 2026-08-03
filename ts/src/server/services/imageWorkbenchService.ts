@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { readFile, readdir } from 'node:fs/promises'
+import { readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { isAbsolute, join, relative, resolve } from 'node:path'
 import {
@@ -48,11 +48,12 @@ import {
   type VerifiedImageBytes,
 } from './imageAssetStore.js'
 import {
-  ImageWorkbenchRepository,
   ImageWorkbenchRepositoryError,
   type ImageOperation,
   type ImageOperationEvent,
 } from './imageWorkbenchRepository.js'
+import { LegacyImageProjectReader } from '../media/image/infrastructure/legacyImageProjectReader.js'
+import { SqliteImageMetadataStore } from '../media/image/infrastructure/sqliteImageMetadataStore.js'
 
 const STANDALONE_IMAGE_OWNER: MediaOwner = {
   kind: 'standalone',
@@ -162,12 +163,13 @@ export class ImageWorkbenchServiceError extends Error {
  * persisted ImageOperation record in a later section of this same service.
  */
 export class ImageWorkbenchService {
-  readonly repository: ImageWorkbenchRepository
+  readonly repository: SqliteImageMetadataStore
   readonly assets: ImageAssetStore
   private readonly now: () => Date
   private readonly fetchImpl: FetchLike
   private readonly imageResultTimeoutMs: number
   private readonly legacyMediaRoot: string
+  private readonly legacyReader: LegacyImageProjectReader
   private readonly activeSubmissions = new Map<string, Promise<ImageOperation>>()
   private readonly activeRefreshes = new Map<string, Promise<ImageOperation>>()
 
@@ -183,7 +185,8 @@ export class ImageWorkbenchService {
     this.imageResultTimeoutMs = Math.max(1_000, Math.min(120_000, options.imageResultTimeoutMs ?? 30_000))
     this.legacyMediaRoot = options.legacyMediaRoot
       ?? join(process.env.BILLIARDBUDDY_CONFIG_DIR ?? join(homedir(), '.BilliardBuddy'), 'billiardbuddy', 'media')
-    this.repository = new ImageWorkbenchRepository({ root: options.root, now: this.now })
+    this.legacyReader = new LegacyImageProjectReader(this.legacyMediaRoot)
+    this.repository = new SqliteImageMetadataStore({ root: options.root, now: this.now })
     this.assets = new ImageAssetStore(this.repository.paths())
   }
 
@@ -757,7 +760,7 @@ export class ImageWorkbenchService {
     providerReceiptHash?: string,
   ): Promise<ImageOperation> {
     const safe = mediaSafeError(errorCode)
-    const failed = await this.repository.saveOperation(this.operation({
+    const next = this.operation({
       ...operation,
       status: 'failed',
       stage: '生成失败',
@@ -765,17 +768,17 @@ export class ImageWorkbenchService {
       error_code: safe.code,
       outcome_unknown: outcomeUnknown,
       provider_receipt_hash: providerReceiptHash,
-    }))
+    })
     const project = await this.project(operation.project_id).catch(() => null)
     if (project?.task_id === operation.id) {
-      await this.repository.saveProject({
+      return (await this.repository.saveProjectAndOperation({
         ...project,
         state: 'failed',
         error: safe.message,
         error_code: safe.code,
-      })
+      }, next)).operation
     }
-    return failed
+    return await this.repository.saveOperation(next)
   }
 
   private async fenceInterruptedSubmission(operation: ImageOperation): Promise<ImageOperation> {
@@ -794,7 +797,29 @@ export class ImageWorkbenchService {
   async recoverInterruptedOperations(): Promise<void> {
     const operations = await this.repository.listOperations()
     await Promise.all(operations.map(async operation => {
-      await this.fenceInterruptedSubmission(operation)
+      const fenced = await this.fenceInterruptedSubmission(operation)
+      const reconciled = await this.reconcileCommittedOperation(fenced)
+      await this.acknowledgeRemoteResult(reconciled)
+    }))
+  }
+
+  /**
+   * A crash after the project/CAS transaction but before the final operation
+   * status must never redownload or resubmit. The immutable local outputs are
+   * sufficient to finish the same committing operation and then retry ACK.
+   */
+  private async reconcileCommittedOperation(operation: ImageOperation): Promise<ImageOperation> {
+    if (operation.status !== 'committing') return operation
+    const project = await this.project(operation.project_id).catch(() => null)
+    if (!project) return operation
+    const outputs = project.outputs.filter(output => output.operation_id === operation.operation_id)
+    if (outputs.length === 0 || outputs.length > operation.image_operation.output_count) return operation
+    return await this.repository.saveOperation(this.operation({
+      ...operation,
+      status: 'succeeded',
+      progress: 100,
+      stage: '已恢复本地图片候选提交',
+      result: imageGenerationTaskResultSchema.parse({ output_count: outputs.length, outputs }),
     }))
   }
 
@@ -805,60 +830,69 @@ export class ImageWorkbenchService {
     return relation && !relation.startsWith('..') && !isAbsolute(relation) ? target : null
   }
 
-  private async legacyAssetBytes(projectId: string, asset: MediaAsset): Promise<Buffer | null> {
+  private async legacyAssetBytes(projectId: string, asset: MediaAsset, sourceRoot = this.legacyMediaRoot): Promise<Buffer | null> {
     let path: string | null = null
     if (asset.storage.kind === 'cas') {
       const digest = /^sha256\/([a-f0-9]{64})$/.exec(asset.storage.locator)?.[1]
-      path = digest ? join(this.legacyMediaRoot, 'cas', 'sha256', digest) : null
+      path = digest ? join(sourceRoot, 'cas', 'sha256', digest) : null
     } else if (asset.storage.kind === 'managed') {
-      path = this.legacyFile(join(this.legacyMediaRoot, 'assets'), asset.storage.locator)
+      path = this.legacyFile(join(sourceRoot, 'assets'), asset.storage.locator)
     }
     if (!path) return null
     return await readFile(path).catch(() => null)
   }
 
-  private async legacyReferenceBytes(projectId: string, fileName: string): Promise<Buffer | null> {
+  private async legacyReferenceBytes(projectId: string, fileName: string, sourceRoot = this.legacyMediaRoot): Promise<Buffer | null> {
     if (!/^[a-z0-9][a-z0-9_.-]{2,120}$/.test(fileName)) return null
-    return await readFile(join(this.legacyMediaRoot, 'assets', projectId, 'references', fileName)).catch(() => null)
+    return await readFile(join(sourceRoot, 'assets', projectId, 'references', fileName)).catch(() => null)
   }
 
-  private async legacyOutputBytes(projectId: string, output: ImageWorkbenchProject['outputs'][number]): Promise<Buffer | null> {
+  private async legacyOutputBytes(projectId: string, output: ImageWorkbenchProject['outputs'][number], sourceRoot = this.legacyMediaRoot): Promise<Buffer | null> {
     if (output.data_url) return (await this.assets.verifyDataUrl(output.data_url)).bytes
-    const prefix = `/api/media/assets/${projectId}/`
-    if (!output.asset_path?.startsWith(prefix)) return null
-    const fileName = output.asset_path.slice(prefix.length)
-    if (!/^[a-z0-9][a-z0-9_.-]{2,120}$/.test(fileName)) return null
-    return await readFile(join(this.legacyMediaRoot, 'assets', projectId, fileName)).catch(() => null)
+    const genericPrefix = `/api/media/assets/${projectId}/`
+    if (output.asset_path?.startsWith(genericPrefix)) {
+      const fileName = output.asset_path.slice(genericPrefix.length)
+      if (!/^[a-z0-9][a-z0-9_.-]{2,120}$/.test(fileName)) return null
+      return await readFile(join(sourceRoot, 'assets', projectId, fileName)).catch(() => null)
+    }
+    const currentPrefix = `/api/images/projects/${projectId}/outputs/`
+    const currentAssetId = output.asset_path?.startsWith(currentPrefix)
+      ? output.asset_path.slice(currentPrefix.length).replace(/\/content$/, '')
+      : ''
+    if (!/^[a-z0-9][a-z0-9_-]{7,79}$/.test(currentAssetId)) return null
+    const mimeType = output.mime_type
+    return await readFile(join(sourceRoot, 'assets', projectId, 'results', `${currentAssetId}.${extensionForMime(mimeType)}`)).catch(() => null)
   }
 
   /**
-   * One-way, idempotent import from the former generic media store. It reads
-   * its files directly and never asks MediaProjectService to keep owning an
-   * image project. Missing/corrupt legacy assets remain in the old store and
-   * are not invented as new candidate or version facts.
+   * One-way, idempotent import from both former JSON layouts. It reads their
+   * files directly and never asks MediaProjectService to keep owning an image
+   * project. Missing/corrupt legacy assets remain in the old store and are not
+   * invented as new candidate or version facts.
    */
   async migrateLegacyMediaStore(): Promise<{ migrated_project_ids: string[]; skipped_project_ids: string[] }> {
-    const projectsDir = join(this.legacyMediaRoot, 'projects')
-    const tasksDir = join(this.legacyMediaRoot, 'tasks')
-    const taskNames = await readdir(tasksDir).catch(() => [])
-    const legacyTasks = new Map<string, ImageOperation>()
-    for (const name of taskNames.filter(name => name.endsWith('.json'))) {
-      const raw = await readFile(join(tasksDir, name), 'utf8').catch(() => null)
-      if (!raw) continue
-      const parsed = mediaTaskSchema.safeParse(JSON.parse(raw))
-      if (!parsed.success || parsed.data.kind !== 'image.generate' || !parsed.data.image_operation) continue
-      legacyTasks.set(parsed.data.id, parsed.data as ImageOperation)
-    }
+    const currentImageReader = new LegacyImageProjectReader(this.repository.paths().root)
+    const [currentImageStore, genericMediaStore] = await Promise.all([
+      currentImageReader.read(),
+      this.legacyReader.read(),
+    ])
+    // A pre-15.1 ImageWorkbenchRepository wrote JSON below the current image
+    // root. Read it first, but do not drop an older generic-media project that
+    // was never copied there. A duplicate id is idempotently skipped after the
+    // first (newer image-root) source has been imported.
+    const legacySources = [
+      { store: currentImageStore, root: this.repository.paths().root },
+      ...(this.legacyMediaRoot === this.repository.paths().root ? [] : [{ store: genericMediaStore, root: this.legacyMediaRoot }]),
+    ]
+    const migrationHash = `sha256:${createHash('sha256')
+      .update(legacySources.map(source => source.store.source_hash).join('\0'))
+      .digest('hex')}`
 
     const migratedProjectIds: string[] = []
     const skippedProjectIds: string[] = []
-    const projectNames = await readdir(projectsDir).catch(() => [])
-    for (const name of projectNames.filter(name => name.endsWith('.json')).sort()) {
-      const raw = await readFile(join(projectsDir, name), 'utf8').catch(() => null)
-      if (!raw) continue
-      const parsed = imageWorkbenchProjectSchema.safeParse(JSON.parse(raw))
-      if (!parsed.success) continue
-      const legacy = parsed.data
+    for (const { store: legacyStore, root: legacyRoot } of legacySources) {
+      for (const legacy of legacyStore.projects) {
+        const legacyTasks = legacyStore.operations
       const existing = await this.repository.getProject(legacy.id).catch(error => {
         if (error instanceof ImageWorkbenchRepositoryError && error.code === 'IMAGE_PROJECT_NOT_FOUND') return null
         throw error
@@ -886,13 +920,13 @@ export class ImageWorkbenchService {
       }
       for (const reference of legacy.references) {
         const asset = legacyAssets.get(reference.asset_id)
-        const bytes = asset ? await this.legacyAssetBytes(legacy.id, asset) : null
+        const bytes = asset ? await this.legacyAssetBytes(legacy.id, asset, legacyRoot) : null
         if (bytes) await importReference(reference.asset_id, reference.role, bytes)
       }
       for (const fileName of legacy.reference_image_assets ?? []) {
         const assetId = fileName.slice(0, fileName.lastIndexOf('.'))
         if (!assetId) continue
-        const bytes = await this.legacyReferenceBytes(legacy.id, fileName)
+        const bytes = await this.legacyReferenceBytes(legacy.id, fileName, legacyRoot)
         if (bytes) await importReference(assetId, legacyReferenceRoles.get(assetId) ?? 'unclassified', bytes)
       }
       for (const [index, dataUrl] of legacy.reference_images.entries()) {
@@ -936,7 +970,7 @@ export class ImageWorkbenchService {
           .find((candidate): candidate is MediaAsset => candidate?.role === 'result')
         if (!asset) continue
         const output = outputById.get(asset.id) ?? legacy.outputs.find(candidate => candidate.version_id === version.id)
-        const bytes = (await this.legacyAssetBytes(legacy.id, asset)) ?? (output ? await this.legacyOutputBytes(legacy.id, output) : null)
+        const bytes = (await this.legacyAssetBytes(legacy.id, asset, legacyRoot)) ?? (output ? await this.legacyOutputBytes(legacy.id, output, legacyRoot) : null)
         await importResult(asset.id, version.id, output ?? {
           id: asset.id,
           version_id: version.id,
@@ -960,12 +994,12 @@ export class ImageWorkbenchService {
           text_layers: output.text_layers,
           image_layers: output.image_layers,
           created_at: legacy.updated_at,
-        }, await this.legacyOutputBytes(legacy.id, output))
+        }, await this.legacyOutputBytes(legacy.id, output, legacyRoot))
       }
       // Masks may be referenced by a persisted edit operation. They are not
       // visible candidates but retain the same verified project ownership.
       for (const asset of legacy.assets.filter(asset => asset.role === 'mask')) {
-        const bytes = await this.legacyAssetBytes(legacy.id, asset)
+        const bytes = await this.legacyAssetBytes(legacy.id, asset, legacyRoot)
         if (!bytes) continue
         const verified = await this.assets.verify(bytes)
         assets.push((await this.assets.persist(legacy.id, asset.id, 'mask', verified, asset.version_id, asset.created_at)).asset)
@@ -988,13 +1022,22 @@ export class ImageWorkbenchService {
         outputs,
         current_version_id: legacy.current_version_id && versions.some(version => version.id === legacy.current_version_id)
           ? legacy.current_version_id
-          : versions.at(-1)?.id,
+          : undefined,
         updated_at: now,
       })
-      await this.repository.saveProject(imported)
-      if (legacyTask) await this.repository.saveOperation(legacyTask)
+      await this.repository.importLegacyProject(imported)
+      if (legacyTask) await this.repository.importLegacyOperation(legacyTask)
+      const journal = legacyStore.journals.get(legacy.id)
+      if (journal) {
+        for (const event of journal.events) {
+          await this.repository.importLegacyOperation(event.task as ImageOperation)
+          await this.repository.importLegacyEvent(event)
+        }
+      }
       migratedProjectIds.push(legacy.id)
+      }
     }
+    await this.repository.recordMigrationReceipt('image-legacy-json-v1', migrationHash)
     return { migrated_project_ids: migratedProjectIds, skipped_project_ids: skippedProjectIds }
   }
 
@@ -1047,7 +1090,7 @@ export class ImageWorkbenchService {
           body.provider_receipt_hash,
         )
       }
-      operation = await this.repository.saveOperation(this.operation({
+      const next = this.operation({
         ...operation,
         status: body.status === 'running' ? 'running' : 'queued',
         progress: body.status === 'running' ? 10 : 2,
@@ -1055,15 +1098,17 @@ export class ImageWorkbenchService {
         remote_task_id: body.task_id,
         poll_after_seconds: relayPollAfterSeconds(body.poll_after_seconds, body.status === 'running' ? 3 : 15),
         provider_receipt_hash: body.provider_receipt_hash,
-      }))
+      })
       const latest = await this.project(project.id)
       if (latest.task_id === operation.id) {
-        await this.repository.saveProject({
+        operation = (await this.repository.saveProjectAndOperation({
           ...latest,
-          state: operation.status === 'running' ? 'generating' : 'queued',
+          state: next.status === 'running' ? 'generating' : 'queued',
           error: undefined,
           error_code: undefined,
-        })
+        }, next)).operation
+      } else {
+        operation = await this.repository.saveOperation(next)
       }
       return operation
     } catch {
@@ -1256,7 +1301,7 @@ export class ImageWorkbenchService {
       ...(body.input_fidelity_status ? { input_fidelity_status: body.input_fidelity_status } : {}),
       ...(body.input_fidelity_risk ? { input_fidelity_risk: boundedMessage(body.input_fidelity_risk) } : {}),
     })
-    const savedProject = await this.repository.saveProject(imageWorkbenchProjectSchema.parse({
+    const savedProject = imageWorkbenchProjectSchema.parse({
       ...project,
       state: 'ready',
       assets: [...project.assets, ...saved.map(candidate => candidate.asset)],
@@ -1272,15 +1317,15 @@ export class ImageWorkbenchService {
           : undefined,
       error: undefined,
       error_code: undefined,
-    }))
-    committing = await this.repository.saveOperation(this.operation({
+    })
+    committing = (await this.repository.saveProjectAndOperation(savedProject, this.operation({
       ...committing,
       status: 'succeeded',
       progress: 100,
       stage: '图片候选已保存',
       provider_receipt_hash: body.provider_receipt_hash,
       result: parsedResult,
-    }))
+    }))).operation
     // The project write above is intentionally before success/ACK. An ACK is
     // only legal when every candidate is an owned, verified project asset.
     void savedProject
@@ -1331,23 +1376,26 @@ export class ImageWorkbenchService {
       )
     }
     if (body.status === 'succeeded') return await this.persistRemoteResults(original, body)
-    const operation = await this.repository.saveOperation(this.operation({
+    const next = this.operation({
       ...original,
       status: body.status === 'running' ? 'running' : 'queued',
       progress: body.status === 'running' ? Math.max(original.progress, 35) : Math.max(original.progress, 5),
       stage: body.status === 'running' ? '正在生成图片' : '等待图片生成',
       poll_after_seconds: relayPollAfterSeconds(body.poll_after_seconds, body.status === 'running' ? 3 : 15),
-    }))
-    const project = await this.project(operation.project_id).catch(() => null)
-    if (project?.task_id === operation.id) {
-      await this.repository.saveProject({ ...project, state: operation.status === 'running' ? 'generating' : 'queued' })
+    })
+    const project = await this.project(next.project_id).catch(() => null)
+    if (project?.task_id === next.id) {
+      return (await this.repository.saveProjectAndOperation({
+        ...project,
+        state: next.status === 'running' ? 'generating' : 'queued',
+      }, next)).operation
     }
-    return operation
+    return await this.repository.saveOperation(next)
   }
 
   private async markOperationCancelled(operation: ImageOperation): Promise<ImageOperation> {
     const safe = mediaSafeError('MEDIA_IMAGE_CANCELLED')
-    const cancelled = await this.repository.saveOperation(this.operation({
+    const next = this.operation({
       ...operation,
       status: 'cancelled',
       progress: 0,
@@ -1355,17 +1403,17 @@ export class ImageWorkbenchService {
       error: safe.message,
       error_code: safe.code,
       outcome_unknown: false,
-    }))
+    })
     const project = await this.project(operation.project_id).catch(() => null)
     if (project?.task_id === operation.id) {
-      await this.repository.saveProject({
+      return (await this.repository.saveProjectAndOperation({
         ...project,
         state: 'failed',
         error: safe.message,
         error_code: safe.code,
-      })
+      }, next)).operation
     }
-    return cancelled
+    return await this.repository.saveOperation(next)
   }
 
   async cancelOperation(operationId: string): Promise<ImageOperation> {
@@ -1428,17 +1476,16 @@ export class ImageWorkbenchService {
       created_at: now,
       updated_at: now,
     })
-    const persisted = await this.repository.saveOperation(operation)
-    const attached = await this.repository.saveProject({
+    const committed = await this.repository.saveProjectAndOperation({
       ...project,
       state: 'queued',
-      task_id: persisted.id,
+      task_id: operation.id,
       revision: project.revision + 1,
       error: undefined,
       error_code: undefined,
       notice: undefined,
-    })
-    return await this.submitPersistedOperation(attached, persisted)
+    }, operation)
+    return await this.submitPersistedOperation(committed.project, committed.operation)
   }
 
   async startOperation(projectId: string, raw: StartImageOperationInput): Promise<ImageOperation> {
@@ -1496,17 +1543,16 @@ export class ImageWorkbenchService {
       created_at: now,
       updated_at: now,
     })
-    const persisted = await this.repository.saveOperation(operation)
-    const attached = await this.repository.saveProject({
+    const committed = await this.repository.saveProjectAndOperation({
       ...project,
       assets: maskAsset ? [...project.assets, maskAsset] : project.assets,
       state: 'queued',
-      task_id: persisted.id,
+      task_id: operation.id,
       revision: project.revision + 1,
       error: undefined,
       error_code: undefined,
       notice: undefined,
-    })
-    return await this.submitPersistedOperation(attached, persisted)
+    }, operation)
+    return await this.submitPersistedOperation(committed.project, committed.operation)
   }
 }
