@@ -1,7 +1,9 @@
 import { expect, test } from 'bun:test'
 import { ELECTRON_IPC_CHANNELS } from '../desktop/electron/ipc/channels.js'
 import { validateElectronIpcPayload } from '../desktop/electron/ipc/capabilities.js'
+import { imageWorkbenchIpcResponse } from '../desktop/electron/ipc/imageResponse.js'
 import { ElectronImageActions } from '../desktop/electron/services/imageActions.js'
+import { mediaSafeError } from '../shared/contracts/media.js'
 
 const projectId = 'img_00000001'
 const versionId = 'ver_00000001'
@@ -217,6 +219,25 @@ test('15.2 Image IPC rejects a malformed server response before it reaches the r
     base_revision: 0,
     instruction: '只修改背景光线',
   })).rejects.toThrow()
+})
+
+test('15.2 Image IPC keeps HTTP idempotency and revision conflicts distinguishable', async () => {
+  for (const code of ['MEDIA_IMAGE_IDEMPOTENCY_CONFLICT', 'MEDIA_IMAGE_REVISION_CONFLICT'] as const) {
+    const actions = new ElectronImageActions({
+      getServerUrl: async () => 'http://127.0.0.1:3456',
+      capability,
+      fetchImpl: async () => Response.json({
+        error: code,
+        message: mediaSafeError(code).message,
+      }, { status: 409 }),
+    })
+    const result = await imageWorkbenchIpcResponse(async () => await actions.decideCandidate(projectId, 'cand_00000001', {
+      base_revision: 0,
+      idempotency_key: `bb-image-ipc-${code.toLowerCase()}-0001`,
+      decision: 'kept',
+    }))
+    expect(result).toEqual({ ok: false, error: mediaSafeError(code) })
+  }
 })
 
 test('15.2 closes the paid-generation and Candidate command bridge gaps while later stages retain unrelated security work', () => {

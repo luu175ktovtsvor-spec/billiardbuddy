@@ -115,6 +115,11 @@ export const mediaTaskStatusSchema = z.enum([
   'cancelled',
 ])
 export const mediaSafeErrorCodeSchema = z.enum(MEDIA_SAFE_ERROR_CODES)
+/** Public HTTP and Electron IPC failure body. */
+export const mediaSafeErrorResponseSchema = z.object({
+  error: mediaSafeErrorCodeSchema,
+  message: z.string().min(1).max(2000),
+}).strict()
 
 export const IMAGE_GENERATION_MODELS = [
   'gpt-image-2',
@@ -1221,6 +1226,7 @@ export type PublicMediaProject = z.infer<typeof publicMediaProjectSchema>
 export type PublicImageWorkbenchProject = z.infer<typeof publicImageWorkbenchProjectSchema>
 export type PublicVideoStudioProject = z.infer<typeof publicVideoStudioProjectSchema>
 export type PublicMediaTask = z.infer<typeof publicMediaTaskSchema>
+export type MediaSafeErrorResponse = z.infer<typeof mediaSafeErrorResponseSchema>
 export type ImageTaskResponse = z.infer<typeof imageTaskResponseSchema>
 export type ImageProjectResponse = z.infer<typeof imageProjectResponseSchema>
 export type MediaJobEvent = z.infer<typeof mediaJobEventSchema>
