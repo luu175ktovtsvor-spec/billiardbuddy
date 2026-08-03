@@ -208,8 +208,10 @@ function stageWindowsComputerUseService(destinationBin: string): void {
     throw new Error('Windows 构建机没有可用的 MSVC x64 工具链')
   }
   const quote = (value: string) => `"${value.replaceAll('"', '""')}"`
+  // Do not pass /s here. Its special quote stripping breaks a Visual Studio
+  // installation path containing spaces before `call` can initialize MSVC.
   run(process.env.ComSpec || 'cmd.exe', [
-    '/d', '/s', '/c',
+    '/d', '/c',
     `call ${quote(vcvars)} >nul && cl.exe ${compilerArguments.map(quote).join(' ')}`,
   ])
 }

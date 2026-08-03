@@ -25,6 +25,7 @@ fn main() {
         let Ok(line) = line else { break };
         if line.trim().is_empty() { continue }
         if let Some(response) = handle_message(&line) {
+            let response = response.replace('\n', "").replace('\r', "");
             if writeln!(stdout, "{response}").is_err() || stdout.flush().is_err() { break }
         }
     }

@@ -43,7 +43,9 @@ function windowsService(destination: string) {
   const compiler = process.env.CXX?.trim() || Bun.which('cl.exe') || Bun.which('cl'); if (compiler) return run(compiler, arguments_)
   const programFilesX86 = process.env['ProgramFiles(x86)']; const vswhere = programFilesX86 && join(programFilesX86, 'Microsoft Visual Studio', 'Installer', 'vswhere.exe'); if (!vswhere || !existsSync(vswhere)) throw new Error('缺少 MSVC C++ 编译器')
   const result = spawnSync(vswhere, ['-latest', '-products', '*', '-requires', 'Microsoft.VisualStudio.Component.VC.Tools.x86.x64', '-property', 'installationPath'], { encoding: 'utf8', timeout: 60_000 }); const install = result.status === 0 ? result.stdout.trim() : ''; const vcvars = install && join(install, 'VC', 'Auxiliary', 'Build', 'vcvars64.bat'); if (!vcvars || !existsSync(vcvars)) throw new Error('Windows 构建机没有可用的 MSVC x64 工具链')
-  const quote = (value: string) => `"${value.replaceAll('"', '""')}"`; run(process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', `call ${quote(vcvars)} >nul && cl.exe ${arguments_.map(quote).join(' ')}`])
+  const quote = (value: string) => `"${value.replaceAll('"', '""')}"`
+  // `cmd /s` strips quotes specially and corrupts VS paths containing spaces.
+  run(process.env.ComSpec || 'cmd.exe', ['/d', '/c', `call ${quote(vcvars)} >nul && cl.exe ${arguments_.map(quote).join(' ')}`])
 }
 
 export function verifyStagedRecordReplayPlugin(options: Options) {
