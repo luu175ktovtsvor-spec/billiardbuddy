@@ -4,7 +4,7 @@
 >
 > 目标仓库：`luu175ktovtsvor-spec/billiardbuddy`
 >
-> 静态审阅基线：`main` 分支提交 `0a0d293cae0301add56139aca17bda8ef3eab74c`
+> 静态审阅基线：`main` 分支提交 `1cc5d6d4`
 >
 > 参考：锁定的 `third_party/codex-engine` Rust 源码，以及官方 Codex 桌面手册
 > 产品边界：BilliardBuddy 使用 Codex Rust App Server 作为 Agent 内核；图片、视频由 BilliardBuddy 自己的工作台承担；不建设语音输入、语音对话、语音合成和声音克隆。
@@ -93,22 +93,25 @@ BilliardBuddy Desktop
 | --- | --- | --- | --- |
 | Agent Loop、Context、压缩 | Rust Core | 已使用 Rust Core | 保持原样 |
 | Thread、Turn、Fork、Rollback、Goal、恢复 | App Server | 已桥接 | 未来新前端投影原生状态 |
-| 文件、Shell、Git、Sandbox、后台终端 | Rust/Exec | 内核已具备；桥接后台终端管理 | 不重写，仅补前端投影 |
+| 文件、Shell、Git、Sandbox、后台终端 | Rust/Exec | 内核已具备；桥接后台终端管理；Windows Sandbox 初始化尚未接入 | 不重写；Windows 版须先完成原生 Sandbox readiness/setup |
 | 三级 Agent 权限 | Rust Sandbox + approval | 已有 `ask/approve-for-me/full-access` | 保留，不能代替桌面权限 |
 | MCP、OAuth、Skills、Hooks | App Server | 已桥接本地配置/列表/授权请求 | 保持 Rust 为唯一注册表 |
 | 本地/工作区插件市场 | App Server | 已桥接 | 保持；安装仍须 Electron 确认 |
 | OpenAI 远程插件市场 | ChatGPT 服务 | 刻意未接 | 后续 BilliardBuddy 自有市场，不复用 OpenAI 账号 |
 | 外部 Agent 配置迁移 | App Server | 检测/导入已通过受限 Electron 桥接；新前端未投影 | 仅迁移安全类别，逐项确认 |
 | Collaboration、子 Agent、Review | Rust Core | 已桥接协作/Review 协议，暂无新 UI | 新前端直接消费原生事件 |
-| Worktrees、项目/仓库工作流 | Rust + Git | 内核具备，产品界面未接 | 不建设第二个 Git 状态 |
-| Scheduled Tasks | Codex 产品能力 + 宿主调度 | Host 调度、受限 IPC、持久化与原生 Thread/Turn 唤醒已进入源码链；新前端未投影 | BilliardBuddy Host 调度原生 Thread/Turn；不复活旧自建 Agent Loop |
-| 本地 Memories / 项目长期上下文 | Codex Core/产品状态 | 未形成 BilliardBuddy 产品入口 | 以 Rust 的 Thread/项目状态为事实；不混入媒体 Project |
+| Worktrees、Handoff、本地环境 | 桌面宿主 + Git | 只有 Rust Workspace 与 Git 基础；没有受管工作树、Handoff、初始化脚本或恢复规则 | BilliardBuddy Host 负责 Git 生命周期；不建设第二个 Git 状态或 Agent Loop |
+| Scheduled Tasks | Codex 产品能力 + 宿主调度 | Host 调度、受限 IPC、持久化与原生 Thread/Turn 唤醒已进入源码链；未能选择独立工作树 | BilliardBuddy Host 调度原生 Thread/Turn；工作树隔离完成前不得把任务默认放在主目录 |
+| 本地 Memories / 项目长期上下文 | Codex Core/产品状态 | Rust 已具备；`thread/memoryMode/set` 与 `memory/reset` 尚未接入产品桥 | 以 Rust 的 Thread/项目状态为事实；不混入媒体 Project，也不另建记忆引擎 |
 | Web Search | 模型/服务工具 | 取决于当前模型 Provider | 只在 Provider 真正支持时启用；不伪造结果 |
 | Built-in Browser / Browser Use | 桌面宿主 + 浏览器服务 | 独立 Electron profile、受限 loopback Host 与 MCP 已进入源码链；尚未两端构建 | 后续前端投影设置/标签状态 |
-| Chrome Extension / CDP | 扩展 + 浏览器宿主 | 扩展、Native Messaging Host、MCP 与打包链已进入源码链；尚未两端构建 | 后续正式扩展安装入口与真实 Chrome 验收 |
+| Chrome Extension / CDP | 扩展 + 浏览器宿主 | 扩展、Native Messaging Host、MCP 与打包链已进入源码链；完整 CDP Developer Mode 尚未接入 | 先完成结构化控制，再以每网站审批方式开放完整 CDP |
 | Computer Use | 桌面插件 + OS 权限 | macOS/Windows 原生适配器、MCP、允许列表配置与打包链已进入源码链；尚未两端构建 | 后续设置入口与系统授权验收 |
 | 远程连接到本机 Host | 账号配对 + 桌面服务 | Gateway 配对/撤销/有界命令队列与 Electron Host 轮询已进入源码链；尚未双设备实机验证 | 后续前端投影配对、状态和设备列表 |
 | Cloud 环境/云任务 | OpenAI 云服务 | 未接 | 建设 BilliardBuddy Remote Runner |
+| Appshots、用户主动视觉/文件附件 | 桌面宿主 + App Server Turn 输入 | Turn 已能传递图片；没有前台窗口捕获、可访问文本提取、文件选择或附件保留合同 | 用户主动采集后作为原生 Thread/Turn 输入；不等同 Computer Use |
+| Auto-review 拒绝管理 | Rust Guardian / App Server | `approve-for-me` 已映射 Auto-review；拒绝记录和单次精确覆盖尚未接 | 保持 Rust 审阅权威，只显示理由并允许用户对某一次动作明确重试 |
+| MCP Apps 与自有插件市场 | App Server + 桌面宿主 + BilliardBuddy 服务 | 本地/工作区插件已接；资源 UI、签名市场、搜索、发布、撤销尚未接 | 采用开放 MCP Apps UI；未来市场为 BilliardBuddy 自有服务，不使用 OpenAI 账号 |
 | 图像生成 | OpenAI 图像服务 | 已关闭原生入口 | 由 BilliardBuddy Image Workbench 等价承担 |
 | 视频剪辑 | 非 Codex 原生领域 | BilliardBuddy 自有领域 | 由 Video Workbench 承担 |
 | 语音 | 桌面/云服务 | 不采用 | 不建设 |
@@ -194,14 +197,58 @@ billiardbuddy-computer-use
 
 这一轮先完成 Agent 的本地扩展后端，不开始图片或视频工作台。优先级按“用户日常可感知价值、能够复用 Codex 原生 Agent、风险是否能清楚收口”排序：
 
-1. **本地插件装配基础**：让 BilliardBuddy 能以原生 Codex 方式安装、启用、运行和撤销自带插件；这是所有高级能力的共同前提，不是另一个运行时。
-2. **Chrome Control**：在用户明确连接的既有 Chrome 标签页中完成网页任务；它比泛化鼠标操作更结构化、可解释，也最适合真实的网页登录、表单和资料整理场景。
-3. **Computer Use**：处理没有结构化接口的原生桌面 App；能力最广，但必须以最小权限和系统授权失败关闭。
-4. **Record & Replay**：把用户明确录制的重复操作整理为可审阅的 Skill/工作流，不做坐标盲回放。
-5. **BilliardBuddy Browser Use**：产品自带的隔离浏览器，用于检索、网页测试和开发预览；它与用户 Chrome 登录态隔离。
-6. **外部 Agent 配置迁移、计划任务、Remote Host、Remote Runner**：均有价值，但分别依赖安全导入、宿主调度、设备配对或云隔离，不能抢在上述本机能力之前。
+1. **Windows Sandbox 接入**：这是现有 Codex Agent 权限在 Windows 的真实缺口；只桥接原生 readiness/setup，不另造安全系统。
+2. **受管 Worktree、本地环境与 Handoff**：它把并行开发、恢复和计划任务从“主目录直接写入”收口到可管理的项目生命周期，且不增加第二个 Agent。
+3. **本地插件装配基础**：让 BilliardBuddy 能以原生 Codex 方式安装、启用、运行和撤销自带插件；这是所有高级能力的共同前提，不是另一个运行时。
+4. **Chrome Control**：在用户明确连接的既有 Chrome 标签页中完成网页任务；它比泛化鼠标操作更结构化、可解释，也最适合真实的网页登录、表单和资料整理场景。
+5. **Computer Use**：处理没有结构化接口的原生桌面 App；能力最广，但必须以最小权限和系统授权失败关闭。
+6. **Record & Replay**：把用户明确录制的重复操作整理为可审阅的 Skill/工作流，不做坐标盲回放。
+7. **BilliardBuddy Browser Use、Developer Mode、Appshots**：Browser 与 Chrome 登录态隔离；开发调试与用户主动视觉附件在独立权限下补齐。
+8. **Memories、外部 Agent 配置迁移、计划任务、Remote Host、Remote Runner、MCP Apps/市场**：均有价值，但分别依赖原生状态控制、安全导入、宿主调度、设备配对、云隔离或新 Renderer，不能抢在上述本机基础之前。
 
 “先做后端”意味着每一模块先交付 Rust/MCP/原生适配器、Core 生命周期、审批/中断/撤销和打包；Renderer 只在对应后端存在后再投影状态。没有后端能力时不以按钮、演示界面或“开发中插件”冒充完成。
+
+### 5.0 M0：Windows 原生 Sandbox 接入
+
+Codex Rust Core 已拥有 Windows Sandbox 的协议和策略语义；BilliardBuddy 目前缺的是桌面宿主对其 `windowsSandbox/readiness` 与 `windowsSandbox/setupStart` 请求的**原生转发和安装流程**。这不是要自研一个 Sandbox，也不能通过把权限档改成 `full-access` 来绕开。
+
+正确的调用链是：
+
+```text
+Rust Core 请求 Windows Sandbox 状态/初始化
+→ Electron Main 显示状态并由用户明确发起安装
+→ Windows 提权/UAC 与官方 Sandbox 组件安装
+→ Rust Core 重新取得 readiness 状态
+→ 需要隔离时仍由 Core 使用其原生 Sandbox 策略
+```
+
+要求：
+
+- 只桥接 Rust App Server 已定义的状态和初始化方法；不重写 Sandbox 策略、镜像或执行器；
+- 初始化必须由用户明确启动并经历 Windows 原生 UAC；拒绝、重启待完成或系统不支持时，准确回传原生失败状态；
+- 隔离不可用时只能按当前 Rust 权限策略降级或失败，不能静默扩大到完全访问；
+- 安装、失败和撤销只记录状态与诊断，不记录项目文件、提示词、模型 Key 或工具输出；
+- Windows runner 至少验证协议桥、未准备状态、用户取消和已准备状态；真实 Sandbox 安装以 Windows 实机验收为准。
+
+### 5.0a W1：受管 Worktree、本地环境与 Handoff
+
+Codex 内核能理解工作区和 Git，但桌面产品的受管 Worktree、Handoff 与本地环境是**宿主层的项目生命周期能力**。它们不应被误做成第二套 Git 状态、第二个任务队列或第二个 Agent。
+
+```text
+用户或原生 Thread 选择隔离开发
+→ BilliardBuddy Host 在该仓库创建/登记受管 Git Worktree
+→ 可选运行用户审阅过的项目初始化脚本
+→ Rust Core 仍以该 Worktree 路径创建/恢复同一个 Thread/Turn
+→ Handoff 只切换工作路径与恢复点，不复制模型 Key、Agent 状态或插件权限
+```
+
+要求：
+
+- 每个隔离任务有明确的仓库、分支、Worktree 路径、创建时间、状态和清理动作；主工作区与其他 Worktree 不被隐式改写；
+- 支持项目受版本控制的环境初始化说明；不自动执行未知脚本，不复制未跟踪的秘密文件；若用户明确允许共享未跟踪文件，使用最小、可预览的包含列表；
+- Handoff、快照/恢复与清理都是 BilliardBuddy 的目录和 Git 生命周期操作，恢复后仍调用 Rust 原生 Thread/Turn；
+- Scheduled Task 只要可能写代码，默认要求显式选定现有 Worktree 或创建新的受管 Worktree，不能默认落到主目录；
+- Worktree 删除前必须确认并确认无未提交工作；BilliardBuddy 运行目录、模型 Key、浏览器 Profile、插件配置和截图不得复制进 Worktree。
 
 ### 5.1 M1：本地高级插件装配
 
@@ -335,6 +382,29 @@ Browser Use 与 Chrome Control 是两个不同模块，不能混用。
 
 当前源码实现为 `billiardbuddy-browser-use`：Electron Main 以 `persist:billiardbuddy-browser` 创建与用户 Chrome 隔离的 BrowserWindow，持有一个仅监听 `127.0.0.1`、随机 token 的短生命周期桥；Rust MCP 只能打开 HTTP(S) 页面、列出本模块窗口、读取有界元素快照、截图、导航、点击、输入及限定按键。新站点须经原生确认，点击始终经原生确认，密码/验证码/支付字段、上传、下载、Cookie、历史、存储及完整 CDP 都不暴露。
 
+### 5.5a M5b：Browser Developer Mode
+
+Browser Use 的结构化工具与完整 Developer Mode 是两种权限。前者服务于正常网页任务；后者才允许开发场景需要的 DOM、Console、Network、Styles、Performance Trace 等调试信息。它不能以“用户已打开 Browser Use”为由自动获得。
+
+实现只扩展现有 BilliardBuddy Browser/Chrome 插件的 MCP 工具与原生审批，不修改 Core：
+
+- 每个网站、每次连接明确显示 Developer Mode 的范围；关闭标签、断开 Chrome 连接、撤销站点许可或应用退出后立即失效；
+- 调试工具先提供只读的 DOM/Console/Network 摘要和性能 trace；执行 JavaScript、修改请求、文件下载/上传或会产生外部副作用的操作仍走逐项审批；
+- 任何调试输出都须过滤 Cookie、`Authorization`、密码字段、浏览器本地存储与其他 Profile 数据；工具不提供 Profile 文件读取或任意 CDP 命令透传；
+- Browser Use 与 Chrome Control 各自拥有独立连接和授权记录，不能由一个入口扩大另一个入口的范围。
+
+### 5.5b M5c：Appshots 与用户主动附件
+
+Appshot 不是 Computer Use 的截图工具：它是用户主动把**此刻**前台 App 的画面和可访问文本附加到当前 Thread，让支持视觉输入的模型理解上下文。截图、文本和文件输入必须作为原生 Turn input 进入 Rust Core；不另建视觉上下文、摘要或记忆系统。
+
+要求：
+
+- 只能由用户菜单/快捷键/文件选择明确触发；默认只采集当前前台窗口，是否附带可访问文本单独可见；
+- macOS 使用系统授权的屏幕和辅助功能能力；Windows 采用相同的“用户主动、当前窗口、可撤销”结果，不复制 OpenAI 专有桌面桥；
+- 输入图片和选择的文件以当前 Thread/Turn 的附件生命周期处理，模型不支持图像时明确提示，不能假装已理解；
+- 密码管理器、身份验证、支付和系统安全窗口必须警告并允许用户在发送前取消；不做后台屏幕历史、连续采集、隐式 OCR 或独立截图仓库；
+- 截图/可访问文本不会进入 Gateway、遥测或 Worktree；其保存、删除和导出遵循该 Thread 的原生会话数据策略。
+
 ### 5.6 M6：外部 Agent 迁移与第三方连接器
 
 接入 Rust 已有的 `externalAgentConfig/detect` 与 import 协议，但不得把检测返回的原始对象直接暴露给 Renderer 或直接交给导入接口。BilliardBuddy Main 进程以随机、单窗口绑定的短期 detection ID 缓存原始结果；Renderer 只能选择索引，Main 再以原始结果调用 Rust。
@@ -348,6 +418,23 @@ Browser Use 与 Chrome Control 是两个不同模块，不能混用。
 ```
 
 首版明确**拒绝** `CONFIG`、MCP、Hook、插件、Memory 和历史会话：完整配置或 MCP 常含环境变量/密钥，Hook 与插件会引入新的可执行入口，记忆和历史会话可能包含用户私密内容。它们不是“发现后自动导入”的对象；以后若要支持，必须先提供逐字段预览、去密钥化与独立审批，而不是绕过 Rust 的原生安装/启用/工具审批。
+
+### 5.6a M6b：本地 Memories 与 Auto-review 拒绝管理
+
+这两项都已有 Rust Core 的状态与决策权。BilliardBuddy 的工作不是新建“长期记忆引擎”或更宽松的审批规则，而是补齐用户控制和可解释性。
+
+- Memory：桥接 `thread/memoryMode/set`、`memory/reset` 和相关原生状态。用户可全局启用/禁用、为某个 Thread 选择模式、查看状态并清空；Memory 的生成、压缩、作用域与存储仍由 Core 负责，不从外部 Agent 自动导入，不混入图片/视频 Project；
+- Auto-review：当 Rust Guardian 拒绝 `approve-for-me` 下的动作时，展示该次原生拒绝原因和影响范围。用户只能对这个确定的动作作一次明确重试；重试仍回到 Rust Guardian，不能把拒绝批量改成 `full-access` 或建立 BilliardBuddy 自己的白名单；
+- 用户清理 Memory、关闭 Auto-review 或切换 Thread 后，Electron 只更新原生状态，不保留第二份记忆、拒绝记录或可恢复的批准令牌。
+
+### 5.6b M6c：MCP Apps 与 BilliardBuddy 自有市场
+
+本地/工作区插件已是 Codex Core 的原生能力；下一层高价值能力是让具备 MCP Apps UI 资源的插件能够在未来 Renderer 内安全展示，以及建设 BilliardBuddy 自己的发现、签名和撤销服务。两者都不能依赖 ChatGPT 账号或 OpenAI 远程市场。
+
+- MCP Apps：采用开放的 MCP Apps resource/UI 形态。Renderer 只承载受隔离的资源视图；资源与工具调用均经过 Main 的类型化桥和 Rust 的原生 MCP 生命周期，不把 Node/Electron 权限暴露给 iframe；
+- 自有市场：服务器仅提供 BilliardBuddy 插件清单、签名、版本、兼容性、撤销和升级信息；客户端在安装前验证签名、显示来源与所需权限，并由用户确认；
+- 本地目录、工作区目录和市场安装来源必须可区分、可禁用、可卸载和可撤销；市场失联不得阻断已安装插件，更不能导致未签名插件被自动安装；
+- 前端重写前不制作伪市场界面，但现在可以固定后端包格式、签名校验和资源桥合同。
 
 ### 5.7 M7：Scheduled Tasks 与长期任务
 
@@ -416,16 +503,21 @@ Desktop creates task package
 ```text
 Agent 权限
   询问我 / 帮我审批 / 完全访问
+  Memory：全局开关、当前 Thread 模式、清空
+  Auto-review：显示原生拒绝原因，只能确认单次精确重试
 
 桌面控制
-  Computer Use、Chrome、Record & Replay、Browser Use、屏幕、后台任务
+  Computer Use、Chrome、Record & Replay、Browser Use、Developer Mode、Appshots、后台任务
   每项显示：已关闭 / 缺少系统授权 / 本次允许 / 已允许的 App
 
 扩展与连接
-  MCP、Skills、Hooks、本地插件、外部 Agent 导入、Remote Host
+  MCP、Skills、Hooks、本地插件、MCP Apps、外部 Agent 导入、Remote Host
+
+项目环境
+  主工作区 / 受管 Worktree、初始化说明、Handoff、快照与清理
 ```
 
-用户默认只看到任务目标和当前风险。复杂范围（App ID、Profile、域名、目录、CDP）在选择“管理权限”后展开。
+用户默认只看到任务目标和当前风险。复杂范围（App ID、Profile、域名、目录、CDP、Worktree）在选择“管理权限”后展开；不能让用户填写上下文压缩、模型窗口或 Codex 内核参数。
 
 ---
 
@@ -442,8 +534,11 @@ Agent 权限
 
 当前明确缺失：
 
+- Windows Sandbox 的原生 readiness/setup 桥、用户发起的安装路径与 Windows 实机验收；
+- 受管 Worktree、本地环境、Handoff、快照/恢复/清理，以及计划任务对隔离工作树的选择；
 - Computer Use、Chrome Control、Browser Use 与 Record & Replay 的 MCP、宿主源码、Windows/macOS 构建 staging 和安装包校验已进入正式源码链；尚缺 GitHub 两端构建、签名后的安装包和真实用户旅程验证，不能宣称已发布；
 - Computer Use 面向用户的启用/允许 App 设置入口，以及 Chrome 扩展的正式发布/安装入口；当前只有后端配置格式、原生 Host 注册服务和插件安装链；
+- Browser Developer Mode、Appshots/用户主动附件、Memory 原生控制、Guardian Auto-review 拒绝管理，以及 MCP Apps 资源桥和 BilliardBuddy 自有签名市场；
 - Remote Host 的跨设备事件观看、远程审批 UI、两台真机验收，以及 Remote Runner；
 - 外部 Agent 迁移的新前端入口（后端受限桥接已存在）；
 - 计划任务的新前端入口（Host Scheduler 与原生 Thread/Turn 唤醒已存在）；
@@ -459,14 +554,20 @@ Agent 权限
 
 | 顺序 | 模块 | 退出条件 |
 | ---: | --- | --- |
+| 0 | M0 Windows Sandbox | 只桥接 Core 原生 readiness/setup；UAC、取消、不支持和未准备状态均可验证，绝不静默扩大权限 |
+| 0a | W1 Worktrees / local environments / Handoff | 受管 Git 生命周期、初始化、Handoff、快照/恢复/清理完整；没有第二个 Agent 或 Git 状态 |
 | 1 | M1 本地高级插件装配 | Rust 工程、stdio MCP 协议、跨平台原生构建与 staging 合同完整；不向用户安装包或 Rust Core 注册半成品插件 |
 | 2 | M2 Chrome Control | 仅用户选择的标签页/Profile 可连接；结构化网页操作可用；副作用、上传下载与完整 CDP 明确确认 |
 | 3 | M3a Computer Use（macOS） | macOS 限定能力可用；未授权/未允许 App 失败关闭；中断和撤销可停止 |
 | 3b | M3b Computer Use（Windows） | Windows 活动桌面限定能力可用；不支持场景失败关闭；中断和撤销可停止 |
 | 4 | M4 Record & Replay | 录制必须明确开始/停止并脱敏；产物需审阅；重放不继承无限权限 |
 | 5 | M5 Browser Use | 受控浏览器与已有 Chrome 会话隔离；副作用、CDP、上传下载均有边界 |
+| 5b | M5b Browser Developer Mode | 每网站、每次连接可见授权；调试输出去秘密；关闭/撤销立即失效 |
+| 5c | M5c Appshots / 主动附件 | 用户主动采集并作为原生 Turn 输入；无后台历史或独立视觉记忆 |
 | 6 | M6 Migration / extensions | 迁移与插件安装逐项确认；不迁移秘密；Rust 是唯一扩展注册表 |
-| 7 | M7 Scheduled Tasks | 宿主调度状态、到期恢复原生 Thread/Turn、通知、暂停/取消和权限不升级完整 |
+| 6b | M6b Memories / Guardian | 只桥接 Rust Memory 与拒绝管理；清理、关闭和单次精确重试可验证 |
+| 6c | M6c MCP Apps / 自有市场 | 类型化资源桥、签名、兼容性、升级、撤销和离线安装边界完整 |
+| 7 | M7 Scheduled Tasks | 宿主调度状态、隔离工作树选择、到期恢复原生 Thread/Turn、通知、暂停/取消和权限不升级完整 |
 | 8 | M8 Remote Host | 设备配对、撤销、Host 上执行与权限继承边界完整 |
 | 9 | M9 Remote Runner | 独立隔离、成本、网络、产物和显式回收合同完整 |
 | 10 | 新前端 | 只投影上述原生/宿主状态，不新建 Agent、权限或项目状态权威 |
@@ -476,6 +577,20 @@ Agent 权限
 ---
 
 ## 9. 验收矩阵
+
+### M0
+
+- Windows Sandbox 状态、准备、安装和失败均来自锁定 Rust App Server 的原生协议；Electron 不解释或重写 Sandbox 策略；
+- 用户没有明确确认时不触发安装；UAC 拒绝、重启待完成、系统不支持和组件未准备均有准确可见结果；
+- Sandbox 不可用时不自动改为 `full-access`，也不替换为 BilliardBuddy 自制隔离器；
+- Windows runner 验证桥接状态机；Windows 实机验证一次实际安装与 Core 隔离执行。
+
+### W1
+
+- 创建、Handoff、恢复和清理的每个 Worktree 都能追溯到单一仓库、分支和路径；不会改写主目录或其他任务的 Worktree；
+- 初始化脚本与未跟踪文件包含清单均须预览和明确确认；Key、运行数据、浏览器数据、插件配置和截图绝不复制；
+- 删除前检查未提交更改；快照恢复不复制或重建 Agent Loop、Memory、审批和模型凭据；
+- Scheduled Task 对可能写入代码的任务必须使用选定/新建的隔离 Worktree，或在无法隔离时明确拒绝创建。
 
 ### M1
 
@@ -513,7 +628,19 @@ Agent 权限
 - 网站副作用和 CDP 高权限操作可见且可确认；
 - 下载、上传和网页内容进入项目时有文件来源和权限记录。
 
-### M6–M9
+### M5b–M5c
+
+- Developer Mode 以网站和连接为最小范围，调试数据过滤 Cookie、授权头、密码与浏览器存储；撤销/关闭后不能再调用；
+- Appshot 只有用户主动触发时采集当前前台窗口；屏幕与可访问文本均可取消，作为当前原生 Turn 输入而非后台历史；
+- 模型不支持图像时不会将 Appshot 伪装成已理解的视觉内容。
+
+### M6–M6c
+
+- Memory 的开启、Thread 模式和清除调用 Rust 原生接口；BilliardBuddy 不另存记忆，也不从外部 Agent 导入记忆；
+- Guardian 拒绝只展示原生理由并允许确定动作的一次确认重试；不得形成主机白名单或权限升级；
+- MCP Apps 资源运行在隔离视图，不能直接取得 Electron/Node 权限；市场包必须验签且可撤销，离线时不自动安装未知包。
+
+### M7–M9
 
 - 迁移、插件、远程主机、云 Runner 都不扩大本地 Agent 的默认权限；
 - 设备、插件、MCP、Hook 和远程 Runner 均可独立撤销；
@@ -531,7 +658,7 @@ Agent 权限
 - 锁定源码：`third_party/codex-engine/codex-rs/core/src/mcp_tool_call.rs`；
 - 当前桥：`ts/desktop/electron/services/codexNativeAppServer.ts`；
 - 当前权限确认：`ts/desktop/electron/main.ts`；
-- 官方 Codex 手册：[Computer Use](https://learn.chatgpt.com/docs/computer-use)、[Browser](https://learn.chatgpt.com/docs/browser?surface=app)、[Chrome extension](https://learn.chatgpt.com/docs/chrome-extension)、[Remote connections](https://learn.chatgpt.com/docs/remote-connections)、Cloud environments、MCP、Skills、Hooks、Plugins、Scheduled tasks。
+- 官方 Codex 手册：[Computer Use](https://learn.chatgpt.com/docs/computer-use)、[Browser](https://learn.chatgpt.com/docs/browser?surface=app)、[Chrome extension](https://learn.chatgpt.com/docs/chrome-extension)、[Worktrees](https://learn.chatgpt.com/docs/environments/git-worktrees)、[Appshots](https://learn.chatgpt.com/docs/appshots)、[Remote connections](https://learn.chatgpt.com/docs/remote-connections)、Cloud environments、MCP、Skills、Hooks、Plugins、Scheduled tasks。
 - 平台 API：Apple [ScreenCaptureKit](https://developer.apple.com/documentation/screencapturekit/capturing-screen-content-in-macos?changes=_9)、Apple [Accessibility API](https://developer.apple.com/documentation/applicationservices/axuielement_h)、Microsoft [UI Automation](https://learn.microsoft.com/en-us/windows/win32/winauto/uiauto-uiautomationoverview)。
 
 本合同只规定 BilliardBuddy 的产品实现边界；第三方插件、浏览器扩展、远程服务和操作系统自动化在接入前仍须分别审查许可证、平台政策、隐私、系统 API 和发布渠道要求。
