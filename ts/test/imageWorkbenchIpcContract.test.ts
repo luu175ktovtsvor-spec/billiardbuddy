@@ -24,7 +24,7 @@ type ImageCommandResponse =
   | ImageGenerationRoundResponse
   | ImageReferenceControlResponse
 
-test('15.2 image IPC validators expose only typed paid-generation and candidate commands', () => {
+test('15.3 image IPC validators expose shared typed Canvas and delivery commands', () => {
   const imageChannels = [
     ELECTRON_IPC_CHANNELS.imageSubmitProject,
     ELECTRON_IPC_CHANNELS.imageStartOperation,
@@ -39,6 +39,13 @@ test('15.2 image IPC validators expose only typed paid-generation and candidate 
     ELECTRON_IPC_CHANNELS.imageDeriveCandidate,
     ELECTRON_IPC_CHANNELS.imageCancelGenerationOperation,
     ELECTRON_IPC_CHANNELS.imageUpdateReferenceControl,
+    ELECTRON_IPC_CHANNELS.imageCreateDeliverySpecRevision,
+    ELECTRON_IPC_CHANNELS.imageCreateCanvas,
+    ELECTRON_IPC_CHANNELS.imageApplyCanvasCommand,
+    ELECTRON_IPC_CHANNELS.imagePreflightCanvas,
+    ELECTRON_IPC_CHANNELS.imageRenderCanvas,
+    ELECTRON_IPC_CHANNELS.imageExportDelivery,
+    ELECTRON_IPC_CHANNELS.imageSelectArtboardVersion,
   ]
   expect(imageChannels).toEqual([
     'desktop:image:submit-project',
@@ -54,6 +61,13 @@ test('15.2 image IPC validators expose only typed paid-generation and candidate 
     'desktop:image:derive-candidate',
     'desktop:image:cancel-generation-operation',
     'desktop:image:update-reference-control',
+    'desktop:image:create-delivery-spec-revision',
+    'desktop:image:create-canvas',
+    'desktop:image:apply-canvas-command',
+    'desktop:image:preflight-canvas',
+    'desktop:image:render-canvas',
+    'desktop:image:export-delivery',
+    'desktop:image:select-artboard-version',
   ])
   expect(validateElectronIpcPayload(ELECTRON_IPC_CHANNELS.imageSubmitProject, {
     projectId,
@@ -144,6 +158,36 @@ test('15.2 image IPC validators expose only typed paid-generation and candidate 
       actor: 'forged-owner',
     },
   })).toBeFalse()
+  expect(validateElectronIpcPayload(ELECTRON_IPC_CHANNELS.imageCreateCanvas, {
+    projectId,
+    input: { artboard_id: 'art_00000001', base_revision: 0, idempotency_key: 'bb-image-ipc-canvas-create-0001' },
+  })).toBeTrue()
+  expect(validateElectronIpcPayload(ELECTRON_IPC_CHANNELS.imageApplyCanvasCommand, {
+    projectId,
+    canvasId: 'canvas_00000001',
+    input: {
+      base_project_revision: 0,
+      command: {
+        idempotency_key: 'bb-image-ipc-canvas-command-0001', base_revision: 0, kind: 'add_layer',
+        payload: { layer: { id: 'shape_00000001', kind: 'shape', shape: 'rectangle', transform: { x: 0, y: 0, width: 100, height: 100, rotation_degrees: 0, scale_x: 1, scale_y: 1 }, fill: '#ffffff', opacity: 1 } },
+      },
+    },
+  })).toBeTrue()
+  expect(validateElectronIpcPayload(ELECTRON_IPC_CHANNELS.imageRenderCanvas, {
+    projectId, canvasId: 'canvas_00000001',
+    input: { base_revision: 0, idempotency_key: 'bb-image-ipc-canvas-render-0001', canvas_revision: 0, activate_on_success: true },
+  })).toBeTrue()
+  expect(validateElectronIpcPayload(ELECTRON_IPC_CHANNELS.imageExportDelivery, {
+    projectId,
+    input: { base_revision: 0, idempotency_key: 'bb-image-ipc-export-0001', version_ids_by_artboard: { art_00000001: versionId } },
+  })).toBeTrue()
+  expect(validateElectronIpcPayload(ELECTRON_IPC_CHANNELS.imageSelectArtboardVersion, {
+    projectId, artboardId: 'art_00000001',
+    input: { base_revision: 0, idempotency_key: 'bb-image-ipc-select-artboard-0001', version_id: versionId },
+  })).toBeTrue()
+  expect(validateElectronIpcPayload(ELECTRON_IPC_CHANNELS.imageRenderCanvas, {
+    projectId, canvasId: 'canvas_00000001', input: { base_revision: 0, idempotency_key: 'short', canvas_revision: 0, activate_on_success: true },
+  })).toBeFalse()
 })
 
 test('current Main-only image action bridge sends the desktop capability through fixed image action entrypoints', async () => {
@@ -233,6 +277,17 @@ test('15.2 Image IPC rejects a malformed server response before it reaches the r
   await expect(actions.estimateDerivation(projectId, 'cand_00000001', {
     base_revision: 0,
     instruction: '只修改背景光线',
+  })).rejects.toThrow()
+})
+
+test('15.3 Canvas IPC rejects a malformed Render response before it reaches the renderer', async () => {
+  const actions = new ElectronImageActions({
+    getServerUrl: async () => 'http://127.0.0.1:3456',
+    capability,
+    fetchImpl: async () => Response.json({ operation: { id: 'op_00000001' } }),
+  })
+  await expect(actions.renderCanvas(projectId, 'canvas_00000001', {
+    base_revision: 0, idempotency_key: 'bb-image-ipc-malformed-render-0001', canvas_revision: 0, activate_on_success: true,
   })).rejects.toThrow()
 })
 

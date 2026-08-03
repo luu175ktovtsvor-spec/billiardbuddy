@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { isAbsolute, join, relative, resolve } from 'node:path'
+import sharp from 'sharp'
 import {
   addImageProjectReferencesInputSchema,
   commitImageVersionInputSchema,
@@ -31,6 +32,13 @@ import {
 } from '../../../shared/contracts/media.js'
 import {
   adoptImageCandidateInputSchema,
+  imageCanvasCommandInputSchema,
+  imageCanvasCreateInputSchema,
+  imageCanvasPreflightInputSchema,
+  imageCanvasRenderInputSchema,
+  imageArtboardSelectVersionInputSchema,
+  imageDeliverySpecRevisionInputSchema,
+  imageExportInputSchema,
   createCreativePlanInputSchema,
   createGenerationRoundInputSchema,
   decideImageCandidateInputSchema,
@@ -45,6 +53,14 @@ import {
   type EstimateGenerationRoundInput,
   type EstimateDeriveImageCandidateInput,
   type ImageBriefSnapshot,
+  type ImageCanvasCommandInput,
+  type ImageCanvasDocument,
+  type ImageCanvasPreflightInput,
+  type ImageCanvasPreflight,
+  type ImageCanvasRevision,
+  type ImageCanvasRenderInput,
+  type ImageDeliverySpecRevisionInput,
+  type ImageExportInput,
   type ImageCandidateAdoption,
   type ImageCandidateDecision,
   type ImageCandidateGroup,
@@ -55,6 +71,10 @@ import {
   type ImageGenerationRound,
   type ImageGenerationEstimate,
   type ImageOperationV2,
+  type ImageRenderReceipt,
+  type ImageReleaseCheckResult,
+  type ImageExportReceipt,
+  type ImageDeliverySet,
   type ImageReferenceV2,
   type ProviderExecutionReceipt,
   type UpdateImageReferenceControlInput,
@@ -76,6 +96,7 @@ import {
   type SupportedImageMime,
   type VerifiedImageBytes,
 } from './imageAssetStore.js'
+import { assertFormalTextLayer, DeterministicImageCanvasRenderer, ImageCanvasRendererError } from './imageCanvasRenderer.js'
 import {
   ImageWorkbenchRepositoryError,
   type ImageOperation,
@@ -102,6 +123,7 @@ export type ImageWorkbenchCrashPoint =
   | 'after_db_commit_before_relay_ack'
   | 'after_generation_round_persisted_before_post'
   | 'after_project_migration_before_operations'
+  | 'after_canvas_render_cas_before_db_commit'
 
 type RelayImageTask = {
   task_id?: string
@@ -245,6 +267,7 @@ export class ImageWorkbenchService {
   private readonly crashInjector?: (point: ImageWorkbenchCrashPoint) => void
   private readonly activeSubmissions = new Map<string, Promise<ImageOperation>>()
   private readonly activeRefreshes = new Map<string, Promise<ImageOperation>>()
+  private readonly canvasRenderer: DeterministicImageCanvasRenderer
 
   constructor(options: {
     root?: string
@@ -253,6 +276,7 @@ export class ImageWorkbenchService {
     imageResultTimeoutMs?: number
     legacyMediaRoot?: string
     casOrphanRetentionMs?: number
+    canvasRenderer?: DeterministicImageCanvasRenderer
     /** Deliberate crash boundaries used by recovery verification only. */
     crashInjector?: (point: ImageWorkbenchCrashPoint) => void
   } = {}) {
@@ -268,6 +292,7 @@ export class ImageWorkbenchService {
       casOrphanRetentionMs: options.casOrphanRetentionMs,
     })
     this.crashInjector = options.crashInjector
+    this.canvasRenderer = options.canvasRenderer ?? new DeterministicImageCanvasRenderer()
     this.assets = new ImageAssetStore(this.repository.paths(), {
       afterCasPublish: async () => this.injectCrash('after_cas_publish_before_db_commit'),
     })
@@ -1467,6 +1492,62 @@ export class ImageWorkbenchService {
     })
   }
 
+  private initialCanvasRevision(input: {
+    project: ImageWorkbenchProject
+    delivery: ImageDeliverySpec
+    artboard: ImageDeliverySpec['artboards'][number]
+    candidate: ImageCandidate
+    asset_id: string
+    adoption: ImageCandidateAdoption
+    created_at: string
+  }): ImageCanvasRevision {
+    const { artboard, candidate, adoption } = input
+    const scale = adoption.placement.fit === 'cover'
+      ? Math.max(artboard.width / candidate.width, artboard.height / candidate.height)
+      : Math.min(artboard.width / candidate.width, artboard.height / candidate.height)
+    const width = candidate.width * scale
+    const height = candidate.height * scale
+    const document: ImageCanvasDocument = {
+      schema_version: 1,
+      id: adoption.canvas_id,
+      project_id: input.project.id,
+      artboard_id: artboard.id,
+      delivery_spec_id: input.delivery.id,
+      delivery_spec_revision: input.delivery.revision,
+      width: artboard.width,
+      height: artboard.height,
+      color_space: 'srgb',
+      background: (artboard.output.format === 'png' || artboard.output.format === 'webp') && artboard.output.transparent
+        ? { kind: 'transparent' }
+        : { kind: 'solid', color: artboard.output.format === 'jpeg' ? artboard.output.background_color : '#ffffff' },
+      layers: [{
+        id: stableId('canvas', adoption.canvas_id, 'candidate-raster'),
+        kind: 'raster',
+        source_asset_id: input.asset_id,
+        transform: {
+          x: (artboard.width - width) * adoption.placement.focus_x,
+          y: (artboard.height - height) * adoption.placement.focus_y,
+          width,
+          height,
+          rotation_degrees: 0,
+          scale_x: 1,
+          scale_y: 1,
+        },
+        opacity: 1,
+        blend_mode: 'normal',
+        clip_to_artboard: true,
+      }],
+      created_at: input.created_at,
+    }
+    return {
+      canvas_id: adoption.canvas_id,
+      revision: 0,
+      document_hash: sha256(document),
+      document,
+      created_at: input.created_at,
+    }
+  }
+
   async adoptCandidate(projectId: string, candidateId: string, raw: AdoptImageCandidateInput): Promise<{ project: ImageWorkbenchProject; adoptions: ImageCandidateAdoption[] }> {
     const input = adoptImageCandidateInputSchema.parse(raw)
     const project = await this.project(projectId)
@@ -1509,6 +1590,15 @@ export class ImageWorkbenchService {
       height: candidate.height,
       created_at: now,
     }))
+    const canvases = adoptions.map(adoption => this.initialCanvasRevision({
+      project,
+      delivery,
+      artboard: artboards.get(adoption.artboard_id)!,
+      candidate,
+      asset_id: asset.id,
+      adoption,
+      created_at: now,
+    }))
     return await this.repository.adoptCandidate({
       project,
       base_revision: input.base_revision,
@@ -1517,7 +1607,318 @@ export class ImageWorkbenchService {
       idempotency_key: input.idempotency_key,
       adoptions,
       versions,
+      canvases,
     })
+  }
+
+  async getCanvas(projectId: string, canvasId: string, revision?: number): Promise<ImageCanvasRevision> {
+    return await this.repository.getCanvasRevision(projectId, canvasId, revision)
+  }
+
+  async listCanvases(projectId: string): Promise<ImageCanvasRevision[]> {
+    return await this.repository.listCanvasRevisions(projectId)
+  }
+
+  async createCanvas(projectId: string, raw: { artboard_id: string; base_revision: number; idempotency_key: string; background?: ImageCanvasDocument['background'] }): Promise<{ project: ImageWorkbenchProject; canvas: ImageCanvasRevision }> {
+    const input = imageCanvasCreateInputSchema.parse(raw)
+    const project = await this.project(projectId)
+    const delivery = await this.ensureDeliverySpec(project)
+    const artboard = delivery.artboards.find(candidate => candidate.id === input.artboard_id)
+    if (!artboard) throw new ImageWorkbenchServiceError('画板不属于当前交付规格', 400, 'IMAGE_OPERATION_CORRUPT')
+    const now = this.iso()
+    const canvasId = stableId('canvas', projectId, input.artboard_id, 'blank-canvas')
+    const document: ImageCanvasDocument = {
+      schema_version: 1, id: canvasId, project_id: projectId, artboard_id: artboard.id,
+      delivery_spec_id: delivery.id, delivery_spec_revision: delivery.revision,
+      width: artboard.width, height: artboard.height, color_space: 'srgb',
+      background: input.background ?? ((artboard.output.format === 'png' || artboard.output.format === 'webp') && artboard.output.transparent
+        ? { kind: 'transparent' }
+        : { kind: 'solid', color: artboard.output.format === 'jpeg' ? artboard.output.background_color : '#ffffff' }),
+      layers: [], created_at: now,
+    }
+    const result = await this.repository.createCanvas({
+      project_id: projectId, base_project_revision: input.base_revision, idempotency_key: input.idempotency_key,
+      request_hash: sha256(input),
+      canvas: { canvas_id: canvasId, revision: 0, document_hash: sha256(document), document, created_at: now },
+    })
+    return { project: result.project, canvas: result.canvas }
+  }
+
+  async applyCanvasCommand(projectId: string, canvasId: string, baseProjectRevision: number, raw: ImageCanvasCommandInput): Promise<{ project: ImageWorkbenchProject; canvas: ImageCanvasRevision }> {
+    const command = imageCanvasCommandInputSchema.parse(raw)
+    const currentCanvas = command.kind === 'sync_delivery_spec'
+      ? await this.repository.getCanvasRevision(projectId, canvasId, command.base_revision)
+      : undefined
+    const deliveryArtboard = command.kind === 'sync_delivery_spec'
+      ? (await this.repository.getDeliverySpecRevision(projectId, command.payload.delivery_spec_id, command.payload.delivery_spec_revision))
+        .artboards.find(artboard => artboard.id === currentCanvas!.document.artboard_id)
+      : undefined
+    if (command.kind === 'sync_delivery_spec' && !deliveryArtboard) {
+      throw new ImageWorkbenchServiceError('交付规格不包含当前画板，不能同步', 409, 'IMAGE_REVISION_CONFLICT')
+    }
+    const requestHash = sha256({ canvas_id: canvasId, base_project_revision: baseProjectRevision, command })
+    const result = await this.repository.applyCanvasCommand({
+      project_id: projectId,
+      canvas_id: canvasId,
+      base_project_revision: baseProjectRevision,
+      command,
+      request_hash: requestHash,
+      created_at: this.iso(),
+      ...(deliveryArtboard ? { delivery_artboard: { width: deliveryArtboard.width, height: deliveryArtboard.height } } : {}),
+    })
+    return { project: result.project, canvas: result.canvas }
+  }
+
+  async createDeliverySpecRevision(projectId: string, raw: ImageDeliverySpecRevisionInput): Promise<{ project: ImageWorkbenchProject; spec: ImageDeliverySpec }> {
+    const input = imageDeliverySpecRevisionInputSchema.parse(raw)
+    const project = await this.project(projectId)
+    const current = await this.ensureDeliverySpec(project)
+    const spec: ImageDeliverySpec = {
+      schema_version: 1,
+      id: stableId('dsp', projectId, input.idempotency_key, String(current.revision + 1)),
+      project_id: projectId,
+      revision: current.revision + 1,
+      purpose: input.purpose,
+      artboards: input.artboards,
+      created_at: this.iso(),
+    }
+    const result = await this.repository.createDeliverySpecRevision({
+      project_id: projectId,
+      base_revision: input.base_revision,
+      idempotency_key: input.idempotency_key,
+      request_hash: sha256({ base_revision: input.base_revision, purpose: input.purpose, artboards: input.artboards }),
+      spec,
+    })
+    return { project: result.project, spec: result.spec }
+  }
+
+  private flattenCanvasLayers(layers: ImageCanvasDocument['layers']): ImageCanvasDocument['layers'] {
+    return layers.flatMap(layer => layer.kind === 'group' ? this.flattenCanvasLayers(layer.children) : [layer])
+  }
+
+  private async canvasInputAssets(project: ImageWorkbenchProject, document: ImageCanvasDocument): Promise<Array<{ id: string; verified: VerifiedImageBytes }>> {
+    const assetIds = new Set<string>()
+    for (const layer of this.flattenCanvasLayers(document.layers)) {
+      if (layer.kind === 'raster' || layer.kind === 'logo' || layer.kind === 'mask') assetIds.add(layer.source_asset_id)
+      if (layer.kind === 'qrcode' && layer.source.kind === 'asset') assetIds.add(layer.source.asset_id)
+    }
+    const assets: Array<{ id: string; verified: VerifiedImageBytes }> = []
+    for (const assetId of assetIds) {
+      const asset = project.assets.find(candidate => candidate.id === assetId)
+      if (!asset) throw new ImageWorkbenchServiceError('画布引用的素材不存在', 409, 'IMAGE_ASSET_NOT_FOUND')
+      assets.push({ id: assetId, verified: await this.assets.readVerified(asset) })
+    }
+    return assets
+  }
+
+  async preflightCanvas(projectId: string, canvasId: string, raw: ImageCanvasPreflightInput): Promise<ImageCanvasPreflight> {
+    const input = imageCanvasPreflightInputSchema.parse(raw)
+    const [project, canvas] = await Promise.all([this.project(projectId), this.repository.getCanvasRevision(projectId, canvasId, input.revision)])
+    const delivery = await this.repository.getDeliverySpecRevision(projectId, canvas.document.delivery_spec_id, canvas.document.delivery_spec_revision)
+    const artboard = delivery.artboards.find(candidate => candidate.id === canvas.document.artboard_id)
+    if (!artboard) throw new ImageWorkbenchServiceError('画布引用的交付规格没有对应画板', 409, 'IMAGE_OPERATION_CORRUPT')
+    const checks: ImageCanvasPreflight['checks'] = []
+    checks.push({
+      id: 'artboard-dimensions', status: canvas.document.width === artboard.width && canvas.document.height === artboard.height ? 'pass' : 'fail',
+      evidence: `canvas=${canvas.document.width}x${canvas.document.height};delivery=${artboard.width}x${artboard.height}`, waivable: false,
+    })
+    try {
+      await this.canvasInputAssets(project, canvas.document)
+      checks.push({ id: 'dependency-assets', status: 'pass', evidence: '全部引用素材通过 CAS 内容校验', waivable: false })
+    } catch (error) {
+      checks.push({ id: 'dependency-assets', status: 'fail', evidence: error instanceof Error ? error.message.slice(0, 500) : '素材校验失败', waivable: false })
+    }
+    const textLayers = this.flattenCanvasLayers(canvas.document.layers).filter((layer): layer is Extract<typeof layer, { kind: 'text' }> => layer.kind === 'text')
+    const brief = await this.repository.latestGenerationBrief(projectId)
+    const missingExact = (brief?.exact_text ?? []).filter(requirement => requirement.required && !textLayers.some(layer => layer.text === requirement.text && layer.requirement_id === requirement.id))
+    checks.push({
+      id: 'exact-text', status: missingExact.length === 0 ? 'pass' : 'fail',
+      evidence: missingExact.length === 0 ? '所有必需精确文字已绑定到正式文本图层' : `缺少精确文字：${missingExact.map(item => item.id).join(',')}`,
+      waivable: false,
+    })
+    const invalidText = textLayers.find(layer => layer.overflow === 'clip' || layer.position.x < 0 || layer.position.y < 0
+      || (layer.max_width !== undefined && layer.position.x + layer.max_width > canvas.document.width)
+      || (layer.max_height !== undefined && layer.position.y + layer.max_height > canvas.document.height)
+      || layer.font_asset_id !== 'font_builtin_0001')
+    let invalidGlyph = false
+    try { textLayers.forEach(layer => assertFormalTextLayer(layer)) } catch { invalidGlyph = true }
+    checks.push({
+      id: 'font-and-text-bounds', status: invalidText || invalidGlyph ? 'fail' : 'pass',
+      evidence: invalidText || invalidGlyph ? '正式文字必须使用受控字体、具备全部字形且不得裁切或越界' : '正式文字字体、字形、边界和溢出策略有效', waivable: false,
+    })
+    const qrLayers = this.flattenCanvasLayers(canvas.document.layers).filter(layer => layer.kind === 'qrcode')
+    checks.push({ id: 'qr-verification', status: qrLayers.every(layer => layer.verify_after_render) ? 'pass' : 'fail', evidence: '二维码层将在正式像素输出后再次解码', waivable: false })
+    const preflight: ImageCanvasPreflight = {
+      id: stableId('receipt', projectId, canvasId, String(canvas.revision), 'preflight'),
+      project_id: projectId,
+      canvas_id: canvasId,
+      canvas_revision: canvas.revision,
+      document_hash: canvas.document_hash,
+      passed: checks.every(check => check.status !== 'fail'),
+      checks,
+      created_at: this.iso(),
+    }
+    return await this.repository.saveCanvasPreflight(preflight)
+  }
+
+  async renderCanvas(projectId: string, canvasId: string, raw: ImageCanvasRenderInput): Promise<{ operation: ImageOperationV2; version_id: string; render_receipt: ImageRenderReceipt; release_check: ImageReleaseCheckResult }> {
+    const input = imageCanvasRenderInputSchema.parse(raw)
+    const preflight = await this.preflightCanvas(projectId, canvasId, { revision: input.canvas_revision })
+    if (!preflight.passed) throw new ImageWorkbenchServiceError('画布预检未通过，不能生成正式版本', 409, 'IMAGE_CANVAS_PREFLIGHT_FAILED')
+    const [project, canvas] = await Promise.all([this.project(projectId), this.repository.getCanvasRevision(projectId, canvasId, input.canvas_revision)])
+    const delivery = await this.repository.getDeliverySpecRevision(projectId, canvas.document.delivery_spec_id, canvas.document.delivery_spec_revision)
+    const artboard = delivery.artboards.find(candidate => candidate.id === canvas.document.artboard_id)
+    if (!artboard) throw new ImageWorkbenchServiceError('交付画板不存在', 409, 'IMAGE_OPERATION_CORRUPT')
+    let rendered
+    try {
+      rendered = await this.canvasRenderer.render(canvas.document, await this.canvasInputAssets(project, canvas.document))
+    } catch (error) {
+      if (error instanceof ImageCanvasRendererError) throw new ImageWorkbenchServiceError(error.message, 409, error.code)
+      throw error
+    }
+    const verified = await this.assets.verify(rendered.bytes)
+    if (verified.mime_type !== 'image/png' || verified.width !== artboard.width || verified.height !== artboard.height) {
+      throw new ImageWorkbenchServiceError('后端渲染结果未满足交付画板规格', 500, 'IMAGE_DIMENSIONS_MISMATCH')
+    }
+    const versionId = stableId('ver', projectId, canvasId, String(canvas.revision), input.idempotency_key)
+    const outputId = stableId('out', projectId, versionId, 'canvas-render')
+    const now = this.iso()
+    const persisted = await this.assets.persist(projectId, outputId, 'result', verified, versionId, now)
+    this.injectCrash('after_canvas_render_cas_before_db_commit')
+    const receipt: ImageRenderReceipt = {
+      id: stableId('receipt', projectId, versionId, 'render'),
+      version_id: versionId,
+      canvas_id: canvasId,
+      canvas_revision: canvas.revision,
+      document_hash: canvas.document_hash,
+      delivery_spec_id: delivery.id,
+      delivery_spec_revision: delivery.revision,
+      ...(canvas.document.brand_kit_revision_id ? { brand_kit_revision_id: canvas.document.brand_kit_revision_id } : {}),
+      ...(canvas.document.template_revision_id ? { template_revision_id: canvas.document.template_revision_id } : {}),
+      renderer_version: rendered.renderer_version,
+      text_layout_engine_version: rendered.text_layout_engine_version,
+      dependency_asset_hashes: rendered.dependency_hashes,
+      font_asset_hashes: rendered.font_hashes,
+      output_hash: verified.content_hash,
+      text_manifest_hash: rendered.text_manifest_hash,
+      created_at: now,
+    }
+    const releaseChecks = preflight.checks.map(check => ({
+      id: check.id,
+      name: check.id,
+      status: check.status,
+      waivable: check.waivable,
+      evidence: check.evidence,
+      evidence_hash: sha256(check.evidence),
+    }))
+    const releaseCheck: ImageReleaseCheckResult = {
+      id: stableId('receipt', projectId, versionId, 'release'),
+      project_id: projectId,
+      version_id: versionId,
+      export_asset_id: outputId,
+      checks: [...releaseChecks, { id: 'canonical-png', name: 'canonical-png', status: 'pass', waivable: false, evidence: verified.content_hash, evidence_hash: sha256(verified.content_hash) }],
+      accepted_warning_receipt_ids: [],
+      passed: true,
+      created_at: now,
+    }
+    const operation: ImageOperationV2 = {
+      id: stableId('op', projectId, 'canvas-render', canvasId, String(canvas.revision), input.idempotency_key),
+      project_id: projectId,
+      owner: project.owner,
+      kind: 'canvas_render',
+      status: 'succeeded',
+      idempotency_key: input.idempotency_key,
+      request_hash: sha256({ canvas_id: canvasId, ...input }),
+      logical_attempt: 1,
+      input_refs: { project_revision: input.base_revision, delivery_spec_revision: delivery.revision, canvas_revision: canvas.revision, execution_policy_revision: 'local-canvas-v1', asset_hashes: rendered.dependency_hashes.slice(0, 16) },
+      cost_state: 'not_submitted',
+      created_at: now,
+      updated_at: now,
+    }
+    const committed = await this.repository.commitCanvasRender({
+      project_id: projectId,
+      artboard_id: artboard.id,
+      expected_current_version_id: input.expected_current_version_id,
+      activate_on_success: input.activate_on_success,
+      operation,
+      asset: persisted.asset,
+      version: {
+        id: versionId, project_revision: project.revision + 1, asset_ids: [outputId], kind: 'canvas',
+        artboard_id: artboard.id, canvas_id: canvasId, canvas_revision: canvas.revision, canvas_document_hash: canvas.document_hash,
+        render_receipt_id: receipt.id, content_hash: verified.content_hash, width: verified.width, height: verified.height, created_at: now,
+      },
+      receipt,
+      release_check: releaseCheck,
+    })
+    return { operation: committed.operation, version_id: committed.version.id, render_receipt: receipt, release_check: releaseCheck }
+  }
+
+  async exportDelivery(projectId: string, raw: ImageExportInput): Promise<{ export_receipts: ImageExportReceipt[]; delivery_set?: ImageDeliverySet; project_revision: number }> {
+    const input = imageExportInputSchema.parse(raw)
+    const project = await this.project(projectId)
+    if (project.revision !== input.base_revision) throw new ImageWorkbenchServiceError('图片项目已更新，请刷新后再导出', 409, 'IMAGE_REVISION_CONFLICT')
+    const delivery = await this.ensureDeliverySpec(project)
+    const requested = Object.entries(input.version_ids_by_artboard)
+    if (requested.length === 0) throw new ImageWorkbenchServiceError('导出至少需要一个画板版本', 400, 'IMAGE_OPERATION_CORRUPT')
+    const now = this.iso()
+    const assets: MediaAsset[] = []
+    const receipts: ImageExportReceipt[] = []
+    for (const [artboardId, versionId] of requested) {
+      const artboard = delivery.artboards.find(candidate => candidate.id === artboardId)
+      if (!artboard) throw new ImageWorkbenchServiceError('导出包含不属于当前规格的画板', 400, 'IMAGE_OPERATION_CORRUPT')
+      const { version, asset, verified } = await this.imageVersionBytes(project, versionId)
+      if (version.kind !== 'canvas' || version.artboard_id !== artboardId || verified.width !== artboard.width || verified.height !== artboard.height) {
+        throw new ImageWorkbenchServiceError('导出版本不是该画板的正式渲染版本', 409, 'IMAGE_VERSION_INVALID')
+      }
+      const release = version.render_receipt_id ? await this.repository.getReleaseCheckResult(projectId, stableId('receipt', projectId, versionId, 'release')) : null
+      if (!release?.passed) throw new ImageWorkbenchServiceError('版本未通过发布检查', 409, 'IMAGE_RELEASE_CHECK_FAILED')
+      const encoder = sharp(verified.bytes)
+      const encoded = artboard.output.format === 'png'
+        ? await encoder.png({ compressionLevel: 9, adaptiveFiltering: false, palette: false }).toBuffer()
+        : artboard.output.format === 'jpeg'
+          ? await encoder.flatten({ background: artboard.output.background_color }).jpeg({ quality: artboard.output.quality, chromaSubsampling: '4:4:4' }).toBuffer()
+          : await encoder.webp({ quality: artboard.output.quality, alphaQuality: 100 }).toBuffer()
+      const output = await this.assets.verify(encoded)
+      if (output.width !== artboard.width || output.height !== artboard.height) throw new ImageWorkbenchServiceError('导出后的图片尺寸不一致', 500, 'IMAGE_DIMENSIONS_MISMATCH')
+      const outputId = stableId('out', projectId, versionId, input.idempotency_key, artboardId, artboard.output.format)
+      const persisted = await this.assets.persist(projectId, outputId, 'export', output, versionId, now)
+      await this.assets.readVerified(persisted.asset)
+      assets.push(persisted.asset)
+      receipts.push({
+        id: stableId('receipt', projectId, outputId, 'export'), project_id: projectId, artboard_id: artboardId, version_id: versionId,
+        source_hash: asset.content_hash!, output_asset_id: outputId, output_format: artboard.output.format, output_hash: output.content_hash,
+        width: output.width, height: output.height, byte_size: output.bytes.byteLength, release_check_result_id: release.id, created_at: now,
+      })
+    }
+    const requiredArtboards = delivery.artboards.filter(artboard => artboard.required).map(artboard => artboard.id)
+    const deliverySet = requiredArtboards.every(artboardId => input.version_ids_by_artboard[artboardId])
+      ? {
+          id: stableId('dsp', projectId, input.idempotency_key, 'delivery-set'), project_id: projectId, delivery_spec_id: delivery.id, delivery_spec_revision: delivery.revision,
+          version_ids_by_artboard: input.version_ids_by_artboard, export_receipt_ids_by_artboard: Object.fromEntries(receipts.map(receipt => [receipt.artboard_id, receipt.id])), created_at: now,
+        } satisfies ImageDeliverySet
+      : undefined
+    const operation: ImageOperationV2 = {
+      id: stableId('op', projectId, 'export', input.idempotency_key), project_id: projectId, owner: project.owner, kind: 'export', status: 'succeeded',
+      idempotency_key: input.idempotency_key, request_hash: sha256(input), logical_attempt: 1,
+      input_refs: { project_revision: input.base_revision, delivery_spec_revision: delivery.revision, execution_policy_revision: 'local-export-v1', asset_hashes: receipts.map(receipt => receipt.source_hash).slice(0, 16) },
+      cost_state: 'not_submitted', created_at: now, updated_at: now,
+    }
+    const committed = await this.repository.commitExport({ project_id: projectId, operation, assets, export_receipts: receipts, delivery_set: deliverySet })
+    return { export_receipts: receipts, ...(deliverySet ? { delivery_set: deliverySet } : {}), project_revision: committed.project.revision }
+  }
+
+  async selectArtboardVersion(projectId: string, artboardId: string, raw: { base_revision: number; idempotency_key: string; version_id: string }): Promise<ImageWorkbenchProject> {
+    const input = imageArtboardSelectVersionInputSchema.parse(raw)
+    const project = await this.project(projectId)
+    const version = project.versions.find(candidate => candidate.id === input.version_id)
+    if (!version || version.artboard_id !== artboardId || version.kind !== 'canvas') {
+      throw new ImageWorkbenchServiceError('版本不属于当前画板或不是正式渲染版本', 409, 'IMAGE_VERSION_INVALID')
+    }
+    await this.imageVersionBytes(project, version.id)
+    return (await this.repository.selectArtboardVersion({
+      project_id: projectId, artboard_id: artboardId, base_revision: input.base_revision, idempotency_key: input.idempotency_key,
+      request_hash: sha256({ artboard_id: artboardId, ...input }), version_id: input.version_id,
+    })).project
   }
 
   private imageVersion(project: ImageWorkbenchProject, versionId: string): { version: ImageWorkbenchProject['versions'][number]; asset: MediaAsset } {
@@ -1568,6 +1969,10 @@ export class ImageWorkbenchService {
   }
 
   async commitVersion(projectId: string, raw: CommitImageVersionInput): Promise<ImageWorkbenchProject> {
+    // 15.3 makes the backend renderer the only formal-version pixel writer.
+    // Retain the implementation below only as historical migration context;
+    // no caller may promote a Renderer-supplied PNG through this path.
+    throw new ImageWorkbenchServiceError('正式图片版本必须通过画布后端渲染生成', 410, 'IMAGE_LEGACY_RENDER_FORBIDDEN')
     const input = commitImageVersionInputSchema.parse(raw)
     const project = await this.project(projectId)
     this.assertRevision(project, input.revision, '图片项目已更新，请刷新后再提交版本')
@@ -1661,7 +2066,7 @@ export class ImageWorkbenchService {
     }
   }
 
-  private async contentResponse(projectId: string, assetId: string, role: 'reference' | 'mask' | 'result'): Promise<Response> {
+  private async contentResponse(projectId: string, assetId: string, role: 'reference' | 'mask' | 'result' | 'export'): Promise<Response> {
     const project = await this.project(projectId)
     const asset = project.assets.find(candidate => candidate.id === assetId && candidate.role === role)
     if (!asset?.mime_type || !isSupportedImageMime(asset.mime_type)) {
@@ -1669,7 +2074,7 @@ export class ImageWorkbenchService {
     }
     return await this.assets.response(
       project.id,
-      role === 'reference' ? 'references' : role === 'mask' ? 'masks' : 'results',
+      role === 'reference' ? 'references' : role === 'mask' ? 'masks' : role === 'export' ? 'exports' : 'results',
       `${asset.id}.${extensionForMime(asset.mime_type)}`,
     )
   }
@@ -1684,6 +2089,10 @@ export class ImageWorkbenchService {
 
   async outputResponse(projectId: string, outputId: string): Promise<Response> {
     return await this.contentResponse(projectId, outputId, 'result')
+  }
+
+  async exportAssetResponse(projectId: string, assetId: string): Promise<Response> {
+    return await this.contentResponse(projectId, assetId, 'export')
   }
 
   async candidateResponse(projectId: string, candidateId: string): Promise<Response> {

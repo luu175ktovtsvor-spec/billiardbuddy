@@ -22,6 +22,20 @@ import {
 } from '../../../shared/contracts/media.js'
 import {
   adoptImageCandidateInputSchema,
+  imageArtboardSelectVersionInputSchema,
+  imageArtboardSelectVersionResponseSchema,
+  imageCanvasCommandInputSchema,
+  imageCanvasCommandRequestInputSchema,
+  imageCanvasCommandResponseSchema,
+  imageCanvasCreateInputSchema,
+  imageCanvasPreflightInputSchema,
+  imageCanvasPreflightResponseSchema,
+  imageCanvasRenderInputSchema,
+  imageCanvasRenderResponseSchema,
+  imageDeliverySpecRevisionInputSchema,
+  imageDeliverySpecRevisionResponseSchema,
+  imageExportInputSchema,
+  imageExportResponseSchema,
   createCreativePlanInputSchema,
   createGenerationRoundInputSchema,
   decideImageCandidateInputSchema,
@@ -114,8 +128,8 @@ export function publicImageProject(project: ImageWorkbenchProject): PublicImageW
       : undefined
     const output = asset ? project.outputs.find(candidate => candidate.id === asset.id) : undefined
     const mimeType = imageMime(asset?.mime_type)
-    if (!asset || !output || !mimeType) return []
-    const imageLayers = (version.image_layers ?? output.image_layers ?? []).flatMap(layer => {
+    if (!asset || !mimeType) return []
+    const imageLayers = (version.image_layers ?? output?.image_layers ?? []).flatMap(layer => {
       const source = project.assets.find(candidate => candidate.id === layer.source_asset_id && candidate.role === 'reference')
       const sourceMime = imageMime(source?.mime_type)
       if (!source || !sourceMime) return []
@@ -128,18 +142,18 @@ export function publicImageProject(project: ImageWorkbenchProject): PublicImageW
     return [{
       id: version.id,
       parent_version_id: version.parent_version_id,
-      kind: version.kind ?? output.version_kind ?? 'generated',
-      operation_id: version.operation_id ?? output.operation_id,
+      kind: version.kind ?? output?.version_kind ?? 'generated',
+      operation_id: version.operation_id ?? output?.operation_id,
       asset_id: asset.id,
       // The asset id and project ownership are the durable facts. Never reuse
       // an old public URL from a migrated record as this workbench's source.
       image_path: `/api/images/projects/${project.id}/outputs/${asset.id}/content`,
       mime_type: mimeType,
-      width: version.width ?? output.width,
-      height: version.height ?? output.height,
-      text_layers: version.text_layers ?? output.text_layers ?? [],
+      width: version.width ?? output?.width,
+      height: version.height ?? output?.height,
+      text_layers: version.text_layers ?? output?.text_layers ?? [],
       image_layers: imageLayers,
-      quality_assessment: output.quality_assessment,
+      quality_assessment: output?.quality_assessment,
       created_at: version.created_at,
     }]
   })
@@ -291,6 +305,11 @@ export function createImageWorkbenchApiHandler(
         }
         throw methodNotAllowed(req.method)
       }
+      if (action === 'export-assets') {
+        const assetId = segments[6]
+        if (!assetId || segments[7] !== 'content' || segments[8] || req.method !== 'GET') throw methodNotAllowed(req.method)
+        return await service.exportAssetResponse(projectId, assetId)
+      }
       if (action === 'operations') {
         if (req.method !== 'POST' || segments[6]) throw methodNotAllowed(req.method)
         requireMediaUiCapability(req, mediaUiCapability)
@@ -312,6 +331,7 @@ export function createImageWorkbenchApiHandler(
           return Response.json({ project: publicImageProject(await service.commitVersion(projectId, input)) }, { status: 201 })
         }
         if (versionAction === 'select' && !segments[8] && req.method === 'POST') {
+          requireMediaUiCapability(req, mediaUiCapability)
           const input = selectImageVersionInputSchema.parse({ ...(await parseJson(req) as Record<string, unknown>), version_id: versionId })
           return Response.json({ project: publicImageProject(await service.selectVersion(projectId, input)) })
         }
@@ -377,6 +397,97 @@ export function createImageWorkbenchDomainApiHandler(
       if (area !== 'projects') throw ApiError.notFound('找不到生图接口')
       const projectId = segments[3]
       const action = segments[4]
+      if (projectId && action === 'delivery-spec') {
+        if (!segments[5] && req.method === 'GET') {
+          const spec = await service.repository.currentDeliverySpec(projectId)
+          if (!spec) throw new ImageWorkbenchServiceError('交付规格不存在', 404, 'IMAGE_OPERATION_CORRUPT')
+          return Response.json({ delivery_spec: spec })
+        }
+        if (segments[5] === 'revisions' && !segments[6] && req.method === 'POST') {
+          requireMediaUiCapability(req, mediaUiCapability)
+          const input = imageDeliverySpecRevisionInputSchema.parse(await parseJson(req))
+          const created = await service.createDeliverySpecRevision(projectId, input)
+          return Response.json(imageDeliverySpecRevisionResponseSchema.parse({ project: publicImageProject(created.project), delivery_spec: created.spec }), { status: 201 })
+        }
+        throw methodNotAllowed(req.method)
+      }
+      if (projectId && action === 'versions' && !segments[5] && req.method === 'GET') {
+        return Response.json({ versions: publicImageProject(await service.getProject(projectId)).version_history })
+      }
+      if (projectId && action === 'artboards') {
+        const artboardId = segments[5]
+        if (!artboardId || segments[6] !== 'commands' || segments[7] !== 'select-version' || segments[8] || req.method !== 'POST') throw methodNotAllowed(req.method)
+        requireMediaUiCapability(req, mediaUiCapability)
+        const input = imageArtboardSelectVersionInputSchema.parse(await parseJson(req))
+        return Response.json(imageArtboardSelectVersionResponseSchema.parse({
+          project: publicImageProject(await service.selectArtboardVersion(projectId, artboardId, input)),
+        }))
+      }
+      if (projectId && action === 'delivery-specs') {
+        if (req.method !== 'POST' || segments[5]) throw methodNotAllowed(req.method)
+        requireMediaUiCapability(req, mediaUiCapability)
+        const input = imageDeliverySpecRevisionInputSchema.parse(await parseJson(req))
+        const created = await service.createDeliverySpecRevision(projectId, input)
+        return Response.json(imageDeliverySpecRevisionResponseSchema.parse({ project: publicImageProject(created.project), delivery_spec: created.spec }), { status: 201 })
+      }
+      if (projectId && action === 'canvases') {
+        const canvasId = segments[5]
+        const canvasAction = segments[6]
+        if (!canvasId) {
+          if (req.method === 'GET' && !canvasAction) return Response.json({ canvases: await service.listCanvases(projectId) })
+          if (req.method !== 'POST' || canvasAction) throw methodNotAllowed(req.method)
+          requireMediaUiCapability(req, mediaUiCapability)
+          const input = imageCanvasCreateInputSchema.parse(await parseJson(req))
+          const created = await service.createCanvas(projectId, input)
+          return Response.json(imageCanvasCommandResponseSchema.parse({ canvas: created.canvas, project_revision: created.project.revision }), { status: 201 })
+        }
+        if (!canvasAction) {
+          if (req.method !== 'GET' || segments[7]) throw methodNotAllowed(req.method)
+          const revisionValue = url.searchParams.get('revision')
+          const revision = revisionValue === null ? undefined : Number(revisionValue)
+          if (revision !== undefined && (!Number.isInteger(revision) || revision < 0)) throw ApiError.badRequest('revision 必须是非负整数')
+          return Response.json({ canvas: await service.getCanvas(projectId, canvasId, revision) })
+        }
+        if (canvasAction === 'revisions') {
+          const revision = Number(segments[7])
+          if (req.method !== 'GET' || segments[8] || !Number.isInteger(revision) || revision < 0) throw methodNotAllowed(req.method)
+          return Response.json({ canvas: await service.getCanvas(projectId, canvasId, revision) })
+        }
+        if (canvasAction === 'commands' && !segments[7] && req.method === 'POST') {
+          requireMediaUiCapability(req, mediaUiCapability)
+          const input = imageCanvasCommandRequestInputSchema.parse(await parseJson(req))
+          const changed = await service.applyCanvasCommand(projectId, canvasId, input.base_project_revision, input.command)
+          return Response.json(imageCanvasCommandResponseSchema.parse({ canvas: changed.canvas, project_revision: changed.project.revision }))
+        }
+        if ((canvasAction === 'preflight' || canvasAction === 'preflights') && !segments[7] && req.method === 'POST') {
+          requireMediaUiCapability(req, mediaUiCapability)
+          const input = imageCanvasPreflightInputSchema.parse(await parseJson(req))
+          return Response.json(imageCanvasPreflightResponseSchema.parse({ preflight: await service.preflightCanvas(projectId, canvasId, input) }))
+        }
+        if ((canvasAction === 'render' || canvasAction === 'renders') && !segments[7] && req.method === 'POST') {
+          requireMediaUiCapability(req, mediaUiCapability)
+          const input = imageCanvasRenderInputSchema.parse(await parseJson(req))
+          const rendered = await service.renderCanvas(projectId, canvasId, input)
+          return Response.json(imageCanvasRenderResponseSchema.parse({ operation: publicGenerationOperation(rendered.operation), version_id: rendered.version_id, render_receipt: rendered.render_receipt, release_check: rendered.release_check }), { status: 201 })
+        }
+        throw methodNotAllowed(req.method)
+      }
+      if (projectId && action === 'exports') {
+        if (req.method !== 'POST' || segments[5]) throw methodNotAllowed(req.method)
+        requireMediaUiCapability(req, mediaUiCapability)
+        const input = imageExportInputSchema.parse(await parseJson(req))
+        return Response.json(imageExportResponseSchema.parse(await service.exportDelivery(projectId, input)), { status: 201 })
+      }
+      if (projectId && action === 'delivery-sets') {
+        const deliverySetId = segments[5]
+        if (!deliverySetId || req.method !== 'GET' || segments[6]) throw methodNotAllowed(req.method)
+        return Response.json({ delivery_set: await service.repository.getDeliverySet(projectId, deliverySetId) })
+      }
+      if (projectId && action === 'export-receipts') {
+        const receiptId = segments[5]
+        if (!receiptId || req.method !== 'GET' || segments[6]) throw methodNotAllowed(req.method)
+        return Response.json({ export_receipt: await service.repository.getExportReceipt(projectId, receiptId) })
+      }
       if (projectId && action === 'creative-plans') {
         const planId = segments[5]
         if (!planId) {
