@@ -58,11 +58,24 @@ type OperationRow = {
   status: ImageOperation['status']
   status_sequence: number
   idempotency_key: string | null
+  request_hash: string
   remote_task_id: string | null
   remote_result_acknowledged_at: string | null
   updated_at: string
   document_json: string
   deleted: number
+}
+
+export type ImageProjectMigrationReceipt = {
+  source_kind: string
+  project_id: string
+  source_hash: string
+  operation_count: number
+  journal_next_cursor: number | null
+  version_count: number
+  current_version_id: string | null
+  status: 'complete'
+  completed_at: string
 }
 
 type EventRow = {
@@ -139,6 +152,25 @@ function operationProjection(operation: ImageOperation): string {
   })
 }
 
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`
+  if (value && typeof value === 'object') {
+    const record = value as Record<string, unknown>
+    return `{${Object.keys(record).sort().map(key => `${JSON.stringify(key)}:${stableJson(record[key])}`).join(',')}}`
+  }
+  return JSON.stringify(value)
+}
+
+/** The idempotency identity is the immutable remote request, never its status. */
+function idempotencyRequestHash(operation: ImageOperation): string {
+  return `sha256:${createHash('sha256').update(stableJson({
+    project_id: operation.project_id,
+    owner: operation.owner,
+    kind: operation.kind,
+    image_operation: operation.image_operation,
+  })).digest('hex')}`
+}
+
 function eventSnapshot(operation: ImageOperation): ImageOperation {
   // An Event is a status projection, not a persistence route for a provider
   // instruction or other private request input. The complete operation remains
@@ -179,16 +211,14 @@ export class ImageWorkbenchRepository {
     this.now = options.now ?? (() => new Date())
     this.unitOfWork = new SqliteUnitOfWork(join(this.root, 'metadata'))
     migrateImageMetadata(this.unitOfWork)
+    this.backfillIdempotencyRequestHashes()
     this.fences = new WriterFence(this.locksDir)
     this.recovery = new RecoverySupervisor([
       { name: 'image deletion receipts', recover: async () => await this.recoverDeletions() },
       {
         name: 'image CAS orphans',
         recover: async () => {
-          // A pre-15.1 ImageWorkbenchRepository stored project JSON under this
-          // directory. Its CAS objects are not in SQLite yet, so no collector
-          // may run until the read-only importer has copied that evidence.
-          if (!(await this.hasLegacyProjectJson())) await this.collectCasOrphans()
+          await this.reconcileCasAfterLegacyMigration()
         },
       },
     ])
@@ -269,6 +299,19 @@ export class ImageWorkbenchRepository {
       if (error instanceof ImageWorkbenchRepositoryError) throw error
       throw new ImageWorkbenchRepositoryError('图片操作 SQLite 记录损坏', 500, 'IMAGE_STORAGE_INVALID')
     }
+  }
+
+  private backfillIdempotencyRequestHashes(): void {
+    const rows = this.unitOfWork.database.query(`SELECT id,document_json FROM image_operations
+      WHERE request_hash=''`).all() as Array<{ id: string; document_json: string }>
+    if (rows.length === 0) return
+    this.unitOfWork.transaction(() => {
+      for (const row of rows) {
+        const operation = canonicalImageOperation(JSON.parse(row.document_json))
+        this.unitOfWork.database.query('UPDATE image_operations SET request_hash=? WHERE id=?')
+          .run(idempotencyRequestHash(operation), row.id)
+      }
+    })
   }
 
   async listProjects(owner?: MediaOwner): Promise<ImageWorkbenchProject[]> {
@@ -413,8 +456,9 @@ export class ImageWorkbenchRepository {
       status_sequence: changed ? (previous?.status_sequence ?? 0) + 1 : previous?.status_sequence ?? input.status_sequence,
       updated_at: this.iso(),
     })
+    const duplicate = this.idempotentOperation(next)
+    if (duplicate && duplicate.id !== next.id) return this.loadOperation(duplicate)
     this.unitOfWork.transaction(() => {
-      this.assertIdempotencyUnique(next)
       this.persistOperation(next)
       if (changed) this.appendEvent(next)
     })
@@ -422,28 +466,30 @@ export class ImageWorkbenchRepository {
     return next
   }
 
-  private assertIdempotencyUnique(operation: ImageOperation): void {
-    if (!operation.idempotency_key || !operation.owner) return
-    const matching = this.unitOfWork.database.query(`SELECT id FROM image_operations
+  private idempotentOperation(operation: ImageOperation): OperationRow | null {
+    if (!operation.idempotency_key || !operation.owner) return null
+    const matching = this.unitOfWork.database.query(`SELECT * FROM image_operations
       WHERE owner_kind=? AND owner_id=? AND kind=? AND idempotency_key=? AND deleted=0`).get(
       operation.owner.kind,
       operation.owner.owner_id,
       operation.kind,
       operation.idempotency_key,
-    ) as { id: string } | null
-    if (matching && matching.id !== operation.id) {
-      throw new ImageWorkbenchRepositoryError('图片操作幂等键已对应另一条操作', 409, 'IMAGE_STORAGE_INVALID')
+    ) as OperationRow | null
+    if (!matching) return null
+    if (matching.request_hash !== idempotencyRequestHash(operation)) {
+      throw new ImageWorkbenchRepositoryError('图片操作幂等键对应的请求内容不一致', 409, 'IMAGE_STORAGE_INVALID')
     }
+    return matching
   }
 
   private persistOperation(operation: ImageOperation): void {
     this.unitOfWork.database.query(`INSERT INTO image_operations(
-      id,operation_id,project_id,owner_kind,owner_id,kind,status,status_sequence,idempotency_key,remote_task_id,
+      id,operation_id,project_id,owner_kind,owner_id,kind,status,status_sequence,idempotency_key,request_hash,remote_task_id,
       remote_result_acknowledged_at,updated_at,document_json,deleted
-    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,0)
+    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,0)
     ON CONFLICT(id) DO UPDATE SET
       operation_id=excluded.operation_id,project_id=excluded.project_id,owner_kind=excluded.owner_kind,owner_id=excluded.owner_id,
-      kind=excluded.kind,status=excluded.status,status_sequence=excluded.status_sequence,idempotency_key=excluded.idempotency_key,
+      kind=excluded.kind,status=excluded.status,status_sequence=excluded.status_sequence,idempotency_key=excluded.idempotency_key,request_hash=excluded.request_hash,
       remote_task_id=excluded.remote_task_id,remote_result_acknowledged_at=excluded.remote_result_acknowledged_at,
       updated_at=excluded.updated_at,document_json=excluded.document_json,deleted=0`).run(
       operation.id,
@@ -455,6 +501,7 @@ export class ImageWorkbenchRepository {
       operation.status,
       operation.status_sequence,
       operation.idempotency_key ?? null,
+      idempotencyRequestHash(operation),
       operation.remote_task_id ?? null,
       operation.remote_result_acknowledged_at ?? null,
       operation.updated_at,
@@ -492,6 +539,15 @@ export class ImageWorkbenchRepository {
     return await this.fences.run(`project-${projectInput.id}`, async () => {
       const currentRow = this.projectRow(projectInput.id, true)
       const current = currentRow && !currentRow.deleted ? this.loadProject(currentRow) : null
+      const identity = canonicalImageOperation({
+        ...operationInput,
+        owner: operationInput.owner ?? current?.owner ?? projectInput.owner,
+      })
+      const duplicate = this.idempotentOperation(identity)
+      if (duplicate && duplicate.id !== operationInput.id) {
+        if (!current) throw new ImageWorkbenchRepositoryError('图片幂等操作缺少项目', 500, 'IMAGE_STORAGE_INVALID')
+        return { project: current, operation: this.loadOperation(duplicate) }
+      }
       if (current && current.writer_fence !== projectInput.writer_fence) {
         throw new ImageWorkbenchRepositoryError('图片项目已被另一写入者更新，请刷新后重试', 409, 'IMAGE_WRITER_FENCE_CONFLICT')
       }
@@ -517,7 +573,6 @@ export class ImageWorkbenchRepository {
       const changed = !previous || operationProjection(nextOperation) !== operationProjection(previous)
       this.unitOfWork.transaction(() => {
         this.persistProject(nextProject)
-        this.assertIdempotencyUnique(nextOperation)
         this.persistOperation(nextOperation)
         if (changed) this.appendEvent(nextOperation)
       })
@@ -550,8 +605,9 @@ export class ImageWorkbenchRepository {
         owner: input.owner ?? this.loadProject(project).owner,
         operation_id: resolvedOperationId(input),
       })
+      const duplicate = this.idempotentOperation(imported)
+      if (duplicate && duplicate.id !== imported.id) return false
       this.unitOfWork.transaction(() => {
-        this.assertIdempotencyUnique(imported)
         this.persistOperation(imported)
       })
       return true
@@ -588,6 +644,28 @@ export class ImageWorkbenchRepository {
         }
       })
       return true
+    })
+  }
+
+  /** Preserve an empty journal's cursor and gaps after the final event. */
+  async preserveLegacyJournalCursor(projectId: string, nextCursor: number): Promise<void> {
+    await this.ready()
+    this.assertId(projectId, 'project')
+    if (!Number.isInteger(nextCursor) || nextCursor < 1) {
+      throw new ImageWorkbenchRepositoryError('旧图片事件游标无效', 500, 'IMAGE_STORAGE_INVALID')
+    }
+    await this.fences.run(`project-${projectId}`, async () => {
+      if (!this.projectRow(projectId)) throw new ImageWorkbenchRepositoryError('旧图片事件缺少项目', 500, 'IMAGE_STORAGE_INVALID')
+      this.unitOfWork.transaction(() => {
+        const state = this.eventCursorState(projectId)
+        if (!state) {
+          this.unitOfWork.database.query(`INSERT INTO image_event_cursors(project_id,next_cursor,retained_from_cursor)
+            VALUES(?,?,?)`).run(projectId, nextCursor, 1)
+        } else {
+          this.unitOfWork.database.query('UPDATE image_event_cursors SET next_cursor=MAX(next_cursor,?) WHERE project_id=?')
+            .run(nextCursor, projectId)
+        }
+      })
     })
   }
 
@@ -853,12 +931,29 @@ export class ImageWorkbenchRepository {
     }
   }
 
-  private async hasLegacyProjectJson(): Promise<boolean> {
+  private async legacyProjectIds(): Promise<string[]> {
     const names = await readdir(this.projectsDir).catch(error => {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []
       throw error
     })
-    return names.some(name => name.endsWith('.json'))
+    return names
+      .filter(name => name.endsWith('.json'))
+      .map(name => name.slice(0, -'.json'.length))
+      .filter(projectId => IMAGE_ID.test(projectId))
+  }
+
+  /**
+   * CAS collection remains blocked only while a current-root JSON project has
+   * no completed per-project receipt. Once every project has crossed that
+   * boundary, startup and explicit migration completion both reconcile it.
+   */
+  async reconcileCasAfterLegacyMigration(): Promise<boolean> {
+    const projectIds = await this.legacyProjectIds()
+    const pending = projectIds.some(projectId => !this.unitOfWork.database.query(`SELECT 1 FROM image_project_migration_receipts
+      WHERE source_kind='image-workbench-json-v1' AND project_id=? AND status='complete'`).get(projectId))
+    if (pending) return false
+    await this.collectCasOrphans()
+    return true
   }
 
   async migrationReceipt(migrationKey: string): Promise<{ source_hash: string; completed_at: string } | null> {
@@ -873,6 +968,36 @@ export class ImageWorkbenchRepository {
       this.unitOfWork.database.query(`INSERT INTO image_migration_receipts(migration_key,source_hash,completed_at)
         VALUES(?,?,?) ON CONFLICT(migration_key) DO UPDATE SET source_hash=excluded.source_hash,completed_at=excluded.completed_at`)
         .run(migrationKey, sourceHash, this.iso())
+    })
+  }
+
+  async projectMigrationReceipt(sourceKind: string, projectId: string): Promise<ImageProjectMigrationReceipt | null> {
+    await this.ready()
+    this.assertId(projectId, 'project')
+    return this.unitOfWork.database.query(`SELECT source_kind,project_id,source_hash,operation_count,journal_next_cursor,
+      version_count,current_version_id,status,completed_at FROM image_project_migration_receipts
+      WHERE source_kind=? AND project_id=?`).get(sourceKind, projectId) as ImageProjectMigrationReceipt | null
+  }
+
+  async recordProjectMigrationReceipt(receipt: Omit<ImageProjectMigrationReceipt, 'status' | 'completed_at'>): Promise<void> {
+    await this.ready()
+    this.assertId(receipt.project_id, 'project')
+    this.unitOfWork.transaction(() => {
+      this.unitOfWork.database.query(`INSERT INTO image_project_migration_receipts(
+        source_kind,project_id,source_hash,operation_count,journal_next_cursor,version_count,current_version_id,status,completed_at
+      ) VALUES(?,?,?,?,?,?,?,'complete',?)
+      ON CONFLICT(source_kind,project_id) DO UPDATE SET
+        source_hash=excluded.source_hash,operation_count=excluded.operation_count,journal_next_cursor=excluded.journal_next_cursor,
+        version_count=excluded.version_count,current_version_id=excluded.current_version_id,status=excluded.status,completed_at=excluded.completed_at`).run(
+        receipt.source_kind,
+        receipt.project_id,
+        receipt.source_hash,
+        receipt.operation_count,
+        receipt.journal_next_cursor,
+        receipt.version_count,
+        receipt.current_version_id,
+        this.iso(),
+      )
     })
   }
 }
