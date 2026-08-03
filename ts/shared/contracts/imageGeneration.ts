@@ -5,6 +5,7 @@ import {
   mediaIdSchema,
   mediaIsoDateSchema,
   mediaOwnerSchema,
+  publicImageWorkbenchProjectSchema,
 } from './media.js'
 
 export const imageHashSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/)
@@ -289,6 +290,46 @@ export const publicImageCandidateGroupSchema = imageCandidateGroupSchema.extend(
   candidates: z.array(publicImageCandidateSchema).max(4),
 })
 
+const imageEstimateResponseFields = {
+  estimate_hash: imageHashSchema,
+  paid_operation_count: z.number().int().positive().max(8),
+  candidate_count_per_operation: z.number().int().positive().max(4),
+  concurrency: z.number().int().positive().max(8),
+  price_upper_bound: z.null(),
+  expires_at: mediaIsoDateSchema,
+}
+
+/** Public API and desktop bridge response contracts for 15.2 paid commands. */
+export const imageCreativePlanResponseSchema = z.object({
+  plan: imageCreativePlanSchema,
+}).strict()
+export const imageGenerationRoundEstimateResponseSchema = z.object({
+  ...imageEstimateResponseFields,
+  direction_count: z.number().int().positive().max(8),
+}).strict()
+export const imageDerivationEstimateResponseSchema = z.object(imageEstimateResponseFields).strict()
+export const imageGenerationRoundResponseSchema = z.object({
+  round: imageGenerationRoundSchema,
+  operations: z.array(publicImageOperationV2Schema).min(1).max(8),
+}).strict()
+export const imageCandidateDecisionResponseSchema = z.object({
+  decision: imageCandidateDecisionSchema,
+}).strict()
+export const imageCandidateAdoptionResponseSchema = z.object({
+  project: publicImageWorkbenchProjectSchema,
+  adoptions: z.array(imageCandidateAdoptionSchema).min(1).max(32),
+}).strict()
+export const imageCandidateDerivationResponseSchema = z.object({
+  round: imageGenerationRoundSchema,
+  operation: publicImageOperationV2Schema,
+}).strict()
+export const imageGenerationCancelResponseSchema = z.object({
+  operation: publicImageOperationV2Schema,
+}).strict()
+export const imageReferenceControlResponseSchema = z.object({
+  project: publicImageWorkbenchProjectSchema,
+}).strict()
+
 const commandEnvelopeFields = {
   idempotency_key: z.string().min(16).max(160),
   base_revision: z.number().int().nonnegative(),
@@ -354,6 +395,15 @@ export type ImageCandidateAdoption = z.infer<typeof imageCandidateAdoptionSchema
 export type PublicImageOperationV2 = z.infer<typeof publicImageOperationV2Schema>
 export type PublicImageCandidate = z.infer<typeof publicImageCandidateSchema>
 export type PublicImageCandidateGroup = z.infer<typeof publicImageCandidateGroupSchema>
+export type ImageCreativePlanResponse = z.infer<typeof imageCreativePlanResponseSchema>
+export type ImageGenerationRoundEstimateResponse = z.infer<typeof imageGenerationRoundEstimateResponseSchema>
+export type ImageDerivationEstimateResponse = z.infer<typeof imageDerivationEstimateResponseSchema>
+export type ImageGenerationRoundResponse = z.infer<typeof imageGenerationRoundResponseSchema>
+export type ImageCandidateDecisionResponse = z.infer<typeof imageCandidateDecisionResponseSchema>
+export type ImageCandidateAdoptionResponse = z.infer<typeof imageCandidateAdoptionResponseSchema>
+export type ImageCandidateDerivationResponse = z.infer<typeof imageCandidateDerivationResponseSchema>
+export type ImageGenerationCancelResponse = z.infer<typeof imageGenerationCancelResponseSchema>
+export type ImageReferenceControlResponse = z.infer<typeof imageReferenceControlResponseSchema>
 export type CreateCreativePlanInput = z.input<typeof createCreativePlanInputSchema>
 export type UpdateImageReferenceControlInput = z.input<typeof updateImageReferenceControlInputSchema>
 export type EstimateGenerationRoundInput = z.input<typeof estimateGenerationRoundInputSchema>

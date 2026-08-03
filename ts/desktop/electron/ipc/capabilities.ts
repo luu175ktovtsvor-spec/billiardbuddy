@@ -1,3 +1,15 @@
+import { z } from 'zod/v4'
+import {
+  adoptImageCandidateInputSchema,
+  createCreativePlanInputSchema,
+  createGenerationRoundInputSchema,
+  decideImageCandidateInputSchema,
+  deriveImageCandidateInputSchema,
+  estimateDeriveImageCandidateInputSchema,
+  estimateGenerationRoundInputSchema,
+  updateImageReferenceControlInputSchema,
+} from '../../../shared/contracts/imageGeneration'
+import { mediaIdSchema } from '../../../shared/contracts/media'
 import { ELECTRON_IPC_CHANNELS, type ElectronIpcChannel } from './channels'
 
 type Validator = (payload: unknown) => boolean
@@ -681,110 +693,56 @@ const imageStartOperation: Validator = value => {
     && typeof value.input.confirm_unknown_retry === 'boolean'
 }
 
-const imageIdempotencyKey = (value: unknown): boolean =>
-  typeof value === 'string' && value.length >= 16 && value.length <= 160 && !/[\u0000\r\n]/.test(value)
+export const imageCreateCreativePlanIpcPayloadSchema = z.object({
+  projectId: mediaIdSchema,
+  input: createCreativePlanInputSchema,
+}).strict()
+export const imageEstimateGenerationRoundIpcPayloadSchema = z.object({
+  projectId: mediaIdSchema,
+  input: estimateGenerationRoundInputSchema,
+}).strict()
+export const imageEstimateDerivationIpcPayloadSchema = z.object({
+  projectId: mediaIdSchema,
+  candidateId: mediaIdSchema,
+  input: estimateDeriveImageCandidateInputSchema,
+}).strict()
+export const imageCreateGenerationRoundIpcPayloadSchema = z.object({
+  projectId: mediaIdSchema,
+  input: createGenerationRoundInputSchema,
+}).strict()
+export const imageDecideCandidateIpcPayloadSchema = z.object({
+  projectId: mediaIdSchema,
+  candidateId: mediaIdSchema,
+  input: decideImageCandidateInputSchema,
+}).strict()
+export const imageAdoptCandidateIpcPayloadSchema = z.object({
+  projectId: mediaIdSchema,
+  candidateId: mediaIdSchema,
+  input: adoptImageCandidateInputSchema,
+}).strict()
+export const imageDeriveCandidateIpcPayloadSchema = z.object({
+  projectId: mediaIdSchema,
+  candidateId: mediaIdSchema,
+  input: deriveImageCandidateInputSchema,
+}).strict()
+export const imageCancelGenerationOperationIpcPayloadSchema = z.object({
+  operationId: mediaIdSchema,
+}).strict()
+export const imageUpdateReferenceControlIpcPayloadSchema = z.object({
+  projectId: mediaIdSchema,
+  referenceId: mediaIdSchema,
+  input: updateImageReferenceControlInputSchema,
+}).strict()
 
-const imageBaseRevision = (value: unknown): boolean =>
-  typeof value === 'number' && Number.isInteger(value) && value >= 0
-
-const imageDirection = (value: unknown): boolean => {
-  if (!isRecord(value) || !hasOnlyKeys(value, ['label', 'rationale', 'generation_intent', 'preservation_rules'])) return false
-  if (typeof value.label !== 'string' || value.label.length < 1 || value.label.length > 120) return false
-  if (typeof value.rationale !== 'string' || value.rationale.length < 1 || value.rationale.length > 500) return false
-  if (!isRecord(value.generation_intent) || !hasOnlyKeys(value.generation_intent, ['composition_goal', 'visual_tone', 'text_space_goal'])) return false
-  if (typeof value.generation_intent.composition_goal !== 'string' || value.generation_intent.composition_goal.length < 1 || value.generation_intent.composition_goal.length > 500) return false
-  if (typeof value.generation_intent.visual_tone !== 'string' || value.generation_intent.visual_tone.length < 1 || value.generation_intent.visual_tone.length > 500) return false
-  if (value.generation_intent.text_space_goal !== undefined && (typeof value.generation_intent.text_space_goal !== 'string' || value.generation_intent.text_space_goal.length < 1 || value.generation_intent.text_space_goal.length > 500)) return false
-  return Array.isArray(value.preservation_rules)
-    && value.preservation_rules.length <= 40
-    && value.preservation_rules.every(rule => typeof rule === 'string' && rule.length > 0 && rule.length <= 500)
-}
-
-const imageCreateCreativePlan: Validator = value =>
-  isRecord(value)
-  && hasOnlyKeys(value, ['projectId', 'input'])
-  && mediaProjectId(value.projectId)
-  && isRecord(value.input)
-  && hasOnlyKeys(value.input, ['base_revision', 'idempotency_key', 'directions'])
-  && imageBaseRevision(value.input.base_revision)
-  && imageIdempotencyKey(value.input.idempotency_key)
-  && (value.input.directions === undefined || Array.isArray(value.input.directions) && value.input.directions.length >= 1 && value.input.directions.length <= 8 && value.input.directions.every(imageDirection))
-
-const imageEstimateGenerationRound: Validator = value =>
-  isRecord(value)
-  && hasOnlyKeys(value, ['projectId', 'input'])
-  && mediaProjectId(value.projectId)
-  && isRecord(value.input)
-  && hasOnlyKeys(value.input, ['base_revision', 'creative_plan_id', 'direction_ids'])
-  && imageBaseRevision(value.input.base_revision)
-  && mediaProjectId(value.input.creative_plan_id)
-  && (value.input.direction_ids === undefined || Array.isArray(value.input.direction_ids) && value.input.direction_ids.length >= 1 && value.input.direction_ids.length <= 8 && value.input.direction_ids.every(mediaProjectId))
-
-const imageCreateGenerationRound: Validator = value =>
-  isRecord(value)
-  && hasOnlyKeys(value, ['projectId', 'input'])
-  && mediaProjectId(value.projectId)
-  && isRecord(value.input)
-  && hasOnlyKeys(value.input, ['base_revision', 'idempotency_key', 'creative_plan_id', 'direction_ids', 'estimate_hash', 'confirm'])
-  && imageBaseRevision(value.input.base_revision)
-  && imageIdempotencyKey(value.input.idempotency_key)
-  && mediaProjectId(value.input.creative_plan_id)
-  && Array.isArray(value.input.direction_ids) && value.input.direction_ids.length >= 1 && value.input.direction_ids.length <= 8 && value.input.direction_ids.every(mediaProjectId)
-  && typeof value.input.estimate_hash === 'string' && /^sha256:[a-f0-9]{64}$/.test(value.input.estimate_hash)
-  && value.input.confirm === true
-
-const imageCandidateCommand = (value: unknown, allowedInputKeys: string[], additional: (input: Record<string, unknown>) => boolean): boolean =>
-  isRecord(value)
-  && hasOnlyKeys(value, ['projectId', 'candidateId', 'input'])
-  && mediaProjectId(value.projectId)
-  && mediaProjectId(value.candidateId)
-  && isRecord(value.input)
-  && hasOnlyKeys(value.input, allowedInputKeys)
-  && imageBaseRevision(value.input.base_revision)
-  && imageIdempotencyKey(value.input.idempotency_key)
-  && additional(value.input)
-
-const imageDecideCandidate: Validator = value => imageCandidateCommand(value, ['base_revision', 'idempotency_key', 'decision'], input => input.decision === 'kept' || input.decision === 'rejected')
-const imageEstimateDerivation: Validator = value =>
-  isRecord(value)
-  && hasOnlyKeys(value, ['projectId', 'candidateId', 'input'])
-  && mediaProjectId(value.projectId)
-  && mediaProjectId(value.candidateId)
-  && isRecord(value.input)
-  && hasOnlyKeys(value.input, ['base_revision', 'instruction'])
-  && imageBaseRevision(value.input.base_revision)
-  && typeof value.input.instruction === 'string' && value.input.instruction.length >= 1 && value.input.instruction.length <= 4_000
-const imageDeriveCandidate: Validator = value => imageCandidateCommand(value, ['base_revision', 'idempotency_key', 'instruction', 'estimate_hash', 'confirm'], input =>
-  typeof input.instruction === 'string' && input.instruction.length >= 1 && input.instruction.length <= 4_000
-  && typeof input.estimate_hash === 'string' && /^sha256:[a-f0-9]{64}$/.test(input.estimate_hash)
-  && input.confirm === true)
-const imageAdoptCandidate: Validator = value => imageCandidateCommand(value, ['base_revision', 'idempotency_key', 'adoptions'], input =>
-  Array.isArray(input.adoptions)
-  && input.adoptions.length >= 1
-  && input.adoptions.length <= 32
-  && input.adoptions.every(adoption => isRecord(adoption)
-    && hasOnlyKeys(adoption, ['artboard_id', 'placement'])
-    && mediaProjectId(adoption.artboard_id)
-    && isRecord(adoption.placement)
-    && hasOnlyKeys(adoption.placement, ['fit', 'focus_x', 'focus_y'])
-    && (adoption.placement.fit === 'cover' || adoption.placement.fit === 'contain')
-    && typeof adoption.placement.focus_x === 'number' && Number.isFinite(adoption.placement.focus_x) && adoption.placement.focus_x >= 0 && adoption.placement.focus_x <= 1
-    && typeof adoption.placement.focus_y === 'number' && Number.isFinite(adoption.placement.focus_y) && adoption.placement.focus_y >= 0 && adoption.placement.focus_y <= 1))
-const imageCancelGenerationOperation: Validator = value => isRecord(value) && hasOnlyKeys(value, ['operationId']) && mediaProjectId(value.operationId)
-const imageUpdateReferenceControl: Validator = value =>
-  isRecord(value)
-  && hasOnlyKeys(value, ['projectId', 'referenceId', 'input'])
-  && mediaProjectId(value.projectId)
-  && mediaProjectId(value.referenceId)
-  && isRecord(value.input)
-  && hasOnlyKeys(value.input, ['base_revision', 'idempotency_key', 'role', 'influence_strength', 'preservation', 'priority', 'label'])
-  && imageBaseRevision(value.input.base_revision)
-  && imageIdempotencyKey(value.input.idempotency_key)
-  && ['unclassified', 'subject', 'product', 'character', 'style', 'composition', 'environment', 'brand', 'logo', 'qrcode'].includes(String(value.input.role))
-  && ['low', 'medium', 'high'].includes(String(value.input.influence_strength))
-  && ['may_change', 'prefer_preserve', 'must_preserve', 'exact'].includes(String(value.input.preservation))
-  && typeof value.input.priority === 'number' && Number.isInteger(value.input.priority) && value.input.priority >= 0 && value.input.priority <= 1_000
-  && (value.input.label === undefined || typeof value.input.label === 'string' && value.input.label.length >= 1 && value.input.label.length <= 120)
+const imageCreateCreativePlan: Validator = value => imageCreateCreativePlanIpcPayloadSchema.safeParse(value).success
+const imageEstimateGenerationRound: Validator = value => imageEstimateGenerationRoundIpcPayloadSchema.safeParse(value).success
+const imageEstimateDerivation: Validator = value => imageEstimateDerivationIpcPayloadSchema.safeParse(value).success
+const imageCreateGenerationRound: Validator = value => imageCreateGenerationRoundIpcPayloadSchema.safeParse(value).success
+const imageDecideCandidate: Validator = value => imageDecideCandidateIpcPayloadSchema.safeParse(value).success
+const imageAdoptCandidate: Validator = value => imageAdoptCandidateIpcPayloadSchema.safeParse(value).success
+const imageDeriveCandidate: Validator = value => imageDeriveCandidateIpcPayloadSchema.safeParse(value).success
+const imageCancelGenerationOperation: Validator = value => imageCancelGenerationOperationIpcPayloadSchema.safeParse(value).success
+const imageUpdateReferenceControl: Validator = value => imageUpdateReferenceControlIpcPayloadSchema.safeParse(value).success
 
 export const ELECTRON_IPC_VALIDATORS = {
   [ELECTRON_IPC_CHANNELS.appGetVersion]: noPayload,

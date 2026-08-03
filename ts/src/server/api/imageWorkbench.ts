@@ -26,6 +26,15 @@ import {
   createGenerationRoundInputSchema,
   decideImageCandidateInputSchema,
   deriveImageCandidateInputSchema,
+  imageCandidateAdoptionResponseSchema,
+  imageCandidateDecisionResponseSchema,
+  imageCandidateDerivationResponseSchema,
+  imageCreativePlanResponseSchema,
+  imageDerivationEstimateResponseSchema,
+  imageGenerationCancelResponseSchema,
+  imageGenerationRoundEstimateResponseSchema,
+  imageGenerationRoundResponseSchema,
+  imageReferenceControlResponseSchema,
   estimateDeriveImageCandidateInputSchema,
   estimateGenerationRoundInputSchema,
   publicImageCandidateGroupSchema,
@@ -351,7 +360,9 @@ export function createImageWorkbenchDomainApiHandler(
         if (segments[4] === 'commands') {
           if (req.method !== 'POST' || segments[5] !== 'cancel' || segments[6]) throw methodNotAllowed(req.method)
           requireMediaUiCapability(req, mediaUiCapability)
-          return Response.json({ operation: publicGenerationOperation(await service.cancelGenerationOperation(operationId)) })
+          return Response.json(imageGenerationCancelResponseSchema.parse({
+            operation: publicGenerationOperation(await service.cancelGenerationOperation(operationId)),
+          }))
         }
         if (segments[4] === 'cancel') {
           if (req.method !== 'POST' || segments[5]) throw methodNotAllowed(req.method)
@@ -372,7 +383,9 @@ export function createImageWorkbenchDomainApiHandler(
           if (req.method !== 'POST' || segments[6]) throw methodNotAllowed(req.method)
           requireMediaUiCapability(req, mediaUiCapability)
           const input = createCreativePlanInputSchema.parse(await parseJson(req))
-          return Response.json({ plan: await service.createCreativePlan(projectId, input) }, { status: 201 })
+          return Response.json(imageCreativePlanResponseSchema.parse({
+            plan: await service.createCreativePlan(projectId, input),
+          }), { status: 201 })
         }
         if (req.method !== 'GET' || segments[6]) throw methodNotAllowed(req.method)
         return Response.json({ plan: await service.getCreativePlan(projectId, planId) })
@@ -382,7 +395,9 @@ export function createImageWorkbenchDomainApiHandler(
         if (referenceId && segments[6] === 'commands' && segments[7] === 'update-control' && !segments[8] && req.method === 'POST') {
           requireMediaUiCapability(req, mediaUiCapability)
           const input = updateImageReferenceControlInputSchema.parse(await parseJson(req))
-          return Response.json({ project: publicImageProject(await service.updateReferenceControl(projectId, referenceId, input)) })
+          return Response.json(imageReferenceControlResponseSchema.parse({
+            project: publicImageProject(await service.updateReferenceControl(projectId, referenceId, input)),
+          }))
         }
       }
       if (projectId && action === 'generation-rounds') {
@@ -391,21 +406,26 @@ export function createImageWorkbenchDomainApiHandler(
           if (req.method !== 'POST' || segments[6]) throw methodNotAllowed(req.method)
           requireMediaUiCapability(req, mediaUiCapability)
           const input = estimateGenerationRoundInputSchema.parse(await parseJson(req))
-          return Response.json(await service.estimateGenerationRound(projectId, input))
+          return Response.json(imageGenerationRoundEstimateResponseSchema.parse(
+            await service.estimateGenerationRound(projectId, input),
+          ))
         }
         if (!roundId) {
           if (req.method !== 'POST' || segments[6]) throw methodNotAllowed(req.method)
           requireMediaUiCapability(req, mediaUiCapability)
           const input = createGenerationRoundInputSchema.parse(await parseJson(req))
           const created = await service.createGenerationRound(projectId, input)
-          return Response.json({
+          return Response.json(imageGenerationRoundResponseSchema.parse({
             round: created.round,
             operations: created.operations.map(publicGenerationOperation),
-          }, { status: 202 })
+          }), { status: 202 })
         }
         if (req.method !== 'GET' || segments[6]) throw methodNotAllowed(req.method)
         const result = await service.getGenerationRound(projectId, roundId)
-        return Response.json({ round: result.round, operations: result.operations.map(publicGenerationOperation) })
+        return Response.json(imageGenerationRoundResponseSchema.parse({
+          round: result.round,
+          operations: result.operations.map(publicGenerationOperation),
+        }))
       }
       if (projectId && action === 'candidate-groups') {
         const groupId = segments[5]
@@ -421,27 +441,34 @@ export function createImageWorkbenchDomainApiHandler(
         if (candidateAction === 'decisions' && !segments[7] && req.method === 'POST') {
           requireMediaUiCapability(req, mediaUiCapability)
           const input = decideImageCandidateInputSchema.parse(await parseJson(req))
-          return Response.json({ decision: await service.decideCandidate(projectId, candidateId, input) })
+          return Response.json(imageCandidateDecisionResponseSchema.parse({
+            decision: await service.decideCandidate(projectId, candidateId, input),
+          }))
         }
         if (candidateAction === 'adoptions' && !segments[7] && req.method === 'POST') {
           requireMediaUiCapability(req, mediaUiCapability)
           const input = adoptImageCandidateInputSchema.parse(await parseJson(req))
           const adopted = await service.adoptCandidate(projectId, candidateId, input)
-          return Response.json({
+          return Response.json(imageCandidateAdoptionResponseSchema.parse({
             project: publicImageProject(adopted.project),
             adoptions: adopted.adoptions,
-          })
+          }))
         }
         if (candidateAction === 'derivations' && !segments[7] && req.method === 'POST') {
           requireMediaUiCapability(req, mediaUiCapability)
           const input = deriveImageCandidateInputSchema.parse(await parseJson(req))
           const derived = await service.deriveCandidate(projectId, candidateId, input)
-          return Response.json({ round: derived.round, operation: publicGenerationOperation(derived.operation) }, { status: 202 })
+          return Response.json(imageCandidateDerivationResponseSchema.parse({
+            round: derived.round,
+            operation: publicGenerationOperation(derived.operation),
+          }), { status: 202 })
         }
         if (candidateAction === 'derivations' && segments[7] === 'estimate' && !segments[8] && req.method === 'POST') {
           requireMediaUiCapability(req, mediaUiCapability)
           const input = estimateDeriveImageCandidateInputSchema.parse(await parseJson(req))
-          return Response.json(await service.estimateDerivation(projectId, candidateId, input))
+          return Response.json(imageDerivationEstimateResponseSchema.parse(
+            await service.estimateDerivation(projectId, candidateId, input),
+          ))
         }
         throw methodNotAllowed(req.method)
       }

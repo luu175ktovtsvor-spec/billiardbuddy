@@ -15,7 +15,7 @@
 //   - 重启恢复:queued 续跑;running 无法确认结果 → failed_unknown,禁止自动重提(避免重复扣费)。
 //
 // 契约(与 gateway /v1/images/tasks、ts 客户端 submitOpenAiImageTask 对齐):
-//   POST /images/tasks   {mode:'generate'|'edit', model, prompt, n, size, response_format?, images?:string[](data-uri), mask?}
+//   POST /images/tasks   {mode:'generate'|'edit', model, prompt, n, size, response_format?, images?:string[](data-uri), reference_controls?, mask?}
 //     headers: Authorization: Bearer <RELAY_TOKEN>; X-Relay-Owner?: <opaque>; Idempotency-Key?: <key>
 //                        → 202 {task_id, status:'queued', reused?}   (立即返回,后台跑 OpenAI)
 //   GET  /images/tasks/:id  headers: Authorization + X-Relay-Owner?
@@ -211,6 +211,15 @@ type InputFidelityCapability = {
   risk?: string
 }
 
+type ReferenceControl = {
+  image_index: number
+  role: 'subject' | 'product' | 'character' | 'style' | 'composition' | 'environment' | 'brand'
+  influence_strength: 'low' | 'medium' | 'high'
+  preservation: 'may_change' | 'prefer_preserve' | 'must_preserve' | 'exact'
+  priority: number
+  label?: string
+}
+
 type SubmitBody = {
   mode?: 'generate' | 'edit'
   model?: string
@@ -219,6 +228,7 @@ type SubmitBody = {
   size?: string
   response_format?: string
   images?: string[]
+  reference_controls?: ReferenceControl[]
   mask?: string
   input_fidelity?: string
 }
@@ -262,6 +272,48 @@ function validateSubmitBody(body: SubmitBody, arkConfigured: boolean): void {
   if (body.mode === 'edit' && (!Array.isArray(body.images) || body.images.length === 0)) {
     throw new HttpError(400, 'relay: 参考图编辑缺少图片')
   }
+  if (body.reference_controls !== undefined) {
+    if (!Array.isArray(body.images) || !Array.isArray(body.reference_controls) || body.reference_controls.length === 0 || body.reference_controls.length > body.images.length) {
+      throw new HttpError(400, 'relay: 参考图控制与图片输入不匹配')
+    }
+    const roles = new Set<ReferenceControl['role']>(['subject', 'product', 'character', 'style', 'composition', 'environment', 'brand'])
+    const influences = new Set<ReferenceControl['influence_strength']>(['low', 'medium', 'high'])
+    const preservations = new Set<ReferenceControl['preservation']>(['may_change', 'prefer_preserve', 'must_preserve', 'exact'])
+    const indexes = new Set<number>()
+    for (const control of body.reference_controls) {
+      if (!control || typeof control !== 'object'
+        || !Number.isInteger(control.image_index) || control.image_index < 0 || control.image_index >= body.images.length
+        || indexes.has(control.image_index)
+        || !roles.has(control.role) || !influences.has(control.influence_strength) || !preservations.has(control.preservation)
+        || !Number.isInteger(control.priority) || control.priority < 0 || control.priority > 1_000
+        || (control.label !== undefined && (typeof control.label !== 'string' || control.label.length === 0 || control.label.length > 120))) {
+        throw new HttpError(400, 'relay: 参考图控制无效')
+      }
+      indexes.add(control.image_index)
+    }
+  }
+}
+
+/** Relay is the last trusted compiler before OpenAI/Ark: controls cannot be dropped after paid admission. */
+function providerPrompt(body: SubmitBody): string {
+  const prompt = String(body.prompt ?? '')
+  const controls = body.reference_controls
+  if (!controls?.length) return prompt
+  const directives = [...controls]
+    .sort((left, right) => right.priority - left.priority || left.image_index - right.image_index)
+    .map(control => [
+      `参考图 ${control.image_index + 1}`,
+      `role=${control.role}`,
+      `influence=${control.influence_strength}`,
+      `preservation=${control.preservation}`,
+      `priority=${control.priority}`,
+      ...(control.label ? [`label=${control.label}`] : []),
+    ].join('; '))
+  return [
+    prompt,
+    '参考图控制（必须按图像索引逐项执行；priority 越高越优先）：',
+    ...directives,
+  ].join('\n')
 }
 
 /** 大体积输入/结果的存储:磁盘(生产,700 目录)或进程内存(测试)。SQLite 只存元数据+引用。 */
@@ -757,7 +809,7 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
 
   async function runSeedream(body: SubmitBody, recordReceipt: (hash: string) => void): Promise<unknown[]> {
     const model = String(body.model ?? SEEDREAM_IMAGE_MODEL)
-    const prompt = String(body.prompt ?? '')
+    const prompt = providerPrompt(body)
     const size = String(body.size ?? '2048x2048')
     const count = clampCount(body.n)
     const outputs: unknown[] = []
@@ -835,7 +887,7 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
           store.setStatus(id, 'succeeded')
           return
         }
-        const prompt = String(body.prompt ?? '')
+        const prompt = providerPrompt(body)
         const n = clampCount(body.n)
         const size = body.size ? String(body.size) : undefined
         const requestUpstream = async (): Promise<{ response: Response; body: string }> => {

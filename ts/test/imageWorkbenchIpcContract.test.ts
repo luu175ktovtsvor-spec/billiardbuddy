@@ -101,12 +101,51 @@ test('15.2 image IPC validators expose only typed paid-generation and candidate 
 
 test('current Main-only image action bridge sends the desktop capability through fixed image action entrypoints', async () => {
   const requests: Array<{ url: string; init?: RequestInit }> = []
+  const timestamp = '2026-08-03T00:00:00.000Z'
   const actions = new ElectronImageActions({
     getServerUrl: async () => 'http://127.0.0.1:3456',
     capability,
     fetchImpl: async (input, init) => {
       requests.push({ url: input.toString(), init })
-      return Response.json({ task: { id: 'task_00000001' } })
+      const pathname = new URL(input.toString()).pathname
+      if (pathname.endsWith('/derivations/estimate')) {
+        return Response.json({
+          estimate_hash: `sha256:${'c'.repeat(64)}`,
+          paid_operation_count: 1,
+          candidate_count_per_operation: 3,
+          concurrency: 1,
+          price_upper_bound: null,
+          expires_at: '2026-08-03T00:05:00.000Z',
+        })
+      }
+      if (pathname.endsWith('/decisions')) {
+        return Response.json({
+          decision: {
+            id: 'adopt_00000001',
+            project_id: projectId,
+            candidate_id: 'cand_00000001',
+            decision: 'kept',
+            actor: { kind: 'standalone', owner_id: 'local_workbench' },
+            idempotency_key: 'bb-image-ipc-decision-0001',
+            request_hash: `sha256:${'d'.repeat(64)}`,
+            created_at: timestamp,
+          },
+        })
+      }
+      return Response.json({
+        task: {
+          schema_version: 1,
+          id: 'task_00000001',
+          project_id: projectId,
+          kind: 'image.generate',
+          status: 'queued',
+          status_sequence: 0,
+          progress: 0,
+          stage: '等待提交',
+          created_at: timestamp,
+          updated_at: timestamp,
+        },
+      })
     },
   })
   await actions.submitProject(projectId)
@@ -117,26 +156,37 @@ test('current Main-only image action bridge sends the desktop capability through
     instruction: '仅用于 IPC 合同基线',
     confirm_unknown_retry: false,
   })
-  await actions.createGenerationRound(projectId, {
-    base_revision: 0,
-    idempotency_key: 'bb-image-ipc-generation-round-0001',
-    creative_plan_id: 'plan_00000001',
-    direction_ids: ['dir_00000001'],
-    estimate_hash: `sha256:${'a'.repeat(64)}`,
-    confirm: true,
-  })
-  await actions.estimateDerivation(projectId, 'cand_00000001', {
+  const estimate = await actions.estimateDerivation(projectId, 'cand_00000001', {
     base_revision: 0,
     instruction: '只修改背景光线',
   })
+  expect(estimate.expires_at).toBe('2026-08-03T00:05:00.000Z')
+  const decision = await actions.decideCandidate(projectId, 'cand_00000001', {
+    base_revision: 0,
+    idempotency_key: 'bb-image-ipc-decision-0001',
+    decision: 'kept',
+  })
+  expect(decision.decision.id).toBe('adopt_00000001')
   expect(requests.map(request => new URL(request.url).pathname)).toEqual([
     `/api/images/projects/${projectId}/submit`,
     `/api/images/projects/${projectId}/operations`,
-    `/api/images/projects/${projectId}/generation-rounds`,
     `/api/images/projects/${projectId}/candidates/cand_00000001/derivations/estimate`,
+    `/api/images/projects/${projectId}/candidates/cand_00000001/decisions`,
   ])
   expect(new Headers(requests[0]!.init?.headers).get('x-billiardbuddy-media-capability')).toBe(capability)
   expect(() => new ElectronImageActions({ getServerUrl: async () => '', capability: 'too-short' })).toThrow('Image UI capability is too short')
+})
+
+test('15.2 Image IPC rejects a malformed server response before it reaches the renderer', async () => {
+  const actions = new ElectronImageActions({
+    getServerUrl: async () => 'http://127.0.0.1:3456',
+    capability,
+    fetchImpl: async () => Response.json({ estimate_hash: `sha256:${'e'.repeat(64)}` }),
+  })
+  await expect(actions.estimateDerivation(projectId, 'cand_00000001', {
+    base_revision: 0,
+    instruction: '只修改背景光线',
+  })).rejects.toThrow()
 })
 
 test('15.2 closes the paid-generation and Candidate command bridge gaps while later stages retain unrelated security work', () => {

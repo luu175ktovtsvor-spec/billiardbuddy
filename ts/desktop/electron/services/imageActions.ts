@@ -1,6 +1,10 @@
+import { z } from 'zod/v4'
 import {
   MEDIA_UI_CAPABILITY_HEADER,
   mediaSafeError,
+  publicImageWorkbenchProjectSchema,
+  publicMediaTaskSchema,
+  saveImageOutputResultSchema,
   type PublicImageWorkbenchProject as ImageWorkbenchProject,
   type PublicMediaTask as ImageOperation,
   type SaveImageOutputInput,
@@ -8,21 +12,42 @@ import {
   type StartImageOperationInput,
   type UpdateImageProjectInput,
 } from '../../../shared/contracts/media'
+import {
+  imageCandidateAdoptionResponseSchema,
+  imageCandidateDecisionResponseSchema,
+  imageCandidateDerivationResponseSchema,
+  imageCreativePlanResponseSchema,
+  imageDerivationEstimateResponseSchema,
+  imageGenerationCancelResponseSchema,
+  imageGenerationRoundEstimateResponseSchema,
+  imageGenerationRoundResponseSchema,
+  imageReferenceControlResponseSchema,
+} from '../../../shared/contracts/imageGeneration'
 import type {
   AdoptImageCandidateInput,
+  ImageCandidateAdoptionResponse,
+  ImageCandidateDecisionResponse,
+  ImageCandidateDerivationResponse,
+  ImageCreativePlanResponse,
+  ImageDerivationEstimateResponse,
+  ImageGenerationCancelResponse,
+  ImageGenerationRoundEstimateResponse,
+  ImageGenerationRoundResponse,
+  ImageReferenceControlResponse,
   CreateCreativePlanInput,
   CreateGenerationRoundInput,
   DecideImageCandidateInput,
   DeriveImageCandidateInput,
   EstimateDeriveImageCandidateInput,
   EstimateGenerationRoundInput,
-  ImageCreativePlan,
-  ImageGenerationRound,
-  PublicImageOperationV2,
   UpdateImageReferenceControlInput,
 } from '../../../shared/contracts/imageGeneration'
 
 type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
+type ResponseSchema<T> = { parse(value: unknown): T }
+
+const imageTaskResponseSchema = z.object({ task: publicMediaTaskSchema }).strict()
+const imageProjectResponseSchema = z.object({ project: publicImageWorkbenchProjectSchema }).strict()
 
 export type ElectronImageActionsOptions = {
   getServerUrl: () => Promise<string>
@@ -42,18 +67,18 @@ export class ElectronImageActions {
   submitProject(projectId: string, confirmUnknownRetry = false): Promise<{ task: ImageOperation }> {
     return this.post(`/api/images/projects/${encodeURIComponent(projectId)}/submit`, {
       confirm_unknown_retry: confirmUnknownRetry,
-    })
+    }, imageTaskResponseSchema)
   }
 
   startOperation(projectId: string, input: StartImageOperationInput): Promise<{ task: ImageOperation }> {
-    return this.post(`/api/images/projects/${encodeURIComponent(projectId)}/operations`, input)
+    return this.post(`/api/images/projects/${encodeURIComponent(projectId)}/operations`, input, imageTaskResponseSchema)
   }
 
   updateUnknownProject(
     projectId: string,
     input: UpdateImageProjectInput,
   ): Promise<{ project: ImageWorkbenchProject }> {
-    return this.request(`/api/images/projects/${encodeURIComponent(projectId)}`, 'PUT', input)
+    return this.request(`/api/images/projects/${encodeURIComponent(projectId)}`, 'PUT', input, imageProjectResponseSchema)
   }
 
   saveOutput(projectId: string, input: SaveImageOutputInput): Promise<SaveImageOutputResult> {
@@ -64,65 +89,51 @@ export class ElectronImageActions {
         ? `/api/images/projects/${encodeURIComponent(projectId)}/versions/${encodeURIComponent(input.version_id)}/save`
         : `/api/images/projects/${encodeURIComponent(projectId)}/outputs/${encodeURIComponent(resultId)}/save`,
       { output_path: input.output_path },
+      saveImageOutputResultSchema,
     )
   }
 
-  createCreativePlan(projectId: string, input: CreateCreativePlanInput): Promise<{ plan: ImageCreativePlan }> {
-    return this.post(`/api/images/projects/${encodeURIComponent(projectId)}/creative-plans`, input)
+  createCreativePlan(projectId: string, input: CreateCreativePlanInput): Promise<ImageCreativePlanResponse> {
+    return this.post(`/api/images/projects/${encodeURIComponent(projectId)}/creative-plans`, input, imageCreativePlanResponseSchema)
   }
 
-  estimateGenerationRound(projectId: string, input: EstimateGenerationRoundInput): Promise<{
-    estimate_hash: string
-    direction_count: number
-    paid_operation_count: number
-    candidate_count_per_operation: number
-    concurrency: number
-    price_upper_bound: null
-    expires_at: string
-  }> {
-    return this.post(`/api/images/projects/${encodeURIComponent(projectId)}/generation-rounds/estimate`, input)
+  estimateGenerationRound(projectId: string, input: EstimateGenerationRoundInput): Promise<ImageGenerationRoundEstimateResponse> {
+    return this.post(`/api/images/projects/${encodeURIComponent(projectId)}/generation-rounds/estimate`, input, imageGenerationRoundEstimateResponseSchema)
   }
 
-  estimateDerivation(projectId: string, candidateId: string, input: EstimateDeriveImageCandidateInput): Promise<{
-    estimate_hash: string
-    paid_operation_count: number
-    candidate_count_per_operation: number
-    concurrency: number
-    price_upper_bound: null
-    expires_at: string
-  }> {
-    return this.post(`/api/images/projects/${encodeURIComponent(projectId)}/candidates/${encodeURIComponent(candidateId)}/derivations/estimate`, input)
+  estimateDerivation(projectId: string, candidateId: string, input: EstimateDeriveImageCandidateInput): Promise<ImageDerivationEstimateResponse> {
+    return this.post(`/api/images/projects/${encodeURIComponent(projectId)}/candidates/${encodeURIComponent(candidateId)}/derivations/estimate`, input, imageDerivationEstimateResponseSchema)
   }
 
-  createGenerationRound(projectId: string, input: CreateGenerationRoundInput): Promise<{ round: ImageGenerationRound; operations: PublicImageOperationV2[] }> {
-    return this.post(`/api/images/projects/${encodeURIComponent(projectId)}/generation-rounds`, input)
+  createGenerationRound(projectId: string, input: CreateGenerationRoundInput): Promise<ImageGenerationRoundResponse> {
+    return this.post(`/api/images/projects/${encodeURIComponent(projectId)}/generation-rounds`, input, imageGenerationRoundResponseSchema)
   }
 
-  decideCandidate(projectId: string, candidateId: string, input: DecideImageCandidateInput): Promise<unknown> {
-    return this.post(`/api/images/projects/${encodeURIComponent(projectId)}/candidates/${encodeURIComponent(candidateId)}/decisions`, input)
+  decideCandidate(projectId: string, candidateId: string, input: DecideImageCandidateInput): Promise<ImageCandidateDecisionResponse> {
+    return this.post(`/api/images/projects/${encodeURIComponent(projectId)}/candidates/${encodeURIComponent(candidateId)}/decisions`, input, imageCandidateDecisionResponseSchema)
   }
 
-  adoptCandidate(projectId: string, candidateId: string, input: AdoptImageCandidateInput): Promise<unknown> {
-    return this.post(`/api/images/projects/${encodeURIComponent(projectId)}/candidates/${encodeURIComponent(candidateId)}/adoptions`, input)
+  adoptCandidate(projectId: string, candidateId: string, input: AdoptImageCandidateInput): Promise<ImageCandidateAdoptionResponse> {
+    return this.post(`/api/images/projects/${encodeURIComponent(projectId)}/candidates/${encodeURIComponent(candidateId)}/adoptions`, input, imageCandidateAdoptionResponseSchema)
   }
 
-  deriveCandidate(projectId: string, candidateId: string, input: DeriveImageCandidateInput): Promise<{ round: ImageGenerationRound; operation: PublicImageOperationV2 }> {
-    return this.post(`/api/images/projects/${encodeURIComponent(projectId)}/candidates/${encodeURIComponent(candidateId)}/derivations`, input)
+  deriveCandidate(projectId: string, candidateId: string, input: DeriveImageCandidateInput): Promise<ImageCandidateDerivationResponse> {
+    return this.post(`/api/images/projects/${encodeURIComponent(projectId)}/candidates/${encodeURIComponent(candidateId)}/derivations`, input, imageCandidateDerivationResponseSchema)
   }
 
-  cancelGenerationOperation(operationId: string): Promise<{ operation: PublicImageOperationV2 }> {
-    return this.post(`/api/images/operations/${encodeURIComponent(operationId)}/commands/cancel`)
+  cancelGenerationOperation(operationId: string): Promise<ImageGenerationCancelResponse> {
+    return this.post(`/api/images/operations/${encodeURIComponent(operationId)}/commands/cancel`, undefined, imageGenerationCancelResponseSchema)
   }
 
-  updateReferenceControl(projectId: string, referenceId: string, input: UpdateImageReferenceControlInput): Promise<{ project: ImageWorkbenchProject }> {
-    return this.post(`/api/images/projects/${encodeURIComponent(projectId)}/references/${encodeURIComponent(referenceId)}/commands/update-control`, input)
+  updateReferenceControl(projectId: string, referenceId: string, input: UpdateImageReferenceControlInput): Promise<ImageReferenceControlResponse> {
+    return this.post(`/api/images/projects/${encodeURIComponent(projectId)}/references/${encodeURIComponent(referenceId)}/commands/update-control`, input, imageReferenceControlResponseSchema)
   }
 
-  private async post<T>(path: string, body?: unknown): Promise<T> {
-    return await this.request(path, 'POST', body)
+  private async post<T>(path: string, body: unknown, responseSchema: ResponseSchema<T>): Promise<T> {
+    return await this.request(path, 'POST', body, responseSchema)
   }
 
-  private async request<T>(path: string, method: 'POST' | 'PUT', body?: unknown): Promise<T> {
+  private async request<T>(path: string, method: 'POST' | 'PUT', body: unknown, responseSchema: ResponseSchema<T>): Promise<T> {
     const baseUrl = (await this.options.getServerUrl()).replace(/\/+$/, '')
     let response: Response
     try {
@@ -137,8 +148,13 @@ export class ElectronImageActions {
     } catch {
       throw new Error(mediaSafeError('MEDIA_TEMPORARILY_UNAVAILABLE').message)
     }
-    const payload = await response.json().catch(() => ({})) as { error?: unknown }
-    if (!response.ok) throw new Error(mediaSafeError(payload.error).message)
-    return payload as T
+    const payload: unknown = await response.json().catch(() => ({}))
+    const errorPayload = z.object({ error: z.unknown().optional() }).passthrough().safeParse(payload)
+    if (!response.ok) throw new Error(mediaSafeError(errorPayload.success ? errorPayload.data.error : undefined).message)
+    try {
+      return responseSchema.parse(payload)
+    } catch {
+      throw new Error(mediaSafeError('MEDIA_TEMPORARILY_UNAVAILABLE').message)
+    }
   }
 }
