@@ -28,6 +28,7 @@ import { ApiError, errorResponse } from '../middleware/errorHandler.js'
 import { VideoWorkbenchRepositoryError, type VideoOperation, type VideoOperationEvent } from '../services/videoWorkbenchRepository.js'
 import { VideoWorkbenchService, VideoWorkbenchServiceError } from '../services/videoWorkbenchService.js'
 import { factKind, factSourceRange, type VideoFact, type VideoFactKind } from '../video/domain/mediaFacts/model.js'
+import { VideoFactsRepositoryError } from '../video/infrastructure/sqliteMediaFactsRepository.js'
 
 function methodNotAllowed(method: string): ApiError {
   return new ApiError(405, `Method ${method} not allowed`, 'METHOD_NOT_ALLOWED')
@@ -58,6 +59,15 @@ function apiErrorResponse(error: unknown): Response {
   if (error instanceof VideoWorkbenchServiceError || error instanceof VideoWorkbenchRepositoryError) {
     const safe = mediaSafeErrorForServiceError(error.code, error.status)
     return Response.json({ error: safe.code, message: safe.message }, { status: error.status })
+  }
+  if (error instanceof VideoFactsRepositoryError) {
+    const status = error.code === 'VIDEO_FACTS_INVALID' ? 400 : error.code === 'VIDEO_FACTS_NOT_FOUND' ? 404 : 500
+    const safe = error.code === 'VIDEO_FACTS_INVALID'
+      ? mediaSafeError('MEDIA_INVALID_REQUEST')
+      : error.code === 'VIDEO_FACTS_NOT_FOUND'
+        ? mediaSafeError('MEDIA_RESOURCE_UNAVAILABLE')
+        : mediaSafeError('MEDIA_TEMPORARILY_UNAVAILABLE')
+    return Response.json({ error: safe.code, message: safe.message }, { status })
   }
   if (error instanceof z.ZodError) {
     const safe = mediaSafeError('MEDIA_INVALID_REQUEST')

@@ -1524,6 +1524,9 @@ export class VideoWorkbenchService {
       }
       const sourceFact = await this.repository.getFact('source', source.id).catch(() => null)
       if (sourceFact && 'fast_identity' in sourceFact) {
+        if (sourceFact.state === 'changed') {
+          throw new VideoWorkbenchServiceError('视频素材内容已经变化，请重新导入', 409, 'VIDEO_SOURCE_CHANGED')
+        }
         if (sourceFact.fingerprint_state !== 'ready' || !sourceFact.fingerprint) {
           throw new VideoWorkbenchServiceError('素材完整指纹尚未就绪，请稍后再试', 409, 'VIDEO_SOURCE_FINGERPRINT_PENDING')
         }
