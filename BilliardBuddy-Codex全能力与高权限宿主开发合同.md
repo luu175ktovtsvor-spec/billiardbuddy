@@ -118,6 +118,18 @@ BilliardBuddy Desktop
 
 当前 Electron 桥已经把 Thread、Turn、权限模式、MCP、Skills、Hooks、插件、协作、Review、后台终端及受限的外部 Agent 迁移转发至 Rust。Computer Use、Chrome、Browser Use、Record & Replay、计划任务与 Remote Host 已进入后端源码；前四项尚无真实跨平台构建，所有模块也尚无用户设置页。Cloud Runner 仍缺失；迁移、计划任务和 Remote Host 的新前端入口也仍缺失。本合同下述顺序是后端建设优先级，不代表这些用户入口已经存在。
 
+### 3.1 锁定 Rust 协议的完整审计结论
+
+对锁定版本 App Server 的全部 Client Request 做了逐项审计：目前有 **47 个**请求经类型化 Electron Main 桥直接进入 Rust；其余 **89 个**不是遗漏的第二套 Agent 能力，已明确分为以下边界：
+
+- OpenAI 账号、云端额度、远程应用和反馈服务：不接入，使用 BilliardBuddy 自己的账号、Gateway 和未来 Remote Runner；
+- 原始文件系统、Shell、PTY 与进程 IPC：刻意不暴露给 Renderer，必须由 Rust 的工具、Sandbox 和审批链执行；
+- 源码调试、实验开关和历史导入内部步骤：不作为产品 API；
+- Remote Environment/设备控制：不复用 OpenAI 私有服务，按 M8/M9 走 BilliardBuddy 自有配对与隔离；
+- `permissionProfile/list`、`threadSection/*`、`thread/section/move`、`model/list` 等：Rust 已保存原生状态，属于新 Renderer 的设置、会话整理和模型选择投影。它们不是现在要另建的 Agent 后端；重做前端时直接桥接原生协议，不能另存权限档案、Section 或模型上下文状态。
+
+协议验证会在锁定上游新增方法时失败，要求将新增方法接入类型化桥，或在上述边界中写明具体原因；不能依赖“源码存在但产品尚未判断”的默认遗漏。
+
 ---
 
 ## 4. 高权限宿主的正式架构
