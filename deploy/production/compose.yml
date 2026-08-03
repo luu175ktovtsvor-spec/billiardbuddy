@@ -80,3 +80,44 @@ services:
       timeout: 5s
       retries: 12
       start_period: 10s
+
+  video-media-relay:
+    image: billiardbuddy/video-media-relay:${BILLIARDBUDDY_RELEASE:?BILLIARDBUDDY_RELEASE is required}
+    build:
+      context: ../..
+      dockerfile: deploy/production/Dockerfile.video-media-relay
+    restart: unless-stopped
+    mem_limit: 1g
+    pids_limit: 256
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+    depends_on:
+      gateway:
+        condition: service_healthy
+    env_file:
+      - /srv/billiardbuddy/secrets/video-media-relay.env
+    environment:
+      VIDEO_MEDIA_RELAY_HOST: 0.0.0.0
+      VIDEO_MEDIA_RELAY_PORT: "8791"
+      VIDEO_MEDIA_RELAY_DB: /data/video-media-relay.db
+      VIDEO_MEDIA_GATEWAY_INTROSPECTION_BASE: http://gateway:8799
+    volumes:
+      - /srv/billiardbuddy/data/video-media-relay:/data
+    ports:
+      - 127.0.0.1:8791:8791
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "bun", "-e", "const r = await fetch('http://127.0.0.1:8791/readyz'); if (!r.ok) process.exit(1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s

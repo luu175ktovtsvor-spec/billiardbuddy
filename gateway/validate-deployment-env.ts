@@ -79,6 +79,8 @@ export function validateDeploymentEnvironment(environment: DeploymentEnvironment
 
   const signingKey = requireValue(environment, 'GW_AUTH_SIGNING_KEY')
   if (signingKey.length < 32) fail('GW_AUTH_SIGNING_KEY must be at least 32 characters')
+  const videoIntrospectionToken = requireValue(environment, 'GW_VIDEO_MEDIA_INTROSPECTION_TOKEN')
+  if (videoIntrospectionToken.length < 32) fail('GW_VIDEO_MEDIA_INTROSPECTION_TOKEN must be at least 32 characters')
 
   for (const name of [
     'GW_ADMIN_TOKEN',

@@ -4,6 +4,7 @@ export const PROVIDER_CAPABILITIES = [
   'MediaReasoning',
   'ImageGeneration',
   'SpeechTranscription',
+  'SemanticEmbedding',
 ] as const
 
 export type ProviderCapability = (typeof PROVIDER_CAPABILITIES)[number]
@@ -58,6 +59,13 @@ export interface SpeechTranscriptionProviderContract {
   model_id: string
 }
 
+/** The video search index is the only separately-metered embedding capability. */
+export interface SemanticEmbeddingProviderContract {
+  capability: 'SemanticEmbedding'
+  model_id: string
+  dimension: 768
+}
+
 export type ProviderRegistryEntry = {
   model_id: string
   provider: string
@@ -77,7 +85,9 @@ export type ProviderRuntimeConfigurationError =
   | 'MODEL_CONTRACT_HASH_MISMATCH'
   | 'MODEL_CONTRACT_STALE'
 
-export type MeteredProviderCapability = Exclude<ProviderCapability, 'ImageGeneration'>
+// Gateway's legacy account policy deliberately excludes video-only embedding;
+// Video Media Relay owns that separate provider/account ledger.
+export type MeteredProviderCapability = Exclude<ProviderCapability, 'ImageGeneration' | 'SemanticEmbedding'>
 export type ProviderUsageAmount = {
   requests: number
   input_bytes: number

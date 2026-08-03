@@ -6,10 +6,7 @@ import {
   type VideoScene,
   type VideoSource,
 } from '../../../shared/contracts/media.js'
-import {
-  PROVIDER_GATEWAY_PROTOCOL,
-  PROVIDER_GATEWAY_PROTOCOL_HEADER,
-} from '../../../shared/product/providerGateway.js'
+import { PROVIDER_GATEWAY_PROTOCOL, PROVIDER_GATEWAY_PROTOCOL_HEADER } from '../../../shared/product/providerGateway.js'
 import { productGatewayTarget } from '../product/productGatewayRuntime.js'
 import { mediaReasoningRegistryEntry } from '../../../../gateway/providerRegistry.js'
 
@@ -78,6 +75,8 @@ export type VideoAnalysisGatewayOptions = {
   signal?: AbortSignal
   fetchImpl?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
   env?: Record<string, string | undefined>
+  /** Only retained for completed legacy Gateway video operations. New video work must be Relay-only. */
+  allowLegacyGateway?: boolean
 }
 
 type VideoPlanningInput = {
@@ -229,48 +228,17 @@ async function gatewayJson(
   messages: Array<{ role: 'system' | 'user'; content: string | Array<Record<string, unknown>> }>,
   options: VideoAnalysisGatewayOptions,
 ): Promise<unknown> {
+  if (options.allowLegacyGateway === false) throw new VideoAnalysisError('Video Media Relay 规划结果尚不可用', 503, 'VIDEO_MEDIA_RELAY_REQUIRED')
   const env = options.env ?? process.env
   const productTarget = env === process.env ? productGatewayTarget() : null
   const gatewayUrl = productTarget?.baseUrl ?? env.BB_GATEWAY_URL?.trim() ?? ''
   const gatewayToken = productTarget?.token ?? env.BB_GATEWAY_TOKEN?.trim() ?? ''
-  if (!gatewayUrl || !gatewayToken) {
-    throw new VideoAnalysisError('视频分析服务未配置', 503, 'GATEWAY_NOT_CONFIGURED')
-  }
-  const headers: Record<string, string> = {
-    Authorization: `Bearer ${gatewayToken}`,
-    'Content-Type': 'application/json',
-    [PROVIDER_GATEWAY_PROTOCOL_HEADER]: PROVIDER_GATEWAY_PROTOCOL.headerValue,
-    'X-BB-Operation-ID': options.operationId,
-  }
+  if (!gatewayUrl || !gatewayToken) throw new VideoAnalysisError('视频分析服务未配置', 503, 'GATEWAY_NOT_CONFIGURED')
   let response: Response
-  try {
-    response = await (options.fetchImpl ?? fetch)(`${gatewayUrl.replace(/\/+$/, '')}/v1/media/reasoning`, {
-      method: 'POST',
-      headers,
-      signal: options.signal,
-      body: JSON.stringify({
-        model: mediaReasoningRegistryEntry().model_id,
-        stream: false,
-        temperature: 0,
-        max_tokens: 6000,
-        messages,
-      }),
-    })
-  } catch {
-    if (options.signal?.aborted) throw new VideoAnalysisError('视频分析已取消', 499, 'VIDEO_ANALYSIS_CANCELLED')
-    throw new VideoAnalysisError('无法连接视频分析服务', 503)
-  }
-  const text = await response.text()
-  if (text.length > MAX_GATEWAY_RESPONSE_CHARS) throw new VideoAnalysisError('视频分析结果过大')
-  if (!response.ok) throw new VideoAnalysisError('视频分析服务暂时不可用', response.status)
-  let envelope: unknown
-  try {
-    envelope = JSON.parse(text)
-  } catch {
-    throw new VideoAnalysisError('视频分析返回了无效结果')
-  }
-  const content = (envelope as { choices?: Array<{ message?: { content?: unknown } }> })
-    .choices?.[0]?.message?.content
+  try { response = await (options.fetchImpl ?? fetch)(`${gatewayUrl.replace(/\/+$/, '')}/v1/media/reasoning`, { method: 'POST', headers: { Authorization: `Bearer ${gatewayToken}`, 'Content-Type': 'application/json', [PROVIDER_GATEWAY_PROTOCOL_HEADER]: PROVIDER_GATEWAY_PROTOCOL.headerValue, 'X-BB-Operation-ID': options.operationId }, signal: options.signal, body: JSON.stringify({ model: mediaReasoningRegistryEntry().model_id, stream: false, temperature: 0, max_tokens: 6000, messages }) }) } catch { if (options.signal?.aborted) throw new VideoAnalysisError('视频分析已取消', 499, 'VIDEO_ANALYSIS_CANCELLED'); throw new VideoAnalysisError('无法连接视频分析服务', 503) }
+  const text = await response.text(); if (text.length > MAX_GATEWAY_RESPONSE_CHARS) throw new VideoAnalysisError('视频分析结果过大'); if (!response.ok) throw new VideoAnalysisError('视频分析服务暂时不可用', response.status)
+  let envelope: unknown; try { envelope = JSON.parse(text) } catch { throw new VideoAnalysisError('视频分析返回了无效结果') }
+  const content = (envelope as { choices?: Array<{ message?: { content?: unknown } }> }).choices?.[0]?.message?.content
   if (typeof content !== 'string' || !content.trim()) throw new VideoAnalysisError('视频分析没有返回内容')
   return extractJson(content)
 }
@@ -280,43 +248,18 @@ async function gatewayVisualEvidence(
   options: VideoAnalysisGatewayOptions,
 ): Promise<z.infer<typeof visualEvidenceBatchSchema>['evidence']> {
   if (frames.length === 0) return []
+  if (options.allowLegacyGateway === false) throw new VideoAnalysisError('Video Media Relay 视觉证据结果尚不可用', 503, 'VIDEO_MEDIA_RELAY_REQUIRED')
   const env = options.env ?? process.env
   const productTarget = env === process.env ? productGatewayTarget() : null
   const gatewayUrl = productTarget?.baseUrl ?? env.BB_GATEWAY_URL?.trim() ?? ''
   const gatewayToken = productTarget?.token ?? env.BB_GATEWAY_TOKEN?.trim() ?? ''
   if (!gatewayUrl || !gatewayToken) throw new VideoAnalysisError('视频分析服务未配置', 503, 'GATEWAY_NOT_CONFIGURED')
-  const headers: Record<string, string> = {
-    Authorization: `Bearer ${gatewayToken}`,
-    'Content-Type': 'application/json',
-    [PROVIDER_GATEWAY_PROTOCOL_HEADER]: PROVIDER_GATEWAY_PROTOCOL.headerValue,
-    'X-BB-Operation-ID': options.operationId,
-  }
   let response: Response
-  try {
-    response = await (options.fetchImpl ?? fetch)(`${gatewayUrl.replace(/\/+$/, '')}/v1/visual/evidence`, {
-      method: 'POST',
-      headers,
-      signal: options.signal,
-      body: JSON.stringify({
-        messages: [{
-          role: 'user',
-          content: frames.map(frame => ({ type: 'image_url', image_url: { url: frame.data_url } })),
-        }],
-      }),
-    })
-  } catch {
-    if (options.signal?.aborted) throw new VideoAnalysisError('视频分析已取消', 499, 'VIDEO_ANALYSIS_CANCELLED')
-    throw new VideoAnalysisError('无法连接视觉证据服务', 503)
-  }
-  const text = await response.text()
-  if (text.length > MAX_GATEWAY_RESPONSE_CHARS) throw new VideoAnalysisError('视觉证据结果过大')
-  if (!response.ok) throw new VideoAnalysisError('视觉证据服务暂时不可用', response.status)
-  let raw: unknown
-  try { raw = JSON.parse(text) } catch { throw new VideoAnalysisError('视觉证据返回了无效结果') }
+  try { response = await (options.fetchImpl ?? fetch)(`${gatewayUrl.replace(/\/+$/, '')}/v1/visual/evidence`, { method: 'POST', headers: { Authorization: `Bearer ${gatewayToken}`, 'Content-Type': 'application/json', [PROVIDER_GATEWAY_PROTOCOL_HEADER]: PROVIDER_GATEWAY_PROTOCOL.headerValue, 'X-BB-Operation-ID': options.operationId }, signal: options.signal, body: JSON.stringify({ messages: [{ role: 'user', content: frames.map(frame => ({ type: 'image_url', image_url: { url: frame.data_url } })) }] }) }) } catch { if (options.signal?.aborted) throw new VideoAnalysisError('视频分析已取消', 499, 'VIDEO_ANALYSIS_CANCELLED'); throw new VideoAnalysisError('无法连接视觉证据服务', 503) }
+  const text = await response.text(); if (text.length > MAX_GATEWAY_RESPONSE_CHARS) throw new VideoAnalysisError('视觉证据结果过大'); if (!response.ok) throw new VideoAnalysisError('视觉证据服务暂时不可用', response.status)
+  let raw: unknown; try { raw = JSON.parse(text) } catch { throw new VideoAnalysisError('视觉证据返回了无效结果') }
   const parsed = visualEvidenceBatchSchema.safeParse(raw)
-  if (!parsed.success || parsed.data.evidence.length !== frames.length) {
-    throw new VideoAnalysisError('视觉证据不符合产品合同')
-  }
+  if (!parsed.success || parsed.data.evidence.length !== frames.length) throw new VideoAnalysisError('视觉证据不符合产品合同')
   return parsed.data.evidence
 }
 

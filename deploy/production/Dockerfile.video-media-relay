@@ -1,0 +1,12 @@
+FROM oven/bun:1.3.14
+
+WORKDIR /app/video-media-relay
+COPY --chown=bun:bun video-media-relay/app.ts video-media-relay/providerRegistry.ts video-media-relay/validate-deployment-env.ts ./
+COPY --chown=bun:bun video-media-relay/contracts /app/video-media-relay/contracts
+# The shared Relay contract uses the repository's locked zod runtime. Keep the
+# image closure explicit; no desktop dependency or credential is copied.
+COPY --chown=bun:bun ts/node_modules/zod /app/ts/node_modules/zod
+
+USER bun
+EXPOSE 8791
+CMD ["bun", "/app/video-media-relay/app.ts"]
