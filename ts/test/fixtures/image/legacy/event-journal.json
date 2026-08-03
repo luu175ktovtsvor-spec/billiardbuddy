@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "next_cursor": 2,
+  "events": [
+    {
+      "schema_version": 1,
+      "cursor": 1,
+      "project_id": "img_legacy_fixture",
+      "task_id": "task_legacy_fixture",
+      "operation_id": "op_legacy_fixture",
+      "status_sequence": 1,
+      "occurred_at": "2026-08-03T00:00:00.000Z",
+      "task": {
+        "schema_version": 1,
+        "id": "task_legacy_fixture",
+        "operation_id": "op_legacy_fixture",
+        "project_id": "img_legacy_fixture",
+        "owner": { "kind": "standalone", "owner_id": "local_workbench" },
+        "kind": "image.generate",
+        "status": "succeeded",
+        "status_sequence": 1,
+        "progress": 100,
+        "stage": "历史候选已保存",
+        "idempotency_key": "bb-image-legacy-fixture-key",
+        "image_operation": {
+          "kind": "generate",
+          "model": "gpt-image-2",
+          "output_count": 3
+        },
+        "result": { "output_count": 1 },
+        "created_at": "2026-08-03T00:00:00.000Z",
+        "updated_at": "2026-08-03T00:00:00.000Z"
+      }
+    }
+  ]
+}
