@@ -1,0 +1,15 @@
+{
+  "name": "billiardbuddy-record-replay",
+  "version": "0.1.0",
+  "description": "Record an explicitly started, redacted desktop workflow and turn it into a reviewable BilliardBuddy Skill. It does not record typed text, clipboard data, secrets, screenshots or video.",
+  "author": { "name": "BilliardBuddy" },
+  "license": "Proprietary",
+  "mcpServers": "./.mcp.json",
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Record and Replay",
+    "shortDescription": "Record a workflow and draft a reviewable Skill",
+    "category": "Productivity",
+    "capabilities": ["Interactive", "Read", "Write"]
+  }
+}

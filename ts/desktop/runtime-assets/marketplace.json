@@ -1,0 +1,56 @@
+{
+  "name": "billiardbuddy-local",
+  "interface": {
+    "displayName": "BilliardBuddy 本地扩展"
+  },
+  "plugins": [
+    {
+      "name": "billiardbuddy-computer-use",
+      "source": {
+        "source": "local",
+        "path": "./plugins/billiardbuddy-computer-use"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_USE"
+      },
+      "category": "Productivity"
+    },
+    {
+      "name": "billiardbuddy-chrome",
+      "source": {
+        "source": "local",
+        "path": "./plugins/billiardbuddy-chrome"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_USE"
+      },
+      "category": "Productivity"
+    },
+    {
+      "name": "billiardbuddy-browser-use",
+      "source": {
+        "source": "local",
+        "path": "./plugins/billiardbuddy-browser-use"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_USE"
+      },
+      "category": "Productivity"
+    },
+    {
+      "name": "billiardbuddy-record-replay",
+      "source": {
+        "source": "local",
+        "path": "./plugins/billiardbuddy-record-replay"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_USE"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

@@ -3,8 +3,8 @@ import { createHash } from 'node:crypto'
 import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
 import {
+  BILLIARDBUDDY_AGENT_ENGINE_NAME,
   CODEX_ENGINE_MANIFEST_SCHEMA,
-  CODEX_ENGINE_NAME,
   CODEX_ENGINE_PRODUCT_PATCHES,
   CODEX_ENGINE_SOURCE_REPOSITORY,
   CODEX_ENGINE_SOURCE_REVISION,
@@ -36,7 +36,7 @@ export type CodexNativeServerRequest = CodexNativeNotification & {
 export type CodexNativeAppServerClientOptions = {
   /** Resolved BilliardBuddy-owned binary; never a renderer-provided command. */
   command: readonly string[]
-  /** BilliardBuddy's private Codex home. This is the sole Agent Thread Store. */
+  /** BilliardBuddy's private Agent runtime home. This is the sole Agent Thread Store. */
   engineHome: string
   /** Do not let process start-up implicitly enter an untrusted workspace. */
   cwd?: string
@@ -113,6 +113,9 @@ export type NativeCodexPluginReference = {
   marketplacePath: string
   pluginName: string
 }
+
+/** Opaque source-native migration item returned by externalAgentConfig/detect. */
+export type NativeExternalAgentMigrationItem = CodexNativeJsonObject
 
 export type NativeCodexStartThreadInput = {
   cwd: string
@@ -289,7 +292,7 @@ async function hasVerifiedNativeEngineManifest(
   target: ReturnType<typeof supportedEngineTarget>,
   binaryName: string,
 ): Promise<boolean> {
-  const manifestPath = path.join(directory, `codex-engine-manifest-${target}.json`)
+  const manifestPath = path.join(directory, `agent-engine-manifest-${target}.json`)
   try {
     const stat = await fs.lstat(manifestPath)
     if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 256 * 1024) return false
@@ -297,7 +300,7 @@ async function hasVerifiedNativeEngineManifest(
     if (path.dirname(resolved) !== directory) return false
     const manifest = jsonObject(JSON.parse(await fs.readFile(resolved, 'utf8')))
     return manifest?.schemaVersion === CODEX_ENGINE_MANIFEST_SCHEMA
-      && manifest.engine === CODEX_ENGINE_NAME
+      && manifest.engine === BILLIARDBUDDY_AGENT_ENGINE_NAME
       && manifest.sourceRepository === CODEX_ENGINE_SOURCE_REPOSITORY
       && manifest.sourceRevision === CODEX_ENGINE_SOURCE_REVISION
       && manifest.target === target
@@ -313,7 +316,7 @@ async function nativeAppServerCommand(desktopRoot: string): Promise<string[]> {
   const extension = process.platform === 'win32' ? '.exe' : ''
   const binaryDirectory = path.join(absoluteDirectory(desktopRoot), 'runtime-assets', 'binaries')
   const directory = await fs.realpath(binaryDirectory)
-  const binary = path.join(directory, `codex-app-server-${target}${extension}`)
+  const binary = path.join(directory, `billiardbuddy-agent-engine-${target}${extension}`)
   const stat = await fs.lstat(binary)
   if (!stat.isFile() || stat.isSymbolicLink() || (process.platform !== 'win32' && (stat.mode & 0o111) === 0)) {
     throw new Error('CODEX_NATIVE_BINARY_UNAVAILABLE')
@@ -1211,6 +1214,36 @@ export class ElectronCodexNativeRuntime {
     })
   }
 
+  /** Detect external Agent configuration through the locked Rust importer. */
+  async detectExternalAgentConfig(
+    thread: Pick<NativeCodexThread, 'id'>,
+    input: { cwd: string, includeHome: boolean, migrationSource?: string },
+  ): Promise<CodexNativeJsonObject> {
+    if (!nonEmptyText(thread.id) || typeof input.includeHome !== 'boolean') throw new Error('CODEX_NATIVE_EXTERNAL_AGENT_DETECT_INVALID')
+    const workspace = await this.workspace(input.cwd)
+    return await this.requireClient().request<CodexNativeJsonObject>('externalAgentConfig/detect', {
+      cwds: [workspace],
+      includeHome: input.includeHome,
+      ...(input.migrationSource === undefined ? {} : { migrationSource: nativePluginText(input.migrationSource, 128, 'CODEX_NATIVE_EXTERNAL_AGENT_SOURCE_INVALID') }),
+    })
+  }
+
+  /** Import only the exact source-native items selected from a cached detection. */
+  async importExternalAgentConfig(
+    thread: Pick<NativeCodexThread, 'id'>,
+    migrationItems: readonly NativeExternalAgentMigrationItem[],
+    migrationSource?: string,
+  ): Promise<CodexNativeJsonObject> {
+    if (!nonEmptyText(thread.id) || migrationItems.length === 0 || migrationItems.length > 128) {
+      throw new Error('CODEX_NATIVE_EXTERNAL_AGENT_IMPORT_INVALID')
+    }
+    return await this.requireClient().request<CodexNativeJsonObject>('externalAgentConfig/import', {
+      migrationItems: [...migrationItems],
+      source: 'billiardbuddy',
+      ...(migrationSource === undefined ? {} : { migrationSource: nativePluginText(migrationSource, 128, 'CODEX_NATIVE_EXTERNAL_AGENT_SOURCE_INVALID') }),
+    })
+  }
+
   /**
    * Sets Codex's own extra Skill roots. The Rust configuration remains the
    * only registry; Electron merely canonicalizes directories before forwarding.
@@ -1523,7 +1556,7 @@ export class ElectronCodexNativeRuntime {
     this.startingProviders.add(provider)
     let client: CodexNativeAppServerClient | undefined
     try {
-      const engineHome = path.join(absoluteDirectory(this.options.userDataPath), 'codex-native')
+      const engineHome = path.join(absoluteDirectory(this.options.userDataPath), 'agent-runtime')
       client = new CodexNativeAppServerClient({
         command: await nativeAppServerCommand(this.options.desktopRoot),
         engineHome,

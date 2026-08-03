@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "billiardbuddy-record-replay": {
+      "command": "./bin/billiardbuddy-record-replay",
+      "cwd": ".",
+      "env_vars": ["CODEX_HOME"]
+    }
+  }
+}

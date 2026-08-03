@@ -1,0 +1,16 @@
+[package]
+name = "billiardbuddy-chrome"
+version = "0.1.0"
+edition = "2024"
+license = "Proprietary"
+publish = false
+
+[[bin]]
+name = "billiardbuddy-chrome"
+path = "src/mcp.rs"
+
+[[bin]]
+name = "billiardbuddy-chrome-native-host"
+path = "src/native_host.rs"
+
+[dependencies]

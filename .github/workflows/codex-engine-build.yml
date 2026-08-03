@@ -9,7 +9,30 @@ on:
       - 'third_party/codex-engine-patches/**'
       - 'ts/shared/product/codexEngineContract.ts'
       - 'ts/desktop/electron/services/codexNativeAppServer.ts'
+      - 'ts/desktop/electron/main.ts'
+      - 'ts/desktop/electron/preload.ts'
+      - 'ts/desktop/electron/ipc/channels.ts'
+      - 'ts/desktop/electron/ipc/capabilities.ts'
+      - 'ts/desktop/electron/services/computerUseConfiguration.ts'
       - 'ts/desktop/package.json'
+      - 'ts/desktop/runtime-assets/marketplace.json'
+      - 'ts/desktop/runtime-assets/plugins/**'
+      - 'native/billiardbuddy-chrome/**'
+      - 'native/billiardbuddy-browser-use/**'
+      - 'native/billiardbuddy-record-replay/**'
+      - 'native/billiardbuddy-computer-use/**'
+      - 'ts/desktop/scripts/stage-agent-plugins.ts'
+      - 'ts/desktop/scripts/stage-chrome-plugin.ts'
+      - 'ts/desktop/scripts/stage-browser-plugin.ts'
+      - 'ts/desktop/scripts/stage-record-replay-plugin.ts'
+      - 'ts/desktop/electron/services/inAppBrowserHost.ts'
+      - 'ts/desktop/electron/services/recordReplayLifecycle.ts'
+      - 'ts/desktop/electron/services/scheduledAgentTasks.ts'
+      - 'ts/desktop/electron/services/remoteHost.ts'
+      - 'gateway/app.ts'
+      - 'gateway/remoteHost.ts'
+      - 'deploy/production/Dockerfile.gateway'
+      - 'ts/desktop/scripts/electron-after-pack.cjs'
       - 'ts/desktop/scripts/stage-codex-engine.ts'
       - 'ts/desktop/scripts/verify-codex-engine-source.ts'
       - 'ts/desktop/scripts/verify-codex-native-protocol.ts'
@@ -24,7 +47,30 @@ on:
       - 'third_party/codex-engine-patches/**'
       - 'ts/shared/product/codexEngineContract.ts'
       - 'ts/desktop/electron/services/codexNativeAppServer.ts'
+      - 'ts/desktop/electron/main.ts'
+      - 'ts/desktop/electron/preload.ts'
+      - 'ts/desktop/electron/ipc/channels.ts'
+      - 'ts/desktop/electron/ipc/capabilities.ts'
+      - 'ts/desktop/electron/services/computerUseConfiguration.ts'
       - 'ts/desktop/package.json'
+      - 'ts/desktop/runtime-assets/marketplace.json'
+      - 'ts/desktop/runtime-assets/plugins/**'
+      - 'native/billiardbuddy-chrome/**'
+      - 'native/billiardbuddy-browser-use/**'
+      - 'native/billiardbuddy-record-replay/**'
+      - 'native/billiardbuddy-computer-use/**'
+      - 'ts/desktop/scripts/stage-agent-plugins.ts'
+      - 'ts/desktop/scripts/stage-chrome-plugin.ts'
+      - 'ts/desktop/scripts/stage-browser-plugin.ts'
+      - 'ts/desktop/scripts/stage-record-replay-plugin.ts'
+      - 'ts/desktop/electron/services/inAppBrowserHost.ts'
+      - 'ts/desktop/electron/services/recordReplayLifecycle.ts'
+      - 'ts/desktop/electron/services/scheduledAgentTasks.ts'
+      - 'ts/desktop/electron/services/remoteHost.ts'
+      - 'gateway/app.ts'
+      - 'gateway/remoteHost.ts'
+      - 'deploy/production/Dockerfile.gateway'
+      - 'ts/desktop/scripts/electron-after-pack.cjs'
       - 'ts/desktop/scripts/stage-codex-engine.ts'
       - 'ts/desktop/scripts/verify-codex-engine-source.ts'
       - 'ts/desktop/scripts/verify-codex-native-protocol.ts'
@@ -68,6 +114,22 @@ jobs:
         with:
           bun-version: '1.3.14'
 
+      - name: 安装并检查 Gateway 代码
+        working-directory: ts
+        shell: bash
+        run: |
+          set -euo pipefail
+          bun install --frozen-lockfile
+          bun run typecheck:server
+
+      - name: 安装并检查 Electron 宿主代码
+        working-directory: ts/desktop
+        shell: bash
+        run: |
+          set -euo pipefail
+          bun install --frozen-lockfile
+          bun run check:electron
+
       - name: 核对固定源码、许可证和协议边界
         working-directory: ts
         run: bun run verify:codex-engine-source
@@ -106,6 +168,35 @@ jobs:
           set -euo pipefail
           artifact="third_party/codex-engine/codex-rs/target/${{ matrix.target }}/release/${{ matrix.binary }}"
           test -s "${artifact}"
+
+      - name: 构建并核对 BilliardBuddy 本地 Agent 插件
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --locked --release --target '${{ matrix.target }}' \
+            --manifest-path native/billiardbuddy-computer-use/Cargo.toml
+          cargo build --locked --release --target '${{ matrix.target }}' \
+            --manifest-path native/billiardbuddy-browser-use/Cargo.toml
+          cargo build --locked --release --target '${{ matrix.target }}' \
+            --manifest-path native/billiardbuddy-record-replay/Cargo.toml
+          plugin_binary="native/billiardbuddy-computer-use/target/${{ matrix.target }}/release/billiardbuddy-computer-use${{ startsWith(matrix.target, 'x86_64-pc-windows') && '.exe' || '' }}"
+          test -s "${plugin_binary}"
+          bun ts/desktop/scripts/stage-agent-plugins.ts --target '${{ matrix.target }}'
+          bun ts/desktop/scripts/stage-chrome-plugin.ts --target '${{ matrix.target }}'
+          bun ts/desktop/scripts/stage-browser-plugin.ts --target '${{ matrix.target }}'
+          bun ts/desktop/scripts/stage-record-replay-plugin.ts --target '${{ matrix.target }}'
+          bun ts/desktop/scripts/stage-agent-plugins.ts --target '${{ matrix.target }}' --verify
+          bun ts/desktop/scripts/stage-chrome-plugin.ts --target '${{ matrix.target }}' --verify
+          bun ts/desktop/scripts/stage-browser-plugin.ts --target '${{ matrix.target }}' --verify
+          bun ts/desktop/scripts/stage-record-replay-plugin.ts --target '${{ matrix.target }}' --verify
+
+      - name: 保存可校验的本地 Agent 插件
+        uses: actions/upload-artifact@v4
+        with:
+          name: billiardbuddy-local-plugins-${{ matrix.target }}-${{ github.sha }}
+          if-no-files-found: error
+          retention-days: 7
+          path: ts/desktop/runtime-assets/agent-marketplace/
 
       # Cargo only runs on the GitHub runner. Convert its output into the
       # exact binary + manifest + license bundle Electron accepts, so local

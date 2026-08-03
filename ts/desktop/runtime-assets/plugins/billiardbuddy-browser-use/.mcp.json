@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "billiardbuddy-browser-use": {
+      "command": "./bin/billiardbuddy-browser-use",
+      "cwd": ".",
+      "env_vars": ["CODEX_HOME"]
+    }
+  }
+}

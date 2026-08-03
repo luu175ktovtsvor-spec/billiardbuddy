@@ -1,0 +1,20 @@
+{
+  "manifest_version": 3,
+  "name": "BilliardBuddy Chrome",
+  "version": "0.1.0",
+  "description": "Connect a Chrome tab that you choose to BilliardBuddy.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAu0hS5hfTBfTBgBjevBzosga/XuIu8MIqpRGg1NjzIEbQil+qOL4szCePAkEdjozUJhAxjv0dKOrUBgkmmaExzjI7gHj6LU+dGZRTqlP6MhYd8vTyGhZHZfUx2llsHhPL7cQ4th80wqxX9n1c3SgKeB2IWjc/fvvatRwkPGNZdyd1XO/rusz0l8v0IJTcmbU8geuGa+uGE5OCXkpW5QBx4j4Yvia+2T8DJYfWEergo9zIForG8xyPrEhrSANBqUbyqjo177sB2klChmks3Uc6cW77Jzfv69I//rI/kKaKZKz5pv3cnRUa/ZEISrQiV4UVU5QMcctdZwBqzVvdqtSRNQIDAQAB",
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "Connect this tab to BilliardBuddy"
+  },
+  "permissions": [
+    "activeTab",
+    "debugger",
+    "nativeMessaging",
+    "storage"
+  ]
+}

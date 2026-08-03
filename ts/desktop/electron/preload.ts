@@ -154,6 +154,61 @@ const nativeAgent = {
     ELECTRON_IPC_CHANNELS.nativeAgentSetExtraSkillRoots,
     { threadId, roots },
   ),
+  detectExternalConfig: (
+    threadId: string,
+    cwd: string,
+    includeHome: boolean,
+    migrationSource?: string,
+  ) => invoke(
+    ELECTRON_IPC_CHANNELS.nativeAgentDetectExternalConfig,
+    { threadId, cwd, includeHome, ...(migrationSource === undefined ? {} : { migrationSource }) },
+  ),
+  importExternalConfig: (threadId: string, detectionId: string, itemIndexes: number[]) => invoke(
+    ELECTRON_IPC_CHANNELS.nativeAgentImportExternalConfig,
+    { threadId, detectionId, itemIndexes },
+  ),
+  listScheduledTasks: (threadId?: string) => invoke(
+    ELECTRON_IPC_CHANNELS.nativeAgentListScheduledTasks,
+    threadId === undefined ? {} : { threadId },
+  ),
+  createScheduledTask: (threadId: string, input: Record<string, unknown>) => invoke(
+    ELECTRON_IPC_CHANNELS.nativeAgentCreateScheduledTask,
+    { threadId, ...input },
+  ),
+  setScheduledTaskEnabled: (threadId: string, taskId: string, enabled: boolean) => invoke(
+    ELECTRON_IPC_CHANNELS.nativeAgentSetScheduledTaskEnabled,
+    { threadId, taskId, enabled },
+  ),
+  removeScheduledTask: (threadId: string, taskId: string) => invoke(
+    ELECTRON_IPC_CHANNELS.nativeAgentRemoveScheduledTask,
+    { threadId, taskId },
+  ),
+  getRemoteHostStatus: () => invoke(ELECTRON_IPC_CHANNELS.remoteHostGetStatus),
+  setRemoteHostEnabled: (enabled: boolean) => invoke(
+    ELECTRON_IPC_CHANNELS.remoteHostSetEnabled,
+    { enabled },
+  ),
+  createRemoteHostPairing: (ttlSeconds?: number) => invoke(
+    ELECTRON_IPC_CHANNELS.remoteHostCreatePairing,
+    ttlSeconds === undefined ? {} : { ttlSeconds },
+  ),
+  listRemoteHostControllers: () => invoke(ELECTRON_IPC_CHANNELS.remoteHostListControllers),
+  revokeRemoteHostController: (installationId: string) => invoke(
+    ELECTRON_IPC_CHANNELS.remoteHostRevokeController,
+    { installationId },
+  ),
+  claimRemoteHostPairing: (pairingCode: string) => invoke(
+    ELECTRON_IPC_CHANNELS.remoteControllerClaim,
+    { pairingCode },
+  ),
+  startRemoteHostTurn: (hostInstallationId: string, threadId: string, cwd: string, text: string) => invoke(
+    ELECTRON_IPC_CHANNELS.remoteControllerStartTurn,
+    { hostInstallationId, threadId, cwd, text },
+  ),
+  steerRemoteHostTurn: (hostInstallationId: string, threadId: string, turnId: string, text: string) => invoke(
+    ELECTRON_IPC_CHANNELS.remoteControllerSteerTurn,
+    { hostInstallationId, threadId, turnId, text },
+  ),
   listHooks: (threadId: string, cwd: string) => invoke(
     ELECTRON_IPC_CHANNELS.nativeAgentListHooks,
     { threadId, cwd },
@@ -174,6 +229,10 @@ const nativeAgent = {
     ELECTRON_IPC_CHANNELS.nativeAgentAddMarketplace,
     { threadId, ...input },
   ),
+  addBundledMarketplace: (threadId: string) => invoke(
+    ELECTRON_IPC_CHANNELS.nativeAgentAddBundledMarketplace,
+    { threadId },
+  ),
   removeMarketplace: (threadId: string, marketplaceName: string) => invoke(
     ELECTRON_IPC_CHANNELS.nativeAgentRemoveMarketplace,
     { threadId, marketplaceName },
@@ -193,6 +252,11 @@ const nativeAgent = {
   listCollaborationModes: (threadId: string) => invoke(
     ELECTRON_IPC_CHANNELS.nativeAgentListCollaborationModes,
     { threadId },
+  ),
+  getComputerUseConfiguration: () => invoke(ELECTRON_IPC_CHANNELS.computerUseConfigurationGet),
+  setComputerUseConfiguration: (allowedAppIds: string[]) => invoke(
+    ELECTRON_IPC_CHANNELS.computerUseConfigurationSet,
+    { allowedAppIds },
   ),
   onEvent: nativeAgentEventListener,
 }

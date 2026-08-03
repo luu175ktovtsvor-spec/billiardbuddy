@@ -16,7 +16,8 @@
     "afterSign": "scripts/electron-after-pack.cjs",
     "asar": true,
     "asarUnpack": [
-      "runtime-assets/binaries/**"
+      "runtime-assets/binaries/**",
+      "runtime-assets/agent-marketplace/**"
     ],
     "artifactName": "BilliardBuddy-${version}-${os}-${arch}.${ext}",
     "publish": [
@@ -33,6 +34,7 @@
       "dist/**",
       "electron-dist/**",
       "runtime-assets/binaries/**",
+      "runtime-assets/agent-marketplace/**",
       "runtime-assets/icons/**",
       "package.json"
     ],
@@ -80,6 +82,14 @@
     "verify:media-toolchain": "bun run ./scripts/stage-media-toolchain.ts --verify",
     "stage:codex-engine": "bun run ./scripts/stage-codex-engine.ts",
     "verify:codex-engine": "bun run ./scripts/stage-codex-engine.ts --verify",
+    "stage:agent-plugins": "bun run ./scripts/stage-agent-plugins.ts",
+    "verify:agent-plugins": "bun run ./scripts/stage-agent-plugins.ts --verify",
+    "stage:chrome-plugin": "bun run ./scripts/stage-chrome-plugin.ts",
+    "verify:chrome-plugin": "bun run ./scripts/stage-chrome-plugin.ts --verify",
+    "stage:browser-plugin": "bun run ./scripts/stage-browser-plugin.ts",
+    "verify:browser-plugin": "bun run ./scripts/stage-browser-plugin.ts --verify",
+    "stage:record-replay-plugin": "bun run ./scripts/stage-record-replay-plugin.ts",
+    "verify:record-replay-plugin": "bun run ./scripts/stage-record-replay-plugin.ts --verify",
     "verify:codex-native-protocol": "bun run ./scripts/verify-codex-native-protocol.ts",
     "verify:codex-managed-live": "bun run ./scripts/verify-codex-managed-live.ts",
     "audit:package": "bun run ./scripts/audit-packaged-resources.ts",
@@ -89,8 +99,8 @@
     "build:windows-x64": "powershell -ExecutionPolicy Bypass -File ./scripts/build-windows-x64.ps1",
     "electron:dev": "bun run verify:codex-engine && bun run build:sidecars && bun run build:electron && bun run ./scripts/electron-dev.ts",
     "electron:build": "bun run build:sidecars && bun run build && bun run build:electron",
-    "electron:package": "bun run stage:media-toolchain && bun run stage:codex-engine && bun run clean:electron-output && bun run electron:build && node ./node_modules/electron-builder/out/cli/cli.js --publish never",
-    "electron:package:dir": "bun run stage:media-toolchain && bun run stage:codex-engine && bun run clean:electron-output && bun run electron:build && node ./node_modules/electron-builder/out/cli/cli.js --dir --publish never",
+    "electron:package": "bun run stage:media-toolchain && bun run stage:codex-engine && bun run stage:agent-plugins && bun run stage:chrome-plugin && bun run stage:browser-plugin && bun run stage:record-replay-plugin && bun run clean:electron-output && bun run electron:build && node ./node_modules/electron-builder/out/cli/cli.js --publish never",
+    "electron:package:dir": "bun run stage:media-toolchain && bun run stage:codex-engine && bun run stage:agent-plugins && bun run stage:chrome-plugin && bun run stage:browser-plugin && bun run stage:record-replay-plugin && bun run clean:electron-output && bun run electron:build && node ./node_modules/electron-builder/out/cli/cli.js --dir --publish never",
     "check:electron": "node ./node_modules/typescript/bin/tsc -p electron/tsconfig.json && bun run build:electron",
     "preview": "vite preview",
     "lint": "node ./node_modules/typescript/bin/tsc --noEmit"
