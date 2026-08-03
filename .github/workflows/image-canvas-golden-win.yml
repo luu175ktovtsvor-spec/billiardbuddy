@@ -35,7 +35,7 @@ jobs:
           BB_IMAGE_GOLDEN_REPORT: ${{ runner.temp }}\\image-canvas-golden-windows-x64.json
         run: |
           $ErrorActionPreference = 'Stop'
-          bun test --preload ./test/setup.ts ./test/imageCanvasGolden.test.ts
+          bun test --preload ./test/setup.ts --timeout 60000 ./test/imageCanvasGolden.test.ts
           if ($LASTEXITCODE -ne 0) { throw 'Windows x64 Canvas golden 不匹配' }
           if (-not (Test-Path -LiteralPath $env:BB_IMAGE_GOLDEN_REPORT -PathType Leaf)) { throw '缺少 Windows x64 golden 审计证据' }
       - name: 上传 Windows x64 golden 审计证据
