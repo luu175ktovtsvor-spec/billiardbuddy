@@ -5,6 +5,7 @@ import {
   PROVIDER_GATEWAY_PROTOCOL,
   PROVIDER_GATEWAY_PROTOCOL_HEADER,
 } from '../shared/product/providerGateway.js'
+import { providerSmokeCancelAction } from './imageWorkbenchProviderSmokePolicy.js'
 
 type ImageTaskResponse = {
   task_id?: unknown
@@ -48,8 +49,10 @@ function assertTask(body: ImageTaskResponse): asserts body is ImageTaskResponse 
  * This suite is intentionally isolated from `bun run test`.  It only creates
  * one billable logical operation after an explicit acknowledgement, retains
  * the exact Idempotency-Key for a duplicate protocol replay, uses one bounded
- * status poll, then cancels an unfinished task.  It never ACKs or downloads a
- * result because the Sidecar owns that durable handoff.
+ * status poll, then only tries to cancel a task last observed as queued. A
+ * 409 accepts the race where that task starts between polling and cancellation.
+ * It never ACKs or downloads a result because the Sidecar owns that durable
+ * handoff.
  */
 test('explicit budget-controlled image Provider smoke validates submit, idempotency replay and bounded status/cancel protocol', async () => {
   const target = requireSmokeConfiguration()
@@ -69,7 +72,7 @@ test('explicit budget-controlled image Provider smoke validates submit, idempote
   }
   const deadline = AbortSignal.timeout(target.timeoutMs)
   let taskId: string | undefined
-  let terminal = false
+  let lastKnownStatus: string | undefined
   try {
     const submitted = await fetch(`${target.baseUrl}/v1/images/tasks`, {
       method: 'POST',
@@ -81,6 +84,7 @@ test('explicit budget-controlled image Provider smoke validates submit, idempote
     const first = await parseImageTask(submitted)
     assertTask(first)
     taskId = first.task_id
+    lastKnownStatus = first.status
 
     // A replay of the same logical task must not authorize a second paid task.
     const replay = await fetch(`${target.baseUrl}/v1/images/tasks`, {
@@ -93,6 +97,7 @@ test('explicit budget-controlled image Provider smoke validates submit, idempote
     const replayed = await parseImageTask(replay)
     assertTask(replayed)
     expect(replayed.task_id).toBe(taskId)
+    lastKnownStatus = replayed.status
 
     const polled = await fetch(`${target.baseUrl}/v1/images/tasks/${encodeURIComponent(taskId)}?metadata_only=1`, {
       headers: {
@@ -105,9 +110,9 @@ test('explicit budget-controlled image Provider smoke validates submit, idempote
     const status = await parseImageTask(polled)
     assertTask(status)
     expect(status.task_id).toBe(taskId)
-    terminal = status.status === 'succeeded' || status.status === 'failed' || status.status === 'cancelled'
+    lastKnownStatus = status.status
   } finally {
-    if (taskId && !terminal) {
+    if (taskId && providerSmokeCancelAction(lastKnownStatus) === 'attempt_cancel') {
       const cancelled = await fetch(`${target.baseUrl}/v1/images/tasks/${encodeURIComponent(taskId)}/cancel`, {
         method: 'POST',
         headers: {
@@ -116,10 +121,12 @@ test('explicit budget-controlled image Provider smoke validates submit, idempote
         },
         signal: AbortSignal.timeout(Math.min(15_000, target.timeoutMs)),
       })
-      expect(cancelled.status).toBe(200)
-      const result = await parseImageTask(cancelled)
-      assertTask(result)
-      expect(result.status).toBe('cancelled')
+      expect([200, 409]).toContain(cancelled.status)
+      if (cancelled.status === 200) {
+        const result = await parseImageTask(cancelled)
+        assertTask(result)
+        expect(result.status).toBe('cancelled')
+      }
     }
   }
 })
