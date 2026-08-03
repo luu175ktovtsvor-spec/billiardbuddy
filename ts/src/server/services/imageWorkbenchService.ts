@@ -173,6 +173,17 @@ function sha256(value: unknown): `sha256:${string}` {
   return `sha256:${createHash('sha256').update(stableJson(value)).digest('hex')}`
 }
 
+function canvasRenderRequestHash(canvasId: string, input: ImageCanvasRenderInput): `sha256:${string}` {
+  return sha256({
+    canvas_id: canvasId,
+    base_revision: input.base_revision,
+    idempotency_key: input.idempotency_key,
+    canvas_revision: input.canvas_revision,
+    ...(input.expected_current_version_id ? { expected_current_version_id: input.expected_current_version_id } : {}),
+    activate_on_success: input.activate_on_success,
+  })
+}
+
 function sizeDimensions(size: string): { width: number; height: number } {
   const match = /^(\d{3,5})x(\d{3,5})$/.exec(size)
   if (!match) throw new ImageWorkbenchServiceError('图片尺寸格式无效', 500, 'IMAGE_OPERATION_CORRUPT')
@@ -859,8 +870,10 @@ export class ImageWorkbenchService {
     })
   }
 
-  private inputByteUpperBound(project: ImageWorkbenchProject, references: ImageReferenceV2[]): number {
-    return references.reduce((total, reference) => total + (project.assets.find(asset => asset.id === reference.asset_id)?.byte_size ?? 0), 0)
+  /** Exact maximum input bytes in the provider payload, counted once per CAS asset. */
+  private inputByteUpperBound(project: ImageWorkbenchProject, references: ImageReferenceV2[], additionalAssets: MediaAsset[] = []): number {
+    const assetIds = new Set([...references.map(reference => reference.asset_id), ...additionalAssets.map(asset => asset.id)])
+    return [...assetIds].reduce((total, assetId) => total + (project.assets.find(asset => asset.id === assetId)?.byte_size ?? 0), 0)
   }
 
   private estimatePriceUpperBound(
@@ -918,7 +931,7 @@ export class ImageWorkbenchService {
       paid_operation_count: directions.length,
       candidate_count_per_operation: 3,
       concurrency: Math.min(2, directions.length),
-      price_upper_bound: this.estimatePriceUpperBound(policies, this.inputByteUpperBound(project, this.generationReferences(project))),
+      price_upper_bound: this.estimatePriceUpperBound(policies, this.inputByteUpperBound(project, this.providerReferences(this.generationReferences(project)))),
       expires_at: expiresAt,
       created_at: createdAt,
     })
@@ -978,7 +991,7 @@ export class ImageWorkbenchService {
       brief_snapshot_hash: input.brief.snapshot_hash,
       delivery_spec_revision: input.delivery.revision,
       execution_policy_revision: IMAGE_PROVIDER_POLICY_REVISION,
-      asset_hashes: input.references.map(reference => reference.content_hash),
+      asset_hashes: this.providerReferences(input.references).map(reference => reference.content_hash),
       direction: input.direction,
       model: input.model,
       logical_attempt: 1,
@@ -1141,7 +1154,7 @@ export class ImageWorkbenchService {
     model: string
     policyRevision: string
   }): `sha256:${string}` {
-    const assetHashes = [...new Set([input.candidate.content_hash, ...input.references.map(reference => reference.content_hash)])]
+    const assetHashes = [...new Set([input.candidate.content_hash, ...this.providerReferences(input.references).map(reference => reference.content_hash)])]
     return sha256({
       project_id: input.project.id,
       owner: input.project.owner,
@@ -1189,6 +1202,11 @@ export class ImageWorkbenchService {
       transparent_output: this.deliveryRequiresTransparency(delivery),
       preferred_model: 'gpt-image-2',
     })
+    const providerReferences = this.providerReferences(references)
+    const provider = providerRegistryEntry(policy.model_id)
+    if (!provider?.image_generation || providerReferences.length + 1 > provider.image_generation.max_reference_images) {
+      throw new ImageWorkbenchServiceError('派生的基础候选与参考图数量超过 Provider 能力上限', 422, 'IMAGE_CAPABILITY_GAP')
+    }
     const operationRequestHash = this.derivationOperationRequestHash({
       project, candidate, brief, delivery, direction, references, instruction: input.instruction,
       model: policy.model_id, policyRevision: policy.policy_revision,
@@ -1212,7 +1230,7 @@ export class ImageWorkbenchService {
       paid_operation_count: 1,
       candidate_count_per_operation: 3,
       concurrency: 1,
-      price_upper_bound: this.estimatePriceUpperBound([policy], source.byte_size ?? 0),
+      price_upper_bound: this.estimatePriceUpperBound([policy], this.inputByteUpperBound(project, providerReferences, [source])),
       expires_at: expiresAt,
       created_at: createdAt,
     })
@@ -1284,6 +1302,12 @@ export class ImageWorkbenchService {
       transparent_output: this.deliveryRequiresTransparency(delivery),
       preferred_model: 'gpt-image-2',
     })
+    const providerReferences = this.providerReferences(references)
+    const provider = providerRegistryEntry(policy.model_id)
+    if (!provider?.image_generation || providerReferences.length + 1 > provider.image_generation.max_reference_images) {
+      throw new ImageWorkbenchServiceError('派生的基础候选与参考图数量超过 Provider 能力上限', 422, 'IMAGE_CAPABILITY_GAP')
+    }
+    await this.providerReferenceInputs(project, providerReferences)
     const requestHash = this.derivationOperationRequestHash({
       project, candidate, brief, delivery, direction, references, instruction: input.instruction,
       model: policy.model_id, policyRevision: policy.policy_revision,
@@ -1299,7 +1323,7 @@ export class ImageWorkbenchService {
     if (!productGatewayConfigured()) throw new ImageWorkbenchServiceError('图片远程能力尚未配置', 503, 'GATEWAY_NOT_CONFIGURED')
     const now = this.iso()
     const operationId = stableId('op', project.id, roundId, candidate.id)
-    const assetHashes = [...new Set([candidate.content_hash, ...references.map(reference => reference.content_hash)])]
+    const assetHashes = [...new Set([candidate.content_hash, ...providerReferences.map(reference => reference.content_hash)])]
     const taskId = id('task')
     const operation: ImageOperationV2 = {
       id: operationId,
@@ -1885,7 +1909,12 @@ export class ImageWorkbenchService {
     return await this.repository.saveCanvasPreflight(preflight)
   }
 
-  private async executeCanvasRender(projectId: string, canvasId: string, raw: ImageCanvasRenderInput): Promise<{ operation: ImageOperationV2; version_id: string; render_receipt: ImageRenderReceipt; release_check: ImageReleaseCheckResult }> {
+  private async executeCanvasRender(
+    projectId: string,
+    canvasId: string,
+    raw: ImageCanvasRenderInput,
+    requestedExpectedCurrentVersionId: string | undefined,
+  ): Promise<{ operation: ImageOperationV2; version_id: string; render_receipt: ImageRenderReceipt; release_check: ImageReleaseCheckResult }> {
     const input = imageCanvasRenderInputSchema.parse(raw)
     const preflight = await this.preflightCanvas(projectId, canvasId, { revision: input.canvas_revision })
     if (!preflight.passed) throw new ImageWorkbenchServiceError('画布预检未通过，不能生成正式版本', 409, 'IMAGE_CANVAS_PREFLIGHT_FAILED')
@@ -1955,11 +1984,23 @@ export class ImageWorkbenchService {
       kind: 'canvas_render',
       status: 'committing',
       idempotency_key: input.idempotency_key,
-      request_hash: sha256({ canvas_id: canvasId, ...input }),
+      request_hash: (() => {
+        const { expected_current_version_id: _acceptancePointer, ...requestWithoutAcceptancePointer } = input
+        return canvasRenderRequestHash(canvasId, {
+          ...requestWithoutAcceptancePointer,
+          ...(requestedExpectedCurrentVersionId ? { expected_current_version_id: requestedExpectedCurrentVersionId } : {}),
+        })
+      })(),
       logical_attempt: 1,
       input_refs: { project_revision: input.base_revision, delivery_spec_revision: delivery.revision, canvas_revision: canvas.revision, execution_policy_revision: 'local-canvas-v1', asset_hashes: rendered.dependency_hashes.slice(0, 16) },
       cost_state: 'not_submitted',
-      local_delivery: { kind: 'canvas_render', canvas_id: canvasId, canvas_revision: canvas.revision, expected_current_version_id: input.expected_current_version_id, activate_on_success: input.activate_on_success },
+      local_delivery: {
+        kind: 'canvas_render', canvas_id: canvasId, canvas_revision: canvas.revision,
+        expected_current_version_id: input.expected_current_version_id,
+        ...(requestedExpectedCurrentVersionId ? { requested_expected_current_version_id: requestedExpectedCurrentVersionId } : {}),
+        expected_current_version_id_source: requestedExpectedCurrentVersionId ? 'client' : 'acceptance',
+        activate_on_success: input.activate_on_success,
+      },
       created_at: now,
       updated_at: now,
     }
@@ -1991,18 +2032,33 @@ export class ImageWorkbenchService {
     if (!preflight.passed) throw new ImageWorkbenchServiceError('画布预检未通过，不能生成正式版本', 409, 'IMAGE_CANVAS_PREFLIGHT_FAILED')
     const [project, canvas] = await Promise.all([this.project(projectId), this.repository.getCanvasRevision(projectId, canvasId, input.canvas_revision)])
     const delivery = await this.repository.getDeliverySpecRevision(projectId, canvas.document.delivery_spec_id, canvas.document.delivery_spec_revision)
+    // If the caller does not supply an explicit compare-and-swap pointer, the
+    // request is still conditional: snapshot the pointer at acceptance. This
+    // permits normal revision activation but never lets late pixels replace a
+    // newer selection.
+    const expectedCurrentVersionId = input.expected_current_version_id ?? project.current_versions_by_artboard[canvas.document.artboard_id]
+    const executableInput: ImageCanvasRenderInput = {
+      ...input,
+      ...(expectedCurrentVersionId ? { expected_current_version_id: expectedCurrentVersionId } : {}),
+    }
     const operation: ImageOperationV2 = {
       id: stableId('op', projectId, 'canvas-render', canvasId, String(canvas.revision), input.idempotency_key),
       project_id: projectId, owner: project.owner, kind: 'canvas_render', status: 'queued',
-      idempotency_key: input.idempotency_key, request_hash: sha256({ canvas_id: canvasId, ...input }), logical_attempt: 1,
+      idempotency_key: input.idempotency_key, request_hash: canvasRenderRequestHash(canvasId, input), logical_attempt: 1,
       input_refs: { project_revision: input.base_revision, delivery_spec_revision: delivery.revision, canvas_revision: canvas.revision, execution_policy_revision: 'local-canvas-v1', asset_hashes: [] },
       cost_state: 'not_submitted',
-      local_delivery: { kind: 'canvas_render', canvas_id: canvasId, canvas_revision: canvas.revision, expected_current_version_id: input.expected_current_version_id, activate_on_success: input.activate_on_success },
+      local_delivery: {
+        kind: 'canvas_render', canvas_id: canvasId, canvas_revision: canvas.revision,
+        ...(expectedCurrentVersionId ? { expected_current_version_id: expectedCurrentVersionId } : {}),
+        ...(input.expected_current_version_id ? { requested_expected_current_version_id: input.expected_current_version_id } : {}),
+        expected_current_version_id_source: input.expected_current_version_id ? 'client' : 'acceptance',
+        activate_on_success: input.activate_on_success,
+      },
       created_at: this.iso(), updated_at: this.iso(),
     }
     const queued = await this.repository.saveGenerationOperation(operation)
     if (queued.status === 'queued') {
-      queueMicrotask(() => { void this.executeCanvasRender(projectId, canvasId, input).catch(() => undefined) })
+      queueMicrotask(() => { void this.executeCanvasRender(projectId, canvasId, executableInput, input.expected_current_version_id).catch(() => undefined) })
     }
     return { operation: queued }
   }
@@ -2567,7 +2623,9 @@ export class ImageWorkbenchService {
             canvas_revision: operation.local_delivery.canvas_revision,
             expected_current_version_id: operation.local_delivery.expected_current_version_id,
             activate_on_success: operation.local_delivery.activate_on_success,
-          }).catch(() => undefined)
+          }, operation.local_delivery.expected_current_version_id_source === 'acceptance'
+            ? undefined
+            : operation.local_delivery.requested_expected_current_version_id ?? operation.local_delivery.expected_current_version_id).catch(() => undefined)
         }
         if (operation.local_delivery?.kind === 'export') {
           await this.executeExportDelivery(operation.project_id, {
