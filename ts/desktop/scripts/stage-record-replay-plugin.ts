@@ -45,8 +45,10 @@ function windowsService(destination: string) {
   const programFilesX86 = process.env['ProgramFiles(x86)']; const vswhere = programFilesX86 && join(programFilesX86, 'Microsoft Visual Studio', 'Installer', 'vswhere.exe'); if (!vswhere || !existsSync(vswhere)) throw new Error('缺少 MSVC C++ 编译器')
   const result = spawnSync(vswhere, ['-latest', '-products', '*', '-requires', 'Microsoft.VisualStudio.Component.VC.Tools.x86.x64', '-property', 'installationPath'], { encoding: 'utf8', timeout: 60_000 }); const install = result.status === 0 ? result.stdout.trim() : ''; const vcvars = install && join(install, 'VC', 'Auxiliary', 'Build', 'vcvars64.bat'); if (!vcvars || !existsSync(vcvars)) throw new Error('Windows 构建机没有可用的 MSVC x64 工具链')
   const quote = (value: string) => `"${value.replaceAll('"', '""')}"`
-  // `cmd /s` strips quotes specially and corrupts VS paths containing spaces.
-  run(process.env.ComSpec || 'cmd.exe', ['/d', '/c', `call ${quote(vcvars)} >nul && cl.exe ${arguments_.map(quote).join(' ')}`])
+  const vcvarsDirectory = join(install, 'VC', 'Auxiliary', 'Build')
+  // Keep the first cmd token unquoted so Bun cannot escape the Visual Studio
+  // path as a literal filename; cwd is the exact directory found by vswhere.
+  run(process.env.ComSpec || 'cmd.exe', ['/d', '/c', `call vcvars64.bat >nul && cl.exe ${arguments_.map(quote).join(' ')}`], vcvarsDirectory)
 }
 
 export function verifyStagedRecordReplayPlugin(options: Options) {

@@ -316,6 +316,8 @@ async function main(): Promise<void> {
   const engineBuildWorkflow = requireRepositoryFile('.github/workflows/codex-engine-build.yml')
   const macosBuild = requireDesktopFile('scripts/build-macos-arm64.sh')
   const windowsBuild = requireDesktopFile('scripts/build-windows-x64.ps1')
+  const agentPluginStaging = requireDesktopFile('scripts/stage-agent-plugins.ts')
+  const recordReplayPluginStaging = requireDesktopFile('scripts/stage-record-replay-plugin.ts')
   const mainProcess = requireDesktopFile('electron/main.ts')
   const credentialStore = requireDesktopFile('electron/services/keychain.ts')
   const serverRequestBridge = requireDesktopFile('electron/services/nativeServerRequest.ts')
@@ -367,6 +369,14 @@ async function main(): Promise<void> {
   ]) {
     assertContains(macosBuild, pluginStage, `macOS 正式构建包含 ${pluginStage}`)
     assertContains(windowsBuild, pluginStage, `Windows 正式构建包含 ${pluginStage}`)
+  }
+  for (const [source, description] of [
+    [agentPluginStaging, 'Computer Use'],
+    [recordReplayPluginStaging, 'Record and Replay'],
+  ] as const) {
+    assertContains(source, '`call vcvars64.bat >nul && cl.exe ${', `${description} 使用无歧义的 MSVC 初始化命令`)
+    assertContains(source, '], vcvarsDirectory)', `${description} 在 vswhere 返回的工具目录执行 MSVC 初始化`)
+    assertNotContains(source, 'call ${quote(vcvars)}', `${description} 将带空格的 Visual Studio 路径嵌入 cmd 命令`)
   }
   assertContains(engineContract, 'CODEX_ENGINE_MANIFEST_SCHEMA = 6', '受管补丁清单版本')
   assertContains(runtime, 'hasVerifiedManagedBinary(', '启动前验证 App Server 与 Code Mode Host 二进制')

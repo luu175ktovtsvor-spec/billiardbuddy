@@ -205,12 +205,14 @@ function stageWindowsComputerUseService(destinationBin: string): void {
     throw new Error('Windows 构建机没有可用的 MSVC x64 工具链')
   }
   const quote = (value: string) => `"${value.replaceAll('"', '""')}"`
-  // Do not pass /s here. Its special quote stripping breaks a Visual Studio
-  // installation path containing spaces before `call` can initialize MSVC.
+  const vcvarsDirectory = join(installation, 'VC', 'Auxiliary', 'Build')
+  // Start the command with an unquoted batch-file name. Bun otherwise escapes
+  // the leading quoted Visual Studio path and cmd treats the quotes as part of
+  // the filename. cwd still points at the exact installation found by vswhere.
   run(process.env.ComSpec || 'cmd.exe', [
     '/d', '/c',
-    `call ${quote(vcvars)} >nul && cl.exe ${compilerArguments.map(quote).join(' ')}`,
-  ])
+    `call vcvars64.bat >nul && cl.exe ${compilerArguments.map(quote).join(' ')}`,
+  ], vcvarsDirectory)
 }
 
 export function verifyStagedAgentPlugins(options: AgentPluginStageOptions): void {
