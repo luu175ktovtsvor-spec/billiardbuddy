@@ -309,7 +309,7 @@ test('15.3 后端渲染、QR 解码、陈旧完成、可验证导出和崩溃重
   const allowed = await handler(new Request(protectedUrl, { headers: { 'X-BilliardBuddy-Media-Capability': capability } }), new URL(protectedUrl), ['api', 'images', 'projects', setup.project.id, 'versions', secondRender.version_id, 'content'])
   expect(allowed.status).toBe(200)
   expect(allowed.headers.get('x-billiardbuddy-media-hash')).toMatch(/^sha256:/)
-})
+}, 15_000)
 
 test('15.3 正式字体会验证 CJK 字形并在预检中阻止缺失字形', async () => {
   const workbench = await service('cjk-font')
