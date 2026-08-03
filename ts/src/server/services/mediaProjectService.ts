@@ -2524,6 +2524,7 @@ export class MediaProjectService {
 
   async saveImageOutput(projectId: string, raw: SaveImageOutputInput): Promise<SaveImageOutputResult> {
     const input = saveImageOutputInputSchema.parse(raw)
+    if (!input.output_path) throw new MediaServiceError('通用媒体保存缺少目标路径', 400, 'INVALID_MEDIA_INPUT')
     if (!isAbsolute(input.output_path)) {
       throw new MediaServiceError('图片保存路径必须是绝对路径', 400, 'OUTPUT_PATH_NOT_ABSOLUTE')
     }

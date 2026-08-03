@@ -1,3 +1,29 @@
+import { z } from 'zod/v4'
+import {
+  adoptImageCandidateInputSchema,
+  imageCanvasCommandRequestInputSchema,
+  imageArtboardSelectVersionInputSchema,
+  imageCanvasCreateInputSchema,
+  imageCanvasPreflightInputSchema,
+  imageCanvasRenderInputSchema,
+  imageSaveOutputInputSchema,
+  imageDestinationGrantRequestSchema,
+  imageDeliverySpecRevisionInputSchema,
+  imageExportInputSchema,
+  createCreativePlanInputSchema,
+  createGenerationRoundInputSchema,
+  decideImageCandidateInputSchema,
+  deriveImageCandidateInputSchema,
+  estimateDeriveImageCandidateInputSchema,
+  estimateGenerationRoundInputSchema,
+  updateImageReferenceControlInputSchema,
+} from '../../../shared/contracts/imageGeneration'
+import {
+  mediaIdSchema,
+  startImageOperationInputSchema,
+  submitImageProjectInputSchema,
+  updateImageProjectInputSchema,
+} from '../../../shared/contracts/media'
 import { ELECTRON_IPC_CHANNELS, type ElectronIpcChannel } from './channels'
 
 type Validator = (payload: unknown) => boolean
@@ -683,28 +709,6 @@ const mediaProjectId = (value: unknown): value is string =>
   typeof value === 'string'
   && /^[a-z0-9][a-z0-9_-]{7,79}$/.test(value)
 
-const imageSubmitProject: Validator = value =>
-  isRecord(value)
-  && hasOnlyKeys(value, ['projectId', 'confirmUnknownRetry'])
-  && mediaProjectId(value.projectId)
-  && typeof value.confirmUnknownRetry === 'boolean'
-
-const imageUpdateUnknownProject: Validator = value => {
-  if (!isRecord(value) || !hasOnlyKeys(value, ['projectId', 'input'])) return false
-  if (!mediaProjectId(value.projectId) || !isRecord(value.input)) return false
-  const input = value.input
-  return hasOnlyKeys(input, ['revision', 'user_request', 'size', 'confirm_unknown_retry'])
-    && typeof input.revision === 'number'
-    && Number.isInteger(input.revision)
-    && input.revision >= 0
-    && typeof input.user_request === 'string'
-    && input.user_request.trim().length > 0
-    && input.user_request.length <= 8000
-    && typeof input.size === 'string'
-    && /^\d{3,4}x\d{3,4}$/.test(input.size)
-    && input.confirm_unknown_retry === true
-}
-
 const videoAddSource: Validator = value =>
   isRecord(value)
   && hasOnlyKeys(value, ['projectId', 'path'])
@@ -736,34 +740,117 @@ const videoAnalyze: Validator = value =>
   && value.userGoal.trim().length > 0
   && value.userGoal.length <= 8000
 
-const imageSaveOutput: Validator = value => {
-  if (!isRecord(value) || !hasOnlyKeys(value, ['projectId', 'input'])) return false
-  if (!mediaProjectId(value.projectId) || !isRecord(value.input)) return false
-  return hasOnlyKeys(value.input, ['output_id', 'version_id', 'output_path'])
-    && (mediaProjectId(value.input.output_id) || mediaProjectId(value.input.version_id))
-    && typeof value.input.output_path === 'string'
-    && value.input.output_path.length > 0
-    && value.input.output_path.length <= 4096
-}
+export const imageSubmitProjectIpcPayloadSchema = z.object({
+  projectId: mediaIdSchema,
+  confirmUnknownRetry: submitImageProjectInputSchema.shape.confirm_unknown_retry,
+}).strict()
+export const imageStartOperationIpcPayloadSchema = z.object({
+  projectId: mediaIdSchema,
+  input: startImageOperationInputSchema.strict(),
+}).strict()
+export const imageUpdateUnknownProjectIpcPayloadSchema = z.object({
+  projectId: mediaIdSchema,
+  input: updateImageProjectInputSchema.strict(),
+}).strict()
+export const imageSaveOutputIpcPayloadSchema = z.object({
+  projectId: mediaIdSchema,
+  input: imageSaveOutputInputSchema,
+}).strict()
+export const imageRequestDestinationIpcPayloadSchema = imageDestinationGrantRequestSchema
+export const imageCreateCreativePlanIpcPayloadSchema = z.object({
+  projectId: mediaIdSchema,
+  input: createCreativePlanInputSchema,
+}).strict()
+export const imageEstimateGenerationRoundIpcPayloadSchema = z.object({
+  projectId: mediaIdSchema,
+  input: estimateGenerationRoundInputSchema,
+}).strict()
+export const imageEstimateDerivationIpcPayloadSchema = z.object({
+  projectId: mediaIdSchema,
+  candidateId: mediaIdSchema,
+  input: estimateDeriveImageCandidateInputSchema,
+}).strict()
+export const imageCreateGenerationRoundIpcPayloadSchema = z.object({
+  projectId: mediaIdSchema,
+  input: createGenerationRoundInputSchema,
+}).strict()
+export const imageDecideCandidateIpcPayloadSchema = z.object({
+  projectId: mediaIdSchema,
+  candidateId: mediaIdSchema,
+  input: decideImageCandidateInputSchema,
+}).strict()
+export const imageAdoptCandidateIpcPayloadSchema = z.object({
+  projectId: mediaIdSchema,
+  candidateId: mediaIdSchema,
+  input: adoptImageCandidateInputSchema,
+}).strict()
+export const imageDeriveCandidateIpcPayloadSchema = z.object({
+  projectId: mediaIdSchema,
+  candidateId: mediaIdSchema,
+  input: deriveImageCandidateInputSchema,
+}).strict()
+export const imageCancelGenerationOperationIpcPayloadSchema = z.object({
+  operationId: mediaIdSchema,
+}).strict()
+export const imageUpdateReferenceControlIpcPayloadSchema = z.object({
+  projectId: mediaIdSchema,
+  referenceId: mediaIdSchema,
+  input: updateImageReferenceControlInputSchema,
+}).strict()
+export const imageCreateDeliverySpecRevisionIpcPayloadSchema = z.object({
+  projectId: mediaIdSchema,
+  input: imageDeliverySpecRevisionInputSchema,
+}).strict()
+export const imageCreateCanvasIpcPayloadSchema = z.object({
+  projectId: mediaIdSchema,
+  input: imageCanvasCreateInputSchema,
+}).strict()
+export const imageApplyCanvasCommandIpcPayloadSchema = z.object({
+  projectId: mediaIdSchema,
+  canvasId: mediaIdSchema,
+  input: imageCanvasCommandRequestInputSchema,
+}).strict()
+export const imagePreflightCanvasIpcPayloadSchema = z.object({
+  projectId: mediaIdSchema,
+  canvasId: mediaIdSchema,
+  input: imageCanvasPreflightInputSchema,
+}).strict()
+export const imageRenderCanvasIpcPayloadSchema = z.object({
+  projectId: mediaIdSchema,
+  canvasId: mediaIdSchema,
+  input: imageCanvasRenderInputSchema,
+}).strict()
+export const imageExportDeliveryIpcPayloadSchema = z.object({
+  projectId: mediaIdSchema,
+  input: imageExportInputSchema,
+}).strict()
+export const imageSelectArtboardVersionIpcPayloadSchema = z.object({
+  projectId: mediaIdSchema,
+  artboardId: mediaIdSchema,
+  input: imageArtboardSelectVersionInputSchema,
+}).strict()
 
-const imageStartOperation: Validator = value => {
-  if (!isRecord(value) || !hasOnlyKeys(value, ['projectId', 'input'])) return false
-  if (!mediaProjectId(value.projectId) || !isRecord(value.input)) return false
-  return hasOnlyKeys(value.input, [
-    'revision', 'base_version_id', 'kind', 'instruction', 'mask_data_url', 'confirm_unknown_retry',
-  ])
-    && typeof value.input.revision === 'number'
-    && Number.isInteger(value.input.revision)
-    && value.input.revision >= 0
-    && mediaProjectId(value.input.base_version_id)
-    && (value.input.kind === 'edit' || value.input.kind === 'inpaint')
-    && typeof value.input.instruction === 'string'
-    && value.input.instruction.length > 0
-    && value.input.instruction.length <= 4000
-    && (value.input.mask_data_url === undefined
-      || typeof value.input.mask_data_url === 'string' && value.input.mask_data_url.length <= 45_000_000)
-    && typeof value.input.confirm_unknown_retry === 'boolean'
-}
+const imageSubmitProject: Validator = value => imageSubmitProjectIpcPayloadSchema.safeParse(value).success
+const imageStartOperation: Validator = value => imageStartOperationIpcPayloadSchema.safeParse(value).success
+const imageUpdateUnknownProject: Validator = value => imageUpdateUnknownProjectIpcPayloadSchema.safeParse(value).success
+const imageSaveOutput: Validator = value => imageSaveOutputIpcPayloadSchema.safeParse(value).success
+const imageCreateCreativePlan: Validator = value => imageCreateCreativePlanIpcPayloadSchema.safeParse(value).success
+const imageEstimateGenerationRound: Validator = value => imageEstimateGenerationRoundIpcPayloadSchema.safeParse(value).success
+const imageEstimateDerivation: Validator = value => imageEstimateDerivationIpcPayloadSchema.safeParse(value).success
+const imageCreateGenerationRound: Validator = value => imageCreateGenerationRoundIpcPayloadSchema.safeParse(value).success
+const imageDecideCandidate: Validator = value => imageDecideCandidateIpcPayloadSchema.safeParse(value).success
+const imageAdoptCandidate: Validator = value => imageAdoptCandidateIpcPayloadSchema.safeParse(value).success
+const imageDeriveCandidate: Validator = value => imageDeriveCandidateIpcPayloadSchema.safeParse(value).success
+const imageCancelGenerationOperation: Validator = value => imageCancelGenerationOperationIpcPayloadSchema.safeParse(value).success
+const imageUpdateReferenceControl: Validator = value => imageUpdateReferenceControlIpcPayloadSchema.safeParse(value).success
+const imageCreateDeliverySpecRevision: Validator = value => imageCreateDeliverySpecRevisionIpcPayloadSchema.safeParse(value).success
+const imageCreateCanvas: Validator = value => imageCreateCanvasIpcPayloadSchema.safeParse(value).success
+const imageApplyCanvasCommand: Validator = value => imageApplyCanvasCommandIpcPayloadSchema.safeParse(value).success
+const imagePreflightCanvas: Validator = value => imagePreflightCanvasIpcPayloadSchema.safeParse(value).success
+const imageRenderCanvas: Validator = value => imageRenderCanvasIpcPayloadSchema.safeParse(value).success
+const imageExportDelivery: Validator = value => imageExportDeliveryIpcPayloadSchema.safeParse(value).success
+const imageRequestDestination: Validator = value => imageRequestDestinationIpcPayloadSchema.safeParse(value).success
+const imageSelectArtboardVersion: Validator = value => imageSelectArtboardVersionIpcPayloadSchema.safeParse(value).success
 
 export const ELECTRON_IPC_VALIDATORS = {
   [ELECTRON_IPC_CHANNELS.appGetVersion]: noPayload,
@@ -860,6 +947,23 @@ export const ELECTRON_IPC_VALIDATORS = {
   [ELECTRON_IPC_CHANNELS.imageStartOperation]: imageStartOperation,
   [ELECTRON_IPC_CHANNELS.imageUpdateUnknownProject]: imageUpdateUnknownProject,
   [ELECTRON_IPC_CHANNELS.imageSaveOutput]: imageSaveOutput,
+  [ELECTRON_IPC_CHANNELS.imageCreateCreativePlan]: imageCreateCreativePlan,
+  [ELECTRON_IPC_CHANNELS.imageEstimateGenerationRound]: imageEstimateGenerationRound,
+  [ELECTRON_IPC_CHANNELS.imageEstimateDerivation]: imageEstimateDerivation,
+  [ELECTRON_IPC_CHANNELS.imageCreateGenerationRound]: imageCreateGenerationRound,
+  [ELECTRON_IPC_CHANNELS.imageDecideCandidate]: imageDecideCandidate,
+  [ELECTRON_IPC_CHANNELS.imageAdoptCandidate]: imageAdoptCandidate,
+  [ELECTRON_IPC_CHANNELS.imageDeriveCandidate]: imageDeriveCandidate,
+  [ELECTRON_IPC_CHANNELS.imageCancelGenerationOperation]: imageCancelGenerationOperation,
+  [ELECTRON_IPC_CHANNELS.imageUpdateReferenceControl]: imageUpdateReferenceControl,
+  [ELECTRON_IPC_CHANNELS.imageCreateDeliverySpecRevision]: imageCreateDeliverySpecRevision,
+  [ELECTRON_IPC_CHANNELS.imageCreateCanvas]: imageCreateCanvas,
+  [ELECTRON_IPC_CHANNELS.imageApplyCanvasCommand]: imageApplyCanvasCommand,
+  [ELECTRON_IPC_CHANNELS.imagePreflightCanvas]: imagePreflightCanvas,
+  [ELECTRON_IPC_CHANNELS.imageRenderCanvas]: imageRenderCanvas,
+  [ELECTRON_IPC_CHANNELS.imageExportDelivery]: imageExportDelivery,
+  [ELECTRON_IPC_CHANNELS.imageRequestDestination]: imageRequestDestination,
+  [ELECTRON_IPC_CHANNELS.imageSelectArtboardVersion]: imageSelectArtboardVersion,
   [ELECTRON_IPC_CHANNELS.videoAddSource]: videoAddSource,
   [ELECTRON_IPC_CHANNELS.videoRender]: videoRender,
   [ELECTRON_IPC_CHANNELS.videoAnalyze]: videoAnalyze,

@@ -1,0 +1,66 @@
+name: 工作台-快速合同验证
+
+on:
+  pull_request:
+    paths:
+      - 'gateway/**'
+      - 'relay/**'
+      - 'ts/src/**'
+      - 'ts/shared/**'
+      - 'ts/desktop/**'
+      - 'ts/test/**'
+      - 'ts/package.json'
+      - 'ts/bun.lock'
+      - '.github/workflows/workbench-fast-check.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'gateway/**'
+      - 'relay/**'
+      - 'ts/src/**'
+      - 'ts/shared/**'
+      - 'ts/desktop/**'
+      - 'ts/test/**'
+      - 'ts/package.json'
+      - 'ts/bun.lock'
+      - '.github/workflows/workbench-fast-check.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: 图片、视频与共享宿主
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.3.14'
+
+      - name: 安装服务端依赖
+        working-directory: ts
+        run: bun install --frozen-lockfile
+
+      - name: 安装桌面端依赖
+        working-directory: ts/desktop
+        run: bun install --frozen-lockfile
+
+      - name: 验证图片、视频与共享服务合同
+        working-directory: ts
+        run: |
+          bun test --preload ./test/setup.ts --timeout 20000
+          bun run typecheck:server
+          bun run audit:source
+
+      - name: 验证 Electron 与桌面前端
+        working-directory: ts
+        run: |
+          bun run check:electron
+          bun run check:desktop

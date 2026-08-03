@@ -17,7 +17,8 @@
     "asar": true,
     "asarUnpack": [
       "runtime-assets/binaries/**",
-      "runtime-assets/agent-marketplace/**"
+      "runtime-assets/agent-marketplace/**",
+      "runtime-assets/fonts/**"
     ],
     "artifactName": "BilliardBuddy-${version}-${os}-${arch}.${ext}",
     "publish": [
@@ -35,6 +36,7 @@
       "electron-dist/**",
       "runtime-assets/binaries/**",
       "runtime-assets/agent-marketplace/**",
+      "runtime-assets/fonts/**",
       "runtime-assets/icons/**",
       "package.json"
     ],
@@ -98,10 +100,11 @@
     "clean:electron-output": "bun run ./scripts/clean-electron-output.ts",
     "build:macos-arm64": "bash ./scripts/build-macos-arm64.sh",
     "build:windows-x64": "powershell -ExecutionPolicy Bypass -File ./scripts/build-windows-x64.ps1",
-    "electron:dev": "bun run verify:codex-engine && bun run build:sidecars && bun run build:electron && bun run ./scripts/electron-dev.ts",
+    "electron:dev": "bun run stage:image-font && bun run verify:codex-engine && bun run build:sidecars && bun run build:electron && bun run ./scripts/electron-dev.ts",
     "electron:build": "bun run build:sidecars && bun run build && bun run build:electron",
-    "electron:package": "bun run stage:media-toolchain && bun run stage:codex-engine && bun run stage:agent-plugins && bun run stage:chrome-plugin && bun run stage:browser-plugin && bun run stage:record-replay-plugin && bun run clean:electron-output && bun run electron:build && node ./node_modules/electron-builder/out/cli/cli.js --publish never",
-    "electron:package:dir": "bun run stage:media-toolchain && bun run stage:codex-engine && bun run stage:agent-plugins && bun run stage:chrome-plugin && bun run stage:browser-plugin && bun run stage:record-replay-plugin && bun run clean:electron-output && bun run electron:build && node ./node_modules/electron-builder/out/cli/cli.js --dir --publish never",
+    "stage:image-font": "bun run ./scripts/stage-image-font.ts",
+    "electron:package": "bun run stage:image-font && bun run stage:media-toolchain && bun run stage:codex-engine && bun run stage:agent-plugins && bun run stage:chrome-plugin && bun run stage:browser-plugin && bun run stage:record-replay-plugin && bun run clean:electron-output && bun run electron:build && node ./node_modules/electron-builder/out/cli/cli.js --publish never",
+    "electron:package:dir": "bun run stage:image-font && bun run stage:media-toolchain && bun run stage:codex-engine && bun run stage:agent-plugins && bun run stage:chrome-plugin && bun run stage:browser-plugin && bun run stage:record-replay-plugin && bun run clean:electron-output && bun run electron:build && node ./node_modules/electron-builder/out/cli/cli.js --dir --publish never",
     "check:electron": "node ./node_modules/typescript/bin/tsc -p electron/tsconfig.json && bun run build:electron",
     "preview": "vite preview",
     "lint": "node ./node_modules/typescript/bin/tsc --noEmit"

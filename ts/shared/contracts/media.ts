@@ -47,6 +47,8 @@ export const imageVersionKindSchema = z.enum([
   'upscale',
   'text_layout',
   'composite',
+  /** Pixels were produced by the 15.3 backend canvas renderer. */
+  'canvas',
 ])
 export const imageLayerSchema = z.object({
   id: mediaIdSchema,
@@ -81,6 +83,13 @@ export const mediaVersionSchema = z.object({
   height: z.number().int().positive().max(12000).optional(),
   text_layers: z.array(imageTextLayerSchema).max(80).optional(),
   image_layers: z.array(imageLayerSchema).max(20).optional(),
+  /** The immutable Canvas input that produced a formal rendered Version. */
+  artboard_id: mediaIdSchema.optional(),
+  canvas_id: mediaIdSchema.optional(),
+  canvas_revision: z.number().int().nonnegative().optional(),
+  canvas_document_hash: z.string().regex(/^sha256:[a-f0-9]{64}$/).optional(),
+  render_receipt_id: mediaIdSchema.optional(),
+  content_hash: z.string().regex(/^sha256:[a-f0-9]{64}$/).optional(),
   created_at: mediaIsoDateSchema,
 })
 export const mediaDeletionReceiptSchema = z.object({
@@ -115,6 +124,11 @@ export const mediaTaskStatusSchema = z.enum([
   'cancelled',
 ])
 export const mediaSafeErrorCodeSchema = z.enum(MEDIA_SAFE_ERROR_CODES)
+/** Public HTTP and Electron IPC failure body. */
+export const mediaSafeErrorResponseSchema = z.object({
+  error: mediaSafeErrorCodeSchema,
+  message: z.string().min(1).max(2000),
+}).strict()
 
 export const IMAGE_GENERATION_MODELS = [
   'gpt-image-2',
@@ -197,6 +211,11 @@ const mediaProjectBaseSchema = z.object({
   updated_at: mediaIsoDateSchema,
 })
 
+const imageBudgetLimitSchema = z.object({
+  currency: z.string().regex(/^[A-Z]{3}$/),
+  amount_minor: z.number().int().positive().max(2_000_000_000),
+}).strict()
+
 export const imageQualityAssessmentResultSchema = z.object({
   score: z.number().int().min(0).max(100),
   summary: z.string().min(1).max(1000),
@@ -249,7 +268,10 @@ export const publicImageVersionSchema = z.object({
 export const imageReferenceRoleSchema = z.enum([
   'unclassified',
   'subject',
+  'product',
+  'character',
   'style',
+  'composition',
   'environment',
   'brand',
   'logo',
@@ -260,6 +282,13 @@ export const imageProjectReferenceSchema = z.object({
   asset_id: mediaIdSchema,
   role: imageReferenceRoleSchema,
   label: z.string().min(1).max(120).optional(),
+  /**
+   * Legacy projects did not persist control semantics.  These defaults keep
+   * them readable while 15.2 stores the authoritative rule in its own table.
+   */
+  influence_strength: z.enum(['low', 'medium', 'high']).optional(),
+  preservation: z.enum(['may_change', 'prefer_preserve', 'must_preserve', 'exact']).optional(),
+  priority: z.number().int().min(0).max(1_000).optional(),
 })
 
 export const publicImageProjectReferenceSchema = imageProjectReferenceSchema.extend({
@@ -295,8 +324,18 @@ export const imageWorkbenchProjectSchema = mediaProjectBaseSchema.extend({
   count: z.number().int().min(1).max(4).default(1),
   /** New provider-neutral projects always request one three-candidate operation. */
   candidate_count: z.literal(3).default(3),
+  /** Project-scoped paid-work ceiling.  Quotes and submitted charge-possible
+   * operations are counted before the remote request is accepted. */
+  budget_limit: imageBudgetLimitSchema.optional(),
   /** Selecting or rolling back changes only this pointer; Version history is immutable. */
   current_version_id: mediaIdSchema.optional(),
+  /** 15.2 working pointers are per delivery Artboard; the legacy single pointer remains readable. */
+  current_versions_by_artboard: z.record(mediaIdSchema, mediaIdSchema).default({}),
+  /** Immutable delivery set produced by the last successful controlled export. */
+  latest_delivery_set_id: mediaIdSchema.optional(),
+  current_brief_id: mediaIdSchema.optional(),
+  current_delivery_spec_id: mediaIdSchema.optional(),
+  current_delivery_spec_revision: z.number().int().nonnegative().optional(),
   brief: imageCreativeBriefSchema.optional(),
   /** User-confirmed Brief fields replace generated suggestions and survive later reasoning. */
   brief_overrides: imageBriefOverridesSchema.default({}),
@@ -789,6 +828,8 @@ export const mediaTaskSchema = z.object({
   image_operation: z.object({
     kind: z.enum(['generate', 'edit', 'inpaint']),
     base_version_id: mediaIdSchema.optional(),
+    /** 15.2 derivation can use an unadopted Candidate as the edit source. */
+    base_candidate_asset_id: mediaIdSchema.optional(),
     instruction: z.string().min(1).max(4000).optional(),
     mask_asset_id: mediaIdSchema.optional(),
     model: imageGenerationModelSchema,
@@ -808,6 +849,10 @@ export const publicMediaTaskSchema = mediaTaskSchema.omit({
   remote_submission_started_at: true,
   remote_result_acknowledged_at: true,
 })
+
+/** Shared API, Main and Preload response contract for ordinary image operations. */
+export const imageTaskResponseSchema = z.object({ task: publicMediaTaskSchema }).strict()
+export const imageProjectResponseSchema = z.object({ project: publicImageWorkbenchProjectSchema }).strict()
 
 export const mediaJobEventSchema = z.object({
   schema_version: z.literal(1),
@@ -955,6 +1000,7 @@ export const createImageProjectInputSchema = z.object({
   prompt: z.string().min(1).max(8000).optional(),
   workspace_root: z.string().min(1).max(4096).optional(),
   size: imageCanvasSizeSchema.default('1024x1024'),
+  budget_limit: imageBudgetLimitSchema.optional(),
   reference_images: z.array(referenceImageDataUrlSchema).max(8).default([]),
   reference_roles: z.array(imageReferenceRoleSchema).max(8).default([]),
 }).superRefine((value, context) => {
@@ -1171,9 +1217,14 @@ export const saveImageOutputInputSchema = z.object({
   version_id: mediaIdSchema.optional(),
   /** One-release compatibility for callers that still address legacy outputs. */
   output_id: mediaIdSchema.optional(),
-  output_path: z.string().min(1).max(4096),
-}).refine(value => Boolean(value.version_id || value.output_id), {
-  message: 'version_id is required',
+  /** Issued by Electron Main after a native save dialog.  It is deliberately
+   * opaque: Renderer and Sidecar APIs never receive a local absolute path. */
+  destination_grant_id: mediaIdSchema.optional(),
+  /** Legacy generic-media writer only. Image Workbench IPC rejects this field
+   * and uses destination_grant_id exclusively. */
+  output_path: z.string().min(1).max(4096).optional(),
+}).refine(value => Boolean(value.version_id || value.output_id) && Boolean(value.destination_grant_id || value.output_path), {
+  message: 'version_id or output_id is required',
 })
 
 /** Evidence returned only after the chosen local export has been re-read. */
@@ -1187,7 +1238,9 @@ export const imageOutputVerificationSchema = z.object({
 })
 
 export const saveImageOutputResultSchema = z.object({
-  path: z.string().min(1).max(4096),
+  destination_grant_id: mediaIdSchema.optional(),
+  /** Legacy generic-media response; the image workbench never emits it. */
+  path: z.string().min(1).max(4096).optional(),
   verification: imageOutputVerificationSchema,
 })
 
@@ -1200,6 +1253,9 @@ export type PublicMediaProject = z.infer<typeof publicMediaProjectSchema>
 export type PublicImageWorkbenchProject = z.infer<typeof publicImageWorkbenchProjectSchema>
 export type PublicVideoStudioProject = z.infer<typeof publicVideoStudioProjectSchema>
 export type PublicMediaTask = z.infer<typeof publicMediaTaskSchema>
+export type MediaSafeErrorResponse = z.infer<typeof mediaSafeErrorResponseSchema>
+export type ImageTaskResponse = z.infer<typeof imageTaskResponseSchema>
+export type ImageProjectResponse = z.infer<typeof imageProjectResponseSchema>
 export type MediaJobEvent = z.infer<typeof mediaJobEventSchema>
 export type MediaJobEventJournal = z.infer<typeof mediaJobEventJournalSchema>
 export type PublicMediaJobEvent = z.infer<typeof publicMediaJobEventSchema>
