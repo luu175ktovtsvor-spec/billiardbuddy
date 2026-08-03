@@ -95,6 +95,14 @@ const nativeAgent = {
     ELECTRON_IPC_CHANNELS.nativeAgentUpdatePermissionMode,
     { threadId, permissionMode },
   ),
+  getWindowsSandboxReadiness: (cwd: string) => invoke(
+    ELECTRON_IPC_CHANNELS.nativeAgentWindowsSandboxReadiness,
+    { cwd },
+  ),
+  startWindowsSandboxSetup: (cwd: string, mode: 'elevated' | 'unelevated') => invoke(
+    ELECTRON_IPC_CHANNELS.nativeAgentWindowsSandboxSetupStart,
+    { cwd, mode },
+  ),
   startTurn: (
     threadId: string,
     input: unknown[],

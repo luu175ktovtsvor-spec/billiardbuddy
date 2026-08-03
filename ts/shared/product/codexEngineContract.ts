@@ -1,4 +1,4 @@
-export const CODEX_ENGINE_MANIFEST_SCHEMA = 3 as const
+export const CODEX_ENGINE_MANIFEST_SCHEMA = 4 as const
 /** Upstream Cargo package and binary name. Never exposed as a product resource name. */
 export const CODEX_ENGINE_NAME = 'codex-app-server' as const
 /** BilliardBuddy's packaged Agent Engine resource name. */

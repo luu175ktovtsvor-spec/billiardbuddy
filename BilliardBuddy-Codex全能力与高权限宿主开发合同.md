@@ -93,7 +93,7 @@ BilliardBuddy Desktop
 | --- | --- | --- | --- |
 | Agent Loop、Context、压缩 | Rust Core | 已使用 Rust Core | 保持原样 |
 | Thread、Turn、Fork、Rollback、Goal、恢复 | App Server | 已桥接 | 未来新前端投影原生状态 |
-| 文件、Shell、Git、Sandbox、后台终端 | Rust/Exec | 内核已具备；桥接后台终端管理；Windows Sandbox 初始化尚未接入 | 不重写；Windows 版须先完成原生 Sandbox readiness/setup |
+| 文件、Shell、Git、Sandbox、后台终端 | Rust/Exec | 已桥接后台终端与 Windows Sandbox readiness/setup；Windows 原生辅助程序纳入受管运行时 | 不重写；等待 Windows runner 与实机 UAC 验收 |
 | 三级 Agent 权限 | Rust Sandbox + approval | 已有 `ask/approve-for-me/full-access` | 保留，不能代替桌面权限 |
 | MCP、OAuth、Skills、Hooks | App Server | 已桥接本地配置/列表/授权请求 | 保持 Rust 为唯一注册表 |
 | 本地/工作区插件市场 | App Server | 已桥接 | 保持；安装仍须 Electron 确认 |
@@ -210,7 +210,7 @@ billiardbuddy-computer-use
 
 ### 5.0 M0：Windows 原生 Sandbox 接入
 
-Codex Rust Core 已拥有 Windows Sandbox 的协议和策略语义；BilliardBuddy 目前缺的是桌面宿主对其 `windowsSandbox/readiness` 与 `windowsSandbox/setupStart` 请求的**原生转发和安装流程**。这不是要自研一个 Sandbox，也不能通过把权限档改成 `full-access` 来绕开。
+Codex Rust Core 已拥有 Windows Sandbox 的协议和策略语义；本轮已由桌面宿主转发其 `windowsSandbox/readiness` 与 `windowsSandbox/setupStart` 请求，并把 Rust 原本依赖的 Windows setup / command-runner 辅助程序按哈希纳入受管运行时。这不是要自研一个 Sandbox，也不能通过把权限档改成 `full-access` 来绕开。当前仍缺 Windows runner 的完整构建证明与真实设备上的 UAC 用户旅程验收。
 
 正确的调用链是：
 
@@ -534,7 +534,7 @@ Agent 权限
 
 当前明确缺失：
 
-- Windows Sandbox 的原生 readiness/setup 桥、用户发起的安装路径与 Windows 实机验收；
+- Windows Sandbox 已有原生 readiness/setup 桥、用户发起的安装路径与辅助程序封装校验；仍缺 Windows runner 构建证明及 Windows 实机 UAC 验收；
 - 受管 Worktree、本地环境、Handoff、快照/恢复/清理，以及计划任务对隔离工作树的选择；
 - Computer Use、Chrome Control、Browser Use 与 Record & Replay 的 MCP、宿主源码、Windows/macOS 构建 staging 和安装包校验已进入正式源码链；尚缺 GitHub 两端构建、签名后的安装包和真实用户旅程验证，不能宣称已发布；
 - Computer Use 面向用户的启用/允许 App 设置入口，以及 Chrome 扩展的正式发布/安装入口；当前只有后端配置格式、原生 Host 注册服务和插件安装链；

@@ -122,6 +122,8 @@ type PendingNativeAgentServerRequest = {
 const nativeAgentThreadOwners = new Map<string, number>()
 const nativeAgentTurnOwners = new Map<string, number>()
 const nativeAgentServerRequests = new Map<string, PendingNativeAgentServerRequest>()
+/** Windows Sandbox setup is source-global, so it has one explicit UI owner. */
+let nativeWindowsSandboxSetupOwnerId: number | undefined
 
 type PendingExternalAgentDetection = {
   ownerId: number
@@ -313,6 +315,33 @@ async function confirmNativeAgentFullAccess(owner: BrowserWindow): Promise<void>
 }
 
 /**
+ * The source Rust Core performs the actual setup, persistence and UAC flow.
+ * Main only makes this machine-level action explicit before forwarding it.
+ */
+async function confirmNativeAgentWindowsSandboxSetup(
+  owner: BrowserWindow,
+  mode: 'elevated' | 'unelevated',
+): Promise<void> {
+  const { dialog } = await import('electron')
+  const elevated = mode === 'elevated'
+  const result = await dialog.showMessageBox(owner, {
+    type: 'warning',
+    title: '初始化 Windows Agent 沙箱？',
+    message: elevated
+      ? 'BilliardBuddy 将启动原生 Windows Sandbox 初始化，Windows 会要求管理员确认。'
+      : 'BilliardBuddy 将启动原生 Windows Sandbox 初始化。',
+    detail: elevated
+      ? '这不是“完全访问”。初始化由 BilliardBuddy 内置 Rust Agent 内核执行，并只为本应用的私有 Agent runtime 保存原生沙箱配置。'
+      : '这不是“完全访问”。初始化由 BilliardBuddy 内置 Rust Agent 内核执行，并只为本应用的私有 Agent runtime 保存原生沙箱配置。',
+    buttons: ['取消', '继续初始化'],
+    defaultId: 0,
+    cancelId: 0,
+    noLink: true,
+  })
+  if (result.response !== 1) throw new Error('CODEX_NATIVE_WINDOWS_SANDBOX_SETUP_DECLINED')
+}
+
+/**
  * Marketplace and Skill-root mutations change future Rust Agent behavior and
  * can fetch or activate third-party instructions/tools. Keep the consent in
  * privileged Main until the replacement renderer provides this interaction.
@@ -437,7 +466,13 @@ function sourceRequestKeyFromResolvedNotification(params: unknown): string | und
 function forwardNativeAgentNotification(notification: CodexNativeNotification): void {
   const threadId = nativeThreadId(notification.params)
   const turnId = nativeTurnId(notification.params)
-  const ownerId = threadId ? nativeAgentThreadOwners.get(threadId) : turnId ? nativeAgentTurnOwners.get(turnId) : undefined
+  const ownerId = threadId
+    ? nativeAgentThreadOwners.get(threadId)
+    : turnId
+      ? nativeAgentTurnOwners.get(turnId)
+      : notification.method === 'windowsSandbox/setupCompleted'
+        ? nativeWindowsSandboxSetupOwnerId
+        : undefined
   if (notification.method === 'serverRequest/resolved') {
     const sourceRequestKey = sourceRequestKeyFromResolvedNotification(notification.params)
     if (sourceRequestKey) {
@@ -462,6 +497,9 @@ function forwardNativeAgentNotification(notification: CodexNativeNotification): 
   if (notification.method === 'turn/completed' && turnId) nativeAgentTurnOwners.delete(turnId)
   if ((notification.method === 'thread/archived' || notification.method === 'thread/deleted') && threadId) {
     nativeAgentThreadOwners.delete(threadId)
+  }
+  if (notification.method === 'windowsSandbox/setupCompleted') {
+    nativeWindowsSandboxSetupOwnerId = undefined
   }
 }
 
@@ -543,7 +581,10 @@ function getNativeAgentRuntime(): ElectronCodexNativeRuntime {
     userDataPath: app.getPath('userData'),
     onNotification: forwardNativeAgentNotification,
     onServerRequest: requestNativeAgentServerRequest,
-    onAppServerUnavailable: rejectNativeAgentServerRequests,
+    onAppServerUnavailable: error => {
+      nativeWindowsSandboxSetupOwnerId = undefined
+      rejectNativeAgentServerRequests(error)
+    },
   })
   return nativeAgentRuntime
 }
@@ -844,6 +885,32 @@ function registerIpcHandlers() {
     })
     claimNativeAgentThread(event.sender.id, thread.id)
     return thread
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentWindowsSandboxReadiness, async (_event, payload) => {
+    const input = payload as { cwd: string }
+    return await getNativeAgentRuntime().getWindowsSandboxReadiness({
+      cwd: input.cwd,
+      route: await resolveNativeAgentRoute(),
+    })
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentWindowsSandboxSetupStart, async (event, payload) => {
+    const input = payload as { cwd: string, mode: 'elevated' | 'unelevated' }
+    if (process.platform !== 'win32') throw new Error('CODEX_NATIVE_WINDOWS_SANDBOX_UNAVAILABLE')
+    if (nativeWindowsSandboxSetupOwnerId !== undefined) {
+      throw new Error('CODEX_NATIVE_WINDOWS_SANDBOX_SETUP_IN_PROGRESS')
+    }
+    await confirmNativeAgentWindowsSandboxSetup(currentWindow(event), input.mode)
+    nativeWindowsSandboxSetupOwnerId = event.sender.id
+    try {
+      return await getNativeAgentRuntime().startWindowsSandboxSetup({
+        cwd: input.cwd,
+        mode: input.mode,
+        route: await resolveNativeAgentRoute(),
+      })
+    } catch (error) {
+      if (nativeWindowsSandboxSetupOwnerId === event.sender.id) nativeWindowsSandboxSetupOwnerId = undefined
+      throw error
+    }
   })
   registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentListThreads, async (_event, payload) => {
     const input = payload as {

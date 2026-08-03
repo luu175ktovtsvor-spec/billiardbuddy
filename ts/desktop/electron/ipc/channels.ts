@@ -29,6 +29,8 @@ export const ELECTRON_IPC_CHANNELS = {
   nativeAgentTerminateBackgroundTerminal: 'desktop:native-agent:terminate-background-terminal',
   nativeAgentCleanBackgroundTerminals: 'desktop:native-agent:clean-background-terminals',
   nativeAgentUpdatePermissionMode: 'desktop:native-agent:update-permission-mode',
+  nativeAgentWindowsSandboxReadiness: 'desktop:native-agent:windows-sandbox-readiness',
+  nativeAgentWindowsSandboxSetupStart: 'desktop:native-agent:windows-sandbox-setup-start',
   nativeAgentStartTurn: 'desktop:native-agent:start-turn',
   nativeAgentSteerTurn: 'desktop:native-agent:steer-turn',
   nativeAgentInterruptTurn: 'desktop:native-agent:interrupt-turn',

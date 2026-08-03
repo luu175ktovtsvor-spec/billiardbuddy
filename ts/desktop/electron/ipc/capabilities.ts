@@ -52,6 +52,9 @@ const nativeMessageId = (value: unknown): value is string =>
 const nativePermissionMode = (value: unknown): value is string =>
   value === 'ask' || value === 'approve-for-me' || value === 'full-access'
 
+const nativeWindowsSandboxMode = (value: unknown): value is string =>
+  value === 'elevated' || value === 'unelevated'
+
 const nativeTurnInput = (value: unknown): boolean =>
   isRecord(value)
   && hasOnlyKeys(value, ['type', 'text', 'url'])
@@ -72,6 +75,17 @@ const nativeAgentStartThread: Validator = value =>
   && hasOnlyKeys(value, ['cwd', 'permissionMode'])
   && nativeWorkspacePath(value.cwd)
   && (value.permissionMode === undefined || nativePermissionMode(value.permissionMode))
+
+const nativeAgentWindowsSandboxReadiness: Validator = value =>
+  isRecord(value)
+  && hasOnlyKeys(value, ['cwd'])
+  && nativeWorkspacePath(value.cwd)
+
+const nativeAgentWindowsSandboxSetupStart: Validator = value =>
+  isRecord(value)
+  && hasOnlyKeys(value, ['cwd', 'mode'])
+  && nativeWorkspacePath(value.cwd)
+  && nativeWindowsSandboxMode(value.mode)
 
 const nativePageCursor = (value: unknown): boolean =>
   value === undefined
@@ -679,6 +693,8 @@ export const ELECTRON_IPC_VALIDATORS = {
   [ELECTRON_IPC_CHANNELS.modelConfigurationSave]: modelConfigurationSave,
   [ELECTRON_IPC_CHANNELS.modelConfigurationRemove]: personalModelProfileId,
   [ELECTRON_IPC_CHANNELS.nativeAgentStartThread]: nativeAgentStartThread,
+  [ELECTRON_IPC_CHANNELS.nativeAgentWindowsSandboxReadiness]: nativeAgentWindowsSandboxReadiness,
+  [ELECTRON_IPC_CHANNELS.nativeAgentWindowsSandboxSetupStart]: nativeAgentWindowsSandboxSetupStart,
   [ELECTRON_IPC_CHANNELS.nativeAgentListThreads]: nativeAgentListThreads,
   [ELECTRON_IPC_CHANNELS.nativeAgentSearchThreads]: nativeAgentSearchThreads,
   [ELECTRON_IPC_CHANNELS.nativeAgentResumeThread]: nativeAgentResumeThread,
