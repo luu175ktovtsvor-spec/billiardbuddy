@@ -29,11 +29,34 @@ export const createMediaObjectLeaseRequestSchema = z.object({
 }).strict()
 export type CreateMediaObjectLeaseRequest = z.infer<typeof createMediaObjectLeaseRequestSchema>
 
+export const multipartUploadedPartSchema = z.object({
+  part_number: z.number().int().positive().max(10_000),
+  etag: z.string().min(1).max(256),
+}).strict()
+export type MultipartUploadedPart = z.infer<typeof multipartUploadedPartSchema>
+
+const multipartLeaseSchema = z.object({
+  upload_id: z.string().min(1).max(1_000),
+  part_size: z.number().int().positive(),
+  parts: z.array(z.object({
+    part_number: z.number().int().positive().max(10_000),
+    put_url: z.string().url(),
+    required_headers: z.record(z.string(), z.string()).optional(),
+  }).strict()).min(1).max(10_000),
+  uploaded_parts: z.array(multipartUploadedPartSchema).max(10_000),
+}).strict()
+
+export const completeMediaObjectLeaseRequestSchema = z.object({
+  parts: z.array(multipartUploadedPartSchema).max(10_000).optional(),
+}).strict()
+export type CompleteMediaObjectLeaseRequest = z.infer<typeof completeMediaObjectLeaseRequestSchema>
+
 export const mediaObjectLeaseSchema = z.object({
   lease_id: opaqueId,
   state: z.enum(['awaiting_upload', 'ready', 'bound', 'expired', 'deleted']),
   put_url: z.string().url().optional(),
   required_headers: z.record(z.string(), z.string()).optional(),
+  multipart_upload: multipartLeaseSchema.optional(),
   object_ref: opaqueId.optional(),
   expires_at: iso,
 }).strict()
