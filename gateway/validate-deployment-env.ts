@@ -86,11 +86,12 @@ export function validateDeploymentEnvironment(environment: DeploymentEnvironment
     'GW_RELAY_TOKEN',
     'GW_DEEPSEEK_KEY',
     'GW_MIMO_KEY',
+    'GW_QWEN_KEY',
     'GW_FUNASR_KEY',
   ]) requireValue(environment, name)
 
   requireRelayTasksUrl(environment)
-  for (const name of ['GW_DEEPSEEK_BASE', 'GW_MIMO_BASE']) {
+  for (const name of ['GW_DEEPSEEK_BASE', 'GW_MIMO_BASE', 'GW_QWEN_BASE']) {
     if (environment[name]?.trim()) requireHttpsUrl(environment, name)
   }
 }

@@ -18,6 +18,10 @@ import type {
   ImageCandidateDecisionResponse,
   ImageCandidateDerivationResponse,
   ImageCreativePlanResponse,
+  ImageUnderstandingInput,
+  ImageUnderstandingResponse,
+  ImageVisualAssessmentInput,
+  ImageVisualAssessmentResponse,
   ImageDerivationEstimateResponse,
   ImageGenerationCancelResponse,
   ImageGenerationRoundEstimateResponse,
@@ -60,10 +64,13 @@ export type ImageWorkbenchPreloadBridge = {
   saveOutput(projectId: string, input: ImageSaveOutputInput): Promise<ImageWorkbenchIpcResponse<ImageSaveOutputResponse>>
   requestDestination(input: ImageDestinationGrantRequest): Promise<ImageWorkbenchIpcResponse<ImageDestinationGrant>>
   createCreativePlan(projectId: string, input: CreateCreativePlanInput): Promise<ImageWorkbenchIpcResponse<ImageCreativePlanResponse>>
+  understandProject(projectId: string, input: ImageUnderstandingInput): Promise<ImageWorkbenchIpcResponse<ImageUnderstandingResponse>>
   estimateGenerationRound(projectId: string, input: EstimateGenerationRoundInput): Promise<ImageWorkbenchIpcResponse<ImageGenerationRoundEstimateResponse>>
   estimateDerivation(projectId: string, candidateId: string, input: EstimateDeriveImageCandidateInput): Promise<ImageWorkbenchIpcResponse<ImageDerivationEstimateResponse>>
   createGenerationRound(projectId: string, input: CreateGenerationRoundInput): Promise<ImageWorkbenchIpcResponse<ImageGenerationRoundResponse>>
   decideCandidate(projectId: string, candidateId: string, input: DecideImageCandidateInput): Promise<ImageWorkbenchIpcResponse<ImageCandidateDecisionResponse>>
+  assessCandidateVisual(projectId: string, candidateId: string, input: ImageVisualAssessmentInput): Promise<ImageWorkbenchIpcResponse<ImageVisualAssessmentResponse>>
+  assessVersionVisual(projectId: string, versionId: string, input: ImageVisualAssessmentInput): Promise<ImageWorkbenchIpcResponse<ImageVisualAssessmentResponse>>
   adoptCandidate(projectId: string, candidateId: string, input: AdoptImageCandidateInput): Promise<ImageWorkbenchIpcResponse<ImageCandidateAdoptionResponse>>
   deriveCandidate(projectId: string, candidateId: string, input: DeriveImageCandidateInput): Promise<ImageWorkbenchIpcResponse<ImageCandidateDerivationResponse>>
   cancelGenerationOperation(operationId: string): Promise<ImageWorkbenchIpcResponse<ImageGenerationCancelResponse>>

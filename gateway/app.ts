@@ -14,6 +14,7 @@ import {
   prepareManagedResponsesBody,
 } from './managedResponses'
 import { fetchMimoWithRetry, MimoRequestError, prepareMimoChatBody } from './mimoChat'
+import { QwenImageReasoningGatewayError, requestQwenImageReasoning } from './qwenImageReasoning'
 import {
   containsImageContent,
   createVisionBridge,
@@ -142,6 +143,9 @@ type GatewayConfig = {
   mimoRetryMax: number
   mimoRetryBaseMs: number
   mimoRetryMaxMs: number
+  qwenKey: string
+  qwenBase: string
+  qwenReasoningTimeoutMs: number
   deepseekKey: string
   deepseekBase: string
   deepseekModel: string
@@ -652,6 +656,9 @@ function loadConfig(env: Env): GatewayConfig {
     mimoRetryMax: Math.max(0, Math.min(1, intEnv(env, 'GW_MIMO_MAX_RETRIES', 1))),
     mimoRetryBaseMs: Math.max(1, intEnv(env, 'GW_MIMO_RETRY_BASE_MS', 500)),
     mimoRetryMaxMs: Math.max(1, intEnv(env, 'GW_MIMO_RETRY_MAX_MS', 8000)),
+    qwenKey: env.GW_QWEN_KEY ?? '',
+    qwenBase: (env.GW_QWEN_BASE ?? 'https://dashscope.aliyuncs.com/compatible-mode/v1').replace(/\/+$/, ''),
+    qwenReasoningTimeoutMs: Math.max(1_000, intEnv(env, 'GW_QWEN_REASONING_TIMEOUT_MS', 15_000)),
     // DeepSeek V4 Flash:真 key 只在服务器。受控假上游验证覆盖 100 人 × 10 窗口的 1,000 路
     // 调度，但尚未证明 1,000 路真实 SSE 的尾延迟。因此先固定为每安装最多 10 路、全局最多
     // 1,000 路；200 个队列槽仅吸收短抖动且最多等 15 秒。这不替代长 SSE、长上下文、
@@ -1297,17 +1304,14 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
     : null
   // The registry-selected VisualEvidence provider is available only with its server key.
   // Missing credentials make image requests fail closed rather than reaching TextReasoning.
-  const visionBridge: VisionBridge | null = config.mimoKey
+  const visionBridge: VisionBridge | null = config.qwenKey
     ? createVisionBridge({
-      mimoBase: config.mimoBase,
-      mimoKey: config.mimoKey,
+      // VisualEvidence is independently bounded Qwen work; it does not borrow
+      // the legacy MiMo media-account scheduler or credentials.
+      providerBase: config.qwenBase,
+      providerKey: config.qwenKey,
       modelId: visualEvidenceRegistryEntry().model_id,
       fetchImpl,
-      mimoReservations,
-      mimoRateLimiter: mimoBucket,
-      // Keep a vision call's RPM wait inside its stricter three-second queue budget
-      // instead of extending it to the retained account setting's five-second allowance.
-      mimoRateLimitMaxWaitSeconds: Math.min(config.mimoQueueMaxWait, config.visionQueueMaxWaitMs / 1000),
       caps: {
         maxImages: config.visionMaxImages,
         maxImageBytes: config.visionMaxImageBytes,
@@ -1848,9 +1852,9 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
         }
       }
 
-      // Media workbenches use MiMo V2.5 directly for visual understanding and
-      // evidence-based planning. This route is intentionally separate from Agent
-      // chat, which is owned exclusively by managed DeepSeek Responses.
+      // Image Workbench uses Qwen3-VL-Flash through this authenticated Gateway
+      // boundary. The request is role/schema locked; Qwen receives no project
+      // write authority and its result remains non-blocking advice.
       if (request.method === 'POST' && url.pathname === '/v1/media/reasoning') {
         const identity = auth(authority, request)
         requireProviderProtocol(request)
@@ -1864,13 +1868,13 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
           ingressBodyBudget,
           config.ingressBodyReadTimeoutMs,
           async rawBody => {
-            if (!mimoMediaReasoning) throw new HttpError(503, 'MiMo 媒体理解服务未配置')
+            if (!config.qwenKey) throw new HttpError(503, 'Qwen 图片理解服务未配置')
             const inputBytes = Buffer.byteLength(rawBody, 'utf8')
             const receipt = reserveMetered(
               identity,
-              'MediaReasoning',
-              `${usageOperation}:media`,
-              usageFingerprint(`MediaReasoning\0${rawBody}`),
+              'VisualEvidence',
+              `${usageOperation}:qwen-image`,
+              usageFingerprint(`VisualEvidence\0qwen-image\0${rawBody}`),
               {
                 requests: 1,
                 input_bytes: inputBytes,
@@ -1881,7 +1885,21 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
             return await runMeteredStream(
               receipt,
               usageOperation,
-              () => mimoMediaReasoning(request, rawBody, identity.owner, identity.principalId),
+              async () => {
+                try {
+                  return await requestQwenImageReasoning(rawBody, {
+                    baseUrl: config.qwenBase,
+                    apiKey: config.qwenKey,
+                    modelId: visualEvidenceRegistryEntry().model_id,
+                    fetchImpl,
+                    signal: request.signal,
+                    timeoutMs: config.qwenReasoningTimeoutMs,
+                  })
+                } catch (error) {
+                  if (error instanceof QwenImageReasoningGatewayError) throw new HttpError(error.status, error.publicMessage)
+                  throw error
+                }
+              },
             )
           },
         )

@@ -4,7 +4,7 @@ WORKDIR /app/gateway
 
 # Keep the Gateway image to its explicit runtime closure. In particular, it
 # contains no desktop credentials, Thread Store or old TypeScript Agent code.
-COPY --chown=bun:bun gateway/app.ts gateway/installationAuth.ts gateway/transcription.ts gateway/modelCapacity.ts gateway/managedResponses.ts gateway/mimoChat.ts gateway/visionBridge.ts gateway/providerRegistry.ts gateway/usageBudget.ts gateway/operationResultStore.ts gateway/validate-deployment-env.ts ./
+COPY --chown=bun:bun gateway/app.ts gateway/installationAuth.ts gateway/transcription.ts gateway/modelCapacity.ts gateway/managedResponses.ts gateway/mimoChat.ts gateway/visionBridge.ts gateway/qwenImageReasoning.ts gateway/providerRegistry.ts gateway/usageBudget.ts gateway/operationResultStore.ts gateway/validate-deployment-env.ts ./
 COPY --chown=bun:bun ts/shared/product/providerContracts.ts /app/ts/shared/product/providerContracts.ts
 COPY --chown=bun:bun ts/shared/product/providerGateway.ts /app/ts/shared/product/providerGateway.ts
 

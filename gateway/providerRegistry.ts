@@ -31,7 +31,9 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
   {
     model_id: 'mimo-v2.5',
     provider: 'mimo',
-    capabilities: ['VisualEvidence', 'MediaReasoning'],
+    // Retained only for consumers outside Image Workbench. Image understanding
+    // and assessment move to the separate Qwen VisualEvidence descriptor.
+    capabilities: ['MediaReasoning'],
     worker_env_source: { variable: 'GW_MIMO_MODEL', slot_aliases: [] },
     body_caps: {
       CHAT_TEXT_BODY_MAX_BYTES: 24 * 1024 * 1024,
@@ -39,6 +41,20 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
       IMAGE_GENERATION_BODY_MAX_BYTES: 32 * 1024 * 1024,
     },
     resume_evidence: { path: 'gateway/visionBridge.ts', status: 'conservative' },
+    contract_version: PROVIDER_REGISTRY_CONTRACT_VERSION,
+    verification_date: PROVIDER_REGISTRY_VERIFICATION_DATE,
+  },
+  {
+    model_id: 'qwen3-vl-flash',
+    provider: 'qwen',
+    capabilities: ['VisualEvidence'],
+    worker_env_source: { variable: 'GW_QWEN_MODEL', slot_aliases: [] },
+    body_caps: {
+      CHAT_TEXT_BODY_MAX_BYTES: 24 * 1024 * 1024,
+      VISION_BODY_MAX_BYTES: 16 * 1024 * 1024,
+      IMAGE_GENERATION_BODY_MAX_BYTES: 32 * 1024 * 1024,
+    },
+    resume_evidence: { path: 'gateway/qwenImageReasoning.ts', status: 'conservative' },
     contract_version: PROVIDER_REGISTRY_CONTRACT_VERSION,
     verification_date: PROVIDER_REGISTRY_VERIFICATION_DATE,
   },

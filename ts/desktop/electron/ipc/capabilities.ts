@@ -10,6 +10,8 @@ import {
   imageDestinationGrantRequestSchema,
   imageDeliverySpecRevisionInputSchema,
   imageExportInputSchema,
+  imageUnderstandingInputSchema,
+  imageVisualAssessmentInputSchema,
   createCreativePlanInputSchema,
   createGenerationRoundInputSchema,
   decideImageCandidateInputSchema,
@@ -761,6 +763,10 @@ export const imageCreateCreativePlanIpcPayloadSchema = z.object({
   projectId: mediaIdSchema,
   input: createCreativePlanInputSchema,
 }).strict()
+export const imageUnderstandProjectIpcPayloadSchema = z.object({
+  projectId: mediaIdSchema,
+  input: imageUnderstandingInputSchema,
+}).strict()
 export const imageEstimateGenerationRoundIpcPayloadSchema = z.object({
   projectId: mediaIdSchema,
   input: estimateGenerationRoundInputSchema,
@@ -778,6 +784,16 @@ export const imageDecideCandidateIpcPayloadSchema = z.object({
   projectId: mediaIdSchema,
   candidateId: mediaIdSchema,
   input: decideImageCandidateInputSchema,
+}).strict()
+export const imageAssessCandidateVisualIpcPayloadSchema = z.object({
+  projectId: mediaIdSchema,
+  candidateId: mediaIdSchema,
+  input: imageVisualAssessmentInputSchema,
+}).strict()
+export const imageAssessVersionVisualIpcPayloadSchema = z.object({
+  projectId: mediaIdSchema,
+  versionId: mediaIdSchema,
+  input: imageVisualAssessmentInputSchema,
 }).strict()
 export const imageAdoptCandidateIpcPayloadSchema = z.object({
   projectId: mediaIdSchema,
@@ -835,10 +851,13 @@ const imageStartOperation: Validator = value => imageStartOperationIpcPayloadSch
 const imageUpdateUnknownProject: Validator = value => imageUpdateUnknownProjectIpcPayloadSchema.safeParse(value).success
 const imageSaveOutput: Validator = value => imageSaveOutputIpcPayloadSchema.safeParse(value).success
 const imageCreateCreativePlan: Validator = value => imageCreateCreativePlanIpcPayloadSchema.safeParse(value).success
+const imageUnderstandProject: Validator = value => imageUnderstandProjectIpcPayloadSchema.safeParse(value).success
 const imageEstimateGenerationRound: Validator = value => imageEstimateGenerationRoundIpcPayloadSchema.safeParse(value).success
 const imageEstimateDerivation: Validator = value => imageEstimateDerivationIpcPayloadSchema.safeParse(value).success
 const imageCreateGenerationRound: Validator = value => imageCreateGenerationRoundIpcPayloadSchema.safeParse(value).success
 const imageDecideCandidate: Validator = value => imageDecideCandidateIpcPayloadSchema.safeParse(value).success
+const imageAssessCandidateVisual: Validator = value => imageAssessCandidateVisualIpcPayloadSchema.safeParse(value).success
+const imageAssessVersionVisual: Validator = value => imageAssessVersionVisualIpcPayloadSchema.safeParse(value).success
 const imageAdoptCandidate: Validator = value => imageAdoptCandidateIpcPayloadSchema.safeParse(value).success
 const imageDeriveCandidate: Validator = value => imageDeriveCandidateIpcPayloadSchema.safeParse(value).success
 const imageCancelGenerationOperation: Validator = value => imageCancelGenerationOperationIpcPayloadSchema.safeParse(value).success
@@ -948,10 +967,13 @@ export const ELECTRON_IPC_VALIDATORS = {
   [ELECTRON_IPC_CHANNELS.imageUpdateUnknownProject]: imageUpdateUnknownProject,
   [ELECTRON_IPC_CHANNELS.imageSaveOutput]: imageSaveOutput,
   [ELECTRON_IPC_CHANNELS.imageCreateCreativePlan]: imageCreateCreativePlan,
+  [ELECTRON_IPC_CHANNELS.imageUnderstandProject]: imageUnderstandProject,
   [ELECTRON_IPC_CHANNELS.imageEstimateGenerationRound]: imageEstimateGenerationRound,
   [ELECTRON_IPC_CHANNELS.imageEstimateDerivation]: imageEstimateDerivation,
   [ELECTRON_IPC_CHANNELS.imageCreateGenerationRound]: imageCreateGenerationRound,
   [ELECTRON_IPC_CHANNELS.imageDecideCandidate]: imageDecideCandidate,
+  [ELECTRON_IPC_CHANNELS.imageAssessCandidateVisual]: imageAssessCandidateVisual,
+  [ELECTRON_IPC_CHANNELS.imageAssessVersionVisual]: imageAssessVersionVisual,
   [ELECTRON_IPC_CHANNELS.imageAdoptCandidate]: imageAdoptCandidate,
   [ELECTRON_IPC_CHANNELS.imageDeriveCandidate]: imageDeriveCandidate,
   [ELECTRON_IPC_CHANNELS.imageCancelGenerationOperation]: imageCancelGenerationOperation,
