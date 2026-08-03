@@ -22,22 +22,22 @@ export type CanvasRenderOutput = {
   dependency_hashes: `sha256:${string}`[]
   font_hashes: `sha256:${string}`[]
   text_manifest_hash: `sha256:${string}`
-  text_layout_manifest: Array<{ id: string; font_hash: `sha256:${string}`; font_size: number; width: number; height: number; lines: string[] }>
-  qr_manifest: Array<{ id: string; payload: string; x: number; y: number; size: number }>
+  text_layout_manifest: Array<{
+    id: string; text_hash: `sha256:${string}`; font_hash: `sha256:${string}`; font_size: number; width: number; height: number; lines: string[]; overflow: 'fit' | 'shrunk' | 'clipped'
+    runs: Array<{ line_index: number; text: string; glyphs: Array<{ glyph_id: number; x: number; y: number; advance_x: number; advance_y: number }> }>
+    pixel_bounds: { left: number; top: number; width: number; height: number; empty: boolean }
+  }>
+  qr_manifest: Array<{ id: string; payload: string; x: number; y: number; width: number; height: number; rotation_degrees: number }>
   renderer_version: string
   text_layout_engine_version: string
 }
 
-const RENDERER_VERSION = 'billiardbuddy-canvas-renderer-v3'
-const TEXT_LAYOUT_ENGINE_VERSION = 'fontkit-cjk-wrap-v1'
+const RENDERER_VERSION = 'billiardbuddy-canvas-renderer-v4'
+const TEXT_LAYOUT_ENGINE_VERSION = 'fontkit-cjk-wrap-runs-v2'
 const BUILTIN_FONT_ID = 'font_builtin_0001'
 
 function sha(bytes: Buffer | string): `sha256:${string}` {
   return `sha256:${createHash('sha256').update(bytes).digest('hex')}`
-}
-
-function escapeXml(value: string): string {
-  return value.replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' }[char]!))
 }
 
 /** Reject active/network-capable SVG before it is ever handed to a renderer. */
@@ -74,7 +74,7 @@ function builtinFontPath(): string {
 type FormalFontFace = {
   unitsPerEm: number
   hasGlyphForCodePoint?(codePoint: number): boolean
-  layout(text: string): { positions: Array<{ xAdvance: number }> }
+  layout(text: string): { glyphs: Array<{ id: number; path: { toSVG(): string } }>; positions: Array<{ xAdvance: number; yAdvance?: number; xOffset?: number; yOffset?: number }> }
 }
 
 type FormalFont = { path: string; hash: `sha256:${string}`; face: FormalFontFace }
@@ -138,7 +138,17 @@ function resolveColor(value: string, brandColors: Record<string, string>): strin
   return resolved
 }
 
-type TextLayout = { font: FormalFont; fontSize: number; width: number; height: number; lines: string[] }
+type TextLayout = {
+  font: FormalFont
+  fontSize: number
+  width: number
+  height: number
+  lines: string[]
+  overflow: 'fit' | 'shrunk' | 'clipped'
+}
+
+type RenderTransform = { x: number; y: number; width: number; height: number; rotation_degrees: number; scale_x: number; scale_y: number }
+type RenderedLayer = { bytes: Buffer; left: number; top: number; width: number; height: number }
 
 function textWidth(face: FormalFontFace, text: string, fontSize: number, letterSpacing: number): number {
   if (!text) return 0
@@ -182,6 +192,7 @@ function layoutText(layer: Extract<ImageCanvasLayer, { kind: 'text' }>): TextLay
         font, fontSize, lines: didOverflowWidth ? layer.text.split('\n') : lines,
         width: bounded(Number.isFinite(maxWidth) ? maxWidth : Math.max(fontSize, width)),
         height: bounded(Number.isFinite(maxHeight) && layer.overflow === 'clip' ? maxHeight : Math.max(fontSize * layer.line_height, height)),
+        overflow: layer.overflow === 'clip' ? 'clipped' : fontSize < layer.font_size ? 'shrunk' : 'fit',
       }
     }
     if (layer.overflow !== 'shrink_to_fit') break
@@ -190,22 +201,113 @@ function layoutText(layer: Extract<ImageCanvasLayer, { kind: 'text' }>): TextLay
 }
 
 function textSvg(layer: Extract<ImageCanvasLayer, { kind: 'text' }>, layout: TextLayout, brandColors: Record<string, string>): Buffer {
-  const x = layer.align === 'center' ? layout.width / 2 : layer.align === 'right' ? layout.width : 0
-  const lines = layout.lines.map((line, index) => `<tspan x="${x}" dy="${index === 0 ? layout.fontSize : layout.fontSize * layer.line_height}">${escapeXml(line)}</tspan>`).join('')
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${layout.width}" height="${layout.height}"><text x="${x}" y="0" font-family="BilliardBuddy Builtin CJK" font-size="${layout.fontSize}" font-weight="${layer.font_weight}" font-style="${layer.font_style}" letter-spacing="${layer.letter_spacing}" fill="${resolveColor(layer.fill, brandColors)}"${layer.stroke ? ` stroke="${resolveColor(layer.stroke, brandColors)}"` : ''} text-anchor="${layer.align === 'center' ? 'middle' : layer.align === 'right' ? 'end' : 'start'}">${lines}</text></svg>`
-  return svgBuffer(svg, layout.font.path)
+  const scale = layout.fontSize / layout.font.face.unitsPerEm
+  const paths = layout.lines.flatMap((line, lineIndex) => {
+    const run = layout.font.face.layout(line)
+    const lineWidth = textWidth(layout.font.face, line, layout.fontSize, layer.letter_spacing)
+    let cursor = layer.align === 'left' ? 0 : layer.align === 'center' ? (layout.width - lineWidth) / 2 : layout.width - lineWidth
+    const baseline = layout.fontSize + lineIndex * layout.fontSize * layer.line_height
+    return run.glyphs.map((glyph, index) => {
+      const position = run.positions[index] ?? { xAdvance: 0 }
+      const x = cursor + (position.xOffset ?? 0) * scale
+      const y = baseline + (position.yOffset ?? 0) * scale
+      cursor += position.xAdvance * scale + (index < run.glyphs.length - 1 ? layer.letter_spacing : 0)
+      return `<path d="${glyph.path.toSVG()}" transform="translate(${x} ${y}) scale(${scale} ${-scale})"/>`
+    })
+  }).join('')
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${layout.width}" height="${layout.height}"><g fill="${resolveColor(layer.fill, brandColors)}"${layer.stroke ? ` stroke="${resolveColor(layer.stroke, brandColors)}"` : ''}>${paths}</g></svg>`
+  return svgBuffer(svg)
 }
 
-export async function verifyRenderedQrManifest(bytes: Buffer, manifest: Array<{ id: string; payload: string; x: number; y: number; size: number }>): Promise<void> {
+function transformPoint(x: number, y: number, transform: RenderTransform): { x: number; y: number } {
+  const scaleX = transform.scale_x
+  const scaleY = transform.scale_y
+  const centerX = transform.width * scaleX / 2
+  const centerY = transform.height * scaleY / 2
+  const localX = x * scaleX - centerX
+  const localY = y * scaleY - centerY
+  const radians = transform.rotation_degrees * Math.PI / 180
+  return {
+    x: transform.x + centerX + localX * Math.cos(radians) - localY * Math.sin(radians),
+    y: transform.y + centerY + localX * Math.sin(radians) + localY * Math.cos(radians),
+  }
+}
+
+async function transformRenderedImage(source: Buffer, transform: RenderTransform): Promise<RenderedLayer> {
+  const targetWidth = bounded(transform.width * transform.scale_x)
+  const targetHeight = bounded(transform.height * transform.scale_y)
+  const scaled = await sharp(source).ensureAlpha().resize({ width: targetWidth, height: targetHeight, fit: 'fill' }).png().toBuffer()
+  const bytes = Buffer.from(await sharp(scaled).rotate(transform.rotation_degrees, { background: { r: 0, g: 0, b: 0, alpha: 0 } }).png().toBuffer())
+  const metadata = await sharp(bytes).metadata()
+  if (!metadata.width || !metadata.height) throw new ImageCanvasRendererError('变换后的图层缺少有效尺寸', 'CANVAS_RENDER_INVALID')
+  return {
+    bytes,
+    left: Math.round(transform.x + (targetWidth - metadata.width) / 2),
+    top: Math.round(transform.y + (targetHeight - metadata.height) / 2),
+    width: metadata.width,
+    height: metadata.height,
+  }
+}
+
+async function opaquePixelBounds(layer: RenderedLayer): Promise<{ left: number; top: number; width: number; height: number; empty: boolean }> {
+  const raw = await sharp(layer.bytes).ensureAlpha().raw().toBuffer({ resolveWithObject: true })
+  let minX = raw.info.width
+  let minY = raw.info.height
+  let maxX = -1
+  let maxY = -1
+  for (let y = 0; y < raw.info.height; y += 1) {
+    for (let x = 0; x < raw.info.width; x += 1) {
+      if (raw.data[(y * raw.info.width + x) * 4 + 3] === 0) continue
+      minX = Math.min(minX, x); minY = Math.min(minY, y); maxX = Math.max(maxX, x); maxY = Math.max(maxY, y)
+    }
+  }
+  if (maxX < 0 || maxY < 0) return { left: layer.left, top: layer.top, width: 0, height: 0, empty: true }
+  return { left: layer.left + minX, top: layer.top + minY, width: maxX - minX + 1, height: maxY - minY + 1, empty: false }
+}
+
+function textRuns(layer: Extract<ImageCanvasLayer, { kind: 'text' }>, layout: TextLayout): CanvasRenderOutput['text_layout_manifest'][number]['runs'] {
+  const transform: RenderTransform = {
+    x: layer.position.x, y: layer.position.y, width: layout.width, height: layout.height,
+    rotation_degrees: layer.rotation_degrees, scale_x: layer.scale_x ?? 1, scale_y: layer.scale_y ?? 1,
+  }
+  return layout.lines.map((line, lineIndex) => {
+    const run = layout.font.face.layout(line)
+    const lineWidth = textWidth(layout.font.face, line, layout.fontSize, layer.letter_spacing)
+    let cursor = layer.align === 'left' ? 0 : layer.align === 'center' ? (layout.width - lineWidth) / 2 : layout.width - lineWidth
+    const baseline = layout.fontSize + lineIndex * layout.fontSize * layer.line_height
+    return {
+      line_index: lineIndex,
+      text: line,
+      glyphs: run.glyphs.map((glyph, index) => {
+        const position = run.positions[index] ?? { xAdvance: 0 }
+        const advanceX = position.xAdvance * layout.fontSize / layout.font.face.unitsPerEm + (index < run.glyphs.length - 1 ? layer.letter_spacing : 0)
+        const advanceY = (position.yAdvance ?? 0) * layout.fontSize / layout.font.face.unitsPerEm
+        const point = transformPoint(
+          cursor + (position.xOffset ?? 0) * layout.fontSize / layout.font.face.unitsPerEm,
+          baseline + (position.yOffset ?? 0) * layout.fontSize / layout.font.face.unitsPerEm,
+          transform,
+        )
+        cursor += advanceX
+        return { glyph_id: glyph.id, x: point.x, y: point.y, advance_x: advanceX, advance_y: advanceY }
+      }),
+    }
+  })
+}
+
+export async function verifyRenderedQrManifest(bytes: Buffer, manifest: Array<{ id: string; payload: string; x: number; y: number; width: number; height: number; rotation_degrees: number }>): Promise<void> {
   for (const expected of manifest) {
     const metadata = await sharp(bytes).metadata()
     if (!metadata.width || !metadata.height) throw new ImageCanvasRendererError('最终导出二维码无法读取尺寸', 'CANVAS_QR_INVALID')
     const left = Math.max(0, Math.floor(expected.x))
     const top = Math.max(0, Math.floor(expected.y))
-    const width = Math.min(metadata.width - left, Math.ceil(expected.size))
-    const height = Math.min(metadata.height - top, Math.ceil(expected.size))
+    const width = Math.min(metadata.width - left, Math.ceil(expected.width))
+    const height = Math.min(metadata.height - top, Math.ceil(expected.height))
     if (width < 16 || height < 16) throw new ImageCanvasRendererError(`最终导出二维码 ${expected.id} 超出画板`, 'CANVAS_QR_INVALID')
-    const raw = await sharp(bytes).extract({ left, top, width, height }).ensureAlpha().raw().toBuffer({ resolveWithObject: true })
+    const cropped = sharp(bytes).extract({ left, top, width, height }).ensureAlpha()
+    const normalized = expected.rotation_degrees === 0
+      ? cropped
+      : cropped.rotate(-expected.rotation_degrees, { background: { r: 255, g: 255, b: 255, alpha: 1 } })
+    const raw = await normalized.ensureAlpha().raw().toBuffer({ resolveWithObject: true })
     const decoded = jsQR(new Uint8ClampedArray(raw.data.buffer, raw.data.byteOffset, raw.data.byteLength), raw.info.width, raw.info.height)
     if (!decoded || decoded.data !== expected.payload) throw new ImageCanvasRendererError(`最终导出二维码 ${expected.id} 无法解码`, 'CANVAS_QR_INVALID')
   }
@@ -257,7 +359,8 @@ export class DeterministicImageCanvasRenderer {
     const fontHashes = new Set<`sha256:${string}`>()
     const textManifest: CanvasRenderOutput['text_layout_manifest'] = []
     const qrManifest: CanvasRenderOutput['qr_manifest'] = []
-    let output = sharp({
+    const composites: Array<{ input: Buffer; left: number; top: number; blend: Blend }> = []
+    const output = sharp({
       create: {
         width: document.width,
         height: document.height,
@@ -293,33 +396,41 @@ export class DeterministicImageCanvasRenderer {
           image = image.extract({ left: Math.floor(layer.source_crop.x), top: Math.floor(layer.source_crop.y), width: Math.floor(layer.source_crop.width), height: Math.floor(layer.source_crop.height) })
         }
         const transform = layer.transform
-        const targetWidth = bounded(transform.width * transform.scale_x)
-        const targetHeight = bounded(transform.height * transform.scale_y)
-        let rendered = Buffer.from(await image.resize({ width: targetWidth, height: targetHeight, fit: 'fill' }).png().toBuffer())
+        const baseWidth = bounded(transform.width)
+        const baseHeight = bounded(transform.height)
+        let rendered = Buffer.from(await image.resize({ width: baseWidth, height: baseHeight, fit: 'fill' }).png().toBuffer())
         const mask = layer.kind === 'raster' ? masks.get(layer.id) : undefined
         if (mask) {
           const maskSource = assets.get(mask.source_asset_id)
           if (!maskSource) throw new ImageCanvasRendererError('画布蒙版素材不存在', 'CANVAS_ASSET_MISSING')
           dependencyHashes.add(maskSource.content_hash)
-          const maskPixels = await sharp(maskSource.bytes).rotate().ensureAlpha().resize({ width: targetWidth, height: targetHeight, fit: 'fill' }).png().toBuffer()
+          const maskPixels = await sharp(maskSource.bytes).rotate().ensureAlpha().resize({ width: baseWidth, height: baseHeight, fit: 'fill' }).png().toBuffer()
           rendered = Buffer.from(await applyRasterMask(rendered, maskPixels, mask.mode))
         }
-        rendered = Buffer.from(await sharp(rendered).rotate(transform.rotation_degrees, { background: { r: 0, g: 0, b: 0, alpha: 0 } }).png().toBuffer())
         if (layer.kind === 'raster') rendered = Buffer.from(await applyOpacity(rendered, layer.opacity))
-        output = output.composite([{ input: rendered, left: Math.round(transform.x), top: Math.round(transform.y), blend: layer.kind === 'raster' ? toBlend(layer.blend_mode) : 'over' }])
+        const transformed = await transformRenderedImage(rendered, transform)
+        composites.push({ input: transformed.bytes, left: transformed.left, top: transformed.top, blend: layer.kind === 'raster' ? toBlend(layer.blend_mode) : 'over' })
         continue
       }
       if (layer.kind === 'shape') {
         const image = await applyOpacity(await sharp(shapeSvg(layer, brandColors)).ensureAlpha().png().toBuffer(), layer.opacity)
-        output = output.composite([{ input: image, left: Math.round(layer.transform.x), top: Math.round(layer.transform.y), blend: 'over' }])
+        const transformed = await transformRenderedImage(image, layer.transform)
+        composites.push({ input: transformed.bytes, left: transformed.left, top: transformed.top, blend: 'over' })
         continue
       }
       if (layer.kind === 'text') {
         const layout = layoutText(layer)
         fontHashes.add(layout.font.hash)
-        textManifest.push({ id: layer.id, font_hash: layout.font.hash, font_size: layout.fontSize, width: layout.width, height: layout.height, lines: layout.lines })
         const image = await applyOpacity(await sharp(textSvg(layer, layout, brandColors)).ensureAlpha().png().toBuffer(), layer.opacity)
-        output = output.composite([{ input: image, left: Math.round(layer.position.x), top: Math.round(layer.position.y), blend: 'over' }])
+        const transformed = await transformRenderedImage(image, {
+          x: layer.position.x, y: layer.position.y, width: layout.width, height: layout.height,
+          rotation_degrees: layer.rotation_degrees, scale_x: layer.scale_x ?? 1, scale_y: layer.scale_y ?? 1,
+        })
+        textManifest.push({
+          id: layer.id, text_hash: sha(layer.text), font_hash: layout.font.hash, font_size: layout.fontSize, width: layout.width, height: layout.height,
+          lines: layout.lines, overflow: layout.overflow, runs: textRuns(layer, layout), pixel_bounds: await opaquePixelBounds(transformed),
+        })
+        composites.push({ input: transformed.bytes, left: transformed.left, top: transformed.top, blend: 'over' })
         continue
       }
       if (layer.kind === 'qrcode') {
@@ -334,15 +445,28 @@ export class DeterministicImageCanvasRenderer {
           if (!code) throw new ImageCanvasRendererError('二维码来源资产无法解码', 'CANVAS_QR_INVALID')
           payload = code.data
         }
-        const size = bounded(Math.min(layer.transform.width, layer.transform.height))
-        qrManifest.push({ id: layer.id, payload, x: layer.transform.x, y: layer.transform.y, size })
-        const image = await QRCode.toBuffer(payload, { type: 'png', errorCorrectionLevel: layer.error_correction, margin: layer.quiet_zone_modules, width: size })
-        output = output.composite([{ input: image, left: Math.round(layer.transform.x), top: Math.round(layer.transform.y), blend: 'over' }])
+        if (layer.transform.width !== layer.transform.height || layer.transform.scale_x !== layer.transform.scale_y) {
+          throw new ImageCanvasRendererError('正式二维码必须保持正方形和等比缩放', 'CANVAS_QR_INVALID')
+        }
+        // Generate at the resolved scale instead of interpolating QR modules.
+        // This preserves the module grid before optional whole-image rotation.
+        const size = bounded(layer.transform.width * layer.transform.scale_x)
+        const image = await sharp(await QRCode.toBuffer(payload, { type: 'png', errorCorrectionLevel: layer.error_correction, margin: layer.quiet_zone_modules, width: size }))
+          .flatten({ background: '#ffffff' }).png().toBuffer()
+        const transformed = await transformRenderedImage(image, {
+          ...layer.transform,
+          width: size,
+          height: size,
+          scale_x: 1,
+          scale_y: 1,
+        })
+        qrManifest.push({ id: layer.id, payload, x: transformed.left, y: transformed.top, width: transformed.width, height: transformed.height, rotation_degrees: layer.transform.rotation_degrees })
+        composites.push({ input: transformed.bytes, left: transformed.left, top: transformed.top, blend: 'over' })
       }
       }
     }
     await renderLayerList(document.layers)
-    const bytes = await output.png({ compressionLevel: 9, adaptiveFiltering: false, palette: false }).toBuffer()
+    const bytes = await output.composite(composites).png({ compressionLevel: 9, adaptiveFiltering: false, palette: false }).toBuffer()
     await verifyRenderedQrManifest(bytes, qrManifest)
     return {
       bytes,
