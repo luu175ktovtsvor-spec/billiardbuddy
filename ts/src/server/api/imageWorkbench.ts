@@ -20,6 +20,21 @@ import {
   type PublicImageWorkbenchProject,
   type PublicMediaTask,
 } from '../../../shared/contracts/media.js'
+import {
+  adoptImageCandidateInputSchema,
+  createCreativePlanInputSchema,
+  createGenerationRoundInputSchema,
+  decideImageCandidateInputSchema,
+  deriveImageCandidateInputSchema,
+  estimateGenerationRoundInputSchema,
+  publicImageCandidateGroupSchema,
+  publicImageCandidateSchema,
+  publicImageOperationV2Schema,
+  updateImageReferenceControlInputSchema,
+  type ImageCandidate,
+  type ImageCandidateGroup,
+  type ImageOperationV2,
+} from '../../../shared/contracts/imageGeneration.js'
 import { ApiError, errorResponse } from '../middleware/errorHandler.js'
 import { ImageWorkbenchService, ImageWorkbenchServiceError } from '../services/imageWorkbenchService.js'
 import { ImageAssetStoreError } from '../services/imageAssetStore.js'
@@ -170,6 +185,24 @@ export function publicImageTask(operation: ImageOperation): PublicMediaTask {
   })
 }
 
+function publicGenerationOperation(operation: ImageOperationV2) {
+  return publicImageOperationV2Schema.parse(operation)
+}
+
+function publicCandidate(projectId: string, candidate: ImageCandidate) {
+  return publicImageCandidateSchema.parse({
+    ...candidate,
+    image_path: `/api/images/projects/${projectId}/candidates/${candidate.id}/content`,
+  })
+}
+
+function publicCandidateGroup(projectId: string, group: ImageCandidateGroup, candidates: ImageCandidate[]) {
+  return publicImageCandidateGroupSchema.parse({
+    ...group,
+    candidates: candidates.map(candidate => publicCandidate(projectId, candidate)),
+  })
+}
+
 function publicImageEvent(event: ImageOperationEvent) {
   return {
     schema_version: event.schema_version,
@@ -313,18 +346,102 @@ export function createImageWorkbenchDomainApiHandler(
       }
       if (area === 'operations') {
         const operationId = segments[3]
-        if (!operationId || segments[5]) throw ApiError.badRequest('缺少图片操作 ID')
+        if (!operationId) throw ApiError.badRequest('缺少图片操作 ID')
+        if (segments[4] === 'commands') {
+          if (req.method !== 'POST' || segments[5] !== 'cancel' || segments[6]) throw methodNotAllowed(req.method)
+          requireMediaUiCapability(req, mediaUiCapability)
+          return Response.json({ operation: publicGenerationOperation(await service.cancelGenerationOperation(operationId)) })
+        }
         if (segments[4] === 'cancel') {
-          if (req.method !== 'POST') throw methodNotAllowed(req.method)
+          if (req.method !== 'POST' || segments[5]) throw methodNotAllowed(req.method)
           return Response.json({ task: publicImageTask(await service.cancelOperation(operationId)) })
         }
-        if (segments[4]) throw ApiError.badRequest('无效的图片操作')
+        if (segments[4] || segments[5]) throw ApiError.badRequest('无效的图片操作')
         if (req.method !== 'GET') throw methodNotAllowed(req.method)
+        const generation = await service.findGenerationOperation(operationId)
+        if (generation) return Response.json({ operation: publicGenerationOperation(generation) })
         return Response.json({ task: publicImageTask(await service.getOperation(operationId)) })
       }
       if (area !== 'projects') throw ApiError.notFound('找不到生图接口')
       const projectId = segments[3]
       const action = segments[4]
+      if (projectId && action === 'creative-plans') {
+        const planId = segments[5]
+        if (!planId) {
+          if (req.method !== 'POST' || segments[6]) throw methodNotAllowed(req.method)
+          requireMediaUiCapability(req, mediaUiCapability)
+          const input = createCreativePlanInputSchema.parse(await parseJson(req))
+          return Response.json({ plan: await service.createCreativePlan(projectId, input) }, { status: 201 })
+        }
+        if (req.method !== 'GET' || segments[6]) throw methodNotAllowed(req.method)
+        return Response.json({ plan: await service.getCreativePlan(projectId, planId) })
+      }
+      if (projectId && action === 'references') {
+        const referenceId = segments[5]
+        if (referenceId && segments[6] === 'commands' && segments[7] === 'update-control' && !segments[8] && req.method === 'POST') {
+          requireMediaUiCapability(req, mediaUiCapability)
+          const input = updateImageReferenceControlInputSchema.parse(await parseJson(req))
+          return Response.json({ project: publicImageProject(await service.updateReferenceControl(projectId, referenceId, input)) })
+        }
+      }
+      if (projectId && action === 'generation-rounds') {
+        const roundId = segments[5]
+        if (roundId === 'estimate') {
+          if (req.method !== 'POST' || segments[6]) throw methodNotAllowed(req.method)
+          requireMediaUiCapability(req, mediaUiCapability)
+          const input = estimateGenerationRoundInputSchema.parse(await parseJson(req))
+          return Response.json(await service.estimateGenerationRound(projectId, input))
+        }
+        if (!roundId) {
+          if (req.method !== 'POST' || segments[6]) throw methodNotAllowed(req.method)
+          requireMediaUiCapability(req, mediaUiCapability)
+          const input = createGenerationRoundInputSchema.parse(await parseJson(req))
+          const created = await service.createGenerationRound(projectId, input)
+          return Response.json({
+            round: created.round,
+            operations: created.operations.map(publicGenerationOperation),
+          }, { status: 202 })
+        }
+        if (req.method !== 'GET' || segments[6]) throw methodNotAllowed(req.method)
+        const result = await service.getGenerationRound(projectId, roundId)
+        return Response.json({ round: result.round, operations: result.operations.map(publicGenerationOperation) })
+      }
+      if (projectId && action === 'candidate-groups') {
+        const groupId = segments[5]
+        if (!groupId || req.method !== 'GET' || segments[6]) throw methodNotAllowed(req.method)
+        const result = await service.getCandidateGroup(projectId, groupId)
+        return Response.json({ candidate_group: publicCandidateGroup(projectId, result.group, result.candidates) })
+      }
+      if (projectId && action === 'candidates') {
+        const candidateId = segments[5]
+        const candidateAction = segments[6]
+        if (!candidateId) throw ApiError.badRequest('缺少图片候选 ID')
+        if (candidateAction === 'content' && !segments[7] && req.method === 'GET') return await service.candidateResponse(projectId, candidateId)
+        if (candidateAction === 'decisions' && !segments[7] && req.method === 'POST') {
+          requireMediaUiCapability(req, mediaUiCapability)
+          const input = decideImageCandidateInputSchema.parse(await parseJson(req))
+          return Response.json({ decision: await service.decideCandidate(projectId, candidateId, input) })
+        }
+        if (candidateAction === 'adoptions' && !segments[7] && req.method === 'POST') {
+          requireMediaUiCapability(req, mediaUiCapability)
+          const input = adoptImageCandidateInputSchema.parse(await parseJson(req))
+          const adopted = await service.adoptCandidate(projectId, candidateId, input)
+          return Response.json({
+            project: publicImageProject(adopted.project),
+            adoptions: adopted.adoptions,
+          })
+        }
+        if (candidateAction === 'derivations' && !segments[7] && req.method === 'POST') {
+          requireMediaUiCapability(req, mediaUiCapability)
+          const input = deriveImageCandidateInputSchema.parse(await parseJson(req))
+          const derived = await service.deriveCandidate(projectId, candidateId, input)
+          return Response.json({ round: derived.round, operation: publicGenerationOperation(derived.operation) }, { status: 202 })
+        }
+        throw methodNotAllowed(req.method)
+      }
+      if (projectId && action === 'operations' && !segments[5] && req.method === 'GET') {
+        return Response.json({ operations: (await service.listGenerationOperations(projectId)).map(publicGenerationOperation) })
+      }
       if (projectId && action === 'events') {
         if (req.method !== 'GET' || segments[5]) throw methodNotAllowed(req.method)
         const cursor = Number(url.searchParams.get('cursor') ?? 0)

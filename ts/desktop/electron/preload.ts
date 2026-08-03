@@ -289,6 +289,38 @@ const media = {
       ELECTRON_IPC_CHANNELS.imageSaveOutput,
       { projectId, input },
     ),
+    createCreativePlan: (projectId: string, input: unknown) => invoke(
+      ELECTRON_IPC_CHANNELS.imageCreateCreativePlan,
+      { projectId, input },
+    ),
+    estimateGenerationRound: (projectId: string, input: unknown) => invoke(
+      ELECTRON_IPC_CHANNELS.imageEstimateGenerationRound,
+      { projectId, input },
+    ),
+    createGenerationRound: (projectId: string, input: unknown) => invoke(
+      ELECTRON_IPC_CHANNELS.imageCreateGenerationRound,
+      { projectId, input },
+    ),
+    decideCandidate: (projectId: string, candidateId: string, input: unknown) => invoke(
+      ELECTRON_IPC_CHANNELS.imageDecideCandidate,
+      { projectId, candidateId, input },
+    ),
+    adoptCandidate: (projectId: string, candidateId: string, input: unknown) => invoke(
+      ELECTRON_IPC_CHANNELS.imageAdoptCandidate,
+      { projectId, candidateId, input },
+    ),
+    deriveCandidate: (projectId: string, candidateId: string, input: unknown) => invoke(
+      ELECTRON_IPC_CHANNELS.imageDeriveCandidate,
+      { projectId, candidateId, input },
+    ),
+    cancelGenerationOperation: (operationId: string) => invoke(
+      ELECTRON_IPC_CHANNELS.imageCancelGenerationOperation,
+      { operationId },
+    ),
+    updateReferenceControl: (projectId: string, referenceId: string, input: unknown) => invoke(
+      ELECTRON_IPC_CHANNELS.imageUpdateReferenceControl,
+      { projectId, referenceId, input },
+    ),
   },
   videos: {
     addSource: (projectId: string, path: string) => invoke(

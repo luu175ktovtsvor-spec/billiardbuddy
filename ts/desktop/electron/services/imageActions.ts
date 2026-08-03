@@ -8,6 +8,18 @@ import {
   type StartImageOperationInput,
   type UpdateImageProjectInput,
 } from '../../../shared/contracts/media'
+import type {
+  AdoptImageCandidateInput,
+  CreateCreativePlanInput,
+  CreateGenerationRoundInput,
+  DecideImageCandidateInput,
+  DeriveImageCandidateInput,
+  EstimateGenerationRoundInput,
+  ImageCreativePlan,
+  ImageGenerationRound,
+  PublicImageOperationV2,
+  UpdateImageReferenceControlInput,
+} from '../../../shared/contracts/imageGeneration'
 
 type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
 
@@ -52,6 +64,45 @@ export class ElectronImageActions {
         : `/api/images/projects/${encodeURIComponent(projectId)}/outputs/${encodeURIComponent(resultId)}/save`,
       { output_path: input.output_path },
     )
+  }
+
+  createCreativePlan(projectId: string, input: CreateCreativePlanInput): Promise<{ plan: ImageCreativePlan }> {
+    return this.post(`/api/images/projects/${encodeURIComponent(projectId)}/creative-plans`, input)
+  }
+
+  estimateGenerationRound(projectId: string, input: EstimateGenerationRoundInput): Promise<{
+    estimate_hash: string
+    direction_count: number
+    paid_operation_count: number
+    candidate_count_per_operation: number
+    concurrency: number
+    price_upper_bound: null
+  }> {
+    return this.post(`/api/images/projects/${encodeURIComponent(projectId)}/generation-rounds/estimate`, input)
+  }
+
+  createGenerationRound(projectId: string, input: CreateGenerationRoundInput): Promise<{ round: ImageGenerationRound; operations: PublicImageOperationV2[] }> {
+    return this.post(`/api/images/projects/${encodeURIComponent(projectId)}/generation-rounds`, input)
+  }
+
+  decideCandidate(projectId: string, candidateId: string, input: DecideImageCandidateInput): Promise<unknown> {
+    return this.post(`/api/images/projects/${encodeURIComponent(projectId)}/candidates/${encodeURIComponent(candidateId)}/decisions`, input)
+  }
+
+  adoptCandidate(projectId: string, candidateId: string, input: AdoptImageCandidateInput): Promise<unknown> {
+    return this.post(`/api/images/projects/${encodeURIComponent(projectId)}/candidates/${encodeURIComponent(candidateId)}/adoptions`, input)
+  }
+
+  deriveCandidate(projectId: string, candidateId: string, input: DeriveImageCandidateInput): Promise<{ round: ImageGenerationRound; operation: PublicImageOperationV2 }> {
+    return this.post(`/api/images/projects/${encodeURIComponent(projectId)}/candidates/${encodeURIComponent(candidateId)}/derivations`, input)
+  }
+
+  cancelGenerationOperation(operationId: string): Promise<{ operation: PublicImageOperationV2 }> {
+    return this.post(`/api/images/operations/${encodeURIComponent(operationId)}/commands/cancel`)
+  }
+
+  updateReferenceControl(projectId: string, referenceId: string, input: UpdateImageReferenceControlInput): Promise<{ project: ImageWorkbenchProject }> {
+    return this.post(`/api/images/projects/${encodeURIComponent(projectId)}/references/${encodeURIComponent(referenceId)}/commands/update-control`, input)
   }
 
   private async post<T>(path: string, body?: unknown): Promise<T> {
