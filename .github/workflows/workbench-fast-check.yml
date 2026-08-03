@@ -38,6 +38,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
+          submodules: recursive
           persist-credentials: false
 
       - uses: oven-sh/setup-bun@v2
@@ -58,6 +59,7 @@ jobs:
           bun test --preload ./test/setup.ts --timeout 20000
           bun run typecheck:server
           bun run audit:source
+          bun run verify:codex-engine-source
 
       - name: 验证 Electron 与桌面前端
         working-directory: ts

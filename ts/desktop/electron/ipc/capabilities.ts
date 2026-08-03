@@ -178,6 +178,18 @@ const nativeSortDirection = (value: unknown): boolean =>
 const nativeThreadSortKey = (value: unknown): boolean =>
   value === undefined || value === 'created_at' || value === 'updated_at' || value === 'recency_at'
 
+const nativeThreadSourceKind = (value: unknown): boolean =>
+  value === 'cli'
+  || value === 'vscode'
+  || value === 'exec'
+  || value === 'appServer'
+  || value === 'subAgent'
+  || value === 'subAgentReview'
+  || value === 'subAgentCompact'
+  || value === 'subAgentThreadSpawn'
+  || value === 'subAgentOther'
+  || value === 'unknown'
+
 const nativeThreadSearchTerm = (value: unknown): boolean =>
   typeof value === 'string' && value.trim().length > 0 && value.length <= 512 && !/[\u0000\r\n]/.test(value)
 
@@ -186,7 +198,20 @@ const nativeTurnItemsView = (value: unknown): boolean =>
 
 const nativeAgentListThreads: Validator = value =>
   isRecord(value)
-  && hasOnlyKeys(value, ['cwd', 'cursor', 'limit', 'archived', 'searchTerm', 'sortKey', 'sortDirection'])
+  && hasOnlyKeys(value, [
+    'cwd',
+    'cursor',
+    'limit',
+    'archived',
+    'searchTerm',
+    'sortKey',
+    'sortDirection',
+    'sectionId',
+    'filterCwds',
+    'sourceKinds',
+    'parentThreadId',
+    'ancestorThreadId',
+  ])
   && nativeWorkspacePath(value.cwd)
   && nativePageCursor(value.cursor)
   && nativePageLimit(value.limit)
@@ -194,6 +219,32 @@ const nativeAgentListThreads: Validator = value =>
   && (value.searchTerm === undefined || nativeThreadSearchTerm(value.searchTerm))
   && nativeThreadSortKey(value.sortKey)
   && nativeSortDirection(value.sortDirection)
+  && (value.sectionId === undefined || value.sectionId === null || nativeCodexId(value.sectionId))
+  && (
+    value.filterCwds === undefined
+    || Array.isArray(value.filterCwds)
+      && value.filterCwds.length > 0
+      && value.filterCwds.length <= 64
+      && value.filterCwds.every(nativeWorkspacePath)
+  )
+  && (
+    value.sourceKinds === undefined
+    || Array.isArray(value.sourceKinds)
+      && value.sourceKinds.length > 0
+      && value.sourceKinds.length <= 10
+      && value.sourceKinds.every(nativeThreadSourceKind)
+      && new Set(value.sourceKinds).size === value.sourceKinds.length
+  )
+  && (value.parentThreadId === undefined || nativeCodexId(value.parentThreadId))
+  && (value.ancestorThreadId === undefined || nativeCodexId(value.ancestorThreadId))
+  && !(value.parentThreadId !== undefined && value.ancestorThreadId !== undefined)
+
+const nativeAgentListLoadedThreads: Validator = value =>
+  isRecord(value)
+  && hasOnlyKeys(value, ['cwd', 'cursor', 'limit'])
+  && nativeWorkspacePath(value.cwd)
+  && nativePageCursor(value.cursor)
+  && nativePageLimit(value.limit)
 
 const nativeAgentSearchThreads: Validator = value =>
   isRecord(value)
@@ -225,6 +276,42 @@ const nativeAgentUpdatePermissionMode: Validator = value =>
   && hasOnlyKeys(value, ['threadId', 'permissionMode'])
   && nativeCodexId(value.threadId)
   && nativePermissionMode(value.permissionMode)
+
+const nativeAgentUpdateThreadSettings: Validator = value =>
+  isRecord(value)
+  && hasOnlyKeys(value, ['threadId', 'permissionProfileId', 'effort', 'summary', 'personality'])
+  && nativeCodexId(value.threadId)
+  && (
+    value.permissionProfileId === undefined
+    || typeof value.permissionProfileId === 'string'
+      && value.permissionProfileId.trim().length > 0
+      && value.permissionProfileId.length <= 200
+      && !/[\u0000\r\n]/.test(value.permissionProfileId)
+  )
+  && (
+    value.effort === undefined
+    || typeof value.effort === 'string'
+      && /^[A-Za-z0-9_-]{1,64}$/.test(value.effort)
+  )
+  && (
+    value.summary === undefined
+    || value.summary === 'auto'
+    || value.summary === 'concise'
+    || value.summary === 'detailed'
+    || value.summary === 'none'
+  )
+  && (
+    value.personality === undefined
+    || value.personality === 'none'
+    || value.personality === 'friendly'
+    || value.personality === 'pragmatic'
+  )
+  && (
+    value.permissionProfileId !== undefined
+    || value.effort !== undefined
+    || value.summary !== undefined
+    || value.personality !== undefined
+  )
 
 const nativeAgentStartTurn: Validator = value =>
   isRecord(value)
@@ -297,6 +384,23 @@ const nativeAgentStoredThreadReference: Validator = value =>
   && hasOnlyKeys(value, ['threadId', 'cwd'])
   && nativeCodexId(value.threadId)
   && nativeWorkspacePath(value.cwd)
+
+const nativeThreadMetadataValue = (value: unknown, limit: number): boolean =>
+  value === undefined
+  || value === null
+  || typeof value === 'string'
+    && value.trim().length > 0
+    && value.length <= limit
+    && !/[\u0000\r\n]/.test(value)
+
+const nativeAgentThreadMetadataUpdate: Validator = value =>
+  isRecord(value)
+  && hasOnlyKeys(value, ['threadId', 'sha', 'branch', 'originUrl'])
+  && nativeCodexId(value.threadId)
+  && nativeThreadMetadataValue(value.sha, 128)
+  && nativeThreadMetadataValue(value.branch, 1_024)
+  && nativeThreadMetadataValue(value.originUrl, 4_096)
+  && (value.sha !== undefined || value.branch !== undefined || value.originUrl !== undefined)
 
 const nativeAgentThreadName: Validator = value =>
   isRecord(value)
@@ -867,9 +971,12 @@ export const ELECTRON_IPC_VALIDATORS = {
   [ELECTRON_IPC_CHANNELS.nativeAgentWindowsSandboxReadiness]: nativeAgentWindowsSandboxReadiness,
   [ELECTRON_IPC_CHANNELS.nativeAgentWindowsSandboxSetupStart]: nativeAgentWindowsSandboxSetupStart,
   [ELECTRON_IPC_CHANNELS.nativeAgentListThreads]: nativeAgentListThreads,
+  [ELECTRON_IPC_CHANNELS.nativeAgentListLoadedThreads]: nativeAgentListLoadedThreads,
   [ELECTRON_IPC_CHANNELS.nativeAgentSearchThreads]: nativeAgentSearchThreads,
   [ELECTRON_IPC_CHANNELS.nativeAgentResumeThread]: nativeAgentResumeThread,
+  [ELECTRON_IPC_CHANNELS.nativeAgentUnsubscribeThread]: nativeAgentThreadReference,
   [ELECTRON_IPC_CHANNELS.nativeAgentReadThread]: nativeAgentThreadReference,
+  [ELECTRON_IPC_CHANNELS.nativeAgentUpdateThreadMetadata]: nativeAgentThreadMetadataUpdate,
   [ELECTRON_IPC_CHANNELS.nativeAgentForkThread]: nativeAgentForkThread,
   [ELECTRON_IPC_CHANNELS.nativeAgentUnarchiveThread]: nativeAgentStoredThreadReference,
   [ELECTRON_IPC_CHANNELS.nativeAgentDeleteThread]: nativeAgentStoredThreadReference,
@@ -883,6 +990,7 @@ export const ELECTRON_IPC_VALIDATORS = {
   [ELECTRON_IPC_CHANNELS.nativeAgentReadModelProviderCapabilities]: nativeAgentThreadReference,
   [ELECTRON_IPC_CHANNELS.nativeAgentListPermissionProfiles]: nativeAgentPermissionProfileList,
   [ELECTRON_IPC_CHANNELS.nativeAgentReadConfigRequirements]: nativeAgentThreadReference,
+  [ELECTRON_IPC_CHANNELS.nativeAgentReadClientSettings]: nativeAgentThreadReference,
   [ELECTRON_IPC_CHANNELS.nativeAgentSetThreadMemoryMode]: nativeAgentThreadMemoryMode,
   [ELECTRON_IPC_CHANNELS.nativeAgentResetMemory]: nativeAgentThreadReference,
   [ELECTRON_IPC_CHANNELS.nativeAgentListThreadSections]: nativeAgentThreadSectionList,
@@ -897,6 +1005,7 @@ export const ELECTRON_IPC_VALIDATORS = {
   [ELECTRON_IPC_CHANNELS.nativeAgentTerminateBackgroundTerminal]: nativeAgentBackgroundTerminalReference,
   [ELECTRON_IPC_CHANNELS.nativeAgentCleanBackgroundTerminals]: nativeAgentThreadReference,
   [ELECTRON_IPC_CHANNELS.nativeAgentUpdatePermissionMode]: nativeAgentUpdatePermissionMode,
+  [ELECTRON_IPC_CHANNELS.nativeAgentUpdateThreadSettings]: nativeAgentUpdateThreadSettings,
   [ELECTRON_IPC_CHANNELS.nativeAgentStartTurn]: nativeAgentStartTurn,
   [ELECTRON_IPC_CHANNELS.nativeAgentStartReview]: nativeAgentStartReview,
   [ELECTRON_IPC_CHANNELS.nativeAgentSteerTurn]: nativeAgentSteerTurn,

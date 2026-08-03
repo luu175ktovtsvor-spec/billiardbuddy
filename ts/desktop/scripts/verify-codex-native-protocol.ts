@@ -14,9 +14,12 @@ const clientRequestMethods = [
   'initialize',
   'thread/start',
   'thread/list',
+  'thread/loaded/list',
   'thread/search',
   'thread/resume',
+  'thread/unsubscribe',
   'thread/read',
+  'thread/metadata/update',
   'thread/fork',
   'thread/unarchive',
   'thread/delete',
@@ -29,6 +32,7 @@ const clientRequestMethods = [
   'model/list',
   'modelProvider/capabilities/read',
   'permissionProfile/list',
+  'config/read',
   'configRequirements/read',
   'thread/memoryMode/set',
   'memory/reset',
@@ -137,7 +141,6 @@ const reviewedNonExposedClientRequestMethods = {
   /** Source diagnostics, import helpers and experimental switches, not product APIs. */
   sourceOnlyConfigurationAndMigration: [
     'config/batchWrite',
-    'config/read',
     'experimentalFeature/enablement/set',
     'experimentalFeature/list',
     'externalAgentConfig/import/readHistories',
@@ -180,15 +183,12 @@ const reviewedNonExposedClientRequestMethods = {
     'thread/decrement_elicitation',
     'thread/increment_elicitation',
     'thread/inject_items',
-    'thread/loaded/list',
-    'thread/metadata/update',
     'thread/realtime/appendAudio',
     'thread/realtime/appendSpeech',
     'thread/realtime/appendText',
     'thread/realtime/listVoices',
     'thread/realtime/start',
     'thread/realtime/stop',
-    'thread/unsubscribe',
   ],
 } as const
 
@@ -410,6 +410,30 @@ async function main(): Promise<void> {
   assertContains(runtime, "'thread/goal/get'", '原生 Thread Goal 查询协议调用')
   assertContains(runtime, "'thread/goal/set'", '原生 Thread Goal 更新协议调用')
   assertContains(runtime, "'thread/goal/clear'", '原生 Thread Goal 清除协议调用')
+  assertContains(runtime, "'thread/loaded/list'", '原生已加载 Thread 查询协议调用')
+  assertContains(runtime, "'thread/unsubscribe'", '原生 Thread 取消订阅协议调用')
+  assertContains(runtime, "'thread/metadata/update'", '原生 Thread Git 元数据更新协议调用')
+  assertContains(runtime, "'config/read'", '原生有效设置读取协议调用')
+  assertContains(runtime, 'activeTurnThreads', '取消订阅前按 Thread 拦截活动 Turn')
+  assertContains(runtime, 'CODEX_NATIVE_THREAD_UNSUBSCRIBE_REQUIRES_IDLE', '活动 Turn 取消订阅失败关闭')
+  assertContains(mainProcess, 'nativeAgentUnsubscribeThread', 'Thread 取消订阅接入 Main 所有权边界')
+  assertContains(mainProcess, 'nativeAgentUpdateThreadMetadata', 'Thread Git 元数据更新接入 Main')
+  assertContains(ipcCapabilities, 'nativeAgentThreadMetadataUpdate', 'Thread Git 元数据更新 IPC 校验')
+  assertContains(preload, 'readClientSettings', '有效 Core 设置的预加载桥')
+  assertContains(runtime, 'async updateThreadSettings(', '原生非敏感 Thread 设置更新')
+  assertContains(ipcCapabilities, 'nativeAgentUpdateThreadSettings', 'Thread 设置更新的字段白名单')
+  assertNotContains(runtime, 'model_auto_compact_token_limit:', 'Electron 写入 Core 自动压缩阈值')
+  const projectedConfig = sourceSection(
+    runtime,
+    'export function projectNativeCodexClientSettings',
+    'function nativeThreadSearchTerm',
+    'Core 有效设置安全投影',
+  )
+  assertNotContains(projectedConfig, 'config.instructions', 'Core instructions 暴露给 Renderer')
+  assertNotContains(projectedConfig, 'config.developer_instructions', 'Core developer_instructions 暴露给 Renderer')
+  assertNotContains(projectedConfig, 'config.compact_prompt', 'Core compact_prompt 暴露给 Renderer')
+  assertNotContains(projectedConfig, 'config.additional', 'Core 任意附加配置暴露给 Renderer')
+  assertNotContains(projectedConfig, 'layer.config', 'Core 配置层正文暴露给 Renderer')
   assertContains(runtime, "'thread/backgroundTerminals/list'", '原生后台终端查询协议调用')
   assertContains(runtime, "'thread/backgroundTerminals/terminate'", '原生后台终端停止协议调用')
   assertContains(runtime, "'thread/backgroundTerminals/clean'", '原生后台终端批量停止协议调用')
@@ -567,6 +591,10 @@ async function main(): Promise<void> {
   assertContains(requireFile('codex-rs/app-server-protocol/src/protocol/v2/thread.rs'), '#[experimental("thread/start.runtimeWorkspaceRoots")]', 'thread/start 运行根目录字段')
   assertContains(requireFile('codex-rs/app-server-protocol/src/protocol/v2/thread.rs'), 'pub struct ThreadSettingsUpdateParams', 'thread/settings/update 参数')
   assertContains(requireFile('codex-rs/app-server-protocol/src/protocol/v2/thread.rs'), 'pub struct ThreadListParams', 'thread/list 参数')
+  assertContains(requireFile('codex-rs/app-server-protocol/src/protocol/v2/thread.rs'), '#[experimental("thread/list.parentThreadId")]', '子 Agent 直接父 Thread 筛选')
+  assertContains(requireFile('codex-rs/app-server-protocol/src/protocol/v2/thread.rs'), '#[experimental("thread/list.ancestorThreadId")]', '子 Agent 祖先 Thread 筛选')
+  assertContains(requireFile('codex-rs/app-server-protocol/src/protocol/v2/thread.rs'), 'pub struct ThreadMetadataUpdateParams', 'thread/metadata/update 参数')
+  assertContains(requireFile('codex-rs/app-server-protocol/src/protocol/v2/thread.rs'), 'pub struct ThreadUnsubscribeParams', 'thread/unsubscribe 参数')
   assertContains(requireFile('codex-rs/app-server-protocol/src/protocol/v2/thread.rs'), 'pub struct ThreadTurnsListParams', 'thread/turns/list 参数')
   assertContains(requireFile('codex-rs/app-server-protocol/src/protocol/v2/thread.rs'), 'pub struct ThreadItemsListParams', 'thread/items/list 参数')
   assertContains(requireFile('codex-rs/app-server-protocol/src/protocol/v2/thread.rs'), 'pub struct ThreadCompactStartParams', 'thread/compact/start 参数')
