@@ -51,7 +51,7 @@ const createLease = async (bytes: Uint8Array, contentType: string, purpose: 'pro
   return await response.json() as Lease
 }
 const completeLease = async (lease: Lease, parts?: Array<{ part_number: number; etag: string }>): Promise<Lease> => await (await control(`/v1/video-media/object-leases/${lease.lease_id}/complete`, 'POST', parts ? { parts } : {})).json() as Lease
-const deleteLease = async (leaseId: string): Promise<void> => { try { await control(`/v1/video-media/object-leases/${leaseId}`, 'DELETE') } catch { /* best-effort cleanup is reported by the operator if needed */ } }
+const deleteLease = async (leaseId: string): Promise<void> => { await control(`/v1/video-media/object-leases/${leaseId}`, 'DELETE') }
 
 let multipartLease: Lease | undefined
 let imageLease: Lease | undefined
@@ -96,6 +96,10 @@ try {
   await control(`/v1/video-media/operations/${operation.id}/ack`, 'POST', { result_hashes: [resultObject.content_hash], receipt_id: operation.provider_receipt.id })
   console.log(`VIDEO_MEDIA_SMOKE_OK multipart_lease=${multipartLease.lease_id} receipt=${operation.provider_receipt.id}`)
 } finally {
-  if (imageLease) await deleteLease(imageLease.lease_id)
-  if (multipartLease) await deleteLease(multipartLease.lease_id)
+  const cleanupErrors: Error[] = []
+  for (const lease of [imageLease, multipartLease]) {
+    if (!lease) continue
+    try { await deleteLease(lease.lease_id) } catch (error) { cleanupErrors.push(error instanceof Error ? error : new Error('unknown smoke cleanup failure')) }
+  }
+  if (cleanupErrors.length) throw new AggregateError(cleanupErrors, 'VIDEO_MEDIA_SMOKE_CLEANUP_FAILED')
 }
