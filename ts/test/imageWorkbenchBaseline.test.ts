@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from 'bun:test'
 import { createHash } from 'node:crypto'
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -65,7 +65,7 @@ type GatewayCall = { path: string; method: string; headers: Headers; body: unkno
 
 function gatewayFixture(
   png: string,
-  options: { onAck?: () => Promise<void> | void } = {},
+  options: { onAck?: () => Promise<void> | void; ackResponse?: () => Promise<Response> | Response } = {},
 ): { calls: GatewayCall[]; fetchImpl: typeof fetch } {
   const calls: GatewayCall[] = []
   const receipt = 'a'.repeat(64)
@@ -97,7 +97,7 @@ function gatewayFixture(
     }
     if (url.pathname === '/gw/v1/images/tasks/relay_task_0001/ack' && method === 'POST') {
       await options.onAck?.()
-      return Response.json({ result_acknowledged: true })
+      return await options.ackResponse?.() ?? Response.json({ result_acknowledged: true })
     }
     if (url.pathname === '/gw/v1/images/tasks/relay_task_0001/cancel' && method === 'POST') {
       return Response.json({ status: 'cancelled' })
@@ -188,13 +188,22 @@ test('fixed legacy Project, Operation/Event and hash fixtures import idempotentl
 
   const firstImport = await target.migrateLegacyMediaStore()
   expect(firstImport.migrated_project_ids).toEqual([legacyProject.id])
+  expect((await stat(join(targetRoot, 'metadata', 'metadata.sqlite'))).isFile()).toBeTrue()
+  await expect(readFile(join(targetRoot, 'projects', `${legacyProject.id}.json`), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
   expect(await target.listProjects()).toHaveLength(1)
   expect(await target.assertProjectOwner(legacyProject.id)).toMatchObject({ owner: { kind: 'standalone', owner_id: 'local_workbench' } })
   expect(await target.getOperation(legacyOperation.id)).toMatchObject({ status: 'succeeded', operation_id: legacyOperation.operation_id })
   expect((await target.listOperationEvents(legacyProject.id, 0, 100)).events).toMatchObject([{ cursor: 1, operation_id: legacyOperation.operation_id }])
   expect((await target.migrateLegacyMediaStore()).skipped_project_ids).toEqual([legacyProject.id])
+  expect((await target.repository.migrationReceipt('image-legacy-json-v1'))?.source_hash).toMatch(/^sha256:[a-f0-9]{64}$/)
 
   const imported = await target.getProject(legacyProject.id)
+  expect(imported).toMatchObject({
+    id: legacyProject.id,
+    title: legacyProject.title,
+    revision: legacyProject.revision,
+  })
+  expect(imported.current_version_id).toBe(legacyProject.current_version_id)
   const importedAsset = imported.assets.find(asset => asset.id === 'out_legacy_fixture')
   expect(importedAsset?.content_hash).toBe(expectedHash)
   expect((await target.assets.readVerified(importedAsset!)).bytes.equals(expectedBytes)).toBeTrue()
@@ -205,6 +214,103 @@ test('fixed legacy Project, Operation/Event and hash fixtures import idempotentl
     code: 'IMAGE_WRITER_FENCE_CONFLICT',
   })
   expect(secondWrite.writer_fence).not.toBe(firstWrite.writer_fence)
+})
+
+test('15.1 SQLite metadata enforces one project writer, foreign project ownership and idempotency uniqueness', async () => {
+  const root = await testRoot('sqlite-constraints')
+  const service = new ImageWorkbenchService({ root, now: () => new Date(at) })
+  const project = await createProject(service)
+  const first = await service.repository.saveOperation(operation(project.id))
+  await expect(service.repository.saveProjectAndOperation({
+    ...project,
+    title: '不能在幂等冲突后写入',
+    revision: project.revision + 1,
+  }, {
+    ...first,
+    id: 'task_00000002',
+    operation_id: 'op_00000002',
+    status_sequence: 0,
+  })).rejects.toMatchObject({ status: 409, code: 'IMAGE_STORAGE_INVALID' })
+  expect((await service.getProject(project.id)).title).toBe(project.title)
+  await expect(service.repository.saveOperation({
+    ...operation('img_missing_0001'),
+    id: 'task_00000003',
+    operation_id: 'op_00000003',
+    idempotency_key: 'bb-image-missing-project-idempotency-key',
+  })).rejects.toMatchObject({ status: 404, code: 'IMAGE_PROJECT_NOT_FOUND' })
+  expect((await service.repository.listOperationEvents(project.id, 0, 10)).events).toMatchObject([
+    { operation_id: first.operation_id, status_sequence: 1 },
+  ])
+})
+
+test('15.1 imports the pre-existing image JSON root before any CAS orphan collection can remove it', async () => {
+  const root = await testRoot('current-image-json-import')
+  const legacyProject = imageWorkbenchProjectSchema.parse(await fixtureJson('legacy/project.json'))
+  const legacyOperation = mediaTaskSchema.parse(await fixtureJson('legacy/operation.json')) as ImageOperation
+  const legacyJournal = mediaJobEventJournalSchema.parse(await fixtureJson('legacy/event-journal.json'))
+  const bytes = await imageBytes()
+  const hash = await imageHash()
+  await Promise.all([
+    mkdir(join(root, 'projects'), { recursive: true }),
+    mkdir(join(root, 'operations'), { recursive: true }),
+    mkdir(join(root, 'events'), { recursive: true }),
+    mkdir(join(root, 'cas', 'sha256'), { recursive: true }),
+  ])
+  await Promise.all([
+    writeFile(join(root, 'projects', `${legacyProject.id}.json`), JSON.stringify(legacyProject)),
+    writeFile(join(root, 'operations', `${legacyOperation.id}.json`), JSON.stringify(legacyOperation)),
+    writeFile(join(root, 'events', `${legacyProject.id}.json`), JSON.stringify(legacyJournal)),
+    writeFile(join(root, 'cas', 'sha256', hash.slice('sha256:'.length)), bytes),
+  ])
+  const service = new ImageWorkbenchService({ root, legacyMediaRoot: await testRoot('empty-old-media'), now: () => new Date(at) })
+  expect((await service.migrateLegacyMediaStore()).migrated_project_ids).toEqual([legacyProject.id])
+  const imported = await service.getProject(legacyProject.id)
+  const asset = imported.assets.find(candidate => candidate.id === 'out_legacy_fixture')
+  expect((await service.assets.readVerified(asset!)).bytes.equals(bytes)).toBeTrue()
+  expect((await service.listOperationEvents(legacyProject.id)).events).toMatchObject([{ cursor: 1, operation_id: legacyOperation.operation_id }])
+})
+
+test('15.1 recovery removes a CAS object published before metadata commit and retries only Relay ACK after local commit', async () => {
+  const root = await testRoot('sqlite-recovery')
+  const legacyRoot = await testRoot('sqlite-recovery-legacy')
+  let ackAttempts = 0
+  const png = (await dataUrl()).split(',', 2)[1]!
+  const gateway = gatewayFixture(png, {
+    ackResponse: () => {
+      ackAttempts += 1
+      return ackAttempts === 1
+        ? Response.json({ error: 'temporary relay error' }, { status: 503 })
+        : Response.json({ result_acknowledged: true })
+    },
+  })
+  const first = new ImageWorkbenchService({ root, legacyMediaRoot: legacyRoot, now: () => new Date(at), fetchImpl: gateway.fetchImpl })
+  const project = await createProject(first)
+  const verified = await first.assets.verify(await imageBytes())
+  const orphan = await first.assets.persist(project.id, 'out_orphan_0001', 'result', verified, 'ver_00000001', at)
+  const orphanPath = join(root, 'cas', 'sha256', orphan.asset.content_hash!.slice('sha256:'.length))
+  await expect(readFile(orphanPath)).resolves.toEqual(verified.bytes)
+  first.repository.close()
+
+  const afterCasCrash = new ImageWorkbenchService({ root, legacyMediaRoot: legacyRoot, now: () => new Date(at), fetchImpl: gateway.fetchImpl })
+  await afterCasCrash.listProjects()
+  await expect(readFile(orphanPath)).rejects.toMatchObject({ code: 'ENOENT' })
+
+  await withGateway(async () => {
+    const submitted = await afterCasCrash.submitProject(project.id)
+    const completedBeforeAck = await afterCasCrash.getOperation(submitted.id)
+    expect(completedBeforeAck.status).toBe('succeeded')
+    expect(completedBeforeAck.remote_result_acknowledged_at).toBeUndefined()
+    expect(ackAttempts).toBe(1)
+    afterCasCrash.repository.close()
+
+    const afterAckCrash = new ImageWorkbenchService({ root, legacyMediaRoot: legacyRoot, now: () => new Date(at), fetchImpl: gateway.fetchImpl })
+    await afterAckCrash.recoverInterruptedOperations()
+    expect(ackAttempts).toBe(2)
+    expect(await afterAckCrash.getOperation(submitted.id)).toMatchObject({
+      status: 'succeeded',
+      remote_result_acknowledged_at: at,
+    })
+  })
 })
 
 test('current Gateway to Relay contract persists candidates before ACK, exposes event cursors and keeps generated candidates unselected', async () => {
