@@ -9,7 +9,7 @@ export class SqliteUnitOfWorkError extends Error {
   }
 }
 
-const MEDIA_KERNEL_SCHEMA_VERSION = 4
+const MEDIA_KERNEL_SCHEMA_VERSION = 5
 
 /**
  * The Media Kernel is the only owner of the SQLite connection and schema
@@ -110,6 +110,7 @@ export class SqliteUnitOfWork {
       else if (version === 2) this.migrateV2()
       else if (version === 3) this.migrateV3()
       else if (version === 4) this.migrateV4()
+      else if (version === 5) this.migrateV5()
     }
   }
 
@@ -344,6 +345,26 @@ export class SqliteUnitOfWork {
       )`)
       this.database.query('INSERT INTO media_kernel_schema_migrations(version,applied_at) VALUES(?,?)')
         .run(4, new Date().toISOString())
+    })
+  }
+
+  /** Immutable embedding generations live beside FTS, never in a provider cache. */
+  private migrateV5(): void {
+    this.transaction(() => {
+      this.database.exec(`CREATE TABLE IF NOT EXISTS video_fact_embeddings(
+        project_id TEXT NOT NULL REFERENCES video_projects(id),
+        entry_id TEXT NOT NULL,
+        generation INTEGER NOT NULL CHECK(generation >= 0),
+        model_snapshot TEXT NOT NULL,
+        dimension INTEGER NOT NULL CHECK(dimension = 768),
+        instruction_version TEXT NOT NULL,
+        vector_json TEXT NOT NULL,
+        content_hash TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY(project_id,entry_id,generation)
+      ); CREATE INDEX IF NOT EXISTS video_fact_embeddings_project_generation ON video_fact_embeddings(project_id,generation,entry_id);`)
+      this.database.query('INSERT INTO media_kernel_schema_migrations(version,applied_at) VALUES(?,?)')
+        .run(5, new Date().toISOString())
     })
   }
 }

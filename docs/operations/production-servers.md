@@ -1,6 +1,6 @@
 # BilliardBuddy 生产服务器
 
-最后按服务器实测记录更新：2026-08-02。部署前必须重新只读盘点实际主机、容器、端口和发布 revision；本文不是用来推断现网的替代品。Video Media Relay 的部署配置已随第 4 关代码提供，但尚未进行本次发布所需的服务器只读盘点与受控 smoke，因此不能把下列目标拓扑描述为现网事实。
+最后按服务器实测记录更新：2026-08-03 13:17 UTC。部署前必须重新只读盘点实际主机、容器、端口和发布 revision；本文不是用来推断现网的替代品。Video Media Relay 的部署配置已随第 4 关代码提供，但尚未进行本次发布所需的受控 smoke，因此不能把下列目标拓扑描述为现网事实。
 
 ## 当前拓扑
 
@@ -13,6 +13,8 @@
 ```
 
 Gateway 与 Relay 位于同一 Compose 主机。Gateway 是托管 DeepSeek Responses 的薄网关：安装鉴权、额度、用量、限流、路由、幂等与 SSE 转发；它不保存 Agent Thread、Turn、工具、审批、沙箱或执行任务。Relay 只承接图片/视频异步任务结果。
+
+本次只读盘点：主机 `cch` 运行 `billiardbuddy-gateway-1` 与 `billiardbuddy-relay-1`（release `8f0000c84548`，均 healthy），以及静态站点容器；Gateway 仅绑定 `127.0.0.1:8799`，Relay 仅处于 Compose 私网。宿主尚未监听 `127.0.0.1:8791`，`/srv/billiardbuddy/data/video-media-relay` 和 `/srv/billiardbuddy/secrets/video-media-relay.env` 尚不存在。现有 `gateway.env`/`relay.env` 权限目录与现有健康检查正常；盘点只记录变量名，不读取任何 secret 值。
 
 ## 第 4 关待部署目标（非现网记录）
 

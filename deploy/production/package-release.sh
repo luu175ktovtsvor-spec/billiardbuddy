@@ -37,6 +37,12 @@ bb_runtime_paths=(
   gateway/validate-production-capacity-env.sh
   relay/app.ts
   relay/validate-production-env.sh
+  video-media-relay/app.ts
+  video-media-relay/objectStore.ts
+  video-media-relay/providerRegistry.ts
+  video-media-relay/validate-deployment-env.ts
+  video-media-relay/contracts/relayApi.ts
+  video-media-relay/providers/dashscope.ts
   ts/shared/product/providerContracts.ts
   ts/shared/product/providerGateway.ts
 )
@@ -51,10 +57,13 @@ for bb_required in \
   deploy/production/deploy.sh \
   deploy/production/Dockerfile.gateway \
   deploy/production/Dockerfile.relay \
+  deploy/production/Dockerfile.video-media-relay \
   gateway/app.ts \
   gateway/managedResponses.ts \
   gateway/validate-deployment-env.ts \
   relay/app.ts \
+  video-media-relay/app.ts \
+  video-media-relay/contracts/relayApi.ts \
   release-manifest.json; do
   tar -tzf "$bb_output" "$bb_required" >/dev/null
 done

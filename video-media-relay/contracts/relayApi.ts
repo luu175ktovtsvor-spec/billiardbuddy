@@ -66,7 +66,19 @@ export const providerUsageSchema = z.object({ requests: z.number().int().nonnega
 export const providerExecutionReceiptSchema = z.object({ id: opaqueId, capability: z.enum(['visual_evidence', 'media_reasoning', 'speech_transcription', 'semantic_embedding']), model_snapshot: z.string().min(1).max(200), region: z.literal('cn-beijing'), request_schema_version: z.number().int().positive(), prompt_version: z.string().min(1).max(160), input_basis_hash: hash, usage: providerUsageSchema, cache_hit: z.boolean(), upstream_receipt_hash: hash.optional(), created_at: iso }).strict()
 export type ProviderExecutionReceipt = z.infer<typeof providerExecutionReceiptSchema>
 
-export const videoRelayOperationProjectionSchema = z.object({ id: opaqueId, state: z.enum(['accepted', 'submitted', 'running', 'succeeded', 'failed', 'cancelled', 'outcome_unknown', 'expired']), provider_task_id: z.string().min(1).max(500).optional(), result_object_refs: z.array(opaqueId).max(64).optional(), provider_receipt: providerExecutionReceiptSchema.optional(), account_quota_reservation_id: opaqueId, safe_error_code: z.string().min(1).max(160).optional(), retry_after_ms: z.number().int().positive().max(24 * 60 * 60_000).optional(), created_at: iso, updated_at: iso }).strict()
+/** Result bytes never travel through the Relay control plane.  A result object
+ * is readable only for the short lease below and is released by ACK. */
+export const relayResultObjectSchema = z.object({
+  object_ref: opaqueId,
+  content_hash: hash,
+  byte_size: z.number().int().positive(),
+  content_type: z.string().min(3).max(160),
+  get_url: z.string().url(),
+  expires_at: iso,
+}).strict()
+export type RelayResultObject = z.infer<typeof relayResultObjectSchema>
+
+export const videoRelayOperationProjectionSchema = z.object({ id: opaqueId, state: z.enum(['accepted', 'submitted', 'running', 'succeeded', 'failed', 'cancelled', 'outcome_unknown', 'expired']), provider_task_id: z.string().min(1).max(500).optional(), result_object_refs: z.array(opaqueId).max(64).optional(), result_objects: z.array(relayResultObjectSchema).max(64).optional(), provider_receipt: providerExecutionReceiptSchema.optional(), account_quota_reservation_id: opaqueId, safe_error_code: z.string().min(1).max(160).optional(), retry_after_ms: z.number().int().positive().max(24 * 60 * 60_000).optional(), created_at: iso, updated_at: iso }).strict()
 export type VideoRelayOperationProjection = z.infer<typeof videoRelayOperationProjectionSchema>
 
 export const operationAcknowledgementSchema = z.object({ result_hashes: z.array(hash).max(64), receipt_id: opaqueId }).strict()
