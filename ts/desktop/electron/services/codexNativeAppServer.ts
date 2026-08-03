@@ -157,6 +157,19 @@ export type NativeCodexResumeThreadInput = {
   route: CodexNativeModelRoute
 }
 
+/** Source kinds emitted by the pinned App Server for top-level and spawned Threads. */
+export type NativeCodexThreadSourceKind =
+  | 'cli'
+  | 'vscode'
+  | 'exec'
+  | 'appServer'
+  | 'subAgent'
+  | 'subAgentReview'
+  | 'subAgentCompact'
+  | 'subAgentThreadSpawn'
+  | 'subAgentOther'
+  | 'unknown'
+
 export type NativeCodexThreadListInput = {
   /** A verified directory used only to start the private App Server process. */
   cwd: string
@@ -167,6 +180,58 @@ export type NativeCodexThreadListInput = {
   searchTerm?: string
   sortKey?: 'created_at' | 'updated_at' | 'recency_at'
   sortDirection?: 'asc' | 'desc'
+  /** Omitted means every section; null selects only unsectioned Threads. */
+  sectionId?: string | null
+  /** Exact, verified workspace paths to include in the source-native query. */
+  filterCwds?: string[]
+  sourceKinds?: NativeCodexThreadSourceKind[]
+  /** Experimental source-native relation filters; they are mutually exclusive. */
+  parentThreadId?: string
+  ancestorThreadId?: string
+}
+
+export type NativeCodexLoadedThreadListInput = {
+  /** A verified directory used only to start the private App Server process. */
+  cwd: string
+  route: CodexNativeModelRoute
+  cursor?: string
+  limit?: number
+}
+
+export type NativeCodexThreadMetadataGitInfoUpdate = {
+  sha?: string | null
+  branch?: string | null
+  originUrl?: string | null
+}
+
+export type NativeCodexThreadUnsubscribeStatus = 'notLoaded' | 'notSubscribed' | 'unsubscribed'
+
+export type NativeCodexThreadUnsubscribeResponse = {
+  status: NativeCodexThreadUnsubscribeStatus
+}
+
+export type NativeCodexThreadSettingsPatch = {
+  permissionProfileId?: string
+  effort?: string
+  summary?: 'auto' | 'concise' | 'detailed' | 'none'
+  personality?: 'none' | 'friendly' | 'pragmatic'
+}
+
+export type NativeCodexClientSettingsProjection = {
+  model: string | null
+  modelProvider: string | null
+  modelContextWindow: number | null
+  modelAutoCompactTokenLimit: number | null
+  modelAutoCompactTokenLimitScope: string | null
+  approvalPolicy: CodexNativeJsonValue
+  sandboxMode: string | null
+  webSearch: string | null
+  reasoningEffort: string | null
+  reasoningSummary: string | null
+  verbosity: string | null
+  serviceTier: string | null
+  origins: Record<string, { source: string, version: string }>
+  layers: Array<{ source: string, version: string, disabledReason: string | null }>
 }
 
 export type NativeCodexThreadSearchInput = {
@@ -592,6 +657,209 @@ function nativeThreadListSortKey(value: unknown): 'created_at' | 'updated_at' | 
     throw new Error('CODEX_NATIVE_THREAD_SORT_KEY_INVALID')
   }
   return value
+}
+
+const NATIVE_THREAD_SOURCE_KINDS = new Set<NativeCodexThreadSourceKind>([
+  'cli',
+  'vscode',
+  'exec',
+  'appServer',
+  'subAgent',
+  'subAgentReview',
+  'subAgentCompact',
+  'subAgentThreadSpawn',
+  'subAgentOther',
+  'unknown',
+])
+
+function nativeThreadSourceKinds(value: unknown): NativeCodexThreadSourceKind[] | undefined {
+  if (value === undefined) return undefined
+  if (!Array.isArray(value) || value.length === 0 || value.length > NATIVE_THREAD_SOURCE_KINDS.size) {
+    throw new Error('CODEX_NATIVE_THREAD_SOURCE_KINDS_INVALID')
+  }
+  const kinds = value.map(kind => {
+    if (typeof kind !== 'string' || !NATIVE_THREAD_SOURCE_KINDS.has(kind as NativeCodexThreadSourceKind)) {
+      throw new Error('CODEX_NATIVE_THREAD_SOURCE_KINDS_INVALID')
+    }
+    return kind as NativeCodexThreadSourceKind
+  })
+  if (new Set(kinds).size !== kinds.length) throw new Error('CODEX_NATIVE_THREAD_SOURCE_KINDS_INVALID')
+  return kinds
+}
+
+function nativeThreadRelationId(value: unknown): string | undefined {
+  if (value === undefined) return undefined
+  if (!nonEmptyText(value, 200) || /[\u0000\r\n]/.test(value)) {
+    throw new Error('CODEX_NATIVE_THREAD_RELATION_ID_INVALID')
+  }
+  return value
+}
+
+function nativeThreadSectionFilter(value: unknown): string | null | undefined {
+  if (value === undefined || value === null) return value
+  if (!nonEmptyText(value, 200) || /[\u0000\r\n]/.test(value)) {
+    throw new Error('CODEX_NATIVE_THREAD_SECTION_ID_INVALID')
+  }
+  return value.trim()
+}
+
+function nativeMetadataLine(value: unknown, limit: number): string | null | undefined {
+  if (value === undefined || value === null) return value
+  if (typeof value !== 'string' || value.length > limit || /[\u0000\r\n]/.test(value) || !value.trim()) {
+    throw new Error('CODEX_NATIVE_THREAD_METADATA_INVALID')
+  }
+  return value.trim()
+}
+
+function nativeThreadMetadataGitInfo(
+  value: NativeCodexThreadMetadataGitInfoUpdate,
+): NativeCodexThreadMetadataGitInfoUpdate {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('CODEX_NATIVE_THREAD_METADATA_INVALID')
+  }
+  const sha = nativeMetadataLine(value.sha, 128)
+  const branch = nativeMetadataLine(value.branch, 1_024)
+  const originUrl = nativeMetadataLine(value.originUrl, 4_096)
+  if (sha === undefined && branch === undefined && originUrl === undefined) {
+    throw new Error('CODEX_NATIVE_THREAD_METADATA_INVALID')
+  }
+  return {
+    ...(sha === undefined ? {} : { sha }),
+    ...(branch === undefined ? {} : { branch }),
+    ...(originUrl === undefined ? {} : { originUrl }),
+  }
+}
+
+function nativeThreadSettingsPatch(value: NativeCodexThreadSettingsPatch): CodexNativeJsonObject {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('CODEX_NATIVE_THREAD_SETTINGS_INVALID')
+  }
+  let permissionProfileId: string | undefined
+  if (value.permissionProfileId !== undefined) {
+    if (!nonEmptyText(value.permissionProfileId, 200) || /[\u0000\r\n]/.test(value.permissionProfileId)) {
+      throw new Error('CODEX_NATIVE_PERMISSION_PROFILE_INVALID')
+    }
+    permissionProfileId = value.permissionProfileId.trim()
+  }
+  let effort: string | undefined
+  if (value.effort !== undefined) {
+    if (!nonEmptyText(value.effort, 64) || !/^[A-Za-z0-9_-]+$/.test(value.effort)) {
+      throw new Error('CODEX_NATIVE_REASONING_EFFORT_INVALID')
+    }
+    effort = value.effort
+  }
+  const summary = value.summary
+  if (summary !== undefined && summary !== 'auto' && summary !== 'concise' && summary !== 'detailed' && summary !== 'none') {
+    throw new Error('CODEX_NATIVE_REASONING_SUMMARY_INVALID')
+  }
+  const personality = value.personality
+  if (personality !== undefined && personality !== 'none' && personality !== 'friendly' && personality !== 'pragmatic') {
+    throw new Error('CODEX_NATIVE_PERSONALITY_INVALID')
+  }
+  if (permissionProfileId === undefined && effort === undefined && summary === undefined && personality === undefined) {
+    throw new Error('CODEX_NATIVE_THREAD_SETTINGS_INVALID')
+  }
+  return {
+    ...(permissionProfileId === undefined ? {} : { permissions: permissionProfileId }),
+    ...(effort === undefined ? {} : { effort }),
+    ...(summary === undefined ? {} : { summary }),
+    ...(personality === undefined ? {} : { personality }),
+  }
+}
+
+function projectedString(value: unknown): string | null {
+  return typeof value === 'string' && value.length <= 4_096 && !value.includes('\u0000') ? value : null
+}
+
+function projectedInteger(value: unknown): number | null {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null
+}
+
+function projectedApprovalPolicy(value: unknown): CodexNativeJsonValue {
+  if (value === 'untrusted' || value === 'on-request' || value === 'never') return value
+  const granular = jsonObject(jsonObject(value)?.granular)
+  if (!granular) return null
+  const keys = ['sandbox_approval', 'rules', 'skill_approval', 'request_permissions', 'mcp_elicitations'] as const
+  if (Object.keys(granular).some(key => !keys.includes(key as typeof keys[number]))) return null
+  if (keys.some(key => typeof granular[key] !== 'boolean')) return null
+  return { granular: Object.fromEntries(keys.map(key => [key, granular[key]])) as CodexNativeJsonObject }
+}
+
+function projectedConfigLayerSource(value: unknown): string {
+  const type = jsonObject(value)?.type
+  return typeof type === 'string' && /^[A-Za-z][A-Za-z0-9]{0,63}$/.test(type) ? type : 'unknown'
+}
+
+const PROJECTED_CONFIG_ORIGINS = new Map<string, keyof NativeCodexClientSettingsProjection>([
+  ['model', 'model'],
+  ['model_provider', 'modelProvider'],
+  ['model_context_window', 'modelContextWindow'],
+  ['model_auto_compact_token_limit', 'modelAutoCompactTokenLimit'],
+  ['model_auto_compact_token_limit_scope', 'modelAutoCompactTokenLimitScope'],
+  ['approval_policy', 'approvalPolicy'],
+  ['sandbox_mode', 'sandboxMode'],
+  ['web_search', 'webSearch'],
+  ['model_reasoning_effort', 'reasoningEffort'],
+  ['model_reasoning_summary', 'reasoningSummary'],
+  ['model_verbosity', 'verbosity'],
+  ['service_tier', 'serviceTier'],
+])
+
+/**
+ * Strip instructions, arbitrary additional config, layer bodies, MCP values
+ * and every unknown field before any effective Core settings reach Renderer.
+ */
+export function projectNativeCodexClientSettings(value: unknown): NativeCodexClientSettingsProjection {
+  const response = jsonObject(value)
+  const config = jsonObject(response?.config)
+  if (!response || !config) throw new Error('CODEX_NATIVE_CONFIG_RESPONSE_INVALID')
+
+  const origins: NativeCodexClientSettingsProjection['origins'] = {}
+  const rawOrigins = jsonObject(response.origins)
+  if (rawOrigins) {
+    for (const [sourceField, productField] of PROJECTED_CONFIG_ORIGINS) {
+      const metadata = jsonObject(rawOrigins[sourceField])
+      if (!metadata) continue
+      const version = projectedString(metadata.version)
+      if (version === null) continue
+      origins[String(productField)] = {
+        source: projectedConfigLayerSource(metadata.name),
+        version,
+      }
+    }
+  }
+
+  const layers: NativeCodexClientSettingsProjection['layers'] = []
+  if (Array.isArray(response.layers)) {
+    for (const candidate of response.layers) {
+      const layer = jsonObject(candidate)
+      if (!layer) continue
+      const version = projectedString(layer.version)
+      if (version === null) continue
+      layers.push({
+        source: projectedConfigLayerSource(layer.name),
+        version,
+        disabledReason: projectedString(layer.disabledReason),
+      })
+    }
+  }
+
+  return {
+    model: projectedString(config.model),
+    modelProvider: projectedString(config.model_provider),
+    modelContextWindow: projectedInteger(config.model_context_window),
+    modelAutoCompactTokenLimit: projectedInteger(config.model_auto_compact_token_limit),
+    modelAutoCompactTokenLimitScope: projectedString(config.model_auto_compact_token_limit_scope),
+    approvalPolicy: projectedApprovalPolicy(config.approval_policy),
+    sandboxMode: projectedString(config.sandbox_mode),
+    webSearch: projectedString(config.web_search),
+    reasoningEffort: projectedString(config.model_reasoning_effort),
+    reasoningSummary: projectedString(config.model_reasoning_summary),
+    verbosity: projectedString(config.model_verbosity),
+    serviceTier: projectedString(config.service_tier),
+    origins,
+    layers,
+  }
 }
 
 function nativeThreadSearchTerm(value: unknown): string | undefined {
@@ -1090,6 +1358,7 @@ export class ElectronCodexNativeRuntime {
   private provider?: StartedCodexNativeProvider
   private configuredRouteKey?: string
   private activeTurns = new Set<string>()
+  private activeTurnThreads = new Map<string, string>()
   private pendingTurnStarts = 0
   /**
    * Ephemeral Main-process reconnect hints only. Rust remains the durable
@@ -1179,6 +1448,19 @@ export class ElectronCodexNativeRuntime {
   async listThreads(input: NativeCodexThreadListInput): Promise<CodexNativeJsonObject> {
     const cwd = await this.workspace(input.cwd)
     const client = await this.ensureClient(input.route, cwd)
+    const sectionId = nativeThreadSectionFilter(input.sectionId)
+    const sourceKinds = nativeThreadSourceKinds(input.sourceKinds)
+    const parentThreadId = nativeThreadRelationId(input.parentThreadId)
+    const ancestorThreadId = nativeThreadRelationId(input.ancestorThreadId)
+    if (parentThreadId && ancestorThreadId) throw new Error('CODEX_NATIVE_THREAD_RELATION_FILTER_CONFLICT')
+    let filterCwds: string[] | undefined
+    if (input.filterCwds !== undefined) {
+      if (!Array.isArray(input.filterCwds) || input.filterCwds.length === 0 || input.filterCwds.length > 64) {
+        throw new Error('CODEX_NATIVE_THREAD_CWD_FILTER_INVALID')
+      }
+      filterCwds = await Promise.all(input.filterCwds.map(filter => this.workspace(filter)))
+      filterCwds = [...new Set(filterCwds)]
+    }
     return await client.request<CodexNativeJsonObject>('thread/list', {
       ...(nativeCursor(input.cursor) ? { cursor: nativeCursor(input.cursor) } : {}),
       ...(nativePageLimit(input.limit) ? { limit: nativePageLimit(input.limit) } : {}),
@@ -1186,6 +1468,58 @@ export class ElectronCodexNativeRuntime {
       ...(nativeThreadSearchTerm(input.searchTerm) ? { searchTerm: nativeThreadSearchTerm(input.searchTerm) } : {}),
       ...(nativeThreadListSortKey(input.sortKey) ? { sortKey: nativeThreadListSortKey(input.sortKey) } : {}),
       ...(nativeSortDirection(input.sortDirection) ? { sortDirection: nativeSortDirection(input.sortDirection) } : {}),
+      ...(sectionId === undefined ? {} : { sectionId }),
+      ...(filterCwds === undefined ? {} : { cwd: filterCwds }),
+      ...(sourceKinds === undefined ? {} : { sourceKinds }),
+      ...(parentThreadId === undefined ? {} : { parentThreadId }),
+      ...(ancestorThreadId === undefined ? {} : { ancestorThreadId }),
+    })
+  }
+
+  /** List the Rust sessions currently loaded by this App Server process. */
+  async listLoadedThreads(input: NativeCodexLoadedThreadListInput): Promise<CodexNativeJsonObject> {
+    const cwd = await this.workspace(input.cwd)
+    const client = await this.ensureClient(input.route, cwd)
+    return await client.request<CodexNativeJsonObject>('thread/loaded/list', {
+      ...(nativeCursor(input.cursor) ? { cursor: nativeCursor(input.cursor) } : {}),
+      ...(nativePageLimit(input.limit) ? { limit: nativePageLimit(input.limit) } : {}),
+    })
+  }
+
+  /**
+   * Detach this App Server connection from an idle Thread. The durable Thread
+   * remains in Rust storage and can later be resumed with an explicit cwd.
+   */
+  async unsubscribeThread(
+    thread: Pick<NativeCodexThread, 'id'>,
+    route: CodexNativeModelRoute,
+  ): Promise<NativeCodexThreadUnsubscribeResponse> {
+    if (!nonEmptyText(thread.id)) throw new Error('CODEX_NATIVE_THREAD_ID_INVALID')
+    if ([...this.activeTurnThreads.values()].includes(thread.id)) {
+      throw new Error('CODEX_NATIVE_THREAD_UNSUBSCRIBE_REQUIRES_IDLE')
+    }
+    const cwd = this.threadWorkspaces.get(thread.id)
+    if (!cwd) throw new Error('CODEX_NATIVE_THREAD_WORKSPACE_UNAVAILABLE')
+    const client = await this.ensureClient(route, cwd)
+    const response = await client.request<CodexNativeJsonObject>('thread/unsubscribe', { threadId: thread.id })
+    const status = response.status
+    if (status !== 'notLoaded' && status !== 'notSubscribed' && status !== 'unsubscribed') {
+      throw new Error('CODEX_NATIVE_THREAD_UNSUBSCRIBE_RESPONSE_INVALID')
+    }
+    this.loadedThreads.delete(thread.id)
+    this.threadWorkspaces.delete(thread.id)
+    return { status }
+  }
+
+  /** Update only source-owned Git display metadata; this never writes the repository. */
+  async updateThreadMetadata(
+    thread: Pick<NativeCodexThread, 'id'>,
+    gitInfo: NativeCodexThreadMetadataGitInfoUpdate,
+  ): Promise<CodexNativeJsonObject> {
+    if (!nonEmptyText(thread.id)) throw new Error('CODEX_NATIVE_THREAD_ID_INVALID')
+    return await this.requireClient().request<CodexNativeJsonObject>('thread/metadata/update', {
+      threadId: thread.id,
+      gitInfo: nativeThreadMetadataGitInfo(gitInfo),
     })
   }
 
@@ -1339,6 +1673,20 @@ export class ElectronCodexNativeRuntime {
   async readConfigRequirements(thread: Pick<NativeCodexThread, 'id'>): Promise<CodexNativeJsonObject> {
     if (!nonEmptyText(thread.id)) throw new Error('CODEX_NATIVE_THREAD_ID_INVALID')
     return await this.requireClient().request<CodexNativeJsonObject>('configRequirements/read', {})
+  }
+
+  /** Read an allowlisted projection of effective Core settings for this Thread workspace. */
+  async readClientSettings(
+    thread: Pick<NativeCodexThread, 'id'>,
+  ): Promise<NativeCodexClientSettingsProjection> {
+    if (!nonEmptyText(thread.id)) throw new Error('CODEX_NATIVE_THREAD_ID_INVALID')
+    const cwd = this.threadWorkspaces.get(thread.id)
+    if (!cwd) throw new Error('CODEX_NATIVE_THREAD_WORKSPACE_UNAVAILABLE')
+    const response = await this.requireClient().request<CodexNativeJsonObject>('config/read', {
+      cwd,
+      includeLayers: true,
+    })
+    return projectNativeCodexClientSettings(response)
   }
 
   /** Enable or disable the Rust Core's own memory behavior for one Thread. */
@@ -1545,6 +1893,18 @@ export class ElectronCodexNativeRuntime {
       approvalsReviewer: settings.approvalsReviewer,
     })
     return mode
+  }
+
+  /** Update only source-native, non-secret per-Thread settings. */
+  async updateThreadSettings(
+    thread: Pick<NativeCodexThread, 'id'>,
+    patch: NativeCodexThreadSettingsPatch,
+  ): Promise<void> {
+    if (!nonEmptyText(thread.id)) throw new Error('CODEX_NATIVE_THREAD_ID_INVALID')
+    await this.requireClient().request('thread/settings/update', {
+      threadId: thread.id,
+      ...nativeThreadSettingsPatch(patch),
+    })
   }
 
   /**
@@ -1788,6 +2148,7 @@ export class ElectronCodexNativeRuntime {
     this.threadWorkspaces.set(reviewThreadId, workspace)
     this.loadedThreads.add(reviewThreadId)
     this.activeTurns.add(id)
+    this.activeTurnThreads.set(id, reviewThreadId)
     return { turn: { id }, reviewThreadId }
   }
 
@@ -1817,6 +2178,7 @@ export class ElectronCodexNativeRuntime {
       })
       const id = turnId(response)
       this.activeTurns.add(id)
+      this.activeTurnThreads.set(id, thread.id)
       return { id }
     } finally {
       this.pendingTurnStarts = Math.max(0, this.pendingTurnStarts - 1)
@@ -1908,6 +2270,7 @@ export class ElectronCodexNativeRuntime {
     if (!nonEmptyText(thread.id) || !nonEmptyText(turn.id)) throw new Error('CODEX_NATIVE_TURN_ID_INVALID')
     await this.requireClient().request('turn/interrupt', { threadId: thread.id, turnId: turn.id })
     this.activeTurns.delete(turn.id)
+    this.activeTurnThreads.delete(turn.id)
   }
 
   async archiveThread(thread: Pick<NativeCodexThread, 'id'>): Promise<void> {
@@ -1920,6 +2283,7 @@ export class ElectronCodexNativeRuntime {
   /** Called by the UI projection after an authoritative `turn/completed` event. */
   markTurnCompleted(turnId: string): void {
     this.activeTurns.delete(turnId)
+    this.activeTurnThreads.delete(turnId)
   }
 
   /** A provider mutation must not interrupt or split a source-native Turn. */
@@ -1971,6 +2335,7 @@ export class ElectronCodexNativeRuntime {
     this.provider = undefined
     this.configuredRouteKey = undefined
     this.activeTurns.clear()
+    this.activeTurnThreads.clear()
     this.pendingTurnStarts = 0
     this.loadedThreads.clear()
     this.threadWorkspaces.clear()
@@ -1996,6 +2361,7 @@ export class ElectronCodexNativeRuntime {
     this.provider = undefined
     this.configuredRouteKey = undefined
     this.activeTurns.clear()
+    this.activeTurnThreads.clear()
     this.pendingTurnStarts = 0
     this.windowsSandboxSetupInProgress = false
     this.loadedThreads.clear()

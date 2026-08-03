@@ -74,6 +74,9 @@ import {
   type CodexNativeServerRequest,
   type NativeCodexSkillSelector,
   type NativeCodexThreadGoalSetInput,
+  type NativeCodexThreadListInput,
+  type NativeCodexThreadMetadataGitInfoUpdate,
+  type NativeCodexThreadSettingsPatch,
   type NativeCodexTurnInput,
 } from './services/codexNativeAppServer'
 import type { CodexNativeModelRoute } from './services/codexNativeProvider'
@@ -475,6 +478,18 @@ function rejectNativeAgentServerRequests(error: Error): void {
   }
 }
 
+function releaseNativeAgentOwner(ownerId: number, error: Error): void {
+  for (const [threadId, currentOwnerId] of nativeAgentThreadOwners) {
+    if (currentOwnerId === ownerId) nativeAgentThreadOwners.delete(threadId)
+  }
+  for (const [turnId, currentOwnerId] of nativeAgentTurnOwners) {
+    if (currentOwnerId === ownerId) nativeAgentTurnOwners.delete(turnId)
+  }
+  for (const [requestId, pending] of nativeAgentServerRequests) {
+    if (pending.ownerId === ownerId) releaseNativeAgentServerRequest(requestId)?.reject(error)
+  }
+}
+
 function sourceRequestKeyFromResolvedNotification(params: unknown): string | undefined {
   const requestId = nativeProtocolObject(params)?.requestId
   return typeof requestId === 'string' || typeof requestId === 'number'
@@ -602,6 +617,17 @@ function getNativeAgentRuntime(): ElectronCodexNativeRuntime {
     onServerRequest: requestNativeAgentServerRequest,
     onAppServerUnavailable: error => {
       nativeWindowsSandboxSetupOwnerId = undefined
+      const ownerIds = new Set([
+        ...nativeAgentThreadOwners.values(),
+        ...nativeAgentTurnOwners.values(),
+      ])
+      for (const ownerId of ownerIds) {
+        sendNativeAgentEvent(ownerId, {
+          type: 'runtime-unavailable',
+          code: 'CODEX_NATIVE_APP_SERVER_UNAVAILABLE',
+        })
+      }
+      nativeAgentTurnOwners.clear()
       rejectNativeAgentServerRequests(error)
     },
   })
@@ -898,16 +924,15 @@ function registerIpcHandlers() {
     }
   })
   registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentListThreads, async (_event, payload) => {
-    const input = payload as {
-      cwd: string
-      cursor?: string
-      limit?: number
-      archived?: boolean
-      searchTerm?: string
-      sortKey?: 'created_at' | 'updated_at' | 'recency_at'
-      sortDirection?: 'asc' | 'desc'
-    }
+    const input = payload as Omit<NativeCodexThreadListInput, 'route'>
     return await getNativeAgentRuntime().listThreads({
+      ...input,
+      route: await resolveNativeAgentRoute(),
+    })
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentListLoadedThreads, async (_event, payload) => {
+    const input = payload as { cwd: string, cursor?: string, limit?: number }
+    return await getNativeAgentRuntime().listLoadedThreads({
       ...input,
       route: await resolveNativeAgentRoute(),
     })
@@ -974,10 +999,29 @@ function registerIpcHandlers() {
       throw error
     }
   })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentUnsubscribeThread, async (event, payload) => {
+    const input = payload as { threadId: string }
+    assertNativeAgentThreadOwner(event.sender.id, input.threadId)
+    const response = await getNativeAgentRuntime().unsubscribeThread(
+      { id: input.threadId },
+      await resolveNativeAgentRoute(),
+    )
+    nativeAgentThreadOwners.delete(input.threadId)
+    return response
+  })
   registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentReadThread, async (event, payload) => {
     const input = payload as { threadId: string }
     assertNativeAgentThreadOwner(event.sender.id, input.threadId)
     return await (await getReadyNativeAgentThreadRuntime(input.threadId)).readThread({ id: input.threadId })
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentUpdateThreadMetadata, async (event, payload) => {
+    const input = payload as { threadId: string } & NativeCodexThreadMetadataGitInfoUpdate
+    assertNativeAgentThreadOwner(event.sender.id, input.threadId)
+    const { threadId, ...gitInfo } = input
+    return await (await getReadyNativeAgentThreadRuntime(threadId)).updateThreadMetadata(
+      { id: threadId },
+      gitInfo,
+    )
   })
   registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentForkThread, async (event, payload) => {
     const input = payload as { threadId: string, cwd: string, permissionMode: unknown, lastTurnId?: string }
@@ -1063,6 +1107,11 @@ function registerIpcHandlers() {
     const input = payload as { threadId: string }
     assertNativeAgentThreadOwner(event.sender.id, input.threadId)
     return await (await getReadyNativeAgentThreadRuntime(input.threadId)).readConfigRequirements({ id: input.threadId })
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentReadClientSettings, async (event, payload) => {
+    const input = payload as { threadId: string }
+    assertNativeAgentThreadOwner(event.sender.id, input.threadId)
+    return await (await getReadyNativeAgentThreadRuntime(input.threadId)).readClientSettings({ id: input.threadId })
   })
   registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentSetThreadMemoryMode, async (event, payload) => {
     const input = payload as { threadId: string, mode: 'enabled' | 'disabled' }
@@ -1178,6 +1227,15 @@ function registerIpcHandlers() {
     return await (await getReadyNativeAgentThreadRuntime(input.threadId)).updatePermissionMode(
       { id: input.threadId },
       permissionMode,
+    )
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentUpdateThreadSettings, async (event, payload) => {
+    const input = payload as { threadId: string } & NativeCodexThreadSettingsPatch
+    assertNativeAgentThreadOwner(event.sender.id, input.threadId)
+    const { threadId, ...settings } = input
+    await (await getReadyNativeAgentThreadRuntime(threadId)).updateThreadSettings(
+      { id: threadId },
+      settings,
     )
   })
   registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentStartTurn, async (event, payload) => {
@@ -1741,6 +1799,10 @@ async function createMainWindow() {
   })
   mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL) => {
     writeWindowSmokeSnapshot(mainWindow, `did-fail-load:${errorCode}:${errorDescription}:${validatedURL}`)
+  })
+  const ownerId = mainWindow.webContents.id
+  mainWindow.webContents.once('destroyed', () => {
+    releaseNativeAgentOwner(ownerId, new Error('CODEX_NATIVE_RENDERER_UNAVAILABLE'))
   })
 
   writeWindowSmokeSnapshot(mainWindow, 'after-create')

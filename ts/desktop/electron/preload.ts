@@ -28,6 +28,10 @@ const nativeAgent = {
     ELECTRON_IPC_CHANNELS.nativeAgentListThreads,
     { ...options, cwd },
   ),
+  listLoadedThreads: (cwd: string, options: Record<string, unknown> = {}) => invoke(
+    ELECTRON_IPC_CHANNELS.nativeAgentListLoadedThreads,
+    { ...options, cwd },
+  ),
   searchThreads: (cwd: string, searchTerm: string, options: Record<string, unknown> = {}) => invoke(
     ELECTRON_IPC_CHANNELS.nativeAgentSearchThreads,
     { ...options, cwd, searchTerm },
@@ -35,6 +39,10 @@ const nativeAgent = {
   resumeThread: (threadId: string, cwd: string) => invoke(
     ELECTRON_IPC_CHANNELS.nativeAgentResumeThread,
     { threadId, cwd },
+  ),
+  unsubscribeThread: (threadId: string) => invoke(
+    ELECTRON_IPC_CHANNELS.nativeAgentUnsubscribeThread,
+    { threadId },
   ),
   unarchiveThread: (threadId: string, cwd: string) => invoke(
     ELECTRON_IPC_CHANNELS.nativeAgentUnarchiveThread,
@@ -45,6 +53,10 @@ const nativeAgent = {
     { threadId, cwd },
   ),
   readThread: (threadId: string) => invoke(ELECTRON_IPC_CHANNELS.nativeAgentReadThread, { threadId }),
+  updateThreadMetadata: (threadId: string, gitInfo: Record<string, unknown>) => invoke(
+    ELECTRON_IPC_CHANNELS.nativeAgentUpdateThreadMetadata,
+    { threadId, ...gitInfo },
+  ),
   forkThread: (threadId: string, cwd: string, permissionMode?: unknown, lastTurnId?: string) => invoke(
     ELECTRON_IPC_CHANNELS.nativeAgentForkThread,
     {
@@ -89,6 +101,10 @@ const nativeAgent = {
   ),
   readConfigRequirements: (threadId: string) => invoke(
     ELECTRON_IPC_CHANNELS.nativeAgentReadConfigRequirements,
+    { threadId },
+  ),
+  readClientSettings: (threadId: string) => invoke(
+    ELECTRON_IPC_CHANNELS.nativeAgentReadClientSettings,
     { threadId },
   ),
   setThreadMemoryMode: (threadId: string, mode: 'enabled' | 'disabled') => invoke(
@@ -146,6 +162,10 @@ const nativeAgent = {
   updatePermissionMode: (threadId: string, permissionMode: unknown) => invoke(
     ELECTRON_IPC_CHANNELS.nativeAgentUpdatePermissionMode,
     { threadId, permissionMode },
+  ),
+  updateThreadSettings: (threadId: string, settings: Record<string, unknown>) => invoke(
+    ELECTRON_IPC_CHANNELS.nativeAgentUpdateThreadSettings,
+    { threadId, ...settings },
   ),
   getWindowsSandboxReadiness: (cwd: string) => invoke(
     ELECTRON_IPC_CHANNELS.nativeAgentWindowsSandboxReadiness,
