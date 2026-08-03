@@ -58,6 +58,7 @@ import {
   type ImageCanvasPreflightInput,
   type ImageCanvasPreflight,
   type ImageCanvasRevision,
+  type ImageBrandKitRevision,
   type ImageCanvasRenderInput,
   type ImageDeliverySpecRevisionInput,
   type ImageExportInput,
@@ -76,6 +77,7 @@ import {
   type ImageExportReceipt,
   type ImageDeliverySet,
   type ImageReferenceV2,
+  type ImageTemplateRevision,
   type ProviderExecutionReceipt,
   type UpdateImageReferenceControlInput,
   updateImageReferenceControlInputSchema,
@@ -124,6 +126,7 @@ export type ImageWorkbenchCrashPoint =
   | 'after_generation_round_persisted_before_post'
   | 'after_project_migration_before_operations'
   | 'after_canvas_render_cas_before_db_commit'
+  | 'after_export_cas_before_db_commit'
 
 type RelayImageTask = {
   task_id?: string
@@ -621,6 +624,7 @@ export class ImageWorkbenchService {
       size: input.size,
       count: 3,
       candidate_count: 3,
+      ...(input.budget_limit ? { budget_limit: input.budget_limit } : {}),
       brief,
       brief_overrides: {},
       references: persisted.references,
@@ -855,13 +859,49 @@ export class ImageWorkbenchService {
     })
   }
 
+  private inputByteUpperBound(project: ImageWorkbenchProject, references: ImageReferenceV2[]): number {
+    return references.reduce((total, reference) => total + (project.assets.find(asset => asset.id === reference.asset_id)?.byte_size ?? 0), 0)
+  }
+
+  private estimatePriceUpperBound(
+    policies: Array<{ price_upper_bound: { currency: string; per_output_amount_minor: number; pricing_revision: string } }>,
+    inputBytes: number,
+  ): ImageGenerationEstimate['price_upper_bound'] {
+    if (policies.length === 0) throw new ImageWorkbenchServiceError('没有可计价的图片 Provider', 422, 'IMAGE_CAPABILITY_GAP')
+    const currency = policies[0]!.price_upper_bound.currency
+    if (policies.some(policy => policy.price_upper_bound.currency !== currency)) {
+      throw new ImageWorkbenchServiceError('本次生成包含无法合并的计价币种', 422, 'IMAGE_CAPABILITY_GAP')
+    }
+    const charges = policies.map(policy => policy.price_upper_bound.per_output_amount_minor * 3)
+    return {
+      currency,
+      amount_minor: charges.reduce((total, amount) => total + amount, 0),
+      per_operation_amount_minor: Math.max(...charges),
+      pricing_revision: policies.map(policy => policy.price_upper_bound.pricing_revision).sort().join('+'),
+      usage_upper_bound: { requests: policies.length, input_bytes: inputBytes, output_images: policies.length * 3 },
+    }
+  }
+
+  private async assertBudgetAllows(project: ImageWorkbenchProject, quote: ImageGenerationEstimate['price_upper_bound']): Promise<void> {
+    if (!project.budget_limit) return
+    if (project.budget_limit.currency !== quote.currency) {
+      throw new ImageWorkbenchServiceError('项目预算币种与当前 Provider 计价币种不一致', 422, 'IMAGE_BUDGET_EXCEEDED')
+    }
+    const committed = (await this.repository.listGenerationOperations(project.id))
+      .filter(operation => operation.cost_state === 'submitted_charge_possible' || operation.cost_state === 'usage_recorded')
+      .reduce((total, operation) => total + (operation.price_upper_bound?.amount_minor ?? 0), 0)
+    if (committed + quote.amount_minor > project.budget_limit.amount_minor) {
+      throw new ImageWorkbenchServiceError('本次付费操作会超过项目预算上限', 422, 'IMAGE_BUDGET_EXCEEDED')
+    }
+  }
+
   private async saveGenerationRoundEstimate(
     project: ImageWorkbenchProject,
     plan: ImageCreativePlan,
     brief: ImageBriefSnapshot,
     delivery: ImageDeliverySpec,
     directions: ImageCreativeDirection[],
-    policies: Array<{ policy_revision: string; provider: string; model_id: string }>,
+    policies: Array<{ policy_revision: string; provider: string; model_id: string; price_upper_bound: { currency: string; per_output_amount_minor: number; pricing_revision: string } }>,
   ): Promise<ImageGenerationEstimate> {
     const createdAt = this.iso()
     const expiresAt = new Date(this.now().getTime() + IMAGE_GENERATION_ESTIMATE_TTL_MS).toISOString()
@@ -878,7 +918,7 @@ export class ImageWorkbenchService {
       paid_operation_count: directions.length,
       candidate_count_per_operation: 3,
       concurrency: Math.min(2, directions.length),
-      price_upper_bound: null,
+      price_upper_bound: this.estimatePriceUpperBound(policies, this.inputByteUpperBound(project, this.generationReferences(project))),
       expires_at: expiresAt,
       created_at: createdAt,
     })
@@ -890,7 +930,7 @@ export class ImageWorkbenchService {
     paid_operation_count: number
     candidate_count_per_operation: number
     concurrency: number
-    price_upper_bound: null
+    price_upper_bound: ImageGenerationEstimate['price_upper_bound']
     expires_at: string
   }> {
     const input = estimateGenerationRoundInputSchema.parse(raw)
@@ -1002,6 +1042,7 @@ export class ImageWorkbenchService {
     ) {
       throw new ImageWorkbenchServiceError('费用估算已过期或不属于当前输入，请重新确认', 409, 'IMAGE_REVISION_CONFLICT')
     }
+    await this.assertBudgetAllows(project, estimate.price_upper_bound)
     if (!productGatewayConfigured()) {
       throw new ImageWorkbenchServiceError('图片远程能力尚未配置', 503, 'GATEWAY_NOT_CONFIGURED')
     }
@@ -1034,6 +1075,11 @@ export class ImageWorkbenchService {
         transport_task_id: taskId,
         execution_receipt_id: stableId('receipt', project.id, operationId),
         cost_state: 'not_submitted',
+        price_upper_bound: {
+          currency: policy.price_upper_bound.currency,
+          amount_minor: policy.price_upper_bound.per_output_amount_minor * 3,
+          pricing_revision: policy.price_upper_bound.pricing_revision,
+        },
         created_at: now,
         updated_at: now,
       }
@@ -1118,7 +1164,7 @@ export class ImageWorkbenchService {
     paid_operation_count: number
     candidate_count_per_operation: number
     concurrency: number
-    price_upper_bound: null
+    price_upper_bound: ImageGenerationEstimate['price_upper_bound']
     expires_at: string
   }> {
     const input = estimateDeriveImageCandidateInputSchema.parse(raw)
@@ -1166,7 +1212,7 @@ export class ImageWorkbenchService {
       paid_operation_count: 1,
       candidate_count_per_operation: 3,
       concurrency: 1,
-      price_upper_bound: null,
+      price_upper_bound: this.estimatePriceUpperBound([policy], source.byte_size ?? 0),
       expires_at: expiresAt,
       created_at: createdAt,
     })
@@ -1249,6 +1295,7 @@ export class ImageWorkbenchService {
     if (estimate.request_hash !== estimateRequestHash) {
       throw new ImageWorkbenchServiceError('派生费用估算已过期或不属于当前输入，请重新确认', 409, 'IMAGE_REVISION_CONFLICT')
     }
+    await this.assertBudgetAllows(project, estimate.price_upper_bound)
     if (!productGatewayConfigured()) throw new ImageWorkbenchServiceError('图片远程能力尚未配置', 503, 'GATEWAY_NOT_CONFIGURED')
     const now = this.iso()
     const operationId = stableId('op', project.id, roundId, candidate.id)
@@ -1275,6 +1322,11 @@ export class ImageWorkbenchService {
       transport_task_id: taskId,
       execution_receipt_id: stableId('receipt', project.id, operationId),
       cost_state: 'not_submitted',
+      price_upper_bound: {
+        currency: policy.price_upper_bound.currency,
+        amount_minor: policy.price_upper_bound.per_output_amount_minor * 3,
+        pricing_revision: policy.price_upper_bound.pricing_revision,
+      },
       created_at: now,
       updated_at: now,
     }
@@ -1646,6 +1698,22 @@ export class ImageWorkbenchService {
 
   async applyCanvasCommand(projectId: string, canvasId: string, baseProjectRevision: number, raw: ImageCanvasCommandInput): Promise<{ project: ImageWorkbenchProject; canvas: ImageCanvasRevision }> {
     const command = imageCanvasCommandInputSchema.parse(raw)
+    const project = await this.project(projectId)
+    const template = command.kind === 'apply_template'
+      ? await this.repository.templateRevision(command.payload.template_id, command.payload.template_revision_id, project.owner)
+      : undefined
+    if (command.kind === 'apply_template') {
+      const boundAssets = command.payload.slot_bindings.flatMap(binding => binding.asset_id ? [binding.asset_id] : [])
+      if (boundAssets.some(assetId => !project.assets.some(asset => asset.id === assetId))) {
+        throw new ImageWorkbenchServiceError('模板 Slot 只能绑定当前项目中已验证的素材', 409, 'IMAGE_ASSET_NOT_FOUND')
+      }
+    }
+    if (command.kind === 'apply_brand_kit') {
+      await this.repository.brandKitRevision(command.payload.brand_kit_id, command.payload.brand_kit_revision_id, project.owner)
+    }
+    if (template?.brand_kit_id && template.brand_kit_revision_id) {
+      await this.repository.brandKitRevision(template.brand_kit_id, template.brand_kit_revision_id, project.owner)
+    }
     const currentCanvas = command.kind === 'sync_delivery_spec'
       ? await this.repository.getCanvasRevision(projectId, canvasId, command.base_revision)
       : undefined
@@ -1664,9 +1732,36 @@ export class ImageWorkbenchService {
       command,
       request_hash: requestHash,
       created_at: this.iso(),
+      ...(template ? { template } : {}),
       ...(deliveryArtboard ? { delivery_artboard: { width: deliveryArtboard.width, height: deliveryArtboard.height } } : {}),
     })
     return { project: result.project, canvas: result.canvas }
+  }
+
+  /** 15.3 application seam used by the owner-scoped Brand/Template editors. */
+  async saveBrandKitRevision(revision: ImageBrandKitRevision): Promise<ImageBrandKitRevision> {
+    if (revision.owner.kind !== STANDALONE_IMAGE_OWNER.kind || revision.owner.owner_id !== STANDALONE_IMAGE_OWNER.owner_id) {
+      throw new ImageWorkbenchServiceError('品牌 revision 不属于当前本地工作台', 403, 'IMAGE_PROJECT_FORBIDDEN')
+    }
+    return await this.repository.saveBrandKitRevision(revision)
+  }
+
+  /** 15.3 application seam used by the owner-scoped Brand/Template editors. */
+  async saveTemplateRevision(revision: ImageTemplateRevision): Promise<ImageTemplateRevision> {
+    if (revision.owner.kind !== STANDALONE_IMAGE_OWNER.kind || revision.owner.owner_id !== STANDALONE_IMAGE_OWNER.owner_id) {
+      throw new ImageWorkbenchServiceError('模板 revision 不属于当前本地工作台', 403, 'IMAGE_PROJECT_FORBIDDEN')
+    }
+    const brand = revision.brand_kit_id && revision.brand_kit_revision_id
+      ? await this.repository.brandKitRevision(revision.brand_kit_id, revision.brand_kit_revision_id, revision.owner)
+      : undefined
+    const referencedAssets = this.flattenCanvasLayers(revision.blueprint.layers).flatMap(layer => {
+      if (layer.kind === 'logo' || layer.kind === 'raster' || layer.kind === 'mask') return [layer.source_asset_id]
+      return layer.kind === 'qrcode' && layer.source.kind === 'asset' ? [layer.source.asset_id] : []
+    })
+    if (referencedAssets.some(assetId => !brand?.logo_asset_ids.includes(assetId))) {
+      throw new ImageWorkbenchServiceError('模板蓝图只能引用同一品牌的受控 Logo 或未绑定 Slot', 409, 'IMAGE_ASSET_NOT_FOUND')
+    }
+    return await this.repository.saveTemplateRevision(revision)
   }
 
   async createDeliverySpecRevision(projectId: string, raw: ImageDeliverySpecRevisionInput): Promise<{ project: ImageWorkbenchProject; spec: ImageDeliverySpec }> {
@@ -1746,6 +1841,35 @@ export class ImageWorkbenchService {
       id: 'font-and-text-bounds', status: invalidText || invalidGlyph ? 'fail' : 'pass',
       evidence: invalidText || invalidGlyph ? '正式文字必须使用受控字体、具备全部字形且不得裁切或越界' : '正式文字字体、字形、边界和溢出策略有效', waivable: false,
     })
+    if (canvas.document.brand_kit_revision_id) {
+      try {
+        const brand = await this.repository.brandKitRevisionById(canvas.document.brand_kit_revision_id, project.owner)
+        const layers = this.flattenCanvasLayers(canvas.document.layers)
+        const requiredText = brand.required_text.filter(item => !textLayers.some(layer => layer.text === item.value))
+        const requiredLogos = brand.logo_asset_ids.filter(assetId => !layers.some(layer => layer.kind === 'logo' && layer.source_asset_id === assetId))
+        const invalidBrandFonts = brand.font_asset_ids.length > 0 && textLayers.some(layer => !brand.font_asset_ids.includes(layer.font_asset_id))
+        const unresolvedColors = layers.some(layer => (layer.kind === 'text' || layer.kind === 'shape')
+          && [layer.fill, layer.stroke].some(color => color?.startsWith('brand.') && !brand.color_tokens[color.slice('brand.'.length)]))
+        const failed = requiredText.length > 0 || requiredLogos.length > 0 || invalidBrandFonts || unresolvedColors
+        checks.push({
+          id: 'brand-revision', status: failed ? 'fail' : 'pass', waivable: false,
+          evidence: failed ? `品牌约束未满足：文字=${requiredText.map(item => item.id).join(',') || '无'}；Logo=${requiredLogos.join(',') || '无'}；字体=${invalidBrandFonts ? '不匹配' : '匹配'}；色彩=${unresolvedColors ? 'Token 未定义' : '有效'}` : `已锁定并满足品牌 revision ${brand.id}`,
+        })
+      } catch (error) {
+        checks.push({ id: 'brand-revision', status: 'fail', waivable: false, evidence: error instanceof Error ? error.message.slice(0, 500) : '品牌 revision 无效' })
+      }
+    }
+    const safe = artboard.safe_area
+    if (safe) {
+      const protectedLayers = this.flattenCanvasLayers(canvas.document.layers).filter((layer): layer is Extract<ImageCanvasDocument['layers'][number], { kind: 'text' | 'logo' | 'qrcode' }> => layer.kind === 'text' || layer.kind === 'logo' || layer.kind === 'qrcode')
+      const outside = protectedLayers.some(layer => {
+        const box = layer.kind === 'text'
+          ? { left: layer.position.x, top: layer.position.y, right: layer.position.x + (layer.max_width ?? layer.font_size * Math.max(1, layer.text.length)), bottom: layer.position.y + (layer.max_height ?? layer.font_size * layer.line_height) }
+          : { left: layer.transform.x, top: layer.transform.y, right: layer.transform.x + layer.transform.width * layer.transform.scale_x, bottom: layer.transform.y + layer.transform.height * layer.transform.scale_y }
+        return box.left < safe.left || box.top < safe.top || box.right > canvas.document.width - safe.right || box.bottom > canvas.document.height - safe.bottom
+      })
+      checks.push({ id: 'required-safe-area', status: outside ? 'fail' : 'pass', evidence: outside ? '必填文字、Logo 或二维码越过交付安全区' : '文字、Logo 与二维码均位于交付安全区内', waivable: false })
+    }
     const qrLayers = this.flattenCanvasLayers(canvas.document.layers).filter(layer => layer.kind === 'qrcode')
     checks.push({ id: 'qr-verification', status: qrLayers.every(layer => layer.verify_after_render) ? 'pass' : 'fail', evidence: '二维码层将在正式像素输出后再次解码', waivable: false })
     const preflight: ImageCanvasPreflight = {
@@ -1761,7 +1885,7 @@ export class ImageWorkbenchService {
     return await this.repository.saveCanvasPreflight(preflight)
   }
 
-  async renderCanvas(projectId: string, canvasId: string, raw: ImageCanvasRenderInput): Promise<{ operation: ImageOperationV2; version_id: string; render_receipt: ImageRenderReceipt; release_check: ImageReleaseCheckResult }> {
+  private async executeCanvasRender(projectId: string, canvasId: string, raw: ImageCanvasRenderInput): Promise<{ operation: ImageOperationV2; version_id: string; render_receipt: ImageRenderReceipt; release_check: ImageReleaseCheckResult }> {
     const input = imageCanvasRenderInputSchema.parse(raw)
     const preflight = await this.preflightCanvas(projectId, canvasId, { revision: input.canvas_revision })
     if (!preflight.passed) throw new ImageWorkbenchServiceError('画布预检未通过，不能生成正式版本', 409, 'IMAGE_CANVAS_PREFLIGHT_FAILED')
@@ -1771,7 +1895,10 @@ export class ImageWorkbenchService {
     if (!artboard) throw new ImageWorkbenchServiceError('交付画板不存在', 409, 'IMAGE_OPERATION_CORRUPT')
     let rendered
     try {
-      rendered = await this.canvasRenderer.render(canvas.document, await this.canvasInputAssets(project, canvas.document))
+      const brandColors = canvas.document.brand_kit_revision_id
+        ? (await this.repository.brandKitRevisionById(canvas.document.brand_kit_revision_id, project.owner)).color_tokens
+        : {}
+      rendered = await this.canvasRenderer.render(canvas.document, await this.canvasInputAssets(project, canvas.document), brandColors)
     } catch (error) {
       if (error instanceof ImageCanvasRendererError) throw new ImageWorkbenchServiceError(error.message, 409, error.code)
       throw error
@@ -1826,12 +1953,13 @@ export class ImageWorkbenchService {
       project_id: projectId,
       owner: project.owner,
       kind: 'canvas_render',
-      status: 'succeeded',
+      status: 'committing',
       idempotency_key: input.idempotency_key,
       request_hash: sha256({ canvas_id: canvasId, ...input }),
       logical_attempt: 1,
       input_refs: { project_revision: input.base_revision, delivery_spec_revision: delivery.revision, canvas_revision: canvas.revision, execution_policy_revision: 'local-canvas-v1', asset_hashes: rendered.dependency_hashes.slice(0, 16) },
       cost_state: 'not_submitted',
+      local_delivery: { kind: 'canvas_render', canvas_id: canvasId, canvas_revision: canvas.revision, expected_current_version_id: input.expected_current_version_id, activate_on_success: input.activate_on_success },
       created_at: now,
       updated_at: now,
     }
@@ -1839,6 +1967,7 @@ export class ImageWorkbenchService {
       project_id: projectId,
       artboard_id: artboard.id,
       expected_current_version_id: input.expected_current_version_id,
+      expected_canvas_current_revision: canvas.revision,
       activate_on_success: input.activate_on_success,
       operation,
       asset: persisted.asset,
@@ -1853,10 +1982,36 @@ export class ImageWorkbenchService {
     return { operation: committed.operation, version_id: committed.version.id, render_receipt: receipt, release_check: releaseCheck }
   }
 
-  async exportDelivery(projectId: string, raw: ImageExportInput): Promise<{ export_receipts: ImageExportReceipt[]; delivery_set?: ImageDeliverySet; project_revision: number }> {
+  /** Persist first and let the durable operation own local rendering.  A
+   * renderer/HTTP disconnect therefore never needs the client to retry an
+   * arbitrary Canvas write after pixels have reached CAS. */
+  async renderCanvas(projectId: string, canvasId: string, raw: ImageCanvasRenderInput): Promise<{ operation: ImageOperationV2; version_id?: string; render_receipt?: ImageRenderReceipt; release_check?: ImageReleaseCheckResult }> {
+    const input = imageCanvasRenderInputSchema.parse(raw)
+    const preflight = await this.preflightCanvas(projectId, canvasId, { revision: input.canvas_revision })
+    if (!preflight.passed) throw new ImageWorkbenchServiceError('画布预检未通过，不能生成正式版本', 409, 'IMAGE_CANVAS_PREFLIGHT_FAILED')
+    const [project, canvas] = await Promise.all([this.project(projectId), this.repository.getCanvasRevision(projectId, canvasId, input.canvas_revision)])
+    const delivery = await this.repository.getDeliverySpecRevision(projectId, canvas.document.delivery_spec_id, canvas.document.delivery_spec_revision)
+    const operation: ImageOperationV2 = {
+      id: stableId('op', projectId, 'canvas-render', canvasId, String(canvas.revision), input.idempotency_key),
+      project_id: projectId, owner: project.owner, kind: 'canvas_render', status: 'queued',
+      idempotency_key: input.idempotency_key, request_hash: sha256({ canvas_id: canvasId, ...input }), logical_attempt: 1,
+      input_refs: { project_revision: input.base_revision, delivery_spec_revision: delivery.revision, canvas_revision: canvas.revision, execution_policy_revision: 'local-canvas-v1', asset_hashes: [] },
+      cost_state: 'not_submitted',
+      local_delivery: { kind: 'canvas_render', canvas_id: canvasId, canvas_revision: canvas.revision, expected_current_version_id: input.expected_current_version_id, activate_on_success: input.activate_on_success },
+      created_at: this.iso(), updated_at: this.iso(),
+    }
+    const queued = await this.repository.saveGenerationOperation(operation)
+    if (queued.status === 'queued') {
+      queueMicrotask(() => { void this.executeCanvasRender(projectId, canvasId, input).catch(() => undefined) })
+    }
+    return { operation: queued }
+  }
+
+  private async executeExportDelivery(projectId: string, raw: ImageExportInput): Promise<{ operation: ImageOperationV2; export_receipts: ImageExportReceipt[]; delivery_set?: ImageDeliverySet; project_revision: number }> {
     const input = imageExportInputSchema.parse(raw)
     const project = await this.project(projectId)
-    if (project.revision !== input.base_revision) throw new ImageWorkbenchServiceError('图片项目已更新，请刷新后再导出', 409, 'IMAGE_REVISION_CONFLICT')
+    // This worker deliberately uses the frozen Version map below.  New Canvas
+    // edits after enqueue must not invalidate an already accepted export.
     const delivery = await this.ensureDeliverySpec(project)
     const requested = Object.entries(input.version_ids_by_artboard)
     if (requested.length === 0) throw new ImageWorkbenchServiceError('导出至少需要一个画板版本', 400, 'IMAGE_OPERATION_CORRUPT')
@@ -1898,13 +2053,31 @@ export class ImageWorkbenchService {
         } satisfies ImageDeliverySet
       : undefined
     const operation: ImageOperationV2 = {
-      id: stableId('op', projectId, 'export', input.idempotency_key), project_id: projectId, owner: project.owner, kind: 'export', status: 'succeeded',
+      id: stableId('op', projectId, 'export', input.idempotency_key), project_id: projectId, owner: project.owner, kind: 'export', status: 'committing',
       idempotency_key: input.idempotency_key, request_hash: sha256(input), logical_attempt: 1,
       input_refs: { project_revision: input.base_revision, delivery_spec_revision: delivery.revision, execution_policy_revision: 'local-export-v1', asset_hashes: receipts.map(receipt => receipt.source_hash).slice(0, 16) },
       cost_state: 'not_submitted', created_at: now, updated_at: now,
+      local_delivery: { kind: 'export', version_ids_by_artboard: input.version_ids_by_artboard },
     }
+    this.injectCrash('after_export_cas_before_db_commit')
     const committed = await this.repository.commitExport({ project_id: projectId, operation, assets, export_receipts: receipts, delivery_set: deliverySet })
-    return { export_receipts: receipts, ...(deliverySet ? { delivery_set: deliverySet } : {}), project_revision: committed.project.revision }
+    return { operation: committed.operation, export_receipts: receipts, ...(deliverySet ? { delivery_set: deliverySet } : {}), project_revision: committed.project.revision }
+  }
+
+  async exportDelivery(projectId: string, raw: ImageExportInput): Promise<{ operation: ImageOperationV2; export_receipts?: ImageExportReceipt[]; delivery_set?: ImageDeliverySet; project_revision: number }> {
+    const input = imageExportInputSchema.parse(raw)
+    const project = await this.project(projectId)
+    if (project.revision !== input.base_revision) throw new ImageWorkbenchServiceError('图片项目已更新，请刷新后再导出', 409, 'IMAGE_REVISION_CONFLICT')
+    const operation: ImageOperationV2 = {
+      id: stableId('op', projectId, 'export', input.idempotency_key), project_id: projectId, owner: project.owner, kind: 'export', status: 'queued',
+      idempotency_key: input.idempotency_key, request_hash: sha256(input), logical_attempt: 1,
+      input_refs: { project_revision: input.base_revision, delivery_spec_revision: project.current_delivery_spec_revision, execution_policy_revision: 'local-export-v1', asset_hashes: [] },
+      cost_state: 'not_submitted', local_delivery: { kind: 'export', version_ids_by_artboard: input.version_ids_by_artboard },
+      created_at: this.iso(), updated_at: this.iso(),
+    }
+    const queued = await this.repository.saveGenerationOperation(operation)
+    if (queued.status === 'queued') queueMicrotask(() => { void this.executeExportDelivery(projectId, input).catch(() => undefined) })
+    return { operation: queued, project_revision: project.revision }
   }
 
   async selectArtboardVersion(projectId: string, artboardId: string, raw: { base_revision: number; idempotency_key: string; version_id: string }): Promise<ImageWorkbenchProject> {
@@ -2051,19 +2224,12 @@ export class ImageWorkbenchService {
   }
 
   async saveOutput(projectId: string, raw: SaveImageOutputInput): Promise<SaveImageOutputResult> {
-    const input = saveImageOutputInputSchema.parse(raw)
-    const project = await this.project(projectId)
-    const output = input.output_id ? project.outputs.find(candidate => candidate.id === input.output_id) : undefined
-    const versionId = input.version_id ?? output?.version_id
-    if (!versionId) throw new ImageWorkbenchServiceError('找不到图片版本', 404, 'IMAGE_OUTPUT_NOT_FOUND')
-    const source = await this.imageVersionBytes(project, versionId)
-    try {
-      const verification = await this.assets.verifiedExport(source.asset, input.output_path)
-      return { path: input.output_path, verification }
-    } catch (error) {
-      if (error instanceof ImageAssetStoreError) throw new ImageWorkbenchServiceError(error.message, error.status, error.code)
-      throw error
-    }
+    saveImageOutputInputSchema.parse(raw)
+    // A Sidecar is never allowed to resolve a Renderer-supplied destination.
+    // Electron Main consumes the one-shot opaque grant and copies bytes through
+    // its authenticated media channel.  Keep this former HTTP writer closed so
+    // a future caller cannot accidentally reintroduce path authority here.
+    throw new ImageWorkbenchServiceError('导出目标只能由桌面端不透明授权处理', 403, 'IMAGE_DESTINATION_GRANT_REQUIRED')
   }
 
   private async contentResponse(projectId: string, assetId: string, role: 'reference' | 'mask' | 'result' | 'export'): Promise<Response> {
@@ -2072,11 +2238,16 @@ export class ImageWorkbenchService {
     if (!asset?.mime_type || !isSupportedImageMime(asset.mime_type)) {
       throw new ImageWorkbenchServiceError('图片资产不存在', 404, 'IMAGE_ASSET_NOT_FOUND')
     }
-    return await this.assets.response(
+    const response = await this.assets.response(
       project.id,
       role === 'reference' ? 'references' : role === 'mask' ? 'masks' : role === 'export' ? 'exports' : 'results',
       `${asset.id}.${extensionForMime(asset.mime_type)}`,
     )
+    const verified = await this.assets.readVerified(asset)
+    response.headers.set('X-BilliardBuddy-Media-Hash', verified.content_hash)
+    response.headers.set('X-BilliardBuddy-Media-Width', String(verified.width))
+    response.headers.set('X-BilliardBuddy-Media-Height', String(verified.height))
+    return response
   }
 
   async referenceResponse(projectId: string, assetId: string): Promise<Response> {
@@ -2093,6 +2264,12 @@ export class ImageWorkbenchService {
 
   async exportAssetResponse(projectId: string, assetId: string): Promise<Response> {
     return await this.contentResponse(projectId, assetId, 'export')
+  }
+
+  async versionResponse(projectId: string, versionId: string): Promise<Response> {
+    const project = await this.project(projectId)
+    const { asset } = this.imageVersion(project, versionId)
+    return await this.contentResponse(projectId, asset.id, 'result')
   }
 
   async candidateResponse(projectId: string, candidateId: string): Promise<Response> {
@@ -2376,6 +2553,30 @@ export class ImageWorkbenchService {
       const generation = await this.repository.getGenerationOperationByTransportTask(recovered.id)
       if (generation) await this.syncGenerationOperationFromTransport(generation, recovered)
     }))
+    // Local Canvas/Export jobs have no remote transport to poll.  Their full
+    // request is stored in ImageOperationV2 and may be resumed under the same
+    // idempotency key after a CAS-before-DB crash.
+    const projects = await this.listProjects()
+    const localOperations = (await Promise.all(projects.map(async project => (await this.repository.listGenerationOperations(project.id))
+      .filter(operation => operation.local_delivery && ['queued', 'running', 'committing'].includes(operation.status))))).flat()
+    await Promise.all(localOperations.map(async operation => {
+        if (operation.local_delivery?.kind === 'canvas_render') {
+          await this.executeCanvasRender(operation.project_id, operation.local_delivery.canvas_id, {
+            base_revision: operation.input_refs.project_revision,
+            idempotency_key: operation.idempotency_key,
+            canvas_revision: operation.local_delivery.canvas_revision,
+            expected_current_version_id: operation.local_delivery.expected_current_version_id,
+            activate_on_success: operation.local_delivery.activate_on_success,
+          }).catch(() => undefined)
+        }
+        if (operation.local_delivery?.kind === 'export') {
+          await this.executeExportDelivery(operation.project_id, {
+            base_revision: operation.input_refs.project_revision,
+            idempotency_key: operation.idempotency_key,
+            version_ids_by_artboard: operation.local_delivery.version_ids_by_artboard,
+          }).catch(() => undefined)
+        }
+      }))
   }
 
   private legacyFile(root: string, locator: string): string | null {

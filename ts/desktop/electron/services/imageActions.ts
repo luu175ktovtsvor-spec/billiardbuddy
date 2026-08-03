@@ -30,6 +30,7 @@ import {
   imageGenerationRoundResponseSchema,
   imageReferenceControlResponseSchema,
 } from '../../../shared/contracts/imageGeneration'
+import { createHash } from 'node:crypto'
 import type {
   AdoptImageCandidateInput,
   ImageCandidateAdoptionResponse,
@@ -184,6 +185,25 @@ export class ElectronImageActions {
 
   selectArtboardVersion(projectId: string, artboardId: string, input: ImageArtboardSelectVersionInput): Promise<ImageArtboardSelectVersionResponse> {
     return this.post(`/api/images/projects/${encodeURIComponent(projectId)}/artboards/${encodeURIComponent(artboardId)}/commands/select-version`, input, imageArtboardSelectVersionResponseSchema)
+  }
+
+  async downloadVersion(projectId: string, versionId: string): Promise<{ bytes: Buffer; verification: SaveImageOutputResult['verification'] }> {
+    const baseUrl = (await this.options.getServerUrl()).replace(/\/+$/, '')
+    const response = await this.fetchImpl(`${baseUrl}/api/images/projects/${encodeURIComponent(projectId)}/versions/${encodeURIComponent(versionId)}/content`, {
+      headers: { [MEDIA_UI_CAPABILITY_HEADER]: this.options.capability },
+    }).catch(() => { throw new ElectronImageActionError('MEDIA_TEMPORARILY_UNAVAILABLE') })
+    if (!response.ok) throw new ElectronImageActionError((await response.json().catch(() => ({})) as { error?: unknown }).error)
+    const bytes = Buffer.from(await response.arrayBuffer())
+    const contentHash = `sha256:${createHash('sha256').update(bytes).digest('hex')}`
+    const expectedHash = response.headers.get('X-BilliardBuddy-Media-Hash')
+    const width = Number(response.headers.get('X-BilliardBuddy-Media-Width'))
+    const height = Number(response.headers.get('X-BilliardBuddy-Media-Height'))
+    const mime_type = response.headers.get('content-type')?.split(';')[0]
+    if (expectedHash !== contentHash || !Number.isInteger(width) || !Number.isInteger(height)
+      || (mime_type !== 'image/png' && mime_type !== 'image/jpeg' && mime_type !== 'image/webp')) {
+      throw new ElectronImageActionError('MEDIA_RESOURCE_UNAVAILABLE')
+    }
+    return { bytes, verification: { byte_size: bytes.byteLength, mime_type, width, height, content_hash: contentHash, verified_at: new Date().toISOString() } }
   }
 
   private async post<T>(path: string, body: unknown, responseSchema: ResponseSchema<T>): Promise<T> {

@@ -5,6 +5,7 @@
     "": {
       "name": "billiardbuddy-backend",
       "dependencies": {
+        "@fontsource/noto-sans-sc": "5.2.5",
         "@resvg/resvg-js": "^2.6.2",
         "fontkit": "^2.0.4",
         "jsqr": "^1.4.0",
@@ -28,6 +29,8 @@
   },
   "packages": {
     "@emnapi/runtime": ["@emnapi/runtime@1.11.3", "", { "dependencies": { "tslib": "^2.4.0" } }, "sha512-Xz4Tpyki7XyrpbUK1jR1AhdAdaXyhhY4lZ3neLodmhpuWfy2PAQN5B46sAiU4liOXGLkHypn/qU+jvfWSCYYLA=="],
+
+    "@fontsource/noto-sans-sc": ["@fontsource/noto-sans-sc@5.2.5", "", {}, "sha512-rYAl3Alcjo2PnI0sqzRfnA022H8yWePNrjYalApQwYE+fFlaXmD6Mm3E9wmJCpmJM8clwhQWq/E8IlPl1bmZHQ=="],
 
     "@img/colour": ["@img/colour@1.1.0", "", {}, "sha512-Td76q7j57o/tLVdgS746cYARfSyxk8iEfRxewL9h4OMzYhbW4TAcppl0mT4eyqXddh6L/jwoM75mo7ixa/pCeQ=="],
 

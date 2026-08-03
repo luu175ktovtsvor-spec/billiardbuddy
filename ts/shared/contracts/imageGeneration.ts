@@ -6,6 +6,7 @@ import {
   mediaIsoDateSchema,
   mediaOwnerSchema,
   publicImageWorkbenchProjectSchema,
+  saveImageOutputResultSchema,
 } from './media.js'
 
 export const imageHashSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/)
@@ -185,6 +186,16 @@ export const imageOperationV2Schema = z.object({
     late_result_policy: z.enum(['retain_as_unadopted', 'discard_after_receipt']),
   }).strict().optional(),
   cost_state: z.enum(['not_submitted', 'submitted_charge_possible', 'usage_recorded']),
+  price_upper_bound: z.object({
+    currency: z.string().regex(/^[A-Z]{3}$/), amount_minor: z.number().int().nonnegative(),
+    pricing_revision: z.string().min(1).max(120),
+  }).strict().optional(),
+  /** Durable local work descriptor.  It lets startup resume the exact Canvas
+   * revision or frozen export map without asking a renderer to re-submit. */
+  local_delivery: z.discriminatedUnion('kind', [
+    z.object({ kind: z.literal('canvas_render'), canvas_id: mediaIdSchema, canvas_revision: z.number().int().nonnegative(), expected_current_version_id: mediaIdSchema.optional(), activate_on_success: z.boolean() }).strict(),
+    z.object({ kind: z.literal('export'), version_ids_by_artboard: z.record(mediaIdSchema, mediaIdSchema) }).strict(),
+  ]).optional(),
   submitted_at: mediaIsoDateSchema.optional(),
   completed_at: mediaIsoDateSchema.optional(),
   created_at: mediaIsoDateSchema,
@@ -229,7 +240,18 @@ export const imageGenerationEstimateSchema = z.object({
   paid_operation_count: z.number().int().positive().max(8),
   candidate_count_per_operation: z.number().int().positive().max(4),
   concurrency: z.number().int().positive().max(8),
-  price_upper_bound: z.null(),
+  /** A quote is expressed in the provider's declared minor unit; it is never a UI-only estimate. */
+  price_upper_bound: z.object({
+    currency: z.string().regex(/^[A-Z]{3}$/),
+    amount_minor: z.number().int().nonnegative(),
+    per_operation_amount_minor: z.number().int().nonnegative(),
+    pricing_revision: z.string().min(1).max(120),
+    usage_upper_bound: z.object({
+      requests: z.number().int().positive().max(8),
+      input_bytes: z.number().int().nonnegative(),
+      output_images: z.number().int().positive().max(32),
+    }).strict(),
+  }).strict(),
   expires_at: mediaIsoDateSchema,
   created_at: mediaIsoDateSchema,
 }).strict().superRefine((estimate, context) => {
@@ -280,6 +302,7 @@ export const publicImageOperationV2Schema = imageOperationV2Schema.omit({
   remote_task_id: true,
   execution_receipt_id: true,
   submitted_at: true,
+  local_delivery: true,
 }).extend({
   safe_error: z.object({ code: z.string().min(1).max(120), message: z.string().min(1).max(500) }).strict().optional(),
 })
@@ -295,7 +318,7 @@ const imageEstimateResponseFields = {
   paid_operation_count: z.number().int().positive().max(8),
   candidate_count_per_operation: z.number().int().positive().max(4),
   concurrency: z.number().int().positive().max(8),
-  price_upper_bound: z.null(),
+  price_upper_bound: imageGenerationEstimateSchema.shape.price_upper_bound,
   expires_at: mediaIsoDateSchema,
 }
 
@@ -331,7 +354,8 @@ export const imageReferenceControlResponseSchema = z.object({
 }).strict()
 
 /** 15.3 Canvas facts. Coordinates are artboard pixels with a top-left origin. */
-export const imageCanvasColorSchema = z.string().regex(/^#[0-9A-Fa-f]{6}(?:[0-9A-Fa-f]{2})?$/)
+/** A brand token is resolved by the locked Brand Kit revision at render time. */
+export const imageCanvasColorSchema = z.string().regex(/^(?:#[0-9A-Fa-f]{6}(?:[0-9A-Fa-f]{2})?|brand\.[a-z][a-z0-9_]{0,63})$/)
 export const imageCanvasTransformSchema = z.object({
   x: z.number().finite(),
   y: z.number().finite(),
@@ -468,14 +492,46 @@ export const imageCanvasLayerSchema: z.ZodType<ImageCanvasLayer> = z.lazy(() => 
 export const imageCanvasDocumentSchema = z.object({
   schema_version: z.literal(1), id: mediaIdSchema, project_id: mediaIdSchema, artboard_id: mediaIdSchema,
   delivery_spec_id: mediaIdSchema, delivery_spec_revision: z.number().int().nonnegative(),
-  brand_kit_revision_id: mediaIdSchema.optional(), template_revision_id: mediaIdSchema.optional(),
+  brand_kit_id: mediaIdSchema.optional(), brand_kit_revision_id: mediaIdSchema.optional(), template_id: mediaIdSchema.optional(), template_revision_id: mediaIdSchema.optional(),
   width: z.number().int().positive().max(12_000), height: z.number().int().positive().max(12_000), color_space: z.literal('srgb'),
   background: imageCanvasBackgroundSchema, layers: z.array(imageCanvasLayerSchema).max(80), created_at: mediaIsoDateSchema,
-}).strict()
+}).strict().superRefine((value, context) => {
+  if (Boolean(value.brand_kit_id) !== Boolean(value.brand_kit_revision_id)) context.addIssue({ code: 'custom', message: 'canvas brand id and revision must be paired' })
+  if (Boolean(value.template_id) !== Boolean(value.template_revision_id)) context.addIssue({ code: 'custom', message: 'canvas template id and revision must be paired' })
+})
 export const imageCanvasRevisionSchema = z.object({
   canvas_id: mediaIdSchema, revision: z.number().int().nonnegative(), document_hash: imageHashSchema,
   document: imageCanvasDocumentSchema, parent_revision: z.number().int().nonnegative().optional(), created_at: mediaIsoDateSchema,
 }).strict()
+
+const imageBrandColorTokensSchema = z.record(z.string().regex(/^[a-z][a-z0-9_]{0,63}$/), z.string().regex(/^#[0-9A-Fa-f]{6}(?:[0-9A-Fa-f]{2})?$/))
+const imageBrandRequiredTextSchema = z.object({ id: mediaIdSchema, value: z.string().min(1).max(2_000), purpose: z.enum(['legal', 'contact', 'slogan']) }).strict()
+export const imageBrandKitRevisionSchema = z.object({
+  id: mediaIdSchema, brand_kit_id: mediaIdSchema, revision: z.number().int().nonnegative(), owner: mediaOwnerSchema,
+  logo_asset_ids: z.array(mediaIdSchema).max(32), font_asset_ids: z.array(mediaIdSchema).max(32), color_tokens: imageBrandColorTokensSchema,
+  required_text: z.array(imageBrandRequiredTextSchema).max(80), created_at: mediaIsoDateSchema,
+}).strict()
+export const imageCanvasBlueprintSchema = z.object({
+  schema_version: z.literal(1), artboard: z.object({ width: z.number().int().positive().max(12_000), height: z.number().int().positive().max(12_000) }).strict(),
+  background: imageCanvasBackgroundSchema, layers: z.array(imageCanvasLayerSchema).max(80),
+}).strict()
+export const imageTemplateRevisionSchema = z.object({
+  id: mediaIdSchema, template_id: mediaIdSchema, revision: z.number().int().nonnegative(), owner: mediaOwnerSchema,
+  brand_kit_id: mediaIdSchema.optional(), brand_kit_revision_id: mediaIdSchema.optional(), blueprint: imageCanvasBlueprintSchema,
+  slots: z.array(z.object({ id: z.string().min(1).max(120), layer_id: mediaIdSchema, kind: z.enum(['raster', 'text', 'logo', 'qrcode']), required: z.boolean() }).strict()).max(80),
+  schema_version: z.literal(1), created_at: mediaIsoDateSchema,
+}).strict().superRefine((value, context) => {
+  if (Boolean(value.brand_kit_id) !== Boolean(value.brand_kit_revision_id)) context.addIssue({ code: 'custom', message: 'template brand id and revision must be paired' })
+  const layers = new Map<string, ImageCanvasLayer>()
+  const walk = (items: ImageCanvasLayer[]) => items.forEach(layer => { layers.set(layer.id, layer); if (layer.kind === 'group') walk(layer.children) })
+  walk(value.blueprint.layers)
+  const slots = new Set<string>()
+  for (const slot of value.slots) {
+    if (slots.has(slot.id)) context.addIssue({ code: 'custom', message: 'template slot id must be unique' })
+    slots.add(slot.id)
+    if (layers.get(slot.layer_id)?.kind !== slot.kind) context.addIssue({ code: 'custom', message: 'template slot kind must match its layer' })
+  }
+})
 
 const imageCanvasCommandBaseSchema = z.object({
   idempotency_key: z.string().min(16).max(160), base_revision: z.number().int().nonnegative(),
@@ -516,6 +572,13 @@ export const imageArtboardSelectVersionInputSchema = z.object({
   idempotency_key: z.string().min(16).max(160),
   version_id: mediaIdSchema,
 }).strict()
+export const imageSaveOutputInputSchema = z.object({
+  version_id: mediaIdSchema.optional(),
+  output_id: mediaIdSchema.optional(),
+  destination_grant_id: mediaIdSchema,
+}).strict().refine(value => Boolean(value.version_id || value.output_id), { message: 'version_id or output_id is required' })
+export const imageDestinationGrantRequestSchema = z.object({ suggested_name: z.string().min(1).max(180).optional() }).strict()
+export const imageDestinationGrantSchema = z.object({ destination_grant_id: mediaIdSchema, expires_at: mediaIsoDateSchema }).strict()
 
 export const imageCanvasPreflightSchema = z.object({
   id: mediaIdSchema, project_id: mediaIdSchema, canvas_id: mediaIdSchema, canvas_revision: z.number().int().nonnegative(),
@@ -550,12 +613,15 @@ export const imageDeliverySpecRevisionResponseSchema = z.object({
 }).strict()
 export const imageCanvasPreflightResponseSchema = z.object({ preflight: imageCanvasPreflightSchema }).strict()
 export const imageCanvasRenderResponseSchema = z.object({
-  operation: publicImageOperationV2Schema, version_id: mediaIdSchema, render_receipt: imageRenderReceiptSchema, release_check: imageReleaseCheckResultSchema,
+  operation: publicImageOperationV2Schema,
+  version_id: mediaIdSchema.optional(), render_receipt: imageRenderReceiptSchema.optional(), release_check: imageReleaseCheckResultSchema.optional(),
 }).strict()
 export const imageExportResponseSchema = z.object({
-  export_receipts: z.array(imageExportReceiptSchema).min(1).max(32), delivery_set: imageDeliverySetSchema.optional(), project_revision: z.number().int().nonnegative(),
+  operation: publicImageOperationV2Schema,
+  export_receipts: z.array(imageExportReceiptSchema).min(1).max(32).optional(), delivery_set: imageDeliverySetSchema.optional(), project_revision: z.number().int().nonnegative(),
 }).strict()
 export const imageArtboardSelectVersionResponseSchema = z.object({ project: publicImageWorkbenchProjectSchema }).strict()
+export const imageSaveOutputResponseSchema = saveImageOutputResultSchema.extend({ destination_grant_id: mediaIdSchema }).strict()
 
 const commandEnvelopeFields = {
   idempotency_key: z.string().min(16).max(160),
@@ -633,6 +699,8 @@ export type ImageGenerationCancelResponse = z.infer<typeof imageGenerationCancel
 export type ImageReferenceControlResponse = z.infer<typeof imageReferenceControlResponseSchema>
 export type ImageCanvasDocument = z.infer<typeof imageCanvasDocumentSchema>
 export type ImageCanvasRevision = z.infer<typeof imageCanvasRevisionSchema>
+export type ImageBrandKitRevision = z.infer<typeof imageBrandKitRevisionSchema>
+export type ImageTemplateRevision = z.infer<typeof imageTemplateRevisionSchema>
 export type ImageCanvasCommandInput = z.input<typeof imageCanvasCommandInputSchema>
 export type ImageCanvasCommandRequestInput = z.input<typeof imageCanvasCommandRequestInputSchema>
 export type ImageCanvasCreateInput = z.input<typeof imageCanvasCreateInputSchema>
@@ -641,6 +709,9 @@ export type ImageCanvasRenderInput = z.input<typeof imageCanvasRenderInputSchema
 export type ImageDeliverySpecRevisionInput = z.input<typeof imageDeliverySpecRevisionInputSchema>
 export type ImageExportInput = z.input<typeof imageExportInputSchema>
 export type ImageArtboardSelectVersionInput = z.input<typeof imageArtboardSelectVersionInputSchema>
+export type ImageSaveOutputInput = z.input<typeof imageSaveOutputInputSchema>
+export type ImageDestinationGrantRequest = z.input<typeof imageDestinationGrantRequestSchema>
+export type ImageDestinationGrant = z.infer<typeof imageDestinationGrantSchema>
 export type ImageCanvasPreflight = z.infer<typeof imageCanvasPreflightSchema>
 export type ImageRenderReceipt = z.infer<typeof imageRenderReceiptSchema>
 export type ImageReleaseCheckResult = z.infer<typeof imageReleaseCheckResultSchema>
@@ -652,6 +723,7 @@ export type ImageCanvasPreflightResponse = z.infer<typeof imageCanvasPreflightRe
 export type ImageCanvasRenderResponse = z.infer<typeof imageCanvasRenderResponseSchema>
 export type ImageExportResponse = z.infer<typeof imageExportResponseSchema>
 export type ImageArtboardSelectVersionResponse = z.infer<typeof imageArtboardSelectVersionResponseSchema>
+export type ImageSaveOutputResponse = z.infer<typeof imageSaveOutputResponseSchema>
 export type CreateCreativePlanInput = z.input<typeof createCreativePlanInputSchema>
 export type UpdateImageReferenceControlInput = z.input<typeof updateImageReferenceControlInputSchema>
 export type EstimateGenerationRoundInput = z.input<typeof estimateGenerationRoundInputSchema>

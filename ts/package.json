@@ -16,6 +16,7 @@
     "verify:codex-engine-source": "bun desktop/scripts/verify-codex-engine-source.ts && bun desktop/scripts/verify-codex-native-protocol.ts"
   },
   "dependencies": {
+    "@fontsource/noto-sans-sc": "5.2.5",
     "@resvg/resvg-js": "^2.6.2",
     "fontkit": "^2.0.4",
     "jsqr": "^1.4.0",

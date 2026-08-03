@@ -1330,6 +1330,22 @@ test('15.2 expires estimates and requires an explicit paid derivation confirmati
   })
 })
 
+test('15.2 returns a versioned price and usage ceiling, then rejects a paid Round above the project budget', async () => {
+  const service = new ImageWorkbenchService({ root: await testRoot('priced-budget'), legacyMediaRoot: await testRoot('priced-budget-legacy'), now: () => new Date(at) })
+  const project = await service.createProject({
+    title: '预算上界', user_request: '生成一张活动海报', size: '1024x1024', reference_images: [], reference_roles: [],
+    budget_limit: { currency: 'USD', amount_minor: 1 },
+  })
+  const current = await service.getProject(project.id)
+  const plan = await service.createCreativePlan(project.id, { base_revision: current.revision, idempotency_key: 'bb-image-price-plan-0001' })
+  const estimate = await service.estimateGenerationRound(project.id, { base_revision: current.revision, creative_plan_id: plan.id })
+  expect(estimate.price_upper_bound).toMatchObject({ currency: 'USD', amount_minor: expect.any(Number), usage_upper_bound: { requests: 1, output_images: 3 } })
+  await expect(service.createGenerationRound(project.id, {
+    base_revision: current.revision, idempotency_key: 'bb-image-price-budget-reject-0001', creative_plan_id: plan.id,
+    direction_ids: [plan.directions[0]!.id], estimate_hash: estimate.estimate_hash, confirm: true,
+  })).rejects.toMatchObject({ status: 422, code: 'IMAGE_BUDGET_EXCEEDED' })
+})
+
 test('15.2 projects every Command idempotency and revision conflict through stable API errors', async () => {
   const png = (await dataUrl()).split(',', 2)[1]!
   let paidPosts = 0

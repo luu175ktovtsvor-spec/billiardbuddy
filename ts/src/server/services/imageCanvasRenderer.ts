@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto'
 import { existsSync, readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { Resvg } from '@resvg/resvg-js'
 import { openSync } from 'fontkit'
 import jsQR from 'jsqr'
@@ -25,13 +26,9 @@ export type CanvasRenderOutput = {
   text_layout_engine_version: string
 }
 
-const RENDERER_VERSION = 'billiardbuddy-canvas-renderer-v1'
-const TEXT_LAYOUT_ENGINE_VERSION = 'resvg-fontkit-v1'
+const RENDERER_VERSION = 'billiardbuddy-canvas-renderer-v2'
+const TEXT_LAYOUT_ENGINE_VERSION = 'resvg-fontkit-v2'
 const BUILTIN_FONT_ID = 'font_builtin_0001'
-const BUILTIN_FONT_PATHS = [
-  '/System/Library/Fonts/PingFang.ttc',
-  '/System/Library/Fonts/Supplemental/Arial Unicode.ttf',
-]
 
 function sha(bytes: Buffer | string): `sha256:${string}` {
   return `sha256:${createHash('sha256').update(bytes).digest('hex')}`
@@ -57,14 +54,17 @@ function svgBuffer(svg: string, fontPath?: string): Buffer {
   }).render().asPng())
 }
 
-function flatten(layers: ImageCanvasLayer[]): ImageCanvasLayer[] {
-  return layers.flatMap(layer => layer.kind === 'group' ? flatten(layer.children) : [layer])
-}
-
 function bounded(value: number): number { return Math.max(1, Math.min(12_000, Math.round(value))) }
 
 function builtinFontPath(): string {
-  const path = BUILTIN_FONT_PATHS.find(candidate => existsSync(candidate))
+  // Never fall back to host fonts: the package/runtime contract supplies the
+  // same reviewed CJK font on macOS, Windows and Linux. A local override is
+  // useful only for a controlled development or test runtime.
+  const configured = process.env.BB_IMAGE_FORMAL_FONT_PATH
+  const packaged = process.env.BB_IMAGE_RUNTIME_ASSETS_DIR
+    ? join(process.env.BB_IMAGE_RUNTIME_ASSETS_DIR, 'fonts', 'BilliardBuddy-NotoSansCJKsc-Regular.woff')
+    : undefined
+  const path = [configured, packaged].find((candidate): candidate is string => typeof candidate === 'string' && existsSync(candidate))
   if (!path) throw new ImageCanvasRendererError('正式 CJK 字体包不可用', 'CANVAS_FONT_MISSING')
   return path
 }
@@ -97,19 +97,26 @@ export function assertFormalTextLayer(layer: Extract<ImageCanvasLayer, { kind: '
   fontHashFor(layer)
 }
 
-function textSvg(layer: Extract<ImageCanvasLayer, { kind: 'text' }>): Buffer {
+function resolveColor(value: string, brandColors: Record<string, string>): string {
+  if (!value.startsWith('brand.')) return value
+  const resolved = brandColors[value.slice('brand.'.length)]
+  if (!resolved) throw new ImageCanvasRendererError(`品牌色 Token ${value} 未在锁定 Brand Kit 中定义`, 'CANVAS_RENDER_INVALID')
+  return resolved
+}
+
+function textSvg(layer: Extract<ImageCanvasLayer, { kind: 'text' }>, brandColors: Record<string, string>): Buffer {
   const width = bounded(layer.max_width ?? Math.max(layer.font_size, layer.text.length * layer.font_size * 1.3))
   const height = bounded(layer.max_height ?? Math.ceil(layer.font_size * layer.line_height * (layer.text.split('\n').length + 0.4)))
   const fontSize = layer.font_size
   const lines = layer.text.split('\n').map((line, index) => `<tspan x="${layer.align === 'center' ? width / 2 : layer.align === 'right' ? width : 0}" dy="${index === 0 ? fontSize : fontSize * layer.line_height}">${escapeXml(line)}</tspan>`).join('')
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}"><text x="0" y="0" font-family="BilliardBuddy Builtin CJK" font-size="${fontSize}" font-weight="${layer.font_weight}" font-style="${layer.font_style}" letter-spacing="${layer.letter_spacing}" fill="${layer.fill}"${layer.stroke ? ` stroke="${layer.stroke}"` : ''} text-anchor="${layer.align === 'center' ? 'middle' : layer.align === 'right' ? 'end' : 'start'}">${lines}</text></svg>`
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}"><text x="0" y="0" font-family="BilliardBuddy Builtin CJK" font-size="${fontSize}" font-weight="${layer.font_weight}" font-style="${layer.font_style}" letter-spacing="${layer.letter_spacing}" fill="${resolveColor(layer.fill, brandColors)}"${layer.stroke ? ` stroke="${resolveColor(layer.stroke, brandColors)}"` : ''} text-anchor="${layer.align === 'center' ? 'middle' : layer.align === 'right' ? 'end' : 'start'}">${lines}</text></svg>`
   return svgBuffer(svg, builtinFontPath())
 }
 
-function shapeSvg(layer: Extract<ImageCanvasLayer, { kind: 'shape' }>): Buffer {
+function shapeSvg(layer: Extract<ImageCanvasLayer, { kind: 'shape' }>, brandColors: Record<string, string>): Buffer {
   const { width, height } = layer.transform
-  const fill = layer.fill ?? 'none'
-  const stroke = layer.stroke ?? 'none'
+  const fill = layer.fill ? resolveColor(layer.fill, brandColors) : 'none'
+  const stroke = layer.stroke ? resolveColor(layer.stroke, brandColors) : 'none'
   const strokeWidth = layer.stroke_width ?? 0
   const shape = layer.shape === 'rectangle'
     ? `<rect width="${width}" height="${height}" fill="${fill}" stroke="${stroke}" stroke-width="${strokeWidth}"/>`
@@ -123,8 +130,30 @@ function toBlend(value: 'normal' | 'multiply' | 'screen'): Blend {
   return value === 'normal' ? 'over' : value
 }
 
+async function applyOpacity(bytes: Buffer, opacity: number): Promise<Buffer> {
+  return await sharp(bytes).ensureAlpha().linear([1, 1, 1, opacity], [0, 0, 0, 0]).png().toBuffer()
+}
+
+async function applyRasterMask(sourceBytes: Buffer, maskBytes: Buffer, mode: 'alpha' | 'luminance'): Promise<Buffer> {
+  const [source, mask] = await Promise.all([
+    sharp(sourceBytes).ensureAlpha().raw().toBuffer({ resolveWithObject: true }),
+    sharp(maskBytes).ensureAlpha().raw().toBuffer({ resolveWithObject: true }),
+  ])
+  if (source.info.width !== mask.info.width || source.info.height !== mask.info.height) {
+    throw new ImageCanvasRendererError('蒙版与目标图层边界不一致', 'CANVAS_RENDER_INVALID')
+  }
+  const pixels = Buffer.from(source.data)
+  for (let offset = 0; offset < pixels.length; offset += 4) {
+    const alpha = mode === 'alpha'
+      ? mask.data[offset + 3]! / 255
+      : ((mask.data[offset]! * 0.2126 + mask.data[offset + 1]! * 0.7152 + mask.data[offset + 2]! * 0.0722) / 255) * (mask.data[offset + 3]! / 255)
+    pixels[offset + 3] = Math.round(pixels[offset + 3]! * alpha)
+  }
+  return await sharp(pixels, { raw: { width: source.info.width, height: source.info.height, channels: 4 } }).png().toBuffer()
+}
+
 export class DeterministicImageCanvasRenderer {
-  async render(document: ImageCanvasDocument, inputAssets: CanvasRenderInputAsset[]): Promise<CanvasRenderOutput> {
+  async render(document: ImageCanvasDocument, inputAssets: CanvasRenderInputAsset[], brandColors: Record<string, string> = {}): Promise<CanvasRenderOutput> {
     const assets = new Map(inputAssets.map(asset => [asset.id, asset.verified]))
     const dependencyHashes = new Set<`sha256:${string}`>()
     const fontHashes = new Set<`sha256:${string}`>()
@@ -138,32 +167,59 @@ export class DeterministicImageCanvasRenderer {
         background: document.background.kind === 'transparent' ? { r: 0, g: 0, b: 0, alpha: 0 } : document.background.color,
       },
     }).png({ compressionLevel: 9, adaptiveFiltering: false, palette: false })
-    for (const layer of flatten(document.layers)) {
-      if (layer.kind === 'mask') continue
-      if (layer.kind === 'raster' || layer.kind === 'logo') {
+    const renderLayerList = async (layers: ImageCanvasLayer[]): Promise<void> => {
+      const siblingById = new Map(layers.map(layer => [layer.id, layer]))
+      const masks = new Map<string, Extract<ImageCanvasLayer, { kind: 'mask' }>>()
+      for (const layer of layers) {
+        if (layer.kind !== 'mask') continue
+        const target = siblingById.get(layer.target_layer_id)
+        if (!target || target.kind !== 'raster') throw new ImageCanvasRendererError('蒙版只能指向同一分组中的 Raster 图层', 'CANVAS_RENDER_INVALID')
+        if (masks.has(layer.target_layer_id)) throw new ImageCanvasRendererError('同一 Raster 图层只能有一个蒙版', 'CANVAS_RENDER_INVALID')
+        masks.set(layer.target_layer_id, layer)
+      }
+      for (const layer of layers) {
+        if (layer.kind === 'group') {
+          await renderLayerList(layer.children)
+          continue
+        }
+        if (layer.kind === 'mask') continue
+        if (layer.kind === 'raster' || layer.kind === 'logo') {
         const source = assets.get(layer.source_asset_id)
         if (!source) throw new ImageCanvasRendererError('画布引用的素材不存在', 'CANVAS_ASSET_MISSING')
         dependencyHashes.add(source.content_hash)
         let image = sharp(source.bytes).rotate().ensureAlpha()
         if (layer.kind === 'raster' && layer.source_crop) {
+          if (layer.source_crop.x + layer.source_crop.width > source.width || layer.source_crop.y + layer.source_crop.height > source.height) {
+            throw new ImageCanvasRendererError('Raster 裁切范围超出源图像', 'CANVAS_RENDER_INVALID')
+          }
           image = image.extract({ left: Math.floor(layer.source_crop.x), top: Math.floor(layer.source_crop.y), width: Math.floor(layer.source_crop.width), height: Math.floor(layer.source_crop.height) })
         }
         const transform = layer.transform
-        const rendered = await image.resize({ width: bounded(transform.width * transform.scale_x), height: bounded(transform.height * transform.scale_y), fit: 'fill' })
-          .rotate(transform.rotation_degrees, { background: { r: 0, g: 0, b: 0, alpha: 0 } })
-          .ensureAlpha(layer.kind === 'raster' ? layer.opacity : 1).png().toBuffer()
+        const targetWidth = bounded(transform.width * transform.scale_x)
+        const targetHeight = bounded(transform.height * transform.scale_y)
+        let rendered = Buffer.from(await image.resize({ width: targetWidth, height: targetHeight, fit: 'fill' }).png().toBuffer())
+        const mask = layer.kind === 'raster' ? masks.get(layer.id) : undefined
+        if (mask) {
+          const maskSource = assets.get(mask.source_asset_id)
+          if (!maskSource) throw new ImageCanvasRendererError('画布蒙版素材不存在', 'CANVAS_ASSET_MISSING')
+          dependencyHashes.add(maskSource.content_hash)
+          const maskPixels = await sharp(maskSource.bytes).rotate().ensureAlpha().resize({ width: targetWidth, height: targetHeight, fit: 'fill' }).png().toBuffer()
+          rendered = Buffer.from(await applyRasterMask(rendered, maskPixels, mask.mode))
+        }
+        rendered = Buffer.from(await sharp(rendered).rotate(transform.rotation_degrees, { background: { r: 0, g: 0, b: 0, alpha: 0 } }).png().toBuffer())
+        if (layer.kind === 'raster') rendered = Buffer.from(await applyOpacity(rendered, layer.opacity))
         output = output.composite([{ input: rendered, left: Math.round(transform.x), top: Math.round(transform.y), blend: layer.kind === 'raster' ? toBlend(layer.blend_mode) : 'over' }])
         continue
       }
       if (layer.kind === 'shape') {
-        const image = await sharp(shapeSvg(layer)).ensureAlpha(layer.opacity).png().toBuffer()
+        const image = await applyOpacity(await sharp(shapeSvg(layer, brandColors)).ensureAlpha().png().toBuffer(), layer.opacity)
         output = output.composite([{ input: image, left: Math.round(layer.transform.x), top: Math.round(layer.transform.y), blend: 'over' }])
         continue
       }
       if (layer.kind === 'text') {
         fontHashes.add(fontHashFor(layer))
         textManifest.push({ id: layer.id, text: layer.text, font: layer.font_asset_id, locale: layer.locale, requirement: layer.requirement_id })
-        const image = await sharp(textSvg(layer)).ensureAlpha(layer.opacity).png().toBuffer()
+        const image = await applyOpacity(await sharp(textSvg(layer, brandColors)).ensureAlpha().png().toBuffer(), layer.opacity)
         output = output.composite([{ input: image, left: Math.round(layer.position.x), top: Math.round(layer.position.y), blend: 'over' }])
         continue
       }
@@ -183,7 +239,9 @@ export class DeterministicImageCanvasRenderer {
         const image = await QRCode.toBuffer(payload, { type: 'png', errorCorrectionLevel: layer.error_correction, margin: layer.quiet_zone_modules, width: bounded(Math.min(layer.transform.width, layer.transform.height)) })
         output = output.composite([{ input: image, left: Math.round(layer.transform.x), top: Math.round(layer.transform.y), blend: 'over' }])
       }
+      }
     }
+    await renderLayerList(document.layers)
     const bytes = await output.png({ compressionLevel: 9, adaptiveFiltering: false, palette: false }).toBuffer()
     if (expectedQr.length > 0) {
       const raw = await sharp(bytes).ensureAlpha().raw().toBuffer({ resolveWithObject: true })

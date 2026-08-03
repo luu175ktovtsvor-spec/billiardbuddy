@@ -327,6 +327,10 @@ const images: ImageWorkbenchPreloadBridge = {
     ELECTRON_IPC_CHANNELS.imageSaveOutput,
     { projectId, input },
   ),
+  requestDestination: input => invoke<ImageBridgeResult<'requestDestination'>>(
+    ELECTRON_IPC_CHANNELS.imageRequestDestination,
+    input,
+  ),
   createCreativePlan: (projectId, input) => invoke<ImageBridgeResult<'createCreativePlan'>>(
     ELECTRON_IPC_CHANNELS.imageCreateCreativePlan,
     { projectId, input },

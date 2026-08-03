@@ -17,6 +17,7 @@ import {
 } from '../../../shared/contracts/media.js'
 import {
   imageBriefSnapshotSchema,
+  imageBrandKitRevisionSchema,
   imageCanvasPreflightSchema,
   imageCanvasCommandInputSchema,
   imageCanvasRevisionSchema,
@@ -34,8 +35,10 @@ import {
   imageExportReceiptSchema,
   imageDeliverySetSchema,
   imageOperationV2Schema,
+  imageTemplateRevisionSchema,
   providerExecutionReceiptSchema,
   type ImageBriefSnapshot,
+  type ImageBrandKitRevision,
   type ImageCanvasCommandInput,
   type ImageCanvasPreflight,
   type ImageCanvasRevision,
@@ -52,6 +55,7 @@ import {
   type ImageExportReceipt,
   type ImageDeliverySet,
   type ImageOperationV2,
+  type ImageTemplateRevision,
   type ProviderExecutionReceipt,
 } from '../../../shared/contracts/imageGeneration.js'
 import { applyCanvasCommandDocument, ImageCanvasCommandError } from './imageCanvasCommands.js'
@@ -1250,6 +1254,56 @@ export class ImageWorkbenchRepository {
     return this.generationDocument(row, value => imageDeliverySpecSchema.parse(value))
   }
 
+  async saveBrandKitRevision(revision: ImageBrandKitRevision): Promise<ImageBrandKitRevision> {
+    await this.ready()
+    const value = imageBrandKitRevisionSchema.parse(revision)
+    return await this.unitOfWork.transaction(() => {
+      const existing = this.unitOfWork.database.query('SELECT document_json FROM image_brand_kit_revisions WHERE id=?').get(value.id) as { document_json: string } | null
+      if (existing) return this.generationDocument(existing, item => imageBrandKitRevisionSchema.parse(item))
+      this.unitOfWork.database.query(`INSERT INTO image_brand_kit_revisions(
+        id,brand_kit_id,revision,owner_kind,owner_id,created_at,document_json
+      ) VALUES(?,?,?,?,?,?,?)`).run(value.id, value.brand_kit_id, value.revision, value.owner.kind, value.owner.owner_id, value.created_at, JSON.stringify(value))
+      return value
+    })
+  }
+
+  async brandKitRevision(brandKitId: string, revisionId: string, owner: MediaOwner): Promise<ImageBrandKitRevision> {
+    await this.ready()
+    const row = this.unitOfWork.database.query(`SELECT document_json FROM image_brand_kit_revisions
+      WHERE id=? AND brand_kit_id=? AND owner_kind=? AND owner_id=?`).get(revisionId, brandKitId, owner.kind, owner.owner_id) as { document_json: string } | null
+    if (!row) throw new ImageWorkbenchRepositoryError('品牌 revision 不存在、无权访问或与品牌标识不匹配', 404, 'IMAGE_STORAGE_INVALID')
+    return this.generationDocument(row, value => imageBrandKitRevisionSchema.parse(value))
+  }
+
+  async brandKitRevisionById(revisionId: string, owner: MediaOwner): Promise<ImageBrandKitRevision> {
+    await this.ready()
+    const row = this.unitOfWork.database.query(`SELECT document_json FROM image_brand_kit_revisions
+      WHERE id=? AND owner_kind=? AND owner_id=?`).get(revisionId, owner.kind, owner.owner_id) as { document_json: string } | null
+    if (!row) throw new ImageWorkbenchRepositoryError('品牌 revision 不存在或无权访问', 404, 'IMAGE_STORAGE_INVALID')
+    return this.generationDocument(row, value => imageBrandKitRevisionSchema.parse(value))
+  }
+
+  async saveTemplateRevision(revision: ImageTemplateRevision): Promise<ImageTemplateRevision> {
+    await this.ready()
+    const value = imageTemplateRevisionSchema.parse(revision)
+    return await this.unitOfWork.transaction(() => {
+      const existing = this.unitOfWork.database.query('SELECT document_json FROM image_template_revisions WHERE id=?').get(value.id) as { document_json: string } | null
+      if (existing) return this.generationDocument(existing, item => imageTemplateRevisionSchema.parse(item))
+      this.unitOfWork.database.query(`INSERT INTO image_template_revisions(
+        id,template_id,revision,owner_kind,owner_id,created_at,document_json
+      ) VALUES(?,?,?,?,?,?,?)`).run(value.id, value.template_id, value.revision, value.owner.kind, value.owner.owner_id, value.created_at, JSON.stringify(value))
+      return value
+    })
+  }
+
+  async templateRevision(templateId: string, revisionId: string, owner: MediaOwner): Promise<ImageTemplateRevision> {
+    await this.ready()
+    const row = this.unitOfWork.database.query(`SELECT document_json FROM image_template_revisions
+      WHERE id=? AND template_id=? AND owner_kind=? AND owner_id=?`).get(revisionId, templateId, owner.kind, owner.owner_id) as { document_json: string } | null
+    if (!row) throw new ImageWorkbenchRepositoryError('模板 revision 不存在、无权访问或与模板标识不匹配', 404, 'IMAGE_STORAGE_INVALID')
+    return this.generationDocument(row, value => imageTemplateRevisionSchema.parse(value))
+  }
+
   /** A Canvas revision is the only mutable-artwork write authority. */
   async getCanvasRevision(projectId: string, canvasId: string, revision?: number): Promise<ImageCanvasRevision> {
     await this.ready()
@@ -1336,6 +1390,7 @@ export class ImageWorkbenchRepository {
     request_hash: string
     created_at: string
     delivery_artboard?: { width: number; height: number }
+    template?: ImageTemplateRevision
   }): Promise<{ project: ImageWorkbenchProject; canvas: ImageCanvasRevision; replayed: boolean }> {
     await this.ready()
     const command = imageCanvasCommandInputSchema.parse(input.command)
@@ -1360,7 +1415,7 @@ export class ImageWorkbenchRepository {
       }
       let document
       try {
-        document = applyCanvasCommandDocument(currentCanvas.document, command, input.delivery_artboard)
+        document = applyCanvasCommandDocument(currentCanvas.document, command, input.delivery_artboard, input.template)
       } catch (error) {
         if (error instanceof ImageCanvasCommandError) throw new ImageWorkbenchRepositoryError(error.message, 400, 'IMAGE_STORAGE_INVALID')
         throw error
@@ -1454,6 +1509,7 @@ export class ImageWorkbenchRepository {
     project_id: string
     artboard_id: string
     expected_current_version_id?: string
+    expected_canvas_current_revision: number
     activate_on_success: boolean
     operation: ImageOperationV2
     asset: MediaAsset
@@ -1480,12 +1536,18 @@ export class ImageWorkbenchRepository {
         const previous = this.loadGenerationOperation(duplicate)
         const renderedResult = previous.result
         const rendered = renderedResult?.kind === 'rendered_version' ? current.versions.find(version => version.id === renderedResult.version_id) : undefined
-        if (!rendered) throw new ImageWorkbenchRepositoryError('画布渲染幂等记录缺少版本', 500, 'IMAGE_STORAGE_INVALID')
-        return { project: current, operation: previous, version: rendered, freshness: previous.completion_freshness ?? 'stale' }
+        if (rendered) return { project: current, operation: previous, version: rendered, freshness: previous.completion_freshness ?? 'stale' }
+        if (!['queued', 'running', 'committing'].includes(previous.status)) {
+          throw new ImageWorkbenchRepositoryError('画布渲染幂等记录缺少版本', 500, 'IMAGE_STORAGE_INVALID')
+        }
       }
       const canvas = this.canvasRevisionRow(input.project_id, receipt.canvas_id, receipt.canvas_revision)
       if (canvas.document_hash !== receipt.document_hash) throw new ImageWorkbenchRepositoryError('画布渲染收据与文档不一致', 409, 'IMAGE_STORAGE_INVALID')
-      const freshness: 'current' | 'stale' = current.current_versions_by_artboard[input.artboard_id] === input.expected_current_version_id ? 'current' : 'stale'
+      const latestCanvas = this.canvasRevisionRow(input.project_id, receipt.canvas_id)
+      const freshness: 'current' | 'stale' = current.current_versions_by_artboard[input.artboard_id] === input.expected_current_version_id
+        && latestCanvas.revision === input.expected_canvas_current_revision
+        ? 'current'
+        : 'stale'
       const version = {
         ...input.version,
         project_revision: current.revision + 1,
@@ -1555,7 +1617,11 @@ export class ImageWorkbenchRepository {
         WHERE project_id=? AND idempotency_key=?`).get(input.project_id, operation.idempotency_key) as { document_json: string; request_hash: string } | null
       if (duplicate) {
         if (duplicate.request_hash !== operation.request_hash) throw new ImageWorkbenchRepositoryError('图片导出幂等键对应的请求内容不一致', 409, 'IMAGE_IDEMPOTENCY_CONFLICT')
-        return { project: current, operation: this.loadGenerationOperation(duplicate) }
+        const previous = this.loadGenerationOperation(duplicate)
+        if (previous.result?.kind === 'export_receipts') return { project: current, operation: previous }
+        if (!['queued', 'running', 'committing'].includes(previous.status)) {
+          throw new ImageWorkbenchRepositoryError('图片导出幂等记录缺少收据', 500, 'IMAGE_STORAGE_INVALID')
+        }
       }
       if (receipts.length === 0 || receipts.some(receipt => receipt.project_id !== input.project_id)
         || deliverySet?.project_id !== input.project_id) throw new ImageWorkbenchRepositoryError('图片导出事实无效', 409, 'IMAGE_STORAGE_INVALID')

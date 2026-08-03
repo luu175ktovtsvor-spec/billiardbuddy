@@ -3,6 +3,7 @@ import { ELECTRON_IPC_CHANNELS } from '../desktop/electron/ipc/channels.js'
 import { validateElectronIpcPayload } from '../desktop/electron/ipc/capabilities.js'
 import { imageWorkbenchIpcResponse } from '../desktop/electron/ipc/imageResponse.js'
 import { ElectronImageActions } from '../desktop/electron/services/imageActions.js'
+import { ImageDestinationGrants } from '../desktop/electron/services/imageDestinationGrants.js'
 import { mediaSafeError } from '../shared/contracts/media.js'
 import type {
   ImageCandidateAdoptionResponse,
@@ -190,6 +191,17 @@ test('15.3 image IPC validators expose shared typed Canvas and delivery commands
   })).toBeFalse()
 })
 
+test('15.3 opaque destination grant is Main-only, expires, and cannot be replayed', () => {
+  const grants = new ImageDestinationGrants()
+  const issued = grants.issue('/private/user-selected-output.png', 1_000)
+  expect(issued.destination_grant_id).toMatch(/^dgr_/)
+  expect(JSON.stringify(issued)).not.toContain('/private/user-selected-output.png')
+  expect(grants.consume(issued.destination_grant_id, 1_001)).toBe('/private/user-selected-output.png')
+  expect(grants.consume(issued.destination_grant_id, 1_002)).toBeNull()
+  const expired = grants.issue('/private/expired.png', 1_000)
+  expect(grants.consume(expired.destination_grant_id, 1_000 + 5 * 60_000 + 1)).toBeNull()
+})
+
 test('current Main-only image action bridge sends the desktop capability through fixed image action entrypoints', async () => {
   const requests: Array<{ url: string; init?: RequestInit }> = []
   const timestamp = '2026-08-03T00:00:00.000Z'
@@ -205,7 +217,10 @@ test('current Main-only image action bridge sends the desktop capability through
           paid_operation_count: 1,
           candidate_count_per_operation: 3,
           concurrency: 1,
-          price_upper_bound: null,
+          price_upper_bound: {
+            currency: 'USD', amount_minor: 42, per_operation_amount_minor: 42, pricing_revision: 'test-price-v1',
+            usage_upper_bound: { requests: 1, input_bytes: 0, output_images: 3 },
+          },
           expires_at: '2026-08-03T00:05:00.000Z',
         })
       }
@@ -380,18 +395,14 @@ test('15.2 Image IPC keeps HTTP idempotency and revision conflicts distinguishab
   }
 })
 
-test('15.2 closes the paid-generation and Candidate command bridge gaps while later stages retain unrelated security work', () => {
-  const missingForFinalBroker = [
-    'project_brief_reference_delivery_spec_canvas_brand_template_campaign_commands',
-    'operation_cancel_retry_and_unknown_outcome_decision',
-    'opaque_source_destination_and_asset_grants',
-    'sensitive_media_capability_reads',
-  ]
-  expect(missingForFinalBroker).toHaveLength(4)
-  // The legacy baseline accepts a renderer-supplied path.  This is deliberately
-  // documented here as a 13.7 gap, not a future security expectation.
+test('15.3 IPC 只接受不透明 destination grant，拒绝 Renderer 路径', () => {
   expect(validateElectronIpcPayload(ELECTRON_IPC_CHANNELS.imageSaveOutput, {
     projectId,
     input: { version_id: versionId, output_path: '/tmp/current-baseline.png' },
+  })).toBeFalse()
+  expect(validateElectronIpcPayload(ELECTRON_IPC_CHANNELS.imageSaveOutput, {
+    projectId,
+    input: { version_id: versionId, destination_grant_id: 'dgr_00000000000000000000000000000000' },
   })).toBeTrue()
+  expect(validateElectronIpcPayload(ELECTRON_IPC_CHANNELS.imageRequestDestination, { suggested_name: '交付图.png' })).toBeTrue()
 })

@@ -54,6 +54,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
       supported_sizes: ['1024x1024', '1536x1024', '1024x1536', '2048x2048', '2048x1152', '3840x2160', '2160x3840'],
       transparency: true,
       max_output_count: 3,
+      price_upper_bound: { currency: 'USD', per_output_amount_minor: 14, pricing_revision: 'openai-gpt-image-2-2026-07-23' },
     },
     worker_env_source: { variable: 'RELAY_IMAGE_MODEL', slot_aliases: [] },
     body_caps: {
@@ -77,6 +78,7 @@ export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
       supported_sizes: ['2048x2048', '2304x1728', '1728x2304', '2848x1600', '1600x2848', '2496x1664', '1664x2496', '3136x1344', '4096x4096', '4704x3520', '3520x4704', '5504x3040', '3040x5504', '4992x3328', '3328x4992', '6240x2656', '2352x1568', '1568x2352', '1680x2240', '2240x1680', '1536x2736', '2736x1536', '1216x3040', '3040x1216'],
       transparency: false,
       max_output_count: 3,
+      price_upper_bound: { currency: 'USD', per_output_amount_minor: 10, pricing_revision: 'ark-seedream-4.5-2026-07-23' },
     },
     worker_env_source: { variable: 'RELAY_SEEDREAM_MODEL', slot_aliases: [] },
     body_caps: {

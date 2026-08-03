@@ -61,6 +61,14 @@ export type ImageGenerationProviderDescriptor = {
   supported_sizes: string[]
   transparency: boolean
   max_output_count: number
+  /** Versioned, non-secret maximum charge for one returned image.  The
+   * Sidecar uses this quote before it creates paid work; Relay later records
+   * the actual provider usage receipt separately. */
+  price_upper_bound: {
+    currency: string
+    per_output_amount_minor: number
+    pricing_revision: string
+  }
 }
 
 /** Provider-neutral speech-transcription capability; audio transport is out of contract. */

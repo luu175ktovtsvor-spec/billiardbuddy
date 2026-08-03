@@ -2,8 +2,6 @@ import type {
   ImageProjectResponse,
   ImageTaskResponse,
   MediaSafeError,
-  SaveImageOutputInput,
-  SaveImageOutputResult,
   StartImageOperationInput,
   SubmitImageProjectInput,
   UpdateImageProjectInput,
@@ -38,6 +36,10 @@ import type {
   ImageArtboardSelectVersionInput,
   ImageArtboardSelectVersionResponse,
   ImageDeliverySpecRevisionResponse,
+  ImageDestinationGrantRequest,
+  ImageDestinationGrant,
+  ImageSaveOutputInput,
+  ImageSaveOutputResponse,
   UpdateImageReferenceControlInput,
 } from './imageGeneration.js'
 
@@ -55,7 +57,8 @@ export type ImageWorkbenchPreloadBridge = {
   submitProject(projectId: string, confirmUnknownRetry?: SubmitImageProjectInput['confirm_unknown_retry']): Promise<ImageWorkbenchIpcResponse<ImageTaskResponse>>
   startOperation(projectId: string, input: StartImageOperationInput): Promise<ImageWorkbenchIpcResponse<ImageTaskResponse>>
   updateUnknownProject(projectId: string, input: UpdateImageProjectInput): Promise<ImageWorkbenchIpcResponse<ImageProjectResponse>>
-  saveOutput(projectId: string, input: SaveImageOutputInput): Promise<ImageWorkbenchIpcResponse<SaveImageOutputResult>>
+  saveOutput(projectId: string, input: ImageSaveOutputInput): Promise<ImageWorkbenchIpcResponse<ImageSaveOutputResponse>>
+  requestDestination(input: ImageDestinationGrantRequest): Promise<ImageWorkbenchIpcResponse<ImageDestinationGrant>>
   createCreativePlan(projectId: string, input: CreateCreativePlanInput): Promise<ImageWorkbenchIpcResponse<ImageCreativePlanResponse>>
   estimateGenerationRound(projectId: string, input: EstimateGenerationRoundInput): Promise<ImageWorkbenchIpcResponse<ImageGenerationRoundEstimateResponse>>
   estimateDerivation(projectId: string, candidateId: string, input: EstimateDeriveImageCandidateInput): Promise<ImageWorkbenchIpcResponse<ImageDerivationEstimateResponse>>

@@ -16,6 +16,11 @@ export type ImageProviderPolicyDecision = {
   model_id: ImageGenerationModel
   operation_mode: OperationMode
   supports_reference_control: true
+  price_upper_bound: {
+    currency: string
+    per_output_amount_minor: number
+    pricing_revision: string
+  }
 }
 
 export class ImageProviderPolicyError extends Error {
@@ -114,5 +119,6 @@ export function resolveImageProviderPolicy(input: {
     model_id: model,
     operation_mode: input.operation_mode,
     supports_reference_control: true,
+    price_upper_bound: entry.image_generation!.price_upper_bound,
   }
 }

@@ -93,6 +93,7 @@ export const ELECTRON_IPC_CHANNELS = {
   imageStartOperation: 'desktop:image:start-operation',
   imageUpdateUnknownProject: 'desktop:image:update-unknown-project',
   imageSaveOutput: 'desktop:image:save-output',
+  imageRequestDestination: 'desktop:image:request-destination',
   imageCreateCreativePlan: 'desktop:image:create-creative-plan',
   imageEstimateGenerationRound: 'desktop:image:estimate-generation-round',
   imageEstimateDerivation: 'desktop:image:estimate-derivation',
