@@ -526,6 +526,12 @@ test('新视频分析只从 Evidence Window 抽帧，并把视觉结果写回窗
     user_goal: '只分析窗口内画面',
   })
   expect((await waitForTerminalOperation(service, task.id)).status).toBe('succeeded')
+  const planTask = (await service.repository.listOperations(created.id)).find(candidate => candidate.kind === 'video.plan')
+  expect(planTask).toBeDefined()
+  expect((await waitForTerminalOperation(service, planTask!.id)).status).toBe('succeeded')
+  const analyzed = await service.getProject(created.id)
+  expect(analyzed.current_editorial_timeline_version_id).toBe(ready.current_editorial_timeline_version_id)
+  expect(analyzed.timeline_drafts).toMatchObject([{ status: 'proposed', base_timeline_version_id: ready.current_editorial_timeline_version_id }])
   const frameCommands = commands.filter(command => command.includes('-frames:v') && command.at(-1)?.includes('/analysis/'))
   expect(frameCommands).toHaveLength(3)
   expect(frameCommands.map(command => command[command.indexOf('-ss') + 1])).toEqual(['0.000', '10.000', '19.999'])
