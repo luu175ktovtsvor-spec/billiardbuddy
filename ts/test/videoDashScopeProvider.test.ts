@@ -19,3 +19,19 @@ test('DashScope video provider pins Qwen planning and 768-dimensional embedding 
   expect(calls.map(call => call.url)).toEqual(['https://dashscope.aliyuncs.com/compatible-mode/v1/embeddings', 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions'])
   expect(calls[1]?.body).toMatchObject({ model: 'qwen3.6-flash', temperature: 0 })
 })
+
+test('DashScope Fun-ASR long task submits once and polls a persisted task id', async () => {
+  const calls: string[] = []
+  const provider = new DashScopeVideoProvider({ apiKey: 'key', now: () => new Date('2026-08-03T00:00:00.000Z'), fetchImpl: async (url, init) => {
+    calls.push(`${init?.method ?? 'GET'} ${String(url)}`)
+    if (init?.method === 'POST') return Response.json({ output: { task_id: 'task-remote-1' } })
+    if (String(url).startsWith('https://dashscope-result-bj.oss-cn-beijing.aliyuncs.com/')) return Response.json({ transcripts: [{ text: '长文件转写', sentences: [{ text: '长文件转写', begin_time: 0, end_time: 1000, words: [{ text: '长', begin_time: 0, end_time: 300 }] }] }] })
+    return Response.json({ output: { task_status: 'SUCCEEDED', results: [{ transcription_url: 'https://dashscope-result-bj.oss-cn-beijing.aliyuncs.com/transcript.json' }] } })
+  } })
+  const input = { local_operation_id: 'task_12345678', consent_revision_id: 'consent_12345678', consent_scope_hash: hash, local_budget_reservation_id: 'budget_12345678', request_hash: hash, capability: 'speech_transcription' as const, application_role: 'asr' as const, input: { mode: 'long_async' as const, audio_object_ref: 'object_12345678', source_offset: { ticks: '0', tick_rate: { num: 1000, den: 1 } }, hotwords: ['开球'], speaker_diarization: true, sentence_timestamps: true as const, word_timestamps: true as const } }
+  const submitted = await provider.execute(input, identity, { object_urls: ['https://oss.example.test/audio'] })
+  expect(submitted).toMatchObject({ state: 'submitted', provider_task_id: 'task-remote-1' })
+  const complete = await provider.poll(input, submitted.provider_task_id!, identity)
+  expect(complete).toMatchObject({ state: 'succeeded', result: { kind: 'asr', text: '长文件转写' } })
+  expect(calls).toEqual(['POST https://dashscope.aliyuncs.com/api/v1/services/audio/asr/transcription', 'GET https://dashscope.aliyuncs.com/api/v1/tasks/task-remote-1', 'GET https://dashscope-result-bj.oss-cn-beijing.aliyuncs.com/transcript.json'])
+})

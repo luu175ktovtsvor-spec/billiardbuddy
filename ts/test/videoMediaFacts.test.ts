@@ -1,4 +1,5 @@
 import { afterEach, expect, test } from 'bun:test'
+import { createHash } from 'node:crypto'
 import { mkdtemp, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -474,6 +475,26 @@ test('Media Facts 正式 API 返回带来源、范围、generation 与 cursor �
     expect(await invalid.json()).toMatchObject({ error: 'MEDIA_INVALID_REQUEST' })
   }
   service.repository.close()
+})
+
+test('768 维文本 embedding 与 FTS 同代持久化，并只重排当前 FTS 页', async () => {
+  const root = await testRoot('hybrid-search')
+  const repository = new VideoWorkbenchRepository({ root, now: () => new Date(at) })
+  const created = await repository.saveProject(project())
+  const videoSource = source(created.id)
+  await repository.saveFact(videoSource)
+  const first = await repository.saveFact(createHostedEvidence({ kind: 'visual', projectId: created.id, source: videoSource, range: sourceTimeRange(videoSource.primary_video_stream.start_time, rationalTime('90000', videoSource.primary_video_stream.start_time.tick_rate)), promptVersion: 'embedding-v1', createdAt: at, payload: { summary: '精彩进球', subjects: ['球'], warnings: [] } }))
+  const second = await repository.saveFact(createHostedEvidence({ kind: 'visual', projectId: created.id, source: videoSource, range: sourceTimeRange(rationalTime('90000', videoSource.primary_video_stream.start_time.tick_rate), rationalTime('90000', videoSource.primary_video_stream.start_time.tick_rate)), promptVersion: 'embedding-v1', createdAt: at, payload: { summary: '精彩开球', subjects: ['球'], warnings: [] } }))
+  const vector = (index: number) => Array.from({ length: 768 }, (_, value) => value === index ? 1 : 0)
+  const contentHash = (index: number) => `sha256:${createHash('sha256').update(JSON.stringify(vector(index))).digest('hex')}` as `sha256:${string}`
+  const generation = await repository.saveFactEmbeddings(created.id, [
+    { entry_id: first.id, vector: vector(1), model_snapshot: 'text-embedding-v4', instruction_version: 'v1', content_hash: contentHash(1) },
+    { entry_id: second.id, vector: vector(0), model_snapshot: 'text-embedding-v4', instruction_version: 'v1', content_hash: contentHash(0) },
+  ])
+  const page = await repository.hybridSearchFactsPage(created.id, '精彩', vector(0), { limit: 10 })
+  expect(page.generation).toBe(generation)
+  expect(page.items.map(item => item.id)).toEqual([second.id, first.id])
+  repository.close()
 })
 
 test('未确认远程分析时，新视频只抽取本地 Evidence Window，不把画面发送到旧 Gateway', async () => {

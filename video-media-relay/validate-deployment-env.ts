@@ -19,6 +19,16 @@ export function validateVideoMediaRelayEnvironment(env: Environment): void {
   if (!((url.protocol === 'http:' && url.hostname === 'gateway' && (!url.port || url.port === '8799')) || url.protocol === 'https:')) fail('VIDEO_MEDIA_GATEWAY_INTROSPECTION_BASE must be the private gateway service or HTTPS')
   requireValue(env, 'VIDEO_MEDIA_RELAY_DB')
   requireValue(env, 'VIDEO_MEDIA_DASHSCOPE_API_KEY', 16)
+  const asrBase = env.VIDEO_MEDIA_DASHSCOPE_ASR_BASE_URL?.trim()
+  if (asrBase) {
+    const url = new URL(asrBase)
+    if (url.protocol !== 'https:' || !url.hostname.endsWith('.cn-beijing.maas.aliyuncs.com')) fail('VIDEO_MEDIA_DASHSCOPE_ASR_BASE_URL must be a Beijing workspace HTTPS endpoint')
+  }
+  const endpoint = requireValue(env, 'VIDEO_MEDIA_OSS_ENDPOINT')
+  if (/^https?:\/\//.test(endpoint) || /[/?#\s]/.test(endpoint)) fail('VIDEO_MEDIA_OSS_ENDPOINT must be an OSS hostname')
+  requireValue(env, 'VIDEO_MEDIA_OSS_BUCKET', 3)
+  requireValue(env, 'VIDEO_MEDIA_OSS_ACCESS_KEY_ID', 16)
+  requireValue(env, 'VIDEO_MEDIA_OSS_ACCESS_KEY_SECRET', 16)
   if ((env.VIDEO_MEDIA_REGION ?? 'cn-beijing') !== 'cn-beijing') fail('VIDEO_MEDIA_REGION must be cn-beijing')
 }
 if (import.meta.main) { const input = process.argv[2]; if (!input) fail('usage: bun validate-deployment-env.ts /path/to/video-media-relay.env'); validateVideoMediaRelayEnvironment(read(input)); console.log('Video Media Relay deployment environment passed static validation.') }
