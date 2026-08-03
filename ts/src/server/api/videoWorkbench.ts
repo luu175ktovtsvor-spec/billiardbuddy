@@ -2,8 +2,12 @@ import { timingSafeEqual } from 'node:crypto'
 import { z } from 'zod/v4'
 import {
   addVideoSourceInputSchema,
+  acceptTimelineDraftInputSchema,
+  applyDeliveryVariantCommandsInputSchema,
+  applyEditorialTimelineCommandsInputSchema,
   analyzeVideoProjectInputSchema,
   applyVideoAlternativeInputSchema,
+  createDeliveryVariantInputSchema,
   createVideoProjectInputSchema,
   lockVideoSceneInputSchema,
   mediaSafeError,
@@ -19,6 +23,10 @@ import {
   publicVideoStudioProjectSchema,
   renderVideoInputSchema,
   selectVideoTimelineVersionInputSchema,
+  deliveryVariantSchema,
+  deliveryVariantVersionSchema,
+  editorialTimelineVersionSchema,
+  timelineDraftSchema,
   updateVideoTimelineInputSchema,
   type PublicMediaTask,
   type PublicVideoStudioProject,
@@ -53,6 +61,10 @@ function requireMediaUiCapability(req: Request, expected: string): void {
   ) {
     throw new VideoWorkbenchServiceError('此操作只能从 BilliardBuddy 桌面工作台确认', 403, 'MEDIA_UI_CONFIRMATION_REQUIRED')
   }
+}
+
+function requireIdempotencyKey(req: Request): string {
+  return z.string().trim().min(16).max(160).parse(req.headers.get('Idempotency-Key') ?? '')
 }
 
 function apiErrorResponse(error: unknown): Response {
@@ -115,10 +127,10 @@ export function publicVideoTask(operation: VideoOperation): PublicMediaTask {
     ? ['source_id']
     : operation.kind === 'video.fingerprint'
       ? ['source_id', 'media_facts']
-    : operation.kind === 'video.analyze'
-      ? ['evidence_revision', 'evidence_count', 'next_task_id']
-      : operation.kind === 'video.plan'
-        ? ['timeline_version_id', 'project_revision', 'alternative_count']
+      : operation.kind === 'video.analyze'
+        ? ['evidence_revision', 'evidence_count', 'next_task_id']
+        : operation.kind === 'video.plan'
+          ? ['timeline_draft_id', 'project_revision', 'alternative_count']
         : operation.kind === 'video.preview'
           ? ['preview_revision', 'timeline_version_id', 'asset_id', 'asset_path', 'content_hash']
           : ['render_revision', 'timeline_version_id', 'output_path', 'output_asset_id', 'output_content_hash', 'output_verification', 'video_encoder']
@@ -247,6 +259,68 @@ export function createVideoWorkbenchApiHandler(
           limit: boundedQueryInteger(url.searchParams.get('limit'), 50, 1, 100, 'limit'),
         })
         return Response.json(publicVideoFactSearchPageSchema.parse({ schema_version: 1, ...page }))
+      }
+      if (action === 'timelines') {
+        const versionId = segments[6]
+        if (!versionId) throw ApiError.badRequest('缺少编辑时间线版本 ID')
+        if (!segments[7]) {
+          if (req.method !== 'GET') throw methodNotAllowed(req.method)
+          return Response.json({ timeline: editorialTimelineVersionSchema.parse(await service.getEditorialTimeline(projectId, versionId)) })
+        }
+        if (segments[7] === 'commands' && !segments[8]) {
+          if (req.method !== 'POST') throw methodNotAllowed(req.method)
+          const input = applyEditorialTimelineCommandsInputSchema.parse({ ...(await parseJson(req) as Record<string, unknown>), base_timeline_version_id: versionId })
+          const result = await service.applyEditorialTimelineCommands(projectId, input, requireIdempotencyKey(req))
+          return Response.json({ project: publicVideoProject(result.project), timeline: editorialTimelineVersionSchema.parse(result.version), reused: result.reused })
+        }
+        throw methodNotAllowed(req.method)
+      }
+      if (action === 'timeline-drafts') {
+        const draftId = segments[6]
+        if (!draftId) throw ApiError.badRequest('缺少时间线草稿 ID')
+        if (!segments[7]) {
+          if (req.method !== 'GET') throw methodNotAllowed(req.method)
+          return Response.json({ draft: timelineDraftSchema.parse(await service.getTimelineDraft(projectId, draftId)) })
+        }
+        if (segments[7] === 'accept' && !segments[8]) {
+          if (req.method !== 'POST') throw methodNotAllowed(req.method)
+          const result = await service.acceptTimelineDraft(
+            projectId,
+            draftId,
+            acceptTimelineDraftInputSchema.parse(await parseJson(req)),
+            requireIdempotencyKey(req),
+          )
+          return Response.json({ project: publicVideoProject(result.project), timeline: editorialTimelineVersionSchema.parse(result.version), reused: result.reused })
+        }
+        throw methodNotAllowed(req.method)
+      }
+      if (action === 'delivery-variants') {
+        const variantId = segments[6]
+        if (!variantId) {
+          if (req.method !== 'POST') throw methodNotAllowed(req.method)
+          const result = await service.createDeliveryVariant(
+            projectId,
+            createDeliveryVariantInputSchema.parse(await parseJson(req)),
+            requireIdempotencyKey(req),
+          )
+          return Response.json({ project: publicVideoProject(result.project), variant: deliveryVariantSchema.parse(result.variant), version: deliveryVariantVersionSchema.parse(result.version), reused: result.reused }, { status: result.reused ? 200 : 201 })
+        }
+        if (!segments[7]) {
+          if (req.method !== 'GET') throw methodNotAllowed(req.method)
+          const result = await service.getDeliveryVariant(projectId, variantId)
+          return Response.json({ variant: deliveryVariantSchema.parse(result.variant), version: deliveryVariantVersionSchema.parse(result.version) })
+        }
+        if (segments[7] === 'commands' && !segments[8]) {
+          if (req.method !== 'POST') throw methodNotAllowed(req.method)
+          const result = await service.applyDeliveryVariantCommands(
+            projectId,
+            variantId,
+            applyDeliveryVariantCommandsInputSchema.parse(await parseJson(req)),
+            requireIdempotencyKey(req),
+          )
+          return Response.json({ project: publicVideoProject(result.project), version: deliveryVariantVersionSchema.parse(result.version), reused: result.reused })
+        }
+        throw methodNotAllowed(req.method)
       }
       if (action === 'timeline') {
         if (segments[6] === 'versions' && segments[7] && segments[8] === 'select' && !segments[9]) {

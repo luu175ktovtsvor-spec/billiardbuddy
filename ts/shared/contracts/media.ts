@@ -403,6 +403,256 @@ export const videoTimelineVersionSchema = z.object({
   created_at: mediaIsoDateSchema,
 })
 
+/**
+ * Timeline v2 is intentionally separate from the pre-refactor scene list
+ * above.  The latter remains a read-compatible projection while every new
+ * editorial write is represented by a typed command set and a v2 version.
+ */
+export const videoRationalSchema = z.object({
+  num: z.number().int().positive(),
+  den: z.number().int().positive(),
+})
+export const videoRationalTimeSchema = z.object({
+  ticks: z.string().regex(/^-?(?:0|[1-9]\d*)$/),
+  tick_rate: videoRationalSchema,
+})
+export const videoSourceTimeRangeSchema = z.object({
+  start: videoRationalTimeSchema,
+  duration: videoRationalTimeSchema,
+})
+export const videoEditorialTimeRangeSchema = videoSourceTimeRangeSchema
+
+export const videoTimelineTrackSchema = z.object({
+  id: mediaIdSchema,
+  kind: z.enum(['primary_video', 'b_roll', 'source_audio', 'music', 'caption', 'overlay']),
+  order: z.number().int().min(0).max(100),
+  locked: z.boolean().default(false),
+  muted: z.boolean().default(false),
+})
+
+export const videoTimelineAssetBindingSchema = z.discriminatedUnion('kind', [
+  z.object({
+    kind: z.literal('source'),
+    source_id: mediaIdSchema,
+    source_fingerprint: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+    source_range: videoSourceTimeRangeSchema,
+  }),
+  z.object({
+    kind: z.literal('project_asset'),
+    asset_id: mediaIdSchema,
+    asset_content_hash: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+    source_range: videoSourceTimeRangeSchema.optional(),
+  }),
+  z.object({
+    kind: z.literal('caption_document'),
+    caption_document_id: mediaIdSchema,
+    caption_revision_id: mediaIdSchema,
+  }),
+])
+
+export const videoTimelineItemSchema = z.object({
+  id: mediaIdSchema,
+  track_id: mediaIdSchema,
+  kind: z.enum(['video', 'audio', 'caption', 'overlay']),
+  timeline_range: videoEditorialTimeRangeSchema,
+  binding: videoTimelineAssetBindingSchema,
+  linked_camera_shot_ids: z.array(mediaIdSchema).max(200).default([]),
+  linked_content_segment_ids: z.array(mediaIdSchema).max(200).default([]),
+  locked: z.boolean().default(false),
+  evidence_ids: z.array(mediaIdSchema).max(500).default([]),
+})
+
+export const editorialTimelineVersionSchema = z.object({
+  schema_version: z.literal(2),
+  id: mediaIdSchema,
+  parent_version_id: mediaIdSchema.optional(),
+  project_revision: z.number().int().nonnegative(),
+  source_fingerprint_set_hash: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+  facts_basis_hash: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+  tick_rate: videoRationalSchema,
+  tracks: z.array(videoTimelineTrackSchema).min(1).max(100),
+  items: z.array(videoTimelineItemSchema).max(2000),
+  created_by_command_set_id: mediaIdSchema,
+  created_at: mediaIsoDateSchema,
+})
+
+export const timelineDraftSchema = z.object({
+  id: mediaIdSchema,
+  project_id: mediaIdSchema,
+  facts_basis_hash: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+  base_timeline_version_id: mediaIdSchema.optional(),
+  plan_ids: z.array(mediaIdSchema).max(200).default([]),
+  tracks: z.array(videoTimelineTrackSchema).min(1).max(100),
+  items: z.array(videoTimelineItemSchema).max(2000),
+  status: z.enum(['proposed', 'accepted', 'rejected', 'stale']),
+  accepted_command_set_id: mediaIdSchema.optional(),
+  created_at: mediaIsoDateSchema,
+})
+
+const videoTransformSchema = z.object({
+  x: z.number().finite(),
+  y: z.number().finite(),
+  scale: z.number().positive().max(100),
+  rotation: z.number().finite().min(-3600).max(3600),
+  opacity: z.number().min(0).max(1),
+})
+const videoKeyframeSchema = <T extends z.ZodType>(value: T) => z.object({
+  at: videoRationalTimeSchema,
+  value,
+  interpolation: z.enum(['hold', 'linear', 'bezier']),
+})
+
+export const videoDeliveryItemOverrideSchema = z.object({
+  item_id: mediaIdSchema,
+  transform_keyframes: z.array(videoKeyframeSchema(videoTransformSchema)).max(1000).optional(),
+  volume_keyframes: z.array(videoKeyframeSchema(z.number().min(0).max(4))).max(1000).optional(),
+  fade_in: videoRationalTimeSchema.optional(),
+  fade_out: videoRationalTimeSchema.optional(),
+  caption_style_id: mediaIdSchema.optional(),
+})
+
+export const initialEncodingProfileSchema = z.union([
+  z.object({
+    container: z.enum(['mp4', 'mov']),
+    video: z.object({
+      codec: z.literal('h264'),
+      quality: z.object({ mode: z.literal('crf'), value: z.number().int().min(16).max(28), preset: z.enum(['fast', 'medium', 'slow']) }),
+    }),
+    audio: z.object({ codec: z.literal('aac_lc'), sample_rate: z.literal(48_000), channels: z.union([z.literal(1), z.literal(2)]) }),
+    output_color: z.object({ range: z.literal('sdr_bt709'), pixel_format: z.literal('yuv420p') }),
+  }),
+  z.object({
+    container: z.literal('mov'),
+    video: z.object({ codec: z.literal('prores_422'), quality: z.object({ mode: z.literal('prores_profile'), profile: z.enum(['standard', 'hq']) }) }),
+    audio: z.object({ codec: z.literal('pcm_s16le'), sample_rate: z.literal(48_000), channels: z.union([z.literal(1), z.literal(2)]) }),
+    output_color: z.object({ range: z.literal('sdr_bt709'), pixel_format: z.literal('yuv422p10le') }),
+  }),
+])
+
+export const videoExportProfileRevisionSchema = z.object({
+  id: mediaIdSchema,
+  profile_id: mediaIdSchema,
+  revision: z.number().int().positive(),
+  target: z.enum(['custom', 'horizontal_video', 'vertical_short', 'square_social']),
+  width: z.number().int().positive().max(4096),
+  height: z.number().int().positive().max(4096),
+  frame_rate: videoRationalSchema,
+  encoding: initialEncodingProfileSchema,
+  hdr_input_policy: z.enum(['tone_map_to_sdr', 'reject']),
+  caption_mode: z.enum(['none', 'burn_in', 'sidecar']),
+  sidecar_caption_format: z.enum(['srt', 'vtt']).optional(),
+  audio_policy: z.enum(['source_only', 'music_with_source', 'music_only']),
+  content_hash: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+  created_at: mediaIsoDateSchema,
+})
+
+export const videoExportProfileSchema = z.object({
+  id: mediaIdSchema,
+  scope: z.enum(['product_preset', 'project_custom']),
+  current_revision_id: mediaIdSchema,
+  created_at: mediaIsoDateSchema,
+})
+
+export const deliveryVariantVersionSchema = z.object({
+  id: mediaIdSchema,
+  variant_id: mediaIdSchema,
+  parent_version_id: mediaIdSchema.optional(),
+  editorial_timeline_version_id: mediaIdSchema,
+  export_profile_revision_id: mediaIdSchema,
+  export_profile_hash: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+  composition_plan_id: mediaIdSchema.optional(),
+  caption_revision_id: mediaIdSchema.optional(),
+  audio_finishing_plan_id: mediaIdSchema.optional(),
+  item_overrides: z.array(videoDeliveryItemOverrideSchema).max(2000),
+  created_by_command_set_id: mediaIdSchema,
+  created_at: mediaIsoDateSchema,
+})
+
+export const deliveryVariantSchema = z.object({
+  id: mediaIdSchema,
+  project_id: mediaIdSchema,
+  name: z.string().trim().min(1).max(160),
+  current_version_id: mediaIdSchema,
+  created_at: mediaIsoDateSchema,
+})
+
+export const editorialTimelineCommandSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('insert'), track_id: mediaIdSchema, item: videoTimelineItemSchema }),
+  z.object({ kind: z.literal('trim'), item_id: mediaIdSchema, source_range: videoSourceTimeRangeSchema, timeline_range: videoEditorialTimeRangeSchema }),
+  z.object({ kind: z.literal('split'), item_id: mediaIdSchema, at: videoRationalTimeSchema }),
+  z.object({ kind: z.literal('reorder'), item_id: mediaIdSchema, track_id: mediaIdSchema, timeline_start: videoRationalTimeSchema }),
+  z.object({ kind: z.literal('replace'), item_id: mediaIdSchema, replacement: videoTimelineItemSchema }),
+  z.object({ kind: z.literal('ripple_delete'), item_ids: z.array(mediaIdSchema).min(1).max(1000), close_gap: z.boolean() }),
+  z.object({ kind: z.literal('set_track_state'), track_id: mediaIdSchema, locked: z.boolean().optional(), muted: z.boolean().optional() }).refine(value => value.locked !== undefined || value.muted !== undefined, { message: 'track state is required' }),
+  z.object({ kind: z.literal('lock'), item_ids: z.array(mediaIdSchema).min(1).max(1000), locked: z.boolean() }),
+])
+
+export const deliveryVariantCommandSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('set_caption_revision'), caption_document_id: mediaIdSchema, caption_revision_id: mediaIdSchema }),
+  z.object({ kind: z.literal('set_transform_keyframes'), item_id: mediaIdSchema, keyframes: z.array(videoKeyframeSchema(videoTransformSchema)).min(1).max(1000) }),
+  z.object({ kind: z.literal('set_volume_keyframes'), item_id: mediaIdSchema, keyframes: z.array(videoKeyframeSchema(z.number().min(0).max(4))).min(1).max(1000) }),
+  z.object({ kind: z.literal('set_audio_fades'), item_id: mediaIdSchema, fade_in: videoRationalTimeSchema.optional(), fade_out: videoRationalTimeSchema.optional() }).refine(value => value.fade_in || value.fade_out, { message: 'audio fade is required' }),
+  z.object({ kind: z.literal('set_caption_style'), item_id: mediaIdSchema, caption_style_id: mediaIdSchema }),
+  z.object({ kind: z.literal('set_export_profile'), export_profile_revision_id: mediaIdSchema, expected_profile_hash: z.string().regex(/^sha256:[a-f0-9]{64}$/) }),
+])
+
+export const timelineCommandSetSchema = z.union([
+  z.object({
+    id: mediaIdSchema,
+    project_id: mediaIdSchema,
+    actor_id: z.string().trim().min(1).max(160),
+    idempotency_key: z.string().min(16).max(160),
+    created_at: mediaIsoDateSchema,
+    target: z.object({ kind: z.literal('editorial'), base_timeline_version_id: mediaIdSchema }),
+    commands: z.array(editorialTimelineCommandSchema).min(1).max(1000),
+  }),
+  z.object({
+    id: mediaIdSchema,
+    project_id: mediaIdSchema,
+    actor_id: z.string().trim().min(1).max(160),
+    idempotency_key: z.string().min(16).max(160),
+    created_at: mediaIsoDateSchema,
+    target: z.object({ kind: z.literal('delivery_variant'), variant_id: mediaIdSchema, base_variant_version_id: mediaIdSchema }),
+    commands: z.array(deliveryVariantCommandSchema).min(1).max(1000),
+  }),
+])
+
+export const editorialCommandReceiptSchema = z.object({
+  idempotency_key: z.string().min(16).max(160),
+  command_set_id: mediaIdSchema,
+  request_hash: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+  target_kind: z.enum(['editorial', 'delivery_variant']),
+  created_version_id: mediaIdSchema,
+  created_at: mediaIsoDateSchema,
+})
+
+export const deliveryVariantCreationReceiptSchema = z.object({
+  idempotency_key: z.string().min(16).max(160),
+  request_hash: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+  variant_id: mediaIdSchema,
+  created_at: mediaIsoDateSchema,
+})
+
+export const videoExecutionPlanSchema = z.object({
+  id: mediaIdSchema,
+  editorial_timeline_version_id: mediaIdSchema,
+  delivery_variant_version_id: mediaIdSchema,
+  inputs: z.array(z.object({ source_id: mediaIdSchema, source_fingerprint: z.string().regex(/^sha256:[a-f0-9]{64}$/), source_range: videoSourceTimeRangeSchema })).max(2000),
+  filters: z.array(z.discriminatedUnion('kind', [
+    z.object({ kind: z.literal('scale_pad'), width: z.number().int().positive(), height: z.number().int().positive() }),
+    z.object({ kind: z.literal('transform'), item_id: mediaIdSchema, keyframes: z.array(videoKeyframeSchema(videoTransformSchema)).max(1000) }),
+    z.object({ kind: z.literal('volume'), item_id: mediaIdSchema, keyframes: z.array(videoKeyframeSchema(z.number().min(0).max(4))).max(1000) }),
+  ])).max(4000),
+  maps: z.array(z.object({ track_id: mediaIdSchema, output: z.enum(['video', 'audio', 'caption']) })).max(100),
+  encoder: videoExportProfileRevisionSchema,
+  color_pipeline: z.object({ output: z.literal('sdr_bt709'), hdr_input_policy: z.enum(['tone_map_to_sdr', 'reject']) }),
+  audio_pipeline: z.object({ policy: z.enum(['source_only', 'music_with_source', 'music_only']), sample_rate: z.literal(48_000), channels: z.union([z.literal(1), z.literal(2)]) }),
+  output_target: z.object({ kind: z.literal('managed'), locator: z.string().regex(/^execution-plans\/[a-z0-9_-]+$/) }),
+  compiler_version: z.literal('editorial-compiler-v1'),
+  basis_hash: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+  created_at: mediaIsoDateSchema,
+})
+
 export const videoPreviewSchema = z.object({
   timeline_version_id: mediaIdSchema,
   asset_id: mediaIdSchema,
@@ -434,9 +684,20 @@ export const videoStudioProjectSchema = mediaProjectBaseSchema.extend({
   evidence: z.array(videoEvidenceSchema).max(5000).default([]),
   evidence_revision: z.string().regex(/^sha256:[a-f0-9]{64}$/).optional(),
   brief: videoBriefSchema.optional(),
+  /** Legacy scene versions remain readable; all new writes use Editorial v2 below. */
   timeline_versions: z.array(videoTimelineVersionSchema).max(1000).default([]),
   current_timeline_version_id: mediaIdSchema.optional(),
   alternatives: z.array(videoAlternativeSchema).max(3).default([]),
+  editorial_timeline_versions: z.array(editorialTimelineVersionSchema).max(1000).default([]),
+  current_editorial_timeline_version_id: mediaIdSchema.optional(),
+  timeline_drafts: z.array(timelineDraftSchema).max(1000).default([]),
+  delivery_variants: z.array(deliveryVariantSchema).max(1000).default([]),
+  delivery_variant_versions: z.array(deliveryVariantVersionSchema).max(2000).default([]),
+  export_profiles: z.array(videoExportProfileSchema).max(200).default([]),
+  export_profile_revisions: z.array(videoExportProfileRevisionSchema).max(1000).default([]),
+  editorial_command_receipts: z.array(editorialCommandReceiptSchema).max(5000).default([]),
+  delivery_variant_creation_receipts: z.array(deliveryVariantCreationReceiptSchema).max(1000).default([]),
+  execution_plans: z.array(videoExecutionPlanSchema).max(2000).default([]),
   task_id: mediaIdSchema.optional(),
   preview_task_id: mediaIdSchema.optional(),
   preview: videoPreviewSchema.optional(),
@@ -471,7 +732,15 @@ export const publicImageWorkbenchProjectSchema = imageWorkbenchProjectSchema.omi
   references: z.array(publicImageProjectReferenceSchema).max(8).default([]),
   version_history: z.array(publicImageVersionSchema).max(1000).default([]),
 })
-export const publicVideoStudioProjectSchema = videoStudioProjectSchema.omit(persistedMediaProjectFields).extend({
+export const publicVideoStudioProjectSchema = videoStudioProjectSchema.omit({
+  ...persistedMediaProjectFields,
+  editorial_command_receipts: true,
+  delivery_variant_creation_receipts: true,
+  editorial_timeline_versions: true,
+  timeline_drafts: true,
+  delivery_variant_versions: true,
+  execution_plans: true,
+}).extend({
   sources: z.array(publicVideoSourceSchema).max(200),
 })
 export const publicMediaProjectSchema = z.discriminatedUnion('kind', [
@@ -864,6 +1133,26 @@ export const previewVideoInputSchema = z.object({
   timeline_version_id: mediaIdSchema,
 })
 
+export const applyEditorialTimelineCommandsInputSchema = z.object({
+  base_timeline_version_id: mediaIdSchema,
+  commands: z.array(editorialTimelineCommandSchema).min(1).max(1000),
+})
+
+export const createDeliveryVariantInputSchema = z.object({
+  name: z.string().trim().min(1).max(160),
+  editorial_timeline_version_id: mediaIdSchema.optional(),
+  export_profile_revision_id: mediaIdSchema.optional(),
+})
+
+export const applyDeliveryVariantCommandsInputSchema = z.object({
+  base_variant_version_id: mediaIdSchema,
+  commands: z.array(deliveryVariantCommandSchema).min(1).max(1000),
+})
+
+export const acceptTimelineDraftInputSchema = z.object({
+  base_timeline_version_id: mediaIdSchema.optional(),
+})
+
 export const saveImageOutputInputSchema = z.object({
   version_id: mediaIdSchema.optional(),
   /** One-release compatibility for callers that still address legacy outputs. */
@@ -925,6 +1214,18 @@ export type VideoBrief = z.infer<typeof videoBriefSchema>
 export type VideoScene = z.infer<typeof videoSceneSchema>
 export type VideoAlternative = z.infer<typeof videoAlternativeSchema>
 export type VideoTimelineVersion = z.infer<typeof videoTimelineVersionSchema>
+export type VideoTimelineTrack = z.infer<typeof videoTimelineTrackSchema>
+export type VideoTimelineItem = z.infer<typeof videoTimelineItemSchema>
+export type EditorialTimelineVersion = z.infer<typeof editorialTimelineVersionSchema>
+export type TimelineDraft = z.infer<typeof timelineDraftSchema>
+export type VideoExportProfile = z.infer<typeof videoExportProfileSchema>
+export type VideoExportProfileRevision = z.infer<typeof videoExportProfileRevisionSchema>
+export type DeliveryVariant = z.infer<typeof deliveryVariantSchema>
+export type DeliveryVariantVersion = z.infer<typeof deliveryVariantVersionSchema>
+export type EditorialTimelineCommand = z.infer<typeof editorialTimelineCommandSchema>
+export type DeliveryVariantCommand = z.infer<typeof deliveryVariantCommandSchema>
+export type TimelineCommandSet = z.infer<typeof timelineCommandSetSchema>
+export type VideoExecutionPlan = z.infer<typeof videoExecutionPlanSchema>
 export type VideoPreview = z.infer<typeof videoPreviewSchema>
 export type VideoOutputVerification = z.infer<typeof videoOutputVerificationSchema>
 export type ImageOutputVerification = z.infer<typeof imageOutputVerificationSchema>
@@ -945,6 +1246,10 @@ export type LockVideoSceneInput = z.input<typeof lockVideoSceneInputSchema>
 export type ApplyVideoAlternativeInput = z.input<typeof applyVideoAlternativeInputSchema>
 export type RenderVideoInput = z.input<typeof renderVideoInputSchema>
 export type PreviewVideoInput = z.input<typeof previewVideoInputSchema>
+export type ApplyEditorialTimelineCommandsInput = z.input<typeof applyEditorialTimelineCommandsInputSchema>
+export type CreateDeliveryVariantInput = z.input<typeof createDeliveryVariantInputSchema>
+export type ApplyDeliveryVariantCommandsInput = z.input<typeof applyDeliveryVariantCommandsInputSchema>
+export type AcceptTimelineDraftInput = z.input<typeof acceptTimelineDraftInputSchema>
 export type SaveImageOutputInput = z.input<typeof saveImageOutputInputSchema>
 export type ImageGenerationTaskResult = z.infer<typeof imageGenerationTaskResultSchema>
 export type VideoRenderTaskResult = z.infer<typeof videoRenderTaskResultSchema>
