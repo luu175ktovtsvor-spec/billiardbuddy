@@ -1,17 +1,9 @@
-import { createHash, createHmac } from 'node:crypto'
+import { createHash } from 'node:crypto'
 import { Readable } from 'node:stream'
-import OssClient, {
-  AbortMultipartUploadRequest,
-  CompleteMultipartUploadRequest,
-  DeleteObjectRequest,
-  GetObjectRequest,
-  HeadObjectRequest,
-  InitiateMultipartUploadRequest,
-  ListMultipartUploadsRequest,
-  ListPartsRequest,
-  PutObjectRequest,
-  type Config as OssConfig,
-} from '../ts/node_modules/@alicloud/oss-client/dist/client.js'
+// ali-oss is the official OSS JavaScript SDK. Its CommonJS package currently
+// ships no declarations, so this boundary supplies the narrow typed surface.
+// @ts-expect-error ali-oss has no bundled declaration file
+import OSS from '../ts/node_modules/ali-oss/lib/client.js'
 
 export type ObjectMetadata = { byte_size: number; content_hash: string; content_type: string }
 export type RelayObjectStore = {
@@ -30,93 +22,108 @@ export type RelayObjectStore = {
   abortMultipartUpload?(input: { leaseId: string; uploadId: string }): Promise<void>
 }
 
-type OssSdk = Pick<OssClient, 'abortMultipartUpload' | 'completeMultipartUpload' | 'deleteObject' | 'getObject' | 'headObject' | 'initiateMultipartUpload' | 'listMultipartUploads' | 'listParts' | 'putObject'>
-const runtime = { autoretry: true, maxAttempts: 3, readTimeout: 60_000, connectTimeout: 10_000 }
+type OssSdk = {
+  signatureUrlV4(method: string, expires: number, request?: { headers?: Record<string, string>; queries?: Record<string, string | number> }, objectName?: string, additionalHeaders?: string[]): Promise<string>
+  head(name: string): Promise<{ res: { headers: Record<string, string | string[] | undefined> } }>
+  getStream(name: string): Promise<{ stream: Readable }>
+  putStream(name: string, stream: Readable, options?: { mime?: string; meta?: Record<string, string>; contentLength?: number }): Promise<unknown>
+  delete(name: string): Promise<unknown>
+  initMultipartUpload(name: string, options?: { mime?: string; meta?: Record<string, string> }): Promise<{ uploadId?: string }>
+  listParts(name: string, uploadId: string, query?: Record<string, string | number>): Promise<{ parts?: Array<{ PartNumber?: string | number; ETag?: string }>; nextPartNumberMarker?: string | number; isTruncated?: boolean | string }>
+  listUploads(query?: Record<string, string | number>): Promise<{ uploads?: Array<{ name?: string; uploadId?: string; initiated?: string }>; nextKeyMarker?: string; nextUploadIdMarker?: string; isTruncated?: boolean | string }>
+  completeMultipartUpload(name: string, uploadId: string, parts: Array<{ number: number; etag: string }>): Promise<unknown>
+  abortMultipartUpload(name: string, uploadId: string): Promise<unknown>
+}
+
+const requestTimeout = 60_000
 
 /**
- * The official Alibaba Cloud SDK signs every Relay-to-OSS request with V4.
- * Presigned URLs are still generated locally because Sidecar and DashScope
- * receive only a temporary object capability, never the RAM credential.
+ * All signed URLs and server-to-server OSS calls use ali-oss with
+ * authorizationV4 enabled.  The SDK owns canonicalization, including the
+ * mandatory /{bucket}/{object} Canonical URI, so no V1 fallback or local
+ * signer can be selected accidentally.
  */
 export class OssObjectStore implements RelayObjectStore {
-  private readonly endpoint: string
   private readonly client: OssSdk
   constructor(private readonly options: { endpoint: string; bucket: string; accessKeyId: string; accessKeySecret: string; region?: string; client?: OssSdk }) {
-    this.endpoint = options.endpoint.replace(/^https?:\/\//, '').replace(/\/+$/, '')
-    this.client = options.client ?? new OssClient({
+    this.client = options.client ?? new OSS({
+      endpoint: options.endpoint,
+      bucket: options.bucket,
       accessKeyId: options.accessKeyId,
       accessKeySecret: options.accessKeySecret,
-      endpoint: this.endpoint,
-      regionId: options.region ?? 'cn-beijing',
-      protocol: 'https',
-      signatureVersion: 'V4',
-      readTimeout: 60_000,
-      connectTimeout: 10_000,
-    } satisfies OssConfig)
+      region: options.region ?? 'oss-cn-beijing',
+      secure: true,
+      timeout: requestTimeout,
+      authorizationV4: true,
+    }) as OssSdk
   }
 
   async createPutUrl(input: { leaseId: string; hash: string; byteSize: number; contentType: string; expiresAt: string }) {
     const headers = { 'content-type': input.contentType, 'x-oss-meta-sha256': input.hash, 'x-oss-meta-size': String(input.byteSize) }
-    return { put_url: this.presignedUrl('PUT', this.inputKey(input.leaseId), input.expiresAt, headers), required_headers: headers }
+    return { put_url: await this.presignedUrl('PUT', this.inputKey(input.leaseId), input.expiresAt, headers), required_headers: headers }
   }
 
-  /** HEAD only checks declared metadata. Complete paths call this streaming
-   * inspection which hashes the actual OSS bytes before marking a lease ready. */
+  /** Reads the actual object stream. Metadata is advisory only; completion
+   * always checks the bytes and the standard lower-case HTTP content-type. */
   async head(leaseId: string): Promise<ObjectMetadata | null> {
     const key = this.inputKey(leaseId)
-    let metadata: Record<string, unknown>
-    try { metadata = await this.client.headObject(new HeadObjectRequest({ bucketName: this.options.bucket, objectName: key }), runtime) as unknown as Record<string, unknown> } catch (error) {
+    let contentType: string
+    try {
+      const response = await this.client.head(key)
+      const header = response.res.headers['content-type']
+      contentType = typeof header === 'string' ? header.split(';', 1)[0]! : ''
+    } catch (error) {
       if (status(error) === 404) return null
       throw new Error('oss_head_failed')
     }
-    const rawContentType = metadata.contentType ?? metadata['content-type']
-    const contentType = typeof rawContentType === 'string' ? rawContentType.split(';', 1)[0]! : ''
-    if (!contentType) return null
-    let response: { body: Readable }
-    try { response = await this.client.getObject(new GetObjectRequest({ bucketName: this.options.bucket, objectName: key }), runtime) as unknown as { body: Readable } } catch (error) {
+    if (!contentType) throw new Error('oss_head_content_type_missing')
+    let stream: Readable
+    try { stream = (await this.client.getStream(key)).stream } catch (error) {
       if (status(error) === 404) return null
       throw new Error('oss_get_failed')
     }
-    const hash = createHash('sha256'); let actualSize = 0
-    for await (const chunk of response.body) { const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk); actualSize += bytes.byteLength; hash.update(bytes) }
-    return { byte_size: actualSize, content_hash: `sha256:${hash.digest('hex')}`, content_type: contentType }
+    const digest = createHash('sha256'); let byteSize = 0
+    for await (const chunk of stream) {
+      const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+      byteSize += bytes.byteLength
+      digest.update(bytes)
+    }
+    return { byte_size: byteSize, content_hash: `sha256:${digest.digest('hex')}`, content_type: contentType }
   }
 
   async delete(leaseId: string): Promise<void> { await this.deleteKey(this.inputKey(leaseId)) }
-  async createReadUrl(input: { leaseId: string; expiresAt: string }): Promise<string> { return this.presignedUrl('GET', this.inputKey(input.leaseId), input.expiresAt) }
+  async createReadUrl(input: { leaseId: string; expiresAt: string }): Promise<string> { return await this.presignedUrl('GET', this.inputKey(input.leaseId), input.expiresAt) }
   async putResult(input: { objectRef: string; body: Uint8Array; contentHash: string; contentType: string }): Promise<void> {
     try {
-      await this.client.putObject(new PutObjectRequest({ bucketName: this.options.bucket, objectName: this.resultKey(input.objectRef), body: Readable.from(input.body), userMeta: { sha256: input.contentHash, size: String(input.body.byteLength) }, header: { contentType: input.contentType } }), runtime)
+      await this.client.putStream(this.resultKey(input.objectRef), Readable.from(input.body), { contentLength: input.body.byteLength, mime: input.contentType, meta: { sha256: input.contentHash, size: String(input.body.byteLength) } })
     } catch { throw new Error('oss_result_put_failed') }
   }
-  async createResultReadUrl(input: { objectRef: string; expiresAt: string }): Promise<string> { return this.presignedUrl('GET', this.resultKey(input.objectRef), input.expiresAt) }
+  async createResultReadUrl(input: { objectRef: string; expiresAt: string }): Promise<string> { return await this.presignedUrl('GET', this.resultKey(input.objectRef), input.expiresAt) }
   async deleteResult(objectRef: string): Promise<void> { await this.deleteKey(this.resultKey(objectRef)) }
 
   async createMultipartUpload(input: { leaseId: string; hash: string; byteSize: number; contentType: string }): Promise<{ uploadId: string }> {
     try {
-      const response = await this.client.initiateMultipartUpload(new InitiateMultipartUploadRequest({ bucketName: this.options.bucket, objectName: this.inputKey(input.leaseId), header: { contentType: input.contentType } }), runtime)
-      const uploadId = response.initiateMultipartUploadResult?.uploadId
-      if (!uploadId) throw new Error('missing_upload_id')
-      return { uploadId }
+      const response = await this.client.initMultipartUpload(this.inputKey(input.leaseId), { mime: input.contentType, meta: { sha256: input.hash, size: String(input.byteSize) } })
+      if (!response.uploadId) throw new Error('missing_upload_id')
+      return { uploadId: response.uploadId }
     } catch { throw new Error('oss_multipart_init_failed') }
   }
   async createMultipartPartPutUrl(input: { leaseId: string; uploadId: string; partNumber: number; expiresAt: string }) {
-    return { put_url: this.presignedUrl('PUT', this.inputKey(input.leaseId), input.expiresAt, {}, { partNumber: String(input.partNumber), uploadId: input.uploadId }), required_headers: {} }
+    return { put_url: await this.presignedUrl('PUT', this.inputKey(input.leaseId), input.expiresAt, {}, { partNumber: input.partNumber, uploadId: input.uploadId }), required_headers: {} }
   }
   async listMultipartParts(input: { leaseId: string; uploadId: string }): Promise<Array<{ part_number: number; etag: string }>> {
-    const parts: Array<{ part_number: number; etag: string }> = []; let marker = 0
+    const parts: Array<{ part_number: number; etag: string }> = []; let marker: number | undefined
     while (true) {
       let response: Awaited<ReturnType<OssSdk['listParts']>>
-      try { response = await this.client.listParts(new ListPartsRequest({ bucketName: this.options.bucket, objectName: this.inputKey(input.leaseId), filter: { uploadId: input.uploadId, maxParts: 1000, ...(marker ? { partNumberMarker: marker } : {}) } }), runtime) } catch { throw new Error('oss_multipart_list_failed') }
-      const result = response.listPartsResult
-      for (const part of result.part ?? []) {
-        const partNumber = Number(part.partNumber); const etag = part.eTag
+      try { response = await this.client.listParts(this.inputKey(input.leaseId), input.uploadId, { 'max-parts': 1000, ...(marker ? { 'part-number-marker': marker } : {}) }) } catch { throw new Error('oss_multipart_list_failed') }
+      for (const part of response.parts ?? []) {
+        const partNumber = Number(part.PartNumber); const etag = part.ETag
         if (!Number.isSafeInteger(partNumber) || partNumber < 1 || !etag) throw new Error('oss_multipart_list_invalid')
         parts.push({ part_number: partNumber, etag })
       }
-      if (result.isTruncated !== 'true') break
-      const next = Number(result.nextPartNumberMarker)
-      if (!Number.isSafeInteger(next) || next <= marker) throw new Error('oss_multipart_list_pagination_invalid')
+      if (!truncated(response.isTruncated)) break
+      const next = Number(response.nextPartNumberMarker)
+      if (!Number.isSafeInteger(next) || next < 1 || next === marker) throw new Error('oss_multipart_list_pagination_invalid')
       marker = next
     }
     return parts
@@ -125,46 +132,30 @@ export class OssObjectStore implements RelayObjectStore {
     const key = this.inputKey(input.leaseId); const uploads: Array<{ uploadId: string; initiatedAt?: string }> = []
     let keyMarker: string | undefined; let uploadIdMarker: string | undefined
     while (true) {
-      let response: Awaited<ReturnType<OssSdk['listMultipartUploads']>>
-      try { response = await this.client.listMultipartUploads(new ListMultipartUploadsRequest({ bucketName: this.options.bucket, filter: { prefix: key, maxUploads: '1000', ...(keyMarker ? { keyMarker } : {}), ...(uploadIdMarker ? { uploadIdMarker } : {}) } }), runtime) } catch { throw new Error('oss_multipart_recovery_list_failed') }
-      const result = response.listMultipartUploadsResult
-      for (const upload of result.upload ?? []) if (upload.key === key && upload.uploadId) uploads.push({ uploadId: upload.uploadId, ...(upload.initiated ? { initiatedAt: upload.initiated } : {}) })
-      if (result.isTruncated !== 'true') break
-      if (!result.nextKeyMarker || !result.nextUploadIdMarker || (result.nextKeyMarker === keyMarker && result.nextUploadIdMarker === uploadIdMarker)) throw new Error('oss_multipart_recovery_pagination_invalid')
-      keyMarker = result.nextKeyMarker; uploadIdMarker = result.nextUploadIdMarker
+      let response: Awaited<ReturnType<OssSdk['listUploads']>>
+      try { response = await this.client.listUploads({ prefix: key, 'max-uploads': 1000, ...(keyMarker ? { 'key-marker': keyMarker } : {}), ...(uploadIdMarker ? { 'upload-id-marker': uploadIdMarker } : {}) }) } catch { throw new Error('oss_multipart_recovery_list_failed') }
+      for (const upload of response.uploads ?? []) if (upload.name === key && upload.uploadId) uploads.push({ uploadId: upload.uploadId, ...(upload.initiated ? { initiatedAt: upload.initiated } : {}) })
+      if (!truncated(response.isTruncated)) break
+      if (!response.nextKeyMarker || !response.nextUploadIdMarker || (response.nextKeyMarker === keyMarker && response.nextUploadIdMarker === uploadIdMarker)) throw new Error('oss_multipart_recovery_pagination_invalid')
+      keyMarker = response.nextKeyMarker; uploadIdMarker = response.nextUploadIdMarker
     }
     return uploads.sort((a, b) => (b.initiatedAt ?? '').localeCompare(a.initiatedAt ?? ''))
   }
   async completeMultipartUpload(input: { leaseId: string; uploadId: string; parts: Array<{ part_number: number; etag: string }> }): Promise<void> {
-    try {
-      await this.client.completeMultipartUpload(new CompleteMultipartUploadRequest({ bucketName: this.options.bucket, objectName: this.inputKey(input.leaseId), filter: { uploadId: input.uploadId }, body: { completeMultipartUpload: { part: input.parts.map(part => ({ partNumber: String(part.part_number), eTag: part.etag })) } } }), runtime)
-    } catch { throw new Error('oss_multipart_complete_failed') }
+    try { await this.client.completeMultipartUpload(this.inputKey(input.leaseId), input.uploadId, input.parts.map(part => ({ number: part.part_number, etag: part.etag }))) } catch { throw new Error('oss_multipart_complete_failed') }
   }
   async abortMultipartUpload(input: { leaseId: string; uploadId: string }): Promise<void> {
-    try { await this.client.abortMultipartUpload(new AbortMultipartUploadRequest({ bucketName: this.options.bucket, objectName: this.inputKey(input.leaseId), filter: { uploadId: input.uploadId } }), runtime) } catch (error) { if (status(error) !== 404) throw new Error('oss_multipart_abort_failed') }
+    try { await this.client.abortMultipartUpload(this.inputKey(input.leaseId), input.uploadId) } catch (error) { if (status(error) !== 404) throw new Error('oss_multipart_abort_failed') }
   }
 
   private inputKey(leaseId: string): string { return `video-media/input/${leaseId}` }
   private resultKey(objectRef: string): string { return `video-media/result/${objectRef}` }
-  private async deleteKey(key: string): Promise<void> { try { await this.client.deleteObject(new DeleteObjectRequest({ bucketName: this.options.bucket, objectName: key }), runtime) } catch (error) { if (status(error) !== 404) throw new Error('oss_delete_failed') } }
-  private presignedUrl(method: 'GET' | 'PUT', key: string, expiresAt: string, headers: Record<string, string> = {}, query: Record<string, string> = {}): string {
-    const now = new Date(); const date = now.toISOString().replace(/[-:]|\.\d{3}/g, ''); const day = date.slice(0, 8)
-    const expires = Math.max(1, Math.min(7 * 24 * 60 * 60, Math.floor((Date.parse(expiresAt) - now.getTime()) / 1000)))
-    const host = `${this.options.bucket}.${this.endpoint}`; const signed = Object.fromEntries(Object.entries({ host, ...headers }).map(([name, value]) => [name.toLowerCase(), value.trim()]))
-    const additionalHeaders = Object.keys(signed).sort().join(';')
-    const scope = `${day}/${this.options.region ?? 'cn-beijing'}/oss/aliyun_v4_request`
-    const parameters = { ...query, 'x-oss-additional-headers': additionalHeaders, 'x-oss-credential': `${this.options.accessKeyId}/${scope}`, 'x-oss-date': date, 'x-oss-expires': String(expires), 'x-oss-signature-version': 'OSS4-HMAC-SHA256' }
-    const canonicalQuery = canonicalQueryString(parameters)
-    const canonicalHeaders = Object.entries(signed).sort(([a], [b]) => a.localeCompare(b)).map(([name, value]) => `${name}:${value}\n`).join('')
-    const canonicalRequest = `${method}\n/${key.split('/').map(rfc3986).join('/')}\n${canonicalQuery}\n${canonicalHeaders}\n${additionalHeaders}\nUNSIGNED-PAYLOAD`
-    const stringToSign = `OSS4-HMAC-SHA256\n${date}\n${scope}\n${createHash('sha256').update(canonicalRequest).digest('hex')}`
-    const dateKey = hmac(`aliyun_v4${this.options.accessKeySecret}`, day); const regionKey = hmac(dateKey, this.options.region ?? 'cn-beijing'); const serviceKey = hmac(regionKey, 'oss'); const signingKey = hmac(serviceKey, 'aliyun_v4_request')
-    const signature = createHmac('sha256', signingKey).update(stringToSign).digest('hex')
-    return `https://${host}/${key.split('/').map(rfc3986).join('/')}?${canonicalQuery}&x-oss-signature=${signature}`
+  private async deleteKey(key: string): Promise<void> { try { await this.client.delete(key) } catch (error) { if (status(error) !== 404) throw new Error('oss_delete_failed') } }
+  private async presignedUrl(method: 'GET' | 'PUT', key: string, expiresAt: string, headers: Record<string, string> = {}, queries: Record<string, string | number> = {}): Promise<string> {
+    const expires = Math.max(1, Math.min(7 * 24 * 60 * 60, Math.floor((Date.parse(expiresAt) - Date.now()) / 1000)))
+    try { return await this.client.signatureUrlV4(method, expires, { headers, queries }, key, Object.keys(headers)) } catch { throw new Error('oss_presign_failed') }
   }
 }
 
-function hmac(key: string | Buffer, value: string): Buffer { return createHmac('sha256', key).update(value).digest() }
-function rfc3986(value: string): string { return encodeURIComponent(value).replace(/[!'()*]/g, character => `%${character.charCodeAt(0).toString(16).toUpperCase()}`) }
-function canonicalQueryString(query: Record<string, string>): string { return Object.entries(query).map(([key, value]) => [rfc3986(key), rfc3986(value)] as const).sort(([a], [b]) => a.localeCompare(b)).map(([key, value]) => `${key}=${value}`).join('&') }
-function status(error: unknown): number | undefined { const value = error as { statusCode?: number; data?: { httpCode?: number } }; return value.statusCode ?? value.data?.httpCode }
+function truncated(value: boolean | string | undefined): boolean { return value === true || value === 'true' }
+function status(error: unknown): number | undefined { const value = error as { status?: number; statusCode?: number; res?: { status?: number } }; return value.status ?? value.statusCode ?? value.res?.status }

@@ -107,7 +107,7 @@ function defaultObjectStore(env: Env): MediaObjectStore {
     const unavailable = async (): Promise<never> => { throw new RelayError(503, 'object_store_unavailable') }
     return { createPutUrl: unavailable, head: unavailable, delete: unavailable, createReadUrl: unavailable, putResult: unavailable, createResultReadUrl: unavailable, deleteResult: unavailable, createMultipartUpload: unavailable, createMultipartPartPutUrl: unavailable, listMultipartParts: unavailable, completeMultipartUpload: unavailable, abortMultipartUpload: unavailable }
   }
-  return new OssObjectStore({ endpoint, bucket, accessKeyId, accessKeySecret, region: 'cn-beijing' })
+  return new OssObjectStore({ endpoint, bucket, accessKeyId, accessKeySecret, region: 'oss-cn-beijing' })
 }
 function defaultProvider(now: () => Date): VideoMediaProvider {
   return { async execute(input) {
@@ -134,10 +134,28 @@ export function createVideoMediaRelayFetch(deps: RelayDeps = {}) {
     return row
   }
   const verified = (row: Row, actual: Awaited<ReturnType<MediaObjectStore['head']>>): boolean => Boolean(actual && actual.byte_size === row.byte_size && actual.content_hash === row.content_hash && actual.content_type === row.content_type)
+  async function abortFailedMultipart(row: Row, uploadId: string, cause: unknown): Promise<never> {
+    if (!objectStore.abortMultipartUpload) throw new RelayError(503, 'multipart_abort_unavailable')
+    try {
+      await objectStore.abortMultipartUpload({ leaseId: row.id as string, uploadId })
+    } catch {
+      // Do not pretend the failed session has gone away. A later recovery call
+      // will retry abort instead of issuing more part or complete requests.
+      store.db.query("UPDATE video_media_leases_v1 SET multipart_phase='aborting' WHERE id=?").run(row.id)
+      throw new RelayError(503, 'multipart_abort_failed')
+    }
+    store.db.query("UPDATE video_media_leases_v1 SET state='deleted',multipart_phase='aborted' WHERE id=?").run(row.id)
+    if (cause instanceof RelayError) throw cause
+    throw new RelayError(503, 'multipart_completion_failed')
+  }
   async function recoverMultipart(row: Row): Promise<Row> {
     const phase = row.multipart_phase as string | null
-    if (!phase || !['initializing', 'completing'].includes(phase)) return row
+    if (!phase || !['initializing', 'completing', 'aborting'].includes(phase)) return row
     let uploadId = row.multipart_upload_id as string | null
+    if (phase === 'aborting') {
+      if (!uploadId) throw new RelayError(503, 'multipart_abort_missing_upload')
+      return await abortFailedMultipart(row, uploadId, new RelayError(503, 'multipart_aborted'))
+    }
     if (phase === 'initializing') {
       if (!uploadId) {
         const recovered = objectStore.findMultipartUploads ? await objectStore.findMultipartUploads({ leaseId: row.id as string }) : []
@@ -148,13 +166,24 @@ export function createVideoMediaRelayFetch(deps: RelayDeps = {}) {
       return leaseRow(row.id as string)
     }
     if (!uploadId || !row.multipart_parts_json || !objectStore.completeMultipartUpload) throw new RelayError(503, 'multipart_completion_recovery_unavailable')
-    const parts = completeMediaObjectLeaseRequestSchema.parse(JSON.parse(row.multipart_parts_json as string)).parts ?? []
-    let actual = await objectStore.head(row.id as string)
-    if (!verified(row, actual)) {
-      await objectStore.completeMultipartUpload({ leaseId: row.id as string, uploadId, parts })
-      actual = await objectStore.head(row.id as string)
+    try {
+      const parts = completeMediaObjectLeaseRequestSchema.parse(JSON.parse(row.multipart_parts_json as string)).parts ?? []
+      let actual = await objectStore.head(row.id as string)
+      if (!verified(row, actual)) {
+        try {
+          await objectStore.completeMultipartUpload({ leaseId: row.id as string, uploadId, parts })
+        } catch (error) {
+          // A timeout can race a successful CompleteMultipartUpload response.
+          // Probe the object once before aborting the still-open upload.
+          actual = await objectStore.head(row.id as string)
+          if (!verified(row, actual)) throw error
+        }
+        actual = await objectStore.head(row.id as string)
+      }
+      if (!verified(row, actual)) throw new RelayError(422, 'object_verification_failed')
+    } catch (error) {
+      return await abortFailedMultipart(row, uploadId, error)
     }
-    if (!verified(row, actual)) throw new RelayError(422, 'object_verification_failed')
     const objectRef = (row.object_ref as string | null) ?? opaque('object')
     store.db.query("UPDATE video_media_leases_v1 SET state='ready',object_ref=?,multipart_phase='completed' WHERE id=?").run(objectRef, row.id)
     return leaseRow(row.id as string)
@@ -271,6 +300,7 @@ export function createVideoMediaRelayFetch(deps: RelayDeps = {}) {
         const hash = canonicalRelayRequestHash({ lease_id: leaseId, action, completion }); const replay = store.replay(principal.owner, key, hash); if (replay) return json(mediaObjectLeaseSchema.parse({ lease_id: row.id, state: row.state, ...(row.object_ref ? { object_ref: row.object_ref } : {}), ...await leaseCapabilities(row), expires_at: row.expires_at }), 200, id)
         if (action === 'renew') { if (Date.parse(row.expires_at as string) <= now().getTime() || row.state === 'deleted') throw new RelayError(410, 'lease_expired'); const expiresAt = new Date(now().getTime() + ttl(env)).toISOString(); store.db.query('UPDATE video_media_leases_v1 SET expires_at=? WHERE id=?').run(expiresAt, leaseId); store.db.query('INSERT INTO video_media_idempotency_v1 VALUES(?,?,?,?)').run(principal.owner, key, hash, leaseId); const renewed = store.db.query('SELECT * FROM video_media_leases_v1 WHERE id=?').get(leaseId) as Row; return json(mediaObjectLeaseSchema.parse({ lease_id: leaseId, state: row.state, ...(row.object_ref ? { object_ref: row.object_ref } : {}), ...await leaseCapabilities(renewed), expires_at: expiresAt }), 200, id) }
         if (Date.parse(row.expires_at as string) <= now().getTime()) throw new RelayError(410, 'lease_expired')
+        if (row.state === 'deleted') throw new RelayError(410, 'lease_deleted')
         if (row.state === 'ready' || row.state === 'bound') {
           if (action === 'complete') store.db.query('INSERT OR IGNORE INTO video_media_idempotency_v1 VALUES(?,?,?,?)').run(principal.owner, key, hash, leaseId)
           return json(mediaObjectLeaseSchema.parse({ lease_id: row.id, state: row.state, object_ref: row.object_ref, expires_at: row.expires_at }), 200, id)

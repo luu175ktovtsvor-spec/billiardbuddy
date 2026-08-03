@@ -86,7 +86,7 @@ test('Relay keeps a submitted long ASR task and only advances it through GET pol
   expect(polls).toBe(1)
 })
 
-test('Relay keeps multipart upload state across a lease replay and verifies every OSS part before completion', async () => {
+test('Relay treats a timeout after remote multipart completion as an idempotent success', async () => {
   const completed: Array<{ part_number: number; etag: string }> = []
   let objectCompleted = false
   let crashAfterOssCompletion = true
@@ -116,10 +116,32 @@ test('Relay keeps multipart upload state across a lease replay and verifies ever
   expect(incomplete.status).toBe(422)
   const completionPayload = { parts: [{ part_number: 1, etag: 'etag-one' }, { part_number: 2, etag: 'etag-two' }] }
   const interrupted = await handler(new Request(`http://relay/v1/video-media/object-leases/${lease.lease_id}/complete`, { method: 'POST', headers: headers('multipart-complete-key-2'), body: JSON.stringify(completionPayload) }))
-  expect(interrupted.status).toBe(500)
+  expect(interrupted.status).toBe(200)
   const complete = await handler(new Request(`http://relay/v1/video-media/object-leases/${lease.lease_id}/complete`, { method: 'POST', headers: headers('multipart-complete-key-3'), body: JSON.stringify(completionPayload) }))
   expect(complete.status).toBe(200)
   expect(completed).toEqual([{ part_number: 1, etag: 'etag-one' }, { part_number: 2, etag: 'etag-two' }])
+})
+
+test('Relay aborts a multipart session and closes the lease when completion really fails', async () => {
+  const aborted: Array<{ leaseId: string; uploadId: string }> = []
+  const objectStore: MediaObjectStore = {
+    async createPutUrl() { throw new Error('single_put_not_expected') }, async head() { return null }, async delete() {}, async createReadUrl() { return 'https://oss.example.test/read' }, async putResult() {}, async createResultReadUrl() { return 'https://oss.example.test/result' }, async deleteResult() {},
+    async createMultipartUpload() { return { uploadId: 'upload-fails' } }, async createMultipartPartPutUrl() { return { put_url: 'https://oss.example.test/part' } },
+    async listMultipartParts() { return [{ part_number: 1, etag: 'etag-one' }, { part_number: 2, etag: 'etag-two' }] }, async completeMultipartUpload() { throw new Error('oss_complete_lost') },
+    async abortMultipartUpload(input) { aborted.push(input) },
+  }
+  const handler = createVideoMediaRelayFetch({ env: { GW_VIDEO_MEDIA_INTROSPECTION_TOKEN: token, VIDEO_MEDIA_GATEWAY_INTROSPECTION_BASE: 'http://gateway', VIDEO_MEDIA_RELAY_DB: ':memory:', VIDEO_MEDIA_MULTIPART_THRESHOLD_BYTES: String(5 * 1024 * 1024), VIDEO_MEDIA_MULTIPART_PART_SIZE_BYTES: String(3 * 1024 * 1024) }, fetchImpl: identityFetch, objectStore, now })
+  const payload = { local_operation_id: 'task_12345678', purpose: 'proxy_video', content_hash: hash, byte_size: 6 * 1024 * 1024, content_type: 'video/mp4', consent_revision_id: 'consent_12345678', consent_scope_hash: hash }
+  const created = await handler(new Request('http://relay/v1/video-media/object-leases', { method: 'POST', headers: headers('multipart-fail-lease-key'), body: JSON.stringify(payload) }))
+  const lease = await created.json() as { lease_id: string }
+  const completion = { parts: [{ part_number: 1, etag: 'etag-one' }, { part_number: 2, etag: 'etag-two' }] }
+  const failed = await handler(new Request(`http://relay/v1/video-media/object-leases/${lease.lease_id}/complete`, { method: 'POST', headers: headers('multipart-fail-complete-key'), body: JSON.stringify(completion) }))
+  expect(failed.status).toBe(503)
+  expect(await failed.json()).toMatchObject({ error: 'multipart_completion_failed' })
+  expect(aborted).toEqual([{ leaseId: lease.lease_id, uploadId: 'upload-fails' }])
+  const retry = await handler(new Request(`http://relay/v1/video-media/object-leases/${lease.lease_id}/complete`, { method: 'POST', headers: headers('multipart-fail-complete-retry'), body: JSON.stringify(completion) }))
+  expect(retry.status).toBe(410)
+  expect(aborted).toHaveLength(1)
 })
 
 test('Sidecar resumes only missing multipart parts and retries a timed-out cross-border PUT', async () => {
