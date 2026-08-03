@@ -9,12 +9,13 @@ import {
   factKind,
   factSchema,
   factSearchText,
+  normalizeFactSearchText,
   type VideoFact,
   type VideoFactKind,
   type TimedTranscript,
   type TranscriptRevision,
 } from '../domain/mediaFacts/model.js'
-import { transcriptRevisionFingerprint } from '../domain/mediaFacts/transcript.js'
+import { materializeTranscriptRevision, transcriptRevisionFingerprint } from '../domain/mediaFacts/transcript.js'
 
 type FactRow = {
   id: string
@@ -181,9 +182,15 @@ export class SqliteMediaFactsRepository {
       if (!('transcript_id' in revision) || revision.project_id !== projectId || revision.transcript_id !== transcriptId) {
         throw new VideoFactsRepositoryError('转录修订不属于当前项目或原始转录', 'VIDEO_FACTS_INVALID')
       }
-      this.unitOfWork.database.query(`INSERT INTO video_fact_transcript_heads(transcript_id,revision_id,updated_at)
-        VALUES(?,?,?) ON CONFLICT(transcript_id) DO UPDATE SET revision_id=excluded.revision_id,updated_at=excluded.updated_at`)
-        .run(transcriptId, revisionId, this.now().toISOString())
+      const transcript = await this.get('transcript', transcriptId) as TimedTranscript
+      const text = normalizeFactSearchText(materializeTranscriptRevision(transcript, revision as TranscriptRevision).segments
+        .map(segment => segment.text).join('\n'))
+      this.unitOfWork.transaction(() => {
+        this.unitOfWork.database.query(`INSERT INTO video_fact_transcript_heads(transcript_id,revision_id,updated_at)
+          VALUES(?,?,?) ON CONFLICT(transcript_id) DO UPDATE SET revision_id=excluded.revision_id,updated_at=excluded.updated_at`)
+          .run(transcriptId, revisionId, this.now().toISOString())
+        this.replaceTranscriptSearch(transcript, text)
+      })
       return revision
     })
   }
@@ -213,6 +220,7 @@ export class SqliteMediaFactsRepository {
     const row = this.unitOfWork.database.query('SELECT * FROM video_fact_payloads WHERE intent_id=?').get(intentId) as FactPayloadRow | null
     if (!row) throw new VideoFactsRepositoryError('视频事实提交记录缺失', 'VIDEO_FACTS_CORRUPT')
     const value = await this.readPayload(row.fact_kind, row.payload_locator, row.payload_hash)
+    const transcriptSearch = await this.transcriptSearchProjection(row.fact_kind, value)
     const table = TABLE_BY_KIND[row.fact_kind]
     this.unitOfWork.transaction(() => {
       const previous = this.unitOfWork.database.query(`SELECT payload_locator FROM ${table} WHERE id=?`).get(row.fact_id) as { payload_locator: string } | null
@@ -239,8 +247,11 @@ export class SqliteMediaFactsRepository {
       this.unitOfWork.database.query("UPDATE video_fact_payloads SET state='committed' WHERE intent_id=?").run(intentId)
       this.payloads.markCommitted(intentId)
       this.unitOfWork.database.query('DELETE FROM video_fact_search WHERE fact_id=? AND fact_kind=?').run(row.fact_id, row.fact_kind)
-      const text = factSearchText(value)
-      if (text) {
+      if (transcriptSearch) {
+        this.replaceTranscriptSearch(transcriptSearch.transcript, transcriptSearch.text)
+      } else {
+        const text = factSearchText(value)
+        if (!text) return
         const fields = sourceFields(value)
         this.unitOfWork.database.query('INSERT INTO video_fact_search(fact_id,project_id,source_id,fact_kind,text) VALUES(?,?,?,?,?)')
           .run(row.fact_id, row.project_id, fields.sourceId, row.fact_kind, text)
@@ -344,6 +355,30 @@ export class SqliteMediaFactsRepository {
       if (error instanceof VideoFactsRepositoryError) throw error
       throw new VideoFactsRepositoryError('视频事实 payload 损坏', 'VIDEO_FACTS_CORRUPT')
     }
+  }
+
+  private async transcriptSearchProjection(kind: VideoFactKind, value: VideoFact): Promise<{ transcript: TimedTranscript; text: string } | null> {
+    if (kind === 'transcript') {
+      const transcript = value as TimedTranscript
+      return { transcript, text: normalizeFactSearchText(transcript.segments.map(segment => segment.text).join('\n')) }
+    }
+    if (kind !== 'transcript_revision') return null
+    const revision = value as TranscriptRevision
+    const row = this.unitOfWork.database.query('SELECT * FROM video_fact_transcripts WHERE id=?').get(revision.transcript_id) as FactRow | null
+    if (!row) throw new VideoFactsRepositoryError('转录修订缺少对应的原始转录', 'VIDEO_FACTS_CORRUPT')
+    const transcript = await this.readRow('transcript', row) as TimedTranscript
+    return {
+      transcript,
+      text: normalizeFactSearchText(materializeTranscriptRevision(transcript, revision).segments.map(segment => segment.text).join('\n')),
+    }
+  }
+
+  private replaceTranscriptSearch(transcript: TimedTranscript, text: string): void {
+    this.unitOfWork.database.query("DELETE FROM video_fact_search WHERE fact_id=? AND fact_kind='transcript'")
+      .run(transcript.id)
+    if (!text) return
+    this.unitOfWork.database.query('INSERT INTO video_fact_search(fact_id,project_id,source_id,fact_kind,text) VALUES(?,?,?,?,?)')
+      .run(transcript.id, transcript.project_id, transcript.source_id, 'transcript', text)
   }
 
   private encodeCursor(row: Pick<FactRow, 'updated_at' | 'id'>): string {

@@ -210,7 +210,11 @@ test('Media Facts 保持不可变 payload、全文检索、转录修订和派生
   await repository.saveFact(revision)
   expect(materializeTranscriptRevision(transcript, revision).segments[0]?.text).toBe('开球后打进关键一球')
   expect(await repository.activeTranscriptRevision(transcript.id)).toMatchObject({ id: revision.id })
-  expect((await repository.searchFacts(created.id, '精彩')).map(item => item.kind)).toContain('transcript')
+  expect(await repository.searchFacts(created.id, '精彩')).toEqual([])
+  expect(await repository.searchFacts(created.id, '关键')).toMatchObject([{ id: transcript.id, kind: 'transcript' }])
+
+  await repository.selectTranscriptRevision(created.id, transcript.id, revision.id)
+  expect(await repository.searchFacts(created.id, '一球')).toMatchObject([{ id: transcript.id, kind: 'transcript' }])
 
   const segments = fixedIntervalContentSegments({ source: videoSource, intervalSeconds: 10, createdAt: at })
   expect(segments).toHaveLength(3)

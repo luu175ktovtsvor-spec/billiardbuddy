@@ -285,6 +285,11 @@ export function factSchema(kind: VideoFactKind): z.ZodType<VideoFact> {
   }
 }
 
+export function normalizeFactSearchText(text: string): string {
+  const cjkTokens = [...text].filter(character => /[\u3400-\u9fff]/u.test(character)).join(' ')
+  return cjkTokens ? `${text}\n${cjkTokens}` : text
+}
+
 export function factSearchText(value: VideoFact): string {
   const text = 'segments' in value
     ? value.segments.map(segment => segment.text).join('\n')
@@ -296,8 +301,7 @@ export function factSearchText(value: VideoFact): string {
   // unicode61 keeps a continuous CJK sentence as one token. Add individual
   // ideographs to the same FTS document so a normal two-character query has a
   // stable, language-neutral fallback before a later embedding index exists.
-  const cjkTokens = [...text].filter(character => /[\u3400-\u9fff]/u.test(character)).join(' ')
-  return cjkTokens ? `${text}\n${cjkTokens}` : text
+  return normalizeFactSearchText(text)
 }
 
 export function factSourceRange(value: VideoFact): SourceTimeRange | undefined {
