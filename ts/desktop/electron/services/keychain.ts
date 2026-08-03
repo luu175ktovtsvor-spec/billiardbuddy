@@ -43,6 +43,28 @@ export class EphemeralCredentialStore implements CredentialStore {
   clear(): void { this.value = null }
 }
 
+/**
+ * Remove only the retired automatic installation-session artifacts.
+ *
+ * This deliberately never constructs a SecureSessionStore or touches
+ * Electron safeStorage: ordinary product startup must not ask macOS Keychain
+ * or Windows credential services to unlock a non-user-owned session. Do not
+ * remove `master-key` here because legacy provider credentials may still use
+ * it until their explicit migration completes.
+ */
+export function retireInstallationSessionArtifacts(
+  platform: NodeJS.Platform,
+  userDataPath: string,
+): void {
+  const retired = [join(userDataPath, 'installation-session')]
+  if (platform === 'darwin') {
+    retired.push(join(userDataPath, 'local-credentials', 'installation-session.enc'))
+  }
+  for (const file of retired) {
+    if (existsSync(file)) unlinkSync(file)
+  }
+}
+
 function assertSecureStorageAvailable(safeStorage: SafeStorageLike, platform: NodeJS.Platform): void {
   if (!safeStorage.isEncryptionAvailable()) throw new Error('Secure credential storage is unavailable')
   // Electron reports basic_text as available on Linux, but it is explicitly not
