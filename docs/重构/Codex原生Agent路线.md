@@ -2,7 +2,7 @@
 
 ## 结论
 
-BilliardBuddy 的 Agent 不再复刻 Codex。正式实现是锁定的 `third_party/codex-engine` Rust 源码构建出的 `codex-app-server`，以 stdio JSON-RPC 运行在 Electron Main 管理的独立进程中。
+BilliardBuddy 的 Agent 不再复刻 Codex。正式实现是锁定的 `third_party/codex-engine` Rust 源码构建出的 `codex-app-server`，以 stdio JSON-RPC 运行在 Electron Main 管理的独立进程中；同 revision 的 `codex-code-mode-host` 作为 Core 固定查找的 companion 随包分发，不由 Electron 重写或强制启用。
 
 这保留 Codex 原生的 Agent 操作系统：ReAct Loop、上下文与压缩、Thread/Turn/Item、工作区规则、文件与命令工具、Exec/Sandbox、审批、MCP、Skills、Hooks、插件、Review、协作、流式通知和会话恢复。BilliardBuddy 不重新实现这些语义。
 
@@ -28,4 +28,4 @@ Codex Core 只使用 Responses wire API。
 
 ## 维护规则
 
-更新 Codex 时，先升级锁定源码 revision，再重新应用并审计 BilliardBuddy 的最小安全补丁，最后重新生成协议/二进制清单并在 macOS、Windows 构建。不得为了兼容而改写 Agent Loop、上下文压缩或工具语义。
+更新 Codex 时，先升级锁定源码 revision，再重新应用并审计 BilliardBuddy 的最小安全补丁，最后重新生成协议/双二进制清单并在 macOS、Windows 构建。不得为了兼容而改写 Agent Loop、上下文压缩或工具语义。

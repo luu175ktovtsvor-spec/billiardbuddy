@@ -32,6 +32,15 @@ const computerUseConfiguration: Validator = value =>
   && Array.isArray(value.allowedAppIds)
   && value.allowedAppIds.length <= 64
   && value.allowedAppIds.every(item => typeof item === 'string' && item.length > 0 && item.length <= 32_767 && !/[\u0000\r\n]/.test(item))
+const browserPolicyConfiguration: Validator = value =>
+  isRecord(value)
+  && hasOnlyKeys(value, ['allowedHosts', 'blockedHosts'])
+  && Array.isArray(value.allowedHosts)
+  && value.allowedHosts.length <= 256
+  && value.allowedHosts.every(item => typeof item === 'string' && item.length > 0 && item.length <= 255 && !/[\u0000\r\n]/.test(item))
+  && Array.isArray(value.blockedHosts)
+  && value.blockedHosts.length <= 256
+  && value.blockedHosts.every(item => typeof item === 'string' && item.length > 0 && item.length <= 255 && !/[\u0000\r\n]/.test(item))
 const hasOnlyKeys = (value: Record<string, unknown>, allowedKeys: string[]) =>
   Object.keys(value).every(key => allowedKeys.includes(key))
 const commandInvoke: Validator = value =>
@@ -73,20 +82,63 @@ const nativePermissionMode = (value: unknown): value is string =>
 const nativeWindowsSandboxMode = (value: unknown): value is string =>
   value === 'elevated' || value === 'unelevated'
 
-const nativeTurnInput = (value: unknown): boolean =>
-  isRecord(value)
-  && hasOnlyKeys(value, ['type', 'text', 'url'])
-  && (
-    value.type === 'text'
-      ? typeof value.text === 'string' && value.text.length > 0 && value.text.length <= 1_048_576 && value.url === undefined
-      : value.type === 'image'
-        ? typeof value.url === 'string'
-        && value.url.length > 0
-        && value.url.length <= 32 * 1024 * 1024
-        && /^data:image\/(?:png|jpeg|webp|gif);base64,[A-Za-z0-9+/=]+$/.test(value.url)
-        && value.text === undefined
-        : false
-  )
+const nativeImageDetail = (value: unknown): boolean =>
+  value === undefined || value === 'auto' || value === 'low' || value === 'high' || value === 'original'
+
+const nativeInputPath = (value: unknown): value is string =>
+  typeof value === 'string'
+  && value.length > 0
+  && value.length <= 4_096
+  && !/[\u0000\r\n]/.test(value)
+
+const nativeInputName = (value: unknown): value is string =>
+  typeof value === 'string'
+  && value.trim().length > 0
+  && value.length <= 512
+  && !/[\u0000\r\n]/.test(value)
+
+const nativeTurnInput = (value: unknown): boolean => {
+  if (!isRecord(value)) return false
+  if (value.type === 'text') {
+    return hasOnlyKeys(value, ['type', 'text'])
+      && typeof value.text === 'string'
+      && value.text.length > 0
+      && value.text.length <= 1_048_576
+  }
+  if (value.type === 'image') {
+    return hasOnlyKeys(value, ['type', 'url', 'detail'])
+      && typeof value.url === 'string'
+      && value.url.length > 0
+      && value.url.length <= 32 * 1024 * 1024
+      && /^data:image\/(?:png|jpeg|webp|gif);base64,[A-Za-z0-9+/=]+$/.test(value.url)
+      && nativeImageDetail(value.detail)
+  }
+  if (value.type === 'localImage') {
+    return hasOnlyKeys(value, ['type', 'path', 'detail'])
+      && nativeInputPath(value.path)
+      && nativeImageDetail(value.detail)
+  }
+  if (value.type === 'audio') {
+    return hasOnlyKeys(value, ['type', 'url'])
+      && typeof value.url === 'string'
+      && value.url.length > 0
+      && value.url.length <= 64 * 1024 * 1024
+      && /^data:audio\/(?:wav|mpeg|mp4|webm|ogg);base64,[A-Za-z0-9+/=]+$/.test(value.url)
+  }
+  if (value.type === 'localAudio') {
+    return hasOnlyKeys(value, ['type', 'path']) && nativeInputPath(value.path)
+  }
+  if (value.type === 'skill') {
+    return hasOnlyKeys(value, ['type', 'name', 'path'])
+      && nativeInputName(value.name)
+      && nativeInputPath(value.path)
+  }
+  return value.type === 'mention'
+    && hasOnlyKeys(value, ['type', 'name', 'path'])
+    && nativeInputName(value.name)
+    && nativeInputPath(value.path)
+    && /^(?:app|plugin):\/\/[A-Za-z0-9._~!$&'()*+,;=:@%/?#-]+$/.test(value.path)
+}
 
 const nativeAgentStartThread: Validator = value =>
   isRecord(value)
@@ -212,12 +264,13 @@ const nativeAgentStartReview: Validator = value =>
 
 const nativeAgentSteerTurn: Validator = value =>
   isRecord(value)
-  && hasOnlyKeys(value, ['threadId', 'turnId', 'text', 'clientUserMessageId'])
+  && hasOnlyKeys(value, ['threadId', 'turnId', 'input', 'clientUserMessageId'])
   && nativeCodexId(value.threadId)
   && nativeCodexId(value.turnId)
-  && typeof value.text === 'string'
-  && value.text.length > 0
-  && value.text.length <= 1_048_576
+  && Array.isArray(value.input)
+  && value.input.length > 0
+  && value.input.length <= 64
+  && value.input.every(nativeTurnInput)
   && (value.clientUserMessageId === undefined || nativeMessageId(value.clientUserMessageId))
 
 const nativeAgentTurnReference: Validator = value =>
@@ -272,6 +325,81 @@ const nativeAgentThreadItemsPage: Validator = value =>
   && nativePageCursor(value.cursor)
   && nativePageLimit(value.limit)
   && nativeSortDirection(value.sortDirection)
+
+const nativeAgentThreadOccurrenceSearch: Validator = value =>
+  isRecord(value)
+  && hasOnlyKeys(value, ['threadId', 'searchTerm', 'cursor', 'limit'])
+  && nativeCodexId(value.threadId)
+  && nativeThreadSearchTerm(value.searchTerm)
+  && nativePageCursor(value.cursor)
+  && nativePageLimit(value.limit)
+
+const nativeAgentModelList: Validator = value =>
+  isRecord(value)
+  && hasOnlyKeys(value, ['threadId', 'cursor', 'limit', 'includeHidden'])
+  && nativeCodexId(value.threadId)
+  && nativePageCursor(value.cursor)
+  && nativePageLimit(value.limit)
+  && (value.includeHidden === undefined || typeof value.includeHidden === 'boolean')
+
+const nativeAgentPermissionProfileList: Validator = value =>
+  isRecord(value)
+  && hasOnlyKeys(value, ['threadId', 'cwd', 'cursor', 'limit'])
+  && nativeCodexId(value.threadId)
+  && nativeWorkspacePath(value.cwd)
+  && nativePageCursor(value.cursor)
+  && nativePageLimit(value.limit)
+
+const nativeAgentThreadMemoryMode: Validator = value =>
+  isRecord(value)
+  && hasOnlyKeys(value, ['threadId', 'mode'])
+  && nativeCodexId(value.threadId)
+  && (value.mode === 'enabled' || value.mode === 'disabled')
+
+const nativeThreadSectionId = (value: unknown): value is string =>
+  typeof value === 'string'
+  && value.trim().length > 0
+  && value.length <= 200
+  && !/[\u0000\r\n]/.test(value)
+
+const nativeThreadSectionName = (value: unknown): value is string =>
+  typeof value === 'string'
+  && value.trim().length > 0
+  && value.length <= 512
+  && !/[\u0000\r\n]/.test(value)
+
+const nativeAgentThreadSectionList: Validator = value =>
+  isRecord(value)
+  && hasOnlyKeys(value, ['threadId', 'cursor', 'limit'])
+  && nativeCodexId(value.threadId)
+  && nativePageCursor(value.cursor)
+  && nativePageLimit(value.limit)
+
+const nativeAgentThreadSectionCreate: Validator = value =>
+  isRecord(value)
+  && hasOnlyKeys(value, ['threadId', 'name'])
+  && nativeCodexId(value.threadId)
+  && nativeThreadSectionName(value.name)
+
+const nativeAgentThreadSectionUpdate: Validator = value =>
+  isRecord(value)
+  && hasOnlyKeys(value, ['threadId', 'sectionId', 'name'])
+  && nativeCodexId(value.threadId)
+  && nativeThreadSectionId(value.sectionId)
+  && nativeThreadSectionName(value.name)
+
+const nativeAgentThreadSectionDelete: Validator = value =>
+  isRecord(value)
+  && hasOnlyKeys(value, ['threadId', 'sectionId'])
+  && nativeCodexId(value.threadId)
+  && nativeThreadSectionId(value.sectionId)
+
+const nativeAgentThreadSectionMove: Validator = value =>
+  isRecord(value)
+  && hasOnlyKeys(value, ['threadId', 'sectionId', 'beforeThreadId'])
+  && nativeCodexId(value.threadId)
+  && (value.sectionId === null || nativeThreadSectionId(value.sectionId))
+  && (value.beforeThreadId === undefined || nativeCodexId(value.beforeThreadId))
 
 const nativeThreadGoalStatus = (value: unknown): boolean =>
   value === undefined
@@ -463,50 +591,6 @@ const nativeAgentSetScheduledTaskEnabled: Validator = value =>
   && nativeCodexId(value.threadId)
   && nativeScheduledTaskId(value.taskId)
   && typeof value.enabled === 'boolean'
-
-const remoteInstallationId = (value: unknown): value is string =>
-  typeof value === 'string' && /^[A-Za-z0-9._-]{8,128}$/.test(value)
-
-const remoteHostSetEnabled: Validator = value =>
-  isRecord(value) && hasOnlyKeys(value, ['enabled']) && typeof value.enabled === 'boolean'
-
-const remoteHostCreatePairing: Validator = value =>
-  isRecord(value)
-  && hasOnlyKeys(value, ['ttlSeconds'])
-  && (value.ttlSeconds === undefined || nativeIntegerBetween(value.ttlSeconds, 60, 600))
-
-const remoteHostRevokeController: Validator = value =>
-  isRecord(value)
-  && hasOnlyKeys(value, ['installationId'])
-  && remoteInstallationId(value.installationId)
-
-const remoteControllerClaim: Validator = value =>
-  isRecord(value)
-  && hasOnlyKeys(value, ['pairingCode'])
-  && typeof value.pairingCode === 'string'
-  && /^[A-Za-z0-9_-]{20,80}$/.test(value.pairingCode)
-
-const remoteControllerStartTurn: Validator = value =>
-  isRecord(value)
-  && hasOnlyKeys(value, ['hostInstallationId', 'threadId', 'cwd', 'text'])
-  && remoteInstallationId(value.hostInstallationId)
-  && nativeCodexId(value.threadId)
-  && nativeWorkspacePath(value.cwd)
-  && typeof value.text === 'string'
-  && value.text.trim().length > 0
-  && value.text.length <= 32_000
-  && !value.text.includes('\u0000')
-
-const remoteControllerSteerTurn: Validator = value =>
-  isRecord(value)
-  && hasOnlyKeys(value, ['hostInstallationId', 'threadId', 'turnId', 'text'])
-  && remoteInstallationId(value.hostInstallationId)
-  && nativeCodexId(value.threadId)
-  && nativeCodexId(value.turnId)
-  && typeof value.text === 'string'
-  && value.text.trim().length > 0
-  && value.text.length <= 32_000
-  && !value.text.includes('\u0000')
 
 const nativeAgentPluginCatalog: Validator = value =>
   isRecord(value)
@@ -745,6 +829,18 @@ export const ELECTRON_IPC_VALIDATORS = {
   [ELECTRON_IPC_CHANNELS.nativeAgentRollbackThread]: nativeAgentThreadRollback,
   [ELECTRON_IPC_CHANNELS.nativeAgentListThreadTurns]: nativeAgentThreadTurnsPage,
   [ELECTRON_IPC_CHANNELS.nativeAgentListThreadItems]: nativeAgentThreadItemsPage,
+  [ELECTRON_IPC_CHANNELS.nativeAgentSearchThreadOccurrences]: nativeAgentThreadOccurrenceSearch,
+  [ELECTRON_IPC_CHANNELS.nativeAgentListModels]: nativeAgentModelList,
+  [ELECTRON_IPC_CHANNELS.nativeAgentReadModelProviderCapabilities]: nativeAgentThreadReference,
+  [ELECTRON_IPC_CHANNELS.nativeAgentListPermissionProfiles]: nativeAgentPermissionProfileList,
+  [ELECTRON_IPC_CHANNELS.nativeAgentReadConfigRequirements]: nativeAgentThreadReference,
+  [ELECTRON_IPC_CHANNELS.nativeAgentSetThreadMemoryMode]: nativeAgentThreadMemoryMode,
+  [ELECTRON_IPC_CHANNELS.nativeAgentResetMemory]: nativeAgentThreadReference,
+  [ELECTRON_IPC_CHANNELS.nativeAgentListThreadSections]: nativeAgentThreadSectionList,
+  [ELECTRON_IPC_CHANNELS.nativeAgentCreateThreadSection]: nativeAgentThreadSectionCreate,
+  [ELECTRON_IPC_CHANNELS.nativeAgentUpdateThreadSection]: nativeAgentThreadSectionUpdate,
+  [ELECTRON_IPC_CHANNELS.nativeAgentDeleteThreadSection]: nativeAgentThreadSectionDelete,
+  [ELECTRON_IPC_CHANNELS.nativeAgentMoveThreadToSection]: nativeAgentThreadSectionMove,
   [ELECTRON_IPC_CHANNELS.nativeAgentGetThreadGoal]: nativeAgentThreadReference,
   [ELECTRON_IPC_CHANNELS.nativeAgentSetThreadGoal]: nativeAgentThreadGoalSet,
   [ELECTRON_IPC_CHANNELS.nativeAgentClearThreadGoal]: nativeAgentThreadReference,
@@ -771,14 +867,6 @@ export const ELECTRON_IPC_VALIDATORS = {
   [ELECTRON_IPC_CHANNELS.nativeAgentCreateScheduledTask]: nativeAgentCreateScheduledTask,
   [ELECTRON_IPC_CHANNELS.nativeAgentSetScheduledTaskEnabled]: nativeAgentSetScheduledTaskEnabled,
   [ELECTRON_IPC_CHANNELS.nativeAgentRemoveScheduledTask]: nativeAgentScheduledTaskReference,
-  [ELECTRON_IPC_CHANNELS.remoteHostGetStatus]: noPayload,
-  [ELECTRON_IPC_CHANNELS.remoteHostSetEnabled]: remoteHostSetEnabled,
-  [ELECTRON_IPC_CHANNELS.remoteHostCreatePairing]: remoteHostCreatePairing,
-  [ELECTRON_IPC_CHANNELS.remoteHostListControllers]: noPayload,
-  [ELECTRON_IPC_CHANNELS.remoteHostRevokeController]: remoteHostRevokeController,
-  [ELECTRON_IPC_CHANNELS.remoteControllerClaim]: remoteControllerClaim,
-  [ELECTRON_IPC_CHANNELS.remoteControllerStartTurn]: remoteControllerStartTurn,
-  [ELECTRON_IPC_CHANNELS.remoteControllerSteerTurn]: remoteControllerSteerTurn,
   [ELECTRON_IPC_CHANNELS.nativeAgentListHooks]: nativeAgentCatalogReference,
   [ELECTRON_IPC_CHANNELS.nativeAgentListPlugins]: nativeAgentPluginCatalog,
   [ELECTRON_IPC_CHANNELS.nativeAgentListInstalledPlugins]: nativeAgentPluginCatalog,
@@ -792,6 +880,13 @@ export const ELECTRON_IPC_VALIDATORS = {
   [ELECTRON_IPC_CHANNELS.nativeAgentListCollaborationModes]: nativeAgentThreadReference,
   [ELECTRON_IPC_CHANNELS.computerUseConfigurationGet]: noPayload,
   [ELECTRON_IPC_CHANNELS.computerUseConfigurationSet]: computerUseConfiguration,
+  [ELECTRON_IPC_CHANNELS.chromeNativeMessagingGetStatus]: noPayload,
+  [ELECTRON_IPC_CHANNELS.chromeNativeMessagingInstall]: noPayload,
+  [ELECTRON_IPC_CHANNELS.chromeNativeMessagingUninstall]: noPayload,
+  [ELECTRON_IPC_CHANNELS.browserUsePolicyGet]: noPayload,
+  [ELECTRON_IPC_CHANNELS.browserUsePolicySet]: browserPolicyConfiguration,
+  [ELECTRON_IPC_CHANNELS.chromeControlPolicyGet]: noPayload,
+  [ELECTRON_IPC_CHANNELS.chromeControlPolicySet]: browserPolicyConfiguration,
   [ELECTRON_IPC_CHANNELS.commandInvoke]: commandInvoke,
   [ELECTRON_IPC_CHANNELS.clipboardReadText]: noPayload,
   [ELECTRON_IPC_CHANNELS.clipboardWriteText]: stringPayload,

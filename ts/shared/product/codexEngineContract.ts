@@ -1,6 +1,8 @@
-export const CODEX_ENGINE_MANIFEST_SCHEMA = 4 as const
+export const CODEX_ENGINE_MANIFEST_SCHEMA = 6 as const
 /** Upstream Cargo package and binary name. Never exposed as a product resource name. */
 export const CODEX_ENGINE_NAME = 'codex-app-server' as const
+/** Exact companion name resolved by the locked Core beside the App Server. */
+export const CODEX_CODE_MODE_HOST_NAME = 'codex-code-mode-host' as const
 /** BilliardBuddy's packaged Agent Engine resource name. */
 export const BILLIARDBUDDY_AGENT_ENGINE_NAME = 'billiardbuddy-agent-engine' as const
 export const CODEX_ENGINE_SOURCE_REPOSITORY = 'https://github.com/openai/codex' as const

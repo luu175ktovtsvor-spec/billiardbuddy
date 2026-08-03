@@ -18,7 +18,7 @@
     "longDescription": "BilliardBuddy Chrome lets the agent use only tabs that you explicitly connect from Chrome. It can inspect pages and perform structured browser actions while preserving your control over websites and sensitive actions.",
     "developerName": "BilliardBuddy",
     "category": "Productivity",
-    "capabilities": ["Interactive", "Read"],
+    "capabilities": ["Interactive", "Read", "Write"],
     "defaultPrompt": [
       "Help me with the Chrome tab I connected."
     ]
