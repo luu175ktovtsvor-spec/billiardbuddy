@@ -9,6 +9,9 @@ import {
   applyVideoAlternativeInputSchema,
   createDeliveryVariantInputSchema,
   createVideoProjectInputSchema,
+  createRemoteAnalysisConsentInputSchema,
+  estimateRemoteAnalysisInputSchema,
+  revokeRemoteAnalysisConsentInputSchema,
   lockVideoSceneInputSchema,
   mediaSafeError,
   mediaSafeErrorForServiceError,
@@ -337,6 +340,22 @@ export function createVideoWorkbenchApiHandler(
         requireMediaUiCapability(req, mediaUiCapability)
         const input = analyzeVideoProjectInputSchema.parse(await parseJson(req))
         return Response.json({ task: publicVideoTask(await service.analyzeVideoProject(projectId, input)) }, { status: 202 })
+      }
+      if (action === 'analysis-estimates') {
+        if (req.method !== 'POST' || segments[6]) throw methodNotAllowed(req.method)
+        requireMediaUiCapability(req, mediaUiCapability)
+        return Response.json({ estimate: await service.estimateRemoteAnalysis(projectId, estimateRemoteAnalysisInputSchema.parse(await parseJson(req))) }, { status: 201 })
+      }
+      if (action === 'remote-analysis-consent') {
+        if (segments[6] === 'revoke' && !segments[7]) {
+          if (req.method !== 'POST') throw methodNotAllowed(req.method)
+          requireMediaUiCapability(req, mediaUiCapability)
+          return Response.json({ project: publicVideoProject(await service.revokeRemoteAnalysisConsent(projectId, revokeRemoteAnalysisConsentInputSchema.parse(await parseJson(req)))) })
+        }
+        if (req.method !== 'POST' || segments[6]) throw methodNotAllowed(req.method)
+        requireMediaUiCapability(req, mediaUiCapability)
+        const result = await service.grantRemoteAnalysisConsent(projectId, createRemoteAnalysisConsentInputSchema.parse(await parseJson(req)))
+        return Response.json({ project: publicVideoProject(result.project), consent: result.consent }, { status: 201 })
       }
       if (action === 'scenes') {
         const sceneId = segments[6]

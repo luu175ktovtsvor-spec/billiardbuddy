@@ -1,5 +1,5 @@
 import { Database } from 'bun:sqlite'
-import { createHash, createHmac } from 'node:crypto'
+import { createHash, createHmac, timingSafeEqual } from 'node:crypto'
 import { dirname } from 'node:path'
 import { mkdirSync } from 'node:fs'
 import { AuthAuthority, AuthError } from './installationAuth'
@@ -1775,6 +1775,37 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
             image_tasks: Boolean(config.relayTasksBase && config.relayToken),
           },
         })
+      }
+
+      // Private Compose-only identity projection for Video Media Relay.  It
+      // intentionally reuses AuthAuthority.verifyAccess so logout/revoke is
+      // checked on every Relay control-plane request.  This route is rejected
+      // by the public nginx configuration and never returns a token or signing
+      // material.
+      if (request.method === 'POST' && url.pathname === '/internal/v1/auth/introspect') {
+        const credential = request.headers.get('x-bb-video-media-introspection')?.trim() ?? ''
+        const expected = env.GW_VIDEO_MEDIA_INTROSPECTION_TOKEN?.trim() ?? ''
+        if (!expected || credential.length !== expected.length || !timingSafeEqual(Buffer.from(credential), Buffer.from(expected))) {
+          throw new HttpError(403, 'invalid_service_credential')
+        }
+        const token = bearer(request)
+        if (!token) throw new HttpError(401, 'missing_installation_access_token')
+        try {
+          const verified = authority.verifyAccess(token)
+          return jsonResponse({
+            active: true,
+            principal_id: verified.pid,
+            installation_id: verified.iid,
+            session_id: verified.sid,
+            // The token has already been verified.  Relay only needs a safe,
+            // non-authoritative expiry hint and must introspect again later.
+            expires_at: Number(JSON.parse(Buffer.from(token.split('.')[0]!, 'base64url').toString('utf8')).exp),
+            owner: `${verified.pid}:${verified.iid}`,
+          }, { headers: { 'Cache-Control': 'no-store' } })
+        } catch (error) {
+          if (error instanceof AuthError) throw new HttpError(error.status, error.code)
+          throw error
+        }
       }
 
       if (request.method === 'POST' && (url.pathname === '/v1/auth/bootstrap' || url.pathname === '/v1/auth/refresh' || url.pathname === '/v1/auth/logout')) {

@@ -15,9 +15,12 @@ BilliardBuddy 是桌面端产品。目标产品由一个 Codex 原生 Agent 运�
 托管模型：Rust -> 本机凭据代理 -> BilliardBuddy Gateway /v1/responses -> DeepSeek
 用户 Responses Key：Rust -> 本机凭据代理 -> 用户 Responses endpoint
 用户 Chat Key：Rust -> 本机协议适配器 -> 用户 Chat Completions endpoint
+视频远程分析：本地 Video Sidecar -> Video Media Relay -> 阿里云百炼 / 北京临时对象存储
 ```
 
 Rust App Server 是唯一的 Agent 执行和会话所有者。Electron 只负责宿主、密钥、进程生命周期和协议转发；Gateway 只负责托管模型的鉴权、额度、用量、路由与 SSE 转发；它们都不保存或调度 Agent 会话。
+
+Video Media Relay 与 Gateway 是两条不重叠的正式路径：前者只承接经项目 Consent 和预算确认的 Qwen、Fun-ASR 与 `text-embedding-v4` 视频派生物，负责对象租约、账户额度、幂等和 Provider receipt；后者继续承接既有 Agent、产品语音和图片路径。Relay 不保存项目、时间线或创作状态，Sidecar 仍是这些本地事实与预算的唯一 writer。
 
 当前桌面 Renderer 是刻意保留的空入口，不含旧 React 页面或旧自建 Agent。新的前端只能投影 Rust Thread/Turn/Item 与各媒体领域状态，不能重建 Agent Loop 或第二份会话状态。
 
@@ -32,6 +35,7 @@ Rust App Server 是唯一的 Agent 执行和会话所有者。Electron 只负责
 | `ts/shared` | 桌面、Sidecar 与 Gateway 的共享产品契约 |
 | `gateway` | 托管 DeepSeek 的鉴权、额度、用量、路由与 Responses/SSE 网关 |
 | `relay` | 图片/视频异步任务结果交接 |
+| `video-media-relay` | 视频远程分析的独立 Relay：对象租约、身份内省、账户额度与 Provider receipt |
 | `docs` | 当前架构、运行与领域边界 |
 
 ## 模型配置

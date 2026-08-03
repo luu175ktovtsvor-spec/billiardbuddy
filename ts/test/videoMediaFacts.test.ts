@@ -476,7 +476,7 @@ test('Media Facts 正式 API 返回带来源、范围、generation 与 cursor �
   service.repository.close()
 })
 
-test('新视频分析只从 Evidence Window 抽帧，并把视觉结果写回窗口绑定的 typed Evidence', async () => {
+test('未确认远程分析时，新视频只抽取本地 Evidence Window，不把画面发送到旧 Gateway', async () => {
   const root = await testRoot('windowed-analysis')
   const sourcePath = join(root, 'source.mp4')
   await writeFile(sourcePath, 'windowed-analysis-source')
@@ -536,9 +536,8 @@ test('新视频分析只从 Evidence Window 抽帧，并把视觉结果写回窗
   expect(frameCommands).toHaveLength(3)
   expect(frameCommands.map(command => command[command.indexOf('-ss') + 1])).toEqual(['0.000', '10.000', '19.999'])
   const evidence = await service.repository.listFacts('evidence', created.id, ready.sources[0]!.id) as Array<{ evidence_window_id?: string }>
-  expect(evidence).toHaveLength(3)
-  expect(evidence.every(item => item.evidence_window_id === windows[0]!.id)).toBeTrue()
+  expect(evidence).toHaveLength(0)
   const refreshedWindow = await service.repository.getFact('evidence_window', windows[0]!.id) as { evidence_ids: string[] }
-  expect(refreshedWindow.evidence_ids).toHaveLength(3)
+  expect(refreshedWindow.evidence_ids).toHaveLength(0)
   service.repository.close()
 })
