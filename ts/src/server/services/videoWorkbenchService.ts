@@ -91,6 +91,7 @@ import {
 import {
   analyzeVideoEvidence,
   compileVideoBrief,
+  planVideoTimelineFromRelay,
   planVideoTimeline,
   VideoAnalysisError,
   type VideoAnalysisFrame,
@@ -109,6 +110,8 @@ import {
   type EditorialSourceBounds,
   type EditorialSourceTiming,
 } from '../video/domain/editorial/editorialApplication.js'
+import { selectFunAsrRoute } from '../video/infrastructure/providers/funAsrAdapter.js'
+import { VideoMediaRelayClient, VideoMediaRelayClientError } from '../video/infrastructure/providers/videoMediaRelayClient.js'
 
 const STANDALONE_VIDEO_OWNER: MediaOwner = {
   kind: 'standalone',
@@ -231,6 +234,13 @@ export class VideoWorkbenchService {
     return this.now().toISOString()
   }
 
+  /** Installation bearer stays in Sidecar memory; Renderer never constructs this client. */
+  private videoMediaRelay(): VideoMediaRelayClient | null {
+    const baseUrl = this.env.BB_VIDEO_MEDIA_RELAY_URL?.trim() ?? ''
+    const accessToken = this.env.BB_GATEWAY_TOKEN?.trim() ?? ''
+    return baseUrl && accessToken ? new VideoMediaRelayClient({ baseUrl, accessToken, fetchImpl: this.fetchImpl }) : null
+  }
+
   private renderQueueLimit(): number {
     const configured = Number(this.env.BB_VIDEO_RENDER_QUEUE_LIMIT ?? '3')
     return Number.isSafeInteger(configured) ? Math.max(1, Math.min(10, configured)) : 3
@@ -308,13 +318,16 @@ export class VideoWorkbenchService {
       const selected = project.sources.filter(source => input.source_ids.includes(source.id))
       if (selected.length !== input.source_ids.length) throw new VideoWorkbenchServiceError('预算估算引用了不存在的素材', 404, 'VIDEO_SOURCE_NOT_FOUND')
       const seconds = selected.reduce((total, source) => total + source.duration_ms / 1000, 0)
+      const asrRequests = input.purposes.includes('asr')
+        ? selected.reduce((total, source) => total + (selectFunAsrRoute({ sourceDurationMs: source.duration_ms, needsSpeakerDiarization: false, hotwords: [] }) === 'short_sync' ? 1 : 1), 0)
+        : 0
       const visualFrames = input.purposes.includes('visual_evidence') ? Math.ceil(seconds / 5) : 0
       const asrSeconds = input.purposes.includes('asr') ? seconds : 0
       const estimate = {
         id: id('budget'),
         estimate_hash: factBasisHash({ project_id: project.id, purposes: [...input.purposes].sort(), source_ids: [...input.source_ids].sort(), seconds, visualFrames, asrSeconds }),
         state: 'estimated' as const,
-        requests: (visualFrames ? 1 : 0) + (asrSeconds ? 1 : 0) + input.purposes.filter(purpose => ['planning', 'caption_translation', 'semantic_search'].includes(purpose)).length,
+        requests: (visualFrames ? 1 : 0) + asrRequests + input.purposes.filter(purpose => ['planning', 'caption_translation', 'semantic_search'].includes(purpose)).length,
         total_tokens: Math.ceil(seconds * 8) + (input.purposes.includes('planning') ? 4_000 : 0),
         input_bytes: Math.ceil(seconds * 16_000),
         visual_frames: visualFrames,
@@ -1551,19 +1564,48 @@ export class VideoWorkbenchService {
       if (active) this.activeAnalyses.set(next.planTask.id, active)
       activeTask = next.planTask
       const currentScenes = next.project.timeline_versions.find(version => version.id === next.project.current_timeline_version_id)?.scenes ?? []
-      const plan = await planVideoTimeline({
+      const planningInput = {
         sources: next.project.sources,
         evidence: next.evidence,
         currentScenes,
         userGoal,
         analysisGaps: next.gaps,
-      }, {
-        operationId: `${next.planTask.operation_id ?? next.planTask.id}-timeline`,
-        signal,
-        fetchImpl: this.fetchImpl,
-        env: this.env,
-        allowLegacyGateway: false,
-      })
+      }
+      const consent = next.project.remote_analysis_consents.find(item => item.state === 'active' && item.purposes.includes('planning'))
+      const budget = consent && next.project.remote_analysis_budgets.find(item => item.estimate_hash === consent.acknowledged_estimate_hash && item.state === 'reserved')
+      let plan: VideoPlanDraft
+      const relay = this.videoMediaRelay()
+      if (consent && budget && relay) {
+        const requestHash = factBasisHash(planningInput)
+        try {
+          const remote = await relay.createOperation({
+            local_operation_id: next.planTask.id,
+            consent_revision_id: consent.id,
+            consent_scope_hash: factBasisHash({ revision: consent.revision, coverage: consent.coverage, purposes: consent.purposes, data_kinds: consent.data_kinds }),
+            local_budget_reservation_id: budget.id,
+            request_hash: requestHash,
+            capability: 'media_reasoning', application_role: 'planning',
+            input: { object_refs: [], facts_basis_hash: next.project.evidence_revision ?? requestHash, evidence: next.evidence.map(item => ({ id: item.id, kind: item.kind === 'transcript' ? 'transcript' as const : 'visual_fact' as const, text: item.text, confidence: item.confidence })), language: 'zh', output_schema_version: 1 },
+          })
+          if (remote.state !== 'succeeded' || !remote.provider_receipt) throw new VideoWorkbenchServiceError('远程规划尚未完成', 503, 'VIDEO_REMOTE_OPERATION_UNAVAILABLE')
+          const result = await relay.result<{ kind: string; plan: unknown }>(remote.id)
+          if (result.kind !== 'planning') throw new VideoWorkbenchServiceError('远程规划结果类型无效', 502, 'VIDEO_ANALYSIS_INVALID')
+          plan = planVideoTimelineFromRelay(planningInput, result.plan)
+          await this.mutateProject(baseProject.id, async () => {
+            const current = await this.requireVideoProject(baseProject.id)
+            await this.repository.saveProject(videoStudioProjectSchema.parse({ ...current, remote_analysis_budgets: current.remote_analysis_budgets.map(item => item.id === budget.id ? { ...item, state: 'settled' as const, total_tokens: remote.provider_receipt!.usage.total_tokens, input_bytes: remote.provider_receipt!.usage.input_bytes, updated_at: this.iso() } : item) }))
+          })
+          await relay.acknowledge(remote.id, { result_hashes: [], receipt_id: remote.provider_receipt.id })
+        } catch (error) {
+          await this.mutateProject(baseProject.id, async () => {
+            const current = await this.requireVideoProject(baseProject.id)
+            await this.repository.saveProject(videoStudioProjectSchema.parse({ ...current, remote_analysis_budgets: current.remote_analysis_budgets.map(item => item.id === budget.id ? { ...item, state: error instanceof VideoMediaRelayClientError && error.status >= 500 ? 'outcome_unknown' as const : 'released' as const, updated_at: this.iso() } : item) }))
+          })
+          throw error
+        }
+      } else {
+        plan = await planVideoTimeline(planningInput, { operationId: `${next.planTask.operation_id ?? next.planTask.id}-timeline`, signal, fetchImpl: this.fetchImpl, env: this.env, allowLegacyGateway: false })
+      }
       await this.mutateProject(baseProject.id, async () => {
         const latest = await this.requireVideoProject(baseProject.id)
         if (

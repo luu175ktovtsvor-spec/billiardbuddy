@@ -15,7 +15,7 @@ test('Video Media Relay enforces introspected identity, lease verification, idem
     async head(leaseId) { return uploaded.get(leaseId) ?? null }, async delete(leaseId) { uploaded.delete(leaseId) },
   }
   const receipt: ProviderExecutionReceipt = { id: 'receipt_12345678', capability: 'semantic_embedding', model_snapshot: 'text-embedding-v4', region: 'cn-beijing', request_schema_version: 1, prompt_version: 'v1', input_basis_hash: hash, usage: { requests: 1, total_tokens: 2, input_bytes: 4, visual_frames: 0, proxy_seconds: 0, asr_seconds: 0, estimated_amount_micros: 1 }, cache_hit: false, created_at: now().toISOString() }
-  const provider: VideoMediaProvider = { async execute() { return { state: 'succeeded', receipt } } }
+  const provider: VideoMediaProvider = { async execute() { return { state: 'succeeded', receipt, result: { kind: 'embedding', vectors: [] } } } }
   const handler = createVideoMediaRelayFetch({ env: { GW_VIDEO_MEDIA_INTROSPECTION_TOKEN: token, VIDEO_MEDIA_GATEWAY_INTROSPECTION_BASE: 'http://gateway', VIDEO_MEDIA_RELAY_DB: ':memory:' }, fetchImpl: identityFetch, objectStore, provider, now })
   const create = await handler(new Request('http://relay/v1/video-media/object-leases', { method: 'POST', headers: headers('lease-idempotency-key-0001'), body: JSON.stringify({ local_operation_id: 'task_12345678', purpose: 'audio_for_asr', content_hash: hash, byte_size: 4, content_type: 'audio/wav', consent_revision_id: 'consent_12345678', consent_scope_hash: hash }) }))
   expect(create.status).toBe(201)
@@ -31,6 +31,9 @@ test('Video Media Relay enforces introspected identity, lease verification, idem
   const replay = await handler(new Request('http://relay/v1/video-media/operations', { method: 'POST', headers: headers('operation-idempotency-key-1'), body: JSON.stringify(operation) }))
   expect(replay.status).toBe(200)
   expect((await replay.json() as { id: string }).id).toBe(projection.id)
+  const result = await handler(new Request(`http://relay/v1/video-media/operations/${projection.id}/result`, { headers: { Authorization: 'Bearer installation-token' } }))
+  expect(result.status).toBe(200)
+  expect(await result.json()).toMatchObject({ kind: 'embedding' })
   const conflict = await handler(new Request('http://relay/v1/video-media/operations', { method: 'POST', headers: headers('operation-idempotency-key-1'), body: JSON.stringify({ ...operation, local_operation_id: 'task_00000000' }) }))
   expect(conflict.status).toBe(409)
   const ack = await handler(new Request(`http://relay/v1/video-media/operations/${projection.id}/ack`, { method: 'POST', headers: headers('ack-idempotency-key-0000001'), body: JSON.stringify({ result_hashes: [], receipt_id: receipt.id }) }))
