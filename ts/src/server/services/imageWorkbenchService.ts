@@ -39,6 +39,8 @@ import {
   imageArtboardSelectVersionInputSchema,
   imageDeliverySpecRevisionInputSchema,
   imageExportInputSchema,
+  imageUnderstandingInputSchema,
+  imageVisualAssessmentInputSchema,
   createCreativePlanInputSchema,
   createGenerationRoundInputSchema,
   decideImageCandidateInputSchema,
@@ -62,6 +64,10 @@ import {
   type ImageCanvasRenderInput,
   type ImageDeliverySpecRevisionInput,
   type ImageExportInput,
+  type ImageUnderstandingInput,
+  type ImageUnderstandingSuggestion,
+  type ImageVisualAssessmentInput,
+  type ImageVisualAssessment,
   type ImageCandidateAdoption,
   type ImageCandidateDecision,
   type ImageCandidateGroup,
@@ -91,6 +97,7 @@ import {
 } from '../../../shared/product/providerGateway.js'
 import { productGatewayConfigured, productGatewayTarget } from '../product/productGatewayRuntime.js'
 import { applyImageBriefOverrides, compileImageBrief, providerPromptForImageBrief } from './imageBrief.js'
+import { QwenImageReasoningError, requestQwenImageReasoning } from './qwenImageReasoningAdapter.js'
 import { IMAGE_PROVIDER_POLICY_REVISION, ImageProviderPolicyError, resolveImageProviderPolicy } from './imageProviderPolicy.js'
 import {
   ImageAssetStore,
@@ -117,6 +124,7 @@ const STANDALONE_IMAGE_OWNER: MediaOwner = {
 }
 const INITIAL_WRITER_FENCE = `fence_${'0'.repeat(32)}`
 const IMAGE_GENERATION_ESTIMATE_TTL_MS = 5 * 60 * 1000
+const IMAGE_QWEN_MAX_INPUT_BYTES = 16 * 1024 * 1024
 
 type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
 
@@ -276,6 +284,7 @@ export class ImageWorkbenchService {
   private readonly now: () => Date
   private readonly fetchImpl: FetchLike
   private readonly imageResultTimeoutMs: number
+  private readonly imageReasoningTimeoutMs: number
   private readonly legacyMediaRoot: string
   private readonly legacyReader: LegacyImageProjectReader
   private readonly crashInjector?: (point: ImageWorkbenchCrashPoint) => void
@@ -288,6 +297,7 @@ export class ImageWorkbenchService {
     now?: () => Date
     fetchImpl?: FetchLike
     imageResultTimeoutMs?: number
+    imageReasoningTimeoutMs?: number
     legacyMediaRoot?: string
     casOrphanRetentionMs?: number
     canvasRenderer?: DeterministicImageCanvasRenderer
@@ -297,6 +307,7 @@ export class ImageWorkbenchService {
     this.now = options.now ?? (() => new Date())
     this.fetchImpl = options.fetchImpl ?? fetch
     this.imageResultTimeoutMs = Math.max(1_000, Math.min(120_000, options.imageResultTimeoutMs ?? 30_000))
+    this.imageReasoningTimeoutMs = Math.max(1_000, Math.min(60_000, options.imageReasoningTimeoutMs ?? 15_000))
     this.legacyMediaRoot = options.legacyMediaRoot
       ?? join(process.env.BILLIARDBUDDY_CONFIG_DIR ?? join(homedir(), '.BilliardBuddy'), 'billiardbuddy', 'media')
     this.legacyReader = new LegacyImageProjectReader(this.legacyMediaRoot)
@@ -415,6 +426,10 @@ export class ImageWorkbenchService {
   private async compileGenerationBrief(project: ImageWorkbenchProject): Promise<ImageBriefSnapshot> {
     const references = this.generationReferences(project)
     const legacy = project.brief ?? compileImageBrief(project.prompt, project.references).brief
+    // Qwen can only add an explicit "needs confirmation" signal. It never
+    // changes the user's facts, preserve rules, exact text, or provider prompt
+    // without a later user command.
+    const qwenSuggestion = await this.repository.latestUnderstandingSuggestion(project.id)
     const { width, height } = sizeDimensions(project.size)
     const snapshot = {
       schema_version: 2 as const,
@@ -424,7 +439,7 @@ export class ImageWorkbenchService {
       confirmed_facts: legacy.confirmed_facts,
       must_preserve: legacy.must_preserve,
       may_change: legacy.may_change,
-      missing_information: legacy.missing_information,
+      missing_information: [...new Set([...legacy.missing_information, ...(qwenSuggestion?.missing_information ?? [])])].slice(0, 20),
       exact_text: legacy.exact_text.map((text, index) => ({
         id: stableId('ref', project.id, 'exact-text', String(index), text),
         text,
@@ -441,6 +456,7 @@ export class ImageWorkbenchService {
       generation_canvas: { width, height, color_space: 'srgb' as const },
       compiler_name: 'image-brief' as const,
       compiler_version: 'image-brief-v2',
+      ...(qwenSuggestion ? { reasoning_receipt_id: qwenSuggestion.execution_receipt_id } : {}),
       created_at: this.iso(),
     }
     return await this.repository.saveGenerationBrief({
@@ -455,6 +471,7 @@ export class ImageWorkbenchService {
         reference_rules: snapshot.reference_rules,
         generation_canvas: snapshot.generation_canvas,
         compiler_version: snapshot.compiler_version,
+        reasoning_receipt_id: snapshot.reasoning_receipt_id ?? null,
       }),
     })
   }
@@ -474,6 +491,191 @@ export class ImageWorkbenchService {
       current_delivery_spec_revision: delivery.revision,
       revision: project.revision + 1,
     })
+  }
+
+  private async qwenReferenceInputs(project: ImageWorkbenchProject): Promise<Array<{
+    content_hash: `sha256:${string}`
+    role: 'subject' | 'product' | 'character' | 'style' | 'composition' | 'environment' | 'brand' | 'logo' | 'qrcode'
+    influence_strength: 'low' | 'medium' | 'high'
+    preservation: 'may_change' | 'prefer_preserve' | 'must_preserve' | 'exact'
+    priority: number
+    data_url: string
+  }>> {
+    const references = this.generationReferences(project)
+    if (references.length === 0) throw new ImageWorkbenchServiceError('当前项目没有需要理解的参考图', 422, 'IMAGE_QWEN_NOT_REQUIRED')
+    let total = 0
+    const values = await Promise.all(references.map(async reference => {
+      if (reference.role === 'unclassified') throw new ImageWorkbenchServiceError('未分类参考图不能发送给 Qwen', 422, 'IMAGE_REFERENCE_UNCLASSIFIED')
+      const asset = project.assets.find(candidate => candidate.id === reference.asset_id)
+      if (!asset) throw new ImageWorkbenchServiceError('Qwen 参考素材不存在', 409, 'REFERENCE_IMAGE_MISSING')
+      const verified = await this.assets.readVerified(asset)
+      total += verified.bytes.byteLength
+      return {
+        content_hash: verified.content_hash,
+        role: reference.role,
+        influence_strength: reference.influence_strength,
+        preservation: reference.preservation,
+        priority: reference.priority,
+        data_url: `data:${verified.mime_type};base64,${verified.bytes.toString('base64')}`,
+      }
+    }))
+    if (total > IMAGE_QWEN_MAX_INPUT_BYTES) throw new ImageWorkbenchServiceError('Qwen 图片理解输入超过资源上限', 413, 'IMAGE_QWEN_INPUT_TOO_LARGE')
+    return values
+  }
+
+  private async qwenReasoning<T>(request: Parameters<typeof requestQwenImageReasoning>[0], operationId: string): Promise<T> {
+    try {
+      return await requestQwenImageReasoning(request, {
+        operationId,
+        signal: AbortSignal.timeout(this.imageReasoningTimeoutMs),
+        fetchImpl: this.fetchImpl,
+      }) as T
+    } catch (error) {
+      if (error instanceof QwenImageReasoningError) {
+        throw new ImageWorkbenchServiceError(error.message, error.status, error.code)
+      }
+      throw error
+    }
+  }
+
+  /** Optional understanding persists only bounded suggestions and its receipt. */
+  async understandProject(projectId: string, raw: ImageUnderstandingInput): Promise<ImageUnderstandingSuggestion> {
+    const input = imageUnderstandingInputSchema.parse(raw)
+    const project = await this.project(projectId)
+    const briefInput = {
+      user_request: project.brief?.user_request ?? project.title,
+      confirmed_facts: project.brief?.confirmed_facts ?? [],
+      must_preserve: project.brief?.must_preserve ?? [],
+    }
+    const requestHash = sha256({
+      kind: 'image_understanding', project_id: project.id, base_revision: input.base_revision, input: {
+        ...briefInput,
+        references: this.generationReferences(project).map(reference => ({
+          content_hash: reference.content_hash,
+          role: reference.role,
+          influence_strength: reference.influence_strength,
+          preservation: reference.preservation,
+          priority: reference.priority,
+        })),
+      },
+    })
+    const replay = await this.repository.understandingSuggestionByIdempotency(project.id, input.idempotency_key)
+    if (replay) {
+      if (replay.request_hash !== requestHash) throw new ImageWorkbenchServiceError('Qwen 理解幂等键对应的请求内容不一致', 409, 'IMAGE_IDEMPOTENCY_CONFLICT')
+      return replay.suggestion
+    }
+    this.assertRevision(project, input.base_revision, '图片项目已更新，请刷新后再请求理解建议')
+    const references = await this.qwenReferenceInputs(project)
+    const receiptId = stableId('receipt', project.id, 'qwen-understanding', input.idempotency_key)
+    const response = await this.qwenReasoning<Awaited<ReturnType<typeof requestQwenImageReasoning>>>({
+      schema_version: 1, application_role: 'image_understanding', idempotency_key: input.idempotency_key,
+      input: { ...briefInput, references },
+    }, receiptId)
+    if (response.application_role !== 'image_understanding') throw new ImageWorkbenchServiceError('Qwen 理解返回角色不匹配', 502, 'IMAGE_QWEN_RESPONSE_INVALID')
+    const now = this.iso()
+    const receipt: ProviderExecutionReceipt = {
+      id: receiptId, project_id: project.id, owner: project.owner, capability: 'image_understanding', registry_capability: 'VisualEvidence',
+      provider: 'qwen', model_id: 'qwen3-vl-flash', policy_revision: 'qwen-image-reasoning-v1', prompt_compiler_version: 'qwen-image-reasoning-v1',
+      idempotency_key: input.idempotency_key, request_hash: requestHash, input_asset_hashes: references.map(reference => reference.content_hash), submitted_at: now, completed_at: now,
+      ...(response.provider_request_id ? { provider_request_id: response.provider_request_id } : {}),
+      ...(response.usage ? { usage: response.usage } : {}),
+    }
+    return await this.repository.saveUnderstandingSuggestionWithReceipt({
+      id: stableId('receipt', project.id, 'understanding', input.idempotency_key), project_id: project.id, execution_receipt_id: receipt.id,
+      ...response.output, created_at: now,
+    }, receipt, requestHash)
+  }
+
+  /** Candidate assessment is immutable advice. It cannot adopt, delete, or publish pixels. */
+  async assessCandidateVisual(projectId: string, candidateId: string, raw: ImageVisualAssessmentInput): Promise<ImageVisualAssessment> {
+    const input = imageVisualAssessmentInputSchema.parse(raw)
+    const project = await this.project(projectId)
+    const candidate = await this.repository.getCandidate(project.id, candidateId)
+    const briefInput = {
+      user_request: project.brief?.user_request ?? project.title,
+      confirmed_facts: project.brief?.confirmed_facts ?? [],
+      must_preserve: project.brief?.must_preserve ?? [],
+    }
+    const requestHash = sha256({
+      kind: 'image_visual_assessment', project_id: project.id, candidate_id: candidate.id, base_revision: input.base_revision,
+      input: { ...briefInput, candidate_hash: candidate.content_hash },
+    })
+    const replay = await this.repository.visualAssessmentByIdempotency(project.id, input.idempotency_key)
+    if (replay) {
+      if (replay.request_hash !== requestHash) throw new ImageWorkbenchServiceError('Qwen 评估幂等键对应的请求内容不一致', 409, 'IMAGE_IDEMPOTENCY_CONFLICT')
+      return replay.assessment
+    }
+    this.assertRevision(project, input.base_revision, '图片项目已更新，请刷新后再请求视觉评估')
+    const asset = project.assets.find(item => item.id === candidate.asset_id && item.role === 'result')
+    if (!asset) throw new ImageWorkbenchServiceError('候选图片资产不存在', 409, 'IMAGE_ASSET_NOT_FOUND')
+    const verified = await this.assets.readVerified(asset)
+    if (verified.bytes.byteLength > IMAGE_QWEN_MAX_INPUT_BYTES) throw new ImageWorkbenchServiceError('Qwen 视觉评估输入超过资源上限', 413, 'IMAGE_QWEN_INPUT_TOO_LARGE')
+    const receiptId = stableId('receipt', project.id, 'qwen-assessment', input.idempotency_key)
+    const response = await this.qwenReasoning<Awaited<ReturnType<typeof requestQwenImageReasoning>>>({
+      schema_version: 1, application_role: 'image_visual_assessment', idempotency_key: input.idempotency_key,
+      input: {
+        ...briefInput,
+        candidate: { content_hash: verified.content_hash, data_url: `data:${verified.mime_type};base64,${verified.bytes.toString('base64')}` },
+      },
+    }, receiptId)
+    if (response.application_role !== 'image_visual_assessment') throw new ImageWorkbenchServiceError('Qwen 评估返回角色不匹配', 502, 'IMAGE_QWEN_RESPONSE_INVALID')
+    const now = this.iso()
+    const receipt: ProviderExecutionReceipt = {
+      id: receiptId, project_id: project.id, owner: project.owner, capability: 'image_visual_assessment', registry_capability: 'VisualEvidence',
+      provider: 'qwen', model_id: 'qwen3-vl-flash', policy_revision: 'qwen-image-reasoning-v1', prompt_compiler_version: 'qwen-image-reasoning-v1',
+      idempotency_key: input.idempotency_key, request_hash: requestHash, input_asset_hashes: [verified.content_hash], submitted_at: now, completed_at: now,
+      ...(response.provider_request_id ? { provider_request_id: response.provider_request_id } : {}),
+      ...(response.usage ? { usage: response.usage } : {}),
+    }
+    return await this.repository.saveVisualAssessmentWithReceipt({
+      id: stableId('receipt', project.id, 'assessment', input.idempotency_key), project_id: project.id, candidate_id: candidate.id, execution_receipt_id: receipt.id,
+      ...response.output, created_at: now,
+    }, receipt, requestHash)
+  }
+
+  /** A formal Version is assessed with the same advice-only contract as a Candidate. */
+  async assessVersionVisual(projectId: string, versionId: string, raw: ImageVisualAssessmentInput): Promise<ImageVisualAssessment> {
+    const input = imageVisualAssessmentInputSchema.parse(raw)
+    const project = await this.project(projectId)
+    const { version, asset } = this.imageVersion(project, versionId)
+    const briefInput = {
+      user_request: project.brief?.user_request ?? project.title,
+      confirmed_facts: project.brief?.confirmed_facts ?? [],
+      must_preserve: project.brief?.must_preserve ?? [],
+    }
+    const verified = await this.assets.readVerified(asset)
+    const requestHash = sha256({
+      kind: 'image_visual_assessment', project_id: project.id, version_id: version.id, base_revision: input.base_revision,
+      input: { ...briefInput, candidate_hash: verified.content_hash },
+    })
+    const replay = await this.repository.visualAssessmentByIdempotency(project.id, input.idempotency_key)
+    if (replay) {
+      if (replay.request_hash !== requestHash) throw new ImageWorkbenchServiceError('Qwen 评估幂等键对应的请求内容不一致', 409, 'IMAGE_IDEMPOTENCY_CONFLICT')
+      return replay.assessment
+    }
+    this.assertRevision(project, input.base_revision, '图片项目已更新，请刷新后再请求视觉评估')
+    if (verified.bytes.byteLength > IMAGE_QWEN_MAX_INPUT_BYTES) throw new ImageWorkbenchServiceError('Qwen 视觉评估输入超过资源上限', 413, 'IMAGE_QWEN_INPUT_TOO_LARGE')
+    const receiptId = stableId('receipt', project.id, 'qwen-version-assessment', input.idempotency_key)
+    const response = await this.qwenReasoning<Awaited<ReturnType<typeof requestQwenImageReasoning>>>({
+      schema_version: 1, application_role: 'image_visual_assessment', idempotency_key: input.idempotency_key,
+      input: {
+        ...briefInput,
+        candidate: { content_hash: verified.content_hash, data_url: `data:${verified.mime_type};base64,${verified.bytes.toString('base64')}` },
+      },
+    }, receiptId)
+    if (response.application_role !== 'image_visual_assessment') throw new ImageWorkbenchServiceError('Qwen 评估返回角色不匹配', 502, 'IMAGE_QWEN_RESPONSE_INVALID')
+    const now = this.iso()
+    const receipt: ProviderExecutionReceipt = {
+      id: receiptId, project_id: project.id, owner: project.owner, capability: 'image_visual_assessment', registry_capability: 'VisualEvidence',
+      provider: 'qwen', model_id: 'qwen3-vl-flash', policy_revision: 'qwen-image-reasoning-v1', prompt_compiler_version: 'qwen-image-reasoning-v1',
+      idempotency_key: input.idempotency_key, request_hash: requestHash, input_asset_hashes: [verified.content_hash], submitted_at: now, completed_at: now,
+      ...(response.provider_request_id ? { provider_request_id: response.provider_request_id } : {}),
+      ...(response.usage ? { usage: response.usage } : {}),
+    }
+    return await this.repository.saveVisualAssessmentWithReceipt({
+      id: stableId('receipt', project.id, 'version-assessment', input.idempotency_key), project_id: project.id, version_id: version.id, execution_receipt_id: receipt.id,
+      ...response.output, created_at: now,
+    }, receipt, requestHash)
   }
 
   private defaultDirection(project: ImageWorkbenchProject, brief: ImageBriefSnapshot): ImageCreativeDirection {

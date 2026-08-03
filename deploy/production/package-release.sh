@@ -29,6 +29,7 @@ bb_runtime_paths=(
   gateway/managedResponses.ts
   gateway/mimoChat.ts
   gateway/visionBridge.ts
+  gateway/qwenImageReasoning.ts
   gateway/providerRegistry.ts
   gateway/usageBudget.ts
   gateway/operationResultStore.ts

@@ -335,6 +335,10 @@ const images: ImageWorkbenchPreloadBridge = {
     ELECTRON_IPC_CHANNELS.imageCreateCreativePlan,
     { projectId, input },
   ),
+  understandProject: (projectId, input) => invoke<ImageBridgeResult<'understandProject'>>(
+    ELECTRON_IPC_CHANNELS.imageUnderstandProject,
+    { projectId, input },
+  ),
   estimateGenerationRound: (projectId, input) => invoke<ImageBridgeResult<'estimateGenerationRound'>>(
     ELECTRON_IPC_CHANNELS.imageEstimateGenerationRound,
     { projectId, input },
@@ -350,6 +354,14 @@ const images: ImageWorkbenchPreloadBridge = {
   decideCandidate: (projectId, candidateId, input) => invoke<ImageBridgeResult<'decideCandidate'>>(
     ELECTRON_IPC_CHANNELS.imageDecideCandidate,
     { projectId, candidateId, input },
+  ),
+  assessCandidateVisual: (projectId, candidateId, input) => invoke<ImageBridgeResult<'assessCandidateVisual'>>(
+    ELECTRON_IPC_CHANNELS.imageAssessCandidateVisual,
+    { projectId, candidateId, input },
+  ),
+  assessVersionVisual: (projectId, versionId, input) => invoke<ImageBridgeResult<'assessVersionVisual'>>(
+    ELECTRON_IPC_CHANNELS.imageAssessVersionVisual,
+    { projectId, versionId, input },
   ),
   adoptCandidate: (projectId, candidateId, input) => invoke<ImageBridgeResult<'adoptCandidate'>>(
     ELECTRON_IPC_CHANNELS.imageAdoptCandidate,

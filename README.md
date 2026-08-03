@@ -16,9 +16,12 @@ BilliardBuddy 是桌面端产品。目标产品由一个 Codex 原生 Agent 运�
 用户 Responses Key：Rust -> 本机凭据代理 -> 用户 Responses endpoint
 用户 Chat Key：Rust -> 本机协议适配器 -> 用户 Chat Completions endpoint
 图片生成：本地媒体 Sidecar -> Gateway /v1/images/tasks -> 私网 Image Relay -> GPT Image 2 / Seedream 4.5
+图片理解/非阻断视觉评估：本地媒体 Sidecar -> Gateway /v1/media/reasoning -> Qwen3-VL-Flash
 ```
 
 Rust App Server 是唯一的 Agent 执行和会话所有者。Electron 只负责宿主、密钥、进程生命周期和协议转发；Gateway 负责托管模型与图片任务的鉴权、额度、用量、路由、幂等与安全转发；它们都不保存或调度 Agent 会话。图片 Project、Candidate、Canvas 和版本事实只保存在本地 Sidecar，Relay 仅持有受 ACK 约束的异步任务结果。
+
+Qwen 只返回有 receipt/confidence 的可见事实、风险和 Repair Action 建议；不能采纳、删除、发布或修改用户事实。最终发布仍由本地确定性 Release Check 与风险接受回执决定。
 
 当前桌面 Renderer 是刻意保留的空入口，不含旧 React 页面或旧自建 Agent。新的前端只能投影 Rust Thread/Turn/Item 与各媒体领域状态，不能重建 Agent Loop 或第二份会话状态。
 
