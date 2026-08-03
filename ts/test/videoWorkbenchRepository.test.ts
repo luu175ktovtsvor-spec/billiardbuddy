@@ -523,6 +523,7 @@ test('existing import, timeline, preview and render paths stay durable through t
     base_timeline_version_id: fingerprinted.current_timeline_version_id,
     clips: fingerprinted.timeline,
   })
+  expect(edited.current_editorial_timeline_version_id).not.toBe(fingerprinted.current_editorial_timeline_version_id)
   const selected = await service.selectTimelineVersion(imported.project.id, {
     revision: edited.revision,
     version_id: fingerprinted.current_timeline_version_id!,
