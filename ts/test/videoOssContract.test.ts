@@ -1,4 +1,5 @@
 import { createHash, createHmac } from 'node:crypto'
+import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { Readable } from 'node:stream'
 import { expect, test } from 'bun:test'
@@ -13,6 +14,16 @@ const officialV4 = require('../node_modules/ali-oss/lib/common/signUtils.js') as
 
 const hash = (bytes: Uint8Array) => `sha256:${createHash('sha256').update(bytes).digest('hex')}`
 const credentials = { endpoint: 'oss-cn-beijing.aliyuncs.com', bucket: 'bb-video-media-contract', accessKeyId: 'LTAIexampleaccesskey', accessKeySecret: 'example-access-key-secret', region: 'oss-cn-beijing' }
+
+test('production visual smoke fixture satisfies the model minimum dimensions', () => {
+  const source = readFileSync(new URL('../../deploy/production/video-media-smoke.ts', import.meta.url), 'utf8')
+  const match = /const image = Buffer\.from\('([^']+)', 'base64'\)/.exec(source)
+  expect(match?.[1]).toBeDefined()
+  const image = Buffer.from(match![1]!, 'base64')
+  expect(image.subarray(1, 4).toString('ascii')).toBe('PNG')
+  expect(image.readUInt32BE(16)).toBeGreaterThan(10)
+  expect(image.readUInt32BE(20)).toBeGreaterThan(10)
+})
 
 test('official OSS V4 documented signing vector includes the bucket in Canonical URI', () => {
   // Values and expected signature are Alibaba Cloud's published PutObject V4

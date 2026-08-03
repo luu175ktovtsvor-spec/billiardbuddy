@@ -73,9 +73,9 @@ try {
   }
   await completeLease(multipartLease, [...uploaded.entries()].map(([part_number, etag]) => ({ part_number, etag })).sort((a, b) => a.part_number - b.part_number))
 
-  // A tiny valid PNG makes DashScope fetch an OSS signed URL and return an
-  // actual provider receipt, while keeping the approved smoke cost minimal.
-  const image = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL6TAAAAABJRU5ErkJggg==', 'base64')
+  // A 16x16 valid PNG meets the minimum dimensions accepted by the visual
+  // model while keeping the approved smoke cost minimal.
+  const image = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAG0lEQVR4nGNQqPj/nxLMMGrAaBiMpoP/wyQMAHDBlh/bs7UxAAAAAElFTkSuQmCC', 'base64')
   const operationSeed = requestId()
   const visualConsent = { id: `consent_smoke_${operationSeed}`, scopeHash: sha256(new TextEncoder().encode(`scope_${operationSeed}`)) }
   imageLease = await createLease(image, 'image/png', 'visual_frames', visualConsent)
