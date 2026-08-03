@@ -72,6 +72,11 @@ export class VideoMediaRelayClient {
    * bytes are ever proxied through the Relay JSON server. */
   async uploadObject(input: CreateMediaObjectLeaseRequest, bytes: Uint8Array): Promise<string> {
     let lease = await this.createObjectLease(input)
+    // The deterministic lease key may already have reached ready/bound before
+    // the Sidecar crashed. Reusing that immutable object ref is the only safe
+    // restart path: uploading again would either fail (no PUT capability) or
+    // create a second ASR input for the same local Operation.
+    if ((lease.state === 'ready' || lease.state === 'bound') && lease.object_ref) return lease.object_ref
     if (lease.multipart_upload) {
       const multipart = lease.multipart_upload
       const completed = new Map(multipart.uploaded_parts.map(part => [part.part_number, part.etag]))
@@ -123,6 +128,7 @@ export class VideoMediaRelayClient {
    */
   async uploadObjectStream(input: CreateMediaObjectLeaseRequest, sourceFactory: () => ReadableStream<Uint8Array>): Promise<string> {
     let lease = await this.createObjectLease(input)
+    if ((lease.state === 'ready' || lease.state === 'bound') && lease.object_ref) return lease.object_ref
     if (!lease.multipart_upload) {
       const bytes = await readExactly(sourceFactory(), input.byte_size, input.content_hash)
       return await this.uploadObject(input, bytes)

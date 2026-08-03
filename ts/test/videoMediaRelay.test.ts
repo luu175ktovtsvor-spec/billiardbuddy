@@ -217,6 +217,22 @@ test('Sidecar streams a large source by fixed parts without materializing cross-
   expect(uploadedPartTwo).toBe(1)
 })
 
+test('Sidecar reuses a ready or bound deterministic lease after a local restart', async () => {
+  let calls = 0
+  const client = new VideoMediaRelayClient({
+    baseUrl: 'https://relay.example.test', accessToken: 'installation-token',
+    fetchImpl: async (input) => {
+      calls += 1
+      if (String(input) !== 'https://relay.example.test/v1/video-media/object-leases') throw new Error(`unexpected request ${input}`)
+      return Response.json({ lease_id: 'lease_12345678', state: calls === 1 ? 'ready' : 'bound', object_ref: 'object_12345678', expires_at: '2026-08-03T01:00:00.000Z' })
+    },
+  })
+  const input = { local_operation_id: 'task_12345678', purpose: 'audio_for_asr' as const, content_hash: hash, byte_size: 4, content_type: 'audio/wav', consent_revision_id: 'consent_12345678', consent_scope_hash: hash }
+  expect(await client.uploadObject(input, new Uint8Array([1, 2, 3, 4]))).toBe('object_12345678')
+  expect(await client.uploadObjectStream(input, () => { throw new Error('ready/bound lease must not reread audio') })).toBe('object_12345678')
+  expect(calls).toBe(2)
+})
+
 test('Relay recovers a multipart initialization committed before the OSS upload id was persisted', async () => {
   const dbPath = join(tmpdir(), `video-relay-init-recovery-${crypto.randomUUID()}.sqlite`)
   const objectStore: MediaObjectStore = {

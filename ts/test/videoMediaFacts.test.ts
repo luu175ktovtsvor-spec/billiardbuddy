@@ -579,6 +579,7 @@ test('正式 ASR 只在完整授权范围内流式上传，并持久化原始 PT
   const payloadHash = `sha256:${createHash('sha256').update(payload).digest('hex')}`
   const requests: Array<{ url: string; method: string }> = []
   let reservationsBeforeAsrCall = 0
+  let reservedAsrMicros = 0
   const service = new VideoWorkbenchService({
     root,
     now: () => new Date(at),
@@ -595,7 +596,9 @@ test('正式 ASR 只在完整授权范围内流式上传，并持久化原始 PT
       if (url.pathname.endsWith('/object-leases')) return Response.json({ lease_id: 'lease_00000001', state: 'awaiting_upload', put_url: 'https://oss.example.test/put', required_headers: {}, expires_at: '2026-08-03T01:00:00.000Z' })
       if (url.pathname.endsWith('/complete')) return Response.json({ lease_id: 'lease_00000001', state: 'ready', object_ref: 'object_00000001', expires_at: '2026-08-03T01:00:00.000Z' })
       if (url.pathname.endsWith('/operations')) {
-        reservationsBeforeAsrCall = (await service.getProject(created.id)).remote_analysis_budgets[0]?.reservations.length ?? 0
+        const budgetAtCall = (await service.getProject(created.id)).remote_analysis_budgets[0]
+        reservationsBeforeAsrCall = budgetAtCall?.reservations.length ?? 0
+        reservedAsrMicros = budgetAtCall?.reservations[0]?.estimated_amount_micros ?? 0
         return Response.json({
         id: 'operation_00000001', state: 'succeeded', account_quota_reservation_id: 'quota_00000001',
         result_object_refs: ['result_00000001'], result_objects: [{ object_ref: 'result_00000001', content_hash: payloadHash, byte_size: payload.byteLength, content_type: 'application/json', get_url: 'https://result.example.test/asr.json', expires_at: '2026-08-03T01:00:00.000Z' }],
@@ -613,17 +616,19 @@ test('正式 ASR 只在完整授权范围内流式上传，并持久化原始 PT
     ...created,
     sources: [{ id: sourceFact.id, path: sourcePath, name: 'source.mp4', duration_ms: 30_000, width: 1920, height: 1080, fps: 30, has_audio: true, fingerprint: sourceFact.fingerprint, rotation: 0, video_stream_count: 1, audio_stream_count: 1, missing: false, content_changed: false }],
     remote_analysis_consents: [{ id: 'consent_00000001', project_id: created.id, revision: 1, state: 'active', provider: 'aliyun_bailian', region: 'cn-beijing', purposes: ['asr'], data_kinds: ['audio_extract'], coverage: [{ source_id: sourceFact.id, ranges: [{ start: sourceFact.primary_video_stream.start_time, duration: sourceFact.primary_video_stream.duration! }] }], acknowledged_estimate_hash: hash('e'), granted_by_actor_id: 'local', granted_at: at }],
-    remote_analysis_budgets: [{ id: 'budget_00000001', estimate_hash: hash('e'), state: 'reserved', requests: 1, total_tokens: 100, input_bytes: 10_000, visual_frames: 0, proxy_seconds: 0, asr_seconds: 30, estimated_amount_micros: 1_000, settlements: [], created_at: at, updated_at: at }],
+    remote_analysis_budgets: [{ id: 'budget_00000001', estimate_hash: hash('e'), state: 'reserved', requests: 1, total_tokens: 100, input_bytes: 10_000, visual_frames: 0, proxy_seconds: 0, asr_seconds: 30, estimated_amount_micros: 10_000, settlements: [], created_at: at, updated_at: at }],
   })
   const invoke = service as unknown as { remoteTranscriptEvidence: (project: VideoStudioProject, source: VideoStudioProject['sources'][number], fact: VideoFactSource, directory: string, operationId: string, signal: AbortSignal) => Promise<Array<{ in_ms: number; out_ms: number }> | null> }
   const evidence = await invoke.remoteTranscriptEvidence(saved, saved.sources[0]!, sourceFact, analysisDirectory, 'task_00000001', new AbortController().signal)
   expect(evidence).toMatchObject([{ in_ms: 100, out_ms: 900, kind: 'transcript' }])
   expect(requests.map(item => `${item.method} ${item.url}`)).toEqual(expect.arrayContaining(['POST /v1/video-media/object-leases', 'PUT /put', 'POST /v1/video-media/operations', 'POST /v1/video-media/operations/operation_00000001/ack']))
   expect(reservationsBeforeAsrCall).toBe(1)
+  expect(reservedAsrMicros).toBeGreaterThan(0)
   expect(await service.repository.listFacts('transcript', created.id)).toMatchObject([{ source_offset: { ticks: '-4500' }, segments: [{ text: '原始 PTS 转写', start: { ticks: '4500' } }] }])
   const settledBudget = (await service.getProject(created.id)).remote_analysis_budgets[0]
   expect(settledBudget?.settlements).toMatchObject([{ operation_id: `task_00000001_asr_${sourceFact.id}`, capability: 'speech_transcription', asr_seconds: 0.8 }])
   expect(settledBudget?.reservations).toHaveLength(0)
+  expect(settledBudget?.settlements[0]?.estimated_amount_micros).toBe(0)
   service.repository.close()
 })
 
