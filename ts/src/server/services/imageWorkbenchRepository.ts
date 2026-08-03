@@ -1624,6 +1624,24 @@ export class ImageWorkbenchRepository {
     })
   }
 
+  /** Resolve a prior decision before a caller applies a newer Project revision fence. */
+  async candidateDecisionByIdempotency(
+    projectId: string,
+    idempotencyKey: string,
+    requestHash: string,
+  ): Promise<ImageCandidateDecision | null> {
+    await this.ready()
+    this.assertGenerationProject(projectId)
+    const request_hash = imageHashSchema.parse(requestHash)
+    const duplicate = this.unitOfWork.database.query(`SELECT document_json,request_hash FROM image_candidate_decisions
+      WHERE project_id=? AND idempotency_key=?`).get(projectId, idempotencyKey) as { document_json: string; request_hash: string } | null
+    if (!duplicate) return null
+    if (duplicate.request_hash !== request_hash) {
+      throw new ImageWorkbenchRepositoryError('图片候选决定幂等键冲突', 409, 'IMAGE_STORAGE_INVALID')
+    }
+    return this.generationDocument(duplicate, value => imageCandidateDecisionSchema.parse(value))
+  }
+
   async currentWorkingVersions(projectId: string): Promise<Record<string, string>> {
     await this.ready()
     this.assertGenerationProject(projectId)

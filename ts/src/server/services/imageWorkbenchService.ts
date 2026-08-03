@@ -980,7 +980,10 @@ export class ImageWorkbenchService {
     if (!productGatewayConfigured()) {
       throw new ImageWorkbenchServiceError('图片远程能力尚未配置', 503, 'GATEWAY_NOT_CONFIGURED')
     }
-    await this.referenceDataUrls(project)
+    // Reject a missing or corrupt Provider reference before accepting paid work.
+    // The final data URIs and per-image controls are rebuilt from the same CAS
+    // assets immediately before the remote submission.
+    await this.providerReferenceInputs(project, this.providerReferences(references))
     const now = this.iso()
     const operationPairs = policies.map(({ direction, policy }) => {
       const operationId = stableId('op', project.id, roundId, direction.id)
@@ -1451,6 +1454,9 @@ export class ImageWorkbenchService {
   async decideCandidate(projectId: string, candidateId: string, raw: DecideImageCandidateInput): Promise<ImageCandidateDecision> {
     const input = decideImageCandidateInputSchema.parse(raw)
     const project = await this.project(projectId)
+    const requestHash = sha256({ candidate_id: candidateId, decision: input.decision, base_revision: input.base_revision })
+    const replay = await this.repository.candidateDecisionByIdempotency(project.id, input.idempotency_key, requestHash)
+    if (replay) return replay
     this.assertRevision(project, input.base_revision, '图片项目已更新，请刷新后再决定候选')
     const now = this.iso()
     return await this.repository.decideCandidate({
@@ -1460,7 +1466,7 @@ export class ImageWorkbenchService {
       decision: input.decision,
       actor: project.owner,
       idempotency_key: input.idempotency_key,
-      request_hash: sha256({ candidate_id: candidateId, decision: input.decision, base_revision: input.base_revision }),
+      request_hash: requestHash,
       created_at: now,
     })
   }
@@ -1802,32 +1808,54 @@ export class ImageWorkbenchService {
     return task as ImageOperation
   }
 
-  private async referenceDataUrls(
+  /** Bind every uploaded Project reference to the exact control facts selected for this paid operation. */
+  private async providerReferenceInputs(
     project: ImageWorkbenchProject,
-    references: ImageWorkbenchProject['references'] = project.references,
-  ): Promise<string[]> {
+    references: ImageReferenceV2[],
+    imageIndexOffset = 0,
+  ): Promise<{
+    images: string[]
+    reference_controls: Array<{
+      image_index: number
+      role: ImageReferenceV2['role']
+      influence_strength: ImageReferenceV2['influence_strength']
+      preservation: ImageReferenceV2['preservation']
+      priority: number
+      label?: string
+    }>
+  }> {
     const assets = new Map(this.referenceAssets(project).map(asset => [asset.id, asset]))
-    return await Promise.all(references.map(async reference => {
+    const images = await Promise.all(references.map(async reference => {
       const asset = assets.get(reference.asset_id)
       if (!asset) throw new ImageWorkbenchServiceError('图片参考素材已经丢失', 409, 'REFERENCE_IMAGE_MISSING')
       const verified = await this.assets.providerUpload(asset)
       return `data:${verified.mime_type};base64,${verified.bytes.toString('base64')}`
     }))
+    return {
+      images,
+      reference_controls: references.map((reference, index) => ({
+        image_index: imageIndexOffset + index,
+        role: reference.role,
+        influence_strength: reference.influence_strength,
+        preservation: reference.preservation,
+        priority: reference.priority,
+        ...(reference.label ? { label: reference.label } : {}),
+      })),
+    }
   }
 
   private async imageSubmissionPayload(project: ImageWorkbenchProject, operation: ImageOperation): Promise<Record<string, unknown>> {
     const imageOperation = operation.image_operation
     if (imageOperation.kind === 'generate') {
-      const providerReferences = project.references.filter(reference => reference.role !== 'logo' && reference.role !== 'qrcode')
-      const references = await this.referenceDataUrls(project, providerReferences)
+      const references = await this.providerReferenceInputs(project, this.providerReferences(this.generationReferences(project)))
       return {
-        mode: references.length > 0 ? 'edit' : 'generate',
+        mode: references.images.length > 0 ? 'edit' : 'generate',
         model: imageOperation.model,
         prompt: imageOperation.instruction ?? project.prompt,
         n: imageOperation.output_count,
         size: project.size,
         ...(imageOperation.model === 'doubao-seedream-4-5-251128' ? { response_format: 'b64_json' } : {}),
-        ...(references.length > 0 ? { images: references } : {}),
+        ...(references.images.length > 0 ? { images: references.images, reference_controls: references.reference_controls } : {}),
       }
     }
     if (!imageOperation.instruction || (!imageOperation.base_version_id && !imageOperation.base_candidate_asset_id)) {
@@ -1848,6 +1876,7 @@ export class ImageWorkbenchService {
       mask = `data:image/png;base64,${verified.bytes.toString('base64')}`
     }
     const providerBase = await this.assets.providerUpload(base.asset)
+    const references = await this.providerReferenceInputs(project, this.providerReferences(this.generationReferences(project)), 1)
     return {
       mode: 'edit',
       model: imageOperation.model,
@@ -1855,7 +1884,8 @@ export class ImageWorkbenchService {
       n: imageOperation.output_count,
       size: project.size,
       ...(imageOperation.model === 'doubao-seedream-4-5-251128' ? { response_format: 'b64_json' } : {}),
-      images: [`data:${providerBase.mime_type};base64,${providerBase.bytes.toString('base64')}`],
+      images: [`data:${providerBase.mime_type};base64,${providerBase.bytes.toString('base64')}`, ...references.images],
+      ...(references.reference_controls.length > 0 ? { reference_controls: references.reference_controls } : {}),
       ...(mask ? { mask } : {}),
     }
   }

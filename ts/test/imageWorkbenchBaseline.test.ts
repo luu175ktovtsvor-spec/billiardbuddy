@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto'
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { createRelayFetch } from '../../relay/app.ts'
 import {
   imageWorkbenchProjectSchema,
   mediaJobEventJournalSchema,
@@ -681,12 +682,33 @@ test('15.2 Gateway to Relay contract commits a Candidate Group before ACK and ne
     expect(gateway.calls.filter(call => call.path === '/gw/v1/images/tasks' && call.method === 'POST')).toHaveLength(1)
 
     const delivery = await service.repository.currentDeliverySpec(project.id)
+    const decisionCapability = 'fedcba9876543210fedcba9876543210'
+    const decisionHandler = createImageWorkbenchDomainApiHandler(service, decisionCapability)
+    const decisionInput = {
+      base_revision: project.revision,
+      idempotency_key: 'bb-image-decision-project-upgrade-replay-0001',
+      decision: 'kept',
+    }
+    const firstDecision = await request(decisionHandler, `/api/images/projects/${project.id}/candidates/${group.candidates[0]!.id}/decisions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-BilliardBuddy-Media-Capability': decisionCapability },
+      body: JSON.stringify(decisionInput),
+    })
+    expect(firstDecision.status).toBe(200)
+    const firstDecisionPayload = await firstDecision.json() as { decision: { id: string } }
     const adopted = await service.adoptCandidate(project.id, group.candidates[0]!.id, {
       base_revision: project.revision,
       idempotency_key: 'bb-image-adopt-gateway-contract-0001',
       adoptions: [{ artboard_id: delivery!.artboards[0]!.id, placement: { fit: 'cover', focus_x: 0.5, focus_y: 0.5 } }],
     })
     expect(adopted.project.current_versions_by_artboard).toEqual({ [delivery!.artboards[0]!.id]: adopted.adoptions[0]!.version_id })
+    const replayDecision = await request(decisionHandler, `/api/images/projects/${project.id}/candidates/${group.candidates[0]!.id}/decisions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-BilliardBuddy-Media-Capability': decisionCapability },
+      body: JSON.stringify(decisionInput),
+    })
+    expect(replayDecision.status).toBe(200)
+    expect(await replayDecision.json()).toMatchObject({ decision: { id: firstDecisionPayload.decision.id, decision: 'kept' } })
     await expect(service.adoptCandidate(project.id, group.candidates[0]!.id, {
       base_revision: adopted.project.revision,
       idempotency_key: 'bb-image-adopt-gateway-contract-conflict-0001',
@@ -712,17 +734,27 @@ test('15.2 sends only Provider-eligible multi-references and keeps exact Logo/QR
       reference_images: [await dataUrl(), await dataUrl()],
       reference_roles: ['subject', 'logo'],
     })
-    const plan = await service.createCreativePlan(project.id, {
+    const subjectReferenceId = `ref_${createHash('sha256').update([project.id, project.references[0]!.asset_id].join('\0')).digest('hex').slice(0, 32)}`
+    const controlled = await service.updateReferenceControl(project.id, subjectReferenceId, {
       base_revision: project.revision,
+      idempotency_key: 'bb-image-provider-reference-control-0001',
+      role: 'brand',
+      influence_strength: 'medium',
+      preservation: 'prefer_preserve',
+      priority: 37,
+      label: '瓶身品牌标识',
+    })
+    const plan = await service.createCreativePlan(project.id, {
+      base_revision: controlled.revision,
       idempotency_key: 'bb-image-provider-reference-plan-0001',
     })
     const estimate = await service.estimateGenerationRound(project.id, {
-      base_revision: project.revision,
+      base_revision: controlled.revision,
       creative_plan_id: plan.id,
       direction_ids: [plan.directions[0]!.id],
     })
     await service.createGenerationRound(project.id, {
-      base_revision: project.revision,
+      base_revision: controlled.revision,
       idempotency_key: 'bb-image-provider-reference-round-0001',
       creative_plan_id: plan.id,
       direction_ids: [plan.directions[0]!.id],
@@ -733,8 +765,77 @@ test('15.2 sends only Provider-eligible multi-references and keeps exact Logo/QR
     expect(submitted?.body).toMatchObject({ mode: 'edit', n: 3, size: '1024x1024' })
     const submittedImages = (submitted?.body as { images?: unknown[] } | undefined)?.images
     expect(submittedImages).toHaveLength(1)
+    expect((submitted?.body as { reference_controls?: unknown } | undefined)?.reference_controls).toEqual([{
+      image_index: 0,
+      role: 'brand',
+      influence_strength: 'medium',
+      preservation: 'prefer_preserve',
+      priority: 37,
+      label: '瓶身品牌标识',
+    }])
     expect((submitted?.body as { prompt?: string } | undefined)?.prompt).toContain('Logo')
   })
+})
+
+test('15.2 Relay compiles every reference control into the actual Provider request', async () => {
+  let resolveUpstream: (() => void) | undefined
+  const upstreamRequested = new Promise<void>(resolve => { resolveUpstream = resolve })
+  const prompts: string[] = []
+  const relay = createRelayFetch({
+    env: {
+      RELAY_TOKEN: 'relay-reference-control-token',
+      RELAY_OPENAI_KEY: 'openai-reference-control-key',
+      RELAY_OPENAI_BASE: 'https://provider.example.test/v1',
+      RELAY_IMG_CONC: '1',
+      RELAY_IMG_USER_CONC: '1',
+    },
+    fetchImpl: async (_input, init) => {
+      expect(init?.method).toBe('POST')
+      expect(init?.body).toBeInstanceOf(FormData)
+      const form = init?.body as FormData
+      prompts.push(String(form.get('prompt')))
+      resolveUpstream?.()
+      return Response.json({ data: [{ b64_json: 'aGVsbG8=' }] })
+    },
+  })
+  const response = await relay(new Request('http://relay.example.test/images/tasks', {
+    method: 'POST',
+    headers: {
+      Authorization: 'Bearer relay-reference-control-token',
+      'Content-Type': 'application/json',
+      'X-Relay-Owner': 'desktop-owner',
+      'X-BB-Provider-Protocol': 'bb-provider-gateway/1.0',
+      'Idempotency-Key': 'bb-image-relay-reference-controls-0001',
+    },
+    body: JSON.stringify({
+      mode: 'edit',
+      model: 'gpt-image-2',
+      prompt: '制作两张参考图融合的商品图',
+      n: 1,
+      size: '1024x1024',
+      images: [await dataUrl(), await dataUrl()],
+      reference_controls: [
+        { image_index: 0, role: 'product', influence_strength: 'high', preservation: 'exact', priority: 90, label: '商品主体' },
+        { image_index: 1, role: 'style', influence_strength: 'medium', preservation: 'prefer_preserve', priority: 35, label: '光影风格' },
+      ],
+    }),
+  }))
+  expect(response.status).toBe(202)
+  let timeout: ReturnType<typeof setTimeout> | undefined
+  try {
+    await Promise.race([
+      upstreamRequested,
+      new Promise<void>((_resolve, reject) => {
+        timeout = setTimeout(() => reject(new Error('Relay did not issue the expected Provider request')), 250)
+      }),
+    ])
+  } finally {
+    if (timeout) clearTimeout(timeout)
+  }
+  expect(prompts).toHaveLength(1)
+  expect(prompts[0]).toContain('制作两张参考图融合的商品图')
+  expect(prompts[0]).toContain('参考图 1; role=product; influence=high; preservation=exact; priority=90; label=商品主体')
+  expect(prompts[0]).toContain('参考图 2; role=style; influence=medium; preservation=prefer_preserve; priority=35; label=光影风格')
 })
 
 test('15.2 rejects capability gaps before paid submission, permits partial candidates, replays a Round and atomically adopts one Candidate to two Artboards', async () => {
