@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { copyFile, mkdir, readFile, readdir, rename, rm, stat } from 'node:fs/promises'
+import { copyFile, mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { basename, dirname, extname, isAbsolute, join, resolve } from 'node:path'
 import {
@@ -51,12 +51,14 @@ import {
 } from './videoExecution.js'
 import {
   createHostedEvidence,
+  factBasisHash,
+  type CameraShot,
   type EvidenceWindow,
   type VideoDerivative,
   type VideoFactKind,
   type VideoFactSource,
 } from '../video/domain/mediaFacts/model.js'
-import { fixedIntervalContentSegments, planEvidenceWindows } from '../video/domain/mediaFacts/analysis.js'
+import { DEFAULT_EVIDENCE_WINDOW_BUDGET, contentSegmentsFromCameraShots, fixedIntervalContentSegments, planEvidenceWindows } from '../video/domain/mediaFacts/analysis.js'
 import {
   compareRationalTime,
   endOfRange,
@@ -286,7 +288,12 @@ export class VideoWorkbenchService {
 
   async pageMediaFacts(projectId: string, kind: VideoFactKind, options?: { sourceId?: string; cursor?: string; limit?: number }) {
     await this.requireVideoProject(projectId)
-    return await this.repository.pageFacts(kind, projectId, options)
+    return await this.repository.pageCurrentFacts(kind, projectId, options)
+  }
+
+  async searchMediaFacts(projectId: string, query: string, options?: { cursor?: string; limit?: number }) {
+    await this.requireVideoProject(projectId)
+    return await this.repository.searchFactsPage(projectId, query, options)
   }
 
   async reclaimDerivativeCache(projectId: string, maxEvictions: number): Promise<string[]> {
@@ -1238,21 +1245,19 @@ export class VideoWorkbenchService {
         state: 'ready',
         updated_at: this.iso(),
       }) as VideoFactSource
-      const contentSegments = fixedIntervalContentSegments({
-        source: sourceFact as VideoFactSource & { fingerprint: `sha256:${string}` },
-        createdAt: this.iso(),
-      })
+      const readySource = sourceFact as VideoFactSource & { fingerprint: `sha256:${string}` }
+      const localFacts = await this.createInitialLocalMediaFacts(readySource, running)
+      const contentSegments = localFacts.cameraShots.length
+        ? contentSegmentsFromCameraShots({ source: readySource, shots: localFacts.cameraShots, createdAt: this.iso() })
+        : fixedIntervalContentSegments({ source: readySource, createdAt: this.iso() })
       for (const segment of contentSegments) await this.repository.saveFact(segment)
       const initialWindows = planEvidenceWindows({
-        source: sourceFact as VideoFactSource & { fingerprint: `sha256:${string}` },
+        source: readySource,
         segments: contentSegments,
         analysisDepth: 'summary',
         samplingReceiptId: operation.id,
         createdAt: this.iso(),
-        budget: {
-          maxWindows: 10_000,
-          maxCoveredTicks: parseInt64(sourceFact.presentation_duration.ticks),
-        },
+        budget: DEFAULT_EVIDENCE_WINDOW_BUDGET,
       })
       for (const window of initialWindows.windows) await this.repository.saveFact(window)
       await this.mutateProject(operation.project_id, async () => {
@@ -1302,7 +1307,18 @@ export class VideoWorkbenchService {
         status: 'succeeded',
         progress: 100,
         stage: '完整指纹已就绪',
-        result: { ...(running.result ?? {}), source_id: sourceId },
+        result: {
+          ...(running.result ?? {}),
+          source_id: sourceId,
+          media_facts: {
+            derivative_ids: localFacts.derivatives.map(item => item.id),
+            camera_shot_ids: localFacts.cameraShots.map(item => item.id),
+            content_segment_ids: contentSegments.map(item => item.id),
+            evidence_window_ids: initialWindows.windows.map(item => item.id),
+            coverage: initialWindows.coverage,
+            gaps: localFacts.gaps,
+          },
+        },
       }))
     } catch {
       const failure = mediaSafeError('MEDIA_VIDEO_SOURCE_UNREADABLE')
@@ -1315,6 +1331,159 @@ export class VideoWorkbenchService {
         error_code: failure.code,
       })).catch(() => undefined)
     }
+  }
+
+  private localFactId(prefix: 'derivative' | 'camera', ...parts: string[]): string {
+    return `${prefix}_${createHash('sha256').update(parts.join('\0')).digest('hex').slice(0, 32)}`
+  }
+
+  private detectedCameraShotCuts(source: VideoFactSource & { fingerprint: `sha256:${string}` }, output: string): bigint[] {
+    const rate = source.primary_video_stream.start_time.tick_rate
+    const start = parseInt64(source.primary_video_stream.start_time.ticks)
+    const end = start + parseInt64(source.presentation_duration.ticks)
+    const cuts = new Set<string>()
+    for (const match of output.matchAll(/pts_time\s*[:=]\s*(-?(?:\d+(?:\.\d*)?|\.\d+))/g)) {
+      const seconds = Number(match[1])
+      if (!Number.isFinite(seconds)) continue
+      const direct = BigInt(Math.round(seconds * Number(rate.num) / Number(rate.den)))
+      const ticks = direct >= start && direct < end ? direct : start + direct
+      if (ticks > start && ticks < end) cuts.add(ticks.toString())
+    }
+    return [...cuts].map(value => BigInt(value)).sort((left, right) => left < right ? -1 : left > right ? 1 : 0)
+  }
+
+  /**
+   * Local media facts are generated from the source itself: one thumbnail and
+   * one persisted scene-map derivative, plus Camera Shots only for detector
+   * cuts. A detector with no cut never fabricates a Camera Shot.
+   */
+  private async createInitialLocalMediaFacts(
+    source: VideoFactSource & { fingerprint: `sha256:${string}` },
+    operation: VideoOperation,
+  ): Promise<{ derivatives: VideoDerivative[]; cameraShots: CameraShot[]; gaps: string[] }> {
+    const derivatives: VideoDerivative[] = []
+    const cameraShots: CameraShot[] = []
+    const gaps: string[] = []
+    const operationId = operation.operation_id ?? operation.id
+    const fingerprintToken = source.fingerprint.slice('sha256:'.length, 'sha256:'.length + 16)
+    const directory = join(this.repository.paths().assets, source.project_id, 'derivatives')
+    await mkdir(directory, { recursive: true, mode: 0o700 })
+    const createDerivative = async (input: {
+      id: string
+      kind: VideoDerivative['kind']
+      path: string
+      mimeType: string
+      parameters: Record<string, unknown>
+    }): Promise<VideoDerivative | null> => {
+      const info = await stat(input.path).catch(() => null)
+      if (!info?.isFile() || info.size <= 0) return null
+      const contentHash = await videoFingerprint(input.path)
+      const derivative: VideoDerivative = {
+        id: input.id,
+        project_id: source.project_id,
+        source_id: source.id,
+        source_fingerprint: source.fingerprint,
+        kind: input.kind,
+        asset: {
+          id: this.localFactId('derivative', source.id, source.fingerprint, input.kind, 'asset'),
+          role: 'source',
+          version_id: this.localFactId('derivative', source.id, source.fingerprint, input.kind, 'version'),
+          storage: { kind: 'managed', locator: join(source.project_id, 'derivatives', basename(input.path)) },
+          mime_type: input.mimeType,
+          content_hash: contentHash,
+          byte_size: info.size,
+          created_at: this.iso(),
+        },
+        content_hash: contentHash,
+        byte_size: info.size,
+        generator_name: 'ffmpeg-local-media-facts',
+        generator_version: '1',
+        parameters_hash: factBasisHash(input.parameters),
+        created_by_operation_id: operationId,
+        created_at: this.iso(),
+        state: 'ready',
+      }
+      await this.repository.saveFact(derivative)
+      derivatives.push(derivative)
+      return derivative
+    }
+
+    const thumbnailPath = join(directory, `${source.id}-${fingerprintToken}-thumbnail.jpg`)
+    const midpoint = Math.max(0, Math.floor(source.presentation_duration.ticks === '0'
+      ? 0
+      : Number(parseInt64(source.presentation_duration.ticks) * 1000n * BigInt(source.presentation_duration.tick_rate.den) / BigInt(source.presentation_duration.tick_rate.num) / 2n)))
+    try {
+      const result = await this.runProcess([
+        videoBinary('ffmpeg', this.env, this.platform), '-hide_banner', '-loglevel', 'error',
+        '-ss', (midpoint / 1000).toFixed(3), '-i', source.path,
+        '-frames:v', '1', '-vf', 'scale=1280:-2:force_original_aspect_ratio=decrease', '-q:v', '3', '-y', thumbnailPath,
+      ])
+      if (result.exitCode !== 0 || !await createDerivative({
+        id: this.localFactId('derivative', source.id, source.fingerprint, 'thumbnail'),
+        kind: 'thumbnail',
+        path: thumbnailPath,
+        mimeType: 'image/jpeg',
+        parameters: { kind: 'thumbnail', midpoint_ms: midpoint, width: 1280, quality: 3 },
+      })) gaps.push(`${source.name} 未能生成缩略图派生物。`)
+    } catch {
+      gaps.push(`${source.name} 未能生成缩略图派生物。`)
+    }
+
+    let detectorOutput = ''
+    const detectorOutputPath = join(directory, `${source.id}-${fingerprintToken}-scene-detect.null`)
+    try {
+      const result = await this.runProcess([
+        videoBinary('ffmpeg', this.env, this.platform), '-hide_banner', '-copyts', '-i', source.path,
+        '-vf', "select='gt(scene,0.35)',metadata=print", '-an', '-f', 'null', detectorOutputPath,
+      ])
+      if (result.exitCode !== 0) throw new Error(result.stderr)
+      detectorOutput = `${result.stdout}\n${result.stderr}`
+    } catch {
+      gaps.push(`${source.name} 未能完成本地镜头切换检测。`)
+    } finally {
+      await rm(detectorOutputPath, { force: true }).catch(() => undefined)
+    }
+    const cuts = this.detectedCameraShotCuts(source, detectorOutput)
+    const sceneMapPath = join(directory, `${source.id}-${fingerprintToken}-scene-map.json`)
+    try {
+      await writeFile(sceneMapPath, JSON.stringify({
+        schema_version: 1,
+        source_id: source.id,
+        source_fingerprint: source.fingerprint,
+        detector: { name: 'ffmpeg-scene', threshold: 0.35, copyts: true },
+        cut_pts_ticks: cuts.map(cut => cut.toString()),
+      }), { mode: 0o600 })
+      if (!await createDerivative({
+        id: this.localFactId('derivative', source.id, source.fingerprint, 'scene_map'),
+        kind: 'scene_map',
+        path: sceneMapPath,
+        mimeType: 'application/json',
+        parameters: { kind: 'scene_map', detector: 'ffmpeg-scene', threshold: 0.35, copyts: true },
+      })) gaps.push(`${source.name} 未能持久化镜头检测派生物。`)
+    } catch {
+      gaps.push(`${source.name} 未能持久化镜头检测派生物。`)
+    }
+
+    const start = parseInt64(source.primary_video_stream.start_time.ticks)
+    const end = start + parseInt64(source.presentation_duration.ticks)
+    const bounds = [start, ...cuts, end]
+    for (let index = 0; index < bounds.length - 1; index += 1) {
+      const lower = bounds[index]!
+      const upper = bounds[index + 1]!
+      if (upper <= lower || cuts.length === 0) continue
+      const shot: CameraShot = {
+        id: this.localFactId('camera', source.id, source.fingerprint, String(index), lower.toString(), upper.toString()),
+        project_id: source.project_id,
+        source_id: source.id,
+        source_fingerprint: source.fingerprint,
+        range: sourceTimeRange(rationalTime(lower, source.primary_video_stream.start_time.tick_rate), rationalTime(upper - lower, source.primary_video_stream.start_time.tick_rate)),
+        boundary_source: 'scene_detect',
+        created_at: this.iso(),
+      }
+      await this.repository.saveFact(shot)
+      cameraShots.push(shot)
+    }
+    return { derivatives, cameraShots, gaps }
   }
 
   private sameFastIdentity(left: VideoFactSource['fast_identity'], right: VideoFactSource['fast_identity']): boolean {

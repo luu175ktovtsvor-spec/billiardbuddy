@@ -21,6 +21,7 @@ import { WriterFence } from '../media/kernel/storage/writerFence.js'
 import {
   SqliteMediaFactsRepository,
   type VideoFactsPage,
+  type VideoFactSearchPage,
 } from '../video/infrastructure/sqliteMediaFactsRepository.js'
 import type { VideoFact, VideoFactKind } from '../video/domain/mediaFacts/model.js'
 
@@ -480,9 +481,19 @@ export class VideoWorkbenchRepository {
     return await this.facts.page(kind, projectId, options)
   }
 
-  async searchFacts(projectId: string, query: string, limit?: number): Promise<Array<{ id: string; source_id: string | null; kind: VideoFactKind; text: string }>> {
+  async pageCurrentFacts(kind: VideoFactKind, projectId: string, options?: { sourceId?: string; cursor?: string; limit?: number }): Promise<VideoFactsPage> {
+    await this.ready()
+    return await this.facts.pageCurrent(kind, projectId, options)
+  }
+
+  async searchFacts(projectId: string, query: string, limit?: number) {
     await this.ready()
     return await this.facts.search(projectId, query, limit)
+  }
+
+  async searchFactsPage(projectId: string, query: string, options?: { cursor?: string; limit?: number }): Promise<VideoFactSearchPage> {
+    await this.ready()
+    return await this.facts.searchPage(projectId, query, options)
   }
 
   async activeTranscriptRevision(transcriptId: string): Promise<VideoFact | null> {

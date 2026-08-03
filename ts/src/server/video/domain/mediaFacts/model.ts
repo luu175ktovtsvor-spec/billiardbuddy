@@ -200,6 +200,42 @@ export const contentSegmentSchema = z.object({
   created_at: mediaIsoDateSchema,
 })
 
+const evidenceWindowBudgetSchema = z.object({
+  max_windows: positiveSafeInteger,
+  max_visual_requests: positiveSafeInteger,
+  max_frames: positiveSafeInteger,
+  max_proxy_seconds: nonNegativeSafeInteger,
+  max_input_tokens: positiveSafeInteger,
+  max_covered_ticks: z.string().regex(/^-?(?:0|[1-9]\d*)$/),
+})
+
+const evidenceWindowUsageSchema = z.object({
+  windows: nonNegativeSafeInteger,
+  visual_requests: nonNegativeSafeInteger,
+  frames: nonNegativeSafeInteger,
+  proxy_seconds: nonNegativeSafeInteger,
+  estimated_input_tokens: nonNegativeSafeInteger,
+  covered_ticks: z.string().regex(/^-?(?:0|[1-9]\d*)$/),
+})
+
+const evidenceWindowCoverageSchema = z.object({
+  /** Changes when this source's persisted visual-input plan is rebuilt. */
+  generation: nonNegativeSafeInteger,
+  request_budget: evidenceWindowBudgetSchema,
+  request_usage: evidenceWindowUsageSchema,
+  uncovered: z.array(z.object({
+    range: sourceTimeRangeSchema,
+    reason: z.enum([
+      'max_windows',
+      'max_visual_requests',
+      'max_frames',
+      'max_proxy_seconds',
+      'max_input_tokens',
+      'max_covered_ticks',
+    ]),
+  })).max(20_000),
+})
+
 export const evidenceWindowSchema = z.object({
   id: mediaIdSchema,
   project_id: mediaIdSchema,
@@ -215,6 +251,8 @@ export const evidenceWindowSchema = z.object({
   evidence_ids: z.array(mediaIdSchema).max(10_000),
   analysis_depth: z.enum(['summary', 'standard', 'deep']),
   sampling_receipt_id: mediaIdSchema,
+  /** Persisted request budget and coverage receipt, never an in-memory cap. */
+  coverage: evidenceWindowCoverageSchema,
   created_at: mediaIsoDateSchema,
 })
 
@@ -290,14 +328,20 @@ export function normalizeFactSearchText(text: string): string {
   return cjkTokens ? `${text}\n${cjkTokens}` : text
 }
 
+export function factDisplaySearchText(value: VideoFact): string {
+  if ('segments' in value) return value.segments.map(segment => segment.text).join('\n')
+  if ('edits' in value) return value.edits.map(edit => edit.kind === 'replace_text' ? edit.text : edit.kind).join('\n')
+  if (!('payload' in value)) return ''
+  if (value.kind === 'visual') return [value.payload.summary, ...value.payload.subjects, ...value.payload.warnings].join('\n')
+  if (value.kind === 'ocr') return value.payload.blocks.map(block => block.text).join('\n')
+  if (value.kind === 'object') return value.payload.label
+  if (value.kind === 'action') return value.payload.label
+  if (value.kind === 'transcript') return value.payload.text
+  return JSON.stringify(value.payload)
+}
+
 export function factSearchText(value: VideoFact): string {
-  const text = 'segments' in value
-    ? value.segments.map(segment => segment.text).join('\n')
-    : 'edits' in value
-      ? value.edits.map(edit => edit.kind === 'replace_text' ? edit.text : edit.kind).join('\n')
-      : 'payload' in value
-        ? JSON.stringify(value.payload)
-        : ''
+  const text = factDisplaySearchText(value)
   // unicode61 keeps a continuous CJK sentence as one token. Add individual
   // ideographs to the same FTS document so a normal two-character query has a
   // stable, language-neutral fallback before a later embedding index exists.
