@@ -44,6 +44,7 @@ export class VideoMediaRelayClient {
   async completeObjectLease(leaseId: string): Promise<MediaObjectLease> { return mediaObjectLeaseSchema.parse(await this.request(`/v1/video-media/object-leases/${encodeURIComponent(leaseId)}/complete`, 'POST', {})) }
   async createOperation(input: CreateVideoRelayOperationRequest): Promise<VideoRelayOperationProjection> { return videoRelayOperationProjectionSchema.parse(await this.request('/v1/video-media/operations', 'POST', createVideoRelayOperationRequestSchema.parse(input))) }
   async operation(id: string): Promise<VideoRelayOperationProjection> { return videoRelayOperationProjectionSchema.parse(await this.request(`/v1/video-media/operations/${encodeURIComponent(id)}`, 'GET')) }
+  async result<T>(id: string): Promise<T> { return await this.request<T>(`/v1/video-media/operations/${encodeURIComponent(id)}/result`, 'GET') }
   async cancel(id: string): Promise<VideoRelayOperationProjection> { return videoRelayOperationProjectionSchema.parse(await this.request(`/v1/video-media/operations/${encodeURIComponent(id)}/cancel`, 'POST', {})) }
   async acknowledge(id: string, input: { result_hashes: Array<`sha256:${string}`>; receipt_id: string }): Promise<void> { await this.request(`/v1/video-media/operations/${encodeURIComponent(id)}/ack`, 'POST', operationAcknowledgementSchema.parse(input)) }
 }

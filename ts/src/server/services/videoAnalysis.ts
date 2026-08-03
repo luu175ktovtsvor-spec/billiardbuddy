@@ -362,6 +362,13 @@ export async function planVideoTimeline(
   }
 }
 
+/** Validates a Relay result with exactly the same host-fact fence as fallback planning. */
+export function planVideoTimelineFromRelay(input: VideoPlanningInput, raw: unknown): VideoPlanDraft {
+  const parsed = planDraftSchema.safeParse(raw)
+  if (!parsed.success || !planUsesHostFacts(parsed.data, input)) throw new VideoAnalysisError('Video Media Relay 规划结果不符合产品合同')
+  return parsed.data
+}
+
 export function compileVideoBrief(userGoal: string, draft: VideoPlanDraft['brief']): VideoBrief {
   return videoBriefSchema.parse({
     ...draft,
