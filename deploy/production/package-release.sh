@@ -58,6 +58,7 @@ for bb_required in \
   deploy/production/Dockerfile.gateway \
   deploy/production/Dockerfile.relay \
   deploy/production/Dockerfile.video-media-relay \
+  deploy/production/video-media-smoke.ts \
   gateway/app.ts \
   gateway/managedResponses.ts \
   gateway/validate-deployment-env.ts \
