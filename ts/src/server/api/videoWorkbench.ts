@@ -28,6 +28,7 @@ import {
   selectVideoTimelineVersionInputSchema,
   deliveryVariantSchema,
   deliveryVariantVersionSchema,
+  videoExecutionPlanSchema,
   editorialTimelineVersionSchema,
   timelineDraftSchema,
   updateVideoTimelineInputSchema,
@@ -322,6 +323,11 @@ export function createVideoWorkbenchApiHandler(
             requireIdempotencyKey(req),
           )
           return Response.json({ project: publicVideoProject(result.project), version: deliveryVariantVersionSchema.parse(result.version), reused: result.reused })
+        }
+        if (segments[7] === 'compile' && !segments[8]) {
+          if (req.method !== 'POST') throw methodNotAllowed(req.method)
+          const result = await service.compileDeliveryVariant(projectId, variantId)
+          return Response.json({ project: publicVideoProject(result.project), plan: videoExecutionPlanSchema.parse(result.plan) })
         }
         throw methodNotAllowed(req.method)
       }

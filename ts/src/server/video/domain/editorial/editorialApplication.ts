@@ -854,6 +854,7 @@ export class EditorialApplication {
     ))) throw new EditorialValidationError('当前执行编译器尚不支持关键帧、音量或淡入淡出命令', 'VIDEO_EDITORIAL_UNSUPPORTED')
     const planId = id('execution_plan')
     const trackOrder = new Map(timeline.tracks.map(track => [track.id, track.order]))
+    const trackKind = new Map(timeline.tracks.map(track => [track.id, track.kind]))
     const orderedItems = [...timeline.items].sort((left, right) => {
       const position = compare(left.timeline_range.start, right.timeline_range.start)
       if (position !== 0) return position
@@ -874,16 +875,23 @@ export class EditorialApplication {
         order,
         item_id: item.id,
         track_id: item.track_id,
+        track_kind: trackKind.get(item.track_id)!,
         kind: item.kind,
         timeline_range: item.timeline_range,
         binding: item.binding,
         ...(item.speed ? { speed: item.speed } : {}),
       })),
-      inputs: sourceItems.map(item => ({
-        source_id: (item.binding as Extract<typeof item.binding, { kind: 'source' }>).source_id,
-        source_fingerprint: (item.binding as Extract<typeof item.binding, { kind: 'source' }>).source_fingerprint,
-        source_range: (item.binding as Extract<typeof item.binding, { kind: 'source' }>).source_range,
-      })),
+      inputs: sourceItems.map(item => {
+        const binding = item.binding as Extract<typeof item.binding, { kind: 'source' }>
+        const bounds = sourceBounds.get(binding.source_id)
+        if (!bounds) throw new EditorialValidationError('缺少原始视频流时间边界，不能编译执行计划', 'VIDEO_EDITORIAL_INVALID')
+        return {
+          source_id: binding.source_id,
+          source_fingerprint: binding.source_fingerprint,
+          source_start: bounds.start,
+          source_range: binding.source_range,
+        }
+      }),
       filters: [
         { kind: 'scale_pad', width: profile.width, height: profile.height },
         ...version.item_overrides.flatMap(override => [

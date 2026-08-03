@@ -487,11 +487,12 @@ test('768 维文本 embedding 与 FTS 同代持久化，并融合非词法命中
   const second = await repository.saveFact(createHostedEvidence({ kind: 'visual', projectId: created.id, source: videoSource, range: sourceTimeRange(rationalTime('90000', videoSource.primary_video_stream.start_time.tick_rate), rationalTime('90000', videoSource.primary_video_stream.start_time.tick_rate)), promptVersion: 'embedding-v1', createdAt: at, payload: { summary: '精彩开球', subjects: ['球'], warnings: [] } }))
   const semanticOnly = await repository.saveFact(createHostedEvidence({ kind: 'visual', projectId: created.id, source: videoSource, range: sourceTimeRange(rationalTime('180000', videoSource.primary_video_stream.start_time.tick_rate), rationalTime('90000', videoSource.primary_video_stream.start_time.tick_rate)), promptVersion: 'embedding-v1', createdAt: at, payload: { summary: '反弹角度控制', subjects: ['球'], warnings: [] } }))
   const vector = (index: number) => Array.from({ length: 768 }, (_, value) => value === index ? 1 : 0)
+  const semanticOnlyVector = Array.from({ length: 768 }, (_, index) => index === 0 ? 0.5 : index === 2 ? Math.sqrt(0.75) : 0)
   const contentHash = (index: number) => `sha256:${createHash('sha256').update(JSON.stringify(vector(index))).digest('hex')}` as `sha256:${string}`
   const generation = await repository.saveFactEmbeddings(created.id, [
     { entry_id: first.id, vector: vector(1), model_snapshot: 'text-embedding-v4', instruction_version: 'v1', content_hash: contentHash(1) },
     { entry_id: second.id, vector: vector(0), model_snapshot: 'text-embedding-v4', instruction_version: 'v1', content_hash: contentHash(0) },
-    { entry_id: semanticOnly.id, vector: vector(0), model_snapshot: 'text-embedding-v4', instruction_version: 'v1', content_hash: contentHash(0) },
+    { entry_id: semanticOnly.id, vector: semanticOnlyVector, model_snapshot: 'text-embedding-v4', instruction_version: 'v1', content_hash: `sha256:${createHash('sha256').update(JSON.stringify(semanticOnlyVector)).digest('hex')}` },
   ])
   const page = await repository.hybridSearchFactsPage(created.id, '精彩', vector(0), { limit: 2 })
   expect(page.generation).toBe(generation)

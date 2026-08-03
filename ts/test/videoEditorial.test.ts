@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { createVideoWorkbenchDomainApiHandler } from '../src/server/api/videoWorkbench.js'
-import { fastVideoIdentity, videoFingerprint } from '../src/server/services/videoExecution.js'
+import { buildExecutionPlanRenderCommand, fastVideoIdentity, videoFingerprint } from '../src/server/services/videoExecution.js'
 import { VideoWorkbenchService } from '../src/server/services/videoWorkbenchService.js'
 import { EditorialApplication } from '../src/server/video/domain/editorial/editorialApplication.js'
 import { mediaTimeBase, rationalTime, tickRateForTimeBase } from '../src/server/video/domain/mediaFacts/time.js'
@@ -269,7 +269,11 @@ test('Editorial v2 API 以单一 CommandSet 写入草稿、版本、变体和受
   const executableVariant = await service.createDeliveryVariant(created.id, {
     name: '无关键帧的正式交付', editorial_timeline_version_id: firstCommandBody.timeline.id,
   }, 'delivery-variant-executable-key-0001')
-  const compiled = await service.compileDeliveryVariant(created.id, executableVariant.variant.id)
+  const compileUrl = new URL(`http://localhost/api/videos/projects/${created.id}/delivery-variants/${executableVariant.variant.id}/compile`)
+  const compileResponse = await request(compileUrl, { method: 'POST' })
+  expect(compileResponse.status).toBe(200)
+  const compiledBody = await compileResponse.json() as { plan: Awaited<ReturnType<typeof service.compileDeliveryVariant>>['plan'] }
+  const compiled = { project: await service.getProject(created.id), plan: compiledBody.plan }
   expect(compiled.plan).toMatchObject({
     editorial_timeline_version_id: firstCommandBody.timeline.id,
     delivery_variant_version_id: executableVariant.version.id,
@@ -281,6 +285,9 @@ test('Editorial v2 API 以单一 CommandSet 写入草稿、版本、变体和受
   ]))
   expect(compiled.plan.filters).not.toEqual(expect.arrayContaining([expect.objectContaining({ kind: 'audio_fade' })]))
   expect(JSON.stringify(compiled.plan)).not.toContain(sourcePath)
+  const command = buildExecutionPlanRenderCommand('ffmpeg', compiled.project, compiled.plan, join(root, 'execution-plan.mp4'))
+  expect(command).toEqual(expect.arrayContaining(['-filter_complex']))
+  expect(command.join(' ')).toContain('concat=n=1:v=1:a=1')
 
   // A/V is a structural invariant, not merely a ripple-delete convenience:
   // time-warping one side must fail, while an explicitly equal paired speed
