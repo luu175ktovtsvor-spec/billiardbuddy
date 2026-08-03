@@ -341,3 +341,64 @@ test('Media Facts payload 在发布后崩溃会由统一恢复器提交，而不
   expect(await recovered.getFact('source', fact.id)).toMatchObject({ fingerprint_state: 'ready', fingerprint: fact.fingerprint })
   recovered.close()
 })
+
+test('新视频分析只从 Evidence Window 抽帧，并把视觉结果写回窗口绑定的 typed Evidence', async () => {
+  const root = await testRoot('windowed-analysis')
+  const sourcePath = join(root, 'source.mp4')
+  await writeFile(sourcePath, 'windowed-analysis-source')
+  const commands: string[][] = []
+  const runProcess = async (command: string[]) => {
+    commands.push(command)
+    if (command.includes('-show_format') && command.includes('-show_streams')) return await mediaProcessRunner(command)
+    if (command.includes('-frames:v')) {
+      await writeFile(command.at(-1)!, 'simulated-frame')
+      return { exitCode: 0, stdout: '', stderr: '' }
+    }
+    return { exitCode: 0, stdout: '', stderr: '' }
+  }
+  const service = new VideoWorkbenchService({
+    root,
+    now: () => new Date(at),
+    runProcess,
+    platform: 'linux',
+    fetchImpl: async (input, init) => {
+      const url = String(input)
+      if (url.endsWith('/v1/visual/evidence')) {
+        const body = JSON.parse(String(init?.body)) as { messages: Array<{ content: unknown[] }> }
+        const count = body.messages[0]!.content.length
+        return Response.json({
+          schema: 'bb.visual-evidence-batch.v1',
+          evidence: Array.from({ length: count }, () => ({
+            schema: 'bb.visual-evidence.v1', ocr: '比分牌', objects: ['球桌'], layout: '', ui: [], alerts: [], observations: ['开球准备'],
+          })),
+        })
+      }
+      // Planning is intentionally allowed to choose the existing deterministic
+      // fallback; this test isolates the visual Evidence Window boundary.
+      return Response.json({ choices: [{ message: { content: '{}' } }] })
+    },
+    env: { BB_GATEWAY_URL: 'https://gateway.example.test', BB_GATEWAY_TOKEN: 'gateway-test-token' },
+  })
+  const created = await service.createProject({ title: '窗口分析' })
+  const imported = await service.addVideoSource(created.id, { path: sourcePath })
+  const fingerprintTask = (await service.repository.listOperations(created.id)).find(task => task.kind === 'video.fingerprint')
+  expect((await waitForTerminalOperation(service, fingerprintTask!.id)).status).toBe('succeeded')
+  const ready = await service.getProject(created.id)
+  const windows = await service.repository.listFacts('evidence_window', created.id, ready.sources[0]!.id) as Array<{ id: string; sample_strategy: string; range: { start: { ticks: string } } }>
+  expect(windows).toHaveLength(1)
+  expect(windows[0]?.sample_strategy).toBe('start_middle_end')
+  const task = await service.analyzeVideoProject(created.id, {
+    base_revision: ready.revision,
+    user_goal: '只分析窗口内画面',
+  })
+  expect((await waitForTerminalOperation(service, task.id)).status).toBe('succeeded')
+  const frameCommands = commands.filter(command => command.includes('-frames:v'))
+  expect(frameCommands).toHaveLength(3)
+  expect(frameCommands.map(command => command[command.indexOf('-ss') + 1])).toEqual(['0.000', '10.000', '19.999'])
+  const evidence = await service.repository.listFacts('evidence', created.id, ready.sources[0]!.id) as Array<{ evidence_window_id?: string }>
+  expect(evidence).toHaveLength(3)
+  expect(evidence.every(item => item.evidence_window_id === windows[0]!.id)).toBeTrue()
+  const refreshedWindow = await service.repository.getFact('evidence_window', windows[0]!.id) as { evidence_ids: string[] }
+  expect(refreshedWindow.evidence_ids).toHaveLength(3)
+  service.repository.close()
+})

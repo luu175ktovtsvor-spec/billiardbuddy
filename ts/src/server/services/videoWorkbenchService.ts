@@ -49,9 +49,24 @@ import {
   verifyVideoOutput,
   type VideoProcessRunner,
 } from './videoExecution.js'
-import type { VideoDerivative, VideoFactKind, VideoFactSource } from '../video/domain/mediaFacts/model.js'
+import {
+  createHostedEvidence,
+  type EvidenceWindow,
+  type VideoDerivative,
+  type VideoFactKind,
+  type VideoFactSource,
+} from '../video/domain/mediaFacts/model.js'
 import { fixedIntervalContentSegments, planEvidenceWindows } from '../video/domain/mediaFacts/analysis.js'
-import { parseInt64, timeToMilliseconds } from '../video/domain/mediaFacts/time.js'
+import {
+  compareRationalTime,
+  endOfRange,
+  parseInt64,
+  rationalTime,
+  rescaleRationalTime,
+  sourceTimeRange,
+  timeToMilliseconds,
+  type SourceTimeRange,
+} from '../video/domain/mediaFacts/time.js'
 import {
   analyzeVideoEvidence,
   compileVideoBrief,
@@ -82,6 +97,14 @@ type ActiveVideoExecution = {
   /** A queued render can be cancelled before it reaches the serialized encoder. */
   started?: boolean
   cancelledBeforeStart?: boolean
+}
+
+type ExtractedVideoAnalysisInputs = {
+  frames: VideoAnalysisFrame[]
+  transcripts: VideoEvidence[]
+  gaps: string[]
+  source_facts: Map<string, VideoFactSource>
+  evidence_windows: Map<string, EvidenceWindow>
 }
 
 function id(prefix: 'vid' | 'src' | 'clip' | 'task' | 'timeline' | 'evidence' | 'alternative'): string {
@@ -732,24 +755,83 @@ export class VideoWorkbenchService {
     project: VideoStudioProject,
     operationId: string,
     signal: AbortSignal,
-  ): Promise<{ frames: VideoAnalysisFrame[]; transcripts: VideoEvidence[]; gaps: string[] }> {
+  ): Promise<ExtractedVideoAnalysisInputs> {
     const directory = join(this.repository.paths().root, 'analysis', operationId)
     await mkdir(directory, { recursive: true, mode: 0o700 })
     const frames: VideoAnalysisFrame[] = []
     const transcripts: VideoEvidence[] = []
     const gaps: string[] = []
-    const sampled = project.sources.slice(0, 4)
-    if (project.sources.length > sampled.length) gaps.push(`仅抽取前 ${sampled.length} 个素材的画面与音频证据；其余素材保留来源证据。`)
+    const sourceFacts = new Map<string, VideoFactSource>()
+    for (const source of project.sources) {
+      const fact = await this.repository.getFact('source', source.id).catch(() => null)
+      if (fact && 'fast_identity' in fact) sourceFacts.set(source.id, fact)
+    }
+    const evidenceWindows = new Map(
+      (await this.repository.listFacts('evidence_window', project.id) as EvidenceWindow[])
+        .map(window => [window.id, window]),
+    )
     try {
-      for (const source of sampled) {
+      for (const source of project.sources) {
         if (signal.aborted) throw new VideoAnalysisError('视频分析已取消', 499, 'VIDEO_ANALYSIS_CANCELLED')
+        const sourceFact = sourceFacts.get(source.id)
+        if (!sourceFact) continue
+        const windows = [...evidenceWindows.values()].filter(window => (
+          window.source_id === source.id
+          && window.source_fingerprint === sourceFact.fingerprint
+        ))
+        if (!windows.length) {
+          gaps.push(`${source.name} 没有可用 Evidence Window，未向视觉模型发送素材。`)
+          continue
+        }
+        let extractedFrames = 0
+        for (const window of windows) {
+          const sampling = this.evidenceWindowSampling(sourceFact, source, window)
+          if (!sampling) {
+            gaps.push(window.sample_strategy === 'short_proxy'
+              ? `${source.name} 的 Evidence Window 仅允许短代理；当前没有可用代理解码器。`
+              : `${source.name} 的 Evidence Window 需要关键帧变化点；当前没有可用 keyframe derivative。`)
+            continue
+          }
+          for (const [frameIndex, frameTimeMs] of sampling.times.entries()) {
+            if (signal.aborted) throw new VideoAnalysisError('视频分析已取消', 499, 'VIDEO_ANALYSIS_CANCELLED')
+            const framePath = join(directory, `${source.id}-${window.id}-${frameIndex}.jpg`)
+            const frame = await this.runProcess([
+              videoBinary('ffmpeg', this.env, this.platform), '-hide_banner', '-loglevel', 'error',
+              '-ss', (frameTimeMs / 1000).toFixed(3), '-i', source.path,
+              '-frames:v', '1', '-vf', 'scale=1280:-2:force_original_aspect_ratio=decrease',
+              '-q:v', '3', '-y', framePath,
+            ], { signal }).catch(() => null)
+            const bytes = frame?.exitCode === 0 ? await readFile(framePath).catch(() => null) : null
+            if (!bytes?.length) continue
+            frames.push({
+              source_id: source.id,
+              in_ms: frameTimeMs,
+              range_end_ms: sampling.end_ms,
+              evidence_window_id: window.id,
+              data_url: `data:image/jpeg;base64,${bytes.toString('base64')}`,
+            })
+            extractedFrames += 1
+          }
+        }
+        if (extractedFrames === 0) gaps.push(`${source.name} 未能抽取画面证据。`)
+        if (source.has_audio) gaps.push(`${source.name} 的新视频转写等待 Video Media Relay，未调用旧产品语音路径。`)
+      }
+
+      // Legacy projects without a Media Facts source remain readable during the
+      // migration window. This compatibility reader is intentionally isolated:
+      // all newly imported sources above must have an Evidence Window first.
+      const legacySources = project.sources.filter(source => !sourceFacts.has(source.id)).slice(0, 4)
+      if (project.sources.filter(source => !sourceFacts.has(source.id)).length > legacySources.length) {
+        gaps.push(`旧项目仅抽取前 ${legacySources.length} 个未迁移素材；其余素材保留来源证据。`)
+      }
+      for (const source of legacySources) {
         const frameTimes = [...new Set([0.1, 0.5, 0.9].map(position => (
           Math.max(0, Math.min(source.duration_ms - 1, Math.floor(source.duration_ms * position)))
         )))]
         let extractedFrames = 0
         for (const [frameIndex, frameTimeMs] of frameTimes.entries()) {
           if (signal.aborted) throw new VideoAnalysisError('视频分析已取消', 499, 'VIDEO_ANALYSIS_CANCELLED')
-          const framePath = join(directory, `${source.id}-${frameIndex}.jpg`)
+          const framePath = join(directory, `${source.id}-legacy-${frameIndex}.jpg`)
           const frame = await this.runProcess([
             videoBinary('ffmpeg', this.env, this.platform), '-hide_banner', '-loglevel', 'error',
             '-ss', (frameTimeMs / 1000).toFixed(3), '-i', source.path,
@@ -763,7 +845,6 @@ export class VideoWorkbenchService {
         }
         if (extractedFrames === 0) gaps.push(`${source.name} 未能抽取画面证据。`)
         else if (extractedFrames < frameTimes.length) gaps.push(`${source.name} 仅抽取到 ${extractedFrames}/${frameTimes.length} 个画面采样点。`)
-
         if (!source.has_audio) continue
         const audioPath = join(directory, `${source.id}.mp3`)
         const audioDurationMs = Math.min(source.duration_ms, 10 * 60_000)
@@ -807,10 +888,39 @@ export class VideoWorkbenchService {
           gaps.push(`${source.name} 未能获得语音转写。`)
         }
       }
-      return { frames, transcripts, gaps }
+      return { frames, transcripts, gaps, source_facts: sourceFacts, evidence_windows: evidenceWindows }
     } finally {
       await rm(directory, { recursive: true, force: true }).catch(() => undefined)
     }
+  }
+
+  private evidenceWindowSampling(
+    sourceFact: VideoFactSource,
+    source: VideoSource,
+    window: EvidenceWindow,
+  ): { times: number[]; end_ms: number } | null {
+    const sourceRate = sourceFact.primary_video_stream.start_time.tick_rate
+    const rangeStart = rescaleRationalTime(window.range.start, sourceRate, 'floor')
+    const rangeEnd = rescaleRationalTime(endOfRange(window.range), sourceRate, 'ceil')
+    const sourceStart = parseInt64(sourceFact.primary_video_stream.start_time.ticks)
+    const startMs = Math.max(0, timeToMilliseconds(rationalTime(parseInt64(rangeStart.ticks) - sourceStart, sourceRate)))
+    const endMs = Math.max(startMs + 1, Math.min(source.duration_ms, timeToMilliseconds(rationalTime(parseInt64(rangeEnd.ticks) - sourceStart, sourceRate))))
+    if (window.sample_strategy === 'short_proxy' || window.sample_strategy === 'visual_change_points') return null
+    const duration = Math.max(1, endMs - startMs)
+    const at = (ratio: number) => Math.max(startMs, Math.min(endMs - 1, startMs + Math.floor(duration * ratio)))
+    const times = window.sample_strategy === 'representative_frame'
+      ? [at(0.5)]
+      : [at(0), at(0.5), at(1)]
+    return { times: [...new Set(times)], end_ms: endMs }
+  }
+
+  private sourceRangeFromDisplayMilliseconds(source: VideoFactSource, inMs: number, outMs: number): SourceTimeRange {
+    const rate = source.primary_video_stream.start_time.tick_rate
+    const startOffset = rescaleRationalTime(rationalTime(String(inMs), { num: 1000, den: 1 }), rate, 'floor')
+    const endOffset = rescaleRationalTime(rationalTime(String(outMs), { num: 1000, den: 1 }), rate, 'ceil')
+    const start = parseInt64(source.primary_video_stream.start_time.ticks) + parseInt64(startOffset.ticks)
+    const end = parseInt64(source.primary_video_stream.start_time.ticks) + parseInt64(endOffset.ticks)
+    return sourceTimeRange(rationalTime(start, rate), rationalTime(end - start, rate))
   }
 
   private materializeVideoEvidence(
@@ -825,6 +935,57 @@ export class VideoWorkbenchService {
       }
       return { id: id('evidence'), ...draft, source_fingerprint: source.fingerprint, created_at: this.iso() }
     })
+  }
+
+  private async persistWindowBoundVisualFacts(
+    project: VideoStudioProject,
+    extracted: ExtractedVideoAnalysisInputs,
+    generated: VideoEvidence[],
+  ): Promise<void> {
+    const frames = new Map(extracted.frames
+      .filter(frame => frame.evidence_window_id)
+      .map(frame => [`${frame.source_id}\0${frame.in_ms}`, frame]))
+    const additions = new Map<string, string[]>()
+    for (const evidence of generated) {
+      if (evidence.kind !== 'visual') continue
+      const frame = frames.get(`${evidence.source_id}\0${evidence.in_ms}`)
+      if (!frame?.evidence_window_id) continue
+      const window = extracted.evidence_windows.get(frame.evidence_window_id)
+      const source = extracted.source_facts.get(evidence.source_id)
+      if (!window || !source || source.fingerprint_state !== 'ready' || !source.fingerprint) {
+        throw new VideoWorkbenchServiceError('视觉证据缺少稳定的事实窗口或完整素材指纹', 502, 'VIDEO_ANALYSIS_INVALID')
+      }
+      const range = this.sourceRangeFromDisplayMilliseconds(source, evidence.in_ms, evidence.out_ms)
+      if (
+        compareRationalTime(range.start, window.range.start) < 0
+        || compareRationalTime(endOfRange(range), endOfRange(window.range)) > 0
+      ) throw new VideoWorkbenchServiceError('视觉证据超出授权 Evidence Window', 502, 'VIDEO_ANALYSIS_INVALID')
+      const fact = createHostedEvidence({
+        kind: 'visual',
+        projectId: project.id,
+        source: source as VideoFactSource & { fingerprint: `sha256:${string}` },
+        range,
+        evidenceWindowId: window.id,
+        promptVersion: 'legacy-gateway-visual-v1',
+        createdAt: this.iso(),
+        confidence: evidence.confidence,
+        payload: {
+          summary: evidence.text,
+          subjects: [],
+          warnings: evidence.warnings,
+        },
+      })
+      await this.repository.saveFact(fact)
+      additions.set(window.id, [...(additions.get(window.id) ?? []), fact.id])
+    }
+    for (const [windowId, evidenceIds] of additions) {
+      const window = extracted.evidence_windows.get(windowId)
+      if (!window) continue
+      await this.repository.saveFact({
+        ...window,
+        evidence_ids: [...new Set([...window.evidence_ids, ...evidenceIds])],
+      })
+    }
   }
 
   private materializeVideoScenes(
@@ -934,6 +1095,7 @@ export class VideoWorkbenchService {
           || latest.current_timeline_version_id !== baseProject.current_timeline_version_id
           || JSON.stringify(latest.sources.map(source => source.fingerprint)) !== JSON.stringify(baseProject.sources.map(source => source.fingerprint))
         ) throw new VideoWorkbenchServiceError('视频项目已更新，本次分析结果未写入', 409, 'VIDEO_ANALYSIS_STALE')
+        await this.persistWindowBoundVisualFacts(latest, extracted, generated)
         const evidence = [...retained, ...extracted.transcripts, ...generated]
         const revision = evidenceRevision(evidence)
         const evidenceProject = await this.repository.saveProject(videoStudioProjectSchema.parse({
