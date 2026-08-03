@@ -416,6 +416,8 @@ export type ImageCanvasLayer = ImageCanvasLayerBase & (
       overflow: 'error' | 'shrink_to_fit' | 'clip'
       locale: string
       align: 'left' | 'center' | 'right'
+      scale_x?: number
+      scale_y?: number
       opacity: number
     }
   | {
@@ -460,7 +462,9 @@ const imageCanvasTextLayerSchema = z.object({
   fill: imageCanvasColorSchema, stroke: imageCanvasColorSchema.optional(), position: z.object({ x: z.number().finite(), y: z.number().finite() }).strict(),
   rotation_degrees: z.number().finite().min(-360).max(360), max_width: z.number().finite().positive().max(12_000).optional(),
   max_height: z.number().finite().positive().max(12_000).optional(), overflow: z.enum(['error', 'shrink_to_fit', 'clip']),
-  locale: z.string().min(2).max(35), align: z.enum(['left', 'center', 'right']), opacity: z.number().min(0).max(1),
+  locale: z.string().min(2).max(35), align: z.enum(['left', 'center', 'right']),
+  scale_x: z.number().finite().positive().max(100).optional(), scale_y: z.number().finite().positive().max(100).optional(),
+  opacity: z.number().min(0).max(1),
 }).strict().superRefine((layer, context) => {
   if (layer.overflow === 'shrink_to_fit' && !layer.min_font_size) {
     context.addIssue({ code: 'custom', message: 'shrink_to_fit requires min_font_size' })
@@ -598,10 +602,15 @@ export const imageRenderReceiptSchema = z.object({
   delivery_spec_id: mediaIdSchema, delivery_spec_revision: z.number().int().nonnegative(), brand_kit_revision_id: mediaIdSchema.optional(), template_revision_id: mediaIdSchema.optional(),
   renderer_version: z.string().min(1).max(120), text_layout_engine_version: z.string().min(1).max(120), dependency_asset_hashes: z.array(imageHashSchema).max(80),
   font_asset_hashes: z.array(imageHashSchema).max(32), output_hash: imageHashSchema, text_manifest_hash: imageHashSchema,
-  /** Frozen deterministic layout proof: actual CJK line breaks and resolved font size. */
-  text_layout_manifest: z.array(z.object({ id: mediaIdSchema, font_hash: imageHashSchema, font_size: z.number().positive(), width: z.number().positive(), height: z.number().positive(), lines: z.array(z.string().max(2_000)).max(2_000) }).strict()).max(80).default([]),
+  /** Frozen deterministic layout proof: shaping runs, overflow decision and rendered pixel bounds. */
+  text_layout_manifest: z.array(z.object({
+    id: mediaIdSchema, text_hash: imageHashSchema, font_hash: imageHashSchema, font_size: z.number().positive(), width: z.number().positive(), height: z.number().positive(),
+    lines: z.array(z.string().max(2_000)).max(2_000), overflow: z.enum(['fit', 'shrunk', 'clipped']),
+    runs: z.array(z.object({ line_index: z.number().int().nonnegative(), text: z.string().max(2_000), glyphs: z.array(z.object({ glyph_id: z.number().int().nonnegative(), x: z.number().finite(), y: z.number().finite(), advance_x: z.number().finite(), advance_y: z.number().finite() }).strict()).max(2_000) }).strict()).max(2_000),
+    pixel_bounds: z.object({ left: z.number().finite(), top: z.number().finite(), width: z.number().int().nonnegative().max(24_000), height: z.number().int().nonnegative().max(24_000), empty: z.boolean() }).strict(),
+  }).strict()).max(80).default([]),
   /** Payload is retained solely to decode every encoded export from this final Canvas version. */
-  qr_manifest: z.array(z.object({ id: mediaIdSchema, payload: z.string().min(1).max(2_048), x: z.number().finite(), y: z.number().finite(), size: z.number().positive().max(12_000) }).strict()).max(80).default([]),
+  qr_manifest: z.array(z.object({ id: mediaIdSchema, payload: z.string().min(1).max(2_048), x: z.number().finite(), y: z.number().finite(), width: z.number().positive().max(12_000), height: z.number().positive().max(12_000), rotation_degrees: z.number().finite().min(-360).max(360) }).strict()).max(80).default([]),
   created_at: mediaIsoDateSchema,
 }).strict()
 export const imageReleaseCheckResultSchema = z.object({

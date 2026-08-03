@@ -95,6 +95,25 @@ jobs:
           bun run verify:codex-engine-source
           if ($LASTEXITCODE -ne 0) { throw 'Codex 锁定源码与协议检查失败' }
 
+      - name: 固定 Windows x64 Canvas golden 并生成审计证据
+        working-directory: ts
+        shell: pwsh
+        env:
+          BB_IMAGE_GOLDEN_REPORT: ${{ runner.temp }}\\image-canvas-golden-windows-x64.json
+        run: |
+          $ErrorActionPreference = 'Stop'
+          bun test --preload ./test/setup.ts ./test/imageCanvasGolden.test.ts
+          if ($LASTEXITCODE -ne 0) { throw 'Windows x64 Canvas golden 不匹配' }
+          if (-not (Test-Path -LiteralPath $env:BB_IMAGE_GOLDEN_REPORT -PathType Leaf)) { throw '缺少 Windows x64 golden 审计证据' }
+
+      - name: 保存 Windows x64 Canvas golden 审计证据
+        uses: actions/upload-artifact@v4
+        with:
+          name: image-canvas-golden-windows-x64-${{ github.sha }}
+          if-no-files-found: error
+          retention-days: 14
+          path: ${{ runner.temp }}/image-canvas-golden-windows-x64.json
+
       - name: 准备经审核的媒体工具链
         shell: pwsh
         env:

@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "test": "bun test --preload ./test/setup.ts",
-    "test:images": "bun test --preload ./test/setup.ts ./test/imageWorkbenchBaseline.test.ts ./test/imageWorkbenchCanvasDelivery.test.ts ./test/imageWorkbenchIpcContract.test.ts ./test/imageWorkbenchProviderSmokePolicy.test.ts",
+    "test:images": "bun test --preload ./test/setup.ts ./test/imageWorkbenchBaseline.test.ts ./test/imageWorkbenchCanvasDelivery.test.ts ./test/imageCanvasGolden.test.ts ./test/imageWorkbenchIpcContract.test.ts ./test/imageWorkbenchProviderSmokePolicy.test.ts",
     "test:images:provider-smoke": "bun test --preload ./test/setup.ts ./test/imageWorkbenchProviderSmoke.ts",
     "typecheck:server": "tsc --project tsconfig.server.json",
     "check:server": "bun run typecheck:server",
