@@ -95,7 +95,10 @@ export class OssObjectStore implements RelayObjectStore {
   async createReadUrl(input: { leaseId: string; expiresAt: string }): Promise<string> { return await this.presignedUrl('GET', this.inputKey(input.leaseId), input.expiresAt) }
   async putResult(input: { objectRef: string; body: Uint8Array; contentHash: string; contentType: string }): Promise<void> {
     try {
-      await this.client.putStream(this.resultKey(input.objectRef), Readable.from(input.body), { contentLength: input.body.byteLength, mime: input.contentType, meta: { sha256: input.contentHash, size: String(input.body.byteLength) } })
+      // Readable.from(Uint8Array) iterates numbers in Bun's Node compatibility
+      // layer. Wrap the immutable bytes as one binary chunk so ali-oss always
+      // receives a byte stream rather than a stream of numeric values.
+      await this.client.putStream(this.resultKey(input.objectRef), Readable.from([Buffer.from(input.body)]), { contentLength: input.body.byteLength, mime: input.contentType, meta: { sha256: input.contentHash, size: String(input.body.byteLength) } })
     } catch { throw new Error('oss_result_put_failed') }
   }
   async createResultReadUrl(input: { objectRef: string; expiresAt: string }): Promise<string> { return await this.presignedUrl('GET', this.resultKey(input.objectRef), input.expiresAt) }
