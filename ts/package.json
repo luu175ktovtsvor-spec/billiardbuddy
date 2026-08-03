@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "test": "bun test --preload ./test/setup.ts",
     "typecheck:server": "tsc --project tsconfig.server.json",
     "check:server": "bun run typecheck:server",
     "check:desktop": "cd desktop && bun run lint && bun run build",
