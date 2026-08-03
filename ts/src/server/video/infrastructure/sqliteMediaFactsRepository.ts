@@ -317,17 +317,57 @@ export class SqliteMediaFactsRepository {
     }))
   }
 
-  /** FTS remains the recall/cursor authority; semantic cosine only re-ranks its bounded page. */
+  /**
+   * Hybrid recall is the union of FTS matches and all current embedding
+   * candidates.  Reciprocal-rank fusion deliberately keeps the lexical and
+   * semantic signals independent; semantic retrieval is no longer restricted
+   * to whatever happened to fit in the current FTS page.
+   */
   async hybridSearchPage(projectId: string, query: string, queryVector: number[], options: { cursor?: string; limit?: number } = {}): Promise<VideoFactSearchPage> {
     if (queryVector.length !== 768 || queryVector.some(value => !Number.isFinite(value))) throw new VideoFactsRepositoryError('Embedding 查询向量无效', 'VIDEO_FACTS_INVALID')
-    const page = await this.searchPage(projectId, query, options)
-    const rows = this.unitOfWork.database.query(`SELECT entry_id,vector_json FROM video_fact_embeddings WHERE project_id=? AND generation=?`).all(projectId, page.generation) as Array<{ entry_id: string; vector_json: string }>
-    const vectors = new Map(rows.flatMap(row => {
-      try { const vector = JSON.parse(row.vector_json) as unknown; return Array.isArray(vector) && vector.length === 768 && vector.every(value => typeof value === 'number' && Number.isFinite(value)) ? [[row.entry_id, vector as number[]] as const] : [] } catch { return [] }
-    }))
+    const generation = await this.ensureSearchGeneration(projectId)
+    const vectorHash = `sha256:${createHash('sha256').update(JSON.stringify(queryVector)).digest('hex')}`
+    const cursor = options.cursor ? this.decodeHybridSearchCursor(options.cursor) : undefined
+    if (cursor && (cursor.generation !== generation || cursor.query_hash !== this.searchQueryHash(query) || cursor.vector_hash !== vectorHash)) {
+      throw new VideoFactsRepositoryError('搜索索引或查询已更新，请从第一页重新查询', 'VIDEO_FACTS_INVALID')
+    }
+    const lexical = await this.searchPage(projectId, query, { limit: 100 })
+    // The persisted fact contract caps one project at 10,000 searchable
+    // entries. Recall that complete bounded set instead of a hidden 2,000-row
+    // prefix, otherwise a semantic-only result can silently disappear.
+    const rows = this.unitOfWork.database.query(`SELECT entry_id,vector_json FROM video_fact_embeddings WHERE project_id=? AND generation=? ORDER BY entry_id LIMIT 10000`).all(projectId, generation) as Array<{ entry_id: string; vector_json: string }>
     const entryId = (item: VideoFactSearchResult) => item.kind === 'transcript' ? this.transcriptSearchEntryId(item.id, item.segment_ids.join(',')) : item.id
     const cosine = (left: number[], right: number[]) => { let dot = 0; let a = 0; let b = 0; for (let index = 0; index < 768; index += 1) { dot += left[index]! * right[index]!; a += left[index]! ** 2; b += right[index]! ** 2 } return a && b ? dot / Math.sqrt(a * b) : -1 }
-    return { ...page, items: page.items.map((item, index) => ({ item, index, score: vectors.get(entryId(item)) ? cosine(queryVector, vectors.get(entryId(item))!) : -1 })).sort((left, right) => right.score - left.score || left.index - right.index).map(item => item.item) }
+    const candidates = new Map<string, { item: VideoFactSearchResult; lexicalRank?: number; semanticRank?: number }>()
+    for (const [index, item] of lexical.items.entries()) candidates.set(entryId(item), { item, lexicalRank: index + 1 })
+    const semantic = rows.flatMap(row => {
+      try {
+        const vector = JSON.parse(row.vector_json) as unknown
+        return Array.isArray(vector) && vector.length === 768 && vector.every(value => typeof value === 'number' && Number.isFinite(value))
+          ? [{ entryId: row.entry_id, score: cosine(queryVector, vector as number[]) }]
+          : []
+      } catch { return [] }
+    }).sort((left, right) => right.score - left.score || left.entryId.localeCompare(right.entryId))
+    for (const [index, candidate] of semantic.entries()) {
+      const existing = candidates.get(candidate.entryId)
+      if (existing) { existing.semanticRank = index + 1; continue }
+      const row = this.unitOfWork.database.query(`SELECT rowid,fact_id AS entry_id,source_id,fact_kind
+        FROM video_fact_search WHERE project_id=? AND fact_id=? ORDER BY rowid LIMIT 1`).get(projectId, candidate.entryId) as SearchRow | null
+      const item = row ? await this.materializeSearchResult(row) : null
+      if (item) candidates.set(candidate.entryId, { item, semanticRank: index + 1 })
+    }
+    const ordered = [...candidates.entries()].map(([key, candidate]) => ({
+      key,
+      item: candidate.item,
+      score: (candidate.lexicalRank ? 1 / (60 + candidate.lexicalRank) : 0) + (candidate.semanticRank ? 1 / (60 + candidate.semanticRank) : 0),
+    })).sort((left, right) => right.score - left.score || left.key.localeCompare(right.key))
+    const limit = Math.max(1, Math.min(100, options.limit ?? 50)); const offset = cursor?.offset ?? 0
+    const items = ordered.slice(offset, offset + limit).map(candidate => candidate.item)
+    return {
+      generation,
+      items,
+      ...(offset + items.length < ordered.length ? { next_cursor: this.encodeHybridSearchCursor({ generation, offset: offset + items.length, query_hash: this.searchQueryHash(query), vector_hash: vectorHash }) } : {}),
+    }
   }
 
   async activeTranscriptRevision(transcriptId: string): Promise<VideoFact | null> {
@@ -704,6 +744,26 @@ export class SqliteMediaFactsRepository {
       const rowid = value.rowid
       if (typeof generation !== 'number' || typeof rowid !== 'number' || !Number.isSafeInteger(generation) || !Number.isSafeInteger(rowid) || generation < 0 || rowid < 0) throw new Error('invalid')
       return { generation, rowid }
+    } catch {
+      throw new VideoFactsRepositoryError('视频事实搜索游标无效', 'VIDEO_FACTS_INVALID')
+    }
+  }
+
+  private searchQueryHash(query: string): `sha256:${string}` {
+    return `sha256:${createHash('sha256').update(query.trim()).digest('hex')}`
+  }
+
+  private encodeHybridSearchCursor(value: { generation: number; offset: number; query_hash: string; vector_hash: string }): string {
+    return Buffer.from(JSON.stringify({ kind: 'hybrid-v1', ...value }), 'utf8').toString('base64url')
+  }
+
+  private decodeHybridSearchCursor(cursor: string): { generation: number; offset: number; query_hash: string; vector_hash: string } {
+    try {
+      const value = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as Record<string, unknown>
+      if (value.kind !== 'hybrid-v1' || typeof value.generation !== 'number' || typeof value.offset !== 'number'
+        || !Number.isSafeInteger(value.generation) || !Number.isSafeInteger(value.offset) || value.generation < 0 || value.offset < 0
+        || typeof value.query_hash !== 'string' || typeof value.vector_hash !== 'string') throw new Error('invalid')
+      return { generation: value.generation, offset: value.offset, query_hash: value.query_hash, vector_hash: value.vector_hash }
     } catch {
       throw new VideoFactsRepositoryError('视频事实搜索游标无效', 'VIDEO_FACTS_INVALID')
     }

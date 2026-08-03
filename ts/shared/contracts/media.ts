@@ -421,6 +421,11 @@ export const videoSourceTimeRangeSchema = z.object({
   duration: videoRationalTimeSchema,
 })
 export const videoEditorialTimeRangeSchema = videoSourceTimeRangeSchema
+/** Source-time consumed for each unit of timeline time. Omitted means 1x. */
+export const videoPlaybackSpeedSchema = videoRationalSchema.refine(
+  value => value.num <= 100 && value.den <= 100,
+  { message: 'playback speed must be between 1/100x and 100x' },
+)
 
 export const videoTimelineTrackSchema = z.object({
   id: mediaIdSchema,
@@ -458,6 +463,8 @@ export const videoTimelineItemSchema = z.object({
   kind: z.enum(['video', 'audio', 'caption', 'overlay']),
   timeline_range: videoEditorialTimeRangeSchema,
   binding: videoTimelineAssetBindingSchema,
+  /** Required whenever a source range and timeline range have different duration. */
+  speed: videoPlaybackSpeedSchema.optional(),
   linked_camera_shot_ids: z.array(mediaIdSchema).max(200).default([]),
   linked_content_segment_ids: z.array(mediaIdSchema).max(200).default([]),
   locked: z.boolean().default(false),
@@ -580,7 +587,7 @@ export const deliveryVariantSchema = z.object({
 
 export const editorialTimelineCommandSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('insert'), track_id: mediaIdSchema, item: videoTimelineItemSchema }),
-  z.object({ kind: z.literal('trim'), item_id: mediaIdSchema, source_range: videoSourceTimeRangeSchema, timeline_range: videoEditorialTimeRangeSchema }),
+  z.object({ kind: z.literal('trim'), item_id: mediaIdSchema, source_range: videoSourceTimeRangeSchema, timeline_range: videoEditorialTimeRangeSchema, speed: videoPlaybackSpeedSchema.optional() }),
   z.object({ kind: z.literal('split'), item_id: mediaIdSchema, at: videoRationalTimeSchema }),
   z.object({ kind: z.literal('reorder'), item_id: mediaIdSchema, track_id: mediaIdSchema, timeline_start: videoRationalTimeSchema }),
   z.object({ kind: z.literal('replace'), item_id: mediaIdSchema, replacement: videoTimelineItemSchema }),
@@ -649,6 +656,7 @@ export const videoExecutionPlanSchema = z.object({
     kind: z.enum(['video', 'audio', 'caption', 'overlay']),
     timeline_range: videoEditorialTimeRangeSchema,
     binding: videoTimelineAssetBindingSchema,
+    speed: videoPlaybackSpeedSchema.optional(),
   })).max(2000),
   inputs: z.array(z.object({ source_id: mediaIdSchema, source_fingerprint: z.string().regex(/^sha256:[a-f0-9]{64}$/), source_range: videoSourceTimeRangeSchema })).max(2000),
   filters: z.array(z.discriminatedUnion('kind', [
@@ -719,6 +727,21 @@ export const videoRemoteBudgetSchema = z.object({
   proxy_seconds: z.number().nonnegative(),
   asr_seconds: z.number().nonnegative(),
   estimated_amount_micros: z.number().int().nonnegative(),
+  /** One immutable entry per Relay receipt; aggregate fields above remain the
+   * user-approved estimate rather than being overwritten by the last call. */
+  settlements: z.array(z.object({
+    operation_id: mediaIdSchema,
+    receipt_id: mediaIdSchema,
+    capability: z.enum(['visual_evidence', 'media_reasoning', 'speech_transcription', 'semantic_embedding']),
+    requests: z.number().int().nonnegative(),
+    total_tokens: z.number().int().nonnegative(),
+    input_bytes: z.number().int().nonnegative(),
+    visual_frames: z.number().int().nonnegative(),
+    proxy_seconds: z.number().nonnegative(),
+    asr_seconds: z.number().nonnegative(),
+    estimated_amount_micros: z.number().int().nonnegative(),
+    settled_at: mediaIsoDateSchema,
+  })).max(10_000).default([]),
   created_at: mediaIsoDateSchema,
   updated_at: mediaIsoDateSchema,
 })

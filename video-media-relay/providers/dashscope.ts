@@ -55,7 +55,7 @@ export class DashScopeVideoProvider {
       : input.capability === 'speech_transcription' ? asrResult(parsed)
         : input.capability === 'visual_evidence' ? visualResult(parsed)
           : planningResult(parsed)
-    return { state: 'succeeded', result, receipt: this.receipt(input, descriptor.model_id, body, raw, parsed) }
+    return { state: 'succeeded', result, receipt: this.receipt(input, descriptor.model_id, body, raw, parsed, input.capability === 'speech_transcription' ? asrSeconds(parsed) : undefined) }
   }
 
   async poll(input: CreateVideoRelayOperationRequest, providerTaskId: string, _identity: Identity): Promise<DashScopeExecution & { safe_error_code?: string }> {
@@ -84,10 +84,10 @@ export class DashScopeVideoProvider {
       if (text.length > 16 * 1024 * 1024) throw new Error('too_large')
       transcription = JSON.parse(text) as Record<string, unknown>
     } catch { throw new DashScopeProviderError(503, 'asr_result_download_unavailable') }
-    return { state: 'succeeded', provider_task_id: providerTaskId, result: asrResult(transcription), receipt: this.receipt(input, 'fun-asr', {}, raw, parsed) }
+    return { state: 'succeeded', provider_task_id: providerTaskId, result: asrResult(transcription), receipt: this.receipt(input, 'fun-asr', {}, raw, parsed, asrSeconds(transcription)) }
   }
 
-  private receipt(input: CreateVideoRelayOperationRequest, model: string, body: unknown, raw: string, parsed: Record<string, unknown>): ProviderExecutionReceipt {
+  private receipt(input: CreateVideoRelayOperationRequest, model: string, body: unknown, raw: string, parsed: Record<string, unknown>, measuredAsrSeconds?: number): ProviderExecutionReceipt {
     const usage = parsed.usage && typeof parsed.usage === 'object' ? parsed.usage as Record<string, unknown> : {}
     const inputBytes = Buffer.byteLength(JSON.stringify(body), 'utf8')
     return {
@@ -95,7 +95,7 @@ export class DashScopeVideoProvider {
       capability: input.capability,
       model_snapshot: model,
       region: 'cn-beijing', request_schema_version: 1, prompt_version: 'video-media-v1', input_basis_hash: input.request_hash,
-      usage: { requests: 1, total_tokens: safeNumber(usage.total_tokens) || safeNumber(usage.input_tokens) + safeNumber(usage.output_tokens), input_bytes: inputBytes, visual_frames: 0, proxy_seconds: 0, asr_seconds: 0, estimated_amount_micros: 0 },
+      usage: { requests: 1, total_tokens: safeNumber(usage.total_tokens) || safeNumber(usage.input_tokens) + safeNumber(usage.output_tokens), input_bytes: inputBytes, visual_frames: 0, proxy_seconds: 0, asr_seconds: measuredAsrSeconds ?? safeNumber(usage.asr_seconds), estimated_amount_micros: 0 },
       cache_hit: false, upstream_receipt_hash: `sha256:${createHash('sha256').update(raw).digest('hex')}`, created_at: (this.options.now ?? (() => new Date()))().toISOString(),
     }
   }
@@ -133,6 +133,15 @@ function asrResult(raw: Record<string, unknown>) {
   const text = typeof value.text === 'string' ? value.text : typeof sentence.text === 'string' ? sentence.text : typeof transcriptValue.text === 'string' ? transcriptValue.text : ''
   if (!text.trim()) throw new DashScopeProviderError(422, 'asr_result_empty')
   return { kind: 'asr', text: text.trim(), sentences: Array.isArray(sentence.sentences) ? sentence.sentences : Array.isArray(transcriptValue.sentences) ? transcriptValue.sentences : [] }
+}
+function asrSeconds(raw: Record<string, unknown>): number {
+  const result = asrResult(raw)
+  const maxEnd = result.sentences.reduce((maximum, item) => {
+    if (!item || typeof item !== 'object') return maximum
+    const end = (item as Record<string, unknown>).end_time
+    return typeof end === 'number' && Number.isFinite(end) ? Math.max(maximum, end) : maximum
+  }, 0)
+  return Math.max(0, maxEnd / 1000)
 }
 function taskIdFrom(raw: Record<string, unknown>): string | undefined {
   const output = raw.output && typeof raw.output === 'object' ? raw.output as Record<string, unknown> : {}

@@ -65,6 +65,27 @@ test('Video Media Relay fails closed when Gateway introspection is unavailable',
   expect(await response.json()).toMatchObject({ error: 'identity_unavailable' })
 })
 
+test('Relay persists failed OSS result cleanup and retries it on the next authenticated request', async () => {
+  let deleteAttempts = 0
+  const objectStore: MediaObjectStore = {
+    async createPutUrl() { return { put_url: 'https://oss.example.test/put', required_headers: {} } }, async head() { return null }, async delete() {}, async createReadUrl() { return 'https://oss.example.test/read' }, async putResult() {}, async createResultReadUrl(input) { return `https://oss.example.test/result/${input.objectRef}` },
+    async deleteResult() { deleteAttempts += 1; if (deleteAttempts === 1) throw new Error('temporary_oss_delete_failure') },
+  }
+  const receipt: ProviderExecutionReceipt = { id: 'receipt_cleanup_12345678', capability: 'semantic_embedding', model_snapshot: 'text-embedding-v4', region: 'cn-beijing', request_schema_version: 1, prompt_version: 'v1', input_basis_hash: hash, usage: { requests: 1, total_tokens: 0, input_bytes: 0, visual_frames: 0, proxy_seconds: 0, asr_seconds: 0, estimated_amount_micros: 0 }, cache_hit: false, created_at: now().toISOString() }
+  const provider: VideoMediaProvider = { async execute() { return { state: 'succeeded', receipt, result: { kind: 'embedding', vectors: [] } } } }
+  let current = now()
+  const handler = createVideoMediaRelayFetch({ env: { GW_VIDEO_MEDIA_INTROSPECTION_TOKEN: token, VIDEO_MEDIA_GATEWAY_INTROSPECTION_BASE: 'http://gateway', VIDEO_MEDIA_RELAY_DB: ':memory:' }, fetchImpl: identityFetch, objectStore, provider, now: () => current })
+  const operation = await handler(new Request('http://relay/v1/video-media/operations', { method: 'POST', headers: headers('cleanup-operation-key-0001'), body: JSON.stringify({ local_operation_id: 'task_cleanup_12345678', consent_revision_id: 'consent_12345678', consent_scope_hash: hash, local_budget_reservation_id: 'budget_12345678', request_hash: hash, capability: 'semantic_embedding', application_role: 'search_index', input: { embedding_role: 'query', items: [{ id: 'embed_cleanup_12345678', text: '清理重试' }], model: 'text-embedding-v4', dimension: 768, instruction_version: 'v1' } }) }))
+  const projection = await operation.json() as { id: string; provider_receipt: { id: string }; result_objects: Array<{ content_hash: `sha256:${string}` }> }
+  const acknowledged = await handler(new Request(`http://relay/v1/video-media/operations/${projection.id}/ack`, { method: 'POST', headers: headers('cleanup-ack-key-00000001'), body: JSON.stringify({ receipt_id: projection.provider_receipt.id, result_hashes: projection.result_objects.map(item => item.content_hash) }) }))
+  expect(acknowledged.status).toBe(204)
+  expect(deleteAttempts).toBe(1)
+  current = new Date(current.getTime() + 2_000)
+  const retryTrigger = await handler(new Request('http://relay/v1/video-media/object-leases', { method: 'POST', headers: headers('cleanup-retry-lease-key'), body: JSON.stringify({ local_operation_id: 'task_cleanup_lease_0001', purpose: 'visual_frames', content_hash: hash, byte_size: 1, content_type: 'image/jpeg', consent_revision_id: 'consent_12345678', consent_scope_hash: hash }) }))
+  expect(retryTrigger.status).toBe(201)
+  expect(deleteAttempts).toBe(2)
+})
+
 test('Relay keeps a submitted long ASR task and only advances it through GET polling', async () => {
   const objectStore: MediaObjectStore = {
     async createPutUrl() { return { put_url: 'https://oss.example.test/put', required_headers: {} } }, async head() { return { byte_size: 4, content_hash: hash, content_type: 'audio/wav' } }, async delete() {}, async createReadUrl() { return 'https://oss.example.test/read' }, async putResult() {}, async createResultReadUrl() { return 'https://oss.example.test/result' }, async deleteResult() {},
