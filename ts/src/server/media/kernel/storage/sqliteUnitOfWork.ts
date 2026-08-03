@@ -9,7 +9,7 @@ export class SqliteUnitOfWorkError extends Error {
   }
 }
 
-const MEDIA_KERNEL_SCHEMA_VERSION = 2
+const MEDIA_KERNEL_SCHEMA_VERSION = 4
 
 /**
  * The Media Kernel is the only owner of the SQLite connection and schema
@@ -108,6 +108,8 @@ export class SqliteUnitOfWork {
       this.backupBeforeMigration(version)
       if (version === 1) this.migrateV1()
       else if (version === 2) this.migrateV2()
+      else if (version === 3) this.migrateV3()
+      else if (version === 4) this.migrateV4()
     }
   }
 
@@ -262,6 +264,86 @@ export class SqliteUnitOfWork {
         GROUP BY project_id`)
       this.database.query('INSERT INTO media_kernel_schema_migrations(version,applied_at) VALUES(?,?)')
         .run(2, new Date().toISOString())
+    })
+  }
+
+  /** Media Facts indexes point to immutable payloads and never to legacy JSON. */
+  private migrateV3(): void {
+    this.transaction(() => {
+      this.database.exec(`CREATE TABLE video_fact_payloads(
+        intent_id TEXT PRIMARY KEY REFERENCES media_commit_intents(id),
+        fact_kind TEXT NOT NULL,
+        fact_id TEXT NOT NULL,
+        project_id TEXT NOT NULL REFERENCES video_projects(id),
+        source_id TEXT,
+        source_fingerprint TEXT,
+        payload_hash TEXT NOT NULL,
+        payload_locator TEXT NOT NULL,
+        payload_schema TEXT NOT NULL,
+        payload_version INTEGER NOT NULL,
+        state TEXT NOT NULL CHECK(state IN ('prepared','committed','abandoned')),
+        UNIQUE(fact_kind, fact_id, intent_id)
+      )`)
+      const createFactTable = (name: string) => this.database.exec(`CREATE TABLE ${name}(
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL REFERENCES video_projects(id),
+        source_id TEXT,
+        source_fingerprint TEXT,
+        state TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        last_accessed_at TEXT NOT NULL,
+        payload_hash TEXT NOT NULL,
+        payload_locator TEXT NOT NULL,
+        payload_schema TEXT NOT NULL,
+        payload_version INTEGER NOT NULL
+      )`)
+      createFactTable('video_fact_sources')
+      createFactTable('video_fact_derivatives')
+      createFactTable('video_fact_transcripts')
+      createFactTable('video_fact_transcript_revisions')
+      createFactTable('video_fact_camera_shots')
+      createFactTable('video_fact_content_segments')
+      createFactTable('video_fact_evidence_windows')
+      createFactTable('video_fact_evidence')
+      this.database.exec(`CREATE TABLE video_fact_transcript_heads(
+        transcript_id TEXT PRIMARY KEY REFERENCES video_fact_transcripts(id),
+        revision_id TEXT NOT NULL REFERENCES video_fact_transcript_revisions(id),
+        updated_at TEXT NOT NULL
+      )`)
+      for (const table of [
+        'video_fact_sources',
+        'video_fact_derivatives',
+        'video_fact_transcripts',
+        'video_fact_transcript_revisions',
+        'video_fact_camera_shots',
+        'video_fact_content_segments',
+        'video_fact_evidence_windows',
+        'video_fact_evidence',
+      ]) {
+        this.database.exec(`CREATE INDEX ${table}_project_source_state ON ${table}(project_id,source_id,state,updated_at DESC)`)
+      }
+      this.database.exec(`CREATE VIRTUAL TABLE video_fact_search USING fts5(
+        fact_id UNINDEXED,
+        project_id UNINDEXED,
+        source_id UNINDEXED,
+        fact_kind UNINDEXED,
+        text
+      )`)
+      this.database.query('INSERT INTO media_kernel_schema_migrations(version,applied_at) VALUES(?,?)')
+        .run(3, new Date().toISOString())
+    })
+  }
+
+  /** Search cursors are tied to a durable generation, never SQLite row order alone. */
+  private migrateV4(): void {
+    this.transaction(() => {
+      this.database.exec(`CREATE TABLE IF NOT EXISTS video_fact_search_generations(
+        project_id TEXT PRIMARY KEY REFERENCES video_projects(id),
+        generation INTEGER NOT NULL CHECK(generation >= 0),
+        updated_at TEXT NOT NULL
+      )`)
+      this.database.query('INSERT INTO media_kernel_schema_migrations(version,applied_at) VALUES(?,?)')
+        .run(4, new Date().toISOString())
     })
   }
 }

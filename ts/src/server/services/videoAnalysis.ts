@@ -66,6 +66,10 @@ export type VideoPlanDraft = z.infer<typeof planDraftSchema>
 export type VideoAnalysisFrame = {
   source_id: string
   in_ms: number
+  /** Host-owned Evidence Window that authorized this visual input. */
+  evidence_window_id?: string
+  /** Exclusive end bound for the visual fact projected from this frame. */
+  range_end_ms?: number
   data_url: string
 }
 
@@ -330,7 +334,12 @@ export async function analyzeVideoEvidence(
   let visual: z.infer<typeof visualEvidenceBatchSchema>['evidence'] = []
   const gaps = [...input.extractionGaps]
   try {
-    visual = await gatewayVisualEvidence(input.frames, options)
+    // The provider envelope caps one request at eight images. Batching keeps
+    // the caller's Evidence Window budget intact instead of silently dropping
+    // later windows or making an oversized request invalid.
+    for (let offset = 0; offset < input.frames.length; offset += 8) {
+      visual.push(...await gatewayVisualEvidence(input.frames.slice(offset, offset + 8), options))
+    }
   } catch (error) {
     if (options.signal?.aborted || (error instanceof VideoAnalysisError && error.code === 'VIDEO_ANALYSIS_CANCELLED')) {
       throw error
@@ -345,7 +354,12 @@ export async function analyzeVideoEvidence(
     const source = sources.get(frame.source_id)
     const item = visual[index]
     if (!source || !item || frame.in_ms < 0 || frame.in_ms >= source.duration_ms) return []
-    const outMs = Math.min(source.duration_ms, Math.max(frame.in_ms + 1, frame.in_ms + 1_000))
+    const outMs = Math.min(
+      source.duration_ms,
+      frame.range_end_ms ?? source.duration_ms,
+      Math.max(frame.in_ms + 1, frame.in_ms + 1_000),
+    )
+    if (outMs <= frame.in_ms) return []
     const facts = [
       item.ocr ? `可见文字：${item.ocr}` : '',
       item.objects.length ? `对象：${item.objects.join('；')}` : '',

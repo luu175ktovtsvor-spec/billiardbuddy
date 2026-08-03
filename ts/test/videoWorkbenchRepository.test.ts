@@ -508,21 +508,26 @@ test('existing import, timeline, preview and render paths stay durable through t
   const imported = await service.addVideoSource(created.id, { path: sourcePath })
   expect(imported.task.status).toBe('succeeded')
   expect(imported.project.timeline).toHaveLength(1)
+  const fingerprintTask = (await service.repository.listOperations(imported.project.id)).find(task => task.kind === 'video.fingerprint')
+  expect(fingerprintTask).toBeDefined()
+  expect((await waitForTerminalOperation(service, fingerprintTask!.id)).status).toBe('succeeded')
+  const fingerprinted = await service.getProject(imported.project.id)
+  expect(fingerprinted.sources[0]?.fingerprint).toMatch(/^sha256:/)
   await expect(service.analyzeVideoProject(imported.project.id, {
     base_revision: imported.project.revision - 1,
     user_goal: '不应以过期版本分析',
   })).rejects.toMatchObject({ code: 'VIDEO_REVISION_CONFLICT' })
 
   const edited = await service.updateTimeline(imported.project.id, {
-    base_revision: imported.project.revision,
-    base_timeline_version_id: imported.project.current_timeline_version_id,
-    clips: imported.project.timeline,
+    base_revision: fingerprinted.revision,
+    base_timeline_version_id: fingerprinted.current_timeline_version_id,
+    clips: fingerprinted.timeline,
   })
   const selected = await service.selectTimelineVersion(imported.project.id, {
     revision: edited.revision,
-    version_id: imported.project.current_timeline_version_id!,
+    version_id: fingerprinted.current_timeline_version_id!,
   })
-  expect(selected.current_timeline_version_id).toBe(imported.project.current_timeline_version_id)
+  expect(selected.current_timeline_version_id).toBe(fingerprinted.current_timeline_version_id)
 
   const preview = await service.previewVideo(selected.id, {
     base_revision: selected.revision,

@@ -164,6 +164,8 @@ function publicTask(task: MediaTask): PublicMediaTask {
     ? 'MEDIA_IMAGE_UNAVAILABLE'
     : task.kind === 'video.probe'
       ? 'MEDIA_VIDEO_SOURCE_UNREADABLE'
+      : task.kind === 'video.fingerprint'
+        ? 'MEDIA_VIDEO_SOURCE_UNREADABLE'
       : task.kind === 'video.analyze' || task.kind === 'video.plan'
         ? 'MEDIA_VIDEO_ANALYSIS_UNAVAILABLE'
         : task.kind === 'video.preview'

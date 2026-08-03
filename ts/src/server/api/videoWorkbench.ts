@@ -13,6 +13,9 @@ import {
   previewVideoInputSchema,
   publicMediaJobEventPageSchema,
   publicMediaTaskSchema,
+  publicVideoFactPageSchema,
+  publicVideoFactSearchPageSchema,
+  publicVideoFactSummarySchema,
   publicVideoStudioProjectSchema,
   renderVideoInputSchema,
   selectVideoTimelineVersionInputSchema,
@@ -24,6 +27,8 @@ import {
 import { ApiError, errorResponse } from '../middleware/errorHandler.js'
 import { VideoWorkbenchRepositoryError, type VideoOperation, type VideoOperationEvent } from '../services/videoWorkbenchRepository.js'
 import { VideoWorkbenchService, VideoWorkbenchServiceError } from '../services/videoWorkbenchService.js'
+import { factKind, factSourceRange, type VideoFact, type VideoFactKind } from '../video/domain/mediaFacts/model.js'
+import { VideoFactsRepositoryError } from '../video/infrastructure/sqliteMediaFactsRepository.js'
 
 function methodNotAllowed(method: string): ApiError {
   return new ApiError(405, `Method ${method} not allowed`, 'METHOD_NOT_ALLOWED')
@@ -54,6 +59,15 @@ function apiErrorResponse(error: unknown): Response {
   if (error instanceof VideoWorkbenchServiceError || error instanceof VideoWorkbenchRepositoryError) {
     const safe = mediaSafeErrorForServiceError(error.code, error.status)
     return Response.json({ error: safe.code, message: safe.message }, { status: error.status })
+  }
+  if (error instanceof VideoFactsRepositoryError) {
+    const status = error.code === 'VIDEO_FACTS_INVALID' ? 400 : error.code === 'VIDEO_FACTS_NOT_FOUND' ? 404 : 500
+    const safe = error.code === 'VIDEO_FACTS_INVALID'
+      ? mediaSafeError('MEDIA_INVALID_REQUEST')
+      : error.code === 'VIDEO_FACTS_NOT_FOUND'
+        ? mediaSafeError('MEDIA_RESOURCE_UNAVAILABLE')
+        : mediaSafeError('MEDIA_TEMPORARILY_UNAVAILABLE')
+    return Response.json({ error: safe.code, message: safe.message }, { status })
   }
   if (error instanceof z.ZodError) {
     const safe = mediaSafeError('MEDIA_INVALID_REQUEST')
@@ -89,6 +103,8 @@ export function publicVideoTask(operation: VideoOperation): PublicMediaTask {
   const { owner: _owner, attempt: _attempt, result, error: rawError, error_code: errorCode, ...safeOperation } = operation
   const fallback = operation.kind === 'video.probe'
     ? 'MEDIA_VIDEO_SOURCE_UNREADABLE'
+    : operation.kind === 'video.fingerprint'
+      ? 'MEDIA_VIDEO_SOURCE_UNREADABLE'
     : operation.kind === 'video.analyze' || operation.kind === 'video.plan'
       ? 'MEDIA_VIDEO_ANALYSIS_UNAVAILABLE'
       : operation.kind === 'video.preview'
@@ -97,6 +113,8 @@ export function publicVideoTask(operation: VideoOperation): PublicMediaTask {
   const failure = rawError ? mediaSafeError(errorCode ?? fallback) : null
   const allowedKeys = operation.kind === 'video.probe'
     ? ['source_id']
+    : operation.kind === 'video.fingerprint'
+      ? ['source_id', 'media_facts']
     : operation.kind === 'video.analyze'
       ? ['evidence_revision', 'evidence_count', 'next_task_id']
       : operation.kind === 'video.plan'
@@ -129,11 +147,46 @@ export function publicVideoEventPage(page: Awaited<ReturnType<VideoWorkbenchServ
   return publicMediaJobEventPageSchema.parse({ ...page, events: page.events.map(publicVideoEvent) })
 }
 
+function publicVideoFactSummary(value: VideoFact) {
+  const kind = factKind(value)
+  const sourceId = 'fast_identity' in value ? value.id : 'source_id' in value ? value.source_id : undefined
+  const sourceFingerprint = 'source_fingerprint' in value ? value.source_fingerprint : 'fingerprint' in value ? value.fingerprint : undefined
+  return publicVideoFactSummarySchema.parse({
+    id: value.id,
+    kind,
+    ...(sourceId ? { source_id: sourceId } : {}),
+    ...(sourceFingerprint ? { source_fingerprint: sourceFingerprint } : {}),
+    ...('content_segment_id' in value && value.content_segment_id
+      ? { segment_id: value.content_segment_id }
+      : kind === 'content_segment' ? { segment_id: value.id } : {}),
+    ...(factSourceRange(value) ? { range: factSourceRange(value) } : {}),
+    ...('state' in value ? { state: value.state } : {}),
+    ...('fingerprint_state' in value ? { fingerprint_state: value.fingerprint_state } : {}),
+    ...('sample_strategy' in value ? { sample_strategy: value.sample_strategy } : {}),
+    ...('analysis_depth' in value ? { analysis_depth: value.analysis_depth } : {}),
+    ...('coverage' in value ? { coverage: value.coverage } : {}),
+    created_at: value.created_at,
+  })
+}
+
+function factKindParameter(value: string | undefined): VideoFactKind {
+  const allowed: VideoFactKind[] = ['source', 'derivative', 'transcript', 'transcript_revision', 'camera_shot', 'content_segment', 'evidence_window', 'evidence']
+  if (!value || !allowed.includes(value as VideoFactKind)) throw ApiError.badRequest('视频事实类型无效')
+  return value as VideoFactKind
+}
+
+function boundedQueryInteger(value: string | null, fallback: number, minimum: number, maximum: number, label: string): number {
+  if (value === null) return fallback
+  const parsed = Number(value)
+  if (!Number.isInteger(parsed) || parsed < minimum || parsed > maximum) throw ApiError.badRequest(`${label} 必须在 ${minimum} 到 ${maximum} 之间`)
+  return parsed
+}
+
 export function createVideoWorkbenchApiHandler(
   service: VideoWorkbenchService,
   mediaUiCapability = '',
 ) {
-  return async function handleVideoWorkbenchApi(req: Request, _url: URL, segments: string[]): Promise<Response> {
+  return async function handleVideoWorkbenchApi(req: Request, url: URL, segments: string[]): Promise<Response> {
     try {
       if (segments[2] !== 'videos') throw ApiError.notFound('找不到视频接口')
       if (segments[3] === 'toolchain') {
@@ -165,6 +218,35 @@ export function createVideoWorkbenchApiHandler(
         const input = addVideoSourceInputSchema.parse(await parseJson(req))
         const result = await service.addVideoSource(projectId, input)
         return Response.json({ project: publicVideoProject(result.project), task: publicVideoTask(result.task) }, { status: 201 })
+      }
+      if (action === 'facts') {
+        if (req.method !== 'GET' || !segments[6] || segments[7]) throw methodNotAllowed(req.method)
+        const kind = factKindParameter(segments[6])
+        const sourceId = url.searchParams.get('source_id')
+        if (sourceId !== null) z.string().regex(/^[a-z0-9][a-z0-9_-]{7,79}$/).parse(sourceId)
+        const cursor = url.searchParams.get('cursor')
+        if (cursor !== null && (!cursor || cursor.length > 2048)) throw ApiError.badRequest('视频事实分页游标无效')
+        const page = await service.pageMediaFacts(projectId, kind, {
+          ...(sourceId ? { sourceId } : {}),
+          ...(cursor ? { cursor } : {}),
+          limit: boundedQueryInteger(url.searchParams.get('limit'), 50, 1, 200, 'limit'),
+        })
+        return Response.json(publicVideoFactPageSchema.parse({
+          schema_version: 1,
+          items: page.items.map(publicVideoFactSummary),
+          ...(page.next_cursor ? { next_cursor: page.next_cursor } : {}),
+        }))
+      }
+      if (action === 'search') {
+        if (req.method !== 'GET' || segments[6]) throw methodNotAllowed(req.method)
+        const query = z.string().trim().min(1).max(1000).parse(url.searchParams.get('q') ?? '')
+        const cursor = url.searchParams.get('cursor')
+        if (cursor !== null && (!cursor || cursor.length > 2048)) throw ApiError.badRequest('视频事实搜索游标无效')
+        const page = await service.searchMediaFacts(projectId, query, {
+          ...(cursor ? { cursor } : {}),
+          limit: boundedQueryInteger(url.searchParams.get('limit'), 50, 1, 100, 'limit'),
+        })
+        return Response.json(publicVideoFactSearchPageSchema.parse({ schema_version: 1, ...page }))
       }
       if (action === 'timeline') {
         if (segments[6] === 'versions' && segments[7] && segments[8] === 'select' && !segments[9]) {
