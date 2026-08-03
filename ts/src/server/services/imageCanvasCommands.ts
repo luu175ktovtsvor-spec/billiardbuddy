@@ -64,7 +64,7 @@ function allIds(layers: ImageCanvasLayer[], seen = new Set<string>()): Set<strin
 export function applyCanvasCommandDocument(
   document: ImageCanvasDocument,
   command: ImageCanvasCommandInput,
-  deliveryArtboard?: { width: number; height: number },
+  deliveryArtboard?: { width: number; height: number; safe_area?: { top: number; right: number; bottom: number; left: number } },
   template?: ImageTemplateRevision,
 ): ImageCanvasDocument {
   const next = clone(document)
@@ -139,9 +139,7 @@ export function applyCanvasCommandDocument(
       next.delivery_spec_revision = command.payload.delivery_spec_revision
       if (!deliveryArtboard) throw new ImageCanvasCommandError('交付规格同步缺少目标画板')
       if (command.payload.layout_policy === 'fit_safe_area') {
-        const scaleX = deliveryArtboard.width / next.width
-        const scaleY = deliveryArtboard.height / next.height
-        next.layers = scaleLayers(next.layers, scaleX, scaleY)
+        next.layers = fitLayersIntoSafeArea(next.layers, next.width, next.height, deliveryArtboard)
       }
       next.width = deliveryArtboard.width
       next.height = deliveryArtboard.height
@@ -165,25 +163,47 @@ function bindTemplateLayers(layers: ImageCanvasLayer[], template: ImageTemplateR
   })
 }
 
-function scaleLayers(layers: ImageCanvasLayer[], scaleX: number, scaleY: number): ImageCanvasLayer[] {
+function fitLayersIntoSafeArea(
+  layers: ImageCanvasLayer[],
+  sourceWidth: number,
+  sourceHeight: number,
+  artboard: { width: number; height: number; safe_area?: { top: number; right: number; bottom: number; left: number } },
+): ImageCanvasLayer[] {
+  const safe = artboard.safe_area ?? { top: 0, right: 0, bottom: 0, left: 0 }
+  const safeWidth = artboard.width - safe.left - safe.right
+  const safeHeight = artboard.height - safe.top - safe.bottom
+  if (safeWidth <= 0 || safeHeight <= 0) throw new ImageCanvasCommandError('交付规格安全区没有可用空间')
+  const scale = Math.min(safeWidth / sourceWidth, safeHeight / sourceHeight)
+  const offsetX = safe.left + (safeWidth - sourceWidth * scale) / 2
+  const offsetY = safe.top + (safeHeight - sourceHeight * scale) / 2
+  return scaleLayers(layers, scale, scale, offsetX, offsetY)
+}
+
+function scaleLayers(layers: ImageCanvasLayer[], scaleX: number, scaleY: number, offsetX = 0, offsetY = 0): ImageCanvasLayer[] {
   return layers.map(layer => {
-    if (layer.kind === 'group') return { ...layer, children: scaleLayers(layer.children, scaleX, scaleY) }
+    if (layer.kind === 'group') return { ...layer, children: scaleLayers(layer.children, scaleX, scaleY, offsetX, offsetY) }
     if (layer.kind === 'raster' || layer.kind === 'logo' || layer.kind === 'qrcode' || layer.kind === 'shape') {
       return {
         ...layer,
         transform: {
           ...layer.transform,
-          x: layer.transform.x * scaleX,
-          y: layer.transform.y * scaleY,
+          x: layer.transform.x * scaleX + offsetX,
+          y: layer.transform.y * scaleY + offsetY,
           width: layer.transform.width * scaleX,
           height: layer.transform.height * scaleY,
         },
+        ...(layer.kind === 'shape' && layer.stroke_width !== undefined
+          ? { stroke_width: layer.stroke_width * Math.min(scaleX, scaleY) }
+          : {}),
       }
     }
     if (layer.kind === 'text') {
       return {
         ...layer,
-        position: { x: layer.position.x * scaleX, y: layer.position.y * scaleY },
+        position: { x: layer.position.x * scaleX + offsetX, y: layer.position.y * scaleY + offsetY },
+        font_size: layer.font_size * Math.min(scaleX, scaleY),
+        ...(layer.min_font_size === undefined ? {} : { min_font_size: layer.min_font_size * Math.min(scaleX, scaleY) }),
+        letter_spacing: layer.letter_spacing * Math.min(scaleX, scaleY),
         ...(layer.max_width === undefined ? {} : { max_width: layer.max_width * scaleX }),
         ...(layer.max_height === undefined ? {} : { max_height: layer.max_height * scaleY }),
       }

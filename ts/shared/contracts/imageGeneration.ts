@@ -597,7 +597,12 @@ export const imageRenderReceiptSchema = z.object({
   id: mediaIdSchema, version_id: mediaIdSchema, canvas_id: mediaIdSchema, canvas_revision: z.number().int().nonnegative(), document_hash: imageHashSchema,
   delivery_spec_id: mediaIdSchema, delivery_spec_revision: z.number().int().nonnegative(), brand_kit_revision_id: mediaIdSchema.optional(), template_revision_id: mediaIdSchema.optional(),
   renderer_version: z.string().min(1).max(120), text_layout_engine_version: z.string().min(1).max(120), dependency_asset_hashes: z.array(imageHashSchema).max(80),
-  font_asset_hashes: z.array(imageHashSchema).max(32), output_hash: imageHashSchema, text_manifest_hash: imageHashSchema, created_at: mediaIsoDateSchema,
+  font_asset_hashes: z.array(imageHashSchema).max(32), output_hash: imageHashSchema, text_manifest_hash: imageHashSchema,
+  /** Frozen deterministic layout proof: actual CJK line breaks and resolved font size. */
+  text_layout_manifest: z.array(z.object({ id: mediaIdSchema, font_hash: imageHashSchema, font_size: z.number().positive(), width: z.number().positive(), height: z.number().positive(), lines: z.array(z.string().max(2_000)).max(2_000) }).strict()).max(80).default([]),
+  /** Payload is retained solely to decode every encoded export from this final Canvas version. */
+  qr_manifest: z.array(z.object({ id: mediaIdSchema, payload: z.string().min(1).max(2_048), x: z.number().finite(), y: z.number().finite(), size: z.number().positive().max(12_000) }).strict()).max(80).default([]),
+  created_at: mediaIsoDateSchema,
 }).strict()
 export const imageReleaseCheckResultSchema = z.object({
   id: mediaIdSchema, project_id: mediaIdSchema, version_id: mediaIdSchema, export_asset_id: mediaIdSchema,

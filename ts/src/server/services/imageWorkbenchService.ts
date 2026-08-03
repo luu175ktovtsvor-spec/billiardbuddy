@@ -98,7 +98,7 @@ import {
   type SupportedImageMime,
   type VerifiedImageBytes,
 } from './imageAssetStore.js'
-import { assertFormalTextLayer, DeterministicImageCanvasRenderer, ImageCanvasRendererError } from './imageCanvasRenderer.js'
+import { assertDeterministicTextLayout, assertFormalTextLayer, DeterministicImageCanvasRenderer, ImageCanvasRendererError, verifyRenderedQrManifest } from './imageCanvasRenderer.js'
 import {
   ImageWorkbenchRepositoryError,
   type ImageOperation,
@@ -1757,7 +1757,13 @@ export class ImageWorkbenchService {
       request_hash: requestHash,
       created_at: this.iso(),
       ...(template ? { template } : {}),
-      ...(deliveryArtboard ? { delivery_artboard: { width: deliveryArtboard.width, height: deliveryArtboard.height } } : {}),
+      ...(deliveryArtboard ? {
+        delivery_artboard: {
+          width: deliveryArtboard.width,
+          height: deliveryArtboard.height,
+          ...(deliveryArtboard.safe_area ? { safe_area: deliveryArtboard.safe_area } : {}),
+        },
+      } : {}),
     })
     return { project: result.project, canvas: result.canvas }
   }
@@ -1860,7 +1866,7 @@ export class ImageWorkbenchService {
       || (layer.max_height !== undefined && layer.position.y + layer.max_height > canvas.document.height)
       || layer.font_asset_id !== 'font_builtin_0001')
     let invalidGlyph = false
-    try { textLayers.forEach(layer => assertFormalTextLayer(layer)) } catch { invalidGlyph = true }
+    try { textLayers.forEach(layer => { assertFormalTextLayer(layer); assertDeterministicTextLayout(layer) }) } catch { invalidGlyph = true }
     checks.push({
       id: 'font-and-text-bounds', status: invalidText || invalidGlyph ? 'fail' : 'pass',
       evidence: invalidText || invalidGlyph ? '正式文字必须使用受控字体、具备全部字形且不得裁切或越界' : '正式文字字体、字形、边界和溢出策略有效', waivable: false,
@@ -1957,6 +1963,8 @@ export class ImageWorkbenchService {
       font_asset_hashes: rendered.font_hashes,
       output_hash: verified.content_hash,
       text_manifest_hash: rendered.text_manifest_hash,
+      text_layout_manifest: rendered.text_layout_manifest,
+      qr_manifest: rendered.qr_manifest,
       created_at: now,
     }
     const releaseChecks = preflight.checks.map(check => ({
@@ -2058,7 +2066,9 @@ export class ImageWorkbenchService {
     }
     const queued = await this.repository.saveGenerationOperation(operation)
     if (queued.status === 'queued') {
-      queueMicrotask(() => { void this.executeCanvasRender(projectId, canvasId, executableInput, input.expected_current_version_id).catch(() => undefined) })
+      queueMicrotask(() => { void this.runLocalDelivery(queued.id, async () => {
+        await this.executeCanvasRender(projectId, canvasId, executableInput, input.expected_current_version_id)
+      }) })
     }
     return { operation: queued }
   }
@@ -2091,6 +2101,16 @@ export class ImageWorkbenchService {
           : await encoder.webp({ quality: artboard.output.quality, alphaQuality: 100 }).toBuffer()
       const output = await this.assets.verify(encoded)
       if (output.width !== artboard.width || output.height !== artboard.height) throw new ImageWorkbenchServiceError('导出后的图片尺寸不一致', 500, 'IMAGE_DIMENSIONS_MISMATCH')
+      const renderReceipt = version.render_receipt_id
+        ? await this.repository.getRenderReceipt(projectId, version.render_receipt_id)
+        : null
+      if (!renderReceipt) throw new ImageWorkbenchServiceError('导出版本缺少正式渲染收据', 409, 'IMAGE_RELEASE_CHECK_FAILED')
+      try {
+        await verifyRenderedQrManifest(encoded, renderReceipt.qr_manifest)
+      } catch (error) {
+        if (error instanceof ImageCanvasRendererError) throw new ImageWorkbenchServiceError(error.message, 409, error.code)
+        throw error
+      }
       const outputId = stableId('out', projectId, versionId, input.idempotency_key, artboardId, artboard.output.format)
       const persisted = await this.assets.persist(projectId, outputId, 'export', output, versionId, now)
       await this.assets.readVerified(persisted.asset)
@@ -2132,8 +2152,29 @@ export class ImageWorkbenchService {
       created_at: this.iso(), updated_at: this.iso(),
     }
     const queued = await this.repository.saveGenerationOperation(operation)
-    if (queued.status === 'queued') queueMicrotask(() => { void this.executeExportDelivery(projectId, input).catch(() => undefined) })
+    if (queued.status === 'queued') queueMicrotask(() => { void this.runLocalDelivery(queued.id, async () => {
+      await this.executeExportDelivery(projectId, input)
+    }) })
     return { operation: queued, project_revision: project.revision }
+  }
+
+  /** Local delivery failures caused by a rejected Canvas/Export contract are
+   * terminal.  Only infrastructure failures remain queued for crash recovery. */
+  private async runLocalDelivery(operationId: string, work: () => Promise<unknown>): Promise<void> {
+    try {
+      await work()
+    } catch (error) {
+      if (!(error instanceof ImageWorkbenchServiceError) || error.status >= 500) return
+      const operation = await this.repository.findGenerationOperation(operationId)
+      if (!operation || ['succeeded', 'failed', 'cancelled'].includes(operation.status)) return
+      await this.repository.updateGenerationOperation({
+        ...operation,
+        status: 'failed',
+        safe_error: { code: error.code, message: error.message },
+        completed_at: this.iso(),
+        updated_at: this.iso(),
+      })
+    }
   }
 
   async selectArtboardVersion(projectId: string, artboardId: string, raw: { base_revision: number; idempotency_key: string; version_id: string }): Promise<ImageWorkbenchProject> {
@@ -2625,14 +2666,15 @@ export class ImageWorkbenchService {
             activate_on_success: operation.local_delivery.activate_on_success,
           }, operation.local_delivery.expected_current_version_id_source === 'acceptance'
             ? undefined
-            : operation.local_delivery.requested_expected_current_version_id ?? operation.local_delivery.expected_current_version_id).catch(() => undefined)
+            : operation.local_delivery.requested_expected_current_version_id ?? operation.local_delivery.expected_current_version_id)
+          .catch(async error => await this.runLocalDelivery(operation.id, async () => { throw error }))
         }
         if (operation.local_delivery?.kind === 'export') {
           await this.executeExportDelivery(operation.project_id, {
             base_revision: operation.input_refs.project_revision,
             idempotency_key: operation.idempotency_key,
             version_ids_by_artboard: operation.local_delivery.version_ids_by_artboard,
-          }).catch(() => undefined)
+          }).catch(async error => await this.runLocalDelivery(operation.id, async () => { throw error }))
         }
       }))
   }
