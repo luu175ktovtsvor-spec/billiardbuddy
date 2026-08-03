@@ -487,7 +487,7 @@ export const mediaTaskSchema = z.object({
   operation_id: mediaIdSchema.optional(),
   owner: mediaOwnerSchema.optional(),
   attempt: z.number().int().positive().default(1),
-  kind: z.enum(['image.generate', 'video.probe', 'video.analyze', 'video.plan', 'video.preview', 'video.render']),
+  kind: z.enum(['image.generate', 'video.probe', 'video.fingerprint', 'video.analyze', 'video.plan', 'video.preview', 'video.render']),
   status: mediaTaskStatusSchema,
   /** Monotonic sequence for user-visible changes to this persisted job. */
   status_sequence: z.number().int().nonnegative().default(0),
@@ -551,6 +551,90 @@ export const publicMediaJobEventPageSchema = z.object({
   events: z.array(publicMediaJobEventSchema).max(200),
   cursor: z.number().int().nonnegative(),
   reset_required: z.boolean(),
+})
+
+const publicMediaFactTimeSchema = z.object({
+  ticks: z.string().regex(/^-?(?:0|[1-9]\d*)$/),
+  tick_rate: z.object({ num: z.number().int().positive(), den: z.number().int().positive() }),
+})
+
+export const publicVideoFactRangeSchema = z.object({
+  start: publicMediaFactTimeSchema,
+  duration: publicMediaFactTimeSchema,
+})
+
+export const publicVideoFactKindSchema = z.enum([
+  'source',
+  'derivative',
+  'transcript',
+  'transcript_revision',
+  'camera_shot',
+  'content_segment',
+  'evidence_window',
+  'evidence',
+])
+
+const publicEvidenceWindowCoverageSchema = z.object({
+  generation: z.number().int().nonnegative(),
+  request_budget: z.object({
+    max_windows: z.number().int().positive(),
+    max_visual_requests: z.number().int().positive(),
+    max_frames: z.number().int().positive(),
+    max_proxy_seconds: z.number().int().nonnegative(),
+    max_input_tokens: z.number().int().positive(),
+    max_covered_ticks: z.string().regex(/^-?(?:0|[1-9]\d*)$/),
+  }),
+  request_usage: z.object({
+    windows: z.number().int().nonnegative(),
+    visual_requests: z.number().int().nonnegative(),
+    frames: z.number().int().nonnegative(),
+    proxy_seconds: z.number().int().nonnegative(),
+    estimated_input_tokens: z.number().int().nonnegative(),
+    covered_ticks: z.string().regex(/^-?(?:0|[1-9]\d*)$/),
+  }),
+  uncovered: z.array(z.object({
+    range: publicVideoFactRangeSchema,
+    reason: z.enum(['max_windows', 'max_visual_requests', 'max_frames', 'max_proxy_seconds', 'max_input_tokens', 'max_covered_ticks']),
+  })).max(20_000),
+})
+
+/** Summary-only projection: no local paths, managed locators, prompts or provider credentials. */
+export const publicVideoFactSummarySchema = z.object({
+  id: mediaIdSchema,
+  kind: publicVideoFactKindSchema,
+  source_id: mediaIdSchema.optional(),
+  source_fingerprint: z.string().regex(/^sha256:[a-f0-9]{64}$/).optional(),
+  segment_id: mediaIdSchema.optional(),
+  range: publicVideoFactRangeSchema.optional(),
+  state: z.enum(['ready', 'stale', 'missing', 'changed', 'probing', 'unsupported']).optional(),
+  fingerprint_state: z.enum(['pending', 'ready', 'failed']).optional(),
+  sample_strategy: z.enum(['representative_frame', 'start_middle_end', 'visual_change_points', 'transcript_signal', 'short_proxy']).optional(),
+  analysis_depth: z.enum(['summary', 'standard', 'deep']).optional(),
+  coverage: publicEvidenceWindowCoverageSchema.optional(),
+  created_at: mediaIsoDateSchema,
+})
+
+export const publicVideoFactPageSchema = z.object({
+  schema_version: z.literal(1),
+  items: z.array(publicVideoFactSummarySchema).max(200),
+  next_cursor: z.string().min(1).max(2048).optional(),
+})
+
+export const publicVideoFactSearchResultSchema = z.object({
+  id: mediaIdSchema,
+  source_id: mediaIdSchema,
+  kind: publicVideoFactKindSchema,
+  segment_id: mediaIdSchema.optional(),
+  segment_ids: z.array(mediaIdSchema).max(10_000).default([]),
+  range: publicVideoFactRangeSchema,
+  text: z.string().min(1).max(32_000),
+})
+
+export const publicVideoFactSearchPageSchema = z.object({
+  schema_version: z.literal(1),
+  generation: z.number().int().nonnegative(),
+  items: z.array(publicVideoFactSearchResultSchema).max(100),
+  next_cursor: z.string().min(1).max(2048).optional(),
 })
 
 export const imageGenerationTaskResultSchema = z.object({
@@ -817,6 +901,9 @@ export type MediaJobEvent = z.infer<typeof mediaJobEventSchema>
 export type MediaJobEventJournal = z.infer<typeof mediaJobEventJournalSchema>
 export type PublicMediaJobEvent = z.infer<typeof publicMediaJobEventSchema>
 export type PublicMediaJobEventPage = z.infer<typeof publicMediaJobEventPageSchema>
+export type PublicVideoFactSummary = z.infer<typeof publicVideoFactSummarySchema>
+export type PublicVideoFactPage = z.infer<typeof publicVideoFactPageSchema>
+export type PublicVideoFactSearchPage = z.infer<typeof publicVideoFactSearchPageSchema>
 export type MediaOwner = z.infer<typeof mediaOwnerSchema>
 export type MediaAsset = z.infer<typeof mediaAssetSchema>
 export type MediaVersion = z.infer<typeof mediaVersionSchema>
