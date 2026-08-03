@@ -32,7 +32,7 @@ import {
   setAppMode,
   type PortableDetection,
 } from './services/appMode'
-import { createCredentialStore } from './services/keychain'
+import { createCredentialStore, EphemeralCredentialStore } from './services/keychain'
 import { ProviderCredentialService } from './services/providerCredentials'
 import {
   ElectronCodexNativeRuntime,
@@ -204,6 +204,17 @@ function registerTrustedProductWindow(window: BrowserWindow, entry: string) {
 
 function getInstallationSessionManager() {
   installationSessionManager ??= (() => {
+    const userDataPath = app.getPath('userData')
+    // Installation authentication is automatic and is not a user-owned API
+    // key. Keeping its refresh proof in macOS Keychain caused a credential
+    // prompt on ordinary app startup. Retire only this old persisted session;
+    // provider-credentials stay in the OS vault and are read only when the
+    // user explicitly chooses a personal model connection.
+    try {
+      createCredentialStore(process.platform, userDataPath, 'installation-session', safeStorage).clear()
+    } catch (error) {
+      console.warn('[desktop] could not clear retired installation session', error)
+    }
     const config = requireProductGatewayConfig(resolveProductGatewayConfig({
       isPackaged: app.isPackaged,
       resourcesPath: process.resourcesPath,
@@ -212,10 +223,10 @@ function getInstallationSessionManager() {
     }))
     return new InstallationSessionManager({
       gatewayUrl: config.url,
-      installationId: ensureInstallationId(process.env.BILLIARDBUDDY_CONFIG_DIR || app.getPath('userData')),
+      installationId: ensureInstallationId(process.env.BILLIARDBUDDY_CONFIG_DIR || userDataPath),
       onTokenChanged: token => serverRuntime?.setInstallationAccessToken(token),
       onSessionFailure: error => console.error('[desktop] installation session update failed', error),
-    }, createCredentialStore(process.platform, app.getPath('userData'), 'installation-session', safeStorage))
+    }, new EphemeralCredentialStore())
   })()
   return installationSessionManager
 }

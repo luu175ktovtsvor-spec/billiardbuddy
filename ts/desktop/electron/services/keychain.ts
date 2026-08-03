@@ -28,6 +28,21 @@ export type CredentialStore = {
   clear(): void
 }
 
+/**
+ * Holds a short-lived product session only for the current Electron process.
+ *
+ * This must not be used for a user-supplied provider key. Its purpose is to
+ * keep automatic installation authentication out of the system credential
+ * vault: a fresh installation session is bootstrapped on each app launch.
+ */
+export class EphemeralCredentialStore implements CredentialStore {
+  private value: string | null = null
+
+  load(): string | null { return this.value }
+  save(value: string): void { this.value = value }
+  clear(): void { this.value = null }
+}
+
 function assertSecureStorageAvailable(safeStorage: SafeStorageLike, platform: NodeJS.Platform): void {
   if (!safeStorage.isEncryptionAvailable()) throw new Error('Secure credential storage is unavailable')
   // Electron reports basic_text as available on Linux, but it is explicitly not

@@ -10,8 +10,9 @@ import path from 'node:path'
  *  - `product-config.json` — PUBLIC config, safe to commit and ship: the stable
  *    HTTPS product gateway URL. No secrets or model selection.
  * A distributed desktop package cannot keep a reusable server secret. Main silently
- * registers its stable installation identity and stores only its rotating session in
- * the OS credential store. Provider keys remain only on the server.
+ * registers its stable installation identity and keeps the rotating session
+ * only for the running app process. Provider keys remain in the OS credential
+ * store only when the user explicitly configures a personal provider.
  */
 export type ProductGatewayConfig = {
   url?: string
