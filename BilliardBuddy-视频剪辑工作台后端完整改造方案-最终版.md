@@ -2357,6 +2357,14 @@ Electron 改动是本合同必需部分：`ipc/channels.ts`、`preload.ts`、Mai
 5. **Finishing/Quality**：Caption、Composition、Audio、Beat、preflight、Render、Output Verification、post-render；
 6. **Desktop/Product gate**：完整 Main broker/preload、敏感媒体签名、迁移退出、真实 Renderer 端到端旅程。
 
+关卡验收边界如下，实施与合并审核均按此解释：
+
+- 第 15 节是六关全部完成后的最终验收清单，不是要求任一单关提前交付其余关卡。每关退出时只验收本关列出的能力、它所依赖的纵向生产路径，以及第 15 节中已经由本关实际触及的状态一致性、安全和失败恢复要求；未到后续关卡的能力必须明确保留为未完成项，不能以占位实现冒充完成。
+- 第 2 关负责本地 Media Facts 底座：精确时间与 Source 状态、fast/full fingerprint、可恢复/可失效 Derivative、Timed Transcript/Revision 的不可变领域与存储、真实 Camera Shot、Content Segment、带持久 sampling budget/coverage/uncovered receipt 的 Evidence Window、typed Evidence、FTS5、index generation/cursor 和 Facts/Search 正式分页投影。素材已经进入 `changed`/`failed` 后必须持续投影真实状态；分页游标、损坏 payload 和项目隔离错误必须返回稳定 machine code，不能留给后续关卡修复。
+- 第 4 关负责依赖远程能力的部分：Fun-ASR-Flash/Fun-ASR 正式 adapter 与恢复任务、768 维 Embedding 与混合排序、Qwen 视觉/规划、Consent、项目级预算预估与确认、Sidecar `reserve/settle/release/outcome_unknown`、Relay 账户额度和 Provider usage receipt。第 2 关的本地窗口预算与覆盖回执不能省略，但不要求提前伪造第 4 关的远程扣费闭环；第 15.2 节第 12 项和第 15 项中的 Provider/Embedding 部分只有第 4 关完成后才可整体判定通过。
+- 第 6 关负责把后端已有的分析范围、未覆盖区间和预算能力变成 Renderer 可操作的查看、扩大范围与确认旅程；前置关卡仍必须提供真实 API/Application 状态，不能用前端尚未施工为由返回错误或无界数据。
+- 第 2–5 关允许现有 `VideoWorkbenchService` 作为阶段性兼容入口编排已落地的正式 Application 能力，但新领域事实只能由对应模块和 SQLite/不可变 payload 单一写入。业务规则必须随相应关卡迁出旧 Service；只有全部迁出并满足第 15.1 节第 1 项后，才可宣称最终 façade 架构完成。
+
 每关必须保持：新 writer 只有一个、旧项目可读、当前正式 Timeline/Export 不丢失、失败可恢复、相关 contract tests 通过。第 2–5 关未完成时可由 façade 投影旧 API，但禁止把旧 API 与新 API 同时变成两个可写状态源。
 
 ### 13.1 Composition Root
@@ -2651,7 +2659,7 @@ Renderer 只保存面板开关、缩放、滚动、当前选中 id 等可丢失�
 
 ## 15. 完成判定
 
-以下必须全部完成：
+以下是六个施工关卡全部完成后的最终验收，届时必须全部通过；单关退出与合并审核按第 13.0 节的关卡验收边界执行，不得把后续关卡提前当成本关阻塞，也不得把本关已经触及的状态错误、生产路径缺口或失败恢复问题推迟给后续关卡。
 
 ### 15.1 架构与唯一状态源
 
