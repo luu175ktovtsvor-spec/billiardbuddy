@@ -1,7 +1,6 @@
 import type {
   ImageProjectResponse,
   ImageTaskResponse,
-  SaveImageOutputResult,
 } from '../../shared/contracts/media.js'
 import type {
   ImageCandidateAdoptionResponse,
@@ -13,6 +12,7 @@ import type {
   ImageGenerationRoundEstimateResponse,
   ImageGenerationRoundResponse,
   ImageReferenceControlResponse,
+  ImageSaveOutputResponse,
 } from '../../shared/contracts/imageGeneration.js'
 import type { ImageWorkbenchIpcResponse, ImageWorkbenchPreloadBridge } from '../../shared/contracts/imageWorkbenchPreload.js'
 
@@ -30,7 +30,7 @@ export type ImageWorkbenchPreloadTypeContract = [
   Assert<Equal<ReturnType<ImagePreload['submitProject']>, Promise<ImageWorkbenchIpcResponse<ImageTaskResponse>>>>,
   Assert<Equal<ReturnType<ImagePreload['startOperation']>, Promise<ImageWorkbenchIpcResponse<ImageTaskResponse>>>>,
   Assert<Equal<ReturnType<ImagePreload['updateUnknownProject']>, Promise<ImageWorkbenchIpcResponse<ImageProjectResponse>>>>,
-  Assert<Equal<ReturnType<ImagePreload['saveOutput']>, Promise<ImageWorkbenchIpcResponse<SaveImageOutputResult>>>>,
+  Assert<Equal<ReturnType<ImagePreload['saveOutput']>, Promise<ImageWorkbenchIpcResponse<ImageSaveOutputResponse>>>>,
   Assert<Equal<ReturnType<ImagePreload['createCreativePlan']>, Promise<ImageWorkbenchIpcResponse<ImageCreativePlanResponse>>>>,
   Assert<Equal<ReturnType<ImagePreload['estimateGenerationRound']>, Promise<ImageWorkbenchIpcResponse<ImageGenerationRoundEstimateResponse>>>>,
   Assert<Equal<ReturnType<ImagePreload['estimateDerivation']>, Promise<ImageWorkbenchIpcResponse<ImageDerivationEstimateResponse>>>>,

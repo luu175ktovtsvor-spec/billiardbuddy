@@ -22,12 +22,14 @@ export type CanvasRenderOutput = {
   dependency_hashes: `sha256:${string}`[]
   font_hashes: `sha256:${string}`[]
   text_manifest_hash: `sha256:${string}`
+  text_layout_manifest: Array<{ id: string; font_hash: `sha256:${string}`; font_size: number; width: number; height: number; lines: string[] }>
+  qr_manifest: Array<{ id: string; payload: string; x: number; y: number; size: number }>
   renderer_version: string
   text_layout_engine_version: string
 }
 
-const RENDERER_VERSION = 'billiardbuddy-canvas-renderer-v2'
-const TEXT_LAYOUT_ENGINE_VERSION = 'resvg-fontkit-v2'
+const RENDERER_VERSION = 'billiardbuddy-canvas-renderer-v3'
+const TEXT_LAYOUT_ENGINE_VERSION = 'fontkit-cjk-wrap-v1'
 const BUILTIN_FONT_ID = 'font_builtin_0001'
 
 function sha(bytes: Buffer | string): `sha256:${string}` {
@@ -69,32 +71,64 @@ function builtinFontPath(): string {
   return path
 }
 
-function fontHashFor(layer: Extract<ImageCanvasLayer, { kind: 'text' }>): `sha256:${string}` {
+type FormalFontFace = {
+  unitsPerEm: number
+  hasGlyphForCodePoint?(codePoint: number): boolean
+  layout(text: string): { positions: Array<{ xAdvance: number }> }
+}
+
+type FormalFont = { path: string; hash: `sha256:${string}`; face: FormalFontFace }
+
+const formalFontCache = new Map<string, FormalFont>()
+
+function loadFormalFont(path: string): FormalFont {
+  const cached = formalFontCache.get(path)
+  if (cached) return cached
+  let font: ReturnType<typeof openSync>
+  try { font = openSync(path) } catch { throw new ImageCanvasRendererError('正式字体包无法解析', 'CANVAS_FONT_MISSING') }
+  const face = ((font.fonts ?? [font]) as unknown as FormalFontFace[])[0]
+  if (!face || !Number.isFinite(face.unitsPerEm) || face.unitsPerEm <= 0) {
+    throw new ImageCanvasRendererError('正式字体缺少可用排版度量', 'CANVAS_FONT_MISSING')
+  }
+  const loaded = { path, hash: sha(readFileSync(path)), face }
+  formalFontCache.set(path, loaded)
+  return loaded
+}
+
+function formalFontFor(layer: Extract<ImageCanvasLayer, { kind: 'text' }>): FormalFont {
   if (layer.font_asset_id !== BUILTIN_FONT_ID) {
     throw new ImageCanvasRendererError('未提供可验证的正式字体资产', 'CANVAS_FONT_MISSING')
   }
   const path = builtinFontPath()
   // Parse, rather than trust a file name, so a damaged platform font cannot
-  // silently become an untracked renderer dependency.
-  let font: ReturnType<typeof openSync>
-  try { font = openSync(path) } catch { throw new ImageCanvasRendererError('正式字体包无法解析', 'CANVAS_FONT_MISSING') }
-  const faces = font.fonts ?? [font]
+  // silently become an untracked renderer dependency. The immutable package
+  // bytes are cached only within this process; their hash remains in receipts.
+  const loaded = loadFormalFont(path)
   for (const char of layer.text) {
     if (/\s/u.test(char)) continue
     const codePoint = char.codePointAt(0)
-    if (codePoint === undefined || !faces.some(face => face.hasGlyphForCodePoint?.(codePoint))) {
+    if (codePoint === undefined || !loaded.face.hasGlyphForCodePoint?.(codePoint)) {
       throw new ImageCanvasRendererError('正式字体缺少画布文本所需字形', 'CANVAS_FONT_GLYPH_MISSING')
     }
   }
   // The exact parsed bytes, rather than a display name or path, are part of
   // every receipt. A machine with another registered builtin font therefore
   // cannot silently reproduce a historical Version under the same identity.
-  return sha(readFileSync(path))
+  return loaded
+}
+
+function fontHashFor(layer: Extract<ImageCanvasLayer, { kind: 'text' }>): `sha256:${string}` {
+  return formalFontFor(layer).hash
 }
 
 /** Preflight calls the same verifier as rendering, so no glyph failure is deferred until export. */
 export function assertFormalTextLayer(layer: Extract<ImageCanvasLayer, { kind: 'text' }>): void {
   fontHashFor(layer)
+}
+
+/** Preflight and final render share the same font metrics and CJK wrapping. */
+export function assertDeterministicTextLayout(layer: Extract<ImageCanvasLayer, { kind: 'text' }>): void {
+  layoutText(layer)
 }
 
 function resolveColor(value: string, brandColors: Record<string, string>): string {
@@ -104,13 +138,77 @@ function resolveColor(value: string, brandColors: Record<string, string>): strin
   return resolved
 }
 
-function textSvg(layer: Extract<ImageCanvasLayer, { kind: 'text' }>, brandColors: Record<string, string>): Buffer {
-  const width = bounded(layer.max_width ?? Math.max(layer.font_size, layer.text.length * layer.font_size * 1.3))
-  const height = bounded(layer.max_height ?? Math.ceil(layer.font_size * layer.line_height * (layer.text.split('\n').length + 0.4)))
-  const fontSize = layer.font_size
-  const lines = layer.text.split('\n').map((line, index) => `<tspan x="${layer.align === 'center' ? width / 2 : layer.align === 'right' ? width : 0}" dy="${index === 0 ? fontSize : fontSize * layer.line_height}">${escapeXml(line)}</tspan>`).join('')
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}"><text x="0" y="0" font-family="BilliardBuddy Builtin CJK" font-size="${fontSize}" font-weight="${layer.font_weight}" font-style="${layer.font_style}" letter-spacing="${layer.letter_spacing}" fill="${resolveColor(layer.fill, brandColors)}"${layer.stroke ? ` stroke="${resolveColor(layer.stroke, brandColors)}"` : ''} text-anchor="${layer.align === 'center' ? 'middle' : layer.align === 'right' ? 'end' : 'start'}">${lines}</text></svg>`
-  return svgBuffer(svg, builtinFontPath())
+type TextLayout = { font: FormalFont; fontSize: number; width: number; height: number; lines: string[] }
+
+function textWidth(face: FormalFontFace, text: string, fontSize: number, letterSpacing: number): number {
+  if (!text) return 0
+  const advance = face.layout(text).positions.reduce((total, position) => total + position.xAdvance, 0)
+  return advance * fontSize / face.unitsPerEm + Math.max(0, Array.from(text).length - 1) * letterSpacing
+}
+
+function wrapCjkLine(face: FormalFontFace, source: string, fontSize: number, letterSpacing: number, maxWidth: number): string[] | null {
+  if (!Number.isFinite(maxWidth)) return [source]
+  const lines: string[] = []
+  let line = ''
+  for (const character of Array.from(source)) {
+    const candidate = line + character
+    if (textWidth(face, candidate, fontSize, letterSpacing) <= maxWidth || !line) {
+      line = candidate
+      if (textWidth(face, line, fontSize, letterSpacing) > maxWidth) return null
+      continue
+    }
+    lines.push(line)
+    line = character
+    if (textWidth(face, line, fontSize, letterSpacing) > maxWidth) return null
+  }
+  lines.push(line)
+  return lines
+}
+
+function layoutText(layer: Extract<ImageCanvasLayer, { kind: 'text' }>): TextLayout {
+  const font = formalFontFor(layer)
+  const maxWidth = layer.max_width ?? Number.POSITIVE_INFINITY
+  const maxHeight = layer.max_height ?? Number.POSITIVE_INFINITY
+  const minimum = layer.overflow === 'shrink_to_fit' ? layer.min_font_size! : layer.font_size
+  for (let fontSize = layer.font_size; fontSize >= minimum - 0.0001; fontSize = Math.round((fontSize - 0.25) * 100) / 100) {
+    const wrapped = layer.text.split('\n').map(source => wrapCjkLine(font.face, source, fontSize, layer.letter_spacing, maxWidth))
+    const lines = wrapped.flatMap(value => value ?? [])
+    const didOverflowWidth = wrapped.some(value => value === null)
+    const height = lines.length * fontSize * layer.line_height
+    const width = Math.max(1, ...lines.map(line => textWidth(font.face, line, fontSize, layer.letter_spacing)))
+    const fits = !didOverflowWidth && width <= maxWidth + 0.001 && height <= maxHeight + 0.001
+    if (fits || layer.overflow === 'clip') {
+      return {
+        font, fontSize, lines: didOverflowWidth ? layer.text.split('\n') : lines,
+        width: bounded(Number.isFinite(maxWidth) ? maxWidth : Math.max(fontSize, width)),
+        height: bounded(Number.isFinite(maxHeight) && layer.overflow === 'clip' ? maxHeight : Math.max(fontSize * layer.line_height, height)),
+      }
+    }
+    if (layer.overflow !== 'shrink_to_fit') break
+  }
+  throw new ImageCanvasRendererError('文字无法在锁定画布边界内确定性排版', 'CANVAS_RENDER_INVALID')
+}
+
+function textSvg(layer: Extract<ImageCanvasLayer, { kind: 'text' }>, layout: TextLayout, brandColors: Record<string, string>): Buffer {
+  const x = layer.align === 'center' ? layout.width / 2 : layer.align === 'right' ? layout.width : 0
+  const lines = layout.lines.map((line, index) => `<tspan x="${x}" dy="${index === 0 ? layout.fontSize : layout.fontSize * layer.line_height}">${escapeXml(line)}</tspan>`).join('')
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${layout.width}" height="${layout.height}"><text x="${x}" y="0" font-family="BilliardBuddy Builtin CJK" font-size="${layout.fontSize}" font-weight="${layer.font_weight}" font-style="${layer.font_style}" letter-spacing="${layer.letter_spacing}" fill="${resolveColor(layer.fill, brandColors)}"${layer.stroke ? ` stroke="${resolveColor(layer.stroke, brandColors)}"` : ''} text-anchor="${layer.align === 'center' ? 'middle' : layer.align === 'right' ? 'end' : 'start'}">${lines}</text></svg>`
+  return svgBuffer(svg, layout.font.path)
+}
+
+export async function verifyRenderedQrManifest(bytes: Buffer, manifest: Array<{ id: string; payload: string; x: number; y: number; size: number }>): Promise<void> {
+  for (const expected of manifest) {
+    const metadata = await sharp(bytes).metadata()
+    if (!metadata.width || !metadata.height) throw new ImageCanvasRendererError('最终导出二维码无法读取尺寸', 'CANVAS_QR_INVALID')
+    const left = Math.max(0, Math.floor(expected.x))
+    const top = Math.max(0, Math.floor(expected.y))
+    const width = Math.min(metadata.width - left, Math.ceil(expected.size))
+    const height = Math.min(metadata.height - top, Math.ceil(expected.size))
+    if (width < 16 || height < 16) throw new ImageCanvasRendererError(`最终导出二维码 ${expected.id} 超出画板`, 'CANVAS_QR_INVALID')
+    const raw = await sharp(bytes).extract({ left, top, width, height }).ensureAlpha().raw().toBuffer({ resolveWithObject: true })
+    const decoded = jsQR(new Uint8ClampedArray(raw.data.buffer, raw.data.byteOffset, raw.data.byteLength), raw.info.width, raw.info.height)
+    if (!decoded || decoded.data !== expected.payload) throw new ImageCanvasRendererError(`最终导出二维码 ${expected.id} 无法解码`, 'CANVAS_QR_INVALID')
+  }
 }
 
 function shapeSvg(layer: Extract<ImageCanvasLayer, { kind: 'shape' }>, brandColors: Record<string, string>): Buffer {
@@ -157,8 +255,8 @@ export class DeterministicImageCanvasRenderer {
     const assets = new Map(inputAssets.map(asset => [asset.id, asset.verified]))
     const dependencyHashes = new Set<`sha256:${string}`>()
     const fontHashes = new Set<`sha256:${string}`>()
-    const textManifest: Array<Record<string, unknown>> = []
-    const expectedQr: string[] = []
+    const textManifest: CanvasRenderOutput['text_layout_manifest'] = []
+    const qrManifest: CanvasRenderOutput['qr_manifest'] = []
     let output = sharp({
       create: {
         width: document.width,
@@ -217,9 +315,10 @@ export class DeterministicImageCanvasRenderer {
         continue
       }
       if (layer.kind === 'text') {
-        fontHashes.add(fontHashFor(layer))
-        textManifest.push({ id: layer.id, text: layer.text, font: layer.font_asset_id, locale: layer.locale, requirement: layer.requirement_id })
-        const image = await applyOpacity(await sharp(textSvg(layer, brandColors)).ensureAlpha().png().toBuffer(), layer.opacity)
+        const layout = layoutText(layer)
+        fontHashes.add(layout.font.hash)
+        textManifest.push({ id: layer.id, font_hash: layout.font.hash, font_size: layout.fontSize, width: layout.width, height: layout.height, lines: layout.lines })
+        const image = await applyOpacity(await sharp(textSvg(layer, layout, brandColors)).ensureAlpha().png().toBuffer(), layer.opacity)
         output = output.composite([{ input: image, left: Math.round(layer.position.x), top: Math.round(layer.position.y), blend: 'over' }])
         continue
       }
@@ -235,24 +334,23 @@ export class DeterministicImageCanvasRenderer {
           if (!code) throw new ImageCanvasRendererError('二维码来源资产无法解码', 'CANVAS_QR_INVALID')
           payload = code.data
         }
-        expectedQr.push(payload)
-        const image = await QRCode.toBuffer(payload, { type: 'png', errorCorrectionLevel: layer.error_correction, margin: layer.quiet_zone_modules, width: bounded(Math.min(layer.transform.width, layer.transform.height)) })
+        const size = bounded(Math.min(layer.transform.width, layer.transform.height))
+        qrManifest.push({ id: layer.id, payload, x: layer.transform.x, y: layer.transform.y, size })
+        const image = await QRCode.toBuffer(payload, { type: 'png', errorCorrectionLevel: layer.error_correction, margin: layer.quiet_zone_modules, width: size })
         output = output.composite([{ input: image, left: Math.round(layer.transform.x), top: Math.round(layer.transform.y), blend: 'over' }])
       }
       }
     }
     await renderLayerList(document.layers)
     const bytes = await output.png({ compressionLevel: 9, adaptiveFiltering: false, palette: false }).toBuffer()
-    if (expectedQr.length > 0) {
-      const raw = await sharp(bytes).ensureAlpha().raw().toBuffer({ resolveWithObject: true })
-      const decoded = jsQR(new Uint8ClampedArray(raw.data.buffer, raw.data.byteOffset, raw.data.byteLength), raw.info.width, raw.info.height)
-      if (!decoded || !expectedQr.includes(decoded.data)) throw new ImageCanvasRendererError('最终画布二维码无法解码', 'CANVAS_QR_INVALID')
-    }
+    await verifyRenderedQrManifest(bytes, qrManifest)
     return {
       bytes,
       dependency_hashes: [...dependencyHashes].sort(),
       font_hashes: [...fontHashes].sort(),
       text_manifest_hash: sha(JSON.stringify(textManifest)),
+      text_layout_manifest: textManifest,
+      qr_manifest: qrManifest,
       renderer_version: RENDERER_VERSION,
       text_layout_engine_version: TEXT_LAYOUT_ENGINE_VERSION,
     }

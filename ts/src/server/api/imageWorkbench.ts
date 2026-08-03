@@ -259,9 +259,11 @@ export function createImageWorkbenchApiHandler(
         }
         if (req.method !== 'POST' || action) throw methodNotAllowed(req.method)
         const input = createImageProjectInputSchema.parse(await parseJson(req))
+        requireMediaUiCapability(req, mediaUiCapability)
         return Response.json({ project: publicImageProject(await service.createProject(input)) }, { status: 201 })
       }
       if (!action && req.method === 'DELETE') {
+        requireMediaUiCapability(req, mediaUiCapability)
         const project = await service.getProject(projectId).catch(error => {
           if (error instanceof ImageWorkbenchServiceError && error.code === 'IMAGE_PROJECT_NOT_FOUND') return null
           throw error
@@ -276,13 +278,14 @@ export function createImageWorkbenchApiHandler(
       if (!action) {
         if (req.method === 'GET') return Response.json({ project: publicImageProject(await service.getProject(projectId)) })
         if (req.method !== 'PUT') throw methodNotAllowed(req.method)
+        requireMediaUiCapability(req, mediaUiCapability)
         const input = updateImageProjectInputSchema.parse(await parseJson(req))
-        if (input.confirm_unknown_retry) requireMediaUiCapability(req, mediaUiCapability)
         return Response.json({ project: publicImageProject(await service.updateProject(projectId, input)) })
       }
       if (action === 'references') {
         const referenceId = segments[6]
         if (!referenceId && req.method === 'POST' && !segments[7]) {
+          requireMediaUiCapability(req, mediaUiCapability)
           const input = addImageProjectReferencesInputSchema.parse(await parseJson(req))
           return Response.json({ project: publicImageProject(await service.addReferences(projectId, input)) }, { status: 201 })
         }
@@ -333,6 +336,7 @@ export function createImageWorkbenchApiHandler(
         const versionAction = segments[7]
         if (!versionId) {
           if (req.method !== 'POST') throw methodNotAllowed(req.method)
+          requireMediaUiCapability(req, mediaUiCapability)
           const input = commitImageVersionInputSchema.parse(await parseJson(req))
           return Response.json({ project: publicImageProject(await service.commitVersion(projectId, input)) }, { status: 201 })
         }
@@ -396,6 +400,7 @@ export function createImageWorkbenchDomainApiHandler(
         }
         if (segments[4] === 'cancel') {
           if (req.method !== 'POST' || segments[5]) throw methodNotAllowed(req.method)
+          requireMediaUiCapability(req, mediaUiCapability)
           return Response.json({ task: publicImageTask(await service.cancelOperation(operationId)) })
         }
         if (segments[4] || segments[5]) throw ApiError.badRequest('无效的图片操作')
@@ -618,6 +623,7 @@ export function createImageWorkbenchDomainApiHandler(
       }
       if (projectId && action === 'restore') {
         if (req.method !== 'POST' || segments[5]) throw methodNotAllowed(req.method)
+        requireMediaUiCapability(req, mediaUiCapability)
         return Response.json({ deletion: publicMediaDeletionReceiptSchema.parse(await service.restoreProject(projectId)) })
       }
       // Preserve the parser's proven request validation while presenting the

@@ -1389,7 +1389,7 @@ export class ImageWorkbenchRepository {
     command: ImageCanvasCommandInput
     request_hash: string
     created_at: string
-    delivery_artboard?: { width: number; height: number }
+    delivery_artboard?: { width: number; height: number; safe_area?: { top: number; right: number; bottom: number; left: number } }
     template?: ImageTemplateRevision
   }): Promise<{ project: ImageWorkbenchProject; canvas: ImageCanvasRevision; replayed: boolean }> {
     await this.ready()

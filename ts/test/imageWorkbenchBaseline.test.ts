@@ -1642,7 +1642,7 @@ test('15.2 API schema rejects invalid fixture and exposes only capability-gated,
 
   const invalidFixture = await request(handler, '/api/images/projects', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', 'X-BilliardBuddy-Media-Capability': capability },
     body: JSON.stringify({
       user_request: '损坏 fixture 必须失败',
       reference_images: [await brokenDataUrl()],
@@ -1653,7 +1653,7 @@ test('15.2 API schema rejects invalid fixture and exposes only capability-gated,
 
   const created = await request(handler, '/api/images/projects', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', 'X-BilliardBuddy-Media-Capability': capability },
     body: JSON.stringify({
       user_request: 'API 合同基线',
       owner: { kind: 'forged', owner_id: 'not-accepted' },

@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import sharp from 'sharp'
 import { createImageWorkbenchDomainApiHandler } from '../src/server/api/imageWorkbench.js'
-import { assertSafeSvg } from '../src/server/services/imageCanvasRenderer.js'
+import { assertSafeSvg, ImageCanvasRendererError, verifyRenderedQrManifest } from '../src/server/services/imageCanvasRenderer.js'
 import { ImageWorkbenchService } from '../src/server/services/imageWorkbenchService.js'
 
 const roots: string[] = []
@@ -361,7 +361,7 @@ test('15.3 预检拒绝越过 Delivery Spec 安全区的二维码', async () => 
   expect(preflight.checks.find(check => check.id === 'required-safe-area')).toMatchObject({ status: 'fail', waivable: false })
 })
 
-test('15.3 交付集会锁定全部 required Artboard 并逐份复核 PNG、JPEG、WebP 哈希', async () => {
+test('15.3 交付集会锁定全部 required Artboard，并逐份解码 QR、复核 PNG、JPEG、WebP 哈希', async () => {
   const workbench = await service('multi-format-export')
   const project = await workbench.createProject({
     title: '多格式交付', user_request: '输出三种可验证格式', size: '1024x1024', reference_images: [], reference_roles: [],
@@ -383,9 +383,16 @@ test('15.3 交付集会锁定全部 required Artboard 并逐份复核 PNG、JPEG
       artboard_id: artboard.id, base_revision: current.revision,
       idempotency_key: `bb-image-multi-format-canvas-${artboard.output.format}-0001`,
     })
+    const withQr = await workbench.applyCanvasCommand(project.id, canvas.canvas.canvas_id, canvas.project.revision, {
+      idempotency_key: `bb-image-multi-format-qr-${artboard.output.format}-0001`, base_revision: 0, kind: 'add_layer',
+      payload: { layer: {
+        id: `qrcode_export_${artboard.output.format}_0001`, kind: 'qrcode', source: { kind: 'payload', value: `https://example.test/export/${artboard.output.format}` },
+        transform: { x: 40, y: 40, width: 180, height: 180, rotation_degrees: 0, scale_x: 1, scale_y: 1 }, error_correction: 'H', quiet_zone_modules: 4, verify_after_render: true,
+      } },
+    })
     const rendered = await completedRender(workbench, project.id, canvas.canvas.canvas_id, {
-      base_revision: canvas.project.revision,
-      idempotency_key: `bb-image-multi-format-render-${artboard.output.format}-0001`, canvas_revision: 0, activate_on_success: true,
+      base_revision: withQr.project.revision,
+      idempotency_key: `bb-image-multi-format-render-${artboard.output.format}-0001`, canvas_revision: withQr.canvas.revision, activate_on_success: true,
     })
     versions[artboard.id] = rendered.version_id
     current = await workbench.getProject(project.id)
@@ -403,7 +410,109 @@ test('15.3 交付集会锁定全部 required Artboard 并逐份复核 PNG、JPEG
     expect(verified.content_hash).toBe(receipt.output_hash)
     expect([verified.width, verified.height]).toEqual([receipt.width, receipt.height])
     expect((await workbench.exportAssetResponse(project.id, receipt.output_asset_id)).headers.get('content-type')).toBe(asset.mime_type)
+    const version = completed.versions.find(candidate => candidate.id === receipt.version_id)
+    if (!version?.render_receipt_id) throw new Error('missing render receipt')
+    const renderReceipt = await workbench.repository.getRenderReceipt(project.id, version.render_receipt_id)
+    expect(renderReceipt.qr_manifest).toHaveLength(1)
+    await expect(verifyRenderedQrManifest(verified.bytes, renderReceipt.qr_manifest)).resolves.toBeUndefined()
   }
+})
+
+test('15.3 CJK 换行与 shrink 使用锁定字体度量，并把可复核 layout manifest 写入每个收据', async () => {
+  const workbench = await service('cjk-layout')
+  const setup = await projectWithCanvas(workbench)
+  const changed = await workbench.applyCanvasCommand(setup.project.id, setup.canvas.canvas_id, setup.project.revision, {
+    idempotency_key: 'bb-image-cjk-layout-command-0001', base_revision: 0, kind: 'add_layer',
+    payload: { layer: {
+      id: 'text_cjk_layout_0001', kind: 'text', text: '台球夏季冠军赛正式交付海报邀请函', font_family: 'BilliardBuddy Builtin CJK', font_asset_id: 'font_builtin_0001',
+      font_size: 72, min_font_size: 36, font_weight: 400, font_style: 'normal', line_height: 1.1, letter_spacing: 0,
+      fill: '#112233', position: { x: 40, y: 40 }, rotation_degrees: 0, max_width: 280, max_height: 170, overflow: 'shrink_to_fit', locale: 'zh-CN', align: 'left', opacity: 1,
+    } },
+  })
+  const first = await completedRender(workbench, setup.project.id, setup.canvas.canvas_id, {
+    base_revision: changed.project.revision, idempotency_key: 'bb-image-cjk-layout-render-0001', canvas_revision: changed.canvas.revision, activate_on_success: true,
+  })
+  const second = await completedRender(workbench, setup.project.id, setup.canvas.canvas_id, {
+    base_revision: (await workbench.getProject(setup.project.id)).revision, idempotency_key: 'bb-image-cjk-layout-render-0002', canvas_revision: changed.canvas.revision, activate_on_success: false,
+  })
+  const layout = first.render_receipt.text_layout_manifest[0]
+  if (!layout) throw new Error('expected CJK layout manifest')
+  expect(Number(layout.font_size)).toBeLessThan(72)
+  expect(layout.id).toBe('text_cjk_layout_0001')
+  expect(layout.lines.length).toBeGreaterThan(1)
+  expect(second.render_receipt.text_layout_manifest).toEqual(first.render_receipt.text_layout_manifest)
+  expect(second.render_receipt.text_manifest_hash).toBe(first.render_receipt.text_manifest_hash)
+  expect(second.render_receipt.output_hash).toBe(first.render_receipt.output_hash)
+})
+
+test('15.3 Canvas 与 Export 的可预期永久失败都会收敛为 failed，重启恢复不再重试', async () => {
+  const failingRenderer = {
+    render: async () => { throw new ImageCanvasRendererError('画布内容永久无效', 'CANVAS_RENDER_INVALID') },
+  } as unknown as ConstructorParameters<typeof ImageWorkbenchService>[0]['canvasRenderer']
+  const workbench = new ImageWorkbenchService({
+    root: await root('terminal-local'), legacyMediaRoot: await root('terminal-local-legacy'), now: () => new Date(timestamp), canvasRenderer: failingRenderer,
+  })
+  const setup = await projectWithCanvas(workbench)
+  const render = await workbench.renderCanvas(setup.project.id, setup.canvas.canvas_id, {
+    base_revision: setup.project.revision, idempotency_key: 'bb-image-terminal-canvas-0001', canvas_revision: 0, activate_on_success: true,
+  })
+  const exportJob = await workbench.exportDelivery(setup.project.id, {
+    base_revision: setup.project.revision, idempotency_key: 'bb-image-terminal-export-0001', version_ids_by_artboard: { [setup.artboard.id]: 'ver_missing_terminal_0001' },
+  })
+  await Bun.sleep(10)
+  await workbench.recoverInterruptedOperations()
+  const [failedRender, failedExport] = await Promise.all([
+    workbench.getGenerationOperation(setup.project.id, render.operation.id),
+    workbench.getGenerationOperation(setup.project.id, exportJob.operation.id),
+  ])
+  expect(failedRender).toMatchObject({ status: 'failed', safe_error: { code: 'CANVAS_RENDER_INVALID' } })
+  expect(failedExport).toMatchObject({ status: 'failed', safe_error: { code: 'IMAGE_VERSION_NOT_FOUND' } })
+  await workbench.recoverInterruptedOperations()
+  expect((await workbench.getGenerationOperation(setup.project.id, render.operation.id)).status).toBe('failed')
+  expect((await workbench.getGenerationOperation(setup.project.id, exportJob.operation.id)).status).toBe('failed')
+})
+
+test('15.3 fit_safe_area 会把受控内容等比放进目标安全区，而不是只缩放整张画板', async () => {
+  const workbench = await service('fit-safe-area')
+  const setup = await projectWithCanvas(workbench)
+  const withQr = await workbench.applyCanvasCommand(setup.project.id, setup.canvas.canvas_id, setup.project.revision, {
+    idempotency_key: 'bb-image-fit-safe-area-layer-0001', base_revision: 0, kind: 'add_layer',
+    payload: { layer: { id: 'qrcode_fit_safe_0001', kind: 'qrcode', source: { kind: 'payload', value: 'https://example.test/fit-safe-area' }, transform: { x: 0, y: 0, width: 256, height: 256, rotation_degrees: 0, scale_x: 1, scale_y: 1 }, error_correction: 'H', quiet_zone_modules: 4, verify_after_render: true } },
+  })
+  const specification = await workbench.createDeliverySpecRevision(setup.project.id, {
+    base_revision: withQr.project.revision, idempotency_key: 'bb-image-fit-safe-area-spec-0001', purpose: 'custom',
+    artboards: [{ ...setup.artboard, width: 1200, height: 800, safe_area: { top: 100, right: 200, bottom: 100, left: 200 } }],
+  })
+  const synced = await workbench.applyCanvasCommand(setup.project.id, setup.canvas.canvas_id, specification.project.revision, {
+    idempotency_key: 'bb-image-fit-safe-area-sync-0001', base_revision: withQr.canvas.revision, kind: 'sync_delivery_spec',
+    payload: { delivery_spec_id: specification.spec.id, delivery_spec_revision: specification.spec.revision, layout_policy: 'fit_safe_area' },
+  })
+  const qr = synced.canvas.document.layers.find(layer => layer.id === 'qrcode_fit_safe_0001')
+  expect(qr).toMatchObject({ kind: 'qrcode', transform: { x: 300, y: 100, width: 150, height: 150 } })
+  expect((await workbench.preflightCanvas(setup.project.id, setup.canvas.canvas_id, { revision: synced.canvas.revision })).checks.find(check => check.id === 'required-safe-area')).toMatchObject({ status: 'pass' })
+})
+
+test('15.3 遗留图片写接口只能由 Main 持有 capability 后调用', async () => {
+  const workbench = await service('legacy-write-gate')
+  const handler = createImageWorkbenchDomainApiHandler(workbench, capability)
+  const createUrl = 'http://127.0.0.1/api/images/projects'
+  const createPayload = { title: '旧写接口门禁', user_request: '仅允许 Main 调用', size: '1024x1024', reference_images: [], reference_roles: [] }
+  const deniedCreate = await handler(new Request(createUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(createPayload) }), new URL(createUrl), ['api', 'images', 'projects'])
+  expect(deniedCreate.status).toBe(403)
+  const project = await workbench.createProject({ title: '旧写接口门禁', user_request: '仅允许 Main 调用', size: '1024x1024', reference_images: [], reference_roles: [] })
+  const url = `http://127.0.0.1/api/images/projects/${project.id}/references`
+  const reference = `data:image/png;base64,${(await sharp({ create: { width: 1, height: 1, channels: 4, background: '#ffffff' } }).png().toBuffer()).toString('base64')}`
+  const request = () => new Request(url, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ revision: project.revision, reference_images: [reference], reference_roles: ['subject'] }),
+  })
+  const denied = await handler(request(), new URL(url), ['api', 'images', 'projects', project.id, 'references'])
+  expect(denied.status).toBe(403)
+  const allowed = await handler(new Request(url, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', 'X-BilliardBuddy-Media-Capability': capability },
+    body: JSON.stringify({ revision: project.revision, reference_images: [reference], reference_roles: ['subject'] }),
+  }), new URL(url), ['api', 'images', 'projects', project.id, 'references'])
+  expect(allowed.status).toBe(201)
 })
 
 test('15.3 在 CAS 落盘后数据库提交前崩溃可由同一 Canvas Render 幂等键恢复', async () => {
