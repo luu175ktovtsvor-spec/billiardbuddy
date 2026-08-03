@@ -942,7 +942,7 @@ export class ImageWorkbenchService {
     })
     if (existingRound) {
       if (await this.repository.generationRoundRequestHash(project.id, roundId) !== roundCommandHash) {
-        throw new ImageWorkbenchServiceError('生成轮次幂等键对应的请求内容不一致', 409, 'IMAGE_REVISION_CONFLICT')
+        throw new ImageWorkbenchServiceError('生成轮次幂等键对应的请求内容不一致', 409, 'IMAGE_IDEMPOTENCY_CONFLICT')
       }
       return {
         round: existingRound,
@@ -1178,7 +1178,7 @@ export class ImageWorkbenchService {
     })
     if (existing) {
       if (await this.repository.generationRoundRequestHash(project.id, roundId) !== derivationCommandHash) {
-        throw new ImageWorkbenchServiceError('候选派生幂等键对应的请求内容不一致', 409, 'IMAGE_REVISION_CONFLICT')
+        throw new ImageWorkbenchServiceError('候选派生幂等键对应的请求内容不一致', 409, 'IMAGE_IDEMPOTENCY_CONFLICT')
       }
       const operationId = existing.direction_operations[0]?.operation_id
       if (!operationId) throw new ImageWorkbenchServiceError('候选派生轮次缺少操作', 500, 'IMAGE_OPERATION_CORRUPT')

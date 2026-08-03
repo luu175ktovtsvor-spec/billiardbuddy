@@ -409,7 +409,7 @@ export class ImageWorkbenchRepository {
         WHERE project_id=? AND idempotency_key=?`).get(project.id, input.idempotency_key) as { request_hash: string; result_project_json: string } | null
       if (prior) {
         if (prior.request_hash !== request_hash) {
-          throw new ImageWorkbenchRepositoryError('参考图控制幂等键对应的请求内容不一致', 409, 'IMAGE_STORAGE_INVALID')
+          throw new ImageWorkbenchRepositoryError('参考图控制幂等键对应的请求内容不一致', 409, 'IMAGE_IDEMPOTENCY_CONFLICT')
         }
         return { project: imageWorkbenchProjectSchema.parse(JSON.parse(prior.result_project_json) as unknown), replayed: true }
       }
@@ -417,7 +417,7 @@ export class ImageWorkbenchRepository {
       if (!currentRow) throw new ImageWorkbenchRepositoryError('图片项目不存在', 404, 'IMAGE_PROJECT_NOT_FOUND')
       const current = this.loadProject(currentRow)
       if (current.revision !== input.base_revision || current.writer_fence !== project.writer_fence) {
-        throw new ImageWorkbenchRepositoryError('图片项目已被另一写入者更新，请刷新后重试', 409, 'IMAGE_WRITER_FENCE_CONFLICT')
+        throw new ImageWorkbenchRepositoryError('图片项目已被另一写入者更新，请刷新后重试', 409, 'IMAGE_REVISION_CONFLICT')
       }
       const next = imageWorkbenchProjectSchema.parse({
         ...project,
@@ -442,7 +442,7 @@ export class ImageWorkbenchRepository {
       WHERE project_id=? AND idempotency_key=?`).get(projectId, idempotencyKey) as { request_hash: string } | null
     if (!prior) return false
     if (prior.request_hash !== request_hash) {
-      throw new ImageWorkbenchRepositoryError('参考图控制幂等键对应的请求内容不一致', 409, 'IMAGE_STORAGE_INVALID')
+      throw new ImageWorkbenchRepositoryError('参考图控制幂等键对应的请求内容不一致', 409, 'IMAGE_IDEMPOTENCY_CONFLICT')
     }
     return true
   }
@@ -1219,7 +1219,7 @@ export class ImageWorkbenchRepository {
         .get(input.id) as { project_id: string; document_json: string; request_hash: string } | null
       if (existing) {
         if (existing.project_id !== input.project_id || existing.request_hash !== request_hash) {
-          throw new ImageWorkbenchRepositoryError('创作方向幂等键对应的请求内容不一致', 409, 'IMAGE_STORAGE_INVALID')
+          throw new ImageWorkbenchRepositoryError('创作方向幂等键对应的请求内容不一致', 409, 'IMAGE_IDEMPOTENCY_CONFLICT')
         }
         return this.generationDocument(existing, value => imageCreativePlanSchema.parse(value))
       }
@@ -1398,7 +1398,7 @@ export class ImageWorkbenchRepository {
         .get(input.id) as { project_id: string; document_json: string; request_hash: string } | null
       if (existing) {
         if (existing.project_id !== input.project_id || existing.request_hash !== request_hash) {
-          throw new ImageWorkbenchRepositoryError('生成轮次幂等键对应的请求内容不一致', 409, 'IMAGE_STORAGE_INVALID')
+          throw new ImageWorkbenchRepositoryError('生成轮次幂等键对应的请求内容不一致', 409, 'IMAGE_IDEMPOTENCY_CONFLICT')
         }
         return this.generationDocument(existing, value => imageGenerationRoundSchema.parse(value))
       }
@@ -1466,14 +1466,14 @@ export class ImageWorkbenchRepository {
       if (!currentRow) throw new ImageWorkbenchRepositoryError('图片项目不存在', 404, 'IMAGE_PROJECT_NOT_FOUND')
       const current = this.loadProject(currentRow)
       if (current.revision !== input.base_revision || current.writer_fence !== projectInput.writer_fence) {
-        throw new ImageWorkbenchRepositoryError('图片项目已被另一写入者更新，请刷新后重试', 409, 'IMAGE_WRITER_FENCE_CONFLICT')
+        throw new ImageWorkbenchRepositoryError('图片项目已被另一写入者更新，请刷新后重试', 409, 'IMAGE_REVISION_CONFLICT')
       }
       const existingRound = this.unitOfWork.database.query('SELECT document_json,request_hash FROM image_generation_rounds WHERE id=?')
         .get(round.id) as { document_json: string; request_hash: string } | null
       if (existingRound) {
         const restored = this.generationDocument(existingRound, value => imageGenerationRoundSchema.parse(value))
         if (restored.project_id !== projectInput.id || restored.estimate_hash !== round.estimate_hash || existingRound.request_hash !== request_hash) {
-          throw new ImageWorkbenchRepositoryError('图片生成轮次幂等键冲突', 409, 'IMAGE_STORAGE_INVALID')
+          throw new ImageWorkbenchRepositoryError('图片生成轮次幂等键冲突', 409, 'IMAGE_IDEMPOTENCY_CONFLICT')
         }
         const restoredOperations = await Promise.all(restored.direction_operations.map(async direction => await this.getGenerationOperation(projectInput.id, direction.operation_id)))
         const restoredTransports = await Promise.all(restoredOperations.map(async operation => {
@@ -1484,7 +1484,7 @@ export class ImageWorkbenchRepository {
       }
       const existingIdempotency = this.unitOfWork.database.query(`SELECT id,request_hash FROM image_generation_operations
         WHERE project_id=? AND idempotency_key IN (${operations.map(() => '?').join(',')})`).all(projectInput.id, ...operations.map(operation => operation.idempotency_key)) as Array<{ id: string; request_hash: string }>
-      if (existingIdempotency.length > 0) throw new ImageWorkbenchRepositoryError('图片生成操作幂等键冲突', 409, 'IMAGE_STORAGE_INVALID')
+      if (existingIdempotency.length > 0) throw new ImageWorkbenchRepositoryError('图片生成操作幂等键冲突', 409, 'IMAGE_IDEMPOTENCY_CONFLICT')
       const nextProject = imageWorkbenchProjectSchema.parse({
         ...projectInput,
         state: 'queued',
@@ -1693,9 +1693,12 @@ export class ImageWorkbenchRepository {
         WHERE project_id=? AND idempotency_key=? ORDER BY artboard_id ASC`).all(projectInput.id, input.idempotency_key) as Array<{ document_json: string; request_hash: string }>
       if (previousRows.length > 0) {
         if (previousRows.length !== adoptions.length || previousRows.some(row => row.request_hash !== input.request_hash)) {
-          throw new ImageWorkbenchRepositoryError('图片候选采纳幂等键冲突', 409, 'IMAGE_STORAGE_INVALID')
+          throw new ImageWorkbenchRepositoryError('图片候选采纳幂等键冲突', 409, 'IMAGE_IDEMPOTENCY_CONFLICT')
         }
         return { project: current, adoptions: previousRows.map(row => this.generationDocument(row, value => imageCandidateAdoptionSchema.parse(value))) }
+      }
+      if (current.revision !== input.base_revision || current.writer_fence !== projectInput.writer_fence) {
+        throw new ImageWorkbenchRepositoryError('图片项目已被另一写入者更新，请刷新后重试', 409, 'IMAGE_REVISION_CONFLICT')
       }
       const existingCandidateArtboard = this.unitOfWork.database.query(`SELECT artboard_id FROM image_candidate_adoptions
         WHERE project_id=? AND candidate_id=? AND artboard_id IN (${adoptions.map(() => '?').join(',')})`).all(
@@ -1705,9 +1708,6 @@ export class ImageWorkbenchRepository {
       ) as Array<{ artboard_id: string }>
       if (existingCandidateArtboard.length > 0) {
         throw new ImageWorkbenchRepositoryError('同一候选不能再次采纳到同一画板', 409, 'IMAGE_STORAGE_INVALID')
-      }
-      if (current.revision !== input.base_revision || current.writer_fence !== projectInput.writer_fence) {
-        throw new ImageWorkbenchRepositoryError('图片项目已被另一写入者更新，请刷新后重试', 409, 'IMAGE_WRITER_FENCE_CONFLICT')
       }
       const candidate = this.unitOfWork.database.query('SELECT asset_id FROM image_candidates WHERE id=? AND project_id=?')
         .get(input.candidate_id, projectInput.id) as { asset_id: string } | null

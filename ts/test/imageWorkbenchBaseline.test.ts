@@ -1321,7 +1321,7 @@ test('15.2 expires estimates and requires an explicit paid derivation confirmati
   })
 })
 
-test('15.2 detects complete idempotency conflicts for Plan, Round, Derivation and Reference Control', async () => {
+test('15.2 projects every Command idempotency and revision conflict through stable API errors', async () => {
   const png = (await dataUrl()).split(',', 2)[1]!
   let paidPosts = 0
   const gateway: typeof fetch = async (input, init) => {
@@ -1354,6 +1354,22 @@ test('15.2 detects complete idempotency conflicts for Plan, Round, Derivation an
       reference_images: [await dataUrl()],
       reference_roles: ['subject'],
     })
+    const commandCapability = 'fedcba9876543210fedcba9876543210'
+    const commandHandler = createImageWorkbenchDomainApiHandler(service, commandCapability)
+    const expectPublicCommandConflict = async (
+      path: string,
+      body: unknown,
+      error: 'MEDIA_IMAGE_IDEMPOTENCY_CONFLICT' | 'MEDIA_IMAGE_REVISION_CONFLICT',
+    ) => {
+      const response = await request(commandHandler, path, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-BilliardBuddy-Media-Capability': commandCapability },
+        body: JSON.stringify(body),
+      })
+      expect(response.status).toBe(409)
+      expect(await response.json()).toEqual({ error, message: mediaSafeError(error).message })
+    }
+    const projectPath = `/api/images/projects/${initial.id}`
     const referenceId = `ref_${createHash('sha256').update([initial.id, initial.references[0]!.asset_id].join('\0')).digest('hex').slice(0, 32)}`
     const referenceCommand = {
       base_revision: initial.revision,
@@ -1366,11 +1382,22 @@ test('15.2 detects complete idempotency conflicts for Plan, Round, Derivation an
     const controlled = await service.updateReferenceControl(initial.id, referenceId, referenceCommand)
     const referenceReplay = await service.updateReferenceControl(initial.id, referenceId, referenceCommand)
     expect(referenceReplay.revision).toBe(controlled.revision)
-    await expect(service.updateReferenceControl(initial.id, referenceId, {
+    const referenceIdempotencyConflict = {
       ...referenceCommand,
       base_revision: controlled.revision,
       priority: 60,
-    })).rejects.toMatchObject({ status: 409 })
+    }
+    await expect(service.updateReferenceControl(initial.id, referenceId, referenceIdempotencyConflict))
+      .rejects.toMatchObject({ status: 409, code: 'IMAGE_IDEMPOTENCY_CONFLICT' })
+    await expectPublicCommandConflict(`${projectPath}/references/${referenceId}/commands/update-control`, referenceIdempotencyConflict, 'MEDIA_IMAGE_IDEMPOTENCY_CONFLICT')
+    const referenceRevisionConflict = {
+      ...referenceCommand,
+      idempotency_key: 'bb-image-reference-control-revision-0001',
+      priority: 70,
+    }
+    await expect(service.updateReferenceControl(initial.id, referenceId, referenceRevisionConflict))
+      .rejects.toMatchObject({ status: 409, code: 'IMAGE_REVISION_CONFLICT' })
+    await expectPublicCommandConflict(`${projectPath}/references/${referenceId}/commands/update-control`, referenceRevisionConflict, 'MEDIA_IMAGE_REVISION_CONFLICT')
 
     const planCommand = {
       base_revision: controlled.revision,
@@ -1378,7 +1405,7 @@ test('15.2 detects complete idempotency conflicts for Plan, Round, Derivation an
     }
     const plan = await service.createCreativePlan(initial.id, planCommand)
     expect((await service.createCreativePlan(initial.id, planCommand)).id).toBe(plan.id)
-    await expect(service.createCreativePlan(initial.id, {
+    const planIdempotencyConflict = {
       ...planCommand,
       directions: [{
         label: '冲突方向',
@@ -1386,7 +1413,18 @@ test('15.2 detects complete idempotency conflicts for Plan, Round, Derivation an
         generation_intent: { composition_goal: '产品居中', visual_tone: '冷色商业感' },
         preservation_rules: [],
       }],
-    })).rejects.toMatchObject({ status: 409 })
+    }
+    await expect(service.createCreativePlan(initial.id, planIdempotencyConflict))
+      .rejects.toMatchObject({ status: 409, code: 'IMAGE_IDEMPOTENCY_CONFLICT' })
+    await expectPublicCommandConflict(`${projectPath}/creative-plans`, planIdempotencyConflict, 'MEDIA_IMAGE_IDEMPOTENCY_CONFLICT')
+    const planRevisionConflict = {
+      ...planCommand,
+      base_revision: initial.revision,
+      idempotency_key: 'bb-image-plan-revision-0001',
+    }
+    await expect(service.createCreativePlan(initial.id, planRevisionConflict))
+      .rejects.toMatchObject({ status: 409, code: 'IMAGE_REVISION_CONFLICT' })
+    await expectPublicCommandConflict(`${projectPath}/creative-plans`, planRevisionConflict, 'MEDIA_IMAGE_REVISION_CONFLICT')
 
     const estimate = await service.estimateGenerationRound(initial.id, {
       base_revision: controlled.revision,
@@ -1403,13 +1441,64 @@ test('15.2 detects complete idempotency conflicts for Plan, Round, Derivation an
     }
     const source = await service.createGenerationRound(initial.id, roundCommand)
     expect((await service.createGenerationRound(initial.id, roundCommand)).round.id).toBe(source.round.id)
-    await expect(service.createGenerationRound(initial.id, {
+    const roundIdempotencyConflict = {
       ...roundCommand,
       estimate_hash: `sha256:${'2'.repeat(64)}`,
-    })).rejects.toMatchObject({ status: 409 })
+    }
+    await expect(service.createGenerationRound(initial.id, roundIdempotencyConflict))
+      .rejects.toMatchObject({ status: 409, code: 'IMAGE_IDEMPOTENCY_CONFLICT' })
+    await expectPublicCommandConflict(`${projectPath}/generation-rounds`, roundIdempotencyConflict, 'MEDIA_IMAGE_IDEMPOTENCY_CONFLICT')
+    const roundRevisionConflict = {
+      ...roundCommand,
+      idempotency_key: 'bb-image-round-revision-0001',
+    }
+    await expect(service.createGenerationRound(initial.id, roundRevisionConflict))
+      .rejects.toMatchObject({ status: 409, code: 'IMAGE_REVISION_CONFLICT' })
+    await expectPublicCommandConflict(`${projectPath}/generation-rounds`, roundRevisionConflict, 'MEDIA_IMAGE_REVISION_CONFLICT')
     const completedSource = await service.getGenerationOperation(initial.id, source.operations[0]!.id)
     if (completedSource.result?.kind !== 'candidate_group') throw new Error('expected source Candidate Group')
     const candidate = (await service.getCandidateGroup(initial.id, completedSource.result.candidate_group_id)).candidates[0]!
+    const sourceProject = await service.getProject(initial.id)
+    const decisionCommand = {
+      base_revision: sourceProject.revision,
+      idempotency_key: 'bb-image-decision-conflict-0001',
+      decision: 'kept' as const,
+    }
+    await service.decideCandidate(initial.id, candidate.id, decisionCommand)
+    const decisionIdempotencyConflict = { ...decisionCommand, decision: 'rejected' as const }
+    await expect(service.decideCandidate(initial.id, candidate.id, decisionIdempotencyConflict))
+      .rejects.toMatchObject({ status: 409, code: 'IMAGE_IDEMPOTENCY_CONFLICT' })
+    await expectPublicCommandConflict(`${projectPath}/candidates/${candidate.id}/decisions`, decisionIdempotencyConflict, 'MEDIA_IMAGE_IDEMPOTENCY_CONFLICT')
+    const decisionRevisionConflict = {
+      ...decisionCommand,
+      base_revision: controlled.revision,
+      idempotency_key: 'bb-image-decision-revision-0001',
+    }
+    await expect(service.decideCandidate(initial.id, candidate.id, decisionRevisionConflict))
+      .rejects.toMatchObject({ status: 409, code: 'IMAGE_REVISION_CONFLICT' })
+    await expectPublicCommandConflict(`${projectPath}/candidates/${candidate.id}/decisions`, decisionRevisionConflict, 'MEDIA_IMAGE_REVISION_CONFLICT')
+    const delivery = await service.repository.currentDeliverySpec(initial.id)
+    if (!delivery) throw new Error('expected delivery spec')
+    const adoptionCommand = {
+      base_revision: sourceProject.revision,
+      idempotency_key: 'bb-image-adoption-conflict-0001',
+      adoptions: [{ artboard_id: delivery.artboards[0]!.id, placement: { fit: 'cover' as const, focus_x: 0.5, focus_y: 0.5 } }],
+    }
+    await service.adoptCandidate(initial.id, candidate.id, adoptionCommand)
+    const adoptionIdempotencyConflict = {
+      ...adoptionCommand,
+      adoptions: [{ artboard_id: delivery.artboards[0]!.id, placement: { fit: 'cover' as const, focus_x: 0.25, focus_y: 0.5 } }],
+    }
+    await expect(service.adoptCandidate(initial.id, candidate.id, adoptionIdempotencyConflict))
+      .rejects.toMatchObject({ status: 409, code: 'IMAGE_IDEMPOTENCY_CONFLICT' })
+    await expectPublicCommandConflict(`${projectPath}/candidates/${candidate.id}/adoptions`, adoptionIdempotencyConflict, 'MEDIA_IMAGE_IDEMPOTENCY_CONFLICT')
+    const adoptionRevisionConflict = {
+      ...adoptionCommand,
+      idempotency_key: 'bb-image-adoption-revision-0001',
+    }
+    await expect(service.adoptCandidate(initial.id, candidate.id, adoptionRevisionConflict))
+      .rejects.toMatchObject({ status: 409, code: 'IMAGE_REVISION_CONFLICT' })
+    await expectPublicCommandConflict(`${projectPath}/candidates/${candidate.id}/adoptions`, adoptionRevisionConflict, 'MEDIA_IMAGE_REVISION_CONFLICT')
     const current = await service.getProject(initial.id)
     const derivationEstimate = await service.estimateDerivation(initial.id, candidate.id, {
       base_revision: current.revision,
@@ -1424,10 +1513,20 @@ test('15.2 detects complete idempotency conflicts for Plan, Round, Derivation an
     }
     const derived = await service.deriveCandidate(initial.id, candidate.id, derivationCommand)
     expect((await service.deriveCandidate(initial.id, candidate.id, derivationCommand)).round.id).toBe(derived.round.id)
-    await expect(service.deriveCandidate(initial.id, candidate.id, {
+    const derivationIdempotencyConflict = {
       ...derivationCommand,
       instruction: '提高背景亮度',
-    })).rejects.toMatchObject({ status: 409 })
+    }
+    await expect(service.deriveCandidate(initial.id, candidate.id, derivationIdempotencyConflict))
+      .rejects.toMatchObject({ status: 409, code: 'IMAGE_IDEMPOTENCY_CONFLICT' })
+    await expectPublicCommandConflict(`${projectPath}/candidates/${candidate.id}/derivations`, derivationIdempotencyConflict, 'MEDIA_IMAGE_IDEMPOTENCY_CONFLICT')
+    const derivationRevisionConflict = {
+      ...derivationCommand,
+      idempotency_key: 'bb-image-derivation-revision-0001',
+    }
+    await expect(service.deriveCandidate(initial.id, candidate.id, derivationRevisionConflict))
+      .rejects.toMatchObject({ status: 409, code: 'IMAGE_REVISION_CONFLICT' })
+    await expectPublicCommandConflict(`${projectPath}/candidates/${candidate.id}/derivations`, derivationRevisionConflict, 'MEDIA_IMAGE_REVISION_CONFLICT')
     expect(paidPosts).toBe(2)
   })
 })
