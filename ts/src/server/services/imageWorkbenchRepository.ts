@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { mkdir, readdir, rename, rm, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
+import { z } from 'zod/v4'
 import {
   imageWorkbenchProjectSchema,
   mediaDeletionReceiptSchema,
@@ -143,11 +144,22 @@ type CasOrphanObservationRow = {
   scan_count: number
 }
 
+const candidateDecisionCommandSchema = imageCandidateDecisionSchema.omit({ actor: true }).extend({
+  base_revision: z.number().int().nonnegative(),
+}).strict()
+type CandidateDecisionCommand = z.infer<typeof candidateDecisionCommandSchema>
+
 export class ImageWorkbenchRepositoryError extends Error {
   constructor(
     message: string,
     readonly status: number,
-    readonly code: 'IMAGE_PROJECT_NOT_FOUND' | 'IMAGE_OPERATION_NOT_FOUND' | 'IMAGE_STORAGE_INVALID' | 'IMAGE_WRITER_FENCE_CONFLICT',
+    readonly code:
+      | 'IMAGE_PROJECT_NOT_FOUND'
+      | 'IMAGE_OPERATION_NOT_FOUND'
+      | 'IMAGE_STORAGE_INVALID'
+      | 'IMAGE_WRITER_FENCE_CONFLICT'
+      | 'IMAGE_IDEMPOTENCY_CONFLICT'
+      | 'IMAGE_REVISION_CONFLICT',
   ) {
     super(message)
     this.name = 'ImageWorkbenchRepositoryError'
@@ -1604,42 +1616,49 @@ export class ImageWorkbenchRepository {
     })
   }
 
-  async decideCandidate(decision: ImageCandidateDecision): Promise<ImageCandidateDecision> {
+  /**
+   * Candidate decisions are a single aggregate command.  The replay lookup,
+   * revision fence, and insert deliberately share one project lock and one
+   * SQLite transaction so a concurrent Project update cannot slip between
+   * the service's revision check and the durable decision write.
+   */
+  async decideCandidate(raw: CandidateDecisionCommand): Promise<ImageCandidateDecision> {
     await this.ready()
-    const input = imageCandidateDecisionSchema.parse(decision)
+    const input = candidateDecisionCommandSchema.parse(raw)
     return await this.fences.run(`project-${input.project_id}`, async () => {
-      this.assertGenerationProject(input.project_id)
-      const duplicate = this.unitOfWork.database.query(`SELECT document_json,request_hash FROM image_candidate_decisions
-        WHERE project_id=? AND idempotency_key=?`).get(input.project_id, input.idempotency_key) as { document_json: string; request_hash: string } | null
-      if (duplicate && duplicate.request_hash !== input.request_hash) throw new ImageWorkbenchRepositoryError('图片候选决定幂等键冲突', 409, 'IMAGE_STORAGE_INVALID')
-      if (duplicate) return this.generationDocument(duplicate, value => imageCandidateDecisionSchema.parse(value))
-      const candidate = this.unitOfWork.database.query('SELECT id FROM image_candidates WHERE id=? AND project_id=?').get(input.candidate_id, input.project_id)
-      if (!candidate) throw new ImageWorkbenchRepositoryError('图片候选不存在', 404, 'IMAGE_STORAGE_INVALID')
-      this.unitOfWork.transaction(() => {
+      return this.unitOfWork.transaction(() => {
+        const currentRow = this.projectRow(input.project_id)
+        if (!currentRow) throw new ImageWorkbenchRepositoryError('图片项目不存在', 404, 'IMAGE_PROJECT_NOT_FOUND')
+        const current = this.loadProject(currentRow)
+        const duplicate = this.unitOfWork.database.query(`SELECT document_json,request_hash FROM image_candidate_decisions
+          WHERE project_id=? AND idempotency_key=?`).get(input.project_id, input.idempotency_key) as { document_json: string; request_hash: string } | null
+        if (duplicate) {
+          if (duplicate.request_hash !== input.request_hash) {
+            throw new ImageWorkbenchRepositoryError('图片候选决定幂等键对应的请求内容不一致', 409, 'IMAGE_IDEMPOTENCY_CONFLICT')
+          }
+          return this.generationDocument(duplicate, value => imageCandidateDecisionSchema.parse(value))
+        }
+        if (current.revision !== input.base_revision) {
+          throw new ImageWorkbenchRepositoryError('图片项目已更新，请刷新后再决定候选', 409, 'IMAGE_REVISION_CONFLICT')
+        }
+        const candidate = this.unitOfWork.database.query('SELECT id FROM image_candidates WHERE id=? AND project_id=?').get(input.candidate_id, input.project_id)
+        if (!candidate) throw new ImageWorkbenchRepositoryError('图片候选不存在', 404, 'IMAGE_STORAGE_INVALID')
+        const decision = imageCandidateDecisionSchema.parse({
+          id: input.id,
+          project_id: input.project_id,
+          candidate_id: input.candidate_id,
+          decision: input.decision,
+          actor: current.owner,
+          idempotency_key: input.idempotency_key,
+          request_hash: input.request_hash,
+          created_at: input.created_at,
+        })
         this.unitOfWork.database.query(`INSERT INTO image_candidate_decisions(
           id,project_id,candidate_id,idempotency_key,request_hash,created_at,document_json
-        ) VALUES(?,?,?,?,?,?,?)`).run(input.id, input.project_id, input.candidate_id, input.idempotency_key, input.request_hash, input.created_at, JSON.stringify(input))
+        ) VALUES(?,?,?,?,?,?,?)`).run(decision.id, decision.project_id, decision.candidate_id, decision.idempotency_key, decision.request_hash, decision.created_at, JSON.stringify(decision))
+        return decision
       })
-      return input
     })
-  }
-
-  /** Resolve a prior decision before a caller applies a newer Project revision fence. */
-  async candidateDecisionByIdempotency(
-    projectId: string,
-    idempotencyKey: string,
-    requestHash: string,
-  ): Promise<ImageCandidateDecision | null> {
-    await this.ready()
-    this.assertGenerationProject(projectId)
-    const request_hash = imageHashSchema.parse(requestHash)
-    const duplicate = this.unitOfWork.database.query(`SELECT document_json,request_hash FROM image_candidate_decisions
-      WHERE project_id=? AND idempotency_key=?`).get(projectId, idempotencyKey) as { document_json: string; request_hash: string } | null
-    if (!duplicate) return null
-    if (duplicate.request_hash !== request_hash) {
-      throw new ImageWorkbenchRepositoryError('图片候选决定幂等键冲突', 409, 'IMAGE_STORAGE_INVALID')
-    }
-    return this.generationDocument(duplicate, value => imageCandidateDecisionSchema.parse(value))
   }
 
   async currentWorkingVersions(projectId: string): Promise<Record<string, string>> {

@@ -12,6 +12,10 @@ import {
   imageDeriveCandidateIpcPayloadSchema,
   imageEstimateDerivationIpcPayloadSchema,
   imageEstimateGenerationRoundIpcPayloadSchema,
+  imageSaveOutputIpcPayloadSchema,
+  imageStartOperationIpcPayloadSchema,
+  imageSubmitProjectIpcPayloadSchema,
+  imageUpdateUnknownProjectIpcPayloadSchema,
   imageUpdateReferenceControlIpcPayloadSchema,
   isElectronIpcChannel,
   validateElectronIpcPayload,
@@ -1464,28 +1468,19 @@ function registerIpcHandlers() {
   registerHandler(ELECTRON_IPC_CHANNELS.dialogSave, (event, payload) =>
     saveDialog(currentWindow(event), payload as Parameters<typeof saveDialog>[1]))
   registerHandler(ELECTRON_IPC_CHANNELS.imageSubmitProject, (_event, payload) => {
-    const input = payload as { projectId: string, confirmUnknownRetry: boolean }
-    return getImageActions().submitProject(input.projectId, input.confirmUnknownRetry)
+    const request = imageSubmitProjectIpcPayloadSchema.parse(payload)
+    return getImageActions().submitProject(request.projectId, request.confirmUnknownRetry)
   })
   registerHandler(ELECTRON_IPC_CHANNELS.imageStartOperation, (_event, payload) => {
-    const request = payload as {
-      projectId: string
-      input: Parameters<ElectronImageActions['startOperation']>[1]
-    }
+    const request = imageStartOperationIpcPayloadSchema.parse(payload)
     return getImageActions().startOperation(request.projectId, request.input)
   })
   registerHandler(ELECTRON_IPC_CHANNELS.imageUpdateUnknownProject, (_event, payload) => {
-    const update = payload as {
-      projectId: string
-      input: Parameters<ElectronImageActions['updateUnknownProject']>[1]
-    }
-    return getImageActions().updateUnknownProject(update.projectId, update.input)
+    const request = imageUpdateUnknownProjectIpcPayloadSchema.parse(payload)
+    return getImageActions().updateUnknownProject(request.projectId, request.input)
   })
   registerHandler(ELECTRON_IPC_CHANNELS.imageSaveOutput, (_event, payload) => {
-    const request = payload as {
-      projectId: string
-      input: Parameters<ElectronImageActions['saveOutput']>[1]
-    }
+    const request = imageSaveOutputIpcPayloadSchema.parse(payload)
     return getImageActions().saveOutput(request.projectId, request.input)
   })
   registerHandler(ELECTRON_IPC_CHANNELS.imageCreateCreativePlan, (_event, payload) => {

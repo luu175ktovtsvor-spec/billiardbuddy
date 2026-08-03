@@ -1453,18 +1453,14 @@ export class ImageWorkbenchService {
 
   async decideCandidate(projectId: string, candidateId: string, raw: DecideImageCandidateInput): Promise<ImageCandidateDecision> {
     const input = decideImageCandidateInputSchema.parse(raw)
-    const project = await this.project(projectId)
     const requestHash = sha256({ candidate_id: candidateId, decision: input.decision, base_revision: input.base_revision })
-    const replay = await this.repository.candidateDecisionByIdempotency(project.id, input.idempotency_key, requestHash)
-    if (replay) return replay
-    this.assertRevision(project, input.base_revision, '图片项目已更新，请刷新后再决定候选')
     const now = this.iso()
     return await this.repository.decideCandidate({
-      id: stableId('adopt', project.id, candidateId, input.idempotency_key, 'decision'),
-      project_id: project.id,
+      id: stableId('adopt', projectId, candidateId, input.idempotency_key, 'decision'),
+      project_id: projectId,
       candidate_id: candidateId,
       decision: input.decision,
-      actor: project.owner,
+      base_revision: input.base_revision,
       idempotency_key: input.idempotency_key,
       request_hash: requestHash,
       created_at: now,

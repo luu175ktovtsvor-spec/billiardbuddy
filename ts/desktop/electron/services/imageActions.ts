@@ -1,12 +1,12 @@
 import { z } from 'zod/v4'
 import {
   MEDIA_UI_CAPABILITY_HEADER,
+  imageProjectResponseSchema,
+  imageTaskResponseSchema,
   mediaSafeError,
-  publicImageWorkbenchProjectSchema,
-  publicMediaTaskSchema,
   saveImageOutputResultSchema,
-  type PublicImageWorkbenchProject as ImageWorkbenchProject,
-  type PublicMediaTask as ImageOperation,
+  type ImageProjectResponse,
+  type ImageTaskResponse,
   type SaveImageOutputInput,
   type SaveImageOutputResult,
   type StartImageOperationInput,
@@ -46,9 +46,6 @@ import type {
 type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
 type ResponseSchema<T> = { parse(value: unknown): T }
 
-const imageTaskResponseSchema = z.object({ task: publicMediaTaskSchema }).strict()
-const imageProjectResponseSchema = z.object({ project: publicImageWorkbenchProjectSchema }).strict()
-
 export type ElectronImageActionsOptions = {
   getServerUrl: () => Promise<string>
   capability: string
@@ -64,20 +61,20 @@ export class ElectronImageActions {
     this.fetchImpl = options.fetchImpl ?? fetch
   }
 
-  submitProject(projectId: string, confirmUnknownRetry = false): Promise<{ task: ImageOperation }> {
+  submitProject(projectId: string, confirmUnknownRetry = false): Promise<ImageTaskResponse> {
     return this.post(`/api/images/projects/${encodeURIComponent(projectId)}/submit`, {
       confirm_unknown_retry: confirmUnknownRetry,
     }, imageTaskResponseSchema)
   }
 
-  startOperation(projectId: string, input: StartImageOperationInput): Promise<{ task: ImageOperation }> {
+  startOperation(projectId: string, input: StartImageOperationInput): Promise<ImageTaskResponse> {
     return this.post(`/api/images/projects/${encodeURIComponent(projectId)}/operations`, input, imageTaskResponseSchema)
   }
 
   updateUnknownProject(
     projectId: string,
     input: UpdateImageProjectInput,
-  ): Promise<{ project: ImageWorkbenchProject }> {
+  ): Promise<ImageProjectResponse> {
     return this.request(`/api/images/projects/${encodeURIComponent(projectId)}`, 'PUT', input, imageProjectResponseSchema)
   }
 

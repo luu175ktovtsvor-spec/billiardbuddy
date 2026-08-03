@@ -9,7 +9,13 @@ import {
   estimateGenerationRoundInputSchema,
   updateImageReferenceControlInputSchema,
 } from '../../../shared/contracts/imageGeneration'
-import { mediaIdSchema } from '../../../shared/contracts/media'
+import {
+  mediaIdSchema,
+  saveImageOutputInputSchema,
+  startImageOperationInputSchema,
+  submitImageProjectInputSchema,
+  updateImageProjectInputSchema,
+} from '../../../shared/contracts/media'
 import { ELECTRON_IPC_CHANNELS, type ElectronIpcChannel } from './channels'
 
 type Validator = (payload: unknown) => boolean
@@ -611,28 +617,6 @@ const mediaProjectId = (value: unknown): value is string =>
   typeof value === 'string'
   && /^[a-z0-9][a-z0-9_-]{7,79}$/.test(value)
 
-const imageSubmitProject: Validator = value =>
-  isRecord(value)
-  && hasOnlyKeys(value, ['projectId', 'confirmUnknownRetry'])
-  && mediaProjectId(value.projectId)
-  && typeof value.confirmUnknownRetry === 'boolean'
-
-const imageUpdateUnknownProject: Validator = value => {
-  if (!isRecord(value) || !hasOnlyKeys(value, ['projectId', 'input'])) return false
-  if (!mediaProjectId(value.projectId) || !isRecord(value.input)) return false
-  const input = value.input
-  return hasOnlyKeys(input, ['revision', 'user_request', 'size', 'confirm_unknown_retry'])
-    && typeof input.revision === 'number'
-    && Number.isInteger(input.revision)
-    && input.revision >= 0
-    && typeof input.user_request === 'string'
-    && input.user_request.trim().length > 0
-    && input.user_request.length <= 8000
-    && typeof input.size === 'string'
-    && /^\d{3,4}x\d{3,4}$/.test(input.size)
-    && input.confirm_unknown_retry === true
-}
-
 const videoAddSource: Validator = value =>
   isRecord(value)
   && hasOnlyKeys(value, ['projectId', 'path'])
@@ -664,35 +648,22 @@ const videoAnalyze: Validator = value =>
   && value.userGoal.trim().length > 0
   && value.userGoal.length <= 8000
 
-const imageSaveOutput: Validator = value => {
-  if (!isRecord(value) || !hasOnlyKeys(value, ['projectId', 'input'])) return false
-  if (!mediaProjectId(value.projectId) || !isRecord(value.input)) return false
-  return hasOnlyKeys(value.input, ['output_id', 'version_id', 'output_path'])
-    && (mediaProjectId(value.input.output_id) || mediaProjectId(value.input.version_id))
-    && typeof value.input.output_path === 'string'
-    && value.input.output_path.length > 0
-    && value.input.output_path.length <= 4096
-}
-
-const imageStartOperation: Validator = value => {
-  if (!isRecord(value) || !hasOnlyKeys(value, ['projectId', 'input'])) return false
-  if (!mediaProjectId(value.projectId) || !isRecord(value.input)) return false
-  return hasOnlyKeys(value.input, [
-    'revision', 'base_version_id', 'kind', 'instruction', 'mask_data_url', 'confirm_unknown_retry',
-  ])
-    && typeof value.input.revision === 'number'
-    && Number.isInteger(value.input.revision)
-    && value.input.revision >= 0
-    && mediaProjectId(value.input.base_version_id)
-    && (value.input.kind === 'edit' || value.input.kind === 'inpaint')
-    && typeof value.input.instruction === 'string'
-    && value.input.instruction.length > 0
-    && value.input.instruction.length <= 4000
-    && (value.input.mask_data_url === undefined
-      || typeof value.input.mask_data_url === 'string' && value.input.mask_data_url.length <= 45_000_000)
-    && typeof value.input.confirm_unknown_retry === 'boolean'
-}
-
+export const imageSubmitProjectIpcPayloadSchema = z.object({
+  projectId: mediaIdSchema,
+  confirmUnknownRetry: submitImageProjectInputSchema.shape.confirm_unknown_retry,
+}).strict()
+export const imageStartOperationIpcPayloadSchema = z.object({
+  projectId: mediaIdSchema,
+  input: startImageOperationInputSchema.strict(),
+}).strict()
+export const imageUpdateUnknownProjectIpcPayloadSchema = z.object({
+  projectId: mediaIdSchema,
+  input: updateImageProjectInputSchema.strict(),
+}).strict()
+export const imageSaveOutputIpcPayloadSchema = z.object({
+  projectId: mediaIdSchema,
+  input: saveImageOutputInputSchema.strict(),
+}).strict()
 export const imageCreateCreativePlanIpcPayloadSchema = z.object({
   projectId: mediaIdSchema,
   input: createCreativePlanInputSchema,
@@ -734,6 +705,10 @@ export const imageUpdateReferenceControlIpcPayloadSchema = z.object({
   input: updateImageReferenceControlInputSchema,
 }).strict()
 
+const imageSubmitProject: Validator = value => imageSubmitProjectIpcPayloadSchema.safeParse(value).success
+const imageStartOperation: Validator = value => imageStartOperationIpcPayloadSchema.safeParse(value).success
+const imageUpdateUnknownProject: Validator = value => imageUpdateUnknownProjectIpcPayloadSchema.safeParse(value).success
+const imageSaveOutput: Validator = value => imageSaveOutputIpcPayloadSchema.safeParse(value).success
 const imageCreateCreativePlan: Validator = value => imageCreateCreativePlanIpcPayloadSchema.safeParse(value).success
 const imageEstimateGenerationRound: Validator = value => imageEstimateGenerationRoundIpcPayloadSchema.safeParse(value).success
 const imageEstimateDerivation: Validator = value => imageEstimateDerivationIpcPayloadSchema.safeParse(value).success
