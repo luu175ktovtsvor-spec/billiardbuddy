@@ -1,0 +1,59 @@
+{
+  "schema_version": 1,
+  "id": "img_legacy_fixture",
+  "kind": "image",
+  "title": "固定历史图片项目",
+  "owner": { "kind": "standalone", "owner_id": "local_workbench" },
+  "writer_fence": "fence_00000000000000000000000000000000",
+  "assets": [],
+  "versions": [
+    {
+      "id": "ver_legacy_fixture",
+      "project_revision": 0,
+      "asset_ids": ["out_legacy_fixture"],
+      "kind": "generated",
+      "operation_id": "op_legacy_fixture",
+      "width": 1,
+      "height": 1,
+      "created_at": "2026-08-03T00:00:00.000Z"
+    }
+  ],
+  "revision": 0,
+  "created_at": "2026-08-03T00:00:00.000Z",
+  "updated_at": "2026-08-03T00:00:00.000Z",
+  "state": "ready",
+  "mode": "generate",
+  "model": "gpt-image-2",
+  "prompt": "固定历史图片项目的已编译提示词",
+  "size": "1024x1024",
+  "count": 3,
+  "candidate_count": 3,
+  "brief": {
+    "schema_version": 1,
+    "user_request": "固定历史图片项目",
+    "confirmed_facts": [],
+    "must_preserve": [],
+    "may_change": [],
+    "missing_information": [],
+    "exact_text": [],
+    "compiler_version": "image-brief-v1"
+  },
+  "brief_overrides": {},
+  "references": [],
+  "reference_images": [],
+  "reference_image_assets": [],
+  "reference_image_count": 0,
+  "task_id": "task_legacy_fixture",
+  "outputs": [
+    {
+      "id": "out_legacy_fixture",
+      "operation_id": "op_legacy_fixture",
+      "version_id": "ver_legacy_fixture",
+      "version_kind": "generated",
+      "width": 1,
+      "height": 1,
+      "mime_type": "image/png",
+      "data_url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAF/gL+0V/6/wAAAABJRU5ErkJggg=="
+    }
+  ]
+}
