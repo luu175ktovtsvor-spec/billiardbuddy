@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { copyFile, link, mkdir, open, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { dirname, extname, isAbsolute, join, relative } from 'node:path'
+import sharp from 'sharp'
 import type { MediaAsset } from '../../../shared/contracts/media.js'
 import { lock } from '../../utils/lockfile.js'
 import { syncParentDirectory } from '../../utils/durableFile.js'
@@ -14,6 +15,10 @@ export type VerifiedImageBytes = {
   height: number
   content_hash: `sha256:${string}`
 }
+
+/** Header parsing is not image validation: keep decompression-bomb limits in
+ * the same place for uploads, CAS re-reads and final exports. */
+const MAX_IMAGE_PIXELS = 100_000_000
 
 export type ImageAssetStoreHooks = {
   /** Test-only crash boundary: CAS is durable but metadata has not committed. */
@@ -161,6 +166,23 @@ export class ImageAssetStore {
     const dimensions = mimeType ? imageDimensions(bytes, mimeType) : null
     if (!mimeType || !dimensions || dimensions.width < 1 || dimensions.height < 1 || dimensions.width > 12_000 || dimensions.height > 12_000) {
       throw new ImageAssetStoreError('图片文件格式或尺寸无效', 400, 'IMAGE_ASSET_INVALID')
+    }
+    if (dimensions.width * dimensions.height > MAX_IMAGE_PIXELS) {
+      throw new ImageAssetStoreError('图片解码像素超过安全上限', 400, 'IMAGE_ASSET_INVALID')
+    }
+    // A superficially valid signature/IHDR/SOF is not enough.  Decode every
+    // pixel before a byte can enter CAS, be sent to a provider or become an
+    // export.  libvips also rejects truncated scans and malformed WebP chunks.
+    try {
+      const decoded = sharp(bytes, { failOn: 'error', limitInputPixels: MAX_IMAGE_PIXELS })
+      const metadata = await decoded.metadata()
+      if (metadata.format !== (mimeType === 'image/jpeg' ? 'jpeg' : mimeType.slice('image/'.length))
+        || metadata.width !== dimensions.width || metadata.height !== dimensions.height) {
+        throw new Error('decoder dimensions differ from container header')
+      }
+      await decoded.ensureAlpha().raw().toBuffer()
+    } catch {
+      throw new ImageAssetStoreError('图片无法完整解码', 400, 'IMAGE_ASSET_INVALID')
     }
     return {
       bytes,

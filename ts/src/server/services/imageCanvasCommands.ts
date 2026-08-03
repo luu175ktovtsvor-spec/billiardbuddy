@@ -3,6 +3,7 @@ import {
   type ImageCanvasCommandInput,
   type ImageCanvasDocument,
   type ImageCanvasLayer,
+  type ImageTemplateRevision,
 } from '../../../shared/contracts/imageGeneration.js'
 
 /** A command failure is deliberately distinct from a stale aggregate revision. */
@@ -64,6 +65,7 @@ export function applyCanvasCommandDocument(
   document: ImageCanvasDocument,
   command: ImageCanvasCommandInput,
   deliveryArtboard?: { width: number; height: number },
+  template?: ImageTemplateRevision,
 ): ImageCanvasDocument {
   const next = clone(document)
   switch (command.kind) {
@@ -103,10 +105,33 @@ export function applyCanvasCommandDocument(
       layers.splice(0, layers.length, ...command.payload.ordered_layer_ids.map(id => index.get(id)!))
       break
     }
-    case 'apply_template':
+    case 'apply_template': {
+      if (!template || template.template_id !== command.payload.template_id || template.id !== command.payload.template_revision_id) {
+        throw new ImageCanvasCommandError('模板 revision 不存在或与模板标识不匹配')
+      }
+      if (template.blueprint.artboard.width !== next.width || template.blueprint.artboard.height !== next.height) {
+        throw new ImageCanvasCommandError('模板画板尺寸必须与当前交付画板完全一致')
+      }
+      const bindingBySlot = new Map(command.payload.slot_bindings.map(binding => [binding.slot_id, binding]))
+      if (bindingBySlot.size !== command.payload.slot_bindings.length || command.payload.slot_bindings.some(binding => !template.slots.some(slot => slot.id === binding.slot_id))) {
+        throw new ImageCanvasCommandError('模板 Slot 绑定无效或重复')
+      }
+      for (const slot of template.slots) {
+        const binding = bindingBySlot.get(slot.id)
+        if (slot.required && !binding) throw new ImageCanvasCommandError(`模板必填 Slot ${slot.id} 未绑定`)
+      }
+      next.background = template.blueprint.background
+      next.layers = bindTemplateLayers(template.blueprint.layers, template, bindingBySlot)
+      next.template_id = command.payload.template_id
       next.template_revision_id = command.payload.template_revision_id
+      if (template.brand_kit_revision_id && template.brand_kit_id) {
+        next.brand_kit_id = template.brand_kit_id
+        next.brand_kit_revision_id = template.brand_kit_revision_id
+      }
       break
+    }
     case 'apply_brand_kit':
+      next.brand_kit_id = command.payload.brand_kit_id
       next.brand_kit_revision_id = command.payload.brand_kit_revision_id
       break
     case 'sync_delivery_spec':
@@ -123,6 +148,21 @@ export function applyCanvasCommandDocument(
       break
   }
   return imageCanvasDocumentSchema.parse(next)
+}
+
+function bindTemplateLayers(layers: ImageCanvasLayer[], template: ImageTemplateRevision, bindings: Map<string, { asset_id?: string; text?: string; qr_payload?: string }>): ImageCanvasLayer[] {
+  const slotByLayer = new Map(template.slots.map(slot => [slot.layer_id, slot]))
+  return layers.map(layer => {
+    if (layer.kind === 'group') return { ...layer, children: bindTemplateLayers(layer.children, template, bindings) }
+    const slot = slotByLayer.get(layer.id)
+    if (!slot) return structuredClone(layer)
+    const binding = bindings.get(slot.id)
+    if (!binding) return structuredClone(layer)
+    if (slot.kind === 'text' && layer.kind === 'text' && binding.text) return { ...layer, text: binding.text }
+    if (slot.kind === 'qrcode' && layer.kind === 'qrcode' && binding.qr_payload) return { ...layer, source: { kind: 'payload', value: binding.qr_payload } }
+    if ((slot.kind === 'raster' || slot.kind === 'logo') && (layer.kind === 'raster' || layer.kind === 'logo') && binding.asset_id) return { ...layer, source_asset_id: binding.asset_id }
+    throw new ImageCanvasCommandError(`模板 Slot ${slot.id} 的绑定类型不匹配`)
+  })
 }
 
 function scaleLayers(layers: ImageCanvasLayer[], scaleX: number, scaleY: number): ImageCanvasLayer[] {

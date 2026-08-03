@@ -1,7 +1,8 @@
 import { afterEach, expect, test } from 'bun:test'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import sharp from 'sharp'
 import { createImageWorkbenchDomainApiHandler } from '../src/server/api/imageWorkbench.js'
 import { assertSafeSvg } from '../src/server/services/imageCanvasRenderer.js'
 import { ImageWorkbenchService } from '../src/server/services/imageWorkbenchService.js'
@@ -42,6 +43,51 @@ async function projectWithCanvas(workbench: ImageWorkbenchService) {
     idempotency_key: 'bb-image-canvas-create-15-3-0001',
   })
   return { project: canvas.project, canvas: canvas.canvas, artboard: delivery.artboards[0]! }
+}
+
+async function projectWithCanvasAssets(workbench: ImageWorkbenchService, referenceImages: Buffer[]) {
+  const project = await workbench.createProject({
+    title: '受控素材画布', user_request: '验证确定性图层合成', size: '1024x1024',
+    reference_images: referenceImages.map(bytes => `data:image/png;base64,${bytes.toString('base64')}`),
+    reference_roles: referenceImages.map((_, index) => index === 0 ? 'subject' : 'style'),
+  })
+  const delivery = await workbench.repository.currentDeliverySpec(project.id)
+  if (!delivery) throw new Error('expected delivery specification')
+  const canvas = await workbench.createCanvas(project.id, {
+    artboard_id: delivery.artboards[0]!.id, base_revision: project.revision, idempotency_key: 'bb-image-canvas-asset-create-0001', background: { kind: 'transparent' },
+  })
+  return { project: canvas.project, canvas: canvas.canvas, artboard: delivery.artboards[0]! }
+}
+
+async function completedRender(workbench: ImageWorkbenchService, projectId: string, canvasId: string, input: Parameters<ImageWorkbenchService['renderCanvas']>[2]) {
+  const queued = await workbench.renderCanvas(projectId, canvasId, input)
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    await workbench.recoverInterruptedOperations()
+    const operation = await workbench.getGenerationOperation(projectId, queued.operation.id)
+    if (operation.result?.kind === 'rendered_version') {
+      return {
+        operation,
+        version_id: operation.result.version_id,
+        render_receipt: await workbench.repository.getRenderReceipt(projectId, operation.result.render_receipt_id),
+      }
+    }
+    await Bun.sleep(5)
+  }
+  throw new Error('canvas render did not complete')
+}
+
+async function completedExport(workbench: ImageWorkbenchService, projectId: string, input: Parameters<ImageWorkbenchService['exportDelivery']>[1]) {
+  const queued = await workbench.exportDelivery(projectId, input)
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    await workbench.recoverInterruptedOperations()
+    const operation = await workbench.getGenerationOperation(projectId, queued.operation.id)
+    if (operation.result?.kind === 'export_receipts') {
+      const receipts = await Promise.all(operation.result.export_receipt_ids.map(async id => await workbench.repository.getExportReceipt(projectId, id)))
+      return { operation, export_receipts: receipts, delivery_set: operation.result.delivery_set_id ? await workbench.repository.getDeliverySet(projectId, operation.result.delivery_set_id) : undefined }
+    }
+    await Bun.sleep(5)
+  }
+  throw new Error('export did not complete')
 }
 
 afterEach(async () => {
@@ -102,6 +148,74 @@ test('15.3 Canvas 命令在同一项目锁事务内重放、冲突并保留独�
   expect(synced.canvas.document.layers[0]).toMatchObject({ transform: { x: 10, y: 10, width: 150, height: 100 } })
 })
 
+test('15.3 在入 CAS 前完整解码图片，拒绝只有合法 PNG 头的截断字节', async () => {
+  const workbench = await service('complete-decode')
+  const encoded = await readFile(join(import.meta.dir, 'fixtures', 'image', 'valid-1x1.png.base64'), 'utf8')
+  const bytes = Buffer.from(encoded.trim(), 'base64')
+  await expect(workbench.assets.verify(bytes.subarray(0, 60))).rejects.toMatchObject({ code: 'IMAGE_ASSET_INVALID' })
+  await expect(workbench.assets.verify(bytes)).resolves.toMatchObject({ width: 1, height: 1, mime_type: 'image/png' })
+})
+
+test('15.3 Raster opacity 与同级 Mask 在正式 Canvas 像素路径中相乘', async () => {
+  const workbench = await service('mask-opacity')
+  const [source, mask] = await Promise.all([
+    sharp({ create: { width: 4, height: 4, channels: 4, background: { r: 255, g: 0, b: 0, alpha: 1 } } }).png().toBuffer(),
+    sharp({ create: { width: 4, height: 4, channels: 4, background: { r: 255, g: 255, b: 255, alpha: 0.5 } } }).png().toBuffer(),
+  ])
+  const setup = await projectWithCanvasAssets(workbench, [source, mask])
+  const project = await workbench.getProject(setup.project.id)
+  const raster = await workbench.applyCanvasCommand(setup.project.id, setup.canvas.canvas_id, project.revision, {
+    idempotency_key: 'bb-image-mask-raster-0001', base_revision: 0, kind: 'add_layer',
+    payload: { layer: { id: 'raster_mask_target_0001', kind: 'raster', source_asset_id: project.assets[0]!.id, transform: { x: 0, y: 0, width: 1024, height: 1024, rotation_degrees: 0, scale_x: 1, scale_y: 1 }, opacity: 0.5, blend_mode: 'normal' } },
+  })
+  const masked = await workbench.applyCanvasCommand(setup.project.id, setup.canvas.canvas_id, raster.project.revision, {
+    idempotency_key: 'bb-image-mask-layer-0001', base_revision: raster.canvas.revision, kind: 'add_layer',
+    payload: { layer: { id: 'mask_layer_0001', kind: 'mask', source_asset_id: project.assets[1]!.id, target_layer_id: 'raster_mask_target_0001', mode: 'alpha' } },
+  })
+  const rendered = await completedRender(workbench, setup.project.id, setup.canvas.canvas_id, {
+    base_revision: masked.project.revision, idempotency_key: 'bb-image-mask-render-0001', canvas_revision: masked.canvas.revision, activate_on_success: true,
+  })
+  const completed = await workbench.getProject(setup.project.id)
+  const version = completed.versions.find(item => item.id === rendered.version_id)
+  const output = version && completed.assets.find(asset => asset.id === version.asset_ids[0])
+  if (!output) throw new Error('expected rendered Canvas asset')
+  const pixels = await sharp((await workbench.assets.readVerified(output)).bytes)
+    .ensureAlpha().raw().toBuffer({ resolveWithObject: true })
+  expect(pixels.data[(512 * pixels.info.width + 512) * 4 + 3]).toBeGreaterThanOrEqual(62)
+  expect(pixels.data[(512 * pixels.info.width + 512) * 4 + 3]).toBeLessThanOrEqual(66)
+})
+
+test('15.3 Template 会展开受控蓝图、填充 Slot，并以锁定 Brand revision 解析颜色与必填内容', async () => {
+  const workbench = await service('template-brand')
+  const setup = await projectWithCanvas(workbench)
+  const brand = await workbench.saveBrandKitRevision({
+    id: 'brrev_canvas_0001', brand_kit_id: 'brand_canvas_0001', revision: 0, owner: setup.project.owner,
+    logo_asset_ids: [], font_asset_ids: ['font_builtin_0001'], color_tokens: { primary: '#d02020' },
+    required_text: [{ id: 'req_canvas_0001', value: '台球夏季冠军赛', purpose: 'slogan' }], created_at: timestamp,
+  })
+  const template = await workbench.saveTemplateRevision({
+    id: 'tplrev_canvas_0001', template_id: 'template_canvas_0001', revision: 0, owner: setup.project.owner,
+    brand_kit_id: brand.brand_kit_id, brand_kit_revision_id: brand.id,
+    blueprint: { schema_version: 1, artboard: { width: 1024, height: 1024 }, background: { kind: 'solid', color: '#ffffff' }, layers: [{
+      id: 'text_template_slot_0001', kind: 'text', text: 'placeholder', font_family: 'BilliardBuddy Builtin CJK', font_asset_id: 'font_builtin_0001', font_size: 72, min_font_size: 48,
+      font_weight: 700, font_style: 'normal', line_height: 1.2, letter_spacing: 0, fill: 'brand.primary', position: { x: 80, y: 160 }, rotation_degrees: 0,
+      max_width: 820, max_height: 160, overflow: 'shrink_to_fit', locale: 'zh-CN', align: 'left', opacity: 1,
+    }] },
+    slots: [{ id: 'slot_title_0001', layer_id: 'text_template_slot_0001', kind: 'text', required: true }], schema_version: 1, created_at: timestamp,
+  })
+  const applied = await workbench.applyCanvasCommand(setup.project.id, setup.canvas.canvas_id, setup.project.revision, {
+    idempotency_key: 'bb-image-template-apply-0001', base_revision: 0, kind: 'apply_template',
+    payload: { template_id: template.template_id, template_revision_id: template.id, slot_bindings: [{ slot_id: 'slot_title_0001', text: '台球夏季冠军赛' }] },
+  })
+  expect(applied.canvas.document).toMatchObject({ template_id: template.template_id, template_revision_id: template.id, brand_kit_id: brand.brand_kit_id, brand_kit_revision_id: brand.id })
+  expect(applied.canvas.document.layers[0]).toMatchObject({ kind: 'text', text: '台球夏季冠军赛', fill: 'brand.primary' })
+  expect((await workbench.preflightCanvas(setup.project.id, setup.canvas.canvas_id, { revision: applied.canvas.revision })).passed).toBeTrue()
+  const rendered = await completedRender(workbench, setup.project.id, setup.canvas.canvas_id, {
+    base_revision: applied.project.revision, idempotency_key: 'bb-image-template-render-0001', canvas_revision: applied.canvas.revision, activate_on_success: true,
+  })
+  expect(rendered.render_receipt).toMatchObject({ brand_kit_revision_id: brand.id, template_revision_id: template.id })
+})
+
 test('15.3 后端渲染、QR 解码、陈旧完成、可验证导出和崩溃重跑都不接受 Renderer PNG', async () => {
   const workbench = await service('renderer')
   const setup = await projectWithCanvas(workbench)
@@ -122,7 +236,7 @@ test('15.3 后端渲染、QR 解码、陈旧完成、可验证导出和崩溃重
       error_correction: 'H', quiet_zone_modules: 4, verify_after_render: true,
     } },
   })
-  const firstRender = await workbench.renderCanvas(setup.project.id, setup.canvas.canvas_id, {
+  const firstRender = await completedRender(workbench, setup.project.id, setup.canvas.canvas_id, {
     base_revision: qr.project.revision,
     idempotency_key: 'bb-image-canvas-render-old-0001',
     canvas_revision: changed.canvas.revision,
@@ -131,26 +245,25 @@ test('15.3 后端渲染、QR 解码、陈旧完成、可验证导出和崩溃重
   const firstOutputHash = firstRender.render_receipt.output_hash
   expect(firstRender.render_receipt).toMatchObject({ canvas_revision: 1, output_hash: expect.stringMatching(/^sha256:/) })
   const secondProject = await workbench.getProject(setup.project.id)
-  const secondRender = await workbench.renderCanvas(setup.project.id, setup.canvas.canvas_id, {
+  const secondRender = await completedRender(workbench, setup.project.id, setup.canvas.canvas_id, {
     base_revision: secondProject.revision,
     idempotency_key: 'bb-image-canvas-render-current-0001',
     canvas_revision: qr.canvas.revision,
     activate_on_success: true,
-    expected_current_version_id: firstRender.version_id,
   })
   expect(secondRender.operation.completion_freshness).toBe('current')
   const staleProject = await workbench.getProject(setup.project.id)
-  const staleRender = await workbench.renderCanvas(setup.project.id, setup.canvas.canvas_id, {
+  const staleRender = await completedRender(workbench, setup.project.id, setup.canvas.canvas_id, {
     base_revision: staleProject.revision,
     idempotency_key: 'bb-image-canvas-render-stale-0001',
     canvas_revision: changed.canvas.revision,
     activate_on_success: true,
-    expected_current_version_id: firstRender.version_id,
+    expected_current_version_id: secondRender.version_id,
   })
   expect(staleRender.operation.completion_freshness).toBe('stale')
   expect(staleRender.render_receipt.output_hash).toBe(firstOutputHash)
   const exportProject = await workbench.getProject(setup.project.id)
-  const exported = await workbench.exportDelivery(setup.project.id, {
+  const exported = await completedExport(workbench, setup.project.id, {
     base_revision: exportProject.revision,
     idempotency_key: 'bb-image-canvas-export-15-3-0001',
     version_ids_by_artboard: { [setup.artboard.id]: secondRender.version_id },
@@ -166,6 +279,13 @@ test('15.3 后端渲染、QR 解码、陈旧完成、可验证导出和崩溃重
   expect(response.status).toBe(409)
   expect(await response.json()).toMatchObject({ error: 'MEDIA_IMAGE_IDEMPOTENCY_CONFLICT' })
   expect(() => assertSafeSvg('<svg><script>alert(1)</script></svg>')).toThrow('SVG')
+
+  const protectedUrl = `http://127.0.0.1/api/images/projects/${setup.project.id}/versions/${secondRender.version_id}/content`
+  const denied = await handler(new Request(protectedUrl), new URL(protectedUrl), ['api', 'images', 'projects', setup.project.id, 'versions', secondRender.version_id, 'content'])
+  expect(denied.status).toBe(403)
+  const allowed = await handler(new Request(protectedUrl, { headers: { 'X-BilliardBuddy-Media-Capability': capability } }), new URL(protectedUrl), ['api', 'images', 'projects', setup.project.id, 'versions', secondRender.version_id, 'content'])
+  expect(allowed.status).toBe(200)
+  expect(allowed.headers.get('x-billiardbuddy-media-hash')).toMatch(/^sha256:/)
 })
 
 test('15.3 正式字体会验证 CJK 字形并在预检中阻止缺失字形', async () => {
@@ -181,7 +301,7 @@ test('15.3 正式字体会验证 CJK 字形并在预检中阻止缺失字形', a
   })
   const valid = await workbench.preflightCanvas(setup.project.id, setup.canvas.canvas_id, { revision: text.canvas.revision })
   expect(valid.passed).toBeTrue()
-  const rendered = await workbench.renderCanvas(setup.project.id, setup.canvas.canvas_id, {
+  const rendered = await completedRender(workbench, setup.project.id, setup.canvas.canvas_id, {
     base_revision: text.project.revision, idempotency_key: 'bb-image-canvas-cjk-render-0001', canvas_revision: text.canvas.revision, activate_on_success: true,
   })
   expect(rendered.render_receipt.font_asset_hashes).toHaveLength(1)
@@ -197,6 +317,25 @@ test('15.3 正式字体会验证 CJK 字形并在预检中阻止缺失字形', a
   const invalidPreflight = await workbench.preflightCanvas(setup.project.id, setup.canvas.canvas_id, { revision: invalid.canvas.revision })
   expect(invalidPreflight.passed).toBeFalse()
   expect(invalidPreflight.checks.find(check => check.id === 'font-and-text-bounds')).toMatchObject({ status: 'fail' })
+})
+
+test('15.3 预检拒绝越过 Delivery Spec 安全区的二维码', async () => {
+  const workbench = await service('safe-area-mask')
+  const setup = await projectWithCanvas(workbench)
+  const spec = await workbench.createDeliverySpecRevision(setup.project.id, {
+    base_revision: setup.project.revision, idempotency_key: 'bb-image-safe-area-spec-0001', purpose: 'custom',
+    artboards: [{ ...setup.artboard, safe_area: { top: 80, right: 80, bottom: 80, left: 80 } }],
+  })
+  const synced = await workbench.applyCanvasCommand(setup.project.id, setup.canvas.canvas_id, spec.project.revision, {
+    idempotency_key: 'bb-image-safe-area-sync-0001', base_revision: 0, kind: 'sync_delivery_spec',
+    payload: { delivery_spec_id: spec.spec.id, delivery_spec_revision: spec.spec.revision, layout_policy: 'preserve_position' },
+  })
+  const withQr = await workbench.applyCanvasCommand(setup.project.id, setup.canvas.canvas_id, synced.project.revision, {
+    idempotency_key: 'bb-image-safe-area-qr-0001', base_revision: synced.canvas.revision, kind: 'add_layer',
+    payload: { layer: { id: 'qrcode_safe_0001', kind: 'qrcode', source: { kind: 'payload', value: 'https://example.test/safe' }, transform: { x: 10, y: 10, width: 160, height: 160, rotation_degrees: 0, scale_x: 1, scale_y: 1 }, error_correction: 'H', quiet_zone_modules: 4, verify_after_render: true } },
+  })
+  const preflight = await workbench.preflightCanvas(setup.project.id, setup.canvas.canvas_id, { revision: withQr.canvas.revision })
+  expect(preflight.checks.find(check => check.id === 'required-safe-area')).toMatchObject({ status: 'fail', waivable: false })
 })
 
 test('15.3 交付集会锁定全部 required Artboard 并逐份复核 PNG、JPEG、WebP 哈希', async () => {
@@ -221,14 +360,14 @@ test('15.3 交付集会锁定全部 required Artboard 并逐份复核 PNG、JPEG
       artboard_id: artboard.id, base_revision: current.revision,
       idempotency_key: `bb-image-multi-format-canvas-${artboard.output.format}-0001`,
     })
-    const rendered = await workbench.renderCanvas(project.id, canvas.canvas.canvas_id, {
+    const rendered = await completedRender(workbench, project.id, canvas.canvas.canvas_id, {
       base_revision: canvas.project.revision,
       idempotency_key: `bb-image-multi-format-render-${artboard.output.format}-0001`, canvas_revision: 0, activate_on_success: true,
     })
     versions[artboard.id] = rendered.version_id
     current = await workbench.getProject(project.id)
   }
-  const exported = await workbench.exportDelivery(project.id, {
+  const exported = await completedExport(workbench, project.id, {
     base_revision: current.revision, idempotency_key: 'bb-image-multi-format-export-0001', version_ids_by_artboard: versions,
   })
   expect(exported.delivery_set?.version_ids_by_artboard).toEqual(versions)
@@ -253,12 +392,38 @@ test('15.3 在 CAS 落盘后数据库提交前崩溃可由同一 Canvas Render �
   } })
   const setup = await projectWithCanvas(crashed)
   const prepared = await crashed.getProject(setup.project.id)
-  await expect(crashed.renderCanvas(setup.project.id, setup.canvas.canvas_id, {
+  const queued = await crashed.renderCanvas(setup.project.id, setup.canvas.canvas_id, {
     base_revision: prepared.revision, idempotency_key: 'bb-image-canvas-crash-replay-0001', canvas_revision: 0, activate_on_success: true,
-  })).rejects.toThrow('injected canvas crash')
+  })
+  await Bun.sleep(5)
+  expect((await crashed.getGenerationOperation(setup.project.id, queued.operation.id)).status).toBe('queued')
   const recovered = new ImageWorkbenchService({ root: storageRoot, legacyMediaRoot: legacyRoot, now: () => new Date(timestamp) })
-  const rendered = await recovered.renderCanvas(setup.project.id, setup.canvas.canvas_id, {
-    base_revision: (await recovered.getProject(setup.project.id)).revision, idempotency_key: 'bb-image-canvas-crash-replay-0001', canvas_revision: 0, activate_on_success: true,
+  const rendered = await completedRender(recovered, setup.project.id, setup.canvas.canvas_id, {
+    base_revision: prepared.revision, idempotency_key: 'bb-image-canvas-crash-replay-0001', canvas_revision: 0, activate_on_success: true,
   })
   expect(rendered.operation.result).toMatchObject({ kind: 'rendered_version', version_id: rendered.version_id })
+})
+
+test('15.3 Export 在 CAS 落盘后崩溃仍以冻结 Version map 恢复，不覆盖后续编辑', async () => {
+  let shouldCrash = true
+  const storageRoot = await root('export-crash')
+  const legacyRoot = await root('export-crash-legacy')
+  const crashed = new ImageWorkbenchService({ root: storageRoot, legacyMediaRoot: legacyRoot, now: () => new Date(timestamp), crashInjector: point => {
+    if (point === 'after_export_cas_before_db_commit' && shouldCrash) { shouldCrash = false; throw new Error('injected export crash') }
+  } })
+  const setup = await projectWithCanvas(crashed)
+  const rendered = await completedRender(crashed, setup.project.id, setup.canvas.canvas_id, {
+    base_revision: setup.project.revision, idempotency_key: 'bb-image-export-crash-render-0001', canvas_revision: 0, activate_on_success: true,
+  })
+  const beforeExport = await crashed.getProject(setup.project.id)
+  const queued = await crashed.exportDelivery(setup.project.id, {
+    base_revision: beforeExport.revision, idempotency_key: 'bb-image-export-crash-0001', version_ids_by_artboard: { [setup.artboard.id]: rendered.version_id },
+  })
+  await Bun.sleep(5)
+  expect((await crashed.getGenerationOperation(setup.project.id, queued.operation.id)).status).toBe('queued')
+  const recovered = new ImageWorkbenchService({ root: storageRoot, legacyMediaRoot: legacyRoot, now: () => new Date(timestamp) })
+  const exported = await completedExport(recovered, setup.project.id, {
+    base_revision: beforeExport.revision, idempotency_key: 'bb-image-export-crash-0001', version_ids_by_artboard: { [setup.artboard.id]: rendered.version_id },
+  })
+  expect(exported.delivery_set?.version_ids_by_artboard).toEqual({ [setup.artboard.id]: rendered.version_id })
 })

@@ -1,6 +1,6 @@
 import type { SqliteUnitOfWork } from '../../kernel/storage/sqliteUnitOfWork.js'
 
-const IMAGE_METADATA_SCHEMA_VERSION = 7
+const IMAGE_METADATA_SCHEMA_VERSION = 8
 
 /** Image-only metadata schema. The shared Kernel remains unaware of image facts. */
 export function migrateImageMetadata(unitOfWork: SqliteUnitOfWork): void {
@@ -17,7 +17,38 @@ export function migrateImageMetadata(unitOfWork: SqliteUnitOfWork): void {
     if (version === 5) migrateV5(unitOfWork)
     if (version === 6) migrateV6(unitOfWork)
     if (version === 7) migrateV7(unitOfWork)
+    if (version === 8) migrateV8(unitOfWork)
   }
+}
+
+/** Immutable Brand/Template revisions are renderer inputs, never project JSON. */
+function migrateV8(unitOfWork: SqliteUnitOfWork): void {
+  unitOfWork.transaction(() => {
+    unitOfWork.database.exec(`CREATE TABLE image_brand_kit_revisions(
+      id TEXT PRIMARY KEY,
+      brand_kit_id TEXT NOT NULL,
+      revision INTEGER NOT NULL CHECK(revision >= 0),
+      owner_kind TEXT NOT NULL,
+      owner_id TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      document_json TEXT NOT NULL,
+      UNIQUE(brand_kit_id, revision)
+    )`)
+    unitOfWork.database.exec(`CREATE TABLE image_template_revisions(
+      id TEXT PRIMARY KEY,
+      template_id TEXT NOT NULL,
+      revision INTEGER NOT NULL CHECK(revision >= 0),
+      owner_kind TEXT NOT NULL,
+      owner_id TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      document_json TEXT NOT NULL,
+      UNIQUE(template_id, revision)
+    )`)
+    unitOfWork.database.exec('CREATE INDEX image_brand_kit_revisions_owner ON image_brand_kit_revisions(owner_kind, owner_id, brand_kit_id, revision DESC)')
+    unitOfWork.database.exec('CREATE INDEX image_template_revisions_owner ON image_template_revisions(owner_kind, owner_id, template_id, revision DESC)')
+    unitOfWork.database.query('INSERT INTO image_metadata_schema_migrations(version,applied_at) VALUES(?,?)')
+      .run(8, new Date().toISOString())
+  })
 }
 
 /**

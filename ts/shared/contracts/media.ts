@@ -211,6 +211,11 @@ const mediaProjectBaseSchema = z.object({
   updated_at: mediaIsoDateSchema,
 })
 
+const imageBudgetLimitSchema = z.object({
+  currency: z.string().regex(/^[A-Z]{3}$/),
+  amount_minor: z.number().int().positive().max(2_000_000_000),
+}).strict()
+
 export const imageQualityAssessmentResultSchema = z.object({
   score: z.number().int().min(0).max(100),
   summary: z.string().min(1).max(1000),
@@ -319,6 +324,9 @@ export const imageWorkbenchProjectSchema = mediaProjectBaseSchema.extend({
   count: z.number().int().min(1).max(4).default(1),
   /** New provider-neutral projects always request one three-candidate operation. */
   candidate_count: z.literal(3).default(3),
+  /** Project-scoped paid-work ceiling.  Quotes and submitted charge-possible
+   * operations are counted before the remote request is accepted. */
+  budget_limit: imageBudgetLimitSchema.optional(),
   /** Selecting or rolling back changes only this pointer; Version history is immutable. */
   current_version_id: mediaIdSchema.optional(),
   /** 15.2 working pointers are per delivery Artboard; the legacy single pointer remains readable. */
@@ -992,6 +1000,7 @@ export const createImageProjectInputSchema = z.object({
   prompt: z.string().min(1).max(8000).optional(),
   workspace_root: z.string().min(1).max(4096).optional(),
   size: imageCanvasSizeSchema.default('1024x1024'),
+  budget_limit: imageBudgetLimitSchema.optional(),
   reference_images: z.array(referenceImageDataUrlSchema).max(8).default([]),
   reference_roles: z.array(imageReferenceRoleSchema).max(8).default([]),
 }).superRefine((value, context) => {
@@ -1208,9 +1217,14 @@ export const saveImageOutputInputSchema = z.object({
   version_id: mediaIdSchema.optional(),
   /** One-release compatibility for callers that still address legacy outputs. */
   output_id: mediaIdSchema.optional(),
-  output_path: z.string().min(1).max(4096),
-}).refine(value => Boolean(value.version_id || value.output_id), {
-  message: 'version_id is required',
+  /** Issued by Electron Main after a native save dialog.  It is deliberately
+   * opaque: Renderer and Sidecar APIs never receive a local absolute path. */
+  destination_grant_id: mediaIdSchema.optional(),
+  /** Legacy generic-media writer only. Image Workbench IPC rejects this field
+   * and uses destination_grant_id exclusively. */
+  output_path: z.string().min(1).max(4096).optional(),
+}).refine(value => Boolean(value.version_id || value.output_id) && Boolean(value.destination_grant_id || value.output_path), {
+  message: 'version_id or output_id is required',
 })
 
 /** Evidence returned only after the chosen local export has been re-read. */
@@ -1224,7 +1238,9 @@ export const imageOutputVerificationSchema = z.object({
 })
 
 export const saveImageOutputResultSchema = z.object({
-  path: z.string().min(1).max(4096),
+  destination_grant_id: mediaIdSchema.optional(),
+  /** Legacy generic-media response; the image workbench never emits it. */
+  path: z.string().min(1).max(4096).optional(),
   verification: imageOutputVerificationSchema,
 })
 

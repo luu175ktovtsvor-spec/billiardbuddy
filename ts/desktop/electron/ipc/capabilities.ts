@@ -6,6 +6,8 @@ import {
   imageCanvasCreateInputSchema,
   imageCanvasPreflightInputSchema,
   imageCanvasRenderInputSchema,
+  imageSaveOutputInputSchema,
+  imageDestinationGrantRequestSchema,
   imageDeliverySpecRevisionInputSchema,
   imageExportInputSchema,
   createCreativePlanInputSchema,
@@ -18,7 +20,6 @@ import {
 } from '../../../shared/contracts/imageGeneration'
 import {
   mediaIdSchema,
-  saveImageOutputInputSchema,
   startImageOperationInputSchema,
   submitImageProjectInputSchema,
   updateImageProjectInputSchema,
@@ -753,8 +754,9 @@ export const imageUpdateUnknownProjectIpcPayloadSchema = z.object({
 }).strict()
 export const imageSaveOutputIpcPayloadSchema = z.object({
   projectId: mediaIdSchema,
-  input: saveImageOutputInputSchema.strict(),
+  input: imageSaveOutputInputSchema,
 }).strict()
+export const imageRequestDestinationIpcPayloadSchema = imageDestinationGrantRequestSchema
 export const imageCreateCreativePlanIpcPayloadSchema = z.object({
   projectId: mediaIdSchema,
   input: createCreativePlanInputSchema,
@@ -847,6 +849,7 @@ const imageApplyCanvasCommand: Validator = value => imageApplyCanvasCommandIpcPa
 const imagePreflightCanvas: Validator = value => imagePreflightCanvasIpcPayloadSchema.safeParse(value).success
 const imageRenderCanvas: Validator = value => imageRenderCanvasIpcPayloadSchema.safeParse(value).success
 const imageExportDelivery: Validator = value => imageExportDeliveryIpcPayloadSchema.safeParse(value).success
+const imageRequestDestination: Validator = value => imageRequestDestinationIpcPayloadSchema.safeParse(value).success
 const imageSelectArtboardVersion: Validator = value => imageSelectArtboardVersionIpcPayloadSchema.safeParse(value).success
 
 export const ELECTRON_IPC_VALIDATORS = {
@@ -959,6 +962,7 @@ export const ELECTRON_IPC_VALIDATORS = {
   [ELECTRON_IPC_CHANNELS.imagePreflightCanvas]: imagePreflightCanvas,
   [ELECTRON_IPC_CHANNELS.imageRenderCanvas]: imageRenderCanvas,
   [ELECTRON_IPC_CHANNELS.imageExportDelivery]: imageExportDelivery,
+  [ELECTRON_IPC_CHANNELS.imageRequestDestination]: imageRequestDestination,
   [ELECTRON_IPC_CHANNELS.imageSelectArtboardVersion]: imageSelectArtboardVersion,
   [ELECTRON_IPC_CHANNELS.videoAddSource]: videoAddSource,
   [ELECTRON_IPC_CHANNELS.videoRender]: videoRender,

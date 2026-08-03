@@ -10,7 +10,6 @@ import {
   publicImageWorkbenchProjectSchema,
   publicMediaJobEventPageSchema,
   publicMediaTaskSchema,
-  saveImageOutputInputSchema,
   selectImageVersionInputSchema,
   startImageOperationInputSchema,
   submitImageProjectInputSchema,
@@ -36,6 +35,7 @@ import {
   imageDeliverySpecRevisionResponseSchema,
   imageExportInputSchema,
   imageExportResponseSchema,
+  imageSaveOutputInputSchema,
   createCreativePlanInputSchema,
   createGenerationRoundInputSchema,
   decideImageCandidateInputSchema,
@@ -287,20 +287,25 @@ export function createImageWorkbenchApiHandler(
           return Response.json({ project: publicImageProject(await service.addReferences(projectId, input)) }, { status: 201 })
         }
         if (!referenceId || segments[7] !== 'content' || segments[8] || req.method !== 'GET') throw methodNotAllowed(req.method)
+        requireMediaUiCapability(req, mediaUiCapability)
         return await service.referenceResponse(projectId, referenceId)
       }
       if (action === 'layer-assets') {
         const assetId = segments[6]
         if (!assetId || segments[7] !== 'content' || segments[8] || req.method !== 'GET') throw methodNotAllowed(req.method)
+        requireMediaUiCapability(req, mediaUiCapability)
         return await service.layerAssetResponse(projectId, assetId)
       }
       if (action === 'outputs') {
         const outputId = segments[6]
         if (!outputId) throw ApiError.badRequest('缺少图片结果 ID')
-        if (segments[7] === 'content' && !segments[8] && req.method === 'GET') return await service.outputResponse(projectId, outputId)
+        if (segments[7] === 'content' && !segments[8] && req.method === 'GET') {
+          requireMediaUiCapability(req, mediaUiCapability)
+          return await service.outputResponse(projectId, outputId)
+        }
         if (segments[7] === 'save' && !segments[8] && req.method === 'POST') {
           requireMediaUiCapability(req, mediaUiCapability)
-          const input = saveImageOutputInputSchema.parse({ ...(await parseJson(req) as Record<string, unknown>), output_id: outputId })
+          const input = imageSaveOutputInputSchema.parse({ ...(await parseJson(req) as Record<string, unknown>), output_id: outputId })
           return Response.json(await service.saveOutput(projectId, input))
         }
         throw methodNotAllowed(req.method)
@@ -308,6 +313,7 @@ export function createImageWorkbenchApiHandler(
       if (action === 'export-assets') {
         const assetId = segments[6]
         if (!assetId || segments[7] !== 'content' || segments[8] || req.method !== 'GET') throw methodNotAllowed(req.method)
+        requireMediaUiCapability(req, mediaUiCapability)
         return await service.exportAssetResponse(projectId, assetId)
       }
       if (action === 'operations') {
@@ -330,6 +336,10 @@ export function createImageWorkbenchApiHandler(
           const input = commitImageVersionInputSchema.parse(await parseJson(req))
           return Response.json({ project: publicImageProject(await service.commitVersion(projectId, input)) }, { status: 201 })
         }
+        if (versionAction === 'content' && !segments[8] && req.method === 'GET') {
+          requireMediaUiCapability(req, mediaUiCapability)
+          return await service.versionResponse(projectId, versionId)
+        }
         if (versionAction === 'select' && !segments[8] && req.method === 'POST') {
           requireMediaUiCapability(req, mediaUiCapability)
           const input = selectImageVersionInputSchema.parse({ ...(await parseJson(req) as Record<string, unknown>), version_id: versionId })
@@ -337,7 +347,7 @@ export function createImageWorkbenchApiHandler(
         }
         if (versionAction === 'save' && !segments[8] && req.method === 'POST') {
           requireMediaUiCapability(req, mediaUiCapability)
-          const input = saveImageOutputInputSchema.parse({ ...(await parseJson(req) as Record<string, unknown>), version_id: versionId })
+          const input = imageSaveOutputInputSchema.parse({ ...(await parseJson(req) as Record<string, unknown>), version_id: versionId })
           return Response.json(await service.saveOutput(projectId, input))
         }
         throw methodNotAllowed(req.method)
@@ -414,6 +424,10 @@ export function createImageWorkbenchDomainApiHandler(
       if (projectId && action === 'versions' && !segments[5] && req.method === 'GET') {
         return Response.json({ versions: publicImageProject(await service.getProject(projectId)).version_history })
       }
+      if (projectId && action === 'versions' && segments[5] && segments[6] === 'content' && !segments[7] && req.method === 'GET') {
+        requireMediaUiCapability(req, mediaUiCapability)
+        return await service.versionResponse(projectId, segments[5])
+      }
       if (projectId && action === 'artboards') {
         const artboardId = segments[5]
         if (!artboardId || segments[6] !== 'commands' || segments[7] !== 'select-version' || segments[8] || req.method !== 'POST') throw methodNotAllowed(req.method)
@@ -468,7 +482,7 @@ export function createImageWorkbenchDomainApiHandler(
           requireMediaUiCapability(req, mediaUiCapability)
           const input = imageCanvasRenderInputSchema.parse(await parseJson(req))
           const rendered = await service.renderCanvas(projectId, canvasId, input)
-          return Response.json(imageCanvasRenderResponseSchema.parse({ operation: publicGenerationOperation(rendered.operation), version_id: rendered.version_id, render_receipt: rendered.render_receipt, release_check: rendered.release_check }), { status: 201 })
+          return Response.json(imageCanvasRenderResponseSchema.parse({ operation: publicGenerationOperation(rendered.operation), ...(rendered.version_id ? { version_id: rendered.version_id, render_receipt: rendered.render_receipt, release_check: rendered.release_check } : {}) }), { status: 202 })
         }
         throw methodNotAllowed(req.method)
       }
@@ -476,7 +490,8 @@ export function createImageWorkbenchDomainApiHandler(
         if (req.method !== 'POST' || segments[5]) throw methodNotAllowed(req.method)
         requireMediaUiCapability(req, mediaUiCapability)
         const input = imageExportInputSchema.parse(await parseJson(req))
-        return Response.json(imageExportResponseSchema.parse(await service.exportDelivery(projectId, input)), { status: 201 })
+        const queued = await service.exportDelivery(projectId, input)
+        return Response.json(imageExportResponseSchema.parse({ ...queued, operation: publicGenerationOperation(queued.operation) }), { status: 202 })
       }
       if (projectId && action === 'delivery-sets') {
         const deliverySetId = segments[5]
@@ -548,7 +563,10 @@ export function createImageWorkbenchDomainApiHandler(
         const candidateId = segments[5]
         const candidateAction = segments[6]
         if (!candidateId) throw ApiError.badRequest('缺少图片候选 ID')
-        if (candidateAction === 'content' && !segments[7] && req.method === 'GET') return await service.candidateResponse(projectId, candidateId)
+        if (candidateAction === 'content' && !segments[7] && req.method === 'GET') {
+          requireMediaUiCapability(req, mediaUiCapability)
+          return await service.candidateResponse(projectId, candidateId)
+        }
         if (candidateAction === 'decisions' && !segments[7] && req.method === 'POST') {
           requireMediaUiCapability(req, mediaUiCapability)
           const input = decideImageCandidateInputSchema.parse(await parseJson(req))
