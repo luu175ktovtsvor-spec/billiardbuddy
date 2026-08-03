@@ -419,6 +419,10 @@ export class VideoWorkbenchService {
       // sample), not a 16 KB/s compressed estimate. Visual frames are bounded
       // at 10 MiB before upload, so reserve their declared maximum as well.
       const inputBytes = Math.ceil(asrSeconds * 32_000) + asrRequests * 44 + visualFrames * 10 * 1024 * 1024
+      const totalTokens = Math.ceil(seconds * 8) + (input.purposes.includes('planning') ? 4_000 : 0)
+      // These are the approved upper-bound units used for admission before a
+      // paid request. Provider receipts later replace them with upstream cost.
+      const estimatedAmountMicros = Math.ceil(asrSeconds * 120 + visualFrames * 250 + totalTokens * 10)
       const estimate = {
         id: id('budget'),
         estimate_hash: factBasisHash({ project_id: project.id, purposes: [...input.purposes].sort(), source_ids: [...input.source_ids].sort(), seconds, visualFrames, asrSeconds, inputBytes }),
@@ -429,12 +433,12 @@ export class VideoWorkbenchService {
           // A generation can contain 10,000 entries and Relay accepts 2,000
           // document embeddings per operation, plus the query vector.
           + (input.purposes.includes('semantic_search') ? 6 : 0),
-        total_tokens: Math.ceil(seconds * 8) + (input.purposes.includes('planning') ? 4_000 : 0),
+        total_tokens: totalTokens,
         input_bytes: inputBytes,
         visual_frames: visualFrames,
         proxy_seconds: input.purposes.includes('visual_evidence') ? seconds : 0,
         asr_seconds: asrSeconds,
-        estimated_amount_micros: Math.ceil(seconds * 120 + visualFrames * 250),
+        estimated_amount_micros: estimatedAmountMicros,
         created_at: this.iso(),
         updated_at: this.iso(),
       }
@@ -847,7 +851,7 @@ export class VideoWorkbenchService {
         const batch = documentItems.slice(offset, offset + 2_000)
         const documentOperationId = `task_${nonce}d${String(offset / 2_000).padStart(2, '0')}`
         await this.reserveRemoteBudget(projectId, budget.id, documentOperationId, 'semantic_embedding', {
-          requests: 1, total_tokens: batch.reduce((sum, item) => sum + Math.ceil(item.text.length / 4), 0), input_bytes: Buffer.byteLength(JSON.stringify(batch), 'utf8'), visual_frames: 0, proxy_seconds: 0, asr_seconds: 0, estimated_amount_micros: 0,
+          requests: 1, total_tokens: batch.reduce((sum, item) => sum + Math.ceil(item.text.length / 4), 0), input_bytes: Buffer.byteLength(JSON.stringify(batch), 'utf8'), visual_frames: 0, proxy_seconds: 0, asr_seconds: 0, estimated_amount_micros: Math.max(1, batch.reduce((sum, item) => sum + Math.ceil(item.text.length / 4), 0) * 10),
         })
         const documents = await relay.createOperation({ local_operation_id: documentOperationId, consent_revision_id: consent.id, consent_scope_hash: scopeHash, local_budget_reservation_id: budget.id, request_hash: factBasisHash({ generation: lexical.generation, documents: batch.map(item => ({ id: item.entry_id, text: item.text })) }), capability: 'semantic_embedding', application_role: 'search_index', input: { embedding_role: 'document', items: batch.map(item => ({ id: item.id, text: item.text })), model: 'text-embedding-v4', dimension: 768, instruction_version: 'video-facts-v1' } })
         if (documents.state !== 'succeeded' || !documents.provider_receipt) throw new VideoWorkbenchServiceError('远程检索索引尚未完成', 503, 'VIDEO_REMOTE_OPERATION_UNAVAILABLE')
@@ -860,7 +864,7 @@ export class VideoWorkbenchService {
       }
       const queryLocalOperationId = `task_${nonce}q`
       await this.reserveRemoteBudget(projectId, budget.id, queryLocalOperationId, 'semantic_embedding', {
-        requests: 1, total_tokens: Math.ceil(query.length / 4), input_bytes: Buffer.byteLength(query, 'utf8'), visual_frames: 0, proxy_seconds: 0, asr_seconds: 0, estimated_amount_micros: 0,
+        requests: 1, total_tokens: Math.ceil(query.length / 4), input_bytes: Buffer.byteLength(query, 'utf8'), visual_frames: 0, proxy_seconds: 0, asr_seconds: 0, estimated_amount_micros: Math.max(1, Math.ceil(query.length / 4) * 10),
       })
       const queryOperation = await relay.createOperation({ local_operation_id: queryLocalOperationId, consent_revision_id: consent.id, consent_scope_hash: scopeHash, local_budget_reservation_id: budget.id, request_hash: factBasisHash({ generation: lexical.generation, query }), capability: 'semantic_embedding', application_role: 'search_index', input: { embedding_role: 'query', items: [{ id: `embed_${nonce}`, text: query }], model: 'text-embedding-v4', dimension: 768, instruction_version: 'video-facts-v1' } })
       if (queryOperation.state !== 'succeeded' || !queryOperation.provider_receipt) throw new VideoWorkbenchServiceError('远程检索查询尚未完成', 503, 'VIDEO_REMOTE_OPERATION_UNAVAILABLE')
@@ -1410,7 +1414,7 @@ export class VideoWorkbenchService {
     const contentHash = await videoFingerprint(audioPath)
     const localOperationId = `${operationId}_asr_${source.id}`
     await this.reserveRemoteBudget(project.id, budget.id, localOperationId, 'speech_transcription', {
-      requests: 1, total_tokens: 0, input_bytes: audio.size, visual_frames: 0, proxy_seconds: 0, asr_seconds: timeToMilliseconds(primaryDuration) / 1000, estimated_amount_micros: 0,
+      requests: 1, total_tokens: 0, input_bytes: audio.size, visual_frames: 0, proxy_seconds: 0, asr_seconds: timeToMilliseconds(primaryDuration) / 1000, estimated_amount_micros: Math.max(1, Math.ceil(timeToMilliseconds(primaryDuration) / 1000 * 120)),
     })
     const scopeHash = factBasisHash({ revision: consent.revision, coverage: consent.coverage, purposes: consent.purposes, data_kinds: consent.data_kinds })
     const objectRef = await relay.uploadObjectStream({
@@ -1652,7 +1656,7 @@ export class VideoWorkbenchService {
       if (!bytes.length || bytes.length > 10 * 1024 * 1024) throw new VideoWorkbenchServiceError('远程关键帧大小无效', 413, 'VIDEO_ANALYSIS_INVALID')
       const frameOperationId = `${operationId}_frame_${index}`
       await this.reserveRemoteBudget(project.id, budget.id, frameOperationId, 'visual_evidence', {
-        requests: 1, total_tokens: 0, input_bytes: bytes.byteLength, visual_frames: 1, proxy_seconds: 0, asr_seconds: 0, estimated_amount_micros: 0,
+        requests: 1, total_tokens: 0, input_bytes: bytes.byteLength, visual_frames: 1, proxy_seconds: 0, asr_seconds: 0, estimated_amount_micros: 250,
       })
       const objectRef = await relay.uploadObject({
         local_operation_id: frameOperationId,
@@ -1892,7 +1896,7 @@ export class VideoWorkbenchService {
         const requestHash = factBasisHash(planningInput)
         try {
           await this.reserveRemoteBudget(baseProject.id, budget.id, next.planTask.id, 'media_reasoning', {
-            requests: 1, total_tokens: Math.ceil(JSON.stringify(planningInput).length / 4), input_bytes: Buffer.byteLength(JSON.stringify(planningInput), 'utf8'), visual_frames: 0, proxy_seconds: 0, asr_seconds: 0, estimated_amount_micros: 0,
+            requests: 1, total_tokens: Math.ceil(JSON.stringify(planningInput).length / 4), input_bytes: Buffer.byteLength(JSON.stringify(planningInput), 'utf8'), visual_frames: 0, proxy_seconds: 0, asr_seconds: 0, estimated_amount_micros: Math.max(1, Math.ceil(JSON.stringify(planningInput).length / 4) * 10),
           })
           const remote = await relay.createOperation({
             local_operation_id: next.planTask.id,

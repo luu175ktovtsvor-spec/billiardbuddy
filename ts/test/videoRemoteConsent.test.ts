@@ -21,8 +21,9 @@ test('remote analysis API persists estimate, immutable consent revision and revo
   const request = async (pathname: string, body: unknown) => { const url = new URL(`http://localhost${pathname}`); return await handler(new Request(url, { method: 'POST', headers: { 'Content-Type': 'application/json', [MEDIA_UI_CAPABILITY_HEADER]: capability }, body: JSON.stringify(body) }), url, segments(url)) }
   const estimateResponse = await request(`/api/videos/projects/${created.id}/analysis-estimates`, { purposes: ['asr', 'semantic_search'], source_ids: ['src_00000001'] })
   expect(estimateResponse.status).toBe(201)
-  const estimate = await estimateResponse.json() as { estimate: { estimate_hash: string; asr_seconds: number } }
+  const estimate = await estimateResponse.json() as { estimate: { estimate_hash: string; asr_seconds: number; estimated_amount_micros: number } }
   expect(estimate.estimate.asr_seconds).toBe(10)
+  expect(estimate.estimate.estimated_amount_micros).toBeGreaterThan(0)
   const consentBody = { purposes: ['asr', 'semantic_search'], data_kinds: ['audio_extract', 'transcript'], coverage: [{ source_id: 'src_00000001', ranges: [{ start: { ticks: '0', tick_rate: { num: 1000, den: 1 } }, duration: { ticks: '10000', tick_rate: { num: 1000, den: 1 } } }] }], acknowledged_estimate_hash: estimate.estimate.estimate_hash }
   const granted = await request(`/api/videos/projects/${created.id}/remote-analysis-consent`, consentBody)
   expect(granted.status).toBe(201)
