@@ -1,6 +1,6 @@
 import type { SqliteUnitOfWork } from '../../kernel/storage/sqliteUnitOfWork.js'
 
-const IMAGE_METADATA_SCHEMA_VERSION = 2
+const IMAGE_METADATA_SCHEMA_VERSION = 4
 
 /** Image-only metadata schema. The shared Kernel remains unaware of image facts. */
 export function migrateImageMetadata(unitOfWork: SqliteUnitOfWork): void {
@@ -12,6 +12,8 @@ export function migrateImageMetadata(unitOfWork: SqliteUnitOfWork): void {
     if (unitOfWork.database.query('SELECT version FROM image_metadata_schema_migrations WHERE version=?').get(version)) continue
     if (version === 1) migrateV1(unitOfWork)
     if (version === 2) migrateV2(unitOfWork)
+    if (version === 3) migrateV3(unitOfWork)
+    if (version === 4) migrateV4(unitOfWork)
   }
 }
 
@@ -40,6 +42,37 @@ function migrateV2(unitOfWork: SqliteUnitOfWork): void {
       ON image_project_migration_receipts(source_kind, status, project_id)`)
     unitOfWork.database.query('INSERT INTO image_metadata_schema_migrations(version,applied_at) VALUES(?,?)')
       .run(2, new Date().toISOString())
+  })
+}
+
+/** Orphan deletion requires an aged observation and a later confirming scan. */
+function migrateV3(unitOfWork: SqliteUnitOfWork): void {
+  unitOfWork.transaction(() => {
+    unitOfWork.database.exec(`CREATE TABLE image_cas_orphan_observations(
+      content_hash TEXT PRIMARY KEY,
+      first_unreachable_at TEXT NOT NULL,
+      last_seen_at TEXT NOT NULL,
+      scan_count INTEGER NOT NULL CHECK(scan_count >= 1)
+    )`)
+    unitOfWork.database.exec('CREATE INDEX image_cas_orphan_observations_seen ON image_cas_orphan_observations(last_seen_at)')
+    unitOfWork.database.query('INSERT INTO image_metadata_schema_migrations(version,applied_at) VALUES(?,?)')
+      .run(3, new Date().toISOString())
+  })
+}
+
+/** A changed source must never continue to advertise a completed receipt. */
+function migrateV4(unitOfWork: SqliteUnitOfWork): void {
+  unitOfWork.transaction(() => {
+    unitOfWork.database.exec(`CREATE TABLE image_project_migration_invalidations(
+      source_kind TEXT NOT NULL,
+      project_id TEXT NOT NULL,
+      source_hash TEXT NOT NULL,
+      previous_source_hash TEXT,
+      invalidated_at TEXT NOT NULL,
+      PRIMARY KEY(source_kind, project_id)
+    )`)
+    unitOfWork.database.query('INSERT INTO image_metadata_schema_migrations(version,applied_at) VALUES(?,?)')
+      .run(4, new Date().toISOString())
   })
 }
 

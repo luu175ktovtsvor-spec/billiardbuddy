@@ -52,7 +52,11 @@ import {
   type ImageOperation,
   type ImageOperationEvent,
 } from './imageWorkbenchRepository.js'
-import { LegacyImageProjectReader } from '../media/image/infrastructure/legacyImageProjectReader.js'
+import {
+  LegacyImageProjectReader,
+  legacyProjectOperations,
+  legacyProjectSourceHash,
+} from '../media/image/infrastructure/legacyImageProjectReader.js'
 import { SqliteImageMetadataStore } from '../media/image/infrastructure/sqliteImageMetadataStore.js'
 
 const STANDALONE_IMAGE_OWNER: MediaOwner = {
@@ -185,6 +189,7 @@ export class ImageWorkbenchService {
     fetchImpl?: FetchLike
     imageResultTimeoutMs?: number
     legacyMediaRoot?: string
+    casOrphanRetentionMs?: number
     /** Deliberate crash boundaries used by recovery verification only. */
     crashInjector?: (point: ImageWorkbenchCrashPoint) => void
   } = {}) {
@@ -194,7 +199,11 @@ export class ImageWorkbenchService {
     this.legacyMediaRoot = options.legacyMediaRoot
       ?? join(process.env.BILLIARDBUDDY_CONFIG_DIR ?? join(homedir(), '.BilliardBuddy'), 'billiardbuddy', 'media')
     this.legacyReader = new LegacyImageProjectReader(this.legacyMediaRoot)
-    this.repository = new SqliteImageMetadataStore({ root: options.root, now: this.now })
+    this.repository = new SqliteImageMetadataStore({
+      root: options.root,
+      now: this.now,
+      casOrphanRetentionMs: options.casOrphanRetentionMs,
+    })
     this.crashInjector = options.crashInjector
     this.assets = new ImageAssetStore(this.repository.paths(), {
       afterCasPublish: async () => this.injectCrash('after_cas_publish_before_db_commit'),
@@ -893,19 +902,8 @@ export class ImageWorkbenchService {
     for (const { kind: sourceKind, store: legacyStore, root: legacyRoot } of legacySources) {
       for (const legacy of legacyStore.projects) {
         const journal = legacyStore.journals.get(legacy.id)
-        const operationsById = new Map([...legacyStore.operations.values()]
-          .filter(operation => operation.project_id === legacy.id)
-          .map(operation => [operation.id, operation]))
-        for (const event of journal?.events ?? []) {
-          const operation = event.task as ImageOperation
-          if (operation.project_id === legacy.id) operationsById.set(operation.id, operation)
-        }
-        const projectOperations = [...operationsById.values()].sort((left, right) => left.id.localeCompare(right.id))
-        const projectSourceHash = `sha256:${createHash('sha256').update(JSON.stringify({
-          project: legacy,
-          operations: projectOperations,
-          journal: journal ?? null,
-        })).digest('hex')}`
+        const projectOperations = legacyProjectOperations(legacyStore, legacy.id)
+        const projectSourceHash = legacyProjectSourceHash(legacyStore, legacy)
         const receipt = await this.repository.projectMigrationReceipt(sourceKind, legacy.id)
         if (receipt?.status === 'complete' && receipt.source_hash === projectSourceHash) {
           skippedProjectIds.push(legacy.id)
@@ -915,6 +913,17 @@ export class ImageWorkbenchService {
           if (error instanceof ImageWorkbenchRepositoryError && error.code === 'IMAGE_PROJECT_NOT_FOUND') return null
           throw error
         })
+        const invalidation = await this.repository.projectMigrationInvalidation(sourceKind, legacy.id)
+        if (existing && invalidation) {
+          throw new ImageWorkbenchServiceError('旧图片迁移源已变化，需要重新核对后再迁移', 409, 'IMAGE_LEGACY_SOURCE_CHANGED')
+        }
+        if (existing && receipt) {
+          // The SQLite project may now have user edits. It is unsafe to claim
+          // that a changed legacy snapshot has been migrated by merely merging
+          // a few Operations, so revoke completion and require resolution.
+          await this.repository.invalidateProjectMigrationReceipt(sourceKind, legacy.id, receipt.source_hash, projectSourceHash)
+          throw new ImageWorkbenchServiceError('旧图片迁移源已变化，需要重新核对后再迁移', 409, 'IMAGE_LEGACY_SOURCE_CHANGED')
+        }
 
         if (!existing) {
           const now = this.iso()

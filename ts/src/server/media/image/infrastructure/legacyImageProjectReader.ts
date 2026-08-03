@@ -22,6 +22,27 @@ export type LegacyImageStoreSnapshot = {
   source_hash: string
 }
 
+/** Include journal-only operations: old stores were allowed to lose task files. */
+export function legacyProjectOperations(snapshot: LegacyImageStoreSnapshot, projectId: string): LegacyImageOperation[] {
+  const operations = new Map([...snapshot.operations.values()]
+    .filter(operation => operation.project_id === projectId)
+    .map(operation => [operation.id, operation]))
+  for (const event of snapshot.journals.get(projectId)?.events ?? []) {
+    const operation = event.task as LegacyImageOperation
+    if (operation.project_id === projectId) operations.set(operation.id, operation)
+  }
+  return [...operations.values()].sort((left, right) => left.id.localeCompare(right.id))
+}
+
+/** Semantic per-project source identity used by resumable migration receipts. */
+export function legacyProjectSourceHash(snapshot: LegacyImageStoreSnapshot, project: ImageWorkbenchProject): string {
+  return `sha256:${createHash('sha256').update(JSON.stringify({
+    project,
+    operations: legacyProjectOperations(snapshot, project.id),
+    journal: snapshot.journals.get(project.id) ?? null,
+  })).digest('hex')}`
+}
+
 /**
  * The former images/ JSON layout is a strict, read-only migration source.
  * New code must never obtain a writer from this class.
