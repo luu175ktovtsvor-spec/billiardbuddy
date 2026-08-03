@@ -570,7 +570,7 @@ test('15.1 injects a crash after CAS publication, then restarts by refetching th
   })
 })
 
-test('15.1 injects a crash after SQLite commit and retries only Relay ACK on restart', async () => {
+test('15.2 injects a crash after Candidate Group transaction and retries only Relay ACK on restart', async () => {
   const root = await testRoot('db-ack-crash')
   const legacyRoot = await testRoot('db-ack-crash-legacy')
   const png = (await dataUrl()).split(',', 2)[1]!
@@ -595,7 +595,8 @@ test('15.1 injects a crash after SQLite commit and retries only Relay ACK on res
     const committedBeforeAck = await first.repository.getOperation(submitted.id)
     expect(committedBeforeAck.status).toBe('succeeded')
     expect(committedBeforeAck.remote_result_acknowledged_at).toBeUndefined()
-    expect((await first.getProject(project.id)).outputs).toHaveLength(3)
+    const formal = await first.repository.findGenerationOperation(committedBeforeAck.operation_id!)
+    expect(formal?.result).toMatchObject({ kind: 'candidate_group', valid_count: 3 })
     expect(gateway.calls.filter(call => call.path.endsWith('/ack'))).toHaveLength(0)
     first.repository.close()
 
@@ -609,7 +610,7 @@ test('15.1 injects a crash after SQLite commit and retries only Relay ACK on res
   })
 })
 
-test('current Gateway to Relay contract persists candidates before ACK, exposes event cursors and keeps generated candidates unselected', async () => {
+test('15.2 Gateway to Relay contract commits a Candidate Group before ACK and never auto-adopts it', async () => {
   const png = (await dataUrl()).split(',', 2)[1]!
   const expectedBytes = await imageBytes()
   const expectedHash = await imageHash()
@@ -618,8 +619,8 @@ test('current Gateway to Relay contract persists candidates before ACK, exposes 
   const gateway = gatewayFixture(png, {
     onAck: async () => {
       const persisted = await service.getProject(projectId)
-      expect(persisted.outputs).toHaveLength(3)
-      expect(persisted.versions).toHaveLength(3)
+      expect(persisted.outputs).toHaveLength(0)
+      expect(persisted.versions).toHaveLength(0)
       const resultAsset = persisted.assets.find(asset => asset.role === 'result')
       expect(resultAsset?.content_hash).toBe(expectedHash)
       const verified = await service.assets.readVerified(resultAsset!)
@@ -645,9 +646,22 @@ test('current Gateway to Relay contract persists candidates before ACK, exposes 
     expect(completed.remote_result_acknowledged_at).toBe(at)
 
     const project = await service.getProject(created.id)
-    expect(project.outputs).toHaveLength(3)
-    expect(project.versions).toHaveLength(3)
+    expect(project.outputs).toHaveLength(0)
+    expect(project.versions).toHaveLength(0)
     expect(project.current_version_id).toBeUndefined()
+    expect(project.current_versions_by_artboard).toEqual({})
+    const formal = await service.findGenerationOperation(completed.operation_id!)
+    expect(formal?.result).toMatchObject({ kind: 'candidate_group', expected_count: 3, valid_count: 3, invalid: [] })
+    const executionReceipt = await service.repository.getExecutionReceipt(project.id, formal!.execution_receipt_id!)
+    expect(executionReceipt).toMatchObject({
+      capability: 'image_generation',
+      registry_capability: 'ImageGeneration',
+      idempotency_key: formal!.idempotency_key,
+      request_hash: formal!.request_hash,
+      input_asset_hashes: [],
+    })
+    const group = await service.getCandidateGroup(project.id, formal!.result!.kind === 'candidate_group' ? formal.result.candidate_group_id : '')
+    expect(group.candidates).toHaveLength(3)
     const page = await service.listOperationEvents(project.id, 0, 100)
     expect(page.events.map(event => event.cursor)).toEqual(page.events.map((_event, index) => index + 1))
     expect(page.events.at(-1)?.operation.status).toBe('succeeded')
@@ -660,16 +674,220 @@ test('current Gateway to Relay contract persists candidates before ACK, exposes 
     expect(poll?.headers.get('x-bb-media-result-handoff')).toBe('direct-v1')
     expect(ack?.method).toBe('POST')
 
-    const adopted = await service.selectVersion(project.id, {
-      revision: project.revision,
-      version_id: project.versions[0]!.id,
+    const compatibilityReplay = await service.submitProject(created.id)
+    expect(compatibilityReplay.id).toBe(submitted.id)
+    expect(gateway.calls.filter(call => call.path === '/gw/v1/images/tasks' && call.method === 'POST')).toHaveLength(1)
+
+    const delivery = await service.repository.currentDeliverySpec(project.id)
+    const adopted = await service.adoptCandidate(project.id, group.candidates[0]!.id, {
+      base_revision: project.revision,
+      idempotency_key: 'bb-image-adopt-gateway-contract-0001',
+      adoptions: [{ artboard_id: delivery!.artboards[0]!.id, placement: { fit: 'cover', focus_x: 0.5, focus_y: 0.5 } }],
     })
-    expect(adopted.current_version_id).toBe(project.versions[0]!.id)
+    expect(adopted.project.current_versions_by_artboard).toEqual({ [delivery!.artboards[0]!.id]: adopted.adoptions[0]!.version_id })
     const receipt = await service.deleteProject(project.id)
     expect(receipt.status).toBe('deleted')
     await expect(service.getProject(project.id)).rejects.toMatchObject({ code: 'IMAGE_PROJECT_NOT_FOUND' })
     expect((await service.restoreProject(project.id)).status).toBe('restored')
-    expect((await service.getProject(project.id)).current_version_id).toBe(project.versions[0]!.id)
+    expect((await service.getProject(project.id)).current_versions_by_artboard).toEqual({ [delivery!.artboards[0]!.id]: adopted.adoptions[0]!.version_id })
+  })
+})
+
+test('15.2 sends only Provider-eligible multi-references and keeps exact Logo/QR source bytes local', async () => {
+  const png = (await dataUrl()).split(',', 2)[1]!
+  const gateway = gatewayFixture(png)
+  const service = await createService('provider-reference-boundary', gateway.fetchImpl)
+  await withGateway(async () => {
+    const project = await service.createProject({
+      title: '多参考图边界',
+      user_request: '为产品做宣传图，Logo 留给后续确定性叠加',
+      size: '1024x1024',
+      reference_images: [await dataUrl(), await dataUrl()],
+      reference_roles: ['subject', 'logo'],
+    })
+    const plan = await service.createCreativePlan(project.id, {
+      base_revision: project.revision,
+      idempotency_key: 'bb-image-provider-reference-plan-0001',
+    })
+    const estimate = await service.estimateGenerationRound(project.id, {
+      base_revision: project.revision,
+      creative_plan_id: plan.id,
+      direction_ids: [plan.directions[0]!.id],
+    })
+    await service.createGenerationRound(project.id, {
+      base_revision: project.revision,
+      idempotency_key: 'bb-image-provider-reference-round-0001',
+      creative_plan_id: plan.id,
+      direction_ids: [plan.directions[0]!.id],
+      estimate_hash: estimate.estimate_hash,
+      confirm: true,
+    })
+    const submitted = gateway.calls.find(call => call.path === '/gw/v1/images/tasks' && call.method === 'POST')
+    expect(submitted?.body).toMatchObject({ mode: 'edit', n: 3, size: '1024x1024' })
+    const submittedImages = (submitted?.body as { images?: unknown[] } | undefined)?.images
+    expect(submittedImages).toHaveLength(1)
+    expect((submitted?.body as { prompt?: string } | undefined)?.prompt).toContain('Logo')
+  })
+})
+
+test('15.2 rejects capability gaps before paid submission, permits partial candidates, replays a Round and atomically adopts one Candidate to two Artboards', async () => {
+  let paidPosts = 0
+  const png = (await dataUrl()).split(',', 2)[1]!
+  const gateway: typeof fetch = async (input, init) => {
+    const url = new URL(input instanceof Request ? input.url : input.toString())
+    if (url.pathname === '/gw/v1/images/tasks' && init?.method === 'POST') {
+      paidPosts += 1
+      return Response.json({ task_id: 'relay_task_partial', status: 'queued', provider_receipt_hash: 'b'.repeat(64) })
+    }
+    if (url.pathname === '/gw/v1/images/tasks/relay_task_partial' && (init?.method ?? 'GET') === 'GET') {
+      return Response.json({
+        task_id: 'relay_task_partial',
+        status: 'succeeded',
+        provider_receipt_hash: 'b'.repeat(64),
+        data: [
+          { b64_json: png, mime_type: 'image/png' },
+          { b64_json: 'not-valid-base64***', mime_type: 'image/png' },
+        ],
+      })
+    }
+    if (url.pathname === '/gw/v1/images/tasks/relay_task_partial/ack' && init?.method === 'POST') {
+      return Response.json({ result_acknowledged: true })
+    }
+    return Response.json({ error: 'unexpected image gateway call' }, { status: 500 })
+  }
+  const service = await createService('generation-round', gateway)
+  await withGateway(async () => {
+    const gapProject = await service.createProject({
+      title: '能力缺口',
+      user_request: '保留产品外观',
+      size: '1024x1024',
+      reference_images: [await dataUrl()],
+      reference_roles: ['subject'],
+    })
+    const unclassified = await service.repository.saveProject({
+      ...gapProject,
+      references: gapProject.references.map(reference => ({ ...reference, role: 'unclassified' as const })),
+      revision: gapProject.revision + 1,
+    })
+    const gapPlan = await service.createCreativePlan(unclassified.id, {
+      base_revision: unclassified.revision,
+      idempotency_key: 'bb-image-capability-gap-plan-0001',
+    })
+    await expect(service.estimateGenerationRound(unclassified.id, {
+      base_revision: unclassified.revision,
+      creative_plan_id: gapPlan.id,
+    })).rejects.toMatchObject({ status: 422, code: 'IMAGE_CAPABILITY_GAP' })
+    expect(paidPosts).toBe(0)
+
+    const project = await createProject(service)
+    const delivery = await service.repository.saveDeliverySpec({
+      schema_version: 1,
+      id: 'dsp_generation_round_two_artboards',
+      project_id: project.id,
+      revision: 1,
+      purpose: 'product_marketing',
+      artboards: [
+        {
+          id: 'art_generation_round_square',
+          label: '方图',
+          width: 1024,
+          height: 1024,
+          required: true,
+          safe_area: { top: 48, right: 48, bottom: 48, left: 48 },
+          output: { format: 'png', transparent: false },
+        },
+        {
+          id: 'art_generation_round_vertical',
+          label: '竖图',
+          width: 1024,
+          height: 1536,
+          required: true,
+          output: { format: 'webp', quality: 90, transparent: false },
+        },
+      ],
+      created_at: at,
+    })
+    const plan = await service.createCreativePlan(project.id, {
+      base_revision: project.revision,
+      idempotency_key: 'bb-image-partial-plan-0001',
+    })
+    const estimate = await service.estimateGenerationRound(project.id, {
+      base_revision: project.revision,
+      creative_plan_id: plan.id,
+      direction_ids: [plan.directions[0]!.id],
+    })
+    const command = {
+      base_revision: project.revision,
+      idempotency_key: 'bb-image-partial-round-0001',
+      creative_plan_id: plan.id,
+      direction_ids: [plan.directions[0]!.id],
+      estimate_hash: estimate.estimate_hash,
+      confirm: true as const,
+    }
+    const created = await service.createGenerationRound(project.id, command)
+    expect(paidPosts).toBe(1)
+    const completed = await service.getGenerationOperation(project.id, created.operations[0]!.id)
+    expect(completed.result).toMatchObject({ kind: 'candidate_group', expected_count: 3, valid_count: 1 })
+    if (completed.result?.kind !== 'candidate_group') throw new Error('expected Candidate Group result')
+    expect(completed.result.invalid).toHaveLength(2)
+    const replay = await service.createGenerationRound(project.id, command)
+    expect(replay.round.id).toBe(created.round.id)
+    expect(paidPosts).toBe(1)
+
+    const group = await service.getCandidateGroup(project.id, completed.result.candidate_group_id)
+    const beforeAdopt = await service.getProject(project.id)
+    expect(beforeAdopt.current_versions_by_artboard).toEqual({})
+    const adoptionInput = {
+      base_revision: beforeAdopt.revision,
+      idempotency_key: 'bb-image-partial-adopt-0001',
+      adoptions: delivery.artboards.map(artboard => ({
+        artboard_id: artboard.id,
+        placement: { fit: 'contain' as const, focus_x: 0.5, focus_y: 0.5 },
+      })),
+    }
+    const adopted = await service.adoptCandidate(project.id, group.candidates[0]!.id, adoptionInput)
+    expect(Object.keys(adopted.project.current_versions_by_artboard)).toEqual(delivery.artboards.map(artboard => artboard.id).sort())
+    const replayedAdoption = await service.adoptCandidate(project.id, group.candidates[0]!.id, adoptionInput)
+    expect(replayedAdoption.adoptions).toEqual(adopted.adoptions)
+    expect((await service.getProject(project.id)).versions).toHaveLength(2)
+  })
+})
+
+test('15.2 records a Provider policy refusal as a blocked Operation and a safe execution receipt', async () => {
+  const service = await createService('policy-refusal', async (input, init) => {
+    const url = new URL(input instanceof Request ? input.url : input.toString())
+    if (url.pathname === '/gw/v1/images/tasks' && init?.method === 'POST') {
+      return Response.json({
+        status: 'blocked_by_policy',
+        refusal: { category: 'content_safety', safe_message: '请求不符合图片内容政策' },
+        provider_receipt_hash: 'c'.repeat(64),
+      }, { status: 422 })
+    }
+    return Response.json({ error: 'unexpected policy refusal call' }, { status: 500 })
+  })
+  await withGateway(async () => {
+    const project = await createProject(service)
+    const plan = await service.createCreativePlan(project.id, {
+      base_revision: project.revision,
+      idempotency_key: 'bb-image-policy-refusal-plan-0001',
+    })
+    const estimate = await service.estimateGenerationRound(project.id, {
+      base_revision: project.revision,
+      creative_plan_id: plan.id,
+      direction_ids: [plan.directions[0]!.id],
+    })
+    const created = await service.createGenerationRound(project.id, {
+      base_revision: project.revision,
+      idempotency_key: 'bb-image-policy-refusal-round-0001',
+      creative_plan_id: plan.id,
+      direction_ids: [plan.directions[0]!.id],
+      estimate_hash: estimate.estimate_hash,
+      confirm: true,
+    })
+    const operation = created.operations[0]!
+    expect(operation).toMatchObject({ status: 'blocked_by_policy', cost_state: 'not_submitted' })
+    const receipt = await service.repository.getExecutionReceipt(project.id, operation.execution_receipt_id!)
+    expect(receipt.refusal).toEqual({ category: 'content_safety', safe_message: '请求不符合图片内容政策' })
   })
 })
 
@@ -701,7 +919,7 @@ test('current recovery fences an interrupted remote submission as outcome_unknow
   })
 })
 
-test('current queued operation uses the Relay cancel contract and records a terminal cancellation event', async () => {
+test('15.2 keeps the queued-only Relay cancel contract and records a terminal cancellation event', async () => {
   const png = (await dataUrl()).split(',', 2)[1]!
   const gateway = gatewayFixture(png)
   const service = await createService('cancel', gateway.fetchImpl)
@@ -710,15 +928,13 @@ test('current queued operation uses the Relay cancel contract and records a term
     const submitted = await service.submitProject(project.id)
     const cancelled = await service.cancelOperation(submitted.id)
     expect(cancelled.status).toBe('cancelled')
-    // This preserves the current projection as a characteristic, not a target
-    // state-machine decision for the later ImageOperation redesign.
-    expect((await service.getProject(project.id)).state).toBe('failed')
+    expect((await service.getProject(project.id)).state).toBe('queued')
     expect((await service.listOperationEvents(project.id, 0, 100)).events.at(-1)?.operation.status).toBe('cancelled')
     expect(gateway.calls.find(call => call.path.endsWith('/cancel'))?.headers.get('authorization')).toBe(`Bearer ${gatewayToken}`)
   })
 })
 
-test('current API schema rejects invalid fixture, forged owner fields, unauthorised paid submit and malformed event cursor', async () => {
+test('15.2 API schema rejects invalid fixture and exposes only capability-gated, prompt-safe generation commands', async () => {
   const service = await createService('api')
   const capability = '0123456789abcdef0123456789abcdef'
   const handler = createImageWorkbenchDomainApiHandler(service, capability)
@@ -743,10 +959,36 @@ test('current API schema rejects invalid fixture, forged owner fields, unauthori
     }),
   })
   expect(created.status).toBe(201)
-  const payload = await created.json() as { project: { id: string; owner?: unknown; prompt?: unknown; model?: unknown } }
+  const payload = await created.json() as { project: { id: string; revision: number; owner?: unknown; prompt?: unknown; model?: unknown } }
   expect(payload.project.owner).toBeUndefined()
   expect(payload.project.prompt).toBeUndefined()
   expect(payload.project.model).toBeUndefined()
+
+  const missingCapability = await request(handler, `/api/images/projects/${payload.project.id}/creative-plans`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ base_revision: payload.project.revision, idempotency_key: 'bb-image-api-plan-unauthorised-0001' }),
+  })
+  expect(missingCapability.status).toBe(403)
+  const planResponse = await request(handler, `/api/images/projects/${payload.project.id}/creative-plans`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-BilliardBuddy-Media-Capability': capability },
+    body: JSON.stringify({ base_revision: payload.project.revision, idempotency_key: 'bb-image-api-plan-authorised-0001' }),
+  })
+  expect(planResponse.status).toBe(201)
+  const plan = await planResponse.json() as { plan: { id: string; directions: Array<{ id: string }>; provider_prompt?: unknown } }
+  expect(plan.plan.provider_prompt).toBeUndefined()
+  const estimate = await request(handler, `/api/images/projects/${payload.project.id}/generation-rounds/estimate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-BilliardBuddy-Media-Capability': capability },
+    body: JSON.stringify({
+      base_revision: payload.project.revision,
+      creative_plan_id: plan.plan.id,
+      direction_ids: [plan.plan.directions[0]!.id],
+    }),
+  })
+  expect(estimate.status).toBe(200)
+  expect((await estimate.json() as { paid_operation_count: number }).paid_operation_count).toBe(1)
 
   const unauthorised = await request(handler, `/api/images/projects/${payload.project.id}/submit`, { method: 'POST' })
   expect(unauthorised.status).toBe(403)

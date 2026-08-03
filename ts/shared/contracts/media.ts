@@ -249,7 +249,10 @@ export const publicImageVersionSchema = z.object({
 export const imageReferenceRoleSchema = z.enum([
   'unclassified',
   'subject',
+  'product',
+  'character',
   'style',
+  'composition',
   'environment',
   'brand',
   'logo',
@@ -260,6 +263,13 @@ export const imageProjectReferenceSchema = z.object({
   asset_id: mediaIdSchema,
   role: imageReferenceRoleSchema,
   label: z.string().min(1).max(120).optional(),
+  /**
+   * Legacy projects did not persist control semantics.  These defaults keep
+   * them readable while 15.2 stores the authoritative rule in its own table.
+   */
+  influence_strength: z.enum(['low', 'medium', 'high']).optional(),
+  preservation: z.enum(['may_change', 'prefer_preserve', 'must_preserve', 'exact']).optional(),
+  priority: z.number().int().min(0).max(1_000).optional(),
 })
 
 export const publicImageProjectReferenceSchema = imageProjectReferenceSchema.extend({
@@ -297,6 +307,11 @@ export const imageWorkbenchProjectSchema = mediaProjectBaseSchema.extend({
   candidate_count: z.literal(3).default(3),
   /** Selecting or rolling back changes only this pointer; Version history is immutable. */
   current_version_id: mediaIdSchema.optional(),
+  /** 15.2 working pointers are per delivery Artboard; the legacy single pointer remains readable. */
+  current_versions_by_artboard: z.record(mediaIdSchema, mediaIdSchema).default({}),
+  current_brief_id: mediaIdSchema.optional(),
+  current_delivery_spec_id: mediaIdSchema.optional(),
+  current_delivery_spec_revision: z.number().int().nonnegative().optional(),
   brief: imageCreativeBriefSchema.optional(),
   /** User-confirmed Brief fields replace generated suggestions and survive later reasoning. */
   brief_overrides: imageBriefOverridesSchema.default({}),
@@ -789,6 +804,8 @@ export const mediaTaskSchema = z.object({
   image_operation: z.object({
     kind: z.enum(['generate', 'edit', 'inpaint']),
     base_version_id: mediaIdSchema.optional(),
+    /** 15.2 derivation can use an unadopted Candidate as the edit source. */
+    base_candidate_asset_id: mediaIdSchema.optional(),
     instruction: z.string().min(1).max(4000).optional(),
     mask_asset_id: mediaIdSchema.optional(),
     model: imageGenerationModelSchema,

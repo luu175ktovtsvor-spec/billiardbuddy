@@ -71,6 +71,75 @@ function extensionForMime(mimeType: SupportedImageMime): 'png' | 'jpg' | 'webp' 
   return mimeType === 'image/jpeg' ? 'jpg' : mimeType === 'image/webp' ? 'webp' : 'png'
 }
 
+/**
+ * Provider input is a disposable derivative, never the original local asset.
+ * Strip the metadata containers that can carry EXIF/GPS without re-encoding
+ * image pixels or depending on a platform image codec.
+ */
+function withoutProviderMetadata(verified: VerifiedImageBytes): Buffer {
+  if (verified.mime_type === 'image/jpeg') {
+    const source = verified.bytes
+    const parts: Buffer[] = [source.subarray(0, 2)]
+    let offset = 2
+    while (offset < source.length) {
+      if (source[offset] !== 0xff) return source
+      const marker = source[offset + 1]
+      if (marker === undefined) return source
+      if (marker === 0xda) { // Start of scan: the remainder is compressed image bytes.
+        parts.push(source.subarray(offset))
+        return Buffer.concat(parts)
+      }
+      if (marker === 0xd8 || marker === 0xd9 || marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) {
+        parts.push(source.subarray(offset, offset + 2))
+        offset += 2
+        continue
+      }
+      if (offset + 4 > source.length) return source
+      const length = source.readUInt16BE(offset + 2)
+      if (length < 2 || offset + 2 + length > source.length) return source
+      // APP1 holds EXIF (including GPS) and XMP.  Do not send either upstream.
+      if (marker !== 0xe1) parts.push(source.subarray(offset, offset + 2 + length))
+      offset += 2 + length
+    }
+    return Buffer.concat(parts)
+  }
+  if (verified.mime_type === 'image/png') {
+    const source = verified.bytes
+    const parts: Buffer[] = [source.subarray(0, 8)]
+    let offset = 8
+    while (offset + 12 <= source.length) {
+      const length = source.readUInt32BE(offset)
+      const end = offset + 12 + length
+      if (end > source.length) return source
+      const type = source.toString('ascii', offset + 4, offset + 8)
+      // PNG eXIf is the only standardized EXIF container.
+      if (type !== 'eXIf') parts.push(source.subarray(offset, end))
+      offset = end
+      if (type === 'IEND') return Buffer.concat(parts)
+    }
+    return source
+  }
+  if (verified.mime_type === 'image/webp') {
+    const source = verified.bytes
+    const chunks: Buffer[] = []
+    let offset = 12
+    while (offset + 8 <= source.length) {
+      const size = source.readUInt32LE(offset + 4)
+      const paddedSize = size + (size % 2)
+      const end = offset + 8 + paddedSize
+      if (end > source.length) return source
+      if (source.toString('ascii', offset, offset + 4) !== 'EXIF') chunks.push(source.subarray(offset, end))
+      offset = end
+    }
+    if (offset !== source.length) return source
+    const body = Buffer.concat(chunks)
+    const header = Buffer.from(source.subarray(0, 12))
+    header.writeUInt32LE(4 + body.length, 4)
+    return Buffer.concat([header, body])
+  }
+  return verified.bytes
+}
+
 function safeId(value: string): boolean {
   return /^[a-z0-9][a-z0-9_-]{7,79}$/.test(value)
 }
@@ -242,6 +311,12 @@ export class ImageAssetStore {
       throw new ImageAssetStoreError('图片资产内容已变化', 409, 'IMAGE_ASSET_CORRUPT')
     }
     return verified
+  }
+
+  /** A provider upload must not contain the user's original EXIF/GPS metadata. */
+  async providerUpload(asset: MediaAsset): Promise<VerifiedImageBytes> {
+    const verified = await this.readVerified(asset)
+    return await this.verify(withoutProviderMetadata(verified))
   }
 
   async verifiedExport(source: MediaAsset, outputPath: string): Promise<{ byte_size: number; mime_type: SupportedImageMime; width: number; height: number; content_hash: `sha256:${string}`; verified_at: string }> {

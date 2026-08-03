@@ -7,18 +7,34 @@ const projectId = 'img_00000001'
 const versionId = 'ver_00000001'
 const capability = '0123456789abcdef0123456789abcdef'
 
-test('current image IPC validators accept only the four explicitly registered baseline channels and reject forged payload shapes', () => {
-  const baselineChannels = [
+test('15.2 image IPC validators expose only typed paid-generation and candidate commands', () => {
+  const imageChannels = [
     ELECTRON_IPC_CHANNELS.imageSubmitProject,
     ELECTRON_IPC_CHANNELS.imageStartOperation,
     ELECTRON_IPC_CHANNELS.imageUpdateUnknownProject,
     ELECTRON_IPC_CHANNELS.imageSaveOutput,
+    ELECTRON_IPC_CHANNELS.imageCreateCreativePlan,
+    ELECTRON_IPC_CHANNELS.imageEstimateGenerationRound,
+    ELECTRON_IPC_CHANNELS.imageCreateGenerationRound,
+    ELECTRON_IPC_CHANNELS.imageDecideCandidate,
+    ELECTRON_IPC_CHANNELS.imageAdoptCandidate,
+    ELECTRON_IPC_CHANNELS.imageDeriveCandidate,
+    ELECTRON_IPC_CHANNELS.imageCancelGenerationOperation,
+    ELECTRON_IPC_CHANNELS.imageUpdateReferenceControl,
   ]
-  expect(baselineChannels).toEqual([
+  expect(imageChannels).toEqual([
     'desktop:image:submit-project',
     'desktop:image:start-operation',
     'desktop:image:update-unknown-project',
     'desktop:image:save-output',
+    'desktop:image:create-creative-plan',
+    'desktop:image:estimate-generation-round',
+    'desktop:image:create-generation-round',
+    'desktop:image:decide-candidate',
+    'desktop:image:adopt-candidate',
+    'desktop:image:derive-candidate',
+    'desktop:image:cancel-generation-operation',
+    'desktop:image:update-reference-control',
   ])
   expect(validateElectronIpcPayload(ELECTRON_IPC_CHANNELS.imageSubmitProject, {
     projectId,
@@ -32,6 +48,27 @@ test('current image IPC validators accept only the four explicitly registered ba
   expect(validateElectronIpcPayload(ELECTRON_IPC_CHANNELS.imageSaveOutput, {
     projectId,
     input: { version_id: versionId, output_path: '' },
+  })).toBeFalse()
+  expect(validateElectronIpcPayload(ELECTRON_IPC_CHANNELS.imageCreateGenerationRound, {
+    projectId,
+    input: {
+      base_revision: 0,
+      idempotency_key: 'bb-image-ipc-generation-round-0001',
+      creative_plan_id: 'plan_00000001',
+      direction_ids: ['dir_00000001'],
+      estimate_hash: `sha256:${'a'.repeat(64)}`,
+      confirm: true,
+    },
+  })).toBeTrue()
+  expect(validateElectronIpcPayload(ELECTRON_IPC_CHANNELS.imageAdoptCandidate, {
+    projectId,
+    candidateId: 'cand_00000001',
+    input: {
+      base_revision: 1,
+      idempotency_key: 'bb-image-ipc-adoption-0001',
+      adoptions: [{ artboard_id: 'art_00000001', placement: { fit: 'cover', focus_x: 0.5, focus_y: 0.5 } }],
+      actor: 'forged-owner',
+    },
   })).toBeFalse()
 })
 
@@ -53,23 +90,31 @@ test('current Main-only image action bridge sends the desktop capability through
     instruction: '仅用于 IPC 合同基线',
     confirm_unknown_retry: false,
   })
+  await actions.createGenerationRound(projectId, {
+    base_revision: 0,
+    idempotency_key: 'bb-image-ipc-generation-round-0001',
+    creative_plan_id: 'plan_00000001',
+    direction_ids: ['dir_00000001'],
+    estimate_hash: `sha256:${'a'.repeat(64)}`,
+    confirm: true,
+  })
   expect(requests.map(request => new URL(request.url).pathname)).toEqual([
     `/api/images/projects/${projectId}/submit`,
     `/api/images/projects/${projectId}/operations`,
+    `/api/images/projects/${projectId}/generation-rounds`,
   ])
   expect(new Headers(requests[0]!.init?.headers).get('x-billiardbuddy-media-capability')).toBe(capability)
   expect(() => new ElectronImageActions({ getServerUrl: async () => '', capability: 'too-short' })).toThrow('Image UI capability is too short')
 })
 
-test('15.0 records the image IPC gaps that later 13.7 work must replace without silently treating them as final security', () => {
+test('15.2 closes the paid-generation and Candidate command bridge gaps while later stages retain unrelated security work', () => {
   const missingForFinalBroker = [
     'project_brief_reference_delivery_spec_canvas_brand_template_campaign_commands',
-    'candidate_decision_adoption_derivation_and_risk_acceptance',
     'operation_cancel_retry_and_unknown_outcome_decision',
     'opaque_source_destination_and_asset_grants',
     'sensitive_media_capability_reads',
   ]
-  expect(missingForFinalBroker).toHaveLength(5)
+  expect(missingForFinalBroker).toHaveLength(4)
   // The legacy baseline accepts a renderer-supplied path.  This is deliberately
   // documented here as a 13.7 gap, not a future security expectation.
   expect(validateElectronIpcPayload(ELECTRON_IPC_CHANNELS.imageSaveOutput, {
