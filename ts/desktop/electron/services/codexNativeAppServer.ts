@@ -54,6 +54,28 @@ export type CodexNativeAppServerClientOptions = {
  */
 export type NativeCodexPermissionMode = 'ask' | 'approve-for-me' | 'full-access'
 
+/** Exact source-native Windows sandbox setup selections. */
+export type NativeCodexWindowsSandboxSetupMode = 'elevated' | 'unelevated'
+export type NativeCodexWindowsSandboxReadiness = 'ready' | 'notConfigured' | 'updateRequired'
+
+export type NativeCodexWindowsSandboxReadinessResponse = {
+  status: NativeCodexWindowsSandboxReadiness
+}
+
+export type NativeCodexWindowsSandboxSetupStartResponse = {
+  started: boolean
+}
+
+export type NativeCodexWindowsSandboxInput = {
+  /** Verified workspace used only to boot the Rust App Server. */
+  cwd: string
+  route: CodexNativeModelRoute
+}
+
+export type NativeCodexWindowsSandboxSetupInput = NativeCodexWindowsSandboxInput & {
+  mode: NativeCodexWindowsSandboxSetupMode
+}
+
 export type NativeCodexThread = {
   id: string
   /** Projected from the authoritative App Server Thread settings response. */
@@ -216,6 +238,10 @@ const MAX_JSON_RPC_FRAME_BYTES = 128 * 1024 * 1024
 const APP_SERVER_SHUTDOWN_WAIT_MS = 1_000
 const NATIVE_PROVIDER_ID = 'billiardbuddy'
 const NATIVE_MCP_SERVER_NAME = /^[A-Za-z0-9_-]{1,128}$/
+const WINDOWS_SANDBOX_HELPER_FILENAMES = [
+  'codex-windows-sandbox-setup.exe',
+  'codex-command-runner.exe',
+] as const
 
 function engineError(message: string, detail?: string): Error {
   return new Error(detail ? `${message}: ${detail}` : message)
@@ -234,6 +260,22 @@ function jsonRpcError(value: unknown): { code: number; message: string } | undef
 
 function nonEmptyText(value: unknown, limit = 512): value is string {
   return typeof value === 'string' && value.length > 0 && value.length <= limit
+}
+
+function windowsSandboxSetupMode(value: unknown): NativeCodexWindowsSandboxSetupMode {
+  if (value === 'elevated' || value === 'unelevated') return value
+  throw new Error('CODEX_NATIVE_WINDOWS_SANDBOX_MODE_INVALID')
+}
+
+function windowsSandboxReadiness(value: CodexNativeJsonObject): NativeCodexWindowsSandboxReadinessResponse {
+  const status = value.status
+  if (status === 'ready' || status === 'notConfigured' || status === 'updateRequired') return { status }
+  throw new Error('CODEX_NATIVE_WINDOWS_SANDBOX_READINESS_INVALID')
+}
+
+function windowsSandboxSetupStarted(value: CodexNativeJsonObject): NativeCodexWindowsSandboxSetupStartResponse {
+  if (typeof value.started !== 'boolean') throw new Error('CODEX_NATIVE_WINDOWS_SANDBOX_SETUP_RESPONSE_INVALID')
+  return { started: value.started }
 }
 
 function absoluteDirectory(value: string): string {
@@ -299,13 +341,33 @@ async function hasVerifiedNativeEngineManifest(
     const resolved = await fs.realpath(manifestPath)
     if (path.dirname(resolved) !== directory) return false
     const manifest = jsonObject(JSON.parse(await fs.readFile(resolved, 'utf8')))
-    return manifest?.schemaVersion === CODEX_ENGINE_MANIFEST_SCHEMA
+    if (!(manifest?.schemaVersion === CODEX_ENGINE_MANIFEST_SCHEMA
       && manifest.engine === BILLIARDBUDDY_AGENT_ENGINE_NAME
       && manifest.sourceRepository === CODEX_ENGINE_SOURCE_REPOSITORY
       && manifest.sourceRevision === CODEX_ENGINE_SOURCE_REVISION
       && manifest.target === target
       && manifest.binary === binaryName
-      && matchesEngineProductPatches(manifest.productPatches)
+      && matchesEngineProductPatches(manifest.productPatches))) return false
+    if (!target.includes('windows')) return manifest.windowsSandboxHelpers === undefined
+    const helpers = manifest.windowsSandboxHelpers
+    if (!Array.isArray(helpers) || helpers.length !== WINDOWS_SANDBOX_HELPER_FILENAMES.length) return false
+    return await Promise.all(helpers.map(async (helper, index) => {
+      const expectedName = WINDOWS_SANDBOX_HELPER_FILENAMES[index]
+      const entry = jsonObject(helper)
+      if (
+        !expectedName
+        || entry?.name !== expectedName
+        || typeof entry.sha256 !== 'string'
+        || !/^[a-f0-9]{64}$/.test(entry.sha256)
+        || typeof entry.size !== 'number'
+        || !Number.isSafeInteger(entry.size)
+        || entry.size < 64 * 1024
+      ) return false
+      const helperPath = path.join(directory, expectedName)
+      const helperStat = await fs.lstat(helperPath)
+      if (!helperStat.isFile() || helperStat.isSymbolicLink() || helperStat.size !== entry.size) return false
+      return createHash('sha256').update(await fs.readFile(helperPath)).digest('hex') === entry.sha256
+    })).then(values => values.every(Boolean))
   } catch {
     return false
   }
@@ -886,12 +948,51 @@ export class ElectronCodexNativeRuntime {
   /** Clients/providers launched before they become current must also be revocable. */
   private readonly startingClients = new Set<CodexNativeAppServerClient>()
   private readonly startingProviders = new Set<StartedCodexNativeProvider>()
+  /** Source setup changes durable Core config, so no Turn may start mid-setup. */
+  private windowsSandboxSetupInProgress = false
   private routeGeneration = 0
   private closePromise?: Promise<void>
 
   constructor(private readonly options: ElectronCodexNativeRuntimeOptions) {}
 
+  /** Read the exact status computed by the source-native Windows sandbox. */
+  async getWindowsSandboxReadiness(
+    input: NativeCodexWindowsSandboxInput,
+  ): Promise<NativeCodexWindowsSandboxReadinessResponse> {
+    this.assertWindowsSandboxSetupNotInProgress()
+    const cwd = await this.workspace(input.cwd)
+    const client = await this.ensureClient(input.route, cwd)
+    return windowsSandboxReadiness(await client.request<CodexNativeJsonObject>('windowsSandbox/readiness'))
+  }
+
+  /**
+   * Start the source-native setup only after Main has received explicit user
+   * consent. Rust owns UAC, provisioning, persistence and the completion
+   * notification; Electron only holds the process stable while that happens.
+   */
+  async startWindowsSandboxSetup(
+    input: NativeCodexWindowsSandboxSetupInput,
+  ): Promise<NativeCodexWindowsSandboxSetupStartResponse> {
+    this.assertWindowsSandboxSetupNotInProgress()
+    this.assertModelRouteMayChange()
+    this.windowsSandboxSetupInProgress = true
+    try {
+      const cwd = await this.workspace(input.cwd)
+      const client = await this.ensureClient(input.route, cwd)
+      const mode = windowsSandboxSetupMode(input.mode)
+      const response = windowsSandboxSetupStarted(
+        await client.request<CodexNativeJsonObject>('windowsSandbox/setupStart', { mode, cwd }),
+      )
+      if (!response.started) this.windowsSandboxSetupInProgress = false
+      return response
+    } catch (error) {
+      this.windowsSandboxSetupInProgress = false
+      throw error
+    }
+  }
+
   async startThread(input: NativeCodexStartThreadInput): Promise<NativeCodexThread> {
+    this.assertWindowsSandboxSetupNotInProgress()
     const cwd = await this.workspace(input.cwd)
     const client = await this.ensureClient(input.route, cwd)
     const permissions = nativePermissionSettings(input.permissionMode)
@@ -1114,6 +1215,7 @@ export class ElectronCodexNativeRuntime {
   }
 
   async forkThread(input: NativeCodexResumeThreadInput & { lastTurnId?: string, permissionMode: NativeCodexPermissionMode }): Promise<NativeCodexThread> {
+    this.assertWindowsSandboxSetupNotInProgress()
     if (!nonEmptyText(input.threadId)) throw new Error('CODEX_NATIVE_THREAD_ID_INVALID')
     const cwd = await this.workspace(input.cwd)
     const client = await this.ensureClient(input.route, cwd)
@@ -1376,6 +1478,7 @@ export class ElectronCodexNativeRuntime {
     thread: Pick<NativeCodexThread, 'id'>,
     input: NativeCodexStartReviewInput,
   ): Promise<NativeCodexReview> {
+    this.assertWindowsSandboxSetupNotInProgress()
     if (!nonEmptyText(thread.id)) throw new Error('CODEX_NATIVE_THREAD_ID_INVALID')
     const target = nativeReviewTarget(input.target)
     const delivery = nativeReviewDelivery(input.delivery)
@@ -1401,6 +1504,7 @@ export class ElectronCodexNativeRuntime {
     clientUserMessageId?: string,
     collaborationMode?: NativeCodexCollaborationMode,
   ): Promise<NativeCodexTurn> {
+    this.assertWindowsSandboxSetupNotInProgress()
     if (!nonEmptyText(thread.id) || input.length === 0 || input.length > 64 || !input.every(validateTurnInput)) {
       throw new Error('CODEX_NATIVE_TURN_INPUT_INVALID')
     }
@@ -1471,6 +1575,12 @@ export class ElectronCodexNativeRuntime {
     }
   }
 
+  private assertWindowsSandboxSetupNotInProgress(): void {
+    if (this.windowsSandboxSetupInProgress) {
+      throw new Error('CODEX_NATIVE_WINDOWS_SANDBOX_SETUP_IN_PROGRESS')
+    }
+  }
+
   /**
    * Revoke the current process-local provider capability after credential or
    * route settings change. The durable Rust Thread Store is intentionally
@@ -1529,6 +1639,7 @@ export class ElectronCodexNativeRuntime {
     this.configuredRouteKey = undefined
     this.activeTurns.clear()
     this.pendingTurnStarts = 0
+    this.windowsSandboxSetupInProgress = false
     this.loadedThreads.clear()
     this.startingClients.clear()
     this.startingProviders.clear()
@@ -1572,9 +1683,20 @@ export class ElectronCodexNativeRuntime {
             // A renderer projection may disappear during navigation. It must
             // not terminate the authoritative Rust session or strand a tool.
           }
+          if (notification.method === 'windowsSandbox/setupCompleted') {
+            const completed = jsonObject(notification.params)
+            this.windowsSandboxSetupInProgress = false
+            // Core writes the selected mode only after source setup succeeds.
+            // Restart its process now so the next `readiness` and Thread load
+            // use that source-owned persisted configuration.
+            if (completed?.success === true) await this.invalidateModelRoute()
+          }
         },
         onServerRequest: this.options.onServerRequest,
-        onUnavailable: error => this.options.onAppServerUnavailable?.(error),
+        onUnavailable: error => {
+          this.windowsSandboxSetupInProgress = false
+          this.options.onAppServerUnavailable?.(error)
+        },
       })
       this.startingClients.add(client)
       await client.start()

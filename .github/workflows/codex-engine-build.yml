@@ -160,13 +160,19 @@ jobs:
           python3 app-server-protocol/scripts/write_schema_fixtures.py
           git diff --exit-code -- app-server-protocol/schema/
 
-      - name: 仅构建 Codex App Server
+      - name: 构建 Codex App Server 与 Windows 原生 Sandbox 辅助程序
         working-directory: third_party/codex-engine/codex-rs
         shell: bash
         run: |
           set -euo pipefail
           cargo build --locked --release --target '${{ matrix.target }}' \
             --package codex-app-server --bin codex-app-server
+          if [[ '${{ matrix.target }}' == *-windows-* ]]; then
+            cargo build --locked --release --target '${{ matrix.target }}' \
+              --package codex-windows-sandbox \
+              --bin codex-windows-sandbox-setup \
+              --bin codex-command-runner
+          fi
 
       - name: 确认引擎产物存在
         shell: bash
@@ -174,6 +180,10 @@ jobs:
           set -euo pipefail
           artifact="third_party/codex-engine/codex-rs/target/${{ matrix.target }}/release/${{ matrix.binary }}"
           test -s "${artifact}"
+          if [[ '${{ matrix.target }}' == *-windows-* ]]; then
+            test -s 'third_party/codex-engine/codex-rs/target/${{ matrix.target }}/release/codex-windows-sandbox-setup.exe'
+            test -s 'third_party/codex-engine/codex-rs/target/${{ matrix.target }}/release/codex-command-runner.exe'
+          fi
 
       - name: 构建并核对 BilliardBuddy 本地 Agent 插件
         shell: bash
@@ -224,9 +234,17 @@ jobs:
         run: |
           set -euo pipefail
           binary="../../third_party/codex-engine/codex-rs/target/${{ matrix.target }}/release/${{ matrix.binary }}"
-          bun ./scripts/stage-codex-engine.ts \
-            --target '${{ matrix.target }}' \
-            --prebuilt-binary "${binary}"
+          if [[ '${{ matrix.target }}' == *-windows-* ]]; then
+            bun ./scripts/stage-codex-engine.ts \
+              --target '${{ matrix.target }}' \
+              --prebuilt-binary "${binary}" \
+              --prebuilt-windows-sandbox-setup '../../third_party/codex-engine/codex-rs/target/${{ matrix.target }}/release/codex-windows-sandbox-setup.exe' \
+              --prebuilt-windows-command-runner '../../third_party/codex-engine/codex-rs/target/${{ matrix.target }}/release/codex-command-runner.exe'
+          else
+            bun ./scripts/stage-codex-engine.ts \
+              --target '${{ matrix.target }}' \
+              --prebuilt-binary "${binary}"
+          fi
           bun ./scripts/stage-codex-engine.ts --target '${{ matrix.target }}' --verify
 
       - name: 保存可校验的引擎运行时供桌面构建使用

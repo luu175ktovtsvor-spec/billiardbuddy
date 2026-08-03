@@ -33,6 +33,29 @@ type SupportedTarget =
 
 type BinaryHashMode = 'sha256' | 'mach-o-code-signature-neutral-sha256'
 
+const WINDOWS_SANDBOX_HELPER_FILENAMES = [
+  'codex-windows-sandbox-setup.exe',
+  'codex-command-runner.exe',
+] as const
+
+type WindowsSandboxHelperName = typeof WINDOWS_SANDBOX_HELPER_FILENAMES[number]
+
+type WindowsSandboxHelperManifest = {
+  name: WindowsSandboxHelperName
+  sha256: string
+  size: number
+}
+
+type PrebuiltWindowsSandboxHelpers = {
+  setup: string
+  commandRunner: string
+}
+
+type PreparedCodexEngine = {
+  binary: string
+  windowsSandboxHelpers?: PrebuiltWindowsSandboxHelpers
+}
+
 type EngineManifest = {
   schemaVersion: typeof CODEX_ENGINE_MANIFEST_SCHEMA
   engine: typeof BILLIARDBUDDY_AGENT_ENGINE_NAME
@@ -44,6 +67,7 @@ type EngineManifest = {
   binaryHashMode: BinaryHashMode
   binarySha256: string
   binarySize: number
+  windowsSandboxHelpers?: WindowsSandboxHelperManifest[]
   license: 'Apache-2.0'
   licenseSha256: string
   noticeSha256: string
@@ -59,12 +83,20 @@ export type CodexEngineStageOptions = {
    * must still pass the resulting staged directory through `verify`.
    */
   prebuiltBinary?: string
+  /**
+   * Windows-only upstream helpers required by the original Rust sandbox
+   * implementation. They intentionally retain the source filenames because
+   * the locked Core resolves them relative to its own executable.
+   */
+  prebuiltWindowsSandboxHelpers?: PrebuiltWindowsSandboxHelpers
 }
 
 export type CodexEngineCliOptions = {
   destinationDir?: string
   target?: string
   prebuiltBinary?: string
+  prebuiltWindowsSandboxSetup?: string
+  prebuiltWindowsCommandRunner?: string
   verifyOnly: boolean
 }
 
@@ -86,6 +118,8 @@ export function parseCodexEngineCliOptions(argv: string[]): CodexEngineCliOption
   let destinationDir: string | undefined
   let target: string | undefined
   let prebuiltBinary: string | undefined
+  let prebuiltWindowsSandboxSetup: string | undefined
+  let prebuiltWindowsCommandRunner: string | undefined
   let verifyOnly = false
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -94,22 +128,44 @@ export function parseCodexEngineCliOptions(argv: string[]): CodexEngineCliOption
       verifyOnly = true
       continue
     }
-    if (argument === '--destination' || argument === '--target' || argument === '--prebuilt-binary') {
+    if (
+      argument === '--destination'
+      || argument === '--target'
+      || argument === '--prebuilt-binary'
+      || argument === '--prebuilt-windows-sandbox-setup'
+      || argument === '--prebuilt-windows-command-runner'
+    ) {
       const value = argv[index + 1]
       if (!value || value.startsWith('--')) throw new Error(`${argument} 需要一个值`)
       if (argument === '--destination') destinationDir = value
       else if (argument === '--target') target = value
-      else prebuiltBinary = value
+      else if (argument === '--prebuilt-binary') prebuiltBinary = value
+      else if (argument === '--prebuilt-windows-sandbox-setup') prebuiltWindowsSandboxSetup = value
+      else prebuiltWindowsCommandRunner = value
       index += 1
       continue
     }
     throw new Error(`未知 Codex 引擎参数: ${argument}`)
   }
 
-  if (verifyOnly && prebuiltBinary !== undefined) {
-    throw new Error('--verify 不能与 --prebuilt-binary 同时使用')
+  if (verifyOnly && (
+    prebuiltBinary !== undefined
+    || prebuiltWindowsSandboxSetup !== undefined
+    || prebuiltWindowsCommandRunner !== undefined
+  )) {
+    throw new Error('--verify 不能与预构建 Codex 引擎文件同时使用')
   }
-  return { destinationDir, target, prebuiltBinary, verifyOnly }
+  if ((prebuiltWindowsSandboxSetup === undefined) !== (prebuiltWindowsCommandRunner === undefined)) {
+    throw new Error('Windows Sandbox 预构建辅助程序必须同时提供 setup 与 command-runner')
+  }
+  return {
+    destinationDir,
+    target,
+    prebuiltBinary,
+    prebuiltWindowsSandboxSetup,
+    prebuiltWindowsCommandRunner,
+    verifyOnly,
+  }
 }
 
 export function detectCodexEngineTarget(
@@ -301,7 +357,17 @@ function withPatchedEngineSource<T>(
   }
 }
 
-function buildPatchedSource(target: SupportedTarget, sourceRoot: string): string {
+function validPrebuiltFile(path: string, label: string, minimumSize: number): string {
+  const resolved = resolve(path)
+  if (!existsSync(resolved)) throw new Error(`${label}不存在: ${resolved}`)
+  const stat = lstatSync(resolved)
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.size < minimumSize) {
+    throw new Error(`${label}无效: ${resolved}`)
+  }
+  return resolved
+}
+
+function buildPatchedSource(target: SupportedTarget, sourceRoot: string): PreparedCodexEngine {
   const sourceWorkspace = join(sourceRoot, 'codex-rs')
   run(resolveCargoCommand(), [
     'build',
@@ -313,20 +379,54 @@ function buildPatchedSource(target: SupportedTarget, sourceRoot: string): string
   ], sourceWorkspace)
 
   const builtBinary = join(sourceWorkspace, 'target', target, 'release', codexEngineBinaryName(target))
-  if (!existsSync(builtBinary) || !lstatSync(builtBinary).isFile() || lstatSync(builtBinary).size < 1_000_000) {
-    throw new Error(`Codex 引擎构建产物无效: ${builtBinary}`)
+  const binary = validPrebuiltFile(builtBinary, 'Codex App Server 构建产物', 1_000_000)
+  if (!target.includes('windows')) return { binary }
+
+  run(resolveCargoCommand(), [
+    'build',
+    '--locked',
+    '--release',
+    '--target', target,
+    '--package', 'codex-windows-sandbox',
+    '--bin', 'codex-windows-sandbox-setup',
+    '--bin', 'codex-command-runner',
+  ], sourceWorkspace)
+  const outputDir = join(sourceWorkspace, 'target', target, 'release')
+  return {
+    binary,
+    windowsSandboxHelpers: {
+      setup: validPrebuiltFile(
+        join(outputDir, WINDOWS_SANDBOX_HELPER_FILENAMES[0]),
+        'Codex Windows Sandbox setup 辅助程序',
+        64 * 1024,
+      ),
+      commandRunner: validPrebuiltFile(
+        join(outputDir, WINDOWS_SANDBOX_HELPER_FILENAMES[1]),
+        'Codex Windows Sandbox command-runner 辅助程序',
+        64 * 1024,
+      ),
+    },
   }
-  return builtBinary
 }
 
-function prebuiltBinary(path: string): string {
-  const binary = resolve(path)
-  if (!existsSync(binary)) throw new Error(`预构建 Codex 引擎不存在: ${binary}`)
-  const stat = lstatSync(binary)
-  if (!stat.isFile() || stat.isSymbolicLink() || stat.size < 1_000_000) {
-    throw new Error(`预构建 Codex 引擎无效: ${binary}`)
+function prebuiltEngine(options: CodexEngineStageOptions): PreparedCodexEngine {
+  if (options.prebuiltBinary === undefined) throw new Error('预构建 Codex App Server 缺失')
+  const binary = validPrebuiltFile(options.prebuiltBinary, '预构建 Codex App Server', 1_000_000)
+  if (!options.target.includes('windows')) {
+    if (options.prebuiltWindowsSandboxHelpers !== undefined) {
+      throw new Error('非 Windows 目标不应提供 Windows Sandbox 辅助程序')
+    }
+    return { binary }
   }
-  return binary
+  const helpers = options.prebuiltWindowsSandboxHelpers
+  if (!helpers) throw new Error('Windows 预构建 Codex 引擎缺少原生 Sandbox 辅助程序')
+  return {
+    binary,
+    windowsSandboxHelpers: {
+      setup: validPrebuiltFile(helpers.setup, '预构建 Windows Sandbox setup 辅助程序', 64 * 1024),
+      commandRunner: validPrebuiltFile(helpers.commandRunner, '预构建 Windows Sandbox command-runner 辅助程序', 64 * 1024),
+    },
+  }
 }
 
 function adHocSignMacBinary(path: string): void {
@@ -340,7 +440,36 @@ function adHocSignMacBinary(path: string): void {
   }
 }
 
-function verifyManifest(manifest: EngineManifest, target: SupportedTarget): void {
+function verifiedWindowsSandboxHelpers(
+  manifest: EngineManifest,
+  target: SupportedTarget,
+): WindowsSandboxHelperManifest[] {
+  if (!target.includes('windows')) {
+    if (manifest.windowsSandboxHelpers !== undefined) {
+      throw new Error('非 Windows Codex 引擎清单不得声明 Windows Sandbox 辅助程序')
+    }
+    return []
+  }
+  const helpers = manifest.windowsSandboxHelpers
+  if (!Array.isArray(helpers) || helpers.length !== WINDOWS_SANDBOX_HELPER_FILENAMES.length) {
+    throw new Error('Windows Codex 引擎清单缺少完整 Sandbox 辅助程序')
+  }
+  return helpers.map((helper, index) => {
+    const expectedName = WINDOWS_SANDBOX_HELPER_FILENAMES[index]
+    if (
+      !helper
+      || helper.name !== expectedName
+      || !/^[a-f0-9]{64}$/.test(helper.sha256)
+      || !Number.isSafeInteger(helper.size)
+      || helper.size < 64 * 1024
+    ) {
+      throw new Error(`Windows Sandbox 辅助程序清单无效: ${expectedName}`)
+    }
+    return helper
+  })
+}
+
+function verifyManifest(manifest: EngineManifest, target: SupportedTarget): WindowsSandboxHelperManifest[] {
   const expectedBinary = stagedCodexEngineBinaryName(target)
   const expectedPatches = expectedProductPatches()
   if (
@@ -366,6 +495,7 @@ function verifyManifest(manifest: EngineManifest, target: SupportedTarget): void
   if (!['sha256', 'mach-o-code-signature-neutral-sha256'].includes(manifest.binaryHashMode)) {
     throw new Error(`Codex 引擎清单使用了不支持的哈希模式: ${manifest.binaryHashMode}`)
   }
+  return verifiedWindowsSandboxHelpers(manifest, target)
 }
 
 export function verifyStagedCodexEngine(options: CodexEngineStageOptions): void {
@@ -381,7 +511,7 @@ export function verifyStagedCodexEngine(options: CodexEngineStageOptions): void 
     throw new Error('安装包中的 Codex 引擎不是普通文件')
   }
   const manifest = readManifest(manifestPath)
-  verifyManifest(manifest, options.target)
+  const windowsSandboxHelpers = verifyManifest(manifest, options.target)
   if (sha256(licensePath) !== manifest.licenseSha256 || sha256(noticePath) !== manifest.noticeSha256) {
     throw new Error('Codex 引擎 LICENSE 或 NOTICE 哈希不匹配')
   }
@@ -398,11 +528,19 @@ export function verifyStagedCodexEngine(options: CodexEngineStageOptions): void 
   if (hashBinary(binaryPath, manifest.binaryHashMode) !== manifest.binarySha256) {
     throw new Error('Codex 引擎二进制哈希不匹配')
   }
+  for (const helper of windowsSandboxHelpers) {
+    const helperPath = join(destination, helper.name)
+    if (!existsSync(helperPath)) throw new Error(`安装包缺少 Windows Sandbox 辅助程序: ${helper.name}`)
+    const stat = lstatSync(helperPath)
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.size !== helper.size || sha256(helperPath) !== helper.sha256) {
+      throw new Error(`Windows Sandbox 辅助程序校验失败: ${helper.name}`)
+    }
+  }
 }
 
 function stagePreparedCodexEngine(
   options: CodexEngineStageOptions,
-  sourceBinary: string,
+  source: PreparedCodexEngine,
   patches: readonly CodexEngineProductPatch[],
 ): void {
   const destination = resolve(options.destinationDir)
@@ -413,7 +551,7 @@ function stagePreparedCodexEngine(
   // Copy first: a CI prebuilt binary may be the previous staged resource in
   // this same directory. Removing the legacy name before the copy would make
   // that valid upgrade input disappear.
-  copyFileSync(sourceBinary, stagedBinary)
+  if (resolve(source.binary) !== stagedBinary) copyFileSync(source.binary, stagedBinary)
   for (const legacy of [
     ...LEGACY_STAGED_FILES,
     `codex-app-server-${options.target}${options.target.includes('windows') ? '.exe' : ''}`,
@@ -422,9 +560,31 @@ function stagePreparedCodexEngine(
     rmSync(join(destination, legacy), { force: true })
   }
   if (!options.target.includes('windows')) {
+    for (const helper of WINDOWS_SANDBOX_HELPER_FILENAMES) {
+      rmSync(join(destination, helper), { force: true })
+    }
+  }
+  if (!options.target.includes('windows')) {
     chmodSync(stagedBinary, 0o755)
     adHocSignMacBinary(stagedBinary)
   }
+  const windowsSandboxHelpers = options.target.includes('windows')
+    ? source.windowsSandboxHelpers
+    : undefined
+  if (options.target.includes('windows') && !windowsSandboxHelpers) {
+    throw new Error('Windows Codex 引擎缺少原生 Sandbox 辅助程序')
+  }
+  const stagedWindowsSandboxHelpers = windowsSandboxHelpers
+    ? [
+      { name: WINDOWS_SANDBOX_HELPER_FILENAMES[0], source: windowsSandboxHelpers.setup },
+      { name: WINDOWS_SANDBOX_HELPER_FILENAMES[1], source: windowsSandboxHelpers.commandRunner },
+    ].map(helper => {
+      const destinationPath = join(destination, helper.name)
+      copyFileSync(helper.source, destinationPath)
+      const stat = lstatSync(destinationPath)
+      return { name: helper.name, sha256: sha256(destinationPath), size: stat.size }
+    })
+    : undefined
   copyFileSync(join(engineRoot, 'LICENSE'), join(destination, LICENSE_FILE))
   copyFileSync(join(engineRoot, 'NOTICE'), join(destination, NOTICE_FILE))
 
@@ -442,6 +602,7 @@ function stagePreparedCodexEngine(
     binaryHashMode,
     binarySha256: hashBinary(stagedBinary, binaryHashMode),
     binarySize: lstatSync(stagedBinary).size,
+    ...(stagedWindowsSandboxHelpers === undefined ? {} : { windowsSandboxHelpers: stagedWindowsSandboxHelpers }),
     license: 'Apache-2.0',
     licenseSha256: sha256(join(destination, LICENSE_FILE)),
     noticeSha256: sha256(join(destination, NOTICE_FILE)),
@@ -460,7 +621,7 @@ export function stageCodexEngine(options: CodexEngineStageOptions): void {
     // produces the binary. It leaves that checkout dirty by design, so only
     // require the pinned revision and legal files here—not a clean worktree.
     assertPinnedSource()
-    stagePreparedCodexEngine(options, prebuiltBinary(options.prebuiltBinary), patches)
+    stagePreparedCodexEngine(options, prebuiltEngine(options), patches)
     assertPinnedSource()
     return
   }
@@ -484,6 +645,14 @@ if (import.meta.main) {
     target: requestedTarget,
     verifyOnly: cli.verifyOnly,
     ...(cli.prebuiltBinary === undefined ? {} : { prebuiltBinary: cli.prebuiltBinary }),
+    ...(cli.prebuiltWindowsSandboxSetup === undefined || cli.prebuiltWindowsCommandRunner === undefined
+      ? {}
+      : {
+        prebuiltWindowsSandboxHelpers: {
+          setup: cli.prebuiltWindowsSandboxSetup,
+          commandRunner: cli.prebuiltWindowsCommandRunner,
+        },
+      }),
   })
   console.log(`[codex-engine] ${cli.verifyOnly ? 'verified' : 'staged'} for ${requestedTarget}`)
 }

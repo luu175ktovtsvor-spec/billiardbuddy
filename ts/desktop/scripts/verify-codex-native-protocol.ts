@@ -32,6 +32,8 @@ const clientRequestMethods = [
   'thread/backgroundTerminals/terminate',
   'thread/backgroundTerminals/clean',
   'thread/settings/update',
+  'windowsSandbox/readiness',
+  'windowsSandbox/setupStart',
   'config/value/write',
   'config/mcpServer/reload',
   'mcpServerStatus/list',
@@ -146,8 +148,6 @@ const reviewedNonExposedClientRequestMethods = {
     'remoteControl/pairing/start',
     'remoteControl/pairing/status',
     'remoteControl/status/read',
-    'windowsSandbox/readiness',
-    'windowsSandbox/setupStart',
   ],
   /**
    * Native backend methods whose product UI/typed IPC is intentionally later:
@@ -340,7 +340,7 @@ async function main(): Promise<void> {
   assertContains(engineStaging, 'assertPinnedSource()', '预构建引擎仍核对锁定源码版本')
   assertContains(engineBuildWorkflow, '--prebuilt-binary', 'GitHub 内核构建产物封装为受管运行时')
   assertContains(engineBuildWorkflow, 'runtime-assets/binaries/', 'GitHub 保存完整可校验引擎运行时')
-  assertContains(engineContract, 'CODEX_ENGINE_MANIFEST_SCHEMA = 3', '受管补丁清单版本')
+  assertContains(engineContract, 'CODEX_ENGINE_MANIFEST_SCHEMA = 4', '受管补丁清单版本')
   for (const patch of CODEX_ENGINE_PRODUCT_PATCHES) {
     assertContains(engineContract, `file: '${patch.file}'`, `受管补丁 ${patch.file}`)
     assertContains(engineContract, `sha256: '${patch.sha256}'`, `受管补丁 ${patch.file} 的 SHA-256`)
@@ -362,6 +362,18 @@ async function main(): Promise<void> {
   assertContains(runtime, "'thread/backgroundTerminals/list'", '原生后台终端查询协议调用')
   assertContains(runtime, "'thread/backgroundTerminals/terminate'", '原生后台终端停止协议调用')
   assertContains(runtime, "'thread/backgroundTerminals/clean'", '原生后台终端批量停止协议调用')
+  assertContains(runtime, "'windowsSandbox/readiness'", '原生 Windows Sandbox 状态协议调用')
+  assertContains(runtime, "'windowsSandbox/setupStart'", '原生 Windows Sandbox 初始化协议调用')
+  assertContains(runtime, 'windowsSandbox/setupCompleted', '原生 Windows Sandbox 完成通知处理')
+  assertContains(runtime, 'CODEX_NATIVE_WINDOWS_SANDBOX_SETUP_IN_PROGRESS', '初始化期间阻止新 Turn')
+  assertContains(mainProcess, 'confirmNativeAgentWindowsSandboxSetup', 'Windows Sandbox 由 Main 明确确认')
+  assertContains(mainProcess, 'nativeWindowsSandboxSetupOwnerId', 'Windows Sandbox 全局通知绑定发起窗口')
+  assertContains(ipcCapabilities, 'nativeAgentWindowsSandboxSetupStart', 'Windows Sandbox 初始化 IPC 校验')
+  assertContains(ipcCapabilities, 'nativeAgentWindowsSandboxReadiness', 'Windows Sandbox 状态 IPC 校验')
+  assertContains(engineStaging, 'codex-windows-sandbox-setup.exe', 'Windows Sandbox setup 辅助程序随引擎封装')
+  assertContains(engineStaging, 'codex-command-runner.exe', 'Windows Sandbox command-runner 辅助程序随引擎封装')
+  assertContains(engineBuildWorkflow, '--package codex-windows-sandbox', 'GitHub 构建原生 Windows Sandbox 辅助程序')
+  assertContains(engineBuildWorkflow, '--prebuilt-windows-sandbox-setup', 'GitHub 将 Windows Sandbox setup 辅助程序交给封装器')
   assertNotContains(runtime, "'thread/shellCommand'", '绕过沙箱的 App Server shellCommand 接口')
   assertContains(protocol, '#[experimental("thread/backgroundTerminals/list")]', '后台终端查询的上游实验性标记')
   assertContains(protocol, 'ThreadGoalUpdated => "thread/goal/updated"', '原生 Thread Goal 更新通知')
