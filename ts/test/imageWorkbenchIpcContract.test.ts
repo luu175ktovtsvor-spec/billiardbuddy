@@ -51,6 +51,36 @@ test('15.2 image IPC validators expose only typed paid-generation and candidate 
     projectId,
     input: { version_id: versionId, output_path: '' },
   })).toBeFalse()
+  expect(validateElectronIpcPayload(ELECTRON_IPC_CHANNELS.imageStartOperation, {
+    projectId,
+    input: {
+      revision: 0,
+      base_version_id: versionId,
+      kind: 'edit',
+      instruction: '仅用于完整 Preload 类型合同的编辑请求',
+      confirm_unknown_retry: false,
+    },
+  })).toBeTrue()
+  expect(validateElectronIpcPayload(ELECTRON_IPC_CHANNELS.imageStartOperation, {
+    projectId,
+    input: {
+      revision: 0,
+      base_version_id: versionId,
+      kind: 'edit',
+      instruction: '不得绕过共享输入 schema',
+      confirm_unknown_retry: false,
+      actor: 'forged-owner',
+    },
+  })).toBeFalse()
+  expect(validateElectronIpcPayload(ELECTRON_IPC_CHANNELS.imageUpdateUnknownProject, {
+    projectId,
+    input: {
+      revision: 0,
+      user_request: '重新确认图片工作台请求',
+      size: '1024x1024',
+      confirm_unknown_retry: true,
+    },
+  })).toBeTrue()
   expect(validateElectronIpcPayload(ELECTRON_IPC_CHANNELS.imageCreateGenerationRound, {
     projectId,
     input: {

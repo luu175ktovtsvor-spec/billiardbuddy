@@ -687,7 +687,21 @@ test('15.2 Gateway to Relay contract commits a Candidate Group before ACK and ne
     const decisionInput = {
       base_revision: project.revision,
       idempotency_key: 'bb-image-decision-project-upgrade-replay-0001',
-      decision: 'kept',
+      decision: 'kept' as const,
+    }
+    const concurrentDecisions = await Promise.all(Array.from({ length: 8 }, async () => await service.decideCandidate(
+      project.id,
+      group.candidates[0]!.id,
+      decisionInput,
+    )))
+    expect(new Set(concurrentDecisions.map(decision => decision.id)).size).toBe(1)
+    const decisionDatabase = new Database(join(service.repository.paths().root, 'metadata', 'metadata.sqlite'))
+    try {
+      const row = decisionDatabase.query(`SELECT COUNT(*) AS count FROM image_candidate_decisions
+        WHERE project_id=? AND idempotency_key=?`).get(project.id, decisionInput.idempotency_key) as { count: number }
+      expect(row.count).toBe(1)
+    } finally {
+      decisionDatabase.close()
     }
     const firstDecision = await request(decisionHandler, `/api/images/projects/${project.id}/candidates/${group.candidates[0]!.id}/decisions`, {
       method: 'POST',
@@ -709,6 +723,14 @@ test('15.2 Gateway to Relay contract commits a Candidate Group before ACK and ne
     })
     expect(replayDecision.status).toBe(200)
     expect(await replayDecision.json()).toMatchObject({ decision: { id: firstDecisionPayload.decision.id, decision: 'kept' } })
+    await expect(service.decideCandidate(project.id, group.candidates[0]!.id, {
+      ...decisionInput,
+      decision: 'rejected',
+    })).rejects.toMatchObject({ status: 409, code: 'IMAGE_IDEMPOTENCY_CONFLICT' })
+    await expect(service.decideCandidate(project.id, group.candidates[0]!.id, {
+      ...decisionInput,
+      idempotency_key: 'bb-image-decision-stale-revision-0001',
+    })).rejects.toMatchObject({ status: 409, code: 'IMAGE_REVISION_CONFLICT' })
     await expect(service.adoptCandidate(project.id, group.candidates[0]!.id, {
       base_revision: adopted.project.revision,
       idempotency_key: 'bb-image-adopt-gateway-contract-conflict-0001',

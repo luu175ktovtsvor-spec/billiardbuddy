@@ -1,9 +1,13 @@
 import { contextBridge, ipcRenderer } from 'electron'
+import type { ImageWorkbenchPreloadBridge } from '../../shared/contracts/imageWorkbenchPreload.js'
 import { ELECTRON_EVENT_CHANNELS, ELECTRON_IPC_CHANNELS, type ElectronIpcChannel } from './ipc/channels'
 
 function invoke<T>(channel: ElectronIpcChannel, payload?: unknown): Promise<T> {
-  return ipcRenderer.invoke(channel, payload) as Promise<T>
+  return ipcRenderer.invoke(channel, payload)
 }
+
+type ImageBridgeResult<Method extends keyof ImageWorkbenchPreloadBridge> =
+  Awaited<ReturnType<ImageWorkbenchPreloadBridge[Method]>>
 
 function nativeAgentEventListener(handler: (event: unknown) => void): () => void {
   const listener = (_event: Electron.IpcRendererEvent, payload: unknown) => handler(payload)
@@ -271,61 +275,63 @@ const nativeAgent = {
 
 // These are product-owned capabilities, not Agent tools. The future renderer
 // uses this narrow bridge to reach the existing image and video backends.
+const images: ImageWorkbenchPreloadBridge = {
+  submitProject: (projectId, confirmUnknownRetry = false) => invoke<ImageBridgeResult<'submitProject'>>(
+    ELECTRON_IPC_CHANNELS.imageSubmitProject,
+    { projectId, confirmUnknownRetry },
+  ),
+  startOperation: (projectId, input) => invoke<ImageBridgeResult<'startOperation'>>(
+    ELECTRON_IPC_CHANNELS.imageStartOperation,
+    { projectId, input },
+  ),
+  updateUnknownProject: (projectId, input) => invoke<ImageBridgeResult<'updateUnknownProject'>>(
+    ELECTRON_IPC_CHANNELS.imageUpdateUnknownProject,
+    { projectId, input },
+  ),
+  saveOutput: (projectId, input) => invoke<ImageBridgeResult<'saveOutput'>>(
+    ELECTRON_IPC_CHANNELS.imageSaveOutput,
+    { projectId, input },
+  ),
+  createCreativePlan: (projectId, input) => invoke<ImageBridgeResult<'createCreativePlan'>>(
+    ELECTRON_IPC_CHANNELS.imageCreateCreativePlan,
+    { projectId, input },
+  ),
+  estimateGenerationRound: (projectId, input) => invoke<ImageBridgeResult<'estimateGenerationRound'>>(
+    ELECTRON_IPC_CHANNELS.imageEstimateGenerationRound,
+    { projectId, input },
+  ),
+  estimateDerivation: (projectId, candidateId, input) => invoke<ImageBridgeResult<'estimateDerivation'>>(
+    ELECTRON_IPC_CHANNELS.imageEstimateDerivation,
+    { projectId, candidateId, input },
+  ),
+  createGenerationRound: (projectId, input) => invoke<ImageBridgeResult<'createGenerationRound'>>(
+    ELECTRON_IPC_CHANNELS.imageCreateGenerationRound,
+    { projectId, input },
+  ),
+  decideCandidate: (projectId, candidateId, input) => invoke<ImageBridgeResult<'decideCandidate'>>(
+    ELECTRON_IPC_CHANNELS.imageDecideCandidate,
+    { projectId, candidateId, input },
+  ),
+  adoptCandidate: (projectId, candidateId, input) => invoke<ImageBridgeResult<'adoptCandidate'>>(
+    ELECTRON_IPC_CHANNELS.imageAdoptCandidate,
+    { projectId, candidateId, input },
+  ),
+  deriveCandidate: (projectId, candidateId, input) => invoke<ImageBridgeResult<'deriveCandidate'>>(
+    ELECTRON_IPC_CHANNELS.imageDeriveCandidate,
+    { projectId, candidateId, input },
+  ),
+  cancelGenerationOperation: operationId => invoke<ImageBridgeResult<'cancelGenerationOperation'>>(
+    ELECTRON_IPC_CHANNELS.imageCancelGenerationOperation,
+    { operationId },
+  ),
+  updateReferenceControl: (projectId, referenceId, input) => invoke<ImageBridgeResult<'updateReferenceControl'>>(
+    ELECTRON_IPC_CHANNELS.imageUpdateReferenceControl,
+    { projectId, referenceId, input },
+  ),
+}
+
 const media = {
-  images: {
-    submitProject: (projectId: string, confirmUnknownRetry = false) => invoke(
-      ELECTRON_IPC_CHANNELS.imageSubmitProject,
-      { projectId, confirmUnknownRetry },
-    ),
-    startOperation: (projectId: string, input: unknown) => invoke(
-      ELECTRON_IPC_CHANNELS.imageStartOperation,
-      { projectId, input },
-    ),
-    updateUnknownProject: (projectId: string, input: unknown) => invoke(
-      ELECTRON_IPC_CHANNELS.imageUpdateUnknownProject,
-      { projectId, input },
-    ),
-    saveOutput: (projectId: string, input: unknown) => invoke(
-      ELECTRON_IPC_CHANNELS.imageSaveOutput,
-      { projectId, input },
-    ),
-    createCreativePlan: (projectId: string, input: unknown) => invoke(
-      ELECTRON_IPC_CHANNELS.imageCreateCreativePlan,
-      { projectId, input },
-    ),
-    estimateGenerationRound: (projectId: string, input: unknown) => invoke(
-      ELECTRON_IPC_CHANNELS.imageEstimateGenerationRound,
-      { projectId, input },
-    ),
-    estimateDerivation: (projectId: string, candidateId: string, input: unknown) => invoke(
-      ELECTRON_IPC_CHANNELS.imageEstimateDerivation,
-      { projectId, candidateId, input },
-    ),
-    createGenerationRound: (projectId: string, input: unknown) => invoke(
-      ELECTRON_IPC_CHANNELS.imageCreateGenerationRound,
-      { projectId, input },
-    ),
-    decideCandidate: (projectId: string, candidateId: string, input: unknown) => invoke(
-      ELECTRON_IPC_CHANNELS.imageDecideCandidate,
-      { projectId, candidateId, input },
-    ),
-    adoptCandidate: (projectId: string, candidateId: string, input: unknown) => invoke(
-      ELECTRON_IPC_CHANNELS.imageAdoptCandidate,
-      { projectId, candidateId, input },
-    ),
-    deriveCandidate: (projectId: string, candidateId: string, input: unknown) => invoke(
-      ELECTRON_IPC_CHANNELS.imageDeriveCandidate,
-      { projectId, candidateId, input },
-    ),
-    cancelGenerationOperation: (operationId: string) => invoke(
-      ELECTRON_IPC_CHANNELS.imageCancelGenerationOperation,
-      { operationId },
-    ),
-    updateReferenceControl: (projectId: string, referenceId: string, input: unknown) => invoke(
-      ELECTRON_IPC_CHANNELS.imageUpdateReferenceControl,
-      { projectId, referenceId, input },
-    ),
-  },
+  images,
   videos: {
     addSource: (projectId: string, path: string) => invoke(
       ELECTRON_IPC_CHANNELS.videoAddSource,

@@ -826,6 +826,10 @@ export const publicMediaTaskSchema = mediaTaskSchema.omit({
   remote_result_acknowledged_at: true,
 })
 
+/** Shared API, Main and Preload response contract for ordinary image operations. */
+export const imageTaskResponseSchema = z.object({ task: publicMediaTaskSchema }).strict()
+export const imageProjectResponseSchema = z.object({ project: publicImageWorkbenchProjectSchema }).strict()
+
 export const mediaJobEventSchema = z.object({
   schema_version: z.literal(1),
   cursor: z.number().int().positive(),
@@ -1217,6 +1221,8 @@ export type PublicMediaProject = z.infer<typeof publicMediaProjectSchema>
 export type PublicImageWorkbenchProject = z.infer<typeof publicImageWorkbenchProjectSchema>
 export type PublicVideoStudioProject = z.infer<typeof publicVideoStudioProjectSchema>
 export type PublicMediaTask = z.infer<typeof publicMediaTaskSchema>
+export type ImageTaskResponse = z.infer<typeof imageTaskResponseSchema>
+export type ImageProjectResponse = z.infer<typeof imageProjectResponseSchema>
 export type MediaJobEvent = z.infer<typeof mediaJobEventSchema>
 export type MediaJobEventJournal = z.infer<typeof mediaJobEventJournalSchema>
 export type PublicMediaJobEvent = z.infer<typeof publicMediaJobEventSchema>
