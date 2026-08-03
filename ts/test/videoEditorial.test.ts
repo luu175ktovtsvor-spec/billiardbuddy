@@ -285,10 +285,27 @@ test('Editorial v2 API 以单一 CommandSet 写入草稿、版本、变体和受
 test('旧时间线选择、场景锁定和备选应用经由 CommandSet，且保留锁定与 A/V 规则', async () => {
   const root = await testRoot('legacy-command-bridge')
   const sourcePath = join(root, 'source.mp4')
+  const outputPath = join(root, 'alternative-output.mp4')
   await writeFile(sourcePath, 'legacy command bridge fixture')
-  const service = new VideoWorkbenchService({ root, now: () => new Date(at), platform: 'linux' })
+  const renderCommands: string[][] = []
+  const runProcess = async (command: string[]) => {
+    if (command.includes('-version') || command.includes('-encoders')) return { exitCode: 0, stdout: 'mpeg4', stderr: '' }
+    if (command.includes('-show_format') && command.includes('-show_streams')) {
+      return { exitCode: 0, stdout: JSON.stringify({ format: { duration: '2.000' }, streams: [{ codec_type: 'video', width: 640, height: 360, avg_frame_rate: '30/1' }, { codec_type: 'audio' }] }), stderr: '' }
+    }
+    if (command.includes('-filter_complex')) renderCommands.push(command)
+    const output = command.at(-1)
+    if (!output) return { exitCode: 1, stdout: '', stderr: 'missing output' }
+    await mkdir(dirname(output), { recursive: true })
+    await writeFile(output, 'simulated output')
+    return { exitCode: 0, stdout: '', stderr: '' }
+  }
+  const service = new VideoWorkbenchService({ root, now: () => new Date(at), platform: 'linux', runProcess })
   const created = await service.createProject({ title: '旧接口 CommandSet 桥接' })
   const fingerprint = await videoFingerprint(sourcePath)
+  const identity = await fastVideoIdentity(sourcePath)
+  const timeBase = mediaTimeBase(1, 1000)
+  const tickRate = tickRateForTimeBase(timeBase)
   const revision = `sha256:${'a'.repeat(64)}`
   const sceneA = {
     id: 'scene_00000001',
@@ -330,6 +347,31 @@ test('旧时间线选择、场景锁定和备选应用经由 CommandSet，且保
     scenes: [sceneA, sceneB, sceneC],
     created_at: at,
   }
+  await service.repository.saveFact({
+    id: 'src_00000001',
+    project_id: created.id,
+    path: sourcePath,
+    name: 'source.mp4',
+    fast_identity: identity,
+    fingerprint,
+    fingerprint_state: 'ready',
+    primary_video_stream: {
+      stream_index: 0,
+      time_base: timeBase,
+      start_time: rationalTime('0', tickRate),
+      duration: rationalTime('10000', tickRate),
+      codec: 'h264',
+      width: 1920,
+      height: 1080,
+      rotation: 0,
+      variable_frame_rate: false,
+    },
+    presentation_duration: rationalTime('10000', tickRate),
+    audio_tracks: [],
+    state: 'ready',
+    created_at: at,
+    updated_at: at,
+  })
   await service.repository.saveProject({
     ...created,
     state: 'ready',
@@ -378,7 +420,8 @@ test('旧时间线选择、场景锁定和备选应用经由 CommandSet，且保
     expect.objectContaining({ kind: 'audio', locked: true }),
   ]))
 
-  const handler = createVideoWorkbenchDomainApiHandler(service)
+  const capability = 'capability_0123456789abcdef0123456789'
+  const handler = createVideoWorkbenchDomainApiHandler(service, capability)
   const request = async (url: URL, init: RequestInit = {}) => await handler(new Request(url, init), url, requestSegments(url))
   const sceneBItems = initialEditorial.items.filter(item => item.legacy_scene_id === sceneB.id)
   const partialRipple = await request(new URL(`http://localhost/api/videos/projects/${created.id}/timelines/${initialEditorial.id}/commands`), {
@@ -406,13 +449,37 @@ test('旧时间线选择、场景锁定和备选应用经由 CommandSet，且保
   })
   expect(appliedAlternative.status).toBe(200)
   const afterAlternative = await service.getProject(created.id)
-  expect(afterAlternative.timeline_versions).toHaveLength(1)
+  expect(afterAlternative.timeline_versions).toHaveLength(2)
   expect(afterAlternative.timeline.map(clip => clip.id)).toEqual([sceneA.id, 'scene_00000004'])
+  const alternativeFormalVersion = afterAlternative.timeline_versions.find(version => version.id === afterAlternative.current_timeline_version_id)!
+  expect(alternativeFormalVersion.id).not.toBe(selectedV1.id)
+  expect(alternativeFormalVersion.scenes.map(scene => scene.id)).toEqual([sceneA.id, 'scene_00000004'])
   const alternativeEditorial = afterAlternative.editorial_timeline_versions.find(version => version.id === afterAlternative.current_editorial_timeline_version_id)!
   expect(alternativeEditorial.items.filter(item => item.legacy_scene_id === sceneA.id)).toEqual(expect.arrayContaining([
     expect.objectContaining({ kind: 'video', locked: true }),
     expect.objectContaining({ kind: 'audio', locked: true }),
   ]))
+  const preview = await request(new URL(`http://localhost/api/videos/projects/${created.id}/preview`), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ base_revision: afterAlternative.revision, timeline_version_id: alternativeFormalVersion.id }),
+  })
+  expect(preview.status).toBe(202)
+  const previewTask = await preview.json() as { task: { id: string } }
+  expect((await waitForTerminalOperation(service, previewTask.task.id)).status).toBe('succeeded')
+  const render = await request(new URL(`http://localhost/api/videos/projects/${created.id}/render`), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', [MEDIA_UI_CAPABILITY_HEADER]: capability },
+    body: JSON.stringify({ base_revision: afterAlternative.revision, timeline_version_id: alternativeFormalVersion.id, output_path: outputPath }),
+  })
+  expect(render.status).toBe(202)
+  const renderTask = await render.json() as { task: { id: string } }
+  expect((await waitForTerminalOperation(service, renderTask.task.id)).status).toBe('succeeded')
+  expect(renderCommands).toHaveLength(2)
+  for (const command of renderCommands) {
+    const sourceOffsets = command.flatMap((value, index) => value === '-ss' ? [command[index + 1]!] : [])
+    expect(sourceOffsets).toEqual(['0.000', '3.000'])
+  }
   const select = await request(new URL(`http://localhost/api/videos/projects/${created.id}/timeline/versions/${selectedV1.id}/select`), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -420,7 +487,7 @@ test('旧时间线选择、场景锁定和备选应用经由 CommandSet，且保
   })
   expect(select.status).toBe(200)
   const afterSelect = await service.getProject(created.id)
-  expect(afterSelect.timeline_versions).toHaveLength(1)
+  expect(afterSelect.timeline_versions).toHaveLength(2)
   expect(afterSelect.current_timeline_version_id).toBe(selectedV1.id)
   expect(afterSelect.current_editorial_timeline_version_id).not.toBe(initialEditorial.id)
 
@@ -448,7 +515,7 @@ test('旧时间线选择、场景锁定和备选应用经由 CommandSet，且保
   })
   expect(relock.status).toBe(200)
   const afterRelock = await service.getProject(created.id)
-  expect(afterRelock.timeline_versions).toHaveLength(1)
+  expect(afterRelock.timeline_versions).toHaveLength(2)
   expect(afterRelock.editorial_timeline_versions).toHaveLength(initial.editorial_timeline_versions.length + 4)
   service.repository.close()
 })
@@ -461,6 +528,21 @@ test('无音轨的多场景 Draft 按场景标识保留证据，而非按 A/V �
   const service = new VideoWorkbenchService({ root, now: () => new Date(at), platform: 'linux' })
   const created = await service.createProject({ title: '无音轨草稿证据' })
   const [firstFingerprint, secondFingerprint] = await Promise.all([videoFingerprint(firstPath), videoFingerprint(secondPath)])
+  const [firstIdentity, secondIdentity] = await Promise.all([fastVideoIdentity(firstPath), fastVideoIdentity(secondPath)])
+  const timeBase = mediaTimeBase(1, 1000)
+  const tickRate = tickRateForTimeBase(timeBase)
+  await Promise.all([
+    service.repository.saveFact({
+      id: 'src_00000011', project_id: created.id, path: firstPath, name: 'first.mp4', fast_identity: firstIdentity, fingerprint: firstFingerprint, fingerprint_state: 'ready',
+      primary_video_stream: { stream_index: 0, time_base: timeBase, start_time: rationalTime('0', tickRate), duration: rationalTime('5000', tickRate), codec: 'h264', width: 1920, height: 1080, rotation: 0, variable_frame_rate: false },
+      presentation_duration: rationalTime('5000', tickRate), audio_tracks: [], state: 'ready', created_at: at, updated_at: at,
+    }),
+    service.repository.saveFact({
+      id: 'src_00000012', project_id: created.id, path: secondPath, name: 'second.mp4', fast_identity: secondIdentity, fingerprint: secondFingerprint, fingerprint_state: 'ready',
+      primary_video_stream: { stream_index: 0, time_base: timeBase, start_time: rationalTime('0', tickRate), duration: rationalTime('5000', tickRate), codec: 'h264', width: 1920, height: 1080, rotation: 0, variable_frame_rate: false },
+      presentation_duration: rationalTime('5000', tickRate), audio_tracks: [], state: 'ready', created_at: at, updated_at: at,
+    }),
+  ])
   await service.repository.saveProject({
     ...created,
     state: 'ready',
@@ -537,7 +619,7 @@ test('编辑 API 拒绝越界素材与锁定目标轨道，并让旧 Timeline Ve
       stream_index: 0,
       time_base: timeBase,
       start_time: rationalTime('100', tickRate),
-      duration: rationalTime('10000', tickRate),
+      duration: rationalTime('3000', tickRate),
       codec: 'h264',
       width: 1920,
       height: 1080,
@@ -612,7 +694,9 @@ test('编辑 API 拒绝越界素材与锁定目标轨道，并让旧 Timeline Ve
       commands: [{
         kind: 'trim',
         item_id: videoItem.id,
-        source_range: { start: { ticks: '10100', tick_rate: tickRate }, duration: { ticks: '1', tick_rate: tickRate } },
+        // Presentation duration is 10s, but the actual primary video stream
+        // ends at PTS 3100. This must be rejected from the primary bound.
+        source_range: { start: { ticks: '3100', tick_rate: tickRate }, duration: { ticks: '1', tick_rate: tickRate } },
         timeline_range: videoItem.timeline_range,
       }],
     }),
@@ -631,6 +715,19 @@ test('编辑 API 拒绝越界素材与锁定目标轨道，并让旧 Timeline Ve
     }),
   })
   expect(beforeStart.status).toBe(400)
+  const originalGetFact = service.repository.getFact.bind(service.repository)
+  service.repository.getFact = async () => {
+    throw new Error('simulated fact storage failure')
+  }
+  const factReadFailure = await request(commandsUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Idempotency-Key': 'fact-read-failure-command-0001' },
+    body: JSON.stringify({
+      commands: [{ kind: 'set_track_state', track_id: timeline.tracks[0]!.id, muted: false }],
+    }),
+  })
+  expect(factReadFailure.status).toBe(503)
+  service.repository.getFact = originalGetFact
 
   const moveToLocked = await request(commandsUrl, {
     method: 'POST',
