@@ -239,6 +239,35 @@ export class SqliteMediaFactsRepository {
     return (await this.searchPage(projectId, query, { limit })).items
   }
 
+  /** Current search projections are the semantic corpus.  This intentionally
+   * does not depend on a lexical query: otherwise semantic-only matches can
+   * never be indexed or returned. */
+  async listCurrentSearchCandidates(projectId: string, limit = 10_000): Promise<VideoFactSearchResult[]> {
+    await this.ensureSearchGeneration(projectId)
+    const rows = this.unitOfWork.database.query(`SELECT rowid,fact_id AS entry_id,source_id,fact_kind
+      FROM video_fact_search WHERE project_id=? ORDER BY rowid LIMIT ?`).all(projectId, Math.max(1, Math.min(10_000, limit))) as SearchRow[]
+    const results: VideoFactSearchResult[] = []
+    for (const row of rows) {
+      const item = await this.materializeSearchResult(row)
+      if (item) results.push(item)
+    }
+    return results
+  }
+
+  async missingSearchEmbeddingEntries(projectId: string, entryIds: string[]): Promise<Set<string>> {
+    const generation = await this.ensureSearchGeneration(projectId)
+    const missing = new Set<string>()
+    for (let offset = 0; offset < entryIds.length; offset += 500) {
+      const batch = entryIds.slice(offset, offset + 500)
+      if (!batch.length) continue
+      const rows = this.unitOfWork.database.query(`SELECT entry_id FROM video_fact_embeddings
+        WHERE project_id=? AND generation=? AND entry_id IN (${batch.map(() => '?').join(',')})`).all(projectId, generation, ...batch) as Array<{ entry_id: string }>
+      const present = new Set(rows.map(row => row.entry_id))
+      for (const entryId of batch) if (!present.has(entryId)) missing.add(entryId)
+    }
+    return missing
+  }
+
   async searchPage(projectId: string, query: string, options: { cursor?: string; limit?: number } = {}): Promise<VideoFactSearchPage> {
     const normalized = query.trim()
     const generation = await this.ensureSearchGeneration(projectId)

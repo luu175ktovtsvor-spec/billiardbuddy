@@ -58,6 +58,7 @@ import {
 } from '../../../shared/contracts/media.js'
 import {
   defaultVideoProcessRunner,
+  buildExecutionPlanRenderCommand,
   buildVideoRenderCommand,
   FALLBACK_VIDEO_ENCODER,
   fastVideoIdentity,
@@ -268,8 +269,24 @@ export class VideoWorkbenchService {
         ...receipt.usage,
         settled_at: this.iso(),
       }
-      const totals = [...budget.settlements, next].reduce((value, item) => value + item.requests, 0)
-      if (totals > budget.requests) throw new VideoWorkbenchServiceError('远程预算已耗尽，拒绝未预估的请求', 429, 'VIDEO_REMOTE_OPERATION_UNAVAILABLE')
+      const totals = [...budget.settlements, next].reduce((value, item) => ({
+        requests: value.requests + item.requests,
+        total_tokens: value.total_tokens + item.total_tokens,
+        input_bytes: value.input_bytes + item.input_bytes,
+        visual_frames: value.visual_frames + item.visual_frames,
+        proxy_seconds: value.proxy_seconds + item.proxy_seconds,
+        asr_seconds: value.asr_seconds + item.asr_seconds,
+        estimated_amount_micros: value.estimated_amount_micros + item.estimated_amount_micros,
+      }), { requests: 0, total_tokens: 0, input_bytes: 0, visual_frames: 0, proxy_seconds: 0, asr_seconds: 0, estimated_amount_micros: 0 })
+      if (
+        totals.requests > budget.requests
+        || totals.total_tokens > budget.total_tokens
+        || totals.input_bytes > budget.input_bytes
+        || totals.visual_frames > budget.visual_frames
+        || totals.proxy_seconds > budget.proxy_seconds
+        || totals.asr_seconds > budget.asr_seconds
+        || totals.estimated_amount_micros > budget.estimated_amount_micros
+      ) throw new VideoWorkbenchServiceError('远程预算已耗尽，拒绝未预估的回执', 429, 'VIDEO_REMOTE_OPERATION_UNAVAILABLE')
       await this.repository.saveProject(videoStudioProjectSchema.parse({
         ...project,
         remote_analysis_budgets: project.remote_analysis_budgets.map(item => item.id === budgetId
@@ -369,7 +386,9 @@ export class VideoWorkbenchService {
         requests: visualFrames + asrRequests
           + (input.purposes.includes('planning') ? 1 : 0)
           + (input.purposes.includes('caption_translation') ? 1 : 0)
-          + (input.purposes.includes('semantic_search') ? 2 : 0),
+          // A generation can contain 10,000 entries and Relay accepts 2,000
+          // document embeddings per operation, plus the query vector.
+          + (input.purposes.includes('semantic_search') ? 6 : 0),
         total_tokens: Math.ceil(seconds * 8) + (input.purposes.includes('planning') ? 4_000 : 0),
         input_bytes: Math.ceil(seconds * 16_000),
         visual_frames: visualFrames,
@@ -734,6 +753,15 @@ export class VideoWorkbenchService {
       const project = await this.prepareEditorialProject(projectId)
       try {
         const compiled = this.editorial.compile(project, variantId, await this.editorialSourceBounds(project))
+        // Compilation is not merely a persisted description: construct the
+        // exact FFmpeg command now so unsupported tracks/effects fail before
+        // the immutable plan is published to callers.
+        buildExecutionPlanRenderCommand(
+          videoBinary('ffmpeg', this.env, this.platform),
+          compiled.project,
+          compiled.plan,
+          join(this.repository.paths().root, 'execution-plans', `${compiled.plan.id}.mp4`),
+        )
         const saved = await this.repository.saveProject(videoStudioProjectSchema.parse(compiled.project))
         return { project: saved, plan: compiled.plan }
       } catch (error) {
@@ -765,22 +793,28 @@ export class VideoWorkbenchService {
     const consent = project.remote_analysis_consents.find(item => item.state === 'active' && item.purposes.includes('semantic_search') && item.data_kinds.includes('transcript'))
     const budget = consent && project.remote_analysis_budgets.find(item => item.estimate_hash === consent.acknowledged_estimate_hash && item.state === 'reserved')
     const relay = this.videoMediaRelay()
-    if (!lexical.items.length || !consent || !budget || !relay) return lexical
+    if (!consent || !budget || !relay) return lexical
     const scopeHash = factBasisHash({ revision: consent.revision, coverage: consent.coverage, purposes: consent.purposes, data_kinds: consent.data_kinds })
-    const eligible = lexical.items.filter(item => consent.coverage.some(coverage => coverage.source_id === item.source_id && coverage.ranges.some(range => compareRationalTime(item.range.start, range.start) >= 0 && compareRationalTime(endOfRange(item.range), endOfRange(range)) <= 0)))
+    const candidates = await this.repository.listCurrentSearchCandidates(projectId)
+    const eligible = candidates.filter(item => consent.coverage.some(coverage => coverage.source_id === item.source_id && coverage.ranges.some(range => compareRationalTime(item.range.start, range.start) >= 0 && compareRationalTime(endOfRange(item.range), endOfRange(range)) <= 0)))
     if (!eligible.length) return lexical
     const nonce = createHash('sha256').update(JSON.stringify({ projectId, generation: lexical.generation, query, cursor: options?.cursor })).digest('hex').slice(0, 24)
-    const documentOperationId = `task_${nonce}d`
-    const documentItems = eligible.map((item, index) => ({ id: `embed_${nonce.slice(0, 16)}${index.toString(16).padStart(2, '0')}`, text: item.text, entry_id: item.kind === 'transcript' ? `${item.id}\u001f${item.segment_ids.join(',')}` : item.id }))
+    const allDocumentItems = eligible.map((item, index) => ({ id: `embed_${nonce.slice(0, 12)}${index.toString(16).padStart(4, '0')}`, text: item.text, entry_id: item.kind === 'transcript' ? `${item.id}\u001f${item.segment_ids.join(',')}` : item.id }))
     try {
-      const documents = await relay.createOperation({ local_operation_id: documentOperationId, consent_revision_id: consent.id, consent_scope_hash: scopeHash, local_budget_reservation_id: budget.id, request_hash: factBasisHash({ generation: lexical.generation, documents: documentItems.map(item => ({ id: item.entry_id, text: item.text })) }), capability: 'semantic_embedding', application_role: 'search_index', input: { embedding_role: 'document', items: documentItems.map(item => ({ id: item.id, text: item.text })), model: 'text-embedding-v4', dimension: 768, instruction_version: 'video-facts-v1' } })
-      if (documents.state !== 'succeeded' || !documents.provider_receipt) throw new VideoWorkbenchServiceError('远程检索索引尚未完成', 503, 'VIDEO_REMOTE_OPERATION_UNAVAILABLE')
-      const downloadedDocuments = await relay.downloadResult<{ kind: string; vectors: Array<{ id: string; vector: number[] }> }>(documents)
-      if (downloadedDocuments.result.kind !== 'embedding') throw new VideoWorkbenchServiceError('Embedding 结果类型无效', 502, 'VIDEO_ANALYSIS_INVALID')
-      const vectorById = new Map(downloadedDocuments.result.vectors.map(item => [item.id, item.vector]))
-      await this.repository.saveFactEmbeddings(projectId, documentItems.map(item => ({ entry_id: item.entry_id, vector: vectorById.get(item.id) ?? [], model_snapshot: documents.provider_receipt!.model_snapshot, instruction_version: 'video-facts-v1', content_hash: `sha256:${createHash('sha256').update(JSON.stringify(vectorById.get(item.id) ?? [])).digest('hex')}` })))
-      await this.settleRemoteBudget(projectId, budget.id, documents.id, documents.provider_receipt)
-      await relay.acknowledge(documents.id, { result_hashes: downloadedDocuments.hashes, receipt_id: documents.provider_receipt.id })
+      const missing = await this.repository.missingSearchEmbeddingEntries(projectId, allDocumentItems.map(item => item.entry_id))
+      const documentItems = allDocumentItems.filter(item => missing.has(item.entry_id))
+      for (let offset = 0; offset < documentItems.length; offset += 2_000) {
+        const batch = documentItems.slice(offset, offset + 2_000)
+        const documentOperationId = `task_${nonce}d${String(offset / 2_000).padStart(2, '0')}`
+        const documents = await relay.createOperation({ local_operation_id: documentOperationId, consent_revision_id: consent.id, consent_scope_hash: scopeHash, local_budget_reservation_id: budget.id, request_hash: factBasisHash({ generation: lexical.generation, documents: batch.map(item => ({ id: item.entry_id, text: item.text })) }), capability: 'semantic_embedding', application_role: 'search_index', input: { embedding_role: 'document', items: batch.map(item => ({ id: item.id, text: item.text })), model: 'text-embedding-v4', dimension: 768, instruction_version: 'video-facts-v1' } })
+        if (documents.state !== 'succeeded' || !documents.provider_receipt) throw new VideoWorkbenchServiceError('远程检索索引尚未完成', 503, 'VIDEO_REMOTE_OPERATION_UNAVAILABLE')
+        const downloadedDocuments = await relay.downloadResult<{ kind: string; vectors: Array<{ id: string; vector: number[] }> }>(documents)
+        if (downloadedDocuments.result.kind !== 'embedding') throw new VideoWorkbenchServiceError('Embedding 结果类型无效', 502, 'VIDEO_ANALYSIS_INVALID')
+        const vectorById = new Map(downloadedDocuments.result.vectors.map(item => [item.id, item.vector]))
+        await this.repository.saveFactEmbeddings(projectId, batch.map(item => ({ entry_id: item.entry_id, vector: vectorById.get(item.id) ?? [], model_snapshot: documents.provider_receipt!.model_snapshot, instruction_version: 'video-facts-v1', content_hash: `sha256:${createHash('sha256').update(JSON.stringify(vectorById.get(item.id) ?? [])).digest('hex')}` })))
+        await this.settleRemoteBudget(projectId, budget.id, documents.id, documents.provider_receipt)
+        await relay.acknowledge(documents.id, { result_hashes: downloadedDocuments.hashes, receipt_id: documents.provider_receipt.id })
+      }
       const queryOperation = await relay.createOperation({ local_operation_id: `task_${nonce}q`, consent_revision_id: consent.id, consent_scope_hash: scopeHash, local_budget_reservation_id: budget.id, request_hash: factBasisHash({ generation: lexical.generation, query }), capability: 'semantic_embedding', application_role: 'search_index', input: { embedding_role: 'query', items: [{ id: `embed_${nonce}`, text: query }], model: 'text-embedding-v4', dimension: 768, instruction_version: 'video-facts-v1' } })
       if (queryOperation.state !== 'succeeded' || !queryOperation.provider_receipt) throw new VideoWorkbenchServiceError('远程检索查询尚未完成', 503, 'VIDEO_REMOTE_OPERATION_UNAVAILABLE')
       const downloadedQuery = await relay.downloadResult<{ kind: string; vectors: Array<{ id: string; vector: number[] }> }>(queryOperation)

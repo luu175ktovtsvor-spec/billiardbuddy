@@ -497,6 +497,16 @@ export class VideoWorkbenchRepository {
     return await this.facts.searchPage(projectId, query, options)
   }
 
+  async listCurrentSearchCandidates(projectId: string) {
+    await this.ready()
+    return await this.facts.listCurrentSearchCandidates(projectId)
+  }
+
+  async missingSearchEmbeddingEntries(projectId: string, entryIds: string[]) {
+    await this.ready()
+    return await this.facts.missingSearchEmbeddingEntries(projectId, entryIds)
+  }
+
   async saveFactEmbeddings(projectId: string, entries: VideoFactEmbedding[]): Promise<number> {
     await this.ready()
     return await this.facts.saveEmbeddings(projectId, entries)
