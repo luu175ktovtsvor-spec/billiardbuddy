@@ -134,6 +134,25 @@ try {
   Pop-Location
 }
 
+Write-Step 'Building and staging local Agent plugins...'
+Push-Location $desktopDir
+try {
+  $pluginStages = @(
+    'stage:agent-plugins',
+    'stage:chrome-plugin',
+    'stage:browser-plugin',
+    'stage:record-replay-plugin'
+  )
+  foreach ($pluginStage in $pluginStages) {
+    & bun run $pluginStage -- --target $targetTriple
+    if ($LASTEXITCODE -ne 0) {
+      throw "[build-windows-x64] $pluginStage failed (exit $LASTEXITCODE)"
+    }
+  }
+} finally {
+  Pop-Location
+}
+
 Write-Step 'Cleaning stale Electron outputs...'
 Remove-Item -LiteralPath (Join-Path $desktopDir 'dist') -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath (Join-Path $desktopDir 'electron-dist') -Recurse -Force -ErrorAction SilentlyContinue

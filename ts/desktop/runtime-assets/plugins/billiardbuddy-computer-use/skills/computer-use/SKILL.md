@@ -15,6 +15,8 @@ Desktop actions can affect apps, files, accounts, or third-party services. Treat
 
 Keep confirmations specific: explain the action, the affected app or destination, and the consequence. Do preparation first and ask only at the action that creates the external effect. The user can stop the active task at any time.
 
+Never ask for a blanket approval for an entire workflow. Confirm immediately before deleting data, sending or publishing content, uploading sensitive data, spending money, creating credentials, changing account/system security, installing software or extensions, or accepting an unexpected permission prompt. If a password change, CAPTCHA or security barrier requires the user, hand control back instead of trying to bypass it.
+
 ## System boundaries
 
 Only operate apps that the user has explicitly enabled for this plugin. Do not read passwords, browser cookies, keychain data, raw clipboard history, or secure text-field values. Do not attempt to bypass operating-system permissions, security prompts, CAPTCHAs, or locked/secure desktops.

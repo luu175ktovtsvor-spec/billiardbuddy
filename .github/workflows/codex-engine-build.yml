@@ -8,12 +8,16 @@ on:
       - 'third_party/codex-engine'
       - 'third_party/codex-engine-patches/**'
       - 'ts/shared/product/codexEngineContract.ts'
+      - 'ts/shared/product/binaryIntegrity.ts'
       - 'ts/desktop/electron/services/codexNativeAppServer.ts'
+      - 'ts/desktop/electron/services/codexNativeProvider.ts'
       - 'ts/desktop/electron/main.ts'
       - 'ts/desktop/electron/preload.ts'
       - 'ts/desktop/electron/ipc/channels.ts'
       - 'ts/desktop/electron/ipc/capabilities.ts'
       - 'ts/desktop/electron/services/computerUseConfiguration.ts'
+      - 'ts/desktop/electron/services/browserPolicyConfiguration.ts'
+      - 'ts/desktop/electron/services/chromeNativeMessaging.ts'
       - 'ts/desktop/package.json'
       - 'ts/desktop/runtime-assets/marketplace.json'
       - 'ts/desktop/runtime-assets/plugins/**'
@@ -22,23 +26,24 @@ on:
       - 'native/billiardbuddy-record-replay/**'
       - 'native/billiardbuddy-computer-use/**'
       - 'ts/desktop/scripts/stage-agent-plugins.ts'
+      - 'ts/desktop/scripts/native-build-tools.ts'
       - 'ts/desktop/scripts/stage-chrome-plugin.ts'
       - 'ts/desktop/scripts/stage-browser-plugin.ts'
       - 'ts/desktop/scripts/stage-record-replay-plugin.ts'
       - 'ts/desktop/electron/services/inAppBrowserHost.ts'
       - 'ts/desktop/electron/services/recordReplayLifecycle.ts'
       - 'ts/desktop/electron/services/scheduledAgentTasks.ts'
-      - 'ts/desktop/electron/services/remoteHost.ts'
       - 'gateway/app.ts'
-      - 'gateway/remoteHost.ts'
       - 'deploy/production/Dockerfile.gateway'
       - 'ts/desktop/scripts/electron-after-pack.cjs'
       - 'ts/desktop/scripts/stage-codex-engine.ts'
+      - 'ts/desktop/scripts/verify-codex-engine-smoke.ts'
       - 'ts/desktop/scripts/verify-codex-engine-source.ts'
       - 'ts/desktop/scripts/verify-codex-native-protocol.ts'
       - 'ts/desktop/scripts/verify-browser-use-e2e.ts'
       - 'ts/desktop/scripts/verify-local-agent-plugin-smoke.ts'
-      - 'ts/desktop/electron/browserUseE2e.ts'
+      - 'ts/desktop/test/browserUseE2e.ts'
+      - 'ts/test/codexNativeProvider.test.ts'
       - 'ts/scripts/check-release-tracked-files.ts'
       - '.github/workflows/codex-engine-build.yml'
   push:
@@ -49,12 +54,16 @@ on:
       - 'third_party/codex-engine'
       - 'third_party/codex-engine-patches/**'
       - 'ts/shared/product/codexEngineContract.ts'
+      - 'ts/shared/product/binaryIntegrity.ts'
       - 'ts/desktop/electron/services/codexNativeAppServer.ts'
+      - 'ts/desktop/electron/services/codexNativeProvider.ts'
       - 'ts/desktop/electron/main.ts'
       - 'ts/desktop/electron/preload.ts'
       - 'ts/desktop/electron/ipc/channels.ts'
       - 'ts/desktop/electron/ipc/capabilities.ts'
       - 'ts/desktop/electron/services/computerUseConfiguration.ts'
+      - 'ts/desktop/electron/services/browserPolicyConfiguration.ts'
+      - 'ts/desktop/electron/services/chromeNativeMessaging.ts'
       - 'ts/desktop/package.json'
       - 'ts/desktop/runtime-assets/marketplace.json'
       - 'ts/desktop/runtime-assets/plugins/**'
@@ -63,23 +72,24 @@ on:
       - 'native/billiardbuddy-record-replay/**'
       - 'native/billiardbuddy-computer-use/**'
       - 'ts/desktop/scripts/stage-agent-plugins.ts'
+      - 'ts/desktop/scripts/native-build-tools.ts'
       - 'ts/desktop/scripts/stage-chrome-plugin.ts'
       - 'ts/desktop/scripts/stage-browser-plugin.ts'
       - 'ts/desktop/scripts/stage-record-replay-plugin.ts'
       - 'ts/desktop/electron/services/inAppBrowserHost.ts'
       - 'ts/desktop/electron/services/recordReplayLifecycle.ts'
       - 'ts/desktop/electron/services/scheduledAgentTasks.ts'
-      - 'ts/desktop/electron/services/remoteHost.ts'
       - 'gateway/app.ts'
-      - 'gateway/remoteHost.ts'
       - 'deploy/production/Dockerfile.gateway'
       - 'ts/desktop/scripts/electron-after-pack.cjs'
       - 'ts/desktop/scripts/stage-codex-engine.ts'
+      - 'ts/desktop/scripts/verify-codex-engine-smoke.ts'
       - 'ts/desktop/scripts/verify-codex-engine-source.ts'
       - 'ts/desktop/scripts/verify-codex-native-protocol.ts'
       - 'ts/desktop/scripts/verify-browser-use-e2e.ts'
       - 'ts/desktop/scripts/verify-local-agent-plugin-smoke.ts'
-      - 'ts/desktop/electron/browserUseE2e.ts'
+      - 'ts/desktop/test/browserUseE2e.ts'
+      - 'ts/test/codexNativeProvider.test.ts'
       - 'ts/scripts/check-release-tracked-files.ts'
       - '.github/workflows/codex-engine-build.yml'
 
@@ -120,6 +130,10 @@ jobs:
         with:
           bun-version: '1.3.14'
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
       - name: 安装并检查 Gateway 代码
         working-directory: ts
         shell: bash
@@ -127,6 +141,7 @@ jobs:
           set -euo pipefail
           bun install --frozen-lockfile
           bun run typecheck:server
+          bun test --preload ./test/setup.ts ./test/codexNativeProvider.test.ts
 
       - name: 安装并检查 Electron 宿主代码
         working-directory: ts/desktop
@@ -145,6 +160,25 @@ jobs:
         with:
           toolchain: '1.95.0'
 
+      - name: 准备 Codex 官方 Sandbox V8 产物
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - '${{ matrix.target }}' "${GITHUB_ENV}" <<'PY'
+          import sys
+          from pathlib import Path
+
+          scripts = Path('third_party/codex-engine/scripts').resolve()
+          sys.path.insert(0, str(scripts))
+          from codex_package.targets import TARGET_SPECS
+          from codex_package.v8 import resolve_codex_v8_cargo_env
+
+          environment = resolve_codex_v8_cargo_env(TARGET_SPECS[sys.argv[1]])
+          with Path(sys.argv[2]).open('a', encoding='utf-8') as output:
+              for name, value in environment.items():
+                  output.write(f'{name}={value}\n')
+          PY
+
       - name: 按产品合同应用所有已审核内核补丁
         working-directory: third_party/codex-engine
         shell: bash
@@ -160,13 +194,15 @@ jobs:
           python3 app-server-protocol/scripts/write_schema_fixtures.py
           git diff --exit-code -- app-server-protocol/schema/
 
-      - name: 构建 Codex App Server 与 Windows 原生 Sandbox 辅助程序
+      - name: 构建 Codex App Server、Code Mode Host 与 Windows 原生 Sandbox 辅助程序
         working-directory: third_party/codex-engine/codex-rs
         shell: bash
         run: |
           set -euo pipefail
           cargo build --locked --release --target '${{ matrix.target }}' \
             --package codex-app-server --bin codex-app-server
+          cargo build --locked --release --target '${{ matrix.target }}' \
+            --package codex-code-mode-host --bin codex-code-mode-host
           if [[ '${{ matrix.target }}' == *-windows-* ]]; then
             cargo build --locked --release --target '${{ matrix.target }}' \
               --package codex-windows-sandbox \
@@ -180,6 +216,8 @@ jobs:
           set -euo pipefail
           artifact="third_party/codex-engine/codex-rs/target/${{ matrix.target }}/release/${{ matrix.binary }}"
           test -s "${artifact}"
+          code_mode_host="third_party/codex-engine/codex-rs/target/${{ matrix.target }}/release/codex-code-mode-host${{ contains(matrix.target, 'windows') && '.exe' || '' }}"
+          test -s "${code_mode_host}"
           if [[ '${{ matrix.target }}' == *-windows-* ]]; then
             test -s 'third_party/codex-engine/codex-rs/target/${{ matrix.target }}/release/codex-windows-sandbox-setup.exe'
             test -s 'third_party/codex-engine/codex-rs/target/${{ matrix.target }}/release/codex-command-runner.exe'
@@ -189,14 +227,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo build --locked --release --target '${{ matrix.target }}' \
-            --manifest-path native/billiardbuddy-computer-use/Cargo.toml
-          cargo build --locked --release --target '${{ matrix.target }}' \
-            --manifest-path native/billiardbuddy-browser-use/Cargo.toml
-          cargo build --locked --release --target '${{ matrix.target }}' \
-            --manifest-path native/billiardbuddy-record-replay/Cargo.toml
-          plugin_binary="native/billiardbuddy-computer-use/target/${{ matrix.target }}/release/billiardbuddy-computer-use${{ startsWith(matrix.target, 'x86_64-pc-windows') && '.exe' || '' }}"
-          test -s "${plugin_binary}"
           bun ts/desktop/scripts/stage-agent-plugins.ts --target '${{ matrix.target }}'
           bun ts/desktop/scripts/stage-chrome-plugin.ts --target '${{ matrix.target }}'
           bun ts/desktop/scripts/stage-browser-plugin.ts --target '${{ matrix.target }}'
@@ -234,18 +264,22 @@ jobs:
         run: |
           set -euo pipefail
           binary="../../third_party/codex-engine/codex-rs/target/${{ matrix.target }}/release/${{ matrix.binary }}"
+          code_mode_host="../../third_party/codex-engine/codex-rs/target/${{ matrix.target }}/release/codex-code-mode-host${{ contains(matrix.target, 'windows') && '.exe' || '' }}"
           if [[ '${{ matrix.target }}' == *-windows-* ]]; then
             bun ./scripts/stage-codex-engine.ts \
               --target '${{ matrix.target }}' \
               --prebuilt-binary "${binary}" \
+              --prebuilt-code-mode-host "${code_mode_host}" \
               --prebuilt-windows-sandbox-setup '../../third_party/codex-engine/codex-rs/target/${{ matrix.target }}/release/codex-windows-sandbox-setup.exe' \
               --prebuilt-windows-command-runner '../../third_party/codex-engine/codex-rs/target/${{ matrix.target }}/release/codex-command-runner.exe'
           else
             bun ./scripts/stage-codex-engine.ts \
               --target '${{ matrix.target }}' \
-              --prebuilt-binary "${binary}"
+              --prebuilt-binary "${binary}" \
+              --prebuilt-code-mode-host "${code_mode_host}"
           fi
           bun ./scripts/stage-codex-engine.ts --target '${{ matrix.target }}' --verify
+          bun ./scripts/verify-codex-engine-smoke.ts --target '${{ matrix.target }}'
 
       - name: 保存可校验的引擎运行时供桌面构建使用
         uses: actions/upload-artifact@v4

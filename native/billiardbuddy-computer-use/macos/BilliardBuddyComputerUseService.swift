@@ -113,12 +113,18 @@ private func visibleWindow(bundleId: String, windowId: CGWindowID) -> [String: A
 
 private func requireWindow(bundleId: String, windowId: CGWindowID, requireForeground: Bool) throws {
     try requireAllowed(bundleId)
-    guard visibleWindow(bundleId: bundleId, windowId: windowId) != nil else {
+    let windows = visibleWindows(for: bundleId)
+    guard windows.contains(where: { ($0["windowId"] as? UInt64) == UInt64(windowId) }) else {
         throw ServiceError.unavailable("The requested window is no longer visible for \(bundleId)")
     }
     if requireForeground {
         guard NSWorkspace.shared.frontmostApplication?.bundleIdentifier == bundleId else {
             throw ServiceError.denied("\(bundleId) is not the foreground app. Activate it and observe the window again before acting.")
+        }
+        guard let frontWindowId = windows.first?["windowId"] as? UInt64,
+              frontWindowId == UInt64(windowId)
+        else {
+            throw ServiceError.denied("The requested window is not the foreground window. Activate and observe it again before acting.")
         }
     }
 }
@@ -157,15 +163,11 @@ private func inspectFocusedElement(bundleId: String, windowId: CGWindowID) throw
     }
     let focused = unsafeBitCast(rawFocused, to: AXUIElement.self)
     let role = attributeString(focused, kAXRoleAttribute as CFString) ?? ""
-    var result: [String: Any] = [
+    return [
         "role": role,
         "title": attributeString(focused, kAXTitleAttribute as CFString) ?? "",
         "description": attributeString(focused, kAXDescriptionAttribute as CFString) ?? "",
     ]
-    if role != "AXSecureTextField", let value = attributeString(focused, kAXValueAttribute as CFString) {
-        result["value"] = value
-    }
-    return result
 }
 
 private func activate(bundleId: String) throws -> [String: Any] {
@@ -290,9 +292,11 @@ private final class FrameCollector: NSObject, SCStreamOutput {
 
 private func captureWindow(bundleId: String, windowId: CGWindowID) async throws -> String {
     try requireObservationPermissions()
-    try requireWindow(bundleId: bundleId, windowId: windowId, requireForeground: false)
+    try requireWindow(bundleId: bundleId, windowId: windowId, requireForeground: true)
     let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
-    guard let window = content.windows.first(where: { $0.windowID == windowId }) else {
+    guard let window = content.windows.first(where: {
+        $0.windowID == windowId && $0.owningApplication?.bundleIdentifier == bundleId
+    }) else {
         throw ServiceError.unavailable("Could not capture the requested window")
     }
     let filter = SCContentFilter(desktopIndependentWindow: window)
@@ -309,6 +313,7 @@ private func captureWindow(bundleId: String, windowId: CGWindowID) async throws 
     guard let image = collector.waitForFrame() else {
         throw ServiceError.unavailable("Timed out while capturing the requested window")
     }
+    try requireWindow(bundleId: bundleId, windowId: windowId, requireForeground: true)
     let bitmap = NSBitmapImageRep(cgImage: image)
     guard let png = bitmap.representation(using: .png, properties: [:]) else {
         throw ServiceError.operation("Could not encode the requested window image")
@@ -376,6 +381,7 @@ private func run(_ arguments: [String]) async throws {
         try requireControlPermissions()
         try requireWindow(bundleId: bundleId, windowId: window, requireForeground: true)
         try requirePointInsideWindow(bundleId: bundleId, windowId: window, x: x, y: y)
+        try requireWindow(bundleId: bundleId, windowId: window, requireForeground: true)
         try postMouseClick(x: x, y: y)
         try emitJson(["clicked": true])
     case "type-text":
@@ -391,18 +397,21 @@ private func run(_ arguments: [String]) async throws {
         guard focused["role"] as? String != "AXSecureTextField" else {
             throw ServiceError.denied("Computer Use will not type into a secure password field")
         }
+        try requireWindow(bundleId: bundleId, windowId: targetWindow, requireForeground: true)
         try typeText(text)
         try emitJson([String: Any](dictionaryLiteral: ("typed", true), ("characterCount", text.count)))
     case "press-key":
         let bundleId = try argument(arguments, 1, "bundleId")
+        let targetWindow = try windowId(arguments, 2)
         try requireControlPermissions()
-        try requireWindow(bundleId: bundleId, windowId: try windowId(arguments, 2), requireForeground: true)
+        try requireWindow(bundleId: bundleId, windowId: targetWindow, requireForeground: true)
         try pressKey(try argument(arguments, 3, "key"))
         try emitJson(["pressed": true])
     case "scroll":
         let bundleId = try argument(arguments, 1, "bundleId")
+        let targetWindow = try windowId(arguments, 2)
         try requireControlPermissions()
-        try requireWindow(bundleId: bundleId, windowId: try windowId(arguments, 2), requireForeground: true)
+        try requireWindow(bundleId: bundleId, windowId: targetWindow, requireForeground: true)
         try scroll(deltaX: try finiteNumber(arguments, 3, "deltaX"), deltaY: try finiteNumber(arguments, 4, "deltaY"))
         try emitJson(["scrolled": true])
     case "wait-for-window":

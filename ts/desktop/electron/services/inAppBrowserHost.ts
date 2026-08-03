@@ -3,12 +3,16 @@ import * as fs from 'node:fs/promises'
 import * as net from 'node:net'
 import * as path from 'node:path'
 import { BrowserWindow, dialog, type MessageBoxOptions } from 'electron'
+import {
+  readBrowserPolicyConfiguration,
+  type BrowserPolicyConfiguration,
+} from './browserPolicyConfiguration'
 
 const MAX_BRIDGE_MESSAGE_BYTES = 1024 * 1024
 const MAX_PAGE_ELEMENTS = 200
 const MAX_SCREENSHOT_BYTES = 12 * 1024 * 1024
 
-type BrowserPolicy = { allowedHosts: string[], blockedHosts: string[] }
+type BrowserPolicy = BrowserPolicyConfiguration
 type BrowserTab = { id: number, window: BrowserWindow, elements: Set<string> }
 
 export type InAppBrowserHostOptions = {
@@ -23,18 +27,6 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 
 function privateBrowserRoot(userDataPath: string) {
   return path.join(userDataPath, 'agent-runtime', 'browser-use')
-}
-
-function sanitizeRules(value: unknown): string[] {
-  if (!Array.isArray(value)) return []
-  const rules = new Set<string>()
-  for (const entry of value.slice(0, 256)) {
-    if (typeof entry !== 'string') continue
-    const rule = entry.trim().toLowerCase().replace(/\.$/, '')
-    const host = rule.startsWith('*.') ? rule.slice(2) : rule
-    if (host && host.length <= 253 && /^[a-z0-9.-]+$/.test(host)) rules.add(rule)
-  }
-  return [...rules].sort((left, right) => left.localeCompare(right))
 }
 
 function hostMatchesRule(host: string, rule: string) {
@@ -110,17 +102,22 @@ export class InAppBrowserHost {
     if (server) await new Promise<void>(resolve => server.close(() => resolve()))
   }
 
+  async reloadPolicy(): Promise<BrowserPolicy> {
+    this.policy = await this.readPolicy()
+    this.approvedHosts.clear()
+    for (const tab of this.tabs.values()) {
+      const current = httpUrl(tab.window.webContents.getURL())
+      if (!current || !this.allowed(current)) tab.window.destroy()
+    }
+    return structuredClone(this.policy)
+  }
+
   private async readPolicy(): Promise<BrowserPolicy> {
-    const file = path.join(privateBrowserRoot(this.options.userDataPath), 'config.json')
-    const raw = await fs.readFile(file, 'utf8').catch(error => {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined
-      throw error
-    })
-    if (!raw) return { allowedHosts: [], blockedHosts: [] }
     try {
-      const parsed = JSON.parse(raw) as Record<string, unknown>
-      return { allowedHosts: sanitizeRules(parsed.allowedHosts), blockedHosts: sanitizeRules(parsed.blockedHosts) }
+      return await readBrowserPolicyConfiguration(this.options.userDataPath, 'browser-use')
     } catch {
+      // A corrupt policy must not restore a previously broad allowlist. Keep
+      // the Browser usable only through fresh per-site confirmation.
       return { allowedHosts: [], blockedHosts: [] }
     }
   }
@@ -142,7 +139,7 @@ export class InAppBrowserHost {
       cancelId: 0,
       title: '允许 Browser 访问此网站？',
       message: `${action}：${host}`,
-      detail: '网页内容不可信。仅允许当前 BilliardBuddy Browser 会话访问此网站；提交、支付、删除等操作仍会单独请求确认。',
+      detail: '网页内容不可信。此授权只允许当前 BilliardBuddy Browser 会话访问该网站，不代表同意提交、支付、删除或其他后续操作。',
       noLink: true,
     }
     const parent = BrowserWindow.getFocusedWindow() ?? this.options.mainWindow()
@@ -153,6 +150,7 @@ export class InAppBrowserHost {
 
   private handleConnection(socket: net.Socket) {
     let body = ''
+    socket.on('error', () => undefined)
     socket.setTimeout(50_000, () => socket.destroy())
     socket.setEncoding('utf8')
     socket.on('data', chunk => {
@@ -209,6 +207,12 @@ export class InAppBrowserHost {
     return tab
   }
 
+  private currentAllowedUrl(tab: BrowserTab): URL {
+    const current = httpUrl(tab.window.webContents.getURL())
+    if (!current || !this.allowed(current)) throw new Error('BILLIARDBUDDY_BROWSER_SITE_BLOCKED')
+    return current
+  }
+
   private async openTab(arguments_: Record<string, unknown>) {
     const url = httpUrl(arguments_.url)
     if (!url) throw new Error('BILLIARDBUDDY_BROWSER_URL_INVALID')
@@ -239,9 +243,15 @@ export class InAppBrowserHost {
     }
     window.webContents.on('will-navigate', guard)
     window.webContents.on('will-redirect', guard)
-    await window.loadURL(url.toString())
-    window.focus()
-    return { id: tab.id, url: window.webContents.getURL(), title: window.getTitle() }
+    try {
+      await window.loadURL(url.toString())
+      window.focus()
+      return { id: tab.id, url: window.webContents.getURL(), title: window.getTitle() }
+    } catch (error) {
+      if (!window.isDestroyed()) window.destroy()
+      this.tabs.delete(tab.id)
+      throw error
+    }
   }
 
   private closeTab(arguments_: Record<string, unknown>) {
@@ -274,13 +284,20 @@ export class InAppBrowserHost {
       }) };
     })()`, true) as { url?: unknown, title?: unknown, elements?: unknown }
     if (!isRecord(snapshot) || !Array.isArray(snapshot.elements)) throw new Error('BILLIARDBUDDY_BROWSER_SNAPSHOT_INVALID')
+    const current = httpUrl(snapshot.url)
+    if (!current || !this.allowed(current)) throw new Error('BILLIARDBUDDY_BROWSER_SITE_BLOCKED')
     tab.elements.clear()
     for (const element of snapshot.elements) if (isRecord(element) && typeof element.id === 'string') tab.elements.add(element.id)
     return snapshot
   }
 
   private async capturePage(arguments_: Record<string, unknown>) {
-    const image = await this.tab(arguments_).window.webContents.capturePage()
+    const tab = this.tab(arguments_)
+    const before = httpUrl(tab.window.webContents.getURL())
+    if (!before || !this.allowed(before)) throw new Error('BILLIARDBUDDY_BROWSER_SITE_BLOCKED')
+    const image = await tab.window.webContents.capturePage()
+    const after = httpUrl(tab.window.webContents.getURL())
+    if (!after || !this.allowed(after)) throw new Error('BILLIARDBUDDY_BROWSER_SITE_BLOCKED')
     const data = image.toPNG().toString('base64')
     if (!data || Buffer.byteLength(data, 'base64') > MAX_SCREENSHOT_BYTES) throw new Error('BILLIARDBUDDY_BROWSER_SCREENSHOT_TOO_LARGE')
     return { mimeType: 'image/png', data }
@@ -294,12 +311,8 @@ export class InAppBrowserHost {
 
   private async clickElement(arguments_: Record<string, unknown>) {
     const tab = this.tab(arguments_)
+    this.currentAllowedUrl(tab)
     const id = this.element(tab, arguments_)
-    const confirmation = await dialog.showMessageBox(tab.window, {
-      type: 'warning', buttons: ['取消', '点击'], defaultId: 0, cancelId: 0, noLink: true,
-      title: '允许 Browser 点击页面元素？', message: '网页点击可能提交信息、跳转页面或触发其他外部操作。',
-    })
-    if (confirmation.response !== 1) throw new Error('BILLIARDBUDDY_BROWSER_ACTION_DENIED')
     const result = await tab.window.webContents.executeJavaScript(`(() => { const nodes = document.querySelectorAll('[data-billiardbuddy-element=${JSON.stringify(id)}]'); if (nodes.length !== 1) return { ok: false }; const node = nodes[0]; if (node instanceof HTMLInputElement && node.type === 'password') return { ok: false, secure: true }; node.click(); return { ok: true }; })()`, true) as { ok?: unknown, secure?: unknown }
     if (!isRecord(result) || result.ok !== true) throw new Error(result.secure === true ? 'BILLIARDBUDDY_BROWSER_SECURE_FIELD_DENIED' : 'BILLIARDBUDDY_BROWSER_ELEMENT_STALE')
     return { clicked: id }
@@ -307,16 +320,18 @@ export class InAppBrowserHost {
 
   private async typeText(arguments_: Record<string, unknown>) {
     const tab = this.tab(arguments_)
+    this.currentAllowedUrl(tab)
     const id = this.element(tab, arguments_)
     const text = arguments_.text
     if (typeof text !== 'string' || text.length === 0 || text.length > 4096) throw new Error('BILLIARDBUDDY_BROWSER_TEXT_INVALID')
-    const result = await tab.window.webContents.executeJavaScript(`(() => { const nodes = document.querySelectorAll('[data-billiardbuddy-element=${JSON.stringify(id)}]'); if (nodes.length !== 1) return { ok: false }; const node = nodes[0]; if (!(node instanceof HTMLInputElement || node instanceof HTMLTextAreaElement || node.isContentEditable) || (node instanceof HTMLInputElement && (node.type === 'password' || /(?:one-time-code|cc-|password)/i.test(node.autocomplete)))) return { ok: false, secure: true }; node.focus(); if (node instanceof HTMLInputElement || node instanceof HTMLTextAreaElement) { node.value = ${JSON.stringify(text)}; } else { node.textContent = ${JSON.stringify(text)}; } node.dispatchEvent(new Event('input', { bubbles: true })); node.dispatchEvent(new Event('change', { bubbles: true })); return { ok: true }; })()`, true) as { ok?: unknown, secure?: unknown }
+    const result = await tab.window.webContents.executeJavaScript(`(() => { const nodes = document.querySelectorAll('[data-billiardbuddy-element=${JSON.stringify(id)}]'); if (nodes.length !== 1) return { ok: false }; const node = nodes[0]; if (!(node instanceof HTMLInputElement || node instanceof HTMLTextAreaElement || node.isContentEditable) || (node instanceof HTMLInputElement && (node.type === 'password' || /(?:one-time-code|cc-|password|token)/i.test(node.autocomplete)))) return { ok: false, secure: true }; node.focus(); if (node instanceof HTMLInputElement || node instanceof HTMLTextAreaElement) { node.value = ${JSON.stringify(text)}; } else { node.textContent = ${JSON.stringify(text)}; } node.dispatchEvent(new Event('input', { bubbles: true })); node.dispatchEvent(new Event('change', { bubbles: true })); return { ok: true }; })()`, true) as { ok?: unknown, secure?: unknown }
     if (!isRecord(result) || result.ok !== true) throw new Error(result.secure === true ? 'BILLIARDBUDDY_BROWSER_SECURE_FIELD_DENIED' : 'BILLIARDBUDDY_BROWSER_ELEMENT_STALE')
     return { typed: text.length }
   }
 
   private pressKey(arguments_: Record<string, unknown>) {
     const tab = this.tab(arguments_)
+    this.currentAllowedUrl(tab)
     const key = arguments_.key
     if (typeof key !== 'string' || !['Enter', 'Tab', 'Escape', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(key)) throw new Error('BILLIARDBUDDY_BROWSER_KEY_INVALID')
     tab.window.webContents.sendInputEvent({ type: 'keyDown', keyCode: key })

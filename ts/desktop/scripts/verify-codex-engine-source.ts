@@ -238,6 +238,13 @@ async function main(): Promise<void> {
   const toolRouter = requireFile('codex-rs/core/src/tools/router.rs')
   const arg0Dispatch = requireFile('codex-rs/arg0/src/lib.rs')
   const execServerClientTransport = requireFile('codex-rs/exec-server/src/client_transport.rs')
+  const codexV8Packaging = requireFile('scripts/codex_package/v8.py')
+  const codexRipgrepPackaging = requireFile('scripts/codex_package/ripgrep.py')
+  const codexRipgrepManifest = requireFile('scripts/codex_package/rg')
+  const productEngineStaging = readFileSync(
+    path.join(repositoryRoot, 'ts', 'desktop', 'scripts', 'stage-codex-engine.ts'),
+    'utf8',
+  )
 
   assertContains(appServerMain, 'arg0_dispatch_or_else', 'App Server 的本地 sandbox helper 分派入口')
   assertContains(appServerRuntime, 'ExecServerRuntimePaths::from_optional_paths(', 'App Server 的本地 Exec Server 运行路径')
@@ -258,6 +265,15 @@ async function main(): Promise<void> {
   assertContains(arg0Dispatch, 'CODEX_ARG0_EXEC_HELPER_ARG1', '本地进程执行 helper')
   assertContains(arg0Dispatch, 'CODEX_FS_HELPER_ARG1', '本地文件系统 helper')
   assertContains(execServerClientTransport, 'command.envs(&stdio_command.env)', '可配置 Exec Server 的显式环境入口')
+  assertContains(codexV8Packaging, 'V8_ARTIFACT_PROFILE = "ptrcomp_sandbox_release"', 'Codex 官方 Sandbox V8 产物类型')
+  assertContains(codexV8Packaging, 'https://github.com/openai/codex/releases/download/rusty-v8-v{version}', 'Codex 官方 Sandbox V8 发布源')
+  assertContains(codexV8Packaging, 'expected_checksums = load_checksums', 'Codex 官方 Sandbox V8 校验清单')
+  assertContains(codexV8Packaging, 'ensure_valid_artifact(', 'Codex 官方 Sandbox V8 文件校验')
+  assertContains(codexRipgrepPackaging, 'fetch_dotslash_executable(', 'Codex 官方 ripgrep DotSlash 下载器')
+  assertContains(codexRipgrepPackaging, 'raise AssertionError("ripgrep is required for all package targets")', 'Codex 官方包的必需 ripgrep 约束')
+  assertContains(codexRipgrepManifest, '"hash": "sha256"', 'Codex 官方 ripgrep SHA-256 清单')
+  assertContains(productEngineStaging, 'from codex_package.v8 import resolve_codex_v8_cargo_env', '产品构建复用锁定源码的 V8 准备器')
+  assertContains(productEngineStaging, 'from codex_package.ripgrep import resolve_rg_bin', '产品构建复用锁定源码的 ripgrep 准备器')
   assertContains(coreConfig, 'pub model_context_window: Option<i64>', 'Core 模型上下文窗口配置')
   assertContains(coreConfig, 'pub model_auto_compact_token_limit: Option<i64>', 'Core 自动压缩阈值配置')
   assertContains(modelInfo, 'from `context_window` (90%).', 'Core 未配置阈值时的原生自动压缩默认值')
@@ -273,7 +289,7 @@ async function main(): Promise<void> {
   assertContains(providerInfo, 'self.is_openai() || is_azure_responses_provider(&self.name, self.base_url.as_deref())', 'Core 远程压缩 Provider 限定')
 
   console.log(`[codex-engine] source lock passed: ${revision}`)
-  console.log(`[codex-engine] Rust App Server/Core/Thread/Context/Tool/Sandbox/Exec composition, Apache-2.0 NOTICE, the Responses-only provider baseline, native 90% automatic-compaction default, and the reviewed product patch contract verified${options.applyProductPatches ? ' and applied' : ''}; personal model credentials remain in Electron through BilliardBuddy Responses bridges.`)
+  console.log(`[codex-engine] Rust App Server/Core/Thread/Context/Tool/Sandbox/Exec composition, Apache-2.0 NOTICE, the Responses-only provider baseline, native 90% automatic-compaction default, the official sandbox-enabled V8 and required ripgrep packaging helpers, and the reviewed product patch contract verified${options.applyProductPatches ? ' and applied' : ''}; personal model credentials remain in Electron through BilliardBuddy Responses bridges.`)
 }
 
 await main()

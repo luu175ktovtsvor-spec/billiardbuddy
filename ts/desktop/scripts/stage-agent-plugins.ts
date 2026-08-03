@@ -1,6 +1,7 @@
 import { spawnSync } from 'node:child_process'
 import { chmodSync, copyFileSync, cpSync, existsSync, lstatSync, mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { basename, join, resolve } from 'node:path'
+import { resolveCargoCommand, verifyProductContent, verifyProductSkill, verifyStdioMcpHandshake } from './native-build-tools'
 
 type SupportedTarget =
   | 'aarch64-apple-darwin'
@@ -86,11 +87,7 @@ function run(command: string, args: string[], cwd?: string): void {
 }
 
 function cargoCommand(): string {
-  const explicit = process.env.CARGO?.trim()
-  if (explicit && existsSync(explicit)) return explicit
-  const onPath = Bun.which('cargo')
-  if (onPath) return onPath
-  throw new Error('缺少 Rust Cargo；请在 macOS/Windows 原生构建机或 GitHub Actions 上构建 BilliardBuddy 本地插件')
+  return resolveCargoCommand('缺少 Rust Cargo；请在 macOS/Windows 原生构建机或 GitHub Actions 上构建 BilliardBuddy 本地插件')
 }
 
 function expectedPluginFiles(destinationDir: string, target: SupportedTarget): string[] {
@@ -220,8 +217,11 @@ export function verifyStagedAgentPlugins(options: AgentPluginStageOptions): void
   const pluginRoot = join(resolve(options.destinationDir), COMPUTER_USE_PLUGIN)
   for (const path of expectedPluginFiles(options.destinationDir, options.target)) requireRegularFile(path)
   validatePluginMetadata(options.destinationDir)
+  verifyProductContent(join(pluginRoot, '.codex-plugin', 'plugin.json'))
+  verifyProductSkill(join(pluginRoot, 'skills', 'computer-use', 'SKILL.md'))
   const binary = join(pluginRoot, 'bin', computerUseBinaryName(options.target))
   if (lstatSync(binary).size < 100_000) throw new Error(`Computer Use 插件二进制大小无效: ${basename(binary)}`)
+  verifyStdioMcpHandshake(binary, options.target, COMPUTER_USE_PLUGIN)
   if (options.target.includes('apple-darwin')) {
     const service = join(pluginRoot, 'bin', macosServiceName, 'Contents', 'MacOS', 'BilliardBuddyComputerUseService')
     if (lstatSync(service).size < 100_000) throw new Error('Computer Use macOS 原生服务二进制大小无效')

@@ -2,6 +2,7 @@ import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { chmodSync, copyFileSync, cpSync, existsSync, lstatSync, mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { join, resolve } from 'node:path'
+import { resolveCargoCommand, verifyProductContent, verifyProductSkill, verifyStdioMcpHandshake } from './native-build-tools'
 
 type SupportedTarget =
   | 'aarch64-apple-darwin'
@@ -56,11 +57,7 @@ function requireFile(file: string): void {
   if (!existsSync(file) || !lstatSync(file).isFile() || lstatSync(file).isSymbolicLink()) throw new Error(`Chrome 插件缺少正式文件: ${file}`)
 }
 function cargo(): string {
-  const configured = process.env.CARGO?.trim()
-  if (configured && existsSync(configured)) return configured
-  const found = Bun.which('cargo')
-  if (!found) throw new Error('缺少 Rust Cargo；请在 macOS/Windows 原生构建机或 GitHub Actions 上构建 BilliardBuddy Chrome 插件')
-  return found
+  return resolveCargoCommand('缺少 Rust Cargo；请在 macOS/Windows 原生构建机或 GitHub Actions 上构建 BilliardBuddy Chrome 插件')
 }
 function run(command: string, args: string[], cwd?: string): void {
   const result = spawnSync(command, args, { cwd, encoding: 'utf8', timeout: 20 * 60_000 })
@@ -87,17 +84,45 @@ export function verifyStagedChromePlugin(options: StageOptions): void {
   ]) requireFile(file)
   const plugin = JSON.parse(readFileSync(join(root, '.codex-plugin', 'plugin.json'), 'utf8')) as { name?: string, mcpServers?: string, skills?: string }
   if (plugin.name !== PLUGIN || plugin.mcpServers !== './.mcp.json' || plugin.skills !== './skills/') throw new Error('Chrome 插件 manifest 不符合本地插件合同')
+  verifyProductContent(join(root, '.codex-plugin', 'plugin.json'))
+  verifyProductSkill(join(root, 'skills', 'chrome-control', 'SKILL.md'))
   const mcp = JSON.parse(readFileSync(join(root, '.mcp.json'), 'utf8')) as { mcpServers?: Record<string, { command?: string, cwd?: string, env_vars?: unknown }> }
   const server = mcp.mcpServers?.[PLUGIN]
   if (server?.command !== `./bin/${PLUGIN}` || server.cwd !== '.' || !Array.isArray(server.env_vars) || !server.env_vars.includes('CODEX_HOME')) throw new Error('Chrome 插件 MCP 配置无效')
   const extension = JSON.parse(readFileSync(join(root, 'chrome-extension', 'manifest.json'), 'utf8')) as { manifest_version?: number, key?: string, permissions?: unknown }
-  if (extension.manifest_version !== 3 || !extension.key || extensionId(extension.key) !== EXTENSION_ID || !Array.isArray(extension.permissions) || !extension.permissions.includes('nativeMessaging') || !extension.permissions.includes('debugger')) throw new Error('Chrome 扩展身份或权限配置无效')
+  if (
+    extension.manifest_version !== 3
+    || !extension.key
+    || extensionId(extension.key) !== EXTENSION_ID
+    || !Array.isArray(extension.permissions)
+    || extension.permissions.length !== 3
+    || !['activeTab', 'debugger', 'nativeMessaging'].every(permission => extension.permissions?.includes(permission))
+  ) throw new Error('Chrome 扩展身份或最小权限配置无效')
+  const background = readFileSync(join(root, 'chrome-extension', 'background.js'), 'utf8')
+  // Parse the service worker without executing Chrome globals.
+  new Function(background)
+  if (!background.includes("nativePort.postMessage({ kind: 'hello' })")) throw new Error('Chrome 扩展缺少 Native Messaging 握手')
+  if (background.includes('el.value ||')) throw new Error('Chrome 页面检查不得读取表单当前值')
+  if (!background.includes("one-time-code|cc-|password|token")) throw new Error('Chrome 扩展缺少凭据字段保护')
+  if (!background.includes("await evaluate(Number(tabId), '({ url: location.href, title: document.title })')")) throw new Error('Chrome 扩展必须在每次操作前重新确认当前网址')
+  if (!background.includes("generation: crypto.getRandomValues(new Uint32Array(1))[0] || 1") || !background.includes("root.generation + '-' + (root.next++)")) {
+    throw new Error('Chrome 扩展元素 ID 必须绑定当前文档代次')
+  }
+  if (!background.includes("method !== 'Page.frameNavigated'")) throw new Error('Chrome 扩展缺少顶层导航撤权处理')
+  if (!background.includes('await applyPolicy(message.policy)')) throw new Error('Chrome 扩展缺少动态网站策略更新')
+  if (!background.includes('navigation?.errorText')) throw new Error('Chrome 扩展未校验导航失败结果')
+  if (!background.includes('image.data.length > MAX_SCREENSHOT_DATA')) throw new Error('Chrome 扩展缺少截图回传上限')
+  const nativeHost = readFileSync(join(sourceRoot, 'src', 'native_host.rs'), 'utf8')
+  if (!nativeHost.includes('let policy = Policy::load(&runtime_root);') || !nativeHost.includes('policy.command_fields()')) {
+    throw new Error('Chrome Native Host 必须在每次工具调用前重读网站策略')
+  }
   const market = JSON.parse(readFileSync(join(resolve(options.destinationDir), '..', '.agents', 'plugins', 'marketplace.json'), 'utf8')) as { plugins?: Array<{ name?: string, source?: { path?: string } }> }
   if (!market.plugins?.some(entry => entry.name === PLUGIN && entry.source?.path === `./plugins/${PLUGIN}`)) throw new Error('BilliardBuddy 本地市场缺少 Chrome 插件')
   for (const name of [PLUGIN, `${PLUGIN}-native-host`]) {
     const file = join(root, 'bin', binary(name, options.target))
     if (lstatSync(file).size < 100_000) throw new Error(`Chrome 插件二进制大小无效: ${file}`)
   }
+  verifyStdioMcpHandshake(join(root, 'bin', binary(PLUGIN, options.target)), options.target, PLUGIN)
 }
 
 export function stageChromePlugin(options: StageOptions): void {
