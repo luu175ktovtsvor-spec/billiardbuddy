@@ -288,6 +288,13 @@ function assertNotContains(source: string, fragment: string, description: string
   if (source.includes(fragment)) throw new Error(`产品协议边界不应包含 ${description}`)
 }
 
+function sourceSection(source: string, startMarker: string, endMarker: string, description: string): string {
+  const start = source.indexOf(startMarker)
+  const end = source.indexOf(endMarker, start + startMarker.length)
+  if (start < 0 || end < 0 || end <= start) throw new Error(`无法定位源码区段：${description}`)
+  return source.slice(start, end)
+}
+
 async function main(): Promise<void> {
   const revision = await gitOutput('rev-parse', 'HEAD')
   if (revision !== expectedRevision) {
@@ -482,6 +489,9 @@ async function main(): Promise<void> {
   assertContains(mainProcess, "'installation-session', safeStorage).clear()", '启动时清理旧安装会话持久化')
   assertContains(mainProcess, 'new EphemeralCredentialStore()', '自动安装会话不触发系统凭据弹窗')
   assertContains(mainProcess, "'provider-credentials', safeStorage", '用户自带 Key 继续保存在系统安全存储')
+  const electronStartup = sourceSection(mainProcess, 'app.whenReady().then(async () => {', "app.on('window-all-closed'", 'Electron 启动链')
+  assertNotContains(electronStartup, 'getProviderCredentialService()', '普通启动读取用户自带 Key')
+  assertNotContains(electronStartup, "'provider-credentials'", '普通启动访问用户自带 Key 凭据存储')
   assertContains(credentialStore, "backend === 'basic_text' || backend === 'unknown'", 'Linux 无密钥服务时拒绝明文凭据后端')
   assertContains(credentialStore, 'class MigratingCredentialStore', 'macOS 旧凭据迁移边界')
   assertContains(credentialStore, 'this.current.save(legacyValue)', '旧 macOS 凭据先写入系统安全存储')
