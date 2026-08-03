@@ -7,7 +7,7 @@ import {
   sourceTimeRange,
   type SourceTimeRange,
 } from './time.js'
-import type { ContentSegment, EvidenceWindow, TimedTranscript, VideoFactSource } from './model.js'
+import type { CameraShot, ContentSegment, EvidenceWindow, TimedTranscript, VideoFactSource } from './model.js'
 
 type Identifiers = {
   next: (prefix: 'segment' | 'window') => string
@@ -15,7 +15,25 @@ type Identifiers = {
 
 export type EvidenceWindowBudget = {
   maxWindows: number
-  maxCoveredTicks: bigint
+  maxVisualRequests: number
+  maxFrames: number
+  maxProxySeconds: number
+  maxInputTokens: number
+  /** Source-tick budget. Omit to use the source-timebase-aware default. */
+  maxCoveredTicks?: bigint
+  /** The current visual gateway contract accepts at most this many images. */
+  maxFramesPerVisualRequest: number
+}
+
+export const DEFAULT_EVIDENCE_WINDOW_MAX_COVERAGE_SECONDS = 600
+
+export const DEFAULT_EVIDENCE_WINDOW_BUDGET: EvidenceWindowBudget = {
+  maxWindows: 24,
+  maxVisualRequests: 12,
+  maxFrames: 72,
+  maxProxySeconds: 120,
+  maxInputTokens: 48_000,
+  maxFramesPerVisualRequest: 8,
 }
 
 function assertReadySource(source: VideoFactSource): asserts source is VideoFactSource & { fingerprint: `sha256:${string}` } {
@@ -60,7 +78,7 @@ export function fixedIntervalContentSegments(input: {
       id: ids.next('segment'),
       project_id: input.source.project_id,
       source_id: input.source.id,
-      source_fingerprint: input.source.fingerprint,
+      source_fingerprint: input.source.fingerprint!,
       range: sourceTimeRange(rationalTime(cursor, rate), rationalTime(next - cursor, rate)),
       camera_shot_ids: [],
       segmentation_source: 'fixed_interval_fallback',
@@ -69,6 +87,32 @@ export function fixedIntervalContentSegments(input: {
     cursor = next
   }
   return segments
+}
+
+/** A scene detector creates real Camera Shots; their ranges become semantic Content Segments. */
+export function contentSegmentsFromCameraShots(input: {
+  source: VideoFactSource
+  shots: CameraShot[]
+  ids?: Identifiers
+  createdAt: string
+}): ContentSegment[] {
+  assertReadySource(input.source)
+  const ids = input.ids ?? defaultIdentifiers(input.source)
+  return input.shots
+    .filter(shot => shot.project_id === input.source.project_id
+      && shot.source_id === input.source.id
+      && shot.source_fingerprint === input.source.fingerprint)
+    .sort((left, right) => compareRationalTime(left.range.start, right.range.start))
+    .map(shot => ({
+      id: ids.next('segment'),
+      project_id: input.source.project_id,
+      source_id: input.source.id,
+      source_fingerprint: input.source.fingerprint!,
+      range: shot.range,
+      camera_shot_ids: [shot.id],
+      segmentation_source: 'motion_change' as const,
+      created_at: input.createdAt,
+    }))
 }
 
 function transcriptIdsWithin(transcript: TimedTranscript | undefined, range: SourceTimeRange): string[] {
@@ -93,20 +137,34 @@ export function planEvidenceWindows(input: {
   samplingReceiptId: string
   createdAt: string
   budget: EvidenceWindowBudget
+  generation?: number
   ids?: Identifiers
-}): { windows: EvidenceWindow[]; uncovered: SourceTimeRange[] } {
+}): { windows: EvidenceWindow[]; uncovered: EvidenceWindow['coverage']['uncovered']; coverage: EvidenceWindow['coverage'] } {
   assertReadySource(input.source)
+  const maxCoveredTicks = input.budget.maxCoveredTicks
+    ?? BigInt(DEFAULT_EVIDENCE_WINDOW_MAX_COVERAGE_SECONDS)
+      * BigInt(input.source.primary_video_stream.start_time.tick_rate.num)
+      / BigInt(input.source.primary_video_stream.start_time.tick_rate.den)
+  if (
+    !Number.isSafeInteger(input.budget.maxWindows) || input.budget.maxWindows < 1
+    || !Number.isSafeInteger(input.budget.maxVisualRequests) || input.budget.maxVisualRequests < 1
+    || !Number.isSafeInteger(input.budget.maxFrames) || input.budget.maxFrames < 1
+    || !Number.isSafeInteger(input.budget.maxProxySeconds) || input.budget.maxProxySeconds < 0
+    || !Number.isSafeInteger(input.budget.maxInputTokens) || input.budget.maxInputTokens < 1
+    || !Number.isSafeInteger(input.budget.maxFramesPerVisualRequest) || input.budget.maxFramesPerVisualRequest < 1
+    || maxCoveredTicks < 0n
+  ) throw new Error('Evidence Window 请求预算无效')
   const ids = input.ids ?? defaultIdentifiers(input.source)
   const candidates = input.segments.filter(segment => segment.source_id === input.source.id && segment.source_fingerprint === input.source.fingerprint)
-  const windows: EvidenceWindow[] = []
-  const uncovered: SourceTimeRange[] = []
+  const drafts: Array<Omit<EvidenceWindow, 'coverage'>> = []
+  const uncovered: EvidenceWindow['coverage']['uncovered'] = []
   let covered = 0n
+  let frames = 0
+  let proxySeconds = 0
+  let proxyRequests = 0
+  let estimatedInputTokens = 0
   for (const segment of candidates) {
     const duration = parseInt64(segment.range.duration.ticks)
-    if (windows.length >= input.budget.maxWindows || covered + duration > input.budget.maxCoveredTicks) {
-      uncovered.push(segment.range)
-      continue
-    }
     const transcriptSegmentIds = transcriptIdsWithin(input.transcript, segment.range)
     const short = duration * BigInt(segment.range.duration.tick_rate.den) <= BigInt(segment.range.duration.tick_rate.num) * 8n
     const strategy: EvidenceWindow['sample_strategy'] = transcriptSegmentIds.length > 0 && !short
@@ -116,11 +174,36 @@ export function planEvidenceWindows(input: {
         : short
           ? 'representative_frame'
           : 'start_middle_end'
-    windows.push({
+    const candidateFrames = strategy === 'representative_frame' ? 1 : strategy === 'short_proxy' ? 0 : 3
+    const candidateProxySeconds = strategy === 'short_proxy'
+      ? Math.max(1, Math.ceil(Number(duration * BigInt(segment.range.duration.tick_rate.den)) / Number(BigInt(segment.range.duration.tick_rate.num))))
+      : 0
+    const candidateTokens = candidateFrames * 550 + candidateProxySeconds * 900
+    const nextVisualRequests = Math.ceil((frames + candidateFrames) / input.budget.maxFramesPerVisualRequest)
+      + proxyRequests + (candidateProxySeconds > 0 ? 1 : 0)
+    const reason = drafts.length >= input.budget.maxWindows
+      ? 'max_windows'
+      : covered + duration > maxCoveredTicks
+        ? 'max_covered_ticks'
+        : frames + candidateFrames > input.budget.maxFrames
+          ? 'max_frames'
+          : proxySeconds + candidateProxySeconds > input.budget.maxProxySeconds
+            ? 'max_proxy_seconds'
+            : estimatedInputTokens + candidateTokens > input.budget.maxInputTokens
+              ? 'max_input_tokens'
+              : nextVisualRequests > input.budget.maxVisualRequests
+                ? 'max_visual_requests'
+                : null
+    if (reason) {
+      uncovered.push({ range: segment.range, reason })
+      continue
+    }
+    drafts.push({
       id: ids.next('window'),
       project_id: input.source.project_id,
       source_id: input.source.id,
       source_fingerprint: input.source.fingerprint,
+      ...(segment.camera_shot_ids.length === 1 ? { camera_shot_id: segment.camera_shot_ids[0] } : {}),
       content_segment_id: segment.id,
       range: segment.range,
       sample_strategy: strategy,
@@ -133,8 +216,32 @@ export function planEvidenceWindows(input: {
       created_at: input.createdAt,
     })
     covered += duration
+    frames += candidateFrames
+    proxySeconds += candidateProxySeconds
+    proxyRequests += candidateProxySeconds > 0 ? 1 : 0
+    estimatedInputTokens += candidateTokens
   }
-  return { windows, uncovered }
+  const coverage: EvidenceWindow['coverage'] = {
+    generation: input.generation ?? 1,
+    request_budget: {
+      max_windows: input.budget.maxWindows,
+      max_visual_requests: input.budget.maxVisualRequests,
+      max_frames: input.budget.maxFrames,
+      max_proxy_seconds: input.budget.maxProxySeconds,
+      max_input_tokens: input.budget.maxInputTokens,
+      max_covered_ticks: maxCoveredTicks.toString(),
+    },
+    request_usage: {
+      windows: drafts.length,
+      visual_requests: Math.ceil(frames / input.budget.maxFramesPerVisualRequest) + proxyRequests,
+      frames,
+      proxy_seconds: proxySeconds,
+      estimated_input_tokens: estimatedInputTokens,
+      covered_ticks: covered.toString(),
+    },
+    uncovered,
+  }
+  return { windows: drafts.map(window => ({ ...window, coverage })), uncovered, coverage }
 }
 
 /** Safe construction helper for one existing source range; no milliseconds are accepted. */

@@ -9,7 +9,7 @@ export class SqliteUnitOfWorkError extends Error {
   }
 }
 
-const MEDIA_KERNEL_SCHEMA_VERSION = 3
+const MEDIA_KERNEL_SCHEMA_VERSION = 4
 
 /**
  * The Media Kernel is the only owner of the SQLite connection and schema
@@ -109,6 +109,7 @@ export class SqliteUnitOfWork {
       if (version === 1) this.migrateV1()
       else if (version === 2) this.migrateV2()
       else if (version === 3) this.migrateV3()
+      else if (version === 4) this.migrateV4()
     }
   }
 
@@ -330,6 +331,19 @@ export class SqliteUnitOfWork {
       )`)
       this.database.query('INSERT INTO media_kernel_schema_migrations(version,applied_at) VALUES(?,?)')
         .run(3, new Date().toISOString())
+    })
+  }
+
+  /** Search cursors are tied to a durable generation, never SQLite row order alone. */
+  private migrateV4(): void {
+    this.transaction(() => {
+      this.database.exec(`CREATE TABLE IF NOT EXISTS video_fact_search_generations(
+        project_id TEXT PRIMARY KEY REFERENCES video_projects(id),
+        generation INTEGER NOT NULL CHECK(generation >= 0),
+        updated_at TEXT NOT NULL
+      )`)
+      this.database.query('INSERT INTO media_kernel_schema_migrations(version,applied_at) VALUES(?,?)')
+        .run(4, new Date().toISOString())
     })
   }
 }

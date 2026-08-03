@@ -1,9 +1,10 @@
 import { afterEach, expect, test } from 'bun:test'
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { VideoWorkbenchRepository } from '../src/server/services/videoWorkbenchRepository.js'
 import { VideoWorkbenchService } from '../src/server/services/videoWorkbenchService.js'
+import { createVideoWorkbenchDomainApiHandler } from '../src/server/api/videoWorkbench.js'
 import { PayloadCommitProtocol } from '../src/server/media/kernel/storage/payloadCommitProtocol.js'
 import { SqliteUnitOfWork } from '../src/server/media/kernel/storage/sqliteUnitOfWork.js'
 import { fixedIntervalContentSegments, planEvidenceWindows } from '../src/server/video/domain/mediaFacts/analysis.js'
@@ -210,6 +211,12 @@ test('Media Facts 保持不可变 payload、全文检索、转录修订和派生
   await repository.saveFact(revision)
   expect(materializeTranscriptRevision(transcript, revision).segments[0]?.text).toBe('开球后打进关键一球')
   expect(await repository.activeTranscriptRevision(transcript.id)).toMatchObject({ id: revision.id })
+  const otherProject = await repository.saveProject(project('vid_00000002'))
+  await expect(repository.saveFact({ ...revision, id: 'revision_00000002', project_id: otherProject.id })).rejects.toMatchObject({ code: 'VIDEO_FACTS_INVALID' })
+  await expect(repository.saveFact({
+    ...revision,
+    edits: [{ kind: 'replace_text' as const, segment_id: 'segment_00000001', text: '试图覆盖已提交修订' }],
+  })).rejects.toMatchObject({ code: 'VIDEO_FACTS_INVALID' })
   expect(await repository.searchFacts(created.id, '精彩')).toEqual([])
   expect(await repository.searchFacts(created.id, '关键')).toMatchObject([{ id: transcript.id, kind: 'transcript' }])
 
@@ -227,10 +234,20 @@ test('Media Facts 保持不可变 payload、全文检索、转录修订和派生
     analysisDepth: 'standard',
     samplingReceiptId: 'receipt_00000002',
     createdAt: at,
-    budget: { maxWindows: 2, maxCoveredTicks: 1_800_000n },
+    budget: {
+      maxWindows: 3,
+      maxVisualRequests: 1,
+      maxFrames: 9,
+      maxProxySeconds: 0,
+      maxInputTokens: 4_950,
+      maxCoveredTicks: 2_700_000n,
+      maxFramesPerVisualRequest: 8,
+    },
   })
   expect(planned.windows).toHaveLength(2)
   expect(planned.uncovered).toHaveLength(1)
+  expect(planned.coverage.request_usage).toMatchObject({ windows: 2, visual_requests: 1, frames: 6, estimated_input_tokens: 3_300 })
+  expect(planned.uncovered[0]?.reason).toBe('max_visual_requests')
   await Promise.all(planned.windows.map(async window => await repository.saveFact(window)))
   const firstWindows = await repository.pageFacts('evidence_window', created.id, { sourceId: videoSource.id, limit: 1 })
   expect(firstWindows.items[0]?.id).toEqual(expect.any(String))
@@ -251,6 +268,19 @@ test('Media Facts 保持不可变 payload、全文检索、转录修订和派生
   await repository.saveFact(evidence)
   expect((await repository.listFacts('evidence_window', created.id, videoSource.id)).length).toBe(2)
   expect((await repository.listFacts('evidence', created.id, videoSource.id))[0]).toMatchObject({ basis_hash: expect.stringMatching(/^sha256:/) })
+  const firstSearch = await repository.searchFactsPage(created.id, '球', { limit: 1 })
+  expect(firstSearch.generation).toBeGreaterThan(0)
+  expect(firstSearch.items[0]).toMatchObject({ source_id: videoSource.id, range: { start: { ticks: expect.any(String) } } })
+  expect(typeof firstSearch.next_cursor).toBe('string')
+  const secondSearch = await repository.searchFactsPage(created.id, '球', { cursor: firstSearch.next_cursor, limit: 1 })
+  expect(secondSearch.generation).toBe(firstSearch.generation)
+  expect(secondSearch.items[0]?.id).not.toBe(firstSearch.items[0]?.id)
+  const { fingerprint: _fingerprint, ...changedSource } = videoSource
+  await repository.saveFact({ ...changedSource, fingerprint_state: 'failed', state: 'changed', updated_at: '2026-08-03T00:01:00.000Z' })
+  await expect(repository.searchFactsPage(created.id, '球', { cursor: firstSearch.next_cursor, limit: 1 })).rejects.toMatchObject({ code: 'VIDEO_FACTS_INVALID' })
+  expect((await repository.searchFactsPage(created.id, '球', { limit: 10 })).items).toEqual([])
+  expect((await repository.pageCurrentFacts('evidence', created.id)).items).toEqual([])
+  expect((await repository.pageCurrentFacts('source', created.id)).items[0]).toMatchObject({ state: 'changed', fingerprint_state: 'failed' })
   expect(await repository.reclaimLeastRecentlyUsedDerivatives(created.id, 1)).toEqual([derivative.id])
   expect(await repository.getFact('derivative', derivative.id)).toMatchObject({ state: 'missing' })
   repository.close()
@@ -306,6 +336,48 @@ test('完整指纹独立恢复，素材改变会阻止正式路径并使派生�
   service.repository.close()
 })
 
+test('完整指纹生产链路生成可追溯 Derivative、真实 Camera Shot 与持久覆盖预算', async () => {
+  const root = await testRoot('local-media-facts')
+  const sourcePath = join(root, 'source.mp4')
+  await writeFile(sourcePath, 'local-media-facts-source')
+  const runProcess = async (command: string[]) => {
+    if (command.includes('-show_format') && command.includes('-show_streams')) return await mediaProcessRunner(command)
+    if (command.includes('-frames:v') && command.at(-1)?.startsWith('/')) {
+      await writeFile(command.at(-1)!, 'thumbnail-bytes')
+      return { exitCode: 0, stdout: '', stderr: '' }
+    }
+    if (command.some(item => item.includes("select='gt(scene,0.35)'"))) {
+      return { exitCode: 0, stdout: 'frame:42 pts_time:9.950000', stderr: '' }
+    }
+    return { exitCode: 0, stdout: '', stderr: '' }
+  }
+  const service = new VideoWorkbenchService({ root, now: () => new Date(at), runProcess, platform: 'linux' })
+  const created = await service.createProject({ title: '本地媒体事实' })
+  await service.addVideoSource(created.id, { path: sourcePath })
+  const fingerprintTask = (await service.repository.listOperations(created.id)).find(task => task.kind === 'video.fingerprint')!
+  const complete = await waitForTerminalOperation(service, fingerprintTask.id)
+  expect(complete.status).toBe('succeeded')
+  expect(complete.result?.media_facts).toMatchObject({
+    derivative_ids: expect.any(Array),
+    camera_shot_ids: expect.any(Array),
+    coverage: { request_budget: { max_visual_requests: 12 }, request_usage: { visual_requests: 1 } },
+  })
+  const derivatives = await service.repository.listFacts('derivative', created.id) as VideoDerivative[]
+  expect(derivatives.map(item => item.kind).sort()).toEqual(['scene_map', 'thumbnail'])
+  expect(derivatives.every(item => item.asset.storage.kind === 'managed' && item.state === 'ready')).toBeTrue()
+  expect((await readdir(join(root, 'assets', created.id, 'derivatives'))).some(file => file.endsWith('.null'))).toBeFalse()
+  const shots = await service.repository.listFacts('camera_shot', created.id) as Array<{ boundary_source: string; range: { duration: { ticks: string } } }>
+  expect(shots).toHaveLength(2)
+  expect(shots.every(item => item.boundary_source === 'scene_detect' && Number(item.range.duration.ticks) > 0)).toBeTrue()
+  const segments = await service.repository.listFacts('content_segment', created.id) as Array<{ camera_shot_ids: string[] }>
+  expect(segments).toHaveLength(2)
+  expect(segments.every(item => item.camera_shot_ids.length === 1)).toBeTrue()
+  const windows = await service.repository.listFacts('evidence_window', created.id) as Array<{ coverage: { uncovered: unknown[]; request_usage: { frames: number } } }>
+  expect(windows).toHaveLength(2)
+  expect(windows[0]?.coverage).toMatchObject({ uncovered: [], request_usage: { frames: 6 } })
+  service.repository.close()
+})
+
 test('Media Facts payload 在发布后崩溃会由统一恢复器提交，而不会暴露 prepared 索引', async () => {
   const root = await testRoot('payload-recovery')
   const firstRepository = new VideoWorkbenchRepository({ root, now: () => new Date(at) })
@@ -346,6 +418,43 @@ test('Media Facts payload 在发布后崩溃会由统一恢复器提交，而不
   recovered.close()
 })
 
+test('Media Facts 正式 API 返回带来源、范围、generation 与 cursor 的安全检索投影', async () => {
+  const root = await testRoot('facts-api')
+  const service = new VideoWorkbenchService({ root, now: () => new Date(at), runProcess: mediaProcessRunner, platform: 'linux' })
+  const created = await service.createProject({ title: '事实检索 API' })
+  const videoSource = source(created.id)
+  await service.repository.saveFact(videoSource)
+  await service.repository.saveFact(createHostedEvidence({
+    kind: 'visual', projectId: created.id, source: videoSource,
+    range: sourceTimeRange(videoSource.primary_video_stream.start_time, rationalTime('90000', videoSource.primary_video_stream.start_time.tick_rate)),
+    promptVersion: 'facts-api-v1', createdAt: at,
+    payload: { summary: '球手准备开球', subjects: ['球手'], warnings: [] },
+  }))
+  await service.repository.saveFact(createHostedEvidence({
+    kind: 'visual', projectId: created.id, source: videoSource,
+    range: sourceTimeRange(rationalTime('90000', videoSource.primary_video_stream.start_time.tick_rate), rationalTime('90000', videoSource.primary_video_stream.start_time.tick_rate)),
+    promptVersion: 'facts-api-v1', createdAt: at,
+    payload: { summary: '球桌上的关键一击', subjects: ['球桌'], warnings: [] },
+  }))
+  const handler = createVideoWorkbenchDomainApiHandler(service)
+  const searchUrl = new URL(`http://localhost/api/videos/projects/${created.id}/search?q=%E7%90%83&limit=1`)
+  const search = await handler(new Request(searchUrl), searchUrl, searchUrl.pathname.split('/').filter(Boolean).map((part, index) => index === 0 ? 'api' : part))
+  expect(search.status).toBe(200)
+  const firstPage = await search.json() as { schema_version: number; generation: number; items: Array<{ source_id: string; range: { start: { ticks: string } } }>; next_cursor?: string }
+  expect(firstPage).toMatchObject({ schema_version: 1, generation: expect.any(Number), items: [{ source_id: videoSource.id, range: { start: { ticks: expect.any(String) } } }] })
+  expect(typeof firstPage.next_cursor).toBe('string')
+  const nextUrl = new URL(searchUrl)
+  nextUrl.searchParams.set('cursor', firstPage.next_cursor!)
+  const next = await handler(new Request(nextUrl), nextUrl, nextUrl.pathname.split('/').filter(Boolean).map((part, index) => index === 0 ? 'api' : part))
+  expect((await next.json() as { generation: number; items: unknown[] }).items).toHaveLength(1)
+  const factsUrl = new URL(`http://localhost/api/videos/projects/${created.id}/facts/source?limit=1`)
+  const facts = await handler(new Request(factsUrl), factsUrl, factsUrl.pathname.split('/').filter(Boolean).map((part, index) => index === 0 ? 'api' : part))
+  const factPage = await facts.json() as { schema_version: number; items: Array<Record<string, unknown>> }
+  expect(factPage).toMatchObject({ schema_version: 1, items: [{ id: videoSource.id, fingerprint_state: 'ready' }] })
+  expect(factPage.items[0]?.path).toBeUndefined()
+  service.repository.close()
+})
+
 test('新视频分析只从 Evidence Window 抽帧，并把视觉结果写回窗口绑定的 typed Evidence', async () => {
   const root = await testRoot('windowed-analysis')
   const sourcePath = join(root, 'source.mp4')
@@ -354,7 +463,7 @@ test('新视频分析只从 Evidence Window 抽帧，并把视觉结果写回窗
   const runProcess = async (command: string[]) => {
     commands.push(command)
     if (command.includes('-show_format') && command.includes('-show_streams')) return await mediaProcessRunner(command)
-    if (command.includes('-frames:v')) {
+    if (command.includes('-frames:v') && command.at(-1)?.startsWith('/')) {
       await writeFile(command.at(-1)!, 'simulated-frame')
       return { exitCode: 0, stdout: '', stderr: '' }
     }
@@ -396,7 +505,7 @@ test('新视频分析只从 Evidence Window 抽帧，并把视觉结果写回窗
     user_goal: '只分析窗口内画面',
   })
   expect((await waitForTerminalOperation(service, task.id)).status).toBe('succeeded')
-  const frameCommands = commands.filter(command => command.includes('-frames:v'))
+  const frameCommands = commands.filter(command => command.includes('-frames:v') && command.at(-1)?.includes('/analysis/'))
   expect(frameCommands).toHaveLength(3)
   expect(frameCommands.map(command => command[command.indexOf('-ss') + 1])).toEqual(['0.000', '10.000', '19.999'])
   const evidence = await service.repository.listFacts('evidence', created.id, ready.sources[0]!.id) as Array<{ evidence_window_id?: string }>
