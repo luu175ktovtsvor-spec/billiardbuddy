@@ -40,7 +40,8 @@ import {
   defaultVideoProcessRunner,
   buildVideoRenderCommand,
   FALLBACK_VIDEO_ENCODER,
-  probeVideoSource,
+  fastVideoIdentity,
+  probeVideoFactSource,
   selectVideoEncoder,
   videoBinary,
   videoFingerprint,
@@ -48,6 +49,9 @@ import {
   verifyVideoOutput,
   type VideoProcessRunner,
 } from './videoExecution.js'
+import type { VideoDerivative, VideoFactKind, VideoFactSource } from '../video/domain/mediaFacts/model.js'
+import { fixedIntervalContentSegments, planEvidenceWindows } from '../video/domain/mediaFacts/analysis.js'
+import { parseInt64, timeToMilliseconds } from '../video/domain/mediaFacts/time.js'
 import {
   analyzeVideoEvidence,
   compileVideoBrief,
@@ -144,6 +148,7 @@ export class VideoWorkbenchService {
   private readonly activePreviews = new Map<string, ActiveVideoExecution>()
   private readonly activeRenders = new Map<string, ActiveVideoExecution>()
   private readonly activeAnalyses = new Map<string, ActiveVideoExecution>()
+  private readonly activeFingerprints = new Map<string, Promise<void>>()
   /**
    * Encoding is intentionally serialized in this desktop runtime. Rendering
    * several timelines at once makes the machine unusable and, more
@@ -254,6 +259,16 @@ export class VideoWorkbenchService {
 
   async getOperation(operationId: string): Promise<VideoOperation> {
     return await this.repository.getOperation(operationId)
+  }
+
+  async pageMediaFacts(projectId: string, kind: VideoFactKind, options?: { sourceId?: string; cursor?: string; limit?: number }) {
+    await this.requireVideoProject(projectId)
+    return await this.repository.pageFacts(kind, projectId, options)
+  }
+
+  async reclaimDerivativeCache(projectId: string, maxEvictions: number): Promise<string[]> {
+    await this.requireVideoProject(projectId)
+    return await this.repository.reclaimLeastRecentlyUsedDerivatives(projectId, maxEvictions)
   }
 
   async waitForOperationEvents(projectId: string, cursor: number, limit: number, waitMs: number) {
@@ -489,25 +504,31 @@ export class VideoWorkbenchService {
         updated_at: now,
       } as VideoOperation))
       try {
-        const probe = await probeVideoSource(
-          input.path,
-          this.runProcess,
-          videoBinary('ffprobe', this.env, this.platform),
-        )
         const sourceId = id('src')
+        const sourceFact = await probeVideoFactSource({
+          id: sourceId,
+          projectId: project.id,
+          path: input.path,
+          name: basename(input.path),
+          now,
+          runProcess: this.runProcess,
+          ffprobe: videoBinary('ffprobe', this.env, this.platform),
+        })
+        await this.repository.saveFact(sourceFact)
+        const durationMs = Math.max(1, timeToMilliseconds(sourceFact.presentation_duration))
+        const averageRate = sourceFact.primary_video_stream.average_frame_rate
         const source = {
           id: sourceId,
           path: input.path,
           name: basename(input.path),
-          duration_ms: probe.duration_ms,
-          width: probe.width,
-          height: probe.height,
-          fps: probe.fps,
-          has_audio: probe.has_audio,
-          fingerprint: probe.content_hash,
-          rotation: probe.rotation,
-          video_stream_count: probe.video_stream_count,
-          audio_stream_count: probe.audio_stream_count,
+          duration_ms: durationMs,
+          width: sourceFact.primary_video_stream.width,
+          height: sourceFact.primary_video_stream.height,
+          ...(averageRate ? { fps: averageRate.num / averageRate.den } : {}),
+          has_audio: sourceFact.audio_tracks.length > 0,
+          rotation: sourceFact.primary_video_stream.rotation,
+          video_stream_count: 1,
+          audio_stream_count: sourceFact.audio_tracks.length,
           missing: false,
           content_changed: false,
         }
@@ -517,18 +538,9 @@ export class VideoWorkbenchService {
           in_ms: 0,
           out_ms: source.duration_ms,
         }
-        const evidence: VideoEvidence[] = [...project.evidence, {
-          id: id('evidence'),
-          kind: 'source_role',
-          source_id: sourceId,
-          source_fingerprint: probe.content_hash,
-          in_ms: 0,
-          out_ms: source.duration_ms,
-          text: `真实视频素材：${source.name}，${source.width}×${source.height}，${source.duration_ms}ms${source.has_audio ? '，含音轨' : '，无音轨'}`,
-          confidence: 1,
-          warnings: [],
-          created_at: this.iso(),
-        }]
+        // A source role is only evidence after the independent full fingerprint
+        // has completed. The fast probe remains useful for UI and local edits.
+        const evidence: VideoEvidence[] = project.evidence
         const nextEvidenceRevision = evidenceRevision(evidence)
         const activeVersion = project.timeline_versions.find(version => version.id === project.current_timeline_version_id)
         const nextScenes = [...(activeVersion?.scenes ?? scenesFromClips(project.timeline, project.evidence)), scenesFromClips([clip], evidence)[0]!]
@@ -539,7 +551,6 @@ export class VideoWorkbenchService {
           version_id: sourceId,
           storage: { kind: 'external', locator: input.path },
           mime_type: 'video/mp4',
-          content_hash: probe.content_hash,
           created_at: now,
         }
         const next = await this.repository.saveProject(videoStudioProjectSchema.parse({
@@ -564,6 +575,19 @@ export class VideoWorkbenchService {
           stage: '素材已加入',
           result: { source_id: sourceId },
         }))
+        const fingerprintTask = await this.repository.saveOperation(this.operation({
+          schema_version: 1,
+          id: id('task'),
+          project_id: project.id,
+          kind: 'video.fingerprint',
+          status: 'queued',
+          progress: 0,
+          stage: '等待计算完整指纹',
+          result: { source_id: sourceId },
+          created_at: now,
+          updated_at: now,
+        } as unknown as VideoOperation))
+        this.startFingerprint(fingerprintTask, sourceId)
         return { project: next, task }
       } catch (error) {
         const failure = mediaSafeError('MEDIA_VIDEO_SOURCE_UNREADABLE')
@@ -1013,6 +1037,146 @@ export class VideoWorkbenchService {
     }
   }
 
+  private startFingerprint(operation: VideoOperation, sourceId: string): void {
+    const completion = Promise.resolve().then(async () => await this.runFullFingerprint(operation, sourceId))
+    this.activeFingerprints.set(operation.id, completion)
+    void completion.catch(() => undefined).finally(() => this.activeFingerprints.delete(operation.id))
+  }
+
+  private async runFullFingerprint(operation: VideoOperation, sourceId: string): Promise<void> {
+    let running = operation
+    try {
+      running = await this.repository.saveOperation(this.operation({
+        ...operation,
+        status: 'running',
+        progress: 10,
+        stage: '正在计算完整指纹',
+      }))
+      const stored = await this.repository.getFact('source', sourceId)
+      if (!('fast_identity' in stored)) throw new Error('视频素材事实类型错误')
+      const before = stored as VideoFactSource
+      let fingerprint: `sha256:${string}`
+      try {
+        fingerprint = await videoFingerprint(before.path)
+      } catch {
+        const observed = await fastVideoIdentity(before.path).catch(() => null)
+        if (observed) await this.markSourceChanged(before, observed)
+        throw new Error('完整指纹计算期间素材不可稳定读取')
+      }
+      const after = await fastVideoIdentity(before.path)
+      if (!this.sameFastIdentity(before.fast_identity, after)) {
+        await this.markSourceChanged(before, after)
+        throw new Error('素材在完整指纹计算期间发生变化')
+      }
+      const sourceFact = await this.repository.saveFact({
+        ...before,
+        fast_identity: after,
+        fingerprint,
+        fingerprint_state: 'ready',
+        state: 'ready',
+        updated_at: this.iso(),
+      }) as VideoFactSource
+      const contentSegments = fixedIntervalContentSegments({
+        source: sourceFact as VideoFactSource & { fingerprint: `sha256:${string}` },
+        createdAt: this.iso(),
+      })
+      for (const segment of contentSegments) await this.repository.saveFact(segment)
+      const initialWindows = planEvidenceWindows({
+        source: sourceFact as VideoFactSource & { fingerprint: `sha256:${string}` },
+        segments: contentSegments,
+        analysisDepth: 'summary',
+        samplingReceiptId: operation.id,
+        createdAt: this.iso(),
+        budget: {
+          maxWindows: 10_000,
+          maxCoveredTicks: parseInt64(sourceFact.presentation_duration.ticks),
+        },
+      })
+      for (const window of initialWindows.windows) await this.repository.saveFact(window)
+      await this.mutateProject(operation.project_id, async () => {
+        const project = await this.requireVideoProject(operation.project_id)
+        const source = project.sources.find(item => item.id === sourceId)
+        if (!source) return
+        const sourceEvidence: VideoEvidence = {
+          id: id('evidence'),
+          kind: 'source_role',
+          source_id: sourceId,
+          source_fingerprint: sourceFact.fingerprint!,
+          in_ms: 0,
+          out_ms: source.duration_ms,
+          text: `真实视频素材：${source.name}，${source.width}×${source.height}，${source.duration_ms}ms${source.has_audio ? '，含音轨' : '，无音轨'}`,
+          confidence: 1,
+          warnings: [],
+          created_at: this.iso(),
+        }
+        const evidence = [
+          ...project.evidence.filter(item => !(item.kind === 'source_role' && item.source_id === sourceId)),
+          sourceEvidence,
+        ]
+        const nextEvidenceRevision = evidenceRevision(evidence)
+        const current = project.timeline_versions.find(version => version.id === project.current_timeline_version_id)
+        const scenes = (current?.scenes ?? scenesFromClips(project.timeline, evidence)).map(scene => ({
+          ...scene,
+          evidence_ids: evidence
+            .filter(item => item.source_id === scene.source_id && item.in_ms < scene.out_ms && item.out_ms > scene.in_ms)
+            .map(item => item.id),
+        }))
+        const version = this.timelineVersion({ ...project, evidence, evidence_revision: nextEvidenceRevision }, scenes, nextEvidenceRevision)
+        await this.repository.saveProject(videoStudioProjectSchema.parse({
+          ...project,
+          sources: project.sources.map(item => item.id === sourceId
+            ? { ...item, fingerprint: sourceFact.fingerprint, missing: false, content_changed: false }
+            : item),
+          assets: project.assets.map(asset => asset.id === sourceId ? { ...asset, content_hash: sourceFact.fingerprint } : asset),
+          evidence,
+          evidence_revision: nextEvidenceRevision,
+          timeline_versions: [...project.timeline_versions, version],
+          current_timeline_version_id: version.id,
+          revision: project.revision + 1,
+        }))
+      })
+      await this.repository.saveOperation(this.operation({
+        ...running,
+        status: 'succeeded',
+        progress: 100,
+        stage: '完整指纹已就绪',
+        result: { ...(running.result ?? {}), source_id: sourceId },
+      }))
+    } catch {
+      const failure = mediaSafeError('MEDIA_VIDEO_SOURCE_UNREADABLE')
+      await this.repository.saveOperation(this.operation({
+        ...running,
+        status: 'failed',
+        progress: 0,
+        stage: '完整指纹计算失败',
+        error: failure.message,
+        error_code: failure.code,
+      })).catch(() => undefined)
+    }
+  }
+
+  private sameFastIdentity(left: VideoFactSource['fast_identity'], right: VideoFactSource['fast_identity']): boolean {
+    return left.byte_size === right.byte_size
+      && left.mtime_ms === right.mtime_ms
+      && left.file_id === right.file_id
+      && left.head_tail_hash === right.head_tail_hash
+  }
+
+  private async markSourceChanged(source: VideoFactSource, observed: VideoFactSource['fast_identity']): Promise<void> {
+    const { fingerprint: _fingerprint, ...withoutFingerprint } = source
+    await this.repository.saveFact({
+      ...withoutFingerprint,
+      fast_identity: observed,
+      fingerprint_state: 'failed',
+      state: 'changed',
+      updated_at: this.iso(),
+    })
+    const derivatives = await this.repository.listFacts('derivative', source.project_id, source.id) as VideoDerivative[]
+    await Promise.all(derivatives
+      .filter(item => item.state !== 'stale')
+      .map(async item => await this.repository.saveFact({ ...item, state: 'stale' })))
+  }
+
   private async assertSourcesUnchanged(project: VideoStudioProject): Promise<VideoStudioProject> {
     const sources = [] as VideoStudioProject['sources']
     let changed = false
@@ -1027,8 +1191,37 @@ export class VideoWorkbenchService {
         }
         throw new VideoWorkbenchServiceError('视频素材已不可用', 404, 'VIDEO_SOURCE_MISSING')
       }
-      const fingerprint = await videoFingerprint(source.path)
+      const sourceFact = await this.repository.getFact('source', source.id).catch(() => null)
+      if (sourceFact && 'fast_identity' in sourceFact) {
+        if (sourceFact.fingerprint_state !== 'ready' || !sourceFact.fingerprint) {
+          throw new VideoWorkbenchServiceError('素材完整指纹尚未就绪，请稍后再试', 409, 'VIDEO_SOURCE_FINGERPRINT_PENDING')
+        }
+        const observed = await fastVideoIdentity(source.path)
+        if (!this.sameFastIdentity(sourceFact.fast_identity, observed)) {
+          await this.markSourceChanged(sourceFact, observed)
+          if (!source.content_changed) {
+            await this.repository.saveProject(videoStudioProjectSchema.parse({
+              ...project,
+              sources: project.sources.map(candidate => candidate.id === source.id
+                ? { ...candidate, missing: false, content_changed: true }
+                : candidate),
+            }))
+          }
+          throw new VideoWorkbenchServiceError('视频素材内容已经变化，请重新导入', 409, 'VIDEO_SOURCE_CHANGED')
+        }
+      }
+      let fingerprint: `sha256:${string}`
+      try {
+        fingerprint = await videoFingerprint(source.path)
+      } catch {
+        if (sourceFact && 'fast_identity' in sourceFact) {
+          const observed = await fastVideoIdentity(source.path).catch(() => null)
+          if (observed) await this.markSourceChanged(sourceFact, observed)
+        }
+        throw new VideoWorkbenchServiceError('视频素材内容已经变化，请重新导入', 409, 'VIDEO_SOURCE_CHANGED')
+      }
       if (source.fingerprint && source.fingerprint !== fingerprint) {
+        if (sourceFact && 'fast_identity' in sourceFact) await this.markSourceChanged(sourceFact, await fastVideoIdentity(source.path))
         if (!source.content_changed) {
           await this.repository.saveProject(videoStudioProjectSchema.parse({
             ...project,
@@ -1486,6 +1679,15 @@ export class VideoWorkbenchService {
   }
 
   private async recoverInterruptedOperation(operation: VideoOperation): Promise<void> {
+    if (operation.kind === 'video.fingerprint') {
+      const sourceId = typeof operation.result?.source_id === 'string' ? operation.result.source_id : null
+      if (!sourceId) {
+        await this.failOperation(operation, 'MEDIA_VIDEO_PROBE_INTERRUPTED', '完整指纹任务缺少素材标识')
+        return
+      }
+      await this.runFullFingerprint(operation, sourceId)
+      return
+    }
     if (operation.kind === 'video.render' && await this.recoverCommittedRender(operation)) return
     const code = operation.kind === 'video.preview'
       ? 'MEDIA_VIDEO_PREVIEW_INTERRUPTED'
