@@ -32,7 +32,7 @@ import {
   setAppMode,
   type PortableDetection,
 } from './services/appMode'
-import { createCredentialStore, EphemeralCredentialStore } from './services/keychain'
+import { createCredentialStore, EphemeralCredentialStore, retireInstallationSessionArtifacts } from './services/keychain'
 import { ProviderCredentialService } from './services/providerCredentials'
 import {
   ElectronCodexNativeRuntime,
@@ -213,7 +213,7 @@ function getInstallationSessionManager() {
     // provider-credentials stay in the OS vault and are read only when the
     // user explicitly chooses a personal model connection.
     try {
-      createCredentialStore(process.platform, userDataPath, 'installation-session', safeStorage).clear()
+      retireInstallationSessionArtifacts(process.platform, userDataPath)
     } catch (error) {
       console.warn('[desktop] could not clear retired installation session', error)
     }
