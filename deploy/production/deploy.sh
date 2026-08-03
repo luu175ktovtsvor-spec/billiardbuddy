@@ -29,7 +29,14 @@ chown -R 1000:1000 "$bb_data_root/gateway" "$bb_data_root/relay" "$bb_data_root/
 bash "$bb_repo_root/gateway/validate-mimo-capacity-env.sh" "$bb_secret_root/gateway.env"
 bash "$bb_repo_root/gateway/validate-production-capacity-env.sh" "$bb_secret_root/gateway.env"
 bash "$bb_repo_root/relay/validate-production-env.sh" "$bb_secret_root/relay.env"
-bun "$bb_repo_root/video-media-relay/validate-deployment-env.ts" "$bb_secret_root/video-media-relay.env"
+# Production hosts run the services in containers and do not require Bun on
+# the host. Keep the Video Relay validator in the same pinned Bun runtime as
+# its image so a missing host executable cannot bypass or block deployment.
+docker run --rm --network none \
+  -v "$bb_repo_root/video-media-relay:/app/video-media-relay:ro" \
+  -v "$bb_secret_root/video-media-relay.env:/secrets/video-media-relay.env:ro" \
+  oven/bun:1.3.14 \
+  bun /app/video-media-relay/validate-deployment-env.ts /secrets/video-media-relay.env
 
 bb_release_id="${BILLIARDBUDDY_RELEASE:-$(printf '%s' "$bb_source_revision" | cut -c1-12)}"
 export BILLIARDBUDDY_RELEASE="$bb_release_id"
