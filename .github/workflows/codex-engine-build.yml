@@ -36,6 +36,9 @@ on:
       - 'ts/desktop/scripts/stage-codex-engine.ts'
       - 'ts/desktop/scripts/verify-codex-engine-source.ts'
       - 'ts/desktop/scripts/verify-codex-native-protocol.ts'
+      - 'ts/desktop/scripts/verify-browser-use-e2e.ts'
+      - 'ts/desktop/scripts/verify-local-agent-plugin-smoke.ts'
+      - 'ts/desktop/electron/browserUseE2e.ts'
       - 'ts/scripts/check-release-tracked-files.ts'
       - '.github/workflows/codex-engine-build.yml'
   push:
@@ -74,6 +77,9 @@ on:
       - 'ts/desktop/scripts/stage-codex-engine.ts'
       - 'ts/desktop/scripts/verify-codex-engine-source.ts'
       - 'ts/desktop/scripts/verify-codex-native-protocol.ts'
+      - 'ts/desktop/scripts/verify-browser-use-e2e.ts'
+      - 'ts/desktop/scripts/verify-local-agent-plugin-smoke.ts'
+      - 'ts/desktop/electron/browserUseE2e.ts'
       - 'ts/scripts/check-release-tracked-files.ts'
       - '.github/workflows/codex-engine-build.yml'
 
@@ -189,6 +195,16 @@ jobs:
           bun ts/desktop/scripts/stage-chrome-plugin.ts --target '${{ matrix.target }}' --verify
           bun ts/desktop/scripts/stage-browser-plugin.ts --target '${{ matrix.target }}' --verify
           bun ts/desktop/scripts/stage-record-replay-plugin.ts --target '${{ matrix.target }}' --verify
+
+      # Hosted runners can verify plugin boot and safe failure paths. They
+      # cannot grant a real user's Accessibility, Screen Recording, or Chrome
+      # profile permissions; those final permission checks remain device-side.
+      - name: 无前端验证本地 Agent 插件与 Browser 宿主链路
+        shell: bash
+        run: |
+          set -euo pipefail
+          bun ts/desktop/scripts/verify-local-agent-plugin-smoke.ts --target '${{ matrix.target }}'
+          bun ts/desktop/scripts/verify-browser-use-e2e.ts --target '${{ matrix.target }}'
 
       - name: 保存可校验的本地 Agent 插件
         uses: actions/upload-artifact@v4

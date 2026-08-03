@@ -14,6 +14,8 @@ type BrowserTab = { id: number, window: BrowserWindow, elements: Set<string> }
 export type InAppBrowserHostOptions = {
   userDataPath: string
   mainWindow: () => BrowserWindow | null
+  /** Used only by automated host verification; product windows stay visible. */
+  showWindow?: boolean
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -216,7 +218,7 @@ export class InAppBrowserHost {
       height: 900,
       minWidth: 640,
       minHeight: 480,
-      show: true,
+      show: this.options.showWindow ?? true,
       title: 'BilliardBuddy Browser',
       webPreferences: {
         partition: 'persist:billiardbuddy-browser',
