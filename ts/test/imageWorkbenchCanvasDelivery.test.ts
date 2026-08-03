@@ -342,7 +342,7 @@ test('15.3 正式字体会验证 CJK 字形并在预检中阻止缺失字形', a
   expect(invalidPreflight.checks.find(check => check.id === 'font-and-text-bounds')).toMatchObject({ status: 'fail' })
 })
 
-test('15.3 预检拒绝越过 Delivery Spec 安全区的二维码', async () => {
+test('15.3 预检以旋转后的真实像素边界拒绝越过 Delivery Spec 安全区的二维码', async () => {
   const workbench = await service('safe-area-mask')
   const setup = await projectWithCanvas(workbench)
   const spec = await workbench.createDeliverySpecRevision(setup.project.id, {
@@ -355,10 +355,50 @@ test('15.3 预检拒绝越过 Delivery Spec 安全区的二维码', async () => 
   })
   const withQr = await workbench.applyCanvasCommand(setup.project.id, setup.canvas.canvas_id, synced.project.revision, {
     idempotency_key: 'bb-image-safe-area-qr-0001', base_revision: synced.canvas.revision, kind: 'add_layer',
-    payload: { layer: { id: 'qrcode_safe_0001', kind: 'qrcode', source: { kind: 'payload', value: 'https://example.test/safe' }, transform: { x: 10, y: 10, width: 160, height: 160, rotation_degrees: 0, scale_x: 1, scale_y: 1 }, error_correction: 'H', quiet_zone_modules: 4, verify_after_render: true } },
+    payload: { layer: { id: 'qrcode_safe_0001', kind: 'qrcode', source: { kind: 'payload', value: 'https://example.test/safe' }, transform: { x: 80, y: 80, width: 160, height: 160, rotation_degrees: 45, scale_x: 1, scale_y: 1 }, error_correction: 'H', quiet_zone_modules: 4, verify_after_render: true } },
   })
   const preflight = await workbench.preflightCanvas(setup.project.id, setup.canvas.canvas_id, { revision: withQr.canvas.revision })
-  expect(preflight.checks.find(check => check.id === 'required-safe-area')).toMatchObject({ status: 'fail', waivable: false })
+  expect(preflight.checks.find(check => check.id === 'required-safe-area')).toMatchObject({ status: 'fail', waivable: false, evidence: '必填文字、Logo 或二维码越过交付安全区：qrcode_safe_0001=47,47,226×226' })
+})
+
+test('15.3 安全区预检以 Text 缩放旋转和 Logo 旋转后的真实边界判定', async () => {
+  const textWorkbench = await service('safe-area-transformed-text')
+  const textSetup = await projectWithCanvas(textWorkbench)
+  const textSpec = await textWorkbench.createDeliverySpecRevision(textSetup.project.id, {
+    base_revision: textSetup.project.revision, idempotency_key: 'bb-image-safe-area-text-spec-0001', purpose: 'custom',
+    artboards: [{ ...textSetup.artboard, safe_area: { top: 80, right: 80, bottom: 80, left: 80 } }],
+  })
+  const textSynced = await textWorkbench.applyCanvasCommand(textSetup.project.id, textSetup.canvas.canvas_id, textSpec.project.revision, {
+    idempotency_key: 'bb-image-safe-area-text-sync-0001', base_revision: 0, kind: 'sync_delivery_spec',
+    payload: { delivery_spec_id: textSpec.spec.id, delivery_spec_revision: textSpec.spec.revision, layout_policy: 'preserve_position' },
+  })
+  const text = await textWorkbench.applyCanvasCommand(textSetup.project.id, textSetup.canvas.canvas_id, textSynced.project.revision, {
+    idempotency_key: 'bb-image-safe-area-text-layer-0001', base_revision: textSynced.canvas.revision, kind: 'add_layer',
+    payload: { layer: {
+      id: 'text_safe_transformed_0001', kind: 'text', text: '台球冠军赛', font_family: 'BilliardBuddy Builtin CJK', font_asset_id: 'font_builtin_0001',
+      font_size: 48, font_weight: 400, font_style: 'normal', line_height: 1.2, letter_spacing: 0, fill: '#ffffff', position: { x: 80, y: 80 },
+      rotation_degrees: 45, scale_x: 1.5, scale_y: 1.25, max_width: 160, max_height: 100, overflow: 'error', locale: 'zh-CN', align: 'left', opacity: 1,
+    } },
+  })
+  expect((await textWorkbench.preflightCanvas(textSetup.project.id, textSetup.canvas.canvas_id, { revision: text.canvas.revision })).checks.find(check => check.id === 'required-safe-area')).toMatchObject({ status: 'fail', waivable: false })
+
+  const logoWorkbench = await service('safe-area-transformed-logo')
+  const source = await sharp({ create: { width: 8, height: 8, channels: 4, background: { r: 255, g: 255, b: 255, alpha: 1 } } }).png().toBuffer()
+  const logoSetup = await projectWithCanvasAssets(logoWorkbench, [source])
+  const logoSpec = await logoWorkbench.createDeliverySpecRevision(logoSetup.project.id, {
+    base_revision: logoSetup.project.revision, idempotency_key: 'bb-image-safe-area-logo-spec-0001', purpose: 'custom',
+    artboards: [{ ...logoSetup.artboard, safe_area: { top: 80, right: 80, bottom: 80, left: 80 } }],
+  })
+  const logoSynced = await logoWorkbench.applyCanvasCommand(logoSetup.project.id, logoSetup.canvas.canvas_id, logoSpec.project.revision, {
+    idempotency_key: 'bb-image-safe-area-logo-sync-0001', base_revision: 0, kind: 'sync_delivery_spec',
+    payload: { delivery_spec_id: logoSpec.spec.id, delivery_spec_revision: logoSpec.spec.revision, layout_policy: 'preserve_position' },
+  })
+  const logoProject = await logoWorkbench.getProject(logoSetup.project.id)
+  const logo = await logoWorkbench.applyCanvasCommand(logoSetup.project.id, logoSetup.canvas.canvas_id, logoSynced.project.revision, {
+    idempotency_key: 'bb-image-safe-area-logo-layer-0001', base_revision: logoSynced.canvas.revision, kind: 'add_layer',
+    payload: { layer: { id: 'logo_safe_transformed_0001', kind: 'logo', source_asset_id: logoProject.assets[0]!.id, transform: { x: 80, y: 80, width: 160, height: 160, rotation_degrees: 45, scale_x: 1, scale_y: 1 }, preserve_exact_source: true, render_mode: 'raster_exact' } },
+  })
+  expect((await logoWorkbench.preflightCanvas(logoSetup.project.id, logoSetup.canvas.canvas_id, { revision: logo.canvas.revision })).checks.find(check => check.id === 'required-safe-area')).toMatchObject({ status: 'fail', waivable: false, evidence: expect.stringContaining('logo_safe_transformed_0001=47,47,226×226') })
 })
 
 test('15.3 交付集会锁定全部 required Artboard，并逐份解码 QR、复核 PNG、JPEG、WebP 哈希', async () => {

@@ -98,7 +98,7 @@ import {
   type SupportedImageMime,
   type VerifiedImageBytes,
 } from './imageAssetStore.js'
-import { assertDeterministicTextLayout, assertFormalTextLayer, DeterministicImageCanvasRenderer, ImageCanvasRendererError, verifyRenderedQrManifest } from './imageCanvasRenderer.js'
+import { assertDeterministicTextLayout, assertFormalTextLayer, DeterministicImageCanvasRenderer, ImageCanvasRendererError, renderedTextBounds, renderedTransformBounds, verifyRenderedQrManifest } from './imageCanvasRenderer.js'
 import {
   ImageWorkbenchRepositoryError,
   type ImageOperation,
@@ -1861,12 +1861,21 @@ export class ImageWorkbenchService {
       evidence: missingExact.length === 0 ? '所有必需精确文字已绑定到正式文本图层' : `缺少精确文字：${missingExact.map(item => item.id).join(',')}`,
       waivable: false,
     })
-    const invalidText = textLayers.find(layer => layer.overflow === 'clip' || layer.position.x < 0 || layer.position.y < 0
-      || (layer.max_width !== undefined && layer.position.x + layer.max_width > canvas.document.width)
-      || (layer.max_height !== undefined && layer.position.y + layer.max_height > canvas.document.height)
-      || layer.font_asset_id !== 'font_builtin_0001')
+    const textFrames = new Map<string, Awaited<ReturnType<typeof renderedTextBounds>>>()
     let invalidGlyph = false
-    try { textLayers.forEach(layer => { assertFormalTextLayer(layer); assertDeterministicTextLayout(layer) }) } catch { invalidGlyph = true }
+    try {
+      for (const layer of textLayers) {
+        assertFormalTextLayer(layer)
+        assertDeterministicTextLayout(layer)
+        textFrames.set(layer.id, await renderedTextBounds(layer))
+      }
+    } catch { invalidGlyph = true }
+    const invalidText = textLayers.find(layer => {
+      const frame = textFrames.get(layer.id)
+      return layer.overflow === 'clip' || !frame || frame.left < 0 || frame.top < 0
+        || frame.right > canvas.document.width || frame.bottom > canvas.document.height
+        || layer.font_asset_id !== 'font_builtin_0001'
+    })
     checks.push({
       id: 'font-and-text-bounds', status: invalidText || invalidGlyph ? 'fail' : 'pass',
       evidence: invalidText || invalidGlyph ? '正式文字必须使用受控字体、具备全部字形且不得裁切或越界' : '正式文字字体、字形、边界和溢出策略有效', waivable: false,
@@ -1892,13 +1901,18 @@ export class ImageWorkbenchService {
     const safe = artboard.safe_area
     if (safe) {
       const protectedLayers = this.flattenCanvasLayers(canvas.document.layers).filter((layer): layer is Extract<ImageCanvasDocument['layers'][number], { kind: 'text' | 'logo' | 'qrcode' }> => layer.kind === 'text' || layer.kind === 'logo' || layer.kind === 'qrcode')
-      const outside = protectedLayers.some(layer => {
-        const box = layer.kind === 'text'
-          ? { left: layer.position.x, top: layer.position.y, right: layer.position.x + (layer.max_width ?? layer.font_size * Math.max(1, layer.text.length)), bottom: layer.position.y + (layer.max_height ?? layer.font_size * layer.line_height) }
-          : { left: layer.transform.x, top: layer.transform.y, right: layer.transform.x + layer.transform.width * layer.transform.scale_x, bottom: layer.transform.y + layer.transform.height * layer.transform.scale_y }
-        return box.left < safe.left || box.top < safe.top || box.right > canvas.document.width - safe.right || box.bottom > canvas.document.height - safe.bottom
-      })
-      checks.push({ id: 'required-safe-area', status: outside ? 'fail' : 'pass', evidence: outside ? '必填文字、Logo 或二维码越过交付安全区' : '文字、Logo 与二维码均位于交付安全区内', waivable: false })
+      const protectedFrames = await Promise.all(protectedLayers.map(async layer => ({
+        id: layer.id,
+        // A failed font/layout check must make preflight fail rather than
+        // throw while attempting a second layout for the safe-area evidence.
+        frame: layer.kind === 'text' ? textFrames.get(layer.id) : await renderedTransformBounds(layer.transform),
+      })))
+      const outside = protectedFrames.filter(({ frame }) => !frame || frame.left < safe.left || frame.top < safe.top
+        || frame.right > canvas.document.width - safe.right || frame.bottom > canvas.document.height - safe.bottom)
+      const evidence = outside.length > 0
+        ? `必填文字、Logo 或二维码越过交付安全区：${outside.map(({ id, frame }) => frame ? `${id}=${frame.left},${frame.top},${frame.width}×${frame.height}` : `${id}=文字布局无效`).join('；')}`
+        : '文字、Logo 与二维码均位于交付安全区内'
+      checks.push({ id: 'required-safe-area', status: outside.length > 0 ? 'fail' : 'pass', evidence, waivable: false })
     }
     const qrLayers = this.flattenCanvasLayers(canvas.document.layers).filter(layer => layer.kind === 'qrcode')
     checks.push({ id: 'qr-verification', status: qrLayers.every(layer => layer.verify_after_render) ? 'pass' : 'fail', evidence: '二维码层将在正式像素输出后再次解码', waivable: false })
