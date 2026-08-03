@@ -728,6 +728,21 @@ export const videoRemoteBudgetSchema = z.object({
   proxy_seconds: z.number().nonnegative(),
   asr_seconds: z.number().nonnegative(),
   estimated_amount_micros: z.number().int().nonnegative(),
+  /** A call is admitted only after its Operation has a durable reservation.
+   * The reservation is replaced by its immutable Provider receipt when the
+   * operation settles, so a restart cannot spend the same estimate twice. */
+  reservations: z.array(z.object({
+    operation_id: mediaIdSchema,
+    capability: z.enum(['visual_evidence', 'media_reasoning', 'speech_transcription', 'semantic_embedding']),
+    requests: z.number().int().nonnegative(),
+    total_tokens: z.number().int().nonnegative(),
+    input_bytes: z.number().int().nonnegative(),
+    visual_frames: z.number().int().nonnegative(),
+    proxy_seconds: z.number().nonnegative(),
+    asr_seconds: z.number().nonnegative(),
+    estimated_amount_micros: z.number().int().nonnegative(),
+    reserved_at: mediaIsoDateSchema,
+  })).max(10_000).default([]),
   /** One immutable entry per Relay receipt; aggregate fields above remain the
    * user-approved estimate rather than being overwritten by the last call. */
   settlements: z.array(z.object({

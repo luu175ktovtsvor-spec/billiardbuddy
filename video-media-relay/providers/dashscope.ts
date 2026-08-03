@@ -14,7 +14,7 @@ export class DashScopeProviderError extends Error { constructor(readonly status:
  */
 export class DashScopeVideoProvider {
   constructor(private readonly options: { apiKey: string; fetchImpl?: FetchLike; now?: () => Date; baseUrl?: string; asrBaseUrl?: string }) {}
-  async execute(input: CreateVideoRelayOperationRequest, _identity: Identity, media: { object_urls: string[] } = { object_urls: [] }): Promise<DashScopeExecution> {
+  async execute(input: CreateVideoRelayOperationRequest, _identity: Identity, media: { object_urls: string[]; object_byte_sizes?: number[] } = { object_urls: [] }): Promise<DashScopeExecution> {
     const descriptor = videoProviderFor(input)
     const endpoint = this.options.baseUrl?.replace(/\/+$/, '') ?? 'https://dashscope.aliyuncs.com/compatible-mode/v1'
     const body = input.capability === 'semantic_embedding'
@@ -48,17 +48,17 @@ export class DashScopeVideoProvider {
     if (input.capability === 'speech_transcription' && input.input.mode === 'long_async') {
       const taskId = taskIdFrom(parsed)
       if (!taskId) throw new DashScopeProviderError(502, 'asr_task_id_missing')
-      return { state: 'submitted', provider_task_id: taskId, receipt: this.receipt(input, descriptor.model_id, body, raw, parsed) }
+      return { state: 'submitted', provider_task_id: taskId, receipt: this.receipt(input, descriptor.model_id, body, raw, parsed, undefined, media) }
     }
     const result = input.capability === 'semantic_embedding'
       ? embeddingResult(parsed, input.input.items.map(item => item.id))
       : input.capability === 'speech_transcription' ? asrResult(parsed)
         : input.capability === 'visual_evidence' ? visualResult(parsed)
           : planningResult(parsed)
-    return { state: 'succeeded', result, receipt: this.receipt(input, descriptor.model_id, body, raw, parsed, input.capability === 'speech_transcription' ? asrSeconds(parsed) : undefined) }
+    return { state: 'succeeded', result, receipt: this.receipt(input, descriptor.model_id, body, raw, parsed, input.capability === 'speech_transcription' ? asrSeconds(parsed) : undefined, media) }
   }
 
-  async poll(input: CreateVideoRelayOperationRequest, providerTaskId: string, _identity: Identity): Promise<DashScopeExecution & { safe_error_code?: string }> {
+  async poll(input: CreateVideoRelayOperationRequest, providerTaskId: string, _identity: Identity, media: { object_urls: string[]; object_byte_sizes?: number[] } = { object_urls: [] }): Promise<DashScopeExecution & { safe_error_code?: string }> {
     if (input.capability !== 'speech_transcription' || input.input.mode !== 'long_async') throw new DashScopeProviderError(422, 'provider_poll_unsupported')
     let response: Response
     const asrBase = (this.options.asrBaseUrl ?? 'https://dashscope.aliyuncs.com/api/v1').replace(/\/+$/, '')
@@ -67,15 +67,15 @@ export class DashScopeVideoProvider {
     let parsed: Record<string, unknown>
     try { parsed = JSON.parse(raw) as Record<string, unknown> } catch { throw new DashScopeProviderError(502, 'provider_invalid_response') }
     if (!response.ok) {
-      if (response.status === 404 || response.status === 410) return { state: 'expired', receipt: this.receipt(input, 'fun-asr', {}, raw, parsed), safe_error_code: 'asr_result_expired' }
+      if (response.status === 404 || response.status === 410) return { state: 'expired', receipt: this.receipt(input, 'fun-asr', {}, raw, parsed, undefined, media), safe_error_code: 'asr_result_expired' }
       throw new DashScopeProviderError(response.status >= 500 ? 503 : 422, 'provider_poll_rejected')
     }
     const output = parsed.output && typeof parsed.output === 'object' ? parsed.output as Record<string, unknown> : {}
     const status = String(output.task_status ?? parsed.task_status ?? '').toUpperCase()
-    if (['PENDING', 'RUNNING', 'QUEUED'].includes(status)) return { state: status === 'RUNNING' ? 'running' : 'submitted', provider_task_id: providerTaskId, receipt: this.receipt(input, 'fun-asr', {}, raw, parsed) }
-    if (!['SUCCEEDED', 'SUCCESS'].includes(status)) return { state: 'failed', provider_task_id: providerTaskId, receipt: this.receipt(input, 'fun-asr', {}, raw, parsed), safe_error_code: 'asr_task_failed' }
+    if (['PENDING', 'RUNNING', 'QUEUED'].includes(status)) return { state: status === 'RUNNING' ? 'running' : 'submitted', provider_task_id: providerTaskId, receipt: this.receipt(input, 'fun-asr', {}, raw, parsed, undefined, media) }
+    if (!['SUCCEEDED', 'SUCCESS'].includes(status)) return { state: 'failed', provider_task_id: providerTaskId, receipt: this.receipt(input, 'fun-asr', {}, raw, parsed, undefined, media), safe_error_code: 'asr_task_failed' }
     const transcriptionUrl = transcriptionUrlFrom(output)
-    if (!transcriptionUrl) return { state: 'failed', provider_task_id: providerTaskId, receipt: this.receipt(input, 'fun-asr', {}, raw, parsed), safe_error_code: 'asr_result_missing' }
+    if (!transcriptionUrl) return { state: 'failed', provider_task_id: providerTaskId, receipt: this.receipt(input, 'fun-asr', {}, raw, parsed, undefined, media), safe_error_code: 'asr_result_missing' }
     let transcription: Record<string, unknown>
     try {
       const downloaded = await (this.options.fetchImpl ?? fetch)(transcriptionUrl)
@@ -84,23 +84,33 @@ export class DashScopeVideoProvider {
       if (text.length > 16 * 1024 * 1024) throw new Error('too_large')
       transcription = JSON.parse(text) as Record<string, unknown>
     } catch { throw new DashScopeProviderError(503, 'asr_result_download_unavailable') }
-    return { state: 'succeeded', provider_task_id: providerTaskId, result: asrResult(transcription), receipt: this.receipt(input, 'fun-asr', {}, raw, parsed, asrSeconds(transcription)) }
+    return { state: 'succeeded', provider_task_id: providerTaskId, result: asrResult(transcription), receipt: this.receipt(input, 'fun-asr', {}, raw, parsed, asrSeconds(transcription), media) }
   }
 
-  private receipt(input: CreateVideoRelayOperationRequest, model: string, body: unknown, raw: string, parsed: Record<string, unknown>, measuredAsrSeconds?: number): ProviderExecutionReceipt {
+  private receipt(input: CreateVideoRelayOperationRequest, model: string, body: unknown, raw: string, parsed: Record<string, unknown>, measuredAsrSeconds?: number, media: { object_urls: string[]; object_byte_sizes?: number[] } = { object_urls: [] }): ProviderExecutionReceipt {
     const usage = parsed.usage && typeof parsed.usage === 'object' ? parsed.usage as Record<string, unknown> : {}
-    const inputBytes = Buffer.byteLength(JSON.stringify(body), 'utf8')
+    // DashScope's token fields and the Relay's immutable object sizes together
+    // describe what was actually handed to the provider.  Do not substitute a
+    // guessed source duration or a cache estimate for this receipt.
+    const inputBytes = Buffer.byteLength(JSON.stringify(body), 'utf8') + (media.object_byte_sizes ?? []).reduce((sum, value) => sum + (Number.isSafeInteger(value) && value > 0 ? value : 0), 0)
     return {
       id: `receipt_${randomUUID().replaceAll('-', '')}`,
       capability: input.capability,
       model_snapshot: model,
       region: 'cn-beijing', request_schema_version: 1, prompt_version: 'video-media-v1', input_basis_hash: input.request_hash,
-      usage: { requests: 1, total_tokens: safeNumber(usage.total_tokens) || safeNumber(usage.input_tokens) + safeNumber(usage.output_tokens), input_bytes: inputBytes, visual_frames: 0, proxy_seconds: 0, asr_seconds: measuredAsrSeconds ?? safeNumber(usage.asr_seconds), estimated_amount_micros: 0 },
+      usage: { requests: 1, total_tokens: safeNumber(usage.total_tokens) || safeNumber(usage.input_tokens) + safeNumber(usage.output_tokens), input_bytes: inputBytes, visual_frames: input.capability === 'visual_evidence' ? media.object_urls.length : 0, proxy_seconds: safeDecimal(usage.proxy_seconds), asr_seconds: measuredAsrSeconds ?? safeDecimal(usage.asr_seconds), estimated_amount_micros: providerAmountMicros(usage) },
       cache_hit: false, upstream_receipt_hash: `sha256:${createHash('sha256').update(raw).digest('hex')}`, created_at: (this.options.now ?? (() => new Date()))().toISOString(),
     }
   }
 }
 function safeNumber(value: unknown): number { return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? Math.trunc(value) : 0 }
+function safeDecimal(value: unknown): number { return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : 0 }
+function providerAmountMicros(usage: Record<string, unknown>): number {
+  const direct = safeNumber(usage.amount_micros ?? usage.estimated_amount_micros)
+  if (direct) return direct
+  const fee = usage.total_fee ?? usage.total_cost ?? usage.cost
+  return typeof fee === 'number' && Number.isFinite(fee) && fee >= 0 ? Math.round(fee * 1_000_000) : 0
+}
 function embeddingResult(raw: Record<string, unknown>, ids: string[]) {
   const rows = Array.isArray(raw.data) ? raw.data : []
   const vectors = rows.map((row, index) => {

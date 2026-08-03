@@ -86,14 +86,17 @@ test('Relay persists failed OSS result cleanup and retries it on the next authen
   expect(deleteAttempts).toBe(2)
 })
 
-test('Relay keeps a submitted long ASR task and only advances it through GET polling', async () => {
+test('Relay restarts locally, reconciles a persisted long ASR task, and only advances it through GET polling', async () => {
   const objectStore: MediaObjectStore = {
     async createPutUrl() { return { put_url: 'https://oss.example.test/put', required_headers: {} } }, async head() { return { byte_size: 4, content_hash: hash, content_type: 'audio/wav' } }, async delete() {}, async createReadUrl() { return 'https://oss.example.test/read' }, async putResult() {}, async createResultReadUrl() { return 'https://oss.example.test/result' }, async deleteResult() {},
   }
   let polls = 0
   const receipt: ProviderExecutionReceipt = { id: 'receipt_12345678', capability: 'speech_transcription', model_snapshot: 'fun-asr', region: 'cn-beijing', request_schema_version: 1, prompt_version: 'v1', input_basis_hash: hash, usage: { requests: 1, total_tokens: 0, input_bytes: 0, visual_frames: 0, proxy_seconds: 0, asr_seconds: 10, estimated_amount_micros: 1 }, cache_hit: false, created_at: now().toISOString() }
   const provider: VideoMediaProvider = { async execute() { return { state: 'submitted', provider_task_id: 'provider-task-1', receipt } }, async poll() { polls += 1; return { state: 'failed', provider_task_id: 'provider-task-1', receipt, safe_error_code: 'asr_task_failed' } } }
-  const handler = createVideoMediaRelayFetch({ env: { GW_VIDEO_MEDIA_INTROSPECTION_TOKEN: token, VIDEO_MEDIA_GATEWAY_INTROSPECTION_BASE: 'http://gateway', VIDEO_MEDIA_RELAY_DB: ':memory:' }, fetchImpl: identityFetch, objectStore, provider, now })
+  const dbPath = join(tmpdir(), `video-relay-asr-restart-${crypto.randomUUID()}.sqlite`)
+  const env = { GW_VIDEO_MEDIA_INTROSPECTION_TOKEN: token, VIDEO_MEDIA_GATEWAY_INTROSPECTION_BASE: 'http://gateway', VIDEO_MEDIA_RELAY_DB: dbPath }
+  try {
+  const handler = createVideoMediaRelayFetch({ env, fetchImpl: identityFetch, objectStore, provider, now })
   const leaseResponse = await handler(new Request('http://relay/v1/video-media/object-leases', { method: 'POST', headers: headers('long-asr-lease-key-001'), body: JSON.stringify({ local_operation_id: 'task_87654321', purpose: 'audio_for_asr', content_hash: hash, byte_size: 4, content_type: 'audio/wav', consent_revision_id: 'consent_12345678', consent_scope_hash: hash }) }))
   const lease = await leaseResponse.json() as { lease_id: string }
   const completed = await handler(new Request(`http://relay/v1/video-media/object-leases/${lease.lease_id}/complete`, { method: 'POST', headers: headers('long-asr-complete-key-1'), body: '{}' }))
@@ -102,9 +105,11 @@ test('Relay keeps a submitted long ASR task and only advances it through GET pol
   const created = await handler(new Request('http://relay/v1/video-media/operations', { method: 'POST', headers: headers('long-asr-operation-key-1'), body: JSON.stringify(operation) }))
   expect(await created.json()).toMatchObject({ state: 'submitted', provider_task_id: 'provider-task-1' })
   const id = (await handler(new Request('http://relay/v1/video-media/operations', { method: 'POST', headers: headers('long-asr-operation-key-1'), body: JSON.stringify(operation) })).then(response => response.json())) as { id: string }
-  const polled = await handler(new Request(`http://relay/v1/video-media/operations/${id.id}`, { headers: { Authorization: 'Bearer installation-token' } }))
+  const restarted = createVideoMediaRelayFetch({ env, fetchImpl: identityFetch, objectStore, provider, now })
+  const polled = await restarted(new Request(`http://relay/v1/video-media/operations/${id.id}`, { headers: { Authorization: 'Bearer installation-token' } }))
   expect(await polled.json()).toMatchObject({ state: 'failed', safe_error_code: 'asr_task_failed' })
   expect(polls).toBe(1)
+  } finally { try { unlinkSync(dbPath) } catch {} }
 })
 
 test('Relay treats a timeout after remote multipart completion as an idempotent success', async () => {
@@ -231,4 +236,30 @@ test('Relay recovers a multipart initialization committed before the OSS upload 
     const resumed = await restarted(new Request('http://relay/v1/video-media/object-leases', { method: 'POST', headers: headers('init-recovery-lease-001'), body: JSON.stringify(payload) }))
     expect(await resumed.json()).toMatchObject({ lease_id: lease.lease_id, multipart_upload: { upload_id: 'upload-recovered-after-crash' } })
   } finally { try { unlinkSync(dbPath) } catch {} }
+})
+
+test('Relay deletes a completed-but-unverified multipart object and retries cleanup durably', async () => {
+  let deletes = 0
+  let current = now()
+  const objectStore: MediaObjectStore = {
+    async createPutUrl() { throw new Error('single_put_not_expected') },
+    async head() { return { byte_size: 1, content_hash: hash, content_type: 'video/mp4' } },
+    async delete() { deletes += 1; if (deletes === 1) throw new Error('oss_delete_timeout') },
+    async createReadUrl() { return 'https://oss.example.test/read' }, async putResult() {}, async createResultReadUrl() { return 'https://oss.example.test/result' }, async deleteResult() {},
+    async createMultipartUpload() { return { uploadId: 'upload-cleanup' } }, async createMultipartPartPutUrl() { return { put_url: 'https://oss.example.test/part' } },
+    async listMultipartParts() { return [{ part_number: 1, etag: 'etag-one' }, { part_number: 2, etag: 'etag-two' }] }, async completeMultipartUpload() {}, async abortMultipartUpload() {},
+  }
+  const env = { GW_VIDEO_MEDIA_INTROSPECTION_TOKEN: token, VIDEO_MEDIA_GATEWAY_INTROSPECTION_BASE: 'http://gateway', VIDEO_MEDIA_RELAY_DB: ':memory:', VIDEO_MEDIA_MULTIPART_THRESHOLD_BYTES: String(5 * 1024 * 1024), VIDEO_MEDIA_MULTIPART_PART_SIZE_BYTES: String(3 * 1024 * 1024) }
+  const handler = createVideoMediaRelayFetch({ env, fetchImpl: identityFetch, objectStore, now: () => current })
+  const payload = { local_operation_id: 'task_12345678', purpose: 'proxy_video', content_hash: hash, byte_size: 6 * 1024 * 1024, content_type: 'video/mp4', consent_revision_id: 'consent_12345678', consent_scope_hash: hash }
+  const lease = await handler(new Request('http://relay/v1/video-media/object-leases', { method: 'POST', headers: headers('cleanup-verify-lease-key'), body: JSON.stringify(payload) })).then(response => response.json()) as { lease_id: string }
+  const completion = { parts: [{ part_number: 1, etag: 'etag-one' }, { part_number: 2, etag: 'etag-two' }] }
+  const failed = await handler(new Request(`http://relay/v1/video-media/object-leases/${lease.lease_id}/complete`, { method: 'POST', headers: headers('cleanup-verify-complete-key'), body: JSON.stringify(completion) }))
+  expect(failed.status).toBe(503)
+  expect(await failed.json()).toMatchObject({ error: 'multipart_object_cleanup_pending' })
+  expect(deletes).toBe(1)
+  current = new Date(current.getTime() + 2_000)
+  const trigger = await handler(new Request('http://relay/v1/video-media/object-leases', { method: 'POST', headers: headers('cleanup-verify-trigger-key'), body: JSON.stringify({ ...payload, local_operation_id: 'task_87654321' }) }))
+  expect(trigger.status).toBe(201)
+  expect(deletes).toBe(2)
 })

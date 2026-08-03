@@ -578,6 +578,7 @@ test('正式 ASR 只在完整授权范围内流式上传，并持久化原始 PT
   const payload = new TextEncoder().encode(JSON.stringify({ kind: 'asr', sentences: [{ text: '原始 PTS 转写', begin_time: 100, end_time: 900, words: [{ text: '原始', begin_time: 100, end_time: 400 }] }] }))
   const payloadHash = `sha256:${createHash('sha256').update(payload).digest('hex')}`
   const requests: Array<{ url: string; method: string }> = []
+  let reservationsBeforeAsrCall = 0
   const service = new VideoWorkbenchService({
     root,
     now: () => new Date(at),
@@ -593,11 +594,14 @@ test('正式 ASR 只在完整授权范围内流式上传，并持久化原始 PT
       if (url.hostname === 'result.example.test') return new Response(payload, { status: 200 })
       if (url.pathname.endsWith('/object-leases')) return Response.json({ lease_id: 'lease_00000001', state: 'awaiting_upload', put_url: 'https://oss.example.test/put', required_headers: {}, expires_at: '2026-08-03T01:00:00.000Z' })
       if (url.pathname.endsWith('/complete')) return Response.json({ lease_id: 'lease_00000001', state: 'ready', object_ref: 'object_00000001', expires_at: '2026-08-03T01:00:00.000Z' })
-      if (url.pathname.endsWith('/operations')) return Response.json({
+      if (url.pathname.endsWith('/operations')) {
+        reservationsBeforeAsrCall = (await service.getProject(created.id)).remote_analysis_budgets[0]?.reservations.length ?? 0
+        return Response.json({
         id: 'operation_00000001', state: 'succeeded', account_quota_reservation_id: 'quota_00000001',
         result_object_refs: ['result_00000001'], result_objects: [{ object_ref: 'result_00000001', content_hash: payloadHash, byte_size: payload.byteLength, content_type: 'application/json', get_url: 'https://result.example.test/asr.json', expires_at: '2026-08-03T01:00:00.000Z' }],
         provider_receipt: { id: 'receipt_00000001', capability: 'speech_transcription', model_snapshot: 'fun-asr', region: 'cn-beijing', request_schema_version: 1, prompt_version: 'v1', input_basis_hash: hash('d'), usage: { requests: 1, total_tokens: 0, input_bytes: 1, visual_frames: 0, proxy_seconds: 0, asr_seconds: 0.8, estimated_amount_micros: 0 }, cache_hit: false, created_at: at }, created_at: at, updated_at: at,
-      })
+        })
+      }
       if (url.pathname.endsWith('/ack')) return new Response(null, { status: 204 })
       throw new Error(`unexpected relay request ${method} ${url}`)
     },
@@ -615,8 +619,11 @@ test('正式 ASR 只在完整授权范围内流式上传，并持久化原始 PT
   const evidence = await invoke.remoteTranscriptEvidence(saved, saved.sources[0]!, sourceFact, analysisDirectory, 'task_00000001', new AbortController().signal)
   expect(evidence).toMatchObject([{ in_ms: 100, out_ms: 900, kind: 'transcript' }])
   expect(requests.map(item => `${item.method} ${item.url}`)).toEqual(expect.arrayContaining(['POST /v1/video-media/object-leases', 'PUT /put', 'POST /v1/video-media/operations', 'POST /v1/video-media/operations/operation_00000001/ack']))
+  expect(reservationsBeforeAsrCall).toBe(1)
   expect(await service.repository.listFacts('transcript', created.id)).toMatchObject([{ source_offset: { ticks: '-4500' }, segments: [{ text: '原始 PTS 转写', start: { ticks: '4500' } }] }])
-  expect((await service.getProject(created.id)).remote_analysis_budgets[0]?.settlements).toMatchObject([{ operation_id: 'operation_00000001', capability: 'speech_transcription', asr_seconds: 0.8 }])
+  const settledBudget = (await service.getProject(created.id)).remote_analysis_budgets[0]
+  expect(settledBudget?.settlements).toMatchObject([{ operation_id: `task_00000001_asr_${sourceFact.id}`, capability: 'speech_transcription', asr_seconds: 0.8 }])
+  expect(settledBudget?.reservations).toHaveLength(0)
   service.repository.close()
 })
 
@@ -624,6 +631,7 @@ test('正式混合检索在零词法命中时仍索引完整授权 Transcript �
   const root = await testRoot('relay-hybrid')
   const resultPayloads = new Map<string, Uint8Array>()
   let operation = 0
+  const reservationsBeforeSearchCalls: number[] = []
   const service = new VideoWorkbenchService({
     root,
     now: () => new Date(at),
@@ -633,6 +641,7 @@ test('正式混合检索在零词法命中时仍索引完整授权 Transcript �
       if (url.hostname === 'result.example.test') return new Response(resultPayloads.get(url.pathname)!, { status: 200 })
       if (url.pathname.endsWith('/ack')) return new Response(null, { status: 204 })
       if (!url.pathname.endsWith('/operations')) throw new Error(`unexpected relay request ${url}`)
+      reservationsBeforeSearchCalls.push((await service.getProject(created.id)).remote_analysis_budgets[0]?.reservations.length ?? 0)
       const request = JSON.parse(String(init?.body)) as { input: { embedding_role: 'document' | 'query'; items: Array<{ id: string; text: string }> } }
       const vectors = request.input.embedding_role === 'query'
         ? [{ id: request.input.items[0]!.id, vector: Array.from({ length: 768 }, (_, index) => index === 0 ? 1 : 0) }]
@@ -661,6 +670,7 @@ test('正式混合检索在零词法命中时仍索引完整授权 Transcript �
   })
   const page = await service.searchMediaFacts(created.id, '完全不同的查询词', { limit: 10 })
   expect(page.items[0]).toMatchObject({ id: 'transcript_00000002', text: '反弹角度的控制技巧' })
+  expect(reservationsBeforeSearchCalls).toEqual([1, 1])
   expect((await service.getProject(created.id)).remote_analysis_budgets[0]?.settlements).toHaveLength(2)
   service.repository.close()
 })

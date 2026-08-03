@@ -20,6 +20,16 @@ test('DashScope video provider pins Qwen planning and 768-dimensional embedding 
   expect(calls[1]?.body).toMatchObject({ model: 'qwen3.6-flash', temperature: 0 })
 })
 
+test('DashScope receipt uses upstream usage and immutable uploaded-object bytes', async () => {
+  const provider = new DashScopeVideoProvider({ apiKey: 'key', now: () => new Date('2026-08-03T00:00:00.000Z'), fetchImpl: async () => Response.json({
+    choices: [{ message: { content: JSON.stringify({ summary: '球杆击球', confidence: 0.9, warnings: [] }) } }],
+    usage: { input_tokens: 12, output_tokens: 8, total_fee: 0.000123, proxy_seconds: 1.25 },
+  }) })
+  const result = await provider.execute({ local_operation_id: 'task_12345678', consent_revision_id: 'consent_12345678', consent_scope_hash: hash, local_budget_reservation_id: 'budget_12345678', request_hash: hash, capability: 'visual_evidence', application_role: 'shot_evidence', input: { object_refs: ['object_12345678'], evidence_window_id: 'window_12345678', facts_basis_hash: hash, language: 'zh', output_schema_version: 1 } }, identity, { object_urls: ['https://oss.example.test/frame.jpg'], object_byte_sizes: [4096] })
+  expect(result.receipt.usage).toMatchObject({ requests: 1, total_tokens: 20, input_bytes: expect.any(Number), visual_frames: 1, proxy_seconds: 1.25, estimated_amount_micros: 123 })
+  expect(result.receipt.upstream_receipt_hash).toMatch(/^sha256:/)
+})
+
 test('DashScope Fun-ASR long task submits once and polls a persisted task id', async () => {
   const calls: string[] = []
   const provider = new DashScopeVideoProvider({ apiKey: 'key', now: () => new Date('2026-08-03T00:00:00.000Z'), fetchImpl: async (url, init) => {
@@ -31,8 +41,9 @@ test('DashScope Fun-ASR long task submits once and polls a persisted task id', a
   const input = { local_operation_id: 'task_12345678', consent_revision_id: 'consent_12345678', consent_scope_hash: hash, local_budget_reservation_id: 'budget_12345678', request_hash: hash, capability: 'speech_transcription' as const, application_role: 'asr' as const, input: { mode: 'long_async' as const, audio_object_ref: 'object_12345678', source_offset: { ticks: '0', tick_rate: { num: 1000, den: 1 } }, hotwords: ['开球'], speaker_diarization: true, sentence_timestamps: true as const, word_timestamps: true as const } }
   const submitted = await provider.execute(input, identity, { object_urls: ['https://oss.example.test/audio'] })
   expect(submitted).toMatchObject({ state: 'submitted', provider_task_id: 'task-remote-1' })
-  const complete = await provider.poll(input, submitted.provider_task_id!, identity)
+  const complete = await provider.poll(input, submitted.provider_task_id!, identity, { object_urls: [], object_byte_sizes: [8192] })
   expect(complete).toMatchObject({ state: 'succeeded', result: { kind: 'asr', text: '长文件转写' } })
   expect(complete.receipt.usage.asr_seconds).toBe(1)
+  expect(complete.receipt.usage.input_bytes).toBeGreaterThanOrEqual(8192)
   expect(calls).toEqual(['POST https://dashscope.aliyuncs.com/api/v1/services/audio/asr/transcription', 'GET https://dashscope.aliyuncs.com/api/v1/tasks/task-remote-1', 'GET https://dashscope-result-bj.oss-cn-beijing.aliyuncs.com/transcript.json'])
 })

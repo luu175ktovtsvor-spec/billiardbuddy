@@ -18,8 +18,8 @@ type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Respo
 type Identity = { principal_id: string; installation_id: string; session_id: string; expires_at: number; owner: string }
 export type MediaObjectStore = RelayObjectStore
 export type VideoMediaProvider = {
-  execute(input: CreateVideoRelayOperationRequest, identity: Identity, media?: { object_urls: string[] }): Promise<{ state: 'succeeded' | 'submitted' | 'running'; provider_task_id?: string; result_object_refs?: string[]; receipt: ProviderExecutionReceipt; result?: unknown }>
-  poll?(input: CreateVideoRelayOperationRequest, providerTaskId: string, identity: Identity): Promise<{ state: 'succeeded' | 'submitted' | 'running' | 'failed' | 'expired'; provider_task_id?: string; receipt: ProviderExecutionReceipt; result?: unknown; safe_error_code?: string }>
+  execute(input: CreateVideoRelayOperationRequest, identity: Identity, media?: { object_urls: string[]; object_byte_sizes: number[] }): Promise<{ state: 'succeeded' | 'submitted' | 'running'; provider_task_id?: string; result_object_refs?: string[]; receipt: ProviderExecutionReceipt; result?: unknown }>
+  poll?(input: CreateVideoRelayOperationRequest, providerTaskId: string, identity: Identity, media?: { object_urls: string[]; object_byte_sizes: number[] }): Promise<{ state: 'succeeded' | 'submitted' | 'running' | 'failed' | 'expired'; provider_task_id?: string; receipt: ProviderExecutionReceipt; result?: unknown; safe_error_code?: string }>
   cancel?(providerTaskId: string): Promise<void>
 }
 
@@ -32,6 +32,24 @@ const opaque = (prefix: string) => `${prefix}_${randomUUID().replaceAll('-', '')
 class RelayError extends Error { constructor(readonly status: number, readonly code: string) { super(code) } }
 function json(data: unknown, status = 200, id = requestId()): Response { return Response.json(data, { status, headers: { 'X-Request-Id': id, 'Cache-Control': 'no-store' } }) }
 function digest(value: string): string { return `sha256:${createHash('sha256').update(value).digest('hex')}` }
+function reconcileProviderReceipt(previous: ProviderExecutionReceipt | null, next: ProviderExecutionReceipt): ProviderExecutionReceipt {
+  if (!previous) return next
+  // Polling a long ASR task is not a second paid inference. Keep the one
+  // operation receipt, carrying forward its actual upload dimensions while
+  // accepting final provider-measured duration/cost fields.
+  return {
+    ...next,
+    usage: {
+      requests: Math.max(previous.usage.requests, next.usage.requests),
+      total_tokens: Math.max(previous.usage.total_tokens, next.usage.total_tokens),
+      input_bytes: Math.max(previous.usage.input_bytes, next.usage.input_bytes),
+      visual_frames: Math.max(previous.usage.visual_frames, next.usage.visual_frames),
+      proxy_seconds: Math.max(previous.usage.proxy_seconds, next.usage.proxy_seconds),
+      asr_seconds: Math.max(previous.usage.asr_seconds, next.usage.asr_seconds),
+      estimated_amount_micros: Math.max(previous.usage.estimated_amount_micros, next.usage.estimated_amount_micros),
+    },
+  }
+}
 function authorization(request: Request): string {
   const value = request.headers.get('authorization') ?? ''
   if (!value.toLowerCase().startsWith('bearer ') || !value.slice(7).trim()) throw new RelayError(401, 'missing_installation_access_token')
@@ -145,17 +163,30 @@ export function createVideoMediaRelayFetch(deps: RelayDeps = {}) {
       store.db.query("UPDATE video_media_leases_v1 SET multipart_phase='aborting' WHERE id=?").run(row.id)
       throw new RelayError(503, 'multipart_abort_failed')
     }
-    store.db.query("UPDATE video_media_leases_v1 SET state='deleted',multipart_phase='aborted' WHERE id=?").run(row.id)
+    // CompleteMultipartUpload can have committed an object even though the
+    // subsequent HEAD validation failed. Abort only closes the multipart
+    // session; delete the object itself through the durable retry queue.
+    store.db.query("UPDATE video_media_leases_v1 SET multipart_phase='cleanup_pending' WHERE id=?").run(row.id)
+    queueLeaseCleanup(row.id as string)
+    await retryObjectCleanup()
+    if (leaseRow(row.id as string).state !== 'deleted') throw new RelayError(503, 'multipart_object_cleanup_pending')
     if (cause instanceof RelayError) throw cause
     throw new RelayError(503, 'multipart_completion_failed')
   }
   async function recoverMultipart(row: Row): Promise<Row> {
     const phase = row.multipart_phase as string | null
-    if (!phase || !['initializing', 'completing', 'aborting'].includes(phase)) return row
+    if (!phase || !['initializing', 'completing', 'aborting', 'cleanup_pending'].includes(phase)) return row
     let uploadId = row.multipart_upload_id as string | null
     if (phase === 'aborting') {
       if (!uploadId) throw new RelayError(503, 'multipart_abort_missing_upload')
       return await abortFailedMultipart(row, uploadId, new RelayError(503, 'multipart_aborted'))
+    }
+    if (phase === 'cleanup_pending') {
+      queueLeaseCleanup(row.id as string)
+      await retryObjectCleanup()
+      const cleaned = leaseRow(row.id as string)
+      if (cleaned.state !== 'deleted') throw new RelayError(503, 'multipart_object_cleanup_pending')
+      return cleaned
     }
     if (phase === 'initializing') {
       if (!uploadId) {
@@ -238,6 +269,7 @@ export function createVideoMediaRelayFetch(deps: RelayDeps = {}) {
     store.db.query(`INSERT OR IGNORE INTO video_media_object_cleanup_v1(id,object_kind,lease_id,object_ref,attempts,next_attempt_at,completed_at,last_error)
       VALUES(?,?,?,?,0,?,NULL,NULL)`).run(opaque('cleanup'), kind, leaseId, objectRef, iso(now))
   }
+  function queueLeaseCleanup(leaseId: string): void { queueCleanup('input', { leaseId }) }
   function queueInputCleanup(input: CreateVideoRelayOperationRequest, owner: string): void {
     const refs = input.capability === 'visual_evidence' || input.capability === 'media_reasoning'
       ? input.input.object_refs
@@ -258,7 +290,7 @@ export function createVideoMediaRelayFetch(deps: RelayDeps = {}) {
       try {
         if (row.object_kind === 'input') {
           await objectStore.delete(row.lease_id as string)
-          store.db.query("UPDATE video_media_leases_v1 SET state='deleted' WHERE id=? AND state IN ('ready','bound')").run(row.lease_id)
+          store.db.query("UPDATE video_media_leases_v1 SET state='deleted',multipart_phase=CASE WHEN multipart_phase='cleanup_pending' THEN 'aborted' ELSE multipart_phase END WHERE id=? AND state <> 'deleted'").run(row.lease_id)
         } else {
           await objectStore.deleteResult(row.object_ref as string)
         }
@@ -276,11 +308,16 @@ export function createVideoMediaRelayFetch(deps: RelayDeps = {}) {
     if (!['submitted', 'running'].includes(row.state as string) || !row.provider_task_id || !provider.poll) return
     const input = createVideoRelayOperationRequestSchema.parse(JSON.parse(row.request_json as string))
     try {
-      const polled = await provider.poll(input, row.provider_task_id as string, principal)
+      const objectRefs = input.capability === 'speech_transcription' ? [input.input.audio_object_ref] : input.capability === 'visual_evidence' || input.capability === 'media_reasoning' ? input.input.object_refs : []
+      const objectByteSizes = objectRefs.map(ref => store.db.query("SELECT byte_size FROM video_media_leases_v1 WHERE owner=? AND object_ref=?").get(principal.owner, ref) as { byte_size: number } | null)
+      if (objectByteSizes.some(item => !item)) throw new RelayError(503, 'object_read_lease_unavailable')
+      const polled = await provider.poll(input, row.provider_task_id as string, principal, { object_urls: [], object_byte_sizes: objectByteSizes.map(item => item!.byte_size) })
       const refs = polled.result === undefined ? [] : await persistResult(row.id as string, polled.result)
+      const priorReceipt = row.provider_receipt ? JSON.parse(row.provider_receipt as string) as ProviderExecutionReceipt : null
+      const receipt = reconcileProviderReceipt(priorReceipt, polled.receipt)
       store.transaction(() => {
         store.db.query('UPDATE video_media_operations_v1 SET state=?,provider_task_id=?,result_object_refs=?,provider_receipt=?,safe_error_code=?,updated_at=? WHERE id=?')
-          .run(polled.state, polled.provider_task_id ?? row.provider_task_id, refs.length ? JSON.stringify(refs) : null, JSON.stringify(polled.receipt), polled.safe_error_code ?? null, iso(now), row.id)
+          .run(polled.state, polled.provider_task_id ?? row.provider_task_id, refs.length ? JSON.stringify(refs) : null, JSON.stringify(receipt), polled.safe_error_code ?? null, iso(now), row.id)
         if (polled.state === 'succeeded') store.db.query("UPDATE video_media_quota_v1 SET state='settled' WHERE reservation_id=?").run(row.account_quota_reservation_id)
         if (polled.state === 'failed' || polled.state === 'expired') store.db.query("UPDATE video_media_quota_v1 SET state='released' WHERE reservation_id=?").run(row.account_quota_reservation_id)
       })
@@ -393,16 +430,16 @@ export function createVideoMediaRelayFetch(deps: RelayDeps = {}) {
           store.db.query("UPDATE video_media_leases_v1 SET state='bound',expires_at=? WHERE owner=? AND object_ref=? AND state='ready'")
             .run(providerInputExpiry, principal.owner, objectRefs[0])
         }
-        const objectUrls = await Promise.all(objectRefs.map(async ref => {
-          const lease = store.db.query("SELECT id,expires_at FROM video_media_leases_v1 WHERE owner=? AND object_ref=? AND state IN ('ready','bound')").get(principal.owner, ref) as { id: string; expires_at: string } | null
+        const objectMedia = await Promise.all(objectRefs.map(async ref => {
+          const lease = store.db.query("SELECT id,expires_at,byte_size FROM video_media_leases_v1 WHERE owner=? AND object_ref=? AND state IN ('ready','bound')").get(principal.owner, ref) as { id: string; expires_at: string; byte_size: number } | null
           if (!lease) throw new RelayError(503, 'object_read_lease_unavailable')
-          return await objectStore.createReadUrl({ leaseId: lease.id, expiresAt: lease.expires_at })
+          return { url: await objectStore.createReadUrl({ leaseId: lease.id, expiresAt: lease.expires_at }), byte_size: lease.byte_size }
         }))
         try {
           // The accepted operation and its request hash exist before the
           // upstream call.  A transport failure is therefore never retried as
           // a fresh paid submission; it is reconciled as outcome_unknown.
-          const executed = await provider.execute(raw, principal, { object_urls: objectUrls })
+          const executed = await provider.execute(raw, principal, { object_urls: objectMedia.map(item => item.url), object_byte_sizes: objectMedia.map(item => item.byte_size) })
           const resultRefs = executed.result === undefined ? (executed.result_object_refs ?? []) : await persistResult(operationId, executed.result)
           store.transaction(() => {
             store.db.query('UPDATE video_media_operations_v1 SET state=?,provider_task_id=?,result_object_refs=?,provider_receipt=?,updated_at=? WHERE id=?').run(executed.state, executed.provider_task_id ?? null, resultRefs.length ? JSON.stringify(resultRefs) : null, JSON.stringify(executed.receipt), iso(now), operationId)
