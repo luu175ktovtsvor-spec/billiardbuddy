@@ -18,6 +18,11 @@ import { DeletionStore, type StoredDeletion } from '../media/kernel/storage/dele
 import { PayloadCommitProtocol, type PayloadCommitIntent } from '../media/kernel/storage/payloadCommitProtocol.js'
 import { SqliteUnitOfWork } from '../media/kernel/storage/sqliteUnitOfWork.js'
 import { WriterFence } from '../media/kernel/storage/writerFence.js'
+import {
+  SqliteMediaFactsRepository,
+  type VideoFactsPage,
+} from '../video/infrastructure/sqliteMediaFactsRepository.js'
+import type { VideoFact, VideoFactKind } from '../video/domain/mediaFacts/model.js'
 
 const VIDEO_ID = /^[a-z0-9][a-z0-9_-]{7,79}$/
 const INITIAL_WRITER_FENCE = `fence_${'0'.repeat(32)}`
@@ -148,6 +153,7 @@ export class VideoWorkbenchRepository {
   private readonly recovery: RecoverySupervisor
   private readonly readyPromise: Promise<void>
   private readonly eventWaiters = new Map<string, Set<() => void>>()
+  readonly facts: SqliteMediaFactsRepository
 
   constructor(options: { root?: string; now?: () => Date } = {}) {
     this.root = options.root
@@ -165,6 +171,7 @@ export class VideoWorkbenchRepository {
     this.unitOfWork = new SqliteUnitOfWork(this.root)
     this.payloads = new PayloadCommitProtocol(this.root, this.unitOfWork, this.now)
     this.fences = new WriterFence(this.locksDir)
+    this.facts = new SqliteMediaFactsRepository(this.unitOfWork, this.payloads, this.fences, this.now)
     this.events = new EventJournal(this.unitOfWork)
     this.deletions = new DeletionStore(this.unitOfWork, value => mediaDeletionReceiptSchema.parse(value))
     this.recovery = new RecoverySupervisor([
@@ -451,6 +458,46 @@ export class VideoWorkbenchRepository {
     const rows = this.unitOfWork.database.query(`SELECT * FROM video_operations WHERE deleted=0${projectId ? ' AND project_id=?' : ''} ORDER BY updated_at DESC`)
       .all(...(projectId ? [projectId] : [])) as OperationRow[]
     return await Promise.all(rows.map(async row => await this.loadOperation(row)))
+  }
+
+  async saveFact(value: VideoFact): Promise<VideoFact> {
+    await this.ready()
+    return await this.facts.save(value)
+  }
+
+  async getFact(kind: VideoFactKind, id: string): Promise<VideoFact> {
+    await this.ready()
+    return await this.facts.get(kind, id)
+  }
+
+  async listFacts(kind: VideoFactKind, projectId: string, sourceId?: string): Promise<VideoFact[]> {
+    await this.ready()
+    return await this.facts.list(kind, projectId, sourceId)
+  }
+
+  async pageFacts(kind: VideoFactKind, projectId: string, options?: { sourceId?: string; cursor?: string; limit?: number }): Promise<VideoFactsPage> {
+    await this.ready()
+    return await this.facts.page(kind, projectId, options)
+  }
+
+  async searchFacts(projectId: string, query: string, limit?: number): Promise<Array<{ id: string; source_id: string | null; kind: VideoFactKind; text: string }>> {
+    await this.ready()
+    return await this.facts.search(projectId, query, limit)
+  }
+
+  async activeTranscriptRevision(transcriptId: string): Promise<VideoFact | null> {
+    await this.ready()
+    return await this.facts.activeTranscriptRevision(transcriptId)
+  }
+
+  async selectTranscriptRevision(projectId: string, transcriptId: string, revisionId: string): Promise<VideoFact> {
+    await this.ready()
+    return await this.facts.selectTranscriptRevision(projectId, transcriptId, revisionId)
+  }
+
+  async reclaimLeastRecentlyUsedDerivatives(projectId: string, maxEvictions: number): Promise<string[]> {
+    await this.ready()
+    return await this.facts.reclaimLeastRecentlyUsedDerivatives(projectId, maxEvictions)
   }
 
   async saveOperation(operation: VideoOperation): Promise<VideoOperation> {
@@ -828,6 +875,8 @@ export class VideoWorkbenchRepository {
           this.events.commit(intent.id)
           this.payloads.markCommitted(intent.id)
         })
+      } else if (this.facts.owns(intent)) {
+        await this.facts.commitIntent(intent.id)
       } else {
         this.unitOfWork.transaction(() => this.payloads.markAbandoned(intent.id))
       }
@@ -838,6 +887,7 @@ export class VideoWorkbenchRepository {
     this.unitOfWork.transaction(() => {
       this.unitOfWork.database.query("UPDATE video_project_payloads SET state='abandoned' WHERE intent_id=? AND state='prepared'").run(intent.id)
       this.unitOfWork.database.query("UPDATE video_operation_payloads SET state='abandoned' WHERE intent_id=? AND state='prepared'").run(intent.id)
+      this.facts.abandonIntent(intent)
       this.events.abandon(intent.id)
       this.unitOfWork.database.query('UPDATE media_payload_blobs SET ref_count=MAX(ref_count-1,0) WHERE locator=?')
         .run(intent.final_locator)

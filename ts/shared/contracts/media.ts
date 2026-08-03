@@ -487,7 +487,7 @@ export const mediaTaskSchema = z.object({
   operation_id: mediaIdSchema.optional(),
   owner: mediaOwnerSchema.optional(),
   attempt: z.number().int().positive().default(1),
-  kind: z.enum(['image.generate', 'video.probe', 'video.analyze', 'video.plan', 'video.preview', 'video.render']),
+  kind: z.enum(['image.generate', 'video.probe', 'video.fingerprint', 'video.analyze', 'video.plan', 'video.preview', 'video.render']),
   status: mediaTaskStatusSchema,
   /** Monotonic sequence for user-visible changes to this persisted job. */
   status_sequence: z.number().int().nonnegative().default(0),

@@ -89,6 +89,8 @@ export function publicVideoTask(operation: VideoOperation): PublicMediaTask {
   const { owner: _owner, attempt: _attempt, result, error: rawError, error_code: errorCode, ...safeOperation } = operation
   const fallback = operation.kind === 'video.probe'
     ? 'MEDIA_VIDEO_SOURCE_UNREADABLE'
+    : operation.kind === 'video.fingerprint'
+      ? 'MEDIA_VIDEO_SOURCE_UNREADABLE'
     : operation.kind === 'video.analyze' || operation.kind === 'video.plan'
       ? 'MEDIA_VIDEO_ANALYSIS_UNAVAILABLE'
       : operation.kind === 'video.preview'
@@ -97,6 +99,8 @@ export function publicVideoTask(operation: VideoOperation): PublicMediaTask {
   const failure = rawError ? mediaSafeError(errorCode ?? fallback) : null
   const allowedKeys = operation.kind === 'video.probe'
     ? ['source_id']
+    : operation.kind === 'video.fingerprint'
+      ? ['source_id']
     : operation.kind === 'video.analyze'
       ? ['evidence_revision', 'evidence_count', 'next_task_id']
       : operation.kind === 'video.plan'
