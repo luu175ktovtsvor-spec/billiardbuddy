@@ -27,6 +27,10 @@ fn main() {
         if let Some(response) = handle_message(&line) {
             // A broken stdout pipe means the Core has stopped this plugin. Do
             // not keep a helper process alive after its parent disconnects.
+            // stdio MCP transports one complete JSON-RPC message per line.
+            // Tool manifests are formatted as multiline Rust literals for
+            // readability, so compact structural newlines before writing.
+            let response = response.replace('\n', "").replace('\r', "");
             if writeln!(stdout, "{response}").is_err() || stdout.flush().is_err() {
                 break;
             }
@@ -44,9 +48,8 @@ fn handle_message(message: &str) -> Option<String> {
     let response = match method.as_str() {
         "initialize" => success_response(
             id.as_deref().unwrap_or("null"),
-            concat!(
-                r#"{"protocolVersion":"2025-06-18","capabilities":{"tools":{"listChanged":false}},"#,
-                r#""serverInfo":{"name":"billiardbuddy-computer-use","version":"0.1.0"}}"#,
+            &format!(
+                r#"{{"protocolVersion":"2025-06-18","capabilities":{{"tools":{{"listChanged":false}}}},"serverInfo":{{"name":"{SERVER_NAME}","version":"{SERVER_VERSION}"}}}}"#,
             ),
         ),
         "ping" => success_response(id.as_deref().unwrap_or("null"), "{}"),
