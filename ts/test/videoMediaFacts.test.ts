@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from 'bun:test'
 import { createHash } from 'node:crypto'
-import { mkdtemp, readdir, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { VideoWorkbenchRepository } from '../src/server/services/videoWorkbenchRepository.js'
@@ -566,5 +566,56 @@ test('未确认远程分析时，新视频只抽取本地 Evidence Window，不�
   expect(evidence).toHaveLength(0)
   const refreshedWindow = await service.repository.getFact('evidence_window', windows[0]!.id) as { evidence_ids: string[] }
   expect(refreshedWindow.evidence_ids).toHaveLength(0)
+  service.repository.close()
+})
+
+test('正式 ASR 只在完整授权范围内流式上传，并持久化原始 PTS Transcript 与预算回执', async () => {
+  const root = await testRoot('relay-asr')
+  const sourcePath = join(root, 'source.mp4')
+  const analysisDirectory = join(root, 'analysis')
+  await writeFile(sourcePath, 'source bytes')
+  await mkdir(analysisDirectory, { recursive: true })
+  const payload = new TextEncoder().encode(JSON.stringify({ kind: 'asr', sentences: [{ text: '原始 PTS 转写', begin_time: 100, end_time: 900, words: [{ text: '原始', begin_time: 100, end_time: 400 }] }] }))
+  const payloadHash = `sha256:${createHash('sha256').update(payload).digest('hex')}`
+  const requests: Array<{ url: string; method: string }> = []
+  const service = new VideoWorkbenchService({
+    root,
+    now: () => new Date(at),
+    env: { BB_VIDEO_MEDIA_RELAY_URL: 'https://relay.example.test', BB_GATEWAY_TOKEN: 'relay-test-token-1234' },
+    runProcess: async command => {
+      if (command.includes('-f') && command.includes('wav')) await writeFile(command.at(-1)!, new Uint8Array(128))
+      return { exitCode: 0, stdout: '', stderr: '' }
+    },
+    fetchImpl: async (input, init) => {
+      const url = new URL(String(input)); const method = init?.method ?? 'GET'
+      requests.push({ url: url.pathname, method })
+      if (url.hostname === 'oss.example.test') return new Response(null, { status: 200, headers: { etag: 'etag-asr' } })
+      if (url.hostname === 'result.example.test') return new Response(payload, { status: 200 })
+      if (url.pathname.endsWith('/object-leases')) return Response.json({ lease_id: 'lease_00000001', state: 'awaiting_upload', put_url: 'https://oss.example.test/put', required_headers: {}, expires_at: '2026-08-03T01:00:00.000Z' })
+      if (url.pathname.endsWith('/complete')) return Response.json({ lease_id: 'lease_00000001', state: 'ready', object_ref: 'object_00000001', expires_at: '2026-08-03T01:00:00.000Z' })
+      if (url.pathname.endsWith('/operations')) return Response.json({
+        id: 'operation_00000001', state: 'succeeded', account_quota_reservation_id: 'quota_00000001',
+        result_object_refs: ['result_00000001'], result_objects: [{ object_ref: 'result_00000001', content_hash: payloadHash, byte_size: payload.byteLength, content_type: 'application/json', get_url: 'https://result.example.test/asr.json', expires_at: '2026-08-03T01:00:00.000Z' }],
+        provider_receipt: { id: 'receipt_00000001', capability: 'speech_transcription', model_snapshot: 'fun-asr', region: 'cn-beijing', request_schema_version: 1, prompt_version: 'v1', input_basis_hash: hash('d'), usage: { requests: 1, total_tokens: 0, input_bytes: 1, visual_frames: 0, proxy_seconds: 0, asr_seconds: 0.8, estimated_amount_micros: 0 }, cache_hit: false, created_at: at }, created_at: at, updated_at: at,
+      })
+      if (url.pathname.endsWith('/ack')) return new Response(null, { status: 204 })
+      throw new Error(`unexpected relay request ${method} ${url}`)
+    },
+  })
+  const created = await service.createProject({ title: 'ASR' })
+  const sourceFact = { ...source(created.id), path: sourcePath }
+  await service.repository.saveFact(sourceFact)
+  const saved = await service.repository.saveProject({
+    ...created,
+    sources: [{ id: sourceFact.id, path: sourcePath, name: 'source.mp4', duration_ms: 30_000, width: 1920, height: 1080, fps: 30, has_audio: true, fingerprint: sourceFact.fingerprint, rotation: 0, video_stream_count: 1, audio_stream_count: 1, missing: false, content_changed: false }],
+    remote_analysis_consents: [{ id: 'consent_00000001', project_id: created.id, revision: 1, state: 'active', provider: 'aliyun_bailian', region: 'cn-beijing', purposes: ['asr'], data_kinds: ['audio_extract'], coverage: [{ source_id: sourceFact.id, ranges: [{ start: sourceFact.primary_video_stream.start_time, duration: sourceFact.primary_video_stream.duration! }] }], acknowledged_estimate_hash: hash('e'), granted_by_actor_id: 'local', granted_at: at }],
+    remote_analysis_budgets: [{ id: 'budget_00000001', estimate_hash: hash('e'), state: 'reserved', requests: 1, total_tokens: 100, input_bytes: 10_000, visual_frames: 0, proxy_seconds: 0, asr_seconds: 30, estimated_amount_micros: 1_000, settlements: [], created_at: at, updated_at: at }],
+  })
+  const invoke = service as unknown as { remoteTranscriptEvidence: (project: VideoStudioProject, source: VideoStudioProject['sources'][number], fact: VideoFactSource, directory: string, operationId: string, signal: AbortSignal) => Promise<Array<{ in_ms: number; out_ms: number }> | null> }
+  const evidence = await invoke.remoteTranscriptEvidence(saved, saved.sources[0]!, sourceFact, analysisDirectory, 'task_00000001', new AbortController().signal)
+  expect(evidence).toMatchObject([{ in_ms: 100, out_ms: 900, kind: 'transcript' }])
+  expect(requests.map(item => `${item.method} ${item.url}`)).toEqual(expect.arrayContaining(['POST /v1/video-media/object-leases', 'PUT /put', 'POST /v1/video-media/operations', 'POST /v1/video-media/operations/operation_00000001/ack']))
+  expect(await service.repository.listFacts('transcript', created.id)).toMatchObject([{ source_offset: { ticks: '-4500' }, segments: [{ text: '原始 PTS 转写', start: { ticks: '4500' } }] }])
+  expect((await service.getProject(created.id)).remote_analysis_budgets[0]?.settlements).toMatchObject([{ operation_id: 'operation_00000001', capability: 'speech_transcription', asr_seconds: 0.8 }])
   service.repository.close()
 })

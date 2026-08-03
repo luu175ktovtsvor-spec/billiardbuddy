@@ -1361,7 +1361,7 @@ export class VideoWorkbenchService {
       throw new VideoWorkbenchServiceError('本地音轨提取失败，拒绝提交不完整 ASR 输入', 502, 'VIDEO_ANALYSIS_INVALID')
     }
     const contentHash = await videoFingerprint(audioPath)
-    const localOperationId = `${operationId}-asr-${source.id}`
+    const localOperationId = `${operationId}_asr_${source.id}`
     const scopeHash = factBasisHash({ revision: consent.revision, coverage: consent.coverage, purposes: consent.purposes, data_kinds: consent.data_kinds })
     const objectRef = await relay.uploadObjectStream({
       local_operation_id: localOperationId, purpose: 'audio_for_asr', content_hash: contentHash, byte_size: audio.size, content_type: 'audio/wav',
@@ -1600,7 +1600,7 @@ export class VideoWorkbenchService {
       if (!match) throw new VideoWorkbenchServiceError('本地关键帧格式无效', 502, 'VIDEO_ANALYSIS_INVALID')
       const bytes = Buffer.from(match[2]!, 'base64')
       if (!bytes.length || bytes.length > 10 * 1024 * 1024) throw new VideoWorkbenchServiceError('远程关键帧大小无效', 413, 'VIDEO_ANALYSIS_INVALID')
-      const frameOperationId = `${operationId}-frame-${index}`
+      const frameOperationId = `${operationId}_frame_${index}`
       const objectRef = await relay.uploadObject({
         local_operation_id: frameOperationId,
         purpose: 'visual_frames', content_hash: `sha256:${createHash('sha256').update(bytes).digest('hex')}`, byte_size: bytes.byteLength, content_type: match[1]!,
