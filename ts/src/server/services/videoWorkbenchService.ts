@@ -245,9 +245,43 @@ export class VideoWorkbenchService {
     return baseUrl && accessToken ? new VideoMediaRelayClient({ baseUrl, accessToken, fetchImpl: this.fetchImpl }) : null
   }
 
-  /** A reservation is not a single mutable total: every paid Relay receipt is
-   * recorded exactly once, so visual, ASR, planning and search calls cannot
-   * overwrite one another's usage or silently reopen a failed budget. */
+  /** A budget is admitted per local Operation before the Relay is called.
+   * Reservations and receipts are two states of the same allocation: adding a
+   * receipt must never make a previously admitted operation spend twice. */
+  private async reserveRemoteBudget(projectId: string, budgetId: string, operationId: string, capability: 'visual_evidence' | 'media_reasoning' | 'speech_transcription' | 'semantic_embedding', usage: {
+    requests: number; total_tokens: number; input_bytes: number; visual_frames: number; proxy_seconds: number; asr_seconds: number; estimated_amount_micros: number
+  }): Promise<void> {
+    await this.mutateProject(projectId, async () => {
+      const project = await this.requireVideoProject(projectId)
+      const budget = project.remote_analysis_budgets.find(item => item.id === budgetId)
+      if (!budget || budget.state !== 'reserved') throw new VideoWorkbenchServiceError('远程预算 reservation 不可使用', 409, 'VIDEO_REMOTE_ESTIMATE_REQUIRED')
+      const settled = budget.settlements.find(item => item.operation_id === operationId)
+      const existing = budget.reservations.find(item => item.operation_id === operationId)
+      if (settled) return
+      if (existing) {
+        if (existing.capability !== capability || JSON.stringify({ ...existing, reserved_at: undefined }) !== JSON.stringify({ operation_id: operationId, capability, ...usage, reserved_at: undefined })) throw new VideoWorkbenchServiceError('远程预算操作预留不一致', 409, 'VIDEO_REMOTE_OPERATION_UNAVAILABLE')
+        return
+      }
+      const next = { operation_id: operationId, capability, ...usage, reserved_at: this.iso() }
+      const totals = [...budget.settlements, ...budget.reservations, next].reduce((value, item) => ({
+        requests: value.requests + item.requests,
+        total_tokens: value.total_tokens + item.total_tokens,
+        input_bytes: value.input_bytes + item.input_bytes,
+        visual_frames: value.visual_frames + item.visual_frames,
+        proxy_seconds: value.proxy_seconds + item.proxy_seconds,
+        asr_seconds: value.asr_seconds + item.asr_seconds,
+        estimated_amount_micros: value.estimated_amount_micros + item.estimated_amount_micros,
+      }), { requests: 0, total_tokens: 0, input_bytes: 0, visual_frames: 0, proxy_seconds: 0, asr_seconds: 0, estimated_amount_micros: 0 })
+      if (totals.requests > budget.requests || totals.total_tokens > budget.total_tokens || totals.input_bytes > budget.input_bytes || totals.visual_frames > budget.visual_frames || totals.proxy_seconds > budget.proxy_seconds || totals.asr_seconds > budget.asr_seconds || totals.estimated_amount_micros > budget.estimated_amount_micros) {
+        throw new VideoWorkbenchServiceError('远程预算已耗尽，拒绝启动未预留操作', 429, 'VIDEO_REMOTE_OPERATION_UNAVAILABLE')
+      }
+      await this.repository.saveProject(videoStudioProjectSchema.parse({
+        ...project,
+        remote_analysis_budgets: project.remote_analysis_budgets.map(item => item.id === budgetId ? { ...item, reservations: [...item.reservations, next], updated_at: this.iso() } : item),
+      }))
+    })
+  }
+
   private async settleRemoteBudget(projectId: string, budgetId: string, operationId: string, receipt: {
     id: string
     capability: 'visual_evidence' | 'media_reasoning' | 'speech_transcription' | 'semantic_embedding'
@@ -262,6 +296,8 @@ export class VideoWorkbenchService {
         if (existing.receipt_id !== receipt.id) throw new VideoWorkbenchServiceError('远程预算操作回执不一致', 409, 'VIDEO_REMOTE_OPERATION_UNAVAILABLE')
         return
       }
+      const reservation = budget.reservations.find(item => item.operation_id === operationId)
+      if (!reservation || reservation.capability !== receipt.capability) throw new VideoWorkbenchServiceError('远程操作缺少调用前预算预留', 409, 'VIDEO_REMOTE_OPERATION_UNAVAILABLE')
       const next = {
         operation_id: operationId,
         receipt_id: receipt.id,
@@ -269,7 +305,7 @@ export class VideoWorkbenchService {
         ...receipt.usage,
         settled_at: this.iso(),
       }
-      const totals = [...budget.settlements, next].reduce((value, item) => ({
+      const totals = [...budget.settlements, ...budget.reservations.filter(item => item.operation_id !== operationId), next].reduce((value, item) => ({
         requests: value.requests + item.requests,
         total_tokens: value.total_tokens + item.total_tokens,
         input_bytes: value.input_bytes + item.input_bytes,
@@ -290,7 +326,7 @@ export class VideoWorkbenchService {
       await this.repository.saveProject(videoStudioProjectSchema.parse({
         ...project,
         remote_analysis_budgets: project.remote_analysis_budgets.map(item => item.id === budgetId
-          ? { ...item, settlements: [...item.settlements, next], updated_at: this.iso() }
+          ? { ...item, reservations: item.reservations.filter(reserved => reserved.operation_id !== operationId), settlements: [...item.settlements, next], updated_at: this.iso() }
           : item),
       }))
     })
@@ -379,9 +415,13 @@ export class VideoWorkbenchService {
       const asrRequests = input.purposes.includes('asr') ? selected.length : 0
       const visualFrames = input.purposes.includes('visual_evidence') ? Math.ceil(seconds / 5) : 0
       const asrSeconds = input.purposes.includes('asr') ? seconds : 0
+      // The local ASR extraction is 16 kHz mono PCM S16LE (two bytes per
+      // sample), not a 16 KB/s compressed estimate. Visual frames are bounded
+      // at 10 MiB before upload, so reserve their declared maximum as well.
+      const inputBytes = Math.ceil(asrSeconds * 32_000) + asrRequests * 44 + visualFrames * 10 * 1024 * 1024
       const estimate = {
         id: id('budget'),
-        estimate_hash: factBasisHash({ project_id: project.id, purposes: [...input.purposes].sort(), source_ids: [...input.source_ids].sort(), seconds, visualFrames, asrSeconds }),
+        estimate_hash: factBasisHash({ project_id: project.id, purposes: [...input.purposes].sort(), source_ids: [...input.source_ids].sort(), seconds, visualFrames, asrSeconds, inputBytes }),
         state: 'estimated' as const,
         requests: visualFrames + asrRequests
           + (input.purposes.includes('planning') ? 1 : 0)
@@ -390,7 +430,7 @@ export class VideoWorkbenchService {
           // document embeddings per operation, plus the query vector.
           + (input.purposes.includes('semantic_search') ? 6 : 0),
         total_tokens: Math.ceil(seconds * 8) + (input.purposes.includes('planning') ? 4_000 : 0),
-        input_bytes: Math.ceil(seconds * 16_000),
+        input_bytes: inputBytes,
         visual_frames: visualFrames,
         proxy_seconds: input.purposes.includes('visual_evidence') ? seconds : 0,
         asr_seconds: asrSeconds,
@@ -806,21 +846,28 @@ export class VideoWorkbenchService {
       for (let offset = 0; offset < documentItems.length; offset += 2_000) {
         const batch = documentItems.slice(offset, offset + 2_000)
         const documentOperationId = `task_${nonce}d${String(offset / 2_000).padStart(2, '0')}`
+        await this.reserveRemoteBudget(projectId, budget.id, documentOperationId, 'semantic_embedding', {
+          requests: 1, total_tokens: batch.reduce((sum, item) => sum + Math.ceil(item.text.length / 4), 0), input_bytes: Buffer.byteLength(JSON.stringify(batch), 'utf8'), visual_frames: 0, proxy_seconds: 0, asr_seconds: 0, estimated_amount_micros: 0,
+        })
         const documents = await relay.createOperation({ local_operation_id: documentOperationId, consent_revision_id: consent.id, consent_scope_hash: scopeHash, local_budget_reservation_id: budget.id, request_hash: factBasisHash({ generation: lexical.generation, documents: batch.map(item => ({ id: item.entry_id, text: item.text })) }), capability: 'semantic_embedding', application_role: 'search_index', input: { embedding_role: 'document', items: batch.map(item => ({ id: item.id, text: item.text })), model: 'text-embedding-v4', dimension: 768, instruction_version: 'video-facts-v1' } })
         if (documents.state !== 'succeeded' || !documents.provider_receipt) throw new VideoWorkbenchServiceError('远程检索索引尚未完成', 503, 'VIDEO_REMOTE_OPERATION_UNAVAILABLE')
         const downloadedDocuments = await relay.downloadResult<{ kind: string; vectors: Array<{ id: string; vector: number[] }> }>(documents)
         if (downloadedDocuments.result.kind !== 'embedding') throw new VideoWorkbenchServiceError('Embedding 结果类型无效', 502, 'VIDEO_ANALYSIS_INVALID')
         const vectorById = new Map(downloadedDocuments.result.vectors.map(item => [item.id, item.vector]))
         await this.repository.saveFactEmbeddings(projectId, batch.map(item => ({ entry_id: item.entry_id, vector: vectorById.get(item.id) ?? [], model_snapshot: documents.provider_receipt!.model_snapshot, instruction_version: 'video-facts-v1', content_hash: `sha256:${createHash('sha256').update(JSON.stringify(vectorById.get(item.id) ?? [])).digest('hex')}` })))
-        await this.settleRemoteBudget(projectId, budget.id, documents.id, documents.provider_receipt)
+        await this.settleRemoteBudget(projectId, budget.id, documentOperationId, documents.provider_receipt)
         await relay.acknowledge(documents.id, { result_hashes: downloadedDocuments.hashes, receipt_id: documents.provider_receipt.id })
       }
-      const queryOperation = await relay.createOperation({ local_operation_id: `task_${nonce}q`, consent_revision_id: consent.id, consent_scope_hash: scopeHash, local_budget_reservation_id: budget.id, request_hash: factBasisHash({ generation: lexical.generation, query }), capability: 'semantic_embedding', application_role: 'search_index', input: { embedding_role: 'query', items: [{ id: `embed_${nonce}`, text: query }], model: 'text-embedding-v4', dimension: 768, instruction_version: 'video-facts-v1' } })
+      const queryLocalOperationId = `task_${nonce}q`
+      await this.reserveRemoteBudget(projectId, budget.id, queryLocalOperationId, 'semantic_embedding', {
+        requests: 1, total_tokens: Math.ceil(query.length / 4), input_bytes: Buffer.byteLength(query, 'utf8'), visual_frames: 0, proxy_seconds: 0, asr_seconds: 0, estimated_amount_micros: 0,
+      })
+      const queryOperation = await relay.createOperation({ local_operation_id: queryLocalOperationId, consent_revision_id: consent.id, consent_scope_hash: scopeHash, local_budget_reservation_id: budget.id, request_hash: factBasisHash({ generation: lexical.generation, query }), capability: 'semantic_embedding', application_role: 'search_index', input: { embedding_role: 'query', items: [{ id: `embed_${nonce}`, text: query }], model: 'text-embedding-v4', dimension: 768, instruction_version: 'video-facts-v1' } })
       if (queryOperation.state !== 'succeeded' || !queryOperation.provider_receipt) throw new VideoWorkbenchServiceError('远程检索查询尚未完成', 503, 'VIDEO_REMOTE_OPERATION_UNAVAILABLE')
       const downloadedQuery = await relay.downloadResult<{ kind: string; vectors: Array<{ id: string; vector: number[] }> }>(queryOperation)
       const queryVector = downloadedQuery.result.vectors[0]?.vector
       if (downloadedQuery.result.kind !== 'embedding' || !queryVector) throw new VideoWorkbenchServiceError('Embedding 查询结果无效', 502, 'VIDEO_ANALYSIS_INVALID')
-      await this.settleRemoteBudget(projectId, budget.id, queryOperation.id, queryOperation.provider_receipt)
+      await this.settleRemoteBudget(projectId, budget.id, queryLocalOperationId, queryOperation.provider_receipt)
       await relay.acknowledge(queryOperation.id, { result_hashes: downloadedQuery.hashes, receipt_id: queryOperation.provider_receipt.id })
       return await this.repository.hybridSearchFactsPage(projectId, query, queryVector, options)
     } catch (error) {
@@ -1362,6 +1409,9 @@ export class VideoWorkbenchService {
     }
     const contentHash = await videoFingerprint(audioPath)
     const localOperationId = `${operationId}_asr_${source.id}`
+    await this.reserveRemoteBudget(project.id, budget.id, localOperationId, 'speech_transcription', {
+      requests: 1, total_tokens: 0, input_bytes: audio.size, visual_frames: 0, proxy_seconds: 0, asr_seconds: timeToMilliseconds(primaryDuration) / 1000, estimated_amount_micros: 0,
+    })
     const scopeHash = factBasisHash({ revision: consent.revision, coverage: consent.coverage, purposes: consent.purposes, data_kinds: consent.data_kinds })
     const objectRef = await relay.uploadObjectStream({
       local_operation_id: localOperationId, purpose: 'audio_for_asr', content_hash: contentHash, byte_size: audio.size, content_type: 'audio/wav',
@@ -1406,7 +1456,7 @@ export class VideoWorkbenchService {
       language: 'zh', segments: segments.map(segment => ({ ...segment, source_id: source.id })), created_at: this.iso(),
     }
     await this.repository.saveFact(transcript)
-    await this.settleRemoteBudget(project.id, budget.id, remote.id, remote.provider_receipt)
+    await this.settleRemoteBudget(project.id, budget.id, localOperationId, remote.provider_receipt)
     await relay.acknowledge(remote.id, { result_hashes: downloaded.hashes, receipt_id: remote.provider_receipt.id })
     const origin = parseInt64(sourceFact.primary_video_stream.start_time.ticks)
     return segments.map(segment => ({
@@ -1601,6 +1651,9 @@ export class VideoWorkbenchService {
       const bytes = Buffer.from(match[2]!, 'base64')
       if (!bytes.length || bytes.length > 10 * 1024 * 1024) throw new VideoWorkbenchServiceError('远程关键帧大小无效', 413, 'VIDEO_ANALYSIS_INVALID')
       const frameOperationId = `${operationId}_frame_${index}`
+      await this.reserveRemoteBudget(project.id, budget.id, frameOperationId, 'visual_evidence', {
+        requests: 1, total_tokens: 0, input_bytes: bytes.byteLength, visual_frames: 1, proxy_seconds: 0, asr_seconds: 0, estimated_amount_micros: 0,
+      })
       const objectRef = await relay.uploadObject({
         local_operation_id: frameOperationId,
         purpose: 'visual_frames', content_hash: `sha256:${createHash('sha256').update(bytes).digest('hex')}`, byte_size: bytes.byteLength, content_type: match[1]!,
@@ -1618,7 +1671,7 @@ export class VideoWorkbenchService {
       const summary = typeof evidence?.summary === 'string' ? evidence.summary.trim() : typeof evidence?.text === 'string' ? evidence.text.trim() : ''
       if (!summary || summary.length > 8000) throw new VideoWorkbenchServiceError('远程视觉证据结果无效', 502, 'VIDEO_ANALYSIS_INVALID')
       output.push({ kind: 'visual', source_id: frame.source_id, in_ms: frame.in_ms, out_ms: frame.range_end_ms ?? frame.in_ms + 1, text: summary, confidence: typeof evidence?.confidence === 'number' && evidence.confidence >= 0 && evidence.confidence <= 1 ? evidence.confidence : 0.5, warnings: Array.isArray(evidence?.warnings) ? evidence.warnings.filter((item): item is string => typeof item === 'string').slice(0, 20) : [] })
-      await this.settleRemoteBudget(project.id, budget.id, remote.id, remote.provider_receipt)
+      await this.settleRemoteBudget(project.id, budget.id, frameOperationId, remote.provider_receipt)
       await relay.acknowledge(remote.id, { result_hashes: downloaded.hashes, receipt_id: remote.provider_receipt.id })
     }
     return output.length ? output : null
@@ -1733,7 +1786,10 @@ export class VideoWorkbenchService {
         status: 'running',
         progress: 5,
         stage: '正在提取素材证据',
-        result: { base_revision: project.revision, base_timeline_version_id: project.current_timeline_version_id },
+        // Persist the intent needed to re-enter analysis after a local Sidecar
+        // restart. Long Fun-ASR itself is reconciled through the Relay's
+        // deterministic local_operation_id and persisted provider task id.
+        result: { base_revision: project.revision, base_timeline_version_id: project.current_timeline_version_id, user_goal: input.user_goal },
         created_at: now,
         updated_at: now,
       } as unknown as VideoOperation))
@@ -1835,6 +1891,9 @@ export class VideoWorkbenchService {
       if (consent && budget && relay) {
         const requestHash = factBasisHash(planningInput)
         try {
+          await this.reserveRemoteBudget(baseProject.id, budget.id, next.planTask.id, 'media_reasoning', {
+            requests: 1, total_tokens: Math.ceil(JSON.stringify(planningInput).length / 4), input_bytes: Buffer.byteLength(JSON.stringify(planningInput), 'utf8'), visual_frames: 0, proxy_seconds: 0, asr_seconds: 0, estimated_amount_micros: 0,
+          })
           const remote = await relay.createOperation({
             local_operation_id: next.planTask.id,
             consent_revision_id: consent.id,
@@ -1848,7 +1907,7 @@ export class VideoWorkbenchService {
           const downloaded = await relay.downloadResult<{ kind: string; plan: unknown }>(remote)
           if (downloaded.result.kind !== 'planning') throw new VideoWorkbenchServiceError('远程规划结果类型无效', 502, 'VIDEO_ANALYSIS_INVALID')
           plan = planVideoTimelineFromRelay(planningInput, downloaded.result.plan)
-          await this.settleRemoteBudget(baseProject.id, budget.id, remote.id, remote.provider_receipt)
+          await this.settleRemoteBudget(baseProject.id, budget.id, next.planTask.id, remote.provider_receipt)
           await relay.acknowledge(remote.id, { result_hashes: downloaded.hashes, receipt_id: remote.provider_receipt.id })
         } catch (error) {
           await this.mutateProject(baseProject.id, async () => {
@@ -2739,6 +2798,18 @@ export class VideoWorkbenchService {
       }
       await this.runFullFingerprint(operation, sourceId)
       return
+    }
+    if (operation.kind === 'video.analyze') {
+      const userGoal = typeof operation.result?.user_goal === 'string' ? operation.result.user_goal : null
+      const project = await this.project(operation.project_id).catch(() => null)
+      if (userGoal && project?.task_id === operation.id && this.videoMediaRelay()) {
+        const controller = new AbortController()
+        const active: ActiveVideoExecution = { controller, completion: Promise.resolve(), output_path: '' }
+        active.completion = this.runVideoAnalysis(project, operation, userGoal, controller.signal)
+        this.activeAnalyses.set(operation.id, active)
+        await active.completion
+        return
+      }
     }
     if (operation.kind === 'video.render' && await this.recoverCommittedRender(operation)) return
     const code = operation.kind === 'video.preview'
