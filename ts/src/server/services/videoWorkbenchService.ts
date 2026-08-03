@@ -326,20 +326,21 @@ export class VideoWorkbenchService {
   private async editorialSourceBounds(project: VideoStudioProject): Promise<Map<string, EditorialSourceBounds>> {
     const bounds = new Map<string, EditorialSourceBounds>()
     for (const source of project.sources) {
-      const fact = await this.repository.getFact('source', source.id).catch(() => null)
-      if (fact && 'fast_identity' in fact) {
-        bounds.set(source.id, {
-          start: fact.primary_video_stream.start_time,
-          duration: fact.presentation_duration,
-        })
-        continue
+      let fact: Awaited<ReturnType<VideoWorkbenchRepository['getFact']>>
+      try {
+        fact = await this.repository.getFact('source', source.id)
+      } catch {
+        throw new VideoWorkbenchServiceError('无法读取素材时间事实，已拒绝编辑以避免越界', 503, 'VIDEO_EDITORIAL_FACTS_UNAVAILABLE')
       }
-      // Compatibility fixtures and pre-fact imports have no exact PTS origin.
-      // Their legacy clip coordinates are milliseconds from zero; once a source
-      // fact exists, the branch above is the authoritative bound.
+      if (!('fast_identity' in fact) || !fact.primary_video_stream.duration) {
+        throw new VideoWorkbenchServiceError('素材原始视频时长缺失，不能安全验证剪辑范围', 409, 'VIDEO_EDITORIAL_FACTS_UNAVAILABLE')
+      }
       bounds.set(source.id, {
-        start: rationalTime('0', { num: 1000, den: 1 }),
-        duration: rationalTime(BigInt(source.duration_ms), { num: 1000, den: 1 }),
+        start: fact.primary_video_stream.start_time,
+        // Presentation duration can include discontinuities or stream
+        // alignment. Editorial source ranges are bounded by the primary
+        // video stream that the compiler will actually read.
+        duration: fact.primary_video_stream.duration,
       })
     }
     return bounds
@@ -1111,9 +1112,17 @@ export class VideoWorkbenchService {
         )
         const applied = this.editorial.applyCommandSet(project, commandSet, await this.editorialSourceBounds(project))
         if (applied.reused) return project
+        const formalVersion = this.timelineVersion(
+          applied.project,
+          alternative.scenes,
+          applied.project.evidence_revision ?? evidenceRevision(applied.project.evidence),
+          applied.project.revision,
+        )
         return await this.repository.saveProject(videoStudioProjectSchema.parse({
           ...applied.project,
           timeline: alternative.scenes.map(scene => ({ id: scene.id, source_id: scene.source_id, in_ms: scene.in_ms, out_ms: scene.out_ms })),
+          timeline_versions: [...applied.project.timeline_versions, formalVersion],
+          current_timeline_version_id: formalVersion.id,
           alternatives: [],
           state: alternative.scenes.length ? 'ready' : 'draft',
         }))
