@@ -22,7 +22,9 @@ import {
   imageCandidateSchema,
   imageCreativePlanSchema,
   imageDeliverySpecSchema,
+  imageGenerationEstimateSchema,
   imageGenerationRoundSchema,
+  imageHashSchema,
   imageOperationV2Schema,
   providerExecutionReceiptSchema,
   type ImageBriefSnapshot,
@@ -32,6 +34,7 @@ import {
   type ImageCandidate,
   type ImageCreativePlan,
   type ImageDeliverySpec,
+  type ImageGenerationEstimate,
   type ImageGenerationRound,
   type ImageOperationV2,
   type ProviderExecutionReceipt,
@@ -377,6 +380,59 @@ export class ImageWorkbenchRepository {
     await this.ready()
     const input = imageWorkbenchProjectSchema.parse(project)
     return await this.fences.run(`project-${input.id}`, async () => this.saveProjectLocked(input))
+  }
+
+  /** Reference control is a command, not a mutable Project document retry. */
+  async saveReferenceControlProject(input: {
+    project: ImageWorkbenchProject
+    base_revision: number
+    idempotency_key: string
+    request_hash: string
+  }): Promise<{ project: ImageWorkbenchProject; replayed: boolean }> {
+    await this.ready()
+    const project = imageWorkbenchProjectSchema.parse(input.project)
+    const request_hash = imageHashSchema.parse(input.request_hash)
+    return await this.fences.run(`project-${project.id}`, async () => {
+      const prior = this.unitOfWork.database.query(`SELECT request_hash,result_project_json FROM image_reference_control_commands
+        WHERE project_id=? AND idempotency_key=?`).get(project.id, input.idempotency_key) as { request_hash: string; result_project_json: string } | null
+      if (prior) {
+        if (prior.request_hash !== request_hash) {
+          throw new ImageWorkbenchRepositoryError('参考图控制幂等键对应的请求内容不一致', 409, 'IMAGE_STORAGE_INVALID')
+        }
+        return { project: imageWorkbenchProjectSchema.parse(JSON.parse(prior.result_project_json) as unknown), replayed: true }
+      }
+      const currentRow = this.projectRow(project.id)
+      if (!currentRow) throw new ImageWorkbenchRepositoryError('图片项目不存在', 404, 'IMAGE_PROJECT_NOT_FOUND')
+      const current = this.loadProject(currentRow)
+      if (current.revision !== input.base_revision || current.writer_fence !== project.writer_fence) {
+        throw new ImageWorkbenchRepositoryError('图片项目已被另一写入者更新，请刷新后重试', 409, 'IMAGE_WRITER_FENCE_CONFLICT')
+      }
+      const next = imageWorkbenchProjectSchema.parse({
+        ...project,
+        writer_fence: `fence_${randomUUID().replaceAll('-', '')}`,
+        updated_at: this.iso(),
+      })
+      this.unitOfWork.transaction(() => {
+        this.persistProject(next)
+        this.unitOfWork.database.query(`INSERT INTO image_reference_control_commands(
+          project_id,idempotency_key,request_hash,result_project_json,created_at
+        ) VALUES(?,?,?,?,?)`).run(next.id, input.idempotency_key, request_hash, JSON.stringify(next), next.updated_at)
+      })
+      return { project: next, replayed: false }
+    })
+  }
+
+  async hasReferenceControlCommand(projectId: string, idempotencyKey: string, requestHash: string): Promise<boolean> {
+    await this.ready()
+    this.assertGenerationProject(projectId)
+    const request_hash = imageHashSchema.parse(requestHash)
+    const prior = this.unitOfWork.database.query(`SELECT request_hash FROM image_reference_control_commands
+      WHERE project_id=? AND idempotency_key=?`).get(projectId, idempotencyKey) as { request_hash: string } | null
+    if (!prior) return false
+    if (prior.request_hash !== request_hash) {
+      throw new ImageWorkbenchRepositoryError('参考图控制幂等键对应的请求内容不一致', 409, 'IMAGE_STORAGE_INVALID')
+    }
+    return true
   }
 
   private saveProjectLocked(input: ImageWorkbenchProject): ImageWorkbenchProject {
@@ -1112,16 +1168,52 @@ export class ImageWorkbenchRepository {
     return row ? this.generationDocument(row, value => imageDeliverySpecSchema.parse(value)) : null
   }
 
-  async saveCreativePlan(plan: ImageCreativePlan): Promise<ImageCreativePlan> {
+  async saveGenerationEstimate(estimate: ImageGenerationEstimate): Promise<ImageGenerationEstimate> {
     await this.ready()
-    const input = imageCreativePlanSchema.parse(plan)
+    const input = imageGenerationEstimateSchema.parse(estimate)
     return await this.fences.run(`project-${input.project_id}`, async () => {
       this.assertGenerationProject(input.project_id)
-      const existing = this.unitOfWork.database.query('SELECT document_json FROM image_creative_plans WHERE id=?').get(input.id) as { document_json: string } | null
-      if (existing) return this.generationDocument(existing, value => imageCreativePlanSchema.parse(value))
+      const existing = this.unitOfWork.database.query(`SELECT document_json FROM image_generation_estimates
+        WHERE estimate_hash=?`).get(input.estimate_hash) as { document_json: string } | null
+      if (existing) return this.generationDocument(existing, value => imageGenerationEstimateSchema.parse(value))
       this.unitOfWork.transaction(() => {
-        this.unitOfWork.database.query(`INSERT INTO image_creative_plans(id,project_id,brief_snapshot_hash,created_at,document_json)
-          VALUES(?,?,?,?,?)`).run(input.id, input.project_id, input.brief_snapshot_hash, input.created_at, JSON.stringify(input))
+        this.unitOfWork.database.query(`INSERT INTO image_generation_estimates(
+          estimate_hash,project_id,kind,request_hash,expires_at,created_at,document_json
+        ) VALUES(?,?,?,?,?,?,?)`).run(
+          input.estimate_hash, input.project_id, input.kind, input.request_hash, input.expires_at, input.created_at, JSON.stringify(input),
+        )
+      })
+      return input
+    })
+  }
+
+  async getGenerationEstimate(projectId: string, estimateHash: string): Promise<ImageGenerationEstimate> {
+    await this.ready()
+    this.assertGenerationProject(projectId)
+    const estimate_hash = imageHashSchema.parse(estimateHash)
+    const row = this.unitOfWork.database.query(`SELECT document_json FROM image_generation_estimates
+      WHERE estimate_hash=? AND project_id=?`).get(estimate_hash, projectId) as { document_json: string } | null
+    if (!row) throw new ImageWorkbenchRepositoryError('生成费用估算不存在或不属于当前项目', 409, 'IMAGE_STORAGE_INVALID')
+    return this.generationDocument(row, value => imageGenerationEstimateSchema.parse(value))
+  }
+
+  async saveCreativePlan(plan: ImageCreativePlan, requestHash: string): Promise<ImageCreativePlan> {
+    await this.ready()
+    const input = imageCreativePlanSchema.parse(plan)
+    const request_hash = imageHashSchema.parse(requestHash)
+    return await this.fences.run(`project-${input.project_id}`, async () => {
+      this.assertGenerationProject(input.project_id)
+      const existing = this.unitOfWork.database.query('SELECT project_id,document_json,request_hash FROM image_creative_plans WHERE id=?')
+        .get(input.id) as { project_id: string; document_json: string; request_hash: string } | null
+      if (existing) {
+        if (existing.project_id !== input.project_id || existing.request_hash !== request_hash) {
+          throw new ImageWorkbenchRepositoryError('创作方向幂等键对应的请求内容不一致', 409, 'IMAGE_STORAGE_INVALID')
+        }
+        return this.generationDocument(existing, value => imageCreativePlanSchema.parse(value))
+      }
+      this.unitOfWork.transaction(() => {
+        this.unitOfWork.database.query(`INSERT INTO image_creative_plans(id,project_id,brief_snapshot_hash,created_at,document_json,request_hash)
+          VALUES(?,?,?,?,?,?)`).run(input.id, input.project_id, input.brief_snapshot_hash, input.created_at, JSON.stringify(input), request_hash)
       })
       return input
     })
@@ -1219,19 +1311,60 @@ export class ImageWorkbenchRepository {
     const input = providerExecutionReceiptSchema.parse(receipt)
     return await this.fences.run(`project-${input.project_id}`, async () => {
       this.assertGenerationProject(input.project_id)
-      const existing = this.unitOfWork.database.query(`SELECT document_json,request_hash FROM image_provider_execution_receipts
-        WHERE project_id=? AND idempotency_key=?`).get(input.project_id, input.idempotency_key) as { document_json: string; request_hash: string } | null
-      if (existing && existing.request_hash !== input.request_hash) {
-        throw new ImageWorkbenchRepositoryError('图片执行回执幂等键冲突', 409, 'IMAGE_STORAGE_INVALID')
-      }
-      if (existing) return this.generationDocument(existing, value => providerExecutionReceiptSchema.parse(value))
-      this.unitOfWork.transaction(() => {
-        this.unitOfWork.database.query(`INSERT INTO image_provider_execution_receipts(
-          id,project_id,idempotency_key,request_hash,submitted_at,document_json
-        ) VALUES(?,?,?,?,?,?)`).run(input.id, input.project_id, input.idempotency_key, input.request_hash, input.submitted_at, JSON.stringify(input))
-      })
-      return input
+      return this.unitOfWork.transaction(() => this.persistExecutionReceipt(input))
     })
+  }
+
+  /** A receipt may gain terminal facts once, but its charged request identity never changes. */
+  private persistExecutionReceipt(input: ProviderExecutionReceipt): ProviderExecutionReceipt {
+    const existing = this.unitOfWork.database.query(`SELECT document_json FROM image_provider_execution_receipts
+      WHERE id=?`).get(input.id) as { document_json: string } | null
+    if (!existing) {
+      const duplicate = this.unitOfWork.database.query(`SELECT document_json FROM image_provider_execution_receipts
+        WHERE project_id=? AND idempotency_key=?`).get(input.project_id, input.idempotency_key) as { document_json: string } | null
+      if (duplicate) {
+        const prior = this.generationDocument(duplicate, value => providerExecutionReceiptSchema.parse(value))
+        if (prior.request_hash !== input.request_hash) {
+          throw new ImageWorkbenchRepositoryError('图片执行回执幂等键冲突', 409, 'IMAGE_STORAGE_INVALID')
+        }
+        return prior
+      }
+      this.unitOfWork.database.query(`INSERT INTO image_provider_execution_receipts(
+        id,project_id,idempotency_key,request_hash,submitted_at,document_json
+      ) VALUES(?,?,?,?,?,?)`).run(input.id, input.project_id, input.idempotency_key, input.request_hash, input.submitted_at, JSON.stringify(input))
+      return input
+    }
+    const prior = this.generationDocument(existing, value => providerExecutionReceiptSchema.parse(value))
+    if (
+      prior.project_id !== input.project_id
+      || prior.idempotency_key !== input.idempotency_key
+      || prior.request_hash !== input.request_hash
+      || prior.provider !== input.provider
+      || prior.model_id !== input.model_id
+      || prior.policy_revision !== input.policy_revision
+      || prior.submitted_at !== input.submitted_at
+    ) {
+      throw new ImageWorkbenchRepositoryError('图片执行回执身份不能改变', 409, 'IMAGE_STORAGE_INVALID')
+    }
+    if (!input.completed_at) return prior
+    if (prior.completed_at) {
+      const sameTerminalFacts = prior.completed_at === input.completed_at
+        && JSON.stringify(prior.output_asset_hashes ?? []) === JSON.stringify(input.output_asset_hashes ?? [])
+        && JSON.stringify(prior.refusal ?? null) === JSON.stringify(input.refusal ?? null)
+      if (!sameTerminalFacts) throw new ImageWorkbenchRepositoryError('图片执行回执终态不能改变', 409, 'IMAGE_STORAGE_INVALID')
+      return prior
+    }
+    const completed = providerExecutionReceiptSchema.parse({
+      ...prior,
+      ...(input.provider_request_id ? { provider_request_id: input.provider_request_id } : {}),
+      ...(input.output_asset_hashes ? { output_asset_hashes: input.output_asset_hashes } : {}),
+      ...(input.refusal ? { refusal: input.refusal } : {}),
+      ...(input.usage ? { usage: input.usage } : {}),
+      completed_at: input.completed_at,
+    })
+    this.unitOfWork.database.query(`UPDATE image_provider_execution_receipts SET document_json=? WHERE id=?`)
+      .run(JSON.stringify(completed), completed.id)
+    return completed
   }
 
   async getExecutionReceipt(projectId: string, receiptId: string): Promise<ProviderExecutionReceipt> {
@@ -1243,16 +1376,23 @@ export class ImageWorkbenchRepository {
     return this.generationDocument(row, value => providerExecutionReceiptSchema.parse(value))
   }
 
-  async saveGenerationRound(round: ImageGenerationRound): Promise<ImageGenerationRound> {
+  async saveGenerationRound(round: ImageGenerationRound, requestHash: string): Promise<ImageGenerationRound> {
     await this.ready()
     const input = imageGenerationRoundSchema.parse(round)
+    const request_hash = imageHashSchema.parse(requestHash)
     return await this.fences.run(`project-${input.project_id}`, async () => {
       this.assertGenerationProject(input.project_id)
-      const existing = this.unitOfWork.database.query('SELECT document_json FROM image_generation_rounds WHERE id=?').get(input.id) as { document_json: string } | null
-      if (existing) return this.generationDocument(existing, value => imageGenerationRoundSchema.parse(value))
+      const existing = this.unitOfWork.database.query('SELECT project_id,document_json,request_hash FROM image_generation_rounds WHERE id=?')
+        .get(input.id) as { project_id: string; document_json: string; request_hash: string } | null
+      if (existing) {
+        if (existing.project_id !== input.project_id || existing.request_hash !== request_hash) {
+          throw new ImageWorkbenchRepositoryError('生成轮次幂等键对应的请求内容不一致', 409, 'IMAGE_STORAGE_INVALID')
+        }
+        return this.generationDocument(existing, value => imageGenerationRoundSchema.parse(value))
+      }
       this.unitOfWork.transaction(() => {
-        this.unitOfWork.database.query(`INSERT INTO image_generation_rounds(id,project_id,creative_plan_id,estimate_hash,confirmed_at,document_json)
-          VALUES(?,?,?,?,?,?)`).run(input.id, input.project_id, input.creative_plan_id, input.estimate_hash, input.confirmed_at, JSON.stringify(input))
+        this.unitOfWork.database.query(`INSERT INTO image_generation_rounds(id,project_id,creative_plan_id,estimate_hash,confirmed_at,document_json,request_hash)
+          VALUES(?,?,?,?,?,?,?)`).run(input.id, input.project_id, input.creative_plan_id, input.estimate_hash, input.confirmed_at, JSON.stringify(input), request_hash)
       })
       return input
     })
@@ -1265,6 +1405,15 @@ export class ImageWorkbenchRepository {
       .get(roundId, projectId) as { document_json: string } | null
     if (!row) throw new ImageWorkbenchRepositoryError('生成轮次不存在', 404, 'IMAGE_STORAGE_INVALID')
     return this.generationDocument(row, value => imageGenerationRoundSchema.parse(value))
+  }
+
+  async generationRoundRequestHash(projectId: string, roundId: string): Promise<string> {
+    await this.ready()
+    this.assertGenerationProject(projectId)
+    const row = this.unitOfWork.database.query('SELECT request_hash FROM image_generation_rounds WHERE id=? AND project_id=?')
+      .get(roundId, projectId) as { request_hash: string } | null
+    if (!row) throw new ImageWorkbenchRepositoryError('生成轮次不存在', 404, 'IMAGE_STORAGE_INVALID')
+    return row.request_hash
   }
 
   async generationRoundForOperation(projectId: string, operationId: string): Promise<ImageGenerationRound> {
@@ -1283,12 +1432,14 @@ export class ImageWorkbenchRepository {
   async createGenerationRoundWithOperations(input: {
     project: ImageWorkbenchProject
     base_revision: number
+    request_hash: string
     round: ImageGenerationRound
     operations: ImageOperationV2[]
     transport_operations: ImageOperation[]
   }): Promise<{ project: ImageWorkbenchProject; round: ImageGenerationRound; operations: ImageOperationV2[]; transport_operations: ImageOperation[] }> {
     await this.ready()
     const projectInput = imageWorkbenchProjectSchema.parse(input.project)
+    const request_hash = imageHashSchema.parse(input.request_hash)
     const round = imageGenerationRoundSchema.parse(input.round)
     const operations = input.operations.map(operation => imageOperationV2Schema.parse(operation))
     const transports = input.transport_operations.map(operation => canonicalImageOperation(operation))
@@ -1305,11 +1456,11 @@ export class ImageWorkbenchRepository {
       if (current.revision !== input.base_revision || current.writer_fence !== projectInput.writer_fence) {
         throw new ImageWorkbenchRepositoryError('图片项目已被另一写入者更新，请刷新后重试', 409, 'IMAGE_WRITER_FENCE_CONFLICT')
       }
-      const existingRound = this.unitOfWork.database.query('SELECT document_json FROM image_generation_rounds WHERE id=?')
-        .get(round.id) as { document_json: string } | null
+      const existingRound = this.unitOfWork.database.query('SELECT document_json,request_hash FROM image_generation_rounds WHERE id=?')
+        .get(round.id) as { document_json: string; request_hash: string } | null
       if (existingRound) {
         const restored = this.generationDocument(existingRound, value => imageGenerationRoundSchema.parse(value))
-        if (restored.project_id !== projectInput.id || restored.estimate_hash !== round.estimate_hash) {
+        if (restored.project_id !== projectInput.id || restored.estimate_hash !== round.estimate_hash || existingRound.request_hash !== request_hash) {
           throw new ImageWorkbenchRepositoryError('图片生成轮次幂等键冲突', 409, 'IMAGE_STORAGE_INVALID')
         }
         const restoredOperations = await Promise.all(restored.direction_operations.map(async direction => await this.getGenerationOperation(projectInput.id, direction.operation_id)))
@@ -1342,8 +1493,8 @@ export class ImageWorkbenchRepository {
       }))
       this.unitOfWork.transaction(() => {
         this.persistProject(nextProject)
-        this.unitOfWork.database.query(`INSERT INTO image_generation_rounds(id,project_id,creative_plan_id,estimate_hash,confirmed_at,document_json)
-          VALUES(?,?,?,?,?,?)`).run(round.id, round.project_id, round.creative_plan_id, round.estimate_hash, round.confirmed_at, JSON.stringify(round))
+        this.unitOfWork.database.query(`INSERT INTO image_generation_rounds(id,project_id,creative_plan_id,estimate_hash,confirmed_at,document_json,request_hash)
+          VALUES(?,?,?,?,?,?,?)`).run(round.id, round.project_id, round.creative_plan_id, round.estimate_hash, round.confirmed_at, JSON.stringify(round), request_hash)
         for (const transport of nextTransports) {
           this.persistOperation(transport)
           this.appendEvent(transport)
@@ -1434,11 +1585,7 @@ export class ImageWorkbenchRepository {
       this.unitOfWork.transaction(() => {
         this.persistProject(nextProject)
         this.persistGenerationOperation(operation)
-        this.unitOfWork.database.query(`INSERT INTO image_provider_execution_receipts(
-          id,project_id,idempotency_key,request_hash,submitted_at,document_json
-        ) VALUES(?,?,?,?,?,?) ON CONFLICT(id) DO NOTHING`).run(
-          receipt.id, receipt.project_id, receipt.idempotency_key, receipt.request_hash, receipt.submitted_at, JSON.stringify(receipt),
-        )
+        this.persistExecutionReceipt(receipt)
         this.unitOfWork.database.query(`INSERT INTO image_candidate_groups(
           id,project_id,operation_id,generation_round_id,created_at,document_json
         ) VALUES(?,?,?,?,?,?)`).run(group.id, group.project_id, group.operation_id, group.generation_round_id, group.created_at, JSON.stringify(group))
@@ -1512,6 +1659,15 @@ export class ImageWorkbenchRepository {
           throw new ImageWorkbenchRepositoryError('图片候选采纳幂等键冲突', 409, 'IMAGE_STORAGE_INVALID')
         }
         return { project: current, adoptions: previousRows.map(row => this.generationDocument(row, value => imageCandidateAdoptionSchema.parse(value))) }
+      }
+      const existingCandidateArtboard = this.unitOfWork.database.query(`SELECT artboard_id FROM image_candidate_adoptions
+        WHERE project_id=? AND candidate_id=? AND artboard_id IN (${adoptions.map(() => '?').join(',')})`).all(
+        projectInput.id,
+        input.candidate_id,
+        ...adoptions.map(adoption => adoption.artboard_id),
+      ) as Array<{ artboard_id: string }>
+      if (existingCandidateArtboard.length > 0) {
+        throw new ImageWorkbenchRepositoryError('同一候选不能再次采纳到同一画板', 409, 'IMAGE_STORAGE_INVALID')
       }
       if (current.revision !== input.base_revision || current.writer_fence !== projectInput.writer_fence) {
         throw new ImageWorkbenchRepositoryError('图片项目已被另一写入者更新，请刷新后重试', 409, 'IMAGE_WRITER_FENCE_CONFLICT')

@@ -35,6 +35,7 @@ import {
   createGenerationRoundInputSchema,
   decideImageCandidateInputSchema,
   deriveImageCandidateInputSchema,
+  estimateDeriveImageCandidateInputSchema,
   estimateGenerationRoundInputSchema,
   type AdoptImageCandidateInput,
   type CreateCreativePlanInput,
@@ -42,6 +43,7 @@ import {
   type DecideImageCandidateInput,
   type DeriveImageCandidateInput,
   type EstimateGenerationRoundInput,
+  type EstimateDeriveImageCandidateInput,
   type ImageBriefSnapshot,
   type ImageCandidateAdoption,
   type ImageCandidateDecision,
@@ -51,6 +53,7 @@ import {
   type ImageCreativePlan,
   type ImageDeliverySpec,
   type ImageGenerationRound,
+  type ImageGenerationEstimate,
   type ImageOperationV2,
   type ImageReferenceV2,
   type ProviderExecutionReceipt,
@@ -90,12 +93,14 @@ const STANDALONE_IMAGE_OWNER: MediaOwner = {
   owner_id: 'local_workbench',
 }
 const INITIAL_WRITER_FENCE = `fence_${'0'.repeat(32)}`
+const IMAGE_GENERATION_ESTIMATE_TTL_MS = 5 * 60 * 1000
 
 type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
 
 export type ImageWorkbenchCrashPoint =
   | 'after_cas_publish_before_db_commit'
   | 'after_db_commit_before_relay_ack'
+  | 'after_generation_round_persisted_before_post'
   | 'after_project_migration_before_operations'
 
 type RelayImageTask = {
@@ -691,7 +696,20 @@ export class ImageWorkbenchService {
   async updateReferenceControl(projectId: string, referenceId: string, raw: UpdateImageReferenceControlInput): Promise<ImageWorkbenchProject> {
     const input = updateImageReferenceControlInputSchema.parse(raw)
     const project = await this.project(projectId)
-    this.assertRevision(project, input.base_revision, '图片项目已更新，请刷新后再更新参考图控制')
+    const requestHash = sha256({
+      kind: 'reference_control',
+      project_id: project.id,
+      base_revision: input.base_revision,
+      reference_id: referenceId,
+      role: input.role,
+      influence_strength: input.influence_strength,
+      preservation: input.preservation,
+      priority: input.priority,
+      label: input.label,
+    })
+    if (await this.repository.hasReferenceControlCommand(project.id, input.idempotency_key, requestHash)) {
+      return project
+    }
     await this.assertNoActiveOperation(project)
     await this.assertNoActiveGenerationOperation(project)
     const references = project.references.map(reference => stableId('ref', project.id, reference.asset_id) === referenceId
@@ -707,15 +725,21 @@ export class ImageWorkbenchService {
     if (references.every(reference => stableId('ref', project.id, reference.asset_id) !== referenceId)) {
       throw new ImageWorkbenchServiceError('图片参考图不存在', 404, 'REFERENCE_IMAGE_MISSING')
     }
-    const saved = await this.repository.saveProject({
+    const saved = await this.repository.saveReferenceControlProject({
+      project: {
       ...project,
       references,
       revision: project.revision + 1,
       error: undefined,
       error_code: undefined,
       notice: undefined,
+      },
+      base_revision: input.base_revision,
+      idempotency_key: input.idempotency_key,
+      request_hash: requestHash,
     })
-    return await this.initializeGenerationHeader(saved)
+    if (saved.replayed) return await this.project(project.id)
+    return await this.initializeGenerationHeader(saved.project)
   }
 
   private async activeGenerationOperations(projectId: string): Promise<ImageOperationV2[]> {
@@ -734,21 +758,34 @@ export class ImageWorkbenchService {
   async createCreativePlan(projectId: string, raw: CreateCreativePlanInput): Promise<ImageCreativePlan> {
     const input = createCreativePlanInputSchema.parse(raw)
     const project = await this.project(projectId)
-    this.assertRevision(project, input.base_revision, '图片项目已更新，请刷新后再创建创作方向')
     const brief = await this.compileGenerationBrief(project)
+    const requestHash = sha256({
+      kind: 'creative_plan',
+      project_id: project.id,
+      base_revision: input.base_revision,
+      brief_snapshot_hash: brief.snapshot_hash,
+      directions: input.directions ?? null,
+    })
+    const planId = stableId('plan', project.id, input.idempotency_key)
+    const existing = await this.repository.getCreativePlan(project.id, planId).catch(error => {
+      if (error instanceof ImageWorkbenchRepositoryError && error.status === 404) return null
+      throw error
+    })
+    if (existing) return await this.repository.saveCreativePlan({ ...existing, id: planId }, requestHash)
+    this.assertRevision(project, input.base_revision, '图片项目已更新，请刷新后再创建创作方向')
     const directions = input.directions?.map((direction, index) => ({
       ...direction,
       id: stableId('dir', project.id, input.idempotency_key, String(index)),
     })) ?? [this.defaultDirection(project, brief)]
     const plan: ImageCreativePlan = {
-      id: stableId('plan', project.id, input.idempotency_key),
+      id: planId,
       project_id: project.id,
       brief_snapshot_hash: brief.snapshot_hash,
       directions,
       source: 'deterministic',
       created_at: this.iso(),
     }
-    return await this.repository.saveCreativePlan(plan)
+    return await this.repository.saveCreativePlan(plan, requestHash)
   }
 
   async getCreativePlan(projectId: string, planId: string): Promise<ImageCreativePlan> {
@@ -780,7 +817,7 @@ export class ImageWorkbenchService {
     return delivery.artboards.some(artboard => artboard.output.format !== 'jpeg' && artboard.output.transparent)
   }
 
-  private estimateHash(project: ImageWorkbenchProject, plan: ImageCreativePlan, brief: ImageBriefSnapshot, delivery: ImageDeliverySpec, directions: ImageCreativeDirection[], policies: Array<{ policy_revision: string; provider: string; model_id: string }>): `sha256:${string}` {
+  private generationEstimateRequestHash(project: ImageWorkbenchProject, plan: ImageCreativePlan, brief: ImageBriefSnapshot, delivery: ImageDeliverySpec, directions: ImageCreativeDirection[], policies: Array<{ policy_revision: string; provider: string; model_id: string }>): `sha256:${string}` {
     return sha256({
       project_id: project.id,
       base_revision: project.revision,
@@ -793,6 +830,35 @@ export class ImageWorkbenchService {
     })
   }
 
+  private async saveGenerationRoundEstimate(
+    project: ImageWorkbenchProject,
+    plan: ImageCreativePlan,
+    brief: ImageBriefSnapshot,
+    delivery: ImageDeliverySpec,
+    directions: ImageCreativeDirection[],
+    policies: Array<{ policy_revision: string; provider: string; model_id: string }>,
+  ): Promise<ImageGenerationEstimate> {
+    const createdAt = this.iso()
+    const expiresAt = new Date(this.now().getTime() + IMAGE_GENERATION_ESTIMATE_TTL_MS).toISOString()
+    const requestHash = this.generationEstimateRequestHash(project, plan, brief, delivery, directions, policies)
+    return await this.repository.saveGenerationEstimate({
+      id: stableId('receipt', 'estimate', project.id, requestHash, expiresAt),
+      project_id: project.id,
+      kind: 'generation_round',
+      creative_plan_id: plan.id,
+      direction_ids: directions.map(direction => direction.id),
+      request_hash: requestHash,
+      estimate_hash: sha256({ kind: 'generation_round', request_hash: requestHash, expires_at: expiresAt }),
+      project_revision: project.revision,
+      paid_operation_count: directions.length,
+      candidate_count_per_operation: 3,
+      concurrency: Math.min(2, directions.length),
+      price_upper_bound: null,
+      expires_at: expiresAt,
+      created_at: createdAt,
+    })
+  }
+
   async estimateGenerationRound(projectId: string, raw: EstimateGenerationRoundInput): Promise<{
     estimate_hash: `sha256:${string}`
     direction_count: number
@@ -800,6 +866,7 @@ export class ImageWorkbenchService {
     candidate_count_per_operation: number
     concurrency: number
     price_upper_bound: null
+    expires_at: string
   }> {
     const input = estimateGenerationRoundInputSchema.parse(raw)
     const project = await this.project(projectId)
@@ -818,13 +885,15 @@ export class ImageWorkbenchService {
       references,
       transparent_output: this.deliveryRequiresTransparency(delivery),
     }))
+    const estimate = await this.saveGenerationRoundEstimate(project, plan, brief, delivery, directions, policies)
     return {
-      estimate_hash: this.estimateHash(project, plan, brief, delivery, directions, policies),
+      estimate_hash: estimate.estimate_hash as `sha256:${string}`,
       direction_count: directions.length,
-      paid_operation_count: directions.length,
-      candidate_count_per_operation: 3,
-      concurrency: Math.min(2, directions.length),
-      price_upper_bound: null,
+      paid_operation_count: estimate.paid_operation_count,
+      candidate_count_per_operation: estimate.candidate_count_per_operation,
+      concurrency: estimate.concurrency,
+      price_upper_bound: estimate.price_upper_bound,
+      expires_at: estimate.expires_at,
     }
   }
 
@@ -858,11 +927,23 @@ export class ImageWorkbenchService {
     const input = createGenerationRoundInputSchema.parse(raw)
     const project = await this.project(projectId)
     const roundId = stableId('rnd', project.id, input.idempotency_key)
+    const roundCommandHash = sha256({
+      kind: 'generation_round',
+      project_id: project.id,
+      base_revision: input.base_revision,
+      creative_plan_id: input.creative_plan_id,
+      direction_ids: input.direction_ids,
+      estimate_hash: input.estimate_hash,
+      confirm: input.confirm,
+    })
     const existingRound = await this.repository.getGenerationRound(project.id, roundId).catch(error => {
       if (error instanceof ImageWorkbenchRepositoryError && error.status === 404) return null
       throw error
     })
     if (existingRound) {
+      if (await this.repository.generationRoundRequestHash(project.id, roundId) !== roundCommandHash) {
+        throw new ImageWorkbenchServiceError('生成轮次幂等键对应的请求内容不一致', 409, 'IMAGE_REVISION_CONFLICT')
+      }
       return {
         round: existingRound,
         operations: await Promise.all(existingRound.direction_operations.map(async direction => await this.repository.getGenerationOperation(project.id, direction.operation_id))),
@@ -883,8 +964,17 @@ export class ImageWorkbenchService {
       references,
       transparent_output: this.deliveryRequiresTransparency(delivery),
     }) }))
-    const estimateHash = this.estimateHash(project, plan, brief, delivery, directions, policies.map(item => item.policy))
-    if (estimateHash !== input.estimate_hash) {
+    const estimate = await this.repository.getGenerationEstimate(project.id, input.estimate_hash)
+    const expectedEstimateRequestHash = this.generationEstimateRequestHash(project, plan, brief, delivery, directions, policies.map(item => item.policy))
+    if (
+      estimate.kind !== 'generation_round'
+      || estimate.creative_plan_id !== plan.id
+      || estimate.project_revision !== input.base_revision
+      || estimate.request_hash !== expectedEstimateRequestHash
+      || estimate.direction_ids.length !== directions.length
+      || estimate.direction_ids.some((directionId, index) => directionId !== directions[index]!.id)
+      || Date.parse(estimate.expires_at) <= this.now().getTime()
+    ) {
       throw new ImageWorkbenchServiceError('费用估算已过期或不属于当前输入，请重新确认', 409, 'IMAGE_REVISION_CONFLICT')
     }
     if (!productGatewayConfigured()) {
@@ -946,22 +1036,120 @@ export class ImageWorkbenchService {
       project_id: project.id,
       creative_plan_id: plan.id,
       direction_operations: operationPairs.map(pair => ({ direction_id: pair.direction.id, operation_id: pair.operation.id })),
-      estimate_hash: estimateHash,
+      estimate_hash: estimate.estimate_hash as `sha256:${string}`,
       confirmed_at: now,
       created_at: now,
     }
     const persisted = await this.repository.createGenerationRoundWithOperations({
       project,
       base_revision: input.base_revision,
+      request_hash: roundCommandHash,
       round,
       operations: operationPairs.map(pair => pair.operation),
       transport_operations: operationPairs.map(pair => pair.transport),
     })
+    this.injectCrash('after_generation_round_persisted_before_post')
     const submitted: ImageOperationV2[] = []
     for (const pair of operationPairs) {
       submitted.push(await this.submitGenerationTransport(persisted.project, pair.operation, pair.transport, pair.policy.provider, pair.policy.model_id))
     }
     return { round: persisted.round, operations: submitted }
+  }
+
+  private derivationOperationRequestHash(input: {
+    project: ImageWorkbenchProject
+    candidate: ImageCandidate
+    brief: ImageBriefSnapshot
+    delivery: ImageDeliverySpec
+    direction: ImageCreativeDirection
+    references: ImageReferenceV2[]
+    instruction: string
+    model: string
+    policyRevision: string
+  }): `sha256:${string}` {
+    const assetHashes = [...new Set([input.candidate.content_hash, ...input.references.map(reference => reference.content_hash)])]
+    return sha256({
+      project_id: input.project.id,
+      owner: input.project.owner,
+      kind: 'edit',
+      base_candidate_id: input.candidate.id,
+      instruction: input.instruction,
+      project_revision: input.project.revision,
+      brief_snapshot_hash: input.brief.snapshot_hash,
+      delivery_spec_revision: input.delivery.revision,
+      creative_direction_id: input.direction.id,
+      execution_policy_revision: input.policyRevision,
+      asset_hashes: assetHashes,
+      model: input.model,
+      logical_attempt: 1,
+    })
+  }
+
+  async estimateDerivation(projectId: string, candidateId: string, raw: EstimateDeriveImageCandidateInput): Promise<{
+    estimate_hash: `sha256:${string}`
+    paid_operation_count: number
+    candidate_count_per_operation: number
+    concurrency: number
+    price_upper_bound: null
+    expires_at: string
+  }> {
+    const input = estimateDeriveImageCandidateInputSchema.parse(raw)
+    const project = await this.project(projectId)
+    this.assertRevision(project, input.base_revision, '图片项目已更新，请重新估算派生费用')
+    const candidate = await this.repository.getCandidate(project.id, candidateId)
+    const source = project.assets.find(asset => asset.id === candidate.asset_id && asset.role === 'result')
+    if (!source?.content_hash) throw new ImageWorkbenchServiceError('候选资产不存在', 409, 'IMAGE_ASSET_NOT_FOUND')
+    await this.assets.readVerified(source)
+    const planKey = `bb-image-derive-estimate-${sha256({ project_id: project.id, candidate_id: candidate.id, instruction: input.instruction }).slice('sha256:'.length)}`
+    const plan = await this.createCreativePlan(project.id, {
+      base_revision: project.revision,
+      idempotency_key: planKey,
+    })
+    const { brief, delivery, references } = await this.creativePlanForGeneration(project, plan.id)
+    const direction = plan.directions[0]!
+    const policy = this.resolveGenerationPolicy({
+      user_request: input.instruction,
+      size: project.size,
+      operation_mode: 'edit',
+      references,
+      transparent_output: this.deliveryRequiresTransparency(delivery),
+      preferred_model: 'gpt-image-2',
+    })
+    const operationRequestHash = this.derivationOperationRequestHash({
+      project, candidate, brief, delivery, direction, references, instruction: input.instruction,
+      model: policy.model_id, policyRevision: policy.policy_revision,
+    })
+    const requestHash = sha256({
+      kind: 'derivation', project_id: project.id, candidate_id: candidate.id,
+      instruction: input.instruction, operation_request_hash: operationRequestHash,
+    })
+    const createdAt = this.iso()
+    const expiresAt = new Date(this.now().getTime() + IMAGE_GENERATION_ESTIMATE_TTL_MS).toISOString()
+    const estimate = await this.repository.saveGenerationEstimate({
+      id: stableId('receipt', 'derive-estimate', project.id, requestHash, expiresAt),
+      project_id: project.id,
+      kind: 'derivation',
+      creative_plan_id: plan.id,
+      candidate_id: candidate.id,
+      direction_ids: [direction.id],
+      request_hash: requestHash,
+      estimate_hash: sha256({ kind: 'derivation', request_hash: requestHash, expires_at: expiresAt }),
+      project_revision: project.revision,
+      paid_operation_count: 1,
+      candidate_count_per_operation: 3,
+      concurrency: 1,
+      price_upper_bound: null,
+      expires_at: expiresAt,
+      created_at: createdAt,
+    })
+    return {
+      estimate_hash: estimate.estimate_hash as `sha256:${string}`,
+      paid_operation_count: estimate.paid_operation_count,
+      candidate_count_per_operation: estimate.candidate_count_per_operation,
+      concurrency: estimate.concurrency,
+      price_upper_bound: estimate.price_upper_bound,
+      expires_at: estimate.expires_at,
+    }
   }
 
   /**
@@ -976,11 +1164,19 @@ export class ImageWorkbenchService {
     const input = deriveImageCandidateInputSchema.parse(raw)
     const project = await this.project(projectId)
     const roundId = stableId('rnd', project.id, 'derive', input.idempotency_key)
+    const derivationCommandHash = sha256({
+      kind: 'derivation', project_id: project.id, candidate_id: candidateId,
+      base_revision: input.base_revision,
+      instruction: input.instruction, estimate_hash: input.estimate_hash, confirm: input.confirm,
+    })
     const existing = await this.repository.getGenerationRound(project.id, roundId).catch(error => {
       if (error instanceof ImageWorkbenchRepositoryError && error.status === 404) return null
       throw error
     })
     if (existing) {
+      if (await this.repository.generationRoundRequestHash(project.id, roundId) !== derivationCommandHash) {
+        throw new ImageWorkbenchServiceError('候选派生幂等键对应的请求内容不一致', 409, 'IMAGE_REVISION_CONFLICT')
+      }
       const operationId = existing.direction_operations[0]?.operation_id
       if (!operationId) throw new ImageWorkbenchServiceError('候选派生轮次缺少操作', 500, 'IMAGE_OPERATION_CORRUPT')
       return { round: existing, operation: await this.repository.getGenerationOperation(project.id, operationId) }
@@ -992,12 +1188,20 @@ export class ImageWorkbenchService {
     const source = project.assets.find(asset => asset.id === candidate.asset_id && asset.role === 'result')
     if (!source?.content_hash) throw new ImageWorkbenchServiceError('候选资产不存在', 409, 'IMAGE_ASSET_NOT_FOUND')
     await this.assets.readVerified(source)
-    const plan = await this.createCreativePlan(project.id, {
-      base_revision: project.revision,
-      idempotency_key: `${input.idempotency_key}-plan`,
-    })
-    const { brief, delivery, references } = await this.creativePlanForGeneration(project, plan.id)
-    const direction = plan.directions[0]!
+    const estimate = await this.repository.getGenerationEstimate(project.id, input.estimate_hash)
+    if (
+      estimate.kind !== 'derivation'
+      || estimate.candidate_id !== candidate.id
+      || estimate.project_revision !== input.base_revision
+      || Date.parse(estimate.expires_at) <= this.now().getTime()
+      || !estimate.creative_plan_id
+      || estimate.direction_ids.length !== 1
+    ) {
+      throw new ImageWorkbenchServiceError('派生费用估算已过期或不属于当前输入，请重新确认', 409, 'IMAGE_REVISION_CONFLICT')
+    }
+    const { plan, brief, delivery, references } = await this.creativePlanForGeneration(project, estimate.creative_plan_id)
+    const direction = plan.directions.find(item => item.id === estimate.direction_ids[0])
+    if (!direction) throw new ImageWorkbenchServiceError('派生费用估算缺少创作方向', 409, 'IMAGE_REVISION_CONFLICT')
     const policy = this.resolveGenerationPolicy({
       user_request: input.instruction,
       size: project.size,
@@ -1006,24 +1210,21 @@ export class ImageWorkbenchService {
       transparent_output: this.deliveryRequiresTransparency(delivery),
       preferred_model: 'gpt-image-2',
     })
+    const requestHash = this.derivationOperationRequestHash({
+      project, candidate, brief, delivery, direction, references, instruction: input.instruction,
+      model: policy.model_id, policyRevision: policy.policy_revision,
+    })
+    const estimateRequestHash = sha256({
+      kind: 'derivation', project_id: project.id, candidate_id: candidate.id,
+      instruction: input.instruction, operation_request_hash: requestHash,
+    })
+    if (estimate.request_hash !== estimateRequestHash) {
+      throw new ImageWorkbenchServiceError('派生费用估算已过期或不属于当前输入，请重新确认', 409, 'IMAGE_REVISION_CONFLICT')
+    }
     if (!productGatewayConfigured()) throw new ImageWorkbenchServiceError('图片远程能力尚未配置', 503, 'GATEWAY_NOT_CONFIGURED')
     const now = this.iso()
     const operationId = stableId('op', project.id, roundId, candidate.id)
     const assetHashes = [...new Set([candidate.content_hash, ...references.map(reference => reference.content_hash)])]
-    const requestHash = sha256({
-      project_id: project.id,
-      owner: project.owner,
-      kind: 'edit',
-      base_candidate_id: candidate.id,
-      instruction: input.instruction,
-      project_revision: project.revision,
-      brief_snapshot_hash: brief.snapshot_hash,
-      delivery_spec_revision: delivery.revision,
-      execution_policy_revision: policy.policy_revision,
-      asset_hashes: assetHashes,
-      model: policy.model_id,
-      logical_attempt: 1,
-    })
     const taskId = id('task')
     const operation: ImageOperationV2 = {
       id: operationId,
@@ -1075,17 +1276,19 @@ export class ImageWorkbenchService {
       project_id: project.id,
       creative_plan_id: plan.id,
       direction_operations: [{ direction_id: direction.id, operation_id: operation.id }],
-      estimate_hash: sha256({ kind: 'derive', request_hash: operation.request_hash, candidate_id: candidate.id }),
+      estimate_hash: estimate.estimate_hash,
       confirmed_at: now,
       created_at: now,
     }
     const persisted = await this.repository.createGenerationRoundWithOperations({
       project,
       base_revision: input.base_revision,
+      request_hash: derivationCommandHash,
       round,
       operations: [operation],
       transport_operations: [transport],
     })
+    this.injectCrash('after_generation_round_persisted_before_post')
     return {
       round: persisted.round,
       operation: await this.submitGenerationTransport(persisted.project, operation, transport, policy.provider, policy.model_id),
@@ -1698,16 +1901,42 @@ export class ImageWorkbenchService {
     return operation
   }
 
+  /**
+   * A durable Round can exist before its first POST, and a process can die
+   * after a POST begins without receiving the remote task id.  In both cases
+   * the only lawful recovery is the original idempotency key; Gateway either
+   * returns the accepted task or treats it as the same logical submission.
+   */
+  private async resumeUnpostedGenerationOperation(operation: ImageOperation, generation: ImageOperationV2): Promise<ImageOperation> {
+    if (operation.remote_task_id || !generation.transport_task_id) return operation
+    const neverPosted = operation.status === 'queued' && !operation.remote_submission_started_at
+    const outcomeUnknown = operation.outcome_unknown === true
+    if (!neverPosted && !outcomeUnknown) return operation
+    if (!productGatewayConfigured()) return operation
+    const provider = providerRegistryEntry(operation.image_operation.model)
+    if (!provider) throw new ImageWorkbenchServiceError('图片操作缺少已注册 Provider', 500, 'IMAGE_OPERATION_CORRUPT')
+    await this.submitGenerationTransport(
+      await this.project(operation.project_id),
+      generation,
+      operation,
+      provider.provider,
+      operation.image_operation.model,
+    )
+    return await this.repository.getOperation(operation.id)
+  }
+
   async recoverInterruptedOperations(): Promise<void> {
     const operations = await this.repository.listOperations()
     await Promise.all(operations.map(async operation => {
       const fenced = await this.fenceInterruptedSubmission(operation)
+      const formal = await this.repository.getGenerationOperationByTransportTask(fenced.id)
+      const resumed = formal ? await this.resumeUnpostedGenerationOperation(fenced, formal) : fenced
       // `committing` means CAS may have published while the SQLite project
       // transaction did not. Re-read the exact accepted remote task; do not
       // manufacture success from partial local files and never POST again.
-      const recovered = fenced.status === 'committing'
-        ? await this.refreshPersistedOperation(fenced)
-        : fenced
+      const recovered = resumed.status === 'committing'
+        ? await this.refreshPersistedOperation(resumed)
+        : resumed
       await this.acknowledgeRemoteResult(recovered)
       const generation = await this.repository.getGenerationOperationByTransportTask(recovered.id)
       if (generation) await this.syncGenerationOperationFromTransport(generation, recovered)
@@ -2241,6 +2470,11 @@ export class ImageWorkbenchService {
       completed_at: now,
       updated_at: now,
     }
+    const completedReceipt: ProviderExecutionReceipt = {
+      ...receipt,
+      output_asset_hashes: saved.map(item => item.candidate.content_hash),
+      completed_at: now,
+    }
     const otherActive = (await this.repository.listGenerationOperations(project.id))
       .some(candidate => candidate.id !== operation.id && ['queued', 'running', 'cancelling', 'committing', 'outcome_unknown'].includes(candidate.status))
     const committed = await this.repository.commitCandidateGroup({
@@ -2259,7 +2493,7 @@ export class ImageWorkbenchService {
         result: { output_count: saved.length, outputs: [] },
       }),
       operation: committingOperation,
-      receipt,
+      receipt: completedReceipt,
       group,
       candidates: saved.map(item => item.candidate),
       assets: saved.map(item => item.asset),
@@ -2547,6 +2781,17 @@ export class ImageWorkbenchService {
         priority: reference.priority,
       })),
     }).slice('sha256:'.length)}`
+    const existingRound = await this.repository.getGenerationRound(project.id, stableId('rnd', project.id, compatibilityKey)).catch(error => {
+      if (error instanceof ImageWorkbenchRepositoryError && error.status === 404) return null
+      throw error
+    })
+    if (existingRound) {
+      const existingOperationId = existingRound.direction_operations[0]?.operation_id
+      if (!existingOperationId) throw new ImageWorkbenchServiceError('兼容生成轮次缺少操作', 500, 'IMAGE_OPERATION_CORRUPT')
+      const existingOperation = await this.repository.getGenerationOperation(project.id, existingOperationId)
+      if (!existingOperation.transport_task_id) throw new ImageWorkbenchServiceError('兼容生成轮次缺少传输任务', 500, 'IMAGE_OPERATION_CORRUPT')
+      return await this.repository.getOperation(existingOperation.transport_task_id)
+    }
     const plan = await this.createCreativePlan(project.id, {
       base_revision: project.revision,
       idempotency_key: `${compatibilityKey}-plan`,

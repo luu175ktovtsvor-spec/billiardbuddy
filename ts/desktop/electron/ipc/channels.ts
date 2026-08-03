@@ -84,6 +84,7 @@ export const ELECTRON_IPC_CHANNELS = {
   imageSaveOutput: 'desktop:image:save-output',
   imageCreateCreativePlan: 'desktop:image:create-creative-plan',
   imageEstimateGenerationRound: 'desktop:image:estimate-generation-round',
+  imageEstimateDerivation: 'desktop:image:estimate-derivation',
   imageCreateGenerationRound: 'desktop:image:create-generation-round',
   imageDecideCandidate: 'desktop:image:decide-candidate',
   imageAdoptCandidate: 'desktop:image:adopt-candidate',

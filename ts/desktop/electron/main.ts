@@ -1484,6 +1484,10 @@ function registerIpcHandlers() {
     const request = payload as { projectId: string; input: Parameters<ElectronImageActions['estimateGenerationRound']>[1] }
     return getImageActions().estimateGenerationRound(request.projectId, request.input)
   })
+  registerHandler(ELECTRON_IPC_CHANNELS.imageEstimateDerivation, (_event, payload) => {
+    const request = payload as { projectId: string; candidateId: string; input: Parameters<ElectronImageActions['estimateDerivation']>[2] }
+    return getImageActions().estimateDerivation(request.projectId, request.candidateId, request.input)
+  })
   registerHandler(ELECTRON_IPC_CHANNELS.imageCreateGenerationRound, (_event, payload) => {
     const request = payload as { projectId: string; input: Parameters<ElectronImageActions['createGenerationRound']>[1] }
     return getImageActions().createGenerationRound(request.projectId, request.input)

@@ -1,6 +1,6 @@
 import type { SqliteUnitOfWork } from '../../kernel/storage/sqliteUnitOfWork.js'
 
-const IMAGE_METADATA_SCHEMA_VERSION = 5
+const IMAGE_METADATA_SCHEMA_VERSION = 6
 
 /** Image-only metadata schema. The shared Kernel remains unaware of image facts. */
 export function migrateImageMetadata(unitOfWork: SqliteUnitOfWork): void {
@@ -15,6 +15,7 @@ export function migrateImageMetadata(unitOfWork: SqliteUnitOfWork): void {
     if (version === 3) migrateV3(unitOfWork)
     if (version === 4) migrateV4(unitOfWork)
     if (version === 5) migrateV5(unitOfWork)
+    if (version === 6) migrateV6(unitOfWork)
   }
 }
 
@@ -202,6 +203,43 @@ function migrateV5(unitOfWork: SqliteUnitOfWork): void {
     )`)
     unitOfWork.database.query('INSERT INTO image_metadata_schema_migrations(version,applied_at) VALUES(?,?)')
       .run(5, new Date().toISOString())
+  })
+}
+
+/**
+ * 15.2 commands are independently replayable.  Their request identity is
+ * indexed separately from mutable projections, and estimates are persisted so
+ * a client cannot mint or extend a paid confirmation window by recomputing a
+ * hash locally.
+ */
+function migrateV6(unitOfWork: SqliteUnitOfWork): void {
+  unitOfWork.transaction(() => {
+    unitOfWork.database.exec("ALTER TABLE image_creative_plans ADD COLUMN request_hash TEXT NOT NULL DEFAULT ''")
+    unitOfWork.database.exec("ALTER TABLE image_generation_rounds ADD COLUMN request_hash TEXT NOT NULL DEFAULT ''")
+    unitOfWork.database.exec(`CREATE TABLE image_generation_estimates(
+      estimate_hash TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES image_projects(id),
+      kind TEXT NOT NULL CHECK(kind IN ('generation_round','derivation')),
+      request_hash TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      document_json TEXT NOT NULL
+    )`)
+    unitOfWork.database.exec('CREATE INDEX image_generation_estimates_project_expiry ON image_generation_estimates(project_id, expires_at)')
+    unitOfWork.database.exec(`CREATE TABLE image_reference_control_commands(
+      project_id TEXT NOT NULL REFERENCES image_projects(id),
+      idempotency_key TEXT NOT NULL,
+      request_hash TEXT NOT NULL,
+      result_project_json TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY(project_id, idempotency_key)
+    )`)
+    // Replaying the same Candidate onto the same Artboard must use the
+    // original idempotency command rather than manufacture another Version.
+    unitOfWork.database.exec(`CREATE UNIQUE INDEX image_candidate_adoptions_candidate_artboard_unique
+      ON image_candidate_adoptions(project_id, candidate_id, artboard_id)`)
+    unitOfWork.database.query('INSERT INTO image_metadata_schema_migrations(version,applied_at) VALUES(?,?)')
+      .run(6, new Date().toISOString())
   })
 }
 

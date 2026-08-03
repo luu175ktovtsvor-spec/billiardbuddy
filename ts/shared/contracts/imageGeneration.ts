@@ -214,6 +214,32 @@ export const imageGenerationRoundSchema = z.object({
   estimate_hash: imageHashSchema, confirmed_at: mediaIsoDateSchema, created_at: mediaIsoDateSchema,
 }).strict()
 
+/** A short-lived, server-persisted price/occupancy quote for one paid command. */
+export const imageGenerationEstimateSchema = z.object({
+  id: mediaIdSchema,
+  project_id: mediaIdSchema,
+  kind: z.enum(['generation_round', 'derivation']),
+  creative_plan_id: mediaIdSchema.optional(),
+  candidate_id: mediaIdSchema.optional(),
+  direction_ids: z.array(mediaIdSchema).min(1).max(8),
+  request_hash: imageHashSchema,
+  estimate_hash: imageHashSchema,
+  project_revision: z.number().int().nonnegative(),
+  paid_operation_count: z.number().int().positive().max(8),
+  candidate_count_per_operation: z.number().int().positive().max(4),
+  concurrency: z.number().int().positive().max(8),
+  price_upper_bound: z.null(),
+  expires_at: mediaIsoDateSchema,
+  created_at: mediaIsoDateSchema,
+}).strict().superRefine((estimate, context) => {
+  if (estimate.kind === 'generation_round' && !estimate.creative_plan_id) {
+    context.addIssue({ code: 'custom', message: 'generation round estimate requires creative_plan_id' })
+  }
+  if (estimate.kind === 'derivation' && !estimate.candidate_id) {
+    context.addIssue({ code: 'custom', message: 'derivation estimate requires candidate_id' })
+  }
+})
+
 export const imageCandidateSchema = z.object({
   id: mediaIdSchema, asset_id: mediaIdSchema, candidate_index: z.number().int().nonnegative().max(3),
   derived_from_candidate_id: mediaIdSchema.optional(), creative_direction_id: mediaIdSchema.optional(), content_hash: imageHashSchema,
@@ -303,6 +329,12 @@ export const adoptImageCandidateInputSchema = z.object({
 export const deriveImageCandidateInputSchema = z.object({
   ...commandEnvelopeFields,
   instruction: z.string().min(1).max(4_000),
+  estimate_hash: imageHashSchema,
+  confirm: z.literal(true),
+}).strict()
+export const estimateDeriveImageCandidateInputSchema = z.object({
+  base_revision: z.number().int().nonnegative(),
+  instruction: z.string().min(1).max(4_000),
 }).strict()
 
 export type ImageReferenceV2 = z.infer<typeof imageReferenceV2Schema>
@@ -314,6 +346,7 @@ export type ImageOperationResult = z.infer<typeof imageOperationResultSchema>
 export type ImageCreativePlan = z.infer<typeof imageCreativePlanSchema>
 export type ImageCreativeDirection = z.infer<typeof imageCreativeDirectionSchema>
 export type ImageGenerationRound = z.infer<typeof imageGenerationRoundSchema>
+export type ImageGenerationEstimate = z.infer<typeof imageGenerationEstimateSchema>
 export type ImageCandidate = z.infer<typeof imageCandidateSchema>
 export type ImageCandidateGroup = z.infer<typeof imageCandidateGroupSchema>
 export type ImageCandidateDecision = z.infer<typeof imageCandidateDecisionSchema>
@@ -328,6 +361,7 @@ export type CreateGenerationRoundInput = z.input<typeof createGenerationRoundInp
 export type DecideImageCandidateInput = z.input<typeof decideImageCandidateInputSchema>
 export type AdoptImageCandidateInput = z.input<typeof adoptImageCandidateInputSchema>
 export type DeriveImageCandidateInput = z.input<typeof deriveImageCandidateInputSchema>
+export type EstimateDeriveImageCandidateInput = z.input<typeof estimateDeriveImageCandidateInputSchema>
 
 /** The only binary fact exposed to the 15.2 repository transaction. */
 export const imageCandidateAssetSchema = mediaAssetSchema.extend({ role: z.literal('result') })

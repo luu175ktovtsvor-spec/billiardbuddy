@@ -745,8 +745,19 @@ const imageCandidateCommand = (value: unknown, allowedInputKeys: string[], addit
   && additional(value.input)
 
 const imageDecideCandidate: Validator = value => imageCandidateCommand(value, ['base_revision', 'idempotency_key', 'decision'], input => input.decision === 'kept' || input.decision === 'rejected')
-const imageDeriveCandidate: Validator = value => imageCandidateCommand(value, ['base_revision', 'idempotency_key', 'instruction'], input =>
-  typeof input.instruction === 'string' && input.instruction.length >= 1 && input.instruction.length <= 4_000)
+const imageEstimateDerivation: Validator = value =>
+  isRecord(value)
+  && hasOnlyKeys(value, ['projectId', 'candidateId', 'input'])
+  && mediaProjectId(value.projectId)
+  && mediaProjectId(value.candidateId)
+  && isRecord(value.input)
+  && hasOnlyKeys(value.input, ['base_revision', 'instruction'])
+  && imageBaseRevision(value.input.base_revision)
+  && typeof value.input.instruction === 'string' && value.input.instruction.length >= 1 && value.input.instruction.length <= 4_000
+const imageDeriveCandidate: Validator = value => imageCandidateCommand(value, ['base_revision', 'idempotency_key', 'instruction', 'estimate_hash', 'confirm'], input =>
+  typeof input.instruction === 'string' && input.instruction.length >= 1 && input.instruction.length <= 4_000
+  && typeof input.estimate_hash === 'string' && /^sha256:[a-f0-9]{64}$/.test(input.estimate_hash)
+  && input.confirm === true)
 const imageAdoptCandidate: Validator = value => imageCandidateCommand(value, ['base_revision', 'idempotency_key', 'adoptions'], input =>
   Array.isArray(input.adoptions)
   && input.adoptions.length >= 1
@@ -861,6 +872,7 @@ export const ELECTRON_IPC_VALIDATORS = {
   [ELECTRON_IPC_CHANNELS.imageSaveOutput]: imageSaveOutput,
   [ELECTRON_IPC_CHANNELS.imageCreateCreativePlan]: imageCreateCreativePlan,
   [ELECTRON_IPC_CHANNELS.imageEstimateGenerationRound]: imageEstimateGenerationRound,
+  [ELECTRON_IPC_CHANNELS.imageEstimateDerivation]: imageEstimateDerivation,
   [ELECTRON_IPC_CHANNELS.imageCreateGenerationRound]: imageCreateGenerationRound,
   [ELECTRON_IPC_CHANNELS.imageDecideCandidate]: imageDecideCandidate,
   [ELECTRON_IPC_CHANNELS.imageAdoptCandidate]: imageAdoptCandidate,

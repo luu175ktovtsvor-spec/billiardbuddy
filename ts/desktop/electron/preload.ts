@@ -297,6 +297,10 @@ const media = {
       ELECTRON_IPC_CHANNELS.imageEstimateGenerationRound,
       { projectId, input },
     ),
+    estimateDerivation: (projectId: string, candidateId: string, input: unknown) => invoke(
+      ELECTRON_IPC_CHANNELS.imageEstimateDerivation,
+      { projectId, candidateId, input },
+    ),
     createGenerationRound: (projectId: string, input: unknown) => invoke(
       ELECTRON_IPC_CHANNELS.imageCreateGenerationRound,
       { projectId, input },

@@ -659,6 +659,8 @@ test('15.2 Gateway to Relay contract commits a Candidate Group before ACK and ne
       idempotency_key: formal!.idempotency_key,
       request_hash: formal!.request_hash,
       input_asset_hashes: [],
+      completed_at: at,
+      output_asset_hashes: [expectedHash, expectedHash, expectedHash],
     })
     const group = await service.getCandidateGroup(project.id, formal!.result!.kind === 'candidate_group' ? formal.result.candidate_group_id : '')
     expect(group.candidates).toHaveLength(3)
@@ -685,6 +687,11 @@ test('15.2 Gateway to Relay contract commits a Candidate Group before ACK and ne
       adoptions: [{ artboard_id: delivery!.artboards[0]!.id, placement: { fit: 'cover', focus_x: 0.5, focus_y: 0.5 } }],
     })
     expect(adopted.project.current_versions_by_artboard).toEqual({ [delivery!.artboards[0]!.id]: adopted.adoptions[0]!.version_id })
+    await expect(service.adoptCandidate(project.id, group.candidates[0]!.id, {
+      base_revision: adopted.project.revision,
+      idempotency_key: 'bb-image-adopt-gateway-contract-conflict-0001',
+      adoptions: [{ artboard_id: delivery!.artboards[0]!.id, placement: { fit: 'cover', focus_x: 0.5, focus_y: 0.5 } }],
+    })).rejects.toMatchObject({ status: 409 })
     const receipt = await service.deleteProject(project.id)
     expect(receipt.status).toBe('deleted')
     await expect(service.getProject(project.id)).rejects.toMatchObject({ code: 'IMAGE_PROJECT_NOT_FOUND' })
@@ -919,6 +926,365 @@ test('current recovery fences an interrupted remote submission as outcome_unknow
   })
 })
 
+test('15.2 persists a Round before POST and resumes it after a process crash with the original idempotency key', async () => {
+  const root = await testRoot('round-before-post')
+  const legacyMediaRoot = await testRoot('round-before-post-legacy')
+  const calls: GatewayCall[] = []
+  let crashOnce = true
+  const gateway: typeof fetch = async (input, init) => {
+    const url = new URL(input instanceof Request ? input.url : input.toString())
+    calls.push({
+      path: url.pathname,
+      method: init?.method ?? 'GET',
+      headers: new Headers(init?.headers),
+      body: init?.body,
+    })
+    if (url.pathname === '/gw/v1/images/tasks' && init?.method === 'POST') {
+      return Response.json({ task_id: 'relay_task_after_restart', status: 'queued', provider_receipt_hash: 'd'.repeat(64) })
+    }
+    return Response.json({ error: 'unexpected Round recovery request' }, { status: 500 })
+  }
+  const first = new ImageWorkbenchService({
+    root,
+    legacyMediaRoot,
+    now: () => new Date(at),
+    fetchImpl: gateway,
+    crashInjector: point => {
+      if (point === 'after_generation_round_persisted_before_post' && crashOnce) {
+        crashOnce = false
+        throw new Error('INJECTED_ROUND_BEFORE_POST_CRASH')
+      }
+    },
+  })
+  await withGateway(async () => {
+    const project = await createProject(first)
+    const plan = await first.createCreativePlan(project.id, {
+      base_revision: project.revision,
+      idempotency_key: 'bb-image-round-before-post-plan-0001',
+    })
+    const estimate = await first.estimateGenerationRound(project.id, {
+      base_revision: project.revision,
+      creative_plan_id: plan.id,
+      direction_ids: [plan.directions[0]!.id],
+    })
+    const command = {
+      base_revision: project.revision,
+      idempotency_key: 'bb-image-round-before-post-round-0001',
+      creative_plan_id: plan.id,
+      direction_ids: [plan.directions[0]!.id],
+      estimate_hash: estimate.estimate_hash,
+      confirm: true as const,
+    }
+    await expect(first.createGenerationRound(project.id, command)).rejects.toThrow('INJECTED_ROUND_BEFORE_POST_CRASH')
+    expect(calls.filter(call => call.path === '/gw/v1/images/tasks' && call.method === 'POST')).toHaveLength(0)
+
+    const roundId = `rnd_${createHash('sha256').update([project.id, command.idempotency_key].join('\0')).digest('hex').slice(0, 32)}`
+    const round = await first.repository.getGenerationRound(project.id, roundId)
+    const formal = await first.repository.getGenerationOperation(project.id, round.direction_operations[0]!.operation_id)
+    const transport = await first.repository.getOperation(formal.transport_task_id!)
+    expect(formal).toMatchObject({ status: 'queued', idempotency_key: transport.idempotency_key })
+    expect(transport.remote_task_id).toBeUndefined()
+    first.repository.close()
+
+    const recovered = new ImageWorkbenchService({ root, legacyMediaRoot, now: () => new Date(at), fetchImpl: gateway })
+    await recovered.recoverInterruptedOperations()
+    const resumed = await recovered.repository.getGenerationOperation(project.id, formal.id)
+    const resumedTransport = await recovered.repository.getOperation(resumed.transport_task_id!)
+    expect(resumed).toMatchObject({ status: 'queued', remote_task_id: 'relay_task_after_restart' })
+    expect(resumedTransport.remote_task_id).toBe('relay_task_after_restart')
+    const posts = calls.filter(call => call.path === '/gw/v1/images/tasks' && call.method === 'POST')
+    expect(posts).toHaveLength(1)
+    expect(posts[0]!.headers.get('idempotency-key')).toBe(transport.idempotency_key)
+    recovered.repository.close()
+  })
+})
+
+test('15.2 recovers an outcome_unknown Generation Round through the original idempotency key', async () => {
+  const root = await testRoot('round-outcome-unknown')
+  const legacyMediaRoot = await testRoot('round-outcome-unknown-legacy')
+  const calls: GatewayCall[] = []
+  let submitCount = 0
+  const gateway: typeof fetch = async (input, init) => {
+    const url = new URL(input instanceof Request ? input.url : input.toString())
+    calls.push({
+      path: url.pathname,
+      method: init?.method ?? 'GET',
+      headers: new Headers(init?.headers),
+      body: init?.body,
+    })
+    if (url.pathname === '/gw/v1/images/tasks' && init?.method === 'POST') {
+      submitCount += 1
+      if (submitCount === 1) throw new Error('connection dropped after provider accepted the request')
+      return Response.json({ task_id: 'relay_task_idempotent_recovery', status: 'queued', reused: true, provider_receipt_hash: 'e'.repeat(64) })
+    }
+    return Response.json({ error: 'unexpected unknown-outcome recovery request' }, { status: 500 })
+  }
+  const first = new ImageWorkbenchService({ root, legacyMediaRoot, now: () => new Date(at), fetchImpl: gateway })
+  await withGateway(async () => {
+    const project = await createProject(first)
+    const plan = await first.createCreativePlan(project.id, {
+      base_revision: project.revision,
+      idempotency_key: 'bb-image-round-unknown-plan-0001',
+    })
+    const estimate = await first.estimateGenerationRound(project.id, {
+      base_revision: project.revision,
+      creative_plan_id: plan.id,
+      direction_ids: [plan.directions[0]!.id],
+    })
+    const created = await first.createGenerationRound(project.id, {
+      base_revision: project.revision,
+      idempotency_key: 'bb-image-round-unknown-round-0001',
+      creative_plan_id: plan.id,
+      direction_ids: [plan.directions[0]!.id],
+      estimate_hash: estimate.estimate_hash,
+      confirm: true,
+    })
+    expect(created.operations[0]).toMatchObject({ status: 'outcome_unknown' })
+    const transport = await first.repository.getOperation(created.operations[0]!.transport_task_id!)
+    expect(transport.outcome_unknown).toBeTrue()
+    expect(transport.remote_task_id).toBeUndefined()
+    first.repository.close()
+
+    const recovered = new ImageWorkbenchService({ root, legacyMediaRoot, now: () => new Date(at), fetchImpl: gateway })
+    await recovered.recoverInterruptedOperations()
+    const resumed = await recovered.repository.getGenerationOperation(project.id, created.operations[0]!.id)
+    expect(resumed).toMatchObject({ status: 'queued', remote_task_id: 'relay_task_idempotent_recovery' })
+    const posts = calls.filter(call => call.path === '/gw/v1/images/tasks' && call.method === 'POST')
+    expect(posts).toHaveLength(2)
+    expect(posts[1]!.headers.get('idempotency-key')).toBe(posts[0]!.headers.get('idempotency-key'))
+    recovered.repository.close()
+  })
+})
+
+test('15.2 expires estimates and requires an explicit paid derivation confirmation', async () => {
+  const png = (await dataUrl()).split(',', 2)[1]!
+  let now = new Date(at)
+  let paidPosts = 0
+  const gateway: typeof fetch = async (input, init) => {
+    const url = new URL(input instanceof Request ? input.url : input.toString())
+    if (url.pathname === '/gw/v1/images/tasks' && init?.method === 'POST') {
+      paidPosts += 1
+      return Response.json({ task_id: paidPosts === 1 ? 'relay_task_source' : 'relay_task_derivation', status: 'queued', provider_receipt_hash: 'f'.repeat(64) })
+    }
+    if (url.pathname === '/gw/v1/images/tasks/relay_task_source' && (init?.method ?? 'GET') === 'GET') {
+      return Response.json({
+        task_id: 'relay_task_source',
+        status: 'succeeded',
+        provider_receipt_hash: 'f'.repeat(64),
+        data: [
+          { b64_json: png, mime_type: 'image/png' },
+          { b64_json: png, mime_type: 'image/png' },
+          { b64_json: png, mime_type: 'image/png' },
+        ],
+      })
+    }
+    if (url.pathname.endsWith('/ack') && init?.method === 'POST') return Response.json({ result_acknowledged: true })
+    return Response.json({ error: 'unexpected estimate or derivation request' }, { status: 500 })
+  }
+  const service = new ImageWorkbenchService({
+    root: await testRoot('estimate-and-derivation-confirmation'),
+    legacyMediaRoot: await testRoot('estimate-and-derivation-confirmation-legacy'),
+    now: () => now,
+    fetchImpl: gateway,
+  })
+  await withGateway(async () => {
+    const project = await createProject(service)
+    const plan = await service.createCreativePlan(project.id, {
+      base_revision: project.revision,
+      idempotency_key: 'bb-image-expiry-plan-0001',
+    })
+    const expired = await service.estimateGenerationRound(project.id, {
+      base_revision: project.revision,
+      creative_plan_id: plan.id,
+      direction_ids: [plan.directions[0]!.id],
+    })
+    now = new Date(Date.parse(expired.expires_at) + 1)
+    await expect(service.createGenerationRound(project.id, {
+      base_revision: project.revision,
+      idempotency_key: 'bb-image-expiry-round-0001',
+      creative_plan_id: plan.id,
+      direction_ids: [plan.directions[0]!.id],
+      estimate_hash: expired.estimate_hash,
+      confirm: true,
+    })).rejects.toMatchObject({ status: 409, code: 'IMAGE_REVISION_CONFLICT' })
+    expect(paidPosts).toBe(0)
+
+    now = new Date(at)
+    const estimate = await service.estimateGenerationRound(project.id, {
+      base_revision: project.revision,
+      creative_plan_id: plan.id,
+      direction_ids: [plan.directions[0]!.id],
+    })
+    const source = await service.createGenerationRound(project.id, {
+      base_revision: project.revision,
+      idempotency_key: 'bb-image-derivation-source-round-0001',
+      creative_plan_id: plan.id,
+      direction_ids: [plan.directions[0]!.id],
+      estimate_hash: estimate.estimate_hash,
+      confirm: true,
+    })
+    const completedSource = await service.getGenerationOperation(project.id, source.operations[0]!.id)
+    if (completedSource.result?.kind !== 'candidate_group') throw new Error('expected source Candidate Group')
+    const sourceCandidate = (await service.getCandidateGroup(project.id, completedSource.result.candidate_group_id)).candidates[0]!
+    const current = await service.getProject(project.id)
+
+    await expect(service.deriveCandidate(project.id, sourceCandidate.id, {
+      base_revision: current.revision,
+      idempotency_key: 'bb-image-derivation-without-confirmation-0001',
+      instruction: '仅调整背景光线',
+    } as never)).rejects.toThrow()
+    expect(paidPosts).toBe(1)
+
+    const derivationEstimate = await service.estimateDerivation(project.id, sourceCandidate.id, {
+      base_revision: current.revision,
+      instruction: '仅调整背景光线',
+    })
+    now = new Date(Date.parse(derivationEstimate.expires_at) + 1)
+    await expect(service.deriveCandidate(project.id, sourceCandidate.id, {
+      base_revision: current.revision,
+      idempotency_key: 'bb-image-derivation-expired-estimate-0001',
+      instruction: '仅调整背景光线',
+      estimate_hash: derivationEstimate.estimate_hash,
+      confirm: true,
+    })).rejects.toMatchObject({ status: 409, code: 'IMAGE_REVISION_CONFLICT' })
+    expect(paidPosts).toBe(1)
+
+    const renewedDerivationEstimate = await service.estimateDerivation(project.id, sourceCandidate.id, {
+      base_revision: current.revision,
+      instruction: '仅调整背景光线',
+    })
+    await expect(service.deriveCandidate(project.id, sourceCandidate.id, {
+      base_revision: current.revision,
+      idempotency_key: 'bb-image-derivation-confirm-false-0001',
+      instruction: '仅调整背景光线',
+      estimate_hash: renewedDerivationEstimate.estimate_hash,
+      confirm: false,
+    } as never)).rejects.toThrow()
+    expect(paidPosts).toBe(1)
+
+    const derived = await service.deriveCandidate(project.id, sourceCandidate.id, {
+      base_revision: current.revision,
+      idempotency_key: 'bb-image-derivation-confirmed-0001',
+      instruction: '仅调整背景光线',
+      estimate_hash: renewedDerivationEstimate.estimate_hash,
+      confirm: true,
+    })
+    expect(derived.operation).toMatchObject({ kind: 'edit', status: 'queued', base_candidate_id: sourceCandidate.id })
+    expect(paidPosts).toBe(2)
+  })
+})
+
+test('15.2 detects complete idempotency conflicts for Plan, Round, Derivation and Reference Control', async () => {
+  const png = (await dataUrl()).split(',', 2)[1]!
+  let paidPosts = 0
+  const gateway: typeof fetch = async (input, init) => {
+    const url = new URL(input instanceof Request ? input.url : input.toString())
+    if (url.pathname === '/gw/v1/images/tasks' && init?.method === 'POST') {
+      paidPosts += 1
+      return Response.json({ task_id: paidPosts === 1 ? 'relay_task_conflict_source' : 'relay_task_conflict_derive', status: 'queued', provider_receipt_hash: '1'.repeat(64) })
+    }
+    if (url.pathname === '/gw/v1/images/tasks/relay_task_conflict_source' && (init?.method ?? 'GET') === 'GET') {
+      return Response.json({
+        task_id: 'relay_task_conflict_source',
+        status: 'succeeded',
+        provider_receipt_hash: '1'.repeat(64),
+        data: [
+          { b64_json: png, mime_type: 'image/png' },
+          { b64_json: png, mime_type: 'image/png' },
+          { b64_json: png, mime_type: 'image/png' },
+        ],
+      })
+    }
+    if (url.pathname.endsWith('/ack') && init?.method === 'POST') return Response.json({ result_acknowledged: true })
+    return Response.json({ error: 'unexpected idempotency conflict request' }, { status: 500 })
+  }
+  const service = await createService('complete-idempotency-conflicts', gateway)
+  await withGateway(async () => {
+    const initial = await service.createProject({
+      title: '完整幂等冲突',
+      user_request: '创建可验证的候选图',
+      size: '1024x1024',
+      reference_images: [await dataUrl()],
+      reference_roles: ['subject'],
+    })
+    const referenceId = `ref_${createHash('sha256').update([initial.id, initial.references[0]!.asset_id].join('\0')).digest('hex').slice(0, 32)}`
+    const referenceCommand = {
+      base_revision: initial.revision,
+      idempotency_key: 'bb-image-reference-control-conflict-0001',
+      role: 'subject' as const,
+      influence_strength: 'high' as const,
+      preservation: 'must_preserve' as const,
+      priority: 80,
+    }
+    const controlled = await service.updateReferenceControl(initial.id, referenceId, referenceCommand)
+    const referenceReplay = await service.updateReferenceControl(initial.id, referenceId, referenceCommand)
+    expect(referenceReplay.revision).toBe(controlled.revision)
+    await expect(service.updateReferenceControl(initial.id, referenceId, {
+      ...referenceCommand,
+      base_revision: controlled.revision,
+      priority: 60,
+    })).rejects.toMatchObject({ status: 409 })
+
+    const planCommand = {
+      base_revision: controlled.revision,
+      idempotency_key: 'bb-image-plan-conflict-0001',
+    }
+    const plan = await service.createCreativePlan(initial.id, planCommand)
+    expect((await service.createCreativePlan(initial.id, planCommand)).id).toBe(plan.id)
+    await expect(service.createCreativePlan(initial.id, {
+      ...planCommand,
+      directions: [{
+        label: '冲突方向',
+        rationale: '同一幂等键不能替换已有创作方向',
+        generation_intent: { composition_goal: '产品居中', visual_tone: '冷色商业感' },
+        preservation_rules: [],
+      }],
+    })).rejects.toMatchObject({ status: 409 })
+
+    const estimate = await service.estimateGenerationRound(initial.id, {
+      base_revision: controlled.revision,
+      creative_plan_id: plan.id,
+      direction_ids: [plan.directions[0]!.id],
+    })
+    const roundCommand = {
+      base_revision: controlled.revision,
+      idempotency_key: 'bb-image-round-conflict-0001',
+      creative_plan_id: plan.id,
+      direction_ids: [plan.directions[0]!.id],
+      estimate_hash: estimate.estimate_hash,
+      confirm: true as const,
+    }
+    const source = await service.createGenerationRound(initial.id, roundCommand)
+    expect((await service.createGenerationRound(initial.id, roundCommand)).round.id).toBe(source.round.id)
+    await expect(service.createGenerationRound(initial.id, {
+      ...roundCommand,
+      estimate_hash: `sha256:${'2'.repeat(64)}`,
+    })).rejects.toMatchObject({ status: 409 })
+    const completedSource = await service.getGenerationOperation(initial.id, source.operations[0]!.id)
+    if (completedSource.result?.kind !== 'candidate_group') throw new Error('expected source Candidate Group')
+    const candidate = (await service.getCandidateGroup(initial.id, completedSource.result.candidate_group_id)).candidates[0]!
+    const current = await service.getProject(initial.id)
+    const derivationEstimate = await service.estimateDerivation(initial.id, candidate.id, {
+      base_revision: current.revision,
+      instruction: '提高产品边缘对比度',
+    })
+    const derivationCommand = {
+      base_revision: current.revision,
+      idempotency_key: 'bb-image-derivation-conflict-0001',
+      instruction: '提高产品边缘对比度',
+      estimate_hash: derivationEstimate.estimate_hash,
+      confirm: true as const,
+    }
+    const derived = await service.deriveCandidate(initial.id, candidate.id, derivationCommand)
+    expect((await service.deriveCandidate(initial.id, candidate.id, derivationCommand)).round.id).toBe(derived.round.id)
+    await expect(service.deriveCandidate(initial.id, candidate.id, {
+      ...derivationCommand,
+      instruction: '提高背景亮度',
+    })).rejects.toMatchObject({ status: 409 })
+    expect(paidPosts).toBe(2)
+  })
+})
+
 test('15.2 keeps the queued-only Relay cancel contract and records a terminal cancellation event', async () => {
   const png = (await dataUrl()).split(',', 2)[1]!
   const gateway = gatewayFixture(png)
@@ -931,6 +1297,70 @@ test('15.2 keeps the queued-only Relay cancel contract and records a terminal ca
     expect((await service.getProject(project.id)).state).toBe('queued')
     expect((await service.listOperationEvents(project.id, 0, 100)).events.at(-1)?.operation.status).toBe('cancelled')
     expect(gateway.calls.find(call => call.path.endsWith('/cancel'))?.headers.get('authorization')).toBe(`Bearer ${gatewayToken}`)
+  })
+})
+
+test('15.2 retains a late successful result after a confirmed queued cancellation without auto-adopting it', async () => {
+  const png = (await dataUrl()).split(',', 2)[1]!
+  let paidPosts = 0
+  let cancelled = false
+  const gateway: typeof fetch = async (input, init) => {
+    const url = new URL(input instanceof Request ? input.url : input.toString())
+    if (url.pathname === '/gw/v1/images/tasks' && init?.method === 'POST') {
+      paidPosts += 1
+      return Response.json({ task_id: 'relay_task_cancel_late', status: 'queued', provider_receipt_hash: '3'.repeat(64) })
+    }
+    if (url.pathname === '/gw/v1/images/tasks/relay_task_cancel_late' && (init?.method ?? 'GET') === 'GET') {
+      return Response.json(cancelled
+        ? {
+            task_id: 'relay_task_cancel_late',
+            status: 'succeeded',
+            provider_receipt_hash: '3'.repeat(64),
+            data: [
+              { b64_json: png, mime_type: 'image/png' },
+              { b64_json: png, mime_type: 'image/png' },
+              { b64_json: png, mime_type: 'image/png' },
+            ],
+          }
+        : { task_id: 'relay_task_cancel_late', status: 'queued', provider_receipt_hash: '3'.repeat(64) })
+    }
+    if (url.pathname === '/gw/v1/images/tasks/relay_task_cancel_late/cancel' && init?.method === 'POST') {
+      cancelled = true
+      return Response.json({ status: 'cancelled' })
+    }
+    if (url.pathname.endsWith('/ack') && init?.method === 'POST') return Response.json({ result_acknowledged: true })
+    return Response.json({ error: 'unexpected late cancellation request' }, { status: 500 })
+  }
+  const service = await createService('cancel-late-result', gateway)
+  await withGateway(async () => {
+    const project = await createProject(service)
+    const plan = await service.createCreativePlan(project.id, {
+      base_revision: project.revision,
+      idempotency_key: 'bb-image-cancel-late-plan-0001',
+    })
+    const estimate = await service.estimateGenerationRound(project.id, {
+      base_revision: project.revision,
+      creative_plan_id: plan.id,
+      direction_ids: [plan.directions[0]!.id],
+    })
+    const created = await service.createGenerationRound(project.id, {
+      base_revision: project.revision,
+      idempotency_key: 'bb-image-cancel-late-round-0001',
+      creative_plan_id: plan.id,
+      direction_ids: [plan.directions[0]!.id],
+      estimate_hash: estimate.estimate_hash,
+      confirm: true,
+    })
+    const cancelledOperation = await service.cancelGenerationOperation(created.operations[0]!.id)
+    expect(cancelledOperation).toMatchObject({ status: 'cancelled', cancellation: { late_result_policy: 'retain_as_unadopted' } })
+
+    const completedLate = await service.getGenerationOperation(project.id, created.operations[0]!.id)
+    expect(completedLate).toMatchObject({ status: 'succeeded', result: { kind: 'candidate_group', valid_count: 3 } })
+    if (completedLate.result?.kind !== 'candidate_group') throw new Error('expected retained Candidate Group')
+    const retained = await service.getCandidateGroup(project.id, completedLate.result.candidate_group_id)
+    expect(retained.candidates).toHaveLength(3)
+    expect((await service.getProject(project.id)).current_versions_by_artboard).toEqual({})
+    expect(paidPosts).toBe(1)
   })
 })
 
@@ -988,7 +1418,18 @@ test('15.2 API schema rejects invalid fixture and exposes only capability-gated,
     }),
   })
   expect(estimate.status).toBe(200)
-  expect((await estimate.json() as { paid_operation_count: number }).paid_operation_count).toBe(1)
+  expect(await estimate.json()).toMatchObject({ paid_operation_count: 1, expires_at: at.replace('00:00:00.000Z', '00:05:00.000Z') })
+
+  const unconfirmedDerivation = await request(handler, `/api/images/projects/${payload.project.id}/candidates/cand_00000001/derivations`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-BilliardBuddy-Media-Capability': capability },
+    body: JSON.stringify({
+      base_revision: payload.project.revision,
+      idempotency_key: 'bb-image-api-derivation-unconfirmed-0001',
+      instruction: '不应触发付费提交',
+    }),
+  })
+  expect(unconfirmedDerivation.status).toBe(400)
 
   const unauthorised = await request(handler, `/api/images/projects/${payload.project.id}/submit`, { method: 'POST' })
   expect(unauthorised.status).toBe(403)
