@@ -212,6 +212,7 @@ struct WindowInfo {
   HWND handle;
   RECT bounds;
   std::wstring title;
+  DWORD processId;
 };
 
 std::vector<WindowInfo> visibleWindows(const std::wstring& appId) {
@@ -226,10 +227,19 @@ std::vector<WindowInfo> visibleWindows(const std::wstring& appId) {
     std::wstring title(static_cast<size_t>(std::max(0, length)) + 1, L'\0');
     const int copied = GetWindowTextW(window, title.data(), static_cast<int>(title.size()));
     title.resize(std::max(0, copied));
-    context.windows.push_back({window, bounds, title});
+    DWORD processId = 0;
+    GetWindowThreadProcessId(window, &processId);
+    context.windows.push_back({window, bounds, title, processId});
     return TRUE;
   }, reinterpret_cast<LPARAM>(&context));
   return windows;
+}
+
+void requireStillForeground(const WindowInfo& window, const std::wstring& appId) {
+  requireActiveDesktop();
+  if (GetForegroundWindow() != window.handle || !windowBelongsTo(window.handle, appId)) {
+    throw ServiceError("The requested window lost foreground focus before Computer Use could act");
+  }
 }
 
 WindowInfo requireWindow(const std::wstring& appId, const std::wstring& rawWindowId, bool foreground) {
@@ -377,7 +387,7 @@ void sendScroll(double deltaX, double deltaY) {
   if (SendInput(2, input, sizeof(INPUT)) != 2) throw ServiceError("Windows blocked scrolling because the target has higher privileges or input is unavailable");
 }
 
-std::string inspectFocusedElement() {
+std::string inspectFocusedElement(DWORD expectedProcessId) {
   IUIAutomation* automation = nullptr;
   IUIAutomationElement* element = nullptr;
   HRESULT hr = CoCreateInstance(CLSID_CUIAutomation, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&automation));
@@ -385,17 +395,22 @@ std::string inspectFocusedElement() {
   if (FAILED(hr) || !element) { if (automation) automation->Release(); throw ServiceError("Windows UI Automation cannot inspect the focused element"); }
   BSTR name = nullptr;
   CONTROLTYPEID controlType = 0;
+  int processId = 0;
   BOOL password = FALSE;
   element->get_CurrentName(&name);
   element->get_CurrentControlType(&controlType);
+  hr = element->get_CurrentProcessId(&processId);
   element->get_CurrentIsPassword(&password);
   std::wstring title = name ? std::wstring(name, SysStringLen(name)) : L"";
   if (name) SysFreeString(name);
   element->Release(); automation->Release();
+  if (FAILED(hr) || processId <= 0 || static_cast<DWORD>(processId) != expectedProcessId) {
+    throw ServiceError("The focused accessibility element is not in the requested app");
+  }
   return "{\"controlType\":" + std::to_string(controlType) + ",\"title\":\"" + wideToUtf8(jsonEscape(title)) + "\",\"isPassword\":" + (password ? "true" : "false") + "}";
 }
 
-bool focusedElementIsPassword() {
+bool focusedElementIsPassword(DWORD expectedProcessId) {
   IUIAutomation* automation = nullptr;
   IUIAutomationElement* element = nullptr;
   HRESULT hr = CoCreateInstance(CLSID_CUIAutomation, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&automation));
@@ -404,11 +419,15 @@ bool focusedElementIsPassword() {
     if (automation) automation->Release();
     throw ServiceError("Windows UI Automation cannot inspect the focused element before typing");
   }
+  int processId = 0;
   BOOL password = FALSE;
-  hr = element->get_CurrentIsPassword(&password);
+  hr = element->get_CurrentProcessId(&processId);
+  if (SUCCEEDED(hr)) hr = element->get_CurrentIsPassword(&password);
   element->Release();
   automation->Release();
-  if (FAILED(hr)) throw ServiceError("Windows UI Automation cannot inspect whether the focused field is secure");
+  if (FAILED(hr) || processId <= 0 || static_cast<DWORD>(processId) != expectedProcessId) {
+    throw ServiceError("Windows UI Automation cannot verify the focused field belongs to the requested app");
+  }
   return password != FALSE;
 }
 
@@ -472,21 +491,28 @@ void run(const std::vector<std::wstring>& arguments) {
   // GDI captures the active desktop surface rather than a private off-screen
   // app buffer. Requiring foreground avoids returning another app's overlay.
   const auto window = requireWindow(appId, argument(arguments, 2, "windowId"), true);
-  if (command == L"capture-window") { std::cout << captureWindow(window) << std::endl; return; }
-  if (command == L"inspect-focused-element") { std::cout << inspectFocusedElement() << std::endl; return; }
+  if (command == L"capture-window") {
+    requireStillForeground(window, appId);
+    const auto image = captureWindow(window);
+    requireStillForeground(window, appId);
+    std::cout << image << std::endl;
+    return;
+  }
+  if (command == L"inspect-focused-element") { requireStillForeground(window, appId); std::cout << inspectFocusedElement(window.processId) << std::endl; return; }
   if (command == L"click") {
     const long x = parseLong(argument(arguments, 3, "x"), "x"); const long y = parseLong(argument(arguments, 4, "y"), "y");
     if (x < window.bounds.left || x >= window.bounds.right || y < window.bounds.top || y >= window.bounds.bottom) throw ServiceError("The requested click is outside the current target window");
-    sendMouseClick(x, y); std::cout << "{\"clicked\":true}" << std::endl; return;
+    requireStillForeground(window, appId); sendMouseClick(x, y); std::cout << "{\"clicked\":true}" << std::endl; return;
   }
   if (command == L"type-text") {
     const auto& text = argument(arguments, 3, "text");
     if (text.size() > 4096) throw ServiceError("text is limited to 4096 characters");
-    if (focusedElementIsPassword()) throw ServiceError("Computer Use will not type into a secure password field");
-    sendText(text); std::cout << "{\"typed\":true,\"characterCount\":" << text.size() << "}" << std::endl; return;
+    requireStillForeground(window, appId);
+    if (focusedElementIsPassword(window.processId)) throw ServiceError("Computer Use will not type into a secure password field");
+    requireStillForeground(window, appId); sendText(text); std::cout << "{\"typed\":true,\"characterCount\":" << text.size() << "}" << std::endl; return;
   }
-  if (command == L"press-key") { sendKey(argument(arguments, 3, "key")); std::cout << "{\"pressed\":true}" << std::endl; return; }
-  if (command == L"scroll") { sendScroll(parseDouble(argument(arguments, 3, "deltaX"), "deltaX"), parseDouble(argument(arguments, 4, "deltaY"), "deltaY")); std::cout << "{\"scrolled\":true}" << std::endl; return; }
+  if (command == L"press-key") { requireStillForeground(window, appId); sendKey(argument(arguments, 3, "key")); std::cout << "{\"pressed\":true}" << std::endl; return; }
+  if (command == L"scroll") { requireStillForeground(window, appId); sendScroll(parseDouble(argument(arguments, 3, "deltaX"), "deltaX"), parseDouble(argument(arguments, 4, "deltaY"), "deltaY")); std::cout << "{\"scrolled\":true}" << std::endl; return; }
   throw ServiceError("Unknown Computer Use command");
 }
 

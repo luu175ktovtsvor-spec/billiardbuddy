@@ -25,6 +25,18 @@ const clientRequestMethods = [
   'thread/rollback',
   'thread/turns/list',
   'thread/items/list',
+  'thread/searchOccurrences',
+  'model/list',
+  'modelProvider/capabilities/read',
+  'permissionProfile/list',
+  'configRequirements/read',
+  'thread/memoryMode/set',
+  'memory/reset',
+  'threadSection/list',
+  'threadSection/create',
+  'threadSection/update',
+  'threadSection/delete',
+  'thread/section/move',
   'thread/goal/get',
   'thread/goal/set',
   'thread/goal/clear',
@@ -126,7 +138,6 @@ const reviewedNonExposedClientRequestMethods = {
   sourceOnlyConfigurationAndMigration: [
     'config/batchWrite',
     'config/read',
-    'configRequirements/read',
     'experimentalFeature/enablement/set',
     'experimentalFeature/list',
     'externalAgentConfig/import/readHistories',
@@ -151,17 +162,13 @@ const reviewedNonExposedClientRequestMethods = {
   ],
   /**
    * Native backend methods whose product UI/typed IPC is intentionally later:
-   * model picker, direct resource explorer, plugin sharing, sections/memory,
-   * realtime voice and guardian controls.  They remain source-backed future
+   * direct resource explorer, plugin sharing, realtime voice and guardian
+   * controls. They remain source-backed future
    * work, rather than being misrepresented as already exposed product APIs.
    */
   deferredProductSurfaces: [
     'mcpServer/resource/read',
     'mcpServer/tool/call',
-    'memory/reset',
-    'model/list',
-    'modelProvider/capabilities/read',
-    'permissionProfile/list',
     'plugin/search',
     'plugin/share/checkout',
     'plugin/share/delete',
@@ -174,7 +181,6 @@ const reviewedNonExposedClientRequestMethods = {
     'thread/increment_elicitation',
     'thread/inject_items',
     'thread/loaded/list',
-    'thread/memoryMode/set',
     'thread/metadata/update',
     'thread/realtime/appendAudio',
     'thread/realtime/appendSpeech',
@@ -182,13 +188,7 @@ const reviewedNonExposedClientRequestMethods = {
     'thread/realtime/listVoices',
     'thread/realtime/start',
     'thread/realtime/stop',
-    'thread/searchOccurrences',
-    'thread/section/move',
     'thread/unsubscribe',
-    'threadSection/create',
-    'threadSection/delete',
-    'threadSection/list',
-    'threadSection/update',
   ],
 } as const
 
@@ -314,10 +314,15 @@ async function main(): Promise<void> {
   const managedResponses = requireRepositoryFile('gateway/managedResponses.ts')
   const featureDefinitions = requireFile('codex-rs/features/src/lib.rs')
   const engineBuildWorkflow = requireRepositoryFile('.github/workflows/codex-engine-build.yml')
+  const macosBuild = requireDesktopFile('scripts/build-macos-arm64.sh')
+  const windowsBuild = requireDesktopFile('scripts/build-windows-x64.ps1')
   const mainProcess = requireDesktopFile('electron/main.ts')
   const credentialStore = requireDesktopFile('electron/services/keychain.ts')
   const serverRequestBridge = requireDesktopFile('electron/services/nativeServerRequest.ts')
   const engineStaging = requireDesktopFile('scripts/stage-codex-engine.ts')
+  const chromeNativeMessaging = requireDesktopFile('electron/services/chromeNativeMessaging.ts')
+  const browserPolicyConfiguration = requireDesktopFile('electron/services/browserPolicyConfiguration.ts')
+  const preload = requireDesktopFile('electron/preload.ts')
 
   assertUniqueMethods(clientRequestMethods, '已接入 App Server client request')
   assertUniqueMethods(reviewedNonExposedMethods, '已审计但未暴露的 App Server client request')
@@ -344,10 +349,28 @@ async function main(): Promise<void> {
   assertContains(runtime, 'if (!await hasVerifiedNativeEngineManifest(', '未验证内核的 fail-closed 启动门')
   assertContains(requireDesktopFile('scripts/verify-codex-engine-source.ts'), '--apply-product-patches', 'CI 按产品补丁合同应用内核改动')
   assertContains(engineStaging, '--prebuilt-binary', '可从 GitHub 构建产物封装受管引擎')
+  assertContains(engineStaging, '--prebuilt-code-mode-host', 'Code Mode Host 与 App Server 一起封装')
+  assertContains(engineStaging, 'codeModeHostSha256', 'Code Mode Host 独立哈希校验')
+  assertContains(engineStaging, 'from codex_package.ripgrep import resolve_rg_bin', '复用锁定源码的官方 ripgrep 包装器')
+  assertContains(engineStaging, 'ripgrepHashMode', 'macOS 签名后仍可校验官方 ripgrep')
+  assertContains(engineStaging, 'ripgrepSha256', '官方 ripgrep 独立哈希校验')
   assertContains(engineStaging, 'assertPinnedSource()', '预构建引擎仍核对锁定源码版本')
   assertContains(engineBuildWorkflow, '--prebuilt-binary', 'GitHub 内核构建产物封装为受管运行时')
+  assertContains(engineBuildWorkflow, '--package codex-code-mode-host', 'GitHub 从锁定源码构建 Code Mode Host')
+  assertContains(engineBuildWorkflow, '--prebuilt-code-mode-host', 'GitHub 将 Code Mode Host 交给封装器')
   assertContains(engineBuildWorkflow, 'runtime-assets/binaries/', 'GitHub 保存完整可校验引擎运行时')
-  assertContains(engineContract, 'CODEX_ENGINE_MANIFEST_SCHEMA = 4', '受管补丁清单版本')
+  for (const pluginStage of [
+    'stage:agent-plugins',
+    'stage:chrome-plugin',
+    'stage:browser-plugin',
+    'stage:record-replay-plugin',
+  ]) {
+    assertContains(macosBuild, pluginStage, `macOS 正式构建包含 ${pluginStage}`)
+    assertContains(windowsBuild, pluginStage, `Windows 正式构建包含 ${pluginStage}`)
+  }
+  assertContains(engineContract, 'CODEX_ENGINE_MANIFEST_SCHEMA = 6', '受管补丁清单版本')
+  assertContains(runtime, 'hasVerifiedManagedBinary(', '启动前验证 App Server 与 Code Mode Host 二进制')
+  assertContains(runtime, 'path.dirname(command)', '将受管 ripgrep 目录加入 Agent 运行 PATH')
   for (const patch of CODEX_ENGINE_PRODUCT_PATCHES) {
     assertContains(engineContract, `file: '${patch.file}'`, `受管补丁 ${patch.file}`)
     assertContains(engineContract, `sha256: '${patch.sha256}'`, `受管补丁 ${patch.file} 的 SHA-256`)
@@ -356,6 +379,14 @@ async function main(): Promise<void> {
   assertContains(runtime, 'runtimeWorkspaceRoots', '受控运行工作区根目录')
   assertContains(runtime, 'sandboxPolicy', '原生沙箱策略字段')
   assertContains(runtime, 'textElements: []', '原生文本输入元素默认值')
+  assertContains(runtime, "type: 'localImage'", '原生本地图片 Turn 输入映射')
+  assertContains(runtime, "type: 'audio'", '原生内联音频 Turn 输入映射')
+  assertContains(runtime, "type: 'localAudio'", '原生本地音频 Turn 输入映射')
+  assertContains(runtime, "type: 'skill'", '原生 Skill Turn 输入映射')
+  assertContains(runtime, "type: 'mention'", '原生 Mention Turn 输入映射')
+  assertContains(runtime, "input.map(item => this.normalizeTurnInput(thread.id, item))", 'Turn steer 复用完整原生输入映射')
+  assertContains(runtime, 'secureRegularFile', '本地 Turn 输入文件范围与真实路径校验')
+  assertContains(runtime, "path.join(homedir(), '.agents', 'skills')", '原生用户 Skill 发现根的显式选择边界')
   assertContains(runtime, "createHash('sha256')", '个人模型路由无明文凭据指纹')
   assertContains(runtime, 'async invalidateModelRoute()', '个人模型变更后的子进程能力撤销')
   assertContains(runtime, 'CODEX_NATIVE_ROUTE_CHANGE_REQUIRES_IDLE', '原生 Turn 期间的模型路由变更拦截')
@@ -381,6 +412,15 @@ async function main(): Promise<void> {
   assertContains(engineStaging, 'codex-command-runner.exe', 'Windows Sandbox command-runner 辅助程序随引擎封装')
   assertContains(engineBuildWorkflow, '--package codex-windows-sandbox', 'GitHub 构建原生 Windows Sandbox 辅助程序')
   assertContains(engineBuildWorkflow, '--prebuilt-windows-sandbox-setup', 'GitHub 将 Windows Sandbox setup 辅助程序交给封装器')
+  assertContains(mainProcess, 'getChromeNativeMessagingHostStatus', 'Chrome Native Messaging 状态接入 Main')
+  assertContains(mainProcess, 'installChromeNativeMessagingHost', 'Chrome Native Messaging 安装接入 Main')
+  assertContains(mainProcess, 'uninstallChromeNativeMessagingHost', 'Chrome Native Messaging 卸载接入 Main')
+  assertContains(ipcCapabilities, 'chromeNativeMessagingInstall', 'Chrome Native Messaging IPC 校验')
+  assertContains(preload, 'installChromeNativeMessaging', 'Chrome Native Messaging 预加载桥')
+  assertContains(chromeNativeMessaging, 'BILLIARDBUDDY_CHROME_EXTENSION_ID', 'Chrome 仅信任固定扩展 ID')
+  assertContains(mainProcess, 'browserUsePolicySet', 'Browser Use 网站策略接入 Main')
+  assertContains(mainProcess, 'chromeControlPolicySet', 'Chrome Control 网站策略接入 Main')
+  assertContains(browserPolicyConfiguration, "'browser-use' | 'chrome-control'", 'Browser 与 Chrome 使用独立策略目录')
   assertNotContains(runtime, "'thread/shellCommand'", '绕过沙箱的 App Server shellCommand 接口')
   assertContains(protocol, '#[experimental("thread/backgroundTerminals/list")]', '后台终端查询的上游实验性标记')
   assertContains(protocol, 'ThreadGoalUpdated => "thread/goal/updated"', '原生 Thread Goal 更新通知')
@@ -413,8 +453,15 @@ async function main(): Promise<void> {
   assertContains(serverRequestBridge, 'validateNativeServerRequestResponse', '按 source request 校验回填结果')
   assertContains(serverRequestBridge, "request.method === 'item/tool/call'", '未注册动态工具的 fail-closed 回退')
   assertContains(provider, "${prefix}.wire_api=${quoted('responses')}", '所有 App Server provider 固定使用 Responses wire API')
+  assertContains(provider, "id: 'billiardbuddy'", '所有模型路线使用非 OpenAI/Azure 的 BilliardBuddy Provider 身份')
+  assertContains(provider, "name: 'BilliardBuddy managed DeepSeek gateway adapter'", '托管模型使用 BilliardBuddy 自定义 Provider 身份')
+  assertContains(provider, "name: 'BilliardBuddy local personal Responses adapter'", '个人 Responses 使用 BilliardBuddy 自定义 Provider 身份')
+  assertContains(provider, "name: 'BilliardBuddy local Chat Completions adapter'", '个人 Chat 使用 BilliardBuddy 自定义 Provider 身份')
   assertContains(provider, "'features.image_generation=false'", 'Codex 托管生图不会越过 BilliardBuddy 独立生图工作台')
-  assertNotContains(provider, "'web_search=\"disabled\"'", '已验证的原生网页搜索被全局禁用')
+  assertContains(provider, "input.hostedWebSearch === 'disabled'", '仅按 provider 能力关闭托管网页搜索')
+  assertContains(provider, "hostedWebSearch: 'disabled'", '旧 Chat Completions 路线关闭无法表达的托管网页搜索')
+  assertNotContains(provider, "name: 'BilliardBuddy managed DeepSeek gateway adapter',\n        baseUrl: started.baseUrl,\n        hostedWebSearch: 'disabled'", '托管 Responses 路线关闭原生网页搜索')
+  assertNotContains(provider, "name: 'BilliardBuddy local personal Responses adapter',\n        baseUrl: started.baseUrl,\n        hostedWebSearch: 'disabled'", '个人 Responses 路线关闭原生网页搜索')
   assertContains(provider, "'shell_environment_policy.ignore_default_excludes=false'", 'Core shell 子进程必须排除注入的 Key、Secret 与 Token')
   assertNotContains(provider, 'model_context_window=', '产品覆盖 Core 模型上下文窗口')
   assertNotContains(provider, 'model_auto_compact_token_limit=', 'Provider 覆盖 Core 原生自动压缩阈值')
@@ -428,6 +475,8 @@ async function main(): Promise<void> {
   assertNotContains(provider, 'BB_CODEX_PERSONAL_RESPONSES_KEY', '个人 Responses 原始 Key 注入 Rust')
   assertContains(provider, "redirect: 'error'", '凭据桥拒绝上游重定向')
   assertContains(provider, 'class ChatCompletionsResponsesAdapter', '个人 Chat Completions 本机转换器')
+  assertContains(provider, 'chatToolOutputMessages(', '旧 Chat Completions 路线保留多模态工具结果')
+  assertContains(provider, 'Media returned by the preceding tool call.', '旧 Chat Completions 工具媒体采用标准多模态消息')
   assertContains(provider, "url.pathname !== '/v1/responses'", 'Chat 转换器对 Rust 暴露的唯一 Responses 路由')
   assertContains(provider, "personalModelEndpoint(this.profile.base_url, 'chat/completions')", 'Chat 转换器唯一上游 Chat Completions 调用')
   assertContains(ipcCapabilities, "value === 'openai-compatible' || value === 'openai-responses'", 'IPC 只接受两种个人 Key 协议')

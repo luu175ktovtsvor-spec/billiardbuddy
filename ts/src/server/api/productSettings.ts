@@ -26,8 +26,6 @@ const USER_PREFERENCE_KEYS = [
   'chatSendBehavior',
   'language',
   'desktopNotificationsEnabled',
-  'webSearch',
-  'deepThinkingEnabled',
   'preventSleepWhileRunning',
 ] as const
 const RUNTIME_SETTING_KEYS = [
@@ -179,19 +177,8 @@ function projectUserPreferences(settings: Record<string, unknown>): Record<strin
   if (typeof settings.desktopNotificationsEnabled === 'boolean') {
     result.desktopNotificationsEnabled = settings.desktopNotificationsEnabled
   }
-  if (typeof settings.deepThinkingEnabled === 'boolean') {
-    result.deepThinkingEnabled = settings.deepThinkingEnabled
-  }
   if (typeof settings.preventSleepWhileRunning === 'boolean') {
     result.preventSleepWhileRunning = settings.preventSleepWhileRunning
-  }
-  if (hasOwn(settings, 'webSearch')) {
-    const webSearch = copyRecord(settings.webSearch)
-    result.webSearch = {
-      enabled: typeof webSearch.enabled === 'boolean'
-        ? webSearch.enabled
-        : webSearch.mode !== 'disabled',
-    }
   }
 
   return result
@@ -223,19 +210,9 @@ function validateUserPreferenceUpdate(body: Record<string, unknown>): Record<str
     assertBoolean(body.desktopNotificationsEnabled, 'desktopNotificationsEnabled')
     update.desktopNotificationsEnabled = body.desktopNotificationsEnabled
   }
-  if (hasOwn(body, 'deepThinkingEnabled')) {
-    assertBoolean(body.deepThinkingEnabled, 'deepThinkingEnabled')
-    update.deepThinkingEnabled = body.deepThinkingEnabled
-  }
   if (hasOwn(body, 'preventSleepWhileRunning')) {
     assertBoolean(body.preventSleepWhileRunning, 'preventSleepWhileRunning')
     update.preventSleepWhileRunning = body.preventSleepWhileRunning
-  }
-  if (hasOwn(body, 'webSearch')) {
-    assertRecord(body.webSearch, 'webSearch')
-    assertKnownKeys(body.webSearch, ['enabled'], 'web search')
-    assertBoolean(body.webSearch.enabled, 'webSearch.enabled')
-    update.webSearch = body.webSearch.enabled
   }
 
   return update
@@ -245,20 +222,7 @@ function mergeUserPreferenceUpdate(
   current: Record<string, unknown>,
   update: Record<string, unknown>,
 ): Record<string, unknown> {
-  const next = { ...current, ...update }
-
-  if (hasOwn(update, 'webSearch')) {
-    const webSearch = copyRecord(current.webSearch)
-    // Retire external-search configuration on the next ordinary product
-    // update. Only the user-facing native-search toggle remains persisted.
-    delete webSearch.mode
-    delete webSearch.tavilyApiKey
-    delete webSearch.braveApiKey
-    webSearch.enabled = update.webSearch
-    next.webSearch = webSearch
-  }
-
-  return next
+  return { ...current, ...update }
 }
 
 function projectRuntimeSettings(settings: Record<string, unknown>): Record<string, unknown> {

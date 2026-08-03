@@ -71,6 +71,54 @@ const nativeAgent = {
     ELECTRON_IPC_CHANNELS.nativeAgentListThreadItems,
     { ...options, threadId },
   ),
+  searchThreadOccurrences: (threadId: string, searchTerm: string, options: Record<string, unknown> = {}) => invoke(
+    ELECTRON_IPC_CHANNELS.nativeAgentSearchThreadOccurrences,
+    { ...options, threadId, searchTerm },
+  ),
+  listModels: (threadId: string, options: Record<string, unknown> = {}) => invoke(
+    ELECTRON_IPC_CHANNELS.nativeAgentListModels,
+    { ...options, threadId },
+  ),
+  readModelProviderCapabilities: (threadId: string) => invoke(
+    ELECTRON_IPC_CHANNELS.nativeAgentReadModelProviderCapabilities,
+    { threadId },
+  ),
+  listPermissionProfiles: (threadId: string, cwd: string, options: Record<string, unknown> = {}) => invoke(
+    ELECTRON_IPC_CHANNELS.nativeAgentListPermissionProfiles,
+    { ...options, threadId, cwd },
+  ),
+  readConfigRequirements: (threadId: string) => invoke(
+    ELECTRON_IPC_CHANNELS.nativeAgentReadConfigRequirements,
+    { threadId },
+  ),
+  setThreadMemoryMode: (threadId: string, mode: 'enabled' | 'disabled') => invoke(
+    ELECTRON_IPC_CHANNELS.nativeAgentSetThreadMemoryMode,
+    { threadId, mode },
+  ),
+  resetMemory: (threadId: string) => invoke(
+    ELECTRON_IPC_CHANNELS.nativeAgentResetMemory,
+    { threadId },
+  ),
+  listThreadSections: (threadId: string, options: Record<string, unknown> = {}) => invoke(
+    ELECTRON_IPC_CHANNELS.nativeAgentListThreadSections,
+    { ...options, threadId },
+  ),
+  createThreadSection: (threadId: string, name: string) => invoke(
+    ELECTRON_IPC_CHANNELS.nativeAgentCreateThreadSection,
+    { threadId, name },
+  ),
+  updateThreadSection: (threadId: string, sectionId: string, name: string) => invoke(
+    ELECTRON_IPC_CHANNELS.nativeAgentUpdateThreadSection,
+    { threadId, sectionId, name },
+  ),
+  deleteThreadSection: (threadId: string, sectionId: string) => invoke(
+    ELECTRON_IPC_CHANNELS.nativeAgentDeleteThreadSection,
+    { threadId, sectionId },
+  ),
+  moveThreadToSection: (threadId: string, sectionId: string | null, beforeThreadId?: string) => invoke(
+    ELECTRON_IPC_CHANNELS.nativeAgentMoveThreadToSection,
+    { threadId, sectionId, ...(beforeThreadId === undefined ? {} : { beforeThreadId }) },
+  ),
   getThreadGoal: (threadId: string) => invoke(
     ELECTRON_IPC_CHANNELS.nativeAgentGetThreadGoal,
     { threadId },
@@ -125,9 +173,9 @@ const nativeAgent = {
     ELECTRON_IPC_CHANNELS.nativeAgentStartReview,
     { threadId, target, ...(delivery === undefined ? {} : { delivery }) },
   ),
-  steerTurn: (threadId: string, turnId: string, text: string, clientUserMessageId?: string) => invoke(
+  steerTurn: (threadId: string, turnId: string, input: unknown[], clientUserMessageId?: string) => invoke(
     ELECTRON_IPC_CHANNELS.nativeAgentSteerTurn,
-    { threadId, turnId, text, ...(clientUserMessageId === undefined ? {} : { clientUserMessageId }) },
+    { threadId, turnId, input, ...(clientUserMessageId === undefined ? {} : { clientUserMessageId }) },
   ),
   interruptTurn: (threadId: string, turnId: string) => invoke(
     ELECTRON_IPC_CHANNELS.nativeAgentInterruptTurn,
@@ -195,32 +243,6 @@ const nativeAgent = {
     ELECTRON_IPC_CHANNELS.nativeAgentRemoveScheduledTask,
     { threadId, taskId },
   ),
-  getRemoteHostStatus: () => invoke(ELECTRON_IPC_CHANNELS.remoteHostGetStatus),
-  setRemoteHostEnabled: (enabled: boolean) => invoke(
-    ELECTRON_IPC_CHANNELS.remoteHostSetEnabled,
-    { enabled },
-  ),
-  createRemoteHostPairing: (ttlSeconds?: number) => invoke(
-    ELECTRON_IPC_CHANNELS.remoteHostCreatePairing,
-    ttlSeconds === undefined ? {} : { ttlSeconds },
-  ),
-  listRemoteHostControllers: () => invoke(ELECTRON_IPC_CHANNELS.remoteHostListControllers),
-  revokeRemoteHostController: (installationId: string) => invoke(
-    ELECTRON_IPC_CHANNELS.remoteHostRevokeController,
-    { installationId },
-  ),
-  claimRemoteHostPairing: (pairingCode: string) => invoke(
-    ELECTRON_IPC_CHANNELS.remoteControllerClaim,
-    { pairingCode },
-  ),
-  startRemoteHostTurn: (hostInstallationId: string, threadId: string, cwd: string, text: string) => invoke(
-    ELECTRON_IPC_CHANNELS.remoteControllerStartTurn,
-    { hostInstallationId, threadId, cwd, text },
-  ),
-  steerRemoteHostTurn: (hostInstallationId: string, threadId: string, turnId: string, text: string) => invoke(
-    ELECTRON_IPC_CHANNELS.remoteControllerSteerTurn,
-    { hostInstallationId, threadId, turnId, text },
-  ),
   listHooks: (threadId: string, cwd: string) => invoke(
     ELECTRON_IPC_CHANNELS.nativeAgentListHooks,
     { threadId, cwd },
@@ -269,6 +291,19 @@ const nativeAgent = {
   setComputerUseConfiguration: (allowedAppIds: string[]) => invoke(
     ELECTRON_IPC_CHANNELS.computerUseConfigurationSet,
     { allowedAppIds },
+  ),
+  getChromeNativeMessagingStatus: () => invoke(ELECTRON_IPC_CHANNELS.chromeNativeMessagingGetStatus),
+  installChromeNativeMessaging: () => invoke(ELECTRON_IPC_CHANNELS.chromeNativeMessagingInstall),
+  uninstallChromeNativeMessaging: () => invoke(ELECTRON_IPC_CHANNELS.chromeNativeMessagingUninstall),
+  getBrowserUsePolicy: () => invoke(ELECTRON_IPC_CHANNELS.browserUsePolicyGet),
+  setBrowserUsePolicy: (allowedHosts: string[], blockedHosts: string[]) => invoke(
+    ELECTRON_IPC_CHANNELS.browserUsePolicySet,
+    { allowedHosts, blockedHosts },
+  ),
+  getChromeControlPolicy: () => invoke(ELECTRON_IPC_CHANNELS.chromeControlPolicyGet),
+  setChromeControlPolicy: (allowedHosts: string[], blockedHosts: string[]) => invoke(
+    ELECTRON_IPC_CHANNELS.chromeControlPolicySet,
+    { allowedHosts, blockedHosts },
   ),
   onEvent: nativeAgentEventListener,
 }

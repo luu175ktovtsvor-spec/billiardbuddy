@@ -18,7 +18,7 @@ permissions:
 jobs:
   verify-and-build:
     runs-on: macos-14
-    timeout-minutes: 90
+    timeout-minutes: 150
     steps:
       - uses: actions/checkout@v5
         with:
@@ -27,6 +27,9 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: '1.3.14'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
       - name: 安装 Codex 源码锁定的 Rust 工具链
         uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582
         with:
@@ -44,10 +47,18 @@ jobs:
         working-directory: ts
         run: bun run scripts/check-release-tracked-files.ts
 
-      - name: 准备经审核的打包凭据与媒体工具链
+      - name: 统一检查 Agent 宿主、模型适配与锁定协议
+        working-directory: ts
+        run: |
+          set -euo pipefail
+          bun run check:server
+          bun test --preload ./test/setup.ts ./test/codexNativeProvider.test.ts
+          bun run check:electron
+          bun run verify:codex-engine-source
+
+      - name: 准备经审核的媒体工具链与签名凭据
         shell: bash
         env:
-          BB_RELEASE_UPLOAD_SSH_KEY_B64: ${{ secrets.BB_RELEASE_UPLOAD_SSH_KEY_B64 }}
           BB_MACOS_MEDIA_TOOLCHAIN_URL: ${{ secrets.BB_MACOS_MEDIA_TOOLCHAIN_URL }}
           BB_MACOS_MEDIA_TOOLCHAIN_SHA256: ${{ secrets.BB_MACOS_MEDIA_TOOLCHAIN_SHA256 }}
           BB_MACOS_CERTIFICATE_P12_B64: ${{ secrets.BB_MACOS_CERTIFICATE_P12_B64 }}
@@ -59,7 +70,6 @@ jobs:
           set -euo pipefail
 
           required=(
-            BB_RELEASE_UPLOAD_SSH_KEY_B64
             BB_MACOS_MEDIA_TOOLCHAIN_URL
             BB_MACOS_MEDIA_TOOLCHAIN_SHA256
             BB_MACOS_CERTIFICATE_P12_B64
@@ -104,53 +114,6 @@ jobs:
             fi
           done
 
-          ssh_dir="${HOME}/.ssh"
-          key_path="${ssh_dir}/billiardbuddy-release-upload"
-          known_hosts_path="${ssh_dir}/known_hosts"
-          mkdir -p "${ssh_dir}"
-          printf '%s' "${BB_RELEASE_UPLOAD_SSH_KEY_B64}" | base64 -D > "${key_path}"
-          chmod 600 "${key_path}"
-          {
-            printf '%s\n' '39.106.214.21 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIgaQWyo3iZcvWHsVpYf+Oncgf5RZhkpMdz7ap5Gbusc'
-            printf '%s\n' 'zzyppz.cn ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJIxRR8LH+6jH3sUGNFy9HlxDKRF9MA9QLYm7AYuwa3P'
-          } > "${known_hosts_path}"
-          chmod 600 "${known_hosts_path}"
-
-          gateway_credentials="$(
-            ssh -i "${key_path}" -o BatchMode=yes -o StrictHostKeyChecking=yes \
-              root@39.106.214.21 \
-              "sed -n 's/^GW_APP_CREDENTIALS=//p' /opt/billiardbuddy-gateway/gw.env"
-          )"
-          license_provisioning_json="$(
-            ssh -i "${key_path}" -o BatchMode=yes -o StrictHostKeyChecking=yes \
-              root@39.106.214.21 \
-              "sed -n 's/^GW_LICENSE_PROVISIONING=//p' /opt/billiardbuddy-gateway/gw.env"
-          )"
-          gateway_bootstrap_credential="$(
-            node -e '
-              const credential = process.argv[1].split(",").map(value => value.trim()).filter(Boolean)[0];
-              if (!/^[A-Za-z0-9_-]{16,256}$/.test(credential || "")) process.exit(1);
-              process.stdout.write(credential);
-            ' "${gateway_credentials}"
-          )"
-          gateway_license_key="$(
-            node -e '
-              const licenses = JSON.parse(process.argv[1]);
-              const key = Array.isArray(licenses) ? licenses[0]?.licenseKey : undefined;
-              if (!/^[A-Za-z0-9._-]{8,256}$/.test(key || "")) process.exit(1);
-              process.stdout.write(key);
-            ' "${license_provisioning_json}"
-          )"
-          mkdir -p ts/desktop/build
-          node -e '
-            const fs = require("node:fs");
-            fs.writeFileSync(
-              "ts/desktop/build/product-secrets.json",
-              `${JSON.stringify({ gatewayBootstrapCredential: process.argv[1], licenseKey: process.argv[2] })}\n`,
-              { mode: 0o600 },
-            );
-          ' "${gateway_bootstrap_credential}" "${gateway_license_key}"
-
           certificate_path="${RUNNER_TEMP}/billiardbuddy-developer-id.p12"
           keychain_path="${RUNNER_TEMP}/billiardbuddy-build.keychain-db"
           keychain_password="$(openssl rand -hex 32)"
@@ -190,6 +153,11 @@ jobs:
           set -euo pipefail
           BB_MEDIA_TOOLCHAIN_PLATFORM=darwin bun run stage:media-toolchain
           CODEX_ENGINE_TARGET=aarch64-apple-darwin bun run stage:codex-engine
+          bun run verify:codex-engine-smoke -- --target aarch64-apple-darwin
+          bun run stage:agent-plugins -- --target aarch64-apple-darwin
+          bun run stage:chrome-plugin -- --target aarch64-apple-darwin
+          bun run stage:browser-plugin -- --target aarch64-apple-darwin
+          bun run stage:record-replay-plugin -- --target aarch64-apple-darwin
           bun run clean:electron-output
           SIDECAR_TARGET_TRIPLE=aarch64-apple-darwin bun run build:sidecars
           bun run build
@@ -259,10 +227,26 @@ jobs:
       - name: 发布 macOS 安装包与更新清单
         if: startsWith(github.ref, 'refs/tags/v') || inputs.publish == true
         shell: bash
+        env:
+          BB_RELEASE_UPLOAD_SSH_KEY_B64: ${{ secrets.BB_RELEASE_UPLOAD_SSH_KEY_B64 }}
         run: |
           set -euo pipefail
           artifact_dir='ts/desktop/build-artifacts/electron'
+          if [[ -z "${BB_RELEASE_UPLOAD_SSH_KEY_B64:-}" ]]; then
+            echo '缺少 GitHub Secret: BB_RELEASE_UPLOAD_SSH_KEY_B64' >&2
+            exit 1
+          fi
+          ssh_dir="${HOME}/.ssh"
           key_path="${HOME}/.ssh/billiardbuddy-release-upload"
+          known_hosts_path="${ssh_dir}/known_hosts"
+          mkdir -p "${ssh_dir}"
+          if ! printf '%s' "${BB_RELEASE_UPLOAD_SSH_KEY_B64}" | base64 -D > "${key_path}"; then
+            echo 'BB_RELEASE_UPLOAD_SSH_KEY_B64 不是有效的 Base64 私钥' >&2
+            exit 1
+          fi
+          chmod 600 "${key_path}"
+          printf '%s\n' 'zzyppz.cn ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJIxRR8LH+6jH3sUGNFy9HlxDKRF9MA9QLYm7AYuwa3P' > "${known_hosts_path}"
+          chmod 600 "${known_hosts_path}"
           shopt -s nullglob
           dmgs=("${artifact_dir}/"*.dmg)
           zips=("${artifact_dir}/"*.zip)

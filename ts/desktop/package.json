@@ -2,7 +2,7 @@
   "name": "billiardbuddy-desktop",
   "private": true,
   "version": "0.5.0",
-  "description": "BilliardBuddy desktop agent for billiards venue operations and content creation.",
+  "description": "BilliardBuddy desktop agent and media creation workspace.",
   "author": {
     "name": "BilliardBuddy"
   },
@@ -82,6 +82,7 @@
     "verify:media-toolchain": "bun run ./scripts/stage-media-toolchain.ts --verify",
     "stage:codex-engine": "bun run ./scripts/stage-codex-engine.ts",
     "verify:codex-engine": "bun run ./scripts/stage-codex-engine.ts --verify",
+    "verify:codex-engine-smoke": "bun run ./scripts/verify-codex-engine-smoke.ts",
     "stage:agent-plugins": "bun run ./scripts/stage-agent-plugins.ts",
     "verify:agent-plugins": "bun run ./scripts/stage-agent-plugins.ts --verify",
     "stage:chrome-plugin": "bun run ./scripts/stage-chrome-plugin.ts",

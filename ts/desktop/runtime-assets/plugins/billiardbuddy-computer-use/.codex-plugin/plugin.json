@@ -19,7 +19,7 @@
     "longDescription": "BilliardBuddy Computer Use lets the agent interact with local apps that you choose to allow. It may use visual information while working. You stay in control: you choose which apps can be accessed and can stop actions at any time.",
     "developerName": "BilliardBuddy",
     "category": "Productivity",
-    "capabilities": ["Interactive"],
+    "capabilities": ["Interactive", "Read", "Write"],
     "defaultPrompt": [
       "Help me use an app on my computer."
     ]

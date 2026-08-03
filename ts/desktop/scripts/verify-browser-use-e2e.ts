@@ -25,7 +25,7 @@ if (!existsSync(executable) || !existsSync(electron)) throw new Error('Browser E
 const output = mkdtempSync(join(tmpdir(), 'billiardbuddy-browser-e2e-bundle-'))
 try {
   const result = await Bun.build({
-    entrypoints: [join(desktopRoot, 'electron', 'browserUseE2e.ts')],
+    entrypoints: [join(desktopRoot, 'test', 'browserUseE2e.ts')],
     outdir: output,
     target: 'node',
     format: 'cjs',

@@ -22,6 +22,14 @@ private struct Trace: Codable {
 }
 
 private var activeTap: CFMachPort?
+private var runtimeRootURL: URL?
+
+private func cleanupRuntimeState() {
+  guard let root = runtimeRootURL else { return }
+  for name in ["state.json", "pid", "stop"] {
+    try? FileManager.default.removeItem(at: root.appendingPathComponent(name))
+  }
+}
 
 /** A listen-only event tap: it never changes, consumes or replays user input. */
 private final class Recorder {
@@ -74,6 +82,7 @@ private func callback(
 }
 
 private func fail(_ message: String) -> Never {
+  cleanupRuntimeState()
   FileHandle.standardError.write(Data("\(message)\n".utf8))
   exit(1)
 }
@@ -84,6 +93,7 @@ guard CommandLine.arguments.count == 6, CommandLine.arguments[1] == "record" els
 
 let traceURL = URL(fileURLWithPath: CommandLine.arguments[2])
 let stopURL = URL(fileURLWithPath: CommandLine.arguments[3])
+runtimeRootURL = traceURL.deletingLastPathComponent()
 guard let maximum = TimeInterval(CommandLine.arguments[4]), maximum >= 30, maximum <= 1_800 else { fail("invalid recording duration") }
 let purpose = CommandLine.arguments[5]
 NSApplication.shared.setActivationPolicy(.accessory)
@@ -127,6 +137,7 @@ do {
   try FileManager.default.createDirectory(at: traceURL.deletingLastPathComponent(), withIntermediateDirectories: true)
   let data = try JSONEncoder().encode(recorder.trace(purpose: purpose))
   try data.write(to: traceURL, options: .atomic)
+  cleanupRuntimeState()
 } catch {
   fail("BILLIARDBUDDY_RECORDING_WRITE_FAILED: \(error.localizedDescription)")
 }

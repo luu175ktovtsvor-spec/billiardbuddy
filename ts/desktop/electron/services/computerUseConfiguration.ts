@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
 
@@ -67,8 +68,17 @@ export async function writeComputerUseConfiguration(
   const data = platform === 'darwin'
     ? { allowedBundleIds: allowedAppIds }
     : { allowedExecutablePaths: allowedAppIds }
-  const temporary = `${file}.${process.pid}.tmp`
-  await fs.writeFile(temporary, `${JSON.stringify(data, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 })
-  await fs.rename(temporary, file)
+  const temporary = `${file}.${process.pid}.${randomUUID()}.tmp`
+  try {
+    await fs.writeFile(temporary, `${JSON.stringify(data, null, 2)}\n`, {
+      encoding: 'utf8',
+      mode: 0o600,
+      flag: 'wx',
+    })
+    await fs.rename(temporary, file)
+  } catch (error) {
+    await fs.rm(temporary, { force: true }).catch(() => undefined)
+    throw error
+  }
   return { allowedAppIds }
 }

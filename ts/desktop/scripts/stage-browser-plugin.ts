@@ -1,6 +1,7 @@
 import { spawnSync } from 'node:child_process'
 import { chmodSync, copyFileSync, cpSync, existsSync, lstatSync, mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { join, resolve } from 'node:path'
+import { resolveCargoCommand, verifyProductContent, verifyProductSkill, verifyStdioMcpHandshake } from './native-build-tools'
 
 type SupportedTarget =
   | 'aarch64-apple-darwin'
@@ -30,11 +31,7 @@ function file(path: string) {
   if (!existsSync(path) || !lstatSync(path).isFile() || lstatSync(path).isSymbolicLink()) throw new Error(`Browser 插件缺少正式文件: ${path}`)
 }
 function cargo(): string {
-  const configured = process.env.CARGO?.trim()
-  if (configured && existsSync(configured)) return configured
-  const found = Bun.which('cargo')
-  if (!found) throw new Error('缺少 Rust Cargo；请在 macOS/Windows 原生构建机或 GitHub Actions 上构建 BilliardBuddy Browser 插件')
-  return found
+  return resolveCargoCommand('缺少 Rust Cargo；请在 macOS/Windows 原生构建机或 GitHub Actions 上构建 BilliardBuddy Browser 插件')
 }
 function run(command: string, arguments_: string[], cwd?: string) {
   const result = spawnSync(command, arguments_, { cwd, encoding: 'utf8', timeout: 20 * 60_000 })
@@ -54,12 +51,16 @@ export function verifyStagedBrowserPlugin(options: Options) {
   ]) file(path)
   const manifest = JSON.parse(readFileSync(join(root, '.codex-plugin', 'plugin.json'), 'utf8')) as { name?: unknown, mcpServers?: unknown, skills?: unknown }
   if (manifest.name !== PLUGIN || manifest.mcpServers !== './.mcp.json' || manifest.skills !== './skills/') throw new Error('Browser 插件 manifest 无效')
+  verifyProductContent(join(root, '.codex-plugin', 'plugin.json'))
+  verifyProductSkill(join(root, 'skills', 'browser-use', 'SKILL.md'))
   const mcp = JSON.parse(readFileSync(join(root, '.mcp.json'), 'utf8')) as { mcpServers?: Record<string, { command?: unknown, cwd?: unknown, env_vars?: unknown }> }
   const server = mcp.mcpServers?.[PLUGIN]
   if (server?.command !== `./bin/${PLUGIN}` || server.cwd !== '.' || !Array.isArray(server.env_vars) || !server.env_vars.includes('CODEX_HOME')) throw new Error('Browser 插件 MCP 配置无效')
   const marketplace = JSON.parse(readFileSync(join(resolve(options.destinationDir), '..', '.agents', 'plugins', 'marketplace.json'), 'utf8')) as { plugins?: Array<{ name?: unknown, source?: { path?: unknown } }> }
   if (!marketplace.plugins?.some(entry => entry.name === PLUGIN && entry.source?.path === `./plugins/${PLUGIN}`)) throw new Error('BilliardBuddy 本地市场缺少 Browser 插件')
-  if (lstatSync(join(root, 'bin', binary(options.target))).size < 100_000) throw new Error('Browser 插件二进制大小无效')
+  const staged = join(root, 'bin', binary(options.target))
+  if (lstatSync(staged).size < 100_000) throw new Error('Browser 插件二进制大小无效')
+  verifyStdioMcpHandshake(staged, options.target, PLUGIN)
 }
 
 export function stageBrowserPlugin(options: Options) {

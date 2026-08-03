@@ -1,14 +1,20 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import * as fs from 'node:fs/promises'
+import { homedir } from 'node:os'
 import * as path from 'node:path'
 import {
   BILLIARDBUDDY_AGENT_ENGINE_NAME,
+  CODEX_CODE_MODE_HOST_NAME,
   CODEX_ENGINE_MANIFEST_SCHEMA,
   CODEX_ENGINE_PRODUCT_PATCHES,
   CODEX_ENGINE_SOURCE_REPOSITORY,
   CODEX_ENGINE_SOURCE_REVISION,
 } from '../../../shared/product/codexEngineContract'
+import {
+  binaryIntegritySha256,
+  type BinaryHashMode,
+} from '../../../shared/product/binaryIntegrity'
 import {
   startCodexNativeProvider,
   type CodexNativeModelRoute,
@@ -189,6 +195,33 @@ export type NativeCodexThreadItemsPageInput = NativeCodexThreadPageInput & {
   turnId?: string
 }
 
+/** Source-native model catalog pagination for the active provider route. */
+export type NativeCodexModelListInput = {
+  cursor?: string
+  limit?: number
+  includeHidden?: boolean
+}
+
+/** Source-native permission profiles resolved for one workspace. */
+export type NativeCodexPermissionProfileListInput = {
+  cwd: string
+  cursor?: string
+  limit?: number
+}
+
+/** Source-native visible-message occurrence search within one Thread. */
+export type NativeCodexThreadOccurrenceSearchInput = {
+  searchTerm: string
+  cursor?: string
+  limit?: number
+}
+
+/** Source-native persistent Thread section pagination. */
+export type NativeCodexThreadSectionListInput = {
+  cursor?: string
+  limit?: number
+}
+
 /** Source-native durable goal statuses. Electron does not invent a parallel task state. */
 export type NativeCodexThreadGoalStatus =
   | 'active'
@@ -216,7 +249,12 @@ export type NativeCodexBackgroundTerminalsPageInput = {
 
 export type NativeCodexTurnInput =
   | { type: 'text'; text: string }
-  | { type: 'image'; url: string }
+  | { type: 'image'; url: string; detail?: 'auto' | 'low' | 'high' | 'original' }
+  | { type: 'localImage'; path: string; detail?: 'auto' | 'low' | 'high' | 'original' }
+  | { type: 'audio'; url: string }
+  | { type: 'localAudio'; path: string }
+  | { type: 'skill'; name: string; path: string }
+  | { type: 'mention'; name: string; path: string }
 
 export type ElectronCodexNativeRuntimeOptions = {
   /** The unpacked desktop root, where verified staged binaries are stored. */
@@ -329,6 +367,35 @@ function matchesEngineProductPatches(value: unknown): boolean {
     })
 }
 
+function binaryHashMode(value: unknown): value is BinaryHashMode {
+  return value === 'sha256' || value === 'mach-o-code-signature-neutral-sha256'
+}
+
+async function hasVerifiedManagedBinary(
+  directory: string,
+  fileName: unknown,
+  hashMode: unknown,
+  expectedSha256: unknown,
+  expectedSize: unknown,
+): Promise<boolean> {
+  if (
+    typeof fileName !== 'string'
+    || !binaryHashMode(hashMode)
+    || typeof expectedSha256 !== 'string'
+    || !/^[a-f0-9]{64}$/.test(expectedSha256)
+    || typeof expectedSize !== 'number'
+    || !Number.isSafeInteger(expectedSize)
+    || expectedSize < 1_000_000
+  ) return false
+  const candidate = path.join(directory, fileName)
+  const stat = await fs.lstat(candidate)
+  if (!stat.isFile() || stat.isSymbolicLink() || (process.platform !== 'win32' && (stat.mode & 0o111) === 0)) return false
+  if (hashMode === 'sha256' && stat.size !== expectedSize) return false
+  const resolved = await fs.realpath(candidate)
+  if (path.dirname(resolved) !== directory) return false
+  return binaryIntegritySha256(await fs.readFile(resolved), hashMode) === expectedSha256
+}
+
 async function hasVerifiedNativeEngineManifest(
   directory: string,
   target: ReturnType<typeof supportedEngineTarget>,
@@ -347,7 +414,30 @@ async function hasVerifiedNativeEngineManifest(
       && manifest.sourceRevision === CODEX_ENGINE_SOURCE_REVISION
       && manifest.target === target
       && manifest.binary === binaryName
+      && manifest.codeModeHost === `${CODEX_CODE_MODE_HOST_NAME}${target.includes('windows') ? '.exe' : ''}`
+      && manifest.ripgrep === `${target.includes('windows') ? 'rg.exe' : 'rg'}`
       && matchesEngineProductPatches(manifest.productPatches))) return false
+    if (!await hasVerifiedManagedBinary(
+      directory,
+      manifest.binary,
+      manifest.binaryHashMode,
+      manifest.binarySha256,
+      manifest.binarySize,
+    )) return false
+    if (!await hasVerifiedManagedBinary(
+      directory,
+      manifest.codeModeHost,
+      manifest.codeModeHostHashMode,
+      manifest.codeModeHostSha256,
+      manifest.codeModeHostSize,
+    )) return false
+    if (!await hasVerifiedManagedBinary(
+      directory,
+      manifest.ripgrep,
+      manifest.ripgrepHashMode,
+      manifest.ripgrepSha256,
+      manifest.ripgrepSize,
+    )) return false
     if (!target.includes('windows')) return manifest.windowsSandboxHelpers === undefined
     const helpers = manifest.windowsSandboxHelpers
     if (!Array.isArray(helpers) || helpers.length !== WINDOWS_SANDBOX_HELPER_FILENAMES.length) return false
@@ -391,7 +481,10 @@ async function nativeAppServerCommand(desktopRoot: string): Promise<string[]> {
   return [resolved]
 }
 
-function childEnvironment(input: Readonly<Record<string, string>>): Record<string, string> {
+function childEnvironment(
+  input: Readonly<Record<string, string>>,
+  managedBinaryDirectory?: string,
+): Record<string, string> {
   // This is the same non-secret ambient set that the pinned Rust Core calls
   // its `ShellEnvironmentPolicyInherit::Core` environment.  The App Server
   // itself deliberately does not inherit Electron's complete environment,
@@ -415,6 +508,12 @@ function childEnvironment(input: Readonly<Record<string, string>>): Record<strin
   }
   for (const [key, value] of Object.entries(input)) {
     if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) && value) environment[key] = value
+  }
+  if (managedBinaryDirectory) {
+    const separator = process.platform === 'win32' ? ';' : ':'
+    environment.PATH = environment.PATH
+      ? `${managedBinaryDirectory}${separator}${environment.PATH}`
+      : managedBinaryDirectory
   }
   return environment
 }
@@ -630,8 +729,58 @@ function nativeCollaborationSettings(
 
 function validateTurnInput(value: NativeCodexTurnInput): boolean {
   if (value.type === 'text') return nonEmptyText(value.text, 1 << 20)
-  return nonEmptyText(value.url, 32 * 1024 * 1024)
-    && /^data:image\/(?:png|jpeg|webp|gif);base64,[A-Za-z0-9+/=]+$/.test(value.url)
+  const validDetail = (detail: unknown) => detail === undefined || ['auto', 'low', 'high', 'original'].includes(String(detail))
+  if (value.type === 'image') {
+    return nonEmptyText(value.url, 32 * 1024 * 1024)
+      && /^data:image\/(?:png|jpeg|webp|gif);base64,[A-Za-z0-9+/=]+$/.test(value.url)
+      && validDetail(value.detail)
+  }
+  if (value.type === 'localImage') {
+    return nonEmptyText(value.path, 4_096) && path.isAbsolute(value.path) && !/[\u0000\r\n]/.test(value.path) && validDetail(value.detail)
+  }
+  if (value.type === 'audio') {
+    return nonEmptyText(value.url, 64 * 1024 * 1024)
+      && /^data:audio\/(?:wav|mpeg|mp4|webm|ogg);base64,[A-Za-z0-9+/=]+$/.test(value.url)
+  }
+  if (value.type === 'localAudio') {
+    return nonEmptyText(value.path, 4_096) && path.isAbsolute(value.path) && !/[\u0000\r\n]/.test(value.path)
+  }
+  if (value.type === 'skill') {
+    return nonEmptyText(value.name, 512) && !/[\u0000\r\n]/.test(value.name)
+      && nonEmptyText(value.path, 4_096) && path.isAbsolute(value.path) && path.basename(value.path) === 'SKILL.md'
+  }
+  return value.type === 'mention'
+    && nonEmptyText(value.name, 512) && !/[\u0000\r\n]/.test(value.name)
+    && nonEmptyText(value.path, 4_096) && /^(?:app|plugin):\/\/[A-Za-z0-9._~!$&'()*+,;=:@%/?#-]+$/.test(value.path)
+}
+
+function pathInside(file: string, root: string): boolean {
+  const relative = path.relative(root, file)
+  return relative === '' || (!path.isAbsolute(relative) && relative !== '..' && !relative.startsWith(`..${path.sep}`))
+}
+
+function recognizedImageHeader(header: Buffer): boolean {
+  return header.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
+    || header.subarray(0, 3).equals(Buffer.from([0xff, 0xd8, 0xff]))
+    || header.subarray(0, 6).toString('ascii') === 'GIF87a'
+    || header.subarray(0, 6).toString('ascii') === 'GIF89a'
+    || (header.subarray(0, 4).toString('ascii') === 'RIFF' && header.subarray(8, 12).toString('ascii') === 'WEBP')
+}
+
+function recognizedAudioHeader(file: string, header: Buffer): boolean {
+  const extension = path.extname(file).toLowerCase()
+  if (extension === '.wav') {
+    return header.subarray(0, 4).toString('ascii') === 'RIFF'
+      && header.subarray(8, 12).toString('ascii') === 'WAVE'
+  }
+  if (extension === '.mp3') {
+    return header.subarray(0, 3).toString('ascii') === 'ID3'
+      || (header[0] === 0xff && ((header[1] ?? 0) & 0xe0) === 0xe0)
+  }
+  if (extension === '.m4a') return header.subarray(4, 8).toString('ascii') === 'ftyp'
+  if (extension === '.webm') return header.subarray(0, 4).equals(Buffer.from([0x1a, 0x45, 0xdf, 0xa3]))
+  if (extension === '.ogg') return header.subarray(0, 4).toString('ascii') === 'OggS'
+  return false
 }
 
 function nativeMcpServerName(value: string): string {
@@ -729,9 +878,12 @@ export class CodexNativeAppServerClient {
     if (this.options.command.length === 0 || this.options.command.some(value => !nonEmptyText(value, 4_096))) {
       throw new Error('CODEX_NATIVE_APP_SERVER_COMMAND_INVALID')
     }
-    const engineHome = await privateDirectory(this.options.engineHome)
-    const environment = childEnvironment({ ...this.options.environment, CODEX_HOME: engineHome })
     const command = this.options.command[0]!
+    const engineHome = await privateDirectory(this.options.engineHome)
+    const environment = childEnvironment(
+      { ...this.options.environment, CODEX_HOME: engineHome },
+      path.dirname(command),
+    )
     const args = [
       ...this.options.command.slice(1),
       ...this.options.configOverrides.flatMap(value => ['--config', value]),
@@ -952,6 +1104,8 @@ export class ElectronCodexNativeRuntime {
   private windowsSandboxSetupInProgress = false
   private routeGeneration = 0
   private closePromise?: Promise<void>
+  private startingRouteKey?: string
+  private startClientPromise?: Promise<CodexNativeAppServerClient>
 
   constructor(private readonly options: ElectronCodexNativeRuntimeOptions) {}
 
@@ -1124,6 +1278,145 @@ export class ElectronCodexNativeRuntime {
       ...(nativeCursor(input.cursor) ? { cursor: nativeCursor(input.cursor) } : {}),
       ...(nativePageLimit(input.limit) ? { limit: nativePageLimit(input.limit) } : {}),
       ...(nativeSortDirection(input.sortDirection) ? { sortDirection: nativeSortDirection(input.sortDirection) } : {}),
+    })
+  }
+
+  /** Search visible messages through the Rust Thread Store without an Electron index. */
+  async searchThreadOccurrences(
+    thread: Pick<NativeCodexThread, 'id'>,
+    input: NativeCodexThreadOccurrenceSearchInput,
+  ): Promise<CodexNativeJsonObject> {
+    if (!nonEmptyText(thread.id)) throw new Error('CODEX_NATIVE_THREAD_ID_INVALID')
+    const searchTerm = nativeThreadSearchTerm(input.searchTerm)
+    if (!searchTerm) throw new Error('CODEX_NATIVE_THREAD_SEARCH_INVALID')
+    return await this.requireClient().request<CodexNativeJsonObject>('thread/searchOccurrences', {
+      threadId: thread.id,
+      searchTerm,
+      ...(nativeCursor(input.cursor) ? { cursor: nativeCursor(input.cursor) } : {}),
+      ...(nativePageLimit(input.limit) ? { limit: nativePageLimit(input.limit) } : {}),
+    })
+  }
+
+  /** Read the Rust model catalog for the provider route that owns this Thread. */
+  async listModels(
+    thread: Pick<NativeCodexThread, 'id'>,
+    input: NativeCodexModelListInput = {},
+  ): Promise<CodexNativeJsonObject> {
+    if (!nonEmptyText(thread.id)) throw new Error('CODEX_NATIVE_THREAD_ID_INVALID')
+    if (input.includeHidden !== undefined && typeof input.includeHidden !== 'boolean') {
+      throw new Error('CODEX_NATIVE_MODEL_LIST_INVALID')
+    }
+    return await this.requireClient().request<CodexNativeJsonObject>('model/list', {
+      ...(nativeCursor(input.cursor) ? { cursor: nativeCursor(input.cursor) } : {}),
+      ...(nativePageLimit(input.limit) ? { limit: nativePageLimit(input.limit) } : {}),
+      ...(input.includeHidden === undefined ? {} : { includeHidden: input.includeHidden }),
+    })
+  }
+
+  /** Read source-declared tool modalities for the active model provider. */
+  async readModelProviderCapabilities(
+    thread: Pick<NativeCodexThread, 'id'>,
+  ): Promise<CodexNativeJsonObject> {
+    if (!nonEmptyText(thread.id)) throw new Error('CODEX_NATIVE_THREAD_ID_INVALID')
+    return await this.requireClient().request<CodexNativeJsonObject>('modelProvider/capabilities/read', {})
+  }
+
+  /** Read source-native permission profiles after project requirements are applied. */
+  async listPermissionProfiles(
+    thread: Pick<NativeCodexThread, 'id'>,
+    input: NativeCodexPermissionProfileListInput,
+  ): Promise<CodexNativeJsonObject> {
+    if (!nonEmptyText(thread.id)) throw new Error('CODEX_NATIVE_THREAD_ID_INVALID')
+    const cwd = await this.workspace(input.cwd)
+    return await this.requireClient().request<CodexNativeJsonObject>('permissionProfile/list', {
+      cwd,
+      ...(nativeCursor(input.cursor) ? { cursor: nativeCursor(input.cursor) } : {}),
+      ...(nativePageLimit(input.limit) ? { limit: nativePageLimit(input.limit) } : {}),
+    })
+  }
+
+  /** Read only managed requirements; unlike `config/read`, this cannot expose model credentials. */
+  async readConfigRequirements(thread: Pick<NativeCodexThread, 'id'>): Promise<CodexNativeJsonObject> {
+    if (!nonEmptyText(thread.id)) throw new Error('CODEX_NATIVE_THREAD_ID_INVALID')
+    return await this.requireClient().request<CodexNativeJsonObject>('configRequirements/read', {})
+  }
+
+  /** Enable or disable the Rust Core's own memory behavior for one Thread. */
+  async setThreadMemoryMode(
+    thread: Pick<NativeCodexThread, 'id'>,
+    mode: 'enabled' | 'disabled',
+  ): Promise<void> {
+    if (!nonEmptyText(thread.id) || (mode !== 'enabled' && mode !== 'disabled')) {
+      throw new Error('CODEX_NATIVE_THREAD_MEMORY_MODE_INVALID')
+    }
+    await this.requireClient().request('thread/memoryMode/set', { threadId: thread.id, mode })
+  }
+
+  /** Delete source-owned local memories. Electron keeps no shadow memory store. */
+  async resetMemory(thread: Pick<NativeCodexThread, 'id'>): Promise<void> {
+    if (!nonEmptyText(thread.id)) throw new Error('CODEX_NATIVE_THREAD_ID_INVALID')
+    await this.requireClient().request('memory/reset', {})
+  }
+
+  /** List source-owned Thread sections without duplicating their state. */
+  async listThreadSections(
+    thread: Pick<NativeCodexThread, 'id'>,
+    input: NativeCodexThreadSectionListInput = {},
+  ): Promise<CodexNativeJsonObject> {
+    if (!nonEmptyText(thread.id)) throw new Error('CODEX_NATIVE_THREAD_ID_INVALID')
+    return await this.requireClient().request<CodexNativeJsonObject>('threadSection/list', {
+      ...(nativeCursor(input.cursor) ? { cursor: nativeCursor(input.cursor) } : {}),
+      ...(nativePageLimit(input.limit) ? { limit: nativePageLimit(input.limit) } : {}),
+    })
+  }
+
+  /** Create a source-owned Thread section. */
+  async createThreadSection(
+    thread: Pick<NativeCodexThread, 'id'>,
+    name: string,
+  ): Promise<CodexNativeJsonObject> {
+    if (!nonEmptyText(thread.id)) throw new Error('CODEX_NATIVE_THREAD_ID_INVALID')
+    return await this.requireClient().request<CodexNativeJsonObject>('threadSection/create', {
+      name: nativePluginText(name, 512, 'CODEX_NATIVE_THREAD_SECTION_NAME_INVALID'),
+    })
+  }
+
+  /** Rename a source-owned Thread section. */
+  async updateThreadSection(
+    thread: Pick<NativeCodexThread, 'id'>,
+    sectionId: string,
+    name: string,
+  ): Promise<CodexNativeJsonObject> {
+    if (!nonEmptyText(thread.id)) throw new Error('CODEX_NATIVE_THREAD_ID_INVALID')
+    return await this.requireClient().request<CodexNativeJsonObject>('threadSection/update', {
+      sectionId: nativePluginText(sectionId, 200, 'CODEX_NATIVE_THREAD_SECTION_ID_INVALID'),
+      name: nativePluginText(name, 512, 'CODEX_NATIVE_THREAD_SECTION_NAME_INVALID'),
+    })
+  }
+
+  /** Delete a source-owned Thread section. */
+  async deleteThreadSection(thread: Pick<NativeCodexThread, 'id'>, sectionId: string): Promise<void> {
+    if (!nonEmptyText(thread.id)) throw new Error('CODEX_NATIVE_THREAD_ID_INVALID')
+    await this.requireClient().request('threadSection/delete', {
+      sectionId: nativePluginText(sectionId, 200, 'CODEX_NATIVE_THREAD_SECTION_ID_INVALID'),
+    })
+  }
+
+  /** Move a Thread using the Rust Store's section ordering. */
+  async moveThreadToSection(
+    thread: Pick<NativeCodexThread, 'id'>,
+    sectionId: string | null,
+    beforeThreadId?: string,
+  ): Promise<void> {
+    if (!nonEmptyText(thread.id)) throw new Error('CODEX_NATIVE_THREAD_ID_INVALID')
+    if (sectionId !== null && !nonEmptyText(sectionId, 200)) throw new Error('CODEX_NATIVE_THREAD_SECTION_ID_INVALID')
+    if (beforeThreadId !== undefined && !nonEmptyText(beforeThreadId, 200)) {
+      throw new Error('CODEX_NATIVE_THREAD_SECTION_BEFORE_ID_INVALID')
+    }
+    await this.requireClient().request('thread/section/move', {
+      threadId: thread.id,
+      sectionId,
+      ...(beforeThreadId === undefined ? {} : { beforeThreadId }),
     })
   }
 
@@ -1513,15 +1806,14 @@ export class ElectronCodexNativeRuntime {
     }
     const nativeMode = nativeCollaborationMode(collaborationMode)
     const client = this.requireClient()
+    const nativeInput = await Promise.all(input.map(item => this.normalizeTurnInput(thread.id, item)))
     this.pendingTurnStarts += 1
     try {
       const response = await client.request<CodexNativeJsonObject>('turn/start', {
         threadId: thread.id,
         ...(clientUserMessageId ? { clientUserMessageId } : {}),
         ...(nativeMode === undefined ? {} : { collaborationMode: nativeCollaborationSettings(nativeMode, this.provider!.model) }),
-        input: input.map(item => item.type === 'text'
-          ? { type: 'text', text: item.text, textElements: [] }
-          : { type: 'image', url: item.url }),
+        input: nativeInput,
       })
       const id = turnId(response)
       this.activeTurns.add(id)
@@ -1531,18 +1823,84 @@ export class ElectronCodexNativeRuntime {
     }
   }
 
-  async steerTurn(thread: Pick<NativeCodexThread, 'id'>, turn: NativeCodexTurn, text: string, clientUserMessageId?: string): Promise<void> {
-    if (!nonEmptyText(thread.id) || !nonEmptyText(turn.id) || !nonEmptyText(text, 1 << 20)) {
+  private async normalizeTurnInput(threadIdValue: string, input: NativeCodexTurnInput): Promise<CodexNativeJsonObject> {
+    if (input.type === 'text') return { type: 'text', text: input.text, textElements: [] }
+    if (input.type === 'image') {
+      return { type: 'image', url: input.url, ...(input.detail === undefined ? {} : { detail: input.detail }) }
+    }
+    if (input.type === 'audio') return { type: 'audio', url: input.url }
+    if (input.type === 'mention') return { type: 'mention', name: input.name, path: input.path }
+
+    const workspace = this.threadWorkspaces.get(threadIdValue)
+    if (!workspace) throw new Error('CODEX_NATIVE_THREAD_WORKSPACE_UNAVAILABLE')
+    const engineHome = path.join(absoluteDirectory(this.options.userDataPath), 'agent-runtime')
+    const bundledMarketplace = path.join(absoluteDirectory(this.options.desktopRoot), 'runtime-assets', 'agent-marketplace')
+    // The locked Core natively discovers user-installed skills from
+    // $HOME/.agents/skills in addition to CODEX_HOME and repository roots.
+    // Mirror only that source-defined read boundary for an explicit Skill
+    // selector; Electron still verifies the real regular SKILL.md file.
+    const userAgentSkills = path.join(homedir(), '.agents', 'skills')
+
+    if (input.type === 'localImage') {
+      const resolved = await this.secureRegularFile(input.path, [workspace], 32 * 1024 * 1024)
+      const handle = await fs.open(resolved, 'r')
+      try {
+        const header = Buffer.alloc(12)
+        const { bytesRead } = await handle.read(header, 0, header.length, 0)
+        if (!recognizedImageHeader(header.subarray(0, bytesRead))) throw new Error('CODEX_NATIVE_LOCAL_IMAGE_INVALID')
+      } finally {
+        await handle.close()
+      }
+      return { type: 'localImage', path: resolved, ...(input.detail === undefined ? {} : { detail: input.detail }) }
+    }
+
+    if (input.type === 'localAudio') {
+      const resolved = await this.secureRegularFile(input.path, [workspace], 64 * 1024 * 1024)
+      const handle = await fs.open(resolved, 'r')
+      try {
+        const header = Buffer.alloc(12)
+        const { bytesRead } = await handle.read(header, 0, header.length, 0)
+        if (!recognizedAudioHeader(resolved, header.subarray(0, bytesRead))) throw new Error('CODEX_NATIVE_LOCAL_AUDIO_INVALID')
+      } finally {
+        await handle.close()
+      }
+      return { type: 'localAudio', path: resolved }
+    }
+
+    const resolved = await this.secureRegularFile(
+      input.path,
+      [workspace, engineHome, bundledMarketplace, userAgentSkills],
+      1024 * 1024,
+    )
+    if (path.basename(resolved) !== 'SKILL.md') throw new Error('CODEX_NATIVE_SKILL_PATH_INVALID')
+    return { type: 'skill', name: input.name, path: resolved }
+  }
+
+  private async secureRegularFile(inputPath: string, roots: readonly string[], maxBytes: number): Promise<string> {
+    if (!path.isAbsolute(inputPath) || /[\u0000\r\n]/.test(inputPath)) throw new Error('CODEX_NATIVE_INPUT_FILE_INVALID')
+    const lexical = await fs.lstat(inputPath)
+    if (lexical.isSymbolicLink()) throw new Error('CODEX_NATIVE_INPUT_FILE_SYMLINK_FORBIDDEN')
+    const resolved = await fs.realpath(inputPath)
+    const stat = await fs.stat(resolved)
+    if (!stat.isFile() || stat.size <= 0 || stat.size > maxBytes) throw new Error('CODEX_NATIVE_INPUT_FILE_INVALID')
+    const realRoots = await Promise.all(roots.map(root => fs.realpath(root).catch(() => path.resolve(root))))
+    if (!realRoots.some(root => pathInside(resolved, root))) throw new Error('CODEX_NATIVE_INPUT_FILE_OUTSIDE_ALLOWED_ROOT')
+    return resolved
+  }
+
+  async steerTurn(thread: Pick<NativeCodexThread, 'id'>, turn: NativeCodexTurn, input: NativeCodexTurnInput[], clientUserMessageId?: string): Promise<void> {
+    if (!nonEmptyText(thread.id) || !nonEmptyText(turn.id) || input.length === 0 || input.length > 64 || !input.every(validateTurnInput)) {
       throw new Error('CODEX_NATIVE_STEER_INPUT_INVALID')
     }
     if (clientUserMessageId !== undefined && !nonEmptyText(clientUserMessageId, 512)) {
       throw new Error('CODEX_NATIVE_CLIENT_MESSAGE_ID_INVALID')
     }
+    const nativeInput = await Promise.all(input.map(item => this.normalizeTurnInput(thread.id, item)))
     await this.requireClient().request('turn/steer', {
       threadId: thread.id,
       expectedTurnId: turn.id,
       ...(clientUserMessageId ? { clientUserMessageId } : {}),
-      input: [{ type: 'text', text, textElements: [] }],
+      input: nativeInput,
     })
   }
 
@@ -1657,6 +2015,29 @@ export class ElectronCodexNativeRuntime {
   private async ensureClient(route: CodexNativeModelRoute, cwd: string): Promise<CodexNativeAppServerClient> {
     const nextRouteKey = routeKey(route)
     if (this.client && this.configuredRouteKey === nextRouteKey && this.client.isAvailable()) return this.client
+    if (this.startClientPromise) {
+      if (this.startingRouteKey === nextRouteKey) return await this.startClientPromise
+      await this.startClientPromise.catch(() => undefined)
+      return await this.ensureClient(route, cwd)
+    }
+    const start = this.startClient(route, cwd, nextRouteKey)
+    this.startingRouteKey = nextRouteKey
+    this.startClientPromise = start
+    try {
+      return await start
+    } finally {
+      if (this.startClientPromise === start) {
+        this.startClientPromise = undefined
+        this.startingRouteKey = undefined
+      }
+    }
+  }
+
+  private async startClient(
+    route: CodexNativeModelRoute,
+    cwd: string,
+    nextRouteKey: string,
+  ): Promise<CodexNativeAppServerClient> {
     // An unexpected child exit invalidates only the process connection. It
     // must not be treated as a live Turn or prevent the Rust Thread Store from
     // reconciling the prior turn under a fresh App Server process.

@@ -42,7 +42,11 @@ fn handle_message(message: &str) -> Option<String> {
     let id = json_member_value(message, "id");
     let method = json_string_member(message, "method");
     let Some(method) = method else {
-        return Some(error_response(id.as_deref().unwrap_or("null"), -32600, "invalid JSON-RPC request"));
+        return Some(error_response(
+            id.as_deref().unwrap_or("null"),
+            -32600,
+            "invalid JSON-RPC request",
+        ));
     };
 
     let response = match method.as_str() {
@@ -61,7 +65,7 @@ fn handle_message(message: &str) -> Option<String> {
         _ => error_response(
             id.as_deref().unwrap_or("null"),
             -32601,
-            "Computer Use does not implement this MCP method",
+            "Computer Use does not support this request",
         ),
     };
     Some(response)
@@ -69,11 +73,11 @@ fn handle_message(message: &str) -> Option<String> {
 
 fn tools_list() -> &'static str {
     r#"{"tools":[
-      {"name":"status","description":"Check Computer Use system-permission readiness without requesting or changing permissions.","inputSchema":{"type":"object","properties":{},"additionalProperties":false}},
-      {"name":"list_allowed_apps","description":"List only desktop apps the user has already allowed for Computer Use.","inputSchema":{"type":"object","properties":{},"additionalProperties":false}},
-      {"name":"list_windows","description":"List visible windows for one already allowed app.","inputSchema":{"type":"object","properties":{"appId":{"type":"string"}},"required":["appId"],"additionalProperties":false}},
-      {"name":"capture_window","description":"Capture a current image of one visible window from an already allowed app.","inputSchema":{"type":"object","properties":{"appId":{"type":"string"},"windowId":{"type":"integer","minimum":1}},"required":["appId","windowId"],"additionalProperties":false}},
-      {"name":"inspect_focused_element","description":"Read the role and label of the focused element in one already allowed foreground app. Secure text values are never returned.","inputSchema":{"type":"object","properties":{"appId":{"type":"string"},"windowId":{"type":"integer","minimum":1}},"required":["appId","windowId"],"additionalProperties":false}},
+      {"name":"status","description":"Check Computer Use system-permission readiness without requesting or changing permissions.","inputSchema":{"type":"object","properties":{},"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"openWorldHint":false}},
+      {"name":"list_allowed_apps","description":"List only desktop apps the user has already allowed for Computer Use.","inputSchema":{"type":"object","properties":{},"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"openWorldHint":false}},
+      {"name":"list_windows","description":"List visible windows for one already allowed app.","inputSchema":{"type":"object","properties":{"appId":{"type":"string"}},"required":["appId"],"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"openWorldHint":false}},
+      {"name":"capture_window","description":"Capture a current image of one foreground window from an already allowed app.","inputSchema":{"type":"object","properties":{"appId":{"type":"string"},"windowId":{"type":"integer","minimum":1}},"required":["appId","windowId"],"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"openWorldHint":false}},
+      {"name":"inspect_focused_element","description":"Read the role and label of the focused element in one already allowed foreground app. Secure text values are never returned.","inputSchema":{"type":"object","properties":{"appId":{"type":"string"},"windowId":{"type":"integer","minimum":1}},"required":["appId","windowId"],"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"openWorldHint":false}},
       {"name":"activate_app","description":"Launch or activate one already allowed app.","inputSchema":{"type":"object","properties":{"appId":{"type":"string"}},"required":["appId"],"additionalProperties":false}},
       {"name":"click","description":"Click a screen coordinate inside one current, allowed foreground window.","inputSchema":{"type":"object","properties":{"appId":{"type":"string"},"windowId":{"type":"integer","minimum":1},"x":{"type":"number"},"y":{"type":"number"}},"required":["appId","windowId","x","y"],"additionalProperties":false}},
       {"name":"type_text","description":"Type text into one current, allowed foreground window. Never use this for passwords, payment, or authentication fields.","inputSchema":{"type":"object","properties":{"appId":{"type":"string"},"windowId":{"type":"integer","minimum":1},"text":{"type":"string","maxLength":4096}},"required":["appId","windowId","text"],"additionalProperties":false}},
@@ -109,7 +113,11 @@ fn tool_call_response(id: &str, message: &str) -> String {
             let x = required_number(&arguments, "x")?;
             let y = required_number(&arguments, "y")?;
             native_call(&[
-                "click", bundle_id, &window_id.to_string(), &x.to_string(), &y.to_string(),
+                "click",
+                bundle_id,
+                &window_id.to_string(),
+                &x.to_string(),
+                &y.to_string(),
             ])
             .map(|text| tool_result(&text))
         }),
@@ -130,13 +138,20 @@ fn tool_call_response(id: &str, message: &str) -> String {
             let delta_x = required_number(&arguments, "deltaX")?;
             let delta_y = required_number(&arguments, "deltaY")?;
             native_call(&[
-                "scroll", bundle_id, &window_id.to_string(), &delta_x.to_string(), &delta_y.to_string(),
+                "scroll",
+                bundle_id,
+                &window_id.to_string(),
+                &delta_x.to_string(),
+                &delta_y.to_string(),
             ])
             .map(|text| tool_result(&text))
         }),
         "wait_for_window" => with_app_id(&arguments, |bundle_id| {
-            let timeout_ms = optional_integer(&arguments, "timeoutMs").unwrap_or(3_000).clamp(100, 10_000);
-            native_call(&["wait-for-window", bundle_id, &timeout_ms.to_string()]).map(|text| tool_result(&text))
+            let timeout_ms = optional_integer(&arguments, "timeoutMs")
+                .unwrap_or(3_000)
+                .clamp(100, 10_000);
+            native_call(&["wait-for-window", bundle_id, &timeout_ms.to_string()])
+                .map(|text| tool_result(&text))
         }),
         _ => return error_response(id, -32602, "unknown BilliardBuddy Computer Use tool"),
     };
@@ -147,7 +162,10 @@ fn tool_call_response(id: &str, message: &str) -> String {
     }
 }
 
-fn with_app_id<T>(arguments: &str, action: impl FnOnce(&str) -> Result<T, String>) -> Result<T, String> {
+fn with_app_id<T>(
+    arguments: &str,
+    action: impl FnOnce(&str) -> Result<T, String>,
+) -> Result<T, String> {
     let bundle_id = required_string(arguments, "appId")?;
     validate_app_id(&bundle_id)?;
     action(&bundle_id)
@@ -159,7 +177,7 @@ fn with_window_target<T>(
 ) -> Result<T, String> {
     with_app_id(arguments, |bundle_id| {
         let window_id = required_integer(arguments, "windowId")?;
-        if window_id == 0 {
+        if window_id <= 0 {
             return Err("windowId must be greater than zero".to_owned());
         }
         action(bundle_id, window_id as u64)
@@ -167,9 +185,7 @@ fn with_window_target<T>(
 }
 
 fn validate_app_id(value: &str) -> Result<(), String> {
-    if value.is_empty()
-        || value.len() > 4_096
-        || value.bytes().any(|byte| byte.is_ascii_control())
+    if value.is_empty() || value.len() > 4_096 || value.bytes().any(|byte| byte.is_ascii_control())
     {
         return Err("appId must be a concrete allowed application identifier".to_owned());
     }
@@ -177,8 +193,7 @@ fn validate_app_id(value: &str) -> Result<(), String> {
 }
 
 fn required_string(arguments: &str, key: &str) -> Result<String, String> {
-    json_string_member(arguments, key)
-        .ok_or_else(|| format!("{key} must be a string"))
+    json_string_member(arguments, key).ok_or_else(|| format!("{key} must be a string"))
 }
 
 fn required_integer(arguments: &str, key: &str) -> Result<i64, String> {
@@ -186,7 +201,10 @@ fn required_integer(arguments: &str, key: &str) -> Result<i64, String> {
 }
 
 fn optional_integer(arguments: &str, key: &str) -> Option<i64> {
-    json_member_value(arguments, key)?.trim().parse::<i64>().ok()
+    json_member_value(arguments, key)?
+        .trim()
+        .parse::<i64>()
+        .ok()
 }
 
 fn required_number(arguments: &str, key: &str) -> Result<f64, String> {
@@ -195,7 +213,9 @@ fn required_number(arguments: &str, key: &str) -> Result<f64, String> {
         .filter(|value| value.is_finite())
         .ok_or_else(|| format!("{key} must be a finite number"))?;
     if value.abs() > 100_000.0 {
-        return Err(format!("{key} is outside the safe desktop coordinate range"));
+        return Err(format!(
+            "{key} is outside the safe desktop coordinate range"
+        ));
     }
     Ok(value)
 }
@@ -203,14 +223,15 @@ fn required_number(arguments: &str, key: &str) -> Result<f64, String> {
 fn native_call(arguments: &[&str]) -> Result<String, String> {
     if !cfg!(any(target_os = "macos", target_os = "windows")) {
         return Err(format!(
-            "Computer Use is not yet available on {}; this plugin fails closed until its native adapter is shipped",
-            platform_name(),
+            "Computer Use is unavailable on {}",
+            platform_name()
         ));
     }
     let executable = native_service_path()?;
-    let output = Command::new(&executable)
-        .args(arguments)
-        .env_remove("DYLD_INSERT_LIBRARIES")
+    let mut command = Command::new(&executable);
+    command.args(arguments).env_remove("DYLD_INSERT_LIBRARIES");
+    remove_sensitive_environment(&mut command);
+    let output = command
         .output()
         .map_err(|error| format!("unable to start the local Computer Use service: {error}"))?;
     if !output.status.success() {
@@ -230,9 +251,24 @@ fn native_call(arguments: &[&str]) -> Result<String, String> {
     Ok(stdout.to_owned())
 }
 
+fn remove_sensitive_environment(command: &mut Command) {
+    for (name, _) in env::vars_os() {
+        let upper = name.to_string_lossy().to_ascii_uppercase();
+        if ["KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL", "AUTH"]
+            .iter()
+            .any(|marker| upper.contains(marker))
+        {
+            command.env_remove(name);
+        }
+    }
+}
+
 fn native_service_path() -> Result<PathBuf, String> {
-    let current = env::current_exe().map_err(|error| format!("cannot locate Computer Use plugin: {error}"))?;
-    let directory = current.parent().ok_or_else(|| "Computer Use plugin has no executable directory".to_owned())?;
+    let current = env::current_exe()
+        .map_err(|error| format!("cannot locate Computer Use plugin: {error}"))?;
+    let directory = current
+        .parent()
+        .ok_or_else(|| "Computer Use plugin has no executable directory".to_owned())?;
     let service = if cfg!(target_os = "macos") {
         directory
             .join("BilliardBuddy Computer Use.app")
@@ -242,17 +278,25 @@ fn native_service_path() -> Result<PathBuf, String> {
     } else if cfg!(target_os = "windows") {
         directory.join("BilliardBuddyComputerUseService.exe")
     } else {
-        return Err(format!("Computer Use is not available on {}", platform_name()));
+        return Err(format!(
+            "Computer Use is not available on {}",
+            platform_name()
+        ));
     };
     if service.is_file() {
         Ok(service)
     } else {
-        Err("BilliardBuddy Computer Use native service is missing from this plugin installation".to_owned())
+        Err("BilliardBuddy Computer Use is incomplete. Reinstall BilliardBuddy".to_owned())
     }
 }
 
 fn image_result(base64: &str) -> Result<String, String> {
-    if base64.len() > 12 * 1024 * 1024 || base64.is_empty() || !base64.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/' | b'=')) {
+    if base64.len() > 16 * 1024 * 1024
+        || base64.is_empty()
+        || !base64
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/' | b'='))
+    {
         return Err("local Computer Use service returned an invalid screenshot".to_owned());
     }
     Ok(format!(
