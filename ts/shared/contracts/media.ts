@@ -452,6 +452,8 @@ export const videoTimelineAssetBindingSchema = z.discriminatedUnion('kind', [
 
 export const videoTimelineItemSchema = z.object({
   id: mediaIdSchema,
+  /** Stable bridge for read-only v1 scenes while v2 is the only writer. */
+  legacy_scene_id: mediaIdSchema.optional(),
   track_id: mediaIdSchema,
   kind: z.enum(['video', 'audio', 'caption', 'overlay']),
   timeline_range: videoEditorialTimeRangeSchema,
@@ -630,6 +632,8 @@ export const deliveryVariantCreationReceiptSchema = z.object({
   idempotency_key: z.string().min(16).max(160),
   request_hash: z.string().regex(/^sha256:[a-f0-9]{64}$/),
   variant_id: mediaIdSchema,
+  /** The immutable version created by the original create request. */
+  version_id: mediaIdSchema.optional(),
   created_at: mediaIsoDateSchema,
 })
 
@@ -637,11 +641,21 @@ export const videoExecutionPlanSchema = z.object({
   id: mediaIdSchema,
   editorial_timeline_version_id: mediaIdSchema,
   delivery_variant_version_id: mediaIdSchema,
+  /** Compiler input order and timeline placement; source inputs alone lose both. */
+  timeline_items: z.array(z.object({
+    order: z.number().int().nonnegative(),
+    item_id: mediaIdSchema,
+    track_id: mediaIdSchema,
+    kind: z.enum(['video', 'audio', 'caption', 'overlay']),
+    timeline_range: videoEditorialTimeRangeSchema,
+    binding: videoTimelineAssetBindingSchema,
+  })).max(2000),
   inputs: z.array(z.object({ source_id: mediaIdSchema, source_fingerprint: z.string().regex(/^sha256:[a-f0-9]{64}$/), source_range: videoSourceTimeRangeSchema })).max(2000),
   filters: z.array(z.discriminatedUnion('kind', [
     z.object({ kind: z.literal('scale_pad'), width: z.number().int().positive(), height: z.number().int().positive() }),
     z.object({ kind: z.literal('transform'), item_id: mediaIdSchema, keyframes: z.array(videoKeyframeSchema(videoTransformSchema)).max(1000) }),
     z.object({ kind: z.literal('volume'), item_id: mediaIdSchema, keyframes: z.array(videoKeyframeSchema(z.number().min(0).max(4))).max(1000) }),
+    z.object({ kind: z.literal('audio_fade'), item_id: mediaIdSchema, fade_in: videoRationalTimeSchema.optional(), fade_out: videoRationalTimeSchema.optional() }).refine(value => value.fade_in || value.fade_out, { message: 'audio fade is required' }),
   ])).max(4000),
   maps: z.array(z.object({ track_id: mediaIdSchema, output: z.enum(['video', 'audio', 'caption']) })).max(100),
   encoder: videoExportProfileRevisionSchema,

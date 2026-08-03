@@ -232,6 +232,7 @@ function legacyItems(
     const binding = { kind: 'source' as const, source_id: source.id, source_fingerprint: source.fingerprint, source_range: sourceRange }
     items.push({
       id: id('item'),
+      legacy_scene_id: clip.id,
       track_id: videoTrack.id,
       kind: 'video',
       timeline_range: timelineRange,
@@ -244,6 +245,7 @@ function legacyItems(
     if (audioTrack && source.has_audio) {
       items.push({
         id: id('item'),
+        legacy_scene_id: clip.id,
         track_id: audioTrack.id,
         kind: 'audio',
         timeline_range: clone(timelineRange),
@@ -257,6 +259,16 @@ function legacyItems(
     cursor += BigInt(millisecondsToTime(clip.out_ms - clip.in_ms, EDITORIAL_TICK_RATE).ticks)
   }
   return items
+}
+
+function withLegacySceneMetadata(items: VideoTimelineItem[], scenes: VideoScene[]): VideoTimelineItem[] {
+  const scenesById = new Map(scenes.map(scene => [scene.id, scene]))
+  return items.map(item => {
+    const scene = item.legacy_scene_id ? scenesById.get(item.legacy_scene_id) : undefined
+    return scene
+      ? { ...item, locked: scene.locked, evidence_ids: clone(scene.evidence_ids) }
+      : item
+  })
 }
 
 function itemTrackKindValid(item: VideoTimelineItem, track: VideoTimelineTrack): boolean {
@@ -317,6 +329,17 @@ function assertEditable(item: VideoTimelineItem, tracks: VideoTimelineTrack[]): 
   if (item.locked || tracks.find(track => track.id === item.track_id)?.locked) {
     throw new EditorialValidationError('锁定的时间线条目不能被修改', 'VIDEO_EDITORIAL_LOCKED')
   }
+}
+
+function timelineRangeKey(value: TimeRange): string {
+  return `${value.start.ticks}/${value.start.tick_rate.num}/${value.start.tick_rate.den}:${value.duration.ticks}/${value.duration.tick_rate.num}/${value.duration.tick_rate.den}`
+}
+
+function avLinkKey(item: VideoTimelineItem, tracks: VideoTimelineTrack[]): string | undefined {
+  const track = tracks.find(candidate => candidate.id === item.track_id)
+  if (!track || (track.kind !== 'primary_video' && track.kind !== 'source_audio') || item.binding.kind !== 'source') return undefined
+  if (item.legacy_scene_id) return `legacy:${item.legacy_scene_id}:${timelineRangeKey(item.timeline_range)}:${timelineRangeKey(item.binding.source_range)}`
+  return `source:${item.binding.source_id}:${item.binding.source_fingerprint}:${timelineRangeKey(item.timeline_range)}:${timelineRangeKey(item.binding.source_range)}`
 }
 
 function applyEditorialCommands(
@@ -400,7 +423,17 @@ function applyEditorialCommands(
     const selected = items.filter(item => deleted.has(item.id))
     if (selected.length !== deleted.size) throw new EditorialValidationError('删除命令引用了不存在的条目', 'VIDEO_EDITORIAL_INVALID')
     selected.forEach(item => assertEditable(item, tracks))
-    const removed = selected.map(item => clone(item.timeline_range)).sort((left, right) => compare(left.start, right.start))
+    const selectedIds = new Set(selected.map(item => item.id))
+    for (const item of selected) {
+      const linkKey = avLinkKey(item, tracks)
+      if (!linkKey) continue
+      const linked = items.filter(candidate => candidate.id !== item.id && avLinkKey(candidate, tracks) === linkKey)
+      if (linked.some(candidate => !selectedIds.has(candidate.id))) {
+        throw new EditorialValidationError('关联的视频和源音频必须一起执行 ripple delete', 'VIDEO_EDITORIAL_INVALID')
+      }
+    }
+    const removed = [...new Map(selected.map(item => [timelineRangeKey(item.timeline_range), clone(item.timeline_range)])).values()]
+      .sort((left, right) => compare(left.start, right.start))
     const remaining = items.filter(item => !deleted.has(item.id))
     if (command.close_gap) {
       for (const item of remaining) {
@@ -432,6 +465,9 @@ function validateOverrides(timeline: EditorialTimelineVersion, overrides: Delive
     if (!item) throw new EditorialValidationError('交付覆盖引用了不存在的时间线条目', 'VIDEO_EDITORIAL_INVALID')
     for (const keyframe of [...(override.transform_keyframes ?? []), ...(override.volume_keyframes ?? [])]) {
       if (!timeWithin(keyframe.at, item.timeline_range)) throw new EditorialValidationError('关键帧必须位于时间线条目范围内', 'VIDEO_EDITORIAL_INVALID')
+    }
+    if ((override.fade_in || override.fade_out) && item.kind !== 'audio') {
+      throw new EditorialValidationError('淡入淡出只能应用于音频条目', 'VIDEO_EDITORIAL_INVALID')
     }
     if (override.fade_in && (BigInt(override.fade_in.ticks) < 0n || compare(override.fade_in, item.timeline_range.duration) > 0)) {
       throw new EditorialValidationError('淡入时长无效', 'VIDEO_EDITORIAL_INVALID')
@@ -468,7 +504,13 @@ export class EditorialApplication {
       created_at: now,
     })
     if (!existing) {
-      timeline.items = legacyItems(project, timeline.tracks, timing)
+      const legacyCurrent = project.current_timeline_version_id
+        ? project.timeline_versions.find(version => version.id === project.current_timeline_version_id)
+        : undefined
+      timeline.items = withLegacySceneMetadata(
+        legacyItems(project, timeline.tracks, timing),
+        legacyCurrent?.scenes ?? [],
+      )
       validateEditorialTimeline(project, timeline)
     }
     const defaults = project.export_profile_revisions.length ? undefined : defaultProfile(project, now)
@@ -504,7 +546,10 @@ export class EditorialApplication {
     const current = this.currentTimeline(project)
     const clips = scenes.map(scene => ({ id: scene.id, source_id: scene.source_id, in_ms: scene.in_ms, out_ms: scene.out_ms }))
     const draftProject = { ...project, timeline: clips }
-    const items = legacyItems(draftProject, current.tracks, timing).map((item, index) => ({ ...item, id: id('draft_item'), evidence_ids: scenes[Math.floor(index / 2)]?.evidence_ids ?? item.evidence_ids }))
+    const items = withLegacySceneMetadata(
+      legacyItems(draftProject, current.tracks, timing),
+      scenes,
+    ).map(item => ({ ...item, id: id('draft_item') }))
     const draft = timelineDraftSchema.parse({
       id: id('draft'),
       project_id: project.id,
@@ -527,6 +572,18 @@ export class EditorialApplication {
     timing: Map<string, EditorialSourceTiming>,
   ): VideoTimelineItem[] {
     return legacyItems({ ...project, timeline: clips }, tracks, timing)
+  }
+
+  itemsFromLegacyScenes(
+    project: VideoStudioProject,
+    scenes: VideoScene[],
+    tracks: VideoTimelineTrack[],
+    timing: Map<string, EditorialSourceTiming>,
+  ): VideoTimelineItem[] {
+    return withLegacySceneMetadata(
+      legacyItems({ ...project, timeline: scenes.map(scene => ({ id: scene.id, source_id: scene.source_id, in_ms: scene.in_ms, out_ms: scene.out_ms })) }, tracks, timing),
+      scenes,
+    )
   }
 
   applyCommandSet(project: VideoStudioProject, commandSet: TimelineCommandSet): { project: VideoStudioProject; version: EditorialTimelineVersion | DeliveryVariantVersion; reused: boolean } {
@@ -591,7 +648,6 @@ export class EditorialApplication {
     const overrides = clone(current.item_overrides)
     let profileId = current.export_profile_revision_id
     let profileHash = current.export_profile_hash
-    let captionRevisionId = current.caption_revision_id
     for (const command of commandSet.commands as DeliveryVariantCommand[]) {
       if (command.kind === 'set_export_profile') {
         const profile = project.export_profile_revisions.find(candidate => candidate.id === command.export_profile_revision_id)
@@ -600,7 +656,7 @@ export class EditorialApplication {
         profileId = profile.id
         profileHash = profile.content_hash
       } else if (command.kind === 'set_caption_revision') {
-        captionRevisionId = command.caption_revision_id
+        throw new EditorialValidationError('字幕 Document 与编译器尚未就绪，不能写入未编译的字幕命令', 'VIDEO_EDITORIAL_INVALID')
       } else if (command.kind === 'set_transform_keyframes') {
         overrideFor(overrides, command.item_id).transform_keyframes = clone(command.keyframes)
       } else if (command.kind === 'set_volume_keyframes') {
@@ -610,7 +666,7 @@ export class EditorialApplication {
         override.fade_in = command.fade_in ? clone(command.fade_in) : undefined
         override.fade_out = command.fade_out ? clone(command.fade_out) : undefined
       } else if (command.kind === 'set_caption_style') {
-        overrideFor(overrides, command.item_id).caption_style_id = command.caption_style_id
+        throw new EditorialValidationError('字幕样式尚未具备编译路径，不能写入交付版本', 'VIDEO_EDITORIAL_INVALID')
       }
     }
     validateOverrides(timeline, overrides)
@@ -621,7 +677,6 @@ export class EditorialApplication {
       editorial_timeline_version_id: timeline.id,
       export_profile_revision_id: profileId,
       export_profile_hash: profileHash,
-      ...(captionRevisionId ? { caption_revision_id: captionRevisionId } : {}),
       item_overrides: overrides,
       created_by_command_set_id: commandSet.id,
       created_at: this.iso(),
@@ -694,7 +749,14 @@ export class EditorialApplication {
     validateOverrides(timeline, version.item_overrides)
     assertExportProfile(profile)
     const planId = id('execution_plan')
-    const sourceItems = timeline.items.filter(item => item.binding.kind === 'source')
+    const trackOrder = new Map(timeline.tracks.map(track => [track.id, track.order]))
+    const orderedItems = [...timeline.items].sort((left, right) => {
+      const position = compare(left.timeline_range.start, right.timeline_range.start)
+      if (position !== 0) return position
+      const trackPosition = (trackOrder.get(left.track_id) ?? 0) - (trackOrder.get(right.track_id) ?? 0)
+      return trackPosition || left.id.localeCompare(right.id)
+    })
+    const sourceItems = orderedItems.filter(item => item.binding.kind === 'source')
     const maps = timeline.tracks.filter(track => !track.muted && timeline.items.some(item => item.track_id === track.id)).map((track): { track_id: string; output: 'video' | 'audio' | 'caption' } => {
       if (track.kind === 'primary_video' || track.kind === 'b_roll' || track.kind === 'overlay') return { track_id: track.id, output: 'video' }
       if (track.kind === 'caption') return { track_id: track.id, output: 'caption' }
@@ -704,6 +766,14 @@ export class EditorialApplication {
       id: planId,
       editorial_timeline_version_id: timeline.id,
       delivery_variant_version_id: version.id,
+      timeline_items: orderedItems.map((item, order) => ({
+        order,
+        item_id: item.id,
+        track_id: item.track_id,
+        kind: item.kind,
+        timeline_range: item.timeline_range,
+        binding: item.binding,
+      })),
       inputs: sourceItems.map(item => ({
         source_id: (item.binding as Extract<typeof item.binding, { kind: 'source' }>).source_id,
         source_fingerprint: (item.binding as Extract<typeof item.binding, { kind: 'source' }>).source_fingerprint,
@@ -714,6 +784,7 @@ export class EditorialApplication {
         ...version.item_overrides.flatMap(override => [
           ...(override.transform_keyframes?.length ? [{ kind: 'transform' as const, item_id: override.item_id, keyframes: override.transform_keyframes }] : []),
           ...(override.volume_keyframes?.length ? [{ kind: 'volume' as const, item_id: override.item_id, keyframes: override.volume_keyframes }] : []),
+          ...((override.fade_in || override.fade_out) ? [{ kind: 'audio_fade' as const, item_id: override.item_id, ...(override.fade_in ? { fade_in: override.fade_in } : {}), ...(override.fade_out ? { fade_out: override.fade_out } : {}) }] : []),
         ]),
       ],
       maps,

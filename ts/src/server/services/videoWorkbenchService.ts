@@ -31,6 +31,7 @@ import {
   type CreateDeliveryVariantInput,
   type DeliveryVariant,
   type DeliveryVariantVersion,
+  type EditorialTimelineCommand,
   type EditorialTimelineVersion,
   type LockVideoSceneInput,
   type MediaAsset,
@@ -44,6 +45,7 @@ import {
   type VideoScene,
   type VideoSource,
   type VideoStudioProject,
+  type VideoTimelineItem,
   type VideoTimelineVersion,
   timelineCommandSetSchema,
 } from '../../../shared/contracts/media.js'
@@ -330,6 +332,60 @@ export class VideoWorkbenchService {
     return await this.ensureEditorialState(checked)
   }
 
+  private sameLegacyProjectionItem(current: VideoTimelineItem, desired: VideoTimelineItem): boolean {
+    return current.legacy_scene_id === desired.legacy_scene_id
+      && current.kind === desired.kind
+      && current.track_id === desired.track_id
+      && JSON.stringify(current.timeline_range) === JSON.stringify(desired.timeline_range)
+      && JSON.stringify(current.binding) === JSON.stringify(desired.binding)
+  }
+
+  /**
+   * v1 actions may choose a read-compatible scene projection, but the actual
+   * state transition is always one v2 CommandSet. Locked v2 items are retained
+   * verbatim and must be represented by the requested legacy projection.
+   */
+  private legacyProjectionCommandSet(
+    project: VideoStudioProject,
+    desired: VideoTimelineItem[],
+    idempotencyKey: string,
+  ) {
+    const current = this.editorial.currentTimeline(project)
+    const lockedTrackIds = new Set(current.tracks.filter(track => track.locked).map(track => track.id))
+    const locked = current.items.filter(item => item.locked || lockedTrackIds.has(item.track_id))
+    const retainedDesiredIds = new Set<string>()
+    for (const lockedItem of locked) {
+      const match = desired.find(candidate => this.sameLegacyProjectionItem(lockedItem, candidate))
+      if (!match) {
+        throw new VideoWorkbenchServiceError('备选时间线不能覆盖锁定场景', 409, 'VIDEO_LOCKED_SCENE_CONFLICT')
+      }
+      retainedDesiredIds.add(match.id)
+    }
+    const deletable = current.items.filter(item => !item.locked && !lockedTrackIds.has(item.track_id))
+    const inserts = desired.filter(item => !retainedDesiredIds.has(item.id))
+    const commands: EditorialTimelineCommand[] = [
+      ...(deletable.length ? [{ kind: 'ripple_delete' as const, item_ids: deletable.map(item => item.id), close_gap: false }] : []),
+      ...inserts.map(item => ({ kind: 'insert' as const, track_id: item.track_id, item })),
+    ]
+    // A CommandSet is also the durable audit marker for a no-op empty legacy
+    // projection. Preserve the current track state instead of making a hidden
+    // v1 write.
+    if (!commands.length) {
+      const track = current.tracks[0]
+      if (!track) throw new VideoWorkbenchServiceError('编辑时间线轨道不存在', 409, 'VIDEO_TIMELINE_MISSING')
+      commands.push({ kind: 'set_track_state' as const, track_id: track.id, locked: track.locked })
+    }
+    return timelineCommandSetSchema.parse({
+      id: `command_${randomUUID().replaceAll('-', '')}`,
+      project_id: project.id,
+      actor_id: STANDALONE_VIDEO_OWNER.owner_id,
+      idempotency_key: idempotencyKey,
+      created_at: this.iso(),
+      target: { kind: 'editorial', base_timeline_version_id: current.id },
+      commands,
+    })
+  }
+
   async getEditorialTimeline(projectId: string, versionId: string): Promise<EditorialTimelineVersion> {
     return await this.mutateProject(projectId, async () => {
       const project = await this.prepareEditorialProject(projectId)
@@ -460,7 +516,8 @@ export class VideoWorkbenchService {
       if (existing) {
         if (existing.request_hash !== requestHash) throw new VideoWorkbenchServiceError('同一幂等键不能创建不同交付变体', 409, 'VIDEO_EDITORIAL_IDEMPOTENCY_CONFLICT')
         const variant = project.delivery_variants.find(candidate => candidate.id === existing.variant_id)
-        const version = variant && project.delivery_variant_versions.find(candidate => candidate.id === variant.current_version_id)
+        if (!existing.version_id) throw new VideoWorkbenchServiceError('交付变体幂等记录缺少首次版本，不能安全重放', 500, 'VIDEO_EDITORIAL_INVALID')
+        const version = project.delivery_variant_versions.find(candidate => candidate.id === existing.version_id)
         if (!variant || !version) throw new VideoWorkbenchServiceError('交付变体幂等记录损坏', 500, 'VIDEO_EDITORIAL_INVALID')
         return { project, variant, version, reused: true }
       }
@@ -472,6 +529,7 @@ export class VideoWorkbenchService {
             idempotency_key: idempotencyKey,
             request_hash: requestHash,
             variant_id: created.variant.id,
+            version_id: created.version.id,
             created_at: this.iso(),
           }],
         }))
@@ -898,21 +956,14 @@ export class VideoWorkbenchService {
         throw new VideoWorkbenchServiceError('视频时间线版本不存在', 409, 'VIDEO_TIMELINE_MISSING')
       }
       const project = await this.prepareEditorialProject(projectId)
-      const current = this.editorial.currentTimeline(project)
       try {
+        const current = this.editorial.currentTimeline(project)
         const items = this.editorial.itemsFromLegacyClips(project, input.clips, current.tracks, await this.editorialTimings(project))
-        const commandSet = timelineCommandSetSchema.parse({
-          id: `command_${randomUUID().replaceAll('-', '')}`,
-          project_id: project.id,
-          actor_id: STANDALONE_VIDEO_OWNER.owner_id,
-          idempotency_key: `legacy-${factBasisHash({ base_revision: input.base_revision, base_timeline_version_id: baseVersionId, clips: input.clips })}`,
-          created_at: this.iso(),
-          target: { kind: 'editorial', base_timeline_version_id: current.id },
-          commands: [
-            ...(current.items.length ? [{ kind: 'ripple_delete' as const, item_ids: current.items.map(item => item.id), close_gap: false }] : []),
-            ...items.map(item => ({ kind: 'insert' as const, track_id: item.track_id, item })),
-          ],
-        })
+        const commandSet = this.legacyProjectionCommandSet(
+          project,
+          items,
+          `legacy-update-${factBasisHash({ base_revision: input.base_revision, base_timeline_version_id: baseVersionId, clips: input.clips })}`,
+        )
         const applied = this.editorial.applyCommandSet(project, commandSet)
         if (applied.reused) return project
         // `timeline` is retained solely as the old API/render projection.  It
@@ -933,74 +984,102 @@ export class VideoWorkbenchService {
   async selectTimelineVersion(projectId: string, raw: SelectVideoTimelineVersionInput): Promise<VideoStudioProject> {
     return await this.mutateProject(projectId, async () => {
       const input = selectVideoTimelineVersionInputSchema.parse(raw)
-      const project = await this.requireVideoProject(projectId)
-      if (project.state === 'rendering') throw new VideoWorkbenchServiceError('正在导出，暂时不能恢复时间线', 409, 'VIDEO_RENDER_ACTIVE')
-      if (project.revision !== input.revision) throw new VideoWorkbenchServiceError('视频项目已更新，请刷新后再选择版本', 409, 'VIDEO_REVISION_CONFLICT')
-      const version = project.timeline_versions.find(candidate => candidate.id === input.version_id)
+      const legacyProject = await this.requireVideoProject(projectId)
+      if (legacyProject.state === 'rendering') throw new VideoWorkbenchServiceError('正在导出，暂时不能恢复时间线', 409, 'VIDEO_RENDER_ACTIVE')
+      if (legacyProject.revision !== input.revision) throw new VideoWorkbenchServiceError('视频项目已更新，请刷新后再选择版本', 409, 'VIDEO_REVISION_CONFLICT')
+      const version = legacyProject.timeline_versions.find(candidate => candidate.id === input.version_id)
       if (!version) throw new VideoWorkbenchServiceError('视频时间线版本不存在', 404, 'VIDEO_TIMELINE_MISSING')
-      if (project.current_timeline_version_id === version.id) return project
-      return await this.repository.saveProject(videoStudioProjectSchema.parse({
-        ...project,
-        timeline: version.scenes.map(scene => ({ id: scene.id, source_id: scene.source_id, in_ms: scene.in_ms, out_ms: scene.out_ms })),
-        current_timeline_version_id: version.id,
-        alternatives: [],
-        state: version.scenes.length ? 'ready' : 'draft',
-        revision: project.revision + 1,
-      }))
+      const project = await this.prepareEditorialProject(projectId)
+      try {
+        const current = this.editorial.currentTimeline(project)
+        const items = this.editorial.itemsFromLegacyScenes(project, version.scenes, current.tracks, await this.editorialTimings(project))
+        const commandSet = this.legacyProjectionCommandSet(
+          project,
+          items,
+          `legacy-select-${factBasisHash({ revision: input.revision, version_id: version.id })}`,
+        )
+        const applied = this.editorial.applyCommandSet(project, commandSet)
+        if (applied.reused) return project
+        return await this.repository.saveProject(videoStudioProjectSchema.parse({
+          ...applied.project,
+          // Kept only for the formal v1 preview/export reader; this is a
+          // projection of the CommandSet target, not a new timeline version.
+          timeline: version.scenes.map(scene => ({ id: scene.id, source_id: scene.source_id, in_ms: scene.in_ms, out_ms: scene.out_ms })),
+          current_timeline_version_id: version.id,
+          alternatives: [],
+          state: version.scenes.length ? 'ready' : 'draft',
+        }))
+      } catch (error) {
+        return this.editorialError(error)
+      }
     })
   }
 
   async lockScene(projectId: string, sceneId: string, raw: LockVideoSceneInput): Promise<VideoStudioProject> {
     return await this.mutateProject(projectId, async () => {
       const input = lockVideoSceneInputSchema.parse(raw)
-      const project = await this.requireVideoProject(projectId)
-      if (project.state === 'rendering') throw new VideoWorkbenchServiceError('正在导出，暂时不能修改时间线', 409, 'VIDEO_RENDER_ACTIVE')
-      if (project.revision !== input.base_revision || project.current_timeline_version_id !== input.timeline_version_id) {
+      const legacyProject = await this.requireVideoProject(projectId)
+      if (legacyProject.state === 'rendering') throw new VideoWorkbenchServiceError('正在导出，暂时不能修改时间线', 409, 'VIDEO_RENDER_ACTIVE')
+      if (legacyProject.revision !== input.base_revision || legacyProject.current_timeline_version_id !== input.timeline_version_id) {
         throw new VideoWorkbenchServiceError('视频时间线已更新，请刷新后再编辑', 409, 'VIDEO_TIMELINE_CONFLICT')
       }
-      const current = project.timeline_versions.find(version => version.id === input.timeline_version_id)
-      if (!current || !current.scenes.some(scene => scene.id === sceneId)) {
+      const legacyCurrent = legacyProject.timeline_versions.find(version => version.id === input.timeline_version_id)
+      if (!legacyCurrent || !legacyCurrent.scenes.some(scene => scene.id === sceneId)) {
         throw new VideoWorkbenchServiceError('场景不存在', 404, 'VIDEO_SCENE_NOT_FOUND')
       }
-      const version = this.timelineVersion(project, current.scenes.map(scene => scene.id === sceneId ? { ...scene, locked: input.locked } : scene))
-      return await this.repository.saveProject(videoStudioProjectSchema.parse({
-        ...project,
-        timeline_versions: [...project.timeline_versions, version],
-        current_timeline_version_id: version.id,
-        revision: project.revision + 1,
-      }))
+      const project = await this.prepareEditorialProject(projectId)
+      try {
+        const current = this.editorial.currentTimeline(project)
+        const itemIds = current.items.filter(item => item.legacy_scene_id === sceneId).map(item => item.id)
+        if (!itemIds.length) throw new VideoWorkbenchServiceError('场景尚未迁移到编辑时间线', 409, 'VIDEO_TIMELINE_MISSING')
+        const commandSet = timelineCommandSetSchema.parse({
+          id: `command_${randomUUID().replaceAll('-', '')}`,
+          project_id: project.id,
+          actor_id: STANDALONE_VIDEO_OWNER.owner_id,
+          idempotency_key: `legacy-lock-${factBasisHash({ base_revision: input.base_revision, timeline_version_id: input.timeline_version_id, scene_id: sceneId, locked: input.locked })}`,
+          created_at: this.iso(),
+          target: { kind: 'editorial', base_timeline_version_id: current.id },
+          commands: [{ kind: 'lock', item_ids: itemIds, locked: input.locked }],
+        })
+        const applied = this.editorial.applyCommandSet(project, commandSet)
+        return applied.reused ? project : await this.repository.saveProject(videoStudioProjectSchema.parse(applied.project))
+      } catch (error) {
+        return this.editorialError(error)
+      }
     })
   }
 
   async applyAlternative(projectId: string, raw: ApplyVideoAlternativeInput): Promise<VideoStudioProject> {
     return await this.mutateProject(projectId, async () => {
       const input = applyVideoAlternativeInputSchema.parse(raw)
-      const project = await this.requireVideoProject(projectId)
-      if (project.state === 'rendering') throw new VideoWorkbenchServiceError('正在导出，暂时不能修改时间线', 409, 'VIDEO_RENDER_ACTIVE')
-      if (project.revision !== input.base_revision) throw new VideoWorkbenchServiceError('视频项目已更新，请刷新后再编辑', 409, 'VIDEO_REVISION_CONFLICT')
-      const alternative = project.alternatives.find(candidate => candidate.id === input.alternative_id)
+      const legacyProject = await this.requireVideoProject(projectId)
+      if (legacyProject.state === 'rendering') throw new VideoWorkbenchServiceError('正在导出，暂时不能修改时间线', 409, 'VIDEO_RENDER_ACTIVE')
+      if (legacyProject.revision !== input.base_revision) throw new VideoWorkbenchServiceError('视频项目已更新，请刷新后再编辑', 409, 'VIDEO_REVISION_CONFLICT')
+      const alternative = legacyProject.alternatives.find(candidate => candidate.id === input.alternative_id)
       if (!alternative) throw new VideoWorkbenchServiceError('备选方案不存在', 404, 'VIDEO_ALTERNATIVE_NOT_FOUND')
-      if (alternative.base_timeline_version_id !== project.current_timeline_version_id) {
+      if (alternative.base_timeline_version_id !== legacyProject.current_timeline_version_id) {
         throw new VideoWorkbenchServiceError('备选方案已经过期，请重新分析', 409, 'VIDEO_ALTERNATIVE_STALE')
       }
-      const current = project.timeline_versions.find(version => version.id === project.current_timeline_version_id)
-      if (!current) throw new VideoWorkbenchServiceError('视频时间线版本不存在', 409, 'VIDEO_TIMELINE_MISSING')
-      for (const locked of current.scenes.filter(scene => scene.locked)) {
-        const candidate = alternative.scenes.find(scene => scene.id === locked.id)
-        if (!candidate || JSON.stringify(candidate) !== JSON.stringify(locked)) {
-          throw new VideoWorkbenchServiceError('备选方案不能覆盖锁定场景', 409, 'VIDEO_LOCKED_SCENE_CONFLICT')
-        }
+      const project = await this.prepareEditorialProject(projectId)
+      try {
+        const current = this.editorial.currentTimeline(project)
+        const items = this.editorial.itemsFromLegacyScenes(project, alternative.scenes, current.tracks, await this.editorialTimings(project))
+        const commandSet = this.legacyProjectionCommandSet(
+          project,
+          items,
+          `legacy-alternative-${factBasisHash({ base_revision: input.base_revision, alternative_id: alternative.id })}`,
+        )
+        const applied = this.editorial.applyCommandSet(project, commandSet)
+        if (applied.reused) return project
+        return await this.repository.saveProject(videoStudioProjectSchema.parse({
+          ...applied.project,
+          timeline: alternative.scenes.map(scene => ({ id: scene.id, source_id: scene.source_id, in_ms: scene.in_ms, out_ms: scene.out_ms })),
+          alternatives: [],
+          state: alternative.scenes.length ? 'ready' : 'draft',
+        }))
+      } catch (error) {
+        return this.editorialError(error)
       }
-      const version = this.timelineVersion(project, alternative.scenes)
-      return await this.repository.saveProject(videoStudioProjectSchema.parse({
-        ...project,
-        timeline: alternative.scenes.map(scene => ({ id: scene.id, source_id: scene.source_id, in_ms: scene.in_ms, out_ms: scene.out_ms })),
-        timeline_versions: [...project.timeline_versions, version],
-        current_timeline_version_id: version.id,
-        alternatives: [],
-        state: 'ready',
-        revision: project.revision + 1,
-      }))
     })
   }
 
