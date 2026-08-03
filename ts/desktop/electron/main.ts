@@ -3,6 +3,7 @@ import { autoUpdater } from 'electron-updater'
 import { randomBytes } from 'node:crypto'
 import path from 'node:path'
 import { ELECTRON_EVENT_CHANNELS, ELECTRON_IPC_CHANNELS, type ElectronIpcChannel } from './ipc/channels'
+import { imageWorkbenchIpcResponse } from './ipc/imageResponse'
 import {
   imageAdoptCandidateIpcPayloadSchema,
   imageCancelGenerationOperationIpcPayloadSchema,
@@ -839,6 +840,13 @@ function registerHandler<T>(
   })
 }
 
+function registerImageHandler<T>(
+  channel: ElectronIpcChannel,
+  handler: (event: Electron.IpcMainInvokeEvent, payload: unknown) => T | Promise<T>,
+) {
+  registerHandler(channel, async (event, payload) => await imageWorkbenchIpcResponse(async () => await handler(event, payload)))
+}
+
 function emitNotificationAction(payload: unknown) {
   showMainWindow(mainWindow, app)
   mainWindow?.webContents.send(ELECTRON_EVENT_CHANNELS.notificationAction, payload)
@@ -1467,55 +1475,55 @@ function registerIpcHandlers() {
     openDialog(currentWindow(event), payload as Parameters<typeof openDialog>[1]))
   registerHandler(ELECTRON_IPC_CHANNELS.dialogSave, (event, payload) =>
     saveDialog(currentWindow(event), payload as Parameters<typeof saveDialog>[1]))
-  registerHandler(ELECTRON_IPC_CHANNELS.imageSubmitProject, (_event, payload) => {
+  registerImageHandler(ELECTRON_IPC_CHANNELS.imageSubmitProject, (_event, payload) => {
     const request = imageSubmitProjectIpcPayloadSchema.parse(payload)
     return getImageActions().submitProject(request.projectId, request.confirmUnknownRetry)
   })
-  registerHandler(ELECTRON_IPC_CHANNELS.imageStartOperation, (_event, payload) => {
+  registerImageHandler(ELECTRON_IPC_CHANNELS.imageStartOperation, (_event, payload) => {
     const request = imageStartOperationIpcPayloadSchema.parse(payload)
     return getImageActions().startOperation(request.projectId, request.input)
   })
-  registerHandler(ELECTRON_IPC_CHANNELS.imageUpdateUnknownProject, (_event, payload) => {
+  registerImageHandler(ELECTRON_IPC_CHANNELS.imageUpdateUnknownProject, (_event, payload) => {
     const request = imageUpdateUnknownProjectIpcPayloadSchema.parse(payload)
     return getImageActions().updateUnknownProject(request.projectId, request.input)
   })
-  registerHandler(ELECTRON_IPC_CHANNELS.imageSaveOutput, (_event, payload) => {
+  registerImageHandler(ELECTRON_IPC_CHANNELS.imageSaveOutput, (_event, payload) => {
     const request = imageSaveOutputIpcPayloadSchema.parse(payload)
     return getImageActions().saveOutput(request.projectId, request.input)
   })
-  registerHandler(ELECTRON_IPC_CHANNELS.imageCreateCreativePlan, (_event, payload) => {
+  registerImageHandler(ELECTRON_IPC_CHANNELS.imageCreateCreativePlan, (_event, payload) => {
     const request = imageCreateCreativePlanIpcPayloadSchema.parse(payload)
     return getImageActions().createCreativePlan(request.projectId, request.input)
   })
-  registerHandler(ELECTRON_IPC_CHANNELS.imageEstimateGenerationRound, (_event, payload) => {
+  registerImageHandler(ELECTRON_IPC_CHANNELS.imageEstimateGenerationRound, (_event, payload) => {
     const request = imageEstimateGenerationRoundIpcPayloadSchema.parse(payload)
     return getImageActions().estimateGenerationRound(request.projectId, request.input)
   })
-  registerHandler(ELECTRON_IPC_CHANNELS.imageEstimateDerivation, (_event, payload) => {
+  registerImageHandler(ELECTRON_IPC_CHANNELS.imageEstimateDerivation, (_event, payload) => {
     const request = imageEstimateDerivationIpcPayloadSchema.parse(payload)
     return getImageActions().estimateDerivation(request.projectId, request.candidateId, request.input)
   })
-  registerHandler(ELECTRON_IPC_CHANNELS.imageCreateGenerationRound, (_event, payload) => {
+  registerImageHandler(ELECTRON_IPC_CHANNELS.imageCreateGenerationRound, (_event, payload) => {
     const request = imageCreateGenerationRoundIpcPayloadSchema.parse(payload)
     return getImageActions().createGenerationRound(request.projectId, request.input)
   })
-  registerHandler(ELECTRON_IPC_CHANNELS.imageDecideCandidate, (_event, payload) => {
+  registerImageHandler(ELECTRON_IPC_CHANNELS.imageDecideCandidate, (_event, payload) => {
     const request = imageDecideCandidateIpcPayloadSchema.parse(payload)
     return getImageActions().decideCandidate(request.projectId, request.candidateId, request.input)
   })
-  registerHandler(ELECTRON_IPC_CHANNELS.imageAdoptCandidate, (_event, payload) => {
+  registerImageHandler(ELECTRON_IPC_CHANNELS.imageAdoptCandidate, (_event, payload) => {
     const request = imageAdoptCandidateIpcPayloadSchema.parse(payload)
     return getImageActions().adoptCandidate(request.projectId, request.candidateId, request.input)
   })
-  registerHandler(ELECTRON_IPC_CHANNELS.imageDeriveCandidate, (_event, payload) => {
+  registerImageHandler(ELECTRON_IPC_CHANNELS.imageDeriveCandidate, (_event, payload) => {
     const request = imageDeriveCandidateIpcPayloadSchema.parse(payload)
     return getImageActions().deriveCandidate(request.projectId, request.candidateId, request.input)
   })
-  registerHandler(ELECTRON_IPC_CHANNELS.imageCancelGenerationOperation, (_event, payload) => {
+  registerImageHandler(ELECTRON_IPC_CHANNELS.imageCancelGenerationOperation, (_event, payload) => {
     const request = imageCancelGenerationOperationIpcPayloadSchema.parse(payload)
     return getImageActions().cancelGenerationOperation(request.operationId)
   })
-  registerHandler(ELECTRON_IPC_CHANNELS.imageUpdateReferenceControl, (_event, payload) => {
+  registerImageHandler(ELECTRON_IPC_CHANNELS.imageUpdateReferenceControl, (_event, payload) => {
     const request = imageUpdateReferenceControlIpcPayloadSchema.parse(payload)
     return getImageActions().updateReferenceControl(request.projectId, request.referenceId, request.input)
   })

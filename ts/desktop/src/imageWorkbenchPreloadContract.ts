@@ -14,7 +14,7 @@ import type {
   ImageGenerationRoundResponse,
   ImageReferenceControlResponse,
 } from '../../shared/contracts/imageGeneration.js'
-import type { ImageWorkbenchPreloadBridge } from '../../shared/contracts/imageWorkbenchPreload.js'
+import type { ImageWorkbenchIpcResponse, ImageWorkbenchPreloadBridge } from '../../shared/contracts/imageWorkbenchPreload.js'
 
 type Equal<Left, Right> = (
   <Value>() => Value extends Left ? 1 : 2
@@ -27,17 +27,17 @@ type ImagePreload = Window['billiardBuddyNative']['media']['images']
 /** Compile-time renderer contract: no exposed image command may regress to Promise<unknown>. */
 export type ImageWorkbenchPreloadTypeContract = [
   Assert<Equal<ImagePreload, ImageWorkbenchPreloadBridge>>,
-  Assert<Equal<ReturnType<ImagePreload['submitProject']>, Promise<ImageTaskResponse>>>,
-  Assert<Equal<ReturnType<ImagePreload['startOperation']>, Promise<ImageTaskResponse>>>,
-  Assert<Equal<ReturnType<ImagePreload['updateUnknownProject']>, Promise<ImageProjectResponse>>>,
-  Assert<Equal<ReturnType<ImagePreload['saveOutput']>, Promise<SaveImageOutputResult>>>,
-  Assert<Equal<ReturnType<ImagePreload['createCreativePlan']>, Promise<ImageCreativePlanResponse>>>,
-  Assert<Equal<ReturnType<ImagePreload['estimateGenerationRound']>, Promise<ImageGenerationRoundEstimateResponse>>>,
-  Assert<Equal<ReturnType<ImagePreload['estimateDerivation']>, Promise<ImageDerivationEstimateResponse>>>,
-  Assert<Equal<ReturnType<ImagePreload['createGenerationRound']>, Promise<ImageGenerationRoundResponse>>>,
-  Assert<Equal<ReturnType<ImagePreload['decideCandidate']>, Promise<ImageCandidateDecisionResponse>>>,
-  Assert<Equal<ReturnType<ImagePreload['adoptCandidate']>, Promise<ImageCandidateAdoptionResponse>>>,
-  Assert<Equal<ReturnType<ImagePreload['deriveCandidate']>, Promise<ImageCandidateDerivationResponse>>>,
-  Assert<Equal<ReturnType<ImagePreload['cancelGenerationOperation']>, Promise<ImageGenerationCancelResponse>>>,
-  Assert<Equal<ReturnType<ImagePreload['updateReferenceControl']>, Promise<ImageReferenceControlResponse>>>,
+  Assert<Equal<ReturnType<ImagePreload['submitProject']>, Promise<ImageWorkbenchIpcResponse<ImageTaskResponse>>>>,
+  Assert<Equal<ReturnType<ImagePreload['startOperation']>, Promise<ImageWorkbenchIpcResponse<ImageTaskResponse>>>>,
+  Assert<Equal<ReturnType<ImagePreload['updateUnknownProject']>, Promise<ImageWorkbenchIpcResponse<ImageProjectResponse>>>>,
+  Assert<Equal<ReturnType<ImagePreload['saveOutput']>, Promise<ImageWorkbenchIpcResponse<SaveImageOutputResult>>>>,
+  Assert<Equal<ReturnType<ImagePreload['createCreativePlan']>, Promise<ImageWorkbenchIpcResponse<ImageCreativePlanResponse>>>>,
+  Assert<Equal<ReturnType<ImagePreload['estimateGenerationRound']>, Promise<ImageWorkbenchIpcResponse<ImageGenerationRoundEstimateResponse>>>>,
+  Assert<Equal<ReturnType<ImagePreload['estimateDerivation']>, Promise<ImageWorkbenchIpcResponse<ImageDerivationEstimateResponse>>>>,
+  Assert<Equal<ReturnType<ImagePreload['createGenerationRound']>, Promise<ImageWorkbenchIpcResponse<ImageGenerationRoundResponse>>>>,
+  Assert<Equal<ReturnType<ImagePreload['decideCandidate']>, Promise<ImageWorkbenchIpcResponse<ImageCandidateDecisionResponse>>>>,
+  Assert<Equal<ReturnType<ImagePreload['adoptCandidate']>, Promise<ImageWorkbenchIpcResponse<ImageCandidateAdoptionResponse>>>>,
+  Assert<Equal<ReturnType<ImagePreload['deriveCandidate']>, Promise<ImageWorkbenchIpcResponse<ImageCandidateDerivationResponse>>>>,
+  Assert<Equal<ReturnType<ImagePreload['cancelGenerationOperation']>, Promise<ImageWorkbenchIpcResponse<ImageGenerationCancelResponse>>>>,
+  Assert<Equal<ReturnType<ImagePreload['updateReferenceControl']>, Promise<ImageWorkbenchIpcResponse<ImageReferenceControlResponse>>>>,
 ]

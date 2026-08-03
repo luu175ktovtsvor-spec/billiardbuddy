@@ -1,10 +1,11 @@
-import { z } from 'zod/v4'
 import {
   MEDIA_UI_CAPABILITY_HEADER,
   imageProjectResponseSchema,
   imageTaskResponseSchema,
   mediaSafeError,
+  mediaSafeErrorResponseSchema,
   saveImageOutputResultSchema,
+  type MediaSafeErrorCode,
   type ImageProjectResponse,
   type ImageTaskResponse,
   type SaveImageOutputInput,
@@ -52,6 +53,18 @@ export type ElectronImageActionsOptions = {
   fetchImpl?: FetchLike
 }
 
+/** An HTTP media failure projected into an Electron-safe stable error code. */
+export class ElectronImageActionError extends Error {
+  readonly code: MediaSafeErrorCode
+
+  constructor(code: unknown) {
+    const safe = mediaSafeError(code)
+    super(safe.message)
+    this.name = 'ElectronImageActionError'
+    this.code = safe.code
+  }
+}
+
 /** Main-process-only bridge for image operations that need the desktop nonce. */
 export class ElectronImageActions {
   private readonly fetchImpl: FetchLike
@@ -80,7 +93,7 @@ export class ElectronImageActions {
 
   saveOutput(projectId: string, input: SaveImageOutputInput): Promise<SaveImageOutputResult> {
     const resultId = input.version_id ?? input.output_id
-    if (!resultId) throw new Error(mediaSafeError('MEDIA_INVALID_REQUEST').message)
+    if (!resultId) throw new ElectronImageActionError('MEDIA_INVALID_REQUEST')
     return this.post(
       input.version_id
         ? `/api/images/projects/${encodeURIComponent(projectId)}/versions/${encodeURIComponent(input.version_id)}/save`
@@ -143,15 +156,15 @@ export class ElectronImageActions {
         body: body === undefined ? undefined : JSON.stringify(body),
       })
     } catch {
-      throw new Error(mediaSafeError('MEDIA_TEMPORARILY_UNAVAILABLE').message)
+      throw new ElectronImageActionError('MEDIA_TEMPORARILY_UNAVAILABLE')
     }
     const payload: unknown = await response.json().catch(() => ({}))
-    const errorPayload = z.object({ error: z.unknown().optional() }).passthrough().safeParse(payload)
-    if (!response.ok) throw new Error(mediaSafeError(errorPayload.success ? errorPayload.data.error : undefined).message)
+    const errorPayload = mediaSafeErrorResponseSchema.safeParse(payload)
+    if (!response.ok) throw new ElectronImageActionError(errorPayload.success ? errorPayload.data.error : undefined)
     try {
       return responseSchema.parse(payload)
     } catch {
-      throw new Error(mediaSafeError('MEDIA_TEMPORARILY_UNAVAILABLE').message)
+      throw new ElectronImageActionError('MEDIA_TEMPORARILY_UNAVAILABLE')
     }
   }
 }

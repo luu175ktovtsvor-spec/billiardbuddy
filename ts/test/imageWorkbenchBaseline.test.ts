@@ -8,6 +8,7 @@ import { createRelayFetch } from '../../relay/app.ts'
 import {
   imageWorkbenchProjectSchema,
   mediaJobEventJournalSchema,
+  mediaSafeError,
   mediaTaskSchema,
 } from '../shared/contracts/media.js'
 import { createImageWorkbenchDomainApiHandler } from '../src/server/api/imageWorkbench.js'
@@ -727,10 +728,33 @@ test('15.2 Gateway to Relay contract commits a Candidate Group before ACK and ne
       ...decisionInput,
       decision: 'rejected',
     })).rejects.toMatchObject({ status: 409, code: 'IMAGE_IDEMPOTENCY_CONFLICT' })
+    const idempotencyConflict = await request(decisionHandler, `/api/images/projects/${project.id}/candidates/${group.candidates[0]!.id}/decisions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-BilliardBuddy-Media-Capability': decisionCapability },
+      body: JSON.stringify({ ...decisionInput, decision: 'rejected' }),
+    })
+    expect(idempotencyConflict.status).toBe(409)
+    expect(await idempotencyConflict.json()).toEqual({
+      error: 'MEDIA_IMAGE_IDEMPOTENCY_CONFLICT',
+      message: mediaSafeError('MEDIA_IMAGE_IDEMPOTENCY_CONFLICT').message,
+    })
     await expect(service.decideCandidate(project.id, group.candidates[0]!.id, {
       ...decisionInput,
       idempotency_key: 'bb-image-decision-stale-revision-0001',
     })).rejects.toMatchObject({ status: 409, code: 'IMAGE_REVISION_CONFLICT' })
+    const revisionConflict = await request(decisionHandler, `/api/images/projects/${project.id}/candidates/${group.candidates[0]!.id}/decisions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-BilliardBuddy-Media-Capability': decisionCapability },
+      body: JSON.stringify({
+        ...decisionInput,
+        idempotency_key: 'bb-image-decision-stale-revision-api-0001',
+      }),
+    })
+    expect(revisionConflict.status).toBe(409)
+    expect(await revisionConflict.json()).toEqual({
+      error: 'MEDIA_IMAGE_REVISION_CONFLICT',
+      message: mediaSafeError('MEDIA_IMAGE_REVISION_CONFLICT').message,
+    })
     await expect(service.adoptCandidate(project.id, group.candidates[0]!.id, {
       base_revision: adopted.project.revision,
       idempotency_key: 'bb-image-adopt-gateway-contract-conflict-0001',
