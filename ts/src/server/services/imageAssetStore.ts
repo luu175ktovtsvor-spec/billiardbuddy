@@ -1,8 +1,9 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { copyFile, link, mkdir, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { copyFile, link, mkdir, open, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { dirname, extname, isAbsolute, join, relative } from 'node:path'
 import type { MediaAsset } from '../../../shared/contracts/media.js'
 import { lock } from '../../utils/lockfile.js'
+import { syncParentDirectory } from '../../utils/durableFile.js'
 
 export type SupportedImageMime = 'image/png' | 'image/jpeg' | 'image/webp'
 
@@ -12,6 +13,11 @@ export type VerifiedImageBytes = {
   width: number
   height: number
   content_hash: `sha256:${string}`
+}
+
+export type ImageAssetStoreHooks = {
+  /** Test-only crash boundary: CAS is durable but metadata has not committed. */
+  afterCasPublish?: (asset: VerifiedImageBytes) => Promise<void> | void
 }
 
 export class ImageAssetStoreError extends Error {
@@ -75,7 +81,7 @@ export class ImageAssetStore {
   private readonly casDir: string
   private readonly locksDir: string
 
-  constructor(paths: { assets: string; root: string }) {
+  constructor(paths: { assets: string; root: string }, private readonly hooks: ImageAssetStoreHooks = {}) {
     this.assetsDir = paths.assets
     this.casDir = join(paths.root, 'cas', 'sha256')
     this.locksDir = join(paths.root, 'locks')
@@ -115,7 +121,13 @@ export class ImageAssetStore {
       const digest = verified.content_hash.slice('sha256:'.length)
       const target = join(this.casDir, digest)
       const temporary = join(this.casDir, `.tmp-${randomUUID()}`)
-      await writeFile(temporary, verified.bytes, { mode: 0o600 })
+      const temporaryHandle = await open(temporary, 'wx', 0o600)
+      try {
+        await temporaryHandle.writeFile(verified.bytes)
+        await temporaryHandle.sync()
+      } finally {
+        await temporaryHandle.close()
+      }
       try {
         await link(temporary, target)
       } catch (error) {
@@ -127,6 +139,13 @@ export class ImageAssetStore {
       } finally {
         await rm(temporary, { force: true })
       }
+      // fsync the directory after linking (or validating an existing entry)
+      // so a power loss cannot expose a committed database row whose CAS name
+      // was never made durable.
+      await syncParentDirectory(target)
+      // A pre-existing object was already validated above; both paths now
+      // have a verified content-addressed object before any SQLite write.
+      await this.hooks.afterCasPublish?.(verified)
     } finally {
       await release()
     }
@@ -150,8 +169,15 @@ export class ImageAssetStore {
     const target = join(this.assetsDir, projectId, section, fileName)
     await mkdir(dirname(target), { recursive: true, mode: 0o700 })
     const temporary = `${target}.tmp-${randomUUID()}`
-    await writeFile(temporary, verified.bytes, { mode: 0o600 })
+    const temporaryHandle = await open(temporary, 'wx', 0o600)
+    try {
+      await temporaryHandle.writeFile(verified.bytes)
+      await temporaryHandle.sync()
+    } finally {
+      await temporaryHandle.close()
+    }
     await rename(temporary, target)
+    await syncParentDirectory(target)
     return {
       file_name: fileName,
       asset: {

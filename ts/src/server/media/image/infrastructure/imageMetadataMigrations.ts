@@ -1,6 +1,6 @@
 import type { SqliteUnitOfWork } from '../../kernel/storage/sqliteUnitOfWork.js'
 
-const IMAGE_METADATA_SCHEMA_VERSION = 1
+const IMAGE_METADATA_SCHEMA_VERSION = 2
 
 /** Image-only metadata schema. The shared Kernel remains unaware of image facts. */
 export function migrateImageMetadata(unitOfWork: SqliteUnitOfWork): void {
@@ -11,7 +11,36 @@ export function migrateImageMetadata(unitOfWork: SqliteUnitOfWork): void {
   for (let version = 1; version <= IMAGE_METADATA_SCHEMA_VERSION; version += 1) {
     if (unitOfWork.database.query('SELECT version FROM image_metadata_schema_migrations WHERE version=?').get(version)) continue
     if (version === 1) migrateV1(unitOfWork)
+    if (version === 2) migrateV2(unitOfWork)
   }
+}
+
+/**
+ * Keep the request identity separate from a mutable operation projection. A
+ * status refresh must therefore never turn into a different idempotent
+ * request, while a retry with the same original request can safely find the
+ * persisted operation.
+ */
+function migrateV2(unitOfWork: SqliteUnitOfWork): void {
+  unitOfWork.transaction(() => {
+    unitOfWork.database.exec("ALTER TABLE image_operations ADD COLUMN request_hash TEXT NOT NULL DEFAULT ''")
+    unitOfWork.database.exec(`CREATE TABLE image_project_migration_receipts(
+      source_kind TEXT NOT NULL,
+      project_id TEXT NOT NULL,
+      source_hash TEXT NOT NULL,
+      operation_count INTEGER NOT NULL CHECK(operation_count >= 0),
+      journal_next_cursor INTEGER,
+      version_count INTEGER NOT NULL CHECK(version_count >= 0),
+      current_version_id TEXT,
+      status TEXT NOT NULL CHECK(status IN ('complete')),
+      completed_at TEXT NOT NULL,
+      PRIMARY KEY(source_kind, project_id)
+    )`)
+    unitOfWork.database.exec(`CREATE INDEX image_project_migration_receipts_source
+      ON image_project_migration_receipts(source_kind, status, project_id)`)
+    unitOfWork.database.query('INSERT INTO image_metadata_schema_migrations(version,applied_at) VALUES(?,?)')
+      .run(2, new Date().toISOString())
+  })
 }
 
 function migrateV1(unitOfWork: SqliteUnitOfWork): void {
