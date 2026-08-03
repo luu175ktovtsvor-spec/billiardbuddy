@@ -310,8 +310,10 @@ test('15.1 SQLite metadata enforces one project writer, foreign project ownershi
   ])
 })
 
-test('15.1 imports the pre-existing image JSON root before any CAS orphan collection can remove it', async () => {
+test('15.1 imports the pre-existing image JSON root before safe CAS orphan collection can remove it', async () => {
   const root = await testRoot('current-image-json-import')
+  const oldMediaRoot = await testRoot('empty-old-media')
+  let nowMs = Date.parse(at)
   const legacyProject = imageWorkbenchProjectSchema.parse(await fixtureJson('legacy/project.json'))
   const legacyOperation = mediaTaskSchema.parse(await fixtureJson('legacy/operation.json')) as ImageOperation
   const legacyJournal = mediaJobEventJournalSchema.parse(await fixtureJson('legacy/event-journal.json'))
@@ -332,14 +334,112 @@ test('15.1 imports the pre-existing image JSON root before any CAS orphan collec
     writeFile(join(root, 'cas', 'sha256', hash.slice('sha256:'.length)), bytes),
     writeFile(join(root, 'cas', 'sha256', orphanHash), orphanBytes),
   ])
-  const service = new ImageWorkbenchService({ root, legacyMediaRoot: await testRoot('empty-old-media'), now: () => new Date(at) })
+  const service = new ImageWorkbenchService({
+    root,
+    legacyMediaRoot: oldMediaRoot,
+    now: () => new Date(nowMs),
+    casOrphanRetentionMs: 1_000,
+  })
   await expect(readFile(join(root, 'cas', 'sha256', orphanHash))).resolves.toEqual(orphanBytes)
   expect((await service.migrateLegacyMediaStore()).migrated_project_ids).toEqual([legacyProject.id])
+  await expect(readFile(join(root, 'cas', 'sha256', orphanHash))).resolves.toEqual(orphanBytes)
+  nowMs += 1_001
+  await service.repository.reconcileCasAfterLegacyMigration()
   await expect(readFile(join(root, 'cas', 'sha256', orphanHash))).rejects.toMatchObject({ code: 'ENOENT' })
   const imported = await service.getProject(legacyProject.id)
   const asset = imported.assets.find(candidate => candidate.id === 'out_legacy_fixture')
   expect((await service.assets.readVerified(asset!)).bytes.equals(bytes)).toBeTrue()
   expect((await service.listOperationEvents(legacyProject.id)).events).toMatchObject([{ cursor: 1, operation_id: legacyOperation.operation_id }])
+  const changedOrphanBytes = Buffer.from('orphan must survive a changed migration source')
+  const changedOrphanHash = createHash('sha256').update(changedOrphanBytes).digest('hex')
+  await writeFile(join(root, 'cas', 'sha256', changedOrphanHash), changedOrphanBytes)
+  await writeFile(join(root, 'events', `${legacyProject.id}.json`), JSON.stringify({ ...legacyJournal, next_cursor: 8 }))
+  service.repository.close()
+
+  const sourceChanged = new ImageWorkbenchService({ root, legacyMediaRoot: oldMediaRoot, now: () => new Date(nowMs) })
+  await sourceChanged.listProjects()
+  await expect(readFile(join(root, 'cas', 'sha256', changedOrphanHash))).resolves.toEqual(changedOrphanBytes)
+  expect(await sourceChanged.repository.projectMigrationReceipt('image-workbench-json-v1', legacyProject.id)).toBeNull()
+  expect(await sourceChanged.repository.projectMigrationInvalidation('image-workbench-json-v1', legacyProject.id)).toMatchObject({
+    source_hash: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+    previous_source_hash: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+  })
+  await expect(sourceChanged.migrateLegacyMediaStore()).rejects.toMatchObject({ code: 'IMAGE_LEGACY_SOURCE_CHANGED' })
+  expect(await sourceChanged.repository.projectMigrationReceipt('image-workbench-json-v1', legacyProject.id)).toBeNull()
+  sourceChanged.repository.close()
+})
+
+test('15.1 CAS orphan GC requires retention plus a second scan before physical deletion', async () => {
+  const root = await testRoot('cas-orphan-retention')
+  let nowMs = Date.parse(at)
+  const service = new ImageWorkbenchService({
+    root,
+    now: () => new Date(nowMs),
+    casOrphanRetentionMs: 60_000,
+  })
+  await service.listProjects()
+  const orphanBytes = Buffer.from('retained orphan')
+  const orphanHash = createHash('sha256').update(orphanBytes).digest('hex')
+  const orphanPath = join(root, 'cas', 'sha256', orphanHash)
+  await writeFile(orphanPath, orphanBytes)
+
+  expect(await service.repository.reconcileCasAfterLegacyMigration()).toBeTrue()
+  const inspect = new Database(join(root, 'metadata', 'metadata.sqlite'), { readonly: true })
+  try {
+    expect(inspect.query('SELECT scan_count FROM image_cas_orphan_observations WHERE content_hash=?')
+      .get(`sha256:${orphanHash}`)).toEqual({ scan_count: 1 })
+  } finally {
+    inspect.close()
+  }
+  nowMs += 30_000
+  expect(await service.repository.reconcileCasAfterLegacyMigration()).toBeTrue()
+  await expect(readFile(orphanPath)).resolves.toEqual(orphanBytes)
+  const secondInspect = new Database(join(root, 'metadata', 'metadata.sqlite'), { readonly: true })
+  try {
+    expect(secondInspect.query('SELECT scan_count FROM image_cas_orphan_observations WHERE content_hash=?')
+      .get(`sha256:${orphanHash}`)).toEqual({ scan_count: 2 })
+  } finally {
+    secondInspect.close()
+  }
+  nowMs += 30_001
+  expect(await service.repository.reconcileCasAfterLegacyMigration()).toBeTrue()
+  await expect(readFile(orphanPath)).rejects.toMatchObject({ code: 'ENOENT' })
+  service.repository.close()
+})
+
+test('15.1 CAS orphan GC protects bytes while an image submission is in flight', async () => {
+  const root = await testRoot('cas-orphan-inflight')
+  let nowMs = Date.parse(at)
+  const service = new ImageWorkbenchService({
+    root,
+    now: () => new Date(nowMs),
+    casOrphanRetentionMs: 1_000,
+  })
+  await service.listProjects()
+  const orphanBytes = Buffer.from('in-flight protected orphan')
+  const orphanHash = createHash('sha256').update(orphanBytes).digest('hex')
+  const orphanPath = join(root, 'cas', 'sha256', orphanHash)
+  await writeFile(orphanPath, orphanBytes)
+  expect(await service.repository.reconcileCasAfterLegacyMigration()).toBeTrue()
+
+  const project = await createProject(service)
+  const inFlight = await service.repository.saveOperation({
+    ...operation(project.id),
+    status: 'committing',
+    remote_task_id: 'relay_task_inflight',
+  })
+  nowMs += 2_000
+  expect(await service.repository.reconcileCasAfterLegacyMigration()).toBeTrue()
+  await expect(readFile(orphanPath)).resolves.toEqual(orphanBytes)
+
+  await service.repository.saveOperation({
+    ...inFlight,
+    status: 'failed',
+    stage: '已结束，可执行对账',
+  })
+  expect(await service.repository.reconcileCasAfterLegacyMigration()).toBeTrue()
+  await expect(readFile(orphanPath)).rejects.toMatchObject({ code: 'ENOENT' })
+  service.repository.close()
 })
 
 test('15.1 resumes each legacy project after a partial import without dropping Operations, journal next_cursor, Version or current pointer', async () => {

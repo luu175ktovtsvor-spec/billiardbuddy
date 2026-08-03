@@ -17,9 +17,12 @@ import { RecoverySupervisor } from '../media/kernel/recovery/recoverySupervisor.
 import { SqliteUnitOfWork } from '../media/kernel/storage/sqliteUnitOfWork.js'
 import { WriterFence } from '../media/kernel/storage/writerFence.js'
 import { migrateImageMetadata } from '../media/image/infrastructure/imageMetadataMigrations.js'
+import { LegacyImageProjectReader, legacyProjectSourceHash } from '../media/image/infrastructure/legacyImageProjectReader.js'
+import { syncParentDirectory } from '../../utils/durableFile.js'
 
 const IMAGE_ID = /^[a-z0-9][a-z0-9_-]{7,79}$/
 const INITIAL_WRITER_FENCE = `fence_${'0'.repeat(32)}`
+const DEFAULT_CAS_ORPHAN_RETENTION_MS = 24 * 60 * 60 * 1000
 
 export type ImageOperation = MediaTask & {
   kind: 'image.generate'
@@ -78,6 +81,14 @@ export type ImageProjectMigrationReceipt = {
   completed_at: string
 }
 
+export type ImageProjectMigrationInvalidation = {
+  source_kind: string
+  project_id: string
+  source_hash: string
+  previous_source_hash: string | null
+  invalidated_at: string
+}
+
 type EventRow = {
   cursor: number
   project_id: string
@@ -96,6 +107,13 @@ type DeletionRow = {
   status: MediaDeletionReceipt['status']
   receipt_json: string
   updated_at: string
+}
+
+type CasOrphanObservationRow = {
+  content_hash: string
+  first_unreachable_at: string
+  last_seen_at: string
+  scan_count: number
 }
 
 export class ImageWorkbenchRepositoryError extends Error {
@@ -193,6 +211,7 @@ export class ImageWorkbenchRepository {
   private readonly trashDir: string
   private readonly locksDir: string
   private readonly now: () => Date
+  private readonly casOrphanRetentionMs: number
   private readonly unitOfWork: SqliteUnitOfWork
   private readonly fences: WriterFence
   private readonly integrity = new AssetIntegrity()
@@ -200,7 +219,7 @@ export class ImageWorkbenchRepository {
   private readonly readyPromise: Promise<void>
   private readonly eventWaiters = new Map<string, Set<() => void>>()
 
-  constructor(options: { root?: string; now?: () => Date } = {}) {
+  constructor(options: { root?: string; now?: () => Date; casOrphanRetentionMs?: number } = {}) {
     this.root = options.root
       ?? join(process.env.BILLIARDBUDDY_CONFIG_DIR ?? join(homedir(), '.BilliardBuddy'), 'billiardbuddy', 'images')
     this.projectsDir = join(this.root, 'projects')
@@ -209,6 +228,7 @@ export class ImageWorkbenchRepository {
     this.trashDir = join(this.root, 'trash')
     this.locksDir = join(this.root, 'locks')
     this.now = options.now ?? (() => new Date())
+    this.casOrphanRetentionMs = Math.max(1_000, Math.min(30 * 86_400_000, options.casOrphanRetentionMs ?? DEFAULT_CAS_ORPHAN_RETENTION_MS))
     this.unitOfWork = new SqliteUnitOfWork(join(this.root, 'metadata'))
     migrateImageMetadata(this.unitOfWork)
     this.backfillIdempotencyRequestHashes()
@@ -918,9 +938,44 @@ export class ImageWorkbenchRepository {
     })
     const reachable = new Set((this.unitOfWork.database.query(`SELECT content_hash FROM image_asset_ownerships
       WHERE storage_kind='cas' AND content_hash IS NOT NULL`).all() as Array<{ content_hash: string }>).map(row => row.content_hash.slice('sha256:'.length)))
+    const inFlight = Boolean(this.unitOfWork.database.query(`SELECT 1 FROM image_operations
+      WHERE deleted=0 AND status IN ('queued','running','committing') LIMIT 1`).get())
+    const seen = new Set<string>()
+    const now = this.iso()
+    const eligibleBefore = this.now().getTime() - this.casOrphanRetentionMs
     for (const name of names) {
-      if (!/^[a-f0-9]{64}$/.test(name) || reachable.has(name)) continue
-      await rm(join(directory, name), { force: true })
+      if (!/^[a-f0-9]{64}$/.test(name)) continue
+      const contentHash = `sha256:${name}`
+      seen.add(contentHash)
+      if (reachable.has(name)) {
+        this.unitOfWork.database.query('DELETE FROM image_cas_orphan_observations WHERE content_hash=?').run(contentHash)
+        continue
+      }
+      // A committing operation may have published CAS bytes but not yet been
+      // able to commit its Project transaction. Without a byte→operation link
+      // at that crash boundary, protecting every orphan while work is in
+      // flight is the conservative and correct ownership policy.
+      if (inFlight) continue
+      const observation = this.unitOfWork.database.query(`SELECT content_hash,first_unreachable_at,last_seen_at,scan_count
+        FROM image_cas_orphan_observations WHERE content_hash=?`).get(contentHash) as CasOrphanObservationRow | null
+      const firstSeenAt = observation ? Date.parse(observation.first_unreachable_at) : Number.NaN
+      if (observation && observation.scan_count >= 1 && Number.isFinite(firstSeenAt) && firstSeenAt <= eligibleBefore) {
+        const path = join(directory, name)
+        await rm(path, { force: true })
+        await syncParentDirectory(path)
+        this.unitOfWork.database.query('DELETE FROM image_cas_orphan_observations WHERE content_hash=?').run(contentHash)
+        continue
+      }
+      this.unitOfWork.database.query(`INSERT INTO image_cas_orphan_observations(
+        content_hash,first_unreachable_at,last_seen_at,scan_count
+      ) VALUES(?,?,?,1)
+      ON CONFLICT(content_hash) DO UPDATE SET last_seen_at=excluded.last_seen_at,scan_count=image_cas_orphan_observations.scan_count+1`)
+        .run(contentHash, now, now)
+    }
+    for (const observation of this.unitOfWork.database.query('SELECT content_hash FROM image_cas_orphan_observations').all() as Array<{ content_hash: string }>) {
+      if (!seen.has(observation.content_hash)) {
+        this.unitOfWork.database.query('DELETE FROM image_cas_orphan_observations WHERE content_hash=?').run(observation.content_hash)
+      }
     }
     const owned = this.unitOfWork.database.query(`SELECT content_hash,byte_size,locator FROM image_asset_ownerships
       WHERE storage_kind='cas' AND content_hash IS NOT NULL`).all() as Array<{ content_hash: `sha256:${string}`; byte_size: number | null; locator: string }>
@@ -931,26 +986,41 @@ export class ImageWorkbenchRepository {
     }
   }
 
-  private async legacyProjectIds(): Promise<string[]> {
-    const names = await readdir(this.projectsDir).catch(error => {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []
-      throw error
-    })
-    return names
-      .filter(name => name.endsWith('.json'))
-      .map(name => name.slice(0, -'.json'.length))
-      .filter(projectId => IMAGE_ID.test(projectId))
-  }
-
   /**
-   * CAS collection remains blocked only while a current-root JSON project has
-   * no completed per-project receipt. Once every project has crossed that
-   * boundary, startup and explicit migration completion both reconcile it.
+   * CAS collection remains blocked while the current JSON source cannot be
+   * parsed or any completed receipt no longer matches its source snapshot.
+   * This prevents both stale completion reports and source-change GC loss.
    */
   async reconcileCasAfterLegacyMigration(): Promise<boolean> {
-    const projectIds = await this.legacyProjectIds()
-    const pending = projectIds.some(projectId => !this.unitOfWork.database.query(`SELECT 1 FROM image_project_migration_receipts
-      WHERE source_kind='image-workbench-json-v1' AND project_id=? AND status='complete'`).get(projectId))
+    const source = await new LegacyImageProjectReader(this.root).read().catch(() => null)
+    if (!source) return false
+    const sourceProjectIds = new Set(source.projects.map(project => project.id))
+    const receipts = this.unitOfWork.database.query(`SELECT project_id,source_hash FROM image_project_migration_receipts
+      WHERE source_kind='image-workbench-json-v1' AND status='complete'`).all() as Array<{ project_id: string; source_hash: string }>
+    let pending = false
+    for (const project of source.projects) {
+      const expectedSourceHash = legacyProjectSourceHash(source, project)
+      const receipt = this.unitOfWork.database.query(`SELECT source_hash FROM image_project_migration_receipts
+        WHERE source_kind='image-workbench-json-v1' AND project_id=? AND status='complete'`).get(project.id) as { source_hash: string } | null
+      if (!receipt) {
+        const invalidation = this.projectMigrationInvalidationRow('image-workbench-json-v1', project.id)
+        if (invalidation && invalidation.source_hash !== expectedSourceHash) {
+          this.markProjectMigrationSourceChanged('image-workbench-json-v1', project.id, expectedSourceHash, invalidation.previous_source_hash)
+        }
+        pending = true
+        continue
+      }
+      if (receipt.source_hash !== expectedSourceHash) {
+        this.markProjectMigrationSourceChanged('image-workbench-json-v1', project.id, expectedSourceHash, receipt.source_hash)
+        pending = true
+      }
+    }
+    for (const receipt of receipts) {
+      if (!sourceProjectIds.has(receipt.project_id)) {
+        this.markProjectMigrationSourceChanged('image-workbench-json-v1', receipt.project_id, 'source-missing', receipt.source_hash)
+        pending = true
+      }
+    }
     if (pending) return false
     await this.collectCasOrphans()
     return true
@@ -998,6 +1068,40 @@ export class ImageWorkbenchRepository {
         receipt.current_version_id,
         this.iso(),
       )
+      this.unitOfWork.database.query(`DELETE FROM image_project_migration_invalidations
+        WHERE source_kind=? AND project_id=?`).run(receipt.source_kind, receipt.project_id)
     })
+  }
+
+  private projectMigrationInvalidationRow(sourceKind: string, projectId: string): ImageProjectMigrationInvalidation | null {
+    return this.unitOfWork.database.query(`SELECT source_kind,project_id,source_hash,previous_source_hash,invalidated_at
+      FROM image_project_migration_invalidations WHERE source_kind=? AND project_id=?`)
+      .get(sourceKind, projectId) as ImageProjectMigrationInvalidation | null
+  }
+
+  private markProjectMigrationSourceChanged(sourceKind: string, projectId: string, sourceHash: string, previousSourceHash: string | null): void {
+    this.unitOfWork.transaction(() => {
+      this.unitOfWork.database.query(`INSERT INTO image_project_migration_invalidations(
+        source_kind,project_id,source_hash,previous_source_hash,invalidated_at
+      ) VALUES(?,?,?,?,?)
+      ON CONFLICT(source_kind,project_id) DO UPDATE SET
+        source_hash=excluded.source_hash,
+        previous_source_hash=COALESCE(excluded.previous_source_hash,image_project_migration_invalidations.previous_source_hash),
+        invalidated_at=excluded.invalidated_at`).run(sourceKind, projectId, sourceHash, previousSourceHash, this.iso())
+      this.unitOfWork.database.query(`DELETE FROM image_project_migration_receipts
+        WHERE source_kind=? AND project_id=?`).run(sourceKind, projectId)
+    })
+  }
+
+  async projectMigrationInvalidation(sourceKind: string, projectId: string): Promise<ImageProjectMigrationInvalidation | null> {
+    await this.ready()
+    this.assertId(projectId, 'project')
+    return this.projectMigrationInvalidationRow(sourceKind, projectId)
+  }
+
+  async invalidateProjectMigrationReceipt(sourceKind: string, projectId: string, previousSourceHash: string, observedSourceHash: string): Promise<void> {
+    await this.ready()
+    this.assertId(projectId, 'project')
+    this.markProjectMigrationSourceChanged(sourceKind, projectId, observedSourceHash, previousSourceHash)
   }
 }
