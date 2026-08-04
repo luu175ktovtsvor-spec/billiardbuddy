@@ -401,7 +401,9 @@ export class DeterministicImageCanvasRenderer {
         width: document.width,
         height: document.height,
         channels: 4,
-        background: document.background.kind === 'transparent' ? { r: 0, g: 0, b: 0, alpha: 0 } : document.background.color,
+        background: document.background.kind === 'transparent'
+          ? { r: 0, g: 0, b: 0, alpha: 0 }
+          : resolveColor(document.background.color, brandColors),
       },
     }).png({ compressionLevel: 9, adaptiveFiltering: false, palette: false })
     const renderLayerList = async (layers: ImageCanvasLayer[]): Promise<void> => {

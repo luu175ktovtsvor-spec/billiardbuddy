@@ -538,6 +538,43 @@ export const imageCanvasLayerSchema: z.ZodType<ImageCanvasLayer> = z.lazy(() => 
   imageCanvasMaskLayerSchema,
 ]))
 
+/**
+ * Canvas layers are a tree, but ids are document-global because commands,
+ * template slots and delivery manifests address a layer by id.  Masks are
+ * deliberately local to a group so their compositing order is unambiguous.
+ */
+function validateImageCanvasLayerGraph(
+  layers: ImageCanvasLayer[],
+  context: z.RefinementCtx,
+  path: Array<string | number> = ['layers'],
+): void {
+  const ids = new Set<string>()
+  const validateSiblings = (items: ImageCanvasLayer[], siblingPath: Array<string | number>): void => {
+    const siblings = new Map<string, ImageCanvasLayer>()
+    for (const [index, layer] of items.entries()) {
+      if (ids.has(layer.id)) {
+        context.addIssue({ code: 'custom', message: 'canvas layer id must be unique', path: [...siblingPath, index, 'id'] })
+      }
+      ids.add(layer.id)
+      siblings.set(layer.id, layer)
+      if (layer.kind === 'group') validateSiblings(layer.children, [...siblingPath, index, 'children'])
+    }
+    const maskedTargets = new Set<string>()
+    for (const [index, layer] of items.entries()) {
+      if (layer.kind !== 'mask') continue
+      const target = siblings.get(layer.target_layer_id)
+      if (!target || target.kind !== 'raster') {
+        context.addIssue({ code: 'custom', message: 'mask target must be a raster layer in the same group', path: [...siblingPath, index, 'target_layer_id'] })
+      }
+      if (maskedTargets.has(layer.target_layer_id)) {
+        context.addIssue({ code: 'custom', message: 'a raster layer may have only one mask in a group', path: [...siblingPath, index, 'target_layer_id'] })
+      }
+      maskedTargets.add(layer.target_layer_id)
+    }
+  }
+  validateSiblings(layers, path)
+}
+
 export const imageCanvasDocumentSchema = z.object({
   schema_version: z.literal(1), id: mediaIdSchema, project_id: mediaIdSchema, artboard_id: mediaIdSchema,
   delivery_spec_id: mediaIdSchema, delivery_spec_revision: z.number().int().nonnegative(),
@@ -547,6 +584,7 @@ export const imageCanvasDocumentSchema = z.object({
 }).strict().superRefine((value, context) => {
   if (Boolean(value.brand_kit_id) !== Boolean(value.brand_kit_revision_id)) context.addIssue({ code: 'custom', message: 'canvas brand id and revision must be paired' })
   if (Boolean(value.template_id) !== Boolean(value.template_revision_id)) context.addIssue({ code: 'custom', message: 'canvas template id and revision must be paired' })
+  validateImageCanvasLayerGraph(value.layers, context)
 })
 export const imageCanvasRevisionSchema = z.object({
   canvas_id: mediaIdSchema, revision: z.number().int().nonnegative(), document_hash: imageHashSchema,
@@ -571,14 +609,18 @@ export const imageTemplateRevisionSchema = z.object({
   schema_version: z.literal(1), created_at: mediaIsoDateSchema,
 }).strict().superRefine((value, context) => {
   if (Boolean(value.brand_kit_id) !== Boolean(value.brand_kit_revision_id)) context.addIssue({ code: 'custom', message: 'template brand id and revision must be paired' })
+  validateImageCanvasLayerGraph(value.blueprint.layers, context, ['blueprint', 'layers'])
   const layers = new Map<string, ImageCanvasLayer>()
   const walk = (items: ImageCanvasLayer[]) => items.forEach(layer => { layers.set(layer.id, layer); if (layer.kind === 'group') walk(layer.children) })
   walk(value.blueprint.layers)
   const slots = new Set<string>()
-  for (const slot of value.slots) {
+  const boundLayers = new Set<string>()
+  for (const [index, slot] of value.slots.entries()) {
     if (slots.has(slot.id)) context.addIssue({ code: 'custom', message: 'template slot id must be unique' })
     slots.add(slot.id)
-    if (layers.get(slot.layer_id)?.kind !== slot.kind) context.addIssue({ code: 'custom', message: 'template slot kind must match its layer' })
+    if (boundLayers.has(slot.layer_id)) context.addIssue({ code: 'custom', message: 'template slot layer_id must be unique', path: ['slots', index, 'layer_id'] })
+    boundLayers.add(slot.layer_id)
+    if (layers.get(slot.layer_id)?.kind !== slot.kind) context.addIssue({ code: 'custom', message: 'template slot kind must match its layer', path: ['slots', index, 'layer_id'] })
   }
 })
 
@@ -593,7 +635,15 @@ export const imageCanvasCommandInputSchema = z.discriminatedUnion('kind', [
   imageCanvasCommandBaseSchema.extend({ kind: z.literal('apply_template'), payload: z.object({ template_id: mediaIdSchema, template_revision_id: mediaIdSchema, slot_bindings: z.array(z.object({ slot_id: z.string().min(1).max(120), asset_id: mediaIdSchema.optional(), text: z.string().min(1).max(2_000).optional(), qr_payload: z.string().min(1).max(2_048).optional() }).strict()).max(80) }).strict() }),
   imageCanvasCommandBaseSchema.extend({ kind: z.literal('apply_brand_kit'), payload: z.object({ brand_kit_id: mediaIdSchema, brand_kit_revision_id: mediaIdSchema }).strict() }),
   imageCanvasCommandBaseSchema.extend({ kind: z.literal('sync_delivery_spec'), payload: z.object({ delivery_spec_id: mediaIdSchema, delivery_spec_revision: z.number().int().nonnegative(), layout_policy: z.enum(['preserve_position', 'fit_safe_area']) }).strict() }),
-])
+]).superRefine((command, context) => {
+  if (command.kind !== 'apply_template') return
+  for (const [index, binding] of command.payload.slot_bindings.entries()) {
+    const boundValues = [binding.asset_id, binding.text, binding.qr_payload].filter(value => value !== undefined)
+    if (boundValues.length !== 1) {
+      context.addIssue({ code: 'custom', message: 'a template slot binding must contain exactly one value', path: ['payload', 'slot_bindings', index] })
+    }
+  }
+})
 export const imageCanvasCreateInputSchema = z.object({
   artboard_id: mediaIdSchema, base_revision: z.number().int().nonnegative(), idempotency_key: z.string().min(16).max(160),
   background: imageCanvasBackgroundSchema.optional(),
@@ -728,11 +778,35 @@ export const deriveImageCandidateInputSchema = z.object({
   instruction: z.string().min(1).max(4_000),
   estimate_hash: imageHashSchema,
   confirm: z.literal(true),
-}).strict()
+  kind: z.enum(['edit', 'inpaint']).default('edit'),
+  mask_data_url: z.string()
+    .max(Math.ceil(32 * 1024 * 1024 * 4 / 3) + 128)
+    .regex(/^data:image\/png;base64,[A-Za-z0-9+/=]+$/)
+    .optional(),
+}).strict().superRefine((value, context) => {
+  if (value.kind === 'inpaint' && !value.mask_data_url) {
+    context.addIssue({ code: 'custom', path: ['mask_data_url'], message: 'inpaint requires a PNG mask' })
+  }
+  if (value.kind === 'edit' && value.mask_data_url) {
+    context.addIssue({ code: 'custom', path: ['mask_data_url'], message: 'edit does not accept a mask' })
+  }
+})
 export const estimateDeriveImageCandidateInputSchema = z.object({
   base_revision: z.number().int().nonnegative(),
   instruction: z.string().min(1).max(4_000),
-}).strict()
+  kind: z.enum(['edit', 'inpaint']).default('edit'),
+  mask_data_url: z.string()
+    .max(Math.ceil(32 * 1024 * 1024 * 4 / 3) + 128)
+    .regex(/^data:image\/png;base64,[A-Za-z0-9+/=]+$/)
+    .optional(),
+}).strict().superRefine((value, context) => {
+  if (value.kind === 'inpaint' && !value.mask_data_url) {
+    context.addIssue({ code: 'custom', path: ['mask_data_url'], message: 'inpaint requires a PNG mask' })
+  }
+  if (value.kind === 'edit' && value.mask_data_url) {
+    context.addIssue({ code: 'custom', path: ['mask_data_url'], message: 'edit does not accept a mask' })
+  }
+})
 
 export type ImageReferenceV2 = z.infer<typeof imageReferenceV2Schema>
 export type ImageBriefSnapshot = z.infer<typeof imageBriefSnapshotSchema>

@@ -1985,3 +1985,66 @@ test('15.5A keeps Inspiration local until explicit promote and exposes typed Bri
   expect((await removed.json() as { project: { references: Array<{ role: string }> } }).project.references).toHaveLength(1)
   service.repository.close()
 })
+
+test('15.5B Inpaint stays on the formal Candidate -> Estimate -> Round path and binds a verified mask to the Provider request', async () => {
+  const png = (await dataUrl()).split(',', 2)[1]!
+  const gateway = gatewayFixture(png)
+  const service = await createService('15b-inpaint', gateway.fetchImpl)
+  await withGateway(async () => {
+    const project = await createProject(service)
+    const submitted = await service.submitProject(project.id)
+    const completed = await service.getOperation(submitted.id)
+    const formal = await service.findGenerationOperation(completed.operation_id!)
+    if (!formal?.result || formal.result.kind !== 'candidate_group') throw new Error('expected candidate group')
+    const group = await service.getCandidateGroup(project.id, formal.result.candidate_group_id)
+    const current = await service.getProject(project.id)
+    const mask = await dataUrl()
+    const estimate = await service.estimateDerivation(current.id, group.candidates[0]!.id, {
+      base_revision: current.revision,
+      instruction: '只替换背景为干净的摄影棚渐变，不修改产品本体',
+      kind: 'inpaint',
+      mask_data_url: mask,
+    })
+    const derived = await service.deriveCandidate(current.id, group.candidates[0]!.id, {
+      base_revision: current.revision,
+      idempotency_key: 'bb-image-15b-inpaint-derive-0001',
+      instruction: '只替换背景为干净的摄影棚渐变，不修改产品本体',
+      kind: 'inpaint',
+      mask_data_url: mask,
+      estimate_hash: estimate.estimate_hash,
+      confirm: true,
+    })
+    expect(derived.operation.kind).toBe('inpaint')
+    expect(derived.operation.mask_asset_id).toMatch(/^mask_/)
+    expect(derived.operation.input_refs.asset_hashes).toContain(await imageHash())
+    const latestPost = gateway.calls.filter(call => call.path === '/image-generation/v1/images/tasks' && call.method === 'POST').at(-1)
+    expect(latestPost?.body).toMatchObject({
+      mode: 'edit',
+      n: 3,
+      mask,
+    })
+    const persisted = await service.repository.getGenerationOperation(current.id, derived.operation.id)
+    expect(persisted).toMatchObject({
+      kind: 'inpaint',
+      base_candidate_id: group.candidates[0]!.id,
+      mask_asset_id: derived.operation.mask_asset_id,
+    })
+    const replay = await service.deriveCandidate(current.id, group.candidates[0]!.id, {
+      base_revision: current.revision,
+      idempotency_key: 'bb-image-15b-inpaint-derive-0001',
+      instruction: '只替换背景为干净的摄影棚渐变，不修改产品本体',
+      kind: 'inpaint',
+      mask_data_url: mask,
+      estimate_hash: estimate.estimate_hash,
+      confirm: true,
+    })
+    expect(replay.operation.id).toBe(derived.operation.id)
+    expect(gateway.calls.filter(call => call.path === '/image-generation/v1/images/tasks' && call.method === 'POST')).toHaveLength(2)
+    await expect(service.estimateDerivation(current.id, group.candidates[0]!.id, {
+      base_revision: current.revision,
+      instruction: '缺少蒙版必须拒绝',
+      kind: 'inpaint',
+    })).rejects.toThrow('inpaint requires a PNG mask')
+  })
+  service.repository.close()
+})

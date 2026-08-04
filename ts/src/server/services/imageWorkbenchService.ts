@@ -20,6 +20,7 @@ import {
   type CommitImageVersionInput,
   type CreateImageProjectInput,
   type ImageWorkbenchProject,
+  type ImageBriefOverrides,
   type MediaAsset,
   type MediaOwner,
   type MediaSafeErrorCode,
@@ -37,6 +38,7 @@ import {
   imageCanvasPreflightInputSchema,
   imageCanvasRenderInputSchema,
   imageArtboardSelectVersionInputSchema,
+  imageBrandKitRevisionSchema,
   imageDeliverySpecRevisionInputSchema,
   imageExportInputSchema,
   imageUnderstandingInputSchema,
@@ -47,6 +49,7 @@ import {
   deriveImageCandidateInputSchema,
   estimateDeriveImageCandidateInputSchema,
   estimateGenerationRoundInputSchema,
+  imageTemplateRevisionSchema,
   type AdoptImageCandidateInput,
   type CreateCreativePlanInput,
   type CreateGenerationRoundInput,
@@ -91,17 +94,55 @@ import {
 import {
   addImageWorkflowReferencesInputSchema,
   applyImageBriefOverridesInputSchema,
+  createImageAssetGrantInputSchema,
+  createImageBrandKitInputSchema,
+  createImageCampaignInputSchema,
+  createImageTemplateInputSchema,
+  cancelImageCampaignInputSchema,
+  confirmImageCampaignInputSchema,
+  deleteImageReusableAggregateInputSchema,
+  estimateImageCampaignInputSchema,
+  imageCampaignConfirmationReceiptSchema,
+  imageCampaignEstimateSchema,
+  imageCampaignItemSchema,
+  imageCampaignProjectIntentSchema,
+  imageCampaignSchema,
+  imageBrandKitSchema,
   imageInspirationBoardSchema,
   imageQuickCreateInputSchema,
+  imageTemplateSchema,
   promoteImageInspirationItemInputSchema,
   removeImageWorkflowReferenceInputSchema,
+  replaceImageCampaignItemsInputSchema,
+  reviseImageBrandKitInputSchema,
+  reviseImageTemplateInputSchema,
+  revokeImageAssetGrantInputSchema,
+  retryImageCampaignItemInputSchema,
+  startImageCampaignInputSchema,
   upsertImageInspirationItemsInputSchema,
   type AddImageWorkflowReferencesInput,
   type ApplyImageBriefOverridesInput,
+  type CreateImageAssetGrantInput,
+  type CreateImageBrandKitInput,
+  type CreateImageCampaignInput,
+  type CreateImageTemplateInput,
+  type ConfirmImageCampaignInput,
+  type EstimateImageCampaignInput,
+  type ImageAssetGrant,
+  type ImageCampaign,
+  type ImageCampaignConfirmationReceipt,
+  type ImageCampaignEstimate,
+  type ImageCampaignItem,
+  type ImageCampaignProjectIntent,
   type ImageInspirationBoard,
+  type ImageProjectLibrary,
   type ImageQuickCreateInput,
   type PromoteImageInspirationItemInput,
   type RemoveImageWorkflowReferenceInput,
+  type ReplaceImageCampaignItemsInput,
+  type ReviseImageBrandKitInput,
+  type ReviseImageTemplateInput,
+  type RetryImageCampaignItemInput,
   type UpsertImageInspirationItemsInput,
 } from '../../../shared/contracts/imageWorkflow.js'
 import { providerRegistryEntry } from '../../../../gateway/providerRegistry.js'
@@ -136,6 +177,7 @@ import {
   ImageWorkbenchRepositoryError,
   type ImageOperation,
   type ImageOperationEvent,
+  type ImageCampaignSnapshot,
 } from './imageWorkbenchRepository.js'
 import {
   LegacyImageProjectReader,
@@ -202,6 +244,7 @@ const STANDALONE_IMAGE_OWNER: MediaOwner = {
 }
 const INITIAL_WRITER_FENCE = `fence_${'0'.repeat(32)}`
 const IMAGE_GENERATION_ESTIMATE_TTL_MS = 5 * 60 * 1000
+const MAX_CAMPAIGN_PAID_OPERATIONS = 256
 const IMAGE_QWEN_MAX_INPUT_BYTES = 16 * 1024 * 1024
 
 type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
@@ -210,6 +253,7 @@ export type ImageWorkbenchCrashPoint =
   | 'after_cas_publish_before_db_commit'
   | 'after_db_commit_before_relay_ack'
   | 'after_generation_round_persisted_before_post'
+  | 'after_campaign_cancel_item_before_completion'
   | 'after_project_migration_before_operations'
   | 'after_canvas_render_cas_before_db_commit'
   | 'after_export_cas_before_db_commit'
@@ -371,6 +415,30 @@ export class ImageWorkbenchServiceError extends Error {
     super(message)
     this.name = 'ImageWorkbenchServiceError'
   }
+}
+
+/** Internal source facts that the HTTP layer converts to the public projection. */
+export type ImageWorkbenchProjectProjectionData = {
+  project: ImageWorkbenchProject
+  inspiration_board: ImageInspirationBoard | null
+  creative_plans: ImageCreativePlan[]
+  generation_rounds: ImageGenerationRound[]
+  operations: ImageOperationV2[]
+  candidate_groups: Array<{ group: ImageCandidateGroup; candidates: ImageCandidate[] }>
+  canvases: ImageCanvasRevision[]
+  delivery_spec: ImageDeliverySpec | null
+  library: ImageProjectLibrary
+  campaign_intent: ImageCampaignProjectIntent | null
+}
+
+type QuickCreateLifecycle = {
+  brief_overrides?: ImageBriefOverrides
+  /** Called after the Round/Operation transaction, before the first paid POST. */
+  on_generation_round_persisted?: (value: {
+    project: ImageWorkbenchProject
+    round: ImageGenerationRound
+    operations: ImageOperationV2[]
+  }) => Promise<void>
 }
 
 /**
@@ -883,6 +951,103 @@ export class ImageWorkbenchService {
     return await this.project(projectId)
   }
 
+  /**
+   * Rehydrates all renderer-visible image facts from durable stores.  The
+   * renderer's own selection and drag state deliberately remains outside this
+   * projection, so a restart cannot resurrect an uncommitted UI mutation.
+   */
+  async getProjectProjection(projectId: string): Promise<ImageWorkbenchProjectProjectionData> {
+    const project = await this.assertProjectOwner(projectId)
+    const [
+      inspiration_board,
+      creative_plans,
+      generation_rounds,
+      candidate_groups,
+      canvases,
+      delivery_spec,
+      library,
+      operations,
+      campaign_intent,
+    ] = await Promise.all([
+      this.repository.getInspirationBoard(project.id),
+      this.repository.listCreativePlans(project.id),
+      this.repository.listGenerationRounds(project.id),
+      this.repository.listCandidateGroups(project.id),
+      this.repository.listCanvasRevisions(project.id),
+      this.repository.currentDeliverySpec(project.id),
+      this.repository.listProjectLibrary(project.id),
+      this.listGenerationOperations(project.id),
+      this.campaignProjectIntent(project),
+    ])
+    return {
+      project,
+      inspiration_board,
+      creative_plans,
+      generation_rounds,
+      operations,
+      candidate_groups,
+      canvases,
+      delivery_spec,
+      library,
+      campaign_intent,
+    }
+  }
+
+  /**
+   * Campaign remains an orchestrator: this only exposes the immutable,
+   * Canvas-ready intent carried by the ordinary child Project.  It never
+   * injects per-item values into a Provider prompt or writes a Canvas.
+   */
+  private async campaignProjectIntent(project: ImageWorkbenchProject): Promise<ImageCampaignProjectIntent | null> {
+    return await this.repository.campaignProjectIntentForProject(project.id, project.owner)
+  }
+
+  private async createCampaignProjectIntent(
+    projectId: string,
+    campaign: ImageCampaign,
+    item: ImageCampaignItem,
+  ): Promise<ImageCampaignProjectIntent> {
+    let slot_bindings: ImageCampaignProjectIntent['slot_bindings'] = []
+    if (campaign.template_id && campaign.template_revision_id) {
+      // Historical lookup is deliberate. A prior Project remains explainable
+      // after a Template is trashed; the normal apply_template command still
+      // checks active state and grants before it can write a new Canvas revision.
+      const template = await this.repository.templateRevision(
+        campaign.template_id,
+        campaign.template_revision_id,
+        campaign.owner,
+      )
+      const slots = new Map(template.slots.map(slot => [slot.id, slot]))
+      slot_bindings = item.variable_values.map(variable => {
+        const slot = slots.get(variable.slot_id)
+        if (!slot) {
+          throw new ImageWorkbenchServiceError('Campaign 项目引用的 Template Slot 已不存在', 500, 'IMAGE_STORAGE_INVALID')
+        }
+        if (slot.kind === 'text') return { slot_id: slot.id, text: variable.value }
+        if (slot.kind === 'qrcode') return { slot_id: slot.id, qr_payload: variable.value }
+        throw new ImageWorkbenchServiceError('Campaign 项目变量不是可写入的文字或二维码 Slot', 500, 'IMAGE_STORAGE_INVALID')
+      })
+    } else if (item.variable_values.length > 0) {
+      throw new ImageWorkbenchServiceError('Campaign 项目缺少变量对应的 Template', 500, 'IMAGE_STORAGE_INVALID')
+    }
+    return imageCampaignProjectIntentSchema.parse({
+      project_id: projectId,
+      campaign_id: campaign.id,
+      campaign_revision: campaign.revision,
+      item_id: item.id,
+      attempt: item.attempt,
+      ...(campaign.brand_kit_id ? {
+        brand_kit_id: campaign.brand_kit_id,
+        brand_kit_revision_id: campaign.brand_kit_revision_id,
+      } : {}),
+      ...(campaign.template_id ? {
+        template_id: campaign.template_id,
+        template_revision_id: campaign.template_revision_id,
+      } : {}),
+      slot_bindings,
+    })
+  }
+
   async assertProjectOwner(projectId: string, owner: MediaOwner = STANDALONE_IMAGE_OWNER): Promise<ImageWorkbenchProject> {
     const project = await this.project(projectId)
     if (project.owner.kind !== owner.kind || project.owner.owner_id !== owner.owner_id) {
@@ -1029,7 +1194,7 @@ export class ImageWorkbenchService {
    * command after a crash reconstructs the same IDs and never starts a new
    * paid attempt.
    */
-  async quickCreate(raw: ImageQuickCreateInput): Promise<{
+  async quickCreate(raw: ImageQuickCreateInput, options: QuickCreateLifecycle = {}): Promise<{
     project: ImageWorkbenchProject
     round: ImageGenerationRound
     operations: ImageOperationV2[]
@@ -1042,6 +1207,7 @@ export class ImageWorkbenchService {
       output_preset: input.output_preset,
       reference_inputs: input.reference_inputs,
       budget_limit: input.budget_limit ?? null,
+      brief_overrides: options.brief_overrides ?? null,
     })
     const projectId = workflowId('img', 'quick-create', input.idempotency_key)
     const roundId = stableId('rnd', projectId, input.idempotency_key)
@@ -1052,7 +1218,7 @@ export class ImageWorkbenchService {
       request_hash: requestHash,
       result: { project_id: projectId, round_id: roundId, operation_ids: [] },
     })
-    const project = await this.createProjectWithId({
+    let project = await this.createProjectWithId({
       title: input.title,
       user_request: input.prompt,
       workspace_root: 'image-workbench',
@@ -1062,10 +1228,14 @@ export class ImageWorkbenchService {
       reference_roles: input.reference_inputs.map(reference => reference.role),
     }, projectId)
 
+    // A persisted Round is the durable boundary for Quick Create.  Recovery
+    // must reach it before replaying any earlier project command, whose
+    // original base revision is intentionally part of its idempotency hash.
     const existingRound = await this.existingGenerationRound(project.id, roundId)
     if (existingRound) {
       const operations = await Promise.all(existingRound.direction_operations.map(async direction =>
         await this.repository.getGenerationOperation(project.id, direction.operation_id)))
+      await options.on_generation_round_persisted?.({ project: await this.project(project.id), round: existingRound, operations })
       await this.repository.completeWorkflowCommand({
         scope: 'quick-create',
         aggregate_id: STANDALONE_IMAGE_OWNER.owner_id,
@@ -1074,6 +1244,18 @@ export class ImageWorkbenchService {
         result: { project_id: project.id, round_id: existingRound.id, operation_ids: operations.map(operation => operation.id) },
       })
       return { project: await this.project(project.id), round: existingRound, operations }
+    }
+
+    if (options.brief_overrides && Object.keys(options.brief_overrides).length > 0) {
+      const hasPersistedOverrides = Object.entries(options.brief_overrides).every(([key, value]) =>
+        stableJson(project.brief_overrides[key as keyof ImageBriefOverrides]) === stableJson(value))
+      if (!hasPersistedOverrides) {
+        project = await this.applyBriefOverrides(project.id, {
+          base_revision: project.revision,
+          idempotency_key: `bb-image-quick-brief-${sha256({ project_id: project.id, key: input.idempotency_key }).slice('sha256:'.length)}`,
+          overrides: options.brief_overrides,
+        })
+      }
     }
     if (receipt.status === 'complete') {
       throw new ImageWorkbenchServiceError('快速创建回执缺少生成轮次', 500, 'IMAGE_OPERATION_CORRUPT')
@@ -1098,6 +1280,14 @@ export class ImageWorkbenchService {
       direction_ids: [direction.id],
       estimate_hash: estimate.estimate_hash,
       confirm: true,
+    }, {
+      on_persisted: async persisted => {
+        await options.on_generation_round_persisted?.({
+          project: persisted.project,
+          round: persisted.round,
+          operations: persisted.operations,
+        })
+      },
     })
     await this.repository.completeWorkflowCommand({
       scope: 'quick-create',
@@ -1492,6 +1682,1338 @@ export class ImageWorkbenchService {
     return { project: await this.refreshWorkflowProject(saved), board: saved.board }
   }
 
+  async listProjectLibrary(projectId: string): Promise<ImageProjectLibrary> {
+    await this.assertProjectOwner(projectId)
+    return await this.repository.listProjectLibrary(projectId)
+  }
+
+  private async assertBrandRevisionAssetGrants(revision: ImageBrandKitRevision, initial = false): Promise<void> {
+    const nonBuiltinFonts = revision.font_asset_ids.filter(assetId => assetId !== 'font_builtin_0001')
+    if (nonBuiltinFonts.length > 0) {
+      throw new ImageWorkbenchServiceError('当前图片工作台仅支持受控内置字体，其他品牌字体暂不可写入品牌包', 422, 'IMAGE_ASSET_NOT_FOUND')
+    }
+    if (initial && revision.logo_asset_ids.length > 0) {
+      throw new ImageWorkbenchServiceError('新建品牌套件必须先创建空 revision，再对素材授权后写入 Logo', 409, 'IMAGE_REVISION_CONFLICT')
+    }
+    for (const assetId of revision.logo_asset_ids) {
+      await this.repository.activeAssetGrant(assetId, { kind: 'brand_kit', id: revision.brand_kit_id }, ['render', 'template_use'])
+    }
+  }
+
+  private templateReferencedAssetIds(revision: ImageTemplateRevision): string[] {
+    const assetIds = new Set<string>()
+    for (const layer of this.flattenCanvasLayers(revision.blueprint.layers)) {
+      if (layer.kind === 'raster' || layer.kind === 'logo' || layer.kind === 'mask') assetIds.add(layer.source_asset_id)
+      if (layer.kind === 'qrcode' && layer.source.kind === 'asset') assetIds.add(layer.source.asset_id)
+    }
+    return [...assetIds]
+  }
+
+  private async assertTemplateRevisionAssetGrants(revision: ImageTemplateRevision, initial = false): Promise<void> {
+    const brand = revision.brand_kit_id && revision.brand_kit_revision_id
+      ? await this.repository.activeBrandKitRevision(revision.brand_kit_id, revision.brand_kit_revision_id, revision.owner)
+      : undefined
+    if (brand) await this.assertBrandRevisionAssetGrants(brand)
+    const brandAssets = new Set(brand?.logo_asset_ids ?? [])
+    const brandFonts = new Set(brand?.font_asset_ids ?? [])
+    for (const assetId of this.templateReferencedAssetIds(revision)) {
+      if (brandAssets.has(assetId)) continue
+      if (initial) {
+        throw new ImageWorkbenchServiceError('新建模板只能从空蓝图或已绑定品牌素材开始；项目素材需先授权后写入 revision', 409, 'IMAGE_REVISION_CONFLICT')
+      }
+      await this.repository.activeAssetGrant(assetId, { kind: 'template', id: revision.template_id }, ['template_use'])
+    }
+    for (const layer of this.flattenCanvasLayers(revision.blueprint.layers)) {
+      if (layer.kind !== 'text' || layer.font_asset_id === 'font_builtin_0001' || brandFonts.has(layer.font_asset_id)) continue
+      throw new ImageWorkbenchServiceError('模板文字只能使用内置字体或已锁定的品牌字体', 422, 'IMAGE_ASSET_NOT_FOUND')
+    }
+  }
+
+  async listBrandKits(includeTrashed = false) {
+    return await this.repository.listBrandKits(STANDALONE_IMAGE_OWNER, includeTrashed)
+  }
+
+  async getBrandKit(brandKitId: string) {
+    return await this.repository.getBrandKit(brandKitId, STANDALONE_IMAGE_OWNER)
+  }
+
+  async createBrandKit(raw: CreateImageBrandKitInput) {
+    const input = createImageBrandKitInputSchema.parse(raw)
+    const now = this.iso()
+    const brandKitId = workflowId('brand', STANDALONE_IMAGE_OWNER.owner_id, input.idempotency_key)
+    const requestHash = sha256({ kind: 'brand_kit_create', name: input.name, revision: input.revision })
+    const replay = await this.repository.brandKitCommandResult(brandKitId, input.idempotency_key, requestHash)
+    if (replay) return replay
+    const revision = imageBrandKitRevisionSchema.parse({
+      id: workflowId('brrev', brandKitId, '0'),
+      brand_kit_id: brandKitId,
+      revision: 0,
+      owner: STANDALONE_IMAGE_OWNER,
+      ...input.revision,
+      created_at: now,
+    })
+    const brandKit = imageBrandKitSchema.parse({
+      id: brandKitId,
+      owner: STANDALONE_IMAGE_OWNER,
+      name: input.name,
+      revision: 0,
+      current_revision_id: revision.id,
+      state: 'active',
+      created_at: now,
+      updated_at: now,
+    })
+    const result = await this.repository.createBrandKitCommand({
+      brand_kit: brandKit,
+      revision,
+      idempotency_key: input.idempotency_key,
+      request_hash: requestHash,
+    })
+    return { brand_kit: result.brand_kit, revision: result.revision }
+  }
+
+  async reviseBrandKit(brandKitId: string, raw: ReviseImageBrandKitInput) {
+    const input = reviseImageBrandKitInputSchema.parse(raw)
+    const requestHash = sha256({ kind: 'brand_kit_revise', brand_kit_id: brandKitId, base_revision: input.base_revision, revision: input.revision })
+    const replay = await this.repository.brandKitCommandResult(brandKitId, input.idempotency_key, requestHash)
+    if (replay) return replay
+    const current = await this.repository.getBrandKit(brandKitId, STANDALONE_IMAGE_OWNER)
+    const now = this.iso()
+    const revision = imageBrandKitRevisionSchema.parse({
+      id: workflowId('brrev', brandKitId, input.idempotency_key),
+      brand_kit_id: brandKitId,
+      revision: current.brand_kit.revision + 1,
+      owner: STANDALONE_IMAGE_OWNER,
+      ...input.revision,
+      created_at: now,
+    })
+    const brandKit = imageBrandKitSchema.parse({
+      ...current.brand_kit,
+      revision: current.brand_kit.revision + 1,
+      current_revision_id: revision.id,
+      updated_at: now,
+    })
+    const result = await this.repository.reviseBrandKitCommand({
+      brand_kit: brandKit,
+      revision,
+      base_revision: input.base_revision,
+      idempotency_key: input.idempotency_key,
+      request_hash: requestHash,
+    })
+    return { brand_kit: result.brand_kit, revision: result.revision }
+  }
+
+  async trashBrandKit(brandKitId: string, raw: { base_revision: number; idempotency_key: string }) {
+    const input = deleteImageReusableAggregateInputSchema.parse(raw)
+    const result = await this.repository.trashBrandKitCommand({
+      brand_kit_id: brandKitId,
+      base_revision: input.base_revision,
+      idempotency_key: input.idempotency_key,
+      request_hash: sha256({ kind: 'brand_kit_trash', brand_kit_id: brandKitId, base_revision: input.base_revision }),
+      updated_at: this.iso(),
+    })
+    return { brand_kit: result.brand_kit, revision: result.revision }
+  }
+
+  async listTemplates(includeTrashed = false) {
+    return await this.repository.listTemplates(STANDALONE_IMAGE_OWNER, includeTrashed)
+  }
+
+  async getTemplate(templateId: string) {
+    return await this.repository.getTemplate(templateId, STANDALONE_IMAGE_OWNER)
+  }
+
+  async createTemplate(raw: CreateImageTemplateInput) {
+    const input = createImageTemplateInputSchema.parse(raw)
+    const now = this.iso()
+    const templateId = workflowId('template', STANDALONE_IMAGE_OWNER.owner_id, input.idempotency_key)
+    const requestHash = sha256({ kind: 'template_create', name: input.name, revision: input.revision })
+    const replay = await this.repository.templateCommandResult(templateId, input.idempotency_key, requestHash)
+    if (replay) return replay
+    const revision = imageTemplateRevisionSchema.parse({
+      id: workflowId('tmrev', templateId, '0'),
+      template_id: templateId,
+      revision: 0,
+      owner: STANDALONE_IMAGE_OWNER,
+      ...input.revision,
+      created_at: now,
+    })
+    const template = imageTemplateSchema.parse({
+      id: templateId,
+      owner: STANDALONE_IMAGE_OWNER,
+      name: input.name,
+      revision: 0,
+      current_revision_id: revision.id,
+      state: 'active',
+      created_at: now,
+      updated_at: now,
+    })
+    const result = await this.repository.createTemplateCommand({
+      template,
+      revision,
+      idempotency_key: input.idempotency_key,
+      request_hash: requestHash,
+    })
+    return { template: result.template, revision: result.revision }
+  }
+
+  async reviseTemplate(templateId: string, raw: ReviseImageTemplateInput) {
+    const input = reviseImageTemplateInputSchema.parse(raw)
+    const requestHash = sha256({ kind: 'template_revise', template_id: templateId, base_revision: input.base_revision, revision: input.revision })
+    const replay = await this.repository.templateCommandResult(templateId, input.idempotency_key, requestHash)
+    if (replay) return replay
+    const current = await this.repository.getTemplate(templateId, STANDALONE_IMAGE_OWNER)
+    const now = this.iso()
+    const revision = imageTemplateRevisionSchema.parse({
+      id: workflowId('tmrev', templateId, input.idempotency_key),
+      template_id: templateId,
+      revision: current.template.revision + 1,
+      owner: STANDALONE_IMAGE_OWNER,
+      ...input.revision,
+      created_at: now,
+    })
+    const template = imageTemplateSchema.parse({
+      ...current.template,
+      revision: current.template.revision + 1,
+      current_revision_id: revision.id,
+      updated_at: now,
+    })
+    const result = await this.repository.reviseTemplateCommand({
+      template,
+      revision,
+      base_revision: input.base_revision,
+      idempotency_key: input.idempotency_key,
+      request_hash: requestHash,
+    })
+    return { template: result.template, revision: result.revision }
+  }
+
+  async trashTemplate(templateId: string, raw: { base_revision: number; idempotency_key: string }) {
+    const input = deleteImageReusableAggregateInputSchema.parse(raw)
+    const result = await this.repository.trashTemplateCommand({
+      template_id: templateId,
+      base_revision: input.base_revision,
+      idempotency_key: input.idempotency_key,
+      request_hash: sha256({ kind: 'template_trash', template_id: templateId, base_revision: input.base_revision }),
+      updated_at: this.iso(),
+    })
+    return { template: result.template, revision: result.revision }
+  }
+
+  async createAssetGrant(raw: CreateImageAssetGrantInput): Promise<ImageAssetGrant> {
+    const input = createImageAssetGrantInputSchema.parse(raw)
+    const provenance = await this.repository.getWorkflowAssetProvenance(input.asset_id)
+    if (provenance.owner.kind !== 'project') {
+      throw new ImageWorkbenchServiceError('当前只支持从图片项目授权素材', 422, 'IMAGE_ASSET_NOT_FOUND')
+    }
+    const grant = {
+      id: workflowId('grant', input.idempotency_key),
+      asset_id: input.asset_id,
+      from_owner: provenance.owner,
+      to_owner: input.to_owner,
+      purpose: input.purpose,
+      granted_by: STANDALONE_IMAGE_OWNER,
+      created_at: this.iso(),
+    } as const
+    const result = await this.repository.createWorkflowAssetGrant({
+      grant,
+      owner: STANDALONE_IMAGE_OWNER,
+      idempotency_key: input.idempotency_key,
+      request_hash: sha256({ kind: 'asset_grant_create', asset_id: input.asset_id, to_owner: input.to_owner, purpose: input.purpose }),
+    })
+    return result.grant
+  }
+
+  async revokeAssetGrant(grantId: string, raw: { idempotency_key: string }): Promise<ImageAssetGrant> {
+    const input = revokeImageAssetGrantInputSchema.parse(raw)
+    const result = await this.repository.revokeWorkflowAssetGrant({
+      grant_id: grantId,
+      owner: STANDALONE_IMAGE_OWNER,
+      idempotency_key: input.idempotency_key,
+      request_hash: sha256({ kind: 'asset_grant_revoke', grant_id: grantId }),
+      revoked_at: this.iso(),
+    })
+    return result.grant
+  }
+
+  async listAssetGrants(includeRevoked = false): Promise<ImageAssetGrant[]> {
+    return await this.repository.listWorkflowAssetGrants(STANDALONE_IMAGE_OWNER, includeRevoked)
+  }
+
+  private campaignItemQuickCreateKey(campaign: ImageCampaign, item: ImageCampaignItem): string {
+    return `bb-image-campaign-${campaign.id}-${item.id}-attempt-${item.attempt}`
+  }
+
+  private campaignItemProjectId(campaign: ImageCampaign, item: ImageCampaignItem): string {
+    return workflowId('img', 'quick-create', this.campaignItemQuickCreateKey(campaign, item))
+  }
+
+  private campaignBriefOverrides(campaign: ImageCampaign): ImageBriefOverrides {
+    return {
+      confirmed_facts: campaign.shared_brief.confirmed_facts,
+      must_preserve: campaign.shared_brief.must_preserve,
+    }
+  }
+
+  /** Campaign values stay as typed Template-slot data and never become raw prompt suffixes. */
+  private async assertCampaignConfiguration(campaign: ImageCampaign, items: readonly ImageCampaignItem[]): Promise<void> {
+    if (campaign.brand_kit_id && campaign.brand_kit_revision_id) {
+      const brand = await this.repository.activeBrandKitRevision(
+        campaign.brand_kit_id,
+        campaign.brand_kit_revision_id,
+        campaign.owner,
+      )
+      await this.assertBrandRevisionAssetGrants(brand)
+    }
+    const template = campaign.template_id && campaign.template_revision_id
+      ? await this.repository.activeTemplateRevision(campaign.template_id, campaign.template_revision_id, campaign.owner)
+      : undefined
+    if (!template) {
+      if (items.some(item => item.variable_values.length > 0)) {
+        throw new ImageWorkbenchServiceError('Campaign 变量必须绑定到已锁定的 Template Slot', 409, 'IMAGE_REVISION_CONFLICT')
+      }
+      return
+    }
+    await this.assertTemplateRevisionAssetGrants(template)
+    if (campaign.brand_kit_id && (
+      template.brand_kit_id !== campaign.brand_kit_id || template.brand_kit_revision_id !== campaign.brand_kit_revision_id
+    )) {
+      throw new ImageWorkbenchServiceError('Campaign Brand Kit 必须与 Template 锁定的 revision 一致', 409, 'IMAGE_REVISION_CONFLICT')
+    }
+    const slots = new Map(template.slots.map(slot => [slot.id, slot]))
+    for (const item of items) {
+      const seen = new Set<string>()
+      for (const variable of item.variable_values) {
+        const slot = slots.get(variable.slot_id)
+        if (!slot || seen.has(variable.slot_id)) {
+          throw new ImageWorkbenchServiceError('Campaign 变量引用了不存在或重复的 Template Slot', 409, 'IMAGE_REVISION_CONFLICT')
+        }
+        if (slot.kind !== 'text' && slot.kind !== 'qrcode') {
+          throw new ImageWorkbenchServiceError('Campaign 字符串变量只能填充文字或二维码 Template Slot', 422, 'IMAGE_CAPABILITY_GAP')
+        }
+        seen.add(variable.slot_id)
+      }
+      for (const slot of template.slots) {
+        if (!slot.required || seen.has(slot.id)) continue
+        if (slot.kind !== 'text' && slot.kind !== 'qrcode') {
+          throw new ImageWorkbenchServiceError('Campaign 不能为必填的图片或标志 Slot 提供未授权素材', 422, 'IMAGE_CAPABILITY_GAP')
+        }
+        throw new ImageWorkbenchServiceError('Campaign 项目缺少必填 Template Slot 的变量值', 409, 'IMAGE_REVISION_CONFLICT')
+      }
+    }
+  }
+
+  private campaignRequestHash(kind: string, campaignId: string, value: unknown): `sha256:${string}` {
+    return sha256({ kind, campaign_id: campaignId, value })
+  }
+
+  private campaignItemState(operation: ImageOperationV2): ImageCampaignItem['state'] {
+    if (operation.status === 'running') return 'running'
+    if (operation.status === 'succeeded') return 'ready'
+    if (operation.status === 'cancelled') return 'cancelled'
+    if (operation.status === 'failed' || operation.status === 'blocked_by_policy') return 'failed'
+    return 'queued'
+  }
+
+  private async campaignItemBudget(campaign: ImageCampaign, item: ImageCampaignItem): Promise<{ currency: string; amount_minor: number } | undefined> {
+    if (item.attempt > 1) {
+      if (!item.retry_estimate_hash || !item.retry_confirmation_receipt_id) {
+        throw new ImageWorkbenchServiceError('Campaign 重试缺少已确认的费用回执', 409, 'IMAGE_REVISION_CONFLICT')
+      }
+      const [confirmation, estimate] = await Promise.all([
+        this.repository.getCampaignConfirmation(campaign.id, item.retry_confirmation_receipt_id, campaign.owner),
+        this.repository.getCampaignEstimate(campaign.id, item.retry_estimate_hash, campaign.owner),
+      ])
+      if (
+        confirmation.purpose !== 'retry'
+        || confirmation.estimate_hash !== item.retry_estimate_hash
+        || confirmation.item_id !== item.id
+        || confirmation.attempt !== item.attempt
+        || estimate.purpose !== 'retry'
+        || estimate.item_id !== item.id
+        || estimate.attempt !== item.attempt
+      ) {
+        throw new ImageWorkbenchServiceError('Campaign 重试费用确认回执损坏', 500, 'IMAGE_OPERATION_CORRUPT')
+      }
+      return {
+        currency: estimate.price_upper_bound.currency,
+        amount_minor: estimate.price_upper_bound.amount_minor,
+      }
+    }
+    if (!campaign.estimate_hash) return undefined
+    const estimate = await this.repository.getCampaignEstimate(campaign.id, campaign.estimate_hash, campaign.owner)
+    if (estimate.purpose !== 'start' || estimate.paid_operation_count < 1 || estimate.price_upper_bound.amount_minor % estimate.paid_operation_count !== 0) {
+      throw new ImageWorkbenchServiceError('Campaign 初始费用估算损坏', 500, 'IMAGE_OPERATION_CORRUPT')
+    }
+    return {
+      currency: estimate.price_upper_bound.currency,
+      amount_minor: estimate.price_upper_bound.amount_minor / estimate.paid_operation_count,
+    }
+  }
+
+  /** Sum only durable user-confirmed quotes, so a policy drift cannot undercharge a new retry. */
+  private async confirmedCampaignBudgetAmount(campaign: ImageCampaign): Promise<{ currency: string; amount_minor: number }> {
+    if (!campaign.estimate_hash) {
+      throw new ImageWorkbenchServiceError('Campaign 缺少初始费用估算', 409, 'IMAGE_REVISION_CONFLICT')
+    }
+    const start = await this.repository.getCampaignEstimate(campaign.id, campaign.estimate_hash, campaign.owner)
+    if (start.purpose !== 'start') throw new ImageWorkbenchServiceError('Campaign 初始费用估算损坏', 500, 'IMAGE_OPERATION_CORRUPT')
+    const retries = await this.repository.listCampaignRetryConfirmations(campaign.id, campaign.owner)
+    const usedRetryReceipts = new Set((await this.getCampaign(campaign.id)).items
+      .map(item => item.retry_confirmation_receipt_id)
+      .filter((receipt): receipt is string => Boolean(receipt)))
+    let amount = start.price_upper_bound.amount_minor
+    for (const retry of retries) {
+      // An unconsumed retry receipt expires with its quote. Once an attempt is
+      // queued it remains a real committed cost even if dispatch resumes later.
+      if (!usedRetryReceipts.has(retry.confirmation.id) && Date.parse(retry.estimate.expires_at) <= this.now().getTime()) continue
+      if (retry.estimate.price_upper_bound.currency !== start.price_upper_bound.currency) {
+        throw new ImageWorkbenchServiceError('Campaign 重试报价币种不一致', 422, 'IMAGE_BUDGET_EXCEEDED')
+      }
+      amount += retry.estimate.price_upper_bound.amount_minor
+    }
+    return { currency: start.price_upper_bound.currency, amount_minor: amount }
+  }
+
+  private async assertCampaignEstimateBudget(campaign: ImageCampaign, estimate: ImageCampaignEstimate): Promise<void> {
+    if (!campaign.budget_limit) return
+    if (estimate.price_upper_bound.currency !== campaign.budget_limit.currency) {
+      throw new ImageWorkbenchServiceError('Campaign 预算币种与报价币种不一致', 422, 'IMAGE_BUDGET_EXCEEDED')
+    }
+    const alreadyConfirmed = estimate.purpose === 'start'
+      ? 0
+      : (await this.confirmedCampaignBudgetAmount(campaign)).amount_minor
+    if (alreadyConfirmed + estimate.price_upper_bound.amount_minor > campaign.budget_limit.amount_minor) {
+      throw new ImageWorkbenchServiceError('Campaign 预计费用超过预算上限', 422, 'IMAGE_BUDGET_EXCEEDED')
+    }
+  }
+
+  /** Campaign discovery is a local, bounded index. Detail reads own remote synchronization. */
+  async listCampaigns(input: { cursor?: number; limit?: number } = {}): Promise<{
+    campaigns: ImageCampaign[]
+    next_cursor?: number
+  }> {
+    return await this.repository.listCampaignSummaries(STANDALONE_IMAGE_OWNER, input)
+  }
+
+  async getCampaign(campaignId: string): Promise<ImageCampaignSnapshot> {
+    const snapshot = await this.repository.getCampaign(campaignId, STANDALONE_IMAGE_OWNER)
+    for (const item of snapshot.items) {
+      if (!item.project_id || !['queued', 'running'].includes(item.state)) continue
+      const attempt = await this.repository.campaignAttempt(campaignId, item.id, item.attempt, STANDALONE_IMAGE_OWNER)
+      if (attempt?.generation_operation_id) await this.synchronizeCampaignItem(campaignId, item.id)
+    }
+    return await this.repository.getCampaign(campaignId, STANDALONE_IMAGE_OWNER)
+  }
+
+  async createCampaign(raw: CreateImageCampaignInput): Promise<ImageCampaignSnapshot> {
+    const input = createImageCampaignInputSchema.parse(raw)
+    const campaignId = workflowId('campaign', STANDALONE_IMAGE_OWNER.owner_id, input.idempotency_key)
+    const requestHash = this.campaignRequestHash('campaign_create', campaignId, {
+      name: input.name,
+      brand_kit_id: input.brand_kit_id ?? null,
+      brand_kit_revision_id: input.brand_kit_revision_id ?? null,
+      template_id: input.template_id ?? null,
+      template_revision_id: input.template_revision_id ?? null,
+      shared_brief: input.shared_brief,
+      output_preset: input.output_preset,
+      budget_limit: input.budget_limit ?? null,
+      items: input.items,
+    })
+    const now = this.iso()
+    const campaign = imageCampaignSchema.parse({
+      id: campaignId,
+      owner: STANDALONE_IMAGE_OWNER,
+      name: input.name,
+      revision: 0,
+      state: 'draft',
+      ...(input.brand_kit_id ? { brand_kit_id: input.brand_kit_id, brand_kit_revision_id: input.brand_kit_revision_id } : {}),
+      ...(input.template_id ? { template_id: input.template_id, template_revision_id: input.template_revision_id } : {}),
+      shared_brief: input.shared_brief,
+      output_preset: input.output_preset,
+      planned_item_count: input.items.length,
+      estimated_paid_operations: input.items.length,
+      ...(input.budget_limit ? { budget_limit: input.budget_limit } : {}),
+      created_at: now,
+      updated_at: now,
+    })
+    const items = input.items.map((item, ordinal) => imageCampaignItemSchema.parse({
+      id: workflowId('campaign-item', campaignId, String(ordinal)),
+      campaign_id: campaignId,
+      ordinal,
+      variable_values: item.variable_values,
+      state: 'draft',
+      attempt: 1,
+      created_at: now,
+      updated_at: now,
+    }))
+    const replay = await this.repository.findCampaignCommandResult(
+      campaignId,
+      STANDALONE_IMAGE_OWNER,
+      input.idempotency_key,
+      requestHash,
+    )
+    if (replay) return replay
+    await this.assertCampaignConfiguration(campaign, items)
+    const result = await this.repository.createCampaignCommand({
+      owner: STANDALONE_IMAGE_OWNER,
+      campaign,
+      items,
+      idempotency_key: input.idempotency_key,
+      request_hash: requestHash,
+    })
+    return { campaign: result.campaign, items: result.items }
+  }
+
+  async replaceCampaignItems(campaignId: string, raw: ReplaceImageCampaignItemsInput): Promise<ImageCampaignSnapshot> {
+    const input = replaceImageCampaignItemsInputSchema.parse(raw)
+    const requestHash = this.campaignRequestHash('campaign_replace_items', campaignId, {
+      base_revision: input.base_revision,
+      items: input.items,
+    })
+    const replay = await this.repository.campaignCommandResult(campaignId, STANDALONE_IMAGE_OWNER, input.idempotency_key, requestHash)
+    if (replay) return replay
+    const current = await this.getCampaign(campaignId)
+    const now = this.iso()
+    const campaign = imageCampaignSchema.parse({
+      ...current.campaign,
+      revision: current.campaign.revision + 1,
+      planned_item_count: input.items.length,
+      estimated_paid_operations: input.items.length,
+      updated_at: now,
+    })
+    const items = input.items.map((item, ordinal) => imageCampaignItemSchema.parse({
+      id: workflowId('campaign-item', campaignId, input.idempotency_key, String(ordinal)),
+      campaign_id: campaignId,
+      ordinal,
+      variable_values: item.variable_values,
+      state: 'draft',
+      attempt: 1,
+      created_at: now,
+      updated_at: now,
+    }))
+    await this.assertCampaignConfiguration(campaign, items)
+    const result = await this.repository.replaceCampaignItemsCommand({
+      owner: STANDALONE_IMAGE_OWNER,
+      campaign,
+      items,
+      base_revision: input.base_revision,
+      idempotency_key: input.idempotency_key,
+      request_hash: requestHash,
+    })
+    return { campaign: result.campaign, items: result.items }
+  }
+
+  async estimateCampaign(campaignId: string, raw: EstimateImageCampaignInput): Promise<{ campaign: ImageCampaign; estimate: ImageCampaignEstimate }> {
+    const input = estimateImageCampaignInputSchema.parse(raw)
+    const snapshot = await this.getCampaign(campaignId)
+    await this.assertCampaignConfiguration(snapshot.campaign, snapshot.items)
+    const retryItem = input.item_id
+      ? snapshot.items.find(item => item.id === input.item_id)
+      : undefined
+    const purpose = retryItem ? 'retry' as const : 'start' as const
+    if (
+      snapshot.campaign.revision !== input.base_revision
+      || (purpose === 'start' && snapshot.campaign.state !== 'draft')
+      || (purpose === 'retry' && (
+        !['running', 'completed', 'cancelled'].includes(snapshot.campaign.state)
+        || !retryItem
+        || !['failed', 'cancelled'].includes(retryItem.state)
+      ))
+    ) {
+      throw new ImageWorkbenchServiceError('Campaign 已更新，不能估算该付费尝试', 409, 'IMAGE_REVISION_CONFLICT')
+    }
+    if (purpose === 'retry' && snapshot.campaign.estimated_paid_operations >= MAX_CAMPAIGN_PAID_OPERATIONS) {
+      throw new ImageWorkbenchServiceError('Campaign 已达到可确认的付费尝试上限，不能再创建重试报价', 422, 'IMAGE_BUDGET_EXCEEDED')
+    }
+    const policy = this.resolveGenerationPolicy({
+      user_request: snapshot.campaign.shared_brief.user_request,
+      size: this.quickCreateSize(snapshot.campaign.output_preset),
+      operation_mode: 'generate',
+      references: [],
+    })
+    const perOperation = policy.price_upper_bound.per_output_amount_minor * 3
+    const paidOperationCount = purpose === 'retry' ? 1 : snapshot.items.length
+    const amount = perOperation * paidOperationCount
+    const createdAt = this.iso()
+    const expiresAt = new Date(this.now().getTime() + IMAGE_GENERATION_ESTIMATE_TTL_MS).toISOString()
+    const requestHash = this.campaignRequestHash('campaign_estimate', campaignId, {
+      revision: snapshot.campaign.revision,
+      purpose,
+      ...(retryItem ? { item_id: retryItem.id, attempt: retryItem.attempt + 1 } : {
+        items: snapshot.items.map(item => ({ id: item.id, attempt: item.attempt, variable_values: item.variable_values })),
+      }),
+      policy_revision: policy.policy_revision,
+      price_upper_bound: policy.price_upper_bound,
+    })
+    const estimate = imageCampaignEstimateSchema.parse({
+      id: workflowId('campaign-estimate', campaignId, requestHash, expiresAt),
+      campaign_id: campaignId,
+      campaign_revision: snapshot.campaign.revision,
+      purpose,
+      ...(retryItem ? { item_id: retryItem.id, attempt: retryItem.attempt + 1 } : {}),
+      estimate_hash: sha256({ kind: 'campaign_estimate', request_hash: requestHash, expires_at: expiresAt }),
+      paid_operation_count: paidOperationCount,
+      concurrency: Math.min(2, paidOperationCount),
+      price_upper_bound: {
+        currency: policy.price_upper_bound.currency,
+        amount_minor: amount,
+        pricing_revision: policy.price_upper_bound.pricing_revision,
+        usage_upper_bound: {
+          requests: paidOperationCount,
+          input_bytes: 0,
+          output_images: paidOperationCount * 3,
+        },
+      },
+      expires_at: expiresAt,
+      created_at: createdAt,
+    })
+    await this.assertCampaignEstimateBudget(snapshot.campaign, estimate)
+    const saved = await this.repository.saveCampaignEstimate({ owner: STANDALONE_IMAGE_OWNER, estimate })
+    return { campaign: saved.campaign, estimate: saved.estimate }
+  }
+
+  async confirmCampaign(campaignId: string, raw: { base_revision: number; idempotency_key: string; estimate_hash: string }): Promise<{
+    campaign: ImageCampaign
+    items: ImageCampaignItem[]
+    confirmation: ImageCampaignConfirmationReceipt
+  }> {
+    const input = confirmImageCampaignInputSchema.parse(raw)
+    const requestHash = this.campaignRequestHash('campaign_confirm', campaignId, {
+      base_revision: input.base_revision,
+      estimate_hash: input.estimate_hash,
+    })
+    const replay = await this.repository.campaignCommandResult(campaignId, STANDALONE_IMAGE_OWNER, input.idempotency_key, requestHash)
+    if (replay) {
+      if (!replay.campaign.confirmation_receipt_id) throw new ImageWorkbenchServiceError('Campaign 确认回执损坏', 500, 'IMAGE_OPERATION_CORRUPT')
+      return {
+        ...replay,
+        confirmation: await this.repository.getCampaignConfirmation(campaignId, replay.campaign.confirmation_receipt_id, STANDALONE_IMAGE_OWNER),
+      }
+    }
+    const current = await this.getCampaign(campaignId)
+    const estimate = await this.repository.getCampaignEstimate(campaignId, input.estimate_hash, STANDALONE_IMAGE_OWNER)
+    if (
+      current.campaign.revision !== input.base_revision
+      || current.campaign.state !== 'draft'
+      || estimate.purpose !== 'start'
+      || estimate.item_id !== undefined
+      || estimate.attempt !== undefined
+      || estimate.campaign_revision !== current.campaign.revision
+      || Date.parse(estimate.expires_at) <= this.now().getTime()
+    ) {
+      throw new ImageWorkbenchServiceError('Campaign 费用估算已过期，请重新确认', 409, 'IMAGE_REVISION_CONFLICT')
+    }
+    const confirmedAt = this.iso()
+    const confirmation = imageCampaignConfirmationReceiptSchema.parse({
+      id: workflowId('campaign-confirmation', campaignId, input.idempotency_key),
+      campaign_id: campaignId,
+      campaign_revision: current.campaign.revision,
+      estimate_hash: input.estimate_hash,
+      confirmed_at: confirmedAt,
+    })
+    const campaign = imageCampaignSchema.parse({
+      ...current.campaign,
+      revision: current.campaign.revision + 1,
+      state: 'confirmed',
+      estimate_hash: input.estimate_hash,
+      confirmation_receipt_id: confirmation.id,
+      confirmed_at: confirmedAt,
+      updated_at: confirmedAt,
+    })
+    const result = await this.repository.confirmCampaignCommand({
+      owner: STANDALONE_IMAGE_OWNER,
+      campaign,
+      confirmation,
+      base_revision: input.base_revision,
+      idempotency_key: input.idempotency_key,
+      request_hash: requestHash,
+    })
+    return { campaign: result.campaign, items: result.items, confirmation: result.confirmation }
+  }
+
+  /** A retry is a distinct paid attempt and therefore gets its own receipt. */
+  async confirmCampaignRetry(campaignId: string, itemId: string, raw: ConfirmImageCampaignInput): Promise<{
+    campaign: ImageCampaign
+    items: ImageCampaignItem[]
+    confirmation: ImageCampaignConfirmationReceipt
+  }> {
+    const input = confirmImageCampaignInputSchema.parse(raw)
+    const requestHash = this.campaignRequestHash('campaign_retry_confirm', campaignId, {
+      base_revision: input.base_revision,
+      item_id: itemId,
+      estimate_hash: input.estimate_hash,
+    })
+    const confirmationId = workflowId('campaign-retry-confirmation', campaignId, itemId, input.idempotency_key)
+    const replay = await this.repository.campaignCommandResult(campaignId, STANDALONE_IMAGE_OWNER, input.idempotency_key, requestHash)
+    if (replay) {
+      return {
+        ...replay,
+        confirmation: await this.repository.getCampaignConfirmation(campaignId, confirmationId, STANDALONE_IMAGE_OWNER),
+      }
+    }
+    const current = await this.getCampaign(campaignId)
+    const item = current.items.find(candidate => candidate.id === itemId)
+    const estimate = await this.repository.getCampaignEstimate(campaignId, input.estimate_hash, STANDALONE_IMAGE_OWNER)
+    if (
+      current.campaign.revision !== input.base_revision
+      || !['running', 'completed', 'cancelled'].includes(current.campaign.state)
+      || !item
+      || !['failed', 'cancelled'].includes(item.state)
+      || estimate.purpose !== 'retry'
+      || estimate.campaign_revision !== current.campaign.revision
+      || estimate.item_id !== item.id
+      || estimate.attempt !== item.attempt + 1
+      || Date.parse(estimate.expires_at) <= this.now().getTime()
+    ) {
+      throw new ImageWorkbenchServiceError('Campaign 重试费用估算已过期，请重新确认', 409, 'IMAGE_REVISION_CONFLICT')
+    }
+    await this.assertCampaignEstimateBudget(current.campaign, estimate)
+    const confirmation = imageCampaignConfirmationReceiptSchema.parse({
+      id: confirmationId,
+      campaign_id: campaignId,
+      campaign_revision: current.campaign.revision,
+      purpose: 'retry',
+      item_id: item.id,
+      attempt: item.attempt + 1,
+      estimate_hash: input.estimate_hash,
+      confirmed_at: this.iso(),
+    })
+    const result = await this.repository.confirmCampaignRetryCommand({
+      owner: STANDALONE_IMAGE_OWNER,
+      campaign_id: campaignId,
+      item_id: itemId,
+      confirmation,
+      base_revision: input.base_revision,
+      idempotency_key: input.idempotency_key,
+      request_hash: requestHash,
+    })
+    return { campaign: result.campaign, items: result.items, confirmation: result.confirmation }
+  }
+
+  private async confirmedCampaignQuote(campaign: ImageCampaign): Promise<{
+    estimate: ImageCampaignEstimate
+    confirmation: ImageCampaignConfirmationReceipt
+  }> {
+    if (!campaign.estimate_hash || !campaign.confirmation_receipt_id) {
+      throw new ImageWorkbenchServiceError('Campaign 尚未确认当前费用估算', 409, 'IMAGE_REVISION_CONFLICT')
+    }
+    const confirmation = await this.repository.getCampaignConfirmation(
+      campaign.id,
+      campaign.confirmation_receipt_id,
+      campaign.owner,
+    )
+    const estimate = await this.repository.getCampaignEstimate(campaign.id, campaign.estimate_hash, campaign.owner)
+    if (
+      confirmation.purpose !== 'start'
+      || confirmation.item_id !== undefined
+      || confirmation.attempt !== undefined
+      || estimate.purpose !== 'start'
+      || estimate.item_id !== undefined
+      || estimate.attempt !== undefined
+      || confirmation.estimate_hash !== campaign.estimate_hash
+      || estimate.campaign_revision !== confirmation.campaign_revision
+      || Date.parse(estimate.expires_at) <= this.now().getTime()
+    ) {
+      throw new ImageWorkbenchServiceError('Campaign 确认的费用估算已过期或不一致', 409, 'IMAGE_REVISION_CONFLICT')
+    }
+    return { estimate, confirmation }
+  }
+
+  private async assertCampaignConfirmation(campaign: ImageCampaign, estimateHash: string, confirmationId: string): Promise<void> {
+    if (campaign.state !== 'confirmed' || campaign.estimate_hash !== estimateHash || campaign.confirmation_receipt_id !== confirmationId) {
+      throw new ImageWorkbenchServiceError('Campaign 尚未确认当前费用估算', 409, 'IMAGE_REVISION_CONFLICT')
+    }
+    const { confirmation } = await this.confirmedCampaignQuote(campaign)
+    if (confirmation.campaign_revision !== campaign.revision - 1) {
+      throw new ImageWorkbenchServiceError('Campaign 确认收据与当前状态不一致', 409, 'IMAGE_REVISION_CONFLICT')
+    }
+  }
+
+  private async bindCampaignItemProject(
+    campaignId: string,
+    itemId: string,
+    expectedAttempt: number,
+    projectId: string,
+    round: ImageGenerationRound,
+    operation: ImageOperationV2,
+  ): Promise<{ snapshot: ImageCampaignSnapshot; suppressed: boolean }> {
+    const snapshot = await this.repository.getCampaign(campaignId, STANDALONE_IMAGE_OWNER)
+    const attempt = await this.repository.campaignAttempt(campaignId, itemId, expectedAttempt, STANDALONE_IMAGE_OWNER)
+    if (attempt?.state === 'cancelled') return { snapshot, suppressed: true }
+    const item = snapshot.items.find(candidate => candidate.id === itemId)
+    if (!item || item.attempt !== expectedAttempt) {
+      return { snapshot, suppressed: true }
+    }
+    if (item.project_id === projectId) return { snapshot, suppressed: false }
+    if (item.state !== 'queued' || item.project_id) {
+      return { snapshot, suppressed: true }
+    }
+    if (round.project_id !== projectId || !round.direction_operations.some(direction => direction.operation_id === operation.id)) {
+      throw new ImageWorkbenchServiceError('Campaign 尝试与持久化的生成 Round 不一致', 500, 'IMAGE_OPERATION_CORRUPT')
+    }
+    const intent = await this.createCampaignProjectIntent(projectId, snapshot.campaign, item)
+    const requestHash = this.campaignRequestHash('campaign_item_bind_project', campaignId, {
+      item_id: item.id,
+      attempt: item.attempt,
+      project_id: projectId,
+      intent,
+    })
+    const result = await this.repository.recordCampaignItemProjectCommand({
+      campaign_id: campaignId,
+      owner: STANDALONE_IMAGE_OWNER,
+      base_revision: snapshot.campaign.revision,
+      item_id: item.id,
+      expected_attempt: expectedAttempt,
+      project_id: projectId,
+      generation_round_id: round.id,
+      generation_operation_id: operation.id,
+      intent,
+      item_state: 'queued',
+      idempotency_key: `bb-image-campaign-bind-${campaignId}-${item.id}-${item.attempt}`,
+      request_hash: requestHash,
+      updated_at: this.iso(),
+    })
+    return { snapshot: { campaign: result.campaign, items: result.items }, suppressed: result.suppressed }
+  }
+
+  private async settleCampaignIfTerminal(campaignId: string): Promise<ImageCampaignSnapshot> {
+    const snapshot = await this.repository.getCampaign(campaignId, STANDALONE_IMAGE_OWNER)
+    if (snapshot.campaign.state !== 'running' || snapshot.items.some(item => ['draft', 'queued', 'running'].includes(item.state))) {
+      return snapshot
+    }
+    const requestHash = this.campaignRequestHash('campaign_complete', campaignId, {
+      base_revision: snapshot.campaign.revision,
+      items: snapshot.items.map(item => ({ id: item.id, state: item.state, attempt: item.attempt })),
+    })
+    const result = await this.repository.updateCampaignWithItemsCommand({
+      owner: STANDALONE_IMAGE_OWNER,
+      campaign: imageCampaignSchema.parse({
+        ...snapshot.campaign,
+        revision: snapshot.campaign.revision + 1,
+        state: 'completed',
+        updated_at: this.iso(),
+      }),
+      items: snapshot.items,
+      base_revision: snapshot.campaign.revision,
+      idempotency_key: `bb-image-campaign-complete-${campaignId}-${snapshot.campaign.revision}`,
+      request_hash: requestHash,
+    })
+    return { campaign: result.campaign, items: result.items }
+  }
+
+  private async synchronizeCampaignItem(campaignId: string, itemId: string): Promise<ImageCampaignSnapshot> {
+    const snapshot = await this.repository.getCampaign(campaignId, STANDALONE_IMAGE_OWNER)
+    const item = snapshot.items.find(candidate => candidate.id === itemId)
+    if (!item || item.state === 'cancelled' || !item.project_id) return snapshot
+    const attempt = await this.repository.campaignAttempt(campaignId, item.id, item.attempt, STANDALONE_IMAGE_OWNER)
+    if (!attempt?.generation_operation_id) return snapshot
+    const stored = await this.repository.getGenerationOperation(item.project_id, attempt.generation_operation_id).catch(() => null)
+    if (!stored) return snapshot
+    const operation = await this.refreshGenerationOperation(item.project_id, stored.id).catch(() => stored)
+    const nextState = this.campaignItemState(operation)
+    if (nextState === item.state) return await this.settleCampaignIfTerminal(campaignId)
+    const requestHash = this.campaignRequestHash('campaign_item_state', campaignId, {
+      item_id: item.id,
+      attempt: item.attempt,
+      project_id: item.project_id,
+      state: nextState,
+      operation_id: operation.id,
+    })
+    const result = await this.repository.updateCampaignItemStateCommand({
+      campaign_id: campaignId,
+      owner: STANDALONE_IMAGE_OWNER,
+      base_revision: snapshot.campaign.revision,
+      item_id: item.id,
+      item_state: nextState,
+      ...(nextState === 'failed' && operation.safe_error ? { safe_error_code: operation.safe_error.code } : {}),
+      idempotency_key: `bb-image-campaign-state-${campaignId}-${item.id}-${item.attempt}-${nextState}`,
+      request_hash: requestHash,
+      updated_at: this.iso(),
+    })
+    return await this.settleCampaignIfTerminal(result.campaign.id)
+  }
+
+  private async failCampaignItem(campaignId: string, itemId: string, safeErrorCode: string, projectId?: string): Promise<ImageCampaignSnapshot> {
+    const snapshot = await this.getCampaign(campaignId)
+    const item = snapshot.items.find(candidate => candidate.id === itemId)
+    if (!item || item.state === 'cancelled' || item.state === 'ready' || item.state === 'failed') return snapshot
+    const requestHash = this.campaignRequestHash('campaign_item_failed', campaignId, {
+      item_id: item.id,
+      attempt: item.attempt,
+      ...(projectId ? { project_id: projectId } : {}),
+      safe_error_code: safeErrorCode,
+    })
+    const result = await this.repository.updateCampaignItemStateCommand({
+      campaign_id: campaignId,
+      owner: STANDALONE_IMAGE_OWNER,
+      base_revision: snapshot.campaign.revision,
+      item_id: item.id,
+      item_state: 'failed',
+      ...(projectId ? { project_id: projectId } : {}),
+      safe_error_code: safeErrorCode,
+      idempotency_key: `bb-image-campaign-failed-${campaignId}-${item.id}-${item.attempt}`,
+      request_hash: requestHash,
+      updated_at: this.iso(),
+    })
+    return await this.settleCampaignIfTerminal(result.campaign.id)
+  }
+
+  private async reserveCampaignAttempt(campaign: ImageCampaign, item: ImageCampaignItem) {
+    return await this.repository.ensureCampaignAttemptReservation({
+      campaign_id: campaign.id,
+      item_id: item.id,
+      attempt: item.attempt,
+      expected_project_id: this.campaignItemProjectId(campaign, item),
+      owner: STANDALONE_IMAGE_OWNER,
+      created_at: this.iso(),
+    })
+  }
+
+  /** A pre-POST Campaign cancellation is one atomic local state change. */
+  private async suppressUnpostedCampaignAttempt(
+    campaignId: string,
+    itemId: string,
+    attempt: number,
+    operation: ImageOperationV2,
+  ): Promise<boolean> {
+    const cancelled = await this.repository.cancelCampaignAttemptBeforeSubmission({
+      campaign_id: campaignId,
+      item_id: itemId,
+      attempt,
+      expected_project_id: operation.project_id,
+      generation_operation_id: operation.id,
+      owner: STANDALONE_IMAGE_OWNER,
+      updated_at: this.iso(),
+    })
+    return cancelled.cancelled
+  }
+
+  private campaignRoundOperation(round: ImageGenerationRound, operations: readonly ImageOperationV2[]): ImageOperationV2 {
+    if (round.direction_operations.length !== 1 || operations.length !== 1) {
+      throw new ImageWorkbenchServiceError('Campaign 尝试必须精确对应一个生成操作', 500, 'IMAGE_OPERATION_CORRUPT')
+    }
+    const operation = operations[0]
+    if (!operation || round.direction_operations[0]?.operation_id !== operation.id) {
+      throw new ImageWorkbenchServiceError('Campaign 尝试的生成操作映射损坏', 500, 'IMAGE_OPERATION_CORRUPT')
+    }
+    return operation
+  }
+
+  private async dispatchCampaignItem(campaignId: string, itemId: string): Promise<ImageCampaignSnapshot> {
+    const snapshot = await this.repository.getCampaign(campaignId, STANDALONE_IMAGE_OWNER)
+    const item = snapshot.items.find(candidate => candidate.id === itemId)
+    if (!item || item.state !== 'queued') return snapshot
+    const reservation = await this.reserveCampaignAttempt(snapshot.campaign, item)
+    if (reservation.state === 'cancelled') {
+      return await this.transitionCampaignItemToCancelled(snapshot, item, `bb-image-campaign-recover-cancel-${campaignId}`)
+    }
+    const key = this.campaignItemQuickCreateKey(snapshot.campaign, item)
+    const projectId = this.campaignItemProjectId(snapshot.campaign, item)
+    let created: Awaited<ReturnType<ImageWorkbenchService['quickCreate']>>
+    try {
+      created = await this.quickCreate({
+        idempotency_key: key,
+        title: `${snapshot.campaign.name} ${item.ordinal + 1}`,
+        prompt: snapshot.campaign.shared_brief.user_request,
+        output_preset: snapshot.campaign.output_preset,
+        budget_limit: await this.campaignItemBudget(snapshot.campaign, item),
+        reference_inputs: [],
+      }, {
+        brief_overrides: this.campaignBriefOverrides(snapshot.campaign),
+        // The Campaign item must point at its ordinary Project before the
+        // persisted Round is allowed to cross the paid submission boundary.
+        on_generation_round_persisted: async ({ project, round, operations }) => {
+          const operation = this.campaignRoundOperation(round, operations)
+          const bound = await this.bindCampaignItemProject(campaignId, itemId, item.attempt, project.id, round, operation)
+          if (bound.suppressed) {
+            const cancelled = await this.suppressUnpostedCampaignAttempt(campaignId, itemId, item.attempt, operation)
+            if (!cancelled) {
+              throw new ImageWorkbenchServiceError('Campaign 项目在取消期间已开始执行', 409, 'IMAGE_OPERATION_NOT_CANCELLABLE')
+            }
+          }
+        },
+      })
+    } catch (error) {
+      const existingRound = await this.existingGenerationRound(projectId, stableId('rnd', projectId, key)).catch(() => null)
+      if (existingRound) {
+        const operations = await Promise.all(existingRound.direction_operations.map(async direction =>
+          await this.repository.getGenerationOperation(projectId, direction.operation_id)))
+        const operation = this.campaignRoundOperation(existingRound, operations)
+        try {
+          const bound = await this.bindCampaignItemProject(campaignId, itemId, item.attempt, projectId, existingRound, operation)
+          if (bound.suppressed) {
+            const cancelled = await this.suppressUnpostedCampaignAttempt(campaignId, itemId, item.attempt, operation)
+            if (!cancelled) throw new ImageWorkbenchServiceError('Campaign 项目在取消期间已开始执行', 409, 'IMAGE_OPERATION_NOT_CANCELLABLE')
+          }
+        } catch (error) {
+          // A stale caller is allowed to observe the Campaign's durable newer
+          // state, but cannot revive or bind its prior Project attempt.
+          if (error instanceof ImageWorkbenchServiceError && (error.code === 'IMAGE_REVISION_CONFLICT' || error.code === 'IMAGE_OPERATION_NOT_CANCELLABLE')) {
+            return await this.repository.getCampaign(campaignId, STANDALONE_IMAGE_OWNER)
+          }
+          throw error
+        }
+        return await this.synchronizeCampaignItem(campaignId, itemId)
+      }
+      return await this.failCampaignItem(campaignId, itemId, mediaErrorCode(error), await this.project(projectId).then(project => project.id).catch(() => undefined))
+    }
+    const operation = this.campaignRoundOperation(created.round, created.operations)
+    const bound = await this.bindCampaignItemProject(campaignId, itemId, item.attempt, created.project.id, created.round, operation)
+    if (bound.suppressed) {
+      const cancelled = await this.suppressUnpostedCampaignAttempt(campaignId, itemId, item.attempt, operation)
+      if (!cancelled) return await this.repository.getCampaign(campaignId, STANDALONE_IMAGE_OWNER)
+    }
+    return await this.synchronizeCampaignItem(campaignId, itemId)
+  }
+
+  async startCampaign(campaignId: string, raw: { base_revision: number; idempotency_key: string; estimate_hash: string; confirmation_receipt_id: string }): Promise<ImageCampaignSnapshot> {
+    const input = startImageCampaignInputSchema.parse(raw)
+    const requestHash = this.campaignRequestHash('campaign_start', campaignId, {
+      base_revision: input.base_revision,
+      estimate_hash: input.estimate_hash,
+      confirmation_receipt_id: input.confirmation_receipt_id,
+    })
+    const replay = await this.repository.campaignCommandResult(campaignId, STANDALONE_IMAGE_OWNER, input.idempotency_key, requestHash)
+    if (replay) return await this.resumeCampaign(campaignId)
+    const current = await this.getCampaign(campaignId)
+    if (current.campaign.revision !== input.base_revision) {
+      throw new ImageWorkbenchServiceError('Campaign 已更新，请刷新后再开始', 409, 'IMAGE_REVISION_CONFLICT')
+    }
+    await this.assertCampaignConfirmation(current.campaign, input.estimate_hash, input.confirmation_receipt_id)
+    const now = this.iso()
+    const started = await this.repository.updateCampaignWithItemsCommand({
+      owner: STANDALONE_IMAGE_OWNER,
+      campaign: imageCampaignSchema.parse({
+        ...current.campaign,
+        revision: current.campaign.revision + 1,
+        state: 'running',
+        updated_at: now,
+      }),
+      items: current.items.map(item => imageCampaignItemSchema.parse({ ...item, state: 'queued', updated_at: now })),
+      base_revision: input.base_revision,
+      idempotency_key: input.idempotency_key,
+      request_hash: requestHash,
+      attempt_reservations: current.items.map(item => ({
+        item_id: item.id,
+        attempt: item.attempt,
+        expected_project_id: this.campaignItemProjectId(current.campaign, item),
+      })),
+    })
+    void started
+    return await this.resumeCampaign(campaignId)
+  }
+
+  private async cancelCampaignItem(
+    campaignId: string,
+    itemId: string,
+    expectedAttempt: number,
+    cancelKey: string,
+  ): Promise<ImageCampaignSnapshot> {
+    const snapshot = await this.repository.getCampaign(campaignId, STANDALONE_IMAGE_OWNER)
+    const item = snapshot.items.find(candidate => candidate.id === itemId)
+    if (!item || item.attempt !== expectedAttempt || ['ready', 'failed', 'cancelled'].includes(item.state)) return snapshot
+    const expectedProjectId = this.campaignItemProjectId(snapshot.campaign, item)
+    const attempt = await this.repository.campaignAttempt(campaignId, item.id, item.attempt, STANDALONE_IMAGE_OWNER)
+    if (item.state === 'draft' || !item.project_id) {
+      await this.repository.markCampaignAttemptCancelled({
+        campaign_id: campaignId,
+        item_id: item.id,
+        attempt: item.attempt,
+        expected_project_id: expectedProjectId,
+        owner: STANDALONE_IMAGE_OWNER,
+        updated_at: this.iso(),
+      })
+      return await this.transitionCampaignItemToCancelled(snapshot, item, cancelKey, expectedAttempt)
+    }
+    if (attempt?.state === 'cancelled') return await this.transitionCampaignItemToCancelled(snapshot, item, cancelKey, expectedAttempt)
+    if (!attempt?.generation_operation_id) {
+      await this.repository.markCampaignAttemptCancelled({
+        campaign_id: campaignId,
+        item_id: item.id,
+        attempt: item.attempt,
+        expected_project_id: expectedProjectId,
+        owner: STANDALONE_IMAGE_OWNER,
+        updated_at: this.iso(),
+      })
+      return await this.transitionCampaignItemToCancelled(snapshot, item, cancelKey, expectedAttempt)
+    }
+    const stored = await this.repository.getGenerationOperation(item.project_id, attempt.generation_operation_id)
+    const operation = await this.refreshGenerationOperation(item.project_id, stored.id).catch(() => stored)
+    if (operation.status !== 'queued') {
+      await this.synchronizeCampaignItem(campaignId, itemId)
+      if (['running', 'cancelling', 'committing', 'outcome_unknown'].includes(operation.status)) {
+        await this.repository.markCampaignAttemptCancellationTooLate({
+          campaign_id: campaignId,
+          item_id: item.id,
+          attempt: item.attempt,
+          owner: STANDALONE_IMAGE_OWNER,
+          updated_at: this.iso(),
+        })
+        throw new ImageWorkbenchServiceError('Campaign 项目已开始执行，不能断言取消成功', 409, 'IMAGE_OPERATION_NOT_CANCELLABLE')
+      }
+      return await this.repository.getCampaign(campaignId, STANDALONE_IMAGE_OWNER)
+    }
+    try {
+      if (!operation.transport_task_id) throw new ImageWorkbenchServiceError('Campaign 尝试缺少传输操作', 500, 'IMAGE_OPERATION_CORRUPT')
+      const transport = await this.repository.getOperation(operation.transport_task_id)
+      if (!transport.remote_task_id && !transport.remote_submission_started_at) {
+        const cancelled = await this.suppressUnpostedCampaignAttempt(campaignId, item.id, item.attempt, operation)
+        if (!cancelled) throw new ImageWorkbenchServiceError('Campaign 项目在取消期间已开始执行', 409, 'IMAGE_OPERATION_NOT_CANCELLABLE')
+      } else {
+        const cancelled = await this.cancelGenerationOperation(operation.id)
+        if (cancelled.status !== 'cancelled') return await this.synchronizeCampaignItem(campaignId, itemId)
+        await this.repository.markCampaignAttemptCancelled({
+          campaign_id: campaignId,
+          item_id: item.id,
+          attempt: item.attempt,
+          expected_project_id: expectedProjectId,
+          owner: STANDALONE_IMAGE_OWNER,
+          updated_at: this.iso(),
+        })
+      }
+      const current = await this.repository.getCampaign(campaignId, STANDALONE_IMAGE_OWNER)
+      const currentItem = current.items.find(candidate => candidate.id === item.id)
+      return currentItem
+        ? await this.transitionCampaignItemToCancelled(current, currentItem, cancelKey, expectedAttempt)
+        : current
+    } catch (error) {
+      if (error instanceof ImageWorkbenchServiceError && error.status === 409) {
+        // The queued task may have started between polling and cancellation.
+        // Preserve the observed state instead of claiming cancellation worked.
+        await this.synchronizeCampaignItem(campaignId, itemId)
+        await this.repository.markCampaignAttemptCancellationTooLate({
+          campaign_id: campaignId,
+          item_id: item.id,
+          attempt: item.attempt,
+          owner: STANDALONE_IMAGE_OWNER,
+          updated_at: this.iso(),
+        })
+        throw new ImageWorkbenchServiceError('Campaign 项目在取消期间已开始执行', 409, 'IMAGE_OPERATION_NOT_CANCELLABLE')
+      }
+      // A local persistence failure must remain observable. Swallowing it
+      // would turn a prepared cancellation receipt into a false 409 outcome,
+      // while the queued paid operation is still eligible for recovery POST.
+      throw error
+    }
+  }
+
+  private async transitionCampaignItemToCancelled(
+    snapshot: ImageCampaignSnapshot,
+    item: ImageCampaignItem,
+    cancelKey: string,
+    expectedAttempt = item.attempt,
+  ): Promise<ImageCampaignSnapshot> {
+    const current = snapshot.items.find(candidate => candidate.id === item.id)
+    if (!current || current.attempt !== expectedAttempt || ['ready', 'failed', 'cancelled'].includes(current.state)) return snapshot
+    const requestHash = this.campaignRequestHash('campaign_item_cancel', snapshot.campaign.id, {
+      item_id: current.id,
+      attempt: current.attempt,
+    })
+    const result = await this.repository.updateCampaignItemStateCommand({
+      campaign_id: snapshot.campaign.id,
+      owner: STANDALONE_IMAGE_OWNER,
+      base_revision: snapshot.campaign.revision,
+      item_id: current.id,
+      item_state: 'cancelled',
+      idempotency_key: `${cancelKey}-${current.id}`,
+      request_hash: requestHash,
+      updated_at: this.iso(),
+    })
+    return { campaign: result.campaign, items: result.items }
+  }
+
+  async cancelCampaign(campaignId: string, raw: { base_revision: number; idempotency_key: string }): Promise<ImageCampaignSnapshot> {
+    const input = cancelImageCampaignInputSchema.parse(raw)
+    const requestHash = this.campaignRequestHash('campaign_cancel', campaignId, { base_revision: input.base_revision })
+    const replay = await this.repository.campaignCommandResult(campaignId, STANDALONE_IMAGE_OWNER, input.idempotency_key, requestHash)
+    if (replay) {
+      await this.repository.completeWorkflowCommand({
+        scope: 'campaign-cancel',
+        aggregate_id: campaignId,
+        idempotency_key: input.idempotency_key,
+        request_hash: requestHash,
+        result: replay,
+      }).catch(() => undefined)
+      return replay
+    }
+    const prepared = await this.repository.prepareCampaignCancellation({
+      campaign_id: campaignId,
+      owner: STANDALONE_IMAGE_OWNER,
+      base_revision: input.base_revision,
+      idempotency_key: input.idempotency_key,
+      request_hash: requestHash,
+    })
+    if (prepared.outcome === 'cancellation_too_late') {
+      throw new ImageWorkbenchServiceError('Campaign 项目已开始执行，不能断言取消成功', 409, 'IMAGE_OPERATION_NOT_CANCELLABLE')
+    }
+    try {
+      for (const target of prepared.intent.targets) {
+        const itemSnapshot = await this.cancelCampaignItem(
+          campaignId,
+          target.item_id,
+          target.attempt,
+          `bb-image-campaign-cancel-${campaignId}-${input.idempotency_key}`,
+        )
+        const item = itemSnapshot.items.find(candidate => candidate.id === target.item_id)
+        if (!item || item.attempt !== target.attempt || item.state !== 'cancelled') {
+          await this.repository.markCampaignAttemptCancellationTooLate({
+            campaign_id: campaignId,
+            item_id: target.item_id,
+            attempt: target.attempt,
+            owner: STANDALONE_IMAGE_OWNER,
+            updated_at: this.iso(),
+          })
+          throw new ImageWorkbenchServiceError('Campaign 项目已开始执行，不能断言取消成功', 409, 'IMAGE_OPERATION_NOT_CANCELLABLE')
+        }
+        this.injectCrash('after_campaign_cancel_item_before_completion')
+      }
+    } catch (error) {
+      if (error instanceof ImageWorkbenchServiceError && error.code === 'IMAGE_OPERATION_NOT_CANCELLABLE') {
+        await this.repository.completeCampaignCancellationTooLate({
+          campaign_id: campaignId,
+          owner: STANDALONE_IMAGE_OWNER,
+          idempotency_key: input.idempotency_key,
+          request_hash: requestHash,
+          intent: prepared.intent,
+        })
+      }
+      throw error
+    }
+    const current = await this.repository.getCampaign(campaignId, STANDALONE_IMAGE_OWNER)
+    const allTerminal = current.items.every(item => ['ready', 'failed', 'cancelled'].includes(item.state))
+    const state = allTerminal ? 'cancelled' : current.campaign.state
+    const result = await this.repository.updateCampaignWithItemsCommand({
+      owner: STANDALONE_IMAGE_OWNER,
+      campaign: imageCampaignSchema.parse({
+        ...current.campaign,
+        revision: current.campaign.revision + 1,
+        state,
+        updated_at: this.iso(),
+      }),
+      items: current.items,
+      base_revision: current.campaign.revision,
+      idempotency_key: input.idempotency_key,
+      request_hash: requestHash,
+    })
+    const snapshot = { campaign: result.campaign, items: result.items }
+    await this.repository.completeWorkflowCommand({
+      scope: 'campaign-cancel',
+      aggregate_id: campaignId,
+      idempotency_key: input.idempotency_key,
+      request_hash: requestHash,
+      result: snapshot,
+    })
+    return snapshot
+  }
+
+  async retryCampaignItem(campaignId: string, itemId: string, raw: RetryImageCampaignItemInput): Promise<ImageCampaignSnapshot> {
+    const input = retryImageCampaignItemInputSchema.parse(raw)
+    const requestHash = this.campaignRequestHash('campaign_retry_item', campaignId, {
+      base_revision: input.base_revision,
+      item_id: itemId,
+      estimate_hash: input.estimate_hash,
+      confirmation_receipt_id: input.confirmation_receipt_id,
+    })
+    const replay = await this.repository.campaignCommandResult(campaignId, STANDALONE_IMAGE_OWNER, input.idempotency_key, requestHash)
+    if (replay) return await this.resumeCampaign(campaignId)
+    const current = await this.getCampaign(campaignId)
+    if (current.campaign.revision !== input.base_revision) {
+      throw new ImageWorkbenchServiceError('Campaign 已更新或缺少费用确认，不能重试', 409, 'IMAGE_REVISION_CONFLICT')
+    }
+    const item = current.items.find(candidate => candidate.id === itemId)
+    if (!item || (item.state !== 'failed' && item.state !== 'cancelled')) {
+      throw new ImageWorkbenchServiceError('只有失败或已取消的 Campaign 项目可以创建新付费尝试', 409, 'IMAGE_REVISION_CONFLICT')
+    }
+    const confirmation = await this.repository.getCampaignConfirmation(
+      campaignId,
+      input.confirmation_receipt_id,
+      STANDALONE_IMAGE_OWNER,
+    )
+    const estimate = await this.repository.getCampaignEstimate(campaignId, input.estimate_hash, STANDALONE_IMAGE_OWNER)
+    if (
+      confirmation.purpose !== 'retry'
+      || confirmation.estimate_hash !== input.estimate_hash
+      || confirmation.campaign_id !== campaignId
+      || confirmation.campaign_revision !== current.campaign.revision
+      || confirmation.item_id !== item.id
+      || confirmation.attempt !== item.attempt + 1
+      || estimate.purpose !== 'retry'
+      || estimate.campaign_id !== campaignId
+      || estimate.campaign_revision !== current.campaign.revision
+      || estimate.item_id !== item.id
+      || estimate.attempt !== item.attempt + 1
+      || Date.parse(estimate.expires_at) <= this.now().getTime()
+    ) {
+      throw new ImageWorkbenchServiceError('Campaign 重试缺少匹配的新费用确认', 409, 'IMAGE_REVISION_CONFLICT')
+    }
+    if (current.campaign.estimated_paid_operations >= MAX_CAMPAIGN_PAID_OPERATIONS) {
+      throw new ImageWorkbenchServiceError('Campaign 已达到可确认的付费尝试上限，不能再创建重试', 422, 'IMAGE_BUDGET_EXCEEDED')
+    }
+    const nextItem = imageCampaignItemSchema.parse({
+      ...item,
+      // The new Project is deterministic from this attempt, but must not be
+      // fabricated before Quick Create has committed it. Recovery derives the
+      // same idempotency key from `attempt` and binds the real Project later.
+      project_id: undefined,
+      state: 'queued',
+      attempt: item.attempt + 1,
+      retry_estimate_hash: input.estimate_hash,
+      retry_confirmation_receipt_id: input.confirmation_receipt_id,
+      updated_at: this.iso(),
+    })
+    const next = await this.repository.updateCampaignWithItemsCommand({
+      owner: STANDALONE_IMAGE_OWNER,
+      campaign: imageCampaignSchema.parse({
+        ...current.campaign,
+        revision: current.campaign.revision + 1,
+        state: 'running',
+        estimated_paid_operations: current.campaign.estimated_paid_operations + 1,
+        updated_at: this.iso(),
+      }),
+      items: current.items.map(candidate => candidate.id === itemId ? nextItem : candidate),
+      base_revision: input.base_revision,
+      idempotency_key: input.idempotency_key,
+      request_hash: requestHash,
+      attempt_reservations: [{
+        item_id: nextItem.id,
+        attempt: nextItem.attempt,
+        expected_project_id: this.campaignItemProjectId(current.campaign, nextItem),
+      }],
+    })
+    void next
+    return await this.resumeCampaign(campaignId)
+  }
+
+  /** Resume only durable queued Campaign items, using their original attempt key. */
+  private async resumeCampaign(campaignId: string): Promise<ImageCampaignSnapshot> {
+    const snapshot = await this.getCampaign(campaignId)
+    if (snapshot.campaign.state !== 'running') return snapshot
+    for (const item of snapshot.items) {
+      if (item.state === 'queued') await this.dispatchCampaignItem(campaignId, item.id)
+      else if (item.state === 'running') await this.synchronizeCampaignItem(campaignId, item.id)
+    }
+    return await this.settleCampaignIfTerminal(campaignId)
+  }
+
+  private async recoverPreparedCampaignCancellations(): Promise<void> {
+    const cancellations = await this.repository.listPreparedCampaignCancellations(STANDALONE_IMAGE_OWNER)
+    for (const cancellation of cancellations) {
+      await this.cancelCampaign(cancellation.campaign_id, {
+        base_revision: cancellation.base_revision,
+        idempotency_key: cancellation.idempotency_key,
+      }).catch(() => undefined)
+    }
+  }
+
+  private async recoverCampaigns(): Promise<void> {
+    await this.recoverPreparedCampaignCancellations()
+    const campaigns = await this.repository.listCampaigns(STANDALONE_IMAGE_OWNER)
+    for (const snapshot of campaigns) {
+      if (snapshot.campaign.state !== 'running') continue
+      await this.resumeCampaign(snapshot.campaign.id)
+    }
+  }
+
   async updateReferenceControl(projectId: string, referenceId: string, raw: UpdateImageReferenceControlInput): Promise<ImageWorkbenchProject> {
     const input = updateImageReferenceControlInputSchema.parse(raw)
     const project = await this.project(projectId)
@@ -1757,7 +3279,17 @@ export class ImageWorkbenchService {
     })
   }
 
-  async createGenerationRound(projectId: string, raw: CreateGenerationRoundInput): Promise<{
+  async createGenerationRound(
+    projectId: string,
+    raw: CreateGenerationRoundInput,
+    lifecycle: {
+      on_persisted?: (value: {
+        project: ImageWorkbenchProject
+        round: ImageGenerationRound
+        operations: ImageOperationV2[]
+      }) => Promise<void>
+    } = {},
+  ): Promise<{
     round: ImageGenerationRound
     operations: ImageOperationV2[]
   }> {
@@ -1781,10 +3313,9 @@ export class ImageWorkbenchService {
       if (await this.repository.generationRoundRequestHash(project.id, roundId) !== roundCommandHash) {
         throw new ImageWorkbenchServiceError('生成轮次幂等键对应的请求内容不一致', 409, 'IMAGE_IDEMPOTENCY_CONFLICT')
       }
-      return {
-        round: existingRound,
-        operations: await Promise.all(existingRound.direction_operations.map(async direction => await this.repository.getGenerationOperation(project.id, direction.operation_id))),
-      }
+      const operations = await Promise.all(existingRound.direction_operations.map(async direction => await this.repository.getGenerationOperation(project.id, direction.operation_id)))
+      await lifecycle.on_persisted?.({ project: await this.project(project.id), round: existingRound, operations })
+      return { round: existingRound, operations }
     }
     this.assertRevision(project, input.base_revision, '图片项目已更新，请重新确认生成费用')
     await this.assertNoActiveOperation(project)
@@ -1894,10 +3425,29 @@ export class ImageWorkbenchService {
       operations: operationPairs.map(pair => pair.operation),
       transport_operations: operationPairs.map(pair => pair.transport),
     })
+    await lifecycle.on_persisted?.({
+      project: persisted.project,
+      round: persisted.round,
+      operations: persisted.operations,
+    })
     this.injectCrash('after_generation_round_persisted_before_post')
     const submitted: ImageOperationV2[] = []
     for (const pair of operationPairs) {
-      submitted.push(await this.submitGenerationTransport(persisted.project, pair.operation, pair.transport, pair.policy.provider, pair.policy.model_id))
+      // A Campaign cancellation can linearize after its pre-POST binding.
+      // Re-read both durable records so a locally cancelled queued operation
+      // never gets revived by this stale creation stack.
+      const currentOperation = await this.repository.getGenerationOperation(persisted.project.id, pair.operation.id)
+      const currentTransport = await this.repository.getOperation(pair.transport.id)
+      if (
+        currentOperation.status !== 'queued'
+        || currentTransport.status !== 'queued'
+        || Boolean(currentTransport.remote_task_id)
+        || Boolean(currentTransport.remote_submission_started_at)
+      ) {
+        submitted.push(currentOperation)
+        continue
+      }
+      submitted.push(await this.submitGenerationTransport(persisted.project, currentOperation, currentTransport, pair.policy.provider, pair.policy.model_id))
     }
     return { round: persisted.round, operations: submitted }
   }
@@ -1910,14 +3460,20 @@ export class ImageWorkbenchService {
     direction: ImageCreativeDirection
     references: ImageReferenceV2[]
     instruction: string
+    kind: 'edit' | 'inpaint'
+    mask_content_hash?: `sha256:${string}`
     model: string
     policyRevision: string
   }): `sha256:${string}` {
-    const assetHashes = [...new Set([input.candidate.content_hash, ...this.providerReferences(input.references).map(reference => reference.content_hash)])]
+    const assetHashes = [...new Set([
+      input.candidate.content_hash,
+      ...this.providerReferences(input.references).map(reference => reference.content_hash),
+      ...(input.mask_content_hash ? [input.mask_content_hash] : []),
+    ])]
     return sha256({
       project_id: input.project.id,
       owner: input.project.owner,
-      kind: 'edit',
+      kind: input.kind,
       base_candidate_id: input.candidate.id,
       instruction: input.instruction,
       project_revision: input.project.revision,
@@ -1926,9 +3482,21 @@ export class ImageWorkbenchService {
       creative_direction_id: input.direction.id,
       execution_policy_revision: input.policyRevision,
       asset_hashes: assetHashes,
+      mask_content_hash: input.mask_content_hash ?? null,
       model: input.model,
       logical_attempt: 1,
     })
+  }
+
+  private async verifyDerivationMask(candidate: ImageCandidate, input: { kind: 'edit' | 'inpaint'; mask_data_url?: string }): Promise<VerifiedImageBytes | undefined> {
+    if (input.kind === 'edit') return undefined
+    if (!input.mask_data_url) throw new ImageWorkbenchServiceError('局部重绘需要 PNG 蒙版', 400, 'IMAGE_MASK_INVALID')
+    const verified = await this.assets.verifyDataUrl(input.mask_data_url)
+    if (verified.mime_type !== 'image/png') throw new ImageWorkbenchServiceError('局部重绘蒙版必须是 PNG', 400, 'IMAGE_MASK_INVALID')
+    if (verified.width !== candidate.width || verified.height !== candidate.height) {
+      throw new ImageWorkbenchServiceError('局部重绘蒙版尺寸必须与候选图片一致', 400, 'IMAGE_MASK_INVALID')
+    }
+    return verified
   }
 
   async estimateDerivation(projectId: string, candidateId: string, raw: EstimateDeriveImageCandidateInput): Promise<{
@@ -1946,7 +3514,15 @@ export class ImageWorkbenchService {
     const source = project.assets.find(asset => asset.id === candidate.asset_id && asset.role === 'result')
     if (!source?.content_hash) throw new ImageWorkbenchServiceError('候选资产不存在', 409, 'IMAGE_ASSET_NOT_FOUND')
     await this.assets.readVerified(source)
-    const planKey = `bb-image-derive-estimate-${sha256({ project_id: project.id, candidate_id: candidate.id, instruction: input.instruction }).slice('sha256:'.length)}`
+    const mask = await this.verifyDerivationMask(candidate, input)
+    const planBrief = await this.compileGenerationBrief(project)
+    const planKey = `bb-image-derive-estimate-${sha256({
+      project_id: project.id, candidate_id: candidate.id, instruction: input.instruction,
+      kind: input.kind,
+      mask_content_hash: mask?.content_hash ?? null,
+      project_revision: project.revision,
+      brief_snapshot_hash: planBrief.snapshot_hash,
+    }).slice('sha256:'.length)}`
     const plan = await this.createCreativePlan(project.id, {
       base_revision: project.revision,
       idempotency_key: planKey,
@@ -1956,7 +3532,7 @@ export class ImageWorkbenchService {
     const policy = this.resolveGenerationPolicy({
       user_request: input.instruction,
       size: project.size,
-      operation_mode: 'edit',
+      operation_mode: input.kind,
       references,
       transparent_output: this.deliveryRequiresTransparency(delivery),
       preferred_model: 'gpt-image-2',
@@ -1968,11 +3544,13 @@ export class ImageWorkbenchService {
     }
     const operationRequestHash = this.derivationOperationRequestHash({
       project, candidate, brief, delivery, direction, references, instruction: input.instruction,
+      kind: input.kind, mask_content_hash: mask?.content_hash,
       model: policy.model_id, policyRevision: policy.policy_revision,
     })
     const requestHash = sha256({
       kind: 'derivation', project_id: project.id, candidate_id: candidate.id,
-      instruction: input.instruction, operation_request_hash: operationRequestHash,
+      instruction: input.instruction, operation_kind: input.kind, mask_content_hash: mask?.content_hash ?? null,
+      operation_request_hash: operationRequestHash,
     })
     const createdAt = this.iso()
     const expiresAt = new Date(this.now().getTime() + IMAGE_GENERATION_ESTIMATE_TTL_MS).toISOString()
@@ -1989,7 +3567,10 @@ export class ImageWorkbenchService {
       paid_operation_count: 1,
       candidate_count_per_operation: 3,
       concurrency: 1,
-      price_upper_bound: this.estimatePriceUpperBound([policy], this.inputByteUpperBound(project, providerReferences, [source])),
+      price_upper_bound: this.estimatePriceUpperBound(
+        [policy],
+        this.inputByteUpperBound(project, providerReferences, [source]) + (mask?.bytes.byteLength ?? 0),
+      ),
       expires_at: expiresAt,
       created_at: createdAt,
     })
@@ -2014,11 +3595,14 @@ export class ImageWorkbenchService {
   }> {
     const input = deriveImageCandidateInputSchema.parse(raw)
     const project = await this.project(projectId)
+    const candidate = await this.repository.getCandidate(project.id, candidateId)
+    const mask = await this.verifyDerivationMask(candidate, input)
     const roundId = stableId('rnd', project.id, 'derive', input.idempotency_key)
     const derivationCommandHash = sha256({
       kind: 'derivation', project_id: project.id, candidate_id: candidateId,
       base_revision: input.base_revision,
-      instruction: input.instruction, estimate_hash: input.estimate_hash, confirm: input.confirm,
+      instruction: input.instruction, operation_kind: input.kind, mask_content_hash: mask?.content_hash ?? null,
+      estimate_hash: input.estimate_hash, confirm: input.confirm,
     })
     const existing = await this.repository.getGenerationRound(project.id, roundId).catch(error => {
       if (error instanceof ImageWorkbenchRepositoryError && error.status === 404) return null
@@ -2035,7 +3619,6 @@ export class ImageWorkbenchService {
     this.assertRevision(project, input.base_revision, '图片项目已更新，请刷新后再派生候选')
     await this.assertNoActiveOperation(project)
     await this.assertNoActiveGenerationOperation(project)
-    const candidate = await this.repository.getCandidate(project.id, candidateId)
     const source = project.assets.find(asset => asset.id === candidate.asset_id && asset.role === 'result')
     if (!source?.content_hash) throw new ImageWorkbenchServiceError('候选资产不存在', 409, 'IMAGE_ASSET_NOT_FOUND')
     await this.assets.readVerified(source)
@@ -2056,7 +3639,7 @@ export class ImageWorkbenchService {
     const policy = this.resolveGenerationPolicy({
       user_request: input.instruction,
       size: project.size,
-      operation_mode: 'edit',
+      operation_mode: input.kind,
       references,
       transparent_output: this.deliveryRequiresTransparency(delivery),
       preferred_model: 'gpt-image-2',
@@ -2069,11 +3652,13 @@ export class ImageWorkbenchService {
     await this.providerReferenceInputs(project, providerReferences)
     const requestHash = this.derivationOperationRequestHash({
       project, candidate, brief, delivery, direction, references, instruction: input.instruction,
+      kind: input.kind, mask_content_hash: mask?.content_hash,
       model: policy.model_id, policyRevision: policy.policy_revision,
     })
     const estimateRequestHash = sha256({
       kind: 'derivation', project_id: project.id, candidate_id: candidate.id,
-      instruction: input.instruction, operation_request_hash: requestHash,
+      instruction: input.instruction, operation_kind: input.kind, mask_content_hash: mask?.content_hash ?? null,
+      operation_request_hash: requestHash,
     })
     if (estimate.request_hash !== estimateRequestHash) {
       throw new ImageWorkbenchServiceError('派生费用估算已过期或不属于当前输入，请重新确认', 409, 'IMAGE_REVISION_CONFLICT')
@@ -2082,18 +3667,29 @@ export class ImageWorkbenchService {
     if (!productImageRelayConfigured()) throw new ImageWorkbenchServiceError('图片远程能力尚未配置', 503, 'IMAGE_RELAY_NOT_CONFIGURED')
     const now = this.iso()
     const operationId = stableId('op', project.id, roundId, candidate.id)
-    const assetHashes = [...new Set([candidate.content_hash, ...providerReferences.map(reference => reference.content_hash)])]
+    const savedMask = mask
+      ? await this.assets.persist(project.id, workflowId('mask', project.id, operationId), 'mask', mask, operationId, now)
+      : undefined
+    const projectForOperation = savedMask && !project.assets.some(asset => asset.id === savedMask.asset.id)
+      ? imageWorkbenchProjectSchema.parse({ ...project, assets: [...project.assets, savedMask.asset] })
+      : project
+    const assetHashes = [...new Set([
+      candidate.content_hash,
+      ...providerReferences.map(reference => reference.content_hash),
+      ...(savedMask?.asset.content_hash ? [savedMask.asset.content_hash as `sha256:${string}`] : []),
+    ])]
     const taskId = id('task')
     const operation: ImageOperationV2 = {
       id: operationId,
-      project_id: project.id,
-      owner: project.owner,
-      kind: 'edit',
+      project_id: projectForOperation.id,
+      owner: projectForOperation.owner,
+      kind: input.kind,
       status: 'queued',
       idempotency_key: `bb-image-${requestHash.slice('sha256:'.length)}`,
       request_hash: requestHash,
       logical_attempt: 1,
       base_candidate_id: candidate.id,
+      ...(savedMask ? { mask_asset_id: savedMask.asset.id } : {}),
       instruction: input.instruction,
       input_refs: {
         project_revision: project.revision,
@@ -2116,7 +3712,7 @@ export class ImageWorkbenchService {
     const transport = this.operation({
       schema_version: 1,
       id: taskId,
-      project_id: project.id,
+      project_id: projectForOperation.id,
       operation_id: operationId,
       owner: project.owner,
       kind: 'image.generate',
@@ -2125,8 +3721,9 @@ export class ImageWorkbenchService {
       stage: '等待提交候选派生',
       idempotency_key: operation.idempotency_key,
       image_operation: {
-        kind: 'edit',
+        kind: input.kind,
         base_candidate_asset_id: candidate.asset_id,
+        ...(savedMask ? { mask_asset_id: savedMask.asset.id } : {}),
         instruction: `${this.providerPromptForDirection(brief, direction)}\n编辑要求：${input.instruction}`,
         model: policy.model_id,
         output_count: 3,
@@ -2136,7 +3733,7 @@ export class ImageWorkbenchService {
     })
     const round: ImageGenerationRound = {
       id: roundId,
-      project_id: project.id,
+      project_id: projectForOperation.id,
       creative_plan_id: plan.id,
       direction_operations: [{ direction_id: direction.id, operation_id: operation.id }],
       estimate_hash: estimate.estimate_hash,
@@ -2144,7 +3741,7 @@ export class ImageWorkbenchService {
       created_at: now,
     }
     const persisted = await this.repository.createGenerationRoundWithOperations({
-      project,
+      project: projectForOperation,
       base_revision: input.base_revision,
       request_hash: derivationCommandHash,
       round,
@@ -2165,6 +3762,9 @@ export class ImageWorkbenchService {
     provider: string,
     modelId: ImageWorkbenchProject['model'],
   ): Promise<ImageOperationV2> {
+    if (!productImageRelayConfigured()) {
+      throw new ImageWorkbenchServiceError('图片远程能力尚未配置', 503, 'IMAGE_RELAY_NOT_CONFIGURED')
+    }
     const submittedAt = this.iso()
     const receipt: ProviderExecutionReceipt = {
       id: operation.execution_receipt_id!,
@@ -2181,21 +3781,22 @@ export class ImageWorkbenchService {
       input_asset_hashes: operation.input_refs.asset_hashes,
       submitted_at: submittedAt,
     }
-    const pending = await this.repository.updateGenerationOperation({
-      ...operation,
-      status: 'queued',
-      cost_state: 'submitted_charge_possible',
-      submitted_at: operation.submitted_at ?? submittedAt,
-      updated_at: submittedAt,
+    const claim = await this.repository.claimGenerationSubmission({
+      operation,
+      transport,
+      submitted_at: submittedAt,
     })
-    const refreshedTransport = await this.submitPersistedOperation(project, transport)
+    if (!claim.claimed) {
+      return claim.operation
+    }
+    const refreshedTransport = await this.submitPersistedOperation(project, claim.transport)
     const refusal = relayPolicyRefusal((refreshedTransport.result ?? {}) as RelayImageTask)
     await this.repository.saveExecutionReceipt({
       ...receipt,
       ...(refreshedTransport.remote_task_id ? { provider_request_id: refreshedTransport.remote_task_id } : {}),
       ...(refusal ? { refusal, completed_at: this.iso() } : {}),
     })
-    return await this.syncGenerationOperationFromTransport(pending, refreshedTransport)
+    return await this.syncGenerationOperationFromTransport(claim.operation, refreshedTransport)
   }
 
   private async ensureGenerationReceiptForTransport(operation: ImageOperationV2, transport: ImageOperation): Promise<void> {
@@ -2233,6 +3834,24 @@ export class ImageWorkbenchService {
     // the newest formal record so a refresh cannot erase its discriminated
     // result, receipt link or cost facts.
     const current = await this.repository.getGenerationOperation(operation.project_id, operation.id).catch(() => operation)
+    // A local Campaign cancellation is authoritative until a remote task id
+    // exists. This also repairs records from an interrupted older writer that
+    // happened to persist the formal cancellation before its transport row.
+    if (current.status === 'cancelled' && current.cancellation?.remote_state === 'confirmed' && !transport.remote_task_id) {
+      if (transport.status !== 'cancelled') {
+        const safe = mediaSafeError('MEDIA_IMAGE_CANCELLED')
+        await this.repository.saveOperation(this.operation({
+          ...transport,
+          status: 'cancelled',
+          progress: 0,
+          stage: '已取消',
+          error: safe.message,
+          error_code: safe.code,
+          outcome_unknown: false,
+        }))
+      }
+      return current
+    }
     await this.ensureGenerationReceiptForTransport(current, transport)
     const refusal = relayPolicyRefusal((transport.result ?? {}) as RelayImageTask)
     const status: ImageOperationV2['status'] = refusal
@@ -2266,7 +3885,7 @@ export class ImageWorkbenchService {
     })
   }
 
-  async getGenerationOperation(projectId: string, operationId: string): Promise<ImageOperationV2> {
+  private async refreshGenerationOperation(projectId: string, operationId: string): Promise<ImageOperationV2> {
     const operation = await this.repository.getGenerationOperation(projectId, operationId)
     if (!operation.transport_task_id) return operation
     const storedTransport = await this.repository.getOperation(operation.transport_task_id)
@@ -2275,6 +3894,22 @@ export class ImageWorkbenchService {
       ? await this.refreshPersistedOperation(storedTransport)
       : await this.getOperation(operation.transport_task_id)
     return await this.syncGenerationOperationFromTransport(operation, transport)
+  }
+
+  /** A transport poll also advances the one Campaign attempt that owns it. */
+  private async synchronizeCampaignAttemptForOperation(operation: ImageOperationV2): Promise<void> {
+    const attempt = await this.repository.campaignAttemptForGenerationOperation(operation.id, STANDALONE_IMAGE_OWNER)
+    if (!attempt) return
+    const snapshot = await this.repository.getCampaign(attempt.campaign_id, STANDALONE_IMAGE_OWNER)
+    const item = snapshot.items.find(candidate => candidate.id === attempt.item_id)
+    if (!item || item.attempt !== attempt.attempt || item.project_id !== operation.project_id) return
+    await this.synchronizeCampaignItem(attempt.campaign_id, item.id)
+  }
+
+  async getGenerationOperation(projectId: string, operationId: string): Promise<ImageOperationV2> {
+    const operation = await this.refreshGenerationOperation(projectId, operationId)
+    await this.synchronizeCampaignAttemptForOperation(operation)
+    return operation
   }
 
   async findGenerationOperation(operationId: string): Promise<ImageOperationV2 | null> {
@@ -2487,33 +4122,29 @@ export class ImageWorkbenchService {
 
   async applyCanvasCommand(projectId: string, canvasId: string, baseProjectRevision: number, raw: ImageCanvasCommandInput): Promise<{ project: ImageWorkbenchProject; canvas: ImageCanvasRevision }> {
     const command = imageCanvasCommandInputSchema.parse(raw)
-    const project = await this.project(projectId)
-    const template = command.kind === 'apply_template'
-      ? await this.repository.templateRevision(command.payload.template_id, command.payload.template_revision_id, project.owner)
-      : undefined
-    if (command.kind === 'apply_template') {
-      const boundAssets = command.payload.slot_bindings.flatMap(binding => binding.asset_id ? [binding.asset_id] : [])
-      if (boundAssets.some(assetId => !project.assets.some(asset => asset.id === assetId))) {
-        throw new ImageWorkbenchServiceError('模板 Slot 只能绑定当前项目中已验证的素材', 409, 'IMAGE_ASSET_NOT_FOUND')
-      }
-    }
-    if (command.kind === 'apply_brand_kit') {
-      await this.repository.brandKitRevision(command.payload.brand_kit_id, command.payload.brand_kit_revision_id, project.owner)
-    }
-    if (template?.brand_kit_id && template.brand_kit_revision_id) {
-      await this.repository.brandKitRevision(template.brand_kit_id, template.brand_kit_revision_id, project.owner)
-    }
+    await this.project(projectId)
+    const requestHash = sha256({ canvas_id: canvasId, base_project_revision: baseProjectRevision, command })
+    const replay = await this.repository.canvasCommandResult({
+      project_id: projectId,
+      canvas_id: canvasId,
+      idempotency_key: command.idempotency_key,
+      request_hash: requestHash,
+    })
+    if (replay) return replay
     const currentCanvas = command.kind === 'sync_delivery_spec'
       ? await this.repository.getCanvasRevision(projectId, canvasId, command.base_revision)
       : undefined
-    const deliveryArtboard = command.kind === 'sync_delivery_spec'
+    // Active aggregate/grant reads are intentionally repeated by the
+    // repository inside its BEGIN IMMEDIATE transaction. The outer reads here
+    // only locate the pinned delivery artboard; they must not authorize a
+    // write that can race a grant revoke or aggregate trash command.
+    const deliveryArtboard = command.kind === 'sync_delivery_spec' && currentCanvas
       ? (await this.repository.getDeliverySpecRevision(projectId, command.payload.delivery_spec_id, command.payload.delivery_spec_revision))
-        .artboards.find(artboard => artboard.id === currentCanvas!.document.artboard_id)
+        .artboards.find(artboard => artboard.id === currentCanvas.document.artboard_id)
       : undefined
     if (command.kind === 'sync_delivery_spec' && !deliveryArtboard) {
       throw new ImageWorkbenchServiceError('交付规格不包含当前画板，不能同步', 409, 'IMAGE_REVISION_CONFLICT')
     }
-    const requestHash = sha256({ canvas_id: canvasId, base_project_revision: baseProjectRevision, command })
     const result = await this.repository.applyCanvasCommand({
       project_id: projectId,
       canvas_id: canvasId,
@@ -2521,7 +4152,6 @@ export class ImageWorkbenchService {
       command,
       request_hash: requestHash,
       created_at: this.iso(),
-      ...(template ? { template } : {}),
       ...(deliveryArtboard ? {
         delivery_artboard: {
           width: deliveryArtboard.width,
@@ -2586,6 +4216,23 @@ export class ImageWorkbenchService {
     return layers.flatMap(layer => layer.kind === 'group' ? this.flattenCanvasLayers(layer.children) : [layer])
   }
 
+  private canvasCommandAssetIds(raw: unknown): string[] {
+    const command = imageCanvasCommandInputSchema.parse(raw)
+    const sourceIds = (layers: ImageCanvasDocument['layers']): string[] => this.flattenCanvasLayers(layers).flatMap(layer => {
+      if (layer.kind === 'raster' || layer.kind === 'logo' || layer.kind === 'mask') return [layer.source_asset_id]
+      return layer.kind === 'qrcode' && layer.source.kind === 'asset' ? [layer.source.asset_id] : []
+    })
+    if (command.kind === 'add_layer' || command.kind === 'replace_layer') return sourceIds([command.payload.layer])
+    return []
+  }
+
+  private async assertCanvasCommandAsset(project: ImageWorkbenchProject, assetId: string): Promise<void> {
+    // A locked Template/Brand revision authorizes its own application only.
+    // A later direct add/replace remains a new Project write and therefore
+    // needs a live grant addressed to that Project.
+    await this.repository.assetForProjectInput(project.id, assetId)
+  }
+
   private async canvasInputAssets(project: ImageWorkbenchProject, document: ImageCanvasDocument): Promise<Array<{ id: string; verified: VerifiedImageBytes }>> {
     const assetIds = new Set<string>()
     for (const layer of this.flattenCanvasLayers(document.layers)) {
@@ -2594,7 +4241,10 @@ export class ImageWorkbenchService {
     }
     const assets: Array<{ id: string; verified: VerifiedImageBytes }> = []
     for (const assetId of assetIds) {
-      const asset = project.assets.find(candidate => candidate.id === assetId)
+      // New commands prove a grant before the Canvas revision is persisted.
+      // Historical canvases deliberately retain that resolved source so a later
+      // revoke/trash does not make an accepted render or export unrecoverable.
+      const asset = project.assets.find(candidate => candidate.id === assetId) ?? await this.repository.getWorkflowAsset(assetId)
       if (!asset) throw new ImageWorkbenchServiceError('画布引用的素材不存在', 409, 'IMAGE_ASSET_NOT_FOUND')
       assets.push({ id: assetId, verified: await this.assets.readVerified(asset) })
     }
@@ -2645,14 +4295,23 @@ export class ImageWorkbenchService {
       id: 'font-and-text-bounds', status: invalidText || invalidGlyph ? 'fail' : 'pass',
       evidence: invalidText || invalidGlyph ? '正式文字必须使用受控字体、具备全部字形且不得裁切或越界' : '正式文字字体、字形、边界和溢出策略有效', waivable: false,
     })
-    if (canvas.document.brand_kit_revision_id) {
+    const canvasLayers = this.flattenCanvasLayers(canvas.document.layers)
+    const hasBrandToken = (canvas.document.background.kind === 'solid' && canvas.document.background.color.startsWith('brand.'))
+      || canvasLayers.some(layer => (layer.kind === 'text' || layer.kind === 'shape')
+        && [layer.fill, layer.stroke].some(color => color?.startsWith('brand.')))
+    if (!canvas.document.brand_kit_revision_id && hasBrandToken) {
+      checks.push({ id: 'brand-revision', status: 'fail', waivable: false, evidence: '画布使用 brand.* 色彩 Token，但未锁定品牌 revision' })
+    } else if (canvas.document.brand_kit_revision_id) {
       try {
         const brand = await this.repository.brandKitRevisionById(canvas.document.brand_kit_revision_id, project.owner)
-        const layers = this.flattenCanvasLayers(canvas.document.layers)
+        const layers = canvasLayers
         const requiredText = brand.required_text.filter(item => !textLayers.some(layer => layer.text === item.value))
         const requiredLogos = brand.logo_asset_ids.filter(assetId => !layers.some(layer => layer.kind === 'logo' && layer.source_asset_id === assetId))
         const invalidBrandFonts = brand.font_asset_ids.length > 0 && textLayers.some(layer => !brand.font_asset_ids.includes(layer.font_asset_id))
-        const unresolvedColors = layers.some(layer => (layer.kind === 'text' || layer.kind === 'shape')
+        const unresolvedBackground = canvas.document.background.kind === 'solid'
+          && canvas.document.background.color.startsWith('brand.')
+          && !brand.color_tokens[canvas.document.background.color.slice('brand.'.length)]
+        const unresolvedColors = unresolvedBackground || layers.some(layer => (layer.kind === 'text' || layer.kind === 'shape')
           && [layer.fill, layer.stroke].some(color => color?.startsWith('brand.') && !brand.color_tokens[color.slice('brand.'.length)]))
         const failed = requiredText.length > 0 || requiredLogos.length > 0 || invalidBrandFonts || unresolvedColors
         checks.push({
@@ -3398,20 +5057,58 @@ export class ImageWorkbenchService {
    * the only lawful recovery is the original idempotency key; Image Relay either
    * returns the accepted task or treats it as the same logical submission.
    */
+  private async reconcileCampaignReservationForOperation(
+    operation: ImageOperation,
+    generation: ImageOperationV2,
+  ): Promise<ImageOperation> {
+    const attempt = await this.repository.campaignAttemptForExpectedProject(operation.project_id, STANDALONE_IMAGE_OWNER)
+    if (!attempt) return operation
+    const snapshot = await this.repository.getCampaign(attempt.campaign_id, STANDALONE_IMAGE_OWNER)
+    const item = snapshot.items.find(candidate => candidate.id === attempt.item_id)
+    if (!item || item.attempt !== attempt.attempt) return operation
+    const expectedRoundId = stableId('rnd', operation.project_id, this.campaignItemQuickCreateKey(snapshot.campaign, item))
+    const round = await this.repository.generationRoundForOperation(operation.project_id, generation.id).catch(() => null)
+    if (!round || round.id !== expectedRoundId) return operation
+    const operations = await Promise.all(round.direction_operations.map(async direction =>
+      await this.repository.getGenerationOperation(operation.project_id, direction.operation_id)))
+    const exact = this.campaignRoundOperation(round, operations)
+    if (attempt.state === 'cancelled') {
+      await this.suppressUnpostedCampaignAttempt(attempt.campaign_id, attempt.item_id, attempt.attempt, exact)
+      return await this.repository.getOperation(operation.id)
+    }
+    if (attempt.state !== 'reserved') return operation
+    const bound = await this.bindCampaignItemProject(
+      attempt.campaign_id,
+      attempt.item_id,
+      attempt.attempt,
+      operation.project_id,
+      round,
+      exact,
+    )
+    if (bound.suppressed) {
+      await this.suppressUnpostedCampaignAttempt(attempt.campaign_id, attempt.item_id, attempt.attempt, exact)
+    }
+    return await this.repository.getOperation(operation.id)
+  }
+
   private async resumeUnpostedGenerationOperation(operation: ImageOperation, generation: ImageOperationV2): Promise<ImageOperation> {
-    if (operation.remote_task_id || !generation.transport_task_id) return operation
+    if (operation.remote_task_id || generation.status !== 'queued' || !generation.transport_task_id) return operation
     const neverPosted = operation.status === 'queued' && !operation.remote_submission_started_at
     // A remotely ambiguous operation is never safe to POST again, even when
     // its idempotency key is stable.  Recovery below asks Image Relay for the
     // existing owner-bound task; only a record which was durably created but
     // whose first POST never started may take its first submission here.
     if (!neverPosted) return operation
+    const reconciled = await this.reconcileCampaignReservationForOperation(operation, generation)
+    if (reconciled.status !== 'queued' || reconciled.remote_task_id || reconciled.remote_submission_started_at) return reconciled
+    const currentGeneration = await this.repository.getGenerationOperation(operation.project_id, generation.id)
+    if (currentGeneration.status !== 'queued') return reconciled
     if (!productImageRelayConfigured()) return operation
     const provider = providerRegistryEntry(operation.image_operation.model)
     if (!provider) throw new ImageWorkbenchServiceError('图片操作缺少已注册 Provider', 500, 'IMAGE_OPERATION_CORRUPT')
     await this.submitGenerationTransport(
       await this.project(operation.project_id),
-      generation,
+      currentGeneration,
       operation,
       provider.provider,
       operation.image_operation.model,
@@ -3463,6 +5160,10 @@ export class ImageWorkbenchService {
   }
 
   async recoverInterruptedOperations(): Promise<void> {
+    // A durable cancellation intent is authoritative over every queued
+    // Campaign child. Resolve it before the generic operation scanner gets a
+    // chance to make a first paid POST for a task the user already cancelled.
+    await this.recoverPreparedCampaignCancellations()
     const operations = await this.repository.listOperations()
     await Promise.all(operations.map(async operation => {
       const fenced = await this.fenceInterruptedSubmission(operation)
@@ -3510,6 +5211,7 @@ export class ImageWorkbenchService {
     // restart only retry that idempotent ACK; never re-run the model request.
     await Promise.all((await this.repository.listUnacknowledgedGatewayAdviceReceipts())
       .map(async receipt => { await this.acknowledgeQwenGatewayResult(receipt) }))
+    await this.recoverCampaigns()
   }
 
   private legacyFile(root: string, locator: string): string | null {
