@@ -23,7 +23,7 @@
 
 三项公开地址只在 [`ts/desktop/build/product-config.json`](../../ts/desktop/build/product-config.json) 中随安装包发布；它们都必须是 HTTPS，分别固定为 `/gw`、`/image-generation`、`/video-media`。图片和视频 Sidecar 直接到各自 Relay，**不再经过 Gateway 转发任务或媒体字节**。Gateway 只提供托管 Agent 与 Relay 的私网身份内省。
 
-Nginx 仅反代到本机回环端口：Gateway `127.0.0.1:8799`、Image Relay `127.0.0.1:8790`、Video Media Relay `127.0.0.1:8791`。公网访问 `/gw/internal/*` 固定返回 `404`；Relay 通过 Compose 私网 `http://gateway:8799/internal/v1/auth/introspect` 获取已验证的安装 owner，不能相信客户端提交的 owner 字段。
+Nginx 仅反代到本机回环端口：Gateway `127.0.0.1:8799`、Image Relay `127.0.0.1:8790`、Video Media Relay `127.0.0.1:8791`。公网访问 `/gw/internal/*` 和 Image Relay 详细 `/image-generation/healthz` 固定返回 `404`；后者只供容器回环健康检查，避免公开队列与容量快照。Relay 通过 Compose 私网 `http://gateway:8799/internal/v1/auth/introspect` 获取已验证的安装 owner，不能相信客户端提交的 owner 字段。
 
 当前实测 release 为 `adf33a9d319c91d947a18c3ec68fbcf37062cdcc`。三个产品容器 `billiardbuddy-gateway-1`、`billiardbuddy-image-relay-1`、`billiardbuddy-video-media-relay-1` 均为 healthy。`https://zzyppz.cn/video-media/readyz` 返回 `200`，公网 POST `/gw/internal/v1/auth/introspect` 返回 `404`。
 
