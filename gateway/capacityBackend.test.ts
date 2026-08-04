@@ -95,6 +95,7 @@ test('Gateway 仅从容量策略构造可替换的整套容量后端，并在业
   let received: GatewayCapacityBackendConfig | undefined
   const rateCalls: string[] = []
   let deepseekFenceChecks = 0
+  let deepseekRequest: { url: string; body: Record<string, unknown>; headers: Headers } | undefined
   const rate = (name: string): GatewayRateLimiter => ({
     acquire: async () => { rateCalls.push(name) },
   })
@@ -162,10 +163,17 @@ test('Gateway 仅从容量策略构造可替换的整套容量后端，并在业
     usageStore: new MemoryUsageStore(),
     transcribeImpl: null,
     capacityBackendFactory: factory,
-    fetchImpl: async () => new Response(
-      'event: response.completed\ndata: {"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}\n\n',
-      { headers: { 'Content-Type': 'text/event-stream' } },
-    ),
+    fetchImpl: async (input, init) => {
+      deepseekRequest = {
+        url: input.toString(),
+        body: JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>,
+        headers: new Headers(init?.headers),
+      }
+      return new Response(
+        'event: response.completed\ndata: {"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}\n\n',
+        { headers: { 'Content-Type': 'text/event-stream' } },
+      )
+    },
   })
 
   const bootstrap = await gateway(new Request('https://gateway.example.test/v1/auth/bootstrap', {
@@ -204,6 +212,15 @@ test('Gateway 仅从容量策略构造可替换的整套容量后端，并在业
   }))
   expect(managed.status).toBe(200)
   await managed.text()
+  expect(deepseekRequest?.url).toBe('https://deepseek.example.test/responses')
+  expect(deepseekRequest?.headers.get('authorization')).toBe('Bearer deepseek-test-key')
+  expect(deepseekRequest?.body).toMatchObject({
+    model: 'deepseek-v4-flash',
+    input: [{ role: 'user', content: [{ type: 'input_text', text: 'capacity fence' }] }],
+    stream: true,
+    store: false,
+  })
+  expect(deepseekRequest?.body).not.toHaveProperty('messages')
   expect(rateCalls).toContain('deepseek')
   expect(deepseekFenceChecks).toBeGreaterThanOrEqual(1)
   expect(received).toMatchObject({

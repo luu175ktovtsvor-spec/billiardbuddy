@@ -214,4 +214,63 @@ describe('Chat Completions to Responses adapter', () => {
       await started.close()
     }
   })
+
+  test('the built-in DeepSeek route preserves Responses through the private bridge and Gateway', async () => {
+    const gatewayRequests: Array<{ url: string; body: string; headers: Headers }> = []
+    const started = await startCodexNativeProvider({
+      kind: 'managed',
+      gatewayUrl: 'https://gateway.example.test/gw',
+      model: 'deepseek-v4-flash',
+      resolveAccessToken: async () => 'managed-access-token',
+    }, {
+      fetchImpl: async (input, init) => {
+        gatewayRequests.push({
+          url: input.toString(),
+          body: String(init?.body ?? ''),
+          headers: new Headers(init?.headers),
+        })
+        return new Response('event: response.completed\ndata: {"type":"response.completed"}\n\n', {
+          headers: { 'content-type': 'text/event-stream', 'cache-control': 'no-store' },
+        })
+      },
+    })
+    try {
+      expect(started.model).toBe('deepseek-v4-flash')
+      expect(started.configOverrides).toContain('model_providers.billiardbuddy.wire_api="responses"')
+      const baseUrlOverride = started.configOverrides.find(value => value.startsWith('model_providers.billiardbuddy.base_url='))
+      if (!baseUrlOverride) throw new Error('missing managed loopback configuration')
+      const loopbackBaseUrl = JSON.parse(baseUrlOverride.slice('model_providers.billiardbuddy.base_url='.length)) as string
+      const capabilityToken = started.environment.BB_CODEX_GATEWAY_ADAPTER_TOKEN
+      if (!capabilityToken) throw new Error('missing managed loopback capability')
+      const body = JSON.stringify({
+        model: 'deepseek-v4-flash',
+        input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'keep Responses native' }] }],
+        stream: true,
+      })
+      const response = await fetch(`${loopbackBaseUrl}/responses`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-billiardbuddy-engine-token': capabilityToken,
+          'x-bb-operation-id': 'managed_responses_test_0001',
+          'idempotency-key': 'managed-responses-idempotency-0001',
+        },
+        body,
+      })
+
+      expect(response.status).toBe(200)
+      expect(await response.text()).toContain('response.completed')
+      expect(gatewayRequests).toHaveLength(1)
+      expect(gatewayRequests[0]).toMatchObject({
+        url: 'https://gateway.example.test/gw/v1/responses',
+        body,
+      })
+      expect(gatewayRequests[0]?.headers.get('authorization')).toBe('Bearer managed-access-token')
+      expect(gatewayRequests[0]?.headers.get('x-bb-provider-protocol')).toBe('bb-provider-gateway/1.0')
+      expect(gatewayRequests[0]?.headers.get('x-bb-operation-id')).toBe('managed_responses_test_0001')
+      expect(gatewayRequests[0]?.headers.get('idempotency-key')).toBe('managed-responses-idempotency-0001')
+    } finally {
+      await started.close()
+    }
+  })
 })
