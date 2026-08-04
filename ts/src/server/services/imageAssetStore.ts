@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { copyFile, link, mkdir, open, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { dirname, extname, isAbsolute, join, relative } from 'node:path'
+import sharp from 'sharp'
 import type { MediaAsset } from '../../../shared/contracts/media.js'
 import { lock } from '../../utils/lockfile.js'
 import { syncParentDirectory } from '../../utils/durableFile.js'
@@ -14,6 +15,10 @@ export type VerifiedImageBytes = {
   height: number
   content_hash: `sha256:${string}`
 }
+
+/** Header parsing is not image validation: keep decompression-bomb limits in
+ * the same place for uploads, CAS re-reads and final exports. */
+const MAX_IMAGE_PIXELS = 100_000_000
 
 export type ImageAssetStoreHooks = {
   /** Test-only crash boundary: CAS is durable but metadata has not committed. */
@@ -71,6 +76,75 @@ function extensionForMime(mimeType: SupportedImageMime): 'png' | 'jpg' | 'webp' 
   return mimeType === 'image/jpeg' ? 'jpg' : mimeType === 'image/webp' ? 'webp' : 'png'
 }
 
+/**
+ * Provider input is a disposable derivative, never the original local asset.
+ * Strip the metadata containers that can carry EXIF/GPS without re-encoding
+ * image pixels or depending on a platform image codec.
+ */
+function withoutProviderMetadata(verified: VerifiedImageBytes): Buffer {
+  if (verified.mime_type === 'image/jpeg') {
+    const source = verified.bytes
+    const parts: Buffer[] = [source.subarray(0, 2)]
+    let offset = 2
+    while (offset < source.length) {
+      if (source[offset] !== 0xff) return source
+      const marker = source[offset + 1]
+      if (marker === undefined) return source
+      if (marker === 0xda) { // Start of scan: the remainder is compressed image bytes.
+        parts.push(source.subarray(offset))
+        return Buffer.concat(parts)
+      }
+      if (marker === 0xd8 || marker === 0xd9 || marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) {
+        parts.push(source.subarray(offset, offset + 2))
+        offset += 2
+        continue
+      }
+      if (offset + 4 > source.length) return source
+      const length = source.readUInt16BE(offset + 2)
+      if (length < 2 || offset + 2 + length > source.length) return source
+      // APP1 holds EXIF (including GPS) and XMP.  Do not send either upstream.
+      if (marker !== 0xe1) parts.push(source.subarray(offset, offset + 2 + length))
+      offset += 2 + length
+    }
+    return Buffer.concat(parts)
+  }
+  if (verified.mime_type === 'image/png') {
+    const source = verified.bytes
+    const parts: Buffer[] = [source.subarray(0, 8)]
+    let offset = 8
+    while (offset + 12 <= source.length) {
+      const length = source.readUInt32BE(offset)
+      const end = offset + 12 + length
+      if (end > source.length) return source
+      const type = source.toString('ascii', offset + 4, offset + 8)
+      // PNG eXIf is the only standardized EXIF container.
+      if (type !== 'eXIf') parts.push(source.subarray(offset, end))
+      offset = end
+      if (type === 'IEND') return Buffer.concat(parts)
+    }
+    return source
+  }
+  if (verified.mime_type === 'image/webp') {
+    const source = verified.bytes
+    const chunks: Buffer[] = []
+    let offset = 12
+    while (offset + 8 <= source.length) {
+      const size = source.readUInt32LE(offset + 4)
+      const paddedSize = size + (size % 2)
+      const end = offset + 8 + paddedSize
+      if (end > source.length) return source
+      if (source.toString('ascii', offset, offset + 4) !== 'EXIF') chunks.push(source.subarray(offset, end))
+      offset = end
+    }
+    if (offset !== source.length) return source
+    const body = Buffer.concat(chunks)
+    const header = Buffer.from(source.subarray(0, 12))
+    header.writeUInt32LE(4 + body.length, 4)
+    return Buffer.concat([header, body])
+  }
+  return verified.bytes
+}
+
 function safeId(value: string): boolean {
   return /^[a-z0-9][a-z0-9_-]{7,79}$/.test(value)
 }
@@ -92,6 +166,23 @@ export class ImageAssetStore {
     const dimensions = mimeType ? imageDimensions(bytes, mimeType) : null
     if (!mimeType || !dimensions || dimensions.width < 1 || dimensions.height < 1 || dimensions.width > 12_000 || dimensions.height > 12_000) {
       throw new ImageAssetStoreError('图片文件格式或尺寸无效', 400, 'IMAGE_ASSET_INVALID')
+    }
+    if (dimensions.width * dimensions.height > MAX_IMAGE_PIXELS) {
+      throw new ImageAssetStoreError('图片解码像素超过安全上限', 400, 'IMAGE_ASSET_INVALID')
+    }
+    // A superficially valid signature/IHDR/SOF is not enough.  Decode every
+    // pixel before a byte can enter CAS, be sent to a provider or become an
+    // export.  libvips also rejects truncated scans and malformed WebP chunks.
+    try {
+      const decoded = sharp(bytes, { failOn: 'error', limitInputPixels: MAX_IMAGE_PIXELS })
+      const metadata = await decoded.metadata()
+      if (metadata.format !== (mimeType === 'image/jpeg' ? 'jpeg' : mimeType.slice('image/'.length))
+        || metadata.width !== dimensions.width || metadata.height !== dimensions.height) {
+        throw new Error('decoder dimensions differ from container header')
+      }
+      await decoded.ensureAlpha().raw().toBuffer()
+    } catch {
+      throw new ImageAssetStoreError('图片无法完整解码', 400, 'IMAGE_ASSET_INVALID')
     }
     return {
       bytes,
@@ -154,7 +245,7 @@ export class ImageAssetStore {
   async persist(
     projectId: string,
     assetId: string,
-    role: Extract<MediaAsset['role'], 'reference' | 'mask' | 'result'>,
+    role: Extract<MediaAsset['role'], 'reference' | 'mask' | 'result' | 'export'>,
     verified: VerifiedImageBytes,
     versionId: string,
     createdAt: string,
@@ -164,7 +255,7 @@ export class ImageAssetStore {
     }
     await this.writeCas(verified)
     const extension = extensionForMime(verified.mime_type)
-    const section = role === 'reference' ? 'references' : role === 'mask' ? 'masks' : 'results'
+    const section = role === 'reference' ? 'references' : role === 'mask' ? 'masks' : role === 'export' ? 'exports' : 'results'
     const fileName = `${assetId}.${extension}`
     const target = join(this.assetsDir, projectId, section, fileName)
     await mkdir(dirname(target), { recursive: true, mode: 0o700 })
@@ -193,7 +284,7 @@ export class ImageAssetStore {
     }
   }
 
-  private async ownedFile(projectId: string, section: 'references' | 'masks' | 'results', fileName: string): Promise<{ path: string; size: number }> {
+  private async ownedFile(projectId: string, section: 'references' | 'masks' | 'results' | 'exports', fileName: string): Promise<{ path: string; size: number }> {
     if (!safeId(projectId) || !/^[a-z0-9][a-z0-9_.-]{2,120}$/.test(fileName)) {
       throw new ImageAssetStoreError('图片资产名无效', 400, 'IMAGE_ASSET_INVALID')
     }
@@ -214,7 +305,7 @@ export class ImageAssetStore {
     return { path: canonicalPath, size: info.size }
   }
 
-  async response(projectId: string, section: 'references' | 'masks' | 'results', fileName: string): Promise<Response> {
+  async response(projectId: string, section: 'references' | 'masks' | 'results' | 'exports', fileName: string): Promise<Response> {
     const asset = await this.ownedFile(projectId, section, fileName)
     const extension = extname(fileName).toLowerCase()
     const contentType: SupportedImageMime = extension === '.jpg' || extension === '.jpeg'
@@ -242,6 +333,12 @@ export class ImageAssetStore {
       throw new ImageAssetStoreError('图片资产内容已变化', 409, 'IMAGE_ASSET_CORRUPT')
     }
     return verified
+  }
+
+  /** A provider upload must not contain the user's original EXIF/GPS metadata. */
+  async providerUpload(asset: MediaAsset): Promise<VerifiedImageBytes> {
+    const verified = await this.readVerified(asset)
+    return await this.verify(withoutProviderMetadata(verified))
   }
 
   async verifiedExport(source: MediaAsset, outputPath: string): Promise<{ byte_size: number; mime_type: SupportedImageMime; width: number; height: number; content_hash: `sha256:${string}`; verified_at: string }> {

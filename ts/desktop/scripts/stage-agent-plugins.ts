@@ -1,7 +1,7 @@
 import { spawnSync } from 'node:child_process'
 import { chmodSync, copyFileSync, cpSync, existsSync, lstatSync, mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { basename, join, resolve } from 'node:path'
-import { resolveCargoCommand, verifyProductContent, verifyProductSkill, verifyStdioMcpHandshake } from './native-build-tools'
+import { resolveCargoCommand, runMsvcCompiler, verifyProductContent, verifyProductSkill, verifyStdioMcpHandshake } from './native-build-tools'
 
 type SupportedTarget =
   | 'aarch64-apple-darwin'
@@ -204,15 +204,7 @@ function stageWindowsComputerUseService(destinationBin: string): void {
   if (!vcvars || !existsSync(vcvars)) {
     throw new Error('Windows 构建机没有可用的 MSVC x64 工具链')
   }
-  const quote = (value: string) => `"${value.replaceAll('"', '""')}"`
-  const vcvarsDirectory = join(installation, 'VC', 'Auxiliary', 'Build')
-  // Start the command with an unquoted batch-file name. Bun otherwise escapes
-  // the leading quoted Visual Studio path and cmd treats the quotes as part of
-  // the filename. cwd still points at the exact installation found by vswhere.
-  run(process.env.ComSpec || 'cmd.exe', [
-    '/d', '/c',
-    `call vcvars64.bat >nul && cl.exe ${compilerArguments.map(quote).join(' ')}`,
-  ], vcvarsDirectory)
+  runMsvcCompiler(vcvars, compilerArguments, 'Computer Use Windows 原生服务编译失败')
 }
 
 export function verifyStagedAgentPlugins(options: AgentPluginStageOptions): void {

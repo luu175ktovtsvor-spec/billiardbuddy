@@ -16,9 +16,10 @@ BilliardBuddy 是桌面端产品。目标产品由一个 Codex 原生 Agent 运�
 用户 Responses Key：Rust -> 本机凭据代理 -> 用户 Responses endpoint
 用户 Chat Key：Rust -> 本机协议适配器 -> 用户 Chat Completions endpoint
 视频远程分析：本地 Video Sidecar -> Video Media Relay -> 阿里云百炼 / 北京临时对象存储
+图片生成：本地媒体 Sidecar -> Gateway /v1/images/tasks -> 私网 Image Relay -> GPT Image 2 / Seedream 4.5
 ```
 
-Rust App Server 是唯一的 Agent 执行和会话所有者。Electron 只负责宿主、密钥、进程生命周期和协议转发；Gateway 只负责托管模型的鉴权、额度、用量、路由与 SSE 转发；它们都不保存或调度 Agent 会话。
+Rust App Server 是唯一的 Agent 执行和会话所有者。Electron 只负责宿主、密钥、进程生命周期和协议转发；Gateway 负责托管模型与图片任务的鉴权、额度、用量、路由、幂等与安全转发；它们都不保存或调度 Agent 会话。图片 Project、Candidate、Canvas 和版本事实只保存在本地 Sidecar，Relay 仅持有受 ACK 约束的异步任务结果。
 
 Video Media Relay 与 Gateway 是两条不重叠的正式路径：前者只承接经项目 Consent 和预算确认的 Qwen、Fun-ASR 与 `text-embedding-v4` 视频派生物，负责对象租约、账户额度、幂等和 Provider receipt；后者继续承接既有 Agent、产品语音和图片路径。Relay 不保存项目、时间线或创作状态，Sidecar 仍是这些本地事实与预算的唯一 writer。
 
@@ -33,8 +34,8 @@ Video Media Relay 与 Gateway 是两条不重叠的正式路径：前者只承�
 | `ts/desktop/src` | 空 Renderer 装配点，供后续前端重建 |
 | `ts/src/server` | 自研图片、视频、本地媒体与设置 Sidecar；含视频转写及既有语音兼容路径，但不执行 Agent |
 | `ts/shared` | 桌面、Sidecar 与 Gateway 的共享产品契约 |
-| `gateway` | 托管 DeepSeek 的鉴权、额度、用量、路由与 Responses/SSE 网关 |
-| `relay` | 图片/视频异步任务结果交接 |
+| `gateway` | 托管 DeepSeek Responses 与图片异步任务的鉴权、额度、用量、路由、幂等和安全转发 |
+| `relay` | 图片/视频异步任务结果交接；不保存图片项目事实 |
 | `video-media-relay` | 视频远程分析的独立 Relay：对象租约、身份内省、账户额度与 Provider receipt |
 | `docs` | 当前架构、运行与领域边界 |
 

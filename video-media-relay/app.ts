@@ -30,6 +30,16 @@ const iso = (now: () => Date) => now().toISOString()
 const opaque = (prefix: string) => `${prefix}_${randomUUID().replaceAll('-', '')}`
 
 class RelayError extends Error { constructor(readonly status: number, readonly code: string) { super(code) } }
+function isOutcomeUnknown(error: unknown): boolean {
+  // A typed 4xx response proves that no billable provider outcome was
+  // accepted. Every transport/server failure and every unclassified failure
+  // is ambiguous: keep its account reservation and its input lease for
+  // reconciliation instead of silently releasing either one.
+  return !(error instanceof RelayError || error instanceof DashScopeProviderError) || error.status >= 500
+}
+function safeFailureCode(error: unknown): string {
+  return error instanceof RelayError || error instanceof DashScopeProviderError ? error.code : 'provider_outcome_unknown'
+}
 function json(data: unknown, status = 200, id = requestId()): Response { return Response.json(data, { status, headers: { 'X-Request-Id': id, 'Cache-Control': 'no-store' } }) }
 function digest(value: string): string { return `sha256:${createHash('sha256').update(value).digest('hex')}` }
 function reconcileProviderReceipt(previous: ProviderExecutionReceipt | null, next: ProviderExecutionReceipt): ProviderExecutionReceipt {
@@ -102,7 +112,7 @@ class RelayStore {
   }
   reserve(owner: string, operationId: string, units: number, env: Env): string {
     const limit = Math.max(1, Number(env.VIDEO_MEDIA_ACCOUNT_QUOTA_UNITS ?? 1_000_000))
-    const active = this.db.query("SELECT COALESCE(SUM(units),0) AS total FROM video_media_quota_v1 WHERE owner=? AND state='reserved'").get(owner) as { total: number }
+    const active = this.db.query("SELECT COALESCE(SUM(units),0) AS total FROM video_media_quota_v1 WHERE owner=? AND state IN ('reserved','outcome_unknown')").get(owner) as { total: number }
     if (active.total + units > limit) throw new RelayError(429, 'account_quota_exceeded')
     const id = opaque('quota')
     this.db.query("INSERT INTO video_media_quota_v1(owner,reservation_id,operation_id,state,units) VALUES(?,?,?,'reserved',?)").run(owner, id, operationId, units)
@@ -323,9 +333,15 @@ export function createVideoMediaRelayFetch(deps: RelayDeps = {}) {
       })
       if (['succeeded', 'failed', 'expired'].includes(polled.state)) queueInputCleanup(input, principal.owner)
     } catch (error) {
-      const unknown = (error instanceof RelayError && error.status >= 500) || (error instanceof DashScopeProviderError && error.status >= 500)
-      if (unknown) store.db.query("UPDATE video_media_operations_v1 SET state='outcome_unknown',safe_error_code='provider_outcome_unknown',updated_at=? WHERE id=?").run(iso(now), row.id)
-      if (unknown) store.db.query("UPDATE video_media_quota_v1 SET state='outcome_unknown' WHERE reservation_id=?").run(row.account_quota_reservation_id)
+      const unknown = isOutcomeUnknown(error)
+      store.db.query('UPDATE video_media_operations_v1 SET state=?,safe_error_code=?,updated_at=? WHERE id=?')
+        .run(unknown ? 'outcome_unknown' : 'failed', unknown ? 'provider_outcome_unknown' : safeFailureCode(error), iso(now), row.id)
+      store.db.query('UPDATE video_media_quota_v1 SET state=? WHERE reservation_id=?')
+        .run(unknown ? 'outcome_unknown' : 'released', row.account_quota_reservation_id)
+      if (!unknown) {
+        queueInputCleanup(input, principal.owner)
+        await retryObjectCleanup()
+      }
     }
   }
   async function identity(request: Request): Promise<Identity> {
@@ -443,14 +459,14 @@ export function createVideoMediaRelayFetch(deps: RelayDeps = {}) {
           const resultRefs = executed.result === undefined ? (executed.result_object_refs ?? []) : await persistResult(operationId, executed.result)
           store.transaction(() => {
             store.db.query('UPDATE video_media_operations_v1 SET state=?,provider_task_id=?,result_object_refs=?,provider_receipt=?,updated_at=? WHERE id=?').run(executed.state, executed.provider_task_id ?? null, resultRefs.length ? JSON.stringify(resultRefs) : null, JSON.stringify(executed.receipt), iso(now), operationId)
-            store.db.query("UPDATE video_media_quota_v1 SET state='settled' WHERE reservation_id=?").run(quota)
+            if (executed.state === 'succeeded') store.db.query("UPDATE video_media_quota_v1 SET state='settled' WHERE reservation_id=?").run(quota)
           })
           if (executed.state === 'succeeded') {
             queueInputCleanup(raw, principal.owner)
             await retryObjectCleanup()
           }
           return json(await projection(operationId), 202, id)
-        } catch (error) { const unknown = (error instanceof RelayError && error.status >= 500) || (error instanceof DashScopeProviderError && error.status >= 500); store.db.query('UPDATE video_media_operations_v1 SET state=?,safe_error_code=?,updated_at=? WHERE id=?').run(unknown ? 'outcome_unknown' : 'failed', unknown ? 'provider_outcome_unknown' : error instanceof RelayError || error instanceof DashScopeProviderError ? error.code : 'provider_failed', iso(now), operationId); store.db.query('UPDATE video_media_quota_v1 SET state=? WHERE reservation_id=?').run(unknown ? 'outcome_unknown' : 'released', quota); if (!unknown) { queueInputCleanup(raw, principal.owner); await retryObjectCleanup() }; if (error instanceof RelayError || error instanceof DashScopeProviderError) throw new RelayError(error.status, error.code); throw new RelayError(503, 'provider_outcome_unknown') }
+        } catch (error) { const unknown = isOutcomeUnknown(error); store.db.query('UPDATE video_media_operations_v1 SET state=?,safe_error_code=?,updated_at=? WHERE id=?').run(unknown ? 'outcome_unknown' : 'failed', unknown ? 'provider_outcome_unknown' : safeFailureCode(error), iso(now), operationId); store.db.query('UPDATE video_media_quota_v1 SET state=? WHERE reservation_id=?').run(unknown ? 'outcome_unknown' : 'released', quota); if (!unknown) { queueInputCleanup(raw, principal.owner); await retryObjectCleanup() }; if (error instanceof RelayError || error instanceof DashScopeProviderError) throw new RelayError(error.status, error.code); throw new RelayError(503, 'provider_outcome_unknown') }
       }
       const operationId = /^\/v1\/video-media\/operations\/([a-z][a-z0-9_]{7,127})(?:\/(cancel|ack))?$/.exec(url.pathname)
       const legacyResultId = /^\/v1\/video-media\/operations\/([a-z][a-z0-9_]{7,127})\/result$/.exec(url.pathname)
@@ -460,7 +476,7 @@ export function createVideoMediaRelayFetch(deps: RelayDeps = {}) {
         if (!row.result_json) throw new RelayError(410, 'legacy_result_unavailable')
         return json(JSON.parse(row.result_json as string), 200, id)
       }
-      if (operationId) { const idValue = operationId[1]!; const action = operationId[2]; const row = store.db.query('SELECT * FROM video_media_operations_v1 WHERE id=? AND owner=?').get(idValue, principal.owner) as Row | null; if (!row) throw new RelayError(404, 'operation_not_found'); if (request.method === 'GET' && !action) { await refreshOperation(row, principal); await retryObjectCleanup(); return json(await projection(idValue), 200, id) } if (request.method === 'POST' && action) { const key = requireControlHeaders(request); const parsed = action === 'ack' ? operationAcknowledgementSchema.parse(await body(request)) : (await body(request), {}); const hash = canonicalRelayRequestHash({ operation_id: idValue, action, parsed }); const replay = store.replay(principal.owner, key, hash); if (!replay) { if (action === 'cancel') { if (row.provider_task_id && provider.cancel) await provider.cancel(row.provider_task_id as string); store.db.query("UPDATE video_media_operations_v1 SET state='cancelled',updated_at=? WHERE id=?").run(iso(now), idValue); queueInputCleanup(createVideoRelayOperationRequestSchema.parse(JSON.parse(row.request_json as string)), principal.owner) } else { if (row.state !== 'succeeded') throw new RelayError(409, 'operation_not_acknowledgeable'); const results = store.db.query('SELECT * FROM video_media_result_objects_v1 WHERE operation_id=? AND acknowledged_at IS NULL').all(idValue) as Row[]; const expected = results.map(item => item.content_hash as string).sort(); if (JSON.stringify([...parsed.result_hashes].sort()) !== JSON.stringify(expected)) throw new RelayError(422, 'result_hash_mismatch'); store.transaction(() => { store.db.query('UPDATE video_media_operations_v1 SET acknowledged_at=?,updated_at=? WHERE id=?').run(iso(now), iso(now), idValue); store.db.query('UPDATE video_media_result_objects_v1 SET acknowledged_at=? WHERE operation_id=?').run(iso(now), idValue); store.db.query('INSERT INTO video_media_idempotency_v1 VALUES(?,?,?,?)').run(principal.owner, key, hash, idValue) }); queueResultCleanup(idValue) }; if (action === 'cancel') store.db.query('INSERT INTO video_media_idempotency_v1 VALUES(?,?,?,?)').run(principal.owner, key, hash, idValue); await retryObjectCleanup() }; return action === 'ack' ? new Response(null, { status: 204, headers: { 'X-Request-Id': id } }) : json(await projection(idValue), 200, id) } }
+      if (operationId) { const idValue = operationId[1]!; const action = operationId[2]; const row = store.db.query('SELECT * FROM video_media_operations_v1 WHERE id=? AND owner=?').get(idValue, principal.owner) as Row | null; if (!row) throw new RelayError(404, 'operation_not_found'); if (request.method === 'GET' && !action) { await refreshOperation(row, principal); await retryObjectCleanup(); return json(await projection(idValue), 200, id) } if (request.method === 'POST' && action) { const key = requireControlHeaders(request); const parsed = action === 'ack' ? operationAcknowledgementSchema.parse(await body(request)) : (await body(request), {}); const hash = canonicalRelayRequestHash({ operation_id: idValue, action, parsed }); const replay = store.replay(principal.owner, key, hash); if (!replay) { if (action === 'cancel') { if (row.provider_task_id && provider.cancel) await provider.cancel(row.provider_task_id as string); store.transaction(() => { store.db.query("UPDATE video_media_operations_v1 SET state='cancelled',updated_at=? WHERE id=?").run(iso(now), idValue); store.db.query("UPDATE video_media_quota_v1 SET state='released' WHERE reservation_id=?").run(row.account_quota_reservation_id); store.db.query('INSERT INTO video_media_idempotency_v1 VALUES(?,?,?,?)').run(principal.owner, key, hash, idValue) }); queueInputCleanup(createVideoRelayOperationRequestSchema.parse(JSON.parse(row.request_json as string)), principal.owner) } else { if (row.state !== 'succeeded') throw new RelayError(409, 'operation_not_acknowledgeable'); const results = store.db.query('SELECT * FROM video_media_result_objects_v1 WHERE operation_id=? AND acknowledged_at IS NULL').all(idValue) as Row[]; const expected = results.map(item => item.content_hash as string).sort(); if (JSON.stringify([...parsed.result_hashes].sort()) !== JSON.stringify(expected)) throw new RelayError(422, 'result_hash_mismatch'); store.transaction(() => { store.db.query('UPDATE video_media_operations_v1 SET acknowledged_at=?,updated_at=? WHERE id=?').run(iso(now), iso(now), idValue); store.db.query('UPDATE video_media_result_objects_v1 SET acknowledged_at=? WHERE operation_id=?').run(iso(now), idValue); store.db.query('INSERT INTO video_media_idempotency_v1 VALUES(?,?,?,?)').run(principal.owner, key, hash, idValue) }); queueResultCleanup(idValue) }; await retryObjectCleanup() }; return action === 'ack' ? new Response(null, { status: 204, headers: { 'X-Request-Id': id } }) : json(await projection(idValue), 200, id) } }
       throw new RelayError(404, 'not_found')
     } catch (error) {
       if (error instanceof RelayError) return json({ error: error.code, request_id: id }, error.status, id)

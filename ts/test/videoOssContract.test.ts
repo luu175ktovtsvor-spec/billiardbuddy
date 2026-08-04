@@ -71,14 +71,14 @@ test('OSS response contract reads real HTTP headers, streams bytes, and uses ali
   const store = new OssObjectStore({ ...credentials, client })
   const signed = await store.createPutUrl({ leaseId: 'lease_12345678', hash: hash(bytes), byteSize: bytes.byteLength, contentType: 'video/mp4', expiresAt: new Date(Date.now() + 60_000).toISOString() })
   expect(new URL(signed.put_url).searchParams.get('x-oss-signature-version')).toBe('OSS4-HMAC-SHA256')
-  expect(signedCalls).toEqual([{ method: 'PUT', key: 'video-media/input/lease_12345678', additionalHeaders: ['content-type', 'x-oss-meta-sha256', 'x-oss-meta-size'] }])
+  expect(signedCalls).toEqual([{ method: 'PUT', key: 'video-media/input/lease_12345678', additionalHeaders: ['content-type', 'if-none-match', 'x-oss-meta-sha256', 'x-oss-meta-size'] }])
   expect(await store.listMultipartParts({ leaseId: 'lease_12345678', uploadId: 'upload-123' })).toEqual([{ part_number: 1, etag: 'etag-1' }, { part_number: 1001, etag: 'etag-1001' }])
   expect(calls).toEqual([{ 'max-parts': 1000 }, { 'max-parts': 1000, 'part-number-marker': 1000 }])
   expect(await store.head('lease_12345678')).toEqual({ byte_size: bytes.byteLength, content_hash: hash(bytes), content_type: 'video/mp4' })
   await store.putResult({ objectRef: 'result_12345678', body: bytes, contentHash: hash(bytes), contentType: 'application/json' })
   expect(resultWrites).toEqual([{
     key: 'video-media/result/result_12345678', body: bytes,
-    options: { contentLength: bytes.byteLength, mime: 'application/json', meta: { sha256: hash(bytes), size: String(bytes.byteLength) } },
+    options: { contentLength: bytes.byteLength, mime: 'application/json', meta: { sha256: hash(bytes), size: String(bytes.byteLength) }, headers: { 'If-None-Match': '*' } },
   }])
 })
 
