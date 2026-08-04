@@ -1,9 +1,35 @@
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Notification, safeStorage, screen, session, webContents } from 'electron'
 import { autoUpdater } from 'electron-updater'
 import { randomBytes } from 'node:crypto'
+import { mkdir, open, rename, rm } from 'node:fs/promises'
 import path from 'node:path'
 import { ELECTRON_EVENT_CHANNELS, ELECTRON_IPC_CHANNELS, type ElectronIpcChannel } from './ipc/channels'
-import { isElectronIpcChannel, validateElectronIpcPayload } from './ipc/capabilities'
+import { imageWorkbenchIpcResponse } from './ipc/imageResponse'
+import {
+  imageAdoptCandidateIpcPayloadSchema,
+  imageSelectArtboardVersionIpcPayloadSchema,
+  imageApplyCanvasCommandIpcPayloadSchema,
+  imageCancelGenerationOperationIpcPayloadSchema,
+  imageCreateCanvasIpcPayloadSchema,
+  imageCreateCreativePlanIpcPayloadSchema,
+  imageCreateDeliverySpecRevisionIpcPayloadSchema,
+  imageCreateGenerationRoundIpcPayloadSchema,
+  imageDecideCandidateIpcPayloadSchema,
+  imageDeriveCandidateIpcPayloadSchema,
+  imageEstimateDerivationIpcPayloadSchema,
+  imageEstimateGenerationRoundIpcPayloadSchema,
+  imageExportDeliveryIpcPayloadSchema,
+  imagePreflightCanvasIpcPayloadSchema,
+  imageRenderCanvasIpcPayloadSchema,
+  imageRequestDestinationIpcPayloadSchema,
+  imageSaveOutputIpcPayloadSchema,
+  imageStartOperationIpcPayloadSchema,
+  imageSubmitProjectIpcPayloadSchema,
+  imageUpdateUnknownProjectIpcPayloadSchema,
+  imageUpdateReferenceControlIpcPayloadSchema,
+  isElectronIpcChannel,
+  validateElectronIpcPayload,
+} from './ipc/capabilities'
 import { ElectronServerRuntime } from './services/serverRuntime'
 import { openDialog, saveDialog } from './services/dialogs'
 import { openExternalUrl, openSystemPath, openSystemSettingsUrl } from './services/shell'
@@ -23,6 +49,7 @@ import { ensureInstallationId } from './services/installationId'
 import { ElectronUpdaterService } from './services/updater'
 import { createUpdateSmokeUpdaterFromEnv } from './services/updateSmoke'
 import { ElectronImageActions } from './services/imageActions'
+import { ImageDestinationGrants } from './services/imageDestinationGrants'
 import { ElectronVideoActions } from './services/videoActions'
 import {
   applyDefaultConfigDir,
@@ -47,6 +74,9 @@ import {
   type CodexNativeServerRequest,
   type NativeCodexSkillSelector,
   type NativeCodexThreadGoalSetInput,
+  type NativeCodexThreadListInput,
+  type NativeCodexThreadMetadataGitInfoUpdate,
+  type NativeCodexThreadSettingsPatch,
   type NativeCodexTurnInput,
 } from './services/codexNativeAppServer'
 import type { CodexNativeModelRoute } from './services/codexNativeProvider'
@@ -108,6 +138,7 @@ let serverRuntime: ElectronServerRuntime | null = null
 let installationSessionManager: InstallationSessionManager | null = null
 let updaterService: ElectronUpdaterService | null = null
 let imageActions: ElectronImageActions | null = null
+const imageDestinationGrants = new ImageDestinationGrants()
 let videoActions: ElectronVideoActions | null = null
 let providerCredentialService: ProviderCredentialService | null = null
 let nativeAgentRuntime: ElectronCodexNativeRuntime | null = null
@@ -447,6 +478,18 @@ function rejectNativeAgentServerRequests(error: Error): void {
   }
 }
 
+function releaseNativeAgentOwner(ownerId: number, error: Error): void {
+  for (const [threadId, currentOwnerId] of nativeAgentThreadOwners) {
+    if (currentOwnerId === ownerId) nativeAgentThreadOwners.delete(threadId)
+  }
+  for (const [turnId, currentOwnerId] of nativeAgentTurnOwners) {
+    if (currentOwnerId === ownerId) nativeAgentTurnOwners.delete(turnId)
+  }
+  for (const [requestId, pending] of nativeAgentServerRequests) {
+    if (pending.ownerId === ownerId) releaseNativeAgentServerRequest(requestId)?.reject(error)
+  }
+}
+
 function sourceRequestKeyFromResolvedNotification(params: unknown): string | undefined {
   const requestId = nativeProtocolObject(params)?.requestId
   return typeof requestId === 'string' || typeof requestId === 'number'
@@ -574,6 +617,17 @@ function getNativeAgentRuntime(): ElectronCodexNativeRuntime {
     onServerRequest: requestNativeAgentServerRequest,
     onAppServerUnavailable: error => {
       nativeWindowsSandboxSetupOwnerId = undefined
+      const ownerIds = new Set([
+        ...nativeAgentThreadOwners.values(),
+        ...nativeAgentTurnOwners.values(),
+      ])
+      for (const ownerId of ownerIds) {
+        sendNativeAgentEvent(ownerId, {
+          type: 'runtime-unavailable',
+          code: 'CODEX_NATIVE_APP_SERVER_UNAVAILABLE',
+        })
+      }
+      nativeAgentTurnOwners.clear()
       rejectNativeAgentServerRequests(error)
     },
   })
@@ -729,6 +783,27 @@ function currentWindow(event: Electron.IpcMainInvokeEvent) {
   return window
 }
 
+async function writeGrantedImageDestination(destinationGrantId: string, projectId: string, versionId: string) {
+  const destination = imageDestinationGrants.consume(destinationGrantId)
+  if (!destination) throw new Error('Image destination grant is expired or already consumed')
+  const downloaded = await getImageActions().downloadVersion(projectId, versionId)
+  await mkdir(path.dirname(destination), { recursive: true, mode: 0o700 })
+  const temporary = `${destination}.partial-${randomBytes(12).toString('hex')}`
+  const handle = await open(temporary, 'wx', 0o600)
+  try {
+    await handle.writeFile(downloaded.bytes)
+    await handle.sync()
+  } finally {
+    await handle.close()
+  }
+  try {
+    await rename(temporary, destination)
+  } finally {
+    await rm(temporary, { force: true }).catch(() => undefined)
+  }
+  return { destination_grant_id: destinationGrantId, verification: downloaded.verification }
+}
+
 function isTrustedMainWindowIpcSender(event: Electron.IpcMainInvokeEvent): boolean {
   const window = BrowserWindow.fromWebContents(event.sender)
   const entry = window ? trustedProductWindowEntries.get(window) : undefined
@@ -750,6 +825,13 @@ function registerHandler<T>(
     }
     return handler(event, payload)
   })
+}
+
+function registerImageHandler<T>(
+  channel: ElectronIpcChannel,
+  handler: (event: Electron.IpcMainInvokeEvent, payload: unknown) => T | Promise<T>,
+) {
+  registerHandler(channel, async (event, payload) => await imageWorkbenchIpcResponse(async () => await handler(event, payload)))
 }
 
 function emitNotificationAction(payload: unknown) {
@@ -842,16 +924,15 @@ function registerIpcHandlers() {
     }
   })
   registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentListThreads, async (_event, payload) => {
-    const input = payload as {
-      cwd: string
-      cursor?: string
-      limit?: number
-      archived?: boolean
-      searchTerm?: string
-      sortKey?: 'created_at' | 'updated_at' | 'recency_at'
-      sortDirection?: 'asc' | 'desc'
-    }
+    const input = payload as Omit<NativeCodexThreadListInput, 'route'>
     return await getNativeAgentRuntime().listThreads({
+      ...input,
+      route: await resolveNativeAgentRoute(),
+    })
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentListLoadedThreads, async (_event, payload) => {
+    const input = payload as { cwd: string, cursor?: string, limit?: number }
+    return await getNativeAgentRuntime().listLoadedThreads({
       ...input,
       route: await resolveNativeAgentRoute(),
     })
@@ -918,10 +999,29 @@ function registerIpcHandlers() {
       throw error
     }
   })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentUnsubscribeThread, async (event, payload) => {
+    const input = payload as { threadId: string }
+    assertNativeAgentThreadOwner(event.sender.id, input.threadId)
+    const response = await getNativeAgentRuntime().unsubscribeThread(
+      { id: input.threadId },
+      await resolveNativeAgentRoute(),
+    )
+    nativeAgentThreadOwners.delete(input.threadId)
+    return response
+  })
   registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentReadThread, async (event, payload) => {
     const input = payload as { threadId: string }
     assertNativeAgentThreadOwner(event.sender.id, input.threadId)
     return await (await getReadyNativeAgentThreadRuntime(input.threadId)).readThread({ id: input.threadId })
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentUpdateThreadMetadata, async (event, payload) => {
+    const input = payload as { threadId: string } & NativeCodexThreadMetadataGitInfoUpdate
+    assertNativeAgentThreadOwner(event.sender.id, input.threadId)
+    const { threadId, ...gitInfo } = input
+    return await (await getReadyNativeAgentThreadRuntime(threadId)).updateThreadMetadata(
+      { id: threadId },
+      gitInfo,
+    )
   })
   registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentForkThread, async (event, payload) => {
     const input = payload as { threadId: string, cwd: string, permissionMode: unknown, lastTurnId?: string }
@@ -1007,6 +1107,11 @@ function registerIpcHandlers() {
     const input = payload as { threadId: string }
     assertNativeAgentThreadOwner(event.sender.id, input.threadId)
     return await (await getReadyNativeAgentThreadRuntime(input.threadId)).readConfigRequirements({ id: input.threadId })
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentReadClientSettings, async (event, payload) => {
+    const input = payload as { threadId: string }
+    assertNativeAgentThreadOwner(event.sender.id, input.threadId)
+    return await (await getReadyNativeAgentThreadRuntime(input.threadId)).readClientSettings({ id: input.threadId })
   })
   registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentSetThreadMemoryMode, async (event, payload) => {
     const input = payload as { threadId: string, mode: 'enabled' | 'disabled' }
@@ -1122,6 +1227,15 @@ function registerIpcHandlers() {
     return await (await getReadyNativeAgentThreadRuntime(input.threadId)).updatePermissionMode(
       { id: input.threadId },
       permissionMode,
+    )
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentUpdateThreadSettings, async (event, payload) => {
+    const input = payload as { threadId: string } & NativeCodexThreadSettingsPatch
+    assertNativeAgentThreadOwner(event.sender.id, input.threadId)
+    const { threadId, ...settings } = input
+    await (await getReadyNativeAgentThreadRuntime(threadId)).updateThreadSettings(
+      { id: threadId },
+      settings,
     )
   })
   registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentStartTurn, async (event, payload) => {
@@ -1486,30 +1600,96 @@ function registerIpcHandlers() {
     openDialog(currentWindow(event), payload as Parameters<typeof openDialog>[1]))
   registerHandler(ELECTRON_IPC_CHANNELS.dialogSave, (event, payload) =>
     saveDialog(currentWindow(event), payload as Parameters<typeof saveDialog>[1]))
-  registerHandler(ELECTRON_IPC_CHANNELS.imageSubmitProject, (_event, payload) => {
-    const input = payload as { projectId: string, confirmUnknownRetry: boolean }
-    return getImageActions().submitProject(input.projectId, input.confirmUnknownRetry)
+  registerImageHandler(ELECTRON_IPC_CHANNELS.imageSubmitProject, (_event, payload) => {
+    const request = imageSubmitProjectIpcPayloadSchema.parse(payload)
+    return getImageActions().submitProject(request.projectId, request.confirmUnknownRetry)
   })
-  registerHandler(ELECTRON_IPC_CHANNELS.imageStartOperation, (_event, payload) => {
-    const request = payload as {
-      projectId: string
-      input: Parameters<ElectronImageActions['startOperation']>[1]
-    }
+  registerImageHandler(ELECTRON_IPC_CHANNELS.imageStartOperation, (_event, payload) => {
+    const request = imageStartOperationIpcPayloadSchema.parse(payload)
     return getImageActions().startOperation(request.projectId, request.input)
   })
-  registerHandler(ELECTRON_IPC_CHANNELS.imageUpdateUnknownProject, (_event, payload) => {
-    const update = payload as {
-      projectId: string
-      input: Parameters<ElectronImageActions['updateUnknownProject']>[1]
-    }
-    return getImageActions().updateUnknownProject(update.projectId, update.input)
+  registerImageHandler(ELECTRON_IPC_CHANNELS.imageUpdateUnknownProject, (_event, payload) => {
+    const request = imageUpdateUnknownProjectIpcPayloadSchema.parse(payload)
+    return getImageActions().updateUnknownProject(request.projectId, request.input)
   })
-  registerHandler(ELECTRON_IPC_CHANNELS.imageSaveOutput, (_event, payload) => {
-    const request = payload as {
-      projectId: string
-      input: Parameters<ElectronImageActions['saveOutput']>[1]
-    }
-    return getImageActions().saveOutput(request.projectId, request.input)
+  registerImageHandler(ELECTRON_IPC_CHANNELS.imageSaveOutput, (_event, payload) => {
+    const request = imageSaveOutputIpcPayloadSchema.parse(payload)
+    if (!request.input.version_id) throw new Error('Formal image export requires version_id')
+    return writeGrantedImageDestination(request.input.destination_grant_id, request.projectId, request.input.version_id)
+  })
+  registerImageHandler(ELECTRON_IPC_CHANNELS.imageRequestDestination, async (event, payload) => {
+    const request = imageRequestDestinationIpcPayloadSchema.parse(payload)
+    const destination = await saveDialog(currentWindow(event), {
+      title: '保存图片交付文件',
+      defaultPath: request.suggested_name,
+      filters: [{ name: '图片', extensions: ['png', 'jpg', 'jpeg', 'webp'] }],
+    })
+    if (!destination) throw new Error('Image destination selection cancelled')
+    return imageDestinationGrants.issue(destination)
+  })
+  registerImageHandler(ELECTRON_IPC_CHANNELS.imageCreateCreativePlan, (_event, payload) => {
+    const request = imageCreateCreativePlanIpcPayloadSchema.parse(payload)
+    return getImageActions().createCreativePlan(request.projectId, request.input)
+  })
+  registerImageHandler(ELECTRON_IPC_CHANNELS.imageEstimateGenerationRound, (_event, payload) => {
+    const request = imageEstimateGenerationRoundIpcPayloadSchema.parse(payload)
+    return getImageActions().estimateGenerationRound(request.projectId, request.input)
+  })
+  registerImageHandler(ELECTRON_IPC_CHANNELS.imageEstimateDerivation, (_event, payload) => {
+    const request = imageEstimateDerivationIpcPayloadSchema.parse(payload)
+    return getImageActions().estimateDerivation(request.projectId, request.candidateId, request.input)
+  })
+  registerImageHandler(ELECTRON_IPC_CHANNELS.imageCreateGenerationRound, (_event, payload) => {
+    const request = imageCreateGenerationRoundIpcPayloadSchema.parse(payload)
+    return getImageActions().createGenerationRound(request.projectId, request.input)
+  })
+  registerImageHandler(ELECTRON_IPC_CHANNELS.imageDecideCandidate, (_event, payload) => {
+    const request = imageDecideCandidateIpcPayloadSchema.parse(payload)
+    return getImageActions().decideCandidate(request.projectId, request.candidateId, request.input)
+  })
+  registerImageHandler(ELECTRON_IPC_CHANNELS.imageAdoptCandidate, (_event, payload) => {
+    const request = imageAdoptCandidateIpcPayloadSchema.parse(payload)
+    return getImageActions().adoptCandidate(request.projectId, request.candidateId, request.input)
+  })
+  registerImageHandler(ELECTRON_IPC_CHANNELS.imageDeriveCandidate, (_event, payload) => {
+    const request = imageDeriveCandidateIpcPayloadSchema.parse(payload)
+    return getImageActions().deriveCandidate(request.projectId, request.candidateId, request.input)
+  })
+  registerImageHandler(ELECTRON_IPC_CHANNELS.imageCancelGenerationOperation, (_event, payload) => {
+    const request = imageCancelGenerationOperationIpcPayloadSchema.parse(payload)
+    return getImageActions().cancelGenerationOperation(request.operationId)
+  })
+  registerImageHandler(ELECTRON_IPC_CHANNELS.imageUpdateReferenceControl, (_event, payload) => {
+    const request = imageUpdateReferenceControlIpcPayloadSchema.parse(payload)
+    return getImageActions().updateReferenceControl(request.projectId, request.referenceId, request.input)
+  })
+  registerImageHandler(ELECTRON_IPC_CHANNELS.imageCreateDeliverySpecRevision, (_event, payload) => {
+    const request = imageCreateDeliverySpecRevisionIpcPayloadSchema.parse(payload)
+    return getImageActions().createDeliverySpecRevision(request.projectId, request.input)
+  })
+  registerImageHandler(ELECTRON_IPC_CHANNELS.imageCreateCanvas, (_event, payload) => {
+    const request = imageCreateCanvasIpcPayloadSchema.parse(payload)
+    return getImageActions().createCanvas(request.projectId, request.input)
+  })
+  registerImageHandler(ELECTRON_IPC_CHANNELS.imageApplyCanvasCommand, (_event, payload) => {
+    const request = imageApplyCanvasCommandIpcPayloadSchema.parse(payload)
+    return getImageActions().applyCanvasCommand(request.projectId, request.canvasId, request.input)
+  })
+  registerImageHandler(ELECTRON_IPC_CHANNELS.imagePreflightCanvas, (_event, payload) => {
+    const request = imagePreflightCanvasIpcPayloadSchema.parse(payload)
+    return getImageActions().preflightCanvas(request.projectId, request.canvasId, request.input)
+  })
+  registerImageHandler(ELECTRON_IPC_CHANNELS.imageRenderCanvas, (_event, payload) => {
+    const request = imageRenderCanvasIpcPayloadSchema.parse(payload)
+    return getImageActions().renderCanvas(request.projectId, request.canvasId, request.input)
+  })
+  registerImageHandler(ELECTRON_IPC_CHANNELS.imageExportDelivery, (_event, payload) => {
+    const request = imageExportDeliveryIpcPayloadSchema.parse(payload)
+    return getImageActions().exportDelivery(request.projectId, request.input)
+  })
+  registerImageHandler(ELECTRON_IPC_CHANNELS.imageSelectArtboardVersion, (_event, payload) => {
+    const request = imageSelectArtboardVersionIpcPayloadSchema.parse(payload)
+    return getImageActions().selectArtboardVersion(request.projectId, request.artboardId, request.input)
   })
   registerHandler(ELECTRON_IPC_CHANNELS.videoAddSource, (_event, payload) => {
     const input = payload as { projectId: string; path: string }
@@ -1620,6 +1800,10 @@ async function createMainWindow() {
   mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL) => {
     writeWindowSmokeSnapshot(mainWindow, `did-fail-load:${errorCode}:${errorDescription}:${validatedURL}`)
   })
+  const ownerId = mainWindow.webContents.id
+  mainWindow.webContents.once('destroyed', () => {
+    releaseNativeAgentOwner(ownerId, new Error('CODEX_NATIVE_RENDERER_UNAVAILABLE'))
+  })
 
   writeWindowSmokeSnapshot(mainWindow, 'after-create')
 
@@ -1640,6 +1824,9 @@ registerIpcHandlers()
 app.whenReady().then(async () => {
   applyWindowsAppUserModelId(app)
   applyStartupPortableMode(app)
+  // Renderer and Sidecar inherit this explicit packaged asset root.  The
+  // Canvas service therefore never substitutes an OS-installed CJK font.
+  process.env.BB_IMAGE_RUNTIME_ASSETS_DIR ??= path.join(unpackedRoot(), 'runtime-assets')
   // After portable/ops override is resolved, default the kernel config dir to
   // BilliardBuddy's own data root keeps the sidecar isolated from other products.
   applyDefaultConfigDir(app)

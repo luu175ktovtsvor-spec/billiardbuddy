@@ -1,6 +1,6 @@
 import type { SqliteUnitOfWork } from '../../kernel/storage/sqliteUnitOfWork.js'
 
-const IMAGE_METADATA_SCHEMA_VERSION = 4
+const IMAGE_METADATA_SCHEMA_VERSION = 8
 
 /** Image-only metadata schema. The shared Kernel remains unaware of image facts. */
 export function migrateImageMetadata(unitOfWork: SqliteUnitOfWork): void {
@@ -14,7 +14,41 @@ export function migrateImageMetadata(unitOfWork: SqliteUnitOfWork): void {
     if (version === 2) migrateV2(unitOfWork)
     if (version === 3) migrateV3(unitOfWork)
     if (version === 4) migrateV4(unitOfWork)
+    if (version === 5) migrateV5(unitOfWork)
+    if (version === 6) migrateV6(unitOfWork)
+    if (version === 7) migrateV7(unitOfWork)
+    if (version === 8) migrateV8(unitOfWork)
   }
+}
+
+/** Immutable Brand/Template revisions are renderer inputs, never project JSON. */
+function migrateV8(unitOfWork: SqliteUnitOfWork): void {
+  unitOfWork.transaction(() => {
+    unitOfWork.database.exec(`CREATE TABLE image_brand_kit_revisions(
+      id TEXT PRIMARY KEY,
+      brand_kit_id TEXT NOT NULL,
+      revision INTEGER NOT NULL CHECK(revision >= 0),
+      owner_kind TEXT NOT NULL,
+      owner_id TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      document_json TEXT NOT NULL,
+      UNIQUE(brand_kit_id, revision)
+    )`)
+    unitOfWork.database.exec(`CREATE TABLE image_template_revisions(
+      id TEXT PRIMARY KEY,
+      template_id TEXT NOT NULL,
+      revision INTEGER NOT NULL CHECK(revision >= 0),
+      owner_kind TEXT NOT NULL,
+      owner_id TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      document_json TEXT NOT NULL,
+      UNIQUE(template_id, revision)
+    )`)
+    unitOfWork.database.exec('CREATE INDEX image_brand_kit_revisions_owner ON image_brand_kit_revisions(owner_kind, owner_id, brand_kit_id, revision DESC)')
+    unitOfWork.database.exec('CREATE INDEX image_template_revisions_owner ON image_template_revisions(owner_kind, owner_id, template_id, revision DESC)')
+    unitOfWork.database.query('INSERT INTO image_metadata_schema_migrations(version,applied_at) VALUES(?,?)')
+      .run(8, new Date().toISOString())
+  })
 }
 
 /**
@@ -73,6 +107,270 @@ function migrateV4(unitOfWork: SqliteUnitOfWork): void {
     )`)
     unitOfWork.database.query('INSERT INTO image_metadata_schema_migrations(version,applied_at) VALUES(?,?)')
       .run(4, new Date().toISOString())
+  })
+}
+
+/**
+ * 15.2 keeps paid-generation facts separate from the pre-15.1 compatibility
+ * project document.  The JSON document in each table is validated by the
+ * shared ImageGeneration contract; indexed columns enforce the identities and
+ * transaction boundaries SQLite needs to protect.
+ */
+function migrateV5(unitOfWork: SqliteUnitOfWork): void {
+  unitOfWork.transaction(() => {
+    unitOfWork.database.exec(`CREATE TABLE image_generation_briefs(
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES image_projects(id),
+      snapshot_hash TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      document_json TEXT NOT NULL,
+      UNIQUE(project_id, snapshot_hash)
+    )`)
+    unitOfWork.database.exec('CREATE INDEX image_generation_briefs_project_created ON image_generation_briefs(project_id, created_at DESC)')
+    unitOfWork.database.exec(`CREATE TABLE image_delivery_specs(
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES image_projects(id),
+      revision INTEGER NOT NULL CHECK(revision >= 0),
+      created_at TEXT NOT NULL,
+      document_json TEXT NOT NULL,
+      UNIQUE(project_id, revision)
+    )`)
+    unitOfWork.database.exec(`CREATE TABLE image_provider_execution_receipts(
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES image_projects(id),
+      idempotency_key TEXT NOT NULL,
+      request_hash TEXT NOT NULL,
+      submitted_at TEXT NOT NULL,
+      document_json TEXT NOT NULL,
+      UNIQUE(project_id, idempotency_key)
+    )`)
+    unitOfWork.database.exec(`CREATE TABLE image_creative_plans(
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES image_projects(id),
+      brief_snapshot_hash TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      document_json TEXT NOT NULL
+    )`)
+    unitOfWork.database.exec('CREATE INDEX image_creative_plans_project_created ON image_creative_plans(project_id, created_at DESC)')
+    unitOfWork.database.exec(`CREATE TABLE image_generation_rounds(
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES image_projects(id),
+      creative_plan_id TEXT NOT NULL REFERENCES image_creative_plans(id),
+      estimate_hash TEXT NOT NULL,
+      confirmed_at TEXT NOT NULL,
+      document_json TEXT NOT NULL
+    )`)
+    unitOfWork.database.exec(`CREATE TABLE image_generation_operations(
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES image_projects(id),
+      transport_task_id TEXT UNIQUE REFERENCES image_operations(id),
+      kind TEXT NOT NULL CHECK(kind IN ('generate','edit','inpaint','assess','canvas_render','export')),
+      status TEXT NOT NULL CHECK(status IN ('queued','running','cancelling','committing','succeeded','failed','cancelled','blocked_by_policy','outcome_unknown')),
+      idempotency_key TEXT NOT NULL,
+      request_hash TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      document_json TEXT NOT NULL,
+      UNIQUE(project_id, idempotency_key)
+    )`)
+    unitOfWork.database.exec('CREATE INDEX image_generation_operations_project_updated ON image_generation_operations(project_id, updated_at DESC)')
+    unitOfWork.database.exec(`CREATE TABLE image_candidate_groups(
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES image_projects(id),
+      operation_id TEXT NOT NULL UNIQUE REFERENCES image_generation_operations(id),
+      generation_round_id TEXT NOT NULL REFERENCES image_generation_rounds(id),
+      created_at TEXT NOT NULL,
+      document_json TEXT NOT NULL
+    )`)
+    unitOfWork.database.exec(`CREATE TABLE image_candidates(
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES image_projects(id),
+      candidate_group_id TEXT NOT NULL REFERENCES image_candidate_groups(id),
+      /* Project relation replacement re-inserts owned assets transactionally. */
+      asset_id TEXT NOT NULL,
+      content_hash TEXT NOT NULL,
+      candidate_index INTEGER NOT NULL CHECK(candidate_index >= 0),
+      created_at TEXT NOT NULL,
+      document_json TEXT NOT NULL,
+      UNIQUE(candidate_group_id, candidate_index)
+    )`)
+    unitOfWork.database.exec('CREATE INDEX image_candidates_project_created ON image_candidates(project_id, created_at DESC)')
+    unitOfWork.database.exec(`CREATE TABLE image_candidate_decisions(
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES image_projects(id),
+      candidate_id TEXT NOT NULL REFERENCES image_candidates(id),
+      idempotency_key TEXT NOT NULL,
+      request_hash TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      document_json TEXT NOT NULL,
+      UNIQUE(project_id, idempotency_key)
+    )`)
+    unitOfWork.database.exec(`CREATE TABLE image_initial_canvases(
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES image_projects(id),
+      artboard_id TEXT NOT NULL,
+      revision INTEGER NOT NULL CHECK(revision >= 0),
+      candidate_id TEXT NOT NULL,
+      document_json TEXT NOT NULL,
+      UNIQUE(project_id, artboard_id, revision)
+    )`)
+    unitOfWork.database.exec(`CREATE TABLE image_candidate_adoptions(
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES image_projects(id),
+      candidate_id TEXT NOT NULL,
+      artboard_id TEXT NOT NULL,
+      version_id TEXT NOT NULL,
+      idempotency_key TEXT NOT NULL,
+      request_hash TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      document_json TEXT NOT NULL,
+      UNIQUE(project_id, idempotency_key, artboard_id)
+    )`)
+    unitOfWork.database.exec(`CREATE TABLE image_project_working_versions(
+      project_id TEXT NOT NULL REFERENCES image_projects(id),
+      artboard_id TEXT NOT NULL,
+      version_id TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY(project_id, artboard_id)
+    )`)
+    unitOfWork.database.query('INSERT INTO image_metadata_schema_migrations(version,applied_at) VALUES(?,?)')
+      .run(5, new Date().toISOString())
+  })
+}
+
+/**
+ * 15.2 commands are independently replayable.  Their request identity is
+ * indexed separately from mutable projections, and estimates are persisted so
+ * a client cannot mint or extend a paid confirmation window by recomputing a
+ * hash locally.
+ */
+function migrateV6(unitOfWork: SqliteUnitOfWork): void {
+  unitOfWork.transaction(() => {
+    unitOfWork.database.exec("ALTER TABLE image_creative_plans ADD COLUMN request_hash TEXT NOT NULL DEFAULT ''")
+    unitOfWork.database.exec("ALTER TABLE image_generation_rounds ADD COLUMN request_hash TEXT NOT NULL DEFAULT ''")
+    unitOfWork.database.exec(`CREATE TABLE image_generation_estimates(
+      estimate_hash TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES image_projects(id),
+      kind TEXT NOT NULL CHECK(kind IN ('generation_round','derivation')),
+      request_hash TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      document_json TEXT NOT NULL
+    )`)
+    unitOfWork.database.exec('CREATE INDEX image_generation_estimates_project_expiry ON image_generation_estimates(project_id, expires_at)')
+    unitOfWork.database.exec(`CREATE TABLE image_reference_control_commands(
+      project_id TEXT NOT NULL REFERENCES image_projects(id),
+      idempotency_key TEXT NOT NULL,
+      request_hash TEXT NOT NULL,
+      result_project_json TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY(project_id, idempotency_key)
+    )`)
+    // Replaying the same Candidate onto the same Artboard must use the
+    // original idempotency command rather than manufacture another Version.
+    unitOfWork.database.exec(`CREATE UNIQUE INDEX image_candidate_adoptions_candidate_artboard_unique
+      ON image_candidate_adoptions(project_id, candidate_id, artboard_id)`)
+    unitOfWork.database.query('INSERT INTO image_metadata_schema_migrations(version,applied_at) VALUES(?,?)')
+      .run(6, new Date().toISOString())
+  })
+}
+
+/**
+ * 15.3 stores Canvas changes as immutable revisions.  The normalized index is
+ * intentionally small; `document_json` remains the validated, complete
+ * command/render/export fact so a recovery never has to reconstitute pixels
+ * from a renderer-owned cache.
+ */
+function migrateV7(unitOfWork: SqliteUnitOfWork): void {
+  unitOfWork.transaction(() => {
+    unitOfWork.database.exec(`CREATE TABLE image_canvases(
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES image_projects(id),
+      artboard_id TEXT NOT NULL,
+      current_revision INTEGER NOT NULL CHECK(current_revision >= 0),
+      created_at TEXT NOT NULL,
+      UNIQUE(project_id, artboard_id)
+    )`)
+    unitOfWork.database.exec(`CREATE TABLE image_canvas_revisions(
+      canvas_id TEXT NOT NULL REFERENCES image_canvases(id),
+      revision INTEGER NOT NULL CHECK(revision >= 0),
+      document_hash TEXT NOT NULL,
+      parent_revision INTEGER,
+      created_at TEXT NOT NULL,
+      document_json TEXT NOT NULL,
+      PRIMARY KEY(canvas_id, revision)
+    )`)
+    unitOfWork.database.exec(`CREATE TABLE image_canvas_commands(
+      project_id TEXT NOT NULL REFERENCES image_projects(id),
+      canvas_id TEXT NOT NULL REFERENCES image_canvases(id),
+      idempotency_key TEXT NOT NULL,
+      request_hash TEXT NOT NULL,
+      result_revision INTEGER NOT NULL CHECK(result_revision >= 0),
+      created_at TEXT NOT NULL,
+      PRIMARY KEY(project_id, canvas_id, idempotency_key)
+    )`)
+    unitOfWork.database.exec(`CREATE TABLE image_canvas_preflights(
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES image_projects(id),
+      canvas_id TEXT NOT NULL REFERENCES image_canvases(id),
+      canvas_revision INTEGER NOT NULL,
+      document_json TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    )`)
+    unitOfWork.database.exec(`CREATE TABLE image_render_receipts(
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES image_projects(id),
+      canvas_id TEXT NOT NULL REFERENCES image_canvases(id),
+      canvas_revision INTEGER NOT NULL,
+      version_id TEXT NOT NULL,
+      document_json TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      UNIQUE(canvas_id, canvas_revision, version_id)
+    )`)
+    unitOfWork.database.exec(`CREATE TABLE image_release_check_results(
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES image_projects(id),
+      version_id TEXT NOT NULL,
+      document_json TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    )`)
+    unitOfWork.database.exec(`CREATE TABLE image_export_receipts(
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES image_projects(id),
+      artboard_id TEXT NOT NULL,
+      version_id TEXT NOT NULL,
+      document_json TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    )`)
+    unitOfWork.database.exec(`CREATE TABLE image_delivery_sets(
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES image_projects(id),
+      delivery_spec_id TEXT NOT NULL,
+      delivery_spec_revision INTEGER NOT NULL,
+      document_json TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    )`)
+    unitOfWork.database.exec(`CREATE TABLE image_delivery_spec_commands(
+      project_id TEXT NOT NULL REFERENCES image_projects(id),
+      idempotency_key TEXT NOT NULL,
+      request_hash TEXT NOT NULL,
+      delivery_spec_id TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY(project_id, idempotency_key)
+    )`)
+    unitOfWork.database.exec(`CREATE TABLE image_artboard_selection_commands(
+      project_id TEXT NOT NULL REFERENCES image_projects(id),
+      artboard_id TEXT NOT NULL,
+      idempotency_key TEXT NOT NULL,
+      request_hash TEXT NOT NULL,
+      version_id TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY(project_id, artboard_id, idempotency_key)
+    )`)
+    unitOfWork.database.exec('CREATE INDEX image_canvas_revisions_created ON image_canvas_revisions(canvas_id, revision DESC)')
+    unitOfWork.database.exec('CREATE INDEX image_render_receipts_project_created ON image_render_receipts(project_id, created_at DESC)')
+    unitOfWork.database.query('INSERT INTO image_metadata_schema_migrations(version,applied_at) VALUES(?,?)')
+      .run(7, new Date().toISOString())
   })
 }
 

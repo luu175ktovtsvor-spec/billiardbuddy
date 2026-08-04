@@ -7,7 +7,10 @@ import type {
 const REFERENCE_ROLE_LABELS: Record<ImageProjectReference['role'], string> = {
   unclassified: '参考图角色尚未由用户确认',
   subject: '主体外观与可辨识特征',
+  product: '产品外观与可辨识特征',
+  character: '角色外观与可辨识特征',
   style: '参考风格',
+  composition: '参考构图',
   environment: '参考环境',
   brand: '品牌视觉',
   logo: 'Logo 原样',

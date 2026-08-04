@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import { Database } from 'bun:sqlite'
 import { createVideoMediaRelayFetch, type MediaObjectStore, type VideoMediaProvider } from '../../video-media-relay/app.ts'
 import type { ProviderExecutionReceipt } from '../../video-media-relay/contracts/relayApi.ts'
+import { DashScopeProviderError } from '../../video-media-relay/providers/dashscope.ts'
 import { VideoMediaRelayClient } from '../src/server/video/infrastructure/providers/videoMediaRelayClient.ts'
 
 const token = 'x'.repeat(40)
@@ -86,15 +87,44 @@ test('Relay persists failed OSS result cleanup and retries it on the next authen
   expect(deleteAttempts).toBe(2)
 })
 
+test('visual provider failures release known rejections but fence ambiguous outcomes without deleting their lease', async () => {
+  const uploaded = new Map<string, { byte_size: number; content_hash: string; content_type: string }>()
+  const deleted: string[] = []
+  const objectStore: MediaObjectStore = {
+    async createPutUrl(input) { uploaded.set(input.leaseId, { byte_size: input.byteSize, content_hash: input.hash, content_type: input.contentType }); return { put_url: `https://oss.example.test/${input.leaseId}`, required_headers: {} } },
+    async head(id) { return uploaded.get(id) ?? null }, async delete(id) { deleted.push(id); uploaded.delete(id) }, async createReadUrl() { return 'https://oss.example.test/read' }, async putResult() {}, async createResultReadUrl() { return 'https://oss.example.test/result' }, async deleteResult() {},
+  }
+  const leasePayload = { local_operation_id: 'task_visual_12345678', purpose: 'visual_frames', content_hash: hash, byte_size: 4, content_type: 'image/png', consent_revision_id: 'consent_visual_12345678', consent_scope_hash: hash }
+  const operation = (objectRef: string, suffix: string) => ({ local_operation_id: `task_visual_${suffix}`, consent_revision_id: leasePayload.consent_revision_id, consent_scope_hash: hash, local_budget_reservation_id: `budget_visual_${suffix}`, request_hash: hash, capability: 'visual_evidence' as const, application_role: 'shot_evidence' as const, input: { object_refs: [objectRef], evidence_window_id: `window_visual_${suffix}`, facts_basis_hash: hash, language: 'zh', output_schema_version: 1 } })
+  const known = createVideoMediaRelayFetch({ env: { GW_VIDEO_MEDIA_INTROSPECTION_TOKEN: token, VIDEO_MEDIA_GATEWAY_INTROSPECTION_BASE: 'http://gateway', VIDEO_MEDIA_RELAY_DB: ':memory:', VIDEO_MEDIA_ACCOUNT_QUOTA_UNITS: '1' }, fetchImpl: identityFetch, objectStore, provider: { async execute() { throw new DashScopeProviderError(422, 'provider_rejected') } }, now })
+  const lease = await known(new Request('http://relay/v1/video-media/object-leases', { method: 'POST', headers: headers('visual-known-lease-key'), body: JSON.stringify(leasePayload) })).then(response => response.json()) as { lease_id: string }
+  const ready = await known(new Request(`http://relay/v1/video-media/object-leases/${lease.lease_id}/complete`, { method: 'POST', headers: headers('visual-known-complete-key'), body: '{}' })).then(response => response.json()) as { object_ref: string }
+  const rejected = await known(new Request('http://relay/v1/video-media/operations', { method: 'POST', headers: headers('visual-known-operation-key'), body: JSON.stringify(operation(ready.object_ref, 'known_12345678')) }))
+  expect(rejected.status).toBe(422)
+  expect(deleted).toEqual([lease.lease_id])
+  const released = await known(new Request('http://relay/v1/video-media/operations', { method: 'POST', headers: headers('visual-known-release-key'), body: JSON.stringify({ local_operation_id: 'task_embedding_known_12345678', consent_revision_id: 'consent_embedding_12345678', consent_scope_hash: hash, local_budget_reservation_id: 'budget_embedding_12345678', request_hash: hash, capability: 'semantic_embedding', application_role: 'search_index', input: { embedding_role: 'query', items: [{ id: 'fact_embedding_12345678', text: 'release after known failure' }], model: 'text-embedding-v4', dimension: 768, instruction_version: 'v1' } }) }))
+  expect(released.status).toBe(422)
+
+  const unknown = createVideoMediaRelayFetch({ env: { GW_VIDEO_MEDIA_INTROSPECTION_TOKEN: token, VIDEO_MEDIA_GATEWAY_INTROSPECTION_BASE: 'http://gateway', VIDEO_MEDIA_RELAY_DB: ':memory:', VIDEO_MEDIA_ACCOUNT_QUOTA_UNITS: '1' }, fetchImpl: identityFetch, objectStore, provider: { async execute() { throw new Error('lost_after_provider_submission') } }, now })
+  const unknownLeasePayload = { ...leasePayload, local_operation_id: 'task_visual_unknown_12345678' }
+  const unknownLease = await unknown(new Request('http://relay/v1/video-media/object-leases', { method: 'POST', headers: headers('visual-unknown-lease-key'), body: JSON.stringify(unknownLeasePayload) })).then(response => response.json()) as { lease_id: string }
+  const unknownReady = await unknown(new Request(`http://relay/v1/video-media/object-leases/${unknownLease.lease_id}/complete`, { method: 'POST', headers: headers('visual-unknown-complete-key'), body: '{}' })).then(response => response.json()) as { object_ref: string }
+  const ambiguous = await unknown(new Request('http://relay/v1/video-media/operations', { method: 'POST', headers: headers('visual-unknown-operation-key'), body: JSON.stringify(operation(unknownReady.object_ref, 'unknown_12345678')) }))
+  expect(ambiguous.status).toBe(503)
+  const blocked = await unknown(new Request('http://relay/v1/video-media/operations', { method: 'POST', headers: headers('visual-unknown-quota-key'), body: JSON.stringify({ local_operation_id: 'task_embedding_unknown_12345678', consent_revision_id: 'consent_embedding_unknown_12345678', consent_scope_hash: hash, local_budget_reservation_id: 'budget_embedding_unknown_12345678', request_hash: hash, capability: 'semantic_embedding', application_role: 'search_index', input: { embedding_role: 'query', items: [{ id: 'fact_embedding_unknown_12345678', text: 'unknown must retain quota' }], model: 'text-embedding-v4', dimension: 768, instruction_version: 'v1' } }) }))
+  expect(blocked.status).toBe(429)
+  expect(deleted).toEqual([lease.lease_id])
+})
+
 test('Relay restarts locally, reconciles a persisted long ASR task, and only advances it through GET polling', async () => {
   const objectStore: MediaObjectStore = {
     async createPutUrl() { return { put_url: 'https://oss.example.test/put', required_headers: {} } }, async head() { return { byte_size: 4, content_hash: hash, content_type: 'audio/wav' } }, async delete() {}, async createReadUrl() { return 'https://oss.example.test/read' }, async putResult() {}, async createResultReadUrl() { return 'https://oss.example.test/result' }, async deleteResult() {},
   }
   let polls = 0
   const receipt: ProviderExecutionReceipt = { id: 'receipt_12345678', capability: 'speech_transcription', model_snapshot: 'fun-asr', region: 'cn-beijing', request_schema_version: 1, prompt_version: 'v1', input_basis_hash: hash, usage: { requests: 1, total_tokens: 0, input_bytes: 0, visual_frames: 0, proxy_seconds: 0, asr_seconds: 10, estimated_amount_micros: 1 }, cache_hit: false, created_at: now().toISOString() }
-  const provider: VideoMediaProvider = { async execute() { return { state: 'submitted', provider_task_id: 'provider-task-1', receipt } }, async poll() { polls += 1; return { state: 'failed', provider_task_id: 'provider-task-1', receipt, safe_error_code: 'asr_task_failed' } } }
+  const provider: VideoMediaProvider = { async execute(input) { return input.capability === 'speech_transcription' ? { state: 'submitted', provider_task_id: 'provider-task-1', receipt } : { state: 'succeeded', receipt: { ...receipt, id: 'receipt_embedding_12345678', capability: 'semantic_embedding', model_snapshot: 'text-embedding-v4' }, result: { kind: 'embedding', vectors: [] } } }, async poll() { polls += 1; return { state: 'failed', provider_task_id: 'provider-task-1', receipt, safe_error_code: 'asr_task_failed' } } }
   const dbPath = join(tmpdir(), `video-relay-asr-restart-${crypto.randomUUID()}.sqlite`)
-  const env = { GW_VIDEO_MEDIA_INTROSPECTION_TOKEN: token, VIDEO_MEDIA_GATEWAY_INTROSPECTION_BASE: 'http://gateway', VIDEO_MEDIA_RELAY_DB: dbPath }
+  const env = { GW_VIDEO_MEDIA_INTROSPECTION_TOKEN: token, VIDEO_MEDIA_GATEWAY_INTROSPECTION_BASE: 'http://gateway', VIDEO_MEDIA_RELAY_DB: dbPath, VIDEO_MEDIA_ACCOUNT_QUOTA_UNITS: '1' }
   try {
   const handler = createVideoMediaRelayFetch({ env, fetchImpl: identityFetch, objectStore, provider, now })
   const leaseResponse = await handler(new Request('http://relay/v1/video-media/object-leases', { method: 'POST', headers: headers('long-asr-lease-key-001'), body: JSON.stringify({ local_operation_id: 'task_87654321', purpose: 'audio_for_asr', content_hash: hash, byte_size: 4, content_type: 'audio/wav', consent_revision_id: 'consent_12345678', consent_scope_hash: hash }) }))
@@ -104,11 +134,15 @@ test('Relay restarts locally, reconciles a persisted long ASR task, and only adv
   const operation = { local_operation_id: 'task_87654321', consent_revision_id: 'consent_12345678', consent_scope_hash: hash, local_budget_reservation_id: 'budget_12345678', request_hash: hash, capability: 'speech_transcription', application_role: 'asr', input: { mode: 'long_async', audio_object_ref: ready.object_ref, source_offset: { ticks: '0', tick_rate: { num: 1000, den: 1 } }, hotwords: ['开球'], speaker_diarization: true, sentence_timestamps: true, word_timestamps: true } }
   const created = await handler(new Request('http://relay/v1/video-media/operations', { method: 'POST', headers: headers('long-asr-operation-key-1'), body: JSON.stringify(operation) }))
   expect(await created.json()).toMatchObject({ state: 'submitted', provider_task_id: 'provider-task-1' })
+  const whileSubmitted = await handler(new Request('http://relay/v1/video-media/operations', { method: 'POST', headers: headers('long-asr-quota-held-key'), body: JSON.stringify({ local_operation_id: 'task_embedding_before_asr_terminal', consent_revision_id: 'consent_embedding_12345678', consent_scope_hash: hash, local_budget_reservation_id: 'budget_embedding_before_asr', request_hash: hash, capability: 'semantic_embedding', application_role: 'search_index', input: { embedding_role: 'query', items: [{ id: 'fact_embedding_12345678', text: 'quota remains reserved' }], model: 'text-embedding-v4', dimension: 768, instruction_version: 'v1' } }) }))
+  expect(whileSubmitted.status).toBe(429)
   const id = (await handler(new Request('http://relay/v1/video-media/operations', { method: 'POST', headers: headers('long-asr-operation-key-1'), body: JSON.stringify(operation) })).then(response => response.json())) as { id: string }
   const restarted = createVideoMediaRelayFetch({ env, fetchImpl: identityFetch, objectStore, provider, now })
   const polled = await restarted(new Request(`http://relay/v1/video-media/operations/${id.id}`, { headers: { Authorization: 'Bearer installation-token' } }))
   expect(await polled.json()).toMatchObject({ state: 'failed', safe_error_code: 'asr_task_failed' })
   expect(polls).toBe(1)
+  const afterTerminal = await restarted(new Request('http://relay/v1/video-media/operations', { method: 'POST', headers: headers('long-asr-quota-released-key'), body: JSON.stringify({ local_operation_id: 'task_embedding_after_asr_terminal', consent_revision_id: 'consent_embedding_after_123456', consent_scope_hash: hash, local_budget_reservation_id: 'budget_embedding_after_asr', request_hash: hash, capability: 'semantic_embedding', application_role: 'search_index', input: { embedding_role: 'query', items: [{ id: 'fact_embedding_after_123456', text: 'quota released after terminal failure' }], model: 'text-embedding-v4', dimension: 768, instruction_version: 'v1' } }) }))
+  expect(afterTerminal.status).toBe(202)
   } finally { try { unlinkSync(dbPath) } catch {} }
 })
 

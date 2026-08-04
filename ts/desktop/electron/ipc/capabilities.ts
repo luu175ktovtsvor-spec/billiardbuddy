@@ -1,3 +1,29 @@
+import { z } from 'zod/v4'
+import {
+  adoptImageCandidateInputSchema,
+  imageCanvasCommandRequestInputSchema,
+  imageArtboardSelectVersionInputSchema,
+  imageCanvasCreateInputSchema,
+  imageCanvasPreflightInputSchema,
+  imageCanvasRenderInputSchema,
+  imageSaveOutputInputSchema,
+  imageDestinationGrantRequestSchema,
+  imageDeliverySpecRevisionInputSchema,
+  imageExportInputSchema,
+  createCreativePlanInputSchema,
+  createGenerationRoundInputSchema,
+  decideImageCandidateInputSchema,
+  deriveImageCandidateInputSchema,
+  estimateDeriveImageCandidateInputSchema,
+  estimateGenerationRoundInputSchema,
+  updateImageReferenceControlInputSchema,
+} from '../../../shared/contracts/imageGeneration'
+import {
+  mediaIdSchema,
+  startImageOperationInputSchema,
+  submitImageProjectInputSchema,
+  updateImageProjectInputSchema,
+} from '../../../shared/contracts/media'
 import { ELECTRON_IPC_CHANNELS, type ElectronIpcChannel } from './channels'
 
 type Validator = (payload: unknown) => boolean
@@ -152,6 +178,18 @@ const nativeSortDirection = (value: unknown): boolean =>
 const nativeThreadSortKey = (value: unknown): boolean =>
   value === undefined || value === 'created_at' || value === 'updated_at' || value === 'recency_at'
 
+const nativeThreadSourceKind = (value: unknown): boolean =>
+  value === 'cli'
+  || value === 'vscode'
+  || value === 'exec'
+  || value === 'appServer'
+  || value === 'subAgent'
+  || value === 'subAgentReview'
+  || value === 'subAgentCompact'
+  || value === 'subAgentThreadSpawn'
+  || value === 'subAgentOther'
+  || value === 'unknown'
+
 const nativeThreadSearchTerm = (value: unknown): boolean =>
   typeof value === 'string' && value.trim().length > 0 && value.length <= 512 && !/[\u0000\r\n]/.test(value)
 
@@ -160,7 +198,20 @@ const nativeTurnItemsView = (value: unknown): boolean =>
 
 const nativeAgentListThreads: Validator = value =>
   isRecord(value)
-  && hasOnlyKeys(value, ['cwd', 'cursor', 'limit', 'archived', 'searchTerm', 'sortKey', 'sortDirection'])
+  && hasOnlyKeys(value, [
+    'cwd',
+    'cursor',
+    'limit',
+    'archived',
+    'searchTerm',
+    'sortKey',
+    'sortDirection',
+    'sectionId',
+    'filterCwds',
+    'sourceKinds',
+    'parentThreadId',
+    'ancestorThreadId',
+  ])
   && nativeWorkspacePath(value.cwd)
   && nativePageCursor(value.cursor)
   && nativePageLimit(value.limit)
@@ -168,6 +219,32 @@ const nativeAgentListThreads: Validator = value =>
   && (value.searchTerm === undefined || nativeThreadSearchTerm(value.searchTerm))
   && nativeThreadSortKey(value.sortKey)
   && nativeSortDirection(value.sortDirection)
+  && (value.sectionId === undefined || value.sectionId === null || nativeCodexId(value.sectionId))
+  && (
+    value.filterCwds === undefined
+    || Array.isArray(value.filterCwds)
+      && value.filterCwds.length > 0
+      && value.filterCwds.length <= 64
+      && value.filterCwds.every(nativeWorkspacePath)
+  )
+  && (
+    value.sourceKinds === undefined
+    || Array.isArray(value.sourceKinds)
+      && value.sourceKinds.length > 0
+      && value.sourceKinds.length <= 10
+      && value.sourceKinds.every(nativeThreadSourceKind)
+      && new Set(value.sourceKinds).size === value.sourceKinds.length
+  )
+  && (value.parentThreadId === undefined || nativeCodexId(value.parentThreadId))
+  && (value.ancestorThreadId === undefined || nativeCodexId(value.ancestorThreadId))
+  && !(value.parentThreadId !== undefined && value.ancestorThreadId !== undefined)
+
+const nativeAgentListLoadedThreads: Validator = value =>
+  isRecord(value)
+  && hasOnlyKeys(value, ['cwd', 'cursor', 'limit'])
+  && nativeWorkspacePath(value.cwd)
+  && nativePageCursor(value.cursor)
+  && nativePageLimit(value.limit)
 
 const nativeAgentSearchThreads: Validator = value =>
   isRecord(value)
@@ -199,6 +276,42 @@ const nativeAgentUpdatePermissionMode: Validator = value =>
   && hasOnlyKeys(value, ['threadId', 'permissionMode'])
   && nativeCodexId(value.threadId)
   && nativePermissionMode(value.permissionMode)
+
+const nativeAgentUpdateThreadSettings: Validator = value =>
+  isRecord(value)
+  && hasOnlyKeys(value, ['threadId', 'permissionProfileId', 'effort', 'summary', 'personality'])
+  && nativeCodexId(value.threadId)
+  && (
+    value.permissionProfileId === undefined
+    || typeof value.permissionProfileId === 'string'
+      && value.permissionProfileId.trim().length > 0
+      && value.permissionProfileId.length <= 200
+      && !/[\u0000\r\n]/.test(value.permissionProfileId)
+  )
+  && (
+    value.effort === undefined
+    || typeof value.effort === 'string'
+      && /^[A-Za-z0-9_-]{1,64}$/.test(value.effort)
+  )
+  && (
+    value.summary === undefined
+    || value.summary === 'auto'
+    || value.summary === 'concise'
+    || value.summary === 'detailed'
+    || value.summary === 'none'
+  )
+  && (
+    value.personality === undefined
+    || value.personality === 'none'
+    || value.personality === 'friendly'
+    || value.personality === 'pragmatic'
+  )
+  && (
+    value.permissionProfileId !== undefined
+    || value.effort !== undefined
+    || value.summary !== undefined
+    || value.personality !== undefined
+  )
 
 const nativeAgentStartTurn: Validator = value =>
   isRecord(value)
@@ -271,6 +384,23 @@ const nativeAgentStoredThreadReference: Validator = value =>
   && hasOnlyKeys(value, ['threadId', 'cwd'])
   && nativeCodexId(value.threadId)
   && nativeWorkspacePath(value.cwd)
+
+const nativeThreadMetadataValue = (value: unknown, limit: number): boolean =>
+  value === undefined
+  || value === null
+  || typeof value === 'string'
+    && value.trim().length > 0
+    && value.length <= limit
+    && !/[\u0000\r\n]/.test(value)
+
+const nativeAgentThreadMetadataUpdate: Validator = value =>
+  isRecord(value)
+  && hasOnlyKeys(value, ['threadId', 'sha', 'branch', 'originUrl'])
+  && nativeCodexId(value.threadId)
+  && nativeThreadMetadataValue(value.sha, 128)
+  && nativeThreadMetadataValue(value.branch, 1_024)
+  && nativeThreadMetadataValue(value.originUrl, 4_096)
+  && (value.sha !== undefined || value.branch !== undefined || value.originUrl !== undefined)
 
 const nativeAgentThreadName: Validator = value =>
   isRecord(value)
@@ -683,28 +813,6 @@ const mediaProjectId = (value: unknown): value is string =>
   typeof value === 'string'
   && /^[a-z0-9][a-z0-9_-]{7,79}$/.test(value)
 
-const imageSubmitProject: Validator = value =>
-  isRecord(value)
-  && hasOnlyKeys(value, ['projectId', 'confirmUnknownRetry'])
-  && mediaProjectId(value.projectId)
-  && typeof value.confirmUnknownRetry === 'boolean'
-
-const imageUpdateUnknownProject: Validator = value => {
-  if (!isRecord(value) || !hasOnlyKeys(value, ['projectId', 'input'])) return false
-  if (!mediaProjectId(value.projectId) || !isRecord(value.input)) return false
-  const input = value.input
-  return hasOnlyKeys(input, ['revision', 'user_request', 'size', 'confirm_unknown_retry'])
-    && typeof input.revision === 'number'
-    && Number.isInteger(input.revision)
-    && input.revision >= 0
-    && typeof input.user_request === 'string'
-    && input.user_request.trim().length > 0
-    && input.user_request.length <= 8000
-    && typeof input.size === 'string'
-    && /^\d{3,4}x\d{3,4}$/.test(input.size)
-    && input.confirm_unknown_retry === true
-}
-
 const videoAddSource: Validator = value =>
   isRecord(value)
   && hasOnlyKeys(value, ['projectId', 'path'])
@@ -736,34 +844,117 @@ const videoAnalyze: Validator = value =>
   && value.userGoal.trim().length > 0
   && value.userGoal.length <= 8000
 
-const imageSaveOutput: Validator = value => {
-  if (!isRecord(value) || !hasOnlyKeys(value, ['projectId', 'input'])) return false
-  if (!mediaProjectId(value.projectId) || !isRecord(value.input)) return false
-  return hasOnlyKeys(value.input, ['output_id', 'version_id', 'output_path'])
-    && (mediaProjectId(value.input.output_id) || mediaProjectId(value.input.version_id))
-    && typeof value.input.output_path === 'string'
-    && value.input.output_path.length > 0
-    && value.input.output_path.length <= 4096
-}
+export const imageSubmitProjectIpcPayloadSchema = z.object({
+  projectId: mediaIdSchema,
+  confirmUnknownRetry: submitImageProjectInputSchema.shape.confirm_unknown_retry,
+}).strict()
+export const imageStartOperationIpcPayloadSchema = z.object({
+  projectId: mediaIdSchema,
+  input: startImageOperationInputSchema.strict(),
+}).strict()
+export const imageUpdateUnknownProjectIpcPayloadSchema = z.object({
+  projectId: mediaIdSchema,
+  input: updateImageProjectInputSchema.strict(),
+}).strict()
+export const imageSaveOutputIpcPayloadSchema = z.object({
+  projectId: mediaIdSchema,
+  input: imageSaveOutputInputSchema,
+}).strict()
+export const imageRequestDestinationIpcPayloadSchema = imageDestinationGrantRequestSchema
+export const imageCreateCreativePlanIpcPayloadSchema = z.object({
+  projectId: mediaIdSchema,
+  input: createCreativePlanInputSchema,
+}).strict()
+export const imageEstimateGenerationRoundIpcPayloadSchema = z.object({
+  projectId: mediaIdSchema,
+  input: estimateGenerationRoundInputSchema,
+}).strict()
+export const imageEstimateDerivationIpcPayloadSchema = z.object({
+  projectId: mediaIdSchema,
+  candidateId: mediaIdSchema,
+  input: estimateDeriveImageCandidateInputSchema,
+}).strict()
+export const imageCreateGenerationRoundIpcPayloadSchema = z.object({
+  projectId: mediaIdSchema,
+  input: createGenerationRoundInputSchema,
+}).strict()
+export const imageDecideCandidateIpcPayloadSchema = z.object({
+  projectId: mediaIdSchema,
+  candidateId: mediaIdSchema,
+  input: decideImageCandidateInputSchema,
+}).strict()
+export const imageAdoptCandidateIpcPayloadSchema = z.object({
+  projectId: mediaIdSchema,
+  candidateId: mediaIdSchema,
+  input: adoptImageCandidateInputSchema,
+}).strict()
+export const imageDeriveCandidateIpcPayloadSchema = z.object({
+  projectId: mediaIdSchema,
+  candidateId: mediaIdSchema,
+  input: deriveImageCandidateInputSchema,
+}).strict()
+export const imageCancelGenerationOperationIpcPayloadSchema = z.object({
+  operationId: mediaIdSchema,
+}).strict()
+export const imageUpdateReferenceControlIpcPayloadSchema = z.object({
+  projectId: mediaIdSchema,
+  referenceId: mediaIdSchema,
+  input: updateImageReferenceControlInputSchema,
+}).strict()
+export const imageCreateDeliverySpecRevisionIpcPayloadSchema = z.object({
+  projectId: mediaIdSchema,
+  input: imageDeliverySpecRevisionInputSchema,
+}).strict()
+export const imageCreateCanvasIpcPayloadSchema = z.object({
+  projectId: mediaIdSchema,
+  input: imageCanvasCreateInputSchema,
+}).strict()
+export const imageApplyCanvasCommandIpcPayloadSchema = z.object({
+  projectId: mediaIdSchema,
+  canvasId: mediaIdSchema,
+  input: imageCanvasCommandRequestInputSchema,
+}).strict()
+export const imagePreflightCanvasIpcPayloadSchema = z.object({
+  projectId: mediaIdSchema,
+  canvasId: mediaIdSchema,
+  input: imageCanvasPreflightInputSchema,
+}).strict()
+export const imageRenderCanvasIpcPayloadSchema = z.object({
+  projectId: mediaIdSchema,
+  canvasId: mediaIdSchema,
+  input: imageCanvasRenderInputSchema,
+}).strict()
+export const imageExportDeliveryIpcPayloadSchema = z.object({
+  projectId: mediaIdSchema,
+  input: imageExportInputSchema,
+}).strict()
+export const imageSelectArtboardVersionIpcPayloadSchema = z.object({
+  projectId: mediaIdSchema,
+  artboardId: mediaIdSchema,
+  input: imageArtboardSelectVersionInputSchema,
+}).strict()
 
-const imageStartOperation: Validator = value => {
-  if (!isRecord(value) || !hasOnlyKeys(value, ['projectId', 'input'])) return false
-  if (!mediaProjectId(value.projectId) || !isRecord(value.input)) return false
-  return hasOnlyKeys(value.input, [
-    'revision', 'base_version_id', 'kind', 'instruction', 'mask_data_url', 'confirm_unknown_retry',
-  ])
-    && typeof value.input.revision === 'number'
-    && Number.isInteger(value.input.revision)
-    && value.input.revision >= 0
-    && mediaProjectId(value.input.base_version_id)
-    && (value.input.kind === 'edit' || value.input.kind === 'inpaint')
-    && typeof value.input.instruction === 'string'
-    && value.input.instruction.length > 0
-    && value.input.instruction.length <= 4000
-    && (value.input.mask_data_url === undefined
-      || typeof value.input.mask_data_url === 'string' && value.input.mask_data_url.length <= 45_000_000)
-    && typeof value.input.confirm_unknown_retry === 'boolean'
-}
+const imageSubmitProject: Validator = value => imageSubmitProjectIpcPayloadSchema.safeParse(value).success
+const imageStartOperation: Validator = value => imageStartOperationIpcPayloadSchema.safeParse(value).success
+const imageUpdateUnknownProject: Validator = value => imageUpdateUnknownProjectIpcPayloadSchema.safeParse(value).success
+const imageSaveOutput: Validator = value => imageSaveOutputIpcPayloadSchema.safeParse(value).success
+const imageCreateCreativePlan: Validator = value => imageCreateCreativePlanIpcPayloadSchema.safeParse(value).success
+const imageEstimateGenerationRound: Validator = value => imageEstimateGenerationRoundIpcPayloadSchema.safeParse(value).success
+const imageEstimateDerivation: Validator = value => imageEstimateDerivationIpcPayloadSchema.safeParse(value).success
+const imageCreateGenerationRound: Validator = value => imageCreateGenerationRoundIpcPayloadSchema.safeParse(value).success
+const imageDecideCandidate: Validator = value => imageDecideCandidateIpcPayloadSchema.safeParse(value).success
+const imageAdoptCandidate: Validator = value => imageAdoptCandidateIpcPayloadSchema.safeParse(value).success
+const imageDeriveCandidate: Validator = value => imageDeriveCandidateIpcPayloadSchema.safeParse(value).success
+const imageCancelGenerationOperation: Validator = value => imageCancelGenerationOperationIpcPayloadSchema.safeParse(value).success
+const imageUpdateReferenceControl: Validator = value => imageUpdateReferenceControlIpcPayloadSchema.safeParse(value).success
+const imageCreateDeliverySpecRevision: Validator = value => imageCreateDeliverySpecRevisionIpcPayloadSchema.safeParse(value).success
+const imageCreateCanvas: Validator = value => imageCreateCanvasIpcPayloadSchema.safeParse(value).success
+const imageApplyCanvasCommand: Validator = value => imageApplyCanvasCommandIpcPayloadSchema.safeParse(value).success
+const imagePreflightCanvas: Validator = value => imagePreflightCanvasIpcPayloadSchema.safeParse(value).success
+const imageRenderCanvas: Validator = value => imageRenderCanvasIpcPayloadSchema.safeParse(value).success
+const imageExportDelivery: Validator = value => imageExportDeliveryIpcPayloadSchema.safeParse(value).success
+const imageRequestDestination: Validator = value => imageRequestDestinationIpcPayloadSchema.safeParse(value).success
+const imageSelectArtboardVersion: Validator = value => imageSelectArtboardVersionIpcPayloadSchema.safeParse(value).success
 
 export const ELECTRON_IPC_VALIDATORS = {
   [ELECTRON_IPC_CHANNELS.appGetVersion]: noPayload,
@@ -780,9 +971,12 @@ export const ELECTRON_IPC_VALIDATORS = {
   [ELECTRON_IPC_CHANNELS.nativeAgentWindowsSandboxReadiness]: nativeAgentWindowsSandboxReadiness,
   [ELECTRON_IPC_CHANNELS.nativeAgentWindowsSandboxSetupStart]: nativeAgentWindowsSandboxSetupStart,
   [ELECTRON_IPC_CHANNELS.nativeAgentListThreads]: nativeAgentListThreads,
+  [ELECTRON_IPC_CHANNELS.nativeAgentListLoadedThreads]: nativeAgentListLoadedThreads,
   [ELECTRON_IPC_CHANNELS.nativeAgentSearchThreads]: nativeAgentSearchThreads,
   [ELECTRON_IPC_CHANNELS.nativeAgentResumeThread]: nativeAgentResumeThread,
+  [ELECTRON_IPC_CHANNELS.nativeAgentUnsubscribeThread]: nativeAgentThreadReference,
   [ELECTRON_IPC_CHANNELS.nativeAgentReadThread]: nativeAgentThreadReference,
+  [ELECTRON_IPC_CHANNELS.nativeAgentUpdateThreadMetadata]: nativeAgentThreadMetadataUpdate,
   [ELECTRON_IPC_CHANNELS.nativeAgentForkThread]: nativeAgentForkThread,
   [ELECTRON_IPC_CHANNELS.nativeAgentUnarchiveThread]: nativeAgentStoredThreadReference,
   [ELECTRON_IPC_CHANNELS.nativeAgentDeleteThread]: nativeAgentStoredThreadReference,
@@ -796,6 +990,7 @@ export const ELECTRON_IPC_VALIDATORS = {
   [ELECTRON_IPC_CHANNELS.nativeAgentReadModelProviderCapabilities]: nativeAgentThreadReference,
   [ELECTRON_IPC_CHANNELS.nativeAgentListPermissionProfiles]: nativeAgentPermissionProfileList,
   [ELECTRON_IPC_CHANNELS.nativeAgentReadConfigRequirements]: nativeAgentThreadReference,
+  [ELECTRON_IPC_CHANNELS.nativeAgentReadClientSettings]: nativeAgentThreadReference,
   [ELECTRON_IPC_CHANNELS.nativeAgentSetThreadMemoryMode]: nativeAgentThreadMemoryMode,
   [ELECTRON_IPC_CHANNELS.nativeAgentResetMemory]: nativeAgentThreadReference,
   [ELECTRON_IPC_CHANNELS.nativeAgentListThreadSections]: nativeAgentThreadSectionList,
@@ -810,6 +1005,7 @@ export const ELECTRON_IPC_VALIDATORS = {
   [ELECTRON_IPC_CHANNELS.nativeAgentTerminateBackgroundTerminal]: nativeAgentBackgroundTerminalReference,
   [ELECTRON_IPC_CHANNELS.nativeAgentCleanBackgroundTerminals]: nativeAgentThreadReference,
   [ELECTRON_IPC_CHANNELS.nativeAgentUpdatePermissionMode]: nativeAgentUpdatePermissionMode,
+  [ELECTRON_IPC_CHANNELS.nativeAgentUpdateThreadSettings]: nativeAgentUpdateThreadSettings,
   [ELECTRON_IPC_CHANNELS.nativeAgentStartTurn]: nativeAgentStartTurn,
   [ELECTRON_IPC_CHANNELS.nativeAgentStartReview]: nativeAgentStartReview,
   [ELECTRON_IPC_CHANNELS.nativeAgentSteerTurn]: nativeAgentSteerTurn,
@@ -860,6 +1056,23 @@ export const ELECTRON_IPC_VALIDATORS = {
   [ELECTRON_IPC_CHANNELS.imageStartOperation]: imageStartOperation,
   [ELECTRON_IPC_CHANNELS.imageUpdateUnknownProject]: imageUpdateUnknownProject,
   [ELECTRON_IPC_CHANNELS.imageSaveOutput]: imageSaveOutput,
+  [ELECTRON_IPC_CHANNELS.imageCreateCreativePlan]: imageCreateCreativePlan,
+  [ELECTRON_IPC_CHANNELS.imageEstimateGenerationRound]: imageEstimateGenerationRound,
+  [ELECTRON_IPC_CHANNELS.imageEstimateDerivation]: imageEstimateDerivation,
+  [ELECTRON_IPC_CHANNELS.imageCreateGenerationRound]: imageCreateGenerationRound,
+  [ELECTRON_IPC_CHANNELS.imageDecideCandidate]: imageDecideCandidate,
+  [ELECTRON_IPC_CHANNELS.imageAdoptCandidate]: imageAdoptCandidate,
+  [ELECTRON_IPC_CHANNELS.imageDeriveCandidate]: imageDeriveCandidate,
+  [ELECTRON_IPC_CHANNELS.imageCancelGenerationOperation]: imageCancelGenerationOperation,
+  [ELECTRON_IPC_CHANNELS.imageUpdateReferenceControl]: imageUpdateReferenceControl,
+  [ELECTRON_IPC_CHANNELS.imageCreateDeliverySpecRevision]: imageCreateDeliverySpecRevision,
+  [ELECTRON_IPC_CHANNELS.imageCreateCanvas]: imageCreateCanvas,
+  [ELECTRON_IPC_CHANNELS.imageApplyCanvasCommand]: imageApplyCanvasCommand,
+  [ELECTRON_IPC_CHANNELS.imagePreflightCanvas]: imagePreflightCanvas,
+  [ELECTRON_IPC_CHANNELS.imageRenderCanvas]: imageRenderCanvas,
+  [ELECTRON_IPC_CHANNELS.imageExportDelivery]: imageExportDelivery,
+  [ELECTRON_IPC_CHANNELS.imageRequestDestination]: imageRequestDestination,
+  [ELECTRON_IPC_CHANNELS.imageSelectArtboardVersion]: imageSelectArtboardVersion,
   [ELECTRON_IPC_CHANNELS.videoAddSource]: videoAddSource,
   [ELECTRON_IPC_CHANNELS.videoRender]: videoRender,
   [ELECTRON_IPC_CHANNELS.videoAnalyze]: videoAnalyze,

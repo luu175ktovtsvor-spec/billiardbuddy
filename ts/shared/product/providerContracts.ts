@@ -53,6 +53,25 @@ export interface ImageGenerationProviderContract {
   model_id: string
 }
 
+/** Declarative limits consumed by ImageProviderPolicy before any paid POST. */
+export type ImageGenerationProviderDescriptor = {
+  operation_modes: Array<'generate' | 'edit' | 'inpaint'>
+  max_reference_images: number
+  reference_roles: Array<'subject' | 'product' | 'character' | 'style' | 'composition' | 'environment' | 'brand' | 'logo' | 'qrcode'>
+  reference_preservations: Array<'may_change' | 'prefer_preserve' | 'must_preserve' | 'exact'>
+  supported_sizes: string[]
+  transparency: boolean
+  max_output_count: number
+  /** Versioned, non-secret maximum charge for one returned image.  The
+   * Sidecar uses this quote before it creates paid work; Relay later records
+   * the actual provider usage receipt separately. */
+  price_upper_bound: {
+    currency: string
+    per_output_amount_minor: number
+    pricing_revision: string
+  }
+}
+
 /** Provider-neutral speech-transcription capability; audio transport is out of contract. */
 export interface SpeechTranscriptionProviderContract {
   capability: 'SpeechTranscription'
@@ -72,6 +91,8 @@ export type ProviderRegistryEntry = {
   capabilities: ProviderCapability[]
   /** Required exactly for TextReasoning entries; absent for other capabilities. */
   text_reasoning_transport?: TextReasoningTransport
+  /** Present only on ImageGeneration entries. */
+  image_generation?: ImageGenerationProviderDescriptor
   worker_env_source: ProviderWorkerEnvSource
   body_caps: ProviderBodyCaps
   resume_evidence: { path: string; status: 'verified' | 'conservative' }

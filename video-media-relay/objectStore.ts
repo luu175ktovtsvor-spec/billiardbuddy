@@ -26,7 +26,7 @@ type OssSdk = {
   signatureUrlV4(method: string, expires: number, request?: { headers?: Record<string, string>; queries?: Record<string, string | number> }, objectName?: string, additionalHeaders?: string[]): Promise<string>
   head(name: string): Promise<{ res: { headers: Record<string, string | string[] | undefined> } }>
   getStream(name: string): Promise<{ stream: Readable }>
-  putStream(name: string, stream: Readable, options?: { mime?: string; meta?: Record<string, string>; contentLength?: number }): Promise<unknown>
+  putStream(name: string, stream: Readable, options?: { mime?: string; meta?: Record<string, string>; contentLength?: number; headers?: Record<string, string> }): Promise<unknown>
   delete(name: string): Promise<unknown>
   initMultipartUpload(name: string, options?: { mime?: string; meta?: Record<string, string> }): Promise<{ uploadId?: string }>
   listParts(name: string, uploadId: string, query?: Record<string, string | number>): Promise<{ parts?: Array<{ PartNumber?: string | number; ETag?: string }>; nextPartNumberMarker?: string | number; isTruncated?: boolean | string }>
@@ -59,7 +59,9 @@ export class OssObjectStore implements RelayObjectStore {
   }
 
   async createPutUrl(input: { leaseId: string; hash: string; byteSize: number; contentType: string; expiresAt: string }) {
-    const headers = { 'content-type': input.contentType, 'x-oss-meta-sha256': input.hash, 'x-oss-meta-size': String(input.byteSize) }
+    // A lease is immutable once signed. Replaying its PUT URL must never
+    // replace the verified source object before the relay consumes it.
+    const headers = { 'content-type': input.contentType, 'if-none-match': '*', 'x-oss-meta-sha256': input.hash, 'x-oss-meta-size': String(input.byteSize) }
     return { put_url: await this.presignedUrl('PUT', this.inputKey(input.leaseId), input.expiresAt, headers), required_headers: headers }
   }
 
@@ -98,7 +100,10 @@ export class OssObjectStore implements RelayObjectStore {
       // Readable.from(Uint8Array) iterates numbers in Bun's Node compatibility
       // layer. Wrap the immutable bytes as one binary chunk so ali-oss always
       // receives a byte stream rather than a stream of numeric values.
-      await this.client.putStream(this.resultKey(input.objectRef), Readable.from([Buffer.from(input.body)]), { contentLength: input.body.byteLength, mime: input.contentType, meta: { sha256: input.contentHash, size: String(input.body.byteLength) } })
+      // Result refs are immutable receipts. The same precondition prevents a
+      // retry or a collision from silently replacing bytes that were already
+      // acknowledged by a Sidecar.
+      await this.client.putStream(this.resultKey(input.objectRef), Readable.from([Buffer.from(input.body)]), { contentLength: input.body.byteLength, mime: input.contentType, meta: { sha256: input.contentHash, size: String(input.body.byteLength) }, headers: { 'If-None-Match': '*' } })
     } catch { throw new Error('oss_result_put_failed') }
   }
   async createResultReadUrl(input: { objectRef: string; expiresAt: string }): Promise<string> { return await this.presignedUrl('GET', this.resultKey(input.objectRef), input.expiresAt) }
