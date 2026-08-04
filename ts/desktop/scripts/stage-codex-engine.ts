@@ -29,6 +29,7 @@ import {
   isThinMachO64,
   type BinaryHashMode,
 } from '../../shared/product/binaryIntegrity'
+import { type WindowsNativeTarget, verifyWindowsPeMachine } from './native-build-tools'
 
 type SupportedTarget =
   | 'aarch64-apple-darwin'
@@ -201,6 +202,19 @@ export function detectCodexEngineTarget(
   if (platform === 'win32' && arch === 'x64') return 'x86_64-pc-windows-msvc'
   if (platform === 'win32' && arch === 'arm64') return 'aarch64-pc-windows-msvc'
   throw new Error(`不支持的 Codex 引擎平台: ${platform}/${arch}`)
+}
+
+/** A cross-compiled companion is integrity-audited but never executed on the wrong host architecture. */
+export function canExecuteCodexEngineTarget(
+  target: SupportedTarget,
+  platform = process.platform,
+  arch = process.arch,
+): boolean {
+  try {
+    return target === detectCodexEngineTarget(platform, arch)
+  } catch {
+    return false
+  }
 }
 
 export function isSupportedCodexEngineTarget(value: string): value is SupportedTarget {
@@ -668,13 +682,17 @@ export function verifyStagedCodexEngine(options: CodexEngineStageOptions): void 
   ) {
     throw new Error('Codex 官方 ripgrep 校验失败')
   }
-  const codeModeHostSmoke = spawnSync(codeModeHostPath, ['--help'], { encoding: 'utf8', timeout: 10_000 })
-  if (
-    codeModeHostSmoke.error
-    || codeModeHostSmoke.status !== 0
-    || !`${codeModeHostSmoke.stdout}\n${codeModeHostSmoke.stderr}`.includes('--listen')
-  ) {
-    throw new Error('Codex Code Mode Host 无法作为同平台 companion 启动')
+  if (canExecuteCodexEngineTarget(options.target)) {
+    const codeModeHostSmoke = spawnSync(codeModeHostPath, ['--help'], { encoding: 'utf8', timeout: 10_000 })
+    if (
+      codeModeHostSmoke.error
+      || codeModeHostSmoke.status !== 0
+      || !`${codeModeHostSmoke.stdout}\n${codeModeHostSmoke.stderr}`.includes('--listen')
+    ) {
+      throw new Error('Codex Code Mode Host 无法作为同平台 companion 启动')
+    }
+  } else {
+    console.log(`[codex-engine] skipped executable smoke for cross target ${options.target}`)
   }
   for (const helper of windowsSandboxHelpers) {
     const helperPath = join(destination, helper.name)
@@ -683,6 +701,17 @@ export function verifyStagedCodexEngine(options: CodexEngineStageOptions): void 
     if (!stat.isFile() || stat.isSymbolicLink() || stat.size !== helper.size || sha256(helperPath) !== helper.sha256) {
       throw new Error(`Windows Sandbox 辅助程序校验失败: ${helper.name}`)
     }
+  }
+  if (options.target.includes('windows')) {
+    // Cross-target staging validates the exact Core executables as PE without
+    // executing them. The later unpacked-app audit covers every native asset.
+    const target = options.target as WindowsNativeTarget
+    for (const executable of [
+      binaryPath,
+      codeModeHostPath,
+      ripgrepPath,
+      ...windowsSandboxHelpers.map(helper => join(destination, helper.name)),
+    ]) verifyWindowsPeMachine(executable, target)
   }
 }
 

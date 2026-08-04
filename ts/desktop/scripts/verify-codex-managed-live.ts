@@ -3,13 +3,15 @@
  *
  * It intentionally has no default credentials and is never part of build or
  * CI. The caller must inject a short-lived Gateway access bearer, obtained by
- * the desktop installation-session flow, and must revoke it afterwards.
+ * the desktop installation-session flow, and explicitly acknowledge billing.
+ * Every App Server approval is declined so the probe never grants a model
+ * network, file-write, or persistent permission capability.
  *
  * This exercises the same Electron Main runtime that the desktop uses:
  * Rust App Server -> loopback capability adapter -> BilliardBuddy Gateway ->
  * managed DeepSeek Responses. It does not start Electron or touch Renderer.
  */
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -77,13 +79,13 @@ class LiveEvents {
     }
   }
 
-  approve(request: CodexNativeServerRequest): CodexNativeJsonObject {
+  decline(request: CodexNativeServerRequest): CodexNativeJsonObject {
     if (
       request.method !== 'item/commandExecution/requestApproval'
       && request.method !== 'item/fileChange/requestApproval'
     ) throw new Error(`unexpected native server request: ${request.method}`)
     this.approvalMethods.add(request.method)
-    return { decision: 'accept' }
+    return { decision: 'decline' }
   }
 
   async waitForTurn(turn: NativeCodexTurn, timeout = TURN_TIMEOUT_MS): Promise<void> {
@@ -116,6 +118,9 @@ function assertThreadRead(value: CodexNativeJsonObject, expectedId: string): voi
 }
 
 async function main(): Promise<void> {
+  if (process.env.BB_LIVE_TEST_CONFIRMATION !== 'RUN_BILLABLE_MANAGED_AGENT_TEST') {
+    throw new Error('BB_LIVE_TEST_CONFIRMATION must be RUN_BILLABLE_MANAGED_AGENT_TEST')
+  }
   const gatewayUrl = requiredEnvironment('BB_LIVE_GATEWAY_URL')
   const accessToken = requiredEnvironment('BB_LIVE_GATEWAY_ACCESS_TOKEN')
   const model = process.env.BB_LIVE_MODEL?.trim() || 'deepseek-v4-flash'
@@ -125,7 +130,6 @@ async function main(): Promise<void> {
   }
   const desktopRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
   const workspace = await mkdtemp(path.join(tmpdir(), 'billiardbuddy-native-live-workspace-'))
-  const approvalWorkspace = await mkdtemp(path.join(tmpdir(), 'billiardbuddy-native-live-approval-'))
   const userDataPath = await mkdtemp(path.join(tmpdir(), 'billiardbuddy-native-live-user-data-'))
   const events = new LiveEvents()
   const route = {
@@ -133,12 +137,13 @@ async function main(): Promise<void> {
     gatewayUrl,
     resolveAccessToken: async () => accessToken,
     model,
+    capabilities: entry.capabilities,
   }
   const createRuntime = () => new ElectronCodexNativeRuntime({
     desktopRoot,
     userDataPath,
     onNotification: notification => events.notify(notification),
-    onServerRequest: async request => events.approve(request),
+    onServerRequest: async request => events.decline(request),
   })
   let runtime: ElectronCodexNativeRuntime | undefined
 
@@ -163,37 +168,25 @@ async function main(): Promise<void> {
     console.log('NATIVE_MANAGED_STAGE=thread_resumed')
     assertThreadRead(await runtime.readThread(resumed), thread.id)
 
-    const toolTurn = await runtime.startTurn(resumed, [{
+    const approvalTurn = await runtime.startTurn(resumed, [{
       type: 'text',
-      text: `Use a tool to create ${path.join(approvalWorkspace, 'approval-proof.txt')} with exactly approved as its content. Then reply with exactly TOOL-LOOP-OK.`,
-    }], 'live-managed-tool-turn')
-    await events.waitForTurn(toolTurn)
-    console.log('NATIVE_MANAGED_STAGE=tool_turn_completed')
-    const proof = await readFile(path.join(approvalWorkspace, 'approval-proof.txt'), 'utf8')
-    if (proof.trim() !== 'approved') throw new Error('native tool did not create the expected workspace file')
+      text: 'Attempt exactly one HEAD request to https://example.com. The native approval will be declined. Do not try another command after the denial, then reply with exactly APPROVAL-DENIED-OK.',
+    }], 'live-managed-approval-denial-turn')
+    await events.waitForTurn(approvalTurn)
+    console.log('NATIVE_MANAGED_STAGE=approval_turn_completed')
+    if (events.approvalMethods.size === 0) throw new Error('native tool turn did not issue an approval request')
 
     const fork = await runtime.forkThread({
       threadId: resumed.id,
       cwd: workspace,
       route,
       permissionMode: 'ask',
-      lastTurnId: toolTurn.id,
+      lastTurnId: approvalTurn.id,
     })
     if (fork.id === resumed.id) throw new Error('Rust Thread fork reused the source Thread id')
     assertThreadRead(await runtime.readThread(fork), fork.id)
     await runtime.archiveThread(fork)
     console.log('NATIVE_MANAGED_STAGE=thread_forked_and_archived')
-
-    // The Mac workspace sandbox permits its private temporary directory, so a
-    // file write is correctly not an escalation. Network is disabled for this
-    // source-native Ask profile and must travel through an approval request.
-    const approvalTurn = await runtime.startTurn(resumed, [{
-      type: 'text',
-      text: 'Use a shell command to make a HEAD request to https://example.com. Request approval for network access if needed. Then reply with exactly NETWORK-APPROVAL-OK.',
-    }], 'live-managed-network-approval-turn')
-    await events.waitForTurn(approvalTurn)
-    console.log('NATIVE_MANAGED_STAGE=network_turn_completed')
-    if (events.approvalMethods.size === 0) throw new Error('native tool turn did not issue an approval request')
 
     const interruptTurn = await runtime.startTurn(resumed, [{
       type: 'text',
@@ -238,7 +231,7 @@ async function main(): Promise<void> {
 
     console.log('NATIVE_MANAGED_THREAD_TURN=passed')
     console.log(`NATIVE_MANAGED_APPROVALS=${[...events.approvalMethods].sort().join(',')}`)
-    console.log('NATIVE_MANAGED_TOOL_LOOP=passed')
+    console.log('NATIVE_MANAGED_APPROVAL_DENIAL=passed')
     console.log('NATIVE_MANAGED_FORK_ARCHIVE=passed')
     console.log('NATIVE_MANAGED_INTERRUPT=passed')
     console.log('NATIVE_MANAGED_RESUME=passed')
@@ -248,7 +241,6 @@ async function main(): Promise<void> {
     // Both paths were created by mkdtemp above; no user workspace or Codex Home
     // is touched by this explicit acceptance probe.
     await rm(workspace, { recursive: true, force: true })
-    await rm(approvalWorkspace, { recursive: true, force: true })
     await rm(userDataPath, { recursive: true, force: true })
   }
 }

@@ -71,22 +71,76 @@ fn tools_list() -> &'static str {
       {"name":"inspect_page","description":"Read a bounded, structured snapshot of one connected Chrome tab and return current element IDs for safe follow-up actions.","inputSchema":{"type":"object","properties":{"tabId":{"type":"integer","minimum":1}},"required":["tabId"],"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"openWorldHint":true}},
       {"name":"capture_page","description":"Capture the visible content of one connected Chrome tab.","inputSchema":{"type":"object","properties":{"tabId":{"type":"integer","minimum":1}},"required":["tabId"],"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"openWorldHint":true}},
       {"name":"developer_snapshot","description":"Read a bounded Console, Network and Performance summary for one connected Chrome tab. The extension omits headers, cookies, storage, bodies and arbitrary CDP access, removes URL credentials, query strings, fragments and sensitive path identifiers, and applies best-effort redaction to console text.","inputSchema":{"type":"object","properties":{"tabId":{"type":"integer","minimum":1}},"required":["tabId"],"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"openWorldHint":true}},
-      {"name":"navigate","description":"Navigate one connected Chrome tab to a URL whose host is already allowed by the user.","inputSchema":{"type":"object","properties":{"tabId":{"type":"integer","minimum":1},"url":{"type":"string","maxLength":4096}},"required":["tabId","url"],"additionalProperties":false}},
-      {"name":"click_element","description":"Click a current element ID returned by inspect_page. Ask the user before an external side effect.","inputSchema":{"type":"object","properties":{"tabId":{"type":"integer","minimum":1},"elementId":{"type":"string","pattern":"^bb-[1-9][0-9]*-[1-9][0-9]*$"}},"required":["tabId","elementId"],"additionalProperties":false}},
-      {"name":"type_text","description":"Type text into a current non-password element ID returned by inspect_page. Never use for passwords or authentication codes.","inputSchema":{"type":"object","properties":{"tabId":{"type":"integer","minimum":1},"elementId":{"type":"string","pattern":"^bb-[1-9][0-9]*-[1-9][0-9]*$"},"text":{"type":"string","minLength":1,"maxLength":4096}},"required":["tabId","elementId","text"],"additionalProperties":false}},
-      {"name":"press_key","description":"Press Enter, Tab, Escape, or one arrow key in a connected tab.","inputSchema":{"type":"object","properties":{"tabId":{"type":"integer","minimum":1},"key":{"type":"string","enum":["Enter","Tab","Escape","ArrowUp","ArrowDown","ArrowLeft","ArrowRight"]}},"required":["tabId","key"],"additionalProperties":false}}
+      {"name":"cdp_send","description":"Run one read-only, allowlisted developer inspection in a user-connected Chrome tab. Only DOM.getDocument, Page.getLayoutMetrics, and Performance.getMetrics are accepted. The extension projects and redacts every result; it never accepts arbitrary JavaScript, CDP parameters, cookies, storage, headers, credentials, response bodies or mutation commands.","inputSchema":{"type":"object","properties":{"tabId":{"type":"integer","minimum":1},"method":{"type":"string","enum":["DOM.getDocument","Page.getLayoutMetrics","Performance.getMetrics"]}},"required":["tabId","method"],"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"openWorldHint":true}},
+      {"name":"cdp_read_events","description":"Read bounded redacted Console, Network and navigation events after a cursor from one connected Chrome tab. No raw CDP event payload, headers, cookies, storage, request/response body or credential is exposed.","inputSchema":{"type":"object","properties":{"tabId":{"type":"integer","minimum":1},"afterSequence":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":100}},"required":["tabId"],"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"openWorldHint":true}},
+      {"name":"wait_for_page","description":"Wait, for at most 10 seconds, until a connected Chrome tab reaches a complete document state or a visible text fragment appears. The fragment is never returned and cannot inspect form values, cookies, storage or hidden state.","inputSchema":{"type":"object","properties":{"tabId":{"type":"integer","minimum":1},"text":{"type":"string","minLength":1,"maxLength":256},"timeoutMs":{"type":"integer","minimum":1,"maximum":10000}},"required":["tabId"],"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"openWorldHint":true}},
+      {"name":"navigate","description":"Navigate one connected Chrome tab to a URL whose host is already allowed by the user.","inputSchema":{"type":"object","properties":{"tabId":{"type":"integer","minimum":1},"url":{"type":"string","maxLength":4096}},"required":["tabId","url"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"destructiveHint":true,"openWorldHint":true}},
+      {"name":"click_element","description":"Click a current element ID returned by inspect_page. Ask the user before an external side effect.","inputSchema":{"type":"object","properties":{"tabId":{"type":"integer","minimum":1},"elementId":{"type":"string","pattern":"^bb-[1-9][0-9]*-[1-9][0-9]*$"}},"required":["tabId","elementId"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"destructiveHint":true,"openWorldHint":true}},
+      {"name":"type_text","description":"Type text into a current non-password element ID returned by inspect_page. Never use for passwords or authentication codes.","inputSchema":{"type":"object","properties":{"tabId":{"type":"integer","minimum":1},"elementId":{"type":"string","pattern":"^bb-[1-9][0-9]*-[1-9][0-9]*$"},"text":{"type":"string","minLength":1,"maxLength":4096}},"required":["tabId","elementId","text"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"destructiveHint":true,"openWorldHint":true}},
+      {"name":"press_key","description":"Press Enter, Tab, Escape, or one arrow key in a connected tab.","inputSchema":{"type":"object","properties":{"tabId":{"type":"integer","minimum":1},"key":{"type":"string","enum":["Enter","Tab","Escape","ArrowUp","ArrowDown","ArrowLeft","ArrowRight"]}},"required":["tabId","key"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"destructiveHint":true,"openWorldHint":true}}
     ]}"#
 }
 
 fn tool_call_response(id: &str, message: &str) -> String {
-    let Some(name) = json_string_member(message, "name") else {
+    let params = json_member_value(message, "params").unwrap_or_else(|| "{}".to_owned());
+    let Some(name) = json_string_member(&params, "name") else {
         return error_response(id, -32602, "tools/call requires a tool name");
     };
-    let arguments = json_member_value(message, "arguments").unwrap_or_else(|| "{}".to_owned());
+    let arguments = json_member_value(&params, "arguments").unwrap_or_else(|| "{}".to_owned());
     let result = match name.as_str() {
         "status" | "list_tabs" => bridge_call(&name, "{}"),
-        "inspect_page" | "capture_page" | "developer_snapshot" => with_tab_id(&arguments, |tab_id| {
-            bridge_call(&name, &format!(r#"{{"tabId":{tab_id}}}"#))
+        "inspect_page" | "capture_page" | "developer_snapshot" => {
+            with_tab_id(&arguments, |tab_id| {
+                bridge_call(&name, &format!(r#"{{"tabId":{tab_id}}}"#))
+            })
+        }
+        "cdp_send" => with_tab_id(&arguments, |tab_id| {
+            let method = required_string(&arguments, "method")?;
+            if !matches!(
+                method.as_str(),
+                "DOM.getDocument" | "Page.getLayoutMetrics" | "Performance.getMetrics"
+            ) {
+                return Err("unsupported Chrome developer method".to_owned());
+            }
+            bridge_call(
+                &name,
+                &format!(r#"{{"tabId":{tab_id},"method":"{method}"}}"#),
+            )
+        }),
+        "cdp_read_events" => with_tab_id(&arguments, |tab_id| {
+            let after_sequence =
+                optional_non_negative_integer(&arguments, "afterSequence")?.unwrap_or(0);
+            let limit = optional_non_negative_integer(&arguments, "limit")?.unwrap_or(50);
+            if !(1..=100).contains(&limit) {
+                return Err("limit must be an integer from 1 to 100".to_owned());
+            }
+            bridge_call(
+                &name,
+                &format!(
+                    r#"{{"tabId":{tab_id},"afterSequence":{after_sequence},"limit":{limit}}}"#
+                ),
+            )
+        }),
+        "wait_for_page" => with_tab_id(&arguments, |tab_id| {
+            let text = json_string_member(&arguments, "text");
+            if text
+                .as_ref()
+                .is_some_and(|value| value.is_empty() || value.chars().count() > 256)
+            {
+                return Err("text must contain 1-256 characters when supplied".to_owned());
+            }
+            let timeout_ms =
+                optional_non_negative_integer(&arguments, "timeoutMs")?.unwrap_or(5_000);
+            if !(1..=10_000).contains(&timeout_ms) {
+                return Err("timeoutMs must be an integer from 1 to 10000".to_owned());
+            }
+            let text_field = text
+                .map(|value| format!(",\"text\":\"{}\"", json_escape(&value)))
+                .unwrap_or_default();
+            bridge_call(
+                &name,
+                &format!(r#"{{"tabId":{tab_id},"timeoutMs":{timeout_ms}{text_field}}}"#),
+            )
         }),
         "navigate" => with_tab_id(&arguments, |tab_id| {
             let url = required_string(&arguments, "url")?;
@@ -280,14 +334,44 @@ fn required_integer(input: &str, key: &str) -> Result<i64, String> {
         .and_then(|value| value.trim().parse().ok())
         .ok_or_else(|| format!("{key} must be an integer"))
 }
+fn optional_non_negative_integer(input: &str, key: &str) -> Result<Option<i64>, String> {
+    json_member_value(input, key)
+        .map(|value| {
+            value
+                .trim()
+                .parse::<i64>()
+                .ok()
+                .filter(|number| *number >= 0)
+                .ok_or_else(|| format!("{key} must be a non-negative integer"))
+        })
+        .transpose()
+}
 
 fn json_member_value(input: &str, key: &str) -> Option<String> {
-    let needle = format!(r#""{key}""#);
-    let start = input.find(&needle)? + needle.len();
-    let after_key = input[start..].trim_start();
-    let value = after_key.strip_prefix(':')?.trim_start();
-    let end = raw_json_value_end(value)?;
-    Some(value[..end].trim().to_owned())
+    let mut remainder = input.trim().strip_prefix('{')?;
+    loop {
+        remainder = remainder.trim_start();
+        if remainder.starts_with('}') {
+            return None;
+        }
+        if let Some(after_comma) = remainder.strip_prefix(',') {
+            remainder = after_comma.trim_start();
+        }
+        let key_end = raw_json_value_end(remainder)?;
+        let member_key = remainder[..key_end]
+            .strip_prefix('"')?
+            .strip_suffix('"')
+            .and_then(json_unescape)?;
+        remainder = remainder[key_end..]
+            .trim_start()
+            .strip_prefix(':')?
+            .trim_start();
+        let value_end = raw_json_value_end(remainder)?;
+        if member_key == key {
+            return Some(remainder[..value_end].trim().to_owned());
+        }
+        remainder = &remainder[value_end..];
+    }
 }
 fn json_string_member(input: &str, key: &str) -> Option<String> {
     json_member_value(input, key).and_then(|value| {
@@ -379,4 +463,36 @@ fn json_escape(value: &str) -> String {
         }
     }
     escaped
+}
+
+#[cfg(test)]
+mod parser_tests {
+    use super::*;
+
+    #[test]
+    fn top_level_member_ignores_field_like_text() {
+        let input = r#"{"text":"contains \"tabId\":999","tabId":42}"#;
+        assert_eq!(json_member_value(input, "tabId").as_deref(), Some("42"));
+    }
+
+    #[test]
+    fn tools_call_reads_name_only_from_nested_params() {
+        let request = r#"{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"status","arguments":{"text":"contains \"name\":\"wrong\""}}}"#;
+        let response = handle_message(request).expect("request must receive a response");
+        assert!(!response.contains("tools/call requires a tool name"));
+        assert!(response.contains(r#""id":7"#));
+    }
+
+    #[test]
+    fn mutating_chrome_tools_explicitly_require_core_approval() {
+        for name in ["navigate", "click_element", "type_text", "press_key"] {
+            let needle = format!(r#""name":"{name}""#);
+            let tool = tools_list()
+                .lines()
+                .find(|line| line.contains(&needle))
+                .expect("mutating Chrome tool must be declared");
+            assert!(tool.contains(r#""readOnlyHint":false"#), "{name}");
+            assert!(tool.contains(r#""destructiveHint":true"#), "{name}");
+        }
+    }
 }

@@ -44,8 +44,8 @@ try {
   const catalog = JSON.parse(new TextDecoder().decode(modelsBytes)) as { data?: Array<{ id?: unknown }> }
   modelIds = (catalog.data ?? []).map(item => item.id).filter((id): id is string => typeof id === 'string')
 } catch { throw new Error('Gateway model catalog returned invalid JSON') }
-if (!modelIds.includes('deepseek-v4-flash') || !modelIds.includes('deepseek-v4-pro')) {
-  throw new Error('Gateway model catalog omitted a registered DeepSeek model')
+if (!modelIds.includes('deepseek-v4-flash')) {
+  throw new Error('Gateway model catalog omitted the registered DeepSeek model')
 }
 
 const operationId = `gateway_smoke_${randomUUID().replaceAll('-', '')}`

@@ -17,10 +17,21 @@ permissions:
 
 jobs:
   verify-and-build:
+    name: Windows ${{ matrix.architecture }}
     runs-on: windows-latest
     # Codex App Server is built from the locked Rust source before Electron
     # packaging; keep this aligned with the macOS source-build budget.
-    timeout-minutes: 180
+    timeout-minutes: ${{ matrix.timeout_minutes }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - architecture: x64
+            target: x86_64-pc-windows-msvc
+            timeout_minutes: 360
+          - architecture: arm64
+            target: aarch64-pc-windows-msvc
+            timeout_minutes: 180
     steps:
       - uses: actions/checkout@v5
         with:
@@ -36,6 +47,30 @@ jobs:
         uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582
         with:
           toolchain: '1.95.0'
+          components: rustfmt
+
+      - name: 安装当前 Windows job 的 Rust target
+        shell: bash
+        run: rustup target add '${{ matrix.target }}'
+
+      - name: 准备 Codex 官方 Sandbox V8 验证环境
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - '${{ matrix.target }}' "$GITHUB_ENV" <<'PY'
+          import sys
+          from pathlib import Path
+
+          scripts = Path('third_party/codex-engine/scripts').resolve()
+          sys.path.insert(0, str(scripts))
+          from codex_package.targets import TARGET_SPECS
+          from codex_package.v8 import resolve_codex_v8_cargo_env
+
+          environment = resolve_codex_v8_cargo_env(TARGET_SPECS[sys.argv[1]])
+          with Path(sys.argv[2]).open('a', encoding='utf-8') as output:
+              for name, value in environment.items():
+                  output.write(f'{name}={value}\n')
+          PY
 
       # Bun 1.3.14 occasionally receives a truncated baseline runtime on
       # GitHub's Windows runner when compiling the bundled sidecar. Seed the
@@ -82,6 +117,7 @@ jobs:
         run: bun run scripts/check-release-tracked-files.ts
 
       - name: 统一检查 Agent 宿主、模型适配与锁定协议
+        if: matrix.architecture == 'x64'
         working-directory: ts
         shell: pwsh
         run: |
@@ -95,7 +131,60 @@ jobs:
           bun run verify:codex-engine-source
           if ($LASTEXITCODE -ne 0) { throw 'Codex 锁定源码与协议检查失败' }
 
+      - name: 验证产品运行路径中的 Rust fmt、check 与 test
+        if: matrix.architecture == 'x64'
+        shell: bash
+        run: |
+          set -euo pipefail
+          target='${{ matrix.target }}'
+          verification_root="${RUNNER_TEMP}/billiardbuddy-codex-rust-verify"
+          verification_source="${verification_root}/source"
+          plugin_target="${RUNNER_TEMP}/billiardbuddy-plugin-rust-verify"
+          cleanup() {
+            git -C third_party/codex-engine worktree remove --force "${verification_source}" >/dev/null 2>&1 || true
+            rm -rf "${verification_root}" "${plugin_target}"
+          }
+          trap cleanup EXIT
+          rm -rf "${verification_root}" "${plugin_target}"
+          mkdir -p "${verification_root}"
+          git -C third_party/codex-engine worktree add --detach "${verification_source}" HEAD
+          for patch in \
+            third_party/codex-engine-patches/0001-sanitize-hook-environment.patch \
+            third_party/codex-engine-patches/0002-sanitize-non-tool-child-environment.patch
+          do
+            git -C "${verification_source}" apply --check "${GITHUB_WORKSPACE}/${patch}"
+            git -C "${verification_source}" apply --whitespace=nowarn "${GITHUB_WORKSPACE}/${patch}"
+          done
+          git -C "${verification_source}" diff --check
+
+          pushd "${verification_source}/codex-rs"
+          cargo fmt --all -- --config imports_granularity=Item --check
+          cargo check --locked --target "${target}" --all-targets \
+            --package codex-app-server \
+            --package codex-core \
+            --package codex-code-mode-host \
+            --package codex-windows-sandbox
+          cargo test --locked --target "${target}" --all-targets \
+            --package codex-app-server \
+            --package codex-core \
+            --package codex-code-mode-host \
+            --package codex-windows-sandbox
+          popd
+
+          export CARGO_TARGET_DIR="${plugin_target}"
+          for manifest in \
+            native/billiardbuddy-browser-use/Cargo.toml \
+            native/billiardbuddy-chrome/Cargo.toml \
+            native/billiardbuddy-computer-use/Cargo.toml \
+            native/billiardbuddy-record-replay/Cargo.toml
+          do
+            cargo fmt --manifest-path "${manifest}" --all -- --check
+            cargo check --locked --manifest-path "${manifest}" --all-targets
+            cargo test --locked --manifest-path "${manifest}" --all-targets
+          done
+
       - name: 固定 Windows x64 Canvas golden 并生成审计证据
+        if: matrix.architecture == 'x64'
         working-directory: ts
         shell: pwsh
         env:
@@ -107,6 +196,7 @@ jobs:
           if (-not (Test-Path -LiteralPath $env:BB_IMAGE_GOLDEN_REPORT -PathType Leaf)) { throw '缺少 Windows x64 golden 审计证据' }
 
       - name: 保存 Windows x64 Canvas golden 审计证据
+        if: matrix.architecture == 'x64'
         uses: actions/upload-artifact@v4
         with:
           name: image-canvas-golden-windows-x64-${{ github.sha }}
@@ -119,24 +209,36 @@ jobs:
         env:
           BB_WINDOWS_MEDIA_TOOLCHAIN_URL: ${{ secrets.BB_WINDOWS_MEDIA_TOOLCHAIN_URL }}
           BB_WINDOWS_MEDIA_TOOLCHAIN_SHA256: ${{ secrets.BB_WINDOWS_MEDIA_TOOLCHAIN_SHA256 }}
+          BB_WINDOWS_MEDIA_TOOLCHAIN_ARM64_URL: ${{ secrets.BB_WINDOWS_MEDIA_TOOLCHAIN_ARM64_URL }}
+          BB_WINDOWS_MEDIA_TOOLCHAIN_ARM64_SHA256: ${{ secrets.BB_WINDOWS_MEDIA_TOOLCHAIN_ARM64_SHA256 }}
         run: |
           $ErrorActionPreference = 'Stop'
 
-          if ([string]::IsNullOrWhiteSpace($env:BB_WINDOWS_MEDIA_TOOLCHAIN_URL)) {
-            throw '缺少 GitHub Secret: BB_WINDOWS_MEDIA_TOOLCHAIN_URL'
+          $architecture = '${{ matrix.architecture }}'
+          if ($architecture -eq 'arm64') {
+            $mediaUrl = $env:BB_WINDOWS_MEDIA_TOOLCHAIN_ARM64_URL
+            $configuredHash = $env:BB_WINDOWS_MEDIA_TOOLCHAIN_ARM64_SHA256
+            $secretLabel = 'BB_WINDOWS_MEDIA_TOOLCHAIN_ARM64_URL / BB_WINDOWS_MEDIA_TOOLCHAIN_ARM64_SHA256'
+          } else {
+            $mediaUrl = $env:BB_WINDOWS_MEDIA_TOOLCHAIN_URL
+            $configuredHash = $env:BB_WINDOWS_MEDIA_TOOLCHAIN_SHA256
+            $secretLabel = 'BB_WINDOWS_MEDIA_TOOLCHAIN_URL / BB_WINDOWS_MEDIA_TOOLCHAIN_SHA256'
           }
-          if ($env:BB_WINDOWS_MEDIA_TOOLCHAIN_URL -notmatch '^https://') {
-            throw 'BB_WINDOWS_MEDIA_TOOLCHAIN_URL 必须使用 HTTPS'
+          $expectedHash = ([string]$configuredHash).Trim().ToLowerInvariant()
+          if ([string]::IsNullOrWhiteSpace($mediaUrl)) {
+            throw "缺少 GitHub Secret: $secretLabel"
           }
-          $expectedHash = $env:BB_WINDOWS_MEDIA_TOOLCHAIN_SHA256.Trim().ToLowerInvariant()
+          if ($mediaUrl -notmatch '^https://') {
+            throw "$secretLabel 必须使用 HTTPS"
+          }
           if ($expectedHash -notmatch '^[a-f0-9]{64}$') {
-            throw 'BB_WINDOWS_MEDIA_TOOLCHAIN_SHA256 必须是 64 位十六进制 SHA-256'
+            throw "$secretLabel 必须提供 64 位十六进制 SHA-256"
           }
 
-          $archive = Join-Path $env:RUNNER_TEMP 'billiardbuddy-media-toolchain.zip'
-          $sourceDir = Join-Path $env:RUNNER_TEMP 'billiardbuddy-media-toolchain'
+          $archive = Join-Path $env:RUNNER_TEMP "billiardbuddy-media-toolchain-$architecture.zip"
+          $sourceDir = Join-Path $env:RUNNER_TEMP "billiardbuddy-media-toolchain-$architecture"
           Remove-Item $archive, $sourceDir -Recurse -Force -ErrorAction SilentlyContinue
-          Invoke-WebRequest -Uri $env:BB_WINDOWS_MEDIA_TOOLCHAIN_URL -OutFile $archive
+          Invoke-WebRequest -Uri $mediaUrl -OutFile $archive
 
           $actualHash = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant()
           if ($actualHash -ne $expectedHash) {
@@ -151,23 +253,41 @@ jobs:
           }
 
           "BB_MEDIA_TOOLCHAIN_SOURCE_DIR=$sourceDir" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "BB_MEDIA_TOOLCHAIN_ARCHITECTURE=$architecture" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: 构建 Windows 安装包（sidecar + renderer + Electron + 打包，脚本内置 --publish never）
-        working-directory: ts/desktop
+        working-directory: .
         env:
-          CODEX_ENGINE_TARGET: x86_64-pc-windows-msvc
-        run: bun run electron:package
+          SKIP_INSTALL: '1'
+        run: pwsh -NoProfile -ExecutionPolicy Bypass -File ts/desktop/scripts/build-windows-x64.ps1 -Architecture ${{ matrix.architecture }}
+
+      - name: 验证 x64 受管 Runtime、Hook、插件与 Browser 生产链
+        if: matrix.architecture == 'x64'
+        working-directory: ts
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          bun run verify:codex-runtime-personal-e2e
+          if ($LASTEXITCODE -ne 0) { throw '受管 App Server 的 Thread/Turn/恢复 E2E 失败' }
+          bun run verify:codex-hook-environment
+          if ($LASTEXITCODE -ne 0) { throw '受管 Hook capability 隔离 E2E 失败' }
+          bun desktop/scripts/verify-local-agent-plugin-smoke.ts --target '${{ matrix.target }}'
+          if ($LASTEXITCODE -ne 0) { throw '本地 Agent 插件 smoke 失败' }
+          bun desktop/scripts/verify-browser-use-e2e.ts --target '${{ matrix.target }}'
+          if ($LASTEXITCODE -ne 0) { throw '独立 Browser E2E 失败' }
 
       - name: 校验安装包产物
         shell: pwsh
         run: |
-          bun ts/desktop/scripts/verify-codex-engine-smoke.ts --target x86_64-pc-windows-msvc
+          $target = '${{ matrix.target }}'
+          $artifactDir = 'ts/desktop/build-artifacts/windows-${{ matrix.architecture }}'
+          bun ts/desktop/scripts/verify-codex-engine-smoke.ts --target $target
           if ($LASTEXITCODE -ne 0) { throw '受管 App Server/ripgrep smoke 失败' }
-          $installers = Get-ChildItem ts/desktop/build-artifacts/electron/*.exe -ErrorAction SilentlyContinue
+          $installers = @(Get-ChildItem -LiteralPath $artifactDir -Filter '*.exe' -File -ErrorAction SilentlyContinue)
           if ($installers.Count -ne 1) { throw '未生成唯一的 Windows 安装包' }
-          $blockmaps = Get-ChildItem ts/desktop/build-artifacts/electron/*.blockmap -ErrorAction SilentlyContinue
+          $blockmaps = @(Get-ChildItem -LiteralPath $artifactDir -Filter '*.blockmap' -File -ErrorAction SilentlyContinue)
           if ($blockmaps.Count -ne 1) { throw '未生成唯一的 Windows 更新 blockmap' }
-          $updateMetadata = Get-ChildItem ts/desktop/build-artifacts/electron/latest.yml -ErrorAction SilentlyContinue
+          $updateMetadata = @(Get-ChildItem -LiteralPath $artifactDir -Filter 'latest.yml' -File -ErrorAction SilentlyContinue)
           if ($updateMetadata.Count -ne 1) { throw '未生成唯一的 Windows 更新清单 latest.yml' }
           $installers | ForEach-Object { Write-Host "$($_.Name) $($_.Length) bytes" }
 
@@ -175,18 +295,20 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $installer = @(Get-ChildItem ts/desktop/build-artifacts/electron/*.exe -ErrorAction Stop)
+          $target = '${{ matrix.target }}'
+          $artifactDir = 'ts/desktop/build-artifacts/windows-${{ matrix.architecture }}'
+          $installer = @(Get-ChildItem -LiteralPath $artifactDir -Filter '*.exe' -File -ErrorAction Stop)
           if ($installer.Count -ne 1) { throw '未生成唯一的 Windows 安装包' }
-          $installerAuditDir = Join-Path $env:RUNNER_TEMP 'BilliardBuddy-installer-audit'
-          $appAuditDir = Join-Path $env:RUNNER_TEMP 'BilliardBuddy-app-audit'
+          $installerAuditDir = Join-Path $env:RUNNER_TEMP 'BilliardBuddy-installer-audit-${{ matrix.architecture }}'
+          $appAuditDir = Join-Path $env:RUNNER_TEMP 'BilliardBuddy-app-audit-${{ matrix.architecture }}'
           if ((Test-Path -LiteralPath $installerAuditDir) -or (Test-Path -LiteralPath $appAuditDir)) {
             throw 'Windows 解包审计目录已存在'
           }
           try {
             & 7z x $installer[0].FullName "-o$installerAuditDir" -y | Out-Host
             if ($LASTEXITCODE -ne 0) { throw "Windows NSIS 解包失败: $LASTEXITCODE" }
-            $appArchives = @(Get-ChildItem -LiteralPath $installerAuditDir -Recurse -Filter 'app-64.7z' -File)
-            if ($appArchives.Count -ne 1) { throw 'Windows NSIS 中缺少唯一的 app-64.7z' }
+            $appArchives = @(Get-ChildItem -LiteralPath $installerAuditDir -Recurse -Filter 'app-*.7z' -File)
+            if ($appArchives.Count -ne 1) { throw 'Windows NSIS 中缺少唯一的 app 架构归档' }
             & 7z x $appArchives[0].FullName "-o$appAuditDir" -y | Out-Host
             if ($LASTEXITCODE -ne 0) { throw "Windows App 解包失败: $LASTEXITCODE" }
             $resourcesDir = Join-Path $appAuditDir 'resources'
@@ -195,7 +317,7 @@ jobs:
             }
             Push-Location ts/desktop
             try {
-              bun run audit:package -- --platform win32 --resources $resourcesDir
+              bun run audit:package -- --platform win32 --target $target --resources $resourcesDir
             } finally {
               Pop-Location
             }
@@ -207,16 +329,16 @@ jobs:
         continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
-          name: BilliardBuddy-windows-x64-${{ github.sha }}
+          name: BilliardBuddy-windows-${{ matrix.architecture }}-${{ github.sha }}
           if-no-files-found: error
           retention-days: 14
           path: |
-            ts/desktop/build-artifacts/electron/*.exe
-            ts/desktop/build-artifacts/electron/*.blockmap
-            ts/desktop/build-artifacts/electron/latest.yml
+            ts/desktop/build-artifacts/windows-${{ matrix.architecture }}/*.exe
+            ts/desktop/build-artifacts/windows-${{ matrix.architecture }}/*.blockmap
+            ts/desktop/build-artifacts/windows-${{ matrix.architecture }}/latest.yml
 
       - name: 发布 Windows 安装包与更新清单
-        if: startsWith(github.ref, 'refs/tags/v') || inputs.publish == true
+        if: (startsWith(github.ref, 'refs/tags/v') || inputs.publish == true) && matrix.architecture == 'x64'
         shell: pwsh
         env:
           BB_RELEASE_UPLOAD_SSH_KEY_B64: ${{ secrets.BB_RELEASE_UPLOAD_SSH_KEY_B64 }}
@@ -239,7 +361,7 @@ jobs:
           'zzyppz.cn ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJIxRR8LH+6jH3sUGNFy9HlxDKRF9MA9QLYm7AYuwa3P' |
           Set-Content -LiteralPath $knownHostsPath -Encoding ascii
 
-          $artifactDir = 'ts/desktop/build-artifacts/electron'
+          $artifactDir = 'ts/desktop/build-artifacts/windows-x64'
           $installers = @(Get-ChildItem "$artifactDir/*.exe" -ErrorAction Stop)
           $blockmaps = @(Get-ChildItem "$artifactDir/*.blockmap" -ErrorAction Stop)
           $updateMetadata = @(Get-ChildItem "$artifactDir/latest.yml" -ErrorAction Stop)
@@ -275,8 +397,8 @@ jobs:
         run: |
           Remove-Item 'ts/desktop/build/product-secrets.json' -Force -ErrorAction SilentlyContinue
           Remove-Item (Join-Path $env:USERPROFILE '.ssh\billiardbuddy-release-upload') -Force -ErrorAction SilentlyContinue
-          Remove-Item (Join-Path $env:RUNNER_TEMP 'billiardbuddy-media-toolchain.zip') -Force -ErrorAction SilentlyContinue
-          Remove-Item (Join-Path $env:RUNNER_TEMP 'billiardbuddy-media-toolchain') -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item (Join-Path $env:RUNNER_TEMP "billiardbuddy-media-toolchain-$env:BB_MEDIA_TOOLCHAIN_ARCHITECTURE.zip") -Force -ErrorAction SilentlyContinue
+          Remove-Item (Join-Path $env:RUNNER_TEMP "billiardbuddy-media-toolchain-$env:BB_MEDIA_TOOLCHAIN_ARCHITECTURE") -Recurse -Force -ErrorAction SilentlyContinue
           Remove-Item (Join-Path $env:RUNNER_TEMP 'billiardbuddy-published-0.4.9-installer') -Recurse -Force -ErrorAction SilentlyContinue
 
 # Windows 发布文件仅在本工作流完成构建和完整性校验后上传至受控更新源；electron-builder 本身始终不直接发布。

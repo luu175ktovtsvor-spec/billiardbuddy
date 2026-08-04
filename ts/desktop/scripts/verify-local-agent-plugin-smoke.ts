@@ -91,6 +91,7 @@ async function verifyPlugin(options: {
   root: string
   expectedServer: string
   tool: string
+  approvalGatedTools: string[]
   expectError?: boolean
   verifyExtra?: (client: McpClient) => Promise<void>
 }) {
@@ -100,7 +101,14 @@ async function verifyPlugin(options: {
     const initialized = result(await client.request('initialize'))
     assert.equal(record(initialized.serverInfo, `${options.name} 缺少 serverInfo`).name, options.expectedServer)
     const listed = result(await client.request('tools/list'))
-    assert.ok(Array.isArray(listed.tools) && listed.tools.some(tool => record(tool, `${options.name} 工具无效`).name === options.tool), `${options.name} 没有声明 ${options.tool}`)
+    const declaredTools = listed.tools
+    assert.ok(Array.isArray(declaredTools) && declaredTools.some(tool => record(tool, `${options.name} 工具无效`).name === options.tool), `${options.name} 没有声明 ${options.tool}`)
+    for (const name of options.approvalGatedTools) {
+      const declared = declaredTools.find(tool => record(tool, `${options.name} 工具无效`).name === name)
+      const annotations = record(record(declared, `${options.name} 没有声明 ${name}`).annotations, `${options.name} ${name} 缺少 MCP 审批注解`)
+      assert.equal(annotations.readOnlyHint, false, `${options.name} ${name} 不能标记为只读`)
+      assert.equal(annotations.destructiveHint, true, `${options.name} ${name} 必须由 Codex Core 发起审批`)
+    }
     const toolCall = result(await client.request('tools/call', { name: options.tool, arguments: {} }))
     assert.equal(toolCall.isError, options.expectError ?? false, `${options.name} 的 ${options.tool} 安全状态不正确`)
     await options.verifyExtra?.(client)
@@ -122,23 +130,29 @@ try {
   await verifyPlugin({
     name: 'Computer Use', executable: plugin('billiardbuddy-computer-use'), root,
     expectedServer: 'billiardbuddy-computer-use', tool: 'status',
+    approvalGatedTools: ['activate_app', 'click_element', 'click', 'drag', 'set_value', 'select_text', 'perform_secondary_action', 'type_text', 'press_key', 'scroll', 'scroll_element'],
   })
   await verifyPlugin({
     name: 'Chrome Control', executable: plugin('billiardbuddy-chrome'), root,
     expectedServer: 'billiardbuddy-chrome', tool: 'status', expectError: true,
+    approvalGatedTools: ['navigate', 'click_element', 'type_text', 'press_key'],
   })
   const recordReplayRoot = join(root, 'record-replay')
   await mkdir(recordReplayRoot, { recursive: true })
-  await writeFile(join(recordReplayRoot, 'trace.json'), '{"version":1,"events":[]}\n')
+  await writeFile(join(recordReplayRoot, 'events.jsonl'), '{"sequence":1,"kind":"pointer_click"}\n')
+  await writeFile(join(recordReplayRoot, 'session.json'), '{"version":2,"eventCount":1}\n')
   await verifyPlugin({
     name: 'Record and Replay', executable: plugin('billiardbuddy-record-replay'), root,
     expectedServer: 'billiardbuddy-record-replay', tool: 'recording_status',
+    approvalGatedTools: ['start_recording', 'stop_recording', 'discard_recording', 'save_recorded_skill'],
     verifyExtra: async client => {
       const stopped = result(await client.request('tools/call', { name: 'stop_recording', arguments: {} }))
-      assert.equal(stopped.isError, false, 'Record and Replay 自动到期后的轨迹无法取回')
+      assert.equal(stopped.isError, false, 'Record and Replay 自动到期后的语义事件无法取回')
       const content = stopped.content
-      assert.ok(Array.isArray(content) && content.length > 0, 'Record and Replay 自动到期轨迹为空')
-      assert.match(String(record(content[0], 'Record and Replay 轨迹结果无效').text), /\"version\":1/)
+      assert.ok(Array.isArray(content) && content.length > 0, 'Record and Replay 自动到期事件结果为空')
+      const text = String(record(content[0], 'Record and Replay 事件结果无效').text)
+      assert.match(text, /\"metadataPath\"/)
+      assert.match(text, /\"eventsPath\"/)
     },
   })
   console.log('[local-agent-plugin-smoke] verified MCP boot, tool declarations, and safe default behavior')

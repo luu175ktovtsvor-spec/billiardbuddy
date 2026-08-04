@@ -1,6 +1,7 @@
 import { randomBytes, randomUUID } from 'node:crypto'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import type { Socket } from 'node:net'
+import type { ProviderCapability } from '../../../shared/product/providerContracts'
 import type { PersonalModelProfile } from '../../../shared/product/personalModels'
 
 type JsonObject = Record<string, unknown>
@@ -26,6 +27,8 @@ export type ManagedCodexModelRoute = {
    */
   resolveAccessToken: () => Promise<string>
   model: string
+  /** Catalog-owned model facts, carried to the local protocol bridge only. */
+  capabilities: readonly ProviderCapability[]
 }
 
 export type PersonalCodexModelRoute = {
@@ -137,6 +140,10 @@ function adapterFailure(response: ServerResponse, status: number, code: string):
   response.end(JSON.stringify({ error: { code, message: code } }))
 }
 
+function safeUpstreamHttpStatus(status: number): number {
+  return Number.isInteger(status) && status >= 400 && status <= 599 ? status : 502
+}
+
 function sse(response: ServerResponse, type: string, data: JsonObject): void {
   if (!response.writableEnded) response.write(`event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`)
 }
@@ -165,6 +172,23 @@ async function requestText(request: IncomingMessage): Promise<string> {
     request.once('error', () => reject(new Error('CODEX_CHAT_ADAPTER_REQUEST_READ_FAILED')))
     request.once('end', () => resolve(Buffer.concat(chunks).toString('utf8')))
   })
+}
+
+/**
+ * A Responses endpoint may accept the envelope while silently replacing an
+ * unsupported image with text. Detect the source-native content item before
+ * forwarding so the caller receives a truthful provider capability error.
+ */
+function containsInputImage(value: unknown, depth = 0): boolean {
+  if (depth > 32 || value === null || typeof value !== 'object') return false
+  if (Array.isArray(value)) return value.some(item => containsInputImage(item, depth + 1))
+  const object = record(value)
+  if (!object) return false
+  return object.type === 'input_image' || Object.values(object).some(item => containsInputImage(item, depth + 1))
+}
+
+function responsesBodyContainsInputImage(body: string): boolean {
+  try { return containsInputImage(JSON.parse(body) as unknown) } catch { return false }
 }
 
 function contentParts(value: unknown): JsonObject[] {
@@ -708,6 +732,8 @@ type ResponsesCredentialAdapterOptions = {
   upstreamUrl: string
   failurePrefix: 'CODEX_GATEWAY_ADAPTER' | 'CODEX_PERSONAL_RESPONSES_ADAPTER'
   resolveHeaders(request: IncomingMessage): Promise<Record<string, string>>
+  /** A documented provider limitation, not a replacement Agent capability model. */
+  rejectInputImage?: boolean
   fetchImpl?: typeof fetch
 }
 
@@ -780,6 +806,9 @@ class ResponsesCredentialAdapter {
     } catch {
       return adapterFailure(response, 413, this.code('REQUEST_TOO_LARGE'))
     }
+    if (this.options.rejectInputImage && responsesBodyContainsInputImage(body)) {
+      return adapterFailure(response, 400, this.code('IMAGE_INPUT_UNSUPPORTED'))
+    }
     const controller = new AbortController()
     const abort = () => controller.abort()
     request.once('aborted', abort)
@@ -793,6 +822,11 @@ class ResponsesCredentialAdapter {
         redirect: 'error',
         signal: controller.signal,
       })
+      if (!upstream.ok) {
+        const status = safeUpstreamHttpStatus(upstream.status)
+        await upstream.body?.cancel().catch(() => undefined)
+        return adapterFailure(response, status, this.code(`UPSTREAM_HTTP_${status}`))
+      }
       const headers: Record<string, string> = {}
       const contentType = upstream.headers.get('content-type')
       const cacheControl = upstream.headers.get('cache-control')
@@ -838,6 +872,7 @@ export async function startCodexNativeProvider(
     const adapter = new ResponsesCredentialAdapter({
       upstreamUrl: `${managedResponsesBaseUrl(route.gatewayUrl)}/responses`,
       failurePrefix: 'CODEX_GATEWAY_ADAPTER',
+      rejectInputImage: !route.capabilities.includes('VisualEvidence'),
       fetchImpl: dependencies.fetchImpl,
       resolveHeaders: async request => {
         const accessToken = await route.resolveAccessToken()

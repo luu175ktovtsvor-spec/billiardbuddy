@@ -215,12 +215,53 @@ describe('Chat Completions to Responses adapter', () => {
     }
   })
 
+  test('a direct Responses upstream error cannot echo a personal API key into Rust', async () => {
+    const secret = 'personal-key-must-not-cross-loopback'
+    const profile: PersonalModelProfile = {
+      id: 'personalresponses2',
+      label: 'Personal Responses provider',
+      base_url: 'https://provider.example.test/v1',
+      model: 'personal-test',
+      protocol: 'openai-responses',
+      auth_mode: 'bearer',
+      api_key: secret,
+    }
+    const started = await startCodexNativeProvider({ kind: 'personal', profile }, {
+      fetchImpl: async (_input, init) => {
+        expect(new Headers(init?.headers).get('authorization')).toBe(`Bearer ${secret}`)
+        return new Response(JSON.stringify({ error: { message: `upstream reflected ${secret}` } }), {
+          status: 401,
+          headers: { 'content-type': 'application/json' },
+        })
+      },
+    })
+    try {
+      const baseUrlOverride = started.configOverrides.find(value => value.startsWith('model_providers.billiardbuddy.base_url='))
+      if (!baseUrlOverride) throw new Error('missing personal loopback configuration')
+      const loopbackBaseUrl = JSON.parse(baseUrlOverride.slice('model_providers.billiardbuddy.base_url='.length)) as string
+      const capabilityToken = started.environment.BB_CODEX_PERSONAL_RESPONSES_ADAPTER_TOKEN
+      if (!capabilityToken) throw new Error('missing personal loopback capability')
+      const response = await fetch(`${loopbackBaseUrl}/responses`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-billiardbuddy-engine-token': capabilityToken },
+        body: JSON.stringify({ model: profile.model, input: 'hello' }),
+      })
+      expect(response.status).toBe(401)
+      const body = await response.text()
+      expect(body).toContain('CODEX_PERSONAL_RESPONSES_ADAPTER_UPSTREAM_HTTP_401')
+      expect(body).not.toContain(secret)
+    } finally {
+      await started.close()
+    }
+  })
+
   test('the built-in DeepSeek route preserves Responses through the private bridge and Gateway', async () => {
     const gatewayRequests: Array<{ url: string; body: string; headers: Headers }> = []
     const started = await startCodexNativeProvider({
       kind: 'managed',
       gatewayUrl: 'https://gateway.example.test/gw',
       model: 'deepseek-v4-flash',
+      capabilities: ['TextReasoning'],
       resolveAccessToken: async () => 'managed-access-token',
     }, {
       fetchImpl: async (input, init) => {
@@ -269,6 +310,50 @@ describe('Chat Completions to Responses adapter', () => {
       expect(gatewayRequests[0]?.headers.get('x-bb-provider-protocol')).toBe('bb-provider-gateway/1.0')
       expect(gatewayRequests[0]?.headers.get('x-bb-operation-id')).toBe('managed_responses_test_0001')
       expect(gatewayRequests[0]?.headers.get('idempotency-key')).toBe('managed-responses-idempotency-0001')
+    } finally {
+      await started.close()
+    }
+  })
+
+  test('the managed text-only route rejects image input before it can reach DeepSeek', async () => {
+    let gatewayRequests = 0
+    const started = await startCodexNativeProvider({
+      kind: 'managed',
+      gatewayUrl: 'https://gateway.example.test/gw',
+      model: 'deepseek-v4-flash',
+      capabilities: ['TextReasoning'],
+      resolveAccessToken: async () => 'managed-access-token',
+    }, {
+      fetchImpl: async () => {
+        gatewayRequests += 1
+        return new Response('unexpected upstream request')
+      },
+    })
+    try {
+      const baseUrlOverride = started.configOverrides.find(value => value.startsWith('model_providers.billiardbuddy.base_url='))
+      if (!baseUrlOverride) throw new Error('missing managed loopback configuration')
+      const loopbackBaseUrl = JSON.parse(baseUrlOverride.slice('model_providers.billiardbuddy.base_url='.length)) as string
+      const capabilityToken = started.environment.BB_CODEX_GATEWAY_ADAPTER_TOKEN
+      if (!capabilityToken) throw new Error('missing managed loopback capability')
+      const response = await fetch(`${loopbackBaseUrl}/responses`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-billiardbuddy-engine-token': capabilityToken,
+        },
+        body: JSON.stringify({
+          model: 'deepseek-v4-flash',
+          input: [{ type: 'message', role: 'user', content: [{ type: 'input_image', image_url: 'data:image/png;base64,AA==' }] }],
+        }),
+      })
+      expect(response.status).toBe(400)
+      expect(await response.json()).toEqual({
+        error: {
+          code: 'CODEX_GATEWAY_ADAPTER_IMAGE_INPUT_UNSUPPORTED',
+          message: 'CODEX_GATEWAY_ADAPTER_IMAGE_INPUT_UNSUPPORTED',
+        },
+      })
+      expect(gatewayRequests).toBe(0)
     } finally {
       await started.close()
     }

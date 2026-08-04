@@ -133,7 +133,7 @@ async function verifyRuntimeSearch(target: string, destinationDir: string): Prom
     rmSync(engineHome, { recursive: true, force: true })
   }
 
-  console.log(`[codex-engine-smoke] ${target} initialized and thread/search used managed ${managedRipgrep}; ${codexEngineManifestName(supportedTarget)} verified`)
+  console.log(`[codex-engine-smoke] ${target} initialized and completed native thread/search; managed ripgrep asset ${managedRipgrep} and ${codexEngineManifestName(supportedTarget)} verified`)
 }
 
 if (import.meta.main) {

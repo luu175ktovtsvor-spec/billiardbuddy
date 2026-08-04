@@ -2,7 +2,7 @@ import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { chmodSync, copyFileSync, cpSync, existsSync, lstatSync, mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { join, resolve } from 'node:path'
-import { resolveCargoCommand, verifyProductContent, verifyProductSkill, verifyStdioMcpHandshake } from './native-build-tools'
+import { resolveCargoCommand, type WindowsNativeTarget, verifyProductContent, verifyProductSkill, verifyStdioMcpHandshake, verifyWindowsPeMachine } from './native-build-tools'
 
 type SupportedTarget =
   | 'aarch64-apple-darwin'
@@ -86,6 +86,8 @@ export function verifyStagedChromePlugin(options: StageOptions): void {
   if (plugin.name !== PLUGIN || plugin.mcpServers !== './.mcp.json' || plugin.skills !== './skills/') throw new Error('Chrome 插件 manifest 不符合本地插件合同')
   verifyProductContent(join(root, '.codex-plugin', 'plugin.json'))
   verifyProductSkill(join(root, 'skills', 'chrome-control', 'SKILL.md'))
+  const skill = readFileSync(join(root, 'skills', 'chrome-control', 'SKILL.md'), 'utf8')
+  if (!skill.includes('cdp_send') || !skill.includes('cdp_read_events') || !skill.includes('wait_for_page')) throw new Error('Chrome 技能缺少受控开发者模式说明')
   const mcp = JSON.parse(readFileSync(join(root, '.mcp.json'), 'utf8')) as { mcpServers?: Record<string, { command?: string, cwd?: string, env_vars?: unknown }> }
   const server = mcp.mcpServers?.[PLUGIN]
   if (server?.command !== `./bin/${PLUGIN}` || server.cwd !== '.' || !Array.isArray(server.env_vars) || !server.env_vars.includes('CODEX_HOME')) throw new Error('Chrome 插件 MCP 配置无效')
@@ -103,24 +105,42 @@ export function verifyStagedChromePlugin(options: StageOptions): void {
   new Function(background)
   if (!background.includes("nativePort.postMessage({ kind: 'hello' })")) throw new Error('Chrome 扩展缺少 Native Messaging 握手')
   if (background.includes('el.value ||')) throw new Error('Chrome 页面检查不得读取表单当前值')
-  if (!background.includes("one-time-code|cc-|password|token")) throw new Error('Chrome 扩展缺少凭据字段保护')
+  if (!background.includes("['type', 'name', 'id', 'aria-label', 'placeholder', 'title']") || !background.includes('bbSensitiveAutocomplete')) throw new Error('Chrome 扩展缺少完整凭据字段保护')
+  if (
+    !background.includes('const bbFileUpload')
+    || !background.includes('.filter(el => !bbFileUpload(el))')
+    || !background.includes("if (bbFileUpload(entry.node)) return { ok: false, reason: 'file' };")
+    || !background.includes("if (bbFileUpload(node)) return { ok: false, reason: 'file' };")
+  ) throw new Error('Chrome 扩展不得暴露或操作文件上传控件')
   if (!background.includes("await evaluate(Number(tabId), '({ url: location.href, title: document.title })')")) throw new Error('Chrome 扩展必须在每次操作前重新确认当前网址')
-  if (!background.includes("generation: crypto.getRandomValues(new Uint32Array(1))[0] || 1") || !background.includes("root.generation + '-' + (root.next++)")) {
-    throw new Error('Chrome 扩展元素 ID 必须绑定当前文档代次')
+  if (background.includes('data-billiardbuddy-element') || !background.includes("'Page.createIsolatedWorld'") || !background.includes('bbAncestry') || !background.includes('bbFingerprint(entry.node) === entry.fingerprint')) {
+    throw new Error('Chrome 扩展元素 ID 必须保存在隔离 world，并在操作前校验节点快照')
   }
   if (!background.includes("method !== 'Page.frameNavigated'")) throw new Error('Chrome 扩展缺少顶层导航撤权处理')
   if (!background.includes('await applyPolicy(message.policy)')) throw new Error('Chrome 扩展缺少动态网站策略更新')
   if (!background.includes('navigation?.errorText')) throw new Error('Chrome 扩展未校验导航失败结果')
   if (!background.includes('image.data.length > MAX_SCREENSHOT_DATA')) throw new Error('Chrome 扩展缺少截图回传上限')
+  if (!background.includes("['DOM.getDocument', 'Page.getLayoutMetrics', 'Performance.getMetrics']") || !background.includes("op === 'cdp_read_events'") || !background.includes("op === 'wait_for_page'")) {
+    throw new Error('Chrome 扩展未锁定受控开发者模式命令白名单')
+  }
+  if (background.includes('Network.getResponseBody') || background.includes('Storage.getCookies')) throw new Error('Chrome 扩展不得开放凭据面或响应体读取')
   const nativeHost = readFileSync(join(sourceRoot, 'src', 'native_host.rs'), 'utf8')
   if (!nativeHost.includes('let policy = Policy::load(&runtime_root);') || !nativeHost.includes('policy.command_fields()')) {
     throw new Error('Chrome Native Host 必须在每次工具调用前重读网站策略')
+  }
+  if (!nativeHost.includes('| "cdp_send"') || !nativeHost.includes('| "cdp_read_events"') || !nativeHost.includes('| "wait_for_page"')) {
+    throw new Error('Chrome Native Host 未转发受控开发者模式命令')
+  }
+  const mcpSource = readFileSync(join(sourceRoot, 'src', 'mcp.rs'), 'utf8')
+  if (!mcpSource.includes('"DOM.getDocument" | "Page.getLayoutMetrics" | "Performance.getMetrics"') || !mcpSource.includes('"cdp_read_events"') || !mcpSource.includes('"wait_for_page"')) {
+    throw new Error('Chrome MCP 未锁定受控开发者模式命令白名单')
   }
   const market = JSON.parse(readFileSync(join(resolve(options.destinationDir), '..', '.agents', 'plugins', 'marketplace.json'), 'utf8')) as { plugins?: Array<{ name?: string, source?: { path?: string } }> }
   if (!market.plugins?.some(entry => entry.name === PLUGIN && entry.source?.path === `./plugins/${PLUGIN}`)) throw new Error('BilliardBuddy 本地市场缺少 Chrome 插件')
   for (const name of [PLUGIN, `${PLUGIN}-native-host`]) {
     const file = join(root, 'bin', binary(name, options.target))
     if (lstatSync(file).size < 100_000) throw new Error(`Chrome 插件二进制大小无效: ${file}`)
+    if (options.target.includes('windows')) verifyWindowsPeMachine(file, options.target as WindowsNativeTarget)
   }
   verifyStdioMcpHandshake(join(root, 'bin', binary(PLUGIN, options.target)), options.target, PLUGIN)
 }

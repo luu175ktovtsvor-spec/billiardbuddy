@@ -100,6 +100,7 @@
     "clean:electron-output": "bun run ./scripts/clean-electron-output.ts",
     "build:macos-arm64": "bash ./scripts/build-macos-arm64.sh",
     "build:windows-x64": "powershell -ExecutionPolicy Bypass -File ./scripts/build-windows-x64.ps1",
+    "build:windows-arm64": "powershell -ExecutionPolicy Bypass -File ./scripts/build-windows-x64.ps1 -Architecture arm64",
     "electron:dev": "bun run stage:image-font && bun run verify:codex-engine && bun run build:sidecars && bun run build:electron && bun run ./scripts/electron-dev.ts",
     "electron:build": "bun run build:sidecars && bun run build && bun run build:electron",
     "stage:image-font": "bun run ./scripts/stage-image-font.ts",
@@ -110,7 +111,8 @@
     "lint": "node ./node_modules/typescript/bin/tsc --noEmit"
   },
   "dependencies": {
-    "electron-updater": "^6.8.3"
+    "electron-updater": "^6.8.3",
+    "smol-toml": "1.7.1"
   },
   "devDependencies": {
     "@electron/asar": "3.4.1",

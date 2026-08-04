@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process'
 import * as fs from 'node:fs/promises'
+import { createConnection } from 'node:net'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import { promisify } from 'node:util'
@@ -17,6 +18,10 @@ export type ChromeNativeMessagingRegistration = {
   homeDirectory?: string
   /** Defaults to the real per-user AppData directory and is injectable only for verification. */
   appDataDirectory?: string
+  /** Electron-owned user data root containing only short-lived Chrome bridge state. */
+  userDataDirectory?: string
+  /** Injectable only by service verification; Renderer never supplies this. */
+  probeLiveExtension?: () => Promise<{ liveConnected: boolean, connectedTabCount?: number }>
 }
 
 type ChromeHostManifest = {
@@ -29,8 +34,109 @@ type ChromeHostManifest = {
 
 export type ChromeNativeMessagingHostStatus = {
   supported: boolean
+  /** Native Messaging registration only; this never implies the extension is installed. */
   installed: boolean
   manifestPath?: string
+  extensionId?: string
+  extensionPath?: string
+  extensionAvailable?: boolean
+  /** A successful authenticated status round-trip is the only live-install proof. */
+  liveConnected?: boolean
+  connectedTabCount?: number
+}
+
+type ChromeLiveStatus = { liveConnected: boolean, connectedTabCount?: number }
+
+function extensionDirectory(registration: ChromeNativeMessagingRegistration): string {
+  return path.join(
+    registration.desktopRoot,
+    'runtime-assets',
+    'agent-marketplace',
+    'plugins',
+    'billiardbuddy-chrome',
+    'chrome-extension',
+  )
+}
+
+function defaultUserDataDirectory(registration: ChromeNativeMessagingRegistration): string | undefined {
+  if (registration.userDataDirectory) return registration.userDataDirectory
+  if (registration.platform === 'darwin') {
+    return path.join(registration.homeDirectory ?? os.homedir(), 'Library', 'Application Support', 'BilliardBuddy')
+  }
+  return process.env.APPDATA ? path.join(process.env.APPDATA, 'BilliardBuddy') : undefined
+}
+
+async function extensionAvailable(registration: ChromeNativeMessagingRegistration): Promise<boolean> {
+  const directory = extensionDirectory(registration)
+  const [manifest, background] = await Promise.all([
+    fs.lstat(path.join(directory, 'manifest.json')).catch(() => undefined),
+    fs.lstat(path.join(directory, 'background.js')).catch(() => undefined),
+  ])
+  return Boolean(
+    manifest?.isFile() && !manifest.isSymbolicLink()
+    && background?.isFile() && !background.isSymbolicLink(),
+  )
+}
+
+async function probeLiveExtension(registration: ChromeNativeMessagingRegistration): Promise<ChromeLiveStatus> {
+  const userData = defaultUserDataDirectory(registration)
+  if (!userData) return { liveConnected: false }
+  const statePath = path.join(userData, 'agent-runtime', 'chrome-control', 'bridge.json')
+  const details = await fs.lstat(statePath).catch(() => undefined)
+  if (!details?.isFile() || details.isSymbolicLink() || details.size > 4_096) return { liveConnected: false }
+  let state: unknown
+  try { state = JSON.parse(await fs.readFile(statePath, 'utf8')) } catch { return { liveConnected: false } }
+  if (!state || typeof state !== 'object' || Array.isArray(state)) return { liveConnected: false }
+  const { schemaVersion, port, token } = state as Record<string, unknown>
+  if (
+    schemaVersion !== 1
+    || typeof port !== 'number'
+    || !Number.isSafeInteger(port)
+    || port < 1
+    || port > 65_535
+    || typeof token !== 'string'
+    || !/^[a-f0-9]{64}$/.test(token)
+  ) return { liveConnected: false }
+
+  return await new Promise(resolve => {
+    const socket = createConnection({ host: '127.0.0.1', port })
+    let response = ''
+    let finished = false
+    const done = (result: ChromeLiveStatus) => {
+      if (finished) return
+      finished = true
+      socket.destroy()
+      resolve(result)
+    }
+    socket.setEncoding('utf8')
+    socket.setTimeout(2_500, () => done({ liveConnected: false }))
+    socket.on('error', () => done({ liveConnected: false }))
+    socket.on('connect', () => {
+      socket.write(`${JSON.stringify({ token, operation: 'status', arguments: {} })}\n`)
+    })
+    socket.on('data', chunk => {
+      response += chunk
+      if (response.length > 64 * 1024) return done({ liveConnected: false })
+      const newline = response.indexOf('\n')
+      if (newline < 0) return
+      try {
+        const parsed = JSON.parse(response.slice(0, newline)) as unknown
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return done({ liveConnected: false })
+        const record = parsed as Record<string, unknown>
+        if (record.ok !== true || !record.payload || typeof record.payload !== 'object' || Array.isArray(record.payload)) {
+          return done({ liveConnected: false })
+        }
+        const payload = record.payload as Record<string, unknown>
+        const count = payload.connectedTabCount
+        if (payload.connected !== true || typeof count !== 'number' || !Number.isSafeInteger(count) || count < 0 || count > 10_000) {
+          return done({ liveConnected: false })
+        }
+        done({ liveConnected: true, connectedTabCount: count })
+      } catch {
+        done({ liveConnected: false })
+      }
+    })
+  })
 }
 
 function manifestFileName(): string {
@@ -95,29 +201,40 @@ export async function getChromeNativeMessagingHostStatus(
   if (registration.platform !== 'darwin' && registration.platform !== 'win32') {
     return { supported: false, installed: false }
   }
+  const extensionPath = extensionDirectory(registration)
+  const [hasExtension, live] = await Promise.all([
+    extensionAvailable(registration),
+    registration.probeLiveExtension?.() ?? probeLiveExtension(registration),
+  ])
+  const extensionStatus = {
+    extensionId: BILLIARDBUDDY_CHROME_EXTENSION_ID,
+    extensionPath,
+    extensionAvailable: hasExtension,
+    ...live,
+  }
   const executable = chromeNativeHostExecutable(registration)
   const executableDetails = await fs.lstat(executable).catch(() => undefined)
   if (!executableDetails?.isFile() || executableDetails.isSymbolicLink()) {
-    return { supported: true, installed: false }
+    return { supported: true, installed: false, ...extensionStatus }
   }
   const manifestPath = registration.platform === 'darwin'
     ? macosChromeNativeHostManifestPath(registration)
     : windowsChromeNativeHostManifestPath(registration)
   const raw = await fs.readFile(manifestPath, 'utf8').catch(() => undefined)
-  if (!raw) return { supported: true, installed: false, manifestPath }
+  if (!raw) return { supported: true, installed: false, manifestPath, ...extensionStatus }
   let manifestMatches = false
   try {
     manifestMatches = sameManifest(JSON.parse(raw), chromeNativeHostManifest(executable))
   } catch {
     manifestMatches = false
   }
-  if (!manifestMatches) return { supported: true, installed: false, manifestPath }
+  if (!manifestMatches) return { supported: true, installed: false, manifestPath, ...extensionStatus }
   if (registration.platform === 'win32') {
     const registry = await execFileAsync('reg.exe', ['query', windowsRegistryKey(), '/ve'], { windowsHide: true })
       .catch(() => undefined)
-    if (!registry?.stdout.includes(manifestPath)) return { supported: true, installed: false, manifestPath }
+    if (!registry?.stdout.includes(manifestPath)) return { supported: true, installed: false, manifestPath, ...extensionStatus }
   }
-  return { supported: true, installed: true, manifestPath }
+  return { supported: true, installed: true, manifestPath, ...extensionStatus }
 }
 
 /**

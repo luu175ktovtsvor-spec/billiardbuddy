@@ -1,7 +1,8 @@
 import { spawnSync } from 'node:child_process'
-import { chmodSync, copyFileSync, cpSync, existsSync, lstatSync, mkdirSync, readFileSync, rmSync } from 'node:fs'
+import { chmodSync, copyFileSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
-import { resolveCargoCommand, runMsvcCompiler, verifyProductContent, verifyProductSkill, verifyStdioMcpHandshake } from './native-build-tools'
+import { resolveCargoCommand, runMsvcCompiler, type WindowsNativeTarget, verifyProductContent, verifyProductSkill, verifyStdioMcpHandshake, verifyWindowsPeMachine } from './native-build-tools'
 
 type Target = 'aarch64-apple-darwin' | 'x86_64-apple-darwin' | 'x86_64-pc-windows-msvc' | 'aarch64-pc-windows-msvc'
 type Options = { destinationDir: string, target: Target, verifyOnly?: boolean }
@@ -33,17 +34,24 @@ function run(command: string, arguments_: string[], cwd?: string) {
 function cargo() { return resolveCargoCommand('缺少 Rust Cargo；请在原生构建机或 GitHub Actions 上构建 Record and Replay 插件') }
 function macService(destination: string, target: Target) {
   const source = join(sourceRoot, 'macos', 'BilliardBuddyRecordReplayService.swift'); const info = join(sourceRoot, 'macos', 'Info.plist'); file(source); file(info)
-  const swiftc = process.env.SWIFTC?.trim() || Bun.which('swiftc'); if (!swiftc) throw new Error('缺少 Swift 编译器')
+  const configuredSwiftc = process.env.SWIFTC?.trim(); const xcrun = configuredSwiftc ? undefined : Bun.which('xcrun'); const swiftc = configuredSwiftc || xcrun || Bun.which('swiftc'); if (!swiftc) throw new Error('缺少 Swift 编译器')
   const root = join(destination, MAC_APP); const executable = join(root, 'Contents', 'MacOS', 'BilliardBuddyRecordReplayService'); rmSync(root, { recursive: true, force: true }); mkdirSync(join(root, 'Contents', 'MacOS'), { recursive: true }); copyFileSync(info, join(root, 'Contents', 'Info.plist'))
-  run(swiftc, ['-O', '-target', target === 'aarch64-apple-darwin' ? 'arm64-apple-macos14.0' : 'x86_64-apple-macos14.0', '-framework', 'AppKit', '-framework', 'ApplicationServices', source, '-o', executable])
+  const moduleCache = mkdtempSync(join(tmpdir(), 'billiardbuddy-record-replay-swift-'))
+  try {
+    run(swiftc, [...(xcrun ? ['swiftc'] : []), '-O', '-target', target === 'aarch64-apple-darwin' ? 'arm64-apple-macos13.0' : 'x86_64-apple-macos13.0', '-module-cache-path', moduleCache, '-framework', 'AppKit', '-framework', 'ApplicationServices', source, '-o', executable])
+  } finally {
+    rmSync(moduleCache, { recursive: true, force: true })
+  }
   chmodSync(executable, 0o755); run('codesign', ['--sign', '-', '--force', '--timestamp=none', root])
 }
-function windowsService(destination: string) {
+function windowsService(destination: string, target: Target) {
   const source = join(sourceRoot, 'windows', 'BilliardBuddyRecordReplayService.cpp'); file(source); const output = join(destination, WINDOWS_SERVICE); rmSync(output, { force: true })
-  const arguments_ = ['/nologo', '/std:c++20', '/O2', '/EHsc', '/DUNICODE', '/D_UNICODE', source, `/Fe${output}`, '/link', 'User32.lib']
-  const compiler = process.env.CXX?.trim() || Bun.which('cl.exe') || Bun.which('cl'); if (compiler) return run(compiler, arguments_)
+  const arguments_ = ['/nologo', '/std:c++20', '/O2', '/EHsc', '/DUNICODE', '/D_UNICODE', source, `/Fe${output}`, '/link', 'User32.lib', 'Advapi32.lib', 'Ole32.lib', 'OleAut32.lib', 'Uiautomationcore.lib']
+  const nativeTarget = process.arch === 'arm64' ? 'aarch64-pc-windows-msvc' : 'x86_64-pc-windows-msvc'
+  const compiler = target === nativeTarget ? process.env.CXX?.trim() || Bun.which('cl.exe') || Bun.which('cl') : undefined; if (compiler) return run(compiler, arguments_)
   const programFilesX86 = process.env['ProgramFiles(x86)']; const vswhere = programFilesX86 && join(programFilesX86, 'Microsoft Visual Studio', 'Installer', 'vswhere.exe'); if (!vswhere || !existsSync(vswhere)) throw new Error('缺少 MSVC C++ 编译器')
-  const result = spawnSync(vswhere, ['-latest', '-products', '*', '-requires', 'Microsoft.VisualStudio.Component.VC.Tools.x86.x64', '-property', 'installationPath'], { encoding: 'utf8', timeout: 60_000 }); const install = result.status === 0 ? result.stdout.trim() : ''; const vcvars = install && join(install, 'VC', 'Auxiliary', 'Build', 'vcvars64.bat'); if (!vcvars || !existsSync(vcvars)) throw new Error('Windows 构建机没有可用的 MSVC x64 工具链')
+  const arm64 = target === 'aarch64-pc-windows-msvc'; const toolComponent = arm64 ? 'Microsoft.VisualStudio.Component.VC.Tools.ARM64' : 'Microsoft.VisualStudio.Component.VC.Tools.x86.x64'
+  const result = spawnSync(vswhere, ['-latest', '-products', '*', '-requires', toolComponent, '-property', 'installationPath'], { encoding: 'utf8', timeout: 60_000 }); const install = result.status === 0 ? result.stdout.trim() : ''; const vcvars = install && join(install, 'VC', 'Auxiliary', 'Build', arm64 && process.arch !== 'arm64' ? 'vcvarsamd64_arm64.bat' : arm64 ? 'vcvarsarm64.bat' : 'vcvars64.bat'); if (!vcvars || !existsSync(vcvars)) throw new Error(`Windows 构建机没有可用的 MSVC ${arm64 ? 'ARM64' : 'x64'} 工具链`)
   runMsvcCompiler(vcvars, arguments_, 'Record and Replay Windows 原生服务编译失败')
 }
 
@@ -63,15 +71,46 @@ export function verifyStagedRecordReplayPlugin(options: Options) {
   verifyStdioMcpHandshake(staged, options.target, PLUGIN)
   const service = options.target.includes('windows') ? join(root, 'bin', WINDOWS_SERVICE) : join(root, 'bin', MAC_APP, 'Contents', 'MacOS', 'BilliardBuddyRecordReplayService')
   file(service); if (lstatSync(service).size < 100_000) throw new Error('Record and Replay 原生录制器二进制大小无效')
+  if (options.target.includes('windows')) {
+    const target = options.target as WindowsNativeTarget
+    verifyWindowsPeMachine(staged, target)
+    verifyWindowsPeMachine(service, target)
+  }
 }
 
 export function stageRecordReplayPlugin(options: Options) {
   if (options.verifyOnly) return verifyStagedRecordReplayPlugin(options)
   for (const path of [join(sourceRoot, 'Cargo.toml'), join(sourceRoot, 'Cargo.lock'), join(sourceRoot, 'src', 'main.rs'), join(sourceRoot, 'macos', 'BilliardBuddyRecordReplayService.swift'), join(sourceRoot, 'windows', 'BilliardBuddyRecordReplayService.cpp'), join(pluginSource, '.codex-plugin', 'plugin.json'), join(pluginSource, '.mcp.json'), join(pluginSource, 'skills', 'record-and-replay', 'SKILL.md')]) file(path)
-  if (readFileSync(join(sourceRoot, 'windows', 'BilliardBuddyRecordReplayService.cpp'), 'utf8').includes('windowTitle')) throw new Error('Record and Replay 不得记录 Windows 窗口标题')
+  const windowsSource = readFileSync(join(sourceRoot, 'windows', 'BilliardBuddyRecordReplayService.cpp'), 'utf8')
+  const macosSource = readFileSync(join(sourceRoot, 'macos', 'BilliardBuddyRecordReplayService.swift'), 'utf8')
+  const mcpSource = readFileSync(join(sourceRoot, 'src', 'main.rs'), 'utf8')
+  if (windowsSource.includes('windowTitle')) throw new Error('Record and Replay 不得记录 Windows 窗口标题')
+  if (!windowsSource.includes('UIA_IsInvokePatternAvailablePropertyId') || !windowsSource.includes('accessibilityDelta')) throw new Error('Record and Replay Windows 原生语义录制不完整')
+  if (
+    !windowsSource.includes('targetWindow = hit ? GetAncestor(hit, GA_ROOT)')
+    || !windowsSource.includes('event.targetProcessId')
+    || !windowsSource.includes('elementBelongsToRecordedWindow(automation, element, window)')
+    || !windowsSource.includes('get_CurrentNativeWindowHandle')
+    || !macosSource.includes('.eventTargetUnixProcessID')
+    || !macosSource.includes('.mouseEventWindowUnderMousePointer')
+    || !macosSource.includes('elementBelongsToRecordedWindow')
+    || !macosSource.includes('"AXWindowNumber" as CFString')
+  ) throw new Error('Record and Replay 必须在输入事件发生时固定应用、进程和窗口身份')
+  if (
+    /state_file\(&root\)[\s\S]{0,180}purpose/.test(mcpSource)
+    || mcpSource.includes('purpose.as_str()')
+    || macosSource.includes('let purpose: String')
+    || macosSource.includes('CommandLine.arguments[6]')
+    || windowsSource.includes('argv[6]')
+    || windowsSource.includes('escape(purpose)')
+  ) throw new Error('Record and Replay 不得将用户目的原文写入录制状态、原生进程参数或会话元数据')
+  if (!mcpSource.includes('prepare_recording_start') || !mcpSource.includes('BILLIARDBUDDY_RECORDING_REVIEW_REQUIRED')) {
+    throw new Error('Record and Replay 开始新录制前必须保留上一份原始证据')
+  }
+  if (!mcpSource.includes('BILLIARDBUDDY_RECORDED_SKILL_EXISTS') || !mcpSource.includes('replace must be a boolean')) throw new Error('Record and Replay 覆盖已有 Skill 前必须要求显式 replace')
   const destination = resolve(options.destinationDir); const market = join(destination, '..'); mkdirSync(join(market, '.agents', 'plugins'), { recursive: true }); copyFileSync(join(desktopRoot, 'runtime-assets', 'marketplace.json'), join(market, '.agents', 'plugins', 'marketplace.json'))
   const root = join(destination, PLUGIN); rmSync(root, { recursive: true, force: true }); mkdirSync(destination, { recursive: true }); cpSync(pluginSource, root, { recursive: true, dereference: false, filter: source => !source.endsWith('/bin') && !source.endsWith('\\bin') }); const bin = join(root, 'bin'); mkdirSync(bin, { recursive: true })
-  run(cargo(), ['build', '--locked', '--release', '--target', options.target, '--manifest-path', join(sourceRoot, 'Cargo.toml')], sourceRoot); const built = join(sourceRoot, 'target', options.target, 'release', binary(options.target)); file(built); const staged = join(bin, binary(options.target)); copyFileSync(built, staged); if (!options.target.includes('windows')) { chmodSync(staged, 0o755); macService(bin, options.target) } else windowsService(bin)
+  run(cargo(), ['build', '--locked', '--release', '--target', options.target, '--manifest-path', join(sourceRoot, 'Cargo.toml')], sourceRoot); const built = join(sourceRoot, 'target', options.target, 'release', binary(options.target)); file(built); const staged = join(bin, binary(options.target)); copyFileSync(built, staged); if (!options.target.includes('windows')) { chmodSync(staged, 0o755); macService(bin, options.target) } else windowsService(bin, options.target)
   verifyStagedRecordReplayPlugin(options)
 }
 

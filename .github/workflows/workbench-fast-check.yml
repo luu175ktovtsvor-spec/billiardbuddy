@@ -12,19 +12,6 @@ on:
       - 'ts/package.json'
       - 'ts/bun.lock'
       - '.github/workflows/workbench-fast-check.yml'
-  push:
-    branches:
-      - main
-    paths:
-      - 'gateway/**'
-      - 'relay/**'
-      - 'ts/src/**'
-      - 'ts/shared/**'
-      - 'ts/desktop/**'
-      - 'ts/test/**'
-      - 'ts/package.json'
-      - 'ts/bun.lock'
-      - '.github/workflows/workbench-fast-check.yml'
   workflow_dispatch:
 
 permissions:

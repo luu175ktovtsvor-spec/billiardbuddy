@@ -17,8 +17,11 @@
 #include <cctype>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
+#include <cstdio>
 #include <cwctype>
 #include <filesystem>
+#include <iomanip>
 #include <iostream>
 #include <optional>
 #include <sstream>
@@ -33,6 +36,7 @@
 #pragma comment(lib, "OleAut32.lib")
 #pragma comment(lib, "Shell32.lib")
 #pragma comment(lib, "UIAutomationCore.lib")
+#pragma comment(lib, "User32.lib")
 #pragma comment(lib, "Windowscodecs.lib")
 
 namespace {
@@ -59,6 +63,24 @@ std::string wideToUtf8(const std::wstring& value) {
     throw ServiceError("Could not encode service output");
   }
   return output;
+}
+
+std::string sha256Hex(const std::string& value) {
+  BYTE digest[32]{};
+  DWORD digestLength = sizeof(digest);
+  if (!CryptHashCertificate(
+        0,
+        CALG_SHA_256,
+        0,
+        reinterpret_cast<const BYTE*>(value.data()),
+        static_cast<DWORD>(value.size()),
+        digest,
+        &digestLength) || digestLength != sizeof(digest)) {
+    throw ServiceError("Windows could not fingerprint the accessibility element");
+  }
+  std::ostringstream output;
+  for (BYTE byte : digest) output << std::hex << std::setw(2) << std::setfill('0') << static_cast<unsigned int>(byte);
+  return output.str();
 }
 
 std::wstring jsonEscape(const std::wstring& value) {
@@ -350,19 +372,27 @@ std::string captureWindow(const WindowInfo& window) {
   return base64(bytes);
 }
 
-void sendMouseClick(long x, long y) {
+void movePointerIntoWindow(const WindowInfo& window, const std::wstring& appId, long x, long y) {
+  requireStillForeground(window, appId);
   if (!SetCursorPos(x, y)) throw ServiceError("Could not move the pointer to the target window");
+  requireStillForeground(window, appId);
+}
+
+void sendMouseClick(const WindowInfo& window, const std::wstring& appId, long x, long y) {
+  movePointerIntoWindow(window, appId, x, y);
   INPUT input[2]{};
   input[0].type = INPUT_MOUSE; input[0].mi.dwFlags = MOUSEEVENTF_LEFTDOWN;
   input[1].type = INPUT_MOUSE; input[1].mi.dwFlags = MOUSEEVENTF_LEFTUP;
+  requireStillForeground(window, appId);
   if (SendInput(2, input, sizeof(INPUT)) != 2) throw ServiceError("Windows blocked the click because the target has higher privileges or input is unavailable");
 }
 
-void sendText(const std::wstring& text) {
+void sendText(const WindowInfo& window, const std::wstring& appId, const std::wstring& text) {
   for (const wchar_t character : text) {
     INPUT input[2]{};
     input[0].type = INPUT_KEYBOARD; input[0].ki.wVk = 0; input[0].ki.wScan = character; input[0].ki.dwFlags = KEYEVENTF_UNICODE;
     input[1] = input[0]; input[1].ki.dwFlags |= KEYEVENTF_KEYUP;
+    requireStillForeground(window, appId);
     if (SendInput(2, input, sizeof(INPUT)) != 2) throw ServiceError("Windows blocked text input because the target has higher privileges or input is unavailable");
   }
 }
@@ -380,19 +410,26 @@ WORD keyCode(const std::wstring& key) {
   throw ServiceError("Unsupported key. Use enter, tab, space, delete, escape, left, right, up, or down.");
 }
 
-void sendKey(const std::wstring& key) {
+void sendKey(const WindowInfo& window, const std::wstring& appId, const std::wstring& key) {
   INPUT input[2]{};
   input[0].type = INPUT_KEYBOARD; input[0].ki.wVk = keyCode(key);
   input[1] = input[0]; input[1].ki.dwFlags = KEYEVENTF_KEYUP;
+  requireStillForeground(window, appId);
   if (SendInput(2, input, sizeof(INPUT)) != 2) throw ServiceError("Windows blocked key input because the target has higher privileges or input is unavailable");
 }
 
-void sendScroll(double deltaX, double deltaY) {
+void sendScroll(const WindowInfo& window, const std::wstring& appId, double deltaX, double deltaY) {
+  const long x = window.bounds.left + (window.bounds.right - window.bounds.left) / 2;
+  const long y = window.bounds.top + (window.bounds.bottom - window.bounds.top) / 2;
+  movePointerIntoWindow(window, appId, x, y);
   INPUT input[2]{};
   input[0].type = INPUT_MOUSE; input[0].mi.dwFlags = MOUSEEVENTF_WHEEL; input[0].mi.mouseData = static_cast<DWORD>(static_cast<LONG>(deltaY * WHEEL_DELTA));
   input[1].type = INPUT_MOUSE; input[1].mi.dwFlags = MOUSEEVENTF_HWHEEL; input[1].mi.mouseData = static_cast<DWORD>(static_cast<LONG>(deltaX * WHEEL_DELTA));
+  requireStillForeground(window, appId);
   if (SendInput(2, input, sizeof(INPUT)) != 2) throw ServiceError("Windows blocked scrolling because the target has higher privileges or input is unavailable");
 }
+
+bool isSensitiveAutomationElement(IUIAutomationElement* element);
 
 std::string inspectFocusedElement(DWORD expectedProcessId) {
   IUIAutomation* automation = nullptr;
@@ -409,15 +446,16 @@ std::string inspectFocusedElement(DWORD expectedProcessId) {
   hr = element->get_CurrentProcessId(&processId);
   element->get_CurrentIsPassword(&password);
   std::wstring title = name ? std::wstring(name, SysStringLen(name)) : L"";
+  const bool sensitive = isSensitiveAutomationElement(element);
   if (name) SysFreeString(name);
   element->Release(); automation->Release();
   if (FAILED(hr) || processId <= 0 || static_cast<DWORD>(processId) != expectedProcessId) {
     throw ServiceError("The focused accessibility element is not in the requested app");
   }
-  return "{\"controlType\":" + std::to_string(controlType) + ",\"title\":\"" + wideToUtf8(jsonEscape(title)) + "\",\"isPassword\":" + (password ? "true" : "false") + "}";
+  return "{\"controlType\":" + std::to_string(controlType) + ",\"title\":\"" + wideToUtf8(jsonEscape(sensitive ? L"" : title)) + "\",\"isPassword\":" + (password ? "true" : "false") + ",\"sensitive\":" + (sensitive ? "true" : "false") + "}";
 }
 
-bool focusedElementIsPassword(DWORD expectedProcessId) {
+bool focusedElementIsSensitive(DWORD expectedProcessId) {
   IUIAutomation* automation = nullptr;
   IUIAutomationElement* element = nullptr;
   HRESULT hr = CoCreateInstance(CLSID_CUIAutomation, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&automation));
@@ -430,12 +468,328 @@ bool focusedElementIsPassword(DWORD expectedProcessId) {
   BOOL password = FALSE;
   hr = element->get_CurrentProcessId(&processId);
   if (SUCCEEDED(hr)) hr = element->get_CurrentIsPassword(&password);
+  const bool sensitive = SUCCEEDED(hr) && isSensitiveAutomationElement(element);
   element->Release();
   automation->Release();
   if (FAILED(hr) || processId <= 0 || static_cast<DWORD>(processId) != expectedProcessId) {
     throw ServiceError("Windows UI Automation cannot verify the focused field belongs to the requested app");
   }
-  return password != FALSE;
+  return sensitive || password != FALSE;
+}
+
+IUIAutomation* createAutomation() {
+  IUIAutomation* automation = nullptr;
+  if (FAILED(CoCreateInstance(CLSID_CUIAutomation, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&automation))) || !automation) {
+    throw ServiceError("Windows UI Automation is unavailable");
+  }
+  return automation;
+}
+
+IUIAutomationElement* windowAutomationElement(IUIAutomation* automation, const WindowInfo& window) {
+  IUIAutomationElement* element = nullptr;
+  if (FAILED(automation->ElementFromHandle(window.handle, &element)) || !element) {
+    throw ServiceError("Windows UI Automation cannot inspect the requested window");
+  }
+  return element;
+}
+
+std::wstring bstrValue(BSTR value) {
+  return value ? std::wstring(value, SysStringLen(value)) : L"";
+}
+
+bool containsSensitiveHint(std::wstring value) {
+  std::transform(value.begin(), value.end(), value.begin(), [](wchar_t character) { return static_cast<wchar_t>(towlower(character)); });
+  for (const wchar_t* marker : {L"password", L"passcode", L"verification", L"one-time", L"otp", L"token", L"secret", L"credit card", L"card number", L"cvv", L"security code"}) {
+    if (value.find(marker) != std::wstring::npos) return true;
+  }
+  return false;
+}
+
+bool isSensitiveAutomationElement(IUIAutomationElement* element) {
+  BOOL password = FALSE; element->get_CurrentIsPassword(&password);
+  if (password) return true;
+  BSTR name = nullptr, automationId = nullptr, className = nullptr;
+  element->get_CurrentName(&name); element->get_CurrentAutomationId(&automationId); element->get_CurrentClassName(&className);
+  const auto hints = bstrValue(name) + L" " + bstrValue(automationId) + L" " + bstrValue(className);
+  if (name) SysFreeString(name); if (automationId) SysFreeString(automationId); if (className) SysFreeString(className);
+  return containsSensitiveHint(hints);
+}
+
+bool supportsPattern(IUIAutomationElement* element, PATTERNID pattern) {
+  IUnknown* unknown = nullptr;
+  const HRESULT hr = element->GetCurrentPattern(pattern, &unknown);
+  if (unknown) unknown->Release();
+  return SUCCEEDED(hr);
+}
+
+std::optional<std::wstring> readableElementValue(IUIAutomationElement* element, bool password) {
+  if (password) return std::nullopt;
+  IUIAutomationValuePattern* pattern = nullptr;
+  if (FAILED(element->GetCurrentPatternAs(UIA_ValuePatternId, IID_PPV_ARGS(&pattern))) || !pattern) return std::nullopt;
+  BSTR value = nullptr;
+  const HRESULT hr = pattern->get_CurrentValue(&value);
+  pattern->Release();
+  if (FAILED(hr) || !value) return std::nullopt;
+  auto output = bstrValue(value);
+  SysFreeString(value);
+  if (output.size() > 4096) output.resize(4096);
+  return output;
+}
+
+std::string availableActions(IUIAutomationElement* element) {
+  std::vector<std::string> actions;
+  if (supportsPattern(element, UIA_InvokePatternId)) actions.push_back("Invoke");
+  if (supportsPattern(element, UIA_ExpandCollapsePatternId)) { actions.push_back("Expand"); actions.push_back("Collapse"); }
+  if (supportsPattern(element, UIA_TogglePatternId)) actions.push_back("Toggle");
+  if (supportsPattern(element, UIA_SelectionItemPatternId)) actions.push_back("Select");
+  if (supportsPattern(element, UIA_ScrollPatternId)) actions.push_back("Scroll");
+  if (supportsPattern(element, UIA_ScrollItemPatternId)) actions.push_back("ScrollIntoView");
+  std::ostringstream output; output << "[";
+  for (size_t index = 0; index < actions.size(); ++index) { if (index) output << ","; output << "\"" << actions[index] << "\""; }
+  output << "]"; return output.str();
+}
+
+std::string elementFingerprint(IUIAutomationElement* element) {
+  BSTR name = nullptr, automationId = nullptr, className = nullptr;
+  CONTROLTYPEID controlType = 0;
+  BOOL enabled = FALSE, offscreen = FALSE, password = FALSE;
+  RECT rect{};
+  element->get_CurrentName(&name);
+  element->get_CurrentAutomationId(&automationId);
+  element->get_CurrentClassName(&className);
+  element->get_CurrentControlType(&controlType);
+  element->get_CurrentIsEnabled(&enabled);
+  element->get_CurrentIsOffscreen(&offscreen);
+  element->get_CurrentIsPassword(&password);
+  element->get_CurrentBoundingRectangle(&rect);
+  std::ostringstream identity;
+  identity << wideToUtf8(bstrValue(name)) << '\x1f'
+           << wideToUtf8(bstrValue(automationId)) << '\x1f'
+           << wideToUtf8(bstrValue(className)) << '\x1f'
+           << controlType << '\x1f' << enabled << '\x1f' << offscreen << '\x1f' << password << '\x1f'
+           << rect.left << ',' << rect.top << ',' << rect.right << ',' << rect.bottom << '\x1f'
+           << availableActions(element);
+  if (name) SysFreeString(name);
+  if (automationId) SysFreeString(automationId);
+  if (className) SysFreeString(className);
+  return sha256Hex(identity.str());
+}
+
+std::string describeAutomationElement(IUIAutomationElement* element, int index) {
+  BSTR name = nullptr, automationId = nullptr, className = nullptr;
+  CONTROLTYPEID controlType = 0; BOOL enabled = FALSE, offscreen = FALSE, focused = FALSE, password = FALSE;
+  RECT rect{};
+  element->get_CurrentName(&name);
+  element->get_CurrentAutomationId(&automationId);
+  element->get_CurrentClassName(&className);
+  element->get_CurrentControlType(&controlType);
+  element->get_CurrentIsEnabled(&enabled);
+  element->get_CurrentIsOffscreen(&offscreen);
+  element->get_CurrentHasKeyboardFocus(&focused);
+  element->get_CurrentIsPassword(&password);
+  element->get_CurrentBoundingRectangle(&rect);
+  const auto nameText = bstrValue(name), idText = bstrValue(automationId), classText = bstrValue(className);
+  const bool sensitive = password != FALSE || containsSensitiveHint(nameText + L" " + idText + L" " + classText);
+  if (name) SysFreeString(name); if (automationId) SysFreeString(automationId); if (className) SysFreeString(className);
+  std::ostringstream output;
+  output << "{\"elementIndex\":" << index
+         << ",\"elementFingerprint\":\"" << elementFingerprint(element) << "\""
+         << ",\"controlType\":" << controlType
+         << ",\"name\":\"" << wideToUtf8(jsonEscape(nameText)) << "\""
+         << ",\"automationId\":\"" << wideToUtf8(jsonEscape(idText)) << "\""
+         << ",\"className\":\"" << wideToUtf8(jsonEscape(classText)) << "\""
+         << ",\"enabled\":" << (enabled ? "true" : "false")
+         << ",\"offscreen\":" << (offscreen ? "true" : "false")
+         << ",\"focused\":" << (focused ? "true" : "false")
+         << ",\"secure\":" << (password ? "true" : "false")
+         << ",\"sensitive\":" << (sensitive ? "true" : "false")
+         << ",\"bounds\":{\"x\":" << rect.left << ",\"y\":" << rect.top
+         << ",\"width\":" << std::max(0L, rect.right - rect.left) << ",\"height\":" << std::max(0L, rect.bottom - rect.top) << "}"
+         << ",\"actions\":" << availableActions(element);
+  if (const auto value = readableElementValue(element, sensitive)) {
+    output << ",\"value\":\"" << wideToUtf8(jsonEscape(*value)) << "\"";
+  }
+  output << "}";
+  return output.str();
+}
+
+std::vector<IUIAutomationElement*> snapshotElements(IUIAutomation* automation, IUIAutomationElement* root, int maxNodes) {
+  IUIAutomationCondition* condition = nullptr;
+  IUIAutomationElementArray* array = nullptr;
+  HRESULT hr = automation->CreateTrueCondition(&condition);
+  if (SUCCEEDED(hr)) hr = root->FindAll(TreeScope_Subtree, condition, &array);
+  if (condition) condition->Release();
+  if (FAILED(hr) || !array) throw ServiceError("Windows UI Automation cannot enumerate the requested window");
+  int length = 0; array->get_Length(&length);
+  std::vector<IUIAutomationElement*> elements;
+  elements.reserve(static_cast<size_t>(std::min(length, maxNodes)));
+  for (int index = 0; index < length && index < maxNodes; ++index) {
+    IUIAutomationElement* element = nullptr;
+    if (SUCCEEDED(array->GetElement(index, &element)) && element) elements.push_back(element);
+  }
+  array->Release();
+  return elements;
+}
+
+void releaseElements(std::vector<IUIAutomationElement*>& elements) {
+  for (auto* element : elements) if (element) element->Release();
+  elements.clear();
+}
+
+std::string accessibilityTree(const WindowInfo& window, const std::wstring& appId, int maxNodes) {
+  IUIAutomation* automation = createAutomation();
+  IUIAutomationElement* root = nullptr;
+  std::vector<IUIAutomationElement*> elements;
+  try {
+    root = windowAutomationElement(automation, window);
+    elements = snapshotElements(automation, root, maxNodes);
+    std::ostringstream output;
+    output << "{\"appId\":\"" << wideToUtf8(jsonEscape(appId)) << "\",\"windowId\":" << reinterpret_cast<uintptr_t>(window.handle)
+           << ",\"fresh\":true,\"truncated\":" << (elements.size() >= static_cast<size_t>(maxNodes) ? "true" : "false") << ",\"nodes\":[";
+    for (size_t index = 0; index < elements.size(); ++index) { if (index) output << ","; output << describeAutomationElement(elements[index], static_cast<int>(index)); }
+    output << "]}";
+    releaseElements(elements); root->Release(); automation->Release(); return output.str();
+  } catch (...) { releaseElements(elements); if (root) root->Release(); automation->Release(); throw; }
+}
+
+IUIAutomationElement* currentElementAt(IUIAutomation* automation, const WindowInfo& window, int index, const std::wstring& requestedFingerprint) {
+  if (index < 0 || index >= 500) throw ServiceError("elementIndex must refer to a fresh accessibility snapshot");
+  if (requestedFingerprint.size() != 64 || !std::all_of(requestedFingerprint.begin(), requestedFingerprint.end(), [](wchar_t character) {
+        return (character >= L'0' && character <= L'9') || (character >= L'a' && character <= L'f');
+      })) throw ServiceError("elementFingerprint must come from a fresh accessibility snapshot");
+  IUIAutomationElement* root = windowAutomationElement(automation, window);
+  std::vector<IUIAutomationElement*> elements;
+  try {
+    elements = snapshotElements(automation, root, 500);
+    root->Release(); root = nullptr;
+    if (static_cast<size_t>(index) >= elements.size()) { releaseElements(elements); throw ServiceError("The requested element is no longer in the current accessibility snapshot. Inspect the window again."); }
+    IUIAutomationElement* selected = elements[static_cast<size_t>(index)];
+    if (elementFingerprint(selected) != wideToUtf8(requestedFingerprint)) {
+      releaseElements(elements);
+      throw ServiceError("The requested accessibility element changed after inspection. Inspect the window again.");
+    }
+    selected->AddRef(); releaseElements(elements); return selected;
+  } catch (...) { releaseElements(elements); if (root) root->Release(); throw; }
+}
+
+void mouseDrag(const WindowInfo& window, const std::wstring& appId, long fromX, long fromY, long toX, long toY) {
+  movePointerIntoWindow(window, appId, fromX, fromY);
+  const long virtualLeft = GetSystemMetrics(SM_XVIRTUALSCREEN);
+  const long virtualTop = GetSystemMetrics(SM_YVIRTUALSCREEN);
+  const long virtualWidth = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+  const long virtualHeight = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+  if (virtualWidth <= 1 || virtualHeight <= 1) throw ServiceError("Windows virtual desktop geometry is unavailable");
+  INPUT input[3]{};
+  input[0].type = INPUT_MOUSE; input[0].mi.dwFlags = MOUSEEVENTF_LEFTDOWN;
+  input[1].type = INPUT_MOUSE;
+  input[1].mi.dx = static_cast<LONG>((toX - virtualLeft) * 65535LL / (virtualWidth - 1));
+  input[1].mi.dy = static_cast<LONG>((toY - virtualTop) * 65535LL / (virtualHeight - 1));
+  input[1].mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK;
+  input[2].type = INPUT_MOUSE; input[2].mi.dwFlags = MOUSEEVENTF_LEFTUP;
+  requireStillForeground(window, appId);
+  if (SendInput(3, input, sizeof(INPUT)) != 3) throw ServiceError("Windows blocked dragging because the target has higher privileges or input is unavailable");
+}
+
+void invokeElement(IUIAutomationElement* element, const WindowInfo& window, const std::wstring& appId) {
+  IUIAutomationInvokePattern* invoke = nullptr;
+  if (SUCCEEDED(element->GetCurrentPatternAs(UIA_InvokePatternId, IID_PPV_ARGS(&invoke))) && invoke) {
+    const HRESULT hr = invoke->Invoke(); invoke->Release(); if (SUCCEEDED(hr)) return;
+  }
+  RECT rect{}; element->get_CurrentBoundingRectangle(&rect);
+  const long x = rect.left + (rect.right - rect.left) / 2, y = rect.top + (rect.bottom - rect.top) / 2;
+  if (x < window.bounds.left || x >= window.bounds.right || y < window.bounds.top || y >= window.bounds.bottom) throw ServiceError("The selected element has no press action or usable bounds");
+  sendMouseClick(window, appId, x, y);
+}
+
+void setElementValue(IUIAutomationElement* element, const std::wstring& value) {
+  if (isSensitiveAutomationElement(element)) throw ServiceError("Computer Use will not read or change a password, credential, or payment field");
+  IUIAutomationValuePattern* pattern = nullptr;
+  if (FAILED(element->GetCurrentPatternAs(UIA_ValuePatternId, IID_PPV_ARGS(&pattern))) || !pattern) throw ServiceError("The selected element does not accept a text value");
+  const HRESULT hr = pattern->SetValue(value.c_str()); pattern->Release();
+  if (FAILED(hr)) throw ServiceError("The selected element rejected the requested value");
+}
+
+void selectElementText(
+    IUIAutomationElement* element,
+    const std::wstring& text,
+    const std::wstring& prefix,
+    const std::wstring& suffix,
+    const std::wstring& selectionType) {
+  if (isSensitiveAutomationElement(element)) throw ServiceError("Computer Use will not read or change a password, credential, or payment field");
+  if (selectionType != L"text" && selectionType != L"cursor_before" && selectionType != L"cursor_after") {
+    throw ServiceError("selectionType must be text, cursor_before, or cursor_after");
+  }
+  IUIAutomationTextPattern* pattern = nullptr;
+  IUIAutomationTextRange* document = nullptr;
+  IUIAutomationTextRange* search = nullptr;
+  IUIAutomationTextRange* prefixRange = nullptr;
+  IUIAutomationTextRange* found = nullptr;
+  IUIAutomationTextRange* suffixSearch = nullptr;
+  IUIAutomationTextRange* suffixRange = nullptr;
+  BSTR needle = SysAllocStringLen(text.data(), static_cast<UINT>(text.size()));
+  BSTR prefixNeedle = prefix.empty() ? nullptr : SysAllocStringLen(prefix.data(), static_cast<UINT>(prefix.size()));
+  BSTR suffixNeedle = suffix.empty() ? nullptr : SysAllocStringLen(suffix.data(), static_cast<UINT>(suffix.size()));
+  if (!needle || (!prefix.empty() && !prefixNeedle) || (!suffix.empty() && !suffixNeedle)) {
+    if (needle) SysFreeString(needle);
+    if (prefixNeedle) SysFreeString(prefixNeedle);
+    if (suffixNeedle) SysFreeString(suffixNeedle);
+    throw ServiceError("Could not allocate the requested selection text");
+  }
+  HRESULT hr = element->GetCurrentPatternAs(UIA_TextPatternId, IID_PPV_ARGS(&pattern));
+  if (SUCCEEDED(hr)) hr = pattern->get_DocumentRange(&document);
+  if (SUCCEEDED(hr)) hr = document->Clone(&search);
+  if (SUCCEEDED(hr) && prefixNeedle) hr = search->FindText(prefixNeedle, FALSE, FALSE, &prefixRange);
+  if (SUCCEEDED(hr) && prefixNeedle && !prefixRange) hr = UIA_E_ELEMENTNOTAVAILABLE;
+  if (SUCCEEDED(hr) && prefixRange) hr = search->MoveEndpointByRange(TextPatternRangeEndpoint_Start, prefixRange, TextPatternRangeEndpoint_End);
+  if (SUCCEEDED(hr)) hr = search->FindText(needle, FALSE, FALSE, &found);
+  if (SUCCEEDED(hr) && !found) hr = UIA_E_ELEMENTNOTAVAILABLE;
+  if (SUCCEEDED(hr) && suffixNeedle) hr = document->Clone(&suffixSearch);
+  if (SUCCEEDED(hr) && suffixSearch) hr = suffixSearch->MoveEndpointByRange(TextPatternRangeEndpoint_Start, found, TextPatternRangeEndpoint_End);
+  if (SUCCEEDED(hr) && suffixSearch) hr = suffixSearch->FindText(suffixNeedle, FALSE, FALSE, &suffixRange);
+  if (SUCCEEDED(hr) && suffixNeedle && !suffixRange) hr = UIA_E_ELEMENTNOTAVAILABLE;
+  if (SUCCEEDED(hr) && selectionType == L"cursor_before") {
+    hr = found->MoveEndpointByRange(TextPatternRangeEndpoint_End, found, TextPatternRangeEndpoint_Start);
+  } else if (SUCCEEDED(hr) && selectionType == L"cursor_after") {
+    hr = found->MoveEndpointByRange(TextPatternRangeEndpoint_Start, found, TextPatternRangeEndpoint_End);
+  }
+  if (SUCCEEDED(hr) && found) hr = found->Select();
+  SysFreeString(needle);
+  if (prefixNeedle) SysFreeString(prefixNeedle);
+  if (suffixNeedle) SysFreeString(suffixNeedle);
+  if (suffixRange) suffixRange->Release();
+  if (suffixSearch) suffixSearch->Release();
+  if (found) found->Release();
+  if (prefixRange) prefixRange->Release();
+  if (search) search->Release();
+  if (document) document->Release();
+  if (pattern) pattern->Release();
+  if (FAILED(hr)) throw ServiceError("The requested text is not present or cannot be selected in the current element");
+}
+
+void secondaryElementAction(IUIAutomationElement* element, const std::wstring& action) {
+  HRESULT hr = E_NOTIMPL;
+  if (action == L"Invoke") { IUIAutomationInvokePattern* p = nullptr; if (SUCCEEDED(element->GetCurrentPatternAs(UIA_InvokePatternId, IID_PPV_ARGS(&p))) && p) { hr = p->Invoke(); p->Release(); } }
+  else if (action == L"Toggle") { IUIAutomationTogglePattern* p = nullptr; if (SUCCEEDED(element->GetCurrentPatternAs(UIA_TogglePatternId, IID_PPV_ARGS(&p))) && p) { hr = p->Toggle(); p->Release(); } }
+  else if (action == L"Select") { IUIAutomationSelectionItemPattern* p = nullptr; if (SUCCEEDED(element->GetCurrentPatternAs(UIA_SelectionItemPatternId, IID_PPV_ARGS(&p))) && p) { hr = p->Select(); p->Release(); } }
+  else if (action == L"Expand" || action == L"Collapse") { IUIAutomationExpandCollapsePattern* p = nullptr; if (SUCCEEDED(element->GetCurrentPatternAs(UIA_ExpandCollapsePatternId, IID_PPV_ARGS(&p))) && p) { hr = action == L"Expand" ? p->Expand() : p->Collapse(); p->Release(); } }
+  else if (action == L"ScrollIntoView") { IUIAutomationScrollItemPattern* p = nullptr; if (SUCCEEDED(element->GetCurrentPatternAs(UIA_ScrollItemPatternId, IID_PPV_ARGS(&p))) && p) { hr = p->ScrollIntoView(); p->Release(); } }
+  else throw ServiceError("The requested action is not exposed by the current accessibility element");
+  if (FAILED(hr)) throw ServiceError("The selected accessibility action failed");
+}
+
+void scrollElement(IUIAutomationElement* element, const std::wstring& direction, int pages) {
+  IUIAutomationScrollPattern* pattern = nullptr;
+  if (SUCCEEDED(element->GetCurrentPatternAs(UIA_ScrollPatternId, IID_PPV_ARGS(&pattern))) && pattern) {
+    const ScrollAmount amount = pages > 1 ? ScrollAmount_LargeIncrement : ScrollAmount_SmallIncrement;
+    ScrollAmount horizontal = ScrollAmount_NoAmount, vertical = ScrollAmount_NoAmount;
+    if (direction == L"up") vertical = pages > 1 ? ScrollAmount_LargeDecrement : ScrollAmount_SmallDecrement;
+    else if (direction == L"down") vertical = amount;
+    else if (direction == L"left") horizontal = pages > 1 ? ScrollAmount_LargeDecrement : ScrollAmount_SmallDecrement;
+    else if (direction == L"right") horizontal = amount;
+    else { pattern->Release(); throw ServiceError("direction must be up, down, left, or right"); }
+    const HRESULT hr = pattern->Scroll(horizontal, vertical); pattern->Release(); if (SUCCEEDED(hr)) return;
+  }
+  throw ServiceError("The selected element does not expose a native scroll action");
 }
 
 long parseLong(const std::wstring& value, const char* name) {
@@ -448,6 +802,12 @@ double parseDouble(const std::wstring& value, const char* name) {
     if (!std::isfinite(number) || std::abs(number) > 100000) throw ServiceError(std::string(name) + " must be a safe finite number");
     return number;
   } catch (const ServiceError&) { throw; } catch (...) { throw ServiceError(std::string(name) + " must be a number"); }
+}
+
+int parseElementIndex(const std::wstring& value) {
+  const long index = parseLong(value, "elementIndex");
+  if (index < 0 || index >= 500) throw ServiceError("elementIndex must refer to a fresh accessibility snapshot index");
+  return static_cast<int>(index);
 }
 
 const std::wstring& argument(const std::vector<std::wstring>& arguments, size_t index, const char* name) {
@@ -505,27 +865,91 @@ void run(const std::vector<std::wstring>& arguments) {
     std::cout << image << std::endl;
     return;
   }
+  if (command == L"accessibility-tree") {
+    const long requested = std::clamp(parseLong(argument(arguments, 3, "maxNodes"), "maxNodes"), 1L, 500L);
+    requireStillForeground(window, appId);
+    const auto tree = accessibilityTree(window, appId, static_cast<int>(requested));
+    requireStillForeground(window, appId);
+    std::cout << tree << std::endl;
+    return;
+  }
   if (command == L"inspect-focused-element") { requireStillForeground(window, appId); std::cout << inspectFocusedElement(window.processId) << std::endl; return; }
+  if (command == L"click-element") {
+    const int index = parseElementIndex(argument(arguments, 3, "elementIndex"));
+    const auto& fingerprint = argument(arguments, 4, "elementFingerprint");
+    requireStillForeground(window, appId); IUIAutomation* automation = createAutomation(); IUIAutomationElement* element = nullptr;
+    try { element = currentElementAt(automation, window, index, fingerprint); requireStillForeground(window, appId); invokeElement(element, window, appId); element->Release(); automation->Release(); }
+    catch (...) { if (element) element->Release(); automation->Release(); throw; }
+    std::cout << "{\"clicked\":true,\"elementIndex\":" << index << ",\"mode\":\"accessibility\"}" << std::endl; return;
+  }
   if (command == L"click") {
     const long x = parseLong(argument(arguments, 3, "x"), "x"); const long y = parseLong(argument(arguments, 4, "y"), "y");
     if (x < window.bounds.left || x >= window.bounds.right || y < window.bounds.top || y >= window.bounds.bottom) throw ServiceError("The requested click is outside the current target window");
-    requireStillForeground(window, appId); sendMouseClick(x, y); std::cout << "{\"clicked\":true}" << std::endl; return;
+    requireStillForeground(window, appId); sendMouseClick(window, appId, x, y); std::cout << "{\"clicked\":true}" << std::endl; return;
+  }
+  if (command == L"drag") {
+    const long fromX = parseLong(argument(arguments, 3, "fromX"), "fromX"), fromY = parseLong(argument(arguments, 4, "fromY"), "fromY");
+    const long toX = parseLong(argument(arguments, 5, "toX"), "toX"), toY = parseLong(argument(arguments, 6, "toY"), "toY");
+    if (fromX < window.bounds.left || fromX >= window.bounds.right || fromY < window.bounds.top || fromY >= window.bounds.bottom || toX < window.bounds.left || toX >= window.bounds.right || toY < window.bounds.top || toY >= window.bounds.bottom) throw ServiceError("The requested drag is outside the current target window");
+    requireStillForeground(window, appId); mouseDrag(window, appId, fromX, fromY, toX, toY); std::cout << "{\"dragged\":true}" << std::endl; return;
+  }
+  if (command == L"set-value") {
+    const int index = parseElementIndex(argument(arguments, 3, "elementIndex")); const auto& fingerprint = argument(arguments, 4, "elementFingerprint"); const auto& value = argument(arguments, 5, "value");
+    if (value.size() > 4096) throw ServiceError("value is limited to 4096 characters");
+    requireStillForeground(window, appId); IUIAutomation* automation = createAutomation(); IUIAutomationElement* element = nullptr;
+    try { element = currentElementAt(automation, window, index, fingerprint); requireStillForeground(window, appId); setElementValue(element, value); element->Release(); automation->Release(); }
+    catch (...) { if (element) element->Release(); automation->Release(); throw; }
+    std::cout << "{\"valueSet\":true,\"elementIndex\":" << index << ",\"characterCount\":" << value.size() << "}" << std::endl; return;
+  }
+  if (command == L"select-text") {
+    const int index = parseElementIndex(argument(arguments, 3, "elementIndex")); const auto& fingerprint = argument(arguments, 4, "elementFingerprint"); const auto& text = argument(arguments, 5, "text");
+    const std::wstring prefix = arguments.size() > 6 ? arguments[6] : L"";
+    const std::wstring suffix = arguments.size() > 7 ? arguments[7] : L"";
+    const std::wstring selectionType = arguments.size() > 8 && !arguments[8].empty() ? arguments[8] : L"text";
+    if (text.size() > 4096 || prefix.size() > 4096 || suffix.size() > 4096) throw ServiceError("selection text and context are limited to 4096 characters");
+    requireStillForeground(window, appId); IUIAutomation* automation = createAutomation(); IUIAutomationElement* element = nullptr;
+    try { element = currentElementAt(automation, window, index, fingerprint); requireStillForeground(window, appId); selectElementText(element, text, prefix, suffix, selectionType); element->Release(); automation->Release(); }
+    catch (...) { if (element) element->Release(); automation->Release(); throw; }
+    std::cout << "{\"selected\":true,\"elementIndex\":" << index << ",\"selectionType\":\"" << wideToUtf8(jsonEscape(selectionType)) << "\"}" << std::endl; return;
+  }
+  if (command == L"secondary-action") {
+    const int index = parseElementIndex(argument(arguments, 3, "elementIndex")); const auto& fingerprint = argument(arguments, 4, "elementFingerprint"); const auto& action = argument(arguments, 5, "action");
+    if (action.size() > 256) throw ServiceError("action is limited to 256 characters");
+    requireStillForeground(window, appId); IUIAutomation* automation = createAutomation(); IUIAutomationElement* element = nullptr;
+    try { element = currentElementAt(automation, window, index, fingerprint); requireStillForeground(window, appId); secondaryElementAction(element, action); element->Release(); automation->Release(); }
+    catch (...) { if (element) element->Release(); automation->Release(); throw; }
+    std::cout << "{\"performed\":true,\"elementIndex\":" << index << ",\"action\":\"" << wideToUtf8(jsonEscape(action)) << "\"}" << std::endl; return;
   }
   if (command == L"type-text") {
     const auto& text = argument(arguments, 3, "text");
     if (text.size() > 4096) throw ServiceError("text is limited to 4096 characters");
     requireStillForeground(window, appId);
-    if (focusedElementIsPassword(window.processId)) throw ServiceError("Computer Use will not type into a secure password field");
-    requireStillForeground(window, appId); sendText(text); std::cout << "{\"typed\":true,\"characterCount\":" << text.size() << "}" << std::endl; return;
+    if (focusedElementIsSensitive(window.processId)) throw ServiceError("Computer Use will not type into a password, credential, or payment field");
+    requireStillForeground(window, appId); sendText(window, appId, text); std::cout << "{\"typed\":true,\"characterCount\":" << text.size() << "}" << std::endl; return;
   }
-  if (command == L"press-key") { requireStillForeground(window, appId); sendKey(argument(arguments, 3, "key")); std::cout << "{\"pressed\":true}" << std::endl; return; }
-  if (command == L"scroll") { requireStillForeground(window, appId); sendScroll(parseDouble(argument(arguments, 3, "deltaX"), "deltaX"), parseDouble(argument(arguments, 4, "deltaY"), "deltaY")); std::cout << "{\"scrolled\":true}" << std::endl; return; }
+  if (command == L"press-key") { requireStillForeground(window, appId); sendKey(window, appId, argument(arguments, 3, "key")); std::cout << "{\"pressed\":true}" << std::endl; return; }
+  if (command == L"scroll") { requireStillForeground(window, appId); sendScroll(window, appId, parseDouble(argument(arguments, 3, "deltaX"), "deltaX"), parseDouble(argument(arguments, 4, "deltaY"), "deltaY")); std::cout << "{\"scrolled\":true}" << std::endl; return; }
+  if (command == L"scroll-element") {
+    const int index = parseElementIndex(argument(arguments, 3, "elementIndex")); const auto& fingerprint = argument(arguments, 4, "elementFingerprint"); const auto& direction = argument(arguments, 5, "direction");
+    const int pages = static_cast<int>(std::clamp(parseLong(argument(arguments, 6, "pages"), "pages"), 1L, 10L));
+    requireStillForeground(window, appId); IUIAutomation* automation = createAutomation(); IUIAutomationElement* element = nullptr;
+    try { element = currentElementAt(automation, window, index, fingerprint); requireStillForeground(window, appId); scrollElement(element, direction, pages); element->Release(); automation->Release(); }
+    catch (...) { if (element) element->Release(); automation->Release(); throw; }
+    std::cout << "{\"scrolled\":true,\"elementIndex\":" << index << ",\"mode\":\"accessibility\"}" << std::endl; return;
+  }
   throw ServiceError("Unknown Computer Use command");
 }
 
 } // namespace
 
 int wmain(int argc, wchar_t* argv[]) {
+  // UIA bounds and injected pointer coordinates must share physical pixels on
+  // mixed-DPI multi-monitor desktops. Access denied only means the packaged
+  // host already established an equivalent process DPI context.
+  if (!SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) && GetLastError() != ERROR_ACCESS_DENIED) {
+    std::cerr << "Could not enable per-monitor DPI awareness" << std::endl;
+    return 64;
+  }
   const HRESULT initialized = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
   if (FAILED(initialized) && initialized != RPC_E_CHANGED_MODE) { std::cerr << "Could not initialize Windows Computer Use" << std::endl; return 64; }
   try {

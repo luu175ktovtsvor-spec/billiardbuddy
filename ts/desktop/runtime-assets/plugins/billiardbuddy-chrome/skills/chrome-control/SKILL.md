@@ -23,11 +23,15 @@ or read cookies, passwords, browser storage, browser history, bookmarks, or
 authentication codes. Uploading and downloading files are not supported by this
 plugin.
 
-Use `developer_snapshot` only when debugging or verification benefits from
-bounded Console, Network or Performance evidence. It omits headers, bodies and
-storage, removes URL credentials/query/fragment data and sensitive path
-identifiers, applies best-effort redaction to titles and console text, and does
-not expose arbitrary CDP commands.
+Use `wait_for_page` before retrying a page that is still loading. It waits for
+document completion or a visible text fragment, but never returns form values
+or hidden state. Use `developer_snapshot` when debugging or verification needs
+bounded Console, Network or Performance evidence. For the three supported
+read-only developer inspections, use `cdp_send` with only `DOM.getDocument`,
+`Page.getLayoutMetrics`, or `Performance.getMetrics`; then use `cdp_read_events`
+with a cursor to observe an action. These results are projected and redacted:
+there is no arbitrary JavaScript or CDP parameters, and no headers, cookies,
+storage, credentials, request/response bodies, or raw CDP event payloads.
 
 The structured snapshot must not be treated as permission. It intentionally omits current form values and marks protected credential fields; stop if a requested action depends on a password, one-time code, payment field or other secret.
 

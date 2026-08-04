@@ -8,7 +8,7 @@
 
 ## 仅有的产品补丁
 
-产品维护三份安全补丁。它们会从 Hook、非工具子进程和旧 notify 命令的环境中剥离名称包含 `KEY`、`SECRET` 或 `TOKEN` 的变量，避免用户控制的命令读取 Rust 子进程的 loopback 模型 capability。
+产品只维护两份安全补丁：`0001-sanitize-hook-environment.patch` 与 `0002-sanitize-non-tool-child-environment.patch`。它们会从 Hook 和非工具子进程的环境中剥离名称包含 `KEY`、`SECRET` 或 `TOKEN` 的变量，避免用户控制的命令读取 Rust 子进程的 loopback 模型 capability。旧 notify 路径经源码审计未进入产品私有 `CODEX_HOME` 的可控配置、IPC 或迁移面，因此不保留第三份补丁。
 
 这些补丁不改动 Agent Loop、Thread、Turn、上下文压缩、工具调度、沙箱、审批、MCP、Skill 或恢复。若上游以原生方式解决同一安全问题，应删除产品补丁而非长期分叉核心。
 

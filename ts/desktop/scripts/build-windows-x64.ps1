@@ -1,5 +1,7 @@
 [CmdletBinding()]
 param(
+  [ValidateSet('x64', 'arm64')]
+  [string]$Architecture = 'x64',
   [Parameter(ValueFromRemainingArguments = $true)]
   [string[]]$BuilderArgs
 )
@@ -15,14 +17,15 @@ Set-StrictMode -Version Latest
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $desktopDir = (Resolve-Path (Join-Path $scriptDir '..')).Path
 $repoRoot = (Resolve-Path (Join-Path $desktopDir '..')).Path
+$repositoryRoot = (Resolve-Path (Join-Path $desktopDir '..\..')).Path
 
-$targetTriple = 'x86_64-pc-windows-msvc'
-$canonicalOutputDir = Join-Path $desktopDir 'build-artifacts\windows-x64'
+$targetTriple = if ($Architecture -eq 'arm64') { 'aarch64-pc-windows-msvc' } else { 'x86_64-pc-windows-msvc' }
+$canonicalOutputDir = Join-Path $desktopDir "build-artifacts\windows-$Architecture"
 $electronOutputDir = Join-Path $desktopDir 'build-artifacts\electron'
 
 function Write-Step {
   param([string]$Message)
-  Write-Host "[build-windows-x64] $Message"
+  Write-Host "[build-windows-$Architecture] $Message"
 }
 
 function Assert-WindowsHost {
@@ -44,9 +47,10 @@ function Import-VsDevEnvironment {
     throw '[build-windows-x64] Could not find vswhere.exe. Install Visual Studio 2022 Build Tools with the C++ workload.'
   }
 
+  $toolComponent = if ($Architecture -eq 'arm64') { 'Microsoft.VisualStudio.Component.VC.Tools.ARM64' } else { 'Microsoft.VisualStudio.Component.VC.Tools.x86.x64' }
   $installationPath = & $vswhere `
     -products * `
-    -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+    -requires $toolComponent `
     -property installationPath |
     Select-Object -First 1
 
@@ -61,7 +65,8 @@ function Import-VsDevEnvironment {
 
   Write-Step "Importing MSVC environment from $vsDevCmd"
   $env:VSCMD_SKIP_SENDTELEMETRY = '1'
-  $envDump = & cmd.exe /d /s /c "`"$vsDevCmd`" -arch=x64 -host_arch=x64 >nul && set"
+  $hostArchitecture = if ([Environment]::Is64BitOperatingSystem -and $env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'arm64' } else { 'x64' }
+  $envDump = & cmd.exe /d /s /c "`"$vsDevCmd`" -arch=$Architecture -host_arch=$hostArchitecture >nul && set"
   if ($LASTEXITCODE -ne 0) {
     throw "[build-windows-x64] Failed to initialize Visual Studio build environment (exit $LASTEXITCODE)"
   }
@@ -70,6 +75,25 @@ function Import-VsDevEnvironment {
     if ($line -match '^(.*?)=(.*)$') {
       [Environment]::SetEnvironmentVariable($matches[1], $matches[2], 'Process')
     }
+  }
+}
+
+function Install-LockedRustTarget {
+  $toolchainFile = Join-Path $repositoryRoot 'third_party\codex-engine\codex-rs\rust-toolchain.toml'
+  if (-not (Test-Path -LiteralPath $toolchainFile -PathType Leaf)) {
+    throw "[build-windows-$Architecture] Missing locked Codex Rust toolchain file: $toolchainFile"
+  }
+  $toolchainSource = Get-Content -LiteralPath $toolchainFile -Raw
+  $channelMatch = [regex]::Match($toolchainSource, '(?m)^channel\s*=\s*"([^"]+)"\s*$')
+  if (-not $channelMatch.Success) {
+    throw "[build-windows-$Architecture] Could not read the locked Codex Rust toolchain channel."
+  }
+  $toolchainChannel = $channelMatch.Groups[1].Value
+  $env:RUSTUP_TOOLCHAIN = $toolchainChannel
+  Write-Step "Installing Rust target $targetTriple for toolchain $toolchainChannel..."
+  & rustup target add --toolchain $toolchainChannel $targetTriple
+  if ($LASTEXITCODE -ne 0) {
+    throw "[build-windows-$Architecture] rustup target add failed (exit $LASTEXITCODE)"
   }
 }
 
@@ -84,7 +108,11 @@ function Clear-Directory {
 Assert-WindowsHost
 Assert-Command bun
 Assert-Command bunx
+Assert-Command rustup
 Import-VsDevEnvironment
+Install-LockedRustTarget
+$env:BILLIARDBUDDY_WINDOWS_TARGET = $targetTriple
+$env:BB_MEDIA_TOOLCHAIN_TARGET = $targetTriple
 
 if ($env:SKIP_INSTALL -ne '1') {
   Write-Step 'Installing root dependencies...'
@@ -187,7 +215,7 @@ try {
     }
   }
 
-  $args = @('electron-builder', '--win', 'nsis', '--x64', '--publish', 'never')
+  $args = @('electron-builder', '--win', 'nsis', "--$Architecture", '--publish', 'never')
   $remainingArgs = @($BuilderArgs)
   if ($remainingArgs.Count -gt 0) {
     $args += $remainingArgs

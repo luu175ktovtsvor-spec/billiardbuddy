@@ -76,17 +76,23 @@ function assertHookEnvironmentPatch(patch: string, patchFile: string): void {
   assertExactPatchTargets(patch, [
     'codex-rs/hooks/src/engine/command_runner.rs',
   ], patchFile)
+  assertContains(
+    patch,
+    '+use codex_protocol::shell_environment::is_default_excluded_environment_variable_name;',
+    `${patchFile} 的共享密钥匹配规则`,
+  )
   assertContains(patch, '+    remove_inherited_secret_environment(&mut command);', `${patchFile} 的 Hook 密钥过滤`)
   assertContains(patch, '+    command.envs(&handler.env);', `${patchFile} 的显式 Hook 环境恢复`)
   assertContains(patch, '+            command.env_remove(name);', `${patchFile} 的继承密钥移除`)
-  assertContains(patch, '+    uppercase_name.contains("KEY")', `${patchFile} 的默认密钥匹配规则`)
-  assertContains(patch, '+        || uppercase_name.contains("SECRET")', `${patchFile} 的默认密钥匹配规则`)
-  assertContains(patch, '+        || uppercase_name.contains("TOKEN")', `${patchFile} 的默认密钥匹配规则`)
+  assertContains(
+    patch,
+    '+        if is_default_excluded_environment_variable_name(&name) {',
+    `${patchFile} 的默认密钥匹配规则`,
+  )
 }
 
 function assertNonToolChildEnvironmentPatch(patch: string, patchFile: string): void {
   assertExactPatchTargets(patch, [
-    'codex-rs/app-server/src/request_processors/feedback_doctor_report.rs',
     'codex-rs/core-plugins/src/lib.rs',
     'codex-rs/core-plugins/src/loader.rs',
     'codex-rs/core-plugins/src/marketplace_add/install.rs',
@@ -106,23 +112,6 @@ function assertNonToolChildEnvironmentPatch(patch: string, patchFile: string): v
   assertContains(patch, '+    remove_inherited_secret_environment(&mut command);', `${patchFile} 的插件子进程密钥过滤`)
 }
 
-function assertLegacyNotifyEnvironmentPatch(patch: string, patchFile: string): void {
-  assertExactPatchTargets(patch, [
-    'codex-rs/hooks/src/legacy_notify.rs',
-  ], patchFile)
-  assertContains(
-    patch,
-    '+use codex_protocol::shell_environment::is_default_excluded_environment_variable_name;',
-    `${patchFile} 的共享密钥匹配规则`,
-  )
-  assertContains(
-    patch,
-    '+                    if is_default_excluded_environment_variable_name(&name) {',
-    `${patchFile} 的通知 Hook 密钥过滤`,
-  )
-  assertContains(patch, '+                        command.env_remove(name);', `${patchFile} 的继承密钥移除`)
-}
-
 function assertProductPatchContents(patchFile: string, patch: string): void {
   if (patchFile === '0001-sanitize-hook-environment.patch') {
     assertHookEnvironmentPatch(patch, patchFile)
@@ -130,10 +119,6 @@ function assertProductPatchContents(patchFile: string, patch: string): void {
   }
   if (patchFile === '0002-sanitize-non-tool-child-environment.patch') {
     assertNonToolChildEnvironmentPatch(patch, patchFile)
-    return
-  }
-  if (patchFile === '0003-sanitize-legacy-notify-environment.patch') {
-    assertLegacyNotifyEnvironmentPatch(patch, patchFile)
     return
   }
   throw new Error(`Codex Engine 产品补丁没有语义审核器: ${patchFile}`)
@@ -245,6 +230,14 @@ async function main(): Promise<void> {
     path.join(repositoryRoot, 'ts', 'desktop', 'scripts', 'stage-codex-engine.ts'),
     'utf8',
   )
+  const productNativeProvider = readFileSync(
+    path.join(repositoryRoot, 'ts', 'desktop', 'electron', 'services', 'codexNativeProvider.ts'),
+    'utf8',
+  )
+  const productProtocolReview = readFileSync(
+    path.join(repositoryRoot, 'ts', 'desktop', 'scripts', 'verify-codex-native-protocol.ts'),
+    'utf8',
+  )
 
   assertContains(appServerMain, 'arg0_dispatch_or_else', 'App Server 的本地 sandbox helper 分派入口')
   assertContains(appServerRuntime, 'ExecServerRuntimePaths::from_optional_paths(', 'App Server 的本地 Exec Server 运行路径')
@@ -274,6 +267,16 @@ async function main(): Promise<void> {
   assertContains(codexRipgrepManifest, '"hash": "sha256"', 'Codex 官方 ripgrep SHA-256 清单')
   assertContains(productEngineStaging, 'from codex_package.v8 import resolve_codex_v8_cargo_env', '产品构建复用锁定源码的 V8 准备器')
   assertContains(productEngineStaging, 'from codex_package.ripgrep import resolve_rg_bin', '产品构建复用锁定源码的 ripgrep 准备器')
+  // The doctor subprocess is reachable only from `feedback/upload`; this
+  // product never exposes that request and pins feedback off at App Server
+  // startup. Keep those two conditions checked before treating its inherited
+  // environment as outside the reviewed patch boundary.
+  assertContains(productNativeProvider, "'feedback.enabled=false'", '产品禁用 App Server feedback 上传')
+  assertContains(productProtocolReview, "'feedback/upload'", '协议总账明确不暴露 feedback 上传')
+  assertContains(productNativeProvider, "'BB_CODEX_GATEWAY_ADAPTER_TOKEN'", '托管模型的回环 capability 名称')
+  assertContains(productNativeProvider, "'BB_CODEX_PERSONAL_RESPONSES_ADAPTER_TOKEN'", '用户 Responses 的回环 capability 名称')
+  assertContains(productNativeProvider, "'BB_CODEX_CHAT_ADAPTER_TOKEN'", '用户 Chat 适配的回环 capability 名称')
+  assertContains(productNativeProvider, "'shell_environment_policy.ignore_default_excludes=false'", '普通 Shell 的 capability 环境排除')
   assertContains(coreConfig, 'pub model_context_window: Option<i64>', 'Core 模型上下文窗口配置')
   assertContains(coreConfig, 'pub model_auto_compact_token_limit: Option<i64>', 'Core 自动压缩阈值配置')
   assertContains(modelInfo, 'from `context_window` (90%).', 'Core 未配置阈值时的原生自动压缩默认值')

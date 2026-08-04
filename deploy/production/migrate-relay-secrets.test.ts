@@ -232,11 +232,11 @@ test('explicit small production profile retires stale service policy but preserv
   expect(() => validateVideoMediaRelayEnvironment(video)).not.toThrow()
 })
 
-test('preserves a registered explicit Gateway model and rejects an unknown one', () => {
+test('preserves the registered explicit Gateway model and rejects an unknown one', () => {
   const root = directory(); const paths = fixture(root)
-  write(paths.gatewayInput, readFileSync(paths.gatewayInput, 'utf8').replace('BB_GATEWAY_MODEL=deepseek-chat', 'BB_GATEWAY_MODEL=deepseek-v4-pro'))
+  write(paths.gatewayInput, readFileSync(paths.gatewayInput, 'utf8').replace('BB_GATEWAY_MODEL=deepseek-chat', 'BB_GATEWAY_MODEL=deepseek-v4-flash'))
   expect(migrateRelaySecrets(paths)).toEqual({ status: 'migrated' })
-  expect(environment(paths.gatewayOutput).BB_GATEWAY_MODEL).toBe('deepseek-v4-pro')
+  expect(environment(paths.gatewayOutput).BB_GATEWAY_MODEL).toBe('deepseek-v4-flash')
 
   const invalidRoot = directory(); const invalidPaths = fixture(invalidRoot)
   write(invalidPaths.gatewayInput, readFileSync(invalidPaths.gatewayInput, 'utf8').replace('BB_GATEWAY_MODEL=deepseek-chat', 'BB_GATEWAY_MODEL=deepseek-v4-typo'))

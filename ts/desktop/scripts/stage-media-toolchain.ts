@@ -3,6 +3,7 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSyn
 import { chmodSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { spawnSync } from 'node:child_process'
+import { type WindowsNativeTarget, verifyWindowsPeMachine } from './native-build-tools'
 
 type SupportedPlatform = 'darwin' | 'win32'
 
@@ -28,12 +29,14 @@ export type MediaToolchainStageOptions = {
   sourceDir?: string
   destinationDir: string
   platform: SupportedPlatform
+  target?: WindowsNativeTarget
   verifyOnly?: boolean
 }
 
 export type MediaToolchainCliOptions = {
   destinationDir?: string
   platform?: string
+  target?: string
   verifyOnly: boolean
 }
 
@@ -48,6 +51,7 @@ function binaryNames(platform: SupportedPlatform): [string, string] {
 export function parseMediaToolchainCliOptions(argv: string[]): MediaToolchainCliOptions {
   let destinationDir: string | undefined
   let platform: string | undefined
+  let target: string | undefined
   let verifyOnly = false
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -56,18 +60,19 @@ export function parseMediaToolchainCliOptions(argv: string[]): MediaToolchainCli
       verifyOnly = true
       continue
     }
-    if (argument === '--destination' || argument === '--platform') {
+    if (argument === '--destination' || argument === '--platform' || argument === '--target') {
       const value = argv[index + 1]
       if (!value || value.startsWith('--')) throw new Error(`${argument} 需要一个值`)
       if (argument === '--destination') destinationDir = value
-      else platform = value
+      else if (argument === '--platform') platform = value
+      else target = value
       index += 1
       continue
     }
     throw new Error(`未知媒体工具链参数: ${argument}`)
   }
 
-  return { destinationDir, platform, verifyOnly }
+  return { destinationDir, platform, target, verifyOnly }
 }
 
 function sha256(path: string): string {
@@ -256,11 +261,23 @@ function verifyHashes(directory: string, manifest: SourceManifest, names: string
   }
 }
 
+function verifiedWindowsTarget(platform: SupportedPlatform, target: string | undefined): WindowsNativeTarget | undefined {
+  if (platform !== 'win32') return undefined
+  if (target === 'x86_64-pc-windows-msvc' || target === 'aarch64-pc-windows-msvc') return target
+  throw new Error('Windows 媒体工具链必须指定 x86_64-pc-windows-msvc 或 aarch64-pc-windows-msvc target')
+}
+
+function verifyWindowsMediaMachine(directory: string, names: string[], target: WindowsNativeTarget | undefined): void {
+  if (!target) return
+  for (const name of names) verifyWindowsPeMachine(join(directory, name), target)
+}
+
 export function stageMediaToolchain(options: MediaToolchainStageOptions): void {
   if (options.platform !== 'darwin' && options.platform !== 'win32') {
     throw new Error(`不支持的媒体工具链平台: ${options.platform}`)
   }
   const names = binaryNames(options.platform)
+  const windowsTarget = verifiedWindowsTarget(options.platform, options.target)
   const destination = resolve(options.destinationDir)
   if (options.verifyOnly) {
     const manifestPath = join(destination, STAGED_MANIFEST)
@@ -271,6 +288,7 @@ export function stageMediaToolchain(options: MediaToolchainStageOptions): void {
     validateMetadata(manifest)
     verifyHashes(destination, manifest, names)
     verifyLicenseFile(destination, LICENSE_FILE, manifest)
+    verifyWindowsMediaMachine(destination, names, windowsTarget)
     const audit = verifyMatchingBinaries(destination, names, manifest)
     if (audit.version !== manifest.binaryVersion || audit.buildConfiguration !== manifest.buildConfiguration) {
       throw new Error('安装包媒体工具链与已审核 manifest 不一致')
@@ -289,6 +307,7 @@ export function stageMediaToolchain(options: MediaToolchainStageOptions): void {
   validateMetadata(manifest)
   verifyHashes(source, manifest, names)
   verifyLicenseFile(source, 'LICENSE.txt', manifest)
+  verifyWindowsMediaMachine(source, names, windowsTarget)
   const audit = verifyMatchingBinaries(source, names, manifest)
 
   mkdirSync(destination, { recursive: true })
@@ -320,10 +339,19 @@ if (import.meta.main) {
   const cli = parseMediaToolchainCliOptions(process.argv.slice(2))
   const platform = (cli.platform ?? process.env.BB_MEDIA_TOOLCHAIN_PLATFORM ?? process.platform) as SupportedPlatform
   if (!['darwin', 'win32'].includes(platform)) throw new Error(`不支持的媒体工具链平台: ${platform}`)
+  const target = cli.target
+    ?? process.env.BB_MEDIA_TOOLCHAIN_TARGET
+    ?? process.env.BILLIARDBUDDY_WINDOWS_TARGET
+    ?? (platform === 'win32' && process.arch === 'x64'
+      ? 'x86_64-pc-windows-msvc'
+      : platform === 'win32' && process.arch === 'arm64'
+        ? 'aarch64-pc-windows-msvc'
+        : undefined)
   stageMediaToolchain({
     sourceDir: process.env.BB_MEDIA_TOOLCHAIN_SOURCE_DIR,
     destinationDir: cli.destinationDir ?? join(desktopRoot, 'runtime-assets', 'binaries'),
     platform,
+    target: verifiedWindowsTarget(platform, target),
     verifyOnly: cli.verifyOnly,
   })
   console.log(`[media-toolchain] ${cli.verifyOnly ? 'verified' : 'staged'} for ${platform}`)

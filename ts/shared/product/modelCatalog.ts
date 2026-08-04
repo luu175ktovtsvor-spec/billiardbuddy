@@ -44,22 +44,6 @@ const MANAGED_MODEL_CATALOG_SOURCE = [
     resume_evidence: { path: 'ts/desktop/electron/services/codexNativeAppServer.ts', status: 'conservative' },
   },
   {
-    model_id: 'deepseek-v4-pro',
-    provider: 'deepseek',
-    capabilities: ['TextReasoning'],
-    workload_bindings: [{
-      workload: 'managed_agent_text',
-      capacity_pool: 'deepseek-account',
-      quota_bucket: 'gateway.text-reasoning',
-      execution_runtime: 'gateway',
-      credential_slot: 'gateway.deepseek',
-    }],
-    text_reasoning_transport: 'responses',
-    worker_env_source: { variable: 'BB_GATEWAY_MODEL', slot_aliases: [] },
-    body_caps: { ...DEFAULT_BODY_CAPS },
-    resume_evidence: { path: 'ts/desktop/electron/services/codexNativeAppServer.ts', status: 'conservative' },
-  },
-  {
     model_id: 'mimo-v2.5',
     provider: 'mimo',
     capabilities: ['VisualEvidence', 'MediaReasoning'],

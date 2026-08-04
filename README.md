@@ -28,6 +28,8 @@ Video Media Relay、Image Relay 与 Gateway 是三条不重叠的正式执行路
 
 当前桌面 Renderer 是刻意保留的空入口，不含旧 React 页面或旧自建 Agent。新的前端只能投影 Rust Thread/Turn/Item 与各媒体领域状态，不能重建 Agent Loop 或第二份会话状态。
 
+Agent 后端的实际调用链、能力归属、平台状态、验证结果、真实缺口和非目标见 [docs/重构/Agent后端能力证据矩阵.md](docs/重构/Agent后端能力证据矩阵.md)。这里的后端边界不表示当前空 Renderer 已向用户交付对应界面。
+
 ## 目录
 
 | 路径 | 职责 |

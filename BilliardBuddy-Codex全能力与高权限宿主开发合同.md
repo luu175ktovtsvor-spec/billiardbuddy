@@ -38,6 +38,8 @@ Electron Main（BilliardBuddy 客户端后端）
 - 当前 revision：`2b5bdcf67547860f2e5c5a605009a70026796b2b`
 - 产品合同：`ts/shared/product/codexEngineContract.ts`
 
+公开依据以 [Codex App Server 官方文档](https://developers.openai.com/codex/app-server/)、[上游 App Server README](https://github.com/openai/codex/blob/main/codex-rs/app-server/README.md)、[配置参考](https://developers.openai.com/codex/config-reference/)、[Skills](https://developers.openai.com/codex/skills/) 和 [MCP](https://developers.openai.com/codex/mcp/) 为语义对照。精确方法、字段和运行行为仍以本仓库锁定 revision 的协议枚举、消息处理器、Core 调用链和测试为准；公开文档或本机 `.app` 的文件名不能替代源码证据。
+
 每次升级只做四件事：
 
 1. 更新锁定 revision；
@@ -58,13 +60,12 @@ CLI、TUI 和 SDK 属于 Codex 项目的其他客户端。BilliardBuddy 不需�
 
 ### 2.2 唯一允许的 Core 产品补丁
 
-当前构建合同包含三份凭据隔离补丁：
+当前构建合同只保留两份凭据隔离补丁：
 
 - `0001-sanitize-hook-environment.patch`
 - `0002-sanitize-non-tool-child-environment.patch`
-- `0003-sanitize-legacy-notify-environment.patch`
 
-原因是 BilliardBuddy 给 App Server 的进程环境包含一枚只能访问本机模型代理的短生命周期 capability。用户可控制的 Hook、旧 notify、插件安装辅助进程和非工具子进程不能继承它。
+原因是 BilliardBuddy 给 App Server 的进程环境包含一枚只能访问本机模型代理的短生命周期 capability。用户可控制的 Hook、插件安装辅助进程和非工具子进程不能继承它。源码审计确认产品私有 `CODEX_HOME` 没有需要保留的旧 `notify` 配置、IPC 或迁移路径，因此删除了原先会扩大上游分叉面的第三份补丁。
 
 这些补丁只删除子进程继承的 `KEY`、`SECRET`、`TOKEN` 类环境变量，不改变 Agent、压缩、工具、Sandbox、审批、MCP、Skill、插件或恢复语义。若上游以后原生解决同一问题，应删除补丁，不保留无意义分叉。
 
@@ -107,13 +108,13 @@ Electron Main 不得：
 
 锁定 App Server 当前共有 136 个 Client Request：
 
-- 63 个已通过类型化 Electron Main 桥接；
-- 73 个逐项登记为不暴露；
+- 73 个已通过类型化 Electron Main 桥接；
+- 63 个逐项登记为不暴露；
 - 6 类 Server Request 已处理。
 
 “6 类”是 Rust 主动向客户端索取审批、用户输入、MCP 表单或动态工具结果的回调类型，不是只有 6 个工具。文件、Shell、Git、网页、MCP、插件和子 Agent 工具仍在 Rust Core 内部运行，所有原生通知继续通用透传。
 
-不暴露的 73 个方法必须属于以下一种：
+不暴露的 63 个方法必须属于以下一种：
 
 - OpenAI 账号、用量、App、远控或云端服务；
 - 会绕过产品边界的原始文件、进程或 Shell 客户端 API；
@@ -121,6 +122,8 @@ Electron Main 不得：
 - 明确不做的 realtime voice、远程环境、插件共享或 Guardian 临时入口。
 
 验证脚本会把上游新增方法当成失败，直到它被正式桥接或写出明确排除理由。
+
+当前官方 Manual 还公开记录了 App Server WebSocket、Unix socket transport、远程 Code Mode Host，以及仍标为开发中的 `plugin/list`、`plugin/read`；其中 WebSocket 路径明确标为实验性且不支持生产。锁定 revision 确实包含这些源码，但 BilliardBuddy 只以 `stdio://` 启动随包 App Server 和本地 Code Mode Host；不会把额外 transport 或远程 host 暴露为产品能力。插件目录调用则包在固定的 BilliardBuddy 类型化 IPC 后面，只读取本地或 workspace marketplace，并依赖 revision 锁定与协议总账吸收上游变化，不能把上游“开发中”状态写成跨版本稳定承诺。
 
 ### 4.3 Thread、Turn、设置与子 Agent 图
 
@@ -171,7 +174,7 @@ Rust Core 的审批仍是 Agent 工具审批权威。Electron 不为每次点击
 
 这些是操作系统或产品资源授权，不是第二个 Agent 审批引擎。
 
-随包 Skill 中关于危险外部副作用的确认规则是给 Agent 的产品行为指令，官方 Computer Use Skill 也采用同一形态。它不保存批准、不绕过 Core，也不能扩大 Core 提供的权限。真正的写工具不声明 `readOnlyHint`，因此仍由 Core 的 MCP 工具策略处理。
+随包 Skill 中关于危险外部副作用的确认规则是给 Agent 的产品行为指令，官方 Computer Use Skill 也采用同一形态。它不保存批准、不绕过 Core，也不能扩大 Core 提供的权限。Browser、Chrome、Computer Use 与 Record & Replay 的写工具都显式声明 `readOnlyHint: false` 和 `destructiveHint: true`，由 Core 的 MCP 工具策略生成审批请求，再沿既有 Server Request 回调进入 Electron；没有第二套批准状态机。若用户明确切到 `full-access`，Core 会按原生语义跳过这些逐项审批，因此 Main 的高权限确认必须同时明示文件、网络和四类本地插件写操作都会放开。
 
 ## 6. 本地插件架构
 
@@ -194,51 +197,37 @@ runtime-assets/agent-marketplace/
 
 当前源码能力：
 
-- Computer Use：macOS 窗口/截图/辅助功能/输入，Windows 活动窗口/UI Automation/截图/输入；
-- Chrome：固定 BilliardBuddy 扩展、Native Messaging、只操作用户连接的标签页；
-- Browser：独立 Electron Profile、受限网页快照/截图/导航/点击/输入；
-- Record & Replay：用户明确开始、限时、脱敏、不可坐标盲回放的录制骨架。
+- Computer Use：macOS AX 与 Windows UIA 的语义快照、稳定元素指纹、前台窗口复核、截图和受限输入；敏感控件拒绝输入；坐标点击、拖拽和滚动只是当语义树没有可靠控件动作时的受控兜底，必须取自当前窗口或截图，且仍受 app/window/前台/边界复核；
+- Chrome：固定 BilliardBuddy 扩展、Native Messaging、只操作用户连接的标签页；元素句柄绑定主 frame/execution context，Developer Mode 只开放三项只读 CDP 投影；
+- Browser：独立 Electron Profile、隔离世界元素句柄、受限网页快照/截图/导航/点击/输入，以及脱敏 Console/Network/Performance 与只读 CDP 投影；
+- Record & Replay：用户明确开始、限时、脱敏、事件时固定应用/进程/窗口、记录控件语义与可访问性差量；录制只作为生成可审阅 Skill 的证据，不提供坐标宏播放器。
 
 插件不会读取 Chrome Profile 文件、Cookie、密码、Keychain、其他应用历史或模型 Key。插件启用、MCP 生命周期和工具审批仍由 Core 负责。
 
 随包 manifest、Skill、弹窗和错误只描述 BilliardBuddy 用户行为。Rust/Core 所有权、施工状态、尚未实现内容和未来路线只允许出现在本合同、源码注释和验证脚本中。
 
-## 7. 仍缺少的实质性客户端后端
+## 7. 源码交叉验证证据矩阵
 
-下面这些不是 Codex Agent 内核缺失，而是 Codex 类桌面客户端常见、BilliardBuddy 尚未完成的宿主能力。只有完成后才能声称桌面客户端能力接近等价。
+逐能力证据、完整调用链、macOS/Windows 状态、已验证项、真实缺口和非目标在 [Agent 后端能力证据矩阵](docs/重构/Agent后端能力证据矩阵.md) 维护。本合同不再用“文件存在”“旧提交”或未打包的静态路径作为完成证据。
 
-### P0：下一批必须完成
+本次交叉审计已经确认并修正三项实际缺口：Appshot 的第三方 AX 文本降为 `untrusted` context、宿主遵守 `allowAppshots`、已托管 Worktree 的恢复/Fork/Review 不再采信 Renderer 指定 cwd。当前 Renderer 仍没有这些 API 的消费方，因此它们是可供后续前端调用的后端边界，不是已交付页面。
 
-1. **受管 Worktree 与 Handoff**
-   创建/登记 detached Worktree、绑定 Thread、初始化项目、快照、迁移未提交工作、安全清理和冷恢复。不得复制 Agent 状态或 Key。
+### 7.1 当前仍需保留的完成门
 
-2. **Local Environment、用户终端与 Git 面板后端**
-   用户明确打开的 PTY、受验证 cwd、resize/stdin/退出清理，以及 Diff/Stage/Revert/Commit/Push 的最小类型化宿主 API。它们是用户直接操作项目，不是 Agent Shell 工具。
+1. 真实 Provider 仍只能以可撤销、低额度专用 Key 的固定两 Turn smoke 取得证据；不读取、导出或猜测用户已有长期 Key。
+2. Windows x64/ARM64 目前只有静态和跨架构 fail-closed 证据。用户明确说“构建”前，不打包、不推送、不触发 GitHub；之后的一次 Windows workflow 才能证明 MSVC、Rust target、NSIS、解包与 PE 审计。
+3. Computer Use、Chrome、Record & Replay、Appshots、Worktree、Git 和 Local Environment 均无前端用户旅程；系统权限、Chrome 扩展人工安装和现场行为不能由类型检查替代。
+4. Scheduled Tasks 只在桌面应用和主窗口存活时运行原生 Turn；没有关闭应用后的系统调度、RRULE、显式时区或重叠策略。
+5. 正式安装包资源审计必须以生成的 `app.asar`/NSIS 成品为对象；staging 清单不能替代它。
 
-3. **Appshots 与工作区外附件授权**
-   用户快捷键/菜单主动捕获当前前台窗口和可访问文本，或用文件选择器授予一次性文件访问，再映射为 Core 原生 Turn input。不能后台采集屏幕历史。
+### 7.2 明确不进入当前范围
 
-4. **Browser Developer Mode**
-   在 Browser/Chrome 已授权连接上提供脱敏的 DOM、Console、Network 和 Performance 摘要；不暴露 Cookie、Authorization、Storage 或任意 CDP 命令。
-
-5. **Record & Replay 语义事件完整性**
-   当前只有脱敏生命周期骨架；仍需稳定控件身份、可访问性差量、动作目标和成功状态，才能可靠生成 Skill。
-
-### P1：本地后端完成后再做
-
-- Scheduled Tasks 的 standalone Thread、时区/RRULE、运行历史、重叠策略和无窗口恢复；
-- 本地插件市场的签名、撤销、升级与 MCP Apps 资源桥；
-- Windows WSL2 执行环境；
-- SSH 远程项目。
-
-### 明确不进入当前范围
-
-- OpenAI/ChatGPT 登录、云端计费、账号用量和远程插件市场；
-- OpenAI Remote Control、专有 device-key 和私有 relay；
-- BilliardBuddy Remote Host 与移动端遥控；
-- Cloud Runner / Remote Runner；
+- OpenAI/ChatGPT 登录、云端计费、账号用量、推理集群和远程插件市场；
+- OpenAI Remote Control、专有 device-key、私有 relay、Cloud Runner / Remote Runner；
+- 上游额外的 App Server WebSocket/Unix socket transport 与远程 Code Mode Host，其中 WebSocket 路径官方标为实验性且不支持生产；BilliardBuddy 固定使用本地 `stdio://` 和随包本地 Host；
+- BilliardBuddy Remote Host、移动端遥控、SSH 远程项目和 Windows WSL2；
 - realtime voice；
-- OpenAI 原生生图。图片和视频继续由 BilliardBuddy 自有工作台负责。
+- OpenAI 原生生图。图片和视频继续由 BilliardBuddy 自有工作台负责，本轮不修改其业务。
 
 ## 8. 本机 `.app` 只读审计结论
 
@@ -269,14 +258,26 @@ runtime-assets/agent-marketplace/
 2. 136 个 Client Request 和全部 Server Request 重新审计；
 3. Electron Main、Preload、IPC 和 Sidecar 类型/构建通过；
 4. 模型、凭据、审批、Thread 恢复和退出清理测试通过；
-5. 四个插件完成本机可执行的编译、产品内容检查和 MCP handshake；
-6. 安装包资源审计不含旧 Agent、旧前端、明文 Key 或临时文件；
+5. 四个插件完成本机可运行的内容、协议、静态与 TypeScript 验证；Rust/C++ 编译、MCP handshake 和 native smoke 由一次远程 Windows workflow 证明；
+6. 打包前资源清单审计不含旧 Agent、旧前端、明文 Key 或临时文件；`app.asar`/NSIS 成品审计由同一次远程 workflow 证明；
 7. 任务启动的测试服务、浏览器、打包进程和辅助进程全部停止；
 8. `git diff` 只包含本轮有意变更；
 9. 文档中的“已完成”与真实代码和证据一致；
 10. 用户明确说“构建”。
 
-GitHub 构建的职责是提供 macOS/Windows 原生编译与安装包证据，不是发现基础架构遗漏的第一道检查。构建失败后只根据真实日志修复一次根因，再由用户决定是否继续触发。
+本次唯一的 GitHub Windows 构建职责是提供 Windows 原生编译、安装包与目标架构证据，不是发现基础架构遗漏的第一道检查。构建失败后只根据真实日志修复一次根因，再由用户决定是否继续触发。
+
+### 9.1 本轮本地验证快照
+
+本段只记录本次仍可复核的命令结果；旧的本机构建缓存、旧提交或文件存在不算证据。最终命令输出同步写入 [Agent 后端能力证据矩阵](docs/重构/Agent后端能力证据矩阵.md)。
+
+- 完整 Bun 套件通过：`283 pass`、`1 skip`、`0 fail`、`1830 expect`、`42 files`。`bun run check:server`、`bun run check:electron`、`bun run audit:source` 也通过；后者没有缺失导入目标，两个既有人工审阅入口不属于本轮 Agent 路径。
+- 锁定源码、两份产品补丁和协议总账已通过 `bun run verify:codex-engine-source`：73 个直连 client request、63 个逐项审计但不暴露的请求、6 类 server request。任何上游 revision 或协议变化都要求重新审计。
+- 已暂存 macOS arm64 Core/插件通过 App Server `thread/search`/ripgrep smoke、受管 Responses Thread/Turn/恢复 E2E、Hook capability 隔离 E2E、四个插件 verify/MCP smoke 和独立 Browser Use Electron E2E；两个 macOS 原生 Swift 服务通过 `swiftc -typecheck`。以上均不使用真实 Provider。
+- Windows workflow YAML 和 `git diff --check` 已通过本地语法/空白审计；这不是 Windows 成品证据。
+- 当前机器按用户明确限制不进行 Rust `cargo` 编译或测试，避免再次耗尽磁盘/内存；Rust `fmt/check/test`、Windows C++/MSVC 链接、NSIS 解包和成品 smoke 由用户说“构建”后的远程 Windows workflow 取得证据。
+- 真实 Provider 冒烟需要的显式确认、端点、模型、协议和专用 Key 环境变量当前均未配置，因此没有产生计费请求。真实 Screen Recording/Accessibility、Chrome extension 连接、安装包 UI 旅程和真实远端 Git push 均不因源码或 mock 通过而自动视为已验证；它们保留在证据矩阵的受控验证计划中。
+- 本轮不提交、不推送、不触发 GitHub，直到用户明确说“构建”。
 
 ## 10. 最终完成标准
 

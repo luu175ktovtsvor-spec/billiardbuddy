@@ -67,23 +67,27 @@ fn tools() -> &'static str {
     r#"{"tools":[
   {"name":"status","description":"Check isolated BilliardBuddy Browser readiness and its website policy.","inputSchema":{"type":"object","properties":{},"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"openWorldHint":false}},
   {"name":"list_tabs","description":"List BilliardBuddy Browser tabs only; it never lists the user's Chrome or other browser tabs.","inputSchema":{"type":"object","properties":{},"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"openWorldHint":false}},
-  {"name":"open_tab","description":"Open one HTTP(S) URL in BilliardBuddy's isolated browser after a site permission confirmation.","inputSchema":{"type":"object","properties":{"url":{"type":"string","maxLength":4096}},"required":["url"],"additionalProperties":false}},
-  {"name":"close_tab","description":"Close one BilliardBuddy Browser tab.","inputSchema":{"type":"object","properties":{"tabId":{"type":"integer","minimum":1}},"required":["tabId"],"additionalProperties":false}},
+  {"name":"open_tab","description":"Open one HTTP(S) URL in BilliardBuddy's isolated browser after a site permission confirmation.","inputSchema":{"type":"object","properties":{"url":{"type":"string","maxLength":4096}},"required":["url"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"destructiveHint":true,"openWorldHint":true}},
+  {"name":"close_tab","description":"Close one BilliardBuddy Browser tab.","inputSchema":{"type":"object","properties":{"tabId":{"type":"integer","minimum":1}},"required":["tabId"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"destructiveHint":true,"openWorldHint":false}},
   {"name":"inspect_page","description":"Read a bounded page snapshot and current element IDs for one Browser tab.","inputSchema":{"type":"object","properties":{"tabId":{"type":"integer","minimum":1}},"required":["tabId"],"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"openWorldHint":true}},
   {"name":"capture_page","description":"Capture one Browser tab's visible page as a PNG image.","inputSchema":{"type":"object","properties":{"tabId":{"type":"integer","minimum":1}},"required":["tabId"],"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"openWorldHint":true}},
   {"name":"developer_snapshot","description":"Read a bounded Console, Network and Performance summary for one BilliardBuddy Browser tab. The host omits headers, cookies, storage, bodies and raw CDP access, removes URL credentials, query strings, fragments and sensitive path identifiers, and applies best-effort redaction to console text.","inputSchema":{"type":"object","properties":{"tabId":{"type":"integer","minimum":1}},"required":["tabId"],"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"openWorldHint":true}},
-  {"name":"navigate","description":"Navigate one Browser tab to an HTTP(S) URL after website permission confirmation.","inputSchema":{"type":"object","properties":{"tabId":{"type":"integer","minimum":1},"url":{"type":"string","maxLength":4096}},"required":["tabId","url"],"additionalProperties":false}},
-  {"name":"click_element","description":"Click a current element ID after user confirmation. Never use it for purchases, submission or deletion without explicit user approval.","inputSchema":{"type":"object","properties":{"tabId":{"type":"integer","minimum":1},"elementId":{"type":"string","pattern":"^bb-[1-9][0-9]*-[1-9][0-9]*$"}},"required":["tabId","elementId"],"additionalProperties":false}},
-  {"name":"type_text","description":"Type into a current non-sensitive page field. Password and authentication fields are rejected by the host.","inputSchema":{"type":"object","properties":{"tabId":{"type":"integer","minimum":1},"elementId":{"type":"string","pattern":"^bb-[1-9][0-9]*-[1-9][0-9]*$"},"text":{"type":"string","minLength":1,"maxLength":4096}},"required":["tabId","elementId","text"],"additionalProperties":false}},
-  {"name":"press_key","description":"Press one safe navigation key in a Browser tab.","inputSchema":{"type":"object","properties":{"tabId":{"type":"integer","minimum":1},"key":{"type":"string","enum":["Enter","Tab","Escape","ArrowUp","ArrowDown","ArrowLeft","ArrowRight"]}},"required":["tabId","key"],"additionalProperties":false}}
+  {"name":"cdp_send","description":"Run one read-only, allowlisted developer inspection in an approved Browser tab. Only DOM.getDocument, Page.getLayoutMetrics, and Performance.getMetrics are accepted. Results are projected and redacted by the host; this never accepts arbitrary JavaScript, CDP parameters, cookies, storage, headers, credentials, response bodies, or mutation commands.","inputSchema":{"type":"object","properties":{"tabId":{"type":"integer","minimum":1},"method":{"type":"string","enum":["DOM.getDocument","Page.getLayoutMetrics","Performance.getMetrics"]}},"required":["tabId","method"],"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"openWorldHint":true}},
+  {"name":"cdp_read_events","description":"Read bounded, redacted developer events after a cursor from one approved Browser tab. Events contain only Console, Network and navigation summaries; they never include headers, cookies, storage, request/response bodies or raw CDP payloads.","inputSchema":{"type":"object","properties":{"tabId":{"type":"integer","minimum":1},"afterSequence":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":100}},"required":["tabId"],"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"openWorldHint":true}},
+  {"name":"wait_for_page","description":"Wait, for at most 10 seconds, until an approved Browser tab reaches a complete document state or a visible text fragment appears. The text is never returned and cannot be used to inspect form values, cookies, storage or hidden page state.","inputSchema":{"type":"object","properties":{"tabId":{"type":"integer","minimum":1},"text":{"type":"string","minLength":1,"maxLength":256},"timeoutMs":{"type":"integer","minimum":1,"maximum":10000}},"required":["tabId"],"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"openWorldHint":true}},
+  {"name":"navigate","description":"Navigate one Browser tab to an HTTP(S) URL after website permission confirmation.","inputSchema":{"type":"object","properties":{"tabId":{"type":"integer","minimum":1},"url":{"type":"string","maxLength":4096}},"required":["tabId","url"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"destructiveHint":true,"openWorldHint":true}},
+  {"name":"click_element","description":"Click a current element ID after user confirmation. Never use it for purchases, submission or deletion without explicit user approval.","inputSchema":{"type":"object","properties":{"tabId":{"type":"integer","minimum":1},"elementId":{"type":"string","pattern":"^bb-[1-9][0-9]*-[1-9][0-9]*$"}},"required":["tabId","elementId"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"destructiveHint":true,"openWorldHint":true}},
+  {"name":"type_text","description":"Type into a current non-sensitive page field. Password and authentication fields are rejected by the host.","inputSchema":{"type":"object","properties":{"tabId":{"type":"integer","minimum":1},"elementId":{"type":"string","pattern":"^bb-[1-9][0-9]*-[1-9][0-9]*$"},"text":{"type":"string","minLength":1,"maxLength":4096}},"required":["tabId","elementId","text"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"destructiveHint":true,"openWorldHint":true}},
+  {"name":"press_key","description":"Press one safe navigation key in a Browser tab.","inputSchema":{"type":"object","properties":{"tabId":{"type":"integer","minimum":1},"key":{"type":"string","enum":["Enter","Tab","Escape","ArrowUp","ArrowDown","ArrowLeft","ArrowRight"]}},"required":["tabId","key"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"destructiveHint":true,"openWorldHint":true}}
 ]}"#
 }
 
 fn tool_call(id: &str, message: &str) -> String {
-    let Some(name) = string_member(message, "name") else {
+    let params = member(message, "params").unwrap_or_else(|| "{}".to_owned());
+    let Some(name) = string_member(&params, "name") else {
         return error(id, -32602, "tools/call requires a tool name");
     };
-    let arguments = member(message, "arguments").unwrap_or_else(|| "{}".to_owned());
+    let arguments = member(&params, "arguments").unwrap_or_else(|| "{}".to_owned());
     let result: Result<String, String> = match name.as_str() {
         "status" | "list_tabs" => bridge(&name, "{}"),
         "open_tab" => (|| {
@@ -91,8 +95,53 @@ fn tool_call(id: &str, message: &str) -> String {
             valid_url(&url)?;
             bridge(&name, &format!(r#"{{"url":"{}"}}"#, escape(&url)))
         })(),
-        "close_tab" | "inspect_page" | "capture_page" | "developer_snapshot" => with_tab(&arguments, |tab| {
-            bridge(&name, &format!(r#"{{"tabId":{tab}}}"#))
+        "close_tab" | "inspect_page" | "capture_page" | "developer_snapshot" => {
+            with_tab(&arguments, |tab| {
+                bridge(&name, &format!(r#"{{"tabId":{tab}}}"#))
+            })
+        }
+        "cdp_send" => with_tab(&arguments, |tab| {
+            let method = required_string(&arguments, "method")?;
+            if !matches!(
+                method.as_str(),
+                "DOM.getDocument" | "Page.getLayoutMetrics" | "Performance.getMetrics"
+            ) {
+                return Err("unsupported Browser developer method".to_owned());
+            }
+            bridge(&name, &format!(r#"{{"tabId":{tab},"method":"{method}"}}"#))
+        }),
+        "cdp_read_events" => with_tab(&arguments, |tab| {
+            let after_sequence =
+                optional_non_negative_integer(&arguments, "afterSequence")?.unwrap_or(0);
+            let limit = optional_non_negative_integer(&arguments, "limit")?.unwrap_or(50);
+            if !(1..=100).contains(&limit) {
+                return Err("limit must be an integer from 1 to 100".to_owned());
+            }
+            bridge(
+                &name,
+                &format!(r#"{{"tabId":{tab},"afterSequence":{after_sequence},"limit":{limit}}}"#),
+            )
+        }),
+        "wait_for_page" => with_tab(&arguments, |tab| {
+            let text = string_member(&arguments, "text");
+            if text
+                .as_ref()
+                .is_some_and(|value| value.is_empty() || value.chars().count() > 256)
+            {
+                return Err("text must contain 1-256 characters when supplied".to_owned());
+            }
+            let timeout_ms =
+                optional_non_negative_integer(&arguments, "timeoutMs")?.unwrap_or(5_000);
+            if !(1..=10_000).contains(&timeout_ms) {
+                return Err("timeoutMs must be an integer from 1 to 10000".to_owned());
+            }
+            let text_field = text
+                .map(|value| format!(",\"text\":\"{}\"", escape(&value)))
+                .unwrap_or_default();
+            bridge(
+                &name,
+                &format!(r#"{{"tabId":{tab},"timeoutMs":{timeout_ms}{text_field}}}"#),
+            )
         }),
         "navigate" => with_tab(&arguments, |tab| {
             let url = required_string(&arguments, "url")?;
@@ -175,6 +224,16 @@ fn valid_url(value: &str) -> Result<(), String> {
     } else {
         Ok(())
     }
+}
+fn optional_non_negative_integer(value: &str, key: &str) -> Result<Option<i64>, String> {
+    member(value, key)
+        .map(|raw| {
+            raw.parse::<i64>()
+                .ok()
+                .filter(|number| *number >= 0)
+                .ok_or_else(|| format!("{key} must be a non-negative integer"))
+        })
+        .transpose()
 }
 
 fn bridge(operation: &str, arguments: &str) -> Result<String, String> {
@@ -271,11 +330,30 @@ fn required_string(value: &str, key: &str) -> Result<String, String> {
 // protocol. It deliberately does not evaluate page content or accept arbitrary
 // JSON paths.
 fn member(value: &str, key: &str) -> Option<String> {
-    let needle = format!(r#""{key}""#);
-    let start = value.find(&needle)? + needle.len();
-    let after = value[start..].trim_start().strip_prefix(':')?.trim_start();
-    let end = json_end(after)?;
-    Some(after[..end].trim().to_owned())
+    let mut remainder = value.trim().strip_prefix('{')?;
+    loop {
+        remainder = remainder.trim_start();
+        if remainder.starts_with('}') {
+            return None;
+        }
+        if let Some(after_comma) = remainder.strip_prefix(',') {
+            remainder = after_comma.trim_start();
+        }
+        let key_end = json_end(remainder)?;
+        let member_key = remainder[..key_end]
+            .strip_prefix('"')?
+            .strip_suffix('"')
+            .and_then(unescape)?;
+        remainder = remainder[key_end..]
+            .trim_start()
+            .strip_prefix(':')?
+            .trim_start();
+        let value_end = json_end(remainder)?;
+        if member_key == key {
+            return Some(remainder[..value_end].trim().to_owned());
+        }
+        remainder = &remainder[value_end..];
+    }
 }
 fn string_member(value: &str, key: &str) -> Option<String> {
     member(value, key).and_then(|raw| raw.strip_prefix('"')?.strip_suffix('"').and_then(unescape))
@@ -360,4 +438,43 @@ fn escape(value: &str) -> String {
         }
     }
     output
+}
+
+#[cfg(test)]
+mod parser_tests {
+    use super::*;
+
+    #[test]
+    fn top_level_member_ignores_field_like_text() {
+        let input = r#"{"text":"contains \"tabId\":999","tabId":42}"#;
+        assert_eq!(member(input, "tabId").as_deref(), Some("42"));
+    }
+
+    #[test]
+    fn tools_call_reads_name_only_from_nested_params() {
+        let request = r#"{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"status","arguments":{"text":"contains \"name\":\"wrong\""}}}"#;
+        let response = handle(request).expect("request must receive a response");
+        assert!(!response.contains("tools/call requires a tool name"));
+        assert!(response.contains(r#""id":7"#));
+    }
+
+    #[test]
+    fn mutating_browser_tools_explicitly_require_core_approval() {
+        for name in [
+            "open_tab",
+            "close_tab",
+            "navigate",
+            "click_element",
+            "type_text",
+            "press_key",
+        ] {
+            let needle = format!(r#""name":"{name}""#);
+            let tool = tools()
+                .lines()
+                .find(|line| line.contains(&needle))
+                .expect("mutating Browser tool must be declared");
+            assert!(tool.contains(r#""readOnlyHint":false"#), "{name}");
+            assert!(tool.contains(r#""destructiveHint":true"#), "{name}");
+        }
+    }
 }

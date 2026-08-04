@@ -1,14 +1,16 @@
 import { extractFile, listPackage } from '@electron/asar'
 import { existsSync, readFileSync } from 'node:fs'
-import { basename, join, resolve } from 'node:path'
-import { detectCodexEngineTarget, verifyStagedCodexEngine } from './stage-codex-engine'
+import { basename, dirname, join, resolve } from 'node:path'
+import { verifyStagedCodexEngine } from './stage-codex-engine'
 import { stageMediaToolchain } from './stage-media-toolchain'
+import { type WindowsNativeTarget, verifyWindowsExecutableTree } from './native-build-tools'
 
 type Platform = 'darwin' | 'win32'
 
 type AuditOptions = {
   resourcesDir: string
   platform: Platform
+  target: 'aarch64-apple-darwin' | 'x86_64-apple-darwin' | WindowsNativeTarget
 }
 
 const requiredEntries = [
@@ -51,17 +53,28 @@ const forbiddenProductStrings = [
 function parseArgs(argv: string[]): AuditOptions {
   let resourcesDir: string | undefined
   let platform: Platform | undefined
+  let target: AuditOptions['target'] | undefined
   for (let index = 0; index < argv.length; index += 2) {
     const name = argv[index]
     const value = argv[index + 1]
     if (!value) throw new Error(`${name ?? '参数'} 需要一个值`)
     if (name === '--resources') resourcesDir = value
     else if (name === '--platform' && (value === 'darwin' || value === 'win32')) platform = value
+    else if (name === '--target' && [
+      'aarch64-apple-darwin',
+      'x86_64-apple-darwin',
+      'x86_64-pc-windows-msvc',
+      'aarch64-pc-windows-msvc',
+    ].includes(value)) target = value as AuditOptions['target']
     else throw new Error(`未知安装包审计参数: ${name} ${value}`)
   }
   if (!resourcesDir) throw new Error('安装包审计缺少 --resources')
   if (!platform) throw new Error('安装包审计缺少有效的 --platform')
-  return { resourcesDir: resolve(resourcesDir), platform }
+  const defaultTarget: AuditOptions['target'] = platform === 'darwin' ? 'aarch64-apple-darwin' : 'x86_64-pc-windows-msvc'
+  if (target && (platform === 'darwin' ? !target.endsWith('apple-darwin') : !target.endsWith('pc-windows-msvc'))) {
+    throw new Error(`安装包审计 target 与平台不匹配: ${target} / ${platform}`)
+  }
+  return { resourcesDir: resolve(resourcesDir), platform, target: target ?? defaultTarget }
 }
 
 function parseJsonFile(path: string): Record<string, unknown> {
@@ -148,15 +161,20 @@ export function auditPackagedResources(options: AuditOptions): void {
   }
 
   const toolchainDir = join(resources, 'app.asar.unpacked', 'runtime-assets', 'binaries')
-  stageMediaToolchain({ destinationDir: toolchainDir, platform: options.platform, verifyOnly: true })
+  stageMediaToolchain({
+    destinationDir: toolchainDir,
+    platform: options.platform,
+    target: options.platform === 'win32' ? options.target as WindowsNativeTarget : undefined,
+    verifyOnly: true,
+  })
   verifyStagedCodexEngine({
     destinationDir: toolchainDir,
-    target: detectCodexEngineTarget(options.platform, options.platform === 'darwin' ? 'arm64' : 'x64'),
+    target: options.target,
     verifyOnly: true,
   })
   const sidecar = options.platform === 'darwin'
     ? 'billiardbuddy-sidecar-aarch64-apple-darwin'
-    : 'billiardbuddy-sidecar-x86_64-pc-windows-msvc.exe'
+    : `billiardbuddy-sidecar-${options.target}.exe`
   const sidecarPath = join(toolchainDir, sidecar)
   if (!existsSync(sidecarPath)) throw new Error(`安装包缺少正式 sidecar: ${sidecar}`)
   const sidecarBytes = readFileSync(sidecarPath)
@@ -168,6 +186,12 @@ export function auditPackagedResources(options: AuditOptions): void {
     .find(candidate => sidecarBytes.includes(Buffer.from(candidate)))
   if (forbiddenSidecarString) {
     throw new Error(`安装包 sidecar 残留旧运行字符串: ${forbiddenSidecarString}`)
+  }
+  if (options.platform === 'win32') {
+    // Audit the whole unpacked app, not only product runtime-assets: Electron
+    // DLLs, the app EXE and unpacked Node addons must share the selected PE
+    // machine too.
+    verifyWindowsExecutableTree(dirname(resources), options.target)
   }
 }
 

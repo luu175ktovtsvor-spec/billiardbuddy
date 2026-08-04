@@ -41,9 +41,9 @@ describe('provider model catalog', () => {
     })
   })
 
-  test('DeepSeek 多模型目录允许一个 workload 下存在多个条目但只能有一个默认项', () => {
+  test('DeepSeek 托管 Agent 目录只发布已经核验的 Responses 模型', () => {
     const managedAgentModels = managedModelsForWorkload('managed_agent_text')
-    expect(managedAgentModels.map(entry => entry.model_id)).toEqual(['deepseek-v4-flash', 'deepseek-v4-pro'])
+    expect(managedAgentModels.map(entry => entry.model_id)).toEqual(['deepseek-v4-flash'])
     expect(defaultManagedModelForWorkload('managed_agent_text').model_id).toBe('deepseek-v4-flash')
     for (const entry of managedAgentModels) {
       expect(entry.workload_bindings[0]).toMatchObject({
@@ -84,6 +84,5 @@ describe('provider model catalog', () => {
 
     const runtime = buildProviderRegistryRuntimeEnv('deepseek-v4-flash')
     expect(validateProviderRuntimeConfiguration(runtime)).toBeUndefined()
-    expect(validateProviderRuntimeConfiguration(buildProviderRegistryRuntimeEnv('deepseek-v4-pro'))).toBeUndefined()
   })
 })
