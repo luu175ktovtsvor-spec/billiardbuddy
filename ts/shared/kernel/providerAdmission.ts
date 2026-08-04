@@ -177,6 +177,10 @@ export type ProviderAdmissionOptions = {
 }
 
 export interface ProviderAdmissionPermit {
+  /** Distributed backends use this last-boundary check to reject a stale or
+   * superseded lease before any provider side effect. The local gate has no
+   * expiring lease and may omit it. */
+  assertCurrent?(): void | Promise<void>
   release(): void
 }
 

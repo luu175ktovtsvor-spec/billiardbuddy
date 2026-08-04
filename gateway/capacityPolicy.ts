@@ -40,10 +40,19 @@ export type MimoCapacityPolicy = {
 export type FunAsrCapacityPolicy = {
   rpm: number
   maxConcurrent: number
+  maxConcurrentPerUser: number
+  maxConcurrentPerToken: number
+  maxInflightPerUser: number
   queueMax: number
   queueMaxWaitMs: number
   maxBytes: number
   timeoutMs: number
+}
+
+export type BootstrapCapacityPolicy = {
+  rpm: number
+  queueMax: number
+  queueMaxWaitMs: number
 }
 
 export type IngressCapacityPolicy = {
@@ -60,6 +69,9 @@ export type GatewayCapacityPolicy = {
   /** Reserved for a later Qwen adapter. It is intentionally not a MiMo lane. */
   qwen: ProviderCapacityPolicy
   funasr: FunAsrCapacityPolicy
+  /** Authentication request shaping is operational capacity, even though it
+   * does not consume a model account. Keep it in the same external policy. */
+  bootstrap: BootstrapCapacityPolicy
   ingress: IngressCapacityPolicy
 }
 
@@ -176,6 +188,10 @@ export function loadCapacityPolicy(env: CapacityPolicyEnv = process.env): Gatewa
     rpm: 60, maxConcurrent: 4, maxConcurrentPerUser: 1, maxConcurrentPerToken: 2, maxInflightPerUser: 2,
     queueMax: 12, queueMaxWaitMs: 3_000, responseTimeoutMs: 60_000,
   })
+  const funAsrMaxConcurrent = integer(env, 'GW_TRANSCRIBE_CONC', 1, 1, LIMITS.concurrency)
+  const funAsrMaxConcurrentPerUser = integer(env, 'GW_TRANSCRIBE_USER_CONC', 1, 1, funAsrMaxConcurrent)
+  const funAsrMaxConcurrentPerToken = integer(env, 'GW_TRANSCRIBE_TOKEN_CONC', funAsrMaxConcurrent, 1, funAsrMaxConcurrent)
+  const funAsrMaxInflightPerUser = integer(env, 'GW_TRANSCRIBE_INFLIGHT_PER_USER', funAsrMaxConcurrentPerUser, funAsrMaxConcurrentPerUser, LIMITS.concurrency)
 
   return {
     revision: capacityPolicyRevision(env),
@@ -200,11 +216,19 @@ export function loadCapacityPolicy(env: CapacityPolicyEnv = process.env): Gatewa
     qwen,
     funasr: {
       rpm: integer(env, 'GW_TRANSCRIBE_RPM', 6, 1, LIMITS.rpm),
-      maxConcurrent: integer(env, 'GW_TRANSCRIBE_CONC', 1, 1, LIMITS.concurrency),
+      maxConcurrent: funAsrMaxConcurrent,
+      maxConcurrentPerUser: funAsrMaxConcurrentPerUser,
+      maxConcurrentPerToken: funAsrMaxConcurrentPerToken,
+      maxInflightPerUser: funAsrMaxInflightPerUser,
       queueMax: integer(env, 'GW_TRANSCRIBE_QUEUE_MAX', 4, 0, LIMITS.queue),
       queueMaxWaitMs: queueWaitSeconds(env, 'GW_QUEUE_MAX_WAIT', 15),
       maxBytes: integer(env, 'GW_TRANSCRIBE_MAX_BYTES', 64 * 1024 * 1024, 1, LIMITS.bytes),
       timeoutMs: integer(env, 'GW_TRANSCRIBE_TIMEOUT_MS', 180_000, 1, LIMITS.durationMs),
+    },
+    bootstrap: {
+      rpm: integer(env, 'GW_BOOTSTRAP_RPM', 30, 1, LIMITS.rpm),
+      queueMax: integer(env, 'GW_BOOTSTRAP_QUEUE_MAX', 0, 0, LIMITS.queue),
+      queueMaxWaitMs: queueWaitSeconds(env, 'GW_BOOTSTRAP_QUEUE_MAX_WAIT', 0),
     },
     ingress: {
       inflightBodyBytes: integer(env, 'GW_INGRESS_INFLIGHT_BODY_BYTES', 64 * 1024 * 1024, 1, LIMITS.bytes),

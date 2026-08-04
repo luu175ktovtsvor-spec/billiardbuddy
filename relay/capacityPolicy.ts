@@ -1,3 +1,12 @@
+import {
+  ProviderAdmissionGate,
+  ProviderRateLimiter,
+  type ProviderAdmissionConfig,
+  type ProviderAdmissionOptions,
+  type ProviderAdmissionPermit,
+  type ProviderAdmissionSnapshot,
+} from '../ts/shared/kernel/providerAdmission.js'
+
 export type RelayCapacityEnvironment = Readonly<Record<string, string | undefined>>
 export type RelayImageProvider = 'openai' | 'seedream'
 
@@ -16,10 +25,98 @@ export type RelayAdmissionCapacity = {
   active_input_bytes_max: number
 }
 
+/** Gateway identity runs before a trusted owner exists, so it has a separate
+ * shared envelope rather than inheriting a caller-controlled owner lane. */
+export type RelayIdentityAdmissionCapacity = {
+  max_active: number
+  max_queued: number
+  max_wait_ms: number
+}
+export const DEFAULT_RELAY_IDENTITY_ADMISSION_CAPACITY: RelayIdentityAdmissionCapacity = Object.freeze({
+  max_active: 8,
+  max_queued: 32,
+  max_wait_ms: 10_000,
+})
+
 export type RelayCapacityPolicy = {
   revision: string
   providers: Record<RelayImageProvider, RelayProviderCapacity>
   admission: RelayAdmissionCapacity
+  identity_admission: RelayIdentityAdmissionCapacity
+}
+
+/** One provider-account admission decision contains both a concurrent-execution
+ * lease and an RPM reservation. Route code must not know whether either is
+ * process-local today or a fenced, shared lease tomorrow. */
+export type RelayProviderAdmissionConfig = {
+  provider: RelayImageProvider
+  concurrency: ProviderAdmissionConfig
+  requests_per_minute: number
+  rate_queue_max: number
+}
+export type RelayProviderAdmissionAcquireOptions = ProviderAdmissionOptions & {
+  rate_limit_wait_seconds: number
+}
+export type RelayRateAdmissionSnapshot = {
+  available: number
+  queued: number
+  rpm: number
+  queueMax: number
+}
+export type RelayProviderAdmissionSnapshot = ProviderAdmissionSnapshot & {
+  rate: RelayRateAdmissionSnapshot
+}
+/** The current production backend is process-local. `assertCurrent` fixes the
+ * provider call boundary, but it is not by itself a multi-worker task-claim
+ * protocol; a shared backend also requires a durable TaskStore write fence. */
+export type RelayAdmissionPermit = ProviderAdmissionPermit
+export type RelayProviderAdmission = {
+  acquire(owner: string, options: RelayProviderAdmissionAcquireOptions): Promise<RelayAdmissionPermit>
+  snapshot(): RelayProviderAdmissionSnapshot
+}
+export type RelayIdentityAdmission = {
+  acquire(options?: ProviderAdmissionOptions): Promise<RelayAdmissionPermit>
+}
+/** The sole Relay capacity execution seam. It isolates scheduling policy from
+ * handlers. Multi-replica execution additionally needs a durable task claim
+ * and fenced terminal writes; swapping this interface alone is insufficient. */
+export type RelayAdmissionBackend = {
+  createProviderAdmission(config: RelayProviderAdmissionConfig): RelayProviderAdmission
+  createIdentityAdmission(config: ProviderAdmissionConfig): RelayIdentityAdmission
+}
+
+export const localRelayAdmissionBackend: RelayAdmissionBackend = Object.freeze({
+  createProviderAdmission(config) {
+    const concurrency = new ProviderAdmissionGate(config.concurrency)
+    const rate = new ProviderRateLimiter(config.requests_per_minute, config.rate_queue_max)
+    return {
+      async acquire(owner, options) {
+        const permit = await concurrency.acquire(owner, options)
+        try {
+          await rate.acquire(options.rate_limit_wait_seconds, options.signal)
+          return permit
+        } catch (error) {
+          permit.release()
+          throw error
+        }
+      },
+      snapshot() { return { ...concurrency.snapshot(), rate: rate.snapshot() } },
+    }
+  },
+  createIdentityAdmission(config) {
+    const admission = new ProviderAdmissionGate(config)
+    return { async acquire(options = {}) { return await admission.acquire('gateway-introspection', options) } }
+  },
+})
+
+export function relayIdentityAdmissionConfig(capacity: RelayIdentityAdmissionCapacity): ProviderAdmissionConfig {
+  return {
+    maxActive: capacity.max_active,
+    maxActivePerOwner: capacity.max_active,
+    maxQueued: capacity.max_queued,
+    maxQueuedPerOwner: capacity.max_queued,
+    maxWaitMs: capacity.max_wait_ms,
+  }
 }
 
 export const RELAY_CAPACITY_POLICY_REVISION_ENV = 'RELAY_CAPACITY_POLICY_REVISION'
@@ -66,6 +163,11 @@ export function relayCapacityPolicyFromEnvironment(environment: RelayCapacityEnv
       max_body_bytes: boundedPositiveInteger(environment, 'RELAY_MAX_BODY_BYTES', 32 * 1024 * 1024, MAX_BODY_BYTES),
       pending_input_bytes_max: boundedPositiveInteger(environment, 'RELAY_PENDING_INPUT_BYTES_MAX', 64 * 1024 * 1024, MAX_PENDING_INPUT_BYTES),
       active_input_bytes_max: boundedPositiveInteger(environment, 'RELAY_ACTIVE_INPUT_BYTES_MAX', 256 * 1024 * 1024, MAX_ACTIVE_INPUT_BYTES),
+    },
+    identity_admission: {
+      max_active: boundedPositiveInteger(environment, 'RELAY_IDENTITY_MAX_ACTIVE', DEFAULT_RELAY_IDENTITY_ADMISSION_CAPACITY.max_active, MAX_PROVIDER_CONCURRENCY),
+      max_queued: boundedPositiveInteger(environment, 'RELAY_IDENTITY_QUEUE_MAX', DEFAULT_RELAY_IDENTITY_ADMISSION_CAPACITY.max_queued, MAX_QUEUE_TASKS),
+      max_wait_ms: boundedPositiveInteger(environment, 'RELAY_IDENTITY_MAX_WAIT_MS', DEFAULT_RELAY_IDENTITY_ADMISSION_CAPACITY.max_wait_ms, MAX_UPSTREAM_TIMEOUT_MS),
     },
   }
   validateRelationships(policy)
@@ -120,5 +222,6 @@ function freezePolicy(policy: RelayCapacityPolicy): RelayCapacityPolicy {
   for (const provider of Object.values(policy.providers)) Object.freeze(provider)
   Object.freeze(policy.providers)
   Object.freeze(policy.admission)
+  Object.freeze(policy.identity_admission)
   return Object.freeze(policy)
 }

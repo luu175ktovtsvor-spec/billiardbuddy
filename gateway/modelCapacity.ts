@@ -1,9 +1,19 @@
-import { CapacityQueueError } from '../ts/shared/kernel/providerAdmission.js'
+import {
+  CapacityQueueError,
+  ProviderRateLimiter as LocalProviderRateLimiter,
+} from '../ts/shared/kernel/providerAdmission.js'
 
-export { CapacityQueueError, ProviderRateLimiter } from '../ts/shared/kernel/providerAdmission.js'
+export { CapacityQueueError, LocalProviderRateLimiter as ProviderRateLimiter }
 
 export interface CapacityPermit {
+  /** A shared backend may reject an expired/superseded lease immediately
+   * before the provider call. Process-local permits do not expire. */
+  assertCurrent?(): void | Promise<void>
   release(): void
+  /** A durable capacity backend may attach its lease fence here. The local
+   * backend intentionally leaves it absent because one Gateway process owns
+   * every permit. */
+  readonly fencingToken?: string
 }
 
 export interface CapacitySnapshot {
@@ -27,6 +37,89 @@ export interface AcquireOptions {
   /** Verified principal this installation belongs to. Bounds all installations of
    *  one principal together. Defaults to the verified installation owner. */
   tokenId?: string
+}
+
+/** The only execution-capacity surface Gateway route handlers need. A future
+ * distributed backend may satisfy this with a shared lease instead of an
+ * in-process semaphore. */
+export interface GatewayCapacityPool {
+  acquire(user: string, opts: AcquireOptions): Promise<CapacityPermit>
+  snapshot(): CapacitySnapshot
+}
+
+/** RPM admission belongs to the same replaceable backend boundary as execution
+ * capacity: sharing only concurrency while leaving this local would still let
+ * multiple Gateway replicas oversubscribe one provider account. */
+export interface GatewayRateLimiter {
+  acquire(maxWaitSeconds: number, signal?: AbortSignal): Promise<void>
+}
+
+/** Public account-reservation surface used by the MediaReasoning and
+ * VisualEvidence lanes. It keeps the physical-account reservation atomic while
+ * allowing its backing store to change independently of Gateway handlers. */
+export interface GatewayMimoReservations {
+  acquire(lane: MimoLane, user: string, opts: AcquireOptions): Promise<CapacityPermit>
+  forLane(lane: MimoLane): GatewayCapacityPool
+  snapshot(): CapacitySnapshot
+  laneSnapshot(lane: MimoLane): CapacitySnapshot
+}
+
+export type FairCapacityConfig = {
+  maxConcurrent: number
+  maxConcurrentPerUser: number
+  maxConcurrentPerToken: number
+  queueMax: number
+  maxInflightPerUser: number
+}
+
+export type GatewayRateLimitConfig = {
+  rpm: number
+  queueMax: number
+}
+
+/** This is built only from the already-validated capacity policy/environment.
+ * It intentionally carries no handler-specific number or implicit default. */
+export type GatewayCapacityBackendConfig = {
+  mimo: {
+    reservations: MimoReservationConfig
+    rate: GatewayRateLimitConfig
+  }
+  deepseek: {
+    capacity: FairCapacityConfig
+    rate: GatewayRateLimitConfig
+  }
+  qwen: {
+    capacity: FairCapacityConfig
+    rate: GatewayRateLimitConfig
+  }
+  transcription: {
+    capacity: FairCapacityConfig
+    rate: GatewayRateLimitConfig
+  }
+  bootstrap: {
+    rate: GatewayRateLimitConfig
+  }
+}
+
+/** Narrow construction seam for Gateway capacity. Production uses the local
+ * implementation below, so a single instance has no extra I/O hop; a later
+ * shared lease/fencing implementation replaces this factory as one unit. */
+export interface GatewayCapacityBackend {
+  readonly mimo: GatewayMimoReservations
+  readonly deepseek: GatewayCapacityPool
+  readonly qwen: GatewayCapacityPool
+  readonly transcription: GatewayCapacityPool
+  readonly rates: {
+    readonly mimo: GatewayRateLimiter
+    readonly deepseek: GatewayRateLimiter
+    readonly qwen: GatewayRateLimiter
+    readonly transcription: GatewayRateLimiter
+    readonly bootstrap: GatewayRateLimiter
+  }
+}
+
+export interface GatewayCapacityBackendFactory {
+  create(config: GatewayCapacityBackendConfig): GatewayCapacityBackend
 }
 
 export type MimoLane = 'media' | 'vision'
@@ -106,7 +199,7 @@ export class MimoReservationScheduler {
   }
 
   /** Adapter for media reasoning MiMo chat, whose generic handler expects FairCapacityScheduler's surface. */
-  forLane(lane: MimoLane): { acquire(user: string, opts: AcquireOptions): Promise<CapacityPermit>; snapshot(): CapacitySnapshot } {
+  forLane(lane: MimoLane): GatewayCapacityPool {
     return {
       acquire: (user, opts) => this.acquire(lane, user, opts),
       snapshot: () => this.laneSnapshot(lane),
@@ -610,4 +703,46 @@ export class FairCapacityScheduler {
     if (pending.timer) clearTimeout(pending.timer)
     if (pending.onAbort) pending.signal?.removeEventListener('abort', pending.onAbort)
   }
+}
+
+/** Creates the zero-hop, process-local backend used by a single Gateway
+ * instance. Keep every scheduler and RPM bucket here: splitting even one out
+ * would make a multi-instance replacement only partially global. */
+export function createLocalGatewayCapacityBackend(config: GatewayCapacityBackendConfig): GatewayCapacityBackend {
+  const mimo = new MimoReservationScheduler(config.mimo.reservations)
+  return {
+    mimo,
+    deepseek: new FairCapacityScheduler(
+      config.deepseek.capacity.maxConcurrent,
+      config.deepseek.capacity.maxConcurrentPerUser,
+      config.deepseek.capacity.maxConcurrentPerToken,
+      config.deepseek.capacity.queueMax,
+      config.deepseek.capacity.maxInflightPerUser,
+    ),
+    qwen: new FairCapacityScheduler(
+      config.qwen.capacity.maxConcurrent,
+      config.qwen.capacity.maxConcurrentPerUser,
+      config.qwen.capacity.maxConcurrentPerToken,
+      config.qwen.capacity.queueMax,
+      config.qwen.capacity.maxInflightPerUser,
+    ),
+    transcription: new FairCapacityScheduler(
+      config.transcription.capacity.maxConcurrent,
+      config.transcription.capacity.maxConcurrentPerUser,
+      config.transcription.capacity.maxConcurrentPerToken,
+      config.transcription.capacity.queueMax,
+      config.transcription.capacity.maxInflightPerUser,
+    ),
+    rates: {
+      mimo: new LocalProviderRateLimiter(config.mimo.rate.rpm, config.mimo.rate.queueMax),
+      deepseek: new LocalProviderRateLimiter(config.deepseek.rate.rpm, config.deepseek.rate.queueMax),
+      qwen: new LocalProviderRateLimiter(config.qwen.rate.rpm, config.qwen.rate.queueMax),
+      transcription: new LocalProviderRateLimiter(config.transcription.rate.rpm, config.transcription.rate.queueMax),
+      bootstrap: new LocalProviderRateLimiter(config.bootstrap.rate.rpm, config.bootstrap.rate.queueMax),
+    },
+  }
+}
+
+export const localGatewayCapacityBackendFactory: GatewayCapacityBackendFactory = {
+  create: createLocalGatewayCapacityBackend,
 }

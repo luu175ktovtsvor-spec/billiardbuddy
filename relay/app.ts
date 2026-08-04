@@ -42,8 +42,6 @@ import {
 import {
   CapacityQueueError,
   ProviderAdmissionError,
-  ProviderAdmissionGate,
-  ProviderRateLimiter,
 } from '../ts/shared/kernel/providerAdmission.js'
 import {
   IMAGE_RELAY_IDEMPOTENCY_LOOKUP_PATH,
@@ -52,7 +50,7 @@ import {
   IMAGE_RELAY_RESULTS_PATH,
   IMAGE_RELAY_TASKS_PATH,
 } from '../ts/shared/product/imageRelayProtocol.js'
-import { relayCapacityPolicyFromEnvironment, type RelayCapacityPolicy } from './capacityPolicy.js'
+import { localRelayAdmissionBackend, relayCapacityPolicyFromEnvironment, relayIdentityAdmissionConfig, type RelayAdmissionBackend, type RelayAdmissionPermit, type RelayCapacityPolicy } from './capacityPolicy.js'
 import { loadImageRelayIdentityIntrospector, RelayIdentityIntrospectionError, type ImageRelayIdentity } from './identityIntrospection.js'
 import { loadRelayProviderCredentials } from './providerCredentials.js'
 import { imageRelayQuotaPolicyFromEnvironment, type ImageRelayQuotaPolicy } from './quotaPolicy.js'
@@ -1153,11 +1151,16 @@ export type RelayDeps = {
   fetchImpl?: FetchLike
   identityFetchImpl?: FetchLike
   now?: () => number
+  /** Process-local in the current single-worker deployment. This seam is also
+   * used for tests; a shared implementation is forbidden until TaskStore has
+   * durable execution claims and fenced terminal writes. */
+  admissionBackend?: RelayAdmissionBackend
 }
 
 export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Response> {
   const config = loadRelayConfig(deps.env)
   const capacity = config.capacityPolicy
+  const admissionBackend = deps.admissionBackend ?? localRelayAdmissionBackend
   const providerCredentials = loadRelayProviderCredentials(deps.env)
   const configuredOpenAiAuthorization = providerCredentials.bearerAuthorization('openai')
   if (!configuredOpenAiAuthorization) throw new Error('relay: 缺少环境变量 RELAY_OPENAI_KEY')
@@ -1166,30 +1169,33 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
   const fetchImpl: FetchLike = deps.fetchImpl ?? globalThis.fetch
   const rawIdentityFetch: FetchLike = deps.identityFetchImpl ?? globalThis.fetch
   const now = deps.now ?? Date.now
+  const identityAdmission = admissionBackend.createIdentityAdmission(relayIdentityAdmissionConfig(capacity.identity_admission))
   const identityIntrospector = loadImageRelayIdentityIntrospector(deps.env, {
     fetchImpl: rawIdentityFetch,
     now,
     timeoutMs: config.identityTimeoutMs,
+    admission: identityAdmission,
   })
   const resultCredentials = loadImageRelayResultCredentials(deps.env, { now })
   const store = new TaskStore(config.dbPath, now, config.quotaPolicy, legacyTaskQuoteForPolicy(config.quotaPolicy))
   const blobs: BlobStore = config.blobDir ? new DiskBlobStore(config.blobDir) : new MemoryBlobStore()
-  const openaiAdmission = new ProviderAdmissionGate({
-    maxActive: capacity.providers.openai.concurrency,
-    maxActivePerOwner: capacity.providers.openai.owner_concurrency,
-    maxQueued: capacity.admission.queue_max,
-    maxQueuedPerOwner: capacity.admission.owner_task_max,
-    maxWaitMs: config.retryAfterSeconds * 1_000,
+  const providerAdmission = (provider: 'openai' | 'seedream') => admissionBackend.createProviderAdmission({
+    provider,
+    concurrency: {
+      maxActive: capacity.providers[provider].concurrency,
+      maxActivePerOwner: capacity.providers[provider].owner_concurrency,
+      maxQueued: capacity.admission.queue_max,
+      maxQueuedPerOwner: capacity.admission.owner_task_max,
+      maxWaitMs: config.retryAfterSeconds * 1_000,
+    },
+    requests_per_minute: capacity.providers[provider].requests_per_minute,
+    rate_queue_max: capacity.admission.queue_max,
   })
-  const seedreamAdmission = new ProviderAdmissionGate({
-    maxActive: capacity.providers.seedream.concurrency,
-    maxActivePerOwner: capacity.providers.seedream.owner_concurrency,
-    maxQueued: capacity.admission.queue_max,
-    maxQueuedPerOwner: capacity.admission.owner_task_max,
-    maxWaitMs: config.retryAfterSeconds * 1_000,
-  })
-  const openaiRate = new ProviderRateLimiter(capacity.providers.openai.requests_per_minute, capacity.admission.queue_max)
-  const seedreamRate = new ProviderRateLimiter(capacity.providers.seedream.requests_per_minute, capacity.admission.queue_max)
+  const openaiAdmission = providerAdmission('openai')
+  const seedreamAdmission = providerAdmission('seedream')
+  // This is a per-process memory/backpressure envelope for base64 delivery,
+  // not Provider-account capacity. A later multi-replica deployment must pair
+  // it with ingress affinity or a shared owner-delivery coordinator.
   const resultDelivery = new ResultDeliveryGate(config.resultGlobalConcurrency, config.resultOwnerConcurrency)
   const admissionControllers = new Map<string, AbortController>()
   const retryTimers = new Map<string, ReturnType<typeof setTimeout>>()
@@ -1363,7 +1369,7 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
     }
   }
 
-  async function runSeedream(body: SubmitBody, recordReceipt: (hash: string) => void): Promise<ProviderRunResult> {
+  async function runSeedream(body: SubmitBody, recordReceipt: (hash: string) => void, assertProviderPermit: () => Promise<void>): Promise<ProviderRunResult> {
     const model = String(body.model ?? SEEDREAM_IMAGE_MODEL)
     const prompt = providerPrompt(body)
     const size = String(body.size ?? '2048x2048')
@@ -1387,6 +1393,7 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
       }
       if (!seedreamAuthorization) throw new UpstreamResponseError('Seedream 凭据未配置')
       try {
+        await assertProviderPermit()
         const { response, body: text } = await fetchUpstreamText(
           'Seedream',
           `${providerCredentials.baseUrl('seedream')}/images/generations`,
@@ -1461,7 +1468,7 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
     const owner = initial.owner || 'legacy-unowned'
     const controller = new AbortController()
     admissionControllers.set(id, controller)
-    let permit: { release(): void } | undefined
+    let permit: RelayAdmissionPermit | undefined
     let retainInputForRetry = false
     try {
       let queuedBody = blobs.get(id, 'in') as SubmitBody | null
@@ -1472,13 +1479,11 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
       const model = String(queuedBody.model ?? GPT_IMAGE_MODEL)
       const seedream = isSeedreamModel(model)
       const admission = seedream ? seedreamAdmission : openaiAdmission
-      const rate = seedream ? seedreamRate : openaiRate
       // Do not retain a parsed edit body (which can contain many large data URIs)
       // while it waits for a paid upstream slot. The durable blob is the source of
       // truth and is read again only after admission.
       queuedBody = null
-      permit = await admission.acquire(owner, { signal: controller.signal })
-      await rate.acquire(config.retryAfterSeconds, controller.signal)
+      permit = await admission.acquire(owner, { signal: controller.signal, rate_limit_wait_seconds: config.retryAfterSeconds })
       if (store.get(id)?.status !== 'queued') return
       const body = blobs.get(id, 'in') as SubmitBody | null
       if (!body) {
@@ -1488,9 +1493,11 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
       // Old queued rows from before the quota migration have no ledger row.
       // They must reserve an exact current-model quote before the first paid hop.
       store.ensureQueuedReservation(id, taskQuote(body, config.quotaPolicy, now()))
+      const assertProviderPermit = async () => { await permit?.assertCurrent?.() }
+      await assertProviderPermit()
       store.markRunning(id)
       if (seedream) {
-        const result = await runSeedream(body, receipt => store.appendProviderReceipt(id, receipt))
+        const result = await runSeedream(body, receipt => store.appendProviderReceipt(id, receipt), assertProviderPermit)
         if (result.outputs.length === 0) {
           throw new UpstreamOutcomeUnknownError('Seedream 没有可验证候选，已保留可能产生的付费结果为未知状态')
         }
@@ -1506,6 +1513,7 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
       const n = outputCount(body)
       const size = body.size ? String(body.size) : undefined
       const requestUpstream = async (): Promise<{ response: Response; body: string }> => {
+        await assertProviderPermit()
         if (body.mode === 'edit') {
           const form = new FormData()
           form.set('model', model)
@@ -1749,12 +1757,10 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
           provider_capacity: {
             openai: {
               ...openaiAdmission.snapshot(),
-              rate: openaiRate.snapshot(),
             },
             seedream: {
               configured: providerCredentials.view('seedream').secret_configured,
               ...seedreamAdmission.snapshot(),
-              rate: seedreamRate.snapshot(),
             },
           },
           img_conc: capacity.providers.openai.concurrency,

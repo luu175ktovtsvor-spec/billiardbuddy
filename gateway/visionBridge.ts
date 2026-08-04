@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { CapacityQueueError, type CapacityPermit, type MimoReservationScheduler } from './modelCapacity'
+import { CapacityQueueError, type CapacityPermit, type GatewayMimoReservations } from './modelCapacity'
 import { fetchMimoWithRetry } from './mimoChat'
 import { visualEvidenceRegistryEntry } from './providerRegistry'
 
@@ -86,7 +86,7 @@ export interface VisionBridgeDeps {
   fetchImpl: FetchLike
   caps: VisionBridgeCaps
   /** Atomic account-level scheduler supplied by the gateway. */
-  mimoReservations?: MimoReservationScheduler
+  mimoReservations?: GatewayMimoReservations
   /** The VisualEvidence bridge uses its account-level RPM bucket. */
   mimoRateLimiter?: VisionRateLimiter
   /** Vision's short queue window caps how long it may wait for its rate bucket. */
@@ -436,7 +436,7 @@ async function runVisionLookup(
         signal: opts.signal,
         tokenId: opts.tokenId ?? opts.schedulerId ?? 'vision',
       })
-      return await callMimoVision(deps, url, opts.signal)
+      return await callMimoVision(deps, url, opts.signal, permit)
     }
     return await semaphore!.run(() => callMimoVision(deps, url, opts.signal), opts.signal, opts.schedulerId)
   } catch (error) {
@@ -453,6 +453,7 @@ async function callMimoVision(
   deps: VisionBridgeDeps,
   url: string,
   externalSignal?: AbortSignal,
+  permit?: CapacityPermit,
 ): Promise<string> {
   const providerBase = deps.providerBase ?? deps.mimoBase
   const providerAuthorization = deps.providerAuthorization ?? (deps.mimoKey ? `Bearer ${deps.mimoKey}` : undefined)
@@ -485,6 +486,7 @@ async function callMimoVision(
       }],
     })
     const { response } = await fetchMimoWithRetry(async () => {
+      await permit?.assertCurrent?.()
       return await deps.fetchImpl(`${providerBase}/chat/completions`, {
         method: 'POST',
         body,

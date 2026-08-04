@@ -11,6 +11,7 @@ import {
   parseActiveImageRelayIdentity,
   parseImageRelayGatewayIntrospectionBase,
 } from './identityIntrospection'
+import type { RelayIdentityAdmission } from './capacityPolicy'
 
 const principalId = `installation:${'a'.repeat(32)}`
 const installationId = 'desktop-installation-123'
@@ -114,5 +115,48 @@ describe('Image Relay identity introspection', () => {
       IMAGE_RELAY_GATEWAY_INTROSPECTION_TOKEN: 'image-relay-service-token-123456789012345',
     }, { fetchImpl: async () => new Response('{}', { headers: { 'content-length': String(16 * 1024 + 1) } }) })
     await expect(introspector.introspect('desktop-token')).rejects.toMatchObject({ status: 502, code: 'identity_response_invalid' })
+  })
+
+  test('同 bearer 合并在途 Gateway 请求，完成后不缓存以保留即时撤销', async () => {
+    let admissions = 0
+    const admission: RelayIdentityAdmission = {
+      async acquire() { admissions += 1; return { release() {} } },
+    }
+    let requests = 0
+    let releaseFirst!: () => void
+    const firstResponse = new Promise<void>(resolve => { releaseFirst = resolve })
+    const introspector = loadImageRelayIdentityIntrospector({
+      IMAGE_RELAY_GATEWAY_INTROSPECTION_BASE: 'http://gateway:8799',
+      IMAGE_RELAY_GATEWAY_INTROSPECTION_TOKEN: 'image-relay-service-token-123456789012345',
+    }, {
+      admission,
+      fetchImpl: async () => {
+        requests += 1
+        if (requests === 1) await firstResponse
+        return Response.json(activeIdentity(Date.now() + 60_000))
+      },
+    })
+    const first = introspector.introspect('desktop-token-to-merge')
+    const duplicate = introspector.introspect('desktop-token-to-merge')
+    while (requests !== 1) await Promise.resolve()
+    expect(admissions).toBe(1)
+    releaseFirst()
+    await expect(Promise.all([first, duplicate])).resolves.toHaveLength(2)
+    await introspector.introspect('desktop-token-to-merge')
+    expect(requests).toBe(2)
+    expect(admissions).toBe(2)
+  })
+
+  test('identity admission 拒绝时不访问 Gateway 且失败关闭', async () => {
+    let fetches = 0
+    const introspector = loadImageRelayIdentityIntrospector({
+      IMAGE_RELAY_GATEWAY_INTROSPECTION_BASE: 'http://gateway:8799',
+      IMAGE_RELAY_GATEWAY_INTROSPECTION_TOKEN: 'image-relay-service-token-123456789012345',
+    }, {
+      admission: { async acquire() { throw new Error('identity_capacity_exhausted') } },
+      fetchImpl: async () => { fetches += 1; return Response.json(activeIdentity(Date.now() + 60_000)) },
+    })
+    await expect(introspector.introspect('desktop-token')).rejects.toMatchObject({ status: 503, code: 'identity_unavailable' })
+    expect(fetches).toBe(0)
   })
 })
