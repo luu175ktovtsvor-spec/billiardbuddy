@@ -1,6 +1,6 @@
 # BilliardBuddy 生产服务器
 
-最后按服务器实测记录更新：2026-08-03 13:17 UTC。部署前必须重新只读盘点实际主机、容器、端口和发布 revision；本文不是用来推断现网的替代品。Video Media Relay 的部署配置已随第 4 关代码提供，但尚未进行本次发布所需的受控 smoke，因此不能把下列目标拓扑描述为现网事实。
+最后按服务器实测记录更新：2026-08-04。本文记录受控发布与 smoke 的实际结果；后续发布前仍必须重新只读盘点主机、容器、端口和 release revision，不能以本文替代现网核验。
 
 ## 当前拓扑
 
@@ -10,23 +10,30 @@
   -> Nginx :443
   -> Gateway（Docker，127.0.0.1:8799）
   -> Relay（Docker Compose 私有网络，relay:8790）
+
+Desktop Sidecar
+  -> https://zzyppz.cn/video-media/
+  -> Nginx :443
+  -> Video Media Relay（Docker，127.0.0.1:8791）
+  -> Compose 私网 Gateway（http://gateway:8799/internal/v1/auth/introspect）
+  -> 北京 OSS 私有 Bucket、北京 DashScope
 ```
 
-Gateway 与 Relay 位于同一 Compose 主机。Gateway 是托管 DeepSeek Responses 与图片任务的薄网关：安装鉴权、额度、用量、限流、路由、幂等与安全转发；它不保存 Agent Thread、Turn、工具、审批、沙箱或图片项目事实。Relay 只承接图片/视频异步任务结果。
+Gateway、Relay 与 Video Media Relay 位于同一 Compose 主机。Gateway 是托管 DeepSeek Responses 与图片任务的薄网关：安装鉴权、额度、用量、限流、路由、幂等与安全转发；它不保存 Agent Thread、Turn、工具、审批、沙箱或图片项目事实。Relay 只承接图片/视频异步任务结果；Video Media Relay 只保存短期 lease、操作、额度预留、receipt 和清理状态，不保存桌面项目事实。
 
-本次只读盘点：主机 `cch` 运行 `billiardbuddy-gateway-1` 与 `billiardbuddy-relay-1`（release `8f0000c84548`，均 healthy），以及静态站点容器；Gateway 仅绑定 `127.0.0.1:8799`，Relay 仅处于 Compose 私网。宿主尚未监听 `127.0.0.1:8791`，`/srv/billiardbuddy/data/video-media-relay` 和 `/srv/billiardbuddy/secrets/video-media-relay.env` 尚不存在。现有 `gateway.env`/`relay.env` 权限目录与现有健康检查正常；盘点只记录变量名，不读取任何 secret 值。
+本次实测：主机 `96.9.225.212` 的 release 为 `112b077414265f112219a710b9b9fdafae151c8f`。`billiardbuddy-gateway-1`、`billiardbuddy-relay-1` 与 `billiardbuddy-video-media-relay-1` 均使用该 revision 镜像且处于 healthy；Gateway 仅绑定 `127.0.0.1:8799`，Video Media Relay 仅绑定 `127.0.0.1:8791`，Relay 与 Gateway 的服务间路由都位于 Compose 私网。公网 `https://zzyppz.cn/video-media/readyz` 返回 200，公网访问 `/gw/internal/v1/auth/introspect` 返回 404。配置只位于权限为 `0600` 的 `/srv/billiardbuddy/secrets/video-media-relay.env`；盘点与日志检查不读取或输出 secret 值。
 
-## 第 4 关待部署目标（非现网记录）
+## 第 4 关生产实测
 
 ```text
 Desktop Sidecar -> https://zzyppz.cn/video-media/ -> Nginx -> 127.0.0.1:8791 Video Media Relay
 Video Media Relay -> Compose 私网 Gateway /internal/v1/auth/introspect
-Video Media Relay -> 北京临时对象存储与阿里云百炼
+Video Media Relay -> 北京 OSS 私有 Bucket 与北京 DashScope
 ```
 
-部署只接受已提交且审核通过的 revision。`video-media-relay` 使用独立 `/srv/billiardbuddy/data/video-media-relay` 与 `/srv/billiardbuddy/secrets/video-media-relay.env`，前者保存短期 lease/request/receipt SQLite 元数据，后者只包含变量值而不进入日志；Gateway 与 Relay 现有数据目录和端口不变。部署前后必须实测 `:8791`、Nginx TLS `/video-media/`、公网拒绝 `/gw/internal/*`、对象租约、Provider receipt、ACK 清理和日志脱敏，再将实测 revision/容器状态写回本文。
+`video-media-relay` 使用独立 `/srv/billiardbuddy/data/video-media-relay` 与 `/srv/billiardbuddy/secrets/video-media-relay.env`，前者保存短期 lease/request/receipt SQLite 元数据，后者只包含变量值而不进入日志；Gateway 与 Relay 现有数据目录和端口不变。该 release 的受控 smoke 使用临时 Gateway token，并在结束时注销：未带 bearer 的租约请求返回 401；公网拒绝 `/gw/internal/*`；9 MiB 流式 multipart 经初始化、ListParts 分页、完成、HEAD 和流式 SHA-256 校验后清理；同一签名 URL 的第二次写入被 OSS 以 409 拒绝；Qwen 视觉、Embedding（768 维）和长 Fun-ASR 异步轮询均返回 provider receipt，结果读回并 ACK。结束时未删除 lease、待清理对象、未 ACK 结果对象与临时 smoke 容器均为 0，Relay 最近 250 行日志未匹配到 AccessKey 或 DashScope key 形态。
 
-北京 OSS RAM 凭据只限私有 Bucket 的 `video-media/input/*` 与 `video-media/result/*`：`oss:PutObject`、`oss:GetObject`、`oss:HeadObject`、`oss:DeleteObject`、`oss:ListParts`、`oss:ListMultipartUploads`、`oss:AbortMultipartUpload`、`oss:CompleteMultipartUpload`。后四项用于崩溃后的 multipart 初始化、分页续传和完成恢复；不得授予其他 Bucket、ACL、RAM 或账户管理权限。
+北京 OSS RAM 凭据只限私有 Bucket 的 `video-media/input/*` 与 `video-media/result/*`：`oss:PutObject`、`oss:GetObject`、`oss:HeadObject`、`oss:DeleteObject`、`oss:ListParts`、`oss:AbortMultipartUpload`、`oss:CompleteMultipartUpload`。`oss:ListMultipartUploads` 必须在该 Bucket 级别授予（OSS 的上传列表请求不能安全携带可用的对象前缀限制），仍不得授予其他 Bucket、ACL、RAM 或账户管理权限。所有 lease、multipart 和结果对象写入均携带 `x-oss-forbid-overwrite: true`；该 OSS 专用条件写入语义在对象已存在时返回 409，避免重放覆盖已验证媒体或已 ACK receipt。
 
 ## 协议边界
 
