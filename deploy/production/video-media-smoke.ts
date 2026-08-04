@@ -4,9 +4,11 @@ const base = (process.env.VIDEO_MEDIA_SMOKE_BASE_URL ?? 'https://zzyppz.cn/video
 const token = process.env.VIDEO_MEDIA_SMOKE_ACCESS_TOKEN?.trim()
 const confirmation = process.env.VIDEO_MEDIA_SMOKE_CONFIRMATION
 const providerOperationLimit = process.env.VIDEO_MEDIA_SMOKE_MAX_PROVIDER_OPERATIONS
+const uploadTimeoutMs = Number(process.env.VIDEO_MEDIA_SMOKE_UPLOAD_TIMEOUT_MS ?? 4 * 60_000)
 if (!token || token.length < 16) throw new Error('VIDEO_MEDIA_SMOKE_ACCESS_TOKEN is required and is never persisted by this smoke tool')
 if (confirmation !== 'FOUR_BILLED_VIDEO_OPERATIONS') throw new Error('VIDEO_MEDIA_SMOKE_CONFIRMATION must be FOUR_BILLED_VIDEO_OPERATIONS')
 if (providerOperationLimit !== '4') throw new Error('VIDEO_MEDIA_SMOKE_MAX_PROVIDER_OPERATIONS must be exactly 4')
+if (!Number.isSafeInteger(uploadTimeoutMs) || uploadTimeoutMs < 30_000 || uploadTimeoutMs > 5 * 60_000) throw new Error('VIDEO_MEDIA_SMOKE_UPLOAD_TIMEOUT_MS must be from 30000 to 300000')
 if (new URL(base).protocol !== 'https:') throw new Error('VIDEO_MEDIA_SMOKE_BASE_URL must use HTTPS')
 
 const requestId = () => randomUUID().replaceAll('-', '')
@@ -48,16 +50,15 @@ const readOperationByLocalOperation = async (localOperationId: string): Promise<
   return await response.json() as Operation
 }
 const put = async (url: string, headers: Record<string, string> | undefined, bytes: Uint8Array): Promise<Response> => {
-  let last: Response | undefined
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    try {
-      const response = await fetch(url, { method: 'PUT', headers, body: bytes, signal: AbortSignal.timeout(60_000) })
-      if (response.ok) return response
-      last = response
-      if (response.status !== 408 && response.status !== 429 && response.status < 500) break
-    } catch { /* repeat the immutable signed part */ }
-  }
-  throw new Error(`OSS PUT failed${last ? ` with ${last.status}` : ''}`)
+  let response: Response
+  try {
+    // An aborted immutable PUT has an ambiguous outcome. The production
+    // Sidecar reconciles it through HEAD/ListParts before retrying; this smoke
+    // never blind-repeats the same capability merely to hide a slow link.
+    response = await fetch(url, { method: 'PUT', headers, body: bytes, signal: AbortSignal.timeout(uploadTimeoutMs) })
+  } catch { throw new Error('OSS PUT failed before a response was available') }
+  if (!response.ok) throw new Error(`OSS PUT failed with ${response.status}`)
+  return response
 }
 
 type Lease = {

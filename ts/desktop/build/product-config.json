@@ -1,5 +1,6 @@
 {
   "$comment": "PUBLIC product config bundled into the installer. It contains only stable HTTPS service routes; every installation creates and rotates its own anonymous session after launch.",
   "gatewayUrl": "https://zzyppz.cn/gw",
-  "imageRelayUrl": "https://zzyppz.cn/image-generation"
+  "imageRelayUrl": "https://zzyppz.cn/image-generation",
+  "videoMediaRelayUrl": "https://zzyppz.cn/video-media"
 }

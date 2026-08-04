@@ -44,7 +44,11 @@ Video Media Relay、Image Relay 与 Gateway 是三条不重叠的正式执行路
 
 ## 模型配置
 
-用户可选择 BilliardBuddy 托管模型，或添加自己的 Provider。个人 Provider 预设包含官方申请 Key 链接、请求地址、认证方式和可选的 `/models` 发现；不会维护或要求用户填写上下文窗口、最大输出或压缩阈值。`/models` 只用于发现模型名，不推断能力。
+每个完成安装认证的用户默认可以使用托管 Agent、图片生成和视频远程分析，无需先配置个人 Key。三类托管额度独立结算：Agent 额度耗尽只限制托管 Agent，图片额度耗尽只限制图片生成，视频远程额度耗尽只限制视频分析；容量排队和上游短暂故障仍是可重试服务状态，不能伪装成额度耗尽。各额度在 UTC 周期重置，正式错误合同携带对应能力和重置时间。
+
+用户也可为 Agent 添加自己的 Provider。个人 Provider 预设包含官方申请 Key 链接、请求地址、认证方式和可选的 `/models` 发现；不会维护或要求用户填写上下文窗口、最大输出或压缩阈值。`/models` 只用于发现模型名，不推断能力。个人 Agent Key 只保存在 Electron Main 的系统安全存储，经本机短生命周期代理直连用户选择的 Provider；它不经过 Gateway、不会消耗托管 Agent 额度，也不改变图片和视频额度。
+
+安装包的 `product-config.json` 仅包含固定 HTTPS Gateway、Image Relay 与 Video Media Relay 路由，不包含模型 Key、Relay service token、额度或并发数字。容量、队列、RPM、额度、账号绑定和跨境媒体传输超时均由服务器/桌面运行环境的受控 policy 配置解析；最终 Provider 调用点仍保留硬性准入，不能只靠 Nginx 或外部面板限制连接数。
 
 只有两条个人协议路径：`Responses` 直接代理，或旧 `Chat Completions` 在本机做无状态协议适配。两条都进入同一个 Rust Codex Agent，Agent Loop、Thread、工具执行和压缩不会因此另写一套；但旧 Chat 接口无法表达的 Responses 专属托管工具不会被伪造，例如 hosted web search 只在真实 Responses Provider 上保留。标准 Chat 图片与 WAV/MP3 音频输入会按旧接口格式转换；工具返回的图片或音频会转换成紧随工具结果的标准多模态消息，不会被静默丢弃。厂商私有多模态协议不在兼容范围。
 

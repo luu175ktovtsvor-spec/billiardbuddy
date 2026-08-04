@@ -103,6 +103,7 @@ import {
   IMAGE_RELAY_RESULT_HANDOFF_HEADER,
   IMAGE_RELAY_TASKS_PATH,
   imageRelayIdempotencyLookupPath,
+  isImageRelayQuotaErrorCode,
 } from '../../../shared/product/imageRelayProtocol.js'
 import { productGatewayTarget, productImageRelayConfigured, productImageRelayTarget } from '../product/productGatewayRuntime.js'
 import { applyImageBriefOverrides, compileImageBrief, providerPromptForImageBrief } from './imageBrief.js'
@@ -210,6 +211,10 @@ type RelayImageTask = {
   }>
   error?: string
   message?: string
+  code?: string
+  capability?: string
+  scope?: string
+  resets_at?: string
   reused?: boolean
   input_fidelity_requested?: string
   input_fidelity_status?: 'accepted' | 'unsupported'
@@ -298,6 +303,14 @@ function relayPolicyRefusal(body: RelayImageTask): { category: string; safe_mess
       : 'provider_policy',
     safe_message: boundedMessage(refusal?.safe_message ?? body.error ?? body.message, mediaSafeError('MEDIA_IMAGE_POLICY_BLOCKED').message),
   }
+}
+
+/** A 429 is not automatically a quota error: admission backpressure is still
+ * retryable. Only the Relay's allow-listed quota codes disable the hosted
+ * image capability for this UTC period. */
+function imageRelayFailureCode(status: number, body: RelayImageTask): MediaSafeErrorCode {
+  if (status === 429 && isImageRelayQuotaErrorCode(body.code)) return 'MEDIA_IMAGE_QUOTA_EXHAUSTED'
+  return body.status === 'failed_unknown' ? 'MEDIA_IMAGE_OUTCOME_UNKNOWN' : 'MEDIA_IMAGE_UNAVAILABLE'
 }
 
 function trustedResultUrl(value: unknown, imageRelayBaseUrl: string): string | null {
@@ -1800,11 +1813,17 @@ export class ImageWorkbenchService {
       : transport.error_code && transport.error
       ? { code: transport.error_code, message: mediaSafeError(transport.error_code).message }
       : undefined
+    // A Relay-declared hosted-quota refusal is definitive: the Relay did not
+    // hand the task to a Provider, so retaining "charge possible" would make
+    // a retry look like a potentially billable duplicate.  Other transport
+    // failures remain conservative because their submission outcome can be
+    // ambiguous and must retain the existing recovery fence.
+    const definitivelyNotSubmitted = refusal || transport.error_code === 'MEDIA_IMAGE_QUOTA_EXHAUSTED'
     return await this.repository.updateGenerationOperation({
       ...current,
       status,
       remote_task_id: transport.remote_task_id,
-      cost_state: status === 'succeeded' ? 'usage_recorded' : status === 'blocked_by_policy' ? 'not_submitted' : current.cost_state,
+      cost_state: status === 'succeeded' ? 'usage_recorded' : definitivelyNotSubmitted ? 'not_submitted' : current.cost_state,
       ...(status === 'succeeded' || status === 'failed' || status === 'cancelled' || status === 'blocked_by_policy' || status === 'outcome_unknown'
         ? { completed_at: current.completed_at ?? this.iso() }
         : {}),
@@ -3361,7 +3380,9 @@ export class ImageWorkbenchService {
         }
         return await this.failOperation(
           operation,
-          response.status >= 500 || response.status === 0 ? 'MEDIA_IMAGE_OUTCOME_UNKNOWN' : 'MEDIA_IMAGE_UNAVAILABLE',
+          response.status >= 500 || response.status === 0
+            ? 'MEDIA_IMAGE_OUTCOME_UNKNOWN'
+            : imageRelayFailureCode(response.status, body),
           response.status >= 500 || response.status === 0,
           body.provider_receipt_hash,
         )
@@ -3796,7 +3817,7 @@ export class ImageWorkbenchService {
       if (response.status >= 500) return original
       return await this.failOperation(
         original,
-        body.status === 'failed_unknown' ? 'MEDIA_IMAGE_OUTCOME_UNKNOWN' : 'MEDIA_IMAGE_UNAVAILABLE',
+        imageRelayFailureCode(response.status, body),
         body.status === 'failed_unknown',
         body.provider_receipt_hash,
       )
@@ -3819,7 +3840,7 @@ export class ImageWorkbenchService {
     if (body.status === 'failed' || body.status === 'failed_unknown') {
       return await this.failOperation(
         original,
-        body.status === 'failed_unknown' ? 'MEDIA_IMAGE_OUTCOME_UNKNOWN' : 'MEDIA_IMAGE_UNAVAILABLE',
+        imageRelayFailureCode(response.status, body),
         body.status === 'failed_unknown',
         body.provider_receipt_hash,
       )

@@ -45,10 +45,12 @@ import {
 } from '../ts/shared/kernel/providerAdmission.js'
 import {
   IMAGE_RELAY_IDEMPOTENCY_LOOKUP_PATH,
+  IMAGE_RELAY_QUEUE_FULL_ERROR,
   IMAGE_RELAY_RESULT_HANDOFF_DIRECT_V1,
   IMAGE_RELAY_RESULT_HANDOFF_HEADER,
   IMAGE_RELAY_RESULTS_PATH,
   IMAGE_RELAY_TASKS_PATH,
+  type ImageRelayQuotaErrorCode,
 } from '../ts/shared/product/imageRelayProtocol.js'
 import { localRelayAdmissionBackend, relayCapacityPolicyFromEnvironment, relayIdentityAdmissionConfig, type RelayAdmissionBackend, type RelayAdmissionPermit, type RelayCapacityPolicy } from './capacityPolicy.js'
 import { loadImageRelayIdentityIntrospector, RelayIdentityIntrospectionError, type ImageRelayIdentity } from './identityIntrospection.js'
@@ -483,8 +485,12 @@ type TaskQuote = {
   amountMinor: number
 }
 
-class ImageQuotaExceededError extends Error {}
-class ImageTaskQueueFullError extends Error {}
+class ImageQuotaExceededError extends Error {
+  constructor(message: string, readonly code: ImageRelayQuotaErrorCode) { super(message) }
+}
+class ImageTaskQueueFullError extends Error {
+  constructor(message: string) { super(message) }
+}
 class ImageIdempotencyConflictError extends Error {}
 class ImageAccountBindingChangedError extends Error {}
 
@@ -694,10 +700,10 @@ class TaskStore {
       const task = this.get(id)
       if (!task || task.status !== 'queued') return
       if (this.ownerQuotaInPeriod(task.owner ?? '', quote.period) + quote.amountMinor > this.quotaPolicy.owner_daily_usd_minor_limit) {
-        throw new ImageQuotaExceededError('relay: 生图可用额度已达上限')
+        throw new ImageQuotaExceededError('relay: 生图可用额度已达上限', 'image_owner_quota_exhausted')
       }
       if (this.providerQuotaInPeriod(quote.provider, quote.accountKey, quote.period) + quote.amountMinor > this.quotaPolicy.provider_daily_usd_minor_limit[quote.provider]) {
-        throw new ImageQuotaExceededError('relay: 生图服务可用额度已达上限')
+        throw new ImageQuotaExceededError('relay: 生图服务可用额度已达上限', 'image_provider_quota_exhausted')
       }
       this.insertReservation(task, quote, 'reserved')
     })
@@ -728,11 +734,11 @@ class TaskStore {
         throw new ImageTaskQueueFullError('relay: 你的生图任务已达上限,请等待前面的完成')
       }
       if (this.ownerQuotaInPeriod(input.owner, input.quote.period) + input.quote.amountMinor > this.quotaPolicy.owner_daily_usd_minor_limit) {
-        throw new ImageQuotaExceededError('relay: 生图可用额度已达上限')
+        throw new ImageQuotaExceededError('relay: 生图可用额度已达上限', 'image_owner_quota_exhausted')
       }
       if (this.providerQuotaInPeriod(input.quote.provider, input.quote.accountKey, input.quote.period) + input.quote.amountMinor
         > this.quotaPolicy.provider_daily_usd_minor_limit[input.quote.provider]) {
-        throw new ImageQuotaExceededError('relay: 生图服务可用额度已达上限')
+        throw new ImageQuotaExceededError('relay: 生图服务可用额度已达上限', 'image_provider_quota_exhausted')
       }
       const ts = this.now()
       try {
@@ -1399,6 +1405,11 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
       'Retry-After': String(config.retryAfterSeconds),
       'Cache-Control': 'no-store',
     })
+  }
+
+  function nextQuotaResetAt(): string {
+    const current = utcPeriod(now())
+    return new Date(Date.parse(`${current}T00:00:00.000Z`) + 24 * 60 * 60_000).toISOString()
   }
 
   async function fetchUpstreamBody<T>(
@@ -2180,8 +2191,21 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
     } catch (err) {
       if (err instanceof HttpError) return Response.json({ error: err.message }, { status: err.status, headers: err.headers })
       if (err instanceof ImageIdempotencyConflictError) return Response.json({ error: err.message }, { status: 409 })
-      if (err instanceof ImageTaskQueueFullError || err instanceof ImageQuotaExceededError) {
-        return Response.json({ error: err.message }, { status: 429, headers: queueFull(err.message).headers })
+      if (err instanceof ImageTaskQueueFullError) {
+        return Response.json({
+          error: err.message,
+          code: IMAGE_RELAY_QUEUE_FULL_ERROR,
+          capability: 'image_generation',
+        }, { status: 429, headers: queueFull(err.message).headers })
+      }
+      if (err instanceof ImageQuotaExceededError) {
+        return Response.json({
+          error: err.message,
+          code: err.code,
+          capability: 'image_generation',
+          scope: err.code === 'image_owner_quota_exhausted' ? 'owner' : 'platform',
+          resets_at: nextQuotaResetAt(),
+        }, { status: 429, headers: queueFull(err.message).headers })
       }
       return Response.json({ error: `relay 内部错误:${String(err).slice(0, 200)}` }, { status: 500 })
     }

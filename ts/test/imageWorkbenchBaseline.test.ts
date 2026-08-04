@@ -1091,6 +1091,51 @@ test('15.2 records a Provider policy refusal as a blocked Operation and a safe e
   })
 })
 
+test('15.2 projects a hosted Image Relay quota refusal without marking another capability unavailable', async () => {
+  const service = await createService('hosted-image-quota', async (input, init) => {
+    const url = new URL(input instanceof Request ? input.url : input.toString())
+    if (url.pathname === '/image-generation/v1/images/tasks' && init?.method === 'POST') {
+      return Response.json({
+        error: '今日托管图片额度已用完',
+        code: 'image_owner_quota_exhausted',
+        capability: 'image_generation',
+        scope: 'owner',
+        resets_at: '2026-08-04T00:00:00.000Z',
+      }, { status: 429 })
+    }
+    return Response.json({ error: 'unexpected image quota call' }, { status: 500 })
+  })
+  await withGateway(async () => {
+    const project = await createProject(service)
+    const plan = await service.createCreativePlan(project.id, {
+      base_revision: project.revision,
+      idempotency_key: 'bb-image-hosted-quota-plan-0001',
+    })
+    const estimate = await service.estimateGenerationRound(project.id, {
+      base_revision: project.revision,
+      creative_plan_id: plan.id,
+      direction_ids: [plan.directions[0]!.id],
+    })
+    const created = await service.createGenerationRound(project.id, {
+      base_revision: project.revision,
+      idempotency_key: 'bb-image-hosted-quota-round-0001',
+      creative_plan_id: plan.id,
+      direction_ids: [plan.directions[0]!.id],
+      estimate_hash: estimate.estimate_hash,
+      confirm: true,
+    })
+    expect(created.operations[0]).toMatchObject({
+      status: 'failed',
+      cost_state: 'not_submitted',
+      safe_error: { code: 'MEDIA_IMAGE_QUOTA_EXHAUSTED' },
+    })
+    expect(mediaSafeErrorForServiceError('IMAGE_QUOTA_EXHAUSTED', 429)).toEqual(
+      mediaSafeError('MEDIA_IMAGE_QUOTA_EXHAUSTED'),
+    )
+    expect(mediaSafeError('MEDIA_IMAGE_QUOTA_EXHAUSTED').message).toContain('Agent 和视频功能不受影响')
+  })
+})
+
 test('current recovery fences an interrupted remote submission as outcome_unknown without resubmitting it', async () => {
   const calls: GatewayCall[] = []
   const service = await createService('interrupted-submission', async (input, init) => {

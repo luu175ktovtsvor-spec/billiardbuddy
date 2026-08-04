@@ -116,7 +116,7 @@ import {
   type EditorialSourceTiming,
 } from '../video/domain/editorial/editorialApplication.js'
 import { normalizeFunAsrSentences, selectFunAsrRoute, type RemoteAsrSentence } from '../video/infrastructure/providers/funAsrAdapter.js'
-import { VideoMediaRelayClient, VideoMediaRelayClientError } from '../video/infrastructure/providers/videoMediaRelayClient.js'
+import { VideoMediaRelayClient, VideoMediaRelayClientError, videoMediaRelayTransportPolicyFromEnvironment } from '../video/infrastructure/providers/videoMediaRelayClient.js'
 
 const STANDALONE_VIDEO_OWNER: MediaOwner = {
   kind: 'standalone',
@@ -277,6 +277,20 @@ export class VideoWorkbenchServiceError extends Error {
   }
 }
 
+/** Relay keeps raw transport codes so recovery can make correct payment
+ * decisions. At the local product boundary, only the two daily hosted-video
+ * quota codes become a user-visible capability limit; queue/lease pressure is
+ * still retryable service availability. */
+function videoHostedQuotaError(error: unknown): VideoWorkbenchServiceError | null {
+  if (!(error instanceof VideoMediaRelayClientError) || error.status !== 429) return null
+  if (!['owner_daily_quota_exceeded', 'account_daily_quota_exceeded'].includes(error.code)) return null
+  return new VideoWorkbenchServiceError(
+    '今日托管视频额度已用完，请在额度重置后重试。',
+    429,
+    'VIDEO_PLATFORM_QUOTA_EXHAUSTED',
+  )
+}
+
 /**
  * The video domain owns projects, source evidence, timeline versions and local
  * operation records. FFprobe/FFmpeg are replaceable executors: they receive a
@@ -332,7 +346,14 @@ export class VideoWorkbenchService {
   private videoMediaRelay(signal?: AbortSignal): VideoMediaRelayClient | null {
     const baseUrl = this.env.BB_VIDEO_MEDIA_RELAY_URL?.trim() ?? ''
     const accessToken = this.env.BB_GATEWAY_TOKEN?.trim() ?? ''
-    return baseUrl && accessToken ? new VideoMediaRelayClient({ baseUrl, accessToken, fetchImpl: this.fetchImpl, signal, now: this.now }) : null
+    return baseUrl && accessToken ? new VideoMediaRelayClient({
+      baseUrl,
+      accessToken,
+      fetchImpl: this.fetchImpl,
+      signal,
+      now: this.now,
+      ...videoMediaRelayTransportPolicyFromEnvironment(this.env),
+    }) : null
   }
 
   private appendPendingRelayAcknowledgements(
@@ -1126,7 +1147,7 @@ export class VideoWorkbenchService {
           estimated_amount_micros: value.estimated_amount_micros + item.estimated_amount_micros,
         }), { requests: 0, total_tokens: 0, input_bytes: 0, visual_frames: 0, proxy_seconds: 0, asr_seconds: 0, estimated_amount_micros: 0 })
         if (totals.requests > budget.requests || totals.total_tokens > budget.total_tokens || totals.input_bytes > budget.input_bytes || totals.visual_frames > budget.visual_frames || totals.proxy_seconds > budget.proxy_seconds || totals.asr_seconds > budget.asr_seconds || totals.estimated_amount_micros > budget.estimated_amount_micros) {
-          throw new VideoWorkbenchServiceError('远程预算已耗尽，拒绝启动未预留操作', 429, 'VIDEO_REMOTE_OPERATION_UNAVAILABLE')
+          throw new VideoWorkbenchServiceError('远程预算已耗尽，拒绝启动未预留操作', 429, 'VIDEO_PROJECT_BUDGET_EXCEEDED')
         }
         await this.repository.saveProject(videoStudioProjectSchema.parse({
           ...project,
@@ -1147,7 +1168,7 @@ export class VideoWorkbenchService {
         estimated_amount_micros: value.estimated_amount_micros + item.estimated_amount_micros,
       }), { requests: 0, total_tokens: 0, input_bytes: 0, visual_frames: 0, proxy_seconds: 0, asr_seconds: 0, estimated_amount_micros: 0 })
       if (totals.requests > budget.requests || totals.total_tokens > budget.total_tokens || totals.input_bytes > budget.input_bytes || totals.visual_frames > budget.visual_frames || totals.proxy_seconds > budget.proxy_seconds || totals.asr_seconds > budget.asr_seconds || totals.estimated_amount_micros > budget.estimated_amount_micros) {
-        throw new VideoWorkbenchServiceError('远程预算已耗尽，拒绝启动未预留操作', 429, 'VIDEO_REMOTE_OPERATION_UNAVAILABLE')
+        throw new VideoWorkbenchServiceError('远程预算已耗尽，拒绝启动未预留操作', 429, 'VIDEO_PROJECT_BUDGET_EXCEEDED')
       }
       await this.repository.saveProject(videoStudioProjectSchema.parse({
         ...project,
@@ -1200,7 +1221,7 @@ export class VideoWorkbenchService {
         || totals.proxy_seconds > budget.proxy_seconds
         || totals.asr_seconds > budget.asr_seconds
         || totals.estimated_amount_micros > budget.estimated_amount_micros
-      ) throw new VideoWorkbenchServiceError('远程预算已耗尽，拒绝未预估的回执', 429, 'VIDEO_REMOTE_OPERATION_UNAVAILABLE')
+      ) throw new VideoWorkbenchServiceError('远程预算已耗尽，拒绝未预估的回执', 429, 'VIDEO_PROJECT_BUDGET_EXCEEDED')
       await this.repository.saveProject(videoStudioProjectSchema.parse({
         ...project,
         remote_analysis_budgets: project.remote_analysis_budgets.map(item => item.id === budgetId
@@ -1324,7 +1345,7 @@ export class VideoWorkbenchService {
           options.parentOperationId,
           error instanceof VideoMediaRelayClientError && error.code === 'provider_not_started' ? 'submitting' : 'cleared',
         )
-        throw error
+        throw videoHostedQuotaError(error) ?? error
       }
       if (options.parentOperationId) await this.updateRemoteOperationRecovery(options.parentOperationId, 'outcome_unknown')
       const recoveryRelay = this.videoMediaRelay()
@@ -1336,7 +1357,7 @@ export class VideoWorkbenchService {
           const absent = new VideoMediaRelayClientError(503, 'provider_not_started')
           await this.finalizeRemoteBudgetFailure(projectId, budgetId, operationId, absent, { submissionFenced: true })
           if (options.parentOperationId) await this.updateRemoteOperationRecovery(options.parentOperationId, 'submitting')
-          throw absent
+          throw videoHostedQuotaError(absent) ?? absent
         }
         // Lookup is read-only recovery; this strict replay is the fingerprint
         // authority. A changed request can only fail 409, never reach Provider.
@@ -1360,7 +1381,7 @@ export class VideoWorkbenchService {
         // release its allocation. Only the explicit null branch above may do
         // that during recovery.
         await this.finalizeRemoteBudgetFailure(projectId, budgetId, operationId, recoveryError, { submissionFenced: true, allowProviderNotStartedRelease: false })
-        throw recoveryError
+        throw videoHostedQuotaError(recoveryError) ?? recoveryError
       }
     }
   }
@@ -3448,15 +3469,20 @@ export class VideoWorkbenchService {
       }
       const cancelled = signal.aborted || (error instanceof VideoAnalysisError && error.code === 'VIDEO_ANALYSIS_CANCELLED')
       const stale = error instanceof VideoWorkbenchServiceError && error.code === 'VIDEO_ANALYSIS_STALE'
+      const platformQuota = error instanceof VideoWorkbenchServiceError && error.code === 'VIDEO_PLATFORM_QUOTA_EXHAUSTED'
+      const projectBudget = error instanceof VideoWorkbenchServiceError && error.code === 'VIDEO_PROJECT_BUDGET_EXCEEDED'
       const failure = mediaSafeError(cancelled
         ? 'MEDIA_VIDEO_ANALYSIS_CANCELLED'
-        : stale ? 'MEDIA_STATE_CONFLICT' : 'MEDIA_VIDEO_ANALYSIS_UNAVAILABLE')
+        : stale ? 'MEDIA_STATE_CONFLICT'
+          : platformQuota ? 'MEDIA_VIDEO_PLATFORM_QUOTA_EXHAUSTED'
+            : projectBudget ? 'MEDIA_VIDEO_PROJECT_BUDGET_EXCEEDED'
+              : 'MEDIA_VIDEO_ANALYSIS_UNAVAILABLE')
       const failureTask = activeTask.id === analyzeTask.id && interruptedAnalysis ? interruptedAnalysis : activeTask
       await this.repository.saveOperation(this.operation({
         ...failureTask,
         status: cancelled ? 'cancelled' : 'failed',
         progress: 0,
-        stage: cancelled ? '已取消' : stale ? '方案已过期' : '视频分析失败',
+        stage: cancelled ? '已取消' : stale ? '方案已过期' : platformQuota ? '托管视频额度已用完' : projectBudget ? '项目远程预算已用完' : '视频分析失败',
         error: failure.message,
         error_code: failure.code,
       })).catch(() => undefined)

@@ -225,7 +225,11 @@ export interface GatewayDeps {
 }
 
 export class HttpError extends Error {
-  constructor(readonly status: number, readonly detail: string) {
+  constructor(
+    readonly status: number,
+    readonly detail: string,
+    readonly metadata?: Readonly<Record<string, unknown>>,
+  ) {
     super(detail)
   }
 }
@@ -595,8 +599,18 @@ function jsonResponse(body: unknown, init?: ResponseInit): Response {
   return Response.json(body, init)
 }
 
-function jsonError(status: number, detail: string): Response {
-  return jsonResponse({ detail }, { status })
+function jsonError(status: number, detail: string, metadata?: Readonly<Record<string, unknown>>): Response {
+  return jsonResponse({ detail, ...(metadata ?? {}) }, { status })
+}
+
+/** Keep quota exhaustion machine-readable without conflating it with a
+ * provider credential or capacity error. The capability is the product usage
+ * ledger dimension; no API key, account reference or model alias is exposed. */
+function usageBudgetHttpError(error: UsageBudgetError): HttpError {
+  return new HttpError(error.status, error.code, {
+    code: error.code,
+    ...(error.limit ?? {}),
+  })
 }
 
 function isJsonContentType(value: string | null): boolean {
@@ -1300,7 +1314,7 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
       return reservation.receipt
     } catch (error) {
       if (error instanceof HttpError) throw error
-      if (error instanceof UsageBudgetError) throw new HttpError(error.status, error.code)
+      if (error instanceof UsageBudgetError) throw usageBudgetHttpError(error)
       throw new HttpError(503, 'BUDGET_UNAVAILABLE')
     }
   }
@@ -1353,7 +1367,7 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
         },
       })
     } catch (error) {
-      if (error instanceof UsageBudgetError) throw new HttpError(error.status, error.code)
+      if (error instanceof UsageBudgetError) throw usageBudgetHttpError(error)
       throw new HttpError(503, 'BUDGET_UNAVAILABLE')
     }
   }
@@ -1768,7 +1782,7 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
               if (operation.outcome === 'started') {
                 try { operationResults.release(binding, operation.fencing_token) } catch {}
               }
-              if (error instanceof UsageBudgetError) throw new HttpError(error.status, error.code)
+              if (error instanceof UsageBudgetError) throw usageBudgetHttpError(error)
               throw new HttpError(503, 'BUDGET_UNAVAILABLE')
             }
             if (operation.outcome === 'started' && reservation.duplicate) {
@@ -2056,7 +2070,7 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
 
       return jsonError(404, 'not found')
     } catch (err) {
-      if (err instanceof HttpError) return jsonError(err.status, err.detail)
+      if (err instanceof HttpError) return jsonError(err.status, err.detail, err.metadata)
       if (err instanceof CapacityQueueError || err instanceof ManagedResponsesRequestError) {
         return jsonError(err.status, err.publicMessage)
       }

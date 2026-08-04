@@ -133,12 +133,15 @@ export function auditPackagedResources(options: AuditOptions): void {
   auditProductArchive(join(resources, 'app.asar'))
 
   const productConfig = parseJsonFile(join(resources, 'product-config.json'))
-  requireExactKeys(productConfig, ['$comment', 'gatewayUrl', 'imageRelayUrl'], 'product-config.json')
+  requireExactKeys(productConfig, ['$comment', 'gatewayUrl', 'imageRelayUrl', 'videoMediaRelayUrl'], 'product-config.json')
   if (typeof productConfig.gatewayUrl !== 'string' || !/^https:\/\//.test(productConfig.gatewayUrl)) {
     throw new Error('product-config.json 缺少 HTTPS Gateway 地址')
   }
   if (productConfig.imageRelayUrl !== 'https://zzyppz.cn/image-generation') {
     throw new Error('product-config.json 缺少正式 HTTPS Image Relay 地址')
+  }
+  if (productConfig.videoMediaRelayUrl !== 'https://zzyppz.cn/video-media') {
+    throw new Error('product-config.json 缺少正式 HTTPS Video Media Relay 地址')
   }
   if (existsSync(join(resources, 'product-secrets.json'))) {
     throw new Error('安装包不得包含 product-secrets.json')
