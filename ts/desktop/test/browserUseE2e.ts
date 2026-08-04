@@ -90,9 +90,14 @@ async function tool(client: McpClient, name: string, arguments_: Json = {}): Pro
 }
 
 async function startFixture(): Promise<{ url: string, close: () => Promise<void> }> {
-  const server = createServer((_request, response) => {
+  const server = createServer((request, response) => {
+    if (request.url?.startsWith('/reset/private-path-token')) {
+      response.writeHead(204)
+      response.end()
+      return
+    }
     response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
-    response.end('<!doctype html><title>Browser E2E</title><input aria-label="normal input"><input type="password" aria-label="password input">')
+    response.end('<!doctype html><title>Browser E2E</title><input aria-label="normal input"><input type="password" aria-label="password input"><script>console.warn("API_KEY=private-value https://example.test/reset/private-path-token?token=secret"); fetch("/reset/private-path-token?token=secret")</script>')
   })
   server.listen(0, '127.0.0.1')
   await once(server, 'listening')
@@ -157,6 +162,13 @@ async function main() {
     assert.equal(image.type, 'image')
     assert.equal(image.mimeType, 'image/png')
     assert.ok(typeof image.data === 'string' && image.data.length > 100, 'Browser screenshot is empty')
+
+    const developer = JSON.parse(toolText(await tool(client, 'developer_snapshot', { tabId }))) as Json
+    const serializedDeveloper = JSON.stringify(developer)
+    assert.match(serializedDeveloper, /API_KEY=\[redacted\]/, 'Browser developer snapshot omitted redacted console evidence')
+    assert.match(serializedDeveloper, /\/reset\/\[redacted\]/, 'Browser developer snapshot omitted redacted network evidence')
+    assert.doesNotMatch(serializedDeveloper, /private-value|private-path-token|token=secret/, 'Browser developer snapshot exposed console or URL secrets')
+    assert.doesNotMatch(serializedDeveloper, /requestHeaders|responseHeaders|cookies|localStorage/, 'Browser developer snapshot exposed a forbidden browser surface')
 
     await fs.writeFile(
       path.join(userData, 'agent-runtime', 'browser-use', 'config.json'),
