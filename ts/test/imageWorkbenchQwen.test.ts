@@ -6,7 +6,10 @@ import { join } from 'node:path'
 import { createImageWorkbenchDomainApiHandler } from '../src/server/api/imageWorkbench.js'
 import { ImageWorkbenchService } from '../src/server/services/imageWorkbenchService.js'
 import { QwenImageReasoningGatewayError, requestQwenImageReasoning } from '../../gateway/qwenImageReasoning.js'
-import { validateDeploymentEnvironment } from '../../gateway/validate-deployment-env.js'
+import {
+  GATEWAY_PRODUCTION_CAPACITY_ENVIRONMENT_VARIABLES,
+  validateDeploymentEnvironment,
+} from '../../gateway/validate-deployment-env.js'
 import { createGatewayFetch } from '../../gateway/app.js'
 import { AuthAuthority } from '../../gateway/installationAuth.js'
 import { PROVIDER_GATEWAY_PROTOCOL, PROVIDER_GATEWAY_PROTOCOL_HEADER } from '../shared/product/providerGateway.js'
@@ -17,6 +20,27 @@ const gatewayUrl = 'https://gateway.example.test/gw'
 const imageRelayUrl = 'https://relay.example.test/image-generation'
 const gatewayToken = 'qwen-gateway-token-0123456789abcdef'
 const capability = 'qwen-desktop-capability-0123456789abcdef'
+
+function gatewayProductionPolicyFixture(): Record<string, string> {
+  const capacity = Object.fromEntries(GATEWAY_PRODUCTION_CAPACITY_ENVIRONMENT_VARIABLES.map(name => [name, '1']))
+  const quota = Object.fromEntries(
+    ['TEXT_REASONING', 'VISUAL_EVIDENCE', 'MEDIA_REASONING', 'IMAGE_ADVICE', 'SPEECH_TRANSCRIPTION']
+      .flatMap(capabilityName => ['PRINCIPAL', 'INSTALLATION'].flatMap(scope =>
+        ['REQUESTS', 'INPUT_BYTES', 'OUTPUT_UNITS', 'TOTAL_TOKENS'].map(axis => [`GW_QUOTA_${capabilityName}_${scope}_${axis}`, '1000']),
+      )),
+  )
+  return {
+    ...capacity,
+    ...quota,
+    GW_CAPACITY_POLICY_REVISION: 'gateway-qwen-test-v1',
+    GW_QUOTA_POLICY_REVISION: 'gateway-qwen-test-v1',
+    // MiMo owns one physical account split into two non-empty lanes.
+    GW_MIMO_CONC: '2',
+    GW_MIMO_MEDIA_CONC: '1',
+    GW_VISION_CONC: '1',
+    GW_SERVER_IDLE_TIMEOUT_SECONDS: '30',
+  }
+}
 
 async function root(label: string): Promise<string> {
   const value = await mkdtemp(join(tmpdir(), `billiardbuddy-qwen-${label}-`))
@@ -240,6 +264,7 @@ test('15.4 Gateway locks Qwen model and rejects unbounded/unknown visual output 
 
 test('15.4 deployment validation requires a server-side Qwen credential without exposing it', () => {
   const environment = {
+    ...gatewayProductionPolicyFixture(),
     BB_GATEWAY_MODEL: 'deepseek-v4-flash',
     GW_AUTH_SIGNING_KEY: 'a'.repeat(32),
     GW_ADMIN_TOKEN: 'admin-token',
