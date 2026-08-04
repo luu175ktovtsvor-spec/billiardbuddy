@@ -7,6 +7,9 @@ const MAX_PAGE_TEXT = 24_000
 const MAX_ELEMENTS = 120
 const MAX_TYPED_TEXT = 4096
 const MAX_SCREENSHOT_DATA = 16 * 1024 * 1024
+const MAX_CONSOLE_ENTRIES = 100
+const MAX_NETWORK_ENTRIES = 200
+const MAX_PERFORMANCE_ENTRIES = 100
 
 let nativePort = null
 let readyPromise = null
@@ -39,6 +42,61 @@ function isAllowedUrl(value) {
   if (!host) return false
   if (policy.blockedHosts.some(rule => hostMatches(host, rule))) return false
   return policy.allowedHosts.some(rule => hostMatches(host, rule))
+}
+
+function sanitizeDiagnosticUrl(value) {
+  try {
+    const url = new URL(String(value || ''))
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return null
+    const sensitivePathLabel = /^(?:auth|authorization|callback|invite|invitation|magic|oauth|password|reset|secret|token|verify|verification)$/i
+    const decodedPathSegment = value => { try { return decodeURIComponent(value) } catch { return value } }
+    const opaquePathCredential = value =>
+      /^eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(value)
+      || /^[0-9a-f]{24,}$/i.test(value)
+      || /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)
+      || value.length >= 32 && /^[A-Za-z0-9._~-]+$/.test(value) && /[A-Za-z]/.test(value) && /[0-9]/.test(value)
+    let redactNext = false
+    const pathname = url.pathname.split('/').map(segment => {
+      const decoded = decodedPathSegment(segment)
+      if (redactNext && decoded.length > 0) { redactNext = false; return '[redacted]' }
+      const keyed = decoded.match(/^(authorization|api[_-]?key|access[_-]?token|refresh[_-]?token|password|secret|token)[:=](.+)$/i)
+      if (keyed) return `${keyed[1]}=[redacted]`
+      if (sensitivePathLabel.test(decoded)) { redactNext = true; return segment }
+      return opaquePathCredential(decoded) ? '[redacted]' : segment
+    }).join('/')
+    const sanitized = `${url.origin}${pathname}`
+    return sanitized.length <= 2048 ? sanitized : url.origin + '/'
+  } catch {
+    return null
+  }
+}
+
+function redactDiagnosticText(value) {
+  return String(value || '')
+    .replace(/https?:\/\/[^\s"'<>]+/gi, candidate => sanitizeDiagnosticUrl(candidate) || '[invalid-url]')
+    .replace(/\b(authorization|api[_-]?key|access[_-]?token|refresh[_-]?token|password|secret|cookie)\b\s*[:=]\s*(?:Bearer\s+)?[^\s,;]+/gi, '$1=[redacted]')
+    .replace(/\bBearer\s+[A-Za-z0-9._~+\/-]+=*/gi, 'Bearer [redacted]')
+    .slice(0, 1000)
+}
+
+function diagnostics() {
+  return { console: [], network: [], requests: new Map() }
+}
+
+function boundedPush(items, value, limit) {
+  items.push(value)
+  if (items.length > limit) items.splice(0, items.length - limit)
+}
+
+function resetDiagnostics(tab) {
+  tab.diagnostics = diagnostics()
+}
+
+function diagnosticTab(tabId) {
+  const tab = connectedTabs.get(Number(tabId))
+  if (!tab) return null
+  if (!tab.diagnostics) tab.diagnostics = diagnostics()
+  return tab
 }
 
 async function applyPolicy(value) {
@@ -196,6 +254,36 @@ async function runAgentOperation(op, args) {
     }
     return { mimeType: 'image/png', data: image.data }
   }
+  if (op === 'developer_snapshot') {
+    const tab = await connectedTab(tabId)
+    const performance = await evaluate(tabId, `(() => {
+      const finite = value => Number.isFinite(value) && value >= 0 ? Math.round(value * 100) / 100 : null;
+      const cleanUrl = value => { try { const url = new URL(String(value || '')); if (url.protocol !== 'http:' && url.protocol !== 'https:') return null; const labels = /^(?:auth|authorization|callback|invite|invitation|magic|oauth|password|reset|secret|token|verify|verification)$/i; const decode = segment => { try { return decodeURIComponent(segment); } catch { return segment; } }; const opaque = segment => /^eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(segment) || /^[0-9a-f]{24,}$/i.test(segment) || /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(segment) || (segment.length >= 32 && /^[A-Za-z0-9._~-]+$/.test(segment) && /[A-Za-z]/.test(segment) && /[0-9]/.test(segment)); let next = false; const pathname = url.pathname.split('/').map(segment => { const decoded = decode(segment); if (next && decoded.length > 0) { next = false; return '[redacted]'; } const keyed = decoded.match(/^(authorization|api[_-]?key|access[_-]?token|refresh[_-]?token|password|secret|token)[:=](.+)$/i); if (keyed) return keyed[1] + '=[redacted]'; if (labels.test(decoded)) { next = true; return segment; } return opaque(decoded) ? '[redacted]' : segment; }).join('/'); const result = url.origin + pathname; return result.length <= 2048 ? result : url.origin + '/'; } catch { return null; } };
+      const navigation = performance.getEntriesByType('navigation')[0];
+      return {
+        navigation: navigation ? {
+          type: String(navigation.type || '').slice(0, 64),
+          durationMs: finite(navigation.duration),
+          domContentLoadedMs: finite(navigation.domContentLoadedEventEnd),
+          loadMs: finite(navigation.loadEventEnd),
+          transferSize: Number.isSafeInteger(navigation.transferSize) && navigation.transferSize >= 0 ? navigation.transferSize : null,
+          decodedBodySize: Number.isSafeInteger(navigation.decodedBodySize) && navigation.decodedBodySize >= 0 ? navigation.decodedBodySize : null,
+        } : null,
+        resources: performance.getEntriesByType('resource').slice(-${MAX_PERFORMANCE_ENTRIES}).flatMap(entry => {
+          const name = cleanUrl(entry.name); if (!name) return [];
+          return [{ name, initiatorType: String(entry.initiatorType || 'other').slice(0, 64), durationMs: finite(entry.duration), transferSize: Number.isSafeInteger(entry.transferSize) && entry.transferSize >= 0 ? entry.transferSize : null, decodedBodySize: Number.isSafeInteger(entry.decodedBodySize) && entry.decodedBodySize >= 0 ? entry.decodedBodySize : null }];
+        }),
+      };
+    })()`)
+    return {
+      url: sanitizeDiagnosticUrl(tab.url),
+      title: redactDiagnosticText(tab.title).slice(0, 500),
+      console: tab.diagnostics.console.map(entry => ({ ...entry })),
+      network: tab.diagnostics.network.map(({ requestId, ...entry }) => ({ ...entry })),
+      performance,
+      privacy: 'Headers, cookies, storage, bodies and raw CDP access are not collected. URL credentials, query strings, fragments and sensitive path identifiers are removed; titles and console text receive bounded best-effort secret redaction.',
+    }
+  }
   if (op === 'navigate') {
     await connectedTab(tabId)
     const url = String(args?.url || '')
@@ -259,14 +347,17 @@ chrome.action.onClicked.addListener(async tab => {
     await chrome.debugger.attach({ tabId: tab.id }, '1.3')
     try {
       await chrome.debugger.sendCommand({ tabId: tab.id }, 'Page.enable')
+      await chrome.debugger.sendCommand({ tabId: tab.id }, 'Runtime.enable')
+      await chrome.debugger.sendCommand({ tabId: tab.id }, 'Network.enable')
+      await chrome.debugger.sendCommand({ tabId: tab.id }, 'Log.enable')
     } catch (error) {
       try { await chrome.debugger.detach({ tabId: tab.id }) } catch { /* Chrome already detached it */ }
       throw error
     }
-    connectedTabs.set(tab.id, { id: tab.id, title: tab.title || '', url: tab.url })
+    connectedTabs.set(tab.id, { id: tab.id, title: tab.title || '', url: tab.url, diagnostics: diagnostics() })
     await chrome.action.setBadgeText({ tabId: tab.id, text: 'ON' })
     await chrome.action.setBadgeBackgroundColor({ tabId: tab.id, color: '#2563eb' })
-    postNative({ kind: 'tab_connected', tab: connectedTabs.get(tab.id) })
+    postNative({ kind: 'tab_connected', tab: { id: tab.id, title: tab.title || '', url: tab.url } })
   } catch (error) {
     await chrome.action.setBadgeText({ tabId: tab.id, text: '!' })
     console.error('BilliardBuddy Chrome could not connect tab', error)
@@ -281,12 +372,80 @@ chrome.debugger.onDetach.addListener(async source => {
 })
 
 chrome.debugger.onEvent.addListener(async (source, method, params) => {
-  if (!source.tabId || !connectedTabs.has(source.tabId) || method !== 'Page.frameNavigated') return
+  if (!source.tabId || !connectedTabs.has(source.tabId)) return
+  const tab = diagnosticTab(source.tabId)
+  if (!tab) return
+
+  if (method === 'Runtime.consoleAPICalled') {
+    const text = Array.isArray(params?.args)
+      ? params.args.map(argument => {
+          if (['string', 'number', 'boolean', 'bigint'].includes(typeof argument?.value)) return String(argument.value)
+          return typeof argument?.description === 'string' ? argument.description : argument?.type || ''
+        }).join(' ')
+      : ''
+    boundedPush(tab.diagnostics.console, {
+      level: params?.type === 'warn' ? 'warning' : ['error', 'warning', 'debug'].includes(params?.type) ? params.type : 'info',
+      message: redactDiagnosticText(text),
+      source: sanitizeDiagnosticUrl(params?.stackTrace?.callFrames?.[0]?.url),
+      line: Number.isSafeInteger(params?.stackTrace?.callFrames?.[0]?.lineNumber) ? params.stackTrace.callFrames[0].lineNumber : 0,
+      timestamp: Date.now(),
+    }, MAX_CONSOLE_ENTRIES)
+    return
+  }
+
+  if (method === 'Log.entryAdded') {
+    const entry = params?.entry
+    boundedPush(tab.diagnostics.console, {
+      level: ['error', 'warning', 'debug'].includes(entry?.level) ? entry.level : 'info',
+      message: redactDiagnosticText(entry?.text),
+      source: sanitizeDiagnosticUrl(entry?.url),
+      line: Number.isSafeInteger(entry?.lineNumber) ? entry.lineNumber : 0,
+      timestamp: Date.now(),
+    }, MAX_CONSOLE_ENTRIES)
+    return
+  }
+
+  if (method === 'Network.requestWillBeSent') {
+    const url = sanitizeDiagnosticUrl(params?.request?.url)
+    if (!url || typeof params?.requestId !== 'string') return
+    const entry = {
+      requestId: params.requestId,
+      method: String(params?.request?.method || 'GET').slice(0, 16),
+      url,
+      resourceType: String(params?.type || 'Other').slice(0, 64),
+      startedAt: Number.isFinite(params?.wallTime) ? Math.round(params.wallTime * 1000) : Date.now(),
+    }
+    tab.diagnostics.requests.set(params.requestId, entry)
+    boundedPush(tab.diagnostics.network, entry, MAX_NETWORK_ENTRIES)
+    const retained = new Set(tab.diagnostics.network.map(item => item.requestId))
+    for (const requestId of tab.diagnostics.requests.keys()) if (!retained.has(requestId)) tab.diagnostics.requests.delete(requestId)
+    return
+  }
+
+  if (method === 'Network.responseReceived') {
+    const entry = tab.diagnostics.requests.get(params?.requestId)
+    if (!entry) return
+    entry.status = Number.isInteger(params?.response?.status) ? params.response.status : undefined
+    entry.fromCache = Boolean(params?.response?.fromDiskCache || params?.response?.fromPrefetchCache || params?.response?.fromServiceWorker)
+    return
+  }
+
+  if (method === 'Network.loadingFinished' || method === 'Network.loadingFailed') {
+    const entry = tab.diagnostics.requests.get(params?.requestId)
+    if (!entry) return
+    entry.completedAt = Date.now()
+    if (method === 'Network.loadingFailed') entry.error = redactDiagnosticText(params?.errorText)
+    tab.diagnostics.requests.delete(params.requestId)
+    return
+  }
+
+  if (method !== 'Page.frameNavigated') return
   const frame = params?.frame
   if (!frame || frame.parentId || typeof frame.url !== 'string') return
   if (isAllowedUrl(frame.url)) {
-    const entry = connectedTabs.get(source.tabId)
-    if (entry) entry.url = frame.url
+    if (sanitizeDiagnosticUrl(tab.url) !== sanitizeDiagnosticUrl(frame.url)) resetDiagnostics(tab)
+    tab.url = frame.url
+    tab.title = typeof frame.name === 'string' && frame.name ? frame.name : tab.title
     return
   }
   connectedTabs.delete(source.tabId)

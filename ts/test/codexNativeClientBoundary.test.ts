@@ -2,6 +2,10 @@ import { describe, expect, test } from 'bun:test'
 import { ELECTRON_IPC_CHANNELS } from '../desktop/electron/ipc/channels'
 import { validateElectronIpcPayload } from '../desktop/electron/ipc/capabilities'
 import { projectNativeCodexClientSettings } from '../desktop/electron/services/codexNativeAppServer'
+import {
+  redactBrowserDiagnosticText,
+  sanitizeBrowserDiagnosticUrl,
+} from '../desktop/electron/services/browserDeveloperDiagnostics'
 import { validateNativeServerRequestResponse } from '../desktop/electron/services/nativeServerRequest'
 
 describe('Codex native client boundary', () => {
@@ -135,5 +139,17 @@ describe('Codex native client boundary', () => {
         },
       },
     )).toThrow('CODEX_NATIVE_PERMISSIONS_RESPONSE_INVALID')
+  })
+
+  test('redacts Browser developer diagnostics without exposing URL secrets', () => {
+    expect(sanitizeBrowserDiagnosticUrl('https://user:secret@example.test/path?q=token#fragment'))
+      .toBe('https://example.test/path')
+    expect(sanitizeBrowserDiagnosticUrl('https://example.test/reset/4f98e7b6-d5c4-4a3b-9c21-1a2b3c4d5e6f?next=/account'))
+      .toBe('https://example.test/reset/[redacted]')
+    expect(sanitizeBrowserDiagnosticUrl('https://example.test/assets/a3f2d9c7e6b54a1098c7d6e5f4a3b2c1/image.png'))
+      .toBe('https://example.test/assets/[redacted]/image.png')
+    expect(redactBrowserDiagnosticText(
+      'POST https://example.test/api?token=secret Authorization: Bearer abc.def API_KEY=private-value',
+    )).toBe('POST https://example.test/api Authorization=[redacted] API_KEY=[redacted]')
   })
 })
