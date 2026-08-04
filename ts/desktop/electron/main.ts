@@ -12,9 +12,12 @@ import {
   imageCancelGenerationOperationIpcPayloadSchema,
   imageCreateCanvasIpcPayloadSchema,
   imageCreateCreativePlanIpcPayloadSchema,
+  imageUnderstandProjectIpcPayloadSchema,
   imageCreateDeliverySpecRevisionIpcPayloadSchema,
   imageCreateGenerationRoundIpcPayloadSchema,
   imageDecideCandidateIpcPayloadSchema,
+  imageAssessCandidateVisualIpcPayloadSchema,
+  imageAssessVersionVisualIpcPayloadSchema,
   imageDeriveCandidateIpcPayloadSchema,
   imageEstimateDerivationIpcPayloadSchema,
   imageEstimateGenerationRoundIpcPayloadSchema,
@@ -1631,6 +1634,10 @@ function registerIpcHandlers() {
     const request = imageCreateCreativePlanIpcPayloadSchema.parse(payload)
     return getImageActions().createCreativePlan(request.projectId, request.input)
   })
+  registerImageHandler(ELECTRON_IPC_CHANNELS.imageUnderstandProject, (_event, payload) => {
+    const request = imageUnderstandProjectIpcPayloadSchema.parse(payload)
+    return getImageActions().understandProject(request.projectId, request.input)
+  })
   registerImageHandler(ELECTRON_IPC_CHANNELS.imageEstimateGenerationRound, (_event, payload) => {
     const request = imageEstimateGenerationRoundIpcPayloadSchema.parse(payload)
     return getImageActions().estimateGenerationRound(request.projectId, request.input)
@@ -1646,6 +1653,14 @@ function registerIpcHandlers() {
   registerImageHandler(ELECTRON_IPC_CHANNELS.imageDecideCandidate, (_event, payload) => {
     const request = imageDecideCandidateIpcPayloadSchema.parse(payload)
     return getImageActions().decideCandidate(request.projectId, request.candidateId, request.input)
+  })
+  registerImageHandler(ELECTRON_IPC_CHANNELS.imageAssessCandidateVisual, (_event, payload) => {
+    const request = imageAssessCandidateVisualIpcPayloadSchema.parse(payload)
+    return getImageActions().assessCandidateVisual(request.projectId, request.candidateId, request.input)
+  })
+  registerImageHandler(ELECTRON_IPC_CHANNELS.imageAssessVersionVisual, (_event, payload) => {
+    const request = imageAssessVersionVisualIpcPayloadSchema.parse(payload)
+    return getImageActions().assessVersionVisual(request.projectId, request.versionId, request.input)
   })
   registerImageHandler(ELECTRON_IPC_CHANNELS.imageAdoptCandidate, (_event, payload) => {
     const request = imageAdoptCandidateIpcPayloadSchema.parse(payload)

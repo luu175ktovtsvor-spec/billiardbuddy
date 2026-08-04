@@ -118,7 +118,7 @@ function gatewayFixture(
     }
     // Current visual quality reasoning is deliberately non-blocking.  The
     // production fixture records its failure without changing candidate facts.
-    if (url.pathname.endsWith('/v1/media/reasoning')) return Response.json({ error: 'unavailable' }, { status: 503 })
+    if (url.pathname.endsWith('/v1/image/reasoning')) return Response.json({ error: 'unavailable' }, { status: 503 })
     return Response.json({ error: 'unexpected image gateway fixture request' }, { status: 500 })
   }
   return { calls, fetchImpl }
@@ -1106,7 +1106,11 @@ test('current recovery fences an interrupted remote submission as outcome_unknow
     await service.recoverInterruptedOperations()
     const recovered = await service.getOperation(saved.id)
     expect(recovered).toMatchObject({ status: 'failed', outcome_unknown: true, error_code: 'MEDIA_IMAGE_OUTCOME_UNKNOWN' })
-    expect(calls).toEqual([])
+    // An ambiguous remote submission is probed through the Relay's read-only
+    // owner/idempotency lookup.  A 404 does not permit a second paid POST.
+    expect(calls.map(call => `${call.method} ${call.path}`)).toEqual([
+      'GET /image-generation/v1/images/tasks/by-idempotency/bb-image-baseline-idempotency-key',
+    ])
   })
 })
 
@@ -1183,11 +1187,10 @@ test('15.2 persists a Round before POST and resumes it after a process crash wit
   })
 })
 
-test('15.2 recovers an outcome_unknown Generation Round through the original idempotency key', async () => {
+test('15.2 recovers an outcome_unknown Generation Round through a read-only original-idempotency lookup without a second POST', async () => {
   const root = await testRoot('round-outcome-unknown')
   const legacyMediaRoot = await testRoot('round-outcome-unknown-legacy')
   const calls: GatewayCall[] = []
-  let submitCount = 0
   const gateway: typeof fetch = async (input, init) => {
     const url = new URL(input instanceof Request ? input.url : input.toString())
     calls.push({
@@ -1197,9 +1200,13 @@ test('15.2 recovers an outcome_unknown Generation Round through the original ide
       body: init?.body,
     })
     if (url.pathname === '/image-generation/v1/images/tasks' && init?.method === 'POST') {
-      submitCount += 1
-      if (submitCount === 1) throw new Error('connection dropped after provider accepted the request')
+      throw new Error('connection dropped after provider accepted the request')
+    }
+    if (url.pathname.startsWith('/image-generation/v1/images/tasks/by-idempotency/') && (init?.method ?? 'GET') === 'GET') {
       return Response.json({ task_id: 'relay_task_idempotent_recovery', status: 'queued', reused: true, provider_receipt_hash: 'e'.repeat(64) })
+    }
+    if (url.pathname === '/image-generation/v1/images/tasks/relay_task_idempotent_recovery' && (init?.method ?? 'GET') === 'GET') {
+      return Response.json({ task_id: 'relay_task_idempotent_recovery', status: 'queued', provider_receipt_hash: 'e'.repeat(64) })
     }
     return Response.json({ error: 'unexpected unknown-outcome recovery request' }, { status: 500 })
   }
@@ -1234,8 +1241,10 @@ test('15.2 recovers an outcome_unknown Generation Round through the original ide
     const resumed = await recovered.repository.getGenerationOperation(project.id, created.operations[0]!.id)
     expect(resumed).toMatchObject({ status: 'queued', remote_task_id: 'relay_task_idempotent_recovery' })
     const posts = calls.filter(call => call.path === '/image-generation/v1/images/tasks' && call.method === 'POST')
-    expect(posts).toHaveLength(2)
-    expect(posts[1]!.headers.get('idempotency-key')).toBe(posts[0]!.headers.get('idempotency-key'))
+    expect(posts).toHaveLength(1)
+    const lookups = calls.filter(call => call.path.startsWith('/image-generation/v1/images/tasks/by-idempotency/') && call.method === 'GET')
+    expect(lookups).toHaveLength(1)
+    expect(decodeURIComponent(lookups[0]!.path.split('/').at(-1)!)).toBe(transport.idempotency_key)
     recovered.repository.close()
   })
 })

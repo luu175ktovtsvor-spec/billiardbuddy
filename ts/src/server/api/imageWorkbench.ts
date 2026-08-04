@@ -35,6 +35,10 @@ import {
   imageDeliverySpecRevisionResponseSchema,
   imageExportInputSchema,
   imageExportResponseSchema,
+  imageUnderstandingInputSchema,
+  imageUnderstandingResponseSchema,
+  imageVisualAssessmentInputSchema,
+  imageVisualAssessmentResponseSchema,
   imageSaveOutputInputSchema,
   createCreativePlanInputSchema,
   createGenerationRoundInputSchema,
@@ -433,6 +437,13 @@ export function createImageWorkbenchDomainApiHandler(
         requireMediaUiCapability(req, mediaUiCapability)
         return await service.versionResponse(projectId, segments[5])
       }
+      if (projectId && action === 'versions' && segments[5] && segments[6] === 'visual-assessments' && !segments[7] && req.method === 'POST') {
+        requireMediaUiCapability(req, mediaUiCapability)
+        const input = imageVisualAssessmentInputSchema.parse(await parseJson(req))
+        return Response.json(imageVisualAssessmentResponseSchema.parse({
+          assessment: await service.assessVersionVisual(projectId, segments[5], input),
+        }))
+      }
       if (projectId && action === 'artboards') {
         const artboardId = segments[5]
         if (!artboardId || segments[6] !== 'commands' || segments[7] !== 'select-version' || segments[8] || req.method !== 'POST') throw methodNotAllowed(req.method)
@@ -521,6 +532,14 @@ export function createImageWorkbenchDomainApiHandler(
         if (req.method !== 'GET' || segments[6]) throw methodNotAllowed(req.method)
         return Response.json({ plan: await service.getCreativePlan(projectId, planId) })
       }
+      if (projectId && action === 'understanding') {
+        if (req.method !== 'POST' || segments[5]) throw methodNotAllowed(req.method)
+        requireMediaUiCapability(req, mediaUiCapability)
+        const input = imageUnderstandingInputSchema.parse(await parseJson(req))
+        return Response.json(imageUnderstandingResponseSchema.parse({
+          suggestion: await service.understandProject(projectId, input),
+        }))
+      }
       if (projectId && action === 'references') {
         const referenceId = segments[5]
         if (referenceId && segments[6] === 'commands' && segments[7] === 'update-control' && !segments[8] && req.method === 'POST') {
@@ -577,6 +596,13 @@ export function createImageWorkbenchDomainApiHandler(
           const input = decideImageCandidateInputSchema.parse(await parseJson(req))
           return Response.json(imageCandidateDecisionResponseSchema.parse({
             decision: await service.decideCandidate(projectId, candidateId, input),
+          }))
+        }
+        if (candidateAction === 'visual-assessments' && !segments[7] && req.method === 'POST') {
+          requireMediaUiCapability(req, mediaUiCapability)
+          const input = imageVisualAssessmentInputSchema.parse(await parseJson(req))
+          return Response.json(imageVisualAssessmentResponseSchema.parse({
+            assessment: await service.assessCandidateVisual(projectId, candidateId, input),
           }))
         }
         if (candidateAction === 'adoptions' && !segments[7] && req.method === 'POST') {

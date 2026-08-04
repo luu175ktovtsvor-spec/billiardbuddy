@@ -122,7 +122,7 @@ export const providerExecutionReceiptSchema = z.object({
   capability: imageProviderCapabilitySchema,
   registry_capability: z.enum(['ImageGeneration', 'VisualEvidence']),
   provider: z.string().min(1).max(120),
-  model_id: imageGenerationModelSchema,
+  model_id: z.union([imageGenerationModelSchema, z.literal('qwen3-vl-flash')]),
   model_snapshot: z.string().min(1).max(500).optional(),
   policy_revision: z.string().min(1).max(120),
   prompt_compiler_version: z.string().min(1).max(120),
@@ -134,6 +134,9 @@ export const providerExecutionReceiptSchema = z.object({
   refusal: z.object({ category: z.string().min(1).max(120), safe_message: z.string().min(1).max(500) }).strict().optional(),
   submitted_at: mediaIsoDateSchema,
   completed_at: mediaIsoDateSchema.optional(),
+  /** The Gateway may retain an advice result until its local image receipt is durable. */
+  gateway_result_fingerprint: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+  gateway_result_acknowledged_at: mediaIsoDateSchema.optional(),
   usage: z.object({
     input_bytes: z.number().int().nonnegative().optional(),
     input_tokens: z.number().int().nonnegative().optional(),
@@ -141,6 +144,40 @@ export const providerExecutionReceiptSchema = z.object({
     image_count: z.number().int().nonnegative().optional(),
   }).strict().optional(),
 }).strict()
+
+/** 15.4 model output is advice only: it never carries a project mutation. */
+export const imageReasoningConfidenceSchema = z.enum(['high', 'medium', 'low'])
+export const imageRepairActionSchema = z.object({
+  kind: z.enum(['keep', 'derive', 'inpaint', 'regenerate', 'canvas']),
+  rationale: z.string().min(1).max(500),
+}).strict()
+export const imageUnderstandingSuggestionSchema = z.object({
+  id: mediaIdSchema,
+  project_id: mediaIdSchema,
+  execution_receipt_id: mediaIdSchema,
+  confidence: imageReasoningConfidenceSchema,
+  visible_facts: z.array(z.string().min(1).max(500)).max(30),
+  preservation_risks: z.array(z.string().min(1).max(500)).max(20),
+  composition_suggestions: z.array(z.string().min(1).max(500)).max(20),
+  missing_information: z.array(z.string().min(1).max(500)).max(20),
+  created_at: mediaIsoDateSchema,
+}).strict()
+export const imageVisualAssessmentSchema = z.object({
+  id: mediaIdSchema,
+  project_id: mediaIdSchema,
+  candidate_id: mediaIdSchema.optional(),
+  version_id: mediaIdSchema.optional(),
+  execution_receipt_id: mediaIdSchema,
+  confidence: imageReasoningConfidenceSchema,
+  observations: z.array(z.string().min(1).max(500)).max(20),
+  risks: z.array(z.string().min(1).max(500)).max(20),
+  repair_actions: z.array(imageRepairActionSchema).max(5),
+  created_at: mediaIsoDateSchema,
+}).strict().superRefine((value, context) => {
+  if (Boolean(value.candidate_id) === Boolean(value.version_id)) {
+    context.addIssue({ code: 'custom', message: 'assessment must target exactly one candidate or version' })
+  }
+})
 
 export const imageOperationResultSchema = z.discriminatedUnion('kind', [
   z.object({
@@ -644,6 +681,8 @@ export const imageExportResponseSchema = z.object({
 }).strict()
 export const imageArtboardSelectVersionResponseSchema = z.object({ project: publicImageWorkbenchProjectSchema }).strict()
 export const imageSaveOutputResponseSchema = saveImageOutputResultSchema.extend({ destination_grant_id: mediaIdSchema }).strict()
+export const imageUnderstandingResponseSchema = z.object({ suggestion: imageUnderstandingSuggestionSchema }).strict()
+export const imageVisualAssessmentResponseSchema = z.object({ assessment: imageVisualAssessmentSchema }).strict()
 
 const commandEnvelopeFields = {
   idempotency_key: z.string().min(16).max(160),
@@ -654,6 +693,8 @@ export const createCreativePlanInputSchema = z.object({
   ...commandEnvelopeFields,
   directions: z.array(imageCreativeDirectionSchema.omit({ id: true })).min(1).max(8).optional(),
 }).strict()
+export const imageUnderstandingInputSchema = z.object({ ...commandEnvelopeFields }).strict()
+export const imageVisualAssessmentInputSchema = z.object({ ...commandEnvelopeFields }).strict()
 export const updateImageReferenceControlInputSchema = z.object({
   ...commandEnvelopeFields,
   role: imageReferenceRoleV2Schema,
@@ -697,6 +738,8 @@ export type ImageReferenceV2 = z.infer<typeof imageReferenceV2Schema>
 export type ImageBriefSnapshot = z.infer<typeof imageBriefSnapshotSchema>
 export type ImageDeliverySpec = z.infer<typeof imageDeliverySpecSchema>
 export type ProviderExecutionReceipt = z.infer<typeof providerExecutionReceiptSchema>
+export type ImageUnderstandingSuggestion = z.infer<typeof imageUnderstandingSuggestionSchema>
+export type ImageVisualAssessment = z.infer<typeof imageVisualAssessmentSchema>
 export type ImageOperationV2 = z.infer<typeof imageOperationV2Schema>
 export type ImageOperationResult = z.infer<typeof imageOperationResultSchema>
 export type ImageCreativePlan = z.infer<typeof imageCreativePlanSchema>
@@ -711,6 +754,8 @@ export type PublicImageOperationV2 = z.infer<typeof publicImageOperationV2Schema
 export type PublicImageCandidate = z.infer<typeof publicImageCandidateSchema>
 export type PublicImageCandidateGroup = z.infer<typeof publicImageCandidateGroupSchema>
 export type ImageCreativePlanResponse = z.infer<typeof imageCreativePlanResponseSchema>
+export type ImageUnderstandingResponse = z.infer<typeof imageUnderstandingResponseSchema>
+export type ImageVisualAssessmentResponse = z.infer<typeof imageVisualAssessmentResponseSchema>
 export type ImageGenerationRoundEstimateResponse = z.infer<typeof imageGenerationRoundEstimateResponseSchema>
 export type ImageDerivationEstimateResponse = z.infer<typeof imageDerivationEstimateResponseSchema>
 export type ImageGenerationRoundResponse = z.infer<typeof imageGenerationRoundResponseSchema>
@@ -747,6 +792,8 @@ export type ImageExportResponse = z.infer<typeof imageExportResponseSchema>
 export type ImageArtboardSelectVersionResponse = z.infer<typeof imageArtboardSelectVersionResponseSchema>
 export type ImageSaveOutputResponse = z.infer<typeof imageSaveOutputResponseSchema>
 export type CreateCreativePlanInput = z.input<typeof createCreativePlanInputSchema>
+export type ImageUnderstandingInput = z.input<typeof imageUnderstandingInputSchema>
+export type ImageVisualAssessmentInput = z.input<typeof imageVisualAssessmentInputSchema>
 export type UpdateImageReferenceControlInput = z.input<typeof updateImageReferenceControlInputSchema>
 export type EstimateGenerationRoundInput = z.input<typeof estimateGenerationRoundInputSchema>
 export type CreateGenerationRoundInput = z.input<typeof createGenerationRoundInputSchema>

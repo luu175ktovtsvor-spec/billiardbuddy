@@ -16,9 +16,12 @@ BilliardBuddy 是桌面端产品。目标产品由一个 Codex 原生 Agent 运�
 用户 Responses Key：Rust -> 本机凭据代理 -> 用户 Responses endpoint
 用户 Chat Key：Rust -> 本机协议适配器 -> 用户 Chat Completions endpoint
 图片生成：本地媒体 Sidecar -> 公网 Image Relay /v1/images/tasks -> GPT Image 2 / Seedream 4.5；Relay 仅回查 Gateway 私网身份内省
+图片理解/非阻断视觉评估：本地媒体 Sidecar -> Gateway /v1/image/reasoning -> Qwen3-VL-Flash
 ```
 
 Rust App Server 是唯一的 Agent 执行和会话所有者。Electron 只负责宿主、密钥、进程生命周期和协议转发；Gateway 负责自己执行的托管短模型治理及两个 Relay 的私网身份内省，不代理图片或视频任务。它们都不保存或调度 Agent 会话。图片 Project、Candidate、Canvas 和版本事实只保存在本地 Sidecar，Image Relay 仅持有受 ACK 约束的异步任务结果。
+
+Qwen 只返回有 receipt/confidence 的可见事实、风险和 Repair Action 建议；不能采纳、删除、发布或修改用户事实。最终发布仍由本地确定性 Release Check 与风险接受回执决定。
 
 当前桌面 Renderer 是刻意保留的空入口，不含旧 React 页面或旧自建 Agent。新的前端只能投影 Rust Thread/Turn/Item 与各媒体领域状态，不能重建 Agent Loop 或第二份会话状态。
 
@@ -31,8 +34,8 @@ Rust App Server 是唯一的 Agent 执行和会话所有者。Electron 只负责
 | `ts/desktop/src` | 空 Renderer 装配点，供后续前端重建 |
 | `ts/src/server` | 自研图片、视频、本地媒体与设置 Sidecar；含视频转写及既有语音兼容路径，但不执行 Agent |
 | `ts/shared` | 桌面、Sidecar 与 Gateway 的共享产品契约 |
-| `gateway` | 托管 DeepSeek Responses 与图片异步任务的鉴权、额度、用量、路由、幂等和安全转发 |
-| `relay` | 图片/视频异步任务结果交接；不保存图片项目事实 |
+| `gateway` | 托管 DeepSeek、MiMo、Qwen 图片建议与既有转写的鉴权、额度、准入、用量、幂等，以及两个 Relay 的私网身份内省；不代理图片/视频任务 |
+| `relay` | 独立 Image Relay：图片生成/编辑的账号准入、异步任务、结果交接与 ACK；不保存图片项目事实 |
 | `docs` | 当前架构、运行与领域边界 |
 
 ## 模型配置

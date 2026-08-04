@@ -18,6 +18,9 @@ describe('Gateway quota policy', () => {
       output_units: 20_000_000,
       total_tokens: 1_000_000_000_000,
     })
+    // Qwen image advice is semantically visual evidence but never shares the
+    // generic MiMo quota ledger or its environment knobs.
+    expect(policy.capabilities.ImageAdvice).toEqual(policy.capabilities.VisualEvidence)
     expect(policy.capabilities.SpeechTranscription.installation.output_units).toBe(20_000_000)
   })
 
@@ -26,6 +29,7 @@ describe('Gateway quota policy', () => {
       GW_QUOTA_POLICY_REVISION: 'gateway-limits-v2',
       GW_AGENT_INSTALLATION_DAILY_TOKEN_LIMIT: '123456',
       GW_QUOTA_VISUAL_EVIDENCE_PRINCIPAL_REQUESTS: '12',
+      GW_QUOTA_IMAGE_ADVICE_PRINCIPAL_REQUESTS: '9',
       GW_QUOTA_MEDIA_REASONING_INSTALLATION_INPUT_BYTES: '34',
       GW_QUOTA_SPEECH_TRANSCRIPTION_PRINCIPAL_OUTPUT_UNITS: '56',
       GW_QUOTA_SPEECH_TRANSCRIPTION_INSTALLATION_TOTAL_TOKENS: '78',
@@ -34,6 +38,7 @@ describe('Gateway quota policy', () => {
     expect(policy.revision).toBe('gateway-limits-v2')
     expect(policy.capabilities.TextReasoning.installation.total_tokens).toBe(123456)
     expect(policy.capabilities.VisualEvidence.principal.requests).toBe(12)
+    expect(policy.capabilities.ImageAdvice.principal.requests).toBe(9)
     expect(policy.capabilities.MediaReasoning.installation.input_bytes).toBe(34)
     expect(policy.capabilities.SpeechTranscription.principal.output_units).toBe(56)
     expect(policy.capabilities.SpeechTranscription.installation.total_tokens).toBe(78)

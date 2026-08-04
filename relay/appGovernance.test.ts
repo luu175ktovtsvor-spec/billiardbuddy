@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 
 import { createRelayFetch } from './app'
+import { imageRelayIdempotencyLookupPath } from '../ts/shared/product/imageRelayProtocol'
 
 const IMAGE_SERVICE_TOKEN = 'image-relay-service-token-123456789012345'
 const RESULT_SIGNING_KEY = 'result-signing-key-that-is-longer-than-thirty-two-bytes'
@@ -184,5 +185,48 @@ describe('Image Relay resource governance', () => {
     const delivered = await relay(new Request(`https://relay.example.test${resultPath}`, { headers: { Authorization: 'Bearer desktop-a' } }))
     expect(delivered.status).toBe(200)
     expect((await delivered.json() as { data: unknown[] }).data).toHaveLength(1)
+  })
+
+  test('recovers a lost submit response by owner-bound idempotency lookup without creating work', async () => {
+    let release: (() => void) | undefined
+    let providerCalls = 0
+    const relay = createRelayFetch({
+      env: environment('openai-recovery-key'),
+      identityFetchImpl: identityFetch,
+      fetchImpl: async () => {
+        providerCalls += 1
+        await new Promise<void>(resolve => { release = resolve })
+        return Response.json({ data: [{ b64_json: 'aGVsbG8=' }] })
+      },
+    })
+    const operation = 'operation/recovery with spaces'
+    const submitted = await relay(new Request('https://relay.example.test/v1/images/tasks', {
+      method: 'POST',
+      headers: requestHeaders('desktop-a', operation),
+      body: JSON.stringify({ mode: 'generate', model: 'gpt-image-2', prompt: 'recover me', n: 1 }),
+    }))
+    expect(submitted.status).toBe(202)
+    const firstTask = await submitted.json() as { task_id: string }
+    await waitFor(() => providerCalls === 1, 'provider task did not start')
+
+    const lookupPath = imageRelayIdempotencyLookupPath(operation)
+    const recovered = await relay(new Request(`https://relay.example.test${lookupPath}`, {
+      headers: { Authorization: 'Bearer desktop-a', 'X-Relay-Owner': 'forged-owner' },
+    }))
+    expect(recovered.status).toBe(200)
+    expect(await recovered.json()).toMatchObject({ task_id: firstTask.task_id, status: 'running', reused: true })
+    expect(providerCalls).toBe(1)
+
+    const hiddenFromAnotherOwner = await relay(new Request(`https://relay.example.test${lookupPath}`, {
+      headers: { Authorization: 'Bearer desktop-b' },
+    }))
+    expect(hiddenFromAnotherOwner.status).toBe(404)
+    const missing = await relay(new Request(`https://relay.example.test${imageRelayIdempotencyLookupPath('never-submitted')}`, {
+      headers: { Authorization: 'Bearer desktop-a' },
+    }))
+    expect(missing.status).toBe(404)
+    expect(providerCalls).toBe(1)
+
+    release?.()
   })
 })

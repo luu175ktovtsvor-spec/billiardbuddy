@@ -29,6 +29,8 @@ import {
   imageGenerationRoundEstimateResponseSchema,
   imageGenerationRoundResponseSchema,
   imageReferenceControlResponseSchema,
+  imageUnderstandingResponseSchema,
+  imageVisualAssessmentResponseSchema,
 } from '../../../shared/contracts/imageGeneration'
 import { createHash } from 'node:crypto'
 import type {
@@ -62,6 +64,10 @@ import type {
   ImageDeliverySpecRevisionResponse,
   ImageExportInput,
   ImageExportResponse,
+  ImageUnderstandingInput,
+  ImageUnderstandingResponse,
+  ImageVisualAssessmentInput,
+  ImageVisualAssessmentResponse,
 } from '../../../shared/contracts/imageGeneration'
 
 type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
@@ -127,6 +133,10 @@ export class ElectronImageActions {
     return this.post(`/api/images/projects/${encodeURIComponent(projectId)}/creative-plans`, input, imageCreativePlanResponseSchema)
   }
 
+  understandProject(projectId: string, input: ImageUnderstandingInput): Promise<ImageUnderstandingResponse> {
+    return this.post(`/api/images/projects/${encodeURIComponent(projectId)}/understanding`, input, imageUnderstandingResponseSchema)
+  }
+
   estimateGenerationRound(projectId: string, input: EstimateGenerationRoundInput): Promise<ImageGenerationRoundEstimateResponse> {
     return this.post(`/api/images/projects/${encodeURIComponent(projectId)}/generation-rounds/estimate`, input, imageGenerationRoundEstimateResponseSchema)
   }
@@ -141,6 +151,14 @@ export class ElectronImageActions {
 
   decideCandidate(projectId: string, candidateId: string, input: DecideImageCandidateInput): Promise<ImageCandidateDecisionResponse> {
     return this.post(`/api/images/projects/${encodeURIComponent(projectId)}/candidates/${encodeURIComponent(candidateId)}/decisions`, input, imageCandidateDecisionResponseSchema)
+  }
+
+  assessCandidateVisual(projectId: string, candidateId: string, input: ImageVisualAssessmentInput): Promise<ImageVisualAssessmentResponse> {
+    return this.post(`/api/images/projects/${encodeURIComponent(projectId)}/candidates/${encodeURIComponent(candidateId)}/visual-assessments`, input, imageVisualAssessmentResponseSchema)
+  }
+
+  assessVersionVisual(projectId: string, versionId: string, input: ImageVisualAssessmentInput): Promise<ImageVisualAssessmentResponse> {
+    return this.post(`/api/images/projects/${encodeURIComponent(projectId)}/versions/${encodeURIComponent(versionId)}/visual-assessments`, input, imageVisualAssessmentResponseSchema)
   }
 
   adoptCandidate(projectId: string, candidateId: string, input: AdoptImageCandidateInput): Promise<ImageCandidateAdoptionResponse> {
