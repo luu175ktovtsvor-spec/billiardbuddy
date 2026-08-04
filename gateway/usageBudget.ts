@@ -21,6 +21,14 @@ export type UsageBudgetPolicy = ProviderUsageBudgetPolicy
 export type UsageState = 'reserved' | 'settled' | 'released' | 'outcome_unknown'
 export type UsageReceipt = ProviderUsageReceipt
 export type UsageReservation = { duplicate: boolean; receipt: UsageReceipt }
+export type UsageBudgetLimitDetail = {
+  /** Provider capability, never a model or physical API key. */
+  capability: MeteredCapability
+  /** The trusted product ledger dimension that reached its configured limit. */
+  scope: 'principal' | 'installation'
+  /** UTC reset boundary for the current daily hosted-quota policy. */
+  resets_at: string
+}
 export type UsageBudgetSummary = {
   period: string
   resets_at: string
@@ -41,7 +49,11 @@ export type UsageReserveInput = {
 }
 
 export class UsageBudgetError extends Error {
-  constructor(readonly status: number, readonly code: 'BUDGET_UNAVAILABLE' | 'USAGE_LIMIT_REACHED' | 'OPERATION_CONFLICT' | 'STALE_FENCING') {
+  constructor(
+    readonly status: number,
+    readonly code: 'BUDGET_UNAVAILABLE' | 'USAGE_LIMIT_REACHED' | 'OPERATION_CONFLICT' | 'STALE_FENCING',
+    readonly limit?: UsageBudgetLimitDetail,
+  ) {
     super(code)
     this.name = 'UsageBudgetError'
   }
@@ -343,9 +355,17 @@ export class SqliteUsageBudgetService implements UsageBudgetService {
       }
     }
     const limits = this.policy.capabilities[input.capability]
-    if (exceeds(add(principal, input.amount), limits.principal)
-      || exceeds(add(installation, input.amount), limits.installation)) {
-      throw new UsageBudgetError(429, 'USAGE_LIMIT_REACHED')
+    const principalExceeded = exceeds(add(principal, input.amount), limits.principal)
+    const installationExceeded = exceeds(add(installation, input.amount), limits.installation)
+    if (principalExceeded || installationExceeded) {
+      const periodStart = Date.parse(`${period}T00:00:00.000Z`)
+      throw new UsageBudgetError(429, 'USAGE_LIMIT_REACHED', {
+        capability: input.capability,
+        // A principal limit is broader and therefore wins the explanation if
+        // both happen to be exhausted at the same instant.
+        scope: principalExceeded ? 'principal' : 'installation',
+        resets_at: new Date(periodStart + 24 * 60 * 60_000).toISOString(),
+      })
     }
   }
   private finalizeRow(row: StoredUsage, fencingToken: number, state: UsageState, actual?: UsageAmount, upstreamReceiptHash?: string): UsageReceipt {

@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { Database } from 'bun:sqlite'
 import { afterEach, expect, test } from 'bun:test'
 
-import { SqliteUsageBudgetService } from './usageBudget.ts'
+import { DEFAULT_GATEWAY_USAGE_POLICY, SqliteUsageBudgetService, UsageBudgetError } from './usageBudget.ts'
 
 const roots: string[] = []
 const fingerprint = createHash('sha256').update('gateway usage account binding').digest('hex')
@@ -81,4 +81,28 @@ test('an old SQLite row stays permanently legacy and only permits exact duplicat
     .toMatchObject({ duplicate: true, receipt: { account_key: 'legacy:unbound' } })
   expect(() => service.reserve({ ...input(operation, current), fingerprint: 'b'.repeat(64) }))
     .toThrow('OPERATION_CONFLICT')
+})
+
+test('hosted Agent quota exhaustion names only its ledger capability and UTC reset', () => {
+  const policy = structuredClone(DEFAULT_GATEWAY_USAGE_POLICY)
+  policy.capabilities.TextReasoning.principal = { requests: 10, input_bytes: 10_000, output_units: 10_000, total_tokens: 10_000 }
+  policy.capabilities.TextReasoning.installation = { requests: 1, input_bytes: 10_000, output_units: 10_000, total_tokens: 10_000 }
+  const service = new SqliteUsageBudgetService(':memory:', policy, () => Date.parse('2026-08-04T12:00:00.000Z'))
+  const account = 'gateway-deepseek-account:deepseek-prod-a:binding-v1'
+  service.reserve(input('operation-hosted-agent-first', account))
+  try {
+    service.reserve(input('operation-hosted-agent-second', account))
+    throw new Error('expected hosted quota exhaustion')
+  } catch (error) {
+    expect(error).toBeInstanceOf(UsageBudgetError)
+    expect(error).toMatchObject({
+      status: 429,
+      code: 'USAGE_LIMIT_REACHED',
+      limit: {
+        capability: 'TextReasoning',
+        scope: 'installation',
+        resets_at: '2026-08-05T00:00:00.000Z',
+      },
+    })
+  }
 })

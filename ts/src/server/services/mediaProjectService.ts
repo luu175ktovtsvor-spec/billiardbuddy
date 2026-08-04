@@ -80,6 +80,7 @@ import {
   IMAGE_RELAY_RESULT_HANDOFF_DIRECT_V1,
   IMAGE_RELAY_RESULT_HANDOFF_HEADER,
   IMAGE_RELAY_TASKS_PATH,
+  isImageRelayQuotaErrorCode,
 } from '../../../shared/product/imageRelayProtocol.js'
 import { diagnosticsService } from './diagnosticsService.js'
 import { lock } from '../../utils/lockfile.js'
@@ -267,6 +268,10 @@ type RelayImageTask = {
     mime_type?: 'image/png' | 'image/jpeg' | 'image/webp'
   }>
   error?: string
+  code?: string
+  capability?: string
+  scope?: string
+  resets_at?: string
   reused?: boolean
   input_fidelity_requested?: string
   input_fidelity_status?: 'accepted' | 'unsupported'
@@ -339,9 +344,15 @@ class ImageSubmissionAttemptError extends MediaServiceError {
     message: string,
     status: number,
     readonly outcomeUnknown: boolean,
+    readonly relayCode?: string,
   ) {
     super(message, status, outcomeUnknown ? 'IMAGE_SUBMIT_UNKNOWN' : 'IMAGE_SUBMIT_FAILED')
   }
+}
+
+function imageRelayFailureCode(status: number, body: RelayImageTask): MediaSafeErrorCode {
+  if (status === 429 && isImageRelayQuotaErrorCode(body.code)) return 'MEDIA_IMAGE_QUOTA_EXHAUSTED'
+  return body.status === 'failed_unknown' ? 'MEDIA_IMAGE_OUTCOME_UNKNOWN' : 'MEDIA_IMAGE_UNAVAILABLE'
 }
 
 function id(prefix: 'img' | 'vid' | 'src' | 'clip' | 'task' | 'out' | 'preview' | 'mask' | 'evidence' | 'scene' | 'alternative' | 'timeline'): string {
@@ -3212,6 +3223,7 @@ export class MediaProjectService {
           boundedMessage(body.error ?? body.message ?? `生图网关返回 HTTP ${response.status}`),
           response.status || 502,
           response.status >= 500 || response.ok,
+          body.code,
         )
       }
       task = await this.saveTask({
@@ -3232,9 +3244,11 @@ export class MediaProjectService {
     } catch (error) {
       const outcomeUnknown = !(error instanceof ImageSubmissionAttemptError) || error.outcomeUnknown
       recordMediaFailure('image_submission', error)
-      const failure = mediaSafeError(
-        outcomeUnknown ? 'MEDIA_IMAGE_OUTCOME_UNKNOWN' : 'MEDIA_IMAGE_UNAVAILABLE',
-      )
+      const failure = mediaSafeError(outcomeUnknown
+        ? 'MEDIA_IMAGE_OUTCOME_UNKNOWN'
+        : error instanceof ImageSubmissionAttemptError && isImageRelayQuotaErrorCode(error.relayCode)
+          ? 'MEDIA_IMAGE_QUOTA_EXHAUSTED'
+          : 'MEDIA_IMAGE_UNAVAILABLE')
       task = await this.saveTask({
         ...task,
         status: 'failed',
@@ -3254,7 +3268,7 @@ export class MediaProjectService {
       throw new MediaServiceError(
         failure.message,
         error instanceof MediaServiceError ? error.status : 502,
-        outcomeUnknown ? 'IMAGE_SUBMIT_UNKNOWN' : 'IMAGE_SUBMIT_FAILED',
+        outcomeUnknown ? 'IMAGE_SUBMIT_UNKNOWN' : failure.code === 'MEDIA_IMAGE_QUOTA_EXHAUSTED' ? 'IMAGE_QUOTA_EXHAUSTED' : 'IMAGE_SUBMIT_FAILED',
       )
     }
   }
@@ -3530,7 +3544,7 @@ export class MediaProjectService {
       if (response.status >= 500) return task
       return await this.failImageTask(
         task,
-        body.status === 'failed_unknown' ? 'MEDIA_IMAGE_OUTCOME_UNKNOWN' : 'MEDIA_IMAGE_UNAVAILABLE',
+        imageRelayFailureCode(response.status, body),
         body.status === 'failed_unknown',
         body.provider_receipt_hash,
       )
@@ -3543,7 +3557,7 @@ export class MediaProjectService {
       recordMediaFailure('image_status_failed', body)
       return await this.failImageTask(
         task,
-        body.status === 'failed_unknown' ? 'MEDIA_IMAGE_OUTCOME_UNKNOWN' : 'MEDIA_IMAGE_UNAVAILABLE',
+        imageRelayFailureCode(response.status, body),
         body.status === 'failed_unknown',
         body.provider_receipt_hash,
       )

@@ -1312,7 +1312,20 @@ export function createVideoMediaRelayFetch(deps: RelayDeps = {}) {
       }
       throw new RelayError(404, 'not_found')
     } catch (error) {
-      if (error instanceof RelayError) return json({ error: error.code, request_id: id }, error.status, id)
+      if (error instanceof RelayError) {
+        const hostedQuota = error.status === 429
+          && (error.code === 'owner_daily_quota_exceeded' || error.code === 'account_daily_quota_exceeded')
+        const currentPeriod = utcDay(now())
+        return json({
+          error: error.code,
+          request_id: id,
+          ...(hostedQuota ? {
+            capability: 'video',
+            scope: error.code === 'owner_daily_quota_exceeded' ? 'owner' : 'platform',
+            resets_at: new Date(Date.parse(`${currentPeriod}T00:00:00.000Z`) + 24 * 60 * 60_000).toISOString(),
+          } : {}),
+        }, error.status, id)
+      }
       if (error instanceof ObjectVerificationError) {
         const status = error.code === 'OBJECT_VERIFY_ABORTED' ? 499 : error.code === 'OBJECT_VERIFY_CAPACITY' ? 429 : 503
         const code = error.code === 'OBJECT_VERIFY_ABORTED' ? 'object_verification_cancelled' : error.code === 'OBJECT_VERIFY_CAPACITY' ? 'object_verification_capacity_unavailable' : 'object_verification_timeout'

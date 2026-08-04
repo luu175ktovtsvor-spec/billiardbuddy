@@ -165,4 +165,53 @@ describe('Chat Completions to Responses adapter', () => {
       await started.close()
     }
   })
+
+  test('a personal Responses profile calls only its selected upstream, not the hosted Gateway route', async () => {
+    let personalRequests = 0
+    let authorization: string | undefined
+    const upstream = createServer(async (request, response) => {
+      personalRequests += 1
+      authorization = request.headers.authorization
+      expect(request.url).toBe('/v1/responses')
+      const chunks: Buffer[] = []
+      for await (const chunk of request) chunks.push(Buffer.from(chunk))
+      expect(JSON.parse(Buffer.concat(chunks).toString('utf8'))).toEqual({ model: 'personal-test', input: 'hello' })
+      response.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store' })
+      response.end('event: response.completed\ndata: {"type":"response.completed"}\n\n')
+    })
+    servers.push(upstream)
+    upstream.listen(0, '127.0.0.1')
+    await once(upstream, 'listening')
+    const address = upstream.address()
+    if (!address || typeof address === 'string') throw new Error('test personal upstream address is invalid')
+
+    const profile: PersonalModelProfile = {
+      id: 'personalresponses1',
+      label: 'Personal Responses provider',
+      base_url: `http://127.0.0.1:${address.port}/v1`,
+      model: 'personal-test',
+      protocol: 'openai-responses',
+      auth_mode: 'bearer',
+      api_key: 'personal-key-only',
+    }
+    const started = await startCodexNativeProvider({ kind: 'personal', profile })
+    try {
+      const baseUrlOverride = started.configOverrides.find(value => value.startsWith('model_providers.billiardbuddy.base_url='))
+      if (!baseUrlOverride) throw new Error('missing personal loopback configuration')
+      const loopbackBaseUrl = JSON.parse(baseUrlOverride.slice('model_providers.billiardbuddy.base_url='.length)) as string
+      const capabilityToken = started.environment.BB_CODEX_PERSONAL_RESPONSES_ADAPTER_TOKEN
+      if (!capabilityToken) throw new Error('missing personal loopback capability')
+      const response = await fetch(`${loopbackBaseUrl}/responses`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-billiardbuddy-engine-token': capabilityToken },
+        body: JSON.stringify({ model: 'personal-test', input: 'hello' }),
+      })
+      expect(response.status).toBe(200)
+      expect(await response.text()).toContain('response.completed')
+      expect(personalRequests).toBe(1)
+      expect(authorization).toBe('Bearer personal-key-only')
+    } finally {
+      await started.close()
+    }
+  })
 })

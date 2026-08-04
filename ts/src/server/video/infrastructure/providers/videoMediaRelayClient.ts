@@ -23,6 +23,44 @@ type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Respo
  * result object, whose declared bytes are independently capped below. */
 const DEFAULT_CONTROL_RESPONSE_MAX_BYTES = 1024 * 1024
 const LEASE_RENEWAL_SAFETY_MARGIN_MS = 5_000
+export const VIDEO_MEDIA_UPLOAD_TIMEOUT_DEFAULT_MS = 4 * 60_000
+
+export type VideoMediaRelayTransportPolicy = {
+  uploadTimeoutMs: number
+  uploadRetries: number
+  controlTimeoutMs: number
+  resultTimeoutMs: number
+}
+
+function transportInteger(
+  environment: Record<string, string | undefined>,
+  name: string,
+  fallback: number,
+  minimum: number,
+  maximum: number,
+): number {
+  const raw = environment[name]?.trim()
+  if (!raw) return fallback
+  const value = Number(raw)
+  if (!Number.isSafeInteger(value) || value < minimum || value > maximum) {
+    throw new Error(`${name} must be an integer from ${minimum} to ${maximum}`)
+  }
+  return value
+}
+
+/** Sidecar transport policy is external configuration, separate from Relay
+ * account capacity and product quota. A slow cross-border OSS part therefore
+ * does not require changing task, model or server admission code. */
+export function videoMediaRelayTransportPolicyFromEnvironment(
+  environment: Record<string, string | undefined>,
+): VideoMediaRelayTransportPolicy {
+  return {
+    uploadTimeoutMs: transportInteger(environment, 'BB_VIDEO_MEDIA_UPLOAD_TIMEOUT_MS', VIDEO_MEDIA_UPLOAD_TIMEOUT_DEFAULT_MS, 5_000, 5 * 60_000),
+    uploadRetries: transportInteger(environment, 'BB_VIDEO_MEDIA_UPLOAD_RETRIES', 3, 0, 5),
+    controlTimeoutMs: transportInteger(environment, 'BB_VIDEO_MEDIA_CONTROL_TIMEOUT_MS', 15_000, 1_000, 60_000),
+    resultTimeoutMs: transportInteger(environment, 'BB_VIDEO_MEDIA_RESULT_TIMEOUT_MS', 60_000, 1_000, 5 * 60_000),
+  }
+}
 
 /** Sidecar-only Relay client. Renderer never receives its installation token. */
 export class VideoMediaRelayClient {
@@ -46,7 +84,7 @@ export class VideoMediaRelayClient {
     now?: () => Date
   }) {}
 
-  private uploadTimeoutMs(): number { return Math.max(5_000, Math.min(5 * 60_000, this.options.uploadTimeoutMs ?? 30_000)) }
+  private uploadTimeoutMs(): number { return Math.max(5_000, Math.min(5 * 60_000, this.options.uploadTimeoutMs ?? VIDEO_MEDIA_UPLOAD_TIMEOUT_DEFAULT_MS)) }
   private uploadRetries(): number { return Math.max(0, Math.min(5, this.options.uploadRetries ?? 3)) }
   private controlResponseMaxBytes(): number { return Math.max(4 * 1024, Math.min(4 * 1024 * 1024, this.options.controlResponseMaxBytes ?? DEFAULT_CONTROL_RESPONSE_MAX_BYTES)) }
   /** The wire contract owns the production result limit. A test/runtime

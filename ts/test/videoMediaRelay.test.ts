@@ -8,13 +8,30 @@ import { createVideoMediaRelayFetch, type MediaObjectStore, type VideoMediaProvi
 import { videoMediaCapacityPolicyFromEnvironment, type VideoMediaAdmissionBackend, type VideoMediaAdmissionScope } from '../../video-media-relay/capacityPolicy.ts'
 import { videoMediaOperationByLocalOperationPath, type ProviderExecutionReceipt, type VideoRelayOperationProjection } from '../../video-media-relay/contracts/relayApi.ts'
 import { DashScopeProviderError } from '../../video-media-relay/providers/dashscope.ts'
-import { VideoMediaRelayClient, VideoMediaRelayClientError } from '../src/server/video/infrastructure/providers/videoMediaRelayClient.ts'
+import { VideoMediaRelayClient, VideoMediaRelayClientError, videoMediaRelayTransportPolicyFromEnvironment } from '../src/server/video/infrastructure/providers/videoMediaRelayClient.ts'
 
 const token = 'x'.repeat(40)
 const hash = `sha256:${'a'.repeat(64)}`
 const now = () => new Date('2026-08-03T00:00:00.000Z')
 const headers = (key: string) => ({ Authorization: 'Bearer installation-token', 'Content-Type': 'application/json', 'Idempotency-Key': key, 'X-Request-Timestamp': new Date().toISOString() })
 const identityFetch = async () => Response.json({ active: true, principal_id: 'installation:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', installation_id: 'install_12345678', session_id: 'abcdefghijklmnopqrstuvwx', expires_at: Date.now() + 60_000, owner: 'installation:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:install_12345678' })
+
+test('Sidecar OSS transport timeout is external and defaults to a cross-border-safe bounded window', () => {
+  expect(videoMediaRelayTransportPolicyFromEnvironment({})).toEqual({
+    uploadTimeoutMs: 240_000,
+    uploadRetries: 3,
+    controlTimeoutMs: 15_000,
+    resultTimeoutMs: 60_000,
+  })
+  expect(videoMediaRelayTransportPolicyFromEnvironment({
+    BB_VIDEO_MEDIA_UPLOAD_TIMEOUT_MS: '180000',
+    BB_VIDEO_MEDIA_UPLOAD_RETRIES: '2',
+    BB_VIDEO_MEDIA_CONTROL_TIMEOUT_MS: '30000',
+    BB_VIDEO_MEDIA_RESULT_TIMEOUT_MS: '120000',
+  })).toEqual({ uploadTimeoutMs: 180_000, uploadRetries: 2, controlTimeoutMs: 30_000, resultTimeoutMs: 120_000 })
+  expect(() => videoMediaRelayTransportPolicyFromEnvironment({ BB_VIDEO_MEDIA_UPLOAD_TIMEOUT_MS: '360000' }))
+    .toThrow('BB_VIDEO_MEDIA_UPLOAD_TIMEOUT_MS')
+})
 
 test('Video Media Relay creates both concurrency and RPM gates through the replaceable backend', async () => {
   const concurrency: Array<{ maxActive: number; maxQueued: number; scope: VideoMediaAdmissionScope }> = []
@@ -325,11 +342,21 @@ test('Relay keeps settled usage in owner and shared-account UTC daily ledgers', 
   expect((await post('owner-a', 'first_12345678')).status).toBe(202)
   const ownerLimited = await post('owner-a', 'again_12345678')
   expect(ownerLimited.status).toBe(429)
-  expect(await ownerLimited.json()).toMatchObject({ error: 'owner_daily_quota_exceeded' })
+  expect(await ownerLimited.json()).toMatchObject({
+    error: 'owner_daily_quota_exceeded',
+    capability: 'video',
+    scope: 'owner',
+    resets_at: '2026-08-04T00:00:00.000Z',
+  })
   expect((await post('owner-b', 'first_12345678')).status).toBe(202)
   const accountLimited = await post('owner-c', 'first_12345678')
   expect(accountLimited.status).toBe(429)
-  expect(await accountLimited.json()).toMatchObject({ error: 'account_daily_quota_exceeded' })
+  expect(await accountLimited.json()).toMatchObject({
+    error: 'account_daily_quota_exceeded',
+    capability: 'video',
+    scope: 'platform',
+    resets_at: '2026-08-04T00:00:00.000Z',
+  })
   current = new Date(current.getTime() + 24 * 60 * 60_000)
   expect((await post('owner-c', 'next_day_12345678')).status).toBe(202)
 })

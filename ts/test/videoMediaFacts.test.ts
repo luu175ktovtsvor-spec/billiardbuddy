@@ -700,7 +700,7 @@ test('ASR 本地预算预留失败时不写远端提交栅栏或 outcome_unknown
   })
   await service.repository.saveOperation({ schema_version: 1, id: 'task_00000001', project_id: created.id, kind: 'video.analyze', status: 'running', progress: 10, stage: 'ASR', result: { user_goal: '预算拒绝' }, created_at: at, updated_at: at })
   const invoke = service as unknown as { remoteTranscriptEvidence: (project: VideoStudioProject, source: VideoStudioProject['sources'][number], fact: VideoFactSource, directory: string, operationId: string, signal: AbortSignal) => Promise<unknown> }
-  await expect(invoke.remoteTranscriptEvidence(saved, saved.sources[0]!, sourceFact, root, 'task_00000001', new AbortController().signal)).rejects.toMatchObject({ code: 'VIDEO_REMOTE_OPERATION_UNAVAILABLE' })
+  await expect(invoke.remoteTranscriptEvidence(saved, saved.sources[0]!, sourceFact, root, 'task_00000001', new AbortController().signal)).rejects.toMatchObject({ code: 'VIDEO_PROJECT_BUDGET_EXCEEDED' })
   expect(relayRequests).toBe(0)
   expect((await service.repository.getOperation('task_00000001')).result?.asr_checkpoints).toMatchObject([{ state: 'uploading' }])
   expect((await service.repository.getOperation('task_00000001')).result?.asr_checkpoints?.[0]).not.toHaveProperty('remote_submission_started_at')
