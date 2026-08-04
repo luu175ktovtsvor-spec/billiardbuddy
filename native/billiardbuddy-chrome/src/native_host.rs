@@ -337,6 +337,7 @@ fn handle_bridge_client(
                 | "list_tabs"
                 | "inspect_page"
                 | "capture_page"
+                | "developer_snapshot"
                 | "navigate"
                 | "click_element"
                 | "type_text"

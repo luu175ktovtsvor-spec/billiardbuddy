@@ -23,6 +23,12 @@ or read cookies, passwords, browser storage, browser history, bookmarks, or
 authentication codes. Uploading and downloading files are not supported by this
 plugin.
 
+Use `developer_snapshot` only when debugging or verification benefits from
+bounded Console, Network or Performance evidence. It omits headers, bodies and
+storage, removes URL credentials/query/fragment data and sensitive path
+identifiers, applies best-effort redaction to titles and console text, and does
+not expose arbitrary CDP commands.
+
 The structured snapshot must not be treated as permission. It intentionally omits current form values and marks protected credential fields; stop if a requested action depends on a password, one-time code, payment field or other secret.
 
 If the extension disconnects, a tab closes, a domain is not allowed, or Chrome

@@ -18,6 +18,7 @@ If the user explicitly names BilliardBuddy Browser, keep that browser choice for
 - Ask for confirmation immediately before any action that sends a form, purchases, deletes data, changes permissions, or publishes content.
 - Do not upload files. This Browser capability intentionally has no upload tool.
 - If authentication is required, ask the user to sign in inside this isolated Browser; never inspect cookie, storage, password, history or profile files.
+- Use `developer_snapshot` only for debugging or verification that benefits from Console, Network or Performance evidence. It omits sensitive browser surfaces, removes URL credentials/query/fragment data and sensitive path identifiers, applies bounded best-effort redaction to titles and console text, and does not provide raw CDP commands.
 
 ## Workflow
 
@@ -25,4 +26,5 @@ If the user explicitly names BilliardBuddy Browser, keep that browser choice for
 2. Call `open_tab` for a new page, or `list_tabs` to use an existing BilliardBuddy Browser tab.
 3. Call `inspect_page` before interacting, then use only its current element IDs.
 4. Use `capture_page` to verify rendered results where needed.
-5. Keep tasks scoped and close unneeded tabs with `close_tab`.
+5. For a debugging task, use `developer_snapshot` and reason only from its bounded redacted evidence; never ask the page to reveal secrets through console logs.
+6. Keep tasks scoped and close unneeded tabs with `close_tab`.
