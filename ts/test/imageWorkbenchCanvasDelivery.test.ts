@@ -185,35 +185,195 @@ test('15.3 Raster opacity 与同级 Mask 在正式 Canvas 像素路径中相乘'
   expect(pixels.data[(512 * pixels.info.width + 512) * 4 + 3]).toBeLessThanOrEqual(66)
 })
 
-test('15.3 Template 会展开受控蓝图、填充 Slot，并以锁定 Brand revision 解析颜色与必填内容', async () => {
+test('15.3 Template 以受控叠加层填充 Slot，保留既有 Candidate Raster 并以锁定 Brand revision 渲染', async () => {
   const workbench = await service('template-brand')
-  const setup = await projectWithCanvas(workbench)
-  const brand = await workbench.saveBrandKitRevision({
-    id: 'brrev_canvas_0001', brand_kit_id: 'brand_canvas_0001', revision: 0, owner: setup.project.owner,
-    logo_asset_ids: [], font_asset_ids: ['font_builtin_0001'], color_tokens: { primary: '#d02020' },
-    required_text: [{ id: 'req_canvas_0001', value: '台球夏季冠军赛', purpose: 'slogan' }], created_at: timestamp,
+  const candidateBytes = await sharp({
+    create: { width: 8, height: 8, channels: 4, background: { r: 12, g: 34, b: 56, alpha: 1 } },
+  }).png().toBuffer()
+  const setup = await projectWithCanvasAssets(workbench, [candidateBytes])
+  const projectWithCandidate = await workbench.getProject(setup.project.id)
+  const candidateRaster = await workbench.applyCanvasCommand(setup.project.id, setup.canvas.canvas_id, projectWithCandidate.revision, {
+    idempotency_key: 'bb-image-template-preserved-candidate-0001', base_revision: setup.canvas.revision, kind: 'add_layer',
+    // Deliberately collide with the Template source ID. The applied Template
+    // must namespace its controlled layers instead of replacing this Raster.
+    payload: { layer: {
+      id: 'text_template_slot_0001', kind: 'raster', source_asset_id: projectWithCandidate.assets[0]!.id,
+      transform: { x: 0, y: 0, width: 1024, height: 1024, rotation_degrees: 0, scale_x: 1, scale_y: 1 },
+      opacity: 1, blend_mode: 'normal', clip_to_artboard: true,
+    } },
   })
-  const template = await workbench.saveTemplateRevision({
-    id: 'tplrev_canvas_0001', template_id: 'template_canvas_0001', revision: 0, owner: setup.project.owner,
-    brand_kit_id: brand.brand_kit_id, brand_kit_revision_id: brand.id,
-    blueprint: { schema_version: 1, artboard: { width: 1024, height: 1024 }, background: { kind: 'solid', color: '#ffffff' }, layers: [{
-      id: 'text_template_slot_0001', kind: 'text', text: 'placeholder', font_family: 'BilliardBuddy Builtin CJK', font_asset_id: 'font_builtin_0001', font_size: 72, min_font_size: 48,
-      font_weight: 700, font_style: 'normal', line_height: 1.2, letter_spacing: 0, fill: 'brand.primary', position: { x: 80, y: 160 }, rotation_degrees: 0,
-      max_width: 820, max_height: 160, overflow: 'shrink_to_fit', locale: 'zh-CN', align: 'left', opacity: 1,
-    }] },
-    slots: [{ id: 'slot_title_0001', layer_id: 'text_template_slot_0001', kind: 'text', required: true }], schema_version: 1, created_at: timestamp,
+  const createdBrand = await workbench.createBrandKit({
+    idempotency_key: 'bb-image-template-brand-create-0001',
+    name: '画布测试品牌包',
+    revision: {
+      logo_asset_ids: [],
+      font_asset_ids: ['font_builtin_0001'],
+      color_tokens: { primary: '#d02020' },
+      required_text: [{ id: 'req_canvas_0001', value: '台球夏季冠军赛', purpose: 'slogan' }],
+    },
   })
-  const applied = await workbench.applyCanvasCommand(setup.project.id, setup.canvas.canvas_id, setup.project.revision, {
-    idempotency_key: 'bb-image-template-apply-0001', base_revision: 0, kind: 'apply_template',
+  const brand = createdBrand.revision
+  const createdTemplate = await workbench.createTemplate({
+    idempotency_key: 'bb-image-template-canvas-create-0001',
+    name: '画布测试模板',
+    revision: {
+      brand_kit_id: createdBrand.brand_kit.id,
+      brand_kit_revision_id: brand.id,
+      blueprint: { schema_version: 1, artboard: { width: 1024, height: 1024 }, background: { kind: 'solid', color: 'brand.primary' }, layers: [{
+        id: 'text_template_slot_0001', kind: 'text', text: 'placeholder', font_family: 'BilliardBuddy Builtin CJK', font_asset_id: 'font_builtin_0001', font_size: 72, min_font_size: 48,
+        font_weight: 700, font_style: 'normal', line_height: 1.2, letter_spacing: 0, fill: 'brand.primary', position: { x: 80, y: 160 }, rotation_degrees: 0,
+        max_width: 820, max_height: 160, overflow: 'shrink_to_fit', locale: 'zh-CN', align: 'left', opacity: 1,
+      }] },
+      slots: [{ id: 'slot_title_0001', layer_id: 'text_template_slot_0001', kind: 'text', required: true }],
+      schema_version: 1,
+    },
+  })
+  const template = createdTemplate.revision
+  const revisedTemplate = await workbench.reviseTemplate(createdTemplate.template.id, {
+    base_revision: createdTemplate.template.revision,
+    idempotency_key: 'bb-image-template-canvas-revise-0001',
+    revision: {
+      brand_kit_id: brand.brand_kit_id,
+      brand_kit_revision_id: brand.id,
+      blueprint: template.blueprint,
+      slots: template.slots,
+      schema_version: template.schema_version,
+    },
+  })
+  expect(revisedTemplate.template.current_revision_id).not.toBe(template.id)
+  const applyInitialRevision = {
+    idempotency_key: 'bb-image-template-apply-0001', base_revision: candidateRaster.canvas.revision, kind: 'apply_template',
     payload: { template_id: template.template_id, template_revision_id: template.id, slot_bindings: [{ slot_id: 'slot_title_0001', text: '台球夏季冠军赛' }] },
-  })
+  } as const
+  const applied = await workbench.applyCanvasCommand(setup.project.id, setup.canvas.canvas_id, candidateRaster.project.revision, applyInitialRevision)
   expect(applied.canvas.document).toMatchObject({ template_id: template.template_id, template_revision_id: template.id, brand_kit_id: brand.brand_kit_id, brand_kit_revision_id: brand.id })
-  expect(applied.canvas.document.layers[0]).toMatchObject({ kind: 'text', text: '台球夏季冠军赛', fill: 'brand.primary' })
-  expect((await workbench.preflightCanvas(setup.project.id, setup.canvas.canvas_id, { revision: applied.canvas.revision })).passed).toBeTrue()
+  expect(applied.canvas.document.layers[0]).toMatchObject({ id: 'text_template_slot_0001', kind: 'raster', source_asset_id: projectWithCandidate.assets[0]!.id })
+  const overlay = applied.canvas.document.layers.at(-1)
+  if (!overlay || overlay.kind !== 'group') throw new Error('expected controlled Template overlay group')
+  const overlayId = overlay.id
+  expect(overlay).toMatchObject({ id: expect.stringMatching(/^tplov_/), children: [{ kind: 'text', text: '台球夏季冠军赛', fill: 'brand.primary' }] })
+  expect(overlay.children[0]?.id).toMatch(/^tplay_/)
+  expect(overlay.children[0]?.id).not.toBe('text_template_slot_0001')
+  await expect(workbench.applyCanvasCommand(setup.project.id, setup.canvas.canvas_id, applied.project.revision, {
+    idempotency_key: 'bb-image-template-overlay-remove-0001', base_revision: applied.canvas.revision, kind: 'remove_layer',
+    payload: { layer_id: overlayId },
+  })).rejects.toMatchObject({ status: 400, code: 'IMAGE_STORAGE_INVALID' })
+  await expect(workbench.applyCanvasCommand(setup.project.id, setup.canvas.canvas_id, applied.project.revision, {
+    idempotency_key: 'bb-image-template-overlay-mask-0001', base_revision: applied.canvas.revision, kind: 'add_layer',
+    payload: { layer: {
+      id: 'mask_template_overlay_target_0001', kind: 'mask', source_asset_id: projectWithCandidate.assets[0]!.id,
+      target_layer_id: overlay.children[0]!.id, mode: 'alpha',
+    } },
+  })).rejects.toMatchObject({ status: 400, code: 'IMAGE_STORAGE_INVALID' })
+  const afterUserEdit = await workbench.applyCanvasCommand(setup.project.id, setup.canvas.canvas_id, applied.project.revision, {
+    idempotency_key: 'bb-image-template-overlay-user-edit-0001', base_revision: applied.canvas.revision, kind: 'add_layer',
+    payload: { layer: {
+      id: 'shape_template_overlay_user_0001', kind: 'shape', shape: 'rectangle',
+      transform: { x: 0, y: 0, width: 8, height: 8, rotation_degrees: 0, scale_x: 1, scale_y: 1 },
+      fill: '#ffffff', opacity: 1,
+    } },
+  })
+  expect(afterUserEdit.canvas.document.layers.at(-1)?.id).toBe(overlayId)
+  expect((await workbench.preflightCanvas(setup.project.id, setup.canvas.canvas_id, { revision: afterUserEdit.canvas.revision })).passed).toBeTrue()
   const rendered = await completedRender(workbench, setup.project.id, setup.canvas.canvas_id, {
-    base_revision: applied.project.revision, idempotency_key: 'bb-image-template-render-0001', canvas_revision: applied.canvas.revision, activate_on_success: true,
+    base_revision: afterUserEdit.project.revision, idempotency_key: 'bb-image-template-render-0001', canvas_revision: afterUserEdit.canvas.revision, activate_on_success: true,
   })
   expect(rendered.render_receipt).toMatchObject({ brand_kit_revision_id: brand.id, template_revision_id: template.id })
+  const completed = await workbench.getProject(setup.project.id)
+  const version = completed.versions.find(item => item.id === rendered.version_id)
+  const output = version && completed.assets.find(asset => asset.id === version.asset_ids[0])
+  if (!output) throw new Error('expected rendered Template Canvas asset')
+  const pixels = await sharp((await workbench.assets.readVerified(output)).bytes).ensureAlpha().raw().toBuffer({ resolveWithObject: true })
+  const center = (512 * pixels.info.width + 512) * 4
+  expect([...pixels.data.subarray(center, center + 4)]).toEqual([12, 34, 56, 255])
+  const replayAfterRevision = await workbench.applyCanvasCommand(
+    setup.project.id, setup.canvas.canvas_id, candidateRaster.project.revision, applyInitialRevision,
+  )
+  expect(replayAfterRevision.canvas.revision).toBe(applied.canvas.revision)
+  await workbench.trashTemplate(createdTemplate.template.id, {
+    base_revision: revisedTemplate.template.revision,
+    idempotency_key: 'bb-image-template-canvas-trash-0001',
+  })
+  const replayAfterTrash = await workbench.applyCanvasCommand(
+    setup.project.id, setup.canvas.canvas_id, candidateRaster.project.revision, applyInitialRevision,
+  )
+  expect(replayAfterTrash.canvas.revision).toBe(applied.canvas.revision)
+  const latest = await workbench.getProject(setup.project.id)
+  await expect(workbench.applyCanvasCommand(setup.project.id, setup.canvas.canvas_id, latest.revision, {
+    ...applyInitialRevision,
+    idempotency_key: 'bb-image-template-apply-after-trash-0001',
+    base_revision: applied.canvas.revision,
+  })).rejects.toMatchObject({ status: 409, code: 'IMAGE_STORAGE_INVALID' })
+}, 15_000)
+
+test('15.5C 未锁定 Brand 的 background Token 会在预检阶段失败', async () => {
+  const workbench = await service('background-brand-token')
+  const setup = await projectWithCanvas(workbench)
+  const template = await workbench.createTemplate({
+    idempotency_key: 'bb-image-background-token-template-create-0001',
+    name: '无品牌背景 Token 模板',
+    revision: {
+      blueprint: {
+        schema_version: 1,
+        artboard: { width: 1024, height: 1024 },
+        background: { kind: 'solid', color: 'brand.primary' },
+        layers: [],
+      },
+      slots: [],
+      schema_version: 1,
+    },
+  })
+  const applied = await workbench.applyCanvasCommand(setup.project.id, setup.canvas.canvas_id, setup.project.revision, {
+    idempotency_key: 'bb-image-background-token-template-apply-0001', base_revision: setup.canvas.revision, kind: 'apply_template',
+    payload: { template_id: template.template.id, template_revision_id: template.revision.id, slot_bindings: [] },
+  })
+  const preflight = await workbench.preflightCanvas(setup.project.id, setup.canvas.canvas_id, { revision: applied.canvas.revision })
+  expect(preflight.passed).toBeFalse()
+  expect(preflight.checks.find(check => check.id === 'brand-revision')).toMatchObject({
+    status: 'fail',
+    evidence: expect.stringContaining('brand.*'),
+  })
+})
+
+test('15.3 Template 叠加不会静默突破 Canvas 图层上限', async () => {
+  const workbench = await service('template-overlay-budget')
+  const setup = await projectWithCanvas(workbench)
+  const template = await workbench.createTemplate({
+    idempotency_key: 'bb-image-template-overlay-budget-create-0001',
+    name: '图层预算模板',
+    revision: {
+      blueprint: {
+        schema_version: 1,
+        artboard: { width: 1024, height: 1024 },
+        background: { kind: 'transparent' },
+        layers: [{
+          id: 'shape_template_budget_0001', kind: 'shape', shape: 'rectangle',
+          transform: { x: 100, y: 100, width: 200, height: 200, rotation_degrees: 0, scale_x: 1, scale_y: 1 },
+          fill: '#112233', opacity: 1,
+        }],
+      },
+      slots: [],
+      schema_version: 1,
+    },
+  })
+  const saturated = await workbench.applyCanvasCommand(setup.project.id, setup.canvas.canvas_id, setup.project.revision, {
+    idempotency_key: 'bb-image-template-overlay-budget-fill-0001', base_revision: setup.canvas.revision, kind: 'add_layer',
+    payload: {
+      layer: {
+        id: 'group_canvas_budget_0001', kind: 'group', children: Array.from({ length: 78 }, (_, index) => ({
+          id: `shape_canvas_budget_${String(index).padStart(4, '0')}`,
+          kind: 'shape' as const,
+          shape: 'rectangle' as const,
+          transform: { x: index, y: index, width: 1, height: 1, rotation_degrees: 0, scale_x: 1, scale_y: 1 },
+          fill: '#000000', opacity: 1,
+        })),
+      },
+    },
+  })
+  await expect(workbench.applyCanvasCommand(setup.project.id, setup.canvas.canvas_id, saturated.project.revision, {
+    idempotency_key: 'bb-image-template-overlay-budget-apply-0001', base_revision: saturated.canvas.revision, kind: 'apply_template',
+    payload: { template_id: template.template.id, template_revision_id: template.revision.id, slot_bindings: [] },
+  })).rejects.toMatchObject({ status: 400, code: 'IMAGE_STORAGE_INVALID' })
 })
 
 test('15.3 未显式 CAS 指针的后续 Canvas revision 会在受理时锁定 current pointer 并正常激活', async () => {
@@ -548,11 +708,55 @@ test('15.3 遗留图片写接口只能由 Main 持有 capability 后调用', asy
   })
   const denied = await handler(request(), new URL(url), ['api', 'images', 'projects', project.id, 'references'])
   expect(denied.status).toBe(403)
+  const deniedWorkflow = await handler(new Request(url, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      idempotency_key: 'bb-image-workflow-reference-denied-0001',
+      base_revision: project.revision,
+      references: [{
+        data_url: reference, role: 'subject', influence_strength: 'medium', preservation: 'prefer_preserve', priority: 100,
+      }],
+    }),
+  }), new URL(url), ['api', 'images', 'projects', project.id, 'references'])
+  expect(deniedWorkflow.status).toBe(403)
   const allowed = await handler(new Request(url, {
     method: 'POST', headers: { 'Content-Type': 'application/json', 'X-BilliardBuddy-Media-Capability': capability },
     body: JSON.stringify({ revision: project.revision, reference_images: [reference], reference_roles: ['subject'] }),
   }), new URL(url), ['api', 'images', 'projects', project.id, 'references'])
   expect(allowed.status).toBe(201)
+  expect(await allowed.json()).toMatchObject({ project: { references: [expect.objectContaining({ role: 'subject' })] } })
+  const afterLegacyReference = await workbench.getProject(project.id)
+  const workflowReference = await handler(new Request(url, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', 'X-BilliardBuddy-Media-Capability': capability },
+    body: JSON.stringify({
+      idempotency_key: 'bb-image-workflow-reference-gate-0001',
+      base_revision: afterLegacyReference.revision,
+      references: [{
+        data_url: reference,
+        role: 'subject',
+        influence_strength: 'medium',
+        preservation: 'prefer_preserve',
+        priority: 100,
+      }],
+    }),
+  }), new URL(url), ['api', 'images', 'projects', project.id, 'references'])
+  expect(workflowReference.status).toBe(201)
+  expect(await workflowReference.json()).toMatchObject({
+    project: { references: expect.arrayContaining([expect.objectContaining({ influence_strength: 'medium', preservation: 'prefer_preserve', priority: 100 })]) },
+  })
+  const ambiguous = await handler(new Request(url, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', 'X-BilliardBuddy-Media-Capability': capability },
+    body: JSON.stringify({
+      revision: afterLegacyReference.revision,
+      reference_images: [reference], reference_roles: ['subject'],
+      idempotency_key: 'bb-image-reference-ambiguous-0001', base_revision: afterLegacyReference.revision,
+      references: [{
+        data_url: reference, role: 'subject', influence_strength: 'medium', preservation: 'prefer_preserve', priority: 100,
+      }],
+    }),
+  }), new URL(url), ['api', 'images', 'projects', project.id, 'references'])
+  expect(ambiguous.status).toBe(400)
+  expect(await ambiguous.json()).toMatchObject({ error: 'MEDIA_INVALID_REQUEST' })
 })
 
 test('15.3 在 CAS 落盘后数据库提交前崩溃可由同一 Canvas Render 幂等键恢复', async () => {

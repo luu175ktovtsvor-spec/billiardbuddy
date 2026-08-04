@@ -9,12 +9,16 @@ import {
 } from './media.js'
 import {
   imageBrandKitRevisionSchema,
+  imageCanvasRevisionSchema,
+  imageCreativePlanSchema,
+  imageDeliverySpecSchema,
   imageGenerationRoundSchema,
   imageHashSchema,
   imageReferenceInfluenceSchema,
   imageReferencePreservationSchema,
   imageReferenceRoleV2Schema,
   imageTemplateRevisionSchema,
+  publicImageCandidateGroupSchema,
   publicImageOperationV2Schema,
 } from './imageGeneration.js'
 
@@ -33,6 +37,21 @@ const imageReferenceRoleForInputSchema = imageReferenceRoleV2Schema.exclude(['un
 export const imageWorkflowAssetOwnerSchema = z.object({
   kind: z.enum(['project', 'brand_kit', 'template']),
   id: mediaIdSchema,
+}).strict()
+
+/**
+ * Shared Main/Preload contract for protected candidate bytes.  This remains a
+ * bounded data URL because a renderer cannot attach a media capability token
+ * to an image element itself.
+ */
+export const imageCandidatePreviewInputSchema = z.object({
+  project_id: mediaIdSchema,
+  candidate_id: mediaIdSchema,
+}).strict()
+
+export const imageCandidatePreviewResponseSchema = z.object({
+  candidate_id: mediaIdSchema,
+  data_url: imageDataUrlSchema,
 }).strict()
 
 export const imageAssetProvenanceSchema = z.object({
@@ -135,6 +154,10 @@ export const imageWorkflowProjectResponseSchema = z.object({
   project: publicImageWorkbenchProjectSchema,
 }).strict()
 
+export const imageWorkbenchProjectListResponseSchema = z.object({
+  projects: z.array(publicImageWorkbenchProjectSchema).max(1_000),
+}).strict()
+
 export const imageInspirationBoardResponseSchema = z.object({
   project: publicImageWorkbenchProjectSchema,
   board: imageInspirationBoardSchema,
@@ -183,6 +206,67 @@ export const imageLibraryEntrySchema = z.object({
 export const imageProjectLibrarySchema = z.object({
   project_id: mediaIdSchema,
   entries: z.array(imageLibraryEntrySchema).max(1_000),
+}).strict()
+
+/**
+ * Immutable Campaign context for an ordinary child Project.  It deliberately
+ * contains Canvas-ready slot bindings rather than a prompt suffix: a user
+ * still adopts a Candidate and then invokes the normal Canvas command.
+ */
+export const imageCampaignTemplateSlotBindingSchema = z.object({
+  slot_id: z.string().min(1).max(120),
+  text: z.string().min(1).max(2_000).optional(),
+  qr_payload: z.string().min(1).max(2_048).optional(),
+}).strict().superRefine((value, context) => {
+  if (Boolean(value.text) === Boolean(value.qr_payload)) {
+    context.addIssue({ code: 'custom', message: 'campaign slot binding must contain exactly one value' })
+  }
+})
+
+export const imageCampaignProjectIntentSchema = z.object({
+  project_id: mediaIdSchema,
+  campaign_id: mediaIdSchema,
+  campaign_revision: z.number().int().nonnegative(),
+  item_id: mediaIdSchema,
+  attempt: z.number().int().positive(),
+  brand_kit_id: mediaIdSchema.optional(),
+  brand_kit_revision_id: mediaIdSchema.optional(),
+  template_id: mediaIdSchema.optional(),
+  template_revision_id: mediaIdSchema.optional(),
+  slot_bindings: z.array(imageCampaignTemplateSlotBindingSchema).max(80),
+}).strict().superRefine((value, context) => {
+  if (Boolean(value.brand_kit_id) !== Boolean(value.brand_kit_revision_id)) {
+    context.addIssue({ code: 'custom', message: 'campaign intent brand id and revision must be paired' })
+  }
+  if (Boolean(value.template_id) !== Boolean(value.template_revision_id)) {
+    context.addIssue({ code: 'custom', message: 'campaign intent template id and revision must be paired' })
+  }
+  if (!value.template_id && value.slot_bindings.length > 0) {
+    context.addIssue({ code: 'custom', message: 'campaign intent slot bindings require a template' })
+  }
+  const seen = new Set<string>()
+  for (const binding of value.slot_bindings) {
+    if (seen.has(binding.slot_id)) context.addIssue({ code: 'custom', message: 'campaign intent slot ids must be unique' })
+    seen.add(binding.slot_id)
+  }
+})
+
+/**
+ * The sole persisted-business-state reload payload for the image renderer.
+ * It intentionally contains only public project/operation facts; selection,
+ * panel expansion and in-progress dragging remain renderer-local state.
+ */
+export const imageWorkbenchProjectProjectionSchema = z.object({
+  project: publicImageWorkbenchProjectSchema,
+  inspiration_board: imageInspirationBoardSchema.nullable(),
+  creative_plans: z.array(imageCreativePlanSchema).max(512),
+  generation_rounds: z.array(imageGenerationRoundSchema).max(512),
+  operations: z.array(publicImageOperationV2Schema).max(2_000),
+  candidate_groups: z.array(publicImageCandidateGroupSchema).max(2_000),
+  canvases: z.array(imageCanvasRevisionSchema).max(512),
+  delivery_spec: imageDeliverySpecSchema.nullable(),
+  library: imageProjectLibrarySchema,
+  campaign_intent: imageCampaignProjectIntentSchema.nullable(),
 }).strict()
 
 export const imageBrandKitSchema = z.object({
@@ -242,6 +326,10 @@ export const imageBrandKitResponseSchema = z.object({
   revision: imageBrandKitRevisionSchema,
 }).strict()
 
+export const imageBrandKitListResponseSchema = z.object({
+  brand_kits: z.array(imageBrandKitSchema).max(1_000),
+}).strict()
+
 export const createImageTemplateInputSchema = z.object({
   idempotency_key: z.string().min(16).max(160),
   name: z.string().min(1).max(160),
@@ -258,6 +346,10 @@ export const imageTemplateResponseSchema = z.object({
   revision: imageTemplateRevisionSchema,
 }).strict()
 
+export const imageTemplateListResponseSchema = z.object({
+  templates: z.array(imageTemplateSchema).max(1_000),
+}).strict()
+
 export const deleteImageReusableAggregateInputSchema = z.object({
   ...commandFields,
 }).strict()
@@ -267,10 +359,31 @@ export const createImageAssetGrantInputSchema = z.object({
   asset_id: mediaIdSchema,
   to_owner: imageWorkflowAssetOwnerSchema,
   purpose: z.enum(['render', 'template_use', 'project_reuse']),
-}).strict()
+}).strict().superRefine((value, context) => {
+  const allowedPurposes = value.to_owner.kind === 'project'
+    ? new Set(['render', 'project_reuse'])
+    : value.to_owner.kind === 'brand_kit'
+      ? new Set(['render', 'template_use'])
+      : new Set(['template_use'])
+  if (!allowedPurposes.has(value.purpose)) {
+    context.addIssue({
+      code: 'custom',
+      message: `grant purpose ${value.purpose} is not valid for ${value.to_owner.kind}`,
+      path: ['purpose'],
+    })
+  }
+})
 
 export const revokeImageAssetGrantInputSchema = z.object({
   idempotency_key: z.string().min(16).max(160),
+}).strict()
+
+export const imageAssetGrantResponseSchema = z.object({
+  grant: imageAssetGrantSchema,
+}).strict()
+
+export const imageAssetGrantListResponseSchema = z.object({
+  grants: z.array(imageAssetGrantSchema).max(1_000),
 }).strict()
 
 export const imageCampaignVariableValueSchema = z.object({
@@ -286,10 +399,21 @@ export const imageCampaignItemSchema = z.object({
   project_id: mediaIdSchema.optional(),
   state: z.enum(['draft', 'queued', 'running', 'ready', 'failed', 'cancelled']),
   attempt: z.number().int().positive(),
+  /** Durable proof of the separately confirmed paid retry attempt. */
+  retry_estimate_hash: imageHashSchema.optional(),
+  retry_confirmation_receipt_id: mediaIdSchema.optional(),
   safe_error_code: z.string().min(1).max(120).optional(),
   created_at: mediaIsoDateSchema,
   updated_at: mediaIsoDateSchema,
-}).strict()
+}).strict().superRefine((value, context) => {
+  const hasRetryReceipt = Boolean(value.retry_estimate_hash) || Boolean(value.retry_confirmation_receipt_id)
+  if (Boolean(value.retry_estimate_hash) !== Boolean(value.retry_confirmation_receipt_id)) {
+    context.addIssue({ code: 'custom', message: 'retry estimate and confirmation receipt must be paired' })
+  }
+  if (value.attempt === 1 && hasRetryReceipt) {
+    context.addIssue({ code: 'custom', message: 'initial campaign attempt cannot carry a retry receipt' })
+  }
+})
 
 export const imageCampaignSharedBriefSchema = z.object({
   user_request: z.string().min(1).max(8_000),
@@ -330,6 +454,10 @@ export const imageCampaignEstimateSchema = z.object({
   id: mediaIdSchema,
   campaign_id: mediaIdSchema,
   campaign_revision: z.number().int().nonnegative(),
+  purpose: z.enum(['start', 'retry']).default('start'),
+  item_id: mediaIdSchema.optional(),
+  /** The explicit new Item attempt covered by a retry quote. */
+  attempt: z.number().int().positive().optional(),
   estimate_hash: imageHashSchema,
   paid_operation_count: z.number().int().nonnegative().max(256),
   concurrency: z.number().int().positive().max(32),
@@ -345,14 +473,47 @@ export const imageCampaignEstimateSchema = z.object({
   }).strict(),
   expires_at: mediaIsoDateSchema,
   created_at: mediaIsoDateSchema,
-}).strict()
+}).strict().superRefine((value, context) => {
+  const hasRetryIdentity = Boolean(value.item_id) || value.attempt !== undefined
+  if (value.purpose === 'retry' && (!value.item_id || value.attempt === undefined)) {
+    context.addIssue({ code: 'custom', message: 'retry estimate requires item_id and attempt' })
+  }
+  if (value.purpose === 'start' && hasRetryIdentity) {
+    context.addIssue({ code: 'custom', message: 'start estimate cannot target a campaign item' })
+  }
+})
 
 export const imageCampaignConfirmationReceiptSchema = z.object({
   id: mediaIdSchema,
   campaign_id: mediaIdSchema,
   campaign_revision: z.number().int().nonnegative(),
+  purpose: z.enum(['start', 'retry']).default('start'),
+  item_id: mediaIdSchema.optional(),
+  attempt: z.number().int().positive().optional(),
   estimate_hash: imageHashSchema,
   confirmed_at: mediaIsoDateSchema,
+}).strict().superRefine((value, context) => {
+  const hasRetryIdentity = Boolean(value.item_id) || value.attempt !== undefined
+  if (value.purpose === 'retry' && (!value.item_id || value.attempt === undefined)) {
+    context.addIssue({ code: 'custom', message: 'retry confirmation requires item_id and attempt' })
+  }
+  if (value.purpose === 'start' && hasRetryIdentity) {
+    context.addIssue({ code: 'custom', message: 'start confirmation cannot target a campaign item' })
+  }
+})
+
+/**
+ * A retry quote and its confirmation remain visible until the corresponding
+ * next attempt is created or its quote expires.  This is a read projection,
+ * not a second retry command: callers still submit its two identifiers to the
+ * normal retry endpoint.
+ */
+export const imageCampaignPendingRetryConfirmationSchema = z.object({
+  item_id: mediaIdSchema,
+  attempt: z.number().int().positive(),
+  estimate_hash: imageHashSchema,
+  confirmation_receipt_id: mediaIdSchema,
+  expires_at: mediaIsoDateSchema,
 }).strict()
 
 const campaignItemDraftSchema = z.object({
@@ -382,6 +543,8 @@ export const replaceImageCampaignItemsInputSchema = z.object({
 
 export const estimateImageCampaignInputSchema = z.object({
   base_revision: z.number().int().nonnegative(),
+  /** Omit for the initial Campaign start quote; include for one retry attempt. */
+  item_id: mediaIdSchema.optional(),
 }).strict()
 
 export const confirmImageCampaignInputSchema = z.object({
@@ -401,11 +564,24 @@ export const cancelImageCampaignInputSchema = z.object({
 
 export const retryImageCampaignItemInputSchema = z.object({
   ...commandFields,
+  estimate_hash: imageHashSchema,
+  confirmation_receipt_id: mediaIdSchema,
 }).strict()
 
 export const imageCampaignResponseSchema = z.object({
   campaign: imageCampaignSchema,
   items: z.array(imageCampaignItemSchema).max(256),
+  pending_retry_confirmations: z.array(imageCampaignPendingRetryConfirmationSchema).max(256).default([]),
+}).strict()
+
+export const imageCampaignListInputSchema = z.object({
+  cursor: z.number().int().nonnegative().optional(),
+  limit: z.number().int().min(1).max(50).optional(),
+}).strict()
+
+export const imageCampaignListResponseSchema = z.object({
+  campaigns: z.array(imageCampaignSchema).max(50),
+  next_cursor: z.number().int().positive().optional(),
 }).strict()
 
 export const imageCampaignEstimateResponseSchema = z.object({
@@ -419,6 +595,8 @@ export const imageCampaignConfirmationResponseSchema = z.object({
 }).strict()
 
 export type ImageWorkflowAssetOwner = z.infer<typeof imageWorkflowAssetOwnerSchema>
+export type ImageCandidatePreviewInput = z.infer<typeof imageCandidatePreviewInputSchema>
+export type ImageCandidatePreviewResponse = z.infer<typeof imageCandidatePreviewResponseSchema>
 export type ImageAssetProvenance = z.infer<typeof imageAssetProvenanceSchema>
 export type ImageAssetGrant = z.infer<typeof imageAssetGrantSchema>
 export type ImageInspirationBoard = z.infer<typeof imageInspirationBoardSchema>
@@ -428,21 +606,37 @@ export type PromoteImageInspirationItemInput = z.input<typeof promoteImageInspir
 export type AddImageWorkflowReferencesInput = z.input<typeof addImageWorkflowReferencesInputSchema>
 export type RemoveImageWorkflowReferenceInput = z.input<typeof removeImageWorkflowReferenceInputSchema>
 export type ApplyImageBriefOverridesInput = z.input<typeof applyImageBriefOverridesInputSchema>
+export type CompileImageBriefResponse = z.infer<typeof compileImageBriefResponseSchema>
+export type ImageWorkflowProjectResponse = z.infer<typeof imageWorkflowProjectResponseSchema>
+export type ImageWorkbenchProjectListResponse = z.infer<typeof imageWorkbenchProjectListResponseSchema>
+export type ImageInspirationBoardResponse = z.infer<typeof imageInspirationBoardResponseSchema>
+export type ImageInspirationBoardReadResponse = z.infer<typeof imageInspirationBoardReadResponseSchema>
 export type ImageQuickCreateInput = z.input<typeof imageQuickCreateInputSchema>
 export type ImageQuickCreateResponse = z.infer<typeof imageQuickCreateResponseSchema>
 export type ImageLibraryEntry = z.infer<typeof imageLibraryEntrySchema>
 export type ImageProjectLibrary = z.infer<typeof imageProjectLibrarySchema>
+export type ImageCampaignTemplateSlotBinding = z.infer<typeof imageCampaignTemplateSlotBindingSchema>
+export type ImageCampaignProjectIntent = z.infer<typeof imageCampaignProjectIntentSchema>
+export type ImageWorkbenchProjectProjection = z.infer<typeof imageWorkbenchProjectProjectionSchema>
 export type ImageBrandKit = z.infer<typeof imageBrandKitSchema>
 export type ImageTemplate = z.infer<typeof imageTemplateSchema>
+export type ImageBrandKitResponse = z.infer<typeof imageBrandKitResponseSchema>
+export type ImageBrandKitListResponse = z.infer<typeof imageBrandKitListResponseSchema>
+export type ImageTemplateResponse = z.infer<typeof imageTemplateResponseSchema>
+export type ImageTemplateListResponse = z.infer<typeof imageTemplateListResponseSchema>
 export type CreateImageBrandKitInput = z.input<typeof createImageBrandKitInputSchema>
 export type ReviseImageBrandKitInput = z.input<typeof reviseImageBrandKitInputSchema>
 export type CreateImageTemplateInput = z.input<typeof createImageTemplateInputSchema>
 export type ReviseImageTemplateInput = z.input<typeof reviseImageTemplateInputSchema>
 export type CreateImageAssetGrantInput = z.input<typeof createImageAssetGrantInputSchema>
+export type ImageAssetGrantResponse = z.infer<typeof imageAssetGrantResponseSchema>
+export type ImageAssetGrantListResponse = z.infer<typeof imageAssetGrantListResponseSchema>
 export type ImageCampaign = z.infer<typeof imageCampaignSchema>
+export type ImageCampaignListInput = z.input<typeof imageCampaignListInputSchema>
 export type ImageCampaignItem = z.infer<typeof imageCampaignItemSchema>
 export type ImageCampaignEstimate = z.infer<typeof imageCampaignEstimateSchema>
 export type ImageCampaignConfirmationReceipt = z.infer<typeof imageCampaignConfirmationReceiptSchema>
+export type ImageCampaignPendingRetryConfirmation = z.infer<typeof imageCampaignPendingRetryConfirmationSchema>
 export type CreateImageCampaignInput = z.input<typeof createImageCampaignInputSchema>
 export type ReplaceImageCampaignItemsInput = z.input<typeof replaceImageCampaignItemsInputSchema>
 export type EstimateImageCampaignInput = z.input<typeof estimateImageCampaignInputSchema>
@@ -450,3 +644,7 @@ export type ConfirmImageCampaignInput = z.input<typeof confirmImageCampaignInput
 export type StartImageCampaignInput = z.input<typeof startImageCampaignInputSchema>
 export type CancelImageCampaignInput = z.input<typeof cancelImageCampaignInputSchema>
 export type RetryImageCampaignItemInput = z.input<typeof retryImageCampaignItemInputSchema>
+export type ImageCampaignResponse = z.infer<typeof imageCampaignResponseSchema>
+export type ImageCampaignListResponse = z.infer<typeof imageCampaignListResponseSchema>
+export type ImageCampaignEstimateResponse = z.infer<typeof imageCampaignEstimateResponseSchema>
+export type ImageCampaignConfirmationResponse = z.infer<typeof imageCampaignConfirmationResponseSchema>

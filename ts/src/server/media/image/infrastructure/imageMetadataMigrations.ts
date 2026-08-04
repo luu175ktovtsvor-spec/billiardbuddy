@@ -1,6 +1,7 @@
+import { createHash } from 'node:crypto'
 import type { SqliteUnitOfWork } from '../../kernel/storage/sqliteUnitOfWork.js'
 
-const IMAGE_METADATA_SCHEMA_VERSION = 10
+const IMAGE_METADATA_SCHEMA_VERSION = 12
 
 /** Image-only metadata schema. The shared Kernel remains unaware of image facts. */
 export function migrateImageMetadata(unitOfWork: SqliteUnitOfWork): void {
@@ -20,7 +21,316 @@ export function migrateImageMetadata(unitOfWork: SqliteUnitOfWork): void {
     if (version === 8) migrateV8(unitOfWork)
     if (version === 9) migrateV9(unitOfWork)
     if (version === 10) migrateV10(unitOfWork)
+    if (version === 11) migrateV11(unitOfWork)
+    if (version === 12) migrateV12(unitOfWork)
   }
+}
+
+/**
+ * A Campaign item can move to a new attempt and therefore clear its current
+ * project pointer.  The Project-facing intent must remain immutable for each
+ * prior attempt, so it is a receipt rather than a derived item lookup.
+ */
+function migrateV11(unitOfWork: SqliteUnitOfWork): void {
+  unitOfWork.transaction(() => {
+    unitOfWork.database.exec(`CREATE TABLE image_campaign_project_intents(
+      project_id TEXT PRIMARY KEY REFERENCES image_projects(id),
+      campaign_id TEXT NOT NULL REFERENCES image_campaigns(id),
+      item_id TEXT NOT NULL,
+      attempt INTEGER NOT NULL CHECK(attempt >= 1),
+      campaign_revision INTEGER NOT NULL CHECK(campaign_revision >= 0),
+      created_at TEXT NOT NULL,
+      document_json TEXT NOT NULL,
+      UNIQUE(campaign_id,item_id,attempt)
+    )`)
+    unitOfWork.database.exec('CREATE INDEX image_campaign_project_intents_campaign_item ON image_campaign_project_intents(campaign_id,item_id,attempt)')
+    const rows = unitOfWork.database.query(`SELECT campaigns.document_json AS campaign_json,
+      items.campaign_id AS campaign_id,items.project_id AS project_id,items.updated_at AS item_updated_at,items.document_json AS item_json
+      FROM image_campaign_items items
+      JOIN image_campaigns campaigns ON campaigns.id=items.campaign_id
+      WHERE items.project_id IS NOT NULL`).all() as Array<{
+        campaign_json: string
+        campaign_id: string
+        project_id: string
+        item_updated_at: string
+        item_json: string
+      }>
+    for (const row of rows) {
+      const intent = legacyCampaignProjectIntent(unitOfWork, row)
+      unitOfWork.database.query(`INSERT INTO image_campaign_project_intents(
+        project_id,campaign_id,item_id,attempt,campaign_revision,created_at,document_json
+      ) VALUES(?,?,?,?,?,?,?)`).run(
+        intent.project_id, intent.campaign_id, intent.item_id, intent.attempt,
+        intent.campaign_revision, intent.created_at, JSON.stringify(intent.document),
+      )
+    }
+    unitOfWork.database.query('INSERT INTO image_metadata_schema_migrations(version,applied_at) VALUES(?,?)')
+      .run(11, new Date().toISOString())
+  })
+}
+
+/**
+ * v11 originally reconstructed an immutable child-project intent from the
+ * mutable Campaign row.  A completed/retried Campaign has moved its revision
+ * since the child was bound, so that record is not evidence for the original
+ * binding.  v12 repairs existing v11 data and records the exact paid Round /
+ * Operation for every attempt.  Both facts come from durable receipts only.
+ */
+function migrateV12(unitOfWork: SqliteUnitOfWork): void {
+  unitOfWork.transaction(() => {
+    unitOfWork.database.exec(`CREATE TABLE image_campaign_attempts(
+      campaign_id TEXT NOT NULL REFERENCES image_campaigns(id),
+      item_id TEXT NOT NULL,
+      attempt INTEGER NOT NULL CHECK(attempt >= 1),
+      expected_project_id TEXT NOT NULL UNIQUE,
+      generation_round_id TEXT,
+      generation_operation_id TEXT UNIQUE,
+      state TEXT NOT NULL CHECK(state IN ('reserved','bound','cancelled','cancellation_too_late')),
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY(campaign_id,item_id,attempt)
+    )`)
+    unitOfWork.database.exec('CREATE INDEX image_campaign_attempts_project ON image_campaign_attempts(expected_project_id,state)')
+    unitOfWork.database.exec('CREATE INDEX image_campaign_attempts_operation ON image_campaign_attempts(generation_operation_id)')
+
+    const intents = unitOfWork.database.query(`SELECT campaign_id,item_id,attempt,project_id,created_at,document_json
+      FROM image_campaign_project_intents ORDER BY created_at ASC,project_id ASC`).all() as Array<{
+        campaign_id: string
+        item_id: string
+        attempt: number
+        project_id: string
+        created_at: string
+        document_json: string
+      }>
+    for (const row of intents) {
+      const intent = campaignIntentFromBindingReceipt(unitOfWork, {
+        campaign_id: row.campaign_id,
+        item_id: row.item_id,
+        attempt: row.attempt,
+        project_id: row.project_id,
+        fallback_created_at: row.created_at,
+      })
+      unitOfWork.database.query(`UPDATE image_campaign_project_intents
+        SET campaign_revision=?,created_at=?,document_json=? WHERE project_id=?`).run(
+        intent.campaign_revision,
+        intent.created_at,
+        JSON.stringify(intent.document),
+        row.project_id,
+      )
+      const expectedProjectId = legacyCampaignProjectId(intent.campaign_id, intent.item_id, intent.attempt)
+      if (expectedProjectId !== row.project_id) {
+        throw new Error('Campaign 项目意图的子项目标识与确定性尝试不一致，不能迁移尝试映射')
+      }
+      const roundId = legacyCampaignRoundId(expectedProjectId, intent.campaign_id, intent.item_id, intent.attempt)
+      const round = unitOfWork.database.query('SELECT document_json FROM image_generation_rounds WHERE id=? AND project_id=?')
+        .get(roundId, row.project_id) as { document_json: string } | null
+      if (!round) throw new Error('Campaign 项目缺少已持久化的生成 Round，不能迁移尝试映射')
+      const roundDocument = migrationRecord(JSON.parse(round.document_json), 'Campaign 生成 Round')
+      const directions = Array.isArray(roundDocument.direction_operations) ? roundDocument.direction_operations : []
+      if (directions.length !== 1) throw new Error('Campaign 项目生成 Round 必须恰好包含一个操作，不能迁移尝试映射')
+      const direction = migrationRecord(directions[0], 'Campaign 生成 Round 操作')
+      const operationId = migrationString(direction.operation_id, 'Campaign 生成 Operation id')
+      const operation = unitOfWork.database.query(`SELECT document_json FROM image_generation_operations
+        WHERE id=? AND project_id=?`).get(operationId, row.project_id) as { document_json: string } | null
+      if (!operation) throw new Error('Campaign 项目生成 Round 引用的正式 Operation 不存在或不属于子项目，不能迁移尝试映射')
+      const operationDocument = migrationRecord(JSON.parse(operation.document_json), 'Campaign 正式生成 Operation')
+      if (
+        migrationString(operationDocument.id, 'Campaign 正式生成 Operation id') !== operationId
+        || migrationString(operationDocument.project_id, 'Campaign 正式生成 Operation project id') !== row.project_id
+      ) {
+        throw new Error('Campaign 项目正式 Operation 事实不一致，不能迁移尝试映射')
+      }
+      const transportTaskId = migrationString(operationDocument.transport_task_id, 'Campaign 正式生成 Operation transport task id')
+      const transport = unitOfWork.database.query(`SELECT project_id FROM image_operations WHERE id=?`).get(transportTaskId) as { project_id: string } | null
+      if (!transport || transport.project_id !== row.project_id) {
+        throw new Error('Campaign 项目正式 Operation 的传输任务不存在或不属于子项目，不能迁移尝试映射')
+      }
+      unitOfWork.database.query(`INSERT INTO image_campaign_attempts(
+        campaign_id,item_id,attempt,expected_project_id,generation_round_id,generation_operation_id,state,created_at,updated_at
+      ) VALUES(?,?,?,?,?,?,?,?,?)`).run(
+        intent.campaign_id,
+        intent.item_id,
+        intent.attempt,
+        expectedProjectId,
+        roundId,
+        operationId,
+        'bound',
+        intent.created_at,
+        intent.created_at,
+      )
+    }
+    // A process can have committed Campaign->queued before it creates the
+    // deterministic child Project.  Preserve that recoverable boundary too:
+    // the first restart can bind or cancel this reservation without guessing
+    // a different paid attempt.
+    const queued = unitOfWork.database.query(`SELECT campaign_id,id,attempt,updated_at FROM image_campaign_items
+      WHERE state='queued' AND project_id IS NULL ORDER BY updated_at ASC,id ASC`).all() as Array<{
+        campaign_id: string
+        id: string
+        attempt: number
+        updated_at: string
+      }>
+    for (const item of queued) {
+      const expectedProjectId = legacyCampaignProjectId(item.campaign_id, item.id, item.attempt)
+      unitOfWork.database.query(`INSERT INTO image_campaign_attempts(
+        campaign_id,item_id,attempt,expected_project_id,state,created_at,updated_at
+      ) VALUES(?,?,?,?,?,?,?) ON CONFLICT(campaign_id,item_id,attempt) DO NOTHING`).run(
+        item.campaign_id,
+        item.id,
+        item.attempt,
+        expectedProjectId,
+        'reserved',
+        item.updated_at,
+        item.updated_at,
+      )
+    }
+    unitOfWork.database.query('INSERT INTO image_metadata_schema_migrations(version,applied_at) VALUES(?,?)')
+      .run(12, new Date().toISOString())
+  })
+}
+
+function legacyCampaignProjectIntent(
+  unitOfWork: SqliteUnitOfWork,
+  row: { campaign_json: string; campaign_id: string; project_id: string; item_updated_at: string; item_json: string },
+): {
+  project_id: string
+  campaign_id: string
+  item_id: string
+  attempt: number
+  campaign_revision: number
+  created_at: string
+  document: Record<string, unknown>
+} {
+  const currentCampaign = migrationRecord(JSON.parse(row.campaign_json), 'Campaign')
+  const currentItem = migrationRecord(JSON.parse(row.item_json), 'Campaign 项目')
+  const campaignId = migrationString(currentCampaign.id, 'Campaign id')
+  if (campaignId !== row.campaign_id) throw new Error('Campaign 项目与 Campaign 记录不一致，不能迁移项目意图')
+  const itemId = migrationString(currentItem.id, 'Campaign 项目 id')
+  const attempt = migrationInteger(currentItem.attempt, 'Campaign 项目 attempt', 1)
+  return campaignIntentFromBindingReceipt(unitOfWork, {
+    campaign_id: campaignId,
+    item_id: itemId,
+    attempt,
+    project_id: row.project_id,
+    fallback_created_at: row.item_updated_at,
+  })
+}
+
+function campaignIntentFromBindingReceipt(
+  unitOfWork: SqliteUnitOfWork,
+  input: { campaign_id: string; item_id: string; attempt: number; project_id: string; fallback_created_at: string },
+): {
+  project_id: string
+  campaign_id: string
+  item_id: string
+  attempt: number
+  campaign_revision: number
+  created_at: string
+  document: Record<string, unknown>
+} {
+  const bindingKey = `bb-image-campaign-bind-${input.campaign_id}-${input.item_id}-${input.attempt}`
+  const receipt = unitOfWork.database.query(`SELECT result_json,created_at FROM image_campaign_commands
+    WHERE campaign_id=? AND idempotency_key=?`).get(input.campaign_id, bindingKey) as {
+      result_json: string
+      created_at: string
+    } | null
+  if (!receipt) throw new Error('Campaign 项目缺少绑定命令回执，不能迁移项目意图')
+  const result = migrationRecord(JSON.parse(receipt.result_json), 'Campaign 项目绑定回执')
+  const campaign = migrationRecord(result.campaign, 'Campaign 项目绑定回执 Campaign')
+  const items = Array.isArray(result.items) ? result.items.map(value => migrationRecord(value, 'Campaign 项目绑定回执项目')) : []
+  const item = items.find(candidate => migrationString(candidate.id, 'Campaign 项目绑定回执项目 id') === input.item_id)
+  if (!item) throw new Error('Campaign 项目绑定回执缺少项目，不能迁移项目意图')
+  const campaignId = migrationString(campaign.id, 'Campaign id')
+  const itemId = migrationString(item.id, 'Campaign 项目 id')
+  const attempt = migrationInteger(item.attempt, 'Campaign 项目 attempt', 1)
+  const projectId = migrationString(item.project_id, 'Campaign 项目绑定的图片项目')
+  if (campaignId !== input.campaign_id || itemId !== input.item_id || attempt !== input.attempt || projectId !== input.project_id) {
+    throw new Error('Campaign 项目绑定回执与项目指针不一致，不能迁移项目意图')
+  }
+  const bindingResultRevision = migrationInteger(campaign.revision, 'Campaign 绑定结果 revision')
+  if (bindingResultRevision < 1) throw new Error('Campaign 绑定结果 revision 无效，不能迁移项目意图')
+  const campaignRevision = bindingResultRevision - 1
+  const templateId = migrationOptionalString(campaign.template_id, 'Campaign template id')
+  const templateRevisionId = migrationOptionalString(campaign.template_revision_id, 'Campaign template revision id')
+  const brandKitId = migrationOptionalString(campaign.brand_kit_id, 'Campaign Brand id')
+  const brandKitRevisionId = migrationOptionalString(campaign.brand_kit_revision_id, 'Campaign Brand revision id')
+  if (Boolean(templateId) !== Boolean(templateRevisionId) || Boolean(brandKitId) !== Boolean(brandKitRevisionId)) {
+    throw new Error('Campaign 锁定的 Template 或 Brand revision 损坏，不能迁移项目意图')
+  }
+  const bindings: Array<Record<string, string>> = []
+  const variableValues = Array.isArray(item.variable_values) ? item.variable_values : []
+  if (templateId && templateRevisionId) {
+    const templateRow = unitOfWork.database.query(`SELECT document_json FROM image_template_revisions
+      WHERE id=? AND template_id=?`).get(templateRevisionId, templateId) as { document_json: string } | null
+    if (!templateRow) throw new Error('Campaign 锁定的 Template revision 不存在，不能迁移项目意图')
+    const template = migrationRecord(JSON.parse(templateRow.document_json), 'Template revision')
+    const slots = Array.isArray(template.slots) ? template.slots.map(value => migrationRecord(value, 'Template Slot')) : []
+    const slotsById = new Map(slots.map(slot => [migrationString(slot.id, 'Template Slot id'), slot]))
+    const seen = new Set<string>()
+    for (const rawVariable of variableValues) {
+      const variable = migrationRecord(rawVariable, 'Campaign 变量')
+      const slotId = migrationString(variable.slot_id, 'Campaign 变量 Slot id')
+      const value = migrationString(variable.value, 'Campaign 变量值')
+      const slot = slotsById.get(slotId)
+      if (!slot || seen.has(slotId)) throw new Error('Campaign 变量与锁定 Template Slot 不一致，不能迁移项目意图')
+      seen.add(slotId)
+      const kind = migrationString(slot.kind, 'Template Slot kind')
+      if (kind === 'text') bindings.push({ slot_id: slotId, text: value })
+      else if (kind === 'qrcode') bindings.push({ slot_id: slotId, qr_payload: value })
+      else throw new Error('Campaign 变量不能写入图片或标志 Template Slot')
+    }
+  } else if (variableValues.length > 0) {
+    throw new Error('Campaign 变量缺少锁定 Template，不能迁移项目意图')
+  }
+  const document: Record<string, unknown> = {
+    project_id: input.project_id,
+    campaign_id: campaignId,
+    campaign_revision: campaignRevision,
+    item_id: itemId,
+    attempt,
+    ...(brandKitId ? { brand_kit_id: brandKitId, brand_kit_revision_id: brandKitRevisionId } : {}),
+    ...(templateId ? { template_id: templateId, template_revision_id: templateRevisionId } : {}),
+    slot_bindings: bindings,
+  }
+  return {
+    project_id: input.project_id,
+    campaign_id: campaignId,
+    item_id: itemId,
+    attempt,
+    campaign_revision: campaignRevision,
+    created_at: receipt.created_at || input.fallback_created_at,
+    document,
+  }
+}
+
+function legacyCampaignProjectId(campaignId: string, itemId: string, attempt: number): string {
+  const key = `bb-image-campaign-${campaignId}-${itemId}-attempt-${attempt}`
+  return `img_${createHash('sha256').update(['quick-create', key].join('\0')).digest('hex').slice(0, 32)}`
+}
+
+function legacyCampaignRoundId(projectId: string, campaignId: string, itemId: string, attempt: number): string {
+  const key = `bb-image-campaign-${campaignId}-${itemId}-attempt-${attempt}`
+  return `rnd_${createHash('sha256').update([projectId, key].join('\0')).digest('hex').slice(0, 32)}`
+}
+
+function migrationRecord(value: unknown, label: string): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`${label} 文档损坏，不能迁移项目意图`)
+  return value as Record<string, unknown>
+}
+
+function migrationString(value: unknown, label: string): string {
+  if (typeof value !== 'string' || value.length === 0) throw new Error(`${label} 损坏，不能迁移项目意图`)
+  return value
+}
+
+function migrationOptionalString(value: unknown, label: string): string | undefined {
+  if (value === undefined) return undefined
+  return migrationString(value, label)
+}
+
+function migrationInteger(value: unknown, label: string, minimum = 0): number {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < minimum) throw new Error(`${label} 损坏，不能迁移项目意图`)
+  return value
 }
 
 /**

@@ -67,13 +67,41 @@ import {
   addImageWorkflowReferencesInputSchema,
   applyImageBriefOverridesInputSchema,
   compileImageBriefResponseSchema,
+  createImageAssetGrantInputSchema,
+  createImageBrandKitInputSchema,
+  createImageCampaignInputSchema,
+  createImageTemplateInputSchema,
+  cancelImageCampaignInputSchema,
+  confirmImageCampaignInputSchema,
+  deleteImageReusableAggregateInputSchema,
+  estimateImageCampaignInputSchema,
+  imageAssetGrantListResponseSchema,
+  imageAssetGrantResponseSchema,
+  imageBrandKitListResponseSchema,
+  imageBrandKitResponseSchema,
+  imageCampaignConfirmationResponseSchema,
+  imageCampaignEstimateResponseSchema,
+  imageCampaignListInputSchema,
+  imageCampaignListResponseSchema,
+  imageCampaignResponseSchema,
   imageInspirationBoardReadResponseSchema,
   imageInspirationBoardResponseSchema,
+  imageProjectLibrarySchema,
   imageQuickCreateInputSchema,
   imageQuickCreateResponseSchema,
+  imageTemplateListResponseSchema,
+  imageTemplateResponseSchema,
+  imageWorkbenchProjectListResponseSchema,
+  imageWorkbenchProjectProjectionSchema,
   imageWorkflowProjectResponseSchema,
   promoteImageInspirationItemInputSchema,
   removeImageWorkflowReferenceInputSchema,
+  replaceImageCampaignItemsInputSchema,
+  reviseImageBrandKitInputSchema,
+  reviseImageTemplateInputSchema,
+  revokeImageAssetGrantInputSchema,
+  retryImageCampaignItemInputSchema,
+  startImageCampaignInputSchema,
   upsertImageInspirationItemsInputSchema,
 } from '../../../shared/contracts/imageWorkflow.js'
 import { ApiError, errorResponse } from '../middleware/errorHandler.js'
@@ -91,6 +119,13 @@ async function parseJson(req: Request): Promise<unknown> {
   } catch {
     throw ApiError.badRequest('请求体不是合法 JSON')
   }
+}
+
+function hasOwnField(value: unknown, field: string): value is Record<string, unknown> {
+  return value !== null
+    && typeof value === 'object'
+    && !Array.isArray(value)
+    && Object.prototype.hasOwnProperty.call(value, field)
 }
 
 function requireMediaUiCapability(req: Request, expected: string): void {
@@ -284,7 +319,9 @@ export function createImageWorkbenchApiHandler(
       const action = segments[5]
       if (!projectId) {
         if (req.method === 'GET' && !action) {
-          return Response.json({ projects: (await service.listProjects()).map(publicImageProject) })
+          return Response.json(imageWorkbenchProjectListResponseSchema.parse({
+            projects: (await service.listProjects()).map(publicImageProject),
+          }))
         }
         if (req.method !== 'POST' || action) throw methodNotAllowed(req.method)
         const input = createImageProjectInputSchema.parse(await parseJson(req))
@@ -449,9 +486,174 @@ export function createImageWorkbenchDomainApiHandler(
           operations: created.operations.map(publicGenerationOperation),
         }), { status: 202 })
       }
+      if (area === 'campaigns') {
+        const campaignId = segments[3]
+        if (!campaignId) {
+          if (req.method === 'GET' && !segments[4]) {
+            const rawCursor = url.searchParams.get('cursor')
+            const rawLimit = url.searchParams.get('limit')
+            const input = imageCampaignListInputSchema.parse({
+              ...(rawCursor === null ? {} : { cursor: Number(rawCursor) }),
+              ...(rawLimit === null ? {} : { limit: Number(rawLimit) }),
+            })
+            return Response.json(imageCampaignListResponseSchema.parse(await service.listCampaigns(input)))
+          }
+          if (req.method !== 'POST' || segments[4]) throw methodNotAllowed(req.method)
+          requireMediaUiCapability(req, mediaUiCapability)
+          const input = createImageCampaignInputSchema.parse(await parseJson(req))
+          return Response.json(imageCampaignResponseSchema.parse(await service.createCampaign(input)), { status: 201 })
+        }
+        if (!segments[4] && req.method === 'GET') {
+          return Response.json(imageCampaignResponseSchema.parse(await service.getCampaign(campaignId)))
+        }
+        if (segments[4] === 'estimate' && !segments[5] && req.method === 'POST') {
+          requireMediaUiCapability(req, mediaUiCapability)
+          const input = estimateImageCampaignInputSchema.parse(await parseJson(req))
+          return Response.json(imageCampaignEstimateResponseSchema.parse(await service.estimateCampaign(campaignId, input)))
+        }
+        if (segments[4] === 'commands' && segments[5] === 'confirm' && !segments[6] && req.method === 'POST') {
+          requireMediaUiCapability(req, mediaUiCapability)
+          const input = confirmImageCampaignInputSchema.parse(await parseJson(req))
+          const confirmed = await service.confirmCampaign(campaignId, input)
+          return Response.json(imageCampaignConfirmationResponseSchema.parse({
+            campaign: confirmed.campaign,
+            confirmation: confirmed.confirmation,
+          }))
+        }
+        if (segments[4] === 'commands' && segments[5] === 'start' && !segments[6] && req.method === 'POST') {
+          requireMediaUiCapability(req, mediaUiCapability)
+          const input = startImageCampaignInputSchema.parse(await parseJson(req))
+          return Response.json(imageCampaignResponseSchema.parse(await service.startCampaign(campaignId, input)), { status: 202 })
+        }
+        if (segments[4] === 'commands' && segments[5] === 'cancel' && !segments[6] && req.method === 'POST') {
+          requireMediaUiCapability(req, mediaUiCapability)
+          const input = cancelImageCampaignInputSchema.parse(await parseJson(req))
+          return Response.json(imageCampaignResponseSchema.parse(await service.cancelCampaign(campaignId, input)))
+        }
+        if (
+          (
+            (segments[4] === 'commands' && segments[5] === 'replace-items' && !segments[6])
+            || (segments[4] === 'items' && segments[5] === 'commands' && segments[6] === 'replace' && !segments[7])
+          )
+          && req.method === 'POST'
+        ) {
+          requireMediaUiCapability(req, mediaUiCapability)
+          const input = replaceImageCampaignItemsInputSchema.parse(await parseJson(req))
+          return Response.json(imageCampaignResponseSchema.parse(await service.replaceCampaignItems(campaignId, input)))
+        }
+        if (segments[4] === 'items' && segments[5] && segments[6] === 'commands' && segments[7] === 'confirm-retry' && !segments[8] && req.method === 'POST') {
+          requireMediaUiCapability(req, mediaUiCapability)
+          const input = confirmImageCampaignInputSchema.parse(await parseJson(req))
+          const confirmed = await service.confirmCampaignRetry(campaignId, segments[5], input)
+          return Response.json(imageCampaignConfirmationResponseSchema.parse({
+            campaign: confirmed.campaign,
+            confirmation: confirmed.confirmation,
+          }))
+        }
+        if (segments[4] === 'items' && segments[5] && segments[6] === 'commands' && segments[7] === 'retry' && !segments[8] && req.method === 'POST') {
+          requireMediaUiCapability(req, mediaUiCapability)
+          const input = retryImageCampaignItemInputSchema.parse(await parseJson(req))
+          return Response.json(imageCampaignResponseSchema.parse(await service.retryCampaignItem(campaignId, segments[5], input)), { status: 202 })
+        }
+        throw methodNotAllowed(req.method)
+      }
+      if (area === 'brand-kits') {
+        const brandKitId = segments[3]
+        if (!brandKitId) {
+          if (req.method === 'GET' && !segments[4]) {
+            const includeTrashed = url.searchParams.get('include_trashed') === '1'
+            return Response.json(imageBrandKitListResponseSchema.parse({ brand_kits: await service.listBrandKits(includeTrashed) }))
+          }
+          if (req.method !== 'POST' || segments[4]) throw methodNotAllowed(req.method)
+          requireMediaUiCapability(req, mediaUiCapability)
+          const input = createImageBrandKitInputSchema.parse(await parseJson(req))
+          return Response.json(imageBrandKitResponseSchema.parse(await service.createBrandKit(input)), { status: 201 })
+        }
+        if (!segments[4] && req.method === 'GET') {
+          return Response.json(imageBrandKitResponseSchema.parse(await service.getBrandKit(brandKitId)))
+        }
+        if (segments[4] === 'revisions' && !segments[5] && req.method === 'POST') {
+          requireMediaUiCapability(req, mediaUiCapability)
+          const input = reviseImageBrandKitInputSchema.parse(await parseJson(req))
+          return Response.json(imageBrandKitResponseSchema.parse(await service.reviseBrandKit(brandKitId, input)))
+        }
+        if (segments[4] === 'commands' && segments[5] === 'trash' && !segments[6] && req.method === 'POST') {
+          requireMediaUiCapability(req, mediaUiCapability)
+          const input = deleteImageReusableAggregateInputSchema.parse(await parseJson(req))
+          return Response.json(imageBrandKitResponseSchema.parse(await service.trashBrandKit(brandKitId, input)))
+        }
+        throw methodNotAllowed(req.method)
+      }
+      if (area === 'templates') {
+        const templateId = segments[3]
+        if (!templateId) {
+          if (req.method === 'GET' && !segments[4]) {
+            const includeTrashed = url.searchParams.get('include_trashed') === '1'
+            return Response.json(imageTemplateListResponseSchema.parse({ templates: await service.listTemplates(includeTrashed) }))
+          }
+          if (req.method !== 'POST' || segments[4]) throw methodNotAllowed(req.method)
+          requireMediaUiCapability(req, mediaUiCapability)
+          const input = createImageTemplateInputSchema.parse(await parseJson(req))
+          return Response.json(imageTemplateResponseSchema.parse(await service.createTemplate(input)), { status: 201 })
+        }
+        if (!segments[4] && req.method === 'GET') {
+          return Response.json(imageTemplateResponseSchema.parse(await service.getTemplate(templateId)))
+        }
+        if (segments[4] === 'revisions' && !segments[5] && req.method === 'POST') {
+          requireMediaUiCapability(req, mediaUiCapability)
+          const input = reviseImageTemplateInputSchema.parse(await parseJson(req))
+          return Response.json(imageTemplateResponseSchema.parse(await service.reviseTemplate(templateId, input)))
+        }
+        if (segments[4] === 'commands' && segments[5] === 'trash' && !segments[6] && req.method === 'POST') {
+          requireMediaUiCapability(req, mediaUiCapability)
+          const input = deleteImageReusableAggregateInputSchema.parse(await parseJson(req))
+          return Response.json(imageTemplateResponseSchema.parse(await service.trashTemplate(templateId, input)))
+        }
+        throw methodNotAllowed(req.method)
+      }
+      if (area === 'asset-grants') {
+        const grantId = segments[3]
+        if (!grantId) {
+          if (req.method === 'GET' && !segments[4]) {
+            const includeRevoked = url.searchParams.get('include_revoked') === '1'
+            return Response.json(imageAssetGrantListResponseSchema.parse({ grants: await service.listAssetGrants(includeRevoked) }))
+          }
+          if (req.method !== 'POST' || segments[4]) throw methodNotAllowed(req.method)
+          requireMediaUiCapability(req, mediaUiCapability)
+          const input = createImageAssetGrantInputSchema.parse(await parseJson(req))
+          return Response.json(imageAssetGrantResponseSchema.parse({ grant: await service.createAssetGrant(input) }), { status: 201 })
+        }
+        if (segments[4] === 'commands' && segments[5] === 'revoke' && !segments[6] && req.method === 'POST') {
+          requireMediaUiCapability(req, mediaUiCapability)
+          const input = revokeImageAssetGrantInputSchema.parse(await parseJson(req))
+          return Response.json(imageAssetGrantResponseSchema.parse({ grant: await service.revokeAssetGrant(grantId, input) }))
+        }
+        throw methodNotAllowed(req.method)
+      }
       if (area !== 'projects') throw ApiError.notFound('找不到生图接口')
       const projectId = segments[3]
       const action = segments[4]
+      if (projectId && action === 'projection') {
+        if (req.method !== 'GET' || segments[5]) throw methodNotAllowed(req.method)
+        const projection = await service.getProjectProjection(projectId)
+        return Response.json(imageWorkbenchProjectProjectionSchema.parse({
+          project: publicImageProject(projection.project),
+          inspiration_board: projection.inspiration_board,
+          creative_plans: projection.creative_plans,
+          generation_rounds: projection.generation_rounds,
+          operations: projection.operations.map(publicGenerationOperation),
+          candidate_groups: projection.candidate_groups.map(({ group, candidates }) =>
+            publicCandidateGroup(projectId, group, candidates)),
+          canvases: projection.canvases,
+          delivery_spec: projection.delivery_spec,
+          library: projection.library,
+          campaign_intent: projection.campaign_intent,
+        }))
+      }
+      if (projectId && action === 'library') {
+        if (req.method !== 'GET' || segments[5]) throw methodNotAllowed(req.method)
+        return Response.json(imageProjectLibrarySchema.parse(await service.listProjectLibrary(projectId)))
+      }
       if (projectId && action === 'inspiration-board') {
         await service.assertProjectOwner(projectId)
         if (!segments[5] && req.method === 'GET') {
@@ -502,10 +704,23 @@ export function createImageWorkbenchDomainApiHandler(
         const referenceId = segments[5]
         if (!referenceId && !segments[6] && req.method === 'POST') {
           requireMediaUiCapability(req, mediaUiCapability)
-          const input = addImageWorkflowReferencesInputSchema.parse(await parseJson(req))
-          return Response.json(imageWorkflowProjectResponseSchema.parse({
-            project: publicImageProject(await service.addWorkflowReferences(projectId, input)),
-          }), { status: 201 })
+          const raw = await parseJson(req)
+          const workflowReferences = hasOwnField(raw, 'references')
+          const legacyReferences = hasOwnField(raw, 'reference_images')
+          if (workflowReferences && legacyReferences) {
+            throw ApiError.badRequest('参考图请求不能同时使用 references 与 reference_images')
+          }
+          if (workflowReferences) {
+            const input = addImageWorkflowReferencesInputSchema.parse(raw)
+            return Response.json(imageWorkflowProjectResponseSchema.parse({
+              project: publicImageProject(await service.addWorkflowReferences(projectId, input)),
+            }), { status: 201 })
+          }
+          if (legacyReferences) {
+            const input = addImageProjectReferencesInputSchema.parse(raw)
+            return Response.json({ project: publicImageProject(await service.addReferences(projectId, input)) }, { status: 201 })
+          }
+          throw ApiError.badRequest('参考图请求缺少 references 或 reference_images')
         }
         if (referenceId && segments[6] === 'commands' && segments[7] === 'remove' && !segments[8] && req.method === 'POST') {
           requireMediaUiCapability(req, mediaUiCapability)
