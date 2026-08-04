@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { VideoWorkbenchRepository } from '../src/server/services/videoWorkbenchRepository.js'
 import { VideoWorkbenchService } from '../src/server/services/videoWorkbenchService.js'
+import { VideoMediaRelayClientError } from '../src/server/video/infrastructure/providers/videoMediaRelayClient.js'
 import { createVideoWorkbenchDomainApiHandler } from '../src/server/api/videoWorkbench.js'
 import { PayloadCommitProtocol } from '../src/server/media/kernel/storage/payloadCommitProtocol.js'
 import { SqliteUnitOfWork } from '../src/server/media/kernel/storage/sqliteUnitOfWork.js'
@@ -629,6 +630,37 @@ test('正式 ASR 只在完整授权范围内流式上传，并持久化原始 PT
   expect(settledBudget?.settlements).toMatchObject([{ operation_id: `task_00000001_asr_${sourceFact.id}`, capability: 'speech_transcription', asr_seconds: 0.8 }])
   expect(settledBudget?.reservations).toHaveLength(0)
   expect(settledBudget?.settlements[0]?.estimated_amount_micros).toBe(0)
+  service.repository.close()
+})
+
+test('四类远程能力按 Operation 结算、释放或围栏，而不改变整个项目预算状态', async () => {
+  const root = await testRoot('operation-budget-finalization')
+  const service = new VideoWorkbenchService({ root, now: () => new Date(at) })
+  const created = await service.createProject({ title: '逐操作预算' })
+  await service.repository.saveProject({
+    ...created,
+    remote_analysis_budgets: [{ id: 'budget_00000001', estimate_hash: hash('a'), state: 'reserved', requests: 20, total_tokens: 20_000, input_bytes: 20_000_000, visual_frames: 20, proxy_seconds: 20, asr_seconds: 20, estimated_amount_micros: 20_000, reservations: [], settlements: [], created_at: at, updated_at: at }],
+  })
+  const invoke = service as unknown as {
+    reserveRemoteBudget: (projectId: string, budgetId: string, operationId: string, capability: 'visual_evidence' | 'media_reasoning' | 'speech_transcription' | 'semantic_embedding', usage: { requests: number; total_tokens: number; input_bytes: number; visual_frames: number; proxy_seconds: number; asr_seconds: number; estimated_amount_micros: number }) => Promise<void>
+    settleRemoteBudget: (projectId: string, budgetId: string, operationId: string, receipt: { id: string; capability: 'visual_evidence' | 'media_reasoning' | 'speech_transcription' | 'semantic_embedding'; usage: { requests: number; total_tokens: number; input_bytes: number; visual_frames: number; proxy_seconds: number; asr_seconds: number; estimated_amount_micros: number } }) => Promise<void>
+    reserveAndRunRemote: (projectId: string, budgetId: string, operationId: string, capability: 'visual_evidence' | 'media_reasoning' | 'speech_transcription' | 'semantic_embedding', usage: { requests: number; total_tokens: number; input_bytes: number; visual_frames: number; proxy_seconds: number; asr_seconds: number; estimated_amount_micros: number }, action: () => Promise<never>) => Promise<never>
+  }
+  const usage = { requests: 1, total_tokens: 1, input_bytes: 1, visual_frames: 0, proxy_seconds: 0, asr_seconds: 0, estimated_amount_micros: 1 }
+  const capabilities = ['visual_evidence', 'media_reasoning', 'speech_transcription', 'semantic_embedding'] as const
+  for (const [index, capability] of capabilities.entries()) {
+    const settledOperationId = `task_settled_${index}`
+    await invoke.reserveRemoteBudget(created.id, 'budget_00000001', settledOperationId, capability, usage)
+    await invoke.settleRemoteBudget(created.id, 'budget_00000001', settledOperationId, { id: `receipt_settled_${index}`, capability, usage })
+    await expect(invoke.reserveAndRunRemote(created.id, 'budget_00000001', `task_known_release_${index}`, capability, usage, async () => { throw new VideoMediaRelayClientError(422, 'provider_rejected') })).rejects.toThrow('provider_rejected')
+    await expect(invoke.reserveAndRunRemote(created.id, 'budget_00000001', `task_unknown_fenced_${index}`, capability, usage, async () => { throw new Error('transport_lost') })).rejects.toThrow('transport_lost')
+  }
+  const budget = (await service.getProject(created.id)).remote_analysis_budgets[0]!
+  expect(budget.state).toBe('reserved')
+  expect(budget.settlements).toHaveLength(4)
+  expect(budget.reservations.filter(item => item.state === 'released')).toHaveLength(4)
+  expect(budget.reservations.filter(item => item.state === 'outcome_unknown')).toHaveLength(4)
+  expect(budget.reservations.every(item => item.finalized_at && item.safe_error_code)).toBe(true)
   service.repository.close()
 })
 

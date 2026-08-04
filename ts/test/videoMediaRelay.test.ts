@@ -75,6 +75,35 @@ test('Video Media Relay rejects a missing bearer token before attempting Gateway
   expect(introspectionCalls).toBe(0)
 })
 
+test('Relay reserves object-lease capacity before signing and rejects purpose, MIME and expired capabilities', async () => {
+  let signed = 0
+  let current = now()
+  const objectStore: MediaObjectStore = {
+    async createPutUrl(input) { signed += 1; return { put_url: `https://oss.example.test/${input.leaseId}`, required_headers: { 'content-type': input.contentType } } },
+    async head() { return null }, async delete() {}, async createReadUrl() { return 'https://oss.example.test/read' }, async putResult() {}, async createResultReadUrl() { return 'https://oss.example.test/result' }, async deleteResult() {},
+  }
+  const env = { GW_VIDEO_MEDIA_INTROSPECTION_TOKEN: token, VIDEO_MEDIA_GATEWAY_INTROSPECTION_BASE: 'http://gateway', VIDEO_MEDIA_RELAY_DB: ':memory:', VIDEO_MEDIA_OBJECT_LEASE_QUOTA_UNITS: '1', VIDEO_MEDIA_LEASE_TTL_MS: '60000' }
+  const handler = createVideoMediaRelayFetch({ env, fetchImpl: identityFetch, objectStore, now: () => current })
+  const valid = { local_operation_id: 'task_lease_policy_0001', purpose: 'visual_frames', content_hash: hash, byte_size: 4, content_type: 'image/png', consent_revision_id: 'consent_lease_policy_01', consent_scope_hash: hash }
+  const invalid = await handler(new Request('http://relay/v1/video-media/object-leases', { method: 'POST', headers: headers('lease-policy-invalid-key'), body: JSON.stringify({ ...valid, local_operation_id: 'task_lease_policy_0002', purpose: 'audio_for_asr', content_type: 'image/png' }) }))
+  expect(invalid.status).toBe(422)
+  expect(await invalid.json()).toMatchObject({ error: 'lease_purpose_mime_mismatch' })
+  expect(signed).toBe(0)
+  const first = await handler(new Request('http://relay/v1/video-media/object-leases', { method: 'POST', headers: headers('lease-policy-first-key'), body: JSON.stringify(valid) }))
+  const lease = await first.json() as { lease_id: string }
+  expect(first.status).toBe(201)
+  expect(signed).toBe(1)
+  const exhausted = await handler(new Request('http://relay/v1/video-media/object-leases', { method: 'POST', headers: headers('lease-policy-exhausted-key'), body: JSON.stringify({ ...valid, local_operation_id: 'task_lease_policy_0003' }) }))
+  expect(exhausted.status).toBe(429)
+  expect(await exhausted.json()).toMatchObject({ error: 'object_lease_quota_exceeded' })
+  current = new Date(current.getTime() + 60_001)
+  const expired = await handler(new Request(`http://relay/v1/video-media/object-leases/${lease.lease_id}/complete`, { method: 'POST', headers: headers('lease-policy-expired-key'), body: '{}' }))
+  expect(expired.status).toBe(410)
+  const reclaimed = await handler(new Request('http://relay/v1/video-media/object-leases', { method: 'POST', headers: headers('lease-policy-reclaimed-key'), body: JSON.stringify({ ...valid, local_operation_id: 'task_lease_policy_0004' }) }))
+  expect(reclaimed.status).toBe(201)
+  expect(signed).toBe(2)
+})
+
 test('Relay persists failed OSS result cleanup and retries it on the next authenticated request', async () => {
   let deleteAttempts = 0
   const objectStore: MediaObjectStore = {
@@ -114,12 +143,14 @@ test('visual provider failures release known rejections but fence ambiguous outc
   const released = await known(new Request('http://relay/v1/video-media/operations', { method: 'POST', headers: headers('visual-known-release-key'), body: JSON.stringify({ local_operation_id: 'task_embedding_known_12345678', consent_revision_id: 'consent_embedding_12345678', consent_scope_hash: hash, local_budget_reservation_id: 'budget_embedding_12345678', request_hash: hash, capability: 'semantic_embedding', application_role: 'search_index', input: { embedding_role: 'query', items: [{ id: 'fact_embedding_12345678', text: 'release after known failure' }], model: 'text-embedding-v4', dimension: 768, instruction_version: 'v1' } }) }))
   expect(released.status).toBe(422)
 
-  const unknown = createVideoMediaRelayFetch({ env: { GW_VIDEO_MEDIA_INTROSPECTION_TOKEN: token, VIDEO_MEDIA_GATEWAY_INTROSPECTION_BASE: 'http://gateway', VIDEO_MEDIA_RELAY_DB: ':memory:', VIDEO_MEDIA_ACCOUNT_QUOTA_UNITS: '1' }, fetchImpl: identityFetch, objectStore, provider: { async execute() { throw new Error('lost_after_provider_submission') } }, now })
+  const unknown = createVideoMediaRelayFetch({ env: { GW_VIDEO_MEDIA_INTROSPECTION_TOKEN: token, VIDEO_MEDIA_GATEWAY_INTROSPECTION_BASE: 'http://gateway', VIDEO_MEDIA_RELAY_DB: ':memory:', VIDEO_MEDIA_ACCOUNT_QUOTA_UNITS: '1', VIDEO_MEDIA_OBJECT_LEASE_QUOTA_UNITS: '1' }, fetchImpl: identityFetch, objectStore, provider: { async execute() { throw new Error('lost_after_provider_submission') } }, now })
   const unknownLeasePayload = { ...leasePayload, local_operation_id: 'task_visual_unknown_12345678' }
   const unknownLease = await unknown(new Request('http://relay/v1/video-media/object-leases', { method: 'POST', headers: headers('visual-unknown-lease-key'), body: JSON.stringify(unknownLeasePayload) })).then(response => response.json()) as { lease_id: string }
   const unknownReady = await unknown(new Request(`http://relay/v1/video-media/object-leases/${unknownLease.lease_id}/complete`, { method: 'POST', headers: headers('visual-unknown-complete-key'), body: '{}' })).then(response => response.json()) as { object_ref: string }
   const ambiguous = await unknown(new Request('http://relay/v1/video-media/operations', { method: 'POST', headers: headers('visual-unknown-operation-key'), body: JSON.stringify(operation(unknownReady.object_ref, 'unknown_12345678')) }))
   expect(ambiguous.status).toBe(503)
+  const retainedLease = await unknown(new Request('http://relay/v1/video-media/object-leases', { method: 'POST', headers: headers('visual-unknown-retained-lease-key'), body: JSON.stringify({ ...unknownLeasePayload, local_operation_id: 'task_visual_outcome_retained' }) }))
+  expect(retainedLease.status).toBe(429)
   const blocked = await unknown(new Request('http://relay/v1/video-media/operations', { method: 'POST', headers: headers('visual-unknown-quota-key'), body: JSON.stringify({ local_operation_id: 'task_embedding_unknown_12345678', consent_revision_id: 'consent_embedding_unknown_12345678', consent_scope_hash: hash, local_budget_reservation_id: 'budget_embedding_unknown_12345678', request_hash: hash, capability: 'semantic_embedding', application_role: 'search_index', input: { embedding_role: 'query', items: [{ id: 'fact_embedding_unknown_12345678', text: 'unknown must retain quota' }], model: 'text-embedding-v4', dimension: 768, instruction_version: 'v1' } }) }))
   expect(blocked.status).toBe(429)
   expect(deleted).toEqual([lease.lease_id])

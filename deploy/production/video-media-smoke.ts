@@ -23,6 +23,11 @@ const control = async (path: string, method: 'POST' | 'DELETE', payload?: unknow
   if (!response.ok) throw new Error(`relay ${method} ${path} failed with ${response.status}`)
   return response
 }
+const uncheckedControl = async (path: string, method: 'POST' | 'DELETE', payload?: unknown): Promise<Response> => await fetch(`${base}${path}`, {
+  method,
+  headers: { ...authHeaders(), ...(payload === undefined ? {} : { 'Content-Type': 'application/json' }), 'Idempotency-Key': `smoke_${requestId()}`, 'X-Request-Timestamp': new Date().toISOString() },
+  ...(payload === undefined ? {} : { body: JSON.stringify(payload) }), signal: AbortSignal.timeout(30_000),
+})
 const readOperation = async (id: string): Promise<Operation> => {
   const response = await fetch(`${base}/v1/video-media/operations/${id}`, { headers: authHeaders(), signal: AbortSignal.timeout(30_000) })
   if (!response.ok) throw new Error(`relay GET operation failed with ${response.status}`)
@@ -74,20 +79,49 @@ const verifyAndAcknowledge = async (operation: Operation): Promise<unknown> => {
 let multipartLease: Lease | undefined
 let imageLease: Lease | undefined
 let audioLease: Lease | undefined
+let expiryLease: Lease | undefined
 try {
   // The relay control plane must reject unauthenticated callers, while the
   // Gateway-only introspection endpoint must remain unreachable on the public
   // origin. These checks create no lease and no provider request.
   const unauthenticated = await fetch(`${base}/v1/video-media/object-leases`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}', signal: AbortSignal.timeout(30_000) })
   if (unauthenticated.status !== 401) throw new Error(`unauthenticated relay request returned ${unauthenticated.status}`)
+  const unauthenticatedPayload = await unauthenticated.text()
+  if (unauthenticatedPayload.includes(token)) throw new Error('relay authentication response leaked its bearer token')
+  const rejectedBearer = await fetch(`${base}/v1/video-media/object-leases`, { method: 'POST', headers: { Authorization: 'Bearer definitely-not-a-valid-installation-token', 'Content-Type': 'application/json' }, body: '{}', signal: AbortSignal.timeout(30_000) })
+  if (![401, 403].includes(rejectedBearer.status)) throw new Error(`invalid bearer returned ${rejectedBearer.status}`)
   const publicIntrospection = await fetch(new URL('/gw/internal/v1/auth/introspect', base), { method: 'POST', signal: AbortSignal.timeout(30_000) })
   if (publicIntrospection.ok) throw new Error('Gateway introspection endpoint is publicly reachable')
+
+  // The controlled production profile intentionally limits unconsumed input
+  // capabilities to one. Prove rejection happens before an OSS URL is signed,
+  // then reclaim it explicitly before paid provider smoke calls.
+  const quotaBytes = new Uint8Array([1, 2, 3, 4])
+  const quotaConsent = { id: `consent_smoke_quota_${requestId()}`, scopeHash: sha256(new TextEncoder().encode(requestId())) }
+  const quotaLease = await createLease(quotaBytes, 'video/mp4', 'proxy_video', quotaConsent)
+  const quotaRejected = await uncheckedControl('/v1/video-media/object-leases', 'POST', {
+    local_operation_id: `task_smoke_quota_${requestId()}`, purpose: 'proxy_video', content_hash: sha256(quotaBytes), byte_size: quotaBytes.byteLength, content_type: 'video/mp4', consent_revision_id: quotaConsent.id, consent_scope_hash: quotaConsent.scopeHash,
+  })
+  if (quotaRejected.status !== 429) throw new Error(`object lease quota returned ${quotaRejected.status}`)
+  await deleteLease(quotaLease.lease_id)
+  const purposeRejected = await uncheckedControl('/v1/video-media/object-leases', 'POST', {
+    local_operation_id: `task_smoke_purpose_${requestId()}`, purpose: 'audio_for_asr', content_hash: sha256(quotaBytes), byte_size: quotaBytes.byteLength, content_type: 'image/png', consent_revision_id: quotaConsent.id, consent_scope_hash: quotaConsent.scopeHash,
+  })
+  if (purposeRejected.status !== 422) throw new Error(`purpose/MIME rejection returned ${purposeRejected.status}`)
+
+  // The deployed one-minute lease TTL is intentionally short. Its expiry is
+  // verified through the Relay (not just an OSS signature query) before a
+  // capability can be renewed or completed.
+  expiryLease = await createLease(quotaBytes, 'video/mp4', 'proxy_video', quotaConsent)
+  await new Promise(resolve => setTimeout(resolve, 61_000))
+  const expired = await uncheckedControl(`/v1/video-media/object-leases/${expiryLease.lease_id}/complete`, 'POST', {})
+  if (expired.status !== 410) throw new Error(`expired object lease returned ${expired.status}`)
 
   // Nine MiB exceeds the production default threshold and proves the LA-to-
   // Beijing multipart path without submitting arbitrary bytes to a model.
   const multipartBytes = new Uint8Array(9 * 1024 * 1024)
   const multipartConsent = { id: `consent_smoke_${requestId()}`, scopeHash: sha256(new TextEncoder().encode(requestId())) }
-  multipartLease = await createLease(multipartBytes, 'application/octet-stream', 'proxy_video', multipartConsent)
+  multipartLease = await createLease(multipartBytes, 'video/mp4', 'proxy_video', multipartConsent)
   if (!multipartLease.multipart_upload) throw new Error('Relay did not issue a multipart upload lease')
   const uploaded = new Map(multipartLease.multipart_upload.uploaded_parts.map(part => [part.part_number, part.etag]))
   for (const part of multipartLease.multipart_upload.parts) {
@@ -99,6 +133,7 @@ try {
     uploaded.set(part.part_number, etag)
   }
   await completeLease(multipartLease, [...uploaded.entries()].map(([part_number, etag]) => ({ part_number, etag })).sort((a, b) => a.part_number - b.part_number))
+  await deleteLease(multipartLease.lease_id); multipartLease = undefined
 
   // A 16x16 valid PNG meets the minimum dimensions accepted by the visual
   // model while keeping the approved smoke cost minimal.
@@ -119,6 +154,7 @@ try {
   })).json() as Operation
   const visualResult = await verifyAndAcknowledge(visual)
   if (!visualResult || typeof visualResult !== 'object') throw new Error('Qwen visual result is not JSON')
+  await deleteLease(imageLease.lease_id); imageLease = undefined
 
   const embeddingSeed = requestId()
   const embedding = await (await control('/v1/video-media/operations', 'POST', {
@@ -128,6 +164,15 @@ try {
   })).json() as Operation
   const embeddingResult = await verifyAndAcknowledge(embedding) as { kind?: string; vectors?: Array<{ vector?: unknown[] }> }
   if (embeddingResult.kind !== 'embedding' || embeddingResult.vectors?.[0]?.vector?.length !== 768) throw new Error('DashScope embedding result is not a 768-dimensional vector')
+
+  const planningSeed = requestId()
+  const planning = await (await control('/v1/video-media/operations', 'POST', {
+    local_operation_id: `task_smoke_planning_${planningSeed}`, consent_revision_id: `consent_smoke_planning_${planningSeed}`, consent_scope_hash: sha256(new TextEncoder().encode(`scope_planning_${planningSeed}`)), local_budget_reservation_id: `budget_smoke_planning_${planningSeed}`,
+    request_hash: sha256(new TextEncoder().encode(`planning_${planningSeed}`)), capability: 'media_reasoning', application_role: 'planning',
+    input: { object_refs: [], facts_basis_hash: sha256(new TextEncoder().encode(`facts_planning_${planningSeed}`)), evidence: [{ id: `fact_smoke_planning_${planningSeed}`, kind: 'transcript', text: '选取开球后母球走位清晰且击球动作完整的片段。', confidence: 0.9 }], language: 'zh', output_schema_version: 1 },
+  })).json() as Operation
+  const planningResult = await verifyAndAcknowledge(planning) as { kind?: string; plan?: unknown }
+  if (planningResult.kind !== 'planning' || !planningResult.plan || typeof planningResult.plan !== 'object') throw new Error('Qwen planning result is not JSON')
 
   // This is DashScope's public, immutable welcome sample, downloaded only by
   // the controlled smoke tool and re-uploaded through the private OSS lease.
@@ -148,6 +193,11 @@ try {
     input: { mode: 'long_async', audio_object_ref: audioReady.object_ref, source_offset: { ticks: '0', tick_rate: { num: 1000, den: 1 } }, language: 'en', hotwords: [], speaker_diarization: false, sentence_timestamps: true, word_timestamps: true },
   })).json() as Operation
   if (!['submitted', 'running'].includes(submittedAsr.state) || !submittedAsr.provider_task_id) throw new Error(`Fun-ASR did not accept an async task (${submittedAsr.state})`)
+  const accountQuota = await uncheckedControl('/v1/video-media/operations', 'POST', {
+    local_operation_id: `task_smoke_quota_operation_${asrSeed}`, consent_revision_id: `consent_smoke_quota_operation_${asrSeed}`, consent_scope_hash: sha256(new TextEncoder().encode(`scope_quota_operation_${asrSeed}`)), local_budget_reservation_id: `budget_smoke_quota_operation_${asrSeed}`,
+    request_hash: sha256(new TextEncoder().encode(`quota_operation_${asrSeed}`)), capability: 'semantic_embedding', application_role: 'search_index', input: { embedding_role: 'document', items: Array.from({ length: 2_000 }, (_, index) => ({ id: `fact_smoke_quota_${asrSeed}_${index}`, text: 'quota must remain reserved while ASR is pending' })), model: 'text-embedding-v4', dimension: 768, instruction_version: 'video-media-v1' },
+  })
+  if (accountQuota.status !== 429) throw new Error(`async account quota returned ${accountQuota.status}`)
   const deadline = Date.now() + 180_000
   let asr: Operation = submittedAsr
   while (Date.now() < deadline && ['submitted', 'running'].includes(asr.state)) {
@@ -156,10 +206,11 @@ try {
   }
   const asrResult = await verifyAndAcknowledge(asr) as { kind?: string; text?: string }
   if (asrResult.kind !== 'asr' || !asrResult.text?.trim()) throw new Error('Fun-ASR did not return transcript text')
-  console.log(`VIDEO_MEDIA_SMOKE_OK multipart_lease=${multipartLease.lease_id} qwen_receipt=${visual.provider_receipt!.id} embedding_receipt=${embedding.provider_receipt!.id} asr_receipt=${asr.provider_receipt!.id}`)
+  await deleteLease(audioLease.lease_id); audioLease = undefined
+  console.log(`VIDEO_MEDIA_SMOKE_OK qwen_visual_receipt=${visual.provider_receipt!.id} qwen_planning_receipt=${planning.provider_receipt!.id} embedding_receipt=${embedding.provider_receipt!.id} asr_receipt=${asr.provider_receipt!.id}`)
 } finally {
   const cleanupErrors: Error[] = []
-  for (const lease of [audioLease, imageLease, multipartLease]) {
+  for (const lease of [audioLease, imageLease, multipartLease, expiryLease]) {
     if (!lease) continue
     try { await deleteLease(lease.lease_id) } catch (error) { cleanupErrors.push(error instanceof Error ? error : new Error('unknown smoke cleanup failure')) }
   }

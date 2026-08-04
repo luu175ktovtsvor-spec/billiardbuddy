@@ -13,6 +13,7 @@ function read(path: string): Environment {
 }
 function requireValue(env: Environment, name: string, min = 1): string { const value = env[name]?.trim() ?? ''; if (value.length < min) fail(`${name} is required${min > 1 ? ` and must be at least ${min} characters` : ''}`); return value }
 function optionalBytes(env: Environment, name: string, min: number, max: number): void { const raw = env[name]?.trim(); if (!raw) return; const value = Number(raw); if (!Number.isSafeInteger(value) || value < min || value > max) fail(`${name} must be an integer between ${min} and ${max}`) }
+function requiredInteger(env: Environment, name: string, min: number, max: number): void { const raw = requireValue(env, name); const value = Number(raw); if (!Number.isSafeInteger(value) || value < min || value > max) fail(`${name} must be an integer between ${min} and ${max}`) }
 export function validateVideoMediaRelayEnvironment(env: Environment): void {
   requireValue(env, 'GW_VIDEO_MEDIA_INTROSPECTION_TOKEN', 32)
   const base = requireValue(env, 'VIDEO_MEDIA_GATEWAY_INTROSPECTION_BASE')
@@ -31,6 +32,13 @@ export function validateVideoMediaRelayEnvironment(env: Environment): void {
   requireValue(env, 'VIDEO_MEDIA_OSS_ACCESS_KEY_ID', 16)
   requireValue(env, 'VIDEO_MEDIA_OSS_ACCESS_KEY_SECRET', 16)
   if ((env.VIDEO_MEDIA_REGION ?? 'cn-beijing') !== 'cn-beijing') fail('VIDEO_MEDIA_REGION must be cn-beijing')
+  // Keep spend and object retention deliberate production choices. Defaults
+  // remain available for isolated unit tests only; deployment cannot inherit
+  // an accidental unlimited or stale holding period.
+  requiredInteger(env, 'VIDEO_MEDIA_ACCOUNT_QUOTA_UNITS', 1, 10_000_000)
+  requiredInteger(env, 'VIDEO_MEDIA_OBJECT_LEASE_QUOTA_UNITS', 1, 1_000_000)
+  requiredInteger(env, 'VIDEO_MEDIA_LEASE_TTL_MS', 60_000, 60 * 60_000)
+  requiredInteger(env, 'VIDEO_MEDIA_OUTCOME_UNKNOWN_RETENTION_MS', 60 * 60_000, 7 * 24 * 60 * 60_000)
   optionalBytes(env, 'VIDEO_MEDIA_MULTIPART_THRESHOLD_BYTES', 5 * 1024 * 1024, 5 * 1024 * 1024 * 1024)
   optionalBytes(env, 'VIDEO_MEDIA_MULTIPART_PART_SIZE_BYTES', 1024 * 1024, 512 * 1024 * 1024)
 }
