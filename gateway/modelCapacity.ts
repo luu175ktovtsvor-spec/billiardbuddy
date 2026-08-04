@@ -1,9 +1,6 @@
-export class CapacityQueueError extends Error {
-  constructor(readonly status: number, readonly publicMessage: string) {
-    super(publicMessage)
-    this.name = 'CapacityQueueError'
-  }
-}
+import { CapacityQueueError } from '../ts/shared/kernel/providerAdmission.js'
+
+export { CapacityQueueError, ProviderRateLimiter } from '../ts/shared/kernel/providerAdmission.js'
 
 export interface CapacityPermit {
   release(): void
@@ -15,6 +12,7 @@ export interface CapacitySnapshot {
   maxConcurrent: number
   maxConcurrentPerUser: number
   maxConcurrentPerToken: number
+  maxInflightPerUser: number
   /** Maximum number of waiters accepted by this provider pool. `Infinity` is only
    * used by direct unit-test construction; gateway production pools set a finite value. */
   queueMax: number
@@ -190,6 +188,9 @@ export class MimoReservationScheduler {
         ? Math.min(this.config.maxConcurrentPerUser, this.config.visionMaxConcurrentPerUser)
         : this.config.maxConcurrentPerUser,
       maxConcurrentPerToken: this.config.maxConcurrentPerToken,
+      maxInflightPerUser: lane === 'vision'
+        ? Math.min(this.config.maxInflightPerUser, this.config.visionMaxInflightPerUser)
+        : this.config.maxInflightPerUser,
       queueMax,
       oldestQueueMs: this.oldestQueueMs(lane),
     }
@@ -504,6 +505,7 @@ export class FairCapacityScheduler {
       maxConcurrent: this.maxConcurrent,
       maxConcurrentPerUser: this.maxConcurrentPerUser,
       maxConcurrentPerToken: this.maxConcurrentPerToken,
+      maxInflightPerUser: this.maxInflightPerUser,
       queueMax: this.queueMax,
       oldestQueueMs: oldestQueuedAt === Infinity ? 0 : Math.max(0, Math.trunc(performance.now() - oldestQueuedAt)),
     }

@@ -26,6 +26,10 @@ bb_runtime_paths=(
   gateway/installationAuth.ts
   gateway/transcription.ts
   gateway/modelCapacity.ts
+  gateway/capacityPolicy.ts
+  gateway/quotaPolicy.ts
+  gateway/providerCredentials.ts
+  gateway/serviceCredentials.ts
   gateway/managedResponses.ts
   gateway/mimoChat.ts
   gateway/visionBridge.ts
@@ -33,12 +37,19 @@ bb_runtime_paths=(
   gateway/usageBudget.ts
   gateway/operationResultStore.ts
   gateway/validate-deployment-env.ts
-  gateway/validate-mimo-capacity-env.sh
-  gateway/validate-production-capacity-env.sh
   relay/app.ts
-  relay/validate-production-env.sh
+  relay/capacityPolicy.ts
+  relay/providerCredentials.ts
+  relay/identityIntrospection.ts
+  relay/resultCredentials.ts
+  relay/validate-deployment-env.ts
+  ts/shared/kernel/providerAdmission.ts
+  ts/shared/kernel/deploymentEnvironment.ts
   ts/shared/product/providerContracts.ts
+  ts/shared/product/modelCatalog.ts
   ts/shared/product/providerGateway.ts
+  ts/shared/product/serviceIntrospection.ts
+  ts/shared/product/imageRelayProtocol.ts
 )
 
 mkdir -p "$(dirname "$bb_output")"

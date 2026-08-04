@@ -73,8 +73,14 @@ export interface VisionRateLimiter {
 }
 
 export interface VisionBridgeDeps {
-  mimoBase: string
-  mimoKey: string
+  /** Provider endpoint and already-formed Authorization value come from the
+   * Gateway credential boundary; the bridge never reads environment secrets. */
+  providerBase?: string
+  providerAuthorization?: string
+  /** @deprecated Compatibility for direct tests during the credential migration. */
+  mimoBase?: string
+  /** @deprecated Compatibility for direct tests during the credential migration. */
+  mimoKey?: string
   /** Registry-owned VisualEvidence model selected by the Gateway. */
   modelId?: string
   fetchImpl: FetchLike
@@ -448,6 +454,9 @@ async function callMimoVision(
   url: string,
   externalSignal?: AbortSignal,
 ): Promise<string> {
+  const providerBase = deps.providerBase ?? deps.mimoBase
+  const providerAuthorization = deps.providerAuthorization ?? (deps.mimoKey ? `Bearer ${deps.mimoKey}` : undefined)
+  if (!providerBase || !providerAuthorization) throw new VisionBridgeError(503, '视觉证据服务未配置')
   const controller = new AbortController()
   let timedOut = false
   const abortForNoSubscribers = () => controller.abort()
@@ -476,12 +485,12 @@ async function callMimoVision(
       }],
     })
     const { response } = await fetchMimoWithRetry(async () => {
-      return await deps.fetchImpl(`${deps.mimoBase}/chat/completions`, {
+      return await deps.fetchImpl(`${providerBase}/chat/completions`, {
         method: 'POST',
         body,
         signal: controller.signal,
         headers: {
-          Authorization: `Bearer ${deps.mimoKey}`,
+          Authorization: providerAuthorization,
           'Content-Type': 'application/json',
           'Accept-Encoding': 'identity',
         },

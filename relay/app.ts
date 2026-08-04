@@ -1,4 +1,5 @@
-// 生图异步任务服务(50~100 用户私测版加固)。
+// 生图异步任务服务。受理队列与真实 Provider 执行容量彼此独立，
+// 容量由 capacityPolicy 的 small 默认档和受控部署覆盖统一解析。
 //
 // 背景:GPT Image 2 是 OpenAI 同步接口(images.generate/edit),单张 high 质量要 2.5~4.5 分钟。若从大陆客户机/大陆网关
 // 直接握这条跨境长连接死等,连接会被网络在约 60 秒物理掐断——图在 OpenAI 已生成并扣费,却传不回来(图丢+白扣钱)。
@@ -7,127 +8,84 @@
 //   客户端(大陆) --短-- 大陆网关 --短-- 本服务(美国) --US→US ~80ms-- OpenAI
 // 任何跨境请求都退化成"提交(短)/轮询(短)",没有任何一跳还握跨境长连接,60 秒墙彻底绕开。
 //
-// 私测版加固(向后兼容,旧网关无 owner/无幂等键仍可工作):
+// 私测版加固:
 //   - 幂等键:同 (owner, Idempotency-Key) 的重复提交返回原 task_id,只跑一次真实上游、只扣一次费。
 //   - 归属绑定:任务绑定提交者 owner(网关注入的受信身份);带 owner 的任务只有同 owner 能轮询,否则 403。
 //   - SQLite 持久化任务元数据;大体积输入/结果放 700 目录的 blob 文件,不长期堆在内存/SQLite。
 //   - 队列上限:总量、单用户、并发、请求体大小、TTL,全部有界。
 //   - 重启恢复:queued 续跑;running 无法确认结果 → failed_unknown,禁止自动重提(避免重复扣费)。
 //
-// 契约(与 gateway /v1/images/tasks、ts 客户端 submitOpenAiImageTask 对齐):
-//   POST /images/tasks   {mode:'generate'|'edit', model, prompt, n, size, response_format?, images?:string[](data-uri), reference_controls?, mask?}
-//     headers: Authorization: Bearer <RELAY_TOKEN>; X-Relay-Owner?: <opaque>; Idempotency-Key?: <key>
+// 契约(与 Gateway 和桌面端对齐):
+//   POST /v1/images/tasks   {mode:'generate'|'edit', model, prompt, n, size, response_format?, images?:string[](data-uri), reference_controls?, mask?}
+//     headers: Authorization: Bearer <desktop access token>; Idempotency-Key: <key>
 //                        → 202 {task_id, status:'queued', reused?}   (立即返回,后台跑 OpenAI)
-//   GET  /images/tasks/:id  headers: Authorization + X-Relay-Owner?
+//   GET  /v1/images/tasks/:id  headers: Authorization; direct-v1 returns owner-bound result URLs
 //                        → 200 {status:'queued'|'running'|'succeeded'|'failed'|'failed_unknown', data?, error?, created}
-//                        → 403 owner 不匹配 / 404 未知或过期
-//   POST /images/tasks/:id/ack  headers: Authorization + X-Relay-Owner?
+//                        → 403 Gateway-introspected owner 不匹配 / 404 未知或过期
+//   POST /v1/images/tasks/:id/ack  headers: Authorization
 //                        → 本机已持久化成功结果后幂等确认，relay 立即删除结果 blob，保留 receipt 元数据
 //
-// 鉴权:Bearer <RELAY_TOKEN>(= 网关注入的 GW_RELAY_TOKEN)。真 OpenAI/ARK key 只在本服务环境变量,绝不下发。
+// 鉴权:每个受保护请求用安装 bearer 调 Gateway 私网 introspection；Relay 从返回值派生 owner。真 OpenAI/ARK key 只在本服务环境变量,绝不下发。
 
 import { Database } from 'bun:sqlite'
-import { createHash, createHmac, timingSafeEqual } from 'node:crypto'
+import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import {
+  defaultManagedModelForWorkload,
+  managedModelById,
+  managedModelsForWorkload,
+} from '../ts/shared/product/modelCatalog.js'
+import {
+  CapacityQueueError,
+  ProviderAdmissionError,
+  ProviderAdmissionGate,
+  ProviderRateLimiter,
+} from '../ts/shared/kernel/providerAdmission.js'
+import {
+  IMAGE_RELAY_RESULT_HANDOFF_DIRECT_V1,
+  IMAGE_RELAY_RESULT_HANDOFF_HEADER,
+  IMAGE_RELAY_RESULTS_PATH,
+  IMAGE_RELAY_TASKS_PATH,
+} from '../ts/shared/product/imageRelayProtocol.js'
+import { relayCapacityPolicyFromEnvironment, type RelayCapacityPolicy } from './capacityPolicy.js'
+import { loadImageRelayIdentityIntrospector, RelayIdentityIntrospectionError, type ImageRelayIdentity } from './identityIntrospection.js'
+import { loadRelayProviderCredentials } from './providerCredentials.js'
+import { loadImageRelayResultCredentials } from './resultCredentials.js'
 
 type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<Response>
 
-export const PROVIDER_GATEWAY_PROTOCOL_VALUE = 'bb-provider-gateway/1.0'
-const RELAY_RESULT_GRANT_MAX_FUTURE_MS = 15 * 60_000
-
-function requireGatewayProtocol(req: Request, owner: string): void {
-  if (owner && req.headers.get('x-bb-provider-protocol')?.trim() !== PROVIDER_GATEWAY_PROTOCOL_VALUE) {
-    throw new HttpError(426, 'relay: PROVIDER_PROTOCOL_INCOMPATIBLE')
-  }
-}
-
 export type RelayConfig = {
-  relayToken: string
-  openaiKey: string
-  openaiBase: string
-  arkKey: string
-  arkBase: string
   taskTtlMs: number
-  imgConc: number
-  imgUserConc: number
-  seedreamConc: number
-  seedreamUserConc: number
   dbPath: string
   blobDir: string | null
-  queueMax: number
-  userMax: number
   retryAfterSeconds: number
-  maxBodyBytes: number
-  activeInputBytesMax: number
-  pendingInputBytesMax: number
-  upstreamTimeoutMs: number
+  capacityPolicy: RelayCapacityPolicy
 }
 
 type Env = Record<string, string | undefined>
 
-function required(env: Env, key: string): string {
-  const v = env[key]
-  if (!v) throw new Error(`relay: 缺少环境变量 ${key}`)
-  return v
-}
-
-function intEnv(env: Env, key: string, fallback: number): number {
-  const raw = env[key]
-  if (raw === undefined || raw.trim() === '') return fallback
-  const parsed = Number.parseInt(raw, 10)
-  return Number.isFinite(parsed) ? parsed : fallback
+function boundedPositiveIntEnv(env: Env, key: string, fallback: number, max: number): number {
+  const raw = env[key]?.trim()
+  if (!raw) return fallback
+  if (!/^[1-9][0-9]*$/.test(raw)) throw new Error(`relay: ${key} 必须是正整数`)
+  const parsed = Number(raw)
+  if (!Number.isSafeInteger(parsed) || parsed > max) throw new Error(`relay: ${key} 超出允许范围`)
+  return parsed
 }
 
 export function loadRelayConfig(env: Env): RelayConfig {
-  const imgConc = Math.max(1, intEnv(env, 'RELAY_IMG_CONC', 6))
-  const seedreamConc = Math.max(1, intEnv(env, 'RELAY_SEEDREAM_CONC', 6))
-  const activeInputBytesMax = Math.max(1, intEnv(env, 'RELAY_ACTIVE_INPUT_BYTES_MAX', 512 * 1024 * 1024))
   return {
-    relayToken: required(env, 'RELAY_TOKEN'),
-    openaiKey: required(env, 'RELAY_OPENAI_KEY'),
-    openaiBase: (env.RELAY_OPENAI_BASE ?? 'https://api.openai.com/v1').replace(/\/+$/, ''),
-    arkKey: env.RELAY_ARK_KEY?.trim() ?? '',
-    arkBase: (env.RELAY_ARK_BASE ?? 'https://ark.cn-beijing.volces.com/api/v3').replace(/\/+$/, ''),
     // Terminal results must survive app restarts and users returning days later.
     // Active queued/running work is never swept regardless of this value.
-    taskTtlMs: Math.max(1, intEnv(env, 'RELAY_TASK_TTL_MS', 7 * 24 * 60 * 60_000)),
-    // 生图是昂贵且慢的同步上游。受理队列可以容纳 1,000 个以上桌面窗口，但真实
-    // OpenAI 调用仍由 RELAY_IMG_CONC 显式控制；默认保持保守值，生产 L2 档位可按账号
-    // 实测调高到 16，不能把受理数误称为真实完成并发。
-    imgConc,
-    // A user may enqueue ten windows, but one installation must not monopolize all
-    // paid upstream slots while 99 other users are waiting. With a 100-user burst this
-    // keeps the six active image calls spread across six owners whenever possible.
-    imgUserConc: Math.min(imgConc, Math.max(1, intEnv(env, 'RELAY_IMG_USER_CONC', 1))),
-    seedreamConc,
-    seedreamUserConc: Math.min(
-      seedreamConc,
-      Math.max(1, intEnv(env, 'RELAY_SEEDREAM_USER_CONC', 1)),
-    ),
+    taskTtlMs: boundedPositiveIntEnv(env, 'RELAY_TASK_TTL_MS', 7 * 24 * 60 * 60_000, 365 * 24 * 60 * 60_000),
     // 持久化:默认内存 SQLite(测试用);生产设 RELAY_DB=/opt/billiardbuddy-relay/relay.db 以支持重启恢复。
     dbPath: env.RELAY_DB ?? ':memory:',
     // 大体积 blob:设了 RELAY_BLOB_DIR 就落 700 目录的磁盘文件;没设(测试)就放进程内存。
     blobDir: env.RELAY_BLOB_DIR && env.RELAY_BLOB_DIR.trim() ? env.RELAY_BLOB_DIR.trim() : null,
-    // 100 人同时各开 10 个窗口时，1,000 个小任务可全部被短请求受理；额外的 200 个位置
-    // 仅用于短暂重试/调度抖动。它是“可排队量”，不是对上游并发或完成时延的承诺。
-    queueMax: Math.max(1, intEnv(env, 'RELAY_QUEUE_MAX', 1_200)), // 全局在途(queued+running)总上限
-    // 和产品的单人 10 窗口假设对齐，避免一个 installation 抢占整条图片队列。
-    userMax: Math.max(1, intEnv(env, 'RELAY_USER_MAX', 10)), // 单 owner 在途上限
     // 队列满时给网关/调用方明确的退避提示，而不是立刻并发重试放大流量。
-    retryAfterSeconds: Math.min(3600, Math.max(1, intEnv(env, 'RELAY_RETRY_AFTER_SECONDS', 30))),
-    // 20 MB decoded reference images expand to about 26.7 MB as base64, plus JSON framing.
-    maxBodyBytes: Math.max(1, intEnv(env, 'RELAY_MAX_BODY_BYTES', 32 * 1024 * 1024)), // 提交请求体大小上限
-    // 1,000 个小文生图可同时排队，但不能让 1,000 个 32 MB 改图输入一起耗尽内存和 blob 磁盘。
-    activeInputBytesMax,
-    // Input chunks are temporarily held both as stream chunks and as a contiguous JSON
-    // buffer before they can be written to the persistent blob. Keep that transient heap
-    // slice much smaller than the on-disk queued-input allowance.
-    pendingInputBytesMax: Math.min(
-      activeInputBytesMax,
-      Math.max(1, intEnv(env, 'RELAY_PENDING_INPUT_BYTES_MAX', 64 * 1024 * 1024)),
-    ),
-    upstreamTimeoutMs: Math.max(1, intEnv(env, 'RELAY_UPSTREAM_TIMEOUT_MS', 5 * 60_000)),
+    retryAfterSeconds: boundedPositiveIntEnv(env, 'RELAY_RETRY_AFTER_SECONDS', 30, 3600),
+    capacityPolicy: relayCapacityPolicyFromEnvironment(env),
   }
 }
 
@@ -141,68 +99,6 @@ class HttpError extends Error {
 
 class UpstreamResponseError extends Error {}
 class UpstreamOutcomeUnknownError extends Error {}
-
-/**
- * Concurrent OpenAI call gate. It is FIFO among eligible tasks, while skipping a
- * temporarily ineligible owner so a single installation cannot occupy every paid slot.
- */
-class Semaphore {
-  private active = 0
-  private readonly activeByOwner = new Map<string, number>()
-  private queue: Array<{ owner: string; grant: () => void }> = []
-  constructor(private readonly max: number, private readonly perOwnerMax: number) {}
-
-  async run<T>(owner: string, fn: () => Promise<T>): Promise<T> {
-    await this.acquire(owner)
-    try {
-      return await fn()
-    } finally {
-      this.release(owner)
-    }
-  }
-
-  private canAcquire(owner: string): boolean {
-    return this.active < this.max && (this.activeByOwner.get(owner) ?? 0) < this.perOwnerMax
-  }
-
-  private take(owner: string): void {
-    this.active++
-    this.activeByOwner.set(owner, (this.activeByOwner.get(owner) ?? 0) + 1)
-  }
-
-  private async acquire(owner: string): Promise<void> {
-    if (this.canAcquire(owner)) {
-      this.take(owner)
-      return
-    }
-    await new Promise<void>(resolve => {
-      this.queue.push({
-        owner,
-        grant: () => {
-          this.take(owner)
-          resolve()
-        },
-      })
-    })
-  }
-
-  private release(owner: string): void {
-    this.active--
-    const nextForOwner = (this.activeByOwner.get(owner) ?? 1) - 1
-    if (nextForOwner > 0) this.activeByOwner.set(owner, nextForOwner)
-    else this.activeByOwner.delete(owner)
-    this.drain()
-  }
-
-  private drain(): void {
-    while (this.active < this.max) {
-      const index = this.queue.findIndex(waiter => this.canAcquire(waiter.owner))
-      if (index < 0) return
-      const [waiter] = this.queue.splice(index, 1)
-      waiter!.grant()
-    }
-  }
-}
 
 type TaskState = 'queued' | 'running' | 'succeeded' | 'failed' | 'failed_unknown' | 'cancelled'
 type InputFidelityCapability = {
@@ -233,23 +129,18 @@ type SubmitBody = {
   input_fidelity?: string
 }
 
-const GPT_IMAGE_MODEL = 'gpt-image-2'
-const SEEDREAM_IMAGE_MODEL = 'doubao-seedream-4-5-251128'
-const GPT_IMAGE_SIZES = new Set([
-  '1024x1024', '1536x1024', '1024x1536',
-  '2048x2048', '2048x1152', '3840x2160', '2160x3840',
-])
-const SEEDREAM_IMAGE_SIZES = new Set([
-  '2048x2048', '2304x1728', '1728x2304',
-  '2848x1600', '1600x2848', '2496x1664',
-  '1664x2496', '3136x1344',
-  '4096x4096', '4704x3520', '3520x4704',
-  '5504x3040', '3040x5504', '4992x3328',
-  '3328x4992', '6240x2656',
-  '2352x1568', '1568x2352',
-  '1680x2240', '2240x1680', '1536x2736',
-  '2736x1536', '1216x3040', '3040x1216',
-])
+const IMAGE_MODEL_CATALOG = managedModelsForWorkload('image_generation')
+const GPT_IMAGE_MODEL = defaultManagedModelForWorkload('image_generation').model_id
+const SEEDREAM_IMAGE_MODEL = IMAGE_MODEL_CATALOG.find(entry => entry.provider === 'bytedance-ark')?.model_id
+if (!SEEDREAM_IMAGE_MODEL) throw new Error('relay: model catalog has no Seedream image provider')
+
+function imageModelDescriptor(model: string) {
+  const entry = managedModelById(model)
+  if (!entry?.workload_bindings.some(binding => (
+    binding.workload === 'image_generation' && binding.execution_runtime === 'image-relay'
+  )) || !entry.image_generation) return undefined
+  return entry
+}
 
 function isSeedreamModel(model: string): boolean {
   return model === SEEDREAM_IMAGE_MODEL
@@ -257,12 +148,11 @@ function isSeedreamModel(model: string): boolean {
 
 function validateSubmitBody(body: SubmitBody, arkConfigured: boolean): void {
   const model = String(body.model ?? GPT_IMAGE_MODEL)
-  if (model !== GPT_IMAGE_MODEL && model !== SEEDREAM_IMAGE_MODEL) {
-    throw new HttpError(400, 'relay: 不支持这个生图模型')
-  }
+  const descriptor = imageModelDescriptor(model)
+  const generation = descriptor?.image_generation
+  if (!descriptor || !generation) throw new HttpError(400, 'relay: 不支持这个生图模型')
   const size = String(body.size ?? (isSeedreamModel(model) ? '2048x2048' : '1024x1024'))
-  const supportedSizes = isSeedreamModel(model) ? SEEDREAM_IMAGE_SIZES : GPT_IMAGE_SIZES
-  if (!supportedSizes.has(size)) throw new HttpError(400, 'relay: 当前模型不支持这个图片尺寸')
+  if (!generation.supported_sizes.includes(size)) throw new HttpError(400, 'relay: 当前模型不支持这个图片尺寸')
   if (isSeedreamModel(model) && !arkConfigured) {
     throw new HttpError(503, 'relay: 豆包生图未配置')
   }
@@ -578,55 +468,8 @@ function clampCount(n: unknown): number {
   return Number.isFinite(v) ? Math.max(1, Math.min(4, v)) : 1
 }
 
-// '' sentinel (never null) for the no-owner/legacy path, so the SQLite unique idempotency
-// index still dedups. A present owner enables ownership enforcement on poll.
-function readOwner(req: Request): string {
-  const raw = (req.headers.get('x-relay-owner') ?? '').trim()
-  return raw ? raw.slice(0, 256) : ''
-}
-
 function sha256(value: string | Uint8Array): string {
   return createHash('sha256').update(value).digest('hex')
-}
-
-type RelayResultGrantPayload = {
-  v: 1
-  task_id: string
-  owner_sha256: string
-  expires_at: number
-}
-
-export function verifyRelayResultGrant(
-  relayToken: string,
-  grant: string,
-  now = Date.now(),
-): RelayResultGrantPayload | null {
-  const [encoded, signature, extra] = grant.split('.')
-  if (!encoded || !signature || extra !== undefined || !/^[a-f0-9]{64}$/.test(signature)) return null
-  const expected = createHmac('sha256', relayToken).update(encoded).digest()
-  const supplied = Buffer.from(signature, 'hex')
-  if (supplied.byteLength !== expected.byteLength || !timingSafeEqual(supplied, expected)) return null
-  let payload: unknown
-  try {
-    payload = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8'))
-  } catch {
-    return null
-  }
-  if (!payload || typeof payload !== 'object') return null
-  const value = payload as Record<string, unknown>
-  if (
-    value.v !== 1
-    || typeof value.task_id !== 'string'
-    || !value.task_id
-    || value.task_id.includes('/')
-    || typeof value.owner_sha256 !== 'string'
-    || !/^[a-f0-9]{64}$/.test(value.owner_sha256)
-    || typeof value.expires_at !== 'number'
-    || !Number.isSafeInteger(value.expires_at)
-    || value.expires_at <= now
-    || value.expires_at > now + RELAY_RESULT_GRANT_MAX_FUTURE_MS
-  ) return null
-  return value as RelayResultGrantPayload
 }
 
 function taskProvider(body: SubmitBody): 'OpenAI' | 'ByteDance Ark' {
@@ -637,16 +480,46 @@ function sameOperationBinding(row: TaskRow, fingerprint: string): boolean {
   return row.input_fingerprint === fingerprint
 }
 
-export type RelayDeps = { env: Env; fetchImpl?: FetchLike; now?: () => number }
+export type RelayDeps = {
+  env: Env
+  /** Provider calls only; identity lookups use identityFetchImpl so tests cannot accidentally conflate them. */
+  fetchImpl?: FetchLike
+  identityFetchImpl?: FetchLike
+  now?: () => number
+}
 
 export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Response> {
   const config = loadRelayConfig(deps.env)
+  const capacity = config.capacityPolicy
+  const providerCredentials = loadRelayProviderCredentials(deps.env)
+  const configuredOpenAiAuthorization = providerCredentials.bearerAuthorization('openai')
+  if (!configuredOpenAiAuthorization) throw new Error('relay: 缺少环境变量 RELAY_OPENAI_KEY')
+  const openaiAuthorization: string = configuredOpenAiAuthorization
+  const seedreamAuthorization = providerCredentials.bearerAuthorization('seedream')
   const fetchImpl: FetchLike = deps.fetchImpl ?? globalThis.fetch
   const now = deps.now ?? Date.now
+  const identityIntrospector = loadImageRelayIdentityIntrospector(deps.env, { fetchImpl: deps.identityFetchImpl, now })
+  const resultCredentials = loadImageRelayResultCredentials(deps.env, { now })
   const store = new TaskStore(config.dbPath, now)
   const blobs: BlobStore = config.blobDir ? new DiskBlobStore(config.blobDir) : new MemoryBlobStore()
-  const openaiSem = new Semaphore(config.imgConc, config.imgUserConc)
-  const seedreamSem = new Semaphore(config.seedreamConc, config.seedreamUserConc)
+  const openaiAdmission = new ProviderAdmissionGate({
+    maxActive: capacity.providers.openai.concurrency,
+    maxActivePerOwner: capacity.providers.openai.owner_concurrency,
+    maxQueued: capacity.admission.queue_max,
+    maxQueuedPerOwner: capacity.admission.owner_task_max,
+    maxWaitMs: config.retryAfterSeconds * 1_000,
+  })
+  const seedreamAdmission = new ProviderAdmissionGate({
+    maxActive: capacity.providers.seedream.concurrency,
+    maxActivePerOwner: capacity.providers.seedream.owner_concurrency,
+    maxQueued: capacity.admission.queue_max,
+    maxQueuedPerOwner: capacity.admission.owner_task_max,
+    maxWaitMs: config.retryAfterSeconds * 1_000,
+  })
+  const openaiRate = new ProviderRateLimiter(capacity.providers.openai.requests_per_minute, capacity.admission.queue_max)
+  const seedreamRate = new ProviderRateLimiter(capacity.providers.seedream.requests_per_minute, capacity.admission.queue_max)
+  const admissionControllers = new Map<string, AbortController>()
+  const retryTimers = new Map<string, ReturnType<typeof setTimeout>>()
   // 尚未落入 SQLite 的上传体也要计入预算；否则 500 个 chunked 请求可在入队前一起占满内存。
   let pendingInputBytes = 0
   // This cache is updated on task-state transitions, not once for every HTTP chunk. A
@@ -659,11 +532,11 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
   }
 
   function reserveInputBytes(bytes: number): void {
-    if (pendingInputBytes + bytes > config.pendingInputBytesMax) {
+    if (pendingInputBytes + bytes > capacity.admission.pending_input_bytes_max) {
       throw queueFull('relay: 同时上传的生图输入数据已达上限,请等待前面的上传完成')
     }
     const used = activeInputBytes + pendingInputBytes
-    if (used + bytes > config.activeInputBytesMax) {
+    if (used + bytes > capacity.admission.active_input_bytes_max) {
       throw queueFull('relay: 活跃生图输入数据已达上限,请等待前面的任务完成或取消')
     }
     pendingInputBytes += bytes
@@ -678,10 +551,18 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
     for (const id of store.sweepExpired(cutoff)) blobs.del(id)
   }
 
-  function auth(req: Request): void {
+  async function identity(req: Request): Promise<ImageRelayIdentity> {
     const header = req.headers.get('authorization') ?? ''
-    const token = header.startsWith('Bearer ') ? header.slice(7) : ''
-    if (!token || token !== config.relayToken) throw new HttpError(401, 'relay: 无效令牌')
+    const match = /^Bearer\s+(.+)$/i.exec(header)
+    if (!match?.[1]?.trim()) throw new HttpError(401, 'relay: 缺少安装访问令牌')
+    try {
+      return await identityIntrospector.introspect(match[1].trim())
+    } catch (error) {
+      if (error instanceof RelayIdentityIntrospectionError) {
+        throw new HttpError(error.status, `relay: ${error.code}`)
+      }
+      throw error
+    }
   }
 
   function queueFull(message: string): HttpError {
@@ -699,14 +580,15 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
   ): Promise<{ response: Response; body: T }> {
     const controller = new AbortController()
     let timer: ReturnType<typeof setTimeout> | undefined
+    const providerPolicy = provider === 'OpenAI' ? capacity.providers.openai : capacity.providers.seedream
     const timeoutError = () => new UpstreamOutcomeUnknownError(
-      `${provider} 请求超过 5 分钟，无法确认是否已经生成或扣费`,
+      `${provider} 请求超过受控上游时限，无法确认是否已经生成或扣费`,
     )
     const timeout = new Promise<never>((_resolve, reject) => {
       timer = setTimeout(() => {
         controller.abort()
         reject(timeoutError())
-      }, config.upstreamTimeoutMs)
+      }, providerPolicy.upstream_timeout_ms)
       ;(timer as unknown as { unref?: () => void }).unref?.()
     })
     const requestAndRead = async () => {
@@ -826,14 +708,19 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
         payload.image = images.length === 1 ? images[0] : images
         payload.sequential_image_generation = 'disabled'
       }
-      const { response, body: text } = await fetchUpstreamText('Seedream', `${config.arkBase}/images/generations`, {
-        method: 'POST',
-        headers: {
-          authorization: `Bearer ${config.arkKey}`,
-          'content-type': 'application/json',
+      if (!seedreamAuthorization) throw new UpstreamResponseError('Seedream 凭据未配置')
+      const { response, body: text } = await fetchUpstreamText(
+        'Seedream',
+        `${providerCredentials.baseUrl('seedream')}/images/generations`,
+        {
+          method: 'POST',
+          headers: {
+            authorization: seedreamAuthorization,
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify(payload),
         },
-        body: JSON.stringify(payload),
-      })
+      )
       if (!response.ok) throw new UpstreamResponseError(`Seedream 请求未被接受: HTTP ${response.status}`)
       recordReceipt(upstreamReceiptHash('Seedream', response, text))
       let parsed: unknown
@@ -854,9 +741,25 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
     return outputs
   }
 
+  function scheduleTaskRetry(id: string): void {
+    if (retryTimers.has(id) || store.get(id)?.status !== 'queued') return
+    const timer = setTimeout(() => {
+      retryTimers.delete(id)
+      if (store.get(id)?.status === 'queued') void runImageTask(id)
+    }, config.retryAfterSeconds * 1_000)
+    ;(timer as unknown as { unref?: () => void }).unref?.()
+    retryTimers.set(id, timer)
+  }
+
   /** 后台按模型调用对应图片上游;成功把 data 存 blob,失败/未知存状态。 */
   async function runImageTask(id: string): Promise<void> {
-    const owner = store.get(id)?.owner ?? ''
+    const initial = store.get(id)
+    if (!initial || initial.status !== 'queued' || admissionControllers.has(id)) return
+    const owner = initial.owner || 'legacy-unowned'
+    const controller = new AbortController()
+    admissionControllers.set(id, controller)
+    let permit: { release(): void } | undefined
+    let retainInputForRetry = false
     try {
       let queuedBody = blobs.get(id, 'in') as SubmitBody | null
       if (!queuedBody) {
@@ -864,96 +767,109 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
         return
       }
       const model = String(queuedBody.model ?? GPT_IMAGE_MODEL)
-      const sem = isSeedreamModel(model) ? seedreamSem : openaiSem
+      const seedream = isSeedreamModel(model)
+      const admission = seedream ? seedreamAdmission : openaiAdmission
+      const rate = seedream ? seedreamRate : openaiRate
       // Do not retain a parsed edit body (which can contain many large data URIs)
       // while it waits for a paid upstream slot. The durable blob is the source of
       // truth and is read again only after admission.
       queuedBody = null
-      await sem.run(owner, async () => {
-        if (store.get(id)?.status !== 'queued') return
-        const body = blobs.get(id, 'in') as SubmitBody | null
-        if (!body) {
-          store.setStatus(id, 'failed_unknown', '任务输入已丢失，无法安全重提')
-          return
-        }
-        store.markRunning(id)
-        if (isSeedreamModel(model)) {
-          const data = await runSeedream(body, receipt => store.appendProviderReceipt(id, receipt))
-          try {
-            blobs.put(id, 'out', { data })
-          } catch (error) {
-            throw new UpstreamOutcomeUnknownError(`Seedream 已返回图片，但 relay 无法持久化结果: ${String(error).slice(0, 160)}`)
-          }
-          store.setStatus(id, 'succeeded')
-          return
-        }
-        const prompt = providerPrompt(body)
-        const n = clampCount(body.n)
-        const size = body.size ? String(body.size) : undefined
-        const requestUpstream = async (): Promise<{ response: Response; body: string }> => {
-          if (body.mode === 'edit') {
-            const form = new FormData()
-            form.set('model', model)
-            form.set('prompt', prompt)
-            form.set('n', String(n))
-            if (size) form.set('size', size)
-            const images = Array.isArray(body.images) ? body.images : []
-            let attached = 0
-            for (const uri of images) {
-              const file = dataUriToFile(String(uri), `image-${attached}.png`)
-              if (file) { form.append('image', file); attached++ }
-            }
-            if (attached === 0) throw new Error('改图任务缺少可用底图(images 为空或非法 data-uri)')
-            if (body.mask) {
-              const mask = dataUriToFile(String(body.mask), 'mask.png')
-              if (mask) form.set('mask', mask)
-            }
-            return await fetchUpstreamText('OpenAI', `${config.openaiBase}/images/edits`, {
-              method: 'POST',
-              headers: { authorization: `Bearer ${config.openaiKey}` },
-              body: form,
-            })
-          }
-          const payload: Record<string, unknown> = { model, prompt, n }
-          if (size) payload.size = size
-          return await fetchUpstreamText('OpenAI', `${config.openaiBase}/images/generations`, {
-            method: 'POST',
-            headers: { authorization: `Bearer ${config.openaiKey}`, 'content-type': 'application/json' },
-            body: JSON.stringify(payload),
-          })
-        }
-
-        const { response: resp, body: text } = await requestUpstream()
-        if (!resp.ok) throw new UpstreamResponseError(`OpenAI 请求未被接受: HTTP ${resp.status}`)
-        store.appendProviderReceipt(id, upstreamReceiptHash('OpenAI', resp, text))
-        let parsed: unknown
-        try {
-          parsed = text ? JSON.parse(text) : {}
-        } catch {
-          throw new UpstreamOutcomeUnknownError('OpenAI 已返回成功状态，但响应内容损坏，无法确认生成结果')
-        }
-        const data = parsed && typeof parsed === 'object' && Array.isArray((parsed as Record<string, unknown>).data)
-          ? (parsed as { data: unknown[] }).data
-          : []
-        if (data.length === 0) {
-          throw new UpstreamOutcomeUnknownError('OpenAI 已返回成功状态，但没有可用结果，可能已经产生费用')
-        }
+      permit = await admission.acquire(owner, { signal: controller.signal })
+      await rate.acquire(config.retryAfterSeconds, controller.signal)
+      if (store.get(id)?.status !== 'queued') return
+      const body = blobs.get(id, 'in') as SubmitBody | null
+      if (!body) {
+        store.setStatus(id, 'failed_unknown', '任务输入已丢失，无法安全重提')
+        return
+      }
+      store.markRunning(id)
+      if (seedream) {
+        const data = await runSeedream(body, receipt => store.appendProviderReceipt(id, receipt))
         try {
           blobs.put(id, 'out', { data })
         } catch (error) {
-          // The provider already returned a successful image. If persistent result storage
-          // is full/unavailable, never report a normal failure that invites a paid retry.
-          throw new UpstreamOutcomeUnknownError(`OpenAI 已返回图片，但 relay 无法持久化结果: ${String(error).slice(0, 160)}`)
+          throw new UpstreamOutcomeUnknownError(`Seedream 已返回图片，但 relay 无法持久化结果: ${String(error).slice(0, 160)}`)
         }
         store.setStatus(id, 'succeeded')
-      })
+        return
+      }
+      const prompt = providerPrompt(body)
+      const n = clampCount(body.n)
+      const size = body.size ? String(body.size) : undefined
+      const requestUpstream = async (): Promise<{ response: Response; body: string }> => {
+        if (body.mode === 'edit') {
+          const form = new FormData()
+          form.set('model', model)
+          form.set('prompt', prompt)
+          form.set('n', String(n))
+          if (size) form.set('size', size)
+          const images = Array.isArray(body.images) ? body.images : []
+          let attached = 0
+          for (const uri of images) {
+            const file = dataUriToFile(String(uri), `image-${attached}.png`)
+            if (file) { form.append('image', file); attached++ }
+          }
+          if (attached === 0) throw new Error('改图任务缺少可用底图(images 为空或非法 data-uri)')
+          if (body.mask) {
+            const mask = dataUriToFile(String(body.mask), 'mask.png')
+            if (mask) form.set('mask', mask)
+          }
+          return await fetchUpstreamText('OpenAI', `${providerCredentials.baseUrl('openai')}/images/edits`, {
+            method: 'POST',
+            headers: { authorization: openaiAuthorization },
+            body: form,
+          })
+        }
+        const payload: Record<string, unknown> = { model, prompt, n }
+        if (size) payload.size = size
+        return await fetchUpstreamText('OpenAI', `${providerCredentials.baseUrl('openai')}/images/generations`, {
+          method: 'POST',
+          headers: { authorization: openaiAuthorization, 'content-type': 'application/json' },
+          body: JSON.stringify(payload),
+        })
+      }
+
+      const { response: resp, body: text } = await requestUpstream()
+      if (!resp.ok) throw new UpstreamResponseError(`OpenAI 请求未被接受: HTTP ${resp.status}`)
+      store.appendProviderReceipt(id, upstreamReceiptHash('OpenAI', resp, text))
+      let parsed: unknown
+      try {
+        parsed = text ? JSON.parse(text) : {}
+      } catch {
+        throw new UpstreamOutcomeUnknownError('OpenAI 已返回成功状态，但响应内容损坏，无法确认生成结果')
+      }
+      const data = parsed && typeof parsed === 'object' && Array.isArray((parsed as Record<string, unknown>).data)
+        ? (parsed as { data: unknown[] }).data
+        : []
+      if (data.length === 0) {
+        throw new UpstreamOutcomeUnknownError('OpenAI 已返回成功状态，但没有可用结果，可能已经产生费用')
+      }
+      try {
+        blobs.put(id, 'out', { data })
+      } catch (error) {
+        // The provider already returned a successful image. If persistent result storage
+        // is full/unavailable, never report a normal failure that invites a paid retry.
+        throw new UpstreamOutcomeUnknownError(`OpenAI 已返回图片，但 relay 无法持久化结果: ${String(error).slice(0, 160)}`)
+      }
+      store.setStatus(id, 'succeeded')
     } catch (err) {
+      const current = store.get(id)
+      if (current?.status === 'cancelled') return
+      if ((err instanceof ProviderAdmissionError || err instanceof CapacityQueueError) && current?.status === 'queued') {
+        retainInputForRetry = true
+        scheduleTaskRetry(id)
+        return
+      }
       const status: TaskState = err instanceof UpstreamOutcomeUnknownError ? 'failed_unknown' : 'failed'
       store.setStatus(id, status, err instanceof Error ? err.message : String(err))
     } finally {
+      permit?.release()
+      if (admissionControllers.get(id) === controller) admissionControllers.delete(id)
       // Reference images and prompts are needed only while queued/running. Terminal tasks retain
       // result blobs and metadata for polling, but not the sensitive original input body.
-      try { blobs.delKind(id, 'in') } finally { refreshActiveInputBytes() }
+      if (!retainInputForRetry) {
+        try { blobs.delKind(id, 'in') } finally { refreshActiveInputBytes() }
+      }
     }
   }
 
@@ -981,9 +897,8 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
   refreshActiveInputBytes()
 
   function pollAfterSeconds(rec: Pick<TaskRow, 'status'>): number | undefined {
-    // Queued image work may legitimately wait minutes behind the paid six-slot
-    // upstream. Tell clients to back off instead of multiplying 500 queued windows
-    // into hundreds of cross-region status reads per second.
+    // Queued image work may legitimately wait behind the paid provider pool. Tell
+    // clients to back off instead of multiplying status reads while capacity drains.
     if (rec.status === 'queued') return config.retryAfterSeconds
     if (rec.status === 'running') return 3
     return undefined
@@ -994,15 +909,27 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
    * b64_json output so observing a terminal task never materializes every image in
    * the runner process. Normal desktop polling remains backward compatible.
    */
-  function pollResponse(rec: TaskRow, metadataOnly = false): Response {
+  function pollResponse(
+    rec: TaskRow,
+    options: { metadataOnly?: boolean; directResultHandoff?: boolean; owner?: string } = {},
+  ): Response {
+    const metadataOnly = options.metadataOnly === true
     const out = rec.status === 'succeeded' ? (blobs.get(rec.id, 'out') as { data?: unknown[] } | null) : null
     const outputCount = Array.isArray(out?.data) ? out.data.length : 0
+    const directResultHandoff = options.directResultHandoff === true && outputCount > 0 && !!options.owner
+    const grant = directResultHandoff ? resultCredentials.issue(rec.id, options.owner!) : undefined
     let fidelity: InputFidelityCapability | null = null
     if (rec.input_fidelity) { try { fidelity = JSON.parse(rec.input_fidelity) } catch { fidelity = null } }
     const pollAfter = pollAfterSeconds(rec)
     return Response.json({
       status: rec.status,
-      ...(metadataOnly
+      ...(directResultHandoff
+        ? {
+            result_url: resultCredentials.resultUrl(grant!),
+            result_urls: Array.from({ length: outputCount }, (_unused, index) => resultCredentials.resultUrl(grant!, index)),
+            result_count: outputCount,
+          }
+        : metadataOnly
         ? { metadata_only: true, result_available: outputCount > 0, output_count: outputCount }
         : { data: out?.data }),
       error: rec.error ?? undefined,
@@ -1031,45 +958,56 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
         return Response.json({
           ok: true,
           component_manifest: {
-            component: 'billiardbuddy-relay',
-            protocol: PROVIDER_GATEWAY_PROTOCOL_VALUE,
-            requires_gateway_protocol_for_owned_tasks: true,
+            component: 'billiardbuddy-image-relay',
+            identity: 'gateway-introspection',
+            result_handoff: 'direct-v1',
           },
           active,
           queued: counts.queued,
           running: counts.running,
-          queue_available: Math.max(0, config.queueMax - active),
+          queue_available: Math.max(0, capacity.admission.queue_max - active),
           active_input_bytes: currentActiveInputBytes,
           pending_input_bytes: pendingInputBytes,
-          pending_input_bytes_max: config.pendingInputBytesMax,
-          pending_input_bytes_available: Math.max(0, config.pendingInputBytesMax - pendingInputBytes),
-          active_input_bytes_max: config.activeInputBytesMax,
-          active_input_bytes_available: Math.max(0, config.activeInputBytesMax - currentActiveInputBytes - pendingInputBytes),
-          img_conc: config.imgConc,
-          img_user_conc: config.imgUserConc,
-          seedream_configured: Boolean(config.arkKey),
-          seedream_conc: config.seedreamConc,
-          seedream_user_conc: config.seedreamUserConc,
-          queue_max: config.queueMax,
-          user_max: config.userMax,
+          pending_input_bytes_max: capacity.admission.pending_input_bytes_max,
+          pending_input_bytes_available: Math.max(0, capacity.admission.pending_input_bytes_max - pendingInputBytes),
+          active_input_bytes_max: capacity.admission.active_input_bytes_max,
+          active_input_bytes_available: Math.max(0, capacity.admission.active_input_bytes_max - currentActiveInputBytes - pendingInputBytes),
+          capacity_policy_revision: capacity.revision,
+          provider_capacity: {
+            openai: {
+              ...openaiAdmission.snapshot(),
+              rate: openaiRate.snapshot(),
+            },
+            seedream: {
+              configured: providerCredentials.view('seedream').secret_configured,
+              ...seedreamAdmission.snapshot(),
+              rate: seedreamRate.snapshot(),
+            },
+          },
+          img_conc: capacity.providers.openai.concurrency,
+          img_user_conc: capacity.providers.openai.owner_concurrency,
+          seedream_configured: providerCredentials.view('seedream').secret_configured,
+          seedream_conc: capacity.providers.seedream.concurrency,
+          seedream_user_conc: capacity.providers.seedream.owner_concurrency,
+          queue_max: capacity.admission.queue_max,
+          user_max: capacity.admission.owner_task_max,
           retry_after_seconds: config.retryAfterSeconds,
         }, { headers: { 'Cache-Control': 'no-store' } })
       }
-      if (req.method === 'POST' && url.pathname === '/images/tasks') {
-        auth(req)
+      if (req.method === 'POST' && url.pathname === IMAGE_RELAY_TASKS_PATH) {
+        const verified = await identity(req)
         sweep()
-        const owner = readOwner(req)
-        requireGatewayProtocol(req, owner)
+        const owner = verified.owner
         const idempotencyKey = (req.headers.get('idempotency-key') ?? '').trim() || null
-        if (owner && (!idempotencyKey || idempotencyKey.length > 160)) {
+        if (!idempotencyKey || idempotencyKey.length > 160) {
           throw new HttpError(428, 'relay: 缺少有效的 operation id')
         }
         // 请求体大小上限:先看 content-length 快速拒,再按实际字节校验。
         const declared = Number(req.headers.get('content-length') ?? '')
-        if (Number.isFinite(declared) && declared > config.maxBodyBytes) throw new HttpError(413, 'relay: 请求体过大')
+        if (Number.isFinite(declared) && declared > capacity.admission.max_body_bytes) throw new HttpError(413, 'relay: 请求体过大')
         const bodyReservation = await readRequestBodyBounded(
           req,
-          config.maxBodyBytes,
+          capacity.admission.max_body_bytes,
           reserveInputBytes,
           releaseInputBytes,
         )
@@ -1080,7 +1018,7 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
           try { body = JSON.parse(Buffer.from(raw).toString('utf8')) as SubmitBody } catch { throw new HttpError(400, 'relay: 请求体不是合法 JSON') }
           if (!body || typeof body !== 'object') throw new HttpError(400, 'relay: 请求体必须是对象')
           if (!String(body.prompt ?? '').trim()) throw new HttpError(400, 'relay: 缺少 prompt')
-          validateSubmitBody(body, Boolean(config.arkKey))
+          validateSubmitBody(body, providerCredentials.view('seedream').secret_configured)
           const inputFingerprint = sha256(raw)
           const provider = taskProvider(body)
 
@@ -1100,8 +1038,8 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
             }
           }
           // 队列上限:全局在途 + 单 owner 在途。
-          if (store.countActive() >= config.queueMax) throw queueFull('relay: 生图队列已满,请稍后重试')
-          if (owner && store.countActiveByOwner(owner) >= config.userMax) throw queueFull('relay: 你的生图任务已达上限,请等待前面的完成')
+          if (store.countActive() >= capacity.admission.queue_max) throw queueFull('relay: 生图队列已满,请稍后重试')
+          if (store.countActiveByOwner(owner) >= capacity.admission.owner_task_max) throw queueFull('relay: 你的生图任务已达上限,请等待前面的完成')
 
           const id = crypto.randomUUID()
           try {
@@ -1141,19 +1079,18 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
           if (!persisted) bodyReservation.release()
         }
       }
-      if (req.method === 'GET' && url.pathname.startsWith('/images/results/')) {
+      if (req.method === 'GET' && url.pathname.startsWith(`${IMAGE_RELAY_RESULTS_PATH}/`)) {
+        const verified = await identity(req)
         sweep()
-        const [grant, outputIndexRaw, extra] = url.pathname.slice('/images/results/'.length).split('/')
+        const [grant, outputIndexRaw, extra] = url.pathname.slice(`${IMAGE_RELAY_RESULTS_PATH}/`.length).split('/')
         if (!grant || extra !== undefined || (outputIndexRaw !== undefined && !/^\d+$/.test(outputIndexRaw))) {
           throw new HttpError(400, 'relay: 无效结果地址')
         }
-        const payload = verifyRelayResultGrant(config.relayToken, grant, now())
+        const payload = resultCredentials.verify(grant)
         if (!payload) throw new HttpError(403, 'relay: 结果授权无效或已过期')
         const rec = store.get(payload.task_id)
         if (!rec) return Response.json({ status: 'failed', error: '任务不存在或已过期' }, { status: 404 })
-        const ownerDigest = Buffer.from(sha256(rec.owner), 'hex')
-        const grantedDigest = Buffer.from(payload.owner_sha256, 'hex')
-        if (!rec.owner || !timingSafeEqual(ownerDigest, grantedDigest)) {
+        if (!rec.owner || rec.owner !== verified.owner || !resultCredentials.isOwner(payload, verified.owner)) {
           throw new HttpError(403, 'relay: 结果授权与任务归属不匹配')
         }
         if (rec.status !== 'succeeded') throw new HttpError(409, 'relay: 图片结果尚未就绪')
@@ -1172,28 +1109,27 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
         headers.set('X-Content-Type-Options', 'nosniff')
         return new Response(response.body, { status: response.status, headers })
       }
-      if (req.method === 'GET' && url.pathname.startsWith('/images/tasks/')) {
-        auth(req)
+      if (req.method === 'GET' && url.pathname.startsWith(`${IMAGE_RELAY_TASKS_PATH}/`)) {
+        const verified = await identity(req)
         sweep()
-        const id = url.pathname.slice('/images/tasks/'.length)
+        const id = url.pathname.slice(`${IMAGE_RELAY_TASKS_PATH}/`.length)
         const rec = store.get(id)
         if (!rec) return Response.json({ status: 'failed', error: '任务不存在或已过期' }, { status: 404 })
-        // 归属绑定:带 owner 的任务只有同 owner 能轮询(越权 403)。旧任务(owner='' 空哨兵)不设防,兼容期可轮询。
-        const requester = readOwner(req)
-        requireGatewayProtocol(req, requester)
-        if (rec.owner && rec.owner !== requester) throw new HttpError(403, 'relay: 无权访问该任务')
-        return pollResponse(rec, url.searchParams.get('metadata_only') === '1')
+        if (rec.owner !== verified.owner) throw new HttpError(403, 'relay: 无权访问该任务')
+        return pollResponse(rec, {
+          metadataOnly: url.searchParams.get('metadata_only') === '1',
+          directResultHandoff: req.headers.get(IMAGE_RELAY_RESULT_HANDOFF_HEADER)?.trim() === IMAGE_RELAY_RESULT_HANDOFF_DIRECT_V1,
+          owner: verified.owner,
+        })
       }
-      if (req.method === 'POST' && url.pathname.startsWith('/images/tasks/') && url.pathname.endsWith('/ack')) {
-        auth(req)
+      if (req.method === 'POST' && url.pathname.startsWith(`${IMAGE_RELAY_TASKS_PATH}/`) && url.pathname.endsWith('/ack')) {
+        const verified = await identity(req)
         sweep()
-        const id = url.pathname.slice('/images/tasks/'.length, -'/ack'.length)
+        const id = url.pathname.slice(`${IMAGE_RELAY_TASKS_PATH}/`.length, -'/ack'.length)
         if (!id || id.includes('/')) throw new HttpError(400, 'relay: 无效任务 ID')
         const rec = store.get(id)
         if (!rec) return Response.json({ status: 'failed', error: '任务不存在或已过期' }, { status: 404 })
-        const requester = readOwner(req)
-        requireGatewayProtocol(req, requester)
-        if (rec.owner && rec.owner !== requester) throw new HttpError(403, 'relay: 无权访问该任务')
+        if (rec.owner !== verified.owner) throw new HttpError(403, 'relay: 无权访问该任务')
         if (rec.status !== 'succeeded') throw new HttpError(409, 'relay: 只能确认已成功的图片结果')
         if (rec.acknowledged_at === null && blobs.byteLength(id, 'out') === null) {
           throw new HttpError(409, 'relay: 结果不完整，不能确认')
@@ -1209,18 +1145,20 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
           acknowledged_at: acknowledgedAt,
         })
       }
-      if (req.method === 'POST' && url.pathname.startsWith('/images/tasks/') && url.pathname.endsWith('/cancel')) {
-        auth(req)
+      if (req.method === 'POST' && url.pathname.startsWith(`${IMAGE_RELAY_TASKS_PATH}/`) && url.pathname.endsWith('/cancel')) {
+        const verified = await identity(req)
         sweep()
-        const id = url.pathname.slice('/images/tasks/'.length, -'/cancel'.length)
+        const id = url.pathname.slice(`${IMAGE_RELAY_TASKS_PATH}/`.length, -'/cancel'.length)
         if (!id || id.includes('/')) throw new HttpError(400, 'relay: 无效任务 ID')
         const rec = store.get(id)
         if (!rec) return Response.json({ status: 'failed', error: '任务不存在或已过期' }, { status: 404 })
-        const requester = readOwner(req)
-        requireGatewayProtocol(req, requester)
-        if (rec.owner && rec.owner !== requester) throw new HttpError(403, 'relay: 无权访问该任务')
+        if (rec.owner !== verified.owner) throw new HttpError(403, 'relay: 无权访问该任务')
         if (rec.status !== 'queued') throw new HttpError(409, 'relay: 任务已经开始，不能安全取消')
         store.setStatus(id, 'cancelled', '任务已在请求上游前取消')
+        admissionControllers.get(id)?.abort()
+        const retryTimer = retryTimers.get(id)
+        if (retryTimer) clearTimeout(retryTimer)
+        retryTimers.delete(id)
         refreshActiveInputBytes()
         blobs.delKind(id, 'in')
         return pollResponse(store.get(id)!)
@@ -1252,7 +1190,7 @@ if (import.meta.main) {
   // 只监听 loopback(默认 127.0.0.1),由 nginx 暴露受保护路径并按大陆 billiardbuddy-gateway 出口 IP 放行;
   // 绝不把 relay 直接绑到公网口(否则绕过 nginx 允许名单,只剩 Bearer 一层)。
   const hostname = process.env.RELAY_HOST ?? '127.0.0.1'
-  const handler = createRelayFetch({ env: process.env }) // 配置非法(缺 RELAY_TOKEN/RELAY_OPENAI_KEY)会在此抛错
+  const handler = createRelayFetch({ env: process.env }) // 配置非法(身份、结果或 Provider 凭据缺失)会在此抛错
   Bun.serve({ hostname, port, fetch: withRelayRequestTimeout(handler) })
   console.log(`[relay] 生图异步任务服务监听 ${hostname}:${port}`)
 }

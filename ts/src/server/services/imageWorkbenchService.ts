@@ -84,12 +84,16 @@ import {
 } from '../../../shared/contracts/imageGeneration.js'
 import { providerRegistryEntry } from '../../../../gateway/providerRegistry.js'
 import {
-  MEDIA_RESULT_HANDOFF_DIRECT_V1,
-  MEDIA_RESULT_HANDOFF_HEADER,
   PROVIDER_GATEWAY_PROTOCOL,
   PROVIDER_GATEWAY_PROTOCOL_HEADER,
 } from '../../../shared/product/providerGateway.js'
-import { productGatewayConfigured, productGatewayTarget } from '../product/productGatewayRuntime.js'
+import {
+  IMAGE_RELAY_RESULTS_PATH,
+  IMAGE_RELAY_RESULT_HANDOFF_DIRECT_V1,
+  IMAGE_RELAY_RESULT_HANDOFF_HEADER,
+  IMAGE_RELAY_TASKS_PATH,
+} from '../../../shared/product/imageRelayProtocol.js'
+import { productImageRelayConfigured, productImageRelayTarget } from '../product/productGatewayRuntime.js'
 import { applyImageBriefOverrides, compileImageBrief, providerPromptForImageBrief } from './imageBrief.js'
 import { IMAGE_PROVIDER_POLICY_REVISION, ImageProviderPolicyError, resolveImageProviderPolicy } from './imageProviderPolicy.js'
 import {
@@ -226,21 +230,22 @@ function relayPolicyRefusal(body: RelayImageTask): { category: string; safe_mess
   }
 }
 
-function trustedResultUrl(value: unknown, gatewayBaseUrl: string): string | null {
+function trustedResultUrl(value: unknown, imageRelayBaseUrl: string): string | null {
   if (typeof value !== 'string') return null
   try {
     const result = new URL(value)
-    const gateway = new URL(gatewayBaseUrl)
+    const imageRelay = new URL(imageRelayBaseUrl)
+    const resultPrefix = `${imageRelay.pathname.replace(/\/+$/, '')}${IMAGE_RELAY_RESULTS_PATH}/`
     if (
       result.protocol !== 'https:'
-      || result.origin !== gateway.origin
+      || result.origin !== imageRelay.origin
       || result.username
       || result.password
       || result.search
       || result.hash
-      || !result.pathname.startsWith('/relay/imgtasks/images/results/')
+      || !result.pathname.startsWith(resultPrefix)
     ) return null
-    const grant = result.pathname.slice('/relay/imgtasks/images/results/'.length)
+    const grant = result.pathname.slice(resultPrefix.length)
     return /^[A-Za-z0-9_-]+\.[a-f0-9]{64}(?:\/[0-3])?$/.test(grant) ? result.toString() : null
   } catch {
     return null
@@ -1056,8 +1061,8 @@ export class ImageWorkbenchService {
       throw new ImageWorkbenchServiceError('费用估算已过期或不属于当前输入，请重新确认', 409, 'IMAGE_REVISION_CONFLICT')
     }
     await this.assertBudgetAllows(project, estimate.price_upper_bound)
-    if (!productGatewayConfigured()) {
-      throw new ImageWorkbenchServiceError('图片远程能力尚未配置', 503, 'GATEWAY_NOT_CONFIGURED')
+    if (!productImageRelayConfigured()) {
+      throw new ImageWorkbenchServiceError('图片远程能力尚未配置', 503, 'IMAGE_RELAY_NOT_CONFIGURED')
     }
     // Reject a missing or corrupt Provider reference before accepting paid work.
     // The final data URIs and per-image controls are rebuilt from the same CAS
@@ -1320,7 +1325,7 @@ export class ImageWorkbenchService {
       throw new ImageWorkbenchServiceError('派生费用估算已过期或不属于当前输入，请重新确认', 409, 'IMAGE_REVISION_CONFLICT')
     }
     await this.assertBudgetAllows(project, estimate.price_upper_bound)
-    if (!productGatewayConfigured()) throw new ImageWorkbenchServiceError('图片远程能力尚未配置', 503, 'GATEWAY_NOT_CONFIGURED')
+    if (!productImageRelayConfigured()) throw new ImageWorkbenchServiceError('图片远程能力尚未配置', 503, 'IMAGE_RELAY_NOT_CONFIGURED')
     const now = this.iso()
     const operationId = stableId('op', project.id, roundId, candidate.id)
     const assetHashes = [...new Set([candidate.content_hash, ...providerReferences.map(reference => reference.content_hash)])]
@@ -2459,7 +2464,7 @@ export class ImageWorkbenchService {
     }
   }
 
-  private async fetchGatewayJson(input: RequestInfo | URL, init: RequestInit): Promise<{
+  private async fetchImageRelayJson(input: RequestInfo | URL, init: RequestInit): Promise<{
     response: Response
     body: RelayImageTask
   }> {
@@ -2468,14 +2473,14 @@ export class ImageWorkbenchService {
     const timeout = new Promise<never>((_resolve, reject) => {
       timer = setTimeout(() => {
         controller.abort()
-        reject(new Error('image gateway response deadline exceeded'))
+        reject(new Error('image relay response deadline exceeded'))
       }, this.imageResultTimeoutMs)
       ;(timer as unknown as { unref?: () => void }).unref?.()
     })
     const request = async () => {
       const response = await this.fetchImpl(input, { ...init, signal: controller.signal })
       const text = await response.text()
-      if (text.length > 4 * 1024 * 1024) throw new Error('image gateway response too large')
+      if (text.length > 4 * 1024 * 1024) throw new Error('image relay response too large')
       let body: RelayImageTask = {}
       if (text) {
         try {
@@ -2627,7 +2632,7 @@ export class ImageWorkbenchService {
   /**
    * A durable Round can exist before its first POST, and a process can die
    * after a POST begins without receiving the remote task id.  In both cases
-   * the only lawful recovery is the original idempotency key; Gateway either
+   * the only lawful recovery is the original idempotency key; Image Relay either
    * returns the accepted task or treats it as the same logical submission.
    */
   private async resumeUnpostedGenerationOperation(operation: ImageOperation, generation: ImageOperationV2): Promise<ImageOperation> {
@@ -2635,7 +2640,7 @@ export class ImageWorkbenchService {
     const neverPosted = operation.status === 'queued' && !operation.remote_submission_started_at
     const outcomeUnknown = operation.outcome_unknown === true
     if (!neverPosted && !outcomeUnknown) return operation
-    if (!productGatewayConfigured()) return operation
+    if (!productImageRelayConfigured()) return operation
     const provider = providerRegistryEntry(operation.image_operation.model)
     if (!provider) throw new ImageWorkbenchServiceError('图片操作缺少已注册 Provider', 500, 'IMAGE_OPERATION_CORRUPT')
     await this.submitGenerationTransport(
@@ -2948,15 +2953,15 @@ export class ImageWorkbenchService {
   }
 
   private async performSubmission(project: ImageWorkbenchProject, original: ImageOperation): Promise<ImageOperation> {
-    if (!productGatewayConfigured()) {
-      throw new ImageWorkbenchServiceError('图片远程能力尚未配置', 503, 'GATEWAY_NOT_CONFIGURED')
+    if (!productImageRelayConfigured()) {
+      throw new ImageWorkbenchServiceError('图片远程能力尚未配置', 503, 'IMAGE_RELAY_NOT_CONFIGURED')
     }
     const idempotencyKey = original.idempotency_key
     if (!idempotencyKey) {
       throw new ImageWorkbenchServiceError('图片操作缺少幂等凭据', 500, 'IMAGE_OPERATION_CORRUPT')
     }
-    const target = productGatewayTarget()
-    if (!target) throw new ImageWorkbenchServiceError('图片远程能力尚未配置', 503, 'GATEWAY_NOT_CONFIGURED')
+    const target = productImageRelayTarget()
+    if (!target) throw new ImageWorkbenchServiceError('图片远程能力尚未配置', 503, 'IMAGE_RELAY_NOT_CONFIGURED')
     const payload = await this.imageSubmissionPayload(project, original)
     let operation = await this.repository.saveOperation(this.operation({
       ...original,
@@ -2969,7 +2974,7 @@ export class ImageWorkbenchService {
       error_code: undefined,
     }))
     try {
-      const { response, body } = await this.fetchGatewayJson(`${target.baseUrl}/v1/images/tasks`, {
+      const { response, body } = await this.fetchImageRelayJson(`${target.baseUrl}${IMAGE_RELAY_TASKS_PATH}`, {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${target.token}`,
@@ -3043,10 +3048,14 @@ export class ImageWorkbenchService {
     if (handoffUrls.length > 4) throw new ImageWorkbenchServiceError('远程图片结果数量异常', 502, 'IMAGE_RESULT_INVALID')
     const trusted = handoffUrls.map(value => trustedResultUrl(value, target.baseUrl))
     if (trusted.some(value => !value)) throw new ImageWorkbenchServiceError('远程图片结果地址不可信', 502, 'IMAGE_RESULT_INVALID')
-    const results = await Promise.all(trusted.map(url => this.fetchGatewayJson(url!, {
+    const results = await Promise.all(trusted.map(url => this.fetchImageRelayJson(url!, {
       method: 'GET',
       redirect: 'error',
-      headers: { Accept: 'application/json' },
+      headers: {
+        Accept: 'application/json',
+        Authorization: `Bearer ${target.token}`,
+        [PROVIDER_GATEWAY_PROTOCOL_HEADER]: PROVIDER_GATEWAY_PROTOCOL.headerValue,
+      },
     })))
     const failure = results.find(result => !result.response.ok)
     if (failure) throw new ImageWorkbenchServiceError(
@@ -3059,11 +3068,11 @@ export class ImageWorkbenchService {
 
   private async acknowledgeGenerationRemoteResult(operation: ImageOperationV2, transport: ImageOperation): Promise<ImageOperation> {
     if (!transport.remote_task_id || !transport.provider_receipt_hash || transport.remote_result_acknowledged_at || !operation.result) return transport
-    const target = productGatewayTarget()
+    const target = productImageRelayTarget()
     if (!target) return transport
     try {
-      const { response, body } = await this.fetchGatewayJson(
-        `${target.baseUrl}/v1/images/tasks/${encodeURIComponent(transport.remote_task_id)}/ack`,
+      const { response, body } = await this.fetchImageRelayJson(
+        `${target.baseUrl}${IMAGE_RELAY_TASKS_PATH}/${encodeURIComponent(transport.remote_task_id)}/ack`,
         {
           method: 'POST',
           headers: {
@@ -3100,11 +3109,11 @@ export class ImageWorkbenchService {
         return operation
       }
     }
-    const target = productGatewayTarget()
+    const target = productImageRelayTarget()
     if (!target) return operation
     try {
-      const { response, body } = await this.fetchGatewayJson(
-        `${target.baseUrl}/v1/images/tasks/${encodeURIComponent(operation.remote_task_id)}/ack`,
+      const { response, body } = await this.fetchImageRelayJson(
+        `${target.baseUrl}${IMAGE_RELAY_TASKS_PATH}/${encodeURIComponent(operation.remote_task_id)}/ack`,
         {
           method: 'POST',
           headers: {
@@ -3380,19 +3389,19 @@ export class ImageWorkbenchService {
   }
 
   private async refreshOperation(original: ImageOperation): Promise<ImageOperation> {
-    if (!original.remote_task_id || !productGatewayConfigured()) return original
-    const target = productGatewayTarget()
+    if (!original.remote_task_id || !productImageRelayConfigured()) return original
+    const target = productImageRelayTarget()
     if (!target) return original
     let response: Response
     let body: RelayImageTask
     try {
-      const result = await this.fetchGatewayJson(
-        `${target.baseUrl}/v1/images/tasks/${encodeURIComponent(original.remote_task_id)}`,
+      const result = await this.fetchImageRelayJson(
+        `${target.baseUrl}${IMAGE_RELAY_TASKS_PATH}/${encodeURIComponent(original.remote_task_id)}`,
         {
           headers: {
             Authorization: `Bearer ${target.token}`,
             [PROVIDER_GATEWAY_PROTOCOL_HEADER]: PROVIDER_GATEWAY_PROTOCOL.headerValue,
-            [MEDIA_RESULT_HANDOFF_HEADER]: MEDIA_RESULT_HANDOFF_DIRECT_V1,
+            [IMAGE_RELAY_RESULT_HANDOFF_HEADER]: IMAGE_RELAY_RESULT_HANDOFF_DIRECT_V1,
           },
         },
       )
@@ -3482,13 +3491,13 @@ export class ImageWorkbenchService {
     if (operation.status !== 'queued' || !operation.remote_task_id) {
       throw new ImageWorkbenchServiceError('当前图片操作不能安全取消', 409, 'IMAGE_OPERATION_NOT_CANCELLABLE')
     }
-    const target = productGatewayTarget()
+    const target = productImageRelayTarget()
     if (!target) {
       throw new ImageWorkbenchServiceError(mediaSafeError('MEDIA_IMAGE_CANCEL_UNKNOWN').message, 503, 'IMAGE_CANCEL_UNKNOWN')
     }
     try {
-      const { response, body } = await this.fetchGatewayJson(
-        `${target.baseUrl}/v1/images/tasks/${encodeURIComponent(operation.remote_task_id)}/cancel`,
+      const { response, body } = await this.fetchImageRelayJson(
+        `${target.baseUrl}${IMAGE_RELAY_TASKS_PATH}/${encodeURIComponent(operation.remote_task_id)}/cancel`,
         {
           method: 'POST',
           headers: {
@@ -3569,8 +3578,8 @@ export class ImageWorkbenchService {
     const project = await this.project(projectId)
     this.assertRevision(project, input.revision, '图片项目已更新，请刷新后再编辑')
     await this.assertNoActiveOperation(project, input.confirm_unknown_retry)
-    if (!productGatewayConfigured()) {
-      throw new ImageWorkbenchServiceError('图片远程能力尚未配置', 503, 'GATEWAY_NOT_CONFIGURED')
+    if (!productImageRelayConfigured()) {
+      throw new ImageWorkbenchServiceError('图片远程能力尚未配置', 503, 'IMAGE_RELAY_NOT_CONFIGURED')
     }
     const base = await this.imageVersionBytes(project, input.base_version_id)
     const model = this.resolveGenerationPolicy({

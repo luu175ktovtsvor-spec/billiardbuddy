@@ -1,18 +1,17 @@
-import { readFileSync } from 'node:fs'
+import {
+  currentDeploymentEnvironment,
+  readStaticDeploymentEnvironment,
+} from '../ts/shared/kernel/deploymentEnvironment'
 import { textReasoningRegistryEntry } from './providerRegistry'
+import { loadCapacityPolicy } from './capacityPolicy'
+import { loadGatewayProviderCredentials, type GatewayCredentialProvider } from './providerCredentials'
+import { loadGatewayServiceCredentials } from './serviceCredentials'
+import { gatewayUsagePolicyFromEnvironment } from './quotaPolicy'
 
 type DeploymentEnvironment = Record<string, string>
 
 function fail(message: string): never {
   throw new Error(`Gateway deployment environment invalid: ${message}`)
-}
-
-function valueWithoutQuotes(value: string): string {
-  const trimmed = value.trim()
-  if (trimmed.length >= 2 && ((trimmed.startsWith('"') && trimmed.endsWith('"')) || (trimmed.startsWith("'") && trimmed.endsWith("'")))) {
-    return trimmed.slice(1, -1)
-  }
-  return trimmed
 }
 
 /**
@@ -21,52 +20,17 @@ function valueWithoutQuotes(value: string): string {
  * malformed production environment cannot execute while it is being checked.
  */
 export function readDeploymentEnvironment(path: string): DeploymentEnvironment {
-  let contents: string
   try {
-    contents = readFileSync(path, 'utf8')
-  } catch {
-    fail('cannot read gw.env')
+    return readStaticDeploymentEnvironment(path)
+  } catch (error) {
+    fail(error instanceof Error ? error.message : 'cannot read gateway.env')
   }
-  const environment: DeploymentEnvironment = {}
-  for (const [index, rawLine] of contents.split(/\r?\n/).entries()) {
-    const line = rawLine.trim()
-    if (!line || line.startsWith('#') || line.startsWith(';')) continue
-    const match = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/.exec(line)
-    if (!match) fail(`line ${index + 1} is not KEY=VALUE`)
-    environment[match[1]] = valueWithoutQuotes(match[2])
-  }
-  return environment
 }
 
 function requireValue(environment: DeploymentEnvironment, name: string): string {
   const value = environment[name]?.trim()
   if (!value) fail(`${name} is required`)
   return value
-}
-
-function requireHttpsUrl(environment: DeploymentEnvironment, name: string): void {
-  const value = requireValue(environment, name)
-  try {
-    if (new URL(value).protocol !== 'https:') fail(`${name} must use https`)
-  } catch (error) {
-    if (error instanceof Error && error.message.startsWith('Gateway deployment environment invalid:')) throw error
-    fail(`${name} must be a valid URL`)
-  }
-}
-
-/** Relay is HTTPS in every cross-host deployment, but Compose uses this fixed private hop. */
-function requireRelayTasksUrl(environment: DeploymentEnvironment): void {
-  const value = requireValue(environment, 'GW_RELAY_TASKS_BASE')
-  try {
-    const url = new URL(value)
-    if (url.username || url.password || url.search || url.hash) fail('GW_RELAY_TASKS_BASE must not contain credentials or query data')
-    if (url.protocol === 'https:') return
-    if (url.protocol === 'http:' && url.hostname === 'relay' && (url.port === '' || url.port === '8790')) return
-    fail('GW_RELAY_TASKS_BASE must use https outside the private Compose relay service')
-  } catch (error) {
-    if (error instanceof Error && error.message.startsWith('Gateway deployment environment invalid:')) throw error
-    fail('GW_RELAY_TASKS_BASE must be a valid URL')
-  }
 }
 
 /** Validate startup-critical values without opening the production database. */
@@ -83,27 +47,30 @@ export function validateDeploymentEnvironment(environment: DeploymentEnvironment
   for (const name of [
     'GW_ADMIN_TOKEN',
     'GW_DB',
-    'GW_RELAY_TOKEN',
-    'GW_DEEPSEEK_KEY',
-    'GW_MIMO_KEY',
-    'GW_FUNASR_KEY',
   ]) requireValue(environment, name)
 
-  requireRelayTasksUrl(environment)
-  for (const name of ['GW_DEEPSEEK_BASE', 'GW_MIMO_BASE']) {
-    if (environment[name]?.trim()) requireHttpsUrl(environment, name)
+  let credentials
+  try {
+    credentials = loadGatewayProviderCredentials(environment)
+    loadGatewayServiceCredentials(environment)
+    loadCapacityPolicy(environment)
+    gatewayUsagePolicyFromEnvironment(environment)
+  } catch (error) {
+    fail(error instanceof Error ? error.message : 'provider governance configuration is invalid')
   }
+  for (const provider of ['deepseek', 'mimo', 'funasr'] as const satisfies readonly GatewayCredentialProvider[]) {
+    if (!credentials.view(provider).secret_configured) fail(`${credentials.view(provider).secret_slot} is required`)
+  }
+  const qwenEnabled = environment.GW_QWEN_ENABLED?.trim() ?? '0'
+  if (qwenEnabled !== '0' && qwenEnabled !== '1') fail('GW_QWEN_ENABLED must be 0 or 1')
+  if (qwenEnabled === '1' && !credentials.view('qwen').secret_configured) fail('GW_QWEN_KEY is required when Qwen is enabled')
 }
 
 if (import.meta.main) {
   if (process.argv.length !== 3) fail('usage: bun validate-deployment-env.ts /path/to/gw.env | --process-env')
   const input = process.argv[2]
   if (input === '--process-env') {
-    const environment: DeploymentEnvironment = {}
-    for (const [name, value] of Object.entries(process.env)) {
-      if (typeof value === 'string') environment[name] = value
-    }
-    validateDeploymentEnvironment(environment)
+    validateDeploymentEnvironment(currentDeploymentEnvironment())
   } else {
     validateDeploymentEnvironment(readDeploymentEnvironment(input))
   }

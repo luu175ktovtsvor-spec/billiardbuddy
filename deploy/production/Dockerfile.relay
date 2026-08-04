@@ -2,6 +2,17 @@ FROM oven/bun:1.3.14
 
 WORKDIR /app/relay
 COPY --chown=bun:bun relay/app.ts ./app.ts
+COPY --chown=bun:bun relay/capacityPolicy.ts ./capacityPolicy.ts
+COPY --chown=bun:bun relay/providerCredentials.ts ./providerCredentials.ts
+COPY --chown=bun:bun relay/identityIntrospection.ts ./identityIntrospection.ts
+COPY --chown=bun:bun relay/resultCredentials.ts ./resultCredentials.ts
+COPY --chown=bun:bun relay/validate-deployment-env.ts ./validate-deployment-env.ts
+COPY --chown=bun:bun ts/shared/product/modelCatalog.ts /app/ts/shared/product/modelCatalog.ts
+COPY --chown=bun:bun ts/shared/product/providerContracts.ts /app/ts/shared/product/providerContracts.ts
+COPY --chown=bun:bun ts/shared/product/serviceIntrospection.ts /app/ts/shared/product/serviceIntrospection.ts
+COPY --chown=bun:bun ts/shared/product/imageRelayProtocol.ts /app/ts/shared/product/imageRelayProtocol.ts
+COPY --chown=bun:bun ts/shared/kernel/providerAdmission.ts /app/ts/shared/kernel/providerAdmission.ts
+COPY --chown=bun:bun ts/shared/kernel/deploymentEnvironment.ts /app/ts/shared/kernel/deploymentEnvironment.ts
 
 USER bun
 EXPOSE 8790

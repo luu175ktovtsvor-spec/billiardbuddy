@@ -9,16 +9,24 @@ import {
   imageWorkbenchProjectSchema,
   mediaJobEventJournalSchema,
   mediaSafeError,
+  mediaSafeErrorForServiceError,
   mediaTaskSchema,
 } from '../shared/contracts/media.js'
 import { createImageWorkbenchDomainApiHandler } from '../src/server/api/imageWorkbench.js'
+import { productGatewayTarget, productImageRelayTarget } from '../src/server/product/productGatewayRuntime.js'
 import { ImageWorkbenchService } from '../src/server/services/imageWorkbenchService.js'
 import type { ImageOperation } from '../src/server/services/imageWorkbenchRepository.js'
 
 const roots: string[] = []
 const at = '2026-08-03T00:00:00.000Z'
 const gatewayUrl = 'https://gateway.example.test/gw'
+const imageRelayUrl = 'https://images.example.test/image-generation'
 const gatewayToken = 'baseline-gateway-token-0123456789abcdef'
+
+test('Image Relay 缺失稳定投影为图片能力不可用', () => {
+  expect(mediaSafeErrorForServiceError('IMAGE_RELAY_NOT_CONFIGURED', 503))
+    .toEqual(mediaSafeError('MEDIA_IMAGE_UNAVAILABLE'))
+})
 
 async function testRoot(label: string): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), `billiardbuddy-image-${label}-`))
@@ -51,20 +59,24 @@ async function brokenDataUrl(): Promise<string> {
 
 async function withGateway<T>(action: () => Promise<T>): Promise<T> {
   const previousUrl = process.env.BB_GATEWAY_URL
+  const previousImageRelayUrl = process.env.BB_IMAGE_RELAY_URL
   const previousToken = process.env.BB_GATEWAY_TOKEN
   process.env.BB_GATEWAY_URL = gatewayUrl
+  process.env.BB_IMAGE_RELAY_URL = imageRelayUrl
   process.env.BB_GATEWAY_TOKEN = gatewayToken
   try {
     return await action()
   } finally {
     if (previousUrl === undefined) delete process.env.BB_GATEWAY_URL
     else process.env.BB_GATEWAY_URL = previousUrl
+    if (previousImageRelayUrl === undefined) delete process.env.BB_IMAGE_RELAY_URL
+    else process.env.BB_IMAGE_RELAY_URL = previousImageRelayUrl
     if (previousToken === undefined) delete process.env.BB_GATEWAY_TOKEN
     else process.env.BB_GATEWAY_TOKEN = previousToken
   }
 }
 
-type GatewayCall = { path: string; method: string; headers: Headers; body: unknown }
+type GatewayCall = { origin: string; path: string; method: string; headers: Headers; body: unknown }
 
 function gatewayFixture(
   png: string,
@@ -77,8 +89,8 @@ function gatewayFixture(
     const method = init?.method ?? 'GET'
     const body = typeof init?.body === 'string' ? JSON.parse(init.body) : undefined
     const headers = new Headers(init?.headers)
-    calls.push({ path: url.pathname, method, headers, body })
-    if (url.pathname === '/gw/v1/images/tasks' && method === 'POST') {
+    calls.push({ origin: url.origin, path: url.pathname, method, headers, body })
+    if (url.pathname === '/image-generation/v1/images/tasks' && method === 'POST') {
       return Response.json({
         task_id: 'relay_task_0001',
         status: 'queued',
@@ -86,23 +98,22 @@ function gatewayFixture(
         provider_receipt_hash: receipt,
       })
     }
-    if (url.pathname === '/gw/v1/images/tasks/relay_task_0001' && method === 'GET') {
+    if (url.pathname === '/image-generation/v1/images/tasks/relay_task_0001' && method === 'GET') {
       return Response.json({
         task_id: 'relay_task_0001',
         status: 'succeeded',
         provider_receipt_hash: receipt,
-        data: [
-          { b64_json: png, mime_type: 'image/png' },
-          { b64_json: png, mime_type: 'image/png' },
-          { b64_json: png, mime_type: 'image/png' },
-        ],
+        result_urls: [0, 1, 2].map(index => `${imageRelayUrl}/v1/images/results/result.${receipt}/${index}`),
       })
     }
-    if (url.pathname === '/gw/v1/images/tasks/relay_task_0001/ack' && method === 'POST') {
+    if (url.pathname.startsWith('/image-generation/v1/images/results/')) {
+      return Response.json({ data: [{ b64_json: png, mime_type: 'image/png' }] })
+    }
+    if (url.pathname === '/image-generation/v1/images/tasks/relay_task_0001/ack' && method === 'POST') {
       await options.onAck?.()
       return await options.ackResponse?.() ?? Response.json({ result_acknowledged: true })
     }
-    if (url.pathname === '/gw/v1/images/tasks/relay_task_0001/cancel' && method === 'POST') {
+    if (url.pathname === '/image-generation/v1/images/tasks/relay_task_0001/cancel' && method === 'POST') {
       return Response.json({ status: 'cancelled' })
     }
     // Current visual quality reasoning is deliberately non-blocking.  The
@@ -565,8 +576,8 @@ test('15.1 injects a crash after CAS publication, then restarts by refetching th
       status: 'succeeded',
       remote_result_acknowledged_at: at,
     })
-    expect(gateway.calls.filter(call => call.path === '/gw/v1/images/tasks' && call.method === 'POST')).toHaveLength(1)
-    expect(gateway.calls.filter(call => call.path === '/gw/v1/images/tasks/relay_task_0001' && call.method === 'GET')).toHaveLength(2)
+    expect(gateway.calls.filter(call => call.path === '/image-generation/v1/images/tasks' && call.method === 'POST')).toHaveLength(1)
+    expect(gateway.calls.filter(call => call.path === '/image-generation/v1/images/tasks/relay_task_0001' && call.method === 'GET')).toHaveLength(2)
     expect(gateway.calls.filter(call => call.path.endsWith('/ack'))).toHaveLength(1)
     recovered.repository.close()
   })
@@ -605,14 +616,14 @@ test('15.2 injects a crash after Candidate Group transaction and retries only Re
     const recovered = new ImageWorkbenchService({ root, legacyMediaRoot: legacyRoot, now: () => new Date(at), fetchImpl: gateway.fetchImpl })
     await recovered.recoverInterruptedOperations()
     expect(await recovered.getOperation(submitted.id)).toMatchObject({ status: 'succeeded', remote_result_acknowledged_at: at })
-    expect(gateway.calls.filter(call => call.path === '/gw/v1/images/tasks' && call.method === 'POST')).toHaveLength(1)
-    expect(gateway.calls.filter(call => call.path === '/gw/v1/images/tasks/relay_task_0001' && call.method === 'GET')).toHaveLength(1)
+    expect(gateway.calls.filter(call => call.path === '/image-generation/v1/images/tasks' && call.method === 'POST')).toHaveLength(1)
+    expect(gateway.calls.filter(call => call.path === '/image-generation/v1/images/tasks/relay_task_0001' && call.method === 'GET')).toHaveLength(1)
     expect(gateway.calls.filter(call => call.path.endsWith('/ack'))).toHaveLength(1)
     recovered.repository.close()
   })
 })
 
-test('15.2 Gateway to Relay contract commits a Candidate Group before ACK and never auto-adopts it', async () => {
+test('15.2 Image Relay contract commits a Candidate Group before ACK and never auto-adopts it', async () => {
   const png = (await dataUrl()).split(',', 2)[1]!
   const expectedBytes = await imageBytes()
   const expectedHash = await imageHash()
@@ -639,6 +650,8 @@ test('15.2 Gateway to Relay contract commits a Candidate Group before ACK and ne
   })
   service = await createService('gateway-relay', gateway.fetchImpl)
   await withGateway(async () => {
+    expect(productGatewayTarget()?.baseUrl).toBe(gatewayUrl)
+    expect(productImageRelayTarget()?.baseUrl).toBe(imageRelayUrl)
     const created = await createProject(service)
     projectId = created.id
     const submitted = await service.submitProject(created.id)
@@ -670,17 +683,21 @@ test('15.2 Gateway to Relay contract commits a Candidate Group before ACK and ne
     expect(page.events.map(event => event.cursor)).toEqual(page.events.map((_event, index) => index + 1))
     expect(page.events.at(-1)?.operation.status).toBe('succeeded')
 
-    const post = gateway.calls.find(call => call.path === '/gw/v1/images/tasks')
-    const poll = gateway.calls.find(call => call.path === '/gw/v1/images/tasks/relay_task_0001' && call.method === 'GET')
+    const post = gateway.calls.find(call => call.path === '/image-generation/v1/images/tasks')
+    const poll = gateway.calls.find(call => call.path === '/image-generation/v1/images/tasks/relay_task_0001' && call.method === 'GET')
     const ack = gateway.calls.find(call => call.path.endsWith('/ack'))
+    expect(post?.origin).toBe(new URL(imageRelayUrl).origin)
     expect(post?.headers.get('idempotency-key')).toMatch(/^bb-image-/)
     expect(post?.body).toMatchObject({ mode: 'generate', n: 3, size: '1024x1024' })
     expect(poll?.headers.get('x-bb-media-result-handoff')).toBe('direct-v1')
+    const resultDownloads = gateway.calls.filter(call => call.path.startsWith('/image-generation/v1/images/results/'))
+    expect(resultDownloads).toHaveLength(3)
+    expect(resultDownloads.every(call => call.headers.get('authorization') === `Bearer ${gatewayToken}`)).toBeTrue()
     expect(ack?.method).toBe('POST')
 
     const compatibilityReplay = await service.submitProject(created.id)
     expect(compatibilityReplay.id).toBe(submitted.id)
-    expect(gateway.calls.filter(call => call.path === '/gw/v1/images/tasks' && call.method === 'POST')).toHaveLength(1)
+    expect(gateway.calls.filter(call => call.path === '/image-generation/v1/images/tasks' && call.method === 'POST')).toHaveLength(1)
 
     const delivery = await service.repository.currentDeliverySpec(project.id)
     const decisionCapability = 'fedcba9876543210fedcba9876543210'
@@ -807,7 +824,7 @@ test('15.2 sends only Provider-eligible multi-references and keeps exact Logo/QR
       estimate_hash: estimate.estimate_hash,
       confirm: true,
     })
-    const submitted = gateway.calls.find(call => call.path === '/gw/v1/images/tasks' && call.method === 'POST')
+    const submitted = gateway.calls.find(call => call.path === '/image-generation/v1/images/tasks' && call.method === 'POST')
     expect(submitted?.body).toMatchObject({ mode: 'edit', n: 3, size: '1024x1024' })
     const submittedImages = (submitted?.body as { images?: unknown[] } | undefined)?.images
     expect(submittedImages).toHaveLength(1)
@@ -829,12 +846,23 @@ test('15.2 Relay compiles every reference control into the actual Provider reque
   const prompts: string[] = []
   const relay = createRelayFetch({
     env: {
-      RELAY_TOKEN: 'relay-reference-control-token',
       RELAY_OPENAI_KEY: 'openai-reference-control-key',
       RELAY_OPENAI_BASE: 'https://provider.example.test/v1',
       RELAY_IMG_CONC: '1',
       RELAY_IMG_USER_CONC: '1',
+      IMAGE_RELAY_GATEWAY_INTROSPECTION_BASE: 'http://gateway:8799',
+      IMAGE_RELAY_GATEWAY_INTROSPECTION_TOKEN: 'image-relay-service-token-123456789012345',
+      IMAGE_RELAY_PUBLIC_BASE: imageRelayUrl,
+      IMAGE_RELAY_RESULT_SIGNING_KEY: 'result-signing-key-that-is-longer-than-thirty-two-bytes',
     },
+    identityFetchImpl: async () => Response.json({
+      active: true,
+      principal_id: `installation:${'a'.repeat(32)}`,
+      installation_id: 'desktop-installation-a',
+      session_id: 'a'.repeat(24),
+      expires_at: Date.now() + 60_000,
+      owner: `installation:${'a'.repeat(32)}:desktop-installation-a`,
+    }),
     fetchImpl: async (_input, init) => {
       expect(init?.method).toBe('POST')
       expect(init?.body).toBeInstanceOf(FormData)
@@ -844,10 +872,10 @@ test('15.2 Relay compiles every reference control into the actual Provider reque
       return Response.json({ data: [{ b64_json: 'aGVsbG8=' }] })
     },
   })
-  const response = await relay(new Request('http://relay.example.test/images/tasks', {
+  const response = await relay(new Request('http://relay.example.test/v1/images/tasks', {
     method: 'POST',
     headers: {
-      Authorization: 'Bearer relay-reference-control-token',
+      Authorization: 'Bearer installation-access-token',
       'Content-Type': 'application/json',
       'X-Relay-Owner': 'desktop-owner',
       'X-BB-Provider-Protocol': 'bb-provider-gateway/1.0',
@@ -889,11 +917,11 @@ test('15.2 rejects capability gaps before paid submission, permits partial candi
   const png = (await dataUrl()).split(',', 2)[1]!
   const gateway: typeof fetch = async (input, init) => {
     const url = new URL(input instanceof Request ? input.url : input.toString())
-    if (url.pathname === '/gw/v1/images/tasks' && init?.method === 'POST') {
+    if (url.pathname === '/image-generation/v1/images/tasks' && init?.method === 'POST') {
       paidPosts += 1
       return Response.json({ task_id: 'relay_task_partial', status: 'queued', provider_receipt_hash: 'b'.repeat(64) })
     }
-    if (url.pathname === '/gw/v1/images/tasks/relay_task_partial' && (init?.method ?? 'GET') === 'GET') {
+    if (url.pathname === '/image-generation/v1/images/tasks/relay_task_partial' && (init?.method ?? 'GET') === 'GET') {
       return Response.json({
         task_id: 'relay_task_partial',
         status: 'succeeded',
@@ -904,7 +932,7 @@ test('15.2 rejects capability gaps before paid submission, permits partial candi
         ],
       })
     }
-    if (url.pathname === '/gw/v1/images/tasks/relay_task_partial/ack' && init?.method === 'POST') {
+    if (url.pathname === '/image-generation/v1/images/tasks/relay_task_partial/ack' && init?.method === 'POST') {
       return Response.json({ result_acknowledged: true })
     }
     return Response.json({ error: 'unexpected image gateway call' }, { status: 500 })
@@ -1019,7 +1047,7 @@ test('15.2 rejects capability gaps before paid submission, permits partial candi
 test('15.2 records a Provider policy refusal as a blocked Operation and a safe execution receipt', async () => {
   const service = await createService('policy-refusal', async (input, init) => {
     const url = new URL(input instanceof Request ? input.url : input.toString())
-    if (url.pathname === '/gw/v1/images/tasks' && init?.method === 'POST') {
+    if (url.pathname === '/image-generation/v1/images/tasks' && init?.method === 'POST') {
       return Response.json({
         status: 'blocked_by_policy',
         refusal: { category: 'content_safety', safe_message: '请求不符合图片内容政策' },
@@ -1095,7 +1123,7 @@ test('15.2 persists a Round before POST and resumes it after a process crash wit
       headers: new Headers(init?.headers),
       body: init?.body,
     })
-    if (url.pathname === '/gw/v1/images/tasks' && init?.method === 'POST') {
+    if (url.pathname === '/image-generation/v1/images/tasks' && init?.method === 'POST') {
       return Response.json({ task_id: 'relay_task_after_restart', status: 'queued', provider_receipt_hash: 'd'.repeat(64) })
     }
     return Response.json({ error: 'unexpected Round recovery request' }, { status: 500 })
@@ -1132,7 +1160,7 @@ test('15.2 persists a Round before POST and resumes it after a process crash wit
       confirm: true as const,
     }
     await expect(first.createGenerationRound(project.id, command)).rejects.toThrow('INJECTED_ROUND_BEFORE_POST_CRASH')
-    expect(calls.filter(call => call.path === '/gw/v1/images/tasks' && call.method === 'POST')).toHaveLength(0)
+    expect(calls.filter(call => call.path === '/image-generation/v1/images/tasks' && call.method === 'POST')).toHaveLength(0)
 
     const roundId = `rnd_${createHash('sha256').update([project.id, command.idempotency_key].join('\0')).digest('hex').slice(0, 32)}`
     const round = await first.repository.getGenerationRound(project.id, roundId)
@@ -1148,7 +1176,7 @@ test('15.2 persists a Round before POST and resumes it after a process crash wit
     const resumedTransport = await recovered.repository.getOperation(resumed.transport_task_id!)
     expect(resumed).toMatchObject({ status: 'queued', remote_task_id: 'relay_task_after_restart' })
     expect(resumedTransport.remote_task_id).toBe('relay_task_after_restart')
-    const posts = calls.filter(call => call.path === '/gw/v1/images/tasks' && call.method === 'POST')
+    const posts = calls.filter(call => call.path === '/image-generation/v1/images/tasks' && call.method === 'POST')
     expect(posts).toHaveLength(1)
     expect(posts[0]!.headers.get('idempotency-key')).toBe(transport.idempotency_key)
     recovered.repository.close()
@@ -1168,7 +1196,7 @@ test('15.2 recovers an outcome_unknown Generation Round through the original ide
       headers: new Headers(init?.headers),
       body: init?.body,
     })
-    if (url.pathname === '/gw/v1/images/tasks' && init?.method === 'POST') {
+    if (url.pathname === '/image-generation/v1/images/tasks' && init?.method === 'POST') {
       submitCount += 1
       if (submitCount === 1) throw new Error('connection dropped after provider accepted the request')
       return Response.json({ task_id: 'relay_task_idempotent_recovery', status: 'queued', reused: true, provider_receipt_hash: 'e'.repeat(64) })
@@ -1205,7 +1233,7 @@ test('15.2 recovers an outcome_unknown Generation Round through the original ide
     await recovered.recoverInterruptedOperations()
     const resumed = await recovered.repository.getGenerationOperation(project.id, created.operations[0]!.id)
     expect(resumed).toMatchObject({ status: 'queued', remote_task_id: 'relay_task_idempotent_recovery' })
-    const posts = calls.filter(call => call.path === '/gw/v1/images/tasks' && call.method === 'POST')
+    const posts = calls.filter(call => call.path === '/image-generation/v1/images/tasks' && call.method === 'POST')
     expect(posts).toHaveLength(2)
     expect(posts[1]!.headers.get('idempotency-key')).toBe(posts[0]!.headers.get('idempotency-key'))
     recovered.repository.close()
@@ -1218,11 +1246,11 @@ test('15.2 expires estimates and requires an explicit paid derivation confirmati
   let paidPosts = 0
   const gateway: typeof fetch = async (input, init) => {
     const url = new URL(input instanceof Request ? input.url : input.toString())
-    if (url.pathname === '/gw/v1/images/tasks' && init?.method === 'POST') {
+    if (url.pathname === '/image-generation/v1/images/tasks' && init?.method === 'POST') {
       paidPosts += 1
       return Response.json({ task_id: paidPosts === 1 ? 'relay_task_source' : 'relay_task_derivation', status: 'queued', provider_receipt_hash: 'f'.repeat(64) })
     }
-    if (url.pathname === '/gw/v1/images/tasks/relay_task_source' && (init?.method ?? 'GET') === 'GET') {
+    if (url.pathname === '/image-generation/v1/images/tasks/relay_task_source' && (init?.method ?? 'GET') === 'GET') {
       return Response.json({
         task_id: 'relay_task_source',
         status: 'succeeded',
@@ -1351,11 +1379,11 @@ test('15.2 projects every Command idempotency and revision conflict through stab
   let paidPosts = 0
   const gateway: typeof fetch = async (input, init) => {
     const url = new URL(input instanceof Request ? input.url : input.toString())
-    if (url.pathname === '/gw/v1/images/tasks' && init?.method === 'POST') {
+    if (url.pathname === '/image-generation/v1/images/tasks' && init?.method === 'POST') {
       paidPosts += 1
       return Response.json({ task_id: paidPosts === 1 ? 'relay_task_conflict_source' : 'relay_task_conflict_derive', status: 'queued', provider_receipt_hash: '1'.repeat(64) })
     }
-    if (url.pathname === '/gw/v1/images/tasks/relay_task_conflict_source' && (init?.method ?? 'GET') === 'GET') {
+    if (url.pathname === '/image-generation/v1/images/tasks/relay_task_conflict_source' && (init?.method ?? 'GET') === 'GET') {
       return Response.json({
         task_id: 'relay_task_conflict_source',
         status: 'succeeded',
@@ -1577,11 +1605,11 @@ test('15.2 retains a late successful result after a confirmed queued cancellatio
   let cancelled = false
   const gateway: typeof fetch = async (input, init) => {
     const url = new URL(input instanceof Request ? input.url : input.toString())
-    if (url.pathname === '/gw/v1/images/tasks' && init?.method === 'POST') {
+    if (url.pathname === '/image-generation/v1/images/tasks' && init?.method === 'POST') {
       paidPosts += 1
       return Response.json({ task_id: 'relay_task_cancel_late', status: 'queued', provider_receipt_hash: '3'.repeat(64) })
     }
-    if (url.pathname === '/gw/v1/images/tasks/relay_task_cancel_late' && (init?.method ?? 'GET') === 'GET') {
+    if (url.pathname === '/image-generation/v1/images/tasks/relay_task_cancel_late' && (init?.method ?? 'GET') === 'GET') {
       return Response.json(cancelled
         ? {
             task_id: 'relay_task_cancel_late',
@@ -1595,7 +1623,7 @@ test('15.2 retains a late successful result after a confirmed queued cancellatio
           }
         : { task_id: 'relay_task_cancel_late', status: 'queued', provider_receipt_hash: '3'.repeat(64) })
     }
-    if (url.pathname === '/gw/v1/images/tasks/relay_task_cancel_late/cancel' && init?.method === 'POST') {
+    if (url.pathname === '/image-generation/v1/images/tasks/relay_task_cancel_late/cancel' && init?.method === 'POST') {
       cancelled = true
       return Response.json({ status: 'cancelled' })
     }
