@@ -2,18 +2,19 @@
 
 > 文档性质：可直接交付开发人员执行的完整后端施工合同  
 > 目标仓库：`luu175ktovtsvor-spec/billiardbuddy`  
-> 静态审阅基线：`main` 分支提交 `ba5396a8585453ef17711d039f3049aad21a0abd`  
-> 交付方式：一次性完成本文件全部目标，不把必要链路拆成“以后再补”  
+> 历史静态审阅基线：`main` 分支提交 `ba5396a8585453ef17711d039f3049aad21a0abd`
+> 当前施工分支基线：从包含本合同版本的干净、已提交 `main` HEAD 创建，并在开工回报中记录精确 SHA；不吸收 Agent 未提交改动，最终集成前再同步 Agent 完成后的 `main`
+> 交付方式：在一个视频开发分支内一次性完成本文件全部目标；关卡是分支内质量检查点，只有全部关卡和第 15 节验收通过后才一次合并 `main`
 > 明确边界：不修改 Agent；不接生视频；保留 FFmpeg/FFprobe 本地执行；MiMo 替换为 Qwen；ASR 使用 Fun-ASR-Flash + Fun-ASR
 > 对抗审查修订：区分 Camera Shot、Content Segment 与 Evidence Window；增加 Delivery Variant、两阶段质量门、跨 SQLite/文件提交协议、Provider 预算闭环和完整桌面安全代理
 
-“一次性完成”指最终交付不得留下双状态源、无验证的占位链路或只能演示的假实现，不代表使用一次大提交重写全部代码。施工必须按第 13 节的迁移关卡推进，每一关均保持旧项目可读、正式写入单一且可独立验证；全部关卡完成后才可宣称本合同完成。
+“一次性完成”指最终交付不得留下双状态源、无验证的占位链路或只能演示的假实现，不代表使用一次大提交重写全部代码。施工必须按第 13 节的迁移关卡推进，每一关均保持旧项目可读、正式写入单一且可独立验证；关卡通过后只形成分支内提交和继续施工许可，不形成 `main` 合并门。全部关卡完成、最终回归通过并完成一次集成审核后，才可合并 `main` 并宣称本合同完成。
 
 ---
 
 ## 0. 开发执行协议
 
-一次开发任务只能实施第 13.0 节的一个施工关卡，或该关卡中一个不留下第二 writer、不可恢复状态或占位生产路径的纵向切片。上一关退出证据未通过，不开始下一关；“最终一次性交付”不能被解释为一次无边界重写。
+一个长期视频开发任务在同一 worktree/分支内顺序实施第 13.0 节全部六个施工关卡。每关仍只能落地不留下第二 writer、不可恢复状态或占位生产路径的完整纵向切片；上一关退出证据未通过，不开始下一关。每关通过后提交分支内检查点并直接进入下一关，不等待合并审核；“最终一次性交付”也不能被解释为一次无边界重写。
 
 修改代码前，实施者必须先输出本关施工对齐：
 
@@ -23,33 +24,33 @@
 4. 明确保留的旧能力、退出的旧写路径和不在本关范围的内容；
 5. 将实际运行的 characteristic、unit、contract、integration、crash/recovery、production-path 与桌面 E2E 验证。
 
-交付时必须分别报告真实走通路径、失败/恢复证据、等价但形状不同的实现、真实未完成项、验证命令和临时进程清理结果。没有对应证据时只能报告“本关未完成”，不能以新增类型、页面或孤立测试代替生产路径。
+每个关卡检查点必须报告真实走通路径、失败/恢复证据、等价但形状不同的实现、真实未完成项、验证命令和临时进程清理结果。没有对应证据时只能报告“本关未完成”，不能以新增类型、页面或孤立测试代替生产路径。六关完成后再汇总为一次完整交付报告和最终合并审核材料。
 
 可直接复制的开工指令：
 
 ```text
 使用《BilliardBuddy 视频剪辑工作台后端完整改造方案（最终版）》作为施工合同。
-本轮只实施第 13.0 节第 N 关：<关卡名称>；按该关要求完成正式 API → Application → SQLite/不可变 payload → Adapter → Event/Public Projection 生产路径和失败恢复路径。
+本轮在 `codex/video-workbench-refactor` 内顺序完成第 13.0 节的全部六关。每关按该关要求完成正式 API → Application → SQLite/不可变 payload → Adapter → Event/Public Projection 生产路径和失败恢复路径，并提交为分支内检查点。
 
-修改前先输出第 0 节要求的施工对齐，并核实当前代码、最近 AGENTS.md 和工作树事实。不得开始下一关，不得新增第二 writer，不得用真实 Provider 依赖替代可复现合同测试，不得改动 Agent/Image 既有语义，不得启动子代理。保留用户无关改动，并停止、复查本轮启动的临时服务、浏览器、测试和打包进程。
+修改前及每关切换前先输出第 0 节要求的施工对齐，并核实当前代码、最近 AGENTS.md 和工作树事实。上一关未通过退出证据不得开始下一关；不得新增第二 writer，不得用真实 Provider 依赖替代可复现合同测试，不得改动 Agent/Image 既有语义，不得启动子代理。保留用户无关改动，并停止、复查本轮启动的临时服务、浏览器、测试和打包进程。
 
-达到本关退出证据后按第 0 节格式回报并停止；证据不足时明确报告未完成项。
+达到本关退出证据后按第 0 节格式记录检查点并继续下一关；证据不足时明确报告未完成项并暂停。只有六关和第 15 节全部通过、最终同步最新已提交 `main` 并完成完整回归后，才停止并交回一次最终合并审核；此前不得向 `main` 提交或合并。
 ```
 
 ### 0.1 Git worktree 与 main 同步协议
 
-允许并推荐在独立 Git worktree 开发，使 `main` 工作树继续维护根 `AGENTS.md`、两份施工合同和已验收集成状态。创建 worktree 前，施工合同必须先进入可从 `main` 到达的提交；不得从包含未跟踪合同、未提交代码或未解决冲突的脏工作树复制开发基线。
+允许并推荐在独立 Git worktree 开发，使 `main` 工作树继续维护 Agent 和最终集成状态。创建 worktree 前，施工合同必须先进入可从 `main` 到达的提交；不得从包含未跟踪合同、未提交代码或未解决冲突的脏工作树复制开发基线。
 
-视频开发分支建议为 `codex/video-workbench-refactor`。视频第 13.0 节第 1 关是 Shared Media Kernel、全局 `ts/package.json` test command 和共享 test runner 的首个 owner：只抽取通用存储/Operation/Event/CAS/recovery/测试原语并保持现有图片行为不变；该关经合并审核进入集成基线后，图片 worktree 才开始图片 15.0/15.1。也可以用单独 `codex/media-kernel-foundation` worktree 先完成完全相同的边界，但不能让图片、视频两个分支并行实现两套 Kernel 或争写全局 test 入口。
+视频开发分支固定为 `codex/video-workbench-refactor`。当前施工基线已经包含 Shared Media Kernel、全局 `ts/package.json` test command 和共享 test runner；视频和图片都只能消费这份经测试的基础，不得并行实现第二套 Kernel 或争写全局 test 入口。若未来确有新的共享 foundation，必须在开工前指定唯一 owner、固定依赖 SHA 和联合发布顺序；它不是普通关卡提前合并 `main` 的理由。
 
 固定规则：
 
 - 创建前先用 `git worktree list --porcelain` 核对现存 worktree/branch/path；只有确认目标目录已不存在的 `prunable` 注册才可清理，不能删除仍在使用的 worktree。新 worktree 使用仓库外的同级独立目录和未被占用的开发分支；
-- `AGENTS.md` 按当前 worktree 中的实际文件生效；main 的后续修改不会自动传播。每关开工前，视频分支必须把最新 main 通过项目采用的 merge/rebase 策略纳入当前 HEAD，证明该 main commit 已是祖先，并重新完整阅读根和最近目录的 `AGENTS.md`；
-- 一次只在一个 worktree 实施一个关卡，开发分支内可按关卡提交。达到退出证据后停在开发分支，等待用户另行发起合并审核；没有明确授权不得向 main 提交或合并，也不得切换主工作树。只有相关关卡经审核进入集成基线后，下一关及图片 worktree 才能同步并依赖它；
-- `ts/package.json`/共享 test runner、Shared Kernel、`ts/shared/product/providerContracts.ts`、Gateway/Relay contracts、根架构文档、`deploy/production/*` 和服务器/Nginx 文档同一时刻只能有一个明确 owner。另一 worktree 必须等待 owner 关卡经合并审核进入集成基线；
+- `AGENTS.md` 按当前 worktree 中的实际文件生效；main 的后续修改不会自动传播。视频分支只在创建时和最终集成前同步已提交的 `main`，并重新完整阅读根和最近目录的 `AGENTS.md`；Agent 未提交改动不进入视频基线。中途只有明确声明的共享依赖变更才允许同步，并必须重跑受影响验证；
+- 一个长期视频 worktree/branch 连续实施全部六关，开发分支内可按关卡提交。关卡退出证据只允许继续本分支施工，不触发 `main` 合并审核；没有明确最终授权不得向 `main` 提交或合并，也不得切换主工作树。六关和第 15 节全部通过后，才同步最终 `main`、完成完整回归并交回唯一一次合并审核；
+- `ts/package.json`/共享 test runner、Shared Kernel、`ts/shared/product/providerContracts.ts`、Gateway/Relay contracts、根架构文档、`deploy/production/*` 和服务器/Nginx 文档同一时刻只能有一个明确 owner。另一 worktree 不得复制或并写这些事实；需要未合并共享变更时，必须显式采用 owner 分支的固定 SHA 并按联合最终集成处理；
 - 各 worktree 使用独立数据目录、SQLite/CAS、端口、缓存、日志与临时输出，不能并发写同一项目目录；任务结束停止并复查各自临时进程；
-- 服务器只部署已提交、已验收 revision。图片/视频 worktree 不并行手工修改同一台服务器；Video Media Relay 只能按第 1.2/5.4.1/13.5 节在第 4 关统一部署。
+- 服务器只部署已提交、已验收 revision。受控 smoke 可以部署当前视频分支的已提交 SHA 并记录 SHA，这不表示已合入 `main`；图片/视频 worktree 不并行手工修改同一台服务器。Video Media Relay 仍只能按第 1.2/5.4.1/13.5 节在第 4 关统一部署。
 
 ---
 
@@ -2355,7 +2356,7 @@ Electron 改动是本合同必需部分：`ipc/channels.ts`、`preload.ts`、Mai
 
 当前 `VideoWorkbenchService`、Repository、Analysis、Execution、API 和 Gateway 先补特征测试，固定现有项目导入、writer fence/CAS、Operation Event、分析 stale、时间线选择、Preview/Render、删除/恢复和中断提交行为。没有这些测试不得先拆 Service。
 
-按以下关卡推进；可以分提交实施，但最终交付必须全部通过：
+在同一个视频开发分支内按以下关卡顺序推进；每关可分提交实施，但必须通过本关退出证据后才继续下一关，最终交付必须全部通过：
 
 1. **Storage/Operation/test foundation**：全局 `ts/package.json` 正式 test command/共享 runner、现状特征测试、SQLite schema、payload commit、migration、outbox、Job Orchestrator、旧 JSON reader；
 2. **Media Facts**：精确时间、fast/full fingerprint、Derivative、Timed Transcript、Camera Shot、Content Segment、Evidence Window、索引；
@@ -2364,7 +2365,7 @@ Electron 改动是本合同必需部分：`ipc/channels.ts`、`preload.ts`、Mai
 5. **Finishing/Quality**：Caption、Composition、Audio、Beat、preflight、Render、Output Verification、post-render；
 6. **Desktop/Product gate**：完整 Main broker/preload、敏感媒体签名、迁移退出、真实 Renderer 端到端旅程。
 
-关卡验收边界如下，实施与合并审核均按此解释：
+关卡验收边界如下，作为分支内质量检查点解释；它们不单独触发合并审核：
 
 - 第 15 节是六关全部完成后的最终验收清单，不是要求任一单关提前交付其余关卡。每关退出时只验收本关列出的能力、它所依赖的纵向生产路径，以及第 15 节中已经由本关实际触及的状态一致性、安全和失败恢复要求；未到后续关卡的能力必须明确保留为未完成项，不能以占位实现冒充完成。
 - 第 2 关负责本地 Media Facts 底座：精确时间与 Source 状态、fast/full fingerprint、可恢复/可失效 Derivative、Timed Transcript/Revision 的不可变领域与存储、真实 Camera Shot、Content Segment、带持久 sampling budget/coverage/uncovered receipt 的 Evidence Window、typed Evidence、FTS5、index generation/cursor 和 Facts/Search 正式分页投影。素材已经进入 `changed`/`failed` 后必须持续投影真实状态；分页游标、损坏 payload 和项目隔离错误必须返回稳定 machine code，不能留给后续关卡修复。
@@ -2372,7 +2373,7 @@ Electron 改动是本合同必需部分：`ipc/channels.ts`、`preload.ts`、Mai
 - 第 6 关负责把后端已有的分析范围、未覆盖区间和预算能力变成 Renderer 可操作的查看、扩大范围与确认旅程；前置关卡仍必须提供真实 API/Application 状态，不能用前端尚未施工为由返回错误或无界数据。
 - 第 2–5 关允许现有 `VideoWorkbenchService` 作为阶段性兼容入口编排已落地的正式 Application 能力，但新领域事实只能由对应模块和 SQLite/不可变 payload 单一写入。业务规则必须随相应关卡迁出旧 Service；只有全部迁出并满足第 15.1 节第 1 项后，才可宣称最终 façade 架构完成。
 
-每关必须保持：新 writer 只有一个、旧项目可读、当前正式 Timeline/Export 不丢失、失败可恢复、相关 contract tests 通过。第 2–5 关未完成时可由 façade 投影旧 API，但禁止把旧 API 与新 API 同时变成两个可写状态源。
+每关必须保持：新 writer 只有一个、旧项目可读、当前正式 Timeline/Export 不丢失、失败可恢复、相关 contract tests 通过。第 2–5 关未完成时可由 façade 投影旧 API，但禁止把旧 API 与新 API 同时变成两个可写状态源。每关通过后只记录分支内检查点并继续施工；六关和第 15 节全部通过、最终同步最新已提交 `main` 并完整复验后，才交回唯一一次合并审核。
 
 ### 13.1 Composition Root
 
@@ -2666,7 +2667,7 @@ Renderer 只保存面板开关、缩放、滚动、当前选中 id 等可丢失�
 
 ## 15. 完成判定
 
-以下是六个施工关卡全部完成后的最终验收，届时必须全部通过；单关退出与合并审核按第 13.0 节的关卡验收边界执行，不得把后续关卡提前当成本关阻塞，也不得把本关已经触及的状态错误、生产路径缺口或失败恢复问题推迟给后续关卡。
+以下是六个施工关卡全部完成后的最终验收，届时必须全部通过；单关退出只允许继续当前分支施工，不进入合并审核。完成第 15 节、最终同步最新已提交 `main` 并完整复验后，才进入一次完整视频合同的合并审核；不得把后续关卡提前当成本关阻塞，也不得把本关已经触及的状态错误、生产路径缺口或失败恢复问题推迟给后续关卡。
 
 ### 15.1 架构与唯一状态源
 
