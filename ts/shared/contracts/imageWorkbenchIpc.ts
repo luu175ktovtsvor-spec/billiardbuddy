@@ -163,21 +163,69 @@ export const imageWorkbenchIpcPayloadSchemas = {
   retryCampaignItem: z.object({ campaignId: mediaIdSchema, itemId: mediaIdSchema, input: retryImageCampaignItemInputSchema }).strict(),
 } as const
 
-export const imageWorkbenchIpcPayloadSchema = z.object({
-  method: z.string().min(1).max(80),
-  payload: z.unknown(),
-}).strict()
+export const imageWorkbenchIpcRequestSchema = z.union([
+  z.object({ method: z.literal('listProjects'), payload: imageWorkbenchIpcPayloadSchemas.listProjects }),
+  z.object({ method: z.literal('getProject'), payload: imageWorkbenchIpcPayloadSchemas.getProject }),
+  z.object({ method: z.literal('getProjectProjection'), payload: imageWorkbenchIpcPayloadSchemas.getProjectProjection }),
+  z.object({ method: z.literal('listOperationEvents'), payload: imageWorkbenchIpcPayloadSchemas.listOperationEvents }),
+  z.object({ method: z.literal('quickCreate'), payload: imageWorkbenchIpcPayloadSchemas.quickCreate }),
+  z.object({ method: z.literal('compileBrief'), payload: imageWorkbenchIpcPayloadSchemas.compileBrief }),
+  z.object({ method: z.literal('applyBriefOverrides'), payload: imageWorkbenchIpcPayloadSchemas.applyBriefOverrides }),
+  z.object({ method: z.literal('getInspirationBoard'), payload: imageWorkbenchIpcPayloadSchemas.getInspirationBoard }),
+  z.object({ method: z.literal('upsertInspirationItems'), payload: imageWorkbenchIpcPayloadSchemas.upsertInspirationItems }),
+  z.object({ method: z.literal('promoteInspirationItem'), payload: imageWorkbenchIpcPayloadSchemas.promoteInspirationItem }),
+  z.object({ method: z.literal('addReferences'), payload: imageWorkbenchIpcPayloadSchemas.addReferences }),
+  z.object({ method: z.literal('removeReference'), payload: imageWorkbenchIpcPayloadSchemas.removeReference }),
+  z.object({ method: z.literal('updateReferenceControl'), payload: imageWorkbenchIpcPayloadSchemas.updateReferenceControl }),
+  z.object({ method: z.literal('createCreativePlan'), payload: imageWorkbenchIpcPayloadSchemas.createCreativePlan }),
+  z.object({ method: z.literal('estimateGenerationRound'), payload: imageWorkbenchIpcPayloadSchemas.estimateGenerationRound }),
+  z.object({ method: z.literal('createGenerationRound'), payload: imageWorkbenchIpcPayloadSchemas.createGenerationRound }),
+  z.object({ method: z.literal('getCandidateGroup'), payload: imageWorkbenchIpcPayloadSchemas.getCandidateGroup }),
+  z.object({ method: z.literal('getCandidatePreview'), payload: imageWorkbenchIpcPayloadSchemas.getCandidatePreview }),
+  z.object({ method: z.literal('decideCandidate'), payload: imageWorkbenchIpcPayloadSchemas.decideCandidate }),
+  z.object({ method: z.literal('estimateCandidateDerivation'), payload: imageWorkbenchIpcPayloadSchemas.estimateCandidateDerivation }),
+  z.object({ method: z.literal('deriveCandidate'), payload: imageWorkbenchIpcPayloadSchemas.deriveCandidate }),
+  z.object({ method: z.literal('adoptCandidate'), payload: imageWorkbenchIpcPayloadSchemas.adoptCandidate }),
+  z.object({ method: z.literal('cancelOperation'), payload: imageWorkbenchIpcPayloadSchemas.cancelOperation }),
+  z.object({ method: z.literal('listCanvases'), payload: imageWorkbenchIpcPayloadSchemas.listCanvases }),
+  z.object({ method: z.literal('getCanvas'), payload: imageWorkbenchIpcPayloadSchemas.getCanvas }),
+  z.object({ method: z.literal('createCanvas'), payload: imageWorkbenchIpcPayloadSchemas.createCanvas }),
+  z.object({ method: z.literal('applyCanvasCommand'), payload: imageWorkbenchIpcPayloadSchemas.applyCanvasCommand }),
+  z.object({ method: z.literal('preflightCanvas'), payload: imageWorkbenchIpcPayloadSchemas.preflightCanvas }),
+  z.object({ method: z.literal('renderCanvas'), payload: imageWorkbenchIpcPayloadSchemas.renderCanvas }),
+  z.object({ method: z.literal('createDeliverySpec'), payload: imageWorkbenchIpcPayloadSchemas.createDeliverySpec }),
+  z.object({ method: z.literal('exportDelivery'), payload: imageWorkbenchIpcPayloadSchemas.exportDelivery }),
+  z.object({ method: z.literal('getDeliverySet'), payload: imageWorkbenchIpcPayloadSchemas.getDeliverySet }),
+  z.object({ method: z.literal('getProjectLibrary'), payload: imageWorkbenchIpcPayloadSchemas.getProjectLibrary }),
+  z.object({ method: z.literal('listBrandKits'), payload: imageWorkbenchIpcPayloadSchemas.listBrandKits }),
+  z.object({ method: z.literal('getBrandKit'), payload: imageWorkbenchIpcPayloadSchemas.getBrandKit }),
+  z.object({ method: z.literal('createBrandKit'), payload: imageWorkbenchIpcPayloadSchemas.createBrandKit }),
+  z.object({ method: z.literal('reviseBrandKit'), payload: imageWorkbenchIpcPayloadSchemas.reviseBrandKit }),
+  z.object({ method: z.literal('deleteBrandKit'), payload: imageWorkbenchIpcPayloadSchemas.deleteBrandKit }),
+  z.object({ method: z.literal('listTemplates'), payload: imageWorkbenchIpcPayloadSchemas.listTemplates }),
+  z.object({ method: z.literal('getTemplate'), payload: imageWorkbenchIpcPayloadSchemas.getTemplate }),
+  z.object({ method: z.literal('createTemplate'), payload: imageWorkbenchIpcPayloadSchemas.createTemplate }),
+  z.object({ method: z.literal('reviseTemplate'), payload: imageWorkbenchIpcPayloadSchemas.reviseTemplate }),
+  z.object({ method: z.literal('deleteTemplate'), payload: imageWorkbenchIpcPayloadSchemas.deleteTemplate }),
+  z.object({ method: z.literal('createAssetGrant'), payload: imageWorkbenchIpcPayloadSchemas.createAssetGrant }),
+  z.object({ method: z.literal('revokeAssetGrant'), payload: imageWorkbenchIpcPayloadSchemas.revokeAssetGrant }),
+  z.object({ method: z.literal('listAssetGrants'), payload: imageWorkbenchIpcPayloadSchemas.listAssetGrants }),
+  z.object({ method: z.literal('listCampaigns'), payload: imageWorkbenchIpcPayloadSchemas.listCampaigns }),
+  z.object({ method: z.literal('getCampaign'), payload: imageWorkbenchIpcPayloadSchemas.getCampaign }),
+  z.object({ method: z.literal('createCampaign'), payload: imageWorkbenchIpcPayloadSchemas.createCampaign }),
+  z.object({ method: z.literal('replaceCampaignItems'), payload: imageWorkbenchIpcPayloadSchemas.replaceCampaignItems }),
+  z.object({ method: z.literal('estimateCampaign'), payload: imageWorkbenchIpcPayloadSchemas.estimateCampaign }),
+  z.object({ method: z.literal('confirmCampaign'), payload: imageWorkbenchIpcPayloadSchemas.confirmCampaign }),
+  z.object({ method: z.literal('confirmCampaignRetry'), payload: imageWorkbenchIpcPayloadSchemas.confirmCampaignRetry }),
+  z.object({ method: z.literal('startCampaign'), payload: imageWorkbenchIpcPayloadSchemas.startCampaign }),
+  z.object({ method: z.literal('cancelCampaign'), payload: imageWorkbenchIpcPayloadSchemas.cancelCampaign }),
+  z.object({ method: z.literal('retryCampaignItem'), payload: imageWorkbenchIpcPayloadSchemas.retryCampaignItem }),
+])
+
+export const imageWorkbenchIpcPayloadSchema = imageWorkbenchIpcRequestSchema
 
 export function parseImageWorkbenchIpcRequest(value: unknown): ImageWorkbenchIpcRequest {
-  const envelope = imageWorkbenchIpcPayloadSchema.parse(value)
-  if (!Object.prototype.hasOwnProperty.call(imageWorkbenchIpcPayloadSchemas, envelope.method)) {
-    throw new Error('未知的图片工作台 IPC 方法')
-  }
-  const method = envelope.method as ImageWorkbenchIpcMethod
-  return {
-    method,
-    payload: imageWorkbenchIpcPayloadSchemas[method].parse(envelope.payload),
-  } as ImageWorkbenchIpcRequest
+  return imageWorkbenchIpcRequestSchema.parse(value)
 }
 
 export const imageWorkbenchIpcResponseSchemas = {
@@ -246,26 +294,7 @@ export type ImageWorkbenchIpcPayloadByMethod = {
 export type ImageWorkbenchIpcValueByMethod = {
   [Method in ImageWorkbenchIpcMethod]: z.infer<(typeof imageWorkbenchIpcResponseSchemas)[Method]>
 }
-export type ImageWorkbenchIpcRequest = {
-  [Method in ImageWorkbenchIpcMethod]: {
-    method: Method
-    payload: ImageWorkbenchIpcPayloadByMethod[Method]
-  }
-}[ImageWorkbenchIpcMethod]
-
-export function parseImageWorkbenchIpcPayload<Method extends ImageWorkbenchIpcMethod>(
-  method: Method,
-  payload: unknown,
-): ImageWorkbenchIpcPayloadByMethod[Method] {
-  return imageWorkbenchIpcPayloadSchemas[method].parse(payload) as ImageWorkbenchIpcPayloadByMethod[Method]
-}
-
-export function parseImageWorkbenchIpcValue<Method extends ImageWorkbenchIpcMethod>(
-  method: Method,
-  value: unknown,
-): ImageWorkbenchIpcValueByMethod[Method] {
-  return imageWorkbenchIpcResponseSchemas[method].parse(value) as ImageWorkbenchIpcValueByMethod[Method]
-}
+export type ImageWorkbenchIpcRequest = z.infer<typeof imageWorkbenchIpcRequestSchema>
 
 export type {
   ImageWorkbenchIpcPayloadByMethod as ImageWorkbenchIpcInputs,

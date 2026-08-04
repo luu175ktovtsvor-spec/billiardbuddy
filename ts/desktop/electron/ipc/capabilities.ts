@@ -21,8 +21,7 @@ import {
   updateImageReferenceControlInputSchema,
 } from '../../../shared/contracts/imageGeneration'
 import {
-  imageWorkbenchIpcPayloadSchema,
-  imageWorkbenchIpcPayloadSchemas,
+  imageWorkbenchIpcRequestSchema,
 } from '../../../shared/contracts/imageWorkbenchIpc'
 import {
   mediaIdSchema,
@@ -1240,11 +1239,7 @@ const imageExportDelivery: Validator = value => imageExportDeliveryIpcPayloadSch
 const imageRequestDestination: Validator = value => imageRequestDestinationIpcPayloadSchema.safeParse(value).success
 const imageSelectArtboardVersion: Validator = value => imageSelectArtboardVersionIpcPayloadSchema.safeParse(value).success
 const imageWorkbenchInvoke: Validator = value => {
-  const envelope = imageWorkbenchIpcPayloadSchema.safeParse(value)
-  if (!envelope.success) return false
-  if (!Object.prototype.hasOwnProperty.call(imageWorkbenchIpcPayloadSchemas, envelope.data.method)) return false
-  const schema = imageWorkbenchIpcPayloadSchemas[envelope.data.method as keyof typeof imageWorkbenchIpcPayloadSchemas]
-  return schema ? schema.safeParse(envelope.data.payload).success : false
+  return imageWorkbenchIpcRequestSchema.safeParse(value).success
 }
 
 export const ELECTRON_IPC_VALIDATORS = {
