@@ -678,6 +678,84 @@ test('正式 ASR 只在完整授权范围内流式上传，并持久化原始 PT
   service.repository.close()
 })
 
+test('ASR 的新 OSS 租约和已围栏提交都会把托管额度关闭投影为终态任务', async () => {
+  for (const quotaAt of ['lease', 'operation'] as const) {
+    const root = await testRoot(`asr-hosted-quota-${quotaAt}`)
+    const sourcePath = join(root, 'source.mp4')
+    await writeFile(sourcePath, 'source bytes')
+    const requests: string[] = []
+    const service = new VideoWorkbenchService({
+      root,
+      now: () => new Date(at),
+      env: { BB_VIDEO_MEDIA_RELAY_URL: 'https://relay.example.test', BB_GATEWAY_TOKEN: 'relay-test-token-1234' },
+      platform: 'linux',
+      runProcess: async command => {
+        if (command.includes('-show_format') && command.includes('-show_streams')) return await mediaProcessRunner(command)
+        const output = command.at(-1)
+        if (command.includes('-f') && command.includes('wav') && output?.startsWith(root)) {
+          await writeFile(output, new Uint8Array(128))
+        } else if (command.includes('-frames:v') && output?.startsWith(root)) {
+          await writeFile(output, 'simulated-frame')
+        }
+        return { exitCode: 0, stdout: '', stderr: '' }
+      },
+      fetchImpl: async (input, init) => {
+        const url = new URL(String(input))
+        requests.push(`${init?.method ?? 'GET'} ${url.pathname}`)
+        if (url.hostname === 'oss.example.test') return new Response(null, { status: 200, headers: { etag: 'quota-test' } })
+        if (url.pathname.endsWith('/object-leases')) {
+          if (quotaAt === 'lease') return Response.json({ error: 'account_daily_quota_exceeded' }, { status: 429 })
+          return Response.json({ lease_id: 'lease_00000001', state: 'awaiting_upload', put_url: 'https://oss.example.test/put', required_headers: {}, expires_at: '2026-08-03T01:00:00.000Z' })
+        }
+        if (url.pathname.endsWith('/complete')) return Response.json({ lease_id: 'lease_00000001', state: 'ready', object_ref: 'object_00000001', expires_at: '2026-08-03T01:00:00.000Z' })
+        if (url.pathname.endsWith('/operations') && quotaAt === 'operation') return Response.json({ error: 'account_daily_quota_exceeded' }, { status: 429 })
+        throw new Error(`unexpected Relay request ${init?.method ?? 'GET'} ${url}`)
+      },
+    })
+    const created = await service.createProject({ title: `ASR 额度关闭 ${quotaAt}` })
+    await service.addVideoSource(created.id, { path: sourcePath })
+    const fingerprint = (await service.repository.listOperations(created.id)).find(item => item.kind === 'video.fingerprint')!
+    expect((await waitForTerminalOperation(service, fingerprint.id)).status).toBe('succeeded')
+    const ready = await service.getProject(created.id)
+    const sourceFact = await service.repository.getFact('source', ready.sources[0]!.id) as VideoFactSource
+    const remoteReady = await service.repository.saveProject({
+      ...ready,
+      remote_analysis_consents: [{
+        id: 'consent_00000001', project_id: created.id, revision: 1, state: 'active', provider: 'aliyun_bailian', region: 'cn-beijing',
+        purposes: ['asr'], data_kinds: ['audio_extract'],
+        coverage: [{ source_id: sourceFact.id, ranges: [{ start: sourceFact.primary_video_stream.start_time, duration: sourceFact.primary_video_stream.duration! }] }],
+        acknowledged_estimate_hash: hash('e'), granted_by_actor_id: 'local', granted_at: at,
+      }],
+      remote_analysis_budgets: [{
+        id: 'budget_00000001', estimate_hash: hash('e'), state: 'reserved', requests: 10, total_tokens: 10_000, input_bytes: 1_000_000,
+        visual_frames: 0, proxy_seconds: 0, asr_seconds: 60, estimated_amount_micros: 1_000_000, settlements: [], created_at: at, updated_at: at,
+      }],
+    })
+    const task = await service.analyzeVideoProject(created.id, { base_revision: remoteReady.revision, user_goal: '验证额度关闭' })
+    const terminal = await waitForTerminalOperation(service, task.id)
+    expect(terminal).toMatchObject({ status: 'failed', error_code: 'MEDIA_VIDEO_PLATFORM_QUOTA_EXHAUSTED', stage: '托管视频额度已用完' })
+    if (quotaAt === 'lease') {
+      expect(requests).toEqual(['POST /v1/video-media/object-leases'])
+    } else {
+      expect(requests).toEqual(expect.arrayContaining([
+        'POST /v1/video-media/object-leases',
+        'PUT /put',
+        'POST /v1/video-media/object-leases/lease_00000001/complete',
+        'POST /v1/video-media/operations',
+      ]))
+      expect(requests.at(-1)).toBe('POST /v1/video-media/operations')
+      expect(requests.filter(item => item === 'POST /v1/video-media/object-leases')).toHaveLength(2)
+    }
+    const checkpoint = terminal.result?.asr_checkpoints?.[0] as Record<string, unknown> | undefined
+    expect(checkpoint).toMatchObject({ state: quotaAt === 'lease' ? 'uploading' : 'failed' })
+    expect(checkpoint).not.toHaveProperty('remote_submission_started_at')
+    expect((await service.getProject(created.id)).remote_analysis_budgets[0]?.reservations).toMatchObject([{
+      state: 'released', safe_error_code: 'account_daily_quota_exceeded',
+    }])
+    service.repository.close()
+  }
+})
+
 test('ASR 本地预算预留失败时不写远端提交栅栏或 outcome_unknown', async () => {
   const root = await testRoot('asr-reserve-failure')
   const sourcePath = join(root, 'source.mp4'); await writeFile(sourcePath, 'source bytes')

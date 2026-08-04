@@ -47,6 +47,7 @@ Nginx 仅反代到本机回环端口：Gateway `127.0.0.1:8799`、Image Relay `1
 ## 用户额度与 Key 边界
 
 - 默认已认证安装可使用托管 Agent、图片和视频能力；三种额度各自结算，一项耗尽只限制该项托管能力。
+- 三项托管额度均接受非负整数；设为 `0` 是明确停止授予该能力的 policy，不是缺失配置。Video Relay 的平台日额度为 `0` 时在签发新的 OSS 租约或准入 Provider 前返回平台级额度耗尽；owner 日额度为 `0` 时只返回 owner 级额度耗尽。已签发租约仅可按原幂等键短期恢复，不能据此创建新的远程工作。生产变更仍须同步更新 policy revision，并走完整候选环境校验和受控重启。
 - 托管 Agent 的文本账本和 Provider 密钥只在 Gateway；图片 Provider 密钥、准入和任务状态只在 Image Relay；视频 Provider/OSS 密钥、准入和短期租约只在 Video Media Relay。
 - 用户给 Agent 配置个人 Provider Key 时，仅本机 Electron Main 的安全存储和本机短生命周期适配器使用它；该请求直连所选上游，不进入 Gateway 的托管账本，也不影响图片或视频额度。
 - Renderer 不持有密钥、Relay service token 或公开结果凭据。当前运行合同不等于 Renderer 已完成所有产品 UI；界面阶段仍按各工作台合同推进。

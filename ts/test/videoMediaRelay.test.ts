@@ -361,6 +361,51 @@ test('Relay keeps settled usage in owner and shared-account UTC daily ledgers', 
   expect((await post('owner-c', 'next_day_12345678')).status).toBe(202)
 })
 
+test('Relay treats zero daily quota as an intentional owner or platform stop before OSS or Provider work', async () => {
+  let providerCalls = 0
+  let signedLeaseUrls = 0
+  const receipt: ProviderExecutionReceipt = { id: 'receipt_zero_quota_12345678', capability: 'semantic_embedding', model_snapshot: 'text-embedding-v4', region: 'cn-beijing', request_schema_version: 1, prompt_version: 'v1', input_basis_hash: hash, usage: { requests: 1, total_tokens: 0, input_bytes: 0, visual_frames: 0, proxy_seconds: 0, asr_seconds: 0, estimated_amount_micros: 0 }, cache_hit: false, created_at: now().toISOString() }
+  const provider: VideoMediaProvider = { async execute() { providerCalls += 1; return { state: 'succeeded', receipt, result: { kind: 'embedding', vectors: [] } } } }
+  const objectStore: MediaObjectStore = {
+    async createPutUrl() { signedLeaseUrls += 1; return { put_url: 'https://oss.example.test/zero-quota', required_headers: {} } },
+    async head() { return null }, async delete() {}, async createReadUrl() { return 'https://oss.example.test/read/zero-quota' },
+    async putResult() {}, async createResultReadUrl() { return 'https://result.example.test/zero-quota' }, async deleteResult() {},
+  }
+  const operation = (suffix: string) => ({ local_operation_id: `task_zero_quota_${suffix}`, consent_revision_id: 'consent_zero_quota_12345678', consent_scope_hash: hash, local_budget_reservation_id: `budget_zero_quota_${suffix}`, request_hash: hash, capability: 'semantic_embedding' as const, application_role: 'search_index' as const, input: { embedding_role: 'query' as const, items: [{ id: `fact_zero_quota_${suffix}`, text: '停用视频额度' }], model: 'text-embedding-v4' as const, dimension: 768 as const, instruction_version: 'v1' } })
+  const lease = (suffix: string) => ({ local_operation_id: `task_zero_quota_lease_${suffix}`, purpose: 'audio_for_asr' as const, content_hash: hash, byte_size: 4, content_type: 'audio/wav', consent_revision_id: 'consent_zero_quota_12345678', consent_scope_hash: hash })
+  const createHandler = (limits: Record<string, string>) => createVideoMediaRelayFetch({ env: {
+    VIDEO_MEDIA_GATEWAY_INTROSPECTION_TOKEN: token,
+    VIDEO_MEDIA_GATEWAY_INTROSPECTION_BASE: 'http://gateway:8799',
+    VIDEO_MEDIA_RELAY_DB: ':memory:',
+    ...limits,
+  }, fetchImpl: identityFetch, objectStore, provider, now })
+
+  for (const value of ['00', '-0', '0e0']) {
+    expect(() => createHandler({ VIDEO_MEDIA_OWNER_DAILY_QUOTA_UNITS: value, VIDEO_MEDIA_ACCOUNT_DAILY_QUOTA_UNITS: '1' }))
+      .toThrow('VIDEO_MEDIA_OWNER_DAILY_QUOTA_UNITS')
+    expect(() => createHandler({ VIDEO_MEDIA_OWNER_DAILY_QUOTA_UNITS: '0', VIDEO_MEDIA_ACCOUNT_DAILY_QUOTA_UNITS: value }))
+      .toThrow('VIDEO_MEDIA_ACCOUNT_DAILY_QUOTA_UNITS')
+  }
+
+  const ownerHandler = createHandler({ VIDEO_MEDIA_OWNER_DAILY_QUOTA_UNITS: '0', VIDEO_MEDIA_ACCOUNT_DAILY_QUOTA_UNITS: '1' })
+  const ownerPaused = await ownerHandler(new Request('http://relay/v1/video-media/operations', { method: 'POST', headers: headers('zero-owner-daily-quota-key'), body: JSON.stringify(operation('owner_12345678')) }))
+  expect(ownerPaused.status).toBe(429)
+  expect(await ownerPaused.json()).toMatchObject({ error: 'owner_daily_quota_exceeded', capability: 'video', scope: 'owner' })
+  const ownerLease = await ownerHandler(new Request('http://relay/v1/video-media/object-leases', { method: 'POST', headers: headers('zero-owner-daily-quota-lease-key'), body: JSON.stringify(lease('owner_12345678')) }))
+  expect(ownerLease.status).toBe(429)
+  expect(await ownerLease.json()).toMatchObject({ error: 'owner_daily_quota_exceeded', capability: 'video', scope: 'owner' })
+
+  const platformHandler = createHandler({ VIDEO_MEDIA_OWNER_DAILY_QUOTA_UNITS: '0', VIDEO_MEDIA_ACCOUNT_DAILY_QUOTA_UNITS: '0' })
+  const platformPaused = await platformHandler(new Request('http://relay/v1/video-media/operations', { method: 'POST', headers: headers('zero-account-daily-quota-key'), body: JSON.stringify(operation('account_12345678')) }))
+  expect(platformPaused.status).toBe(429)
+  expect(await platformPaused.json()).toMatchObject({ error: 'account_daily_quota_exceeded', capability: 'video', scope: 'platform' })
+  const platformLease = await platformHandler(new Request('http://relay/v1/video-media/object-leases', { method: 'POST', headers: headers('zero-account-daily-quota-lease-key'), body: JSON.stringify(lease('account_12345678')) }))
+  expect(platformLease.status).toBe(429)
+  expect(await platformLease.json()).toMatchObject({ error: 'account_daily_quota_exceeded', capability: 'video', scope: 'platform' })
+  expect(signedLeaseUrls).toBe(0)
+  expect(providerCalls).toBe(0)
+})
+
 test('Relay only marks a submitted operation cancelled after explicit Provider proof and keeps its settled charge', async () => {
   const receipt: ProviderExecutionReceipt = { id: 'receipt_cancel_12345678', capability: 'semantic_embedding', model_snapshot: 'text-embedding-v4', region: 'cn-beijing', request_schema_version: 1, prompt_version: 'v1', input_basis_hash: hash, usage: { requests: 1, total_tokens: 0, input_bytes: 0, visual_frames: 0, proxy_seconds: 0, asr_seconds: 0, estimated_amount_micros: 0 }, cache_hit: false, created_at: now().toISOString() }
   let cancellationCalls = 0

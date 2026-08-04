@@ -14,7 +14,12 @@ function read(path: string): Environment {
 }
 function requireValue(env: Environment, name: string, min = 1): string { const value = env[name]?.trim() ?? ''; if (value.length < min) fail(`${name} is required${min > 1 ? ` and must be at least ${min} characters` : ''}`); return value }
 function optionalBytes(env: Environment, name: string, min: number, max: number): void { const raw = env[name]?.trim(); if (!raw) return; const value = Number(raw); if (!Number.isSafeInteger(value) || value < min || value > max) fail(`${name} must be an integer between ${min} and ${max}`) }
-function requiredInteger(env: Environment, name: string, min: number, max: number): void { const raw = requireValue(env, name); const value = Number(raw); if (!Number.isSafeInteger(value) || value < min || value > max) fail(`${name} must be an integer between ${min} and ${max}`) }
+function requiredInteger(env: Environment, name: string, min: number, max: number): void {
+  const raw = requireValue(env, name)
+  const integer = min === 0 ? /^(0|[1-9][0-9]*)$/ : /^[1-9][0-9]*$/
+  const value = Number(raw)
+  if (!integer.test(raw) || !Number.isSafeInteger(value) || value < min || value > max) fail(`${name} must be an integer between ${min} and ${max}`)
+}
 export function validateVideoMediaRelayEnvironment(env: Environment): void {
   requireValue(env, 'VIDEO_MEDIA_GATEWAY_INTROSPECTION_TOKEN', 32)
   const base = requireValue(env, 'VIDEO_MEDIA_GATEWAY_INTROSPECTION_BASE')
@@ -37,8 +42,10 @@ export function validateVideoMediaRelayEnvironment(env: Environment): void {
   // remain available for isolated unit tests only; deployment cannot inherit
   // an accidental unlimited or stale holding period.
   requireValue(env, 'VIDEO_MEDIA_QUOTA_POLICY_REVISION')
-  requiredInteger(env, 'VIDEO_MEDIA_OWNER_DAILY_QUOTA_UNITS', 1, 1_000_000_000)
-  requiredInteger(env, 'VIDEO_MEDIA_ACCOUNT_DAILY_QUOTA_UNITS', 1, 1_000_000_000)
+  // Zero is a deliberate entitlement stop, not an omitted value. The Relay
+  // rejects before new OSS leases or Provider admission with a stable error.
+  requiredInteger(env, 'VIDEO_MEDIA_OWNER_DAILY_QUOTA_UNITS', 0, 1_000_000_000)
+  requiredInteger(env, 'VIDEO_MEDIA_ACCOUNT_DAILY_QUOTA_UNITS', 0, 1_000_000_000)
   if (Number(env.VIDEO_MEDIA_OWNER_DAILY_QUOTA_UNITS) > Number(env.VIDEO_MEDIA_ACCOUNT_DAILY_QUOTA_UNITS)) fail('VIDEO_MEDIA_OWNER_DAILY_QUOTA_UNITS must not exceed VIDEO_MEDIA_ACCOUNT_DAILY_QUOTA_UNITS')
   // A visual operation needs several independently leased frames. Production
   // may be stricter, but a value below eight makes normal multi-frame analysis
