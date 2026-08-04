@@ -155,6 +155,10 @@ export const timedTranscriptSchema = z.object({
   source_id: mediaIdSchema,
   source_fingerprint: hashSchema,
   model_receipt_id: mediaIdSchema,
+  /** The temporary Relay result remains retrievable until the Sidecar has
+   * committed this Fact and completed its durable ACK outbox entry. */
+  relay_operation_id: mediaIdSchema.optional(),
+  relay_result_hashes: z.array(hashSchema).min(1).max(64).optional(),
   source_offset: z.object({ ticks: z.string(), tick_rate: z.object({ num: positiveSafeInteger, den: positiveSafeInteger }) }).transform(value => rationalTime(value.ticks, value.tick_rate)),
   language: z.string().min(1).max(32).optional(),
   segments: z.array(transcriptSegmentSchema).max(20_000),
@@ -267,6 +271,8 @@ const evidenceBaseSchema = z.object({
   range: sourceTimeRangeSchema,
   derivative_ids: z.array(mediaIdSchema).max(1_000),
   provider_receipt_id: mediaIdSchema.optional(),
+  relay_operation_id: mediaIdSchema.optional(),
+  relay_result_hashes: z.array(hashSchema).min(1).max(64).optional(),
   confidence: z.number().min(0).max(1).optional(),
   facts_schema_version: z.number().int().positive(),
   prompt_version: z.string().min(1).max(160),
@@ -374,6 +380,8 @@ export function createHostedEvidence<K extends EvidenceKind>(input: {
   contentSegmentId?: string
   evidenceWindowId?: string
   providerReceiptId?: string
+  relayOperationId?: string
+  relayResultHashes?: `sha256:${string}`[]
   confidence?: number
   id?: string
 }): Extract<VideoFactEvidence, { kind: K }> {
@@ -388,6 +396,8 @@ export function createHostedEvidence<K extends EvidenceKind>(input: {
     range: input.range,
     derivative_ids: input.derivativeIds ?? [],
     ...(input.providerReceiptId ? { provider_receipt_id: input.providerReceiptId } : {}),
+    ...(input.relayOperationId ? { relay_operation_id: input.relayOperationId } : {}),
+    ...(input.relayResultHashes ? { relay_result_hashes: input.relayResultHashes } : {}),
     ...(input.confidence === undefined ? {} : { confidence: input.confidence }),
     facts_schema_version: 1,
     prompt_version: input.promptVersion,

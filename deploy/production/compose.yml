@@ -1,11 +1,11 @@
 name: billiardbuddy
 
 # This Compose file owns only the product backends. The public nginx site and
-# static update service remain independent so a Gateway/Relay release cannot
+# static update service remain independent so a Gateway/Image Relay release cannot
 # accidentally replace the website or desktop-update artifacts.
 services:
-  relay:
-    image: billiardbuddy/relay:${BILLIARDBUDDY_RELEASE:?BILLIARDBUDDY_RELEASE is required}
+  image-relay:
+    image: billiardbuddy/image-relay:${BILLIARDBUDDY_RELEASE:?BILLIARDBUDDY_RELEASE is required}
     build:
       context: ../..
       dockerfile: deploy/production/Dockerfile.relay
@@ -18,16 +18,23 @@ services:
         max-size: 10m
         max-file: "3"
     env_file:
-      - /srv/billiardbuddy/secrets/relay.env
+      - /srv/billiardbuddy/secrets/image-relay.env
     environment:
       RELAY_HOST: 0.0.0.0
       RELAY_PORT: "8790"
+      # Keep the historical SQLite filename while the owning directory/service is
+      # renamed. This makes the one-time directory move lossless and auditable.
       RELAY_DB: /data/relay.db
       RELAY_BLOB_DIR: /data/blobs
+      IMAGE_RELAY_GATEWAY_INTROSPECTION_BASE: http://gateway:8799
+      IMAGE_RELAY_PUBLIC_BASE: https://zzyppz.cn/image-generation
+    depends_on:
+      gateway:
+        condition: service_healthy
     volumes:
-      - /srv/billiardbuddy/data/relay:/data
-    expose:
-      - "8790"
+      - /srv/billiardbuddy/data/image-relay:/data
+    ports:
+      - 127.0.0.1:8790:8790
     read_only: true
     tmpfs:
       - /tmp:size=64m,mode=1777
@@ -55,14 +62,10 @@ services:
       options:
         max-size: 10m
         max-file: "3"
-    depends_on:
-      relay:
-        condition: service_healthy
     env_file:
       - /srv/billiardbuddy/secrets/gateway.env
     environment:
       GW_DB: /data/usage.db
-      GW_RELAY_TASKS_BASE: http://relay:8790
     volumes:
       - /srv/billiardbuddy/data/gateway:/data
     ports:
@@ -76,6 +79,47 @@ services:
       - no-new-privileges:true
     healthcheck:
       test: ["CMD", "bun", "-e", "const r = await fetch('http://127.0.0.1:8799/healthz'); if (!r.ok) process.exit(1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  video-media-relay:
+    image: billiardbuddy/video-media-relay:${BILLIARDBUDDY_RELEASE:?BILLIARDBUDDY_RELEASE is required}
+    build:
+      context: ../..
+      dockerfile: deploy/production/Dockerfile.video-media-relay
+    restart: unless-stopped
+    mem_limit: 1g
+    pids_limit: 256
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+    depends_on:
+      gateway:
+        condition: service_healthy
+    env_file:
+      - /srv/billiardbuddy/secrets/video-media-relay.env
+    environment:
+      VIDEO_MEDIA_RELAY_HOST: 0.0.0.0
+      VIDEO_MEDIA_RELAY_PORT: "8791"
+      VIDEO_MEDIA_RELAY_DB: /data/video-media-relay.db
+      VIDEO_MEDIA_GATEWAY_INTROSPECTION_BASE: http://gateway:8799
+    volumes:
+      - /srv/billiardbuddy/data/video-media-relay:/data
+    ports:
+      - 127.0.0.1:8791:8791
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "bun", "-e", "const r = await fetch('http://127.0.0.1:8791/readyz'); if (!r.ok) process.exit(1)"]
       interval: 10s
       timeout: 5s
       retries: 12

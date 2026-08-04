@@ -4,8 +4,10 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "bun test --preload ./test/setup.ts",
-    "test:images": "bun test --preload ./test/setup.ts ./test/imageWorkbenchBaseline.test.ts ./test/imageWorkbenchCanvasDelivery.test.ts ./test/imageCanvasGolden.test.ts ./test/imageWorkbenchIpcContract.test.ts ./test/imageWorkbenchProviderSmokePolicy.test.ts",
+    "test": "bun test --preload ./test/setup.ts ./test ../gateway ../relay",
+    "test:gateway-governance": "bun test --preload ./test/setup.ts ../gateway",
+    "test:resource-governance": "bun test --preload ./test/setup.ts ../gateway ../relay ./test/providerAdmission.test.ts",
+    "test:images": "bun test --preload ./test/setup.ts ./test/imageWorkbenchBaseline.test.ts ./test/imageWorkbenchCanvasDelivery.test.ts ./test/imageCanvasGolden.test.ts ./test/imageWorkbenchIpcContract.test.ts ./test/imageWorkbenchProviderSmokePolicy.test.ts ./test/imageWorkbenchQwen.test.ts",
     "test:images:provider-smoke": "bun test --preload ./test/setup.ts ./test/imageWorkbenchProviderSmoke.ts",
     "typecheck:server": "tsc --project tsconfig.server.json",
     "check:server": "bun run typecheck:server",
@@ -16,6 +18,7 @@
     "verify:codex-engine-source": "bun desktop/scripts/verify-codex-engine-source.ts && bun desktop/scripts/verify-codex-native-protocol.ts"
   },
   "dependencies": {
+    "ali-oss": "6.23.0",
     "@fontsource/noto-sans-sc": "5.2.5",
     "@resvg/resvg-js": "^2.6.2",
     "fontkit": "^2.0.4",

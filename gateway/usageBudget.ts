@@ -7,6 +7,12 @@ import type {
   ProviderUsageBudgetPolicy,
   ProviderUsageReceipt,
 } from '../ts/shared/product/providerContracts'
+import {
+  DEFAULT_GATEWAY_USAGE_POLICY,
+  MANAGED_AGENT_INSTALLATION_DAILY_TOKEN_LIMIT,
+} from './quotaPolicy'
+
+export { DEFAULT_GATEWAY_USAGE_POLICY, MANAGED_AGENT_INSTALLATION_DAILY_TOKEN_LIMIT } from './quotaPolicy'
 
 export type MeteredCapability = MeteredProviderCapability
 export type UsageAmount = ProviderUsageAmount
@@ -15,6 +21,14 @@ export type UsageBudgetPolicy = ProviderUsageBudgetPolicy
 export type UsageState = 'reserved' | 'settled' | 'released' | 'outcome_unknown'
 export type UsageReceipt = ProviderUsageReceipt
 export type UsageReservation = { duplicate: boolean; receipt: UsageReceipt }
+export type UsageBudgetLimitDetail = {
+  /** Provider capability, never a model or physical API key. */
+  capability: MeteredCapability
+  /** The trusted product ledger dimension that reached its configured limit. */
+  scope: 'principal' | 'installation'
+  /** UTC reset boundary for the current daily hosted-quota policy. */
+  resets_at: string
+}
 export type UsageBudgetSummary = {
   period: string
   resets_at: string
@@ -28,47 +42,18 @@ export type UsageReserveInput = {
   principal_id: string
   installation_id: string
   capability: MeteredCapability
+  /** Physical provider-account binding selected by the capacity policy. */
+  account_key: string
   fingerprint: string
   amount: UsageAmount
 }
 
-export const MANAGED_AGENT_INSTALLATION_DAILY_TOKEN_LIMIT = 50_000_000
-
-const UNBOUNDED_USAGE_LIMIT: UsageAmount = {
-  requests: 1_000_000_000,
-  input_bytes: 1_000_000_000_000,
-  output_units: 1_000_000_000_000,
-  total_tokens: 1_000_000_000_000,
-}
-
-export const DEFAULT_GATEWAY_USAGE_POLICY: UsageBudgetPolicy = {
-  revision: 'bb-agent-daily-token-v1',
-  period: 'utc_day',
-  capabilities: {
-    TextReasoning: {
-      // This is the product-owned managed Agent key. Each verified installation
-      // gets a fresh 50M-token allowance at UTC midnight; a user's own provider
-      // key never enters this Gateway ledger.
-      principal: { ...UNBOUNDED_USAGE_LIMIT },
-      installation: { ...UNBOUNDED_USAGE_LIMIT, total_tokens: MANAGED_AGENT_INSTALLATION_DAILY_TOKEN_LIMIT },
-    },
-    VisualEvidence: {
-      principal: { requests: 20_000, input_bytes: 500 * 1024 ** 3, output_units: 20_000_000, total_tokens: UNBOUNDED_USAGE_LIMIT.total_tokens },
-      installation: { requests: 2_000, input_bytes: 50 * 1024 ** 3, output_units: 2_000_000, total_tokens: UNBOUNDED_USAGE_LIMIT.total_tokens },
-    },
-    MediaReasoning: {
-      principal: { requests: 20_000, input_bytes: 500 * 1024 ** 3, output_units: 20_000_000, total_tokens: UNBOUNDED_USAGE_LIMIT.total_tokens },
-      installation: { requests: 2_000, input_bytes: 50 * 1024 ** 3, output_units: 2_000_000, total_tokens: UNBOUNDED_USAGE_LIMIT.total_tokens },
-    },
-    SpeechTranscription: {
-      principal: { requests: 20_000, input_bytes: 500 * 1024 ** 3, output_units: 200_000_000, total_tokens: UNBOUNDED_USAGE_LIMIT.total_tokens },
-      installation: { requests: 2_000, input_bytes: 50 * 1024 ** 3, output_units: 20_000_000, total_tokens: UNBOUNDED_USAGE_LIMIT.total_tokens },
-    },
-  },
-}
-
 export class UsageBudgetError extends Error {
-  constructor(readonly status: number, readonly code: 'BUDGET_UNAVAILABLE' | 'USAGE_LIMIT_REACHED' | 'OPERATION_CONFLICT' | 'STALE_FENCING') {
+  constructor(
+    readonly status: number,
+    readonly code: 'BUDGET_UNAVAILABLE' | 'USAGE_LIMIT_REACHED' | 'OPERATION_CONFLICT' | 'STALE_FENCING',
+    readonly limit?: UsageBudgetLimitDetail,
+  ) {
     super(code)
     this.name = 'UsageBudgetError'
   }
@@ -98,7 +83,7 @@ function validateAmount(amount: UsageAmount): void {
 
 function validatePolicy(policy: UsageBudgetPolicy): void {
   if (!policy.revision.trim() || policy.period !== 'utc_day') throw new UsageBudgetError(503, 'BUDGET_UNAVAILABLE')
-  for (const capability of ['TextReasoning', 'VisualEvidence', 'MediaReasoning', 'SpeechTranscription'] as const) {
+  for (const capability of ['TextReasoning', 'VisualEvidence', 'MediaReasoning', 'ImageAdvice', 'SpeechTranscription'] as const) {
     const limits = policy.capabilities[capability]
     if (!limits) throw new UsageBudgetError(503, 'BUDGET_UNAVAILABLE')
     validateAmount(limits.principal)
@@ -109,7 +94,9 @@ function validatePolicy(policy: UsageBudgetPolicy): void {
 function validateReserveInput(input: UsageReserveInput): void {
   if (!/^[A-Za-z0-9._:-]{8,200}$/.test(input.operation_id)
     || !input.principal_id || !input.installation_id
-    || !/^[a-f0-9]{64}$/.test(input.fingerprint)) {
+    || !/^[a-f0-9]{64}$/.test(input.fingerprint)
+    || !/^[A-Za-z0-9._:-]{8,300}$/.test(input.account_key)
+    || input.account_key === 'legacy:unbound') {
     throw new UsageBudgetError(409, 'OPERATION_CONFLICT')
   }
   validateAmount(input.amount)
@@ -155,6 +142,18 @@ function sameBinding(existing: StoredUsage, input: UsageReserveInput): boolean {
   return existing.principal_id === input.principal_id
     && existing.installation_id === input.installation_id
     && existing.capability === input.capability
+    && existing.account_key === input.account_key
+    && existing.fingerprint === input.fingerprint
+    && JSON.stringify(existing.reserved) === JSON.stringify(input.amount)
+}
+
+/** Historical rows may not be truthfully attributed to any later credential.
+ * They can only replay the identical product operation; their account marker
+ * is deliberately outside that compatibility comparison. */
+function sameLegacyBinding(existing: StoredUsage, input: UsageReserveInput): boolean {
+  return existing.principal_id === input.principal_id
+    && existing.installation_id === input.installation_id
+    && existing.capability === input.capability
     && existing.fingerprint === input.fingerprint
     && JSON.stringify(existing.reserved) === JSON.stringify(input.amount)
 }
@@ -174,12 +173,18 @@ type SqlRow = {
   reserved_input_bytes: number; reserved_output_units: number; reserved_total_tokens: number; actual_requests: number
   actual_input_bytes: number; actual_output_units: number; actual_total_tokens: number; fencing_token: number
   fingerprint: string; upstream_receipt_hash: string | null
+  account_key: string | null
 }
 
 function fromSql(row: SqlRow): StoredUsage {
   return {
     operation_id: row.operation_id, principal_id: row.principal_id, installation_id: row.installation_id,
-    capability: row.capability, policy_revision: row.policy_revision, period: row.period, state: row.state,
+    capability: row.capability,
+    // A database created before account bindings did not carry this field. Do
+    // not invent a current account for historical spend; expose the permanent,
+    // explicit legacy marker instead.
+    account_key: row.account_key ?? 'legacy:unbound',
+    policy_revision: row.policy_revision, period: row.period, state: row.state,
     reserved: {
       requests: row.reserved_requests,
       input_bytes: row.reserved_input_bytes,
@@ -211,6 +216,7 @@ export class SqliteUsageBudgetService implements UsageBudgetService {
       principal_id TEXT NOT NULL,
       installation_id TEXT NOT NULL,
       capability TEXT NOT NULL,
+      account_key TEXT NOT NULL,
       policy_revision TEXT NOT NULL,
       period TEXT NOT NULL,
       state TEXT NOT NULL,
@@ -237,6 +243,13 @@ export class SqliteUsageBudgetService implements UsageBudgetService {
       this.db.exec('ALTER TABLE usage_budget_reservations ADD COLUMN actual_total_tokens INTEGER NOT NULL DEFAULT 0')
       this.db.exec('UPDATE usage_budget_reservations SET actual_total_tokens=actual_output_units')
     }
+    if (!columns.some(column => column.name === 'account_key')) {
+      // The old database has no physical-account evidence. Preserve that fact
+      // as a permanent audit marker rather than attributing it to whatever key
+      // happens to be installed at the first later replay.
+      this.db.exec('ALTER TABLE usage_budget_reservations ADD COLUMN account_key TEXT')
+    }
+    this.db.exec("UPDATE usage_budget_reservations SET account_key='legacy:unbound' WHERE account_key IS NULL")
     this.db.exec('CREATE INDEX IF NOT EXISTS usage_budget_period_principal ON usage_budget_reservations(period, principal_id)')
   }
 
@@ -249,7 +262,7 @@ export class SqliteUsageBudgetService implements UsageBudgetService {
       'SELECT * FROM usage_budget_reservations WHERE period=? AND principal_id=? AND state<>\'released\'',
     ).all(period, principalId) as SqlRow[]).map(fromSql)
     const capabilities = Object.fromEntries(
-      (['TextReasoning', 'VisualEvidence', 'MediaReasoning', 'SpeechTranscription'] as const).map((capability) => {
+      (['TextReasoning', 'VisualEvidence', 'MediaReasoning', 'ImageAdvice', 'SpeechTranscription'] as const).map((capability) => {
         const limits = this.policy.capabilities[capability]
         const principal: UsageAmount = { requests: 0, input_bytes: 0, output_units: 0, total_tokens: 0 }
         const installation: UsageAmount = { requests: 0, input_bytes: 0, output_units: 0, total_tokens: 0 }
@@ -280,6 +293,14 @@ export class SqliteUsageBudgetService implements UsageBudgetService {
     try {
       const existing = this.getForReserve(input)
       if (existing) {
+        if (existing.account_key === 'legacy:unbound') {
+          // Replay cannot prove which provider account spent the historic cost.
+          // Keep it legacy forever; it is a duplicate only for the exact same
+          // product operation and never authorizes a new upstream request.
+          if (!sameLegacyBinding(existing, input)) throw new UsageBudgetError(409, 'OPERATION_CONFLICT')
+          this.db.exec('COMMIT')
+          return { duplicate: true, receipt: publicReceipt(existing) }
+        }
         if (!sameBinding(existing, input)) throw new UsageBudgetError(409, 'OPERATION_CONFLICT')
         this.db.exec('COMMIT')
         return { duplicate: true, receipt: publicReceipt(existing) }
@@ -288,10 +309,10 @@ export class SqliteUsageBudgetService implements UsageBudgetService {
       const rows = this.db.query('SELECT * FROM usage_budget_reservations WHERE period=? AND capability=? AND state<>\'released\'').all(period, input.capability) as SqlRow[]
       this.assertWithinBudget(rows.map(fromSql), input)
       this.db.query(`INSERT INTO usage_budget_reservations(
-        operation_key,operation_id,principal_id,installation_id,capability,policy_revision,period,state,fingerprint,
+        operation_key,operation_id,principal_id,installation_id,capability,account_key,policy_revision,period,state,fingerprint,
         reserved_requests,reserved_input_bytes,reserved_output_units,reserved_total_tokens
-      ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
-        operationKey(input.principal_id, input.operation_id), input.operation_id, input.principal_id, input.installation_id, input.capability,
+      ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+        operationKey(input.principal_id, input.operation_id), input.operation_id, input.principal_id, input.installation_id, input.capability, input.account_key,
         this.policy.revision, period, 'reserved', input.fingerprint,
         input.amount.requests, input.amount.input_bytes, input.amount.output_units, input.amount.total_tokens,
       )
@@ -334,9 +355,17 @@ export class SqliteUsageBudgetService implements UsageBudgetService {
       }
     }
     const limits = this.policy.capabilities[input.capability]
-    if (exceeds(add(principal, input.amount), limits.principal)
-      || exceeds(add(installation, input.amount), limits.installation)) {
-      throw new UsageBudgetError(429, 'USAGE_LIMIT_REACHED')
+    const principalExceeded = exceeds(add(principal, input.amount), limits.principal)
+    const installationExceeded = exceeds(add(installation, input.amount), limits.installation)
+    if (principalExceeded || installationExceeded) {
+      const periodStart = Date.parse(`${period}T00:00:00.000Z`)
+      throw new UsageBudgetError(429, 'USAGE_LIMIT_REACHED', {
+        capability: input.capability,
+        // A principal limit is broader and therefore wins the explanation if
+        // both happen to be exhausted at the same instant.
+        scope: principalExceeded ? 'principal' : 'installation',
+        resets_at: new Date(periodStart + 24 * 60 * 60_000).toISOString(),
+      })
     }
   }
   private finalizeRow(row: StoredUsage, fencingToken: number, state: UsageState, actual?: UsageAmount, upstreamReceiptHash?: string): UsageReceipt {

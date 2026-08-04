@@ -72,16 +72,21 @@ import {
   type VideoTimelineVersion,
 } from '../../../shared/contracts/media.js'
 import {
-  MEDIA_RESULT_HANDOFF_DIRECT_V1,
-  MEDIA_RESULT_HANDOFF_HEADER,
   PROVIDER_GATEWAY_PROTOCOL,
   PROVIDER_GATEWAY_PROTOCOL_HEADER,
 } from '../../../shared/product/providerGateway.js'
+import {
+  IMAGE_RELAY_RESULTS_PATH,
+  IMAGE_RELAY_RESULT_HANDOFF_DIRECT_V1,
+  IMAGE_RELAY_RESULT_HANDOFF_HEADER,
+  IMAGE_RELAY_TASKS_PATH,
+  isImageRelayQuotaErrorCode,
+} from '../../../shared/product/imageRelayProtocol.js'
 import { diagnosticsService } from './diagnosticsService.js'
 import { lock } from '../../utils/lockfile.js'
 import {
-  productGatewayConfigured,
-  productGatewayTarget,
+  productImageRelayConfigured,
+  productImageRelayTarget,
 } from '../product/productGatewayRuntime.js'
 import { providerRegistryEntriesForCapability } from '../../../../gateway/providerRegistry.js'
 import { applyImageBriefOverrides, compileImageBrief, providerPromptForImageBrief } from './imageBrief.js'
@@ -102,6 +107,58 @@ import {
 } from './videoAnalysis.js'
 
 type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
+
+const IMAGE_RELAY_CONTROL_JSON_MAX_BYTES = 256 * 1024
+const IMAGE_RELAY_DIRECT_RESULT_JSON_MAX_BYTES = Math.ceil((32 * 1024 * 1024) / 3) * 4 + 64 * 1024
+
+async function readImageRelayResponseText(response: Response, maxBytes: number, signal: AbortSignal): Promise<string> {
+  const declaredRaw = response.headers.get('content-length')?.trim()
+  const declared = declaredRaw && /^\d+$/.test(declaredRaw) ? Number(declaredRaw) : undefined
+  if (declared !== undefined && (!Number.isSafeInteger(declared) || declared > maxBytes)) {
+    void response.body?.cancel().catch(() => {})
+    throw new Error('image relay response too large')
+  }
+  if (!response.body) return ''
+  const reader = response.body.getReader()
+  const chunks: Uint8Array[] = []
+  let total = 0
+  let detachAbort = () => {}
+  const aborted = new Promise<never>((_resolve, reject) => {
+    const onAbort = () => {
+      void reader.cancel().catch(() => {})
+      reject(new Error('image relay response deadline exceeded'))
+    }
+    if (signal.aborted) onAbort()
+    else {
+      signal.addEventListener('abort', onAbort, { once: true })
+      detachAbort = () => signal.removeEventListener('abort', onAbort)
+    }
+  })
+  try {
+    while (true) {
+      const next = await Promise.race([reader.read(), aborted])
+      if (next.done) break
+      const value = next.value
+      if (!value || value.byteLength === 0) continue
+      if (total + value.byteLength > maxBytes) {
+        void reader.cancel().catch(() => {})
+        throw new Error('image relay response too large')
+      }
+      chunks.push(value)
+      total += value.byteLength
+    }
+    const bytes = new Uint8Array(total)
+    let offset = 0
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset)
+      offset += chunk.byteLength
+    }
+    return new TextDecoder().decode(bytes)
+  } finally {
+    detachAbort()
+    try { reader.releaseLock() } catch {}
+  }
+}
 
 export type MediaProcessResult = {
   exitCode: number
@@ -188,7 +245,7 @@ function maxQueuedVideoProbes(env: Record<string, string | undefined>): number {
 export type MediaProjectServiceOptions = {
   root?: string
   fetchImpl?: FetchLike
-  /** Complete gateway response deadline; injectable only for deterministic timeout tests. */
+  /** Complete image Relay response deadline; injectable only for deterministic timeout tests. */
   imageResultTimeoutMs?: number
   runProcess?: MediaProcessRunner
   moveFile?: MoveFile
@@ -211,6 +268,10 @@ type RelayImageTask = {
     mime_type?: 'image/png' | 'image/jpeg' | 'image/webp'
   }>
   error?: string
+  code?: string
+  capability?: string
+  scope?: string
+  resets_at?: string
   reused?: boolean
   input_fidelity_requested?: string
   input_fidelity_status?: 'accepted' | 'unsupported'
@@ -222,20 +283,20 @@ type RelayImageTask = {
   result_urls?: string[]
 }
 
-function trustedMediaResultUrl(value: unknown, gatewayBaseUrl: string): string | null {
+function trustedMediaResultUrl(value: unknown, imageRelayBaseUrl: string): string | null {
   if (typeof value !== 'string') return null
   try {
     const result = new URL(value)
-    const gateway = new URL(gatewayBaseUrl)
+    const imageRelay = new URL(imageRelayBaseUrl)
     if (
       result.protocol !== 'https:'
-      || result.origin !== gateway.origin
+      || result.origin !== imageRelay.origin
       || result.username
       || result.password
       || result.search
       || result.hash
     ) return null
-    const prefix = '/relay/imgtasks/images/results/'
+    const prefix = `${imageRelay.pathname.replace(/\/+$/, '')}${IMAGE_RELAY_RESULTS_PATH}/`
     if (!result.pathname.startsWith(prefix)) return null
     const grant = result.pathname.slice(prefix.length)
     if (!/^[A-Za-z0-9_-]+\.[a-f0-9]{64}(?:\/[0-3])?$/.test(grant)) return null
@@ -283,9 +344,15 @@ class ImageSubmissionAttemptError extends MediaServiceError {
     message: string,
     status: number,
     readonly outcomeUnknown: boolean,
+    readonly relayCode?: string,
   ) {
     super(message, status, outcomeUnknown ? 'IMAGE_SUBMIT_UNKNOWN' : 'IMAGE_SUBMIT_FAILED')
   }
+}
+
+function imageRelayFailureCode(status: number, body: RelayImageTask): MediaSafeErrorCode {
+  if (status === 429 && isImageRelayQuotaErrorCode(body.code)) return 'MEDIA_IMAGE_QUOTA_EXHAUSTED'
+  return body.status === 'failed_unknown' ? 'MEDIA_IMAGE_OUTCOME_UNKNOWN' : 'MEDIA_IMAGE_UNAVAILABLE'
 }
 
 function id(prefix: 'img' | 'vid' | 'src' | 'clip' | 'task' | 'out' | 'preview' | 'mask' | 'evidence' | 'scene' | 'alternative' | 'timeline'): string {
@@ -612,22 +679,23 @@ export class MediaProjectService {
     }
   }
 
-  private async fetchImageGatewayJson(
+  private async fetchImageRelayJson(
     input: RequestInfo | URL,
     init: RequestInit,
+    maxBytes = IMAGE_RELAY_CONTROL_JSON_MAX_BYTES,
   ): Promise<{ response: Response; body: RelayImageTask & { message?: string } }> {
     const controller = new AbortController()
     let timer: ReturnType<typeof setTimeout> | undefined
     const timeout = new Promise<never>((_resolve, reject) => {
       timer = setTimeout(() => {
         controller.abort()
-        reject(new Error('image gateway response deadline exceeded'))
+        reject(new Error('image relay response deadline exceeded'))
       }, this.imageResultTimeoutMs)
       ;(timer as unknown as { unref?: () => void }).unref?.()
     })
     const fetchAndRead = async () => {
       const response = await this.fetchImpl(input, { ...init, signal: controller.signal })
-      const text = await response.text()
+      const text = await readImageRelayResponseText(response, maxBytes, controller.signal)
       const body = (text ? JSON.parse(text) : {}) as RelayImageTask & { message?: string }
       return { response, body }
     }
@@ -2788,8 +2856,8 @@ export class MediaProjectService {
       }
       if (existing && existing.status !== 'failed' && existing.status !== 'cancelled') return existing
     }
-    if (!productGatewayConfigured()) {
-      throw new MediaServiceError(mediaSafeError('MEDIA_IMAGE_UNAVAILABLE').message, 503, 'GATEWAY_NOT_CONFIGURED')
+    if (!productImageRelayConfigured()) {
+      throw new MediaServiceError(mediaSafeError('MEDIA_IMAGE_UNAVAILABLE').message, 503, 'IMAGE_RELAY_NOT_CONFIGURED')
     }
     // Admission validates project-scoped reference bytes before publishing a Job.
     // The reasoning stage reads them again so a post-admission swap still fails closed.
@@ -2866,8 +2934,8 @@ export class MediaProjectService {
         throw new MediaServiceError('当前图片操作尚未完成', 409, 'IMAGE_OPERATION_ACTIVE')
       }
     }
-    if (!productGatewayConfigured()) {
-      throw new MediaServiceError(mediaSafeError('MEDIA_IMAGE_UNAVAILABLE').message, 503, 'GATEWAY_NOT_CONFIGURED')
+    if (!productImageRelayConfigured()) {
+      throw new MediaServiceError(mediaSafeError('MEDIA_IMAGE_UNAVAILABLE').message, 503, 'IMAGE_RELAY_NOT_CONFIGURED')
     }
     const base = await this.imageVersionBytes(project, input.base_version_id)
     const model = input.kind === 'inpaint'
@@ -3108,8 +3176,8 @@ export class MediaProjectService {
   }
 
   private async performImageSubmission(project: ImageWorkbenchProject, originalTask: MediaTask): Promise<MediaTask> {
-    if (!productGatewayConfigured()) {
-      throw new MediaServiceError(mediaSafeError('MEDIA_IMAGE_UNAVAILABLE').message, 503, 'GATEWAY_NOT_CONFIGURED')
+    if (!productImageRelayConfigured()) {
+      throw new MediaServiceError(mediaSafeError('MEDIA_IMAGE_UNAVAILABLE').message, 503, 'IMAGE_RELAY_NOT_CONFIGURED')
     }
     if (!originalTask.idempotency_key) {
       throw new MediaServiceError('生图任务缺少幂等凭据', 500, 'IMAGE_SUBMISSION_CORRUPT')
@@ -3134,18 +3202,18 @@ export class MediaProjectService {
       error_code: undefined,
       updated_at: this.iso(),
     }) as ImageWorkbenchProject
-    const gateway = productGatewayTarget()
-    if (!gateway) throw new MediaServiceError('产品网关未配置', 503, 'GATEWAY_NOT_CONFIGURED')
-    const endpoint = `${gateway.baseUrl}/v1/images/tasks`
+    const imageRelay = productImageRelayTarget()
+    if (!imageRelay) throw new MediaServiceError('图片远程能力尚未配置', 503, 'IMAGE_RELAY_NOT_CONFIGURED')
+    const endpoint = `${imageRelay.baseUrl}${IMAGE_RELAY_TASKS_PATH}`
     const headers: Record<string, string> = {
-      Authorization: `Bearer ${gateway.token}`,
+      Authorization: `Bearer ${imageRelay.token}`,
       'Content-Type': 'application/json',
       'Idempotency-Key': originalTask.idempotency_key,
       [PROVIDER_GATEWAY_PROTOCOL_HEADER]: PROVIDER_GATEWAY_PROTOCOL.headerValue,
     }
 
     try {
-      const { response, body } = await this.fetchImageGatewayJson(endpoint, {
+      const { response, body } = await this.fetchImageRelayJson(endpoint, {
         method: 'POST',
         headers,
         body: JSON.stringify(payload),
@@ -3155,6 +3223,7 @@ export class MediaProjectService {
           boundedMessage(body.error ?? body.message ?? `生图网关返回 HTTP ${response.status}`),
           response.status || 502,
           response.status >= 500 || response.ok,
+          body.code,
         )
       }
       task = await this.saveTask({
@@ -3175,9 +3244,11 @@ export class MediaProjectService {
     } catch (error) {
       const outcomeUnknown = !(error instanceof ImageSubmissionAttemptError) || error.outcomeUnknown
       recordMediaFailure('image_submission', error)
-      const failure = mediaSafeError(
-        outcomeUnknown ? 'MEDIA_IMAGE_OUTCOME_UNKNOWN' : 'MEDIA_IMAGE_UNAVAILABLE',
-      )
+      const failure = mediaSafeError(outcomeUnknown
+        ? 'MEDIA_IMAGE_OUTCOME_UNKNOWN'
+        : error instanceof ImageSubmissionAttemptError && isImageRelayQuotaErrorCode(error.relayCode)
+          ? 'MEDIA_IMAGE_QUOTA_EXHAUSTED'
+          : 'MEDIA_IMAGE_UNAVAILABLE')
       task = await this.saveTask({
         ...task,
         status: 'failed',
@@ -3197,7 +3268,7 @@ export class MediaProjectService {
       throw new MediaServiceError(
         failure.message,
         error instanceof MediaServiceError ? error.status : 502,
-        outcomeUnknown ? 'IMAGE_SUBMIT_UNKNOWN' : 'IMAGE_SUBMIT_FAILED',
+        outcomeUnknown ? 'IMAGE_SUBMIT_UNKNOWN' : failure.code === 'MEDIA_IMAGE_QUOTA_EXHAUSTED' ? 'IMAGE_QUOTA_EXHAUSTED' : 'IMAGE_SUBMIT_FAILED',
       )
     }
   }
@@ -3361,7 +3432,7 @@ export class MediaProjectService {
       || !task.remote_task_id
       || !task.provider_receipt_hash
       || task.remote_result_acknowledged_at
-      || !productGatewayConfigured()
+      || !productImageRelayConfigured()
     ) return task
     const result = imageGenerationTaskResultSchema.safeParse(task.result)
     if (!result.success || result.data.outputs.length === 0) return task
@@ -3377,15 +3448,15 @@ export class MediaProjectService {
     }))
     if (localAssets.some(persisted => !persisted)) return task
 
-    const gateway = productGatewayTarget()
-    if (!gateway) return task
+    const imageRelay = productImageRelayTarget()
+    if (!imageRelay) return task
     const headers: Record<string, string> = {
-      Authorization: `Bearer ${gateway.token}`,
+      Authorization: `Bearer ${imageRelay.token}`,
       [PROVIDER_GATEWAY_PROTOCOL_HEADER]: PROVIDER_GATEWAY_PROTOCOL.headerValue,
     }
     try {
-      const { response, body } = await this.fetchImageGatewayJson(
-        `${gateway.baseUrl}/v1/images/tasks/${encodeURIComponent(task.remote_task_id)}/ack`,
+      const { response, body } = await this.fetchImageRelayJson(
+        `${imageRelay.baseUrl}${IMAGE_RELAY_TASKS_PATH}/${encodeURIComponent(task.remote_task_id)}/ack`,
         { method: 'POST', headers },
       )
       if (!response.ok || body.result_acknowledged !== true) {
@@ -3407,47 +3478,58 @@ export class MediaProjectService {
 
   private async refreshImageTask(task: MediaTask): Promise<MediaTask> {
     if (!task.remote_task_id) return task
-    if (!productGatewayConfigured()) return task
-    const gateway = productGatewayTarget()
-    if (!gateway) return task
+    if (!productImageRelayConfigured()) return task
+    const imageRelay = productImageRelayTarget()
+    if (!imageRelay) return task
     const headers: Record<string, string> = {
-      Authorization: `Bearer ${gateway.token}`,
+      Authorization: `Bearer ${imageRelay.token}`,
       [PROVIDER_GATEWAY_PROTOCOL_HEADER]: PROVIDER_GATEWAY_PROTOCOL.headerValue,
-      [MEDIA_RESULT_HANDOFF_HEADER]: MEDIA_RESULT_HANDOFF_DIRECT_V1,
+      [IMAGE_RELAY_RESULT_HANDOFF_HEADER]: IMAGE_RELAY_RESULT_HANDOFF_DIRECT_V1,
     }
     let response: Response
     let body: RelayImageTask & { message?: string }
     try {
-      const result = await this.fetchImageGatewayJson(
-        `${gateway.baseUrl}/v1/images/tasks/${encodeURIComponent(task.remote_task_id)}`,
+      const result = await this.fetchImageRelayJson(
+        `${imageRelay.baseUrl}${IMAGE_RELAY_TASKS_PATH}/${encodeURIComponent(task.remote_task_id)}`,
         { headers },
       )
       response = result.response
       body = result.body
       if (response.ok && body.status === 'succeeded' && body.result_urls?.length) {
         if (body.result_urls.length > 4) throw new Error('too many image result handoff URLs')
-        const resultUrls = body.result_urls.map(value => trustedMediaResultUrl(value, gateway.baseUrl))
+        const resultUrls = body.result_urls.map(value => trustedMediaResultUrl(value, imageRelay.baseUrl))
         if (resultUrls.some(value => !value)) throw new Error('untrusted image result handoff URL')
-        const direct = await Promise.all(resultUrls.map(resultUrl => this.fetchImageGatewayJson(resultUrl!, {
-          method: 'GET',
-          redirect: 'error',
-          headers: { Accept: 'application/json' },
-        })))
-        const failed = direct.find(result => !result.response.ok)
-        if (failed) {
-          response = failed.response
-          body = failed.body
-        } else {
-          body = { ...body, data: direct.flatMap(result => result.body.data ?? []) }
+        const data: NonNullable<RelayImageTask['data']> = []
+        for (const resultUrl of resultUrls) {
+          const direct = await this.fetchImageRelayJson(resultUrl!, {
+            method: 'GET',
+            redirect: 'error',
+            headers: {
+              Accept: 'application/json',
+              Authorization: `Bearer ${imageRelay.token}`,
+              [PROVIDER_GATEWAY_PROTOCOL_HEADER]: PROVIDER_GATEWAY_PROTOCOL.headerValue,
+            },
+          }, IMAGE_RELAY_DIRECT_RESULT_JSON_MAX_BYTES)
+          if (!direct.response.ok) {
+            response = direct.response
+            body = direct.body
+            break
+          }
+          data.push(...(direct.body.data ?? []))
         }
+        if (response.ok) body = { ...body, data }
       } else if (response.ok && body.status === 'succeeded' && body.result_url) {
-        const resultUrl = trustedMediaResultUrl(body.result_url, gateway.baseUrl)
+        const resultUrl = trustedMediaResultUrl(body.result_url, imageRelay.baseUrl)
         if (!resultUrl) throw new Error('untrusted image result handoff URL')
-        const direct = await this.fetchImageGatewayJson(resultUrl, {
+        const direct = await this.fetchImageRelayJson(resultUrl, {
           method: 'GET',
           redirect: 'error',
-          headers: { Accept: 'application/json' },
-        })
+          headers: {
+            Accept: 'application/json',
+            Authorization: `Bearer ${imageRelay.token}`,
+            [PROVIDER_GATEWAY_PROTOCOL_HEADER]: PROVIDER_GATEWAY_PROTOCOL.headerValue,
+          },
+        }, IMAGE_RELAY_DIRECT_RESULT_JSON_MAX_BYTES)
         response = direct.response
         body = { ...body, ...direct.body }
       }
@@ -3462,7 +3544,7 @@ export class MediaProjectService {
       if (response.status >= 500) return task
       return await this.failImageTask(
         task,
-        body.status === 'failed_unknown' ? 'MEDIA_IMAGE_OUTCOME_UNKNOWN' : 'MEDIA_IMAGE_UNAVAILABLE',
+        imageRelayFailureCode(response.status, body),
         body.status === 'failed_unknown',
         body.provider_receipt_hash,
       )
@@ -3475,7 +3557,7 @@ export class MediaProjectService {
       recordMediaFailure('image_status_failed', body)
       return await this.failImageTask(
         task,
-        body.status === 'failed_unknown' ? 'MEDIA_IMAGE_OUTCOME_UNKNOWN' : 'MEDIA_IMAGE_UNAVAILABLE',
+        imageRelayFailureCode(response.status, body),
         body.status === 'failed_unknown',
         body.provider_receipt_hash,
       )
@@ -3568,7 +3650,7 @@ export class MediaProjectService {
       } else if (item.url) {
         // A provider URL is not a project asset: it can expire, cannot be
         // content-addressed, and cannot safely become a canvas base version.
-        // The gateway's controlled result handoff supplies bytes instead.
+        // Image Relay's controlled result handoff supplies bytes instead.
         rejectedResultCount += 1
       }
     }
@@ -5078,19 +5160,19 @@ export class MediaProjectService {
     if (task.status !== 'queued' || !task.remote_task_id) {
       throw new MediaServiceError('生图任务已经开始或提交结果尚未确认，不能安全取消', 409, 'TASK_NOT_CANCELLABLE')
     }
-    if (!productGatewayConfigured()) {
-      throw new MediaServiceError(mediaSafeError('MEDIA_IMAGE_CANCEL_UNKNOWN').message, 503, 'GATEWAY_NOT_CONFIGURED')
+    if (!productImageRelayConfigured()) {
+      throw new MediaServiceError(mediaSafeError('MEDIA_IMAGE_CANCEL_UNKNOWN').message, 503, 'IMAGE_RELAY_NOT_CONFIGURED')
     }
-    const gateway = productGatewayTarget()
-    if (!gateway) throw new MediaServiceError(mediaSafeError('MEDIA_IMAGE_CANCEL_UNKNOWN').message, 503, 'GATEWAY_NOT_CONFIGURED')
+    const imageRelay = productImageRelayTarget()
+    if (!imageRelay) throw new MediaServiceError(mediaSafeError('MEDIA_IMAGE_CANCEL_UNKNOWN').message, 503, 'IMAGE_RELAY_NOT_CONFIGURED')
     const headers: Record<string, string> = {
-      Authorization: `Bearer ${gateway.token}`,
+      Authorization: `Bearer ${imageRelay.token}`,
       [PROVIDER_GATEWAY_PROTOCOL_HEADER]: PROVIDER_GATEWAY_PROTOCOL.headerValue,
     }
     let response: Response
     try {
       response = await this.fetchImpl(
-        `${gateway.baseUrl}/v1/images/tasks/${encodeURIComponent(task.remote_task_id)}/cancel`,
+        `${imageRelay.baseUrl}${IMAGE_RELAY_TASKS_PATH}/${encodeURIComponent(task.remote_task_id)}/cancel`,
         { method: 'POST', headers },
       )
     } catch (error) {

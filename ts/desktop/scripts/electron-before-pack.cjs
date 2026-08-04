@@ -15,14 +15,29 @@ function readJsonObject(file, label) {
   }
 }
 
-function isAllowedGatewayUrl(url) {
+function isAllowedProductRoute(url, pathname) {
   return url.protocol === 'https:'
     && url.hostname.length > 0
     && !url.username
     && !url.password
     && !url.search
     && !url.hash
-    && url.pathname.replace(/\/+$/, '') === '/gw'
+    && url.pathname.replace(/\/+$/, '') === pathname
+}
+
+function requireProductRoute(publicConfig, key, pathname, label) {
+  if (typeof publicConfig[key] !== 'string' || !publicConfig[key].trim()) {
+    throw new Error(`Cannot package BilliardBuddy: product-config.json is missing ${key}`)
+  }
+  let url
+  try {
+    url = new URL(publicConfig[key])
+  } catch {
+    throw new Error(`Cannot package BilliardBuddy: product-config.json contains an invalid ${key}`)
+  }
+  if (!isAllowedProductRoute(url, pathname)) {
+    throw new Error(`Cannot package BilliardBuddy: ${label} must use HTTPS at the ${pathname} endpoint`)
+  }
 }
 
 function validateProductPackageFiles(desktopDir = path.join(__dirname, '..')) {
@@ -30,7 +45,7 @@ function validateProductPackageFiles(desktopDir = path.join(__dirname, '..')) {
   const publicConfig = readJsonObject(path.join(buildDir, 'product-config.json'), 'product-config.json')
   const secretsPath = path.join(buildDir, 'product-secrets.json')
 
-  const unexpectedPublicKeys = Object.keys(publicConfig).filter(key => !['$comment', 'gatewayUrl'].includes(key))
+  const unexpectedPublicKeys = Object.keys(publicConfig).filter(key => !['$comment', 'gatewayUrl', 'imageRelayUrl', 'videoMediaRelayUrl'].includes(key))
   if (unexpectedPublicKeys.length > 0) {
     throw new Error(`Cannot package BilliardBuddy: product-config.json contains unsupported fields: ${unexpectedPublicKeys.join(', ')}`)
   }
@@ -40,18 +55,9 @@ function validateProductPackageFiles(desktopDir = path.join(__dirname, '..')) {
   if (existsSync(secretsPath)) {
     throw new Error('Cannot package BilliardBuddy: product-secrets.json must not be included')
   }
-  if (typeof publicConfig.gatewayUrl !== 'string' || !publicConfig.gatewayUrl.trim()) {
-    throw new Error('Cannot package BilliardBuddy: product-config.json is missing gatewayUrl')
-  }
-  let gatewayUrl
-  try {
-    gatewayUrl = new URL(publicConfig.gatewayUrl)
-  } catch {
-    throw new Error('Cannot package BilliardBuddy: product-config.json contains an invalid gatewayUrl')
-  }
-  if (!isAllowedGatewayUrl(gatewayUrl)) {
-    throw new Error('Cannot package BilliardBuddy: gatewayUrl must use HTTPS at the /gw endpoint')
-  }
+  requireProductRoute(publicConfig, 'gatewayUrl', '/gw', 'gatewayUrl')
+  requireProductRoute(publicConfig, 'imageRelayUrl', '/image-generation', 'imageRelayUrl')
+  requireProductRoute(publicConfig, 'videoMediaRelayUrl', '/video-media', 'videoMediaRelayUrl')
 }
 
 async function beforePack() {

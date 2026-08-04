@@ -1,6 +1,7 @@
 import { expect, test } from 'bun:test'
 import { randomUUID } from 'node:crypto'
-import { productGatewayTarget } from '../src/server/product/productGatewayRuntime.js'
+import { productImageRelayTarget } from '../src/server/product/productGatewayRuntime.js'
+import { IMAGE_RELAY_TASKS_PATH } from '../shared/product/imageRelayProtocol.js'
 import {
   PROVIDER_GATEWAY_PROTOCOL,
   PROVIDER_GATEWAY_PROTOCOL_HEADER,
@@ -30,8 +31,8 @@ function requireSmokeConfiguration(): { baseUrl: string; token: string; timeoutM
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 5_000 || timeoutMs > 60_000) {
     throw new Error('BILLIARDBUDDY_IMAGE_PROVIDER_SMOKE_TIMEOUT_MS must be an integer between 5000 and 60000')
   }
-  const target = productGatewayTarget()
-  if (!target) throw new Error('BB_GATEWAY_URL and BB_GATEWAY_TOKEN must name the approved Gateway before a smoke can run')
+  const target = productImageRelayTarget()
+  if (!target) throw new Error('BB_IMAGE_RELAY_URL and BB_GATEWAY_TOKEN must name the approved Image Relay before a smoke can run')
   return { ...target, timeoutMs }
 }
 
@@ -74,7 +75,7 @@ test('explicit budget-controlled image Provider smoke validates submit, idempote
   let taskId: string | undefined
   let lastKnownStatus: string | undefined
   try {
-    const submitted = await fetch(`${target.baseUrl}/v1/images/tasks`, {
+    const submitted = await fetch(`${target.baseUrl}${IMAGE_RELAY_TASKS_PATH}`, {
       method: 'POST',
       headers,
       body,
@@ -87,7 +88,7 @@ test('explicit budget-controlled image Provider smoke validates submit, idempote
     lastKnownStatus = first.status
 
     // A replay of the same logical task must not authorize a second paid task.
-    const replay = await fetch(`${target.baseUrl}/v1/images/tasks`, {
+    const replay = await fetch(`${target.baseUrl}${IMAGE_RELAY_TASKS_PATH}`, {
       method: 'POST',
       headers,
       body,
@@ -99,7 +100,7 @@ test('explicit budget-controlled image Provider smoke validates submit, idempote
     expect(replayed.task_id).toBe(taskId)
     lastKnownStatus = replayed.status
 
-    const polled = await fetch(`${target.baseUrl}/v1/images/tasks/${encodeURIComponent(taskId)}?metadata_only=1`, {
+    const polled = await fetch(`${target.baseUrl}${IMAGE_RELAY_TASKS_PATH}/${encodeURIComponent(taskId)}?metadata_only=1`, {
       headers: {
         Authorization: `Bearer ${target.token}`,
         [PROVIDER_GATEWAY_PROTOCOL_HEADER]: PROVIDER_GATEWAY_PROTOCOL.headerValue,
@@ -113,7 +114,7 @@ test('explicit budget-controlled image Provider smoke validates submit, idempote
     lastKnownStatus = status.status
   } finally {
     if (taskId && providerSmokeCancelAction(lastKnownStatus) === 'attempt_cancel') {
-      const cancelled = await fetch(`${target.baseUrl}/v1/images/tasks/${encodeURIComponent(taskId)}/cancel`, {
+      const cancelled = await fetch(`${target.baseUrl}${IMAGE_RELAY_TASKS_PATH}/${encodeURIComponent(taskId)}/cancel`, {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${target.token}`,
