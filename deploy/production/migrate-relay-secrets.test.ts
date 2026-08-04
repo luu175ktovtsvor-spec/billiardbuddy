@@ -135,6 +135,23 @@ test('writes separated generated tokens, complete production defaults and no leg
   expect(() => validateDeploymentEnvironment(gateway)).not.toThrow()
   expect(() => validateRelayDeploymentEnvironment(image)).not.toThrow()
   expect(() => validateVideoMediaRelayEnvironment(video)).not.toThrow()
+  expect(() => validateVideoMediaRelayEnvironment({
+    ...video,
+    VIDEO_MEDIA_OWNER_DAILY_QUOTA_UNITS: '0',
+    VIDEO_MEDIA_ACCOUNT_DAILY_QUOTA_UNITS: '0',
+  })).not.toThrow()
+  for (const value of ['00', '-0', '0e0']) {
+    expect(() => validateVideoMediaRelayEnvironment({
+      ...video,
+      VIDEO_MEDIA_OWNER_DAILY_QUOTA_UNITS: value,
+      VIDEO_MEDIA_ACCOUNT_DAILY_QUOTA_UNITS: '1',
+    })).toThrow('VIDEO_MEDIA_OWNER_DAILY_QUOTA_UNITS')
+    expect(() => validateVideoMediaRelayEnvironment({
+      ...video,
+      VIDEO_MEDIA_OWNER_DAILY_QUOTA_UNITS: '0',
+      VIDEO_MEDIA_ACCOUNT_DAILY_QUOTA_UNITS: value,
+    })).toThrow('VIDEO_MEDIA_ACCOUNT_DAILY_QUOTA_UNITS')
+  }
 })
 
 test('targets and backups are owner-only, and a repeat run fails closed', () => {

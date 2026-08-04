@@ -160,7 +160,8 @@ function multipartPartSize(env: Env): number { return Math.max(1024 * 1024, Math
 function boundedEnvInt(env: Env, name: string, fallback: number, min: number, max: number): number {
   const raw = env[name]?.trim()
   if (!raw) return fallback
-  if (!/^[1-9][0-9]*$/.test(raw)) throw new Error(`${name} must be an integer between ${min} and ${max}`)
+  const integer = min === 0 ? /^(0|[1-9][0-9]*)$/ : /^[1-9][0-9]*$/
+  if (!integer.test(raw)) throw new Error(`${name} must be an integer between ${min} and ${max}`)
   const value = Number(raw)
   if (!Number.isSafeInteger(value) || value < min || value > max) throw new Error(`${name} must be an integer between ${min} and ${max}`)
   return value
@@ -180,10 +181,16 @@ function videoMediaQuotaPolicyFromEnvironment(env: Env, accountKey: string): Vid
   if (!/^[A-Za-z0-9._-]{1,128}$/.test(revision)) throw new Error('VIDEO_MEDIA_QUOTA_POLICY_REVISION is invalid')
   return Object.freeze({
     revision,
-    owner_daily_units: boundedEnvInt(env, 'VIDEO_MEDIA_OWNER_DAILY_QUOTA_UNITS', 50_000, 1, 1_000_000_000),
-    account_daily_units: boundedEnvInt(env, 'VIDEO_MEDIA_ACCOUNT_DAILY_QUOTA_UNITS', 1_000_000, 1, 1_000_000_000),
+    owner_daily_units: boundedEnvInt(env, 'VIDEO_MEDIA_OWNER_DAILY_QUOTA_UNITS', 50_000, 0, 1_000_000_000),
+    account_daily_units: boundedEnvInt(env, 'VIDEO_MEDIA_ACCOUNT_DAILY_QUOTA_UNITS', 1_000_000, 0, 1_000_000_000),
     account_key: accountKey,
   })
+}
+function assertVideoQuotaAllowsNewWork(policy: VideoMediaQuotaPolicy): void {
+  // Prefer the platform scope when both switches are zero so the client sees
+  // the operator's broadest intentional stop.
+  if (policy.account_daily_units === 0) throw new RelayError(429, 'account_daily_quota_exceeded')
+  if (policy.owner_daily_units === 0) throw new RelayError(429, 'owner_daily_quota_exceeded')
 }
 function utcDay(now: Date): string { return now.toISOString().slice(0, 10) }
 function assertLeasePurposeAndMime(input: { purpose: string; content_type: string }): void {
@@ -251,6 +258,7 @@ class RelayStore {
   reserve(owner: string, operationId: string, units: number, policy: VideoMediaQuotaPolicy): string {
     const period = utcDay(this.now())
     const charged = "CASE WHEN state='settled' THEN settled_units ELSE units END"
+    assertVideoQuotaAllowsNewWork(policy)
     const ownerTotal = this.db.query(`SELECT COALESCE(SUM(${charged}),0) AS total FROM video_media_quota_v1 WHERE owner=? AND period=? AND state IN ('reserved','outcome_unknown','settled')`).get(owner, period) as { total: number }
     if (ownerTotal.total + units > policy.owner_daily_units) throw new RelayError(429, 'owner_daily_quota_exceeded')
     const accountTotal = this.db.query(`SELECT COALESCE(SUM(${charged}),0) AS total FROM video_media_quota_v1 WHERE account_key=? AND period=? AND state IN ('reserved','outcome_unknown','settled')`).get(policy.account_key, period) as { total: number }
@@ -962,6 +970,10 @@ export function createVideoMediaRelayFetch(deps: RelayDeps = {}) {
           const signed = await leaseCapabilities(row, verificationRequest(row, request.signal))
           return json(mediaObjectLeaseSchema.parse({ lease_id: row.id, state: row.state, ...(row.object_ref ? { object_ref: row.object_ref } : {}), ...signed, expires_at: row.expires_at }), 200, id)
         }
+        // A zero daily quota is a deliberate remote-video stop. Reject before
+        // issuing a fresh OSS capability, while preserving idempotent recovery
+        // for a lease that was already accepted before the policy changed.
+        assertVideoQuotaAllowsNewWork(quotaPolicy)
         const leaseId = opaque('lease'); const expiresAt = new Date(now().getTime() + ttl(env)).toISOString()
         const multipart = raw.byte_size >= multipartThreshold(env)
         const partSize = multipart ? multipartPartSize(env) : null

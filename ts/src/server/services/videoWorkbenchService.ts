@@ -984,16 +984,22 @@ export class VideoWorkbenchService {
       return await this.mutateProject((await this.repository.getOperation(parentOperationId)).project_id, async () => {
         const operation = await this.repository.getOperation(parentOperationId)
         const existing = this.asrCheckpoint(operation, sourceId)
+        const hasPatch = (key: keyof typeof patch) => Object.prototype.hasOwnProperty.call(patch, key)
+        const localOperationId = hasPatch('local_operation_id') ? patch.local_operation_id : existing?.local_operation_id
+        const objectRef = hasPatch('object_ref') ? patch.object_ref : existing?.object_ref
+        const relayOperationId = hasPatch('relay_operation_id') ? patch.relay_operation_id : existing?.relay_operation_id
+        const providerTaskId = hasPatch('provider_task_id') ? patch.provider_task_id : existing?.provider_task_id
+        const submissionStartedAt = hasPatch('remote_submission_started_at') ? patch.remote_submission_started_at : existing?.remote_submission_started_at
+        const nextPollAt = hasPatch('next_poll_at') ? patch.next_poll_at : existing?.next_poll_at
         const checkpoint: AsrPollCheckpoint = {
           source_id: sourceId,
-          local_operation_id: existing?.local_operation_id ?? `${parentOperationId}_asr_${sourceId}`,
+          local_operation_id: localOperationId ?? `${parentOperationId}_asr_${sourceId}`,
           state: patch.state ?? existing?.state ?? 'uploading',
-          ...(existing?.object_ref ? { object_ref: existing.object_ref } : {}),
-          ...(existing?.relay_operation_id ? { relay_operation_id: existing.relay_operation_id } : {}),
-          ...(existing?.provider_task_id ? { provider_task_id: existing.provider_task_id } : {}),
-          ...(existing?.remote_submission_started_at ? { remote_submission_started_at: existing.remote_submission_started_at } : {}),
-          ...(existing?.next_poll_at ? { next_poll_at: existing.next_poll_at } : {}),
-          ...patch,
+          ...(typeof objectRef === 'string' ? { object_ref: objectRef } : {}),
+          ...(typeof relayOperationId === 'string' ? { relay_operation_id: relayOperationId } : {}),
+          ...(typeof providerTaskId === 'string' ? { provider_task_id: providerTaskId } : {}),
+          ...(typeof submissionStartedAt === 'string' ? { remote_submission_started_at: submissionStartedAt } : {}),
+          ...(typeof nextPollAt === 'string' ? { next_poll_at: nextPollAt } : {}),
           updated_at: this.iso(),
         }
         const prior = Array.isArray(operation.result?.asr_checkpoints) ? operation.result!.asr_checkpoints : []
@@ -2612,8 +2618,14 @@ export class VideoWorkbenchService {
           // No provider submission can have happened in this phase. Release
           // the local allocation with a known-safe classification so the same
           // deterministic upload/Operation may resume without outcome_unknown.
-          await this.finalizeRemoteBudgetFailure(project.id, budget.id, localOperationId, new VideoMediaRelayClientError(422, 'relay_upload_failed_before_submission'))
-          throw error
+          const quotaError = videoHostedQuotaError(error)
+          await this.finalizeRemoteBudgetFailure(
+            project.id,
+            budget.id,
+            localOperationId,
+            quotaError ? error : new VideoMediaRelayClientError(422, 'relay_upload_failed_before_submission'),
+          )
+          throw quotaError ?? error
         }
       }
       if (!checkpoint?.remote_submission_started_at) {
@@ -2643,6 +2655,19 @@ export class VideoWorkbenchService {
       try {
         remote = await relay.createOperation(asrRequest)
       } catch (error) {
+        const quotaError = videoHostedQuotaError(error)
+        if (quotaError) {
+          await this.finalizeRemoteBudgetFailure(project.id, budget.id, localOperationId, error, { submissionFenced: true })
+          await this.saveAsrCheckpoint(operationId, source.id, {
+            state: 'failed',
+            object_ref: objectRef,
+            relay_operation_id: undefined,
+            provider_task_id: undefined,
+            remote_submission_started_at: undefined,
+            next_poll_at: undefined,
+          })
+          throw quotaError
+        }
         await this.finalizeRemoteBudgetFailure(project.id, budget.id, localOperationId, error, { submissionFenced: true })
         cancellationRequested ||= signal.aborted
         checkpoint = await this.saveAsrCheckpoint(operationId, source.id, {
@@ -2672,6 +2697,19 @@ export class VideoWorkbenchService {
           try {
             remote = await control.createOperation(asrRequest)
           } catch (retryError) {
+            const quotaError = videoHostedQuotaError(retryError)
+            if (quotaError) {
+              await this.finalizeRemoteBudgetFailure(project.id, budget.id, localOperationId, retryError, { submissionFenced: true })
+              await this.saveAsrCheckpoint(operationId, source.id, {
+                state: 'failed',
+                object_ref: objectRef,
+                relay_operation_id: undefined,
+                provider_task_id: undefined,
+                remote_submission_started_at: undefined,
+                next_poll_at: undefined,
+              })
+              throw quotaError
+            }
             await this.finalizeRemoteBudgetFailure(project.id, budget.id, localOperationId, retryError, { submissionFenced: true })
             await this.saveAsrCheckpoint(operationId, source.id, { state: 'outcome_unknown', object_ref: objectRef })
             throw retryError
@@ -3078,14 +3116,15 @@ export class VideoWorkbenchService {
         // remains fenced, however: the client cannot prove which durable Relay
         // lease state won, and a changed object fingerprint must fail closed.
         const uncertainTransfer = error instanceof VideoMediaRelayClientError && (error.status === 499 || error.status === 409)
+        const quotaError = videoHostedQuotaError(error)
         await this.finalizeRemoteBudgetFailure(
           project.id,
           budget.id,
           frameOperationId,
-          uncertainTransfer ? error : new VideoMediaRelayClientError(422, 'relay_upload_failed_before_submission'),
+          uncertainTransfer || quotaError ? error : new VideoMediaRelayClientError(422, 'relay_upload_failed_before_submission'),
           { submissionFenced: uncertainTransfer },
         )
-        throw error
+        throw quotaError ?? error
       }
       const frameRequest = {
         local_operation_id: frameOperationId, consent_revision_id: consent.id, consent_scope_hash: scopeHash, local_budget_reservation_id: budget.id,
