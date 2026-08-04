@@ -14,7 +14,9 @@ COPY --chown=bun:bun ts/shared/product/serviceIntrospection.ts /app/ts/shared/pr
 # dependencies; credentials are supplied only through the mounted env file.
 COPY --chown=bun:bun ts/package.json ts/bun.lock /app/ts/
 RUN cd /app/ts && bun install --production --frozen-lockfile
+COPY --chown=bun:bun deploy/production/container-entrypoint.sh /app/container-entrypoint.sh
 
 USER bun
 EXPOSE 8791
+ENTRYPOINT ["/bin/sh", "/app/container-entrypoint.sh"]
 CMD ["bun", "/app/video-media-relay/app.ts"]

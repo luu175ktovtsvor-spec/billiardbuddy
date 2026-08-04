@@ -40,6 +40,7 @@ bb_runtime_paths=(
   gateway/validate-deployment-env.ts
   relay/app.ts
   relay/capacityPolicy.ts
+  relay/quotaPolicy.ts
   relay/providerCredentials.ts
   relay/identityIntrospection.ts
   relay/resultCredentials.ts
@@ -62,6 +63,7 @@ bb_runtime_paths=(
   ts/shared/product/providerGateway.ts
   ts/shared/product/serviceIntrospection.ts
   ts/shared/product/imageRelayProtocol.ts
+  ts/shared/product/imageVisualReasoning.ts
 )
 
 mkdir -p "$(dirname "$bb_output")"
@@ -75,7 +77,12 @@ for bb_required in \
   deploy/production/Dockerfile.gateway \
   deploy/production/Dockerfile.relay \
   deploy/production/Dockerfile.video-media-relay \
+  deploy/production/container-entrypoint.sh \
+  deploy/production/gateway-smoke.ts \
+  deploy/production/image-relay-smoke.ts \
+  deploy/production/production-smoke.ts \
   deploy/production/video-media-smoke.ts \
+  deploy/production/migrate-relay-secrets.ts \
   deploy/production/install-nginx-relay-routes.sh \
   deploy/production/migrate-image-relay-data.sh \
   deploy/production/nginx/billiardbuddy-relay-routes.conf \
@@ -85,6 +92,7 @@ for bb_required in \
   gateway/validate-deployment-env.ts \
   relay/app.ts \
   relay/capacityPolicy.ts \
+  relay/quotaPolicy.ts \
   relay/identityIntrospection.ts \
   video-media-relay/app.ts \
   video-media-relay/objectStore.ts \
@@ -100,6 +108,7 @@ for bb_required in \
   ts/shared/product/providerContracts.ts \
   ts/shared/product/modelCatalog.ts \
   ts/shared/product/serviceIntrospection.ts \
+  ts/shared/product/imageVisualReasoning.ts \
   ts/package.json \
   ts/bun.lock \
   release-manifest.json; do

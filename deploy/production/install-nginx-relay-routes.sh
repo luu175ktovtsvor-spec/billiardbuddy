@@ -85,12 +85,14 @@ cleanup() { rm -rf "$bb_temp_dir"; }
 trap cleanup EXIT
 
 rollback() {
-  if [ "$bb_vhost_changed" -eq 1 ]; then cp -p "$bb_vhost_backup" "$bb_vhost"; fi
+  local failed=0
+  if [ "$bb_vhost_changed" -eq 1 ] && ! cp -p "$bb_vhost_backup" "$bb_vhost"; then failed=1; fi
   if [ "$bb_fragment_existed" -eq 1 ]; then
-    cp -p "$bb_fragment_backup" "$bb_fragment"
+    if ! cp -p "$bb_fragment_backup" "$bb_fragment"; then failed=1; fi
   else
-    rm -f "$bb_fragment"
+    if ! rm -f "$bb_fragment"; then failed=1; fi
   fi
+  return "$failed"
 }
 
 if [ "$bb_mode" = install-include ]; then
@@ -144,15 +146,25 @@ install -m 0644 "$bb_source" "$bb_fragment_next"
 mv -f "$bb_fragment_next" "$bb_fragment"
 
 if ! nginx -t; then
-  rollback
+  rollback || { echo 'Nginx configuration rejected the Relay route update and prior selected files could not be restored' >&2; exit 1; }
   nginx -t >/dev/null || true
   echo 'Nginx configuration rejected the Relay route update; restored the prior selected files' >&2
   exit 1
 fi
 if ! systemctl reload nginx; then
-  rollback
-  nginx -t >/dev/null || true
-  echo 'Nginx reload failed; restored the prior selected files' >&2
+  if ! rollback; then
+    echo 'Nginx reload failed and prior selected files could not be restored: running Nginx state is unknown' >&2
+    exit 1
+  fi
+  if ! nginx -t; then
+    echo 'Nginx reload failed; restored prior files, but restored configuration does not validate: running Nginx state is unknown' >&2
+    exit 1
+  fi
+  if ! systemctl reload nginx; then
+    echo 'Nginx reload failed; restored prior files, but reload of restored configuration also failed: running Nginx state is unknown' >&2
+    exit 1
+  fi
+  echo 'Nginx reload failed; restored the prior selected files and explicitly reloaded the restored configuration' >&2
   exit 1
 fi
 

@@ -4,18 +4,12 @@ import { randomBytes } from 'node:crypto'
 import { validateDeploymentEnvironment } from '../../gateway/validate-deployment-env.ts'
 import { validateRelayDeploymentEnvironment } from '../../relay/validate-deployment-env.ts'
 import { validateVideoMediaRelayEnvironment } from '../../video-media-relay/validate-deployment-env.ts'
+import { managedModelById } from '../../ts/shared/product/modelCatalog.ts'
 
 type Environment = Record<string, string>
 
-const GATEWAY_RUNTIME_DEFAULTS: Environment = {
-  // The legacy DeepSeek aliases were retired upstream.  Secret migration is
-  // also the explicit product-model migration point, so an old persisted
-  // BB_GATEWAY_MODEL can never silently keep the new Gateway on a removed API
-  // contract.  Operators can switch to another catalogued model afterwards by
-  // changing this one runtime binding; capacity, quota and credentials remain
-  // independent.
-  BB_GATEWAY_MODEL: 'deepseek-v4-flash',
-}
+const DEFAULT_GATEWAY_MODEL = 'deepseek-v4-flash'
+const RETIRED_GATEWAY_MODEL_ALIASES = new Set(['deepseek-chat', 'deepseek-reasoner'])
 
 export type MigrationPaths = {
   gatewayInput: string
@@ -39,6 +33,10 @@ const GATEWAY_CAPACITY_DEFAULTS: Environment = {
   GW_QWEN_BASE: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
   GW_FUNASR_URL: 'https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation',
   GW_CAPACITY_POLICY_REVISION: 'gateway-small-v1',
+  GW_DEEPSEEK_ACCOUNT_REF: 'billiardbuddy-deepseek-production', GW_DEEPSEEK_ACCOUNT_BINDING_REVISION: '1',
+  GW_MIMO_ACCOUNT_REF: 'billiardbuddy-mimo-production', GW_MIMO_ACCOUNT_BINDING_REVISION: '1',
+  GW_QWEN_ACCOUNT_REF: 'billiardbuddy-qwen-production', GW_QWEN_ACCOUNT_BINDING_REVISION: '1',
+  GW_FUNASR_ACCOUNT_REF: 'billiardbuddy-funasr-production', GW_FUNASR_ACCOUNT_BINDING_REVISION: '1',
   GW_BOOTSTRAP_RPM: '30', GW_BOOTSTRAP_QUEUE_MAX: '0', GW_BOOTSTRAP_QUEUE_MAX_WAIT: '0',
   GW_DEEPSEEK_RPM: '120', GW_DEEPSEEK_CONC: '8', GW_DEEPSEEK_USER_CONC: '2', GW_DEEPSEEK_TOKEN_CONC: '4', GW_DEEPSEEK_INFLIGHT_PER_USER: '4', GW_DEEPSEEK_QUEUE_MAX: '24', GW_DEEPSEEK_QUEUE_MAX_WAIT: '5', GW_DEEPSEEK_RESPONSE_TIMEOUT_MS: '120000',
   GW_MIMO_RPM: '60', GW_MIMO_CONC: '8', GW_MIMO_MEDIA_CONC: '5', GW_VISION_CONC: '3', GW_MIMO_USER_CONC: '1', GW_MIMO_TOKEN_CONC: '2', GW_MIMO_INFLIGHT_PER_USER: '1', GW_MIMO_QUEUE_MAX: '16', GW_MIMO_QUEUE_MAX_WAIT: '3', GW_VISION_QUEUE_MAX: '8', GW_VISION_QUEUE_MAX_WAIT_MS: '2000', GW_VISION_PER_CLIENT_CONC: '1', GW_VISION_MAX_INFLIGHT_PER_CLIENT: '1', GW_VISION_PER_REQUEST_CONC: '1', GW_VISION_TIMEOUT_MS: '30000',
@@ -64,6 +62,7 @@ const GATEWAY_QUOTA_DEFAULTS: Environment = Object.fromEntries(
 
 const IMAGE_DEFAULTS: Environment = {
   RELAY_DB: '/data/relay.db', RELAY_BLOB_DIR: '/data/blobs',
+  RELAY_TASK_TTL_MS: '604800000', RELAY_UNACKNOWLEDGED_RESULT_TTL_MS: '31536000000',
   RELAY_CAPACITY_POLICY_REVISION: 'relay-image-small-scale-v1',
   RELAY_IMG_CONC: '1', RELAY_IMG_USER_CONC: '1', RELAY_OPENAI_RPM: '12',
   RELAY_SEEDREAM_CONC: '1', RELAY_SEEDREAM_USER_CONC: '1', RELAY_SEEDREAM_RPM: '30',
@@ -76,6 +75,8 @@ const IMAGE_DEFAULTS: Environment = {
   IMAGE_RELAY_PUBLIC_BASE: 'https://zzyppz.cn/image-generation',
   IMAGE_RELAY_RESULT_GRANT_TTL_MS: '300000',
   RELAY_OPENAI_BASE: 'https://api.openai.com/v1', RELAY_ARK_BASE: 'https://ark.cn-beijing.volces.com/api/v3',
+  RELAY_OPENAI_ACCOUNT_REF: 'billiardbuddy-openai-production', RELAY_OPENAI_ACCOUNT_BINDING_REVISION: '1',
+  RELAY_SEEDREAM_ACCOUNT_REF: 'billiardbuddy-seedream-production', RELAY_SEEDREAM_ACCOUNT_BINDING_REVISION: '1',
 }
 
 const VIDEO_DEFAULTS: Environment = {
@@ -87,10 +88,11 @@ const VIDEO_DEFAULTS: Environment = {
   // so the small-production profile must not reject one valid project merely
   // because its admission gates are deliberately conservative.
   VIDEO_MEDIA_QUOTA_POLICY_REVISION: 'video-media-small-v1', VIDEO_MEDIA_OWNER_DAILY_QUOTA_UNITS: '50000', VIDEO_MEDIA_ACCOUNT_DAILY_QUOTA_UNITS: '1000000', VIDEO_MEDIA_OBJECT_LEASE_QUOTA_UNITS: '32',
-  VIDEO_MEDIA_LEASE_TTL_MS: '60000', VIDEO_MEDIA_OUTCOME_UNKNOWN_RETENTION_MS: '259200000', VIDEO_MEDIA_CONTROL_BODY_TIMEOUT_MS: '30000', VIDEO_MEDIA_GATEWAY_INTROSPECTION_TIMEOUT_MS: '10000',
-  VIDEO_MEDIA_DASHSCOPE_TIMEOUT_MS: '120000', VIDEO_MEDIA_DASHSCOPE_RESPONSE_MAX_BYTES: '4194304', VIDEO_MEDIA_DASHSCOPE_TRANSCRIPT_MAX_BYTES: '33554432', VIDEO_MEDIA_MULTIPART_THRESHOLD_BYTES: '8388608', VIDEO_MEDIA_MULTIPART_PART_SIZE_BYTES: '8388608',
+  VIDEO_MEDIA_LEASE_TTL_MS: '900000', VIDEO_MEDIA_OUTCOME_UNKNOWN_RETENTION_MS: '259200000', VIDEO_MEDIA_CONTROL_BODY_TIMEOUT_MS: '30000', VIDEO_MEDIA_GATEWAY_INTROSPECTION_TIMEOUT_MS: '10000',
+  VIDEO_MEDIA_DASHSCOPE_TIMEOUT_MS: '120000', VIDEO_MEDIA_DASHSCOPE_RESPONSE_MAX_BYTES: '4194304', VIDEO_MEDIA_DASHSCOPE_TRANSCRIPT_MAX_BYTES: '33554432', VIDEO_MEDIA_MULTIPART_THRESHOLD_BYTES: '8388608', VIDEO_MEDIA_MULTIPART_PART_SIZE_BYTES: '16777216',
   VIDEO_MEDIA_CAPACITY_POLICY_REVISION: 'video-media-dashscope-small-v1', VIDEO_MEDIA_DASHSCOPE_QUEUE_MAX: '32', VIDEO_MEDIA_DASHSCOPE_OWNER_QUEUE_MAX: '4', VIDEO_MEDIA_DASHSCOPE_MAX_WAIT_MS: '30000',
   VIDEO_MEDIA_DASHSCOPE_ACCOUNT_MAX_ACTIVE: '4', VIDEO_MEDIA_DASHSCOPE_ACCOUNT_OWNER_MAX_ACTIVE: '1', VIDEO_MEDIA_DASHSCOPE_ACCOUNT_RPM: '120',
+  VIDEO_MEDIA_DASHSCOPE_ACCOUNT_REF: 'billiardbuddy-dashscope-production', VIDEO_MEDIA_DASHSCOPE_ACCOUNT_BINDING_REVISION: '1',
   VIDEO_MEDIA_DASHSCOPE_VISUAL_MAX_ACTIVE: '2', VIDEO_MEDIA_DASHSCOPE_VISUAL_OWNER_MAX_ACTIVE: '1', VIDEO_MEDIA_DASHSCOPE_VISUAL_RPM: '60',
   VIDEO_MEDIA_DASHSCOPE_REASONING_MAX_ACTIVE: '2', VIDEO_MEDIA_DASHSCOPE_REASONING_OWNER_MAX_ACTIVE: '1', VIDEO_MEDIA_DASHSCOPE_REASONING_RPM: '60',
   VIDEO_MEDIA_DASHSCOPE_ASR_MAX_ACTIVE: '2', VIDEO_MEDIA_DASHSCOPE_ASR_OWNER_MAX_ACTIVE: '1', VIDEO_MEDIA_DASHSCOPE_ASR_RPM: '30',
@@ -148,7 +150,7 @@ function withoutLegacyImageCoupling(name: string): boolean {
   return name === 'RELAY_TOKEN'
     || name === 'RELAY_PUBLIC_BASE'
     || name.startsWith('RELAY_GATEWAY_')
-    || name.startsWith('RELAY_TASK_')
+    || (name.startsWith('RELAY_TASK_') && name !== 'RELAY_TASK_TTL_MS')
     || name.startsWith('RELAY_PROXY_')
 }
 
@@ -158,6 +160,16 @@ function selected(environment: Environment, predicate: (name: string) => boolean
 
 function combine(...layers: Environment[]): Environment {
   return Object.assign({}, ...layers)
+}
+
+function migratedGatewayModel(value: string | undefined): string {
+  const selected = value?.trim()
+  if (!selected || RETIRED_GATEWAY_MODEL_ALIASES.has(selected)) return DEFAULT_GATEWAY_MODEL
+  const model = managedModelById(selected)
+  if (model?.provider === 'deepseek' && model.text_reasoning_transport === 'responses') return selected
+  // Preserve an unknown explicit value so the authoritative Gateway validator
+  // rejects it instead of silently selecting a different billable model.
+  return selected
 }
 
 function assertDistinctTokens(image: string, video: string): void {
@@ -185,10 +197,10 @@ export function buildMigrationPlan(gatewayInput: Environment, relayInput: Enviro
     // Defaults fill a missing policy; a valid explicit server value remains
     // authoritative. Migration must never silently reset an operator's
     // capacity, quota, timeout, endpoint, or credential choice.
-    selected(gatewayInput, name => ((name.startsWith('GW_') && !withoutLegacyGatewayCoupling(name)) || name === 'BB_GATEWAY_MODEL')
-      && !Object.hasOwn(GATEWAY_RUNTIME_DEFAULTS, name)),
-    // The retired DeepSeek alias is the one intentional runtime migration.
-    GATEWAY_RUNTIME_DEFAULTS,
+    selected(gatewayInput, name => name.startsWith('GW_') && !withoutLegacyGatewayCoupling(name)),
+    // Only retired aliases are intentionally migrated. Registered explicit
+    // models remain authoritative and unknown values fail validation.
+    { BB_GATEWAY_MODEL: migratedGatewayModel(gatewayInput.BB_GATEWAY_MODEL) },
     { GW_IMAGE_RELAY_INTROSPECTION_TOKEN: imageToken, GW_VIDEO_MEDIA_RELAY_INTROSPECTION_TOKEN: videoToken },
   )
   const image = combine(
