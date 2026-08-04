@@ -1,53 +1,94 @@
 # BilliardBuddy 生产服务器
 
-最后按服务器实测记录更新：2026-08-04。本文记录受控发布与 smoke 的实际结果；后续发布前仍必须重新只读盘点主机、容器、端口和 release revision，不能以本文替代现网核验。
+最后按服务器实测更新：2026-08-04。本文是当前三服务发布与运行边界的操作手册，不替代每次发布前的只读盘点。
 
 ## 当前拓扑
 
 ```text
-桌面端
-  -> https://zzyppz.cn/gw/
-  -> Nginx :443
-  -> Gateway（Docker，127.0.0.1:8799）
-  -> Relay（Docker Compose 私有网络，relay:8790）
-
-Desktop Sidecar
-  -> https://zzyppz.cn/video-media/
-  -> Nginx :443
-  -> Video Media Relay（Docker，127.0.0.1:8791）
-  -> Compose 私网 Gateway（http://gateway:8799/internal/v1/auth/introspect）
-  -> 北京 OSS 私有 Bucket、北京 DashScope
+桌面安装包中的公开配置
+  Agent（托管）  -> https://zzyppz.cn/gw/v1/responses
+  Image Sidecar  -> https://zzyppz.cn/image-generation/v1/images/tasks
+  Video Sidecar  -> https://zzyppz.cn/video-media/v1/video-media/...
+                         │
+                         ▼
+                    Nginx :443
+        ┌────────────────┼─────────────────┐
+        ▼                ▼                 ▼
+ Gateway :8799    Image Relay :8790  Video Media Relay :8791
+        │                │                 │
+ 托管文本 Provider   图片 Provider      北京 OSS / DashScope
+                         │                 │
+             Gateway 私网 introspection（仅 Compose 网络）
 ```
 
-Gateway、Relay 与 Video Media Relay 位于同一 Compose 主机。Gateway 是托管 DeepSeek Responses 与图片任务的薄网关：安装鉴权、额度、用量、限流、路由、幂等与安全转发；它不保存 Agent Thread、Turn、工具、审批、沙箱或图片项目事实。Relay 只承接图片/视频异步任务结果；Video Media Relay 只保存短期 lease、操作、额度预留、receipt 和清理状态，不保存桌面项目事实。
+三项公开地址只在 [`ts/desktop/build/product-config.json`](../../ts/desktop/build/product-config.json) 中随安装包发布；它们都必须是 HTTPS，分别固定为 `/gw`、`/image-generation`、`/video-media`。图片和视频 Sidecar 直接到各自 Relay，**不再经过 Gateway 转发任务或媒体字节**。Gateway 只提供托管 Agent 与 Relay 的私网身份内省。
 
-本次实测：主机 `96.9.225.212` 的 release 为 `3a15713250bcab9ea81ec797e0d9295383d01d23`。`billiardbuddy-gateway-1`、`billiardbuddy-relay-1` 与 `billiardbuddy-video-media-relay-1` 均使用该 revision 镜像且处于 healthy；Gateway 仅绑定 `127.0.0.1:8799`，Video Media Relay 仅绑定 `127.0.0.1:8791`，Relay 与 Gateway 的服务间路由都位于 Compose 私网。公网 `https://zzyppz.cn/video-media/readyz` 返回 200，公网访问 `/gw/internal/v1/auth/introspect` 返回 404。配置只位于权限为 `0600` 的 `/srv/billiardbuddy/secrets/video-media-relay.env`；盘点与日志检查不读取或输出 secret 值。
+Nginx 仅反代到本机回环端口：Gateway `127.0.0.1:8799`、Image Relay `127.0.0.1:8790`、Video Media Relay `127.0.0.1:8791`。公网访问 `/gw/internal/*` 固定返回 `404`；Relay 通过 Compose 私网 `http://gateway:8799/internal/v1/auth/introspect` 获取已验证的安装 owner，不能相信客户端提交的 owner 字段。
 
-## 第 4 关生产实测
+当前实测 release 为 `adf33a9d319c91d947a18c3ec68fbcf37062cdcc`。三个产品容器 `billiardbuddy-gateway-1`、`billiardbuddy-image-relay-1`、`billiardbuddy-video-media-relay-1` 均为 healthy。`https://zzyppz.cn/video-media/readyz` 返回 `200`，公网 POST `/gw/internal/v1/auth/introspect` 返回 `404`。
 
-```text
-Desktop Sidecar -> https://zzyppz.cn/video-media/ -> Nginx -> 127.0.0.1:8791 Video Media Relay
-Video Media Relay -> Compose 私网 Gateway /internal/v1/auth/introspect
-Video Media Relay -> 北京 OSS 私有 Bucket 与北京 DashScope
-```
+## 并发、模型与额度的分层
 
-`video-media-relay` 使用独立 `/srv/billiardbuddy/data/video-media-relay` 与 `/srv/billiardbuddy/secrets/video-media-relay.env`，前者保存短期 lease/request/receipt SQLite 元数据，后者只包含变量值而不进入日志；Gateway 与 Relay 现有数据目录和端口不变。生产环境显式配置 `VIDEO_MEDIA_ACCOUNT_QUOTA_UNITS=2000`、`VIDEO_MEDIA_OBJECT_LEASE_QUOTA_UNITS=1`、`VIDEO_MEDIA_LEASE_TTL_MS=60000` 与 `VIDEO_MEDIA_OUTCOME_UNKNOWN_RETENTION_MS=259200000`：前两项分别限制单安装账户的远程调用单位和未消费的 OSS 写入能力，后两项分别限制客户端 URL 与不可判定结果的保留期。
+这三者必须分开，不能把数值散落到业务 handler，也不能只依赖 Nginx：
 
-该 release 的受控 smoke 使用临时 Gateway token，并在结束时注销，实测矩阵如下：无 bearer 返回 401；伪造 bearer 返回 401/403；公网拒绝 `/gw/internal/*`；错误 purpose/MIME 和租约到期分别被 Relay 拒绝；第二个未消费 lease 在签发前被 429 拒绝，过期 lease 返回 410 并释放配额；长 Fun-ASR 处于 submitted/running 时，2000 单位 Embedding 请求返回 429。9 MiB 流式 multipart 经初始化、ListParts 分页、完成、HEAD 和流式 SHA-256 校验后清理；同一签名 URL 的第二次写入被 OSS 以 409 拒绝；Qwen 视觉、Qwen 规划、Embedding（768 维）和长 Fun-ASR 异步轮询均返回 provider receipt，结果读回并 ACK。结束时未删除 lease、待清理对象、未 ACK 结果对象与临时 smoke 容器均为 0，Relay 最近 250 行日志未匹配到 AccessKey 或 DashScope key 形态。
+| 层 | 事实来源 | 职责 |
+| --- | --- | --- |
+| 模型目录 | 共享产品目录 | 逻辑模型、能力和工作负载；不含 API Key 或物理账号容量。 |
+| 容量 policy | 三个服务各自的受控部署环境 | 每个物理账号/工作负载的并发、RPM、队列、等待时间、单 owner 上限和 policy revision。 |
+| 准入执行 | 共享 admission kernel，位于 Gateway、Image Relay、Video Media Relay 的最终 Provider 边界 | 公平排队、取消/超时释放、最终硬上限；请求没有许可不得到达 Provider。 |
+| 额度账本 | 对应受信服务的持久化账本 | 从安装身份派生 owner，做预留、结算、释放和幂等；不是 API Key 的镜像。 |
 
-北京 OSS RAM 凭据只限私有 Bucket 的 `video-media/input/*` 与 `video-media/result/*`：`oss:PutObject`、`oss:GetObject`、`oss:HeadObject`、`oss:DeleteObject`、`oss:ListParts`、`oss:AbortMultipartUpload`、`oss:CompleteMultipartUpload`。`oss:ListMultipartUploads` 必须在该 Bucket 级别授予（OSS 的上传列表请求不能安全携带可用的对象前缀限制），仍不得授予其他 Bucket、ACL、RAM 或账户管理权限。所有 lease、multipart 和结果对象写入均携带 `x-oss-forbid-overwrite: true`；该 OSS 专用条件写入语义在对象已存在时返回 409，避免重放覆盖已验证媒体或已 ACK receipt。
+因此“配置外置”指的是**并发数字、账号绑定和 revision 在环境配置中**，通过完整候选环境、同版本 validator 和受控重启生效；并不意味着删除服务端准入。Nginx 可以做连接数、请求大小和粗粒度入口保护，但无法正确处理 owner、公平队列、异步恢复、Provider 账号和付费任务。
 
-## 协议边界
+当前是单实例服务：容量 backend 为进程内实现，避免新增网络跳转和中央单点。未来才在多副本阶段，把同一 admission 接口替换为带租约和 fencing 的全局协调器；每个执行进程仍保留本地硬上限。不要为了“配置在外”现在额外搭建一个并发服务器。
 
-- 托管文本入口为 `POST /gw/v1/responses`，不提供 `/v1/chat/completions`。
-- 图片任务入口为 `POST /gw/v1/images/tasks`，并由 `GET /gw/v1/images/tasks/:id`、`POST .../:id/cancel` 和 `POST .../:id/ack` 组成同一幂等任务协议；Sidecar 不直连 Relay。
-- 桌面端的个人 Key 不经过 Gateway；个人 Chat 转换也只在用户本机发生。
-- Gateway 到 Relay 使用 Compose 私有网络 `http://relay:8790`；对外请求必须走 HTTPS。
-- Relay 在本地 Candidate Group、CAS 与 SQLite 事务成功后才接受 ACK；远端结果、Provider 响应和 Relay credential 不进入公开投影或日志。
-- 秘钥文件只留在服务器的受限权限目录，不打包进发布物，不写入日志或部署记录。
+图片工作台估算响应里的 `concurrency` 是一次创作 Round 的产品级并行计划提示，不是 Provider 的实际并发闸门；实际执行上限仍只以 Relay capacity policy 为准。
 
-## 发布原则
+## 用户额度与 Key 边界
 
-只从已提交 revision 制作发布包，不从工作树复制文件。发布前检查 Compose 配置、镜像构建、环境变量和健康端点；发布后复核运行镜像 revision、容器健康、`/gw/healthz`、一次受控 `/v1/responses` SSE 调用，以及在明确预算开关下的一次 Gateway → Relay 图片协议 smoke。测试安装会话与输出必须清理。
+- 默认已认证安装可使用托管 Agent、图片和视频能力；三种额度各自结算，一项耗尽只限制该项托管能力。
+- 托管 Agent 的文本账本和 Provider 密钥只在 Gateway；图片 Provider 密钥、准入和任务状态只在 Image Relay；视频 Provider/OSS 密钥、准入和短期租约只在 Video Media Relay。
+- 用户给 Agent 配置个人 Provider Key 时，仅本机 Electron Main 的安全存储和本机短生命周期适配器使用它；该请求直连所选上游，不进入 Gateway 的托管账本，也不影响图片或视频额度。
+- Renderer 不持有密钥、Relay service token 或公开结果凭据。当前运行合同不等于 Renderer 已完成所有产品 UI；界面阶段仍按各工作台合同推进。
 
-不要使用会影响同主机其他项目的 `--remove-orphans`。Gateway/Relay 的部署不会替代桌面端、Windows/macOS、个人 Key 或原生工具/审批的用户旅程验证。
+对外错误只给稳定、可处理的能力状态，不泄漏账号、模型密钥、余额或内部队列细节。例如托管 Agent 额度返回 `USAGE_LIMIT_REACHED`；图片和视频 Relay 分别返回其已列入合同的 quota/queue 错误码和安全 retry 信息。
+
+## 进程、数据与权限
+
+Compose 文件是 [`deploy/production/compose.yml`](../../deploy/production/compose.yml)。三个产品容器均为只读根文件系统、`/tmp` tmpfs、删除 Linux capabilities、`no-new-privileges`、`pids_limit: 256`；Image Relay 内存上限 `2g`，Gateway 和 Video Media Relay 各 `1g`。它们不管理同主机的静态站点或桌面更新服务。
+
+| 服务 | 密钥文件（`0600`） | 持久数据目录（`0700`、容器 uid/gid `1000:1000`） |
+| --- | --- | --- |
+| Gateway | `/srv/billiardbuddy/secrets/gateway.env` | `/srv/billiardbuddy/data/gateway` |
+| Image Relay | `/srv/billiardbuddy/secrets/image-relay.env` | `/srv/billiardbuddy/data/image-relay` |
+| Video Media Relay | `/srv/billiardbuddy/secrets/video-media-relay.env` | `/srv/billiardbuddy/data/video-media-relay` |
+
+绝不把上述文件、API Key、service token、安装 bearer、完整 Provider 回执或用户媒体输入写入仓库、安装包、日志、聊天记录或发布包。视频 OSS Bucket 保持私有；Relay 只使用最小前缀权限和短期签名 URL。
+
+## 发布与配置变更
+
+1. 从已提交 revision 打包，不从工作树复制：`deploy/production/package-release.sh <输出包> <完整提交 SHA>`。
+2. 在服务器解压到 `/srv/billiardbuddy/releases/<完整提交 SHA>`，核对 `release-manifest.json` 与审核 SHA 一致。
+3. 修改并发、RPM、队列、额度或账号绑定时，先准备完整的三个候选环境文件；不要对运行容器零散热改变量。每个文件中的 policy revision 也要同步更新。
+4. 以明确盘点过的 root vhost 执行发布：
+
+   ```bash
+   cd /srv/billiardbuddy/releases/<完整提交 SHA>
+   sudo BILLIARDBUDDY_RELEASE=<发布标签> \
+     BILLIARDBUDDY_NGINX_ROOT_VHOST=/etc/nginx/sites-available/billiardbuddy \
+     bash deploy/production/deploy.sh
+   ```
+
+   脚本会构建三镜像、离线校验三份环境、校验数据目录、等待三个健康检查，再原子安装 Nginx 路由。不要使用会影响其他服务的 `--remove-orphans`。
+
+5. 发布后复核实际运行镜像、三项健康检查和公网内部路由拒绝。付费 smoke 必须显式确认、使用临时安装 token、限制操作数，并在结束时注销/ACK/清理。服务器未安装 Bun 时，使用对应 release 的一次性、只读容器执行 smoke；不要为了 smoke 在主机全局安装运行时或把 token 落盘。
+
+2026-08-04 对当前 release 的受控视频 smoke 已实测四项真实 Provider 操作（视觉、Embedding、规划、长 ASR）均 succeeded 且 ACK；所有对应 lease 已 deleted，没有待清理对象或未确认结果。这个结果证明当前 Video Media Relay → 北京 OSS/DashScope 的真实链路可用；每次新 release 仍应重新跑其受影响的受控 smoke。
+
+## 操作禁区
+
+- 不把 `/gw/internal/*`、Relay service token 或任一服务器 env 暴露给公网、桌面端或 Renderer。
+- 不绕过 capacity policy 直接在业务 handler 调 Provider。
+- 不用 Nginx 的连接上限替代应用层 owner/账号/付费准入。
+- 不把个人 Agent Key 转发到 Gateway，也不以个人 Key 绕过图片或视频的托管安全边界。
+- 不删除旧 release 目录或数据目录来“清理”发布；先完成数据盘点和明确的保留/回滚决策。可在成功部署后删除仅用于传输的临时 tar 包。
