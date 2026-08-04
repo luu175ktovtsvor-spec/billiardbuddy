@@ -15,7 +15,9 @@ test('root-domain Relay snippet does not duplicate the existing Gateway prefix',
   expect(vhost).toContain('proxy_read_timeout 300s;')
   expect(snippet).toContain('location ^~ /gw/internal/')
   expect(snippet).not.toMatch(/^\s*location\s+\^~\s+\/gw\/\s*\{/m)
+  expect(snippet).toContain('location = /image-generation/healthz')
   expect(snippet).toContain('location ^~ /image-generation/')
+  expect(snippet.indexOf('location = /image-generation/healthz')).toBeLessThan(snippet.indexOf('location ^~ /image-generation/'))
   expect(snippet).toContain('location ^~ /video-media/')
 
   const keys = [...locationKeys(vhost), ...locationKeys(snippet)]
