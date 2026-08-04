@@ -41,6 +41,8 @@ test('Gateway production preflight requires an explicit capacity envelope', () =
   expect(() => validateDeploymentEnvironment(environment)).not.toThrow()
   expect(() => validateDeploymentEnvironment({ ...environment, GW_DEEPSEEK_RPM: '' }))
     .toThrow('GW_DEEPSEEK_RPM is required')
+  expect(() => validateDeploymentEnvironment({ ...environment, GW_MIMO_ACCOUNT_REF: '' }))
+    .toThrow('GW_MIMO_ACCOUNT_REF is required')
   expect(() => validateDeploymentEnvironment({ ...environment, GW_MIMO_MEDIA_CONC: '6' }))
     .toThrow('GW_MIMO_MEDIA_CONC + GW_VISION_CONC must equal GW_MIMO_CONC')
   expect(() => validateDeploymentEnvironment({ ...environment, GW_QUOTA_IMAGE_ADVICE_PRINCIPAL_REQUESTS: '' }))

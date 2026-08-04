@@ -628,6 +628,7 @@ export class EditorialApplication {
     timing: Map<string, EditorialSourceTiming>,
     planIds: string[] = [],
     sourceBounds: Map<string, EditorialSourceBounds> = new Map(),
+    draftId = id('draft'),
   ): TimelineDraft {
     const current = this.currentTimeline(project)
     const clips = scenes.map(scene => ({ id: scene.id, source_id: scene.source_id, in_ms: scene.in_ms, out_ms: scene.out_ms }))
@@ -637,7 +638,7 @@ export class EditorialApplication {
       scenes,
     ).map(item => ({ ...item, id: id('draft_item') }))
     const draft = timelineDraftSchema.parse({
-      id: id('draft'),
+      id: draftId,
       project_id: project.id,
       facts_basis_hash: editorialFactsBasisHash(project),
       base_timeline_version_id: current.id,

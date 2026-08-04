@@ -12,9 +12,13 @@ import { loadImageRelayResultCredentials } from './resultCredentials'
 /** Production has no implicit image-provider admission profile. */
 export const IMAGE_RELAY_PRODUCTION_CAPACITY_ENVIRONMENT_VARIABLES = [
   'RELAY_CAPACITY_POLICY_REVISION',
+  'RELAY_OPENAI_ACCOUNT_REF',
+  'RELAY_OPENAI_ACCOUNT_BINDING_REVISION',
   'RELAY_IMG_CONC',
   'RELAY_IMG_USER_CONC',
   'RELAY_OPENAI_RPM',
+  'RELAY_SEEDREAM_ACCOUNT_REF',
+  'RELAY_SEEDREAM_ACCOUNT_BINDING_REVISION',
   'RELAY_SEEDREAM_CONC',
   'RELAY_SEEDREAM_USER_CONC',
   'RELAY_SEEDREAM_RPM',
@@ -75,6 +79,11 @@ function requireAbsoluteDataPath(environment: StaticDeploymentEnvironment, name:
 export function validateRelayDeploymentEnvironment(environment: StaticDeploymentEnvironment): void {
   requireAbsoluteDataPath(environment, 'RELAY_DB', /(?:image-)?relay\.db$/i)
   requireAbsoluteDataPath(environment, 'RELAY_BLOB_DIR', /blobs?\/?$/i)
+  requireBoundedInteger(environment, 'RELAY_TASK_TTL_MS', 1, 365 * 24 * 60 * 60_000)
+  requireBoundedInteger(environment, 'RELAY_UNACKNOWLEDGED_RESULT_TTL_MS', 1, 365 * 24 * 60 * 60_000)
+  if (Number(environment.RELAY_UNACKNOWLEDGED_RESULT_TTL_MS) < Number(environment.RELAY_TASK_TTL_MS)) {
+    fail('RELAY_UNACKNOWLEDGED_RESULT_TTL_MS must not be less than RELAY_TASK_TTL_MS')
+  }
   for (const name of IMAGE_RELAY_PRODUCTION_CAPACITY_ENVIRONMENT_VARIABLES) requireValue(environment, name)
   for (const name of IMAGE_RELAY_PRODUCTION_QUOTA_ENVIRONMENT_VARIABLES) requireValue(environment, name)
   // This wait owns both the fair provider-admission deadline and the rate-limit

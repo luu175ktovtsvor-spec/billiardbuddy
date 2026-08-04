@@ -394,6 +394,12 @@ export const videoEvidenceSchema = z.object({
   text: z.string().min(1).max(8000),
   confidence: z.number().min(0).max(1),
   warnings: z.array(z.string().min(1).max(500)).max(20).default([]),
+  /** Immutable Relay receipt that produced this local evidence, when remote
+   * analysis was authorized. It lets restart recovery ACK cleanup without
+   * issuing a second model request. */
+  provider_receipt_id: mediaIdSchema.optional(),
+  relay_operation_id: mediaIdSchema.optional(),
+  relay_result_hashes: z.array(z.string().regex(/^sha256:[a-f0-9]{64}$/)).min(1).max(64).optional(),
   created_at: mediaIsoDateSchema,
 }).refine(value => value.out_ms > value.in_ms, {
   message: 'evidence out_ms must be greater than in_ms',
@@ -805,6 +811,16 @@ export const videoRemoteBudgetSchema = z.object({
   created_at: mediaIsoDateSchema,
   updated_at: mediaIsoDateSchema,
 })
+/** Result cleanup is durable project state, not an in-memory finally block.
+ * The Relay deletes its temporary result object only after this record's
+ * local Fact/Project result is committed. */
+export const videoRelayPendingAcknowledgementSchema = z.object({
+  operation_id: mediaIdSchema,
+  relay_operation_id: mediaIdSchema,
+  receipt_id: mediaIdSchema,
+  result_hashes: z.array(z.string().regex(/^sha256:[a-f0-9]{64}$/)).min(1).max(64),
+  created_at: mediaIsoDateSchema,
+})
 export const createRemoteAnalysisConsentInputSchema = remoteAnalysisConsentSchema.pick({ purposes: true, data_kinds: true, coverage: true, acknowledged_estimate_hash: true }).extend({ granted_by_actor_id: z.string().min(1).max(160).optional() })
 export const revokeRemoteAnalysisConsentInputSchema = z.object({ revision: z.number().int().positive() })
 export const estimateRemoteAnalysisInputSchema = z.object({ purposes: z.array(z.enum(['visual_evidence', 'planning', 'caption_translation', 'asr', 'semantic_search'])).min(1).max(5), source_ids: z.array(mediaIdSchema).min(1).max(200) })
@@ -819,6 +835,13 @@ export const videoStudioProjectSchema = mediaProjectBaseSchema.extend({
   evidence_revision: z.string().regex(/^sha256:[a-f0-9]{64}$/).optional(),
   remote_analysis_consents: z.array(remoteAnalysisConsentSchema).max(200).default([]),
   remote_analysis_budgets: z.array(videoRemoteBudgetSchema).max(10_000).default([]),
+  pending_relay_acknowledgements: z.array(videoRelayPendingAcknowledgementSchema).max(10_000).default([]),
+  /** An ACK removes a temporary Relay result but must remain recorded locally;
+   * otherwise startup reconciliation would re-ACK every historical Fact. */
+  acknowledged_relay_operations: z.array(mediaIdSchema).max(10_000).default([]),
+  /** Relay may confirm that an un-ACKed temporary object already expired. The
+   * local immutable Fact/Project result remains authoritative in that case. */
+  retired_relay_operations: z.array(mediaIdSchema).max(10_000).default([]),
   brief: videoBriefSchema.optional(),
   /** Legacy scene versions remain readable; all new writes use Editorial v2 below. */
   timeline_versions: z.array(videoTimelineVersionSchema).max(1000).default([]),
@@ -871,6 +894,8 @@ export const publicImageWorkbenchProjectSchema = imageWorkbenchProjectSchema.omi
 export const publicVideoStudioProjectSchema = videoStudioProjectSchema.omit({
   ...persistedMediaProjectFields,
   editorial_command_receipts: true,
+  acknowledged_relay_operations: true,
+  retired_relay_operations: true,
   delivery_variant_creation_receipts: true,
   editorial_timeline_versions: true,
   timeline_drafts: true,

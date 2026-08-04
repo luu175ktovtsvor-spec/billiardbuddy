@@ -60,6 +60,7 @@ type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<
 
 export type RelayConfig = {
   taskTtlMs: number
+  unacknowledgedResultTtlMs: number
   dbPath: string
   blobDir: string | null
   retryAfterSeconds: number
@@ -85,10 +86,21 @@ function boundedPositiveIntEnv(env: Env, key: string, fallback: number, max: num
 }
 
 export function loadRelayConfig(env: Env): RelayConfig {
+  const taskTtlMs = boundedPositiveIntEnv(env, 'RELAY_TASK_TTL_MS', 7 * 24 * 60 * 60_000, 365 * 24 * 60 * 60_000)
+  const unacknowledgedResultTtlMs = boundedPositiveIntEnv(
+    env,
+    'RELAY_UNACKNOWLEDGED_RESULT_TTL_MS',
+    365 * 24 * 60 * 60_000,
+    365 * 24 * 60 * 60_000,
+  )
+  if (unacknowledgedResultTtlMs < taskTtlMs) {
+    throw new Error('relay: RELAY_UNACKNOWLEDGED_RESULT_TTL_MS 不能小于 RELAY_TASK_TTL_MS')
+  }
   return {
     // Terminal results must survive app restarts and users returning days later.
     // Active queued/running work is never swept regardless of this value.
-    taskTtlMs: boundedPositiveIntEnv(env, 'RELAY_TASK_TTL_MS', 7 * 24 * 60 * 60_000, 365 * 24 * 60 * 60_000),
+    taskTtlMs,
+    unacknowledgedResultTtlMs,
     // 持久化:默认内存 SQLite(测试用);生产设 RELAY_DB=/opt/billiardbuddy-relay/relay.db 以支持重启恢复。
     dbPath: env.RELAY_DB ?? ':memory:',
     // 大体积 blob:设了 RELAY_BLOB_DIR 就落 700 目录的磁盘文件;没设(测试)就放进程内存。
@@ -128,6 +140,7 @@ class UpstreamBodyLimitError extends Error {}
 const MAX_PROVIDER_IMAGE_RESPONSE_BYTES = 32 * 1024 * 1024
 
 type TaskState = 'queued' | 'running' | 'succeeded' | 'failed' | 'failed_unknown' | 'cancelled'
+export const MAX_PRE_PROVIDER_ADMISSION_RETRIES = 3
 type CandidateInvalid = { index: number; safe_error_code: string }
 type RelayResultSummary = {
   expected_count: number
@@ -453,14 +466,17 @@ type TaskRow = {
   provider_receipt_hash: string | null
   result_summary: string | null
   acknowledged_at: number | null
+  admission_retry_count: number
   created: number
   updated: number
 }
 
 type ImageQuotaProvider = 'openai' | 'seedream'
+type ImageProviderAccountKeys = Readonly<Record<ImageQuotaProvider, string>>
 
 type TaskQuote = {
   provider: ImageQuotaProvider
+  accountKey: string
   period: string
   policyRevision: string
   pricingRevision: string
@@ -470,6 +486,7 @@ type TaskQuote = {
 class ImageQuotaExceededError extends Error {}
 class ImageTaskQueueFullError extends Error {}
 class ImageIdempotencyConflictError extends Error {}
+class ImageAccountBindingChangedError extends Error {}
 
 type CreateTaskResult = {
   task: TaskRow
@@ -485,6 +502,7 @@ class TaskStore {
     path: string,
     private readonly now: () => number,
     private readonly quotaPolicy: ImageRelayQuotaPolicy,
+    private readonly accountKeys: ImageProviderAccountKeys,
     private readonly legacyTaskQuote: LegacyTaskQuote,
   ) {
     this.db = new Database(path)
@@ -495,7 +513,7 @@ class TaskStore {
       'id TEXT PRIMARY KEY, owner TEXT, idempotency_key TEXT, status TEXT NOT NULL, ' +
       'error TEXT, input_fidelity TEXT, input_bytes INTEGER NOT NULL DEFAULT 0, ' +
       'input_fingerprint TEXT, provider TEXT, provider_receipt_hash TEXT, result_summary TEXT, ' +
-      'acknowledged_at INTEGER, created INTEGER NOT NULL, updated INTEGER NOT NULL)'
+      'acknowledged_at INTEGER, admission_retry_count INTEGER NOT NULL DEFAULT 0, created INTEGER NOT NULL, updated INTEGER NOT NULL)'
     )
     // 旧的持久化库没有 input_bytes；CREATE TABLE IF NOT EXISTS 不会自动补列。
     const columns = this.db.query('PRAGMA table_info(tasks)').all() as Array<{ name: string }>
@@ -508,6 +526,9 @@ class TaskStore {
     if (!columns.some(existing => existing.name === 'acknowledged_at')) {
       this.db.exec('ALTER TABLE tasks ADD COLUMN acknowledged_at INTEGER')
     }
+    if (!columns.some(existing => existing.name === 'admission_retry_count')) {
+      this.db.exec('ALTER TABLE tasks ADD COLUMN admission_retry_count INTEGER NOT NULL DEFAULT 0')
+    }
     // (owner, key) 唯一 —— 幂等去重;key 为 NULL 的行不参与(旧请求无幂等键,不去重)。
     this.db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_idem ON tasks(owner, idempotency_key) WHERE idempotency_key IS NOT NULL')
     this.db.exec('CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)')
@@ -516,11 +537,21 @@ class TaskStore {
     // the transient task must not erase proof that the amount was released.
     this.db.exec(
       'CREATE TABLE IF NOT EXISTS image_quota_reservations(' +
-      'task_id TEXT PRIMARY KEY, owner TEXT NOT NULL, provider TEXT NOT NULL, period TEXT NOT NULL, ' +
+      'task_id TEXT PRIMARY KEY, owner TEXT NOT NULL, provider TEXT NOT NULL, account_key TEXT NOT NULL, period TEXT NOT NULL, ' +
       'policy_revision TEXT NOT NULL, pricing_revision TEXT NOT NULL, amount_minor INTEGER NOT NULL, ' +
       "state TEXT NOT NULL CHECK(state IN ('reserved','outcome_unknown','settled','released')), " +
       'upstream_receipt_hash TEXT, created INTEGER NOT NULL, updated INTEGER NOT NULL)',
     )
+    const quotaColumns = this.db.query('PRAGMA table_info(image_quota_reservations)').all() as Array<{ name: string }>
+    if (!quotaColumns.some(column => column.name === 'account_key')) {
+      this.db.exec('ALTER TABLE image_quota_reservations ADD COLUMN account_key TEXT')
+    }
+    // The first process that opens a pre-binding ledger assigns its NULL rows
+    // to the then-authoritative deployment binding. Later account rotations
+    // never rewrite a non-NULL historical key.
+    this.db.query(`UPDATE image_quota_reservations
+      SET account_key=CASE provider WHEN 'openai' THEN ? WHEN 'seedream' THEN ? ELSE 'image:unknown:legacy@legacy-v1' END
+      WHERE account_key IS NULL`).run(this.accountKeys.openai, this.accountKeys.seedream)
     this.db.exec(
       "CREATE INDEX IF NOT EXISTS idx_image_quota_owner_period ON image_quota_reservations(owner,period) " +
       "WHERE state IN ('reserved','outcome_unknown','settled')",
@@ -529,8 +560,14 @@ class TaskStore {
       "CREATE INDEX IF NOT EXISTS idx_image_quota_provider_period ON image_quota_reservations(provider,period) " +
       "WHERE state IN ('reserved','outcome_unknown','settled')",
     )
-    // Existing terminal work predating this table is not retroactively charged:
-    // this durable boundary says exactly when the new policy became authoritative.
+    this.db.exec(
+      "CREATE INDEX IF NOT EXISTS idx_image_quota_account_period ON image_quota_reservations(provider,account_key,period) " +
+      "WHERE state IN ('reserved','outcome_unknown','settled')",
+    )
+    // This durable boundary records when the new policy became authoritative.
+    // Current-day legacy terminal spend is conservatively backfilled below;
+    // older historical work is retained as task evidence but is outside today's
+    // provider-account safety window.
     this.db.exec(
       'CREATE TABLE IF NOT EXISTS image_quota_policy_boundaries(' +
       'policy_revision TEXT NOT NULL, effective_period TEXT NOT NULL, created INTEGER NOT NULL, ' +
@@ -538,6 +575,53 @@ class TaskStore {
     )
     this.db.query('INSERT OR IGNORE INTO image_quota_policy_boundaries(policy_revision,effective_period,created) VALUES(?,?,?)')
       .run(this.quotaPolicy.revision, utcPeriod(this.now()), this.now())
+    this.backfillLegacyTerminalQuota()
+  }
+
+  /** The pre-ledger Relay already paid for terminal work. On its first start
+   * under this schema, conservatively charge current-UTC-day succeeded or
+   * receipt-bearing tasks to the physical account ledger. Unknown historical
+   * providers reserve both accounts rather than creating an unsafe free gap. */
+  private backfillLegacyTerminalQuota(): void {
+    const instant = this.now()
+    const period = utcPeriod(instant)
+    const periodStart = Date.parse(`${period}T00:00:00.000Z`)
+    const periodEnd = periodStart + 24 * 60 * 60_000
+    const tasks = this.db.query(`SELECT * FROM tasks
+      WHERE updated>=? AND updated<? AND (status='succeeded' OR provider_receipt_hash IS NOT NULL)`)
+      .all(periodStart, periodEnd) as TaskRow[]
+    if (!tasks.length) return
+    this.transaction(() => {
+      for (const task of tasks) {
+        // A row written by the new ledger is already authoritative.
+        if (this.reservationExists(task.id)) continue
+        const providers = task.provider === 'ByteDance Ark' || task.provider === 'seedream'
+          ? ['ByteDance Ark']
+          : task.provider === 'OpenAI' || task.provider === 'openai'
+            ? ['OpenAI']
+            : ['OpenAI', 'ByteDance Ark']
+        for (const provider of providers) {
+          const quote = this.legacyTaskQuote(provider, task.updated)
+          const syntheticId = `legacy-terminal:${task.id}:${quote.provider}`
+          this.db.query(`INSERT OR IGNORE INTO image_quota_reservations(
+            task_id,owner,provider,account_key,period,policy_revision,pricing_revision,amount_minor,state,upstream_receipt_hash,created,updated
+          ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+            syntheticId,
+            task.owner ?? '',
+            quote.provider,
+            quote.accountKey,
+            quote.period,
+            `${this.quotaPolicy.revision}:legacy-terminal`,
+            quote.pricingRevision,
+            quote.amountMinor,
+            task.status === 'succeeded' ? 'settled' : 'outcome_unknown',
+            task.provider_receipt_hash,
+            task.updated,
+            instant,
+          )
+        }
+      }
+    })
   }
 
   private transaction<T>(work: () => T): T {
@@ -560,22 +644,23 @@ class TaskStore {
     return Number(row.amount ?? 0)
   }
 
-  private providerQuotaInPeriod(provider: ImageQuotaProvider, period: string): number {
+  private providerQuotaInPeriod(provider: ImageQuotaProvider, accountKey: string, period: string): number {
     const row = this.db.query(
       "SELECT COALESCE(SUM(amount_minor), 0) AS amount FROM image_quota_reservations " +
-      "WHERE provider=? AND period=? AND state IN ('reserved','outcome_unknown','settled')",
-    ).get(provider, period) as { amount: number | null }
+      "WHERE provider=? AND account_key=? AND period=? AND state IN ('reserved','outcome_unknown','settled')",
+    ).get(provider, accountKey, period) as { amount: number | null }
     return Number(row.amount ?? 0)
   }
 
   private insertReservation(task: TaskRow, quote: TaskQuote, state: 'reserved' | 'outcome_unknown'): void {
     const ts = this.now()
     this.db.query(
-      'INSERT INTO image_quota_reservations(task_id,owner,provider,period,policy_revision,pricing_revision,amount_minor,state,upstream_receipt_hash,created,updated) VALUES(?,?,?,?,?,?,?,?,?,?,?)',
+      'INSERT INTO image_quota_reservations(task_id,owner,provider,account_key,period,policy_revision,pricing_revision,amount_minor,state,upstream_receipt_hash,created,updated) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',
     ).run(
       task.id,
       task.owner ?? '',
       quote.provider,
+      quote.accountKey,
       quote.period,
       quote.policyRevision,
       quote.pricingRevision,
@@ -595,13 +680,23 @@ class TaskStore {
    * must obtain a new explicit reservation under the current UTC policy. */
   ensureQueuedReservation(id: string, quote: TaskQuote): void {
     this.transaction(() => {
-      if (this.reservationExists(id)) return
+      const existing = this.db.query('SELECT account_key FROM image_quota_reservations WHERE task_id=?').get(id) as { account_key: string } | null
+      if (existing) {
+        // A queued task accepted under an older account must not execute with
+        // newly rotated credentials while charging the old physical account.
+        // Keep the audit row immutable; the normal pre-upstream failure path
+        // releases it and requires a new operation under the new binding.
+        if (existing.account_key !== quote.accountKey) {
+          throw new ImageAccountBindingChangedError('relay: 图片 Provider 账号绑定已更新，请创建新任务')
+        }
+        return
+      }
       const task = this.get(id)
       if (!task || task.status !== 'queued') return
       if (this.ownerQuotaInPeriod(task.owner ?? '', quote.period) + quote.amountMinor > this.quotaPolicy.owner_daily_usd_minor_limit) {
         throw new ImageQuotaExceededError('relay: 生图可用额度已达上限')
       }
-      if (this.providerQuotaInPeriod(quote.provider, quote.period) + quote.amountMinor > this.quotaPolicy.provider_daily_usd_minor_limit[quote.provider]) {
+      if (this.providerQuotaInPeriod(quote.provider, quote.accountKey, quote.period) + quote.amountMinor > this.quotaPolicy.provider_daily_usd_minor_limit[quote.provider]) {
         throw new ImageQuotaExceededError('relay: 生图服务可用额度已达上限')
       }
       this.insertReservation(task, quote, 'reserved')
@@ -635,7 +730,7 @@ class TaskStore {
       if (this.ownerQuotaInPeriod(input.owner, input.quote.period) + input.quote.amountMinor > this.quotaPolicy.owner_daily_usd_minor_limit) {
         throw new ImageQuotaExceededError('relay: 生图可用额度已达上限')
       }
-      if (this.providerQuotaInPeriod(input.quote.provider, input.quote.period) + input.quote.amountMinor
+      if (this.providerQuotaInPeriod(input.quote.provider, input.quote.accountKey, input.quote.period) + input.quote.amountMinor
         > this.quotaPolicy.provider_daily_usd_minor_limit[input.quote.provider]) {
         throw new ImageQuotaExceededError('relay: 生图服务可用额度已达上限')
       }
@@ -710,6 +805,31 @@ class TaskStore {
 
   markRunning(id: string): void {
     this.db.query('UPDATE tasks SET status=?, updated=? WHERE id=?').run('running', this.now(), id)
+  }
+
+  /** A local/shared admission failure before the first Provider receipt is known
+   * unspent. Return the durable task to queued and retain its input, but cap the
+   * persisted retry count so a permanently unavailable account cannot spin for
+   * the whole task TTL. */
+  retryPreProviderAdmission(id: string, error: string): 'queued' | 'exhausted' | 'ineligible' {
+    return this.transaction(() => {
+      const current = this.get(id)
+      if (!current
+        || (current.status !== 'queued' && current.status !== 'running')
+        || current.provider_receipt_hash !== null) return 'ineligible'
+      const retryCount = current.admission_retry_count + 1
+      const ts = this.now()
+      if (retryCount > MAX_PRE_PROVIDER_ADMISSION_RETRIES) {
+        this.db.query('UPDATE tasks SET status=?, error=?, admission_retry_count=?, updated=? WHERE id=?')
+          .run('failed', `资源准入连续失败，已停止自动重试: ${error.slice(0, 160)}`, retryCount, ts, id)
+        this.db.query("UPDATE image_quota_reservations SET state='released', updated=? WHERE task_id=? AND state='reserved'")
+          .run(ts, id)
+        return 'exhausted'
+      }
+      this.db.query('UPDATE tasks SET status=?, error=NULL, admission_retry_count=?, updated=? WHERE id=?')
+        .run('queued', retryCount, ts, id)
+      return 'queued'
+    })
   }
 
   markSucceeded(id: string, summary: RelayResultSummary): void {
@@ -796,12 +916,29 @@ class TaskStore {
     return { queued: Number(row.queued ?? 0), running: Number(row.running ?? 0) }
   }
 
-  /** 只删除过期终态任务,活跃任务永不被 TTL 清理。 */
-  sweepExpired(cutoff: number): string[] {
-    const terminal = "status IN ('succeeded','failed','failed_unknown','cancelled')"
-    const rows = this.db.query(`SELECT id FROM tasks WHERE updated < ? AND ${terminal}`).all(cutoff) as Array<{ id: string }>
-    if (rows.length) this.db.query(`DELETE FROM tasks WHERE updated < ? AND ${terminal}`).run(cutoff)
+  /** Active work is never swept. A succeeded result that has not been ACKed
+   * gets its own longer retention window so a deployment cannot erase paid
+   * legacy bytes on the first poll. */
+  sweepExpired(terminalCutoff: number, unacknowledgedResultCutoff: number): string[] {
+    const predicate = `(
+      (status IN ('failed','failed_unknown','cancelled') AND updated < ?)
+      OR (status='succeeded' AND acknowledged_at IS NOT NULL AND updated < ?)
+      OR (status='succeeded' AND acknowledged_at IS NULL AND updated < ?)
+    )`
+    const rows = this.db.query(`SELECT id FROM tasks WHERE ${predicate}`)
+      .all(terminalCutoff, terminalCutoff, unacknowledgedResultCutoff) as Array<{ id: string }>
+    if (rows.length) this.db.query(`DELETE FROM tasks WHERE ${predicate}`)
+      .run(terminalCutoff, terminalCutoff, unacknowledgedResultCutoff)
     return rows.map(r => r.id)
+  }
+
+  /** ACK is the authoritative delivery boundary.  Output bytes are best-effort
+   * deleted in the ACK request itself, so this list lets startup and periodic
+   * sweeps finish cleanup after a process death between SQLite commit and
+   * unlink without shortening task/receipt retention. */
+  acknowledgedResultIds(): string[] {
+    return (this.db.query('SELECT id FROM tasks WHERE acknowledged_at IS NOT NULL').all() as Array<{ id: string }>)
+      .map(row => row.id)
   }
 
   sweepQuotaBefore(period: string): void {
@@ -1099,7 +1236,7 @@ function taskProvider(body: SubmitBody): 'OpenAI' | 'ByteDance Ark' {
   return isSeedreamModel(String(body.model ?? GPT_IMAGE_MODEL)) ? 'ByteDance Ark' : 'OpenAI'
 }
 
-function taskQuote(body: SubmitBody, policy: ImageRelayQuotaPolicy, now: number): TaskQuote {
+function taskQuote(body: SubmitBody, policy: ImageRelayQuotaPolicy, accountKeys: ImageProviderAccountKeys, now: number): TaskQuote {
   const descriptor = imageModelDescriptor(String(body.model ?? GPT_IMAGE_MODEL))
   const price = descriptor?.image_generation?.price_upper_bound
   if (!price || price.currency !== 'USD' || !Number.isSafeInteger(price.per_output_amount_minor) || price.per_output_amount_minor < 0) {
@@ -1107,8 +1244,10 @@ function taskQuote(body: SubmitBody, policy: ImageRelayQuotaPolicy, now: number)
   }
   const amountMinor = price.per_output_amount_minor * outputCount(body)
   if (!Number.isSafeInteger(amountMinor)) throw new HttpError(503, 'relay: 当前模型报价超出安全范围')
+  const provider = isSeedreamModel(String(body.model ?? GPT_IMAGE_MODEL)) ? 'seedream' : 'openai'
   return {
-    provider: isSeedreamModel(String(body.model ?? GPT_IMAGE_MODEL)) ? 'seedream' : 'openai',
+    provider,
+    accountKey: accountKeys[provider],
     period: utcPeriod(now),
     policyRevision: policy.revision,
     pricingRevision: price.pricing_revision,
@@ -1119,7 +1258,7 @@ function taskQuote(body: SubmitBody, policy: ImageRelayQuotaPolicy, now: number)
 /** A legacy running task has no persisted model/count quote. Recover it as the
  * most expensive catalog shape for its recorded physical provider, never as a
  * free unknown outcome. Queued legacy rows take the exact path above instead. */
-function legacyTaskQuoteForPolicy(policy: ImageRelayQuotaPolicy): LegacyTaskQuote {
+function legacyTaskQuoteForPolicy(policy: ImageRelayQuotaPolicy, accountKeys: ImageProviderAccountKeys): LegacyTaskQuote {
   return (provider, now) => {
     const seedream = provider === 'ByteDance Ark'
     const candidates = IMAGE_MODEL_CATALOG.filter(entry => (entry.provider === 'bytedance-ark') === seedream)
@@ -1133,6 +1272,7 @@ function legacyTaskQuoteForPolicy(policy: ImageRelayQuotaPolicy): LegacyTaskQuot
     const amountMinor = candidate.generation.price_upper_bound.per_output_amount_minor * candidate.generation.max_output_count
     return {
       provider: seedream ? 'seedream' : 'openai',
+      accountKey: accountKeys[seedream ? 'seedream' : 'openai'],
       period: utcPeriod(now),
       policyRevision: `${policy.revision}:legacy-active`,
       pricingRevision: `legacy-conservative:${candidate.generation.price_upper_bound.pricing_revision}`,
@@ -1169,6 +1309,10 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
   const fetchImpl: FetchLike = deps.fetchImpl ?? globalThis.fetch
   const rawIdentityFetch: FetchLike = deps.identityFetchImpl ?? globalThis.fetch
   const now = deps.now ?? Date.now
+  const accountKeys: ImageProviderAccountKeys = {
+    openai: capacity.providers.openai.account_key,
+    seedream: capacity.providers.seedream.account_key,
+  }
   const identityAdmission = admissionBackend.createIdentityAdmission(relayIdentityAdmissionConfig(capacity.identity_admission))
   const identityIntrospector = loadImageRelayIdentityIntrospector(deps.env, {
     fetchImpl: rawIdentityFetch,
@@ -1177,10 +1321,11 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
     admission: identityAdmission,
   })
   const resultCredentials = loadImageRelayResultCredentials(deps.env, { now })
-  const store = new TaskStore(config.dbPath, now, config.quotaPolicy, legacyTaskQuoteForPolicy(config.quotaPolicy))
+  const store = new TaskStore(config.dbPath, now, config.quotaPolicy, accountKeys, legacyTaskQuoteForPolicy(config.quotaPolicy, accountKeys))
   const blobs: BlobStore = config.blobDir ? new DiskBlobStore(config.blobDir) : new MemoryBlobStore()
   const providerAdmission = (provider: 'openai' | 'seedream') => admissionBackend.createProviderAdmission({
     provider,
+    account_key: capacity.providers[provider].account_key,
     concurrency: {
       maxActive: capacity.providers[provider].concurrency,
       maxActivePerOwner: capacity.providers[provider].owner_concurrency,
@@ -1226,9 +1371,13 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
   }
 
   function sweep(): void {
-    const cutoff = now() - config.taskTtlMs
-    for (const id of store.sweepExpired(cutoff)) blobs.del(id)
-    store.sweepQuotaBefore(utcPeriod(now() - config.quotaLedgerRetentionDays * 24 * 60 * 60_000))
+    const instant = now()
+    for (const id of store.acknowledgedResultIds()) blobs.delKind(id, 'out')
+    for (const id of store.sweepExpired(
+      instant - config.taskTtlMs,
+      instant - config.unacknowledgedResultTtlMs,
+    )) blobs.del(id)
+    store.sweepQuotaBefore(utcPeriod(instant - config.quotaLedgerRetentionDays * 24 * 60 * 60_000))
   }
 
   async function identity(req: Request): Promise<ImageRelayIdentity> {
@@ -1257,6 +1406,7 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
     input: string,
     init: RequestInit,
     readBody: (response: Response) => Promise<T>,
+    assertCurrent?: () => void | Promise<void>,
   ): Promise<{ response: Response; body: T }> {
     const controller = new AbortController()
     let timer: ReturnType<typeof setTimeout> | undefined
@@ -1273,6 +1423,10 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
     })
     const requestAndRead = async () => {
       let response: Response
+      // RequestInit, including any large JSON/FormData body, is fully built by
+      // the caller before this final lease check. The next external side effect
+      // is the fetch itself.
+      await assertCurrent?.()
       try {
         response = await fetchImpl(input, { ...init, signal: controller.signal })
       } catch (error) {
@@ -1299,19 +1453,21 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
     provider: 'OpenAI' | 'Seedream',
     input: string,
     init: RequestInit,
+    assertCurrent?: () => void | Promise<void>,
   ): Promise<{ response: Response; body: string }> {
     return fetchUpstreamBody(provider, input, init, async response => {
       const bytes = await readResponseBytesBounded(response, MAX_PROVIDER_JSON_RESPONSE_BYTES)
       return new TextDecoder().decode(bytes)
-    })
+    }, assertCurrent)
   }
 
   function fetchUpstreamBytes(
     provider: 'OpenAI' | 'Seedream',
     input: string,
     init: RequestInit,
+    assertCurrent?: () => void | Promise<void>,
   ): Promise<{ response: Response; body: Uint8Array }> {
-    return fetchUpstreamBody(provider, input, init, response => readResponseBytesBounded(response, MAX_PROVIDER_IMAGE_RESPONSE_BYTES))
+    return fetchUpstreamBody(provider, input, init, response => readResponseBytesBounded(response, MAX_PROVIDER_IMAGE_RESPONSE_BYTES), assertCurrent)
   }
 
   function upstreamReceiptHash(provider: 'OpenAI' | 'Seedream', response: Response, body: string): string {
@@ -1319,7 +1475,11 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
     return sha256(`${provider}\0${requestId}\0${sha256(body)}`)
   }
 
-  async function seedreamDataItem(item: unknown, candidateIndex: number): Promise<{ output?: RelayCandidate; invalid?: CandidateInvalid }> {
+  async function seedreamDataItem(
+    item: unknown,
+    candidateIndex: number,
+    assertProviderPermit: () => Promise<void>,
+  ): Promise<{ output?: RelayCandidate; invalid?: CandidateInvalid }> {
     if (!item || typeof item !== 'object') return { invalid: { index: candidateIndex, safe_error_code: 'IMAGE_RESULT_MISSING' } }
     const source = item as Record<string, unknown>
     if (typeof source.b64_json === 'string') return normaliseInlineCandidate(source, candidateIndex, config.resultMaxBytes)
@@ -1333,12 +1493,17 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
     if (assetUrl.protocol !== 'https:') {
       throw new UpstreamOutcomeUnknownError('Seedream 已返回成功状态，但图片地址不是安全链接')
     }
+    // The returned URL is a second external Provider-account I/O boundary,
+    // separate from the generation POST. A shared/fenced backend may revoke
+    // the lease between them, so every asset GET must revalidate immediately
+    // before network execution.
     const { response: imageResponse, body: bytes } = await fetchUpstreamBytes(
       'Seedream',
       assetUrl.toString(),
       // A provider-returned asset URL is not a redirect grant. Do not follow a
       // redirected target which could bypass the HTTPS asset validation above.
       { method: 'GET', redirect: 'error' },
+      assertProviderPermit,
     )
     if (!imageResponse.ok) {
       throw new UpstreamOutcomeUnknownError(`Seedream 已生成图片，但下载结果失败: HTTP ${imageResponse.status}`)
@@ -1369,7 +1534,12 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
     }
   }
 
-  async function runSeedream(body: SubmitBody, recordReceipt: (hash: string) => void, assertProviderPermit: () => Promise<void>): Promise<ProviderRunResult> {
+  async function runSeedream(
+    body: SubmitBody,
+    recordReceipt: (hash: string) => void,
+    assertProviderPermit: () => Promise<void>,
+    acquireGenerationRate: () => Promise<void>,
+  ): Promise<ProviderRunResult> {
     const model = String(body.model ?? SEEDREAM_IMAGE_MODEL)
     const prompt = providerPrompt(body)
     const size = String(body.size ?? '2048x2048')
@@ -1393,7 +1563,12 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
       }
       if (!seedreamAuthorization) throw new UpstreamResponseError('Seedream 凭据未配置')
       try {
-        await assertProviderPermit()
+        const wireBody = JSON.stringify(payload)
+        // Seedream emits one paid generation POST per requested candidate.
+        // The task retains one execution permit, but each of those POSTs must
+        // take its own RPM token immediately at the external side-effect
+        // boundary. Asset GETs below deliberately do not use this gate.
+        await acquireGenerationRate()
         const { response, body: text } = await fetchUpstreamText(
           'Seedream',
           `${providerCredentials.baseUrl('seedream')}/images/generations`,
@@ -1403,8 +1578,9 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
               authorization: seedreamAuthorization,
               'content-type': 'application/json',
             },
-            body: JSON.stringify(payload),
+            body: wireBody,
           },
+          assertProviderPermit,
         )
         if (!response.ok) {
           if (outputs.length === 0) throw new UpstreamResponseError(`Seedream 请求未被接受: HTTP ${response.status}`)
@@ -1431,7 +1607,7 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
         // returning extras is a protocol anomaly, not permission to emit extra
         // candidates or to invalidate the requested one that did verify.
         if (data.length > 1) partialOutcomeUnknown = true
-        const normalized = await seedreamDataItem(data[0], index)
+        const normalized = await seedreamDataItem(data[0], index, assertProviderPermit)
         if (normalized.output) outputs.push(normalized.output)
         else if (normalized.invalid) {
           invalid.push(normalized.invalid)
@@ -1492,12 +1668,28 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
       }
       // Old queued rows from before the quota migration have no ledger row.
       // They must reserve an exact current-model quote before the first paid hop.
-      store.ensureQueuedReservation(id, taskQuote(body, config.quotaPolicy, now()))
+      store.ensureQueuedReservation(id, taskQuote(body, config.quotaPolicy, accountKeys, now()))
       const assertProviderPermit = async () => { await permit?.assertCurrent?.() }
+      const acquireGenerationRate = async () => {
+        // Check both immediately before and immediately after a potentially
+        // queued rate reservation. A future fenced backend may revoke the
+        // task-wide lease while this request waits for a token.
+        await assertProviderPermit()
+        await admission.acquireGenerationRate({
+          signal: controller.signal,
+          rate_limit_wait_seconds: config.retryAfterSeconds,
+        })
+        await assertProviderPermit()
+      }
       await assertProviderPermit()
       store.markRunning(id)
       if (seedream) {
-        const result = await runSeedream(body, receipt => store.appendProviderReceipt(id, receipt), assertProviderPermit)
+        const result = await runSeedream(
+          body,
+          receipt => store.appendProviderReceipt(id, receipt),
+          assertProviderPermit,
+          acquireGenerationRate,
+        )
         if (result.outputs.length === 0) {
           throw new UpstreamOutcomeUnknownError('Seedream 没有可验证候选，已保留可能产生的付费结果为未知状态')
         }
@@ -1513,7 +1705,6 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
       const n = outputCount(body)
       const size = body.size ? String(body.size) : undefined
       const requestUpstream = async (): Promise<{ response: Response; body: string }> => {
-        await assertProviderPermit()
         if (body.mode === 'edit') {
           const form = new FormData()
           form.set('model', model)
@@ -1531,19 +1722,22 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
             const mask = dataUriToFile(String(body.mask), 'mask.png')
             if (mask) form.set('mask', mask)
           }
+          await acquireGenerationRate()
           return await fetchUpstreamText('OpenAI', `${providerCredentials.baseUrl('openai')}/images/edits`, {
             method: 'POST',
             headers: { authorization: openaiAuthorization },
             body: form,
-          })
+          }, assertProviderPermit)
         }
         const payload: Record<string, unknown> = { model, prompt, n }
         if (size) payload.size = size
+        const wireBody = JSON.stringify(payload)
+        await acquireGenerationRate()
         return await fetchUpstreamText('OpenAI', `${providerCredentials.baseUrl('openai')}/images/generations`, {
           method: 'POST',
           headers: { authorization: openaiAuthorization, 'content-type': 'application/json' },
-          body: JSON.stringify(payload),
-        })
+          body: wireBody,
+        }, assertProviderPermit)
       }
 
       const { response: resp, body: text } = await requestUpstream()
@@ -1588,10 +1782,14 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
     } catch (err) {
       const current = store.get(id)
       if (current?.status === 'cancelled') return
-      if ((err instanceof ProviderAdmissionError || err instanceof CapacityQueueError) && current?.status === 'queued') {
-        retainInputForRetry = true
-        scheduleTaskRetry(id)
-        return
+      if (err instanceof ProviderAdmissionError || err instanceof CapacityQueueError) {
+        const retry = store.retryPreProviderAdmission(id, err instanceof Error ? err.message : String(err))
+        if (retry === 'queued') {
+          retainInputForRetry = true
+          scheduleTaskRetry(id)
+          return
+        }
+        if (retry === 'exhausted') return
       }
       const message = err instanceof Error ? err.message : String(err)
       // A receipt (notably the first Seedream output of a multi-output request)
@@ -1664,6 +1862,9 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
     }
   }
   refreshActiveInputBytes()
+  // Finish any ACK that committed its delivery fence before the old process
+  // could unlink output bytes.  This is intentionally before serving traffic.
+  sweep()
 
   function pollAfterSeconds(rec: Pick<TaskRow, 'status'>): number | undefined {
     // Queued image work may legitimately wait behind the paid provider pool. Tell
@@ -1682,7 +1883,9 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
     rec: TaskRow,
     options: { directResultHandoff?: boolean; owner?: string } = {},
   ): Response {
-    const outputCount = rec.status === 'succeeded' ? blobs.outputCount(rec.id) : 0
+    // acknowledged_at is the durable, fail-closed delivery fence.  Never
+    // issue a fresh handoff merely because a crash left an output file behind.
+    const outputCount = rec.status === 'succeeded' && rec.acknowledged_at === null ? blobs.outputCount(rec.id) : 0
     const directResultHandoff = options.directResultHandoff === true && outputCount > 0 && !!options.owner
     const grant = directResultHandoff ? resultCredentials.issue(rec.id, options.owner!) : undefined
     let fidelity: InputFidelityCapability | null = null
@@ -1732,6 +1935,9 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
     try {
       const url = new URL(req.url)
       if (req.method === 'GET' && url.pathname === '/healthz') {
+        // Production health checks provide the bounded periodic cleanup clock;
+        // unlike a detached timer this also leaves no test/runtime handle alive.
+        sweep()
         const counts = store.activeCounts()
         const active = counts.queued + counts.running
         const currentActiveInputBytes = refreshActiveInputBytes()
@@ -1811,7 +2017,7 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
             inputBytes: raw.byteLength,
             inputFingerprint,
             provider,
-            quote: taskQuote(body, config.quotaPolicy, now()),
+            quote: taskQuote(body, config.quotaPolicy, accountKeys, now()),
             queueMax: capacity.admission.queue_max,
             ownerTaskMax: capacity.admission.owner_task_max,
           })
@@ -1856,6 +2062,7 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
         if (!rec.owner || rec.owner !== verified.owner || !resultCredentials.isOwner(payload, verified.owner)) {
           throw new HttpError(403, 'relay: 结果授权与任务归属不匹配')
         }
+        if (rec.acknowledged_at !== null) throw new HttpError(410, 'relay: 图片结果已确认或已清理')
         if (rec.status !== 'succeeded') throw new HttpError(409, 'relay: 图片结果尚未就绪')
         if (outputIndexRaw === undefined && blobs.outputCount(rec.id) === 0) throw new HttpError(410, 'relay: 图片结果已确认或已清理')
         if (outputIndexRaw !== undefined) {

@@ -7,7 +7,35 @@
 
 export type CapacityPolicyEnv = Record<string, string | undefined>
 
-export type ProviderCapacityPolicy = {
+export type GatewayProviderAccount = 'deepseek' | 'mimo' | 'qwen' | 'funasr'
+
+/** A deployment-owned physical provider account binding. It never contains a
+ * secret or credential fingerprint, but its revision makes a rebind explicit
+ * to a future shared capacity backend. */
+export type GatewayProviderAccountScope = {
+  kind: 'provider-account'
+  account_key: string
+  scope_key: string
+}
+
+export type GatewayBootstrapScope = {
+  kind: 'bootstrap'
+  scope_key: 'gateway-bootstrap'
+}
+
+export type GatewayIngressScope = {
+  kind: 'ingress'
+  scope_key: 'gateway-ingress'
+}
+
+export type GatewayProviderAccountBinding = {
+  account_ref: string
+  binding_revision: string
+  account_key: string
+  scope: GatewayProviderAccountScope
+}
+
+type ProviderCapacityLimits = {
   rpm: number
   maxConcurrent: number
   maxConcurrentPerUser: number
@@ -17,8 +45,9 @@ export type ProviderCapacityPolicy = {
   queueMaxWaitMs: number
   responseTimeoutMs: number
 }
+export type ProviderCapacityPolicy = ProviderCapacityLimits & GatewayProviderAccountBinding
 
-export type MimoCapacityPolicy = {
+type MimoCapacityLimits = {
   /** One physical MiMo account is partitioned between media reasoning and visual evidence. */
   rpm: number
   maxConcurrent: number
@@ -36,8 +65,9 @@ export type MimoCapacityPolicy = {
   visionPerRequestConcurrent: number
   visionTimeoutMs: number
 }
+export type MimoCapacityPolicy = MimoCapacityLimits & GatewayProviderAccountBinding
 
-export type FunAsrCapacityPolicy = {
+type FunAsrCapacityLimits = {
   rpm: number
   maxConcurrent: number
   maxConcurrentPerUser: number
@@ -48,17 +78,22 @@ export type FunAsrCapacityPolicy = {
   maxBytes: number
   timeoutMs: number
 }
+export type FunAsrCapacityPolicy = FunAsrCapacityLimits & GatewayProviderAccountBinding
 
 export type BootstrapCapacityPolicy = {
   rpm: number
   queueMax: number
   queueMaxWaitMs: number
+  /** Authentication shaping is operational capacity, never a model account. */
+  scope: GatewayBootstrapScope
 }
 
 export type IngressCapacityPolicy = {
   inflightBodyBytes: number
   bodyReadTimeoutMs: number
   serverIdleTimeoutSeconds: number
+  /** Ingress reserves Gateway memory, not provider capacity. */
+  scope: GatewayIngressScope
 }
 
 export type GatewayCapacityPolicy = {
@@ -119,8 +154,8 @@ function requireAtMost(name: string, value: number, ceilingName: string, ceiling
 function providerPolicy(
   env: CapacityPolicyEnv,
   names: { rpm: string; conc: string; userConc: string; tokenConc: string; inflightPerUser: string; queueMax: string; queueWait: string; timeout: string },
-  defaults: ProviderCapacityPolicy,
-): ProviderCapacityPolicy {
+  defaults: ProviderCapacityLimits,
+): ProviderCapacityLimits {
   const maxConcurrent = integer(env, names.conc, defaults.maxConcurrent, 1, LIMITS.concurrency)
   // A deployment that only lowers its existing global ceiling keeps working. An
   // explicitly supplied per-user/per-token value still has to fit that ceiling.
@@ -148,7 +183,7 @@ function providerPolicy(
  * bounded before a server can start.
  */
 export function loadCapacityPolicy(env: CapacityPolicyEnv = process.env): GatewayCapacityPolicy {
-  const deepseek = providerPolicy(env, {
+  const deepseek = { ...providerPolicy(env, {
     rpm: 'GW_DEEPSEEK_RPM', conc: 'GW_DEEPSEEK_CONC', userConc: 'GW_DEEPSEEK_USER_CONC',
     tokenConc: 'GW_DEEPSEEK_TOKEN_CONC', queueMax: 'GW_DEEPSEEK_QUEUE_MAX',
     inflightPerUser: 'GW_DEEPSEEK_INFLIGHT_PER_USER',
@@ -156,7 +191,7 @@ export function loadCapacityPolicy(env: CapacityPolicyEnv = process.env): Gatewa
   }, {
     rpm: 120, maxConcurrent: 8, maxConcurrentPerUser: 2, maxConcurrentPerToken: 4, maxInflightPerUser: 4,
     queueMax: 24, queueMaxWaitMs: 5_000, responseTimeoutMs: 120_000,
-  })
+  }), ...providerAccountBinding(env, 'DEEPSEEK', 'deepseek', 'local-deepseek-account') }
 
   const mimoTotal = integer(env, 'GW_MIMO_CONC', 8, 2, LIMITS.concurrency)
   const defaultVision = Math.min(3, mimoTotal - 1)
@@ -180,14 +215,14 @@ export function loadCapacityPolicy(env: CapacityPolicyEnv = process.env): Gatewa
   requireAtMost('GW_VISION_PER_REQUEST_CONC', visionPerRequestConcurrent, 'GW_VISION_PER_CLIENT_CONC', visionPerClientConc)
   requireAtMost('GW_VISION_PER_REQUEST_CONC', visionPerRequestConcurrent, 'GW_VISION_MAX_INFLIGHT_PER_CLIENT', visionMaxInflightPerClient)
 
-  const qwen = providerPolicy(env, {
+  const qwen = { ...providerPolicy(env, {
     rpm: 'GW_QWEN_RPM', conc: 'GW_QWEN_CONC', userConc: 'GW_QWEN_USER_CONC', tokenConc: 'GW_QWEN_TOKEN_CONC',
     inflightPerUser: 'GW_QWEN_INFLIGHT_PER_USER',
     queueMax: 'GW_QWEN_QUEUE_MAX', queueWait: 'GW_QWEN_QUEUE_MAX_WAIT', timeout: 'GW_QWEN_RESPONSE_TIMEOUT_MS',
   }, {
     rpm: 60, maxConcurrent: 4, maxConcurrentPerUser: 1, maxConcurrentPerToken: 2, maxInflightPerUser: 2,
     queueMax: 12, queueMaxWaitMs: 3_000, responseTimeoutMs: 60_000,
-  })
+  }), ...providerAccountBinding(env, 'QWEN', 'qwen', 'local-qwen-account') }
   const funAsrMaxConcurrent = integer(env, 'GW_TRANSCRIBE_CONC', 1, 1, LIMITS.concurrency)
   const funAsrMaxConcurrentPerUser = integer(env, 'GW_TRANSCRIBE_USER_CONC', 1, 1, funAsrMaxConcurrent)
   const funAsrMaxConcurrentPerToken = integer(env, 'GW_TRANSCRIBE_TOKEN_CONC', funAsrMaxConcurrent, 1, funAsrMaxConcurrent)
@@ -212,6 +247,7 @@ export function loadCapacityPolicy(env: CapacityPolicyEnv = process.env): Gatewa
       visionMaxInflightPerUser: visionMaxInflightPerClient,
       visionPerRequestConcurrent,
       visionTimeoutMs: integer(env, 'GW_VISION_TIMEOUT_MS', 30_000, 1, LIMITS.durationMs),
+      ...providerAccountBinding(env, 'MIMO', 'mimo', 'local-mimo-account'),
     },
     qwen,
     funasr: {
@@ -224,18 +260,46 @@ export function loadCapacityPolicy(env: CapacityPolicyEnv = process.env): Gatewa
       queueMaxWaitMs: queueWaitSeconds(env, 'GW_QUEUE_MAX_WAIT', 15),
       maxBytes: integer(env, 'GW_TRANSCRIBE_MAX_BYTES', 64 * 1024 * 1024, 1, LIMITS.bytes),
       timeoutMs: integer(env, 'GW_TRANSCRIBE_TIMEOUT_MS', 180_000, 1, LIMITS.durationMs),
+      ...providerAccountBinding(env, 'FUNASR', 'funasr', 'local-funasr-account'),
     },
     bootstrap: {
       rpm: integer(env, 'GW_BOOTSTRAP_RPM', 30, 1, LIMITS.rpm),
       queueMax: integer(env, 'GW_BOOTSTRAP_QUEUE_MAX', 0, 0, LIMITS.queue),
       queueMaxWaitMs: queueWaitSeconds(env, 'GW_BOOTSTRAP_QUEUE_MAX_WAIT', 0),
+      scope: { kind: 'bootstrap', scope_key: 'gateway-bootstrap' },
     },
     ingress: {
       inflightBodyBytes: integer(env, 'GW_INGRESS_INFLIGHT_BODY_BYTES', 64 * 1024 * 1024, 1, LIMITS.bytes),
       bodyReadTimeoutMs: integer(env, 'GW_INGRESS_BODY_READ_TIMEOUT_MS', 30_000, 1, LIMITS.durationMs),
       serverIdleTimeoutSeconds: integer(env, 'GW_SERVER_IDLE_TIMEOUT_SECONDS', 120, 30, 255),
+      scope: { kind: 'ingress', scope_key: 'gateway-ingress' },
     },
   }
+}
+
+function providerAccountBinding(
+  env: CapacityPolicyEnv,
+  environmentPrefix: 'DEEPSEEK' | 'MIMO' | 'QWEN' | 'FUNASR',
+  provider: GatewayProviderAccount,
+  fallbackRef: string,
+): GatewayProviderAccountBinding {
+  const account_ref = accountBindingComponent(env, `GW_${environmentPrefix}_ACCOUNT_REF`, fallbackRef)
+  const binding_revision = accountBindingComponent(env, `GW_${environmentPrefix}_ACCOUNT_BINDING_REVISION`, 'local-v1')
+  const account_key = `gateway-${provider}-account:${account_ref}:${binding_revision}`
+  return {
+    account_ref,
+    binding_revision,
+    account_key,
+    scope: { kind: 'provider-account', account_key, scope_key: account_key },
+  }
+}
+
+function accountBindingComponent(env: CapacityPolicyEnv, name: string, fallback: string): string {
+  const value = env[name]?.trim() || fallback
+  if (!/^[A-Za-z0-9._-]{1,128}$/.test(value)) {
+    throw new Error(`${name} must be 1-128 ASCII letters, digits, dots, underscores, or hyphens`)
+  }
+  return value
 }
 
 function capacityPolicyRevision(env: CapacityPolicyEnv): string {

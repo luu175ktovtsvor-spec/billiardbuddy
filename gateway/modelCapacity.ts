@@ -2,6 +2,7 @@ import {
   CapacityQueueError,
   ProviderRateLimiter as LocalProviderRateLimiter,
 } from '../ts/shared/kernel/providerAdmission.js'
+import type { GatewayBootstrapScope, GatewayIngressScope, GatewayProviderAccountScope } from './capacityPolicy.ts'
 
 export { CapacityQueueError, LocalProviderRateLimiter as ProviderRateLimiter }
 
@@ -81,23 +82,34 @@ export type GatewayRateLimitConfig = {
  * It intentionally carries no handler-specific number or implicit default. */
 export type GatewayCapacityBackendConfig = {
   mimo: {
+    /** A shared backend coordinates this physical account, not the logical MiMo label. */
+    scope: GatewayProviderAccountScope
     reservations: MimoReservationConfig
     rate: GatewayRateLimitConfig
   }
   deepseek: {
+    scope: GatewayProviderAccountScope
     capacity: FairCapacityConfig
     rate: GatewayRateLimitConfig
   }
   qwen: {
+    scope: GatewayProviderAccountScope
     capacity: FairCapacityConfig
     rate: GatewayRateLimitConfig
   }
   transcription: {
+    scope: GatewayProviderAccountScope
     capacity: FairCapacityConfig
     rate: GatewayRateLimitConfig
   }
   bootstrap: {
+    scope: GatewayBootstrapScope
     rate: GatewayRateLimitConfig
+  }
+  /** Gateway-owned memory admission has no provider identity. It is included
+   * so a later shared backend cannot accidentally sign it as model capacity. */
+  ingress: {
+    scope: GatewayIngressScope
   }
 }
 

@@ -3,7 +3,8 @@ import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { Readable } from 'node:stream'
 import { expect, test } from 'bun:test'
-import { OssObjectStore } from '../../video-media-relay/objectStore.ts'
+import { ObjectVerificationError, OssObjectStore } from '../../video-media-relay/objectStore.ts'
+import type { VideoMediaAdmissionBackend } from '../../video-media-relay/capacityPolicy.ts'
 
 const require = createRequire(import.meta.url)
 const officialV4 = require('../node_modules/ali-oss/lib/common/signUtils.js') as {
@@ -87,6 +88,161 @@ test('OSS response contract reads real HTTP headers, streams bytes, and uses ali
     { phase: 'init', options: { mime: 'video/mp4', meta: { sha256: hash(bytes), size: String(bytes.byteLength) }, headers: { 'x-oss-forbid-overwrite': 'true' } } },
     { phase: 'complete', options: { headers: { 'x-oss-forbid-overwrite': 'true' } } },
   ])
+})
+
+test('OSS byte verification is globally and per-owner bounded, stops at expected bytes plus one, and releases failed permits', async () => {
+  const held: Readable[] = []
+  let streamsStarted = 0
+  let headCalls = 0
+  const client = {
+    async signatureUrlV4() { return 'https://oss.example.test/signed' },
+    async head() { headCalls += 1; return { res: { headers: { 'content-type': 'video/mp4' } } } },
+    async getStream() {
+      streamsStarted += 1
+      const stream = new Readable({ read() {} })
+      held.push(stream)
+      return { stream }
+    },
+    async putStream() {}, async delete() {}, async listParts() { return { isTruncated: false, parts: [] } }, async listUploads() { return { isTruncated: false, uploads: [] } }, async abortMultipartUpload() {}, async completeMultipartUpload() {}, async initMultipartUpload() { return { uploadId: 'upload-123' } },
+  }
+  const policy = { max_active: 2, max_active_per_owner: 1, max_queued: 2, max_queued_per_owner: 1, max_wait_ms: 40, timeout_ms: 1_000 }
+  const store = new OssObjectStore({ ...credentials, client, objectVerification: policy })
+  const first = store.head('lease_owner_a_1', { owner: 'owner-a' })
+  const secondOwner = store.head('lease_owner_b_1', { owner: 'owner-b' })
+  const sameOwner = store.head('lease_owner_a_2', { owner: 'owner-a' })
+  while (streamsStarted !== 2) await Promise.resolve()
+  expect(streamsStarted).toBe(2)
+  held.splice(0).forEach(stream => stream.push(null))
+  await Promise.all([first, secondOwner])
+  while (streamsStarted !== 3) await Promise.resolve()
+  held.splice(0).forEach(stream => stream.push(null))
+  await sameOwner
+
+  const fullA = store.head('lease_full_a', { owner: 'owner-a' })
+  const fullB = store.head('lease_full_b', { owner: 'owner-b' })
+  while (streamsStarted !== 5) await Promise.resolve()
+  const headsBeforeRejected = headCalls
+  await expect(store.head('lease_full_c', { owner: 'owner-c' })).rejects.toMatchObject({ code: 'OBJECT_VERIFY_CAPACITY' } satisfies Partial<ObjectVerificationError>)
+  expect(headCalls).toBe(headsBeforeRejected)
+  held.splice(0).forEach(stream => stream.push(null))
+  await Promise.all([fullA, fullB])
+
+  let emitted = 0
+  const oversizedClient = {
+    ...client,
+    async getStream() {
+      const stream = Readable.from((async function* () {
+        for (let index = 0; index < 32; index += 1) { emitted += 1; yield Buffer.from([index]) }
+      })())
+      return { stream }
+    },
+  }
+  const oversized = new OssObjectStore({ ...credentials, client: oversizedClient, objectVerification: policy })
+  const metadata = await oversized.head('lease_oversized_1', { owner: 'owner-a', expectedByteSize: 3 })
+  expect(metadata?.byte_size).toBe(4)
+  expect(emitted).toBeLessThanOrEqual(5)
+})
+
+test('OSS admits result, cleanup, and multipart network calls through the same bounded owner-aware gate', async () => {
+  let releasePut!: () => void
+  const putBlocked = new Promise<void>(resolve => { releasePut = resolve })
+  let putCalls = 0; let deleteCalls = 0; let multipartCalls = 0; let multipartNetworkCalls = 0
+  const client = {
+    async signatureUrlV4() { return 'https://oss.example.test/signed' },
+    async head() { return { res: { headers: { 'content-type': 'video/mp4' } } } },
+    async getStream() { return { stream: Readable.from([]) } },
+    async putStream() { putCalls += 1; await putBlocked },
+    async delete() { deleteCalls += 1 },
+    async initMultipartUpload() { multipartCalls += 1; return { uploadId: 'upload_gate_123' } },
+    async listParts() { multipartNetworkCalls += 1; return { isTruncated: false, parts: [] } },
+    async listUploads() { multipartNetworkCalls += 1; return { isTruncated: false, uploads: [] } },
+    async completeMultipartUpload() { multipartNetworkCalls += 1 }, async abortMultipartUpload() { multipartNetworkCalls += 1 },
+  }
+  const policy = { max_active: 1, max_active_per_owner: 1, max_queued: 2, max_queued_per_owner: 2, max_wait_ms: 1_000, timeout_ms: 1_000 }
+  const store = new OssObjectStore({ ...credentials, client, objectVerification: policy })
+  const writing = store.putResult({ objectRef: 'result_gate_123', body: new Uint8Array([1]), contentHash: hash(new Uint8Array([1])), contentType: 'application/json' }, { owner: 'owner-a' })
+  while (putCalls !== 1) await Promise.resolve()
+  const deleting = store.delete('lease_gate_123', { owner: 'owner-b' })
+  const initializing = store.createMultipartUpload({ leaseId: 'lease_gate_456', hash: hash(new Uint8Array([2])), byteSize: 1, contentType: 'video/mp4' }, { owner: 'owner-c' })
+  await Promise.resolve()
+  expect(deleteCalls).toBe(0)
+  expect(multipartCalls).toBe(0)
+  releasePut()
+  await writing
+  await deleting
+  expect(deleteCalls).toBe(1)
+  await initializing
+  expect(multipartCalls).toBe(1)
+  await store.listMultipartParts({ leaseId: 'lease_gate_456', uploadId: 'upload_gate_123' }, { owner: 'owner-c' })
+  await store.findMultipartUploads({ leaseId: 'lease_gate_456' }, { owner: 'owner-c' })
+  await store.completeMultipartUpload({ leaseId: 'lease_gate_456', uploadId: 'upload_gate_123', parts: [] }, { owner: 'owner-c' })
+  await store.abortMultipartUpload({ leaseId: 'lease_gate_456', uploadId: 'upload_gate_123' }, { owner: 'owner-c' })
+  expect(multipartNetworkCalls).toBe(4)
+})
+
+test('OSS revalidates an injected admission permit at each actual object I/O boundary', async () => {
+  let fenceChecks = 0
+  let deleteFence = 0
+  const scopes: unknown[] = []
+  const backend: VideoMediaAdmissionBackend = {
+    createGate(_config, scope) {
+      scopes.push(scope)
+      return { async acquire() { return { async assertCurrent() { fenceChecks += 1 }, release() {} } } }
+    },
+    createRateGate() { return { async acquire() {} } },
+  }
+  const client = {
+    async signatureUrlV4() { return 'https://oss.example.test/signed' },
+    async head() { return { res: { headers: { 'content-type': 'video/mp4' } } } },
+    async getStream() { return { stream: Readable.from([Buffer.from([7])]) } },
+    async putStream() {}, async delete() { deleteFence = fenceChecks }, async listParts() { return { isTruncated: false, parts: [] } }, async listUploads() { return { isTruncated: false, uploads: [] } }, async abortMultipartUpload() {}, async completeMultipartUpload() {}, async initMultipartUpload() { return { uploadId: 'upload-fence' } },
+  }
+  const store = new OssObjectStore({ ...credentials, client, admissionBackend: backend })
+  await store.putResult({ objectRef: 'result_fence_123', body: new Uint8Array([7]), contentHash: hash(new Uint8Array([7])), contentType: 'application/json' }, { owner: 'owner-a' })
+  await store.head('lease_fence_123', { owner: 'owner-a', expectedByteSize: 1 })
+  await store.delete('lease_fence_123', { owner: 'owner-a' })
+  // putResult plus HEAD metadata and GET stream are three separate I/O hops;
+  // deletion is checked again immediately before its destructive SDK call.
+  expect(fenceChecks).toBe(7)
+  expect(deleteFence).toBe(fenceChecks)
+  expect(scopes).toEqual([{ kind: 'object-verification', scope_key: 'video-media-object-verification' }])
+})
+
+test('OSS revalidates a shared permit before every multipart pagination page', async () => {
+  let fenceChecks = 0
+  let listedParts = 0
+  let listedUploads = 0
+  const backend: VideoMediaAdmissionBackend = {
+    createGate() {
+      return { async acquire() { return { async assertCurrent() { fenceChecks += 1 }, release() {} } } }
+    },
+    createRateGate() { return { async acquire() {} } },
+  }
+  const client = {
+    async signatureUrlV4() { return 'https://oss.example.test/signed' },
+    async head() { return { res: { headers: { 'content-type': 'video/mp4' } } } },
+    async getStream() { return { stream: Readable.from([]) } },
+    async putStream() {}, async delete() {}, async abortMultipartUpload() {}, async completeMultipartUpload() {}, async initMultipartUpload() { return { uploadId: 'upload-pages' } },
+    async listParts() {
+      listedParts += 1
+      return listedParts === 1
+        ? { isTruncated: true, nextPartNumberMarker: 1, parts: [{ PartNumber: 1, ETag: 'etag-1' }] }
+        : { isTruncated: false, parts: [{ PartNumber: 2, ETag: 'etag-2' }] }
+    },
+    async listUploads() {
+      listedUploads += 1
+      return listedUploads === 1
+        ? { isTruncated: true, nextKeyMarker: 'video-media/input/lease_pages_123', nextUploadIdMarker: 'upload-1', uploads: [{ name: 'video-media/input/lease_pages_123', uploadId: 'upload-1' }] }
+        : { isTruncated: false, uploads: [{ name: 'video-media/input/lease_pages_123', uploadId: 'upload-2' }] }
+    },
+  }
+  const store = new OssObjectStore({ ...credentials, client, admissionBackend: backend })
+  await expect(store.listMultipartParts({ leaseId: 'lease_pages_123', uploadId: 'upload-pages' }, { owner: 'owner-a' }))
+    .resolves.toEqual([{ part_number: 1, etag: 'etag-1' }, { part_number: 2, etag: 'etag-2' }])
+  await expect(store.findMultipartUploads({ leaseId: 'lease_pages_123' }, { owner: 'owner-a' }))
+    .resolves.toEqual([{ uploadId: 'upload-1' }, { uploadId: 'upload-2' }])
+  // Every operation asserts once on admission, then again before each of two SDK pages.
+  expect(fenceChecks).toBe(6)
 })
 
 const live = process.env.VIDEO_MEDIA_OSS_CONTRACT === '1'

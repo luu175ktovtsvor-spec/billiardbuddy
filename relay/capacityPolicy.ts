@@ -11,6 +11,9 @@ export type RelayCapacityEnvironment = Readonly<Record<string, string | undefine
 export type RelayImageProvider = 'openai' | 'seedream'
 
 export type RelayProviderCapacity = {
+  /** Versioned physical-account binding. Capacity and quota consumers must use
+   * this key rather than the provider name, which survives account rotation. */
+  account_key: string
   concurrency: number
   owner_concurrency: number
   requests_per_minute: number
@@ -50,6 +53,7 @@ export type RelayCapacityPolicy = {
  * process-local today or a fenced, shared lease tomorrow. */
 export type RelayProviderAdmissionConfig = {
   provider: RelayImageProvider
+  account_key: string
   concurrency: ProviderAdmissionConfig
   requests_per_minute: number
   rate_queue_max: number
@@ -71,7 +75,13 @@ export type RelayProviderAdmissionSnapshot = ProviderAdmissionSnapshot & {
  * protocol; a shared backend also requires a durable TaskStore write fence. */
 export type RelayAdmissionPermit = ProviderAdmissionPermit
 export type RelayProviderAdmission = {
+  /** Holds the task-wide execution lease.  A Seedream task can issue several
+   * billable generation POSTs while retaining this one concurrency permit. */
   acquire(owner: string, options: RelayProviderAdmissionAcquireOptions): Promise<RelayAdmissionPermit>
+  /** Reserves exactly one Provider request-rate slot.  This is deliberately
+   * separate from `acquire`: asset downloads must not consume generation RPM,
+   * while every billable generation POST must consume one slot. */
+  acquireGenerationRate(options: RelayProviderAdmissionAcquireOptions): Promise<void>
   snapshot(): RelayProviderAdmissionSnapshot
 }
 export type RelayIdentityAdmission = {
@@ -91,14 +101,10 @@ export const localRelayAdmissionBackend: RelayAdmissionBackend = Object.freeze({
     const rate = new ProviderRateLimiter(config.requests_per_minute, config.rate_queue_max)
     return {
       async acquire(owner, options) {
-        const permit = await concurrency.acquire(owner, options)
-        try {
-          await rate.acquire(options.rate_limit_wait_seconds, options.signal)
-          return permit
-        } catch (error) {
-          permit.release()
-          throw error
-        }
+        return await concurrency.acquire(owner, options)
+      },
+      async acquireGenerationRate(options) {
+        await rate.acquire(options.rate_limit_wait_seconds, options.signal)
       },
       snapshot() { return { ...concurrency.snapshot(), rate: rate.snapshot() } },
     }
@@ -120,6 +126,10 @@ export function relayIdentityAdmissionConfig(capacity: RelayIdentityAdmissionCap
 }
 
 export const RELAY_CAPACITY_POLICY_REVISION_ENV = 'RELAY_CAPACITY_POLICY_REVISION'
+export const RELAY_OPENAI_ACCOUNT_REF_ENV = 'RELAY_OPENAI_ACCOUNT_REF'
+export const RELAY_OPENAI_ACCOUNT_BINDING_REVISION_ENV = 'RELAY_OPENAI_ACCOUNT_BINDING_REVISION'
+export const RELAY_SEEDREAM_ACCOUNT_REF_ENV = 'RELAY_SEEDREAM_ACCOUNT_REF'
+export const RELAY_SEEDREAM_ACCOUNT_BINDING_REVISION_ENV = 'RELAY_SEEDREAM_ACCOUNT_BINDING_REVISION'
 
 const MAX_PROVIDER_CONCURRENCY = 16
 const MAX_PROVIDER_RPM = 120
@@ -145,12 +155,14 @@ export function relayCapacityPolicyFromEnvironment(environment: RelayCapacityEnv
     revision: revision(environment),
     providers: {
       openai: {
+        account_key: providerAccountKey(environment, 'openai'),
         concurrency: openaiConcurrency,
         owner_concurrency: boundedPositiveInteger(environment, 'RELAY_IMG_USER_CONC', 1, MAX_PROVIDER_CONCURRENCY),
         requests_per_minute: boundedPositiveInteger(environment, 'RELAY_OPENAI_RPM', 12, MAX_PROVIDER_RPM),
         upstream_timeout_ms: boundedPositiveInteger(environment, 'RELAY_UPSTREAM_TIMEOUT_MS', 5 * 60_000, MAX_UPSTREAM_TIMEOUT_MS, MIN_UPSTREAM_TIMEOUT_MS),
       },
       seedream: {
+        account_key: providerAccountKey(environment, 'seedream'),
         concurrency: seedreamConcurrency,
         owner_concurrency: boundedPositiveInteger(environment, 'RELAY_SEEDREAM_USER_CONC', 1, MAX_PROVIDER_CONCURRENCY),
         requests_per_minute: boundedPositiveInteger(environment, 'RELAY_SEEDREAM_RPM', 30, MAX_PROVIDER_RPM),
@@ -172,6 +184,30 @@ export function relayCapacityPolicyFromEnvironment(environment: RelayCapacityEnv
   }
   validateRelationships(policy)
   return freezePolicy(policy)
+}
+
+function providerAccountKey(environment: RelayCapacityEnvironment, provider: RelayImageProvider): string {
+  const accountRefName = provider === 'openai' ? RELAY_OPENAI_ACCOUNT_REF_ENV : RELAY_SEEDREAM_ACCOUNT_REF_ENV
+  const bindingRevisionName = provider === 'openai'
+    ? RELAY_OPENAI_ACCOUNT_BINDING_REVISION_ENV
+    : RELAY_SEEDREAM_ACCOUNT_BINDING_REVISION_ENV
+  const accountRef = accountBindingComponent(environment, accountRefName, `${provider}-managed-default`)
+  const bindingRevision = accountBindingComponent(environment, bindingRevisionName, 'legacy-v1')
+  return `image:${provider}:${accountRef}@${bindingRevision}`
+}
+
+function accountBindingComponent(
+  environment: RelayCapacityEnvironment,
+  name: string,
+  fallback: string,
+): string {
+  const value = environment[name]?.trim() || fallback
+  // `@` is intentionally excluded because it separates the account reference
+  // from its binding revision in the durable account key.
+  if (!/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/.test(value)) {
+    throw new Error(`${name} must be 1-128 ASCII letters, digits, dots, underscores, colons, slashes, or hyphens`)
+  }
+  return value
 }
 
 function revision(environment: RelayCapacityEnvironment): string {

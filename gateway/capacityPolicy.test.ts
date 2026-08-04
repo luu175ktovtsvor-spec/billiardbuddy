@@ -9,8 +9,11 @@ describe('gateway capacity policy', () => {
     expect(policy.deepseek).toMatchObject({ rpm: 120, maxConcurrent: 8, queueMax: 24, responseTimeoutMs: 120_000 })
     expect(policy.mimo).toMatchObject({ maxConcurrent: 8, mediaConcurrent: 5, visionConcurrent: 3, rpm: 60 })
     expect(policy.funasr).toMatchObject({ rpm: 6, maxConcurrent: 1, maxConcurrentPerUser: 1, maxConcurrentPerToken: 1, maxInflightPerUser: 1, queueMax: 4, timeoutMs: 180_000 })
-    expect(policy.bootstrap).toEqual({ rpm: 30, queueMax: 0, queueMaxWaitMs: 0 })
+    expect(policy.bootstrap).toEqual({ rpm: 30, queueMax: 0, queueMaxWaitMs: 0, scope: { kind: 'bootstrap', scope_key: 'gateway-bootstrap' } })
     expect(policy.ingress).toMatchObject({ inflightBodyBytes: 64 * 1024 * 1024, serverIdleTimeoutSeconds: 120 })
+    expect(policy.deepseek.scope).toEqual({ kind: 'provider-account', account_key: 'gateway-deepseek-account:local-deepseek-account:local-v1', scope_key: 'gateway-deepseek-account:local-deepseek-account:local-v1' })
+    expect(policy.mimo.scope).toEqual({ kind: 'provider-account', account_key: 'gateway-mimo-account:local-mimo-account:local-v1', scope_key: 'gateway-mimo-account:local-mimo-account:local-v1' })
+    expect(policy.ingress.scope).toEqual({ kind: 'ingress', scope_key: 'gateway-ingress' })
   })
 
   test('fails closed for malformed or out-of-range supplied values', () => {
@@ -18,6 +21,7 @@ describe('gateway capacity policy', () => {
     expect(() => loadCapacityPolicy({ GW_QWEN_QUEUE_MAX: '-1' })).toThrow('GW_QWEN_QUEUE_MAX must be a decimal integer')
     expect(() => loadCapacityPolicy({ GW_MIMO_QUEUE_MAX_WAIT: 'forever' })).toThrow('GW_MIMO_QUEUE_MAX_WAIT must be a non-negative decimal number of seconds')
     expect(() => loadCapacityPolicy({ GW_DEEPSEEK_USER_CONC: '9' })).toThrow('GW_DEEPSEEK_USER_CONC must not exceed GW_DEEPSEEK_CONC')
+    expect(() => loadCapacityPolicy({ GW_DEEPSEEK_ACCOUNT_REF: 'contains space' })).toThrow('GW_DEEPSEEK_ACCOUNT_REF must be 1-128 ASCII')
   })
 
   test('allows an existing global ceiling override without inventing invalid child limits', () => {

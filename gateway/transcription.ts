@@ -8,6 +8,8 @@ export interface GatewayTranscriptionOptions {
   language: string
   responseFormat: 'json' | 'verbose_json'
   signal?: AbortSignal
+  /** Capacity fence supplied by Gateway immediately before each provider call. */
+  assertCurrent?: () => void | Promise<void>
 }
 
 export interface GatewayTranscriptionSegment {
@@ -117,15 +119,17 @@ export function createFunAsrTranscriber(
         asr_options: { enable_words: opts.responseFormat === 'verbose_json', language: opts.language || 'zh' },
       },
     }
+    const wireBody = JSON.stringify(requestBody)
     const controller = new AbortController()
     const onAbort = () => controller.abort(opts.signal?.reason)
     opts.signal?.addEventListener('abort', onAbort, { once: true })
     const timer = setTimeout(() => controller.abort(new Error('timeout')), timeoutMs)
     try {
+      await opts.assertCurrent?.()
       const response = await fetchImpl(endpoint, {
         method: 'POST',
         headers: { Authorization: authorization, 'Content-Type': 'application/json' },
-        body: JSON.stringify(requestBody),
+        body: wireBody,
         signal: controller.signal,
       })
       const responseText = await response.text()
