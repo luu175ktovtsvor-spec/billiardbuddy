@@ -348,8 +348,12 @@ export function createVideoMediaRelayFetch(deps: RelayDeps = {}) {
     const service = env.GW_VIDEO_MEDIA_INTROSPECTION_TOKEN?.trim() ?? ''
     const base = env.VIDEO_MEDIA_GATEWAY_INTROSPECTION_BASE?.trim() ?? ''
     if (!service || service.length < 32 || !base) throw new RelayError(503, 'identity_unavailable')
+    // Validate the caller credential before the transport catch below. A
+    // missing/forged bearer token is a client-authentication failure, not an
+    // unavailable Gateway, and must keep its 401 boundary on the public API.
+    const accessToken = authorization(request)
     let response: Response
-    try { response = await fetchImpl(`${base.replace(/\/+$/, '')}/internal/v1/auth/introspect`, { method: 'POST', headers: { Authorization: `Bearer ${authorization(request)}`, 'X-BB-Video-Media-Introspection': service } }) } catch { throw new RelayError(503, 'identity_unavailable') }
+    try { response = await fetchImpl(`${base.replace(/\/+$/, '')}/internal/v1/auth/introspect`, { method: 'POST', headers: { Authorization: `Bearer ${accessToken}`, 'X-BB-Video-Media-Introspection': service } }) } catch { throw new RelayError(503, 'identity_unavailable') }
     if (response.status === 401 || response.status === 403) throw new RelayError(response.status, 'identity_rejected')
     if (!response.ok) throw new RelayError(503, 'identity_unavailable')
     const parsed = await response.json() as Identity & { active?: boolean }
