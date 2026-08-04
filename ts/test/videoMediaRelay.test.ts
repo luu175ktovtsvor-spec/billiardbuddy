@@ -66,6 +66,15 @@ test('Video Media Relay fails closed when Gateway introspection is unavailable',
   expect(await response.json()).toMatchObject({ error: 'identity_unavailable' })
 })
 
+test('Video Media Relay rejects a missing bearer token before attempting Gateway introspection', async () => {
+  let introspectionCalls = 0
+  const handler = createVideoMediaRelayFetch({ env: { GW_VIDEO_MEDIA_INTROSPECTION_TOKEN: token, VIDEO_MEDIA_GATEWAY_INTROSPECTION_BASE: 'http://gateway', VIDEO_MEDIA_RELAY_DB: ':memory:' }, fetchImpl: async () => { introspectionCalls += 1; return Response.json({ active: true }) }, now })
+  const response = await handler(new Request('http://relay/v1/video-media/object-leases', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }))
+  expect(response.status).toBe(401)
+  expect(await response.json()).toMatchObject({ error: 'missing_installation_access_token' })
+  expect(introspectionCalls).toBe(0)
+})
+
 test('Relay persists failed OSS result cleanup and retries it on the next authenticated request', async () => {
   let deleteAttempts = 0
   const objectStore: MediaObjectStore = {
