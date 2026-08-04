@@ -2,8 +2,9 @@
 
 > 文档性质：不需要实施者补做产品/架构决策，可直接执行的产品、前端与后端施工合同
 > 目标仓库：`luu175ktovtsvor-spec/billiardbuddy`
-> 静态审阅基线：`main` 分支提交 `ba5396a8585453ef17711d039f3049aad21a0abd`
-> 交付方式：最终交付必须一次性达到本文件全部目标；施工按可验证的纵向切片推进，每个切片都保持数据一致和可恢复，不把半成品路径留在正式运行链
+> 历史静态审阅基线：`main` 分支提交 `ba5396a8585453ef17711d039f3049aad21a0abd`
+> 当前施工分支基线：从包含本合同版本的干净、已提交 `main` HEAD 创建，并在开工回报中记录精确 SHA；不吸收 Agent 未提交改动，最终集成前再同步 Agent 完成后的 `main`
+> 交付方式：在一个图片开发分支内一次性完成本文件全部目标；阶段是分支内质量检查点，只有全部阶段和第 18 节验收通过后才一次合并 `main`
 > 明确边界：不修改 Agent；保留 GPT Image 2 与 Seedream 4.5；删除图片理解链路中的 MiMo；使用 Qwen3-VL-Flash 做理解与非阻断视觉评估，确定性 Release Check 负责成品发布门禁
 
 **架构裁决：** 以本文件修正后的新架构为正式目标；当前旧架构只作为可用能力和迁移数据的基线，不继续扩展为最终工作台。原因不是新架构“类更多”，而是它用更少的正式 writer 和清晰的事务边界，同时覆盖人的探索、选择、修改、多规格排版与交付。本文件定义的是目标与验收合同，不表示当前代码已达成；只有第 18 节全部有生产路径证据时才能宣称完成。
@@ -14,12 +15,12 @@
 
 ### 0.1 一次任务的唯一范围
 
-每个开发任务只接收第 15 节的一个阶段，或该阶段中一个可独立验证的纵向切片。标准任务语句为：
+一个长期图片开发任务在同一 worktree/分支内顺序完成 `15.0 → 15.5`。每个阶段仍只落地可独立验证的完整纵向切片，上一阶段退出证据未通过不得开始下一阶段；阶段通过后提交分支内检查点并直接继续，不等待合并审核。标准任务语句为：
 
 ```text
-只实施本文档第 15.X 节（或其中明确子切片）。
-完成该节的正式 API → Application → SQLite/CAS → Adapter → Event/Public Projection 生产路径和失败路径。
-达到该节退出证据后停止，不开始下一阶段。
+在 `codex/image-workbench` 内顺序实施本文档 `15.0 → 15.5` 全部阶段。
+每阶段完成其正式 API → Application → SQLite/CAS → Adapter → Event/Public Projection 生产路径和失败路径，达到退出证据后提交为分支内检查点并继续下一阶段。
+只有 `15.5`、第 18 节最终验收和最终集成回归全部通过后，才停止并交回一次 `main` 合并审核。
 ```
 
 不允许使用“先把所有类和页面搭出来，以后再接真实存储/恢复”的横向施工方式。
@@ -49,7 +50,7 @@
 
 ### 0.4 交付时必须输出
 
-每个阶段的最终回报必须分开说明：
+每个阶段检查点必须分开说明：
 
 - **已走通的用户结果**：从真实 API 到最终投影/文件的链路；
 - **事务与失败结果**：幂等、冲突、崩溃、恢复、拒绝、取消和过期结果中与本阶段有关的证据；
@@ -58,7 +59,7 @@
 - **验证清单**：实际命令、结果、未验证的外部依赖；
 - **运行环境清理**：施工中启动的临时测试、服务、浏览器和打包进程已停止并复查。
 
-没有对应退出证据时，回报“本阶段未完成”；不因为新增了类、页面、类型或通过了孤立测试而宣称完成。
+没有对应退出证据时，回报“本阶段未完成”；不因为新增了类、页面、类型或通过了孤立测试而宣称完成。阶段检查点不触发合并审核；完整交付时再汇总所有阶段证据、最终 diff 和第 18 节回归，作为唯一一次合并审核材料。
 
 ### 0.5 已冻结、不得重新设计的决策
 
@@ -83,14 +84,14 @@
 | 远程拓扑 | 生图 Sidecar 携带短期安装 bearer 直连公开 Image Relay；Relay 只经私网 Gateway 内省身份；Qwen 建议单独经 Gateway | Gateway 再代理图片任务、客户端自报 owner/持有 service token，或把 Qwen 覆盖到通用 MiMo 路由 |
 | 共享能力语义 | Registry 使用 `ImageGeneration` 与 `VisualEvidence`；图片 generate/edit/inpaint 和 understanding/assessment 是业务 mode/role | 为每个图片用例复制共享 capability，或让共享 Registry 承担图片业务路由 |
 | 桌面安全 | 所有写入、付费、路径、grant、风险接受和最终交付经 Electron Main typed IPC | 把 loopback/CORS 当唯一授权，给 Renderer 会话级 secret 或任意路径能力 |
-| Shared Kernel 边界 | 视频第 13.0 节第 1 关先成为共享底座 owner 并合入 main；图片 15.1A 只从图片旧 Repository 采用这些兼容原语 | 在图片 worktree 修改视频 Repository/业务状态，或并行复制第二套同义 Kernel |
-| 测试开工门 | 视频第 1 关/共享 foundation 先建立全局 test command；图片同步后由 15.0 增加图片分组和旧行为特征基线 | 两个 worktree 并行争写 `ts/package.json`，或先拆 Service/Repository 再反推旧行为 |
+| Shared Kernel 边界 | 当前施工基线的 Shared Media Kernel 是唯一共享底座；图片 15.1A 只从图片旧 Repository 采用这些兼容原语 | 在图片 worktree 修改视频 Repository/业务状态，或并行复制第二套同义 Kernel |
+| 测试开工门 | 当前施工基线的全局 test command/共享 runner 是唯一入口；图片由 15.0 增加图片分组和旧行为特征基线 | 两个 worktree 并行争写 `ts/package.json`，或先拆 Service/Repository 再反推旧行为 |
 
 允许自主选择的只是不改变上表结果的实现细节：内部函数/类名、SQLite 表与索引的具体名称、满足资源限制和 golden test 的成熟库、前端组件拆分，以及与本文档用户结果和工程质量等价的更小实现。
 
 ### 0.6 固定施工顺序与阅读索引
 
-阶段顺序固定为 `15.0 → 15.1 → 15.2 → 15.3 → 15.4 → 15.5`。上一阶段的退出证据未通过，不开始下一阶段。特别是：在旧行为特征基线和正式 test command 未成立前不拆 Service/Repository；在 SQLite 唯一 writer 未成立前不扩展新领域写路径；在确定性 Release Check 未成立前不把 Qwen 评估包装成“质量门禁”。
+阶段顺序固定为 `15.0 → 15.1 → 15.2 → 15.3 → 15.4 → 15.5`。上一阶段的退出证据未通过，不开始下一阶段；通过后只允许继续本分支施工，不形成 `main` 合并门。特别是：在旧行为特征基线和正式 test command 未成立前不拆 Service/Repository；在 SQLite 唯一 writer 未成立前不扩展新领域写路径；在确定性 Release Check 未成立前不把 Qwen 评估包装成“质量门禁”。
 
 | 阶段 | 本阶段必读 | 必须交付的生产结果 | 本阶段停止边界 |
 | --- | --- | --- | --- |
@@ -101,7 +102,7 @@
 | 15.4 智能辅助 | 第 5.2–5.4、6.3、6.6、6.14、7、8.4、13.6–13.7、14.4、14.8、14.10–14.11、15.4、15.6 节 | Qwen Understanding/Visual Assessment Adapter、严格 schema、receipt/confidence、失败降级与非阻断 Repair Action | 不给 Qwen 采纳、删除、发布或修改用户事实权限 |
 | 15.5 完整工作流 | 第 6.10–6.13、8.4、11–13、14.7–14.11、15.5–15.6、17 节 | Quick Create、Inspiration、Reference Tray、Candidate Review、Canvas/Delivery/Library/Operation Center、Brand/Template、Campaign E2E | 不扩展多人协同、云素材、外部审稿或 CMYK |
 
-每个阶段还必须阅读第 18 节中与本阶段相关的全部条目。如果一个修改横跨两个阶段，优先收缩为上游阶段的完整纵向切片；只有在不留第二 writer或不可恢复中间状态时，才允许一个任务同时收口必要的上下游边界。
+每个阶段还必须阅读第 18 节中与本阶段相关的全部条目。如果一个修改横跨两个阶段，优先收缩为上游阶段的完整纵向切片；同一长期任务可以在前一阶段通过后连续收口后续阶段，但不能提前引入下游业务能力、第二 writer 或不可恢复中间状态。
 
 ### 0.7 第 18 节验收责任映射
 
@@ -121,45 +122,45 @@
 ```text
 使用《BilliardBuddy 生图工作台完整改造方案（最终版）》作为本轮施工合同。
 
-本轮只实施第 15.X 节：<阶段名称>。
-按第 0.6 节阅读必读章节，按第 0.7 节承担对应验收条目。
+本轮在 `codex/image-workbench` 内顺序实施 `15.0 → 15.5` 全部阶段。
+每个阶段按第 0.6 节阅读必读章节，按第 0.7 节承担对应验收条目；通过退出证据后提交分支内检查点并继续下一阶段，不合并 `main`。
 第 0.5 节的冻结决策不得重新设计或降级。
 
 修改代码前，先按第 0.2 节输出“本阶段施工对齐”，并根据当前代码核实真实装配、writer、生产调用链、失败路径和最近 AGENTS.md。
 然后自主完成本阶段的实现、迁移、旧测试更新、真实生产路径验证、崩溃/恢复验证和最终 diff 审查。
 
-不开始下一阶段，不创建并行业务 writer，不用孤立测试代替生产路径，不启动子代理，不改动 Agent/Video。Shared Kernel 必须来自已经合入 main 的共享底座，不在图片 worktree 改写 Video 来制造前置条件。
+上一阶段未通过退出证据不得开始下一阶段；不创建并行业务 writer，不用孤立测试代替生产路径，不启动子代理，不改动 Agent/Video。Shared Kernel 必须来自当前固定施工基线或显式采用的唯一 owner SHA，不在图片 worktree 改写 Video 来制造前置条件。
 保留用户的无关工作区改动。停止并复查本轮启动的临时服务、浏览器、测试和打包进程。
 
-达到第 15.X 节退出证据后，按第 0.4 节格式回报并停止；证据不足时明确回报未完成项，不宣称阶段完成。
+每个阶段达到退出证据后，按第 0.4 节格式记录检查点并继续；证据不足时明确回报未完成项并暂停。只有 `15.5`、第 18 节和最终同步最新已提交 `main` 后的完整回归全部通过，才停止并交回一次最终合并审核；此前不得向 `main` 提交或合并。
 ```
 
 ### 0.9 Git worktree 与 main 同步协议
 
-允许并推荐在独立 Git worktree 开发，使 `main` 工作树可以继续维护根 `AGENTS.md`、施工合同和集成状态。创建 worktree 前，两份施工合同必须先进入一个可从 `main` 到达的提交；不得从包含未跟踪合同、未提交代码或未解决冲突的脏工作树复制开发基线。
+允许并推荐在独立 Git worktree 开发，使 `main` 工作树继续维护 Agent 和最终集成状态。创建 worktree 前，两份施工合同必须先进入一个可从 `main` 到达的提交；不得从包含未跟踪合同、未提交代码或未解决冲突的脏工作树复制开发基线。
 
 建议边界：
 
 ```text
 主工作树 / main
-  只负责 AGENTS.md、施工合同、已验收关卡集成和发布基线
+  只负责 Agent 和最终集成/发布基线
 
 视频 worktree / codex/video-workbench-refactor
-  先完成视频第 13.0 节第 1 关，成为 Shared Media Kernel 首个 owner
+  在自身分支内连续完成完整视频合同
 
-图片 worktree / codex/image-workbench-refactor
-  等共享 test/Kernel foundation 经审核进入集成基线后同步，再完成 15.0 → 15.1
+图片 worktree / codex/image-workbench
+  在自身分支内连续完成 15.0 → 15.5
 ```
 
 固定规则：
 
 - 创建前先用 `git worktree list --porcelain` 核对现存 worktree/branch/path；只有确认目标目录已不存在的 `prunable` 注册才可清理，不能删除仍在使用的 worktree。新 worktree 使用仓库外的同级独立目录和未被占用的开发分支；
-- `AGENTS.md` 按 worktree 内实际文件生效，main 后续修改不会自动传播。每个阶段开工前，开发分支必须把最新 main 通过项目采用的 merge/rebase 策略纳入当前 HEAD，证明该 main commit 已是祖先，然后重新完整阅读根和最近目录的 `AGENTS.md`；未提交在 main 的指令不视为其他 worktree 已收到；
-- 一个阶段只在一个 worktree/branch 内实施，开发分支内可按关卡提交。达到退出证据后停在开发分支，等待用户另行发起合并审核；没有明确授权不得向 main 提交或合并，也不得切换主工作树。只有相关关卡经审核进入集成基线后，后续阶段和另一 worktree 才能同步并依赖它，不能长期在两个分支各自演化同一事实；
-- `ts/package.json`/共享 test runner、Shared Kernel、`ts/shared/product/providerContracts.ts`、Gateway/Relay contracts、根架构文档、`deploy/production/*` 和 Nginx/服务器运行文档同一时刻只能有一个明确 owner。需要触碰时先在阶段对齐中声明文件与语义，另一 worktree 等其经合并审核进入集成基线后再继续；
-- 图片 worktree 不修改 Video 业务文件；Shared Kernel 首次抽取由视频第 1 关或单独 foundation worktree 完成。图片 15.1 只消费已合入 main 的兼容原语；
+- `AGENTS.md` 按 worktree 内实际文件生效，main 后续修改不会自动传播。图片分支只在创建时和最终集成前同步已提交的 `main`，并重新完整阅读根和最近目录的 `AGENTS.md`；Agent 未提交改动不进入图片基线。中途只有明确声明的共享依赖变更才允许同步，并必须重跑受影响验证；
+- 一个长期图片 worktree/branch 连续实施 `15.0 → 15.5`，开发分支内可按阶段提交。阶段退出证据只允许继续本分支施工，不触发 `main` 合并审核；没有明确最终授权不得向 `main` 提交或合并，也不得切换主工作树。所有阶段和第 18 节全部通过后，才同步最终 `main`、完成完整回归并交回唯一一次合并审核；
+- `ts/package.json`/共享 test runner、Shared Kernel、`ts/shared/product/providerContracts.ts`、Gateway/Relay contracts、根架构文档、`deploy/production/*` 和 Nginx/服务器运行文档同一时刻只能有一个明确 owner。另一 worktree 不得复制或并写这些事实；需要未合并共享变更时，必须显式采用 owner 分支的固定 SHA 并按联合最终集成处理；
+- 图片 worktree 不修改 Video 业务文件；图片 15.1 只消费当前固定施工基线或显式采用的共享兼容原语，不自行复制或跨领域补写；
 - 每个 worktree 使用独立本地数据目录、SQLite/CAS、Sidecar 端口、缓存、日志和临时输出，不能让两个开发实例写同一项目目录。阶段结束停止并复查各自临时进程；
-- 服务器只接受已提交、已验收 revision 的一次部署。图片/视频 worktree 不能同时手工改同一台服务器；涉及远程服务的关卡先合入集成基线，再按对应服务器合同盘点和部署。
+- 服务器只接受已提交、已验收 revision 的部署。受控 smoke 可以部署当前图片分支的已提交 SHA 并记录 SHA，这不表示已合入 `main`；图片/视频 worktree 不能同时手工改同一台服务器。最终生产发布仍使用完整合同通过最终审核后的 revision。
 
 ---
 
@@ -2073,7 +2074,7 @@ Untrusted Renderer
 
 图片/视频的 schema、迁移、业务表和读写仍分开。Kernel 不知道 Candidate、Canvas、Brand Kit 等图片概念。
 
-Shared Kernel 的首次抽取由视频文档第 13.0 节第 1 关或一个先行的单一 foundation worktree 完成并合入 main；该底座必须已经通过视频 repository characteristic/崩溃恢复测试。图片 15.1A 只把 `imageWorkbenchRepository.ts` 中同义技术原语迁移到现有 Kernel，并运行图片兼容测试，不修改 `videoWorkbenchRepository.ts`。如果 main 尚无该兼容底座，图片 15.1 不得自行复制或跨领域补写，先完成并合入共享底座关卡。
+Shared Kernel 只能由一个明确 owner 抽取，并以通过 video repository characteristic/崩溃恢复测试的固定 SHA 供图片采用；当前施工基线已包含该底座。图片 15.1A 只把 `imageWorkbenchRepository.ts` 中同义技术原语迁移到现有 Kernel，并运行图片兼容测试，不修改 `videoWorkbenchRepository.ts`。若未来缺少新的兼容原语，图片不得自行复制或跨领域补写；先显式指定 foundation owner 和联合最终集成顺序。
 
 ### 14.3 Service
 
@@ -2201,7 +2202,7 @@ Qwen Adapter 只实现 shared `VisualEvidence` capability 下的 `image_understa
 
 ### 14.11 正式测试入口、根文档与服务器发布
 
-- 视频第 1 关/共享 foundation 先在 `ts/package.json` 建立正式一方 `test` script 与共享 runner；图片同步该集成基线后只增加可单独运行的 Image Workbench、API/IPC contract 与 integration 分组，并保持全局 `test` 包含它们。日常测试只用可提交 fixture/fake，不依赖真实 Provider；
+- 当前施工基线的 `ts/package.json` 已提供正式 `test` script 与共享 runner；图片只增加可单独运行的 Image Workbench、API/IPC contract 与 integration 分组，并保持全局 `test` 包含它们。日常测试只用可提交 fixture/fake，不依赖真实 Provider；
 - 真实 GPT Image/Seedream/Qwen smoke 与日常 suite 分离，只在受控账户、预算和明确环境开关下运行，验证 schema、幂等/usage receipt、拒绝、超时和日志脱敏，不把它当领域测试替代品；
 - 15.0 先为当前 Repository/Service/API/Gateway/Relay/IPC 路径建立 characteristic tests；15.1 以后每个阶段在其上补 Domain unit、Port contract、SQLite/CAS crash/recovery、API/IPC、Renderer golden 与真实生产路径测试；
 - 15.2E/15.4D 涉及远程实现时同步更新 `README.md`、`docs/重构/模型与远程能力平台.md`、`docs/operations/production-servers.md`、对应 env example/validator 和部署 smoke，使文档与第 5.4 节一致；
@@ -2217,7 +2218,7 @@ Qwen Adapter 只实现 shared `VisualEvidence` capability 下的 `image_understa
 
 本阶段只建立可重复证据，不改变生产 writer、路由、远程模型、项目数据或用户行为：
 
-1. **15.0A 正式测试入口：** 先确认视频第 1 关/共享 foundation 的全局 test runner 已进入当前集成基线，再由本阶段单独拥有 `ts/package.json`，增加第 14.11 节的图片 test 分组并纳入全局 `test`；区分可复现日常 suite 与显式真实 Provider smoke，保证 CI/本地失败码可靠；
+1. **15.0A 正式测试入口：** 确认当前图片分支已包含固定 Shared Kernel/test runner 基线，再由本阶段单独拥有图片 test 分组并纳入全局 `test`；区分可复现日常 suite 与显式真实 Provider smoke，保证 CI/本地失败码可靠；
 2. **15.0B 当前行为特征：** 固定旧 Image Project 导入/读取、owner、writer fence/CAS、Operation/Event cursor、submit/poll/cancel/unknown、Candidate/Version/current pointer、删除/恢复、Gateway → Relay ACK 和中断提交行为；测试描述当前事实，不把已知缺陷写成新架构规范；
 3. **15.0C API/IPC 合同：** 为当前 image API、Gateway/Relay DTO、现有 Image IPC 建立 schema harness 和未授权/伪造 owner/路径拒绝测试，列出第 13.7 节尚缺 channel 作为后续明确差距；
 4. **15.0D Fixture 与进程纪律：** 提交最小合法/损坏图片、旧项目、Operation/Event、迁移和 hash fixture；测试使用独立临时数据目录/端口，并自动终止 Sidecar、Gateway/Relay fake、浏览器和渲染辅助进程。
@@ -2228,7 +2229,7 @@ Qwen Adapter 只实现 shared `VisualEvidence` capability 下的 `image_understa
 
 子切片按以下顺序执行；15.1D 是唯一生产 writer 切换点，不得在更早子切片中开始双写：
 
-1. **15.1A Shared Kernel 采用、Schema 与事务仓储：** 确认视频第 1 关/共享 foundation 已合入当前 main，从 `imageWorkbenchRepository.ts` 采用现有 Operation/Event/CAS/recovery 原语，再建立图片 SQLite schema/migration、外键、索引、revision compare-and-swap、idempotency 唯一约束、Event/Outbox 和 Asset Ownership/Grant；新存储此时可以在测试中运行，但不接管生产 writer，也不修改 Video；
+1. **15.1A Shared Kernel 采用、Schema 与事务仓储：** 确认当前图片分支包含经过测试的固定 Shared Kernel/foundation SHA，从 `imageWorkbenchRepository.ts` 采用现有 Operation/Event/CAS/recovery 原语，再建立图片 SQLite schema/migration、外键、索引、revision compare-and-swap、idempotency 唯一约束、Event/Outbox 和 Asset Ownership/Grant；新存储此时可以在测试中运行，但不接管生产 writer，也不修改 Video；
 2. **15.1B 旧数据导入：** 实现旧 JSON 只读、幂等导入和 migration receipt，用固定 fixture 验证 Project、Operation、Candidate、Version、Asset hash 和历史 current pointer 不丢失；
 3. **15.1C 提交与恢复：** 在新存储上跑通 CAS publish → DB transaction → Event/Outbox → Relay ACK，实现启动对账、ACK 重试、CAS orphan 和事务崩溃注入测试；
 4. **15.1D 生产切换：** 对比新旧 public projection，将正式 writer 一次性切到 SQLite，把旧 Repository 降为仅供导入的只读 reader，复查正式运行时只剩一个 writer。
