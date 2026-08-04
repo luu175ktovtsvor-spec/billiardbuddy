@@ -62,6 +62,12 @@ import {
   type ImageTemplateRevision,
   type ProviderExecutionReceipt,
 } from '../../../shared/contracts/imageGeneration.js'
+import {
+  imageInspirationBoardSchema,
+  imageInspirationItemSchema,
+  type ImageInspirationBoard,
+  type ImageInspirationItem,
+} from '../../../shared/contracts/imageWorkflow.js'
 import { applyCanvasCommandDocument, ImageCanvasCommandError } from './imageCanvasCommands.js'
 import { AssetIntegrity } from '../media/kernel/assets/assetIntegrity.js'
 import { RecoverySupervisor } from '../media/kernel/recovery/recoverySupervisor.js'
@@ -468,6 +474,286 @@ export class ImageWorkbenchRepository {
       throw new ImageWorkbenchRepositoryError('参考图控制幂等键对应的请求内容不一致', 409, 'IMAGE_IDEMPOTENCY_CONFLICT')
     }
     return true
+  }
+
+  /**
+   * A human workflow command reserves its idempotency identity before any
+   * follow-up application step can reach a remote provider. A `prepared`
+   * receipt is intentionally recoverable: callers reconstruct the same
+   * deterministic aggregate IDs and complete it instead of creating another
+   * paid attempt.
+   */
+  async prepareWorkflowCommand(input: {
+    scope: string
+    aggregate_id: string
+    idempotency_key: string
+    request_hash: string
+    result: unknown
+  }): Promise<{ status: 'prepared' | 'complete'; result: unknown; replayed: boolean }> {
+    await this.ready()
+    const requestHash = imageHashSchema.parse(input.request_hash)
+    return await this.fences.run(`workflow-${input.scope}-${input.aggregate_id}`, async () => this.unitOfWork.transaction(() => {
+      const existing = this.unitOfWork.database.query(`SELECT request_hash,status,result_json FROM image_workflow_command_receipts
+        WHERE scope=? AND aggregate_id=? AND idempotency_key=?`).get(
+        input.scope,
+        input.aggregate_id,
+        input.idempotency_key,
+      ) as { request_hash: string; status: 'prepared' | 'complete'; result_json: string } | null
+      if (existing) {
+        if (existing.request_hash !== requestHash) {
+          throw new ImageWorkbenchRepositoryError('图片工作流幂等键对应的请求内容不一致', 409, 'IMAGE_IDEMPOTENCY_CONFLICT')
+        }
+        let result: unknown
+        try { result = JSON.parse(existing.result_json) } catch {
+          throw new ImageWorkbenchRepositoryError('图片工作流幂等回执损坏', 500, 'IMAGE_STORAGE_INVALID')
+        }
+        return { status: existing.status, result, replayed: true }
+      }
+      const now = this.iso()
+      this.unitOfWork.database.query(`INSERT INTO image_workflow_command_receipts(
+        scope,aggregate_id,idempotency_key,request_hash,status,result_json,created_at,updated_at
+      ) VALUES(?,?,?,?,?,?,?,?)`).run(
+        input.scope,
+        input.aggregate_id,
+        input.idempotency_key,
+        requestHash,
+        'prepared',
+        JSON.stringify(input.result),
+        now,
+        now,
+      )
+      return { status: 'prepared' as const, result: input.result, replayed: false }
+    }))
+  }
+
+  async completeWorkflowCommand(input: {
+    scope: string
+    aggregate_id: string
+    idempotency_key: string
+    request_hash: string
+    result: unknown
+  }): Promise<void> {
+    await this.ready()
+    const requestHash = imageHashSchema.parse(input.request_hash)
+    await this.fences.run(`workflow-${input.scope}-${input.aggregate_id}`, async () => this.unitOfWork.transaction(() => {
+      const existing = this.unitOfWork.database.query(`SELECT request_hash FROM image_workflow_command_receipts
+        WHERE scope=? AND aggregate_id=? AND idempotency_key=?`).get(
+        input.scope,
+        input.aggregate_id,
+        input.idempotency_key,
+      ) as { request_hash: string } | null
+      if (!existing) throw new ImageWorkbenchRepositoryError('图片工作流幂等回执不存在', 500, 'IMAGE_STORAGE_INVALID')
+      if (existing.request_hash !== requestHash) {
+        throw new ImageWorkbenchRepositoryError('图片工作流幂等键对应的请求内容不一致', 409, 'IMAGE_IDEMPOTENCY_CONFLICT')
+      }
+      this.unitOfWork.database.query(`UPDATE image_workflow_command_receipts
+        SET status='complete',result_json=?,updated_at=?
+        WHERE scope=? AND aggregate_id=? AND idempotency_key=?`).run(
+        JSON.stringify(input.result),
+        this.iso(),
+        input.scope,
+        input.aggregate_id,
+        input.idempotency_key,
+      )
+    }))
+  }
+
+  /** Generic project mutations added by 15.5 keep the same CAS/fence/CAS
+   * boundary as Reference Control instead of opening a second JSON writer. */
+  async saveWorkflowProjectCommand(input: {
+    project: ImageWorkbenchProject
+    base_revision: number
+    idempotency_key: string
+    request_hash: string
+    command_kind: string
+  }): Promise<{ project: ImageWorkbenchProject; replayed: boolean }> {
+    await this.ready()
+    const project = imageWorkbenchProjectSchema.parse(input.project)
+    const requestHash = imageHashSchema.parse(input.request_hash)
+    return await this.fences.run(`project-${project.id}`, async () => this.unitOfWork.transaction(() => {
+      const prior = this.unitOfWork.database.query(`SELECT request_hash,result_project_json FROM image_project_workflow_commands
+        WHERE project_id=? AND idempotency_key=?`).get(project.id, input.idempotency_key) as { request_hash: string; result_project_json: string } | null
+      if (prior) {
+        if (prior.request_hash !== requestHash) {
+          throw new ImageWorkbenchRepositoryError('图片工作流幂等键对应的请求内容不一致', 409, 'IMAGE_IDEMPOTENCY_CONFLICT')
+        }
+        try {
+          return { project: imageWorkbenchProjectSchema.parse(JSON.parse(prior.result_project_json) as unknown), replayed: true }
+        } catch {
+          throw new ImageWorkbenchRepositoryError('图片工作流幂等回执损坏', 500, 'IMAGE_STORAGE_INVALID')
+        }
+      }
+      const currentRow = this.projectRow(project.id)
+      if (!currentRow) throw new ImageWorkbenchRepositoryError('图片项目不存在', 404, 'IMAGE_PROJECT_NOT_FOUND')
+      const current = this.loadProject(currentRow)
+      if (current.revision !== input.base_revision || current.writer_fence !== project.writer_fence) {
+        throw new ImageWorkbenchRepositoryError('图片项目已被另一写入者更新，请刷新后重试', 409, 'IMAGE_REVISION_CONFLICT')
+      }
+      const next = imageWorkbenchProjectSchema.parse({
+        ...project,
+        writer_fence: `fence_${randomUUID().replaceAll('-', '')}`,
+        updated_at: this.iso(),
+      })
+      this.persistProject(next)
+      this.unitOfWork.database.query(`INSERT INTO image_project_workflow_commands(
+        project_id,idempotency_key,command_kind,request_hash,result_project_json,created_at
+      ) VALUES(?,?,?,?,?,?)`).run(
+        next.id,
+        input.idempotency_key,
+        input.command_kind,
+        requestHash,
+        JSON.stringify(next),
+        next.updated_at,
+      )
+      return { project: next, replayed: false }
+    }))
+  }
+
+  async workflowProjectCommandResult(projectId: string, idempotencyKey: string, requestHash: string): Promise<ImageWorkbenchProject | null> {
+    await this.ready()
+    this.assertGenerationProject(projectId)
+    const hash = imageHashSchema.parse(requestHash)
+    const prior = this.unitOfWork.database.query(`SELECT request_hash,result_project_json FROM image_project_workflow_commands
+      WHERE project_id=? AND idempotency_key=?`).get(projectId, idempotencyKey) as { request_hash: string; result_project_json: string } | null
+    if (!prior) return null
+    if (prior.request_hash !== hash) {
+      throw new ImageWorkbenchRepositoryError('图片工作流幂等键对应的请求内容不一致', 409, 'IMAGE_IDEMPOTENCY_CONFLICT')
+    }
+    try {
+      return imageWorkbenchProjectSchema.parse(JSON.parse(prior.result_project_json) as unknown)
+    } catch {
+      throw new ImageWorkbenchRepositoryError('图片工作流幂等回执损坏', 500, 'IMAGE_STORAGE_INVALID')
+    }
+  }
+
+  private loadInspirationBoard(row: { document_json: string }, itemRows: Array<{ document_json: string }>): ImageInspirationBoard {
+    try {
+      const header = imageInspirationBoardSchema.parse(JSON.parse(row.document_json))
+      const items = itemRows.map(item => imageInspirationItemSchema.parse(JSON.parse(item.document_json)))
+      return imageInspirationBoardSchema.parse({ ...header, items })
+    } catch {
+      throw new ImageWorkbenchRepositoryError('灵感板 SQLite 记录损坏', 500, 'IMAGE_STORAGE_INVALID')
+    }
+  }
+
+  async getInspirationBoard(projectId: string): Promise<ImageInspirationBoard | null> {
+    await this.ready()
+    this.assertGenerationProject(projectId)
+    const row = this.unitOfWork.database.query('SELECT document_json FROM image_inspiration_boards WHERE project_id=?')
+      .get(projectId) as { document_json: string } | null
+    if (!row) return null
+    const items = this.unitOfWork.database.query(`SELECT document_json FROM image_inspiration_items
+      WHERE project_id=? ORDER BY created_at,id`).all(projectId) as Array<{ document_json: string }>
+    return this.loadInspirationBoard(row, items)
+  }
+
+  async saveInspirationBoardCommand(input: {
+    project: ImageWorkbenchProject
+    base_revision: number
+    idempotency_key: string
+    request_hash: string
+    board: ImageInspirationBoard
+  }): Promise<{ project: ImageWorkbenchProject; board: ImageInspirationBoard; replayed: boolean }> {
+    await this.ready()
+    const project = imageWorkbenchProjectSchema.parse(input.project)
+    const board = imageInspirationBoardSchema.parse(input.board)
+    const requestHash = imageHashSchema.parse(input.request_hash)
+    if (board.project_id !== project.id) throw new ImageWorkbenchRepositoryError('灵感板项目不匹配', 409, 'IMAGE_STORAGE_INVALID')
+    return await this.fences.run(`project-${project.id}`, async () => this.unitOfWork.transaction(() => {
+      const prior = this.unitOfWork.database.query(`SELECT request_hash,result_json FROM image_inspiration_commands
+        WHERE project_id=? AND idempotency_key=?`).get(project.id, input.idempotency_key) as { request_hash: string; result_json: string } | null
+      if (prior) {
+        if (prior.request_hash !== requestHash) {
+          throw new ImageWorkbenchRepositoryError('灵感板幂等键对应的请求内容不一致', 409, 'IMAGE_IDEMPOTENCY_CONFLICT')
+        }
+        try {
+          const replay = JSON.parse(prior.result_json) as { project: unknown; board: unknown }
+          return {
+            project: imageWorkbenchProjectSchema.parse(replay.project),
+            board: imageInspirationBoardSchema.parse(replay.board),
+            replayed: true,
+          }
+        } catch {
+          throw new ImageWorkbenchRepositoryError('灵感板幂等回执损坏', 500, 'IMAGE_STORAGE_INVALID')
+        }
+      }
+      const currentRow = this.projectRow(project.id)
+      if (!currentRow) throw new ImageWorkbenchRepositoryError('图片项目不存在', 404, 'IMAGE_PROJECT_NOT_FOUND')
+      const current = this.loadProject(currentRow)
+      if (current.revision !== input.base_revision || current.writer_fence !== project.writer_fence) {
+        throw new ImageWorkbenchRepositoryError('图片项目已被另一写入者更新，请刷新后重试', 409, 'IMAGE_REVISION_CONFLICT')
+      }
+      const existing = this.unitOfWork.database.query('SELECT revision FROM image_inspiration_boards WHERE project_id=?')
+        .get(project.id) as { revision: number } | null
+      if (board.revision !== (existing?.revision ?? -1) + 1) {
+        throw new ImageWorkbenchRepositoryError('灵感板修订不是下一连续版本', 409, 'IMAGE_REVISION_CONFLICT')
+      }
+      const nextProject = imageWorkbenchProjectSchema.parse({
+        ...project,
+        writer_fence: `fence_${randomUUID().replaceAll('-', '')}`,
+        updated_at: board.updated_at,
+      })
+      this.persistProject(nextProject)
+      this.unitOfWork.database.query(`INSERT INTO image_inspiration_boards(
+        id,project_id,revision,created_at,updated_at,document_json
+      ) VALUES(?,?,?,?,?,?) ON CONFLICT(project_id) DO UPDATE SET
+        id=excluded.id,revision=excluded.revision,updated_at=excluded.updated_at,document_json=excluded.document_json`).run(
+        board.id,
+        board.project_id,
+        board.revision,
+        board.created_at,
+        board.updated_at,
+        JSON.stringify(board),
+      )
+      this.unitOfWork.database.query('DELETE FROM image_inspiration_items WHERE project_id=?').run(project.id)
+      for (const item of board.items) {
+        this.unitOfWork.database.query(`INSERT INTO image_inspiration_items(
+          id,board_id,project_id,asset_id,promoted_reference_asset_id,created_at,updated_at,document_json
+        ) VALUES(?,?,?,?,?,?,?,?)`).run(
+          item.id,
+          board.id,
+          project.id,
+          item.asset_id,
+          item.promoted_reference_asset_id ?? null,
+          item.created_at,
+          item.updated_at,
+          JSON.stringify(item),
+        )
+      }
+      const result = { project: nextProject, board }
+      this.unitOfWork.database.query(`INSERT INTO image_inspiration_commands(
+        project_id,idempotency_key,request_hash,board_id,result_json,created_at
+      ) VALUES(?,?,?,?,?,?)`).run(
+        project.id,
+        input.idempotency_key,
+        requestHash,
+        board.id,
+        JSON.stringify(result),
+        board.updated_at,
+      )
+      return { ...result, replayed: false }
+    }))
+  }
+
+  async inspirationCommandResult(projectId: string, idempotencyKey: string, requestHash: string): Promise<{ project: ImageWorkbenchProject; board: ImageInspirationBoard } | null> {
+    await this.ready()
+    this.assertGenerationProject(projectId)
+    const hash = imageHashSchema.parse(requestHash)
+    const prior = this.unitOfWork.database.query(`SELECT request_hash,result_json FROM image_inspiration_commands
+      WHERE project_id=? AND idempotency_key=?`).get(projectId, idempotencyKey) as { request_hash: string; result_json: string } | null
+    if (!prior) return null
+    if (prior.request_hash !== hash) {
+      throw new ImageWorkbenchRepositoryError('灵感板幂等键对应的请求内容不一致', 409, 'IMAGE_IDEMPOTENCY_CONFLICT')
+    }
+    try {
+      const replay = JSON.parse(prior.result_json) as { project: unknown; board: unknown }
+      return {
+        project: imageWorkbenchProjectSchema.parse(replay.project),
+        board: imageInspirationBoardSchema.parse(replay.board),
+      }
+    } catch {
+      throw new ImageWorkbenchRepositoryError('灵感板幂等回执损坏', 500, 'IMAGE_STORAGE_INVALID')
+    }
   }
 
   private saveProjectLocked(input: ImageWorkbenchProject): ImageWorkbenchProject {

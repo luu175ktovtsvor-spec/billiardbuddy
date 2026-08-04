@@ -63,6 +63,19 @@ import {
   type ImageCandidateGroup,
   type ImageOperationV2,
 } from '../../../shared/contracts/imageGeneration.js'
+import {
+  addImageWorkflowReferencesInputSchema,
+  applyImageBriefOverridesInputSchema,
+  compileImageBriefResponseSchema,
+  imageInspirationBoardReadResponseSchema,
+  imageInspirationBoardResponseSchema,
+  imageQuickCreateInputSchema,
+  imageQuickCreateResponseSchema,
+  imageWorkflowProjectResponseSchema,
+  promoteImageInspirationItemInputSchema,
+  removeImageWorkflowReferenceInputSchema,
+  upsertImageInspirationItemsInputSchema,
+} from '../../../shared/contracts/imageWorkflow.js'
 import { ApiError, errorResponse } from '../middleware/errorHandler.js'
 import { ImageWorkbenchService, ImageWorkbenchServiceError } from '../services/imageWorkbenchService.js'
 import { ImageAssetStoreError } from '../services/imageAssetStore.js'
@@ -214,7 +227,19 @@ export function publicImageTask(operation: ImageOperation): PublicMediaTask {
 }
 
 function publicGenerationOperation(operation: ImageOperationV2) {
-  return publicImageOperationV2Schema.parse(operation)
+  const {
+    owner: _owner,
+    idempotency_key: _idempotencyKey,
+    request_hash: _requestHash,
+    input_refs: _inputRefs,
+    transport_task_id: _transportTaskId,
+    remote_task_id: _remoteTaskId,
+    execution_receipt_id: _executionReceiptId,
+    submitted_at: _submittedAt,
+    local_delivery: _localDelivery,
+    ...safeOperation
+  } = operation
+  return publicImageOperationV2Schema.parse(safeOperation)
 }
 
 function publicCandidate(projectId: string, candidate: ImageCandidate) {
@@ -413,9 +438,83 @@ export function createImageWorkbenchDomainApiHandler(
         if (generation) return Response.json({ operation: publicGenerationOperation(generation) })
         return Response.json({ task: publicImageTask(await service.getOperation(operationId)) })
       }
+      if (area === 'quick-create') {
+        if (req.method !== 'POST' || segments[3]) throw methodNotAllowed(req.method)
+        requireMediaUiCapability(req, mediaUiCapability)
+        const input = imageQuickCreateInputSchema.parse(await parseJson(req))
+        const created = await service.quickCreate(input)
+        return Response.json(imageQuickCreateResponseSchema.parse({
+          project: publicImageProject(created.project),
+          round: created.round,
+          operations: created.operations.map(publicGenerationOperation),
+        }), { status: 202 })
+      }
       if (area !== 'projects') throw ApiError.notFound('找不到生图接口')
       const projectId = segments[3]
       const action = segments[4]
+      if (projectId && action === 'inspiration-board') {
+        await service.assertProjectOwner(projectId)
+        if (!segments[5] && req.method === 'GET') {
+          return Response.json(imageInspirationBoardReadResponseSchema.parse({
+            board: await service.getInspirationBoard(projectId),
+          }))
+        }
+        if (segments[5] === 'commands' && segments[6] === 'upsert-items' && !segments[7] && req.method === 'POST') {
+          requireMediaUiCapability(req, mediaUiCapability)
+          const input = upsertImageInspirationItemsInputSchema.parse(await parseJson(req))
+          const saved = await service.upsertInspirationItems(projectId, input)
+          return Response.json(imageInspirationBoardResponseSchema.parse({
+            project: publicImageProject(saved.project), board: saved.board,
+          }))
+        }
+        if (segments[5] === 'items' && segments[6] && segments[7] === 'commands' && segments[8] === 'promote' && !segments[9] && req.method === 'POST') {
+          requireMediaUiCapability(req, mediaUiCapability)
+          const input = promoteImageInspirationItemInputSchema.parse(await parseJson(req))
+          const saved = await service.promoteInspirationItem(projectId, segments[6], input)
+          return Response.json(imageInspirationBoardResponseSchema.parse({
+            project: publicImageProject(saved.project), board: saved.board,
+          }))
+        }
+        throw methodNotAllowed(req.method)
+      }
+      if (projectId && action === 'brief') {
+        await service.assertProjectOwner(projectId)
+        if (segments[5] === 'compile' && !segments[6] && req.method === 'POST') {
+          requireMediaUiCapability(req, mediaUiCapability)
+          const compiled = await service.compileBrief(projectId)
+          return Response.json(compileImageBriefResponseSchema.parse({
+            project: publicImageProject(compiled.project),
+            brief_id: compiled.brief.id,
+            snapshot_hash: compiled.brief.snapshot_hash,
+          }))
+        }
+        if (segments[5] === 'commands' && segments[6] === 'apply-overrides' && !segments[7] && req.method === 'POST') {
+          requireMediaUiCapability(req, mediaUiCapability)
+          const input = applyImageBriefOverridesInputSchema.parse(await parseJson(req))
+          return Response.json(imageWorkflowProjectResponseSchema.parse({
+            project: publicImageProject(await service.applyBriefOverrides(projectId, input)),
+          }))
+        }
+        throw methodNotAllowed(req.method)
+      }
+      if (projectId && action === 'references') {
+        await service.assertProjectOwner(projectId)
+        const referenceId = segments[5]
+        if (!referenceId && !segments[6] && req.method === 'POST') {
+          requireMediaUiCapability(req, mediaUiCapability)
+          const input = addImageWorkflowReferencesInputSchema.parse(await parseJson(req))
+          return Response.json(imageWorkflowProjectResponseSchema.parse({
+            project: publicImageProject(await service.addWorkflowReferences(projectId, input)),
+          }), { status: 201 })
+        }
+        if (referenceId && segments[6] === 'commands' && segments[7] === 'remove' && !segments[8] && req.method === 'POST') {
+          requireMediaUiCapability(req, mediaUiCapability)
+          const input = removeImageWorkflowReferenceInputSchema.parse(await parseJson(req))
+          return Response.json(imageWorkflowProjectResponseSchema.parse({
+            project: publicImageProject(await service.removeWorkflowReference(projectId, referenceId, input)),
+          }))
+        }
+      }
       if (projectId && action === 'delivery-spec') {
         if (!segments[5] && req.method === 'GET') {
           const spec = await service.repository.currentDeliverySpec(projectId)
