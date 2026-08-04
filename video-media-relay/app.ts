@@ -80,8 +80,19 @@ async function body(request: Request): Promise<unknown> {
   try { return JSON.parse(raw) } catch { throw new RelayError(400, 'invalid_json') }
 }
 function ttl(env: Env): number { return Math.max(60_000, Math.min(60 * 60_000, Number(env.VIDEO_MEDIA_LEASE_TTL_MS ?? 15 * 60_000))) }
+function outcomeUnknownRetention(env: Env): number { return Math.max(ttl(env), Math.min(7 * 24 * 60 * 60_000, Number(env.VIDEO_MEDIA_OUTCOME_UNKNOWN_RETENTION_MS ?? 72 * 60 * 60_000))) }
 function multipartThreshold(env: Env): number { return Math.max(5 * 1024 * 1024, Number(env.VIDEO_MEDIA_MULTIPART_THRESHOLD_BYTES ?? 8 * 1024 * 1024)) }
 function multipartPartSize(env: Env): number { return Math.max(1024 * 1024, Math.min(512 * 1024 * 1024, Number(env.VIDEO_MEDIA_MULTIPART_PART_SIZE_BYTES ?? 8 * 1024 * 1024))) }
+function assertLeasePurposeAndMime(input: { purpose: string; content_type: string }): void {
+  const mime = input.content_type.toLowerCase().split(';', 1)[0]!.trim()
+  const permitted: Record<string, readonly string[]> = {
+    visual_frames: ['image/png', 'image/jpeg', 'image/webp'],
+    proxy_video: ['video/mp4', 'video/quicktime'],
+    audio_for_asr: ['audio/wav', 'audio/mpeg', 'audio/mp4'],
+    transcript_for_reasoning: ['application/json', 'text/plain'],
+  }
+  if (!permitted[input.purpose]?.includes(mime)) throw new RelayError(422, 'lease_purpose_mime_mismatch')
+}
 
 class RelayStore {
   readonly db: Database
@@ -93,7 +104,8 @@ class RelayStore {
       CREATE TABLE IF NOT EXISTS video_media_operations_v1(id TEXT PRIMARY KEY, owner TEXT NOT NULL, local_operation_id TEXT NOT NULL, idempotency_key TEXT NOT NULL, request_hash TEXT NOT NULL, request_json TEXT NOT NULL, state TEXT NOT NULL, provider_task_id TEXT, result_object_refs TEXT, provider_receipt TEXT, account_quota_reservation_id TEXT NOT NULL, safe_error_code TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, acknowledged_at TEXT, UNIQUE(owner,local_operation_id));
       CREATE TABLE IF NOT EXISTS video_media_result_objects_v1(object_ref TEXT PRIMARY KEY, operation_id TEXT NOT NULL REFERENCES video_media_operations_v1(id), content_hash TEXT NOT NULL, byte_size INTEGER NOT NULL, content_type TEXT NOT NULL, expires_at TEXT NOT NULL, acknowledged_at TEXT);
       CREATE TABLE IF NOT EXISTS video_media_object_cleanup_v1(id TEXT PRIMARY KEY, object_kind TEXT NOT NULL, lease_id TEXT NOT NULL, object_ref TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, next_attempt_at TEXT NOT NULL, completed_at TEXT, last_error TEXT, UNIQUE(object_kind,lease_id,object_ref));
-      CREATE TABLE IF NOT EXISTS video_media_quota_v1(owner TEXT NOT NULL, reservation_id TEXT NOT NULL, operation_id TEXT NOT NULL, state TEXT NOT NULL, units INTEGER NOT NULL, PRIMARY KEY(owner,reservation_id));`)
+      CREATE TABLE IF NOT EXISTS video_media_quota_v1(owner TEXT NOT NULL, reservation_id TEXT NOT NULL, operation_id TEXT NOT NULL, state TEXT NOT NULL, units INTEGER NOT NULL, PRIMARY KEY(owner,reservation_id));
+      CREATE TABLE IF NOT EXISTS video_media_lease_quota_v1(owner TEXT NOT NULL, lease_id TEXT NOT NULL PRIMARY KEY, state TEXT NOT NULL, units INTEGER NOT NULL);`)
     // Read-only compatibility for operations created by the pre-lease Relay.
     // New code never writes this column and the endpoint below is not part of
     // the new wire contract.
@@ -118,6 +130,13 @@ class RelayStore {
     this.db.query("INSERT INTO video_media_quota_v1(owner,reservation_id,operation_id,state,units) VALUES(?,?,?,'reserved',?)").run(owner, id, operationId, units)
     return id
   }
+  reserveLease(owner: string, leaseId: string, env: Env): void {
+    const limit = Math.max(1, Number(env.VIDEO_MEDIA_OBJECT_LEASE_QUOTA_UNITS ?? 1_000))
+    const active = this.db.query("SELECT COALESCE(SUM(units),0) AS total FROM video_media_lease_quota_v1 WHERE owner=? AND state IN ('reserved','outcome_unknown')").get(owner) as { total: number }
+    if (active.total + 1 > limit) throw new RelayError(429, 'object_lease_quota_exceeded')
+    this.db.query("INSERT INTO video_media_lease_quota_v1(owner,lease_id,state,units) VALUES(?,?, 'reserved',1)").run(owner, leaseId)
+  }
+  releaseLease(leaseId: string): void { this.db.query("UPDATE video_media_lease_quota_v1 SET state='released' WHERE lease_id=? AND state IN ('reserved','outcome_unknown')").run(leaseId) }
   projection(id: string) {
     const row = this.db.query('SELECT * FROM video_media_operations_v1 WHERE id=?').get(id) as Row | null
     if (!row) throw new RelayError(404, 'operation_not_found')
@@ -161,6 +180,19 @@ export function createVideoMediaRelayFetch(deps: RelayDeps = {}) {
     const row = store.db.query('SELECT * FROM video_media_leases_v1 WHERE id=?').get(id) as Row | null
     if (!row) throw new RelayError(409, 'lease_recovery_missing')
     return row
+  }
+  const expireLease = (row: Row): void => store.transaction(() => {
+    store.db.query("UPDATE video_media_leases_v1 SET state='expired' WHERE id=? AND state IN ('awaiting_upload','ready','bound')").run(row.id)
+    store.releaseLease(row.id as string)
+  })
+  const retainOutcomeUnknownInputs = (input: CreateVideoRelayOperationRequest, owner: string): void => {
+    const refs = input.capability === 'speech_transcription' ? [input.input.audio_object_ref] : input.capability === 'visual_evidence' || input.capability === 'media_reasoning' ? input.input.object_refs : []
+    const expiresAt = new Date(now().getTime() + outcomeUnknownRetention(env)).toISOString()
+    for (const ref of refs) {
+      store.db.query("UPDATE video_media_leases_v1 SET state='bound',expires_at=? WHERE owner=? AND object_ref=? AND state IN ('ready','bound')").run(expiresAt, owner, ref)
+      const lease = store.db.query('SELECT id FROM video_media_leases_v1 WHERE owner=? AND object_ref=?').get(owner, ref) as { id: string } | null
+      if (lease) store.db.query("UPDATE video_media_lease_quota_v1 SET state='outcome_unknown' WHERE lease_id=? AND state='reserved'").run(lease.id)
+    }
   }
   const verified = (row: Row, actual: Awaited<ReturnType<MediaObjectStore['head']>>): boolean => Boolean(actual && actual.byte_size === row.byte_size && actual.content_hash === row.content_hash && actual.content_type === row.content_type)
   async function abortFailedMultipart(row: Row, uploadId: string, cause: unknown): Promise<never> {
@@ -301,6 +333,7 @@ export function createVideoMediaRelayFetch(deps: RelayDeps = {}) {
         if (row.object_kind === 'input') {
           await objectStore.delete(row.lease_id as string)
           store.db.query("UPDATE video_media_leases_v1 SET state='deleted',multipart_phase=CASE WHEN multipart_phase='cleanup_pending' THEN 'aborted' ELSE multipart_phase END WHERE id=? AND state <> 'deleted'").run(row.lease_id)
+          store.releaseLease(row.lease_id as string)
         } else {
           await objectStore.deleteResult(row.object_ref as string)
         }
@@ -338,6 +371,7 @@ export function createVideoMediaRelayFetch(deps: RelayDeps = {}) {
         .run(unknown ? 'outcome_unknown' : 'failed', unknown ? 'provider_outcome_unknown' : safeFailureCode(error), iso(now), row.id)
       store.db.query('UPDATE video_media_quota_v1 SET state=? WHERE reservation_id=?')
         .run(unknown ? 'outcome_unknown' : 'released', row.account_quota_reservation_id)
+      if (unknown) retainOutcomeUnknownInputs(input, principal.owner)
       if (!unknown) {
         queueInputCleanup(input, principal.owner)
         await retryObjectCleanup()
@@ -369,7 +403,7 @@ export function createVideoMediaRelayFetch(deps: RelayDeps = {}) {
       const principal = await identity(request)
       await retryObjectCleanup()
       if (request.method === 'POST' && url.pathname === '/v1/video-media/object-leases') {
-        const key = requireControlHeaders(request); const raw = createMediaObjectLeaseRequestSchema.parse(await body(request)); const hash = canonicalRelayRequestHash(raw)
+        const key = requireControlHeaders(request); const raw = createMediaObjectLeaseRequestSchema.parse(await body(request)); assertLeasePurposeAndMime(raw); const hash = canonicalRelayRequestHash(raw)
         const replay = store.replay(principal.owner, key, hash); if (replay) {
           const row = store.db.query('SELECT * FROM video_media_leases_v1 WHERE id=? AND owner=?').get(replay, principal.owner) as Row | null
           if (!row) throw new RelayError(409, 'idempotency_resource_missing')
@@ -382,6 +416,9 @@ export function createVideoMediaRelayFetch(deps: RelayDeps = {}) {
         const leaseId = opaque('lease'); const expiresAt = new Date(now().getTime() + ttl(env)).toISOString()
         const multipart = raw.byte_size >= multipartThreshold(env)
         store.transaction(() => {
+          // Reserve before returning any signed URL. This isolates direct OSS
+          // capability issuance from unbounded client-side upload attempts.
+          store.reserveLease(principal.owner, leaseId, env)
           store.db.query(`INSERT INTO video_media_leases_v1(
             id,owner,local_operation_id,purpose,content_hash,byte_size,content_type,consent_revision_id,consent_scope_hash,state,object_ref,expires_at,created_at,multipart_upload_id,multipart_part_size,multipart_phase,multipart_parts_json
           ) VALUES(?,?,?,?,?,?,?,?,?,'awaiting_upload',NULL,?,?,?,? ,?,NULL)`).run(
@@ -398,8 +435,8 @@ export function createVideoMediaRelayFetch(deps: RelayDeps = {}) {
         let row = store.db.query('SELECT * FROM video_media_leases_v1 WHERE id=? AND owner=?').get(leaseId, principal.owner) as Row | null; if (!row) throw new RelayError(404, 'lease_not_found')
         row = await recoverMultipart(row)
         const hash = canonicalRelayRequestHash({ lease_id: leaseId, action, completion }); const replay = store.replay(principal.owner, key, hash); if (replay) return json(mediaObjectLeaseSchema.parse({ lease_id: row.id, state: row.state, ...(row.object_ref ? { object_ref: row.object_ref } : {}), ...await leaseCapabilities(row), expires_at: row.expires_at }), 200, id)
-        if (action === 'renew') { if (Date.parse(row.expires_at as string) <= now().getTime() || row.state === 'deleted') throw new RelayError(410, 'lease_expired'); const expiresAt = new Date(now().getTime() + ttl(env)).toISOString(); store.db.query('UPDATE video_media_leases_v1 SET expires_at=? WHERE id=?').run(expiresAt, leaseId); store.db.query('INSERT INTO video_media_idempotency_v1 VALUES(?,?,?,?)').run(principal.owner, key, hash, leaseId); const renewed = store.db.query('SELECT * FROM video_media_leases_v1 WHERE id=?').get(leaseId) as Row; return json(mediaObjectLeaseSchema.parse({ lease_id: leaseId, state: row.state, ...(row.object_ref ? { object_ref: row.object_ref } : {}), ...await leaseCapabilities(renewed), expires_at: expiresAt }), 200, id) }
-        if (Date.parse(row.expires_at as string) <= now().getTime()) throw new RelayError(410, 'lease_expired')
+        if (action === 'renew') { if (Date.parse(row.expires_at as string) <= now().getTime() || row.state === 'deleted') { expireLease(row); throw new RelayError(410, 'lease_expired') }; const expiresAt = new Date(now().getTime() + ttl(env)).toISOString(); store.db.query('UPDATE video_media_leases_v1 SET expires_at=? WHERE id=?').run(expiresAt, leaseId); store.db.query('INSERT INTO video_media_idempotency_v1 VALUES(?,?,?,?)').run(principal.owner, key, hash, leaseId); const renewed = store.db.query('SELECT * FROM video_media_leases_v1 WHERE id=?').get(leaseId) as Row; return json(mediaObjectLeaseSchema.parse({ lease_id: leaseId, state: row.state, ...(row.object_ref ? { object_ref: row.object_ref } : {}), ...await leaseCapabilities(renewed), expires_at: expiresAt }), 200, id) }
+        if (Date.parse(row.expires_at as string) <= now().getTime()) { expireLease(row); throw new RelayError(410, 'lease_expired') }
         if (row.state === 'deleted') throw new RelayError(410, 'lease_deleted')
         if (row.state === 'ready' || row.state === 'bound') {
           if (action === 'complete') store.db.query('INSERT OR IGNORE INTO video_media_idempotency_v1 VALUES(?,?,?,?)').run(principal.owner, key, hash, leaseId)
@@ -428,7 +465,7 @@ export function createVideoMediaRelayFetch(deps: RelayDeps = {}) {
         return json(mediaObjectLeaseSchema.parse({ lease_id: leaseId, state: 'ready', object_ref: objectRef, expires_at: row.expires_at }), 200, id)
       }
       const deleteLease = /^\/v1\/video-media\/object-leases\/([a-z][a-z0-9_]{7,127})$/.exec(url.pathname)
-      if (deleteLease && request.method === 'DELETE') { const key = requireControlHeaders(request); const leaseId = deleteLease[1]!; const row = store.db.query('SELECT * FROM video_media_leases_v1 WHERE id=? AND owner=?').get(leaseId, principal.owner) as Row | null; if (!row) return new Response(null, { status: 204, headers: { 'X-Request-Id': id } }); const hash = canonicalRelayRequestHash({ lease_id: leaseId, action: 'delete' }); const replay = store.replay(principal.owner, key, hash); if (!replay) { if (row.multipart_upload_id && objectStore.abortMultipartUpload) await objectStore.abortMultipartUpload({ leaseId, uploadId: row.multipart_upload_id as string }); await objectStore.delete(leaseId); store.transaction(() => { store.db.query("UPDATE video_media_leases_v1 SET state='deleted' WHERE id=?").run(leaseId); store.db.query('INSERT INTO video_media_idempotency_v1 VALUES(?,?,?,?)').run(principal.owner, key, hash, leaseId) }) }; return new Response(null, { status: 204, headers: { 'X-Request-Id': id } }) }
+      if (deleteLease && request.method === 'DELETE') { const key = requireControlHeaders(request); const leaseId = deleteLease[1]!; const row = store.db.query('SELECT * FROM video_media_leases_v1 WHERE id=? AND owner=?').get(leaseId, principal.owner) as Row | null; if (!row) return new Response(null, { status: 204, headers: { 'X-Request-Id': id } }); const hash = canonicalRelayRequestHash({ lease_id: leaseId, action: 'delete' }); const replay = store.replay(principal.owner, key, hash); if (!replay) { if (row.multipart_upload_id && objectStore.abortMultipartUpload) await objectStore.abortMultipartUpload({ leaseId, uploadId: row.multipart_upload_id as string }); await objectStore.delete(leaseId); store.transaction(() => { store.db.query("UPDATE video_media_leases_v1 SET state='deleted' WHERE id=?").run(leaseId); store.releaseLease(leaseId); store.db.query('INSERT INTO video_media_idempotency_v1 VALUES(?,?,?,?)').run(principal.owner, key, hash, leaseId) }) }; return new Response(null, { status: 204, headers: { 'X-Request-Id': id } }) }
       if (request.method === 'POST' && url.pathname === '/v1/video-media/operations') {
         const key = requireControlHeaders(request); const raw = createVideoRelayOperationRequestSchema.parse(await body(request)); const hash = canonicalRelayRequestHash(raw); const replay = store.replay(principal.owner, key, hash); if (replay) return json(await projection(replay), 200, id)
         const objectRefs = raw.capability === 'visual_evidence' || raw.capability === 'media_reasoning' ? raw.input.object_refs : raw.capability === 'speech_transcription' ? [raw.input.audio_object_ref] : []
@@ -470,7 +507,7 @@ export function createVideoMediaRelayFetch(deps: RelayDeps = {}) {
             await retryObjectCleanup()
           }
           return json(await projection(operationId), 202, id)
-        } catch (error) { const unknown = isOutcomeUnknown(error); store.db.query('UPDATE video_media_operations_v1 SET state=?,safe_error_code=?,updated_at=? WHERE id=?').run(unknown ? 'outcome_unknown' : 'failed', unknown ? 'provider_outcome_unknown' : safeFailureCode(error), iso(now), operationId); store.db.query('UPDATE video_media_quota_v1 SET state=? WHERE reservation_id=?').run(unknown ? 'outcome_unknown' : 'released', quota); if (!unknown) { queueInputCleanup(raw, principal.owner); await retryObjectCleanup() }; if (error instanceof RelayError || error instanceof DashScopeProviderError) throw new RelayError(error.status, error.code); throw new RelayError(503, 'provider_outcome_unknown') }
+        } catch (error) { const unknown = isOutcomeUnknown(error); store.db.query('UPDATE video_media_operations_v1 SET state=?,safe_error_code=?,updated_at=? WHERE id=?').run(unknown ? 'outcome_unknown' : 'failed', unknown ? 'provider_outcome_unknown' : safeFailureCode(error), iso(now), operationId); store.db.query('UPDATE video_media_quota_v1 SET state=? WHERE reservation_id=?').run(unknown ? 'outcome_unknown' : 'released', quota); if (unknown) retainOutcomeUnknownInputs(raw, principal.owner); else { queueInputCleanup(raw, principal.owner); await retryObjectCleanup() }; if (error instanceof RelayError || error instanceof DashScopeProviderError) throw new RelayError(error.status, error.code); throw new RelayError(503, 'provider_outcome_unknown') }
       }
       const operationId = /^\/v1\/video-media\/operations\/([a-z][a-z0-9_]{7,127})(?:\/(cancel|ack))?$/.exec(url.pathname)
       const legacyResultId = /^\/v1\/video-media\/operations\/([a-z][a-z0-9_]{7,127})\/result$/.exec(url.pathname)

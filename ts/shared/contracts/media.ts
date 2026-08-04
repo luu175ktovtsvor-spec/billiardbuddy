@@ -773,6 +773,10 @@ export const videoRemoteBudgetSchema = z.object({
   reservations: z.array(z.object({
     operation_id: mediaIdSchema,
     capability: z.enum(['visual_evidence', 'media_reasoning', 'speech_transcription', 'semantic_embedding']),
+    /** A reservation remains attributable to its local Operation even when a
+     * provider transport outcome cannot be safely classified. */
+    state: z.enum(['reserved', 'released', 'outcome_unknown']).default('reserved'),
+    safe_error_code: z.string().min(1).max(160).optional(),
     requests: z.number().int().nonnegative(),
     total_tokens: z.number().int().nonnegative(),
     input_bytes: z.number().int().nonnegative(),
@@ -781,6 +785,7 @@ export const videoRemoteBudgetSchema = z.object({
     asr_seconds: z.number().nonnegative(),
     estimated_amount_micros: z.number().int().nonnegative(),
     reserved_at: mediaIsoDateSchema,
+    finalized_at: mediaIsoDateSchema.optional(),
   })).max(10_000).default([]),
   /** One immutable entry per Relay receipt; aggregate fields above remain the
    * user-approved estimate rather than being overwritten by the last call. */
