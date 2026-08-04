@@ -915,6 +915,7 @@ test('15.2 Relay compiles every reference control into the actual Provider reque
 test('15.2 rejects capability gaps before paid submission, permits partial candidates, replays a Round and atomically adopts one Candidate to two Artboards', async () => {
   let paidPosts = 0
   const png = (await dataUrl()).split(',', 2)[1]!
+  const broken = (await brokenDataUrl()).split(',', 2)[1]!
   const gateway: typeof fetch = async (input, init) => {
     const url = new URL(input instanceof Request ? input.url : input.toString())
     if (url.pathname === '/image-generation/v1/images/tasks' && init?.method === 'POST') {
@@ -926,9 +927,13 @@ test('15.2 rejects capability gaps before paid submission, permits partial candi
         task_id: 'relay_task_partial',
         status: 'succeeded',
         provider_receipt_hash: 'b'.repeat(64),
+        expected_count: 3,
+        valid_count: 2,
+        partial_outcome_unknown: true,
+        invalid: [],
         data: [
-          { b64_json: png, mime_type: 'image/png' },
-          { b64_json: 'not-valid-base64***', mime_type: 'image/png' },
+          { candidate_index: 0, b64_json: broken, mime_type: 'image/png' },
+          { candidate_index: 2, b64_json: png, mime_type: 'image/png' },
         ],
       })
     }
@@ -1011,12 +1016,16 @@ test('15.2 rejects capability gaps before paid submission, permits partial candi
     const completed = await service.getGenerationOperation(project.id, created.operations[0]!.id)
     expect(completed.result).toMatchObject({ kind: 'candidate_group', expected_count: 3, valid_count: 1 })
     if (completed.result?.kind !== 'candidate_group') throw new Error('expected Candidate Group result')
-    expect(completed.result.invalid).toHaveLength(2)
+    expect(completed.result.invalid).toEqual([
+      { index: 0, safe_error_code: 'IMAGE_ASSET_INVALID' },
+      { index: 1, safe_error_code: 'IMAGE_RESULT_MISSING' },
+    ])
     const replay = await service.createGenerationRound(project.id, command)
     expect(replay.round.id).toBe(created.round.id)
     expect(paidPosts).toBe(1)
 
     const group = await service.getCandidateGroup(project.id, completed.result.candidate_group_id)
+    expect(group.candidates[0]?.candidate_index).toBe(2)
     const beforeAdopt = await service.getProject(project.id)
     expect(beforeAdopt.current_versions_by_artboard).toEqual({})
     const adoptionInput = {

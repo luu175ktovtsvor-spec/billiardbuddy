@@ -85,4 +85,34 @@ describe('Image Relay identity introspection', () => {
       expect(() => parseImageRelayGatewayIntrospectionBase(value)).toThrow('IMAGE_RELAY_GATEWAY_INTROSPECTION_BASE')
     }
   })
+
+  test('在 headers 已到但 identity body 永不结束时按 deadline 失败关闭', async () => {
+    let pulls = 0
+    const introspector = loadImageRelayIdentityIntrospector({
+      IMAGE_RELAY_GATEWAY_INTROSPECTION_BASE: 'http://gateway:8799',
+      IMAGE_RELAY_GATEWAY_INTROSPECTION_TOKEN: 'image-relay-service-token-123456789012345',
+    }, {
+      timeoutMs: 5,
+      fetchImpl: async () => new Response(new ReadableStream<Uint8Array>({
+        pull: () => {
+          pulls += 1
+          return new Promise<void>(() => {})
+        },
+        // A broken peer may never settle cancellation either. The deadline must
+        // still return control to the Relay handler rather than await it.
+        cancel: () => new Promise<void>(() => {}),
+      }), { headers: { 'content-type': 'application/json' } }),
+    })
+    await expect(introspector.introspect('desktop-token')).rejects.toMatchObject({ status: 503, code: 'identity_unavailable' })
+    await new Promise(resolve => setTimeout(resolve, 5))
+    expect(pulls).toBe(1)
+  })
+
+  test('在读取前按 Content-Length 拒绝过大的 identity 响应', async () => {
+    const introspector = loadImageRelayIdentityIntrospector({
+      IMAGE_RELAY_GATEWAY_INTROSPECTION_BASE: 'http://gateway:8799',
+      IMAGE_RELAY_GATEWAY_INTROSPECTION_TOKEN: 'image-relay-service-token-123456789012345',
+    }, { fetchImpl: async () => new Response('{}', { headers: { 'content-length': String(16 * 1024 + 1) } }) })
+    await expect(introspector.introspect('desktop-token')).rejects.toMatchObject({ status: 502, code: 'identity_response_invalid' })
+  })
 })

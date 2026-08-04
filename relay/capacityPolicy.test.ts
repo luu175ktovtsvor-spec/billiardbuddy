@@ -76,19 +76,29 @@ describe('Image Relay deployment preflight', () => {
       IMAGE_RELAY_PUBLIC_BASE: 'https://zzyppz.cn/image-generation',
       IMAGE_RELAY_RESULT_SIGNING_KEY: 's'.repeat(32),
       RELAY_CAPACITY_POLICY_REVISION: 'relay-image-production-v1',
-      RELAY_IMG_CONC: '2',
+      RELAY_IMG_CONC: '1',
       RELAY_IMG_USER_CONC: '1',
       RELAY_OPENAI_RPM: '12',
-      RELAY_SEEDREAM_CONC: '2',
+      RELAY_SEEDREAM_CONC: '1',
       RELAY_SEEDREAM_USER_CONC: '1',
       RELAY_SEEDREAM_RPM: '30',
       RELAY_QUEUE_MAX: '24',
       RELAY_USER_MAX: '4',
       RELAY_RETRY_AFTER_SECONDS: '30',
+      RELAY_REQUEST_BODY_TIMEOUT_MS: '30000',
       RELAY_UPSTREAM_TIMEOUT_MS: '300000',
       RELAY_MAX_BODY_BYTES: String(32 * 1024 * 1024),
       RELAY_PENDING_INPUT_BYTES_MAX: String(64 * 1024 * 1024),
       RELAY_ACTIVE_INPUT_BYTES_MAX: String(256 * 1024 * 1024),
+      RELAY_IDENTITY_TIMEOUT_MS: '5000',
+      RELAY_RESULT_GLOBAL_CONC: '2',
+      RELAY_RESULT_OWNER_CONC: '1',
+      RELAY_RESULT_MAX_BYTES: String(32 * 1024 * 1024),
+      RELAY_QUOTA_LEDGER_RETENTION_DAYS: '35',
+      RELAY_QUOTA_POLICY_REVISION: 'relay-image-spend-v1',
+      RELAY_OWNER_DAILY_USD_MINOR_LIMIT: '1000',
+      RELAY_OPENAI_DAILY_USD_MINOR_LIMIT: '10000',
+      RELAY_SEEDREAM_DAILY_USD_MINOR_LIMIT: '10000',
     }
     expect(() => validateRelayDeploymentEnvironment(valid)).not.toThrow()
     expect(() => validateRelayDeploymentEnvironment({ ...valid, RELAY_DB: ':memory:' }))
@@ -101,5 +111,7 @@ describe('Image Relay deployment preflight', () => {
       .toThrow('RELAY_OPENAI_RPM is required')
     expect(() => validateRelayDeploymentEnvironment({ ...valid, RELAY_RETRY_AFTER_SECONDS: '0' }))
       .toThrow('RELAY_RETRY_AFTER_SECONDS')
+    expect(() => validateRelayDeploymentEnvironment({ ...valid, RELAY_OWNER_DAILY_USD_MINOR_LIMIT: undefined }))
+      .toThrow('RELAY_OWNER_DAILY_USD_MINOR_LIMIT is required')
   })
 })

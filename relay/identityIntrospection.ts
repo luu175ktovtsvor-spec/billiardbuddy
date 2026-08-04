@@ -18,6 +18,9 @@ const REDACTED = '[REDACTED]'
 const INSTALLATION_ID = /^[A-Za-z0-9._-]{8,128}$/
 const SESSION_ID = /^[A-Za-z0-9_-]{24}$/
 const PRINCIPAL_ID = /^installation:[A-Za-z0-9_-]{32}$/
+const MAX_IDENTITY_RESPONSE_BYTES = 16 * 1024
+const DEFAULT_TIMEOUT_MS = 5_000
+const MAX_TIMEOUT_MS = 60_000
 
 export type ImageRelayIdentity = Omit<ActiveServiceIntrospection, 'active'>
 
@@ -37,45 +40,62 @@ export class ImageRelayIdentityIntrospector {
   #serviceToken: string
   #fetch: FetchLike
   #now: () => number
+  #timeoutMs: number
 
-  constructor(options: { baseUrl: string; serviceToken: string; fetchImpl?: FetchLike; now?: () => number }) {
+  constructor(options: { baseUrl: string; serviceToken: string; fetchImpl?: FetchLike; now?: () => number; timeoutMs?: number }) {
     this.#baseUrl = options.baseUrl
     this.#serviceToken = options.serviceToken
     this.#fetch = options.fetchImpl ?? fetch
     this.#now = options.now ?? Date.now
+    this.#timeoutMs = boundedTimeout(options.timeoutMs ?? DEFAULT_TIMEOUT_MS)
   }
 
   async introspect(installationBearer: string): Promise<ImageRelayIdentity> {
     if (!installationBearer.trim()) throw new RelayIdentityIntrospectionError(401, 'identity_inactive')
-    let response: Response
+    const controller = new AbortController()
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const deadline = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => {
+        controller.abort()
+        reject(new Error('identity deadline exceeded'))
+      }, this.#timeoutMs)
+      ;(timer as unknown as { unref?: () => void }).unref?.()
+    })
     try {
-      response = await this.#fetch(`${this.#baseUrl}${SERVICE_INTROSPECTION_PATH}`, {
-        method: 'POST',
-        headers: {
-          [SERVICE_INTROSPECTION_INSTALLATION_AUTHORIZATION_HEADER]: `Bearer ${installationBearer}`,
-          [SERVICE_INTROSPECTION_AUDIENCE_HEADER]: 'image-relay',
-          [SERVICE_INTROSPECTION_TOKEN_HEADER]: this.#serviceToken,
-        },
-      })
-    } catch {
+      return await Promise.race([(
+        async () => {
+          const response = await this.#fetch(`${this.#baseUrl}${SERVICE_INTROSPECTION_PATH}`, {
+            method: 'POST',
+            signal: controller.signal,
+            headers: {
+              [SERVICE_INTROSPECTION_INSTALLATION_AUTHORIZATION_HEADER]: `Bearer ${installationBearer}`,
+              [SERVICE_INTROSPECTION_AUDIENCE_HEADER]: 'image-relay',
+              [SERVICE_INTROSPECTION_TOKEN_HEADER]: this.#serviceToken,
+            },
+          })
+          if (!response.ok) {
+            if (response.status === 401 || response.status === 403) throw new RelayIdentityIntrospectionError(401, 'identity_inactive')
+            if (response.status >= 500) throw new RelayIdentityIntrospectionError(503, 'identity_unavailable')
+            throw new RelayIdentityIntrospectionError(502, 'identity_response_invalid')
+          }
+          let body: unknown
+          try {
+            body = JSON.parse(await readBoundedIdentityText(response, controller.signal)) as unknown
+          } catch (error) {
+            if (error instanceof RelayIdentityIntrospectionError) throw error
+            throw new RelayIdentityIntrospectionError(502, 'identity_response_invalid')
+          }
+          const identity = parseActiveImageRelayIdentity(body, this.#now())
+          if (!identity) throw new RelayIdentityIntrospectionError(401, 'identity_inactive')
+          return identity
+        }
+      )(), deadline])
+    } catch (error) {
+      if (error instanceof RelayIdentityIntrospectionError) throw error
       throw new RelayIdentityIntrospectionError(503, 'identity_unavailable')
+    } finally {
+      if (timer) clearTimeout(timer)
     }
-    if (!response.ok) {
-      if (response.status === 401 || response.status === 403) throw new RelayIdentityIntrospectionError(401, 'identity_inactive')
-      if (response.status >= 500) throw new RelayIdentityIntrospectionError(503, 'identity_unavailable')
-      throw new RelayIdentityIntrospectionError(502, 'identity_response_invalid')
-    }
-    let body: unknown
-    try {
-      const text = await response.text()
-      if (text.length > 16 * 1024) throw new Error('too large')
-      body = JSON.parse(text) as unknown
-    } catch {
-      throw new RelayIdentityIntrospectionError(502, 'identity_response_invalid')
-    }
-    const identity = parseActiveImageRelayIdentity(body, this.#now())
-    if (!identity) throw new RelayIdentityIntrospectionError(401, 'identity_inactive')
-    return identity
   }
 
   toJSON(): { gateway_introspection_base: string; service_token: string } {
@@ -89,12 +109,77 @@ export class ImageRelayIdentityIntrospector {
 
 export function loadImageRelayIdentityIntrospector(
   environment: ImageRelayIdentityEnvironment = process.env,
-  options: { fetchImpl?: FetchLike; now?: () => number } = {},
+  options: { fetchImpl?: FetchLike; now?: () => number; timeoutMs?: number } = {},
 ): ImageRelayIdentityIntrospector {
   const baseUrl = parseImageRelayGatewayIntrospectionBase(environment[IMAGE_RELAY_GATEWAY_INTROSPECTION_BASE_ENV])
   const token = environment[IMAGE_RELAY_GATEWAY_INTROSPECTION_TOKEN_ENV]?.trim()
   if (!token || token.length < 32) throw new Error(`${IMAGE_RELAY_GATEWAY_INTROSPECTION_TOKEN_ENV} must be at least 32 characters`)
   return new ImageRelayIdentityIntrospector({ baseUrl, serviceToken: token, ...options })
+}
+
+function boundedTimeout(value: number): number {
+  if (!Number.isSafeInteger(value) || value < 1 || value > MAX_TIMEOUT_MS) {
+    throw new Error(`identity timeout must be an integer between 1 and ${MAX_TIMEOUT_MS}`)
+  }
+  return value
+}
+
+function declaredContentLength(response: Response): number | undefined {
+  const raw = response.headers.get('content-length')?.trim()
+  if (!raw || !/^\d+$/.test(raw)) return undefined
+  const value = Number(raw)
+  return Number.isSafeInteger(value) ? value : undefined
+}
+
+/** Identity is a tiny fixed schema. Stream it so a malicious/failed Gateway
+ * cannot force `response.text()` to allocate an unbounded body. */
+async function readBoundedIdentityText(response: Response, signal: AbortSignal): Promise<string> {
+  if ((declaredContentLength(response) ?? 0) > MAX_IDENTITY_RESPONSE_BYTES) {
+    void response.body?.cancel().catch(() => {})
+    throw new RelayIdentityIntrospectionError(502, 'identity_response_invalid')
+  }
+  if (!response.body) return ''
+  const reader = response.body.getReader()
+  const chunks: Uint8Array[] = []
+  let total = 0
+  let detachAbort = () => {}
+  const aborted = new Promise<never>((_resolve, reject) => {
+    const onAbort = () => {
+      // Cancellation is deliberately fire-and-forget: a broken upstream stream
+      // must not hold the Relay request past its configured whole-body deadline.
+      void reader.cancel().catch(() => {})
+      reject(new Error('identity response deadline exceeded'))
+    }
+    if (signal.aborted) onAbort()
+    else {
+      signal.addEventListener('abort', onAbort, { once: true })
+      detachAbort = () => signal.removeEventListener('abort', onAbort)
+    }
+  })
+  try {
+    while (true) {
+      const next = await Promise.race([reader.read(), aborted])
+      if (next.done) break
+      const value = next.value
+      if (!value || value.byteLength === 0) continue
+      if (total + value.byteLength > MAX_IDENTITY_RESPONSE_BYTES) {
+        void reader.cancel().catch(() => {})
+        throw new RelayIdentityIntrospectionError(502, 'identity_response_invalid')
+      }
+      chunks.push(value)
+      total += value.byteLength
+    }
+    const bytes = new Uint8Array(total)
+    let offset = 0
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset)
+      offset += chunk.byteLength
+    }
+    return new TextDecoder().decode(bytes)
+  } finally {
+    detachAbort()
+    try { reader.releaseLock() } catch {}
+  }
 }
 
 /** Only an HTTPS service endpoint or the exact private Compose Gateway hop may carry this request. */
