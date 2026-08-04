@@ -98,7 +98,7 @@ type Deferred = {
 
 type CampaignGateway = {
   calls: GatewayCall[]
-  setTaskStatus(taskId: string, status: 'queued' | 'running' | 'cancelled'): void
+  setTaskStatus(taskId: string, status: 'queued' | 'running' | 'succeeded' | 'cancelled'): void
   waitForBlockedPost(postNumber?: number): Promise<void>
   releaseBlockedPost(postNumber?: number): void
   fetchImpl: typeof fetch
@@ -168,8 +168,8 @@ function deferred(): Deferred {
 
 function campaignGateway(options: { failPosts?: number[]; blockPosts?: number[] } = {}): CampaignGateway {
   const calls: GatewayCall[] = []
-  const taskByIdempotencyKey = new Map<string, { id: string; status: 'queued' | 'running' | 'cancelled' }>()
-  const taskById = new Map<string, { id: string; status: 'queued' | 'running' | 'cancelled' }>()
+  const taskByIdempotencyKey = new Map<string, { id: string; status: 'queued' | 'running' | 'succeeded' | 'cancelled' }>()
+  const taskById = new Map<string, { id: string; status: 'queued' | 'running' | 'succeeded' | 'cancelled' }>()
   const failPosts = new Set(options.failPosts ?? [])
   const blockedPosts = new Map<number, { entered: Deferred; release: Deferred }>((options.blockPosts ?? []).map(postNumber => [postNumber, {
     entered: deferred(),
@@ -177,6 +177,7 @@ function campaignGateway(options: { failPosts?: number[]; blockPosts?: number[] 
   }] as const))
   let postCount = 0
   const receipt = 'd'.repeat(64)
+  const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAACXBIWXMAAAPoAAAD6AG1e1JrAAAADUlEQVQImWP4z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg=='
 
   const fetchImpl: typeof fetch = async (input, init) => {
     const url = new URL(input instanceof Request ? input.url : input.toString())
@@ -221,11 +222,18 @@ function campaignGateway(options: { failPosts?: number[]; blockPosts?: number[] 
       if (!task) return Response.json({ error: 'unknown task' }, { status: 404 })
       if (taskMatch[2] === 'cancel' && method === 'POST') {
         if (task.status === 'running') return Response.json({ status: 'running' }, { status: 409 })
+        if (task.status === 'succeeded') return Response.json({ status: 'succeeded' }, { status: 409 })
         task.status = 'cancelled'
         return Response.json({ status: 'cancelled' })
       }
       if (method === 'GET') {
-        return Response.json({ task_id: task.id, status: task.status, poll_after_seconds: 1, provider_receipt_hash: receipt })
+        return Response.json({
+          task_id: task.id,
+          status: task.status,
+          poll_after_seconds: 1,
+          provider_receipt_hash: receipt,
+          ...(task.status === 'succeeded' ? { data: [{ b64_json: png, mime_type: 'image/png' }] } : {}),
+        })
       }
     }
     if (url.pathname.includes('/by-idempotency/') && method === 'GET') {
@@ -939,6 +947,25 @@ test('15.5D Campaign 只会取消 queued 项目，running 竞态返回 409 且�
     expect(afterRace.status).toBe(200)
     expect(await afterRace.json()).toMatchObject({ campaign: { state: 'running' }, items: [{ state: 'running' }] })
     expect(gateway.calls.filter(call => call.path.endsWith('/cancel') && call.method === 'POST')).toHaveLength(1)
+
+    // A late cancellation receipt is terminal even when the accepted remote
+    // task finishes after the 409 race.  Recovery must not reopen the
+    // prepared workflow intent or reinterpret the item as a successful cancel.
+    gateway.setTaskStatus(transport.remote_task_id, 'succeeded')
+    const afterCompletion = await request(handler, `/api/images/campaigns/${runningCampaign.payload.campaign.id}`)
+    expect(afterCompletion.status).toBe(200)
+    expect(await afterCompletion.json()).toMatchObject({ campaign: { state: 'completed' }, items: [{ state: 'ready' }] })
+    const completedCancellationReceipt = repositoryDatabase(service).query(`SELECT status,result_json
+      FROM image_workflow_command_receipts
+      WHERE scope='campaign-cancel' AND aggregate_id=? AND idempotency_key=?`).get(
+      runningCampaign.payload.campaign.id,
+      'bb-image-15-5d-campaign-running-cancel-command-0001',
+    ) as { status: string; result_json: string } | null
+    expect(completedCancellationReceipt).toMatchObject({ status: 'complete' })
+    expect(JSON.parse(completedCancellationReceipt?.result_json ?? '{}')).toMatchObject({
+      kind: 'campaign_cancellation_outcome',
+      outcome: 'cancellation_too_late',
+    })
   })
 })
 
@@ -1147,6 +1174,103 @@ test('15.5D 取消事务写入失败后重启优先消费取消回执，排队 O
       created.payload.campaign.id,
       'bb-image-15-5d-campaign-cancel-atomic-cancel-0001',
     )).toMatchObject({ status: 'complete' })
+  })
+})
+
+test('15.5D 旧版本 formal 已取消但 transport 未落库时恢复不得重新 POST 或复活 formal', async () => {
+  const gateway = campaignGateway()
+  let interruptBeforePost = true
+  const rootPath = await root('cancel-formal-partial-recovery')
+  const legacyRoot = await root('cancel-formal-partial-recovery-legacy')
+  const first = new ImageWorkbenchService({
+    root: rootPath,
+    legacyMediaRoot: legacyRoot,
+    now: () => new Date('2026-08-05T00:00:00.000Z'),
+    fetchImpl: gateway.fetchImpl,
+    crashInjector: point => {
+      if (point === 'after_generation_round_persisted_before_post' && interruptBeforePost) {
+        interruptBeforePost = false
+        throw new Error('INJECTED_CAMPAIGN_ROUND_BEFORE_POST')
+      }
+    },
+  })
+  services.push(first)
+  const firstHandler = createImageWorkbenchDomainApiHandler(first, capability)
+
+  await withGateway(async () => {
+    const created = await createCampaign(firstHandler, campaignInput({
+      idempotency_key: 'bb-image-15-5d-campaign-cancel-formal-partial-create-0001',
+      items: [{ variable_values: [] }],
+    }))
+    const estimateResponse = await request(firstHandler, `/api/images/campaigns/${created.payload.campaign.id}/estimate`, {
+      method: 'POST', headers, body: JSON.stringify({ base_revision: created.payload.campaign.revision }),
+    })
+    const estimate = await estimateResponse.json() as EstimatePayload
+    const confirmationResponse = await request(firstHandler, `/api/images/campaigns/${created.payload.campaign.id}/commands/confirm`, {
+      method: 'POST', headers, body: JSON.stringify({
+        base_revision: created.payload.campaign.revision,
+        idempotency_key: 'bb-image-15-5d-campaign-cancel-formal-partial-confirm-0001',
+        estimate_hash: estimate.estimate.estimate_hash,
+      }),
+    })
+    const confirmation = await confirmationResponse.json() as ConfirmationPayload
+    const startedResponse = await request(firstHandler, `/api/images/campaigns/${created.payload.campaign.id}/commands/start`, {
+      method: 'POST', headers, body: JSON.stringify({
+        base_revision: confirmation.campaign.revision,
+        idempotency_key: 'bb-image-15-5d-campaign-cancel-formal-partial-start-0001',
+        estimate_hash: estimate.estimate.estimate_hash,
+        confirmation_receipt_id: confirmation.confirmation.id,
+      }),
+    })
+    expect(startedResponse.status).toBe(202)
+    const started = await startedResponse.json() as CampaignPayload
+    const item = started.items[0]
+    if (!item?.project_id) throw new Error('expected persisted Campaign child Project')
+    const formalBefore = (await first.repository.listGenerationOperations(item.project_id))[0]
+    if (!formalBefore?.transport_task_id) throw new Error('expected formal generation transport')
+    expect(formalBefore).toMatchObject({ status: 'queued', cost_state: 'not_submitted' })
+    expect(await first.repository.getOperation(formalBefore.transport_task_id)).toMatchObject({ status: 'queued' })
+
+    // This is the state left by the pre-atomic cancellation writer: the
+    // formal record says cancellation is confirmed, while its transport row
+    // is still queued.  The restart path must repair the transport locally,
+    // never treat the formal operation as queued, and never POST to Relay.
+    await first.repository.updateGenerationOperation({
+      ...formalBefore,
+      status: 'cancelled',
+      cost_state: 'not_submitted',
+      cancellation: {
+        requested_at: '2026-08-05T00:00:01.000Z',
+        remote_state: 'confirmed',
+        late_result_policy: 'retain_as_unadopted',
+      },
+      completed_at: '2026-08-05T00:00:01.000Z',
+      updated_at: '2026-08-05T00:00:01.000Z',
+    })
+    first.repository.close()
+    services.splice(services.indexOf(first), 1)
+
+    const recovered = new ImageWorkbenchService({
+      root: rootPath,
+      legacyMediaRoot: legacyRoot,
+      now: () => new Date('2026-08-05T00:00:00.000Z'),
+      fetchImpl: gateway.fetchImpl,
+    })
+    services.push(recovered)
+    const recoveredHandler = createImageWorkbenchDomainApiHandler(recovered, capability)
+    await recovered.recoverInterruptedOperations()
+    expect(postCount(gateway)).toBe(0)
+    const formalAfterRecovery = await recovered.repository.getGenerationOperation(item.project_id, formalBefore.id)
+    const transportAfterRecovery = await recovered.repository.getOperation(formalBefore.transport_task_id)
+    expect(formalAfterRecovery).toMatchObject({
+      status: 'cancelled',
+      cost_state: 'not_submitted',
+      cancellation: { remote_state: 'confirmed' },
+    })
+    expect(transportAfterRecovery).toMatchObject({ status: 'cancelled' })
+    const state = await request(recoveredHandler, `/api/images/campaigns/${created.payload.campaign.id}`)
+    expect(state.status).toBe(200)
+    expect(await state.json()).toMatchObject({ items: [{ state: 'cancelled', attempt: 1 }] })
   })
 })
 

@@ -75,6 +75,7 @@ import type {
   StartImageCampaignInput,
   UpsertImageInspirationItemsInput,
 } from '../../../../shared/contracts/imageWorkflow.js'
+import type { ImageWorkbenchPreloadBridge } from '../../../../shared/contracts/imageWorkbenchPreload.js'
 
 export type { ImageWorkbenchProjectProjection } from '../../../../shared/contracts/imageWorkflow.js'
 
@@ -111,9 +112,8 @@ export type ImageReferenceIdentifier = ImageProjectIdentifier & { reference_id: 
 export type ImageOperationIdentifier = ImageProjectIdentifier & { operation_id: string }
 
 /**
- * A renderer-safe candidate preview.  The future Main/Preload adapter must
- * resolve the protected media capability and return bytes through the typed
- * bridge; the renderer must never turn a protected API path into an <img> URL.
+ * A renderer-safe candidate preview resolved by Main/Preload into a bounded
+ * data URL; the renderer never turns a protected API path into an <img> URL.
  */
 export type ImageCommandEnvelope = {
   idempotency_key: string
@@ -273,9 +273,8 @@ export type ImageCampaignRetryItemCommand = ImageCampaignIdentifier & {
 }
 
 /**
- * This is a contract only.  A Main/Preload adapter is intentionally not
- * constructed here, so the renderer cannot silently bypass the shared IPC
- * capability gate or issue direct HTTP/Provider requests.
+ * The adapter below is the sole renderer entry point. It only forwards typed
+ * calls to the shared Main/Preload bridge and never constructs a server URL.
  */
 export interface ImageWorkbenchClient {
   listProjects(): Promise<ImageWorkbenchClientResult<ImageWorkbenchProjectListResponse>>
@@ -302,8 +301,7 @@ export interface ImageWorkbenchClient {
   deriveCandidate(command: ImageCandidateDerivationCommand): Promise<ImageWorkbenchClientResult<ImageCandidateDerivationResponse>>
   adoptCandidate(command: ImageCandidateAdoptionCommand): Promise<ImageWorkbenchClientResult<ImageCandidateAdoptionResponse>>
   cancelOperation(input: ImageOperationIdentifier): Promise<ImageWorkbenchClientResult<ImageGenerationCancelResponse>>
-  /** Optional until the shared Main/Preload media bridge lands. */
-  getCandidatePreview?(input: ImageCandidateIdentifier): Promise<ImageWorkbenchClientResult<ImageCandidatePreviewResponse>>
+  getCandidatePreview(input: ImageCandidateIdentifier): Promise<ImageWorkbenchClientResult<ImageCandidatePreviewResponse>>
 
   listCanvases(input: ImageProjectIdentifier): Promise<ImageWorkbenchClientResult<ImageCanvasListResponse>>
   getCanvas(input: ImageCanvasIdentifier & { revision?: number }): Promise<ImageWorkbenchClientResult<ImageCanvasResponse>>
@@ -340,4 +338,145 @@ export interface ImageWorkbenchClient {
   startCampaign(command: ImageCampaignStartCommand): Promise<ImageWorkbenchClientResult<ImageCampaignResponse>>
   cancelCampaign(command: ImageCampaignCancelCommand): Promise<ImageWorkbenchClientResult<ImageCampaignResponse>>
   retryCampaignItem(command: ImageCampaignRetryItemCommand): Promise<ImageWorkbenchClientResult<ImageCampaignResponse>>
+}
+
+/**
+ * Renderer adapter for the complete image workbench. Every protected read or
+ * write remains a typed Main/Preload call; no renderer HTTP client is needed.
+ */
+export function createElectronImageWorkbenchClient(
+  bridge: ImageWorkbenchPreloadBridge,
+): ImageWorkbenchClient {
+  return {
+    listProjects: () => bridge.listProjects(),
+    getProject: input => bridge.getProject(input.project_id),
+    getProjectProjection: input => bridge.getProjectProjection(input.project_id),
+    listOperationEvents: input => bridge.listOperationEvents({
+      projectId: input.project_id,
+      cursor: input.cursor,
+      ...(input.limit === undefined ? {} : { limit: input.limit }),
+      ...(input.wait_ms === undefined ? {} : { waitMs: input.wait_ms }),
+    }),
+    quickCreate: input => bridge.quickCreate(input),
+    compileBrief: input => bridge.compileBrief(input.project_id),
+    applyBriefOverrides: command => bridge.applyBriefOverrides({
+      projectId: command.project_id,
+      briefId: command.brief_id,
+      input: command.input,
+    }),
+    getInspirationBoard: input => bridge.getInspirationBoard(input.project_id),
+    upsertInspirationItems: command => bridge.upsertInspirationItems({
+      projectId: command.project_id,
+      input: command.input,
+    }),
+    promoteInspirationItem: command => bridge.promoteInspirationItem({
+      projectId: command.project_id,
+      inspirationItemId: command.inspiration_item_id,
+      input: command.input,
+    }),
+    addReferences: command => bridge.addReferences({
+      projectId: command.project_id,
+      input: command.input,
+    }),
+    removeReference: command => bridge.removeReference({
+      projectId: command.project_id,
+      referenceId: command.reference_id,
+      input: command.input,
+    }),
+    updateReferenceControl: command => bridge.updateReferenceControl(command.project_id, command.reference_id, command.input),
+    createCreativePlan: command => bridge.createCreativePlan(command.project_id, command.input),
+    estimateGenerationRound: command => bridge.estimateGenerationRound(command.project_id, command.input),
+    createGenerationRound: command => bridge.createGenerationRound(command.project_id, command.input),
+    getCandidateGroup: input => bridge.getCandidateGroup({
+      projectId: input.project_id,
+      candidateGroupId: input.candidate_group_id,
+    }),
+    decideCandidate: command => bridge.decideCandidate(command.project_id, command.candidate_id, command.input),
+    estimateCandidateDerivation: command => bridge.estimateDerivation(command.project_id, command.candidate_id, command.input),
+    deriveCandidate: command => bridge.deriveCandidate(command.project_id, command.candidate_id, command.input),
+    adoptCandidate: command => bridge.adoptCandidate(command.project_id, command.candidate_id, command.input),
+    cancelOperation: input => bridge.cancelGenerationOperation(input.operation_id),
+    getCandidatePreview: input => bridge.getCandidatePreview({
+      projectId: input.project_id,
+      candidateId: input.candidate_id,
+    }),
+    listCanvases: input => bridge.listCanvases(input.project_id),
+    getCanvas: input => bridge.getCanvas({
+      projectId: input.project_id,
+      canvasId: input.canvas_id,
+      ...(input.revision === undefined ? {} : { revision: input.revision }),
+    }),
+    createCanvas: command => bridge.createCanvas(command.project_id, command.input),
+    applyCanvasCommand: command => bridge.applyCanvasCommand(command.project_id, command.canvas_id, command.input),
+    preflightCanvas: command => bridge.preflightCanvas(command.project_id, command.canvas_id, command.input),
+    renderCanvas: command => bridge.renderCanvas(command.project_id, command.canvas_id, command.input),
+    createDeliverySpec: command => bridge.createDeliverySpecRevision(command.project_id, command.input),
+    exportDelivery: command => bridge.exportDelivery(command.project_id, command.input),
+    getDeliverySet: input => bridge.getDeliverySet({
+      projectId: input.project_id,
+      deliverySetId: input.delivery_set_id,
+    }),
+    getProjectLibrary: input => bridge.getProjectLibrary(input.project_id),
+    listBrandKits: () => bridge.listBrandKits(),
+    getBrandKit: input => bridge.getBrandKit(input.brand_kit_id),
+    createBrandKit: input => bridge.createBrandKit(input),
+    reviseBrandKit: command => bridge.reviseBrandKit({
+      brandKitId: command.brand_kit_id,
+      input: command.input,
+    }),
+    deleteBrandKit: input => bridge.deleteBrandKit({
+      brandKitId: input.brand_kit_id,
+      input: input.input,
+    }),
+    listTemplates: () => bridge.listTemplates(),
+    getTemplate: input => bridge.getTemplate(input.template_id),
+    createTemplate: input => bridge.createTemplate(input),
+    reviseTemplate: command => bridge.reviseTemplate({
+      templateId: command.template_id,
+      input: command.input,
+    }),
+    deleteTemplate: input => bridge.deleteTemplate({
+      templateId: input.template_id,
+      input: input.input,
+    }),
+    createAssetGrant: command => bridge.createAssetGrant(command.input),
+    revokeAssetGrant: command => bridge.revokeAssetGrant({
+      grantId: command.grant_id,
+      input: command.input,
+    }),
+    listAssetGrants: () => bridge.listAssetGrants(),
+    listCampaigns: input => bridge.listCampaigns(input),
+    getCampaign: input => bridge.getCampaign(input.campaign_id),
+    createCampaign: input => bridge.createCampaign(input),
+    replaceCampaignItems: command => bridge.replaceCampaignItems({
+      campaignId: command.campaign_id,
+      input: command.input,
+    }),
+    estimateCampaign: command => bridge.estimateCampaign({
+      campaignId: command.campaign_id,
+      input: command.input,
+    }),
+    confirmCampaign: command => bridge.confirmCampaign({
+      campaignId: command.campaign_id,
+      input: command.input,
+    }),
+    confirmCampaignRetry: command => bridge.confirmCampaignRetry({
+      campaignId: command.campaign_id,
+      itemId: command.item_id,
+      input: command.input,
+    }),
+    startCampaign: command => bridge.startCampaign({
+      campaignId: command.campaign_id,
+      input: command.input,
+    }),
+    cancelCampaign: command => bridge.cancelCampaign({
+      campaignId: command.campaign_id,
+      input: command.input,
+    }),
+    retryCampaignItem: command => bridge.retryCampaignItem({
+      campaignId: command.campaign_id,
+      itemId: command.item_id,
+      input: command.input,
+    }),
+  }
 }

@@ -13,6 +13,7 @@ export {
   serializeImageWorkbenchViewState,
 } from './state/imageWorkbenchViewState.js'
 export {
+  createElectronImageWorkbenchClient,
   ImageWorkbenchClientFailure,
   unwrapImageWorkbenchClientResult,
 } from './api/imageWorkbenchClient.js'

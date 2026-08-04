@@ -21,6 +21,10 @@ import {
   updateImageReferenceControlInputSchema,
 } from '../../../shared/contracts/imageGeneration'
 import {
+  imageWorkbenchIpcPayloadSchema,
+  imageWorkbenchIpcPayloadSchemas,
+} from '../../../shared/contracts/imageWorkbenchIpc'
+import {
   mediaIdSchema,
   startImageOperationInputSchema,
   submitImageProjectInputSchema,
@@ -1235,6 +1239,13 @@ const imageRenderCanvas: Validator = value => imageRenderCanvasIpcPayloadSchema.
 const imageExportDelivery: Validator = value => imageExportDeliveryIpcPayloadSchema.safeParse(value).success
 const imageRequestDestination: Validator = value => imageRequestDestinationIpcPayloadSchema.safeParse(value).success
 const imageSelectArtboardVersion: Validator = value => imageSelectArtboardVersionIpcPayloadSchema.safeParse(value).success
+const imageWorkbenchInvoke: Validator = value => {
+  const envelope = imageWorkbenchIpcPayloadSchema.safeParse(value)
+  if (!envelope.success) return false
+  if (!Object.prototype.hasOwnProperty.call(imageWorkbenchIpcPayloadSchemas, envelope.data.method)) return false
+  const schema = imageWorkbenchIpcPayloadSchemas[envelope.data.method as keyof typeof imageWorkbenchIpcPayloadSchemas]
+  return schema ? schema.safeParse(envelope.data.payload).success : false
+}
 
 export const ELECTRON_IPC_VALIDATORS = {
   [ELECTRON_IPC_CHANNELS.appGetVersion]: noPayload,
@@ -1390,6 +1401,7 @@ export const ELECTRON_IPC_VALIDATORS = {
   [ELECTRON_IPC_CHANNELS.imageExportDelivery]: imageExportDelivery,
   [ELECTRON_IPC_CHANNELS.imageRequestDestination]: imageRequestDestination,
   [ELECTRON_IPC_CHANNELS.imageSelectArtboardVersion]: imageSelectArtboardVersion,
+  [ELECTRON_IPC_CHANNELS.imageWorkbenchInvoke]: imageWorkbenchInvoke,
   [ELECTRON_IPC_CHANNELS.videoAddSource]: videoAddSource,
   [ELECTRON_IPC_CHANNELS.videoRender]: videoRender,
   [ELECTRON_IPC_CHANNELS.videoAnalyze]: videoAnalyze,

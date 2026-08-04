@@ -32,6 +32,16 @@ import {
   imageUnderstandingResponseSchema,
   imageVisualAssessmentResponseSchema,
 } from '../../../shared/contracts/imageGeneration'
+import {
+  imageWorkbenchIpcResponseSchemas,
+  type ImageWorkbenchIpcRequest,
+  type ImageWorkbenchIpcMethod,
+  type ImageWorkbenchIpcValueByMethod,
+} from '../../../shared/contracts/imageWorkbenchIpc'
+import {
+  imageCandidatePreviewResponseSchema,
+  type ImageCandidatePreviewResponse,
+} from '../../../shared/contracts/imageWorkflow'
 import { createHash } from 'node:crypto'
 import type {
   AdoptImageCandidateInput,
@@ -205,6 +215,137 @@ export class ElectronImageActions {
     return this.post(`/api/images/projects/${encodeURIComponent(projectId)}/artboards/${encodeURIComponent(artboardId)}/commands/select-version`, input, imageArtboardSelectVersionResponseSchema)
   }
 
+  /** Main-only dispatcher for the typed 15.5 renderer workbench bridge. */
+  async invokeWorkbench(request: ImageWorkbenchIpcRequest): Promise<ImageWorkbenchIpcValueByMethod[ImageWorkbenchIpcMethod]> {
+    switch (request.method) {
+      case 'listProjects':
+        return this.get('/api/images/projects', imageWorkbenchIpcResponseSchemas.listProjects)
+      case 'getProject':
+        return this.get(`/api/images/projects/${encodeURIComponent(request.payload.projectId)}`, imageWorkbenchIpcResponseSchemas.getProject)
+      case 'getProjectProjection':
+        return this.get(`/api/images/projects/${encodeURIComponent(request.payload.projectId)}/projection`, imageWorkbenchIpcResponseSchemas.getProjectProjection)
+      case 'listOperationEvents': {
+        const query = new URLSearchParams({
+          cursor: String(request.payload.cursor),
+          limit: String(request.payload.limit ?? 200),
+          wait_ms: String(request.payload.waitMs ?? 25_000),
+        })
+        return this.get(`/api/images/projects/${encodeURIComponent(request.payload.projectId)}/events?${query.toString()}`, imageWorkbenchIpcResponseSchemas.listOperationEvents)
+      }
+      case 'quickCreate':
+        return this.post('/api/images/quick-create', request.payload.input, imageWorkbenchIpcResponseSchemas.quickCreate)
+      case 'compileBrief':
+        return this.post(`/api/images/projects/${encodeURIComponent(request.payload.projectId)}/brief/compile`, undefined, imageWorkbenchIpcResponseSchemas.compileBrief)
+      case 'applyBriefOverrides':
+        return this.post(`/api/images/projects/${encodeURIComponent(request.payload.projectId)}/brief/commands/apply-overrides`, request.payload.input, imageWorkbenchIpcResponseSchemas.applyBriefOverrides)
+      case 'getInspirationBoard':
+        return this.get(`/api/images/projects/${encodeURIComponent(request.payload.projectId)}/inspiration-board`, imageWorkbenchIpcResponseSchemas.getInspirationBoard)
+      case 'upsertInspirationItems':
+        return this.post(`/api/images/projects/${encodeURIComponent(request.payload.projectId)}/inspiration-board/commands/upsert-items`, request.payload.input, imageWorkbenchIpcResponseSchemas.upsertInspirationItems)
+      case 'promoteInspirationItem':
+        return this.post(`/api/images/projects/${encodeURIComponent(request.payload.projectId)}/inspiration-board/items/${encodeURIComponent(request.payload.inspirationItemId)}/commands/promote`, request.payload.input, imageWorkbenchIpcResponseSchemas.promoteInspirationItem)
+      case 'addReferences':
+        return this.post(`/api/images/projects/${encodeURIComponent(request.payload.projectId)}/references`, request.payload.input, imageWorkbenchIpcResponseSchemas.addReferences)
+      case 'removeReference':
+        return this.post(`/api/images/projects/${encodeURIComponent(request.payload.projectId)}/references/${encodeURIComponent(request.payload.referenceId)}/commands/remove`, request.payload.input, imageWorkbenchIpcResponseSchemas.removeReference)
+      case 'updateReferenceControl':
+        return this.updateReferenceControl(request.payload.projectId, request.payload.referenceId, request.payload.input)
+      case 'createCreativePlan':
+        return this.createCreativePlan(request.payload.projectId, request.payload.input)
+      case 'estimateGenerationRound':
+        return this.estimateGenerationRound(request.payload.projectId, request.payload.input)
+      case 'createGenerationRound':
+        return this.createGenerationRound(request.payload.projectId, request.payload.input)
+      case 'getCandidateGroup':
+        return this.get(`/api/images/projects/${encodeURIComponent(request.payload.projectId)}/candidate-groups/${encodeURIComponent(request.payload.candidateGroupId)}`, imageWorkbenchIpcResponseSchemas.getCandidateGroup)
+      case 'getCandidatePreview':
+        return this.downloadCandidatePreview(request.payload.projectId, request.payload.candidateId)
+      case 'decideCandidate':
+        return this.decideCandidate(request.payload.projectId, request.payload.candidateId, request.payload.input)
+      case 'estimateCandidateDerivation':
+        return this.estimateDerivation(request.payload.projectId, request.payload.candidateId, request.payload.input)
+      case 'deriveCandidate':
+        return this.deriveCandidate(request.payload.projectId, request.payload.candidateId, request.payload.input)
+      case 'adoptCandidate':
+        return this.adoptCandidate(request.payload.projectId, request.payload.candidateId, request.payload.input)
+      case 'cancelOperation':
+        return this.cancelGenerationOperation(request.payload.operationId)
+      case 'listCanvases':
+        return this.get(`/api/images/projects/${encodeURIComponent(request.payload.projectId)}/canvases`, imageWorkbenchIpcResponseSchemas.listCanvases)
+      case 'getCanvas': {
+        const suffix = request.payload.revision === undefined ? '' : `?revision=${encodeURIComponent(String(request.payload.revision))}`
+        return this.get(`/api/images/projects/${encodeURIComponent(request.payload.projectId)}/canvases/${encodeURIComponent(request.payload.canvasId)}${suffix}`, imageWorkbenchIpcResponseSchemas.getCanvas)
+      }
+      case 'createCanvas':
+        return this.createCanvas(request.payload.projectId, request.payload.input)
+      case 'applyCanvasCommand':
+        return this.applyCanvasCommand(request.payload.projectId, request.payload.canvasId, request.payload.input)
+      case 'preflightCanvas':
+        return this.preflightCanvas(request.payload.projectId, request.payload.canvasId, request.payload.input)
+      case 'renderCanvas':
+        return this.renderCanvas(request.payload.projectId, request.payload.canvasId, request.payload.input)
+      case 'createDeliverySpec':
+        return this.createDeliverySpecRevision(request.payload.projectId, request.payload.input)
+      case 'exportDelivery':
+        return this.exportDelivery(request.payload.projectId, request.payload.input)
+      case 'getDeliverySet':
+        return this.get(`/api/images/projects/${encodeURIComponent(request.payload.projectId)}/delivery-sets/${encodeURIComponent(request.payload.deliverySetId)}`, imageWorkbenchIpcResponseSchemas.getDeliverySet)
+      case 'getProjectLibrary':
+        return this.get(`/api/images/projects/${encodeURIComponent(request.payload.projectId)}/library`, imageWorkbenchIpcResponseSchemas.getProjectLibrary)
+      case 'listBrandKits':
+        return this.get('/api/images/brand-kits', imageWorkbenchIpcResponseSchemas.listBrandKits)
+      case 'getBrandKit':
+        return this.get(`/api/images/brand-kits/${encodeURIComponent(request.payload.brandKitId)}`, imageWorkbenchIpcResponseSchemas.getBrandKit)
+      case 'createBrandKit':
+        return this.post('/api/images/brand-kits', request.payload.input, imageWorkbenchIpcResponseSchemas.createBrandKit)
+      case 'reviseBrandKit':
+        return this.post(`/api/images/brand-kits/${encodeURIComponent(request.payload.brandKitId)}/revisions`, request.payload.input, imageWorkbenchIpcResponseSchemas.reviseBrandKit)
+      case 'deleteBrandKit':
+        return this.post(`/api/images/brand-kits/${encodeURIComponent(request.payload.brandKitId)}/commands/trash`, request.payload.input, imageWorkbenchIpcResponseSchemas.deleteBrandKit)
+      case 'listTemplates':
+        return this.get('/api/images/templates', imageWorkbenchIpcResponseSchemas.listTemplates)
+      case 'getTemplate':
+        return this.get(`/api/images/templates/${encodeURIComponent(request.payload.templateId)}`, imageWorkbenchIpcResponseSchemas.getTemplate)
+      case 'createTemplate':
+        return this.post('/api/images/templates', request.payload.input, imageWorkbenchIpcResponseSchemas.createTemplate)
+      case 'reviseTemplate':
+        return this.post(`/api/images/templates/${encodeURIComponent(request.payload.templateId)}/revisions`, request.payload.input, imageWorkbenchIpcResponseSchemas.reviseTemplate)
+      case 'deleteTemplate':
+        return this.post(`/api/images/templates/${encodeURIComponent(request.payload.templateId)}/commands/trash`, request.payload.input, imageWorkbenchIpcResponseSchemas.deleteTemplate)
+      case 'createAssetGrant':
+        return this.post('/api/images/asset-grants', request.payload.input, imageWorkbenchIpcResponseSchemas.createAssetGrant)
+      case 'revokeAssetGrant':
+        return this.post(`/api/images/asset-grants/${encodeURIComponent(request.payload.grantId)}/commands/revoke`, request.payload.input, imageWorkbenchIpcResponseSchemas.revokeAssetGrant)
+      case 'listAssetGrants':
+        return this.get('/api/images/asset-grants', imageWorkbenchIpcResponseSchemas.listAssetGrants)
+      case 'listCampaigns': {
+        const query = new URLSearchParams()
+        if (request.payload.input?.cursor !== undefined) query.set('cursor', String(request.payload.input.cursor))
+        if (request.payload.input?.limit !== undefined) query.set('limit', String(request.payload.input.limit))
+        const suffix = query.size > 0 ? `?${query.toString()}` : ''
+        return this.get(`/api/images/campaigns${suffix}`, imageWorkbenchIpcResponseSchemas.listCampaigns)
+      }
+      case 'getCampaign':
+        return this.get(`/api/images/campaigns/${encodeURIComponent(request.payload.campaignId)}`, imageWorkbenchIpcResponseSchemas.getCampaign)
+      case 'createCampaign':
+        return this.post('/api/images/campaigns', request.payload.input, imageWorkbenchIpcResponseSchemas.createCampaign)
+      case 'replaceCampaignItems':
+        return this.post(`/api/images/campaigns/${encodeURIComponent(request.payload.campaignId)}/commands/replace-items`, request.payload.input, imageWorkbenchIpcResponseSchemas.replaceCampaignItems)
+      case 'estimateCampaign':
+        return this.post(`/api/images/campaigns/${encodeURIComponent(request.payload.campaignId)}/estimate`, request.payload.input, imageWorkbenchIpcResponseSchemas.estimateCampaign)
+      case 'confirmCampaign':
+        return this.post(`/api/images/campaigns/${encodeURIComponent(request.payload.campaignId)}/commands/confirm`, request.payload.input, imageWorkbenchIpcResponseSchemas.confirmCampaign)
+      case 'confirmCampaignRetry':
+        return this.post(`/api/images/campaigns/${encodeURIComponent(request.payload.campaignId)}/items/${encodeURIComponent(request.payload.itemId)}/commands/confirm-retry`, request.payload.input, imageWorkbenchIpcResponseSchemas.confirmCampaignRetry)
+      case 'startCampaign':
+        return this.post(`/api/images/campaigns/${encodeURIComponent(request.payload.campaignId)}/commands/start`, request.payload.input, imageWorkbenchIpcResponseSchemas.startCampaign)
+      case 'cancelCampaign':
+        return this.post(`/api/images/campaigns/${encodeURIComponent(request.payload.campaignId)}/commands/cancel`, request.payload.input, imageWorkbenchIpcResponseSchemas.cancelCampaign)
+      case 'retryCampaignItem':
+        return this.post(`/api/images/campaigns/${encodeURIComponent(request.payload.campaignId)}/items/${encodeURIComponent(request.payload.itemId)}/commands/retry`, request.payload.input, imageWorkbenchIpcResponseSchemas.retryCampaignItem)
+    }
+  }
+
   async downloadVersion(projectId: string, versionId: string): Promise<{ bytes: Buffer; verification: SaveImageOutputResult['verification'] }> {
     const baseUrl = (await this.options.getServerUrl()).replace(/\/+$/, '')
     const response = await this.fetchImpl(`${baseUrl}/api/images/projects/${encodeURIComponent(projectId)}/versions/${encodeURIComponent(versionId)}/content`, {
@@ -224,18 +365,53 @@ export class ElectronImageActions {
     return { bytes, verification: { byte_size: bytes.byteLength, mime_type, width, height, content_hash: contentHash, verified_at: new Date().toISOString() } }
   }
 
+  private async downloadCandidatePreview(projectId: string, candidateId: string): Promise<ImageCandidatePreviewResponse> {
+    const baseUrl = (await this.options.getServerUrl()).replace(/\/+$/, '')
+    let response: Response
+    try {
+      response = await this.fetchImpl(`${baseUrl}/api/images/projects/${encodeURIComponent(projectId)}/candidates/${encodeURIComponent(candidateId)}/content`, {
+        headers: { [MEDIA_UI_CAPABILITY_HEADER]: this.options.capability },
+      })
+    } catch {
+      throw new ElectronImageActionError('MEDIA_TEMPORARILY_UNAVAILABLE')
+    }
+    if (!response.ok) {
+      const error = mediaSafeErrorResponseSchema.safeParse(await response.json().catch(() => undefined))
+      throw new ElectronImageActionError(error.success ? error.data.error : undefined)
+    }
+    const bytes = Buffer.from(await response.arrayBuffer())
+    if (bytes.byteLength > 8 * 1024 * 1024) throw new ElectronImageActionError('MEDIA_RESOURCE_UNAVAILABLE')
+    const mimeType = response.headers.get('content-type')?.split(';')[0]
+    const expectedHash = response.headers.get('X-BilliardBuddy-Media-Hash')
+    const contentHash = `sha256:${createHash('sha256').update(bytes).digest('hex')}`
+    const width = Number(response.headers.get('X-BilliardBuddy-Media-Width'))
+    const height = Number(response.headers.get('X-BilliardBuddy-Media-Height'))
+    if (expectedHash !== contentHash || !Number.isInteger(width) || !Number.isInteger(height)
+      || (mimeType !== 'image/png' && mimeType !== 'image/jpeg' && mimeType !== 'image/webp')) {
+      throw new ElectronImageActionError('MEDIA_RESOURCE_UNAVAILABLE')
+    }
+    return imageCandidatePreviewResponseSchema.parse({
+      candidate_id: candidateId,
+      data_url: `data:${mimeType};base64,${bytes.toString('base64')}`,
+    })
+  }
+
   private async post<T>(path: string, body: unknown, responseSchema: ResponseSchema<T>): Promise<T> {
     return await this.request(path, 'POST', body, responseSchema)
   }
 
-  private async request<T>(path: string, method: 'POST' | 'PUT', body: unknown, responseSchema: ResponseSchema<T>): Promise<T> {
+  private async get<T>(path: string, responseSchema: ResponseSchema<T>): Promise<T> {
+    return await this.request(path, 'GET', undefined, responseSchema)
+  }
+
+  private async request<T>(path: string, method: 'GET' | 'POST' | 'PUT', body: unknown, responseSchema: ResponseSchema<T>): Promise<T> {
     const baseUrl = (await this.options.getServerUrl()).replace(/\/+$/, '')
     let response: Response
     try {
       response = await this.fetchImpl(`${baseUrl}${path}`, {
         method,
         headers: {
-          'Content-Type': 'application/json',
+          ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
           [MEDIA_UI_CAPABILITY_HEADER]: this.options.capability,
         },
         body: body === undefined ? undefined : JSON.stringify(body),
