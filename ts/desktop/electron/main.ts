@@ -35,7 +35,6 @@ import {
 } from './ipc/capabilities'
 import {
   parseImageWorkbenchIpcRequest,
-  parseImageWorkbenchIpcValue,
 } from '../../shared/contracts/imageWorkbenchIpc'
 import { ElectronServerRuntime } from './services/serverRuntime'
 import { openDialog, saveDialog } from './services/dialogs'
@@ -2515,10 +2514,7 @@ function registerIpcHandlers() {
   })
   registerImageHandler(ELECTRON_IPC_CHANNELS.imageWorkbenchInvoke, async (_event, payload) => {
     const request = parseImageWorkbenchIpcRequest(payload)
-    return parseImageWorkbenchIpcValue(
-      request.method,
-      await getImageActions().invokeWorkbench(request),
-    )
+    return await getImageActions().invokeWorkbench(request)
   })
   registerHandler(ELECTRON_IPC_CHANNELS.videoAddSource, (_event, payload) => {
     const input = payload as { projectId: string; path: string }
