@@ -460,6 +460,11 @@ export const videoSourceTimeRangeSchema = z.object({
   duration: videoRationalTimeSchema,
 })
 export const videoEditorialTimeRangeSchema = videoSourceTimeRangeSchema
+/** Source-time consumed for each unit of timeline time. Omitted means 1x. */
+export const videoPlaybackSpeedSchema = videoRationalSchema.refine(
+  value => value.num <= 100 && value.den <= 100,
+  { message: 'playback speed must be between 1/100x and 100x' },
+)
 
 export const videoTimelineTrackSchema = z.object({
   id: mediaIdSchema,
@@ -497,6 +502,8 @@ export const videoTimelineItemSchema = z.object({
   kind: z.enum(['video', 'audio', 'caption', 'overlay']),
   timeline_range: videoEditorialTimeRangeSchema,
   binding: videoTimelineAssetBindingSchema,
+  /** Required whenever a source range and timeline range have different duration. */
+  speed: videoPlaybackSpeedSchema.optional(),
   linked_camera_shot_ids: z.array(mediaIdSchema).max(200).default([]),
   linked_content_segment_ids: z.array(mediaIdSchema).max(200).default([]),
   locked: z.boolean().default(false),
@@ -619,7 +626,7 @@ export const deliveryVariantSchema = z.object({
 
 export const editorialTimelineCommandSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('insert'), track_id: mediaIdSchema, item: videoTimelineItemSchema }),
-  z.object({ kind: z.literal('trim'), item_id: mediaIdSchema, source_range: videoSourceTimeRangeSchema, timeline_range: videoEditorialTimeRangeSchema }),
+  z.object({ kind: z.literal('trim'), item_id: mediaIdSchema, source_range: videoSourceTimeRangeSchema, timeline_range: videoEditorialTimeRangeSchema, speed: videoPlaybackSpeedSchema.optional() }),
   z.object({ kind: z.literal('split'), item_id: mediaIdSchema, at: videoRationalTimeSchema }),
   z.object({ kind: z.literal('reorder'), item_id: mediaIdSchema, track_id: mediaIdSchema, timeline_start: videoRationalTimeSchema }),
   z.object({ kind: z.literal('replace'), item_id: mediaIdSchema, replacement: videoTimelineItemSchema }),
@@ -685,11 +692,13 @@ export const videoExecutionPlanSchema = z.object({
     order: z.number().int().nonnegative(),
     item_id: mediaIdSchema,
     track_id: mediaIdSchema,
+    track_kind: z.enum(['primary_video', 'b_roll', 'source_audio', 'music', 'voice_over', 'caption', 'overlay']),
     kind: z.enum(['video', 'audio', 'caption', 'overlay']),
     timeline_range: videoEditorialTimeRangeSchema,
     binding: videoTimelineAssetBindingSchema,
+    speed: videoPlaybackSpeedSchema.optional(),
   })).max(2000),
-  inputs: z.array(z.object({ source_id: mediaIdSchema, source_fingerprint: z.string().regex(/^sha256:[a-f0-9]{64}$/), source_range: videoSourceTimeRangeSchema })).max(2000),
+  inputs: z.array(z.object({ source_id: mediaIdSchema, source_fingerprint: z.string().regex(/^sha256:[a-f0-9]{64}$/), source_start: videoRationalTimeSchema, source_range: videoSourceTimeRangeSchema })).max(2000),
   filters: z.array(z.discriminatedUnion('kind', [
     z.object({ kind: z.literal('scale_pad'), width: z.number().int().positive(), height: z.number().int().positive() }),
     z.object({ kind: z.literal('transform'), item_id: mediaIdSchema, keyframes: z.array(videoKeyframeSchema(videoTransformSchema)).max(1000) }),
@@ -728,6 +737,78 @@ export const videoOutputVerificationSchema = z.object({
   verified_at: mediaIsoDateSchema,
 })
 
+const remoteAnalysisRangeSchema = z.object({
+  source_id: mediaIdSchema,
+  ranges: z.array(videoSourceTimeRangeSchema).min(1).max(2_000),
+})
+export const remoteAnalysisConsentSchema = z.object({
+  id: mediaIdSchema,
+  project_id: mediaIdSchema,
+  revision: z.number().int().positive(),
+  state: z.enum(['active', 'revoked']),
+  provider: z.literal('aliyun_bailian'),
+  region: z.literal('cn-beijing'),
+  purposes: z.array(z.enum(['visual_evidence', 'planning', 'caption_translation', 'asr', 'semantic_search'])).min(1).max(5),
+  data_kinds: z.array(z.enum(['audio_extract', 'keyframes', 'proxy_video', 'transcript'])).min(1).max(4),
+  coverage: z.array(remoteAnalysisRangeSchema).min(1).max(200),
+  acknowledged_estimate_hash: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+  granted_by_actor_id: z.string().min(1).max(160),
+  granted_at: mediaIsoDateSchema,
+  revoked_at: mediaIsoDateSchema.optional(),
+})
+export const videoRemoteBudgetSchema = z.object({
+  id: mediaIdSchema,
+  estimate_hash: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+  state: z.enum(['estimated', 'reserved', 'settled', 'released', 'outcome_unknown']),
+  requests: z.number().int().nonnegative(),
+  total_tokens: z.number().int().nonnegative(),
+  input_bytes: z.number().int().nonnegative(),
+  visual_frames: z.number().int().nonnegative(),
+  proxy_seconds: z.number().nonnegative(),
+  asr_seconds: z.number().nonnegative(),
+  estimated_amount_micros: z.number().int().nonnegative(),
+  /** A call is admitted only after its Operation has a durable reservation.
+   * The reservation is replaced by its immutable Provider receipt when the
+   * operation settles, so a restart cannot spend the same estimate twice. */
+  reservations: z.array(z.object({
+    operation_id: mediaIdSchema,
+    capability: z.enum(['visual_evidence', 'media_reasoning', 'speech_transcription', 'semantic_embedding']),
+    /** A reservation remains attributable to its local Operation even when a
+     * provider transport outcome cannot be safely classified. */
+    state: z.enum(['reserved', 'released', 'outcome_unknown']).default('reserved'),
+    safe_error_code: z.string().min(1).max(160).optional(),
+    requests: z.number().int().nonnegative(),
+    total_tokens: z.number().int().nonnegative(),
+    input_bytes: z.number().int().nonnegative(),
+    visual_frames: z.number().int().nonnegative(),
+    proxy_seconds: z.number().nonnegative(),
+    asr_seconds: z.number().nonnegative(),
+    estimated_amount_micros: z.number().int().nonnegative(),
+    reserved_at: mediaIsoDateSchema,
+    finalized_at: mediaIsoDateSchema.optional(),
+  })).max(10_000).default([]),
+  /** One immutable entry per Relay receipt; aggregate fields above remain the
+   * user-approved estimate rather than being overwritten by the last call. */
+  settlements: z.array(z.object({
+    operation_id: mediaIdSchema,
+    receipt_id: mediaIdSchema,
+    capability: z.enum(['visual_evidence', 'media_reasoning', 'speech_transcription', 'semantic_embedding']),
+    requests: z.number().int().nonnegative(),
+    total_tokens: z.number().int().nonnegative(),
+    input_bytes: z.number().int().nonnegative(),
+    visual_frames: z.number().int().nonnegative(),
+    proxy_seconds: z.number().nonnegative(),
+    asr_seconds: z.number().nonnegative(),
+    estimated_amount_micros: z.number().int().nonnegative(),
+    settled_at: mediaIsoDateSchema,
+  })).max(10_000).default([]),
+  created_at: mediaIsoDateSchema,
+  updated_at: mediaIsoDateSchema,
+})
+export const createRemoteAnalysisConsentInputSchema = remoteAnalysisConsentSchema.pick({ purposes: true, data_kinds: true, coverage: true, acknowledged_estimate_hash: true }).extend({ granted_by_actor_id: z.string().min(1).max(160).optional() })
+export const revokeRemoteAnalysisConsentInputSchema = z.object({ revision: z.number().int().positive() })
+export const estimateRemoteAnalysisInputSchema = z.object({ purposes: z.array(z.enum(['visual_evidence', 'planning', 'caption_translation', 'asr', 'semantic_search'])).min(1).max(5), source_ids: z.array(mediaIdSchema).min(1).max(200) })
+
 export const videoStudioProjectSchema = mediaProjectBaseSchema.extend({
   kind: z.literal('video'),
   state: z.enum(['draft', 'ready', 'rendering', 'complete', 'failed']),
@@ -736,6 +817,8 @@ export const videoStudioProjectSchema = mediaProjectBaseSchema.extend({
   output: videoOutputSettingsSchema.default({ width: 1080, height: 1920, fps: 30 }),
   evidence: z.array(videoEvidenceSchema).max(5000).default([]),
   evidence_revision: z.string().regex(/^sha256:[a-f0-9]{64}$/).optional(),
+  remote_analysis_consents: z.array(remoteAnalysisConsentSchema).max(200).default([]),
+  remote_analysis_budgets: z.array(videoRemoteBudgetSchema).max(10_000).default([]),
   brief: videoBriefSchema.optional(),
   /** Legacy scene versions remain readable; all new writes use Editorial v2 below. */
   timeline_versions: z.array(videoTimelineVersionSchema).max(1000).default([]),
@@ -809,7 +892,7 @@ export const mediaTaskSchema = z.object({
   operation_id: mediaIdSchema.optional(),
   owner: mediaOwnerSchema.optional(),
   attempt: z.number().int().positive().default(1),
-  kind: z.enum(['image.generate', 'video.probe', 'video.fingerprint', 'video.analyze', 'video.plan', 'video.preview', 'video.render']),
+  kind: z.enum(['image.generate', 'video.probe', 'video.fingerprint', 'video.analyze', 'video.plan', 'video.transcribe', 'video.understand', 'video.index', 'video.preview', 'video.render']),
   status: mediaTaskStatusSchema,
   /** Monotonic sequence for user-visible changes to this persisted job. */
   status_sequence: z.number().int().nonnegative().default(0),
@@ -1312,6 +1395,8 @@ export type AddVideoSourceInput = z.input<typeof addVideoSourceInputSchema>
 export type UpdateVideoTimelineInput = z.input<typeof updateVideoTimelineInputSchema>
 export type SelectVideoTimelineVersionInput = z.input<typeof selectVideoTimelineVersionInputSchema>
 export type AnalyzeVideoProjectInput = z.input<typeof analyzeVideoProjectInputSchema>
+export type CreateRemoteAnalysisConsentInput = z.input<typeof createRemoteAnalysisConsentInputSchema>
+export type EstimateRemoteAnalysisInput = z.input<typeof estimateRemoteAnalysisInputSchema>
 export type LockVideoSceneInput = z.input<typeof lockVideoSceneInputSchema>
 export type ApplyVideoAlternativeInput = z.input<typeof applyVideoAlternativeInputSchema>
 export type RenderVideoInput = z.input<typeof renderVideoInputSchema>

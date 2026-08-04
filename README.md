@@ -17,11 +17,14 @@ BilliardBuddy 是桌面端产品。目标产品由一个 Codex 原生 Agent 运�
 用户 Chat Key：Rust -> 本机协议适配器 -> 用户 Chat Completions endpoint
 图片生成：本地媒体 Sidecar -> 公网 Image Relay /v1/images/tasks -> GPT Image 2 / Seedream 4.5；Relay 仅回查 Gateway 私网身份内省
 图片理解/非阻断视觉评估：本地媒体 Sidecar -> Gateway /v1/image/reasoning -> Qwen3-VL-Flash
+视频远程分析：本地 Video Sidecar -> Video Media Relay -> 阿里云百炼 / 北京临时对象存储
 ```
 
 Rust App Server 是唯一的 Agent 执行和会话所有者。Electron 只负责宿主、密钥、进程生命周期和协议转发；Gateway 负责自己执行的托管短模型治理及两个 Relay 的私网身份内省，不代理图片或视频任务。它们都不保存或调度 Agent 会话。图片 Project、Candidate、Canvas 和版本事实只保存在本地 Sidecar，Image Relay 仅持有受 ACK 约束的异步任务结果。
 
 Qwen 只返回有 receipt/confidence 的可见事实、风险和 Repair Action 建议；不能采纳、删除、发布或修改用户事实。最终发布仍由本地确定性 Release Check 与风险接受回执决定。
+
+Video Media Relay、Image Relay 与 Gateway 是三条不重叠的正式执行路径：Video Media Relay 只承接经项目 Consent 和预算确认的 Qwen、Fun-ASR 与 `text-embedding-v4` 视频派生物，Image Relay 只承接图片生成/编辑，Gateway 执行托管 Agent、既有产品语音、MiMo 与 Qwen 图片建议。两个 Relay 只回查 Gateway 私网身份内省；它们都不保存项目、时间线、画布或创作状态，Sidecar 仍是媒体领域事实与项目预算的唯一 writer。
 
 当前桌面 Renderer 是刻意保留的空入口，不含旧 React 页面或旧自建 Agent。新的前端只能投影 Rust Thread/Turn/Item 与各媒体领域状态，不能重建 Agent Loop 或第二份会话状态。
 
@@ -36,6 +39,7 @@ Qwen 只返回有 receipt/confidence 的可见事实、风险和 Repair Action �
 | `ts/shared` | 桌面、Sidecar 与 Gateway 的共享产品契约 |
 | `gateway` | 托管 DeepSeek、MiMo、Qwen 图片建议与既有转写的鉴权、额度、准入、用量、幂等，以及两个 Relay 的私网身份内省；不代理图片/视频任务 |
 | `relay` | 独立 Image Relay：图片生成/编辑的账号准入、异步任务、结果交接与 ACK；不保存图片项目事实 |
+| `video-media-relay` | 视频远程分析的独立 Relay：对象租约、身份内省、账户额度与 Provider receipt |
 | `docs` | 当前架构、运行与领域边界 |
 
 ## 模型配置

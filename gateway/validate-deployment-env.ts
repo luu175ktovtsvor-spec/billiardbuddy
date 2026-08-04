@@ -3,10 +3,17 @@ import {
   readStaticDeploymentEnvironment,
 } from '../ts/shared/kernel/deploymentEnvironment'
 import { textReasoningRegistryEntry } from './providerRegistry'
-import { loadCapacityPolicy } from './capacityPolicy'
+import {
+  GATEWAY_CAPACITY_POLICY_REVISION_ENV,
+  loadCapacityPolicy,
+} from './capacityPolicy'
 import { loadGatewayProviderCredentials, type GatewayCredentialProvider } from './providerCredentials'
 import { loadGatewayServiceCredentials } from './serviceCredentials'
-import { gatewayUsagePolicyFromEnvironment } from './quotaPolicy'
+import {
+  gatewayUsagePolicyFromEnvironment,
+  MANAGED_AGENT_INSTALLATION_DAILY_TOKEN_LIMIT_ENV,
+  QUOTA_POLICY_REVISION_ENV,
+} from './quotaPolicy'
 
 type DeploymentEnvironment = Record<string, string>
 
@@ -33,6 +40,96 @@ function requireValue(environment: DeploymentEnvironment, name: string): string 
   return value
 }
 
+/**
+ * Production may not accidentally inherit the development profile embedded in
+ * capacityPolicy.ts. The runtime still has safe defaults for local tests and
+ * isolated development, while this preflight makes the operator-owned policy
+ * wholly visible and editable in gateway.env.
+ */
+export const GATEWAY_PRODUCTION_CAPACITY_ENVIRONMENT_VARIABLES = [
+  GATEWAY_CAPACITY_POLICY_REVISION_ENV,
+  'GW_BOOTSTRAP_RPM',
+  'GW_DEEPSEEK_RPM',
+  'GW_DEEPSEEK_CONC',
+  'GW_DEEPSEEK_USER_CONC',
+  'GW_DEEPSEEK_TOKEN_CONC',
+  'GW_DEEPSEEK_INFLIGHT_PER_USER',
+  'GW_DEEPSEEK_QUEUE_MAX',
+  'GW_DEEPSEEK_QUEUE_MAX_WAIT',
+  'GW_DEEPSEEK_RESPONSE_TIMEOUT_MS',
+  'GW_MIMO_RPM',
+  'GW_MIMO_CONC',
+  'GW_MIMO_MEDIA_CONC',
+  'GW_VISION_CONC',
+  'GW_MIMO_USER_CONC',
+  'GW_MIMO_TOKEN_CONC',
+  'GW_MIMO_INFLIGHT_PER_USER',
+  'GW_MIMO_QUEUE_MAX',
+  'GW_MIMO_QUEUE_MAX_WAIT',
+  'GW_VISION_QUEUE_MAX',
+  'GW_VISION_QUEUE_MAX_WAIT_MS',
+  'GW_VISION_PER_CLIENT_CONC',
+  'GW_VISION_MAX_INFLIGHT_PER_CLIENT',
+  'GW_VISION_PER_REQUEST_CONC',
+  'GW_VISION_TIMEOUT_MS',
+  'GW_QWEN_RPM',
+  'GW_QWEN_CONC',
+  'GW_QWEN_USER_CONC',
+  'GW_QWEN_TOKEN_CONC',
+  'GW_QWEN_INFLIGHT_PER_USER',
+  'GW_QWEN_QUEUE_MAX',
+  'GW_QWEN_QUEUE_MAX_WAIT',
+  'GW_QWEN_RESPONSE_TIMEOUT_MS',
+  'GW_TRANSCRIBE_RPM',
+  'GW_TRANSCRIBE_CONC',
+  'GW_TRANSCRIBE_QUEUE_MAX',
+  'GW_QUEUE_MAX_WAIT',
+  'GW_TRANSCRIBE_MAX_BYTES',
+  'GW_TRANSCRIBE_TIMEOUT_MS',
+  'GW_INGRESS_INFLIGHT_BODY_BYTES',
+  'GW_INGRESS_BODY_READ_TIMEOUT_MS',
+  'GW_SERVER_IDLE_TIMEOUT_SECONDS',
+] as const
+
+const GATEWAY_QUOTA_CAPABILITIES = [
+  'TEXT_REASONING',
+  'VISUAL_EVIDENCE',
+  'MEDIA_REASONING',
+  'IMAGE_ADVICE',
+  'SPEECH_TRANSCRIPTION',
+] as const
+const GATEWAY_QUOTA_SCOPES = ['PRINCIPAL', 'INSTALLATION'] as const
+const GATEWAY_QUOTA_AXES = ['REQUESTS', 'INPUT_BYTES', 'OUTPUT_UNITS', 'TOTAL_TOKENS'] as const
+
+/**
+ * Capacity and entitlement are independent policies. Production must name
+ * every quota cell explicitly, rather than inheriting source-code ceilings.
+ * TextReasoning installation TOTAL_TOKENS retains one compatibility alias,
+ * but the policy parser rejects setting both spellings at the same time.
+ */
+export const GATEWAY_PRODUCTION_QUOTA_POLICY_REVISION_ENV = QUOTA_POLICY_REVISION_ENV
+
+function requireProductionQuotaEnvironment(environment: DeploymentEnvironment): void {
+  requireValue(environment, GATEWAY_PRODUCTION_QUOTA_POLICY_REVISION_ENV)
+  for (const capability of GATEWAY_QUOTA_CAPABILITIES) {
+    for (const scope of GATEWAY_QUOTA_SCOPES) {
+      for (const axis of GATEWAY_QUOTA_AXES) {
+        const name = `GW_QUOTA_${capability}_${scope}_${axis}`
+        const usesDailyAlias = capability === 'TEXT_REASONING' && scope === 'INSTALLATION' && axis === 'TOTAL_TOKENS'
+        if (!usesDailyAlias) {
+          requireValue(environment, name)
+          continue
+        }
+        const named = environment[name]?.trim()
+        const alias = environment[MANAGED_AGENT_INSTALLATION_DAILY_TOKEN_LIMIT_ENV]?.trim()
+        if (!named && !alias) {
+          fail(`${name} or ${MANAGED_AGENT_INSTALLATION_DAILY_TOKEN_LIMIT_ENV} is required`)
+        }
+      }
+    }
+  }
+}
+
 /** Validate startup-critical values without opening the production database. */
 export function validateDeploymentEnvironment(environment: DeploymentEnvironment): void {
   const selectedModel = environment.BB_GATEWAY_MODEL?.trim()
@@ -48,6 +145,8 @@ export function validateDeploymentEnvironment(environment: DeploymentEnvironment
     'GW_ADMIN_TOKEN',
     'GW_DB',
   ]) requireValue(environment, name)
+  for (const name of GATEWAY_PRODUCTION_CAPACITY_ENVIRONMENT_VARIABLES) requireValue(environment, name)
+  requireProductionQuotaEnvironment(environment)
 
   let credentials
   try {

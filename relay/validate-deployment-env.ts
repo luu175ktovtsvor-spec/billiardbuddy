@@ -8,6 +8,24 @@ import { loadImageRelayIdentityIntrospector } from './identityIntrospection'
 import { loadRelayProviderCredentials } from './providerCredentials'
 import { loadImageRelayResultCredentials } from './resultCredentials'
 
+/** Production has no implicit image-provider admission profile. */
+export const IMAGE_RELAY_PRODUCTION_CAPACITY_ENVIRONMENT_VARIABLES = [
+  'RELAY_CAPACITY_POLICY_REVISION',
+  'RELAY_IMG_CONC',
+  'RELAY_IMG_USER_CONC',
+  'RELAY_OPENAI_RPM',
+  'RELAY_SEEDREAM_CONC',
+  'RELAY_SEEDREAM_USER_CONC',
+  'RELAY_SEEDREAM_RPM',
+  'RELAY_QUEUE_MAX',
+  'RELAY_USER_MAX',
+  'RELAY_RETRY_AFTER_SECONDS',
+  'RELAY_UPSTREAM_TIMEOUT_MS',
+  'RELAY_MAX_BODY_BYTES',
+  'RELAY_PENDING_INPUT_BYTES_MAX',
+  'RELAY_ACTIVE_INPUT_BYTES_MAX',
+] as const
+
 function fail(message: string): never {
   throw new Error(`Image Relay deployment environment invalid: ${message}`)
 }
@@ -16,6 +34,13 @@ function requireValue(environment: StaticDeploymentEnvironment, name: string): s
   const value = environment[name]?.trim()
   if (!value) fail(`${name} is required`)
   return value
+}
+
+function requireBoundedInteger(environment: StaticDeploymentEnvironment, name: string, min: number, max: number): void {
+  const value = requireValue(environment, name)
+  if (!/^[1-9][0-9]*$/.test(value)) fail(`${name} must be an integer between ${min} and ${max}`)
+  const parsed = Number(value)
+  if (!Number.isSafeInteger(parsed) || parsed < min || parsed > max) fail(`${name} must be an integer between ${min} and ${max}`)
 }
 
 function requireAbsoluteDataPath(environment: StaticDeploymentEnvironment, name: string, expectedLeaf: RegExp): void {
@@ -32,6 +57,10 @@ function requireAbsoluteDataPath(environment: StaticDeploymentEnvironment, name:
 export function validateRelayDeploymentEnvironment(environment: StaticDeploymentEnvironment): void {
   requireAbsoluteDataPath(environment, 'RELAY_DB', /(?:image-)?relay\.db$/i)
   requireAbsoluteDataPath(environment, 'RELAY_BLOB_DIR', /blobs?\/?$/i)
+  for (const name of IMAGE_RELAY_PRODUCTION_CAPACITY_ENVIRONMENT_VARIABLES) requireValue(environment, name)
+  // This wait owns both the fair provider-admission deadline and the rate-limit
+  // queue deadline in relay/app.ts, so it is part of the explicit policy too.
+  requireBoundedInteger(environment, 'RELAY_RETRY_AFTER_SECONDS', 1, 3_600)
 
   try {
     relayCapacityPolicyFromEnvironment(environment)

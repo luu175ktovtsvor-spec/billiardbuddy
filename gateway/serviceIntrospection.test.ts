@@ -89,7 +89,7 @@ describe('Gateway Relay identity introspection', () => {
     expect((await gateway(request(IMAGE_TOKEN))).status).toBe(401)
   })
 
-  test('does not expose a paid image task proxy', async () => {
+  test('does not expose paid image or video task proxies', async () => {
     const authority = new AuthAuthority({
       dbPath: ':memory:',
       signingKey: 'gateway-auth-signing-key-12345678901234567890',
@@ -111,5 +111,12 @@ describe('Gateway Relay identity introspection', () => {
       body: '{}',
     }))
     expect(response.status).toBe(404)
+
+    const videoResponse = await gateway(new Request('https://gateway.example.test/v1/video-media/operations', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${tokens.accessToken}`, 'Content-Type': 'application/json' },
+      body: '{}',
+    }))
+    expect(videoResponse.status).toBe(404)
   })
 })
