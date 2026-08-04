@@ -622,7 +622,7 @@ Renderer → Electron Main typed IPC → Local Sidecar
 - Qwen 图片建议通过 Gateway 独立 `/v1/image/reasoning` 版本化 schema 发送，使用 `image_advice` workload、独立 `qwen-account` capacity policy 和 `gateway.image-advice` quota。它不得改写通用 MiMo `/v1/media/reasoning` 或 `/v1/visual/evidence`；Gateway 只保存 Qwen 服务端凭据、鉴权、额度、实际用量、幂等结果和安全转发，不保存 Image Project/Candidate/Canvas；
 - 模型目录、物理账号 capacity、产品 quota 与 credential ownership 是四个独立权威来源。并发采用“配置外置、算法共享、Provider 执行边界守门”：Nginx 只做连接/请求体/基础速率保护，不充当付费 Provider 并发事实源；Image Relay 在真实 Provider 调用前获取对应账号许可。首版保持单 Relay worker；未来多实例除共享 admission 租约外，还必须让任务 claim、Provider receipt、终态和额度以同一 fencing token 条件写入，禁止仅复制进程内队列；
 - 图片施工不得创建或复用 Video Media Relay。视频大对象租约、视频 ASR/Embedding 与本节无关；两条远程路径只共享向后兼容的 capability/receipt DTO，不共享服务数据库或路由所有权；
-- 实施 15.2E/15.4D 时必须同步更新 `README.md`、`docs/重构/模型与远程能力平台.md`、`docs/重构/模型资源治理分层.md` 与 `docs/operations/production-servers.md`，准确记录图片直连 Relay、私网身份内省、独立 Qwen 路由和凭据归属；不得保留 Gateway 图片任务代理或把 Video Media Relay 描述成图片依赖；
+- 实施 15.2E/15.4D 时必须同步更新 `README.md`、`docs/重构/模型与远程能力平台.md`、`docs/重构/模型资源治理分层.md` 与 `docs/运维/生产服务器.md`，准确记录图片直连 Relay、私网身份内省、独立 Qwen 路由和凭据归属；不得保留 Gateway 图片任务代理或把 Video Media Relay 描述成图片依赖；
 - 服务器随已审核提交更新 Gateway/Image Relay 镜像、两个独立 introspection secret 端、Image Relay 结果签名 secret、Qwen/图片 Provider credential、validator、Nginx `/image-generation/` 回源和受控 smoke。任何写操作前仍须按运行文档只读盘点容器、端口、Nginx、revision、资源和 secret 引用；部署后分别验证真实 Sidecar → Image Relay → Provider、Relay → Gateway 内省与 Sidecar → Gateway → Qwen 路径，并以实测更新运行文档。
 
 ---
@@ -2205,7 +2205,7 @@ Qwen Adapter 只实现 shared `VisualEvidence` capability 下的 `image_understa
 - 当前施工基线的 `ts/package.json` 已提供正式 `test` script 与共享 runner；图片只增加可单独运行的 Image Workbench、API/IPC contract 与 integration 分组，并保持全局 `test` 包含它们。日常测试只用可提交 fixture/fake，不依赖真实 Provider；
 - 真实 GPT Image/Seedream/Qwen smoke 与日常 suite 分离，只在受控账户、预算和明确环境开关下运行，验证 schema、幂等/usage receipt、拒绝、超时和日志脱敏，不把它当领域测试替代品；
 - 15.0 先为当前 Repository/Service/API/Gateway/Relay/IPC 路径建立 characteristic tests；15.1 以后每个阶段在其上补 Domain unit、Port contract、SQLite/CAS crash/recovery、API/IPC、Renderer golden 与真实生产路径测试；
-- 15.2E/15.4D 涉及远程实现时同步更新 `README.md`、`docs/重构/模型与远程能力平台.md`、`docs/operations/production-servers.md`、对应 env example/validator 和部署 smoke，使文档与第 5.4 节一致；
+- 15.2E/15.4D 涉及远程实现时同步更新 `README.md`、`docs/重构/模型与远程能力平台.md`、`docs/运维/生产服务器.md`、对应 env example/validator 和部署 smoke，使文档与第 5.4 节一致；
 - 图片不增加物理服务器，但把原图片 Relay 正式收口为独立 `image-relay` service 和 `/image-generation/` 公网前缀。只有代码确实修改 Gateway/Image Relay 时才从已提交 revision 发布镜像；部署前只读盘点，部署后验证真实 Image Relay 直连链、Gateway 私网内省、Qwen、容器 revision、健康、capacity/quota、幂等查询、ACK 和日志。
 
 ---

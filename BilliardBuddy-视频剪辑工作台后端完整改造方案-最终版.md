@@ -166,7 +166,7 @@ Video Media Relay 的“无状态”是指不拥有 Project/Timeline/Consent，�
 
 1. 在任何写操作前只读盘点真实主机的容器/镜像 revision、Compose、Nginx、监听端口、DNS/TLS、`/srv/billiardbuddy` 目录与权限、磁盘/内存、当前健康端点和 secret **变量名引用**；不得输出 secret 值；
 2. 在第 13.0 节第 4 关先完成 Relay API/鉴权/对象租约/Provider contract tests、Dockerfile、env validator 和 `/healthz`/`/readyz`；
-3. 同一关再更新 `deploy/production/compose.yml`、`deploy.sh`、Nginx 配置与 `docs/operations/production-servers.md`，从已提交 revision 构建并部署；不得先建立长期占位容器、空路由或临时手工进程；
+3. 同一关再更新 `deploy/production/compose.yml`、`deploy.sh`、Nginx 配置与 `docs/运维/生产服务器.md`，从已提交 revision 构建并部署；不得先建立长期占位容器、空路由或临时手工进程；
 4. 部署后验证外网 TLS/auth 拒绝、大小/MIME、幂等冲突、上传中断、lease 过期、真实受控 Provider smoke、ACK/清理、额度与日志脱敏；停止全部临时测试进程；
 5. 第 6 关再以真实打包 Sidecar 完成桌面端 E2E。服务健康不等于产品旅程完成。
 
@@ -2472,7 +2472,7 @@ Electron 改动是本合同必需部分：`ipc/channels.ts`、`preload.ts`、Mai
 - 修改 `deploy/production/compose.yml` 与 `deploy.sh`，增加独立 `video-media-relay` service、`127.0.0.1:8791`、持久 request/receipt/lease metadata 目录、只读 rootfs、tmpfs、cap drop、资源限制与 health/readiness；Video Media Relay 可依赖 Gateway healthy 以使用私网身份内省，但 Gateway 与 Image Relay 不依赖 Video Media Relay，图片与视频公网前缀分别直达对应 Relay；
 - 在 `gateway.env` 使用 `GW_VIDEO_MEDIA_RELAY_INTROSPECTION_TOKEN`，在 `video-media-relay.env` 使用 `VIDEO_MEDIA_GATEWAY_INTROSPECTION_TOKEN`，两者保存同一独立高熵值；两侧 validator 只验证存在/强度而不打印值。Gateway 的 `/internal/v1/auth/introspect` 复用现有 `AuthAuthority.verifyAccess()` 并按 Video Relay audience 校验，不另建用户/session 表，也不得复用 Image Relay 的 service token；
 - 将 `/video-media/` Nginx TLS 路由的规范配置纳入仓库并部署，同时显式拒绝公网 `/gw/internal/*`。控制面 request body/timeouts 只满足第 5.4.1 节 JSON；大字节必须直传北京临时对象存储，不能穿过 Nginx/Bun 内存；
-- 更新 `docs/operations/production-servers.md` 的实测拓扑、端口、容器 revision、数据/secret 路径、健康检查、日志/保留期和故障诊断；更新内容必须来自部署当次只读/部署后实测，不能从目标文档反推现网；
+- 更新 `docs/运维/生产服务器.md` 的实测拓扑、端口、容器 revision、数据/secret 路径、健康检查、日志/保留期和故障诊断；更新内容必须来自部署当次只读/部署后实测，不能从目标文档反推现网；
 - 部署前后 contract/smoke 必须覆盖安装 token 正常/过期/logout/revoke、错误 service credential、Gateway 内省不可用、伪造 owner、region/scope、无 token 拒绝、对象 URL 单次/过期、幂等冲突、账户额度、真实受控 Qwen/Fun-ASR/Embedding receipt、ACK 后清理和日志脱敏。未通过时本关不得标完成，也不得让桌面正式路径切到新服务。
 
 ### 13.6 FFmpeg
