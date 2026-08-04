@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { inspect } from 'node:util'
 
 import {
@@ -7,6 +8,7 @@ import {
   SERVICE_INTROSPECTION_TOKEN_HEADER,
   type ActiveServiceIntrospection,
 } from '../ts/shared/product/serviceIntrospection.js'
+import { DEFAULT_RELAY_IDENTITY_ADMISSION_CAPACITY, localRelayAdmissionBackend, relayIdentityAdmissionConfig, type RelayAdmissionPermit, type RelayIdentityAdmission } from './capacityPolicy.js'
 
 export type ImageRelayIdentityEnvironment = Readonly<Record<string, string | undefined>>
 type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<Response>
@@ -41,17 +43,43 @@ export class ImageRelayIdentityIntrospector {
   #fetch: FetchLike
   #now: () => number
   #timeoutMs: number
+  #admission: RelayIdentityAdmission
+  #inFlight = new Map<string, Promise<ImageRelayIdentity>>()
 
-  constructor(options: { baseUrl: string; serviceToken: string; fetchImpl?: FetchLike; now?: () => number; timeoutMs?: number }) {
+  constructor(options: { baseUrl: string; serviceToken: string; fetchImpl?: FetchLike; now?: () => number; timeoutMs?: number; admission?: RelayIdentityAdmission }) {
     this.#baseUrl = options.baseUrl
     this.#serviceToken = options.serviceToken
     this.#fetch = options.fetchImpl ?? fetch
     this.#now = options.now ?? Date.now
     this.#timeoutMs = boundedTimeout(options.timeoutMs ?? DEFAULT_TIMEOUT_MS)
+    this.#admission = options.admission ?? localRelayAdmissionBackend.createIdentityAdmission(relayIdentityAdmissionConfig(DEFAULT_RELAY_IDENTITY_ADMISSION_CAPACITY))
   }
 
   async introspect(installationBearer: string): Promise<ImageRelayIdentity> {
     if (!installationBearer.trim()) throw new RelayIdentityIntrospectionError(401, 'identity_inactive')
+    // The bearer itself is not cached or retained as a map key. This hash only
+    // identifies work that is still in flight; once it settles the entry is
+    // removed so Gateway revocation remains immediately authoritative.
+    const fingerprint = createHash('sha256').update(installationBearer).digest('hex')
+    let shared = this.#inFlight.get(fingerprint)
+    if (!shared) {
+      shared = this.introspectOnce(installationBearer)
+      this.#inFlight.set(fingerprint, shared)
+      void shared.finally(() => {
+        if (this.#inFlight.get(fingerprint) === shared) this.#inFlight.delete(fingerprint)
+      }).catch(() => { /* every caller receives the same fail-closed error */ })
+    }
+    return await shared
+  }
+
+  private async introspectOnce(installationBearer: string): Promise<ImageRelayIdentity> {
+    let permit: RelayAdmissionPermit
+    try {
+      permit = await this.#admission.acquire()
+    } catch {
+      throw new RelayIdentityIntrospectionError(503, 'identity_unavailable')
+    }
+    try {
     const controller = new AbortController()
     let timer: ReturnType<typeof setTimeout> | undefined
     const deadline = new Promise<never>((_resolve, reject) => {
@@ -64,6 +92,7 @@ export class ImageRelayIdentityIntrospector {
     try {
       return await Promise.race([(
         async () => {
+          await permit.assertCurrent?.()
           const response = await this.#fetch(`${this.#baseUrl}${SERVICE_INTROSPECTION_PATH}`, {
             method: 'POST',
             signal: controller.signal,
@@ -96,6 +125,7 @@ export class ImageRelayIdentityIntrospector {
     } finally {
       if (timer) clearTimeout(timer)
     }
+    } finally { permit.release() }
   }
 
   toJSON(): { gateway_introspection_base: string; service_token: string } {
@@ -109,7 +139,7 @@ export class ImageRelayIdentityIntrospector {
 
 export function loadImageRelayIdentityIntrospector(
   environment: ImageRelayIdentityEnvironment = process.env,
-  options: { fetchImpl?: FetchLike; now?: () => number; timeoutMs?: number } = {},
+  options: { fetchImpl?: FetchLike; now?: () => number; timeoutMs?: number; admission?: RelayIdentityAdmission } = {},
 ): ImageRelayIdentityIntrospector {
   const baseUrl = parseImageRelayGatewayIntrospectionBase(environment[IMAGE_RELAY_GATEWAY_INTROSPECTION_BASE_ENV])
   const token = environment[IMAGE_RELAY_GATEWAY_INTROSPECTION_TOKEN_ENV]?.trim()

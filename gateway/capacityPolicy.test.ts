@@ -8,7 +8,8 @@ describe('gateway capacity policy', () => {
 
     expect(policy.deepseek).toMatchObject({ rpm: 120, maxConcurrent: 8, queueMax: 24, responseTimeoutMs: 120_000 })
     expect(policy.mimo).toMatchObject({ maxConcurrent: 8, mediaConcurrent: 5, visionConcurrent: 3, rpm: 60 })
-    expect(policy.funasr).toMatchObject({ rpm: 6, maxConcurrent: 1, queueMax: 4, timeoutMs: 180_000 })
+    expect(policy.funasr).toMatchObject({ rpm: 6, maxConcurrent: 1, maxConcurrentPerUser: 1, maxConcurrentPerToken: 1, maxInflightPerUser: 1, queueMax: 4, timeoutMs: 180_000 })
+    expect(policy.bootstrap).toEqual({ rpm: 30, queueMax: 0, queueMaxWaitMs: 0 })
     expect(policy.ingress).toMatchObject({ inflightBodyBytes: 64 * 1024 * 1024, serverIdleTimeoutSeconds: 120 })
   })
 

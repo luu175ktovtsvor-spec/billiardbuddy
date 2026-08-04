@@ -7,7 +7,15 @@ import {
   GatewayTranscriptionError,
   type GatewayTranscriber,
 } from './transcription'
-import { CapacityQueueError, FairCapacityScheduler, MimoReservationScheduler, ProviderRateLimiter, type CapacityPermit, type CapacitySnapshot } from './modelCapacity'
+import {
+  CapacityQueueError,
+  localGatewayCapacityBackendFactory,
+  type CapacityPermit,
+  type CapacitySnapshot,
+  type GatewayCapacityBackendFactory,
+  type GatewayCapacityPool,
+  type GatewayRateLimiter,
+} from './modelCapacity'
 import { loadCapacityPolicy } from './capacityPolicy'
 import { loadGatewayProviderCredentials } from './providerCredentials'
 import { loadGatewayServiceCredentials } from './serviceCredentials'
@@ -91,11 +99,6 @@ interface ChatRequestError {
 
 type ChatRequestErrorCtor = new (status: number, publicMessage: string) => Error & ChatRequestError
 
-type CapacityPool = {
-  acquire(user: string, opts: { maxWaitMs: number; signal?: AbortSignal; tokenId?: string }): Promise<CapacityPermit>
-  snapshot(): CapacitySnapshot
-}
-
 type ChatProvider = {
   label: string
   base: string
@@ -103,8 +106,8 @@ type ChatProvider = {
   endpoint: 'chat/completions' | 'responses'
   defaultModel: string
   allowedModels: ReadonlySet<string>
-  bucket: ProviderRateLimiter
-  capacity: CapacityPool
+  bucket: GatewayRateLimiter
+  capacity: GatewayCapacityPool
   queueMaxWait: number
   retryMax?: number
   retryBaseMs?: number
@@ -127,6 +130,8 @@ type GatewayConfig = {
   adminToken: string
   db: string
   bootstrapRpm: number
+  bootstrapQueueMax: number
+  bootstrapQueueMaxWait: number
   mimoRpm: number
   /** Retained scheduler lane; BB-04C submits only VisualEvidence work. */
   mimoMediaConc: number
@@ -180,6 +185,9 @@ type GatewayConfig = {
   queueMaxWait: number
   transcribeRpm: number
   transcribeConc: number
+  transcribeUserConc: number
+  transcribeTokenConc: number
+  transcribeInflightPerUser: number
   transcribeQueueMax: number
   transcribeMaxBytes: number
 }
@@ -208,6 +216,10 @@ export interface GatewayDeps {
   transcribeImpl?: GatewayTranscriber | null
   mimoRetrySleep?: (ms: number) => Promise<void>
   mimoRetryRandom?: () => number
+  /** Production keeps the zero-hop in-process backend. Tests and a future
+   * multi-instance deployment may replace all account schedulers/rate buckets
+   * together through this one construction seam. */
+  capacityBackendFactory?: GatewayCapacityBackendFactory
   /** Explicit authority injection is for tests and controlled embedding only. */
   authority?: AuthAuthority
 }
@@ -487,7 +499,9 @@ function loadConfig(env: Env): GatewayConfig {
   return {
     adminToken: env.GW_ADMIN_TOKEN ?? 'change-me',
     db: env.GW_DB ?? '/opt/billiardbuddy-gateway/usage.db',
-    bootstrapRpm: Math.max(1, intEnv(env, 'GW_BOOTSTRAP_RPM', 30)),
+    bootstrapRpm: capacity.bootstrap.rpm,
+    bootstrapQueueMax: capacity.bootstrap.queueMax,
+    bootstrapQueueMaxWait: capacity.bootstrap.queueMaxWaitMs / 1_000,
     mimoRpm: capacity.mimo.rpm,
     // MediaReasoning and VisualEvidence share one physical account but have hard,
     // separately observable reservations so neither product path can starve the other.
@@ -551,6 +565,9 @@ function loadConfig(env: Env): GatewayConfig {
     queueMaxWait: capacity.funasr.queueMaxWaitMs / 1_000,
     transcribeRpm: capacity.funasr.rpm,
     transcribeConc: capacity.funasr.maxConcurrent,
+    transcribeUserConc: capacity.funasr.maxConcurrentPerUser,
+    transcribeTokenConc: capacity.funasr.maxConcurrentPerToken,
+    transcribeInflightPerUser: capacity.funasr.maxInflightPerUser,
     transcribeQueueMax: capacity.funasr.queueMax,
     transcribeMaxBytes: capacity.funasr.maxBytes,
   }
@@ -1017,6 +1034,7 @@ function createChatHandler(provider: ChatProvider, fetchImpl: FetchLike, store: 
       const requestUpstream = async () => {
         try {
           await provider.bucket.acquire(provider.queueMaxWait, deadline?.signal ?? request.signal)
+          await permit?.assertCurrent?.()
         } catch (error) {
           if (error instanceof CapacityQueueError) throw new provider.RequestError(error.status, error.publicMessage)
           throw error
@@ -1118,27 +1136,58 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
     )
   const operationResults = deps.operationResultStore
     ?? new SqliteGatewayOperationResultStore(deps.usageStore ? ':memory:' : config.db)
-  const mimoBucket = new ProviderRateLimiter(config.mimoRpm, config.mimoQueueMax + config.visionQueueMax)
-  const mimoReservations = new MimoReservationScheduler({
-    maxConcurrent: config.mimoConc,
-    mediaConcurrent: config.mimoMediaConc,
-    visionConcurrent: config.visionConc,
-    maxConcurrentPerUser: config.mimoUserConc,
-    maxConcurrentPerToken: config.mimoTokenConc,
-    maxInflightPerUser: config.mimoInflightPerUser,
-    mediaQueueMax: config.mimoQueueMax,
-    visionQueueMax: config.visionQueueMax,
-    visionMaxConcurrentPerUser: config.visionPerClientConc,
-    visionMaxInflightPerUser: config.visionMaxInflightPerClient,
+  const capacityBackend = (deps.capacityBackendFactory ?? localGatewayCapacityBackendFactory).create({
+    mimo: {
+      reservations: {
+        maxConcurrent: config.mimoConc,
+        mediaConcurrent: config.mimoMediaConc,
+        visionConcurrent: config.visionConc,
+        maxConcurrentPerUser: config.mimoUserConc,
+        maxConcurrentPerToken: config.mimoTokenConc,
+        maxInflightPerUser: config.mimoInflightPerUser,
+        mediaQueueMax: config.mimoQueueMax,
+        visionQueueMax: config.visionQueueMax,
+        visionMaxConcurrentPerUser: config.visionPerClientConc,
+        visionMaxInflightPerUser: config.visionMaxInflightPerClient,
+      },
+      rate: { rpm: config.mimoRpm, queueMax: config.mimoQueueMax + config.visionQueueMax },
+    },
+    deepseek: {
+      capacity: {
+        maxConcurrent: config.deepseekConc,
+        maxConcurrentPerUser: config.deepseekUserConc,
+        maxConcurrentPerToken: config.deepseekTokenConc,
+        queueMax: config.deepseekQueueMax,
+        maxInflightPerUser: config.deepseekInflightPerUser,
+      },
+      rate: { rpm: config.deepseekRpm, queueMax: config.deepseekQueueMax },
+    },
+    qwen: {
+      capacity: {
+        maxConcurrent: config.qwenConc,
+        maxConcurrentPerUser: config.qwenUserConc,
+        maxConcurrentPerToken: config.qwenTokenConc,
+        queueMax: config.qwenQueueMax,
+        maxInflightPerUser: config.qwenInflightPerUser,
+      },
+      rate: { rpm: config.qwenRpm, queueMax: config.qwenQueueMax },
+    },
+    transcription: {
+      capacity: {
+        maxConcurrent: config.transcribeConc,
+        maxConcurrentPerUser: config.transcribeUserConc,
+        maxConcurrentPerToken: config.transcribeTokenConc,
+        queueMax: config.transcribeQueueMax,
+        maxInflightPerUser: config.transcribeInflightPerUser,
+      },
+      rate: { rpm: config.transcribeRpm, queueMax: config.transcribeQueueMax },
+    },
+    bootstrap: { rate: { rpm: config.bootstrapRpm, queueMax: config.bootstrapQueueMax } },
   })
-  const deepseekBucket = new ProviderRateLimiter(config.deepseekRpm, config.deepseekQueueMax)
-  const deepseekCapacity = new FairCapacityScheduler(
-    config.deepseekConc,
-    config.deepseekUserConc,
-    config.deepseekTokenConc,
-    config.deepseekQueueMax,
-    config.deepseekInflightPerUser,
-  )
+  const mimoBucket = capacityBackend.rates.mimo
+  const mimoReservations = capacityBackend.mimo
+  const deepseekBucket = capacityBackend.rates.deepseek
+  const deepseekCapacity = capacityBackend.deepseek
   const deepseekAuthorization = providerCredentials.bearerAuthorization('deepseek')
   const deepseekProvider: ChatProvider | null = deepseekAuthorization
     ? {
@@ -1213,25 +1262,13 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
     : null
   // Qwen image advice deliberately owns a different physical-account scheduler,
   // rate bucket and quota lane. It must never borrow MiMo's generic visual work.
-  const qwenBucket = new ProviderRateLimiter(config.qwenRpm, config.qwenQueueMax)
-  const qwenCapacity = new FairCapacityScheduler(
-    config.qwenConc,
-    config.qwenUserConc,
-    config.qwenTokenConc,
-    config.qwenQueueMax,
-    config.qwenInflightPerUser,
-  )
+  const qwenBucket = capacityBackend.rates.qwen
+  const qwenCapacity = capacityBackend.qwen
   const qwenAuthorization = config.qwenEnabled ? providerCredentials.bearerAuthorization('qwen') : undefined
   const ingressBodyBudget = new InflightByteBudget(config.ingressInflightBodyBytes, '请求较多，请稍后重试')
-  const transcribeBucket = new ProviderRateLimiter(config.transcribeRpm, config.transcribeQueueMax)
-  const bootstrapBucket = new ProviderRateLimiter(config.bootstrapRpm, 0)
-  const transcribeCapacity = new FairCapacityScheduler(
-    config.transcribeConc,
-    1,
-    config.transcribeConc,
-    config.transcribeQueueMax,
-    1,
-  )
+  const transcribeBucket = capacityBackend.rates.transcription
+  const bootstrapBucket = capacityBackend.rates.bootstrap
+  const transcribeCapacity = capacityBackend.transcription
   const transcribe = deps.transcribeImpl === undefined
     ? createGatewayTranscriber(env, providerCredentials)
     : deps.transcribeImpl
@@ -1572,7 +1609,7 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
           body = parsed
         } catch { throw new HttpError(400, 'invalid_auth_body') }
         if (url.pathname === '/v1/auth/bootstrap') {
-          await bootstrapBucket.acquire(0, request.signal)
+          await bootstrapBucket.acquire(config.bootstrapQueueMaxWait, request.signal)
           const installationId = typeof body.installation_id === 'string' ? body.installation_id : ''
           try { return jsonResponse(authTokensResponse(authority.bootstrap(installationId))) }
           catch (error) { if (error instanceof AuthError) throw new HttpError(error.status, error.code); throw error }
@@ -1753,6 +1790,7 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
                 tokenId: identity.principalId,
               })
               await qwenBucket.acquire(config.qwenQueueMaxWait, request.signal)
+              await permit.assertCurrent?.()
               const response = await requestQwenImageReasoning(rawBody, {
                 baseUrl: providerCredentials.baseUrl('qwen'),
                 providerAuthorization: qwenAuthorization,
@@ -1960,6 +1998,7 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
         try {
           try {
             await transcribeBucket.acquire(config.queueMaxWait, request.signal)
+            await capacityPermit.assertCurrent?.()
           } catch (error) {
             completeMetered(receipt, 'released')
             throw error

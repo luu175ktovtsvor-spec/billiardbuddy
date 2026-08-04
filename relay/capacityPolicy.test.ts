@@ -20,6 +20,7 @@ describe('Relay capacity policy', () => {
         pending_input_bytes_max: 64 * 1024 * 1024,
         active_input_bytes_max: 256 * 1024 * 1024,
       },
+      identity_admission: { max_active: 8, max_queued: 32, max_wait_ms: 10_000 },
     })
   })
 
@@ -44,6 +45,7 @@ describe('Relay capacity policy', () => {
     expect(policy.providers.openai).toEqual({ concurrency: 8, owner_concurrency: 2, requests_per_minute: 30, upstream_timeout_ms: 60000 })
     expect(policy.providers.seedream).toEqual({ concurrency: 4, owner_concurrency: 3, requests_per_minute: 40, upstream_timeout_ms: 60000 })
     expect(policy.admission).toEqual({ queue_max: 80, owner_task_max: 6, max_body_bytes: 1024, pending_input_bytes_max: 2048, active_input_bytes_max: 4096 })
+    expect(policy.identity_admission).toEqual({ max_active: 8, max_queued: 32, max_wait_ms: 10_000 })
   })
 
   test('拒绝无效数值和相互冲突的资源边界', () => {
@@ -61,6 +63,8 @@ describe('Relay capacity policy', () => {
       .toThrow('RELAY_OPENAI_RPM')
     expect(() => relayCapacityPolicyFromEnvironment({ RELAY_UPSTREAM_TIMEOUT_MS: '999' }))
       .toThrow('RELAY_UPSTREAM_TIMEOUT_MS')
+    expect(() => relayCapacityPolicyFromEnvironment({ RELAY_IDENTITY_MAX_ACTIVE: '0' }))
+      .toThrow('RELAY_IDENTITY_MAX_ACTIVE')
   })
 })
 
@@ -91,6 +95,9 @@ describe('Image Relay deployment preflight', () => {
       RELAY_PENDING_INPUT_BYTES_MAX: String(64 * 1024 * 1024),
       RELAY_ACTIVE_INPUT_BYTES_MAX: String(256 * 1024 * 1024),
       RELAY_IDENTITY_TIMEOUT_MS: '5000',
+      RELAY_IDENTITY_MAX_ACTIVE: '8',
+      RELAY_IDENTITY_QUEUE_MAX: '32',
+      RELAY_IDENTITY_MAX_WAIT_MS: '5000',
       RELAY_RESULT_GLOBAL_CONC: '2',
       RELAY_RESULT_OWNER_CONC: '1',
       RELAY_RESULT_MAX_BYTES: String(32 * 1024 * 1024),

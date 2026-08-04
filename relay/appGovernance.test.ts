@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 
 import { createRelayFetch } from './app'
+import type { RelayAdmissionBackend, RelayProviderAdmissionConfig } from './capacityPolicy'
 import { imageRelayIdempotencyLookupPath } from '../ts/shared/product/imageRelayProtocol'
 
 const IMAGE_SERVICE_TOKEN = 'image-relay-service-token-123456789012345'
@@ -63,6 +64,61 @@ async function waitFor(predicate: () => boolean | Promise<boolean>, message: str
 }
 
 describe('Image Relay resource governance', () => {
+  test('uses one injected backend for Gateway identity and provider account concurrency plus RPM', async () => {
+    const providerConfigs: RelayProviderAdmissionConfig[] = []
+    const identityConfigs: Array<{ maxActive: number; maxQueued: number; maxWaitMs: number }> = []
+    const acquired: string[] = []
+    let providerReleases = 0
+    let identityFenceChecks = 0
+    let providerFenceChecks = 0
+    const admissionBackend: RelayAdmissionBackend = {
+      createIdentityAdmission(config) {
+        identityConfigs.push(config)
+        return { async acquire() { return { async assertCurrent() { identityFenceChecks += 1 }, release() {} } } }
+      },
+      createProviderAdmission(config) {
+        providerConfigs.push(config)
+        return {
+          async acquire(owner) {
+            acquired.push(owner)
+            return { async assertCurrent() { providerFenceChecks += 1 }, release() { providerReleases += 1 } }
+          },
+          snapshot() {
+            return {
+              active: 0, queued: 0, activeOwners: 0, queuedOwners: 0,
+              maxActive: 91, maxActivePerOwner: 92, maxQueued: 93, maxQueuedPerOwner: 94,
+              oldestQueueMs: 0, closed: false,
+              rate: { available: 95, queued: 0, rpm: config.requests_per_minute, queueMax: config.rate_queue_max },
+            }
+          },
+        }
+      },
+    }
+    const relay = createRelayFetch({
+      env: { ...environment('openai-backend-injection-key'), RELAY_OPENAI_RPM: '17', RELAY_IDENTITY_MAX_ACTIVE: '3', RELAY_IDENTITY_QUEUE_MAX: '7', RELAY_IDENTITY_MAX_WAIT_MS: '9000' },
+      admissionBackend,
+      identityFetchImpl: identityFetch,
+      fetchImpl: async () => Response.json({ data: [{ b64_json: 'aGVsbG8=' }] }),
+    })
+    expect(identityConfigs).toEqual([expect.objectContaining({ maxActive: 3, maxQueued: 7, maxWaitMs: 9000 })])
+    expect(providerConfigs).toHaveLength(2)
+    expect(providerConfigs[0]).toEqual(expect.objectContaining({
+      provider: 'openai', requests_per_minute: 17, rate_queue_max: 4,
+      concurrency: expect.objectContaining({ maxActive: 1, maxActivePerOwner: 1, maxQueued: 4, maxQueuedPerOwner: 2 }),
+    }))
+    const health = await relay(new Request('https://relay.example.test/healthz'))
+    expect(await health.json()).toMatchObject({ provider_capacity: { openai: { maxActive: 91, rate: { available: 95, rpm: 17 } } } })
+    const submitted = await relay(new Request('https://relay.example.test/v1/images/tasks', {
+      method: 'POST', headers: requestHeaders('desktop-a', 'operation-injected-backend'),
+      body: JSON.stringify({ mode: 'generate', model: 'gpt-image-2', prompt: 'injected backend', n: 1, size: '1024x1024' }),
+    }))
+    expect(submitted.status).toBe(202)
+    await waitFor(() => providerReleases === 1, 'injected provider admission was not released')
+    expect(acquired).toEqual([`installation:${'a'.repeat(32)}:desktop-installation-a`])
+    expect(identityFenceChecks).toBeGreaterThanOrEqual(1)
+    expect(providerFenceChecks).toBeGreaterThanOrEqual(2)
+  })
+
   test('uses Gateway-introspected owners for fair admission and never projects secrets', async () => {
     const started: string[] = []
     const releases: Array<() => void> = []
