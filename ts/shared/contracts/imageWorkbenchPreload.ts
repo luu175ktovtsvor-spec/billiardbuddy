@@ -46,10 +46,18 @@ import type {
   ImageSaveOutputResponse,
   UpdateImageReferenceControlInput,
 } from './imageGeneration.js'
+import type {
+  ImageWorkbenchIpcMethod,
+  ImageWorkbenchIpcPayloadByMethod,
+  ImageWorkbenchIpcValueByMethod,
+} from './imageWorkbenchIpc.js'
 
 export type ImageWorkbenchIpcResponse<Value> =
   | { ok: true; value: Value }
   | { ok: false; error: MediaSafeError }
+
+export type ImageWorkbenchIpcMethodResponse<Method extends ImageWorkbenchIpcMethod> =
+  ImageWorkbenchIpcResponse<ImageWorkbenchIpcValueByMethod[Method]>
 
 /**
  * The renderer-visible image workbench boundary.  Inputs and outputs stay in
@@ -82,6 +90,47 @@ export type ImageWorkbenchPreloadBridge = {
   renderCanvas(projectId: string, canvasId: string, input: ImageCanvasRenderInput): Promise<ImageWorkbenchIpcResponse<ImageCanvasRenderResponse>>
   exportDelivery(projectId: string, input: ImageExportInput): Promise<ImageWorkbenchIpcResponse<ImageExportResponse>>
   selectArtboardVersion(projectId: string, artboardId: string, input: ImageArtboardSelectVersionInput): Promise<ImageWorkbenchIpcResponse<ImageArtboardSelectVersionResponse>>
+  listProjects(): Promise<ImageWorkbenchIpcMethodResponse<'listProjects'>>
+  getProject(projectId: string): Promise<ImageWorkbenchIpcMethodResponse<'getProject'>>
+  getProjectProjection(projectId: string): Promise<ImageWorkbenchIpcMethodResponse<'getProjectProjection'>>
+  listOperationEvents(input: ImageWorkbenchIpcPayloadByMethod['listOperationEvents']): Promise<ImageWorkbenchIpcMethodResponse<'listOperationEvents'>>
+  quickCreate(input: ImageWorkbenchIpcPayloadByMethod['quickCreate']['input']): Promise<ImageWorkbenchIpcMethodResponse<'quickCreate'>>
+  compileBrief(projectId: string): Promise<ImageWorkbenchIpcMethodResponse<'compileBrief'>>
+  applyBriefOverrides(input: ImageWorkbenchIpcPayloadByMethod['applyBriefOverrides']): Promise<ImageWorkbenchIpcMethodResponse<'applyBriefOverrides'>>
+  getInspirationBoard(projectId: string): Promise<ImageWorkbenchIpcMethodResponse<'getInspirationBoard'>>
+  upsertInspirationItems(input: ImageWorkbenchIpcPayloadByMethod['upsertInspirationItems']): Promise<ImageWorkbenchIpcMethodResponse<'upsertInspirationItems'>>
+  promoteInspirationItem(input: ImageWorkbenchIpcPayloadByMethod['promoteInspirationItem']): Promise<ImageWorkbenchIpcMethodResponse<'promoteInspirationItem'>>
+  addReferences(input: ImageWorkbenchIpcPayloadByMethod['addReferences']): Promise<ImageWorkbenchIpcMethodResponse<'addReferences'>>
+  removeReference(input: ImageWorkbenchIpcPayloadByMethod['removeReference']): Promise<ImageWorkbenchIpcMethodResponse<'removeReference'>>
+  getCandidateGroup(input: ImageWorkbenchIpcPayloadByMethod['getCandidateGroup']): Promise<ImageWorkbenchIpcMethodResponse<'getCandidateGroup'>>
+  getCandidatePreview(input: ImageWorkbenchIpcPayloadByMethod['getCandidatePreview']): Promise<ImageWorkbenchIpcMethodResponse<'getCandidatePreview'>>
+  listCanvases(projectId: string): Promise<ImageWorkbenchIpcMethodResponse<'listCanvases'>>
+  getCanvas(input: ImageWorkbenchIpcPayloadByMethod['getCanvas']): Promise<ImageWorkbenchIpcMethodResponse<'getCanvas'>>
+  getDeliverySet(input: ImageWorkbenchIpcPayloadByMethod['getDeliverySet']): Promise<ImageWorkbenchIpcMethodResponse<'getDeliverySet'>>
+  getProjectLibrary(projectId: string): Promise<ImageWorkbenchIpcMethodResponse<'getProjectLibrary'>>
+  listBrandKits(): Promise<ImageWorkbenchIpcMethodResponse<'listBrandKits'>>
+  getBrandKit(brandKitId: string): Promise<ImageWorkbenchIpcMethodResponse<'getBrandKit'>>
+  createBrandKit(input: ImageWorkbenchIpcPayloadByMethod['createBrandKit']['input']): Promise<ImageWorkbenchIpcMethodResponse<'createBrandKit'>>
+  reviseBrandKit(input: ImageWorkbenchIpcPayloadByMethod['reviseBrandKit']): Promise<ImageWorkbenchIpcMethodResponse<'reviseBrandKit'>>
+  deleteBrandKit(input: ImageWorkbenchIpcPayloadByMethod['deleteBrandKit']): Promise<ImageWorkbenchIpcMethodResponse<'deleteBrandKit'>>
+  listTemplates(): Promise<ImageWorkbenchIpcMethodResponse<'listTemplates'>>
+  getTemplate(templateId: string): Promise<ImageWorkbenchIpcMethodResponse<'getTemplate'>>
+  createTemplate(input: ImageWorkbenchIpcPayloadByMethod['createTemplate']['input']): Promise<ImageWorkbenchIpcMethodResponse<'createTemplate'>>
+  reviseTemplate(input: ImageWorkbenchIpcPayloadByMethod['reviseTemplate']): Promise<ImageWorkbenchIpcMethodResponse<'reviseTemplate'>>
+  deleteTemplate(input: ImageWorkbenchIpcPayloadByMethod['deleteTemplate']): Promise<ImageWorkbenchIpcMethodResponse<'deleteTemplate'>>
+  createAssetGrant(input: ImageWorkbenchIpcPayloadByMethod['createAssetGrant']['input']): Promise<ImageWorkbenchIpcMethodResponse<'createAssetGrant'>>
+  revokeAssetGrant(input: ImageWorkbenchIpcPayloadByMethod['revokeAssetGrant']): Promise<ImageWorkbenchIpcMethodResponse<'revokeAssetGrant'>>
+  listAssetGrants(): Promise<ImageWorkbenchIpcMethodResponse<'listAssetGrants'>>
+  listCampaigns(input?: ImageWorkbenchIpcPayloadByMethod['listCampaigns']['input']): Promise<ImageWorkbenchIpcMethodResponse<'listCampaigns'>>
+  getCampaign(campaignId: string): Promise<ImageWorkbenchIpcMethodResponse<'getCampaign'>>
+  createCampaign(input: ImageWorkbenchIpcPayloadByMethod['createCampaign']['input']): Promise<ImageWorkbenchIpcMethodResponse<'createCampaign'>>
+  replaceCampaignItems(input: ImageWorkbenchIpcPayloadByMethod['replaceCampaignItems']): Promise<ImageWorkbenchIpcMethodResponse<'replaceCampaignItems'>>
+  estimateCampaign(input: ImageWorkbenchIpcPayloadByMethod['estimateCampaign']): Promise<ImageWorkbenchIpcMethodResponse<'estimateCampaign'>>
+  confirmCampaign(input: ImageWorkbenchIpcPayloadByMethod['confirmCampaign']): Promise<ImageWorkbenchIpcMethodResponse<'confirmCampaign'>>
+  confirmCampaignRetry(input: ImageWorkbenchIpcPayloadByMethod['confirmCampaignRetry']): Promise<ImageWorkbenchIpcMethodResponse<'confirmCampaignRetry'>>
+  startCampaign(input: ImageWorkbenchIpcPayloadByMethod['startCampaign']): Promise<ImageWorkbenchIpcMethodResponse<'startCampaign'>>
+  cancelCampaign(input: ImageWorkbenchIpcPayloadByMethod['cancelCampaign']): Promise<ImageWorkbenchIpcMethodResponse<'cancelCampaign'>>
+  retryCampaignItem(input: ImageWorkbenchIpcPayloadByMethod['retryCampaignItem']): Promise<ImageWorkbenchIpcMethodResponse<'retryCampaignItem'>>
 }
 
 export type BilliardBuddyMediaPreloadBridge = {

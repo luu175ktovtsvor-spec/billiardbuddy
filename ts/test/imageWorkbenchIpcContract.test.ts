@@ -5,6 +5,12 @@ import { imageWorkbenchIpcResponse } from '../desktop/electron/ipc/imageResponse
 import { ElectronImageActions } from '../desktop/electron/services/imageActions.js'
 import { ImageDestinationGrants } from '../desktop/electron/services/imageDestinationGrants.js'
 import { mediaSafeError } from '../shared/contracts/media.js'
+import {
+  imageWorkbenchIpcResponseSchemas,
+  parseImageWorkbenchIpcRequest,
+} from '../shared/contracts/imageWorkbenchIpc.js'
+import type { ImageWorkbenchPreloadBridge } from '../shared/contracts/imageWorkbenchPreload.js'
+import { createElectronImageWorkbenchClient } from '../desktop/src/image-workbench/api/imageWorkbenchClient.js'
 import type {
   ImageCandidateAdoptionResponse,
   ImageCandidateDecisionResponse,
@@ -222,6 +228,97 @@ test('15.4 image IPC validators expose every shared typed image command', () => 
   expect(validateElectronIpcPayload(ELECTRON_IPC_CHANNELS.imageRenderCanvas, {
     projectId, canvasId: 'canvas_00000001', input: { base_revision: 0, idempotency_key: 'short', canvas_revision: 0, activate_on_success: true },
   })).toBeFalse()
+})
+
+test('15.5 image workbench bridge validates method payloads and response schemas', () => {
+  const channel = ELECTRON_IPC_CHANNELS.imageWorkbenchInvoke
+  expect(channel).toBe('desktop:image-workbench:invoke')
+  expect(validateElectronIpcPayload(channel, { method: 'listProjects', payload: {} })).toBeTrue()
+  expect(validateElectronIpcPayload(channel, { method: 'listProjects', payload: { forged: true } })).toBeFalse()
+  expect(validateElectronIpcPayload(channel, {
+    method: 'getProjectProjection',
+    payload: { projectId },
+  })).toBeTrue()
+  expect(validateElectronIpcPayload(channel, {
+    method: 'getProjectProjection',
+    payload: { projectId, actor: 'forged-owner' },
+  })).toBeFalse()
+  expect(validateElectronIpcPayload(channel, {
+    method: 'quickCreate',
+    payload: {
+      input: {
+        idempotency_key: 'bb-image-ipc-quick-create-0001',
+        prompt: '一张桌球馆海报',
+        output_preset: 'square',
+        reference_inputs: [],
+      },
+    },
+  })).toBeTrue()
+  expect(validateElectronIpcPayload(channel, {
+    method: 'quickCreate',
+    payload: {
+      input: {
+        idempotency_key: 'bb-image-ipc-quick-create-0001',
+        prompt: '一张桌球馆海报',
+        output_preset: 'square',
+        reference_inputs: [],
+        actor: 'forged-owner',
+      },
+    },
+  })).toBeFalse()
+  expect(() => parseImageWorkbenchIpcRequest({ method: 'listProjects', payload: {} })).not.toThrow()
+  expect(() => parseImageWorkbenchIpcRequest({ method: 'listProjects', payload: { forged: true } })).toThrow()
+  expect(imageWorkbenchIpcResponseSchemas.getCandidatePreview.safeParse({
+    candidate_id: 'cand_00000001',
+    data_url: 'data:image/png;base64,AA==',
+  }).success).toBeTrue()
+  expect(imageWorkbenchIpcResponseSchemas.getCandidatePreview.safeParse({
+    candidate_id: 'cand_00000001',
+    data_url: 'https://server.example/candidate.png',
+  }).success).toBeFalse()
+})
+
+test('15.5 renderer adapter maps project and Campaign commands to typed Preload inputs', async () => {
+  const calls: Array<{ method: string; value: unknown }> = []
+  const ok = <Value>(value: Value) => Promise.resolve({ ok: true as const, value })
+  const bridge = {
+    getProjectProjection: async (projectId: string) => {
+      calls.push({ method: 'getProjectProjection', value: projectId })
+      return ok({})
+    },
+    listCampaigns: async (input?: { cursor?: number; limit?: number }) => {
+      calls.push({ method: 'listCampaigns', value: input })
+      return ok({ campaigns: [] })
+    },
+    createCampaign: async (input: unknown) => {
+      calls.push({ method: 'createCampaign', value: input })
+      return ok({})
+    },
+  } as unknown as ImageWorkbenchPreloadBridge
+  const client = createElectronImageWorkbenchClient(bridge)
+  await client.getProjectProjection({ project_id: projectId })
+  await client.listCampaigns({ cursor: 20, limit: 10 })
+  await client.createCampaign({
+    idempotency_key: 'bb-image-adapter-campaign-0001',
+    name: '适配器回归',
+    shared_brief: { user_request: '海报', confirmed_facts: [], must_preserve: [] },
+    output_preset: 'square',
+    items: [{ variable_values: [] }],
+  })
+  expect(calls).toEqual([
+    { method: 'getProjectProjection', value: projectId },
+    { method: 'listCampaigns', value: { cursor: 20, limit: 10 } },
+    {
+      method: 'createCampaign',
+      value: {
+        idempotency_key: 'bb-image-adapter-campaign-0001',
+        name: '适配器回归',
+        shared_brief: { user_request: '海报', confirmed_facts: [], must_preserve: [] },
+        output_preset: 'square',
+        items: [{ variable_values: [] }],
+      },
+    },
+  ])
 })
 
 test('15.3 opaque destination grant is Main-only, expires, and cannot be replayed', () => {

@@ -152,6 +152,7 @@ export const ELECTRON_IPC_CHANNELS = {
   imageRenderCanvas: 'desktop:image:render-canvas',
   imageExportDelivery: 'desktop:image:export-delivery',
   imageSelectArtboardVersion: 'desktop:image:select-artboard-version',
+  imageWorkbenchInvoke: 'desktop:image-workbench:invoke',
   videoAddSource: 'desktop:video:add-source',
   videoRender: 'desktop:video:render',
   videoAnalyze: 'desktop:video:analyze',

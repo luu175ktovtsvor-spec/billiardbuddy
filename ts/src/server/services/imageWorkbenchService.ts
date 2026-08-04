@@ -3837,7 +3837,9 @@ export class ImageWorkbenchService {
     // A local Campaign cancellation is authoritative until a remote task id
     // exists. This also repairs records from an interrupted older writer that
     // happened to persist the formal cancellation before its transport row.
-    if (current.status === 'cancelled' && current.cancellation?.remote_state === 'confirmed' && !transport.remote_task_id) {
+    const locallyCancelled = current.status === 'cancelled'
+      && !transport.remote_task_id
+    if (locallyCancelled) {
       if (transport.status !== 'cancelled') {
         const safe = mediaSafeError('MEDIA_IMAGE_CANCELLED')
         await this.repository.saveOperation(this.operation({

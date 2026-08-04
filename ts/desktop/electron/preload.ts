@@ -1,5 +1,13 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import type { ImageWorkbenchPreloadBridge } from '../../shared/contracts/imageWorkbenchPreload.js'
+import type {
+  ImageWorkbenchIpcResponse,
+  ImageWorkbenchPreloadBridge,
+} from '../../shared/contracts/imageWorkbenchPreload.js'
+import type {
+  ImageWorkbenchIpcMethod,
+  ImageWorkbenchIpcPayloadByMethod,
+  ImageWorkbenchIpcValueByMethod,
+} from '../../shared/contracts/imageWorkbenchIpc.js'
 import { ELECTRON_EVENT_CHANNELS, ELECTRON_IPC_CHANNELS, type ElectronIpcChannel } from './ipc/channels'
 
 function invoke<T>(channel: ElectronIpcChannel, payload?: unknown): Promise<T> {
@@ -8,6 +16,16 @@ function invoke<T>(channel: ElectronIpcChannel, payload?: unknown): Promise<T> {
 
 type ImageBridgeResult<Method extends keyof ImageWorkbenchPreloadBridge> =
   Awaited<ReturnType<ImageWorkbenchPreloadBridge[Method]>>
+
+function invokeImageWorkbench<Method extends ImageWorkbenchIpcMethod>(
+  method: Method,
+  payload: ImageWorkbenchIpcPayloadByMethod[Method],
+): Promise<ImageWorkbenchIpcResponse<ImageWorkbenchIpcValueByMethod[Method]>> {
+  return invoke<ImageWorkbenchIpcResponse<ImageWorkbenchIpcValueByMethod[Method]>>(
+    ELECTRON_IPC_CHANNELS.imageWorkbenchInvoke,
+    { method, payload },
+  )
+}
 
 function nativeAgentEventListener(handler: (event: unknown) => void): () => void {
   const listener = (_event: Electron.IpcRendererEvent, payload: unknown) => handler(payload)
@@ -542,6 +560,47 @@ const images: ImageWorkbenchPreloadBridge = {
     ELECTRON_IPC_CHANNELS.imageSelectArtboardVersion,
     { projectId, artboardId, input },
   ),
+  listProjects: () => invokeImageWorkbench('listProjects', {}),
+  getProject: projectId => invokeImageWorkbench('getProject', { projectId }),
+  getProjectProjection: projectId => invokeImageWorkbench('getProjectProjection', { projectId }),
+  listOperationEvents: input => invokeImageWorkbench('listOperationEvents', input),
+  quickCreate: input => invokeImageWorkbench('quickCreate', { input }),
+  compileBrief: projectId => invokeImageWorkbench('compileBrief', { projectId }),
+  applyBriefOverrides: input => invokeImageWorkbench('applyBriefOverrides', input),
+  getInspirationBoard: projectId => invokeImageWorkbench('getInspirationBoard', { projectId }),
+  upsertInspirationItems: input => invokeImageWorkbench('upsertInspirationItems', input),
+  promoteInspirationItem: input => invokeImageWorkbench('promoteInspirationItem', input),
+  addReferences: input => invokeImageWorkbench('addReferences', input),
+  removeReference: input => invokeImageWorkbench('removeReference', input),
+  getCandidateGroup: input => invokeImageWorkbench('getCandidateGroup', input),
+  getCandidatePreview: input => invokeImageWorkbench('getCandidatePreview', input),
+  listCanvases: projectId => invokeImageWorkbench('listCanvases', { projectId }),
+  getCanvas: input => invokeImageWorkbench('getCanvas', input),
+  getDeliverySet: input => invokeImageWorkbench('getDeliverySet', input),
+  getProjectLibrary: projectId => invokeImageWorkbench('getProjectLibrary', { projectId }),
+  listBrandKits: () => invokeImageWorkbench('listBrandKits', {}),
+  getBrandKit: brandKitId => invokeImageWorkbench('getBrandKit', { brandKitId }),
+  createBrandKit: input => invokeImageWorkbench('createBrandKit', { input }),
+  reviseBrandKit: input => invokeImageWorkbench('reviseBrandKit', input),
+  deleteBrandKit: input => invokeImageWorkbench('deleteBrandKit', input),
+  listTemplates: () => invokeImageWorkbench('listTemplates', {}),
+  getTemplate: templateId => invokeImageWorkbench('getTemplate', { templateId }),
+  createTemplate: input => invokeImageWorkbench('createTemplate', { input }),
+  reviseTemplate: input => invokeImageWorkbench('reviseTemplate', input),
+  deleteTemplate: input => invokeImageWorkbench('deleteTemplate', input),
+  createAssetGrant: input => invokeImageWorkbench('createAssetGrant', { input }),
+  revokeAssetGrant: input => invokeImageWorkbench('revokeAssetGrant', input),
+  listAssetGrants: () => invokeImageWorkbench('listAssetGrants', {}),
+  listCampaigns: input => invokeImageWorkbench('listCampaigns', { ...(input === undefined ? {} : { input }) }),
+  getCampaign: campaignId => invokeImageWorkbench('getCampaign', { campaignId }),
+  createCampaign: input => invokeImageWorkbench('createCampaign', { input }),
+  replaceCampaignItems: input => invokeImageWorkbench('replaceCampaignItems', input),
+  estimateCampaign: input => invokeImageWorkbench('estimateCampaign', input),
+  confirmCampaign: input => invokeImageWorkbench('confirmCampaign', input),
+  confirmCampaignRetry: input => invokeImageWorkbench('confirmCampaignRetry', input),
+  startCampaign: input => invokeImageWorkbench('startCampaign', input),
+  cancelCampaign: input => invokeImageWorkbench('cancelCampaign', input),
+  retryCampaignItem: input => invokeImageWorkbench('retryCampaignItem', input),
 }
 
 const media = {
