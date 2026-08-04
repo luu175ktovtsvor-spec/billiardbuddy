@@ -6,6 +6,7 @@ import {
 import { relayCapacityPolicyFromEnvironment } from './capacityPolicy'
 import { loadImageRelayIdentityIntrospector } from './identityIntrospection'
 import { loadRelayProviderCredentials } from './providerCredentials'
+import { IMAGE_RELAY_QUOTA_POLICY_ENVIRONMENT_VARIABLES, imageRelayQuotaPolicyFromEnvironment } from './quotaPolicy'
 import { loadImageRelayResultCredentials } from './resultCredentials'
 
 /** Production has no implicit image-provider admission profile. */
@@ -20,11 +21,20 @@ export const IMAGE_RELAY_PRODUCTION_CAPACITY_ENVIRONMENT_VARIABLES = [
   'RELAY_QUEUE_MAX',
   'RELAY_USER_MAX',
   'RELAY_RETRY_AFTER_SECONDS',
+  'RELAY_REQUEST_BODY_TIMEOUT_MS',
   'RELAY_UPSTREAM_TIMEOUT_MS',
   'RELAY_MAX_BODY_BYTES',
   'RELAY_PENDING_INPUT_BYTES_MAX',
   'RELAY_ACTIVE_INPUT_BYTES_MAX',
+  'RELAY_IDENTITY_TIMEOUT_MS',
+  'RELAY_RESULT_GLOBAL_CONC',
+  'RELAY_RESULT_OWNER_CONC',
+  'RELAY_RESULT_MAX_BYTES',
+  'RELAY_QUOTA_LEDGER_RETENTION_DAYS',
 ] as const
+
+/** Paid spend is enabled only with an explicit daily policy, never a source default. */
+export const IMAGE_RELAY_PRODUCTION_QUOTA_ENVIRONMENT_VARIABLES = IMAGE_RELAY_QUOTA_POLICY_ENVIRONMENT_VARIABLES
 
 function fail(message: string): never {
   throw new Error(`Image Relay deployment environment invalid: ${message}`)
@@ -43,6 +53,11 @@ function requireBoundedInteger(environment: StaticDeploymentEnvironment, name: s
   if (!Number.isSafeInteger(parsed) || parsed < min || parsed > max) fail(`${name} must be an integer between ${min} and ${max}`)
 }
 
+function requireAtMost(environment: StaticDeploymentEnvironment, name: string, max: number): void {
+  const value = Number(requireValue(environment, name))
+  if (!Number.isSafeInteger(value) || value > max) fail(`${name} must not exceed ${max} for the bounded production memory envelope`)
+}
+
 function requireAbsoluteDataPath(environment: StaticDeploymentEnvironment, name: string, expectedLeaf: RegExp): void {
   const value = requireValue(environment, name)
   if (!/^\/[A-Za-z0-9._/-]+$/.test(value) || value === '/' || value.includes('//')) {
@@ -58,12 +73,28 @@ export function validateRelayDeploymentEnvironment(environment: StaticDeployment
   requireAbsoluteDataPath(environment, 'RELAY_DB', /(?:image-)?relay\.db$/i)
   requireAbsoluteDataPath(environment, 'RELAY_BLOB_DIR', /blobs?\/?$/i)
   for (const name of IMAGE_RELAY_PRODUCTION_CAPACITY_ENVIRONMENT_VARIABLES) requireValue(environment, name)
+  for (const name of IMAGE_RELAY_PRODUCTION_QUOTA_ENVIRONMENT_VARIABLES) requireValue(environment, name)
   // This wait owns both the fair provider-admission deadline and the rate-limit
   // queue deadline in relay/app.ts, so it is part of the explicit policy too.
   requireBoundedInteger(environment, 'RELAY_RETRY_AFTER_SECONDS', 1, 3_600)
+  requireBoundedInteger(environment, 'RELAY_REQUEST_BODY_TIMEOUT_MS', 1_000, 120_000)
+  requireBoundedInteger(environment, 'RELAY_IDENTITY_TIMEOUT_MS', 1, 60_000)
+  requireBoundedInteger(environment, 'RELAY_RESULT_GLOBAL_CONC', 1, 64)
+  requireBoundedInteger(environment, 'RELAY_RESULT_OWNER_CONC', 1, 16)
+  requireBoundedInteger(environment, 'RELAY_RESULT_MAX_BYTES', 1, 32 * 1024 * 1024)
+  requireBoundedInteger(environment, 'RELAY_QUOTA_LEDGER_RETENTION_DAYS', 7, 3650)
+  // A three-output Provider envelope can legitimately approach ~129 MiB before
+  // parse/base64 expansion. Until the worker gets an incremental JSON parser,
+  // production accepts only one paid generation and at most two direct result
+  // deliveries at a time on a 2 GiB Relay container.
+  requireAtMost(environment, 'RELAY_IMG_CONC', 1)
+  requireAtMost(environment, 'RELAY_SEEDREAM_CONC', 1)
+  requireAtMost(environment, 'RELAY_RESULT_GLOBAL_CONC', 2)
+  requireAtMost(environment, 'RELAY_RESULT_OWNER_CONC', 1)
 
   try {
     relayCapacityPolicyFromEnvironment(environment)
+    imageRelayQuotaPolicyFromEnvironment(environment)
     loadImageRelayIdentityIntrospector(environment)
     loadImageRelayResultCredentials(environment)
     const credentials = loadRelayProviderCredentials(environment)

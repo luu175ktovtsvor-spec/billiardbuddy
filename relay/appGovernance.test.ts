@@ -175,8 +175,8 @@ describe('Image Relay resource governance', () => {
       return Array.isArray(handoff.result_urls) && handoff.result_urls.length === 1
     }, 'direct result handoff was not issued')
     expect(handoff.data).toBeUndefined()
-    expect(handoff.result_url).toContain('/v1/images/results/')
-    expect(handoff.result_urls?.[0]).toContain('/v1/images/results/')
+    expect(handoff.result_url).toBe(handoff.result_urls?.[0])
+    expect(new URL(handoff.result_url!).pathname).toMatch(/\/0$/)
 
     // The public relay prefix is stripped by the reverse proxy before this Bun handler.
     const resultPath = new URL(handoff.result_urls![0]!).pathname.replace('/image-generation', '')
@@ -228,5 +228,27 @@ describe('Image Relay resource governance', () => {
     expect(providerCalls).toBe(1)
 
     release?.()
+  })
+
+  test('bounds a slow chunked submit body even when stream cancellation never resolves', async () => {
+    let cancelled = false
+    const relay = createRelayFetch({
+      env: { ...environment(), RELAY_REQUEST_BODY_TIMEOUT_MS: '5' },
+      identityFetchImpl: identityFetch,
+      fetchImpl: async () => Response.json({ data: [{ b64_json: 'aGVsbG8=' }] }),
+    })
+    const body = new ReadableStream<Uint8Array>({
+      cancel: () => {
+        cancelled = true
+        return new Promise<void>(() => {})
+      },
+    })
+    const response = await relay(new Request('https://relay.example.test/v1/images/tasks', {
+      method: 'POST',
+      headers: requestHeaders('desktop-a', 'operation-hanging-body'),
+      body,
+    }))
+    expect(response.status).toBe(408)
+    expect(cancelled).toBe(true)
   })
 })

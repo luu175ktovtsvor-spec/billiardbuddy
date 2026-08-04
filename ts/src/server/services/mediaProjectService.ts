@@ -107,6 +107,58 @@ import {
 
 type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
 
+const IMAGE_RELAY_CONTROL_JSON_MAX_BYTES = 256 * 1024
+const IMAGE_RELAY_DIRECT_RESULT_JSON_MAX_BYTES = Math.ceil((32 * 1024 * 1024) / 3) * 4 + 64 * 1024
+
+async function readImageRelayResponseText(response: Response, maxBytes: number, signal: AbortSignal): Promise<string> {
+  const declaredRaw = response.headers.get('content-length')?.trim()
+  const declared = declaredRaw && /^\d+$/.test(declaredRaw) ? Number(declaredRaw) : undefined
+  if (declared !== undefined && (!Number.isSafeInteger(declared) || declared > maxBytes)) {
+    void response.body?.cancel().catch(() => {})
+    throw new Error('image relay response too large')
+  }
+  if (!response.body) return ''
+  const reader = response.body.getReader()
+  const chunks: Uint8Array[] = []
+  let total = 0
+  let detachAbort = () => {}
+  const aborted = new Promise<never>((_resolve, reject) => {
+    const onAbort = () => {
+      void reader.cancel().catch(() => {})
+      reject(new Error('image relay response deadline exceeded'))
+    }
+    if (signal.aborted) onAbort()
+    else {
+      signal.addEventListener('abort', onAbort, { once: true })
+      detachAbort = () => signal.removeEventListener('abort', onAbort)
+    }
+  })
+  try {
+    while (true) {
+      const next = await Promise.race([reader.read(), aborted])
+      if (next.done) break
+      const value = next.value
+      if (!value || value.byteLength === 0) continue
+      if (total + value.byteLength > maxBytes) {
+        void reader.cancel().catch(() => {})
+        throw new Error('image relay response too large')
+      }
+      chunks.push(value)
+      total += value.byteLength
+    }
+    const bytes = new Uint8Array(total)
+    let offset = 0
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset)
+      offset += chunk.byteLength
+    }
+    return new TextDecoder().decode(bytes)
+  } finally {
+    detachAbort()
+    try { reader.releaseLock() } catch {}
+  }
+}
+
 export type MediaProcessResult = {
   exitCode: number
   stdout: string
@@ -619,6 +671,7 @@ export class MediaProjectService {
   private async fetchImageRelayJson(
     input: RequestInfo | URL,
     init: RequestInit,
+    maxBytes = IMAGE_RELAY_CONTROL_JSON_MAX_BYTES,
   ): Promise<{ response: Response; body: RelayImageTask & { message?: string } }> {
     const controller = new AbortController()
     let timer: ReturnType<typeof setTimeout> | undefined
@@ -631,7 +684,7 @@ export class MediaProjectService {
     })
     const fetchAndRead = async () => {
       const response = await this.fetchImpl(input, { ...init, signal: controller.signal })
-      const text = await response.text()
+      const text = await readImageRelayResponseText(response, maxBytes, controller.signal)
       const body = (text ? JSON.parse(text) : {}) as RelayImageTask & { message?: string }
       return { response, body }
     }
@@ -3432,22 +3485,25 @@ export class MediaProjectService {
         if (body.result_urls.length > 4) throw new Error('too many image result handoff URLs')
         const resultUrls = body.result_urls.map(value => trustedMediaResultUrl(value, imageRelay.baseUrl))
         if (resultUrls.some(value => !value)) throw new Error('untrusted image result handoff URL')
-        const direct = await Promise.all(resultUrls.map(resultUrl => this.fetchImageRelayJson(resultUrl!, {
-          method: 'GET',
-          redirect: 'error',
-          headers: {
-            Accept: 'application/json',
-            Authorization: `Bearer ${imageRelay.token}`,
-            [PROVIDER_GATEWAY_PROTOCOL_HEADER]: PROVIDER_GATEWAY_PROTOCOL.headerValue,
-          },
-        })))
-        const failed = direct.find(result => !result.response.ok)
-        if (failed) {
-          response = failed.response
-          body = failed.body
-        } else {
-          body = { ...body, data: direct.flatMap(result => result.body.data ?? []) }
+        const data: NonNullable<RelayImageTask['data']> = []
+        for (const resultUrl of resultUrls) {
+          const direct = await this.fetchImageRelayJson(resultUrl!, {
+            method: 'GET',
+            redirect: 'error',
+            headers: {
+              Accept: 'application/json',
+              Authorization: `Bearer ${imageRelay.token}`,
+              [PROVIDER_GATEWAY_PROTOCOL_HEADER]: PROVIDER_GATEWAY_PROTOCOL.headerValue,
+            },
+          }, IMAGE_RELAY_DIRECT_RESULT_JSON_MAX_BYTES)
+          if (!direct.response.ok) {
+            response = direct.response
+            body = direct.body
+            break
+          }
+          data.push(...(direct.body.data ?? []))
         }
+        if (response.ok) body = { ...body, data }
       } else if (response.ok && body.status === 'succeeded' && body.result_url) {
         const resultUrl = trustedMediaResultUrl(body.result_url, imageRelay.baseUrl)
         if (!resultUrl) throw new Error('untrusted image result handoff URL')
@@ -3459,7 +3515,7 @@ export class MediaProjectService {
             Authorization: `Bearer ${imageRelay.token}`,
             [PROVIDER_GATEWAY_PROTOCOL_HEADER]: PROVIDER_GATEWAY_PROTOCOL.headerValue,
           },
-        })
+        }, IMAGE_RELAY_DIRECT_RESULT_JSON_MAX_BYTES)
         response = direct.response
         body = { ...body, ...direct.body }
       }

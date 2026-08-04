@@ -32,7 +32,7 @@
 
 import { Database } from 'bun:sqlite'
 import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import {
   defaultManagedModelForWorkload,
@@ -55,6 +55,7 @@ import {
 import { relayCapacityPolicyFromEnvironment, type RelayCapacityPolicy } from './capacityPolicy.js'
 import { loadImageRelayIdentityIntrospector, RelayIdentityIntrospectionError, type ImageRelayIdentity } from './identityIntrospection.js'
 import { loadRelayProviderCredentials } from './providerCredentials.js'
+import { imageRelayQuotaPolicyFromEnvironment, type ImageRelayQuotaPolicy } from './quotaPolicy.js'
 import { loadImageRelayResultCredentials } from './resultCredentials.js'
 
 type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<Response>
@@ -64,7 +65,14 @@ export type RelayConfig = {
   dbPath: string
   blobDir: string | null
   retryAfterSeconds: number
+  requestBodyTimeoutMs: number
+  identityTimeoutMs: number
+  resultGlobalConcurrency: number
+  resultOwnerConcurrency: number
+  resultMaxBytes: number
+  quotaLedgerRetentionDays: number
   capacityPolicy: RelayCapacityPolicy
+  quotaPolicy: ImageRelayQuotaPolicy
 }
 
 type Env = Record<string, string | undefined>
@@ -89,7 +97,21 @@ export function loadRelayConfig(env: Env): RelayConfig {
     blobDir: env.RELAY_BLOB_DIR && env.RELAY_BLOB_DIR.trim() ? env.RELAY_BLOB_DIR.trim() : null,
     // 队列满时给网关/调用方明确的退避提示，而不是立刻并发重试放大流量。
     retryAfterSeconds: boundedPositiveIntEnv(env, 'RELAY_RETRY_AFTER_SECONDS', 30, 3600),
+    requestBodyTimeoutMs: boundedPositiveIntEnv(env, 'RELAY_REQUEST_BODY_TIMEOUT_MS', 30_000, 120_000),
+    // Gateway introspection is a private, short JSON hop. Keep it independently
+    // bounded so a stuck identity dependency cannot tie up submit sockets.
+    identityTimeoutMs: boundedPositiveIntEnv(env, 'RELAY_IDENTITY_TIMEOUT_MS', 5_000, 60_000),
+    // Result bytes are delivered independently from paid generation admission.
+    // A direct-v1 URL reads only one persisted candidate while these external
+    // limits keep simultaneous base64 responses inside the Relay memory budget.
+    resultGlobalConcurrency: boundedPositiveIntEnv(env, 'RELAY_RESULT_GLOBAL_CONC', 4, 64),
+    resultOwnerConcurrency: boundedPositiveIntEnv(env, 'RELAY_RESULT_OWNER_CONC', 1, 16),
+    resultMaxBytes: boundedPositiveIntEnv(env, 'RELAY_RESULT_MAX_BYTES', 32 * 1024 * 1024, 32 * 1024 * 1024),
+    // Daily quota enforcement needs only the active UTC period; retain terminal
+    // ledger evidence for a bounded audit window instead of growing forever.
+    quotaLedgerRetentionDays: boundedPositiveIntEnv(env, 'RELAY_QUOTA_LEDGER_RETENTION_DAYS', 35, 3650),
     capacityPolicy: relayCapacityPolicyFromEnvironment(env),
+    quotaPolicy: imageRelayQuotaPolicyFromEnvironment(env),
   }
 }
 
@@ -103,8 +125,33 @@ class HttpError extends Error {
 
 class UpstreamResponseError extends Error {}
 class UpstreamOutcomeUnknownError extends Error {}
+class UpstreamBodyLimitError extends Error {}
+
+const MAX_PROVIDER_IMAGE_RESPONSE_BYTES = 32 * 1024 * 1024
 
 type TaskState = 'queued' | 'running' | 'succeeded' | 'failed' | 'failed_unknown' | 'cancelled'
+type CandidateInvalid = { index: number; safe_error_code: string }
+type RelayResultSummary = {
+  expected_count: number
+  valid_count: number
+  invalid: CandidateInvalid[]
+  /** Provider records observed before Relay discards any output that was not
+   * authorized by the original n. It must never invalidate a valid index. */
+  observed_count: number
+  /** A result subset is deliverable, but at least one paid Provider attempt
+   * cannot be proven complete. Its reservation must stay conservatively held. */
+  partial_outcome_unknown: boolean
+}
+type RelayCandidate = {
+  candidate_index: number
+  b64_json: string
+  mime_type: 'image/png' | 'image/jpeg' | 'image/webp'
+  revised_prompt?: string
+}
+type ProviderRunResult = {
+  outputs: RelayCandidate[]
+  summary: RelayResultSummary
+}
 type InputFidelityCapability = {
   requested: string
   status: 'accepted' | 'unsupported'
@@ -138,6 +185,12 @@ const GPT_IMAGE_MODEL = defaultManagedModelForWorkload('image_generation').model
 const SEEDREAM_IMAGE_MODEL = IMAGE_MODEL_CATALOG.find(entry => entry.provider === 'bytedance-ark')?.model_id
 if (!SEEDREAM_IMAGE_MODEL) throw new Error('relay: model catalog has no Seedream image provider')
 
+const MAX_IMAGE_OUTPUT_COUNT = Math.max(...IMAGE_MODEL_CATALOG.map(entry => entry.image_generation?.max_output_count ?? 0))
+const MAX_BASE64_BYTES_PER_IMAGE = Math.ceil(MAX_PROVIDER_IMAGE_RESPONSE_BYTES / 3) * 4
+// Provider JSON may legitimately carry up to the catalog's maximum number of
+// base64 images. This is still a fixed upper bound, not an unbounded text read.
+const MAX_PROVIDER_JSON_RESPONSE_BYTES = MAX_BASE64_BYTES_PER_IMAGE * MAX_IMAGE_OUTPUT_COUNT + 1024 * 1024
+
 function imageModelDescriptor(model: string) {
   const entry = managedModelById(model)
   if (!entry?.workload_bindings.some(binding => (
@@ -155,6 +208,10 @@ function validateSubmitBody(body: SubmitBody, arkConfigured: boolean): void {
   const descriptor = imageModelDescriptor(model)
   const generation = descriptor?.image_generation
   if (!descriptor || !generation) throw new HttpError(400, 'relay: 不支持这个生图模型')
+  const outputs = Number(body.n ?? 1)
+  if (!Number.isInteger(outputs) || outputs < 1 || outputs > generation.max_output_count) {
+    throw new HttpError(400, `relay: 当前模型一次最多生成 ${generation.max_output_count} 张图片`)
+  }
   const size = String(body.size ?? (isSeedreamModel(model) ? '2048x2048' : '1024x1024'))
   if (!generation.supported_sizes.includes(size)) throw new HttpError(400, 'relay: 当前模型不支持这个图片尺寸')
   if (isSeedreamModel(model) && !arkConfigured) {
@@ -217,6 +274,10 @@ interface BlobStore {
   byteLength(id: string, kind: 'in' | 'out'): number | null
   delKind(id: string, kind: 'in' | 'out'): void
   del(id: string): void
+  putOutputs(id: string, data: unknown[]): void
+  outputCount(id: string): number
+  outputAt(id: string, index: number): unknown | null
+  allOutputs(id: string): unknown[] | null
 }
 
 class MemoryBlobStore implements BlobStore {
@@ -231,26 +292,153 @@ class MemoryBlobStore implements BlobStore {
   }
   delKind(id: string, kind: 'in' | 'out'): void { this.map.delete(`${id}.${kind}`) }
   del(id: string): void { this.map.delete(`${id}.in`); this.map.delete(`${id}.out`) }
+  putOutputs(id: string, data: unknown[]): void { this.put(id, 'out', { data }) }
+  outputCount(id: string): number {
+    const out = this.get(id, 'out') as { data?: unknown[] } | null
+    return Array.isArray(out?.data) ? out.data.length : 0
+  }
+  outputAt(id: string, index: number): unknown | null {
+    const out = this.get(id, 'out') as { data?: unknown[] } | null
+    return Array.isArray(out?.data) && index >= 0 && index < out.data.length ? out.data[index]! : null
+  }
+  allOutputs(id: string): unknown[] | null {
+    const out = this.get(id, 'out') as { data?: unknown[] } | null
+    return Array.isArray(out?.data) ? out.data : null
+  }
 }
 
 class DiskBlobStore implements BlobStore {
   constructor(private readonly dir: string) { mkdirSync(dir, { recursive: true, mode: 0o700 }) }
   private file(id: string, kind: 'in' | 'out'): string { return join(this.dir, `${id}.${kind}.json`) }
+  private outputManifest(id: string): string { return join(this.dir, `${id}.out.manifest.json`) }
+  private outputFile(id: string, index: number): string { return join(this.dir, `${id}.out.${index}.json`) }
   put(id: string, kind: 'in' | 'out', value: unknown): void {
     writeFileSync(this.file(id, kind), JSON.stringify(value), { mode: 0o600 })
   }
   get(id: string, kind: 'in' | 'out'): unknown | null {
+    if (kind === 'out') {
+      const data = this.allOutputs(id)
+      return data === null ? null : { data }
+    }
     const path = this.file(id, kind)
     if (!existsSync(path)) return null
     try { return JSON.parse(readFileSync(path, 'utf8')) } catch { return null }
   }
   byteLength(id: string, kind: 'in' | 'out'): number | null {
+    if (kind === 'out') {
+      const manifest = this.manifest(id)
+      if (manifest) {
+        try { return statSync(this.outputManifest(id)).size } catch { return null }
+      }
+    }
     const path = this.file(id, kind)
     try { return statSync(path).size } catch { return null }
   }
-  delKind(id: string, kind: 'in' | 'out'): void { rmSync(this.file(id, kind), { force: true }) }
+  delKind(id: string, kind: 'in' | 'out'): void {
+    rmSync(this.file(id, kind), { force: true })
+    if (kind === 'out') {
+      rmSync(this.outputManifest(id), { force: true })
+      for (let index = 0; index < 3; index += 1) rmSync(this.outputFile(id, index), { force: true })
+    }
+  }
   del(id: string): void {
-    for (const kind of ['in', 'out'] as const) rmSync(this.file(id, kind), { force: true })
+    for (const kind of ['in', 'out'] as const) this.delKind(id, kind)
+  }
+
+  private manifest(id: string): { count: number } | null {
+    const path = this.outputManifest(id)
+    if (!existsSync(path)) return null
+    try {
+      const value = JSON.parse(readFileSync(path, 'utf8')) as { count?: unknown }
+      const count = value?.count
+      return typeof count === 'number' && Number.isInteger(count) && count >= 0 && count <= 3 ? { count } : null
+    } catch { return null }
+  }
+
+  private legacyOutputs(id: string): unknown[] | null {
+    const path = this.file(id, 'out')
+    if (!existsSync(path)) return null
+    try {
+      const value = JSON.parse(readFileSync(path, 'utf8')) as { data?: unknown[] }
+      return Array.isArray(value?.data) ? value.data : null
+    } catch { return null }
+  }
+
+  /** fsync the file before its rename and the containing directory after it.
+   * The manifest is written last, so an acknowledged result never points at a
+   * candidate whose bytes were only in the process cache at the crash point. */
+  private syncFile(path: string): void {
+    const descriptor = openSync(path, 'r')
+    try { fsyncSync(descriptor) } finally { closeSync(descriptor) }
+  }
+
+  private syncDirectory(): void {
+    const descriptor = openSync(this.dir, 'r')
+    try { fsyncSync(descriptor) } finally { closeSync(descriptor) }
+  }
+
+  private writeJsonAtomically(target: string, value: unknown, temporary: string[]): void {
+    const next = `${target}.${crypto.randomUUID()}.tmp`
+    temporary.push(next)
+    writeFileSync(next, JSON.stringify(value), { mode: 0o600 })
+    this.syncFile(next)
+    renameSync(next, target)
+    temporary.pop()
+  }
+
+  putOutputs(id: string, data: unknown[]): void {
+    if (data.length === 0 || data.length > 3) throw new Error('relay: result output count is outside the catalog boundary')
+    // A manifest means the result set has already committed. Retrying the
+    // caller must replay it, never overwrite an ACKable paid result.
+    if (existsSync(this.outputManifest(id))) throw new Error('relay: result manifest is already committed')
+    const temporary: string[] = []
+    try {
+      for (let index = 0; index < data.length; index += 1) {
+        this.writeJsonAtomically(this.outputFile(id, index), data[index], temporary)
+      }
+      this.syncDirectory()
+      // The manifest is the commit marker. Readers see either the old legacy
+      // blob or a complete new output set, never a partially-written group.
+      const manifest = this.outputManifest(id)
+      this.writeJsonAtomically(manifest, { version: 1, count: data.length }, temporary)
+      this.syncDirectory()
+      // This new write has committed, so reclaim only its superseded legacy
+      // representation. Pre-existing legacy tasks remain readable on their
+      // old whole-array path until they are ACKed or swept.
+      rmSync(this.file(id, 'out'), { force: true })
+    } catch (error) {
+      for (const path of temporary) rmSync(path, { force: true })
+      for (let index = 0; index < 3; index += 1) rmSync(this.outputFile(id, index), { force: true })
+      rmSync(this.outputManifest(id), { force: true })
+      throw error
+    }
+  }
+
+  outputCount(id: string): number {
+    const manifest = this.manifest(id)
+    if (manifest) return manifest.count
+    return this.legacyOutputs(id)?.length ?? 0
+  }
+
+  outputAt(id: string, index: number): unknown | null {
+    const manifest = this.manifest(id)
+    if (manifest) {
+      if (index < 0 || index >= manifest.count) return null
+      try { return JSON.parse(readFileSync(this.outputFile(id, index), 'utf8')) } catch { return null }
+    }
+    return this.legacyOutputs(id)?.[index] ?? null
+  }
+
+  allOutputs(id: string): unknown[] | null {
+    const manifest = this.manifest(id)
+    if (!manifest) return this.legacyOutputs(id)
+    const values: unknown[] = []
+    for (let index = 0; index < manifest.count; index += 1) {
+      const item = this.outputAt(id, index)
+      if (item === null) return null
+      values.push(item)
+    }
+    return values
   }
 }
 
@@ -265,22 +453,50 @@ type TaskRow = {
   input_fingerprint: string | null
   provider: string | null
   provider_receipt_hash: string | null
+  result_summary: string | null
   acknowledged_at: number | null
   created: number
   updated: number
 }
 
+type ImageQuotaProvider = 'openai' | 'seedream'
+
+type TaskQuote = {
+  provider: ImageQuotaProvider
+  period: string
+  policyRevision: string
+  pricingRevision: string
+  amountMinor: number
+}
+
+class ImageQuotaExceededError extends Error {}
+class ImageTaskQueueFullError extends Error {}
+class ImageIdempotencyConflictError extends Error {}
+
+type CreateTaskResult = {
+  task: TaskRow
+  created: boolean
+}
+
+type LegacyTaskQuote = (provider: string | null, now: number) => TaskQuote
+
 /** SQLite 任务元数据存储 + 幂等映射。大体积 base64 不进这里,只进 BlobStore。 */
 class TaskStore {
   private db: Database
-  constructor(path: string, private readonly now: () => number) {
+  constructor(
+    path: string,
+    private readonly now: () => number,
+    private readonly quotaPolicy: ImageRelayQuotaPolicy,
+    private readonly legacyTaskQuote: LegacyTaskQuote,
+  ) {
     this.db = new Database(path)
     this.db.exec('PRAGMA journal_mode=WAL')
+    this.db.exec('PRAGMA foreign_keys=ON')
     this.db.exec(
       'CREATE TABLE IF NOT EXISTS tasks(' +
       'id TEXT PRIMARY KEY, owner TEXT, idempotency_key TEXT, status TEXT NOT NULL, ' +
       'error TEXT, input_fidelity TEXT, input_bytes INTEGER NOT NULL DEFAULT 0, ' +
-      'input_fingerprint TEXT, provider TEXT, provider_receipt_hash TEXT, ' +
+      'input_fingerprint TEXT, provider TEXT, provider_receipt_hash TEXT, result_summary TEXT, ' +
       'acknowledged_at INTEGER, created INTEGER NOT NULL, updated INTEGER NOT NULL)'
     )
     // 旧的持久化库没有 input_bytes；CREATE TABLE IF NOT EXISTS 不会自动补列。
@@ -288,7 +504,7 @@ class TaskStore {
     if (!columns.some(column => column.name === 'input_bytes')) {
       this.db.exec('ALTER TABLE tasks ADD COLUMN input_bytes INTEGER NOT NULL DEFAULT 0')
     }
-    for (const column of ['input_fingerprint', 'provider', 'provider_receipt_hash']) {
+    for (const column of ['input_fingerprint', 'provider', 'provider_receipt_hash', 'result_summary']) {
       if (!columns.some(existing => existing.name === column)) this.db.exec(`ALTER TABLE tasks ADD COLUMN ${column} TEXT`)
     }
     if (!columns.some(existing => existing.name === 'acknowledged_at')) {
@@ -297,20 +513,166 @@ class TaskStore {
     // (owner, key) 唯一 —— 幂等去重;key 为 NULL 的行不参与(旧请求无幂等键,不去重)。
     this.db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_idem ON tasks(owner, idempotency_key) WHERE idempotency_key IS NOT NULL')
     this.db.exec('CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)')
+    // A released reservation remains as an audit row after a pre-upstream blob
+    // failure removes its task. It is deliberately not a foreign key: deleting
+    // the transient task must not erase proof that the amount was released.
+    this.db.exec(
+      'CREATE TABLE IF NOT EXISTS image_quota_reservations(' +
+      'task_id TEXT PRIMARY KEY, owner TEXT NOT NULL, provider TEXT NOT NULL, period TEXT NOT NULL, ' +
+      'policy_revision TEXT NOT NULL, pricing_revision TEXT NOT NULL, amount_minor INTEGER NOT NULL, ' +
+      "state TEXT NOT NULL CHECK(state IN ('reserved','outcome_unknown','settled','released')), " +
+      'upstream_receipt_hash TEXT, created INTEGER NOT NULL, updated INTEGER NOT NULL)',
+    )
+    this.db.exec(
+      "CREATE INDEX IF NOT EXISTS idx_image_quota_owner_period ON image_quota_reservations(owner,period) " +
+      "WHERE state IN ('reserved','outcome_unknown','settled')",
+    )
+    this.db.exec(
+      "CREATE INDEX IF NOT EXISTS idx_image_quota_provider_period ON image_quota_reservations(provider,period) " +
+      "WHERE state IN ('reserved','outcome_unknown','settled')",
+    )
+    // Existing terminal work predating this table is not retroactively charged:
+    // this durable boundary says exactly when the new policy became authoritative.
+    this.db.exec(
+      'CREATE TABLE IF NOT EXISTS image_quota_policy_boundaries(' +
+      'policy_revision TEXT NOT NULL, effective_period TEXT NOT NULL, created INTEGER NOT NULL, ' +
+      'PRIMARY KEY(policy_revision,effective_period))',
+    )
+    this.db.query('INSERT OR IGNORE INTO image_quota_policy_boundaries(policy_revision,effective_period,created) VALUES(?,?,?)')
+      .run(this.quotaPolicy.revision, utcPeriod(this.now()), this.now())
   }
 
-  insert(id: string, owner: string, key: string | null, inputBytes: number, inputFingerprint: string, provider: string): void {
+  private transaction<T>(work: () => T): T {
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      const value = work()
+      this.db.exec('COMMIT')
+      return value
+    } catch (error) {
+      this.db.exec('ROLLBACK')
+      throw error
+    }
+  }
+
+  private ownerQuotaInPeriod(owner: string, period: string): number {
+    const row = this.db.query(
+      "SELECT COALESCE(SUM(amount_minor), 0) AS amount FROM image_quota_reservations " +
+      "WHERE owner=? AND period=? AND state IN ('reserved','outcome_unknown','settled')",
+    ).get(owner, period) as { amount: number | null }
+    return Number(row.amount ?? 0)
+  }
+
+  private providerQuotaInPeriod(provider: ImageQuotaProvider, period: string): number {
+    const row = this.db.query(
+      "SELECT COALESCE(SUM(amount_minor), 0) AS amount FROM image_quota_reservations " +
+      "WHERE provider=? AND period=? AND state IN ('reserved','outcome_unknown','settled')",
+    ).get(provider, period) as { amount: number | null }
+    return Number(row.amount ?? 0)
+  }
+
+  private insertReservation(task: TaskRow, quote: TaskQuote, state: 'reserved' | 'outcome_unknown'): void {
     const ts = this.now()
-    this.db.query('INSERT INTO tasks(id,owner,idempotency_key,status,error,input_fidelity,input_bytes,input_fingerprint,provider,provider_receipt_hash,created,updated) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)')
-      .run(id, owner, key, 'queued', null, null, inputBytes, inputFingerprint, provider, null, ts, ts)
+    this.db.query(
+      'INSERT INTO image_quota_reservations(task_id,owner,provider,period,policy_revision,pricing_revision,amount_minor,state,upstream_receipt_hash,created,updated) VALUES(?,?,?,?,?,?,?,?,?,?,?)',
+    ).run(
+      task.id,
+      task.owner ?? '',
+      quote.provider,
+      quote.period,
+      quote.policyRevision,
+      quote.pricingRevision,
+      quote.amountMinor,
+      state,
+      task.provider_receipt_hash,
+      ts,
+      ts,
+    )
+  }
+
+  private reservationExists(id: string): boolean {
+    return this.db.query('SELECT 1 AS value FROM image_quota_reservations WHERE task_id=?').get(id) !== null
+  }
+
+  /** Old queued rows predate the ledger. Before they can reach a Provider they
+   * must obtain a new explicit reservation under the current UTC policy. */
+  ensureQueuedReservation(id: string, quote: TaskQuote): void {
+    this.transaction(() => {
+      if (this.reservationExists(id)) return
+      const task = this.get(id)
+      if (!task || task.status !== 'queued') return
+      if (this.ownerQuotaInPeriod(task.owner ?? '', quote.period) + quote.amountMinor > this.quotaPolicy.owner_daily_usd_minor_limit) {
+        throw new ImageQuotaExceededError('relay: 生图可用额度已达上限')
+      }
+      if (this.providerQuotaInPeriod(quote.provider, quote.period) + quote.amountMinor > this.quotaPolicy.provider_daily_usd_minor_limit[quote.provider]) {
+        throw new ImageQuotaExceededError('relay: 生图服务可用额度已达上限')
+      }
+      this.insertReservation(task, quote, 'reserved')
+    })
+  }
+
+  /** The idempotency lookup, queue check, quota reservation and task write are
+   * one SQLite transaction. This prevents two concurrent same-key submissions
+   * from reserving twice or starting two paid calls. */
+  createWithReservation(input: {
+    id: string
+    owner: string
+    idempotencyKey: string
+    inputBytes: number
+    inputFingerprint: string
+    provider: string
+    quote: TaskQuote
+    queueMax: number
+    ownerTaskMax: number
+  }): CreateTaskResult {
+    return this.transaction(() => {
+      const existing = this.findByIdempotency(input.owner, input.idempotencyKey)
+      if (existing) {
+        if (!sameOperationBinding(existing, input.inputFingerprint)) throw new ImageIdempotencyConflictError('relay: operation 已绑定不同输入')
+        return { task: existing, created: false }
+      }
+      if (this.countActive() >= input.queueMax) throw new ImageTaskQueueFullError('relay: 生图队列已满,请稍后重试')
+      if (this.countActiveByOwner(input.owner) >= input.ownerTaskMax) {
+        throw new ImageTaskQueueFullError('relay: 你的生图任务已达上限,请等待前面的完成')
+      }
+      if (this.ownerQuotaInPeriod(input.owner, input.quote.period) + input.quote.amountMinor > this.quotaPolicy.owner_daily_usd_minor_limit) {
+        throw new ImageQuotaExceededError('relay: 生图可用额度已达上限')
+      }
+      if (this.providerQuotaInPeriod(input.quote.provider, input.quote.period) + input.quote.amountMinor
+        > this.quotaPolicy.provider_daily_usd_minor_limit[input.quote.provider]) {
+        throw new ImageQuotaExceededError('relay: 生图服务可用额度已达上限')
+      }
+      const ts = this.now()
+      try {
+        this.db.query('INSERT INTO tasks(id,owner,idempotency_key,status,error,input_fidelity,input_bytes,input_fingerprint,provider,provider_receipt_hash,result_summary,created,updated) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)')
+          .run(input.id, input.owner, input.idempotencyKey, 'queued', null, null, input.inputBytes, input.inputFingerprint, input.provider, null, null, ts, ts)
+      } catch (error) {
+        // BEGIN IMMEDIATE normally serializes this path. Preserve the same-key
+        // contract if a future driver changes SQLite lock behavior.
+        const concurrent = this.findByIdempotency(input.owner, input.idempotencyKey)
+        if (concurrent) {
+          if (!sameOperationBinding(concurrent, input.inputFingerprint)) throw new ImageIdempotencyConflictError('relay: operation 已绑定不同输入')
+          return { task: concurrent, created: false }
+        }
+        throw error
+      }
+      this.insertReservation(this.get(input.id)!, input.quote, 'reserved')
+      return { task: this.get(input.id)!, created: true }
+    })
   }
 
   setInputBytes(id: string, inputBytes: number): void {
     this.db.query('UPDATE tasks SET input_bytes=?, updated=? WHERE id=?').run(inputBytes, this.now(), id)
   }
 
-  remove(id: string): void {
-    this.db.query('DELETE FROM tasks WHERE id=?').run(id)
+  /** Blob persistence is part of accepting paid work. If it fails before any
+   * upstream call, remove the task and atomically release the reservation. */
+  removeAndRelease(id: string): void {
+    this.transaction(() => {
+      const ts = this.now()
+      this.db.query("UPDATE image_quota_reservations SET state='released', updated=? WHERE task_id=? AND state='reserved'")
+        .run(ts, id)
+      this.db.query('DELETE FROM tasks WHERE id=?').run(id)
+    })
   }
 
   get(id: string): TaskRow | null {
@@ -323,17 +685,19 @@ class TaskStore {
     return (this.db.query('SELECT * FROM tasks WHERE idempotency_key=? AND owner=?').get(key, owner) as TaskRow | null) ?? null
   }
 
-  setStatus(id: string, status: TaskState, error?: string, inputFidelity?: InputFidelityCapability): void {
-    this.db.query('UPDATE tasks SET status=?, error=?, input_fidelity=?, updated=? WHERE id=?')
-      .run(status, error ?? null, inputFidelity ? JSON.stringify(inputFidelity) : null, this.now(), id)
-  }
-
   appendProviderReceipt(id: string, receiptHash: string): void {
-    const current = this.get(id)?.provider_receipt_hash
-    const aggregate = current
-      ? createHash('sha256').update(`${current}\0${receiptHash}`).digest('hex')
-      : receiptHash
-    this.db.query('UPDATE tasks SET provider_receipt_hash=?, updated=? WHERE id=?').run(aggregate, this.now(), id)
+    this.transaction(() => {
+      const current = this.get(id)?.provider_receipt_hash
+      const aggregate = current
+        ? createHash('sha256').update(`${current}\0${receiptHash}`).digest('hex')
+        : receiptHash
+      const ts = this.now()
+      this.db.query('UPDATE tasks SET provider_receipt_hash=?, updated=? WHERE id=?').run(aggregate, ts, id)
+      // A receipt means the provider may have charged even if a later parser,
+      // image download or blob write fails. Never release that reservation.
+      this.db.query("UPDATE image_quota_reservations SET state='outcome_unknown', upstream_receipt_hash=?, updated=? WHERE task_id=? AND state IN ('reserved','outcome_unknown')")
+        .run(aggregate, ts, id)
+    })
   }
 
   acknowledgeResult(id: string): number {
@@ -348,6 +712,63 @@ class TaskStore {
 
   markRunning(id: string): void {
     this.db.query('UPDATE tasks SET status=?, updated=? WHERE id=?').run('running', this.now(), id)
+  }
+
+  markSucceeded(id: string, summary: RelayResultSummary): void {
+    this.transaction(() => {
+      const ts = this.now()
+      this.db.query('UPDATE tasks SET status=?, error=?, result_summary=?, updated=? WHERE id=?')
+        .run('succeeded', null, JSON.stringify(summary), ts, id)
+      const state = summary.partial_outcome_unknown ? 'outcome_unknown' : 'settled'
+      this.db.query("UPDATE image_quota_reservations SET state=?, updated=? WHERE task_id=? AND state IN ('reserved','outcome_unknown')")
+        .run(state, ts, id)
+    })
+  }
+
+  /** A crash can land after the durable manifest but before the SQLite terminal
+   * projection. The manifest is proof of a deliverable subset, not permission
+   * to call the Provider again. Restore it with a conservative unknown ledger. */
+  recoverSucceededManifestResult(id: string, summary: RelayResultSummary): boolean {
+    return this.transaction(() => {
+      const current = this.get(id)
+      if (!current || current.status !== 'failed_unknown' || !current.provider_receipt_hash || current.acknowledged_at !== null) return false
+      const ts = this.now()
+      this.db.query('UPDATE tasks SET status=?, error=?, result_summary=?, updated=? WHERE id=?')
+        .run('succeeded', null, JSON.stringify({ ...summary, partial_outcome_unknown: true }), ts, id)
+      this.db.query("UPDATE image_quota_reservations SET state='outcome_unknown', updated=? WHERE task_id=? AND state IN ('reserved','outcome_unknown','settled')")
+        .run(ts, id)
+      return true
+    })
+  }
+
+  markKnownFailedAndRelease(id: string, error: string): void {
+    this.transaction(() => {
+      const ts = this.now()
+      this.db.query('UPDATE tasks SET status=?, error=?, updated=? WHERE id=?').run('failed', error, ts, id)
+      this.db.query("UPDATE image_quota_reservations SET state='released', updated=? WHERE task_id=? AND state='reserved'")
+        .run(ts, id)
+    })
+  }
+
+  markOutcomeUnknown(id: string, error: string): void {
+    this.transaction(() => {
+      const ts = this.now()
+      this.db.query('UPDATE tasks SET status=?, error=?, updated=? WHERE id=?').run('failed_unknown', error, ts, id)
+      this.db.query("UPDATE image_quota_reservations SET state='outcome_unknown', updated=? WHERE task_id=? AND state IN ('reserved','outcome_unknown')")
+        .run(ts, id)
+    })
+  }
+
+  cancelQueuedAndRelease(id: string): TaskRow | null {
+    return this.transaction(() => {
+      const current = this.get(id)
+      if (!current || current.status !== 'queued') return null
+      const ts = this.now()
+      this.db.query('UPDATE tasks SET status=?, error=?, updated=? WHERE id=?').run('cancelled', '任务已在请求上游前取消', ts, id)
+      this.db.query("UPDATE image_quota_reservations SET state='released', updated=? WHERE task_id=? AND state='reserved'")
+        .run(ts, id)
+      return this.get(id)
+    })
   }
 
   countActive(): number {
@@ -385,18 +806,34 @@ class TaskStore {
     return rows.map(r => r.id)
   }
 
+  sweepQuotaBefore(period: string): void {
+    this.db.query(
+      "DELETE FROM image_quota_reservations WHERE period < ? AND state IN ('settled','released','outcome_unknown')",
+    ).run(period)
+  }
+
   /**
    * 重启恢复:queued 需要续跑;running 无法确认上游是否已完成/扣费 → 标 failed_unknown 且禁止自动重提。
    * 返回待续跑的 queued id 列表(由调用方读 blob 重新入队跑)。
    */
   recover(): { queued: string[]; unknown: string[] } {
-    const running = this.db.query("SELECT id FROM tasks WHERE status='running'").all() as Array<{ id: string }>
-    if (running.length) {
-      this.db.query("UPDATE tasks SET status='failed_unknown', error='服务重启前任务在跑,无法确认结果(不自动重提,避免重复扣费)', updated=? WHERE status='running'")
-        .run(this.now())
-    }
-    const queued = this.db.query("SELECT id FROM tasks WHERE status='queued'").all() as Array<{ id: string }>
-    return { queued: queued.map(r => r.id), unknown: running.map(r => r.id) }
+    return this.transaction(() => {
+      const running = this.db.query("SELECT id FROM tasks WHERE status='running'").all() as Array<{ id: string }>
+      if (running.length) {
+        const ts = this.now()
+        for (const { id } of running) {
+          if (this.reservationExists(id)) continue
+          const task = this.get(id)
+          if (task) this.insertReservation(task, this.legacyTaskQuote(task.provider, ts), 'outcome_unknown')
+        }
+        this.db.query("UPDATE tasks SET status='failed_unknown', error='服务重启前任务在跑,无法确认结果(不自动重提,避免重复扣费)', updated=? WHERE status='running'")
+          .run(ts)
+        this.db.query("UPDATE image_quota_reservations SET state='outcome_unknown', updated=? WHERE task_id IN (SELECT id FROM tasks WHERE status='failed_unknown') AND state IN ('reserved','outcome_unknown')")
+          .run(ts)
+      }
+      const queued = this.db.query("SELECT id FROM tasks WHERE status='queued'").all() as Array<{ id: string }>
+      return { queued: queued.map(r => r.id), unknown: running.map(r => r.id) }
+    })
   }
 }
 
@@ -416,6 +853,7 @@ function dataUriToFile(uri: string, name: string): File | null {
 async function readRequestBodyBounded(
   req: Request,
   maxBytes: number,
+  timeoutMs: number,
   reserve: (bytes: number) => void,
   release: (bytes: number) => void,
 ): Promise<{ raw: Uint8Array; release: () => void }> {
@@ -425,13 +863,14 @@ async function readRequestBodyBounded(
   let total = 0
   let reserved = 0
   let wasReleased = false
+  let timer: ReturnType<typeof setTimeout> | undefined
   const releaseReserved = () => {
     if (wasReleased || reserved === 0) return
     wasReleased = true
     release(reserved)
   }
 
-  try {
+  const read = async () => {
     while (true) {
       let next
       try {
@@ -443,7 +882,7 @@ async function readRequestBodyBounded(
       const value = next.value
       if (!value || value.byteLength === 0) continue
       if (total + value.byteLength > maxBytes) {
-        await reader.cancel().catch(() => {})
+        void reader.cancel().catch(() => {})
         throw new HttpError(413, 'relay: 请求体过大')
       }
       reserve(value.byteLength)
@@ -458,26 +897,250 @@ async function readRequestBodyBounded(
       offset += chunk.byteLength
     }
     return { raw, release: releaseReserved }
+  }
+  const deadline = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      void reader.cancel().catch(() => {})
+      reject(new HttpError(408, 'relay: 请求体读取超时'))
+    }, timeoutMs)
+    ;(timer as unknown as { unref?: () => void }).unref?.()
+  })
+  try {
+    return await Promise.race([read(), deadline])
   } catch (error) {
-    await reader.cancel().catch(() => {})
+    void reader.cancel().catch(() => {})
     releaseReserved()
     throw error
   } finally {
-    reader.releaseLock()
+    if (timer) clearTimeout(timer)
+    try { reader.releaseLock() } catch {}
   }
 }
 
-function clampCount(n: unknown): number {
-  const v = Math.floor(Number(n))
-  return Number.isFinite(v) ? Math.max(1, Math.min(4, v)) : 1
+function outputCount(body: SubmitBody): number {
+  const descriptor = imageModelDescriptor(String(body.model ?? GPT_IMAGE_MODEL))
+  const max = descriptor?.image_generation?.max_output_count
+  const value = Number(body.n ?? 1)
+  if (!Number.isInteger(value) || value < 1 || !max || value > max) {
+    throw new Error('relay: persisted task has an invalid image output count')
+  }
+  return value
 }
 
 function sha256(value: string | Uint8Array): string {
   return createHash('sha256').update(value).digest('hex')
 }
 
+function utcPeriod(now: number): string {
+  return new Date(now).toISOString().slice(0, 10)
+}
+
+function declaredContentLength(response: Response): number | undefined {
+  const raw = response.headers.get('content-length')?.trim()
+  if (!raw) return undefined
+  if (!/^\d+$/.test(raw)) return undefined
+  const value = Number(raw)
+  return Number.isSafeInteger(value) ? value : undefined
+}
+
+function maxBase64BytesFor(binaryBytes: number): number {
+  return Math.ceil(binaryBytes / 3) * 4 + 8
+}
+
+function detectedRelayImageMime(bytes: Buffer, contentType = ''): RelayCandidate['mime_type'] {
+  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return 'image/jpeg'
+  if (bytes.length >= 12 && bytes.toString('ascii', 0, 4) === 'RIFF' && bytes.toString('ascii', 8, 12) === 'WEBP') return 'image/webp'
+  if (contentType.startsWith('image/jpeg')) return 'image/jpeg'
+  if (contentType.startsWith('image/webp')) return 'image/webp'
+  return 'image/png'
+}
+
+/** Relay does not own image-format validation (the Sidecar verifies bytes into
+ * CAS), but it must reject malformed/oversized base64 before a candidate can
+ * occupy a result slot. Return a safe reason instead of discarding siblings. */
+function normaliseInlineCandidate(item: unknown, candidateIndex: number, binaryLimit: number): { output?: RelayCandidate; invalid?: CandidateInvalid } {
+  if (!item || typeof item !== 'object') return { invalid: { index: candidateIndex, safe_error_code: 'IMAGE_RESULT_MISSING' } }
+  const source = item as Record<string, unknown>
+  const encoded = source.b64_json
+  if (typeof encoded !== 'string' || encoded.length === 0) {
+    return { invalid: { index: candidateIndex, safe_error_code: source.url ? 'IMAGE_RESULT_INVALID' : 'IMAGE_RESULT_MISSING' } }
+  }
+  if (!/^[A-Za-z0-9+/]*={0,2}$/.test(encoded) || encoded.indexOf('=') >= 0 && encoded.indexOf('=') < encoded.length - 2) {
+    return { invalid: { index: candidateIndex, safe_error_code: 'IMAGE_RESULT_INVALID' } }
+  }
+  if (Buffer.byteLength(encoded, 'ascii') > maxBase64BytesFor(binaryLimit)) {
+    return { invalid: { index: candidateIndex, safe_error_code: 'IMAGE_RESULT_TOO_LARGE' } }
+  }
+  const bytes = Buffer.from(encoded, 'base64')
+  const canonical = bytes.toString('base64')
+  if (bytes.byteLength === 0 || bytes.byteLength > binaryLimit || (encoded !== canonical && encoded !== canonical.replace(/=+$/, ''))) {
+    return { invalid: { index: candidateIndex, safe_error_code: bytes.byteLength > binaryLimit ? 'IMAGE_RESULT_TOO_LARGE' : 'IMAGE_RESULT_INVALID' } }
+  }
+  return {
+    output: {
+      candidate_index: candidateIndex,
+      b64_json: canonical,
+      mime_type: detectedRelayImageMime(bytes),
+      ...(typeof source.revised_prompt === 'string' ? { revised_prompt: source.revised_prompt } : {}),
+    },
+  }
+}
+
+function partialSummary(expectedCount: number, outputs: RelayCandidate[], invalid: CandidateInvalid[], partialOutcomeUnknown: boolean, observedCount = outputs.length): RelayResultSummary {
+  return {
+    expected_count: expectedCount,
+    valid_count: outputs.length,
+    invalid: invalid.sort((left, right) => left.index - right.index),
+    observed_count: observedCount,
+    partial_outcome_unknown: partialOutcomeUnknown,
+  }
+}
+
+class ResultDeliveryGate {
+  #active = 0
+  #owners = new Map<string, number>()
+  constructor(private readonly globalLimit: number, private readonly ownerLimit: number) {}
+
+  tryAcquire(owner: string): (() => void) | null {
+    const ownerActive = this.#owners.get(owner) ?? 0
+    if (this.#active >= this.globalLimit || ownerActive >= this.ownerLimit) return null
+    this.#active += 1
+    this.#owners.set(owner, ownerActive + 1)
+    let released = false
+    return () => {
+      if (released) return
+      released = true
+      this.#active = Math.max(0, this.#active - 1)
+      const current = (this.#owners.get(owner) ?? 1) - 1
+      if (current <= 0) this.#owners.delete(owner)
+      else this.#owners.set(owner, current)
+    }
+  }
+}
+
+/** Keep the delivery permit until the response body is consumed or cancelled,
+ * not merely until JSON serialization returns to this handler. */
+function retainDeliveryPermit(response: Response, release: () => void): Response {
+  if (!response.body) {
+    release()
+    return response
+  }
+  const reader = response.body.getReader()
+  let closed = false
+  const close = () => {
+    if (closed) return
+    closed = true
+    release()
+  }
+  const stream = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      try {
+        const next = await reader.read()
+        if (next.done) {
+          close()
+          controller.close()
+        } else {
+          controller.enqueue(next.value)
+        }
+      } catch (error) {
+        close()
+        controller.error(error)
+      }
+    },
+    async cancel(reason) {
+      try { await reader.cancel(reason) } finally { close() }
+    },
+  })
+  const headers = new Headers(response.headers)
+  return new Response(stream, { status: response.status, statusText: response.statusText, headers })
+}
+
+/** A response header is only advisory, so it is a fast rejection rather than
+ * the only guard. Chunked bodies are bounded as they stream into memory. */
+async function readResponseBytesBounded(response: Response, maxBytes: number): Promise<Uint8Array> {
+  const declared = declaredContentLength(response)
+  if (declared !== undefined && declared > maxBytes) {
+    // The response is already rejected by its declared size. Do not let a
+    // broken peer's never-settling cancel promise hold the worker slot.
+    void response.body?.cancel().catch(() => {})
+    throw new UpstreamBodyLimitError(`response exceeds ${maxBytes} byte limit`)
+  }
+  if (!response.body) return new Uint8Array()
+  const reader = response.body.getReader()
+  const chunks: Uint8Array[] = []
+  let total = 0
+  try {
+    while (true) {
+      const next = await reader.read()
+      if (next.done) break
+      const value = next.value
+      if (!value || value.byteLength === 0) continue
+      if (total + value.byteLength > maxBytes) {
+        void reader.cancel().catch(() => {})
+        throw new UpstreamBodyLimitError(`response exceeds ${maxBytes} byte limit`)
+      }
+      chunks.push(value)
+      total += value.byteLength
+    }
+    const merged = new Uint8Array(total)
+    let offset = 0
+    for (const chunk of chunks) {
+      merged.set(chunk, offset)
+      offset += chunk.byteLength
+    }
+    return merged
+  } finally {
+    // A deadline can win while a hostile stream still owns a pending read.
+    // Releasing that lock is cleanup only and must never replace the bounded
+    // upstream error with a secondary stream-state exception.
+    try { reader.releaseLock() } catch {}
+  }
+}
+
 function taskProvider(body: SubmitBody): 'OpenAI' | 'ByteDance Ark' {
   return isSeedreamModel(String(body.model ?? GPT_IMAGE_MODEL)) ? 'ByteDance Ark' : 'OpenAI'
+}
+
+function taskQuote(body: SubmitBody, policy: ImageRelayQuotaPolicy, now: number): TaskQuote {
+  const descriptor = imageModelDescriptor(String(body.model ?? GPT_IMAGE_MODEL))
+  const price = descriptor?.image_generation?.price_upper_bound
+  if (!price || price.currency !== 'USD' || !Number.isSafeInteger(price.per_output_amount_minor) || price.per_output_amount_minor < 0) {
+    throw new HttpError(503, 'relay: 当前模型缺少可执行的付费报价')
+  }
+  const amountMinor = price.per_output_amount_minor * outputCount(body)
+  if (!Number.isSafeInteger(amountMinor)) throw new HttpError(503, 'relay: 当前模型报价超出安全范围')
+  return {
+    provider: isSeedreamModel(String(body.model ?? GPT_IMAGE_MODEL)) ? 'seedream' : 'openai',
+    period: utcPeriod(now),
+    policyRevision: policy.revision,
+    pricingRevision: price.pricing_revision,
+    amountMinor,
+  }
+}
+
+/** A legacy running task has no persisted model/count quote. Recover it as the
+ * most expensive catalog shape for its recorded physical provider, never as a
+ * free unknown outcome. Queued legacy rows take the exact path above instead. */
+function legacyTaskQuoteForPolicy(policy: ImageRelayQuotaPolicy): LegacyTaskQuote {
+  return (provider, now) => {
+    const seedream = provider === 'ByteDance Ark'
+    const candidates = IMAGE_MODEL_CATALOG.filter(entry => (entry.provider === 'bytedance-ark') === seedream)
+    const candidate = candidates
+      .map(entry => ({ entry, generation: entry.image_generation! }))
+      .sort((left, right) => (
+        right.generation.price_upper_bound.per_output_amount_minor * right.generation.max_output_count
+        - left.generation.price_upper_bound.per_output_amount_minor * left.generation.max_output_count
+      ))[0]
+    if (!candidate) throw new Error('relay: catalog has no conservative legacy quote')
+    const amountMinor = candidate.generation.price_upper_bound.per_output_amount_minor * candidate.generation.max_output_count
+    return {
+      provider: seedream ? 'seedream' : 'openai',
+      period: utcPeriod(now),
+      policyRevision: `${policy.revision}:legacy-active`,
+      pricingRevision: `legacy-conservative:${candidate.generation.price_upper_bound.pricing_revision}`,
+      amountMinor,
+    }
+  }
 }
 
 function sameOperationBinding(row: TaskRow, fingerprint: string): boolean {
@@ -501,10 +1164,15 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
   const openaiAuthorization: string = configuredOpenAiAuthorization
   const seedreamAuthorization = providerCredentials.bearerAuthorization('seedream')
   const fetchImpl: FetchLike = deps.fetchImpl ?? globalThis.fetch
+  const rawIdentityFetch: FetchLike = deps.identityFetchImpl ?? globalThis.fetch
   const now = deps.now ?? Date.now
-  const identityIntrospector = loadImageRelayIdentityIntrospector(deps.env, { fetchImpl: deps.identityFetchImpl, now })
+  const identityIntrospector = loadImageRelayIdentityIntrospector(deps.env, {
+    fetchImpl: rawIdentityFetch,
+    now,
+    timeoutMs: config.identityTimeoutMs,
+  })
   const resultCredentials = loadImageRelayResultCredentials(deps.env, { now })
-  const store = new TaskStore(config.dbPath, now)
+  const store = new TaskStore(config.dbPath, now, config.quotaPolicy, legacyTaskQuoteForPolicy(config.quotaPolicy))
   const blobs: BlobStore = config.blobDir ? new DiskBlobStore(config.blobDir) : new MemoryBlobStore()
   const openaiAdmission = new ProviderAdmissionGate({
     maxActive: capacity.providers.openai.concurrency,
@@ -522,6 +1190,7 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
   })
   const openaiRate = new ProviderRateLimiter(capacity.providers.openai.requests_per_minute, capacity.admission.queue_max)
   const seedreamRate = new ProviderRateLimiter(capacity.providers.seedream.requests_per_minute, capacity.admission.queue_max)
+  const resultDelivery = new ResultDeliveryGate(config.resultGlobalConcurrency, config.resultOwnerConcurrency)
   const admissionControllers = new Map<string, AbortController>()
   const retryTimers = new Map<string, ReturnType<typeof setTimeout>>()
   // 尚未落入 SQLite 的上传体也要计入预算；否则 500 个 chunked 请求可在入队前一起占满内存。
@@ -553,6 +1222,7 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
   function sweep(): void {
     const cutoff = now() - config.taskTtlMs
     for (const id of store.sweepExpired(cutoff)) blobs.del(id)
+    store.sweepQuotaBefore(utcPeriod(now() - config.quotaLedgerRetentionDays * 24 * 60 * 60_000))
   }
 
   async function identity(req: Request): Promise<ImageRelayIdentity> {
@@ -624,15 +1294,18 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
     input: string,
     init: RequestInit,
   ): Promise<{ response: Response; body: string }> {
-    return fetchUpstreamBody(provider, input, init, response => response.text())
+    return fetchUpstreamBody(provider, input, init, async response => {
+      const bytes = await readResponseBytesBounded(response, MAX_PROVIDER_JSON_RESPONSE_BYTES)
+      return new TextDecoder().decode(bytes)
+    })
   }
 
   function fetchUpstreamBytes(
     provider: 'OpenAI' | 'Seedream',
     input: string,
     init: RequestInit,
-  ): Promise<{ response: Response; body: ArrayBuffer }> {
-    return fetchUpstreamBody(provider, input, init, response => response.arrayBuffer())
+  ): Promise<{ response: Response; body: Uint8Array }> {
+    return fetchUpstreamBody(provider, input, init, response => readResponseBytesBounded(response, MAX_PROVIDER_IMAGE_RESPONSE_BYTES))
   }
 
   function upstreamReceiptHash(provider: 'OpenAI' | 'Seedream', response: Response, body: string): string {
@@ -640,23 +1313,11 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
     return sha256(`${provider}\0${requestId}\0${sha256(body)}`)
   }
 
-  async function seedreamDataItem(item: unknown): Promise<Record<string, unknown> | null> {
-    if (!item || typeof item !== 'object') return null
+  async function seedreamDataItem(item: unknown, candidateIndex: number): Promise<{ output?: RelayCandidate; invalid?: CandidateInvalid }> {
+    if (!item || typeof item !== 'object') return { invalid: { index: candidateIndex, safe_error_code: 'IMAGE_RESULT_MISSING' } }
     const source = item as Record<string, unknown>
-    if (typeof source.b64_json === 'string' && source.b64_json) {
-      const bytes = Buffer.from(source.b64_json, 'base64')
-      const mimeType = bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff
-        ? 'image/jpeg'
-        : bytes.length >= 12 && bytes.toString('ascii', 0, 4) === 'RIFF' && bytes.toString('ascii', 8, 12) === 'WEBP'
-          ? 'image/webp'
-          : 'image/png'
-      return {
-        b64_json: source.b64_json,
-        mime_type: mimeType,
-        ...(typeof source.revised_prompt === 'string' ? { revised_prompt: source.revised_prompt } : {}),
-      }
-    }
-    if (typeof source.url !== 'string' || !source.url) return null
+    if (typeof source.b64_json === 'string') return normaliseInlineCandidate(source, candidateIndex, config.resultMaxBytes)
+    if (typeof source.url !== 'string' || !source.url) return { invalid: { index: candidateIndex, safe_error_code: 'IMAGE_RESULT_MISSING' } }
     let assetUrl: URL
     try {
       assetUrl = new URL(source.url)
@@ -669,36 +1330,48 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
     const { response: imageResponse, body: bytes } = await fetchUpstreamBytes(
       'Seedream',
       assetUrl.toString(),
-      { method: 'GET' },
+      // A provider-returned asset URL is not a redirect grant. Do not follow a
+      // redirected target which could bypass the HTTPS asset validation above.
+      { method: 'GET', redirect: 'error' },
     )
     if (!imageResponse.ok) {
       throw new UpstreamOutcomeUnknownError(`Seedream 已生成图片，但下载结果失败: HTTP ${imageResponse.status}`)
     }
-    if (bytes.byteLength === 0) throw new UpstreamOutcomeUnknownError('Seedream 已生成图片，但下载结果为空')
+    if (imageResponse.redirected) {
+      throw new UpstreamOutcomeUnknownError('Seedream 已生成图片，但下载结果发生重定向')
+    }
+    if (imageResponse.url) {
+      let finalUrl: URL
+      try { finalUrl = new URL(imageResponse.url) } catch {
+        throw new UpstreamOutcomeUnknownError('Seedream 已生成图片，但下载结果地址无效')
+      }
+      if (finalUrl.protocol !== 'https:' || finalUrl.origin !== assetUrl.origin) {
+        throw new UpstreamOutcomeUnknownError('Seedream 已生成图片，但下载结果越过受信资产来源')
+      }
+    }
+    if (bytes.byteLength === 0) return { invalid: { index: candidateIndex, safe_error_code: 'IMAGE_RESULT_MISSING' } }
+    if (bytes.byteLength > config.resultMaxBytes) return { invalid: { index: candidateIndex, safe_error_code: 'IMAGE_RESULT_TOO_LARGE' } }
     const buffer = Buffer.from(bytes)
     const contentType = imageResponse.headers.get('content-type')?.toLowerCase() ?? ''
-    const mimeType = buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff
-      ? 'image/jpeg'
-      : buffer.length >= 12 && buffer.toString('ascii', 0, 4) === 'RIFF' && buffer.toString('ascii', 8, 12) === 'WEBP'
-        ? 'image/webp'
-        : contentType.startsWith('image/jpeg')
-          ? 'image/jpeg'
-          : contentType.startsWith('image/webp')
-            ? 'image/webp'
-            : 'image/png'
     return {
-      b64_json: Buffer.from(bytes).toString('base64'),
-      mime_type: mimeType,
-      ...(typeof source.revised_prompt === 'string' ? { revised_prompt: source.revised_prompt } : {}),
+      output: {
+        candidate_index: candidateIndex,
+        b64_json: buffer.toString('base64'),
+        mime_type: detectedRelayImageMime(buffer, contentType),
+        ...(typeof source.revised_prompt === 'string' ? { revised_prompt: source.revised_prompt } : {}),
+      },
     }
   }
 
-  async function runSeedream(body: SubmitBody, recordReceipt: (hash: string) => void): Promise<unknown[]> {
+  async function runSeedream(body: SubmitBody, recordReceipt: (hash: string) => void): Promise<ProviderRunResult> {
     const model = String(body.model ?? SEEDREAM_IMAGE_MODEL)
     const prompt = providerPrompt(body)
     const size = String(body.size ?? '2048x2048')
-    const count = clampCount(body.n)
-    const outputs: unknown[] = []
+    const count = outputCount(body)
+    const outputs: RelayCandidate[] = []
+    const invalid: CandidateInvalid[] = []
+    let partialOutcomeUnknown = false
+    let observedCount = 0
     for (let index = 0; index < count; index += 1) {
       const payload: Record<string, unknown> = {
         model,
@@ -713,36 +1386,62 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
         payload.sequential_image_generation = 'disabled'
       }
       if (!seedreamAuthorization) throw new UpstreamResponseError('Seedream 凭据未配置')
-      const { response, body: text } = await fetchUpstreamText(
-        'Seedream',
-        `${providerCredentials.baseUrl('seedream')}/images/generations`,
-        {
-          method: 'POST',
-          headers: {
-            authorization: seedreamAuthorization,
-            'content-type': 'application/json',
-          },
-          body: JSON.stringify(payload),
-        },
-      )
-      if (!response.ok) throw new UpstreamResponseError(`Seedream 请求未被接受: HTTP ${response.status}`)
-      recordReceipt(upstreamReceiptHash('Seedream', response, text))
-      let parsed: unknown
       try {
-        parsed = text ? JSON.parse(text) : {}
-      } catch {
-        throw new UpstreamOutcomeUnknownError('Seedream 已返回成功状态，但响应内容损坏，无法确认生成结果')
+        const { response, body: text } = await fetchUpstreamText(
+          'Seedream',
+          `${providerCredentials.baseUrl('seedream')}/images/generations`,
+          {
+            method: 'POST',
+            headers: {
+              authorization: seedreamAuthorization,
+              'content-type': 'application/json',
+            },
+            body: JSON.stringify(payload),
+          },
+        )
+        if (!response.ok) {
+          if (outputs.length === 0) throw new UpstreamResponseError(`Seedream 请求未被接受: HTTP ${response.status}`)
+          invalid.push({ index, safe_error_code: 'IMAGE_PROVIDER_REJECTED' })
+          for (let missing = index + 1; missing < count; missing += 1) invalid.push({ index: missing, safe_error_code: 'IMAGE_PROVIDER_NOT_ATTEMPTED' })
+          // A preceding Seedream receipt has already crossed the paid boundary.
+          // Keep the aggregate reservation unknown rather than treating a later
+          // provider failure as a complete known settlement for the whole Round.
+          partialOutcomeUnknown = true
+          break
+        }
+        recordReceipt(upstreamReceiptHash('Seedream', response, text))
+        let parsed: unknown
+        try {
+          parsed = text ? JSON.parse(text) : {}
+        } catch {
+          throw new UpstreamOutcomeUnknownError('Seedream 已返回成功状态，但响应内容损坏，无法确认生成结果')
+        }
+        const data = parsed && typeof parsed === 'object' && Array.isArray((parsed as Record<string, unknown>).data)
+          ? (parsed as { data: unknown[] }).data
+          : []
+        observedCount += data.length
+        // Seedream is called once per requested candidate. A successful call
+        // returning extras is a protocol anomaly, not permission to emit extra
+        // candidates or to invalidate the requested one that did verify.
+        if (data.length > 1) partialOutcomeUnknown = true
+        const normalized = await seedreamDataItem(data[0], index)
+        if (normalized.output) outputs.push(normalized.output)
+        else if (normalized.invalid) {
+          invalid.push(normalized.invalid)
+          partialOutcomeUnknown = true
+        }
+      } catch (error) {
+        // Once a preceding candidate is durable, never throw it away merely
+        // because a later paid hop has an unprovable outcome. Stop instead of
+        // automatically issuing more remote calls under the same Round.
+        if (outputs.length === 0) throw error
+        invalid.push({ index, safe_error_code: 'IMAGE_RESULT_OUTCOME_UNKNOWN' })
+        for (let missing = index + 1; missing < count; missing += 1) invalid.push({ index: missing, safe_error_code: 'IMAGE_PROVIDER_NOT_ATTEMPTED' })
+        partialOutcomeUnknown = true
+        break
       }
-      const data = parsed && typeof parsed === 'object' && Array.isArray((parsed as Record<string, unknown>).data)
-        ? (parsed as { data: unknown[] }).data
-        : []
-      const normalized = await seedreamDataItem(data[0])
-      if (!normalized) {
-        throw new UpstreamOutcomeUnknownError('Seedream 已返回成功状态，但没有可用结果，可能已经产生费用')
-      }
-      outputs.push(normalized)
     }
-    return outputs
+    return { outputs, summary: partialSummary(count, outputs, invalid, partialOutcomeUnknown, observedCount) }
   }
 
   function scheduleTaskRetry(id: string): void {
@@ -767,7 +1466,7 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
     try {
       let queuedBody = blobs.get(id, 'in') as SubmitBody | null
       if (!queuedBody) {
-        store.setStatus(id, 'failed_unknown', '任务输入已丢失，无法安全重提')
+        store.markKnownFailedAndRelease(id, '任务在调用上游前丢失输入，已释放额度')
         return
       }
       const model = String(queuedBody.model ?? GPT_IMAGE_MODEL)
@@ -783,22 +1482,28 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
       if (store.get(id)?.status !== 'queued') return
       const body = blobs.get(id, 'in') as SubmitBody | null
       if (!body) {
-        store.setStatus(id, 'failed_unknown', '任务输入已丢失，无法安全重提')
+        store.markKnownFailedAndRelease(id, '任务在调用上游前丢失输入，已释放额度')
         return
       }
+      // Old queued rows from before the quota migration have no ledger row.
+      // They must reserve an exact current-model quote before the first paid hop.
+      store.ensureQueuedReservation(id, taskQuote(body, config.quotaPolicy, now()))
       store.markRunning(id)
       if (seedream) {
-        const data = await runSeedream(body, receipt => store.appendProviderReceipt(id, receipt))
+        const result = await runSeedream(body, receipt => store.appendProviderReceipt(id, receipt))
+        if (result.outputs.length === 0) {
+          throw new UpstreamOutcomeUnknownError('Seedream 没有可验证候选，已保留可能产生的付费结果为未知状态')
+        }
         try {
-          blobs.put(id, 'out', { data })
+          blobs.putOutputs(id, result.outputs)
         } catch (error) {
           throw new UpstreamOutcomeUnknownError(`Seedream 已返回图片，但 relay 无法持久化结果: ${String(error).slice(0, 160)}`)
         }
-        store.setStatus(id, 'succeeded')
+        store.markSucceeded(id, result.summary)
         return
       }
       const prompt = providerPrompt(body)
-      const n = clampCount(body.n)
+      const n = outputCount(body)
       const size = body.size ? String(body.size) : undefined
       const requestUpstream = async (): Promise<{ response: Response; body: string }> => {
         if (body.mode === 'edit') {
@@ -845,17 +1550,33 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
       const data = parsed && typeof parsed === 'object' && Array.isArray((parsed as Record<string, unknown>).data)
         ? (parsed as { data: unknown[] }).data
         : []
-      if (data.length === 0) {
-        throw new UpstreamOutcomeUnknownError('OpenAI 已返回成功状态，但没有可用结果，可能已经产生费用')
+      const outputs: RelayCandidate[] = []
+      const invalid: CandidateInvalid[] = []
+      let partialOutcomeUnknown = data.length !== n
+      for (let index = 0; index < n; index += 1) {
+        const normalized = normaliseInlineCandidate(data[index], index, config.resultMaxBytes)
+        if (normalized.output) outputs.push(normalized.output)
+        else if (normalized.invalid) {
+          invalid.push(normalized.invalid)
+          partialOutcomeUnknown = true
+        }
+      }
+      // Extra records cannot become candidates (the request did not authorize
+      // them), but their presence is retained as a safe degraded-result fact.
+      // Extra Provider records are not authorized candidates. Keep their count
+      // as an audit fact, but do not mark a valid requested index invalid.
+      const result = { outputs, summary: partialSummary(n, outputs, invalid, partialOutcomeUnknown, data.length) }
+      if (result.outputs.length === 0) {
+        throw new UpstreamOutcomeUnknownError('OpenAI 已返回成功状态，但没有可验证候选，可能已经产生费用')
       }
       try {
-        blobs.put(id, 'out', { data })
+        blobs.putOutputs(id, result.outputs)
       } catch (error) {
         // The provider already returned a successful image. If persistent result storage
         // is full/unavailable, never report a normal failure that invites a paid retry.
         throw new UpstreamOutcomeUnknownError(`OpenAI 已返回图片，但 relay 无法持久化结果: ${String(error).slice(0, 160)}`)
       }
-      store.setStatus(id, 'succeeded')
+      store.markSucceeded(id, result.summary)
     } catch (err) {
       const current = store.get(id)
       if (current?.status === 'cancelled') return
@@ -864,8 +1585,16 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
         scheduleTaskRetry(id)
         return
       }
-      const status: TaskState = err instanceof UpstreamOutcomeUnknownError ? 'failed_unknown' : 'failed'
-      store.setStatus(id, status, err instanceof Error ? err.message : String(err))
+      const message = err instanceof Error ? err.message : String(err)
+      // A receipt (notably the first Seedream output of a multi-output request)
+      // or any indeterminate network/read result may already have spent money.
+      if (current?.provider_receipt_hash || err instanceof UpstreamOutcomeUnknownError) {
+        store.markOutcomeUnknown(id, message)
+      } else {
+        // Explicit provider rejection and local pre-upstream validation are the
+        // only known-unspent failures that release a reservation.
+        store.markKnownFailedAndRelease(id, message)
+      }
     } finally {
       permit?.release()
       if (admissionControllers.get(id) === controller) admissionControllers.delete(id)
@@ -877,12 +1606,40 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
     }
   }
 
-  // 重启恢复:queued 续跑(读 blob 里的原始输入重新入队);running → failed_unknown(store.recover 已改状态)。
+  // 重启恢复:queued 续跑(读 blob 里的原始输入重新入队);running 通常是
+  // failed_unknown，但若 manifest 已先落盘，恢复该可验证结果而绝不重提。
   const recovered = store.recover()
   for (const id of recovered.unknown) {
-    const output = blobs.get(id, 'out') as { data?: unknown[] } | null
-    if (Array.isArray(output?.data) && output.data.length > 0) {
-      store.setStatus(id, 'succeeded')
+    const body = blobs.get(id, 'in') as SubmitBody | null
+    if (body) {
+      try {
+        const expectedCount = outputCount(body)
+        const seen = new Set<number>()
+        for (let deliveryIndex = 0; deliveryIndex < blobs.outputCount(id); deliveryIndex += 1) {
+          const raw = blobs.outputAt(id, deliveryIndex)
+          const source = raw && typeof raw === 'object' ? raw as Record<string, unknown> : null
+          const candidateIndex = Number.isInteger(source?.candidate_index) ? source!.candidate_index as number : deliveryIndex
+          if (candidateIndex < 0 || candidateIndex >= expectedCount || seen.has(candidateIndex)) continue
+          const normalized = normaliseInlineCandidate(raw, candidateIndex, config.resultMaxBytes)
+          if (normalized.output) seen.add(candidateIndex)
+        }
+        if (seen.size > 0) {
+          const invalid: CandidateInvalid[] = []
+          for (let index = 0; index < expectedCount; index += 1) {
+            if (!seen.has(index)) invalid.push({ index, safe_error_code: 'IMAGE_RESULT_RECOVERED_UNKNOWN' })
+          }
+          store.recoverSucceededManifestResult(id, {
+            expected_count: expectedCount,
+            valid_count: seen.size,
+            invalid,
+            observed_count: blobs.outputCount(id),
+            partial_outcome_unknown: true,
+          })
+        }
+      } catch {
+        // A malformed input/blob pair has no safe result projection. The
+        // failed_unknown state from TaskStore.recover remains authoritative.
+      }
     }
     blobs.delKind(id, 'in')
   }
@@ -894,7 +1651,7 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
       if (store.get(id)?.input_bytes === 0) store.setInputBytes(id, inputBytes)
       void runImageTask(id)
     } else {
-      store.setStatus(id, 'failed_unknown', '重启后找不到原始输入,无法续跑')
+      store.markKnownFailedAndRelease(id, '重启后找不到原始输入，调用上游前已失败并释放额度')
       blobs.delKind(id, 'in')
     }
   }
@@ -910,32 +1667,42 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
 
   /**
    * Status-only polling is used by controlled load runners. It deliberately omits
-   * b64_json output so observing a terminal task never materializes every image in
-   * the runner process. Normal desktop polling remains backward compatible.
+   * b64_json output so observing a terminal task never materializes every image
+   * in either the caller or Relay. Desktop result delivery is direct-v1 only.
    */
   function pollResponse(
     rec: TaskRow,
-    options: { metadataOnly?: boolean; directResultHandoff?: boolean; owner?: string } = {},
+    options: { directResultHandoff?: boolean; owner?: string } = {},
   ): Response {
-    const metadataOnly = options.metadataOnly === true
-    const out = rec.status === 'succeeded' ? (blobs.get(rec.id, 'out') as { data?: unknown[] } | null) : null
-    const outputCount = Array.isArray(out?.data) ? out.data.length : 0
+    const outputCount = rec.status === 'succeeded' ? blobs.outputCount(rec.id) : 0
     const directResultHandoff = options.directResultHandoff === true && outputCount > 0 && !!options.owner
     const grant = directResultHandoff ? resultCredentials.issue(rec.id, options.owner!) : undefined
     let fidelity: InputFidelityCapability | null = null
     if (rec.input_fidelity) { try { fidelity = JSON.parse(rec.input_fidelity) } catch { fidelity = null } }
+    let resultSummary: RelayResultSummary | null = null
+    if (rec.result_summary) {
+      try {
+        const parsed = JSON.parse(rec.result_summary) as Partial<RelayResultSummary>
+        if (Number.isInteger(parsed.expected_count) && (parsed.expected_count ?? 0) > 0
+          && Number.isInteger(parsed.valid_count) && (parsed.valid_count ?? -1) >= 0
+          && Number.isInteger(parsed.observed_count) && (parsed.observed_count ?? -1) >= 0
+          && Array.isArray(parsed.invalid) && typeof parsed.partial_outcome_unknown === 'boolean') {
+          resultSummary = parsed as RelayResultSummary
+        }
+      } catch {}
+    }
     const pollAfter = pollAfterSeconds(rec)
     return Response.json({
       status: rec.status,
       ...(directResultHandoff
         ? {
-            result_url: resultCredentials.resultUrl(grant!),
+            // result_url is the legacy single-candidate field. It must remain a
+            // real candidate handoff, not the metadata-only grant base URL.
+            result_url: resultCredentials.resultUrl(grant!, 0),
             result_urls: Array.from({ length: outputCount }, (_unused, index) => resultCredentials.resultUrl(grant!, index)),
             result_count: outputCount,
           }
-        : metadataOnly
-        ? { metadata_only: true, result_available: outputCount > 0, output_count: outputCount }
-        : { data: out?.data }),
+        : { metadata_only: true, result_available: outputCount > 0, output_count: outputCount }),
       error: rec.error ?? undefined,
       created: rec.created,
       operation_id: rec.id,
@@ -943,6 +1710,7 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
       provider_receipt_hash: rec.provider_receipt_hash ?? undefined,
       result_acknowledged: rec.acknowledged_at !== null,
       acknowledged_at: rec.acknowledged_at ?? undefined,
+      ...(resultSummary ? resultSummary : {}),
       ...(pollAfter ? { poll_after_seconds: pollAfter } : {}),
       ...(fidelity ? {
         input_fidelity_requested: fidelity.requested,
@@ -977,6 +1745,7 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
           active_input_bytes_max: capacity.admission.active_input_bytes_max,
           active_input_bytes_available: Math.max(0, capacity.admission.active_input_bytes_max - currentActiveInputBytes - pendingInputBytes),
           capacity_policy_revision: capacity.revision,
+          quota_policy_revision: config.quotaPolicy.revision,
           provider_capacity: {
             openai: {
               ...openaiAdmission.snapshot(),
@@ -996,6 +1765,9 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
           queue_max: capacity.admission.queue_max,
           user_max: capacity.admission.owner_task_max,
           retry_after_seconds: config.retryAfterSeconds,
+          result_delivery_global_concurrency: config.resultGlobalConcurrency,
+          result_delivery_owner_concurrency: config.resultOwnerConcurrency,
+          result_max_bytes: config.resultMaxBytes,
         }, { headers: { 'Cache-Control': 'no-store' } })
       }
       if (req.method === 'POST' && url.pathname === IMAGE_RELAY_TASKS_PATH) {
@@ -1012,6 +1784,7 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
         const bodyReservation = await readRequestBodyBounded(
           req,
           capacity.admission.max_body_bytes,
+          config.requestBodyTimeoutMs,
           reserveInputBytes,
           releaseInputBytes,
         )
@@ -1025,53 +1798,33 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
           validateSubmitBody(body, providerCredentials.view('seedream').secret_configured)
           const inputFingerprint = sha256(raw)
           const provider = taskProvider(body)
-
-          // 幂等:同 (owner, key) 已存在 → 返回原 task_id,不再跑第二次真实上游。
-          if (idempotencyKey) {
-            const existing = store.findByIdempotency(owner, idempotencyKey)
-            if (existing) {
-              if (!sameOperationBinding(existing, inputFingerprint)) {
-                throw new HttpError(409, 'relay: operation 已绑定不同输入')
-              }
-              return Response.json({
-                task_id: existing.id,
-                status: existing.status,
-                reused: true,
-                ...(pollAfterSeconds(existing) ? { poll_after_seconds: pollAfterSeconds(existing) } : {}),
-              }, { status: 202 })
-            }
+          const created = store.createWithReservation({
+            id: crypto.randomUUID(),
+            owner,
+            idempotencyKey,
+            inputBytes: raw.byteLength,
+            inputFingerprint,
+            provider,
+            quote: taskQuote(body, config.quotaPolicy, now()),
+            queueMax: capacity.admission.queue_max,
+            ownerTaskMax: capacity.admission.owner_task_max,
+          })
+          if (!created.created) {
+            const pollAfter = pollAfterSeconds(created.task)
+            return Response.json({
+              task_id: created.task.id,
+              status: created.task.status,
+              reused: true,
+              ...(pollAfter ? { poll_after_seconds: pollAfter } : {}),
+            }, { status: 202 })
           }
-          // 队列上限:全局在途 + 单 owner 在途。
-          if (store.countActive() >= capacity.admission.queue_max) throw queueFull('relay: 生图队列已满,请稍后重试')
-          if (store.countActiveByOwner(owner) >= capacity.admission.owner_task_max) throw queueFull('relay: 你的生图任务已达上限,请等待前面的完成')
-
-          const id = crypto.randomUUID()
-          try {
-            store.insert(id, owner, idempotencyKey, raw.byteLength, inputFingerprint, provider)
-            activeInputBytes += raw.byteLength
-          } catch (err) {
-            // 唯一索引撞车(并发同 owner+key):取回已存在的那条,保证幂等只一个真实任务。
-            if (idempotencyKey) {
-              const existing = store.findByIdempotency(owner, idempotencyKey)
-              if (existing) {
-                if (!sameOperationBinding(existing, inputFingerprint)) {
-                  throw new HttpError(409, 'relay: operation 已绑定不同输入')
-                }
-                return Response.json({
-                  task_id: existing.id,
-                  status: existing.status,
-                  reused: true,
-                  ...(pollAfterSeconds(existing) ? { poll_after_seconds: pollAfterSeconds(existing) } : {}),
-                }, { status: 202 })
-              }
-            }
-            throw err
-          }
+          const id = created.task.id
+          activeInputBytes += raw.byteLength
           try {
             blobs.put(id, 'in', body) // 持久化原始输入,供重启后续跑
           } catch (error) {
             try { blobs.del(id) } catch {}
-            store.remove(id)
+            store.removeAndRelease(id)
             refreshActiveInputBytes()
             throw error
           }
@@ -1098,16 +1851,35 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
           throw new HttpError(403, 'relay: 结果授权与任务归属不匹配')
         }
         if (rec.status !== 'succeeded') throw new HttpError(409, 'relay: 图片结果尚未就绪')
-        if (blobs.byteLength(rec.id, 'out') === null) throw new HttpError(410, 'relay: 图片结果已确认或已清理')
-        const response = outputIndexRaw === undefined
-          ? pollResponse(rec)
-          : (() => {
-              const out = blobs.get(rec.id, 'out') as { data?: unknown[] } | null
-              const outputIndex = Number.parseInt(outputIndexRaw, 10)
-              const output = Array.isArray(out?.data) ? out.data[outputIndex] : undefined
-              if (output === undefined) throw new HttpError(404, 'relay: 图片候选不存在')
-              return Response.json({ status: 'succeeded', operation_id: rec.id, data: [output] })
-            })()
+        if (outputIndexRaw === undefined && blobs.outputCount(rec.id) === 0) throw new HttpError(410, 'relay: 图片结果已确认或已清理')
+        if (outputIndexRaw !== undefined) {
+          // Acquire before touching the per-output file. A saturated delivery
+          // path must reject before JSON.parse/base64 can allocate user bytes.
+          const release = resultDelivery.tryAcquire(verified.owner)
+          if (!release) throw queueFull('relay: 图片结果交付并发已达上限，请稍后重试')
+          let handedOff = false
+          try {
+          const outputIndex = Number.parseInt(outputIndexRaw, 10)
+          const output = blobs.outputAt(rec.id, outputIndex)
+          if (output === null) throw new HttpError(404, 'relay: 图片候选不存在')
+          const wire = JSON.stringify({ status: 'succeeded', operation_id: rec.id, data: [output] })
+          if (Buffer.byteLength(wire) > maxBase64BytesFor(config.resultMaxBytes) + 64 * 1024) {
+            throw new HttpError(413, 'relay: 图片结果超过受控交付字节上限')
+          }
+            const response = retainDeliveryPermit(new Response(wire, {
+            headers: {
+              'Content-Type': 'application/json; charset=utf-8',
+              'Cache-Control': 'private, no-store',
+              'X-Content-Type-Options': 'nosniff',
+            },
+            }), release)
+            handedOff = true
+            return response
+          } finally {
+            if (!handedOff) release()
+          }
+        }
+        const response = pollResponse(rec)
         const headers = new Headers(response.headers)
         headers.set('Cache-Control', 'private, no-store')
         headers.set('X-Content-Type-Options', 'nosniff')
@@ -1145,7 +1917,6 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
         if (!rec) return Response.json({ status: 'failed', error: '任务不存在或已过期' }, { status: 404 })
         if (rec.owner !== verified.owner) throw new HttpError(403, 'relay: 无权访问该任务')
         return pollResponse(rec, {
-          metadataOnly: url.searchParams.get('metadata_only') === '1',
           directResultHandoff: req.headers.get(IMAGE_RELAY_RESULT_HANDOFF_HEADER)?.trim() === IMAGE_RELAY_RESULT_HANDOFF_DIRECT_V1,
           owner: verified.owner,
         })
@@ -1159,7 +1930,7 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
         if (!rec) return Response.json({ status: 'failed', error: '任务不存在或已过期' }, { status: 404 })
         if (rec.owner !== verified.owner) throw new HttpError(403, 'relay: 无权访问该任务')
         if (rec.status !== 'succeeded') throw new HttpError(409, 'relay: 只能确认已成功的图片结果')
-        if (rec.acknowledged_at === null && blobs.byteLength(id, 'out') === null) {
+        if (rec.acknowledged_at === null && blobs.outputCount(id) === 0) {
           throw new HttpError(409, 'relay: 结果不完整，不能确认')
         }
         const acknowledgedAt = store.acknowledgeResult(id)
@@ -1182,18 +1953,23 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
         if (!rec) return Response.json({ status: 'failed', error: '任务不存在或已过期' }, { status: 404 })
         if (rec.owner !== verified.owner) throw new HttpError(403, 'relay: 无权访问该任务')
         if (rec.status !== 'queued') throw new HttpError(409, 'relay: 任务已经开始，不能安全取消')
-        store.setStatus(id, 'cancelled', '任务已在请求上游前取消')
+        const cancelled = store.cancelQueuedAndRelease(id)
+        if (!cancelled) throw new HttpError(409, 'relay: 任务已经开始，不能安全取消')
         admissionControllers.get(id)?.abort()
         const retryTimer = retryTimers.get(id)
         if (retryTimer) clearTimeout(retryTimer)
         retryTimers.delete(id)
         refreshActiveInputBytes()
         blobs.delKind(id, 'in')
-        return pollResponse(store.get(id)!)
+        return pollResponse(cancelled)
       }
       return new Response('Not found', { status: 404 })
     } catch (err) {
       if (err instanceof HttpError) return Response.json({ error: err.message }, { status: err.status, headers: err.headers })
+      if (err instanceof ImageIdempotencyConflictError) return Response.json({ error: err.message }, { status: 409 })
+      if (err instanceof ImageTaskQueueFullError || err instanceof ImageQuotaExceededError) {
+        return Response.json({ error: err.message }, { status: 429, headers: queueFull(err.message).headers })
+      }
       return Response.json({ error: `relay 内部错误:${String(err).slice(0, 200)}` }, { status: 500 })
     }
   }

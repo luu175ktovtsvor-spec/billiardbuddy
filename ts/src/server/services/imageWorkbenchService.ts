@@ -127,6 +127,58 @@ import {
 } from '../media/image/infrastructure/legacyImageProjectReader.js'
 import { SqliteImageMetadataStore } from '../media/image/infrastructure/sqliteImageMetadataStore.js'
 
+const IMAGE_RELAY_CONTROL_JSON_MAX_BYTES = 256 * 1024
+const IMAGE_RELAY_DIRECT_RESULT_JSON_MAX_BYTES = Math.ceil((32 * 1024 * 1024) / 3) * 4 + 64 * 1024
+
+async function readImageRelayResponseText(response: Response, maxBytes: number, signal: AbortSignal): Promise<string> {
+  const declaredRaw = response.headers.get('content-length')?.trim()
+  const declared = declaredRaw && /^\d+$/.test(declaredRaw) ? Number(declaredRaw) : undefined
+  if (declared !== undefined && (!Number.isSafeInteger(declared) || declared > maxBytes)) {
+    void response.body?.cancel().catch(() => {})
+    throw new Error('image relay response too large')
+  }
+  if (!response.body) return ''
+  const reader = response.body.getReader()
+  const chunks: Uint8Array[] = []
+  let total = 0
+  let detachAbort = () => {}
+  const aborted = new Promise<never>((_resolve, reject) => {
+    const onAbort = () => {
+      void reader.cancel().catch(() => {})
+      reject(new Error('image relay response deadline exceeded'))
+    }
+    if (signal.aborted) onAbort()
+    else {
+      signal.addEventListener('abort', onAbort, { once: true })
+      detachAbort = () => signal.removeEventListener('abort', onAbort)
+    }
+  })
+  try {
+    while (true) {
+      const next = await Promise.race([reader.read(), aborted])
+      if (next.done) break
+      const value = next.value
+      if (!value || value.byteLength === 0) continue
+      if (total + value.byteLength > maxBytes) {
+        void reader.cancel().catch(() => {})
+        throw new Error('image relay response too large')
+      }
+      chunks.push(value)
+      total += value.byteLength
+    }
+    const bytes = new Uint8Array(total)
+    let offset = 0
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset)
+      offset += chunk.byteLength
+    }
+    return new TextDecoder().decode(bytes)
+  } finally {
+    detachAbort()
+    try { reader.releaseLock() } catch {}
+  }
+}
+
 const STANDALONE_IMAGE_OWNER: MediaOwner = {
   kind: 'standalone',
   owner_id: 'local_workbench',
@@ -150,6 +202,7 @@ type RelayImageTask = {
   status?: string
   poll_after_seconds?: number
   data?: Array<{
+    candidate_index?: number
     b64_json?: string
     url?: string
     revised_prompt?: string
@@ -162,6 +215,10 @@ type RelayImageTask = {
   input_fidelity_status?: 'accepted' | 'unsupported'
   input_fidelity_risk?: string
   provider_receipt_hash?: string
+  expected_count?: number
+  valid_count?: number
+  invalid?: Array<{ index?: number; safe_error_code?: string }>
+  partial_outcome_unknown?: boolean
   refusal?: { category?: string; safe_message?: string }
   policy_refusal?: { category?: string; safe_message?: string }
   result_acknowledged?: boolean
@@ -2714,7 +2771,11 @@ export class ImageWorkbenchService {
     }
   }
 
-  private async fetchImageRelayJson(input: RequestInfo | URL, init: RequestInit): Promise<{
+  private async fetchImageRelayJson(
+    input: RequestInfo | URL,
+    init: RequestInit,
+    maxBytes = IMAGE_RELAY_CONTROL_JSON_MAX_BYTES,
+  ): Promise<{
     response: Response
     body: RelayImageTask
   }> {
@@ -2729,8 +2790,7 @@ export class ImageWorkbenchService {
     })
     const request = async () => {
       const response = await this.fetchImpl(input, { ...init, signal: controller.signal })
-      const text = await response.text()
-      if (text.length > 4 * 1024 * 1024) throw new Error('image relay response too large')
+      const text = await readImageRelayResponseText(response, maxBytes, controller.signal)
       let body: RelayImageTask = {}
       if (text) {
         try {
@@ -3348,21 +3408,26 @@ export class ImageWorkbenchService {
     if (handoffUrls.length > 4) throw new ImageWorkbenchServiceError('远程图片结果数量异常', 502, 'IMAGE_RESULT_INVALID')
     const trusted = handoffUrls.map(value => trustedResultUrl(value, target.baseUrl))
     if (trusted.some(value => !value)) throw new ImageWorkbenchServiceError('远程图片结果地址不可信', 502, 'IMAGE_RESULT_INVALID')
-    const results = await Promise.all(trusted.map(url => this.fetchImageRelayJson(url!, {
-      method: 'GET',
-      redirect: 'error',
-      headers: {
-        Accept: 'application/json',
-        Authorization: `Bearer ${target.token}`,
-      },
-    })))
-    const failure = results.find(result => !result.response.ok)
-    if (failure) throw new ImageWorkbenchServiceError(
-      boundedMessage(failure.body.error ?? failure.body.message),
-      failure.response.status || 502,
-      'IMAGE_RESULT_UNAVAILABLE',
-    )
-    return { ...body, data: results.flatMap(result => result.body.data ?? []) }
+    const data: NonNullable<RelayImageTask['data']> = []
+    // Direct candidates are intentionally fetched one at a time. A valid 32 MiB
+    // image expands to ~43 MiB JSON; Promise.all would multiply that footprint.
+    for (const url of trusted) {
+      const result = await this.fetchImageRelayJson(url!, {
+        method: 'GET',
+        redirect: 'error',
+        headers: {
+          Accept: 'application/json',
+          Authorization: `Bearer ${target.token}`,
+        },
+      }, IMAGE_RELAY_DIRECT_RESULT_JSON_MAX_BYTES)
+      if (!result.response.ok) throw new ImageWorkbenchServiceError(
+        boundedMessage(result.body.error ?? result.body.message),
+        result.response.status || 502,
+        'IMAGE_RESULT_UNAVAILABLE',
+      )
+      data.push(...(result.body.data ?? []))
+    }
+    return { ...body, data }
   }
 
   private async acknowledgeGenerationRemoteResult(operation: ImageOperationV2, transport: ImageOperation): Promise<ImageOperation> {
@@ -3454,14 +3519,29 @@ export class ImageWorkbenchService {
       updated_at: this.iso(),
     })
     const rawCandidates = body.data ?? []
-    const invalid: Array<{ index: number; safe_error_code: string }> = []
+    const invalidByIndex = new Map<number, string>()
+    const addInvalid = (index: number, code: string) => {
+      if (!Number.isInteger(index) || index < 0 || index >= expectedCount || invalidByIndex.has(index)) return
+      invalidByIndex.set(index, /^[A-Z0-9_]{1,120}$/.test(code) ? code : 'IMAGE_RESULT_INVALID')
+    }
+    for (const item of body.invalid ?? []) addInvalid(item.index ?? -1, item.safe_error_code ?? 'IMAGE_RESULT_INVALID')
+    const candidatesByIndex = new Map<number, NonNullable<RelayImageTask['data']>[number]>()
+    for (let position = 0; position < rawCandidates.length; position += 1) {
+      const remote = rawCandidates[position]!
+      const index = Number.isInteger(remote.candidate_index) ? remote.candidate_index! : position
+      if (index < 0 || index >= expectedCount || candidatesByIndex.has(index)) {
+        addInvalid(Math.max(0, Math.min(expectedCount - 1, index)), 'IMAGE_RESULT_COUNT_INVALID')
+        continue
+      }
+      candidatesByIndex.set(index, remote)
+    }
     const saved: Array<{ candidate: ImageCandidate; asset: MediaAsset }> = []
     const groupId = stableId('grp', project.id, operation.id)
     const now = this.iso()
     for (let index = 0; index < expectedCount; index += 1) {
-      const remote = rawCandidates[index]
+      const remote = candidatesByIndex.get(index)
       if (!remote?.b64_json || remote.url || !/^[A-Za-z0-9+/=]+$/.test(remote.b64_json)) {
-        invalid.push({ index, safe_error_code: remote ? 'IMAGE_RESULT_INVALID' : 'IMAGE_RESULT_MISSING' })
+        addInvalid(index, remote ? 'IMAGE_RESULT_INVALID' : 'IMAGE_RESULT_MISSING')
         continue
       }
       try {
@@ -3486,15 +3566,18 @@ export class ImageWorkbenchService {
         })
       } catch (error) {
         if (error instanceof ImageAssetStoreError) {
-          invalid.push({ index, safe_error_code: error.code })
+          addInvalid(index, error.code)
           continue
         }
         throw error
       }
     }
-    if (rawCandidates.length > expectedCount) {
-      invalid.push({ index: expectedCount - 1, safe_error_code: 'IMAGE_RESULT_COUNT_INVALID' })
-    }
+    // valid_count is aggregate Relay telemetry.  A local verification failure
+    // cannot safely be attributed to another candidate index, so only the
+    // per-candidate facts collected above may produce indexed invalid entries.
+    const invalid = [...invalidByIndex.entries()]
+      .map(([index, safe_error_code]) => ({ index, safe_error_code }))
+      .sort((left, right) => left.index - right.index)
     if (saved.length === 0) {
       const failed = await this.failOperation(committingTransport, 'MEDIA_IMAGE_UNAVAILABLE', false, body.provider_receipt_hash)
       await this.syncGenerationOperationFromTransport(committingOperation, failed)
