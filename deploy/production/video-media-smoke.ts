@@ -138,17 +138,13 @@ try {
   await publicIntrospection.body?.cancel().catch(() => {})
   if (publicIntrospectionStatus !== 404) throw new Error(`Gateway introspection endpoint must be public 404, got ${publicIntrospectionStatus}`)
 
-  // The controlled production profile intentionally limits unconsumed input
-  // capabilities to one. Prove rejection happens before an OSS URL is signed,
-  // then reclaim it explicitly before paid provider smoke calls.
+  // Quota ceilings are an external deployment policy, so a live smoke must not
+  // assume a fixed lease count or manufacture N temporary objects to exhaust
+  // the configured entitlement. Deterministic repository tests prove quota
+  // rejection. Here we prove schema/purpose rejection before any OSS URL is
+  // signed; the real multipart flow below proves lease lifecycle cleanup.
   const quotaBytes = new Uint8Array([1, 2, 3, 4])
   const quotaConsent = { id: `consent_smoke_quota_${requestId()}`, scopeHash: sha256(new TextEncoder().encode(requestId())) }
-  const quotaLease = await createLease(quotaBytes, 'video/mp4', 'proxy_video', quotaConsent)
-  const quotaRejected = await uncheckedControl('/v1/video-media/object-leases', 'POST', {
-    local_operation_id: `task_smoke_quota_${requestId()}`, purpose: 'proxy_video', content_hash: sha256(quotaBytes), byte_size: quotaBytes.byteLength, content_type: 'video/mp4', consent_revision_id: quotaConsent.id, consent_scope_hash: quotaConsent.scopeHash,
-  })
-  if (quotaRejected.status !== 429) throw new Error(`object lease quota returned ${quotaRejected.status}`)
-  await deleteLease(quotaLease.lease_id)
   const purposeRejected = await uncheckedControl('/v1/video-media/object-leases', 'POST', {
     local_operation_id: `task_smoke_purpose_${requestId()}`, purpose: 'audio_for_asr', content_hash: sha256(quotaBytes), byte_size: quotaBytes.byteLength, content_type: 'image/png', consent_revision_id: quotaConsent.id, consent_scope_hash: quotaConsent.scopeHash,
   })
