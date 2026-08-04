@@ -92,9 +92,54 @@ const evidenceItem = z.object({
   confidence: z.number().min(0).max(1).optional(),
 }).strict()
 
-export const createVideoRelayOperationRequestSchema = z.discriminatedUnion('capability', [
+const planningInput = z.object({
+  object_refs: z.array(opaqueId).max(64),
+  facts_basis_hash: hash,
+  evidence: z.array(evidenceItem).max(2_000),
+  language: z.string().min(1).max(32),
+  output_schema_version: z.number().int().positive(),
+}).strict()
+
+/** Caption translation is text-only. A caller cannot repurpose this role to
+ * attach media objects or planning/user-instruction evidence. */
+const captionTranslationEvidenceItem = z.object({
+  id: opaqueId,
+  kind: z.literal('transcript'),
+  text: z.string().min(1).max(32_000),
+  source_range_id: opaqueId,
+  confidence: z.number().min(0).max(1).optional(),
+}).strict()
+
+const captionTranslationInput = z.object({
+  object_refs: z.array(opaqueId).length(0),
+  facts_basis_hash: hash,
+  evidence: z.array(captionTranslationEvidenceItem).min(1).max(2_000),
+  language: z.string().min(1).max(32),
+  output_schema_version: z.literal(1),
+}).strict()
+
+/** Exact bytes written to a caption-translation result object. The Sidecar
+ * owns anchors/timing, so Relay may return only cue identity and translated
+ * text; planning envelopes, ranges and arbitrary provider fields are refused. */
+export const captionTranslationRelayResultSchema = z.object({
+  kind: z.literal('caption_translation'),
+  translations: z.array(z.object({
+    cue_id: opaqueId,
+    text: z.string().trim().min(1).max(16_000),
+  }).strict()).min(1).max(2_000),
+}).strict().refine(value => new Set(value.translations.map(item => item.cue_id)).size === value.translations.length, {
+  message: 'caption_translation_duplicate_cue_id',
+  path: ['translations'],
+})
+export type CaptionTranslationRelayResult = z.infer<typeof captionTranslationRelayResultSchema>
+
+/** `media_reasoning` has two independently strict role variants, so this
+ * cannot be a capability-only discriminated union. Each alternative still
+ * rejects every unsupported capability/role/input combination. */
+export const createVideoRelayOperationRequestSchema = z.union([
   operationBase.extend({ capability: z.literal('visual_evidence'), application_role: z.literal('shot_evidence'), input: z.object({ object_refs: z.array(opaqueId).min(1).max(64), evidence_window_id: opaqueId, facts_basis_hash: hash, language: z.string().min(1).max(32), output_schema_version: z.number().int().positive() }).strict() }),
-  operationBase.extend({ capability: z.literal('media_reasoning'), application_role: z.enum(['planning', 'caption_translation']), input: z.object({ object_refs: z.array(opaqueId).max(64), facts_basis_hash: hash, evidence: z.array(evidenceItem).max(2_000), language: z.string().min(1).max(32), output_schema_version: z.number().int().positive() }).strict() }),
+  operationBase.extend({ capability: z.literal('media_reasoning'), application_role: z.literal('planning'), input: planningInput }),
+  operationBase.extend({ capability: z.literal('media_reasoning'), application_role: z.literal('caption_translation'), input: captionTranslationInput }),
   operationBase.extend({ capability: z.literal('speech_transcription'), application_role: z.literal('asr'), input: z.object({ mode: z.enum(['short_sync', 'long_async']), audio_object_ref: opaqueId, source_offset: sourceTime, language: z.string().min(1).max(32).optional(), hotwords: z.array(z.string().min(1).max(200)).max(200), speaker_diarization: z.boolean(), sentence_timestamps: z.literal(true), word_timestamps: z.literal(true) }).strict() }),
   operationBase.extend({ capability: z.literal('semantic_embedding'), application_role: z.literal('search_index'), input: z.object({ embedding_role: z.enum(['document', 'query']), items: z.array(z.object({ id: opaqueId, text: z.string().min(1).max(32_000) }).strict()).min(1).max(2_000), model: z.literal('text-embedding-v4'), dimension: z.literal(768), instruction_version: z.string().min(1).max(160) }).strict() }),
 ])

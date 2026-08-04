@@ -5,12 +5,13 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { VideoWorkbenchRepository, type VideoOperation } from '../src/server/services/videoWorkbenchRepository.js'
 import { VideoWorkbenchService } from '../src/server/services/videoWorkbenchService.js'
+import { probeVideoFactSource } from '../src/server/services/videoExecution.js'
 import { VideoMediaRelayClient, VideoMediaRelayClientError } from '../src/server/video/infrastructure/providers/videoMediaRelayClient.js'
 import { createVideoWorkbenchDomainApiHandler } from '../src/server/api/videoWorkbench.js'
 import { PayloadCommitProtocol } from '../src/server/media/kernel/storage/payloadCommitProtocol.js'
 import { SqliteUnitOfWork } from '../src/server/media/kernel/storage/sqliteUnitOfWork.js'
-import { fixedIntervalContentSegments, planEvidenceWindows } from '../src/server/video/domain/mediaFacts/analysis.js'
-import type { VideoStudioProject } from '../shared/contracts/media.js'
+import { fixedIntervalContentSegments, planEvidenceWindows, sourceRangeForSegment } from '../src/server/video/domain/mediaFacts/analysis.js'
+import { MEDIA_UI_CAPABILITY_HEADER, type VideoStudioProject } from '../shared/contracts/media.js'
 import { createHostedEvidence, type TimedTranscript, type VideoDerivative, type VideoFactSource } from '../src/server/video/domain/mediaFacts/model.js'
 import {
   compareRationalTime,
@@ -143,6 +144,44 @@ test('精确时间保留负 PTS、30000/1001，并要求显式舍入和跨域 re
   expect(() => sourceTimeRange(rationalTime('0', { num: 1, den: 1 }), rationalTime('1', { num: 2, den: 1 }))).toThrow()
 })
 
+test('素材探测保留 PQ/HLG 颜色事实，未知传输不会被默认标为 SDR', async () => {
+  const root = await testRoot('hdr-color-facts')
+  const path = join(root, 'hdr-source.mp4')
+  await writeFile(path, 'hdr-fact-fixture')
+  const probe = async (colorTransfer?: string) => await probeVideoFactSource({
+    id: 'src_00000001',
+    projectId: 'vid_00000001',
+    path,
+    name: 'hdr-source.mp4',
+    now: at,
+    ffprobe: 'ffprobe',
+    runProcess: async () => ({
+      exitCode: 0,
+      stdout: JSON.stringify({
+        format: { duration: '10.000', start_time: '0' },
+        streams: [{
+          index: 0, codec_type: 'video', codec_name: 'hevc', width: 1920, height: 1080,
+          time_base: '1/90000', start_pts: '0', duration_ts: '900000',
+          ...(colorTransfer ? {
+            color_space: 'bt2020nc', color_transfer: colorTransfer, color_primaries: 'bt2020', color_range: 'tv', pix_fmt: 'yuv420p10le',
+          } : {}),
+        }],
+      }),
+      stderr: '',
+    }),
+  })
+  await expect(probe('smpte2084')).resolves.toMatchObject({
+    primary_video_stream: {
+      hdr_kind: 'pq', color_space: 'bt2020nc', color_transfer: 'smpte2084', color_primaries: 'bt2020', color_range: 'tv', pixel_format: 'yuv420p10le',
+    },
+  })
+  await expect(probe('arib-std-b67')).resolves.toMatchObject({ primary_video_stream: { hdr_kind: 'hlg' } })
+  await expect(probe()).resolves.toMatchObject({ primary_video_stream: { hdr_kind: 'unknown' } })
+  await expect(probe('unknown')).resolves.toMatchObject({ primary_video_stream: { hdr_kind: 'unknown' } })
+  await expect(probe('unspecified')).resolves.toMatchObject({ primary_video_stream: { hdr_kind: 'unknown' } })
+  await expect(probe('future-transfer')).resolves.toMatchObject({ primary_video_stream: { hdr_kind: 'unknown' } })
+})
+
 test('Media Facts 保持不可变 payload、全文检索、转录修订和派生状态', async () => {
   const root = await testRoot('repository')
   const repository = new VideoWorkbenchRepository({ root, now: () => new Date(at) })
@@ -227,6 +266,19 @@ test('Media Facts 保持不可变 payload、全文检索、转录修订和派生
 
   const segments = fixedIntervalContentSegments({ source: videoSource, intervalSeconds: 10, createdAt: at })
   expect(segments).toHaveLength(3)
+
+  // Container presentation duration may include non-primary streams or a
+  // discontinuity. Editorial facts must never turn that into an extra source
+  // range that the primary video stream cannot actually supply.
+  const longerPresentation = {
+    ...videoSource,
+    presentation_duration: rationalTime('5400000', videoSource.presentation_duration.tick_rate),
+  }
+  expect(fixedIntervalContentSegments({ source: longerPresentation, intervalSeconds: 10, createdAt: at })).toHaveLength(3)
+  expect(() => sourceRangeForSegment(
+    sourceTimeRange(videoSource.primary_video_stream.start_time, rationalTime('2700001', videoSource.primary_video_stream.start_time.tick_rate)),
+    longerPresentation,
+  )).toThrow('事实范围超出原始素材 PTS')
   await Promise.all(segments.map(async segment => await repository.saveFact(segment)))
   const planned = planEvidenceWindows({
     source: videoSource,
@@ -328,24 +380,30 @@ test('完整指纹独立恢复，素材改变会阻止正式路径并使派生�
     created_at: at,
     state: 'ready',
   })
+  // Ensure the formal v2 delivery head exists before the source changes.
+  await expect(service.getEditorialTimeline(created.id, 'timeline_missing')).rejects.toMatchObject({ code: 'VIDEO_TIMELINE_MISSING' })
+  const formal = await service.getProject(created.id)
+  const variant = formal.delivery_variants[0]!
+  const version = formal.delivery_variant_versions.find(candidate => candidate.id === variant.current_version_id)!
   await writeFile(sourcePath, 'changed simulated video bytes with a different length')
-  const handler = createVideoWorkbenchDomainApiHandler(service)
-  const previewUrl = new URL(`http://localhost/api/videos/projects/${created.id}/preview`)
-  const previewInput = {
-    base_revision: current.revision,
-    timeline_version_id: current.current_timeline_version_id!,
+  const capability = 'capability_0123456789abcdef0123456789'
+  const handler = createVideoWorkbenchDomainApiHandler(service, capability)
+  const preflightUrl = new URL(`http://localhost/api/videos/projects/${created.id}/delivery-variants/${variant.id}/preflight`)
+  const preflightInput = {
+    base_revision: formal.revision,
+    base_variant_version_id: version.id,
   }
-  const requestPreview = async () => await handler(
-    new Request(previewUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(previewInput) }),
-    previewUrl,
-    previewUrl.pathname.split('/').filter(Boolean).map((part, index) => index === 0 ? 'api' : part),
+  const requestPreflight = async () => await handler(
+    new Request(preflightUrl, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': 'changed-source-preflight-0001', [MEDIA_UI_CAPABILITY_HEADER]: capability }, body: JSON.stringify(preflightInput) }),
+    preflightUrl,
+    preflightUrl.pathname.split('/').filter(Boolean).map((part, index) => index === 0 ? 'api' : part),
   )
-  const changed = await requestPreview()
+  const changed = await requestPreflight()
   expect(changed.status).toBe(409)
   expect(await changed.json()).toMatchObject({ error: 'MEDIA_VIDEO_SOURCE_CHANGED' })
   expect(await service.repository.getFact('source', sourceFact.id)).toMatchObject({ state: 'changed', fingerprint_state: 'failed' })
   expect(await service.repository.getFact('derivative', 'derivative_00000002')).toMatchObject({ state: 'stale' })
-  const repeated = await requestPreview()
+  const repeated = await requestPreflight()
   expect(repeated.status).toBe(409)
   expect(await repeated.json()).toMatchObject({ error: 'MEDIA_VIDEO_SOURCE_CHANGED' })
   service.repository.close()

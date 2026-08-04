@@ -12,6 +12,7 @@ import { analyzeVideoEvidence, planVideoTimeline } from '../src/server/services/
 import { VideoWorkbenchRepository } from '../src/server/services/videoWorkbenchRepository.js'
 import { VideoWorkbenchService } from '../src/server/services/videoWorkbenchService.js'
 import {
+  MEDIA_UI_CAPABILITY_HEADER,
   type MediaTask,
   type VideoEvidence,
   type VideoSource,
@@ -552,10 +553,11 @@ test('existing import, timeline, preview and render paths stay durable through t
 test('video API create path reaches the SQLite-backed repository', async () => {
   const root = await testRoot('api')
   const service = new VideoWorkbenchService({ root, now: () => new Date(at) })
-  const handler = createVideoWorkbenchDomainApiHandler(service)
+  const capability = 'capability_0123456789abcdef0123456789'
+  const handler = createVideoWorkbenchDomainApiHandler(service, capability)
   const request = new Request('http://localhost/api/videos/projects', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', [MEDIA_UI_CAPABILITY_HEADER]: capability },
     body: JSON.stringify({ title: '从 API 创建' }),
   })
   const response = await handler(request, new URL(request.url), ['api', 'videos', 'projects'])

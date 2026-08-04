@@ -33,6 +33,43 @@ test('Sidecar OSS transport timeout is external and defaults to a cross-border-s
     .toThrow('BB_VIDEO_MEDIA_UPLOAD_TIMEOUT_MS')
 })
 
+test('Video Media Relay 只在容器字幕运行时探针成功后声明 readyz 可用于烧录', async () => {
+  const unavailable = createVideoMediaRelayFetch({
+    env: {
+      VIDEO_MEDIA_GATEWAY_INTROSPECTION_TOKEN: token,
+      VIDEO_MEDIA_GATEWAY_INTROSPECTION_BASE: 'http://gateway:8799',
+      VIDEO_MEDIA_RELAY_DB: ':memory:',
+    },
+    fetchImpl: identityFetch,
+    now,
+  })
+  const unavailableResponse = await unavailable(new Request('http://relay/readyz'))
+  expect(unavailableResponse.status).toBe(503)
+  expect(await unavailableResponse.json()).toMatchObject({
+    ok: false,
+    component: 'video-media-relay',
+    subtitle_burn_in: { available: false, font_family: 'Noto Sans CJK SC' },
+  })
+
+  const ready = createVideoMediaRelayFetch({
+    env: {
+      VIDEO_MEDIA_GATEWAY_INTROSPECTION_TOKEN: token,
+      VIDEO_MEDIA_GATEWAY_INTROSPECTION_BASE: 'http://gateway:8799',
+      VIDEO_MEDIA_RELAY_DB: ':memory:',
+      VIDEO_MEDIA_SUBTITLE_RUNTIME_READY: '1',
+    },
+    fetchImpl: identityFetch,
+    now,
+  })
+  const readyResponse = await ready(new Request('http://relay/readyz'))
+  expect(readyResponse.status).toBe(200)
+  expect(await readyResponse.json()).toMatchObject({
+    ok: true,
+    component: 'video-media-relay',
+    subtitle_burn_in: { available: true, font_family: 'Noto Sans CJK SC' },
+  })
+})
+
 test('Video Media Relay creates both concurrency and RPM gates through the replaceable backend', async () => {
   const concurrency: Array<{ maxActive: number; maxQueued: number; scope: VideoMediaAdmissionScope }> = []
   const rates: Array<{ rpm: number; maxQueued: number; scope: VideoMediaAdmissionScope }> = []
@@ -147,6 +184,77 @@ test('Video Media Relay enforces introspected identity, lease verification, idem
   expect(ack.status).toBe(204)
   expect(results.size).toBe(0)
   expect(ready.object_ref).toMatch(/^object_/)
+})
+
+test('Relay 不会把规划 envelope 发布为 caption_translation 结果对象', async () => {
+  let providerCalls = 0
+  const receipt: ProviderExecutionReceipt = {
+    id: 'receipt_caption_contract_0001',
+    capability: 'media_reasoning',
+    model_snapshot: 'qwen3.6-flash',
+    region: 'cn-beijing',
+    request_schema_version: 1,
+    prompt_version: 'caption-translation-v1',
+    input_basis_hash: hash,
+    usage: { requests: 1, total_tokens: 8, input_bytes: 120, visual_frames: 0, proxy_seconds: 0, asr_seconds: 0, estimated_amount_micros: 80 },
+    cache_hit: false,
+    created_at: now().toISOString(),
+  }
+  const provider: VideoMediaProvider = {
+    async execute() {
+      providerCalls += 1
+      return { state: 'succeeded', receipt, result: { kind: 'planning', plan: { scenes: [] } } }
+    },
+  }
+  const handler = createVideoMediaRelayFetch({
+    env: {
+      VIDEO_MEDIA_GATEWAY_INTROSPECTION_TOKEN: token,
+      VIDEO_MEDIA_GATEWAY_INTROSPECTION_BASE: 'http://gateway:8799',
+      VIDEO_MEDIA_RELAY_DB: ':memory:',
+    },
+    fetchImpl: identityFetch,
+    provider,
+    now,
+  })
+  const request = {
+    local_operation_id: 'task_caption_contract_0001',
+    consent_revision_id: 'consent_caption_contract_0001',
+    consent_scope_hash: hash,
+    local_budget_reservation_id: 'budget_caption_contract_0001',
+    request_hash: hash,
+    capability: 'media_reasoning',
+    application_role: 'caption_translation',
+    input: {
+      object_refs: [],
+      facts_basis_hash: hash,
+      evidence: [{
+        id: 'caption_cue_contract_0001',
+        kind: 'transcript',
+        text: '第一句字幕',
+        source_range_id: 'segment_caption_contract_0001',
+        confidence: 0.95,
+      }],
+      language: 'en',
+      output_schema_version: 1,
+    },
+  }
+  const rejected = await handler(new Request('http://relay/v1/video-media/operations', {
+    method: 'POST',
+    headers: headers('caption-translation-contract-key-0001'),
+    body: JSON.stringify(request),
+  }))
+  expect(rejected.status).toBe(502)
+  expect(await rejected.json()).toMatchObject({ error: 'caption_translation_result_invalid' })
+  expect(providerCalls).toBe(1)
+  const lookup = await handler(new Request(`http://relay${videoMediaOperationByLocalOperationPath(request.local_operation_id)}`, {
+    headers: { Authorization: 'Bearer installation-token' },
+  }))
+  expect(lookup.status).toBe(200)
+  expect(await lookup.json()).toMatchObject({
+    state: 'failed',
+    safe_error_code: 'caption_translation_result_invalid',
+    provider_receipt: { id: receipt.id },
+  })
 })
 
 test('Video Media Relay fails closed when Gateway introspection is unavailable', async () => {

@@ -1,6 +1,7 @@
 import { createHash, randomUUID, timingSafeEqual } from 'node:crypto'
 import { Database } from 'bun:sqlite'
 import {
+  captionTranslationRelayResultSchema,
   canonicalRelayRequestHash,
   completeMediaObjectLeaseRequestSchema,
   createMediaObjectLeaseRequestSchema,
@@ -63,6 +64,10 @@ function isOutcomeUnknown(error: unknown): boolean {
 }
 function safeFailureCode(error: unknown): string {
   return error instanceof RelayError || error instanceof DashScopeProviderError ? error.code : 'provider_outcome_unknown'
+}
+function isKnownCaptionTranslationResultRejection(error: unknown): boolean {
+  return (error instanceof RelayError || error instanceof DashScopeProviderError)
+    && error.code === 'caption_translation_result_invalid'
 }
 function json(data: unknown, status = 200, id = requestId()): Response { return Response.json(data, { status, headers: { 'X-Request-Id': id, 'Cache-Control': 'no-store' } }) }
 function digest(value: string): string { return `sha256:${createHash('sha256').update(value).digest('hex')}` }
@@ -324,6 +329,11 @@ function defaultProvider(now: () => Date): VideoMediaProvider {
 export function createVideoMediaRelayFetch(deps: RelayDeps = {}) {
   const env = deps.env ?? process.env
   const now = deps.now ?? (() => new Date())
+  // The container entry command sets this only after the same image's
+  // subtitles/fontconfig/one-frame libass probe succeeds. Do not let a
+  // running Relay claim burn-in readiness when it was launched outside that
+  // controlled runtime contract.
+  const subtitleBurnInReady = env.VIDEO_MEDIA_SUBTITLE_RUNTIME_READY === '1'
   const processStartedAt = iso(now)
   const acceptedOrphanGraceMs = boundedEnvInt(env, 'VIDEO_MEDIA_ACCEPTED_ORPHAN_GRACE_MS', 60_000, 1_000, 10 * 60_000)
   const capacity = videoMediaCapacityPolicyFromEnvironment(env)
@@ -645,7 +655,20 @@ export function createVideoMediaRelayFetch(deps: RelayDeps = {}) {
   function hasPublishingResult(operationId: string): boolean {
     return Boolean(store.db.query("SELECT 1 FROM video_media_result_objects_v1 WHERE operation_id=? AND state='publishing' LIMIT 1").get(operationId))
   }
+  function resultAllowedForOperation(operation: { request_json: string }, result: unknown): unknown {
+    let input: CreateVideoRelayOperationRequest
+    try { input = createVideoRelayOperationRequestSchema.parse(JSON.parse(operation.request_json)) } catch {
+      throw new RelayError(502, 'operation_request_invalid')
+    }
+    if (input.capability !== 'media_reasoning' || input.application_role !== 'caption_translation') return result
+    const parsed = captionTranslationRelayResultSchema.safeParse(result)
+    if (!parsed.success) throw new RelayError(502, 'caption_translation_result_invalid')
+    return parsed.data
+  }
   async function persistResult(operationId: string, result: unknown, publication: ResultPublication): Promise<string[]> {
+    const operation = store.db.query('SELECT id,request_json FROM video_media_operations_v1 WHERE id=?').get(operationId) as { id: string; request_json: string } | null
+    if (!operation) throw new RelayError(503, 'operation_missing_for_result')
+    result = resultAllowedForOperation(operation, result)
     let encoded: string
     try { encoded = JSON.stringify(result) } catch { throw new RelayError(502, 'provider_result_not_serializable') }
     const bytes = new TextEncoder().encode(encoded)
@@ -653,8 +676,6 @@ export function createVideoMediaRelayFetch(deps: RelayDeps = {}) {
     const objectRef = opaque('result')
     const contentHash = `sha256:${createHash('sha256').update(bytes).digest('hex')}`
     const expiresAt = new Date(now().getTime() + ttl(env)).toISOString()
-    const operation = store.db.query('SELECT id FROM video_media_operations_v1 WHERE id=?').get(operationId) as { id: string } | null
-    if (!operation) throw new RelayError(503, 'operation_missing_for_result')
     activeResultPublications.add(objectRef)
     try {
       store.transaction(() => {
@@ -941,7 +962,18 @@ export function createVideoMediaRelayFetch(deps: RelayDeps = {}) {
     try {
       const url = new URL(request.url)
       if (request.method === 'GET' && url.pathname === '/healthz') return json({ ok: true, component: 'video-media-relay' }, 200, id)
-      if (request.method === 'GET' && url.pathname === '/readyz') return json({ ok: true, component: 'video-media-relay', identity_configured: Boolean(env.VIDEO_MEDIA_GATEWAY_INTROSPECTION_TOKEN && env.VIDEO_MEDIA_GATEWAY_INTROSPECTION_BASE), capacity_policy_revision: capacity.revision }, 200, id)
+      if (request.method === 'GET' && url.pathname === '/readyz') {
+        return json({
+          ok: subtitleBurnInReady,
+          component: 'video-media-relay',
+          identity_configured: Boolean(env.VIDEO_MEDIA_GATEWAY_INTROSPECTION_TOKEN && env.VIDEO_MEDIA_GATEWAY_INTROSPECTION_BASE),
+          capacity_policy_revision: capacity.revision,
+          subtitle_burn_in: {
+            available: subtitleBurnInReady,
+            font_family: 'Noto Sans CJK SC',
+          },
+        }, subtitleBurnInReady ? 200 : 503, id)
+      }
       const principal = await identity(request)
       const lookupPrefix = videoMediaOperationByLocalOperationPath('')
       if (request.method === 'GET' && url.pathname.startsWith(lookupPrefix)) {
@@ -1115,6 +1147,7 @@ export function createVideoMediaRelayFetch(deps: RelayDeps = {}) {
           }
         }
         let ownsProviderSubmission = false
+        let executed: Awaited<ReturnType<VideoMediaProvider['execute']>> | undefined
         try {
           const providerInputExpiry = raw.capability === 'speech_transcription' && raw.input.mode === 'long_async'
             ? new Date(now().getTime() + 48 * 60 * 60_000).toISOString()
@@ -1137,7 +1170,6 @@ export function createVideoMediaRelayFetch(deps: RelayDeps = {}) {
           // fence: a restart may resume only a record still provably before
           // this boundary, never submit the same paid work twice.
           const permit = await acquireProviderCapacity(raw, principal.owner, request.signal)
-          let executed: Awaited<ReturnType<VideoMediaProvider['execute']>>
           try {
             await permit.assertCurrent?.()
             store.transaction(() => {
@@ -1191,6 +1223,17 @@ export function createVideoMediaRelayFetch(deps: RelayDeps = {}) {
           const row = store.db.query('SELECT submission_started_at,provider_task_id FROM video_media_operations_v1 WHERE id=?').get(operationId) as { submission_started_at: string | null; provider_task_id: string | null } | null
           const crossedProviderBoundary = Boolean(row?.submission_started_at)
           if (ownsProviderSubmission) activeProviderSubmissions.delete(operationId)
+          if (crossedProviderBoundary && isKnownCaptionTranslationResultRejection(error)) {
+            store.transaction(() => {
+              const failed = store.db.query("UPDATE video_media_operations_v1 SET state='failed',provider_task_id=?,provider_receipt=?,safe_error_code=?,updated_at=? WHERE id=? AND state IN ('accepted','submitted','running','outcome_unknown')")
+                .run(executed?.provider_task_id ?? null, executed?.receipt ? JSON.stringify(executed.receipt) : null, 'caption_translation_result_invalid', iso(now), operationId)
+              if (failed.changes === 1) store.settleQuota(quota, executed?.receipt)
+            })
+            queueInputCleanup(raw, principal.owner)
+            await retryObjectCleanup()
+            if (error instanceof RelayError || error instanceof DashScopeProviderError) throw new RelayError(error.status, error.code)
+            throw new RelayError(502, 'caption_translation_result_invalid')
+          }
           if (!crossedProviderBoundary) {
             const released = await failBeforeProvider(operationId, quota, raw, principal.owner)
             if (released) {

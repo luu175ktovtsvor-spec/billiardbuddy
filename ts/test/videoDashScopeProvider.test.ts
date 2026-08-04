@@ -1,8 +1,34 @@
 import { expect, test } from 'bun:test'
+import { captionTranslationRelayResultSchema, createVideoRelayOperationRequestSchema } from '../../video-media-relay/contracts/relayApi.ts'
 import { DashScopeVideoProvider } from '../../video-media-relay/providers/dashscope.ts'
 
 const hash = `sha256:${'a'.repeat(64)}`
 const identity = { owner: 'installation:test' }
+
+function captionTranslationRequest() {
+  return {
+    local_operation_id: 'task_caption_translation_0001',
+    consent_revision_id: 'consent_caption_translation_0001',
+    consent_scope_hash: hash,
+    local_budget_reservation_id: 'budget_caption_translation_0001',
+    request_hash: hash,
+    capability: 'media_reasoning' as const,
+    application_role: 'caption_translation' as const,
+    input: {
+      object_refs: [],
+      facts_basis_hash: hash,
+      evidence: [{
+        id: 'caption_cue_translation_0001',
+        kind: 'transcript' as const,
+        text: '第一句字幕',
+        source_range_id: 'segment_caption_translation_0001',
+        confidence: 0.95,
+      }],
+      language: 'en',
+      output_schema_version: 1 as const,
+    },
+  }
+}
 
 test('DashScope video provider pins Qwen planning and 768-dimensional embedding snapshots', async () => {
   const calls: Array<{ url: string; body: Record<string, unknown> }> = []
@@ -18,6 +44,69 @@ test('DashScope video provider pins Qwen planning and 768-dimensional embedding 
   expect(plan.receipt.model_snapshot).toBe('qwen3.6-flash')
   expect(calls.map(call => call.url)).toEqual(['https://dashscope.aliyuncs.com/compatible-mode/v1/embeddings', 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions'])
   expect(calls[1]?.body).toMatchObject({ model: 'qwen3.6-flash', temperature: 0 })
+})
+
+test('字幕翻译 Relay 契约只接受文本 Cue，并用专门提示和严格结果 envelope', async () => {
+  const request = captionTranslationRequest()
+  expect(createVideoRelayOperationRequestSchema.safeParse(request).success).toBe(true)
+  expect(createVideoRelayOperationRequestSchema.safeParse({
+    ...request,
+    input: { ...request.input, object_refs: ['object_translation_0001'] },
+  }).success).toBe(false)
+  expect(createVideoRelayOperationRequestSchema.safeParse({
+    ...request,
+    input: { ...request.input, evidence: [{ ...request.input.evidence[0]!, kind: 'visual_fact' }] },
+  }).success).toBe(false)
+  expect(captionTranslationRelayResultSchema.safeParse({
+    kind: 'planning',
+    plan: { scenes: [] },
+  }).success).toBe(false)
+  expect(captionTranslationRelayResultSchema.safeParse({
+    kind: 'caption_translation',
+    translations: [{ cue_id: request.input.evidence[0]!.id, text: 'First subtitle' }],
+    plan: { scenes: [] },
+  }).success).toBe(false)
+
+  let capturedBody: Record<string, unknown> | undefined
+  const provider = new DashScopeVideoProvider({
+    apiKey: 'key',
+    now: () => new Date('2026-08-03T00:00:00.000Z'),
+    fetchImpl: async (_url, init) => {
+      capturedBody = JSON.parse(String(init?.body)) as Record<string, unknown>
+      return Response.json({ choices: [{ message: { content: JSON.stringify({
+        kind: 'caption_translation',
+        translations: [{ cue_id: request.input.evidence[0]!.id, text: 'First subtitle' }],
+      }) } }], usage: { total_tokens: 7 } })
+    },
+  })
+  const translated = await provider.execute(request, identity)
+  expect(translated).toMatchObject({
+    state: 'succeeded',
+    receipt: { prompt_version: 'caption-translation-v1' },
+    result: {
+      kind: 'caption_translation',
+      translations: [{ cue_id: request.input.evidence[0]!.id, text: 'First subtitle' }],
+    },
+  })
+  const messages = capturedBody?.messages as Array<{ role: string; content: string }>
+  expect(messages[0]?.content).toContain('字幕翻译器')
+  expect(messages[0]?.content).toContain('不得返回 plan')
+  expect(JSON.parse(messages[1]!.content)).toEqual({
+    task: 'caption_translation',
+    target_language: 'en',
+    facts_basis_hash: hash,
+    output_schema_version: 1,
+    cues: [{ cue_id: request.input.evidence[0]!.id, text: '第一句字幕', source_range_id: 'segment_caption_translation_0001' }],
+  })
+
+  const planningEnvelope = new DashScopeVideoProvider({
+    apiKey: 'key',
+    fetchImpl: async () => Response.json({ choices: [{ message: { content: JSON.stringify({ kind: 'planning', plan: { scenes: [] } }) } }] }),
+  })
+  await expect(planningEnvelope.execute(request, identity)).rejects.toMatchObject({
+    status: 502,
+    code: 'caption_translation_result_invalid',
+  })
 })
 
 test('DashScope receipt uses upstream usage and immutable uploaded-object bytes', async () => {

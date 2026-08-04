@@ -44,6 +44,14 @@ export const videoStreamInfoSchema = streamTimingSchema.extend({
   width: positiveSafeInteger,
   height: positiveSafeInteger,
   rotation: z.number().int().min(-360).max(360),
+  /** Raw FFprobe color facts are retained so delivery cannot relabel HDR as SDR. */
+  color_space: z.string().trim().min(1).max(80).optional(),
+  color_transfer: z.string().trim().min(1).max(80).optional(),
+  color_primaries: z.string().trim().min(1).max(80).optional(),
+  color_range: z.string().trim().min(1).max(80).optional(),
+  pixel_format: z.string().trim().min(1).max(80).optional(),
+  /** `unknown` is intentionally not deliverable until the source is re-probed. */
+  hdr_kind: z.enum(['sdr', 'pq', 'hlg', 'unknown']).default('unknown'),
   average_frame_rate: frameRateSchema.optional(),
   nominal_frame_rate: frameRateSchema.optional(),
   variable_frame_rate: z.boolean(),
@@ -260,6 +268,22 @@ export const evidenceWindowSchema = z.object({
   created_at: mediaIsoDateSchema,
 })
 
+const evidenceRationalTimeSchema = z.object({
+  ticks: z.string(),
+  tick_rate: z.object({ num: positiveSafeInteger, den: positiveSafeInteger }),
+}).transform(value => rationalTime(value.ticks, value.tick_rate))
+
+const normalizedBoxSchema = z.object({
+  x: z.number().min(0).max(1),
+  y: z.number().min(0).max(1),
+  width: z.number().positive().max(1),
+  height: z.number().positive().max(1),
+}).superRefine((value, context) => {
+  if (value.x + value.width > 1 || value.y + value.height > 1) {
+    context.addIssue({ code: 'custom', message: 'normalized box must remain inside the frame' })
+  }
+})
+
 const evidenceBaseSchema = z.object({
   id: mediaIdSchema,
   project_id: mediaIdSchema,
@@ -287,7 +311,39 @@ export const videoFactEvidenceSchema = z.discriminatedUnion('kind', [
   evidenceBaseSchema.extend({ kind: z.literal('quality'), payload: z.object({ metric: z.enum(['sharpness', 'stability', 'exposure', 'black_frame']), score: z.number().finite(), threshold_version: z.string().min(1).max(160) }) }),
   evidenceBaseSchema.extend({ kind: z.literal('object'), payload: z.object({ label: z.string().min(1).max(500), normalized_box: z.tuple([z.number().min(0).max(1), z.number().min(0).max(1), z.number().min(0).max(1), z.number().min(0).max(1)]).optional(), subject_id: mediaIdSchema.optional() }) }),
   evidenceBaseSchema.extend({ kind: z.literal('action'), payload: z.object({ label: z.string().min(1).max(500), phase: z.enum(['start', 'middle', 'end', 'complete']).optional(), actor_subject_id: mediaIdSchema.optional() }) }),
-  evidenceBaseSchema.extend({ kind: z.literal('beat_grid'), payload: z.object({ bpm: z.number().positive().optional(), beat_times: z.array(z.object({ ticks: z.string(), tick_rate: z.object({ num: positiveSafeInteger, den: positiveSafeInteger }) }).transform(value => rationalTime(value.ticks, value.tick_rate))), confidence: z.number().min(0).max(1), analyzer_version: z.string().min(1).max(160) }) }),
+  evidenceBaseSchema.extend({ kind: z.literal('beat_grid'), payload: z.object({
+    // The v1 fields remain optional so imported old evidence stays readable.
+    bpm: z.number().positive().optional(),
+    tempo_bpm: z.number().positive().optional(),
+    beat_times: z.array(evidenceRationalTimeSchema).default([]),
+    beats: z.array(z.object({ at: evidenceRationalTimeSchema, strength: z.number().min(0).max(1), downbeat: z.boolean() })).default([]),
+    confidence: z.number().min(0).max(1),
+    analyzer_version: z.string().min(1).max(160),
+    pcm_hash: hashSchema.optional(),
+    sample_rate: positiveSafeInteger.optional(),
+    coverage: z.array(sourceTimeRangeSchema).max(1_000).default([]),
+    created_by_operation_id: mediaIdSchema.optional(),
+    /** Immutable source/decode identity used to find a reusable PCM receipt. */
+    source_cache_key: hashSchema.optional(),
+    /** Full receipt key includes the streamed PCM digest and exact coverage. */
+    cache_key: hashSchema.optional(),
+  }) }),
+  evidenceBaseSchema.extend({ kind: z.literal('subject_track'), payload: z.object({
+    subject_id: mediaIdSchema,
+    analyzer_version: z.string().min(1).max(160),
+    anchor_evidence_ids: z.array(mediaIdSchema).min(1).max(10_000),
+    points: z.array(z.object({
+      at: evidenceRationalTimeSchema,
+      box: normalizedBoxSchema,
+      confidence: z.number().min(0).max(1),
+      source: z.enum(['visual_anchor', 'local_track', 'manual']),
+    })).min(1).max(20_000),
+    unresolved_ranges: z.array(z.object({
+      range: sourceTimeRangeSchema,
+      reason: z.enum(['occluded', 'left_frame', 'ambiguous', 'low_confidence']),
+    })).max(10_000),
+    created_by_operation_id: mediaIdSchema,
+  }) }),
 ])
 
 export type VideoFactSource = z.infer<typeof videoFactSourceSchema>

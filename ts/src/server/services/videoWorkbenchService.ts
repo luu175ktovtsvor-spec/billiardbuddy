@@ -1,29 +1,46 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { createReadStream } from 'node:fs'
-import { copyFile, mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { constants as fsConstants, createReadStream } from 'node:fs'
+import { copyFile, link, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import { Readable } from 'node:stream'
-import { homedir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { basename, dirname, extname, isAbsolute, join, resolve } from 'node:path'
 import {
   addVideoSourceInputSchema,
+  analyzeVideoBeatInputSchema,
+  createVideoBeatSyncDraftInputSchema,
+  analyzeVideoSubjectTrackInputSchema,
   acceptTimelineDraftInputSchema,
   applyDeliveryVariantCommandsInputSchema,
   applyEditorialTimelineCommandsInputSchema,
   analyzeVideoProjectInputSchema,
   applyVideoAlternativeInputSchema,
   createDeliveryVariantInputSchema,
+  createVideoAudioFinishingPlanInputSchema,
+  createVideoCaptionDraftInputSchema,
+  createVideoCaptionRevisionInputSchema,
+  createVideoCaptionTranslationInputSchema,
+  createVideoCompositionPlanInputSchema,
+  confirmVideoPostRenderQualityInputSchema,
   createVideoProjectInputSchema,
   lockVideoSceneInputSchema,
   mediaTaskSchema,
   mediaSafeError,
   previewVideoInputSchema,
+  previewVideoVariantInputSchema,
+  preflightVideoVariantInputSchema,
   renderVideoInputSchema,
+  renderVideoVariantInputSchema,
   selectVideoTimelineVersionInputSchema,
   updateVideoTimelineInputSchema,
   videoPreviewTaskResultSchema,
   videoRenderTaskResultSchema,
+  videoCaptionDocumentRevisionSchema,
+  videoCaptionTranslationResultSchema,
   videoStudioProjectSchema,
   type AddVideoSourceInput,
+  type AnalyzeVideoBeatInput,
+  type CreateVideoBeatSyncDraftInput,
+  type AnalyzeVideoSubjectTrackInput,
   type AcceptTimelineDraftInput,
   type ApplyDeliveryVariantCommandsInput,
   type ApplyEditorialTimelineCommandsInput,
@@ -31,6 +48,12 @@ import {
   type ApplyVideoAlternativeInput,
   type CreateVideoProjectInput,
   type CreateDeliveryVariantInput,
+  type CreateVideoAudioFinishingPlanInput,
+  type CreateVideoCaptionDraftInput,
+  type CreateVideoCaptionRevisionInput,
+  type CreateVideoCaptionTranslationInput,
+  type CreateVideoCompositionPlanInput,
+  type ConfirmVideoPostRenderQualityInput,
   type DeliveryVariant,
   type DeliveryVariantVersion,
   type EditorialTimelineCommand,
@@ -39,22 +62,35 @@ import {
   type MediaAsset,
   type MediaOwner,
   type PreviewVideoInput,
+  type PreviewVideoVariantInput,
+  type PreflightVideoVariantInput,
   type RenderVideoInput,
+  type RenderVideoVariantInput,
   type SelectVideoTimelineVersionInput,
   type UpdateVideoTimelineInput,
   type VideoClip,
+  type VideoCaptionDocumentRevision,
   type VideoEvidence,
+  type VideoExecutionPlan,
+  type VideoExportProfileRevision,
+  type VideoFinishingReceipt,
+  type VideoOutputVerification,
+  type VideoRenderTaskResult,
+  type VideoQualityAcknowledgement,
+  type VideoQualityReport,
   type VideoScene,
   type VideoSource,
   type VideoStudioProject,
   type VideoTimelineItem,
   type VideoTimelineVersion,
+  type TimelineDraft,
   createRemoteAnalysisConsentInputSchema,
   estimateRemoteAnalysisInputSchema,
   revokeRemoteAnalysisConsentInputSchema,
   type CreateRemoteAnalysisConsentInput,
   type EstimateRemoteAnalysisInput,
   timelineCommandSetSchema,
+  timelineDraftSchema,
 } from '../../../shared/contracts/media.js'
 import {
   defaultVideoProcessRunner,
@@ -64,10 +100,14 @@ import {
   fastVideoIdentity,
   probeVideoFactSource,
   selectVideoEncoder,
+  selectDeliveryVideoEncoder,
   videoBinary,
   videoFingerprint,
   videoToolchainStatus,
+  verifyDeliveryVideoOutput,
   verifyVideoOutput,
+  writeExecutionPlanCaption,
+  type ExecutionPlanProjectAsset,
   type VideoProcessRunner,
 } from './videoExecution.js'
 import {
@@ -80,7 +120,9 @@ import {
   type VideoFactEvidence,
   type VideoFactKind,
   type VideoFactSource,
+  type TranscriptRevision,
 } from '../video/domain/mediaFacts/model.js'
+import { materializeTranscriptRevision } from '../video/domain/mediaFacts/transcript.js'
 import { DEFAULT_EVIDENCE_WINDOW_BUDGET, contentSegmentsFromCameraShots, fixedIntervalContentSegments, planEvidenceWindows } from '../video/domain/mediaFacts/analysis.js'
 import {
   compareRationalTime,
@@ -91,6 +133,7 @@ import {
   sourceTimeRange,
   tickRateForTimeBase,
   timeToMilliseconds,
+  type RationalTime,
   type SourceTimeRange,
 } from '../video/domain/mediaFacts/time.js'
 import {
@@ -112,9 +155,18 @@ import {
   EditorialApplication,
   EditorialValidationError,
   editorialFactsBasisHash,
+  validateEditorialTimeline,
   type EditorialSourceBounds,
   type EditorialSourceTiming,
 } from '../video/domain/editorial/editorialApplication.js'
+import {
+  FinishingDeliveryApplication,
+  FinishingDeliveryValidationError,
+  type AudioMeasurement,
+  type AudioTranscriptAnchor,
+} from '../video/domain/finishingDelivery/finishingDeliveryApplication.js'
+import { detectBeatGridFromPcmChunks } from '../video/domain/finishingDelivery/beatDetector.js'
+import { trackSubject } from '../video/domain/finishingDelivery/subjectTracker.js'
 import { normalizeFunAsrSentences, selectFunAsrRoute, type RemoteAsrSentence } from '../video/infrastructure/providers/funAsrAdapter.js'
 import { VideoMediaRelayClient, VideoMediaRelayClientError, videoMediaRelayTransportPolicyFromEnvironment } from '../video/infrastructure/providers/videoMediaRelayClient.js'
 
@@ -123,6 +175,10 @@ const STANDALONE_VIDEO_OWNER: MediaOwner = {
   owner_id: 'local_workbench',
 }
 const INITIAL_WRITER_FENCE = `fence_${'0'.repeat(32)}`
+/** This is deliberately the same reviewed face copied by the Video Relay
+ * image. Burn-in never falls back to a host font with a similar name. */
+const CONTROLLED_CAPTION_FONT_FAMILY = 'Noto Sans CJK SC'
+const CONTROLLED_CAPTION_FONT_FILE = 'NotoSansCJKSC-Regular.ttc'
 
 type ActiveVideoExecution = {
   controller: AbortController
@@ -132,6 +188,22 @@ type ActiveVideoExecution = {
   started?: boolean
   cancelledBeforeStart?: boolean
 }
+
+type PcmDecodeResult = {
+  chunks: AsyncIterable<Uint8Array<ArrayBufferLike>>
+  completion: Promise<{ exitCode: number; stderr: string }>
+}
+
+/** A narrow local port keeps BeatGrid API contracts independent from FFmpeg. */
+export type LocalPcmDecoder = (input: {
+  sourcePath: string
+  audioStreamIndex: number
+  sampleRate: number
+  /** Exact primary-video intersection, measured from the selected audio PTS. */
+  startSeconds: number
+  durationSeconds: number
+  signal: AbortSignal
+}) => PcmDecodeResult | Promise<PcmDecodeResult>
 
 type ExtractedVideoAnalysisInputs = {
   frames: VideoAnalysisFrame[]
@@ -143,6 +215,12 @@ type ExtractedVideoAnalysisInputs = {
 }
 
 type PendingRelayAcknowledgement = VideoStudioProject['pending_relay_acknowledgements'][number]
+
+type PendingPostRenderQuality = {
+  result: VideoRenderTaskResult
+  report: VideoQualityReport
+  plan: VideoExecutionPlan
+}
 
 /** A paid planning result is first staged in the durable local Operation.
  * It is intentionally separate from the public Project projection: a restart
@@ -156,6 +234,22 @@ type StagedRemotePlanningResult = {
   raw_plan: unknown
   acknowledgement: PendingRelayAcknowledgement
   timeline_draft_id: string
+}
+
+/** A caption translation is staged as the complete immutable candidate before
+ * its Project projection or Relay ACK. Restart recovery can therefore finish
+ * one paid request without regenerating Cue ids or re-submitting the model. */
+type CaptionTranslationOperationInput = {
+  document_id: string
+  base_revision_id: string
+  editorial_timeline_version_id: string
+  language: string
+  style_id?: string
+}
+
+type StagedRemoteCaptionTranslationResult = CaptionTranslationOperationInput & {
+  revision: VideoCaptionDocumentRevision
+  acknowledgement: PendingRelayAcknowledgement
 }
 
 /** Kept on the parent local Video Operation, rather than in a process-local
@@ -234,6 +328,183 @@ function id(prefix: 'vid' | 'src' | 'clip' | 'task' | 'timeline' | 'draft' | 'ev
   return `${prefix}_${randomUUID().replaceAll('-', '')}`
 }
 
+/** Escape one FFmpeg filter option value. The shell is never involved, but
+ * colons and quotes remain syntax inside the subtitles filter itself. */
+function ffmpegFilterValue(value: string): string {
+  return value.replace(/([\\':,;\[\]])/g, '\\$1')
+}
+
+const MICROSECOND_TICK_RATE = { num: 1_000_000, den: 1 }
+
+/** Use a common integer time base before converting the exact Source PTS delta to FFmpeg seconds. */
+function rationalSecondsBetween(start: RationalTime, end: RationalTime): number {
+  const startUs = parseInt64(rescaleRationalTime(start, MICROSECOND_TICK_RATE, 'nearest').ticks)
+  const endUs = parseInt64(rescaleRationalTime(end, MICROSECOND_TICK_RATE, 'nearest').ticks)
+  const delta = endUs - startUs
+  if (delta < 0n || delta > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error('媒体时间戳超出可执行范围')
+  return Number(delta) / MICROSECOND_TICK_RATE.num
+}
+
+/** Convert FFmpeg's analysis-relative seconds back into the immutable source
+ * PTS range selected for this receipt.  Invalid/truncated log events are
+ * ignored instead of inventing a semantic-cut range. */
+function sourceRangeFromAnalysisSeconds(
+  selected: SourceTimeRange,
+  startSeconds: number,
+  endSeconds: number,
+): SourceTimeRange | null {
+  const selectedDuration = rationalSecondsBetween(selected.start, endOfRange(selected))
+  if (!Number.isFinite(startSeconds) || !Number.isFinite(endSeconds) || startSeconds < 0 || endSeconds <= startSeconds) return null
+  const start = Math.max(0, Math.min(selectedDuration, startSeconds))
+  const end = Math.max(start, Math.min(selectedDuration, endSeconds))
+  if (end <= start) return null
+  const toTicks = (seconds: number) => rescaleRationalTime(
+    rationalTime(BigInt(Math.round(seconds * MICROSECOND_TICK_RATE.num)), MICROSECOND_TICK_RATE),
+    selected.start.tick_rate,
+    'nearest',
+  )
+  const offsetStart = toTicks(start)
+  const offsetEnd = toTicks(end)
+  const startTicks = parseInt64(selected.start.ticks) + parseInt64(offsetStart.ticks)
+  const durationTicks = parseInt64(offsetEnd.ticks) - parseInt64(offsetStart.ticks)
+  if (durationTicks <= 0n) return null
+  return sourceTimeRange(
+    rationalTime(startTicks, selected.start.tick_rate),
+    rationalTime(durationTicks, selected.start.tick_rate),
+  )
+}
+
+function silencedetectRanges(raw: string, selected: SourceTimeRange): SourceTimeRange[] {
+  const events = [...raw.matchAll(/\bsilence_(start|end):\s*([0-9]+(?:\.[0-9]+)?)/gi)]
+  const selectedDuration = rationalSecondsBetween(selected.start, endOfRange(selected))
+  const ranges: SourceTimeRange[] = []
+  let start: number | undefined
+  for (const event of events) {
+    const seconds = Number(event[2])
+    if (!Number.isFinite(seconds) || seconds < 0) continue
+    if (event[1]!.toLowerCase() === 'start') {
+      start = seconds
+      continue
+    }
+    if (start === undefined) continue
+    const range = sourceRangeFromAnalysisSeconds(selected, start, seconds)
+    if (range) ranges.push(range)
+    start = undefined
+  }
+  if (start !== undefined) {
+    const range = sourceRangeFromAnalysisSeconds(selected, start, selectedDuration)
+    if (range) ranges.push(range)
+  }
+  return ranges
+}
+
+function sourceRangeCoveredBy(coverage: readonly SourceTimeRange[], target: SourceTimeRange): boolean {
+  const targetEnd = endOfRange(target)
+  let cursor = target.start
+  const ordered = [...coverage].sort((left, right) => compareRationalTime(left.start, right.start))
+  for (const range of ordered) {
+    const rangeEnd = endOfRange(range)
+    if (compareRationalTime(rangeEnd, cursor) <= 0) continue
+    if (compareRationalTime(range.start, cursor) > 0) return false
+    cursor = rangeEnd
+    if (compareRationalTime(cursor, targetEnd) >= 0) return true
+  }
+  return false
+}
+
+function beatSplitPoints(
+  item: VideoTimelineItem,
+  beatTimes: readonly RationalTime[],
+  minimumCutIntervalMs: number,
+): RationalTime[] {
+  if (item.binding.kind !== 'source' || item.speed) return []
+  const range = item.binding.source_range
+  const end = endOfRange(range)
+  const selected: RationalTime[] = []
+  let previous = range.start
+  for (const beat of beatTimes) {
+    const at = rescaleRationalTime(beat, range.start.tick_rate, 'nearest')
+    if (compareRationalTime(at, range.start) <= 0 || compareRationalTime(at, end) >= 0) continue
+    if (rationalSecondsBetween(previous, at) * 1000 < minimumCutIntervalMs) continue
+    if (rationalSecondsBetween(at, end) * 1000 < 500) continue
+    selected.push(at)
+    previous = at
+  }
+  return selected
+}
+
+function beatSyncAvLinkKey(item: VideoTimelineItem): string | null {
+  if (item.binding.kind !== 'source') return null
+  const range = item.timeline_range
+  const start = range.start
+  const duration = range.duration
+  const speed = item.speed ? `${item.speed.num}/${item.speed.den}` : '1/1'
+  return `${item.binding.source_id}:${item.binding.source_fingerprint}:${start.ticks}/${start.tick_rate.num}/${start.tick_rate.den}:${duration.ticks}/${duration.tick_rate.num}/${duration.tick_rate.den}:${speed}`
+}
+
+/** Map cuts chosen on the primary-video PTS into the paired audio stream's
+ * PTS.  Each stream owns its start timestamp, while the elapsed media time
+ * and resulting timeline boundaries remain identical. */
+function pairedAudioBeatSplitPoints(
+  video: VideoTimelineItem,
+  audio: VideoTimelineItem,
+  videoCutPoints: readonly RationalTime[],
+): RationalTime[] {
+  if (video.binding.kind !== 'source' || audio.binding.kind !== 'source' || video.speed || audio.speed) return []
+  const audioRate = audio.binding.source_range.start.tick_rate
+  const videoStart = rescaleRationalTime(video.binding.source_range.start, audioRate, 'nearest')
+  const audioStart = audio.binding.source_range.start
+  const audioEnd = endOfRange(audio.binding.source_range)
+  return videoCutPoints.flatMap(cut => {
+    const cutAtAudioRate = rescaleRationalTime(cut, audioRate, 'nearest')
+    const offset = parseInt64(cutAtAudioRate.ticks) - parseInt64(videoStart.ticks)
+    if (offset <= 0n) return []
+    const translated = rationalTime(parseInt64(audioStart.ticks) + offset, audioRate)
+    return compareRationalTime(translated, audioStart) > 0 && compareRationalTime(translated, audioEnd) < 0
+      ? [translated]
+      : []
+  })
+}
+
+function splitItemOnBeats(item: VideoTimelineItem, cutPoints: readonly RationalTime[]): VideoTimelineItem[] {
+  if (item.binding.kind !== 'source' || item.speed || !cutPoints.length) return [structuredClone(item)]
+  const sourceRange = item.binding.source_range
+  const sourceEnd = endOfRange(sourceRange)
+  const sourceBoundaries = [sourceRange.start, ...cutPoints, sourceEnd]
+  const timelineRate = item.timeline_range.start.tick_rate
+  const originalTimelineEnd = endOfRange(item.timeline_range)
+  const sourceStartAtTimelineRate = rescaleRationalTime(sourceRange.start, timelineRate, 'nearest')
+  const timelineBoundaries = sourceBoundaries.map((at, index) => {
+    if (index === 0) return item.timeline_range.start
+    if (index === sourceBoundaries.length - 1) return originalTimelineEnd
+    const atTimelineRate = rescaleRationalTime(at, timelineRate, 'nearest')
+    return rationalTime(
+      parseInt64(item.timeline_range.start.ticks) + parseInt64(atTimelineRate.ticks) - parseInt64(sourceStartAtTimelineRate.ticks),
+      timelineRate,
+    )
+  })
+  return sourceBoundaries.slice(0, -1).flatMap((start, index) => {
+    const finish = sourceBoundaries[index + 1]!
+    const timelineStart = timelineBoundaries[index]!
+    const timelineEnd = timelineBoundaries[index + 1]!
+    const sourceDuration = parseInt64(finish.ticks) - parseInt64(start.ticks)
+    const timelineDuration = parseInt64(timelineEnd.ticks) - parseInt64(timelineStart.ticks)
+    if (sourceDuration <= 0n || timelineDuration <= 0n) return []
+    return [{
+      ...structuredClone(item),
+      id: id('clip'),
+      timeline_range: {
+        start: timelineStart,
+        duration: rationalTime(timelineDuration, timelineRate),
+      },
+      binding: {
+        ...item.binding,
+        source_range: sourceTimeRange(start, rationalTime(sourceDuration, start.tick_rate)),
+      },
+    }]
+  })
+}
+
 function evidenceRevision(evidence: VideoEvidence[]): `sha256:${string}` {
   return `sha256:${createHash('sha256').update(JSON.stringify(evidence.map(item => ({
     id: item.id,
@@ -304,7 +575,9 @@ export class VideoWorkbenchService {
   private readonly env: Record<string, string | undefined>
   private readonly platform: NodeJS.Platform
   private readonly legacyMediaRoot: string
+  private readonly pcmDecoder?: LocalPcmDecoder
   private readonly editorial: EditorialApplication
+  private readonly finishing: FinishingDeliveryApplication
   private readonly projectMutations = new Map<string, Promise<unknown>>()
   private readonly activePreviews = new Map<string, ActiveVideoExecution>()
   private readonly activeRenders = new Map<string, ActiveVideoExecution>()
@@ -326,14 +599,17 @@ export class VideoWorkbenchService {
     env?: Record<string, string | undefined>
     platform?: NodeJS.Platform
     legacyMediaRoot?: string
+    pcmDecoder?: LocalPcmDecoder
   } = {}) {
     this.now = options.now ?? (() => new Date())
     this.editorial = new EditorialApplication(this.now)
+    this.finishing = new FinishingDeliveryApplication(this.now)
     this.repository = new VideoWorkbenchRepository({ root: options.root, now: this.now })
     this.runProcess = options.runProcess ?? defaultVideoProcessRunner
     this.fetchImpl = options.fetchImpl
     this.env = options.env ?? process.env
     this.platform = options.platform ?? process.platform
+    this.pcmDecoder = options.pcmDecoder
     this.legacyMediaRoot = options.legacyMediaRoot
       ?? join(this.env.BILLIARDBUDDY_CONFIG_DIR ?? join(homedir(), '.BilliardBuddy'), 'billiardbuddy', 'media')
   }
@@ -457,9 +733,11 @@ export class VideoWorkbenchService {
     if (operations.some(operation => {
       const staged = this.stagedRemotePlanningResult(operation)
       const semantic = this.stagedSemanticQueryResult(operation)
+      const captionTranslation = this.stagedCaptionTranslationResult(operation)
       return Boolean(
         (staged && same(staged.acknowledgement.receipt_id, staged.acknowledgement.relay_operation_id, staged.acknowledgement.result_hashes))
-        || (semantic && same(semantic.acknowledgement.receipt_id, semantic.acknowledgement.relay_operation_id, semantic.acknowledgement.result_hashes)),
+        || (semantic && same(semantic.acknowledgement.receipt_id, semantic.acknowledgement.relay_operation_id, semantic.acknowledgement.result_hashes))
+        || (captionTranslation && same(captionTranslation.acknowledgement.receipt_id, captionTranslation.acknowledgement.relay_operation_id, captionTranslation.acknowledgement.result_hashes)),
       )
     })) return true
     return await this.repository.hasFactEmbeddingRelayAcknowledgement(projectId, {
@@ -544,6 +822,196 @@ export class VideoWorkbenchService {
       acknowledgement: ack as PendingRelayAcknowledgement,
       timeline_draft_id: value.timeline_draft_id,
     }
+  }
+
+  private captionTranslationInput(operation: VideoOperation): CaptionTranslationOperationInput | null {
+    const value = operation.result?.caption_translation
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+    const record = value as Record<string, unknown>
+    const parsed = createVideoCaptionTranslationInputSchema.safeParse(record)
+    if (!parsed.success || typeof record.document_id !== 'string') return null
+    return { document_id: record.document_id, ...parsed.data }
+  }
+
+  private stagedCaptionTranslationResult(operation: VideoOperation): StagedRemoteCaptionTranslationResult | null {
+    const input = this.captionTranslationInput(operation)
+    const result = operation.result
+    if (!input || !result || typeof result !== 'object') return null
+    const revision = videoCaptionDocumentRevisionSchema.safeParse(result.caption_translation_revision)
+    const acknowledgement = result.relay_acknowledgement
+    if (!revision.success || !acknowledgement || typeof acknowledgement !== 'object' || Array.isArray(acknowledgement)) return null
+    const ack = acknowledgement as Record<string, unknown>
+    if (
+      typeof ack.operation_id !== 'string'
+      || typeof ack.relay_operation_id !== 'string'
+      || typeof ack.receipt_id !== 'string'
+      || !Array.isArray(ack.result_hashes)
+      || !ack.result_hashes.every(item => typeof item === 'string' && /^sha256:[a-f0-9]{64}$/.test(item))
+      || typeof ack.created_at !== 'string'
+      || ack.operation_id !== operation.id
+      || revision.data.document_id !== input.document_id
+      || revision.data.parent_revision_id !== input.base_revision_id
+      || revision.data.editorial_timeline_version_id !== input.editorial_timeline_version_id
+      || revision.data.language !== input.language
+      || (input.style_id !== undefined && revision.data.style_id !== input.style_id)
+    ) return null
+    return { ...input, revision: revision.data, acknowledgement: ack as PendingRelayAcknowledgement }
+  }
+
+  /** A staged Remote result is not trusted merely because it parses. This
+   * rechecks the immutable parent mapping before a crash-recovery projection
+   * can make the candidate visible on a Project. */
+  private assertCaptionTranslationCandidate(
+    project: VideoStudioProject,
+    parent: VideoCaptionDocumentRevision,
+    staged: StagedRemoteCaptionTranslationResult,
+  ): void {
+    const revision = staged.revision
+    if (
+      revision.project_id !== project.id
+      || revision.document_id !== staged.document_id
+      || revision.parent_revision_id !== parent.id
+      || revision.editorial_timeline_version_id !== staged.editorial_timeline_version_id
+      || revision.transcript_id !== parent.transcript_id
+      || revision.transcript_revision_id !== parent.transcript_revision_id
+      || revision.style_id !== (staged.style_id ?? parent.style_id)
+      || revision.cues.length !== parent.cues.length
+    ) throw new VideoWorkbenchServiceError('字幕翻译候选与不可变父修订不一致', 502, 'VIDEO_FINISHING_INVALID')
+    const parentByCueId = new Map(parent.cues.map(cue => [cue.id, cue]))
+    const translatedParentIds = new Set<string>()
+    for (const cue of revision.cues) {
+      const parentCue = cue.translation_of_cue_id ? parentByCueId.get(cue.translation_of_cue_id) : undefined
+      if (
+        !parentCue
+        || translatedParentIds.has(parentCue.id)
+        || JSON.stringify(cue.source_anchor) !== JSON.stringify(parentCue.source_anchor)
+        || JSON.stringify(cue.timeline_range) !== JSON.stringify(parentCue.timeline_range)
+      ) throw new VideoWorkbenchServiceError('字幕翻译候选包含错版或被拉伸的 Cue', 502, 'VIDEO_FINISHING_INVALID')
+      translatedParentIds.add(parentCue.id)
+    }
+    if (translatedParentIds.size !== parent.cues.length) {
+      throw new VideoWorkbenchServiceError('字幕翻译候选未覆盖完整父修订', 502, 'VIDEO_FINISHING_INVALID')
+    }
+  }
+
+  /** Persist the fully validated candidate before exposing it on the Project.
+   * The parent Operation remains the only recovery authority for the paid
+   * Relay submission until this checkpoint is durably present. */
+  private async stageCaptionTranslationResult(
+    operationId: string,
+    revision: VideoCaptionDocumentRevision,
+    acknowledgement: PendingRelayAcknowledgement,
+  ): Promise<VideoOperation> {
+    const operation = await this.repository.getOperation(operationId)
+    return await this.mutateProject(operation.project_id, async () => {
+      const current = await this.repository.getOperation(operationId)
+      const input = this.captionTranslationInput(current)
+      if (!input) throw new VideoWorkbenchServiceError('字幕翻译恢复记录缺少原始输入', 502, 'VIDEO_FINISHING_INVALID')
+      const existing = this.stagedCaptionTranslationResult(current)
+      if (existing) {
+        if (
+          existing.revision.id !== revision.id
+          || existing.revision.basis_hash !== revision.basis_hash
+          || existing.acknowledgement.relay_operation_id !== acknowledgement.relay_operation_id
+          || existing.acknowledgement.receipt_id !== acknowledgement.receipt_id
+          || JSON.stringify(existing.acknowledgement.result_hashes) !== JSON.stringify(acknowledgement.result_hashes)
+        ) throw new VideoWorkbenchServiceError('字幕翻译恢复记录与远程结果不一致', 409, 'VIDEO_REMOTE_OPERATION_UNAVAILABLE')
+        return current
+      }
+      if (
+        revision.document_id !== input.document_id
+        || revision.parent_revision_id !== input.base_revision_id
+        || revision.editorial_timeline_version_id !== input.editorial_timeline_version_id
+        || revision.language !== input.language
+        || (input.style_id !== undefined && revision.style_id !== input.style_id)
+      ) throw new VideoWorkbenchServiceError('字幕翻译候选版本与原始请求不一致', 502, 'VIDEO_FINISHING_INVALID')
+      const { remote_recovery: _remoteRecovery, ...result } = current.result ?? {}
+      return await this.repository.saveOperation(this.operation({
+        ...current,
+        status: 'committing',
+        progress: 85,
+        stage: '字幕翻译结果已持久化，正在生成候选版本',
+        outcome_unknown: false,
+        result: {
+          ...result,
+          caption_translation_revision: revision,
+          relay_acknowledgement: acknowledgement,
+        },
+      }))
+    })
+  }
+
+  /** Project projection is deliberately separate from the staging write. A
+   * crash after the paid response can only finalize this exact candidate and
+   * ACK, never ask the provider to translate again. */
+  private async finalizeStagedCaptionTranslationResult(
+    operation: VideoOperation,
+  ): Promise<{ project: VideoStudioProject; revision: VideoCaptionDocumentRevision; task: VideoOperation }> {
+    const staged = this.stagedCaptionTranslationResult(operation)
+    if (!staged) throw new VideoWorkbenchServiceError('字幕翻译恢复记录无效', 502, 'VIDEO_FINISHING_INVALID')
+    let completed: { project: VideoStudioProject; revision: VideoCaptionDocumentRevision; task: VideoOperation } | undefined
+    await this.mutateProject(operation.project_id, async () => {
+      const latest = await this.requireVideoProject(operation.project_id)
+      const current = await this.repository.getOperation(operation.id)
+      const currentStaged = this.stagedCaptionTranslationResult(current)
+      if (!currentStaged || currentStaged.revision.id !== staged.revision.id || currentStaged.revision.basis_hash !== staged.revision.basis_hash) {
+        throw new VideoWorkbenchServiceError('字幕翻译恢复记录已变化', 409, 'VIDEO_REMOTE_OPERATION_UNAVAILABLE')
+      }
+      const document = latest.caption_documents.find(candidate => candidate.id === staged.document_id)
+      const parent = latest.caption_document_revisions.find(candidate => candidate.id === staged.base_revision_id)
+      const timeline = latest.editorial_timeline_versions.find(candidate => candidate.id === staged.editorial_timeline_version_id)
+      if (
+        !document
+        || !parent
+        || !timeline
+        || document.project_id !== latest.id
+        || parent.project_id !== latest.id
+        || parent.document_id !== document.id
+        || document.current_revision_id !== parent.id
+        || latest.current_editorial_timeline_version_id !== timeline.id
+      ) throw new VideoWorkbenchServiceError('字幕翻译基础版本已变化，已拒绝写入候选', 409, 'VIDEO_FINISHING_STALE')
+      this.assertCaptionTranslationCandidate(latest, parent, currentStaged)
+      const existing = latest.caption_document_revisions.find(candidate => candidate.id === staged.revision.id)
+      if (existing && (
+        existing.project_id !== latest.id
+        || existing.document_id !== document.id
+        || existing.parent_revision_id !== parent.id
+        || existing.basis_hash !== staged.revision.basis_hash
+        || JSON.stringify(existing.cues) !== JSON.stringify(staged.revision.cues)
+      )) throw new VideoWorkbenchServiceError('字幕翻译候选 ID 已被其他版本占用', 409, 'VIDEO_REMOTE_OPERATION_UNAVAILABLE')
+      const requestHash = typeof current.result?.request_hash === 'string' ? current.result.request_hash as `sha256:${string}` : null
+      if (!requestHash) throw new VideoWorkbenchServiceError('字幕翻译恢复记录缺少请求摘要', 502, 'VIDEO_FINISHING_INVALID')
+      if (!current.idempotency_key) throw new VideoWorkbenchServiceError('字幕翻译恢复记录缺少幂等键', 502, 'VIDEO_FINISHING_INVALID')
+      const receipt = latest.finishing_receipts.find(candidate => candidate.kind === 'caption_translation' && candidate.idempotency_key === current.idempotency_key)
+      if (receipt && (receipt.request_hash !== requestHash || receipt.resource_ids.length !== 1 || receipt.resource_ids[0] !== staged.revision.id)) {
+        throw new VideoWorkbenchServiceError('字幕翻译幂等记录与候选版本不一致', 409, 'VIDEO_EDITORIAL_IDEMPOTENCY_CONFLICT')
+      }
+      const pending = this.appendPendingRelayAcknowledgements(latest, [staged.acknowledgement])
+      const changed = !existing || !receipt || pending.length !== latest.pending_relay_acknowledgements.length
+      const project = changed
+        ? await this.repository.saveProject(videoStudioProjectSchema.parse({
+            ...latest,
+            caption_document_revisions: existing ? latest.caption_document_revisions : [...latest.caption_document_revisions, staged.revision],
+            finishing_receipts: receipt
+              ? latest.finishing_receipts
+              : [...latest.finishing_receipts, this.finishingReceipt('caption_translation', current.idempotency_key, requestHash, [staged.revision.id])],
+            pending_relay_acknowledgements: pending,
+            revision: latest.revision + 1,
+            updated_at: this.iso(),
+          }))
+        : latest
+      const task = current.status === 'succeeded'
+        ? current
+        : await this.completeFinishingOperation(current, '字幕翻译候选已生成，等待应用', {
+            caption_document_id: document.id,
+            caption_revision_id: staged.revision.id,
+            caption_style_id: staged.revision.style_id,
+          })
+      completed = { project, revision: existing ?? staged.revision, task }
+    })
+    await this.flushPendingRelayAcknowledgements(operation.project_id)
+    if (!completed) throw new VideoWorkbenchServiceError('字幕翻译候选未完成持久化', 502, 'VIDEO_FINISHING_INVALID')
+    return completed
   }
 
   private stagedSemanticQueryResult(operation: VideoOperation): StagedSemanticQueryResult | null {
@@ -845,6 +1313,32 @@ export class VideoWorkbenchService {
     await this.finalizeStagedRemotePlanningResult(staged)
   }
 
+  /** Recover only the fenced caption request recorded on the local Operation.
+   * The document head and Editorial Version are rechecked before the staged
+   * candidate can become visible, so a late provider answer never attaches to
+   * a newer caption edit. */
+  private async recoverCaptionTranslationOperation(operation: VideoOperation): Promise<void> {
+    const input = this.captionTranslationInput(operation)
+    if (!input) throw new VideoWorkbenchServiceError('字幕翻译恢复记录缺少原始输入', 502, 'VIDEO_FINISHING_INVALID')
+    const { document_id: documentId, ...rawInput } = input
+    const expectedRequestHash = factBasisHash({
+      kind: 'caption_translation',
+      document_id: documentId,
+      input: rawInput,
+    })
+    if (operation.result?.request_hash !== expectedRequestHash) {
+      throw new VideoWorkbenchServiceError('字幕翻译恢复记录与原始请求不一致', 409, 'VIDEO_REMOTE_OPERATION_UNAVAILABLE')
+    }
+    const project = await this.requireVideoProject(operation.project_id)
+    const document = project.caption_documents.find(candidate => candidate.id === input.document_id)
+    const parent = project.caption_document_revisions.find(candidate => candidate.id === input.base_revision_id)
+    const timeline = project.editorial_timeline_versions.find(candidate => candidate.id === input.editorial_timeline_version_id)
+    if (!document || !parent || !timeline) {
+      throw new VideoWorkbenchServiceError('字幕翻译恢复基础不存在', 409, 'VIDEO_FINISHING_STALE')
+    }
+    await this.executeCaptionTranslation(project, document, parent, timeline, input, operation)
+  }
+
   private remoteRecoveryCheckpoint(operation: VideoOperation): RemoteOperationRecoveryCheckpoint | null {
     const value = operation.result?.remote_recovery
     if (!value || typeof value !== 'object' || Array.isArray(value)) return null
@@ -900,7 +1394,7 @@ export class VideoWorkbenchService {
   ): Promise<void> {
     await this.mutateProject(projectId, async () => {
       const operation = await this.repository.getOperation(parentOperationId)
-      if (operation.project_id !== projectId || !['video.analyze', 'video.plan', 'video.index'].includes(operation.kind)) {
+      if (operation.project_id !== projectId || !['video.analyze', 'video.plan', 'video.index', 'video.caption_translation'].includes(operation.kind)) {
         throw new VideoWorkbenchServiceError('远程恢复父任务无效', 409, 'VIDEO_REMOTE_OPERATION_UNAVAILABLE')
       }
       const requestFingerprint = factBasisHash(request) as `sha256:${string}`
@@ -1453,12 +1947,103 @@ export class VideoWorkbenchService {
     }
   }
 
+  private finishingReplay(
+    project: VideoStudioProject,
+    kind: VideoFinishingReceipt['kind'],
+    idempotencyKey: string,
+    requestHash: `sha256:${string}`,
+  ): string[] | null {
+    const receipt = project.finishing_receipts.find(candidate => candidate.kind === kind && candidate.idempotency_key === idempotencyKey)
+    if (!receipt) return null
+    if (receipt.request_hash !== requestHash) {
+      throw new VideoWorkbenchServiceError('同一幂等键不能提交不同的完成层请求', 409, 'VIDEO_EDITORIAL_IDEMPOTENCY_CONFLICT')
+    }
+    return [...receipt.resource_ids]
+  }
+
+  private finishingReceipt(
+    kind: VideoFinishingReceipt['kind'],
+    idempotencyKey: string,
+    requestHash: `sha256:${string}`,
+    resourceIds: string[],
+  ): VideoFinishingReceipt {
+    return {
+      kind,
+      idempotency_key: idempotencyKey,
+      request_hash: requestHash,
+      resource_ids: resourceIds,
+      created_at: this.iso(),
+    }
+  }
+
+  private async startFinishingOperation(
+    project: VideoStudioProject,
+    kind: 'video.caption_draft' | 'video.caption_translation' | 'video.composition_plan' | 'video.audio_finish_plan' | 'video.quality_preflight' | 'video.subject_track' | 'video.beat_sync_draft',
+    idempotencyKey: string,
+    requestHash: `sha256:${string}`,
+    stage: string,
+  ): Promise<VideoOperation> {
+    const existing = (await this.repository.listOperations(project.id)).find(candidate => candidate.kind === kind && candidate.idempotency_key === idempotencyKey)
+    if (existing) {
+      if (existing.result?.request_hash !== requestHash) {
+        throw new VideoWorkbenchServiceError('同一幂等键不能提交不同的完成层请求', 409, 'VIDEO_EDITORIAL_IDEMPOTENCY_CONFLICT')
+      }
+      return existing
+    }
+    const queued = await this.repository.saveOperation(this.operation({
+      schema_version: 1,
+      id: id('task'),
+      project_id: project.id,
+      kind,
+      status: 'queued',
+      progress: 0,
+      stage: `等待${stage}`,
+      idempotency_key: idempotencyKey,
+      result: { request_hash: requestHash },
+      created_at: this.iso(),
+      updated_at: this.iso(),
+    } as unknown as VideoOperation))
+    return await this.repository.saveOperation(this.operation({
+      ...queued,
+      status: 'running',
+      progress: 10,
+      stage: `正在${stage}`,
+    }))
+  }
+
+  private async completeFinishingOperation(operation: VideoOperation, stage: string, result: Record<string, unknown>): Promise<VideoOperation> {
+    return await this.repository.saveOperation(this.operation({
+      ...operation,
+      status: 'succeeded',
+      progress: 100,
+      stage,
+      result: { ...(operation.result ?? {}), ...result },
+      error: undefined,
+      error_code: undefined,
+    }))
+  }
+
   async listProjects(owner: MediaOwner = STANDALONE_VIDEO_OWNER): Promise<VideoStudioProject[]> {
     return await this.repository.listProjects(owner)
   }
 
   async getProject(projectId: string): Promise<VideoStudioProject> {
     return await this.project(projectId)
+  }
+
+  /**
+   * Read-side only snapshot for the desktop after startup or an event-cursor
+   * reset.  It never makes a Relay/Provider request and deliberately returns
+   * raw domain values only to the API projector, not to Renderer callers.
+   */
+  async getWorkspaceSnapshotData(projectId: string, eventCursor: number) {
+    const project = await this.requireVideoProject(projectId)
+    const [facts, operations, events] = await Promise.all([
+      this.repository.pageCurrentFacts('evidence_window', projectId, { limit: 200 }),
+      this.repository.listOperations(projectId),
+      this.repository.listOperationEvents(projectId, eventCursor, 200),
+    ])
+    return { project, facts, operations, events }
   }
 
   /** A persisted estimate is the only value a Consent may acknowledge. */
@@ -1475,11 +2060,18 @@ export class VideoWorkbenchService {
       const asrRequests = input.purposes.includes('asr') ? selected.length : 0
       const visualFrames = input.purposes.includes('visual_evidence') ? Math.ceil(seconds / 5) : 0
       const asrSeconds = input.purposes.includes('asr') ? seconds : 0
+      // Translation receives immutable Cue text rather than compressed media.
+      // Reserve a non-zero, deliberately conservative payload before the
+      // request; the exact Relay receipt later replaces this allocation.
+      const captionTranslationTokens = input.purposes.includes('caption_translation')
+        ? Math.max(4_000, Math.ceil(seconds * 200))
+        : 0
+      const captionTranslationBytes = captionTranslationTokens * 4
       // The local ASR extraction is 16 kHz mono PCM S16LE (two bytes per
       // sample), not a 16 KB/s compressed estimate. Visual frames are bounded
       // at 10 MiB before upload, so reserve their declared maximum as well.
-      const inputBytes = Math.ceil(asrSeconds * 32_000) + asrRequests * 44 + visualFrames * 10 * 1024 * 1024
-      const totalTokens = Math.ceil(seconds * 8) + (input.purposes.includes('planning') ? 4_000 : 0)
+      const inputBytes = Math.ceil(asrSeconds * 32_000) + asrRequests * 44 + visualFrames * 10 * 1024 * 1024 + captionTranslationBytes
+      const totalTokens = Math.ceil(seconds * 8) + (input.purposes.includes('planning') ? 4_000 : 0) + captionTranslationTokens
       // These are the approved upper-bound units used for admission before a
       // paid request. Provider receipts later replace them with upstream cost.
       const estimatedAmountMicros = Math.ceil(asrSeconds * 120 + visualFrames * 250 + totalTokens * 10)
@@ -1561,6 +2153,17 @@ export class VideoWorkbenchService {
     throw error
   }
 
+  private finishingError(error: unknown): never {
+    if (error instanceof FinishingDeliveryValidationError) {
+      const status = error.code === 'VIDEO_FINISHING_STALE' ? 409
+        : error.code === 'VIDEO_QUALITY_BLOCKED' ? 409
+          : error.code === 'VIDEO_FINISHING_UNAVAILABLE' ? 422
+            : 400
+      throw new VideoWorkbenchServiceError(error.message, status, error.code)
+    }
+    throw error
+  }
+
   private async editorialTimings(project: VideoStudioProject): Promise<Map<string, EditorialSourceTiming>> {
     const timings = new Map<string, EditorialSourceTiming>()
     for (const source of project.sources) {
@@ -1586,12 +2189,33 @@ export class VideoWorkbenchService {
       if (!('fast_identity' in fact) || !fact.primary_video_stream.duration) {
         throw new VideoWorkbenchServiceError('素材原始视频时长缺失，不能安全验证剪辑范围', 409, 'VIDEO_EDITORIAL_FACTS_UNAVAILABLE')
       }
+      const audio = fact.audio_tracks.find(track => track.disposition_default) ?? fact.audio_tracks[0]
+      if (source.has_audio && (!audio || !audio.duration)) {
+        throw new VideoWorkbenchServiceError('素材原始音频流范围缺失，不能安全编译 A/V 时间线', 409, 'VIDEO_EDITORIAL_FACTS_UNAVAILABLE')
+      }
       bounds.set(source.id, {
         start: fact.primary_video_stream.start_time,
         // Presentation duration can include discontinuities or stream
         // alignment. Editorial source ranges are bounded by the primary
         // video stream that the compiler will actually read.
         duration: fact.primary_video_stream.duration,
+        video_color: {
+          hdr_kind: fact.primary_video_stream.hdr_kind,
+          ...(fact.primary_video_stream.color_space ? { color_space: fact.primary_video_stream.color_space } : {}),
+          ...(fact.primary_video_stream.color_transfer ? { color_transfer: fact.primary_video_stream.color_transfer } : {}),
+          ...(fact.primary_video_stream.color_primaries ? { color_primaries: fact.primary_video_stream.color_primaries } : {}),
+          ...(fact.primary_video_stream.color_range ? { color_range: fact.primary_video_stream.color_range } : {}),
+          ...(fact.primary_video_stream.pixel_format ? { pixel_format: fact.primary_video_stream.pixel_format } : {}),
+        },
+        ...(audio?.duration ? {
+          audio: {
+            stream_index: audio.stream_index,
+            start: audio.start_time,
+            duration: audio.duration,
+            sample_rate: audio.sample_rate,
+            channels: audio.channels,
+          },
+        } : {}),
       })
     }
     return bounds
@@ -1688,6 +2312,32 @@ export class VideoWorkbenchService {
     })
   }
 
+  private async isBeatSyncDraftCurrent(project: VideoStudioProject, draft: TimelineDraft): Promise<boolean> {
+    const beatSync = draft.beat_sync
+    if (!beatSync) return true
+    const source = project.sources.find(candidate => candidate.id === beatSync.source_id)
+    if (!source || source.fingerprint !== beatSync.source_fingerprint || source.missing || source.content_changed) return false
+    const evidence = await this.repository.getFact('evidence', beatSync.evidence_id).catch(() => null)
+    if (!evidence || !('payload' in evidence) || evidence.kind !== 'beat_grid') return false
+    if (evidence.source_id !== beatSync.source_id
+      || evidence.source_fingerprint !== beatSync.source_fingerprint
+      || evidence.basis_hash !== beatSync.facts_basis_hash
+      || evidence.payload.analyzer_version !== beatSync.analyzer_version
+      || evidence.payload.confidence < 0.65) return false
+    const beats = evidence.payload.beats.length ? evidence.payload.beats.map(point => point.at) : evidence.payload.beat_times
+    if (beats.length < 4 || !evidence.payload.coverage.length) return false
+    const tracks = new Map(draft.tracks.map(track => [track.id, track]))
+    const ranges = draft.items.flatMap(item => item.binding.kind === 'source'
+      && item.binding.source_id === beatSync.source_id
+      && tracks.get(item.track_id)?.kind === 'primary_video'
+      ? [item.binding.source_range]
+      : [])
+    return ranges.length > 0 && ranges.every(range => sourceRangeCoveredBy(
+      evidence.payload.coverage,
+      sourceTimeRange(range.start, range.duration),
+    ))
+  }
+
   async getDeliveryVariant(projectId: string, variantId: string): Promise<{ variant: DeliveryVariant; version: DeliveryVariantVersion }> {
     return await this.mutateProject(projectId, async () => {
       const project = await this.prepareEditorialProject(projectId)
@@ -1741,6 +2391,17 @@ export class VideoWorkbenchService {
         const receipt = project.editorial_command_receipts.find(candidate => candidate.command_set_id === draft.accepted_command_set_id && candidate.idempotency_key === idempotencyKey)
         const version = receipt && project.editorial_timeline_versions.find(candidate => candidate.id === receipt.created_version_id)
         if (version) return { project, version, reused: true }
+      }
+      if (!await this.isBeatSyncDraftCurrent(project, draft)) {
+        if (draft.status === 'proposed') {
+          project = await this.repository.saveProject(videoStudioProjectSchema.parse({
+            ...project,
+            timeline_drafts: project.timeline_drafts.map(candidate => candidate.id === draft.id ? { ...candidate, status: 'stale' } : candidate),
+            revision: project.revision + 1,
+            updated_at: this.iso(),
+          }))
+        }
+        throw new VideoWorkbenchServiceError('节拍证据或素材已经变化，请重新生成 Beat Sync 草稿', 409, 'VIDEO_EDITORIAL_STALE')
       }
       if (
         draft.status !== 'proposed'
@@ -1844,9 +2505,21 @@ export class VideoWorkbenchService {
           commands: input.commands,
         })
         const applied = this.editorial.applyCommandSet(project, commandSet, await this.editorialSourceBounds(project))
+        const appliedVersion = applied.version as DeliveryVariantVersion
+        const acceptedAudioPlan = appliedVersion.audio_finishing_plan_id
+          ? applied.project.audio_finishing_plans.find(candidate => candidate.id === appliedVersion.audio_finishing_plan_id)
+          : undefined
+        // Applying an older immutable plan is still a new execution decision.
+        // Re-probe here so a changed local FFmpeg cannot accept a denoise
+        // command that preview/render would have to silently skip.
+        await this.assertAudioFiltersSupported([
+          ...input.commands,
+          ...(acceptedAudioPlan?.proposed_commands ?? []),
+        ])
         const saved = applied.reused ? project : await this.repository.saveProject(videoStudioProjectSchema.parse(applied.project))
-        return { project: saved, version: applied.version as DeliveryVariantVersion, reused: applied.reused }
+        return { project: saved, version: appliedVersion, reused: applied.reused }
       } catch (error) {
+        if (error instanceof FinishingDeliveryValidationError) return this.finishingError(error)
         return this.editorialError(error)
       }
     })
@@ -1857,19 +2530,1296 @@ export class VideoWorkbenchService {
       const project = await this.prepareEditorialProject(projectId)
       try {
         const compiled = this.editorial.compile(project, variantId, await this.editorialSourceBounds(project))
-        // Compilation is not merely a persisted description: construct the
-        // exact FFmpeg command now so unsupported tracks/effects fail before
-        // the immutable plan is published to callers.
-        buildExecutionPlanRenderCommand(
-          videoBinary('ffmpeg', this.env, this.platform),
-          compiled.project,
-          compiled.plan,
-          join(this.repository.paths().root, 'execution-plans', `${compiled.plan.id}.mp4`),
-        )
         const saved = await this.repository.saveProject(videoStudioProjectSchema.parse(compiled.project))
         return { project: saved, plan: compiled.plan }
       } catch (error) {
         return this.editorialError(error)
+      }
+    })
+  }
+
+  private deliveryVariantContext(
+    project: VideoStudioProject,
+    variantId: string,
+    expectedVersionId?: string,
+  ): { variant: DeliveryVariant; version: DeliveryVariantVersion; timeline: EditorialTimelineVersion; profile: VideoStudioProject['export_profile_revisions'][number] } {
+    const variant = project.delivery_variants.find(candidate => candidate.id === variantId)
+    const version = variant && project.delivery_variant_versions.find(candidate => candidate.id === variant.current_version_id)
+    if (!variant || !version) throw new VideoWorkbenchServiceError('交付变体不存在', 404, 'VIDEO_DELIVERY_VARIANT_NOT_FOUND')
+    if (expectedVersionId && version.id !== expectedVersionId) {
+      throw new VideoWorkbenchServiceError('交付变体已更新，请刷新后重试', 409, 'VIDEO_FINISHING_STALE')
+    }
+    const timeline = project.editorial_timeline_versions.find(candidate => candidate.id === version.editorial_timeline_version_id)
+    const profile = project.export_profile_revisions.find(candidate => candidate.id === version.export_profile_revision_id)
+    if (!timeline || !profile || profile.content_hash !== version.export_profile_hash) {
+      throw new VideoWorkbenchServiceError('交付变体引用的时间线或导出规格已变化', 409, 'VIDEO_FINISHING_STALE')
+    }
+    const profileOwner = project.export_profiles.find(candidate => candidate.id === profile.profile_id)
+    if (project.current_editorial_timeline_version_id !== timeline.id || profileOwner?.current_revision_id !== profile.id) {
+      throw new VideoWorkbenchServiceError('交付变体引用的时间线或导出规格已不是当前版本，请重新创建交付版本并预检', 409, 'VIDEO_FINISHING_STALE')
+    }
+    return { variant, version, timeline, profile }
+  }
+
+  private async captionTranscript(
+    projectId: string,
+    transcriptId?: string,
+    revisionId?: string,
+  ): Promise<{ transcript: TimedTranscript; revision?: TranscriptRevision }> {
+    const transcripts = (await this.repository.listFacts('transcript', projectId))
+      .filter((fact): fact is TimedTranscript => 'segments' in fact)
+      .sort((left, right) => right.created_at.localeCompare(left.created_at))
+    const transcript = transcriptId ? transcripts.find(candidate => candidate.id === transcriptId) : transcripts[0]
+    if (!transcript) throw new VideoWorkbenchServiceError('没有可用于字幕的带时间码转写', 422, 'VIDEO_FINISHING_UNAVAILABLE')
+    let requested: Awaited<ReturnType<VideoWorkbenchRepository['getFact']>> | undefined
+    if (revisionId) {
+      try {
+        requested = await this.repository.getFact('transcript_revision', revisionId)
+      } catch {
+        // A caller selected a concrete immutable revision. Falling back to the
+        // active head would silently generate captions from different text.
+        throw new VideoWorkbenchServiceError('指定的字幕转写修订不存在或不可读取', 409, 'VIDEO_FINISHING_STALE')
+      }
+    }
+    let active: Awaited<ReturnType<VideoWorkbenchRepository['facts']['activeTranscriptRevision']>> | undefined
+    try {
+      active = requested ?? await this.repository.facts.activeTranscriptRevision(transcript.id)
+    } catch {
+      throw new VideoWorkbenchServiceError('无法读取字幕转写修订，已拒绝生成候选字幕', 503, 'VIDEO_FINISHING_UNAVAILABLE')
+    }
+    if (active && (!('transcript_id' in active) || active.transcript_id !== transcript.id || active.project_id !== projectId)) {
+      throw new VideoWorkbenchServiceError('字幕转写修订不属于当前项目', 400, 'VIDEO_FINISHING_INVALID')
+    }
+    return { transcript, ...(active ? { revision: active as TranscriptRevision } : {}) }
+  }
+
+  /** Consent is checked against immutable transcript source time, never a
+   * caller-provided Cue display range. Full source segments are used when a
+   * Cue has word anchors so translation cannot leak the unanchored remainder
+   * of a synthetic projection by mistake. */
+  private captionTranslationSourceRanges(
+    transcript: TimedTranscript,
+    revision: VideoCaptionDocumentRevision,
+  ): SourceTimeRange[] {
+    const segments = new Map(transcript.segments.map(segment => [segment.id, segment]))
+    const ranges: SourceTimeRange[] = []
+    for (const cue of revision.cues) {
+      if (cue.source_anchor.transcript_id !== transcript.id) {
+        throw new VideoWorkbenchServiceError('字幕翻译 Cue 引用了其他转写', 400, 'VIDEO_FINISHING_INVALID')
+      }
+      const selected = cue.source_anchor.segment_ids.map(segmentId => segments.get(segmentId))
+      if (selected.some(segment => !segment)) {
+        throw new VideoWorkbenchServiceError('字幕翻译 Cue 引用了不存在的转写片段', 400, 'VIDEO_FINISHING_INVALID')
+      }
+      const first = selected[0]!
+      let start = first.start
+      let finish = endOfRange(first)
+      const words = new Map(selected.flatMap(segment => segment!.words).map(word => [word.id, word]))
+      if (cue.source_anchor.word_ids.length && cue.source_anchor.word_ids.some(wordId => !words.has(wordId))) {
+        throw new VideoWorkbenchServiceError('字幕翻译 Cue 的词级锚点不属于其转写片段', 400, 'VIDEO_FINISHING_INVALID')
+      }
+      for (const segment of selected.slice(1)) {
+        if (compareRationalTime(segment!.start, start) < 0) start = segment!.start
+        const end = endOfRange(segment!)
+        if (compareRationalTime(end, finish) > 0) finish = end
+      }
+      const endAtStartRate = rescaleRationalTime(finish, start.tick_rate, 'ceil')
+      const duration = parseInt64(endAtStartRate.ticks) - parseInt64(start.ticks)
+      if (duration <= 0n) throw new VideoWorkbenchServiceError('字幕翻译 Cue 的源时间范围无效', 400, 'VIDEO_FINISHING_INVALID')
+      ranges.push(sourceTimeRange(start, rationalTime(duration, start.tick_rate)))
+    }
+    return ranges
+  }
+
+  private async captionTranslationRemoteRequest(
+    project: VideoStudioProject,
+    document: VideoStudioProject['caption_documents'][number],
+    parent: VideoCaptionDocumentRevision,
+    timeline: EditorialTimelineVersion,
+    input: CreateVideoCaptionTranslationInput,
+    operation: VideoOperation,
+  ): Promise<{ budgetId: string; relay: VideoMediaRelayClient; request: RelayOperationRequest; usage: RemoteUsage }> {
+    if (
+      document.project_id !== project.id
+      || parent.project_id !== project.id
+      || parent.document_id !== document.id
+      || parent.editorial_timeline_version_id !== timeline.id
+      || document.current_revision_id !== parent.id
+      || project.current_editorial_timeline_version_id !== timeline.id
+      || parent.cues.length === 0
+      || parent.cues.length > 2_000
+    ) throw new VideoWorkbenchServiceError('字幕翻译基础版本无效或已变化', 409, 'VIDEO_FINISHING_STALE')
+    const { transcript, revision } = await this.captionTranscript(project.id, parent.transcript_id, parent.transcript_revision_id)
+    if (
+      transcript.id !== parent.transcript_id
+      || (parent.transcript_revision_id && revision?.id !== parent.transcript_revision_id)
+      || transcript.source_fingerprint !== project.sources.find(source => source.id === transcript.source_id)?.fingerprint
+    ) throw new VideoWorkbenchServiceError('字幕翻译转写基础无效或不属于当前素材', 409, 'VIDEO_FINISHING_STALE')
+    const sourceRanges = this.captionTranslationSourceRanges(transcript, parent)
+    const consent = project.remote_analysis_consents.find(item => (
+      item.state === 'active'
+      && item.purposes.includes('caption_translation')
+      && item.data_kinds.includes('transcript')
+    ))
+    const budget = consent && project.remote_analysis_budgets.find(item => item.estimate_hash === consent.acknowledged_estimate_hash && item.state === 'reserved')
+    const relay = this.videoMediaRelay()
+    if (!consent || !budget) throw new VideoWorkbenchServiceError('字幕翻译需要已确认的转写授权和预算', 409, 'VIDEO_REMOTE_ESTIMATE_REQUIRED')
+    if (!relay) throw new VideoWorkbenchServiceError('字幕翻译远程服务不可用', 503, 'VIDEO_REMOTE_OPERATION_UNAVAILABLE')
+    const coverage = consent.coverage.find(item => item.source_id === transcript.source_id)
+    const consentRanges = coverage?.ranges.map(range => sourceTimeRange(range.start, range.duration)) ?? []
+    if (!coverage || sourceRanges.some(range => !sourceRangeCoveredBy(consentRanges, range))) {
+      throw new VideoWorkbenchServiceError('字幕翻译超出已确认的转写范围', 422, 'VIDEO_REMOTE_CONSENT_SCOPE_INVALID')
+    }
+    const evidence = parent.cues.map(cue => ({
+      id: cue.id,
+      kind: 'transcript' as const,
+      text: cue.text,
+      source_range_id: cue.source_anchor.segment_ids[0],
+      confidence: cue.alignment_confidence,
+    }))
+    const factsBasisHash = factBasisHash({
+      kind: 'caption_translation',
+      document_id: document.id,
+      parent_revision_id: parent.id,
+      parent_basis_hash: parent.basis_hash,
+      editorial_timeline_version_id: timeline.id,
+      transcript_id: transcript.id,
+      transcript_revision_id: parent.transcript_revision_id ?? null,
+      language: input.language,
+      cues: parent.cues.map(cue => ({ id: cue.id, text: cue.text, source_anchor: cue.source_anchor, timeline_range: cue.timeline_range })),
+    })
+    const serializedEvidence = JSON.stringify(evidence)
+    const usage: RemoteUsage = {
+      requests: 1,
+      total_tokens: Math.max(1, Math.ceil(serializedEvidence.length / 4) + 128),
+      input_bytes: Buffer.byteLength(serializedEvidence, 'utf8'),
+      visual_frames: 0,
+      proxy_seconds: 0,
+      asr_seconds: 0,
+      estimated_amount_micros: Math.max(1, Math.ceil(serializedEvidence.length / 4) * 10 + 1_280),
+    }
+    const request: RelayOperationRequest = {
+      local_operation_id: operation.id,
+      consent_revision_id: consent.id,
+      consent_scope_hash: factBasisHash({ revision: consent.revision, coverage: consent.coverage, purposes: consent.purposes, data_kinds: consent.data_kinds }),
+      local_budget_reservation_id: budget.id,
+      request_hash: factsBasisHash,
+      capability: 'media_reasoning',
+      application_role: 'caption_translation',
+      input: {
+        object_refs: [],
+        facts_basis_hash: factsBasisHash,
+        evidence,
+        language: input.language,
+        output_schema_version: 1,
+      },
+    }
+    return { budgetId: budget.id, relay, request, usage }
+  }
+
+  async createCaptionDraft(
+    projectId: string,
+    raw: CreateVideoCaptionDraftInput,
+    idempotencyKey: string,
+  ): Promise<{ project: VideoStudioProject; document: VideoStudioProject['caption_documents'][number]; revision: VideoStudioProject['caption_document_revisions'][number]; task: VideoOperation }> {
+    return await this.mutateProject(projectId, async () => {
+      const input = createVideoCaptionDraftInputSchema.parse(raw)
+      const project = await this.prepareEditorialProject(projectId)
+      const requestHash = factBasisHash({ kind: 'caption_draft', input })
+      const replay = this.finishingReplay(project, 'caption_draft', idempotencyKey, requestHash)
+      if (replay) {
+        const document = project.caption_documents.find(candidate => candidate.id === replay[0])
+        const revision = project.caption_document_revisions.find(candidate => candidate.id === replay[1])
+        if (!document || !revision) throw new VideoWorkbenchServiceError('字幕幂等记录损坏', 500, 'VIDEO_FINISHING_INVALID')
+        const task = await this.startFinishingOperation(project, 'video.caption_draft', idempotencyKey, requestHash, '生成字幕草稿')
+        return {
+          project,
+          document,
+          revision,
+          task: task.status === 'succeeded' ? task : await this.completeFinishingOperation(task, '字幕草稿已按幂等请求复用', {
+            caption_document_id: document.id,
+            caption_revision_id: revision.id,
+            caption_style_id: revision.style_id,
+          }),
+        }
+      }
+      const timeline = project.editorial_timeline_versions.find(candidate => candidate.id === input.editorial_timeline_version_id)
+      if (!timeline) throw new VideoWorkbenchServiceError('编辑时间线版本不存在', 404, 'VIDEO_TIMELINE_MISSING')
+      const operation = await this.startFinishingOperation(project, 'video.caption_draft', idempotencyKey, requestHash, '生成字幕草稿')
+      try {
+        const { transcript, revision: activeRevision } = await this.captionTranscript(project.id, input.transcript_id, input.transcript_revision_id)
+        const created = this.finishing.createCaptionDraft(project, timeline, transcript, activeRevision, input)
+        const saved = await this.repository.saveProject(videoStudioProjectSchema.parse({
+          ...project,
+          caption_styles: [...project.caption_styles, created.style],
+          caption_documents: [...project.caption_documents, created.document],
+          caption_document_revisions: [...project.caption_document_revisions, created.revision],
+          finishing_receipts: [...project.finishing_receipts, this.finishingReceipt('caption_draft', idempotencyKey, requestHash, [created.document.id, created.revision.id])],
+          revision: project.revision + 1,
+          updated_at: this.iso(),
+        }))
+        const task = await this.completeFinishingOperation(operation, '字幕草稿已生成', {
+          caption_document_id: created.document.id,
+          caption_revision_id: created.revision.id,
+          caption_style_id: created.style.id,
+        })
+        return { project: saved, document: created.document, revision: created.revision, task }
+      } catch (error) {
+        await this.failOperation(operation, 'MEDIA_VIDEO_FINISHING_UNAVAILABLE', '字幕草稿生成失败').catch(() => undefined)
+        return this.finishingError(error)
+      }
+    })
+  }
+
+  async createCaptionRevision(
+    projectId: string,
+    documentId: string,
+    raw: CreateVideoCaptionRevisionInput,
+    idempotencyKey: string,
+  ): Promise<{ project: VideoStudioProject; revision: VideoStudioProject['caption_document_revisions'][number]; task: VideoOperation }> {
+    return await this.mutateProject(projectId, async () => {
+      const input = createVideoCaptionRevisionInputSchema.parse(raw)
+      const project = await this.prepareEditorialProject(projectId)
+      const requestHash = factBasisHash({ kind: 'caption_revision', document_id: documentId, input })
+      const replay = this.finishingReplay(project, 'caption_revision', idempotencyKey, requestHash)
+      if (replay) {
+        const revision = project.caption_document_revisions.find(candidate => candidate.id === replay[0])
+        if (!revision) throw new VideoWorkbenchServiceError('字幕修订幂等记录损坏', 500, 'VIDEO_FINISHING_INVALID')
+        const task = await this.startFinishingOperation(project, 'video.caption_draft', idempotencyKey, requestHash, '保存字幕修订')
+        return {
+          project,
+          revision,
+          task: task.status === 'succeeded' ? task : await this.completeFinishingOperation(task, '字幕修订已按幂等请求复用', {
+            caption_document_id: documentId,
+            caption_revision_id: revision.id,
+            caption_style_id: revision.style_id,
+          }),
+        }
+      }
+      const document = project.caption_documents.find(candidate => candidate.id === documentId)
+      const parent = document && project.caption_document_revisions.find(candidate => candidate.id === document.current_revision_id)
+      const timeline = project.editorial_timeline_versions.find(candidate => candidate.id === input.editorial_timeline_version_id)
+      if (!document || !parent || !timeline) throw new VideoWorkbenchServiceError('字幕文档、修订或编辑时间线不存在', 404, 'VIDEO_FINISHING_INVALID')
+      if (input.base_revision_id !== parent.id) throw new VideoWorkbenchServiceError('字幕修订已更新，请刷新后重试', 409, 'VIDEO_FINISHING_STALE')
+      const operation = await this.startFinishingOperation(project, 'video.caption_draft', idempotencyKey, requestHash, '保存字幕修订')
+      try {
+        const { transcript } = await this.captionTranscript(project.id, parent.transcript_id, parent.transcript_revision_id)
+        const revision = this.finishing.createCaptionRevision(project, document, parent, timeline, transcript, input)
+        const saved = await this.repository.saveProject(videoStudioProjectSchema.parse({
+          ...project,
+          caption_documents: project.caption_documents.map(candidate => candidate.id === document.id ? { ...candidate, current_revision_id: revision.id } : candidate),
+          caption_document_revisions: [...project.caption_document_revisions, revision],
+          finishing_receipts: [...project.finishing_receipts, this.finishingReceipt('caption_revision', idempotencyKey, requestHash, [revision.id])],
+          revision: project.revision + 1,
+          updated_at: this.iso(),
+        }))
+        const task = await this.completeFinishingOperation(operation, '字幕修订已保存', {
+          caption_document_id: document.id,
+          caption_revision_id: revision.id,
+          caption_style_id: revision.style_id,
+        })
+        return { project: saved, revision, task }
+      } catch (error) {
+        await this.failOperation(operation, 'MEDIA_VIDEO_FINISHING_UNAVAILABLE', '字幕修订保存失败').catch(() => undefined)
+        return this.finishingError(error)
+      }
+    })
+  }
+
+  private async executeCaptionTranslation(
+    project: VideoStudioProject,
+    document: VideoStudioProject['caption_documents'][number],
+    parent: VideoCaptionDocumentRevision,
+    timeline: EditorialTimelineVersion,
+    input: CreateVideoCaptionTranslationInput,
+    operation: VideoOperation,
+  ): Promise<{ project: VideoStudioProject; revision: VideoCaptionDocumentRevision; task: VideoOperation }> {
+    const staged = this.stagedCaptionTranslationResult(operation)
+    if (staged) return await this.finalizeStagedCaptionTranslationResult(operation)
+    const remoteInput = await this.captionTranslationRemoteRequest(project, document, parent, timeline, input, operation)
+    let stagedOperation: VideoOperation | undefined
+    await this.reserveAndRunRemote(project.id, remoteInput.budgetId, 'media_reasoning', remoteInput.usage, remoteInput.relay, remoteInput.request, async (activeRelay, remote) => {
+      if (remote.state !== 'succeeded' || !remote.provider_receipt) {
+        throw new VideoMediaRelayClientError(remote.state === 'outcome_unknown' ? 503 : 422, 'relay_operation_not_succeeded')
+      }
+      await this.settleRemoteBudget(project.id, remoteInput.budgetId, operation.id, remote.provider_receipt)
+      const downloaded = await activeRelay.downloadResult<unknown>(remote)
+      if (!downloaded.result || typeof downloaded.result !== 'object' || Array.isArray(downloaded.result)) {
+        throw new VideoWorkbenchServiceError('远程字幕翻译结果类型无效', 502, 'VIDEO_FINISHING_INVALID')
+      }
+      const remoteResult = downloaded.result as Record<string, unknown>
+      if (remoteResult.kind !== 'caption_translation') {
+        throw new VideoWorkbenchServiceError('远程字幕翻译结果类型无效', 502, 'VIDEO_FINISHING_INVALID')
+      }
+      const translated = videoCaptionTranslationResultSchema.safeParse({ translations: remoteResult.translations })
+      if (!translated.success) {
+        throw new VideoWorkbenchServiceError('远程字幕翻译结果结构无效', 502, 'VIDEO_FINISHING_INVALID')
+      }
+      const byCueId = new Map<string, string>()
+      for (const item of translated.data.translations) {
+        if (byCueId.has(item.cue_id)) {
+          throw new VideoWorkbenchServiceError('远程字幕翻译包含重复 Cue', 502, 'VIDEO_FINISHING_INVALID')
+        }
+        byCueId.set(item.cue_id, item.text)
+      }
+      if (
+        byCueId.size !== parent.cues.length
+        || parent.cues.some(cue => !byCueId.has(cue.id))
+      ) throw new VideoWorkbenchServiceError('远程字幕翻译未覆盖当前字幕修订的全部 Cue', 502, 'VIDEO_FINISHING_INVALID')
+      const { transcript } = await this.captionTranscript(project.id, parent.transcript_id, parent.transcript_revision_id)
+      const revision = this.finishing.createCaptionRevision(project, document, parent, timeline, transcript, {
+        language: input.language,
+        ...(input.style_id ? { style_id: input.style_id } : {}),
+        cues: parent.cues.map(cue => ({
+          source_anchor: cue.source_anchor,
+          // The finishing layer deliberately discards this client/Relay echo
+          // and reprojects it from the immutable source anchor.
+          timeline_range: cue.timeline_range,
+          text: byCueId.get(cue.id)!,
+          translation_of_cue_id: cue.id,
+          alignment_confidence: cue.alignment_confidence,
+          alignment_state: cue.alignment_state,
+        })),
+      })
+      stagedOperation = await this.stageCaptionTranslationResult(
+        operation.id,
+        revision,
+        this.acknowledgementFor(operation.id, remote.id, remote.provider_receipt.id, downloaded.hashes),
+      )
+    }, { parentOperationId: operation.id })
+    const ready = stagedOperation ?? await this.repository.getOperation(operation.id)
+    if (!this.stagedCaptionTranslationResult(ready)) {
+      throw new VideoWorkbenchServiceError('远程字幕翻译未形成可恢复候选', 502, 'VIDEO_FINISHING_INVALID')
+    }
+    return await this.finalizeStagedCaptionTranslationResult(ready)
+  }
+
+  async createCaptionTranslation(
+    projectId: string,
+    documentId: string,
+    raw: CreateVideoCaptionTranslationInput,
+    idempotencyKey: string,
+  ): Promise<{ project: VideoStudioProject; revision: VideoCaptionDocumentRevision; task: VideoOperation }> {
+    const setup = await this.mutateProject(projectId, async () => {
+      const input = createVideoCaptionTranslationInputSchema.parse(raw)
+      const project = await this.prepareEditorialProject(projectId)
+      const requestHash = factBasisHash({ kind: 'caption_translation', document_id: documentId, input })
+      const replay = this.finishingReplay(project, 'caption_translation', idempotencyKey, requestHash)
+      if (replay) {
+        const revision = project.caption_document_revisions.find(candidate => candidate.id === replay[0])
+        if (!revision || revision.document_id !== documentId) {
+          throw new VideoWorkbenchServiceError('字幕翻译幂等记录损坏', 500, 'VIDEO_FINISHING_INVALID')
+        }
+        const task = await this.startFinishingOperation(project, 'video.caption_translation', idempotencyKey, requestHash, '生成字幕翻译候选')
+        return { replay: true as const, project, revision, task }
+      }
+      const document = project.caption_documents.find(candidate => candidate.id === documentId)
+      const parent = document && project.caption_document_revisions.find(candidate => candidate.id === input.base_revision_id)
+      const timeline = project.editorial_timeline_versions.find(candidate => candidate.id === input.editorial_timeline_version_id)
+      if (!document || !parent || !timeline) throw new VideoWorkbenchServiceError('字幕文档、修订或编辑时间线不存在', 404, 'VIDEO_FINISHING_INVALID')
+      if (
+        document.project_id !== project.id
+        || parent.project_id !== project.id
+        || parent.document_id !== document.id
+        || document.current_revision_id !== parent.id
+        || parent.editorial_timeline_version_id !== timeline.id
+        || project.current_editorial_timeline_version_id !== timeline.id
+      ) throw new VideoWorkbenchServiceError('字幕翻译基础版本已更新，请刷新后重试', 409, 'VIDEO_FINISHING_STALE')
+      if (input.style_id && !project.caption_styles.some(style => style.id === input.style_id)) {
+        throw new VideoWorkbenchServiceError('字幕翻译指定的样式不存在', 400, 'VIDEO_FINISHING_INVALID')
+      }
+      const initial = await this.startFinishingOperation(project, 'video.caption_translation', idempotencyKey, requestHash, '生成字幕翻译候选')
+      const context: CaptionTranslationOperationInput = {
+        document_id: document.id,
+        base_revision_id: parent.id,
+        editorial_timeline_version_id: timeline.id,
+        language: input.language,
+        ...(input.style_id ? { style_id: input.style_id } : {}),
+      }
+      const persisted = this.captionTranslationInput(initial)
+      if (persisted && JSON.stringify(persisted) !== JSON.stringify(context)) {
+        throw new VideoWorkbenchServiceError('字幕翻译任务与幂等请求不一致', 409, 'VIDEO_EDITORIAL_IDEMPOTENCY_CONFLICT')
+      }
+      const operation = persisted
+        ? initial
+        : await this.repository.saveOperation(this.operation({
+            ...initial,
+            result: { ...(initial.result ?? {}), caption_translation: context },
+          }))
+      return { replay: false as const, project, document, parent, timeline, input, operation, requestHash }
+    })
+    if (setup.replay) {
+      const task = setup.task.status === 'succeeded'
+        ? setup.task
+        : await this.completeFinishingOperation(setup.task, '字幕翻译候选已按幂等请求复用', {
+            caption_document_id: documentId,
+            caption_revision_id: setup.revision.id,
+            caption_style_id: setup.revision.style_id,
+          })
+      return { project: setup.project, revision: setup.revision, task }
+    }
+    try {
+      return await this.executeCaptionTranslation(
+        setup.project,
+        setup.document,
+        setup.parent,
+        setup.timeline,
+        setup.input,
+        setup.operation,
+      )
+    } catch (error) {
+      const current = await this.repository.getOperation(setup.operation.id).catch(() => null)
+      // A surviving submission fence or staged candidate is the only authority
+      // after an uncertain transport outcome. Leave it enumerable for startup
+      // recovery instead of marking it failed and allowing a new paid call.
+      if (current && !this.remoteRecoveryCheckpoint(current) && !this.stagedCaptionTranslationResult(current) && current.status !== 'succeeded') {
+        await this.failOperation(current, 'MEDIA_VIDEO_FINISHING_UNAVAILABLE', '字幕翻译候选生成失败').catch(() => undefined)
+      }
+      return this.finishingError(error)
+    }
+  }
+
+  async createCompositionPlan(
+    projectId: string,
+    raw: CreateVideoCompositionPlanInput,
+    idempotencyKey: string,
+  ): Promise<{ project: VideoStudioProject; plan: VideoStudioProject['composition_plans'][number]; task: VideoOperation }> {
+    return await this.mutateProject(projectId, async () => {
+      const input = createVideoCompositionPlanInputSchema.parse(raw)
+      const project = await this.prepareEditorialProject(projectId)
+      const requestHash = factBasisHash({ kind: 'composition_plan', input })
+      const replay = this.finishingReplay(project, 'composition_plan', idempotencyKey, requestHash)
+      if (replay) {
+        const plan = project.composition_plans.find(candidate => candidate.id === replay[0])
+        if (!plan) throw new VideoWorkbenchServiceError('构图计划幂等记录损坏', 500, 'VIDEO_FINISHING_INVALID')
+        const task = await this.startFinishingOperation(project, 'video.composition_plan', idempotencyKey, requestHash, '生成构图计划')
+        return {
+          project,
+          plan,
+          task: task.status === 'succeeded' ? task : await this.completeFinishingOperation(task, '构图计划已按幂等请求复用', { composition_plan_id: plan.id }),
+        }
+      }
+      const context = this.deliveryVariantContext(project, input.variant_id, input.base_variant_version_id)
+      const operation = await this.startFinishingOperation(project, 'video.composition_plan', idempotencyKey, requestHash, '生成构图计划')
+      try {
+        const evidence = (await this.repository.listFacts('evidence', project.id))
+          .filter((fact): fact is VideoFactEvidence => 'payload' in fact)
+        const plan = this.finishing.createCompositionPlan(project, context.variant, context.version, context.timeline, context.profile, evidence)
+        const saved = await this.repository.saveProject(videoStudioProjectSchema.parse({
+          ...project,
+          composition_plans: [...project.composition_plans, plan],
+          finishing_receipts: [...project.finishing_receipts, this.finishingReceipt('composition_plan', idempotencyKey, requestHash, [plan.id])],
+          revision: project.revision + 1,
+          updated_at: this.iso(),
+        }))
+        const task = await this.completeFinishingOperation(operation, '构图计划已生成', { composition_plan_id: plan.id })
+        return { project: saved, plan, task }
+      } catch (error) {
+        await this.failOperation(operation, 'MEDIA_VIDEO_FINISHING_UNAVAILABLE', '构图计划生成失败').catch(() => undefined)
+        return this.finishingError(error)
+      }
+    })
+  }
+
+  /** Audio suggestions are anchored only to the current, immutable Transcript
+   * projection.  A repository/read error is deliberately propagated so an
+   * unavailable fact cannot turn into an unreviewable semantic recommendation. */
+  private async audioTranscriptAnchors(project: VideoStudioProject): Promise<AudioTranscriptAnchor[]> {
+    const transcripts = (await this.repository.listFacts('transcript', project.id))
+      .filter((fact): fact is TimedTranscript => 'segments' in fact)
+    const anchors: AudioTranscriptAnchor[] = []
+    for (const transcript of transcripts) {
+      const source = project.sources.find(candidate => candidate.id === transcript.source_id)
+      if (!source || source.fingerprint !== transcript.source_fingerprint || source.missing || source.content_changed) continue
+      const active = await this.repository.facts.activeTranscriptRevision(transcript.id)
+      if (active && (!('transcript_id' in active) || !('edits' in active)
+        || active.project_id !== project.id || active.transcript_id !== transcript.id)) {
+        throw new FinishingDeliveryValidationError('活动 Transcript Revision 不属于当前项目，拒绝生成语义音频建议', 'VIDEO_FINISHING_UNAVAILABLE')
+      }
+      const projection = materializeTranscriptRevision(transcript, active as TranscriptRevision | undefined)
+      for (const segment of projection.segments) {
+        const transcriptAnchorIds = [...new Set([...segment.anchor_segment_ids, ...segment.word_ids])]
+        if (!transcriptAnchorIds.length) continue
+        anchors.push({
+          transcript_id: transcript.id,
+          source_id: transcript.source_id,
+          source_range: sourceTimeRange(segment.start, segment.duration),
+          transcript_anchor_ids: transcriptAnchorIds,
+          text: segment.text,
+        })
+      }
+    }
+    return anchors
+  }
+
+  /** Frozen filters must exist locally; execution never substitutes a best-effort approximation. */
+  private async assertExecutionFiltersSupported(
+    filters: ReadonlyArray<{ kind: string }>,
+    needsHdrToneMap = false,
+    needsBurnInSubtitles = false,
+  ): Promise<void> {
+    const needsDenoise = filters.some(filter => filter.kind === 'set_audio_denoise' || filter.kind === 'audio_denoise')
+    if (!needsDenoise && !needsHdrToneMap && !needsBurnInSubtitles) return
+    let listed: { exitCode: number; stdout: string; stderr: string }
+    try {
+      listed = await this.runProcess([videoBinary('ffmpeg', this.env, this.platform), '-hide_banner', '-filters'])
+    } catch {
+      throw new FinishingDeliveryValidationError('无法确认 FFmpeg 完成滤镜能力，拒绝编译正式交付', 'VIDEO_FINISHING_UNAVAILABLE')
+    }
+    const available = `${listed.stdout}\n${listed.stderr}`
+    if (listed.exitCode !== 0 || (needsDenoise && !/\bafftdn\b/i.test(available))) {
+      throw new FinishingDeliveryValidationError('当前 FFmpeg 不支持冻结音频计划所需的 afftdn 降噪滤镜', 'VIDEO_FINISHING_UNAVAILABLE')
+    }
+    if (needsHdrToneMap && (!/\bzscale\b/i.test(available) || !/\btonemap\b/i.test(available))) {
+      throw new FinishingDeliveryValidationError('当前 FFmpeg 不支持 HDR 转 SDR 所需的 zscale/tonemap 滤镜', 'VIDEO_FINISHING_UNAVAILABLE')
+    }
+    if (needsBurnInSubtitles && !/\bsubtitles\b/i.test(available)) {
+      throw new FinishingDeliveryValidationError('当前 FFmpeg 不支持烧录字幕所需的 subtitles 滤镜', 'VIDEO_FINISHING_UNAVAILABLE')
+    }
+    if (needsBurnInSubtitles) await this.assertControlledCaptionBurnInRuntime()
+  }
+
+  /**
+   * The Relay image proves its own startup environment before it serves
+   * requests, but a Sidecar may execute the frozen plan on another machine.
+   * Check the executor that will actually burn the subtitles instead of
+   * treating Gateway or Relay readiness as a local renderer capability.
+   */
+  private async assertControlledCaptionBurnInRuntime(): Promise<void> {
+    const fontDirectory = this.controlledCaptionFontDirectory()
+    const fontFile = join(fontDirectory, CONTROLLED_CAPTION_FONT_FILE)
+    let probeDirectory: string | undefined
+    try {
+      const [directory, font] = await Promise.all([
+        stat(fontDirectory),
+        stat(fontFile),
+      ])
+      if (!directory.isDirectory() || !font.isFile() || font.size <= 0) {
+        throw new FinishingDeliveryValidationError('受控字幕字体目录或字体文件不可用，不能安全烧录字幕', 'VIDEO_FINISHING_UNAVAILABLE')
+      }
+      let scanned: { exitCode: number; stdout: string; stderr: string }
+      try {
+        // Inspect the reviewed file itself rather than asking fontconfig to
+        // resolve a family from a host-wide registry, which can hide a wrong
+        // font behind a same-name fallback.
+        scanned = await this.runProcess(['fc-scan', '-f', '%{family}\n', fontFile])
+      } catch {
+        throw new FinishingDeliveryValidationError('无法确认受控字幕字体族，不能安全烧录字幕', 'VIDEO_FINISHING_UNAVAILABLE')
+      }
+      const families = `${scanned.stdout}\n${scanned.stderr}`.split(/\r?\n/).map(value => value.trim())
+      if (scanned.exitCode !== 0 || !families.includes(CONTROLLED_CAPTION_FONT_FAMILY)) {
+        throw new FinishingDeliveryValidationError('受控字幕字体族与交付计划不匹配，不能安全烧录字幕', 'VIDEO_FINISHING_UNAVAILABLE')
+      }
+      probeDirectory = await mkdtemp(join(tmpdir(), 'billiardbuddy-caption-runtime-'))
+      const subtitlePath = join(probeDirectory, 'probe.srt')
+      await writeFile(subtitlePath, '1\n00:00:00,000 --> 00:00:00,040\n台球字幕\n', { mode: 0o600 })
+      const rendered = await this.runProcess([
+        videoBinary('ffmpeg', this.env, this.platform),
+        '-hide_banner', '-nostdin', '-loglevel', 'error',
+        '-f', 'lavfi', '-i', 'color=c=black:s=320x180:r=25:d=0.04',
+        '-vf', `subtitles=filename='${ffmpegFilterValue(subtitlePath)}':fontsdir='${ffmpegFilterValue(fontDirectory)}':force_style='FontName=${CONTROLLED_CAPTION_FONT_FAMILY},FontSize=24,Alignment=2'`,
+        '-frames:v', '1', '-f', 'null', '-',
+      ])
+      if (rendered.exitCode !== 0) {
+        throw new FinishingDeliveryValidationError('受控字幕字体无法由当前 FFmpeg 实际烧录，不能安全交付', 'VIDEO_FINISHING_UNAVAILABLE')
+      }
+    } catch (error) {
+      if (error instanceof FinishingDeliveryValidationError || error instanceof VideoWorkbenchServiceError) throw error
+      throw new FinishingDeliveryValidationError('无法验证受控字幕烧录运行时，不能安全交付', 'VIDEO_FINISHING_UNAVAILABLE')
+    } finally {
+      if (probeDirectory) await rm(probeDirectory, { recursive: true, force: true }).catch(() => undefined)
+    }
+  }
+
+  /** A frozen afftdn command must be executable by the local FFmpeg, never silently dropped. */
+  private async assertAudioFiltersSupported(filters: ReadonlyArray<{ kind: string }>): Promise<void> {
+    await this.assertExecutionFiltersSupported(filters)
+  }
+
+  private async assertExecutionPlanFiltersSupported(plan: VideoExecutionPlan): Promise<void> {
+    const needsHdrToneMap = plan.inputs.some(input => input.video_color?.hdr_kind === 'pq' || input.video_color?.hdr_kind === 'hlg')
+    await this.assertExecutionFiltersSupported(plan.filters, needsHdrToneMap, plan.caption?.mode === 'burn_in')
+  }
+
+  private async audioMeasurements(project: VideoStudioProject, timeline: EditorialTimelineVersion): Promise<AudioMeasurement[]> {
+    const measurements: AudioMeasurement[] = []
+    const seen = new Set<string>()
+    for (const item of timeline.items) {
+      const binding = item.binding
+      if (item.kind !== 'audio' || binding.kind !== 'source' || seen.has(item.id)) continue
+      seen.add(item.id)
+      const source = project.sources.find(candidate => candidate.id === binding.source_id)
+      if (!source?.has_audio || source.missing || source.content_changed) continue
+      let sourceFact: Awaited<ReturnType<VideoWorkbenchRepository['getFact']>>
+      try {
+        sourceFact = await this.repository.getFact('source', source.id)
+      } catch {
+        throw new FinishingDeliveryValidationError('无法读取源音频流事实，已拒绝响度分析', 'VIDEO_FINISHING_UNAVAILABLE')
+      }
+      if (!('fast_identity' in sourceFact)
+        || sourceFact.id !== source.id
+        || sourceFact.project_id !== project.id) {
+        throw new FinishingDeliveryValidationError('源音频流事实缺失或无效，已拒绝响度分析', 'VIDEO_FINISHING_UNAVAILABLE')
+      }
+      const audio = sourceFact.audio_tracks.find(track => track.disposition_default) ?? sourceFact.audio_tracks[0]
+      if (!audio?.duration
+        || compareRationalTime(binding.source_range.start, audio.start_time) < 0
+        || compareRationalTime(endOfRange(binding.source_range), endOfRange({ start: audio.start_time, duration: audio.duration })) > 0) {
+        throw new FinishingDeliveryValidationError('源音频轨范围无法验证，已拒绝响度分析', 'VIDEO_FINISHING_UNAVAILABLE')
+      }
+      const startSeconds = rationalSecondsBetween(audio.start_time, binding.source_range.start)
+      const durationSeconds = rationalSecondsBetween(binding.source_range.start, endOfRange(binding.source_range))
+      if (!Number.isFinite(startSeconds) || startSeconds < 0 || !Number.isFinite(durationSeconds) || durationSeconds <= 0) {
+        throw new FinishingDeliveryValidationError('源音频轨时间戳无效，已拒绝响度分析', 'VIDEO_FINISHING_UNAVAILABLE')
+      }
+      const seekAt = Number(parseInt64(rescaleRationalTime(binding.source_range.start, MICROSECOND_TICK_RATE, 'nearest').ticks)) / MICROSECOND_TICK_RATE.num
+      if (!Number.isFinite(seekAt) || seekAt < 0) {
+        throw new FinishingDeliveryValidationError('源音频 PTS 不能安全映射为本地分析 seek 位置', 'VIDEO_FINISHING_UNAVAILABLE')
+      }
+      const base = [videoBinary('ffmpeg', this.env, this.platform), '-hide_banner', '-nostdin', '-ss', seekAt.toFixed(6), '-t', durationSeconds.toFixed(6), '-i', source.path, '-map', `0:${audio.stream_index}`]
+      const [loudness, silence] = await Promise.all([
+        this.runProcess([...base, '-filter:a', 'ebur128=peak=true', '-f', 'null', '-']),
+        this.runProcess([...base, '-af', 'silencedetect=noise=-45dB:d=0.30', '-f', 'null', '-']),
+      ])
+      if (loudness.exitCode !== 0 || silence.exitCode !== 0) {
+        throw new FinishingDeliveryValidationError('无法完成本地响度或静音分析', 'VIDEO_FINISHING_UNAVAILABLE')
+      }
+      const lufs = [...loudness.stderr.matchAll(/\bI:\s*(-?\d+(?:\.\d+)?)\s*LUFS/gi)].at(-1)?.[1]
+      const peak = [...loudness.stderr.matchAll(/\b(?:Peak|True peak):\s*(-?\d+(?:\.\d+)?)/gi)].at(-1)?.[1]
+      const silentSeconds = [...silence.stderr.matchAll(/silence_duration:\s*(\d+(?:\.\d+)?)/gi)]
+        .reduce((total, match) => total + Number(match[1] ?? 0), 0)
+      const sourceRange = sourceTimeRange(binding.source_range.start, binding.source_range.duration)
+      measurements.push({
+        item_id: item.id,
+        source_id: source.id,
+        audio_stream_index: audio.stream_index,
+        source_range: sourceRange,
+        receipt_id: `audio_receipt_${randomUUID().replaceAll('-', '')}`,
+        ...(lufs && Number.isFinite(Number(lufs)) ? { integrated_lufs: Number(lufs) } : {}),
+        ...(peak && Number.isFinite(Number(peak)) ? { true_peak_db: Number(peak) } : {}),
+        silence_ratio: Math.max(0, Math.min(1, silentSeconds / durationSeconds)),
+        silence_ranges: silencedetectRanges(`${silence.stdout}\n${silence.stderr}`, sourceRange),
+      })
+    }
+    return measurements
+  }
+
+  async createAudioFinishingPlan(
+    projectId: string,
+    raw: CreateVideoAudioFinishingPlanInput,
+    idempotencyKey: string,
+  ): Promise<{ project: VideoStudioProject; plan: VideoStudioProject['audio_finishing_plans'][number]; task: VideoOperation }> {
+    return await this.mutateProject(projectId, async () => {
+      const input = createVideoAudioFinishingPlanInputSchema.parse(raw)
+      const project = await this.prepareEditorialProject(projectId)
+      const requestHash = factBasisHash({ kind: 'audio_finishing_plan', input })
+      const replay = this.finishingReplay(project, 'audio_finishing_plan', idempotencyKey, requestHash)
+      if (replay) {
+        const plan = project.audio_finishing_plans.find(candidate => candidate.id === replay[0])
+        if (!plan) throw new VideoWorkbenchServiceError('音频完成计划幂等记录损坏', 500, 'VIDEO_FINISHING_INVALID')
+        const task = await this.startFinishingOperation(project, 'video.audio_finish_plan', idempotencyKey, requestHash, '生成音频完成计划')
+        return {
+          project,
+          plan,
+          task: task.status === 'succeeded' ? task : await this.completeFinishingOperation(task, '音频完成计划已按幂等请求复用', { audio_finishing_plan_id: plan.id }),
+        }
+      }
+      const context = this.deliveryVariantContext(project, input.variant_id, input.base_variant_version_id)
+      const operation = await this.startFinishingOperation(project, 'video.audio_finish_plan', idempotencyKey, requestHash, '生成音频完成计划')
+      try {
+        const plan = this.finishing.createAudioFinishingPlan(
+          project,
+          context.variant,
+          context.version,
+          context.timeline,
+          await this.audioMeasurements(project, context.timeline),
+          await this.audioTranscriptAnchors(project),
+        )
+        await this.assertAudioFiltersSupported(plan.proposed_commands)
+        const saved = await this.repository.saveProject(videoStudioProjectSchema.parse({
+          ...project,
+          audio_finishing_plans: [...project.audio_finishing_plans, plan],
+          finishing_receipts: [...project.finishing_receipts, this.finishingReceipt('audio_finishing_plan', idempotencyKey, requestHash, [plan.id])],
+          revision: project.revision + 1,
+          updated_at: this.iso(),
+        }))
+        const task = await this.completeFinishingOperation(operation, '音频完成计划已生成', { audio_finishing_plan_id: plan.id })
+        return { project: saved, plan, task }
+      } catch (error) {
+        await this.failOperation(operation, 'MEDIA_VIDEO_FINISHING_UNAVAILABLE', '音频完成计划生成失败').catch(() => undefined)
+        return this.finishingError(error)
+      }
+    })
+  }
+
+  async preflightDeliveryVariant(
+    projectId: string,
+    variantId: string,
+    raw: PreflightVideoVariantInput,
+    idempotencyKey: string,
+  ): Promise<{ project: VideoStudioProject; plan: VideoStudioProject['execution_plans'][number]; report: VideoQualityReport; task: VideoOperation }> {
+    return await this.mutateProject(projectId, async () => {
+      const input = preflightVideoVariantInputSchema.parse(raw)
+      let project = await this.prepareEditorialProject(projectId)
+      const requestHash = factBasisHash({ kind: 'quality_preflight', variant_id: variantId, input })
+      const replay = this.finishingReplay(project, 'quality_preflight', idempotencyKey, requestHash)
+      if (replay) {
+        const context = this.deliveryVariantContext(project, variantId, input.base_variant_version_id)
+        const plan = project.execution_plans.find(candidate => candidate.id === replay[0])
+        const report = project.quality_reports.find(candidate => candidate.id === replay[1])
+        if (!plan || !report) throw new VideoWorkbenchServiceError('预检幂等记录损坏', 500, 'VIDEO_FINISHING_INVALID')
+        if (report.kind !== 'preflight'
+          || report.editorial_timeline_version_id !== context.timeline.id
+          || report.delivery_variant_version_id !== context.version.id
+          || report.export_profile_revision_id !== context.profile.id
+          || plan.editorial_timeline_version_id !== context.timeline.id
+          || plan.delivery_variant_version_id !== context.version.id
+          || plan.encoder.id !== context.profile.id
+          || plan.encoder.content_hash !== context.profile.content_hash) {
+          throw new VideoWorkbenchServiceError('预检幂等记录引用的交付版本已过期，请重新预检', 409, 'VIDEO_FINISHING_STALE')
+        }
+        const task = await this.startFinishingOperation(project, 'video.quality_preflight', idempotencyKey, requestHash, '交付预检')
+        return {
+          project,
+          plan,
+          report,
+          task: task.status === 'succeeded' ? task : await this.completeFinishingOperation(task, '交付预检已按幂等请求复用', {
+            execution_plan_id: plan.id,
+            report_id: report.id,
+            report,
+          }),
+        }
+      }
+      if (project.revision !== input.base_revision) throw new VideoWorkbenchServiceError('视频项目已更新，请刷新后再预检', 409, 'VIDEO_REVISION_CONFLICT')
+      const context = this.deliveryVariantContext(project, variantId, input.base_variant_version_id)
+      const operation = await this.startFinishingOperation(project, 'video.quality_preflight', idempotencyKey, requestHash, '交付预检')
+      try {
+        const compiled = this.editorial.compile(project, context.variant.id, await this.editorialSourceBounds(project))
+        await this.assertExecutionPlanFiltersSupported(compiled.plan)
+        const projectAssets = await this.deliveryProjectAssets(compiled.project, compiled.plan)
+        let encoder: Awaited<ReturnType<typeof selectDeliveryVideoEncoder>>
+        try {
+          // Preflight must verify the exact frozen delivery Profile.  The
+          // legacy MPEG-4 fallback is valid only for old previews and would
+          // otherwise defer a missing libx264/prores_ks error until render.
+          encoder = await selectDeliveryVideoEncoder(this.runProcess, this.env, this.platform, compiled.plan.encoder)
+        } catch (error) {
+          throw new FinishingDeliveryValidationError(
+            error instanceof Error ? error.message : '无法确认正式交付编码器能力',
+            'VIDEO_FINISHING_UNAVAILABLE',
+          )
+        }
+        // Build argv during preflight as a fail-closed compiler validation.
+        // No process is launched and no output path is accepted from clients.
+        buildExecutionPlanRenderCommand(
+          videoBinary('ffmpeg', this.env, this.platform),
+          compiled.project,
+          compiled.plan,
+          join(this.repository.paths().root, '.preflight-validation-output'),
+          encoder,
+          {
+            ...(compiled.plan.caption?.mode === 'burn_in' ? { burnInCaptionPath: 'frozen-caption.srt' } : {}),
+            ...(compiled.plan.caption?.mode === 'burn_in' ? { burnInCaptionFontDirectory: this.controlledCaptionFontDirectory() } : {}),
+            ...(projectAssets.size ? { projectAssets } : {}),
+          },
+        )
+        const report = this.finishing.createPreflightReport({
+          project: compiled.project,
+          version: context.version,
+          timeline: context.timeline,
+          profile: context.profile,
+          executionPlanId: compiled.plan.id,
+        })
+        project = await this.repository.saveProject(videoStudioProjectSchema.parse({
+          ...compiled.project,
+          quality_reports: [...compiled.project.quality_reports, report],
+          finishing_receipts: [...compiled.project.finishing_receipts, this.finishingReceipt('quality_preflight', idempotencyKey, requestHash, [compiled.plan.id, report.id])],
+          revision: project.revision + 1,
+          updated_at: this.iso(),
+        }))
+        const task = await this.completeFinishingOperation(operation, report.state === 'passed' ? '交付预检通过' : '交付预检需要处理', {
+          execution_plan_id: compiled.plan.id,
+          report_id: report.id,
+          report,
+        })
+        return { project, plan: compiled.plan, report, task }
+      } catch (error) {
+        await this.failOperation(operation, 'MEDIA_VIDEO_FINISHING_UNAVAILABLE', '交付预检失败').catch(() => undefined)
+        if (error instanceof FinishingDeliveryValidationError) return this.finishingError(error)
+        return this.editorialError(error)
+      }
+    })
+  }
+
+  async getQualityReport(projectId: string, reportId: string): Promise<VideoQualityReport> {
+    const project = await this.requireVideoProject(projectId)
+    const report = project.quality_reports.find(candidate => candidate.id === reportId)
+    if (!report) throw new VideoWorkbenchServiceError('质量报告不存在', 404, 'VIDEO_QUALITY_REPORT_NOT_FOUND')
+    return report
+  }
+
+  /** Decode only a mono PCM stream and feed the local detector incrementally. */
+  async analyzeVideoBeat(
+    projectId: string,
+    raw: AnalyzeVideoBeatInput,
+    idempotencyKey: string,
+  ): Promise<VideoOperation> {
+    return await this.mutateProject(projectId, async () => {
+      const input = analyzeVideoBeatInputSchema.parse(raw)
+      const project = await this.prepareEditorialProject(projectId)
+      const requestHash = factBasisHash({ kind: 'beat_analyze', input })
+      const existing = (await this.repository.listOperations(project.id))
+        .find(candidate => candidate.kind === 'video.beat_analyze' && candidate.idempotency_key === idempotencyKey)
+      if (existing) {
+        if (existing.result?.request_hash !== requestHash) {
+          throw new VideoWorkbenchServiceError('同一幂等键不能分析不同的节拍素材', 409, 'VIDEO_EDITORIAL_IDEMPOTENCY_CONFLICT')
+        }
+        return existing
+      }
+      const source = project.sources.find(candidate => candidate.id === input.source_id)
+      if (!source || source.missing || source.content_changed) throw new VideoWorkbenchServiceError('节拍分析素材不可用', 404, 'VIDEO_SOURCE_NOT_FOUND')
+      const sourceFact = await this.repository.getFact('source', source.id).catch(() => null)
+      if (!sourceFact || !('fast_identity' in sourceFact) || !sourceFact.fingerprint) {
+        throw new VideoWorkbenchServiceError('素材原始流事实未就绪，不能安全分析节拍', 409, 'VIDEO_EDITORIAL_FACTS_UNAVAILABLE')
+      }
+      if (!sourceFact.primary_video_stream.duration) {
+        throw new VideoWorkbenchServiceError('素材原始视频流时长缺失，不能安全分析节拍', 409, 'VIDEO_EDITORIAL_FACTS_UNAVAILABLE')
+      }
+      const defaultAudio = sourceFact.audio_tracks.find(track => track.disposition_default) ?? sourceFact.audio_tracks[0]
+      const audioStreamIndex = input.audio_stream_index ?? defaultAudio?.stream_index
+      if (!Number.isSafeInteger(audioStreamIndex) || !sourceFact.audio_tracks.some(track => track.stream_index === audioStreamIndex)) {
+        throw new VideoWorkbenchServiceError('所选素材没有可分析的音频轨', 422, 'VIDEO_FINISHING_UNAVAILABLE')
+      }
+      const sourceCacheKey = factBasisHash({
+        analyzer_version: 'local-energy-v2',
+        source_id: source.id,
+        source_fingerprint: sourceFact.fingerprint,
+        audio_stream_index: audioStreamIndex,
+        primary_video_range: sourceTimeRange(sourceFact.primary_video_stream.start_time, sourceFact.primary_video_stream.duration),
+        sample_rate: 22_050,
+      })
+      const cached = (await this.repository.listFacts('evidence', project.id))
+        .find((fact): fact is Extract<VideoFactEvidence, { kind: 'beat_grid' }> => 'payload' in fact
+          && fact.kind === 'beat_grid'
+          && fact.source_id === source.id
+          && fact.source_fingerprint === sourceFact.fingerprint
+          && fact.payload.source_cache_key === sourceCacheKey)
+      if (cached) {
+        return await this.repository.saveOperation(this.operation({
+          schema_version: 1,
+          id: id('task'),
+          project_id: project.id,
+          kind: 'video.beat_analyze',
+          status: 'succeeded',
+          progress: 100,
+          stage: '已复用相同素材的本地节拍网格',
+          idempotency_key: idempotencyKey,
+          result: {
+            request_hash: requestHash,
+            source_id: source.id,
+            audio_stream_index: audioStreamIndex,
+            evidence_id: cached.id,
+            confidence: cached.payload.confidence,
+            ...(cached.payload.bpm ? { bpm: cached.payload.bpm } : {}),
+          },
+          created_at: this.iso(),
+          updated_at: this.iso(),
+        } as unknown as VideoOperation))
+      }
+      const operation = await this.repository.saveOperation(this.operation({
+        schema_version: 1,
+        id: id('task'),
+        project_id: project.id,
+        kind: 'video.beat_analyze',
+        status: 'queued',
+        progress: 0,
+        stage: '等待本地节拍分析',
+        idempotency_key: idempotencyKey,
+        result: { request_hash: requestHash, source_id: source.id, audio_stream_index: audioStreamIndex },
+        created_at: this.iso(),
+        updated_at: this.iso(),
+      } as unknown as VideoOperation))
+      const controller = new AbortController()
+      const active: ActiveVideoExecution = { controller, completion: Promise.resolve(), output_path: '' }
+      const readySource = sourceFact as VideoFactSource & { fingerprint: `sha256:${string}` }
+      active.completion = Promise.resolve().then(async () => await this.runBeatAnalysis(project, operation, readySource, audioStreamIndex, controller.signal))
+      this.activeAnalyses.set(operation.id, active)
+      return operation
+    })
+  }
+
+  /**
+   * Turn trusted local BeatGrid evidence into a reviewable TimelineDraft.
+   * It only adds edit boundaries; it never deletes footage or commits a new
+   * Timeline Version until the user accepts the normal CommandSet flow.
+   */
+  async createBeatSyncTimelineDraft(
+    projectId: string,
+    raw: CreateVideoBeatSyncDraftInput,
+    idempotencyKey: string,
+  ): Promise<{ project: VideoStudioProject; draft: TimelineDraft; task: VideoOperation }> {
+    return await this.mutateProject(projectId, async () => {
+      const input = createVideoBeatSyncDraftInputSchema.parse(raw)
+      let project = await this.prepareEditorialProject(projectId)
+      const current = this.editorial.currentTimeline(project)
+      if (current.id !== input.base_timeline_version_id) {
+        throw new VideoWorkbenchServiceError('编辑时间线已更新，请基于当前版本重新生成 Beat Sync 草稿', 409, 'VIDEO_EDITORIAL_STALE')
+      }
+      if (current.tracks.some(track => track.locked) || current.items.some(item => item.locked)) {
+        throw new VideoWorkbenchServiceError('时间线含有锁定轨道或条目，不能生成会替换结构的 Beat Sync 草稿', 409, 'VIDEO_EDITORIAL_LOCKED')
+      }
+      const requestHash = factBasisHash({ kind: 'beat_sync_draft', input })
+      const replay = this.finishingReplay(project, 'beat_sync_draft', idempotencyKey, requestHash)
+      if (replay) {
+        const draft = project.timeline_drafts.find(candidate => candidate.id === replay[0])
+        if (!draft) throw new VideoWorkbenchServiceError('Beat Sync 草稿幂等记录损坏', 500, 'VIDEO_FINISHING_INVALID')
+        if (!await this.isBeatSyncDraftCurrent(project, draft) || draft.base_timeline_version_id !== current.id) {
+          throw new VideoWorkbenchServiceError('原 BeatGrid 或时间线已过期，请重新生成 Beat Sync 草稿', 409, 'VIDEO_EDITORIAL_STALE')
+        }
+        const task = await this.startFinishingOperation(project, 'video.beat_sync_draft', idempotencyKey, requestHash, '生成 Beat Sync 草稿')
+        return {
+          project,
+          draft,
+          task: task.status === 'succeeded'
+            ? task
+            : await this.completeFinishingOperation(task, 'Beat Sync 草稿已按幂等请求复用', { timeline_draft_id: draft.id, evidence_id: input.beat_evidence_id }),
+        }
+      }
+      const source = project.sources.find(candidate => candidate.id === input.source_id)
+      if (!source || source.missing || source.content_changed || !source.fingerprint) {
+        throw new VideoWorkbenchServiceError('Beat Sync 素材不可用', 404, 'VIDEO_SOURCE_NOT_FOUND')
+      }
+      const rawEvidence = await this.repository.getFact('evidence', input.beat_evidence_id).catch(() => null)
+      if (!rawEvidence || !('payload' in rawEvidence) || rawEvidence.kind !== 'beat_grid'
+        || rawEvidence.source_id !== source.id || rawEvidence.source_fingerprint !== source.fingerprint) {
+        throw new VideoWorkbenchServiceError('BeatGrid 不属于当前素材或不存在', 422, 'VIDEO_FINISHING_UNAVAILABLE')
+      }
+      const beatEvidence = rawEvidence
+      const beatTimes = beatEvidence.payload.beats.length
+        ? beatEvidence.payload.beats.map(point => point.at)
+        : beatEvidence.payload.beat_times
+      if (beatEvidence.payload.confidence < 0.65 || beatTimes.length < 4 || !beatEvidence.payload.coverage.length) {
+        throw new VideoWorkbenchServiceError('BeatGrid 置信度或覆盖不足，已降级为普通剪辑，不能生成 Beat Sync 草稿', 422, 'VIDEO_FINISHING_UNAVAILABLE')
+      }
+      const tracks = new Map(current.tracks.map(track => [track.id, track]))
+      const affected = current.items.filter(item => item.binding.kind === 'source'
+        && item.binding.source_id === source.id
+        && (tracks.get(item.track_id)?.kind === 'primary_video' || tracks.get(item.track_id)?.kind === 'source_audio'))
+      const primaryItems = affected.filter(item => tracks.get(item.track_id)?.kind === 'primary_video')
+      // Beat evidence is measured in the primary-video PTS domain.  Audio
+      // may legitimately begin at another PTS and is paired from timeline
+      // cuts below, so requiring its absolute range here rejects valid media.
+      if (!primaryItems.length || primaryItems.some(item => item.binding.kind !== 'source' || !sourceRangeCoveredBy(
+        beatEvidence.payload.coverage,
+        sourceTimeRange(item.binding.source_range.start, item.binding.source_range.duration),
+      ))) {
+        throw new VideoWorkbenchServiceError('BeatGrid 未覆盖当前 A/V 剪辑范围，不能安全生成 Beat Sync 草稿', 422, 'VIDEO_FINISHING_UNAVAILABLE')
+      }
+      const operation = await this.startFinishingOperation(project, 'video.beat_sync_draft', idempotencyKey, requestHash, '生成 Beat Sync 草稿')
+      try {
+        const orderedBeats = [...beatTimes].sort((left, right) => compareRationalTime(left, right))
+        let cutCount = 0
+        const cutsByPrimaryLink = new Map<string, RationalTime[]>()
+        for (const item of primaryItems) {
+          const key = beatSyncAvLinkKey(item)
+          if (!key) continue
+          const cuts = beatSplitPoints(item, orderedBeats, input.minimum_cut_interval_ms)
+          cutsByPrimaryLink.set(key, cuts)
+          cutCount += cuts.length
+        }
+        const items = current.items.flatMap(item => {
+          if (item.binding.kind !== 'source' || item.binding.source_id !== source.id) return [structuredClone(item)]
+          const track = tracks.get(item.track_id)
+          if (track?.kind !== 'primary_video' && track?.kind !== 'source_audio') return [structuredClone(item)]
+          const key = beatSyncAvLinkKey(item)
+          const primaryCuts = key ? cutsByPrimaryLink.get(key) : undefined
+          if (track.kind === 'primary_video') return splitItemOnBeats(item, primaryCuts ?? [])
+          const pairedVideo = primaryItems.find(candidate => beatSyncAvLinkKey(candidate) === key)
+          if (!pairedVideo || !primaryCuts) {
+            throw new FinishingDeliveryValidationError('Beat Sync 找不到源音频对应的主视频 A/V link', 'VIDEO_FINISHING_UNAVAILABLE')
+          }
+          return splitItemOnBeats(item, pairedAudioBeatSplitPoints(pairedVideo, item, primaryCuts))
+        })
+        if (!cutCount) {
+          throw new FinishingDeliveryValidationError('当前时间线没有能在可信节拍处增加的剪辑边界', 'VIDEO_FINISHING_UNAVAILABLE')
+        }
+        const draft = timelineDraftSchema.parse({
+          id: id('draft'),
+          project_id: project.id,
+          facts_basis_hash: editorialFactsBasisHash(project),
+          base_timeline_version_id: current.id,
+          plan_ids: [beatEvidence.id],
+          beat_sync: {
+            evidence_id: beatEvidence.id,
+            source_id: source.id,
+            source_fingerprint: source.fingerprint,
+            analyzer_version: beatEvidence.payload.analyzer_version,
+            facts_basis_hash: beatEvidence.basis_hash,
+          },
+          tracks: structuredClone(current.tracks),
+          items,
+          status: 'proposed',
+          created_at: this.iso(),
+        })
+        validateEditorialTimeline(project, { ...current, tracks: draft.tracks, items: draft.items }, await this.editorialSourceBounds(project))
+        project = await this.repository.saveProject(videoStudioProjectSchema.parse({
+          ...project,
+          timeline_drafts: [...project.timeline_drafts, draft],
+          finishing_receipts: [...project.finishing_receipts, this.finishingReceipt('beat_sync_draft', idempotencyKey, requestHash, [draft.id])],
+          revision: project.revision + 1,
+          updated_at: this.iso(),
+        }))
+        const task = await this.completeFinishingOperation(operation, 'Beat Sync 草稿已生成，等待用户接受', {
+          timeline_draft_id: draft.id,
+          evidence_id: beatEvidence.id,
+          confidence: beatEvidence.payload.confidence,
+          cut_count: cutCount,
+        })
+        return { project, draft, task }
+      } catch (error) {
+        await this.failOperation(operation, 'MEDIA_VIDEO_FINISHING_UNAVAILABLE', 'Beat Sync 草稿生成失败').catch(() => undefined)
+        return this.finishingError(error)
+      }
+    })
+  }
+
+  private async decodeMonoPcm(input: {
+    sourcePath: string
+    audioStreamIndex: number
+    sampleRate: number
+    startSeconds: number
+    durationSeconds: number
+    signal: AbortSignal
+  }): Promise<PcmDecodeResult> {
+    if (this.pcmDecoder) return await this.pcmDecoder(input)
+    const child = Bun.spawn([
+      videoBinary('ffmpeg', this.env, this.platform), '-hide_banner', '-nostdin', '-v', 'error',
+      '-ss', input.startSeconds.toFixed(6), '-t', input.durationSeconds.toFixed(6),
+      '-i', input.sourcePath,
+      '-map', `0:${input.audioStreamIndex}`,
+      '-ac', '1', '-ar', String(input.sampleRate), '-f', 'f32le', 'pipe:1',
+    ], { stdout: 'pipe', stderr: 'pipe', signal: input.signal })
+    const chunks = async function* (): AsyncGenerator<Uint8Array<ArrayBufferLike>> {
+      const reader = child.stdout.getReader()
+      try {
+        while (true) {
+          const next = await reader.read()
+          if (next.done) return
+          if (next.value) yield next.value
+        }
+      } finally {
+        reader.releaseLock()
+      }
+    }
+    return {
+      chunks: chunks(),
+      completion: Promise.all([new Response(child.stderr).text(), child.exited])
+        .then(([stderr, exitCode]) => ({ stderr, exitCode })),
+    }
+  }
+
+  private async runBeatAnalysis(
+    project: VideoStudioProject,
+    operation: VideoOperation,
+    source: VideoFactSource & { fingerprint: `sha256:${string}` },
+    audioStreamIndex: number,
+    signal: AbortSignal,
+  ): Promise<void> {
+    try {
+      const sourceDuration = source.primary_video_stream.duration
+      if (!sourceDuration) throw new VideoWorkbenchServiceError('素材原始视频流时长缺失，不能安全分析节拍', 409, 'VIDEO_EDITORIAL_FACTS_UNAVAILABLE')
+      const audio = source.audio_tracks.find(track => track.stream_index === audioStreamIndex)
+      if (!audio?.duration) throw new VideoWorkbenchServiceError('所选音频轨时间范围缺失，不能安全分析节拍', 409, 'VIDEO_EDITORIAL_FACTS_UNAVAILABLE')
+      const videoRange = sourceTimeRange(source.primary_video_stream.start_time, sourceDuration)
+      const audioRange = sourceTimeRange(audio.start_time, audio.duration)
+      const decodeStart = compareRationalTime(videoRange.start, audioRange.start) >= 0 ? videoRange.start : audioRange.start
+      const videoEnd = endOfRange(videoRange)
+      const audioEnd = endOfRange(audioRange)
+      const decodeEnd = compareRationalTime(videoEnd, audioEnd) <= 0 ? videoEnd : audioEnd
+      if (compareRationalTime(decodeEnd, decodeStart) <= 0) {
+        throw new VideoWorkbenchServiceError('所选音频轨与主视频原始 PTS 没有交集，不能安全分析节拍', 422, 'VIDEO_FINISHING_UNAVAILABLE')
+      }
+      const decodeRange = sourceTimeRange(
+        decodeStart,
+        rationalTime(
+          parseInt64(rescaleRationalTime(decodeEnd, decodeStart.tick_rate, 'nearest').ticks)
+            - parseInt64(decodeStart.ticks),
+          decodeStart.tick_rate,
+        ),
+      )
+      const startSeconds = rationalSecondsBetween(audio.start_time, decodeRange.start)
+      const durationSeconds = rationalSecondsBetween(decodeRange.start, endOfRange(decodeRange))
+      const running = await this.repository.saveOperation(this.operation({
+        ...operation,
+        status: 'running',
+        progress: 10,
+        stage: '正在解码本地音频并检测节拍',
+      }))
+      const sampleRate = 22_050
+      const decoded = await this.decodeMonoPcm({
+        sourcePath: source.path,
+        audioStreamIndex,
+        sampleRate,
+        startSeconds,
+        durationSeconds,
+        signal,
+      })
+      const [grid, outcome] = await Promise.all([
+        detectBeatGridFromPcmChunks(decoded.chunks, sampleRate, decodeRange.start),
+        decoded.completion,
+      ])
+      const { stderr, exitCode } = outcome
+      if (exitCode !== 0 || signal.aborted) throw new Error(stderr || 'beat analysis interrupted')
+      const evidence = createHostedEvidence({
+        kind: 'beat_grid',
+        projectId: project.id,
+        source,
+        range: decodeRange,
+        payload: {
+          ...grid,
+          created_by_operation_id: operation.id,
+          source_cache_key: factBasisHash({
+            analyzer_version: grid.analyzer_version,
+            source_id: source.id,
+          source_fingerprint: source.fingerprint,
+          audio_stream_index: audioStreamIndex,
+          primary_video_range: videoRange,
+          sample_rate: grid.sample_rate,
+          }),
+          cache_key: factBasisHash({
+            analyzer_version: grid.analyzer_version,
+            source_id: source.id,
+            source_fingerprint: source.fingerprint,
+            audio_stream_index: audioStreamIndex,
+            sample_rate: grid.sample_rate,
+            source_range: decodeRange,
+            pcm_hash: grid.pcm_hash,
+          }),
+        },
+        promptVersion: grid.analyzer_version,
+        createdAt: this.iso(),
+        confidence: grid.confidence,
+      })
+      await this.repository.saveFact(evidence)
+      await this.repository.saveOperation(this.operation({
+        ...running,
+        status: 'succeeded',
+        progress: 100,
+        stage: grid.confidence >= 0.65 ? '本地节拍网格已就绪' : '节拍置信度不足，已降级为普通剪辑',
+        result: { ...(running.result ?? {}), evidence_id: evidence.id, confidence: grid.confidence, ...(grid.bpm ? { bpm: grid.bpm } : {}) },
+      }))
+    } catch {
+      await this.failOperation(operation, signal.aborted ? 'MEDIA_VIDEO_ANALYSIS_INTERRUPTED' : 'MEDIA_VIDEO_ANALYSIS_UNAVAILABLE', signal.aborted ? '节拍分析已取消' : '节拍分析失败').catch(() => undefined)
+    } finally {
+      this.activeAnalyses.delete(operation.id)
+    }
+  }
+
+  /**
+   * Build a conservative local track from already validated object evidence.
+   * This operation never calls a remote model and never fills a long evidence
+   * gap with an invented position; callers get a typed unavailable result when
+   * the factual anchors are insufficient for a usable track.
+   */
+  async analyzeVideoSubjectTrack(
+    projectId: string,
+    raw: AnalyzeVideoSubjectTrackInput,
+    idempotencyKey: string,
+  ): Promise<{ project: VideoStudioProject; evidence: Extract<VideoFactEvidence, { kind: 'subject_track' }>; task: VideoOperation }> {
+    return await this.mutateProject(projectId, async () => {
+      const input = analyzeVideoSubjectTrackInputSchema.parse(raw)
+      let project = await this.prepareEditorialProject(projectId)
+      const requestHash = factBasisHash({ kind: 'subject_track', input })
+      const replay = this.finishingReplay(project, 'subject_track', idempotencyKey, requestHash)
+      if (replay) {
+        const evidence = await this.repository.getFact('evidence', replay[0]!).catch(() => null)
+        if (!evidence || !('payload' in evidence) || evidence.kind !== 'subject_track') {
+          throw new VideoWorkbenchServiceError('主体轨迹幂等记录损坏', 500, 'VIDEO_FINISHING_INVALID')
+        }
+        const task = await this.startFinishingOperation(project, 'video.subject_track', idempotencyKey, requestHash, '生成主体轨迹')
+        return {
+          project,
+          evidence,
+          task: task.status === 'succeeded'
+            ? task
+            : await this.completeFinishingOperation(task, '主体轨迹已按幂等请求复用', { evidence_id: evidence.id, subject_id: input.subject_id }),
+        }
+      }
+      const source = project.sources.find(candidate => candidate.id === input.source_id)
+      if (!source || source.missing || source.content_changed) {
+        throw new VideoWorkbenchServiceError('主体轨迹素材不可用', 404, 'VIDEO_SOURCE_NOT_FOUND')
+      }
+      const sourceFact = await this.repository.getFact('source', source.id).catch(() => null)
+      if (!sourceFact || !('fast_identity' in sourceFact) || !sourceFact.fingerprint || !sourceFact.primary_video_stream.start_time || !sourceFact.primary_video_stream.duration) {
+        throw new VideoWorkbenchServiceError('素材原始视频流事实未就绪，不能安全生成主体轨迹', 409, 'VIDEO_EDITORIAL_FACTS_UNAVAILABLE')
+      }
+      const primaryVideoStart = sourceFact.primary_video_stream.start_time
+      const primaryVideoDuration = sourceFact.primary_video_stream.duration
+      const readySource = sourceFact as VideoFactSource & { fingerprint: `sha256:${string}` }
+      const fullRange = sourceTimeRange(primaryVideoStart, primaryVideoDuration)
+      const requestedRange = input.source_range
+        ? sourceTimeRange(input.source_range.start, input.source_range.duration)
+        : fullRange
+      if (
+        compareRationalTime(requestedRange.start, fullRange.start) < 0
+        || compareRationalTime(endOfRange(requestedRange), endOfRange(fullRange)) > 0
+      ) {
+        throw new VideoWorkbenchServiceError('主体轨迹范围超出素材原始视频流边界', 422, 'VIDEO_EDITORIAL_INVALID')
+      }
+      const operation = await this.startFinishingOperation(project, 'video.subject_track', idempotencyKey, requestHash, '生成主体轨迹')
+      try {
+        const objectEvidence = (await this.repository.listFacts('evidence', project.id))
+          .filter((fact): fact is Extract<VideoFactEvidence, { kind: 'object' }> => 'payload' in fact
+            && fact.kind === 'object'
+            && fact.source_id === readySource.id
+            && fact.source_fingerprint === readySource.fingerprint
+            && fact.payload.subject_id === input.subject_id
+            && Boolean(fact.payload.normalized_box)
+            && (fact.confidence ?? 0) >= 0.65)
+          .map(fact => ({
+            evidence_id: fact.id,
+            range: fact.range,
+            confidence: fact.confidence ?? 0,
+            box: fact.payload.normalized_box!,
+          }))
+        const tracked = trackSubject(requestedRange, objectEvidence)
+        if (!tracked.points.length || !tracked.anchor_evidence_ids.length) {
+          throw new FinishingDeliveryValidationError('当前范围没有足够可信的主体证据，已保留原构图', 'VIDEO_FINISHING_UNAVAILABLE')
+        }
+        const evidence = createHostedEvidence({
+          kind: 'subject_track',
+          projectId: project.id,
+          source: readySource,
+          range: requestedRange,
+          payload: {
+            subject_id: input.subject_id,
+            analyzer_version: tracked.analyzer_version,
+            anchor_evidence_ids: tracked.anchor_evidence_ids,
+            points: tracked.points,
+            unresolved_ranges: tracked.unresolved_ranges,
+            created_by_operation_id: operation.id,
+          },
+          promptVersion: tracked.analyzer_version,
+          createdAt: this.iso(),
+          confidence: tracked.confidence,
+        })
+        await this.repository.saveFact(evidence)
+        project = await this.repository.saveProject(videoStudioProjectSchema.parse({
+          ...project,
+          finishing_receipts: [...project.finishing_receipts, this.finishingReceipt('subject_track', idempotencyKey, requestHash, [evidence.id])],
+          revision: project.revision + 1,
+          updated_at: this.iso(),
+        }))
+        const task = await this.completeFinishingOperation(operation, '主体轨迹已生成', {
+          source_id: source.id,
+          evidence_id: evidence.id,
+          subject_id: input.subject_id,
+          confidence: tracked.confidence,
+        })
+        return { project, evidence, task }
+      } catch (error) {
+        await this.failOperation(operation, 'MEDIA_VIDEO_FINISHING_UNAVAILABLE', '主体轨迹生成失败').catch(() => undefined)
+        return this.finishingError(error)
       }
     })
   }
@@ -2050,6 +4000,13 @@ export class VideoWorkbenchService {
     })
   }
 
+  private async captionFileResponse(path: string): Promise<Response> {
+    const info = await stat(path).catch(() => null)
+    if (!info?.isFile()) throw new VideoWorkbenchServiceError('视频预览字幕不可用', 404, 'VIDEO_ASSET_NOT_FOUND')
+    const contentType = extname(path).toLowerCase() === '.vtt' ? 'text/vtt; charset=utf-8' : 'application/x-subrip; charset=utf-8'
+    return new Response(Bun.file(path), { headers: { 'Content-Type': contentType, 'Content-Length': String(info.size) } })
+  }
+
   async sourceResponse(projectId: string, sourceId: string, request: Request): Promise<Response> {
     const project = await this.requireVideoProject(projectId)
     const source = project.sources.find(candidate => candidate.id === sourceId)
@@ -2068,6 +4025,21 @@ export class VideoWorkbenchService {
     const path = resolve(root, asset.storage.locator)
     if (!path.startsWith(`${root}/`)) throw new VideoWorkbenchServiceError('视频预览地址无效', 404, 'VIDEO_ASSET_NOT_FOUND')
     return await this.videoFileResponse(path, request)
+  }
+
+  async previewSidecarResponse(projectId: string, assetId: string): Promise<Response> {
+    const project = await this.requireVideoProject(projectId)
+    const preview = project.preview
+    if (!preview || preview.asset_id !== assetId || !preview.sidecar_caption) {
+      throw new VideoWorkbenchServiceError('找不到视频预览字幕', 404, 'VIDEO_ASSET_NOT_FOUND')
+    }
+    const root = resolve(this.repository.paths().assets)
+    const locator = join(project.id, `${assetId}.${preview.sidecar_caption.format}`)
+    const path = resolve(root, locator)
+    if (!path.startsWith(`${root}/`) || await videoFingerprint(path).catch(() => null) !== preview.sidecar_caption.content_hash) {
+      throw new VideoWorkbenchServiceError('视频预览字幕不可用', 404, 'VIDEO_ASSET_NOT_FOUND')
+    }
+    return await this.captionFileResponse(path)
   }
 
   /**
@@ -2344,13 +4316,17 @@ export class VideoWorkbenchService {
       const project = await this.prepareEditorialProject(projectId)
       try {
         const current = this.editorial.currentTimeline(project)
-        const items = this.editorial.itemsFromLegacyClips(project, input.clips, current.tracks, await this.editorialTimings(project))
+        const [timing, sourceBounds] = await Promise.all([
+          this.editorialTimings(project),
+          this.editorialSourceBounds(project),
+        ])
+        const items = this.editorial.itemsFromLegacyClips(project, input.clips, current.tracks, timing, sourceBounds)
         const commandSet = this.legacyProjectionCommandSet(
           project,
           items,
           `legacy-update-${factBasisHash({ base_revision: input.base_revision, base_timeline_version_id: baseVersionId, clips: input.clips })}`,
         )
-        const applied = this.editorial.applyCommandSet(project, commandSet, await this.editorialSourceBounds(project))
+        const applied = this.editorial.applyCommandSet(project, commandSet, sourceBounds)
         if (applied.reused) return project
         // The formal v1 Version is a read-only projection of the accepted
         // CommandSet target. Preview/Render consume this exact projection, so
@@ -2386,13 +4362,17 @@ export class VideoWorkbenchService {
       const project = await this.prepareEditorialProject(projectId)
       try {
         const current = this.editorial.currentTimeline(project)
-        const items = this.editorial.itemsFromLegacyScenes(project, version.scenes, current.tracks, await this.editorialTimings(project))
+        const [timing, sourceBounds] = await Promise.all([
+          this.editorialTimings(project),
+          this.editorialSourceBounds(project),
+        ])
+        const items = this.editorial.itemsFromLegacyScenes(project, version.scenes, current.tracks, timing, sourceBounds)
         const commandSet = this.legacyProjectionCommandSet(
           project,
           items,
           `legacy-select-${factBasisHash({ revision: input.revision, version_id: version.id })}`,
         )
-        const applied = this.editorial.applyCommandSet(project, commandSet, await this.editorialSourceBounds(project))
+        const applied = this.editorial.applyCommandSet(project, commandSet, sourceBounds)
         if (applied.reused) return project
         return await this.repository.saveProject(videoStudioProjectSchema.parse({
           ...applied.project,
@@ -2457,13 +4437,17 @@ export class VideoWorkbenchService {
       const project = await this.prepareEditorialProject(projectId)
       try {
         const current = this.editorial.currentTimeline(project)
-        const items = this.editorial.itemsFromLegacyScenes(project, alternative.scenes, current.tracks, await this.editorialTimings(project))
+        const [timing, sourceBounds] = await Promise.all([
+          this.editorialTimings(project),
+          this.editorialSourceBounds(project),
+        ])
+        const items = this.editorial.itemsFromLegacyScenes(project, alternative.scenes, current.tracks, timing, sourceBounds)
         const commandSet = this.legacyProjectionCommandSet(
           project,
           items,
           `legacy-alternative-${factBasisHash({ base_revision: input.base_revision, alternative_id: alternative.id })}`,
         )
-        const applied = this.editorial.applyCommandSet(project, commandSet, await this.editorialSourceBounds(project))
+        const applied = this.editorial.applyCommandSet(project, commandSet, sourceBounds)
         if (applied.reused) return project
         const formalVersion = this.timelineVersion(
           applied.project,
@@ -3784,7 +5768,12 @@ export class VideoWorkbenchService {
     }
 
     const start = parseInt64(source.primary_video_stream.start_time.ticks)
-    const end = start + parseInt64(source.presentation_duration.ticks)
+    const primaryDuration = source.primary_video_stream.duration
+    if (!primaryDuration) {
+      gaps.push(`${source.name} 缺少原始视频流时长，已拒绝生成镜头边界。`)
+      return { derivatives, cameraShots, gaps }
+    }
+    const end = start + parseInt64(primaryDuration.ticks)
     const bounds = [start, ...cuts, end]
     for (let index = 0; index < bounds.length - 1; index += 1) {
       const lower = bounds[index]!
@@ -3918,21 +5907,432 @@ export class VideoWorkbenchService {
     }
   }
 
-  private async movePublishedFile(source: string, destination: string): Promise<void> {
+  /**
+   * The fallback copy must have a deterministic, operation-private witness.
+   * Keeping it until the whole group has committed lets recovery prove that a
+   * cross-device destination came from this publish, rather than deleting a
+   * same-named user file after a crash.
+   */
+  private publicationWitnessPath(source: string, destination: string): string {
+    const identity = createHash('sha256')
+      .update(`${resolve(source)}\u0000${resolve(destination)}`)
+      .digest('hex')
+    return join(dirname(destination), `.${basename(destination)}.publishing-${identity}`)
+  }
+
+  private outputExistsError(): VideoWorkbenchServiceError {
+    return new VideoWorkbenchServiceError(
+      '导出位置已有文件，正式发布不会覆盖它',
+      409,
+      'VIDEO_OUTPUT_EXISTS',
+    )
+  }
+
+  private async publicationSourceHash(source: string, expectedHash?: string): Promise<string> {
+    const actual = await videoFingerprint(source).catch(() => null)
+    if (!actual) {
+      throw new VideoWorkbenchServiceError('交付临时文件已丢失，不能继续发布', 409, 'VIDEO_OUTPUT_UNAVAILABLE')
+    }
+    if (expectedHash && actual !== expectedHash) {
+      throw new VideoWorkbenchServiceError('交付临时文件校验失败，不能继续发布', 409, 'VIDEO_FINISHING_STALE')
+    }
+    return expectedHash ?? actual
+  }
+
+  private async samePublishedFile(left: string, right: string): Promise<boolean> {
+    const [leftInfo, rightInfo] = await Promise.all([
+      stat(left).catch(() => null),
+      stat(right).catch(() => null),
+    ])
+    return Boolean(
+      leftInfo?.isFile()
+      && rightInfo?.isFile()
+      && leftInfo.dev === rightInfo.dev
+      && leftInfo.ino === rightInfo.ino,
+    )
+  }
+
+  private async removeOwnedPublishedDestination(
+    source: string | undefined,
+    destination: string,
+  ): Promise<void> {
+    const destinationHash = await videoFingerprint(destination).catch(() => null)
+    if (!destinationHash) return
+    const witnesses = [
+      source,
+      ...(source ? [this.publicationWitnessPath(source, destination)] : []),
+    ].filter((candidate): candidate is string => Boolean(candidate))
+    for (const witness of witnesses) {
+      if (await videoFingerprint(witness).catch(() => null) !== destinationHash) continue
+      // The final name is removable only when it is still the byte sequence
+      // linked from our managed temporary source or fallback witness.
+      if (await this.samePublishedFile(witness, destination)) {
+        await rm(destination, { force: true }).catch(() => undefined)
+        return
+      }
+    }
+  }
+
+  private async clearPublicationArtifacts(files: ReadonlyArray<{
+    source?: string
+    destination: string
+  }>, cleanup: { removeDestinations: boolean; removeSources: boolean }): Promise<void> {
+    await Promise.all(files.map(async file => {
+      if (cleanup.removeDestinations) {
+        await this.removeOwnedPublishedDestination(file.source, file.destination)
+      }
+      if (cleanup.removeSources && file.source) {
+        await rm(file.source, { force: true }).catch(() => undefined)
+        await rm(this.publicationWitnessPath(file.source, file.destination), { force: true }).catch(() => undefined)
+      }
+    }))
+  }
+
+  /**
+   * Create a destination without ever replacing an existing user file. A
+   * hard-link is atomic on the common same-volume path. For cross-device
+   * sources the private witness remains until the complete group succeeds.
+   */
+  private async linkPublishedFile(source: string, destination: string): Promise<void> {
     await mkdir(dirname(destination), { recursive: true, mode: 0o700 })
     try {
-      await rename(source, destination)
+      await link(source, destination)
+      return
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'EXDEV') throw error
-      await copyFile(source, destination)
-      await rm(source, { force: true })
+      const code = (error as NodeJS.ErrnoException).code
+      if (code === 'EEXIST') throw this.outputExistsError()
+      if (code !== 'EXDEV') throw error
     }
+    const staging = this.publicationWitnessPath(source, destination)
+    let createdStaging = false
+    try {
+      try {
+        await copyFile(source, staging, fsConstants.COPYFILE_EXCL)
+        createdStaging = true
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
+        const [sourceHash, stagingHash] = await Promise.all([
+          videoFingerprint(source).catch(() => null),
+          videoFingerprint(staging).catch(() => null),
+        ])
+        if (!sourceHash || stagingHash !== sourceHash) {
+          throw new VideoWorkbenchServiceError('交付发布见证文件不匹配，不能继续发布', 409, 'VIDEO_FINISHING_STALE')
+        }
+      }
+      try {
+        await link(staging, destination)
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'EEXIST') throw this.outputExistsError()
+        throw error
+      }
+    } catch (error) {
+      if (createdStaging) await rm(staging, { force: true }).catch(() => undefined)
+      throw error
+    }
+  }
+
+  private async publishFiles(files: ReadonlyArray<{
+    source: string
+    destination: string
+    content_hash?: string
+  }>): Promise<void> {
+    if (!files.length || new Set(files.map(file => file.destination)).size !== files.length) {
+      throw new VideoWorkbenchServiceError('交付发布文件组无效', 409, 'VIDEO_FINISHING_STALE')
+    }
+    const prepared: Array<{ source: string; destination: string; content_hash: string }> = []
+    for (const file of files) {
+      prepared.push({ ...file, content_hash: await this.publicationSourceHash(file.source, file.content_hash) })
+    }
+    const published: typeof prepared = []
+    try {
+      for (const file of prepared) {
+        await this.linkPublishedFile(file.source, file.destination)
+        published.push(file)
+        if (await videoFingerprint(file.destination).catch(() => null) !== file.content_hash) {
+          throw new VideoWorkbenchServiceError('交付发布文件校验失败，不能继续发布', 409, 'VIDEO_FINISHING_STALE')
+        }
+      }
+    } catch (error) {
+      // Only destinations linked by this invocation have a managed witness,
+      // so rollback cannot erase a competing user file with identical bytes.
+      await this.clearPublicationArtifacts(published, { removeDestinations: true, removeSources: false })
+      await Promise.all(prepared.map(async file => {
+        await rm(this.publicationWitnessPath(file.source, file.destination), { force: true }).catch(() => undefined)
+      }))
+      throw error
+    }
+    await this.clearPublicationArtifacts(prepared, { removeDestinations: false, removeSources: true })
+  }
+
+  /**
+   * Recovery may see a first destination from the same group already linked.
+   * It accepts that destination only when its verified hash matches exactly,
+   * then links the missing members from retained managed bytes. No existing
+   * destination is ever replaced.
+   */
+  private async resumePublishedFiles(files: ReadonlyArray<{
+    source?: string
+    destination: string
+    content_hash: string
+  }>): Promise<void> {
+    if (!files.length || new Set(files.map(file => file.destination)).size !== files.length) {
+      throw new VideoWorkbenchServiceError('交付发布文件组无效', 409, 'VIDEO_FINISHING_STALE')
+    }
+    for (const file of files) {
+      const destinationHash = await videoFingerprint(file.destination).catch(() => null)
+      if (destinationHash) {
+        if (destinationHash !== file.content_hash) throw this.outputExistsError()
+        continue
+      }
+      if (!file.source) {
+        throw new VideoWorkbenchServiceError('交付临时文件已丢失，不能继续发布', 409, 'VIDEO_OUTPUT_UNAVAILABLE')
+      }
+      const sourceHash = await videoFingerprint(file.source).catch(() => null)
+      if (sourceHash === file.content_hash) {
+        try {
+          await this.linkPublishedFile(file.source, file.destination)
+        } catch (error) {
+          // A second recovery worker can race the first link. It is still an
+          // idempotent continuation only when the newly visible bytes match
+          // the frozen receipt exactly.
+          if (!(error instanceof VideoWorkbenchServiceError
+            && error.code === 'VIDEO_OUTPUT_EXISTS'
+            && await videoFingerprint(file.destination).catch(() => null) === file.content_hash)) {
+            throw error
+          }
+        }
+      } else {
+        const witness = this.publicationWitnessPath(file.source, file.destination)
+        if (await videoFingerprint(witness).catch(() => null) !== file.content_hash) {
+          throw new VideoWorkbenchServiceError('交付临时文件校验失败，不能继续发布', 409, 'VIDEO_FINISHING_STALE')
+        }
+        try {
+          await link(witness, file.destination)
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === 'EEXIST'
+            && await videoFingerprint(file.destination).catch(() => null) === file.content_hash) {
+            continue
+          }
+          if ((error as NodeJS.ErrnoException).code === 'EEXIST') throw this.outputExistsError()
+          throw error
+        }
+      }
+      if (await videoFingerprint(file.destination).catch(() => null) !== file.content_hash) {
+        throw new VideoWorkbenchServiceError('交付发布文件校验失败，不能继续发布', 409, 'VIDEO_FINISHING_STALE')
+      }
+    }
+    await this.clearPublicationArtifacts(files, { removeDestinations: false, removeSources: true })
+  }
+
+  private async movePublishedFile(source: string, destination: string): Promise<void> {
+    await this.publishFiles([{ source, destination }])
+  }
+
+  private renderPublicationFiles(result: VideoRenderTaskResult): Array<{
+    source?: string
+    destination: string
+    content_hash: string
+  }> {
+    if (!result.output_path || !result.output_content_hash || !result.output_verification) {
+      throw new VideoWorkbenchServiceError('交付发布记录不完整，不能继续发布', 409, 'VIDEO_FINISHING_STALE')
+    }
+    const files = [{
+      source: result.temporary_output,
+      destination: result.output_path,
+      content_hash: result.output_content_hash,
+    }]
+    const sidecar = result.output_verification.sidecar_caption
+    if (sidecar) {
+      if (!result.sidecar_caption_path) {
+        throw new VideoWorkbenchServiceError('字幕交付文件记录不完整，不能继续发布', 409, 'VIDEO_FINISHING_STALE')
+      }
+      files.push({
+        source: result.temporary_sidecar_path,
+        destination: result.sidecar_caption_path,
+        content_hash: sidecar.content_hash,
+      })
+    }
+    return files
+  }
+
+  private deliveryPreflight(
+    project: VideoStudioProject,
+    variantId: string,
+    expectedVersionId: string,
+  ): {
+    context: ReturnType<VideoWorkbenchService['deliveryVariantContext']>
+    plan: VideoExecutionPlan
+    report: VideoQualityReport
+  } {
+    const context = this.deliveryVariantContext(project, variantId, expectedVersionId)
+    const report = [...project.quality_reports]
+      .reverse()
+      .find(candidate => candidate.kind === 'preflight'
+        && candidate.editorial_timeline_version_id === context.timeline.id
+        && candidate.delivery_variant_version_id === context.version.id
+        && candidate.export_profile_revision_id === context.profile.id)
+    if (!report?.execution_plan_id) {
+      throw new VideoWorkbenchServiceError('请先对当前交付变体完成预检', 409, 'VIDEO_QUALITY_BLOCKED')
+    }
+    const plan = project.execution_plans.find(candidate => candidate.id === report.execution_plan_id)
+    if (!plan
+      || plan.editorial_timeline_version_id !== context.timeline.id
+      || plan.delivery_variant_version_id !== context.version.id
+      || plan.encoder.id !== context.profile.id
+      || plan.encoder.content_hash !== context.profile.content_hash) {
+      throw new VideoWorkbenchServiceError('预检执行计划已经过期，请重新预检', 409, 'VIDEO_FINISHING_STALE')
+    }
+    if (report.state !== 'passed') {
+      throw new VideoWorkbenchServiceError('当前交付变体尚未通过预检', 409, 'VIDEO_QUALITY_BLOCKED')
+    }
+    return { context, plan, report }
+  }
+
+  private executionPlanDurationMs(plan: VideoExecutionPlan): number {
+    const duration = plan.timeline_items.reduce((latest, item) => {
+      const end = timeToMilliseconds(endOfRange(item.timeline_range))
+      return Math.max(latest, end)
+    }, 0)
+    if (!Number.isSafeInteger(duration) || duration <= 0) {
+      throw new VideoWorkbenchServiceError('执行计划没有可验证的交付时长', 409, 'VIDEO_FINISHING_INVALID')
+    }
+    return duration
+  }
+
+  private deliveryOutputExtension(profile: VideoExportProfileRevision): '.mp4' | '.mov' {
+    return profile.encoding.container === 'mp4' ? '.mp4' : '.mov'
+  }
+
+  private deliveryOutputMime(profile: VideoExportProfileRevision): 'video/mp4' | 'video/quicktime' {
+    return profile.encoding.container === 'mp4' ? 'video/mp4' : 'video/quicktime'
+  }
+
+  /**
+   * Resolve only managed, attested project assets.  The immutable Timeline
+   * carries an id/hash pair; a path is deliberately resolved here at the
+   * server boundary and never accepted from a CommandSet or Renderer.
+   */
+  private async deliveryProjectAssets(
+    project: VideoStudioProject,
+    plan: VideoExecutionPlan,
+  ): Promise<Map<string, ExecutionPlanProjectAsset>> {
+    const root = resolve(this.repository.paths().assets)
+    const resolved = new Map<string, ExecutionPlanProjectAsset>()
+    for (const item of plan.timeline_items) {
+      if (item.binding.kind !== 'project_asset') continue
+      const binding = item.binding
+      const existing = resolved.get(binding.asset_id)
+      if (existing) {
+        if (existing.content_hash !== binding.asset_content_hash) {
+          throw new VideoWorkbenchServiceError('同一项目资产在执行计划中出现冲突内容哈希', 409, 'VIDEO_FINISHING_STALE')
+        }
+        continue
+      }
+      const asset = project.assets.find(candidate => candidate.id === binding.asset_id)
+      if (!asset || asset.storage.kind !== 'managed' || !asset.content_hash || asset.content_hash !== binding.asset_content_hash) {
+        throw new VideoWorkbenchServiceError('执行计划引用的受管项目资产不可用或已变化', 409, 'VIDEO_FINISHING_STALE')
+      }
+      if (!project.video_asset_attestations.some(attestation => attestation.asset_id === asset.id && attestation.license_attestation.trim())) {
+        throw new VideoWorkbenchServiceError('执行计划引用的项目资产缺少来源或许可声明', 409, 'VIDEO_FINISHING_INVALID')
+      }
+      const path = resolve(root, asset.storage.locator)
+      if (!path.startsWith(`${root}/`)) {
+        throw new VideoWorkbenchServiceError('受管项目资产定位符无效', 409, 'VIDEO_FINISHING_INVALID')
+      }
+      const contentHash = await videoFingerprint(path).catch(() => null)
+      if (!contentHash || contentHash !== binding.asset_content_hash) {
+        throw new VideoWorkbenchServiceError('受管项目资产字节校验失败', 409, 'VIDEO_FINISHING_STALE')
+      }
+      resolved.set(asset.id, {
+        path,
+        content_hash: contentHash,
+        ...(asset.mime_type ? { mime_type: asset.mime_type } : {}),
+      })
+    }
+    return resolved
+  }
+
+  private async runDeliveryExecution(
+    project: VideoStudioProject,
+    plan: VideoExecutionPlan,
+    outputPath: string,
+    signal: AbortSignal,
+    burnInCaptionPath?: string,
+  ): Promise<ReturnType<typeof selectDeliveryVideoEncoder> extends Promise<infer T> ? T : never> {
+    await this.assertExecutionPlanFiltersSupported(plan)
+    const projectAssets = await this.deliveryProjectAssets(project, plan)
+    const executionOptions = {
+      ...(burnInCaptionPath ? { burnInCaptionPath } : {}),
+      ...(burnInCaptionPath ? { burnInCaptionFontDirectory: this.controlledCaptionFontDirectory() } : {}),
+      ...(projectAssets.size ? { projectAssets } : {}),
+    }
+    let encoder = await selectDeliveryVideoEncoder(this.runProcess, this.env, this.platform, plan.encoder)
+    let result = await this.runProcess(
+      buildExecutionPlanRenderCommand(
+        videoBinary('ffmpeg', this.env, this.platform),
+        project,
+        plan,
+        outputPath,
+        encoder,
+        executionOptions,
+      ),
+      { signal },
+    )
+    const isHardware = encoder.name === 'h264_videotoolbox' || encoder.name === 'h264_mf'
+    if (result.exitCode !== 0 && !signal.aborted && !this.env.BB_FFMPEG_VIDEO_ENCODER?.trim() && isHardware) {
+      const failedEncoder = encoder.name === 'h264_videotoolbox' ? 'h264_videotoolbox' : 'h264_mf'
+      await rm(outputPath, { force: true }).catch(() => undefined)
+      encoder = await selectDeliveryVideoEncoder(this.runProcess, this.env, this.platform, plan.encoder, {
+        forceSoftware: true,
+        fallbackFrom: failedEncoder,
+      })
+      result = await this.runProcess(
+        buildExecutionPlanRenderCommand(
+          videoBinary('ffmpeg', this.env, this.platform),
+          project,
+          plan,
+          outputPath,
+          encoder,
+          executionOptions,
+        ),
+        { signal },
+      )
+    }
+    if (result.exitCode !== 0 || signal.aborted) {
+      throw new Error(result.stderr || 'delivery execution interrupted')
+    }
+    return encoder
+  }
+
+  /** Relay's startup probe owns the matching font face; no host fallback is valid for burn-in. */
+  private controlledCaptionFontDirectory(): string {
+    const directory = this.env.VIDEO_MEDIA_SUBTITLE_FONT_DIR?.trim()
+    if (!directory || !isAbsolute(directory)) {
+      throw new VideoWorkbenchServiceError('受控字幕字体目录未配置，不能安全烧录字幕', 503, 'VIDEO_FINISHING_UNAVAILABLE')
+    }
+    return directory
+  }
+
+  private findOperationReplay(
+    operations: VideoOperation[],
+    kind: 'video.preview' | 'video.render',
+    idempotencyKey: string,
+    requestHash: `sha256:${string}`,
+  ): VideoOperation | null {
+    const existing = operations.find(candidate => candidate.kind === kind && candidate.idempotency_key === idempotencyKey)
+    if (!existing) return null
+    if (existing.result?.request_hash !== requestHash) {
+      throw new VideoWorkbenchServiceError('同一幂等键不能提交不同的预览或导出请求', 409, 'VIDEO_EDITORIAL_IDEMPOTENCY_CONFLICT')
+    }
+    return existing
   }
 
   private async failOperation(
     operation: VideoOperation,
     code:
       | 'MEDIA_VIDEO_SOURCE_UNREADABLE'
+      | 'MEDIA_VIDEO_ANALYSIS_UNAVAILABLE'
+      | 'MEDIA_VIDEO_FINISHING_UNAVAILABLE'
       | 'MEDIA_VIDEO_PROBE_INTERRUPTED'
       | 'MEDIA_VIDEO_ANALYSIS_INTERRUPTED'
       | 'MEDIA_VIDEO_PREVIEW_FAILED'
@@ -3940,7 +6340,8 @@ export class VideoWorkbenchService {
       | 'MEDIA_VIDEO_PREVIEW_INTERRUPTED'
       | 'MEDIA_VIDEO_EXPORT_FAILED'
       | 'MEDIA_VIDEO_EXPORT_CANCELLED'
-      | 'MEDIA_VIDEO_EXPORT_INTERRUPTED',
+      | 'MEDIA_VIDEO_EXPORT_INTERRUPTED'
+      | 'MEDIA_VIDEO_QUALITY_BLOCKED',
     stage: string,
   ): Promise<VideoOperation> {
     const failure = mediaSafeError(code)
@@ -4043,6 +6444,10 @@ export class VideoWorkbenchService {
         result: { ...(running.result ?? {}), temporary_output: temporary, content_hash: verified.content_hash },
       }))
       const parsed = videoPreviewTaskResultSchema.parse(committing.result)
+      const expectedSidecarAssetPath = `/api/videos/projects/${project.id}/previews/${parsed.asset_id}/sidecar`
+      if (parsed.sidecar_caption && parsed.sidecar_caption.asset_path !== expectedSidecarAssetPath) {
+        throw new VideoWorkbenchServiceError('预览字幕资源记录不匹配，不能发布', 409, 'VIDEO_PREVIEW_STALE')
+      }
       await this.mutateProject(project.id, async () => {
         const latest = await this.requireVideoProject(project.id)
         if (
@@ -4084,6 +6489,192 @@ export class VideoWorkbenchService {
       await this.failOperation(operation, signal.aborted ? 'MEDIA_VIDEO_PREVIEW_CANCELLED' : 'MEDIA_VIDEO_PREVIEW_FAILED', signal.aborted ? '已取消' : '预览生成失败').catch(() => undefined)
     } finally {
       await rm(temporary, { force: true }).catch(() => undefined)
+      this.activePreviews.delete(operation.id)
+    }
+  }
+
+  /**
+   * Formal previews never project legacy scenes.  They execute the exact
+   * immutable Variant Version and ExecutionPlan that passed preflight.
+   */
+  async previewDeliveryVariant(
+    projectId: string,
+    variantId: string,
+    raw: PreviewVideoVariantInput,
+    idempotencyKey: string,
+  ): Promise<VideoOperation> {
+    return await this.mutateProject(projectId, async () => {
+      const input = previewVideoVariantInputSchema.parse(raw)
+      let project = await this.prepareEditorialProject(projectId)
+      const requestHash = factBasisHash({ kind: 'preview_delivery_variant', variant_id: variantId, input })
+      const replay = this.findOperationReplay(await this.repository.listOperations(project.id), 'video.preview', idempotencyKey, requestHash)
+      if (replay) return replay
+      if (project.revision !== input.base_revision) throw new VideoWorkbenchServiceError('视频项目已更新，请刷新后再生成预览', 409, 'VIDEO_REVISION_CONFLICT')
+      const { context, plan, report } = this.deliveryPreflight(project, variantId, input.base_variant_version_id)
+      const existing = project.preview_task_id ? await this.repository.getOperation(project.preview_task_id).catch(() => null) : null
+      if (existing && ['queued', 'running', 'committing'].includes(existing.status)) {
+        throw new VideoWorkbenchServiceError('请先等待当前预览完成或取消', 409, 'VIDEO_PREVIEW_ACTIVE')
+      }
+      const toolchain = await this.toolchainStatus()
+      if (!toolchain.ffmpeg.available || !toolchain.ffprobe.available) {
+        throw new VideoWorkbenchServiceError(mediaSafeError('MEDIA_VIDEO_TOOLCHAIN_UNAVAILABLE').message, 503, 'VIDEO_TOOLCHAIN_UNAVAILABLE')
+      }
+      const assetId = `preview_${randomUUID().replaceAll('-', '')}`
+      const extension = this.deliveryOutputExtension(context.profile)
+      const outputPath = join(this.repository.paths().assets, project.id, `${assetId}${extension}`)
+      const operation = await this.repository.saveOperation(this.operation({
+        schema_version: 1,
+        id: id('task'),
+        project_id: project.id,
+        kind: 'video.preview',
+        status: 'queued',
+        progress: 0,
+        stage: '等待按冻结交付版本生成预览',
+        idempotency_key: idempotencyKey,
+        result: {
+          request_hash: requestHash,
+          preview_revision: project.revision,
+          timeline_version_id: context.timeline.id,
+          delivery_variant_version_id: context.version.id,
+          execution_plan_id: plan.id,
+          preflight_report_id: report.id,
+          asset_id: assetId,
+          asset_path: `/api/videos/projects/${project.id}/previews/${assetId}/content`,
+        },
+        created_at: this.iso(),
+        updated_at: this.iso(),
+      } as unknown as VideoOperation))
+      project = await this.repository.saveProject(videoStudioProjectSchema.parse({
+        ...project,
+        preview_task_id: operation.id,
+        error: undefined,
+        error_code: undefined,
+      }))
+      const controller = new AbortController()
+      const active: ActiveVideoExecution = { controller, completion: Promise.resolve(), output_path: outputPath }
+      active.completion = Promise.resolve().then(async () => await this.runDeliveryPreview(project, operation, plan, outputPath, controller.signal))
+      this.activePreviews.set(operation.id, active)
+      return operation
+    })
+  }
+
+  private async runDeliveryPreview(
+    project: VideoStudioProject,
+    operation: VideoOperation,
+    plan: VideoExecutionPlan,
+    outputPath: string,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const temporary = `${outputPath}.partial-${operation.id}${extname(outputPath)}`
+    const captionPath = plan.caption?.mode === 'burn_in' ? `${temporary}.captions.srt` : undefined
+    const outputExtension = extname(outputPath)
+    const sidecarPath = plan.caption?.mode === 'sidecar'
+      ? `${outputPath.slice(0, -outputExtension.length)}.${plan.caption.sidecar_format ?? 'srt'}`
+      : undefined
+    const temporarySidecarPath = sidecarPath
+      ? join(dirname(sidecarPath), `${basename(sidecarPath, extname(sidecarPath))}.partial-${operation.id}${extname(sidecarPath)}`)
+      : undefined
+    let published = false
+    try {
+      await mkdir(dirname(outputPath), { recursive: true, mode: 0o700 })
+      const running = await this.repository.saveOperation(this.operation({
+        ...operation,
+        status: 'running',
+        progress: 10,
+        stage: '正在按冻结交付版本生成预览',
+        result: {
+          ...(operation.result ?? {}),
+          temporary_output: temporary,
+          ...(temporarySidecarPath ? { temporary_sidecar_path: temporarySidecarPath } : {}),
+        },
+      }))
+      if (captionPath) await writeExecutionPlanCaption(plan, captionPath, 'srt')
+      const sidecar = temporarySidecarPath && plan.caption
+        ? await writeExecutionPlanCaption(plan, temporarySidecarPath, plan.caption.sidecar_format ?? 'srt')
+        : null
+      const encoder = await this.runDeliveryExecution(project, plan, temporary, signal, captionPath)
+      await this.assertSourcesUnchanged(project)
+      const verified = await verifyVideoOutput(temporary, this.runProcess, videoBinary('ffprobe', this.env, this.platform))
+      const committing = await this.repository.saveOperation(this.operation({
+        ...running,
+        status: 'committing',
+        progress: 95,
+        stage: '正在发布交付预览',
+        result: {
+          ...(running.result ?? {}),
+          temporary_output: temporary,
+          content_hash: verified.content_hash,
+          video_encoder: encoder.name,
+          ...(encoder.fallback_from ? { encoder_fallback_from: encoder.fallback_from } : {}),
+          ...(sidecar && plan.caption ? {
+            sidecar_caption: {
+              format: plan.caption.sidecar_format ?? 'srt',
+              asset_path: `/api/videos/projects/${project.id}/previews/${basename(outputPath, outputExtension)}/sidecar`,
+              byte_size: sidecar.byte_size,
+              content_hash: sidecar.content_hash,
+              caption_basis_hash: plan.caption.basis_hash,
+            },
+          } : {}),
+        },
+      }))
+      const parsed = videoPreviewTaskResultSchema.parse(committing.result)
+      await this.mutateProject(project.id, async () => {
+        const latest = await this.requireVideoProject(project.id)
+        const variant = parsed.delivery_variant_version_id
+          ? latest.delivery_variants.find(candidate => latest.delivery_variant_versions.some(version => version.id === parsed.delivery_variant_version_id && version.variant_id === candidate.id))
+          : undefined
+        if (
+          latest.revision !== parsed.preview_revision
+          || !variant
+          || variant.current_version_id !== parsed.delivery_variant_version_id
+          || latest.preview_task_id !== operation.id
+        ) throw new VideoWorkbenchServiceError('交付变体已更新，本次预览不再发布', 409, 'VIDEO_PREVIEW_STALE')
+        await this.publishFiles([
+          { source: temporary, destination: outputPath, content_hash: verified.content_hash },
+          ...(temporarySidecarPath && sidecarPath && parsed.sidecar_caption
+            ? [{ source: temporarySidecarPath, destination: sidecarPath, content_hash: parsed.sidecar_caption.content_hash }]
+            : []),
+        ])
+        published = true
+        const profile = plan.encoder
+        const asset: MediaAsset = {
+          id: parsed.asset_id,
+          role: 'preview',
+          version_id: plan.delivery_variant_version_id,
+          storage: { kind: 'managed', locator: join(project.id, basename(outputPath)) },
+          mime_type: this.deliveryOutputMime(profile),
+          byte_size: verified.byte_size,
+          content_hash: verified.content_hash,
+          created_at: this.iso(),
+        }
+        await this.repository.saveProject(videoStudioProjectSchema.parse({
+          ...latest,
+          assets: [...latest.assets.filter(candidate => candidate.role !== 'preview'), asset],
+          preview: {
+            timeline_version_id: plan.editorial_timeline_version_id,
+            delivery_variant_version_id: plan.delivery_variant_version_id,
+            execution_plan_id: plan.id,
+            asset_id: parsed.asset_id,
+            asset_path: parsed.asset_path,
+            content_hash: verified.content_hash,
+            ...(parsed.sidecar_caption ? { sidecar_caption: parsed.sidecar_caption } : {}),
+            created_at: this.iso(),
+          },
+        }))
+      })
+      await this.repository.saveOperation(this.operation({
+        ...committing,
+        status: 'succeeded',
+        progress: 100,
+        stage: '交付预览已就绪',
+        result: { ...(committing.result ?? {}), temporary_output: undefined, temporary_sidecar_path: undefined, content_hash: verified.content_hash },
+      }))
+    } catch {
+      if (!published) await this.failOperation(operation, signal.aborted ? 'MEDIA_VIDEO_PREVIEW_CANCELLED' : 'MEDIA_VIDEO_PREVIEW_FAILED', signal.aborted ? '已取消' : '交付预览生成失败').catch(() => undefined)
+    } finally {
+      await rm(temporary, { force: true }).catch(() => undefined)
+      if (captionPath) await rm(captionPath, { force: true }).catch(() => undefined)
+      if (temporarySidecarPath) await rm(temporarySidecarPath, { force: true }).catch(() => undefined)
       this.activePreviews.delete(operation.id)
     }
   }
@@ -4296,6 +6887,792 @@ export class VideoWorkbenchService {
     }
   }
 
+  /** Formal export follows the same frozen Variant/Plan path as preview. */
+  async renderDeliveryVariant(
+    projectId: string,
+    variantId: string,
+    raw: RenderVideoVariantInput,
+    idempotencyKey: string,
+  ): Promise<VideoOperation> {
+    return await this.mutateProject(projectId, async () => {
+      const input = renderVideoVariantInputSchema.parse(raw)
+      let project = await this.prepareEditorialProject(projectId)
+      const requestHash = factBasisHash({ kind: 'render_delivery_variant', variant_id: variantId, input })
+      const replay = this.findOperationReplay(await this.repository.listOperations(project.id), 'video.render', idempotencyKey, requestHash)
+      if (replay) return replay
+      if (project.state === 'rendering') {
+        throw new VideoWorkbenchServiceError('已有交付导出正在运行，请先等待或取消', 409, 'VIDEO_RENDER_STATE_CONFLICT')
+      }
+      if (project.preview_task_id) {
+        const preview = await this.repository.getOperation(project.preview_task_id).catch(() => null)
+        if (preview && ['queued', 'running', 'committing'].includes(preview.status)) {
+          throw new VideoWorkbenchServiceError('请先等待当前预览完成或取消', 409, 'VIDEO_PREVIEW_ACTIVE')
+        }
+      }
+      if (project.revision !== input.base_revision) throw new VideoWorkbenchServiceError('视频项目已更新，请刷新后再导出', 409, 'VIDEO_REVISION_CONFLICT')
+      const { context, plan, report } = this.deliveryPreflight(project, variantId, input.base_variant_version_id)
+      if (!isAbsolute(input.output_path)) throw new VideoWorkbenchServiceError('导出路径必须是绝对路径', 400, 'VIDEO_OUTPUT_PATH_INVALID')
+      const outputPath = resolve(input.output_path)
+      const extension = extname(outputPath).toLowerCase()
+      if (extension !== this.deliveryOutputExtension(context.profile)) {
+        throw new VideoWorkbenchServiceError('导出文件扩展名必须与冻结的交付规格一致', 400, 'VIDEO_OUTPUT_FORMAT_INVALID')
+      }
+      if (project.sources.some(source => resolve(source.path) === outputPath)) {
+        throw new VideoWorkbenchServiceError('导出位置不能覆盖原始视频素材', 409, 'VIDEO_OUTPUT_OVERWRITES_SOURCE')
+      }
+      if (await stat(outputPath).then(() => true).catch(() => false)) {
+        throw new VideoWorkbenchServiceError('导出位置已有文件，正式导出不会覆盖它', 409, 'VIDEO_OUTPUT_EXISTS')
+      }
+      const sidecarPath = plan.caption?.mode === 'sidecar'
+        ? `${outputPath.slice(0, -extension.length)}.${plan.caption.sidecar_format ?? 'srt'}`
+        : undefined
+      if (sidecarPath && await stat(sidecarPath).then(() => true).catch(() => false)) {
+        throw new VideoWorkbenchServiceError('字幕输出位置已有文件，正式导出不会覆盖它', 409, 'VIDEO_OUTPUT_EXISTS')
+      }
+      const toolchain = await this.toolchainStatus()
+      if (!toolchain.ffmpeg.available || !toolchain.ffprobe.available) {
+        throw new VideoWorkbenchServiceError(mediaSafeError('MEDIA_VIDEO_TOOLCHAIN_UNAVAILABLE').message, 503, 'VIDEO_TOOLCHAIN_UNAVAILABLE')
+      }
+      if (this.activeRenders.size >= this.renderQueueLimit()) {
+        throw new VideoWorkbenchServiceError('视频导出队列已满，请等待当前导出完成后再试', 429, 'VIDEO_RENDER_QUEUE_FULL')
+      }
+      const operation = await this.repository.saveOperation(this.operation({
+        schema_version: 1,
+        id: id('task'),
+        project_id: project.id,
+        kind: 'video.render',
+        status: 'queued',
+        progress: 0,
+        stage: '等待按冻结交付版本导出',
+        idempotency_key: idempotencyKey,
+        result: {
+          request_hash: requestHash,
+          render_revision: project.revision,
+          timeline_version_id: context.timeline.id,
+          delivery_variant_version_id: context.version.id,
+          execution_plan_id: plan.id,
+          preflight_report_id: report.id,
+          output_path: outputPath,
+          ...(sidecarPath ? { sidecar_caption_path: sidecarPath } : {}),
+        },
+        created_at: this.iso(),
+        updated_at: this.iso(),
+      } as unknown as VideoOperation))
+      project = await this.repository.saveProject(videoStudioProjectSchema.parse({
+        ...project,
+        state: 'rendering',
+        task_id: operation.id,
+        output_path: outputPath,
+        output_asset_id: undefined,
+        output_content_hash: undefined,
+        output_verification: undefined,
+        error: undefined,
+        error_code: undefined,
+      }))
+      const controller = new AbortController()
+      const active: ActiveVideoExecution = { controller, completion: Promise.resolve(), output_path: outputPath }
+      active.completion = this.enqueueRender(async () => {
+        active.started = true
+        if (active.cancelledBeforeStart) return
+        await this.runDeliveryRender(project, operation, plan, outputPath, controller.signal)
+      })
+      this.activeRenders.set(operation.id, active)
+      return operation
+    })
+  }
+
+  private async runDeliveryRender(
+    project: VideoStudioProject,
+    operation: VideoOperation,
+    plan: VideoExecutionPlan,
+    outputPath: string,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const extension = this.deliveryOutputExtension(plan.encoder)
+    const temporary = join(dirname(outputPath), `${basename(outputPath, extension)}.partial-${operation.id}${extension}`)
+    const burnInCaptionPath = plan.caption?.mode === 'burn_in' ? `${temporary}.captions.srt` : undefined
+    const sidecarPath = plan.caption?.mode === 'sidecar'
+      ? `${outputPath.slice(0, -extension.length)}.${plan.caption.sidecar_format ?? 'srt'}`
+      : undefined
+    const temporarySidecarPath = sidecarPath
+      ? join(dirname(sidecarPath), `${basename(sidecarPath, extname(sidecarPath))}.partial-${operation.id}${extname(sidecarPath)}`)
+      : undefined
+    let published = false
+    let retainTemporaryOutput = false
+    // After the parent records a quality wait, that receipt owns the
+    // temporary bytes. Later projection writes are recoverable and must not
+    // overwrite the parent back to a stale queued state or delete the bytes.
+    let durableQualityWait = false
+    try {
+      if (signal.aborted) throw new Error('render cancelled before start')
+      await mkdir(dirname(outputPath), { recursive: true, mode: 0o700 })
+      const running = await this.repository.saveOperation(this.operation({
+        ...operation,
+        status: 'running',
+        progress: 10,
+        stage: '正在按冻结交付版本导出',
+        result: {
+          ...(operation.result ?? {}),
+          temporary_output: temporary,
+          ...(temporarySidecarPath ? { temporary_sidecar_path: temporarySidecarPath } : {}),
+        },
+      }))
+      if (burnInCaptionPath) await writeExecutionPlanCaption(plan, burnInCaptionPath, 'srt')
+      const sidecar = temporarySidecarPath && plan.caption
+        ? await writeExecutionPlanCaption(plan, temporarySidecarPath, plan.caption.sidecar_format ?? 'srt')
+        : null
+      const encoder = await this.runDeliveryExecution(project, plan, temporary, signal, burnInCaptionPath)
+      await this.assertSourcesUnchanged(project)
+      const verificationOperation = await this.repository.saveOperation(this.operation({
+        schema_version: 1,
+        id: id('task'),
+        project_id: project.id,
+        kind: 'video.output_verify',
+        status: 'running',
+        progress: 30,
+        stage: '正在校验实际导出文件',
+        result: { parent_operation_id: operation.id, execution_plan_id: plan.id, output_path: temporary },
+        created_at: this.iso(),
+        updated_at: this.iso(),
+      } as unknown as VideoOperation))
+      let inspected: Awaited<ReturnType<typeof verifyDeliveryVideoOutput>>
+      try {
+        inspected = await verifyDeliveryVideoOutput({
+          path: temporary,
+          runProcess: this.runProcess,
+          ffmpeg: videoBinary('ffmpeg', this.env, this.platform),
+          ffprobe: videoBinary('ffprobe', this.env, this.platform),
+          expected_duration_ms: this.executionPlanDurationMs(plan),
+          expected_profile: plan.encoder,
+        })
+        await this.repository.saveOperation(this.operation({
+          ...verificationOperation,
+          status: 'succeeded',
+          progress: 100,
+          stage: '实际导出文件校验通过',
+          result: { ...(verificationOperation.result ?? {}), output_verification: inspected },
+        }))
+      } catch (error) {
+        await this.failOperation(verificationOperation, 'MEDIA_VIDEO_EXPORT_FAILED', '实际导出文件校验失败').catch(() => undefined)
+        throw error
+      }
+      const verification: VideoOutputVerification = {
+        timeline_version_id: plan.editorial_timeline_version_id,
+        delivery_variant_version_id: plan.delivery_variant_version_id,
+        execution_plan_id: plan.id,
+        ...inspected,
+        ...(sidecar && plan.caption ? {
+          sidecar_caption: {
+            format: plan.caption.sidecar_format ?? 'srt',
+            byte_size: sidecar.byte_size,
+            content_hash: sidecar.content_hash,
+            caption_basis_hash: plan.caption.basis_hash,
+          },
+        } : {}),
+        verified_at: this.iso(),
+      }
+      const variantId = project.delivery_variant_versions.find(candidate => candidate.id === plan.delivery_variant_version_id)?.variant_id
+      if (!variantId) throw new VideoWorkbenchServiceError('执行计划引用的交付变体已不存在', 409, 'VIDEO_FINISHING_STALE')
+      const context = this.deliveryVariantContext(project, variantId, plan.delivery_variant_version_id)
+      const report = this.finishing.createPostRenderReport({
+        project,
+        version: context.version,
+        timeline: context.timeline,
+        profile: context.profile,
+        executionPlanId: plan.id,
+        output: verification,
+      })
+      const outputAssetId = `out_${randomUUID().replaceAll('-', '')}`
+      let waitingForQuality: VideoOperation | undefined
+      if (report.state === 'needs_user_decision') {
+        // Persist the recovery authority before its denormalized projections.
+        // A restart can reconstruct the Project report from this exact receipt.
+        waitingForQuality = await this.repository.saveOperation(this.operation({
+          ...running,
+          status: 'committing',
+          progress: 90,
+          stage: '导出后质量报告等待人工确认',
+          result: {
+            ...(running.result ?? {}),
+            temporary_output: temporary,
+            ...(temporarySidecarPath ? { temporary_sidecar_path: temporarySidecarPath } : {}),
+            output_asset_id: outputAssetId,
+            output_content_hash: verification.content_hash,
+            output_verification: verification,
+            post_render_report_id: report.id,
+            post_render_report: report,
+            awaiting_quality_confirmation: true,
+            video_encoder: encoder.name,
+            ...(encoder.fallback_from ? { encoder_fallback_from: encoder.fallback_from } : {}),
+            ...(sidecarPath ? { sidecar_caption_path: sidecarPath } : {}),
+          },
+        }))
+        durableQualityWait = true
+        retainTemporaryOutput = true
+        videoRenderTaskResultSchema.parse(waitingForQuality.result)
+      }
+      const qualityOperation = await this.repository.saveOperation(this.operation({
+        schema_version: 1,
+        id: id('task'),
+        project_id: project.id,
+        kind: 'video.quality_post_render',
+        status: 'running',
+        progress: 50,
+        stage: '正在生成导出后质量报告',
+        result: { parent_operation_id: operation.id, execution_plan_id: plan.id, report_id: report.id },
+        created_at: this.iso(),
+        updated_at: this.iso(),
+      } as unknown as VideoOperation))
+      await this.repository.saveOperation(this.operation({
+        ...qualityOperation,
+        status: report.state === 'blocked' ? 'failed' : 'succeeded',
+        progress: 100,
+        stage: report.state === 'passed'
+          ? '导出后质量报告通过'
+          : report.state === 'needs_user_decision'
+            ? '导出后质量报告等待人工确认'
+            : '导出后质量报告阻止交付',
+        result: { ...(qualityOperation.result ?? {}), report },
+        ...(report.state === 'blocked' ? { error: mediaSafeError('MEDIA_VIDEO_QUALITY_BLOCKED').message, error_code: 'MEDIA_VIDEO_QUALITY_BLOCKED' } : {}),
+      }))
+      if (report.state === 'blocked') {
+        await this.mutateProject(project.id, async () => {
+          const latest = await this.requireVideoProject(project.id)
+          if (latest.task_id !== operation.id) return
+          const failure = mediaSafeError('MEDIA_VIDEO_QUALITY_BLOCKED')
+          await this.repository.saveProject(videoStudioProjectSchema.parse({
+            ...latest,
+            state: 'ready',
+            task_id: undefined,
+            quality_reports: [...latest.quality_reports, report],
+            error: failure.message,
+            error_code: failure.code,
+          }))
+        })
+        throw new VideoWorkbenchServiceError('导出文件未通过质量报告，未发布到目标位置', 409, 'VIDEO_QUALITY_BLOCKED')
+      }
+      if (report.state === 'needs_user_decision') {
+        if (!waitingForQuality) {
+          throw new VideoWorkbenchServiceError('质量确认等待状态未能持久化', 503, 'VIDEO_FINISHING_UNAVAILABLE')
+        }
+        await this.persistPendingPostRenderQualityReport(project.id, waitingForQuality)
+        return
+      }
+      const committing = await this.repository.saveOperation(this.operation({
+        ...running,
+        status: 'committing',
+        progress: 95,
+        stage: '正在发布已验证的交付文件',
+        result: {
+          ...(running.result ?? {}),
+          temporary_output: temporary,
+          ...(temporarySidecarPath ? { temporary_sidecar_path: temporarySidecarPath } : {}),
+          output_asset_id: outputAssetId,
+          output_content_hash: verification.content_hash,
+          output_verification: verification,
+          post_render_report_id: report.id,
+          post_render_report: report,
+          video_encoder: encoder.name,
+          ...(encoder.fallback_from ? { encoder_fallback_from: encoder.fallback_from } : {}),
+          ...(sidecarPath ? { sidecar_caption_path: sidecarPath } : {}),
+        },
+      }))
+      const parsed = videoRenderTaskResultSchema.parse(committing.result)
+      await this.mutateProject(project.id, async () => {
+        const latest = await this.requireVideoProject(project.id)
+        const variant = parsed.delivery_variant_version_id
+          ? latest.delivery_variants.find(candidate => candidate.current_version_id === parsed.delivery_variant_version_id)
+          : undefined
+        if (
+          latest.revision !== parsed.render_revision
+          || !variant
+          || latest.task_id !== operation.id
+        ) throw new VideoWorkbenchServiceError('交付变体已更新，本次导出结果不再发布', 409, 'VIDEO_RENDER_STALE')
+        await this.publishFiles([
+          { source: temporary, destination: outputPath, content_hash: verification.content_hash },
+          ...(temporarySidecarPath && sidecarPath && verification.sidecar_caption
+            ? [{ source: temporarySidecarPath, destination: sidecarPath, content_hash: verification.sidecar_caption.content_hash }]
+            : []),
+        ])
+        published = true
+        const asset: MediaAsset = {
+          id: outputAssetId,
+          role: 'export',
+          version_id: plan.delivery_variant_version_id,
+          storage: { kind: 'external', locator: outputPath },
+          mime_type: this.deliveryOutputMime(plan.encoder),
+          byte_size: verification.byte_size,
+          content_hash: verification.content_hash,
+          created_at: this.iso(),
+        }
+        await this.repository.saveProject(videoStudioProjectSchema.parse({
+          ...latest,
+          assets: [...latest.assets.filter(candidate => candidate.role !== 'export'), asset],
+          state: 'complete',
+          output_path: outputPath,
+          output_asset_id: outputAssetId,
+          output_content_hash: verification.content_hash,
+          output_verification: verification,
+          quality_reports: [...latest.quality_reports, report],
+          error: undefined,
+          error_code: undefined,
+        }))
+      })
+      await this.repository.saveOperation(this.operation({
+        ...committing,
+        status: 'succeeded',
+        progress: 100,
+        stage: '交付导出完成',
+        result: { ...(committing.result ?? {}), temporary_output: undefined, temporary_sidecar_path: undefined },
+      }))
+    } catch (error) {
+      if (!published && !durableQualityWait) {
+        const qualityBlocked = error instanceof VideoWorkbenchServiceError && error.code === 'VIDEO_QUALITY_BLOCKED'
+        await this.failOperation(
+          operation,
+          qualityBlocked ? 'MEDIA_VIDEO_QUALITY_BLOCKED' : signal.aborted ? 'MEDIA_VIDEO_EXPORT_CANCELLED' : 'MEDIA_VIDEO_EXPORT_FAILED',
+          qualityBlocked ? '导出后质量报告未通过' : signal.aborted ? '已取消' : '交付导出失败',
+        ).catch(() => undefined)
+        const latest = await this.project(project.id).catch(() => null)
+        if (latest?.task_id === operation.id) {
+          const failure = mediaSafeError(qualityBlocked ? 'MEDIA_VIDEO_QUALITY_BLOCKED' : signal.aborted ? 'MEDIA_VIDEO_EXPORT_CANCELLED' : 'MEDIA_VIDEO_EXPORT_FAILED')
+          await this.repository.saveProject(videoStudioProjectSchema.parse({
+            ...latest,
+            state: signal.aborted ? 'ready' : 'failed',
+            error: failure.message,
+            error_code: failure.code,
+          })).catch(() => undefined)
+        }
+      }
+    } finally {
+      if (!retainTemporaryOutput) await rm(temporary, { force: true }).catch(() => undefined)
+      if (burnInCaptionPath) await rm(burnInCaptionPath, { force: true }).catch(() => undefined)
+      if (!retainTemporaryOutput && temporarySidecarPath) await rm(temporarySidecarPath, { force: true }).catch(() => undefined)
+      this.activeRenders.delete(operation.id)
+    }
+  }
+
+  private pendingPostRenderQuality(
+    project: VideoStudioProject,
+    operation: VideoOperation,
+  ): PendingPostRenderQuality {
+    const parsed = videoRenderTaskResultSchema.safeParse(operation.result)
+    if (
+      !parsed.success
+      || !parsed.data.execution_plan_id
+      || !parsed.data.delivery_variant_version_id
+      || !parsed.data.output_asset_id
+      || !parsed.data.output_content_hash
+      || !parsed.data.output_verification
+      || !parsed.data.post_render_report_id
+      || !parsed.data.post_render_report
+    ) {
+      throw new VideoWorkbenchServiceError('等待确认的导出记录不完整，不能发布文件', 409, 'VIDEO_FINISHING_STALE')
+    }
+    const result = parsed.data
+    const report = result.post_render_report!
+    const outputVerification = result.output_verification!
+    const plan = project.execution_plans.find(candidate => candidate.id === result.execution_plan_id)
+    const version = project.delivery_variant_versions.find(candidate => candidate.id === result.delivery_variant_version_id)
+    const variant = version && project.delivery_variants.find(candidate => candidate.id === version.variant_id)
+    const storedReport = project.quality_reports.find(candidate => candidate.id === report.id)
+    if (
+      operation.kind !== 'video.render'
+      || report.id !== result.post_render_report_id
+      || report.kind !== 'post_render'
+      || report.state !== 'needs_user_decision'
+      || report.project_id !== project.id
+      || report.execution_plan_id !== result.execution_plan_id
+      || report.delivery_variant_version_id !== result.delivery_variant_version_id
+      || report.output_verification?.content_hash !== result.output_content_hash
+      || outputVerification.content_hash !== result.output_content_hash
+      || outputVerification.execution_plan_id !== result.execution_plan_id
+      || outputVerification.delivery_variant_version_id !== result.delivery_variant_version_id
+      || !plan
+      || plan.delivery_variant_version_id !== result.delivery_variant_version_id
+      || plan.encoder.id !== report.export_profile_revision_id
+      || !version
+      || variant?.current_version_id !== version.id
+      || project.revision !== result.render_revision
+      || !storedReport
+      || JSON.stringify(storedReport) !== JSON.stringify(report)
+      || report.checks.some(check => check.state === 'blocked')
+    ) {
+      throw new VideoWorkbenchServiceError('后渲染质量报告或冻结交付版本已变化，不能继续发布', 409, 'VIDEO_FINISHING_STALE')
+    }
+    return { result, report, plan }
+  }
+
+  /**
+   * The parent render Operation is written before this denormalized Project
+   * projection.  Rebuild the projection from that immutable parent receipt on
+   * retry/startup, rather than making a process stop between the two writes
+   * discard a verified output that is waiting for a human decision.
+   */
+  private async persistPendingPostRenderQualityReport(
+    projectId: string,
+    operation: VideoOperation,
+  ): Promise<VideoStudioProject> {
+    const parsed = videoRenderTaskResultSchema.safeParse(operation.result)
+    if (
+      !parsed.success
+      || operation.kind !== 'video.render'
+      || operation.status !== 'committing'
+      || parsed.data.awaiting_quality_confirmation !== true
+      || !parsed.data.execution_plan_id
+      || !parsed.data.delivery_variant_version_id
+      || !parsed.data.output_asset_id
+      || !parsed.data.output_content_hash
+      || !parsed.data.output_verification
+      || !parsed.data.post_render_report_id
+      || !parsed.data.post_render_report
+    ) {
+      throw new VideoWorkbenchServiceError('等待确认的导出记录不完整，不能恢复质量报告', 409, 'VIDEO_FINISHING_STALE')
+    }
+    const result = parsed.data
+    const report = result.post_render_report!
+    const outputVerification = result.output_verification!
+    return await this.mutateProject(projectId, async () => {
+      const latest = await this.requireVideoProject(projectId)
+      const plan = latest.execution_plans.find(candidate => candidate.id === result.execution_plan_id)
+      const version = latest.delivery_variant_versions.find(candidate => candidate.id === result.delivery_variant_version_id)
+      const variant = version && latest.delivery_variants.find(candidate => candidate.id === version.variant_id)
+      if (
+        latest.task_id !== operation.id
+        || latest.revision !== result.render_revision
+        || !plan
+        || plan.delivery_variant_version_id !== result.delivery_variant_version_id
+        || !version
+        || variant?.current_version_id !== version.id
+        || report.id !== result.post_render_report_id
+        || report.kind !== 'post_render'
+        || report.state !== 'needs_user_decision'
+        || report.project_id !== latest.id
+        || report.editorial_timeline_version_id !== plan.editorial_timeline_version_id
+        || report.delivery_variant_version_id !== result.delivery_variant_version_id
+        || report.execution_plan_id !== result.execution_plan_id
+        || report.export_profile_revision_id !== plan.encoder.id
+        || report.output_verification?.content_hash !== result.output_content_hash
+        || outputVerification.content_hash !== result.output_content_hash
+        || outputVerification.execution_plan_id !== result.execution_plan_id
+        || outputVerification.delivery_variant_version_id !== result.delivery_variant_version_id
+        || report.checks.some(check => check.state === 'blocked')
+      ) {
+        throw new VideoWorkbenchServiceError('后渲染质量报告或冻结交付版本已变化，不能恢复确认状态', 409, 'VIDEO_FINISHING_STALE')
+      }
+      const stored = latest.quality_reports.find(candidate => candidate.id === report.id)
+      if (stored) {
+        if (JSON.stringify(stored) !== JSON.stringify(report)) {
+          throw new VideoWorkbenchServiceError('已保存的质量报告与渲染收据不一致，不能恢复确认状态', 409, 'VIDEO_FINISHING_STALE')
+        }
+        return latest
+      }
+      return await this.repository.saveProject(videoStudioProjectSchema.parse({
+        ...latest,
+        state: 'rendering',
+        task_id: operation.id,
+        quality_reports: [...latest.quality_reports, report],
+        error: undefined,
+        error_code: undefined,
+      }))
+    })
+  }
+
+  private qualityWarningCheckIds(report: VideoQualityReport): string[] {
+    const ids = report.checks
+      .filter(check => check.state === 'needs_user_decision')
+      .map(check => check.id)
+      .sort()
+    if (!ids.length) {
+      throw new VideoWorkbenchServiceError('该后渲染质量报告没有可确认的告警项', 409, 'VIDEO_QUALITY_BLOCKED')
+    }
+    return ids
+  }
+
+  private assertExactQualityAcknowledgement(
+    report: VideoQualityReport,
+    acceptedCheckIds: string[],
+  ): void {
+    const expected = this.qualityWarningCheckIds(report)
+    const accepted = [...acceptedCheckIds].sort()
+    if (
+      accepted.length !== expected.length
+      || accepted.some((checkId, index) => checkId !== expected[index])
+    ) {
+      throw new VideoWorkbenchServiceError('必须精确确认本报告中全部且仅有的人工决策项', 409, 'VIDEO_QUALITY_BLOCKED')
+    }
+  }
+
+  private assertQualityAcknowledgementBinding(
+    pending: PendingPostRenderQuality,
+    operation: VideoOperation,
+    acknowledgement: VideoQualityAcknowledgement,
+  ): void {
+    if (
+      acknowledgement.project_id !== operation.project_id
+      || acknowledgement.render_operation_id !== operation.id
+      || acknowledgement.report_id !== pending.report.id
+      || acknowledgement.execution_plan_id !== pending.plan.id
+      || acknowledgement.delivery_variant_version_id !== pending.result.delivery_variant_version_id
+      || acknowledgement.output_content_hash !== pending.result.output_content_hash
+    ) {
+      throw new VideoWorkbenchServiceError('质量确认记录未绑定当前交付文件，不能继续发布', 409, 'VIDEO_FINISHING_STALE')
+    }
+    this.assertExactQualityAcknowledgement(pending.report, acknowledgement.accepted_check_ids)
+  }
+
+  private async assertPendingQualityOutput(result: VideoRenderTaskResult): Promise<void> {
+    if (!result.temporary_output || !result.output_content_hash || !result.output_verification) {
+      throw new VideoWorkbenchServiceError('临时交付文件记录不完整，不能继续发布', 409, 'VIDEO_FINISHING_STALE')
+    }
+    const info = await stat(result.temporary_output).catch(() => null)
+    if (!info?.isFile() || info.size !== result.output_verification.byte_size) {
+      throw new VideoWorkbenchServiceError('待确认的临时交付文件不可用，不能发布', 409, 'VIDEO_OUTPUT_UNAVAILABLE')
+    }
+    const hash = await videoFingerprint(result.temporary_output).catch(() => null)
+    if (hash !== result.output_content_hash || hash !== result.output_verification.content_hash) {
+      throw new VideoWorkbenchServiceError('待确认的临时交付文件校验失败，不能发布', 409, 'VIDEO_OUTPUT_UNAVAILABLE')
+    }
+    const sidecar = result.output_verification.sidecar_caption
+    if (!sidecar) return
+    if (!result.temporary_sidecar_path) {
+      throw new VideoWorkbenchServiceError('待确认的字幕交付文件记录不完整，不能发布', 409, 'VIDEO_FINISHING_STALE')
+    }
+    const sidecarInfo = await stat(result.temporary_sidecar_path).catch(() => null)
+    const sidecarHash = await videoFingerprint(result.temporary_sidecar_path).catch(() => null)
+    if (!sidecarInfo?.isFile() || sidecarInfo.size !== sidecar.byte_size || sidecarHash !== sidecar.content_hash) {
+      throw new VideoWorkbenchServiceError('待确认的字幕交付文件校验失败，不能发布', 409, 'VIDEO_OUTPUT_UNAVAILABLE')
+    }
+  }
+
+  private async assertPublishedQualityOutput(result: VideoRenderTaskResult): Promise<void> {
+    if (!result.output_path || !result.output_content_hash || !result.output_verification) {
+      throw new VideoWorkbenchServiceError('交付文件记录不完整，不能继续发布', 409, 'VIDEO_FINISHING_STALE')
+    }
+    const info = await stat(result.output_path).catch(() => null)
+    const hash = await videoFingerprint(result.output_path).catch(() => null)
+    if (
+      !info?.isFile()
+      || info.size !== result.output_verification.byte_size
+      || hash !== result.output_content_hash
+      || hash !== result.output_verification.content_hash
+    ) {
+      throw new VideoWorkbenchServiceError('交付文件校验失败，不能完成发布', 409, 'VIDEO_OUTPUT_UNAVAILABLE')
+    }
+    const sidecar = result.output_verification.sidecar_caption
+    if (!sidecar) return
+    if (!result.sidecar_caption_path) {
+      throw new VideoWorkbenchServiceError('字幕交付文件记录不完整，不能完成发布', 409, 'VIDEO_FINISHING_STALE')
+    }
+    const sidecarInfo = await stat(result.sidecar_caption_path).catch(() => null)
+    const sidecarHash = await videoFingerprint(result.sidecar_caption_path).catch(() => null)
+    if (!sidecarInfo?.isFile() || sidecarInfo.size !== sidecar.byte_size || sidecarHash !== sidecar.content_hash) {
+      throw new VideoWorkbenchServiceError('字幕交付文件校验失败，不能完成发布', 409, 'VIDEO_OUTPUT_UNAVAILABLE')
+    }
+  }
+
+  private async publishQualityAcknowledgedRender(
+    project: VideoStudioProject,
+    operation: VideoOperation,
+    pending: PendingPostRenderQuality,
+    acknowledgement: VideoQualityAcknowledgement,
+    allowAlreadyPublished: boolean,
+  ): Promise<{ project: VideoStudioProject; task: VideoOperation }> {
+    this.assertQualityAcknowledgementBinding(pending, operation, acknowledgement)
+    const result = pending.result
+    if (!result.output_path || !result.output_asset_id || !result.output_content_hash || !result.output_verification) {
+      throw new VideoWorkbenchServiceError('质量确认的交付记录不完整，不能发布', 409, 'VIDEO_FINISHING_STALE')
+    }
+    const files = this.renderPublicationFiles(result)
+    const existingOutput = await stat(result.output_path).catch(() => null)
+    if (allowAlreadyPublished) {
+      // A restart can be between the primary and sidecar links. Resume only
+      // exact-hash destinations and retain no temporary bytes on success.
+      try {
+        await this.resumePublishedFiles(files)
+      } catch (error) {
+        await this.clearPublicationArtifacts(files, { removeDestinations: true, removeSources: true })
+        throw error
+      }
+      await this.assertPublishedQualityOutput(result)
+    } else {
+      if (existingOutput) {
+        throw new VideoWorkbenchServiceError('导出位置已有文件，确认不会覆盖它', 409, 'VIDEO_OUTPUT_EXISTS')
+      }
+      await this.assertPendingQualityOutput(result)
+      if (result.sidecar_caption_path && await stat(result.sidecar_caption_path).then(() => true).catch(() => false)) {
+        throw new VideoWorkbenchServiceError('字幕输出位置已有文件，确认不会覆盖它', 409, 'VIDEO_OUTPUT_EXISTS')
+      }
+      await this.publishFiles(files.map(file => {
+        if (!file.source) {
+          throw new VideoWorkbenchServiceError('临时交付文件记录不完整，不能继续发布', 409, 'VIDEO_FINISHING_STALE')
+        }
+        return { ...file, source: file.source }
+      }))
+      await this.assertPublishedQualityOutput(result)
+    }
+    const current = await this.requireVideoProject(project.id)
+    if (current.task_id !== operation.id || current.revision !== result.render_revision) {
+      throw new VideoWorkbenchServiceError('项目或交付变体已更新，确认结果不能发布', 409, 'VIDEO_RENDER_STALE')
+    }
+    const asset: MediaAsset = {
+      id: result.output_asset_id,
+      role: 'export',
+      version_id: result.delivery_variant_version_id ?? operation.id,
+      storage: { kind: 'external', locator: result.output_path },
+      mime_type: this.deliveryOutputMime(pending.plan.encoder),
+      byte_size: result.output_verification.byte_size,
+      content_hash: result.output_content_hash,
+      created_at: this.iso(),
+    }
+    const savedProject = await this.repository.saveProject(videoStudioProjectSchema.parse({
+      ...current,
+      assets: [...current.assets.filter(candidate => candidate.id !== asset.id && candidate.role !== 'export'), asset],
+      state: 'complete',
+      task_id: undefined,
+      output_path: result.output_path,
+      output_asset_id: result.output_asset_id,
+      output_content_hash: result.output_content_hash,
+      output_verification: result.output_verification,
+      quality_reports: current.quality_reports.some(candidate => candidate.id === pending.report.id)
+        ? current.quality_reports
+        : [...current.quality_reports, pending.report],
+      quality_acknowledgements: current.quality_acknowledgements.some(candidate => candidate.id === acknowledgement.id)
+        ? current.quality_acknowledgements
+        : [...current.quality_acknowledgements, acknowledgement],
+      error: undefined,
+      error_code: undefined,
+    }))
+    const task = await this.repository.saveOperation(this.operation({
+      ...operation,
+      status: 'succeeded',
+      progress: 100,
+      stage: '质量告警已确认，交付导出完成',
+      result: {
+        ...result,
+        awaiting_quality_confirmation: false,
+        quality_acknowledgement: acknowledgement,
+        temporary_output: undefined,
+        temporary_sidecar_path: undefined,
+      },
+      error: undefined,
+      error_code: undefined,
+    }))
+    if (result.temporary_output) await rm(result.temporary_output, { force: true }).catch(() => undefined)
+    if (result.temporary_sidecar_path) await rm(result.temporary_sidecar_path, { force: true }).catch(() => undefined)
+    return { project: savedProject, task }
+  }
+
+  /**
+   * The Project and Operation payloads commit independently.  If a process
+   * stops after the published Project commit but before the terminal Operation
+   * event, the durable acknowledgement plus output hash is enough to finish
+   * that same Operation without asking the user to approve again.
+   */
+  private async completeAlreadyPublishedQualityRender(
+    project: VideoStudioProject,
+    operation: VideoOperation,
+    pending: PendingPostRenderQuality,
+    acknowledgement: VideoQualityAcknowledgement,
+  ): Promise<VideoOperation | null> {
+    this.assertQualityAcknowledgementBinding(pending, operation, acknowledgement)
+    const result = pending.result
+    if (
+      project.state !== 'complete'
+      || project.output_path !== result.output_path
+      || project.output_asset_id !== result.output_asset_id
+      || project.output_content_hash !== result.output_content_hash
+      || project.output_verification?.content_hash !== result.output_content_hash
+      || !project.quality_acknowledgements.some(candidate => candidate.id === acknowledgement.id)
+      || !project.assets.some(asset => asset.id === result.output_asset_id && asset.role === 'export' && asset.content_hash === result.output_content_hash)
+    ) return null
+    await this.assertPublishedQualityOutput(result)
+    return await this.repository.saveOperation(this.operation({
+      ...operation,
+      status: 'succeeded',
+      progress: 100,
+      stage: '质量告警已确认，交付导出完成',
+      result: {
+        ...result,
+        awaiting_quality_confirmation: false,
+        quality_acknowledgement: acknowledgement,
+        temporary_output: undefined,
+        temporary_sidecar_path: undefined,
+      },
+      error: undefined,
+      error_code: undefined,
+    }))
+  }
+
+  async confirmPostRenderQuality(
+    projectId: string,
+    operationId: string,
+    raw: ConfirmVideoPostRenderQualityInput,
+  ): Promise<{ project: VideoStudioProject; acknowledgement: VideoQualityAcknowledgement; task: VideoOperation; reused: boolean }> {
+    return await this.mutateProject(projectId, async () => {
+      const input = confirmVideoPostRenderQualityInputSchema.parse(raw)
+      const project = await this.requireVideoProject(projectId)
+      const operation = await this.repository.getOperation(operationId)
+      if (operation.project_id !== project.id || operation.kind !== 'video.render') {
+        throw new VideoWorkbenchServiceError('质量确认引用的导出任务不存在', 404, 'VIDEO_OPERATION_NOT_FOUND')
+      }
+      const pending = this.pendingPostRenderQuality(project, operation)
+      if (input.report_id !== pending.report.id || input.output_content_hash !== pending.result.output_content_hash) {
+        throw new VideoWorkbenchServiceError('质量确认未绑定当前后渲染报告或输出文件', 409, 'VIDEO_FINISHING_STALE')
+      }
+      this.assertExactQualityAcknowledgement(pending.report, input.accepted_check_ids)
+      const persisted = pending.result.quality_acknowledgement
+        ?? project.quality_acknowledgements.find(candidate => candidate.render_operation_id === operation.id
+          && candidate.report_id === pending.report.id
+          && candidate.output_content_hash === pending.result.output_content_hash)
+      if (persisted) {
+        this.assertQualityAcknowledgementBinding(pending, operation, persisted)
+        if (operation.status === 'succeeded') {
+          return { project, acknowledgement: persisted, task: operation, reused: true }
+        }
+        const alreadyPublished = await this.completeAlreadyPublishedQualityRender(project, operation, pending, persisted)
+        if (alreadyPublished) {
+          return { project, acknowledgement: persisted, task: alreadyPublished, reused: true }
+        }
+        if (operation.status !== 'committing') {
+          throw new VideoWorkbenchServiceError('质量确认对应的导出任务不再可发布', 409, 'VIDEO_FINISHING_STALE')
+        }
+        const completed = await this.publishQualityAcknowledgedRender(project, operation, pending, persisted, true)
+        return { ...completed, acknowledgement: persisted, reused: true }
+      }
+      if (operation.status !== 'committing' || !pending.result.awaiting_quality_confirmation) {
+        throw new VideoWorkbenchServiceError('该导出任务当前不等待质量确认', 409, 'VIDEO_QUALITY_BLOCKED')
+      }
+      await this.assertPendingQualityOutput(pending.result)
+      await this.assertSourcesUnchanged(project)
+      const acknowledgement: VideoQualityAcknowledgement = {
+        id: `quality_ack_${randomUUID().replaceAll('-', '')}`,
+        project_id: project.id,
+        render_operation_id: operation.id,
+        report_id: pending.report.id,
+        execution_plan_id: pending.plan.id,
+        delivery_variant_version_id: pending.result.delivery_variant_version_id!,
+        output_content_hash: pending.result.output_content_hash!,
+        accepted_check_ids: [...input.accepted_check_ids].sort(),
+        acknowledged_at: this.iso(),
+      }
+      const confirming = await this.repository.saveOperation(this.operation({
+        ...operation,
+        status: 'committing',
+        progress: 95,
+        stage: '正在根据质量确认发布交付文件',
+        result: {
+          ...pending.result,
+          awaiting_quality_confirmation: false,
+          quality_acknowledgement: acknowledgement,
+        },
+      }))
+      const confirmed = this.pendingPostRenderQuality(project, confirming)
+      const completed = await this.publishQualityAcknowledgedRender(project, confirming, confirmed, acknowledgement, false)
+      return { ...completed, acknowledgement, reused: false }
+    })
+  }
+
   async cancelOperation(operationId: string): Promise<VideoOperation> {
     const operation = await this.repository.getOperation(operationId)
     if (!['queued', 'running', 'committing'].includes(operation.status)) {
@@ -4305,7 +7682,7 @@ export class VideoWorkbenchService {
       ? this.activePreviews.get(operation.id)
       : operation.kind === 'video.render'
         ? this.activeRenders.get(operation.id)
-        : operation.kind === 'video.analyze' || operation.kind === 'video.plan'
+        : operation.kind === 'video.analyze' || operation.kind === 'video.plan' || operation.kind === 'video.beat_analyze'
           ? this.activeAnalyses.get(operation.id)
           : undefined
     if (!active) throw new VideoWorkbenchServiceError('当前视频操作不能安全取消', 409, 'VIDEO_OPERATION_NOT_CANCELLABLE')
@@ -4393,6 +7770,19 @@ export class VideoWorkbenchService {
       }
       return
     }
+    if (operation.kind === 'video.caption_translation' && (this.stagedCaptionTranslationResult(operation) || this.remoteRecoveryCheckpoint(operation))) {
+      try {
+        await this.recoverCaptionTranslationOperation(operation)
+      } catch {
+        const current = await this.repository.getOperation(operation.id).catch(() => null)
+        // Keep only a surviving submission fence retryable. A durable staged
+        // candidate that no longer matches its caption/timeline basis fails
+        // closed instead of attaching to a later document head.
+        if (current && this.remoteRecoveryCheckpoint(current)) return
+        await this.failOperation(current ?? operation, 'MEDIA_VIDEO_FINISHING_UNAVAILABLE', '远程字幕翻译恢复失败')
+      }
+      return
+    }
     if (operation.kind === 'video.fingerprint') {
       const sourceId = typeof operation.result?.source_id === 'string' ? operation.result.source_id : null
       if (!sourceId) {
@@ -4414,28 +7804,111 @@ export class VideoWorkbenchService {
         return
       }
     }
+    if (operation.kind === 'video.beat_analyze') {
+      const sourceId = typeof operation.result?.source_id === 'string' ? operation.result.source_id : null
+      const audioStreamIndex = typeof operation.result?.audio_stream_index === 'number' ? operation.result.audio_stream_index : null
+      const project = await this.project(operation.project_id).catch(() => null)
+      const source = sourceId ? await this.repository.getFact('source', sourceId).catch(() => null) : null
+      if (project && source && 'fast_identity' in source && source.fingerprint && Number.isSafeInteger(audioStreamIndex)) {
+        const controller = new AbortController()
+        const active: ActiveVideoExecution = { controller, completion: Promise.resolve(), output_path: '' }
+        active.completion = this.runBeatAnalysis(project, operation, source as VideoFactSource & { fingerprint: `sha256:${string}` }, audioStreamIndex!, controller.signal)
+        this.activeAnalyses.set(operation.id, active)
+        await active.completion
+        return
+      }
+    }
+    if (operation.kind === 'video.caption_draft' || operation.kind === 'video.caption_translation' || operation.kind === 'video.composition_plan' || operation.kind === 'video.audio_finish_plan' || operation.kind === 'video.quality_preflight' || operation.kind === 'video.subject_track' || operation.kind === 'video.beat_sync_draft') {
+      const requestHash = typeof operation.result?.request_hash === 'string' ? operation.result.request_hash : null
+      const project = await this.project(operation.project_id).catch(() => null)
+      const receipt = project && requestHash
+        ? project.finishing_receipts.find(candidate => candidate.idempotency_key === operation.idempotency_key && candidate.request_hash === requestHash)
+        : undefined
+      if (project && receipt) {
+        const captionRevision = operation.kind === 'video.caption_translation'
+          ? project.caption_document_revisions.find(candidate => candidate.id === receipt.resource_ids[0])
+          : undefined
+        const captionDocument = captionRevision
+          ? project.caption_documents.find(candidate => candidate.id === captionRevision.document_id)
+          : undefined
+        const captionParent = captionRevision?.parent_revision_id
+          ? project.caption_document_revisions.find(candidate => candidate.id === captionRevision.parent_revision_id)
+          : undefined
+        if (operation.kind === 'video.caption_translation' && (
+          !captionRevision
+          || !captionDocument
+          || !captionParent
+          || captionDocument.project_id !== project.id
+          || captionRevision.project_id !== project.id
+          || captionParent.project_id !== project.id
+          || captionParent.document_id !== captionDocument.id
+        )) {
+          await this.failOperation(operation, 'MEDIA_VIDEO_FINISHING_UNAVAILABLE', '字幕翻译回执缺少可验证的候选版本')
+          return
+        }
+        const completion = operation.kind === 'video.caption_draft' || operation.kind === 'video.caption_translation'
+          ? {
+              caption_document_id: operation.kind === 'video.caption_translation'
+                ? captionRevision?.document_id
+                : receipt.resource_ids.length > 1 ? receipt.resource_ids[0] : undefined,
+              caption_revision_id: operation.kind === 'video.caption_translation'
+                ? captionRevision?.id
+                : receipt.resource_ids.at(-1),
+              ...(operation.kind === 'video.caption_translation' && captionRevision
+                ? { caption_style_id: captionRevision.style_id }
+                : {}),
+            }
+          : operation.kind === 'video.composition_plan'
+            ? { composition_plan_id: receipt.resource_ids[0] }
+            : operation.kind === 'video.audio_finish_plan'
+              ? { audio_finishing_plan_id: receipt.resource_ids[0] }
+              : operation.kind === 'video.subject_track'
+                ? { evidence_id: receipt.resource_ids[0] }
+                : operation.kind === 'video.beat_sync_draft'
+                  ? { timeline_draft_id: receipt.resource_ids[0] }
+                  : { execution_plan_id: receipt.resource_ids[0], report_id: receipt.resource_ids[1] }
+        await this.completeFinishingOperation(operation, '完成层结果已在重启后对账恢复', completion)
+        return
+      }
+    }
     if (operation.kind === 'video.render' && await this.recoverCommittedRender(operation)) return
     const code = operation.kind === 'video.preview'
       ? 'MEDIA_VIDEO_PREVIEW_INTERRUPTED'
       : operation.kind === 'video.render'
         ? 'MEDIA_VIDEO_EXPORT_INTERRUPTED'
-        : operation.kind === 'video.analyze' || operation.kind === 'video.plan'
+        : operation.kind === 'video.caption_draft' || operation.kind === 'video.caption_translation' || operation.kind === 'video.composition_plan' || operation.kind === 'video.audio_finish_plan' || operation.kind === 'video.quality_preflight' || operation.kind === 'video.subject_track' || operation.kind === 'video.beat_sync_draft'
+          ? 'MEDIA_VIDEO_FINISHING_UNAVAILABLE'
+        : operation.kind === 'video.analyze' || operation.kind === 'video.plan' || operation.kind === 'video.beat_analyze'
           ? 'MEDIA_VIDEO_ANALYSIS_INTERRUPTED'
           : 'MEDIA_VIDEO_PROBE_INTERRUPTED'
     const stage = operation.kind === 'video.preview'
       ? '预览已中断'
       : operation.kind === 'video.render'
         ? '导出已中断'
-        : operation.kind === 'video.analyze' || operation.kind === 'video.plan'
+        : operation.kind === 'video.caption_draft' || operation.kind === 'video.caption_translation' || operation.kind === 'video.composition_plan' || operation.kind === 'video.audio_finish_plan' || operation.kind === 'video.quality_preflight' || operation.kind === 'video.subject_track' || operation.kind === 'video.beat_sync_draft'
+          ? '完成层任务已中断'
+        : operation.kind === 'video.analyze' || operation.kind === 'video.plan' || operation.kind === 'video.beat_analyze'
           ? '分析已中断'
           : '素材读取已中断'
     await this.failOperation(operation, code, stage)
+    const previewResult = operation.kind === 'video.preview'
+      ? videoPreviewTaskResultSchema.safeParse(operation.result)
+      : undefined
+    const renderResult = operation.kind === 'video.render'
+      ? videoRenderTaskResultSchema.safeParse(operation.result)
+      : undefined
     const temporary = operation.kind === 'video.preview'
-      ? videoPreviewTaskResultSchema.safeParse(operation.result).data?.temporary_output
+      ? previewResult?.data?.temporary_output
       : operation.kind === 'video.render'
-        ? videoRenderTaskResultSchema.safeParse(operation.result).data?.temporary_output
+        ? renderResult?.data?.temporary_output
         : undefined
     if (temporary) await rm(temporary, { force: true }).catch(() => undefined)
+    const temporarySidecar = operation.kind === 'video.preview'
+      ? previewResult?.data?.temporary_sidecar_path
+      : operation.kind === 'video.render'
+        ? renderResult?.data?.temporary_sidecar_path
+      : undefined
+    if (temporarySidecar) await rm(temporarySidecar, { force: true }).catch(() => undefined)
     const project = await this.project(operation.project_id).catch(() => null)
     if (!project) return
     if (operation.kind === 'video.render' && project.task_id === operation.id) {
@@ -4456,19 +7929,215 @@ export class VideoWorkbenchService {
     if (!result.success || !result.data.output_path || !result.data.output_content_hash || !result.data.output_verification || !result.data.output_asset_id) {
       return false
     }
+    const outputVerification = result.data.output_verification
     const project = await this.project(operation.project_id).catch(() => null)
-    if (!project || project.task_id !== operation.id) return false
+    if (!project) return false
+    if (project.task_id !== operation.id) {
+      if (result.data.quality_acknowledgement && result.data.post_render_report?.state === 'needs_user_decision') {
+        try {
+          const pending = this.pendingPostRenderQuality(project, operation)
+          return Boolean(await this.completeAlreadyPublishedQualityRender(
+            project,
+            operation,
+            pending,
+            result.data.quality_acknowledgement,
+          ))
+        } catch {
+          return false
+        }
+      }
+      return false
+    }
+    if (result.data.awaiting_quality_confirmation) {
+      try {
+        const recoveredProject = await this.persistPendingPostRenderQualityReport(project.id, operation)
+        const pending = this.pendingPostRenderQuality(recoveredProject, operation)
+        await this.assertPendingQualityOutput(pending.result)
+        // This is an intentional, durable user-decision state.  Recovery must
+        // keep the verified temporary output instead of treating it as an
+        // interrupted encoder and silently discarding it.
+        return true
+      } catch {
+        return false
+      }
+    }
+    if (result.data.quality_acknowledgement && result.data.post_render_report?.state === 'needs_user_decision') {
+      try {
+        const pending = this.pendingPostRenderQuality(project, operation)
+        await this.publishQualityAcknowledgedRender(
+          project,
+          operation,
+          pending,
+          result.data.quality_acknowledgement,
+          true,
+        )
+        return true
+      } catch {
+        return false
+      }
+    }
+    const publicationFiles = [{
+      source: result.data.temporary_output,
+      destination: result.data.output_path,
+      content_hash: result.data.output_content_hash,
+    }, ...(outputVerification.sidecar_caption && result.data.sidecar_caption_path
+      ? [{
+          source: result.data.temporary_sidecar_path,
+          destination: result.data.sidecar_caption_path,
+          content_hash: outputVerification.sidecar_caption.content_hash,
+        }]
+      : [])]
+    const projectOwnsOutput = project.output_path === result.data.output_path
+      && project.output_asset_id === result.data.output_asset_id
+      && project.output_content_hash === result.data.output_content_hash
+      && project.assets.some(asset => asset.id === result.data.output_asset_id
+        && asset.role === 'export'
+        && asset.content_hash === result.data.output_content_hash)
+    const cleanupIncompletePublication = async (): Promise<void> => {
+      await this.clearPublicationArtifacts(publicationFiles, { removeDestinations: true, removeSources: true })
+      // A prior Project commit is an additional ownership receipt. This keeps
+      // the existing "lost verification receipt" recovery fail-closed while
+      // still refusing to delete an arbitrary same-named user destination.
+      if (projectOwnsOutput && await videoFingerprint(result.data.output_path).catch(() => null) === result.data.output_content_hash) {
+        await rm(result.data.output_path, { force: true }).catch(() => undefined)
+      }
+      if (outputVerification.sidecar_caption && !result.data.sidecar_caption_path && result.data.temporary_sidecar_path) {
+        await rm(result.data.temporary_sidecar_path, { force: true }).catch(() => undefined)
+      }
+    }
+    const formalVersionId = result.data.delivery_variant_version_id
+    let formalPlan: VideoExecutionPlan | undefined
+    let formalReport: VideoQualityReport | undefined
+    if (formalVersionId) {
+      if (!result.data.execution_plan_id || !result.data.post_render_report || result.data.post_render_report.state !== 'passed') {
+        await cleanupIncompletePublication()
+        return false
+      }
+      formalPlan = project.execution_plans.find(candidate => candidate.id === result.data.execution_plan_id)
+      const variant = project.delivery_variant_versions.find(candidate => candidate.id === formalVersionId)
+      const variantHead = variant && project.delivery_variants.find(candidate => candidate.id === variant.variant_id)
+      if (!formalPlan
+        || formalPlan.delivery_variant_version_id !== formalVersionId
+        || formalPlan.editorial_timeline_version_id !== result.data.output_verification.timeline_version_id
+        || variantHead?.current_version_id !== formalVersionId
+        || result.data.post_render_report.delivery_variant_version_id !== formalVersionId
+        || result.data.post_render_report.execution_plan_id !== formalPlan.id) {
+        await cleanupIncompletePublication()
+        return false
+      }
+      const operations = await this.repository.listOperations(project.id)
+      const outputVerify = operations.find(candidate => candidate.kind === 'video.output_verify'
+        && candidate.status === 'succeeded'
+        && candidate.result?.parent_operation_id === operation.id
+        && candidate.result?.execution_plan_id === formalPlan!.id)
+      const outputReceipt = outputVerify?.result?.output_verification
+      const receipt = outputReceipt && typeof outputReceipt === 'object'
+        ? outputReceipt as Record<string, unknown>
+        : undefined
+      const receiptHasFullEvidence = receipt
+        && receipt.content_hash === outputVerification.content_hash
+        && receipt.decoded === true
+        && receipt.packet_timestamps_monotonic === true
+        && receipt.video_stream_count === 1
+        && receipt.audio_stream_count === 1
+        && typeof receipt.expected_duration_ms === 'number' && receipt.expected_duration_ms > 0
+        && typeof receipt.duration_delta_ms === 'number' && receipt.duration_delta_ms >= 0
+        && typeof receipt.audio_video_duration_delta_ms === 'number' && receipt.audio_video_duration_delta_ms >= 0
+        && typeof receipt.black_duration_ms === 'number' && receipt.black_duration_ms >= 0
+        && typeof receipt.black_ratio === 'number' && receipt.black_ratio >= 0 && receipt.black_ratio <= 1
+        && typeof receipt.silence_duration_ms === 'number' && receipt.silence_duration_ms >= 0
+        && typeof receipt.silence_ratio === 'number' && receipt.silence_ratio >= 0 && receipt.silence_ratio <= 1
+      const requiredQualityChecks = new Set([
+        'output_verification_receipt',
+        'output_stream_layout',
+        'decode_scan',
+        'packet_timestamps',
+        'duration_tolerance',
+        'av_duration_tolerance',
+        'profile_integrity',
+        'black_frame_scan',
+        'silence_scan',
+      ])
+      const qualityPostRender = operations.find(candidate => candidate.kind === 'video.quality_post_render'
+        && candidate.status === 'succeeded'
+        && candidate.result?.parent_operation_id === operation.id
+        && candidate.result?.execution_plan_id === formalPlan!.id
+        && candidate.result?.report_id === result.data.post_render_report!.id)
+      const qualityReceipt = qualityPostRender?.result?.report
+      const qualityReceiptRecord = qualityReceipt && typeof qualityReceipt === 'object'
+        ? qualityReceipt as Record<string, unknown>
+        : undefined
+      const qualityChecks = Array.isArray(qualityReceiptRecord?.checks)
+        ? qualityReceiptRecord.checks as unknown[]
+        : []
+      const completedQualityChecks = new Set(qualityChecks.flatMap(check => {
+        if (!check || typeof check !== 'object') return []
+        const entry = check as Record<string, unknown>
+        return entry.state === 'passed' && requiredQualityChecks.has(String(entry.code)) ? [String(entry.code)] : []
+      }))
+      const reportHasFullEvidence = qualityReceiptRecord
+        && qualityReceiptRecord.id === result.data.post_render_report.id
+        && qualityReceiptRecord.state === 'passed'
+        && completedQualityChecks.size === requiredQualityChecks.size
+        && result.data.post_render_report.output_verification?.content_hash === outputVerification.content_hash
+      if (!receiptHasFullEvidence || !reportHasFullEvidence) {
+        await cleanupIncompletePublication()
+        return false
+      }
+      formalReport = result.data.post_render_report
+    }
+    if (outputVerification.sidecar_caption && !result.data.sidecar_caption_path) {
+      await cleanupIncompletePublication()
+      return false
+    }
+    try {
+      await this.resumePublishedFiles(publicationFiles)
+    } catch {
+      await cleanupIncompletePublication()
+      return false
+    }
     const info = await stat(result.data.output_path).catch(() => null)
-    if (!info?.isFile() || info.size <= 0) return false
+    if (!info?.isFile() || info.size <= 0) {
+      await cleanupIncompletePublication()
+      return false
+    }
     const hash = await videoFingerprint(result.data.output_path).catch(() => null)
-    if (hash !== result.data.output_content_hash || hash !== result.data.output_verification.content_hash) return false
+    if (hash !== result.data.output_content_hash || hash !== result.data.output_verification.content_hash) {
+      await cleanupIncompletePublication()
+      return false
+    }
+    if (outputVerification.sidecar_caption) {
+      if (!result.data.sidecar_caption_path) {
+        await cleanupIncompletePublication()
+        return false
+      }
+      const sidecarHash = await videoFingerprint(result.data.sidecar_caption_path).catch(() => null)
+      if (sidecarHash !== outputVerification.sidecar_caption.content_hash) {
+        await cleanupIncompletePublication()
+        return false
+      }
+    }
+    const recoveredAsset: MediaAsset = {
+      id: result.data.output_asset_id,
+      role: 'export',
+      version_id: formalVersionId ?? result.data.timeline_version_id ?? operation.id,
+      storage: { kind: 'external', locator: result.data.output_path },
+      ...(formalPlan ? { mime_type: this.deliveryOutputMime(formalPlan.encoder) } : {}),
+      byte_size: result.data.output_verification.byte_size,
+      content_hash: result.data.output_content_hash,
+      created_at: this.iso(),
+    }
     const terminalProject = await this.repository.saveProject(videoStudioProjectSchema.parse({
       ...project,
+      assets: [...project.assets.filter(asset => asset.id !== recoveredAsset.id && asset.role !== 'export'), recoveredAsset],
       state: 'complete',
       output_path: result.data.output_path,
       output_asset_id: result.data.output_asset_id,
       output_content_hash: result.data.output_content_hash,
       output_verification: result.data.output_verification,
+      ...(formalReport && !project.quality_reports.some(report => report.id === formalReport!.id)
+        ? { quality_reports: [...project.quality_reports, formalReport] }
+        : {}),
       error: undefined,
       error_code: undefined,
     }))
@@ -4477,7 +8146,7 @@ export class VideoWorkbenchService {
       status: 'succeeded',
       progress: 100,
       stage: '导出完成',
-      result: { ...result.data, temporary_output: undefined },
+      result: { ...result.data, temporary_output: undefined, temporary_sidecar_path: undefined },
       error: undefined,
       error_code: undefined,
     }))
