@@ -48,6 +48,7 @@ test('OSS response contract reads real HTTP headers, streams bytes, and uses ali
   const calls: Array<Record<string, unknown>> = []
   const signedCalls: Array<{ method: string; key: string; additionalHeaders: string[] | undefined }> = []
   const resultWrites: Array<{ key: string; body: Uint8Array; options: Record<string, unknown> }> = []
+  const multipartWrites: Array<{ phase: string; options: Record<string, unknown> | undefined }> = []
   const bytes = new TextEncoder().encode('actual OSS body')
   const client = {
     async signatureUrlV4(method: string, _expires: number, _request: unknown, key: string, additionalHeaders?: string[]) { signedCalls.push({ method, key, additionalHeaders }); return `https://bb-video-media-contract.oss-cn-beijing.aliyuncs.com/${key}?x-oss-signature-version=OSS4-HMAC-SHA256` },
@@ -66,20 +67,26 @@ test('OSS response contract reads real HTTP headers, streams bytes, and uses ali
       return query['part-number-marker'] ? { isTruncated: false, parts: [{ PartNumber: '1001', ETag: 'etag-1001' }] } : { isTruncated: true, nextPartNumberMarker: '1000', parts: [{ PartNumber: '1', ETag: 'etag-1' }] }
     },
     async listUploads() { return { isTruncated: false, uploads: [] } },
-    async abortMultipartUpload() {}, async completeMultipartUpload() {}, async initMultipartUpload() { return { uploadId: 'upload-123' } },
+    async abortMultipartUpload() {}, async completeMultipartUpload(_name: string, _uploadId: string, _parts: unknown, options: Record<string, unknown>) { multipartWrites.push({ phase: 'complete', options }) }, async initMultipartUpload(_name: string, options: Record<string, unknown>) { multipartWrites.push({ phase: 'init', options }); return { uploadId: 'upload-123' } },
   }
   const store = new OssObjectStore({ ...credentials, client })
   const signed = await store.createPutUrl({ leaseId: 'lease_12345678', hash: hash(bytes), byteSize: bytes.byteLength, contentType: 'video/mp4', expiresAt: new Date(Date.now() + 60_000).toISOString() })
   expect(new URL(signed.put_url).searchParams.get('x-oss-signature-version')).toBe('OSS4-HMAC-SHA256')
-  expect(signedCalls).toEqual([{ method: 'PUT', key: 'video-media/input/lease_12345678', additionalHeaders: ['content-type', 'if-none-match', 'x-oss-meta-sha256', 'x-oss-meta-size'] }])
+  expect(signedCalls).toEqual([{ method: 'PUT', key: 'video-media/input/lease_12345678', additionalHeaders: ['content-type', 'x-oss-forbid-overwrite', 'x-oss-meta-sha256', 'x-oss-meta-size'] }])
   expect(await store.listMultipartParts({ leaseId: 'lease_12345678', uploadId: 'upload-123' })).toEqual([{ part_number: 1, etag: 'etag-1' }, { part_number: 1001, etag: 'etag-1001' }])
   expect(calls).toEqual([{ 'max-parts': 1000 }, { 'max-parts': 1000, 'part-number-marker': 1000 }])
   expect(await store.head('lease_12345678')).toEqual({ byte_size: bytes.byteLength, content_hash: hash(bytes), content_type: 'video/mp4' })
   await store.putResult({ objectRef: 'result_12345678', body: bytes, contentHash: hash(bytes), contentType: 'application/json' })
   expect(resultWrites).toEqual([{
     key: 'video-media/result/result_12345678', body: bytes,
-    options: { contentLength: bytes.byteLength, mime: 'application/json', meta: { sha256: hash(bytes), size: String(bytes.byteLength) }, headers: { 'If-None-Match': '*' } },
+    options: { contentLength: bytes.byteLength, mime: 'application/json', meta: { sha256: hash(bytes), size: String(bytes.byteLength) }, headers: { 'x-oss-forbid-overwrite': 'true' } },
   }])
+  const multipart = await store.createMultipartUpload({ leaseId: 'lease_12345678', hash: hash(bytes), byteSize: bytes.byteLength, contentType: 'video/mp4' })
+  await store.completeMultipartUpload({ leaseId: 'lease_12345678', uploadId: multipart.uploadId, parts: [{ part_number: 1, etag: 'etag-1' }] })
+  expect(multipartWrites).toEqual([
+    { phase: 'init', options: { mime: 'video/mp4', meta: { sha256: hash(bytes), size: String(bytes.byteLength) }, headers: { 'x-oss-forbid-overwrite': 'true' } } },
+    { phase: 'complete', options: { headers: { 'x-oss-forbid-overwrite': 'true' } } },
+  ])
 })
 
 const live = process.env.VIDEO_MEDIA_OSS_CONTRACT === '1'

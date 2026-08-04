@@ -109,7 +109,7 @@ try {
   if (!imageLease.put_url) throw new Error('Relay did not issue an image PUT lease')
   if (!(await put(imageLease.put_url, imageLease.required_headers, image)).ok) throw new Error('image upload failed')
   const overwrite = await fetch(imageLease.put_url, { method: 'PUT', headers: imageLease.required_headers, body: image, signal: AbortSignal.timeout(30_000) })
-  if (overwrite.status !== 412) throw new Error(`OSS immutable lease overwrite returned ${overwrite.status}`)
+  if (overwrite.status !== 409) throw new Error(`OSS immutable lease overwrite returned ${overwrite.status}`)
   const imageReady = await completeLease(imageLease)
   if (!imageReady.object_ref) throw new Error('Relay did not verify the image object')
   const visual = await (await control('/v1/video-media/operations', 'POST', {

@@ -28,10 +28,10 @@ type OssSdk = {
   getStream(name: string): Promise<{ stream: Readable }>
   putStream(name: string, stream: Readable, options?: { mime?: string; meta?: Record<string, string>; contentLength?: number; headers?: Record<string, string> }): Promise<unknown>
   delete(name: string): Promise<unknown>
-  initMultipartUpload(name: string, options?: { mime?: string; meta?: Record<string, string> }): Promise<{ uploadId?: string }>
+  initMultipartUpload(name: string, options?: { mime?: string; meta?: Record<string, string>; headers?: Record<string, string> }): Promise<{ uploadId?: string }>
   listParts(name: string, uploadId: string, query?: Record<string, string | number>): Promise<{ parts?: Array<{ PartNumber?: string | number; ETag?: string }>; nextPartNumberMarker?: string | number; isTruncated?: boolean | string }>
   listUploads(query?: Record<string, string | number>): Promise<{ uploads?: Array<{ name?: string; uploadId?: string; initiated?: string }>; nextKeyMarker?: string; nextUploadIdMarker?: string; isTruncated?: boolean | string }>
-  completeMultipartUpload(name: string, uploadId: string, parts: Array<{ number: number; etag: string }>): Promise<unknown>
+  completeMultipartUpload(name: string, uploadId: string, parts: Array<{ number: number; etag: string }>, options?: { headers?: Record<string, string> }): Promise<unknown>
   abortMultipartUpload(name: string, uploadId: string): Promise<unknown>
 }
 
@@ -59,9 +59,9 @@ export class OssObjectStore implements RelayObjectStore {
   }
 
   async createPutUrl(input: { leaseId: string; hash: string; byteSize: number; contentType: string; expiresAt: string }) {
-    // A lease is immutable once signed. Replaying its PUT URL must never
-    // replace the verified source object before the relay consumes it.
-    const headers = { 'content-type': input.contentType, 'if-none-match': '*', 'x-oss-meta-sha256': input.hash, 'x-oss-meta-size': String(input.byteSize) }
+    // OSS uses its dedicated V4-signable overwrite guard. Replaying a lease
+    // URL must never replace the verified source object before consumption.
+    const headers = { 'content-type': input.contentType, 'x-oss-forbid-overwrite': 'true', 'x-oss-meta-sha256': input.hash, 'x-oss-meta-size': String(input.byteSize) }
     return { put_url: await this.presignedUrl('PUT', this.inputKey(input.leaseId), input.expiresAt, headers), required_headers: headers }
   }
 
@@ -100,10 +100,9 @@ export class OssObjectStore implements RelayObjectStore {
       // Readable.from(Uint8Array) iterates numbers in Bun's Node compatibility
       // layer. Wrap the immutable bytes as one binary chunk so ali-oss always
       // receives a byte stream rather than a stream of numeric values.
-      // Result refs are immutable receipts. The same precondition prevents a
-      // retry or a collision from silently replacing bytes that were already
-      // acknowledged by a Sidecar.
-      await this.client.putStream(this.resultKey(input.objectRef), Readable.from([Buffer.from(input.body)]), { contentLength: input.body.byteLength, mime: input.contentType, meta: { sha256: input.contentHash, size: String(input.body.byteLength) }, headers: { 'If-None-Match': '*' } })
+      // Result refs are immutable receipts. OSS rejects a retry or collision
+      // rather than replacing bytes that a Sidecar may already acknowledge.
+      await this.client.putStream(this.resultKey(input.objectRef), Readable.from([Buffer.from(input.body)]), { contentLength: input.body.byteLength, mime: input.contentType, meta: { sha256: input.contentHash, size: String(input.body.byteLength) }, headers: { 'x-oss-forbid-overwrite': 'true' } })
     } catch { throw new Error('oss_result_put_failed') }
   }
   async createResultReadUrl(input: { objectRef: string; expiresAt: string }): Promise<string> { return await this.presignedUrl('GET', this.resultKey(input.objectRef), input.expiresAt) }
@@ -111,7 +110,7 @@ export class OssObjectStore implements RelayObjectStore {
 
   async createMultipartUpload(input: { leaseId: string; hash: string; byteSize: number; contentType: string }): Promise<{ uploadId: string }> {
     try {
-      const response = await this.client.initMultipartUpload(this.inputKey(input.leaseId), { mime: input.contentType, meta: { sha256: input.hash, size: String(input.byteSize) } })
+      const response = await this.client.initMultipartUpload(this.inputKey(input.leaseId), { mime: input.contentType, meta: { sha256: input.hash, size: String(input.byteSize) }, headers: { 'x-oss-forbid-overwrite': 'true' } })
       if (!response.uploadId) throw new Error('missing_upload_id')
       return { uploadId: response.uploadId }
     } catch { throw new Error('oss_multipart_init_failed') }
@@ -150,7 +149,7 @@ export class OssObjectStore implements RelayObjectStore {
     return uploads.sort((a, b) => (b.initiatedAt ?? '').localeCompare(a.initiatedAt ?? ''))
   }
   async completeMultipartUpload(input: { leaseId: string; uploadId: string; parts: Array<{ part_number: number; etag: string }> }): Promise<void> {
-    try { await this.client.completeMultipartUpload(this.inputKey(input.leaseId), input.uploadId, input.parts.map(part => ({ number: part.part_number, etag: part.etag }))) } catch { throw new Error('oss_multipart_complete_failed') }
+    try { await this.client.completeMultipartUpload(this.inputKey(input.leaseId), input.uploadId, input.parts.map(part => ({ number: part.part_number, etag: part.etag })), { headers: { 'x-oss-forbid-overwrite': 'true' } }) } catch { throw new Error('oss_multipart_complete_failed') }
   }
   async abortMultipartUpload(input: { leaseId: string; uploadId: string }): Promise<void> {
     try { await this.client.abortMultipartUpload(this.inputKey(input.leaseId), input.uploadId) } catch (error) { if (status(error) !== 404) throw new Error('oss_multipart_abort_failed') }
