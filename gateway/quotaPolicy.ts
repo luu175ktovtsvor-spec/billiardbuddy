@@ -17,6 +17,7 @@ const METERED_CAPABILITIES = [
   ['TextReasoning', 'TEXT_REASONING'],
   ['VisualEvidence', 'VISUAL_EVIDENCE'],
   ['MediaReasoning', 'MEDIA_REASONING'],
+  ['ImageAdvice', 'IMAGE_ADVICE'],
   ['SpeechTranscription', 'SPEECH_TRANSCRIPTION'],
 ] as const
 

@@ -25,17 +25,21 @@ type ImageCommandResponse =
   | ImageGenerationRoundResponse
   | ImageReferenceControlResponse
 
-test('15.3 image IPC validators expose shared typed Canvas and delivery commands', () => {
+test('15.4 image IPC validators expose every shared typed image command', () => {
   const imageChannels = [
     ELECTRON_IPC_CHANNELS.imageSubmitProject,
     ELECTRON_IPC_CHANNELS.imageStartOperation,
     ELECTRON_IPC_CHANNELS.imageUpdateUnknownProject,
     ELECTRON_IPC_CHANNELS.imageSaveOutput,
+    ELECTRON_IPC_CHANNELS.imageRequestDestination,
     ELECTRON_IPC_CHANNELS.imageCreateCreativePlan,
+    ELECTRON_IPC_CHANNELS.imageUnderstandProject,
     ELECTRON_IPC_CHANNELS.imageEstimateGenerationRound,
     ELECTRON_IPC_CHANNELS.imageEstimateDerivation,
     ELECTRON_IPC_CHANNELS.imageCreateGenerationRound,
     ELECTRON_IPC_CHANNELS.imageDecideCandidate,
+    ELECTRON_IPC_CHANNELS.imageAssessCandidateVisual,
+    ELECTRON_IPC_CHANNELS.imageAssessVersionVisual,
     ELECTRON_IPC_CHANNELS.imageAdoptCandidate,
     ELECTRON_IPC_CHANNELS.imageDeriveCandidate,
     ELECTRON_IPC_CHANNELS.imageCancelGenerationOperation,
@@ -53,11 +57,15 @@ test('15.3 image IPC validators expose shared typed Canvas and delivery commands
     'desktop:image:start-operation',
     'desktop:image:update-unknown-project',
     'desktop:image:save-output',
+    'desktop:image:request-destination',
     'desktop:image:create-creative-plan',
+    'desktop:image:understand-project',
     'desktop:image:estimate-generation-round',
     'desktop:image:estimate-derivation',
     'desktop:image:create-generation-round',
     'desktop:image:decide-candidate',
+    'desktop:image:assess-candidate-visual',
+    'desktop:image:assess-version-visual',
     'desktop:image:adopt-candidate',
     'desktop:image:derive-candidate',
     'desktop:image:cancel-generation-operation',
@@ -82,6 +90,13 @@ test('15.3 image IPC validators expose shared typed Canvas and delivery commands
   expect(validateElectronIpcPayload(ELECTRON_IPC_CHANNELS.imageSaveOutput, {
     projectId,
     input: { version_id: versionId, output_path: '' },
+  })).toBeFalse()
+  expect(validateElectronIpcPayload(ELECTRON_IPC_CHANNELS.imageRequestDestination, {
+    suggested_name: 'delivery.png',
+  })).toBeTrue()
+  expect(validateElectronIpcPayload(ELECTRON_IPC_CHANNELS.imageRequestDestination, {
+    suggested_name: 'delivery.png',
+    destination_path: '/forged/renderer-path.png',
   })).toBeFalse()
   expect(validateElectronIpcPayload(ELECTRON_IPC_CHANNELS.imageStartOperation, {
     projectId,
@@ -123,6 +138,24 @@ test('15.3 image IPC validators expose shared typed Canvas and delivery commands
       estimate_hash: `sha256:${'a'.repeat(64)}`,
       confirm: true,
     },
+  })).toBeTrue()
+  expect(validateElectronIpcPayload(ELECTRON_IPC_CHANNELS.imageUnderstandProject, {
+    projectId,
+    input: { base_revision: 0, idempotency_key: 'bb-image-ipc-qwen-understanding-0001' },
+  })).toBeTrue()
+  expect(validateElectronIpcPayload(ELECTRON_IPC_CHANNELS.imageUnderstandProject, {
+    projectId,
+    input: { base_revision: 0, idempotency_key: 'bb-image-ipc-qwen-understanding-0001', forged: true },
+  })).toBeFalse()
+  expect(validateElectronIpcPayload(ELECTRON_IPC_CHANNELS.imageAssessCandidateVisual, {
+    projectId,
+    candidateId: 'cand_00000001',
+    input: { base_revision: 0, idempotency_key: 'bb-image-ipc-qwen-assessment-0001' },
+  })).toBeTrue()
+  expect(validateElectronIpcPayload(ELECTRON_IPC_CHANNELS.imageAssessVersionVisual, {
+    projectId,
+    versionId,
+    input: { base_revision: 0, idempotency_key: 'bb-image-ipc-qwen-version-assessment-0001' },
   })).toBeTrue()
   expect(validateElectronIpcPayload(ELECTRON_IPC_CHANNELS.imageEstimateDerivation, {
     projectId,

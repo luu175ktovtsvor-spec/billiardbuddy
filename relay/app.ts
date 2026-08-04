@@ -5,8 +5,9 @@
 // 直接握这条跨境长连接死等,连接会被网络在约 60 秒物理掐断——图在 OpenAI 已生成并扣费,却传不回来(图丢+白扣钱)。
 //
 // 本服务部署在美国服务器(与 OpenAI 同区、网络稳),把"慢调用"收到美国本地跑:
-//   客户端(大陆) --短-- 大陆网关 --短-- 本服务(美国) --US→US ~80ms-- OpenAI
-// 任何跨境请求都退化成"提交(短)/轮询(短)",没有任何一跳还握跨境长连接,60 秒墙彻底绕开。
+//   图片 Sidecar --短 HTTPS-- 本服务(美国) --Provider 调用-- OpenAI / Seedream
+// Relay 只经 Compose 私网回查 Gateway 安装身份；Gateway 不转发图片字节或任务。
+// 客户端链路退化成"提交(短)/轮询(短)",不会持有跨境 Provider 长连接。
 //
 // 私测版加固:
 //   - 幂等键:同 (owner, Idempotency-Key) 的重复提交返回原 task_id,只跑一次真实上游、只扣一次费。
@@ -22,6 +23,8 @@
 //   GET  /v1/images/tasks/:id  headers: Authorization; direct-v1 returns owner-bound result URLs
 //                        → 200 {status:'queued'|'running'|'succeeded'|'failed'|'failed_unknown', data?, error?, created}
 //                        → 403 Gateway-introspected owner 不匹配 / 404 未知或过期
+//   GET  /v1/images/tasks/by-idempotency/:key  headers: Authorization
+//                        → 200 {task_id,status,reused:true} / 404 没有已持久化的远端任务；只查询，绝不代替客户端重提
 //   POST /v1/images/tasks/:id/ack  headers: Authorization
 //                        → 本机已持久化成功结果后幂等确认，relay 立即删除结果 blob，保留 receipt 元数据
 //
@@ -43,6 +46,7 @@ import {
   ProviderRateLimiter,
 } from '../ts/shared/kernel/providerAdmission.js'
 import {
+  IMAGE_RELAY_IDEMPOTENCY_LOOKUP_PATH,
   IMAGE_RELAY_RESULT_HANDOFF_DIRECT_V1,
   IMAGE_RELAY_RESULT_HANDOFF_HEADER,
   IMAGE_RELAY_RESULTS_PATH,
@@ -1109,6 +1113,30 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
         headers.set('X-Content-Type-Options', 'nosniff')
         return new Response(response.body, { status: response.status, headers })
       }
+      if (req.method === 'GET' && url.pathname.startsWith(`${IMAGE_RELAY_IDEMPOTENCY_LOOKUP_PATH}/`)) {
+        const verified = await identity(req)
+        sweep()
+        const encodedKey = url.pathname.slice(`${IMAGE_RELAY_IDEMPOTENCY_LOOKUP_PATH}/`.length)
+        if (!encodedKey || encodedKey.includes('/')) throw new HttpError(400, 'relay: 无效 operation id')
+        let idempotencyKey: string
+        try { idempotencyKey = decodeURIComponent(encodedKey).trim() } catch { throw new HttpError(400, 'relay: 无效 operation id') }
+        if (!idempotencyKey || idempotencyKey.length > 160) throw new HttpError(400, 'relay: 无效 operation id')
+        const rec = store.findByIdempotency(verified.owner, idempotencyKey)
+        if (!rec) {
+          return Response.json({ status: 'not_found', error: '没有已持久化的远端任务' }, {
+            status: 404,
+            headers: { 'Cache-Control': 'no-store' },
+          })
+        }
+        const pollAfter = pollAfterSeconds(rec)
+        return Response.json({
+          task_id: rec.id,
+          operation_id: rec.id,
+          status: rec.status,
+          reused: true,
+          ...(pollAfter ? { poll_after_seconds: pollAfter } : {}),
+        }, { headers: { 'Cache-Control': 'no-store' } })
+      }
       if (req.method === 'GET' && url.pathname.startsWith(`${IMAGE_RELAY_TASKS_PATH}/`)) {
         const verified = await identity(req)
         sweep()
@@ -1187,8 +1215,8 @@ export function withRelayRequestTimeout(
 
 if (import.meta.main) {
   const port = Number(process.env.RELAY_PORT ?? 8790)
-  // 只监听 loopback(默认 127.0.0.1),由 nginx 暴露受保护路径并按大陆 billiardbuddy-gateway 出口 IP 放行;
-  // 绝不把 relay 直接绑到公网口(否则绕过 nginx 允许名单,只剩 Bearer 一层)。
+  // 只监听 loopback(默认 127.0.0.1)，由 Nginx 暴露受 TLS 和入口上限保护的正式路径。
+  // 每个业务请求仍须经 Gateway introspection 验证安装 bearer；绝不直接绑定公网口。
   const hostname = process.env.RELAY_HOST ?? '127.0.0.1'
   const handler = createRelayFetch({ env: process.env }) // 配置非法(身份、结果或 Provider 凭据缺失)会在此抛错
   Bun.serve({ hostname, port, fetch: withRelayRequestTimeout(handler) })

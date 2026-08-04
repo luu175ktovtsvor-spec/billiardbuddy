@@ -1,6 +1,6 @@
 import type { SqliteUnitOfWork } from '../../kernel/storage/sqliteUnitOfWork.js'
 
-const IMAGE_METADATA_SCHEMA_VERSION = 8
+const IMAGE_METADATA_SCHEMA_VERSION = 9
 
 /** Image-only metadata schema. The shared Kernel remains unaware of image facts. */
 export function migrateImageMetadata(unitOfWork: SqliteUnitOfWork): void {
@@ -18,7 +18,40 @@ export function migrateImageMetadata(unitOfWork: SqliteUnitOfWork): void {
     if (version === 6) migrateV6(unitOfWork)
     if (version === 7) migrateV7(unitOfWork)
     if (version === 8) migrateV8(unitOfWork)
+    if (version === 9) migrateV9(unitOfWork)
   }
+}
+
+/** 15.4 keeps Qwen suggestions immutable and separate from Candidate/Version facts. */
+function migrateV9(unitOfWork: SqliteUnitOfWork): void {
+  unitOfWork.transaction(() => {
+    unitOfWork.database.exec(`CREATE TABLE image_understanding_suggestions(
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES image_projects(id),
+      execution_receipt_id TEXT NOT NULL UNIQUE REFERENCES image_provider_execution_receipts(id),
+      idempotency_key TEXT NOT NULL,
+      request_hash TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      document_json TEXT NOT NULL,
+      UNIQUE(project_id, idempotency_key)
+    )`)
+    unitOfWork.database.exec(`CREATE TABLE image_visual_assessments(
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES image_projects(id),
+      candidate_id TEXT REFERENCES image_candidates(id),
+      version_id TEXT,
+      execution_receipt_id TEXT NOT NULL UNIQUE REFERENCES image_provider_execution_receipts(id),
+      idempotency_key TEXT NOT NULL,
+      request_hash TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      document_json TEXT NOT NULL,
+      UNIQUE(project_id, idempotency_key),
+      CHECK((candidate_id IS NOT NULL AND version_id IS NULL) OR (candidate_id IS NULL AND version_id IS NOT NULL))
+    )`)
+    unitOfWork.database.exec('CREATE INDEX image_visual_assessments_target ON image_visual_assessments(project_id, candidate_id, version_id, created_at DESC)')
+    unitOfWork.database.query('INSERT INTO image_metadata_schema_migrations(version,applied_at) VALUES(?,?)')
+      .run(9, new Date().toISOString())
+  })
 }
 
 /** Immutable Brand/Template revisions are renderer inputs, never project JSON. */

@@ -168,7 +168,10 @@ export type ProviderRuntimeConfigurationError =
   | 'MODEL_CONTRACT_HASH_MISMATCH'
   | 'MODEL_CONTRACT_STALE'
 
-export type MeteredProviderCapability = Exclude<ProviderCapability, 'ImageGeneration' | 'SemanticEmbedding'>
+/** Billing categories are more granular than public capabilities: Qwen image
+ * advice is still VisualEvidence semantically, but it has its own provider
+ * account and quota bucket rather than borrowing generic visual evidence. */
+export type MeteredProviderCapability = Exclude<ProviderCapability, 'ImageGeneration' | 'SemanticEmbedding'> | 'ImageAdvice'
 export type ProviderUsageAmount = {
   requests: number
   input_bytes: number

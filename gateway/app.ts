@@ -17,13 +17,21 @@ import {
   prepareManagedResponsesBody,
 } from './managedResponses'
 import { fetchMimoWithRetry, MimoRequestError, prepareMimoChatBody } from './mimoChat'
+import { QwenImageReasoningGatewayError, requestQwenImageReasoning } from './qwenImageReasoning'
 import {
   containsImageContent,
   createVisionBridge,
   VisionBridgeError,
   type VisionBridge,
 } from './visionBridge'
-import { PROVIDER_REGISTRY, PROVIDER_REGISTRY_CONTRACT_VERSION, mediaReasoningRegistryEntry, textReasoningRegistryEntry, visualEvidenceRegistryEntry } from './providerRegistry'
+import {
+  PROVIDER_REGISTRY,
+  PROVIDER_REGISTRY_CONTRACT_VERSION,
+  imageAdviceRegistryEntry,
+  mediaReasoningRegistryEntry,
+  textReasoningRegistryEntry,
+  visualEvidenceRegistryEntry,
+} from './providerRegistry'
 import {
   fileUsageFingerprint,
   MANAGED_AGENT_INSTALLATION_DAILY_TOKEN_LIMIT,
@@ -131,6 +139,15 @@ type GatewayConfig = {
   mimoRetryMax: number
   mimoRetryBaseMs: number
   mimoRetryMaxMs: number
+  qwenRpm: number
+  qwenEnabled: boolean
+  qwenConc: number
+  qwenUserConc: number
+  qwenTokenConc: number
+  qwenInflightPerUser: number
+  qwenQueueMax: number
+  qwenQueueMaxWait: number
+  qwenResponseTimeoutMs: number
   deepseekModel: string
   deepseekRpm: number
   deepseekConc: number
@@ -465,6 +482,8 @@ function loadConfig(env: Env): GatewayConfig {
     throw new Error('BilliardBuddy 托管 Agent 仅支持 DeepSeek Responses 协议')
   }
   const capacity = loadCapacityPolicy(env)
+  const qwenEnabledRaw = env.GW_QWEN_ENABLED?.trim() ?? '0'
+  if (qwenEnabledRaw !== '0' && qwenEnabledRaw !== '1') throw new Error('GW_QWEN_ENABLED must be 0 or 1')
   return {
     adminToken: env.GW_ADMIN_TOKEN ?? 'change-me',
     db: env.GW_DB ?? '/opt/billiardbuddy-gateway/usage.db',
@@ -484,6 +503,15 @@ function loadConfig(env: Env): GatewayConfig {
     mimoRetryMax: Math.max(0, Math.min(1, intEnv(env, 'GW_MIMO_MAX_RETRIES', 1))),
     mimoRetryBaseMs: Math.max(1, intEnv(env, 'GW_MIMO_RETRY_BASE_MS', 500)),
     mimoRetryMaxMs: Math.max(1, intEnv(env, 'GW_MIMO_RETRY_MAX_MS', 8000)),
+    qwenRpm: capacity.qwen.rpm,
+    qwenEnabled: qwenEnabledRaw === '1',
+    qwenConc: capacity.qwen.maxConcurrent,
+    qwenUserConc: capacity.qwen.maxConcurrentPerUser,
+    qwenTokenConc: capacity.qwen.maxConcurrentPerToken,
+    qwenInflightPerUser: capacity.qwen.maxInflightPerUser,
+    qwenQueueMax: capacity.qwen.queueMax,
+    qwenQueueMaxWait: capacity.qwen.queueMaxWaitMs / 1_000,
+    qwenResponseTimeoutMs: capacity.qwen.responseTimeoutMs,
     // Model choice and capacity are separate: future registered DeepSeek variants
     // share this physical-account pool unless the catalog explicitly binds another one.
     deepseekModel: textModel.model_id,
@@ -722,6 +750,10 @@ function visualEvidenceBodyCaps() {
   return visualEvidenceRegistryEntry().body_caps
 }
 
+function imageAdviceBodyCaps() {
+  return imageAdviceRegistryEntry().body_caps
+}
+
 function requireTextReasoningModel(rawBody: string): string {
   const model = parseChatModel(rawBody).trim()
   const entry = model ? textReasoningRegistryEntry(model) : undefined
@@ -769,6 +801,52 @@ type StoredTextReasoningResult = {
   content_type: string
   sse_base64: string
   actual: UsageAmount
+}
+
+type StoredImageAdviceResult = {
+  schema: 'bb.image-advice-result.v1'
+  response: Record<string, unknown>
+  actual: UsageAmount
+}
+
+/** Persist a fully validated Qwen response before charging it.  The adapter
+ * guarantees the public schema; this second check protects durable replay from
+ * a malformed or partially written payload. */
+function imageAdviceResultPayload(responseBody: string): { payload: string; actual: UsageAmount } {
+  let response: unknown
+  try { response = JSON.parse(responseBody) } catch { throw new GatewayOperationResultError(503, 'OPERATION_RESULT_UNAVAILABLE') }
+  if (!isRecord(response) || response.provider !== 'qwen' || response.model_id !== 'qwen3-vl-flash' || !isRecord(response.usage)
+    || !Number.isSafeInteger(response.usage.input_bytes) || response.usage.input_bytes < 0
+    || !Number.isSafeInteger(response.usage.input_tokens) || response.usage.input_tokens < 0
+    || !Number.isSafeInteger(response.usage.output_tokens) || response.usage.output_tokens < 0) {
+    throw new GatewayOperationResultError(503, 'OPERATION_RESULT_UNAVAILABLE')
+  }
+  const total_tokens = response.usage.input_tokens + response.usage.output_tokens
+  if (!Number.isSafeInteger(total_tokens)) throw new GatewayOperationResultError(503, 'OPERATION_RESULT_UNAVAILABLE')
+  const actual: UsageAmount = {
+    requests: 1,
+    input_bytes: response.usage.input_bytes,
+    output_units: response.usage.output_tokens,
+    total_tokens,
+  }
+  return {
+    payload: JSON.stringify({ schema: 'bb.image-advice-result.v1', response, actual } satisfies StoredImageAdviceResult),
+    actual,
+  }
+}
+
+function parseImageAdviceResult(payload: string): StoredImageAdviceResult {
+  try {
+    const parsed: unknown = JSON.parse(payload)
+    if (!isRecord(parsed) || parsed.schema !== 'bb.image-advice-result.v1' || !isRecord(parsed.response)) throw new Error('invalid')
+    const actual = parseUsageAmount(parsed.actual)
+    if (!actual) throw new Error('invalid')
+    // Re-run the same response envelope validation used before persistence.
+    imageAdviceResultPayload(JSON.stringify(parsed.response))
+    return { schema: 'bb.image-advice-result.v1', response: parsed.response, actual }
+  } catch {
+    throw new GatewayOperationResultError(503, 'OPERATION_RESULT_UNAVAILABLE')
+  }
 }
 
 function parseUsageAmount(value: unknown): UsageAmount | undefined {
@@ -1133,6 +1211,17 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
   const mimoMediaReasoning: ChatHandler | null = mimoMediaProvider
     ? createChatHandler(mimoMediaProvider, fetchImpl, store)
     : null
+  // Qwen image advice deliberately owns a different physical-account scheduler,
+  // rate bucket and quota lane. It must never borrow MiMo's generic visual work.
+  const qwenBucket = new ProviderRateLimiter(config.qwenRpm, config.qwenQueueMax)
+  const qwenCapacity = new FairCapacityScheduler(
+    config.qwenConc,
+    config.qwenUserConc,
+    config.qwenTokenConc,
+    config.qwenQueueMax,
+    config.qwenInflightPerUser,
+  )
+  const qwenAuthorization = config.qwenEnabled ? providerCredentials.bearerAuthorization('qwen') : undefined
   const ingressBodyBudget = new InflightByteBudget(config.ingressInflightBodyBytes, '请求较多，请稍后重试')
   const transcribeBucket = new ProviderRateLimiter(config.transcribeRpm, config.transcribeQueueMax)
   const bootstrapBucket = new ProviderRateLimiter(config.bootstrapRpm, 0)
@@ -1376,6 +1465,12 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
             deepseek_token_conc: config.deepseekTokenConc,
             deepseek_queue_max: config.deepseekQueueMax,
             deepseek_queue_max_wait_seconds: config.deepseekQueueMaxWait,
+            qwen_rpm: config.qwenRpm,
+            qwen_conc: config.qwenConc,
+            qwen_user_conc: config.qwenUserConc,
+            qwen_token_conc: config.qwenTokenConc,
+            qwen_queue_max: config.qwenQueueMax,
+            qwen_queue_max_wait_seconds: config.qwenQueueMaxWait,
             vision_conc: config.visionConc,
             vision_queue_max: config.visionQueueMax,
             vision_queue_max_wait_ms: config.visionQueueMaxWaitMs,
@@ -1392,7 +1487,7 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
           quota: {},
           usage_budget: {
             policy_revision: usageBudget.policyRevision(),
-            metered_capabilities: ['TextReasoning', 'VisualEvidence', 'MediaReasoning', 'SpeechTranscription'],
+            metered_capabilities: ['TextReasoning', 'VisualEvidence', 'MediaReasoning', 'ImageAdvice', 'SpeechTranscription'],
             managed_agent_installation_daily_total_tokens: MANAGED_AGENT_INSTALLATION_DAILY_TOKEN_LIMIT,
           },
           usage_summary: usageBudget.summary(identity.principalId, identity.installationId),
@@ -1421,6 +1516,7 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
               visionReserved: config.visionConc,
             },
             deepseek: deepseekCapacity.snapshot(),
+            qwen: qwenCapacity.snapshot(),
             vision,
             transcription: transcribeCapacity.snapshot(),
             ingress_body: ingressBodyBudget.snapshot(),
@@ -1429,6 +1525,7 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
             transcription: transcribe !== null,
             managed_text: managedText !== null,
             vision_bridge: visionBridge !== null,
+            image_advice: qwenAuthorization !== undefined,
             relay_identity_introspection: serviceCredentials !== null,
           },
         })
@@ -1523,7 +1620,9 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
           capability: request.headers.get(PROVIDER_OPERATION_RESULT_CAPABILITY_HEADER)?.trim() as GatewayOperationResultBinding['capability'],
           fingerprint: request.headers.get(PROVIDER_OPERATION_RESULT_FINGERPRINT_HEADER)?.trim() ?? '',
         }
-        if (binding.capability !== 'TextReasoning') throw new HttpError(400, 'OPERATION_ACK_CAPABILITY_UNSUPPORTED')
+        if (binding.capability !== 'TextReasoning' && binding.capability !== 'ImageAdvice') {
+          throw new HttpError(400, 'OPERATION_ACK_CAPABILITY_UNSUPPORTED')
+        }
         try {
           const acknowledgement = operationResults.acknowledge(binding)
           if (acknowledgement === 'in_progress') throw new HttpError(409, 'OPERATION_IN_PROGRESS')
@@ -1570,6 +1669,119 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
               usageOperation,
               () => mimoMediaReasoning(request, rawBody, identity.owner, identity.principalId),
             )
+          },
+        )
+      }
+
+      // Image Workbench gets a separate, schema-locked Qwen advice boundary.
+      // It is intentionally not a generic media route and never grants the model
+      // project-write authority or a path to paid image generation.
+      if (request.method === 'POST' && url.pathname === '/v1/image/reasoning') {
+        const identity = auth(authority, request)
+        requireProviderProtocol(request)
+        const usageOperation = usageOperationId(request)
+        server?.timeout(request, 0)
+        const contentType = request.headers.get('content-type')
+        if (contentType && !isJsonContentType(contentType)) throw new HttpError(415, '图片理解请求需要 JSON')
+        return await withBufferedBodyReservation(
+          request,
+          imageAdviceBodyCaps().VISION_BODY_MAX_BYTES,
+          ingressBodyBudget,
+          config.ingressBodyReadTimeoutMs,
+          async rawBody => {
+            if (!qwenAuthorization) throw new HttpError(503, 'Qwen 图片理解服务未配置')
+            const binding: GatewayOperationResultBinding = {
+              principal_id: identity.principalId,
+              installation_id: identity.installationId,
+              operation_id: usageOperation,
+              capability: 'ImageAdvice',
+              fingerprint: usageFingerprint(`ImageAdvice\0${rawBody}`),
+            }
+            let operation: ReturnType<GatewayOperationResultStore['begin']>
+            try { operation = operationResults.begin(binding, { awaitingConsumerAck: true }) }
+            catch (error) { operationResultFailure(error) }
+            if (operation.outcome === 'in_progress') throw new HttpError(409, 'OPERATION_IN_PROGRESS')
+            if (operation.outcome === 'outcome_unknown') throw new HttpError(409, 'OPERATION_OUTCOME_UNKNOWN')
+            let reservation: { receipt: UsageReceipt; duplicate: boolean }
+            try {
+              const inputBytes = Buffer.byteLength(rawBody, 'utf8')
+              reservation = usageBudget.reserve({
+                operation_id: `${usageOperation}:image-advice`,
+                principal_id: identity.principalId,
+                installation_id: identity.installationId,
+                capability: 'ImageAdvice',
+                fingerprint: binding.fingerprint,
+                // Provider input tokens are unavailable pre-call. UTF-8 request bytes
+                // are a conservative token ceiling for this bounded JSON/data-URL
+                // contract, so the reservation covers input plus max output before
+                // any paid call. Settlement later replaces it with provider usage.
+                amount: { requests: 1, input_bytes: inputBytes, output_units: 2_000, total_tokens: inputBytes + 2_000 },
+              })
+            } catch (error) {
+              if (operation.outcome === 'started') {
+                try { operationResults.release(binding, operation.fencing_token) } catch {}
+              }
+              if (error instanceof UsageBudgetError) throw new HttpError(error.status, error.code)
+              throw new HttpError(503, 'BUDGET_UNAVAILABLE')
+            }
+            if (operation.outcome === 'started' && reservation.duplicate) {
+              try { operationResults.release(binding, operation.fencing_token) } catch {}
+              throw new HttpError(409, 'OPERATION_USAGE_CONFLICT')
+            }
+            const withResultHeaders = (response: Response): Response => {
+              const headers = new Headers(response.headers)
+              headers.set('Cache-Control', 'no-store')
+              headers.set('X-BB-Usage-Operation', usageOperation)
+              headers.set(PROVIDER_OPERATION_RESULT_ID_HEADER, binding.operation_id)
+              headers.set(PROVIDER_OPERATION_RESULT_CAPABILITY_HEADER, binding.capability)
+              headers.set(PROVIDER_OPERATION_RESULT_FINGERPRINT_HEADER, binding.fingerprint)
+              return new Response(response.body, { status: response.status, headers })
+            }
+            const settleStored = (payload: string): Response => {
+              const stored = parseImageAdviceResult(payload)
+              try { completeMetered(reservation.receipt, 'settled', stored.actual) }
+              catch { throw new HttpError(503, 'BUDGET_UNAVAILABLE') }
+              return withResultHeaders(Response.json(stored.response))
+            }
+            if (operation.outcome === 'succeeded') return settleStored(operation.payload)
+
+            let permit: CapacityPermit | undefined
+            try {
+              permit = await qwenCapacity.acquire(identity.owner, {
+                maxWaitMs: config.qwenQueueMaxWait * 1_000,
+                signal: request.signal,
+                tokenId: identity.principalId,
+              })
+              await qwenBucket.acquire(config.qwenQueueMaxWait, request.signal)
+              const response = await requestQwenImageReasoning(rawBody, {
+                baseUrl: providerCredentials.baseUrl('qwen'),
+                providerAuthorization: qwenAuthorization,
+                modelId: imageAdviceRegistryEntry().model_id,
+                fetchImpl,
+                signal: request.signal,
+                timeoutMs: config.qwenResponseTimeoutMs,
+              })
+              const responseBody = await response.text()
+              const stored = imageAdviceResultPayload(responseBody)
+              // The result first becomes replayable, then the ledger settles it.
+              operationResults.complete(binding, operation.fencing_token, stored.payload, { awaitingConsumerAck: true })
+              completeMetered(reservation.receipt, 'settled', stored.actual)
+              return withResultHeaders(new Response(responseBody, { status: 200, headers: { 'Content-Type': 'application/json; charset=utf-8' } }))
+            } catch (error) {
+              const status = error instanceof HttpError || error instanceof CapacityQueueError || error instanceof QwenImageReasoningGatewayError
+                ? error.status
+                : request.signal.aborted ? 499 : 503
+              try { completeMetered(reservation.receipt, status === 499 || status >= 500 ? 'outcome_unknown' : 'released') } catch {}
+              try {
+                if (status === 499 || status >= 500) operationResults.markOutcomeUnknown(binding, operation.fencing_token)
+                else operationResults.release(binding, operation.fencing_token)
+              } catch {}
+              if (error instanceof QwenImageReasoningGatewayError) throw new HttpError(error.status, error.publicMessage)
+              if (error instanceof HttpError || error instanceof CapacityQueueError) throw error
+              throw new HttpError(status, 'Qwen 图片理解服务暂时不可用')
+            } finally {
+              permit?.release()
+            }
           },
         )
       }
