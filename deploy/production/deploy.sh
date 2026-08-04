@@ -29,6 +29,33 @@ for bb_required in "$bb_secret_root/gateway.env" "$bb_secret_root/image-relay.en
   chmod 600 "$bb_required"
 done
 
+bb_release_id="${BILLIARDBUDDY_RELEASE:-$(printf '%s' "$bb_source_revision" | cut -c1-12)}"
+export BILLIARDBUDDY_RELEASE="$bb_release_id"
+
+# A release must first prove that its static Compose graph, images and all
+# three secret/config validators are usable.  This stage intentionally uses
+# `docker run`, not `docker compose run`: Compose would materialise the image
+# relay's bind mount and could create an empty /srv/.../image-relay directory
+# before the one-time legacy-data cutover has happened.  Validators do not open
+# a database or contact a provider, so disposable /tmp paths are sufficient.
+# A failed cutover can therefore be corrected and re-run without rebuilding.
+docker compose -f "$bb_compose_file" config --quiet
+docker compose -f "$bb_compose_file" build --pull gateway image-relay video-media-relay
+docker run --rm --network none --read-only --tmpfs /tmp:rw,noexec,nosuid,size=64m \
+  --env-file "$bb_secret_root/gateway.env" --env GW_DB=/tmp/usage.db \
+  "billiardbuddy/gateway:$bb_release_id" bun /app/gateway/validate-deployment-env.ts --process-env
+docker run --rm --network none --read-only --tmpfs /tmp:rw,noexec,nosuid,size=64m \
+  --env-file "$bb_secret_root/image-relay.env" --env RELAY_DB=/tmp/relay.db --env RELAY_BLOB_DIR=/tmp/blobs \
+  --env RELAY_HOST=0.0.0.0 --env RELAY_PORT=8790 \
+  --env IMAGE_RELAY_GATEWAY_INTROSPECTION_BASE=http://gateway:8799 \
+  --env IMAGE_RELAY_PUBLIC_BASE=https://zzyppz.cn/image-generation \
+  "billiardbuddy/image-relay:$bb_release_id" bun /app/relay/validate-deployment-env.ts --process-env
+docker run --rm --network none --read-only --tmpfs /tmp:rw,noexec,nosuid,size=64m \
+  --env-file "$bb_secret_root/video-media-relay.env" --env VIDEO_MEDIA_RELAY_DB=/tmp/video-media-relay.db \
+  --env VIDEO_MEDIA_RELAY_HOST=0.0.0.0 --env VIDEO_MEDIA_RELAY_PORT=8791 \
+  --env VIDEO_MEDIA_GATEWAY_INTROSPECTION_BASE=http://gateway:8799 \
+  "billiardbuddy/video-media-relay:$bb_release_id" bun /app/video-media-relay/validate-deployment-env.ts --process-env
+
 # Never let a renamed service start against an empty database while the previous
 # Image Relay facts still exist under the legacy directory. The one-time server
 # migration is deliberately operator-visible and happens only after the old
@@ -43,7 +70,7 @@ fi
 bb_legacy_image_data="$bb_data_root/relay"
 bb_legacy_relay_env="$bb_secret_root/relay.env"
 if [ -e "$bb_legacy_image_data" ]; then
-  echo "image relay data migration/retirement required: $bb_legacy_image_data -> $bb_data_root/image-relay (use deploy/production/migrate-image-relay-data.sh after inventory)" >&2
+  echo "image relay data migration/retirement required: $bb_legacy_image_data -> $bb_data_root/image-relay (use deploy/production/migrate-image-relay-data.sh after inventory; it creates and retains $bb_data_root/image-relay-recovery until image smoke passes)" >&2
   exit 1
 fi
 if [ -e "$bb_legacy_relay_env" ]; then
@@ -68,21 +95,6 @@ ensure_service_data_directory "$bb_data_root/gateway"
 ensure_service_data_directory "$bb_data_root/image-relay"
 ensure_service_data_directory "$bb_data_root/image-relay/blobs"
 ensure_service_data_directory "$bb_data_root/video-media-relay"
-
-bb_release_id="${BILLIARDBUDDY_RELEASE:-$(printf '%s' "$bb_source_revision" | cut -c1-12)}"
-export BILLIARDBUDDY_RELEASE="$bb_release_id"
-
-docker compose -f "$bb_compose_file" config --quiet
-docker compose -f "$bb_compose_file" build --pull gateway image-relay video-media-relay
-# One preflight owns model selection, secret-slot presence, capacity and quota
-# policy validation under the exact Compose environment. It opens neither the
-# database nor a model connection and never prints secret values.
-docker compose -f "$bb_compose_file" run --rm --no-deps --entrypoint bun gateway \
-  /app/gateway/validate-deployment-env.ts --process-env
-docker compose -f "$bb_compose_file" run --rm --no-deps --entrypoint bun image-relay \
-  /app/relay/validate-deployment-env.ts --process-env
-docker compose -f "$bb_compose_file" run --rm --no-deps --entrypoint bun video-media-relay \
-  /app/video-media-relay/validate-deployment-env.ts --process-env
 docker compose -f "$bb_compose_file" up -d --wait --wait-timeout 180 gateway image-relay video-media-relay
 
 curl --fail --silent --show-error --max-time 10 http://127.0.0.1:8799/healthz >/dev/null
