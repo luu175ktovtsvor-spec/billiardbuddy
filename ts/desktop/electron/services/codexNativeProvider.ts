@@ -708,6 +708,7 @@ type ResponsesCredentialAdapterOptions = {
   upstreamUrl: string
   failurePrefix: 'CODEX_GATEWAY_ADAPTER' | 'CODEX_PERSONAL_RESPONSES_ADAPTER'
   resolveHeaders(request: IncomingMessage): Promise<Record<string, string>>
+  fetchImpl?: typeof fetch
 }
 
 /**
@@ -785,7 +786,7 @@ class ResponsesCredentialAdapter {
     response.once('close', abort)
     this.activeRequests.add(controller)
     try {
-      const upstream = await fetch(this.options.upstreamUrl, {
+      const upstream = await (this.options.fetchImpl ?? fetch)(this.options.upstreamUrl, {
         method: 'POST',
         headers: await this.options.resolveHeaders(request),
         body,
@@ -827,13 +828,17 @@ class ResponsesCredentialAdapter {
 }
 
 /** Build the exact source-provider configuration for one private App Server. */
-export async function startCodexNativeProvider(route: CodexNativeModelRoute): Promise<StartedCodexNativeProvider> {
+export async function startCodexNativeProvider(
+  route: CodexNativeModelRoute,
+  dependencies: { fetchImpl?: typeof fetch } = {},
+): Promise<StartedCodexNativeProvider> {
   if (route.kind === 'managed') {
     const model = route.model.trim()
     if (!model) throw new Error('CODEX_NATIVE_MANAGED_ROUTE_INVALID')
     const adapter = new ResponsesCredentialAdapter({
       upstreamUrl: `${managedResponsesBaseUrl(route.gatewayUrl)}/responses`,
       failurePrefix: 'CODEX_GATEWAY_ADAPTER',
+      fetchImpl: dependencies.fetchImpl,
       resolveHeaders: async request => {
         const accessToken = await route.resolveAccessToken()
         if (!accessToken.trim()) throw new Error('CODEX_GATEWAY_ADAPTER_ACCESS_TOKEN_INVALID')
@@ -880,6 +885,7 @@ export async function startCodexNativeProvider(route: CodexNativeModelRoute): Pr
     const adapter = new ResponsesCredentialAdapter({
       upstreamUrl: personalModelEndpoint(profile.base_url, 'responses'),
       failurePrefix: 'CODEX_PERSONAL_RESPONSES_ADAPTER',
+      fetchImpl: dependencies.fetchImpl,
       resolveHeaders: async () => ({
         ...personalModelAuthHeader(profile),
         Accept: 'text/event-stream',
