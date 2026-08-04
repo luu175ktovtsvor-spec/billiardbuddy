@@ -1798,3 +1798,190 @@ test('15.2 API schema rejects invalid fixture and exposes only capability-gated,
   const malformedCursor = await request(handler, `/api/images/projects/${payload.project.id}/events?cursor=-1`)
   expect(malformedCursor.status).toBe(400)
 })
+
+test('15.5A Quick Create reserves one formal Project and paid Direction across replay and restart recovery', async () => {
+  const png = (await dataUrl()).split(',', 2)[1]!
+  const gateway = gatewayFixture(png)
+  const capability = '15aquickcreatecapability000000000000'
+  const input = {
+    idempotency_key: 'bb-image-15a-quick-create-replay-0001',
+    prompt: '为新品制作一张有清晰产品主体的横版宣传图',
+    title: '15.5A 快速建项',
+    output_preset: 'landscape' as const,
+    reference_inputs: [{ data_url: await dataUrl(), role: 'product' as const }],
+  }
+  const service = await createService('15a-quick-create', gateway.fetchImpl)
+  const handler = createImageWorkbenchDomainApiHandler(service, capability)
+  await withGateway(async () => {
+    const first = await request(handler, '/api/images/quick-create', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-BilliardBuddy-Media-Capability': capability },
+      body: JSON.stringify(input),
+    })
+    expect(first.status).toBe(202)
+    const firstPayload = await first.json() as { project: { id: string; size: string; revision: number }; round: { id: string }; operations: Array<{ id: string; status: string }> }
+    expect(firstPayload.project.size).toBe('1536x1024')
+    expect(firstPayload.operations).toHaveLength(1)
+    expect(firstPayload.operations[0]?.status).toBe('queued')
+    const posts = gateway.calls.filter(call => call.path === '/image-generation/v1/images/tasks' && call.method === 'POST')
+    expect(posts).toHaveLength(1)
+    expect(posts[0]?.body).toMatchObject({ mode: 'edit', n: 3, size: '1536x1024' })
+    expect((posts[0]?.body as { reference_controls?: unknown[] }).reference_controls).toEqual([{
+      image_index: 0,
+      role: 'product',
+      influence_strength: 'high',
+      preservation: 'must_preserve',
+      priority: 0,
+    }])
+
+    const replay = await request(handler, '/api/images/quick-create', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-BilliardBuddy-Media-Capability': capability },
+      body: JSON.stringify(input),
+    })
+    expect(replay.status).toBe(202)
+    const replayPayload = await replay.json() as { project: { id: string }; round: { id: string }; operations: Array<{ id: string }> }
+    expect(replayPayload.project.id).toBe(firstPayload.project.id)
+    expect(replayPayload.round.id).toBe(firstPayload.round.id)
+    expect(replayPayload.operations.map(operation => operation.id)).toEqual(firstPayload.operations.map(operation => operation.id))
+    expect(gateway.calls.filter(call => call.path === '/image-generation/v1/images/tasks' && call.method === 'POST')).toHaveLength(1)
+  })
+  service.repository.close()
+
+  const crashRoot = await testRoot('15a-quick-create-crash')
+  const crashLegacyRoot = await testRoot('15a-quick-create-crash-legacy')
+  let crashOnce = true
+  const interrupted = new ImageWorkbenchService({
+    root: crashRoot,
+    legacyMediaRoot: crashLegacyRoot,
+    now: () => new Date(at),
+    fetchImpl: gateway.fetchImpl,
+    crashInjector: point => {
+      if (point === 'after_generation_round_persisted_before_post' && crashOnce) {
+        crashOnce = false
+        throw new Error('INJECTED_QUICK_CREATE_BEFORE_POST')
+      }
+    },
+  })
+  await withGateway(async () => {
+    await expect(interrupted.quickCreate({
+      ...input,
+      idempotency_key: 'bb-image-15a-quick-create-recovery-0001',
+    })).rejects.toThrow('INJECTED_QUICK_CREATE_BEFORE_POST')
+    const postsBeforeRecovery = gateway.calls.filter(call => call.path === '/image-generation/v1/images/tasks' && call.method === 'POST').length
+    interrupted.repository.close()
+    const recovered = new ImageWorkbenchService({
+      root: crashRoot,
+      legacyMediaRoot: crashLegacyRoot,
+      now: () => new Date(at),
+      fetchImpl: gateway.fetchImpl,
+    })
+    await recovered.recoverInterruptedOperations()
+    const replayed = await recovered.quickCreate({
+      ...input,
+      idempotency_key: 'bb-image-15a-quick-create-recovery-0001',
+    })
+    expect(replayed.operations).toHaveLength(1)
+    expect(gateway.calls.filter(call => call.path === '/image-generation/v1/images/tasks' && call.method === 'POST')).toHaveLength(postsBeforeRecovery + 1)
+    recovered.repository.close()
+  })
+})
+
+test('15.5A keeps Inspiration local until explicit promote and exposes typed Brief and Reference commands', async () => {
+  const service = await createService('15a-inspiration')
+  const capability = '15ainspirationcapability000000000000'
+  const handler = createImageWorkbenchDomainApiHandler(service, capability)
+  const project = await createProject(service)
+  const headers = { 'Content-Type': 'application/json', 'X-BilliardBuddy-Media-Capability': capability }
+  const inspirationInput = {
+    base_revision: project.revision,
+    idempotency_key: 'bb-image-15a-inspiration-upsert-0001',
+    items: [{ data_url: await dataUrl(), note: '仅供灵感比较，不发送给模型' }],
+  }
+  const upsert = await request(handler, `/api/images/projects/${project.id}/inspiration-board/commands/upsert-items`, {
+    method: 'POST', headers, body: JSON.stringify(inspirationInput),
+  })
+  expect(upsert.status).toBe(200)
+  const upsertPayload = await upsert.json() as { project: { revision: number }; board: { id: string; items: Array<{ id: string; asset_id: string; data_url?: unknown }> } }
+  expect(upsertPayload.board.items).toHaveLength(1)
+  expect(upsertPayload.board.items[0]?.data_url).toBeUndefined()
+  const boardReplay = await request(handler, `/api/images/projects/${project.id}/inspiration-board/commands/upsert-items`, {
+    method: 'POST', headers, body: JSON.stringify(inspirationInput),
+  })
+  expect(boardReplay.status).toBe(200)
+  expect((await boardReplay.json() as { board: { items: unknown[] } }).board.items).toHaveLength(1)
+  expect((await service.getProject(project.id)).references).toHaveLength(0)
+
+  const promote = await request(handler, `/api/images/projects/${project.id}/inspiration-board/items/${upsertPayload.board.items[0]!.id}/commands/promote`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      base_revision: upsertPayload.project.revision,
+      idempotency_key: 'bb-image-15a-inspiration-promote-0001',
+      role: 'style',
+      influence_strength: 'medium',
+      preservation: 'prefer_preserve',
+      priority: 7,
+      label: '纸张与光线风格',
+    }),
+  })
+  expect(promote.status).toBe(200)
+  const promotePayload = await promote.json() as { project: { revision: number; references: Array<{ asset_id: string; role: string; influence_strength: string; preservation: string; priority: number }> }; board: { items: Array<{ promoted_reference_asset_id?: string }> } }
+  expect(promotePayload.project.references).toEqual([{
+    asset_id: upsertPayload.board.items[0]!.asset_id,
+    role: 'style',
+    influence_strength: 'medium',
+    preservation: 'prefer_preserve',
+    priority: 7,
+    label: '纸张与光线风格',
+    image_path: expect.any(String),
+    mime_type: 'image/png',
+  }])
+  expect(promotePayload.board.items[0]?.promoted_reference_asset_id).toBe(upsertPayload.board.items[0]?.asset_id)
+
+  const compiled = await request(handler, `/api/images/projects/${project.id}/brief/compile`, { method: 'POST', headers })
+  expect(compiled.status).toBe(200)
+  expect(await compiled.json()).toMatchObject({ brief_id: expect.stringMatching(/^brf_/), snapshot_hash: expect.stringMatching(/^sha256:/) })
+  const overridden = await request(handler, `/api/images/projects/${project.id}/brief/commands/apply-overrides`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      base_revision: promotePayload.project.revision,
+      idempotency_key: 'bb-image-15a-brief-overrides-0001',
+      overrides: { exact_text: ['新品上市'] },
+    }),
+  })
+  expect(overridden.status).toBe(200)
+  const overriddenPayload = await overridden.json() as { project: { revision: number } }
+
+  const added = await request(handler, `/api/images/projects/${project.id}/references`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      base_revision: overriddenPayload.project.revision,
+      idempotency_key: 'bb-image-15a-add-reference-0001',
+      references: [{
+        data_url: await dataUrl(),
+        role: 'product',
+        influence_strength: 'high',
+        preservation: 'must_preserve',
+        priority: 1,
+        label: '真实产品',
+      }],
+    }),
+  })
+  expect(added.status).toBe(201)
+  const addedPayload = await added.json() as { project: { revision: number; references: Array<{ asset_id: string; role: string }> } }
+  expect(addedPayload.project.references).toHaveLength(2)
+  const removed = await request(handler, `/api/images/projects/${project.id}/references/${addedPayload.project.references.find(reference => reference.role === 'product')!.asset_id}/commands/remove`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      base_revision: addedPayload.project.revision,
+      idempotency_key: 'bb-image-15a-remove-reference-0001',
+    }),
+  })
+  expect(removed.status).toBe(200)
+  expect((await removed.json() as { project: { references: Array<{ role: string }> } }).project.references).toHaveLength(1)
+  service.repository.close()
+})

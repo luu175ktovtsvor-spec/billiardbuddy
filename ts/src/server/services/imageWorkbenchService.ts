@@ -88,6 +88,22 @@ import {
   type UpdateImageReferenceControlInput,
   updateImageReferenceControlInputSchema,
 } from '../../../shared/contracts/imageGeneration.js'
+import {
+  addImageWorkflowReferencesInputSchema,
+  applyImageBriefOverridesInputSchema,
+  imageInspirationBoardSchema,
+  imageQuickCreateInputSchema,
+  promoteImageInspirationItemInputSchema,
+  removeImageWorkflowReferenceInputSchema,
+  upsertImageInspirationItemsInputSchema,
+  type AddImageWorkflowReferencesInput,
+  type ApplyImageBriefOverridesInput,
+  type ImageInspirationBoard,
+  type ImageQuickCreateInput,
+  type PromoteImageInspirationItemInput,
+  type RemoveImageWorkflowReferenceInput,
+  type UpsertImageInspirationItemsInput,
+} from '../../../shared/contracts/imageWorkflow.js'
 import { providerRegistryEntry } from '../../../../gateway/providerRegistry.js'
 import {
   PROVIDER_GATEWAY_PROTOCOL,
@@ -236,6 +252,11 @@ function id(prefix: 'img' | 'ref' | 'mask' | 'out' | 'task' | 'brf' | 'dsp' | 'a
 }
 
 function stableId(prefix: 'op' | 'ver' | 'ref' | 'dsp' | 'art' | 'plan' | 'dir' | 'rnd' | 'grp' | 'cand' | 'out' | 'receipt' | 'adopt' | 'canvas', ...parts: string[]): string {
+  return `${prefix}_${createHash('sha256').update(parts.join('\0')).digest('hex').slice(0, 32)}`
+}
+
+/** A deterministic aggregate id used by a recoverable human-workflow command. */
+function workflowId(prefix: string, ...parts: string[]): string {
   return `${prefix}_${createHash('sha256').update(parts.join('\0')).digest('hex').slice(0, 32)}`
 }
 
@@ -935,16 +956,27 @@ export class ImageWorkbenchService {
   }
 
   async createProject(raw: CreateImageProjectInput): Promise<ImageWorkbenchProject> {
-    const input = createImageProjectInputSchema.parse(raw)
+    return await this.createProjectWithId(createImageProjectInputSchema.parse(raw), id('img'))
+  }
+
+  /** The id is supplied only by a durable workflow receipt, never by a client. */
+  private async createProjectWithId(input: CreateImageProjectInput, projectId: string): Promise<ImageWorkbenchProject> {
+    const existing = await this.repository.getProject(projectId).catch(error => {
+      if (error instanceof ImageWorkbenchRepositoryError && error.status === 404) return null
+      throw error
+    })
+    if (existing) return existing
     const now = this.iso()
-    const projectId = id('img')
-    const persisted = await this.persistImages(projectId, input.reference_images, input.reference_roles, now)
-    const { brief, providerPrompt } = compileImageBrief(input.user_request, persisted.references)
+    const userRequest = input.user_request ?? input.prompt
+    if (!userRequest) throw new ImageWorkbenchServiceError('图片项目缺少创作需求', 400, 'IMAGE_OPERATION_CORRUPT')
+    const size = input.size ?? '1024x1024'
+    const persisted = await this.persistImages(projectId, input.reference_images ?? [], input.reference_roles ?? [], now)
+    const { brief, providerPrompt } = compileImageBrief(userRequest, persisted.references)
     const project = imageWorkbenchProjectSchema.parse({
       schema_version: 1,
       id: projectId,
       kind: 'image',
-      title: input.title ?? titleForRequest(input.user_request),
+      title: input.title ?? titleForRequest(userRequest),
       workspace_root: input.workspace_root,
       owner: STANDALONE_IMAGE_OWNER,
       writer_fence: INITIAL_WRITER_FENCE,
@@ -955,9 +987,9 @@ export class ImageWorkbenchService {
       updated_at: now,
       state: 'draft',
       mode: persisted.references.length > 0 ? 'edit' : 'generate',
-      model: this.initialProjectionModel(input.user_request, input.size),
+      model: this.initialProjectionModel(userRequest, size),
       prompt: providerPrompt,
-      size: input.size,
+      size,
       count: 3,
       candidate_count: 3,
       ...(input.budget_limit ? { budget_limit: input.budget_limit } : {}),
@@ -975,6 +1007,106 @@ export class ImageWorkbenchService {
     } catch (error) {
       throw new ImageWorkbenchServiceError('无法创建图片项目', 500, mediaErrorCode(error))
     }
+  }
+
+  private quickCreateSize(preset: ImageQuickCreateInput['output_preset']): ImageWorkbenchProject['size'] {
+    if (preset === 'landscape') return '1536x1024'
+    if (preset === 'portrait') return '1024x1536'
+    return '1024x1024'
+  }
+
+  private async existingGenerationRound(projectId: string, roundId: string): Promise<ImageGenerationRound | null> {
+    return await this.repository.getGenerationRound(projectId, roundId).catch(error => {
+      if (error instanceof ImageWorkbenchRepositoryError && error.status === 404) return null
+      throw error
+    })
+  }
+
+  /**
+   * Quick Create is intentionally only a shortcut into Project -> Plan ->
+   * Estimate -> confirmed one-direction Round.  Its receipt is prepared
+   * before the first durable Project or paid-operation action, so repeating a
+   * command after a crash reconstructs the same IDs and never starts a new
+   * paid attempt.
+   */
+  async quickCreate(raw: ImageQuickCreateInput): Promise<{
+    project: ImageWorkbenchProject
+    round: ImageGenerationRound
+    operations: ImageOperationV2[]
+  }> {
+    const input = imageQuickCreateInputSchema.parse(raw)
+    const requestHash = sha256({
+      kind: 'quick_create',
+      prompt: input.prompt,
+      title: input.title ?? null,
+      output_preset: input.output_preset,
+      reference_inputs: input.reference_inputs,
+      budget_limit: input.budget_limit ?? null,
+    })
+    const projectId = workflowId('img', 'quick-create', input.idempotency_key)
+    const roundId = stableId('rnd', projectId, input.idempotency_key)
+    const receipt = await this.repository.prepareWorkflowCommand({
+      scope: 'quick-create',
+      aggregate_id: STANDALONE_IMAGE_OWNER.owner_id,
+      idempotency_key: input.idempotency_key,
+      request_hash: requestHash,
+      result: { project_id: projectId, round_id: roundId, operation_ids: [] },
+    })
+    const project = await this.createProjectWithId({
+      title: input.title,
+      user_request: input.prompt,
+      workspace_root: 'image-workbench',
+      size: this.quickCreateSize(input.output_preset),
+      ...(input.budget_limit ? { budget_limit: input.budget_limit } : {}),
+      reference_images: input.reference_inputs.map(reference => reference.data_url),
+      reference_roles: input.reference_inputs.map(reference => reference.role),
+    }, projectId)
+
+    const existingRound = await this.existingGenerationRound(project.id, roundId)
+    if (existingRound) {
+      const operations = await Promise.all(existingRound.direction_operations.map(async direction =>
+        await this.repository.getGenerationOperation(project.id, direction.operation_id)))
+      await this.repository.completeWorkflowCommand({
+        scope: 'quick-create',
+        aggregate_id: STANDALONE_IMAGE_OWNER.owner_id,
+        idempotency_key: input.idempotency_key,
+        request_hash: requestHash,
+        result: { project_id: project.id, round_id: existingRound.id, operation_ids: operations.map(operation => operation.id) },
+      })
+      return { project: await this.project(project.id), round: existingRound, operations }
+    }
+    if (receipt.status === 'complete') {
+      throw new ImageWorkbenchServiceError('快速创建回执缺少生成轮次', 500, 'IMAGE_OPERATION_CORRUPT')
+    }
+
+    const planKey = `bb-image-quick-${sha256({ project_id: project.id, key: input.idempotency_key }).slice('sha256:'.length)}`
+    const plan = await this.createCreativePlan(project.id, {
+      base_revision: project.revision,
+      idempotency_key: planKey,
+    })
+    const direction = plan.directions[0]
+    if (!direction) throw new ImageWorkbenchServiceError('快速创建缺少创作方向', 500, 'IMAGE_OPERATION_CORRUPT')
+    const estimate = await this.estimateGenerationRound(project.id, {
+      base_revision: project.revision,
+      creative_plan_id: plan.id,
+      direction_ids: [direction.id],
+    })
+    const created = await this.createGenerationRound(project.id, {
+      base_revision: project.revision,
+      idempotency_key: input.idempotency_key,
+      creative_plan_id: plan.id,
+      direction_ids: [direction.id],
+      estimate_hash: estimate.estimate_hash,
+      confirm: true,
+    })
+    await this.repository.completeWorkflowCommand({
+      scope: 'quick-create',
+      aggregate_id: STANDALONE_IMAGE_OWNER.owner_id,
+      idempotency_key: input.idempotency_key,
+      request_hash: requestHash,
+      result: { project_id: project.id, round_id: created.round.id, operation_ids: created.operations.map(operation => operation.id) },
+    })
+    return { project: await this.project(project.id), ...created }
   }
 
   private assertRevision(project: ImageWorkbenchProject, revision: number, message: string): void {
@@ -1058,6 +1190,308 @@ export class ImageWorkbenchService {
     })
   }
 
+  private referenceAssetNames(project: ImageWorkbenchProject, references: ImageWorkbenchProject['references']): string[] {
+    return references.map(reference => {
+      const asset = project.assets.find(candidate => candidate.id === reference.asset_id)
+      if (!asset?.mime_type || !isSupportedImageMime(asset.mime_type)) {
+        throw new ImageWorkbenchServiceError('图片参考素材格式无效', 409, 'REFERENCE_IMAGE_MISSING')
+      }
+      return `${asset.id}.${extensionForMime(asset.mime_type)}`
+    })
+  }
+
+  /** Public projection exposes the asset id; keep the older deterministic reference id readable too. */
+  private matchesReference(project: ImageWorkbenchProject, reference: ImageWorkbenchProject['references'][number], value: string): boolean {
+    return reference.asset_id === value || stableId('ref', project.id, reference.asset_id) === value
+  }
+
+  private async refreshWorkflowProject(result: { project: ImageWorkbenchProject; replayed: boolean }): Promise<ImageWorkbenchProject> {
+    // A response can be lost after the command transaction but before the
+    // header pointer update. Reloading on replay lets the normal, idempotent
+    // header initializer finish local recovery without rerunning user work.
+    return await this.initializeGenerationHeader(result.replayed ? await this.project(result.project.id) : result.project)
+  }
+
+  async compileBrief(projectId: string): Promise<{ project: ImageWorkbenchProject; brief: ImageBriefSnapshot }> {
+    const project = await this.project(projectId)
+    return { project, brief: await this.compileGenerationBrief(project) }
+  }
+
+  async applyBriefOverrides(projectId: string, raw: ApplyImageBriefOverridesInput): Promise<ImageWorkbenchProject> {
+    const input = applyImageBriefOverridesInputSchema.parse(raw)
+    const requestHash = sha256({
+      kind: 'brief_overrides', project_id: projectId, base_revision: input.base_revision, overrides: input.overrides,
+    })
+    const project = await this.project(projectId)
+    const replay = await this.repository.workflowProjectCommandResult(project.id, input.idempotency_key, requestHash)
+    if (replay) return await this.refreshWorkflowProject({ project: replay, replayed: true })
+    this.assertRevision(project, input.base_revision, '图片项目已更新，请刷新后再确认 Brief')
+    await this.assertNoActiveOperation(project)
+    await this.assertNoActiveGenerationOperation(project)
+    const userRequest = project.brief?.user_request ?? project.prompt
+    const overrides = { ...project.brief_overrides, ...input.overrides }
+    const brief = applyImageBriefOverrides(compileImageBrief(userRequest, project.references).brief, overrides)
+    return await this.refreshWorkflowProject(await this.repository.saveWorkflowProjectCommand({
+      project: imageWorkbenchProjectSchema.parse({
+        ...project,
+        state: 'draft',
+        task_id: undefined,
+        prompt: providerPromptForImageBrief(brief),
+        brief,
+        brief_overrides: overrides,
+        revision: project.revision + 1,
+        error: undefined,
+        error_code: undefined,
+        notice: undefined,
+      }),
+      base_revision: input.base_revision,
+      idempotency_key: input.idempotency_key,
+      request_hash: requestHash,
+      command_kind: 'brief_overrides',
+    }))
+  }
+
+  async addWorkflowReferences(projectId: string, raw: AddImageWorkflowReferencesInput): Promise<ImageWorkbenchProject> {
+    const input = addImageWorkflowReferencesInputSchema.parse(raw)
+    const requestHash = sha256({
+      kind: 'add_references', project_id: projectId, base_revision: input.base_revision, references: input.references,
+    })
+    const project = await this.project(projectId)
+    const replay = await this.repository.workflowProjectCommandResult(project.id, input.idempotency_key, requestHash)
+    if (replay) return await this.refreshWorkflowProject({ project: replay, replayed: true })
+    this.assertRevision(project, input.base_revision, '图片项目已更新，请刷新后再追加参考素材')
+    await this.assertNoActiveOperation(project)
+    await this.assertNoActiveGenerationOperation(project)
+    if (project.references.length + input.references.length > 8) {
+      throw new ImageWorkbenchServiceError('每个图片项目最多保留 8 张参考图片', 400, 'TOO_MANY_REFERENCE_IMAGES')
+    }
+    const now = this.iso()
+    const persisted = await this.persistImages(
+      project.id,
+      input.references.map(reference => reference.data_url),
+      input.references.map(reference => reference.role),
+      now,
+    )
+    const addedReferences = persisted.references.map((reference, index) => ({
+      ...reference,
+      influence_strength: input.references[index]!.influence_strength,
+      preservation: input.references[index]!.preservation,
+      priority: input.references[index]!.priority,
+      ...(input.references[index]!.label ? { label: input.references[index]!.label } : {}),
+    }))
+    const references = [...project.references, ...addedReferences]
+    const assets = [...project.assets, ...persisted.assets]
+    await this.assertReferenceSet({ ...project, assets }, references)
+    const userRequest = project.brief?.user_request ?? project.prompt
+    const brief = applyImageBriefOverrides(compileImageBrief(userRequest, references).brief, project.brief_overrides)
+    return await this.refreshWorkflowProject(await this.repository.saveWorkflowProjectCommand({
+      project: imageWorkbenchProjectSchema.parse({
+        ...project,
+        state: 'draft',
+        task_id: undefined,
+        mode: 'edit',
+        prompt: providerPromptForImageBrief(brief),
+        brief,
+        assets,
+        references,
+        reference_image_assets: this.referenceAssetNames({ ...project, assets }, references),
+        reference_image_count: references.length,
+        revision: project.revision + 1,
+        error: undefined,
+        error_code: undefined,
+        notice: undefined,
+      }),
+      base_revision: input.base_revision,
+      idempotency_key: input.idempotency_key,
+      request_hash: requestHash,
+      command_kind: 'add_references',
+    }))
+  }
+
+  async removeWorkflowReference(projectId: string, referenceId: string, raw: RemoveImageWorkflowReferenceInput): Promise<ImageWorkbenchProject> {
+    const input = removeImageWorkflowReferenceInputSchema.parse(raw)
+    const requestHash = sha256({
+      kind: 'remove_reference', project_id: projectId, base_revision: input.base_revision, reference_id: referenceId,
+    })
+    const project = await this.project(projectId)
+    const replay = await this.repository.workflowProjectCommandResult(project.id, input.idempotency_key, requestHash)
+    if (replay) return await this.refreshWorkflowProject({ project: replay, replayed: true })
+    this.assertRevision(project, input.base_revision, '图片项目已更新，请刷新后再移除参考素材')
+    await this.assertNoActiveOperation(project)
+    await this.assertNoActiveGenerationOperation(project)
+    const references = project.references.filter(reference => !this.matchesReference(project, reference, referenceId))
+    if (references.length === project.references.length) {
+      throw new ImageWorkbenchServiceError('图片参考图不存在', 404, 'REFERENCE_IMAGE_MISSING')
+    }
+    const userRequest = project.brief?.user_request ?? project.prompt
+    const brief = applyImageBriefOverrides(compileImageBrief(userRequest, references).brief, project.brief_overrides)
+    return await this.refreshWorkflowProject(await this.repository.saveWorkflowProjectCommand({
+      project: imageWorkbenchProjectSchema.parse({
+        ...project,
+        state: 'draft',
+        task_id: undefined,
+        mode: references.length > 0 ? 'edit' : 'generate',
+        prompt: providerPromptForImageBrief(brief),
+        brief,
+        references,
+        reference_image_assets: this.referenceAssetNames(project, references),
+        reference_image_count: references.length,
+        revision: project.revision + 1,
+        error: undefined,
+        error_code: undefined,
+        notice: undefined,
+      }),
+      base_revision: input.base_revision,
+      idempotency_key: input.idempotency_key,
+      request_hash: requestHash,
+      command_kind: 'remove_reference',
+    }))
+  }
+
+  async getInspirationBoard(projectId: string): Promise<ImageInspirationBoard | null> {
+    await this.assertProjectOwner(projectId)
+    return await this.repository.getInspirationBoard(projectId)
+  }
+
+  /** Unpromoted inspiration remains a local Project asset and is never a Provider reference. */
+  async upsertInspirationItems(projectId: string, raw: UpsertImageInspirationItemsInput): Promise<{
+    project: ImageWorkbenchProject
+    board: ImageInspirationBoard
+  }> {
+    const input = upsertImageInspirationItemsInputSchema.parse(raw)
+    const requestHash = sha256({
+      kind: 'inspiration_upsert', project_id: projectId, base_revision: input.base_revision, items: input.items,
+    })
+    const project = await this.project(projectId)
+    const replay = await this.repository.inspirationCommandResult(project.id, input.idempotency_key, requestHash)
+    if (replay) return { project: await this.project(project.id), board: replay.board }
+    this.assertRevision(project, input.base_revision, '图片项目已更新，请刷新后再修改灵感板')
+    const existing = await this.repository.getInspirationBoard(project.id)
+    const now = this.iso()
+    const items = [...(existing?.items ?? [])]
+    const itemsById = new Map(items.map(item => [item.id, item]))
+    const assets = [...project.assets]
+    for (const [index, patch] of input.items.entries()) {
+      if (patch.id) {
+        if (patch.data_url) {
+          throw new ImageWorkbenchServiceError('已有灵感项不能通过更新替换像素，请新建一项', 400, 'IMAGE_ASSET_INVALID')
+        }
+        const current = itemsById.get(patch.id)
+        if (!current) throw new ImageWorkbenchServiceError('灵感项不存在', 404, 'IMAGE_ASSET_NOT_FOUND')
+        const next = { ...current, ...(patch.note === undefined ? {} : { note: patch.note }), updated_at: now }
+        itemsById.set(next.id, next)
+        continue
+      }
+      if (!patch.data_url) throw new ImageWorkbenchServiceError('新灵感项缺少图片', 400, 'IMAGE_ASSET_INVALID')
+      const verified = await this.assets.verifyDataUrl(patch.data_url)
+      const assetId = workflowId('ref', 'inspiration', project.id, input.idempotency_key, String(index))
+      const saved = await this.assets.persist(project.id, assetId, 'reference', verified, project.id, now)
+      if (!assets.some(asset => asset.id === saved.asset.id)) assets.push(saved.asset)
+      const item = {
+        id: workflowId('inspire', project.id, input.idempotency_key, String(index)),
+        board_id: existing?.id ?? workflowId('board', project.id),
+        project_id: project.id,
+        asset_id: saved.asset.id,
+        ...(patch.note ? { note: patch.note } : {}),
+        created_at: now,
+        updated_at: now,
+      }
+      itemsById.set(item.id, item)
+    }
+    const board = imageInspirationBoardSchema.parse({
+      id: existing?.id ?? workflowId('board', project.id),
+      project_id: project.id,
+      revision: (existing?.revision ?? -1) + 1,
+      items: [...itemsById.values()].sort((left, right) => left.created_at.localeCompare(right.created_at) || left.id.localeCompare(right.id)),
+      created_at: existing?.created_at ?? now,
+      updated_at: now,
+    })
+    const saved = await this.repository.saveInspirationBoardCommand({
+      project: imageWorkbenchProjectSchema.parse({
+        ...project,
+        assets,
+        revision: project.revision + 1,
+      }),
+      base_revision: input.base_revision,
+      idempotency_key: input.idempotency_key,
+      request_hash: requestHash,
+      board,
+    })
+    return { project: saved.project, board: saved.board }
+  }
+
+  async promoteInspirationItem(projectId: string, itemId: string, raw: PromoteImageInspirationItemInput): Promise<{
+    project: ImageWorkbenchProject
+    board: ImageInspirationBoard
+  }> {
+    const input = promoteImageInspirationItemInputSchema.parse(raw)
+    const requestHash = sha256({
+      kind: 'inspiration_promote', project_id: projectId, base_revision: input.base_revision, item_id: itemId,
+      role: input.role, influence_strength: input.influence_strength, preservation: input.preservation,
+      priority: input.priority, label: input.label ?? null,
+    })
+    const project = await this.project(projectId)
+    const replay = await this.repository.inspirationCommandResult(project.id, input.idempotency_key, requestHash)
+    if (replay) return { project: await this.refreshWorkflowProject({ project: replay.project, replayed: true }), board: replay.board }
+    this.assertRevision(project, input.base_revision, '图片项目已更新，请刷新后再提升灵感项')
+    await this.assertNoActiveOperation(project)
+    await this.assertNoActiveGenerationOperation(project)
+    const existing = await this.repository.getInspirationBoard(project.id)
+    if (!existing) throw new ImageWorkbenchServiceError('灵感板不存在', 404, 'IMAGE_ASSET_NOT_FOUND')
+    const sourceItem = existing.items.find(item => item.id === itemId)
+    if (!sourceItem) throw new ImageWorkbenchServiceError('灵感项不存在', 404, 'IMAGE_ASSET_NOT_FOUND')
+    if (project.references.some(reference => reference.asset_id === sourceItem.asset_id)) {
+      throw new ImageWorkbenchServiceError('该灵感项已经是项目参考图', 409, 'IMAGE_IDEMPOTENCY_CONFLICT')
+    }
+    if (project.references.length >= 8) {
+      throw new ImageWorkbenchServiceError('每个图片项目最多保留 8 张参考图片', 400, 'TOO_MANY_REFERENCE_IMAGES')
+    }
+    const asset = project.assets.find(candidate => candidate.id === sourceItem.asset_id && candidate.role === 'reference')
+    if (!asset) throw new ImageWorkbenchServiceError('灵感图片资产不存在', 409, 'IMAGE_ASSET_NOT_FOUND')
+    await this.assets.readVerified(asset)
+    const references = [...project.references, {
+      asset_id: asset.id,
+      role: input.role,
+      influence_strength: input.influence_strength,
+      preservation: input.preservation,
+      priority: input.priority,
+      ...(input.label ? { label: input.label } : {}),
+    }]
+    const userRequest = project.brief?.user_request ?? project.prompt
+    const brief = applyImageBriefOverrides(compileImageBrief(userRequest, references).brief, project.brief_overrides)
+    const now = this.iso()
+    const board = imageInspirationBoardSchema.parse({
+      ...existing,
+      revision: existing.revision + 1,
+      items: existing.items.map(item => item.id === itemId
+        ? { ...item, promoted_reference_asset_id: asset.id, updated_at: now }
+        : item),
+      updated_at: now,
+    })
+    const saved = await this.repository.saveInspirationBoardCommand({
+      project: imageWorkbenchProjectSchema.parse({
+        ...project,
+        state: 'draft',
+        task_id: undefined,
+        mode: 'edit',
+        prompt: providerPromptForImageBrief(brief),
+        brief,
+        references,
+        reference_image_assets: this.referenceAssetNames(project, references),
+        reference_image_count: references.length,
+        revision: project.revision + 1,
+        error: undefined,
+        error_code: undefined,
+        notice: undefined,
+      }),
+      base_revision: input.base_revision,
+      idempotency_key: input.idempotency_key,
+      request_hash: requestHash,
+      board,
+    })
+    return { project: await this.refreshWorkflowProject(saved), board: saved.board }
+  }
+
   async updateReferenceControl(projectId: string, referenceId: string, raw: UpdateImageReferenceControlInput): Promise<ImageWorkbenchProject> {
     const input = updateImageReferenceControlInputSchema.parse(raw)
     const project = await this.project(projectId)
@@ -1077,7 +1511,7 @@ export class ImageWorkbenchService {
     }
     await this.assertNoActiveOperation(project)
     await this.assertNoActiveGenerationOperation(project)
-    const references = project.references.map(reference => stableId('ref', project.id, reference.asset_id) === referenceId
+    const references = project.references.map(reference => this.matchesReference(project, reference, referenceId)
       ? {
           ...reference,
           role: input.role,
@@ -1087,7 +1521,7 @@ export class ImageWorkbenchService {
           ...(input.label === undefined ? {} : { label: input.label }),
         }
       : reference)
-    if (references.every(reference => stableId('ref', project.id, reference.asset_id) !== referenceId)) {
+    if (references.every(reference => !this.matchesReference(project, reference, referenceId))) {
       throw new ImageWorkbenchServiceError('图片参考图不存在', 404, 'REFERENCE_IMAGE_MISSING')
     }
     const saved = await this.repository.saveReferenceControlProject({

@@ -1,6 +1,6 @@
 import type { SqliteUnitOfWork } from '../../kernel/storage/sqliteUnitOfWork.js'
 
-const IMAGE_METADATA_SCHEMA_VERSION = 9
+const IMAGE_METADATA_SCHEMA_VERSION = 10
 
 /** Image-only metadata schema. The shared Kernel remains unaware of image facts. */
 export function migrateImageMetadata(unitOfWork: SqliteUnitOfWork): void {
@@ -19,7 +19,196 @@ export function migrateImageMetadata(unitOfWork: SqliteUnitOfWork): void {
     if (version === 7) migrateV7(unitOfWork)
     if (version === 8) migrateV8(unitOfWork)
     if (version === 9) migrateV9(unitOfWork)
+    if (version === 10) migrateV10(unitOfWork)
   }
+}
+
+/**
+ * 15.5 adds human workflow aggregates without reopening the old JSON writer.
+ * Every aggregate keeps an indexed header and a schema-validated immutable
+ * document payload; item collections and command receipts stay independently
+ * addressable so recovery never needs to infer a batch from a mutable array.
+ */
+function migrateV10(unitOfWork: SqliteUnitOfWork): void {
+  unitOfWork.transaction(() => {
+    unitOfWork.database.exec(`CREATE TABLE image_workflow_command_receipts(
+      scope TEXT NOT NULL,
+      aggregate_id TEXT NOT NULL,
+      idempotency_key TEXT NOT NULL,
+      request_hash TEXT NOT NULL,
+      status TEXT NOT NULL CHECK(status IN ('prepared','complete')),
+      result_json TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY(scope, aggregate_id, idempotency_key)
+    )`)
+    unitOfWork.database.exec(`CREATE TABLE image_project_workflow_commands(
+      project_id TEXT NOT NULL REFERENCES image_projects(id),
+      idempotency_key TEXT NOT NULL,
+      command_kind TEXT NOT NULL,
+      request_hash TEXT NOT NULL,
+      result_project_json TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY(project_id, idempotency_key)
+    )`)
+
+    unitOfWork.database.exec(`CREATE TABLE image_inspiration_boards(
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL UNIQUE REFERENCES image_projects(id),
+      revision INTEGER NOT NULL CHECK(revision >= 0),
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      document_json TEXT NOT NULL
+    )`)
+    unitOfWork.database.exec(`CREATE TABLE image_inspiration_items(
+      id TEXT PRIMARY KEY,
+      board_id TEXT NOT NULL REFERENCES image_inspiration_boards(id),
+      project_id TEXT NOT NULL REFERENCES image_projects(id),
+      asset_id TEXT NOT NULL,
+      promoted_reference_asset_id TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      document_json TEXT NOT NULL
+    )`)
+    unitOfWork.database.exec('CREATE INDEX image_inspiration_items_board ON image_inspiration_items(board_id, created_at)')
+    unitOfWork.database.exec(`CREATE TABLE image_inspiration_commands(
+      project_id TEXT NOT NULL REFERENCES image_projects(id),
+      idempotency_key TEXT NOT NULL,
+      request_hash TEXT NOT NULL,
+      board_id TEXT NOT NULL REFERENCES image_inspiration_boards(id),
+      result_json TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY(project_id, idempotency_key)
+    )`)
+
+    unitOfWork.database.exec(`CREATE TABLE image_brand_kits(
+      id TEXT PRIMARY KEY,
+      owner_kind TEXT NOT NULL,
+      owner_id TEXT NOT NULL,
+      revision INTEGER NOT NULL CHECK(revision >= 0),
+      current_revision_id TEXT NOT NULL,
+      state TEXT NOT NULL CHECK(state IN ('active','trashed')),
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      document_json TEXT NOT NULL
+    )`)
+    unitOfWork.database.exec('CREATE INDEX image_brand_kits_owner ON image_brand_kits(owner_kind, owner_id, state, updated_at DESC)')
+    unitOfWork.database.exec(`CREATE TABLE image_brand_kit_commands(
+      brand_kit_id TEXT NOT NULL REFERENCES image_brand_kits(id),
+      idempotency_key TEXT NOT NULL,
+      request_hash TEXT NOT NULL,
+      result_json TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY(brand_kit_id, idempotency_key)
+    )`)
+
+    unitOfWork.database.exec(`CREATE TABLE image_templates(
+      id TEXT PRIMARY KEY,
+      owner_kind TEXT NOT NULL,
+      owner_id TEXT NOT NULL,
+      revision INTEGER NOT NULL CHECK(revision >= 0),
+      current_revision_id TEXT NOT NULL,
+      state TEXT NOT NULL CHECK(state IN ('active','trashed')),
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      document_json TEXT NOT NULL
+    )`)
+    unitOfWork.database.exec('CREATE INDEX image_templates_owner ON image_templates(owner_kind, owner_id, state, updated_at DESC)')
+    unitOfWork.database.exec(`CREATE TABLE image_template_commands(
+      template_id TEXT NOT NULL REFERENCES image_templates(id),
+      idempotency_key TEXT NOT NULL,
+      request_hash TEXT NOT NULL,
+      result_json TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY(template_id, idempotency_key)
+    )`)
+
+    unitOfWork.database.exec(`CREATE TABLE image_asset_provenances(
+      asset_id TEXT PRIMARY KEY,
+      owner_kind TEXT NOT NULL,
+      owner_id TEXT NOT NULL,
+      origin TEXT NOT NULL CHECK(origin IN ('user_upload','generated','derived','template')),
+      retention TEXT NOT NULL CHECK(retention IN ('project','brand_kit','template')),
+      created_at TEXT NOT NULL,
+      document_json TEXT NOT NULL
+    )`)
+    unitOfWork.database.exec('CREATE INDEX image_asset_provenances_owner ON image_asset_provenances(owner_kind, owner_id, created_at DESC)')
+    /* This detached grant table intentionally does not FK asset ownership. A
+       project relation refresh replaces normalized asset rows atomically and
+       must never erase a valid cross-aggregate grant during that refresh. */
+    unitOfWork.database.exec(`CREATE TABLE image_workflow_asset_grants(
+      id TEXT PRIMARY KEY,
+      asset_id TEXT NOT NULL,
+      from_owner_kind TEXT NOT NULL,
+      from_owner_id TEXT NOT NULL,
+      to_owner_kind TEXT NOT NULL,
+      to_owner_id TEXT NOT NULL,
+      purpose TEXT NOT NULL CHECK(purpose IN ('render','template_use','project_reuse')),
+      revoked_at TEXT,
+      created_at TEXT NOT NULL,
+      document_json TEXT NOT NULL
+    )`)
+    unitOfWork.database.exec('CREATE INDEX image_workflow_asset_grants_target ON image_workflow_asset_grants(to_owner_kind, to_owner_id, revoked_at, created_at DESC)')
+    unitOfWork.database.exec(`CREATE TABLE image_workflow_asset_grant_commands(
+      aggregate_id TEXT NOT NULL,
+      idempotency_key TEXT NOT NULL,
+      request_hash TEXT NOT NULL,
+      grant_id TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY(aggregate_id, idempotency_key)
+    )`)
+
+    unitOfWork.database.exec(`CREATE TABLE image_campaigns(
+      id TEXT PRIMARY KEY,
+      owner_kind TEXT NOT NULL,
+      owner_id TEXT NOT NULL,
+      revision INTEGER NOT NULL CHECK(revision >= 0),
+      state TEXT NOT NULL CHECK(state IN ('draft','confirmed','running','completed','cancelled')),
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      document_json TEXT NOT NULL
+    )`)
+    unitOfWork.database.exec('CREATE INDEX image_campaigns_owner ON image_campaigns(owner_kind, owner_id, updated_at DESC)')
+    unitOfWork.database.exec(`CREATE TABLE image_campaign_items(
+      id TEXT PRIMARY KEY,
+      campaign_id TEXT NOT NULL REFERENCES image_campaigns(id),
+      ordinal INTEGER NOT NULL CHECK(ordinal >= 0),
+      project_id TEXT,
+      state TEXT NOT NULL CHECK(state IN ('draft','queued','running','ready','failed','cancelled')),
+      attempt INTEGER NOT NULL CHECK(attempt >= 1),
+      updated_at TEXT NOT NULL,
+      document_json TEXT NOT NULL,
+      UNIQUE(campaign_id, ordinal)
+    )`)
+    unitOfWork.database.exec('CREATE INDEX image_campaign_items_campaign_state ON image_campaign_items(campaign_id, state, ordinal)')
+    unitOfWork.database.exec(`CREATE TABLE image_campaign_estimates(
+      estimate_hash TEXT PRIMARY KEY,
+      campaign_id TEXT NOT NULL REFERENCES image_campaigns(id),
+      campaign_revision INTEGER NOT NULL CHECK(campaign_revision >= 0),
+      expires_at TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      document_json TEXT NOT NULL
+    )`)
+    unitOfWork.database.exec('CREATE INDEX image_campaign_estimates_expiry ON image_campaign_estimates(campaign_id, expires_at)')
+    unitOfWork.database.exec(`CREATE TABLE image_campaign_confirmations(
+      id TEXT PRIMARY KEY,
+      campaign_id TEXT NOT NULL REFERENCES image_campaigns(id),
+      campaign_revision INTEGER NOT NULL CHECK(campaign_revision >= 0),
+      estimate_hash TEXT NOT NULL REFERENCES image_campaign_estimates(estimate_hash),
+      created_at TEXT NOT NULL,
+      document_json TEXT NOT NULL
+    )`)
+    unitOfWork.database.exec(`CREATE TABLE image_campaign_commands(
+      campaign_id TEXT NOT NULL REFERENCES image_campaigns(id),
+      idempotency_key TEXT NOT NULL,
+      request_hash TEXT NOT NULL,
+      result_json TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY(campaign_id, idempotency_key)
+    )`)
+    unitOfWork.database.query('INSERT INTO image_metadata_schema_migrations(version,applied_at) VALUES(?,?)')
+      .run(10, new Date().toISOString())
+  })
 }
 
 /** 15.4 keeps Qwen suggestions immutable and separate from Candidate/Version facts. */
