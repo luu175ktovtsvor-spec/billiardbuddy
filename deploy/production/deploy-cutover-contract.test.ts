@@ -49,4 +49,6 @@ test('video smoke requires the public Gateway-only introspection path to be a co
   const exact404 = position(videoSmoke, 'if (publicIntrospectionStatus !== 404)')
   expect(request).toBeLessThan(cancel)
   expect(cancel).toBeLessThan(exact404)
+  expect(videoSmoke).not.toContain('object lease quota returned')
+  expect(videoSmoke).toContain('Quota ceilings are an external deployment policy')
 })
