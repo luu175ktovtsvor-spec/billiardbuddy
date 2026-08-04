@@ -23,6 +23,10 @@ export type MigrationPaths = {
 
 export type MigrationOptions = MigrationPaths & {
   validateOnly?: boolean
+  /** Explicit one-time cutover choice: replace stale service resource knobs
+   * with the bounded production profile while preserving credentials,
+   * provider endpoints, account bindings and storage paths. */
+  useSmallProductionProfile?: boolean
   /** Test-only escape hatch. The command-line entrypoint always requires root. */
   enforceRoot?: boolean
 }
@@ -60,6 +64,14 @@ const GATEWAY_QUOTA_DEFAULTS: Environment = Object.fromEntries(
   ),
 )
 
+const GATEWAY_OPERATIONAL_BINDING_KEYS = new Set([
+  'GW_DB', 'GW_DEEPSEEK_BASE', 'GW_MIMO_BASE', 'GW_QWEN_BASE', 'GW_FUNASR_URL',
+  'GW_DEEPSEEK_ACCOUNT_REF', 'GW_DEEPSEEK_ACCOUNT_BINDING_REVISION',
+  'GW_MIMO_ACCOUNT_REF', 'GW_MIMO_ACCOUNT_BINDING_REVISION',
+  'GW_QWEN_ACCOUNT_REF', 'GW_QWEN_ACCOUNT_BINDING_REVISION',
+  'GW_FUNASR_ACCOUNT_REF', 'GW_FUNASR_ACCOUNT_BINDING_REVISION',
+])
+
 const IMAGE_DEFAULTS: Environment = {
   RELAY_DB: '/data/relay.db', RELAY_BLOB_DIR: '/data/blobs',
   RELAY_TASK_TTL_MS: '604800000', RELAY_UNACKNOWLEDGED_RESULT_TTL_MS: '31536000000',
@@ -78,6 +90,14 @@ const IMAGE_DEFAULTS: Environment = {
   RELAY_OPENAI_ACCOUNT_REF: 'billiardbuddy-openai-production', RELAY_OPENAI_ACCOUNT_BINDING_REVISION: '1',
   RELAY_SEEDREAM_ACCOUNT_REF: 'billiardbuddy-seedream-production', RELAY_SEEDREAM_ACCOUNT_BINDING_REVISION: '1',
 }
+
+const IMAGE_OPERATIONAL_BINDING_KEYS = new Set([
+  'RELAY_DB', 'RELAY_BLOB_DIR',
+  'IMAGE_RELAY_GATEWAY_INTROSPECTION_BASE', 'IMAGE_RELAY_PUBLIC_BASE',
+  'RELAY_OPENAI_BASE', 'RELAY_ARK_BASE',
+  'RELAY_OPENAI_ACCOUNT_REF', 'RELAY_OPENAI_ACCOUNT_BINDING_REVISION',
+  'RELAY_SEEDREAM_ACCOUNT_REF', 'RELAY_SEEDREAM_ACCOUNT_BINDING_REVISION',
+])
 
 const VIDEO_DEFAULTS: Environment = {
   VIDEO_MEDIA_RELAY_DB: '/data/video-media-relay.db',
@@ -102,6 +122,12 @@ const VIDEO_DEFAULTS: Environment = {
   VIDEO_MEDIA_OBJECT_VERIFY_MAX_WAIT_MS: '30000', VIDEO_MEDIA_OBJECT_VERIFY_TIMEOUT_MS: '120000',
   VIDEO_MEDIA_IDENTITY_MAX_ACTIVE: '8', VIDEO_MEDIA_IDENTITY_QUEUE_MAX: '32', VIDEO_MEDIA_IDENTITY_MAX_WAIT_MS: '5000',
 }
+
+const VIDEO_OPERATIONAL_BINDING_KEYS = new Set([
+  'VIDEO_MEDIA_RELAY_DB', 'VIDEO_MEDIA_GATEWAY_INTROSPECTION_BASE',
+  'VIDEO_MEDIA_REGION', 'VIDEO_MEDIA_OSS_ENDPOINT',
+  'VIDEO_MEDIA_DASHSCOPE_ACCOUNT_REF', 'VIDEO_MEDIA_DASHSCOPE_ACCOUNT_BINDING_REVISION',
+])
 
 const REQUIRED_GATEWAY = ['GW_AUTH_SIGNING_KEY', 'GW_ADMIN_TOKEN', 'GW_DEEPSEEK_KEY', 'GW_MIMO_KEY', 'GW_FUNASR_KEY']
 const REQUIRED_IMAGE = ['RELAY_OPENAI_KEY', 'RELAY_ARK_KEY']
@@ -179,7 +205,12 @@ function assertDistinctTokens(image: string, video: string): void {
 export type MigrationPlan = { gateway: Environment; image: Environment; video: Environment }
 
 /** Build a plan without reading shell syntax, expanding variables, or writing any file. */
-export function buildMigrationPlan(gatewayInput: Environment, relayInput: Environment, videoInput: Environment): MigrationPlan {
+export function buildMigrationPlan(
+  gatewayInput: Environment,
+  relayInput: Environment,
+  videoInput: Environment,
+  options: Pick<MigrationOptions, 'useSmallProductionProfile'> = {},
+): MigrationPlan {
   nonempty(gatewayInput, REQUIRED_GATEWAY, 'gateway.env')
   if (gatewayInput.GW_QWEN_ENABLED?.trim() === '1') nonempty(gatewayInput, ['GW_QWEN_KEY'], 'gateway.env')
   nonempty(relayInput, REQUIRED_IMAGE, 'relay.env')
@@ -203,6 +234,11 @@ export function buildMigrationPlan(gatewayInput: Environment, relayInput: Enviro
     { BB_GATEWAY_MODEL: migratedGatewayModel(gatewayInput.BB_GATEWAY_MODEL) },
     { GW_IMAGE_RELAY_INTROSPECTION_TOKEN: imageToken, GW_VIDEO_MEDIA_RELAY_INTROSPECTION_TOKEN: videoToken },
   )
+  if (options.useSmallProductionProfile) {
+    for (const [name, value] of Object.entries({ ...GATEWAY_CAPACITY_DEFAULTS, GW_QUOTA_POLICY_REVISION: 'bb-agent-daily-token-v1', ...GATEWAY_QUOTA_DEFAULTS })) {
+      if (!GATEWAY_OPERATIONAL_BINDING_KEYS.has(name)) gateway[name] = value
+    }
+  }
   const image = combine(
     IMAGE_DEFAULTS,
     selected(relayInput, name => (
@@ -211,11 +247,25 @@ export function buildMigrationPlan(gatewayInput: Environment, relayInput: Enviro
     )),
     { IMAGE_RELAY_GATEWAY_INTROSPECTION_TOKEN: imageToken, IMAGE_RELAY_RESULT_SIGNING_KEY: resultSigningKey },
   )
+  if (options.useSmallProductionProfile) {
+    for (const [name, value] of Object.entries(IMAGE_DEFAULTS)) {
+      if (!IMAGE_OPERATIONAL_BINDING_KEYS.has(name)) image[name] = value
+    }
+  }
   const video = combine(
     VIDEO_DEFAULTS,
     selected(videoInput, name => name.startsWith('VIDEO_MEDIA_') && name !== 'VIDEO_MEDIA_GATEWAY_INTROSPECTION_TOKEN'),
     { VIDEO_MEDIA_GATEWAY_INTROSPECTION_TOKEN: videoToken },
   )
+  if (options.useSmallProductionProfile) {
+    // Historical deployments used Gateway concurrency 1000, Image concurrency
+    // 16/queue 2000 and a one-minute Video object lease. They predate the
+    // governed service contracts and are not an intentional target profile.
+    // Requiring this flag keeps future ordinary migrations operator-driven.
+    for (const [name, value] of Object.entries(VIDEO_DEFAULTS)) {
+      if (!VIDEO_OPERATIONAL_BINDING_KEYS.has(name)) video[name] = value
+    }
+  }
   // Generated credentials must never inherit a legacy token, even if a source
   // file already happened to contain a new-looking name.
   gateway.GW_IMAGE_RELAY_INTROSPECTION_TOKEN = imageToken
@@ -333,6 +383,7 @@ export function migrateRelaySecrets(options: MigrationOptions): { status: 'valid
     readEnvironment(paths.gatewayInput, 'gateway.env'),
     readEnvironment(paths.imageInput, 'relay.env'),
     readEnvironment(paths.videoInput, 'video-media-relay.env'),
+    { useSmallProductionProfile: options.useSmallProductionProfile },
   )
   // Explicit source values win over defaults, but only after the exact three
   // production validators accept the complete target. This prevents a typo
@@ -368,10 +419,16 @@ export function migrateRelaySecrets(options: MigrationOptions): { status: 'valid
 
 function parseArguments(argv: readonly string[]): MigrationOptions {
   let validateOnly = false
+  let useSmallProductionProfile = false
   const values: Record<string, string> = {}
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index]!
     if (argument === '--validate-only' || argument === '--dry-run') { validateOnly = true; continue }
+    if (argument === '--use-small-production-profile') {
+      if (useSmallProductionProfile) fail('--use-small-production-profile may be supplied only once')
+      useSmallProductionProfile = true
+      continue
+    }
     if (!argument.startsWith('--')) fail('unrecognized command-line argument')
     const value = argv[index + 1]
     if (!value || value.startsWith('--')) fail(`${argument} requires a path`)
@@ -384,7 +441,7 @@ function parseArguments(argv: readonly string[]): MigrationOptions {
   return {
     gatewayInput: values['--gateway-in']!, imageInput: values['--image-in']!, videoInput: values['--video-in']!,
     gatewayOutput: values['--gateway-out']!, imageOutput: values['--image-out']!, videoOutput: values['--video-out']!,
-    backupDirectory: values['--backup-dir']!, validateOnly,
+    backupDirectory: values['--backup-dir']!, validateOnly, useSmallProductionProfile,
   }
 }
 

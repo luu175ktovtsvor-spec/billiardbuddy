@@ -170,6 +170,51 @@ test('preserves explicit policy values but rejects an invalid one before writing
   expect(() => lstatSync(paths.backupDirectory)).toThrow()
 })
 
+test('explicit small production profile retires stale service policy but preserves operational bindings', () => {
+  const root = directory(); const paths = fixture(root)
+  write(paths.gatewayInput, [
+    readFileSync(paths.gatewayInput, 'utf8'),
+    'GW_DEEPSEEK_CONC=1000',
+    'GW_DEEPSEEK_BASE=https://custom-deepseek.example.test',
+  ].join('\n'))
+  write(paths.imageInput, [
+    readFileSync(paths.imageInput, 'utf8'),
+    'RELAY_QUEUE_MAX=2000',
+    'RELAY_UPSTREAM_TIMEOUT_MS=900000',
+    'RELAY_OPENAI_BASE=https://custom-openai.example.test/v1',
+    'RELAY_OPENAI_ACCOUNT_REF=existing-openai-account',
+    'RELAY_OPENAI_ACCOUNT_BINDING_REVISION=7',
+  ].join('\n'))
+  write(paths.videoInput, [
+    readFileSync(paths.videoInput, 'utf8'),
+    'VIDEO_MEDIA_OBJECT_LEASE_QUOTA_UNITS=1',
+    'VIDEO_MEDIA_LEASE_TTL_MS=60000',
+    'VIDEO_MEDIA_DASHSCOPE_ASR_BASE_URL=https://workspace.cn-beijing.maas.aliyuncs.com/api/v1',
+  ].join('\n'))
+  expect(migrateRelaySecrets({ ...paths, useSmallProductionProfile: true })).toEqual({ status: 'migrated' })
+  const gateway = environment(paths.gatewayOutput); const image = environment(paths.imageOutput); const video = environment(paths.videoOutput)
+  expect(gateway.GW_DEEPSEEK_CONC).toBe('8')
+  expect(gateway.GW_DEEPSEEK_RPM).toBe('120')
+  expect(gateway.GW_DEEPSEEK_BASE).toBe('https://custom-deepseek.example.test')
+  expect(image.RELAY_IMG_CONC).toBe('1')
+  expect(image.RELAY_QUEUE_MAX).toBe('24')
+  expect(image.RELAY_UPSTREAM_TIMEOUT_MS).toBe('300000')
+  expect(image.RELAY_TASK_TTL_MS).toBe('604800000')
+  expect(image.RELAY_OPENAI_BASE).toBe('https://custom-openai.example.test/v1')
+  expect(image.RELAY_OPENAI_ACCOUNT_REF).toBe('existing-openai-account')
+  expect(image.RELAY_OPENAI_ACCOUNT_BINDING_REVISION).toBe('7')
+  expect(video.VIDEO_MEDIA_OBJECT_LEASE_QUOTA_UNITS).toBe('32')
+  expect(video.VIDEO_MEDIA_LEASE_TTL_MS).toBe('900000')
+  expect(video.VIDEO_MEDIA_DASHSCOPE_QUEUE_MAX).toBe('32')
+  expect(video.VIDEO_MEDIA_DASHSCOPE_ASR_BASE_URL).toBe('https://workspace.cn-beijing.maas.aliyuncs.com/api/v1')
+  expect(readFileSync(join(paths.backupDirectory, 'relay.env'), 'utf8')).toContain('RELAY_QUEUE_MAX=2000')
+  expect(readFileSync(join(paths.backupDirectory, 'gateway.env'), 'utf8')).toContain('GW_DEEPSEEK_CONC=1000')
+  expect(readFileSync(join(paths.backupDirectory, 'video-media-relay.env'), 'utf8')).toContain('VIDEO_MEDIA_OBJECT_LEASE_QUOTA_UNITS=1')
+  expect(() => validateDeploymentEnvironment(gateway)).not.toThrow()
+  expect(() => validateRelayDeploymentEnvironment(image)).not.toThrow()
+  expect(() => validateVideoMediaRelayEnvironment(video)).not.toThrow()
+})
+
 test('preserves a registered explicit Gateway model and rejects an unknown one', () => {
   const root = directory(); const paths = fixture(root)
   write(paths.gatewayInput, readFileSync(paths.gatewayInput, 'utf8').replace('BB_GATEWAY_MODEL=deepseek-chat', 'BB_GATEWAY_MODEL=deepseek-v4-pro'))
