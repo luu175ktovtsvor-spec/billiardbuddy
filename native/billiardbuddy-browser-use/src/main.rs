@@ -71,6 +71,7 @@ fn tools() -> &'static str {
   {"name":"close_tab","description":"Close one BilliardBuddy Browser tab.","inputSchema":{"type":"object","properties":{"tabId":{"type":"integer","minimum":1}},"required":["tabId"],"additionalProperties":false}},
   {"name":"inspect_page","description":"Read a bounded page snapshot and current element IDs for one Browser tab.","inputSchema":{"type":"object","properties":{"tabId":{"type":"integer","minimum":1}},"required":["tabId"],"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"openWorldHint":true}},
   {"name":"capture_page","description":"Capture one Browser tab's visible page as a PNG image.","inputSchema":{"type":"object","properties":{"tabId":{"type":"integer","minimum":1}},"required":["tabId"],"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"openWorldHint":true}},
+  {"name":"developer_snapshot","description":"Read a bounded Console, Network and Performance summary for one BilliardBuddy Browser tab. The host omits headers, cookies, storage, bodies and raw CDP access, removes URL credentials, query strings, fragments and sensitive path identifiers, and applies best-effort redaction to console text.","inputSchema":{"type":"object","properties":{"tabId":{"type":"integer","minimum":1}},"required":["tabId"],"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"openWorldHint":true}},
   {"name":"navigate","description":"Navigate one Browser tab to an HTTP(S) URL after website permission confirmation.","inputSchema":{"type":"object","properties":{"tabId":{"type":"integer","minimum":1},"url":{"type":"string","maxLength":4096}},"required":["tabId","url"],"additionalProperties":false}},
   {"name":"click_element","description":"Click a current element ID after user confirmation. Never use it for purchases, submission or deletion without explicit user approval.","inputSchema":{"type":"object","properties":{"tabId":{"type":"integer","minimum":1},"elementId":{"type":"string","pattern":"^bb-[1-9][0-9]*-[1-9][0-9]*$"}},"required":["tabId","elementId"],"additionalProperties":false}},
   {"name":"type_text","description":"Type into a current non-sensitive page field. Password and authentication fields are rejected by the host.","inputSchema":{"type":"object","properties":{"tabId":{"type":"integer","minimum":1},"elementId":{"type":"string","pattern":"^bb-[1-9][0-9]*-[1-9][0-9]*$"},"text":{"type":"string","minLength":1,"maxLength":4096}},"required":["tabId","elementId","text"],"additionalProperties":false}},
@@ -90,7 +91,7 @@ fn tool_call(id: &str, message: &str) -> String {
             valid_url(&url)?;
             bridge(&name, &format!(r#"{{"url":"{}"}}"#, escape(&url)))
         })(),
-        "close_tab" | "inspect_page" | "capture_page" => with_tab(&arguments, |tab| {
+        "close_tab" | "inspect_page" | "capture_page" | "developer_snapshot" => with_tab(&arguments, |tab| {
             bridge(&name, &format!(r#"{{"tabId":{tab}}}"#))
         }),
         "navigate" => with_tab(&arguments, |tab| {

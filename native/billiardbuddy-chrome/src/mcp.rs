@@ -70,6 +70,7 @@ fn tools_list() -> &'static str {
       {"name":"list_tabs","description":"List only Chrome tabs that the user explicitly connected and whose domains are allowed.","inputSchema":{"type":"object","properties":{},"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"openWorldHint":false}},
       {"name":"inspect_page","description":"Read a bounded, structured snapshot of one connected Chrome tab and return current element IDs for safe follow-up actions.","inputSchema":{"type":"object","properties":{"tabId":{"type":"integer","minimum":1}},"required":["tabId"],"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"openWorldHint":true}},
       {"name":"capture_page","description":"Capture the visible content of one connected Chrome tab.","inputSchema":{"type":"object","properties":{"tabId":{"type":"integer","minimum":1}},"required":["tabId"],"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"openWorldHint":true}},
+      {"name":"developer_snapshot","description":"Read a bounded Console, Network and Performance summary for one connected Chrome tab. The extension omits headers, cookies, storage, bodies and arbitrary CDP access, removes URL credentials, query strings, fragments and sensitive path identifiers, and applies best-effort redaction to console text.","inputSchema":{"type":"object","properties":{"tabId":{"type":"integer","minimum":1}},"required":["tabId"],"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"openWorldHint":true}},
       {"name":"navigate","description":"Navigate one connected Chrome tab to a URL whose host is already allowed by the user.","inputSchema":{"type":"object","properties":{"tabId":{"type":"integer","minimum":1},"url":{"type":"string","maxLength":4096}},"required":["tabId","url"],"additionalProperties":false}},
       {"name":"click_element","description":"Click a current element ID returned by inspect_page. Ask the user before an external side effect.","inputSchema":{"type":"object","properties":{"tabId":{"type":"integer","minimum":1},"elementId":{"type":"string","pattern":"^bb-[1-9][0-9]*-[1-9][0-9]*$"}},"required":["tabId","elementId"],"additionalProperties":false}},
       {"name":"type_text","description":"Type text into a current non-password element ID returned by inspect_page. Never use for passwords or authentication codes.","inputSchema":{"type":"object","properties":{"tabId":{"type":"integer","minimum":1},"elementId":{"type":"string","pattern":"^bb-[1-9][0-9]*-[1-9][0-9]*$"},"text":{"type":"string","minLength":1,"maxLength":4096}},"required":["tabId","elementId","text"],"additionalProperties":false}},
@@ -84,7 +85,7 @@ fn tool_call_response(id: &str, message: &str) -> String {
     let arguments = json_member_value(message, "arguments").unwrap_or_else(|| "{}".to_owned());
     let result = match name.as_str() {
         "status" | "list_tabs" => bridge_call(&name, "{}"),
-        "inspect_page" | "capture_page" => with_tab_id(&arguments, |tab_id| {
+        "inspect_page" | "capture_page" | "developer_snapshot" => with_tab_id(&arguments, |tab_id| {
             bridge_call(&name, &format!(r#"{{"tabId":{tab_id}}}"#))
         }),
         "navigate" => with_tab_id(&arguments, |tab_id| {

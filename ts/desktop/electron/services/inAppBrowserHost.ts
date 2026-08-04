@@ -2,18 +2,51 @@ import { randomBytes, timingSafeEqual } from 'node:crypto'
 import * as fs from 'node:fs/promises'
 import * as net from 'node:net'
 import * as path from 'node:path'
-import { BrowserWindow, dialog, type MessageBoxOptions } from 'electron'
+import { BrowserWindow, dialog, session, type MessageBoxOptions } from 'electron'
 import {
   readBrowserPolicyConfiguration,
   type BrowserPolicyConfiguration,
 } from './browserPolicyConfiguration'
+import {
+  redactBrowserDiagnosticText,
+  sanitizeBrowserDiagnosticUrl,
+} from './browserDeveloperDiagnostics'
 
 const MAX_BRIDGE_MESSAGE_BYTES = 1024 * 1024
 const MAX_PAGE_ELEMENTS = 200
 const MAX_SCREENSHOT_BYTES = 12 * 1024 * 1024
+const MAX_CONSOLE_ENTRIES = 100
+const MAX_NETWORK_ENTRIES = 200
+const MAX_PERFORMANCE_ENTRIES = 100
 
 type BrowserPolicy = BrowserPolicyConfiguration
-type BrowserTab = { id: number, window: BrowserWindow, elements: Set<string> }
+type BrowserConsoleEntry = {
+  level: 'info' | 'warning' | 'error' | 'debug'
+  message: string
+  source: string | null
+  line: number
+  timestamp: number
+}
+type BrowserNetworkEntry = {
+  requestId: number
+  method: string
+  url: string
+  resourceType: string
+  startedAt: number
+  completedAt?: number
+  status?: number
+  fromCache?: boolean
+  error?: string
+}
+type BrowserTab = {
+  id: number
+  window: BrowserWindow
+  elements: Set<string>
+  console: BrowserConsoleEntry[]
+  network: BrowserNetworkEntry[]
+  pendingNetwork: Map<number, BrowserNetworkEntry>
+  documentUrl?: string
+}
 
 export type InAppBrowserHostOptions = {
   userDataPath: string
@@ -44,6 +77,17 @@ function httpUrl(value: unknown): URL | undefined {
   }
 }
 
+function boundedPush<T>(items: T[], value: T, limit: number): void {
+  items.push(value)
+  if (items.length > limit) items.splice(0, items.length - limit)
+}
+
+function clearTabDiagnostics(tab: BrowserTab): void {
+  tab.console.length = 0
+  tab.network.length = 0
+  tab.pendingNetwork.clear()
+}
+
 function safeTokenEquals(expected: string, supplied: unknown): boolean {
   if (typeof supplied !== 'string' || supplied.length !== expected.length) return false
   return timingSafeEqual(Buffer.from(expected), Buffer.from(supplied))
@@ -70,6 +114,7 @@ export class InAppBrowserHost {
     await fs.mkdir(root, { recursive: true, mode: 0o700 })
     await fs.chmod(root, 0o700).catch(() => undefined)
     this.policy = await this.readPolicy()
+    this.installDeveloperDiagnostics()
     this.token = randomBytes(32).toString('hex')
     const server = net.createServer(socket => this.handleConnection(socket))
     await new Promise<void>((resolve, reject) => {
@@ -98,6 +143,10 @@ export class InAppBrowserHost {
     this.token = undefined
     for (const tab of this.tabs.values()) tab.window.destroy()
     this.tabs.clear()
+    const webRequest = session.fromPartition('persist:billiardbuddy-browser').webRequest
+    webRequest.onBeforeRequest(null)
+    webRequest.onCompleted(null)
+    webRequest.onErrorOccurred(null)
     await fs.rm(path.join(privateBrowserRoot(this.options.userDataPath), 'bridge.json'), { force: true }).catch(() => undefined)
     if (server) await new Promise<void>(resolve => server.close(() => resolve()))
   }
@@ -186,6 +235,8 @@ export class InAppBrowserHost {
         return await this.inspectPage(request.arguments)
       case 'capture_page':
         return await this.capturePage(request.arguments)
+      case 'developer_snapshot':
+        return await this.developerSnapshot(request.arguments)
       case 'navigate':
         return await this.navigate(request.arguments)
       case 'click_element':
@@ -233,7 +284,14 @@ export class InAppBrowserHost {
         webviewTag: false,
       },
     })
-    const tab: BrowserTab = { id: window.webContents.id, window, elements: new Set() }
+    const tab: BrowserTab = {
+      id: window.webContents.id,
+      window,
+      elements: new Set(),
+      console: [],
+      network: [],
+      pendingNetwork: new Map(),
+    }
     this.tabs.set(tab.id, tab)
     window.once('closed', () => this.tabs.delete(tab.id))
     window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
@@ -243,6 +301,16 @@ export class InAppBrowserHost {
     }
     window.webContents.on('will-navigate', guard)
     window.webContents.on('will-redirect', guard)
+    window.webContents.on('console-message', details => {
+      if (window.isDestroyed()) return
+      boundedPush(tab.console, {
+        level: details.level,
+        message: redactBrowserDiagnosticText(details.message),
+        source: sanitizeBrowserDiagnosticUrl(details.sourceId),
+        line: Number.isSafeInteger(details.lineNumber) && details.lineNumber >= 0 ? details.lineNumber : 0,
+        timestamp: Date.now(),
+      }, MAX_CONSOLE_ENTRIES)
+    })
     try {
       await window.loadURL(url.toString())
       window.focus()
@@ -301,6 +369,109 @@ export class InAppBrowserHost {
     const data = image.toPNG().toString('base64')
     if (!data || Buffer.byteLength(data, 'base64') > MAX_SCREENSHOT_BYTES) throw new Error('BILLIARDBUDDY_BROWSER_SCREENSHOT_TOO_LARGE')
     return { mimeType: 'image/png', data }
+  }
+
+  private async developerSnapshot(arguments_: Record<string, unknown>) {
+    const tab = this.tab(arguments_)
+    const current = this.currentAllowedUrl(tab)
+    const raw = await tab.window.webContents.executeJavaScript(`(() => {
+      const finite = value => Number.isFinite(value) && value >= 0 ? Math.round(value * 100) / 100 : null;
+      const navigation = performance.getEntriesByType('navigation')[0];
+      const resources = performance.getEntriesByType('resource').slice(-${MAX_PERFORMANCE_ENTRIES});
+      return {
+        navigation: navigation ? {
+          type: String(navigation.type || ''),
+          durationMs: finite(navigation.duration),
+          domContentLoadedMs: finite(navigation.domContentLoadedEventEnd),
+          loadMs: finite(navigation.loadEventEnd),
+          transferSize: Number.isSafeInteger(navigation.transferSize) && navigation.transferSize >= 0 ? navigation.transferSize : null,
+          decodedBodySize: Number.isSafeInteger(navigation.decodedBodySize) && navigation.decodedBodySize >= 0 ? navigation.decodedBodySize : null,
+        } : null,
+        resources: resources.map(entry => ({
+          name: String(entry.name || ''),
+          initiatorType: String(entry.initiatorType || 'other').slice(0, 64),
+          durationMs: finite(entry.duration),
+          transferSize: Number.isSafeInteger(entry.transferSize) && entry.transferSize >= 0 ? entry.transferSize : null,
+          decodedBodySize: Number.isSafeInteger(entry.decodedBodySize) && entry.decodedBodySize >= 0 ? entry.decodedBodySize : null,
+        })),
+      };
+    })()`, true) as Record<string, unknown>
+    const resources = Array.isArray(raw?.resources) ? raw.resources.flatMap(candidate => {
+      if (!isRecord(candidate)) return []
+      const name = sanitizeBrowserDiagnosticUrl(candidate.name)
+      if (!name) return []
+      return [{
+        name,
+        initiatorType: typeof candidate.initiatorType === 'string' ? candidate.initiatorType.slice(0, 64) : 'other',
+        durationMs: typeof candidate.durationMs === 'number' ? candidate.durationMs : null,
+        transferSize: Number.isSafeInteger(candidate.transferSize) ? candidate.transferSize : null,
+        decodedBodySize: Number.isSafeInteger(candidate.decodedBodySize) ? candidate.decodedBodySize : null,
+      }]
+    }).slice(-MAX_PERFORMANCE_ENTRIES) : []
+    const navigation = isRecord(raw?.navigation) ? {
+      type: typeof raw.navigation.type === 'string' ? raw.navigation.type.slice(0, 64) : '',
+      durationMs: typeof raw.navigation.durationMs === 'number' ? raw.navigation.durationMs : null,
+      domContentLoadedMs: typeof raw.navigation.domContentLoadedMs === 'number' ? raw.navigation.domContentLoadedMs : null,
+      loadMs: typeof raw.navigation.loadMs === 'number' ? raw.navigation.loadMs : null,
+      transferSize: Number.isSafeInteger(raw.navigation.transferSize) ? raw.navigation.transferSize : null,
+      decodedBodySize: Number.isSafeInteger(raw.navigation.decodedBodySize) ? raw.navigation.decodedBodySize : null,
+    } : null
+    return {
+      url: sanitizeBrowserDiagnosticUrl(current.toString()),
+      title: redactBrowserDiagnosticText(tab.window.getTitle()).slice(0, 500),
+      console: tab.console.map(entry => ({ ...entry })),
+      network: tab.network.map(({ requestId: _requestId, ...entry }) => ({ ...entry })),
+      performance: { navigation, resources },
+      privacy: 'Headers, cookies, storage, bodies and raw CDP access are not collected. URL credentials, query strings, fragments and sensitive path identifiers are removed; titles and console text receive bounded best-effort secret redaction.',
+    }
+  }
+
+  private installDeveloperDiagnostics(): void {
+    const webRequest = session.fromPartition('persist:billiardbuddy-browser').webRequest
+    webRequest.onBeforeRequest((details, callback) => {
+      const tab = details.webContentsId === undefined ? undefined : this.tabs.get(details.webContentsId)
+      if (tab) {
+        const url = sanitizeBrowserDiagnosticUrl(details.url)
+        if (url) {
+          if (details.resourceType === 'mainFrame' && tab.documentUrl !== url) {
+            clearTabDiagnostics(tab)
+            tab.documentUrl = url
+          }
+          const entry: BrowserNetworkEntry = {
+            requestId: details.id,
+            method: details.method.slice(0, 16),
+            url,
+            resourceType: details.resourceType,
+            startedAt: details.timestamp,
+          }
+          tab.pendingNetwork.set(details.id, entry)
+          tab.network.push(entry)
+          while (tab.network.length > MAX_NETWORK_ENTRIES) {
+            const removed = tab.network.shift()
+            if (removed) tab.pendingNetwork.delete(removed.requestId)
+          }
+        }
+      }
+      callback({})
+    })
+    webRequest.onCompleted(details => {
+      const tab = details.webContentsId === undefined ? undefined : this.tabs.get(details.webContentsId)
+      const entry = tab?.pendingNetwork.get(details.id)
+      if (!tab || !entry) return
+      entry.completedAt = details.timestamp
+      entry.status = details.statusCode
+      entry.fromCache = details.fromCache
+      tab.pendingNetwork.delete(details.id)
+    })
+    webRequest.onErrorOccurred(details => {
+      const tab = details.webContentsId === undefined ? undefined : this.tabs.get(details.webContentsId)
+      const entry = tab?.pendingNetwork.get(details.id)
+      if (!tab || !entry) return
+      entry.completedAt = details.timestamp
+      entry.error = redactBrowserDiagnosticText(details.error)
+      entry.fromCache = details.fromCache
+      tab.pendingNetwork.delete(details.id)
+    })
   }
 
   private element(tab: BrowserTab, arguments_: Record<string, unknown>) {
