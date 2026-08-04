@@ -7,6 +7,12 @@ import type {
   ProviderUsageBudgetPolicy,
   ProviderUsageReceipt,
 } from '../ts/shared/product/providerContracts'
+import {
+  DEFAULT_GATEWAY_USAGE_POLICY,
+  MANAGED_AGENT_INSTALLATION_DAILY_TOKEN_LIMIT,
+} from './quotaPolicy'
+
+export { DEFAULT_GATEWAY_USAGE_POLICY, MANAGED_AGENT_INSTALLATION_DAILY_TOKEN_LIMIT } from './quotaPolicy'
 
 export type MeteredCapability = MeteredProviderCapability
 export type UsageAmount = ProviderUsageAmount
@@ -30,41 +36,6 @@ export type UsageReserveInput = {
   capability: MeteredCapability
   fingerprint: string
   amount: UsageAmount
-}
-
-export const MANAGED_AGENT_INSTALLATION_DAILY_TOKEN_LIMIT = 50_000_000
-
-const UNBOUNDED_USAGE_LIMIT: UsageAmount = {
-  requests: 1_000_000_000,
-  input_bytes: 1_000_000_000_000,
-  output_units: 1_000_000_000_000,
-  total_tokens: 1_000_000_000_000,
-}
-
-export const DEFAULT_GATEWAY_USAGE_POLICY: UsageBudgetPolicy = {
-  revision: 'bb-agent-daily-token-v1',
-  period: 'utc_day',
-  capabilities: {
-    TextReasoning: {
-      // This is the product-owned managed Agent key. Each verified installation
-      // gets a fresh 50M-token allowance at UTC midnight; a user's own provider
-      // key never enters this Gateway ledger.
-      principal: { ...UNBOUNDED_USAGE_LIMIT },
-      installation: { ...UNBOUNDED_USAGE_LIMIT, total_tokens: MANAGED_AGENT_INSTALLATION_DAILY_TOKEN_LIMIT },
-    },
-    VisualEvidence: {
-      principal: { requests: 20_000, input_bytes: 500 * 1024 ** 3, output_units: 20_000_000, total_tokens: UNBOUNDED_USAGE_LIMIT.total_tokens },
-      installation: { requests: 2_000, input_bytes: 50 * 1024 ** 3, output_units: 2_000_000, total_tokens: UNBOUNDED_USAGE_LIMIT.total_tokens },
-    },
-    MediaReasoning: {
-      principal: { requests: 20_000, input_bytes: 500 * 1024 ** 3, output_units: 20_000_000, total_tokens: UNBOUNDED_USAGE_LIMIT.total_tokens },
-      installation: { requests: 2_000, input_bytes: 50 * 1024 ** 3, output_units: 2_000_000, total_tokens: UNBOUNDED_USAGE_LIMIT.total_tokens },
-    },
-    SpeechTranscription: {
-      principal: { requests: 20_000, input_bytes: 500 * 1024 ** 3, output_units: 200_000_000, total_tokens: UNBOUNDED_USAGE_LIMIT.total_tokens },
-      installation: { requests: 2_000, input_bytes: 50 * 1024 ** 3, output_units: 20_000_000, total_tokens: UNBOUNDED_USAGE_LIMIT.total_tokens },
-    },
-  },
 }
 
 export class UsageBudgetError extends Error {

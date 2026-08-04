@@ -4,6 +4,7 @@ export const PROVIDER_CAPABILITIES = [
   'MediaReasoning',
   'ImageGeneration',
   'SpeechTranscription',
+  'SemanticEmbedding',
 ] as const
 
 export type ProviderCapability = (typeof PROVIDER_CAPABILITIES)[number]
@@ -24,8 +25,74 @@ export type ProviderBodyCaps = {
 
 export type ProviderWorkerEnvSource = {
   variable: string
-  slot_aliases: string[]
+  slot_aliases: readonly string[]
   default_model?: boolean
+}
+
+/** Product workloads are stable routing intents. A caller asks for one of these
+ * workloads; it never chooses a provider account, capacity pool or quota bucket. */
+export const MANAGED_MODEL_WORKLOADS = [
+  'managed_agent_text',
+  'shared_visual_evidence',
+  'media_reasoning',
+  'image_advice',
+  'image_generation',
+  'speech_transcription',
+  'video_visual_evidence',
+  'video_media_reasoning',
+  'video_speech_transcription',
+  'video_semantic_embedding',
+] as const
+export type ManagedModelWorkload = (typeof MANAGED_MODEL_WORKLOADS)[number]
+
+export const PROVIDER_CAPACITY_POOLS = [
+  'deepseek-account',
+  'mimo-account',
+  'qwen-account',
+  'openai-image-account',
+  'seedream-image-account',
+  'funasr-account',
+  'video-dashscope-account',
+] as const
+export type ProviderCapacityPool = (typeof PROVIDER_CAPACITY_POOLS)[number]
+
+export const PROVIDER_QUOTA_BUCKETS = [
+  'gateway.text-reasoning',
+  'gateway.visual-evidence',
+  'gateway.media-reasoning',
+  'gateway.image-advice',
+  'gateway.speech-transcription',
+  'relay.image-paid',
+  'video-relay.account',
+] as const
+export type ProviderQuotaBucket = (typeof PROVIDER_QUOTA_BUCKETS)[number]
+
+export const PROVIDER_EXECUTION_RUNTIMES = ['gateway', 'image-relay', 'video-media-relay'] as const
+export type ProviderExecutionRuntime = (typeof PROVIDER_EXECUTION_RUNTIMES)[number]
+
+export const PROVIDER_CREDENTIAL_SLOTS = [
+  'gateway.deepseek',
+  'gateway.mimo',
+  'gateway.qwen',
+  'gateway.funasr',
+  'image-relay.openai',
+  'image-relay.seedream',
+  'video-relay.dashscope',
+] as const
+export type ProviderCredentialSlot = (typeof PROVIDER_CREDENTIAL_SLOTS)[number]
+
+export type ProviderWorkloadBinding = {
+  workload: ManagedModelWorkload
+  /** Exactly one registered model is the default for each workload. Other
+   * registered models may be selected by trusted server configuration. */
+  default_for_workload?: boolean
+  capacity_pool: ProviderCapacityPool
+  quota_bucket: ProviderQuotaBucket
+  execution_runtime: ProviderExecutionRuntime
+  credential_slot: ProviderCredentialSlot
+  /** A physical provider account may reserve independent lanes without creating
+   * a second scheduler or pretending it is a second account. */
+  capacity_lane?: string
 }
 
 /** Provider-neutral text reasoning capability; no provider SDK request leaks here. */
@@ -54,11 +121,11 @@ export interface ImageGenerationProviderContract {
 
 /** Declarative limits consumed by ImageProviderPolicy before any paid POST. */
 export type ImageGenerationProviderDescriptor = {
-  operation_modes: Array<'generate' | 'edit' | 'inpaint'>
+  operation_modes: ReadonlyArray<'generate' | 'edit' | 'inpaint'>
   max_reference_images: number
-  reference_roles: Array<'subject' | 'product' | 'character' | 'style' | 'composition' | 'environment' | 'brand' | 'logo' | 'qrcode'>
-  reference_preservations: Array<'may_change' | 'prefer_preserve' | 'must_preserve' | 'exact'>
-  supported_sizes: string[]
+  reference_roles: ReadonlyArray<'subject' | 'product' | 'character' | 'style' | 'composition' | 'environment' | 'brand' | 'logo' | 'qrcode'>
+  reference_preservations: ReadonlyArray<'may_change' | 'prefer_preserve' | 'must_preserve' | 'exact'>
+  supported_sizes: readonly string[]
   transparency: boolean
   max_output_count: number
   /** Versioned, non-secret maximum charge for one returned image.  The
@@ -80,7 +147,8 @@ export interface SpeechTranscriptionProviderContract {
 export type ProviderRegistryEntry = {
   model_id: string
   provider: string
-  capabilities: ProviderCapability[]
+  capabilities: readonly ProviderCapability[]
+  workload_bindings: readonly ProviderWorkloadBinding[]
   /** Required exactly for TextReasoning entries; absent for other capabilities. */
   text_reasoning_transport?: TextReasoningTransport
   /** Present only on ImageGeneration entries. */
@@ -92,13 +160,15 @@ export type ProviderRegistryEntry = {
   verification_date: string
 }
 
+export type ManagedModelCatalogEntry = Omit<ProviderRegistryEntry, 'contract_version' | 'verification_date'>
+
 export type ProviderRuntimeConfigurationError =
   | 'MODEL_CONFIGURATION_INVALID'
   | 'MODEL_CONTRACT_VERSION_MISMATCH'
   | 'MODEL_CONTRACT_HASH_MISMATCH'
   | 'MODEL_CONTRACT_STALE'
 
-export type MeteredProviderCapability = Exclude<ProviderCapability, 'ImageGeneration'>
+export type MeteredProviderCapability = Exclude<ProviderCapability, 'ImageGeneration' | 'SemanticEmbedding'>
 export type ProviderUsageAmount = {
   requests: number
   input_bytes: number

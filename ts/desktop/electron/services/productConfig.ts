@@ -8,7 +8,7 @@ import path from 'node:path'
  * dev/ops env override we resolve the config from packaged resources:
  *
  *  - `product-config.json` — PUBLIC config, safe to commit and ship: the stable
- *    HTTPS product gateway URL. No secrets or model selection.
+ *    HTTPS product Gateway and Image Relay URLs. No secrets or model selection.
  * A distributed desktop package cannot keep a reusable server secret. Main silently
  * registers its stable installation identity and keeps the rotating session
  * only for the running app process. Provider keys remain in the OS credential
@@ -16,6 +16,7 @@ import path from 'node:path'
  */
 export type ProductGatewayConfig = {
   url?: string
+  imageRelayUrl?: string
 }
 
 export type ProductConfigSource = {
@@ -70,6 +71,21 @@ export function isAllowedProductGatewayUrl(value: string): boolean {
   }
 }
 
+export function isAllowedImageRelayUrl(value: string): boolean {
+  try {
+    const url = new URL(value)
+    return url.protocol === 'https:'
+      && url.hostname.length > 0
+      && !url.username
+      && !url.password
+      && !url.search
+      && !url.hash
+      && url.pathname.replace(/\/+$/, '') === '/image-generation'
+  } catch {
+    return false
+  }
+}
+
 /** Directory that holds the packaged config files for the current run. */
 export function productConfigDir(source: ProductConfigSource): string | undefined {
   return source.isPackaged ? source.resourcesPath : source.devBuildDir
@@ -81,6 +97,7 @@ export function resolveProductGatewayConfig(source: ProductConfigSource): Produc
   const publicCfg = dir ? readJsonObject(path.join(dir, 'product-config.json')) : null
   return {
     url: trimmed(env.BB_GATEWAY_URL) ?? trimmed(publicCfg?.gatewayUrl),
+    imageRelayUrl: trimmed(env.BB_IMAGE_RELAY_URL) ?? trimmed(publicCfg?.imageRelayUrl),
   }
 }
 
@@ -90,9 +107,12 @@ export function resolveProductGatewayConfig(source: ProductConfigSource): Produc
  */
 export function requireProductGatewayConfig(
   config: ProductGatewayConfig,
-): ProductGatewayConfig & { url: string } {
+): ProductGatewayConfig & { url: string; imageRelayUrl: string } {
   if (!config.url) {
     throw new ProductGatewayConfigError('Product gateway is not configured: missing gateway URL.')
+  }
+  if (!config.imageRelayUrl) {
+    throw new ProductGatewayConfigError('Product image relay is not configured: missing image relay URL.')
   }
 
   try {
@@ -105,7 +125,17 @@ export function requireProductGatewayConfig(
       'Product gateway is not configured: gateway URL must use HTTPS at the /gw endpoint.',
     )
   }
-  return { url: config.url }
+  try {
+    new URL(config.imageRelayUrl)
+  } catch {
+    throw new ProductGatewayConfigError('Product image relay is not configured: image relay URL is invalid.')
+  }
+  if (!isAllowedImageRelayUrl(config.imageRelayUrl)) {
+    throw new ProductGatewayConfigError(
+      'Product image relay is not configured: image relay URL must use HTTPS at the /image-generation endpoint.',
+    )
+  }
+  return { url: config.url, imageRelayUrl: config.imageRelayUrl }
 }
 
 /**
@@ -120,5 +150,6 @@ export function applyGatewayConfigToEnv(
   if (!gateway) return baseEnv
   const env: NodeJS.ProcessEnv = { ...baseEnv }
   if (gateway.url && !env.BB_GATEWAY_URL) env.BB_GATEWAY_URL = gateway.url
+  if (gateway.imageRelayUrl && !env.BB_IMAGE_RELAY_URL) env.BB_IMAGE_RELAY_URL = gateway.imageRelayUrl
   return env
 }

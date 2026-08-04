@@ -13,6 +13,8 @@ export type VerifiedInstallation = {
   pid: string
   iid: string
   sid: string
+  /** Expiry of this verified access proof, projected to trusted Relay introspection. */
+  exp: number
 }
 
 export class AuthError extends Error {
@@ -163,7 +165,7 @@ export class AuthAuthority {
     if (!session || session.revoked || session.expires_at <= this.now() || session.principal_id !== payload.pid || session.installation_id !== payload.iid || !registration || registration.revoked || registration.principal_id !== payload.pid) {
       throw new AuthError(401, 'invalid_access')
     }
-    return { pid: payload.pid, iid: payload.iid, sid: payload.sid }
+    return { pid: payload.pid, iid: payload.iid, sid: payload.sid, exp: payload.exp }
   }
 
   private registration(installationId: string): RegistrationRow | null {

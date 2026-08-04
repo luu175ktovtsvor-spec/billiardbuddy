@@ -1,5 +1,4 @@
 import { Database } from 'bun:sqlite'
-import { createHash, createHmac } from 'node:crypto'
 import { dirname } from 'node:path'
 import { mkdirSync } from 'node:fs'
 import { AuthAuthority, AuthError } from './installationAuth'
@@ -8,7 +7,11 @@ import {
   GatewayTranscriptionError,
   type GatewayTranscriber,
 } from './transcription'
-import { CapacityQueueError, FairCapacityScheduler, MimoReservationScheduler, type CapacityPermit, type CapacitySnapshot } from './modelCapacity'
+import { CapacityQueueError, FairCapacityScheduler, MimoReservationScheduler, ProviderRateLimiter, type CapacityPermit, type CapacitySnapshot } from './modelCapacity'
+import { loadCapacityPolicy } from './capacityPolicy'
+import { loadGatewayProviderCredentials } from './providerCredentials'
+import { loadGatewayServiceCredentials } from './serviceCredentials'
+import { gatewayUsagePolicyFromEnvironment } from './quotaPolicy'
 import {
   ManagedResponsesRequestError,
   prepareManagedResponsesBody,
@@ -20,7 +23,7 @@ import {
   VisionBridgeError,
   type VisionBridge,
 } from './visionBridge'
-import { PROVIDER_REGISTRY, mediaReasoningRegistryEntry, textReasoningRegistryEntry, visualEvidenceRegistryEntry } from './providerRegistry'
+import { PROVIDER_REGISTRY, PROVIDER_REGISTRY_CONTRACT_VERSION, mediaReasoningRegistryEntry, textReasoningRegistryEntry, visualEvidenceRegistryEntry } from './providerRegistry'
 import {
   fileUsageFingerprint,
   MANAGED_AGENT_INSTALLATION_DAILY_TOKEN_LIMIT,
@@ -47,19 +50,21 @@ import {
   PROVIDER_OPERATION_RESULT_FINGERPRINT_HEADER,
   PROVIDER_OPERATION_RESULT_ID_HEADER,
 } from '../ts/shared/product/providerGateway'
+import {
+  SERVICE_INTROSPECTION_AUDIENCE_HEADER,
+  SERVICE_INTROSPECTION_PATH,
+  SERVICE_INTROSPECTION_TOKEN_HEADER,
+  isServiceIntrospectionAudience,
+} from '../ts/shared/product/serviceIntrospection'
 
 type Env = Record<string, string | undefined>
 type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
 type RequestTimeoutController = { timeout(request: Request, seconds: number): void }
 
 export const PROVIDER_GATEWAY_PROTOCOL_VALUE = PROVIDER_GATEWAY_PROTOCOL.headerValue
-export const MEDIA_RESULT_HANDOFF_HEADER = 'x-bb-media-result-handoff'
-export const MEDIA_RESULT_HANDOFF_DIRECT_V1 = 'direct-v1'
-const RELAY_RESULT_GRANT_TTL_MS = 10 * 60_000
 const COMPONENT_MANIFEST = {
   component: 'billiardbuddy-gateway',
   protocol: PROVIDER_GATEWAY_PROTOCOL_VALUE,
-  relay_protocol: PROVIDER_GATEWAY_PROTOCOL_VALUE,
 } as const
 
 type ChatRetryOptions = {
@@ -83,23 +88,14 @@ type CapacityPool = {
   snapshot(): CapacitySnapshot
 }
 
-type TokenBucketWaiter = {
-  deadlineAt: number
-  resolve: () => void
-  reject: (error: HttpError) => void
-  signal?: AbortSignal
-  onAbort?: () => void
-  timeout?: ReturnType<typeof setTimeout>
-}
-
 type ChatProvider = {
   label: string
   base: string
-  key: string
+  authorization: string
   endpoint: 'chat/completions' | 'responses'
   defaultModel: string
   allowedModels: ReadonlySet<string>
-  bucket: TokenBucket
+  bucket: ProviderRateLimiter
   capacity: CapacityPool
   queueMaxWait: number
   retryMax?: number
@@ -120,16 +116,9 @@ type ChatProvider = {
 // upstream opaque identity. Untrusted client headers never influence those boundaries.
 type ChatHandler = (request: Request, rawBody: string, user: string, principalId: string) => Promise<Response>
 type GatewayConfig = {
-  relayToken: string
-  relayTasksBase: string
-  relaySubmitTimeoutMs: number
-  relayResultTimeoutMs: number
-  relayResultMaxBytes: number
   adminToken: string
   db: string
   bootstrapRpm: number
-  mimoKey: string
-  mimoBase: string
   mimoRpm: number
   /** Retained scheduler lane; BB-04C submits only VisualEvidence work. */
   mimoMediaConc: number
@@ -142,13 +131,12 @@ type GatewayConfig = {
   mimoRetryMax: number
   mimoRetryBaseMs: number
   mimoRetryMaxMs: number
-  deepseekKey: string
-  deepseekBase: string
   deepseekModel: string
   deepseekRpm: number
   deepseekConc: number
   deepseekUserConc: number
   deepseekTokenConc: number
+  deepseekInflightPerUser: number
   deepseekQueueMax: number
   deepseekQueueMaxWait: number
   /** Hard deadline spanning the managed model request and its SSE body. */
@@ -163,8 +151,6 @@ type GatewayConfig = {
   ingressInflightBodyBytes: number
   /** Slowloris guard for public JSON body reads after Bun's request idle timeout is disabled. */
   ingressBodyReadTimeoutMs: number
-  /** Larger authenticated image-edit uploads keep their own bounded total read window. */
-  imgTaskBodyReadTimeoutMs: number
   visionTimeoutMs: number
   visionConc: number
   visionQueueMax: number
@@ -174,9 +160,6 @@ type GatewayConfig = {
   visionPerRequestConc: number
   visionCacheMax: number
   visionCacheTtlMs: number
-  imgIpm: number
-  imgQueueMax: number
-  imgTaskMaxBodyBytes: number
   queueMaxWait: number
   transcribeRpm: number
   transcribeConc: number
@@ -224,108 +207,7 @@ function requireProviderProtocol(request: Request): void {
   }
 }
 
-class TokenBucket {
-  private capacity: number
-  private tokens: number
-  private rate: number
-  private ts = performance.now()
-  private waiters: TokenBucketWaiter[] = []
-  private wakeTimer?: ReturnType<typeof setTimeout>
-
-  constructor(rpm: number, private readonly queueMax = Infinity) {
-    this.capacity = Math.max(1, rpm)
-    this.tokens = this.capacity
-    this.rate = this.capacity / 60_000
-    if (queueMax !== Infinity && (!Number.isInteger(queueMax) || queueMax < 0)) {
-      throw new Error('TokenBucket queueMax must be a non-negative integer or Infinity')
-    }
-  }
-
-  async acquire(maxWaitSeconds: number, signal?: AbortSignal): Promise<void> {
-    if (signal?.aborted) throw new HttpError(499, '请求已取消')
-    this.refill()
-    if (this.waiters.length === 0 && this.tokens >= 1) {
-      this.tokens -= 1
-      return
-    }
-    const maxWaitMs = Math.max(0, maxWaitSeconds) * 1000
-    if (maxWaitMs <= 0 || this.waiters.length >= this.queueMax) {
-      throw new HttpError(429, '现在用的人多,稍等一下再发(已在排队保护)')
-    }
-    return await new Promise<void>((resolve, reject) => {
-      const waiter: TokenBucketWaiter = {
-        deadlineAt: performance.now() + maxWaitMs,
-        resolve,
-        reject,
-        signal,
-      }
-      const rejectAndRemove = (error: HttpError) => {
-        if (!this.remove(waiter)) return
-        this.cleanup(waiter)
-        reject(error)
-        this.drain()
-      }
-      waiter.timeout = setTimeout(
-        () => rejectAndRemove(new HttpError(429, '现在用的人多,稍等一下再发(已在排队保护)')),
-        maxWaitMs,
-      )
-      waiter.onAbort = () => rejectAndRemove(new HttpError(499, '请求已取消'))
-      signal?.addEventListener('abort', waiter.onAbort, { once: true })
-      this.waiters.push(waiter)
-      this.drain()
-    })
-  }
-
-  private refill(now = performance.now()): void {
-    this.tokens = Math.min(this.capacity, this.tokens + (now - this.ts) * this.rate)
-    this.ts = now
-  }
-
-  private drain(): void {
-    if (this.wakeTimer) {
-      clearTimeout(this.wakeTimer)
-      this.wakeTimer = undefined
-    }
-    this.refill()
-    const now = performance.now()
-    while (this.waiters.length > 0 && this.waiters[0]!.deadlineAt <= now) {
-      const expired = this.waiters.shift()!
-      this.cleanup(expired)
-      expired.reject(new HttpError(429, '现在用的人多,稍等一下再发(已在排队保护)'))
-    }
-    while (this.waiters.length > 0 && this.tokens >= 1) {
-      const waiter = this.waiters.shift()!
-      this.cleanup(waiter)
-      this.tokens -= 1
-      waiter.resolve()
-    }
-    if (this.waiters.length > 0) {
-      const waitMs = Math.max(1, Math.ceil((1 - this.tokens) / this.rate))
-      this.wakeTimer = setTimeout(() => {
-        this.wakeTimer = undefined
-        this.drain()
-      }, waitMs)
-    }
-  }
-
-  private remove(waiter: TokenBucketWaiter): boolean {
-    const index = this.waiters.indexOf(waiter)
-    if (index < 0) return false
-    this.waiters.splice(index, 1)
-    return true
-  }
-
-  private cleanup(waiter: TokenBucketWaiter): void {
-    if (waiter.timeout) clearTimeout(waiter.timeout)
-    if (waiter.onAbort) waiter.signal?.removeEventListener('abort', waiter.onAbort)
-  }
-}
-
-/**
- * Tracks a process-wide reservation for image-task request bodies while billiardbuddy-gateway reads,
- * merges, decodes and forwards them. Relay's task queue protects expensive image work,
- * but it cannot protect this gateway from a simultaneous burst of base64 bodies.
- */
+/** Tracks process-wide request-body reservations for Gateway-owned model routes. */
 class InflightByteBudget {
   private reservedBytes = 0
 
@@ -575,32 +457,6 @@ function intEnv(env: Env, name: string, fallback: number): number {
   return Number.isFinite(parsed) ? parsed : fallback
 }
 
-function floatEnv(env: Env, name: string, fallback: number): number {
-  const raw = env[name]
-  if (raw === undefined || raw.trim() === '') return fallback
-  const parsed = Number.parseFloat(raw)
-  return Number.isFinite(parsed) ? parsed : fallback
-}
-
-function required(env: Env, name: string): string {
-  const value = env[name]
-  if (!value) throw new Error(`${name} is required`)
-  return value
-}
-
-
-/** Relay submissions carry an internal relay credential and potentially source images. */
-function httpsUrlOrEmpty(value: string | undefined): string {
-  const trimmed = value?.trim() ?? ''
-  if (!trimmed) return ''
-  try {
-    const url = new URL(trimmed)
-    return url.protocol === 'https:' ? trimmed.replace(/\/+$/, '') : ''
-  } catch {
-    return ''
-  }
-}
-
 function loadConfig(env: Env): GatewayConfig {
   const selectedModel = env.BB_GATEWAY_MODEL?.trim()
   const textModel = selectedModel ? textReasoningRegistryEntry(selectedModel) : textReasoningRegistryEntry()
@@ -608,126 +464,67 @@ function loadConfig(env: Env): GatewayConfig {
   if (textModel.provider !== 'deepseek' || textModel.text_reasoning_transport !== 'responses') {
     throw new Error('BilliardBuddy 托管 Agent 仅支持 DeepSeek Responses 协议')
   }
-  const mimoConc = Math.max(1, intEnv(env, 'GW_MIMO_CONC', 64))
-  // Old deployments may have only GW_MIMO_CONC. Derive a valid partition for those
-  // small canary profiles instead of injecting 12 visual slots into a two-slot pool.
-  // New or explicitly tuned profiles must name values whose sum exactly matches the
-  // account ceiling: unused capacity makes health misleading and is not a reservation.
-  const implicitVisionConc = Math.min(12, Math.max(1, mimoConc - 1))
-  const visionConc = Math.max(1, intEnv(env, 'GW_VISION_CONC', implicitVisionConc))
-  const implicitMediaConc = mimoConc - visionConc
-  if (implicitMediaConc < 1) {
-    throw new Error('GW_MIMO_CONC must leave at least one media-reasoning and one visual-evidence MiMo slot')
-  }
-  const mimoMediaConc = Math.max(1, intEnv(env, 'GW_MIMO_MEDIA_CONC', implicitMediaConc))
-  if (mimoMediaConc + visionConc !== mimoConc) {
-    throw new Error('GW_MIMO_MEDIA_CONC + GW_VISION_CONC must equal GW_MIMO_CONC')
-  }
+  const capacity = loadCapacityPolicy(env)
   return {
-    relayToken: required(env, 'GW_RELAY_TOKEN'),
-    // 美国 relay 上的生图异步任务服务(relay/app.ts)地址；缺失时相关端点明确返回 503。
-    relayTasksBase: httpsUrlOrEmpty(env.GW_RELAY_TASKS_BASE),
-    // Relay 只负责快速接受持久化任务；跨境提交异常不能无限占用入口 body reservation。
-    relaySubmitTimeoutMs: Math.max(1, intEnv(env, 'GW_RELAY_SUBMIT_TIMEOUT_MS', 15_000)),
-    // 最终状态响应可能携带完整 Base64 图片；流式正文仍受总时限和字节上限约束。
-    relayResultTimeoutMs: Math.max(1, intEnv(env, 'GW_RELAY_RESULT_TIMEOUT_MS', 5 * 60_000)),
-    relayResultMaxBytes: Math.max(1, intEnv(env, 'GW_RELAY_RESULT_MAX_BYTES', 96 * 1024 * 1024)),
     adminToken: env.GW_ADMIN_TOKEN ?? 'change-me',
     db: env.GW_DB ?? '/opt/billiardbuddy-gateway/usage.db',
     bootstrapRpm: Math.max(1, intEnv(env, 'GW_BOOTSTRAP_RPM', 30)),
-    mimoKey: env.GW_MIMO_KEY ?? '',
-    mimoBase: (env.GW_MIMO_BASE ?? 'https://api.xiaomimimo.com/v1').replace(/\/+$/, ''),
-    mimoRpm: intEnv(env, 'GW_MIMO_RPM', 100_000),
+    mimoRpm: capacity.mimo.rpm,
     // MediaReasoning and VisualEvidence share one physical account but have hard,
     // separately observable reservations so neither product path can starve the other.
-    mimoConc,
-    mimoMediaConc,
-    mimoUserConc: Math.max(1, intEnv(env, 'GW_MIMO_USER_CONC', 1)),
-    mimoInflightPerUser: Math.max(1, intEnv(env, 'GW_MIMO_INFLIGHT_PER_USER', 1)),
-    mimoTokenConc: Math.max(1, intEnv(env, 'GW_MIMO_TOKEN_CONC', mimoConc)),
-    mimoQueueMax: Math.max(0, intEnv(env, 'GW_MIMO_QUEUE_MAX', 64)),
-    mimoQueueMaxWait: Math.max(0, floatEnv(env, 'GW_MIMO_QUEUE_MAX_WAIT', 5)),
+    mimoConc: capacity.mimo.maxConcurrent,
+    mimoMediaConc: capacity.mimo.mediaConcurrent,
+    mimoUserConc: capacity.mimo.maxConcurrentPerUser,
+    mimoInflightPerUser: capacity.mimo.maxInflightPerUser,
+    mimoTokenConc: capacity.mimo.maxConcurrentPerToken,
+    mimoQueueMax: capacity.mimo.mediaQueueMax,
+    mimoQueueMaxWait: capacity.mimo.mediaQueueMaxWaitMs / 1_000,
     // Retained account retry budget allows at most one extra attempt and remains
     // independently bounded.
     mimoRetryMax: Math.max(0, Math.min(1, intEnv(env, 'GW_MIMO_MAX_RETRIES', 1))),
     mimoRetryBaseMs: Math.max(1, intEnv(env, 'GW_MIMO_RETRY_BASE_MS', 500)),
     mimoRetryMaxMs: Math.max(1, intEnv(env, 'GW_MIMO_RETRY_MAX_MS', 8000)),
-    // DeepSeek V4 Flash:真 key 只在服务器。受控假上游验证覆盖 100 人 × 10 窗口的 1,000 路
-    // 调度，但尚未证明 1,000 路真实 SSE 的尾延迟。因此先固定为每安装最多 10 路、全局最多
-    // 1,000 路；200 个队列槽仅吸收短抖动且最多等 15 秒。这不替代长 SSE、长上下文、
-    // CPU 余量与真实混合负载的渐进式验收。DeepSeek 账号的 2500 并发额度不等于单台 Bun 应直接开到
-    // 2500；缺 key 时路由显式 503，绝不回退到未登记 provider。
-    deepseekKey: env.GW_DEEPSEEK_KEY ?? '',
-    deepseekBase: (env.GW_DEEPSEEK_BASE ?? 'https://api.deepseek.com').replace(/\/+$/, ''),
+    // Model choice and capacity are separate: future registered DeepSeek variants
+    // share this physical-account pool unless the catalog explicitly binds another one.
     deepseekModel: textModel.model_id,
-    deepseekRpm: intEnv(env, 'GW_DEEPSEEK_RPM', 100_000),
-    deepseekConc: Math.max(1, intEnv(env, 'GW_DEEPSEEK_CONC', 1_000)),
-    deepseekUserConc: Math.max(1, intEnv(env, 'GW_DEEPSEEK_USER_CONC', Math.min(10, intEnv(env, 'GW_DEEPSEEK_CONC', 1_000)))),
-    deepseekTokenConc: Math.max(1, intEnv(env, 'GW_DEEPSEEK_TOKEN_CONC', intEnv(env, 'GW_DEEPSEEK_CONC', 1_000))),
-    deepseekQueueMax: Math.max(0, intEnv(env, 'GW_DEEPSEEK_QUEUE_MAX', 200)),
-    deepseekQueueMaxWait: Math.max(0, floatEnv(env, 'GW_DEEPSEEK_QUEUE_MAX_WAIT', 15)),
+    deepseekRpm: capacity.deepseek.rpm,
+    deepseekConc: capacity.deepseek.maxConcurrent,
+    deepseekUserConc: capacity.deepseek.maxConcurrentPerUser,
+    deepseekTokenConc: capacity.deepseek.maxConcurrentPerToken,
+    deepseekInflightPerUser: capacity.deepseek.maxInflightPerUser,
+    deepseekQueueMax: capacity.deepseek.queueMax,
+    deepseekQueueMaxWait: capacity.deepseek.queueMaxWaitMs / 1_000,
     // The HTTP idle timeout is disabled for agent SSE. This owns the separate
     // total upstream deadline, including a quiet stream after response headers.
-    deepseekResponseTimeoutMs: Math.max(1, intEnv(env, 'GW_DEEPSEEK_RESPONSE_TIMEOUT_MS', 5 * 60_000)),
-    deepseekAllowedModels: new Set([textModel.model_id]),
+    deepseekResponseTimeoutMs: capacity.deepseek.responseTimeoutMs,
+    deepseekAllowedModels: new Set(PROVIDER_REGISTRY.filter(entry => (
+      entry.provider === 'deepseek'
+      && entry.text_reasoning_transport === 'responses'
+      && entry.workload_bindings.some(binding => binding.workload === 'managed_agent_text')
+    )).map(entry => entry.model_id)),
     // 视觉桥接上限：超限在调用 Registry-owned VisualEvidence 之前失败关闭。visionMaxTotalBytes 同时也是整个聊天请求体
     // (含非图片请求)的大小闸,在任何路由/许可之前生效——图片 base64 是拖垮请求体积的主因。
     visionMaxImages: Math.max(1, intEnv(env, 'GW_VISION_MAX_IMAGES', 8)),
     visionMaxImageBytes: Math.max(1, intEnv(env, 'GW_VISION_MAX_IMAGE_BYTES', 8 * 1024 * 1024)),
     visionMaxTotalBytes: Math.max(1, intEnv(env, 'GW_VISION_MAX_TOTAL_BYTES', 24 * 1024 * 1024)),
-    visionTimeoutMs: Math.max(1, intEnv(env, 'GW_VISION_TIMEOUT_MS', 45_000)),
-    visionConc,
-    // A real 12-call vision ramp showed noticeable tail latency. Keep only 12-active +
-    // 24-waiting as a short safety envelope, not a claim of 500-image throughput; shed
-    // the remainder rather than turning it into stale work or unbounded request state.
-    visionQueueMax: Math.max(1, intEnv(env, 'GW_VISION_QUEUE_MAX', 24)),
-    // 视觉属于聊天关键路径，不允许默认 120 秒那样的长等待。生产可在已验证
-    // VisualEvidence 时延后调整，但必须保持有限窗口，避免 500 个带图窗口堆成陈旧请求。
-    visionQueueMaxWaitMs: Math.max(1, intEnv(env, 'GW_VISION_QUEUE_MAX_WAIT_MS', 3_000)),
-    // Unlike plain text, image understanding is a conservative, unverified VisualEvidence path:
-    // one installation gets one active visual slot by default so 12 distinct desktops can
-    // make progress. The total active-or-queued cap below is also one, so its follow-up
-    // windows cannot fill all 24 brief wait slots before later installations arrive.
-    visionPerClientConc: Math.max(1, intEnv(env, 'GW_VISION_PER_CLIENT_CONC', 1)),
-    visionMaxInflightPerClient: Math.max(1, intEnv(env, 'GW_VISION_MAX_INFLIGHT_PER_CLIENT', 1)),
-    // 一次多图聊天可并发处理的图片数，必须同时服从视觉和账号级 VisualEvidence 调度的单安装额度。
-    // 否则默认 "每安装 1 槽" 下，一个两图请求的第二张会被自己的第一张挤成 429。
-    // 运营侧若同时把这四项公平额度提高，才可把 GW_VISION_PER_REQUEST_CONC 提高到 2+。
-    visionPerRequestConc: Math.max(1, Math.min(
-      intEnv(env, 'GW_VISION_PER_REQUEST_CONC', 2),
-      intEnv(env, 'GW_VISION_PER_CLIENT_CONC', 1),
-      intEnv(env, 'GW_VISION_MAX_INFLIGHT_PER_CLIENT', 1),
-      intEnv(env, 'GW_MIMO_USER_CONC', 1),
-      intEnv(env, 'GW_MIMO_INFLIGHT_PER_USER', 1),
-    )),
+    visionTimeoutMs: capacity.mimo.visionTimeoutMs,
+    visionConc: capacity.mimo.visionConcurrent,
+    visionQueueMax: capacity.mimo.visionQueueMax,
+    visionQueueMaxWaitMs: capacity.mimo.visionQueueMaxWaitMs,
+    visionPerClientConc: capacity.mimo.visionMaxConcurrentPerUser,
+    visionMaxInflightPerClient: capacity.mimo.visionMaxInflightPerUser,
+    visionPerRequestConc: capacity.mimo.visionPerRequestConcurrent,
     visionCacheMax: Math.max(1, intEnv(env, 'GW_VISION_CACHE_MAX', 512)),
     visionCacheTtlMs: Math.max(1, intEnv(env, 'GW_VISION_CACHE_TTL_MS', 600_000)),
-    // A valid 24/32 MB body can temporarily exist as chunks + merged bytes + decoded
-    // text + parsed/rewritten JSON.  One conservative 256 MB ingress reservation spans
-    // managed Responses, visual-evidence and image submissions so a burst
-    // fails quickly instead of multiplying into an OOM.  The two older per-route names
-    // remain read-only compatibility fallbacks; a new deployment should set only GW_INGRESS_INFLIGHT_BODY_BYTES.
-    ingressInflightBodyBytes: Math.max(1, intEnv(
-      env,
-      'GW_INGRESS_INFLIGHT_BODY_BYTES',
-      intEnv(env, 'GW_CHAT_INFLIGHT_BODY_BYTES', intEnv(env, 'GW_IMG_INFLIGHT_BODY_BYTES', 256 * 1024 * 1024)),
-    )),
-    ingressBodyReadTimeoutMs: Math.max(1, intEnv(env, 'GW_INGRESS_BODY_READ_TIMEOUT_MS', 30_000)),
-    // Image generation itself is queued on relay; billiardbuddy-gateway only accepts short submissions.
-    // Permit a 100×10 burst to reach relay's idempotent queue instead of throttling it to
-    // 18/min here. The byte reservation below is the memory guard for those submissions.
-    imgIpm: intEnv(env, 'GW_IMG_IPM', 1_200),
-    // RPM 桶耗尽后的短提交等待也必须有硬上限；默认 200 只影响超过首个 1,200/min burst 的流量。
-    imgQueueMax: Math.max(0, intEnv(env, 'GW_IMG_QUEUE_MAX', 200)),
-    // 20 MB decoded reference images expand to about 26.7 MB as base64. Enforce the
-    // same 32 MB request ceiling at the public gateway before buffering or forwarding.
-    imgTaskMaxBodyBytes: Math.max(1, intEnv(env, 'GW_IMG_TASK_MAX_BODY_BYTES', 32 * 1024 * 1024)),
-    imgTaskBodyReadTimeoutMs: Math.max(1, intEnv(env, 'GW_IMG_TASK_BODY_READ_TIMEOUT_MS', 180_000)),
-    queueMaxWait: floatEnv(env, 'GW_QUEUE_MAX_WAIT', 60),
-    transcribeRpm: intEnv(env, 'GW_TRANSCRIBE_RPM', 12),
-    transcribeConc: intEnv(env, 'GW_TRANSCRIBE_CONC', 1),
-    transcribeQueueMax: Math.max(0, intEnv(env, 'GW_TRANSCRIBE_QUEUE_MAX', 12)),
-    transcribeMaxBytes: intEnv(env, 'GW_TRANSCRIBE_MAX_BYTES', 96 * 1024 * 1024),
+    // One bounded Gateway-owned ingress reservation spans managed Responses and
+    // visual evidence. Paid image bodies now go straight to Image Relay.
+    ingressInflightBodyBytes: capacity.ingress.inflightBodyBytes,
+    ingressBodyReadTimeoutMs: capacity.ingress.bodyReadTimeoutMs,
+    queueMaxWait: capacity.funasr.queueMaxWaitMs / 1_000,
+    transcribeRpm: capacity.funasr.rpm,
+    transcribeConc: capacity.funasr.maxConcurrent,
+    transcribeQueueMax: capacity.funasr.queueMax,
+    transcribeMaxBytes: capacity.funasr.maxBytes,
   }
 }
 
@@ -761,15 +558,13 @@ function isJsonContentType(value: string | null): boolean {
   return (value ?? '').toLowerCase().startsWith('application/json')
 }
 
-async function proxyJsonOrRaw(resp: Response): Promise<Response> {
-  const contentType = resp.headers.get('content-type')
-  if (isJsonContentType(contentType)) {
-    return jsonResponse(await resp.json(), { status: resp.status })
-  }
-  return jsonResponse({ raw: (await resp.text()).slice(0, 500) }, { status: resp.status })
+type VerifiedInstallation = {
+  principalId: string
+  installationId: string
+  sessionId: string
+  expiresAt: number
+  owner: string
 }
-
-type VerifiedInstallation = { principalId: string; installationId: string; owner: string }
 
 function bearer(request: Request): string | undefined {
   const header = request.headers.get('authorization') ?? ''
@@ -781,7 +576,13 @@ function auth(authority: AuthAuthority, request: Request): VerifiedInstallation 
   if (!token) throw new HttpError(401, 'missing_installation_access_token')
   try {
     const verified = authority.verifyAccess(token)
-    return { principalId: verified.pid, installationId: verified.iid, owner: `${verified.pid}:${verified.iid}` }
+    return {
+      principalId: verified.pid,
+      installationId: verified.iid,
+      sessionId: verified.sid,
+      expiresAt: verified.exp,
+      owner: `${verified.pid}:${verified.iid}`,
+    }
   } catch (error) {
     if (error instanceof AuthError) throw new HttpError(error.status, error.code)
     throw error
@@ -790,35 +591,6 @@ function auth(authority: AuthAuthority, request: Request): VerifiedInstallation 
 
 function hasInstallationAccess(authority: AuthAuthority, request: Request): boolean {
   try { auth(authority, request); return true } catch { return false }
-}
-
-/** 传给美国 relay 的受信任务归属身份只来自已验证 owner。 */
-function relayOwner(owner: string): string {
-  return owner
-}
-
-type RelayResultGrantPayload = {
-  v: 1
-  task_id: string
-  owner_sha256: string
-  expires_at: number
-}
-
-export function createRelayResultGrant(
-  relayToken: string,
-  taskId: string,
-  owner: string,
-  now = Date.now(),
-): string {
-  const payload: RelayResultGrantPayload = {
-    v: 1,
-    task_id: taskId,
-    owner_sha256: createHash('sha256').update(owner).digest('hex'),
-    expires_at: now + RELAY_RESULT_GRANT_TTL_MS,
-  }
-  const encoded = Buffer.from(JSON.stringify(payload)).toString('base64url')
-  const signature = createHmac('sha256', relayToken).update(encoded).digest('hex')
-  return `${encoded}.${signature}`
 }
 
 async function logUsage(store: UsageStore, entry: UsageEntry): Promise<void> {
@@ -1168,7 +940,7 @@ function createChatHandler(provider: ChatProvider, fetchImpl: FetchLike, store: 
         try {
           await provider.bucket.acquire(provider.queueMaxWait, deadline?.signal ?? request.signal)
         } catch (error) {
-          if (error instanceof HttpError) throw new provider.RequestError(error.status, error.detail)
+          if (error instanceof CapacityQueueError) throw new provider.RequestError(error.status, error.publicMessage)
           throw error
         }
         return await fetchImpl(`${provider.base}/${provider.endpoint}`, {
@@ -1176,7 +948,7 @@ function createChatHandler(provider: ChatProvider, fetchImpl: FetchLike, store: 
           body: prepared.body,
           signal: deadline?.signal ?? request.signal,
           headers: {
-            Authorization: `Bearer ${provider.key}`,
+            Authorization: provider.authorization,
             'Content-Type': 'application/json',
             'Accept-Encoding': 'identity',
           },
@@ -1249,14 +1021,26 @@ function createChatHandler(provider: ChatProvider, fetchImpl: FetchLike, store: 
 export function createGatewayFetch(deps: GatewayDeps = {}) {
   const env = deps.env ?? process.env
   const config = loadConfig(env)
+  const capacityPolicy = loadCapacityPolicy(env)
+  const providerCredentials = loadGatewayProviderCredentials(env)
+  const hasAnyServiceCredential = Boolean(
+    env.GW_IMAGE_RELAY_INTROSPECTION_TOKEN?.trim()
+    || env.GW_VIDEO_MEDIA_RELAY_INTROSPECTION_TOKEN?.trim(),
+  )
+  const serviceCredentials = hasAnyServiceCredential
+    ? loadGatewayServiceCredentials(env)
+    : null
   const authority = deps.authority ?? createAuthorityFromEnv(env)
   const fetchImpl = deps.fetchImpl ?? fetch
   const store = deps.usageStore ?? new SqliteUsageStore(config.db)
   const usageBudget = deps.usageBudgetService
-    ?? new SqliteUsageBudgetService(deps.usageStore ? ':memory:' : config.db)
+    ?? new SqliteUsageBudgetService(
+      deps.usageStore ? ':memory:' : config.db,
+      gatewayUsagePolicyFromEnvironment(env),
+    )
   const operationResults = deps.operationResultStore
     ?? new SqliteGatewayOperationResultStore(deps.usageStore ? ':memory:' : config.db)
-  const mimoBucket = new TokenBucket(config.mimoRpm)
+  const mimoBucket = new ProviderRateLimiter(config.mimoRpm, config.mimoQueueMax + config.visionQueueMax)
   const mimoReservations = new MimoReservationScheduler({
     maxConcurrent: config.mimoConc,
     mediaConcurrent: config.mimoMediaConc,
@@ -1269,18 +1053,20 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
     visionMaxConcurrentPerUser: config.visionPerClientConc,
     visionMaxInflightPerUser: config.visionMaxInflightPerClient,
   })
-  const deepseekBucket = new TokenBucket(config.deepseekRpm)
+  const deepseekBucket = new ProviderRateLimiter(config.deepseekRpm, config.deepseekQueueMax)
   const deepseekCapacity = new FairCapacityScheduler(
     config.deepseekConc,
     config.deepseekUserConc,
     config.deepseekTokenConc,
     config.deepseekQueueMax,
+    config.deepseekInflightPerUser,
   )
-  const deepseekProvider: ChatProvider | null = config.deepseekKey
+  const deepseekAuthorization = providerCredentials.bearerAuthorization('deepseek')
+  const deepseekProvider: ChatProvider | null = deepseekAuthorization
     ? {
       label: 'deepseek',
-      base: config.deepseekBase,
-      key: config.deepseekKey,
+      base: providerCredentials.baseUrl('deepseek'),
+      authorization: deepseekAuthorization,
       endpoint: 'responses',
       defaultModel: config.deepseekModel,
       allowedModels: config.deepseekAllowedModels,
@@ -1297,10 +1083,11 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
     : null
   // The registry-selected VisualEvidence provider is available only with its server key.
   // Missing credentials make image requests fail closed rather than reaching TextReasoning.
-  const visionBridge: VisionBridge | null = config.mimoKey
+  const mimoAuthorization = providerCredentials.bearerAuthorization('mimo')
+  const visionBridge: VisionBridge | null = mimoAuthorization
     ? createVisionBridge({
-      mimoBase: config.mimoBase,
-      mimoKey: config.mimoKey,
+      providerBase: providerCredentials.baseUrl('mimo'),
+      providerAuthorization: mimoAuthorization,
       modelId: visualEvidenceRegistryEntry().model_id,
       fetchImpl,
       mimoReservations,
@@ -1324,11 +1111,11 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
       },
   })
     : null
-  const mimoMediaProvider: ChatProvider | null = config.mimoKey
+  const mimoMediaProvider: ChatProvider | null = mimoAuthorization
     ? {
       label: 'mimo',
-      base: config.mimoBase,
-      key: config.mimoKey,
+      base: providerCredentials.baseUrl('mimo'),
+      authorization: mimoAuthorization,
       endpoint: 'chat/completions',
       defaultModel: mediaReasoningRegistryEntry().model_id,
       allowedModels: new Set([mediaReasoningRegistryEntry().model_id]),
@@ -1346,10 +1133,9 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
   const mimoMediaReasoning: ChatHandler | null = mimoMediaProvider
     ? createChatHandler(mimoMediaProvider, fetchImpl, store)
     : null
-  const imgBucket = new TokenBucket(config.imgIpm, config.imgQueueMax)
   const ingressBodyBudget = new InflightByteBudget(config.ingressInflightBodyBytes, '请求较多，请稍后重试')
-  const transcribeBucket = new TokenBucket(config.transcribeRpm, config.transcribeQueueMax)
-  const bootstrapBucket = new TokenBucket(config.bootstrapRpm, 0)
+  const transcribeBucket = new ProviderRateLimiter(config.transcribeRpm, config.transcribeQueueMax)
+  const bootstrapBucket = new ProviderRateLimiter(config.bootstrapRpm, 0)
   const transcribeCapacity = new FairCapacityScheduler(
     config.transcribeConc,
     1,
@@ -1357,7 +1143,9 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
     config.transcribeQueueMax,
     1,
   )
-  const transcribe = deps.transcribeImpl === undefined ? createGatewayTranscriber(env) : deps.transcribeImpl
+  const transcribe = deps.transcribeImpl === undefined
+    ? createGatewayTranscriber(env, providerCredentials)
+    : deps.transcribeImpl
 
   function reserveMetered(
     identity: VerifiedInstallation,
@@ -1552,138 +1340,6 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
     }
   }
 
-  async function proxyRelayImageResult(request: Request, input: string, headers: Record<string, string>): Promise<Response> {
-    const controller = new AbortController()
-    let timedOut = false
-    let bodyController: ReadableStreamDefaultController<Uint8Array> | undefined
-    let closed = false
-    const abortForClient = () => {
-      controller.abort()
-      if (!closed) bodyController?.error(new Error('relay result request cancelled'))
-    }
-    if (request.signal.aborted) abortForClient()
-    else request.signal.addEventListener('abort', abortForClient, { once: true })
-    let timer: ReturnType<typeof setTimeout> | undefined
-    const cleanup = () => {
-      if (closed) return
-      closed = true
-      if (timer) clearTimeout(timer)
-      request.signal.removeEventListener('abort', abortForClient)
-    }
-    const timeout = new Promise<never>((_resolve, reject) => {
-      timer = setTimeout(() => {
-        timedOut = true
-        controller.abort()
-        if (!closed) bodyController?.error(new Error('relay result response deadline exceeded'))
-        reject(new HttpError(504, '生图结果读取超时，请稍后重试'))
-      }, config.relayResultTimeoutMs)
-      ;(timer as unknown as { unref?: () => void }).unref?.()
-    })
-    try {
-      const upstream = await Promise.race([fetchImpl(input, {
-        method: 'GET',
-        headers,
-        signal: controller.signal,
-      }), timeout])
-      if (!isJsonContentType(upstream.headers.get('content-type'))) {
-        controller.abort()
-        cleanup()
-        throw new HttpError(502, '生图结果响应格式无效')
-      }
-      const declaredBytes = Number(upstream.headers.get('content-length') ?? '')
-      if (Number.isFinite(declaredBytes) && declaredBytes > config.relayResultMaxBytes) {
-        controller.abort()
-        cleanup()
-        throw new HttpError(502, '生图结果响应过大')
-      }
-      if (!upstream.body) {
-        cleanup()
-        return new Response(null, {
-          status: upstream.status,
-          statusText: upstream.statusText,
-          headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
-        })
-      }
-      const reader = upstream.body.getReader()
-      let receivedBytes = 0
-      const body = new ReadableStream<Uint8Array>({
-        start(value) { bodyController = value },
-        async pull(value) {
-          if (closed) return
-          try {
-            const chunk = await reader.read()
-            if (chunk.done) {
-              cleanup()
-              value.close()
-              return
-            }
-            receivedBytes += chunk.value.byteLength
-            if (receivedBytes > config.relayResultMaxBytes) {
-              controller.abort()
-              cleanup()
-              await reader.cancel('relay result response exceeded byte limit').catch(() => undefined)
-              value.error(new Error('relay result response exceeded byte limit'))
-              return
-            }
-            value.enqueue(chunk.value)
-          } catch (error) {
-            cleanup()
-            value.error(error)
-          }
-        },
-        async cancel(reason) {
-          controller.abort()
-          cleanup()
-          await reader.cancel(reason).catch(() => undefined)
-        },
-      })
-      const responseHeaders = new Headers({
-        'Content-Type': 'application/json',
-        'Cache-Control': 'no-store',
-      })
-      if (Number.isFinite(declaredBytes) && declaredBytes >= 0) responseHeaders.set('Content-Length', String(declaredBytes))
-      return new Response(body, {
-        status: upstream.status,
-        statusText: upstream.statusText,
-        headers: responseHeaders,
-      })
-    } catch (error) {
-      cleanup()
-      if (timedOut) throw new HttpError(504, '生图结果读取超时，请稍后重试')
-      if (request.signal.aborted) throw new HttpError(499, '请求已取消')
-      throw error
-    }
-  }
-
-  async function imageResultHandoff(
-    taskId: string,
-    owner: string,
-    headers: Record<string, string>,
-  ): Promise<Response> {
-    const upstream = await fetchImpl(
-      `${config.relayTasksBase}/images/tasks/${encodeURIComponent(taskId)}?metadata_only=1`,
-      { method: 'GET', headers },
-    )
-    if (!isJsonContentType(upstream.headers.get('content-type'))) {
-      throw new HttpError(502, '生图任务状态响应格式无效')
-    }
-    const metadata = await upstream.json() as Record<string, unknown>
-    if (!upstream.ok) return jsonResponse(metadata, { status: upstream.status })
-    if (metadata.status !== 'succeeded' || metadata.result_available !== true) {
-      return jsonResponse(metadata, { status: upstream.status, headers: { 'Cache-Control': 'no-store' } })
-    }
-    const grant = createRelayResultGrant(config.relayToken, taskId, relayOwner(owner))
-    const outputCount = typeof metadata.output_count === 'number'
-      ? Math.max(0, Math.min(4, Math.trunc(metadata.output_count)))
-      : 0
-    const resultBase = `${config.relayTasksBase}/images/results/${encodeURIComponent(grant)}`
-    return jsonResponse({
-      ...metadata,
-      result_url: resultBase,
-      result_urls: Array.from({ length: outputCount }, (_value, index) => `${resultBase}/${index}`),
-    }, { status: upstream.status, headers: { 'Cache-Control': 'no-store' } })
-  }
-
   async function fetchHandler(request: Request, server?: RequestTimeoutController): Promise<Response> {
     const url = new URL(request.url)
     try {
@@ -1726,13 +1382,6 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
             vision_per_client_conc: config.visionPerClientConc,
             vision_max_inflight_per_client: config.visionMaxInflightPerClient,
             vision_per_request_conc: config.visionPerRequestConc,
-            img_ipm: config.imgIpm,
-            img_queue_max: config.imgQueueMax,
-            img_task_max_body_bytes: config.imgTaskMaxBodyBytes,
-            img_task_body_read_timeout_ms: config.imgTaskBodyReadTimeoutMs,
-            relay_submit_timeout_ms: config.relaySubmitTimeoutMs,
-            relay_result_timeout_ms: config.relayResultTimeoutMs,
-            relay_result_max_bytes: config.relayResultMaxBytes,
             ingress_inflight_body_bytes: config.ingressInflightBodyBytes,
             ingress_body_read_timeout_ms: config.ingressBodyReadTimeoutMs,
             transcribe_rpm: config.transcribeRpm,
@@ -1747,6 +1396,14 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
             managed_agent_installation_daily_total_tokens: MANAGED_AGENT_INSTALLATION_DAILY_TOKEN_LIMIT,
           },
           usage_summary: usageBudget.summary(identity.principalId, identity.installationId),
+          governance: {
+            model_catalog_contract_version: PROVIDER_REGISTRY_CONTRACT_VERSION,
+            capacity_profile: 'small-v1',
+            capacity_policy: capacityPolicy,
+            quota_policy_revision: usageBudget.policyRevision(),
+            provider_credentials: providerCredentials.toJSON(),
+            service_credentials: serviceCredentials?.toJSON() ?? { services: [] },
+          },
           capacity: {
             // `mimo` is the account aggregate; each product contract also exposes its
             // own reservation so overload and starvation are attributable.
@@ -1772,9 +1429,39 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
             transcription: transcribe !== null,
             managed_text: managedText !== null,
             vision_bridge: visionBridge !== null,
-            image_tasks: Boolean(config.relayTasksBase && config.relayToken),
+            relay_identity_introspection: serviceCredentials !== null,
           },
         })
+      }
+
+      // Relays call this private route only to turn one short-lived desktop bearer
+      // into an authoritative scheduling owner. Gateway never proxies paid image or
+      // video payloads, status polls, results, cancellation, or acknowledgements.
+      if (request.method === 'POST' && url.pathname === SERVICE_INTROSPECTION_PATH) {
+        const audienceValue = request.headers.get(SERVICE_INTROSPECTION_AUDIENCE_HEADER)?.trim() ?? ''
+        if (!isServiceIntrospectionAudience(audienceValue)) {
+          throw new HttpError(403, 'invalid_service_audience')
+        }
+        const serviceToken = request.headers.get(SERVICE_INTROSPECTION_TOKEN_HEADER)?.trim()
+        if (!serviceCredentials?.verify(audienceValue, serviceToken)) {
+          throw new HttpError(403, 'invalid_service_credential')
+        }
+        const token = bearer(request)
+        if (!token) throw new HttpError(401, 'missing_installation_access_token')
+        try {
+          const verified = authority.verifyAccess(token)
+          return jsonResponse({
+            active: true,
+            principal_id: verified.pid,
+            installation_id: verified.iid,
+            session_id: verified.sid,
+            expires_at: verified.exp,
+            owner: `${verified.pid}:${verified.iid}`,
+          }, { headers: { 'Cache-Control': 'no-store' } })
+        } catch (error) {
+          if (error instanceof AuthError) throw new HttpError(error.status, error.code)
+          throw error
+        }
       }
 
       if (request.method === 'POST' && (url.pathname === '/v1/auth/bootstrap' || url.pathname === '/v1/auth/refresh' || url.pathname === '/v1/auth/logout')) {
@@ -2098,167 +1785,6 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
         }
       }
 
-      // 生图异步任务:提交短请求到 relay；relay 再按模型调用 GPT Image 或豆包 Seedream。
-      if (request.method === 'POST' && url.pathname === '/v1/images/tasks') {
-        const identity = auth(authority, request)
-        requireProviderProtocol(request)
-        const user = identity.owner
-        // Relay forwarding can cross the default Bun 10 s idle window even though image
-        // generation itself is asynchronous. Disable it before buffering/rate waiting.
-        server?.timeout(request, 0)
-        if (!config.relayTasksBase) throw new HttpError(503, '生图异步任务未配置(缺 GW_RELAY_TASKS_BASE)')
-        const contentType = request.headers.get('content-type')
-        if (contentType && !isJsonContentType(contentType)) throw new HttpError(415, '生图任务需要 JSON')
-        const idempotencyKey = request.headers.get('idempotency-key')?.trim() ?? ''
-        if (!idempotencyKey || idempotencyKey.length > 160) throw new HttpError(428, 'OPERATION_ID_REQUIRED')
-        try {
-          return await withBufferedBodyReservation(request, config.imgTaskMaxBodyBytes, ingressBodyBudget, config.imgTaskBodyReadTimeoutMs, async rawBody => {
-            // Submission counts toward the short ingress rate guard, not relay's actual
-            // image-generation concurrency. Respect cancellation while waiting so a
-            // disconnected client cannot occupy TokenBucket's serialized chain forever.
-            await imgBucket.acquire(config.queueMaxWait, request.signal)
-            const started = performance.now()
-            // 把受信任务归属身份传给 relay(relay 据此绑定 owner、越权轮询 403);客户端若带
-            // Idempotency-Key 则透传,relay 按 (owner,key) 去重,重复提交只跑一次真实上游。
-            const submitHeaders: Record<string, string> = {
-              Authorization: `Bearer ${config.relayToken}`,
-              'Content-Type': 'application/json',
-              'X-Relay-Owner': relayOwner(user),
-              'X-BB-Provider-Protocol': PROVIDER_GATEWAY_PROTOCOL_VALUE,
-            }
-            submitHeaders['Idempotency-Key'] = idempotencyKey
-            const relayController = new AbortController()
-            let relayTimedOut = false
-            const abortForClient = () => relayController.abort()
-            if (request.signal.aborted) abortForClient()
-            else request.signal.addEventListener('abort', abortForClient, { once: true })
-            const relayTimer = setTimeout(() => {
-              relayTimedOut = true
-              relayController.abort()
-            }, config.relaySubmitTimeoutMs)
-            try {
-              const upstream = await fetchImpl(`${config.relayTasksBase}/images/tasks`, {
-                method: 'POST',
-                body: rawBody,
-                signal: relayController.signal,
-                headers: submitHeaders,
-              })
-              await logUsage(store, { user, model: 'img', ok: upstream.status < 400, status: upstream.status, ms: elapsedMs(started) })
-              return await proxyJsonOrRaw(upstream)
-            } catch (error) {
-              if (relayTimedOut) {
-                await logUsage(store, { user, model: 'img', ok: false, status: 504, ms: elapsedMs(started), note: 'relay_submit_timeout' })
-                throw new HttpError(504, '生图任务提交超时，请稍后重试')
-              }
-              if (request.signal.aborted) {
-                await logUsage(store, { user, model: 'img', ok: false, status: 499, ms: elapsedMs(started), note: 'client_cancelled' })
-                throw new HttpError(499, '请求已取消')
-              }
-              throw error
-            } finally {
-              clearTimeout(relayTimer)
-              request.signal.removeEventListener('abort', abortForClient)
-            }
-          })
-        } catch (err) {
-          if (err instanceof HttpError) throw err
-          // Do not expose raw relay/network details. The usage row keeps only a fixed
-          // category; the shared ingress reservation is released by the helper above.
-          await logUsage(store, { user, model: 'img', ok: false, status: 599, ms: 0, note: 'image_task_forward_failed' })
-          throw new HttpError(502, '生图任务提交出错，请稍后重试')
-        }
-      }
-
-      if (
-        request.method === 'POST'
-        && url.pathname.startsWith('/v1/images/tasks/')
-        && url.pathname.endsWith('/ack')
-      ) {
-        const identity = auth(authority, request)
-        requireProviderProtocol(request)
-        const user = identity.owner
-        server?.timeout(request, 0)
-        if (!config.relayTasksBase) throw new HttpError(503, '生图异步任务未配置(缺 GW_RELAY_TASKS_BASE)')
-        const taskId = url.pathname.slice('/v1/images/tasks/'.length, -'/ack'.length)
-        if (!taskId || taskId.includes('/')) throw new HttpError(400, '无效 task id')
-        const upstream = await fetchImpl(
-          `${config.relayTasksBase}/images/tasks/${encodeURIComponent(taskId)}/ack`,
-          {
-            method: 'POST',
-            signal: request.signal,
-            headers: {
-              Authorization: `Bearer ${config.relayToken}`,
-              'X-Relay-Owner': relayOwner(user),
-              'X-BB-Provider-Protocol': PROVIDER_GATEWAY_PROTOCOL_VALUE,
-            },
-          },
-        )
-        return await proxyJsonOrRaw(upstream)
-      }
-
-      if (
-        request.method === 'POST'
-        && url.pathname.startsWith('/v1/images/tasks/')
-        && url.pathname.endsWith('/cancel')
-      ) {
-        const identity = auth(authority, request)
-        requireProviderProtocol(request)
-        const user = identity.owner
-        // Cancellation still crosses the mainland/US relay boundary. Disable Bun's
-        // 10 s idle timeout before that request so a slow relay acknowledgement is
-        // not turned into a client-side socket reset.
-        server?.timeout(request, 0)
-        if (!config.relayTasksBase) throw new HttpError(503, '生图异步任务未配置(缺 GW_RELAY_TASKS_BASE)')
-        const taskId = url.pathname.slice('/v1/images/tasks/'.length, -'/cancel'.length)
-        if (!taskId || taskId.includes('/')) throw new HttpError(400, '无效 task id')
-        const upstream = await fetchImpl(
-          `${config.relayTasksBase}/images/tasks/${encodeURIComponent(taskId)}/cancel`,
-          {
-            method: 'POST',
-            signal: request.signal,
-            headers: {
-              Authorization: `Bearer ${config.relayToken}`,
-              'X-Relay-Owner': relayOwner(user),
-              'X-BB-Provider-Protocol': PROVIDER_GATEWAY_PROTOCOL_VALUE,
-            },
-          },
-        )
-        return await proxyJsonOrRaw(upstream)
-      }
-
-      // 生图异步任务:轮询状态(短请求,不计配额)。带上同一 owner,relay 强制"谁提交谁轮询",
-      // 拿别人的 task id 轮询会被 relay 返 403。
-      if (request.method === 'GET' && url.pathname.startsWith('/v1/images/tasks/')) {
-        const identity = auth(authority, request)
-        requireProviderProtocol(request)
-        const user = identity.owner
-        // A status poll also waits on the cross-border relay. Apply this before
-        // forwarding so Bun's default 10 s idle timeout cannot reset the client
-        // socket while the relay is still responding.
-        server?.timeout(request, 0)
-        if (!config.relayTasksBase) throw new HttpError(503, '生图异步任务未配置(缺 GW_RELAY_TASKS_BASE)')
-        const taskId = url.pathname.slice('/v1/images/tasks/'.length)
-        if (!taskId || taskId.includes('/')) throw new HttpError(400, '无效 task id')
-        // The load runner asks only for compact terminal metadata so it never pulls
-        // b64 image output merely to observe status. Do not forward arbitrary query
-        // parameters from an app client to the internal relay.
-        const metadataOnly = url.searchParams.get('metadata_only') === '1'
-        const metadataQuery = metadataOnly ? '?metadata_only=1' : ''
-        const relayHeaders = {
-          Authorization: `Bearer ${config.relayToken}`,
-          'X-Relay-Owner': relayOwner(user),
-          'X-BB-Provider-Protocol': PROVIDER_GATEWAY_PROTOCOL_VALUE,
-        }
-        if (request.headers.get(MEDIA_RESULT_HANDOFF_HEADER) === MEDIA_RESULT_HANDOFF_DIRECT_V1) {
-          return await imageResultHandoff(taskId, user, relayHeaders)
-        }
-        return await proxyRelayImageResult(
-          request,
-          `${config.relayTasksBase}/images/tasks/${encodeURIComponent(taskId)}${metadataQuery}`,
-          relayHeaders,
-        )
-      }
-
       return jsonError(404, 'not found')
     } catch (err) {
       if (err instanceof HttpError) return jsonError(err.status, err.detail)
@@ -2318,7 +1844,7 @@ function parseArgs(argv: string[]): { host: string; port: number } {
  * handlers still explicitly disable their individual request timeout.
  */
 export function gatewayServerIdleTimeoutSeconds(env: Env = process.env): number {
-  return Math.min(255, Math.max(30, intEnv(env, 'GW_SERVER_IDLE_TIMEOUT_SECONDS', 255)))
+  return loadCapacityPolicy(env).ingress.serverIdleTimeoutSeconds
 }
 
 export function startGatewayServer(opts: { host?: string; port?: number } = {}) {
