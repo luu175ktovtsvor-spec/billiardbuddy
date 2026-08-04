@@ -86,6 +86,13 @@ export type NativeCodexThread = {
   id: string
   /** Projected from the authoritative App Server Thread settings response. */
   permissionMode: NativeCodexPermissionMode
+  /** Live source-native Turns recovered from `thread/resume`; never a second durable status store. */
+  activeTurnIds: string[]
+  /** Source relation used by the desktop host to inherit a child Thread owner. */
+  parentThreadId?: string
+  /** Opaque source-native cursors used to continue lazy history hydration. */
+  turnsBackwardsCursor?: string
+  itemsBackwardsCursor?: string
 }
 
 export type NativeCodexTurn = {
@@ -127,6 +134,13 @@ export type NativeCodexMcpServerConfig = CodexNativeJsonObject
 export type NativeCodexSkillSelector = {
   name?: string
   path?: string
+}
+
+/** An exact Hook identity returned by `hooks/list`; Electron never invents it. */
+export type NativeCodexHookTrustInput = {
+  cwd: string
+  hookKey: string
+  currentHash: string
 }
 
 /** Source-native marketplace input. Electron never clones or parses plugins itself. */
@@ -230,6 +244,9 @@ export type NativeCodexClientSettingsProjection = {
   reasoningSummary: string | null
   verbosity: string | null
   serviceTier: string | null
+  memoryFeatureEnabled: boolean
+  memoryUseEnabled: boolean
+  memoryGenerationEnabled: boolean
   origins: Record<string, { source: string, version: string }>
   layers: Array<{ source: string, version: string, disabledReason: string | null }>
 }
@@ -312,14 +329,55 @@ export type NativeCodexBackgroundTerminalsPageInput = {
   limit?: number
 }
 
+export type NativeCodexTextElement = {
+  byteRange: { start: number, end: number }
+  placeholder?: string
+}
+
+export type NativeCodexAdditionalContextEntry = {
+  value: string
+  kind: 'untrusted' | 'application'
+}
+
+export type NativeCodexAdditionalContext = Record<string, NativeCodexAdditionalContextEntry>
+
 export type NativeCodexTurnInput =
-  | { type: 'text'; text: string }
+  | { type: 'text'; text: string; textElements?: NativeCodexTextElement[] }
   | { type: 'image'; url: string; detail?: 'auto' | 'low' | 'high' | 'original' }
   | { type: 'localImage'; path: string; detail?: 'auto' | 'low' | 'high' | 'original' }
   | { type: 'audio'; url: string }
   | { type: 'localAudio'; path: string }
   | { type: 'skill'; name: string; path: string }
   | { type: 'mention'; name: string; path: string }
+
+export type NativeCodexMemoryConfiguration = {
+  enabled: boolean
+  useMemories: boolean
+  generateMemories: boolean
+}
+
+export type NativeCodexTerminalSize = { rows: number, cols: number }
+
+export type NativeCodexCommandExecResponse = {
+  exitCode: number
+  stdout: string
+  stderr: string
+}
+
+export type NativeCodexIntegratedTerminalInput = {
+  processId: string
+  command: string[]
+  size: NativeCodexTerminalSize
+}
+
+export type NativeCodexFuzzyFileSearchResult = {
+  root: string
+  path: string
+  matchType: 'file' | 'directory'
+  fileName: string
+  score: number
+  indices?: number[]
+}
 
 export type ElectronCodexNativeRuntimeOptions = {
   /** The unpacked desktop root, where verified staged binaries are stored. */
@@ -352,6 +410,23 @@ function engineError(message: string, detail?: string): Error {
 
 function jsonObject(value: unknown): CodexNativeJsonObject | undefined {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as CodexNativeJsonObject : undefined
+}
+
+/**
+ * The native requirements endpoint is the authority for whether an Electron
+ * host may capture an Appshot. Absence of a requirements file means Core has
+ * no restriction; a malformed response never authorizes a privileged capture.
+ */
+export function nativeConfigRequirementsAllowAppshots(value: CodexNativeJsonObject): boolean {
+  if (!Object.hasOwn(value, 'requirements')) throw new Error('CODEX_NATIVE_CONFIG_REQUIREMENTS_INVALID')
+  const rawRequirements = value.requirements
+  if (rawRequirements === null) return true
+  const requirements = jsonObject(rawRequirements)
+  if (!requirements) throw new Error('CODEX_NATIVE_CONFIG_REQUIREMENTS_INVALID')
+  const allowed = requirements.allowAppshots
+  if (allowed === undefined) return true
+  if (typeof allowed !== 'boolean') throw new Error('CODEX_NATIVE_CONFIG_REQUIREMENTS_INVALID')
+  return allowed
 }
 
 function jsonRpcError(value: unknown): { code: number; message: string } | undefined {
@@ -388,7 +463,7 @@ function absoluteDirectory(value: string): string {
 
 function routeKey(route: CodexNativeModelRoute): string {
   if (route.kind === 'managed') {
-    return `managed\0${route.gatewayUrl}\0${route.model}`
+    return `managed\0${route.gatewayUrl}\0${route.model}\0${[...route.capabilities].sort().join(',')}`
   }
   // A profile can keep its id, endpoint and model while the user rotates its
   // secret or changes a Chat-adapter option. Keep only a non-reversible route
@@ -609,6 +684,56 @@ function permissionModeFromThreadResponse(value: CodexNativeJsonObject): NativeC
   return 'ask'
 }
 
+function sourceThreadParentId(thread: CodexNativeJsonObject): string | undefined {
+  if (nonEmptyText(thread.parentThreadId, 200)) return thread.parentThreadId
+  if (nonEmptyText(thread.forkedFromId, 200)) return thread.forkedFromId
+  const source = jsonObject(thread.source)
+  const subAgent = jsonObject(source?.subAgent)
+  const spawn = jsonObject(subAgent?.thread_spawn) ?? jsonObject(subAgent?.threadSpawn)
+  const nested = spawn?.parent_thread_id ?? spawn?.parentThreadId
+  return nonEmptyText(nested, 200) ? nested : undefined
+}
+
+function sourceActiveTurnIds(value: CodexNativeJsonObject): string[] {
+  const thread = jsonObject(value.thread)
+  const initialPage = jsonObject(value.initialTurnsPage)
+  const candidates = [
+    ...(Array.isArray(thread?.turns) ? thread.turns : []),
+    ...(Array.isArray(initialPage?.data) ? initialPage.data : []),
+  ]
+  const ids: string[] = []
+  for (const candidate of candidates) {
+    const turn = jsonObject(candidate)
+    if (turn?.status !== 'inProgress' || !nonEmptyText(turn.id, 200) || ids.includes(turn.id)) continue
+    ids.push(turn.id)
+  }
+  return ids
+}
+
+/**
+ * Project only the Thread fields the desktop host must own. The Rust response
+ * remains authoritative for history and live Turn status.
+ */
+export function projectNativeCodexThreadResponse(value: CodexNativeJsonObject): NativeCodexThread {
+  const thread = jsonObject(value.thread)
+  const id = threadId(value)
+  const parentThreadId = thread ? sourceThreadParentId(thread) : undefined
+  const turnsBackwardsCursor = nonEmptyText(value.turnsBackwardsCursor, 4_096)
+    ? value.turnsBackwardsCursor
+    : undefined
+  const itemsBackwardsCursor = nonEmptyText(value.itemsBackwardsCursor, 4_096)
+    ? value.itemsBackwardsCursor
+    : undefined
+  return {
+    id,
+    permissionMode: permissionModeFromThreadResponse(value),
+    activeTurnIds: sourceActiveTurnIds(value),
+    ...(parentThreadId === undefined ? {} : { parentThreadId }),
+    ...(turnsBackwardsCursor === undefined ? {} : { turnsBackwardsCursor }),
+    ...(itemsBackwardsCursor === undefined ? {} : { itemsBackwardsCursor }),
+  }
+}
+
 function nativePermissionSettings(mode: NativeCodexPermissionMode): {
   sandbox: 'workspace-write' | 'danger-full-access'
   approvalPolicy: 'on-request' | 'never'
@@ -775,6 +900,10 @@ function projectedInteger(value: unknown): number | null {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null
 }
 
+function projectedBoolean(value: unknown): boolean {
+  return value === true
+}
+
 function projectedApprovalPolicy(value: unknown): CodexNativeJsonValue {
   if (value === 'untrusted' || value === 'on-request' || value === 'never') return value
   const granular = jsonObject(jsonObject(value)?.granular)
@@ -803,6 +932,9 @@ const PROJECTED_CONFIG_ORIGINS = new Map<string, keyof NativeCodexClientSettings
   ['model_reasoning_summary', 'reasoningSummary'],
   ['model_verbosity', 'verbosity'],
   ['service_tier', 'serviceTier'],
+  ['features.memories', 'memoryFeatureEnabled'],
+  ['memories.use_memories', 'memoryUseEnabled'],
+  ['memories.generate_memories', 'memoryGenerationEnabled'],
 ])
 
 /**
@@ -813,6 +945,8 @@ export function projectNativeCodexClientSettings(value: unknown): NativeCodexCli
   const response = jsonObject(value)
   const config = jsonObject(response?.config)
   if (!response || !config) throw new Error('CODEX_NATIVE_CONFIG_RESPONSE_INVALID')
+  const features = jsonObject(config.features)
+  const memories = jsonObject(config.memories)
 
   const origins: NativeCodexClientSettingsProjection['origins'] = {}
   const rawOrigins = jsonObject(response.origins)
@@ -857,6 +991,9 @@ export function projectNativeCodexClientSettings(value: unknown): NativeCodexCli
     reasoningSummary: projectedString(config.model_reasoning_summary),
     verbosity: projectedString(config.model_verbosity),
     serviceTier: projectedString(config.service_tier),
+    memoryFeatureEnabled: projectedBoolean(features?.memories),
+    memoryUseEnabled: projectedBoolean(memories?.use_memories),
+    memoryGenerationEnabled: projectedBoolean(memories?.generate_memories),
     origins,
     layers,
   }
@@ -935,6 +1072,89 @@ function nativeBackgroundTerminalProcessId(value: unknown): string {
   return value
 }
 
+function nativeOperationId(value: unknown, error: string): string {
+  if (typeof value !== 'string' || !/^[A-Za-z0-9_-]{8,200}$/.test(value)) throw new Error(error)
+  return value
+}
+
+function nativeTerminalSize(value: unknown): NativeCodexTerminalSize {
+  const size = jsonObject(value)
+  if (
+    typeof size?.rows !== 'number'
+    || !Number.isSafeInteger(size.rows)
+    || size.rows < 1
+    || size.rows > 1_000
+    || typeof size.cols !== 'number'
+    || !Number.isSafeInteger(size.cols)
+    || size.cols < 1
+    || size.cols > 1_000
+  ) throw new Error('CODEX_NATIVE_TERMINAL_SIZE_INVALID')
+  return { rows: size.rows, cols: size.cols }
+}
+
+function nativeTerminalCommand(value: unknown): string[] {
+  if (!Array.isArray(value) || value.length === 0 || value.length > 16) {
+    throw new Error('CODEX_NATIVE_TERMINAL_COMMAND_INVALID')
+  }
+  return value.map(argument => {
+    if (typeof argument !== 'string' || argument.length === 0 || argument.length > 4_096 || argument.includes('\u0000')) {
+      throw new Error('CODEX_NATIVE_TERMINAL_COMMAND_INVALID')
+    }
+    return argument
+  })
+}
+
+function nativeFuzzyQuery(value: unknown): string {
+  if (typeof value !== 'string' || value.length > 512 || value.includes('\u0000')) {
+    throw new Error('CODEX_NATIVE_FUZZY_QUERY_INVALID')
+  }
+  return value
+}
+
+function projectCommandExecResponse(value: CodexNativeJsonObject): NativeCodexCommandExecResponse {
+  if (
+    typeof value.exitCode !== 'number'
+    || !Number.isSafeInteger(value.exitCode)
+    || typeof value.stdout !== 'string'
+    || typeof value.stderr !== 'string'
+  ) throw new Error('CODEX_NATIVE_COMMAND_EXEC_RESPONSE_INVALID')
+  return { exitCode: value.exitCode, stdout: value.stdout, stderr: value.stderr }
+}
+
+function projectFuzzyFileSearchResponse(value: CodexNativeJsonObject): { files: NativeCodexFuzzyFileSearchResult[] } {
+  if (!Array.isArray(value.files) || value.files.length > 2_000) {
+    throw new Error('CODEX_NATIVE_FUZZY_RESPONSE_INVALID')
+  }
+  const files = value.files.map(candidate => {
+    const item = jsonObject(candidate)
+    if (
+      !item
+      || !nonEmptyText(item.root, 4_096)
+      || !nonEmptyText(item.path, 4_096)
+      || (item.matchType !== 'file' && item.matchType !== 'directory')
+      || !nonEmptyText(item.fileName, 4_096)
+      || typeof item.score !== 'number'
+      || !Number.isSafeInteger(item.score)
+      || item.score < 0
+      || (item.indices !== undefined && (
+        !Array.isArray(item.indices)
+        || item.indices.length > 4_096
+        || !item.indices.every(index => typeof index === 'number' && Number.isSafeInteger(index) && index >= 0)
+      ))
+    ) throw new Error('CODEX_NATIVE_FUZZY_RESPONSE_INVALID')
+    const matchType: NativeCodexFuzzyFileSearchResult['matchType'] = item.matchType
+    return {
+      root: item.root,
+      path: item.path,
+      matchType,
+      fileName: item.fileName,
+      score: item.score,
+      ...(item.indices === undefined ? {} : { indices: [...item.indices] as number[] }),
+    }
+  })
+  return { files }
+}
+
 function nativeReviewLine(value: unknown, limit: number, error: string): string {
   if (typeof value !== 'string' || value.length === 0 || value.length > limit || /[\u0000\r\n]/.test(value)) {
     throw new Error(error)
@@ -995,8 +1215,85 @@ function nativeCollaborationSettings(
   }
 }
 
+function nativeTextElements(text: string, value: unknown): NativeCodexTextElement[] {
+  if (value === undefined) return []
+  if (!Array.isArray(value) || value.length > 256) throw new Error('CODEX_NATIVE_TEXT_ELEMENTS_INVALID')
+  const boundaries = new Set<number>([0])
+  let byteOffset = 0
+  for (const character of text) {
+    byteOffset += Buffer.byteLength(character)
+    boundaries.add(byteOffset)
+  }
+  let previousEnd = 0
+  return value.map(elementValue => {
+    const element = jsonObject(elementValue)
+    const range = jsonObject(element?.byteRange)
+    const start = range?.start
+    const end = range?.end
+    const placeholder = element?.placeholder
+    if (
+      typeof start !== 'number'
+      || !Number.isSafeInteger(start)
+      || typeof end !== 'number'
+      || !Number.isSafeInteger(end)
+      || start < previousEnd
+      || start < 0
+      || end <= start
+      || end > byteOffset
+      || !boundaries.has(start)
+      || !boundaries.has(end)
+      || (placeholder !== undefined && (
+        typeof placeholder !== 'string'
+        || placeholder.length > 1_024
+        || placeholder.includes('\u0000')
+      ))
+    ) throw new Error('CODEX_NATIVE_TEXT_ELEMENTS_INVALID')
+    previousEnd = end
+    return {
+      byteRange: { start, end },
+      ...(placeholder === undefined ? {} : { placeholder }),
+    }
+  })
+}
+
+function nativeAdditionalContext(value: NativeCodexAdditionalContext | undefined): CodexNativeJsonObject | undefined {
+  if (value === undefined) return undefined
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('CODEX_NATIVE_ADDITIONAL_CONTEXT_INVALID')
+  }
+  const entries = Object.entries(value)
+  if (entries.length === 0 || entries.length > 32) throw new Error('CODEX_NATIVE_ADDITIONAL_CONTEXT_INVALID')
+  let totalBytes = 0
+  const projected: CodexNativeJsonObject = {}
+  for (const [source, rawEntry] of entries) {
+    if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(source)) {
+      throw new Error('CODEX_NATIVE_ADDITIONAL_CONTEXT_INVALID')
+    }
+    const entry = jsonObject(rawEntry)
+    if (
+      !entry
+      || (entry.kind !== 'untrusted' && entry.kind !== 'application')
+      || typeof entry.value !== 'string'
+      || entry.value.length === 0
+      || entry.value.includes('\u0000')
+    ) throw new Error('CODEX_NATIVE_ADDITIONAL_CONTEXT_INVALID')
+    totalBytes += Buffer.byteLength(source) + Buffer.byteLength(entry.value)
+    if (totalBytes > (1 << 20)) throw new Error('CODEX_NATIVE_ADDITIONAL_CONTEXT_INVALID')
+    projected[source] = { value: entry.value, kind: entry.kind }
+  }
+  return projected
+}
+
 function validateTurnInput(value: NativeCodexTurnInput): boolean {
-  if (value.type === 'text') return nonEmptyText(value.text, 1 << 20)
+  if (value.type === 'text') {
+    if (!nonEmptyText(value.text, 1 << 20)) return false
+    try {
+      nativeTextElements(value.text, value.textElements)
+      return true
+    } catch {
+      return false
+    }
+  }
   const validDetail = (detail: unknown) => detail === undefined || ['auto', 'low', 'high', 'original'].includes(String(detail))
   if (value.type === 'image') {
     return nonEmptyText(value.url, 32 * 1024 * 1024)
@@ -1099,6 +1396,48 @@ function nativePluginText(value: string, maximum: number, error: string): string
     throw new Error(error)
   }
   return value.trim()
+}
+
+type NativeCodexListedHook = {
+  key: string
+  currentHash: string
+  trustStatus: 'managed' | 'untrusted' | 'trusted' | 'modified'
+}
+
+function nativeHookTrustText(value: unknown, maximum: number, error: string): string {
+  if (!nonEmptyText(value, maximum) || value.trim() !== value || /[\u0000\r\n]/.test(value)) {
+    throw new Error(error)
+  }
+  return value
+}
+
+function listedNativeHook(
+  response: CodexNativeJsonObject,
+  hookKey: string,
+  currentHash: string,
+): NativeCodexListedHook {
+  if (!Array.isArray(response.data)) throw new Error('CODEX_NATIVE_HOOK_LIST_INVALID')
+  const hooks: NativeCodexListedHook[] = []
+  for (const entry of response.data) {
+    const group = jsonObject(entry)
+    if (!group || !Array.isArray(group.hooks)) throw new Error('CODEX_NATIVE_HOOK_LIST_INVALID')
+    for (const rawHook of group.hooks) {
+      const hook = jsonObject(rawHook)
+      const key = hook?.key
+      const hash = hook?.currentHash
+      const trustStatus = hook?.trustStatus
+      if (
+        !nonEmptyText(key, 4_096)
+        || !nonEmptyText(hash, 1_024)
+        || (trustStatus !== 'managed' && trustStatus !== 'untrusted' && trustStatus !== 'trusted' && trustStatus !== 'modified')
+      ) throw new Error('CODEX_NATIVE_HOOK_LIST_INVALID')
+      hooks.push({ key, currentHash: hash, trustStatus })
+    }
+  }
+  const matching = hooks.filter(hook => hook.key === hookKey && hook.currentHash === currentHash)
+  const match = matching[0]
+  if (matching.length !== 1 || !match) throw new Error('CODEX_NATIVE_HOOK_TRUST_STALE')
+  return match
 }
 
 function nativeMarketplaceAddInput(value: NativeCodexMarketplaceAddInput): NativeCodexMarketplaceAddInput {
@@ -1360,6 +1699,8 @@ export class ElectronCodexNativeRuntime {
   private activeTurns = new Set<string>()
   private activeTurnThreads = new Map<string, string>()
   private pendingTurnStarts = 0
+  private readonly pendingTurnThreads = new Map<string, number>()
+  private readonly workspaceMutationRoots = new Map<string, Set<string>>()
   /**
    * Ephemeral Main-process reconnect hints only. Rust remains the durable
    * Thread owner; these paths are never persisted or used as Agent history.
@@ -1426,10 +1767,11 @@ export class ElectronCodexNativeRuntime {
       modelProvider: NATIVE_PROVIDER_ID,
       ...permissions,
     })
-    const id = threadId(response)
+    const thread = projectNativeCodexThreadResponse(response)
+    const id = thread.id
     this.threadWorkspaces.set(id, cwd)
     this.loadedThreads.add(id)
-    return { id, permissionMode: permissionModeFromThreadResponse(response) }
+    return thread
   }
 
   async resumeThread(input: NativeCodexResumeThreadInput): Promise<NativeCodexThread> {
@@ -1575,6 +1917,132 @@ export class ElectronCodexNativeRuntime {
     await this.resumeStoredThread(thread.id, route)
   }
 
+  /** Return only the current host cwd hint; Rust remains the Thread owner. */
+  threadWorkspace(thread: Pick<NativeCodexThread, 'id'>): string {
+    if (!nonEmptyText(thread.id)) throw new Error('CODEX_NATIVE_THREAD_ID_INVALID')
+    const workspace = this.threadWorkspaces.get(thread.id)
+    if (!workspace) throw new Error('CODEX_NATIVE_THREAD_WORKSPACE_UNAVAILABLE')
+    return workspace
+  }
+
+  /**
+   * Main uses this host-local lookup only to protect a shared checkout while
+   * Core-owned background terminals still run. It never mirrors terminal
+   * state: the App Server remains the source queried below.
+   */
+  threadIdsUsingWorkspaces(workspaces: readonly string[]): string[] {
+    const roots = new Set<string>()
+    for (const candidate of workspaces) {
+      if (!nonEmptyText(candidate, 4_096) || /[\u0000\r\n]/.test(candidate) || !path.isAbsolute(candidate)) {
+        throw new Error('CODEX_NATIVE_THREAD_WORKSPACE_INVALID')
+      }
+      roots.add(path.normalize(candidate))
+    }
+    return [...this.threadWorkspaces]
+      .filter(([, workspace]) => roots.has(path.normalize(workspace)))
+      .map(([threadId]) => threadId)
+  }
+
+  /** Fail closed before a host mutation can race a source-native background process. */
+  async assertWorkspacesHaveNoBackgroundTerminals(workspaces: readonly string[]): Promise<void> {
+    for (const threadId of this.threadIdsUsingWorkspaces(workspaces)) {
+      const page = await this.listBackgroundTerminals({ id: threadId }, { limit: 1 })
+      if (!Array.isArray(page.data)) throw new Error('CODEX_NATIVE_BACKGROUND_TERMINALS_RESPONSE_INVALID')
+      if (page.data.length > 0) throw new Error('CODEX_NATIVE_WORKSPACE_BACKGROUND_TERMINAL_ACTIVE')
+    }
+  }
+
+  /**
+   * Atomically reserve an idle Thread cwd while Electron performs a bounded
+   * Worktree/Handoff/Local Environment host operation. New native Turns and
+   * integrated terminals fail closed until Main releases the reservation.
+   */
+  beginThreadWorkspaceMutation(
+    thread: Pick<NativeCodexThread, 'id'>,
+    relatedWorkspaces: readonly string[] = [],
+  ): void {
+    if (!nonEmptyText(thread.id)) throw new Error('CODEX_NATIVE_THREAD_ID_INVALID')
+    const workspace = this.threadWorkspace(thread)
+    const roots = new Set([workspace])
+    for (const candidate of relatedWorkspaces) {
+      if (!nonEmptyText(candidate, 4_096) || /[\u0000\r\n]/.test(candidate) || !path.isAbsolute(candidate)) {
+        throw new Error('CODEX_NATIVE_THREAD_WORKSPACE_INVALID')
+      }
+      roots.add(path.normalize(candidate))
+    }
+    if (
+      this.workspaceMutationRoots.has(thread.id)
+      || [...this.workspaceMutationRoots.values()].some(existing => [...roots].some(root => existing.has(root)))
+    ) {
+      throw new Error('CODEX_NATIVE_WORKSPACE_MUTATION_IN_PROGRESS')
+    }
+    this.assertWorkspacesHaveNoTurn(roots)
+    this.workspaceMutationRoots.set(thread.id, roots)
+  }
+
+  endThreadWorkspaceMutation(thread: Pick<NativeCodexThread, 'id'>): void {
+    if (!nonEmptyText(thread.id)) return
+    this.workspaceMutationRoots.delete(thread.id)
+  }
+
+  private assertThreadHasNoTurn(threadId: string): void {
+    const workspace = this.threadWorkspaces.get(threadId)
+    if (workspace) this.assertWorkspacesHaveNoTurn(new Set([workspace]))
+  }
+
+  private assertWorkspacesHaveNoTurn(workspaces: ReadonlySet<string>): void {
+    if (
+      [...this.activeTurnThreads.values()].some(id => {
+        const workspace = this.threadWorkspaces.get(id)
+        return workspace !== undefined && workspaces.has(workspace)
+      })
+      || [...this.pendingTurnThreads].some(([id, count]) => {
+        const workspace = this.threadWorkspaces.get(id)
+        return count > 0 && workspace !== undefined && workspaces.has(workspace)
+      })
+    ) throw new Error('CODEX_NATIVE_WORKSPACE_RELOCATION_REQUIRES_IDLE_THREAD')
+  }
+
+  private assertThreadWorkspaceAvailable(threadId: string): void {
+    const workspace = this.threadWorkspaces.get(threadId)
+    if (workspace && [...this.workspaceMutationRoots.values()].some(roots => roots.has(workspace))) {
+      throw new Error('CODEX_NATIVE_WORKSPACE_MUTATION_IN_PROGRESS')
+    }
+  }
+
+  private markPendingTurnStart(threadId: string): void {
+    this.pendingTurnStarts += 1
+    this.pendingTurnThreads.set(threadId, (this.pendingTurnThreads.get(threadId) ?? 0) + 1)
+  }
+
+  private unmarkPendingTurnStart(threadId: string): void {
+    this.pendingTurnStarts = Math.max(0, this.pendingTurnStarts - 1)
+    const remaining = (this.pendingTurnThreads.get(threadId) ?? 1) - 1
+    if (remaining <= 0) this.pendingTurnThreads.delete(threadId)
+    else this.pendingTurnThreads.set(threadId, remaining)
+  }
+
+  /**
+   * Move an idle Thread between a local checkout and a desktop-managed
+   * worktree. The next native Turn carries the new cwd to Core; no history,
+   * context, approval or Agent state is copied by Electron.
+   */
+  async relocateThreadWorkspace(thread: Pick<NativeCodexThread, 'id'>, cwd: string): Promise<string> {
+    if (!nonEmptyText(thread.id)) throw new Error('CODEX_NATIVE_THREAD_ID_INVALID')
+    this.assertThreadHasNoTurn(thread.id)
+    const workspace = await this.workspace(cwd)
+    const reservation = this.workspaceMutationRoots.get(thread.id)
+    if (reservation) {
+      if ([...this.workspaceMutationRoots].some(([id, roots]) => id !== thread.id && roots.has(workspace))) {
+        throw new Error('CODEX_NATIVE_WORKSPACE_MUTATION_IN_PROGRESS')
+      }
+      this.assertWorkspacesHaveNoTurn(new Set([workspace]))
+      reservation.add(workspace)
+    }
+    this.threadWorkspaces.set(thread.id, workspace)
+    return workspace
+  }
+
   /** Read durable history from the Rust Thread Store; Electron never caches it as authority. */
   async readThread(thread: Pick<NativeCodexThread, 'id'>): Promise<CodexNativeJsonObject> {
     if (!nonEmptyText(thread.id)) throw new Error('CODEX_NATIVE_THREAD_ID_INVALID')
@@ -1687,6 +2155,36 @@ export class ElectronCodexNativeRuntime {
       includeLayers: true,
     })
     return projectNativeCodexClientSettings(response)
+  }
+
+  /**
+   * Configure the source-native memory feature and its two user settings in
+   * one Core-owned config transaction. A fresh App Server process is required
+   * because the stable `memories` feature is session-static.
+   */
+  async configureMemory(
+    thread: Pick<NativeCodexThread, 'id'>,
+    configuration: NativeCodexMemoryConfiguration,
+  ): Promise<CodexNativeJsonObject> {
+    if (
+      !nonEmptyText(thread.id)
+      || !configuration
+      || typeof configuration !== 'object'
+      || typeof configuration.enabled !== 'boolean'
+      || typeof configuration.useMemories !== 'boolean'
+      || typeof configuration.generateMemories !== 'boolean'
+    ) throw new Error('CODEX_NATIVE_MEMORY_CONFIGURATION_INVALID')
+    this.assertModelRouteMayChange()
+    const response = await this.requireClient().request<CodexNativeJsonObject>('config/batchWrite', {
+      edits: [
+        { keyPath: 'features.memories', value: configuration.enabled, mergeStrategy: 'replace' },
+        { keyPath: 'memories.use_memories', value: configuration.useMemories, mergeStrategy: 'replace' },
+        { keyPath: 'memories.generate_memories', value: configuration.generateMemories, mergeStrategy: 'replace' },
+      ],
+      reloadUserConfig: true,
+    })
+    await this.invalidateModelRoute()
+    return response
   }
 
   /** Enable or disable the Rust Core's own memory behavior for one Thread. */
@@ -1826,6 +2324,99 @@ export class ElectronCodexNativeRuntime {
     await this.requireClient().request('thread/backgroundTerminals/clean', { threadId: thread.id })
   }
 
+  /**
+   * Start the client terminal through App Server's own sandboxed PTY. Main
+   * chooses the shell, process id and Thread workspace; Renderer cannot turn
+   * this into an unsandboxed process-spawn API.
+   */
+  async startIntegratedTerminal(
+    thread: Pick<NativeCodexThread, 'id'>,
+    input: NativeCodexIntegratedTerminalInput,
+  ): Promise<NativeCodexCommandExecResponse> {
+    if (!nonEmptyText(thread.id)) throw new Error('CODEX_NATIVE_THREAD_ID_INVALID')
+    this.assertThreadWorkspaceAvailable(thread.id)
+    const cwd = this.threadWorkspaces.get(thread.id)
+    if (!cwd) throw new Error('CODEX_NATIVE_THREAD_WORKSPACE_UNAVAILABLE')
+    const processId = nativeOperationId(input.processId, 'CODEX_NATIVE_TERMINAL_ID_INVALID')
+    const response = await this.requireClient().request<CodexNativeJsonObject>('command/exec', {
+      command: nativeTerminalCommand(input.command),
+      processId,
+      tty: true,
+      streamStdin: true,
+      streamStdoutStderr: true,
+      outputBytesCap: 16 * 1024 * 1024,
+      disableTimeout: true,
+      cwd,
+      size: nativeTerminalSize(input.size),
+    })
+    return projectCommandExecResponse(response)
+  }
+
+  async writeIntegratedTerminal(processId: string, text: string, closeStdin = false): Promise<void> {
+    if (typeof text !== 'string' || Buffer.byteLength(text) > 64 * 1024 || text.includes('\u0000')) {
+      throw new Error('CODEX_NATIVE_TERMINAL_INPUT_INVALID')
+    }
+    if (!text && !closeStdin) throw new Error('CODEX_NATIVE_TERMINAL_INPUT_INVALID')
+    await this.requireClient().request('command/exec/write', {
+      processId: nativeOperationId(processId, 'CODEX_NATIVE_TERMINAL_ID_INVALID'),
+      ...(text ? { deltaBase64: Buffer.from(text).toString('base64') } : {}),
+      closeStdin,
+    })
+  }
+
+  async resizeIntegratedTerminal(processId: string, size: NativeCodexTerminalSize): Promise<void> {
+    await this.requireClient().request('command/exec/resize', {
+      processId: nativeOperationId(processId, 'CODEX_NATIVE_TERMINAL_ID_INVALID'),
+      size: nativeTerminalSize(size),
+    })
+  }
+
+  async terminateIntegratedTerminal(processId: string): Promise<void> {
+    await this.requireClient().request('command/exec/terminate', {
+      processId: nativeOperationId(processId, 'CODEX_NATIVE_TERMINAL_ID_INVALID'),
+    })
+  }
+
+  /** One-off source-native fuzzy search restricted to the Thread workspace. */
+  async searchWorkspaceFiles(
+    thread: Pick<NativeCodexThread, 'id'>,
+    query: string,
+  ): Promise<{ files: NativeCodexFuzzyFileSearchResult[] }> {
+    if (!nonEmptyText(thread.id)) throw new Error('CODEX_NATIVE_THREAD_ID_INVALID')
+    const root = this.threadWorkspaces.get(thread.id)
+    if (!root) throw new Error('CODEX_NATIVE_THREAD_WORKSPACE_UNAVAILABLE')
+    return projectFuzzyFileSearchResponse(await this.requireClient().request<CodexNativeJsonObject>('fuzzyFileSearch', {
+      query: nativeFuzzyQuery(query),
+      roots: [root],
+    }))
+  }
+
+  async startWorkspaceFileSearchSession(
+    thread: Pick<NativeCodexThread, 'id'>,
+    sessionId: string,
+  ): Promise<void> {
+    if (!nonEmptyText(thread.id)) throw new Error('CODEX_NATIVE_THREAD_ID_INVALID')
+    const root = this.threadWorkspaces.get(thread.id)
+    if (!root) throw new Error('CODEX_NATIVE_THREAD_WORKSPACE_UNAVAILABLE')
+    await this.requireClient().request('fuzzyFileSearch/sessionStart', {
+      sessionId: nativeOperationId(sessionId, 'CODEX_NATIVE_FUZZY_SESSION_ID_INVALID'),
+      roots: [root],
+    })
+  }
+
+  async updateWorkspaceFileSearchSession(sessionId: string, query: string): Promise<void> {
+    await this.requireClient().request('fuzzyFileSearch/sessionUpdate', {
+      sessionId: nativeOperationId(sessionId, 'CODEX_NATIVE_FUZZY_SESSION_ID_INVALID'),
+      query: nativeFuzzyQuery(query),
+    })
+  }
+
+  async stopWorkspaceFileSearchSession(sessionId: string): Promise<void> {
+    await this.requireClient().request('fuzzyFileSearch/sessionStop', {
+      sessionId: nativeOperationId(sessionId, 'CODEX_NATIVE_FUZZY_SESSION_ID_INVALID'),
+    })
+  }
+
   /** Ask Rust Core to compact a Thread's context; Core owns the resulting history. */
   async compactThread(thread: Pick<NativeCodexThread, 'id'>): Promise<void> {
     if (!nonEmptyText(thread.id)) throw new Error('CODEX_NATIVE_THREAD_ID_INVALID')
@@ -1872,10 +2463,11 @@ export class ElectronCodexNativeRuntime {
       ...permissions,
       ...(input.lastTurnId ? { lastTurnId: input.lastTurnId } : {}),
     })
-    const id = threadId(response)
+    const thread = projectNativeCodexThreadResponse(response)
+    const id = thread.id
     this.threadWorkspaces.set(id, cwd)
     this.loadedThreads.add(id)
-    return { id, permissionMode: permissionModeFromThreadResponse(response) }
+    return thread
   }
 
   /**
@@ -1999,6 +2591,14 @@ export class ElectronCodexNativeRuntime {
     })
   }
 
+  /** Read import outcomes from the source-owned state DB. */
+  async readExternalAgentImportHistories(
+    thread: Pick<NativeCodexThread, 'id'>,
+  ): Promise<CodexNativeJsonObject> {
+    if (!nonEmptyText(thread.id)) throw new Error('CODEX_NATIVE_THREAD_ID_INVALID')
+    return await this.requireClient().request<CodexNativeJsonObject>('externalAgentConfig/import/readHistories', {})
+  }
+
   /**
    * Sets Codex's own extra Skill roots. The Rust configuration remains the
    * only registry; Electron merely canonicalizes directories before forwarding.
@@ -2027,6 +2627,41 @@ export class ElectronCodexNativeRuntime {
     if (!nonEmptyText(thread.id)) throw new Error('CODEX_NATIVE_THREAD_ID_INVALID')
     const workspace = await this.workspace(cwd)
     return await this.requireClient().request<CodexNativeJsonObject>('hooks/list', { cwds: [workspace] })
+  }
+
+  /**
+   * Trust only the exact source-returned Hook revision after privileged Main
+   * consent. This intentionally exposes no general `config/batchWrite` API.
+   */
+  async trustHook(
+    thread: Pick<NativeCodexThread, 'id'>,
+    input: NativeCodexHookTrustInput,
+  ): Promise<CodexNativeJsonObject> {
+    if (!nonEmptyText(thread.id)) throw new Error('CODEX_NATIVE_THREAD_ID_INVALID')
+    const hookKey = nativeHookTrustText(input?.hookKey, 4_096, 'CODEX_NATIVE_HOOK_KEY_INVALID')
+    const currentHash = nativeHookTrustText(input?.currentHash, 1_024, 'CODEX_NATIVE_HOOK_HASH_INVALID')
+    const workspace = await this.workspace(input?.cwd)
+    const client = this.requireClient()
+    const listed = await client.request<CodexNativeJsonObject>('hooks/list', { cwds: [workspace] })
+    const hook = listedNativeHook(listed, hookKey, currentHash)
+    if (hook.trustStatus === 'managed') throw new Error('CODEX_NATIVE_HOOK_TRUST_MANAGED')
+    if (hook.trustStatus === 'trusted') return listed
+    if (hook.trustStatus !== 'untrusted' && hook.trustStatus !== 'modified') {
+      throw new Error('CODEX_NATIVE_HOOK_TRUST_STATUS_INVALID')
+    }
+    await client.request<CodexNativeJsonObject>('config/batchWrite', {
+      edits: [{
+        keyPath: 'hooks.state',
+        value: { [hookKey]: { trusted_hash: currentHash } },
+        mergeStrategy: 'upsert',
+      }],
+      reloadUserConfig: true,
+    })
+    const verified = await client.request<CodexNativeJsonObject>('hooks/list', { cwds: [workspace] })
+    if (listedNativeHook(verified, hookKey, currentHash).trustStatus !== 'trusted') {
+      throw new Error('CODEX_NATIVE_HOOK_TRUST_VERIFICATION_FAILED')
+    }
+    return verified
   }
 
   /**
@@ -2135,21 +2770,26 @@ export class ElectronCodexNativeRuntime {
     if (!nonEmptyText(thread.id)) throw new Error('CODEX_NATIVE_THREAD_ID_INVALID')
     const target = nativeReviewTarget(input.target)
     const delivery = nativeReviewDelivery(input.delivery)
-    const response = await this.requireClient().request<CodexNativeJsonObject>('review/start', {
-      threadId: thread.id,
-      target,
-      ...(delivery === undefined ? {} : { delivery }),
-    })
-    const id = turnId(response)
-    const reviewThreadId = response.reviewThreadId
-    if (!nonEmptyText(reviewThreadId)) throw new Error('CODEX_NATIVE_REVIEW_RESPONSE_INVALID')
-    const workspace = this.threadWorkspaces.get(thread.id)
-    if (!workspace) throw new Error('CODEX_NATIVE_THREAD_WORKSPACE_UNAVAILABLE')
-    this.threadWorkspaces.set(reviewThreadId, workspace)
-    this.loadedThreads.add(reviewThreadId)
-    this.activeTurns.add(id)
-    this.activeTurnThreads.set(id, reviewThreadId)
-    return { turn: { id }, reviewThreadId }
+    this.assertThreadWorkspaceAvailable(thread.id)
+    const workspace = this.threadWorkspace(thread)
+    this.markPendingTurnStart(thread.id)
+    try {
+      const response = await this.requireClient().request<CodexNativeJsonObject>('review/start', {
+        threadId: thread.id,
+        target,
+        ...(delivery === undefined ? {} : { delivery }),
+      })
+      const id = turnId(response)
+      const reviewThreadId = response.reviewThreadId
+      if (!nonEmptyText(reviewThreadId)) throw new Error('CODEX_NATIVE_REVIEW_RESPONSE_INVALID')
+      this.threadWorkspaces.set(reviewThreadId, workspace)
+      this.loadedThreads.add(reviewThreadId)
+      this.activeTurns.add(id)
+      this.activeTurnThreads.set(id, reviewThreadId)
+      return { turn: { id }, reviewThreadId }
+    } finally {
+      this.unmarkPendingTurnStart(thread.id)
+    }
   }
 
   async startTurn(
@@ -2157,6 +2797,7 @@ export class ElectronCodexNativeRuntime {
     input: readonly NativeCodexTurnInput[],
     clientUserMessageId?: string,
     collaborationMode?: NativeCodexCollaborationMode,
+    additionalContext?: NativeCodexAdditionalContext,
   ): Promise<NativeCodexTurn> {
     this.assertWindowsSandboxSetupNotInProgress()
     if (!nonEmptyText(thread.id) || input.length === 0 || input.length > 64 || !input.every(validateTurnInput)) {
@@ -2166,14 +2807,20 @@ export class ElectronCodexNativeRuntime {
       throw new Error('CODEX_NATIVE_CLIENT_MESSAGE_ID_INVALID')
     }
     const nativeMode = nativeCollaborationMode(collaborationMode)
+    const sourceContext = nativeAdditionalContext(additionalContext)
     const client = this.requireClient()
-    const nativeInput = await Promise.all(input.map(item => this.normalizeTurnInput(thread.id, item)))
-    this.pendingTurnStarts += 1
+    this.assertThreadWorkspaceAvailable(thread.id)
+    const cwd = this.threadWorkspace(thread)
+    this.markPendingTurnStart(thread.id)
     try {
+      const nativeInput = await Promise.all(input.map(item => this.normalizeTurnInput(thread.id, item)))
       const response = await client.request<CodexNativeJsonObject>('turn/start', {
         threadId: thread.id,
+        cwd,
+        runtimeWorkspaceRoots: [cwd],
         ...(clientUserMessageId ? { clientUserMessageId } : {}),
         ...(nativeMode === undefined ? {} : { collaborationMode: nativeCollaborationSettings(nativeMode, this.provider!.model) }),
+        ...(sourceContext === undefined ? {} : { additionalContext: sourceContext }),
         input: nativeInput,
       })
       const id = turnId(response)
@@ -2181,12 +2828,14 @@ export class ElectronCodexNativeRuntime {
       this.activeTurnThreads.set(id, thread.id)
       return { id }
     } finally {
-      this.pendingTurnStarts = Math.max(0, this.pendingTurnStarts - 1)
+      this.unmarkPendingTurnStart(thread.id)
     }
   }
 
   private async normalizeTurnInput(threadIdValue: string, input: NativeCodexTurnInput): Promise<CodexNativeJsonObject> {
-    if (input.type === 'text') return { type: 'text', text: input.text, textElements: [] }
+    if (input.type === 'text') {
+      return { type: 'text', text: input.text, textElements: nativeTextElements(input.text, input.textElements) }
+    }
     if (input.type === 'image') {
       return { type: 'image', url: input.url, ...(input.detail === undefined ? {} : { detail: input.detail }) }
     }
@@ -2250,18 +2899,26 @@ export class ElectronCodexNativeRuntime {
     return resolved
   }
 
-  async steerTurn(thread: Pick<NativeCodexThread, 'id'>, turn: NativeCodexTurn, input: NativeCodexTurnInput[], clientUserMessageId?: string): Promise<void> {
+  async steerTurn(
+    thread: Pick<NativeCodexThread, 'id'>,
+    turn: NativeCodexTurn,
+    input: NativeCodexTurnInput[],
+    clientUserMessageId?: string,
+    additionalContext?: NativeCodexAdditionalContext,
+  ): Promise<void> {
     if (!nonEmptyText(thread.id) || !nonEmptyText(turn.id) || input.length === 0 || input.length > 64 || !input.every(validateTurnInput)) {
       throw new Error('CODEX_NATIVE_STEER_INPUT_INVALID')
     }
     if (clientUserMessageId !== undefined && !nonEmptyText(clientUserMessageId, 512)) {
       throw new Error('CODEX_NATIVE_CLIENT_MESSAGE_ID_INVALID')
     }
+    const sourceContext = nativeAdditionalContext(additionalContext)
     const nativeInput = await Promise.all(input.map(item => this.normalizeTurnInput(thread.id, item)))
     await this.requireClient().request('turn/steer', {
       threadId: thread.id,
       expectedTurnId: turn.id,
       ...(clientUserMessageId ? { clientUserMessageId } : {}),
+      ...(sourceContext === undefined ? {} : { additionalContext: sourceContext }),
       input: nativeInput,
     })
   }
@@ -2284,6 +2941,42 @@ export class ElectronCodexNativeRuntime {
   markTurnCompleted(turnId: string): void {
     this.activeTurns.delete(turnId)
     this.activeTurnThreads.delete(turnId)
+  }
+
+  private observeSourceNotification(notification: CodexNativeNotification): void {
+    const params = jsonObject(notification.params)
+    if (notification.method === 'thread/started') {
+      const thread = jsonObject(params?.thread)
+      const id = thread?.id
+      if (!thread || !nonEmptyText(id, 200)) return
+      const parentThreadId = sourceThreadParentId(thread)
+      const inheritedWorkspace = parentThreadId === undefined
+        ? undefined
+        : this.threadWorkspaces.get(parentThreadId)
+      if (inheritedWorkspace) this.threadWorkspaces.set(id, inheritedWorkspace)
+      this.loadedThreads.add(id)
+      return
+    }
+    const threadIdValue = nonEmptyText(params?.threadId, 200) ? params.threadId : undefined
+    const turn = jsonObject(params?.turn)
+    const turnIdValue = nonEmptyText(turn?.id, 200)
+      ? turn.id
+      : nonEmptyText(params?.turnId, 200)
+        ? params.turnId
+        : undefined
+    if (notification.method === 'turn/started' && threadIdValue && turnIdValue) {
+      this.activeTurns.add(turnIdValue)
+      this.activeTurnThreads.set(turnIdValue, threadIdValue)
+      return
+    }
+    if (notification.method === 'turn/completed' && turnIdValue) {
+      this.markTurnCompleted(turnIdValue)
+      return
+    }
+    if ((notification.method === 'thread/archived' || notification.method === 'thread/deleted') && threadIdValue) {
+      this.threadWorkspaces.delete(threadIdValue)
+      this.loadedThreads.delete(threadIdValue)
+    }
   }
 
   /** A provider mutation must not interrupt or split a source-native Turn. */
@@ -2337,6 +3030,8 @@ export class ElectronCodexNativeRuntime {
     this.activeTurns.clear()
     this.activeTurnThreads.clear()
     this.pendingTurnStarts = 0
+    this.pendingTurnThreads.clear()
+    this.workspaceMutationRoots.clear()
     this.loadedThreads.clear()
     this.threadWorkspaces.clear()
     this.startingClients.clear()
@@ -2363,6 +3058,8 @@ export class ElectronCodexNativeRuntime {
     this.activeTurns.clear()
     this.activeTurnThreads.clear()
     this.pendingTurnStarts = 0
+    this.pendingTurnThreads.clear()
+    this.workspaceMutationRoots.clear()
     this.windowsSandboxSetupInProgress = false
     this.loadedThreads.clear()
     this.startingClients.clear()
@@ -2422,8 +3119,7 @@ export class ElectronCodexNativeRuntime {
         configOverrides: provider.configOverrides,
         environment: provider.environment,
         onNotification: async notification => {
-          const completedTurn = jsonObject(jsonObject(notification.params)?.turn)?.id
-          if (notification.method === 'turn/completed' && typeof completedTurn === 'string') this.markTurnCompleted(completedTurn)
+          this.observeSourceNotification(notification)
           try {
             await this.options.onNotification?.(notification)
           } catch {
@@ -2483,10 +3179,20 @@ export class ElectronCodexNativeRuntime {
       modelProvider: NATIVE_PROVIDER_ID,
       model: this.provider!.model,
     })
-    const id = threadId(response)
+    const thread = projectNativeCodexThreadResponse(response)
+    const id = thread.id
     if (id !== threadIdValue) throw new Error('CODEX_NATIVE_THREAD_RESPONSE_INVALID')
+    for (const [activeTurnId, activeThreadId] of this.activeTurnThreads) {
+      if (activeThreadId !== id) continue
+      this.activeTurnThreads.delete(activeTurnId)
+      this.activeTurns.delete(activeTurnId)
+    }
+    for (const activeTurnId of thread.activeTurnIds) {
+      this.activeTurns.add(activeTurnId)
+      this.activeTurnThreads.set(activeTurnId, id)
+    }
     this.loadedThreads.add(id)
-    return { id, permissionMode: permissionModeFromThreadResponse(response) }
+    return thread
   }
 
   private async workspace(value: string): Promise<string> {

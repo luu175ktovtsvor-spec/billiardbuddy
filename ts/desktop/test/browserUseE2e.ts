@@ -97,7 +97,47 @@ async function startFixture(): Promise<{ url: string, close: () => Promise<void>
       return
     }
     response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
-    response.end('<!doctype html><title>Browser E2E</title><input aria-label="normal input"><input type="password" aria-label="password input"><script>console.warn("API_KEY=private-value https://example.test/reset/private-path-token?token=secret"); fetch("/reset/private-path-token?token=secret")</script>')
+    response.end(`<!doctype html>
+      <title>Browser E2E</title>
+      <input aria-label="normal input" value="must-not-leak">
+      <input type="file" aria-label="file upload">
+      <input type="password" aria-label="field-type">
+      <input autocomplete="one-time-code" aria-label="field-autocomplete">
+      <input name="access_token" aria-label="field-name">
+      <input id="api-key" aria-label="field-id">
+      <input aria-label="authentication token">
+      <input placeholder="credit card number">
+      <input title="verification code">
+      <input aria-label="move trigger">
+      <input aria-label="fingerprint trigger">
+      <input aria-label="fingerprint target">
+      <div id="first-slot"><button aria-label="move target">move target</button></div>
+      <div id="second-slot"></div>
+      <button aria-label="identity original">identity original</button>
+      <button aria-label="identity evil">identity evil</button>
+      <script>
+        console.warn("API_KEY=private-value https://example.test/reset/private-path-token?token=secret");
+        fetch("/reset/private-path-token?token=secret");
+        const identityOriginal = document.querySelector('[aria-label="identity original"]');
+        const identityEvil = document.querySelector('[aria-label="identity evil"]');
+        identityOriginal.addEventListener('click', () => identityOriginal.setAttribute('aria-label', 'identity original clicked'));
+        identityEvil.addEventListener('click', () => identityEvil.setAttribute('aria-label', 'identity evil clicked'));
+        const spoof = new MutationObserver(records => {
+          const mutation = records.find(record => record.target === identityOriginal && (record.attributeName === 'data-billiardbuddy-element' || record.attributeName === 'data-billiardbuddy-element-id'));
+          if (!mutation) return;
+          spoof.disconnect();
+          const value = mutation.target.getAttribute(mutation.attributeName);
+          mutation.target.removeAttribute(mutation.attributeName);
+          identityEvil.setAttribute(mutation.attributeName, value);
+        });
+        spoof.observe(document.documentElement, { subtree: true, attributes: true, attributeFilter: ['data-billiardbuddy-element', 'data-billiardbuddy-element-id'] });
+        document.querySelector('[aria-label="move trigger"]').addEventListener('input', () => {
+          document.querySelector('#second-slot').append(document.querySelector('[aria-label="move target"]'));
+        });
+        document.querySelector('[aria-label="fingerprint trigger"]').addEventListener('input', () => {
+          document.querySelector('[aria-label="fingerprint target"]').setAttribute('name', 'api_key');
+        });
+      </script>`)
   })
   server.listen(0, '127.0.0.1')
   await once(server, 'listening')
@@ -134,17 +174,29 @@ async function main() {
 
     const initialized = record((await client.request('initialize')).result, 'Browser MCP did not initialize')
     assert.equal(record(initialized.serverInfo, 'Browser MCP omitted its server info').name, 'billiardbuddy-browser-use')
+    const listed = record((await client.request('tools/list')).result, 'Browser MCP did not list tools')
+    const declaredTools = listed.tools
+    assert.ok(Array.isArray(declaredTools), 'Browser MCP tools are invalid')
+    for (const name of ['open_tab', 'close_tab', 'navigate', 'click_element', 'type_text', 'press_key']) {
+      const declared = declaredTools.find(tool => record(tool, 'Browser MCP tool is invalid').name === name)
+      const annotations = record(record(declared, `Browser MCP omitted ${name}`).annotations, `Browser MCP ${name} omitted approval annotations`)
+      assert.equal(annotations.readOnlyHint, false, `Browser MCP ${name} cannot be read-only`)
+      assert.equal(annotations.destructiveHint, true, `Browser MCP ${name} must require Codex Core approval`)
+    }
     assert.match(toolText(await tool(client, 'status')), /"ready":true/)
 
     const opened = JSON.parse(toolText(await tool(client, 'open_tab', { url: fixture.url }))) as Json
     const tabId = opened.id
     assert.equal(typeof tabId, 'number', 'Browser MCP did not return a tab ID')
+    assert.match(toolText(await tool(client, 'wait_for_page', { tabId })), /"ready":true/)
     const page = JSON.parse(toolText(await tool(client, 'inspect_page', { tabId }))) as Json
     const elements = page.elements
     assert.ok(Array.isArray(elements), 'Browser MCP did not return page elements')
     const normal = elements.map(element => record(element, 'Browser element is invalid')).find(element => element.label === 'normal input')
-    const password = elements.map(element => record(element, 'Browser element is invalid')).find(element => element.label === 'password input')
+    const fileUpload = elements.map(element => record(element, 'Browser element is invalid')).find(element => element.label === 'file upload')
+    const password = elements.map(element => record(element, 'Browser element is invalid')).find(element => element.label === 'field-type')
     assert.equal(typeof normal?.id, 'string', 'Browser MCP did not identify the normal field')
+    assert.equal(fileUpload, undefined, 'Browser MCP exposed a file chooser control')
     assert.equal(typeof password?.id, 'string', 'Browser MCP did not identify the password field')
     assert.match(toolText(await tool(client, 'type_text', { tabId, elementId: normal?.id, text: 'safe' })), /"typed":4/)
 
@@ -153,6 +205,45 @@ async function main() {
     const deniedContent = denied.content
     assert.ok(Array.isArray(deniedContent) && deniedContent.length > 0, 'Browser MCP omitted denial detail')
     assert.match(String(record(deniedContent[0], 'Browser denial is invalid').text), /BILLIARDBUDDY_BROWSER_SECURE_FIELD_DENIED/)
+
+    const securityCases = [
+      'field-type',
+      'field-autocomplete',
+      'field-name',
+      'field-id',
+      'authentication token',
+      'credit card number',
+      'verification code',
+    ]
+    for (const label of securityCases) {
+      const field = elements.map(element => record(element, 'Browser element is invalid')).find(element => element.label === label)
+      assert.equal(field?.secure, true, `Browser did not classify ${label} as sensitive`)
+      const protectedResult = await tool(client, 'type_text', { tabId, elementId: field?.id, text: 'must-not-type' })
+      assert.equal(protectedResult.isError, true, `Browser typed into sensitive field ${label}`)
+      assert.match(String(record((protectedResult.content as unknown[])[0], 'Browser sensitive-field denial is invalid').text), /BILLIARDBUDDY_BROWSER_SECURE_FIELD_DENIED/)
+    }
+
+    const identity = elements.map(element => record(element, 'Browser element is invalid')).find(element => element.label === 'identity original')
+    assert.equal(typeof identity?.id, 'string', 'Browser did not identify the spoof-resistance target')
+    assert.match(toolText(await tool(client, 'click_element', { tabId, elementId: identity?.id })), /"clicked"/)
+    const afterIdentity = JSON.parse(toolText(await tool(client, 'inspect_page', { tabId }))) as Json
+    const afterIdentityElements = afterIdentity.elements as unknown[]
+    assert.ok(afterIdentityElements.map(element => record(element, 'Browser element is invalid')).some(element => element.label === 'identity original clicked'), 'Browser clicked a page-forged element ID instead of the inspected node')
+    assert.ok(afterIdentityElements.map(element => record(element, 'Browser element is invalid')).some(element => element.label === 'identity evil'), 'Browser clicked the page-forged replacement node')
+
+    const moveTarget = afterIdentityElements.map(element => record(element, 'Browser element is invalid')).find(element => element.label === 'move target')
+    const moveTrigger = afterIdentityElements.map(element => record(element, 'Browser element is invalid')).find(element => element.label === 'move trigger')
+    assert.match(toolText(await tool(client, 'type_text', { tabId, elementId: moveTrigger?.id, text: 'move' })), /"typed":4/)
+    const movedResult = await tool(client, 'click_element', { tabId, elementId: moveTarget?.id })
+    assert.equal(movedResult.isError, true, 'Browser clicked an inspected node after its DOM ancestry changed')
+    assert.match(String(record((movedResult.content as unknown[])[0], 'Browser moved-node denial is invalid').text), /BILLIARDBUDDY_BROWSER_ELEMENT_STALE/)
+
+    const fingerprintTarget = afterIdentityElements.map(element => record(element, 'Browser element is invalid')).find(element => element.label === 'fingerprint target')
+    const fingerprintTrigger = afterIdentityElements.map(element => record(element, 'Browser element is invalid')).find(element => element.label === 'fingerprint trigger')
+    assert.match(toolText(await tool(client, 'type_text', { tabId, elementId: fingerprintTrigger?.id, text: 'change' })), /"typed":6/)
+    const fingerprintResult = await tool(client, 'type_text', { tabId, elementId: fingerprintTarget?.id, text: 'must-not-type' })
+    assert.equal(fingerprintResult.isError, true, 'Browser typed after the inspected element fingerprint changed')
+    assert.match(String(record((fingerprintResult.content as unknown[])[0], 'Browser fingerprint denial is invalid').text), /BILLIARDBUDDY_BROWSER_ELEMENT_STALE/)
 
     const screenshot = await tool(client, 'capture_page', { tabId })
     assert.equal(screenshot.isError, false, `Browser screenshot failed: ${JSON.stringify(screenshot)}`)
@@ -169,6 +260,22 @@ async function main() {
     assert.match(serializedDeveloper, /\/reset\/\[redacted\]/, 'Browser developer snapshot omitted redacted network evidence')
     assert.doesNotMatch(serializedDeveloper, /private-value|private-path-token|token=secret/, 'Browser developer snapshot exposed console or URL secrets')
     assert.doesNotMatch(serializedDeveloper, /requestHeaders|responseHeaders|cookies|localStorage/, 'Browser developer snapshot exposed a forbidden browser surface')
+
+    const cdpDom = JSON.parse(toolText(await tool(client, 'cdp_send', { tabId, method: 'DOM.getDocument' }))) as Json
+    assert.equal(cdpDom.method, 'DOM.getDocument', 'Browser did not return the allowlisted CDP method')
+    const serializedDom = JSON.stringify(cdpDom)
+    assert.doesNotMatch(serializedDom, /must-not-leak|private-value|token=secret/, 'Browser CDP DOM projection exposed a form value or secret')
+    assert.match(serializedDom, /projection/, 'Browser CDP DOM projection omitted its boundary')
+    const cdpPerformance = JSON.parse(toolText(await tool(client, 'cdp_send', { tabId, method: 'Performance.getMetrics' }))) as Json
+    assert.equal(cdpPerformance.method, 'Performance.getMetrics', 'Browser did not expose the allowlisted performance projection')
+    const deniedCdp = await tool(client, 'cdp_send', { tabId, method: 'Network.getResponseBody' })
+    assert.equal(deniedCdp.isError, true, 'Browser MCP accepted a forbidden CDP method')
+
+    const developerEvents = JSON.parse(toolText(await tool(client, 'cdp_read_events', { tabId, afterSequence: 0, limit: 100 }))) as Json
+    const serializedEvents = JSON.stringify(developerEvents)
+    assert.ok(Array.isArray(developerEvents.events) && developerEvents.events.length > 0, 'Browser did not retain projected developer events')
+    assert.equal(typeof developerEvents.cursor, 'number', 'Browser developer event cursor is missing')
+    assert.doesNotMatch(serializedEvents, /private-value|private-path-token|token=secret|requestHeaders|responseHeaders|cookies|localStorage/, 'Browser developer events exposed a forbidden surface')
 
     await fs.writeFile(
       path.join(userData, 'agent-runtime', 'browser-use', 'config.json'),

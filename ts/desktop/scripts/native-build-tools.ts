@@ -1,7 +1,71 @@
 import { spawnSync } from 'node:child_process'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
+
+export type WindowsNativeTarget = 'x86_64-pc-windows-msvc' | 'aarch64-pc-windows-msvc'
+
+const WINDOWS_PE_MACHINE = {
+  x64: 0x8664,
+  arm64: 0xaa64,
+} as const
+
+export function windowsTargetForArch(arch: string): WindowsNativeTarget {
+  if (arch === 'x64') return 'x86_64-pc-windows-msvc'
+  if (arch === 'arm64') return 'aarch64-pc-windows-msvc'
+  throw new Error(`不支持的 Windows 原生架构: ${arch}`)
+}
+
+export function windowsPeMachineForTarget(target: WindowsNativeTarget): number {
+  return target === 'x86_64-pc-windows-msvc' ? WINDOWS_PE_MACHINE.x64 : WINDOWS_PE_MACHINE.arm64
+}
+
+export function windowsPeMachineName(machine: number): string {
+  if (machine === WINDOWS_PE_MACHINE.x64) return 'x64'
+  if (machine === WINDOWS_PE_MACHINE.arm64) return 'ARM64'
+  return `未知 PE machine 0x${machine.toString(16)}`
+}
+
+/** Read the COFF machine from a PE image without executing untrusted package files. */
+export function readWindowsPeMachine(bytes: Uint8Array, label = 'PE 文件'): number {
+  const source = Buffer.from(bytes)
+  if (source.length < 0x40 || source.readUInt16LE(0) !== 0x5a4d) {
+    throw new Error(`${label} 不是有效的 Windows PE 文件`)
+  }
+  const headerOffset = source.readUInt32LE(0x3c)
+  if (headerOffset > source.length - 6 || source.readUInt32LE(headerOffset) !== 0x00004550) {
+    throw new Error(`${label} 的 PE 头无效`)
+  }
+  return source.readUInt16LE(headerOffset + 4)
+}
+
+export function verifyWindowsPeMachine(path: string, target: WindowsNativeTarget): void {
+  const machine = readWindowsPeMachine(readFileSync(path), path)
+  const expected = windowsPeMachineForTarget(target)
+  if (machine !== expected) {
+    throw new Error(`${path} 的 PE 架构为 ${windowsPeMachineName(machine)}，预期 ${windowsPeMachineName(expected)}`)
+  }
+}
+
+/**
+ * All native runtime resources must match the Electron package target.
+ * This catches a cross-build that stages host x64 helpers into an ARM64 app
+ * before an installer is published.
+ */
+export function verifyWindowsExecutableTree(root: string, target: WindowsNativeTarget): void {
+  const executables: string[] = []
+  const visit = (directory: string): void => {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const path = join(directory, entry.name)
+      if (entry.isDirectory()) visit(path)
+      else if (entry.isFile() && /\.(?:exe|dll|node)$/i.test(entry.name)) executables.push(path)
+    }
+  }
+  if (!existsSync(root)) throw new Error(`安装包缺少 Windows 原生资源目录: ${root}`)
+  visit(root)
+  if (executables.length === 0) throw new Error(`安装包没有可审计的 Windows 原生资源: ${root}`)
+  for (const executable of executables) verifyWindowsPeMachine(executable, target)
+}
 
 export function resolveCargoCommand(errorMessage: string): string {
   const configured = process.env.CARGO?.trim()
@@ -28,8 +92,12 @@ function commandFailureDetail(result: ReturnType<typeof spawnSync>): string {
  * Windows quote escaping turning valid compiler switches into file names.
  */
 export function runMsvcCompiler(vcvarsPath: string, compilerArguments: string[], errorMessage: string): void {
+  const vcvarsFile = basename(vcvarsPath)
+  if (!/^vcvars[a-z0-9_]+\.bat$/i.test(vcvarsFile) || !existsSync(vcvarsPath)) {
+    throw new Error(`${errorMessage}：MSVC 初始化脚本无效`)
+  }
   const initialized = spawnSync(process.env.ComSpec || 'cmd.exe', [
-    '/d', '/c', 'call vcvars64.bat >nul && set',
+    '/d', '/s', '/c', `call "${vcvarsFile}" >nul && set`,
   ], {
     cwd: dirname(vcvarsPath),
     encoding: 'utf8',

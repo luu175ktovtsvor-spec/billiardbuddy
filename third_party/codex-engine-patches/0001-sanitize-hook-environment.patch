@@ -1,17 +1,18 @@
 diff --git a/codex-rs/hooks/src/engine/command_runner.rs b/codex-rs/hooks/src/engine/command_runner.rs
 --- a/codex-rs/hooks/src/engine/command_runner.rs
 +++ b/codex-rs/hooks/src/engine/command_runner.rs
-@@ -1,3 +1,4 @@
-+use std::ffi::OsStr;
- use std::io::ErrorKind;
- use std::path::Path;
- use std::process::Stdio;
+@@ -18,4 +18,5 @@ use super::dispatcher::hook_source_label;
+ use super::dispatcher::hook_source_label;
+ use super::dispatcher::scope_for_event;
++use codex_protocol::shell_environment::is_default_excluded_environment_variable_name;
+ use codex_protocol::protocol::HookExecutionMode;
+ use codex_protocol::protocol::HookHandlerType;
 @@ -60,2 +61,4 @@ pub(crate) async fn run_command(
      let mut command = build_command(shell, handler);
 +    remove_inherited_secret_environment(&mut command);
 +    command.envs(&handler.env);
      command
-@@ -188,10 +191,27 @@ fn build_command(shell: &CommandShell, handler: &ConfiguredHandler) -> Command {
+@@ -188,10 +191,20 @@ fn build_command(shell: &CommandShell, handler: &ConfiguredHandler) -> Command {
          #[cfg(not(windows))]
          command.arg(&handler.command);
      }
@@ -25,17 +26,10 @@ diff --git a/codex-rs/hooks/src/engine/command_runner.rs b/codex-rs/hooks/src/en
 +    // Server's credential capabilities; explicitly configured hook values are
 +    // applied afterwards in run_command.
 +    for (name, _) in std::env::vars_os() {
-+        if is_secret_environment_name(&name) {
++        if is_default_excluded_environment_variable_name(&name) {
 +            command.env_remove(name);
 +        }
 +    }
-+}
-+
-+fn is_secret_environment_name(name: &OsStr) -> bool {
-+    let uppercase_name = name.to_string_lossy().to_ascii_uppercase();
-+    uppercase_name.contains("KEY")
-+        || uppercase_name.contains("SECRET")
-+        || uppercase_name.contains("TOKEN")
 +}
 +
  fn default_shell_command() -> Command {

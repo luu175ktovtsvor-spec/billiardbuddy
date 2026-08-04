@@ -15,7 +15,10 @@
     "check:electron": "cd desktop && bun run check:electron",
     "check:native": "cd desktop && bun run build:sidecars && bun run check:electron && CSC_IDENTITY_AUTO_DISCOVERY=false bun run electron:package:dir",
     "audit:source": "bun desktop/scripts/scan-missing-imports.ts",
-    "verify:codex-engine-source": "bun desktop/scripts/verify-codex-engine-source.ts && bun desktop/scripts/verify-codex-native-protocol.ts"
+  "verify:codex-engine-source": "bun desktop/scripts/verify-codex-engine-source.ts && bun desktop/scripts/verify-codex-native-protocol.ts",
+  "verify:codex-hook-environment": "bun desktop/scripts/verify-codex-hook-environment.ts",
+  "verify:codex-runtime-personal-e2e": "bun desktop/scripts/verify-codex-runtime-personal-e2e.ts",
+    "verify:codex-runtime-real-provider": "bun desktop/scripts/verify-codex-runtime-real-provider.ts"
   },
   "dependencies": {
     "ali-oss": "6.23.0",

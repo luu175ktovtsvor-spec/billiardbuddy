@@ -1,9 +1,10 @@
 //! BilliardBuddy Record & Replay stdio MCP endpoint.
 //!
-//! It records only a bounded, redacted action trace after an explicit start.
-//! Key values, clipboard content, cookies, passwords and screen video never
-//! enter the trace. The later Skill is guidance for the normal, currently
-//! approved tools; this is deliberately not a coordinate macro player.
+//! It records only a bounded, redacted semantic event stream after an explicit
+//! start. Key values, clipboard content, cookies, passwords and screen video
+//! never enter the stream. The later Skill is guidance for the normal,
+//! currently approved tools; this is deliberately not a coordinate macro
+//! player.
 
 use std::{
     env, fs,
@@ -67,18 +68,19 @@ fn handle(message: &str) -> Option<String> {
 fn tools() -> &'static str {
     r#"{"tools":[
  {"name":"recording_status","description":"Check whether a BilliardBuddy recording is active. This never begins recording.","inputSchema":{"type":"object","properties":{},"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"openWorldHint":false}},
- {"name":"start_recording","description":"After explicit user confirmation, begin one redacted desktop-action recording for a stated workflow. It expires automatically within 30 minutes.","inputSchema":{"type":"object","properties":{"purpose":{"type":"string","minLength":1,"maxLength":500},"maxDurationSeconds":{"type":"integer","minimum":30,"maximum":1800}},"required":["purpose"],"additionalProperties":false}},
- {"name":"stop_recording","description":"Stop the active recording and return its redacted action trace for drafting a reviewable Skill.","inputSchema":{"type":"object","properties":{},"additionalProperties":false}},
- {"name":"discard_recording","description":"Stop and permanently discard the active or last unsaved recording.","inputSchema":{"type":"object","properties":{},"additionalProperties":false}},
- {"name":"save_recorded_skill","description":"Save user-reviewed Skill Markdown generated from a stopped recording. It does not grant future desktop permissions.","inputSchema":{"type":"object","properties":{"name":{"type":"string","pattern":"^[a-z0-9][a-z0-9-]{0,63}$"},"markdown":{"type":"string","minLength":32,"maxLength":65536}},"required":["name","markdown"],"additionalProperties":false}}
+ {"name":"start_recording","description":"After explicit user confirmation, begin one bounded redacted semantic event stream for a stated workflow. It expires automatically within 30 minutes. A prior raw recording must be reviewed or explicitly discarded first.","inputSchema":{"type":"object","properties":{"purpose":{"type":"string","minLength":1,"maxLength":500},"maxDurationSeconds":{"type":"integer","minimum":30,"maximum":1800}},"required":["purpose"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"destructiveHint":true,"openWorldHint":false}},
+ {"name":"stop_recording","description":"Stop the active recording and return metadataPath and eventsPath for drafting a reviewable Skill. The stream is not a coordinate macro.","inputSchema":{"type":"object","properties":{},"additionalProperties":false},"annotations":{"readOnlyHint":false,"destructiveHint":true,"openWorldHint":false}},
+ {"name":"discard_recording","description":"Stop and permanently discard the active or last unsaved recording.","inputSchema":{"type":"object","properties":{},"additionalProperties":false},"annotations":{"readOnlyHint":false,"destructiveHint":true,"openWorldHint":false}},
+ {"name":"save_recorded_skill","description":"Save user-reviewed Skill Markdown generated from a stopped recording. Existing Skills are preserved unless replace=true is explicitly approved. It does not grant future desktop permissions.","inputSchema":{"type":"object","properties":{"name":{"type":"string","pattern":"^[a-z0-9][a-z0-9-]{0,63}$"},"markdown":{"type":"string","minLength":32,"maxLength":65536},"replace":{"type":"boolean","default":false}},"required":["name","markdown"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"destructiveHint":true,"openWorldHint":false}}
 ]}"#
 }
 
 fn call(id: &str, message: &str) -> String {
-    let Some(name) = string_member(message, "name") else {
+    let params = member(message, "params").unwrap_or_else(|| "{}".to_owned());
+    let Some(name) = string_member(&params, "name") else {
         return error(id, -32602, "tools/call requires a tool name");
     };
-    let arguments = member(message, "arguments").unwrap_or_else(|| "{}".to_owned());
+    let arguments = member(&params, "arguments").unwrap_or_else(|| "{}".to_owned());
     let result: Result<String, String> = match name.as_str() {
         "recording_status" => status(),
         "start_recording" => start(&arguments),
@@ -103,11 +105,26 @@ fn root() -> Result<PathBuf, String> {
 fn state_file(root: &Path) -> PathBuf {
     root.join("state.json")
 }
-fn trace_file(root: &Path) -> PathBuf {
-    root.join("trace.json")
+fn events_file(root: &Path) -> PathBuf {
+    root.join("events.jsonl")
+}
+fn session_file(root: &Path) -> PathBuf {
+    root.join("session.json")
 }
 fn stop_file(root: &Path) -> PathBuf {
     root.join("stop")
+}
+fn active_state_json(started_at: u64, duration: u64) -> String {
+    format!(r#"{{"active":true,"startedAt":{started_at},"maxDurationSeconds":{duration}}}"#)
+}
+fn recorder_service_arguments(root: &Path, duration: u64) -> [String; 5] {
+    [
+        "record".to_owned(),
+        events_file(root).to_string_lossy().into_owned(),
+        session_file(root).to_string_lossy().into_owned(),
+        stop_file(root).to_string_lossy().into_owned(),
+        duration.to_string(),
+    ]
 }
 
 fn recording_active(root: &Path) -> bool {
@@ -134,12 +151,31 @@ fn recording_active(root: &Path) -> bool {
     still_within_deadline
 }
 
+/**
+ * Do not overwrite raw semantic evidence before the native recorder has even
+ * reached its explicit system confirmation. A user must first inspect/save or
+ * explicitly discard the previous recording.
+ */
+fn prepare_recording_start(root: &Path) -> Result<(), String> {
+    ensure_directory_without_symlink(root)?;
+    if recording_active(root) {
+        return Err("BILLIARDBUDDY_RECORDING_ALREADY_ACTIVE".to_owned());
+    }
+    if events_file(root).is_file() || session_file(root).is_file() {
+        return Err("BILLIARDBUDDY_RECORDING_REVIEW_REQUIRED".to_owned());
+    }
+    let _ = fs::remove_file(stop_file(root));
+    Ok(())
+}
+
 fn status() -> Result<String, String> {
     let root = root()?;
     let active = recording_active(&root);
     Ok(format!(
-        r#"{{"active":{active},"traceAvailable":{}}}"#,
-        trace_file(&root).is_file()
+        r#"{{"active":{active},"recordingAvailable":{},"metadataPath":{},"eventsPath":{}}}"#,
+        recording_complete(&root),
+        optional_path(&session_file(&root)),
+        optional_path(&events_file(&root)),
     ))
 }
 
@@ -148,29 +184,24 @@ fn start(arguments: &str) -> Result<String, String> {
     if purpose.trim().is_empty() || purpose.len() > 500 {
         return Err("purpose must contain 1-500 characters".to_owned());
     }
+    // The purpose proves that this is a deliberate, scoped request. It is not
+    // recorder metadata and must not cross into BilliardBuddy-owned storage or
+    // the native recorder's command line.
+    drop(purpose);
     let duration = member(arguments, "maxDurationSeconds")
         .and_then(|value| value.parse::<u64>().ok())
         .unwrap_or(600)
         .clamp(30, MAX_DURATION_SECONDS);
     let root = root()?;
-    ensure_directory_without_symlink(&root)?;
-    if recording_active(&root) {
-        return Err("BILLIARDBUDDY_RECORDING_ALREADY_ACTIVE".to_owned());
-    }
-    let _ = fs::remove_file(stop_file(&root));
-    let _ = fs::remove_file(trace_file(&root));
+    prepare_recording_start(&root)?;
     let service = service_path()?;
     let started_at = unix_seconds();
-    fs::write(state_file(&root), format!(r#"{{"active":true,"purpose":"{}","startedAt":{started_at},"maxDurationSeconds":{duration}}}"#, escape(&purpose))).map_err(|error| error.to_string())?;
+    fs::write(state_file(&root), active_state_json(started_at, duration))
+        .map_err(|error| error.to_string())?;
+    let service_arguments = recorder_service_arguments(&root, duration);
     let mut command = Command::new(service);
     command
-        .args([
-            "record",
-            trace_file(&root).to_string_lossy().as_ref(),
-            stop_file(&root).to_string_lossy().as_ref(),
-            &duration.to_string(),
-            purpose.as_str(),
-        ])
+        .args(&service_arguments)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
@@ -193,7 +224,7 @@ fn start(arguments: &str) -> Result<String, String> {
         let _ = spawned.wait();
     });
     Ok(format!(
-        r#"{{"active":true,"maxDurationSeconds":{duration},"privacy":"typed text, clipboard, cookies, passwords, screen video and raw screenshots are never recorded"}}"#
+        r#"{{"active":true,"maxDurationSeconds":{duration},"privacy":"typed text, key codes, clipboard, cookies, passwords, window titles, raw coordinates, screen video and raw screenshots are never recorded"}}"#
     ))
 }
 
@@ -201,22 +232,23 @@ fn stop(discard: bool) -> Result<String, String> {
     let root = root()?;
     if !state_file(&root).is_file() {
         if discard {
-            let _ = fs::remove_file(trace_file(&root));
+            let _ = fs::remove_file(events_file(&root));
+            let _ = fs::remove_file(session_file(&root));
             return Ok("{\"discarded\":true}".to_owned());
         };
-        if trace_file(&root).is_file() {
-            return read_trace(&root);
+        if recording_complete(&root) {
+            return completed_recording(&root);
         }
         return Err("BILLIARDBUDDY_RECORDING_NOT_ACTIVE".to_owned());
     }
     fs::write(stop_file(&root), "stop\n").map_err(|error| error.to_string())?;
     for _ in 0..100 {
-        if trace_file(&root).is_file() {
+        if recording_complete(&root) {
             break;
         };
         thread::sleep(Duration::from_millis(100))
     }
-    if !trace_file(&root).is_file() {
+    if !recording_complete(&root) {
         // Keep the stop marker and active state in place. The native recorder
         // will observe the marker or its own hard deadline and clean them up;
         // removing the marker here could let a delayed recorder continue.
@@ -226,19 +258,41 @@ fn stop(discard: bool) -> Result<String, String> {
     let _ = fs::remove_file(root.join("pid"));
     let _ = fs::remove_file(stop_file(&root));
     if discard {
-        let _ = fs::remove_file(trace_file(&root));
+        let _ = fs::remove_file(events_file(&root));
+        let _ = fs::remove_file(session_file(&root));
         return Ok("{\"discarded\":true}".to_owned());
     }
-    read_trace(&root)
+    completed_recording(&root)
 }
 
-fn read_trace(root: &Path) -> Result<String, String> {
-    let trace = fs::read_to_string(trace_file(root))
-        .map_err(|_| "BILLIARDBUDDY_RECORDING_TRACE_UNAVAILABLE".to_owned())?;
-    if trace.len() > 256 * 1024 {
-        return Err("BILLIARDBUDDY_RECORDING_TRACE_TOO_LARGE".to_owned());
+fn recording_complete(root: &Path) -> bool {
+    session_file(root).is_file() && events_file(root).is_file()
+}
+
+fn optional_path(path: &Path) -> String {
+    if path.is_file() {
+        format!("\"{}\"", escape(&path.to_string_lossy()))
+    } else {
+        "null".to_owned()
     }
-    Ok(trace)
+}
+
+fn completed_recording(root: &Path) -> Result<String, String> {
+    let events = fs::metadata(events_file(root))
+        .map_err(|_| "BILLIARDBUDDY_RECORDING_EVENTS_UNAVAILABLE".to_owned())?;
+    if events.len() > 512 * 1024 {
+        return Err("BILLIARDBUDDY_RECORDING_EVENTS_TOO_LARGE".to_owned());
+    }
+    let metadata = fs::metadata(session_file(root))
+        .map_err(|_| "BILLIARDBUDDY_RECORDING_METADATA_UNAVAILABLE".to_owned())?;
+    if metadata.len() > 64 * 1024 {
+        return Err("BILLIARDBUDDY_RECORDING_METADATA_TOO_LARGE".to_owned());
+    }
+    Ok(format!(
+        r#"{{"active":false,"metadataPath":"{}","eventsPath":"{}"}}"#,
+        escape(&session_file(root).to_string_lossy()),
+        escape(&events_file(root).to_string_lossy()),
+    ))
 }
 
 fn save_skill(arguments: &str) -> Result<String, String> {
@@ -252,9 +306,14 @@ fn save_skill(arguments: &str) -> Result<String, String> {
         return Err("skill markdown must be reviewed YAML-frontmatter Skill content".to_owned());
     }
     let root = root()?;
-    if !trace_file(&root).is_file() {
-        return Err("BILLIARDBUDDY_RECORDING_TRACE_REQUIRED".to_owned());
+    if !recording_complete(&root) {
+        return Err("BILLIARDBUDDY_RECORDING_EVENTS_REQUIRED".to_owned());
     }
+    let replace = match member(arguments, "replace").as_deref() {
+        None | Some("false") => false,
+        Some("true") => true,
+        _ => return Err("replace must be a boolean".to_owned()),
+    };
     let destination = root
         .parent()
         .ok_or_else(|| "BilliardBuddy recording storage is unavailable".to_owned())?
@@ -263,6 +322,10 @@ fn save_skill(arguments: &str) -> Result<String, String> {
         .join(&name);
     ensure_directory_without_symlink(&destination)?;
     let file = destination.join("SKILL.md");
+    let file_exists = fs::symlink_metadata(&file).is_ok();
+    if file_exists && !replace {
+        return Err("BILLIARDBUDDY_RECORDED_SKILL_EXISTS".to_owned());
+    }
     let temporary = destination.join("SKILL.md.tmp");
     let _ = fs::remove_file(&temporary);
     fs::OpenOptions::new()
@@ -271,10 +334,12 @@ fn save_skill(arguments: &str) -> Result<String, String> {
         .open(&temporary)
         .and_then(|mut output| output.write_all(markdown.as_bytes()))
         .map_err(|error| error.to_string())?;
-    let _ = fs::remove_file(&file);
+    if replace && file_exists {
+        fs::remove_file(&file).map_err(|error| error.to_string())?;
+    }
     fs::rename(temporary, &file).map_err(|error| error.to_string())?;
     Ok(format!(
-        r#"{{"saved":true,"name":"{}","path":"{}"}}"#,
+        r#"{{"saved":true,"replaced":{replace},"name":"{}","path":"{}"}}"#,
         escape(&name),
         escape(&file.to_string_lossy())
     ))
@@ -371,7 +436,14 @@ fn ensure_directory_without_symlink(directory: &Path) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::valid_skill_frontmatter;
+    use super::{
+        active_state_json, completed_recording, events_file, handle, member, optional_path,
+        prepare_recording_start, recorder_service_arguments, session_file, tools, valid_skill_frontmatter,
+    };
+    use std::{
+        fs,
+        time::{SystemTime, UNIX_EPOCH},
+    };
 
     #[test]
     fn recorded_skill_requires_matching_name_description_and_body() {
@@ -387,6 +459,105 @@ mod tests {
             "---\nname: sample-flow\n---\n\n# Steps\n",
             "sample-flow",
         ));
+    }
+
+    #[test]
+    fn completed_recording_returns_paths_not_event_contents() {
+        let root = std::env::temp_dir().join(format!(
+            "billiardbuddy-record-replay-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            events_file(&root),
+            "{\"sequence\":1,\"kind\":\"pointer_click\"}\n",
+        )
+        .unwrap();
+        fs::write(session_file(&root), "{\"version\":2,\"eventCount\":1}\n").unwrap();
+        let result = completed_recording(&root).unwrap();
+        assert!(result.contains("metadataPath"));
+        assert!(result.contains("eventsPath"));
+        assert!(!result.contains("pointer_click"));
+        assert!(optional_path(&events_file(&root)).starts_with('"'));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn starting_again_preserves_reviewable_recording_until_explicit_discard() {
+        let root = std::env::temp_dir().join(format!(
+            "billiardbuddy-record-replay-preserve-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        fs::create_dir_all(&root).unwrap();
+        fs::write(events_file(&root), "{\"sequence\":1}\n").unwrap();
+        fs::write(session_file(&root), "{\"version\":2}\n").unwrap();
+
+        assert_eq!(
+            prepare_recording_start(&root).unwrap_err(),
+            "BILLIARDBUDDY_RECORDING_REVIEW_REQUIRED"
+        );
+        assert_eq!(fs::read_to_string(events_file(&root)).unwrap(), "{\"sequence\":1}\n");
+        assert_eq!(fs::read_to_string(session_file(&root)).unwrap(), "{\"version\":2}\n");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn replacement_flag_must_be_a_top_level_member() {
+        let input = r#"{"markdown":"contains \"replace\": true","replace":false}"#;
+        assert_eq!(member(input, "replace").as_deref(), Some("false"));
+    }
+
+    #[test]
+    fn tools_call_reads_name_only_from_nested_params() {
+        let request = r#"{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"recording_status","arguments":{"markdown":"contains \"name\":\"wrong\""}}}"#;
+        let response = handle(request).expect("request must receive a response");
+        assert!(!response.contains("tools/call requires a tool name"));
+        assert!(response.contains(r#""id":7"#));
+    }
+
+    #[test]
+    fn mutating_record_tools_explicitly_require_core_approval() {
+        for name in [
+            "start_recording",
+            "stop_recording",
+            "discard_recording",
+            "save_recorded_skill",
+        ] {
+            let needle = format!(r#""name":"{name}""#);
+            let tool = tools()
+                .lines()
+                .find(|line| line.contains(&needle))
+                .expect("mutating Record and Replay tool must be declared");
+            assert!(tool.contains(r#""readOnlyHint":false"#), "{name}");
+            assert!(tool.contains(r#""destructiveHint":true"#), "{name}");
+        }
+    }
+
+    #[test]
+    fn recording_purpose_never_enters_recorder_state_or_child_arguments() {
+        let root = std::env::temp_dir().join("billiardbuddy-record-replay-purpose-boundary");
+        let state = active_state_json(1_700_000_000, 600);
+        let arguments = recorder_service_arguments(&root, 600);
+        assert_eq!(
+            state,
+            r#"{"active":true,"startedAt":1700000000,"maxDurationSeconds":600}"#
+        );
+        assert_eq!(
+            arguments,
+            [
+                "record".to_owned(),
+                events_file(&root).to_string_lossy().into_owned(),
+                session_file(&root).to_string_lossy().into_owned(),
+                root.join("stop").to_string_lossy().into_owned(),
+                "600".to_owned(),
+            ]
+        );
     }
 }
 fn tool_result(value: &str) -> String {
@@ -414,11 +585,30 @@ fn required_string(value: &str, key: &str) -> Result<String, String> {
     string_member(value, key).ok_or_else(|| format!("{key} must be a string"))
 }
 fn member(value: &str, key: &str) -> Option<String> {
-    let needle = format!(r#""{key}""#);
-    let start = value.find(&needle)? + needle.len();
-    let after = value[start..].trim_start().strip_prefix(':')?.trim_start();
-    let end = json_end(after)?;
-    Some(after[..end].trim().to_owned())
+    let mut remainder = value.trim().strip_prefix('{')?;
+    loop {
+        remainder = remainder.trim_start();
+        if remainder.starts_with('}') {
+            return None;
+        }
+        if let Some(after_comma) = remainder.strip_prefix(',') {
+            remainder = after_comma.trim_start();
+        }
+        let key_end = json_end(remainder)?;
+        let member_key = remainder[..key_end]
+            .strip_prefix('"')?
+            .strip_suffix('"')
+            .and_then(unescape)?;
+        remainder = remainder[key_end..]
+            .trim_start()
+            .strip_prefix(':')?
+            .trim_start();
+        let value_end = json_end(remainder)?;
+        if member_key == key {
+            return Some(remainder[..value_end].trim().to_owned());
+        }
+        remainder = &remainder[value_end..];
+    }
 }
 fn string_member(value: &str, key: &str) -> Option<String> {
     member(value, key).and_then(|raw| raw.strip_prefix('"')?.strip_suffix('"').and_then(unescape))

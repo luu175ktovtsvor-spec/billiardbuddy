@@ -33,6 +33,7 @@ const clientRequestMethods = [
   'modelProvider/capabilities/read',
   'permissionProfile/list',
   'config/read',
+  'config/batchWrite',
   'configRequirements/read',
   'thread/memoryMode/set',
   'memory/reset',
@@ -47,6 +48,14 @@ const clientRequestMethods = [
   'thread/backgroundTerminals/list',
   'thread/backgroundTerminals/terminate',
   'thread/backgroundTerminals/clean',
+  'command/exec',
+  'command/exec/write',
+  'command/exec/resize',
+  'command/exec/terminate',
+  'fuzzyFileSearch',
+  'fuzzyFileSearch/sessionStart',
+  'fuzzyFileSearch/sessionUpdate',
+  'fuzzyFileSearch/sessionStop',
   'thread/settings/update',
   'windowsSandbox/readiness',
   'windowsSandbox/setupStart',
@@ -69,6 +78,7 @@ const clientRequestMethods = [
   'collaborationMode/list',
   'externalAgentConfig/detect',
   'externalAgentConfig/import',
+  'externalAgentConfig/import/readHistories',
   'review/start',
   'turn/start',
   'turn/steer',
@@ -112,13 +122,11 @@ const reviewedNonExposedClientRequestMethods = {
   ],
   /**
    * Must never become generic Renderer IPC: Rust turns invoke equivalent
-   * sandboxed tools under native approval policy instead.
+   * sandboxed tools under native approval policy instead. The source-native
+   * `command/exec` PTY and fuzzy search are exposed separately through typed,
+   * Main-owned workspace capabilities and therefore are not in this list.
    */
   rawProcessAndFilesystemBypasses: [
-    'command/exec',
-    'command/exec/resize',
-    'command/exec/terminate',
-    'command/exec/write',
     'fs/copy',
     'fs/createDirectory',
     'fs/getMetadata',
@@ -128,10 +136,6 @@ const reviewedNonExposedClientRequestMethods = {
     'fs/unwatch',
     'fs/watch',
     'fs/writeFile',
-    'fuzzyFileSearch',
-    'fuzzyFileSearch/sessionStart',
-    'fuzzyFileSearch/sessionStop',
-    'fuzzyFileSearch/sessionUpdate',
     'process/kill',
     'process/resizePty',
     'process/spawn',
@@ -140,10 +144,8 @@ const reviewedNonExposedClientRequestMethods = {
   ],
   /** Source diagnostics, import helpers and experimental switches, not product APIs. */
   sourceOnlyConfigurationAndMigration: [
-    'config/batchWrite',
     'experimentalFeature/enablement/set',
     'experimentalFeature/list',
-    'externalAgentConfig/import/readHistories',
     'externalAgentConfig/import/recordHistory',
     'mock/experimentalMethod',
   ],
@@ -314,11 +316,13 @@ async function main(): Promise<void> {
   const managedResponses = requireRepositoryFile('gateway/managedResponses.ts')
   const featureDefinitions = requireFile('codex-rs/features/src/lib.rs')
   const engineBuildWorkflow = requireRepositoryFile('.github/workflows/codex-engine-build.yml')
+  const windowsDesktopBuildWorkflow = requireRepositoryFile('.github/workflows/desktop-build-win.yml')
   const macosBuild = requireDesktopFile('scripts/build-macos-arm64.sh')
   const windowsBuild = requireDesktopFile('scripts/build-windows-x64.ps1')
   const agentPluginStaging = requireDesktopFile('scripts/stage-agent-plugins.ts')
   const recordReplayPluginStaging = requireDesktopFile('scripts/stage-record-replay-plugin.ts')
   const nativeBuildTools = requireDesktopFile('scripts/native-build-tools.ts')
+  const electronAfterPack = requireDesktopFile('scripts/electron-after-pack.cjs')
   const mainProcess = requireDesktopFile('electron/main.ts')
   const credentialStore = requireDesktopFile('electron/services/keychain.ts')
   const serverRequestBridge = requireDesktopFile('electron/services/nativeServerRequest.ts')
@@ -347,6 +351,8 @@ async function main(): Promise<void> {
   assertContains(protocol, 'client_notification_definitions! {\n    Initialized,', 'initialized 客户端通知定义')
   assertContains(protocol, '"method": "initialized"', 'initialized 客户端通知序列化')
   assertContains(runtime, 'experimentalApi: true', '实验性 App Server 协议能力声明')
+  assertContains(runtime, "'--listen',\n      'stdio://'", 'App Server 固定使用本地 stdio transport')
+  assertNotContains(runtime, "'--code-mode-host'", '不暴露实验性远程 Code Mode Host')
   assertContains(runtime, 'hasVerifiedNativeEngineManifest(', '原生二进制的受管补丁清单校验')
   assertContains(runtime, 'CODEX_ENGINE_PRODUCT_PATCHES', '原生二进制的受管补丁合同')
   assertContains(runtime, 'if (!await hasVerifiedNativeEngineManifest(', '未验证内核的 fail-closed 启动门')
@@ -362,6 +368,10 @@ async function main(): Promise<void> {
   assertContains(engineBuildWorkflow, '--package codex-code-mode-host', 'GitHub 从锁定源码构建 Code Mode Host')
   assertContains(engineBuildWorkflow, '--prebuilt-code-mode-host', 'GitHub 将 Code Mode Host 交给封装器')
   assertContains(engineBuildWorkflow, 'runtime-assets/binaries/', 'GitHub 保存完整可校验引擎运行时')
+  assertContains(windowsDesktopBuildWorkflow, '验证产品运行路径中的 Rust fmt、check 与 test', 'Windows 构建保留产品 Rust 验证门')
+  assertContains(windowsDesktopBuildWorkflow, '--package codex-windows-sandbox', 'Windows 构建验证原生 Sandbox Rust crate')
+  assertContains(windowsDesktopBuildWorkflow, 'verify:codex-hook-environment', 'Windows 构建验证补丁后的 Hook 子进程隔离')
+  assertContains(windowsDesktopBuildWorkflow, 'verify-browser-use-e2e.ts', 'Windows 构建验证 Browser Electron 生产链')
   for (const pluginStage of [
     'stage:agent-plugins',
     'stage:chrome-plugin',
@@ -378,9 +388,17 @@ async function main(): Promise<void> {
     assertContains(source, 'runMsvcCompiler(vcvars,', `${description} 复用结构化 MSVC 编译入口`)
     assertNotContains(source, '&& cl.exe', `${description} 将编译器参数拼进 cmd 命令`)
   }
-  assertContains(nativeBuildTools, "'call vcvars64.bat >nul && set'", 'MSVC 初始化与编译命令分离')
+  assertContains(nativeBuildTools, "basename(vcvarsPath)", 'MSVC 初始化脚本只取受控文件名')
+  assertContains(nativeBuildTools, "/^vcvars[a-z0-9_]+\\.bat$/i", 'MSVC 初始化脚本文件名白名单')
+  assertContains(nativeBuildTools, '`call "${vcvarsFile}" >nul && set`', '按目标架构初始化 MSVC 环境且与编译命令分离')
   assertContains(nativeBuildTools, "spawnSync('cl.exe', compilerArguments", 'cl.exe 使用结构化参数启动')
   assertContains(nativeBuildTools, 'env: environment', 'cl.exe 继承 vcvars 初始化结果')
+  assertContains(windowsBuild, "[ValidateSet('x64', 'arm64')]", 'Windows 正式构建显式支持 x64 与 ARM64')
+  assertContains(windowsBuild, 'Microsoft.VisualStudio.Component.VC.Tools.ARM64', 'Windows ARM64 MSVC 工具链检查')
+  assertContains(windowsBuild, '$env:RUSTUP_TOOLCHAIN = $toolchainChannel', 'Windows 全部 Rust 构建绑定到锁定工具链')
+  assertContains(windowsBuild, '& rustup target add --toolchain $toolchainChannel $targetTriple', '锁定 Rust 工具链安装目标架构')
+  assertContains(windowsBuild, '$env:BB_MEDIA_TOOLCHAIN_TARGET = $targetTriple', 'Windows 媒体工具链与 Electron 使用同一目标架构')
+  assertContains(electronAfterPack, 'configured !== contextTarget', 'Windows 环境 target 与 Electron 实际架构交叉校验')
   assertContains(engineContract, 'CODEX_ENGINE_MANIFEST_SCHEMA = 6', '受管补丁清单版本')
   assertContains(runtime, 'hasVerifiedManagedBinary(', '启动前验证 App Server 与 Code Mode Host 二进制')
   assertContains(runtime, 'path.dirname(command)', '将受管 ripgrep 目录加入 Agent 运行 PATH')
@@ -391,7 +409,8 @@ async function main(): Promise<void> {
   assertContains(runtime, 'requestAttestation: false', '禁用未接入的上游 attestation 请求')
   assertContains(runtime, 'runtimeWorkspaceRoots', '受控运行工作区根目录')
   assertContains(runtime, 'sandboxPolicy', '原生沙箱策略字段')
-  assertContains(runtime, 'textElements: []', '原生文本输入元素默认值')
+  assertContains(runtime, 'nativeTextElements(input.text, input.textElements)', '原生文本输入元素按 UTF-8 字节边界转发')
+  assertContains(runtime, 'nativeAdditionalContext(additionalContext)', '原生 Turn 附加上下文转发')
   assertContains(runtime, "type: 'localImage'", '原生本地图片 Turn 输入映射')
   assertContains(runtime, "type: 'audio'", '原生内联音频 Turn 输入映射')
   assertContains(runtime, "type: 'localAudio'", '原生本地音频 Turn 输入映射')
@@ -437,6 +456,20 @@ async function main(): Promise<void> {
   assertContains(runtime, "'thread/backgroundTerminals/list'", '原生后台终端查询协议调用')
   assertContains(runtime, "'thread/backgroundTerminals/terminate'", '原生后台终端停止协议调用')
   assertContains(runtime, "'thread/backgroundTerminals/clean'", '原生后台终端批量停止协议调用')
+  assertContains(runtime, "'command/exec'", '原生集成终端 PTY 协议调用')
+  assertContains(runtime, 'cwd,\n      size: nativeTerminalSize(input.size)', '集成终端固定使用 Main 记录的 Thread 工作区')
+  assertContains(runtime, "'fuzzyFileSearch/sessionStart'", '原生模糊文件搜索会话协议调用')
+  assertContains(runtime, 'roots: [root]', '模糊文件搜索固定在 Thread 工作区')
+  assertContains(runtime, "'config/batchWrite'", '原生 Memory 配置原子写入')
+  assertContains(runtime, "'externalAgentConfig/import/readHistories'", '原生外部 Agent 导入历史读取')
+  assertContains(mainProcess, 'nativeAgentTerminalOwners', '集成终端由 Main 绑定发起窗口')
+  assertContains(mainProcess, '包括 Computer Use、Browser、Chrome 与 Record & Replay 的写操作', '完全访问警告覆盖所有本地插件写工具')
+  assertContains(mainProcess, 'nativeAgentFuzzySearchOwners', '模糊搜索会话由 Main 绑定发起窗口')
+  assertContains(mainProcess, 'pendingNativeAgentExternalImportOwner', '外部 Agent 导入进度由 Main 绑定发起窗口')
+  assertContains(mainProcess, 'pendingNativeAgentThreadStartOwnerId', '顶层 Thread 启动通知由 Main 绑定发起窗口')
+  assertContains(mainProcess, 'thread.activeTurnIds', '恢复 Thread 时重建活动 Turn 所有权')
+  assertContains(ipcCapabilities, "entry.kind !== 'untrusted'", 'Renderer 附加上下文只能标记为不可信')
+  assertContains(ipcCapabilities, "hasOnlyKeys(value, ['threadId', 'size'])", 'Renderer 不能为集成终端指定命令、环境或目录')
   assertContains(runtime, "'windowsSandbox/readiness'", '原生 Windows Sandbox 状态协议调用')
   assertContains(runtime, "'windowsSandbox/setupStart'", '原生 Windows Sandbox 初始化协议调用')
   assertContains(runtime, 'windowsSandbox/setupCompleted', '原生 Windows Sandbox 完成通知处理')
@@ -467,6 +500,13 @@ async function main(): Promise<void> {
   assertContains(ipcCapabilities, 'nativeAgentSetThreadGoal', 'Thread Goal 的受限 IPC 校验')
   assertContains(ipcCapabilities, 'nativeAgentBackgroundTerminalReference', '后台终端进程标识受限 IPC 校验')
   assertContains(runtime, "'skills/extraRoots/set'", '原生额外技能目录协议调用')
+  assertContains(runtime, "'hooks/list'", '原生 Hook 目录协议调用')
+  assertContains(runtime, 'async trustHook(', '仅信任 Core 列出的 Hook 内容版本')
+  assertContains(runtime, "keyPath: 'hooks.state'", 'Hook 信任只写入上游 hooks.state 键空间')
+  assertContains(runtime, 'CODEX_NATIVE_HOOK_TRUST_STALE', 'Hook 内容变化时拒绝旧哈希')
+  assertContains(mainProcess, 'nativeAgentTrustHook', 'Hook 信任接入 Main 所有权与确认边界')
+  assertContains(ipcCapabilities, 'nativeAgentTrustHook', 'Hook 信任 IPC 仅接受精确标识和哈希')
+  assertContains(preload, 'trustHook: (threadId: string, cwd: string, hookKey: string, currentHash: string)', 'Hook 信任预加载桥不暴露配置写入')
   assertContains(runtime, "'plugin/list'", '原生插件目录协议调用')
   assertContains(runtime, "marketplaceKinds: ['local', 'workspace-directory']", '产品插件目录只选择本地和工作区市场')
   assertContains(runtime, "'plugin/install'", '原生插件安装协议调用')
@@ -485,6 +525,7 @@ async function main(): Promise<void> {
   assertContains(mainProcess, 'await nativeAgentRuntime?.invalidateModelRoute()', '凭据写入后撤销旧原生子进程')
   assertNotContains(mainProcess, 'autoCompactTokenLimit:', 'Electron 覆盖 Core 自动压缩阈值')
   assertContains(mainProcess, 'getReadyNativeAgentThreadRuntime', '线程操作前重新接入当前原生模型路由')
+  assertContains(mainProcess, 'BILLIARDBUDDY_APPSHOT_MODEL_IMAGE_INPUT_UNSUPPORTED', '托管文本模型在捕获前拒绝不支持的 Appshot 图片')
   assertContains(mainProcess, 'nativeAgentResolveServerRequest', '原生 server request 回填 IPC')
   assertContains(mainProcess, 'rejectNativeAgentServerRequests', '原生子进程失效时清理交互请求')
   assertContains(serverRequestBridge, 'validateNativeServerRequestResponse', '按 source request 校验回填结果')
@@ -506,6 +547,7 @@ async function main(): Promise<void> {
   assertContains(provider, "if (profile.protocol === 'openai-responses')", '个人 Responses 本机凭据桥分支')
   assertContains(provider, "if (profile.protocol !== 'openai-compatible')", '未知个人协议 fail-closed')
   assertContains(provider, 'class ResponsesCredentialAdapter', '所有 Responses 路线共用本机凭据桥')
+  assertContains(provider, "rejectInputImage: !route.capabilities.includes('VisualEvidence')", '托管模型按共享目录能力拒绝会被上游静默降级的图片输入')
   assertContains(provider, "failurePrefix: 'CODEX_PERSONAL_RESPONSES_ADAPTER'", '个人 Responses 凭据桥')
   assertContains(provider, "personalModelEndpoint(profile.base_url, 'responses')", '个人 Responses 凭据桥唯一上游调用')
   assertContains(provider, "const tokenEnv = 'BB_CODEX_PERSONAL_RESPONSES_ADAPTER_TOKEN'", '个人 Responses 只向 Rust 注入本机能力令牌')

@@ -338,6 +338,9 @@ fn handle_bridge_client(
                 | "inspect_page"
                 | "capture_page"
                 | "developer_snapshot"
+                | "cdp_send"
+                | "cdp_read_events"
+                | "wait_for_page"
                 | "navigate"
                 | "click_element"
                 | "type_text"
@@ -513,12 +516,30 @@ fn json_string_array(input: &str, key: &str) -> Vec<String> {
     output
 }
 fn json_member_value(input: &str, key: &str) -> Option<String> {
-    let needle = format!(r#""{key}""#);
-    let start = input.find(&needle)? + needle.len();
-    let after_key = input[start..].trim_start();
-    let value = after_key.strip_prefix(':')?.trim_start();
-    let end = raw_json_value_end(value)?;
-    Some(value[..end].trim().to_owned())
+    let mut remainder = input.trim().strip_prefix('{')?;
+    loop {
+        remainder = remainder.trim_start();
+        if remainder.starts_with('}') {
+            return None;
+        }
+        if let Some(after_comma) = remainder.strip_prefix(',') {
+            remainder = after_comma.trim_start();
+        }
+        let key_end = raw_json_value_end(remainder)?;
+        let member_key = remainder[..key_end]
+            .strip_prefix('"')?
+            .strip_suffix('"')
+            .and_then(json_unescape)?;
+        remainder = remainder[key_end..]
+            .trim_start()
+            .strip_prefix(':')?
+            .trim_start();
+        let value_end = raw_json_value_end(remainder)?;
+        if member_key == key {
+            return Some(remainder[..value_end].trim().to_owned());
+        }
+        remainder = &remainder[value_end..];
+    }
 }
 fn json_string_member(input: &str, key: &str) -> Option<String> {
     json_member_value(input, key).and_then(|value| {
@@ -610,4 +631,18 @@ fn json_escape(value: &str) -> String {
         }
     }
     escaped
+}
+
+#[cfg(test)]
+mod parser_tests {
+    use super::*;
+
+    #[test]
+    fn top_level_member_ignores_field_like_text() {
+        let input = r#"{"message":"contains \"operation\":\"bad\"","operation":"status"}"#;
+        assert_eq!(
+            json_string_member(input, "operation").as_deref(),
+            Some("status")
+        );
+    }
 }

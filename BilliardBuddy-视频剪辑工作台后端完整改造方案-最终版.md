@@ -629,8 +629,8 @@ video-media-relay/
 
 ```text
 TextReasoning
-→ deepseek-v4-flash（默认）/ deepseek-v4-pro（可选）
-→ 两者共享 DeepSeek 物理账号容量池、TextReasoning 额度桶与 Gateway 凭据槽；Agent 调用路径不改
+→ deepseek-v4-flash
+→ 使用 DeepSeek 物理账号容量池、TextReasoning 额度桶与 Gateway 凭据槽；Agent 调用路径不改
 
 VisualEvidence
 → qwen3-vl-flash

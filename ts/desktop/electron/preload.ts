@@ -107,6 +107,13 @@ const nativeAgent = {
     ELECTRON_IPC_CHANNELS.nativeAgentReadClientSettings,
     { threadId },
   ),
+  configureMemory: (
+    threadId: string,
+    configuration: { enabled: boolean, useMemories: boolean, generateMemories: boolean },
+  ) => invoke(
+    ELECTRON_IPC_CHANNELS.nativeAgentConfigureMemory,
+    { threadId, ...configuration },
+  ),
   setThreadMemoryMode: (threadId: string, mode: 'enabled' | 'disabled') => invoke(
     ELECTRON_IPC_CHANNELS.nativeAgentSetThreadMemoryMode,
     { threadId, mode },
@@ -159,6 +166,78 @@ const nativeAgent = {
     ELECTRON_IPC_CHANNELS.nativeAgentCleanBackgroundTerminals,
     { threadId },
   ),
+  startIntegratedTerminal: (threadId: string, size: { rows: number, cols: number }) => invoke(
+    ELECTRON_IPC_CHANNELS.nativeAgentStartIntegratedTerminal,
+    { threadId, size },
+  ),
+  writeIntegratedTerminal: (processId: string, text: string, closeStdin = false) => invoke(
+    ELECTRON_IPC_CHANNELS.nativeAgentWriteIntegratedTerminal,
+    { processId, text, closeStdin },
+  ),
+  resizeIntegratedTerminal: (processId: string, size: { rows: number, cols: number }) => invoke(
+    ELECTRON_IPC_CHANNELS.nativeAgentResizeIntegratedTerminal,
+    { processId, size },
+  ),
+  terminateIntegratedTerminal: (processId: string) => invoke(
+    ELECTRON_IPC_CHANNELS.nativeAgentTerminateIntegratedTerminal,
+    { processId },
+  ),
+  searchWorkspaceFiles: (threadId: string, query: string) => invoke(
+    ELECTRON_IPC_CHANNELS.nativeAgentSearchWorkspaceFiles,
+    { threadId, query },
+  ),
+  startWorkspaceFileSearch: (threadId: string) => invoke(
+    ELECTRON_IPC_CHANNELS.nativeAgentStartWorkspaceFileSearch,
+    { threadId },
+  ),
+  updateWorkspaceFileSearch: (sessionId: string, query: string) => invoke(
+    ELECTRON_IPC_CHANNELS.nativeAgentUpdateWorkspaceFileSearch,
+    { sessionId, query },
+  ),
+  stopWorkspaceFileSearch: (sessionId: string) => invoke(
+    ELECTRON_IPC_CHANNELS.nativeAgentStopWorkspaceFileSearch,
+    { sessionId },
+  ),
+  listWorktrees: (threadId: string) => invoke(ELECTRON_IPC_CHANNELS.nativeAgentListWorktrees, { threadId }),
+  createWorktree: (threadId: string, revision?: string) => invoke(
+    ELECTRON_IPC_CHANNELS.nativeAgentCreateWorktree,
+    { threadId, ...(revision === undefined ? {} : { revision }) },
+  ),
+  snapshotWorktree: (threadId: string) => invoke(ELECTRON_IPC_CHANNELS.nativeAgentSnapshotWorktree, { threadId }),
+  restoreWorktree: (threadId: string, snapshotId: string) => invoke(
+    ELECTRON_IPC_CHANNELS.nativeAgentRestoreWorktree,
+    { threadId, snapshotId },
+  ),
+  activateWorktree: (threadId: string) => invoke(ELECTRON_IPC_CHANNELS.nativeAgentActivateWorktree, { threadId }),
+  cleanupWorktree: (threadId: string) => invoke(ELECTRON_IPC_CHANNELS.nativeAgentCleanupWorktree, { threadId }),
+  handoffWorkspace: (threadId: string, destination: 'source' | 'worktree') => invoke(
+    ELECTRON_IPC_CHANNELS.nativeAgentHandoffWorkspace,
+    { threadId, destination },
+  ),
+  readLocalEnvironment: (threadId: string) => invoke(ELECTRON_IPC_CHANNELS.nativeAgentReadLocalEnvironment, { threadId }),
+  runLocalEnvironmentSetup: (threadId: string) => invoke(ELECTRON_IPC_CHANNELS.nativeAgentRunLocalEnvironmentSetup, { threadId }),
+  runLocalEnvironmentCleanup: (threadId: string) => invoke(ELECTRON_IPC_CHANNELS.nativeAgentRunLocalEnvironmentCleanup, { threadId }),
+  startLocalEnvironmentAction: (threadId: string, name: string, size: { rows: number, cols: number }) => invoke(
+    ELECTRON_IPC_CHANNELS.nativeAgentStartLocalEnvironmentAction,
+    { threadId, name, size },
+  ),
+  gitStatus: (threadId: string) => invoke(ELECTRON_IPC_CHANNELS.nativeAgentGitStatus, { threadId }),
+  gitDiff: (threadId: string, options: { staged?: boolean, paths?: string[] } = {}) => invoke(
+    ELECTRON_IPC_CHANNELS.nativeAgentGitDiff,
+    { threadId, ...options },
+  ),
+  gitStageFiles: (threadId: string, paths: string[]) => invoke(ELECTRON_IPC_CHANNELS.nativeAgentGitStageFiles, { threadId, paths }),
+  gitRevertFiles: (threadId: string, paths: string[]) => invoke(ELECTRON_IPC_CHANNELS.nativeAgentGitRevertFiles, { threadId, paths }),
+  gitStagePatch: (threadId: string, patch: string) => invoke(ELECTRON_IPC_CHANNELS.nativeAgentGitStagePatch, { threadId, patch }),
+  gitRevertPatch: (threadId: string, patch: string) => invoke(ELECTRON_IPC_CHANNELS.nativeAgentGitRevertPatch, { threadId, patch }),
+  gitCommit: (threadId: string, message: string) => invoke(ELECTRON_IPC_CHANNELS.nativeAgentGitCommit, { threadId, message }),
+  gitPush: (threadId: string, branch: string, remote?: string) => invoke(
+    ELECTRON_IPC_CHANNELS.nativeAgentGitPush,
+    { threadId, branch, ...(remote === undefined ? {} : { remote }) },
+  ),
+  gitListBranches: (threadId: string) => invoke(ELECTRON_IPC_CHANNELS.nativeAgentGitListBranches, { threadId }),
+  gitCreateBranch: (threadId: string, name: string) => invoke(ELECTRON_IPC_CHANNELS.nativeAgentGitCreateBranch, { threadId, name }),
+  gitSwitchBranch: (threadId: string, name: string) => invoke(ELECTRON_IPC_CHANNELS.nativeAgentGitSwitchBranch, { threadId, name }),
   updatePermissionMode: (threadId: string, permissionMode: unknown) => invoke(
     ELECTRON_IPC_CHANNELS.nativeAgentUpdatePermissionMode,
     { threadId, permissionMode },
@@ -180,11 +259,27 @@ const nativeAgent = {
     input: unknown[],
     clientUserMessageId?: string,
     collaborationMode?: 'default' | 'plan',
+    additionalContext?: Record<string, { value: string, kind: 'untrusted' }>,
   ) => invoke(
     ELECTRON_IPC_CHANNELS.nativeAgentStartTurn,
     {
       threadId,
       input,
+      ...(clientUserMessageId === undefined ? {} : { clientUserMessageId }),
+      ...(collaborationMode === undefined ? {} : { collaborationMode }),
+      ...(additionalContext === undefined ? {} : { additionalContext }),
+    },
+  ),
+  startTurnWithAppshot: (
+    threadId: string,
+    text?: string,
+    clientUserMessageId?: string,
+    collaborationMode?: 'default' | 'plan',
+  ) => invoke(
+    ELECTRON_IPC_CHANNELS.nativeAgentStartTurnWithAppshot,
+    {
+      threadId,
+      ...(text === undefined ? {} : { text }),
       ...(clientUserMessageId === undefined ? {} : { clientUserMessageId }),
       ...(collaborationMode === undefined ? {} : { collaborationMode }),
     },
@@ -193,9 +288,21 @@ const nativeAgent = {
     ELECTRON_IPC_CHANNELS.nativeAgentStartReview,
     { threadId, target, ...(delivery === undefined ? {} : { delivery }) },
   ),
-  steerTurn: (threadId: string, turnId: string, input: unknown[], clientUserMessageId?: string) => invoke(
+  steerTurn: (
+    threadId: string,
+    turnId: string,
+    input: unknown[],
+    clientUserMessageId?: string,
+    additionalContext?: Record<string, { value: string, kind: 'untrusted' }>,
+  ) => invoke(
     ELECTRON_IPC_CHANNELS.nativeAgentSteerTurn,
-    { threadId, turnId, input, ...(clientUserMessageId === undefined ? {} : { clientUserMessageId }) },
+    {
+      threadId,
+      turnId,
+      input,
+      ...(clientUserMessageId === undefined ? {} : { clientUserMessageId }),
+      ...(additionalContext === undefined ? {} : { additionalContext }),
+    },
   ),
   interruptTurn: (threadId: string, turnId: string) => invoke(
     ELECTRON_IPC_CHANNELS.nativeAgentInterruptTurn,
@@ -247,6 +354,10 @@ const nativeAgent = {
     ELECTRON_IPC_CHANNELS.nativeAgentImportExternalConfig,
     { threadId, detectionId, itemIndexes },
   ),
+  readExternalImportHistories: (threadId: string) => invoke(
+    ELECTRON_IPC_CHANNELS.nativeAgentReadExternalImportHistories,
+    { threadId },
+  ),
   listScheduledTasks: (threadId?: string) => invoke(
     ELECTRON_IPC_CHANNELS.nativeAgentListScheduledTasks,
     threadId === undefined ? {} : { threadId },
@@ -266,6 +377,10 @@ const nativeAgent = {
   listHooks: (threadId: string, cwd: string) => invoke(
     ELECTRON_IPC_CHANNELS.nativeAgentListHooks,
     { threadId, cwd },
+  ),
+  trustHook: (threadId: string, cwd: string, hookKey: string, currentHash: string) => invoke(
+    ELECTRON_IPC_CHANNELS.nativeAgentTrustHook,
+    { threadId, cwd, hookKey, currentHash },
   ),
   listPlugins: (threadId: string, cwd: string) => invoke(
     ELECTRON_IPC_CHANNELS.nativeAgentListPlugins,

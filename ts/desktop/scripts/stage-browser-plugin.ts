@@ -1,7 +1,7 @@
 import { spawnSync } from 'node:child_process'
 import { chmodSync, copyFileSync, cpSync, existsSync, lstatSync, mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { join, resolve } from 'node:path'
-import { resolveCargoCommand, verifyProductContent, verifyProductSkill, verifyStdioMcpHandshake } from './native-build-tools'
+import { resolveCargoCommand, type WindowsNativeTarget, verifyProductContent, verifyProductSkill, verifyStdioMcpHandshake, verifyWindowsPeMachine } from './native-build-tools'
 
 type SupportedTarget =
   | 'aarch64-apple-darwin'
@@ -53,6 +53,8 @@ export function verifyStagedBrowserPlugin(options: Options) {
   if (manifest.name !== PLUGIN || manifest.mcpServers !== './.mcp.json' || manifest.skills !== './skills/') throw new Error('Browser 插件 manifest 无效')
   verifyProductContent(join(root, '.codex-plugin', 'plugin.json'))
   verifyProductSkill(join(root, 'skills', 'browser-use', 'SKILL.md'))
+  const skill = readFileSync(join(root, 'skills', 'browser-use', 'SKILL.md'), 'utf8')
+  if (!skill.includes('cdp_send') || !skill.includes('cdp_read_events') || !skill.includes('wait_for_page')) throw new Error('Browser 技能缺少受控开发者模式说明')
   const mcp = JSON.parse(readFileSync(join(root, '.mcp.json'), 'utf8')) as { mcpServers?: Record<string, { command?: unknown, cwd?: unknown, env_vars?: unknown }> }
   const server = mcp.mcpServers?.[PLUGIN]
   if (server?.command !== `./bin/${PLUGIN}` || server.cwd !== '.' || !Array.isArray(server.env_vars) || !server.env_vars.includes('CODEX_HOME')) throw new Error('Browser 插件 MCP 配置无效')
@@ -60,7 +62,13 @@ export function verifyStagedBrowserPlugin(options: Options) {
   if (!marketplace.plugins?.some(entry => entry.name === PLUGIN && entry.source?.path === `./plugins/${PLUGIN}`)) throw new Error('BilliardBuddy 本地市场缺少 Browser 插件')
   const staged = join(root, 'bin', binary(options.target))
   if (lstatSync(staged).size < 100_000) throw new Error('Browser 插件二进制大小无效')
+  if (options.target.includes('windows')) verifyWindowsPeMachine(staged, options.target as WindowsNativeTarget)
   verifyStdioMcpHandshake(staged, options.target, PLUGIN)
+  const source = readFileSync(join(sourceRoot, 'src', 'main.rs'), 'utf8')
+  if (!source.includes('"DOM.getDocument" | "Page.getLayoutMetrics" | "Performance.getMetrics"') || !source.includes('"cdp_read_events"') || !source.includes('"wait_for_page"')) {
+    throw new Error('Browser MCP 未锁定受控开发者模式命令白名单')
+  }
+  if (source.includes('Runtime.evaluate') || source.includes('Network.getResponseBody')) throw new Error('Browser MCP 不得开放原始 CDP 或响应体读取')
 }
 
 export function stageBrowserPlugin(options: Options) {

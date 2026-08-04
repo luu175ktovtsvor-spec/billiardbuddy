@@ -1,7 +1,16 @@
 import { spawnSync } from 'node:child_process'
-import { chmodSync, copyFileSync, cpSync, existsSync, lstatSync, mkdirSync, readFileSync, rmSync } from 'node:fs'
+import { chmodSync, copyFileSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { basename, join, resolve } from 'node:path'
-import { resolveCargoCommand, runMsvcCompiler, verifyProductContent, verifyProductSkill, verifyStdioMcpHandshake } from './native-build-tools'
+import {
+  resolveCargoCommand,
+  runMsvcCompiler,
+  type WindowsNativeTarget,
+  verifyProductContent,
+  verifyProductSkill,
+  verifyStdioMcpHandshake,
+  verifyWindowsPeMachine,
+} from './native-build-tools'
 
 type SupportedTarget =
   | 'aarch64-apple-darwin'
@@ -152,7 +161,9 @@ function stageMacComputerUseService(destinationBin: string, target: SupportedTar
   const infoPlist = join(sourceRoot, 'macos', 'Info.plist')
   requireRegularFile(source)
   requireRegularFile(infoPlist)
-  const swiftc = process.env.SWIFTC?.trim() || Bun.which('swiftc')
+  const configuredSwiftc = process.env.SWIFTC?.trim()
+  const xcrun = configuredSwiftc ? undefined : Bun.which('xcrun')
+  const swiftc = configuredSwiftc || xcrun || Bun.which('swiftc')
   if (!swiftc) {
     throw new Error('缺少 Swift 编译器；macOS Computer Use 原生服务必须在 macOS 原生构建机或 GitHub Actions 上构建')
   }
@@ -161,32 +172,42 @@ function stageMacComputerUseService(destinationBin: string, target: SupportedTar
   rmSync(serviceRoot, { recursive: true, force: true })
   mkdirSync(join(serviceRoot, 'Contents', 'MacOS'), { recursive: true })
   copyFileSync(infoPlist, join(serviceRoot, 'Contents', 'Info.plist'))
-  run(swiftc, [
-    '-O',
-    '-target', target === 'aarch64-apple-darwin' ? 'arm64-apple-macos14.0' : 'x86_64-apple-macos14.0',
-    '-framework', 'AppKit',
-    '-framework', 'ApplicationServices',
-    '-framework', 'CoreGraphics',
-    '-framework', 'CoreImage',
-    '-framework', 'CoreMedia',
-    '-framework', 'ScreenCaptureKit',
-    source,
-    '-o', serviceExecutable,
-  ])
+  const moduleCache = mkdtempSync(join(tmpdir(), 'billiardbuddy-computer-use-swift-'))
+  try {
+    run(swiftc, [
+      ...(xcrun ? ['swiftc'] : []),
+      '-O',
+      '-target', target === 'aarch64-apple-darwin' ? 'arm64-apple-macos13.0' : 'x86_64-apple-macos13.0',
+      '-module-cache-path', moduleCache,
+      '-framework', 'AppKit',
+      '-framework', 'ApplicationServices',
+      '-framework', 'CoreGraphics',
+      '-framework', 'CoreImage',
+      '-framework', 'CoreMedia',
+      '-framework', 'ScreenCaptureKit',
+      source,
+      '-o', serviceExecutable,
+    ])
+  } finally {
+    rmSync(moduleCache, { recursive: true, force: true })
+  }
   chmodSync(serviceExecutable, 0o755)
   adHocSignMacBinary(serviceRoot)
 }
 
-function stageWindowsComputerUseService(destinationBin: string): void {
+function stageWindowsComputerUseService(destinationBin: string, target: SupportedTarget): void {
   const source = join(sourceRoot, 'windows', 'BilliardBuddyComputerUseService.cpp')
   requireRegularFile(source)
   const service = join(destinationBin, windowsServiceName)
   rmSync(service, { force: true })
   const compilerArguments = [
     '/nologo', '/std:c++20', '/O2', '/EHsc', '/DUNICODE', '/D_UNICODE', source, `/Fe${service}`,
-    '/link', 'Crypt32.lib', 'Gdi32.lib', 'Ole32.lib', 'OleAut32.lib', 'Shell32.lib', 'UIAutomationCore.lib', 'Windowscodecs.lib',
+    '/link', 'Crypt32.lib', 'Gdi32.lib', 'Ole32.lib', 'OleAut32.lib', 'Shell32.lib', 'UIAutomationCore.lib', 'User32.lib', 'Windowscodecs.lib',
   ]
-  const compiler = process.env.CXX?.trim() || Bun.which('cl.exe') || Bun.which('cl')
+  const nativeTarget = process.arch === 'arm64' ? 'aarch64-pc-windows-msvc' : 'x86_64-pc-windows-msvc'
+  const compiler = target === nativeTarget
+    ? process.env.CXX?.trim() || Bun.which('cl.exe') || Bun.which('cl')
+    : undefined
   if (compiler) {
     run(compiler, compilerArguments)
     return
@@ -196,13 +217,23 @@ function stageWindowsComputerUseService(destinationBin: string): void {
   if (!vswhere || !existsSync(vswhere)) {
     throw new Error('缺少 MSVC C++ 编译器；Windows Computer Use 原生服务必须在 Windows 原生构建机或 GitHub Actions 上构建')
   }
+  const arm64 = target === 'aarch64-pc-windows-msvc'
+  const toolComponent = arm64
+    ? 'Microsoft.VisualStudio.Component.VC.Tools.ARM64'
+    : 'Microsoft.VisualStudio.Component.VC.Tools.x86.x64'
   const lookup = spawnSync(vswhere, [
-    '-latest', '-products', '*', '-requires', 'Microsoft.VisualStudio.Component.VC.Tools.x86.x64', '-property', 'installationPath',
+    '-latest', '-products', '*', '-requires', toolComponent, '-property', 'installationPath',
   ], { encoding: 'utf8', timeout: 60_000 })
   const installation = lookup.status === 0 ? lookup.stdout.trim() : ''
-  const vcvars = installation && join(installation, 'VC', 'Auxiliary', 'Build', 'vcvars64.bat')
+  const vcvars = installation && join(
+    installation,
+    'VC',
+    'Auxiliary',
+    'Build',
+    arm64 && process.arch !== 'arm64' ? 'vcvarsamd64_arm64.bat' : arm64 ? 'vcvarsarm64.bat' : 'vcvars64.bat',
+  )
   if (!vcvars || !existsSync(vcvars)) {
-    throw new Error('Windows 构建机没有可用的 MSVC x64 工具链')
+    throw new Error(`Windows 构建机没有可用的 MSVC ${arm64 ? 'ARM64' : 'x64'} 工具链`)
   }
   runMsvcCompiler(vcvars, compilerArguments, 'Computer Use Windows 原生服务编译失败')
 }
@@ -223,6 +254,9 @@ export function verifyStagedAgentPlugins(options: AgentPluginStageOptions): void
   if (options.target.includes('windows')) {
     const service = join(pluginRoot, 'bin', windowsServiceName)
     if (lstatSync(service).size < 100_000) throw new Error('Computer Use Windows 原生服务二进制大小无效')
+    const target = options.target as WindowsNativeTarget
+    verifyWindowsPeMachine(binary, target)
+    verifyWindowsPeMachine(service, target)
   }
 }
 
@@ -237,6 +271,31 @@ export function stageAgentPlugins(options: AgentPluginStageOptions): void {
     join(packagedSourceRoot, '.mcp.json'),
     join(packagedSourceRoot, 'skills', 'computer-use', 'SKILL.md'),
   ]) requireRegularFile(path)
+  const mcpSource = readFileSync(join(sourceRoot, 'src', 'main.rs'), 'utf8')
+  const macosSource = readFileSync(join(sourceRoot, 'macos', 'BilliardBuddyComputerUseService.swift'), 'utf8')
+  const windowsSource = readFileSync(join(sourceRoot, 'windows', 'BilliardBuddyComputerUseService.cpp'), 'utf8')
+  if (!mcpSource.includes('elementFingerprint') || !mcpSource.includes('^[a-f0-9]{64}$')) {
+    throw new Error('Computer Use MCP 未强制绑定原生可访问性元素指纹')
+  }
+  if (
+    !macosSource.includes('elementFingerprint(element) == requestedFingerprint')
+    || !macosSource.includes('.utf16.count')
+    || !macosSource.includes('accessibilityWindowMatchesVisibleWindow')
+    || !macosSource.includes('scrollAtPoint')
+    || !macosSource.includes('guard CGWarpMouseCursorPosition(point) == .success')
+  ) {
+    throw new Error('Computer Use macOS AX 元素身份、窗口一致性或全局输入重校验契约不完整')
+  }
+  if (
+    !windowsSource.includes('elementFingerprint(selected) != wideToUtf8(requestedFingerprint)')
+    || !windowsSource.includes('DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2')
+    || !windowsSource.includes('MOUSEEVENTF_VIRTUALDESK')
+    || !windowsSource.includes('void movePointerIntoWindow')
+    || !windowsSource.includes('void sendText(const WindowInfo& window, const std::wstring& appId')
+    || !windowsSource.includes('void sendKey(const WindowInfo& window, const std::wstring& appId')
+    || !windowsSource.includes('sendScroll(window, appId')
+    || !windowsSource.includes('User32.lib')
+  ) throw new Error('Computer Use Windows UIA 身份、DPI、虚拟桌面、输入重校验或链接契约不完整')
 
   const cargo = cargoCommand()
   run(cargo, [
@@ -263,7 +322,7 @@ export function stageAgentPlugins(options: AgentPluginStageOptions): void {
     adHocSignMacBinary(stagedBinary)
     stageMacComputerUseService(destinationBin, options.target)
   } else {
-    stageWindowsComputerUseService(destinationBin)
+    stageWindowsComputerUseService(destinationBin, options.target)
   }
   verifyStagedAgentPlugins(options)
 }

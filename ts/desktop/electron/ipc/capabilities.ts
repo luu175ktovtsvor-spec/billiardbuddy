@@ -107,13 +107,72 @@ const nativeInputName = (value: unknown): value is string =>
   && value.length <= 512
   && !/[\u0000\r\n]/.test(value)
 
+const nativeTextElements = (text: string, value: unknown): boolean => {
+  if (value === undefined) return true
+  if (!Array.isArray(value) || value.length > 256) return false
+  const boundaries = new Set<number>([0])
+  let byteOffset = 0
+  for (const character of text) {
+    byteOffset += Buffer.byteLength(character)
+    boundaries.add(byteOffset)
+  }
+  let previousEnd = 0
+  for (const candidate of value) {
+    if (!isRecord(candidate) || !hasOnlyKeys(candidate, ['byteRange', 'placeholder'])) return false
+    if (!isRecord(candidate.byteRange) || !hasOnlyKeys(candidate.byteRange, ['start', 'end'])) return false
+    const { start, end } = candidate.byteRange
+    if (
+      typeof start !== 'number'
+      || !Number.isSafeInteger(start)
+      || typeof end !== 'number'
+      || !Number.isSafeInteger(end)
+      || start < previousEnd
+      || start < 0
+      || end <= start
+      || end > byteOffset
+      || !boundaries.has(start)
+      || !boundaries.has(end)
+      || candidate.placeholder !== undefined && (
+        typeof candidate.placeholder !== 'string'
+        || candidate.placeholder.length > 1_024
+        || candidate.placeholder.includes('\u0000')
+      )
+    ) return false
+    previousEnd = end
+  }
+  return true
+}
+
+const nativeUntrustedAdditionalContext = (value: unknown): boolean => {
+  if (value === undefined) return true
+  if (!isRecord(value)) return false
+  const entries = Object.entries(value)
+  if (entries.length === 0 || entries.length > 32) return false
+  let totalBytes = 0
+  for (const [source, entry] of entries) {
+    if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(source)) return false
+    if (
+      !isRecord(entry)
+      || !hasOnlyKeys(entry, ['value', 'kind'])
+      || entry.kind !== 'untrusted'
+      || typeof entry.value !== 'string'
+      || entry.value.length === 0
+      || entry.value.includes('\u0000')
+    ) return false
+    totalBytes += Buffer.byteLength(source) + Buffer.byteLength(entry.value)
+    if (totalBytes > 1_048_576) return false
+  }
+  return true
+}
+
 const nativeTurnInput = (value: unknown): boolean => {
   if (!isRecord(value)) return false
   if (value.type === 'text') {
-    return hasOnlyKeys(value, ['type', 'text'])
+    return hasOnlyKeys(value, ['type', 'text', 'textElements'])
       && typeof value.text === 'string'
       && value.text.length > 0
       && value.text.length <= 1_048_576
+      && nativeTextElements(value.text, value.textElements)
   }
   if (value.type === 'image') {
     return hasOnlyKeys(value, ['type', 'url', 'detail'])
@@ -317,12 +376,27 @@ const nativeAgentUpdateThreadSettings: Validator = value =>
 
 const nativeAgentStartTurn: Validator = value =>
   isRecord(value)
-  && hasOnlyKeys(value, ['threadId', 'input', 'clientUserMessageId', 'collaborationMode'])
+  && hasOnlyKeys(value, ['threadId', 'input', 'clientUserMessageId', 'collaborationMode', 'additionalContext'])
   && nativeCodexId(value.threadId)
   && Array.isArray(value.input)
   && value.input.length > 0
   && value.input.length <= 64
   && value.input.every(nativeTurnInput)
+  && (value.clientUserMessageId === undefined || nativeMessageId(value.clientUserMessageId))
+  && (value.collaborationMode === undefined || value.collaborationMode === 'default' || value.collaborationMode === 'plan')
+  && nativeUntrustedAdditionalContext(value.additionalContext)
+
+const nativeAgentStartTurnWithAppshot: Validator = value =>
+  isRecord(value)
+  && hasOnlyKeys(value, ['threadId', 'text', 'clientUserMessageId', 'collaborationMode'])
+  && nativeCodexId(value.threadId)
+  && (
+    value.text === undefined
+    || typeof value.text === 'string'
+      && value.text.trim().length > 0
+      && value.text.length <= 1_048_576
+      && !value.text.includes('\u0000')
+  )
   && (value.clientUserMessageId === undefined || nativeMessageId(value.clientUserMessageId))
   && (value.collaborationMode === undefined || value.collaborationMode === 'default' || value.collaborationMode === 'plan')
 
@@ -361,7 +435,7 @@ const nativeAgentStartReview: Validator = value =>
 
 const nativeAgentSteerTurn: Validator = value =>
   isRecord(value)
-  && hasOnlyKeys(value, ['threadId', 'turnId', 'input', 'clientUserMessageId'])
+  && hasOnlyKeys(value, ['threadId', 'turnId', 'input', 'clientUserMessageId', 'additionalContext'])
   && nativeCodexId(value.threadId)
   && nativeCodexId(value.turnId)
   && Array.isArray(value.input)
@@ -369,6 +443,7 @@ const nativeAgentSteerTurn: Validator = value =>
   && value.input.length <= 64
   && value.input.every(nativeTurnInput)
   && (value.clientUserMessageId === undefined || nativeMessageId(value.clientUserMessageId))
+  && nativeUntrustedAdditionalContext(value.additionalContext)
 
 const nativeAgentTurnReference: Validator = value =>
   isRecord(value)
@@ -470,6 +545,14 @@ const nativeAgentThreadMemoryMode: Validator = value =>
   && nativeCodexId(value.threadId)
   && (value.mode === 'enabled' || value.mode === 'disabled')
 
+const nativeAgentMemoryConfiguration: Validator = value =>
+  isRecord(value)
+  && hasOnlyKeys(value, ['threadId', 'enabled', 'useMemories', 'generateMemories'])
+  && nativeCodexId(value.threadId)
+  && typeof value.enabled === 'boolean'
+  && typeof value.useMemories === 'boolean'
+  && typeof value.generateMemories === 'boolean'
+
 const nativeThreadSectionId = (value: unknown): value is string =>
   typeof value === 'string'
   && value.trim().length > 0
@@ -562,6 +645,169 @@ const nativeAgentBackgroundTerminalReference: Validator = value =>
   && nativeCodexId(value.threadId)
   && nativeBackgroundTerminalProcessId(value.processId)
 
+const nativeOperationId = (value: unknown): value is string =>
+  typeof value === 'string' && /^[A-Za-z0-9_-]{8,200}$/.test(value)
+
+const nativeTerminalSize = (value: unknown): boolean =>
+  isRecord(value)
+  && hasOnlyKeys(value, ['rows', 'cols'])
+  && typeof value.rows === 'number'
+  && Number.isSafeInteger(value.rows)
+  && value.rows >= 1
+  && value.rows <= 1_000
+  && typeof value.cols === 'number'
+  && Number.isSafeInteger(value.cols)
+  && value.cols >= 1
+  && value.cols <= 1_000
+
+const nativeAgentIntegratedTerminalStart: Validator = value =>
+  isRecord(value)
+  && hasOnlyKeys(value, ['threadId', 'size'])
+  && nativeCodexId(value.threadId)
+  && nativeTerminalSize(value.size)
+
+const nativeAgentIntegratedTerminalWrite: Validator = value =>
+  isRecord(value)
+  && hasOnlyKeys(value, ['processId', 'text', 'closeStdin'])
+  && nativeOperationId(value.processId)
+  && typeof value.text === 'string'
+  && Buffer.byteLength(value.text) <= 64 * 1024
+  && !value.text.includes('\u0000')
+  && (value.closeStdin === undefined || typeof value.closeStdin === 'boolean')
+  && (value.text.length > 0 || value.closeStdin === true)
+
+const nativeAgentIntegratedTerminalResize: Validator = value =>
+  isRecord(value)
+  && hasOnlyKeys(value, ['processId', 'size'])
+  && nativeOperationId(value.processId)
+  && nativeTerminalSize(value.size)
+
+const nativeAgentIntegratedTerminalTerminate: Validator = value =>
+  isRecord(value)
+  && hasOnlyKeys(value, ['processId'])
+  && nativeOperationId(value.processId)
+
+const nativeFuzzyQuery = (value: unknown): value is string =>
+  typeof value === 'string' && value.length <= 512 && !value.includes('\u0000')
+
+const nativeAgentWorkspaceFileSearch: Validator = value =>
+  isRecord(value)
+  && hasOnlyKeys(value, ['threadId', 'query'])
+  && nativeCodexId(value.threadId)
+  && nativeFuzzyQuery(value.query)
+
+const nativeAgentWorkspaceFileSearchStart: Validator = value =>
+  isRecord(value)
+  && hasOnlyKeys(value, ['threadId'])
+  && nativeCodexId(value.threadId)
+
+const nativeAgentWorkspaceFileSearchUpdate: Validator = value =>
+  isRecord(value)
+  && hasOnlyKeys(value, ['sessionId', 'query'])
+  && nativeOperationId(value.sessionId)
+  && nativeFuzzyQuery(value.query)
+
+const nativeAgentWorkspaceFileSearchStop: Validator = value =>
+  isRecord(value)
+  && hasOnlyKeys(value, ['sessionId'])
+  && nativeOperationId(value.sessionId)
+
+const nativeWorktreeRevision = (value: unknown): boolean =>
+  value === undefined
+  || typeof value === 'string'
+    && /^(?:HEAD|[0-9a-fA-F]{7,64}|[A-Za-z0-9][A-Za-z0-9._/-]{0,255})$/.test(value)
+    && !value.includes('..')
+    && !value.startsWith('-')
+
+const nativeAgentCreateWorktree: Validator = value =>
+  isRecord(value)
+  && hasOnlyKeys(value, ['threadId', 'revision'])
+  && nativeCodexId(value.threadId)
+  && nativeWorktreeRevision(value.revision)
+
+const nativeAgentRestoreWorktree: Validator = value =>
+  isRecord(value)
+  && hasOnlyKeys(value, ['threadId', 'snapshotId'])
+  && nativeCodexId(value.threadId)
+  && nativeCodexId(value.snapshotId)
+
+const nativeAgentHandoffWorkspace: Validator = value =>
+  isRecord(value)
+  && hasOnlyKeys(value, ['threadId', 'destination'])
+  && nativeCodexId(value.threadId)
+  && (value.destination === 'source' || value.destination === 'worktree')
+
+const nativeAgentLocalEnvironmentAction: Validator = value =>
+  isRecord(value)
+  && hasOnlyKeys(value, ['threadId', 'name', 'size'])
+  && nativeCodexId(value.threadId)
+  && typeof value.name === 'string'
+  && /^[A-Za-z0-9][A-Za-z0-9 _.-]{0,79}$/.test(value.name)
+  && nativeTerminalSize(value.size)
+
+const nativeGitPath = (value: unknown): value is string =>
+  typeof value === 'string'
+  && value.length > 0
+  && value.length <= 1_024
+  && !/[\u0000\r\n]/.test(value)
+
+const nativeGitPaths = (value: unknown, optional = false): boolean =>
+  value === undefined && optional
+  || Array.isArray(value)
+    && value.length > 0
+    && value.length <= 256
+    && value.every(nativeGitPath)
+
+const nativeAgentGitDiff: Validator = value =>
+  isRecord(value)
+  && hasOnlyKeys(value, ['threadId', 'staged', 'paths'])
+  && nativeCodexId(value.threadId)
+  && (value.staged === undefined || typeof value.staged === 'boolean')
+  && nativeGitPaths(value.paths, true)
+
+const nativeAgentGitFiles: Validator = value =>
+  isRecord(value)
+  && hasOnlyKeys(value, ['threadId', 'paths'])
+  && nativeCodexId(value.threadId)
+  && nativeGitPaths(value.paths)
+
+const nativeAgentGitPatch: Validator = value =>
+  isRecord(value)
+  && hasOnlyKeys(value, ['threadId', 'patch'])
+  && nativeCodexId(value.threadId)
+  && typeof value.patch === 'string'
+  && value.patch.length > 0
+  && Buffer.byteLength(value.patch) <= 2 * 1024 * 1024
+  && !value.patch.includes('\u0000')
+
+const nativeAgentGitCommit: Validator = value =>
+  isRecord(value)
+  && hasOnlyKeys(value, ['threadId', 'message'])
+  && nativeCodexId(value.threadId)
+  && typeof value.message === 'string'
+  && value.message.trim().length > 0
+  && value.message.length <= 16_000
+  && !value.message.includes('\u0000')
+
+const nativeGitBranch = (value: unknown): value is string =>
+  typeof value === 'string'
+  && value.length > 0
+  && value.length <= 240
+  && !/[\u0000\r\n]/.test(value)
+
+const nativeAgentGitPush: Validator = value =>
+  isRecord(value)
+  && hasOnlyKeys(value, ['threadId', 'remote', 'branch'])
+  && nativeCodexId(value.threadId)
+  && nativeGitBranch(value.branch)
+  && (value.remote === undefined || typeof value.remote === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(value.remote))
+
+const nativeAgentGitBranch: Validator = value =>
+  isRecord(value)
+  && hasOnlyKeys(value, ['threadId', 'name'])
+  && nativeCodexId(value.threadId)
+  && nativeGitBranch(value.name)
+
 const nativeMcpServerName = (value: unknown): value is string =>
   typeof value === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(value)
 
@@ -609,6 +855,21 @@ const nativeAgentCatalogReference: Validator = value =>
   && hasOnlyKeys(value, ['threadId', 'cwd'])
   && nativeCodexId(value.threadId)
   && nativeWorkspacePath(value.cwd)
+
+const nativeHookTrustText = (value: unknown, maximum: number): value is string =>
+  typeof value === 'string'
+  && value.length > 0
+  && value.length <= maximum
+  && value.trim() === value
+  && !/[\u0000\r\n]/.test(value)
+
+const nativeAgentTrustHook: Validator = value =>
+  isRecord(value)
+  && hasOnlyKeys(value, ['threadId', 'cwd', 'hookKey', 'currentHash'])
+  && nativeCodexId(value.threadId)
+  && nativeWorkspacePath(value.cwd)
+  && nativeHookTrustText(value.hookKey, 4_096)
+  && nativeHookTrustText(value.currentHash, 1_024)
 
 const nativeAgentSetSkillEnabled: Validator = value =>
   isRecord(value)
@@ -658,8 +919,8 @@ const nativeAgentImportExternalConfig: Validator = value =>
   && nativeCodexId(value.detectionId)
   && Array.isArray(value.itemIndexes)
   && value.itemIndexes.length > 0
-  && value.itemIndexes.length <= 64
-  && value.itemIndexes.every(item => typeof item === 'number' && Number.isSafeInteger(item) && item >= 0 && item < 256)
+  && value.itemIndexes.length <= 128
+  && value.itemIndexes.every(item => typeof item === 'number' && Number.isSafeInteger(item) && item >= 0 && item < 1_024)
   && new Set(value.itemIndexes).size === value.itemIndexes.length
 
 const nativeScheduledTaskId = (value: unknown): value is string =>
@@ -1010,6 +1271,7 @@ export const ELECTRON_IPC_VALIDATORS = {
   [ELECTRON_IPC_CHANNELS.nativeAgentListPermissionProfiles]: nativeAgentPermissionProfileList,
   [ELECTRON_IPC_CHANNELS.nativeAgentReadConfigRequirements]: nativeAgentThreadReference,
   [ELECTRON_IPC_CHANNELS.nativeAgentReadClientSettings]: nativeAgentThreadReference,
+  [ELECTRON_IPC_CHANNELS.nativeAgentConfigureMemory]: nativeAgentMemoryConfiguration,
   [ELECTRON_IPC_CHANNELS.nativeAgentSetThreadMemoryMode]: nativeAgentThreadMemoryMode,
   [ELECTRON_IPC_CHANNELS.nativeAgentResetMemory]: nativeAgentThreadReference,
   [ELECTRON_IPC_CHANNELS.nativeAgentListThreadSections]: nativeAgentThreadSectionList,
@@ -1023,9 +1285,40 @@ export const ELECTRON_IPC_VALIDATORS = {
   [ELECTRON_IPC_CHANNELS.nativeAgentListBackgroundTerminals]: nativeAgentBackgroundTerminalsPage,
   [ELECTRON_IPC_CHANNELS.nativeAgentTerminateBackgroundTerminal]: nativeAgentBackgroundTerminalReference,
   [ELECTRON_IPC_CHANNELS.nativeAgentCleanBackgroundTerminals]: nativeAgentThreadReference,
+  [ELECTRON_IPC_CHANNELS.nativeAgentStartIntegratedTerminal]: nativeAgentIntegratedTerminalStart,
+  [ELECTRON_IPC_CHANNELS.nativeAgentWriteIntegratedTerminal]: nativeAgentIntegratedTerminalWrite,
+  [ELECTRON_IPC_CHANNELS.nativeAgentResizeIntegratedTerminal]: nativeAgentIntegratedTerminalResize,
+  [ELECTRON_IPC_CHANNELS.nativeAgentTerminateIntegratedTerminal]: nativeAgentIntegratedTerminalTerminate,
+  [ELECTRON_IPC_CHANNELS.nativeAgentSearchWorkspaceFiles]: nativeAgentWorkspaceFileSearch,
+  [ELECTRON_IPC_CHANNELS.nativeAgentStartWorkspaceFileSearch]: nativeAgentWorkspaceFileSearchStart,
+  [ELECTRON_IPC_CHANNELS.nativeAgentUpdateWorkspaceFileSearch]: nativeAgentWorkspaceFileSearchUpdate,
+  [ELECTRON_IPC_CHANNELS.nativeAgentStopWorkspaceFileSearch]: nativeAgentWorkspaceFileSearchStop,
+  [ELECTRON_IPC_CHANNELS.nativeAgentListWorktrees]: nativeAgentThreadReference,
+  [ELECTRON_IPC_CHANNELS.nativeAgentCreateWorktree]: nativeAgentCreateWorktree,
+  [ELECTRON_IPC_CHANNELS.nativeAgentSnapshotWorktree]: nativeAgentThreadReference,
+  [ELECTRON_IPC_CHANNELS.nativeAgentRestoreWorktree]: nativeAgentRestoreWorktree,
+  [ELECTRON_IPC_CHANNELS.nativeAgentActivateWorktree]: nativeAgentThreadReference,
+  [ELECTRON_IPC_CHANNELS.nativeAgentCleanupWorktree]: nativeAgentThreadReference,
+  [ELECTRON_IPC_CHANNELS.nativeAgentHandoffWorkspace]: nativeAgentHandoffWorkspace,
+  [ELECTRON_IPC_CHANNELS.nativeAgentReadLocalEnvironment]: nativeAgentThreadReference,
+  [ELECTRON_IPC_CHANNELS.nativeAgentRunLocalEnvironmentSetup]: nativeAgentThreadReference,
+  [ELECTRON_IPC_CHANNELS.nativeAgentRunLocalEnvironmentCleanup]: nativeAgentThreadReference,
+  [ELECTRON_IPC_CHANNELS.nativeAgentStartLocalEnvironmentAction]: nativeAgentLocalEnvironmentAction,
+  [ELECTRON_IPC_CHANNELS.nativeAgentGitStatus]: nativeAgentThreadReference,
+  [ELECTRON_IPC_CHANNELS.nativeAgentGitDiff]: nativeAgentGitDiff,
+  [ELECTRON_IPC_CHANNELS.nativeAgentGitStageFiles]: nativeAgentGitFiles,
+  [ELECTRON_IPC_CHANNELS.nativeAgentGitRevertFiles]: nativeAgentGitFiles,
+  [ELECTRON_IPC_CHANNELS.nativeAgentGitStagePatch]: nativeAgentGitPatch,
+  [ELECTRON_IPC_CHANNELS.nativeAgentGitRevertPatch]: nativeAgentGitPatch,
+  [ELECTRON_IPC_CHANNELS.nativeAgentGitCommit]: nativeAgentGitCommit,
+  [ELECTRON_IPC_CHANNELS.nativeAgentGitPush]: nativeAgentGitPush,
+  [ELECTRON_IPC_CHANNELS.nativeAgentGitListBranches]: nativeAgentThreadReference,
+  [ELECTRON_IPC_CHANNELS.nativeAgentGitCreateBranch]: nativeAgentGitBranch,
+  [ELECTRON_IPC_CHANNELS.nativeAgentGitSwitchBranch]: nativeAgentGitBranch,
   [ELECTRON_IPC_CHANNELS.nativeAgentUpdatePermissionMode]: nativeAgentUpdatePermissionMode,
   [ELECTRON_IPC_CHANNELS.nativeAgentUpdateThreadSettings]: nativeAgentUpdateThreadSettings,
   [ELECTRON_IPC_CHANNELS.nativeAgentStartTurn]: nativeAgentStartTurn,
+  [ELECTRON_IPC_CHANNELS.nativeAgentStartTurnWithAppshot]: nativeAgentStartTurnWithAppshot,
   [ELECTRON_IPC_CHANNELS.nativeAgentStartReview]: nativeAgentStartReview,
   [ELECTRON_IPC_CHANNELS.nativeAgentSteerTurn]: nativeAgentSteerTurn,
   [ELECTRON_IPC_CHANNELS.nativeAgentInterruptTurn]: nativeAgentTurnReference,
@@ -1040,11 +1333,13 @@ export const ELECTRON_IPC_VALIDATORS = {
   [ELECTRON_IPC_CHANNELS.nativeAgentSetExtraSkillRoots]: nativeAgentSetExtraSkillRoots,
   [ELECTRON_IPC_CHANNELS.nativeAgentDetectExternalConfig]: nativeAgentDetectExternalConfig,
   [ELECTRON_IPC_CHANNELS.nativeAgentImportExternalConfig]: nativeAgentImportExternalConfig,
+  [ELECTRON_IPC_CHANNELS.nativeAgentReadExternalImportHistories]: nativeAgentThreadReference,
   [ELECTRON_IPC_CHANNELS.nativeAgentListScheduledTasks]: nativeAgentListScheduledTasks,
   [ELECTRON_IPC_CHANNELS.nativeAgentCreateScheduledTask]: nativeAgentCreateScheduledTask,
   [ELECTRON_IPC_CHANNELS.nativeAgentSetScheduledTaskEnabled]: nativeAgentSetScheduledTaskEnabled,
   [ELECTRON_IPC_CHANNELS.nativeAgentRemoveScheduledTask]: nativeAgentScheduledTaskReference,
   [ELECTRON_IPC_CHANNELS.nativeAgentListHooks]: nativeAgentCatalogReference,
+  [ELECTRON_IPC_CHANNELS.nativeAgentTrustHook]: nativeAgentTrustHook,
   [ELECTRON_IPC_CHANNELS.nativeAgentListPlugins]: nativeAgentPluginCatalog,
   [ELECTRON_IPC_CHANNELS.nativeAgentListInstalledPlugins]: nativeAgentPluginCatalog,
   [ELECTRON_IPC_CHANNELS.nativeAgentReadPlugin]: nativeAgentPluginReference,

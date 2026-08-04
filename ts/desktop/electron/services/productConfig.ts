@@ -121,22 +121,16 @@ export function resolveProductGatewayConfig(source: ProductConfigSource): Produc
 }
 
 /**
- * The BilliardBuddy desktop is a managed product, so it must never fall through
- * to an unrelated provider/login path when its packaged gateway config is absent.
+ * The Gateway is independently sufficient for installation authentication and
+ * the managed Agent Responses route. Image and video Relay configuration is
+ * deliberately not an implicit prerequisite for those operations.
  */
-export function requireProductGatewayConfig(
+export function requireProductGatewayRoute(
   config: ProductGatewayConfig,
-): ProductGatewayConfig & { url: string; imageRelayUrl: string; videoMediaRelayUrl: string } {
+): ProductGatewayConfig & { url: string } {
   if (!config.url) {
     throw new ProductGatewayConfigError('Product gateway is not configured: missing gateway URL.')
   }
-  if (!config.imageRelayUrl) {
-    throw new ProductGatewayConfigError('Product image relay is not configured: missing image relay URL.')
-  }
-  if (!config.videoMediaRelayUrl) {
-    throw new ProductGatewayConfigError('Product video media relay is not configured: missing video media relay URL.')
-  }
-
   try {
     new URL(config.url)
   } catch {
@@ -147,6 +141,24 @@ export function requireProductGatewayConfig(
       'Product gateway is not configured: gateway URL must use HTTPS at the /gw endpoint.',
     )
   }
+  return { ...config, url: config.url }
+}
+
+/**
+ * The BilliardBuddy desktop is a managed product, so it must never fall through
+ * to an unrelated provider/login path when its packaged gateway config is absent.
+ */
+export function requireProductGatewayConfig(
+  config: ProductGatewayConfig,
+): ProductGatewayConfig & { url: string; imageRelayUrl: string; videoMediaRelayUrl: string } {
+  const gateway = requireProductGatewayRoute(config)
+  if (!config.imageRelayUrl) {
+    throw new ProductGatewayConfigError('Product image relay is not configured: missing image relay URL.')
+  }
+  if (!config.videoMediaRelayUrl) {
+    throw new ProductGatewayConfigError('Product video media relay is not configured: missing video media relay URL.')
+  }
+
   try {
     new URL(config.imageRelayUrl)
   } catch {
@@ -167,7 +179,7 @@ export function requireProductGatewayConfig(
       'Product video media relay is not configured: video media relay URL must use HTTPS at the /video-media endpoint.',
     )
   }
-  return { url: config.url, imageRelayUrl: config.imageRelayUrl, videoMediaRelayUrl: config.videoMediaRelayUrl }
+  return { ...gateway, imageRelayUrl: config.imageRelayUrl, videoMediaRelayUrl: config.videoMediaRelayUrl }
 }
 
 /**

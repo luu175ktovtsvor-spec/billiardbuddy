@@ -46,6 +46,7 @@ import { acquireSingleInstanceLock } from './services/singleInstance'
 import { installTray, shouldInstallTray, type TrayController } from './services/tray'
 import {
   requireProductGatewayConfig,
+  requireProductGatewayRoute,
   resolveProductGatewayConfig,
 } from './services/productConfig'
 import { ensureInstallationId } from './services/installationId'
@@ -66,10 +67,14 @@ import { createCredentialStore, EphemeralCredentialStore, retireInstallationSess
 import { ProviderCredentialService } from './services/providerCredentials'
 import {
   ElectronCodexNativeRuntime,
+  nativeConfigRequirementsAllowAppshots,
   type CodexNativeJsonObject,
   type CodexNativeNotification,
   type NativeCodexCollaborationMode,
+  type NativeCodexAdditionalContext,
+  type NativeCodexHookTrustInput,
   type NativeCodexMarketplaceAddInput,
+  type NativeCodexMemoryConfiguration,
   type NativeExternalAgentMigrationItem,
   type NativeCodexPermissionMode,
   type NativeCodexPluginReference,
@@ -80,6 +85,7 @@ import {
   type NativeCodexThreadListInput,
   type NativeCodexThreadMetadataGitInfoUpdate,
   type NativeCodexThreadSettingsPatch,
+  type NativeCodexTerminalSize,
   type NativeCodexTurnInput,
 } from './services/codexNativeAppServer'
 import type { CodexNativeModelRoute } from './services/codexNativeProvider'
@@ -107,6 +113,10 @@ import {
 import { InAppBrowserHost } from './services/inAppBrowserHost'
 import { requestRecordReplayStop } from './services/recordReplayLifecycle'
 import { ScheduledAgentTaskService, type ScheduledAgentTask, type ScheduledAgentTaskInput } from './services/scheduledAgentTasks'
+import { AgentWorkspaceHost, type AgentWorktree } from './services/agentWorkspaceHost'
+import { AgentGitHost, type AgentGitStatus } from './services/agentGitHost'
+import { LocalEnvironmentHost } from './services/localEnvironment'
+import { AgentAppshotHost } from './services/agentAppshotHost'
 import { resolveRendererEntry } from './services/rendererEntry'
 import {
   nativeInteractiveServerRequest,
@@ -147,6 +157,11 @@ let providerCredentialService: ProviderCredentialService | null = null
 let nativeAgentRuntime: ElectronCodexNativeRuntime | null = null
 let inAppBrowserHost: InAppBrowserHost | null = null
 let scheduledAgentTasks: ScheduledAgentTaskService | null = null
+let agentWorkspaceHost: AgentWorkspaceHost | null = null
+let agentGitHost: AgentGitHost | null = null
+let localEnvironmentHost: LocalEnvironmentHost | null = null
+let agentAppshotHost: AgentAppshotHost | null = null
+let nativeAgentAppshotInProgress = false
 let isQuitting = false
 let trayController: TrayController | null = null
 const trustedProductWindowEntries = new Map<BrowserWindow, string>()
@@ -163,9 +178,17 @@ type PendingNativeAgentServerRequest = {
 
 const nativeAgentThreadOwners = new Map<string, number>()
 const nativeAgentTurnOwners = new Map<string, number>()
+const nativeAgentTerminalOwners = new Map<string, { ownerId: number, threadId: string }>()
+const nativeAgentFuzzySearchOwners = new Map<string, { ownerId: number, threadId: string }>()
+const nativeAgentExternalImportOwners = new Map<string, { ownerId: number, threadId: string }>()
 const nativeAgentServerRequests = new Map<string, PendingNativeAgentServerRequest>()
 /** Windows Sandbox setup is source-global, so it has one explicit UI owner. */
 let nativeWindowsSandboxSetupOwnerId: number | undefined
+/** Only one top-level start can be awaiting its source notification at once. */
+let pendingNativeAgentThreadStartOwnerId: number | undefined
+/** Import response precedes progress, but keep an owner for same-frame notification races. */
+let pendingNativeAgentExternalImportOwner: { ownerId: number, threadId: string } | undefined
+const completedNativeAgentExternalImports = new Set<string>()
 
 type PendingExternalAgentDetection = {
   ownerId: number
@@ -175,11 +198,10 @@ type PendingExternalAgentDetection = {
 }
 
 const pendingExternalAgentDetections = new Map<string, PendingExternalAgentDetection>()
-const permittedExternalAgentMigrationTypes = new Set(['AGENTS_MD', 'SKILLS', 'SUBAGENTS', 'COMMANDS'])
 
 function externalAgentMigrationItemType(item: NativeExternalAgentMigrationItem): string | undefined {
   const itemType = item.itemType
-  return typeof itemType === 'string' ? itemType : undefined
+  return typeof itemType === 'string' && /^[A-Z][A-Z0-9_]{0,63}$/.test(itemType) ? itemType : undefined
 }
 
 function safeExternalAgentMigrationItems(response: CodexNativeJsonObject): readonly NativeExternalAgentMigrationItem[] {
@@ -187,7 +209,7 @@ function safeExternalAgentMigrationItems(response: CodexNativeJsonObject): reado
   if (!Array.isArray(items)) return []
   return items.filter((item): item is NativeExternalAgentMigrationItem => {
     if (!item || typeof item !== 'object' || Array.isArray(item)) return false
-    return permittedExternalAgentMigrationTypes.has(externalAgentMigrationItemType(item as NativeExternalAgentMigrationItem) ?? '')
+    return externalAgentMigrationItemType(item as NativeExternalAgentMigrationItem) !== undefined
   })
 }
 
@@ -259,7 +281,7 @@ function getInstallationSessionManager() {
     } catch (error) {
       console.warn('[desktop] could not clear retired installation session', error)
     }
-    const config = requireProductGatewayConfig(resolveProductGatewayConfig({
+    const config = requireProductGatewayRoute(resolveProductGatewayConfig({
       isPackaged: app.isPackaged,
       resourcesPath: process.resourcesPath,
       devBuildDir: path.join(unpackedRoot(), 'build'),
@@ -299,6 +321,34 @@ function nativeThreadId(params: unknown): string | undefined {
 function nativeTurnId(params: unknown): string | undefined {
   const value = nativeProtocolObject(params)
   return nativeProtocolText(value?.turnId) ?? nativeProtocolText(nativeProtocolObject(value?.turn)?.id)
+}
+
+function nativeThreadParentId(params: unknown): string | undefined {
+  const thread = nativeProtocolObject(nativeProtocolObject(params)?.thread)
+  if (!thread) return undefined
+  const direct = nativeProtocolText(thread.parentThreadId) ?? nativeProtocolText(thread.forkedFromId)
+  if (direct) return direct
+  const source = nativeProtocolObject(thread.source)
+  const subAgent = nativeProtocolObject(source?.subAgent)
+  const spawn = nativeProtocolObject(subAgent?.thread_spawn) ?? nativeProtocolObject(subAgent?.threadSpawn)
+  return nativeProtocolText(spawn?.parent_thread_id) ?? nativeProtocolText(spawn?.parentThreadId)
+}
+
+function nativeCorrelationId(params: unknown, key: string): string | undefined {
+  return nativeProtocolText(nativeProtocolObject(params)?.[key])
+}
+
+const nativeAgentHostGlobalNotifications = new Set([
+  'skills/changed',
+  'fs/changed',
+  'deprecationNotice',
+  'configWarning',
+  'windows/worldWritableWarning',
+])
+
+function nativeIntegratedTerminalCommand(): string[] {
+  if (process.platform === 'win32') return [process.env.ComSpec?.trim() || 'cmd.exe']
+  return [process.env.SHELL?.trim() || '/bin/zsh', '-l']
 }
 
 function nativeAgentPermissionMode(value: unknown): NativeCodexPermissionMode {
@@ -347,7 +397,7 @@ async function confirmNativeAgentFullAccess(owner: BrowserWindow): Promise<void>
     type: 'warning',
     title: '启用 Agent 完全访问？',
     message: 'Agent 将可读取和修改这台电脑上的任意文件，并执行带网络的命令。',
-    detail: '此模式不再逐项请求批准。你可以随时在 Agent 权限中切回受限模式。',
+    detail: '此模式会关闭 Codex Core 的逐项审批，包括 Computer Use、Browser、Chrome 与 Record & Replay 的写操作。你可以随时在 Agent 权限中切回受限模式。',
     buttons: ['取消', '启用完全访问'],
     defaultId: 0,
     cancelId: 0,
@@ -482,15 +532,35 @@ function rejectNativeAgentServerRequests(error: Error): void {
 }
 
 function releaseNativeAgentOwner(ownerId: number, error: Error): void {
+  const runtime = nativeAgentRuntime
   for (const [threadId, currentOwnerId] of nativeAgentThreadOwners) {
     if (currentOwnerId === ownerId) nativeAgentThreadOwners.delete(threadId)
   }
   for (const [turnId, currentOwnerId] of nativeAgentTurnOwners) {
     if (currentOwnerId === ownerId) nativeAgentTurnOwners.delete(turnId)
   }
+  for (const [processId, ownership] of nativeAgentTerminalOwners) {
+    if (ownership.ownerId !== ownerId) continue
+    nativeAgentTerminalOwners.delete(processId)
+    if (runtime) void runtime.terminateIntegratedTerminal(processId).catch(() => undefined)
+  }
+  for (const [sessionId, ownership] of nativeAgentFuzzySearchOwners) {
+    if (ownership.ownerId !== ownerId) continue
+    nativeAgentFuzzySearchOwners.delete(sessionId)
+    if (runtime) void runtime.stopWorkspaceFileSearchSession(sessionId).catch(() => undefined)
+  }
+  for (const [importId, ownership] of nativeAgentExternalImportOwners) {
+    if (ownership.ownerId === ownerId) nativeAgentExternalImportOwners.delete(importId)
+  }
+  for (const [detectionId, detection] of pendingExternalAgentDetections) {
+    if (detection.ownerId === ownerId) pendingExternalAgentDetections.delete(detectionId)
+  }
   for (const [requestId, pending] of nativeAgentServerRequests) {
     if (pending.ownerId === ownerId) releaseNativeAgentServerRequest(requestId)?.reject(error)
   }
+  if (pendingNativeAgentThreadStartOwnerId === ownerId) pendingNativeAgentThreadStartOwnerId = undefined
+  if (pendingNativeAgentExternalImportOwner?.ownerId === ownerId) pendingNativeAgentExternalImportOwner = undefined
+  if (nativeWindowsSandboxSetupOwnerId === ownerId) nativeWindowsSandboxSetupOwnerId = undefined
 }
 
 function sourceRequestKeyFromResolvedNotification(params: unknown): string | undefined {
@@ -503,12 +573,57 @@ function sourceRequestKeyFromResolvedNotification(params: unknown): string | und
 function forwardNativeAgentNotification(notification: CodexNativeNotification): void {
   const threadId = nativeThreadId(notification.params)
   const turnId = nativeTurnId(notification.params)
+  if (notification.method === 'thread/started' && threadId && !nativeAgentThreadOwners.has(threadId)) {
+    const parentThreadId = nativeThreadParentId(notification.params)
+    const inheritedOwnerId = parentThreadId === undefined
+      ? pendingNativeAgentThreadStartOwnerId
+      : nativeAgentThreadOwners.get(parentThreadId)
+    if (inheritedOwnerId !== undefined) {
+      nativeAgentThreadOwners.set(threadId, inheritedOwnerId)
+      if (inheritedOwnerId === pendingNativeAgentThreadStartOwnerId) pendingNativeAgentThreadStartOwnerId = undefined
+    }
+    if (parentThreadId) {
+      // Rust owns child Thread creation. Persist only the host checkout routing
+      // inherited from an already managed parent, so a later resume cannot use
+      // a renderer-selected directory.
+      void nativeAgentWorktree(parentThreadId).then(async parent => {
+        if (parent) await getAgentWorkspaceHost().attachThread(parent.id, threadId)
+      }).catch(error => {
+        console.warn('BilliardBuddy could not persist a managed child Thread workspace', error)
+      })
+    }
+  }
+  if (notification.method === 'turn/started' && threadId && turnId) {
+    const threadOwnerId = nativeAgentThreadOwners.get(threadId)
+    if (threadOwnerId !== undefined) nativeAgentTurnOwners.set(turnId, threadOwnerId)
+  }
+
+  const processId = nativeCorrelationId(notification.params, 'processId')
+  const importId = nativeCorrelationId(notification.params, 'importId')
+  const sessionId = nativeCorrelationId(notification.params, 'sessionId')
+  const globalOwnerId = mainWindow?.webContents && !mainWindow.webContents.isDestroyed()
+    ? mainWindow.webContents.id
+    : undefined
+  const nullableHostGlobal = threadId === undefined && (
+    notification.method === 'warning'
+    || notification.method === 'mcpServer/oauthLogin/completed'
+    || notification.method === 'mcpServer/startupStatus/updated'
+  )
   const ownerId = threadId
     ? nativeAgentThreadOwners.get(threadId)
     : turnId
       ? nativeAgentTurnOwners.get(turnId)
+      : processId && notification.method === 'command/exec/outputDelta'
+        ? nativeAgentTerminalOwners.get(processId)?.ownerId
+        : importId && notification.method.startsWith('externalAgentConfig/import/')
+          ? nativeAgentExternalImportOwners.get(importId)?.ownerId
+            ?? pendingNativeAgentExternalImportOwner?.ownerId
+          : sessionId && notification.method.startsWith('fuzzyFileSearch/session')
+            ? nativeAgentFuzzySearchOwners.get(sessionId)?.ownerId
       : notification.method === 'windowsSandbox/setupCompleted'
         ? nativeWindowsSandboxSetupOwnerId
+        : nativeAgentHostGlobalNotifications.has(notification.method) || nullableHostGlobal
+          ? globalOwnerId
         : undefined
   if (notification.method === 'serverRequest/resolved') {
     const sourceRequestKey = sourceRequestKeyFromResolvedNotification(notification.params)
@@ -534,6 +649,18 @@ function forwardNativeAgentNotification(notification: CodexNativeNotification): 
   if (notification.method === 'turn/completed' && turnId) nativeAgentTurnOwners.delete(turnId)
   if ((notification.method === 'thread/archived' || notification.method === 'thread/deleted') && threadId) {
     nativeAgentThreadOwners.delete(threadId)
+  }
+  if (notification.method === 'thread/deleted' && threadId) {
+    void getAgentWorkspaceHost().detachThread(threadId).catch(error => {
+      console.warn('BilliardBuddy could not remove a deleted child Thread workspace binding', error)
+    })
+  }
+  if (notification.method === 'externalAgentConfig/import/completed' && importId) {
+    if (nativeAgentExternalImportOwners.has(importId)) nativeAgentExternalImportOwners.delete(importId)
+    else if (pendingNativeAgentExternalImportOwner) completedNativeAgentExternalImports.add(importId)
+  }
+  if (notification.method === 'fuzzyFileSearch/sessionCompleted' && sessionId) {
+    nativeAgentFuzzySearchOwners.delete(sessionId)
   }
   if (notification.method === 'windowsSandbox/setupCompleted') {
     nativeWindowsSandboxSetupOwnerId = undefined
@@ -580,7 +707,7 @@ async function requestNativeAgentServerRequest(request: CodexNativeServerRequest
   })
 }
 
-function managedNativeAgentModel(): string {
+function managedNativeAgentModel() {
   const model = process.env.BB_GATEWAY_MODEL?.trim() || defaultProviderModel()
   const entry = textReasoningRegistryEntry(model)
   // The built-in Agent route is deliberately pinned to the managed DeepSeek
@@ -589,7 +716,7 @@ function managedNativeAgentModel(): string {
   if (!entry || entry.provider !== 'deepseek' || entry.text_reasoning_transport !== 'responses') {
     throw new Error('CODEX_NATIVE_MANAGED_MODEL_INVALID')
   }
-  return model
+  return entry
 }
 
 async function resolveNativeAgentRoute(): Promise<CodexNativeModelRoute> {
@@ -597,18 +724,19 @@ async function resolveNativeAgentRoute(): Promise<CodexNativeModelRoute> {
   if (profile) {
     return { kind: 'personal', profile }
   }
-  const config = requireProductGatewayConfig(resolveProductGatewayConfig({
+  const config = requireProductGatewayRoute(resolveProductGatewayConfig({
     isPackaged: app.isPackaged,
     resourcesPath: process.resourcesPath,
     devBuildDir: path.join(unpackedRoot(), 'build'),
     env: process.env,
   }))
-  const model = managedNativeAgentModel()
+  const managedModel = managedNativeAgentModel()
   return {
     kind: 'managed',
     gatewayUrl: config.url,
     resolveAccessToken: () => getInstallationSessionManager().accessToken(),
-    model,
+    model: managedModel.model_id,
+    capabilities: managedModel.capabilities,
   }
 }
 
@@ -623,6 +751,9 @@ function getNativeAgentRuntime(): ElectronCodexNativeRuntime {
       const ownerIds = new Set([
         ...nativeAgentThreadOwners.values(),
         ...nativeAgentTurnOwners.values(),
+        ...[...nativeAgentTerminalOwners.values()].map(owner => owner.ownerId),
+        ...[...nativeAgentFuzzySearchOwners.values()].map(owner => owner.ownerId),
+        ...[...nativeAgentExternalImportOwners.values()].map(owner => owner.ownerId),
       ])
       for (const ownerId of ownerIds) {
         sendNativeAgentEvent(ownerId, {
@@ -631,6 +762,12 @@ function getNativeAgentRuntime(): ElectronCodexNativeRuntime {
         })
       }
       nativeAgentTurnOwners.clear()
+      nativeAgentTerminalOwners.clear()
+      nativeAgentFuzzySearchOwners.clear()
+      nativeAgentExternalImportOwners.clear()
+      pendingNativeAgentThreadStartOwnerId = undefined
+      pendingNativeAgentExternalImportOwner = undefined
+      completedNativeAgentExternalImports.clear()
       rejectNativeAgentServerRequests(error)
     },
   })
@@ -646,6 +783,149 @@ function getInAppBrowserHost(): InAppBrowserHost {
   return inAppBrowserHost
 }
 
+function getAgentWorkspaceHost(): AgentWorkspaceHost {
+  agentWorkspaceHost ??= new AgentWorkspaceHost({ userDataPath: app.getPath('userData') })
+  return agentWorkspaceHost
+}
+
+function getAgentGitHost(): AgentGitHost {
+  agentGitHost ??= new AgentGitHost({ userDataPath: app.getPath('userData') })
+  return agentGitHost
+}
+
+function getLocalEnvironmentHost(): LocalEnvironmentHost {
+  localEnvironmentHost ??= new LocalEnvironmentHost()
+  return localEnvironmentHost
+}
+
+function getAgentAppshotHost(): AgentAppshotHost {
+  agentAppshotHost ??= new AgentAppshotHost({ desktopRoot: unpackedRoot() })
+  return agentAppshotHost
+}
+
+function nativeAgentWorkspace(threadId: string): string {
+  return getNativeAgentRuntime().threadWorkspace({ id: threadId })
+}
+
+async function nativeAgentWorktree(threadId: string): Promise<AgentWorktree | undefined> {
+  return await getAgentWorkspaceHost().forThread(threadId)
+}
+
+/** A managed Thread may only re-enter its persisted source or worktree path. */
+async function nativeAgentWorkspaceForThread(threadId: string, requestedCwd: string): Promise<string> {
+  return await getAgentWorkspaceHost().activeWorkspacePath(threadId) ?? requestedCwd
+}
+
+/** Keep host-only Worktree routing durable without making it a parallel Thread store. */
+async function relocateNativeAgentWorktree(
+  threadId: string,
+  worktree: AgentWorktree,
+  destination: 'source' | 'worktree',
+): Promise<void> {
+  const host = getAgentWorkspaceHost()
+  const previous = worktree.activeWorkspace ?? 'source'
+  const target = destination === 'source' ? worktree.sourceTree : worktree.worktreePath
+  await host.setActiveWorkspace(worktree.id, destination)
+  try {
+    await getNativeAgentRuntime().relocateThreadWorkspace({ id: threadId }, target)
+  } catch (error) {
+    await host.setActiveWorkspace(worktree.id, previous).catch(() => undefined)
+    throw error
+  }
+}
+
+async function withNativeAgentWorkspaceMutation<T>(
+  threadId: string,
+  action: () => Promise<T>,
+  relatedWorkspaces: readonly string[] = [],
+): Promise<T> {
+  const runtime = await getReadyNativeAgentThreadRuntime(threadId)
+  const roots = new Set([path.normalize(nativeAgentWorkspace(threadId)), ...relatedWorkspaces.map(workspace => path.normalize(workspace))])
+  runtime.beginThreadWorkspaceMutation({ id: threadId }, relatedWorkspaces)
+  try {
+    if ([...nativeAgentTerminalOwners.values()].some(owner => {
+      try { return roots.has(path.normalize(runtime.threadWorkspace({ id: owner.threadId }))) } catch { return false }
+    })) {
+      throw new Error('BILLIARDBUDDY_WORKSPACE_TERMINAL_ACTIVE')
+    }
+    // The Rust App Server owns background terminals. Reserve first so no new
+    // Turn/PTY can start between this query and the host filesystem mutation.
+    await runtime.assertWorkspacesHaveNoBackgroundTerminals([...roots])
+    return await action()
+  } finally {
+    runtime.endThreadWorkspaceMutation({ id: threadId })
+  }
+}
+
+async function confirmNativeAgentHostMutation(
+  owner: BrowserWindow,
+  title: string,
+  message: string,
+  detail: string,
+  action: string,
+): Promise<void> {
+  const result = await dialog.showMessageBox(owner, {
+    type: 'warning',
+    title,
+    message,
+    detail: detail.replace(/[\u0000-\u001F\u007F]/g, ' ').slice(0, 2_000),
+    buttons: ['取消', action],
+    defaultId: 0,
+    cancelId: 0,
+    noLink: true,
+  })
+  if (result.response !== 1) throw new Error('BILLIARDBUDDY_HOST_MUTATION_DECLINED')
+}
+
+async function syncNativeAgentGitMetadata(threadId: string, status?: AgentGitStatus): Promise<AgentGitStatus> {
+  const current = status ?? await getAgentGitHost().status(nativeAgentWorkspace(threadId))
+  await (await getReadyNativeAgentThreadRuntime(threadId)).updateThreadMetadata(
+    { id: threadId },
+    { sha: current.head, branch: current.branch },
+  )
+  return current
+}
+
+function nativeLocalEnvironmentCommand(script: string): string[] {
+  if (process.platform === 'win32') {
+    return [process.env.ComSpec?.trim() || 'cmd.exe', '/d', '/s', '/c', script]
+  }
+  return [process.env.SHELL?.trim() || '/bin/zsh', '-lc', script]
+}
+
+async function startNativeAgentTerminal(
+  ownerId: number,
+  threadId: string,
+  size: NativeCodexTerminalSize,
+  command = nativeIntegratedTerminalCommand(),
+): Promise<{ processId: string }> {
+  const runtime = await getReadyNativeAgentThreadRuntime(threadId)
+  const processId = randomBytes(18).toString('base64url')
+  const ownership = { ownerId, threadId }
+  nativeAgentTerminalOwners.set(processId, ownership)
+  void runtime.startIntegratedTerminal(
+    { id: threadId },
+    { processId, command, size },
+  ).then(result => {
+    if (nativeAgentTerminalOwners.get(processId) !== ownership) return
+    sendNativeAgentEvent(ownership.ownerId, {
+      type: 'integrated-terminal-completed',
+      processId,
+      result,
+    })
+  }).catch(() => {
+    if (nativeAgentTerminalOwners.get(processId) !== ownership) return
+    sendNativeAgentEvent(ownership.ownerId, {
+      type: 'integrated-terminal-failed',
+      processId,
+      code: 'CODEX_NATIVE_INTEGRATED_TERMINAL_FAILED',
+    })
+  }).finally(() => {
+    if (nativeAgentTerminalOwners.get(processId) === ownership) nativeAgentTerminalOwners.delete(processId)
+  })
+  return { processId }
+}
+
 /**
  * Scheduled work deliberately re-enters a durable Rust Thread.  There is no
  * second Agent loop in Electron: the host only persists cadence and starts a
@@ -659,11 +939,13 @@ function getScheduledAgentTasks(): ScheduledAgentTaskService {
       if (!owner || owner.isDestroyed()) throw new Error('BILLIARDBUDDY_SCHEDULED_TASK_HOST_UNAVAILABLE')
       claimNativeAgentThread(owner.id, task.threadId)
       const runtime = getNativeAgentRuntime()
-      await runtime.resumeThread({
+      const cwd = await nativeAgentWorkspaceForThread(task.threadId, task.cwd)
+      const resumed = await runtime.resumeThread({
         threadId: task.threadId,
-        cwd: task.cwd,
+        cwd,
         route: await resolveNativeAgentRoute(),
       })
+      for (const activeTurnId of resumed.activeTurnIds) nativeAgentTurnOwners.set(activeTurnId, owner.id)
       const turn = await runtime.startTurn(
         { id: task.threadId },
         [{ type: 'text', text: task.prompt }],
@@ -685,9 +967,12 @@ function getScheduledAgentTasks(): ScheduledAgentTaskService {
  * Rust Thread. Re-open that owned Thread through the current route before a
  * subsequent thread-scoped operation reaches Core.
  */
-async function getReadyNativeAgentThreadRuntime(threadId: string): Promise<ElectronCodexNativeRuntime> {
+async function getReadyNativeAgentThreadRuntime(
+  threadId: string,
+  route?: CodexNativeModelRoute,
+): Promise<ElectronCodexNativeRuntime> {
   const runtime = getNativeAgentRuntime()
-  await runtime.ensureThread({ id: threadId }, await resolveNativeAgentRoute())
+  await runtime.ensureThread({ id: threadId }, route ?? await resolveNativeAgentRoute())
   return runtime
 }
 
@@ -892,13 +1177,21 @@ function registerIpcHandlers() {
     const input = payload as { cwd: string, permissionMode: unknown }
     const permissionMode = nativeAgentPermissionMode(input.permissionMode)
     if (permissionMode === 'full-access') await confirmNativeAgentFullAccess(currentWindow(event))
-    const thread = await getNativeAgentRuntime().startThread({
-      cwd: input.cwd,
-      route: await resolveNativeAgentRoute(),
-      permissionMode,
-    })
-    claimNativeAgentThread(event.sender.id, thread.id)
-    return thread
+    if (pendingNativeAgentThreadStartOwnerId !== undefined) {
+      throw new Error('CODEX_NATIVE_THREAD_START_IN_PROGRESS')
+    }
+    pendingNativeAgentThreadStartOwnerId = event.sender.id
+    try {
+      const thread = await getNativeAgentRuntime().startThread({
+        cwd: input.cwd,
+        route: await resolveNativeAgentRoute(),
+        permissionMode,
+      })
+      claimNativeAgentThread(event.sender.id, thread.id)
+      return thread
+    } finally {
+      if (pendingNativeAgentThreadStartOwnerId === event.sender.id) pendingNativeAgentThreadStartOwnerId = undefined
+    }
   })
   registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentWindowsSandboxReadiness, async (_event, payload) => {
     const input = payload as { cwd: string }
@@ -960,11 +1253,13 @@ function registerIpcHandlers() {
     const previousOwnerId = nativeAgentThreadOwners.get(input.threadId)
     claimNativeAgentThread(event.sender.id, input.threadId)
     try {
-      return await getNativeAgentRuntime().resumeThread({
+      const thread = await getNativeAgentRuntime().resumeThread({
         threadId: input.threadId,
-        cwd: input.cwd,
+        cwd: await nativeAgentWorkspaceForThread(input.threadId, input.cwd),
         route: await resolveNativeAgentRoute(),
       })
+      for (const activeTurnId of thread.activeTurnIds) nativeAgentTurnOwners.set(activeTurnId, event.sender.id)
+      return thread
     } catch (error) {
       if (previousOwnerId === undefined) nativeAgentThreadOwners.delete(input.threadId)
       else nativeAgentThreadOwners.set(input.threadId, previousOwnerId)
@@ -977,7 +1272,8 @@ function registerIpcHandlers() {
     claimNativeAgentThread(event.sender.id, input.threadId)
     try {
       return await getNativeAgentRuntime().unarchiveThread({
-        ...input,
+        threadId: input.threadId,
+        cwd: await nativeAgentWorkspaceForThread(input.threadId, input.cwd),
         route: await resolveNativeAgentRoute(),
       })
     } catch (error) {
@@ -992,9 +1288,11 @@ function registerIpcHandlers() {
     claimNativeAgentThread(event.sender.id, input.threadId)
     try {
       await getNativeAgentRuntime().deleteThread({
-        ...input,
+        threadId: input.threadId,
+        cwd: await nativeAgentWorkspaceForThread(input.threadId, input.cwd),
         route: await resolveNativeAgentRoute(),
       })
+      await getAgentWorkspaceHost().detachThread(input.threadId)
       nativeAgentThreadOwners.delete(input.threadId)
     } catch (error) {
       if (previousOwnerId === undefined) nativeAgentThreadOwners.delete(input.threadId)
@@ -1031,13 +1329,15 @@ function registerIpcHandlers() {
     assertNativeAgentThreadOwner(event.sender.id, input.threadId)
     const permissionMode = nativeAgentPermissionMode(input.permissionMode)
     if (permissionMode === 'full-access') await confirmNativeAgentFullAccess(currentWindow(event))
+    const worktree = await nativeAgentWorktree(input.threadId)
     const thread = await getNativeAgentRuntime().forkThread({
       threadId: input.threadId,
-      cwd: input.cwd,
+      cwd: await nativeAgentWorkspaceForThread(input.threadId, input.cwd),
       ...(input.lastTurnId === undefined ? {} : { lastTurnId: input.lastTurnId }),
       route: await resolveNativeAgentRoute(),
       permissionMode,
     })
+    if (worktree) await getAgentWorkspaceHost().attachThread(worktree.id, thread.id)
     claimNativeAgentThread(event.sender.id, thread.id)
     return thread
   })
@@ -1115,6 +1415,15 @@ function registerIpcHandlers() {
     const input = payload as { threadId: string }
     assertNativeAgentThreadOwner(event.sender.id, input.threadId)
     return await (await getReadyNativeAgentThreadRuntime(input.threadId)).readClientSettings({ id: input.threadId })
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentConfigureMemory, async (event, payload) => {
+    const input = payload as { threadId: string } & NativeCodexMemoryConfiguration
+    assertNativeAgentThreadOwner(event.sender.id, input.threadId)
+    const { threadId, ...configuration } = input
+    return await (await getReadyNativeAgentThreadRuntime(threadId)).configureMemory(
+      { id: threadId },
+      configuration,
+    )
   })
   registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentSetThreadMemoryMode, async (event, payload) => {
     const input = payload as { threadId: string, mode: 'enabled' | 'disabled' }
@@ -1222,6 +1531,361 @@ function registerIpcHandlers() {
     )
     await (await getReadyNativeAgentThreadRuntime(input.threadId)).cleanBackgroundTerminals({ id: input.threadId })
   })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentStartIntegratedTerminal, async (event, payload) => {
+    const input = payload as { threadId: string, size: NativeCodexTerminalSize }
+    assertNativeAgentThreadOwner(event.sender.id, input.threadId)
+    return await startNativeAgentTerminal(event.sender.id, input.threadId, input.size)
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentWriteIntegratedTerminal, async (event, payload) => {
+    const input = payload as { processId: string, text: string, closeStdin?: boolean }
+    const ownership = nativeAgentTerminalOwners.get(input.processId)
+    if (!ownership || ownership.ownerId !== event.sender.id) throw new Error('CODEX_NATIVE_TERMINAL_OWNER_REQUIRED')
+    await getNativeAgentRuntime().writeIntegratedTerminal(input.processId, input.text, input.closeStdin)
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentResizeIntegratedTerminal, async (event, payload) => {
+    const input = payload as { processId: string, size: NativeCodexTerminalSize }
+    const ownership = nativeAgentTerminalOwners.get(input.processId)
+    if (!ownership || ownership.ownerId !== event.sender.id) throw new Error('CODEX_NATIVE_TERMINAL_OWNER_REQUIRED')
+    await getNativeAgentRuntime().resizeIntegratedTerminal(input.processId, input.size)
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentTerminateIntegratedTerminal, async (event, payload) => {
+    const input = payload as { processId: string }
+    const ownership = nativeAgentTerminalOwners.get(input.processId)
+    if (!ownership || ownership.ownerId !== event.sender.id) throw new Error('CODEX_NATIVE_TERMINAL_OWNER_REQUIRED')
+    await getNativeAgentRuntime().terminateIntegratedTerminal(input.processId)
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentSearchWorkspaceFiles, async (event, payload) => {
+    const input = payload as { threadId: string, query: string }
+    assertNativeAgentThreadOwner(event.sender.id, input.threadId)
+    return await (await getReadyNativeAgentThreadRuntime(input.threadId)).searchWorkspaceFiles(
+      { id: input.threadId },
+      input.query,
+    )
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentStartWorkspaceFileSearch, async (event, payload) => {
+    const input = payload as { threadId: string }
+    assertNativeAgentThreadOwner(event.sender.id, input.threadId)
+    const runtime = await getReadyNativeAgentThreadRuntime(input.threadId)
+    const sessionId = randomBytes(18).toString('base64url')
+    const ownership = { ownerId: event.sender.id, threadId: input.threadId }
+    nativeAgentFuzzySearchOwners.set(sessionId, ownership)
+    try {
+      await runtime.startWorkspaceFileSearchSession({ id: input.threadId }, sessionId)
+    } catch (error) {
+      if (nativeAgentFuzzySearchOwners.get(sessionId) === ownership) {
+        nativeAgentFuzzySearchOwners.delete(sessionId)
+      }
+      throw error
+    }
+    return { sessionId }
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentUpdateWorkspaceFileSearch, async (event, payload) => {
+    const input = payload as { sessionId: string, query: string }
+    const ownership = nativeAgentFuzzySearchOwners.get(input.sessionId)
+    if (!ownership || ownership.ownerId !== event.sender.id) throw new Error('CODEX_NATIVE_FUZZY_SESSION_OWNER_REQUIRED')
+    await getNativeAgentRuntime().updateWorkspaceFileSearchSession(input.sessionId, input.query)
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentStopWorkspaceFileSearch, async (event, payload) => {
+    const input = payload as { sessionId: string }
+    const ownership = nativeAgentFuzzySearchOwners.get(input.sessionId)
+    if (!ownership || ownership.ownerId !== event.sender.id) throw new Error('CODEX_NATIVE_FUZZY_SESSION_OWNER_REQUIRED')
+    try {
+      await getNativeAgentRuntime().stopWorkspaceFileSearchSession(input.sessionId)
+    } finally {
+      nativeAgentFuzzySearchOwners.delete(input.sessionId)
+    }
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentListWorktrees, async (event, payload) => {
+    const input = payload as { threadId: string }
+    assertNativeAgentThreadOwner(event.sender.id, input.threadId)
+    const current = nativeAgentWorkspace(input.threadId)
+    const associated = await getAgentWorkspaceHost().forWorkspace(current)
+    const sourceTree = associated?.sourceTree ?? await getAgentGitHost().root(current)
+    return (await getAgentWorkspaceHost().list()).filter(item => item.sourceTree === sourceTree)
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentCreateWorktree, async (event, payload) => {
+    const input = payload as { threadId: string, revision?: string }
+    assertNativeAgentThreadOwner(event.sender.id, input.threadId)
+    const current = nativeAgentWorkspace(input.threadId)
+    const associated = await getAgentWorkspaceHost().forWorkspace(current)
+    const sourceTree = associated?.sourceTree ?? await getAgentGitHost().root(current)
+    return await withNativeAgentWorkspaceMutation(input.threadId, async () => {
+      const environment = await getLocalEnvironmentHost().read(sourceTree)
+      await confirmNativeAgentHostMutation(
+        currentWindow(event),
+        '创建 Agent Worktree？',
+        'BilliardBuddy 将创建 detached Git worktree，并把当前未提交修改安全复制过去。',
+        `源工作区：${sourceTree}${environment?.setup ? `\n随后运行 Local Environment setup：${environment.name}` : ''}`,
+        '创建 Worktree',
+      )
+      const worktree = await getAgentWorkspaceHost().create({
+        threadId: input.threadId,
+        sourceTree,
+        ...(input.revision === undefined ? {} : { revision: input.revision }),
+      })
+      const setup = await getLocalEnvironmentHost().runSetup({ sourceTree, worktreePath: worktree.worktreePath })
+      if (setup && setup.exitCode !== 0) return { worktree, setup, activated: false }
+      await relocateNativeAgentWorktree(input.threadId, worktree, 'worktree')
+      await syncNativeAgentGitMetadata(input.threadId)
+      return { worktree, setup, activated: true }
+    }, [sourceTree])
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentSnapshotWorktree, async (event, payload) => {
+    const input = payload as { threadId: string }
+    assertNativeAgentThreadOwner(event.sender.id, input.threadId)
+    const worktree = await nativeAgentWorktree(input.threadId)
+    if (!worktree || nativeAgentWorkspace(input.threadId) !== worktree.worktreePath) {
+      throw new Error('BILLIARDBUDDY_WORKTREE_NOT_ACTIVE')
+    }
+    return await withNativeAgentWorkspaceMutation(input.threadId, async () => {
+      return await getAgentWorkspaceHost().snapshot(worktree.id)
+    }, [worktree.sourceTree, worktree.worktreePath])
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentRestoreWorktree, async (event, payload) => {
+    const input = payload as { threadId: string, snapshotId: string }
+    assertNativeAgentThreadOwner(event.sender.id, input.threadId)
+    const sourceTree = await getAgentWorkspaceHost().snapshotSourceTree(input.snapshotId)
+    return await withNativeAgentWorkspaceMutation(input.threadId, async () => {
+      if (await nativeAgentWorktree(input.threadId)) throw new Error('BILLIARDBUDDY_WORKTREE_THREAD_EXISTS')
+      await confirmNativeAgentHostMutation(
+        currentWindow(event),
+        '恢复 Agent Worktree？',
+        'BilliardBuddy 将从私有快照恢复 detached worktree。',
+        `快照：${input.snapshotId}`,
+        '恢复 Worktree',
+      )
+      const worktree = await getAgentWorkspaceHost().restore({ snapshotId: input.snapshotId, threadId: input.threadId })
+      const setup = await getLocalEnvironmentHost().runSetup({ sourceTree: worktree.sourceTree, worktreePath: worktree.worktreePath })
+      if (setup && setup.exitCode !== 0) return { worktree, setup, activated: false }
+      await relocateNativeAgentWorktree(input.threadId, worktree, 'worktree')
+      await syncNativeAgentGitMetadata(input.threadId)
+      return { worktree, setup, activated: true }
+    }, [sourceTree])
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentActivateWorktree, async (event, payload) => {
+    const input = payload as { threadId: string }
+    assertNativeAgentThreadOwner(event.sender.id, input.threadId)
+    const worktree = await nativeAgentWorktree(input.threadId)
+    if (!worktree) throw new Error('BILLIARDBUDDY_WORKTREE_NOT_FOUND')
+    return await withNativeAgentWorkspaceMutation(input.threadId, async () => {
+      const current = nativeAgentWorkspace(input.threadId)
+      if (current === worktree.worktreePath) {
+        if (worktree.activeWorkspace !== 'worktree') await getAgentWorkspaceHost().setActiveWorkspace(worktree.id, 'worktree')
+        return { worktree, setup: undefined, activated: true }
+      }
+      if (current !== worktree.sourceTree) throw new Error('BILLIARDBUDDY_HANDOFF_SOURCE_INVALID')
+      const environment = await getLocalEnvironmentHost().read(worktree.worktreePath)
+      await confirmNativeAgentHostMutation(
+        currentWindow(event),
+        '激活 Agent Worktree？',
+        'BilliardBuddy 将在恢复出的 detached worktree 运行其 Local Environment setup，然后把 Thread 切换过去。',
+        `Worktree：${worktree.worktreePath}${environment?.setup ? `\n环境：${environment.name}` : ''}`,
+        '激活 Worktree',
+      )
+      const setup = await getLocalEnvironmentHost().runSetup({ sourceTree: worktree.sourceTree, worktreePath: worktree.worktreePath })
+      if (setup && setup.exitCode !== 0) return { worktree, setup, activated: false }
+      await relocateNativeAgentWorktree(input.threadId, worktree, 'worktree')
+      await syncNativeAgentGitMetadata(input.threadId)
+      return { worktree, setup, activated: true }
+    }, [worktree.sourceTree, worktree.worktreePath])
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentCleanupWorktree, async (event, payload) => {
+    const input = payload as { threadId: string }
+    assertNativeAgentThreadOwner(event.sender.id, input.threadId)
+    const worktree = await nativeAgentWorktree(input.threadId)
+    if (!worktree) throw new Error('BILLIARDBUDDY_WORKTREE_NOT_FOUND')
+    return await withNativeAgentWorkspaceMutation(input.threadId, async () => {
+      await confirmNativeAgentHostMutation(
+        currentWindow(event),
+        '清理 Agent Worktree？',
+        '清理前会创建可恢复快照；未提交修改不会直接写回源工作区。',
+        `Worktree：${worktree.worktreePath}\n源工作区：${worktree.sourceTree}`,
+        '创建快照并清理',
+      )
+      const cleanup = await getLocalEnvironmentHost().runCleanup({ sourceTree: worktree.sourceTree, worktreePath: worktree.worktreePath })
+      if (cleanup && cleanup.exitCode !== 0) throw new Error('BILLIARDBUDDY_LOCAL_ENVIRONMENT_CLEANUP_FAILED')
+      await relocateNativeAgentWorktree(input.threadId, worktree, 'source')
+      const result = await getAgentWorkspaceHost().cleanup(worktree.id)
+      await syncNativeAgentGitMetadata(input.threadId)
+      return { ...result, cleanup, workspacePath: worktree.sourceTree }
+    }, [worktree.sourceTree, worktree.worktreePath])
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentHandoffWorkspace, async (event, payload) => {
+    const input = payload as { threadId: string, destination: 'source' | 'worktree' }
+    assertNativeAgentThreadOwner(event.sender.id, input.threadId)
+    const worktree = await nativeAgentWorktree(input.threadId)
+    if (!worktree) throw new Error('BILLIARDBUDDY_WORKTREE_NOT_FOUND')
+    return await withNativeAgentWorkspaceMutation(input.threadId, async () => {
+      const current = nativeAgentWorkspace(input.threadId)
+      if (input.destination === 'source' && current === worktree.sourceTree) {
+        if (worktree.activeWorkspace !== 'source') await getAgentWorkspaceHost().setActiveWorkspace(worktree.id, 'source')
+        return { changed: false, workspacePath: current }
+      }
+      if (input.destination === 'worktree' && current === worktree.worktreePath) {
+        if (worktree.activeWorkspace !== 'worktree') await getAgentWorkspaceHost().setActiveWorkspace(worktree.id, 'worktree')
+        return { changed: false, workspacePath: current }
+      }
+      if (current !== worktree.sourceTree && current !== worktree.worktreePath) throw new Error('BILLIARDBUDDY_HANDOFF_SOURCE_INVALID')
+      await confirmNativeAgentHostMutation(
+        currentWindow(event),
+        '交接 Agent 工作区？',
+        'BilliardBuddy 会先保存恢复快照，再把未提交代码移动到目标 checkout；目标有不同修改时会拒绝覆盖。',
+        `从：${current}\n到：${input.destination === 'source' ? worktree.sourceTree : worktree.worktreePath}`,
+        '交接',
+      )
+      const result = input.destination === 'source'
+        ? await getAgentWorkspaceHost().handoffToSource(worktree.id)
+        : await getAgentWorkspaceHost().handoffFromSource(worktree.id)
+      await relocateNativeAgentWorktree(input.threadId, worktree, input.destination)
+      await syncNativeAgentGitMetadata(input.threadId)
+      return { ...result, changed: true }
+    }, [worktree.sourceTree, worktree.worktreePath])
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentReadLocalEnvironment, async (event, payload) => {
+    const input = payload as { threadId: string }
+    assertNativeAgentThreadOwner(event.sender.id, input.threadId)
+    return await getLocalEnvironmentHost().read(nativeAgentWorkspace(input.threadId))
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentRunLocalEnvironmentSetup, async (event, payload) => {
+    const input = payload as { threadId: string }
+    assertNativeAgentThreadOwner(event.sender.id, input.threadId)
+    return await withNativeAgentWorkspaceMutation(input.threadId, async () => {
+      const worktreePath = nativeAgentWorkspace(input.threadId)
+      const worktree = await getAgentWorkspaceHost().forWorkspace(worktreePath)
+      const sourceTree = worktree?.sourceTree ?? await getAgentGitHost().root(worktreePath)
+      const environment = await getLocalEnvironmentHost().read(worktreePath)
+      if (!environment?.setup) return undefined
+      await confirmNativeAgentHostMutation(
+        currentWindow(event),
+        '运行 Local Environment setup？',
+        'setup 是仓库提供的本机脚本，将在当前 Agent 工作区执行。',
+        `环境：${environment.name}\n工作区：${worktreePath}`,
+        '运行 setup',
+      )
+      return await getLocalEnvironmentHost().runSetup({ sourceTree, worktreePath })
+    })
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentRunLocalEnvironmentCleanup, async (event, payload) => {
+    const input = payload as { threadId: string }
+    assertNativeAgentThreadOwner(event.sender.id, input.threadId)
+    return await withNativeAgentWorkspaceMutation(input.threadId, async () => {
+      const worktreePath = nativeAgentWorkspace(input.threadId)
+      const worktree = await getAgentWorkspaceHost().forWorkspace(worktreePath)
+      const sourceTree = worktree?.sourceTree ?? await getAgentGitHost().root(worktreePath)
+      const environment = await getLocalEnvironmentHost().read(worktreePath)
+      if (!environment?.cleanup) return undefined
+      await confirmNativeAgentHostMutation(
+        currentWindow(event),
+        '运行 Local Environment cleanup？',
+        'cleanup 是仓库提供的本机脚本，将在当前 Agent 工作区执行。',
+        `环境：${environment.name}\n工作区：${worktreePath}`,
+        '运行 cleanup',
+      )
+      return await getLocalEnvironmentHost().runCleanup({ sourceTree, worktreePath })
+    })
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentStartLocalEnvironmentAction, async (event, payload) => {
+    const input = payload as { threadId: string, name: string, size: NativeCodexTerminalSize }
+    assertNativeAgentThreadOwner(event.sender.id, input.threadId)
+    const action = await getLocalEnvironmentHost().resolveAction({
+      worktreePath: nativeAgentWorkspace(input.threadId),
+      name: input.name,
+    })
+    await confirmNativeAgentHostMutation(
+      currentWindow(event),
+      '运行 Local Environment action？',
+      '该仓库 action 将在 Thread 的集成终端中运行，并继续受 App Server 沙箱约束。',
+      `Action：${action.name}\n命令：${action.command}`,
+      '在终端运行',
+    )
+    return await startNativeAgentTerminal(
+      event.sender.id,
+      input.threadId,
+      input.size,
+      nativeLocalEnvironmentCommand(action.command),
+    )
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentGitStatus, async (event, payload) => {
+    const input = payload as { threadId: string }
+    assertNativeAgentThreadOwner(event.sender.id, input.threadId)
+    return await getAgentGitHost().status(nativeAgentWorkspace(input.threadId))
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentGitDiff, async (event, payload) => {
+    const input = payload as { threadId: string, staged?: boolean, paths?: string[] }
+    assertNativeAgentThreadOwner(event.sender.id, input.threadId)
+    return await getAgentGitHost().diff(nativeAgentWorkspace(input.threadId), input)
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentGitStageFiles, async (event, payload) => {
+    const input = payload as { threadId: string, paths: string[] }
+    assertNativeAgentThreadOwner(event.sender.id, input.threadId)
+    return await withNativeAgentWorkspaceMutation(input.threadId, async () => {
+      return await getAgentGitHost().stageFiles(nativeAgentWorkspace(input.threadId), input.paths)
+    })
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentGitRevertFiles, async (event, payload) => {
+    const input = payload as { threadId: string, paths: string[] }
+    assertNativeAgentThreadOwner(event.sender.id, input.threadId)
+    return await withNativeAgentWorkspaceMutation(input.threadId, async () => {
+      await confirmNativeAgentHostMutation(currentWindow(event), '还原所选文件？', '这些文件的暂存区和工作区修改会被还原到 HEAD。', input.paths.join('\n'), '还原文件')
+      return await getAgentGitHost().revertFiles(nativeAgentWorkspace(input.threadId), input.paths)
+    })
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentGitStagePatch, async (event, payload) => {
+    const input = payload as { threadId: string, patch: string }
+    assertNativeAgentThreadOwner(event.sender.id, input.threadId)
+    return await withNativeAgentWorkspaceMutation(input.threadId, async () => {
+      return await getAgentGitHost().stagePatch(nativeAgentWorkspace(input.threadId), input.patch)
+    })
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentGitRevertPatch, async (event, payload) => {
+    const input = payload as { threadId: string, patch: string }
+    assertNativeAgentThreadOwner(event.sender.id, input.threadId)
+    return await withNativeAgentWorkspaceMutation(input.threadId, async () => {
+      await confirmNativeAgentHostMutation(currentWindow(event), '还原补丁？', '该补丁对应的暂存区和工作区修改会被反向应用。', '补丁内容已由 Main 校验，确认后执行。', '还原补丁')
+      return await getAgentGitHost().revertPatch(nativeAgentWorkspace(input.threadId), input.patch)
+    })
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentGitCommit, async (event, payload) => {
+    const input = payload as { threadId: string, message: string }
+    assertNativeAgentThreadOwner(event.sender.id, input.threadId)
+    return await withNativeAgentWorkspaceMutation(input.threadId, async () => {
+      await confirmNativeAgentHostMutation(currentWindow(event), '创建 Git 提交？', 'BilliardBuddy 将提交当前暂存区，不会自动推送。', input.message, '创建提交')
+      const result = await getAgentGitHost().commit(nativeAgentWorkspace(input.threadId), input.message)
+      await syncNativeAgentGitMetadata(input.threadId)
+      return result
+    })
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentGitPush, async (event, payload) => {
+    const input = payload as { threadId: string, remote?: string, branch: string }
+    assertNativeAgentThreadOwner(event.sender.id, input.threadId)
+    await withNativeAgentWorkspaceMutation(input.threadId, async () => {
+      await confirmNativeAgentHostMutation(currentWindow(event), '推送 Git 分支？', '这会把当前 HEAD 写入远程仓库。', `远程：${input.remote ?? 'origin'}\n分支：${input.branch}`, '推送')
+      await getAgentGitHost().push(nativeAgentWorkspace(input.threadId), input)
+    })
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentGitListBranches, async (event, payload) => {
+    const input = payload as { threadId: string }
+    assertNativeAgentThreadOwner(event.sender.id, input.threadId)
+    return await getAgentGitHost().listBranches(nativeAgentWorkspace(input.threadId))
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentGitCreateBranch, async (event, payload) => {
+    const input = payload as { threadId: string, name: string }
+    assertNativeAgentThreadOwner(event.sender.id, input.threadId)
+    return await withNativeAgentWorkspaceMutation(input.threadId, async () => {
+      await confirmNativeAgentHostMutation(currentWindow(event), '创建并切换 Git 分支？', '当前工作区必须干净。', input.name, '创建分支')
+      await getAgentGitHost().createBranch(nativeAgentWorkspace(input.threadId), input.name)
+      return await syncNativeAgentGitMetadata(input.threadId)
+    })
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentGitSwitchBranch, async (event, payload) => {
+    const input = payload as { threadId: string, name: string }
+    assertNativeAgentThreadOwner(event.sender.id, input.threadId)
+    return await withNativeAgentWorkspaceMutation(input.threadId, async () => {
+      await confirmNativeAgentHostMutation(currentWindow(event), '切换 Git 分支？', '当前工作区必须干净。', input.name, '切换分支')
+      await getAgentGitHost().switchBranch(nativeAgentWorkspace(input.threadId), input.name)
+      return await syncNativeAgentGitMetadata(input.threadId)
+    })
+  })
   registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentUpdatePermissionMode, async (event, payload) => {
     const input = payload as { threadId: string, permissionMode: unknown }
     assertNativeAgentThreadOwner(event.sender.id, input.threadId)
@@ -1247,6 +1911,7 @@ function registerIpcHandlers() {
       input: Parameters<ElectronCodexNativeRuntime['startTurn']>[1]
       clientUserMessageId?: string
       collaborationMode?: NativeCodexCollaborationMode
+      additionalContext?: NativeCodexAdditionalContext
     }
     assertNativeAgentThreadOwner(event.sender.id, input.threadId)
     const collaborationMode = nativeAgentCollaborationMode(input.collaborationMode)
@@ -1256,9 +1921,76 @@ function registerIpcHandlers() {
       input.input,
       input.clientUserMessageId,
       collaborationMode,
+      input.additionalContext,
     )
     nativeAgentTurnOwners.set(turn.id, event.sender.id)
     return turn
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentStartTurnWithAppshot, async (event, payload) => {
+    const input = payload as {
+      threadId: string
+      text?: string
+      clientUserMessageId?: string
+      collaborationMode?: NativeCodexCollaborationMode
+    }
+    assertNativeAgentThreadOwner(event.sender.id, input.threadId)
+    if (nativeAgentAppshotInProgress) throw new Error('BILLIARDBUDDY_APPSHOT_IN_PROGRESS')
+    const owner = currentWindow(event)
+    const collaborationMode = nativeAgentCollaborationMode(input.collaborationMode)
+    await confirmNativeAgentCollaborationMode(owner, collaborationMode)
+    const route = await resolveNativeAgentRoute()
+    if (route.kind === 'managed' && !route.capabilities.includes('VisualEvidence')) {
+      throw new Error('BILLIARDBUDDY_APPSHOT_MODEL_IMAGE_INPUT_UNSUPPORTED')
+    }
+    const runtime = await getReadyNativeAgentThreadRuntime(input.threadId, route)
+    if (!nativeConfigRequirementsAllowAppshots(await runtime.readConfigRequirements({ id: input.threadId }))) {
+      throw new Error('BILLIARDBUDDY_APPSHOT_DISALLOWED_BY_REQUIREMENTS')
+    }
+    await confirmNativeAgentHostMutation(
+      owner,
+      '捕获前台应用 Appshot？',
+      'BilliardBuddy 将暂时隐藏窗口，并捕获随后露出的 macOS 前台应用。',
+      '截图和可访问性文本只会由 Electron Main 读取；捕获来源以宿主上下文标记，外部应用文本按不可信数据进入这一次原生 Codex Turn。',
+      '捕获并发送',
+    )
+
+    nativeAgentAppshotInProgress = true
+    const wasVisible = owner.isVisible()
+    try {
+      owner.hide()
+      // Let WindowServer finish activating the previously-frontmost app before
+      // the native host resolves its window. Renderer input cannot influence the
+      // native app/window identity or the trusted application context.
+      await new Promise(resolve => setTimeout(resolve, 250))
+      const appshot = await getAgentAppshotHost().capture()
+      const turn = await runtime.startTurn(
+        { id: input.threadId },
+        [
+          {
+            type: 'text',
+            text: input.text?.trim() || '请根据这张由 BilliardBuddy 明确捕获的 Appshot 帮助我。',
+          },
+          { type: 'image', url: appshot.imageDataUrl, detail: 'original' },
+        ],
+        input.clientUserMessageId,
+        collaborationMode,
+        {
+          'billiardbuddy.appshot.provenance': {
+            kind: 'application',
+            value: appshot.applicationContext,
+          },
+          'billiardbuddy.appshot.accessibility': {
+            kind: 'untrusted',
+            value: appshot.accessibilityContext,
+          },
+        },
+      )
+      nativeAgentTurnOwners.set(turn.id, event.sender.id)
+      return turn
+    } finally {
+      nativeAgentAppshotInProgress = false
+      if (wasVisible && !owner.isDestroyed()) showMainWindow(owner, app)
+    }
   })
   registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentStartReview, async (event, payload) => {
     const input = payload as { threadId: string } & NativeCodexStartReviewInput
@@ -1267,12 +1999,22 @@ function registerIpcHandlers() {
       { id: input.threadId },
       input,
     )
+    const worktree = await nativeAgentWorktree(input.threadId)
+    if (worktree && review.reviewThreadId !== input.threadId) {
+      await getAgentWorkspaceHost().attachThread(worktree.id, review.reviewThreadId)
+    }
     claimNativeAgentThread(event.sender.id, review.reviewThreadId)
     nativeAgentTurnOwners.set(review.turn.id, event.sender.id)
     return review
   })
   registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentSteerTurn, async (event, payload) => {
-    const input = payload as { threadId: string, turnId: string, input: NativeCodexTurnInput[], clientUserMessageId?: string }
+    const input = payload as {
+      threadId: string
+      turnId: string
+      input: NativeCodexTurnInput[]
+      clientUserMessageId?: string
+      additionalContext?: NativeCodexAdditionalContext
+    }
     assertNativeAgentThreadOwner(event.sender.id, input.threadId)
     assertNativeAgentTurnOwner(event.sender.id, input.turnId)
     await getNativeAgentRuntime().steerTurn(
@@ -1280,6 +2022,7 @@ function registerIpcHandlers() {
       { id: input.turnId },
       input.input,
       input.clientUserMessageId,
+      input.additionalContext,
     )
   })
   registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentInterruptTurn, async (event, payload) => {
@@ -1325,7 +2068,10 @@ function registerIpcHandlers() {
   registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentListSkills, async (event, payload) => {
     const input = payload as { threadId: string, cwd: string }
     assertNativeAgentThreadOwner(event.sender.id, input.threadId)
-    return await (await getReadyNativeAgentThreadRuntime(input.threadId)).listSkills({ id: input.threadId }, input.cwd)
+    return await (await getReadyNativeAgentThreadRuntime(input.threadId)).listSkills(
+      { id: input.threadId },
+      await nativeAgentWorkspaceForThread(input.threadId, input.cwd),
+    )
   })
   registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentSetSkillEnabled, async (event, payload) => {
     const input = payload as { threadId: string, enabled: boolean } & NativeCodexSkillSelector
@@ -1384,7 +2130,7 @@ function registerIpcHandlers() {
     const selected = input.itemIndexes
       .map(index => detected.items[index])
       .filter((item): item is NativeExternalAgentMigrationItem => item !== undefined)
-    if (selected.length !== input.itemIndexes.length || selected.some(item => !permittedExternalAgentMigrationTypes.has(externalAgentMigrationItemType(item) ?? ''))) {
+    if (selected.length !== input.itemIndexes.length || selected.some(item => externalAgentMigrationItemType(item) === undefined)) {
       throw new Error('CODEX_NATIVE_EXTERNAL_AGENT_IMPORT_SELECTION_INVALID')
     }
     const response = await dialog.showMessageBox(currentWindow(event), {
@@ -1394,16 +2140,40 @@ function registerIpcHandlers() {
       cancelId: 0,
       noLink: true,
       title: '导入其他智能体配置',
-      message: '只会导入你已选择的指令、Skill、子智能体或命令。',
-      detail: `${selected.map(externalAgentMigrationSummary).join('\n')}\n\n不会导入 API Key、完整配置、MCP、Hook、插件、记忆或历史会话。`,
+      message: 'BilliardBuddy 将把你选择的项目交给内置 Agent 导入器。',
+      detail: `${selected.map(externalAgentMigrationSummary).join('\n')}\n\n只处理上方已选项目。需要凭据或外部服务授权的项目，导入后仍须由你重新完成授权。`,
     })
     if (response.response !== 1) return { cancelled: true }
+    if (pendingNativeAgentExternalImportOwner !== undefined) {
+      throw new Error('CODEX_NATIVE_EXTERNAL_AGENT_IMPORT_IN_PROGRESS')
+    }
     pendingExternalAgentDetections.delete(input.detectionId)
     const runtime = await getReadyNativeAgentThreadRuntime(input.threadId)
-    return await runtime.importExternalAgentConfig(
+    const pendingOwner = { ownerId: event.sender.id, threadId: input.threadId }
+    pendingNativeAgentExternalImportOwner = pendingOwner
+    try {
+      const result = await runtime.importExternalAgentConfig(
+        { id: input.threadId },
+        selected,
+        detected.migrationSource,
+      )
+      const importId = nativeProtocolText(result.importId)
+      if (!importId) throw new Error('CODEX_NATIVE_EXTERNAL_AGENT_IMPORT_RESPONSE_INVALID')
+      if (completedNativeAgentExternalImports.delete(importId)) {
+        nativeAgentExternalImportOwners.delete(importId)
+      } else {
+        nativeAgentExternalImportOwners.set(importId, pendingOwner)
+      }
+      return result
+    } finally {
+      if (pendingNativeAgentExternalImportOwner === pendingOwner) pendingNativeAgentExternalImportOwner = undefined
+    }
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentReadExternalImportHistories, async (event, payload) => {
+    const input = payload as { threadId: string }
+    assertNativeAgentThreadOwner(event.sender.id, input.threadId)
+    return await (await getReadyNativeAgentThreadRuntime(input.threadId)).readExternalAgentImportHistories(
       { id: input.threadId },
-      selected,
-      detected.migrationSource,
     )
   })
   registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentListScheduledTasks, async (event, payload) => {
@@ -1414,8 +2184,9 @@ function registerIpcHandlers() {
   registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentCreateScheduledTask, async (event, payload) => {
     const input = payload as ScheduledAgentTaskInput
     assertNativeAgentThreadOwner(event.sender.id, input.threadId)
-    await confirmNativeAgentScheduledTask(currentWindow(event), input)
-    return await getScheduledAgentTasks().create(input)
+    const task = { ...input, cwd: await nativeAgentWorkspaceForThread(input.threadId, input.cwd) }
+    await confirmNativeAgentScheduledTask(currentWindow(event), task)
+    return await getScheduledAgentTasks().create(task)
   })
   registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentSetScheduledTaskEnabled, async (event, payload) => {
     const input = payload as { threadId: string, taskId: string, enabled: boolean }
@@ -1435,17 +2206,37 @@ function registerIpcHandlers() {
   registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentListHooks, async (event, payload) => {
     const input = payload as { threadId: string, cwd: string }
     assertNativeAgentThreadOwner(event.sender.id, input.threadId)
-    return await (await getReadyNativeAgentThreadRuntime(input.threadId)).listHooks({ id: input.threadId }, input.cwd)
+    return await (await getReadyNativeAgentThreadRuntime(input.threadId)).listHooks(
+      { id: input.threadId },
+      await nativeAgentWorkspaceForThread(input.threadId, input.cwd),
+    )
+  })
+  registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentTrustHook, async (event, payload) => {
+    const input = payload as { threadId: string } & NativeCodexHookTrustInput
+    assertNativeAgentThreadOwner(event.sender.id, input.threadId)
+    await confirmNativeAgentExtensionChange(
+      currentWindow(event),
+      '信任 Agent Hook？',
+      '这个 Hook 的命令会在之后的 Agent Turn 中执行。Hook 内容变化后必须重新信任。',
+      `Hook：${input.hookKey}\n当前版本：${input.currentHash.slice(0, 16)}`,
+    )
+    return await (await getReadyNativeAgentThreadRuntime(input.threadId)).trustHook({ id: input.threadId }, input)
   })
   registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentListPlugins, async (event, payload) => {
     const input = payload as { threadId: string, cwd: string }
     assertNativeAgentThreadOwner(event.sender.id, input.threadId)
-    return await (await getReadyNativeAgentThreadRuntime(input.threadId)).listPlugins({ id: input.threadId }, input.cwd)
+    return await (await getReadyNativeAgentThreadRuntime(input.threadId)).listPlugins(
+      { id: input.threadId },
+      await nativeAgentWorkspaceForThread(input.threadId, input.cwd),
+    )
   })
   registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentListInstalledPlugins, async (event, payload) => {
     const input = payload as { threadId: string, cwd: string }
     assertNativeAgentThreadOwner(event.sender.id, input.threadId)
-    return await (await getReadyNativeAgentThreadRuntime(input.threadId)).listInstalledPlugins({ id: input.threadId }, input.cwd)
+    return await (await getReadyNativeAgentThreadRuntime(input.threadId)).listInstalledPlugins(
+      { id: input.threadId },
+      await nativeAgentWorkspaceForThread(input.threadId, input.cwd),
+    )
   })
   registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentReadPlugin, async (event, payload) => {
     const input = payload as { threadId: string } & NativeCodexPluginReference
@@ -1543,7 +2334,11 @@ function registerIpcHandlers() {
     return await writeComputerUseConfiguration(process.platform, app.getPath('userData'), input)
   })
   registerHandler(ELECTRON_IPC_CHANNELS.chromeNativeMessagingGetStatus, async () =>
-    await getChromeNativeMessagingHostStatus({ platform: process.platform, desktopRoot: unpackedRoot() }),
+    await getChromeNativeMessagingHostStatus({
+      platform: process.platform,
+      desktopRoot: unpackedRoot(),
+      userDataDirectory: app.getPath('userData'),
+    }),
   )
   registerHandler(ELECTRON_IPC_CHANNELS.chromeNativeMessagingInstall, async (event) => {
     await confirmNativeAgentExtensionChange(
@@ -1552,7 +2347,11 @@ function registerIpcHandlers() {
       '这会为固定的 BilliardBuddy 扩展注册本机消息通道。不会读取 Cookie、密码或 Chrome Profile 文件。',
       'Chrome 会把扩展发起的受限请求交给随应用签名的本机 Host。',
     )
-    const registration = { platform: process.platform, desktopRoot: unpackedRoot() }
+    const registration = {
+      platform: process.platform,
+      desktopRoot: unpackedRoot(),
+      userDataDirectory: app.getPath('userData'),
+    }
     await installChromeNativeMessagingHost(registration)
     return await getChromeNativeMessagingHostStatus(registration)
   })
@@ -1563,7 +2362,11 @@ function registerIpcHandlers() {
       '这会删除 BilliardBuddy 与 Chrome 的本机连接配置，不会改动浏览器资料。',
       '断开后，Agent 无法通过该扩展控制 Chrome。',
     )
-    const registration = { platform: process.platform, desktopRoot: unpackedRoot() }
+    const registration = {
+      platform: process.platform,
+      desktopRoot: unpackedRoot(),
+      userDataDirectory: app.getPath('userData'),
+    }
     await uninstallChromeNativeMessagingHost(registration)
     return await getChromeNativeMessagingHostStatus(registration)
   })
@@ -1912,8 +2715,16 @@ app.on('before-quit', () => {
   rejectNativeAgentServerRequests(new Error('CODEX_NATIVE_APP_QUITTING'))
   nativeAgentRuntime?.closeImmediately()
   nativeAgentRuntime = null
+  nativeAgentAppshotInProgress = false
+  agentAppshotHost = null
   nativeAgentThreadOwners.clear()
   nativeAgentTurnOwners.clear()
+  nativeAgentTerminalOwners.clear()
+  nativeAgentFuzzySearchOwners.clear()
+  nativeAgentExternalImportOwners.clear()
+  completedNativeAgentExternalImports.clear()
+  pendingNativeAgentThreadStartOwnerId = undefined
+  pendingNativeAgentExternalImportOwner = undefined
   pendingExternalAgentDetections.clear()
   // Synchronous on quit so the Windows taskkill completes before the process
   // exits, otherwise the fire-and-forget kill can leave orphaned sidecars.

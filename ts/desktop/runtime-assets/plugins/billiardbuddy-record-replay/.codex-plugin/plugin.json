@@ -1,7 +1,7 @@
 {
   "name": "billiardbuddy-record-replay",
   "version": "0.1.0",
-  "description": "Record an explicitly started, redacted desktop workflow and turn it into a reviewable BilliardBuddy Skill. It does not record typed text, clipboard data, secrets, screenshots or video.",
+  "description": "Record an explicitly started, bounded redacted semantic desktop event stream and turn it into a reviewable BilliardBuddy Skill. It does not record typed text, key codes, window titles, raw coordinates, clipboard data, secrets, screenshots or video.",
   "author": { "name": "BilliardBuddy" },
   "license": "Proprietary",
   "mcpServers": "./.mcp.json",
