@@ -144,6 +144,13 @@ export interface SpeechTranscriptionProviderContract {
   model_id: string
 }
 
+/** The video search index is the only separately-metered embedding capability. */
+export interface SemanticEmbeddingProviderContract {
+  capability: 'SemanticEmbedding'
+  model_id: string
+  dimension: 768
+}
+
 export type ProviderRegistryEntry = {
   model_id: string
   provider: string

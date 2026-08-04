@@ -53,6 +53,7 @@ export type IngressCapacityPolicy = {
 }
 
 export type GatewayCapacityPolicy = {
+  revision: string
   deepseek: ProviderCapacityPolicy
   /** Reserved shared account lanes; visual and media work must add up exactly. */
   mimo: MimoCapacityPolicy
@@ -61,6 +62,8 @@ export type GatewayCapacityPolicy = {
   funasr: FunAsrCapacityPolicy
   ingress: IngressCapacityPolicy
 }
+
+export const GATEWAY_CAPACITY_POLICY_REVISION_ENV = 'GW_CAPACITY_POLICY_REVISION'
 
 const LIMITS = {
   rpm: 1_000_000,
@@ -175,6 +178,7 @@ export function loadCapacityPolicy(env: CapacityPolicyEnv = process.env): Gatewa
   })
 
   return {
+    revision: capacityPolicyRevision(env),
     deepseek,
     mimo: {
       rpm: integer(env, 'GW_MIMO_RPM', 60, 1, LIMITS.rpm),
@@ -208,4 +212,13 @@ export function loadCapacityPolicy(env: CapacityPolicyEnv = process.env): Gatewa
       serverIdleTimeoutSeconds: integer(env, 'GW_SERVER_IDLE_TIMEOUT_SECONDS', 120, 30, 255),
     },
   }
+}
+
+function capacityPolicyRevision(env: CapacityPolicyEnv): string {
+  const value = env[GATEWAY_CAPACITY_POLICY_REVISION_ENV]
+  if (value === undefined || value.trim() === '') return 'gateway-small-v1'
+  if (!/^[A-Za-z0-9._-]{1,128}$/.test(value)) {
+    throw new Error(`${GATEWAY_CAPACITY_POLICY_REVISION_ENV} must be 1-128 ASCII letters, digits, dots, underscores, or hyphens`)
+  }
+  return value
 }

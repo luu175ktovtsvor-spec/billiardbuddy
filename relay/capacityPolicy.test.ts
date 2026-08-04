@@ -75,6 +75,20 @@ describe('Image Relay deployment preflight', () => {
       IMAGE_RELAY_GATEWAY_INTROSPECTION_TOKEN: 'i'.repeat(32),
       IMAGE_RELAY_PUBLIC_BASE: 'https://zzyppz.cn/image-generation',
       IMAGE_RELAY_RESULT_SIGNING_KEY: 's'.repeat(32),
+      RELAY_CAPACITY_POLICY_REVISION: 'relay-image-production-v1',
+      RELAY_IMG_CONC: '2',
+      RELAY_IMG_USER_CONC: '1',
+      RELAY_OPENAI_RPM: '12',
+      RELAY_SEEDREAM_CONC: '2',
+      RELAY_SEEDREAM_USER_CONC: '1',
+      RELAY_SEEDREAM_RPM: '30',
+      RELAY_QUEUE_MAX: '24',
+      RELAY_USER_MAX: '4',
+      RELAY_RETRY_AFTER_SECONDS: '30',
+      RELAY_UPSTREAM_TIMEOUT_MS: '300000',
+      RELAY_MAX_BODY_BYTES: String(32 * 1024 * 1024),
+      RELAY_PENDING_INPUT_BYTES_MAX: String(64 * 1024 * 1024),
+      RELAY_ACTIVE_INPUT_BYTES_MAX: String(256 * 1024 * 1024),
     }
     expect(() => validateRelayDeploymentEnvironment(valid)).not.toThrow()
     expect(() => validateRelayDeploymentEnvironment({ ...valid, RELAY_DB: ':memory:' }))
@@ -83,5 +97,9 @@ describe('Image Relay deployment preflight', () => {
       .toThrow('RELAY_ARK_KEY')
     expect(() => validateRelayDeploymentEnvironment({ ...valid, RELAY_QUEUE_MAX: '1000' }))
       .toThrow('RELAY_QUEUE_MAX')
+    expect(() => validateRelayDeploymentEnvironment(({ ...valid, RELAY_OPENAI_RPM: undefined })))
+      .toThrow('RELAY_OPENAI_RPM is required')
+    expect(() => validateRelayDeploymentEnvironment({ ...valid, RELAY_RETRY_AFTER_SECONDS: '0' }))
+      .toThrow('RELAY_RETRY_AFTER_SECONDS')
   })
 })

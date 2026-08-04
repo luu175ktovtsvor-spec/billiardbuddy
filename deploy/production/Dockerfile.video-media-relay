@@ -1,0 +1,20 @@
+FROM oven/bun:1.3.14
+
+WORKDIR /app/video-media-relay
+COPY --chown=bun:bun video-media-relay/app.ts video-media-relay/objectStore.ts video-media-relay/providerRegistry.ts video-media-relay/capacityPolicy.ts video-media-relay/identityIntrospection.ts video-media-relay/network.ts video-media-relay/validate-deployment-env.ts ./
+COPY --chown=bun:bun video-media-relay/contracts /app/video-media-relay/contracts
+COPY --chown=bun:bun video-media-relay/providers /app/video-media-relay/providers
+COPY --chown=bun:bun ts/shared/kernel/providerAdmission.ts /app/ts/shared/kernel/providerAdmission.ts
+COPY --chown=bun:bun ts/shared/kernel/deploymentEnvironment.ts /app/ts/shared/kernel/deploymentEnvironment.ts
+COPY --chown=bun:bun ts/shared/product/modelCatalog.ts /app/ts/shared/product/modelCatalog.ts
+COPY --chown=bun:bun ts/shared/product/providerContracts.ts /app/ts/shared/product/providerContracts.ts
+COPY --chown=bun:bun ts/shared/product/serviceIntrospection.ts /app/ts/shared/product/serviceIntrospection.ts
+# The Relay imports the locked zod contract and the official Alibaba OSS SDK
+# through the repository's TypeScript runtime path. Install only production
+# dependencies; credentials are supplied only through the mounted env file.
+COPY --chown=bun:bun ts/package.json ts/bun.lock /app/ts/
+RUN cd /app/ts && bun install --production --frozen-lockfile
+
+USER bun
+EXPOSE 8791
+CMD ["bun", "/app/video-media-relay/app.ts"]

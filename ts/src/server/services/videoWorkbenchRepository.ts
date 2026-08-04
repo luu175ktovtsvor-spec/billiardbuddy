@@ -22,6 +22,7 @@ import {
   SqliteMediaFactsRepository,
   type VideoFactsPage,
   type VideoFactSearchPage,
+  type VideoFactEmbedding,
 } from '../video/infrastructure/sqliteMediaFactsRepository.js'
 import type { VideoFact, VideoFactKind } from '../video/domain/mediaFacts/model.js'
 
@@ -494,6 +495,26 @@ export class VideoWorkbenchRepository {
   async searchFactsPage(projectId: string, query: string, options?: { cursor?: string; limit?: number }): Promise<VideoFactSearchPage> {
     await this.ready()
     return await this.facts.searchPage(projectId, query, options)
+  }
+
+  async listCurrentSearchCandidates(projectId: string) {
+    await this.ready()
+    return await this.facts.listCurrentSearchCandidates(projectId)
+  }
+
+  async missingSearchEmbeddingEntries(projectId: string, entryIds: string[]) {
+    await this.ready()
+    return await this.facts.missingSearchEmbeddingEntries(projectId, entryIds)
+  }
+
+  async saveFactEmbeddings(projectId: string, entries: VideoFactEmbedding[]): Promise<number> {
+    await this.ready()
+    return await this.facts.saveEmbeddings(projectId, entries)
+  }
+
+  async hybridSearchFactsPage(projectId: string, query: string, vector: number[], options?: { cursor?: string; limit?: number }): Promise<VideoFactSearchPage> {
+    await this.ready()
+    return await this.facts.hybridSearchPage(projectId, query, vector, options)
   }
 
   async activeTranscriptRevision(transcriptId: string): Promise<VideoFact | null> {

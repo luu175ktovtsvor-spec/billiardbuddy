@@ -44,6 +44,17 @@ bb_runtime_paths=(
   relay/identityIntrospection.ts
   relay/resultCredentials.ts
   relay/validate-deployment-env.ts
+  video-media-relay/app.ts
+  video-media-relay/objectStore.ts
+  video-media-relay/providerRegistry.ts
+  video-media-relay/capacityPolicy.ts
+  video-media-relay/identityIntrospection.ts
+  video-media-relay/network.ts
+  video-media-relay/validate-deployment-env.ts
+  video-media-relay/contracts/relayApi.ts
+  video-media-relay/providers/dashscope.ts
+  ts/package.json
+  ts/bun.lock
   ts/shared/kernel/providerAdmission.ts
   ts/shared/kernel/deploymentEnvironment.ts
   ts/shared/product/providerContracts.ts
@@ -63,10 +74,34 @@ for bb_required in \
   deploy/production/deploy.sh \
   deploy/production/Dockerfile.gateway \
   deploy/production/Dockerfile.relay \
+  deploy/production/Dockerfile.video-media-relay \
+  deploy/production/video-media-smoke.ts \
+  deploy/production/install-nginx-relay-routes.sh \
+  deploy/production/migrate-image-relay-data.sh \
+  deploy/production/nginx/billiardbuddy-relay-routes.conf \
   gateway/app.ts \
   gateway/managedResponses.ts \
+  gateway/serviceCredentials.ts \
   gateway/validate-deployment-env.ts \
   relay/app.ts \
+  relay/capacityPolicy.ts \
+  relay/identityIntrospection.ts \
+  video-media-relay/app.ts \
+  video-media-relay/objectStore.ts \
+  video-media-relay/providerRegistry.ts \
+  video-media-relay/capacityPolicy.ts \
+  video-media-relay/identityIntrospection.ts \
+  video-media-relay/network.ts \
+  video-media-relay/validate-deployment-env.ts \
+  video-media-relay/contracts/relayApi.ts \
+  video-media-relay/providers/dashscope.ts \
+  ts/shared/kernel/providerAdmission.ts \
+  ts/shared/kernel/deploymentEnvironment.ts \
+  ts/shared/product/providerContracts.ts \
+  ts/shared/product/modelCatalog.ts \
+  ts/shared/product/serviceIntrospection.ts \
+  ts/package.json \
+  ts/bun.lock \
   release-manifest.json; do
   tar -tzf "$bb_output" "$bb_required" >/dev/null
 done
