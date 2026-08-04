@@ -4,10 +4,17 @@ WORKDIR /app/gateway
 
 # Keep the Gateway image to its explicit runtime closure. In particular, it
 # contains no desktop credentials, Thread Store or old TypeScript Agent code.
-COPY --chown=bun:bun gateway/app.ts gateway/installationAuth.ts gateway/transcription.ts gateway/modelCapacity.ts gateway/managedResponses.ts gateway/mimoChat.ts gateway/visionBridge.ts gateway/providerRegistry.ts gateway/usageBudget.ts gateway/operationResultStore.ts gateway/validate-deployment-env.ts ./
+COPY --chown=bun:bun gateway/app.ts gateway/installationAuth.ts gateway/transcription.ts gateway/modelCapacity.ts gateway/capacityPolicy.ts gateway/quotaPolicy.ts gateway/providerCredentials.ts gateway/serviceCredentials.ts gateway/managedResponses.ts gateway/mimoChat.ts gateway/visionBridge.ts gateway/qwenImageReasoning.ts gateway/providerRegistry.ts gateway/usageBudget.ts gateway/operationResultStore.ts gateway/validate-deployment-env.ts ./
 COPY --chown=bun:bun ts/shared/product/providerContracts.ts /app/ts/shared/product/providerContracts.ts
+COPY --chown=bun:bun ts/shared/product/modelCatalog.ts /app/ts/shared/product/modelCatalog.ts
 COPY --chown=bun:bun ts/shared/product/providerGateway.ts /app/ts/shared/product/providerGateway.ts
+COPY --chown=bun:bun ts/shared/product/serviceIntrospection.ts /app/ts/shared/product/serviceIntrospection.ts
+COPY --chown=bun:bun ts/shared/product/imageVisualReasoning.ts /app/ts/shared/product/imageVisualReasoning.ts
+COPY --chown=bun:bun ts/shared/kernel/providerAdmission.ts /app/ts/shared/kernel/providerAdmission.ts
+COPY --chown=bun:bun ts/shared/kernel/deploymentEnvironment.ts /app/ts/shared/kernel/deploymentEnvironment.ts
+COPY --chown=bun:bun deploy/production/container-entrypoint.sh /app/container-entrypoint.sh
 
 USER bun
 EXPOSE 8799
+ENTRYPOINT ["/bin/sh", "/app/container-entrypoint.sh"]
 CMD ["bun", "/app/gateway/app.ts", "--host", "0.0.0.0", "--port", "8799"]

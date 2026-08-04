@@ -39,6 +39,8 @@ import {
   imageArtboardSelectVersionInputSchema,
   imageDeliverySpecRevisionInputSchema,
   imageExportInputSchema,
+  imageUnderstandingInputSchema,
+  imageVisualAssessmentInputSchema,
   createCreativePlanInputSchema,
   createGenerationRoundInputSchema,
   decideImageCandidateInputSchema,
@@ -62,6 +64,10 @@ import {
   type ImageCanvasRenderInput,
   type ImageDeliverySpecRevisionInput,
   type ImageExportInput,
+  type ImageUnderstandingInput,
+  type ImageUnderstandingSuggestion,
+  type ImageVisualAssessmentInput,
+  type ImageVisualAssessment,
   type ImageCandidateAdoption,
   type ImageCandidateDecision,
   type ImageCandidateGroup,
@@ -84,13 +90,24 @@ import {
 } from '../../../shared/contracts/imageGeneration.js'
 import { providerRegistryEntry } from '../../../../gateway/providerRegistry.js'
 import {
-  MEDIA_RESULT_HANDOFF_DIRECT_V1,
-  MEDIA_RESULT_HANDOFF_HEADER,
   PROVIDER_GATEWAY_PROTOCOL,
   PROVIDER_GATEWAY_PROTOCOL_HEADER,
+  PROVIDER_OPERATION_ACK_PATH,
+  PROVIDER_OPERATION_RESULT_CAPABILITY_HEADER,
+  PROVIDER_OPERATION_RESULT_FINGERPRINT_HEADER,
+  PROVIDER_OPERATION_RESULT_ID_HEADER,
 } from '../../../shared/product/providerGateway.js'
-import { productGatewayConfigured, productGatewayTarget } from '../product/productGatewayRuntime.js'
+import {
+  IMAGE_RELAY_RESULTS_PATH,
+  IMAGE_RELAY_RESULT_HANDOFF_DIRECT_V1,
+  IMAGE_RELAY_RESULT_HANDOFF_HEADER,
+  IMAGE_RELAY_TASKS_PATH,
+  imageRelayIdempotencyLookupPath,
+  isImageRelayQuotaErrorCode,
+} from '../../../shared/product/imageRelayProtocol.js'
+import { productGatewayTarget, productImageRelayConfigured, productImageRelayTarget } from '../product/productGatewayRuntime.js'
 import { applyImageBriefOverrides, compileImageBrief, providerPromptForImageBrief } from './imageBrief.js'
+import { QwenImageReasoningError, requestQwenImageReasoning } from './qwenImageReasoningAdapter.js'
 import { IMAGE_PROVIDER_POLICY_REVISION, ImageProviderPolicyError, resolveImageProviderPolicy } from './imageProviderPolicy.js'
 import {
   ImageAssetStore,
@@ -111,12 +128,65 @@ import {
 } from '../media/image/infrastructure/legacyImageProjectReader.js'
 import { SqliteImageMetadataStore } from '../media/image/infrastructure/sqliteImageMetadataStore.js'
 
+const IMAGE_RELAY_CONTROL_JSON_MAX_BYTES = 256 * 1024
+const IMAGE_RELAY_DIRECT_RESULT_JSON_MAX_BYTES = Math.ceil((32 * 1024 * 1024) / 3) * 4 + 64 * 1024
+
+async function readImageRelayResponseText(response: Response, maxBytes: number, signal: AbortSignal): Promise<string> {
+  const declaredRaw = response.headers.get('content-length')?.trim()
+  const declared = declaredRaw && /^\d+$/.test(declaredRaw) ? Number(declaredRaw) : undefined
+  if (declared !== undefined && (!Number.isSafeInteger(declared) || declared > maxBytes)) {
+    void response.body?.cancel().catch(() => {})
+    throw new Error('image relay response too large')
+  }
+  if (!response.body) return ''
+  const reader = response.body.getReader()
+  const chunks: Uint8Array[] = []
+  let total = 0
+  let detachAbort = () => {}
+  const aborted = new Promise<never>((_resolve, reject) => {
+    const onAbort = () => {
+      void reader.cancel().catch(() => {})
+      reject(new Error('image relay response deadline exceeded'))
+    }
+    if (signal.aborted) onAbort()
+    else {
+      signal.addEventListener('abort', onAbort, { once: true })
+      detachAbort = () => signal.removeEventListener('abort', onAbort)
+    }
+  })
+  try {
+    while (true) {
+      const next = await Promise.race([reader.read(), aborted])
+      if (next.done) break
+      const value = next.value
+      if (!value || value.byteLength === 0) continue
+      if (total + value.byteLength > maxBytes) {
+        void reader.cancel().catch(() => {})
+        throw new Error('image relay response too large')
+      }
+      chunks.push(value)
+      total += value.byteLength
+    }
+    const bytes = new Uint8Array(total)
+    let offset = 0
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset)
+      offset += chunk.byteLength
+    }
+    return new TextDecoder().decode(bytes)
+  } finally {
+    detachAbort()
+    try { reader.releaseLock() } catch {}
+  }
+}
+
 const STANDALONE_IMAGE_OWNER: MediaOwner = {
   kind: 'standalone',
   owner_id: 'local_workbench',
 }
 const INITIAL_WRITER_FENCE = `fence_${'0'.repeat(32)}`
 const IMAGE_GENERATION_ESTIMATE_TTL_MS = 5 * 60 * 1000
+const IMAGE_QWEN_MAX_INPUT_BYTES = 16 * 1024 * 1024
 
 type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
 
@@ -133,6 +203,7 @@ type RelayImageTask = {
   status?: string
   poll_after_seconds?: number
   data?: Array<{
+    candidate_index?: number
     b64_json?: string
     url?: string
     revised_prompt?: string
@@ -140,11 +211,19 @@ type RelayImageTask = {
   }>
   error?: string
   message?: string
+  code?: string
+  capability?: string
+  scope?: string
+  resets_at?: string
   reused?: boolean
   input_fidelity_requested?: string
   input_fidelity_status?: 'accepted' | 'unsupported'
   input_fidelity_risk?: string
   provider_receipt_hash?: string
+  expected_count?: number
+  valid_count?: number
+  invalid?: Array<{ index?: number; safe_error_code?: string }>
+  partial_outcome_unknown?: boolean
   refusal?: { category?: string; safe_message?: string }
   policy_refusal?: { category?: string; safe_message?: string }
   result_acknowledged?: boolean
@@ -226,21 +305,30 @@ function relayPolicyRefusal(body: RelayImageTask): { category: string; safe_mess
   }
 }
 
-function trustedResultUrl(value: unknown, gatewayBaseUrl: string): string | null {
+/** A 429 is not automatically a quota error: admission backpressure is still
+ * retryable. Only the Relay's allow-listed quota codes disable the hosted
+ * image capability for this UTC period. */
+function imageRelayFailureCode(status: number, body: RelayImageTask): MediaSafeErrorCode {
+  if (status === 429 && isImageRelayQuotaErrorCode(body.code)) return 'MEDIA_IMAGE_QUOTA_EXHAUSTED'
+  return body.status === 'failed_unknown' ? 'MEDIA_IMAGE_OUTCOME_UNKNOWN' : 'MEDIA_IMAGE_UNAVAILABLE'
+}
+
+function trustedResultUrl(value: unknown, imageRelayBaseUrl: string): string | null {
   if (typeof value !== 'string') return null
   try {
     const result = new URL(value)
-    const gateway = new URL(gatewayBaseUrl)
+    const imageRelay = new URL(imageRelayBaseUrl)
+    const resultPrefix = `${imageRelay.pathname.replace(/\/+$/, '')}${IMAGE_RELAY_RESULTS_PATH}/`
     if (
       result.protocol !== 'https:'
-      || result.origin !== gateway.origin
+      || result.origin !== imageRelay.origin
       || result.username
       || result.password
       || result.search
       || result.hash
-      || !result.pathname.startsWith('/relay/imgtasks/images/results/')
+      || !result.pathname.startsWith(resultPrefix)
     ) return null
-    const grant = result.pathname.slice('/relay/imgtasks/images/results/'.length)
+    const grant = result.pathname.slice(resultPrefix.length)
     return /^[A-Za-z0-9_-]+\.[a-f0-9]{64}(?:\/[0-3])?$/.test(grant) ? result.toString() : null
   } catch {
     return null
@@ -276,6 +364,7 @@ export class ImageWorkbenchService {
   private readonly now: () => Date
   private readonly fetchImpl: FetchLike
   private readonly imageResultTimeoutMs: number
+  private readonly imageReasoningTimeoutMs: number
   private readonly legacyMediaRoot: string
   private readonly legacyReader: LegacyImageProjectReader
   private readonly crashInjector?: (point: ImageWorkbenchCrashPoint) => void
@@ -288,6 +377,7 @@ export class ImageWorkbenchService {
     now?: () => Date
     fetchImpl?: FetchLike
     imageResultTimeoutMs?: number
+    imageReasoningTimeoutMs?: number
     legacyMediaRoot?: string
     casOrphanRetentionMs?: number
     canvasRenderer?: DeterministicImageCanvasRenderer
@@ -297,6 +387,7 @@ export class ImageWorkbenchService {
     this.now = options.now ?? (() => new Date())
     this.fetchImpl = options.fetchImpl ?? fetch
     this.imageResultTimeoutMs = Math.max(1_000, Math.min(120_000, options.imageResultTimeoutMs ?? 30_000))
+    this.imageReasoningTimeoutMs = Math.max(1_000, Math.min(60_000, options.imageReasoningTimeoutMs ?? 15_000))
     this.legacyMediaRoot = options.legacyMediaRoot
       ?? join(process.env.BILLIARDBUDDY_CONFIG_DIR ?? join(homedir(), '.BilliardBuddy'), 'billiardbuddy', 'media')
     this.legacyReader = new LegacyImageProjectReader(this.legacyMediaRoot)
@@ -415,6 +506,10 @@ export class ImageWorkbenchService {
   private async compileGenerationBrief(project: ImageWorkbenchProject): Promise<ImageBriefSnapshot> {
     const references = this.generationReferences(project)
     const legacy = project.brief ?? compileImageBrief(project.prompt, project.references).brief
+    // Qwen can only add an explicit "needs confirmation" signal. It never
+    // changes the user's facts, preserve rules, exact text, or provider prompt
+    // without a later user command.
+    const qwenSuggestion = await this.repository.latestUnderstandingSuggestion(project.id)
     const { width, height } = sizeDimensions(project.size)
     const snapshot = {
       schema_version: 2 as const,
@@ -424,7 +519,7 @@ export class ImageWorkbenchService {
       confirmed_facts: legacy.confirmed_facts,
       must_preserve: legacy.must_preserve,
       may_change: legacy.may_change,
-      missing_information: legacy.missing_information,
+      missing_information: [...new Set([...legacy.missing_information, ...(qwenSuggestion?.missing_information ?? [])])].slice(0, 20),
       exact_text: legacy.exact_text.map((text, index) => ({
         id: stableId('ref', project.id, 'exact-text', String(index), text),
         text,
@@ -441,6 +536,7 @@ export class ImageWorkbenchService {
       generation_canvas: { width, height, color_space: 'srgb' as const },
       compiler_name: 'image-brief' as const,
       compiler_version: 'image-brief-v2',
+      ...(qwenSuggestion ? { reasoning_receipt_id: qwenSuggestion.execution_receipt_id } : {}),
       created_at: this.iso(),
     }
     return await this.repository.saveGenerationBrief({
@@ -455,6 +551,7 @@ export class ImageWorkbenchService {
         reference_rules: snapshot.reference_rules,
         generation_canvas: snapshot.generation_canvas,
         compiler_version: snapshot.compiler_version,
+        reasoning_receipt_id: snapshot.reasoning_receipt_id ?? null,
       }),
     })
   }
@@ -474,6 +571,234 @@ export class ImageWorkbenchService {
       current_delivery_spec_revision: delivery.revision,
       revision: project.revision + 1,
     })
+  }
+
+  private async qwenReferenceInputs(project: ImageWorkbenchProject): Promise<Array<{
+    content_hash: `sha256:${string}`
+    role: 'subject' | 'product' | 'character' | 'style' | 'composition' | 'environment' | 'brand' | 'logo' | 'qrcode'
+    influence_strength: 'low' | 'medium' | 'high'
+    preservation: 'may_change' | 'prefer_preserve' | 'must_preserve' | 'exact'
+    priority: number
+    data_url: string
+  }>> {
+    const references = this.generationReferences(project)
+    if (references.length === 0) throw new ImageWorkbenchServiceError('当前项目没有需要理解的参考图', 422, 'IMAGE_QWEN_NOT_REQUIRED')
+    let total = 0
+    const values = await Promise.all(references.map(async reference => {
+      if (reference.role === 'unclassified') throw new ImageWorkbenchServiceError('未分类参考图不能发送给 Qwen', 422, 'IMAGE_REFERENCE_UNCLASSIFIED')
+      const asset = project.assets.find(candidate => candidate.id === reference.asset_id)
+      if (!asset) throw new ImageWorkbenchServiceError('Qwen 参考素材不存在', 409, 'REFERENCE_IMAGE_MISSING')
+      const verified = await this.assets.providerUpload(asset)
+      total += verified.bytes.byteLength
+      return {
+        content_hash: verified.content_hash,
+        role: reference.role,
+        influence_strength: reference.influence_strength,
+        preservation: reference.preservation,
+        priority: reference.priority,
+        data_url: `data:${verified.mime_type};base64,${verified.bytes.toString('base64')}`,
+      }
+    }))
+    if (total > IMAGE_QWEN_MAX_INPUT_BYTES) throw new ImageWorkbenchServiceError('Qwen 图片理解输入超过资源上限', 413, 'IMAGE_QWEN_INPUT_TOO_LARGE')
+    return values
+  }
+
+  private async qwenReasoning(request: Parameters<typeof requestQwenImageReasoning>[0], operationId: string): Promise<Awaited<ReturnType<typeof requestQwenImageReasoning>>> {
+    try {
+      return await requestQwenImageReasoning(request, {
+        operationId,
+        signal: AbortSignal.timeout(this.imageReasoningTimeoutMs),
+        fetchImpl: this.fetchImpl,
+      })
+    } catch (error) {
+      if (error instanceof QwenImageReasoningError) {
+        throw new ImageWorkbenchServiceError(error.message, error.status, error.code)
+      }
+      throw error
+    }
+  }
+
+  /** Local receipt first, then tell Gateway it may retire its durable replay. */
+  private async acknowledgeQwenGatewayResult(receipt: ProviderExecutionReceipt): Promise<ProviderExecutionReceipt> {
+    if (receipt.gateway_result_acknowledged_at || !receipt.gateway_result_fingerprint) return receipt
+    const target = productGatewayTarget()
+    if (!target) return receipt
+    try {
+      const response = await this.fetchImpl(`${target.baseUrl}${PROVIDER_OPERATION_ACK_PATH}`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${target.token}`,
+          [PROVIDER_GATEWAY_PROTOCOL_HEADER]: PROVIDER_GATEWAY_PROTOCOL.headerValue,
+          [PROVIDER_OPERATION_RESULT_ID_HEADER]: receipt.id,
+          [PROVIDER_OPERATION_RESULT_CAPABILITY_HEADER]: 'ImageAdvice',
+          [PROVIDER_OPERATION_RESULT_FINGERPRINT_HEADER]: receipt.gateway_result_fingerprint,
+        },
+      })
+      if (response.status !== 204) return receipt
+      return await this.repository.saveExecutionReceipt({
+        ...receipt,
+        gateway_result_acknowledged_at: this.iso(),
+      })
+    } catch {
+      // The local receipt and suggestion are already transactional.  Keep the
+      // Gateway result for a later idempotent ACK rather than repeat advice.
+      return receipt
+    }
+  }
+
+  /** Optional understanding persists only bounded suggestions and its receipt. */
+  async understandProject(projectId: string, raw: ImageUnderstandingInput): Promise<ImageUnderstandingSuggestion> {
+    const input = imageUnderstandingInputSchema.parse(raw)
+    const project = await this.project(projectId)
+    const briefInput = {
+      user_request: project.brief?.user_request ?? project.title,
+      confirmed_facts: project.brief?.confirmed_facts ?? [],
+      must_preserve: project.brief?.must_preserve ?? [],
+    }
+    const requestHash = sha256({
+      kind: 'image_understanding', project_id: project.id, base_revision: input.base_revision, input: {
+        ...briefInput,
+        references: this.generationReferences(project).map(reference => ({
+          content_hash: reference.content_hash,
+          role: reference.role,
+          influence_strength: reference.influence_strength,
+          preservation: reference.preservation,
+          priority: reference.priority,
+        })),
+      },
+    })
+    const replay = await this.repository.understandingSuggestionByIdempotency(project.id, input.idempotency_key)
+    if (replay) {
+      if (replay.request_hash !== requestHash) throw new ImageWorkbenchServiceError('Qwen 理解幂等键对应的请求内容不一致', 409, 'IMAGE_IDEMPOTENCY_CONFLICT')
+      await this.acknowledgeQwenGatewayResult(await this.repository.getExecutionReceipt(project.id, replay.suggestion.execution_receipt_id))
+      return replay.suggestion
+    }
+    this.assertRevision(project, input.base_revision, '图片项目已更新，请刷新后再请求理解建议')
+    const references = await this.qwenReferenceInputs(project)
+    const receiptId = stableId('receipt', project.id, 'qwen-understanding', input.idempotency_key)
+    const remote = await this.qwenReasoning({
+      schema_version: 1, application_role: 'image_understanding', idempotency_key: input.idempotency_key,
+      input: { ...briefInput, references },
+    }, receiptId)
+    const response = remote.response
+    if (response.application_role !== 'image_understanding') throw new ImageWorkbenchServiceError('Qwen 理解返回角色不匹配', 502, 'IMAGE_QWEN_RESPONSE_INVALID')
+    const now = this.iso()
+    const receipt: ProviderExecutionReceipt = {
+      id: receiptId, project_id: project.id, owner: project.owner, capability: 'image_understanding', registry_capability: 'VisualEvidence',
+      provider: 'qwen', model_id: 'qwen3-vl-flash', policy_revision: 'qwen-image-reasoning-v1', prompt_compiler_version: 'qwen-image-reasoning-v1',
+      idempotency_key: input.idempotency_key, request_hash: requestHash, input_asset_hashes: references.map(reference => reference.content_hash), submitted_at: now, completed_at: now,
+      ...(response.provider_request_id ? { provider_request_id: response.provider_request_id } : {}),
+      ...(response.usage ? { usage: response.usage } : {}),
+      gateway_result_fingerprint: remote.gateway_result.fingerprint,
+    }
+    const saved = await this.repository.saveUnderstandingSuggestionWithReceipt({
+      id: stableId('receipt', project.id, 'understanding', input.idempotency_key), project_id: project.id, execution_receipt_id: receipt.id,
+      ...response.output, created_at: now,
+    }, receipt, requestHash)
+    await this.acknowledgeQwenGatewayResult(receipt)
+    return saved
+  }
+
+  /** Candidate assessment is immutable advice. It cannot adopt, delete, or publish pixels. */
+  async assessCandidateVisual(projectId: string, candidateId: string, raw: ImageVisualAssessmentInput): Promise<ImageVisualAssessment> {
+    const input = imageVisualAssessmentInputSchema.parse(raw)
+    const project = await this.project(projectId)
+    const candidate = await this.repository.getCandidate(project.id, candidateId)
+    const briefInput = {
+      user_request: project.brief?.user_request ?? project.title,
+      confirmed_facts: project.brief?.confirmed_facts ?? [],
+      must_preserve: project.brief?.must_preserve ?? [],
+    }
+    const requestHash = sha256({
+      kind: 'image_visual_assessment', project_id: project.id, candidate_id: candidate.id, base_revision: input.base_revision,
+      input: { ...briefInput, candidate_hash: candidate.content_hash },
+    })
+    const replay = await this.repository.visualAssessmentByIdempotency(project.id, input.idempotency_key)
+    if (replay) {
+      if (replay.request_hash !== requestHash) throw new ImageWorkbenchServiceError('Qwen 评估幂等键对应的请求内容不一致', 409, 'IMAGE_IDEMPOTENCY_CONFLICT')
+      await this.acknowledgeQwenGatewayResult(await this.repository.getExecutionReceipt(project.id, replay.assessment.execution_receipt_id))
+      return replay.assessment
+    }
+    this.assertRevision(project, input.base_revision, '图片项目已更新，请刷新后再请求视觉评估')
+    const asset = project.assets.find(item => item.id === candidate.asset_id && item.role === 'result')
+    if (!asset) throw new ImageWorkbenchServiceError('候选图片资产不存在', 409, 'IMAGE_ASSET_NOT_FOUND')
+    const verified = await this.assets.providerUpload(asset)
+    if (verified.bytes.byteLength > IMAGE_QWEN_MAX_INPUT_BYTES) throw new ImageWorkbenchServiceError('Qwen 视觉评估输入超过资源上限', 413, 'IMAGE_QWEN_INPUT_TOO_LARGE')
+    const receiptId = stableId('receipt', project.id, 'qwen-assessment', input.idempotency_key)
+    const remote = await this.qwenReasoning({
+      schema_version: 1, application_role: 'image_visual_assessment', idempotency_key: input.idempotency_key,
+      input: {
+        ...briefInput,
+        candidate: { content_hash: verified.content_hash, data_url: `data:${verified.mime_type};base64,${verified.bytes.toString('base64')}` },
+      },
+    }, receiptId)
+    const response = remote.response
+    if (response.application_role !== 'image_visual_assessment') throw new ImageWorkbenchServiceError('Qwen 评估返回角色不匹配', 502, 'IMAGE_QWEN_RESPONSE_INVALID')
+    const now = this.iso()
+    const receipt: ProviderExecutionReceipt = {
+      id: receiptId, project_id: project.id, owner: project.owner, capability: 'image_visual_assessment', registry_capability: 'VisualEvidence',
+      provider: 'qwen', model_id: 'qwen3-vl-flash', policy_revision: 'qwen-image-reasoning-v1', prompt_compiler_version: 'qwen-image-reasoning-v1',
+      idempotency_key: input.idempotency_key, request_hash: requestHash, input_asset_hashes: [verified.content_hash], submitted_at: now, completed_at: now,
+      ...(response.provider_request_id ? { provider_request_id: response.provider_request_id } : {}),
+      ...(response.usage ? { usage: response.usage } : {}),
+      gateway_result_fingerprint: remote.gateway_result.fingerprint,
+    }
+    const saved = await this.repository.saveVisualAssessmentWithReceipt({
+      id: stableId('receipt', project.id, 'assessment', input.idempotency_key), project_id: project.id, candidate_id: candidate.id, execution_receipt_id: receipt.id,
+      ...response.output, created_at: now,
+    }, receipt, requestHash)
+    await this.acknowledgeQwenGatewayResult(receipt)
+    return saved
+  }
+
+  /** A formal Version is assessed with the same advice-only contract as a Candidate. */
+  async assessVersionVisual(projectId: string, versionId: string, raw: ImageVisualAssessmentInput): Promise<ImageVisualAssessment> {
+    const input = imageVisualAssessmentInputSchema.parse(raw)
+    const project = await this.project(projectId)
+    const { version, asset } = this.imageVersion(project, versionId)
+    const briefInput = {
+      user_request: project.brief?.user_request ?? project.title,
+      confirmed_facts: project.brief?.confirmed_facts ?? [],
+      must_preserve: project.brief?.must_preserve ?? [],
+    }
+    const verified = await this.assets.providerUpload(asset)
+    const requestHash = sha256({
+      kind: 'image_visual_assessment', project_id: project.id, version_id: version.id, base_revision: input.base_revision,
+      input: { ...briefInput, candidate_hash: verified.content_hash },
+    })
+    const replay = await this.repository.visualAssessmentByIdempotency(project.id, input.idempotency_key)
+    if (replay) {
+      if (replay.request_hash !== requestHash) throw new ImageWorkbenchServiceError('Qwen 评估幂等键对应的请求内容不一致', 409, 'IMAGE_IDEMPOTENCY_CONFLICT')
+      await this.acknowledgeQwenGatewayResult(await this.repository.getExecutionReceipt(project.id, replay.assessment.execution_receipt_id))
+      return replay.assessment
+    }
+    this.assertRevision(project, input.base_revision, '图片项目已更新，请刷新后再请求视觉评估')
+    if (verified.bytes.byteLength > IMAGE_QWEN_MAX_INPUT_BYTES) throw new ImageWorkbenchServiceError('Qwen 视觉评估输入超过资源上限', 413, 'IMAGE_QWEN_INPUT_TOO_LARGE')
+    const receiptId = stableId('receipt', project.id, 'qwen-version-assessment', input.idempotency_key)
+    const remote = await this.qwenReasoning({
+      schema_version: 1, application_role: 'image_visual_assessment', idempotency_key: input.idempotency_key,
+      input: {
+        ...briefInput,
+        candidate: { content_hash: verified.content_hash, data_url: `data:${verified.mime_type};base64,${verified.bytes.toString('base64')}` },
+      },
+    }, receiptId)
+    const response = remote.response
+    if (response.application_role !== 'image_visual_assessment') throw new ImageWorkbenchServiceError('Qwen 评估返回角色不匹配', 502, 'IMAGE_QWEN_RESPONSE_INVALID')
+    const now = this.iso()
+    const receipt: ProviderExecutionReceipt = {
+      id: receiptId, project_id: project.id, owner: project.owner, capability: 'image_visual_assessment', registry_capability: 'VisualEvidence',
+      provider: 'qwen', model_id: 'qwen3-vl-flash', policy_revision: 'qwen-image-reasoning-v1', prompt_compiler_version: 'qwen-image-reasoning-v1',
+      idempotency_key: input.idempotency_key, request_hash: requestHash, input_asset_hashes: [verified.content_hash], submitted_at: now, completed_at: now,
+      ...(response.provider_request_id ? { provider_request_id: response.provider_request_id } : {}),
+      ...(response.usage ? { usage: response.usage } : {}),
+      gateway_result_fingerprint: remote.gateway_result.fingerprint,
+    }
+    const saved = await this.repository.saveVisualAssessmentWithReceipt({
+      id: stableId('receipt', project.id, 'version-assessment', input.idempotency_key), project_id: project.id, version_id: version.id, execution_receipt_id: receipt.id,
+      ...response.output, created_at: now,
+    }, receipt, requestHash)
+    await this.acknowledgeQwenGatewayResult(receipt)
+    return saved
   }
 
   private defaultDirection(project: ImageWorkbenchProject, brief: ImageBriefSnapshot): ImageCreativeDirection {
@@ -1056,8 +1381,8 @@ export class ImageWorkbenchService {
       throw new ImageWorkbenchServiceError('费用估算已过期或不属于当前输入，请重新确认', 409, 'IMAGE_REVISION_CONFLICT')
     }
     await this.assertBudgetAllows(project, estimate.price_upper_bound)
-    if (!productGatewayConfigured()) {
-      throw new ImageWorkbenchServiceError('图片远程能力尚未配置', 503, 'GATEWAY_NOT_CONFIGURED')
+    if (!productImageRelayConfigured()) {
+      throw new ImageWorkbenchServiceError('图片远程能力尚未配置', 503, 'IMAGE_RELAY_NOT_CONFIGURED')
     }
     // Reject a missing or corrupt Provider reference before accepting paid work.
     // The final data URIs and per-image controls are rebuilt from the same CAS
@@ -1320,7 +1645,7 @@ export class ImageWorkbenchService {
       throw new ImageWorkbenchServiceError('派生费用估算已过期或不属于当前输入，请重新确认', 409, 'IMAGE_REVISION_CONFLICT')
     }
     await this.assertBudgetAllows(project, estimate.price_upper_bound)
-    if (!productGatewayConfigured()) throw new ImageWorkbenchServiceError('图片远程能力尚未配置', 503, 'GATEWAY_NOT_CONFIGURED')
+    if (!productImageRelayConfigured()) throw new ImageWorkbenchServiceError('图片远程能力尚未配置', 503, 'IMAGE_RELAY_NOT_CONFIGURED')
     const now = this.iso()
     const operationId = stableId('op', project.id, roundId, candidate.id)
     const assetHashes = [...new Set([candidate.content_hash, ...providerReferences.map(reference => reference.content_hash)])]
@@ -1488,11 +1813,17 @@ export class ImageWorkbenchService {
       : transport.error_code && transport.error
       ? { code: transport.error_code, message: mediaSafeError(transport.error_code).message }
       : undefined
+    // A Relay-declared hosted-quota refusal is definitive: the Relay did not
+    // hand the task to a Provider, so retaining "charge possible" would make
+    // a retry look like a potentially billable duplicate.  Other transport
+    // failures remain conservative because their submission outcome can be
+    // ambiguous and must retain the existing recovery fence.
+    const definitivelyNotSubmitted = refusal || transport.error_code === 'MEDIA_IMAGE_QUOTA_EXHAUSTED'
     return await this.repository.updateGenerationOperation({
       ...current,
       status,
       remote_task_id: transport.remote_task_id,
-      cost_state: status === 'succeeded' ? 'usage_recorded' : status === 'blocked_by_policy' ? 'not_submitted' : current.cost_state,
+      cost_state: status === 'succeeded' ? 'usage_recorded' : definitivelyNotSubmitted ? 'not_submitted' : current.cost_state,
       ...(status === 'succeeded' || status === 'failed' || status === 'cancelled' || status === 'blocked_by_policy' || status === 'outcome_unknown'
         ? { completed_at: current.completed_at ?? this.iso() }
         : {}),
@@ -2459,7 +2790,11 @@ export class ImageWorkbenchService {
     }
   }
 
-  private async fetchGatewayJson(input: RequestInfo | URL, init: RequestInit): Promise<{
+  private async fetchImageRelayJson(
+    input: RequestInfo | URL,
+    init: RequestInit,
+    maxBytes = IMAGE_RELAY_CONTROL_JSON_MAX_BYTES,
+  ): Promise<{
     response: Response
     body: RelayImageTask
   }> {
@@ -2468,14 +2803,13 @@ export class ImageWorkbenchService {
     const timeout = new Promise<never>((_resolve, reject) => {
       timer = setTimeout(() => {
         controller.abort()
-        reject(new Error('image gateway response deadline exceeded'))
+        reject(new Error('image relay response deadline exceeded'))
       }, this.imageResultTimeoutMs)
       ;(timer as unknown as { unref?: () => void }).unref?.()
     })
     const request = async () => {
       const response = await this.fetchImpl(input, { ...init, signal: controller.signal })
-      const text = await response.text()
-      if (text.length > 4 * 1024 * 1024) throw new Error('image gateway response too large')
+      const text = await readImageRelayResponseText(response, maxBytes, controller.signal)
       let body: RelayImageTask = {}
       if (text) {
         try {
@@ -2627,15 +2961,18 @@ export class ImageWorkbenchService {
   /**
    * A durable Round can exist before its first POST, and a process can die
    * after a POST begins without receiving the remote task id.  In both cases
-   * the only lawful recovery is the original idempotency key; Gateway either
+   * the only lawful recovery is the original idempotency key; Image Relay either
    * returns the accepted task or treats it as the same logical submission.
    */
   private async resumeUnpostedGenerationOperation(operation: ImageOperation, generation: ImageOperationV2): Promise<ImageOperation> {
     if (operation.remote_task_id || !generation.transport_task_id) return operation
     const neverPosted = operation.status === 'queued' && !operation.remote_submission_started_at
-    const outcomeUnknown = operation.outcome_unknown === true
-    if (!neverPosted && !outcomeUnknown) return operation
-    if (!productGatewayConfigured()) return operation
+    // A remotely ambiguous operation is never safe to POST again, even when
+    // its idempotency key is stable.  Recovery below asks Image Relay for the
+    // existing owner-bound task; only a record which was durably created but
+    // whose first POST never started may take its first submission here.
+    if (!neverPosted) return operation
+    if (!productImageRelayConfigured()) return operation
     const provider = providerRegistryEntry(operation.image_operation.model)
     if (!provider) throw new ImageWorkbenchServiceError('图片操作缺少已注册 Provider', 500, 'IMAGE_OPERATION_CORRUPT')
     await this.submitGenerationTransport(
@@ -2648,18 +2985,62 @@ export class ImageWorkbenchService {
     return await this.repository.getOperation(operation.id)
   }
 
+  /**
+   * A timeout after the request leaves us unable to prove whether the provider
+   * accepted paid work.  The relay lookup is deliberately read-only and bound
+   * to the authenticated installation plus the original idempotency key.  A
+   * 404 is not permission to submit again: it remains outcome_unknown until
+   * an explicit user resolution path exists.
+   */
+  private async recoverOutcomeUnknownOperation(operation: ImageOperation): Promise<ImageOperation> {
+    if (!operation.outcome_unknown || operation.remote_task_id || !operation.idempotency_key) return operation
+    const target = productImageRelayTarget()
+    if (!target) return operation
+    try {
+      const { response, body } = await this.fetchImageRelayJson(
+        `${target.baseUrl}${imageRelayIdempotencyLookupPath(operation.idempotency_key)}`,
+        { headers: { Authorization: `Bearer ${target.token}` } },
+      )
+      // No remotely confirmed record is still an unknown paid outcome. Never
+      // turn a lookup miss into another POST.
+      if (response.status === 404) return operation
+      if (!response.ok || !body.task_id) return operation
+      if (operation.provider_receipt_hash && body.provider_receipt_hash && operation.provider_receipt_hash !== body.provider_receipt_hash) {
+        return await this.failOperation(operation, 'MEDIA_IMAGE_OUTCOME_UNKNOWN', true)
+      }
+      const restored = await this.repository.saveOperation(this.operation({
+        ...operation,
+        remote_task_id: body.task_id,
+        provider_receipt_hash: body.provider_receipt_hash ?? operation.provider_receipt_hash,
+        status: body.status === 'running' ? 'running' : 'queued',
+        progress: body.status === 'running' ? Math.max(operation.progress, 10) : Math.max(operation.progress, 2),
+        stage: '已确认上次图片任务',
+        poll_after_seconds: relayPollAfterSeconds(body.poll_after_seconds, body.status === 'running' ? 3 : 15),
+        outcome_unknown: false,
+        error: undefined,
+        error_code: undefined,
+      }))
+      // Once the same remote task is bound, ordinary status polling and result
+      // recovery are safe.  This is a GET only; it cannot create paid work.
+      return await this.refreshPersistedOperation(restored)
+    } catch {
+      return operation
+    }
+  }
+
   async recoverInterruptedOperations(): Promise<void> {
     const operations = await this.repository.listOperations()
     await Promise.all(operations.map(async operation => {
       const fenced = await this.fenceInterruptedSubmission(operation)
       const formal = await this.repository.getGenerationOperationByTransportTask(fenced.id)
       const resumed = formal ? await this.resumeUnpostedGenerationOperation(fenced, formal) : fenced
+      const lookedUp = await this.recoverOutcomeUnknownOperation(resumed)
       // `committing` means CAS may have published while the SQLite project
       // transaction did not. Re-read the exact accepted remote task; do not
       // manufacture success from partial local files and never POST again.
-      const recovered = resumed.status === 'committing'
-        ? await this.refreshPersistedOperation(resumed)
-        : resumed
+      const recovered = lookedUp.status === 'committing'
+        ? await this.refreshPersistedOperation(lookedUp)
+        : lookedUp
       await this.acknowledgeRemoteResult(recovered)
       const generation = await this.repository.getGenerationOperationByTransportTask(recovered.id)
       if (generation) await this.syncGenerationOperationFromTransport(generation, recovered)
@@ -2689,8 +3070,12 @@ export class ImageWorkbenchService {
             idempotency_key: operation.idempotency_key,
             version_ids_by_artboard: operation.local_delivery.version_ids_by_artboard,
           }).catch(async error => await this.runLocalDelivery(operation.id, async () => { throw error }))
-        }
-      }))
+      }
+    }))
+    // A Qwen advice result becomes locally durable before its Gateway ACK.  On
+    // restart only retry that idempotent ACK; never re-run the model request.
+    await Promise.all((await this.repository.listUnacknowledgedGatewayAdviceReceipts())
+      .map(async receipt => { await this.acknowledgeQwenGatewayResult(receipt) }))
   }
 
   private legacyFile(root: string, locator: string): string | null {
@@ -2948,15 +3333,15 @@ export class ImageWorkbenchService {
   }
 
   private async performSubmission(project: ImageWorkbenchProject, original: ImageOperation): Promise<ImageOperation> {
-    if (!productGatewayConfigured()) {
-      throw new ImageWorkbenchServiceError('图片远程能力尚未配置', 503, 'GATEWAY_NOT_CONFIGURED')
+    if (!productImageRelayConfigured()) {
+      throw new ImageWorkbenchServiceError('图片远程能力尚未配置', 503, 'IMAGE_RELAY_NOT_CONFIGURED')
     }
     const idempotencyKey = original.idempotency_key
     if (!idempotencyKey) {
       throw new ImageWorkbenchServiceError('图片操作缺少幂等凭据', 500, 'IMAGE_OPERATION_CORRUPT')
     }
-    const target = productGatewayTarget()
-    if (!target) throw new ImageWorkbenchServiceError('图片远程能力尚未配置', 503, 'GATEWAY_NOT_CONFIGURED')
+    const target = productImageRelayTarget()
+    if (!target) throw new ImageWorkbenchServiceError('图片远程能力尚未配置', 503, 'IMAGE_RELAY_NOT_CONFIGURED')
     const payload = await this.imageSubmissionPayload(project, original)
     let operation = await this.repository.saveOperation(this.operation({
       ...original,
@@ -2969,13 +3354,12 @@ export class ImageWorkbenchService {
       error_code: undefined,
     }))
     try {
-      const { response, body } = await this.fetchGatewayJson(`${target.baseUrl}/v1/images/tasks`, {
+      const { response, body } = await this.fetchImageRelayJson(`${target.baseUrl}${IMAGE_RELAY_TASKS_PATH}`, {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${target.token}`,
           'Content-Type': 'application/json',
           'Idempotency-Key': idempotencyKey,
-          [PROVIDER_GATEWAY_PROTOCOL_HEADER]: PROVIDER_GATEWAY_PROTOCOL.headerValue,
         },
         body: JSON.stringify(payload),
       })
@@ -2996,7 +3380,9 @@ export class ImageWorkbenchService {
         }
         return await this.failOperation(
           operation,
-          response.status >= 500 || response.status === 0 ? 'MEDIA_IMAGE_OUTCOME_UNKNOWN' : 'MEDIA_IMAGE_UNAVAILABLE',
+          response.status >= 500 || response.status === 0
+            ? 'MEDIA_IMAGE_OUTCOME_UNKNOWN'
+            : imageRelayFailureCode(response.status, body),
           response.status >= 500 || response.status === 0,
           body.provider_receipt_hash,
         )
@@ -3043,32 +3429,39 @@ export class ImageWorkbenchService {
     if (handoffUrls.length > 4) throw new ImageWorkbenchServiceError('远程图片结果数量异常', 502, 'IMAGE_RESULT_INVALID')
     const trusted = handoffUrls.map(value => trustedResultUrl(value, target.baseUrl))
     if (trusted.some(value => !value)) throw new ImageWorkbenchServiceError('远程图片结果地址不可信', 502, 'IMAGE_RESULT_INVALID')
-    const results = await Promise.all(trusted.map(url => this.fetchGatewayJson(url!, {
-      method: 'GET',
-      redirect: 'error',
-      headers: { Accept: 'application/json' },
-    })))
-    const failure = results.find(result => !result.response.ok)
-    if (failure) throw new ImageWorkbenchServiceError(
-      boundedMessage(failure.body.error ?? failure.body.message),
-      failure.response.status || 502,
-      'IMAGE_RESULT_UNAVAILABLE',
-    )
-    return { ...body, data: results.flatMap(result => result.body.data ?? []) }
+    const data: NonNullable<RelayImageTask['data']> = []
+    // Direct candidates are intentionally fetched one at a time. A valid 32 MiB
+    // image expands to ~43 MiB JSON; Promise.all would multiply that footprint.
+    for (const url of trusted) {
+      const result = await this.fetchImageRelayJson(url!, {
+        method: 'GET',
+        redirect: 'error',
+        headers: {
+          Accept: 'application/json',
+          Authorization: `Bearer ${target.token}`,
+        },
+      }, IMAGE_RELAY_DIRECT_RESULT_JSON_MAX_BYTES)
+      if (!result.response.ok) throw new ImageWorkbenchServiceError(
+        boundedMessage(result.body.error ?? result.body.message),
+        result.response.status || 502,
+        'IMAGE_RESULT_UNAVAILABLE',
+      )
+      data.push(...(result.body.data ?? []))
+    }
+    return { ...body, data }
   }
 
   private async acknowledgeGenerationRemoteResult(operation: ImageOperationV2, transport: ImageOperation): Promise<ImageOperation> {
     if (!transport.remote_task_id || !transport.provider_receipt_hash || transport.remote_result_acknowledged_at || !operation.result) return transport
-    const target = productGatewayTarget()
+    const target = productImageRelayTarget()
     if (!target) return transport
     try {
-      const { response, body } = await this.fetchGatewayJson(
-        `${target.baseUrl}/v1/images/tasks/${encodeURIComponent(transport.remote_task_id)}/ack`,
+      const { response, body } = await this.fetchImageRelayJson(
+        `${target.baseUrl}${IMAGE_RELAY_TASKS_PATH}/${encodeURIComponent(transport.remote_task_id)}/ack`,
         {
           method: 'POST',
           headers: {
             Authorization: `Bearer ${target.token}`,
-            [PROVIDER_GATEWAY_PROTOCOL_HEADER]: PROVIDER_GATEWAY_PROTOCOL.headerValue,
           },
         },
       )
@@ -3100,16 +3493,15 @@ export class ImageWorkbenchService {
         return operation
       }
     }
-    const target = productGatewayTarget()
+    const target = productImageRelayTarget()
     if (!target) return operation
     try {
-      const { response, body } = await this.fetchGatewayJson(
-        `${target.baseUrl}/v1/images/tasks/${encodeURIComponent(operation.remote_task_id)}/ack`,
+      const { response, body } = await this.fetchImageRelayJson(
+        `${target.baseUrl}${IMAGE_RELAY_TASKS_PATH}/${encodeURIComponent(operation.remote_task_id)}/ack`,
         {
           method: 'POST',
           headers: {
             Authorization: `Bearer ${target.token}`,
-            [PROVIDER_GATEWAY_PROTOCOL_HEADER]: PROVIDER_GATEWAY_PROTOCOL.headerValue,
           },
         },
       )
@@ -3148,14 +3540,29 @@ export class ImageWorkbenchService {
       updated_at: this.iso(),
     })
     const rawCandidates = body.data ?? []
-    const invalid: Array<{ index: number; safe_error_code: string }> = []
+    const invalidByIndex = new Map<number, string>()
+    const addInvalid = (index: number, code: string) => {
+      if (!Number.isInteger(index) || index < 0 || index >= expectedCount || invalidByIndex.has(index)) return
+      invalidByIndex.set(index, /^[A-Z0-9_]{1,120}$/.test(code) ? code : 'IMAGE_RESULT_INVALID')
+    }
+    for (const item of body.invalid ?? []) addInvalid(item.index ?? -1, item.safe_error_code ?? 'IMAGE_RESULT_INVALID')
+    const candidatesByIndex = new Map<number, NonNullable<RelayImageTask['data']>[number]>()
+    for (let position = 0; position < rawCandidates.length; position += 1) {
+      const remote = rawCandidates[position]!
+      const index = Number.isInteger(remote.candidate_index) ? remote.candidate_index! : position
+      if (index < 0 || index >= expectedCount || candidatesByIndex.has(index)) {
+        addInvalid(Math.max(0, Math.min(expectedCount - 1, index)), 'IMAGE_RESULT_COUNT_INVALID')
+        continue
+      }
+      candidatesByIndex.set(index, remote)
+    }
     const saved: Array<{ candidate: ImageCandidate; asset: MediaAsset }> = []
     const groupId = stableId('grp', project.id, operation.id)
     const now = this.iso()
     for (let index = 0; index < expectedCount; index += 1) {
-      const remote = rawCandidates[index]
+      const remote = candidatesByIndex.get(index)
       if (!remote?.b64_json || remote.url || !/^[A-Za-z0-9+/=]+$/.test(remote.b64_json)) {
-        invalid.push({ index, safe_error_code: remote ? 'IMAGE_RESULT_INVALID' : 'IMAGE_RESULT_MISSING' })
+        addInvalid(index, remote ? 'IMAGE_RESULT_INVALID' : 'IMAGE_RESULT_MISSING')
         continue
       }
       try {
@@ -3180,15 +3587,18 @@ export class ImageWorkbenchService {
         })
       } catch (error) {
         if (error instanceof ImageAssetStoreError) {
-          invalid.push({ index, safe_error_code: error.code })
+          addInvalid(index, error.code)
           continue
         }
         throw error
       }
     }
-    if (rawCandidates.length > expectedCount) {
-      invalid.push({ index: expectedCount - 1, safe_error_code: 'IMAGE_RESULT_COUNT_INVALID' })
-    }
+    // valid_count is aggregate Relay telemetry.  A local verification failure
+    // cannot safely be attributed to another candidate index, so only the
+    // per-candidate facts collected above may produce indexed invalid entries.
+    const invalid = [...invalidByIndex.entries()]
+      .map(([index, safe_error_code]) => ({ index, safe_error_code }))
+      .sort((left, right) => left.index - right.index)
     if (saved.length === 0) {
       const failed = await this.failOperation(committingTransport, 'MEDIA_IMAGE_UNAVAILABLE', false, body.provider_receipt_hash)
       await this.syncGenerationOperationFromTransport(committingOperation, failed)
@@ -3380,19 +3790,18 @@ export class ImageWorkbenchService {
   }
 
   private async refreshOperation(original: ImageOperation): Promise<ImageOperation> {
-    if (!original.remote_task_id || !productGatewayConfigured()) return original
-    const target = productGatewayTarget()
+    if (!original.remote_task_id || !productImageRelayConfigured()) return original
+    const target = productImageRelayTarget()
     if (!target) return original
     let response: Response
     let body: RelayImageTask
     try {
-      const result = await this.fetchGatewayJson(
-        `${target.baseUrl}/v1/images/tasks/${encodeURIComponent(original.remote_task_id)}`,
+      const result = await this.fetchImageRelayJson(
+        `${target.baseUrl}${IMAGE_RELAY_TASKS_PATH}/${encodeURIComponent(original.remote_task_id)}`,
         {
           headers: {
             Authorization: `Bearer ${target.token}`,
-            [PROVIDER_GATEWAY_PROTOCOL_HEADER]: PROVIDER_GATEWAY_PROTOCOL.headerValue,
-            [MEDIA_RESULT_HANDOFF_HEADER]: MEDIA_RESULT_HANDOFF_DIRECT_V1,
+            [IMAGE_RELAY_RESULT_HANDOFF_HEADER]: IMAGE_RELAY_RESULT_HANDOFF_DIRECT_V1,
           },
         },
       )
@@ -3408,7 +3817,7 @@ export class ImageWorkbenchService {
       if (response.status >= 500) return original
       return await this.failOperation(
         original,
-        body.status === 'failed_unknown' ? 'MEDIA_IMAGE_OUTCOME_UNKNOWN' : 'MEDIA_IMAGE_UNAVAILABLE',
+        imageRelayFailureCode(response.status, body),
         body.status === 'failed_unknown',
         body.provider_receipt_hash,
       )
@@ -3431,7 +3840,7 @@ export class ImageWorkbenchService {
     if (body.status === 'failed' || body.status === 'failed_unknown') {
       return await this.failOperation(
         original,
-        body.status === 'failed_unknown' ? 'MEDIA_IMAGE_OUTCOME_UNKNOWN' : 'MEDIA_IMAGE_UNAVAILABLE',
+        imageRelayFailureCode(response.status, body),
         body.status === 'failed_unknown',
         body.provider_receipt_hash,
       )
@@ -3482,18 +3891,17 @@ export class ImageWorkbenchService {
     if (operation.status !== 'queued' || !operation.remote_task_id) {
       throw new ImageWorkbenchServiceError('当前图片操作不能安全取消', 409, 'IMAGE_OPERATION_NOT_CANCELLABLE')
     }
-    const target = productGatewayTarget()
+    const target = productImageRelayTarget()
     if (!target) {
       throw new ImageWorkbenchServiceError(mediaSafeError('MEDIA_IMAGE_CANCEL_UNKNOWN').message, 503, 'IMAGE_CANCEL_UNKNOWN')
     }
     try {
-      const { response, body } = await this.fetchGatewayJson(
-        `${target.baseUrl}/v1/images/tasks/${encodeURIComponent(operation.remote_task_id)}/cancel`,
+      const { response, body } = await this.fetchImageRelayJson(
+        `${target.baseUrl}${IMAGE_RELAY_TASKS_PATH}/${encodeURIComponent(operation.remote_task_id)}/cancel`,
         {
           method: 'POST',
           headers: {
             Authorization: `Bearer ${target.token}`,
-            [PROVIDER_GATEWAY_PROTOCOL_HEADER]: PROVIDER_GATEWAY_PROTOCOL.headerValue,
           },
         },
       )
@@ -3569,8 +3977,8 @@ export class ImageWorkbenchService {
     const project = await this.project(projectId)
     this.assertRevision(project, input.revision, '图片项目已更新，请刷新后再编辑')
     await this.assertNoActiveOperation(project, input.confirm_unknown_retry)
-    if (!productGatewayConfigured()) {
-      throw new ImageWorkbenchServiceError('图片远程能力尚未配置', 503, 'GATEWAY_NOT_CONFIGURED')
+    if (!productImageRelayConfigured()) {
+      throw new ImageWorkbenchServiceError('图片远程能力尚未配置', 503, 'IMAGE_RELAY_NOT_CONFIGURED')
     }
     const base = await this.imageVersionBytes(project, input.base_version_id)
     const model = this.resolveGenerationPolicy({

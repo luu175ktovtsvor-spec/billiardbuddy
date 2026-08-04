@@ -3,7 +3,7 @@ import { mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { Database } from 'bun:sqlite'
 
-export type GatewayReplayCapability = 'SpeechTranscription' | 'SpeechSynthesis' | 'VoiceCloning' | 'VisualEvidence' | 'AudioUnderstanding' | 'MediaReasoning' | 'WebSearch' | 'TextReasoning'
+export type GatewayReplayCapability = 'SpeechTranscription' | 'SpeechSynthesis' | 'VoiceCloning' | 'VisualEvidence' | 'AudioUnderstanding' | 'MediaReasoning' | 'ImageAdvice' | 'WebSearch' | 'TextReasoning'
 
 export type GatewayOperationResultBinding = {
   principal_id: string
@@ -69,6 +69,7 @@ const MAX_RESULT_BYTES_BY_CAPABILITY: Record<GatewayReplayCapability, number> = 
   VisualEvidence: 4 * 1024 * 1024,
   AudioUnderstanding: 4 * 1024 * 1024,
   MediaReasoning: 4 * 1024 * 1024,
+  ImageAdvice: 4 * 1024 * 1024,
   WebSearch: 4 * 1024 * 1024,
   // The canonical JSON can be larger than the original 8 MiB SSE body because
   // JSON string escaping may expand tool arguments and text by nearly 2x.
@@ -90,6 +91,7 @@ const MAX_SUCCEEDED_RESULTS_BY_CAPABILITY: Record<GatewayReplayCapability, numbe
   VisualEvidence: 512,
   AudioUnderstanding: 512,
   MediaReasoning: 256,
+  ImageAdvice: 512,
   WebSearch: 128,
   TextReasoning: 64,
 }
@@ -105,7 +107,7 @@ function fencingToken(): number {
 function validateBinding(binding: GatewayOperationResultBinding): void {
   if (!binding.principal_id || !binding.installation_id
     || !/^[A-Za-z0-9._:-]{8,200}$/.test(binding.operation_id)
-    || !['SpeechTranscription', 'SpeechSynthesis', 'VoiceCloning', 'VisualEvidence', 'AudioUnderstanding', 'MediaReasoning', 'WebSearch', 'TextReasoning'].includes(binding.capability)
+    || !['SpeechTranscription', 'SpeechSynthesis', 'VoiceCloning', 'VisualEvidence', 'AudioUnderstanding', 'MediaReasoning', 'ImageAdvice', 'WebSearch', 'TextReasoning'].includes(binding.capability)
     || !/^[a-f0-9]{64}$/.test(binding.fingerprint)) {
     throw new GatewayOperationResultError(409, 'OPERATION_RESULT_CONFLICT')
   }

@@ -26,19 +26,44 @@ bb_runtime_paths=(
   gateway/installationAuth.ts
   gateway/transcription.ts
   gateway/modelCapacity.ts
+  gateway/capacityPolicy.ts
+  gateway/quotaPolicy.ts
+  gateway/providerCredentials.ts
+  gateway/serviceCredentials.ts
   gateway/managedResponses.ts
   gateway/mimoChat.ts
   gateway/visionBridge.ts
+  gateway/qwenImageReasoning.ts
   gateway/providerRegistry.ts
   gateway/usageBudget.ts
   gateway/operationResultStore.ts
   gateway/validate-deployment-env.ts
-  gateway/validate-mimo-capacity-env.sh
-  gateway/validate-production-capacity-env.sh
   relay/app.ts
-  relay/validate-production-env.sh
+  relay/capacityPolicy.ts
+  relay/quotaPolicy.ts
+  relay/providerCredentials.ts
+  relay/identityIntrospection.ts
+  relay/resultCredentials.ts
+  relay/validate-deployment-env.ts
+  video-media-relay/app.ts
+  video-media-relay/objectStore.ts
+  video-media-relay/providerRegistry.ts
+  video-media-relay/capacityPolicy.ts
+  video-media-relay/identityIntrospection.ts
+  video-media-relay/network.ts
+  video-media-relay/validate-deployment-env.ts
+  video-media-relay/contracts/relayApi.ts
+  video-media-relay/providers/dashscope.ts
+  ts/package.json
+  ts/bun.lock
+  ts/shared/kernel/providerAdmission.ts
+  ts/shared/kernel/deploymentEnvironment.ts
   ts/shared/product/providerContracts.ts
+  ts/shared/product/modelCatalog.ts
   ts/shared/product/providerGateway.ts
+  ts/shared/product/serviceIntrospection.ts
+  ts/shared/product/imageRelayProtocol.ts
+  ts/shared/product/imageVisualReasoning.ts
 )
 
 mkdir -p "$(dirname "$bb_output")"
@@ -51,10 +76,41 @@ for bb_required in \
   deploy/production/deploy.sh \
   deploy/production/Dockerfile.gateway \
   deploy/production/Dockerfile.relay \
+  deploy/production/Dockerfile.video-media-relay \
+  deploy/production/container-entrypoint.sh \
+  deploy/production/gateway-smoke.ts \
+  deploy/production/image-relay-smoke.ts \
+  deploy/production/production-smoke.ts \
+  deploy/production/video-media-smoke.ts \
+  deploy/production/migrate-relay-secrets.ts \
+  deploy/production/install-nginx-relay-routes.sh \
+  deploy/production/migrate-image-relay-data.sh \
+  deploy/production/nginx/billiardbuddy-relay-routes.conf \
   gateway/app.ts \
   gateway/managedResponses.ts \
+  gateway/serviceCredentials.ts \
   gateway/validate-deployment-env.ts \
   relay/app.ts \
+  relay/capacityPolicy.ts \
+  relay/quotaPolicy.ts \
+  relay/identityIntrospection.ts \
+  video-media-relay/app.ts \
+  video-media-relay/objectStore.ts \
+  video-media-relay/providerRegistry.ts \
+  video-media-relay/capacityPolicy.ts \
+  video-media-relay/identityIntrospection.ts \
+  video-media-relay/network.ts \
+  video-media-relay/validate-deployment-env.ts \
+  video-media-relay/contracts/relayApi.ts \
+  video-media-relay/providers/dashscope.ts \
+  ts/shared/kernel/providerAdmission.ts \
+  ts/shared/kernel/deploymentEnvironment.ts \
+  ts/shared/product/providerContracts.ts \
+  ts/shared/product/modelCatalog.ts \
+  ts/shared/product/serviceIntrospection.ts \
+  ts/shared/product/imageVisualReasoning.ts \
+  ts/package.json \
+  ts/bun.lock \
   release-manifest.json; do
   tar -tzf "$bb_output" "$bb_required" >/dev/null
 done

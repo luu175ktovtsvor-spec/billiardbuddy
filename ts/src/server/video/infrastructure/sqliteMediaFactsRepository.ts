@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { readFile, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { AssetIntegrity } from '../../media/kernel/assets/assetIntegrity.js'
@@ -67,6 +67,18 @@ export type VideoFactSearchPage = {
   generation: number
   items: VideoFactSearchResult[]
   next_cursor?: string
+}
+
+export type VideoFactEmbedding = { entry_id: string; vector: number[]; model_snapshot: string; instruction_version: string; content_hash: `sha256:${string}` }
+/** A Relay result may be deleted only after the already-persisted document
+ * vectors have been acknowledged. This is a SQLite outbox record, not a
+ * provider cache or an in-memory retry. */
+export type VideoFactEmbeddingRelayAcknowledgement = {
+  local_operation_id: string
+  relay_operation_id: string
+  receipt_id: string
+  result_hashes: `sha256:${string}`[]
+  created_at: string
 }
 
 type SearchRow = {
@@ -237,6 +249,35 @@ export class SqliteMediaFactsRepository {
     return (await this.searchPage(projectId, query, { limit })).items
   }
 
+  /** Current search projections are the semantic corpus.  This intentionally
+   * does not depend on a lexical query: otherwise semantic-only matches can
+   * never be indexed or returned. */
+  async listCurrentSearchCandidates(projectId: string, limit = 10_000): Promise<VideoFactSearchResult[]> {
+    await this.ensureSearchGeneration(projectId)
+    const rows = this.unitOfWork.database.query(`SELECT rowid,fact_id AS entry_id,source_id,fact_kind
+      FROM video_fact_search WHERE project_id=? ORDER BY rowid LIMIT ?`).all(projectId, Math.max(1, Math.min(10_000, limit))) as SearchRow[]
+    const results: VideoFactSearchResult[] = []
+    for (const row of rows) {
+      const item = await this.materializeSearchResult(row)
+      if (item) results.push(item)
+    }
+    return results
+  }
+
+  async missingSearchEmbeddingEntries(projectId: string, entryIds: string[]): Promise<Set<string>> {
+    const generation = await this.ensureSearchGeneration(projectId)
+    const missing = new Set<string>()
+    for (let offset = 0; offset < entryIds.length; offset += 500) {
+      const batch = entryIds.slice(offset, offset + 500)
+      if (!batch.length) continue
+      const rows = this.unitOfWork.database.query(`SELECT entry_id FROM video_fact_embeddings
+        WHERE project_id=? AND generation=? AND entry_id IN (${batch.map(() => '?').join(',')})`).all(projectId, generation, ...batch) as Array<{ entry_id: string }>
+      const present = new Set(rows.map(row => row.entry_id))
+      for (const entryId of batch) if (!present.has(entryId)) missing.add(entryId)
+    }
+    return missing
+  }
+
   async searchPage(projectId: string, query: string, options: { cursor?: string; limit?: number } = {}): Promise<VideoFactSearchPage> {
     const normalized = query.trim()
     const generation = await this.ensureSearchGeneration(projectId)
@@ -287,6 +328,167 @@ export class SqliteMediaFactsRepository {
         : !exhausted && after > (cursor?.rowid ?? 0)
           ? { next_cursor: this.encodeSearchCursor({ generation, rowid: after }) }
           : {}),
+    }
+  }
+
+  /** Stores only text-derived vectors. Raw image/audio bytes never enter this index. */
+  async saveEmbeddings(projectId: string, entries: VideoFactEmbedding[]): Promise<number> {
+    return await this.saveEmbeddingsWithRelayAcknowledgement(projectId, entries)
+  }
+
+  /** Atomically makes document vectors visible and records the corresponding
+   * Relay ACK obligation. A crash after commit can retry only the ACK; it
+   * cannot trigger a second embedding request for already-present entries. */
+  async saveEmbeddingsWithRelayAcknowledgement(
+    projectId: string,
+    entries: VideoFactEmbedding[],
+    acknowledgement?: VideoFactEmbeddingRelayAcknowledgement,
+  ): Promise<number> {
+    if (!entries.length) {
+      if (acknowledgement) throw new VideoFactsRepositoryError('Embedding ACK 缺少向量', 'VIDEO_FACTS_INVALID')
+      return await this.ensureSearchGeneration(projectId)
+    }
+    const model = entries[0]!.model_snapshot
+    const instruction = entries[0]!.instruction_version
+    if (!entries.every(entry => entry.model_snapshot === model && entry.instruction_version === instruction && entry.vector.length === 768 && entry.vector.every(value => Number.isFinite(value)))) {
+      throw new VideoFactsRepositoryError('Embedding 索引输入无效', 'VIDEO_FACTS_INVALID')
+    }
+    if (acknowledgement) this.assertEmbeddingAcknowledgement(acknowledgement)
+    await this.ensureSearchGeneration(projectId)
+    return await this.fences.run(`project-${projectId}`, async () => this.unitOfWork.transaction(() => {
+      const latest = this.unitOfWork.database.query(`SELECT model_snapshot,instruction_version FROM video_fact_embeddings WHERE project_id=? ORDER BY generation DESC LIMIT 1`).get(projectId) as { model_snapshot: string; instruction_version: string } | null
+      if (latest && (latest.model_snapshot !== model || latest.instruction_version !== instruction)) this.bumpSearchGeneration(projectId)
+      const generation = this.searchGeneration(projectId) ?? 1
+      const createdAt = this.now().toISOString()
+      for (const entry of entries) {
+        const actual = `sha256:${createHash('sha256').update(JSON.stringify(entry.vector)).digest('hex')}`
+        if (actual !== entry.content_hash) throw new VideoFactsRepositoryError('Embedding 内容哈希不匹配', 'VIDEO_FACTS_INVALID')
+        this.unitOfWork.database.query(`INSERT INTO video_fact_embeddings(project_id,entry_id,generation,model_snapshot,dimension,instruction_version,vector_json,content_hash,created_at)
+          VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(project_id,entry_id,generation) DO UPDATE SET vector_json=excluded.vector_json,content_hash=excluded.content_hash,created_at=excluded.created_at`)
+          .run(projectId, entry.entry_id, generation, model, 768, instruction, JSON.stringify(entry.vector), entry.content_hash, createdAt)
+      }
+      if (acknowledgement) {
+        const existing = this.unitOfWork.database.query(`SELECT project_id,local_operation_id,receipt_id,result_hashes_json
+          FROM video_fact_embedding_relay_acknowledgements WHERE relay_operation_id=?`)
+          .get(acknowledgement.relay_operation_id) as { project_id: string; local_operation_id: string; receipt_id: string; result_hashes_json: string } | null
+        const hashes = JSON.stringify(acknowledgement.result_hashes)
+        if (existing && (
+          existing.project_id !== projectId
+          || existing.local_operation_id !== acknowledgement.local_operation_id
+          || existing.receipt_id !== acknowledgement.receipt_id
+          || existing.result_hashes_json !== hashes
+        )) throw new VideoFactsRepositoryError('Embedding ACK 回执不一致', 'VIDEO_FACTS_INVALID')
+        if (!existing) {
+          this.unitOfWork.database.query(`INSERT INTO video_fact_embedding_relay_acknowledgements(
+            relay_operation_id,project_id,local_operation_id,receipt_id,result_hashes_json,state,created_at,updated_at
+          ) VALUES(?,?,?,?,?,'pending',?,?)`).run(
+            acknowledgement.relay_operation_id,
+            projectId,
+            acknowledgement.local_operation_id,
+            acknowledgement.receipt_id,
+            hashes,
+            acknowledgement.created_at,
+            createdAt,
+          )
+        }
+      }
+      return generation
+    }))
+  }
+
+  async listPendingEmbeddingRelayAcknowledgements(projectId: string): Promise<VideoFactEmbeddingRelayAcknowledgement[]> {
+    const rows = this.unitOfWork.database.query(`SELECT local_operation_id,relay_operation_id,receipt_id,result_hashes_json,created_at
+      FROM video_fact_embedding_relay_acknowledgements
+      WHERE project_id=? AND state='pending' ORDER BY created_at,relay_operation_id`).all(projectId) as Array<{
+        local_operation_id: string; relay_operation_id: string; receipt_id: string; result_hashes_json: string; created_at: string
+      }>
+    return rows.map(row => {
+      let hashes: unknown
+      try { hashes = JSON.parse(row.result_hashes_json) } catch { throw new VideoFactsRepositoryError('Embedding ACK 记录损坏', 'VIDEO_FACTS_INVALID') }
+      const acknowledgement = { ...row, result_hashes: hashes }
+      this.assertEmbeddingAcknowledgement(acknowledgement)
+      return acknowledgement
+    })
+  }
+
+  async hasEmbeddingRelayAcknowledgement(projectId: string, acknowledgement: Pick<VideoFactEmbeddingRelayAcknowledgement, 'relay_operation_id' | 'receipt_id' | 'result_hashes'>): Promise<boolean> {
+    const row = this.unitOfWork.database.query(`SELECT receipt_id,result_hashes_json FROM video_fact_embedding_relay_acknowledgements
+      WHERE project_id=? AND relay_operation_id=? AND state IN ('pending','acknowledged','retired')`)
+      .get(projectId, acknowledgement.relay_operation_id) as { receipt_id: string; result_hashes_json: string } | null
+    return Boolean(row && row.receipt_id === acknowledgement.receipt_id && row.result_hashes_json === JSON.stringify(acknowledgement.result_hashes))
+  }
+
+  async resolveEmbeddingRelayAcknowledgement(projectId: string, relayOperationId: string, state: 'acknowledged' | 'retired'): Promise<void> {
+    await this.fences.run(`project-${projectId}`, async () => this.unitOfWork.transaction(() => {
+      this.unitOfWork.database.query(`UPDATE video_fact_embedding_relay_acknowledgements
+        SET state=?,updated_at=? WHERE project_id=? AND relay_operation_id=? AND state='pending'`)
+        .run(state, this.now().toISOString(), projectId, relayOperationId)
+    }))
+  }
+
+  private assertEmbeddingAcknowledgement(value: unknown): asserts value is VideoFactEmbeddingRelayAcknowledgement {
+    const acknowledgement = value as Partial<VideoFactEmbeddingRelayAcknowledgement>
+    if (
+      !acknowledgement
+      || typeof acknowledgement.local_operation_id !== 'string' || !acknowledgement.local_operation_id
+      || typeof acknowledgement.relay_operation_id !== 'string' || !acknowledgement.relay_operation_id
+      || typeof acknowledgement.receipt_id !== 'string' || !acknowledgement.receipt_id
+      || typeof acknowledgement.created_at !== 'string' || Number.isNaN(Date.parse(acknowledgement.created_at))
+      || !Array.isArray(acknowledgement.result_hashes) || !acknowledgement.result_hashes.length
+      || !acknowledgement.result_hashes.every(hash => typeof hash === 'string' && /^sha256:[a-f0-9]{64}$/.test(hash))
+    ) throw new VideoFactsRepositoryError('Embedding ACK 记录无效', 'VIDEO_FACTS_INVALID')
+  }
+
+  /**
+   * Hybrid recall is the union of FTS matches and all current embedding
+   * candidates.  Reciprocal-rank fusion deliberately keeps the lexical and
+   * semantic signals independent; semantic retrieval is no longer restricted
+   * to whatever happened to fit in the current FTS page.
+   */
+  async hybridSearchPage(projectId: string, query: string, queryVector: number[], options: { cursor?: string; limit?: number } = {}): Promise<VideoFactSearchPage> {
+    if (queryVector.length !== 768 || queryVector.some(value => !Number.isFinite(value))) throw new VideoFactsRepositoryError('Embedding 查询向量无效', 'VIDEO_FACTS_INVALID')
+    const generation = await this.ensureSearchGeneration(projectId)
+    const vectorHash = `sha256:${createHash('sha256').update(JSON.stringify(queryVector)).digest('hex')}`
+    const cursor = options.cursor ? this.decodeHybridSearchCursor(options.cursor) : undefined
+    if (cursor && (cursor.generation !== generation || cursor.query_hash !== this.searchQueryHash(query) || cursor.vector_hash !== vectorHash)) {
+      throw new VideoFactsRepositoryError('搜索索引或查询已更新，请从第一页重新查询', 'VIDEO_FACTS_INVALID')
+    }
+    const lexical = await this.searchPage(projectId, query, { limit: 100 })
+    // The persisted fact contract caps one project at 10,000 searchable
+    // entries. Recall that complete bounded set instead of a hidden 2,000-row
+    // prefix, otherwise a semantic-only result can silently disappear.
+    const rows = this.unitOfWork.database.query(`SELECT entry_id,vector_json FROM video_fact_embeddings WHERE project_id=? AND generation=? ORDER BY entry_id LIMIT 10000`).all(projectId, generation) as Array<{ entry_id: string; vector_json: string }>
+    const entryId = (item: VideoFactSearchResult) => item.kind === 'transcript' ? this.transcriptSearchEntryId(item.id, item.segment_ids.join(',')) : item.id
+    const cosine = (left: number[], right: number[]) => { let dot = 0; let a = 0; let b = 0; for (let index = 0; index < 768; index += 1) { dot += left[index]! * right[index]!; a += left[index]! ** 2; b += right[index]! ** 2 } return a && b ? dot / Math.sqrt(a * b) : -1 }
+    const candidates = new Map<string, { item: VideoFactSearchResult; lexicalRank?: number; semanticRank?: number }>()
+    for (const [index, item] of lexical.items.entries()) candidates.set(entryId(item), { item, lexicalRank: index + 1 })
+    const semantic = rows.flatMap(row => {
+      try {
+        const vector = JSON.parse(row.vector_json) as unknown
+        return Array.isArray(vector) && vector.length === 768 && vector.every(value => typeof value === 'number' && Number.isFinite(value))
+          ? [{ entryId: row.entry_id, score: cosine(queryVector, vector as number[]) }]
+          : []
+      } catch { return [] }
+    }).sort((left, right) => right.score - left.score || left.entryId.localeCompare(right.entryId))
+    for (const [index, candidate] of semantic.entries()) {
+      const existing = candidates.get(candidate.entryId)
+      if (existing) { existing.semanticRank = index + 1; continue }
+      const row = this.unitOfWork.database.query(`SELECT rowid,fact_id AS entry_id,source_id,fact_kind
+        FROM video_fact_search WHERE project_id=? AND fact_id=? ORDER BY rowid LIMIT 1`).get(projectId, candidate.entryId) as SearchRow | null
+      const item = row ? await this.materializeSearchResult(row) : null
+      if (item) candidates.set(candidate.entryId, { item, semanticRank: index + 1 })
+    }
+    const ordered = [...candidates.entries()].map(([key, candidate]) => ({
+      key,
+      item: candidate.item,
+      score: (candidate.lexicalRank ? 1 / (60 + candidate.lexicalRank) : 0) + (candidate.semanticRank ? 1 / (60 + candidate.semanticRank) : 0),
+    })).sort((left, right) => right.score - left.score || left.key.localeCompare(right.key))
+    const limit = Math.max(1, Math.min(100, options.limit ?? 50)); const offset = cursor?.offset ?? 0
+    const items = ordered.slice(offset, offset + limit).map(candidate => candidate.item)
+    return {
+      generation,
+      items,
+      ...(offset + items.length < ordered.length ? { next_cursor: this.encodeHybridSearchCursor({ generation, offset: offset + items.length, query_hash: this.searchQueryHash(query), vector_hash: vectorHash }) } : {}),
     }
   }
 
@@ -664,6 +866,26 @@ export class SqliteMediaFactsRepository {
       const rowid = value.rowid
       if (typeof generation !== 'number' || typeof rowid !== 'number' || !Number.isSafeInteger(generation) || !Number.isSafeInteger(rowid) || generation < 0 || rowid < 0) throw new Error('invalid')
       return { generation, rowid }
+    } catch {
+      throw new VideoFactsRepositoryError('视频事实搜索游标无效', 'VIDEO_FACTS_INVALID')
+    }
+  }
+
+  private searchQueryHash(query: string): `sha256:${string}` {
+    return `sha256:${createHash('sha256').update(query.trim()).digest('hex')}`
+  }
+
+  private encodeHybridSearchCursor(value: { generation: number; offset: number; query_hash: string; vector_hash: string }): string {
+    return Buffer.from(JSON.stringify({ kind: 'hybrid-v1', ...value }), 'utf8').toString('base64url')
+  }
+
+  private decodeHybridSearchCursor(cursor: string): { generation: number; offset: number; query_hash: string; vector_hash: string } {
+    try {
+      const value = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as Record<string, unknown>
+      if (value.kind !== 'hybrid-v1' || typeof value.generation !== 'number' || typeof value.offset !== 'number'
+        || !Number.isSafeInteger(value.generation) || !Number.isSafeInteger(value.offset) || value.generation < 0 || value.offset < 0
+        || typeof value.query_hash !== 'string' || typeof value.vector_hash !== 'string') throw new Error('invalid')
+      return { generation: value.generation, offset: value.offset, query_hash: value.query_hash, vector_hash: value.vector_hash }
     } catch {
       throw new VideoFactsRepositoryError('视频事实搜索游标无效', 'VIDEO_FACTS_INVALID')
     }

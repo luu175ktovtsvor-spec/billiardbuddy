@@ -80,7 +80,7 @@
 | Brand/Template/Asset | 不可变 revision、owner、Provenance 和 Grant 同时成立 | 只靠 CAS hash 推导权限，或让历史成品跟随 head 漂移 |
 | 高频旅程 | Quick Create/Inspiration/Campaign 复用普通 Project/Operation/Asset 正式链路 | 为快捷或批量模式复制第二套业务模型 |
 | 应用层 | 五个按完整用例/事务边界组织的 Application | 再造一个单体 Service，或按每个名词拆出大量 CRUD Service |
-| 远程拓扑 | 生图 Sidecar 只经已认证 Gateway 调现有 Image Relay；Qwen 也只经 Gateway | Sidecar 直连 Relay、在 Renderer 放 Relay token，或为图片另建第二套 Media Relay |
+| 远程拓扑 | 生图 Sidecar 携带短期安装 bearer 直连公开 Image Relay；Relay 只经私网 Gateway 内省身份；Qwen 建议单独经 Gateway | Gateway 再代理图片任务、客户端自报 owner/持有 service token，或把 Qwen 覆盖到通用 MiMo 路由 |
 | 共享能力语义 | Registry 使用 `ImageGeneration` 与 `VisualEvidence`；图片 generate/edit/inpaint 和 understanding/assessment 是业务 mode/role | 为每个图片用例复制共享 capability，或让共享 Registry 承担图片业务路由 |
 | 桌面安全 | 所有写入、付费、路径、grant、风险接受和最终交付经 Electron Main typed IPC | 把 loopback/CORS 当唯一授权，给 Renderer 会话级 secret 或任意路径能力 |
 | Shared Kernel 边界 | 视频第 13.0 节第 1 关先成为共享底座 owner 并合入 main；图片 15.1A 只从图片旧 Repository 采用这些兼容原语 | 在图片 worktree 修改视频 Repository/业务状态，或并行复制第二套同义 Kernel |
@@ -597,29 +597,32 @@ Receipt 是独立、不可变的领域证据，Operation 只保存 receipt id。
 
 ### 5.4 固定远程调用拓扑与服务器边界
 
-首版图片改造不新增服务器、容器、公开端口或第二套 Relay。现有正式路径保持：
+首版图片改造不新增物理服务器；现有图片 Relay 收口为独立 `image-relay` service，并由 Nginx 提供唯一公开前缀。正式路径固定为：
 
 ```text
 生成 / 编辑 / Inpaint
 Renderer → Electron Main typed IPC → Local Sidecar
-         → 已认证 Gateway POST /v1/images/tasks
-         → 现有 Image Relay POST /images/tasks（Compose 私网）
-         → GPT Image 2 / Seedream 4.5
+         → https://zzyppz.cn/image-generation/v1/images/tasks
+         → Image Relay
+             ├── Gateway POST /internal/v1/auth/introspect（仅 Compose 私网身份内省）
+             └── GPT Image 2 / Seedream 4.5
 
 图片理解 / 非阻断视觉评估
 Renderer → Electron Main typed IPC → Local Sidecar
-         → 已认证 Gateway POST /v1/media/reasoning
+         → 已认证 Gateway POST /v1/image/reasoning
          → Qwen3-VL-Flash
 ```
 
 冻结规则：
 
-- Sidecar 的生成 adapter 命名和职责为 `gatewayImageGenerationAdapter`；它只知道 Gateway 合同，不知道 Relay 地址/token。Gateway 从已验证产品会话注入 owner、账户额度和 Relay service credential，再经 Compose 私网调用现有 Relay；Renderer/Sidecar 请求体中的 owner、Relay URL/token 一律不可信并拒绝；
-- `ImageGenerationPort` 的 generate/edit/inpaint 均走同一 Gateway task/幂等/结果 grant/ACK 协议。Relay 继续拥有 queue、远程 task、unknown、result grant 和 ACK；Image Module 只在本地 CAS + SQLite/Event 事务提交后 ACK，ACK 失败只重试 ACK；
-- Qwen `VisualEvidence` 通过 Gateway 的 `/v1/media/reasoning` 版本化 schema 发送。Gateway provider registry/adapter 可以由 MiMo 改为 Qwen，但不把 Qwen 放入现有 Image Relay，也不让 Sidecar直连阿里云；Gateway 只保存服务端凭据、鉴权/额度/用量/幂等和安全转发，不保存 Image Project/Candidate/Canvas；
+- Sidecar 只从受信产品运行配置取得 Image Relay HTTPS base，并复用 Electron Main 注入的短生命周期安装 bearer；Renderer 不得到 bearer、Relay service credential 或 Provider Key。Image Relay 每个受保护请求都用独立 service credential 回查 Gateway，并且只信任内省返回的 owner；请求体/header 自报 owner 一律忽略或拒绝；
+- `ImageGenerationPort` 的 generate/edit/inpaint 均走同一 Image Relay task/幂等查询/结果 grant/ACK 协议。Relay 继续拥有 queue、远程 task、unknown、result grant 和 ACK；Image Module 只在本地 CAS + SQLite/Event 事务提交后 ACK，ACK 失败只重试 ACK；
+- 付费 POST 前先持久化 operation、idempotency key、request hash 与 `remote_submission_started_at`。若提交响应丢失，Sidecar 只调用 Image Relay `GET /v1/images/tasks/by-idempotency/:key` 查询已持久化任务；404 保持 `outcome_unknown`/失败关闭，禁止自动 POST。只有从未进入提交边界的 operation 才允许首次 POST；
+- Qwen 图片建议通过 Gateway 独立 `/v1/image/reasoning` 版本化 schema 发送，使用 `image_advice` workload、独立 `qwen-account` capacity policy 和 `gateway.image-advice` quota。它不得改写通用 MiMo `/v1/media/reasoning` 或 `/v1/visual/evidence`；Gateway 只保存 Qwen 服务端凭据、鉴权、额度、实际用量、幂等结果和安全转发，不保存 Image Project/Candidate/Canvas；
+- 模型目录、物理账号 capacity、产品 quota 与 credential ownership 是四个独立权威来源。并发采用“配置外置、算法共享、Provider 执行边界守门”：Nginx 只做连接/请求体/基础速率保护，不充当付费 Provider 并发事实源；Image Relay 在真实 Provider 调用前获取对应账号许可。首版保持单 Relay worker；未来多实例除共享 admission 租约外，还必须让任务 claim、Provider receipt、终态和额度以同一 fencing token 条件写入，禁止仅复制进程内队列；
 - 图片施工不得创建或复用 Video Media Relay。视频大对象租约、视频 ASR/Embedding 与本节无关；两条远程路径只共享向后兼容的 capability/receipt DTO，不共享服务数据库或路由所有权；
-- 实施 15.2E/15.4D 时必须同步更新 `README.md`、`docs/重构/模型与远程能力平台.md` 与 `docs/operations/production-servers.md`，使它们准确记录 Gateway 的现有图片 task/media reasoning、私网 Image Relay 及新增 Qwen 凭据引用；不得继续写“Gateway 仅接受文本”或把 Video Media Relay 描述成图片依赖；
-- 服务器只需要随对应代码发布更新 Gateway/Image Relay 镜像、`gateway.env` 的 Qwen 变量名合同、validator 和受控 smoke；不提前增加空容器、Nginx 路由或手工常驻进程。任何服务器写操作前仍须按运行文档只读盘点实际容器、端口、Nginx、revision、资源和 secret 引用，部署后用真实 Gateway → Relay/Qwen 路径验证并更新实测文档。
+- 实施 15.2E/15.4D 时必须同步更新 `README.md`、`docs/重构/模型与远程能力平台.md`、`docs/重构/模型资源治理分层.md` 与 `docs/operations/production-servers.md`，准确记录图片直连 Relay、私网身份内省、独立 Qwen 路由和凭据归属；不得保留 Gateway 图片任务代理或把 Video Media Relay 描述成图片依赖；
+- 服务器随已审核提交更新 Gateway/Image Relay 镜像、两个独立 introspection secret 端、Image Relay 结果签名 secret、Qwen/图片 Provider credential、validator、Nginx `/image-generation/` 回源和受控 smoke。任何写操作前仍须按运行文档只读盘点容器、端口、Nginx、revision、资源和 secret 引用；部署后分别验证真实 Sidecar → Image Relay → Provider、Relay → Gateway 内省与 Sidecar → Gateway → Qwen 路径，并以实测更新运行文档。
 
 ---
 
@@ -2100,7 +2103,7 @@ Domain 仍按概念分模型与纯规则，但不为每个名词创建一个只�
 
 删除图片 MiMo 路径。
 
-Qwen Adapter 只实现 shared `VisualEvidence` capability 下的 `image_understanding`/`image_visual_assessment` application role，并通过 Gateway `/v1/media/reasoning` 调用。`providerContracts.ts` 如需修改，只做与现有 Agent/Video/ImageGeneration 向后兼容的 descriptor/receipt 加法，不引入图片专属共享 capability 名称。
+Qwen Adapter 只实现 shared `VisualEvidence` capability 下的 `image_understanding`/`image_visual_assessment` application role，并通过 Gateway 独立 `/v1/image/reasoning` 调用。目录用 `image_advice` workload 把它绑定到独立 capacity/quota/credential，不覆盖 MiMo 的 `media_reasoning` 或 `shared_visual_evidence`。`providerContracts.ts` 如需修改，只做与现有 Agent/Video/ImageGeneration 向后兼容的 descriptor/receipt 加法。
 
 ### 14.5 Relay
 
@@ -2116,7 +2119,7 @@ Qwen Adapter 只实现 shared `VisualEvidence` capability 下的 `image_understa
 
 在 Image Module 中通过 `ImageGenerationPort` 调用，不直接耦合 HTTP 细节。
 
-具体生产路径固定为 `gatewayImageGenerationAdapter → Gateway /v1/images/tasks → Image Relay /images/tasks`。Sidecar 不配置 Relay base URL/token；若当前旧代码存在直连兼容入口，只允许旧 reader/迁移窗口读取，不得成为新 Operation 写路径。Gateway/Relay schema、幂等、result grant、ACK 和 production contract test 必须与第 5.4 节一致。
+具体生产路径固定为 `ImageGenerationPort → Image Relay /v1/images/tasks`。Sidecar 只配置公开 Relay base URL，并携带 Electron Main 注入的短期安装 bearer；它不持有 introspection service token 或 Provider Key。Gateway 不保留 `/v1/images/tasks` 代理。Relay 的提交、按 idempotency 查询、poll、result grant、cancel、ACK、owner 内省和 production contract test 必须与第 5.4 节一致。
 
 ### 14.6 Canvas
 
@@ -2202,7 +2205,7 @@ Qwen Adapter 只实现 shared `VisualEvidence` capability 下的 `image_understa
 - 真实 GPT Image/Seedream/Qwen smoke 与日常 suite 分离，只在受控账户、预算和明确环境开关下运行，验证 schema、幂等/usage receipt、拒绝、超时和日志脱敏，不把它当领域测试替代品；
 - 15.0 先为当前 Repository/Service/API/Gateway/Relay/IPC 路径建立 characteristic tests；15.1 以后每个阶段在其上补 Domain unit、Port contract、SQLite/CAS crash/recovery、API/IPC、Renderer golden 与真实生产路径测试；
 - 15.2E/15.4D 涉及远程实现时同步更新 `README.md`、`docs/重构/模型与远程能力平台.md`、`docs/operations/production-servers.md`、对应 env example/validator 和部署 smoke，使文档与第 5.4 节一致；
-- 图片不增加服务器 service。只有代码确实修改 Gateway/Image Relay 时才从已提交 revision 发布现有镜像；部署前只读盘点，部署后验证真实 Gateway → Image Relay/Qwen、容器 revision、健康、额度、幂等、ACK 和日志，不提前创建占位路由/容器。
+- 图片不增加物理服务器，但把原图片 Relay 正式收口为独立 `image-relay` service 和 `/image-generation/` 公网前缀。只有代码确实修改 Gateway/Image Relay 时才从已提交 revision 发布镜像；部署前只读盘点，部署后验证真实 Image Relay 直连链、Gateway 私网内省、Qwen、容器 revision、健康、capacity/quota、幂等查询、ACK 和日志。
 
 ---
 
@@ -2497,7 +2500,7 @@ Shared Media Kernel
 1. `ImageWorkbenchService` 只是兼容 façade，五个 Application 进入 `MediaRuntime`；Agent 和 Video 未进入图片领域状态。
 2. 正式元数据只写 SQLite；旧 JSON 只读导入可重入，不存在长期双写或第二个业务 writer。
 3. Project、Operation、Candidate/Version/Receipt、pointer 和 Event/Outbox 在用例事务中一致提交；CAS publish 失败、DB commit 失败和 ACK 失败都可对账恢复。
-4. GPT Image 2 和 Seedream 4.5 保留真实生成/编辑路径，固定为 Sidecar → Gateway `/v1/images/tasks` → Image Relay；图片新理解/评估使用 Qwen3-VL-Flash 并只经 Gateway `/v1/media/reasoning`，不再调用 MiMo，也不存在 Sidecar/Renderer 直连 Relay/Provider。
+4. GPT Image 2 和 Seedream 4.5 保留真实生成/编辑路径，固定为 Sidecar → Image Relay `/v1/images/tasks`；Relay 只经 Gateway 私网内省验证安装 owner。图片新理解/评估使用 Qwen3-VL-Flash 并只经 Gateway `/v1/image/reasoning`，不再调用 MiMo；Renderer 不直连 Relay/Provider，Sidecar 不持有 service credential 或 Provider Key。
 5. Provider 路由集中在 `ImageProviderPolicy`；Reference 能力差异在付费前返回，Provider/model/policy/request/input/output 有不可变 Execution Receipt。
 6. Brief 有不可变 snapshot 和清晰事实优先级；正式尺寸、格式和安全区只以 Delivery Spec revision 为权威。
 7. Reference 明确 role、influence strength、preservation 和 priority；`unclassified` 不能触发付费生成。

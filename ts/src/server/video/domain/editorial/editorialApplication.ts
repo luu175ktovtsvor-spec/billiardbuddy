@@ -43,6 +43,7 @@ export class EditorialValidationError extends Error {
       | 'VIDEO_EDITORIAL_INVALID'
       | 'VIDEO_EDITORIAL_STALE'
       | 'VIDEO_EDITORIAL_LOCKED'
+      | 'VIDEO_EDITORIAL_UNSUPPORTED'
       | 'VIDEO_EXPORT_PROFILE_UNSUPPORTED'
       | 'VIDEO_EDITORIAL_IDEMPOTENCY_CONFLICT'
       | 'VIDEO_SOURCE_FINGERPRINT_PENDING',
@@ -119,6 +120,26 @@ function durationMilliseconds(value: TimeRange): number {
   const numerator = ticks * 1000n * BigInt(value.duration.tick_rate.den)
   const denominator = BigInt(value.duration.tick_rate.num)
   return Number(numerator / denominator)
+}
+
+function speedKey(speed: VideoTimelineItem['speed']): string {
+  return speed ? `${speed.num}/${speed.den}` : '1/1'
+}
+
+function sourceDurationMatchesTimeline(item: VideoTimelineItem): boolean {
+  if (item.binding.kind !== 'source') return item.speed === undefined
+  const speed = item.speed ?? { num: 1, den: 1 }
+  const source = item.binding.source_range.duration
+  const timeline = item.timeline_range.duration
+  // source seconds / timeline seconds must be exactly the declared speed.
+  const left = BigInt(source.ticks) * BigInt(source.tick_rate.den) * BigInt(speed.den) * BigInt(timeline.tick_rate.num)
+  const right = BigInt(timeline.ticks) * BigInt(timeline.tick_rate.den) * BigInt(speed.num) * BigInt(source.tick_rate.num)
+  return left === right
+}
+
+function avPairKey(item: VideoTimelineItem): string | undefined {
+  if (item.binding.kind !== 'source') return undefined
+  return `${item.binding.source_id}:${item.binding.source_fingerprint}:${timelineRangeKey(item.binding.source_range)}:${timelineRangeKey(item.timeline_range)}:${speedKey(item.speed)}`
 }
 
 function timeWithin(value: RationalTime, target: TimeRange): boolean {
@@ -312,6 +333,11 @@ export function validateEditorialTimeline(
       if (BigInt(item.binding.source_range.duration.ticks) <= 0n || durationMilliseconds(item.binding.source_range) > source.duration_ms + 1) {
         throw new EditorialValidationError('素材剪辑范围无效', 'VIDEO_EDITORIAL_INVALID')
       }
+      if (!sourceDurationMatchesTimeline(item)) {
+        throw new EditorialValidationError(item.speed
+          ? '素材时长与显式 speed 不一致'
+          : '素材时长与时间线时长不一致，必须显式声明 speed', 'VIDEO_EDITORIAL_INVALID')
+      }
       const bounds = sourceBounds.get(source.id)
       if (bounds && (
         compare(item.binding.source_range.start, bounds.start) < 0
@@ -319,6 +345,8 @@ export function validateEditorialTimeline(
       )) {
         throw new EditorialValidationError('素材剪辑范围超出原始素材边界', 'VIDEO_EDITORIAL_INVALID')
       }
+    } else if (item.speed) {
+      throw new EditorialValidationError('只有素材条目可以设置 speed', 'VIDEO_EDITORIAL_INVALID')
     }
   }
   for (const track of timeline.tracks.filter(track => track.kind === 'primary_video' || track.kind === 'source_audio')) {
@@ -327,6 +355,30 @@ export function validateEditorialTimeline(
       if (compare(ordered[index]!.timeline_range.start, end(ordered[index - 1]!.timeline_range)) < 0) {
         throw new EditorialValidationError('主视频或源音频轨不能重叠', 'VIDEO_EDITORIAL_INVALID')
       }
+    }
+  }
+  const avItems = timeline.items.flatMap(item => {
+    const track = tracks.get(item.track_id)
+    return track?.kind === 'primary_video' || track?.kind === 'source_audio'
+      ? [{ item, track }]
+      : []
+  })
+  const avPairs = new Map<string, Array<{ item: VideoTimelineItem; track: VideoTimelineTrack }>>()
+  for (const entry of avItems) {
+    if (entry.item.binding.kind !== 'source') continue
+    const source = sourceById.get(entry.item.binding.source_id)
+    if (entry.track.kind === 'source_audio' && !source?.has_audio) {
+      throw new EditorialValidationError('源音频轨不能引用无音频的素材', 'VIDEO_EDITORIAL_INVALID')
+    }
+    const key = avPairKey(entry.item)
+    if (key) avPairs.set(key, [...(avPairs.get(key) ?? []), entry])
+  }
+  for (const entries of avPairs.values()) {
+    const video = entries.filter(entry => entry.track.kind === 'primary_video')
+    const audio = entries.filter(entry => entry.track.kind === 'source_audio')
+    const source = video[0]?.item.binding.kind === 'source' ? sourceById.get(video[0].item.binding.source_id) : undefined
+    if (video.length > 1 || audio.length > 1 || (video.length && source?.has_audio && audio.length !== 1) || (audio.length && video.length !== 1)) {
+      throw new EditorialValidationError('主视频与源音频必须保持一对一 A/V link、范围和 speed 一致', 'VIDEO_EDITORIAL_INVALID')
     }
   }
 }
@@ -354,8 +406,8 @@ function timelineRangeKey(value: TimeRange): string {
 function avLinkKey(item: VideoTimelineItem, tracks: VideoTimelineTrack[]): string | undefined {
   const track = tracks.find(candidate => candidate.id === item.track_id)
   if (!track || (track.kind !== 'primary_video' && track.kind !== 'source_audio') || item.binding.kind !== 'source') return undefined
-  if (item.legacy_scene_id) return `legacy:${item.legacy_scene_id}:${timelineRangeKey(item.timeline_range)}:${timelineRangeKey(item.binding.source_range)}`
-  return `source:${item.binding.source_id}:${item.binding.source_fingerprint}:${timelineRangeKey(item.timeline_range)}:${timelineRangeKey(item.binding.source_range)}`
+  if (item.legacy_scene_id) return `legacy:${item.legacy_scene_id}:${timelineRangeKey(item.timeline_range)}:${timelineRangeKey(item.binding.source_range)}:${speedKey(item.speed)}`
+  return `source:${item.binding.source_id}:${item.binding.source_fingerprint}:${timelineRangeKey(item.timeline_range)}:${timelineRangeKey(item.binding.source_range)}:${speedKey(item.speed)}`
 }
 
 function applyEditorialCommands(
@@ -391,6 +443,7 @@ function applyEditorialCommands(
       if (item.binding.kind !== 'source') throw new EditorialValidationError('只有素材条目支持裁剪', 'VIDEO_EDITORIAL_INVALID')
       item.binding.source_range = clone(command.source_range)
       item.timeline_range = clone(command.timeline_range)
+      if (command.speed) item.speed = clone(command.speed)
       continue
     }
     if (command.kind === 'reorder') {
@@ -424,6 +477,7 @@ function applyEditorialCommands(
       if (item.binding.kind !== 'source' || !timeWithin(command.at, item.timeline_range) || compare(command.at, item.timeline_range.start) === 0 || compare(command.at, end(item.timeline_range)) === 0) {
         throw new EditorialValidationError('切分点必须位于素材条目内部', 'VIDEO_EDITORIAL_INVALID')
       }
+      if (item.speed) throw new EditorialValidationError('变速素材必须先还原为 1x 后再切分', 'VIDEO_EDITORIAL_INVALID')
       const timelineFirstDuration = subtract(command.at, item.timeline_range.start)
       const timelineSecondDuration = subtract(end(item.timeline_range), command.at)
       const sourceDuration = BigInt(item.binding.source_range.duration.ticks)
@@ -574,6 +628,7 @@ export class EditorialApplication {
     timing: Map<string, EditorialSourceTiming>,
     planIds: string[] = [],
     sourceBounds: Map<string, EditorialSourceBounds> = new Map(),
+    draftId = id('draft'),
   ): TimelineDraft {
     const current = this.currentTimeline(project)
     const clips = scenes.map(scene => ({ id: scene.id, source_id: scene.source_id, in_ms: scene.in_ms, out_ms: scene.out_ms }))
@@ -583,7 +638,7 @@ export class EditorialApplication {
       scenes,
     ).map(item => ({ ...item, id: id('draft_item') }))
     const draft = timelineDraftSchema.parse({
-      id: id('draft'),
+      id: draftId,
       project_id: project.id,
       facts_basis_hash: editorialFactsBasisHash(project),
       base_timeline_version_id: current.id,
@@ -788,8 +843,19 @@ export class EditorialApplication {
     validateEditorialTimeline(project, timeline, sourceBounds)
     validateOverrides(timeline, version.item_overrides)
     assertExportProfile(profile)
+    // The legacy preview renderer cannot consume arbitrary keyframed filters.
+    // Do not publish an execution plan that would silently drop a requested
+    // fade, transform or gain curve; these commands must wait for a compiler
+    // that can execute them byte-for-byte.
+    if (version.item_overrides.some(override => (
+      override.transform_keyframes?.length
+      || override.volume_keyframes?.length
+      || override.fade_in
+      || override.fade_out
+    ))) throw new EditorialValidationError('当前执行编译器尚不支持关键帧、音量或淡入淡出命令', 'VIDEO_EDITORIAL_UNSUPPORTED')
     const planId = id('execution_plan')
     const trackOrder = new Map(timeline.tracks.map(track => [track.id, track.order]))
+    const trackKind = new Map(timeline.tracks.map(track => [track.id, track.kind]))
     const orderedItems = [...timeline.items].sort((left, right) => {
       const position = compare(left.timeline_range.start, right.timeline_range.start)
       if (position !== 0) return position
@@ -810,15 +876,23 @@ export class EditorialApplication {
         order,
         item_id: item.id,
         track_id: item.track_id,
+        track_kind: trackKind.get(item.track_id)!,
         kind: item.kind,
         timeline_range: item.timeline_range,
         binding: item.binding,
+        ...(item.speed ? { speed: item.speed } : {}),
       })),
-      inputs: sourceItems.map(item => ({
-        source_id: (item.binding as Extract<typeof item.binding, { kind: 'source' }>).source_id,
-        source_fingerprint: (item.binding as Extract<typeof item.binding, { kind: 'source' }>).source_fingerprint,
-        source_range: (item.binding as Extract<typeof item.binding, { kind: 'source' }>).source_range,
-      })),
+      inputs: sourceItems.map(item => {
+        const binding = item.binding as Extract<typeof item.binding, { kind: 'source' }>
+        const bounds = sourceBounds.get(binding.source_id)
+        if (!bounds) throw new EditorialValidationError('缺少原始视频流时间边界，不能编译执行计划', 'VIDEO_EDITORIAL_INVALID')
+        return {
+          source_id: binding.source_id,
+          source_fingerprint: binding.source_fingerprint,
+          source_start: bounds.start,
+          source_range: binding.source_range,
+        }
+      }),
       filters: [
         { kind: 'scale_pad', width: profile.width, height: profile.height },
         ...version.item_overrides.flatMap(override => [

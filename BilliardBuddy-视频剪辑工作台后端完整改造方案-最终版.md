@@ -113,7 +113,7 @@ Create Project
 
 以下不是留给开发者或模型自行选择的开放题；实施必须按这些边界推进，改变时先修订本合同：
 
-1. **视频远程能力走独立、无状态的 Video Media Relay。** 现有 Agent Text Gateway、图片 Relay 和产品语音转写路径保持不动，不承载本合同新增的关键帧、代理视频、视频 ASR task 或 embedding。Video Media Relay 持有一份服务端阿里云百炼凭据，代理 Qwen Visual/MediaReasoning、Fun-ASR 和 `text-embedding-v4`；它只保存请求级幂等、额度、上游 task/usage receipt 和短期对象租约，不保存 Project、Timeline、Creative Session 或用户编辑状态。本文后续简称 Media Relay。
+1. **视频远程能力走独立、无状态的 Video Media Relay。** Agent 与通用短模型仍由 Gateway 承载，图片生成/编辑由图片 Sidecar 直连 Image Relay；二者都不承载本合同新增的关键帧、代理视频、视频 ASR task 或 embedding。Video Media Relay 持有独立的服务端阿里云百炼凭据，代理 Qwen Visual/MediaReasoning、Fun-ASR 和 `text-embedding-v4`；它只保存请求级幂等、账户额度、上游 task/usage receipt 和短期对象租约，不保存 Project、Timeline、Creative Session 或用户编辑状态。本文后续简称 Media Relay。
 2. **视频施工不迁移生图状态。** 本轮可以新增通用 Media Kernel 原语和向共享 capability registry 做加法，但首个消费者仅为 VideoModule；不得顺带迁移 `imageWorkbenchRepository.ts`、改写图片 writer，或重构 `imageReasoning.ts`。图片模块以后在自己的施工合同中主动采用兼容原语。
 3. **首版导出只实现第 6.9.1 节白名单。** 模型、API 和 Renderer 不能提交任意 codec/filter/FFmpeg 参数；白名单外组合由 Validator 以稳定错误失败关闭。
 4. **Beat 和 Subject Tracking 使用第 5.5 节本地 Port。** VLM 只提供候选语义/主体锚点，FFmpeg 只负责受控解码和确定性媒体测量；Beat Grid、跨帧跟踪和平滑必须有真实本地实现、版本 receipt、置信度和保守降级。
@@ -135,22 +135,29 @@ Renderer
 
 长音频或短代理需要对象 URL 时，由 Media Relay 签发限定 `operation_id`、content hash、大小、Content-Type、过期时间和单次写入的上传能力；对象进入 Relay 控制的短期隔离区，提交 Provider 后按租约删除。桌面端不获得 OSS AccessKey、可复用上传凭据或任意 bucket 读写权。首版部署与阿里云百炼统一使用华北 2（北京）地域的一份 workspace API Key 和同地域临时对象存储；禁止为了调用成功静默跨地域回退。以后增加海外部署时建立独立 Relay、凭据和 consent region，不复用北京临时对象。Sidecar 的项目预算先 `reserve`，Media Relay 同时执行账户额度校验；最终以 Relay 返回的真实 Provider usage receipt `settle`。两者一个约束本地用户授权、一个约束服务端账户额度，不构成第二份项目状态。
 
+模型容量采用“**配置外置、算法共享、执行点守门**”。模型目录只声明 workload 对应的 capacity pool、quota bucket、执行 runtime 与凭据槽，不包含并发数字或密钥；并发、RPM、队列长度、等待时间与单 owner 上限由各服务的受控部署配置解析。Gateway、Image Relay、Video Media Relay 复用同一 admission kernel，但只在各自真正调用 Provider 的最后边界获取许可。Nginx 只负责连接、请求体和基础入口速率，不能替代按物理账号、workload、可信 owner 与付费状态的应用层准入。首版单实例不增加中央并发服务；未来多实例时在不改图片、视频业务 API 的前提下，把 admission 接口替换为带租约和 fencing 的全局协调实现，同时让 Relay 的执行 claim、回执、终态和额度以同一 fence 条件写入；不得只替换队列就宣称已支持多活。
+
 ### 1.2 生产服务器目标拓扑与调整时机
 
-首版不要求增加一台物理服务器，也不迁移现有 Gateway/Image Relay；需要调整的是服务级拓扑。Video Media Relay 可以先作为同一产品后端主机上的独立 Compose service 部署，但必须拥有独立镜像、监听端口、数据目录、secret 文件、健康检查和 Nginx 公网前缀。Gateway 不依赖、不反向代理 Video Media Relay，也不承载视频字节；Video Media Relay 只依赖 Gateway 的私网安装会话内省端点。若开工前实测发现现有主机不在合适地域、CPU/内存/磁盘/出口不足或不能满足隔离要求，才把同一无状态服务部署到独立北京主机；API、鉴权、对象租约和 Sidecar 合同不得因此变化。
+首版不要求增加一台物理服务器；需要调整的是服务级拓扑。Gateway、Image Relay 与 Video Media Relay 作为同一产品后端主机上的三个独立 Compose service 部署，分别拥有独立镜像、监听端口、数据目录、secret 文件、健康检查和 Nginx 公网前缀。Gateway 不依赖、不反向代理两个 Relay，也不承载图片或视频任务字节；两个 Relay 只依赖 Gateway 的私网安装会话内省端点，并使用相互独立的 audience 和服务凭据。若实测现有主机 CPU/内存/磁盘/出口或故障隔离不足，可把任一无状态 Relay 独立部署；公开 API、鉴权、对象租约和 Sidecar 合同不得因此变化。洛杉矶主机调用北京 OSS/百炼属于已接受的跨地域部署，延迟与公网下行应进入监控，但不得静默跨地域回退。
 
 ```text
-现有链路（保持）
-Desktop → https://zzyppz.cn/gw/ → Nginx → Gateway :8799 → Image Relay :8790（Compose 私网）
+Agent / 通用短模型链路
+Desktop → https://zzyppz.cn/gw/ → Nginx → Gateway :8799
 
-新增视频链路
+图片生成/编辑链路
+Image Sidecar → https://zzyppz.cn/image-generation/ → Nginx
+              → Image Relay :8790
+                 └── Gateway /internal/v1/auth/introspect（仅身份内省，Compose 私网）
+
+视频远程链路
 Desktop Sidecar → https://zzyppz.cn/video-media/ → Nginx
                → Video Media Relay :8791
                   ├── Gateway /internal/v1/auth/introspect（仅身份内省，Compose 私网）
-               → 北京 OSS 短期隔离对象 + 阿里云百炼
+                  └── 北京 OSS 短期隔离对象 + 阿里云百炼
 ```
 
-公网前缀 `/video-media/` 只映射到 Video Media Relay，并剥离该外层前缀后保留第 5.4.1 节的 `/v1/video-media/*` API。`relay:8790` 继续只在 Compose 私网暴露；`video-media-relay:8791` 只绑定宿主 `127.0.0.1:8791` 并由 Nginx 提供 TLS，不直接暴露 Docker 端口。Gateway 不新增 `GW_VIDEO_MEDIA_RELAY_BASE`，避免形成第二条视频路由。
+公网前缀 `/image-generation/` 与 `/video-media/` 分别只映射到 Image Relay 与 Video Media Relay，并剥离外层前缀后保留各自正式 API。两个 Relay 分别只绑定宿主 `127.0.0.1:8790`、`127.0.0.1:8791`，由 Nginx 提供 TLS，不直接暴露公网 Docker 端口。Gateway 不配置图片或视频 Relay base，也不新增代理 handler；`/internal/v1/auth/introspect` 只在 Compose 私网可达，公网所有等价路径必须失败关闭。
 
 Video Media Relay 的“无状态”是指不拥有 Project/Timeline/Consent，不表示完全无持久化。它必须持久化请求幂等、账户额度 reservation、上游 task、Provider usage receipt、ACK 和短期对象 lease 元数据；大字节存北京临时对象存储，服务自身数据库落独立 `/srv/billiardbuddy/data/video-media-relay`。凭据只放 `/srv/billiardbuddy/secrets/video-media-relay.env`，至少包含 Gateway 私网内省 base/服务凭据、阿里云百炼 workspace/key、北京 OSS endpoint/bucket 与签名权限、账户限额和保留期；Gateway 自己的会话签名 key 和安装会话数据库绝不复制给 Relay。部署脚本和日志只能校验变量名/权限，不打印值。
 
@@ -621,8 +628,8 @@ video-media-relay/
 
 ```text
 TextReasoning
-→ deepseek-v4-flash
-→ Agent，不改
+→ deepseek-v4-flash（默认）/ deepseek-v4-pro（可选）
+→ 两者共享 DeepSeek 物理账号容量池、TextReasoning 额度桶与 Gateway 凭据槽；Agent 调用路径不改
 
 VisualEvidence
 → qwen3-vl-flash
@@ -2454,15 +2461,15 @@ Electron 改动是本合同必需部分：`ipc/channels.ts`、`preload.ts`、Mai
 - `textEmbeddingV4Adapter.ts`
 - `providerBudgetLedgerAdapter.ts`
 
-删除新视频链路 MiMo 路径。Video Media Relay Registry 复用 `VisualEvidence`、`MediaReasoning`、`SpeechTranscription`，只新增 `SemanticEmbedding`；MediaReasoning 应用角色与 SpeechTranscription short/long mode 不新增共享 capability 名称。现有 `gateway/*`、`relay/*` 与 `imageReasoning.ts` 除第 5.4.1 节明确的私网身份内省端点外不改动既有语义；`providerContracts.ts` 只做向后兼容的 `SemanticEmbedding`/descriptor/receipt 加法，不能改写 Agent、Image 或产品语音既有语义。
+删除新视频链路 MiMo 路径。Video Media Relay Registry 复用 `VisualEvidence`、`MediaReasoning`、`SpeechTranscription`，只新增 `SemanticEmbedding`；MediaReasoning 应用角色与 SpeechTranscription short/long mode 不新增共享 capability 名称。共享 `providerContracts.ts` 与模型目录只增加视频需要的兼容 workload/descriptor/receipt；视频实现不得向 Gateway 或 Image Relay 增加视频 Provider 调用、视频任务或媒体字节路径，也不得改变 Agent、图片或产品语音的领域事实所有权。
 
-实施本关时同步更新 `README.md` 和 `docs/重构/模型与远程能力平台.md`：Agent Text Gateway 与既有产品语音/图片远程路径保持原有所有权；Video Media Relay 独立承载新增视频对象租约、阿里云凭据、模型路由、账户额度、幂等和 Provider usage receipt。Sidecar 仍是 Video Project/Operation/Consent/本地预算的唯一 owner，Media Relay 不出现 Timeline、Proposal 或 Creative Session 表。
+实施本关时同步更新 `README.md`、`docs/重构/模型与远程能力平台.md` 与 `docs/重构/模型资源治理分层.md`：Gateway 只承载 Agent/通用短模型及两个 Relay 的私网身份内省；Image Relay 独立承载图片生成/编辑；Video Media Relay 独立承载新增视频对象租约、阿里云凭据、模型路由、账户额度、幂等和 Provider usage receipt。Sidecar 仍是 Video Project/Operation/Consent/本地预算的唯一 owner，Media Relay 不出现 Timeline、Proposal 或 Creative Session 表。
 
 本关同时承担第 1.2 节的服务器交付，不另开“先改服务器”的前置任务：
 
 - 新增 `deploy/production/Dockerfile.video-media-relay`、生产 env validator 和独立 release image；
-- 修改 `deploy/production/compose.yml` 与 `deploy.sh`，增加独立 `video-media-relay` service、`127.0.0.1:8791`、持久 request/receipt/lease metadata 目录、只读 rootfs、tmpfs、cap drop、资源限制与 health/readiness；Video Media Relay 可依赖 Gateway healthy 以使用私网身份内省，但 Gateway/现有 Relay 不依赖 Video Media Relay，现有端口和媒体路由保持不变；
-- 在 `gateway.env` 与 `video-media-relay.env` 增加同一独立高熵 `GW_VIDEO_MEDIA_INTROSPECTION_TOKEN`（或共享合同冻结的等价单一变量名），两侧 validator 只验证存在/强度而不打印值；Gateway 新增 `/internal/v1/auth/introspect` 时复用现有 `AuthAuthority.verifyAccess()`，不另建用户/session 表；
+- 修改 `deploy/production/compose.yml` 与 `deploy.sh`，增加独立 `video-media-relay` service、`127.0.0.1:8791`、持久 request/receipt/lease metadata 目录、只读 rootfs、tmpfs、cap drop、资源限制与 health/readiness；Video Media Relay 可依赖 Gateway healthy 以使用私网身份内省，但 Gateway 与 Image Relay 不依赖 Video Media Relay，图片与视频公网前缀分别直达对应 Relay；
+- 在 `gateway.env` 使用 `GW_VIDEO_MEDIA_RELAY_INTROSPECTION_TOKEN`，在 `video-media-relay.env` 使用 `VIDEO_MEDIA_GATEWAY_INTROSPECTION_TOKEN`，两者保存同一独立高熵值；两侧 validator 只验证存在/强度而不打印值。Gateway 的 `/internal/v1/auth/introspect` 复用现有 `AuthAuthority.verifyAccess()` 并按 Video Relay audience 校验，不另建用户/session 表，也不得复用 Image Relay 的 service token；
 - 将 `/video-media/` Nginx TLS 路由的规范配置纳入仓库并部署，同时显式拒绝公网 `/gw/internal/*`。控制面 request body/timeouts 只满足第 5.4.1 节 JSON；大字节必须直传北京临时对象存储，不能穿过 Nginx/Bun 内存；
 - 更新 `docs/operations/production-servers.md` 的实测拓扑、端口、容器 revision、数据/secret 路径、健康检查、日志/保留期和故障诊断；更新内容必须来自部署当次只读/部署后实测，不能从目标文档反推现网；
 - 部署前后 contract/smoke 必须覆盖安装 token 正常/过期/logout/revoke、错误 service credential、Gateway 内省不可用、伪造 owner、region/scope、无 token 拒绝、对象 URL 单次/过期、幂等冲突、账户额度、真实受控 Qwen/Fun-ASR/Embedding receipt、ACK 后清理和日志脱敏。未通过时本关不得标完成，也不得让桌面正式路径切到新服务。

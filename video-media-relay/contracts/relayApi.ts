@@ -1,0 +1,130 @@
+// Relay is a separately-built runtime, while the repository's Bun dependency
+// closure currently lives under ts/. Keep the contract source shared without
+// making the Relay resolve through a project-local filesystem at runtime.
+import { z } from '../../ts/node_modules/zod/v4'
+import { createHash } from 'node:crypto'
+
+/**
+ * The only wire contract shared by the Video Sidecar and Video Media Relay.
+ * It deliberately contains no project, filesystem, provider key, model tuning
+ * or client supplied owner field.
+ */
+export const VIDEO_MEDIA_RELAY_SCHEMA_VERSION = 1 as const
+export const videoMediaRelaySchemaHeader = 'X-BB-Video-Media-Schema'
+export const videoMediaRelaySchemaValue = 'bb-video-media/1'
+/** Read-only crash-recovery lookup for a client that durably recorded its
+ * local operation fence but lost the Relay operation id in transit. */
+export function videoMediaOperationByLocalOperationPath(localOperationId: string): string {
+  return `/v1/video-media/operations/by-local-operation/${encodeURIComponent(localOperationId)}`
+}
+/**
+ * Every Relay result is read and JSON-decoded by the Sidecar. This cap is a
+ * wire-level safety boundary, not a storage preference: it still leaves room
+ * for long ASR transcripts and a 2,000 x 768 embedding batch, while preventing
+ * a compromised/buggy provider response from becoming an unbounded desktop
+ * allocation.
+ */
+export const VIDEO_MEDIA_RELAY_RESULT_MAX_BYTES = 32 * 1024 * 1024
+/** Multipart signed URLs are returned in one control response. */
+export const VIDEO_MEDIA_RELAY_MAX_MULTIPART_PARTS = 512
+
+const hash = z.string().regex(/^sha256:[a-f0-9]{64}$/)
+const opaqueId = z.string().regex(/^[a-z][a-z0-9_]{7,127}$/)
+const iso = z.string().datetime({ offset: true })
+const sourceTime = z.object({ ticks: z.string().regex(/^-?(?:0|[1-9]\d*)$/), tick_rate: z.object({ num: z.number().int().positive(), den: z.number().int().positive() }) })
+
+export const createMediaObjectLeaseRequestSchema = z.object({
+  local_operation_id: opaqueId,
+  purpose: z.enum(['visual_frames', 'proxy_video', 'audio_for_asr', 'transcript_for_reasoning']),
+  content_hash: hash,
+  byte_size: z.number().int().positive().max(5 * 1024 * 1024 * 1024),
+  content_type: z.string().min(3).max(160),
+  consent_revision_id: opaqueId,
+  consent_scope_hash: hash,
+}).strict()
+export type CreateMediaObjectLeaseRequest = z.infer<typeof createMediaObjectLeaseRequestSchema>
+
+export const multipartUploadedPartSchema = z.object({
+  part_number: z.number().int().positive().max(VIDEO_MEDIA_RELAY_MAX_MULTIPART_PARTS),
+  etag: z.string().min(1).max(256),
+}).strict()
+export type MultipartUploadedPart = z.infer<typeof multipartUploadedPartSchema>
+
+const multipartLeaseSchema = z.object({
+  upload_id: z.string().min(1).max(1_000),
+  part_size: z.number().int().positive(),
+  parts: z.array(z.object({
+    part_number: z.number().int().positive().max(VIDEO_MEDIA_RELAY_MAX_MULTIPART_PARTS),
+    put_url: z.string().url(),
+    required_headers: z.record(z.string(), z.string()).optional(),
+  }).strict()).min(1).max(VIDEO_MEDIA_RELAY_MAX_MULTIPART_PARTS),
+  uploaded_parts: z.array(multipartUploadedPartSchema).max(VIDEO_MEDIA_RELAY_MAX_MULTIPART_PARTS),
+}).strict()
+
+export const completeMediaObjectLeaseRequestSchema = z.object({
+  parts: z.array(multipartUploadedPartSchema).max(VIDEO_MEDIA_RELAY_MAX_MULTIPART_PARTS).optional(),
+}).strict()
+export type CompleteMediaObjectLeaseRequest = z.infer<typeof completeMediaObjectLeaseRequestSchema>
+
+export const mediaObjectLeaseSchema = z.object({
+  lease_id: opaqueId,
+  state: z.enum(['awaiting_upload', 'ready', 'bound', 'expired', 'deleted']),
+  put_url: z.string().url().optional(),
+  required_headers: z.record(z.string(), z.string()).optional(),
+  multipart_upload: multipartLeaseSchema.optional(),
+  object_ref: opaqueId.optional(),
+  expires_at: iso,
+}).strict()
+export type MediaObjectLease = z.infer<typeof mediaObjectLeaseSchema>
+
+const operationBase = z.object({
+  local_operation_id: opaqueId,
+  consent_revision_id: opaqueId,
+  consent_scope_hash: hash,
+  local_budget_reservation_id: opaqueId,
+  request_hash: hash,
+})
+const evidenceItem = z.object({
+  id: opaqueId,
+  kind: z.enum(['transcript', 'visual_fact', 'user_constraint', 'delivery_intent']),
+  text: z.string().min(1).max(32_000),
+  source_range_id: opaqueId.optional(),
+  confidence: z.number().min(0).max(1).optional(),
+}).strict()
+
+export const createVideoRelayOperationRequestSchema = z.discriminatedUnion('capability', [
+  operationBase.extend({ capability: z.literal('visual_evidence'), application_role: z.literal('shot_evidence'), input: z.object({ object_refs: z.array(opaqueId).min(1).max(64), evidence_window_id: opaqueId, facts_basis_hash: hash, language: z.string().min(1).max(32), output_schema_version: z.number().int().positive() }).strict() }),
+  operationBase.extend({ capability: z.literal('media_reasoning'), application_role: z.enum(['planning', 'caption_translation']), input: z.object({ object_refs: z.array(opaqueId).max(64), facts_basis_hash: hash, evidence: z.array(evidenceItem).max(2_000), language: z.string().min(1).max(32), output_schema_version: z.number().int().positive() }).strict() }),
+  operationBase.extend({ capability: z.literal('speech_transcription'), application_role: z.literal('asr'), input: z.object({ mode: z.enum(['short_sync', 'long_async']), audio_object_ref: opaqueId, source_offset: sourceTime, language: z.string().min(1).max(32).optional(), hotwords: z.array(z.string().min(1).max(200)).max(200), speaker_diarization: z.boolean(), sentence_timestamps: z.literal(true), word_timestamps: z.literal(true) }).strict() }),
+  operationBase.extend({ capability: z.literal('semantic_embedding'), application_role: z.literal('search_index'), input: z.object({ embedding_role: z.enum(['document', 'query']), items: z.array(z.object({ id: opaqueId, text: z.string().min(1).max(32_000) }).strict()).min(1).max(2_000), model: z.literal('text-embedding-v4'), dimension: z.literal(768), instruction_version: z.string().min(1).max(160) }).strict() }),
+])
+export type CreateVideoRelayOperationRequest = z.infer<typeof createVideoRelayOperationRequestSchema>
+
+export const providerUsageSchema = z.object({ requests: z.number().int().nonnegative(), total_tokens: z.number().int().nonnegative(), input_bytes: z.number().int().nonnegative(), visual_frames: z.number().int().nonnegative(), proxy_seconds: z.number().nonnegative(), asr_seconds: z.number().nonnegative(), estimated_amount_micros: z.number().int().nonnegative() }).strict()
+export const providerExecutionReceiptSchema = z.object({ id: opaqueId, capability: z.enum(['visual_evidence', 'media_reasoning', 'speech_transcription', 'semantic_embedding']), model_snapshot: z.string().min(1).max(200), region: z.literal('cn-beijing'), request_schema_version: z.number().int().positive(), prompt_version: z.string().min(1).max(160), input_basis_hash: hash, usage: providerUsageSchema, cache_hit: z.boolean(), upstream_receipt_hash: hash.optional(), created_at: iso }).strict()
+export type ProviderExecutionReceipt = z.infer<typeof providerExecutionReceiptSchema>
+
+/** Result bytes never travel through the Relay control plane.  A result object
+ * is readable only for the short lease below and is released by ACK. */
+export const relayResultObjectSchema = z.object({
+  object_ref: opaqueId,
+  content_hash: hash,
+  byte_size: z.number().int().positive().max(VIDEO_MEDIA_RELAY_RESULT_MAX_BYTES),
+  content_type: z.string().min(3).max(160),
+  get_url: z.string().url(),
+  expires_at: iso,
+}).strict()
+export type RelayResultObject = z.infer<typeof relayResultObjectSchema>
+
+export const videoRelayOperationProjectionSchema = z.object({ id: opaqueId, state: z.enum(['accepted', 'submitted', 'running', 'succeeded', 'failed', 'cancelled', 'outcome_unknown', 'expired']), provider_task_id: z.string().min(1).max(500).optional(), result_object_refs: z.array(opaqueId).max(64).optional(), result_objects: z.array(relayResultObjectSchema).max(64).optional(), provider_receipt: providerExecutionReceiptSchema.optional(), account_quota_reservation_id: opaqueId, safe_error_code: z.string().min(1).max(160).optional(), retry_after_ms: z.number().int().positive().max(24 * 60 * 60_000).optional(), created_at: iso, updated_at: iso }).strict()
+export type VideoRelayOperationProjection = z.infer<typeof videoRelayOperationProjectionSchema>
+
+export const operationAcknowledgementSchema = z.object({ result_hashes: z.array(hash).max(64), receipt_id: opaqueId }).strict()
+export function canonicalRelayRequestHash(value: unknown): `sha256:${string}` {
+  const stable = (item: unknown): string => {
+    if (Array.isArray(item)) return `[${item.map(stable).join(',')}]`
+    if (item && typeof item === 'object') return `{${Object.keys(item as Record<string, unknown>).sort().map(key => `${JSON.stringify(key)}:${stable((item as Record<string, unknown>)[key])}`).join(',')}}`
+    return JSON.stringify(item)
+  }
+  return `sha256:${createHash('sha256').update(stable(value)).digest('hex')}`
+}

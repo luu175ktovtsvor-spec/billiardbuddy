@@ -1,110 +1,29 @@
 import { createHash } from 'node:crypto'
 import type {
+  ManagedModelWorkload,
   ProviderRegistryEntry,
   ProviderRuntimeConfigurationError,
   TextReasoningTransport,
 } from '../ts/shared/product/providerContracts.js'
+import { MANAGED_MODEL_WORKLOADS } from '../ts/shared/product/providerContracts.js'
+import {
+  MANAGED_MODEL_CATALOG,
+  defaultManagedModelForWorkload,
+  managedModelById,
+} from '../ts/shared/product/modelCatalog.js'
 
-export const PROVIDER_REGISTRY_CONTRACT_VERSION = 4 as const
-export const PROVIDER_REGISTRY_VERIFICATION_DATE = '2026-07-23'
+export const PROVIDER_REGISTRY_CONTRACT_VERSION = 5 as const
+export const PROVIDER_REGISTRY_VERIFICATION_DATE = '2026-08-04'
 export const PROVIDER_RUNTIME_CONTRACT_VERSION_ENV = 'BB_PROVIDER_CONTRACT_VERSION'
 export const PROVIDER_RUNTIME_REGISTRY_SHA256_ENV = 'BB_PROVIDER_REGISTRY_SHA256'
 export const PROVIDER_RUNTIME_MANIFEST_SHA256_ENV = 'BB_PROVIDER_WORKER_MANIFEST_SHA256'
 
-/** The one canonical, non-secret model registry. */
-export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = [
-  {
-    model_id: 'deepseek-v4-flash',
-    provider: 'deepseek',
-    capabilities: ['TextReasoning'],
-    text_reasoning_transport: 'responses',
-    worker_env_source: { variable: 'BB_GATEWAY_MODEL', slot_aliases: [], default_model: true },
-    body_caps: {
-      CHAT_TEXT_BODY_MAX_BYTES: 24 * 1024 * 1024,
-      VISION_BODY_MAX_BYTES: 24 * 1024 * 1024,
-      IMAGE_GENERATION_BODY_MAX_BYTES: 32 * 1024 * 1024,
-    },
-    resume_evidence: { path: 'ts/desktop/electron/services/codexNativeAppServer.ts', status: 'conservative' },
-    contract_version: PROVIDER_REGISTRY_CONTRACT_VERSION,
-    verification_date: PROVIDER_REGISTRY_VERIFICATION_DATE,
-  },
-  {
-    model_id: 'mimo-v2.5',
-    provider: 'mimo',
-    capabilities: ['VisualEvidence', 'MediaReasoning'],
-    worker_env_source: { variable: 'GW_MIMO_MODEL', slot_aliases: [] },
-    body_caps: {
-      CHAT_TEXT_BODY_MAX_BYTES: 24 * 1024 * 1024,
-      VISION_BODY_MAX_BYTES: 24 * 1024 * 1024,
-      IMAGE_GENERATION_BODY_MAX_BYTES: 32 * 1024 * 1024,
-    },
-    resume_evidence: { path: 'gateway/visionBridge.ts', status: 'conservative' },
-    contract_version: PROVIDER_REGISTRY_CONTRACT_VERSION,
-    verification_date: PROVIDER_REGISTRY_VERIFICATION_DATE,
-  },
-  {
-    model_id: 'gpt-image-2',
-    provider: 'openai',
-    capabilities: ['ImageGeneration'],
-    image_generation: {
-      operation_modes: ['generate', 'edit', 'inpaint'],
-      max_reference_images: 8,
-      reference_roles: ['subject', 'product', 'character', 'style', 'composition', 'environment', 'brand', 'logo', 'qrcode'],
-      reference_preservations: ['may_change', 'prefer_preserve', 'must_preserve', 'exact'],
-      supported_sizes: ['1024x1024', '1536x1024', '1024x1536', '2048x2048', '2048x1152', '3840x2160', '2160x3840'],
-      transparency: true,
-      max_output_count: 3,
-      price_upper_bound: { currency: 'USD', per_output_amount_minor: 14, pricing_revision: 'openai-gpt-image-2-2026-07-23' },
-    },
-    worker_env_source: { variable: 'RELAY_IMAGE_MODEL', slot_aliases: [] },
-    body_caps: {
-      CHAT_TEXT_BODY_MAX_BYTES: 24 * 1024 * 1024,
-      VISION_BODY_MAX_BYTES: 24 * 1024 * 1024,
-      IMAGE_GENERATION_BODY_MAX_BYTES: 32 * 1024 * 1024,
-    },
-    resume_evidence: { path: 'relay/app.ts', status: 'verified' },
-    contract_version: PROVIDER_REGISTRY_CONTRACT_VERSION,
-    verification_date: PROVIDER_REGISTRY_VERIFICATION_DATE,
-  },
-  {
-    model_id: 'doubao-seedream-4-5-251128',
-    provider: 'bytedance-ark',
-    capabilities: ['ImageGeneration'],
-    image_generation: {
-      operation_modes: ['generate', 'edit'],
-      max_reference_images: 8,
-      reference_roles: ['subject', 'product', 'character', 'style', 'composition', 'environment', 'brand', 'logo', 'qrcode'],
-      reference_preservations: ['may_change', 'prefer_preserve', 'must_preserve', 'exact'],
-      supported_sizes: ['2048x2048', '2304x1728', '1728x2304', '2848x1600', '1600x2848', '2496x1664', '1664x2496', '3136x1344', '4096x4096', '4704x3520', '3520x4704', '5504x3040', '3040x5504', '4992x3328', '3328x4992', '6240x2656', '2352x1568', '1568x2352', '1680x2240', '2240x1680', '1536x2736', '2736x1536', '1216x3040', '3040x1216'],
-      transparency: false,
-      max_output_count: 3,
-      price_upper_bound: { currency: 'USD', per_output_amount_minor: 10, pricing_revision: 'ark-seedream-4.5-2026-07-23' },
-    },
-    worker_env_source: { variable: 'RELAY_SEEDREAM_MODEL', slot_aliases: [] },
-    body_caps: {
-      CHAT_TEXT_BODY_MAX_BYTES: 24 * 1024 * 1024,
-      VISION_BODY_MAX_BYTES: 24 * 1024 * 1024,
-      IMAGE_GENERATION_BODY_MAX_BYTES: 32 * 1024 * 1024,
-    },
-    resume_evidence: { path: 'relay/app.ts', status: 'verified' },
-    contract_version: PROVIDER_REGISTRY_CONTRACT_VERSION,
-    verification_date: PROVIDER_REGISTRY_VERIFICATION_DATE,
-  },
-  {
-    model_id: 'fun-asr-flash-2026-06-15',
-    provider: 'dashscope',
-    capabilities: ['SpeechTranscription'],
-    worker_env_source: { variable: 'GW_FUNASR_MODEL', slot_aliases: [] },
-    body_caps: {
-      CHAT_TEXT_BODY_MAX_BYTES: 24 * 1024 * 1024,
-      VISION_BODY_MAX_BYTES: 24 * 1024 * 1024,
-      IMAGE_GENERATION_BODY_MAX_BYTES: 32 * 1024 * 1024,
-    },
-    resume_evidence: { path: 'gateway/transcription.ts', status: 'verified' },
-    contract_version: PROVIDER_REGISTRY_CONTRACT_VERSION,
-    verification_date: PROVIDER_REGISTRY_VERIFICATION_DATE,
-  },
-] as const
+/** Runtime contract metadata is added here; every model fact lives in the shared catalog. */
+export const PROVIDER_REGISTRY: readonly ProviderRegistryEntry[] = MANAGED_MODEL_CATALOG.map(entry => ({
+  ...entry,
+  contract_version: PROVIDER_REGISTRY_CONTRACT_VERSION,
+  verification_date: PROVIDER_REGISTRY_VERIFICATION_DATE,
+}))
 
 type Json = null | boolean | number | string | Json[] | { [key: string]: Json }
 
@@ -125,13 +44,16 @@ export function providerRegistrySha256(): string {
 type WorkerModelRegistryEntry = {
   model_id: string
   capabilities: readonly string[]
+  workload_bindings?: readonly { workload: string; default_for_workload?: boolean }[]
   text_reasoning_transport?: TextReasoningTransport
   worker_env_source: { default_model?: boolean }
 }
 
 export function workerTextReasoningEntry(registry: readonly WorkerModelRegistryEntry[] = PROVIDER_REGISTRY): WorkerModelRegistryEntry | undefined {
   const textReasoning = registry.filter(candidate => candidate.capabilities.includes('TextReasoning'))
-  const defaults = textReasoning.filter(candidate => candidate.worker_env_source.default_model === true)
+  const defaults = textReasoning.filter(candidate => candidate.workload_bindings
+    ? candidate.workload_bindings.some(binding => binding.workload === 'managed_agent_text' && binding.default_for_workload === true)
+    : candidate.worker_env_source.default_model === true)
   if (defaults.length !== 1 || !defaults[0]!.text_reasoning_transport) return undefined
   return defaults[0]
 }
@@ -143,13 +65,26 @@ export function defaultProviderModel(registry: readonly WorkerModelRegistryEntry
 }
 
 export function providerRegistryEntry(model: string | undefined): ProviderRegistryEntry | undefined {
-  const normalized = model?.trim()
-  return normalized ? PROVIDER_REGISTRY.find(candidate => candidate.model_id === normalized) : undefined
+  const catalogEntry = managedModelById(model)
+  return catalogEntry ? PROVIDER_REGISTRY.find(candidate => candidate.model_id === catalogEntry.model_id) : undefined
 }
 
+export function providerRegistryEntryForWorkload(workload: ManagedModelWorkload, model?: string): ProviderRegistryEntry {
+  const selected = model?.trim()
+    ? providerRegistryEntry(model)
+    : providerRegistryEntry(defaultManagedModelForWorkload(workload).model_id)
+  if (!selected?.workload_bindings.some(binding => binding.workload === workload)) {
+    throw new Error(`provider registry model is not registered for ${workload}`)
+  }
+  return selected
+}
+
+/** Compatibility helper for callers that truly require one capability-wide model.
+ * New routing code must use a workload so Qwen image advice cannot replace the
+ * unrelated shared visual-evidence contract. */
 export function providerRegistryEntryForCapability(capability: ProviderRegistryEntry['capabilities'][number]): ProviderRegistryEntry {
   const entries = PROVIDER_REGISTRY.filter(entry => entry.capabilities.includes(capability))
-  if (entries.length !== 1) throw new Error(`provider registry must contain exactly one ${capability} entry`)
+  if (entries.length !== 1) throw new Error(`provider registry capability ${capability} is ambiguous; select a workload`)
   return entries[0]!
 }
 
@@ -171,11 +106,15 @@ export function textReasoningRegistryEntry(model?: string): ProviderRegistryEntr
 }
 
 export function visualEvidenceRegistryEntry(): ProviderRegistryEntry {
-  return providerRegistryEntryForCapability('VisualEvidence')
+  return providerRegistryEntryForWorkload('shared_visual_evidence')
 }
 
 export function mediaReasoningRegistryEntry(): ProviderRegistryEntry {
-  return providerRegistryEntryForCapability('MediaReasoning')
+  return providerRegistryEntryForWorkload('media_reasoning')
+}
+
+export function imageAdviceRegistryEntry(model?: string): ProviderRegistryEntry {
+  return providerRegistryEntryForWorkload('image_advice', model)
 }
 
 /** Build the private Worker compatibility manifest from the canonical registry. */
@@ -189,6 +128,7 @@ export function renderProviderRuntimeManifest(): Json {
       model_id: entry.model_id,
       provider: entry.provider,
       capabilities: entry.capabilities,
+      workload_bindings: entry.workload_bindings,
       ...(entry.text_reasoning_transport ? { text_reasoning_transport: entry.text_reasoning_transport } : {}),
       ...(entry.image_generation ? { image_generation: entry.image_generation } : {}),
       worker_env_source: entry.worker_env_source,
@@ -215,13 +155,17 @@ export function buildProviderRegistryRuntimeEnv(model: string | undefined): Reco
   return contract
 }
 
-export function validateProviderRegistryEntry(entry: Pick<ProviderRegistryEntry, 'capabilities' | 'text_reasoning_transport' | 'image_generation' | 'verification_date' | 'body_caps' | 'resume_evidence'>): ProviderRuntimeConfigurationError | undefined {
+export function validateProviderRegistryEntry(entry: Pick<ProviderRegistryEntry, 'capabilities' | 'workload_bindings' | 'text_reasoning_transport' | 'image_generation' | 'verification_date' | 'body_caps' | 'resume_evidence'>): ProviderRuntimeConfigurationError | undefined {
   if (
     !entry.resume_evidence.path
     || entry.verification_date !== PROVIDER_REGISTRY_VERIFICATION_DATE
   ) return 'MODEL_CONTRACT_STALE'
   const caps = entry.body_caps
   if (caps.CHAT_TEXT_BODY_MAX_BYTES <= 0 || caps.VISION_BODY_MAX_BYTES <= 0 || caps.IMAGE_GENERATION_BODY_MAX_BYTES <= 0) return 'MODEL_CONTRACT_STALE'
+  if (entry.workload_bindings.length === 0 || entry.workload_bindings.some(binding => (
+    !binding.workload || !binding.capacity_pool || !binding.quota_bucket
+    || !binding.execution_runtime || !binding.credential_slot
+  ))) return 'MODEL_CONTRACT_STALE'
   const needsTextTransport = entry.capabilities.includes('TextReasoning')
   if (needsTextTransport !== Boolean(entry.text_reasoning_transport)) return 'MODEL_CONTRACT_STALE'
   if (entry.text_reasoning_transport && !['chat_completions', 'responses'].includes(entry.text_reasoning_transport)) return 'MODEL_CONTRACT_STALE'
@@ -244,6 +188,12 @@ export function validateProviderRuntimeConfiguration(env: Record<string, string 
   for (const entry of PROVIDER_REGISTRY) {
     const error = validateProviderRegistryEntry(entry)
     if (error) return error
+  }
+  for (const workload of MANAGED_MODEL_WORKLOADS) {
+    const defaults = PROVIDER_REGISTRY.filter(entry => entry.workload_bindings.some(
+      binding => binding.workload === workload && binding.default_for_workload === true,
+    ))
+    if (defaults.length !== 1) return 'MODEL_CONFIGURATION_INVALID'
   }
   const selectedModel = env.BB_GATEWAY_MODEL?.trim()
   const textReasoning = selectedModel ? textReasoningRegistryEntry(selectedModel) : undefined

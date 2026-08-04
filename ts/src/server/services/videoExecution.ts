@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { open, stat } from 'node:fs/promises'
 import { isAbsolute } from 'node:path'
-import type { VideoStudioProject } from '../../../shared/contracts/media.js'
+import type { VideoExecutionPlan, VideoStudioProject } from '../../../shared/contracts/media.js'
 import { ContentAddressedStore } from '../media/kernel/assets/contentAddressedStore.js'
 import type { VideoFactSource } from '../video/domain/mediaFacts/model.js'
 import {
@@ -317,6 +317,93 @@ export function buildVideoRenderCommand(
     '-filter_complex', filters.join(';'), '-map', '[vout]', '-map', '[aout]',
     '-c:v', encoder.name, ...encoder.args, '-pix_fmt', 'yuv420p',
     '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', outputPath,
+  ]
+}
+
+function planSeconds(value: { ticks: string; tick_rate: { num: number; den: number } }): number {
+  const ticks = Number(value.ticks)
+  if (!Number.isSafeInteger(ticks) || !Number.isSafeInteger(value.tick_rate.num) || !Number.isSafeInteger(value.tick_rate.den) || value.tick_rate.num <= 0 || value.tick_rate.den <= 0) {
+    throw new Error('ExecutionPlan 时间戳不可安全执行')
+  }
+  return ticks * value.tick_rate.den / value.tick_rate.num
+}
+
+function atempoFilters(speed: number, input: string, output: string): string {
+  if (!Number.isFinite(speed) || speed <= 0) throw new Error('ExecutionPlan speed 无效')
+  const factors: number[] = []
+  let remaining = speed
+  while (remaining > 2) { factors.push(2); remaining /= 2 }
+  while (remaining < 0.5) { factors.push(0.5); remaining /= 0.5 }
+  factors.push(remaining)
+  return `${input}${factors.map(factor => `atempo=${factor.toFixed(8)}`).join(',')}${output}`
+}
+
+/**
+ * Compile the strict, linear subset of the v2 ExecutionPlan directly to
+ * FFmpeg.  Unsupported composition is rejected rather than quietly falling
+ * back to the legacy scene projection.  Timeline order and placement are
+ * taken solely from the plan, not inferred from source input order.
+ */
+export function buildExecutionPlanRenderCommand(
+  ffmpeg: string,
+  project: VideoStudioProject,
+  plan: VideoExecutionPlan,
+  outputPath: string,
+  encoder: VideoEncoderProfile = FALLBACK_VIDEO_ENCODER,
+): string[] {
+  if (plan.filters.some(filter => filter.kind !== 'scale_pad')) throw new Error('ExecutionPlan 包含未编译的效果')
+  if (plan.maps.some(map => map.output === 'caption')) throw new Error('ExecutionPlan 字幕输出尚不可执行')
+  const items = [...plan.timeline_items].sort((left, right) => left.order - right.order)
+  type SourceVideoItem = VideoExecutionPlan['timeline_items'][number] & { binding: Extract<VideoExecutionPlan['timeline_items'][number]['binding'], { kind: 'source' }> }
+  const videos: SourceVideoItem[] = []
+  for (const item of items.filter(item => item.kind === 'video')) {
+    if (item.track_kind !== 'primary_video' || item.binding.kind !== 'source') throw new Error('ExecutionPlan 仅支持线性主视频源条目')
+    videos.push(item as SourceVideoItem)
+  }
+  if (!videos.length) throw new Error('ExecutionPlan 缺少主视频条目')
+  if (items.some(item => item.kind === 'caption' || item.kind === 'overlay' || (item.kind === 'video' && item.track_kind !== 'primary_video'))) {
+    throw new Error('ExecutionPlan 包含未编译的视频合成条目')
+  }
+  const sourceById = new Map(project.sources.map(source => [source.id, source]))
+  const sourceStarts = new Map(plan.inputs.map(input => [`${input.source_id}\0${input.source_fingerprint}`, planSeconds(input.source_start)]))
+  const inputs: string[] = []; const filters: string[] = []; const concat: string[] = []
+  const width = plan.encoder.width; const height = plan.encoder.height
+  const fps = plan.encoder.frame_rate.num / plan.encoder.frame_rate.den
+  let cursor = 0
+  for (const [index, item] of videos.entries()) {
+    const binding = item.binding
+    const source = sourceById.get(binding.source_id)
+    if (!source || source.fingerprint !== binding.source_fingerprint || source.content_changed || source.missing) throw new Error(`ExecutionPlan 素材不可用: ${binding.source_id}`)
+    const sourceStart = sourceStarts.get(`${binding.source_id}\0${binding.source_fingerprint}`)
+    if (sourceStart === undefined) throw new Error('ExecutionPlan 缺少原始视频流起始 PTS')
+    const start = planSeconds(binding.source_range.start) - sourceStart
+    const sourceDuration = planSeconds(binding.source_range.duration)
+    const timelineStart = planSeconds(item.timeline_range.start)
+    const timelineDuration = planSeconds(item.timeline_range.duration)
+    const speed = item.speed ? item.speed.num / item.speed.den : 1
+    if (Math.abs(sourceDuration / speed - timelineDuration) > 0.002) throw new Error('ExecutionPlan speed 与范围不一致')
+    if (timelineStart + 0.001 < cursor) throw new Error('ExecutionPlan 主视频时间线重叠')
+    const gap = timelineStart - cursor
+    if (gap > 0.001) {
+      const gapIndex = `gap${index}`
+      filters.push(`color=c=black:s=${width}x${height}:r=${fps}:d=${gap.toFixed(6)}[v${gapIndex}]`)
+      filters.push(`anullsrc=channel_layout=stereo:sample_rate=48000,atrim=duration=${gap.toFixed(6)}[a${gapIndex}]`)
+      concat.push(`[v${gapIndex}][a${gapIndex}]`)
+    }
+    inputs.push('-ss', seconds(Math.max(0, start)), '-t', seconds(sourceDuration), '-i', source.path)
+    filters.push(`[${index}:v]setpts=PTS-STARTPTS/${speed.toFixed(8)},scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=${fps}[v${index}]`)
+    if (source.has_audio) {
+      filters.push(atempoFilters(speed, `[${index}:a]asetpts=PTS-STARTPTS,aresample=48000,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,`, `[a${index}]`))
+    } else {
+      filters.push(`anullsrc=channel_layout=stereo:sample_rate=48000,atrim=duration=${timelineDuration.toFixed(6)}[a${index}]`)
+    }
+    concat.push(`[v${index}][a${index}]`)
+    cursor = timelineStart + timelineDuration
+  }
+  filters.push(`${concat.join('')}concat=n=${concat.length}:v=1:a=1[vout][aout]`)
+  return [
+    ffmpeg, '-hide_banner', '-y', ...inputs, '-filter_complex', filters.join(';'), '-map', '[vout]', '-map', '[aout]',
+    '-c:v', encoder.name, ...encoder.args, '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', outputPath,
   ]
 }
 

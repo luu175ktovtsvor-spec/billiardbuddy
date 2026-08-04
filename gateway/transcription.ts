@@ -1,4 +1,6 @@
 import { extname } from 'node:path'
+import { defaultManagedModelForWorkload } from '../ts/shared/product/modelCatalog.js'
+import { loadGatewayProviderCredentials, type GatewayProviderCredentials } from './providerCredentials'
 
 type Env = Record<string, string | undefined>
 
@@ -6,6 +8,8 @@ export interface GatewayTranscriptionOptions {
   language: string
   responseFormat: 'json' | 'verbose_json'
   signal?: AbortSignal
+  /** Capacity fence supplied by Gateway immediately before each provider call. */
+  assertCurrent?: () => void | Promise<void>
 }
 
 export interface GatewayTranscriptionSegment {
@@ -49,8 +53,7 @@ function inputSuffix(file: File): string {
 }
 
 // 阿里百炼 Fun-ASR：DashScope 多模态生成端点,同步一次返回文字 + 词级时间戳。
-const FUNASR_ENDPOINT = 'https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation'
-const DEFAULT_FUNASR_MODEL = 'fun-asr-flash-2026-06-15'
+const DEFAULT_FUNASR_MODEL = defaultManagedModelForWorkload('speech_transcription').model_id
 
 /** 文件后缀 → Fun-ASR 的 format 值(wav/mp3/flac/m4a…)。 */
 function funAsrFormat(file: File): string {
@@ -95,10 +98,14 @@ export function parseFunAsrResult(raw: unknown, format: 'json' | 'verbose_json')
   return { text, language: 'zh', duration: segments[segments.length - 1]!.end, segments }
 }
 
-export function createFunAsrTranscriber(env: Env, fetchImpl: FetchLike = fetch): GatewayTranscriber | null {
-  const key = env.GW_FUNASR_KEY?.trim() ?? ''
-  if (!key) return null
-  const endpoint = env.GW_FUNASR_URL?.trim() || FUNASR_ENDPOINT
+export function createFunAsrTranscriber(
+  env: Env,
+  fetchImpl: FetchLike = fetch,
+  credentials: GatewayProviderCredentials = loadGatewayProviderCredentials(env),
+): GatewayTranscriber | null {
+  const authorization = credentials.bearerAuthorization('funasr')
+  if (!authorization) return null
+  const endpoint = credentials.baseUrl('funasr')
   const model = env.GW_FUNASR_MODEL?.trim() || DEFAULT_FUNASR_MODEL
   const timeoutMs = positiveInt(env.GW_TRANSCRIBE_TIMEOUT_MS, 5 * 60_000)
   return async (file, opts) => {
@@ -112,15 +119,17 @@ export function createFunAsrTranscriber(env: Env, fetchImpl: FetchLike = fetch):
         asr_options: { enable_words: opts.responseFormat === 'verbose_json', language: opts.language || 'zh' },
       },
     }
+    const wireBody = JSON.stringify(requestBody)
     const controller = new AbortController()
     const onAbort = () => controller.abort(opts.signal?.reason)
     opts.signal?.addEventListener('abort', onAbort, { once: true })
     const timer = setTimeout(() => controller.abort(new Error('timeout')), timeoutMs)
     try {
+      await opts.assertCurrent?.()
       const response = await fetchImpl(endpoint, {
         method: 'POST',
-        headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify(requestBody),
+        headers: { Authorization: authorization, 'Content-Type': 'application/json' },
+        body: wireBody,
         signal: controller.signal,
       })
       const responseText = await response.text()
@@ -142,8 +151,11 @@ export function createFunAsrTranscriber(env: Env, fetchImpl: FetchLike = fetch):
   }
 }
 
-export function createGatewayTranscriber(env: Env): GatewayTranscriber | null {
+export function createGatewayTranscriber(
+  env: Env,
+  credentials: GatewayProviderCredentials = loadGatewayProviderCredentials(env),
+): GatewayTranscriber | null {
   const provider = env.GW_TRANSCRIBE_PROVIDER?.trim().toLowerCase()
   if (provider && provider !== 'funasr' && provider !== 'fun-asr') return null
-  return createFunAsrTranscriber(env)
+  return createFunAsrTranscriber(env, fetch, credentials)
 }

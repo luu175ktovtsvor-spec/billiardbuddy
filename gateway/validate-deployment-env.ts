@@ -1,18 +1,24 @@
-import { readFileSync } from 'node:fs'
+import {
+  currentDeploymentEnvironment,
+  readStaticDeploymentEnvironment,
+} from '../ts/shared/kernel/deploymentEnvironment'
 import { textReasoningRegistryEntry } from './providerRegistry'
+import {
+  GATEWAY_CAPACITY_POLICY_REVISION_ENV,
+  loadCapacityPolicy,
+} from './capacityPolicy'
+import { loadGatewayProviderCredentials, type GatewayCredentialProvider } from './providerCredentials'
+import { loadGatewayServiceCredentials } from './serviceCredentials'
+import {
+  gatewayUsagePolicyFromEnvironment,
+  MANAGED_AGENT_INSTALLATION_DAILY_TOKEN_LIMIT_ENV,
+  QUOTA_POLICY_REVISION_ENV,
+} from './quotaPolicy'
 
 type DeploymentEnvironment = Record<string, string>
 
 function fail(message: string): never {
   throw new Error(`Gateway deployment environment invalid: ${message}`)
-}
-
-function valueWithoutQuotes(value: string): string {
-  const trimmed = value.trim()
-  if (trimmed.length >= 2 && ((trimmed.startsWith('"') && trimmed.endsWith('"')) || (trimmed.startsWith("'") && trimmed.endsWith("'")))) {
-    return trimmed.slice(1, -1)
-  }
-  return trimmed
 }
 
 /**
@@ -21,21 +27,11 @@ function valueWithoutQuotes(value: string): string {
  * malformed production environment cannot execute while it is being checked.
  */
 export function readDeploymentEnvironment(path: string): DeploymentEnvironment {
-  let contents: string
   try {
-    contents = readFileSync(path, 'utf8')
-  } catch {
-    fail('cannot read gw.env')
+    return readStaticDeploymentEnvironment(path)
+  } catch (error) {
+    fail(error instanceof Error ? error.message : 'cannot read gateway.env')
   }
-  const environment: DeploymentEnvironment = {}
-  for (const [index, rawLine] of contents.split(/\r?\n/).entries()) {
-    const line = rawLine.trim()
-    if (!line || line.startsWith('#') || line.startsWith(';')) continue
-    const match = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/.exec(line)
-    if (!match) fail(`line ${index + 1} is not KEY=VALUE`)
-    environment[match[1]] = valueWithoutQuotes(match[2])
-  }
-  return environment
 }
 
 function requireValue(environment: DeploymentEnvironment, name: string): string {
@@ -44,28 +40,106 @@ function requireValue(environment: DeploymentEnvironment, name: string): string 
   return value
 }
 
-function requireHttpsUrl(environment: DeploymentEnvironment, name: string): void {
-  const value = requireValue(environment, name)
-  try {
-    if (new URL(value).protocol !== 'https:') fail(`${name} must use https`)
-  } catch (error) {
-    if (error instanceof Error && error.message.startsWith('Gateway deployment environment invalid:')) throw error
-    fail(`${name} must be a valid URL`)
-  }
-}
+/**
+ * Production may not accidentally inherit the development profile embedded in
+ * capacityPolicy.ts. The runtime still has safe defaults for local tests and
+ * isolated development, while this preflight makes the operator-owned policy
+ * wholly visible and editable in gateway.env.
+ */
+export const GATEWAY_PRODUCTION_CAPACITY_ENVIRONMENT_VARIABLES = [
+  GATEWAY_CAPACITY_POLICY_REVISION_ENV,
+  'GW_BOOTSTRAP_RPM',
+  'GW_BOOTSTRAP_QUEUE_MAX',
+  'GW_BOOTSTRAP_QUEUE_MAX_WAIT',
+  'GW_DEEPSEEK_RPM',
+  'GW_DEEPSEEK_CONC',
+  'GW_DEEPSEEK_USER_CONC',
+  'GW_DEEPSEEK_TOKEN_CONC',
+  'GW_DEEPSEEK_INFLIGHT_PER_USER',
+  'GW_DEEPSEEK_QUEUE_MAX',
+  'GW_DEEPSEEK_QUEUE_MAX_WAIT',
+  'GW_DEEPSEEK_RESPONSE_TIMEOUT_MS',
+  'GW_DEEPSEEK_ACCOUNT_REF',
+  'GW_DEEPSEEK_ACCOUNT_BINDING_REVISION',
+  'GW_MIMO_RPM',
+  'GW_MIMO_CONC',
+  'GW_MIMO_MEDIA_CONC',
+  'GW_VISION_CONC',
+  'GW_MIMO_USER_CONC',
+  'GW_MIMO_TOKEN_CONC',
+  'GW_MIMO_INFLIGHT_PER_USER',
+  'GW_MIMO_QUEUE_MAX',
+  'GW_MIMO_QUEUE_MAX_WAIT',
+  'GW_VISION_QUEUE_MAX',
+  'GW_VISION_QUEUE_MAX_WAIT_MS',
+  'GW_VISION_PER_CLIENT_CONC',
+  'GW_VISION_MAX_INFLIGHT_PER_CLIENT',
+  'GW_VISION_PER_REQUEST_CONC',
+  'GW_VISION_TIMEOUT_MS',
+  'GW_MIMO_ACCOUNT_REF',
+  'GW_MIMO_ACCOUNT_BINDING_REVISION',
+  'GW_QWEN_RPM',
+  'GW_QWEN_CONC',
+  'GW_QWEN_USER_CONC',
+  'GW_QWEN_TOKEN_CONC',
+  'GW_QWEN_INFLIGHT_PER_USER',
+  'GW_QWEN_QUEUE_MAX',
+  'GW_QWEN_QUEUE_MAX_WAIT',
+  'GW_QWEN_RESPONSE_TIMEOUT_MS',
+  'GW_QWEN_ACCOUNT_REF',
+  'GW_QWEN_ACCOUNT_BINDING_REVISION',
+  'GW_TRANSCRIBE_RPM',
+  'GW_TRANSCRIBE_CONC',
+  'GW_TRANSCRIBE_USER_CONC',
+  'GW_TRANSCRIBE_TOKEN_CONC',
+  'GW_TRANSCRIBE_INFLIGHT_PER_USER',
+  'GW_TRANSCRIBE_QUEUE_MAX',
+  'GW_QUEUE_MAX_WAIT',
+  'GW_TRANSCRIBE_MAX_BYTES',
+  'GW_TRANSCRIBE_TIMEOUT_MS',
+  'GW_FUNASR_ACCOUNT_REF',
+  'GW_FUNASR_ACCOUNT_BINDING_REVISION',
+  'GW_INGRESS_INFLIGHT_BODY_BYTES',
+  'GW_INGRESS_BODY_READ_TIMEOUT_MS',
+  'GW_SERVER_IDLE_TIMEOUT_SECONDS',
+] as const
 
-/** Relay is HTTPS in every cross-host deployment, but Compose uses this fixed private hop. */
-function requireRelayTasksUrl(environment: DeploymentEnvironment): void {
-  const value = requireValue(environment, 'GW_RELAY_TASKS_BASE')
-  try {
-    const url = new URL(value)
-    if (url.username || url.password || url.search || url.hash) fail('GW_RELAY_TASKS_BASE must not contain credentials or query data')
-    if (url.protocol === 'https:') return
-    if (url.protocol === 'http:' && url.hostname === 'relay' && (url.port === '' || url.port === '8790')) return
-    fail('GW_RELAY_TASKS_BASE must use https outside the private Compose relay service')
-  } catch (error) {
-    if (error instanceof Error && error.message.startsWith('Gateway deployment environment invalid:')) throw error
-    fail('GW_RELAY_TASKS_BASE must be a valid URL')
+const GATEWAY_QUOTA_CAPABILITIES = [
+  'TEXT_REASONING',
+  'VISUAL_EVIDENCE',
+  'MEDIA_REASONING',
+  'IMAGE_ADVICE',
+  'SPEECH_TRANSCRIPTION',
+] as const
+const GATEWAY_QUOTA_SCOPES = ['PRINCIPAL', 'INSTALLATION'] as const
+const GATEWAY_QUOTA_AXES = ['REQUESTS', 'INPUT_BYTES', 'OUTPUT_UNITS', 'TOTAL_TOKENS'] as const
+
+/**
+ * Capacity and entitlement are independent policies. Production must name
+ * every quota cell explicitly, rather than inheriting source-code ceilings.
+ * TextReasoning installation TOTAL_TOKENS retains one compatibility alias,
+ * but the policy parser rejects setting both spellings at the same time.
+ */
+export const GATEWAY_PRODUCTION_QUOTA_POLICY_REVISION_ENV = QUOTA_POLICY_REVISION_ENV
+
+function requireProductionQuotaEnvironment(environment: DeploymentEnvironment): void {
+  requireValue(environment, GATEWAY_PRODUCTION_QUOTA_POLICY_REVISION_ENV)
+  for (const capability of GATEWAY_QUOTA_CAPABILITIES) {
+    for (const scope of GATEWAY_QUOTA_SCOPES) {
+      for (const axis of GATEWAY_QUOTA_AXES) {
+        const name = `GW_QUOTA_${capability}_${scope}_${axis}`
+        const usesDailyAlias = capability === 'TEXT_REASONING' && scope === 'INSTALLATION' && axis === 'TOTAL_TOKENS'
+        if (!usesDailyAlias) {
+          requireValue(environment, name)
+          continue
+        }
+        const named = environment[name]?.trim()
+        const alias = environment[MANAGED_AGENT_INSTALLATION_DAILY_TOKEN_LIMIT_ENV]?.trim()
+        if (!named && !alias) {
+          fail(`${name} or ${MANAGED_AGENT_INSTALLATION_DAILY_TOKEN_LIMIT_ENV} is required`)
+        }
+      }
+    }
   }
 }
 
@@ -83,27 +157,32 @@ export function validateDeploymentEnvironment(environment: DeploymentEnvironment
   for (const name of [
     'GW_ADMIN_TOKEN',
     'GW_DB',
-    'GW_RELAY_TOKEN',
-    'GW_DEEPSEEK_KEY',
-    'GW_MIMO_KEY',
-    'GW_FUNASR_KEY',
   ]) requireValue(environment, name)
+  for (const name of GATEWAY_PRODUCTION_CAPACITY_ENVIRONMENT_VARIABLES) requireValue(environment, name)
+  requireProductionQuotaEnvironment(environment)
 
-  requireRelayTasksUrl(environment)
-  for (const name of ['GW_DEEPSEEK_BASE', 'GW_MIMO_BASE']) {
-    if (environment[name]?.trim()) requireHttpsUrl(environment, name)
+  let credentials
+  try {
+    credentials = loadGatewayProviderCredentials(environment)
+    loadGatewayServiceCredentials(environment)
+    loadCapacityPolicy(environment)
+    gatewayUsagePolicyFromEnvironment(environment)
+  } catch (error) {
+    fail(error instanceof Error ? error.message : 'provider governance configuration is invalid')
   }
+  for (const provider of ['deepseek', 'mimo', 'funasr'] as const satisfies readonly GatewayCredentialProvider[]) {
+    if (!credentials.view(provider).secret_configured) fail(`${credentials.view(provider).secret_slot} is required`)
+  }
+  const qwenEnabled = environment.GW_QWEN_ENABLED?.trim() ?? '0'
+  if (qwenEnabled !== '0' && qwenEnabled !== '1') fail('GW_QWEN_ENABLED must be 0 or 1')
+  if (qwenEnabled === '1' && !credentials.view('qwen').secret_configured) fail('GW_QWEN_KEY is required when Qwen is enabled')
 }
 
 if (import.meta.main) {
   if (process.argv.length !== 3) fail('usage: bun validate-deployment-env.ts /path/to/gw.env | --process-env')
   const input = process.argv[2]
   if (input === '--process-env') {
-    const environment: DeploymentEnvironment = {}
-    for (const [name, value] of Object.entries(process.env)) {
-      if (typeof value === 'string') environment[name] = value
-    }
-    validateDeploymentEnvironment(environment)
+    validateDeploymentEnvironment(currentDeploymentEnvironment())
   } else {
     validateDeploymentEnvironment(readDeploymentEnvironment(input))
   }

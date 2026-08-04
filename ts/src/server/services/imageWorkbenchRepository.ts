@@ -30,6 +30,8 @@ import {
   imageGenerationEstimateSchema,
   imageGenerationRoundSchema,
   imageHashSchema,
+  imageUnderstandingSuggestionSchema,
+  imageVisualAssessmentSchema,
   imageRenderReceiptSchema,
   imageReleaseCheckResultSchema,
   imageExportReceiptSchema,
@@ -50,6 +52,8 @@ import {
   type ImageDeliverySpec,
   type ImageGenerationEstimate,
   type ImageGenerationRound,
+  type ImageUnderstandingSuggestion,
+  type ImageVisualAssessment,
   type ImageRenderReceipt,
   type ImageReleaseCheckResult,
   type ImageExportReceipt,
@@ -1171,7 +1175,7 @@ export class ImageWorkbenchRepository {
     await this.ready()
     this.assertGenerationProject(projectId)
     const row = this.unitOfWork.database.query(`SELECT document_json FROM image_generation_briefs
-      WHERE project_id=? ORDER BY created_at DESC LIMIT 1`).get(projectId) as { document_json: string } | null
+      WHERE project_id=? ORDER BY created_at DESC, rowid DESC LIMIT 1`).get(projectId) as { document_json: string } | null
     return row ? this.generationDocument(row, value => imageBriefSnapshotSchema.parse(value)) : null
   }
 
@@ -1853,6 +1857,16 @@ export class ImageWorkbenchRepository {
         && JSON.stringify(prior.output_asset_hashes ?? []) === JSON.stringify(input.output_asset_hashes ?? [])
         && JSON.stringify(prior.refusal ?? null) === JSON.stringify(input.refusal ?? null)
       if (!sameTerminalFacts) throw new ImageWorkbenchRepositoryError('图片执行回执终态不能改变', 409, 'IMAGE_STORAGE_INVALID')
+      if (input.gateway_result_acknowledged_at && !prior.gateway_result_acknowledged_at) {
+        const acknowledged = providerExecutionReceiptSchema.parse({
+          ...prior,
+          ...(input.gateway_result_fingerprint ? { gateway_result_fingerprint: input.gateway_result_fingerprint } : {}),
+          gateway_result_acknowledged_at: input.gateway_result_acknowledged_at,
+        })
+        this.unitOfWork.database.query('UPDATE image_provider_execution_receipts SET document_json=? WHERE id=?')
+          .run(JSON.stringify(acknowledged), acknowledged.id)
+        return acknowledged
+      }
       return prior
     }
     const completed = providerExecutionReceiptSchema.parse({
@@ -1861,6 +1875,8 @@ export class ImageWorkbenchRepository {
       ...(input.output_asset_hashes ? { output_asset_hashes: input.output_asset_hashes } : {}),
       ...(input.refusal ? { refusal: input.refusal } : {}),
       ...(input.usage ? { usage: input.usage } : {}),
+      ...(input.gateway_result_fingerprint ? { gateway_result_fingerprint: input.gateway_result_fingerprint } : {}),
+      ...(input.gateway_result_acknowledged_at ? { gateway_result_acknowledged_at: input.gateway_result_acknowledged_at } : {}),
       completed_at: input.completed_at,
     })
     this.unitOfWork.database.query(`UPDATE image_provider_execution_receipts SET document_json=? WHERE id=?`)
@@ -1875,6 +1891,111 @@ export class ImageWorkbenchRepository {
       .get(receiptId, projectId) as { document_json: string } | null
     if (!row) throw new ImageWorkbenchRepositoryError('图片执行回执不存在', 404, 'IMAGE_STORAGE_INVALID')
     return this.generationDocument(row, value => providerExecutionReceiptSchema.parse(value))
+  }
+
+  /** Gateway advice results are retained until the local receipt can acknowledge them. */
+  async listUnacknowledgedGatewayAdviceReceipts(): Promise<ProviderExecutionReceipt[]> {
+    await this.ready()
+    const rows = this.unitOfWork.database.query('SELECT document_json FROM image_provider_execution_receipts').all() as Array<{ document_json: string }>
+    return rows
+      .map(row => this.generationDocument(row, value => providerExecutionReceiptSchema.parse(value)))
+      .filter(receipt => receipt.provider === 'qwen'
+        && receipt.completed_at !== undefined
+        && receipt.gateway_result_fingerprint !== undefined
+        && receipt.gateway_result_acknowledged_at === undefined)
+  }
+
+  /** Qwen advice and its immutable remote receipt commit together, never touching user facts. */
+  async saveUnderstandingSuggestionWithReceipt(
+    suggestion: ImageUnderstandingSuggestion,
+    receipt: ProviderExecutionReceipt,
+    requestHash: string,
+  ): Promise<ImageUnderstandingSuggestion> {
+    await this.ready()
+    const input = imageUnderstandingSuggestionSchema.parse(suggestion)
+    const execution = providerExecutionReceiptSchema.parse(receipt)
+    const request_hash = imageHashSchema.parse(requestHash)
+    if (input.project_id !== execution.project_id || input.execution_receipt_id !== execution.id) {
+      throw new ImageWorkbenchRepositoryError('Qwen 建议与执行回执不匹配', 409, 'IMAGE_STORAGE_INVALID')
+    }
+    return await this.fences.run(`project-${input.project_id}`, async () => {
+      this.assertGenerationProject(input.project_id)
+      return this.unitOfWork.transaction(() => {
+        const prior = this.unitOfWork.database.query(`SELECT document_json,request_hash FROM image_understanding_suggestions
+          WHERE project_id=? AND idempotency_key=?`).get(input.project_id, execution.idempotency_key) as { document_json: string; request_hash: string } | null
+        if (prior) {
+          if (prior.request_hash !== request_hash) throw new ImageWorkbenchRepositoryError('Qwen 建议幂等键冲突', 409, 'IMAGE_IDEMPOTENCY_CONFLICT')
+          return this.generationDocument(prior, value => imageUnderstandingSuggestionSchema.parse(value))
+        }
+        this.persistExecutionReceipt(execution)
+        this.unitOfWork.database.query(`INSERT INTO image_understanding_suggestions(
+          id,project_id,execution_receipt_id,idempotency_key,request_hash,created_at,document_json
+        ) VALUES(?,?,?,?,?,?,?)`).run(input.id, input.project_id, input.execution_receipt_id, execution.idempotency_key, request_hash, input.created_at, JSON.stringify(input))
+        return input
+      })
+    })
+  }
+
+  async saveVisualAssessmentWithReceipt(
+    assessment: ImageVisualAssessment,
+    receipt: ProviderExecutionReceipt,
+    requestHash: string,
+  ): Promise<ImageVisualAssessment> {
+    await this.ready()
+    const input = imageVisualAssessmentSchema.parse(assessment)
+    const execution = providerExecutionReceiptSchema.parse(receipt)
+    const request_hash = imageHashSchema.parse(requestHash)
+    if (input.project_id !== execution.project_id || input.execution_receipt_id !== execution.id) {
+      throw new ImageWorkbenchRepositoryError('Qwen 评估与执行回执不匹配', 409, 'IMAGE_STORAGE_INVALID')
+    }
+    return await this.fences.run(`project-${input.project_id}`, async () => {
+      this.assertGenerationProject(input.project_id)
+      return this.unitOfWork.transaction(() => {
+        const prior = this.unitOfWork.database.query(`SELECT document_json,request_hash FROM image_visual_assessments
+          WHERE project_id=? AND idempotency_key=?`).get(input.project_id, execution.idempotency_key) as { document_json: string; request_hash: string } | null
+        if (prior) {
+          if (prior.request_hash !== request_hash) throw new ImageWorkbenchRepositoryError('Qwen 评估幂等键冲突', 409, 'IMAGE_IDEMPOTENCY_CONFLICT')
+          return this.generationDocument(prior, value => imageVisualAssessmentSchema.parse(value))
+        }
+        this.persistExecutionReceipt(execution)
+        this.unitOfWork.database.query(`INSERT INTO image_visual_assessments(
+          id,project_id,candidate_id,version_id,execution_receipt_id,idempotency_key,request_hash,created_at,document_json
+        ) VALUES(?,?,?,?,?,?,?,?,?)`).run(input.id, input.project_id, input.candidate_id ?? null, input.version_id ?? null, input.execution_receipt_id, execution.idempotency_key, request_hash, input.created_at, JSON.stringify(input))
+        return input
+      })
+    })
+  }
+
+  async latestUnderstandingSuggestion(projectId: string): Promise<ImageUnderstandingSuggestion | null> {
+    await this.ready()
+    this.assertGenerationProject(projectId)
+    const row = this.unitOfWork.database.query(`SELECT document_json FROM image_understanding_suggestions
+      WHERE project_id=? ORDER BY created_at DESC, rowid DESC LIMIT 1`).get(projectId) as { document_json: string } | null
+    return row ? this.generationDocument(row, value => imageUnderstandingSuggestionSchema.parse(value)) : null
+  }
+
+  async understandingSuggestionByIdempotency(projectId: string, idempotencyKey: string): Promise<{ suggestion: ImageUnderstandingSuggestion; request_hash: string } | null> {
+    await this.ready()
+    this.assertGenerationProject(projectId)
+    const row = this.unitOfWork.database.query(`SELECT document_json,request_hash FROM image_understanding_suggestions
+      WHERE project_id=? AND idempotency_key=?`).get(projectId, idempotencyKey) as { document_json: string; request_hash: string } | null
+    return row ? { suggestion: this.generationDocument(row, value => imageUnderstandingSuggestionSchema.parse(value)), request_hash: row.request_hash } : null
+  }
+
+  async latestVisualAssessmentForCandidate(projectId: string, candidateId: string): Promise<ImageVisualAssessment | null> {
+    await this.ready()
+    this.assertGenerationProject(projectId)
+    const row = this.unitOfWork.database.query(`SELECT document_json FROM image_visual_assessments
+      WHERE project_id=? AND candidate_id=? ORDER BY created_at DESC LIMIT 1`).get(projectId, candidateId) as { document_json: string } | null
+    return row ? this.generationDocument(row, value => imageVisualAssessmentSchema.parse(value)) : null
+  }
+
+  async visualAssessmentByIdempotency(projectId: string, idempotencyKey: string): Promise<{ assessment: ImageVisualAssessment; request_hash: string } | null> {
+    await this.ready()
+    this.assertGenerationProject(projectId)
+    const row = this.unitOfWork.database.query(`SELECT document_json,request_hash FROM image_visual_assessments
+      WHERE project_id=? AND idempotency_key=?`).get(projectId, idempotencyKey) as { document_json: string; request_hash: string } | null
+    return row ? { assessment: this.generationDocument(row, value => imageVisualAssessmentSchema.parse(value)), request_hash: row.request_hash } : null
   }
 
   async saveGenerationRound(round: ImageGenerationRound, requestHash: string): Promise<ImageGenerationRound> {
