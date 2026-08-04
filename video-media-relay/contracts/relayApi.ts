@@ -12,6 +12,21 @@ import { createHash } from 'node:crypto'
 export const VIDEO_MEDIA_RELAY_SCHEMA_VERSION = 1 as const
 export const videoMediaRelaySchemaHeader = 'X-BB-Video-Media-Schema'
 export const videoMediaRelaySchemaValue = 'bb-video-media/1'
+/** Read-only crash-recovery lookup for a client that durably recorded its
+ * local operation fence but lost the Relay operation id in transit. */
+export function videoMediaOperationByLocalOperationPath(localOperationId: string): string {
+  return `/v1/video-media/operations/by-local-operation/${encodeURIComponent(localOperationId)}`
+}
+/**
+ * Every Relay result is read and JSON-decoded by the Sidecar. This cap is a
+ * wire-level safety boundary, not a storage preference: it still leaves room
+ * for long ASR transcripts and a 2,000 x 768 embedding batch, while preventing
+ * a compromised/buggy provider response from becoming an unbounded desktop
+ * allocation.
+ */
+export const VIDEO_MEDIA_RELAY_RESULT_MAX_BYTES = 32 * 1024 * 1024
+/** Multipart signed URLs are returned in one control response. */
+export const VIDEO_MEDIA_RELAY_MAX_MULTIPART_PARTS = 512
 
 const hash = z.string().regex(/^sha256:[a-f0-9]{64}$/)
 const opaqueId = z.string().regex(/^[a-z][a-z0-9_]{7,127}$/)
@@ -30,7 +45,7 @@ export const createMediaObjectLeaseRequestSchema = z.object({
 export type CreateMediaObjectLeaseRequest = z.infer<typeof createMediaObjectLeaseRequestSchema>
 
 export const multipartUploadedPartSchema = z.object({
-  part_number: z.number().int().positive().max(10_000),
+  part_number: z.number().int().positive().max(VIDEO_MEDIA_RELAY_MAX_MULTIPART_PARTS),
   etag: z.string().min(1).max(256),
 }).strict()
 export type MultipartUploadedPart = z.infer<typeof multipartUploadedPartSchema>
@@ -39,15 +54,15 @@ const multipartLeaseSchema = z.object({
   upload_id: z.string().min(1).max(1_000),
   part_size: z.number().int().positive(),
   parts: z.array(z.object({
-    part_number: z.number().int().positive().max(10_000),
+    part_number: z.number().int().positive().max(VIDEO_MEDIA_RELAY_MAX_MULTIPART_PARTS),
     put_url: z.string().url(),
     required_headers: z.record(z.string(), z.string()).optional(),
-  }).strict()).min(1).max(10_000),
-  uploaded_parts: z.array(multipartUploadedPartSchema).max(10_000),
+  }).strict()).min(1).max(VIDEO_MEDIA_RELAY_MAX_MULTIPART_PARTS),
+  uploaded_parts: z.array(multipartUploadedPartSchema).max(VIDEO_MEDIA_RELAY_MAX_MULTIPART_PARTS),
 }).strict()
 
 export const completeMediaObjectLeaseRequestSchema = z.object({
-  parts: z.array(multipartUploadedPartSchema).max(10_000).optional(),
+  parts: z.array(multipartUploadedPartSchema).max(VIDEO_MEDIA_RELAY_MAX_MULTIPART_PARTS).optional(),
 }).strict()
 export type CompleteMediaObjectLeaseRequest = z.infer<typeof completeMediaObjectLeaseRequestSchema>
 
@@ -94,7 +109,7 @@ export type ProviderExecutionReceipt = z.infer<typeof providerExecutionReceiptSc
 export const relayResultObjectSchema = z.object({
   object_ref: opaqueId,
   content_hash: hash,
-  byte_size: z.number().int().positive(),
+  byte_size: z.number().int().positive().max(VIDEO_MEDIA_RELAY_RESULT_MAX_BYTES),
   content_type: z.string().min(3).max(160),
   get_url: z.string().url(),
   expires_at: iso,

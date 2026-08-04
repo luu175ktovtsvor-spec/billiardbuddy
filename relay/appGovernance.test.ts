@@ -1,8 +1,13 @@
 import { describe, expect, test } from 'bun:test'
+import { Database } from 'bun:sqlite'
+import { existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
-import { createRelayFetch } from './app'
+import { createRelayFetch, MAX_PRE_PROVIDER_ADMISSION_RETRIES } from './app'
 import type { RelayAdmissionBackend, RelayProviderAdmissionConfig } from './capacityPolicy'
 import { imageRelayIdempotencyLookupPath } from '../ts/shared/product/imageRelayProtocol'
+import { CapacityQueueError } from '../ts/shared/kernel/providerAdmission'
 
 const IMAGE_SERVICE_TOKEN = 'image-relay-service-token-123456789012345'
 const RESULT_SIGNING_KEY = 'result-signing-key-that-is-longer-than-thirty-two-bytes'
@@ -11,6 +16,10 @@ function environment(openaiKey = 'openai-secret-that-must-not-leak'): Record<str
   return {
     RELAY_OPENAI_KEY: openaiKey,
     RELAY_OPENAI_BASE: 'https://provider.example.test/v1',
+    RELAY_OPENAI_ACCOUNT_REF: 'openai-primary-account',
+    RELAY_OPENAI_ACCOUNT_BINDING_REVISION: 'openai-binding-test-v1',
+    RELAY_SEEDREAM_ACCOUNT_REF: 'seedream-primary-account',
+    RELAY_SEEDREAM_ACCOUNT_BINDING_REVISION: 'seedream-binding-test-v1',
     RELAY_IMG_CONC: '1',
     RELAY_IMG_USER_CONC: '1',
     RELAY_OPENAI_RPM: '120',
@@ -55,8 +64,8 @@ function requestHeaders(desktopBearer: string, operation: string, legacyOwner = 
   }
 }
 
-async function waitFor(predicate: () => boolean | Promise<boolean>, message: string): Promise<void> {
-  const deadline = Date.now() + 1_000
+async function waitFor(predicate: () => boolean | Promise<boolean>, message: string, timeoutMs = 1_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs
   while (!(await predicate())) {
     if (Date.now() >= deadline) throw new Error(message)
     await new Promise(resolve => setTimeout(resolve, 2))
@@ -83,6 +92,7 @@ describe('Image Relay resource governance', () => {
             acquired.push(owner)
             return { async assertCurrent() { providerFenceChecks += 1 }, release() { providerReleases += 1 } }
           },
+          async acquireGenerationRate() {},
           snapshot() {
             return {
               active: 0, queued: 0, activeOwners: 0, queuedOwners: 0,
@@ -103,8 +113,11 @@ describe('Image Relay resource governance', () => {
     expect(identityConfigs).toEqual([expect.objectContaining({ maxActive: 3, maxQueued: 7, maxWaitMs: 9000 })])
     expect(providerConfigs).toHaveLength(2)
     expect(providerConfigs[0]).toEqual(expect.objectContaining({
-      provider: 'openai', requests_per_minute: 17, rate_queue_max: 4,
+      provider: 'openai', account_key: 'image:openai:openai-primary-account@openai-binding-test-v1', requests_per_minute: 17, rate_queue_max: 4,
       concurrency: expect.objectContaining({ maxActive: 1, maxActivePerOwner: 1, maxQueued: 4, maxQueuedPerOwner: 2 }),
+    }))
+    expect(providerConfigs[1]).toEqual(expect.objectContaining({
+      provider: 'seedream', account_key: 'image:seedream:seedream-primary-account@seedream-binding-test-v1',
     }))
     const health = await relay(new Request('https://relay.example.test/healthz'))
     expect(await health.json()).toMatchObject({ provider_capacity: { openai: { maxActive: 91, rate: { available: 95, rpm: 17 } } } })
@@ -117,6 +130,294 @@ describe('Image Relay resource governance', () => {
     expect(acquired).toEqual([`installation:${'a'.repeat(32)}:desktop-installation-a`])
     expect(identityFenceChecks).toBeGreaterThanOrEqual(1)
     expect(providerFenceChecks).toBeGreaterThanOrEqual(2)
+  })
+
+  test('revalidates the Seedream account permit before every returned-asset GET', async () => {
+    const events: string[] = []
+    let providerReleases = 0
+    const admissionBackend: RelayAdmissionBackend = {
+      createIdentityAdmission() {
+        return { async acquire() { return { release() {} } } }
+      },
+      createProviderAdmission(config) {
+        return {
+          async acquire() {
+            return {
+              async assertCurrent() { if (config.provider === 'seedream') events.push('permit') },
+              release() { if (config.provider === 'seedream') providerReleases += 1 },
+            }
+          },
+          async acquireGenerationRate() { if (config.provider === 'seedream') events.push('generation-rate') },
+          snapshot() {
+            return {
+              active: 0, queued: 0, activeOwners: 0, queuedOwners: 0,
+              maxActive: 1, maxActivePerOwner: 1, maxQueued: 4, maxQueuedPerOwner: 2,
+              oldestQueueMs: 0, closed: false,
+              rate: { available: 120, queued: 0, rpm: config.requests_per_minute, queueMax: config.rate_queue_max },
+            }
+          },
+        }
+      },
+    }
+    let generation = 0
+    const relay = createRelayFetch({
+      env: {
+        ...environment(),
+        RELAY_ARK_KEY: 'seedream-permit-test-key',
+        RELAY_ARK_BASE: 'https://seedream.example.test/v1',
+      },
+      admissionBackend,
+      identityFetchImpl: identityFetch,
+      fetchImpl: async (input, init) => {
+        const url = String(input)
+        if (url.endsWith('/images/generations')) {
+          expect(typeof init?.body).toBe('string')
+          generation += 1
+          events.push(`POST:${generation}`)
+          return Response.json({ data: [{ url: `https://assets.example.test/result-${generation}.png` }] }, { headers: { 'x-tt-logid': `seedream-${generation}` } })
+        }
+        events.push(`GET:${url}`)
+        return new Response(new Uint8Array([1, 2, 3]), { headers: { 'content-type': 'image/png' } })
+      },
+    })
+    const submitted = await relay(new Request('https://relay.example.test/v1/images/tasks', {
+      method: 'POST', headers: requestHeaders('desktop-a', 'operation-seedream-asset-permits'),
+      body: JSON.stringify({ mode: 'generate', model: 'doubao-seedream-4-5-251128', prompt: 'permit every asset', n: 2 }),
+    }))
+    const task = await submitted.json() as { task_id: string }
+    let terminal = ''
+    await waitFor(async () => {
+      const response = await relay(new Request(`https://relay.example.test/v1/images/tasks/${task.task_id}`, { headers: { Authorization: 'Bearer desktop-a' } }))
+      terminal = String((await response.json() as { status?: string }).status ?? '')
+      return terminal === 'succeeded'
+    }, 'Seedream URL task did not finish')
+    expect(events).toEqual([
+      'permit',
+      'permit', 'generation-rate', 'permit', 'permit', 'POST:1', 'permit', 'GET:https://assets.example.test/result-1.png',
+      'permit', 'generation-rate', 'permit', 'permit', 'POST:2', 'permit', 'GET:https://assets.example.test/result-2.png',
+    ])
+    expect(providerReleases).toBe(1)
+  })
+
+  test('Seedream n=2 保持一次任务并发 permit，但每个生成 POST 都扣独立 RPM', async () => {
+    let concurrencyAcquires = 0
+    let generationRateAttempts = 0
+    let providerPosts = 0
+    const admissionBackend: RelayAdmissionBackend = {
+      createIdentityAdmission() {
+        return { async acquire() { return { release() {} } } }
+      },
+      createProviderAdmission(config) {
+        return {
+          async acquire() {
+            if (config.provider === 'seedream') concurrencyAcquires += 1
+            return { async assertCurrent() {}, release() {} }
+          },
+          async acquireGenerationRate() {
+            if (config.provider !== 'seedream') return
+            generationRateAttempts += 1
+            // RELAY_SEEDREAM_RPM=1: the second paid POST is refused before
+            // fetch, without waiting a real minute in this regression test.
+            if (generationRateAttempts > 1) throw new CapacityQueueError(429, '当前使用人数较多，请稍后重试')
+          },
+          snapshot() {
+            return {
+              active: 0, queued: 0, activeOwners: 0, queuedOwners: 0,
+              maxActive: 1, maxActivePerOwner: 1, maxQueued: 4, maxQueuedPerOwner: 2,
+              oldestQueueMs: 0, closed: false,
+              rate: { available: 0, queued: 0, rpm: config.requests_per_minute, queueMax: config.rate_queue_max },
+            }
+          },
+        }
+      },
+    }
+    const relay = createRelayFetch({
+      env: {
+        ...environment(),
+        RELAY_ARK_KEY: 'seedream-rpm-test-key',
+        RELAY_ARK_BASE: 'https://seedream.example.test/v1',
+        RELAY_SEEDREAM_RPM: '1',
+      },
+      admissionBackend,
+      identityFetchImpl: identityFetch,
+      fetchImpl: async input => {
+        if (!String(input).endsWith('/images/generations')) throw new Error('this regression does not download assets')
+        providerPosts += 1
+        return Response.json({ data: [{ b64_json: 'aGVsbG8=' }] }, { headers: { 'x-tt-logid': 'seedream-rpm-first' } })
+      },
+    })
+    const submitted = await relay(new Request('https://relay.example.test/v1/images/tasks', {
+      method: 'POST', headers: requestHeaders('desktop-a', 'operation-seedream-rpm-per-post'),
+      body: JSON.stringify({ mode: 'generate', model: 'doubao-seedream-4-5-251128', prompt: 'one rpm token only', n: 2 }),
+    }))
+    expect(submitted.status).toBe(202)
+    const task = await submitted.json() as { task_id: string }
+    let terminal: Record<string, unknown> = {}
+    await waitFor(async () => {
+      const response = await relay(new Request(`https://relay.example.test/v1/images/tasks/${task.task_id}`, { headers: { Authorization: 'Bearer desktop-a' } }))
+      terminal = await response.json() as Record<string, unknown>
+      return terminal.status === 'succeeded'
+    }, 'Seedream RPM-limited task did not reach its partial terminal projection')
+    expect(terminal).toMatchObject({ valid_count: 1, partial_outcome_unknown: true })
+    expect(concurrencyAcquires).toBe(1)
+    expect(generationRateAttempts).toBe(2)
+    expect(providerPosts).toBe(1)
+  })
+
+  test('首次生成 RPM 准入失败会持久化回到 queued，保留输入且有限重试', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'bb-image-relay-rate-retry-'))
+    const dbPath = join(root, 'relay.db')
+    const blobDir = join(root, 'blobs')
+    let rateAttempts = 0
+    let providerFetches = 0
+    const admissionBackend: RelayAdmissionBackend = {
+      createIdentityAdmission() {
+        return { async acquire() { return { release() {} } } }
+      },
+      createProviderAdmission(config) {
+        return {
+          async acquire() { return { async assertCurrent() {}, release() {} } },
+          async acquireGenerationRate() {
+            if (config.provider !== 'openai') return
+            rateAttempts += 1
+            throw new CapacityQueueError(429, '生成 RPM 暂时无可用令牌')
+          },
+          snapshot() {
+            return {
+              active: 0, queued: 0, activeOwners: 0, queuedOwners: 0,
+              maxActive: 1, maxActivePerOwner: 1, maxQueued: 4, maxQueuedPerOwner: 2,
+              oldestQueueMs: 0, closed: false,
+              rate: { available: 0, queued: 0, rpm: config.requests_per_minute, queueMax: config.rate_queue_max },
+            }
+          },
+        }
+      },
+    }
+    try {
+      const relay = createRelayFetch({
+        env: { ...environment(), RELAY_DB: dbPath, RELAY_BLOB_DIR: blobDir, RELAY_RETRY_AFTER_SECONDS: '3600' },
+        admissionBackend,
+        identityFetchImpl: identityFetch,
+        fetchImpl: async () => {
+          providerFetches += 1
+          return Response.json({ data: [{ b64_json: 'aGVsbG8=' }] })
+        },
+      })
+      const submitted = await relay(new Request('https://relay.example.test/v1/images/tasks', {
+        method: 'POST', headers: requestHeaders('desktop-a', 'operation-first-rate-admission-retry'),
+        body: JSON.stringify({ mode: 'generate', model: 'gpt-image-2', prompt: 'retain before paid fetch', n: 1 }),
+      }))
+      const task = await submitted.json() as { task_id: string }
+      await waitFor(async () => {
+        if (rateAttempts !== 1) return false
+        const response = await relay(new Request(`https://relay.example.test/v1/images/tasks/${task.task_id}`, {
+          headers: { Authorization: 'Bearer desktop-a' },
+        }))
+        return (await response.json() as { status?: string }).status === 'queued'
+      }, 'first RPM rejection did not return the durable task to queued')
+      expect(providerFetches).toBe(0)
+      expect(existsSync(join(blobDir, `${task.task_id}.in.json`))).toBeTrue()
+
+      const database = new Database(dbPath)
+      expect(database.query('SELECT status,admission_retry_count FROM tasks WHERE id=?').get(task.task_id))
+        .toEqual({ status: 'queued', admission_retry_count: 1 })
+      // Put the durable row at the retry ceiling, then simulate a process
+      // restart. Recovery immediately makes one final attempt, proving that the
+      // persisted counter (rather than an in-memory loop) bounds retries.
+      database.query('UPDATE tasks SET admission_retry_count=? WHERE id=?')
+        .run(MAX_PRE_PROVIDER_ADMISSION_RETRIES, task.task_id)
+      database.close()
+
+      const recoveredRelay = createRelayFetch({
+        env: { ...environment(), RELAY_DB: dbPath, RELAY_BLOB_DIR: blobDir, RELAY_RETRY_AFTER_SECONDS: '3600' },
+        admissionBackend,
+        identityFetchImpl: identityFetch,
+        fetchImpl: async () => {
+          providerFetches += 1
+          return Response.json({ data: [{ b64_json: 'aGVsbG8=' }] })
+        },
+      })
+      let terminal: { status?: string } = {}
+      await waitFor(async () => {
+        const response = await recoveredRelay(new Request(`https://relay.example.test/v1/images/tasks/${task.task_id}`, {
+          headers: { Authorization: 'Bearer desktop-a' },
+        }))
+        terminal = await response.json() as { status?: string }
+        return terminal.status === 'failed'
+      }, 'persisted RPM retry ceiling did not stop the task')
+      expect(providerFetches).toBe(0)
+      expect(rateAttempts).toBe(2)
+      expect(existsSync(join(blobDir, `${task.task_id}.in.json`))).toBeFalse()
+      const exhausted = new Database(dbPath)
+      expect(exhausted.query('SELECT status,admission_retry_count FROM tasks WHERE id=?').get(task.task_id))
+        .toEqual({ status: 'failed', admission_retry_count: MAX_PRE_PROVIDER_ADMISSION_RETRIES + 1 })
+      expect(exhausted.query('SELECT state FROM image_quota_reservations WHERE task_id=?').get(task.task_id))
+        .toEqual({ state: 'released' })
+      exhausted.close()
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  test('OpenAI 生成与编辑都在完整 wire body 后执行最后 fence，然后立即 fetch', async () => {
+    const events: string[] = []
+    let operation = ''
+    const admissionBackend: RelayAdmissionBackend = {
+      createIdentityAdmission() {
+        return { async acquire() { return { release() {} } } }
+      },
+      createProviderAdmission(config) {
+        return {
+          async acquire() {
+            return {
+              async assertCurrent() { if (config.provider === 'openai') events.push(`fence:${operation}`) },
+              release() {},
+            }
+          },
+          async acquireGenerationRate() { if (config.provider === 'openai') events.push(`rate:${operation}`) },
+          snapshot() {
+            return {
+              active: 0, queued: 0, activeOwners: 0, queuedOwners: 0,
+              maxActive: 1, maxActivePerOwner: 1, maxQueued: 4, maxQueuedPerOwner: 2,
+              oldestQueueMs: 0, closed: false,
+              rate: { available: 120, queued: 0, rpm: config.requests_per_minute, queueMax: config.rate_queue_max },
+            }
+          },
+        }
+      },
+    }
+    const relay = createRelayFetch({
+      env: environment(), admissionBackend, identityFetchImpl: identityFetch,
+      fetchImpl: async (input, init) => {
+        const path = new URL(String(input)).pathname
+        if (path.endsWith('/images/edits')) expect(init?.body).toBeInstanceOf(FormData)
+        else expect(typeof init?.body).toBe('string')
+        events.push(`fetch:${operation}`)
+        return Response.json({ data: [{ b64_json: 'aGVsbG8=' }] })
+      },
+    })
+    const submitAndWait = async (body: Record<string, unknown>, key: string) => {
+      operation = key
+      const submitted = await relay(new Request('https://relay.example.test/v1/images/tasks', {
+        method: 'POST', headers: requestHeaders('desktop-a', key), body: JSON.stringify(body),
+      }))
+      const task = await submitted.json() as { task_id: string }
+      await waitFor(async () => {
+        const response = await relay(new Request(`https://relay.example.test/v1/images/tasks/${task.task_id}`, {
+          headers: { Authorization: 'Bearer desktop-a' },
+        }))
+        return (await response.json() as { status?: string }).status === 'succeeded'
+      }, `${key} did not finish`)
+    }
+    await submitAndWait({ mode: 'generate', model: 'gpt-image-2', prompt: 'wire generate', n: 1 }, 'generate')
+    await submitAndWait({
+      mode: 'edit', model: 'gpt-image-2', prompt: 'wire edit', n: 1,
+      images: ['data:image/png;base64,aGVsbG8='],
+    }, 'edit')
+    expect(events).toEqual([
+      'fence:generate', 'fence:generate', 'rate:generate', 'fence:generate', 'fence:generate', 'fetch:generate',
+      'fence:edit', 'fence:edit', 'rate:edit', 'fence:edit', 'fence:edit', 'fetch:edit',
+    ])
   })
 
   test('uses Gateway-introspected owners for fair admission and never projects secrets', async () => {
@@ -159,6 +460,10 @@ describe('Image Relay resource governance', () => {
     expect(healthText).toContain('relay-image-small-scale-v1')
     expect(healthText).toContain('gateway-introspection')
     expect(healthText).not.toContain('openai-secret-that-must-not-leak')
+    expect(healthText).not.toContain('openai-primary-account')
+    expect(healthText).not.toContain('openai-binding-test-v1')
+    expect(healthText).not.toContain('seedream-primary-account')
+    expect(healthText).not.toContain('seedream-binding-test-v1')
     expect(healthText).not.toContain(IMAGE_SERVICE_TOKEN)
     expect(healthText).not.toContain(RESULT_SIGNING_KEY)
     expect((await relay(new Request('https://relay.example.test/images/tasks'))).status).toBe(404)

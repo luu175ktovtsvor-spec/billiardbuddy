@@ -204,6 +204,9 @@ export type ProviderUsageReceipt = {
   principal_id: string
   installation_id: string
   capability: MeteredProviderCapability
+  /** Physical provider-account binding used for this one upstream attempt. It is
+   * an audit and idempotency fence, never a product entitlement dimension. */
+  account_key: string
   policy_revision: string
   period: string
   state: 'reserved' | 'settled' | 'released' | 'outcome_unknown'

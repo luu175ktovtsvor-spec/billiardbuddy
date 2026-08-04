@@ -262,6 +262,22 @@ test('15.4 Gateway locks Qwen model and rejects unbounded/unknown visual output 
   })).rejects.toMatchObject({ publicMessage: 'Qwen 图片理解响应超过资源上限' })
 })
 
+test('Qwen adapter checks the capacity fence immediately before the paid fetch', async () => {
+  const image = await fixtureDataUrl()
+  let fetches = 0
+  let fenceChecks = 0
+  await expect(requestQwenImageReasoning(JSON.stringify({
+    schema_version: 1, application_role: 'image_understanding', idempotency_key: 'bb-image-qwen-fence-before-fetch-0001',
+    input: { user_request: '仅分析可见事实', confirmed_facts: [], must_preserve: [], references: [{ content_hash: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', role: 'subject', influence_strength: 'high', preservation: 'must_preserve', priority: 0, data_url: image }] },
+  }), {
+    baseUrl: 'https://qwen.example.test/v1', providerAuthorization: 'Bearer key', modelId: 'qwen3-vl-flash', timeoutMs: 1_000,
+    assertCurrent: () => { fenceChecks += 1; throw new Error('lease expired before fetch') },
+    fetchImpl: async () => { fetches += 1; return Response.json({}) },
+  })).rejects.toMatchObject({ status: 503 })
+  expect(fenceChecks).toBe(1)
+  expect(fetches).toBe(0)
+})
+
 test('15.4 deployment validation requires a server-side Qwen credential without exposing it', () => {
   const environment = {
     ...gatewayProductionPolicyFixture(),

@@ -77,6 +77,7 @@ import {
   type EvidenceWindow,
   type TimedTranscript,
   type VideoDerivative,
+  type VideoFactEvidence,
   type VideoFactKind,
   type VideoFactSource,
 } from '../video/domain/mediaFacts/model.js'
@@ -135,12 +136,101 @@ type ActiveVideoExecution = {
 type ExtractedVideoAnalysisInputs = {
   frames: VideoAnalysisFrame[]
   transcripts: VideoEvidence[]
+  relay_acknowledgements: PendingRelayAcknowledgement[]
   gaps: string[]
   source_facts: Map<string, VideoFactSource>
   evidence_windows: Map<string, EvidenceWindow>
 }
 
-function id(prefix: 'vid' | 'src' | 'clip' | 'task' | 'timeline' | 'evidence' | 'alternative' | 'consent' | 'budget'): string {
+type PendingRelayAcknowledgement = VideoStudioProject['pending_relay_acknowledgements'][number]
+
+/** A paid planning result is first staged in the durable local Operation.
+ * It is intentionally separate from the public Project projection: a restart
+ * can finish the projection without re-downloading or re-submitting it. */
+type StagedRemotePlanningResult = {
+  base_revision: number
+  base_timeline_version_id?: string
+  evidence_revision?: string
+  user_goal: string
+  analysis_gaps: string[]
+  raw_plan: unknown
+  acknowledgement: PendingRelayAcknowledgement
+  timeline_draft_id: string
+}
+
+/** Kept on the parent local Video Operation, rather than in a process-local
+ * Promise. Once remote_submission_started_at is present, recovery may only
+ * read the recorded Relay operation; it must never upload or submit again. */
+type AsrPollCheckpoint = {
+  source_id: string
+  local_operation_id: string
+  state: 'uploading' | 'submitting' | 'submitted' | 'running' | 'cancel_pending' | 'result_pending' | 'succeeded' | 'failed' | 'cancelled' | 'outcome_unknown' | 'expired'
+  object_ref?: string
+  relay_operation_id?: string
+  provider_task_id?: string
+  remote_submission_started_at?: string
+  next_poll_at?: string
+  updated_at: string
+}
+
+type RemoteTranscriptResult = {
+  evidence: VideoEvidence[]
+  acknowledgements: PendingRelayAcknowledgement[]
+}
+
+type RemoteVisualEvidenceResult = {
+  evidence: Array<{
+    kind: 'visual'
+    source_id: string
+    in_ms: number
+    out_ms: number
+    text: string
+    confidence: number
+    warnings: string[]
+    provider_receipt_id?: string
+    relay_operation_id?: string
+    relay_result_hashes?: string[]
+    id?: string
+  }>
+  acknowledgements: PendingRelayAcknowledgement[]
+}
+
+type RemoteCapability = 'visual_evidence' | 'media_reasoning' | 'speech_transcription' | 'semantic_embedding'
+type RemoteUsage = {
+  requests: number
+  total_tokens: number
+  input_bytes: number
+  visual_frames: number
+  proxy_seconds: number
+  asr_seconds: number
+  estimated_amount_micros: number
+}
+type RelayOperationRequest = Parameters<VideoMediaRelayClient['createOperation']>[0]
+type RelayOperationProjection = Awaited<ReturnType<VideoMediaRelayClient['createOperation']>>
+
+/** The local task owns this submission journal before the Relay POST. It is
+ * intentionally compact: recovery reconstructs the request from immutable
+ * project facts, then verifies this full-request fingerprint and allocation
+ * before any network call can leave the Sidecar. */
+type RemoteOperationRecoveryCheckpoint = {
+  state: 'submitting' | 'outcome_unknown'
+  local_operation_id: string
+  request_fingerprint: `sha256:${string}`
+  request_hash: `sha256:${string}`
+  budget_id: string
+  capability: RemoteCapability
+  usage: RemoteUsage
+  updated_at: string
+}
+
+type StagedSemanticQueryResult = {
+  generation: number
+  query_hash: `sha256:${string}`
+  query_vector: number[]
+  acknowledgement: PendingRelayAcknowledgement
+}
+
+function id(prefix: 'vid' | 'src' | 'clip' | 'task' | 'timeline' | 'draft' | 'evidence' | 'alternative' | 'consent' | 'budget'): string {
   return `${prefix}_${randomUUID().replaceAll('-', '')}`
 }
 
@@ -239,18 +329,764 @@ export class VideoWorkbenchService {
   }
 
   /** Installation bearer stays in Sidecar memory; Renderer never constructs this client. */
-  private videoMediaRelay(): VideoMediaRelayClient | null {
+  private videoMediaRelay(signal?: AbortSignal): VideoMediaRelayClient | null {
     const baseUrl = this.env.BB_VIDEO_MEDIA_RELAY_URL?.trim() ?? ''
     const accessToken = this.env.BB_GATEWAY_TOKEN?.trim() ?? ''
-    return baseUrl && accessToken ? new VideoMediaRelayClient({ baseUrl, accessToken, fetchImpl: this.fetchImpl }) : null
+    return baseUrl && accessToken ? new VideoMediaRelayClient({ baseUrl, accessToken, fetchImpl: this.fetchImpl, signal, now: this.now }) : null
+  }
+
+  private appendPendingRelayAcknowledgements(
+    project: VideoStudioProject,
+    acknowledgements: PendingRelayAcknowledgement[],
+  ): PendingRelayAcknowledgement[] {
+    const merged = [...project.pending_relay_acknowledgements]
+    for (const acknowledgement of acknowledgements) {
+      if (project.acknowledged_relay_operations.includes(acknowledgement.relay_operation_id) || project.retired_relay_operations.includes(acknowledgement.relay_operation_id)) continue
+      const existing = merged.find(item => item.relay_operation_id === acknowledgement.relay_operation_id)
+      if (existing) {
+        if (existing.receipt_id !== acknowledgement.receipt_id || JSON.stringify(existing.result_hashes) !== JSON.stringify(acknowledgement.result_hashes)) {
+          throw new VideoWorkbenchServiceError('远程结果 ACK 回执不一致', 409, 'VIDEO_REMOTE_OPERATION_UNAVAILABLE')
+        }
+        continue
+      }
+      merged.push(acknowledgement)
+    }
+    return merged
+  }
+
+  /** Result facts and project projections are committed before this method is
+   * invoked. An ACK failure deliberately leaves the durable entry untouched so
+   * restart recovery performs only the idempotent ACK, never another model
+   * request or result download. */
+  private async flushPendingRelayAcknowledgements(projectId: string): Promise<void> {
+    const relay = this.videoMediaRelay()
+    if (!relay) return
+    const project = await this.requireVideoProject(projectId)
+    for (const acknowledgement of project.pending_relay_acknowledgements) {
+      try {
+        await relay.acknowledge(acknowledgement.relay_operation_id, {
+          result_hashes: acknowledgement.result_hashes as Array<`sha256:${string}`>,
+          receipt_id: acknowledgement.receipt_id,
+        })
+      } catch (error) {
+        const retired = error instanceof VideoMediaRelayClientError && [404, 410].includes(error.status)
+        if (!retired || !await this.hasDurableRelayResult(projectId, acknowledgement)) {
+        // Preserve the outbox entry; result cleanup is retried at next Sidecar
+        // start or later successful project work.
+        continue
+        }
+        // A Relay 404/410 is a terminal statement about its temporary object,
+        // not a reason to retry forever. This is allowed only after the same
+        // receipt/hashes have been verified in a local Fact or staged Plan.
+        await this.mutateProject(projectId, async () => {
+          const latest = await this.requireVideoProject(projectId)
+          if (!latest.pending_relay_acknowledgements.some(item => item.relay_operation_id === acknowledgement.relay_operation_id)) return
+          await this.repository.saveProject(videoStudioProjectSchema.parse({
+            ...latest,
+            pending_relay_acknowledgements: latest.pending_relay_acknowledgements.filter(item => item.relay_operation_id !== acknowledgement.relay_operation_id),
+            retired_relay_operations: [...new Set([...latest.retired_relay_operations, acknowledgement.relay_operation_id])],
+          }))
+        })
+        continue
+      }
+      await this.mutateProject(projectId, async () => {
+        const latest = await this.requireVideoProject(projectId)
+        if (!latest.pending_relay_acknowledgements.some(item => item.relay_operation_id === acknowledgement.relay_operation_id)) return
+        await this.repository.saveProject(videoStudioProjectSchema.parse({
+          ...latest,
+          pending_relay_acknowledgements: latest.pending_relay_acknowledgements.filter(item => item.relay_operation_id !== acknowledgement.relay_operation_id),
+          acknowledged_relay_operations: [...new Set([...latest.acknowledged_relay_operations, acknowledgement.relay_operation_id])],
+        }))
+      })
+    }
+    // Document embeddings are not represented by a Fact payload. Their
+    // separate SQLite outbox is committed in the same transaction as the
+    // vectors, so a 5xx/crash here can retry only this ACK on startup or later
+    // search work without re-running the embedding model.
+    for (const acknowledgement of await this.repository.listPendingFactEmbeddingRelayAcknowledgements(projectId)) {
+      try {
+        await relay.acknowledge(acknowledgement.relay_operation_id, {
+          result_hashes: acknowledgement.result_hashes,
+          receipt_id: acknowledgement.receipt_id,
+        })
+      } catch (error) {
+        const retired = error instanceof VideoMediaRelayClientError && [404, 410].includes(error.status)
+        if (!retired || !await this.repository.hasFactEmbeddingRelayAcknowledgement(projectId, acknowledgement)) continue
+        await this.repository.resolveFactEmbeddingRelayAcknowledgement(projectId, acknowledgement.relay_operation_id, 'retired')
+        continue
+      }
+      await this.repository.resolveFactEmbeddingRelayAcknowledgement(projectId, acknowledgement.relay_operation_id, 'acknowledged')
+    }
+  }
+
+  /** Only a local immutable Fact or a staged Plan payload may retire an ACK
+   * after the Relay reports its temporary object gone. A forged/stale pending
+   * entry therefore remains retryable instead of suppressing cleanup. */
+  private async hasDurableRelayResult(projectId: string, acknowledgement: PendingRelayAcknowledgement): Promise<boolean> {
+    const same = (receiptId: string | undefined, relayId: string | undefined, hashes: string[] | undefined): boolean => (
+      receiptId === acknowledgement.receipt_id
+      && relayId === acknowledgement.relay_operation_id
+      && JSON.stringify(hashes) === JSON.stringify(acknowledgement.result_hashes)
+    )
+    const transcripts = await this.repository.listFacts('transcript', projectId)
+    if (transcripts.some(fact => 'segments' in fact && same(fact.model_receipt_id, fact.relay_operation_id, fact.relay_result_hashes))) return true
+    const evidence = await this.repository.listFacts('evidence', projectId)
+    if (evidence.some(fact => 'payload' in fact && same(fact.provider_receipt_id, fact.relay_operation_id, fact.relay_result_hashes))) return true
+    const operations = await this.repository.listOperations(projectId)
+    if (operations.some(operation => {
+      const staged = this.stagedRemotePlanningResult(operation)
+      const semantic = this.stagedSemanticQueryResult(operation)
+      return Boolean(
+        (staged && same(staged.acknowledgement.receipt_id, staged.acknowledgement.relay_operation_id, staged.acknowledgement.result_hashes))
+        || (semantic && same(semantic.acknowledgement.receipt_id, semantic.acknowledgement.relay_operation_id, semantic.acknowledgement.result_hashes)),
+      )
+    })) return true
+    return await this.repository.hasFactEmbeddingRelayAcknowledgement(projectId, {
+      relay_operation_id: acknowledgement.relay_operation_id,
+      receipt_id: acknowledgement.receipt_id,
+      result_hashes: acknowledgement.result_hashes as `sha256:${string}`[],
+    })
+  }
+
+  /** The Fact payload is the durable local copy of a remote result. If a
+   * crash happens after Fact publication but before the Project ACK outbox
+   * write, rebuild only that outbox from the immutable Fact metadata. No
+   * provider call, result download, upload or task re-submission is involved.
+   * This is the recovery half of the Fact -> Project durable commit protocol. */
+  private async rebuildRelayAcknowledgementsFromFacts(projectId: string): Promise<void> {
+    const project = await this.requireVideoProject(projectId)
+    const acknowledgements: PendingRelayAcknowledgement[] = []
+    const transcripts = await this.repository.listFacts('transcript', projectId)
+    for (const fact of transcripts) {
+      if (!('segments' in fact) || !fact.relay_operation_id || !fact.relay_result_hashes) continue
+      acknowledgements.push(this.acknowledgementFor(fact.id, fact.relay_operation_id, fact.model_receipt_id, fact.relay_result_hashes))
+    }
+    const evidence = await this.repository.listFacts('evidence', projectId)
+    for (const fact of evidence) {
+      if (!('payload' in fact) || !fact.relay_operation_id || !fact.relay_result_hashes || !fact.provider_receipt_id) continue
+      acknowledgements.push(this.acknowledgementFor(fact.id, fact.relay_operation_id, fact.provider_receipt_id, fact.relay_result_hashes))
+    }
+    if (!acknowledgements.length) return
+    await this.mutateProject(projectId, async () => {
+      const latest = await this.requireVideoProject(projectId)
+      const pending = this.appendPendingRelayAcknowledgements(latest, acknowledgements)
+      if (pending.length === latest.pending_relay_acknowledgements.length) return
+      await this.repository.saveProject(videoStudioProjectSchema.parse({
+        ...latest,
+        pending_relay_acknowledgements: pending,
+        revision: latest.revision + 1,
+      }))
+    })
+  }
+
+  private acknowledgementFor(
+    operationId: string,
+    relayOperationId: string,
+    receiptId: string,
+    resultHashes: string[],
+  ): PendingRelayAcknowledgement {
+    return { operation_id: operationId, relay_operation_id: relayOperationId, receipt_id: receiptId, result_hashes: resultHashes, created_at: this.iso() }
+  }
+
+  private stagedRemotePlanningResult(operation: VideoOperation): StagedRemotePlanningResult | null {
+    const result = operation.result
+    if (!result || typeof result !== 'object') return null
+    const value = result as Record<string, unknown>
+    const acknowledgement = value.relay_acknowledgement
+    if (
+      !Number.isSafeInteger(value.base_revision)
+      || typeof value.user_goal !== 'string'
+      || !value.user_goal.trim()
+      || !Array.isArray(value.analysis_gaps)
+      || !value.analysis_gaps.every(item => typeof item === 'string')
+      || !Object.hasOwn(value, 'raw_plan')
+      || typeof value.timeline_draft_id !== 'string'
+      || !acknowledgement
+      || typeof acknowledgement !== 'object'
+    ) return null
+    const ack = acknowledgement as Record<string, unknown>
+    if (
+      typeof ack.operation_id !== 'string'
+      || typeof ack.relay_operation_id !== 'string'
+      || typeof ack.receipt_id !== 'string'
+      || !Array.isArray(ack.result_hashes)
+      || !ack.result_hashes.every(item => typeof item === 'string' && /^sha256:[a-f0-9]{64}$/.test(item))
+      || typeof ack.created_at !== 'string'
+    ) return null
+    return {
+      base_revision: value.base_revision as number,
+      ...(typeof value.base_timeline_version_id === 'string' ? { base_timeline_version_id: value.base_timeline_version_id } : {}),
+      ...(typeof value.evidence_revision === 'string' ? { evidence_revision: value.evidence_revision } : {}),
+      user_goal: value.user_goal,
+      analysis_gaps: value.analysis_gaps,
+      raw_plan: value.raw_plan,
+      acknowledgement: ack as PendingRelayAcknowledgement,
+      timeline_draft_id: value.timeline_draft_id,
+    }
+  }
+
+  private stagedSemanticQueryResult(operation: VideoOperation): StagedSemanticQueryResult | null {
+    const result = operation.result
+    if (!result || typeof result !== 'object') return null
+    const acknowledgement = result.relay_acknowledgement
+    if (
+      !Number.isSafeInteger(result.search_generation)
+      || typeof result.query_hash !== 'string'
+      || !/^sha256:[a-f0-9]{64}$/.test(result.query_hash)
+      || !Array.isArray(result.query_vector)
+      || result.query_vector.length !== 768
+      || !result.query_vector.every(value => typeof value === 'number' && Number.isFinite(value))
+      || !acknowledgement
+      || typeof acknowledgement !== 'object'
+    ) return null
+    const ack = acknowledgement as Record<string, unknown>
+    if (
+      typeof ack.operation_id !== 'string'
+      || typeof ack.relay_operation_id !== 'string'
+      || typeof ack.receipt_id !== 'string'
+      || !Array.isArray(ack.result_hashes)
+      || !ack.result_hashes.every(item => typeof item === 'string' && /^sha256:[a-f0-9]{64}$/.test(item))
+      || typeof ack.created_at !== 'string'
+    ) return null
+    return {
+      generation: result.search_generation as number,
+      query_hash: result.query_hash as `sha256:${string}`,
+      query_vector: result.query_vector as number[],
+      acknowledgement: ack as PendingRelayAcknowledgement,
+    }
+  }
+
+  /** The vector is durable before Relay ACK. Replacing remote_recovery and
+   * staging the vector happen in one Operation save, so a crash can either
+   * replay the exact paid request or reuse the local vector, never neither. */
+  private async stageSemanticQueryResult(
+    operationId: string,
+    generation: number,
+    queryHash: `sha256:${string}`,
+    queryVector: number[],
+    acknowledgement: PendingRelayAcknowledgement,
+  ): Promise<VideoOperation> {
+    const operation = await this.repository.getOperation(operationId)
+    const existing = this.stagedSemanticQueryResult(operation)
+    if (existing) {
+      if (existing.generation !== generation || existing.query_hash !== queryHash) {
+        throw new VideoWorkbenchServiceError('语义查询恢复记录与当前索引不一致', 409, 'VIDEO_REMOTE_OPERATION_UNAVAILABLE')
+      }
+      return operation
+    }
+    const { remote_recovery: _remoteRecovery, ...result } = operation.result ?? {}
+    return await this.repository.saveOperation(this.operation({
+      ...operation,
+      status: 'committing',
+      progress: 90,
+      stage: '查询向量已持久化，正在确认远程结果',
+      outcome_unknown: false,
+      result: {
+        ...result,
+        search_generation: generation,
+        query_hash: queryHash,
+        query_vector: queryVector,
+        relay_acknowledgement: acknowledgement,
+      },
+    }))
+  }
+
+  private async finalizeStagedSemanticQueryResult(operation: VideoOperation): Promise<number[]> {
+    const staged = this.stagedSemanticQueryResult(operation)
+    if (!staged) throw new VideoWorkbenchServiceError('语义查询恢复记录无效', 502, 'VIDEO_ANALYSIS_INVALID')
+    await this.mutateProject(operation.project_id, async () => {
+      const latest = await this.requireVideoProject(operation.project_id)
+      const current = await this.repository.getOperation(operation.id)
+      const currentStaged = this.stagedSemanticQueryResult(current)
+      if (!currentStaged || currentStaged.query_hash !== staged.query_hash || currentStaged.generation !== staged.generation) {
+        throw new VideoWorkbenchServiceError('语义查询恢复记录已变化', 409, 'VIDEO_REMOTE_OPERATION_UNAVAILABLE')
+      }
+      const pending = this.appendPendingRelayAcknowledgements(latest, [currentStaged.acknowledgement])
+      if (pending.length !== latest.pending_relay_acknowledgements.length) {
+        await this.repository.saveProject(videoStudioProjectSchema.parse({
+          ...latest,
+          pending_relay_acknowledgements: pending,
+        }))
+      }
+      if (current.status !== 'succeeded') {
+        await this.repository.saveOperation(this.operation({
+          ...current,
+          status: 'succeeded',
+          progress: 100,
+          stage: '查询向量已就绪',
+          outcome_unknown: false,
+          error: undefined,
+          error_code: undefined,
+        }))
+      }
+    })
+    await this.flushPendingRelayAcknowledgements(operation.project_id)
+    return staged.query_vector
+  }
+
+  private async stageRemotePlanningResult(
+    task: VideoOperation,
+    input: { userGoal: string; analysisGaps: string[] },
+    rawPlan: unknown,
+    acknowledgement: PendingRelayAcknowledgement,
+  ): Promise<VideoOperation> {
+    const draftId = id('draft')
+    return await this.mutateProject(task.project_id, async () => {
+      const current = await this.repository.getOperation(task.id)
+      const existing = this.stagedRemotePlanningResult(current)
+      if (existing) return current
+      const { remote_recovery: _remoteRecovery, ...result } = current.result ?? {}
+      return await this.repository.saveOperation(this.operation({
+        ...current,
+        status: 'committing',
+        progress: 85,
+        stage: '已持久化远程规划，正在生成草稿',
+        outcome_unknown: false,
+        result: {
+          ...result,
+          user_goal: input.userGoal,
+          analysis_gaps: input.analysisGaps,
+          raw_plan: rawPlan,
+          relay_acknowledgement: acknowledgement,
+          timeline_draft_id: draftId,
+        },
+      }))
+    })
+  }
+
+  /** Finish a locally staged Relay planning result. This never contacts the
+   * Relay: after a crash, it validates the persisted result against the
+   * current immutable facts, writes the Project projection plus ACK outbox,
+   * then lets the normal outbox flusher perform cleanup. */
+  private async finalizeStagedRemotePlanningResult(operation: VideoOperation): Promise<void> {
+    const staged = this.stagedRemotePlanningResult(operation)
+    if (!staged) throw new VideoWorkbenchServiceError('远程规划恢复记录无效', 502, 'VIDEO_ANALYSIS_INVALID')
+    await this.mutateProject(operation.project_id, async () => {
+      const latest = await this.requireVideoProject(operation.project_id)
+      const currentScenes = latest.timeline_versions.find(version => version.id === latest.current_timeline_version_id)?.scenes ?? []
+      const hasDraft = latest.timeline_drafts.some(draft => draft.id === staged.timeline_draft_id)
+      const matchesBasis = (
+        latest.revision === staged.base_revision
+        && latest.evidence_revision === staged.evidence_revision
+        && latest.current_timeline_version_id === staged.base_timeline_version_id
+      )
+      if (hasDraft) {
+        const project = latest.pending_relay_acknowledgements.some(item => item.relay_operation_id === staged.acknowledgement.relay_operation_id)
+          ? latest
+          : await this.repository.saveProject(videoStudioProjectSchema.parse({
+            ...latest,
+            pending_relay_acknowledgements: this.appendPendingRelayAcknowledgements(latest, [staged.acknowledgement]),
+            revision: latest.revision + 1,
+          }))
+        await this.repository.saveOperation(this.operation({
+          ...operation,
+          status: 'succeeded',
+          progress: 100,
+          stage: '剪辑草稿已生成，等待用户接受',
+          result: { ...operation.result, timeline_draft_id: staged.timeline_draft_id, project_revision: project.revision, alternative_count: 0 },
+          error: undefined,
+          error_code: undefined,
+        }))
+        return
+      }
+      if (!matchesBasis) {
+        const project = await this.repository.saveProject(videoStudioProjectSchema.parse({
+          ...latest,
+          pending_relay_acknowledgements: this.appendPendingRelayAcknowledgements(latest, [staged.acknowledgement]),
+          revision: latest.revision + 1,
+        }))
+        const failure = mediaSafeError('MEDIA_STATE_CONFLICT')
+        await this.repository.saveOperation(this.operation({
+          ...operation,
+          status: 'failed',
+          progress: 0,
+          stage: '方案已过期',
+          result: { ...operation.result, project_revision: project.revision },
+          error: failure.message,
+          error_code: failure.code,
+        }))
+        return
+      }
+      const input = {
+        sources: latest.sources,
+        evidence: latest.evidence,
+        currentScenes,
+        userGoal: staged.user_goal,
+        analysisGaps: staged.analysis_gaps,
+      }
+      const plan = planVideoTimelineFromRelay(input, staged.raw_plan)
+      const proposed = this.materializeVideoScenes(latest, plan.scenes, latest.evidence)
+      const scenes = this.preserveLockedVideoScenes(currentScenes, proposed)
+      const editorialProject = await this.ensureEditorialState(latest)
+      const timelineDraft = this.editorial.createDraft(
+        editorialProject,
+        scenes,
+        await this.editorialTimings(editorialProject),
+        [],
+        await this.editorialSourceBounds(editorialProject),
+        staged.timeline_draft_id,
+      )
+      const completed = await this.repository.saveProject(videoStudioProjectSchema.parse({
+        ...editorialProject,
+        brief: compileVideoBrief(staged.user_goal, { ...plan.brief, gaps: [...new Set([...plan.brief.gaps, ...staged.analysis_gaps])].slice(0, 20) }),
+        timeline_drafts: [...editorialProject.timeline_drafts, timelineDraft],
+        alternatives: [],
+        pending_relay_acknowledgements: this.appendPendingRelayAcknowledgements(editorialProject, [staged.acknowledgement]),
+        state: 'ready',
+        revision: editorialProject.revision + 1,
+      }))
+      await this.repository.saveOperation(this.operation({
+        ...operation,
+        status: 'succeeded',
+        progress: 100,
+        stage: '剪辑草稿已生成，等待用户接受',
+        result: { ...operation.result, timeline_draft_id: timelineDraft.id, project_revision: completed.revision, alternative_count: 0 },
+        error: undefined,
+        error_code: undefined,
+      }))
+    })
+    await this.flushPendingRelayAcknowledgements(operation.project_id)
+  }
+
+  /** Resume only the already-fenced planning command. The immutable project
+   * basis reconstructs its body; fenceRemoteOperation compares that body with
+   * the journal written before the first POST, so recovery cannot drift to a
+   * different goal, facts revision, budget or allocation. */
+  private async recoverRemotePlanningOperation(operation: VideoOperation): Promise<void> {
+    const result = operation.result ?? {}
+    const userGoal = typeof result.user_goal === 'string' ? result.user_goal : ''
+    const analysisGaps = Array.isArray(result.analysis_gaps) && result.analysis_gaps.every(item => typeof item === 'string')
+      ? result.analysis_gaps as string[]
+      : null
+    const baseRevision = Number.isSafeInteger(result.base_revision) ? result.base_revision as number : null
+    const baseTimelineVersionId = typeof result.base_timeline_version_id === 'string' ? result.base_timeline_version_id : undefined
+    const evidenceRevisionValue = typeof result.evidence_revision === 'string' ? result.evidence_revision : undefined
+    if (!userGoal.trim() || !analysisGaps || baseRevision === null) {
+      throw new VideoWorkbenchServiceError('远程规划恢复记录缺少原始输入', 502, 'VIDEO_ANALYSIS_INVALID')
+    }
+    const project = await this.requireVideoProject(operation.project_id)
+    if (
+      project.revision !== baseRevision
+      || project.current_timeline_version_id !== baseTimelineVersionId
+      || project.evidence_revision !== evidenceRevisionValue
+    ) {
+      throw new VideoWorkbenchServiceError('远程规划恢复基础已变化', 409, 'VIDEO_ANALYSIS_STALE')
+    }
+    const consent = project.remote_analysis_consents.find(item => item.state === 'active' && item.purposes.includes('planning'))
+    const budget = consent && project.remote_analysis_budgets.find(item => item.estimate_hash === consent.acknowledged_estimate_hash && item.state === 'reserved')
+    const relay = this.videoMediaRelay()
+    if (!consent || !budget || !relay) {
+      throw new VideoWorkbenchServiceError('远程规划恢复所需授权或服务不可用', 503, 'VIDEO_REMOTE_OPERATION_UNAVAILABLE')
+    }
+    const currentScenes = project.timeline_versions.find(version => version.id === project.current_timeline_version_id)?.scenes ?? []
+    const planningInput = { sources: project.sources, evidence: project.evidence, currentScenes, userGoal, analysisGaps }
+    const requestHash = factBasisHash(planningInput)
+    const usage = {
+      requests: 1,
+      total_tokens: Math.ceil(JSON.stringify(planningInput).length / 4),
+      input_bytes: Buffer.byteLength(JSON.stringify(planningInput), 'utf8'),
+      visual_frames: 0,
+      proxy_seconds: 0,
+      asr_seconds: 0,
+      estimated_amount_micros: Math.max(1, Math.ceil(JSON.stringify(planningInput).length / 4) * 10),
+    }
+    const request: RelayOperationRequest = {
+      local_operation_id: operation.id,
+      consent_revision_id: consent.id,
+      consent_scope_hash: factBasisHash({ revision: consent.revision, coverage: consent.coverage, purposes: consent.purposes, data_kinds: consent.data_kinds }),
+      local_budget_reservation_id: budget.id,
+      request_hash: requestHash,
+      capability: 'media_reasoning',
+      application_role: 'planning',
+      input: {
+        object_refs: [],
+        facts_basis_hash: project.evidence_revision ?? requestHash,
+        evidence: project.evidence.map(item => ({ id: item.id, kind: item.kind === 'transcript' ? 'transcript' as const : 'visual_fact' as const, text: item.text, confidence: item.confidence })),
+        language: 'zh',
+        output_schema_version: 1,
+      },
+    }
+    let stagedOperation: VideoOperation | undefined
+    await this.reserveAndRunRemote(project.id, budget.id, 'media_reasoning', usage, relay, request, async (activeRelay, remote) => {
+      if (remote.state !== 'succeeded' || !remote.provider_receipt) throw new VideoMediaRelayClientError(remote.state === 'outcome_unknown' ? 503 : 422, 'relay_operation_not_succeeded')
+      await this.settleRemoteBudget(project.id, budget.id, operation.id, remote.provider_receipt)
+      const downloaded = await activeRelay.downloadResult<{ kind: string; plan: unknown }>(remote)
+      if (downloaded.result.kind !== 'planning') throw new VideoWorkbenchServiceError('远程规划结果类型无效', 502, 'VIDEO_ANALYSIS_INVALID')
+      stagedOperation = await this.stageRemotePlanningResult(
+        operation,
+        { userGoal, analysisGaps },
+        downloaded.result.plan,
+        this.acknowledgementFor(operation.id, remote.id, remote.provider_receipt.id, downloaded.hashes),
+      )
+    }, { parentOperationId: operation.id })
+    const staged = stagedOperation ?? await this.repository.getOperation(operation.id)
+    if (!this.stagedRemotePlanningResult(staged)) throw new VideoWorkbenchServiceError('远程规划恢复未产生结果', 502, 'VIDEO_ANALYSIS_INVALID')
+    await this.finalizeStagedRemotePlanningResult(staged)
+  }
+
+  private remoteRecoveryCheckpoint(operation: VideoOperation): RemoteOperationRecoveryCheckpoint | null {
+    const value = operation.result?.remote_recovery
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+    const checkpoint = value as Record<string, unknown>
+    const usage = checkpoint.usage
+    if (
+      !['submitting', 'outcome_unknown'].includes(String(checkpoint.state))
+      || typeof checkpoint.local_operation_id !== 'string'
+      || typeof checkpoint.request_fingerprint !== 'string'
+      || !/^sha256:[a-f0-9]{64}$/.test(checkpoint.request_fingerprint)
+      || typeof checkpoint.request_hash !== 'string'
+      || !/^sha256:[a-f0-9]{64}$/.test(checkpoint.request_hash)
+      || typeof checkpoint.budget_id !== 'string'
+      || !['visual_evidence', 'media_reasoning', 'speech_transcription', 'semantic_embedding'].includes(String(checkpoint.capability))
+      || !usage
+      || typeof usage !== 'object'
+      || Array.isArray(usage)
+      || typeof checkpoint.updated_at !== 'string'
+    ) return null
+    const allocation = usage as Record<string, unknown>
+    if (
+      !Number.isSafeInteger(allocation.requests)
+      || !Number.isSafeInteger(allocation.total_tokens)
+      || !Number.isSafeInteger(allocation.input_bytes)
+      || !Number.isSafeInteger(allocation.visual_frames)
+      || typeof allocation.proxy_seconds !== 'number'
+      || typeof allocation.asr_seconds !== 'number'
+      || !Number.isSafeInteger(allocation.estimated_amount_micros)
+    ) return null
+    return checkpoint as unknown as RemoteOperationRecoveryCheckpoint
+  }
+
+  private sameRemoteUsage(left: RemoteUsage, right: RemoteUsage): boolean {
+    return left.requests === right.requests
+      && left.total_tokens === right.total_tokens
+      && left.input_bytes === right.input_bytes
+      && left.visual_frames === right.visual_frames
+      && left.proxy_seconds === right.proxy_seconds
+      && left.asr_seconds === right.asr_seconds
+      && left.estimated_amount_micros === right.estimated_amount_micros
+  }
+
+  /** Persist the exact recovery authority before a generic Relay POST. A task
+   * that already owns a different request or allocation fails before network
+   * I/O, rather than silently changing the meaning of an outcome-unknown call. */
+  private async fenceRemoteOperation(
+    projectId: string,
+    parentOperationId: string,
+    budgetId: string,
+    capability: RemoteCapability,
+    usage: RemoteUsage,
+    request: RelayOperationRequest,
+  ): Promise<void> {
+    await this.mutateProject(projectId, async () => {
+      const operation = await this.repository.getOperation(parentOperationId)
+      if (operation.project_id !== projectId || !['video.analyze', 'video.plan', 'video.index'].includes(operation.kind)) {
+        throw new VideoWorkbenchServiceError('远程恢复父任务无效', 409, 'VIDEO_REMOTE_OPERATION_UNAVAILABLE')
+      }
+      const requestFingerprint = factBasisHash(request) as `sha256:${string}`
+      const existing = this.remoteRecoveryCheckpoint(operation)
+      if (existing && (
+        existing.local_operation_id !== request.local_operation_id
+        || existing.request_fingerprint !== requestFingerprint
+        || existing.request_hash !== request.request_hash
+        || existing.budget_id !== budgetId
+        || existing.capability !== capability
+        || !this.sameRemoteUsage(existing.usage, usage)
+      )) {
+        throw new VideoWorkbenchServiceError('远程恢复请求与已持久化栅栏不一致', 409, 'VIDEO_REMOTE_OPERATION_UNAVAILABLE')
+      }
+      const checkpoint: RemoteOperationRecoveryCheckpoint = {
+        state: existing?.state ?? 'submitting',
+        local_operation_id: request.local_operation_id,
+        request_fingerprint: requestFingerprint,
+        request_hash: request.request_hash as `sha256:${string}`,
+        budget_id: budgetId,
+        capability,
+        usage,
+        updated_at: this.iso(),
+      }
+      await this.repository.saveOperation(this.operation({
+        ...operation,
+        status: 'running',
+        remote_submission_started_at: operation.remote_submission_started_at ?? this.iso(),
+        outcome_unknown: checkpoint.state === 'outcome_unknown',
+        result: { ...operation.result, remote_recovery: checkpoint },
+      }))
+    })
+  }
+
+  private async updateRemoteOperationRecovery(parentOperationId: string, state: 'submitting' | 'outcome_unknown' | 'cleared'): Promise<void> {
+    const operation = await this.repository.getOperation(parentOperationId).catch(() => null)
+    if (!operation) return
+    await this.mutateProject(operation.project_id, async () => {
+      const current = await this.repository.getOperation(parentOperationId)
+      const checkpoint = this.remoteRecoveryCheckpoint(current)
+      if (!checkpoint) return
+      const { remote_recovery: _remoteRecovery, ...result } = current.result ?? {}
+      await this.repository.saveOperation(this.operation({
+        ...current,
+        outcome_unknown: state === 'outcome_unknown',
+        result: state === 'cleared'
+          ? result
+          : { ...result, remote_recovery: { ...checkpoint, state, updated_at: this.iso() } },
+      }))
+    })
+  }
+
+  private asrCheckpoint(operation: VideoOperation, sourceId: string): AsrPollCheckpoint | null {
+    const entries = operation.result?.asr_checkpoints
+    if (!Array.isArray(entries)) return null
+    const value = entries.find(item => item && typeof item === 'object' && (item as Record<string, unknown>).source_id === sourceId)
+    if (!value || typeof value !== 'object') return null
+    const checkpoint = value as Record<string, unknown>
+    const states = new Set<AsrPollCheckpoint['state']>(['uploading', 'submitting', 'submitted', 'running', 'cancel_pending', 'result_pending', 'succeeded', 'failed', 'cancelled', 'outcome_unknown', 'expired'])
+    if (
+      typeof checkpoint.local_operation_id !== 'string'
+      || typeof checkpoint.state !== 'string'
+      || !states.has(checkpoint.state as AsrPollCheckpoint['state'])
+      || typeof checkpoint.updated_at !== 'string'
+    ) return null
+    return {
+      source_id: sourceId,
+      local_operation_id: checkpoint.local_operation_id,
+      state: checkpoint.state as AsrPollCheckpoint['state'],
+      ...(typeof checkpoint.object_ref === 'string' ? { object_ref: checkpoint.object_ref } : {}),
+      ...(typeof checkpoint.relay_operation_id === 'string' ? { relay_operation_id: checkpoint.relay_operation_id } : {}),
+      ...(typeof checkpoint.provider_task_id === 'string' ? { provider_task_id: checkpoint.provider_task_id } : {}),
+      ...(typeof checkpoint.remote_submission_started_at === 'string' ? { remote_submission_started_at: checkpoint.remote_submission_started_at } : {}),
+      ...(typeof checkpoint.next_poll_at === 'string' ? { next_poll_at: checkpoint.next_poll_at } : {}),
+      updated_at: checkpoint.updated_at,
+    }
+  }
+
+  private async saveAsrCheckpoint(parentOperationId: string, sourceId: string, patch: Omit<Partial<AsrPollCheckpoint>, 'source_id' | 'updated_at'>): Promise<AsrPollCheckpoint | null> {
+    try {
+      return await this.mutateProject((await this.repository.getOperation(parentOperationId)).project_id, async () => {
+        const operation = await this.repository.getOperation(parentOperationId)
+        const existing = this.asrCheckpoint(operation, sourceId)
+        const checkpoint: AsrPollCheckpoint = {
+          source_id: sourceId,
+          local_operation_id: existing?.local_operation_id ?? `${parentOperationId}_asr_${sourceId}`,
+          state: patch.state ?? existing?.state ?? 'uploading',
+          ...(existing?.object_ref ? { object_ref: existing.object_ref } : {}),
+          ...(existing?.relay_operation_id ? { relay_operation_id: existing.relay_operation_id } : {}),
+          ...(existing?.provider_task_id ? { provider_task_id: existing.provider_task_id } : {}),
+          ...(existing?.remote_submission_started_at ? { remote_submission_started_at: existing.remote_submission_started_at } : {}),
+          ...(existing?.next_poll_at ? { next_poll_at: existing.next_poll_at } : {}),
+          ...patch,
+          updated_at: this.iso(),
+        }
+        const prior = Array.isArray(operation.result?.asr_checkpoints) ? operation.result!.asr_checkpoints : []
+        const checkpoints = [...prior.filter(item => !(item && typeof item === 'object' && (item as Record<string, unknown>).source_id === sourceId)), checkpoint]
+        await this.repository.saveOperation(this.operation({
+          ...operation,
+          result: { ...operation.result, asr_checkpoints: checkpoints },
+        }))
+        return checkpoint
+      })
+    } catch (error) {
+      if (error instanceof VideoWorkbenchRepositoryError) return null
+      throw error
+    }
+  }
+
+  private async waitForAsrPoll(delayMs: number, signal: AbortSignal): Promise<void> {
+    if (signal.aborted) throw new VideoAnalysisError('视频分析已取消', 499, 'VIDEO_ANALYSIS_CANCELLED')
+    await new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(done, delayMs)
+      const cancelled = () => {
+        clearTimeout(timeout)
+        signal.removeEventListener('abort', cancelled)
+        reject(new VideoAnalysisError('视频分析已取消', 499, 'VIDEO_ANALYSIS_CANCELLED'))
+      }
+      function done() {
+        signal.removeEventListener('abort', cancelled)
+        resolve()
+      }
+      signal.addEventListener('abort', cancelled, { once: true })
+    })
+  }
+
+  private async finalizeAsrTerminalBudget(
+    projectId: string,
+    localOperationId: string,
+    projection: RelayOperationProjection,
+    terminal: 'failed' | 'expired' | 'cancelled' | 'late_cancelled_result',
+  ): Promise<void> {
+    const project = await this.requireVideoProject(projectId)
+    const budget = project.remote_analysis_budgets.find(item => (
+      item.settlements.some(entry => entry.operation_id === localOperationId)
+      || item.reservations.some(entry => entry.operation_id === localOperationId)
+    ))
+    if (!budget || budget.settlements.some(entry => entry.operation_id === localOperationId)) return
+    if (projection.provider_receipt) {
+      await this.settleRemoteBudget(projectId, budget.id, localOperationId, projection.provider_receipt)
+      return
+    }
+    if (terminal === 'cancelled') {
+      // Relay can confirm a pre-provider cancellation without a receipt. That
+      // is the only terminal path that proves the reservation was never spent.
+      await this.finalizeRemoteBudgetFailure(
+        projectId,
+        budget.id,
+        localOperationId,
+        new VideoMediaRelayClientError(422, 'provider_cancelled_before_start'),
+        { submissionFenced: true, allowOutcomeUnknownRelease: true },
+      )
+      return
+    }
+    // A failed/expired/late terminal projection without a receipt cannot prove
+    // zero spend. Retain the exact allocation instead of releasing it.
+    await this.finalizeRemoteBudgetFailure(
+      projectId,
+      budget.id,
+      localOperationId,
+      new VideoMediaRelayClientError(503, `provider_${terminal}_receipt_missing`),
+      { submissionFenced: true },
+    )
+  }
+
+  /** Persist cancellation intent before contacting Relay, then use a fresh
+   * client that is deliberately not bound to the already-aborted analysis
+   * signal. Only Relay's cancelled projection is authoritative; every failure
+   * leaves cancel_pending for startup reconciliation. */
+  private async requestAsrCancellation(parentOperationId: string, sourceId: string, relayOperationId: string): Promise<RelayOperationProjection | null> {
+    const pending = await this.saveAsrCheckpoint(parentOperationId, sourceId, {
+      state: 'cancel_pending',
+      relay_operation_id: relayOperationId,
+    })
+    if (!pending) return null
+    const controlRelay = this.videoMediaRelay()
+    if (!controlRelay) return null
+    // One immediate bounded retry absorbs a transient Relay/network failure
+    // without turning cancellation into an unbounded in-process loop. Both
+    // attempts use the same Relay idempotency key; startup remains the durable
+    // retry boundary if neither attempt obtains explicit cancellation proof.
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        const projection = await controlRelay.cancel(relayOperationId)
+        if (projection.state !== 'cancelled') return null
+        const cancelled = await this.saveAsrCheckpoint(parentOperationId, sourceId, {
+          state: 'cancelled',
+          relay_operation_id: relayOperationId,
+          ...(projection.provider_task_id ? { provider_task_id: projection.provider_task_id } : {}),
+        })
+        if (cancelled?.state !== 'cancelled') return null
+        const operation = await this.repository.getOperation(parentOperationId)
+        await this.finalizeAsrTerminalBudget(operation.project_id, pending.local_operation_id, projection, 'cancelled')
+        return projection
+      } catch (error) {
+        const retryable = !(error instanceof VideoMediaRelayClientError) || error.status >= 500
+        if (!retryable || attempt === 1) return null
+        await new Promise<void>(resolve => setTimeout(resolve, 50))
+      }
+    }
+    return null
   }
 
   /** A budget is admitted per local Operation before the Relay is called.
    * Reservations and receipts are two states of the same allocation: adding a
    * receipt must never make a previously admitted operation spend twice. */
-  private async reserveRemoteBudget(projectId: string, budgetId: string, operationId: string, capability: 'visual_evidence' | 'media_reasoning' | 'speech_transcription' | 'semantic_embedding', usage: {
-    requests: number; total_tokens: number; input_bytes: number; visual_frames: number; proxy_seconds: number; asr_seconds: number; estimated_amount_micros: number
-  }): Promise<void> {
+  private async reserveRemoteBudget(projectId: string, budgetId: string, operationId: string, capability: RemoteCapability, usage: RemoteUsage): Promise<void> {
     await this.mutateProject(projectId, async () => {
       const project = await this.requireVideoProject(projectId)
       const budget = project.remote_analysis_budgets.find(item => item.id === budgetId)
@@ -259,7 +1095,45 @@ export class VideoWorkbenchService {
       const existing = budget.reservations.find(item => item.operation_id === operationId)
       if (settled) return
       if (existing) {
-        if (existing.state !== 'reserved' || existing.capability !== capability || JSON.stringify({ ...existing, reserved_at: undefined, finalized_at: undefined }) !== JSON.stringify({ operation_id: operationId, capability, state: 'reserved', ...usage, reserved_at: undefined, finalized_at: undefined })) throw new VideoWorkbenchServiceError('远程预算操作预留不一致', 409, 'VIDEO_REMOTE_OPERATION_UNAVAILABLE')
+        const sameAllocation = existing.capability === capability
+          && existing.requests === usage.requests
+          && existing.total_tokens === usage.total_tokens
+          && existing.input_bytes === usage.input_bytes
+          && existing.visual_frames === usage.visual_frames
+          && existing.proxy_seconds === usage.proxy_seconds
+          && existing.asr_seconds === usage.asr_seconds
+          && existing.estimated_amount_micros === usage.estimated_amount_micros
+        if (!sameAllocation) {
+          throw new VideoWorkbenchServiceError('远程预算操作预留不一致', 409, 'VIDEO_REMOTE_OPERATION_UNAVAILABLE')
+        }
+        // An outcome-unknown reservation is deliberately retained. The same
+        // deterministic local Operation and byte-for-byte allocation may use
+        // Relay's owner-scoped idempotency record to recover; it must not
+        // reserve a second unit of budget. A different allocation failed the
+        // comparison above before any Relay request can leave this process.
+        if (existing.state === 'reserved' || existing.state === 'outcome_unknown') return
+        // A failure proven to have happened before the provider submission
+        // may retry the same deterministic local Operation. Replace its
+        // released allocation rather than accumulating another reservation.
+        const revived = { operation_id: operationId, capability, state: 'reserved' as const, ...usage, reserved_at: this.iso() }
+        const totals = [...budget.settlements, ...budget.reservations.filter(item => item.operation_id !== operationId && item.state !== 'released'), revived].reduce((value, item) => ({
+          requests: value.requests + item.requests,
+          total_tokens: value.total_tokens + item.total_tokens,
+          input_bytes: value.input_bytes + item.input_bytes,
+          visual_frames: value.visual_frames + item.visual_frames,
+          proxy_seconds: value.proxy_seconds + item.proxy_seconds,
+          asr_seconds: value.asr_seconds + item.asr_seconds,
+          estimated_amount_micros: value.estimated_amount_micros + item.estimated_amount_micros,
+        }), { requests: 0, total_tokens: 0, input_bytes: 0, visual_frames: 0, proxy_seconds: 0, asr_seconds: 0, estimated_amount_micros: 0 })
+        if (totals.requests > budget.requests || totals.total_tokens > budget.total_tokens || totals.input_bytes > budget.input_bytes || totals.visual_frames > budget.visual_frames || totals.proxy_seconds > budget.proxy_seconds || totals.asr_seconds > budget.asr_seconds || totals.estimated_amount_micros > budget.estimated_amount_micros) {
+          throw new VideoWorkbenchServiceError('远程预算已耗尽，拒绝启动未预留操作', 429, 'VIDEO_REMOTE_OPERATION_UNAVAILABLE')
+        }
+        await this.repository.saveProject(videoStudioProjectSchema.parse({
+          ...project,
+          remote_analysis_budgets: project.remote_analysis_budgets.map(item => item.id === budgetId
+            ? { ...item, reservations: item.reservations.map(entry => entry.operation_id === operationId ? revived : entry), updated_at: this.iso() }
+            : item),
+        }))
         return
       }
       const next = { operation_id: operationId, capability, state: 'reserved' as const, ...usage, reserved_at: this.iso() }
@@ -284,8 +1158,8 @@ export class VideoWorkbenchService {
 
   private async settleRemoteBudget(projectId: string, budgetId: string, operationId: string, receipt: {
     id: string
-    capability: 'visual_evidence' | 'media_reasoning' | 'speech_transcription' | 'semantic_embedding'
-    usage: { requests: number; total_tokens: number; input_bytes: number; visual_frames: number; proxy_seconds: number; asr_seconds: number; estimated_amount_micros: number }
+    capability: RemoteCapability
+    usage: RemoteUsage
   }): Promise<void> {
     await this.mutateProject(projectId, async () => {
       const project = await this.requireVideoProject(projectId)
@@ -297,7 +1171,11 @@ export class VideoWorkbenchService {
         return
       }
       const reservation = budget.reservations.find(item => item.operation_id === operationId)
-      if (!reservation || reservation.state !== 'reserved' || reservation.capability !== receipt.capability) throw new VideoWorkbenchServiceError('远程操作缺少调用前预算预留', 409, 'VIDEO_REMOTE_OPERATION_UNAVAILABLE')
+      // A transport loss after the Relay accepted a task fences the local
+      // reservation as outcome_unknown. If a later read-only poll returns the
+      // same receipt, that exact reservation is safely settled rather than
+      // forcing a duplicate submission or leaving spend permanently orphaned.
+      if (!reservation || !['reserved', 'outcome_unknown'].includes(reservation.state) || reservation.capability !== receipt.capability) throw new VideoWorkbenchServiceError('远程操作缺少调用前预算预留', 409, 'VIDEO_REMOTE_OPERATION_UNAVAILABLE')
       const next = {
         operation_id: operationId,
         receipt_id: receipt.id,
@@ -334,15 +1212,40 @@ export class VideoWorkbenchService {
 
   /** A provider failure belongs to the one local Operation that was admitted.
    * Do not revoke a whole project estimate merely because one call failed. */
-  private async finalizeRemoteBudgetFailure(projectId: string, budgetId: string, operationId: string, error: unknown): Promise<void> {
-    const outcomeUnknown = !(error instanceof VideoMediaRelayClientError) || error.status >= 500
+  private async finalizeRemoteBudgetFailure(
+    projectId: string,
+    budgetId: string,
+    operationId: string,
+    error: unknown,
+    options: { submissionFenced?: boolean; allowProviderNotStartedRelease?: boolean; allowOutcomeUnknownRelease?: boolean } = {},
+  ): Promise<void> {
+    // The Relay may use a 503 transport status for a saturated/closing local
+    // admission gate while still proving that its durable provider submission
+    // fence was never crossed. That exact machine code is authoritative: it is
+    // safe to release even though a generic 5xx remains outcome-unknown.
+    const providerNotStarted = options.allowProviderNotStartedRelease !== false
+      && error instanceof VideoMediaRelayClientError
+      && error.status === 503
+      && error.code === 'provider_not_started'
+    // After the local submission fence, a caller-side 499 only proves that
+    // the response was abandoned. Relay/Provider acceptance may still have
+    // happened, so this one 4xx must remain outcome-unknown.
+    const fencedCancellation = options.submissionFenced && error instanceof VideoMediaRelayClientError && error.status === 499
+    // A 409 can mean an existing idempotency/local-operation record already
+    // owns this logical submission. Releasing its allocation would ignore a
+    // Provider task that may be running; recovery must resolve that record.
+    const fencedConflict = options.submissionFenced && error instanceof VideoMediaRelayClientError && error.status === 409
+    const outcomeUnknown = !providerNotStarted && (fencedCancellation || fencedConflict || !(error instanceof VideoMediaRelayClientError) || error.status >= 500)
     const safeErrorCode = error instanceof VideoMediaRelayClientError ? error.code : 'provider_outcome_unknown'
     await this.mutateProject(projectId, async () => {
       const project = await this.requireVideoProject(projectId)
       const budget = project.remote_analysis_budgets.find(item => item.id === budgetId)
       if (!budget || budget.state !== 'reserved' || budget.settlements.some(item => item.operation_id === operationId)) return
       const reservation = budget.reservations.find(item => item.operation_id === operationId)
-      if (!reservation || reservation.state !== 'reserved') return
+      if (!reservation || (
+        reservation.state !== 'reserved'
+        && !((providerNotStarted || options.allowOutcomeUnknownRelease) && reservation.state === 'outcome_unknown')
+      )) return
       await this.repository.saveProject(videoStudioProjectSchema.parse({
         ...project,
         remote_analysis_budgets: project.remote_analysis_budgets.map(item => item.id === budgetId
@@ -358,13 +1261,107 @@ export class VideoWorkbenchService {
     })
   }
 
-  private async reserveAndRunRemote<T>(projectId: string, budgetId: string, operationId: string, capability: 'visual_evidence' | 'media_reasoning' | 'speech_transcription' | 'semantic_embedding', usage: {
-    requests: number; total_tokens: number; input_bytes: number; visual_frames: number; proxy_seconds: number; asr_seconds: number; estimated_amount_micros: number
-  }, action: () => Promise<T>): Promise<T> {
+  /** Execute one deterministic Relay Operation under one durable allocation.
+   *
+   * Every current caller builds `request` once, so recovery uses the exact
+   * same local_operation_id, request_hash and payload. After a transport loss,
+   * the unbound control client first proves the operation exists through the
+   * formal local id index, then repeats the same POST. That POST is not a new
+   * provider call: Relay's durable idempotency record either returns the same
+   * operation or rejects a changed fingerprint with 409. A healthy 404 is the
+   * only proof that no provider submission exists and releases the allocation.
+   */
+  private async reserveAndRunRemote<T>(
+    projectId: string,
+    budgetId: string,
+    capability: RemoteCapability,
+    usage: RemoteUsage,
+    relay: VideoMediaRelayClient,
+    request: RelayOperationRequest,
+    consume: (client: VideoMediaRelayClient, operation: RelayOperationProjection) => Promise<T>,
+    options: { parentOperationId?: string } = {},
+  ): Promise<T> {
+    const operationId = request.local_operation_id
+    if (request.capability !== capability || request.local_budget_reservation_id !== budgetId) {
+      throw new VideoWorkbenchServiceError('远程请求与本地预算预留不一致', 409, 'VIDEO_REMOTE_OPERATION_UNAVAILABLE')
+    }
     await this.reserveRemoteBudget(projectId, budgetId, operationId, capability, usage)
-    try { return await action() } catch (error) {
-      await this.finalizeRemoteBudgetFailure(projectId, budgetId, operationId, error)
-      throw error
+    if (options.parentOperationId) {
+      try {
+        await this.fenceRemoteOperation(projectId, options.parentOperationId, budgetId, capability, usage, request)
+      } catch (error) {
+        await this.finalizeRemoteBudgetFailure(projectId, budgetId, operationId, new VideoMediaRelayClientError(422, 'local_submission_fence_failed'))
+        throw error
+      }
+    }
+    let accepted: RelayOperationProjection | undefined
+    try {
+      accepted = await relay.createOperation(request)
+      const value = await consume(relay, accepted)
+      // A caller with a parent Operation clears/replaces its fence only inside
+      // `consume`, together with a durable local result (Fact, staged Plan, or
+      // staged query vector). Clearing here would create a paid-result crash
+      // window between this return and the caller's later persistence step.
+      return value
+    } catch (error) {
+      // The Relay has already supplied a terminal receipt. Parsing or local
+      // projection failures after that point are not provider-outcome unknown;
+      // the caller has settled the one receipt and may fail normally.
+      if (accepted?.state === 'succeeded' && accepted.provider_receipt) {
+        if (options.parentOperationId) await this.updateRemoteOperationRecovery(
+          options.parentOperationId,
+          error instanceof VideoWorkbenchServiceError ? 'cleared' : 'outcome_unknown',
+        )
+        throw error
+      }
+      await this.finalizeRemoteBudgetFailure(projectId, budgetId, operationId, error, { submissionFenced: true })
+      const outcomeUnknown = !(
+        error instanceof VideoMediaRelayClientError
+        && (error.status < 500 && error.status !== 409 && error.status !== 499)
+      ) && !(error instanceof VideoMediaRelayClientError && error.status === 503 && error.code === 'provider_not_started')
+      if (!outcomeUnknown) {
+        if (options.parentOperationId) await this.updateRemoteOperationRecovery(
+          options.parentOperationId,
+          error instanceof VideoMediaRelayClientError && error.code === 'provider_not_started' ? 'submitting' : 'cleared',
+        )
+        throw error
+      }
+      if (options.parentOperationId) await this.updateRemoteOperationRecovery(options.parentOperationId, 'outcome_unknown')
+      const recoveryRelay = this.videoMediaRelay()
+      if (!recoveryRelay) throw error
+      let replayed: RelayOperationProjection | undefined
+      try {
+        const existing = await recoveryRelay.operationByLocalOperationId(operationId)
+        if (!existing) {
+          const absent = new VideoMediaRelayClientError(503, 'provider_not_started')
+          await this.finalizeRemoteBudgetFailure(projectId, budgetId, operationId, absent, { submissionFenced: true })
+          if (options.parentOperationId) await this.updateRemoteOperationRecovery(options.parentOperationId, 'submitting')
+          throw absent
+        }
+        // Lookup is read-only recovery; this strict replay is the fingerprint
+        // authority. A changed request can only fail 409, never reach Provider.
+        replayed = await recoveryRelay.createOperation(request)
+        if (replayed.id !== existing.id) throw new VideoMediaRelayClientError(409, 'local_operation_projection_conflict')
+        const value = await consume(recoveryRelay, replayed)
+        return value
+      } catch (recoveryError) {
+        if (
+          replayed?.state === 'succeeded'
+          && replayed.provider_receipt
+          && recoveryError instanceof VideoWorkbenchServiceError
+        ) {
+          // A deterministic local validation rejected a known terminal result.
+          // Do not schedule another consume/replay of the same invalid payload.
+          if (options.parentOperationId) await this.updateRemoteOperationRecovery(options.parentOperationId, 'cleared')
+          throw recoveryError
+        }
+        // A failed lookup is not an absence proof, and once lookup found an
+        // operation even a contradictory provider_not_started response cannot
+        // release its allocation. Only the explicit null branch above may do
+        // that during recovery.
+        await this.finalizeRemoteBudgetFailure(projectId, budgetId, operationId, recoveryError, { submissionFenced: true, allowProviderNotStartedRelease: false })
+        throw recoveryError
+      }
     }
   }
 
@@ -874,6 +1871,9 @@ export class VideoWorkbenchService {
     const budget = consent && project.remote_analysis_budgets.find(item => item.estimate_hash === consent.acknowledged_estimate_hash && item.state === 'reserved')
     const relay = this.videoMediaRelay()
     if (!consent || !budget || !relay) return lexical
+    // This attempts only durable ACK retries. It does not submit, download or
+    // otherwise re-run a document embedding whose vectors already committed.
+    await this.flushPendingRelayAcknowledgements(projectId)
     const scopeHash = factBasisHash({ revision: consent.revision, coverage: consent.coverage, purposes: consent.purposes, data_kinds: consent.data_kinds })
     const candidates = await this.repository.listCurrentSearchCandidates(projectId)
     const eligible = candidates.filter(item => item.kind === 'transcript' && consent.coverage.some(coverage => coverage.source_id === item.source_id && coverage.ranges.some(range => compareRationalTime(item.range.start, range.start) >= 0 && compareRationalTime(endOfRange(item.range), endOfRange(range)) <= 0)))
@@ -886,32 +1886,78 @@ export class VideoWorkbenchService {
       for (let offset = 0; offset < documentItems.length; offset += 2_000) {
         const batch = documentItems.slice(offset, offset + 2_000)
         const documentOperationId = `task_${nonce}d${String(offset / 2_000).padStart(2, '0')}`
-        await this.reserveAndRunRemote(projectId, budget.id, documentOperationId, 'semantic_embedding', {
+        const documentUsage = {
           requests: 1, total_tokens: batch.reduce((sum, item) => sum + Math.ceil(item.text.length / 4), 0), input_bytes: Buffer.byteLength(JSON.stringify(batch), 'utf8'), visual_frames: 0, proxy_seconds: 0, asr_seconds: 0, estimated_amount_micros: Math.max(1, batch.reduce((sum, item) => sum + Math.ceil(item.text.length / 4), 0) * 10),
-        }, async () => {
-        const documents = await relay.createOperation({ local_operation_id: documentOperationId, consent_revision_id: consent.id, consent_scope_hash: scopeHash, local_budget_reservation_id: budget.id, request_hash: factBasisHash({ generation: lexical.generation, documents: batch.map(item => ({ id: item.entry_id, text: item.text })) }), capability: 'semantic_embedding', application_role: 'search_index', input: { embedding_role: 'document', items: batch.map(item => ({ id: item.id, text: item.text })), model: 'text-embedding-v4', dimension: 768, instruction_version: 'video-facts-v1' } })
-        if (documents.state !== 'succeeded' || !documents.provider_receipt) throw new VideoMediaRelayClientError(documents.state === 'outcome_unknown' ? 503 : 422, 'relay_operation_not_succeeded')
-        await this.settleRemoteBudget(projectId, budget.id, documentOperationId, documents.provider_receipt)
-        const downloadedDocuments = await relay.downloadResult<{ kind: string; vectors: Array<{ id: string; vector: number[] }> }>(documents)
-        if (downloadedDocuments.result.kind !== 'embedding') throw new VideoWorkbenchServiceError('Embedding 结果类型无效', 502, 'VIDEO_ANALYSIS_INVALID')
-        const vectorById = new Map(downloadedDocuments.result.vectors.map(item => [item.id, item.vector]))
-        await this.repository.saveFactEmbeddings(projectId, batch.map(item => ({ entry_id: item.entry_id, vector: vectorById.get(item.id) ?? [], model_snapshot: documents.provider_receipt!.model_snapshot, instruction_version: 'video-facts-v1', content_hash: `sha256:${createHash('sha256').update(JSON.stringify(vectorById.get(item.id) ?? [])).digest('hex')}` })))
-        await relay.acknowledge(documents.id, { result_hashes: downloadedDocuments.hashes, receipt_id: documents.provider_receipt.id })
+        }
+        const documentRequest = { local_operation_id: documentOperationId, consent_revision_id: consent.id, consent_scope_hash: scopeHash, local_budget_reservation_id: budget.id, request_hash: factBasisHash({ generation: lexical.generation, documents: batch.map(item => ({ id: item.entry_id, text: item.text })) }), capability: 'semantic_embedding' as const, application_role: 'search_index' as const, input: { embedding_role: 'document' as const, items: batch.map(item => ({ id: item.id, text: item.text })), model: 'text-embedding-v4' as const, dimension: 768 as const, instruction_version: 'video-facts-v1' } }
+        await this.reserveAndRunRemote(projectId, budget.id, 'semantic_embedding', documentUsage, relay, documentRequest, async (activeRelay, documents) => {
+          if (documents.state !== 'succeeded' || !documents.provider_receipt) throw new VideoMediaRelayClientError(documents.state === 'outcome_unknown' ? 503 : 422, 'relay_operation_not_succeeded')
+          await this.settleRemoteBudget(projectId, budget.id, documentOperationId, documents.provider_receipt)
+          const downloadedDocuments = await activeRelay.downloadResult<{ kind: string; vectors: Array<{ id: string; vector: number[] }> }>(documents)
+          if (downloadedDocuments.result.kind !== 'embedding') throw new VideoWorkbenchServiceError('Embedding 结果类型无效', 502, 'VIDEO_ANALYSIS_INVALID')
+          const vectorById = new Map(downloadedDocuments.result.vectors.map(item => [item.id, item.vector]))
+          const acknowledgement = this.acknowledgementFor(documentOperationId, documents.id, documents.provider_receipt.id, downloadedDocuments.hashes)
+          await this.repository.saveFactEmbeddingsWithRelayAcknowledgement(
+            projectId,
+            batch.map(item => ({ entry_id: item.entry_id, vector: vectorById.get(item.id) ?? [], model_snapshot: documents.provider_receipt!.model_snapshot, instruction_version: 'video-facts-v1', content_hash: `sha256:${createHash('sha256').update(JSON.stringify(vectorById.get(item.id) ?? [])).digest('hex')}` })),
+            { ...acknowledgement, local_operation_id: documentOperationId, result_hashes: acknowledgement.result_hashes as `sha256:${string}`[] },
+          )
+          await this.flushPendingRelayAcknowledgements(projectId)
         })
       }
       const queryLocalOperationId = `task_${nonce}q`
-      const queryVector = await this.reserveAndRunRemote(projectId, budget.id, queryLocalOperationId, 'semantic_embedding', {
+      const queryUsage = {
         requests: 1, total_tokens: Math.ceil(query.length / 4), input_bytes: Buffer.byteLength(query, 'utf8'), visual_frames: 0, proxy_seconds: 0, asr_seconds: 0, estimated_amount_micros: Math.max(1, Math.ceil(query.length / 4) * 10),
-      }, async () => {
-      const queryOperation = await relay.createOperation({ local_operation_id: queryLocalOperationId, consent_revision_id: consent.id, consent_scope_hash: scopeHash, local_budget_reservation_id: budget.id, request_hash: factBasisHash({ generation: lexical.generation, query }), capability: 'semantic_embedding', application_role: 'search_index', input: { embedding_role: 'query', items: [{ id: `embed_${nonce}`, text: query }], model: 'text-embedding-v4', dimension: 768, instruction_version: 'video-facts-v1' } })
-      if (queryOperation.state !== 'succeeded' || !queryOperation.provider_receipt) throw new VideoMediaRelayClientError(queryOperation.state === 'outcome_unknown' ? 503 : 422, 'relay_operation_not_succeeded')
-      await this.settleRemoteBudget(projectId, budget.id, queryLocalOperationId, queryOperation.provider_receipt)
-      const downloadedQuery = await relay.downloadResult<{ kind: string; vectors: Array<{ id: string; vector: number[] }> }>(queryOperation)
-      const queryVector = downloadedQuery.result.vectors[0]?.vector
-      if (downloadedQuery.result.kind !== 'embedding' || !queryVector) throw new VideoWorkbenchServiceError('Embedding 查询结果无效', 502, 'VIDEO_ANALYSIS_INVALID')
-      await relay.acknowledge(queryOperation.id, { result_hashes: downloadedQuery.hashes, receipt_id: queryOperation.provider_receipt.id })
-      return queryVector
-      })
+      }
+      const queryHash = factBasisHash({ generation: lexical.generation, query })
+      const queryRequest = { local_operation_id: queryLocalOperationId, consent_revision_id: consent.id, consent_scope_hash: scopeHash, local_budget_reservation_id: budget.id, request_hash: queryHash, capability: 'semantic_embedding' as const, application_role: 'search_index' as const, input: { embedding_role: 'query' as const, items: [{ id: `embed_${nonce}`, text: query }], model: 'text-embedding-v4' as const, dimension: 768 as const, instruction_version: 'video-facts-v1' } }
+      let queryTask = await this.repository.getOperation(queryLocalOperationId).catch(() => null)
+      if (queryTask && (
+        queryTask.project_id !== projectId
+        || queryTask.kind !== 'video.index'
+        || queryTask.result?.query_hash !== queryHash
+        || queryTask.result?.search_generation !== lexical.generation
+      )) throw new VideoWorkbenchServiceError('语义查询幂等记录与当前请求不一致', 409, 'VIDEO_REMOTE_OPERATION_UNAVAILABLE')
+      if (!queryTask) {
+        queryTask = await this.repository.saveOperation(this.operation({
+          schema_version: 1,
+          id: queryLocalOperationId,
+          project_id: projectId,
+          kind: 'video.index',
+          status: 'running',
+          progress: 10,
+          stage: '正在生成语义查询向量',
+          result: { search_generation: lexical.generation, query_hash: queryHash, query, cursor: options?.cursor ?? null },
+          created_at: this.iso(),
+          updated_at: this.iso(),
+        } as unknown as VideoOperation))
+      }
+      const durableQuery = this.stagedSemanticQueryResult(queryTask)
+      let queryVector: number[]
+      if (durableQuery) {
+        queryVector = await this.finalizeStagedSemanticQueryResult(queryTask)
+      } else {
+        if (!['queued', 'running'].includes(queryTask.status)) throw new VideoWorkbenchServiceError('语义查询任务没有可恢复结果', 409, 'VIDEO_REMOTE_OPERATION_UNAVAILABLE')
+        queryVector = await this.reserveAndRunRemote(projectId, budget.id, 'semantic_embedding', queryUsage, relay, queryRequest, async (activeRelay, queryOperation) => {
+          if (queryOperation.state !== 'succeeded' || !queryOperation.provider_receipt) throw new VideoMediaRelayClientError(queryOperation.state === 'outcome_unknown' ? 503 : 422, 'relay_operation_not_succeeded')
+          await this.settleRemoteBudget(projectId, budget.id, queryLocalOperationId, queryOperation.provider_receipt)
+          const downloadedQuery = await activeRelay.downloadResult<{ kind: string; vectors: Array<{ id: string; vector: number[] }> }>(queryOperation)
+          const vector = downloadedQuery.result.vectors[0]?.vector
+          if (downloadedQuery.result.kind !== 'embedding' || !vector || vector.length !== 768 || vector.some(value => !Number.isFinite(value))) {
+            throw new VideoWorkbenchServiceError('Embedding 查询结果无效', 502, 'VIDEO_ANALYSIS_INVALID')
+          }
+          await this.stageSemanticQueryResult(
+            queryTask!.id,
+            lexical.generation,
+            queryHash,
+            vector,
+            this.acknowledgementFor(queryLocalOperationId, queryOperation.id, queryOperation.provider_receipt.id, downloadedQuery.hashes),
+          )
+          return vector
+        }, { parentOperationId: queryTask.id })
+        queryTask = await this.repository.getOperation(queryTask.id)
+        queryVector = await this.finalizeStagedSemanticQueryResult(queryTask)
+      }
       return await this.repository.hybridSearchFactsPage(projectId, query, queryVector, options)
     } catch (error) { throw error }
   }
@@ -1421,11 +2467,27 @@ export class VideoWorkbenchService {
     directory: string,
     operationId: string,
     signal: AbortSignal,
-  ): Promise<VideoEvidence[] | null> {
+  ): Promise<RemoteTranscriptResult | null> {
     if (!source.has_audio || sourceFact.fingerprint_state !== 'ready' || !sourceFact.fingerprint) return null
+    const localOperationId = `${operationId}_asr_${source.id}`
+    // A transcript fact is committed before the Relay result is ACKed. On a
+    // restart it is therefore the authoritative recovery point: do not send
+    // audio again merely because the project-level analysis has not yet
+    // materialized its summary projection.
+    const persisted = (await this.repository.listFacts('transcript', project.id, source.id))
+      .filter((fact): fact is TimedTranscript => 'segments' in fact)
+      .find(fact => fact.source_fingerprint === sourceFact.fingerprint)
+    if (persisted) return {
+      evidence: this.transcriptEvidence(persisted),
+      acknowledgements: persisted.relay_operation_id
+        && persisted.relay_result_hashes
+        && !persisted.segments.every(segment => project.evidence.some(item => item.id === segment.id))
+        ? [this.acknowledgementFor(localOperationId, persisted.relay_operation_id, persisted.model_receipt_id, persisted.relay_result_hashes)]
+        : [],
+    }
     const consent = project.remote_analysis_consents.find(item => item.state === 'active' && item.purposes.includes('asr') && item.data_kinds.includes('audio_extract'))
     const budget = consent && project.remote_analysis_budgets.find(item => item.estimate_hash === consent.acknowledged_estimate_hash && item.state === 'reserved')
-    const relay = this.videoMediaRelay()
+    const relay = this.videoMediaRelay(signal)
     const primaryDuration = sourceFact.primary_video_stream.duration
     if (!primaryDuration) throw new VideoWorkbenchServiceError('素材缺少原始视频流时长，拒绝发送 ASR', 502, 'VIDEO_ANALYSIS_INVALID')
     const sourceRange = { start: sourceFact.primary_video_stream.start_time, duration: primaryDuration }
@@ -1435,44 +2497,269 @@ export class VideoWorkbenchService {
     ))
     if (!consent || !budget || !relay || !covered) return null
 
-    const audioPath = join(directory, `${source.id}-asr.wav`)
-    const extraction = await this.runProcess([
-      videoBinary('ffmpeg', this.env, this.platform), '-hide_banner', '-loglevel', 'error', '-i', source.path,
-      '-map', '0:a:0', '-vn', '-ac', '1', '-ar', '16000', '-c:a', 'pcm_s16le', '-f', 'wav', '-y', audioPath,
-    ], { signal })
-    const audio = await stat(audioPath).catch(() => null)
-    if (extraction.exitCode !== 0 || !audio?.isFile() || audio.size <= 44) {
-      throw new VideoWorkbenchServiceError('本地音轨提取失败，拒绝提交不完整 ASR 输入', 502, 'VIDEO_ANALYSIS_INVALID')
+    let checkpoint = await this.saveAsrCheckpoint(operationId, source.id, {})
+    let remote: Awaited<ReturnType<VideoMediaRelayClient['operation']>> | undefined
+    let cancellationRequested = checkpoint?.state === 'cancel_pending' || signal.aborted
+    if (checkpoint?.relay_operation_id) {
+      // Restart path: only the recorded Relay id may be polled. It never
+      // re-opens a media lease, re-uploads audio, or re-submits to Fun-ASR.
+      try {
+        const control = cancellationRequested ? this.videoMediaRelay() : relay
+        if (!control) throw new VideoMediaRelayClientError(503, 'relay_control_unavailable')
+        remote = await control.operation(checkpoint.relay_operation_id)
+      } catch (error) {
+        if (signal.aborted) {
+          cancellationRequested = true
+          await this.saveAsrCheckpoint(operationId, source.id, { state: 'cancel_pending', relay_operation_id: checkpoint.relay_operation_id })
+          const control = this.videoMediaRelay()
+          if (control) {
+            try {
+              remote = await control.operation(checkpoint.relay_operation_id)
+            } catch {
+              throw error
+            }
+          }
+        }
+        if (!remote) throw error
+      }
+    } else if (checkpoint?.remote_submission_started_at) {
+      // The local fence may commit immediately before the Relay POST response
+      // (and therefore its id) is lost. Resolve only through Relay's durable
+      // local_operation_id index. A healthy 404 proves provider_not_started;
+      // transport/5xx remains fenced and must never blind-submit again.
+      try {
+        const control = cancellationRequested ? this.videoMediaRelay() : relay
+        if (!control) throw new VideoMediaRelayClientError(503, 'relay_control_unavailable')
+        remote = await control.operationByLocalOperationId(localOperationId) ?? undefined
+      } catch (error) {
+        await this.saveAsrCheckpoint(operationId, source.id, { state: cancellationRequested ? 'cancel_pending' : 'outcome_unknown' })
+        throw error
+      }
+      if (remote) {
+        checkpoint = await this.saveAsrCheckpoint(operationId, source.id, {
+          state: cancellationRequested
+            ? 'cancel_pending'
+            : remote.state === 'succeeded'
+              ? 'result_pending'
+              : remote.state === 'running' ? 'running' : remote.state === 'submitted' || remote.state === 'accepted' ? 'submitted' : remote.state,
+          relay_operation_id: remote.id,
+          ...(remote.provider_task_id ? { provider_task_id: remote.provider_task_id } : {}),
+        }) ?? checkpoint
+      } else {
+        // Relay's authoritative absence proof releases even a prior
+        // outcome_unknown allocation; reserveRemoteBudget then revives exactly
+        // the same allocation for the deterministic idempotent replay.
+        await this.finalizeRemoteBudgetFailure(project.id, budget.id, localOperationId, new VideoMediaRelayClientError(503, 'provider_not_started'))
+        if (cancellationRequested) {
+          await this.saveAsrCheckpoint(operationId, source.id, { state: 'cancelled' })
+          throw new VideoAnalysisError('视频分析已取消', 499, 'VIDEO_ANALYSIS_CANCELLED')
+        }
+      }
     }
-    const contentHash = await videoFingerprint(audioPath)
-    const localOperationId = `${operationId}_asr_${source.id}`
-    return await this.reserveAndRunRemote(project.id, budget.id, localOperationId, 'speech_transcription', {
-      requests: 1, total_tokens: 0, input_bytes: audio.size, visual_frames: 0, proxy_seconds: 0, asr_seconds: timeToMilliseconds(primaryDuration) / 1000, estimated_amount_micros: Math.max(1, Math.ceil(timeToMilliseconds(primaryDuration) / 1000 * 120)),
-    }, async () => {
-    const scopeHash = factBasisHash({ revision: consent.revision, coverage: consent.coverage, purposes: consent.purposes, data_kinds: consent.data_kinds })
-    const objectRef = await relay.uploadObjectStream({
-      local_operation_id: localOperationId, purpose: 'audio_for_asr', content_hash: contentHash, byte_size: audio.size, content_type: 'audio/wav',
-      consent_revision_id: consent.id, consent_scope_hash: scopeHash,
-    }, () => Readable.toWeb(createReadStream(audioPath)) as unknown as ReadableStream<Uint8Array>)
-    const route = selectFunAsrRoute({ sourceDurationMs: source.duration_ms, needsSpeakerDiarization: false, hotwords: [] })
-    let remote = await relay.createOperation({
-      local_operation_id: localOperationId, consent_revision_id: consent.id, consent_scope_hash: scopeHash, local_budget_reservation_id: budget.id,
-      request_hash: factBasisHash({ source_id: source.id, source_fingerprint: sourceFact.fingerprint, audio_hash: contentHash, source_range: sourceRange, route }),
-      capability: 'speech_transcription', application_role: 'asr',
-      input: { mode: route, audio_object_ref: objectRef, source_offset: sourceFact.primary_video_stream.start_time, language: 'zh', hotwords: [], speaker_diarization: false, sentence_timestamps: true, word_timestamps: true },
-    })
-    for (let attempt = 0; remote.state === 'submitted' || remote.state === 'running'; attempt += 1) {
-      if (attempt >= 120) throw new VideoWorkbenchServiceError('ASR 任务在允许的等待窗口内未完成', 503, 'VIDEO_REMOTE_OPERATION_UNAVAILABLE')
-      await new Promise(resolve => setTimeout(resolve, 1_000))
-      remote = await relay.operation(remote.id)
+    if (!remote) {
+      if (checkpoint?.remote_submission_started_at && !checkpoint.object_ref) {
+        await this.saveAsrCheckpoint(operationId, source.id, { state: 'outcome_unknown' })
+        throw new VideoWorkbenchServiceError('ASR 提交栅栏缺少已持久化对象引用', 503, 'VIDEO_REMOTE_OPERATION_UNAVAILABLE')
+      }
+      const audioPath = join(directory, `${source.id}-asr.wav`)
+      const extraction = await this.runProcess([
+        videoBinary('ffmpeg', this.env, this.platform), '-hide_banner', '-loglevel', 'error', '-i', source.path,
+        '-map', '0:a:0', '-vn', '-ac', '1', '-ar', '16000', '-c:a', 'pcm_s16le', '-f', 'wav', '-y', audioPath,
+      ], { signal })
+      const audio = await stat(audioPath).catch(() => null)
+      if (extraction.exitCode !== 0 || !audio?.isFile() || audio.size <= 44) {
+        throw new VideoWorkbenchServiceError('本地音轨提取失败，拒绝提交不完整 ASR 输入', 502, 'VIDEO_ANALYSIS_INVALID')
+      }
+      const contentHash = await videoFingerprint(audioPath)
+      const scopeHash = factBasisHash({ revision: consent.revision, coverage: consent.coverage, purposes: consent.purposes, data_kinds: consent.data_kinds })
+      const route = selectFunAsrRoute({ sourceDurationMs: source.duration_ms, needsSpeakerDiarization: false, hotwords: [] })
+      const reservedUsage = {
+        requests: 1, total_tokens: 0, input_bytes: audio.size, visual_frames: 0, proxy_seconds: 0, asr_seconds: timeToMilliseconds(primaryDuration) / 1000, estimated_amount_micros: Math.max(1, Math.ceil(timeToMilliseconds(primaryDuration) / 1000 * 120)),
+      }
+      await this.reserveRemoteBudget(project.id, budget.id, localOperationId, 'speech_transcription', reservedUsage)
+      let objectRef = checkpoint?.object_ref
+      if (!objectRef) {
+        try {
+          objectRef = await relay.uploadObjectStream({
+            local_operation_id: localOperationId, purpose: 'audio_for_asr', content_hash: contentHash, byte_size: audio.size, content_type: 'audio/wav',
+            consent_revision_id: consent.id, consent_scope_hash: scopeHash,
+          }, () => Readable.toWeb(createReadStream(audioPath)) as unknown as ReadableStream<Uint8Array>)
+          const uploaded = await this.saveAsrCheckpoint(operationId, source.id, { object_ref: objectRef, state: 'uploading' })
+          if (!uploaded?.object_ref) throw new VideoWorkbenchServiceError('ASR 对象检查点持久化失败，已拒绝远程提交', 503, 'VIDEO_REMOTE_OPERATION_UNAVAILABLE')
+          checkpoint = uploaded
+        } catch (error) {
+          // No provider submission can have happened in this phase. Release
+          // the local allocation with a known-safe classification so the same
+          // deterministic upload/Operation may resume without outcome_unknown.
+          await this.finalizeRemoteBudgetFailure(project.id, budget.id, localOperationId, new VideoMediaRelayClientError(422, 'relay_upload_failed_before_submission'))
+          throw error
+        }
+      }
+      if (!checkpoint?.remote_submission_started_at) {
+        try {
+          // This is the last durable write before the sole Relay operation
+          // POST. A crash after it recovers only by lookup/idempotent replay.
+          const fenced = await this.saveAsrCheckpoint(operationId, source.id, {
+            object_ref: objectRef,
+            state: 'submitting',
+            remote_submission_started_at: this.iso(),
+          })
+          if (!fenced?.remote_submission_started_at || fenced.object_ref !== objectRef) {
+            throw new VideoWorkbenchServiceError('ASR 提交栅栏持久化失败，已拒绝远程提交', 503, 'VIDEO_REMOTE_OPERATION_UNAVAILABLE')
+          }
+          checkpoint = fenced
+        } catch (error) {
+          await this.finalizeRemoteBudgetFailure(project.id, budget.id, localOperationId, new VideoMediaRelayClientError(422, 'local_submission_fence_failed'))
+          throw error
+        }
+      }
+      const asrRequest: RelayOperationRequest = {
+        local_operation_id: localOperationId, consent_revision_id: consent.id, consent_scope_hash: scopeHash, local_budget_reservation_id: budget.id,
+        request_hash: factBasisHash({ source_id: source.id, source_fingerprint: sourceFact.fingerprint, audio_hash: contentHash, source_range: sourceRange, route }),
+        capability: 'speech_transcription', application_role: 'asr',
+        input: { mode: route, audio_object_ref: objectRef, source_offset: sourceFact.primary_video_stream.start_time, language: 'zh', hotwords: [], speaker_diarization: false, sentence_timestamps: true, word_timestamps: true },
+      }
+      try {
+        remote = await relay.createOperation(asrRequest)
+      } catch (error) {
+        await this.finalizeRemoteBudgetFailure(project.id, budget.id, localOperationId, error, { submissionFenced: true })
+        cancellationRequested ||= signal.aborted
+        checkpoint = await this.saveAsrCheckpoint(operationId, source.id, {
+          state: cancellationRequested ? 'cancel_pending' : 'outcome_unknown',
+          object_ref: objectRef,
+        }) ?? checkpoint
+        // Resolve the post-fence response-loss window immediately through the
+        // owner-scoped index. A healthy 404 is the sole authority to retry the
+        // exact persisted request; transport failure leaves the parent running.
+        const control = this.videoMediaRelay()
+        if (!control) throw error
+        let existing: RelayOperationProjection | null
+        try {
+          existing = await control.operationByLocalOperationId(localOperationId)
+        } catch {
+          throw error
+        }
+        if (existing) {
+          remote = existing
+        } else {
+          await this.finalizeRemoteBudgetFailure(project.id, budget.id, localOperationId, new VideoMediaRelayClientError(503, 'provider_not_started'))
+          if (cancellationRequested) {
+            await this.saveAsrCheckpoint(operationId, source.id, { state: 'cancelled' })
+            throw new VideoAnalysisError('视频分析已取消', 499, 'VIDEO_ANALYSIS_CANCELLED')
+          }
+          await this.reserveRemoteBudget(project.id, budget.id, localOperationId, 'speech_transcription', reservedUsage)
+          try {
+            remote = await control.createOperation(asrRequest)
+          } catch (retryError) {
+            await this.finalizeRemoteBudgetFailure(project.id, budget.id, localOperationId, retryError, { submissionFenced: true })
+            await this.saveAsrCheckpoint(operationId, source.id, { state: 'outcome_unknown', object_ref: objectRef })
+            throw retryError
+          }
+        }
+      }
+      checkpoint = await this.saveAsrCheckpoint(operationId, source.id, {
+        state: cancellationRequested
+          ? 'cancel_pending'
+          : remote.state === 'succeeded'
+            ? 'result_pending'
+            : remote.state === 'running' ? 'running' : remote.state === 'submitted' || remote.state === 'accepted' ? 'submitted' : remote.state,
+        relay_operation_id: remote.id,
+        ...(remote.provider_task_id ? { provider_task_id: remote.provider_task_id } : {}),
+      }) ?? checkpoint
     }
-    if (remote.state !== 'succeeded' || !remote.provider_receipt) throw new VideoMediaRelayClientError(remote.state === 'outcome_unknown' ? 503 : 422, 'relay_operation_not_succeeded')
+    if (!remote) throw new VideoWorkbenchServiceError('ASR 远程操作恢复失败', 503, 'VIDEO_REMOTE_OPERATION_UNAVAILABLE')
+    while (remote.state === 'submitted' || remote.state === 'running' || remote.state === 'accepted') {
+      if (signal.aborted && !cancellationRequested) {
+        cancellationRequested = true
+        checkpoint = await this.saveAsrCheckpoint(operationId, source.id, { state: 'cancel_pending', relay_operation_id: remote.id }) ?? checkpoint
+      }
+      if (cancellationRequested) {
+        const cancelled = await this.requestAsrCancellation(operationId, source.id, remote.id)
+        if (cancelled) {
+          remote = cancelled
+          break
+        }
+      }
+      // The Relay supplies its own backoff. Respect a short positive value in
+      // tests and bounded deployments; when omitted, retain the 1s default.
+      const delay = Math.max(1, Math.min(60_000, remote.retry_after_ms ?? 1_000))
+      checkpoint = await this.saveAsrCheckpoint(operationId, source.id, {
+        state: cancellationRequested ? 'cancel_pending' : remote.state === 'running' ? 'running' : 'submitted',
+        relay_operation_id: remote.id,
+        ...(remote.provider_task_id ? { provider_task_id: remote.provider_task_id } : {}),
+        next_poll_at: new Date(this.now().getTime() + delay).toISOString(),
+      }) ?? checkpoint
+      try {
+        await this.waitForAsrPoll(delay, cancellationRequested ? new AbortController().signal : signal)
+      } catch (error) {
+        if (signal.aborted) {
+          cancellationRequested = true
+          checkpoint = await this.saveAsrCheckpoint(operationId, source.id, { state: 'cancel_pending', relay_operation_id: remote.id }) ?? checkpoint
+          continue
+        }
+        throw error
+      }
+      try {
+        const control = cancellationRequested ? this.videoMediaRelay() : relay
+        if (!control) throw new VideoMediaRelayClientError(503, 'relay_control_unavailable')
+        remote = await control.operation(remote.id)
+      } catch (error) {
+        // While cancellation is pending, every wait and control request is
+        // bounded but a transient failure does not discard the durable intent.
+        if (cancellationRequested) continue
+        throw error
+      }
+      checkpoint = await this.saveAsrCheckpoint(operationId, source.id, {
+        state: cancellationRequested
+          ? 'cancel_pending'
+          : remote.state === 'succeeded'
+            ? 'result_pending'
+            : remote.state === 'running' ? 'running' : remote.state === 'submitted' || remote.state === 'accepted' ? 'submitted' : remote.state,
+        relay_operation_id: remote.id,
+        ...(remote.provider_task_id ? { provider_task_id: remote.provider_task_id } : {}),
+      }) ?? checkpoint
+    }
+    cancellationRequested ||= signal.aborted
+    if (cancellationRequested) {
+      await this.finalizeAsrTerminalBudget(
+        project.id,
+        localOperationId,
+        remote,
+        remote.state === 'cancelled' ? 'cancelled' : 'late_cancelled_result',
+      )
+      await this.saveAsrCheckpoint(operationId, source.id, { state: 'cancelled', relay_operation_id: remote.id })
+      throw new VideoAnalysisError('视频分析已取消', 499, 'VIDEO_ANALYSIS_CANCELLED')
+    }
+    if (remote.state === 'cancelled') {
+      await this.finalizeAsrTerminalBudget(project.id, localOperationId, remote, 'cancelled')
+      await this.saveAsrCheckpoint(operationId, source.id, { state: 'cancelled', relay_operation_id: remote.id })
+      throw new VideoAnalysisError('视频分析已取消', 499, 'VIDEO_ANALYSIS_CANCELLED')
+    }
+    if (remote.state === 'expired') {
+      await this.finalizeAsrTerminalBudget(project.id, localOperationId, remote, 'expired')
+      await this.saveAsrCheckpoint(operationId, source.id, { state: 'expired', relay_operation_id: remote.id })
+      throw new VideoWorkbenchServiceError('ASR 结果保留期已过期', 503, 'VIDEO_REMOTE_OPERATION_UNAVAILABLE')
+    }
+    if (remote.state !== 'succeeded' || !remote.provider_receipt) {
+      if (remote.state === 'failed') await this.finalizeAsrTerminalBudget(project.id, localOperationId, remote, 'failed')
+      await this.saveAsrCheckpoint(operationId, source.id, {
+        state: remote.state === 'outcome_unknown' ? 'outcome_unknown' : 'failed',
+        relay_operation_id: remote.id,
+      })
+      throw new VideoMediaRelayClientError(remote.state === 'outcome_unknown' ? 503 : 422, 'relay_operation_not_succeeded')
+    }
     // The provider accepted and accounted for this operation. Persist the
     // receipt before parsing its result so a local post-processing fault can
     // never silently release a real ASR charge.
     await this.settleRemoteBudget(project.id, budget.id, localOperationId, remote.provider_receipt)
+    await this.saveAsrCheckpoint(operationId, source.id, {
+      state: 'result_pending',
+      relay_operation_id: remote.id,
+      ...(remote.provider_task_id ? { provider_task_id: remote.provider_task_id } : {}),
+    })
     const downloaded = await relay.downloadResult<{ kind: string; sentences: unknown }>(remote)
     if (downloaded.result.kind !== 'asr' || !Array.isArray(downloaded.result.sentences)) {
+      await this.saveAsrCheckpoint(operationId, source.id, { state: 'failed', relay_operation_id: remote.id })
       throw new VideoWorkbenchServiceError('ASR 返回的时间戳结果无效', 502, 'VIDEO_ANALYSIS_INVALID')
     }
     const sentences = downloaded.result.sentences.flatMap((item): RemoteAsrSentence[] => {
@@ -1490,22 +2777,42 @@ export class VideoWorkbenchService {
         : []
     })
     const segments = normalizeFunAsrSentences(sentences, sourceFact.primary_video_stream.start_time)
-    if (!segments.length) throw new VideoWorkbenchServiceError('ASR 未返回可验证的句级时间戳', 502, 'VIDEO_ANALYSIS_INVALID')
+    if (!segments.length) {
+      await this.saveAsrCheckpoint(operationId, source.id, { state: 'failed', relay_operation_id: remote.id })
+      throw new VideoWorkbenchServiceError('ASR 未返回可验证的句级时间戳', 502, 'VIDEO_ANALYSIS_INVALID')
+    }
     const transcript: TimedTranscript = {
       id: id('evidence'), project_id: project.id, source_id: source.id, source_fingerprint: sourceFact.fingerprint!,
-      model_receipt_id: remote.provider_receipt.id, source_offset: sourceFact.primary_video_stream.start_time,
+      model_receipt_id: remote.provider_receipt.id,
+      relay_operation_id: remote.id,
+      relay_result_hashes: downloaded.hashes,
+      source_offset: sourceFact.primary_video_stream.start_time,
       language: 'zh', segments: segments.map(segment => ({ ...segment, source_id: source.id })), created_at: this.iso(),
     }
     await this.repository.saveFact(transcript)
-    await relay.acknowledge(remote.id, { result_hashes: downloaded.hashes, receipt_id: remote.provider_receipt.id })
-    const origin = parseInt64(sourceFact.primary_video_stream.start_time.ticks)
-    return segments.map(segment => ({
-      id: id('evidence'), kind: 'transcript' as const, source_id: source.id, source_fingerprint: sourceFact.fingerprint!,
+    await this.saveAsrCheckpoint(operationId, source.id, {
+      state: 'succeeded',
+      relay_operation_id: remote.id,
+      ...(remote.provider_task_id ? { provider_task_id: remote.provider_task_id } : {}),
+    })
+    return {
+      evidence: this.transcriptEvidence(transcript),
+      acknowledgements: [this.acknowledgementFor(localOperationId, remote.id, remote.provider_receipt.id, downloaded.hashes)],
+    }
+  }
+
+  /** Projects retain a compact transcript projection, while the immutable Fact
+   * is the recovery authority and carries original-source PTS. */
+  private transcriptEvidence(transcript: TimedTranscript): VideoEvidence[] {
+    const origin = parseInt64(transcript.source_offset.ticks)
+    return transcript.segments.map(segment => ({
+      // A segment id is immutable within its transcript Fact, so the compact
+      // Project projection can be recovered without inventing a second id.
+      id: segment.id, kind: 'transcript' as const, source_id: transcript.source_id, source_fingerprint: transcript.source_fingerprint,
       in_ms: Math.max(0, timeToMilliseconds(rationalTime(parseInt64(segment.start.ticks) - origin, segment.start.tick_rate))),
       out_ms: Math.max(1, timeToMilliseconds(rationalTime(parseInt64(endOfRange({ start: segment.start, duration: segment.duration }).ticks) - origin, segment.start.tick_rate))),
       text: segment.text, confidence: 1, warnings: [], created_at: this.iso(),
     }))
-    })
   }
 
   private async extractVideoAnalysisInputs(
@@ -1517,6 +2824,7 @@ export class VideoWorkbenchService {
     await mkdir(directory, { recursive: true, mode: 0o700 })
     const frames: VideoAnalysisFrame[] = []
     const transcripts: VideoEvidence[] = []
+    const acknowledgements: PendingRelayAcknowledgement[] = []
     const gaps: string[] = []
     const sourceFacts = new Map<string, VideoFactSource>()
     for (const source of project.sources) {
@@ -1533,7 +2841,10 @@ export class VideoWorkbenchService {
         const sourceFact = sourceFacts.get(source.id)
         if (!sourceFact) continue
         const transcript = await this.remoteTranscriptEvidence(project, source, sourceFact, directory, operationId, signal)
-        if (transcript) transcripts.push(...transcript)
+        if (transcript) {
+          transcripts.push(...transcript.evidence)
+          acknowledgements.push(...transcript.acknowledgements)
+        }
         else if (source.has_audio) gaps.push(`${source.name} 没有覆盖完整原始音频的 ASR 授权、预算或 Relay；未发送音频。`)
         const windows = [...evidenceWindows.values()].filter(window => (
           window.source_id === source.id
@@ -1611,7 +2922,7 @@ export class VideoWorkbenchService {
           gaps.push(`${source.name} 的历史音频未重新发送；请确认远程分析范围后通过 Video Media Relay 转写。`)
         }
       }
-      return { frames, transcripts, gaps, source_facts: sourceFacts, evidence_windows: evidenceWindows }
+      return { frames, transcripts, relay_acknowledgements: acknowledgements, gaps, source_facts: sourceFacts, evidence_windows: evidenceWindows }
     } finally {
       await rm(directory, { recursive: true, force: true }).catch(() => undefined)
     }
@@ -1670,13 +2981,15 @@ export class VideoWorkbenchService {
     project: VideoStudioProject,
     operationId: string,
     extracted: ExtractedVideoAnalysisInputs,
-  ): Promise<Array<{ kind: 'visual'; source_id: string; in_ms: number; out_ms: number; text: string; confidence: number; warnings: string[] }> | null> {
+    signal: AbortSignal,
+  ): Promise<RemoteVisualEvidenceResult | null> {
     const consent = project.remote_analysis_consents.find(item => item.state === 'active' && item.purposes.includes('visual_evidence') && item.data_kinds.includes('keyframes'))
     const budget = consent && project.remote_analysis_budgets.find(item => item.estimate_hash === consent.acknowledged_estimate_hash && item.state === 'reserved')
-    const relay = this.videoMediaRelay()
+    const relay = this.videoMediaRelay(signal)
     if (!consent || !budget || !relay) return null
     const scopeHash = factBasisHash({ revision: consent.revision, coverage: consent.coverage, purposes: consent.purposes, data_kinds: consent.data_kinds })
-    const output: Array<{ kind: 'visual'; source_id: string; in_ms: number; out_ms: number; text: string; confidence: number; warnings: string[] }> = []
+    const output: RemoteVisualEvidenceResult['evidence'] = []
+    const acknowledgements: PendingRelayAcknowledgement[] = []
     for (const [index, frame] of extracted.frames.entries()) {
       if (!frame.evidence_window_id) continue
       const source = extracted.source_facts.get(frame.source_id)
@@ -1692,31 +3005,117 @@ export class VideoWorkbenchService {
       const bytes = Buffer.from(match[2]!, 'base64')
       if (!bytes.length || bytes.length > 10 * 1024 * 1024) throw new VideoWorkbenchServiceError('远程关键帧大小无效', 413, 'VIDEO_ANALYSIS_INVALID')
       const frameOperationId = `${operationId}_frame_${index}`
-      await this.reserveAndRunRemote(project.id, budget.id, frameOperationId, 'visual_evidence', {
+      const persisted = (await this.repository.listFacts('evidence', project.id, frame.source_id))
+        .filter((fact): fact is Extract<VideoFactEvidence, { kind: 'visual' }> => 'payload' in fact && fact.kind === 'visual')
+        .find(fact => (
+          fact.evidence_window_id === window.id
+          && fact.source_fingerprint === source.fingerprint
+          && compareRationalTime(fact.range.start, range.start) === 0
+          && compareRationalTime(endOfRange(fact.range), endOfRange(range)) === 0
+        ))
+      if (persisted) {
+        if (!window.evidence_ids.includes(persisted.id)) {
+          await this.repository.saveFact({ ...window, evidence_ids: [...window.evidence_ids, persisted.id] })
+        }
+        const parent = await this.repository.getOperation(operationId).catch(() => null)
+        if (parent && this.remoteRecoveryCheckpoint(parent)?.local_operation_id === frameOperationId) {
+          await this.updateRemoteOperationRecovery(operationId, 'cleared')
+        }
+        output.push({
+          id: persisted.id,
+          kind: 'visual', source_id: frame.source_id, in_ms: frame.in_ms, out_ms: frame.range_end_ms ?? frame.in_ms + 1,
+          text: persisted.payload.summary,
+          confidence: persisted.confidence ?? 0.5,
+          warnings: persisted.payload.warnings.slice(0, 20),
+          ...(persisted.provider_receipt_id ? { provider_receipt_id: persisted.provider_receipt_id } : {}),
+          ...(persisted.relay_operation_id ? { relay_operation_id: persisted.relay_operation_id } : {}),
+          ...(persisted.relay_result_hashes ? { relay_result_hashes: persisted.relay_result_hashes } : {}),
+        })
+        if (
+          persisted.provider_receipt_id
+          && persisted.relay_operation_id
+          && persisted.relay_result_hashes
+          && !project.evidence.some(item => item.id === persisted.id)
+        ) acknowledgements.push(this.acknowledgementFor(frameOperationId, persisted.relay_operation_id, persisted.provider_receipt_id, persisted.relay_result_hashes))
+        continue
+      }
+      const frameUsage = {
         requests: 1, total_tokens: 0, input_bytes: bytes.byteLength, visual_frames: 1, proxy_seconds: 0, asr_seconds: 0, estimated_amount_micros: 250,
-      }, async () => {
-      const objectRef = await relay.uploadObject({
-        local_operation_id: frameOperationId,
-        purpose: 'visual_frames', content_hash: `sha256:${createHash('sha256').update(bytes).digest('hex')}`, byte_size: bytes.byteLength, content_type: match[1]!,
-        consent_revision_id: consent.id, consent_scope_hash: scopeHash,
-      }, bytes)
-      const remote = await relay.createOperation({
+      }
+      await this.reserveRemoteBudget(project.id, budget.id, frameOperationId, 'visual_evidence', frameUsage)
+      const contentHash: `sha256:${string}` = `sha256:${createHash('sha256').update(bytes).digest('hex')}`
+      let objectRef: string
+      try {
+        objectRef = await relay.uploadObject({
+          local_operation_id: frameOperationId,
+          purpose: 'visual_frames', content_hash: contentHash, byte_size: bytes.byteLength, content_type: match[1]!,
+          consent_revision_id: consent.id, consent_scope_hash: scopeHash,
+        }, bytes)
+      } catch (error) {
+        // Object transfer precedes the Provider submission. A reserved call
+        // can normally be released. A caller-side 499 or identity/content 409
+        // remains fenced, however: the client cannot prove which durable Relay
+        // lease state won, and a changed object fingerprint must fail closed.
+        const uncertainTransfer = error instanceof VideoMediaRelayClientError && (error.status === 499 || error.status === 409)
+        await this.finalizeRemoteBudgetFailure(
+          project.id,
+          budget.id,
+          frameOperationId,
+          uncertainTransfer ? error : new VideoMediaRelayClientError(422, 'relay_upload_failed_before_submission'),
+          { submissionFenced: uncertainTransfer },
+        )
+        throw error
+      }
+      const frameRequest = {
         local_operation_id: frameOperationId, consent_revision_id: consent.id, consent_scope_hash: scopeHash, local_budget_reservation_id: budget.id,
-        request_hash: factBasisHash({ source_id: frame.source_id, window_id: window.id, range, content_hash: `sha256:${createHash('sha256').update(bytes).digest('hex')}` }),
-        capability: 'visual_evidence', application_role: 'shot_evidence',
+        request_hash: factBasisHash({ source_id: frame.source_id, window_id: window.id, range, content_hash: contentHash }),
+        capability: 'visual_evidence' as const, application_role: 'shot_evidence' as const,
         input: { object_refs: [objectRef], evidence_window_id: window.id, facts_basis_hash: project.evidence_revision ?? factBasisHash({ project: project.id }), language: 'zh', output_schema_version: 1 },
-      })
-      if (remote.state !== 'succeeded' || !remote.provider_receipt) throw new VideoMediaRelayClientError(remote.state === 'outcome_unknown' ? 503 : 422, 'relay_operation_not_succeeded')
-      await this.settleRemoteBudget(project.id, budget.id, frameOperationId, remote.provider_receipt)
-      const downloaded = await relay.downloadResult<{ kind: string; evidence: unknown }>(remote)
-      const evidence = downloaded.result.evidence as Record<string, unknown> | undefined
-      const summary = typeof evidence?.summary === 'string' ? evidence.summary.trim() : typeof evidence?.text === 'string' ? evidence.text.trim() : ''
-      if (!summary || summary.length > 8000) throw new VideoWorkbenchServiceError('远程视觉证据结果无效', 502, 'VIDEO_ANALYSIS_INVALID')
-      output.push({ kind: 'visual', source_id: frame.source_id, in_ms: frame.in_ms, out_ms: frame.range_end_ms ?? frame.in_ms + 1, text: summary, confidence: typeof evidence?.confidence === 'number' && evidence.confidence >= 0 && evidence.confidence <= 1 ? evidence.confidence : 0.5, warnings: Array.isArray(evidence?.warnings) ? evidence.warnings.filter((item): item is string => typeof item === 'string').slice(0, 20) : [] })
-      await relay.acknowledge(remote.id, { result_hashes: downloaded.hashes, receipt_id: remote.provider_receipt.id })
-      })
+      }
+      await this.reserveAndRunRemote(project.id, budget.id, 'visual_evidence', frameUsage, relay, frameRequest, async (activeRelay, remote) => {
+        if (remote.state !== 'succeeded' || !remote.provider_receipt) throw new VideoMediaRelayClientError(remote.state === 'outcome_unknown' ? 503 : 422, 'relay_operation_not_succeeded')
+        await this.settleRemoteBudget(project.id, budget.id, frameOperationId, remote.provider_receipt)
+        const downloaded = await activeRelay.downloadResult<{ kind: string; evidence: unknown }>(remote)
+        const evidence = downloaded.result.evidence as Record<string, unknown> | undefined
+        const summary = typeof evidence?.summary === 'string' ? evidence.summary.trim() : typeof evidence?.text === 'string' ? evidence.text.trim() : ''
+        if (!summary || summary.length > 8000) throw new VideoWorkbenchServiceError('远程视觉证据结果无效', 502, 'VIDEO_ANALYSIS_INVALID')
+        const confidence = typeof evidence?.confidence === 'number' && evidence.confidence >= 0 && evidence.confidence <= 1 ? evidence.confidence : 0.5
+        const warnings = Array.isArray(evidence?.warnings) ? evidence.warnings.filter((item): item is string => typeof item === 'string').slice(0, 20) : []
+        const hosted = createHostedEvidence({
+          kind: 'visual',
+          projectId: project.id,
+          source: source as VideoFactSource & { fingerprint: `sha256:${string}` },
+          range,
+          evidenceWindowId: window.id,
+          promptVersion: 'video-relay-visual-v1',
+          createdAt: this.iso(),
+          confidence,
+          id: `evidence_${createHash('sha256').update(frameOperationId).digest('hex').slice(0, 32)}`,
+          providerReceiptId: remote.provider_receipt.id,
+          relayOperationId: remote.id,
+          relayResultHashes: downloaded.hashes,
+          payload: { summary, subjects: [], warnings },
+        })
+        // The immutable Fact is the durable result authority. Only after it
+        // and its Evidence Window link exist may the parent submission fence
+        // be cleared; startup can rebuild the ACK outbox from this Fact.
+        await this.repository.saveFact(hosted)
+        await this.repository.saveFact({ ...window, evidence_ids: [...new Set([...window.evidence_ids, hosted.id])] })
+        await this.updateRemoteOperationRecovery(operationId, 'cleared')
+        output.push({
+          id: hosted.id,
+          kind: 'visual', source_id: frame.source_id, in_ms: frame.in_ms, out_ms: frame.range_end_ms ?? frame.in_ms + 1,
+          text: summary,
+          confidence,
+          warnings,
+          provider_receipt_id: remote.provider_receipt.id,
+          relay_operation_id: remote.id,
+          relay_result_hashes: downloaded.hashes,
+        })
+        acknowledgements.push(this.acknowledgementFor(frameOperationId, remote.id, remote.provider_receipt.id, downloaded.hashes))
+      }, { parentOperationId: operationId })
     }
-    return output.length ? output : null
+    return output.length ? { evidence: output, acknowledgements } : null
   }
 
   private async persistWindowBoundVisualFacts(
@@ -1748,9 +3147,13 @@ export class VideoWorkbenchService {
         source: source as VideoFactSource & { fingerprint: `sha256:${string}` },
         range,
         evidenceWindowId: window.id,
-        promptVersion: 'legacy-gateway-visual-v1',
+        promptVersion: evidence.provider_receipt_id ? 'video-relay-visual-v1' : 'legacy-gateway-visual-v1',
         createdAt: this.iso(),
         confidence: evidence.confidence,
+        id: evidence.id,
+        ...(evidence.provider_receipt_id ? { providerReceiptId: evidence.provider_receipt_id } : {}),
+        ...(evidence.relay_operation_id ? { relayOperationId: evidence.relay_operation_id } : {}),
+        ...(evidence.relay_result_hashes ? { relayResultHashes: evidence.relay_result_hashes as Array<`sha256:${string}`> } : {}),
         payload: {
           summary: evidence.text,
           subjects: [],
@@ -1853,14 +3256,14 @@ export class VideoWorkbenchService {
   ): Promise<void> {
     let activeTask = analyzeTask
     try {
-      const extracted = await this.extractVideoAnalysisInputs(baseProject, analyzeTask.operation_id ?? analyzeTask.id, signal)
+      const extracted = await this.extractVideoAnalysisInputs(baseProject, analyzeTask.id, signal)
       await this.repository.saveOperation(this.operation({ ...analyzeTask, progress: 45, stage: '正在分析画面与语音证据' }))
       const retainedEvidenceIds = new Set(baseProject.timeline_versions
         .find(version => version.id === baseProject.current_timeline_version_id)
         ?.scenes.filter(scene => scene.locked).flatMap(scene => scene.evidence_ids) ?? [])
       const retained = baseProject.evidence.filter(item => item.kind === 'source_role' || retainedEvidenceIds.has(item.id))
-      const remoteVisual = await this.remoteVisualEvidence(baseProject, analyzeTask.operation_id ?? analyzeTask.id, extracted)
-      const draft = remoteVisual ? { evidence: remoteVisual, gaps: [] } : await analyzeVideoEvidence({
+      const remoteVisual = await this.remoteVisualEvidence(baseProject, analyzeTask.operation_id ?? analyzeTask.id, extracted, signal)
+      const draft = remoteVisual ? { evidence: remoteVisual.evidence, gaps: [] } : await analyzeVideoEvidence({
         sources: baseProject.sources,
         existingEvidence: retained,
         transcriptEvidence: extracted.transcripts,
@@ -1874,7 +3277,7 @@ export class VideoWorkbenchService {
         env: this.env,
         allowLegacyGateway: false,
       })
-      const generated = remoteVisual ? this.materializeVideoEvidence(baseProject, remoteVisual) : this.materializeVideoEvidence(baseProject, draft.evidence)
+      const generated = this.materializeVideoEvidence(baseProject, draft.evidence)
       const next = await this.mutateProject(baseProject.id, async () => {
         const latest = await this.requireVideoProject(baseProject.id)
         if (
@@ -1889,6 +3292,10 @@ export class VideoWorkbenchService {
           ...latest,
           evidence,
           evidence_revision: revision,
+          pending_relay_acknowledgements: this.appendPendingRelayAcknowledgements(latest, [
+            ...extracted.relay_acknowledgements,
+            ...(remoteVisual?.acknowledgements ?? []),
+          ]),
           revision: latest.revision + 1,
         }))
         const now = this.iso()
@@ -1900,7 +3307,13 @@ export class VideoWorkbenchService {
           status: 'running',
           progress: 60,
           stage: '正在编译剪辑方案',
-          result: { base_revision: evidenceProject.revision, base_timeline_version_id: evidenceProject.current_timeline_version_id, evidence_revision: revision },
+          result: {
+            base_revision: evidenceProject.revision,
+            base_timeline_version_id: evidenceProject.current_timeline_version_id,
+            evidence_revision: revision,
+            user_goal: userGoal,
+            analysis_gaps: [...extracted.gaps, ...draft.gaps],
+          },
           created_at: now,
           updated_at: now,
         } as unknown as VideoOperation))
@@ -1914,6 +3327,7 @@ export class VideoWorkbenchService {
         }))
         return { project: evidenceProject, planTask, evidence, gaps: [...extracted.gaps, ...draft.gaps] }
       })
+      await this.flushPendingRelayAcknowledgements(baseProject.id)
       const active = this.activeAnalyses.get(analyzeTask.id)
       this.activeAnalyses.delete(analyzeTask.id)
       if (active) this.activeAnalyses.set(next.planTask.id, active)
@@ -1929,32 +3343,44 @@ export class VideoWorkbenchService {
       const consent = next.project.remote_analysis_consents.find(item => item.state === 'active' && item.purposes.includes('planning'))
       const budget = consent && next.project.remote_analysis_budgets.find(item => item.estimate_hash === consent.acknowledged_estimate_hash && item.state === 'reserved')
       let plan: VideoPlanDraft
-      const relay = this.videoMediaRelay()
+      let stagedPlanningOperation: VideoOperation | undefined
+      const relay = this.videoMediaRelay(signal)
       if (consent && budget && relay) {
         const requestHash = factBasisHash(planningInput)
-        try {
-          await this.reserveAndRunRemote(baseProject.id, budget.id, next.planTask.id, 'media_reasoning', {
-            requests: 1, total_tokens: Math.ceil(JSON.stringify(planningInput).length / 4), input_bytes: Buffer.byteLength(JSON.stringify(planningInput), 'utf8'), visual_frames: 0, proxy_seconds: 0, asr_seconds: 0, estimated_amount_micros: Math.max(1, Math.ceil(JSON.stringify(planningInput).length / 4) * 10),
-          }, async () => {
-          const remote = await relay.createOperation({
-            local_operation_id: next.planTask.id,
-            consent_revision_id: consent.id,
-            consent_scope_hash: factBasisHash({ revision: consent.revision, coverage: consent.coverage, purposes: consent.purposes, data_kinds: consent.data_kinds }),
-            local_budget_reservation_id: budget.id,
-            request_hash: requestHash,
-            capability: 'media_reasoning', application_role: 'planning',
-            input: { object_refs: [], facts_basis_hash: next.project.evidence_revision ?? requestHash, evidence: next.evidence.map(item => ({ id: item.id, kind: item.kind === 'transcript' ? 'transcript' as const : 'visual_fact' as const, text: item.text, confidence: item.confidence })), language: 'zh', output_schema_version: 1 },
-          })
+        const planningUsage = {
+          requests: 1, total_tokens: Math.ceil(JSON.stringify(planningInput).length / 4), input_bytes: Buffer.byteLength(JSON.stringify(planningInput), 'utf8'), visual_frames: 0, proxy_seconds: 0, asr_seconds: 0, estimated_amount_micros: Math.max(1, Math.ceil(JSON.stringify(planningInput).length / 4) * 10),
+        }
+        const planningRequest = {
+          local_operation_id: next.planTask.id,
+          consent_revision_id: consent.id,
+          consent_scope_hash: factBasisHash({ revision: consent.revision, coverage: consent.coverage, purposes: consent.purposes, data_kinds: consent.data_kinds }),
+          local_budget_reservation_id: budget.id,
+          request_hash: requestHash,
+          capability: 'media_reasoning' as const,
+          application_role: 'planning' as const,
+          input: { object_refs: [], facts_basis_hash: next.project.evidence_revision ?? requestHash, evidence: next.evidence.map(item => ({ id: item.id, kind: item.kind === 'transcript' ? 'transcript' as const : 'visual_fact' as const, text: item.text, confidence: item.confidence })), language: 'zh', output_schema_version: 1 },
+        }
+        await this.reserveAndRunRemote(baseProject.id, budget.id, 'media_reasoning', planningUsage, relay, planningRequest, async (activeRelay, remote) => {
           if (remote.state !== 'succeeded' || !remote.provider_receipt) throw new VideoMediaRelayClientError(remote.state === 'outcome_unknown' ? 503 : 422, 'relay_operation_not_succeeded')
           await this.settleRemoteBudget(baseProject.id, budget.id, next.planTask.id, remote.provider_receipt)
-          const downloaded = await relay.downloadResult<{ kind: string; plan: unknown }>(remote)
+          const downloaded = await activeRelay.downloadResult<{ kind: string; plan: unknown }>(remote)
           if (downloaded.result.kind !== 'planning') throw new VideoWorkbenchServiceError('远程规划结果类型无效', 502, 'VIDEO_ANALYSIS_INVALID')
           plan = planVideoTimelineFromRelay(planningInput, downloaded.result.plan)
-          await relay.acknowledge(remote.id, { result_hashes: downloaded.hashes, receipt_id: remote.provider_receipt.id })
-          })
-        } catch (error) { throw error }
+          stagedPlanningOperation = await this.stageRemotePlanningResult(
+            next.planTask,
+            { userGoal, analysisGaps: next.gaps },
+            downloaded.result.plan,
+            this.acknowledgementFor(next.planTask.id, remote.id, remote.provider_receipt.id, downloaded.hashes),
+          )
+        }, { parentOperationId: next.planTask.id })
       } else {
         plan = await planVideoTimeline(planningInput, { operationId: `${next.planTask.operation_id ?? next.planTask.id}-timeline`, signal, fetchImpl: this.fetchImpl, env: this.env, allowLegacyGateway: false })
+      }
+      if (stagedPlanningOperation) {
+        const staged = stagedPlanningOperation
+        activeTask = staged
+        await this.finalizeStagedRemotePlanningResult(staged)
+        return
       }
       await this.mutateProject(baseProject.id, async () => {
         const latest = await this.requireVideoProject(baseProject.id)
@@ -1981,6 +3407,7 @@ export class VideoWorkbenchService {
           // may only create a proposed draft; user accept/CommandSet is the
           // sole path that creates an Editorial Timeline Version.
           alternatives: [],
+          pending_relay_acknowledgements: editorialProject.pending_relay_acknowledgements,
           state: 'ready',
           revision: editorialProject.revision + 1,
         }))
@@ -1992,14 +3419,41 @@ export class VideoWorkbenchService {
           result: { timeline_draft_id: timelineDraft.id, project_revision: completed.revision, alternative_count: 0 },
         }))
       })
+      await this.flushPendingRelayAcknowledgements(baseProject.id)
     } catch (error) {
+      const interruptedAnalysis = await this.repository.getOperation(analyzeTask.id).catch(() => null)
+      const interruptedActive = activeTask.id === analyzeTask.id
+        ? interruptedAnalysis
+        : await this.repository.getOperation(activeTask.id).catch(() => null)
+      const asrRecovery = interruptedAnalysis?.result?.asr_checkpoints
+      const recoverableAsrStates = new Set(['submitting', 'submitted', 'running', 'cancel_pending', 'result_pending', 'outcome_unknown'])
+      const hasRecoverableAsr = Array.isArray(asrRecovery)
+        && asrRecovery.some(item => item && typeof item === 'object' && recoverableAsrStates.has(String((item as Record<string, unknown>).state)))
+      const hasGenericRecovery = Boolean(interruptedActive && this.remoteRecoveryCheckpoint(interruptedActive))
+      if (
+        interruptedActive
+        && (hasRecoverableAsr || hasGenericRecovery)
+      ) {
+        // A fenced submission or cancel intent is still owned by this exact
+        // parent id. Keep it startup-enumerable; failing it here would let the
+        // user create a fresh paid local_operation_id around the fence.
+        await this.repository.saveOperation(this.operation({
+          ...interruptedActive,
+          status: 'running',
+          stage: hasRecoverableAsr ? '正在恢复远程媒体操作' : '正在恢复远程规划',
+          error: undefined,
+          error_code: undefined,
+        })).catch(() => undefined)
+        return
+      }
       const cancelled = signal.aborted || (error instanceof VideoAnalysisError && error.code === 'VIDEO_ANALYSIS_CANCELLED')
       const stale = error instanceof VideoWorkbenchServiceError && error.code === 'VIDEO_ANALYSIS_STALE'
       const failure = mediaSafeError(cancelled
         ? 'MEDIA_VIDEO_ANALYSIS_CANCELLED'
         : stale ? 'MEDIA_STATE_CONFLICT' : 'MEDIA_VIDEO_ANALYSIS_UNAVAILABLE')
+      const failureTask = activeTask.id === analyzeTask.id && interruptedAnalysis ? interruptedAnalysis : activeTask
       await this.repository.saveOperation(this.operation({
-        ...activeTask,
+        ...failureTask,
         status: cancelled ? 'cancelled' : 'failed',
         progress: 0,
         stage: cancelled ? '已取消' : stale ? '方案已过期' : '视频分析失败',
@@ -2818,6 +4272,16 @@ export class VideoWorkbenchService {
   }
 
   async recoverInterruptedOperations(): Promise<void> {
+    // Relay result bytes are already represented by immutable Facts or a
+    // committed Project projection. Recovery starts by retrying that cleanup
+    // protocol only; it never replays a paid provider request for an ACK.
+    // Startup recovery must not fan out unbounded Relay ACK/introspection work
+    // across every local project before the Sidecar is ready. Sequential work
+    // keeps it below the same installation-level network/capacity envelope.
+    for (const project of await this.repository.listProjects()) {
+      await this.rebuildRelayAcknowledgementsFromFacts(project.id)
+      await this.flushPendingRelayAcknowledgements(project.id)
+    }
     const orchestrator = new JobOrchestrator(
       async () => (await this.repository.listOperations())
         .filter(operation => ['queued', 'running', 'committing'].includes(operation.status)),
@@ -2827,6 +4291,43 @@ export class VideoWorkbenchService {
   }
 
   private async recoverInterruptedOperation(operation: VideoOperation): Promise<void> {
+    if (operation.kind === 'video.index' && operation.status === 'committing' && this.stagedSemanticQueryResult(operation)) {
+      await this.finalizeStagedSemanticQueryResult(operation)
+      return
+    }
+    if (operation.kind === 'video.index' && operation.status === 'running') {
+      const query = typeof operation.result?.query === 'string' ? operation.result.query : null
+      const cursor = typeof operation.result?.cursor === 'string' ? operation.result.cursor : undefined
+      if (query) {
+        try {
+          await this.searchMediaFacts(operation.project_id, query, { ...(cursor ? { cursor } : {}) })
+        } catch {
+          const current = await this.repository.getOperation(operation.id).catch(() => null)
+          // Keep the deterministic query task enumerable while its exact Relay
+          // fence survives. A later startup or the same user query resumes it.
+          if (current && this.remoteRecoveryCheckpoint(current)) return
+          await this.failOperation(operation, 'MEDIA_VIDEO_ANALYSIS_INTERRUPTED', '语义查询恢复失败')
+        }
+        return
+      }
+    }
+    if (operation.kind === 'video.plan' && operation.status === 'committing' && this.stagedRemotePlanningResult(operation)) {
+      await this.finalizeStagedRemotePlanningResult(operation)
+      return
+    }
+    if (operation.kind === 'video.plan' && operation.status === 'running' && this.remoteRecoveryCheckpoint(operation)) {
+      try {
+        await this.recoverRemotePlanningOperation(operation)
+      } catch {
+        const current = await this.repository.getOperation(operation.id).catch(() => null)
+        // A surviving journal is the durable retry authority. Keep this task
+        // enumerable for the next bounded startup pass; never fall through to
+        // the generic interrupted-task failure that would permit a new id.
+        if (current && this.remoteRecoveryCheckpoint(current)) return
+        await this.failOperation(operation, 'MEDIA_VIDEO_ANALYSIS_INTERRUPTED', '远程规划恢复失败')
+      }
+      return
+    }
     if (operation.kind === 'video.fingerprint') {
       const sourceId = typeof operation.result?.source_id === 'string' ? operation.result.source_id : null
       if (!sourceId) {

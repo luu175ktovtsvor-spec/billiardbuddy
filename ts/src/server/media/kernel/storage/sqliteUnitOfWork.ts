@@ -9,7 +9,7 @@ export class SqliteUnitOfWorkError extends Error {
   }
 }
 
-const MEDIA_KERNEL_SCHEMA_VERSION = 5
+const MEDIA_KERNEL_SCHEMA_VERSION = 6
 
 /**
  * The Media Kernel is the only owner of the SQLite connection and schema
@@ -111,6 +111,7 @@ export class SqliteUnitOfWork {
       else if (version === 3) this.migrateV3()
       else if (version === 4) this.migrateV4()
       else if (version === 5) this.migrateV5()
+      else if (version === 6) this.migrateV6()
     }
   }
 
@@ -365,6 +366,27 @@ export class SqliteUnitOfWork {
       ); CREATE INDEX IF NOT EXISTS video_fact_embeddings_project_generation ON video_fact_embeddings(project_id,generation,entry_id);`)
       this.database.query('INSERT INTO media_kernel_schema_migrations(version,applied_at) VALUES(?,?)')
         .run(5, new Date().toISOString())
+    })
+  }
+
+  /** A document-embedding result becomes locally useful before its Relay
+   * object may be acknowledged. Keep that ACK obligation in the same SQLite
+   * transaction as the vectors, rather than relying on one request's memory. */
+  private migrateV6(): void {
+    this.transaction(() => {
+      this.database.exec(`CREATE TABLE IF NOT EXISTS video_fact_embedding_relay_acknowledgements(
+        relay_operation_id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL REFERENCES video_projects(id),
+        local_operation_id TEXT NOT NULL,
+        receipt_id TEXT NOT NULL,
+        result_hashes_json TEXT NOT NULL,
+        state TEXT NOT NULL CHECK(state IN ('pending','acknowledged','retired')),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      ); CREATE INDEX IF NOT EXISTS video_fact_embedding_relay_ack_project_state
+        ON video_fact_embedding_relay_acknowledgements(project_id,state,created_at);`)
+      this.database.query('INSERT INTO media_kernel_schema_migrations(version,applied_at) VALUES(?,?)')
+        .run(6, new Date().toISOString())
     })
   }
 }

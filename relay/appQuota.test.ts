@@ -15,6 +15,10 @@ function env(overrides: Record<string, string> = {}): Record<string, string> {
     RELAY_ARK_KEY: 'seedream-key',
     RELAY_OPENAI_BASE: 'https://openai.example.test/v1',
     RELAY_ARK_BASE: 'https://seedream.example.test/v1',
+    RELAY_OPENAI_ACCOUNT_REF: 'openai-quota-test-account',
+    RELAY_OPENAI_ACCOUNT_BINDING_REVISION: 'openai-quota-test-v1',
+    RELAY_SEEDREAM_ACCOUNT_REF: 'seedream-quota-test-account',
+    RELAY_SEEDREAM_ACCOUNT_BINDING_REVISION: 'seedream-quota-test-v1',
     RELAY_IMG_CONC: '1', RELAY_IMG_USER_CONC: '1', RELAY_OPENAI_RPM: '120',
     RELAY_SEEDREAM_CONC: '1', RELAY_SEEDREAM_USER_CONC: '1', RELAY_SEEDREAM_RPM: '120',
     RELAY_QUEUE_MAX: '8', RELAY_USER_MAX: '4',
@@ -62,6 +66,174 @@ async function waitTerminal(relay: ReturnType<typeof createRelayFetch>, taskId: 
 }
 
 describe('Image Relay paid task reservations', () => {
+  test('preserves one legacy unacknowledged result while sweeping acknowledged peers and backfills current-day provider spend', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'bb-image-relay-legacy-cutover-'))
+    const dbPath = join(root, 'relay.db')
+    const blobDir = join(root, 'blobs')
+    const current = Date.now()
+    const terminalAt = current - 1_000
+    const principal = `installation:${'a'.repeat(32)}`
+    const owner = `${principal}:desktop-installation-a`
+    const unacknowledgedId = 'legacy-result-13'
+    try {
+      const legacy = new Database(dbPath)
+      legacy.exec(`CREATE TABLE tasks(
+        id TEXT PRIMARY KEY, owner TEXT, idempotency_key TEXT, status TEXT NOT NULL,
+        error TEXT, input_fidelity TEXT, provider TEXT, provider_receipt_hash TEXT,
+        result_summary TEXT, acknowledged_at INTEGER, created INTEGER NOT NULL, updated INTEGER NOT NULL
+      )`)
+      const summary = JSON.stringify({ expected_count: 1, valid_count: 1, observed_count: 1, invalid: [], partial_outcome_unknown: false })
+      for (let index = 0; index < 14; index += 1) {
+        legacy.query('INSERT INTO tasks VALUES(?,?,?,?,?,?,?,?,?,?,?,?)').run(
+          `legacy-result-${index.toString().padStart(2, '0')}`,
+          owner,
+          `legacy-idempotency-${index}`,
+          'succeeded',
+          null,
+          null,
+          'OpenAI',
+          'a'.repeat(64),
+          summary,
+          index < 13 ? terminalAt : null,
+          terminalAt,
+          terminalAt,
+        )
+      }
+      legacy.close()
+
+      const relay = createRelayFetch({
+        env: env({
+          RELAY_DB: dbPath,
+          RELAY_BLOB_DIR: blobDir,
+          RELAY_TASK_TTL_MS: '1',
+          RELAY_UNACKNOWLEDGED_RESULT_TTL_MS: String(365 * 24 * 60 * 60_000),
+        }),
+        now: () => current,
+        identityFetchImpl: identityFetch,
+        fetchImpl: async () => { throw new Error('legacy result recovery must not call a Provider') },
+      })
+      writeFileSync(join(blobDir, `${unacknowledgedId}.out.json`), JSON.stringify({
+        data: [{ candidate_index: 0, b64_json: 'aGVsbG8=', mime_type: 'image/png' }],
+      }), { mode: 0o600 })
+
+      const handoff = await relay(new Request(`https://relay.example.test/v1/images/tasks/${unacknowledgedId}`, {
+        headers: { Authorization: 'Bearer desktop-a', 'X-BB-Media-Result-Handoff': 'direct-v1' },
+      }))
+      expect(handoff.status).toBe(200)
+      const projection = await handoff.json() as { result_urls?: string[]; result_acknowledged?: boolean }
+      expect(projection.result_acknowledged).toBeFalse()
+      expect(projection.result_urls).toHaveLength(1)
+
+      const resultPath = new URL(projection.result_urls![0]!).pathname.replace('/image-generation', '')
+      const result = await relay(new Request(`https://relay.example.test${resultPath}`, { headers: { Authorization: 'Bearer desktop-a' } }))
+      expect(result.status).toBe(200)
+      expect((await result.json() as { data?: unknown[] }).data).toHaveLength(1)
+      const acknowledgement = await relay(new Request(`https://relay.example.test/v1/images/tasks/${unacknowledgedId}/ack`, {
+        method: 'POST', headers: { Authorization: 'Bearer desktop-a' },
+      }))
+      expect(acknowledgement.status).toBe(200)
+
+      const migrated = new Database(dbPath)
+      expect(migrated.query('SELECT COUNT(*) AS count FROM tasks').get()).toEqual({ count: 1 })
+      expect(migrated.query('SELECT acknowledged_at FROM tasks WHERE id=?').get(unacknowledgedId))
+        .toEqual({ acknowledged_at: current })
+      expect(migrated.query("SELECT COUNT(*) AS count FROM image_quota_reservations WHERE policy_revision LIKE '%:legacy-terminal' AND state='settled'").get())
+        .toEqual({ count: 14 })
+      expect((migrated.query("SELECT SUM(amount_minor) AS amount FROM image_quota_reservations WHERE account_key='image:openai:openai-quota-test-account@openai-quota-test-v1'").get() as { amount: number }).amount)
+        .toBeGreaterThan(0)
+      migrated.close()
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  test('backfills only NULL legacy account keys and isolates quota after an account rotation', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'bb-image-relay-account-rotation-'))
+    const dbPath = join(root, 'relay.db')
+    const blobDir = join(root, 'blobs')
+    const current = Date.now()
+    const period = new Date(current).toISOString().slice(0, 10)
+    try {
+      const legacy = new Database(dbPath)
+      legacy.exec(
+        'CREATE TABLE image_quota_reservations(' +
+        'task_id TEXT PRIMARY KEY, owner TEXT NOT NULL, provider TEXT NOT NULL, period TEXT NOT NULL, ' +
+        'policy_revision TEXT NOT NULL, pricing_revision TEXT NOT NULL, amount_minor INTEGER NOT NULL, ' +
+        "state TEXT NOT NULL CHECK(state IN ('reserved','outcome_unknown','settled','released')), " +
+        'upstream_receipt_hash TEXT, created INTEGER NOT NULL, updated INTEGER NOT NULL)',
+      )
+      legacy.query('INSERT INTO image_quota_reservations VALUES(?,?,?,?,?,?,?,?,?,?,?)')
+        .run('legacy-openai-task', 'legacy-owner', 'openai', period, 'legacy-policy', 'legacy-price', 14, 'settled', null, current, current)
+      legacy.close()
+
+      createRelayFetch({
+        env: env({
+          RELAY_DB: dbPath,
+          RELAY_BLOB_DIR: blobDir,
+          RELAY_OPENAI_ACCOUNT_REF: 'openai-account-before-rotation',
+          RELAY_OPENAI_ACCOUNT_BINDING_REVISION: 'binding-v1',
+          RELAY_OPENAI_DAILY_USD_MINOR_LIMIT: '14',
+        }),
+        now: () => current,
+        identityFetchImpl: identityFetch,
+        fetchImpl: async () => Response.json({ data: [{ b64_json: 'aGVsbG8=' }] }),
+      })
+      const migrated = new Database(dbPath)
+      expect(migrated.query('SELECT account_key FROM image_quota_reservations WHERE task_id=?').get('legacy-openai-task'))
+        .toEqual({ account_key: 'image:openai:openai-account-before-rotation@binding-v1' })
+      migrated.query('INSERT INTO tasks(id,owner,idempotency_key,status,error,input_fidelity,input_bytes,input_fingerprint,provider,provider_receipt_hash,result_summary,acknowledged_at,created,updated) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
+        .run('legacy-queued-task', 'legacy-owner', 'legacy-queued-key', 'queued', null, null, 0, 'legacy-fingerprint', 'OpenAI', null, null, null, current, current)
+      migrated.query('INSERT INTO image_quota_reservations(task_id,owner,provider,account_key,period,policy_revision,pricing_revision,amount_minor,state,upstream_receipt_hash,created,updated) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)')
+        .run('legacy-queued-task', 'legacy-owner', 'openai', 'image:openai:openai-account-before-rotation@binding-v1', period, 'legacy-policy', 'legacy-price', 14, 'reserved', null, current, current)
+      migrated.close()
+      writeFileSync(join(blobDir, 'legacy-queued-task.in.json'), JSON.stringify({ mode: 'generate', model: 'gpt-image-2', prompt: 'must not cross account rotation', n: 1 }))
+
+      let providerCalls = 0
+      const rotated = createRelayFetch({
+        env: env({
+          RELAY_DB: dbPath,
+          RELAY_BLOB_DIR: blobDir,
+          RELAY_OPENAI_ACCOUNT_REF: 'openai-account-after-rotation',
+          RELAY_OPENAI_ACCOUNT_BINDING_REVISION: 'binding-v2',
+          RELAY_OPENAI_DAILY_USD_MINOR_LIMIT: '14',
+        }),
+        now: () => current,
+        identityFetchImpl: identityFetch,
+        fetchImpl: async () => { providerCalls += 1; return Response.json({ data: [{ b64_json: 'aGVsbG8=' }] }) },
+      })
+      const recoveryDeadline = Date.now() + 1_000
+      while (true) {
+        const recovery = new Database(dbPath)
+        const row = recovery.query('SELECT status FROM tasks WHERE id=?').get('legacy-queued-task') as { status: string }
+        recovery.close()
+        if (row.status !== 'queued') {
+          expect(row.status).toBe('failed')
+          break
+        }
+        if (Date.now() >= recoveryDeadline) throw new Error('rotated queued task did not stop before Provider execution')
+        await new Promise(resolve => setTimeout(resolve, 2))
+      }
+      expect(providerCalls).toBe(0)
+      const accepted = await rotated(request('desktop-a', 'new-binding-first'))
+      expect(accepted.status).toBe(202)
+      const task = await accepted.json() as { task_id: string }
+      expect((await waitTerminal(rotated, task.task_id)).status).toBe('succeeded')
+      expect(providerCalls).toBe(1)
+      expect((await rotated(request('desktop-b', 'new-binding-account-cap'))).status).toBe(429)
+
+      const afterRotation = new Database(dbPath)
+      expect(afterRotation.query('SELECT account_key FROM image_quota_reservations WHERE task_id=?').get('legacy-openai-task'))
+        .toEqual({ account_key: 'image:openai:openai-account-before-rotation@binding-v1' })
+      expect(afterRotation.query('SELECT account_key,state FROM image_quota_reservations WHERE task_id=?').get('legacy-queued-task'))
+        .toEqual({ account_key: 'image:openai:openai-account-before-rotation@binding-v1', state: 'released' })
+      expect(afterRotation.query('SELECT account_key FROM image_quota_reservations WHERE task_id=?').get(task.task_id))
+        .toEqual({ account_key: 'image:openai:openai-account-after-rotation@binding-v2' })
+      afterRotation.close()
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   test('enforces physical account and owner-across-provider daily caps from a persisted reservation', async () => {
     const relay = createRelayFetch({
       env: env({ RELAY_OWNER_DAILY_USD_MINOR_LIMIT: '20', RELAY_OPENAI_DAILY_USD_MINOR_LIMIT: '14' }),
@@ -142,6 +314,64 @@ describe('Image Relay paid task reservations', () => {
       expect(await replay.json()).toMatchObject({ task_id: task.task_id, status: 'succeeded', reused: true })
       expect(providerCalls).toBe(1)
       expect(readFileSync(join(root, 'blobs', `${task.task_id}.out.manifest.json`), 'utf8')).toBe(manifest)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  test('启动清理 ACK 崩溃窗口遗留输出，并对旧结果授权失败关闭', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'bb-image-relay-ack-recovery-'))
+    try {
+      const dbPath = join(root, 'relay.db')
+      const blobDir = join(root, 'blobs')
+      let providerCalls = 0
+      const first = createRelayFetch({
+        env: env({ RELAY_DB: dbPath, RELAY_BLOB_DIR: blobDir }),
+        identityFetchImpl: identityFetch,
+        fetchImpl: async () => {
+          providerCalls += 1
+          return Response.json({ data: [{ b64_json: 'aGVsbG8=' }] }, { headers: { 'x-request-id': 'ack-crash-window' } })
+        },
+      })
+      const submitted = await first(request('desktop-a', 'ack-crash-before-unlink'))
+      const task = await submitted.json() as { task_id: string }
+      expect(await waitTerminal(first, task.task_id)).toMatchObject({ status: 'succeeded' })
+      const handoff = await first(new Request(`https://relay.example.test/v1/images/tasks/${task.task_id}`, {
+        headers: { Authorization: 'Bearer desktop-a', 'X-BB-Media-Result-Handoff': 'direct-v1' },
+      }))
+      const resultUrl = (await handoff.json() as { result_urls: string[] }).result_urls[0]!
+      expect(existsSync(join(blobDir, `${task.task_id}.out.manifest.json`))).toBe(true)
+
+      // Exact crash state after SQLite ACK commit but before BlobStore.unlink.
+      const db = new Database(dbPath)
+      try {
+        db.query('UPDATE tasks SET acknowledged_at=?, updated=? WHERE id=?').run(Date.now(), Date.now(), task.task_id)
+      } finally {
+        db.close()
+      }
+
+      const resumed = createRelayFetch({
+        env: env({ RELAY_DB: dbPath, RELAY_BLOB_DIR: blobDir }),
+        identityFetchImpl: identityFetch,
+        fetchImpl: async () => {
+          providerCalls += 1
+          throw new Error('acknowledged result recovery must not resubmit a Provider task')
+        },
+      })
+      // createRelayFetch performs the startup sweep synchronously.
+      expect(existsSync(join(blobDir, `${task.task_id}.out.manifest.json`))).toBe(false)
+      expect(existsSync(join(blobDir, `${task.task_id}.out.0.json`))).toBe(false)
+
+      const projection = await resumed(new Request(`https://relay.example.test/v1/images/tasks/${task.task_id}`, {
+        headers: { Authorization: 'Bearer desktop-a', 'X-BB-Media-Result-Handoff': 'direct-v1' },
+      }))
+      expect(await projection.json()).toMatchObject({
+        status: 'succeeded', result_acknowledged: true, result_available: false, output_count: 0,
+      })
+      const resultPath = new URL(resultUrl).pathname.replace('/image-generation', '')
+      const oldGrant = await resumed(new Request(`https://relay.example.test${resultPath}`, { headers: { Authorization: 'Bearer desktop-a' } }))
+      expect(oldGrant.status).toBe(410)
+      expect(providerCalls).toBe(1)
     } finally {
       rmSync(root, { recursive: true, force: true })
     }

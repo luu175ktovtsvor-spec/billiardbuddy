@@ -70,6 +70,16 @@ export type VideoFactSearchPage = {
 }
 
 export type VideoFactEmbedding = { entry_id: string; vector: number[]; model_snapshot: string; instruction_version: string; content_hash: `sha256:${string}` }
+/** A Relay result may be deleted only after the already-persisted document
+ * vectors have been acknowledged. This is a SQLite outbox record, not a
+ * provider cache or an in-memory retry. */
+export type VideoFactEmbeddingRelayAcknowledgement = {
+  local_operation_id: string
+  relay_operation_id: string
+  receipt_id: string
+  result_hashes: `sha256:${string}`[]
+  created_at: string
+}
 
 type SearchRow = {
   rowid: number
@@ -321,14 +331,29 @@ export class SqliteMediaFactsRepository {
     }
   }
 
-  /** Stores only text-derived vectors.  Raw image/audio bytes never enter this index. */
+  /** Stores only text-derived vectors. Raw image/audio bytes never enter this index. */
   async saveEmbeddings(projectId: string, entries: VideoFactEmbedding[]): Promise<number> {
-    if (!entries.length) return await this.ensureSearchGeneration(projectId)
+    return await this.saveEmbeddingsWithRelayAcknowledgement(projectId, entries)
+  }
+
+  /** Atomically makes document vectors visible and records the corresponding
+   * Relay ACK obligation. A crash after commit can retry only the ACK; it
+   * cannot trigger a second embedding request for already-present entries. */
+  async saveEmbeddingsWithRelayAcknowledgement(
+    projectId: string,
+    entries: VideoFactEmbedding[],
+    acknowledgement?: VideoFactEmbeddingRelayAcknowledgement,
+  ): Promise<number> {
+    if (!entries.length) {
+      if (acknowledgement) throw new VideoFactsRepositoryError('Embedding ACK 缺少向量', 'VIDEO_FACTS_INVALID')
+      return await this.ensureSearchGeneration(projectId)
+    }
     const model = entries[0]!.model_snapshot
     const instruction = entries[0]!.instruction_version
     if (!entries.every(entry => entry.model_snapshot === model && entry.instruction_version === instruction && entry.vector.length === 768 && entry.vector.every(value => Number.isFinite(value)))) {
       throw new VideoFactsRepositoryError('Embedding 索引输入无效', 'VIDEO_FACTS_INVALID')
     }
+    if (acknowledgement) this.assertEmbeddingAcknowledgement(acknowledgement)
     await this.ensureSearchGeneration(projectId)
     return await this.fences.run(`project-${projectId}`, async () => this.unitOfWork.transaction(() => {
       const latest = this.unitOfWork.database.query(`SELECT model_snapshot,instruction_version FROM video_fact_embeddings WHERE project_id=? ORDER BY generation DESC LIMIT 1`).get(projectId) as { model_snapshot: string; instruction_version: string } | null
@@ -342,8 +367,76 @@ export class SqliteMediaFactsRepository {
           VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(project_id,entry_id,generation) DO UPDATE SET vector_json=excluded.vector_json,content_hash=excluded.content_hash,created_at=excluded.created_at`)
           .run(projectId, entry.entry_id, generation, model, 768, instruction, JSON.stringify(entry.vector), entry.content_hash, createdAt)
       }
+      if (acknowledgement) {
+        const existing = this.unitOfWork.database.query(`SELECT project_id,local_operation_id,receipt_id,result_hashes_json
+          FROM video_fact_embedding_relay_acknowledgements WHERE relay_operation_id=?`)
+          .get(acknowledgement.relay_operation_id) as { project_id: string; local_operation_id: string; receipt_id: string; result_hashes_json: string } | null
+        const hashes = JSON.stringify(acknowledgement.result_hashes)
+        if (existing && (
+          existing.project_id !== projectId
+          || existing.local_operation_id !== acknowledgement.local_operation_id
+          || existing.receipt_id !== acknowledgement.receipt_id
+          || existing.result_hashes_json !== hashes
+        )) throw new VideoFactsRepositoryError('Embedding ACK 回执不一致', 'VIDEO_FACTS_INVALID')
+        if (!existing) {
+          this.unitOfWork.database.query(`INSERT INTO video_fact_embedding_relay_acknowledgements(
+            relay_operation_id,project_id,local_operation_id,receipt_id,result_hashes_json,state,created_at,updated_at
+          ) VALUES(?,?,?,?,?,'pending',?,?)`).run(
+            acknowledgement.relay_operation_id,
+            projectId,
+            acknowledgement.local_operation_id,
+            acknowledgement.receipt_id,
+            hashes,
+            acknowledgement.created_at,
+            createdAt,
+          )
+        }
+      }
       return generation
     }))
+  }
+
+  async listPendingEmbeddingRelayAcknowledgements(projectId: string): Promise<VideoFactEmbeddingRelayAcknowledgement[]> {
+    const rows = this.unitOfWork.database.query(`SELECT local_operation_id,relay_operation_id,receipt_id,result_hashes_json,created_at
+      FROM video_fact_embedding_relay_acknowledgements
+      WHERE project_id=? AND state='pending' ORDER BY created_at,relay_operation_id`).all(projectId) as Array<{
+        local_operation_id: string; relay_operation_id: string; receipt_id: string; result_hashes_json: string; created_at: string
+      }>
+    return rows.map(row => {
+      let hashes: unknown
+      try { hashes = JSON.parse(row.result_hashes_json) } catch { throw new VideoFactsRepositoryError('Embedding ACK 记录损坏', 'VIDEO_FACTS_INVALID') }
+      const acknowledgement = { ...row, result_hashes: hashes }
+      this.assertEmbeddingAcknowledgement(acknowledgement)
+      return acknowledgement
+    })
+  }
+
+  async hasEmbeddingRelayAcknowledgement(projectId: string, acknowledgement: Pick<VideoFactEmbeddingRelayAcknowledgement, 'relay_operation_id' | 'receipt_id' | 'result_hashes'>): Promise<boolean> {
+    const row = this.unitOfWork.database.query(`SELECT receipt_id,result_hashes_json FROM video_fact_embedding_relay_acknowledgements
+      WHERE project_id=? AND relay_operation_id=? AND state IN ('pending','acknowledged','retired')`)
+      .get(projectId, acknowledgement.relay_operation_id) as { receipt_id: string; result_hashes_json: string } | null
+    return Boolean(row && row.receipt_id === acknowledgement.receipt_id && row.result_hashes_json === JSON.stringify(acknowledgement.result_hashes))
+  }
+
+  async resolveEmbeddingRelayAcknowledgement(projectId: string, relayOperationId: string, state: 'acknowledged' | 'retired'): Promise<void> {
+    await this.fences.run(`project-${projectId}`, async () => this.unitOfWork.transaction(() => {
+      this.unitOfWork.database.query(`UPDATE video_fact_embedding_relay_acknowledgements
+        SET state=?,updated_at=? WHERE project_id=? AND relay_operation_id=? AND state='pending'`)
+        .run(state, this.now().toISOString(), projectId, relayOperationId)
+    }))
+  }
+
+  private assertEmbeddingAcknowledgement(value: unknown): asserts value is VideoFactEmbeddingRelayAcknowledgement {
+    const acknowledgement = value as Partial<VideoFactEmbeddingRelayAcknowledgement>
+    if (
+      !acknowledgement
+      || typeof acknowledgement.local_operation_id !== 'string' || !acknowledgement.local_operation_id
+      || typeof acknowledgement.relay_operation_id !== 'string' || !acknowledgement.relay_operation_id
+      || typeof acknowledgement.receipt_id !== 'string' || !acknowledgement.receipt_id
+      || typeof acknowledgement.created_at !== 'string' || Number.isNaN(Date.parse(acknowledgement.created_at))
+      || !Array.isArray(acknowledgement.result_hashes) || !acknowledgement.result_hashes.length
+      || !acknowledgement.result_hashes.every(hash => typeof hash === 'string' && /^sha256:[a-f0-9]{64}$/.test(hash))
+    ) throw new VideoFactsRepositoryError('Embedding ACK 记录无效', 'VIDEO_FACTS_INVALID')
   }
 
   /**

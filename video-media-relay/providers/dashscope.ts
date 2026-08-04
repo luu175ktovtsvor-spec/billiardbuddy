@@ -1,10 +1,12 @@
 import { createHash, randomUUID } from 'node:crypto'
 import type { CreateVideoRelayOperationRequest, ProviderExecutionReceipt } from '../contracts/relayApi.ts'
 import { videoProviderFor } from '../providerRegistry.ts'
+import { fetchBoundedResponseText, UpstreamDeadlineExceededError, UpstreamResponseTooLargeError } from '../network.ts'
 
 type Identity = { owner: string }
 type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
 export type DashScopeExecution = { state: 'succeeded' | 'submitted' | 'running'; provider_task_id?: string; receipt: ProviderExecutionReceipt; result?: unknown }
+export type DashScopePollExecution = DashScopeExecution | { state: 'failed' | 'expired' | 'cancelled'; provider_task_id?: string; receipt: ProviderExecutionReceipt; safe_error_code: string }
 
 export class DashScopeProviderError extends Error { constructor(readonly status: number, readonly code: string) { super(code) } }
 
@@ -13,8 +15,8 @@ export class DashScopeProviderError extends Error { constructor(readonly status:
  * capability contract, never a caller-selected model/options/provider URL.
  */
 export class DashScopeVideoProvider {
-  constructor(private readonly options: { apiKey: string; fetchImpl?: FetchLike; now?: () => Date; baseUrl?: string; asrBaseUrl?: string }) {}
-  async execute(input: CreateVideoRelayOperationRequest, _identity: Identity, media: { object_urls: string[]; object_byte_sizes?: number[] } = { object_urls: [] }): Promise<DashScopeExecution> {
+  constructor(private readonly options: { apiKey: string; fetchImpl?: FetchLike; now?: () => Date; baseUrl?: string; asrBaseUrl?: string; timeoutMs?: number; responseMaxBytes?: number; transcriptMaxBytes?: number }) {}
+  async execute(input: CreateVideoRelayOperationRequest, _identity: Identity, media: { object_urls: string[]; object_byte_sizes?: number[] } = { object_urls: [] }, options: { signal?: AbortSignal; onAccepted?: (accepted: { provider_task_id: string; receipt: ProviderExecutionReceipt }) => Promise<void> } = {}): Promise<DashScopeExecution> {
     const descriptor = videoProviderFor(input)
     const endpoint = this.options.baseUrl?.replace(/\/+$/, '') ?? 'https://dashscope.aliyuncs.com/compatible-mode/v1'
     const body = input.capability === 'semantic_embedding'
@@ -30,14 +32,17 @@ export class DashScopeVideoProvider {
             : null
     if (!body) throw new DashScopeProviderError(503, 'provider_object_input_not_ready')
     let response: Response
+    let raw: string
     try {
       const isAsr = input.capability === 'speech_transcription'
       const longAsr = isAsr && input.input.mode === 'long_async'
       const asrBase = (this.options.asrBaseUrl ?? 'https://dashscope.aliyuncs.com/api/v1').replace(/\/+$/, '')
-      response = await (this.options.fetchImpl ?? fetch)(isAsr ? (longAsr ? `${asrBase}/services/audio/asr/transcription` : `${asrBase}/services/aigc/multimodal-generation/generation`) : `${endpoint}/${input.capability === 'semantic_embedding' ? 'embeddings' : 'chat/completions'}`, { method: 'POST', headers: { Authorization: `Bearer ${this.options.apiKey}`, 'Content-Type': 'application/json', ...(longAsr ? { 'X-DashScope-Async': 'enable' } : {}) }, body: JSON.stringify(body) })
-    } catch { throw new DashScopeProviderError(503, 'provider_unavailable') }
-    const raw = await response.text()
-    if (raw.length > 4 * 1024 * 1024) throw new DashScopeProviderError(502, 'provider_result_too_large')
+      ;({ response, text: raw } = await fetchBoundedResponseText(this.options.fetchImpl ?? fetch, isAsr ? (longAsr ? `${asrBase}/services/audio/asr/transcription` : `${asrBase}/services/aigc/multimodal-generation/generation`) : `${endpoint}/${input.capability === 'semantic_embedding' ? 'embeddings' : 'chat/completions'}`, { method: 'POST', headers: { Authorization: `Bearer ${this.options.apiKey}`, 'Content-Type': 'application/json', ...(longAsr ? { 'X-DashScope-Async': 'enable' } : {}) }, body: JSON.stringify(body) }, this.options.responseMaxBytes ?? 4 * 1024 * 1024, this.options.timeoutMs ?? 120_000, options.signal))
+    } catch (error) {
+      if (error instanceof UpstreamResponseTooLargeError) throw new DashScopeProviderError(502, 'provider_result_too_large')
+      if (error instanceof UpstreamDeadlineExceededError) throw new DashScopeProviderError(503, 'provider_timeout')
+      throw new DashScopeProviderError(503, 'provider_unavailable')
+    }
     let parsed: Record<string, unknown>
     try { parsed = JSON.parse(raw) as Record<string, unknown> } catch { throw new DashScopeProviderError(502, 'provider_invalid_response') }
     if (!response.ok) {
@@ -48,7 +53,12 @@ export class DashScopeVideoProvider {
     if (input.capability === 'speech_transcription' && input.input.mode === 'long_async') {
       const taskId = taskIdFrom(parsed)
       if (!taskId) throw new DashScopeProviderError(502, 'asr_task_id_missing')
-      return { state: 'submitted', provider_task_id: taskId, receipt: this.receipt(input, descriptor.model_id, body, raw, parsed, undefined, media) }
+      const receipt = this.receipt(input, descriptor.model_id, body, raw, parsed, undefined, media)
+      // Once DashScope has returned a task id, losing it is worse than losing
+      // the HTTP response: the Relay can poll this durable id after a restart
+      // without issuing another billable ASR submission.
+      await options.onAccepted?.({ provider_task_id: taskId, receipt })
+      return { state: 'submitted', provider_task_id: taskId, receipt }
     }
     const result = input.capability === 'semantic_embedding'
       ? embeddingResult(parsed, input.input.items.map(item => item.id))
@@ -58,33 +68,96 @@ export class DashScopeVideoProvider {
     return { state: 'succeeded', result, receipt: this.receipt(input, descriptor.model_id, body, raw, parsed, input.capability === 'speech_transcription' ? asrSeconds(parsed) : undefined, media) }
   }
 
-  async poll(input: CreateVideoRelayOperationRequest, providerTaskId: string, _identity: Identity, media: { object_urls: string[]; object_byte_sizes?: number[] } = { object_urls: [] }): Promise<DashScopeExecution & { safe_error_code?: string }> {
+  async poll(input: CreateVideoRelayOperationRequest, providerTaskId: string, _identity: Identity, media: { object_urls: string[]; object_byte_sizes?: number[] } = { object_urls: [] }, options: { signal?: AbortSignal } = {}): Promise<DashScopePollExecution> {
     if (input.capability !== 'speech_transcription' || input.input.mode !== 'long_async') throw new DashScopeProviderError(422, 'provider_poll_unsupported')
+    const descriptor = videoProviderFor(input)
     let response: Response
+    let raw: string
     const asrBase = (this.options.asrBaseUrl ?? 'https://dashscope.aliyuncs.com/api/v1').replace(/\/+$/, '')
-    try { response = await (this.options.fetchImpl ?? fetch)(`${asrBase}/tasks/${encodeURIComponent(providerTaskId)}`, { headers: { Authorization: `Bearer ${this.options.apiKey}` } }) } catch { throw new DashScopeProviderError(503, 'provider_unavailable') }
-    const raw = await response.text()
+    try {
+      ;({ response, text: raw } = await fetchBoundedResponseText(this.options.fetchImpl ?? fetch, `${asrBase}/tasks/${encodeURIComponent(providerTaskId)}`, { headers: { Authorization: `Bearer ${this.options.apiKey}` } }, this.options.responseMaxBytes ?? 4 * 1024 * 1024, this.options.timeoutMs ?? 120_000, options.signal))
+    } catch (error) {
+      if (error instanceof UpstreamResponseTooLargeError) throw new DashScopeProviderError(502, 'provider_result_too_large')
+      if (error instanceof UpstreamDeadlineExceededError) throw new DashScopeProviderError(503, 'provider_timeout')
+      throw new DashScopeProviderError(503, 'provider_unavailable')
+    }
     let parsed: Record<string, unknown>
     try { parsed = JSON.parse(raw) as Record<string, unknown> } catch { throw new DashScopeProviderError(502, 'provider_invalid_response') }
     if (!response.ok) {
-      if (response.status === 404 || response.status === 410) return { state: 'expired', receipt: this.receipt(input, 'fun-asr', {}, raw, parsed, undefined, media), safe_error_code: 'asr_result_expired' }
-      throw new DashScopeProviderError(response.status >= 500 ? 503 : 422, 'provider_poll_rejected')
+      if (response.status === 404 || response.status === 410) return { state: 'expired', receipt: this.receipt(input, descriptor.model_id, {}, raw, parsed, undefined, media), safe_error_code: 'asr_result_expired' }
+      // A query rejection does not prove anything about the already-created
+      // remote task. Keep it retryable so Relay continues polling the durable
+      // task id instead of manufacturing a terminal failure.
+      throw new DashScopeProviderError(503, 'provider_poll_rejected')
     }
     const output = parsed.output && typeof parsed.output === 'object' ? parsed.output as Record<string, unknown> : {}
     const status = String(output.task_status ?? parsed.task_status ?? '').toUpperCase()
-    if (['PENDING', 'RUNNING', 'QUEUED'].includes(status)) return { state: status === 'RUNNING' ? 'running' : 'submitted', provider_task_id: providerTaskId, receipt: this.receipt(input, 'fun-asr', {}, raw, parsed, undefined, media) }
-    if (!['SUCCEEDED', 'SUCCESS'].includes(status)) return { state: 'failed', provider_task_id: providerTaskId, receipt: this.receipt(input, 'fun-asr', {}, raw, parsed, undefined, media), safe_error_code: 'asr_task_failed' }
+    if (['PENDING', 'RUNNING', 'QUEUED'].includes(status)) return { state: status === 'RUNNING' ? 'running' : 'submitted', provider_task_id: providerTaskId, receipt: this.receipt(input, descriptor.model_id, {}, raw, parsed, undefined, media) }
+    if (['CANCELED', 'CANCELLED'].includes(status)) return { state: 'cancelled', provider_task_id: providerTaskId, receipt: this.receipt(input, descriptor.model_id, {}, raw, parsed, undefined, media), safe_error_code: 'asr_task_cancelled' }
+    if (!['SUCCEEDED', 'SUCCESS'].includes(status)) return { state: 'failed', provider_task_id: providerTaskId, receipt: this.receipt(input, descriptor.model_id, {}, raw, parsed, undefined, media), safe_error_code: 'asr_task_failed' }
     const transcriptionUrl = transcriptionUrlFrom(output)
-    if (!transcriptionUrl) return { state: 'failed', provider_task_id: providerTaskId, receipt: this.receipt(input, 'fun-asr', {}, raw, parsed, undefined, media), safe_error_code: 'asr_result_missing' }
+    if (!transcriptionUrl) return { state: 'failed', provider_task_id: providerTaskId, receipt: this.receipt(input, descriptor.model_id, {}, raw, parsed, undefined, media), safe_error_code: 'asr_result_missing' }
     let transcription: Record<string, unknown>
     try {
-      const downloaded = await (this.options.fetchImpl ?? fetch)(transcriptionUrl)
-      if (!downloaded.ok) throw new Error('not_ok')
-      const text = await downloaded.text()
-      if (text.length > 16 * 1024 * 1024) throw new Error('too_large')
-      transcription = JSON.parse(text) as Record<string, unknown>
-    } catch { throw new DashScopeProviderError(503, 'asr_result_download_unavailable') }
-    return { state: 'succeeded', provider_task_id: providerTaskId, result: asrResult(transcription), receipt: this.receipt(input, 'fun-asr', {}, raw, parsed, asrSeconds(transcription), media) }
+      const downloaded = await fetchBoundedResponseText(this.options.fetchImpl ?? fetch, transcriptionUrl, { redirect: 'error' }, this.options.transcriptMaxBytes ?? 32 * 1024 * 1024, this.options.timeoutMs ?? 120_000, options.signal)
+      if (!downloaded.response.ok) throw new Error('not_ok')
+      // Fetch must not follow an untrusted Provider redirect. The final URL
+      // check also covers non-standard fetch implementations used by hosts.
+      if (downloaded.response.url && !isApprovedTranscriptionUrl(downloaded.response.url)) {
+        throw new DashScopeProviderError(502, 'asr_result_redirect_rejected')
+      }
+      transcription = JSON.parse(downloaded.text) as Record<string, unknown>
+    } catch (error) {
+      if (error instanceof DashScopeProviderError) throw error
+      if (error instanceof UpstreamResponseTooLargeError) throw new DashScopeProviderError(502, 'asr_result_too_large')
+      if (error instanceof UpstreamDeadlineExceededError) throw new DashScopeProviderError(503, 'provider_timeout')
+      throw new DashScopeProviderError(503, 'asr_result_download_unavailable')
+    }
+    return { state: 'succeeded', provider_task_id: providerTaskId, result: asrResult(transcription), receipt: this.receipt(input, descriptor.model_id, {}, raw, parsed, asrSeconds(transcription), media) }
+  }
+
+  /** DashScope's asynchronous-task API can cancel only PENDING work. A 2xx
+   * cancel response is therefore not treated as terminal proof by itself: the
+   * query endpoint must explicitly report CANCELED/CANCELLED before Relay may
+   * publish `cancelled`. RUNNING or another terminal state remains unmodified
+   * and continues through the ordinary polling path. */
+  async cancel(providerTaskId: string, options: { signal?: AbortSignal } = {}): Promise<{ cancelled: true } | void> {
+    const asrBase = (this.options.asrBaseUrl ?? 'https://dashscope.aliyuncs.com/api/v1').replace(/\/+$/, '')
+    const taskPath = `${asrBase}/tasks/${encodeURIComponent(providerTaskId)}`
+    let cancellation: Response
+    try {
+      cancellation = (await fetchBoundedResponseText(this.options.fetchImpl ?? fetch, `${taskPath}/cancel`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${this.options.apiKey}` },
+      }, this.options.responseMaxBytes ?? 4 * 1024 * 1024, this.options.timeoutMs ?? 120_000, options.signal)).response
+    } catch (error) {
+      if (error instanceof UpstreamResponseTooLargeError) throw new DashScopeProviderError(502, 'provider_result_too_large')
+      if (error instanceof UpstreamDeadlineExceededError) throw new DashScopeProviderError(503, 'provider_timeout')
+      throw new DashScopeProviderError(503, 'provider_unavailable')
+    }
+    if (!cancellation.ok && cancellation.status >= 500) throw new DashScopeProviderError(503, 'provider_cancel_unavailable')
+    if (!cancellation.ok && cancellation.status === 429) throw new DashScopeProviderError(429, 'provider_rate_limited')
+
+    let query: Response
+    let raw: string
+    try {
+      ;({ response: query, text: raw } = await fetchBoundedResponseText(this.options.fetchImpl ?? fetch, taskPath, {
+        headers: { Authorization: `Bearer ${this.options.apiKey}` },
+      }, this.options.responseMaxBytes ?? 4 * 1024 * 1024, this.options.timeoutMs ?? 120_000, options.signal))
+    } catch (error) {
+      if (error instanceof UpstreamResponseTooLargeError) throw new DashScopeProviderError(502, 'provider_result_too_large')
+      if (error instanceof UpstreamDeadlineExceededError) throw new DashScopeProviderError(503, 'provider_timeout')
+      throw new DashScopeProviderError(503, 'provider_unavailable')
+    }
+    if (!query.ok) {
+      if (query.status >= 500) throw new DashScopeProviderError(503, 'provider_poll_rejected')
+      return
+    }
+    let parsed: Record<string, unknown>
+    try { parsed = JSON.parse(raw) as Record<string, unknown> } catch { throw new DashScopeProviderError(502, 'provider_invalid_response') }
+    const output = parsed.output && typeof parsed.output === 'object' ? parsed.output as Record<string, unknown> : {}
+    const status = String(output.task_status ?? parsed.task_status ?? '').toUpperCase()
+    if (status === 'CANCELED' || status === 'CANCELLED') return { cancelled: true }
   }
 
   private receipt(input: CreateVideoRelayOperationRequest, model: string, body: unknown, raw: string, parsed: Record<string, unknown>, measuredAsrSeconds?: number, media: { object_urls: string[]; object_byte_sizes?: number[] } = { object_urls: [] }): ProviderExecutionReceipt {
@@ -158,11 +231,14 @@ function taskIdFrom(raw: Record<string, unknown>): string | undefined {
   const value = output.task_id ?? raw.task_id
   return typeof value === 'string' && value.length > 0 && value.length <= 500 ? value : undefined
 }
+function isApprovedTranscriptionUrl(value: string): boolean {
+  try {
+    const url = new URL(value)
+    return url.protocol === 'https:' && (url.hostname === 'oss-cn-beijing.aliyuncs.com' || url.hostname.endsWith('.oss-cn-beijing.aliyuncs.com'))
+  } catch { return false }
+}
 function transcriptionUrlFrom(output: Record<string, unknown>): string | undefined {
   const results = Array.isArray(output.results) ? output.results : []
   const value = results[0] && typeof results[0] === 'object' ? (results[0] as Record<string, unknown>).transcription_url : undefined
-  try {
-    const url = typeof value === 'string' ? new URL(value) : null
-    return url?.protocol === 'https:' && (url.hostname === 'oss-cn-beijing.aliyuncs.com' || url.hostname.endsWith('.oss-cn-beijing.aliyuncs.com')) ? url.toString() : undefined
-  } catch { return undefined }
+  return typeof value === 'string' && isApprovedTranscriptionUrl(value) ? value : undefined
 }

@@ -10,8 +10,8 @@ describe('Relay capacity policy', () => {
     expect(policy).toEqual({
       revision: 'relay-image-small-scale-v1',
       providers: {
-        openai: { concurrency: 2, owner_concurrency: 1, requests_per_minute: 12, upstream_timeout_ms: 5 * 60_000 },
-        seedream: { concurrency: 2, owner_concurrency: 1, requests_per_minute: 30, upstream_timeout_ms: 5 * 60_000 },
+        openai: { account_key: 'image:openai:openai-managed-default@legacy-v1', concurrency: 2, owner_concurrency: 1, requests_per_minute: 12, upstream_timeout_ms: 5 * 60_000 },
+        seedream: { account_key: 'image:seedream:seedream-managed-default@legacy-v1', concurrency: 2, owner_concurrency: 1, requests_per_minute: 30, upstream_timeout_ms: 5 * 60_000 },
       },
       admission: {
         queue_max: 24,
@@ -27,6 +27,10 @@ describe('Relay capacity policy', () => {
   test('兼容当前 Relay 环境变量并集中 RPM 与超时覆盖', () => {
     const policy = relayCapacityPolicyFromEnvironment({
       RELAY_CAPACITY_POLICY_REVISION: 'relay-image-small-scale-v2',
+      RELAY_OPENAI_ACCOUNT_REF: 'openai-primary',
+      RELAY_OPENAI_ACCOUNT_BINDING_REVISION: 'binding-v2',
+      RELAY_SEEDREAM_ACCOUNT_REF: 'seedream-primary',
+      RELAY_SEEDREAM_ACCOUNT_BINDING_REVISION: 'binding-v3',
       RELAY_IMG_CONC: '8',
       RELAY_IMG_USER_CONC: '2',
       RELAY_SEEDREAM_CONC: '4',
@@ -42,8 +46,8 @@ describe('Relay capacity policy', () => {
     })
 
     expect(policy.revision).toBe('relay-image-small-scale-v2')
-    expect(policy.providers.openai).toEqual({ concurrency: 8, owner_concurrency: 2, requests_per_minute: 30, upstream_timeout_ms: 60000 })
-    expect(policy.providers.seedream).toEqual({ concurrency: 4, owner_concurrency: 3, requests_per_minute: 40, upstream_timeout_ms: 60000 })
+    expect(policy.providers.openai).toEqual({ account_key: 'image:openai:openai-primary@binding-v2', concurrency: 8, owner_concurrency: 2, requests_per_minute: 30, upstream_timeout_ms: 60000 })
+    expect(policy.providers.seedream).toEqual({ account_key: 'image:seedream:seedream-primary@binding-v3', concurrency: 4, owner_concurrency: 3, requests_per_minute: 40, upstream_timeout_ms: 60000 })
     expect(policy.admission).toEqual({ queue_max: 80, owner_task_max: 6, max_body_bytes: 1024, pending_input_bytes_max: 2048, active_input_bytes_max: 4096 })
     expect(policy.identity_admission).toEqual({ max_active: 8, max_queued: 32, max_wait_ms: 10_000 })
   })
@@ -65,6 +69,10 @@ describe('Relay capacity policy', () => {
       .toThrow('RELAY_UPSTREAM_TIMEOUT_MS')
     expect(() => relayCapacityPolicyFromEnvironment({ RELAY_IDENTITY_MAX_ACTIVE: '0' }))
       .toThrow('RELAY_IDENTITY_MAX_ACTIVE')
+    expect(() => relayCapacityPolicyFromEnvironment({ RELAY_OPENAI_ACCOUNT_REF: 'contains@separator' }))
+      .toThrow('RELAY_OPENAI_ACCOUNT_REF')
+    expect(() => relayCapacityPolicyFromEnvironment({ RELAY_SEEDREAM_ACCOUNT_BINDING_REVISION: '包含中文' }))
+      .toThrow('RELAY_SEEDREAM_ACCOUNT_BINDING_REVISION')
   })
 })
 
@@ -73,8 +81,14 @@ describe('Image Relay deployment preflight', () => {
     const valid = {
       RELAY_DB: '/data/image-relay.db',
       RELAY_BLOB_DIR: '/data/blobs',
+      RELAY_TASK_TTL_MS: String(7 * 24 * 60 * 60_000),
+      RELAY_UNACKNOWLEDGED_RESULT_TTL_MS: String(365 * 24 * 60 * 60_000),
       RELAY_OPENAI_KEY: 'openai-key',
+      RELAY_OPENAI_ACCOUNT_REF: 'openai-production-primary',
+      RELAY_OPENAI_ACCOUNT_BINDING_REVISION: 'openai-production-v1',
       RELAY_ARK_KEY: 'seedream-key',
+      RELAY_SEEDREAM_ACCOUNT_REF: 'seedream-production-primary',
+      RELAY_SEEDREAM_ACCOUNT_BINDING_REVISION: 'seedream-production-v1',
       IMAGE_RELAY_GATEWAY_INTROSPECTION_BASE: 'http://gateway:8799',
       IMAGE_RELAY_GATEWAY_INTROSPECTION_TOKEN: 'i'.repeat(32),
       IMAGE_RELAY_PUBLIC_BASE: 'https://zzyppz.cn/image-generation',
@@ -112,6 +126,8 @@ describe('Image Relay deployment preflight', () => {
       .toThrow('RELAY_DB')
     expect(() => validateRelayDeploymentEnvironment({ ...valid, RELAY_ARK_KEY: '' }))
       .toThrow('RELAY_ARK_KEY')
+    expect(() => validateRelayDeploymentEnvironment({ ...valid, RELAY_UNACKNOWLEDGED_RESULT_TTL_MS: '1' }))
+      .toThrow('must not be less than RELAY_TASK_TTL_MS')
     expect(() => validateRelayDeploymentEnvironment({ ...valid, RELAY_QUEUE_MAX: '1000' }))
       .toThrow('RELAY_QUEUE_MAX')
     expect(() => validateRelayDeploymentEnvironment(({ ...valid, RELAY_OPENAI_RPM: undefined })))

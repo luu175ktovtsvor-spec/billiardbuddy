@@ -23,6 +23,7 @@ import {
   type VideoFactsPage,
   type VideoFactSearchPage,
   type VideoFactEmbedding,
+  type VideoFactEmbeddingRelayAcknowledgement,
 } from '../video/infrastructure/sqliteMediaFactsRepository.js'
 import type { VideoFact, VideoFactKind } from '../video/domain/mediaFacts/model.js'
 
@@ -510,6 +511,33 @@ export class VideoWorkbenchRepository {
   async saveFactEmbeddings(projectId: string, entries: VideoFactEmbedding[]): Promise<number> {
     await this.ready()
     return await this.facts.saveEmbeddings(projectId, entries)
+  }
+
+  async saveFactEmbeddingsWithRelayAcknowledgement(
+    projectId: string,
+    entries: VideoFactEmbedding[],
+    acknowledgement: VideoFactEmbeddingRelayAcknowledgement,
+  ): Promise<number> {
+    await this.ready()
+    return await this.facts.saveEmbeddingsWithRelayAcknowledgement(projectId, entries, acknowledgement)
+  }
+
+  async listPendingFactEmbeddingRelayAcknowledgements(projectId: string): Promise<VideoFactEmbeddingRelayAcknowledgement[]> {
+    await this.ready()
+    return await this.facts.listPendingEmbeddingRelayAcknowledgements(projectId)
+  }
+
+  async hasFactEmbeddingRelayAcknowledgement(
+    projectId: string,
+    acknowledgement: Pick<VideoFactEmbeddingRelayAcknowledgement, 'relay_operation_id' | 'receipt_id' | 'result_hashes'>,
+  ): Promise<boolean> {
+    await this.ready()
+    return await this.facts.hasEmbeddingRelayAcknowledgement(projectId, acknowledgement)
+  }
+
+  async resolveFactEmbeddingRelayAcknowledgement(projectId: string, relayOperationId: string, state: 'acknowledged' | 'retired'): Promise<void> {
+    await this.ready()
+    await this.facts.resolveEmbeddingRelayAcknowledgement(projectId, relayOperationId, state)
   }
 
   async hybridSearchFactsPage(projectId: string, query: string, vector: number[], options?: { cursor?: string; limit?: number }): Promise<VideoFactSearchPage> {

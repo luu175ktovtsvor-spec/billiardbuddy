@@ -54,6 +54,7 @@ function minimumBackendConfig(): GatewayCapacityBackendConfig {
   const rate = { rpm: 1, queueMax: 0 }
   return {
     mimo: {
+      scope: { kind: 'provider-account', account_key: 'gateway-mimo-account:test:v1', scope_key: 'gateway-mimo-account:test:v1' },
       reservations: {
         maxConcurrent: 2,
         mediaConcurrent: 1,
@@ -68,10 +69,11 @@ function minimumBackendConfig(): GatewayCapacityBackendConfig {
       },
       rate,
     },
-    deepseek: { capacity, rate },
-    qwen: { capacity, rate },
-    transcription: { capacity, rate },
-    bootstrap: { rate },
+    deepseek: { scope: { kind: 'provider-account', account_key: 'gateway-deepseek-account:test:v1', scope_key: 'gateway-deepseek-account:test:v1' }, capacity, rate },
+    qwen: { scope: { kind: 'provider-account', account_key: 'gateway-qwen-account:test:v1', scope_key: 'gateway-qwen-account:test:v1' }, capacity, rate },
+    transcription: { scope: { kind: 'provider-account', account_key: 'gateway-funasr-account:test:v1', scope_key: 'gateway-funasr-account:test:v1' }, capacity, rate },
+    bootstrap: { scope: { kind: 'bootstrap', scope_key: 'gateway-bootstrap' }, rate },
+    ingress: { scope: { kind: 'ingress', scope_key: 'gateway-ingress' } },
   }
 }
 
@@ -136,13 +138,21 @@ test('Gateway 仅从容量策略构造可替换的整套容量后端，并在业
       GW_DEEPSEEK_TOKEN_CONC: '2',
       GW_DEEPSEEK_INFLIGHT_PER_USER: '3',
       GW_DEEPSEEK_QUEUE_MAX: '4',
+      GW_DEEPSEEK_ACCOUNT_REF: 'deepseek-prod-a',
+      GW_DEEPSEEK_ACCOUNT_BINDING_REVISION: '2026-08-04',
       GW_MIMO_RPM: '11',
       GW_MIMO_CONC: '4',
       GW_MIMO_MEDIA_CONC: '2',
       GW_VISION_CONC: '2',
+      GW_MIMO_ACCOUNT_REF: 'mimo-prod-a',
+      GW_MIMO_ACCOUNT_BINDING_REVISION: '2026-08-04',
+      GW_QWEN_ACCOUNT_REF: 'qwen-prod-a',
+      GW_QWEN_ACCOUNT_BINDING_REVISION: '2026-08-04',
       GW_TRANSCRIBE_RPM: '5',
       GW_TRANSCRIBE_CONC: '2',
       GW_TRANSCRIBE_QUEUE_MAX: '3',
+      GW_FUNASR_ACCOUNT_REF: 'funasr-prod-a',
+      GW_FUNASR_ACCOUNT_BINDING_REVISION: '2026-08-04',
       GW_BOOTSTRAP_RPM: '9',
       BB_GATEWAY_MODEL: 'deepseek-v4-flash',
       GW_DEEPSEEK_KEY: 'deepseek-test-key',
@@ -198,17 +208,24 @@ test('Gateway 仅从容量策略构造可替换的整套容量后端，并在业
   expect(deepseekFenceChecks).toBeGreaterThanOrEqual(1)
   expect(received).toMatchObject({
     mimo: {
+      scope: { kind: 'provider-account', account_key: 'gateway-mimo-account:mimo-prod-a:2026-08-04' },
       reservations: { maxConcurrent: 4, mediaConcurrent: 2, visionConcurrent: 2 },
       rate: { rpm: 11, queueMax: 24 },
     },
     deepseek: {
+      scope: { kind: 'provider-account', account_key: 'gateway-deepseek-account:deepseek-prod-a:2026-08-04' },
       capacity: { maxConcurrent: 3, maxConcurrentPerUser: 1, maxConcurrentPerToken: 2, maxInflightPerUser: 3, queueMax: 4 },
       rate: { rpm: 17, queueMax: 4 },
     },
+    qwen: {
+      scope: { kind: 'provider-account', account_key: 'gateway-qwen-account:qwen-prod-a:2026-08-04' },
+    },
     transcription: {
+      scope: { kind: 'provider-account', account_key: 'gateway-funasr-account:funasr-prod-a:2026-08-04' },
       capacity: { maxConcurrent: 2, queueMax: 3 },
       rate: { rpm: 5, queueMax: 3 },
     },
-    bootstrap: { rate: { rpm: 9, queueMax: 0 } },
+    bootstrap: { scope: { kind: 'bootstrap', scope_key: 'gateway-bootstrap' }, rate: { rpm: 9, queueMax: 0 } },
+    ingress: { scope: { kind: 'ingress', scope_key: 'gateway-ingress' } },
   })
 })

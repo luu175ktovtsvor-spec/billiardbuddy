@@ -147,7 +147,11 @@ async function boundedJson(response: Response): Promise<unknown> {
 
 export async function requestQwenImageReasoning(
   rawBody: string,
-  deps: { baseUrl: string; providerAuthorization: string; modelId: string; fetchImpl: FetchLike; signal?: AbortSignal; timeoutMs: number },
+  deps: {
+    baseUrl: string; providerAuthorization: string; modelId: string; fetchImpl: FetchLike; signal?: AbortSignal; timeoutMs: number
+    /** Durable capacity lease fence. Must be checked at the real paid boundary. */
+    assertCurrent?: () => void | Promise<void>
+  },
 ): Promise<Response> {
   if (deps.modelId !== 'qwen3-vl-flash') {
     throw new QwenImageReasoningGatewayError(500, 'Qwen 图片理解模型配置不符合注册表')
@@ -156,6 +160,13 @@ export async function requestQwenImageReasoning(
   try { raw = JSON.parse(rawBody) } catch { throw new QwenImageReasoningGatewayError(400, '媒体理解请求不是合法 JSON') }
   const request = parseRequest(raw)
   if (!request) throw new QwenImageReasoningGatewayError(400, 'Qwen 图片理解请求不符合合同')
+  const wireBody = JSON.stringify({
+    model: deps.modelId,
+    temperature: 0,
+    max_tokens: 2_000,
+    response_format: { type: 'json_object' },
+    messages: messages(request),
+  })
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), deps.timeoutMs)
   const relayAbort = () => controller.abort()
@@ -163,10 +174,11 @@ export async function requestQwenImageReasoning(
   try {
     let upstream: Response
     try {
+      await deps.assertCurrent?.()
       upstream = await deps.fetchImpl(`${deps.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
         method: 'POST', signal: controller.signal,
         headers: { Authorization: deps.providerAuthorization, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: deps.modelId, temperature: 0, max_tokens: 2_000, response_format: { type: 'json_object' }, messages: messages(request) }),
+        body: wireBody,
       })
     } catch {
       if (controller.signal.aborted) throw new QwenImageReasoningGatewayError(504, 'Qwen 图片理解请求超时')

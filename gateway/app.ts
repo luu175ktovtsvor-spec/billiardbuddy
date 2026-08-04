@@ -1138,6 +1138,7 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
     ?? new SqliteGatewayOperationResultStore(deps.usageStore ? ':memory:' : config.db)
   const capacityBackend = (deps.capacityBackendFactory ?? localGatewayCapacityBackendFactory).create({
     mimo: {
+      scope: capacityPolicy.mimo.scope,
       reservations: {
         maxConcurrent: config.mimoConc,
         mediaConcurrent: config.mimoMediaConc,
@@ -1153,6 +1154,7 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
       rate: { rpm: config.mimoRpm, queueMax: config.mimoQueueMax + config.visionQueueMax },
     },
     deepseek: {
+      scope: capacityPolicy.deepseek.scope,
       capacity: {
         maxConcurrent: config.deepseekConc,
         maxConcurrentPerUser: config.deepseekUserConc,
@@ -1163,6 +1165,7 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
       rate: { rpm: config.deepseekRpm, queueMax: config.deepseekQueueMax },
     },
     qwen: {
+      scope: capacityPolicy.qwen.scope,
       capacity: {
         maxConcurrent: config.qwenConc,
         maxConcurrentPerUser: config.qwenUserConc,
@@ -1173,6 +1176,7 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
       rate: { rpm: config.qwenRpm, queueMax: config.qwenQueueMax },
     },
     transcription: {
+      scope: capacityPolicy.funasr.scope,
       capacity: {
         maxConcurrent: config.transcribeConc,
         maxConcurrentPerUser: config.transcribeUserConc,
@@ -1182,7 +1186,8 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
       },
       rate: { rpm: config.transcribeRpm, queueMax: config.transcribeQueueMax },
     },
-    bootstrap: { rate: { rpm: config.bootstrapRpm, queueMax: config.bootstrapQueueMax } },
+    bootstrap: { scope: capacityPolicy.bootstrap.scope, rate: { rpm: config.bootstrapRpm, queueMax: config.bootstrapQueueMax } },
+    ingress: { scope: capacityPolicy.ingress.scope },
   })
   const mimoBucket = capacityBackend.rates.mimo
   const mimoReservations = capacityBackend.mimo
@@ -1276,6 +1281,7 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
   function reserveMetered(
     identity: VerifiedInstallation,
     capability: MeteredCapability,
+    accountKey: string,
     operationId: string,
     fingerprint: string,
     amount: UsageAmount,
@@ -1286,6 +1292,7 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
         principal_id: identity.principalId,
         installation_id: identity.installationId,
         capability,
+        account_key: accountKey,
         fingerprint,
         amount,
       })
@@ -1336,6 +1343,7 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
         principal_id: identity.principalId,
         installation_id: identity.installationId,
         capability: 'TextReasoning',
+        account_key: capacityPolicy.deepseek.account_key,
         fingerprint,
         amount: {
           requests: 1,
@@ -1692,6 +1700,7 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
             const receipt = reserveMetered(
               identity,
               'MediaReasoning',
+              capacityPolicy.mimo.account_key,
               `${usageOperation}:media`,
               usageFingerprint(`MediaReasoning\0${rawBody}`),
               {
@@ -1747,6 +1756,7 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
                 principal_id: identity.principalId,
                 installation_id: identity.installationId,
                 capability: 'ImageAdvice',
+                account_key: capacityPolicy.qwen.account_key,
                 fingerprint: binding.fingerprint,
                 // Provider input tokens are unavailable pre-call. UTF-8 request bytes
                 // are a conservative token ceiling for this bounded JSON/data-URL
@@ -1798,6 +1808,7 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
                 fetchImpl,
                 signal: request.signal,
                 timeoutMs: config.qwenResponseTimeoutMs,
+                assertCurrent: () => permit?.assertCurrent?.(),
               })
               const responseBody = await response.text()
               const stored = imageAdviceResultPayload(responseBody)
@@ -1846,6 +1857,7 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
             const receipt = reserveMetered(
               identity,
               'VisualEvidence',
+              capacityPolicy.mimo.account_key,
               `${usageOperation}:vision`,
               usageFingerprint(`VisualEvidence\0${rawBody}`),
               { requests: 1, input_bytes: inputBytes, output_units: 4_096, total_tokens: 0 },
@@ -1982,6 +1994,7 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
         const receipt = reserveMetered(
           identity,
           'SpeechTranscription',
+          capacityPolicy.funasr.account_key,
           `${usageOperation}:speech`,
           usageFingerprint(`SpeechTranscription\0${await fileUsageFingerprint(file)}\0${language}\0${responseFormat}`),
           { requests: 1, input_bytes: file.size, output_units: 0, total_tokens: 0 },
@@ -2006,7 +2019,12 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
           const queueMs = elapsedMs(started)
           const runStarted = performance.now()
           try {
-            const result = await transcribe(file, { language, responseFormat, signal: request.signal })
+            const result = await transcribe(file, {
+              language,
+              responseFormat,
+              signal: request.signal,
+              assertCurrent: () => capacityPermit.assertCurrent?.(),
+            })
             const audioSeconds = Number(result.duration)
             completeMetered(receipt, 'settled', {
               requests: 1,

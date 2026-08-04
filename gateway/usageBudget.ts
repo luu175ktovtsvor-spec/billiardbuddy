@@ -34,6 +34,8 @@ export type UsageReserveInput = {
   principal_id: string
   installation_id: string
   capability: MeteredCapability
+  /** Physical provider-account binding selected by the capacity policy. */
+  account_key: string
   fingerprint: string
   amount: UsageAmount
 }
@@ -80,7 +82,9 @@ function validatePolicy(policy: UsageBudgetPolicy): void {
 function validateReserveInput(input: UsageReserveInput): void {
   if (!/^[A-Za-z0-9._:-]{8,200}$/.test(input.operation_id)
     || !input.principal_id || !input.installation_id
-    || !/^[a-f0-9]{64}$/.test(input.fingerprint)) {
+    || !/^[a-f0-9]{64}$/.test(input.fingerprint)
+    || !/^[A-Za-z0-9._:-]{8,300}$/.test(input.account_key)
+    || input.account_key === 'legacy:unbound') {
     throw new UsageBudgetError(409, 'OPERATION_CONFLICT')
   }
   validateAmount(input.amount)
@@ -126,6 +130,18 @@ function sameBinding(existing: StoredUsage, input: UsageReserveInput): boolean {
   return existing.principal_id === input.principal_id
     && existing.installation_id === input.installation_id
     && existing.capability === input.capability
+    && existing.account_key === input.account_key
+    && existing.fingerprint === input.fingerprint
+    && JSON.stringify(existing.reserved) === JSON.stringify(input.amount)
+}
+
+/** Historical rows may not be truthfully attributed to any later credential.
+ * They can only replay the identical product operation; their account marker
+ * is deliberately outside that compatibility comparison. */
+function sameLegacyBinding(existing: StoredUsage, input: UsageReserveInput): boolean {
+  return existing.principal_id === input.principal_id
+    && existing.installation_id === input.installation_id
+    && existing.capability === input.capability
     && existing.fingerprint === input.fingerprint
     && JSON.stringify(existing.reserved) === JSON.stringify(input.amount)
 }
@@ -145,12 +161,18 @@ type SqlRow = {
   reserved_input_bytes: number; reserved_output_units: number; reserved_total_tokens: number; actual_requests: number
   actual_input_bytes: number; actual_output_units: number; actual_total_tokens: number; fencing_token: number
   fingerprint: string; upstream_receipt_hash: string | null
+  account_key: string | null
 }
 
 function fromSql(row: SqlRow): StoredUsage {
   return {
     operation_id: row.operation_id, principal_id: row.principal_id, installation_id: row.installation_id,
-    capability: row.capability, policy_revision: row.policy_revision, period: row.period, state: row.state,
+    capability: row.capability,
+    // A database created before account bindings did not carry this field. Do
+    // not invent a current account for historical spend; expose the permanent,
+    // explicit legacy marker instead.
+    account_key: row.account_key ?? 'legacy:unbound',
+    policy_revision: row.policy_revision, period: row.period, state: row.state,
     reserved: {
       requests: row.reserved_requests,
       input_bytes: row.reserved_input_bytes,
@@ -182,6 +204,7 @@ export class SqliteUsageBudgetService implements UsageBudgetService {
       principal_id TEXT NOT NULL,
       installation_id TEXT NOT NULL,
       capability TEXT NOT NULL,
+      account_key TEXT NOT NULL,
       policy_revision TEXT NOT NULL,
       period TEXT NOT NULL,
       state TEXT NOT NULL,
@@ -208,6 +231,13 @@ export class SqliteUsageBudgetService implements UsageBudgetService {
       this.db.exec('ALTER TABLE usage_budget_reservations ADD COLUMN actual_total_tokens INTEGER NOT NULL DEFAULT 0')
       this.db.exec('UPDATE usage_budget_reservations SET actual_total_tokens=actual_output_units')
     }
+    if (!columns.some(column => column.name === 'account_key')) {
+      // The old database has no physical-account evidence. Preserve that fact
+      // as a permanent audit marker rather than attributing it to whatever key
+      // happens to be installed at the first later replay.
+      this.db.exec('ALTER TABLE usage_budget_reservations ADD COLUMN account_key TEXT')
+    }
+    this.db.exec("UPDATE usage_budget_reservations SET account_key='legacy:unbound' WHERE account_key IS NULL")
     this.db.exec('CREATE INDEX IF NOT EXISTS usage_budget_period_principal ON usage_budget_reservations(period, principal_id)')
   }
 
@@ -251,6 +281,14 @@ export class SqliteUsageBudgetService implements UsageBudgetService {
     try {
       const existing = this.getForReserve(input)
       if (existing) {
+        if (existing.account_key === 'legacy:unbound') {
+          // Replay cannot prove which provider account spent the historic cost.
+          // Keep it legacy forever; it is a duplicate only for the exact same
+          // product operation and never authorizes a new upstream request.
+          if (!sameLegacyBinding(existing, input)) throw new UsageBudgetError(409, 'OPERATION_CONFLICT')
+          this.db.exec('COMMIT')
+          return { duplicate: true, receipt: publicReceipt(existing) }
+        }
         if (!sameBinding(existing, input)) throw new UsageBudgetError(409, 'OPERATION_CONFLICT')
         this.db.exec('COMMIT')
         return { duplicate: true, receipt: publicReceipt(existing) }
@@ -259,10 +297,10 @@ export class SqliteUsageBudgetService implements UsageBudgetService {
       const rows = this.db.query('SELECT * FROM usage_budget_reservations WHERE period=? AND capability=? AND state<>\'released\'').all(period, input.capability) as SqlRow[]
       this.assertWithinBudget(rows.map(fromSql), input)
       this.db.query(`INSERT INTO usage_budget_reservations(
-        operation_key,operation_id,principal_id,installation_id,capability,policy_revision,period,state,fingerprint,
+        operation_key,operation_id,principal_id,installation_id,capability,account_key,policy_revision,period,state,fingerprint,
         reserved_requests,reserved_input_bytes,reserved_output_units,reserved_total_tokens
-      ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
-        operationKey(input.principal_id, input.operation_id), input.operation_id, input.principal_id, input.installation_id, input.capability,
+      ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+        operationKey(input.principal_id, input.operation_id), input.operation_id, input.principal_id, input.installation_id, input.capability, input.account_key,
         this.policy.revision, period, 'reserved', input.fingerprint,
         input.amount.requests, input.amount.input_bytes, input.amount.output_units, input.amount.total_tokens,
       )
