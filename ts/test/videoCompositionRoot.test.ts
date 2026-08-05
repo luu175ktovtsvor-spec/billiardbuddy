@@ -146,12 +146,18 @@ test('应用模块不反向导入具体运行时，组合根是唯一适配位�
   expect(sources[1]).not.toContain('this.commands.revokeRemoteAnalysisConsent')
   expect(sources[2]).toContain('EditorialCommandPort')
   expect(sources[2]).toContain('projectStore.mutate')
+  expect(sources[2]).toContain('this.rules.applyCommandSet')
+  expect(sources[2]).not.toContain('this.commands.applyEditorialTimelineCommands')
+  expect(sources[2]).not.toContain('this.commands.acceptTimelineDraft')
   expect(sources[2]).not.toContain('this.commands.createReviewNote')
   expect(sources[2]).not.toContain('this.commands.resolveReviewNote')
   expect(sources[2]).not.toContain('this.commands.createApprovalDecision')
   expect(sources[3]).toContain('FinishingDeliveryCommandPort')
   expect(sources[3]).toContain('projectStore.repository.saveProject')
   expect(sources[3]).not.toContain('this.commands.createDeliveryVariant')
+  expect(sources[3]).not.toContain('this.commands.applyDeliveryVariantCommands')
+  expect(sources[3]).not.toContain('this.commands.compileDeliveryVariant')
+  expect(sources[3]).toContain('this.editorialRules.applyCommandSet')
 
   const runtimeSource = await readFile(new URL('../src/server/services/videoWorkbenchRuntime.ts', import.meta.url), 'utf8')
   for (const migratedCommand of [
@@ -159,7 +165,14 @@ test('应用模块不反向导入具体运行时，组合根是唯一适配位�
     'estimateRemoteAnalysis',
     'grantRemoteAnalysisConsent',
     'revokeRemoteAnalysisConsent',
+    'getEditorialTimeline',
+    'getTimelineDraft',
+    'applyEditorialTimelineCommands',
+    'acceptTimelineDraft',
     'createDeliveryVariant',
+    'getDeliveryVariant',
+    'applyDeliveryVariantCommands',
+    'compileDeliveryVariant',
   ]) expect(runtimeSource).not.toContain(`async ${migratedCommand}(`)
 })
 

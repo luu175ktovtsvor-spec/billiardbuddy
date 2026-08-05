@@ -1,15 +1,19 @@
 import { randomUUID } from 'node:crypto'
 import {
+  applyDeliveryVariantCommandsInputSchema,
   createDeliveryVariantInputSchema,
+  timelineCommandSetSchema,
   videoStudioProjectSchema,
+  type ApplyDeliveryVariantCommandsInput,
   type CreateDeliveryVariantInput,
+  type DeliveryVariantCommand,
   type DeliveryVariant,
   type DeliveryVariantVersion,
   type VideoQualityReport,
   type VideoStudioProject,
 } from '../../../../shared/contracts/media.js'
 import { EditorialApplication, EditorialValidationError } from '../domain/editorial/editorialApplication.js'
-import type { FinishingDeliveryApplication } from '../domain/finishingDelivery/finishingDeliveryApplication.js'
+import { FinishingDeliveryValidationError, type FinishingDeliveryApplication } from '../domain/finishingDelivery/finishingDeliveryApplication.js'
 import { factBasisHash } from '../domain/mediaFacts/model.js'
 import type { VideoProjectStore } from '../runtime/videoProjectStore.js'
 import type {
@@ -63,10 +67,23 @@ export class FinishingDelivery {
         : 400
       throw this.errors.create(error.message, status, error.code)
     }
+    if (error instanceof FinishingDeliveryValidationError) {
+      const status = error.code === 'VIDEO_FINISHING_STALE' ? 409
+        : error.code === 'VIDEO_QUALITY_BLOCKED' ? 409
+          : error.code === 'VIDEO_FINISHING_UNAVAILABLE' ? 422
+            : 400
+      throw this.errors.create(error.message, status, error.code)
+    }
     throw error
   }
 
-  readonly getDeliveryVariant = (...args: Parameters<FinishingDeliveryCommandPort['getDeliveryVariant']>) => this.commands.getDeliveryVariant(...args)
+  async getDeliveryVariant(projectId: string, variantId: string): Promise<{ variant: DeliveryVariant; version: DeliveryVariantVersion }> {
+    const project = await this.commands.prepareEditorialProject(projectId)
+    const variant = project.delivery_variants.find(candidate => candidate.id === variantId)
+    const version = variant && project.delivery_variant_versions.find(candidate => candidate.id === variant.current_version_id)
+    if (!variant || !version) throw this.errors.create('交付变体不存在', 404, 'VIDEO_DELIVERY_VARIANT_NOT_FOUND')
+    return { variant, version }
+  }
 
   /** A delivery creation receipt freezes the first Variant Version. Replays
    * must return that immutable version even after the Variant head advances. */
@@ -128,8 +145,56 @@ export class FinishingDelivery {
       }
     })
   }
-  readonly applyDeliveryVariantCommands = (...args: Parameters<FinishingDeliveryCommandPort['applyDeliveryVariantCommands']>) => this.commands.applyDeliveryVariantCommands(...args)
-  readonly compileDeliveryVariant = (...args: Parameters<FinishingDeliveryCommandPort['compileDeliveryVariant']>) => this.commands.compileDeliveryVariant(...args)
+  /** Delivery accepts only immutable CommandSets; it never mutates the
+   * Variant head or a Timeline projection in place. */
+  async applyDeliveryVariantCommands(
+    projectId: string,
+    variantId: string,
+    raw: ApplyDeliveryVariantCommandsInput,
+    idempotencyKey: string,
+  ): Promise<{ project: VideoStudioProject; version: DeliveryVariantVersion; reused: boolean }> {
+    return await this.projectStore.mutate(projectId, async () => {
+      const input = applyDeliveryVariantCommandsInputSchema.parse(raw)
+      const project = await this.commands.prepareEditorialProject(projectId)
+      try {
+        const commandSet = timelineCommandSetSchema.parse({
+          id: `command_${randomUUID().replaceAll('-', '')}`,
+          project_id: project.id,
+          actor_id: 'local_workbench',
+          idempotency_key: idempotencyKey,
+          created_at: this.now().toISOString(),
+          target: { kind: 'delivery_variant', variant_id: variantId, base_variant_version_id: input.base_variant_version_id },
+          commands: input.commands,
+        })
+        const applied = this.editorialRules.applyCommandSet(project, commandSet, await this.commands.editorialSourceBounds(project))
+        const version = applied.version as DeliveryVariantVersion
+        const acceptedAudioPlan = version.audio_finishing_plan_id
+          ? applied.project.audio_finishing_plans.find(candidate => candidate.id === version.audio_finishing_plan_id)
+          : undefined
+        await this.commands.assertAudioFiltersSupported([
+          ...input.commands,
+          ...(acceptedAudioPlan?.proposed_commands ?? []),
+        ] as DeliveryVariantCommand[])
+        const saved = applied.reused ? project : await this.projectStore.repository.saveProject(videoStudioProjectSchema.parse(applied.project))
+        return { project: saved, version, reused: applied.reused }
+      } catch (error) {
+        return this.editorialError(error)
+      }
+    })
+  }
+
+  async compileDeliveryVariant(projectId: string, variantId: string) {
+    return await this.projectStore.mutate(projectId, async () => {
+      const project = await this.commands.prepareEditorialProject(projectId)
+      try {
+        const compiled = this.editorialRules.compile(project, variantId, await this.commands.editorialSourceBounds(project))
+        const saved = await this.projectStore.repository.saveProject(videoStudioProjectSchema.parse(compiled.project))
+        return { project: saved, plan: compiled.plan }
+      } catch (error) {
+        return this.editorialError(error)
+      }
+    })
+  }
   readonly createCaptionDraft = (...args: Parameters<FinishingDeliveryCommandPort['createCaptionDraft']>) => this.commands.createCaptionDraft(...args)
   readonly createCaptionRevision = (...args: Parameters<FinishingDeliveryCommandPort['createCaptionRevision']>) => this.commands.createCaptionRevision(...args)
   readonly createCaptionTranslation = (...args: Parameters<FinishingDeliveryCommandPort['createCaptionTranslation']>) => this.commands.createCaptionTranslation(...args)

@@ -2226,7 +2226,7 @@ export class VideoWorkbenchRuntime {
     return timings
   }
 
-  private async editorialSourceBounds(project: VideoStudioProject): Promise<Map<string, EditorialSourceBounds>> {
+  async editorialSourceBounds(project: VideoStudioProject): Promise<Map<string, EditorialSourceBounds>> {
     const bounds = new Map<string, EditorialSourceBounds>()
     for (const source of project.sources) {
       let fact: Awaited<ReturnType<VideoWorkbenchRepository['getFact']>>
@@ -2290,6 +2290,32 @@ export class VideoWorkbenchRuntime {
     return await this.ensureEditorialState(checked)
   }
 
+  private async isBeatSyncDraftCurrent(project: VideoStudioProject, draft: TimelineDraft): Promise<boolean> {
+    const beatSync = draft.beat_sync
+    if (!beatSync) return true
+    const source = project.sources.find(candidate => candidate.id === beatSync.source_id)
+    if (!source || source.fingerprint !== beatSync.source_fingerprint || source.missing || source.content_changed) return false
+    const evidence = await this.repository.getFact('evidence', beatSync.evidence_id).catch(() => null)
+    if (!evidence || !('payload' in evidence) || evidence.kind !== 'beat_grid') return false
+    if (evidence.source_id !== beatSync.source_id
+      || evidence.source_fingerprint !== beatSync.source_fingerprint
+      || evidence.basis_hash !== beatSync.facts_basis_hash
+      || evidence.payload.analyzer_version !== beatSync.analyzer_version
+      || evidence.payload.confidence < 0.65) return false
+    const beats = evidence.payload.beats.length ? evidence.payload.beats.map(point => point.at) : evidence.payload.beat_times
+    if (beats.length < 4 || !evidence.payload.coverage.length) return false
+    const tracks = new Map(draft.tracks.map(track => [track.id, track]))
+    const ranges = draft.items.flatMap(item => item.binding.kind === 'source'
+      && item.binding.source_id === beatSync.source_id
+      && tracks.get(item.track_id)?.kind === 'primary_video'
+      ? [item.binding.source_range]
+      : [])
+    return ranges.length > 0 && ranges.every(range => sourceRangeCoveredBy(
+      evidence.payload.coverage,
+      sourceTimeRange(range.start, range.duration),
+    ))
+  }
+
   private sameLegacyProjectionItem(current: VideoTimelineItem, desired: VideoTimelineItem): boolean {
     return current.legacy_scene_id === desired.legacy_scene_id
       && current.kind === desired.kind
@@ -2341,213 +2367,6 @@ export class VideoWorkbenchRuntime {
       created_at: this.iso(),
       target: { kind: 'editorial', base_timeline_version_id: current.id },
       commands,
-    })
-  }
-
-  async getEditorialTimeline(projectId: string, versionId: string): Promise<EditorialTimelineVersion> {
-    return await this.mutateProject(projectId, async () => {
-      const project = await this.prepareEditorialProject(projectId)
-      const version = project.editorial_timeline_versions.find(candidate => candidate.id === versionId)
-      if (!version) throw new VideoWorkbenchServiceError('编辑时间线版本不存在', 404, 'VIDEO_TIMELINE_MISSING')
-      return version
-    })
-  }
-
-  async getTimelineDraft(projectId: string, draftId: string) {
-    return await this.mutateProject(projectId, async () => {
-      const project = await this.prepareEditorialProject(projectId)
-      const draft = project.timeline_drafts.find(candidate => candidate.id === draftId)
-      if (!draft) throw new VideoWorkbenchServiceError('时间线草稿不存在', 404, 'VIDEO_TIMELINE_DRAFT_NOT_FOUND')
-      return draft
-    })
-  }
-
-  private async isBeatSyncDraftCurrent(project: VideoStudioProject, draft: TimelineDraft): Promise<boolean> {
-    const beatSync = draft.beat_sync
-    if (!beatSync) return true
-    const source = project.sources.find(candidate => candidate.id === beatSync.source_id)
-    if (!source || source.fingerprint !== beatSync.source_fingerprint || source.missing || source.content_changed) return false
-    const evidence = await this.repository.getFact('evidence', beatSync.evidence_id).catch(() => null)
-    if (!evidence || !('payload' in evidence) || evidence.kind !== 'beat_grid') return false
-    if (evidence.source_id !== beatSync.source_id
-      || evidence.source_fingerprint !== beatSync.source_fingerprint
-      || evidence.basis_hash !== beatSync.facts_basis_hash
-      || evidence.payload.analyzer_version !== beatSync.analyzer_version
-      || evidence.payload.confidence < 0.65) return false
-    const beats = evidence.payload.beats.length ? evidence.payload.beats.map(point => point.at) : evidence.payload.beat_times
-    if (beats.length < 4 || !evidence.payload.coverage.length) return false
-    const tracks = new Map(draft.tracks.map(track => [track.id, track]))
-    const ranges = draft.items.flatMap(item => item.binding.kind === 'source'
-      && item.binding.source_id === beatSync.source_id
-      && tracks.get(item.track_id)?.kind === 'primary_video'
-      ? [item.binding.source_range]
-      : [])
-    return ranges.length > 0 && ranges.every(range => sourceRangeCoveredBy(
-      evidence.payload.coverage,
-      sourceTimeRange(range.start, range.duration),
-    ))
-  }
-
-  async getDeliveryVariant(projectId: string, variantId: string): Promise<{ variant: DeliveryVariant; version: DeliveryVariantVersion }> {
-    return await this.mutateProject(projectId, async () => {
-      const project = await this.prepareEditorialProject(projectId)
-      const variant = project.delivery_variants.find(candidate => candidate.id === variantId)
-      const version = variant && project.delivery_variant_versions.find(candidate => candidate.id === variant.current_version_id)
-      if (!variant || !version) throw new VideoWorkbenchServiceError('交付变体不存在', 404, 'VIDEO_DELIVERY_VARIANT_NOT_FOUND')
-      return { variant, version }
-    })
-  }
-
-  async applyEditorialTimelineCommands(
-    projectId: string,
-    raw: ApplyEditorialTimelineCommandsInput,
-    idempotencyKey: string,
-  ): Promise<{ project: VideoStudioProject; version: EditorialTimelineVersion; reused: boolean }> {
-    return await this.mutateProject(projectId, async () => {
-      const input = applyEditorialTimelineCommandsInputSchema.parse(raw)
-      const project = await this.prepareEditorialProject(projectId)
-      try {
-        const commandSet = timelineCommandSetSchema.parse({
-          id: `command_${randomUUID().replaceAll('-', '')}`,
-          project_id: project.id,
-          actor_id: STANDALONE_VIDEO_OWNER.owner_id,
-          idempotency_key: idempotencyKey,
-          created_at: this.iso(),
-          target: { kind: 'editorial', base_timeline_version_id: input.base_timeline_version_id },
-          commands: input.commands,
-        })
-        const applied = this.editorial.applyCommandSet(project, commandSet, await this.editorialSourceBounds(project))
-        const saved = applied.reused ? project : await this.repository.saveProject(videoStudioProjectSchema.parse(applied.project))
-        return { project: saved, version: applied.version as EditorialTimelineVersion, reused: applied.reused }
-      } catch (error) {
-        return this.editorialError(error)
-      }
-    })
-  }
-
-  async acceptTimelineDraft(
-    projectId: string,
-    draftId: string,
-    raw: AcceptTimelineDraftInput,
-    idempotencyKey: string,
-  ): Promise<{ project: VideoStudioProject; version: EditorialTimelineVersion; reused: boolean }> {
-    return await this.mutateProject(projectId, async () => {
-      const input = acceptTimelineDraftInputSchema.parse(raw)
-      let project = await this.prepareEditorialProject(projectId)
-      const draft = project.timeline_drafts.find(candidate => candidate.id === draftId)
-      if (!draft) throw new VideoWorkbenchServiceError('时间线草稿不存在', 404, 'VIDEO_TIMELINE_DRAFT_NOT_FOUND')
-      const current = this.editorial.currentTimeline(project)
-      if (draft.status === 'accepted' && draft.accepted_command_set_id) {
-        const receipt = project.editorial_command_receipts.find(candidate => candidate.command_set_id === draft.accepted_command_set_id && candidate.idempotency_key === idempotencyKey)
-        const version = receipt && project.editorial_timeline_versions.find(candidate => candidate.id === receipt.created_version_id)
-        if (version) return { project, version, reused: true }
-      }
-      if (!await this.isBeatSyncDraftCurrent(project, draft)) {
-        if (draft.status === 'proposed') {
-          project = await this.repository.saveProject(videoStudioProjectSchema.parse({
-            ...project,
-            timeline_drafts: project.timeline_drafts.map(candidate => candidate.id === draft.id ? { ...candidate, status: 'stale' } : candidate),
-            revision: project.revision + 1,
-            updated_at: this.iso(),
-          }))
-        }
-        throw new VideoWorkbenchServiceError('节拍证据或素材已经变化，请重新生成 Beat Sync 草稿', 409, 'VIDEO_EDITORIAL_STALE')
-      }
-      if (
-        draft.status !== 'proposed'
-        || draft.facts_basis_hash !== editorialFactsBasisHash(project)
-        || draft.base_timeline_version_id !== current.id
-        || (input.base_timeline_version_id && input.base_timeline_version_id !== current.id)
-      ) {
-        if (draft.status === 'proposed' && draft.facts_basis_hash !== editorialFactsBasisHash(project)) {
-          project = await this.repository.saveProject(videoStudioProjectSchema.parse({
-            ...project,
-            timeline_drafts: project.timeline_drafts.map(candidate => candidate.id === draft.id ? { ...candidate, status: 'stale' } : candidate),
-          }))
-        }
-        throw new VideoWorkbenchServiceError('时间线草稿已经过期，请重新生成', 409, 'VIDEO_EDITORIAL_STALE')
-      }
-      if (JSON.stringify(draft.tracks) !== JSON.stringify(current.tracks)) {
-        throw new VideoWorkbenchServiceError('时间线草稿的轨道结构已变化，请重新生成', 409, 'VIDEO_EDITORIAL_STALE')
-      }
-      try {
-        const commandSet = timelineCommandSetSchema.parse({
-          id: `command_${randomUUID().replaceAll('-', '')}`,
-          project_id: project.id,
-          actor_id: STANDALONE_VIDEO_OWNER.owner_id,
-          idempotency_key: idempotencyKey,
-          created_at: this.iso(),
-          target: { kind: 'editorial', base_timeline_version_id: current.id },
-          commands: [
-            ...(current.items.length ? [{ kind: 'ripple_delete' as const, item_ids: current.items.map(item => item.id), close_gap: false }] : []),
-            ...draft.items.map(item => ({ kind: 'insert' as const, track_id: item.track_id, item })),
-          ],
-        })
-        const applied = this.editorial.applyCommandSet(project, commandSet, await this.editorialSourceBounds(project))
-        const next = applied.reused ? project : {
-          ...applied.project,
-          timeline_drafts: applied.project.timeline_drafts.map(candidate => candidate.id === draft.id
-            ? { ...candidate, status: 'accepted', accepted_command_set_id: commandSet.id }
-            : candidate),
-        }
-        const saved = applied.reused ? project : await this.repository.saveProject(videoStudioProjectSchema.parse(next))
-        return { project: saved, version: applied.version as EditorialTimelineVersion, reused: applied.reused }
-      } catch (error) {
-        return this.editorialError(error)
-      }
-    })
-  }
-
-  async applyDeliveryVariantCommands(
-    projectId: string,
-    variantId: string,
-    raw: ApplyDeliveryVariantCommandsInput,
-    idempotencyKey: string,
-  ): Promise<{ project: VideoStudioProject; version: DeliveryVariantVersion; reused: boolean }> {
-    return await this.mutateProject(projectId, async () => {
-      const input = applyDeliveryVariantCommandsInputSchema.parse(raw)
-      const project = await this.prepareEditorialProject(projectId)
-      try {
-        const commandSet = timelineCommandSetSchema.parse({
-          id: `command_${randomUUID().replaceAll('-', '')}`,
-          project_id: project.id,
-          actor_id: STANDALONE_VIDEO_OWNER.owner_id,
-          idempotency_key: idempotencyKey,
-          created_at: this.iso(),
-          target: { kind: 'delivery_variant', variant_id: variantId, base_variant_version_id: input.base_variant_version_id },
-          commands: input.commands,
-        })
-        const applied = this.editorial.applyCommandSet(project, commandSet, await this.editorialSourceBounds(project))
-        const appliedVersion = applied.version as DeliveryVariantVersion
-        const acceptedAudioPlan = appliedVersion.audio_finishing_plan_id
-          ? applied.project.audio_finishing_plans.find(candidate => candidate.id === appliedVersion.audio_finishing_plan_id)
-          : undefined
-        // Applying an older immutable plan is still a new execution decision.
-        // Re-probe here so a changed local FFmpeg cannot accept a denoise
-        // command that preview/render would have to silently skip.
-        await this.assertAudioFiltersSupported([
-          ...input.commands,
-          ...(acceptedAudioPlan?.proposed_commands ?? []),
-        ])
-        const saved = applied.reused ? project : await this.repository.saveProject(videoStudioProjectSchema.parse(applied.project))
-        return { project: saved, version: appliedVersion, reused: applied.reused }
-      } catch (error) {
-        if (error instanceof FinishingDeliveryValidationError) return this.finishingError(error)
-        return this.editorialError(error)
-      }
-    })
-  }
-
-  async compileDeliveryVariant(projectId: string, variantId: string) {
-    return await this.mutateProject(projectId, async () => {
-      const project = await this.prepareEditorialProject(projectId)
-      try {
-        const compiled = this.editorial.compile(project, variantId, await this.editorialSourceBounds(project))
-        const saved = await this.repository.saveProject(videoStudioProjectSchema.parse(compiled.project))
-        return { project: saved, plan: compiled.plan }
-      } catch (error) {
-        return this.editorialError(error)
-      }
     })
   }
 
@@ -3145,7 +2964,7 @@ export class VideoWorkbenchRuntime {
   }
 
   /** A frozen afftdn command must be executable by the local FFmpeg, never silently dropped. */
-  private async assertAudioFiltersSupported(filters: ReadonlyArray<{ kind: string }>): Promise<void> {
+  async assertAudioFiltersSupported(filters: ReadonlyArray<{ kind: string }>): Promise<void> {
     await this.assertExecutionFiltersSupported(filters)
   }
 

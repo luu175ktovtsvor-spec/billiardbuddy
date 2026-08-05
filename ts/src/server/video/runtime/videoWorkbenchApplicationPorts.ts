@@ -21,10 +21,8 @@ export interface AnalysisIndexCommandPort extends Pick<VideoWorkbenchRuntime,
 > {}
 
 export interface EditorialCommandPort extends Pick<VideoWorkbenchRuntime,
-  | 'getEditorialTimeline'
-  | 'getTimelineDraft'
-  | 'applyEditorialTimelineCommands'
-  | 'acceptTimelineDraft'
+  | 'prepareEditorialProject'
+  | 'editorialSourceBounds'
   | 'updateTimeline'
   | 'selectTimelineVersion'
   | 'lockScene'
@@ -42,10 +40,9 @@ export interface EditorialCommandPort extends Pick<VideoWorkbenchRuntime,
 > {}
 
 export interface FinishingDeliveryCommandPort extends Pick<VideoWorkbenchRuntime,
-  | 'getDeliveryVariant'
   | 'prepareEditorialProject'
-  | 'applyDeliveryVariantCommands'
-  | 'compileDeliveryVariant'
+  | 'editorialSourceBounds'
+  | 'assertAudioFiltersSupported'
   | 'createCaptionDraft'
   | 'createCaptionRevision'
   | 'createCaptionTranslation'
