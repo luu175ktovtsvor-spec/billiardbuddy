@@ -137,6 +137,12 @@ jobs:
       - name: 验证产品运行路径中的 Rust fmt、check 与 test
         if: matrix.architecture == 'x64'
         shell: bash
+        env:
+          # The locked app-server guardian test builds a deeply nested async
+          # notification fixture. Keep the upstream test unchanged and give
+          # the Windows libtest harness the same larger stack used by Codex's
+          # own stack-sensitive tests; this changes only test execution.
+          RUST_MIN_STACK: '8388608'
         run: |
           set -euo pipefail
           target='${{ matrix.target }}'
