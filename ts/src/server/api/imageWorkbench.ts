@@ -95,6 +95,7 @@ import {
   imageWorkbenchProjectListResponseSchema,
   imageWorkbenchProjectProjectionSchema,
   imageWorkflowProjectResponseSchema,
+  IMAGE_WORKBENCH_REQUEST_BODY_MAX_BYTES,
   promoteImageInspirationItemInputSchema,
   removeImageWorkflowReferenceInputSchema,
   replaceImageCampaignItemsInputSchema,
@@ -130,10 +131,51 @@ function methodNotAllowed(method: string): ApiError {
 
 const rawRequestBodies = new WeakMap<Request, Promise<string>>()
 
+/**
+ * The image workbench receives Base64 uploads in command JSON.  Never use
+ * Request.text() here: it can allocate an attacker-controlled body before the
+ * parser, ticket verifier, or schema has a chance to reject it.
+ */
+export async function readImageWorkbenchRequestBody(
+  req: Request,
+  maxBytes = IMAGE_WORKBENCH_REQUEST_BODY_MAX_BYTES,
+): Promise<string> {
+  const declaredLength = req.headers.get('content-length')?.trim()
+  if (declaredLength && /^\d+$/u.test(declaredLength) && Number(declaredLength) > maxBytes) {
+    throw new ApiError(413, '图片请求体超过安全上限', 'IMAGE_REQUEST_BODY_TOO_LARGE')
+  }
+  if (!req.body) return ''
+
+  const reader = req.body.getReader()
+  const chunks: Uint8Array[] = []
+  let total = 0
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      total += value.byteLength
+      if (total > maxBytes) {
+        void reader.cancel().catch(() => undefined)
+        throw new ApiError(413, '图片请求体超过安全上限', 'IMAGE_REQUEST_BODY_TOO_LARGE')
+      }
+      chunks.push(value)
+    }
+  } finally {
+    reader.releaseLock()
+  }
+  const bytes = new Uint8Array(total)
+  let offset = 0
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset)
+    offset += chunk.byteLength
+  }
+  return new TextDecoder().decode(bytes)
+}
+
 function rawRequestBody(req: Request): Promise<string> {
   const existing = rawRequestBodies.get(req)
   if (existing) return existing
-  const body = req.text()
+  const body = readImageWorkbenchRequestBody(req)
   rawRequestBodies.set(req, body)
   return body
 }
