@@ -157,6 +157,9 @@ jobs:
           verification_source="${verification_root}/source"
           plugin_target="${RUNNER_TEMP}/billiardbuddy-plugin-rust-verify"
           cleanup() {
+            powershell.exe -NoProfile -NonInteractive -Command \
+              "Get-Process -Name codex-windows-sandbox-setup,codex-command-runner -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue" \
+              >/dev/null 2>&1 || true
             git -C third_party/codex-engine worktree remove --force "${verification_source}" >/dev/null 2>&1 || true
             rm -rf "${verification_root}" "${plugin_target}"
           }
