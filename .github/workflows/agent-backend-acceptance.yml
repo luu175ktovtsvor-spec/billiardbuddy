@@ -116,7 +116,12 @@ jobs:
           export BILLIARDBUDDY_REAL_PROVIDER_SMOKE_TURNS=2
           export BILLIARDBUDDY_REAL_PROVIDER_SMOKE_CONFIRMATION=RUN_BILLABLE_PERSONAL_AGENT_TURNS_2
           base_url="${BILLIARDBUDDY_REAL_PROVIDER_BASE_URL:-https://api.deepseek.com}"
-          base_url="${base_url//$'\r'/}"
+          # Secrets copied from .env/TOML often contain a leading/trailing
+          # newline around the quoted value. Normalize only transport
+          # whitespace here; the product URL validator remains authoritative.
+          base_url="$(printf '%s' "$base_url" | tr -d '\r\n')"
+          base_url="${base_url#"${base_url%%[![:space:]]*}"}"
+          base_url="${base_url%"${base_url##*[![:space:]]}"}"
           # GitHub secrets are sometimes pasted from a quoted .env/TOML value.
           # Accept exactly one matching pair here, without weakening the
           # product URL validator or exposing the secret value.
@@ -127,6 +132,8 @@ jobs:
               base_url="${base_url:1:${#base_url}-2}"
             fi
           fi
+          base_url="${base_url#"${base_url%%[![:space:]]*}"}"
+          base_url="${base_url%"${base_url##*[![:space:]]}"}"
           base_url="${base_url%/}"
           if [[ "$base_url" =~ ^https://api\.deepseek\.com/v1(/responses)?$ ]]; then
             base_url='https://api.deepseek.com'
