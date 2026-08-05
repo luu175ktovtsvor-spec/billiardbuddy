@@ -50,10 +50,10 @@ export class VideoWorkbenchCompositionRoot {
       editorialRules,
       finishingRules,
     })
-    this.projectAssets = new ProjectAssets(this.runtime, projectStore, errors)
-    this.analysisIndex = new AnalysisIndex(this.runtime, projectStore, analysisState, errors)
+    this.projectAssets = new ProjectAssets(this.runtime, projectStore, errors, now)
+    this.analysisIndex = new AnalysisIndex(this.runtime, projectStore, analysisState, errors, now)
     this.editorial = new Editorial(this.runtime, projectStore, editorialRules, errors, now)
-    this.finishingDelivery = new FinishingDelivery(this.runtime, projectStore, finishingState, finishingRules, errors)
+    this.finishingDelivery = new FinishingDelivery(this.runtime, projectStore, finishingState, editorialRules, finishingRules, errors, now)
   }
 
   get repository() {

@@ -48,6 +48,7 @@ test('应用层通过窄端口写入，并直接从共享 SQLite 投影读取、
   const root = createVideoWorkbenchCompositionRoot({ root: await rootPath('direct-reads') })
   const project = await root.projectAssets.createProject({ title: '共享读取职责' })
   const runtime = root.runtime as unknown as {
+    createProject: (...args: unknown[]) => Promise<never>
     listProjects: (...args: unknown[]) => Promise<never>
     getProject: (...args: unknown[]) => Promise<never>
     assertProjectOwner: (...args: unknown[]) => Promise<never>
@@ -59,6 +60,9 @@ test('应用层通过窄端口写入，并直接从共享 SQLite 投影读取、
     reclaimDerivativeCache: (...args: unknown[]) => Promise<never>
     waitForOperationEvents: (...args: unknown[]) => Promise<never>
     getQualityReport: (...args: unknown[]) => Promise<never>
+    estimateRemoteAnalysis: (...args: unknown[]) => Promise<never>
+    grantRemoteAnalysisConsent: (...args: unknown[]) => Promise<never>
+    revokeRemoteAnalysisConsent: (...args: unknown[]) => Promise<never>
   }
   const failIfDelegated = async (): Promise<never> => {
     throw new Error('应用层错误地回退到完整运行时')
@@ -74,6 +78,10 @@ test('应用层通过窄端口写入，并直接从共享 SQLite 投影读取、
   runtime.reclaimDerivativeCache = failIfDelegated
   runtime.waitForOperationEvents = failIfDelegated
   runtime.getQualityReport = failIfDelegated
+  runtime.createProject = failIfDelegated
+  runtime.estimateRemoteAnalysis = failIfDelegated
+  runtime.grantRemoteAnalysisConsent = failIfDelegated
+  runtime.revokeRemoteAnalysisConsent = failIfDelegated
 
   expect((await root.projectAssets.listProjects())[0]?.id).toBe(project.id)
   expect((await root.projectAssets.getProject(project.id)).id).toBe(project.id)
@@ -87,6 +95,30 @@ test('应用层通过窄端口写入，并直接从共享 SQLite 投影读取、
   expect((await root.analysisIndex.pageMediaFacts(project.id, 'evidence_window')).items).toEqual([])
   expect(await root.analysisIndex.reclaimDerivativeCache(project.id, 1)).toEqual([])
   expect((await root.analysisIndex.waitForOperationEvents(project.id, 0, 20, 0)).next_cursor).toBe(1)
+  await root.repository.saveProject({
+    ...project,
+    state: 'ready',
+    revision: 1,
+    sources: [{
+      id: 'src_00000001',
+      path: '/fixture.mp4',
+      name: 'fixture.mp4',
+      duration_ms: 10_000,
+      width: 1920,
+      height: 1080,
+      has_audio: true,
+      rotation: 0,
+      video_stream_count: 1,
+      audio_stream_count: 1,
+      missing: false,
+      content_changed: false,
+    }],
+  })
+  const estimate = await root.analysisIndex.estimateRemoteAnalysis(project.id, {
+    purposes: ['asr', 'semantic_search'],
+    source_ids: ['src_00000001'],
+  })
+  expect(estimate).toMatchObject({ asr_seconds: 10, state: 'estimated' })
   await expect(root.finishingDelivery.getQualityReport(project.id, 'quality_missing')).rejects.toMatchObject({
     code: 'VIDEO_QUALITY_REPORT_NOT_FOUND',
     status: 404,
@@ -105,13 +137,21 @@ test('应用模块不反向导入具体运行时，组合根是唯一适配位�
     expect(source).not.toContain("services/videoWorkbenchRuntime.js")
   }
   expect(sources[0]).toContain('ProjectAssetsCommandPort')
+  expect(sources[0]).toContain('projectStore.repository.saveProject')
+  expect(sources[0]).not.toContain('this.commands.createProject')
   expect(sources[1]).toContain('AnalysisIndexCommandPort')
+  expect(sources[1]).toContain('projectStore.mutate')
+  expect(sources[1]).not.toContain('this.commands.estimateRemoteAnalysis')
+  expect(sources[1]).not.toContain('this.commands.grantRemoteAnalysisConsent')
+  expect(sources[1]).not.toContain('this.commands.revokeRemoteAnalysisConsent')
   expect(sources[2]).toContain('EditorialCommandPort')
   expect(sources[2]).toContain('projectStore.mutate')
   expect(sources[2]).not.toContain('this.commands.createReviewNote')
   expect(sources[2]).not.toContain('this.commands.resolveReviewNote')
   expect(sources[2]).not.toContain('this.commands.createApprovalDecision')
   expect(sources[3]).toContain('FinishingDeliveryCommandPort')
+  expect(sources[3]).toContain('projectStore.repository.saveProject')
+  expect(sources[3]).not.toContain('this.commands.createDeliveryVariant')
 })
 
 test('兼容门面只委托组合根，不重新持有 repository、Relay、FFmpeg 或恢复状态', async () => {

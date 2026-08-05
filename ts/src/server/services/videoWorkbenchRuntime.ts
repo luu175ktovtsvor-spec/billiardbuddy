@@ -2189,100 +2189,6 @@ export class VideoWorkbenchRuntime {
     return snapshot
   }
 
-  /** A persisted estimate is the only value a Consent may acknowledge. */
-  async estimateRemoteAnalysis(projectId: string, raw: EstimateRemoteAnalysisInput) {
-    return await this.mutateProject(projectId, async () => {
-      const input = estimateRemoteAnalysisInputSchema.parse(raw)
-      const project = await this.requireVideoProject(projectId)
-      const selected = project.sources.filter(source => input.source_ids.includes(source.id))
-      if (selected.length !== input.source_ids.length) throw new VideoWorkbenchServiceError('预算估算引用了不存在的素材', 404, 'VIDEO_SOURCE_NOT_FOUND')
-      const seconds = selected.reduce((total, source) => total + source.duration_ms / 1000, 0)
-      // Each source yields one immutable ASR operation irrespective of the
-      // provider's short/long route. Visual evidence is charged per frame;
-      // semantic search always needs a document and a query embedding.
-      const asrRequests = input.purposes.includes('asr') ? selected.length : 0
-      const visualFrames = input.purposes.includes('visual_evidence') ? Math.ceil(seconds / 5) : 0
-      const asrSeconds = input.purposes.includes('asr') ? seconds : 0
-      // Translation receives immutable Cue text rather than compressed media.
-      // Reserve a non-zero, deliberately conservative payload before the
-      // request; the exact Relay receipt later replaces this allocation.
-      const captionTranslationTokens = input.purposes.includes('caption_translation')
-        ? Math.max(4_000, Math.ceil(seconds * 200))
-        : 0
-      const captionTranslationBytes = captionTranslationTokens * 4
-      // The local ASR extraction is 16 kHz mono PCM S16LE (two bytes per
-      // sample), not a 16 KB/s compressed estimate. Visual frames are bounded
-      // at 10 MiB before upload, so reserve their declared maximum as well.
-      const inputBytes = Math.ceil(asrSeconds * 32_000) + asrRequests * 44 + visualFrames * 10 * 1024 * 1024 + captionTranslationBytes
-      const totalTokens = Math.ceil(seconds * 8) + (input.purposes.includes('planning') ? 4_000 : 0) + captionTranslationTokens
-      // These are the approved upper-bound units used for admission before a
-      // paid request. Provider receipts later replace them with upstream cost.
-      const estimatedAmountMicros = Math.ceil(asrSeconds * 120 + visualFrames * 250 + totalTokens * 10)
-      const estimate = {
-        id: id('budget'),
-        estimate_hash: factBasisHash({ project_id: project.id, purposes: [...input.purposes].sort(), source_ids: [...input.source_ids].sort(), seconds, visualFrames, asrSeconds, inputBytes }),
-        state: 'estimated' as const,
-        requests: visualFrames + asrRequests
-          + (input.purposes.includes('planning') ? 1 : 0)
-          + (input.purposes.includes('caption_translation') ? 1 : 0)
-          // A generation can contain 10,000 entries and Relay accepts 2,000
-          // document embeddings per operation, plus the query vector.
-          + (input.purposes.includes('semantic_search') ? 6 : 0),
-        total_tokens: totalTokens,
-        input_bytes: inputBytes,
-        visual_frames: visualFrames,
-        proxy_seconds: input.purposes.includes('visual_evidence') ? seconds : 0,
-        asr_seconds: asrSeconds,
-        estimated_amount_micros: estimatedAmountMicros,
-        created_at: this.iso(),
-        updated_at: this.iso(),
-      }
-      const saved = await this.repository.saveProject(videoStudioProjectSchema.parse({ ...project, remote_analysis_budgets: [...project.remote_analysis_budgets, estimate] }))
-      return estimate
-    })
-  }
-
-  async grantRemoteAnalysisConsent(projectId: string, raw: CreateRemoteAnalysisConsentInput) {
-    return await this.mutateProject(projectId, async () => {
-      const input = createRemoteAnalysisConsentInputSchema.parse(raw)
-      const project = await this.requireVideoProject(projectId)
-      const estimate = project.remote_analysis_budgets.find(item => item.estimate_hash === input.acknowledged_estimate_hash && item.state === 'estimated')
-      if (!estimate) throw new VideoWorkbenchServiceError('远程分析同意必须确认当前项目的预算估算', 409, 'VIDEO_REMOTE_ESTIMATE_REQUIRED')
-      for (const coverage of input.coverage) {
-        const source = project.sources.find(candidate => candidate.id === coverage.source_id)
-        if (!source || coverage.ranges.some(range => Number(range.start.ticks) < 0 || Number(range.duration.ticks) <= 0)) {
-          throw new VideoWorkbenchServiceError('远程分析范围无效', 422, 'VIDEO_REMOTE_CONSENT_SCOPE_INVALID')
-        }
-      }
-      const revision = Math.max(0, ...project.remote_analysis_consents.map(consent => consent.revision)) + 1
-      const consent = {
-        id: id('consent'), project_id: project.id, revision, state: 'active' as const,
-        provider: 'aliyun_bailian' as const, region: 'cn-beijing' as const,
-        purposes: input.purposes, data_kinds: input.data_kinds, coverage: input.coverage,
-        acknowledged_estimate_hash: input.acknowledged_estimate_hash,
-        granted_by_actor_id: input.granted_by_actor_id ?? STANDALONE_VIDEO_OWNER.owner_id,
-        granted_at: this.iso(),
-      }
-      const saved = await this.repository.saveProject(videoStudioProjectSchema.parse({
-        ...project,
-        remote_analysis_consents: [...project.remote_analysis_consents.map(item => item.state === 'active' ? { ...item, state: 'revoked' as const, revoked_at: this.iso() } : item), consent],
-        remote_analysis_budgets: project.remote_analysis_budgets.map(item => item.id === estimate.id ? { ...item, state: 'reserved' as const, updated_at: this.iso() } : item),
-      }))
-      return { project: saved, consent }
-    })
-  }
-
-  async revokeRemoteAnalysisConsent(projectId: string, raw: { revision: number }) {
-    return await this.mutateProject(projectId, async () => {
-      const input = revokeRemoteAnalysisConsentInputSchema.parse(raw)
-      const project = await this.requireVideoProject(projectId)
-      const current = project.remote_analysis_consents.find(item => item.revision === input.revision)
-      if (!current) throw new VideoWorkbenchServiceError('远程分析同意不存在', 404, 'VIDEO_REMOTE_CONSENT_NOT_FOUND')
-      if (current.state === 'revoked') return project
-      return await this.repository.saveProject(videoStudioProjectSchema.parse({ ...project, remote_analysis_consents: project.remote_analysis_consents.map(item => item.id === current.id ? { ...item, state: 'revoked' as const, revoked_at: this.iso() } : item) }))
-    })
-  }
-
   private editorialError(error: unknown): never {
     if (error instanceof EditorialValidationError) {
       const status = error.code === 'VIDEO_EDITORIAL_STALE'
@@ -2378,7 +2284,7 @@ export class VideoWorkbenchRuntime {
     }
   }
 
-  private async prepareEditorialProject(projectId: string): Promise<VideoStudioProject> {
+  async prepareEditorialProject(projectId: string): Promise<VideoStudioProject> {
     const current = await this.requireVideoProject(projectId)
     const checked = await this.assertSourcesUnchanged(current)
     return await this.ensureEditorialState(checked)
@@ -2586,64 +2492,6 @@ export class VideoWorkbenchRuntime {
         }
         const saved = applied.reused ? project : await this.repository.saveProject(videoStudioProjectSchema.parse(next))
         return { project: saved, version: applied.version as EditorialTimelineVersion, reused: applied.reused }
-      } catch (error) {
-        return this.editorialError(error)
-      }
-    })
-  }
-
-  async createDeliveryVariant(
-    projectId: string,
-    raw: CreateDeliveryVariantInput,
-    idempotencyKey: string,
-  ): Promise<{ project: VideoStudioProject; variant: DeliveryVariant; version: DeliveryVariantVersion; reused: boolean }> {
-    return await this.mutateProject(projectId, async () => {
-      const input = createDeliveryVariantInputSchema.parse(raw)
-      const project = await this.prepareEditorialProject(projectId)
-      const requestHash = factBasisHash(input)
-      const existing = project.delivery_variant_creation_receipts.find(receipt => receipt.idempotency_key === idempotencyKey)
-      if (existing) {
-        if (existing.request_hash !== requestHash) throw new VideoWorkbenchServiceError('同一幂等键不能创建不同交付变体', 409, 'VIDEO_EDITORIAL_IDEMPOTENCY_CONFLICT')
-        const variant = project.delivery_variants.find(candidate => candidate.id === existing.variant_id)
-        if (!existing.version_id) throw new VideoWorkbenchServiceError('交付变体幂等记录缺少首次版本，不能安全重放', 500, 'VIDEO_EDITORIAL_INVALID')
-        const version = project.delivery_variant_versions.find(candidate => candidate.id === existing.version_id)
-        if (
-          !variant
-          || !version
-          || !existing.command_set_id
-          || version.created_by_command_set_id !== existing.command_set_id
-          || (existing.editorial_timeline_version_id && version.editorial_timeline_version_id !== existing.editorial_timeline_version_id)
-          || (existing.export_profile_revision_id && version.export_profile_revision_id !== existing.export_profile_revision_id)
-          || (existing.export_profile_hash && version.export_profile_hash !== existing.export_profile_hash)
-        ) throw new VideoWorkbenchServiceError('交付变体幂等记录损坏', 500, 'VIDEO_EDITORIAL_INVALID')
-        return { project, variant, version, reused: true }
-      }
-      try {
-        const commandSetId = `command_${randomUUID().replaceAll('-', '')}`
-        const created = this.editorial.createDeliveryVariant(project, input, commandSetId)
-        const saved = await this.repository.saveProject(videoStudioProjectSchema.parse({
-          ...created.project,
-          editorial_command_receipts: [...created.project.editorial_command_receipts, {
-            idempotency_key: idempotencyKey,
-            command_set_id: commandSetId,
-            request_hash: requestHash,
-            target_kind: 'delivery_variant' as const,
-            created_version_id: created.version.id,
-            created_at: this.iso(),
-          }],
-          delivery_variant_creation_receipts: [...created.project.delivery_variant_creation_receipts, {
-            idempotency_key: idempotencyKey,
-            request_hash: requestHash,
-            command_set_id: commandSetId,
-            variant_id: created.variant.id,
-            version_id: created.version.id,
-            editorial_timeline_version_id: created.version.editorial_timeline_version_id,
-            export_profile_revision_id: created.version.export_profile_revision_id,
-            export_profile_hash: created.version.export_profile_hash,
-            created_at: this.iso(),
-          }],
-        }))
-        return { project: saved, variant: created.variant, version: created.version, reused: false }
       } catch (error) {
         return this.editorialError(error)
       }
@@ -4391,32 +4239,6 @@ export class VideoWorkbenchRuntime {
       else skippedProjectIds.push(legacy.id)
     }
     return { migrated_project_ids: migratedProjectIds, skipped_project_ids: skippedProjectIds }
-  }
-
-  async createProject(raw: CreateVideoProjectInput): Promise<VideoStudioProject> {
-    const input = createVideoProjectInputSchema.parse(raw)
-    const now = this.iso()
-    return await this.repository.saveProject(videoStudioProjectSchema.parse({
-      schema_version: 1,
-      id: id('vid'),
-      kind: 'video',
-      title: input.title ?? '新视频',
-      workspace_root: input.workspace_root,
-      owner: STANDALONE_VIDEO_OWNER,
-      writer_fence: INITIAL_WRITER_FENCE,
-      assets: [],
-      versions: [],
-      revision: 0,
-      created_at: now,
-      updated_at: now,
-      state: 'draft',
-      sources: [],
-      timeline: [],
-      evidence: [],
-      timeline_versions: [],
-      alternatives: [],
-      output: input.output,
-    }))
   }
 
   private async requireVideoProject(projectId: string): Promise<VideoStudioProject> {

@@ -6,7 +6,6 @@ import type { VideoWorkbenchRuntime } from '../../services/videoWorkbenchRuntime
  * that knows the runtime implementation and wires its capabilities together.
  */
 export interface ProjectAssetsCommandPort extends Pick<VideoWorkbenchRuntime,
-  | 'createProject'
   | 'addVideoSource'
   | 'sourceResponse'
   | 'restoreProject'
@@ -14,9 +13,6 @@ export interface ProjectAssetsCommandPort extends Pick<VideoWorkbenchRuntime,
 > {}
 
 export interface AnalysisIndexCommandPort extends Pick<VideoWorkbenchRuntime,
-  | 'estimateRemoteAnalysis'
-  | 'grantRemoteAnalysisConsent'
-  | 'revokeRemoteAnalysisConsent'
   | 'searchMediaFacts'
   | 'analyzeVideoProject'
   | 'analyzeVideoBeat'
@@ -47,7 +43,7 @@ export interface EditorialCommandPort extends Pick<VideoWorkbenchRuntime,
 
 export interface FinishingDeliveryCommandPort extends Pick<VideoWorkbenchRuntime,
   | 'getDeliveryVariant'
-  | 'createDeliveryVariant'
+  | 'prepareEditorialProject'
   | 'applyDeliveryVariantCommands'
   | 'compileDeliveryVariant'
   | 'createCaptionDraft'

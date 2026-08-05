@@ -1,4 +1,11 @@
-import type { MediaOwner, VideoStudioProject } from '../../../../shared/contracts/media.js'
+import { randomUUID } from 'node:crypto'
+import {
+  createVideoProjectInputSchema,
+  videoStudioProjectSchema,
+  type CreateVideoProjectInput,
+  type MediaOwner,
+  type VideoStudioProject,
+} from '../../../../shared/contracts/media.js'
 import type { VideoProjectStore } from '../runtime/videoProjectStore.js'
 import type {
   ProjectAssetsCommandPort,
@@ -24,6 +31,7 @@ export class ProjectAssets {
     private readonly commands: ProjectAssetsCommandPort,
     readonly projectStore: VideoProjectStore,
     private readonly errors: VideoWorkbenchApplicationErrors,
+    private readonly now: () => Date,
   ) {}
 
   async listProjects(owner: MediaOwner = STANDALONE_VIDEO_OWNER): Promise<VideoStudioProject[]> {
@@ -46,7 +54,32 @@ export class ProjectAssets {
     return project
   }
 
-  readonly createProject = (...args: Parameters<ProjectAssetsCommandPort['createProject']>) => this.commands.createProject(...args)
+  /** The project shell is an application-owned SQLite write, rather than a
+   * compatibility call into the old runtime. */
+  async createProject(raw: CreateVideoProjectInput): Promise<VideoStudioProject> {
+    const input = createVideoProjectInputSchema.parse(raw)
+    const createdAt = this.now().toISOString()
+    return await this.projectStore.repository.saveProject(videoStudioProjectSchema.parse({
+      schema_version: 1,
+      id: `vid_${randomUUID().replaceAll('-', '')}`,
+      kind: 'video',
+      title: input.title ?? '新视频',
+      workspace_root: input.workspace_root,
+      owner: STANDALONE_VIDEO_OWNER,
+      assets: [],
+      versions: [],
+      revision: 0,
+      created_at: createdAt,
+      updated_at: createdAt,
+      state: 'draft',
+      sources: [],
+      timeline: [],
+      evidence: [],
+      timeline_versions: [],
+      alternatives: [],
+      output: input.output,
+    }))
+  }
   readonly addVideoSource = (...args: Parameters<ProjectAssetsCommandPort['addVideoSource']>) => this.commands.addVideoSource(...args)
   readonly sourceResponse = (...args: Parameters<ProjectAssetsCommandPort['sourceResponse']>) => this.commands.sourceResponse(...args)
 
