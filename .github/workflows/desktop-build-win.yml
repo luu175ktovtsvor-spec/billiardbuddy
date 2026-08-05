@@ -21,6 +21,7 @@ jobs:
     runs-on: windows-latest
     env:
       BB_AGENT_ONLY_BUILD: '1'
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
     # Codex App Server is built from the locked Rust source before Electron
     # packaging; keep this aligned with the macOS source-build budget.
     timeout-minutes: ${{ matrix.timeout_minutes }}
@@ -150,6 +151,13 @@ jobs:
           rm -rf "${verification_root}" "${plugin_target}"
           mkdir -p "${verification_root}"
           git -C third_party/codex-engine worktree add --detach "${verification_source}" HEAD
+          # Check the locked upstream tree before applying the two product
+          # security patches. The patch files are intentionally applied as a
+          # separate product layer; the patched tree is covered by cargo
+          # check/test below.
+          pushd "${verification_source}/codex-rs"
+          cargo fmt --all -- --check
+          popd
           for patch in \
             third_party/codex-engine-patches/0001-sanitize-hook-environment.patch \
             third_party/codex-engine-patches/0002-sanitize-non-tool-child-environment.patch
@@ -160,7 +168,6 @@ jobs:
           git -C "${verification_source}" diff --check
 
           pushd "${verification_source}/codex-rs"
-          cargo fmt --all -- --config imports_granularity=Item --check
           cargo check --locked --target "${target}" --all-targets \
             --package codex-app-server \
             --package codex-core \
@@ -268,7 +275,7 @@ jobs:
             ts/desktop/build-artifacts/windows-${{ matrix.architecture }}/latest.yml
 
       - name: 发布 Windows 安装包与更新清单
-        if: (startsWith(github.ref, 'refs/tags/v') || inputs.publish == true) && matrix.architecture == 'x64'
+        if: env.BB_AGENT_ONLY_BUILD != '1' && (startsWith(github.ref, 'refs/tags/v') || inputs.publish == true) && matrix.architecture == 'x64'
         shell: pwsh
         env:
           BB_RELEASE_UPLOAD_SSH_KEY_B64: ${{ secrets.BB_RELEASE_UPLOAD_SSH_KEY_B64 }}

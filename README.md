@@ -79,4 +79,4 @@ bun run electron:dev
 
 本地 `ts/desktop/scripts/build-macos-arm64.sh` 与 `build-windows-x64.ps1` 仍支持维护和故障复现；需要显式设置 `BB_AGENT_ONLY_BUILD=1` 或 Windows `-AgentOnly` 才会跳过媒体工具链。
 
-构建通过只证明 Agent 构建闭环。正式发行仍须验证真实安装、Agent Thread/Turn、工具审批、恢复、个人 Key 和升级路径；媒体工作台另行验收。
+构建通过只证明 Agent-only 构建、安装包资源和核心可用性闭环；本轮 Windows/macOS 均不要求签名、公证或正式更新源。仍须验证真实安装、Agent Thread/Turn、工具审批、恢复和个人 Key 路径；媒体工作台另行验收。

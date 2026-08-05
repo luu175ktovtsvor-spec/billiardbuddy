@@ -360,7 +360,9 @@ function rustyV8Environment(target: SupportedTarget): NodeJS.ProcessEnv {
   const value: unknown = JSON.parse(output)
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('rusty_v8 准备结果无效')
   const archive = (value as { RUSTY_V8_ARCHIVE?: unknown }).RUSTY_V8_ARCHIVE
+    ?? process.env.RUSTY_V8_ARCHIVE
   const binding = (value as { RUSTY_V8_SRC_BINDING_PATH?: unknown }).RUSTY_V8_SRC_BINDING_PATH
+    ?? process.env.RUSTY_V8_SRC_BINDING_PATH
   if (typeof archive !== 'string' || typeof binding !== 'string') throw new Error('rusty_v8 准备结果缺少路径')
   return { ...process.env, RUSTY_V8_ARCHIVE: archive, RUSTY_V8_SRC_BINDING_PATH: binding }
 }

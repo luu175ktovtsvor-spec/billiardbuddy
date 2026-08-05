@@ -33,9 +33,9 @@
 - 本轮尝试运行选定的无 Rust 编译 Agent 边界测试：已执行部分为 `22 pass`、`113 expect`，但 `codexNativeClientBoundary` 与 `localEnvironment` 分别因本机未安装 `zod/v4`、`smol-toml` 而无法加载，整次命令失败。按当前“不安装依赖、不本机编译”边界，这不是代码通过证据；必须在远程构建环境重跑。
 - 当前工作树存在被忽略的 macOS arm64 引擎和插件工件，但没有本轮从锁定源码重新生成、stage/handshake 或成品审计的可复核收据。因此先前的 macOS staging、Swift typecheck、插件 handshake、Browser E2E 和受管 Thread/Turn E2E 不能被当作当前成品证据；Windows 工件与安装包同样须在唯一远程构建中重新生成后验证。
 - 当前机器按用户明确限制不安装依赖或编译 Rust；全量 TypeScript 检查/测试、Rust `fmt/check/test`、Swift typecheck、插件 stage/smoke、Browser E2E、Windows MSVC/PE、NSIS 解包和最终 `app.asar` 资源审计均待用户明确“构建”后的远程 workflow。
-- 上一轮 Windows workflow `30991170685` 的真实失败包括 ARM64 缺少媒体工具链 Secret，以及 x64 Rust/plugin 验证门失败；本轮已移除 Agent workflow 的媒体依赖，但没有把 x64 Rust 失败伪装成已修复，需由新的远程运行给出日志。
+- 上一轮 Windows workflow `30991170685` 的真实失败包括 ARM64 缺少媒体工具链 Secret，以及 x64 Rust/plugin 验证门失败；本轮已移除 Agent workflow 的媒体依赖，但没有把 x64 Rust 失败伪装成已修复，需由新的远程运行给出日志。上一轮 Agent-only 运行 `30993849826`/`30993849713` 又暴露了 ARM64 Rusty-V8 环境回传、上游 fmt 门和 macOS 签名凭据误依赖；修复后 macOS Agent-only 明确采用无签名模式，签名不再是本轮可用性门槛，仍需新的远程运行给出通过证据。
 - 真实 Provider 冒烟尚未运行。它必须使用可撤销、低额度、限速的专用 Key，在静态和打包门禁通过后执行；系统权限、Chrome 扩展连接、安装包 UI 旅程和远端 Git push 不因源码或 mock 通过而视为完成。
-- 用户已明确说“构建”；本次应只触发 Agent-only Windows 与 macOS workflow。workflow 完成前，两平台原生编译、安装包、PE/签名/NSIS 与成品资源审计仍未验证；媒体不属于本轮构建门。
+- 用户已明确说“构建”；本次应只触发 Agent-only Windows 与 macOS workflow。workflow 完成前，两平台原生编译、安装包、PE/NSIS、macOS 无签名 DMG/ZIP、可安装启动和成品资源审计仍未验证；签名、公证、正式发布和媒体不属于本轮构建门。
 
 ## 对抗审计结论
 
