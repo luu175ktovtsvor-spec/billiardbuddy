@@ -193,6 +193,20 @@ jobs:
           cargo build --locked --target "${target}" \
             --package codex-rmcp-client \
             --bin test_stdio_server
+          # The locked CLI stream and multi-agent resume tests launch the
+          # official `codex` executable through codex_utils_cargo_bin. `cargo
+          # check --all-targets` type-checks it but does not materialize the
+          # debug binary, so build it explicitly before the test harness runs.
+          cargo build --locked --target "${target}" \
+            --package codex-cli \
+            --bin codex
+          # Windows sandbox integration tests launch the two official helper
+          # binaries from target/<triple>/debug. They are separate bins in
+          # codex-windows-sandbox and likewise are not produced by cargo check.
+          cargo build --locked --target "${target}" \
+            --package codex-windows-sandbox \
+            --bin codex-windows-sandbox-setup \
+            --bin codex-command-runner
           timing_sensitive_tests=(
             'suite::v2::external_agent_config::external_agent_config_secondary_source_imports_session_and_plugin_end_to_end'
             'suite::v2::mcp_server_status::mcp_server_status_list_waits_for_live_stdio_metadata_before_using_cached_tools'
