@@ -1,0 +1,132 @@
+name: Agent 后端验收
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_real_provider:
+        description: '使用私有 GitHub Secret 执行两轮真实 DeepSeek Responses 验收（会产生 API 费用）'
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  macos-agent-backend:
+    name: macOS Agent 后端完整验收
+    runs-on: macos-14
+    timeout-minutes: 180
+    env:
+      BB_AGENT_ONLY_BUILD: '1'
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.3.14'
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: 安装 Codex 源码锁定的 Rust 工具链
+        uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582
+        with:
+          toolchain: '1.95.0'
+          components: rustfmt
+
+      - name: 安装内核和桌面依赖
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd ts && bun install --frozen-lockfile)
+          (cd ts/desktop && bun install --frozen-lockfile)
+
+      - name: 检查 Agent 宿主、IPC、模型适配与锁定协议
+        working-directory: ts
+        shell: bash
+        run: |
+          set -euo pipefail
+          bun run check:server
+          bun test --preload ./test/setup.ts \
+            ./test/agentAppshotHost.test.ts \
+            ./test/agentGitHost.test.ts \
+            ./test/agentWorkspaceHost.test.ts \
+            ./test/chromeNativeMessaging.test.ts \
+            ./test/codexNativeClientBoundary.test.ts \
+            ./test/codexNativeProvider.test.ts \
+            ./test/localEnvironment.test.ts \
+            ./test/productConfig.test.ts \
+            ./test/providerAdmission.test.ts \
+            ./test/scheduledAgentTasks.test.ts \
+            ./test/windowsNativePackagingAudit.test.ts
+          bun run check:electron
+          bun run verify:codex-engine-source
+
+      - name: 构建并校验受管 Codex App Server
+        working-directory: ts/desktop
+        shell: bash
+        run: |
+          set -euo pipefail
+          CODEX_ENGINE_TARGET=aarch64-apple-darwin bun run stage:codex-engine
+          bun run verify:codex-engine-smoke -- --target aarch64-apple-darwin
+
+      - name: 暂存并校验 Agent 插件
+        working-directory: ts/desktop
+        shell: bash
+        run: |
+          set -euo pipefail
+          bun run stage:agent-plugins -- --target aarch64-apple-darwin
+          bun run stage:chrome-plugin -- --target aarch64-apple-darwin
+          bun run stage:browser-plugin -- --target aarch64-apple-darwin
+          bun run stage:record-replay-plugin -- --target aarch64-apple-darwin
+          bun run ./scripts/stage-agent-plugins.ts --target aarch64-apple-darwin --verify
+          bun run ./scripts/stage-chrome-plugin.ts --target aarch64-apple-darwin --verify
+          bun run ./scripts/stage-browser-plugin.ts --target aarch64-apple-darwin --verify
+          bun run ./scripts/stage-record-replay-plugin.ts --target aarch64-apple-darwin --verify
+
+      - name: 验证无前端 Electron Main、Thread/Turn 恢复、Hook、插件与 Browser 链路
+        working-directory: ts
+        shell: bash
+        run: |
+          set -euo pipefail
+          bun run verify:codex-runtime-personal-e2e
+          bun run verify:codex-hook-environment
+          bun desktop/scripts/verify-local-agent-plugin-smoke.ts --target aarch64-apple-darwin
+          bun desktop/scripts/verify-browser-use-e2e.ts --target aarch64-apple-darwin
+
+      - name: 使用私有 Secret 执行两轮真实 DeepSeek Responses 验收
+        if: inputs.run_real_provider == true
+        working-directory: ts
+        shell: bash
+        env:
+          BILLIARDBUDDY_REAL_PROVIDER_API_KEY: ${{ secrets.BUNDLED_DEEPSEEK_API_KEY }}
+          BILLIARDBUDDY_REAL_PROVIDER_BASE_URL: ${{ secrets.BUNDLED_DEEPSEEK_BASE_URL }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${BILLIARDBUDDY_REAL_PROVIDER_API_KEY:-}" ]]; then
+            echo '缺少 GitHub Secret: BUNDLED_DEEPSEEK_API_KEY' >&2
+            exit 1
+          fi
+          export BILLIARDBUDDY_REAL_PROVIDER_SMOKE=1
+          export BILLIARDBUDDY_REAL_PROVIDER_SMOKE_TURNS=2
+          export BILLIARDBUDDY_REAL_PROVIDER_SMOKE_CONFIRMATION=RUN_BILLABLE_PERSONAL_AGENT_TURNS_2
+          base_url="${BILLIARDBUDDY_REAL_PROVIDER_BASE_URL:-https://api.deepseek.com}"
+          if [[ "${base_url%/}" == 'https://api.deepseek.com/v1' ]]; then
+            base_url='https://api.deepseek.com'
+          fi
+          export BILLIARDBUDDY_REAL_PROVIDER_BASE_URL="${base_url%/}"
+          export BILLIARDBUDDY_REAL_PROVIDER_MODEL=deepseek-v4-flash
+          export BILLIARDBUDDY_REAL_PROVIDER_PROTOCOL=openai-responses
+          export BILLIARDBUDDY_REAL_PROVIDER_AUTH_MODE=bearer
+          bun run verify:codex-runtime-real-provider
+
+      - name: 清理验收临时输出
+        if: always()
+        shell: bash
+        run: |
+          rm -f ts/desktop/build/product-secrets.json

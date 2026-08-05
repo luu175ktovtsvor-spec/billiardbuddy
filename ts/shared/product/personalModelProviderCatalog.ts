@@ -12,7 +12,7 @@ import type {
  * Codex's native model/context handling must not be replaced by a product
  * capacity table or a user-entered token contract.
  */
-export const PERSONAL_MODEL_PROVIDER_SETUP_CATALOG_REVISION = 3 as const
+export const PERSONAL_MODEL_PROVIDER_SETUP_CATALOG_REVISION = 4 as const
 
 /**
  * A provider route is deliberately more precise than a vendor name.  One
@@ -75,12 +75,16 @@ const PERSONAL_MODEL_PROVIDER_SETUP_CATALOG: readonly PersonalModelProviderSetup
     kind: 'official',
     is_coding_plan: false,
     requires_provider_compatibility_confirmation: false,
-    base_url: 'https://api.deepseek.com/v1',
+    // DeepSeek's Responses guide defines the origin as https://api.deepseek.com;
+    // Electron appends the protocol endpoint (`/responses` or
+    // `/chat/completions`) itself. Keeping `/v1` here would produce the wrong
+    // Responses route for this provider.
+    base_url: 'https://api.deepseek.com',
     default_protocol: 'openai-responses',
     supported_protocols: ['openai-responses', 'openai-compatible'],
     auth_mode: 'bearer',
     api_key_url: 'https://platform.deepseek.com/api_keys',
-    documentation_url: 'https://api-docs.deepseek.com/quick_start/pricing/',
+    documentation_url: 'https://api-docs.deepseek.com/zh-cn/guides/responses_api',
     model_discovery: 'openai-compatible',
   },
   {

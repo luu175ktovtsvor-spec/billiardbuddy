@@ -5,6 +5,7 @@ import {
   ChatCompletionsResponsesAdapter,
   startCodexNativeProvider,
 } from '../desktop/electron/services/codexNativeProvider'
+import { personalModelProviderPreset } from '../shared/product/personalModelProviderCatalog'
 import type { PersonalModelProfile } from '../shared/product/personalModels'
 
 const adapters: ChatCompletionsResponsesAdapter[] = []
@@ -357,5 +358,17 @@ describe('Chat Completions to Responses adapter', () => {
     } finally {
       await started.close()
     }
+  })
+})
+
+describe('personal provider catalog', () => {
+  test('DeepSeek uses the official Responses origin and model protocol defaults', () => {
+    const preset = personalModelProviderPreset('deepseek')
+    expect(preset).toMatchObject({
+      base_url: 'https://api.deepseek.com',
+      default_protocol: 'openai-responses',
+      supported_protocols: ['openai-responses', 'openai-compatible'],
+      documentation_url: 'https://api-docs.deepseek.com/zh-cn/guides/responses_api',
+    })
   })
 })
