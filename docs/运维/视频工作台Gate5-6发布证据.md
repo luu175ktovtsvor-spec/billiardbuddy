@@ -29,8 +29,8 @@ bun run check:electron
 
 ## 本轮共享桌面最终集成审计
 
-- 最终审计基线为已提交的 `main@bf86525aa6a91589d613f4f999bbee3bcfda539e`（其中包含 Agent 桌面宿主收口提交 `b53f078a`）。视频分支已以该提交为祖先，`git rebase main` 返回 `Current branch ... is up to date`，没有重写或修改 `main`。
-- 已人工核对唯一 `desktop:video:workbench` channel 的 trusted sender 校验、Zod discriminated command schema、Main-only `MEDIA_UI_CAPABILITY_HEADER` 注入、来源/导出 grant 的项目/用途/MIME/一次性约束、内存 replay receipt、Preload typed bridge、Renderer 的受控输入以及关闭时 replay 清理。`bun run check:desktop`、`bun run check:electron` 和视频 IPC/Renderer contract 均在此基线上通过。
+- 最终审计基线为已提交的 `main@cc608eb27a2e2edec2d60e5af3df3eb8905f5625`。视频分支已 rebase 到该提交；重写的仅是视频特性分支提交，`main` 没有被修改。
+- 已人工核对唯一 `desktop:video:workbench` channel 的 trusted sender 校验、Zod discriminated command schema、Main-only `MEDIA_UI_CAPABILITY_HEADER` 注入、来源/导出 grant 的项目/用途/MIME/一次性约束、内存 replay receipt、Preload typed bridge、Renderer 的受控输入以及关闭时 replay 清理。与主线图片工作台共存时，两者分别挂载在隔离根节点，并保留各自独立 bridge、状态和清理生命周期。`bun run check:desktop`、`bun run check:electron` 和视频 IPC/Renderer contract 必须在此基线上通过。
 - 这项审计只证明本地 TypeScript、打包构建和受控协议旅程；不会替代已安装 Electron 的原生选择器、Sidecar 或实际 Preview/Render smoke。
 
 ## 仍待受控环境完成的桌面字体与安装包证据

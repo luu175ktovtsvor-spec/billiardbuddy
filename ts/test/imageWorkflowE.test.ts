@@ -523,6 +523,7 @@ test('15.5E 从建项、受控参考、候选采纳到画布和素材库均可�
     const eventPage = publicMediaJobEventPageSchema.parse(await firstEvents.json())
     expect(eventPage.events.length).toBeGreaterThan(0)
     expect(eventPage.events.map(event => event.cursor)).toEqual([...eventPage.events].map(event => event.cursor).sort((left, right) => left - right))
+    expect(eventPage.next_cursor).toBe(eventPage.events.at(-1)!.cursor + 1)
 
     // Only selections and the cursor survive the desktop restart. Server facts
     // are reloaded from /projection and reconciled against its current IDs.

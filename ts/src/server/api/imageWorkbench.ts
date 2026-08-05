@@ -1147,8 +1147,14 @@ export function createImageWorkbenchDomainApiHandler(
 }
 
 export function publicImageEventPage(page: Awaited<ReturnType<ImageWorkbenchApplications['recovery']['waitForOperationEvents']>>) {
+  const events = page.events.map(publicImageEvent)
+  const lastEvent = events.at(-1)
   return publicMediaJobEventPageSchema.parse({
     ...page,
-    events: page.events.map(publicImageEvent),
+    // The shared event envelope now carries an explicit continuation. Image
+    // events already expose a durable cursor, so derive the next raw journal
+    // position from the actual page rather than inventing a second sequence.
+    next_cursor: lastEvent ? lastEvent.cursor + 1 : Math.max(1, page.cursor + 1),
+    events,
   })
 }
