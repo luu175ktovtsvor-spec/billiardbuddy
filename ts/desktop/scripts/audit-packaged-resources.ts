@@ -50,6 +50,13 @@ const forbiddenProductStrings = [
   'node-pty',
 ]
 
+// Bun's standalone runtime embeds its npm package catalog for dynamic module
+// resolution. These names are runtime metadata, not product source or a
+// bundled legacy dependency, so they must not make the sidecar audit reject a
+// valid Agent-only executable. Keep them excluded only from the binary scan;
+// the app.asar text scan above still rejects the same markers in product code.
+const runtimeOwnedSidecarStrings = new Set(['CLAUDE.md', 'node-pty'])
+
 function parseArgs(argv: string[]): AuditOptions {
   let resourcesDir: string | undefined
   let platform: Platform | undefined
@@ -188,11 +195,11 @@ export function auditPackagedResources(options: AuditOptions): void {
   const sidecarPath = join(toolchainDir, sidecar)
   if (!existsSync(sidecarPath)) throw new Error(`安装包缺少正式 sidecar: ${sidecar}`)
   const sidecarBytes = readFileSync(sidecarPath)
-  // Bun's standalone runtime embeds one upstream build-rule filename. It is
-  // compiler payload, not BilliardBuddy source or prompt, so exclude only that
-  // runtime-owned filename while auditing every other product marker.
+  // Bun's standalone runtime embeds a small upstream build-rule/package
+  // catalog. It is compiler payload, not BilliardBuddy source or prompt, so
+  // exclude only those runtime-owned names while auditing every other marker.
   const forbiddenSidecarString = forbiddenProductStrings
-    .filter(candidate => candidate !== 'CLAUDE.md')
+    .filter(candidate => !runtimeOwnedSidecarStrings.has(candidate))
     .find(candidate => sidecarBytes.includes(Buffer.from(candidate)))
   if (forbiddenSidecarString) {
     throw new Error(`安装包 sidecar 残留旧运行字符串: ${forbiddenSidecarString}`)
