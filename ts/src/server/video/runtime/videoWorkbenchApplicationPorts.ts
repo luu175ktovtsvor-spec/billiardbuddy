@@ -24,10 +24,6 @@ export interface AnalysisIndexCommandPort extends Pick<VideoWorkbenchRuntime,
 export interface EditorialCommandPort extends Pick<VideoWorkbenchRuntime,
   | 'prepareEditorialProject'
   | 'editorialSourceBounds'
-  | 'updateTimeline'
-  | 'selectTimelineVersion'
-  | 'lockScene'
-  | 'applyAlternative'
   | 'updateDeliveryIntent'
   | 'getDurationFeasibility'
   | 'createSourceRangeDecision'

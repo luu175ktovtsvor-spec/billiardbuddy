@@ -152,6 +152,10 @@ test('应用模块不反向导入具体运行时，组合根是唯一适配位�
   expect(sources[2]).toContain('this.rules.applyCommandSet')
   expect(sources[2]).not.toContain('this.commands.applyEditorialTimelineCommands')
   expect(sources[2]).not.toContain('this.commands.acceptTimelineDraft')
+  expect(sources[2]).not.toContain('this.commands.updateTimeline')
+  expect(sources[2]).not.toContain('this.commands.selectTimelineVersion')
+  expect(sources[2]).not.toContain('this.commands.lockScene')
+  expect(sources[2]).not.toContain('this.commands.applyAlternative')
   expect(sources[2]).not.toContain('this.commands.createReviewNote')
   expect(sources[2]).not.toContain('this.commands.resolveReviewNote')
   expect(sources[2]).not.toContain('this.commands.createApprovalDecision')
@@ -173,6 +177,10 @@ test('应用模块不反向导入具体运行时，组合根是唯一适配位�
     'getTimelineDraft',
     'applyEditorialTimelineCommands',
     'acceptTimelineDraft',
+    'updateTimeline',
+    'selectTimelineVersion',
+    'lockScene',
+    'applyAlternative',
     'createDeliveryVariant',
     'getDeliveryVariant',
     'applyDeliveryVariantCommands',

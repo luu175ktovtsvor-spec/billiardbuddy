@@ -2,27 +2,37 @@ import { randomUUID } from 'node:crypto'
 import {
   acceptTimelineDraftInputSchema,
   applyEditorialTimelineCommandsInputSchema,
+  applyVideoAlternativeInputSchema,
   createVideoApprovalDecisionInputSchema,
   createVideoReviewNoteInputSchema,
+  lockVideoSceneInputSchema,
   resolveVideoReviewNoteInputSchema,
+  selectVideoTimelineVersionInputSchema,
   timelineCommandSetSchema,
+  updateVideoTimelineInputSchema,
   videoStudioProjectSchema,
   type AcceptTimelineDraftInput,
   type ApplyEditorialTimelineCommandsInput,
+  type ApplyVideoAlternativeInput,
   type CreateVideoApprovalDecisionInput,
   type CreateVideoReviewNoteInput,
+  type EditorialTimelineCommand,
+  type EditorialTimelineVersion,
+  type LockVideoSceneInput,
   type ResolveVideoReviewNoteInput,
+  type SelectVideoTimelineVersionInput,
   type VideoApprovalDecision,
   type VideoReviewAnchor,
   type VideoReviewNote,
   type VideoStudioProject,
-  type EditorialTimelineVersion,
+  type VideoTimelineItem,
+  type UpdateVideoTimelineInput,
   type TimelineDraft,
 } from '../../../../shared/contracts/media.js'
 import { factBasisHash } from '../domain/mediaFacts/model.js'
-import { compareRationalTime, endOfRange, rationalTime, sourceTimeRange, type SourceTimeRange } from '../domain/mediaFacts/time.js'
+import { compareRationalTime, endOfRange, rationalTime, sourceTimeRange, tickRateForTimeBase, type SourceTimeRange } from '../domain/mediaFacts/time.js'
 import { materializeVideoReviewNotes, nextVideoReviewEventSequence } from '../domain/editorial/review.js'
-import { EditorialValidationError, editorialFactsBasisHash, type EditorialApplication } from '../domain/editorial/editorialApplication.js'
+import { EditorialValidationError, editorialFactsBasisHash, type EditorialApplication, type EditorialSourceTiming } from '../domain/editorial/editorialApplication.js'
 import type { VideoProjectStore } from '../runtime/videoProjectStore.js'
 import type { EditorialCommandPort, VideoWorkbenchApplicationErrors } from '../runtime/videoWorkbenchApplicationPorts.js'
 
@@ -105,6 +115,64 @@ export class Editorial {
       throw this.errors.create(error.message, status, error.code)
     }
     throw error
+  }
+
+  private async editorialTimings(project: VideoStudioProject): Promise<Map<string, EditorialSourceTiming>> {
+    const timings = new Map<string, EditorialSourceTiming>()
+    for (const source of project.sources) {
+      const fact = await this.projectStore.repository.getFact('source', source.id).catch(() => null)
+      if (!fact || !('fast_identity' in fact)) continue
+      timings.set(source.id, {
+        tick_rate: tickRateForTimeBase(fact.primary_video_stream.time_base),
+        start_ticks: fact.primary_video_stream.start_time.ticks,
+      })
+    }
+    return timings
+  }
+
+  private sameLegacyProjectionItem(current: VideoTimelineItem, desired: VideoTimelineItem): boolean {
+    return current.legacy_scene_id === desired.legacy_scene_id
+      && current.kind === desired.kind
+      && current.track_id === desired.track_id
+      && JSON.stringify(current.timeline_range) === JSON.stringify(desired.timeline_range)
+      && JSON.stringify(current.binding) === JSON.stringify(desired.binding)
+  }
+
+  /** Legacy projections are read-compatible inputs only. The resulting state
+   * transition is one CommandSet, which preserves locked items and tracks. */
+  private legacyProjectionCommandSet(
+    project: VideoStudioProject,
+    desired: VideoTimelineItem[],
+    idempotencyKey: string,
+  ) {
+    const current = this.rules.currentTimeline(project)
+    const lockedTrackIds = new Set(current.tracks.filter(track => track.locked).map(track => track.id))
+    const locked = current.items.filter(item => item.locked || lockedTrackIds.has(item.track_id))
+    const retainedDesiredIds = new Set<string>()
+    for (const lockedItem of locked) {
+      const match = desired.find(candidate => this.sameLegacyProjectionItem(lockedItem, candidate))
+      if (!match) throw this.errors.create('备选时间线不能覆盖锁定场景', 409, 'VIDEO_LOCKED_SCENE_CONFLICT')
+      retainedDesiredIds.add(match.id)
+    }
+    const deletable = current.items.filter(item => !item.locked && !lockedTrackIds.has(item.track_id))
+    const commands: EditorialTimelineCommand[] = [
+      ...(deletable.length ? [{ kind: 'ripple_delete' as const, item_ids: deletable.map(item => item.id), close_gap: false }] : []),
+      ...desired.filter(item => !retainedDesiredIds.has(item.id)).map(item => ({ kind: 'insert' as const, track_id: item.track_id, item })),
+    ]
+    if (!commands.length) {
+      const track = current.tracks[0]
+      if (!track) throw this.errors.create('编辑时间线轨道不存在', 409, 'VIDEO_TIMELINE_MISSING')
+      commands.push({ kind: 'set_track_state', track_id: track.id, locked: track.locked })
+    }
+    return timelineCommandSetSchema.parse({
+      id: `command_${randomUUID().replaceAll('-', '')}`,
+      project_id: project.id,
+      actor_id: 'local_workbench',
+      idempotency_key: idempotencyKey,
+      created_at: this.now().toISOString(),
+      target: { kind: 'editorial', base_timeline_version_id: current.id },
+      commands,
+    })
   }
 
   private async isBeatSyncDraftCurrent(project: VideoStudioProject, draft: TimelineDraft): Promise<boolean> {
@@ -421,10 +489,133 @@ export class Editorial {
       }
     })
   }
-  readonly updateTimeline = (...args: Parameters<EditorialCommandPort['updateTimeline']>) => this.commands.updateTimeline(...args)
-  readonly selectTimelineVersion = (...args: Parameters<EditorialCommandPort['selectTimelineVersion']>) => this.commands.selectTimelineVersion(...args)
-  readonly lockScene = (...args: Parameters<EditorialCommandPort['lockScene']>) => this.commands.lockScene(...args)
-  readonly applyAlternative = (...args: Parameters<EditorialCommandPort['applyAlternative']>) => this.commands.applyAlternative(...args)
+
+  async updateTimeline(projectId: string, raw: UpdateVideoTimelineInput): Promise<VideoStudioProject> {
+    return await this.projectStore.mutate(projectId, async () => {
+      const input = updateVideoTimelineInputSchema.parse(raw)
+      const project = await this.commands.prepareEditorialProject(projectId)
+      try {
+        if (project.state === 'rendering') throw this.errors.create('正在导出，暂时不能修改时间线', 409, 'VIDEO_RENDER_ACTIVE')
+        if (project.revision !== input.base_revision) throw this.errors.create('视频项目已更新，请刷新后再编辑', 409, 'VIDEO_REVISION_CONFLICT')
+        const current = this.rules.currentTimeline(project)
+        const baseVersionId = input.base_timeline_version_id
+        if (baseVersionId && baseVersionId !== current.id && baseVersionId !== project.current_timeline_version_id) {
+          throw this.errors.create('视频时间线已更新，请刷新后再编辑', 409, 'VIDEO_TIMELINE_CONFLICT')
+        }
+        const [timing, sourceBounds] = await Promise.all([this.editorialTimings(project), this.commands.editorialSourceBounds(project)])
+        const items = this.rules.itemsFromLegacyClips(project, input.clips, current.tracks, timing, sourceBounds)
+        const commandSet = this.legacyProjectionCommandSet(
+          project,
+          items,
+          `legacy-update-${factBasisHash({ base_revision: input.base_revision, base_timeline_version_id: baseVersionId ?? current.id, clips: input.clips })}`,
+        )
+        const applied = this.rules.applyCommandSet(project, commandSet, sourceBounds)
+        if (applied.reused) return project
+        return await this.projectStore.repository.saveProject(videoStudioProjectSchema.parse({
+          ...applied.project,
+          alternatives: [],
+          state: input.clips.length ? 'ready' : 'draft',
+        }))
+      } catch (error) {
+        return this.editorialError(error)
+      }
+    })
+  }
+
+  async selectTimelineVersion(projectId: string, raw: SelectVideoTimelineVersionInput): Promise<VideoStudioProject> {
+    return await this.projectStore.mutate(projectId, async () => {
+      const input = selectVideoTimelineVersionInputSchema.parse(raw)
+      const project = await this.commands.prepareEditorialProject(projectId)
+      try {
+        if (project.state === 'rendering') throw this.errors.create('正在导出，暂时不能恢复时间线', 409, 'VIDEO_RENDER_ACTIVE')
+        if (project.revision !== input.revision) throw this.errors.create('视频项目已更新，请刷新后再选择版本', 409, 'VIDEO_REVISION_CONFLICT')
+        const current = this.rules.currentTimeline(project)
+        const [timing, sourceBounds] = await Promise.all([this.editorialTimings(project), this.commands.editorialSourceBounds(project)])
+        const formal = project.editorial_timeline_versions.find(candidate => candidate.id === input.version_id)
+        const legacy = project.timeline_versions.find(candidate => candidate.id === input.version_id)
+        if (!formal && !legacy) throw this.errors.create('视频时间线版本不存在', 404, 'VIDEO_TIMELINE_MISSING')
+        const items = formal
+          ? structuredClone(formal.items)
+          : this.rules.itemsFromLegacyScenes(project, legacy!.scenes, current.tracks, timing, sourceBounds)
+        const applied = this.rules.applyCommandSet(
+          project,
+          this.legacyProjectionCommandSet(project, items, `legacy-select-${factBasisHash({ revision: input.revision, version_id: input.version_id })}`),
+          sourceBounds,
+        )
+        if (applied.reused) return project
+        return await this.projectStore.repository.saveProject(videoStudioProjectSchema.parse({
+          ...applied.project,
+          alternatives: [],
+          state: items.length ? 'ready' : 'draft',
+        }))
+      } catch (error) {
+        return this.editorialError(error)
+      }
+    })
+  }
+
+  async lockScene(projectId: string, sceneId: string, raw: LockVideoSceneInput): Promise<VideoStudioProject> {
+    return await this.projectStore.mutate(projectId, async () => {
+      const input = lockVideoSceneInputSchema.parse(raw)
+      const project = await this.commands.prepareEditorialProject(projectId)
+      try {
+        if (project.state === 'rendering') throw this.errors.create('正在导出，暂时不能修改时间线', 409, 'VIDEO_RENDER_ACTIVE')
+        if (project.revision !== input.base_revision) throw this.errors.create('视频项目已更新，请刷新后再编辑', 409, 'VIDEO_TIMELINE_CONFLICT')
+        const current = this.rules.currentTimeline(project)
+        if (input.timeline_version_id !== current.id && input.timeline_version_id !== project.current_timeline_version_id) {
+          throw this.errors.create('视频时间线已更新，请刷新后再编辑', 409, 'VIDEO_TIMELINE_CONFLICT')
+        }
+        const itemIds = current.items.filter(item => item.id === sceneId || item.legacy_scene_id === sceneId).map(item => item.id)
+        if (!itemIds.length) throw this.errors.create('场景尚未迁移到编辑时间线', 409, 'VIDEO_TIMELINE_MISSING')
+        const commandSet = timelineCommandSetSchema.parse({
+          id: `command_${randomUUID().replaceAll('-', '')}`,
+          project_id: project.id,
+          actor_id: 'local_workbench',
+          idempotency_key: `legacy-lock-${factBasisHash({ base_revision: input.base_revision, timeline_version_id: input.timeline_version_id, scene_id: sceneId, locked: input.locked })}`,
+          created_at: this.now().toISOString(),
+          target: { kind: 'editorial', base_timeline_version_id: current.id },
+          commands: [{ kind: 'lock', item_ids: itemIds, locked: input.locked }],
+        })
+        const applied = this.rules.applyCommandSet(project, commandSet, await this.commands.editorialSourceBounds(project))
+        return applied.reused ? project : await this.projectStore.repository.saveProject(videoStudioProjectSchema.parse(applied.project))
+      } catch (error) {
+        return this.editorialError(error)
+      }
+    })
+  }
+
+  async applyAlternative(projectId: string, raw: ApplyVideoAlternativeInput): Promise<VideoStudioProject> {
+    return await this.projectStore.mutate(projectId, async () => {
+      const input = applyVideoAlternativeInputSchema.parse(raw)
+      const project = await this.commands.prepareEditorialProject(projectId)
+      try {
+        if (project.state === 'rendering') throw this.errors.create('正在导出，暂时不能修改时间线', 409, 'VIDEO_RENDER_ACTIVE')
+        if (project.revision !== input.base_revision) throw this.errors.create('视频项目已更新，请刷新后再编辑', 409, 'VIDEO_REVISION_CONFLICT')
+        const alternative = project.alternatives.find(candidate => candidate.id === input.alternative_id)
+        if (!alternative) throw this.errors.create('备选方案不存在', 404, 'VIDEO_ALTERNATIVE_NOT_FOUND')
+        if (alternative.base_timeline_version_id !== project.current_timeline_version_id && alternative.base_timeline_version_id !== project.current_editorial_timeline_version_id) {
+          throw this.errors.create('备选方案已经过期，请重新分析', 409, 'VIDEO_ALTERNATIVE_STALE')
+        }
+        const current = this.rules.currentTimeline(project)
+        const [timing, sourceBounds] = await Promise.all([this.editorialTimings(project), this.commands.editorialSourceBounds(project)])
+        const items = this.rules.itemsFromLegacyScenes(project, alternative.scenes, current.tracks, timing, sourceBounds)
+        const applied = this.rules.applyCommandSet(
+          project,
+          this.legacyProjectionCommandSet(project, items, `legacy-alternative-${factBasisHash({ base_revision: input.base_revision, alternative_id: alternative.id })}`),
+          sourceBounds,
+        )
+        if (applied.reused) return project
+        return await this.projectStore.repository.saveProject(videoStudioProjectSchema.parse({
+          ...applied.project,
+          alternatives: [],
+          state: alternative.scenes.length ? 'ready' : 'draft',
+        }))
+      } catch (error) {
+        return this.editorialError(error)
+      }
+    })
+  }
+
   readonly updateDeliveryIntent = (...args: Parameters<EditorialCommandPort['updateDeliveryIntent']>) => this.commands.updateDeliveryIntent(...args)
   readonly getDurationFeasibility = (...args: Parameters<EditorialCommandPort['getDurationFeasibility']>) => this.commands.getDurationFeasibility(...args)
   readonly createSourceRangeDecision = (...args: Parameters<EditorialCommandPort['createSourceRangeDecision']>) => this.commands.createSourceRangeDecision(...args)
