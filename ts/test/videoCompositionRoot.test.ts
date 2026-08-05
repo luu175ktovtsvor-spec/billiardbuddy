@@ -152,6 +152,15 @@ test('应用模块不反向导入具体运行时，组合根是唯一适配位�
   expect(sources[3]).toContain('FinishingDeliveryCommandPort')
   expect(sources[3]).toContain('projectStore.repository.saveProject')
   expect(sources[3]).not.toContain('this.commands.createDeliveryVariant')
+
+  const runtimeSource = await readFile(new URL('../src/server/services/videoWorkbenchRuntime.ts', import.meta.url), 'utf8')
+  for (const migratedCommand of [
+    'createProject',
+    'estimateRemoteAnalysis',
+    'grantRemoteAnalysisConsent',
+    'revokeRemoteAnalysisConsent',
+    'createDeliveryVariant',
+  ]) expect(runtimeSource).not.toContain(`async ${migratedCommand}(`)
 })
 
 test('兼容门面只委托组合根，不重新持有 repository、Relay、FFmpeg 或恢复状态', async () => {
