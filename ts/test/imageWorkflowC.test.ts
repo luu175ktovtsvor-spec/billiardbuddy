@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createImageWorkbenchDomainApiHandler } from '../src/server/api/imageWorkbench.js'
 import { ImageWorkbenchService } from '../src/server/services/imageWorkbenchService.js'
+import { imageTicketRequest } from './helpers/imageUiTicket.js'
 
 const roots: string[] = []
 const workbenches: ImageWorkbenchService[] = []
@@ -57,7 +58,7 @@ async function request(
   init: RequestInit = {},
 ): Promise<Response> {
   const url = new URL(path, 'http://127.0.0.1:3456')
-  return await handler(new Request(url, init), url, url.pathname.split('/').filter(Boolean))
+  return await handler(imageTicketRequest(url, init), url, url.pathname.split('/').filter(Boolean))
 }
 
 const headers = {

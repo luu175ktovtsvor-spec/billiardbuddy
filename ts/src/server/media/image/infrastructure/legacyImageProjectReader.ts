@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import {
   imageWorkbenchProjectSchema,
   mediaJobEventJournalSchema,
+  mediaProjectSchema,
   mediaTaskSchema,
   type ImageWorkbenchProject,
   type MediaJobEventJournal,
@@ -62,7 +63,9 @@ export class LegacyImageProjectReader {
     const projects: ImageWorkbenchProject[] = []
     for (const [name, path] of projectFiles) {
       const text = await this.readText(path)
-      const project = imageWorkbenchProjectSchema.parse(JSON.parse(text))
+      const record = mediaProjectSchema.parse(JSON.parse(text))
+      if (record.kind !== 'image') continue
+      const project = imageWorkbenchProjectSchema.parse(record)
       if (name !== `${project.id}.json`) throw new Error('IMAGE_LEGACY_PROJECT_FILENAME_MISMATCH')
       sources.push({ path, text })
       projects.push(project)
@@ -71,16 +74,19 @@ export class LegacyImageProjectReader {
     for (const [name, path] of operationFiles) {
       const text = await this.readText(path)
       const operation = mediaTaskSchema.parse(JSON.parse(text))
-      if (operation.kind !== 'image.generate' || !operation.image_operation || name !== `${operation.id}.json`) {
+      if (operation.kind !== 'image.generate') continue
+      if (!operation.image_operation || name !== `${operation.id}.json`) {
         throw new Error('IMAGE_LEGACY_OPERATION_INVALID')
       }
       sources.push({ path, text })
       operations.set(operation.id, operation as LegacyImageOperation)
     }
     const journals = new Map<string, MediaJobEventJournal>()
+    const imageProjectIds = new Set(projects.map(project => project.id))
     for (const [name, path] of journalFiles) {
       const projectId = name.slice(0, -'.json'.length)
       const text = await this.readText(path)
+      if (!imageProjectIds.has(projectId)) continue
       const journal = mediaJobEventJournalSchema.parse(JSON.parse(text))
       if (journal.events.some(event => event.project_id !== projectId || event.task.kind !== 'image.generate')) {
         throw new Error('IMAGE_LEGACY_EVENT_INVALID')

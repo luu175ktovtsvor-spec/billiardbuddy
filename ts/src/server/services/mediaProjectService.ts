@@ -1750,6 +1750,59 @@ export class MediaProjectService {
     await this.ensureDirs()
   }
 
+  /**
+   * These probes deliberately read raw legacy records without calling any
+   * migration, reconciliation, polling, ACK, or writer code. The retired
+   * generic API uses them only to refuse image records before it can touch a
+   * second image lifecycle.
+   */
+  private async readStoredProjectWithoutRepair(projectId: string): Promise<MediaProject | null> {
+    try {
+      const raw = JSON.parse(await readFile(this.projectPath(projectId), 'utf8')) as unknown
+      const parsed = mediaProjectSchema.safeParse(migrateLegacyMediaOwnerRecord(raw).value)
+      return parsed.success ? parsed.data : null
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+      throw error
+    }
+  }
+
+  private async readStoredTaskWithoutRepair(taskId: string): Promise<MediaTask | null> {
+    try {
+      const raw = JSON.parse(await readFile(this.taskPath(taskId), 'utf8')) as unknown
+      const parsed = mediaTaskSchema.safeParse(migrateLegacyMediaOwnerRecord(raw).value)
+      return parsed.success ? parsed.data : null
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+      throw error
+    }
+  }
+
+  async inspectStoredProjectKind(projectId: string): Promise<MediaProject['kind'] | null> {
+    return (await this.readStoredProjectWithoutRepair(projectId))?.kind ?? null
+  }
+
+  async inspectStoredTaskKind(taskId: string): Promise<MediaTask['kind'] | null> {
+    return (await this.readStoredTaskWithoutRepair(taskId))?.kind ?? null
+  }
+
+  async listStoredProjectsForOwner(
+    owner: MediaOwner,
+    kind: MediaProject['kind'],
+  ): Promise<MediaProject[]> {
+    const names = await readdir(this.projectsDir).catch(error => {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []
+      throw error
+    })
+    const projects = await Promise.all(names
+      .filter(name => name.endsWith('.json'))
+      .map(async name => await this.readStoredProjectWithoutRepair(name.slice(0, -5)).catch(() => null)))
+    return projects
+      .filter((project): project is MediaProject => project !== null)
+      .filter(project => project.kind === kind && sameOwner(project.owner, owner))
+      .sort((left, right) => right.updated_at.localeCompare(left.updated_at))
+  }
+
   async listProjects(kind?: 'image' | 'video', owner?: MediaOwner): Promise<MediaProject[]> {
     await this.ensureDirs()
     const names = await readdir(this.projectsDir)
@@ -5238,6 +5291,58 @@ export class MediaProjectService {
       }
     }))
     return receipts.filter((receipt): receipt is MediaDeletionReceipt => receipt !== null)
+  }
+
+  private async readStoredDeletionReceiptsWithoutRepair(): Promise<MediaDeletionReceipt[]> {
+    const names = await readdir(this.deletionsDir).catch(error => {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []
+      throw error
+    })
+    const receipts = await Promise.all(names.filter(name => name.endsWith('.json')).map(async name => {
+      try {
+        const raw = JSON.parse(await readFile(join(this.deletionsDir, name), 'utf8')) as unknown
+        const parsed = mediaDeletionReceiptSchema.safeParse(migrateLegacyMediaOwnerRecord(raw).value)
+        return parsed.success ? parsed.data : null
+      } catch {
+        return null
+      }
+    }))
+    return receipts.filter((receipt): receipt is MediaDeletionReceipt => receipt !== null)
+  }
+
+  async inspectStoredDeletionProjectKind(projectId: string): Promise<MediaProject['kind'] | null> {
+    const receipt = (await this.readStoredDeletionReceiptsWithoutRepair())
+      .filter(candidate => candidate.project_id === projectId && candidate.status !== 'purged')
+      .sort((left, right) => right.deleted_at.localeCompare(left.deleted_at))[0]
+    if (!receipt) return null
+    if (receipt.project_kind) return receipt.project_kind
+    try {
+      const raw = JSON.parse(await readFile(join(this.trashPath(receipt.trash_key), 'project.json'), 'utf8')) as unknown
+      const parsed = mediaProjectSchema.safeParse(migrateLegacyMediaOwnerRecord(raw).value)
+      return parsed.success ? parsed.data.kind : null
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+      throw error
+    }
+  }
+
+  async listStoredDeletionsForOwner(
+    owner: MediaOwner,
+    kind: MediaProject['kind'],
+  ): Promise<MediaDeletionReceipt[]> {
+    const receipts = await this.readStoredDeletionReceiptsWithoutRepair()
+    const withKind = await Promise.all(receipts.map(async receipt => ({
+      receipt,
+      kind: receipt.project_kind ?? await this.inspectStoredDeletionProjectKind(receipt.project_id),
+    })))
+    return withKind
+      .filter(({ receipt, kind: receiptKind }) => (
+        sameOwner(receipt.owner, owner)
+        && receipt.status !== 'purged'
+        && receiptKind === kind
+      ))
+      .map(({ receipt }) => receipt)
+      .sort((left, right) => right.deleted_at.localeCompare(left.deleted_at))
   }
 
   private async latestDeletion(

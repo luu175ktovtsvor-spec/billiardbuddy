@@ -1,23 +1,43 @@
 import { expect, test } from 'bun:test'
+import { createHash } from 'node:crypto'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { ELECTRON_IPC_CHANNELS } from '../desktop/electron/ipc/channels.js'
 import { validateElectronIpcPayload } from '../desktop/electron/ipc/capabilities.js'
 import { imageWorkbenchIpcResponse } from '../desktop/electron/ipc/imageResponse.js'
 import { ElectronImageActions } from '../desktop/electron/services/imageActions.js'
 import { ImageDestinationGrants } from '../desktop/electron/services/imageDestinationGrants.js'
-import { mediaSafeError } from '../shared/contracts/media.js'
+import { buildSidecarEnv } from '../desktop/electron/services/sidecarManager.js'
+import { MEDIA_UI_CAPABILITY_HEADER, mediaSafeError } from '../shared/contracts/media.js'
+import {
+  ImageUiCapabilityReplayGuard,
+  issueImageUiCapabilityTicket,
+  verifyImageUiCapabilityTicket,
+} from '../shared/product/imageUiCapabilityTicket.js'
 import {
   imageWorkbenchIpcResponseSchemas,
   parseImageWorkbenchIpcRequest,
 } from '../shared/contracts/imageWorkbenchIpc.js'
 import type { ImageWorkbenchPreloadBridge } from '../shared/contracts/imageWorkbenchPreload.js'
 import { createElectronImageWorkbenchClient } from '../desktop/src/image-workbench/api/imageWorkbenchClient.js'
+import { consumeImageUiTicketSecret, createImageWorkbenchDomainApiHandler } from '../src/server/api/imageWorkbench.js'
+import { consumeMediaUiCapability } from '../src/server/api/media.js'
+import { ImageWorkbenchService } from '../src/server/services/imageWorkbenchService.js'
+import { imageTicketHeaders } from './helpers/imageUiTicket.js'
 import type {
   ImageCandidateAdoptionResponse,
   ImageCandidateDecisionResponse,
   ImageCandidateDerivationResponse,
   ImageCreativePlanResponse,
+  ImageArtboardSelectVersionResponse,
+  ImageDestinationGrant,
+  ImageDestinationGrantRequest,
+  ImageExportReceipt,
   ImageGenerationRoundResponse,
   ImageReferenceControlResponse,
+  ImageSaveOutputInput,
+  ImageSaveOutputResponse,
 } from '../shared/contracts/imageGeneration.js'
 
 const projectId = 'img_00000001'
@@ -98,9 +118,15 @@ test('15.4 image IPC validators expose every shared typed image command', () => 
     input: { version_id: versionId, output_path: '' },
   })).toBeFalse()
   expect(validateElectronIpcPayload(ELECTRON_IPC_CHANNELS.imageRequestDestination, {
+    project_id: projectId,
+    version_id: versionId,
+    intent: 'save_version',
     suggested_name: 'delivery.png',
   })).toBeTrue()
   expect(validateElectronIpcPayload(ELECTRON_IPC_CHANNELS.imageRequestDestination, {
+    project_id: projectId,
+    version_id: versionId,
+    intent: 'save_version',
     suggested_name: 'delivery.png',
     destination_path: '/forged/renderer-path.png',
   })).toBeFalse()
@@ -244,6 +270,46 @@ test('15.5 image workbench bridge validates method payloads and response schemas
     payload: { projectId, actor: 'forged-owner' },
   })).toBeFalse()
   expect(validateElectronIpcPayload(channel, {
+    method: 'getVersionPreview',
+    payload: { projectId, versionId },
+  })).toBeTrue()
+  expect(validateElectronIpcPayload(channel, {
+    method: 'getVersionPreview',
+    payload: { projectId, versionId, path: '/api/images/forged' },
+  })).toBeFalse()
+  expect(validateElectronIpcPayload(channel, {
+    method: 'estimateVersionDerivation',
+    payload: {
+      projectId,
+      versionId,
+      input: { base_revision: 4, instruction: '只调整背景亮度', kind: 'edit' },
+    },
+  })).toBeTrue()
+  expect(validateElectronIpcPayload(channel, {
+    method: 'deriveVersion',
+    payload: {
+      projectId,
+      versionId,
+      input: {
+        base_revision: 4,
+        idempotency_key: 'bb-image-ipc-version-derive-0001',
+        instruction: '只调整背景亮度',
+        kind: 'edit',
+        estimate_hash: `sha256:${'a'.repeat(64)}`,
+        confirm: true,
+        candidate_id: 'forged-candidate-source',
+      },
+    },
+  })).toBeFalse()
+  expect(validateElectronIpcPayload(channel, {
+    method: 'getExportReceipt',
+    payload: { projectId, receiptId: 'export_receipt_00000001' },
+  })).toBeTrue()
+  expect(validateElectronIpcPayload(channel, {
+    method: 'getExportReceipt',
+    payload: { projectId, receiptId: 'export_receipt_00000001', rawReceipt: true },
+  })).toBeFalse()
+  expect(validateElectronIpcPayload(channel, {
     method: 'quickCreate',
     payload: {
       input: {
@@ -251,6 +317,12 @@ test('15.5 image workbench bridge validates method payloads and response schemas
         prompt: '一张桌球馆海报',
         output_preset: 'square',
         reference_inputs: [],
+        brief_overrides: {
+          confirmed_facts: ['场馆地址以用户确认为准'],
+          must_preserve: ['赛事主题'],
+          may_change: ['背景配色'],
+          exact_text: ['夏季冠军赛'],
+        },
       },
     },
   })).toBeTrue()
@@ -276,6 +348,100 @@ test('15.5 image workbench bridge validates method payloads and response schemas
     candidate_id: 'cand_00000001',
     data_url: 'https://server.example/candidate.png',
   }).success).toBeFalse()
+  expect(imageWorkbenchIpcResponseSchemas.getVersionPreview.safeParse({
+    version_id: versionId,
+    data_url: 'data:image/png;base64,AA==',
+  }).success).toBeTrue()
+  expect(imageWorkbenchIpcResponseSchemas.getVersionPreview.safeParse({
+    version_id: versionId,
+    data_url: 'https://server.example/version.png',
+  }).success).toBeFalse()
+  expect(imageWorkbenchIpcResponseSchemas.getExportReceipt.safeParse({
+    export_receipt: {
+      id: 'export_receipt_00000001', project_id: projectId, artboard_id: 'art_00000001', version_id: versionId,
+      source_hash: `sha256:${'a'.repeat(64)}`, output_asset_id: 'asset_00000001', output_format: 'png', output_hash: `sha256:${'b'.repeat(64)}`,
+      width: 1024, height: 1024, byte_size: 1024, release_check_result_id: 'release_00000001', created_at: '2026-08-05T00:00:00.000Z',
+    },
+  }).success).toBeTrue()
+})
+
+test('15.5 Main validates bounded Version pixels and durable export receipts for typed workbench reads', async () => {
+  const previewBytes = Buffer.from('verified-version-preview')
+  const previewHash = `sha256:${createHash('sha256').update(previewBytes).digest('hex')}`
+  const requests: Array<{ url: URL; headers: Headers }> = []
+  const receipt = {
+    id: 'export_receipt_00000001', project_id: projectId, artboard_id: 'art_00000001', version_id: versionId,
+    source_hash: `sha256:${'a'.repeat(64)}`, output_asset_id: 'asset_00000001', output_format: 'png' as const, output_hash: `sha256:${'b'.repeat(64)}`,
+    width: 1024, height: 1024, byte_size: 1024, release_check_result_id: 'release_00000001', created_at: '2026-08-05T00:00:00.000Z',
+  }
+  const actions = new ElectronImageActions({
+    getServerUrl: async () => 'http://127.0.0.1:3456',
+    ticketSecret: capability,
+    fetchImpl: async (input, init) => {
+      const url = new URL(input.toString())
+      requests.push({ url, headers: new Headers(init?.headers) })
+      if (url.pathname.endsWith('/versions/ver_00000002/content')) {
+        return new Response(previewBytes, {
+          headers: {
+            'Content-Type': 'image/png',
+            'Content-Length': String(8 * 1024 * 1024 + 1),
+            'X-BilliardBuddy-Media-Hash': previewHash,
+            'X-BilliardBuddy-Media-Width': '1024',
+            'X-BilliardBuddy-Media-Height': '1024',
+          },
+        })
+      }
+      if (url.pathname.endsWith('/versions/' + versionId + '/content')) {
+        return new Response(previewBytes, {
+          headers: {
+            'Content-Type': 'image/png',
+            'Content-Length': String(previewBytes.byteLength),
+            'X-BilliardBuddy-Media-Hash': previewHash,
+            'X-BilliardBuddy-Media-Width': '1024',
+            'X-BilliardBuddy-Media-Height': '1024',
+          },
+        })
+      }
+      if (url.pathname.endsWith('/export-receipts/export_receipt_00000001')) {
+        return Response.json({ export_receipt: receipt })
+      }
+      return Response.json({ error: 'MEDIA_NOT_FOUND', message: 'not found' }, { status: 404 })
+    },
+  })
+
+  const preview = await actions.invokeWorkbench(parseImageWorkbenchIpcRequest({
+    method: 'getVersionPreview',
+    payload: { projectId, versionId },
+  }))
+  const persistedReceipt = await actions.invokeWorkbench(parseImageWorkbenchIpcRequest({
+    method: 'getExportReceipt',
+    payload: { projectId, receiptId: receipt.id },
+  }))
+  await expect(actions.invokeWorkbench(parseImageWorkbenchIpcRequest({
+    method: 'getVersionPreview',
+    payload: { projectId, versionId: 'ver_00000002' },
+  }))).rejects.toMatchObject({ code: 'MEDIA_RESOURCE_UNAVAILABLE' })
+
+  expect(preview).toEqual({
+    version_id: versionId,
+    data_url: `data:image/png;base64,${previewBytes.toString('base64')}`,
+  })
+  expect(persistedReceipt).toEqual({ export_receipt: receipt })
+  expect(requests.map(request => request.url.pathname)).toEqual([
+    `/api/images/projects/${projectId}/versions/${versionId}/content`,
+    `/api/images/projects/${projectId}/export-receipts/${receipt.id}`,
+    `/api/images/projects/${projectId}/versions/ver_00000002/content`,
+  ])
+  for (const request of requests) {
+    const ticket = request.headers.get(MEDIA_UI_CAPABILITY_HEADER)
+    expect(ticket).toStartWith('bbimg1.')
+    expect(verifyImageUiCapabilityTicket(capability, ticket!, {
+      method: 'GET',
+      url: request.url,
+      body: '',
+      range: request.headers.get('range'),
+    }, new ImageUiCapabilityReplayGuard())).not.toBeNull()
+  }
 })
 
 test('15.5 renderer adapter maps project and Campaign commands to typed Preload inputs', async () => {
@@ -321,23 +487,316 @@ test('15.5 renderer adapter maps project and Campaign commands to typed Preload 
   ])
 })
 
-test('15.3 opaque destination grant is Main-only, expires, and cannot be replayed', () => {
-  const grants = new ImageDestinationGrants()
-  const issued = grants.issue('/private/user-selected-output.png', 1_000)
-  expect(issued.destination_grant_id).toMatch(/^dgr_/)
-  expect(JSON.stringify(issued)).not.toContain('/private/user-selected-output.png')
-  expect(grants.consume(issued.destination_grant_id, 1_001)).toBe('/private/user-selected-output.png')
-  expect(grants.consume(issued.destination_grant_id, 1_002)).toBeNull()
-  const expired = grants.issue('/private/expired.png', 1_000)
-  expect(grants.consume(expired.destination_grant_id, 1_000 + 5 * 60_000 + 1)).toBeNull()
+test('15.5 renderer adapter maps Version preview, derivation, receipt recovery and Artboard history selection to typed Preload inputs', async () => {
+  const calls: Array<{ method: string; value: unknown }> = []
+  const receipt: ImageExportReceipt = {
+    id: 'export_receipt_00000001', project_id: projectId, artboard_id: 'art_00000001', version_id: versionId,
+    source_hash: `sha256:${'a'.repeat(64)}`, output_asset_id: 'asset_00000001', output_format: 'png', output_hash: `sha256:${'b'.repeat(64)}`,
+    width: 1024, height: 1024, byte_size: 1024, release_check_result_id: 'release_00000001', created_at: '2026-08-05T00:00:00.000Z',
+  }
+  const bridge = {
+    getVersionPreview: async (input: { projectId: string; versionId: string }) => {
+      calls.push({ method: 'getVersionPreview', value: input })
+      return { ok: true as const, value: { version_id: input.versionId, data_url: 'data:image/png;base64,AA==' } }
+    },
+    estimateVersionDerivation: async (project: string, version: string, input: unknown) => {
+      calls.push({ method: 'estimateVersionDerivation', value: { project, version, input } })
+      return { ok: true as const, value: {} as unknown as ImageDerivationEstimateResponse }
+    },
+    deriveVersion: async (project: string, version: string, input: unknown) => {
+      calls.push({ method: 'deriveVersion', value: { project, version, input } })
+      return { ok: true as const, value: {} as unknown as ImageCandidateDerivationResponse }
+    },
+    getExportReceipt: async (input: { projectId: string; receiptId: string }) => {
+      calls.push({ method: 'getExportReceipt', value: input })
+      return { ok: true as const, value: { export_receipt: receipt } }
+    },
+    selectArtboardVersion: async (project: string, artboard: string, input: unknown) => {
+      calls.push({ method: 'selectArtboardVersion', value: { project, artboard, input } })
+      return { ok: true as const, value: { project: {} } as unknown as ImageArtboardSelectVersionResponse }
+    },
+  } satisfies Pick<ImageWorkbenchPreloadBridge, 'getVersionPreview' | 'estimateVersionDerivation' | 'deriveVersion' | 'getExportReceipt' | 'selectArtboardVersion'>
+  const client = createElectronImageWorkbenchClient(bridge as ImageWorkbenchPreloadBridge)
+
+  await client.getVersionPreview({ project_id: projectId, version_id: versionId })
+  await client.estimateVersionDerivation({
+    project_id: projectId,
+    version_id: versionId,
+    input: { base_revision: 4, instruction: '只调整背景亮度', kind: 'edit' },
+  })
+  await client.deriveVersion({
+    project_id: projectId,
+    version_id: versionId,
+    input: {
+      base_revision: 4,
+      idempotency_key: 'bb-image-ipc-version-derive-0001',
+      instruction: '只调整背景亮度',
+      kind: 'edit',
+      estimate_hash: `sha256:${'c'.repeat(64)}`,
+      confirm: true,
+    },
+  })
+  await client.getExportReceipt({ project_id: projectId, export_receipt_id: receipt.id })
+  await client.selectArtboardVersion({
+    project_id: projectId,
+    artboard_id: receipt.artboard_id,
+    input: {
+      base_revision: 4,
+      idempotency_key: 'bb-image-ipc-select-history-0001',
+      version_id: versionId,
+    },
+  })
+
+  expect(calls).toEqual([
+    { method: 'getVersionPreview', value: { projectId, versionId } },
+    {
+      method: 'estimateVersionDerivation',
+      value: {
+        project: projectId,
+        version: versionId,
+        input: { base_revision: 4, instruction: '只调整背景亮度', kind: 'edit' },
+      },
+    },
+    {
+      method: 'deriveVersion',
+      value: {
+        project: projectId,
+        version: versionId,
+        input: {
+          base_revision: 4,
+          idempotency_key: 'bb-image-ipc-version-derive-0001',
+          instruction: '只调整背景亮度',
+          kind: 'edit',
+          estimate_hash: `sha256:${'c'.repeat(64)}`,
+          confirm: true,
+        },
+      },
+    },
+    { method: 'getExportReceipt', value: { projectId, receiptId: receipt.id } },
+    {
+      method: 'selectArtboardVersion',
+      value: {
+        project: projectId,
+        artboard: receipt.artboard_id,
+        input: {
+          base_revision: 4,
+          idempotency_key: 'bb-image-ipc-select-history-0001',
+          version_id: versionId,
+        },
+      },
+    },
+  ])
 })
 
-test('current Main-only image action bridge sends the desktop capability through fixed image action entrypoints', async () => {
+test('15.5 renderer adapter keeps destination grant and save-output payloads typed', async () => {
+  type FileOutputCall =
+    | { method: 'requestDestination'; input: ImageDestinationGrantRequest }
+    | { method: 'saveOutput'; projectId: string; input: ImageSaveOutputInput }
+
+  const calls: FileOutputCall[] = []
+  const destination: ImageDestinationGrant = {
+    destination_grant_id: 'dgr_00000001',
+    expires_at: '2026-08-05T00:05:00.000Z',
+  }
+  const saved: ImageSaveOutputResponse = {
+    destination_grant_id: destination.destination_grant_id,
+    verification: {
+      byte_size: 1024,
+      mime_type: 'image/png',
+      width: 1024,
+      height: 1024,
+      content_hash: `sha256:${'f'.repeat(64)}`,
+      verified_at: '2026-08-05T00:00:00.000Z',
+    },
+  }
+  const bridge = {
+    requestDestination: async (input: ImageDestinationGrantRequest) => {
+      calls.push({ method: 'requestDestination', input })
+      return { ok: true as const, value: destination }
+    },
+    saveOutput: async (projectId: string, input: ImageSaveOutputInput) => {
+      calls.push({ method: 'saveOutput', projectId, input })
+      return { ok: true as const, value: saved }
+    },
+  } satisfies Pick<ImageWorkbenchPreloadBridge, 'requestDestination' | 'saveOutput'>
+  const client = createElectronImageWorkbenchClient(bridge as ImageWorkbenchPreloadBridge)
+
+  const requested = await client.requestDestination({
+    project_id: projectId,
+    version_id: versionId,
+    intent: 'save_version',
+    suggested_name: 'final-artboard.png',
+  })
+  const savedOutput = await client.saveOutput({
+    project_id: projectId,
+    input: {
+      version_id: versionId,
+      destination_grant_id: destination.destination_grant_id,
+    },
+  })
+
+  expect(requested).toEqual({ ok: true, value: destination })
+  expect(savedOutput).toEqual({ ok: true, value: saved })
+  expect(calls).toEqual([
+    {
+      method: 'requestDestination',
+      input: {
+        project_id: projectId,
+        version_id: versionId,
+        intent: 'save_version',
+        suggested_name: 'final-artboard.png',
+      },
+    },
+    {
+      method: 'saveOutput',
+      projectId,
+      input: {
+        version_id: versionId,
+        destination_grant_id: destination.destination_grant_id,
+      },
+    },
+  ])
+})
+
+test('15.3 opaque destination grant binds a one-shot native choice to sender, Project and Version', () => {
+  const grants = new ImageDestinationGrants()
+  const subject = { senderId: 42, projectId, versionId }
+  const issued = grants.issue('/private/user-selected-output.png', subject, 1_000)
+  expect(issued.destination_grant_id).toMatch(/^dgr_/)
+  expect(JSON.stringify(issued)).not.toContain('/private/user-selected-output.png')
+  expect(grants.consume(issued.destination_grant_id, subject, 1_001)).toBe('/private/user-selected-output.png')
+  expect(grants.consume(issued.destination_grant_id, subject, 1_002)).toBeNull()
+
+  const mismatch = grants.issue('/private/mismatch.png', subject, 1_000)
+  expect(grants.consume(mismatch.destination_grant_id, { ...subject, senderId: 43 }, 1_001)).toBeNull()
+  // A mismatched request is terminal: an untrusted sender cannot leave the
+  // opaque capability live and let a later request retry it.
+  expect(grants.consume(mismatch.destination_grant_id, subject, 1_002)).toBeNull()
+
+  const expired = grants.issue('/private/expired.png', subject, 1_000)
+  expect(grants.consume(expired.destination_grant_id, subject, 1_000 + 5 * 60_000 + 1)).toBeNull()
+})
+
+test('15.5 image API accepts only a short-lived exact-request Main ticket', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'billiardbuddy-image-ticket-api-'))
+  const legacyMediaRoot = await mkdtemp(join(tmpdir(), 'billiardbuddy-image-ticket-api-legacy-'))
+  const service = new ImageWorkbenchService({ root, legacyMediaRoot })
+  const handler = createImageWorkbenchDomainApiHandler(service.applications, capability)
+  const projectsUrl = new URL('http://127.0.0.1:3456/api/images/projects')
+  const body = JSON.stringify({
+    title: '票据安全回归',
+    user_request: '验证桌面图片操作的短期签名票据',
+    size: '1024x1024',
+    reference_images: [],
+    reference_roles: [],
+  })
+  const invoke = async (request: Request, url = new URL(request.url)) => await handler(
+    request,
+    url,
+    url.pathname.split('/').filter(Boolean),
+  )
+  const signedHeaders = (url: URL, signedBody = body) => imageTicketHeaders(capability, url, {
+    method: 'POST',
+    body: signedBody,
+    headers: { 'Content-Type': 'application/json' },
+  })
+  const signedRequest = (url: URL, signedBody = body, actualBody = signedBody, headers = signedHeaders(url, signedBody)) => new Request(url, {
+    method: 'POST',
+    headers,
+    body: actualBody,
+  })
+  const expectDenied = async (request: Request, url = new URL(request.url)) => {
+    const response = await invoke(request, url)
+    expect(response.status).toBe(403)
+    expect(await response.json()).toMatchObject({ error: 'MEDIA_ACTION_NOT_ALLOWED' })
+  }
+
+  try {
+    const publicList = await invoke(new Request(projectsUrl))
+    expect(publicList.status).toBe(200)
+
+    await expectDenied(new Request(projectsUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Origin: projectsUrl.origin,
+        [MEDIA_UI_CAPABILITY_HEADER]: capability,
+      },
+      body,
+    }))
+
+    const replayHeaders = signedHeaders(projectsUrl)
+    const first = await invoke(signedRequest(projectsUrl, body, body, replayHeaders))
+    expect(first.status).toBe(201)
+    await expectDenied(signedRequest(projectsUrl, body, body, replayHeaders))
+
+    await expectDenied(signedRequest(projectsUrl, body, `${body} `))
+
+    const changedPath = new URL('http://127.0.0.1:3456/api/images/quick-create')
+    await expectDenied(signedRequest(changedPath, body, body, signedHeaders(projectsUrl)), changedPath)
+
+    const changedQuery = new URL('http://127.0.0.1:3456/api/images/projects?cursor=1')
+    await expectDenied(signedRequest(changedQuery, body, body, signedHeaders(projectsUrl)), changedQuery)
+
+    const rangedHeaders = signedHeaders(projectsUrl)
+    rangedHeaders.set('Range', 'bytes=0-1')
+    await expectDenied(signedRequest(projectsUrl, body, body, rangedHeaders))
+
+    const hostTicketUrl = new URL('http://localhost:3456/api/images/projects')
+    await expectDenied(signedRequest(projectsUrl, body, body, signedHeaders(hostTicketUrl)))
+
+    const wrongOriginHeaders = signedHeaders(projectsUrl)
+    wrongOriginHeaders.set('Origin', 'http://localhost:3456')
+    await expectDenied(signedRequest(projectsUrl, body, body, wrongOriginHeaders))
+
+    const expiredHeaders = new Headers({
+      'Content-Type': 'application/json',
+      Origin: projectsUrl.origin,
+      [MEDIA_UI_CAPABILITY_HEADER]: issueImageUiCapabilityTicket(capability, {
+        method: 'POST', url: projectsUrl, body,
+      }, { now: 0 }),
+    })
+    await expectDenied(signedRequest(projectsUrl, body, body, expiredHeaders))
+
+    const invalidSignatureHeaders = signedHeaders(projectsUrl)
+    const validTicket = invalidSignatureHeaders.get(MEDIA_UI_CAPABILITY_HEADER)!
+    invalidSignatureHeaders.set(MEDIA_UI_CAPABILITY_HEADER, `${validTicket.slice(0, -1)}${validTicket.endsWith('a') ? 'b' : 'a'}`)
+    await expectDenied(signedRequest(projectsUrl, body, body, invalidSignatureHeaders))
+  } finally {
+    service.repository.close()
+    await Promise.all([
+      rm(root, { recursive: true, force: true }),
+      rm(legacyMediaRoot, { recursive: true, force: true }),
+    ])
+  }
+})
+
+test('image ticket secret is a distinct trusted sidecar input and cannot consume video or generic media capability', () => {
+  const trusted = buildSidecarEnv({
+    BB_IMAGE_UI_TICKET_SECRET: 'forged-image-ticket-secret',
+    BB_MEDIA_UI_CAPABILITY: 'forged-media-capability',
+    UNRELATED_PROVIDER_SECRET: 'must-be-stripped',
+  }, {
+    BB_IMAGE_UI_TICKET_SECRET: capability,
+    BB_MEDIA_UI_CAPABILITY: 'generic-video-media-capability-0123456789',
+  })
+  expect(trusted.BB_IMAGE_UI_TICKET_SECRET).toBe(capability)
+  expect(trusted.BB_MEDIA_UI_CAPABILITY).toBe('generic-video-media-capability-0123456789')
+  expect(trusted.UNRELATED_PROVIDER_SECRET).toBeUndefined()
+
+  const sidecarEnv = { ...trusted }
+  expect(consumeImageUiTicketSecret(sidecarEnv)).toBe(capability)
+  expect(sidecarEnv.BB_IMAGE_UI_TICKET_SECRET).toBeUndefined()
+  expect(sidecarEnv.BB_MEDIA_UI_CAPABILITY).toBe('generic-video-media-capability-0123456789')
+  expect(consumeMediaUiCapability(sidecarEnv)).toBe('generic-video-media-capability-0123456789')
+})
+
+test('current Main-only image action bridge signs fixed image action entrypoints with a verifiable ticket', async () => {
   const requests: Array<{ url: string; init?: RequestInit }> = []
   const timestamp = '2026-08-03T00:00:00.000Z'
   const actions = new ElectronImageActions({
     getServerUrl: async () => 'http://127.0.0.1:3456',
-    capability,
+    ticketSecret: capability,
     fetchImpl: async (input, init) => {
       requests.push({ url: input.toString(), init })
       const pathname = new URL(input.toString()).pathname
@@ -409,14 +868,47 @@ test('current Main-only image action bridge sends the desktop capability through
     `/api/images/projects/${projectId}/candidates/cand_00000001/derivations/estimate`,
     `/api/images/projects/${projectId}/candidates/cand_00000001/decisions`,
   ])
-  expect(new Headers(requests[0]!.init?.headers).get('x-billiardbuddy-media-capability')).toBe(capability)
-  expect(() => new ElectronImageActions({ getServerUrl: async () => '', capability: 'too-short' })).toThrow('Image UI capability is too short')
+  const first = requests[0]!
+  const firstUrl = new URL(first.url)
+  const firstHeaders = new Headers(first.init?.headers)
+  const ticket = firstHeaders.get('x-billiardbuddy-media-capability')
+  expect(ticket).toStartWith('bbimg1.')
+  expect(ticket).not.toBe(capability)
+  expect(firstHeaders.get('origin')).toBe(firstUrl.origin)
+  const replayGuard = new ImageUiCapabilityReplayGuard()
+  expect(verifyImageUiCapabilityTicket(capability, ticket!, {
+    method: first.init?.method ?? 'GET',
+    url: firstUrl,
+    body: typeof first.init?.body === 'string' ? first.init.body : '',
+    range: firstHeaders.get('range'),
+  }, replayGuard)).not.toBeNull()
+  expect(verifyImageUiCapabilityTicket(capability, ticket!, {
+    method: first.init?.method ?? 'GET',
+    url: firstUrl,
+    body: typeof first.init?.body === 'string' ? first.init.body : '',
+    range: firstHeaders.get('range'),
+  }, replayGuard)).toBeNull()
+  const decisionRequest = requests[3]!
+  const decisionUrl = new URL(decisionRequest.url)
+  const decisionHeaders = new Headers(decisionRequest.init?.headers)
+  const decisionClaims = verifyImageUiCapabilityTicket(capability, decisionHeaders.get(MEDIA_UI_CAPABILITY_HEADER)!, {
+    method: decisionRequest.init?.method ?? 'GET',
+    url: decisionUrl,
+    body: typeof decisionRequest.init?.body === 'string' ? decisionRequest.init.body : '',
+    range: decisionHeaders.get('range'),
+  }, new ImageUiCapabilityReplayGuard())
+  expect(decisionClaims).toMatchObject({
+    owner: { kind: 'standalone', owner_id: 'local_workbench' },
+    project_id: projectId,
+  })
+  expect(decisionClaims?.resource_ids).toEqual(expect.arrayContaining([projectId, 'cand_00000001']))
+  expect(() => new ElectronImageActions({ getServerUrl: async () => '', ticketSecret: 'too-short' })).toThrow('Image UI ticket secret is too short')
 })
 
 test('15.2 Image IPC rejects a malformed server response before it reaches the renderer', async () => {
   const actions = new ElectronImageActions({
     getServerUrl: async () => 'http://127.0.0.1:3456',
-    capability,
+    ticketSecret: capability,
     fetchImpl: async () => Response.json({ estimate_hash: `sha256:${'e'.repeat(64)}` }),
   })
   await expect(actions.estimateDerivation(projectId, 'cand_00000001', {
@@ -428,7 +920,7 @@ test('15.2 Image IPC rejects a malformed server response before it reaches the r
 test('15.3 Canvas IPC rejects a malformed Render response before it reaches the renderer', async () => {
   const actions = new ElectronImageActions({
     getServerUrl: async () => 'http://127.0.0.1:3456',
-    capability,
+    ticketSecret: capability,
     fetchImpl: async () => Response.json({ operation: { id: 'op_00000001' } }),
   })
   await expect(actions.renderCanvas(projectId, 'canvas_00000001', {
@@ -509,7 +1001,7 @@ test('15.2 Image IPC keeps HTTP idempotency and revision conflicts distinguishab
       const requests: string[] = []
       const actions = new ElectronImageActions({
         getServerUrl: async () => 'http://127.0.0.1:3456',
-        capability,
+        ticketSecret: capability,
         fetchImpl: async input => {
           requests.push(new URL(input.toString()).pathname)
           return Response.json({ error: code, message: mediaSafeError(code).message }, { status: 409 })
@@ -534,5 +1026,10 @@ test('15.3 IPC 只接受不透明 destination grant，拒绝 Renderer 路径', (
     projectId,
     input: { version_id: versionId, destination_grant_id: 'dgr_00000000000000000000000000000000' },
   })).toBeTrue()
-  expect(validateElectronIpcPayload(ELECTRON_IPC_CHANNELS.imageRequestDestination, { suggested_name: '交付图.png' })).toBeTrue()
+  expect(validateElectronIpcPayload(ELECTRON_IPC_CHANNELS.imageRequestDestination, {
+    project_id: projectId,
+    version_id: versionId,
+    intent: 'save_version',
+    suggested_name: '交付图.png',
+  })).toBeTrue()
 })

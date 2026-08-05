@@ -5,7 +5,7 @@ import { resolveCors, type CorsResolution } from './middleware/cors.js'
 import { requireAuth } from './middleware/auth.js'
 import { diagnosticsService } from './services/diagnosticsService.js'
 import { consumeMediaUiCapability, createMediaApiHandler } from './api/media.js'
-import { createImageWorkbenchDomainApiHandler } from './api/imageWorkbench.js'
+import { consumeImageUiTicketSecret, createImageWorkbenchDomainApiHandler } from './api/imageWorkbench.js'
 import { createVideoWorkbenchDomainApiHandler } from './api/videoWorkbench.js'
 import { isLongMediaRequestPath } from './mediaRequestTimeout.js'
 import { handleProductControlApi } from './api/productControl.js'
@@ -88,6 +88,7 @@ export function resolveLocalServerHost(host: string): string {
 export function startServer(port = PORT, host = HOST) {
   const localHost = resolveLocalServerHost(host)
   const mediaUiCapability = consumeMediaUiCapability()
+  const imageUiTicketSecret = consumeImageUiTicketSecret()
   const gatewayAccessTokenCapability = consumeGatewayAccessTokenCapability()
   // The generic media service is now a legacy reader only. Image and video
   // each own their state, operation journal and recovery paths.
@@ -104,7 +105,7 @@ export function startServer(port = PORT, host = HOST) {
   }
   const imageApiHandler = createImageWorkbenchDomainApiHandler(
     mediaRuntime.imageApplications,
-    mediaUiCapability,
+    imageUiTicketSecret,
   )
   const videoApiHandler = createVideoWorkbenchDomainApiHandler(
     videoWorkbenchService,

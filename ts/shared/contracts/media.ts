@@ -251,6 +251,10 @@ export const publicImageVersionSchema = z.object({
   parent_version_id: mediaIdSchema.optional(),
   kind: imageVersionKindSchema,
   operation_id: mediaIdSchema.optional(),
+  /** Immutable Canvas provenance needed to group and restore Artboard history. */
+  artboard_id: mediaIdSchema.optional(),
+  canvas_id: mediaIdSchema.optional(),
+  canvas_revision: z.number().int().nonnegative().optional(),
   asset_id: mediaIdSchema,
   image_path: z.string().min(1).max(4096),
   mime_type: z.enum(['image/png', 'image/jpeg', 'image/webp']),

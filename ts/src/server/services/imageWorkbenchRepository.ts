@@ -174,6 +174,11 @@ export type ImageProjectMigrationInvalidation = {
   invalidated_at: string
 }
 
+type LegacyMigrationSource = {
+  source_kind: string
+  root: string
+}
+
 export type ImageCampaignSnapshot = {
   campaign: ImageCampaign
   items: ImageCampaignItem[]
@@ -354,8 +359,14 @@ export class ImageWorkbenchRepository {
   private readonly recovery: RecoverySupervisor
   private readonly readyPromise: Promise<void>
   private readonly eventWaiters = new Map<string, Set<() => void>>()
+  private readonly legacyMigrationSources: readonly LegacyMigrationSource[]
 
-  constructor(options: { root?: string; now?: () => Date; casOrphanRetentionMs?: number } = {}) {
+  constructor(options: {
+    root?: string
+    now?: () => Date
+    casOrphanRetentionMs?: number
+    legacyMigrationSources?: readonly LegacyMigrationSource[]
+  } = {}) {
     this.root = options.root
       ?? join(process.env.BILLIARDBUDDY_CONFIG_DIR ?? join(homedir(), '.BilliardBuddy'), 'billiardbuddy', 'images')
     this.projectsDir = join(this.root, 'projects')
@@ -365,6 +376,14 @@ export class ImageWorkbenchRepository {
     this.locksDir = join(this.root, 'locks')
     this.now = options.now ?? (() => new Date())
     this.casOrphanRetentionMs = Math.max(1_000, Math.min(30 * 86_400_000, options.casOrphanRetentionMs ?? DEFAULT_CAS_ORPHAN_RETENTION_MS))
+    const migrationSources = new Map<string, string>([
+      ['image-workbench-json-v1', this.root],
+    ])
+    for (const source of options.legacyMigrationSources ?? []) {
+      if (!migrationSources.has(source.source_kind)) migrationSources.set(source.source_kind, source.root)
+    }
+    this.legacyMigrationSources = [...migrationSources.entries()]
+      .map(([source_kind, root]) => ({ source_kind, root }))
     this.unitOfWork = new SqliteUnitOfWork(join(this.root, 'metadata'))
     migrateImageMetadata(this.unitOfWork)
     this.backfillIdempotencyRequestHashes()
@@ -531,17 +550,27 @@ export class ImageWorkbenchRepository {
     })
   }
 
-  async hasReferenceControlCommand(projectId: string, idempotencyKey: string, requestHash: string): Promise<boolean> {
+  /**
+   * Read a completed Reference Control command before the Application runs
+   * mutable-operation guards.  The corresponding save still repeats this
+   * check while holding the Project fence, so a concurrent replay cannot
+   * create a second command result.
+   */
+  async findReferenceControlCommandResult(
+    projectId: string,
+    idempotencyKey: string,
+    requestHash: string,
+  ): Promise<ImageWorkbenchProject | null> {
     await this.ready()
     this.assertGenerationProject(projectId)
     const request_hash = imageHashSchema.parse(requestHash)
-    const prior = this.unitOfWork.database.query(`SELECT request_hash FROM image_reference_control_commands
-      WHERE project_id=? AND idempotency_key=?`).get(projectId, idempotencyKey) as { request_hash: string } | null
-    if (!prior) return false
+    const prior = this.unitOfWork.database.query(`SELECT request_hash,result_project_json FROM image_reference_control_commands
+      WHERE project_id=? AND idempotency_key=?`).get(projectId, idempotencyKey) as { request_hash: string; result_project_json: string } | null
+    if (!prior) return null
     if (prior.request_hash !== request_hash) {
       throw new ImageWorkbenchRepositoryError('参考图控制幂等键对应的请求内容不一致', 409, 'IMAGE_IDEMPOTENCY_CONFLICT')
     }
-    return true
+    return imageWorkbenchProjectSchema.parse(JSON.parse(prior.result_project_json) as unknown)
   }
 
   /**
@@ -1527,33 +1556,39 @@ export class ImageWorkbenchRepository {
    * This prevents both stale completion reports and source-change GC loss.
    */
   async reconcileCasAfterLegacyMigration(): Promise<boolean> {
-    const source = await new LegacyImageProjectReader(this.root).read().catch(() => null)
-    if (!source) return false
-    const sourceProjectIds = new Set(source.projects.map(project => project.id))
-    const receipts = this.unitOfWork.database.query(`SELECT project_id,source_hash FROM image_project_migration_receipts
-      WHERE source_kind='image-workbench-json-v1' AND status='complete'`).all() as Array<{ project_id: string; source_hash: string }>
+    const sources = await Promise.all(this.legacyMigrationSources.map(async source => ({
+      ...source,
+      snapshot: await new LegacyImageProjectReader(source.root).read().catch(() => null),
+    })))
+    if (sources.some(source => source.snapshot === null)) return false
     let pending = false
-    for (const project of source.projects) {
-      const expectedSourceHash = legacyProjectSourceHash(source, project)
-      const receipt = this.unitOfWork.database.query(`SELECT source_hash FROM image_project_migration_receipts
-        WHERE source_kind='image-workbench-json-v1' AND project_id=? AND status='complete'`).get(project.id) as { source_hash: string } | null
-      if (!receipt) {
-        const invalidation = this.projectMigrationInvalidationRow('image-workbench-json-v1', project.id)
-        if (invalidation && invalidation.source_hash !== expectedSourceHash) {
-          this.markProjectMigrationSourceChanged('image-workbench-json-v1', project.id, expectedSourceHash, invalidation.previous_source_hash)
+    for (const source of sources) {
+      const snapshot = source.snapshot!
+      const sourceProjectIds = new Set(snapshot.projects.map(project => project.id))
+      const receipts = this.unitOfWork.database.query(`SELECT project_id,source_hash FROM image_project_migration_receipts
+        WHERE source_kind=? AND status='complete'`).all(source.source_kind) as Array<{ project_id: string; source_hash: string }>
+      for (const project of snapshot.projects) {
+        const expectedSourceHash = legacyProjectSourceHash(snapshot, project)
+        const receipt = this.unitOfWork.database.query(`SELECT source_hash FROM image_project_migration_receipts
+          WHERE source_kind=? AND project_id=? AND status='complete'`).get(source.source_kind, project.id) as { source_hash: string } | null
+        if (!receipt) {
+          const invalidation = this.projectMigrationInvalidationRow(source.source_kind, project.id)
+          if (invalidation && invalidation.source_hash !== expectedSourceHash) {
+            this.markProjectMigrationSourceChanged(source.source_kind, project.id, expectedSourceHash, invalidation.previous_source_hash)
+          }
+          pending = true
+          continue
         }
-        pending = true
-        continue
+        if (receipt.source_hash !== expectedSourceHash) {
+          this.markProjectMigrationSourceChanged(source.source_kind, project.id, expectedSourceHash, receipt.source_hash)
+          pending = true
+        }
       }
-      if (receipt.source_hash !== expectedSourceHash) {
-        this.markProjectMigrationSourceChanged('image-workbench-json-v1', project.id, expectedSourceHash, receipt.source_hash)
-        pending = true
-      }
-    }
-    for (const receipt of receipts) {
-      if (!sourceProjectIds.has(receipt.project_id)) {
-        this.markProjectMigrationSourceChanged('image-workbench-json-v1', receipt.project_id, 'source-missing', receipt.source_hash)
-        pending = true
+      for (const receipt of receipts) {
+        if (!sourceProjectIds.has(receipt.project_id)) {
+          this.markProjectMigrationSourceChanged(source.source_kind, receipt.project_id, 'source-missing', receipt.source_hash)
+          pending = true
+        }
       }
     }
     if (pending) return false
@@ -2996,6 +3031,47 @@ export class ImageWorkbenchRepository {
       this.unitOfWork.transaction(() => this.persistGenerationOperation(input))
       return input
     })
+  }
+
+  /**
+   * Export acceptance is a user command, not merely a generic queued job.
+   * Keep its revision check and idempotency identity under the same Project
+   * fence before an Application schedules any CAS/encoder work.
+   */
+  async acceptExportOperation(input: {
+    project_id: string
+    base_revision: number
+    operation: ImageOperationV2
+  }): Promise<{ project: ImageWorkbenchProject; operation: ImageOperationV2; replayed: boolean }> {
+    await this.ready()
+    const operation = imageOperationV2Schema.parse(input.operation)
+    if (
+      operation.project_id !== input.project_id
+      || operation.kind !== 'export'
+      || operation.status !== 'queued'
+      || operation.local_delivery?.kind !== 'export'
+      || operation.input_refs.project_revision !== input.base_revision
+    ) {
+      throw new ImageWorkbenchRepositoryError('图片导出接受请求无效', 409, 'IMAGE_STORAGE_INVALID')
+    }
+    return await this.fences.run(`project-${input.project_id}`, async () => this.unitOfWork.transaction(() => {
+      const row = this.projectRow(input.project_id)
+      if (!row) throw new ImageWorkbenchRepositoryError('图片项目不存在', 404, 'IMAGE_PROJECT_NOT_FOUND')
+      const project = this.loadProject(row)
+      const duplicate = this.unitOfWork.database.query(`SELECT document_json,request_hash FROM image_generation_operations
+        WHERE project_id=? AND idempotency_key=?`).get(input.project_id, operation.idempotency_key) as { document_json: string; request_hash: string } | null
+      if (duplicate) {
+        if (duplicate.request_hash !== operation.request_hash) {
+          throw new ImageWorkbenchRepositoryError('图片导出幂等键对应的请求内容不一致', 409, 'IMAGE_IDEMPOTENCY_CONFLICT')
+        }
+        return { project, operation: this.loadGenerationOperation(duplicate), replayed: true }
+      }
+      if (project.revision !== input.base_revision) {
+        throw new ImageWorkbenchRepositoryError('图片项目已更新，请刷新后再导出', 409, 'IMAGE_REVISION_CONFLICT')
+      }
+      this.persistGenerationOperation(operation)
+      return { project, operation, replayed: false }
+    }))
   }
 
   async updateGenerationOperation(operation: ImageOperationV2): Promise<ImageOperationV2> {

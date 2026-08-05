@@ -104,9 +104,13 @@ export type ImageWorkbenchPreloadBridge = {
   removeReference(input: ImageWorkbenchIpcPayloadByMethod['removeReference']): Promise<ImageWorkbenchIpcMethodResponse<'removeReference'>>
   getCandidateGroup(input: ImageWorkbenchIpcPayloadByMethod['getCandidateGroup']): Promise<ImageWorkbenchIpcMethodResponse<'getCandidateGroup'>>
   getCandidatePreview(input: ImageWorkbenchIpcPayloadByMethod['getCandidatePreview']): Promise<ImageWorkbenchIpcMethodResponse<'getCandidatePreview'>>
+  getVersionPreview(input: ImageWorkbenchIpcPayloadByMethod['getVersionPreview']): Promise<ImageWorkbenchIpcMethodResponse<'getVersionPreview'>>
+  estimateVersionDerivation(projectId: string, versionId: string, input: ImageWorkbenchIpcPayloadByMethod['estimateVersionDerivation']['input']): Promise<ImageWorkbenchIpcMethodResponse<'estimateVersionDerivation'>>
+  deriveVersion(projectId: string, versionId: string, input: ImageWorkbenchIpcPayloadByMethod['deriveVersion']['input']): Promise<ImageWorkbenchIpcMethodResponse<'deriveVersion'>>
   listCanvases(projectId: string): Promise<ImageWorkbenchIpcMethodResponse<'listCanvases'>>
   getCanvas(input: ImageWorkbenchIpcPayloadByMethod['getCanvas']): Promise<ImageWorkbenchIpcMethodResponse<'getCanvas'>>
   getDeliverySet(input: ImageWorkbenchIpcPayloadByMethod['getDeliverySet']): Promise<ImageWorkbenchIpcMethodResponse<'getDeliverySet'>>
+  getExportReceipt(input: ImageWorkbenchIpcPayloadByMethod['getExportReceipt']): Promise<ImageWorkbenchIpcMethodResponse<'getExportReceipt'>>
   getProjectLibrary(projectId: string): Promise<ImageWorkbenchIpcMethodResponse<'getProjectLibrary'>>
   listBrandKits(): Promise<ImageWorkbenchIpcMethodResponse<'listBrandKits'>>
   getBrandKit(brandKitId: string): Promise<ImageWorkbenchIpcMethodResponse<'getBrandKit'>>

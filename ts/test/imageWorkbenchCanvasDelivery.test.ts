@@ -6,10 +6,15 @@ import sharp from 'sharp'
 import { createImageWorkbenchDomainApiHandler } from '../src/server/api/imageWorkbench.js'
 import { assertSafeSvg, ImageCanvasRendererError, verifyRenderedQrManifest } from '../src/server/services/imageCanvasRenderer.js'
 import { ImageWorkbenchService } from '../src/server/services/imageWorkbenchService.js'
+import { imageTicketRequest } from './helpers/imageUiTicket.js'
 
 const roots: string[] = []
 const timestamp = '2026-08-03T00:00:00.000Z'
 const capability = '15-3-canvas-capability-token-0123456789'
+
+function signedImageRequest(url: string | URL, init: RequestInit = {}): Request {
+  return imageTicketRequest(new URL(url), init)
+}
 
 async function root(label: string): Promise<string> {
   const value = await mkdtemp(join(tmpdir(), `billiardbuddy-canvas-${label}-`))
@@ -62,7 +67,7 @@ async function projectWithCanvasAssets(workbench: ImageWorkbenchService, referen
 async function completedRender(workbench: ImageWorkbenchService, projectId: string, canvasId: string, input: Parameters<ImageWorkbenchService['renderCanvas']>[2]) {
   const queued = await workbench.renderCanvas(projectId, canvasId, input)
   for (let attempt = 0; attempt < 8; attempt += 1) {
-    await workbench.recoverInterruptedOperations()
+    await workbench.applications.recovery.recoverInterruptedOperations()
     const operation = await workbench.getGenerationOperation(projectId, queued.operation.id)
     if (operation.result?.kind === 'rendered_version') {
       return {
@@ -76,11 +81,10 @@ async function completedRender(workbench: ImageWorkbenchService, projectId: stri
   throw new Error('canvas render did not complete')
 }
 
-async function completedExport(workbench: ImageWorkbenchService, projectId: string, input: Parameters<ImageWorkbenchService['exportDelivery']>[1]) {
-  const queued = await workbench.exportDelivery(projectId, input)
+async function waitForCompletedExport(workbench: ImageWorkbenchService, projectId: string, operationId: string) {
   for (let attempt = 0; attempt < 8; attempt += 1) {
-    await workbench.recoverInterruptedOperations()
-    const operation = await workbench.getGenerationOperation(projectId, queued.operation.id)
+    await workbench.applications.recovery.recoverInterruptedOperations()
+    const operation = await workbench.getGenerationOperation(projectId, operationId)
     if (operation.result?.kind === 'export_receipts') {
       const receipts = await Promise.all(operation.result.export_receipt_ids.map(async id => await workbench.repository.getExportReceipt(projectId, id)))
       return { operation, export_receipts: receipts, delivery_set: operation.result.delivery_set_id ? await workbench.repository.getDeliverySet(projectId, operation.result.delivery_set_id) : undefined }
@@ -90,6 +94,11 @@ async function completedExport(workbench: ImageWorkbenchService, projectId: stri
   throw new Error('export did not complete')
 }
 
+async function completedExport(workbench: ImageWorkbenchService, projectId: string, input: Parameters<ImageWorkbenchService['exportDelivery']>[1]) {
+  const queued = await workbench.applications.delivery.exportDelivery(projectId, input)
+  return await waitForCompletedExport(workbench, projectId, queued.operation.id)
+}
+
 afterEach(async () => {
   await Promise.all(roots.splice(0).map(async value => await rm(value, { recursive: true, force: true })))
 })
@@ -97,6 +106,7 @@ afterEach(async () => {
 test('15.3 Canvas 命令在同一项目锁事务内重放、冲突并保留独立画板修订', async () => {
   const workbench = await service('commands')
   const setup = await projectWithCanvas(workbench)
+  const canvasApplication = workbench.applications.canvas
   const first = {
     idempotency_key: 'bb-image-canvas-command-15-3-0001',
     base_revision: 0,
@@ -109,22 +119,22 @@ test('15.3 Canvas 命令在同一项目锁事务内重放、冲突并保留独�
       },
     },
   }
-  const changed = await workbench.applyCanvasCommand(setup.project.id, setup.canvas.canvas_id, setup.project.revision, first)
+  const changed = await canvasApplication.applyCanvasCommand(setup.project.id, setup.canvas.canvas_id, setup.project.revision, first)
   expect(changed.canvas).toMatchObject({ revision: 1, parent_revision: 0 })
-  const replay = await workbench.applyCanvasCommand(setup.project.id, setup.canvas.canvas_id, setup.project.revision, first)
+  const replay = await canvasApplication.applyCanvasCommand(setup.project.id, setup.canvas.canvas_id, setup.project.revision, first)
   expect(replay.canvas).toEqual(changed.canvas)
-  await expect(workbench.applyCanvasCommand(setup.project.id, setup.canvas.canvas_id, setup.project.revision, {
+  await expect(canvasApplication.applyCanvasCommand(setup.project.id, setup.canvas.canvas_id, setup.project.revision, {
     ...first,
     payload: { layer: { ...first.payload.layer, fill: '#654321' } },
   })).rejects.toMatchObject({ status: 409, code: 'IMAGE_IDEMPOTENCY_CONFLICT' })
 
   const afterReplay = await workbench.getProject(setup.project.id)
   const concurrent = await Promise.allSettled([
-    workbench.applyCanvasCommand(setup.project.id, setup.canvas.canvas_id, afterReplay.revision, {
+    canvasApplication.applyCanvasCommand(setup.project.id, setup.canvas.canvas_id, afterReplay.revision, {
       idempotency_key: 'bb-image-canvas-command-15-3-0002', base_revision: 1, kind: 'add_layer',
       payload: { layer: { ...first.payload.layer, id: 'shape_canvas_0002', fill: '#aabbcc' } },
     }),
-    workbench.applyCanvasCommand(setup.project.id, setup.canvas.canvas_id, afterReplay.revision, {
+    canvasApplication.applyCanvasCommand(setup.project.id, setup.canvas.canvas_id, afterReplay.revision, {
       idempotency_key: 'bb-image-canvas-command-15-3-0003', base_revision: 1, kind: 'add_layer',
       payload: { layer: { ...first.payload.layer, id: 'shape_canvas_0003', fill: '#ccbbaa' } },
     }),
@@ -140,12 +150,69 @@ test('15.3 Canvas 命令在同一项目锁事务内重放、冲突并保留独�
     idempotency_key: 'bb-image-canvas-delivery-sync-0001', purpose: 'custom',
     artboards: [{ id: setup.artboard.id, label: '缩放画板', width: 512, height: 512, required: true, output: { format: 'png', transparent: false } }],
   })
-  const synced = await workbench.applyCanvasCommand(setup.project.id, setup.canvas.canvas_id, nextSpec.project.revision, {
+  const synced = await canvasApplication.applyCanvasCommand(setup.project.id, setup.canvas.canvas_id, nextSpec.project.revision, {
     idempotency_key: 'bb-image-canvas-sync-command-0001', base_revision: latest.revision, kind: 'sync_delivery_spec',
     payload: { delivery_spec_id: nextSpec.spec.id, delivery_spec_revision: nextSpec.spec.revision, layout_policy: 'fit_safe_area' },
   })
   expect(synced.canvas.document).toMatchObject({ width: 512, height: 512, delivery_spec_revision: nextSpec.spec.revision })
   expect(synced.canvas.document.layers[0]).toMatchObject({ transform: { x: 10, y: 10, width: 150, height: 100 } })
+})
+
+test('15.5 Canvas Application 的 API 命令路由保持重放、幂等冲突和同项目并发原子性', async () => {
+  const workbench = await service('canvas-application-api')
+  const setup = await projectWithCanvas(workbench)
+  const handler = createImageWorkbenchDomainApiHandler(workbench.applications, capability)
+  const url = `http://127.0.0.1/api/images/projects/${setup.project.id}/canvases/${setup.canvas.canvas_id}/commands`
+  const segments = ['api', 'images', 'projects', setup.project.id, 'canvases', setup.canvas.canvas_id, 'commands']
+  const request = (baseProjectRevision: number, command: object) => signedImageRequest(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-BilliardBuddy-Media-Capability': capability },
+    body: JSON.stringify({ base_project_revision: baseProjectRevision, command }),
+  })
+  const invoke = async (baseProjectRevision: number, command: object) => await handler(
+    request(baseProjectRevision, command),
+    new URL(url),
+    segments,
+  )
+  const first = {
+    idempotency_key: 'bb-image-canvas-application-api-0001', base_revision: 0, kind: 'add_layer' as const,
+    payload: { layer: {
+      id: 'shape_canvas_application_api_0001', kind: 'shape' as const, shape: 'rectangle' as const,
+      transform: { x: 40, y: 40, width: 200, height: 120, rotation_degrees: 0, scale_x: 1, scale_y: 1 },
+      fill: '#224466', opacity: 1,
+    } },
+  }
+  const created = await invoke(setup.project.revision, first)
+  expect(created.status).toBe(200)
+  const createdBody = await created.json() as { canvas: { revision: number }; project_revision: number }
+  expect(createdBody).toMatchObject({ canvas: { revision: 1 }, project_revision: setup.project.revision + 1 })
+
+  const replay = await invoke(setup.project.revision, first)
+  expect(replay.status).toBe(200)
+  expect(await replay.json()).toEqual(createdBody)
+
+  const collision = await invoke(createdBody.project_revision, {
+    ...first,
+    payload: { layer: { ...first.payload.layer, fill: '#cc8844' } },
+  })
+  expect(collision.status).toBe(409)
+  expect(await collision.json()).toMatchObject({ error: 'MEDIA_IMAGE_IDEMPOTENCY_CONFLICT' })
+
+  const commandProject = await workbench.getProject(setup.project.id)
+  const commandCanvas = await workbench.getCanvas(setup.project.id, setup.canvas.canvas_id)
+  const [left, right] = await Promise.all([
+    invoke(commandProject.revision, {
+      idempotency_key: 'bb-image-canvas-application-api-0002', base_revision: commandCanvas.revision, kind: 'add_layer',
+      payload: { layer: { ...first.payload.layer, id: 'shape_canvas_application_api_0002', fill: '#338855' } },
+    }),
+    invoke(commandProject.revision, {
+      idempotency_key: 'bb-image-canvas-application-api-0003', base_revision: commandCanvas.revision, kind: 'add_layer',
+      payload: { layer: { ...first.payload.layer, id: 'shape_canvas_application_api_0003', fill: '#885533' } },
+    }),
+  ])
+  const statuses = [left.status, right.status].sort((a, b) => a - b)
+  expect(statuses).toEqual([200, 409])
+  expect((await workbench.getCanvas(setup.project.id, setup.canvas.canvas_id)).revision).toBe(commandCanvas.revision + 1)
 })
 
 test('15.3 在入 CAS 前完整解码图片，拒绝只有合法 PNG 头的截断字节', async () => {
@@ -455,10 +522,22 @@ test('15.3 后端渲染、QR 解码、陈旧完成、可验证导出和崩溃重
   expect(exported.export_receipts[0]).toMatchObject({ width: setup.artboard.width, height: setup.artboard.height, output_hash: expect.stringMatching(/^sha256:/) })
 
   const handler = createImageWorkbenchDomainApiHandler(workbench.applications, capability)
-  const response = await handler(new Request(`http://127.0.0.1/api/images/projects/${setup.project.id}/canvases/${setup.canvas.canvas_id}/commands`, {
+  const projectUrl = new URL(`http://127.0.0.1/api/images/projects/${setup.project.id}`)
+  const projected = await handler(new Request(projectUrl), projectUrl, ['api', 'images', 'projects', setup.project.id])
+  expect(projected.status).toBe(200)
+  const publicProject = await projected.json() as { project: { version_history: Array<Record<string, unknown>> } }
+  expect(publicProject.project.version_history.find(version => version.id === secondRender.version_id)).toMatchObject({
+    id: secondRender.version_id,
+    kind: 'canvas',
+    artboard_id: setup.artboard.id,
+    canvas_id: setup.canvas.canvas_id,
+    canvas_revision: qr.canvas.revision,
+  })
+  const commandUrl = new URL(`http://127.0.0.1/api/images/projects/${setup.project.id}/canvases/${setup.canvas.canvas_id}/commands`)
+  const response = await handler(signedImageRequest(commandUrl, {
     method: 'POST', headers: { 'Content-Type': 'application/json', 'X-BilliardBuddy-Media-Capability': capability },
     body: JSON.stringify({ base_project_revision: (await workbench.getProject(setup.project.id)).revision, command: { ...shape, payload: { layer: { ...shape.payload.layer, fill: '#ffeeaa' } } } }),
-  }), new URL(`http://127.0.0.1/api/images/projects/${setup.project.id}/canvases/${setup.canvas.canvas_id}/commands`), ['api', 'images', 'projects', setup.project.id, 'canvases', setup.canvas.canvas_id, 'commands'])
+  }), commandUrl, ['api', 'images', 'projects', setup.project.id, 'canvases', setup.canvas.canvas_id, 'commands'])
   expect(response.status).toBe(409)
   expect(await response.json()).toMatchObject({ error: 'MEDIA_IMAGE_IDEMPOTENCY_CONFLICT' })
   expect(() => assertSafeSvg('<svg><script>alert(1)</script></svg>')).toThrow('SVG')
@@ -466,9 +545,22 @@ test('15.3 后端渲染、QR 解码、陈旧完成、可验证导出和崩溃重
   const protectedUrl = `http://127.0.0.1/api/images/projects/${setup.project.id}/versions/${secondRender.version_id}/content`
   const denied = await handler(new Request(protectedUrl), new URL(protectedUrl), ['api', 'images', 'projects', setup.project.id, 'versions', secondRender.version_id, 'content'])
   expect(denied.status).toBe(403)
-  const allowed = await handler(new Request(protectedUrl, { headers: { 'X-BilliardBuddy-Media-Capability': capability } }), new URL(protectedUrl), ['api', 'images', 'projects', setup.project.id, 'versions', secondRender.version_id, 'content'])
+  const allowed = await handler(signedImageRequest(protectedUrl, { headers: { 'X-BilliardBuddy-Media-Capability': capability } }), new URL(protectedUrl), ['api', 'images', 'projects', setup.project.id, 'versions', secondRender.version_id, 'content'])
   expect(allowed.status).toBe(200)
   expect(allowed.headers.get('x-billiardbuddy-media-hash')).toMatch(/^sha256:/)
+  const receiptUrl = `http://127.0.0.1/api/images/projects/${setup.project.id}/export-receipts/${exported.export_receipts[0]!.id}`
+  const receiptResponse = await handler(signedImageRequest(receiptUrl, {
+    headers: { 'X-BilliardBuddy-Media-Capability': capability },
+  }), new URL(receiptUrl), ['api', 'images', 'projects', setup.project.id, 'export-receipts', exported.export_receipts[0]!.id])
+  expect(receiptResponse.status).toBe(200)
+  expect(await receiptResponse.json()).toMatchObject({
+    export_receipt: {
+      id: exported.export_receipts[0]!.id,
+      output_hash: exported.export_receipts[0]!.output_hash,
+      byte_size: exported.export_receipts[0]!.byte_size,
+      created_at: exported.export_receipts[0]!.created_at,
+    },
+  })
 }, 15_000)
 
 test('15.3 正式字体会验证 CJK 字形并在预检中阻止缺失字形', async () => {
@@ -656,18 +748,18 @@ test('15.3 Canvas 与 Export 的可预期永久失败都会收敛为 failed，�
   const render = await workbench.renderCanvas(setup.project.id, setup.canvas.canvas_id, {
     base_revision: setup.project.revision, idempotency_key: 'bb-image-terminal-canvas-0001', canvas_revision: 0, activate_on_success: true,
   })
-  const exportJob = await workbench.exportDelivery(setup.project.id, {
+  const exportJob = await workbench.applications.delivery.exportDelivery(setup.project.id, {
     base_revision: setup.project.revision, idempotency_key: 'bb-image-terminal-export-0001', version_ids_by_artboard: { [setup.artboard.id]: 'ver_missing_terminal_0001' },
   })
   await Bun.sleep(10)
-  await workbench.recoverInterruptedOperations()
+  await workbench.applications.recovery.recoverInterruptedOperations()
   const [failedRender, failedExport] = await Promise.all([
     workbench.getGenerationOperation(setup.project.id, render.operation.id),
     workbench.getGenerationOperation(setup.project.id, exportJob.operation.id),
   ])
   expect(failedRender).toMatchObject({ status: 'failed', safe_error: { code: 'CANVAS_RENDER_INVALID' } })
   expect(failedExport).toMatchObject({ status: 'failed', safe_error: { code: 'IMAGE_VERSION_NOT_FOUND' } })
-  await workbench.recoverInterruptedOperations()
+  await workbench.applications.recovery.recoverInterruptedOperations()
   expect((await workbench.getGenerationOperation(setup.project.id, render.operation.id)).status).toBe('failed')
   expect((await workbench.getGenerationOperation(setup.project.id, exportJob.operation.id)).status).toBe('failed')
 })
@@ -719,14 +811,14 @@ test('15.3 遗留图片写接口只能由 Main 持有 capability 后调用', asy
     }),
   }), new URL(url), ['api', 'images', 'projects', project.id, 'references'])
   expect(deniedWorkflow.status).toBe(403)
-  const allowed = await handler(new Request(url, {
+  const allowed = await handler(signedImageRequest(url, {
     method: 'POST', headers: { 'Content-Type': 'application/json', 'X-BilliardBuddy-Media-Capability': capability },
     body: JSON.stringify({ revision: project.revision, reference_images: [reference], reference_roles: ['subject'] }),
   }), new URL(url), ['api', 'images', 'projects', project.id, 'references'])
   expect(allowed.status).toBe(201)
   expect(await allowed.json()).toMatchObject({ project: { references: [expect.objectContaining({ role: 'subject' })] } })
   const afterLegacyReference = await workbench.getProject(project.id)
-  const workflowReference = await handler(new Request(url, {
+  const workflowReference = await handler(signedImageRequest(url, {
     method: 'POST', headers: { 'Content-Type': 'application/json', 'X-BilliardBuddy-Media-Capability': capability },
     body: JSON.stringify({
       idempotency_key: 'bb-image-workflow-reference-gate-0001',
@@ -744,7 +836,7 @@ test('15.3 遗留图片写接口只能由 Main 持有 capability 后调用', asy
   expect(await workflowReference.json()).toMatchObject({
     project: { references: expect.arrayContaining([expect.objectContaining({ influence_strength: 'medium', preservation: 'prefer_preserve', priority: 100 })]) },
   })
-  const ambiguous = await handler(new Request(url, {
+  const ambiguous = await handler(signedImageRequest(url, {
     method: 'POST', headers: { 'Content-Type': 'application/json', 'X-BilliardBuddy-Media-Capability': capability },
     body: JSON.stringify({
       revision: afterLegacyReference.revision,
@@ -780,26 +872,40 @@ test('15.3 在 CAS 落盘后数据库提交前崩溃可由同一 Canvas Render �
   expect(rendered.operation.result).toMatchObject({ kind: 'rendered_version', version_id: rendered.version_id })
 })
 
-test('15.3 Export 在 CAS 落盘后崩溃仍以冻结 Version map 恢复，不覆盖后续编辑', async () => {
-  let shouldCrash = true
+test('15.5 Delivery Application 在 CAS 落盘后崩溃仍以冻结 Version map 重放并恢复', async () => {
   const storageRoot = await root('export-crash')
   const legacyRoot = await root('export-crash-legacy')
   const crashed = new ImageWorkbenchService({ root: storageRoot, legacyMediaRoot: legacyRoot, now: () => new Date(timestamp), crashInjector: point => {
-    if (point === 'after_export_cas_before_db_commit' && shouldCrash) { shouldCrash = false; throw new Error('injected export crash') }
+    if (point === 'after_export_cas_before_db_commit') throw new Error('injected export crash')
   } })
   const setup = await projectWithCanvas(crashed)
   const rendered = await completedRender(crashed, setup.project.id, setup.canvas.canvas_id, {
     base_revision: setup.project.revision, idempotency_key: 'bb-image-export-crash-render-0001', canvas_revision: 0, activate_on_success: true,
   })
   const beforeExport = await crashed.getProject(setup.project.id)
-  const queued = await crashed.exportDelivery(setup.project.id, {
+  const input = {
     base_revision: beforeExport.revision, idempotency_key: 'bb-image-export-crash-0001', version_ids_by_artboard: { [setup.artboard.id]: rendered.version_id },
-  })
+  }
+  const queued = await crashed.applications.delivery.exportDelivery(setup.project.id, input)
   await Bun.sleep(5)
   expect((await crashed.getGenerationOperation(setup.project.id, queued.operation.id)).status).toBe('queued')
+  const replayed = await crashed.applications.delivery.exportDelivery(setup.project.id, input)
+  expect(replayed).toMatchObject({ operation: { id: queued.operation.id, status: 'queued' } })
+  await expect(crashed.applications.delivery.exportDelivery(setup.project.id, {
+    ...input,
+    version_ids_by_artboard: { [setup.artboard.id]: 'ver_export_replay_conflict_0001' },
+  })).rejects.toMatchObject({ status: 409, code: 'IMAGE_IDEMPOTENCY_CONFLICT' })
+  await expect(crashed.applications.delivery.exportDelivery(setup.project.id, {
+    ...input,
+    base_revision: beforeExport.revision + 1,
+    idempotency_key: 'bb-image-export-revision-conflict-0001',
+  })).rejects.toMatchObject({ status: 409, code: 'IMAGE_REVISION_CONFLICT' })
   const recovered = new ImageWorkbenchService({ root: storageRoot, legacyMediaRoot: legacyRoot, now: () => new Date(timestamp) })
-  const exported = await completedExport(recovered, setup.project.id, {
-    base_revision: beforeExport.revision, idempotency_key: 'bb-image-export-crash-0001', version_ids_by_artboard: { [setup.artboard.id]: rendered.version_id },
-  })
+  // No client retry is required after restart: recovery reuses the accepted
+  // queued Operation and its frozen local_delivery map.
+  const exported = await waitForCompletedExport(recovered, setup.project.id, queued.operation.id)
   expect(exported.delivery_set?.version_ids_by_artboard).toEqual({ [setup.artboard.id]: rendered.version_id })
+  const completedProject = await recovered.getProject(setup.project.id)
+  const completedReplay = await recovered.applications.delivery.exportDelivery(setup.project.id, input)
+  expect(completedReplay).toMatchObject({ operation: { id: queued.operation.id, status: 'succeeded' }, project_revision: completedProject.revision })
 })

@@ -43,20 +43,24 @@ import {
   imageExportInputSchema,
   imageUnderstandingInputSchema,
   imageVisualAssessmentInputSchema,
-  createCreativePlanInputSchema,
   createGenerationRoundInputSchema,
   decideImageCandidateInputSchema,
   deriveImageCandidateInputSchema,
+  deriveImageVersionInputSchema,
   estimateDeriveImageCandidateInputSchema,
+  estimateDeriveImageVersionInputSchema,
   estimateGenerationRoundInputSchema,
+  imageDerivationSourceSchema,
   imageTemplateRevisionSchema,
   type AdoptImageCandidateInput,
   type CreateCreativePlanInput,
   type CreateGenerationRoundInput,
   type DecideImageCandidateInput,
   type DeriveImageCandidateInput,
+  type DeriveImageVersionInput,
   type EstimateGenerationRoundInput,
   type EstimateDeriveImageCandidateInput,
+  type EstimateDeriveImageVersionInput,
   type ImageBriefSnapshot,
   type ImageCanvasCommandInput,
   type ImageCanvasDocument,
@@ -78,6 +82,7 @@ import {
   type ImageCreativeDirection,
   type ImageCreativePlan,
   type ImageDeliverySpec,
+  type ImageDerivationSource,
   type ImageGenerationRound,
   type ImageGenerationEstimate,
   type ImageOperationV2,
@@ -88,8 +93,6 @@ import {
   type ImageReferenceV2,
   type ImageTemplateRevision,
   type ProviderExecutionReceipt,
-  type UpdateImageReferenceControlInput,
-  updateImageReferenceControlInputSchema,
 } from '../../../shared/contracts/imageGeneration.js'
 import {
   addImageWorkflowReferencesInputSchema,
@@ -185,6 +188,7 @@ import {
   legacyProjectSourceHash,
 } from '../media/image/infrastructure/legacyImageProjectReader.js'
 import { SqliteImageMetadataStore } from '../media/image/infrastructure/sqliteImageMetadataStore.js'
+import { createCreativePlanCommand } from '../media/image/application/imageGenerationApplication.js'
 
 const IMAGE_RELAY_CONTROL_JSON_MAX_BYTES = 256 * 1024
 const IMAGE_RELAY_DIRECT_RESULT_JSON_MAX_BYTES = Math.ceil((32 * 1024 * 1024) / 3) * 4 + 64 * 1024
@@ -248,6 +252,20 @@ const MAX_CAMPAIGN_PAID_OPERATIONS = 256
 const IMAGE_QWEN_MAX_INPUT_BYTES = 16 * 1024 * 1024
 
 type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
+
+type DerivationSourceRecord =
+  | {
+    kind: 'candidate'
+    candidate: ImageCandidate
+    asset: MediaAsset
+    verified: VerifiedImageBytes
+  }
+  | {
+    kind: 'version'
+    version_id: string
+    asset: MediaAsset
+    verified: VerifiedImageBytes
+  }
 
 export type ImageWorkbenchCrashPoint =
   | 'after_cas_publish_before_db_commit'
@@ -431,8 +449,118 @@ export type ImageWorkbenchProjectProjectionData = {
   campaign_intent: ImageCampaignProjectIntent | null
 }
 
+/**
+ * Narrow internal infrastructure boundary for the Project Application's
+ * Reference Control command.  It deliberately excludes the rest of the
+ * runtime so that command ownership remains with ImageProjectApplication.
+ */
+export type ImageReferenceControlRuntimePort = {
+  loadProject(projectId: string): Promise<ImageWorkbenchProject>
+  findCommand(
+    projectId: string,
+    idempotencyKey: string,
+    requestHash: `sha256:${string}`,
+  ): Promise<ImageWorkbenchProject | null>
+  assertNoActiveOperation(project: ImageWorkbenchProject): Promise<void>
+  assertNoActiveGenerationOperation(project: ImageWorkbenchProject): Promise<void>
+  save(input: {
+    project: ImageWorkbenchProject
+    base_revision: number
+    idempotency_key: string
+    request_hash: `sha256:${string}`
+  }): Promise<{ project: ImageWorkbenchProject; replayed: boolean }>
+  refreshGenerationHeader(result: { project: ImageWorkbenchProject; replayed: boolean }): Promise<ImageWorkbenchProject>
+}
+
+/** Narrow persistence/Brief boundary for the Generation Application's plan command. */
+export type ImageCreativePlanRuntimePort = {
+  loadProject(projectId: string): Promise<ImageWorkbenchProject>
+  compileBrief(project: ImageWorkbenchProject): Promise<ImageBriefSnapshot>
+  findPlan(projectId: string, planId: string): Promise<ImageCreativePlan | null>
+  savePlan(plan: ImageCreativePlan, requestHash: `sha256:${string}`): Promise<ImageCreativePlan>
+  iso(): string
+  revisionConflict(): Error
+}
+
+/**
+ * Narrow durable boundary for ImageCanvasApplication's public Canvas command.
+ * Repository owns the per-project fence and SQLite transaction; the
+ * Application owns parsing, replay ordering, revision checks and pinned
+ * delivery geometry.
+ */
+export type ImageCanvasCommandRuntimePort = {
+  loadProject(projectId: string): Promise<ImageWorkbenchProject>
+  canvasCommandResult(input: {
+    project_id: string
+    canvas_id: string
+    idempotency_key: string
+    request_hash: `sha256:${string}`
+  }): Promise<{ project: ImageWorkbenchProject; canvas: ImageCanvasRevision } | null>
+  getCanvasRevision(projectId: string, canvasId: string, revision?: number): Promise<ImageCanvasRevision>
+  getDeliverySpecRevision(projectId: string, deliverySpecId: string, revision: number): Promise<ImageDeliverySpec>
+  applyCanvasCommand(input: {
+    project_id: string
+    canvas_id: string
+    base_project_revision: number
+    command: ImageCanvasCommandInput
+    request_hash: `sha256:${string}`
+    created_at: string
+    delivery_artboard?: {
+      width: number
+      height: number
+      safe_area?: { top: number; right: number; bottom: number; left: number }
+    }
+  }): Promise<{ project: ImageWorkbenchProject; canvas: ImageCanvasRevision; replayed: boolean }>
+  iso(): string
+}
+
+/**
+ * Narrow durable/execution boundary for ImageDeliveryApplication's export
+ * command. Acceptance happens before asynchronous CAS/encoder work; the
+ * persisted local_delivery payload remains the recovery source of truth.
+ */
+export type ImageExportDeliveryRuntimePort = {
+  loadProject(projectId: string): Promise<ImageWorkbenchProject>
+  findAccepted(
+    projectId: string,
+    idempotencyKey: string,
+    requestHash: `sha256:${string}`,
+  ): Promise<ImageOperationV2 | null>
+  accept(input: {
+    project_id: string
+    base_revision: number
+    operation: ImageOperationV2
+  }): Promise<{ operation: ImageOperationV2; project_revision: number; replayed: boolean }>
+  schedule(input: { projectId: string; input: ImageExportInput; operationId: string }): void
+  iso(): string
+  revisionConflict(): Error
+}
+
+/**
+ * Narrow restart-recovery primitives for ImageRecoveryApplication.  The
+ * Runtime retains storage, Relay and renderer mechanics; the Application
+ * owns the durable recovery sequence across those independently recoverable
+ * domains.
+ */
+export type ImageRecoveryRuntimePort = {
+  recoverPreparedCampaignCancellations(): Promise<void>
+  listTransportOperations(): Promise<ImageOperation[]>
+  fenceInterruptedSubmission(operation: ImageOperation): Promise<ImageOperation>
+  findGenerationOperationByTransportTask(transportOperationId: string): Promise<ImageOperationV2 | null>
+  resumeUnpostedGenerationOperation(operation: ImageOperation, generation: ImageOperationV2): Promise<ImageOperation>
+  recoverOutcomeUnknownOperation(operation: ImageOperation): Promise<ImageOperation>
+  refreshPersistedOperation(operation: ImageOperation): Promise<ImageOperation>
+  acknowledgeRemoteResult(operation: ImageOperation): Promise<ImageOperation>
+  syncGenerationOperationFromTransport(operation: ImageOperationV2, transport: ImageOperation): Promise<ImageOperationV2>
+  listRecoverableLocalDeliveryOperations(): Promise<ImageOperationV2[]>
+  resumeCanvasRender(operation: ImageOperationV2): Promise<void>
+  resumeExportDelivery(operation: ImageOperationV2): Promise<void>
+  listUnacknowledgedGatewayAdviceReceipts(): Promise<ProviderExecutionReceipt[]>
+  acknowledgeQwenGatewayResult(receipt: ProviderExecutionReceipt): Promise<ProviderExecutionReceipt>
+  recoverCampaigns(): Promise<void>
+}
+
 type QuickCreateLifecycle = {
-  brief_overrides?: ImageBriefOverrides
   /** Called after the Round/Operation transaction, before the first paid POST. */
   on_generation_round_persisted?: (value: {
     project: ImageWorkbenchProject
@@ -487,10 +615,15 @@ export class ImageWorkbenchRuntime {
     this.legacyMediaRoot = options.legacyMediaRoot
       ?? join(process.env.BILLIARDBUDDY_CONFIG_DIR ?? join(homedir(), '.BilliardBuddy'), 'billiardbuddy', 'media')
     this.legacyReader = new LegacyImageProjectReader(this.legacyMediaRoot)
+    const imageRoot = options.root
+      ?? join(process.env.BILLIARDBUDDY_CONFIG_DIR ?? join(homedir(), '.BilliardBuddy'), 'billiardbuddy', 'images')
     this.repository = new SqliteImageMetadataStore({
-      root: options.root,
+      root: imageRoot,
       now: this.now,
       casOrphanRetentionMs: options.casOrphanRetentionMs,
+      legacyMigrationSources: resolve(this.legacyMediaRoot) === resolve(imageRoot)
+        ? []
+        : [{ source_kind: 'generic-media-json-v1', root: this.legacyMediaRoot }],
     })
     this.crashInjector = options.crashInjector
     this.canvasRenderer = options.canvasRenderer ?? new DeterministicImageCanvasRenderer()
@@ -897,20 +1030,6 @@ export class ImageWorkbenchRuntime {
     return saved
   }
 
-  private defaultDirection(project: ImageWorkbenchProject, brief: ImageBriefSnapshot): ImageCreativeDirection {
-    return {
-      id: stableId('dir', project.id, brief.snapshot_hash, 'default-commercial-direction'),
-      label: '稳妥商业版',
-      rationale: '保留已确认事实和参考图约束，提供可直接评审的单一方向。',
-      generation_intent: {
-        composition_goal: '清晰主视觉、主体完整、层级明确',
-        visual_tone: '与用户需求和已确认参考一致',
-        ...(brief.exact_text.length > 0 ? { text_space_goal: '预留清晰的确定性文字排版区域' } : {}),
-      },
-      preservation_rules: brief.must_preserve,
-    }
-  }
-
   private providerPromptForDirection(brief: ImageBriefSnapshot, direction: ImageCreativeDirection): string {
     const exactOverlayRoles = brief.reference_rules
       .filter(rule => rule.role === 'logo' || rule.role === 'qrcode')
@@ -956,6 +1075,144 @@ export class ImageWorkbenchRuntime {
 
   async getProject(projectId: string): Promise<ImageWorkbenchProject> {
     return await this.project(projectId)
+  }
+
+  /** @internal Composition-only dependency for ImageProjectApplication. */
+  createReferenceControlPort(): ImageReferenceControlRuntimePort {
+    return Object.freeze({
+      loadProject: async (projectId: string) => await this.project(projectId),
+      findCommand: async (projectId: string, idempotencyKey: string, requestHash: `sha256:${string}`) =>
+        await this.repository.findReferenceControlCommandResult(projectId, idempotencyKey, requestHash),
+      assertNoActiveOperation: async (project: ImageWorkbenchProject) => await this.assertNoActiveOperation(project),
+      assertNoActiveGenerationOperation: async (project: ImageWorkbenchProject) => await this.assertNoActiveGenerationOperation(project),
+      save: async input => await this.repository.saveReferenceControlProject(input),
+      refreshGenerationHeader: async result => await this.refreshWorkflowProject(result),
+    })
+  }
+
+  /** @internal Composition-only dependency for ImageGenerationApplication. */
+  createCreativePlanPort(): ImageCreativePlanRuntimePort {
+    return Object.freeze({
+      loadProject: async (projectId: string) => await this.project(projectId),
+      compileBrief: async (project: ImageWorkbenchProject) => await this.compileGenerationBrief(project),
+      findPlan: async (projectId: string, planId: string) => await this.repository.getCreativePlan(projectId, planId).catch(error => {
+        if (error instanceof ImageWorkbenchRepositoryError && error.status === 404) return null
+        throw error
+      }),
+      savePlan: async (plan: ImageCreativePlan, requestHash: `sha256:${string}`) =>
+        await this.repository.saveCreativePlan(plan, requestHash),
+      iso: () => this.iso(),
+      revisionConflict: () => new ImageWorkbenchServiceError('图片项目已更新，请刷新后再创建创作方向', 409, 'IMAGE_REVISION_CONFLICT'),
+    })
+  }
+
+  /** @internal Composition-only dependency for ImageCanvasApplication. */
+  createCanvasCommandPort(): ImageCanvasCommandRuntimePort {
+    return Object.freeze({
+      loadProject: async (projectId: string) => await this.project(projectId),
+      canvasCommandResult: async input => await this.repository.canvasCommandResult(input),
+      getCanvasRevision: async (projectId: string, canvasId: string, revision?: number) =>
+        await this.repository.getCanvasRevision(projectId, canvasId, revision),
+      getDeliverySpecRevision: async (projectId: string, deliverySpecId: string, revision: number) =>
+        await this.repository.getDeliverySpecRevision(projectId, deliverySpecId, revision),
+      // The Repository repeats idempotency/revision checks while holding the
+      // same project fence and BEGIN IMMEDIATE transaction as the write.
+      applyCanvasCommand: async input => await this.repository.applyCanvasCommand(input),
+      iso: () => this.iso(),
+    })
+  }
+
+  /** @internal Composition-only dependency for ImageDeliveryApplication. */
+  createExportDeliveryPort(): ImageExportDeliveryRuntimePort {
+    return Object.freeze({
+      loadProject: async (projectId: string) => await this.project(projectId),
+      findAccepted: async (projectId: string, idempotencyKey: string, requestHash: `sha256:${string}`) => {
+        const operation = await this.repository.findGenerationOperation(stableId('op', projectId, 'export', idempotencyKey))
+        if (!operation) return null
+        if (operation.project_id !== projectId || operation.kind !== 'export' || operation.idempotency_key !== idempotencyKey) {
+          throw new ImageWorkbenchServiceError('图片导出操作身份无效', 409, 'IMAGE_OPERATION_CORRUPT')
+        }
+        if (operation.request_hash !== requestHash) {
+          throw new ImageWorkbenchServiceError('图片导出幂等键对应的请求内容不一致', 409, 'IMAGE_IDEMPOTENCY_CONFLICT')
+        }
+        return operation
+      },
+      accept: async input => {
+        try {
+          const accepted = await this.repository.acceptExportOperation(input)
+          return { operation: accepted.operation, project_revision: accepted.project.revision, replayed: accepted.replayed }
+        } catch (error) {
+          if (error instanceof ImageWorkbenchRepositoryError) {
+            throw new ImageWorkbenchServiceError(error.message, error.status, error.code)
+          }
+          throw error
+        }
+      },
+      schedule: ({ projectId, input, operationId }) => {
+        queueMicrotask(() => { void this.runLocalDelivery(operationId, async () => {
+          await this.executeExportDelivery(projectId, input)
+        }) })
+      },
+      iso: () => this.iso(),
+      revisionConflict: () => new ImageWorkbenchServiceError('图片项目已更新，请刷新后再导出', 409, 'IMAGE_REVISION_CONFLICT'),
+    })
+  }
+
+  /** @internal Composition-only dependency for ImageRecoveryApplication. */
+  createRecoveryPort(): ImageRecoveryRuntimePort {
+    return Object.freeze({
+      recoverPreparedCampaignCancellations: async () => await this.recoverPreparedCampaignCancellations(),
+      listTransportOperations: async () => await this.repository.listOperations(),
+      fenceInterruptedSubmission: async operation => await this.fenceInterruptedSubmission(operation),
+      findGenerationOperationByTransportTask: async transportOperationId =>
+        await this.repository.getGenerationOperationByTransportTask(transportOperationId),
+      resumeUnpostedGenerationOperation: async (operation, generation) =>
+        await this.resumeUnpostedGenerationOperation(operation, generation),
+      recoverOutcomeUnknownOperation: async operation => await this.recoverOutcomeUnknownOperation(operation),
+      refreshPersistedOperation: async operation => await this.refreshPersistedOperation(operation),
+      acknowledgeRemoteResult: async operation => await this.acknowledgeRemoteResult(operation),
+      syncGenerationOperationFromTransport: async (operation, transport) =>
+        await this.syncGenerationOperationFromTransport(operation, transport),
+      listRecoverableLocalDeliveryOperations: async () => {
+        const projects = await this.listProjects()
+        return (await Promise.all(projects.map(async project =>
+          (await this.repository.listGenerationOperations(project.id))
+            .filter(operation => operation.local_delivery && ['queued', 'running', 'committing'].includes(operation.status)),
+        ))).flat()
+      },
+      resumeCanvasRender: async operation => {
+        const local = operation.local_delivery
+        if (!local || local.kind !== 'canvas_render') return
+        await this.executeCanvasRender(operation.project_id, local.canvas_id, {
+          base_revision: operation.input_refs.project_revision,
+          idempotency_key: operation.idempotency_key,
+          canvas_revision: local.canvas_revision,
+          expected_current_version_id: local.expected_current_version_id,
+          activate_on_success: local.activate_on_success,
+        }, local.expected_current_version_id_source === 'acceptance'
+          ? undefined
+          : local.requested_expected_current_version_id ?? local.expected_current_version_id)
+          .catch(async error => await this.runLocalDelivery(operation.id, async () => { throw error }))
+      },
+      resumeExportDelivery: async operation => {
+        const local = operation.local_delivery
+        if (!local || local.kind !== 'export') return
+        await this.executeExportDelivery(operation.project_id, {
+          base_revision: operation.input_refs.project_revision,
+          idempotency_key: operation.idempotency_key,
+          version_ids_by_artboard: local.version_ids_by_artboard,
+        }).catch(async error => await this.runLocalDelivery(operation.id, async () => { throw error }))
+      },
+      listUnacknowledgedGatewayAdviceReceipts: async () =>
+        await this.repository.listUnacknowledgedGatewayAdviceReceipts(),
+      acknowledgeQwenGatewayResult: async receipt => await this.acknowledgeQwenGatewayResult(receipt),
+      recoverCampaigns: async () => await this.recoverCampaigns(),
+    })
+  }
+
+  /** Shared Runtime-internal flow uses the same Application-owned command. */
+  private async createCreativePlanForInternal(projectId: string, raw: CreateCreativePlanInput): Promise<ImageCreativePlan> {
+    return await createCreativePlanCommand(this.createCreativePlanPort(), projectId, raw)
   }
 
   /**
@@ -1207,6 +1464,7 @@ export class ImageWorkbenchRuntime {
     operations: ImageOperationV2[]
   }> {
     const input = imageQuickCreateInputSchema.parse(raw)
+    const briefOverrides = input.brief_overrides
     const requestHash = sha256({
       kind: 'quick_create',
       prompt: input.prompt,
@@ -1214,7 +1472,7 @@ export class ImageWorkbenchRuntime {
       output_preset: input.output_preset,
       reference_inputs: input.reference_inputs,
       budget_limit: input.budget_limit ?? null,
-      brief_overrides: options.brief_overrides ?? null,
+      brief_overrides: briefOverrides ?? null,
     })
     const projectId = workflowId('img', 'quick-create', input.idempotency_key)
     const roundId = stableId('rnd', projectId, input.idempotency_key)
@@ -1253,14 +1511,14 @@ export class ImageWorkbenchRuntime {
       return { project: await this.project(project.id), round: existingRound, operations }
     }
 
-    if (options.brief_overrides && Object.keys(options.brief_overrides).length > 0) {
-      const hasPersistedOverrides = Object.entries(options.brief_overrides).every(([key, value]) =>
+    if (briefOverrides && Object.keys(briefOverrides).length > 0) {
+      const hasPersistedOverrides = Object.entries(briefOverrides).every(([key, value]) =>
         stableJson(project.brief_overrides[key as keyof ImageBriefOverrides]) === stableJson(value))
       if (!hasPersistedOverrides) {
         project = await this.applyBriefOverrides(project.id, {
           base_revision: project.revision,
           idempotency_key: `bb-image-quick-brief-${sha256({ project_id: project.id, key: input.idempotency_key }).slice('sha256:'.length)}`,
-          overrides: options.brief_overrides,
+          overrides: briefOverrides,
         })
       }
     }
@@ -1269,7 +1527,7 @@ export class ImageWorkbenchRuntime {
     }
 
     const planKey = `bb-image-quick-${sha256({ project_id: project.id, key: input.idempotency_key }).slice('sha256:'.length)}`
-    const plan = await this.createCreativePlan(project.id, {
+    const plan = await this.createCreativePlanForInternal(project.id, {
       base_revision: project.revision,
       idempotency_key: planKey,
     })
@@ -2647,11 +2905,11 @@ export class ImageWorkbenchRuntime {
         idempotency_key: key,
         title: `${snapshot.campaign.name} ${item.ordinal + 1}`,
         prompt: snapshot.campaign.shared_brief.user_request,
-        output_preset: snapshot.campaign.output_preset,
-        budget_limit: await this.campaignItemBudget(snapshot.campaign, item),
-        reference_inputs: [],
-      }, {
+      output_preset: snapshot.campaign.output_preset,
+      budget_limit: await this.campaignItemBudget(snapshot.campaign, item),
+      reference_inputs: [],
         brief_overrides: this.campaignBriefOverrides(snapshot.campaign),
+      }, {
         // The Campaign item must point at its ordinary Project before the
         // persisted Round is allowed to cross the paid submission boundary.
         on_generation_round_persisted: async ({ project, round, operations }) => {
@@ -3038,61 +3296,11 @@ export class ImageWorkbenchRuntime {
   }
 
   private async recoverCampaigns(): Promise<void> {
-    await this.recoverPreparedCampaignCancellations()
     const campaigns = await this.repository.listCampaigns(STANDALONE_IMAGE_OWNER)
     for (const snapshot of campaigns) {
       if (snapshot.campaign.state !== 'running') continue
       await this.resumeCampaign(snapshot.campaign.id)
     }
-  }
-
-  async updateReferenceControl(projectId: string, referenceId: string, raw: UpdateImageReferenceControlInput): Promise<ImageWorkbenchProject> {
-    const input = updateImageReferenceControlInputSchema.parse(raw)
-    const project = await this.project(projectId)
-    const requestHash = sha256({
-      kind: 'reference_control',
-      project_id: project.id,
-      base_revision: input.base_revision,
-      reference_id: referenceId,
-      role: input.role,
-      influence_strength: input.influence_strength,
-      preservation: input.preservation,
-      priority: input.priority,
-      label: input.label,
-    })
-    if (await this.repository.hasReferenceControlCommand(project.id, input.idempotency_key, requestHash)) {
-      return project
-    }
-    await this.assertNoActiveOperation(project)
-    await this.assertNoActiveGenerationOperation(project)
-    const references = project.references.map(reference => this.matchesReference(project, reference, referenceId)
-      ? {
-          ...reference,
-          role: input.role,
-          influence_strength: input.influence_strength,
-          preservation: input.preservation,
-          priority: input.priority,
-          ...(input.label === undefined ? {} : { label: input.label }),
-        }
-      : reference)
-    if (references.every(reference => !this.matchesReference(project, reference, referenceId))) {
-      throw new ImageWorkbenchServiceError('图片参考图不存在', 404, 'REFERENCE_IMAGE_MISSING')
-    }
-    const saved = await this.repository.saveReferenceControlProject({
-      project: {
-      ...project,
-      references,
-      revision: project.revision + 1,
-      error: undefined,
-      error_code: undefined,
-      notice: undefined,
-      },
-      base_revision: input.base_revision,
-      idempotency_key: input.idempotency_key,
-      request_hash: requestHash,
-    })
-    if (saved.replayed) return await this.project(project.id)
-    return await this.initializeGenerationHeader(saved.project)
   }
 
   private async activeGenerationOperations(projectId: string): Promise<ImageOperationV2[]> {
@@ -3106,39 +3314,6 @@ export class ImageWorkbenchRuntime {
     if (active.length > 0) {
       throw new ImageWorkbenchServiceError('当前图片生成轮次尚未完成', 409, 'IMAGE_OPERATION_ACTIVE')
     }
-  }
-
-  async createCreativePlan(projectId: string, raw: CreateCreativePlanInput): Promise<ImageCreativePlan> {
-    const input = createCreativePlanInputSchema.parse(raw)
-    const project = await this.project(projectId)
-    const brief = await this.compileGenerationBrief(project)
-    const requestHash = sha256({
-      kind: 'creative_plan',
-      project_id: project.id,
-      base_revision: input.base_revision,
-      brief_snapshot_hash: brief.snapshot_hash,
-      directions: input.directions ?? null,
-    })
-    const planId = stableId('plan', project.id, input.idempotency_key)
-    const existing = await this.repository.getCreativePlan(project.id, planId).catch(error => {
-      if (error instanceof ImageWorkbenchRepositoryError && error.status === 404) return null
-      throw error
-    })
-    if (existing) return await this.repository.saveCreativePlan({ ...existing, id: planId }, requestHash)
-    this.assertRevision(project, input.base_revision, '图片项目已更新，请刷新后再创建创作方向')
-    const directions = input.directions?.map((direction, index) => ({
-      ...direction,
-      id: stableId('dir', project.id, input.idempotency_key, String(index)),
-    })) ?? [this.defaultDirection(project, brief)]
-    const plan: ImageCreativePlan = {
-      id: planId,
-      project_id: project.id,
-      brief_snapshot_hash: brief.snapshot_hash,
-      directions,
-      source: 'deterministic',
-      created_at: this.iso(),
-    }
-    return await this.repository.saveCreativePlan(plan, requestHash)
   }
 
   async getCreativePlan(projectId: string, planId: string): Promise<ImageCreativePlan> {
@@ -3486,7 +3661,7 @@ export class ImageWorkbenchRuntime {
 
   private derivationOperationRequestHash(input: {
     project: ImageWorkbenchProject
-    candidate: ImageCandidate
+    source: DerivationSourceRecord
     brief: ImageBriefSnapshot
     delivery: ImageDeliverySpec
     direction: ImageCreativeDirection
@@ -3498,7 +3673,7 @@ export class ImageWorkbenchRuntime {
     policyRevision: string
   }): `sha256:${string}` {
     const assetHashes = [...new Set([
-      input.candidate.content_hash,
+      input.source.kind === 'candidate' ? input.source.candidate.content_hash : input.source.verified.content_hash,
       ...this.providerReferences(input.references).map(reference => reference.content_hash),
       ...(input.mask_content_hash ? [input.mask_content_hash] : []),
     ])]
@@ -3506,7 +3681,9 @@ export class ImageWorkbenchRuntime {
       project_id: input.project.id,
       owner: input.project.owner,
       kind: input.kind,
-      base_candidate_id: input.candidate.id,
+      ...(input.source.kind === 'candidate'
+        ? { base_candidate_id: input.source.candidate.id }
+        : this.versionDerivationHashFields(input.source)),
       instruction: input.instruction,
       project_revision: input.project.revision,
       brief_snapshot_hash: input.brief.snapshot_hash,
@@ -3520,15 +3697,95 @@ export class ImageWorkbenchRuntime {
     })
   }
 
-  private async verifyDerivationMask(candidate: ImageCandidate, input: { kind: 'edit' | 'inpaint'; mask_data_url?: string }): Promise<VerifiedImageBytes | undefined> {
+  private versionDerivationHashFields(source: Extract<DerivationSourceRecord, { kind: 'version' }>): {
+    candidate_id: string | null
+    base_version_id: string | null
+    base_asset_hash: `sha256:${string}`
+  } {
+    return { candidate_id: null, base_version_id: source.version_id, base_asset_hash: source.verified.content_hash }
+  }
+
+  private derivationSourceId(source: DerivationSourceRecord): string {
+    return source.kind === 'candidate' ? source.candidate.id : source.version_id
+  }
+
+  private derivationSourceLabel(source: DerivationSourceRecord): '候选' | '正式版本' {
+    return source.kind === 'candidate' ? '候选' : '正式版本'
+  }
+
+  private async resolveDerivationSource(project: ImageWorkbenchProject, raw: ImageDerivationSource): Promise<DerivationSourceRecord> {
+    const source = imageDerivationSourceSchema.parse(raw)
+    if (source.candidate_id) {
+      const candidate = await this.repository.getCandidate(project.id, source.candidate_id)
+      const asset = project.assets.find(item => item.id === candidate.asset_id && item.role === 'result')
+      if (!asset?.content_hash) throw new ImageWorkbenchServiceError('候选资产不存在', 409, 'IMAGE_ASSET_NOT_FOUND')
+      return { kind: 'candidate', candidate, asset, verified: await this.assets.readVerified(asset) }
+    }
+    const version = await this.imageVersionBytes(project, source.version_id!)
+    return { kind: 'version', version_id: version.version.id, asset: version.asset, verified: version.verified }
+  }
+
+  private async verifyDerivationMask(source: DerivationSourceRecord, input: { kind: 'edit' | 'inpaint'; mask_data_url?: string }): Promise<VerifiedImageBytes | undefined> {
     if (input.kind === 'edit') return undefined
     if (!input.mask_data_url) throw new ImageWorkbenchServiceError('局部重绘需要 PNG 蒙版', 400, 'IMAGE_MASK_INVALID')
     const verified = await this.assets.verifyDataUrl(input.mask_data_url)
     if (verified.mime_type !== 'image/png') throw new ImageWorkbenchServiceError('局部重绘蒙版必须是 PNG', 400, 'IMAGE_MASK_INVALID')
-    if (verified.width !== candidate.width || verified.height !== candidate.height) {
-      throw new ImageWorkbenchServiceError('局部重绘蒙版尺寸必须与候选图片一致', 400, 'IMAGE_MASK_INVALID')
+    if (verified.width !== source.verified.width || verified.height !== source.verified.height) {
+      throw new ImageWorkbenchServiceError(`局部重绘蒙版尺寸必须与${this.derivationSourceLabel(source)}图片一致`, 400, 'IMAGE_MASK_INVALID')
     }
     return verified
+  }
+
+  private derivationEstimateRequestHash(
+    project: ImageWorkbenchProject,
+    source: DerivationSourceRecord,
+    input: { instruction: string; kind: 'edit' | 'inpaint' },
+    mask: VerifiedImageBytes | undefined,
+    operationRequestHash: `sha256:${string}`,
+  ): `sha256:${string}` {
+    if (source.kind === 'candidate') {
+      return sha256({
+        kind: 'derivation', project_id: project.id, candidate_id: source.candidate.id,
+        instruction: input.instruction, operation_kind: input.kind, mask_content_hash: mask?.content_hash ?? null,
+        operation_request_hash: operationRequestHash,
+      })
+    }
+    return sha256({
+      kind: 'derivation',
+      project_id: project.id,
+      ...this.versionDerivationHashFields(source),
+      instruction: input.instruction,
+      operation_kind: input.kind,
+      mask_content_hash: mask?.content_hash ?? null,
+      operation_request_hash: operationRequestHash,
+    })
+  }
+
+  private derivationCommandHash(
+    project: ImageWorkbenchProject,
+    source: DerivationSourceRecord,
+    input: { base_revision: number; instruction: string; kind: 'edit' | 'inpaint'; estimate_hash: string; confirm: true },
+    mask: VerifiedImageBytes | undefined,
+  ): `sha256:${string}` {
+    if (source.kind === 'candidate') {
+      return sha256({
+        kind: 'derivation', project_id: project.id, candidate_id: source.candidate.id,
+        base_revision: input.base_revision,
+        instruction: input.instruction, operation_kind: input.kind, mask_content_hash: mask?.content_hash ?? null,
+        estimate_hash: input.estimate_hash, confirm: input.confirm,
+      })
+    }
+    return sha256({
+      kind: 'derivation',
+      project_id: project.id,
+      ...this.versionDerivationHashFields(source),
+      base_revision: input.base_revision,
+      instruction: input.instruction,
+      operation_kind: input.kind,
+      mask_content_hash: mask?.content_hash ?? null,
+      estimate_hash: input.estimate_hash,
+      confirm: input.confirm,
+    })
   }
 
   async estimateDerivation(projectId: string, candidateId: string, raw: EstimateDeriveImageCandidateInput): Promise<{
@@ -3539,23 +3796,46 @@ export class ImageWorkbenchRuntime {
     price_upper_bound: ImageGenerationEstimate['price_upper_bound']
     expires_at: string
   }> {
+    return await this.estimateDerivationForSource(projectId, { candidate_id: candidateId }, raw)
+  }
+
+  async estimateVersionDerivation(projectId: string, versionId: string, raw: EstimateDeriveImageVersionInput): Promise<{
+    estimate_hash: `sha256:${string}`
+    paid_operation_count: number
+    candidate_count_per_operation: number
+    concurrency: number
+    price_upper_bound: ImageGenerationEstimate['price_upper_bound']
+    expires_at: string
+  }> {
+    return await this.estimateDerivationForSource(projectId, { version_id: versionId }, estimateDeriveImageVersionInputSchema.parse(raw))
+  }
+
+  private async estimateDerivationForSource(projectId: string, sourceInput: ImageDerivationSource, raw: EstimateDeriveImageCandidateInput): Promise<{
+    estimate_hash: `sha256:${string}`
+    paid_operation_count: number
+    candidate_count_per_operation: number
+    concurrency: number
+    price_upper_bound: ImageGenerationEstimate['price_upper_bound']
+    expires_at: string
+  }> {
     const input = estimateDeriveImageCandidateInputSchema.parse(raw)
     const project = await this.project(projectId)
     this.assertRevision(project, input.base_revision, '图片项目已更新，请重新估算派生费用')
-    const candidate = await this.repository.getCandidate(project.id, candidateId)
-    const source = project.assets.find(asset => asset.id === candidate.asset_id && asset.role === 'result')
-    if (!source?.content_hash) throw new ImageWorkbenchServiceError('候选资产不存在', 409, 'IMAGE_ASSET_NOT_FOUND')
-    await this.assets.readVerified(source)
-    const mask = await this.verifyDerivationMask(candidate, input)
+    const source = await this.resolveDerivationSource(project, sourceInput)
+    const mask = await this.verifyDerivationMask(source, input)
     const planBrief = await this.compileGenerationBrief(project)
     const planKey = `bb-image-derive-estimate-${sha256({
-      project_id: project.id, candidate_id: candidate.id, instruction: input.instruction,
+      project_id: project.id,
+      ...(source.kind === 'candidate'
+        ? { candidate_id: source.candidate.id }
+        : this.versionDerivationHashFields(source)),
+      instruction: input.instruction,
       kind: input.kind,
       mask_content_hash: mask?.content_hash ?? null,
       project_revision: project.revision,
       brief_snapshot_hash: planBrief.snapshot_hash,
     }).slice('sha256:'.length)}`
-    const plan = await this.createCreativePlan(project.id, {
+    const plan = await this.createCreativePlanForInternal(project.id, {
       base_revision: project.revision,
       idempotency_key: planKey,
     })
@@ -3575,15 +3855,11 @@ export class ImageWorkbenchRuntime {
       throw new ImageWorkbenchServiceError('派生的基础候选与参考图数量超过 Provider 能力上限', 422, 'IMAGE_CAPABILITY_GAP')
     }
     const operationRequestHash = this.derivationOperationRequestHash({
-      project, candidate, brief, delivery, direction, references, instruction: input.instruction,
+      project, source, brief, delivery, direction, references, instruction: input.instruction,
       kind: input.kind, mask_content_hash: mask?.content_hash,
       model: policy.model_id, policyRevision: policy.policy_revision,
     })
-    const requestHash = sha256({
-      kind: 'derivation', project_id: project.id, candidate_id: candidate.id,
-      instruction: input.instruction, operation_kind: input.kind, mask_content_hash: mask?.content_hash ?? null,
-      operation_request_hash: operationRequestHash,
-    })
+    const requestHash = this.derivationEstimateRequestHash(project, source, input, mask, operationRequestHash)
     const createdAt = this.iso()
     const expiresAt = new Date(this.now().getTime() + IMAGE_GENERATION_ESTIMATE_TTL_MS).toISOString()
     const estimate = await this.repository.saveGenerationEstimate({
@@ -3591,7 +3867,7 @@ export class ImageWorkbenchRuntime {
       project_id: project.id,
       kind: 'derivation',
       creative_plan_id: plan.id,
-      candidate_id: candidate.id,
+      ...(source.kind === 'candidate' ? { candidate_id: source.candidate.id } : { version_id: source.version_id }),
       direction_ids: [direction.id],
       request_hash: requestHash,
       estimate_hash: sha256({ kind: 'derivation', request_hash: requestHash, expires_at: expiresAt }),
@@ -3601,7 +3877,7 @@ export class ImageWorkbenchRuntime {
       concurrency: 1,
       price_upper_bound: this.estimatePriceUpperBound(
         [policy],
-        this.inputByteUpperBound(project, providerReferences, [source]) + (mask?.bytes.byteLength ?? 0),
+        this.inputByteUpperBound(project, providerReferences, [source.asset]) + (mask?.bytes.byteLength ?? 0),
       ),
       expires_at: expiresAt,
       created_at: createdAt,
@@ -3617,47 +3893,55 @@ export class ImageWorkbenchRuntime {
   }
 
   /**
-   * Derivation is a normal paid edit Operation whose source is an immutable,
-   * possibly unadopted Candidate. It deliberately creates another one-
-   * direction Round and Candidate Group instead of mutating the source.
+   * Derivation is a normal paid edit Operation whose source is exactly one
+   * immutable Candidate or formal Version. It deliberately creates another
+   * one-direction Round and Candidate Group instead of mutating the source.
    */
   async deriveCandidate(projectId: string, candidateId: string, raw: DeriveImageCandidateInput): Promise<{
     round: ImageGenerationRound
     operation: ImageOperationV2
   }> {
+    return await this.deriveForSource(projectId, { candidate_id: candidateId }, raw)
+  }
+
+  async deriveVersion(projectId: string, versionId: string, raw: DeriveImageVersionInput): Promise<{
+    round: ImageGenerationRound
+    operation: ImageOperationV2
+  }> {
+    return await this.deriveForSource(projectId, { version_id: versionId }, deriveImageVersionInputSchema.parse(raw))
+  }
+
+  private async deriveForSource(projectId: string, sourceInput: ImageDerivationSource, raw: DeriveImageCandidateInput): Promise<{
+    round: ImageGenerationRound
+    operation: ImageOperationV2
+  }> {
     const input = deriveImageCandidateInputSchema.parse(raw)
     const project = await this.project(projectId)
-    const candidate = await this.repository.getCandidate(project.id, candidateId)
-    const mask = await this.verifyDerivationMask(candidate, input)
+    const source = await this.resolveDerivationSource(project, sourceInput)
+    const mask = await this.verifyDerivationMask(source, input)
     const roundId = stableId('rnd', project.id, 'derive', input.idempotency_key)
-    const derivationCommandHash = sha256({
-      kind: 'derivation', project_id: project.id, candidate_id: candidateId,
-      base_revision: input.base_revision,
-      instruction: input.instruction, operation_kind: input.kind, mask_content_hash: mask?.content_hash ?? null,
-      estimate_hash: input.estimate_hash, confirm: input.confirm,
-    })
+    const derivationCommandHash = this.derivationCommandHash(project, source, input, mask)
     const existing = await this.repository.getGenerationRound(project.id, roundId).catch(error => {
       if (error instanceof ImageWorkbenchRepositoryError && error.status === 404) return null
       throw error
     })
     if (existing) {
       if (await this.repository.generationRoundRequestHash(project.id, roundId) !== derivationCommandHash) {
-        throw new ImageWorkbenchServiceError('候选派生幂等键对应的请求内容不一致', 409, 'IMAGE_IDEMPOTENCY_CONFLICT')
+        throw new ImageWorkbenchServiceError(`${this.derivationSourceLabel(source)}派生幂等键对应的请求内容不一致`, 409, 'IMAGE_IDEMPOTENCY_CONFLICT')
       }
       const operationId = existing.direction_operations[0]?.operation_id
-      if (!operationId) throw new ImageWorkbenchServiceError('候选派生轮次缺少操作', 500, 'IMAGE_OPERATION_CORRUPT')
+      if (!operationId) throw new ImageWorkbenchServiceError(`${this.derivationSourceLabel(source)}派生轮次缺少操作`, 500, 'IMAGE_OPERATION_CORRUPT')
       return { round: existing, operation: await this.repository.getGenerationOperation(project.id, operationId) }
     }
-    this.assertRevision(project, input.base_revision, '图片项目已更新，请刷新后再派生候选')
+    this.assertRevision(project, input.base_revision, `图片项目已更新，请刷新后再派生${this.derivationSourceLabel(source)}`)
     await this.assertNoActiveOperation(project)
     await this.assertNoActiveGenerationOperation(project)
-    const source = project.assets.find(asset => asset.id === candidate.asset_id && asset.role === 'result')
-    if (!source?.content_hash) throw new ImageWorkbenchServiceError('候选资产不存在', 409, 'IMAGE_ASSET_NOT_FOUND')
-    await this.assets.readVerified(source)
     const estimate = await this.repository.getGenerationEstimate(project.id, input.estimate_hash)
     if (
       estimate.kind !== 'derivation'
-      || estimate.candidate_id !== candidate.id
+      || (source.kind === 'candidate'
+        ? estimate.candidate_id !== source.candidate.id || Boolean(estimate.version_id)
+        : estimate.version_id !== source.version_id || Boolean(estimate.candidate_id))
       || estimate.project_revision !== input.base_revision
       || Date.parse(estimate.expires_at) <= this.now().getTime()
       || !estimate.creative_plan_id
@@ -3683,22 +3967,18 @@ export class ImageWorkbenchRuntime {
     }
     await this.providerReferenceInputs(project, providerReferences)
     const requestHash = this.derivationOperationRequestHash({
-      project, candidate, brief, delivery, direction, references, instruction: input.instruction,
+      project, source, brief, delivery, direction, references, instruction: input.instruction,
       kind: input.kind, mask_content_hash: mask?.content_hash,
       model: policy.model_id, policyRevision: policy.policy_revision,
     })
-    const estimateRequestHash = sha256({
-      kind: 'derivation', project_id: project.id, candidate_id: candidate.id,
-      instruction: input.instruction, operation_kind: input.kind, mask_content_hash: mask?.content_hash ?? null,
-      operation_request_hash: requestHash,
-    })
+    const estimateRequestHash = this.derivationEstimateRequestHash(project, source, input, mask, requestHash)
     if (estimate.request_hash !== estimateRequestHash) {
       throw new ImageWorkbenchServiceError('派生费用估算已过期或不属于当前输入，请重新确认', 409, 'IMAGE_REVISION_CONFLICT')
     }
     await this.assertBudgetAllows(project, estimate.price_upper_bound)
     if (!productImageRelayConfigured()) throw new ImageWorkbenchServiceError('图片远程能力尚未配置', 503, 'IMAGE_RELAY_NOT_CONFIGURED')
     const now = this.iso()
-    const operationId = stableId('op', project.id, roundId, candidate.id)
+    const operationId = stableId('op', project.id, roundId, this.derivationSourceId(source))
     const savedMask = mask
       ? await this.assets.persist(project.id, workflowId('mask', project.id, operationId), 'mask', mask, operationId, now)
       : undefined
@@ -3706,7 +3986,7 @@ export class ImageWorkbenchRuntime {
       ? imageWorkbenchProjectSchema.parse({ ...project, assets: [...project.assets, savedMask.asset] })
       : project
     const assetHashes = [...new Set([
-      candidate.content_hash,
+      source.kind === 'candidate' ? source.candidate.content_hash : source.verified.content_hash,
       ...providerReferences.map(reference => reference.content_hash),
       ...(savedMask?.asset.content_hash ? [savedMask.asset.content_hash as `sha256:${string}`] : []),
     ])]
@@ -3720,7 +4000,7 @@ export class ImageWorkbenchRuntime {
       idempotency_key: `bb-image-${requestHash.slice('sha256:'.length)}`,
       request_hash: requestHash,
       logical_attempt: 1,
-      base_candidate_id: candidate.id,
+      ...(source.kind === 'candidate' ? { base_candidate_id: source.candidate.id } : { base_version_id: source.version_id }),
       ...(savedMask ? { mask_asset_id: savedMask.asset.id } : {}),
       instruction: input.instruction,
       input_refs: {
@@ -3750,11 +4030,11 @@ export class ImageWorkbenchRuntime {
       kind: 'image.generate',
       status: 'queued',
       progress: 0,
-      stage: '等待提交候选派生',
+      stage: `等待提交${this.derivationSourceLabel(source)}派生`,
       idempotency_key: operation.idempotency_key,
       image_operation: {
         kind: input.kind,
-        base_candidate_asset_id: candidate.asset_id,
+        ...(source.kind === 'candidate' ? { base_candidate_asset_id: source.asset.id } : { base_version_id: source.version_id }),
         ...(savedMask ? { mask_asset_id: savedMask.asset.id } : {}),
         instruction: `${this.providerPromptForDirection(brief, direction)}\n编辑要求：${input.instruction}`,
         model: policy.model_id,
@@ -3781,9 +4061,22 @@ export class ImageWorkbenchRuntime {
       transport_operations: [transport],
     })
     this.injectCrash('after_generation_round_persisted_before_post')
+    // A cancellation may linearize after this derivation was durably accepted
+    // but before this stack reaches its first POST. Re-read both records so a
+    // stale derive call cannot revive an explicitly cancelled queued task.
+    const currentOperation = await this.repository.getGenerationOperation(persisted.project.id, operation.id)
+    const currentTransport = await this.repository.getOperation(transport.id)
+    if (
+      currentOperation.status !== 'queued'
+      || currentTransport.status !== 'queued'
+      || Boolean(currentTransport.remote_task_id)
+      || Boolean(currentTransport.remote_submission_started_at)
+    ) {
+      return { round: persisted.round, operation: currentOperation }
+    }
     return {
       round: persisted.round,
-      operation: await this.submitGenerationTransport(persisted.project, operation, transport, policy.provider, policy.model_id),
+      operation: await this.submitGenerationTransport(persisted.project, currentOperation, currentTransport, policy.provider, policy.model_id),
     }
   }
 
@@ -4096,6 +4389,9 @@ export class ImageWorkbenchRuntime {
       asset_ids: [candidate.asset_id],
       kind: 'generated' as const,
       operation_id: undefined,
+      artboard_id: adoption.artboard_id,
+      canvas_id: adoption.canvas_id,
+      canvas_revision: adoption.canvas_revision,
       width: candidate.width,
       height: candidate.height,
       created_at: now,
@@ -4150,49 +4446,6 @@ export class ImageWorkbenchRuntime {
       project_id: projectId, base_project_revision: input.base_revision, idempotency_key: input.idempotency_key,
       request_hash: sha256(input),
       canvas: { canvas_id: canvasId, revision: 0, document_hash: sha256(document), document, created_at: now },
-    })
-    return { project: result.project, canvas: result.canvas }
-  }
-
-  async applyCanvasCommand(projectId: string, canvasId: string, baseProjectRevision: number, raw: ImageCanvasCommandInput): Promise<{ project: ImageWorkbenchProject; canvas: ImageCanvasRevision }> {
-    const command = imageCanvasCommandInputSchema.parse(raw)
-    await this.project(projectId)
-    const requestHash = sha256({ canvas_id: canvasId, base_project_revision: baseProjectRevision, command })
-    const replay = await this.repository.canvasCommandResult({
-      project_id: projectId,
-      canvas_id: canvasId,
-      idempotency_key: command.idempotency_key,
-      request_hash: requestHash,
-    })
-    if (replay) return replay
-    const currentCanvas = command.kind === 'sync_delivery_spec'
-      ? await this.repository.getCanvasRevision(projectId, canvasId, command.base_revision)
-      : undefined
-    // Active aggregate/grant reads are intentionally repeated by the
-    // repository inside its BEGIN IMMEDIATE transaction. The outer reads here
-    // only locate the pinned delivery artboard; they must not authorize a
-    // write that can race a grant revoke or aggregate trash command.
-    const deliveryArtboard = command.kind === 'sync_delivery_spec' && currentCanvas
-      ? (await this.repository.getDeliverySpecRevision(projectId, command.payload.delivery_spec_id, command.payload.delivery_spec_revision))
-        .artboards.find(artboard => artboard.id === currentCanvas.document.artboard_id)
-      : undefined
-    if (command.kind === 'sync_delivery_spec' && !deliveryArtboard) {
-      throw new ImageWorkbenchServiceError('交付规格不包含当前画板，不能同步', 409, 'IMAGE_REVISION_CONFLICT')
-    }
-    const result = await this.repository.applyCanvasCommand({
-      project_id: projectId,
-      canvas_id: canvasId,
-      base_project_revision: baseProjectRevision,
-      command,
-      request_hash: requestHash,
-      created_at: this.iso(),
-      ...(deliveryArtboard ? {
-        delivery_artboard: {
-          width: deliveryArtboard.width,
-          height: deliveryArtboard.height,
-          ...(deliveryArtboard.safe_area ? { safe_area: deliveryArtboard.safe_area } : {}),
-        },
-      } : {}),
     })
     return { project: result.project, canvas: result.canvas }
   }
@@ -4610,24 +4863,6 @@ export class ImageWorkbenchRuntime {
     this.injectCrash('after_export_cas_before_db_commit')
     const committed = await this.repository.commitExport({ project_id: projectId, operation, assets, export_receipts: receipts, delivery_set: deliverySet })
     return { operation: committed.operation, export_receipts: receipts, ...(deliverySet ? { delivery_set: deliverySet } : {}), project_revision: committed.project.revision }
-  }
-
-  async exportDelivery(projectId: string, raw: ImageExportInput): Promise<{ operation: ImageOperationV2; export_receipts?: ImageExportReceipt[]; delivery_set?: ImageDeliverySet; project_revision: number }> {
-    const input = imageExportInputSchema.parse(raw)
-    const project = await this.project(projectId)
-    if (project.revision !== input.base_revision) throw new ImageWorkbenchServiceError('图片项目已更新，请刷新后再导出', 409, 'IMAGE_REVISION_CONFLICT')
-    const operation: ImageOperationV2 = {
-      id: stableId('op', projectId, 'export', input.idempotency_key), project_id: projectId, owner: project.owner, kind: 'export', status: 'queued',
-      idempotency_key: input.idempotency_key, request_hash: sha256(input), logical_attempt: 1,
-      input_refs: { project_revision: input.base_revision, delivery_spec_revision: project.current_delivery_spec_revision, execution_policy_revision: 'local-export-v1', asset_hashes: [] },
-      cost_state: 'not_submitted', local_delivery: { kind: 'export', version_ids_by_artboard: input.version_ids_by_artboard },
-      created_at: this.iso(), updated_at: this.iso(),
-    }
-    const queued = await this.repository.saveGenerationOperation(operation)
-    if (queued.status === 'queued') queueMicrotask(() => { void this.runLocalDelivery(queued.id, async () => {
-      await this.executeExportDelivery(projectId, input)
-    }) })
-    return { operation: queued, project_revision: project.revision }
   }
 
   /** Local delivery failures caused by a rejected Canvas/Export contract are
@@ -5189,61 +5424,6 @@ export class ImageWorkbenchRuntime {
     }
   }
 
-  async recoverInterruptedOperations(): Promise<void> {
-    // A durable cancellation intent is authoritative over every queued
-    // Campaign child. Resolve it before the generic operation scanner gets a
-    // chance to make a first paid POST for a task the user already cancelled.
-    await this.recoverPreparedCampaignCancellations()
-    const operations = await this.repository.listOperations()
-    await Promise.all(operations.map(async operation => {
-      const fenced = await this.fenceInterruptedSubmission(operation)
-      const formal = await this.repository.getGenerationOperationByTransportTask(fenced.id)
-      const resumed = formal ? await this.resumeUnpostedGenerationOperation(fenced, formal) : fenced
-      const lookedUp = await this.recoverOutcomeUnknownOperation(resumed)
-      // `committing` means CAS may have published while the SQLite project
-      // transaction did not. Re-read the exact accepted remote task; do not
-      // manufacture success from partial local files and never POST again.
-      const recovered = lookedUp.status === 'committing'
-        ? await this.refreshPersistedOperation(lookedUp)
-        : lookedUp
-      await this.acknowledgeRemoteResult(recovered)
-      const generation = await this.repository.getGenerationOperationByTransportTask(recovered.id)
-      if (generation) await this.syncGenerationOperationFromTransport(generation, recovered)
-    }))
-    // Local Canvas/Export jobs have no remote transport to poll.  Their full
-    // request is stored in ImageOperationV2 and may be resumed under the same
-    // idempotency key after a CAS-before-DB crash.
-    const projects = await this.listProjects()
-    const localOperations = (await Promise.all(projects.map(async project => (await this.repository.listGenerationOperations(project.id))
-      .filter(operation => operation.local_delivery && ['queued', 'running', 'committing'].includes(operation.status))))).flat()
-    await Promise.all(localOperations.map(async operation => {
-        if (operation.local_delivery?.kind === 'canvas_render') {
-          await this.executeCanvasRender(operation.project_id, operation.local_delivery.canvas_id, {
-            base_revision: operation.input_refs.project_revision,
-            idempotency_key: operation.idempotency_key,
-            canvas_revision: operation.local_delivery.canvas_revision,
-            expected_current_version_id: operation.local_delivery.expected_current_version_id,
-            activate_on_success: operation.local_delivery.activate_on_success,
-          }, operation.local_delivery.expected_current_version_id_source === 'acceptance'
-            ? undefined
-            : operation.local_delivery.requested_expected_current_version_id ?? operation.local_delivery.expected_current_version_id)
-          .catch(async error => await this.runLocalDelivery(operation.id, async () => { throw error }))
-        }
-        if (operation.local_delivery?.kind === 'export') {
-          await this.executeExportDelivery(operation.project_id, {
-            base_revision: operation.input_refs.project_revision,
-            idempotency_key: operation.idempotency_key,
-            version_ids_by_artboard: operation.local_delivery.version_ids_by_artboard,
-          }).catch(async error => await this.runLocalDelivery(operation.id, async () => { throw error }))
-      }
-    }))
-    // A Qwen advice result becomes locally durable before its Gateway ACK.  On
-    // restart only retry that idempotent ACK; never re-run the model request.
-    await Promise.all((await this.repository.listUnacknowledgedGatewayAdviceReceipts())
-      .map(async receipt => { await this.acknowledgeQwenGatewayResult(receipt) }))
-    await this.recoverCampaigns()
-  }
-
   private legacyFile(root: string, locator: string): string | null {
     if (!locator || isAbsolute(locator)) return null
     const target = resolve(root, locator)
@@ -5778,6 +5958,7 @@ export class ImageWorkbenchRuntime {
       creative_plan_id: round.creative_plan_id,
       creative_direction_id: direction.direction_id,
       generation_round_id: round.id,
+      ...(operation.base_version_id ? { base_version_id: operation.base_version_id } : {}),
       candidate_ids: saved.map(item => item.candidate.id),
       created_at: now,
     }
@@ -6116,7 +6297,7 @@ export class ImageWorkbenchRuntime {
       if (!existingOperation.transport_task_id) throw new ImageWorkbenchServiceError('兼容生成轮次缺少传输任务', 500, 'IMAGE_OPERATION_CORRUPT')
       return await this.repository.getOperation(existingOperation.transport_task_id)
     }
-    const plan = await this.createCreativePlan(project.id, {
+    const plan = await this.createCreativePlanForInternal(project.id, {
       base_revision: project.revision,
       idempotency_key: `${compatibilityKey}-plan`,
     })
