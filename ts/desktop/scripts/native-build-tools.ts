@@ -97,7 +97,10 @@ export function runMsvcCompiler(vcvarsPath: string, compilerArguments: string[],
     throw new Error(`${errorMessage}：MSVC 初始化脚本无效`)
   }
   const initialized = spawnSync(process.env.ComSpec || 'cmd.exe', [
-    '/d', '/s', '/c', `call "${vcvarsFile}" >nul && set`,
+    // The filename is already validated and the cwd is the MSVC Build
+    // directory. Avoid quoting a bare batch filename: cmd.exe on the hosted
+    // ARM64 cross toolchain can otherwise treat the quoted token as a command.
+    '/d', '/s', '/c', `call .\\${vcvarsFile} >nul && set`,
   ], {
     cwd: dirname(vcvarsPath),
     encoding: 'utf8',

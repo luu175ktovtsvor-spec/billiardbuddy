@@ -390,7 +390,7 @@ async function main(): Promise<void> {
   }
   assertContains(nativeBuildTools, "basename(vcvarsPath)", 'MSVC 初始化脚本只取受控文件名')
   assertContains(nativeBuildTools, "/^vcvars[a-z0-9_]+\\.bat$/i", 'MSVC 初始化脚本文件名白名单')
-  assertContains(nativeBuildTools, '`call "${vcvarsFile}" >nul && set`', '按目标架构初始化 MSVC 环境且与编译命令分离')
+  assertContains(nativeBuildTools, '`call .\\\\${vcvarsFile} >nul && set`', '按目标架构初始化 MSVC 环境且与编译命令分离')
   assertContains(nativeBuildTools, "spawnSync('cl.exe', compilerArguments", 'cl.exe 使用结构化参数启动')
   assertContains(nativeBuildTools, 'env: environment', 'cl.exe 继承 vcvars 初始化结果')
   assertContains(windowsBuild, "[ValidateSet('x64', 'arm64')]", 'Windows 正式构建显式支持 x64 与 ARM64')

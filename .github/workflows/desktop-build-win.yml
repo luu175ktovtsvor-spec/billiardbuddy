@@ -145,9 +145,9 @@ jobs:
           # the Windows libtest harness the same larger stack used by Codex's
           # own stack-sensitive tests; this changes only test execution.
           RUST_MIN_STACK: '8388608'
-          # The locked app-server integration suite contains timing-sensitive
-          # mock/stdio tests. Serialize the harness on Windows so unrelated
-          # test processes do not starve each other's short deadlines; every
+          # Keep the Windows libtest harness deterministic. The four tests
+          # below are run in their own invocations so their short WebSocket
+          # and stdio deadlines cannot be affected by the long suite; every
           # test still runs.
           RUST_TEST_THREADS: '1'
         run: |
@@ -186,11 +186,41 @@ jobs:
             --package codex-core \
             --package codex-code-mode-host \
             --package codex-windows-sandbox
+          # app-server integration tests resolve this official RMCP helper
+          # through target/<triple>/debug. Build it explicitly because it is
+          # owned by another workspace package and is not a codex-app-server
+          # target.
+          cargo build --locked --target "${target}" \
+            --package codex-rmcp-client \
+            --bin test_stdio_server
+          timing_sensitive_tests=(
+            'suite::v2::external_agent_config::external_agent_config_secondary_source_imports_session_and_plugin_end_to_end'
+            'suite::v2::mcp_server_status::mcp_server_status_list_waits_for_live_stdio_metadata_before_using_cached_tools'
+            'suite::v2::realtime_conversation::websocket_v2_tool_call_delegated_turn_can_execute_shell_tool'
+            'suite::v2::thread_name_websocket::thread_name_updated_broadcasts_for_loaded_threads'
+          )
+          # Run the rest of the locked upstream suite first, then execute the
+          # timing-sensitive cases one by one. This is partitioning, not an
+          # exclusion: all four names are invoked explicitly below.
           cargo test --locked --target "${target}" --all-targets \
             --package codex-app-server \
             --package codex-core \
             --package codex-code-mode-host \
-            --package codex-windows-sandbox
+            --package codex-windows-sandbox \
+            -- \
+            --test-threads=1 \
+            --skip "${timing_sensitive_tests[0]}" \
+            --skip "${timing_sensitive_tests[1]}" \
+            --skip "${timing_sensitive_tests[2]}" \
+            --skip "${timing_sensitive_tests[3]}"
+          for test_name in "${timing_sensitive_tests[@]}"; do
+            cargo test --locked --target "${target}" \
+              --package codex-app-server \
+              --test all "${test_name}" \
+              -- \
+              --exact \
+              --test-threads=1
+          done
           popd
 
           export CARGO_TARGET_DIR="${plugin_target}"
