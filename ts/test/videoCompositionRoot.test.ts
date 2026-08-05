@@ -139,6 +139,9 @@ test('应用模块不反向导入具体运行时，组合根是唯一适配位�
   expect(sources[0]).toContain('ProjectAssetsCommandPort')
   expect(sources[0]).toContain('projectStore.repository.saveProject')
   expect(sources[0]).not.toContain('this.commands.createProject')
+  expect(sources[0]).not.toContain('this.commands.addVideoSource')
+  expect(sources[0]).toContain('this.commands.probeSourceFact')
+  expect(sources[0]).toContain('this.commands.startSourceFingerprint')
   expect(sources[1]).toContain('AnalysisIndexCommandPort')
   expect(sources[1]).toContain('projectStore.mutate')
   expect(sources[1]).not.toContain('this.commands.estimateRemoteAnalysis')
@@ -162,6 +165,7 @@ test('应用模块不反向导入具体运行时，组合根是唯一适配位�
   const runtimeSource = await readFile(new URL('../src/server/services/videoWorkbenchRuntime.ts', import.meta.url), 'utf8')
   for (const migratedCommand of [
     'createProject',
+    'addVideoSource',
     'estimateRemoteAnalysis',
     'grantRemoteAnalysisConsent',
     'revokeRemoteAnalysisConsent',

@@ -6,7 +6,8 @@ import type { VideoWorkbenchRuntime } from '../../services/videoWorkbenchRuntime
  * that knows the runtime implementation and wires its capabilities together.
  */
 export interface ProjectAssetsCommandPort extends Pick<VideoWorkbenchRuntime,
-  | 'addVideoSource'
+  | 'probeSourceFact'
+  | 'startSourceFingerprint'
   | 'sourceResponse'
   | 'restoreProject'
   | 'migrateLegacyMediaStore'

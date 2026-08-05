@@ -5,7 +5,6 @@ import { Readable } from 'node:stream'
 import { homedir, tmpdir } from 'node:os'
 import { basename, dirname, extname, isAbsolute, join, resolve } from 'node:path'
 import {
-  addVideoSourceInputSchema,
   analyzeVideoBeatInputSchema,
   createVideoBeatSyncDraftInputSchema,
   analyzeVideoSubjectTrackInputSchema,
@@ -48,7 +47,6 @@ import {
   videoCaptionDocumentRevisionSchema,
   videoCaptionTranslationResultSchema,
   videoStudioProjectSchema,
-  type AddVideoSourceInput,
   type AnalyzeVideoBeatInput,
   type CreateVideoBeatSyncDraftInput,
   type AnalyzeVideoSubjectTrackInput,
@@ -4066,123 +4064,30 @@ export class VideoWorkbenchRuntime {
     return project
   }
 
-  async addVideoSource(projectId: string, raw: AddVideoSourceInput): Promise<{ project: VideoStudioProject; task: VideoOperation }> {
-    return await this.mutateProject(projectId, async () => {
-      const input = addVideoSourceInputSchema.parse(raw)
-      const project = await this.requireVideoProject(projectId)
-      if (project.state === 'rendering') throw new VideoWorkbenchServiceError('正在导出，暂时不能添加素材', 409, 'VIDEO_RENDER_ACTIVE')
-      if (!isAbsolute(input.path)) throw new VideoWorkbenchServiceError('视频素材必须使用绝对路径', 400, 'SOURCE_PATH_NOT_ABSOLUTE')
-      const now = this.iso()
-      let task = await this.repository.saveOperation(this.operation({
-        schema_version: 1,
-        id: id('task'),
-        project_id: project.id,
-        kind: 'video.probe',
-        status: 'running',
-        progress: 20,
-        stage: '正在读取素材',
-        created_at: now,
-        updated_at: now,
-      } as VideoOperation))
-      try {
-        const sourceId = id('src')
-        const sourceFact = await probeVideoFactSource({
-          id: sourceId,
-          projectId: project.id,
-          path: input.path,
-          name: basename(input.path),
-          now,
-          runProcess: this.runProcess,
-          ffprobe: videoBinary('ffprobe', this.env, this.platform),
-        })
-        await this.repository.saveFact(sourceFact)
-        // Editable ranges are bounded by the selected primary video stream,
-        // not by presentation duration (which may include gaps/offsets).
-        const primaryVideoDuration = sourceFact.primary_video_stream.duration
-        if (!primaryVideoDuration) {
-          throw new VideoWorkbenchServiceError('素材原始视频流时长缺失，不能安全导入可编辑素材', 409, 'VIDEO_EDITORIAL_FACTS_UNAVAILABLE')
-        }
-        const durationMs = Math.max(1, timeToMilliseconds(primaryVideoDuration))
-        const averageRate = sourceFact.primary_video_stream.average_frame_rate
-        const source = {
-          id: sourceId,
-          path: input.path,
-          name: basename(input.path),
-          duration_ms: durationMs,
-          width: sourceFact.primary_video_stream.width,
-          height: sourceFact.primary_video_stream.height,
-          ...(averageRate ? { fps: averageRate.num / averageRate.den } : {}),
-          has_audio: sourceFact.audio_tracks.length > 0,
-          rotation: sourceFact.primary_video_stream.rotation,
-          video_stream_count: 1,
-          audio_stream_count: sourceFact.audio_tracks.length,
-          missing: false,
-          content_changed: false,
-        }
-        // A source role is only evidence after the independent full fingerprint
-        // has completed. The fast probe remains useful for UI and local edits.
-        const evidence: VideoEvidence[] = project.evidence
-        const nextEvidenceRevision = evidenceRevision(evidence)
-        const asset: MediaAsset = {
-          id: sourceId,
-          role: 'source',
-          version_id: sourceId,
-          storage: { kind: 'external', locator: input.path },
-          mime_type: 'video/mp4',
-          created_at: now,
-        }
-        const materialized = await this.repository.saveProject(videoStudioProjectSchema.parse({
-          ...project,
-          state: 'ready',
-          sources: [...project.sources, source],
-          assets: [...project.assets, asset],
-          evidence,
-          evidence_revision: nextEvidenceRevision,
-          alternatives: [],
-          revision: project.revision + 1,
-          error: undefined,
-          error_code: undefined,
-        }))
-        // New sources never write a v1 Timeline. A formal Version requires a
-        // full immutable fingerprint, so it is created by the fingerprint
-        // completion path below rather than treating a fast probe as a stable
-        // source binding.
-        const next = materialized
-        task = await this.repository.saveOperation(this.operation({
-          ...task,
-          status: 'succeeded',
-          progress: 100,
-          stage: '素材已加入',
-          result: { source_id: sourceId },
-        }))
-        const fingerprintTask = await this.repository.saveOperation(this.operation({
-          schema_version: 1,
-          id: id('task'),
-          project_id: project.id,
-          kind: 'video.fingerprint',
-          status: 'queued',
-          progress: 0,
-          stage: '等待计算完整指纹',
-          result: { source_id: sourceId },
-          created_at: now,
-          updated_at: now,
-        } as unknown as VideoOperation))
-        this.startFingerprint(fingerprintTask, sourceId)
-        return { project: next, task }
-      } catch (error) {
-        const failure = mediaSafeError('MEDIA_VIDEO_SOURCE_UNREADABLE')
-        task = await this.repository.saveOperation(this.operation({
-          ...task,
-          status: 'failed',
-          progress: 0,
-          stage: '读取失败',
-          error: failure.message,
-          error_code: failure.code,
-        }))
-        if (error instanceof VideoWorkbenchServiceError) throw error
-        throw new VideoWorkbenchServiceError(failure.message, 422, 'VIDEO_PROBE_FAILED')
-      }
+  /** Narrow ProjectAssets infrastructure port. Probe facts are persisted by
+   * the application; Runtime retains only FFprobe process configuration. */
+  async probeSourceFact(input: {
+    id: string
+    project_id: string
+    path: string
+    name: string
+    now: string
+  }): Promise<VideoFactSource> {
+    return await probeVideoFactSource({
+      id: input.id,
+      projectId: input.project_id,
+      path: input.path,
+      name: input.name,
+      now: input.now,
+      runProcess: this.runProcess,
+      ffprobe: videoBinary('ffprobe', this.env, this.platform),
     })
+  }
+
+  /** The in-memory handle is rebuilt from the durable fingerprint Operation
+   * during recovery; it is not a second Project or operation journal. */
+  startSourceFingerprint(operation: VideoOperation, sourceId: string): void {
+    this.startFingerprint(operation, sourceId)
   }
 
   async updateTimeline(projectId: string, raw: UpdateVideoTimelineInput): Promise<VideoStudioProject> {
