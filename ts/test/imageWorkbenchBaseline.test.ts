@@ -13,6 +13,7 @@ import {
   mediaTaskSchema,
 } from '../shared/contracts/media.js'
 import { createImageWorkbenchDomainApiHandler } from '../src/server/api/imageWorkbench.js'
+import { createMediaRuntime } from '../src/server/media/runtime/createMediaRuntime.js'
 import { productGatewayTarget, productImageRelayTarget } from '../src/server/product/productGatewayRuntime.js'
 import { ImageWorkbenchService } from '../src/server/services/imageWorkbenchService.js'
 import type { ImageOperation } from '../src/server/services/imageWorkbenchRepository.js'
@@ -26,6 +27,40 @@ const gatewayToken = 'baseline-gateway-token-0123456789abcdef'
 test('Image Relay 缺失稳定投影为图片能力不可用', () => {
   expect(mediaSafeErrorForServiceError('IMAGE_RELAY_NOT_CONFIGURED', 503))
     .toEqual(mediaSafeError('MEDIA_IMAGE_UNAVAILABLE'))
+})
+
+test('MediaRuntime 仅公开五个 Application，不泄露兼容 façade 或 raw runtime', async () => {
+  const root = await testRoot('application-composition')
+  const legacyMediaRoot = await testRoot('application-composition-legacy')
+  const media = createMediaRuntime({
+    imageWorkbench: { root, legacyMediaRoot, now: () => new Date(at) },
+  })
+
+  expect(media).not.toHaveProperty('imageRuntime')
+  expect(media).not.toHaveProperty('imageWorkbench')
+  expect(media).not.toHaveProperty('imageProject')
+  expect(media.imageApplications.project).not.toHaveProperty('port')
+  expect(media.imageApplications.project).not.toHaveProperty('repository')
+  expect(media.imageApplications.project).not.toHaveProperty('renderCanvas')
+  expect(media.imageApplications.generation).not.toHaveProperty('exportDelivery')
+  expect(media.imageApplications.canvas).not.toHaveProperty('recoverInterruptedOperations')
+  expect(media.imageApplications.delivery).not.toHaveProperty('createCreativePlan')
+  expect(media.imageApplications.recovery).not.toHaveProperty('createProject')
+
+  const project = await media.imageApplications.project.createProject({
+    title: 'Application 组合项目',
+    user_request: '验证 MediaRuntime 唯一 writer',
+    size: '1024x1024',
+    reference_images: [],
+    reference_roles: [],
+  })
+  expect((await media.imageApplications.project.getProject(project.id)).id).toBe(project.id)
+
+  const handler = createImageWorkbenchDomainApiHandler(media.imageApplications)
+  const url = new URL('/api/images/projects', 'http://127.0.0.1:3456')
+  const response = await handler(new Request(url), url, ['api', 'images', 'projects'])
+  expect(response.status).toBe(200)
+  expect(await response.json()).toMatchObject({ projects: [{ id: project.id }] })
 })
 
 async function testRoot(label: string): Promise<string> {
@@ -701,7 +736,7 @@ test('15.2 Image Relay contract commits a Candidate Group before ACK and never a
 
     const delivery = await service.repository.currentDeliverySpec(project.id)
     const decisionCapability = 'fedcba9876543210fedcba9876543210'
-    const decisionHandler = createImageWorkbenchDomainApiHandler(service, decisionCapability)
+    const decisionHandler = createImageWorkbenchDomainApiHandler(service.applications, decisionCapability)
     const decisionInput = {
       base_revision: project.revision,
       idempotency_key: 'bb-image-decision-project-upgrade-replay-0001',
@@ -1471,7 +1506,7 @@ test('15.2 projects every Command idempotency and revision conflict through stab
       reference_roles: ['subject'],
     })
     const commandCapability = 'fedcba9876543210fedcba9876543210'
-    const commandHandler = createImageWorkbenchDomainApiHandler(service, commandCapability)
+    const commandHandler = createImageWorkbenchDomainApiHandler(service.applications, commandCapability)
     const expectPublicCommandConflict = async (
       path: string,
       body: unknown,
@@ -1729,7 +1764,7 @@ test('15.2 retains a late successful result after a confirmed queued cancellatio
 test('15.2 API schema rejects invalid fixture and exposes only capability-gated, prompt-safe generation commands', async () => {
   const service = await createService('api')
   const capability = '0123456789abcdef0123456789abcdef'
-  const handler = createImageWorkbenchDomainApiHandler(service, capability)
+  const handler = createImageWorkbenchDomainApiHandler(service.applications, capability)
 
   const invalidFixture = await request(handler, '/api/images/projects', {
     method: 'POST',
@@ -1811,7 +1846,7 @@ test('15.5A Quick Create reserves one formal Project and paid Direction across r
     reference_inputs: [{ data_url: await dataUrl(), role: 'product' as const }],
   }
   const service = await createService('15a-quick-create', gateway.fetchImpl)
-  const handler = createImageWorkbenchDomainApiHandler(service, capability)
+  const handler = createImageWorkbenchDomainApiHandler(service.applications, capability)
   await withGateway(async () => {
     const first = await request(handler, '/api/images/quick-create', {
       method: 'POST',
@@ -1890,7 +1925,7 @@ test('15.5A Quick Create reserves one formal Project and paid Direction across r
 test('15.5A keeps Inspiration local until explicit promote and exposes typed Brief and Reference commands', async () => {
   const service = await createService('15a-inspiration')
   const capability = '15ainspirationcapability000000000000'
-  const handler = createImageWorkbenchDomainApiHandler(service, capability)
+  const handler = createImageWorkbenchDomainApiHandler(service.applications, capability)
   const project = await createProject(service)
   const headers = { 'Content-Type': 'application/json', 'X-BilliardBuddy-Media-Capability': capability }
   const inspirationInput = {

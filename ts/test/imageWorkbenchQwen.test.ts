@@ -156,7 +156,7 @@ test('15.4 candidate visual assessment is public-safe advice and cannot change C
     expect(after.revision).toBe(before.revision)
     expect(after.current_versions_by_artboard).toEqual(before.current_versions_by_artboard)
     expect((await workbench.repository.getCandidate(project.id, candidate.id)).content_hash).toBe(candidate.content_hash)
-    const handler = createImageWorkbenchDomainApiHandler(workbench, capability)
+    const handler = createImageWorkbenchDomainApiHandler(workbench.applications, capability)
     const url = new URL(`http://127.0.0.1/api/images/projects/${project.id}/candidates/${candidate.id}/visual-assessments`)
     const response = await handler(new Request(url, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-BilliardBuddy-Media-Capability': capability }, body: JSON.stringify({ base_revision: before.revision, idempotency_key: 'bb-image-qwen-assessment-0001' }) }), url, ['api', 'images', 'projects', project.id, 'candidates', candidate.id, 'visual-assessments'])
     expect(response.status).toBe(200)
