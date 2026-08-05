@@ -428,7 +428,10 @@ function withPatchedEngineSource<T>(
   patches: readonly CodexEngineProductPatch[],
   action: (sourceRoot: string) => T,
 ): T {
-  const temporaryRoot = mkdtempSync(join(tmpdir(), 'billiardbuddy-codex-engine-'))
+  // Keep the worktree root deliberately short on Windows. The locked Codex
+  // tree contains deep target/dependency paths, and a verbose temp prefix can
+  // make cleanup hit MAX_PATH even after Cargo has completed successfully.
+  const temporaryRoot = mkdtempSync(join(tmpdir(), 'bbce-'))
   const sourceRoot = join(temporaryRoot, 'source')
   let worktreeCreated = false
 
@@ -440,12 +443,28 @@ function withPatchedEngineSource<T>(
   } finally {
     if (worktreeCreated) {
       try {
-        run('git', ['worktree', 'remove', '--force', sourceRoot], engineRoot)
+        run('git', ['-c', 'core.longpaths=true', 'worktree', 'remove', '--force', sourceRoot], engineRoot)
+      } catch (error) {
+        if (process.platform !== 'win32') throw error
+        // The runner is ephemeral and the source was already detached from
+        // the product path. Prune metadata and keep the successful build
+        // result instead of turning a Windows MAX_PATH cleanup warning into a
+        // false build failure.
+        console.warn(`[codex-engine] Windows worktree cleanup deferred: ${error instanceof Error ? error.message : String(error)}`)
+        spawnSync('git', ['-c', 'core.longpaths=true', 'worktree', 'prune', '--expire', 'now'], {
+          cwd: engineRoot,
+          stdio: 'ignore',
+        })
       } finally {
-        rmSync(temporaryRoot, { recursive: true, force: true })
+        try {
+          rmSync(temporaryRoot, { recursive: true, force: true, maxRetries: 3, retryDelay: 200 })
+        } catch (error) {
+          if (process.platform !== 'win32') throw error
+          console.warn(`[codex-engine] Windows temp worktree removal deferred: ${error instanceof Error ? error.message : String(error)}`)
+        }
       }
     } else {
-      rmSync(temporaryRoot, { recursive: true, force: true })
+      rmSync(temporaryRoot, { recursive: true, force: true, maxRetries: 3, retryDelay: 200 })
     }
   }
 }
