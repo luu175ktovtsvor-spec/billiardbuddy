@@ -114,7 +114,7 @@ afterEach(async () => {
 
 test('15.5C Brand Kit、Template、素材授权和项目素材库都走 capability API，并保留回收与撤销边界', async () => {
   const service = await workbench('workflow')
-  const handler = createImageWorkbenchDomainApiHandler(service, capability)
+  const handler = createImageWorkbenchDomainApiHandler(service.applications, capability)
 
   const sourceResponse = await request(handler, '/api/images/projects', {
     method: 'POST',

@@ -1,12 +1,22 @@
-import { ImageWorkbenchService } from '../../services/imageWorkbenchService.js'
+import {
+  createImageWorkbenchComposition,
+  type ImageWorkbenchComposition,
+  type ImageWorkbenchApplications,
+  type ImageWorkbenchRuntimeOptions,
+} from '../../services/imageWorkbenchService.js'
 
 export type MediaRuntime = {
-  imageWorkbench: ImageWorkbenchService
+  imageApplications: ImageWorkbenchApplications
+}
+
+export type CreateMediaRuntimeOptions = {
+  imageWorkbench?: ImageWorkbenchRuntimeOptions
 }
 
 /** Composition root for media-domain services; it never mixes image state with Video or Agent state. */
-export function createMediaRuntime(): MediaRuntime {
+export function createMediaRuntime(options: CreateMediaRuntimeOptions = {}): MediaRuntime {
+  const composition: ImageWorkbenchComposition = createImageWorkbenchComposition(options.imageWorkbench)
   return {
-    imageWorkbench: new ImageWorkbenchService(),
+    imageApplications: composition.applications,
   }
 }

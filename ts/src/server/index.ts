@@ -93,7 +93,6 @@ export function startServer(port = PORT, host = HOST) {
   // each own their state, operation journal and recovery paths.
   const mediaService = new MediaProjectService()
   const mediaRuntime = createMediaRuntime()
-  const imageWorkbenchService = mediaRuntime.imageWorkbench
   const videoWorkbenchService = new VideoWorkbenchService()
   if (process.env.NODE_ENV !== 'test') {
     void voiceOperationService.purgeExpired().catch(error => diagnosticsService.recordEvent({
@@ -104,7 +103,7 @@ export function startServer(port = PORT, host = HOST) {
     }))
   }
   const imageApiHandler = createImageWorkbenchDomainApiHandler(
-    imageWorkbenchService,
+    mediaRuntime.imageApplications,
     mediaUiCapability,
   )
   const videoApiHandler = createVideoWorkbenchDomainApiHandler(
@@ -124,11 +123,11 @@ export function startServer(port = PORT, host = HOST) {
   // workbench, then settle only local child-process operations after restart.
   const mediaWorkbenchRecovery = sidecarStorageUpgrade
     .then(async () => await Promise.all([
-      imageWorkbenchService.migrateLegacyMediaStore(),
+      mediaRuntime.imageApplications.recovery.migrateLegacyMediaStore(),
       videoWorkbenchService.migrateLegacyMediaStore(),
     ]))
     .then(async () => await Promise.all([
-      imageWorkbenchService.recoverInterruptedOperations(),
+      mediaRuntime.imageApplications.recovery.recoverInterruptedOperations(),
       videoWorkbenchService.recoverInterruptedOperations(),
     ]))
   const productApiHandler = (req: Request, url: URL, segments: string[]) =>

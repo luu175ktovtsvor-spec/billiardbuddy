@@ -163,7 +163,7 @@ test('15.5E Quick Create 首轮参考图在付费 Round 前持久化，并拒绝
     fetchImpl: gateway.fetchImpl,
   })
   services.push(service)
-  const handler = createImageWorkbenchDomainApiHandler(service, capability)
+  const handler = createImageWorkbenchDomainApiHandler(service.applications, capability)
   const paidSubmissions = () => gateway.calls.filter(call =>
     call.path === '/image-generation/v1/images/tasks' && call.method === 'POST')
 
@@ -249,7 +249,7 @@ test('15.5E 从建项、受控参考、候选采纳到画布和素材库均可�
     fetchImpl: gateway.fetchImpl,
   })
   services.push(first)
-  const firstHandler = createImageWorkbenchDomainApiHandler(first, capability)
+  const firstHandler = createImageWorkbenchDomainApiHandler(first.applications, capability)
 
   await withGateway(async () => {
     const quickCreate = await request(firstHandler, '/api/images/quick-create', {
@@ -338,7 +338,7 @@ test('15.5E 从建项、受控参考、候选采纳到画布和素材库均可�
       fetchImpl: gateway.fetchImpl,
     })
     services.push(restarted)
-    const restartedHandler = createImageWorkbenchDomainApiHandler(restarted, capability)
+    const restartedHandler = createImageWorkbenchDomainApiHandler(restarted.applications, capability)
     await restarted.recoverInterruptedOperations()
 
     const recoveredProjection = await projectProjection(restartedHandler, created.project.id)

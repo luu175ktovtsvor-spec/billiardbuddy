@@ -454,7 +454,7 @@ test('15.3 后端渲染、QR 解码、陈旧完成、可验证导出和崩溃重
   expect(exported.delivery_set?.version_ids_by_artboard[setup.artboard.id]).toBe(secondRender.version_id)
   expect(exported.export_receipts[0]).toMatchObject({ width: setup.artboard.width, height: setup.artboard.height, output_hash: expect.stringMatching(/^sha256:/) })
 
-  const handler = createImageWorkbenchDomainApiHandler(workbench, capability)
+  const handler = createImageWorkbenchDomainApiHandler(workbench.applications, capability)
   const response = await handler(new Request(`http://127.0.0.1/api/images/projects/${setup.project.id}/canvases/${setup.canvas.canvas_id}/commands`, {
     method: 'POST', headers: { 'Content-Type': 'application/json', 'X-BilliardBuddy-Media-Capability': capability },
     body: JSON.stringify({ base_project_revision: (await workbench.getProject(setup.project.id)).revision, command: { ...shape, payload: { layer: { ...shape.payload.layer, fill: '#ffeeaa' } } } }),
@@ -609,7 +609,7 @@ test('15.3 交付集会锁定全部 required Artboard，并逐份解码 QR、复
     const verified = await workbench.assets.readVerified(asset)
     expect(verified.content_hash).toBe(receipt.output_hash)
     expect([verified.width, verified.height]).toEqual([receipt.width, receipt.height])
-    expect((await workbench.exportAssetResponse(project.id, receipt.output_asset_id)).headers.get('content-type')).toBe(asset.mime_type)
+    expect((await workbench.deliveryApplication.readMediaAsset(project.id, receipt.output_asset_id, 'export')).mime_type).toBe(asset.mime_type)
     const version = completed.versions.find(candidate => candidate.id === receipt.version_id)
     if (!version?.render_receipt_id) throw new Error('missing render receipt')
     const renderReceipt = await workbench.repository.getRenderReceipt(project.id, version.render_receipt_id)
@@ -694,7 +694,7 @@ test('15.3 fit_safe_area 会把受控内容等比放进目标安全区，而不�
 
 test('15.3 遗留图片写接口只能由 Main 持有 capability 后调用', async () => {
   const workbench = await service('legacy-write-gate')
-  const handler = createImageWorkbenchDomainApiHandler(workbench, capability)
+  const handler = createImageWorkbenchDomainApiHandler(workbench.applications, capability)
   const createUrl = 'http://127.0.0.1/api/images/projects'
   const createPayload = { title: '旧写接口门禁', user_request: '仅允许 Main 调用', size: '1024x1024', reference_images: [], reference_roles: [] }
   const deniedCreate = await handler(new Request(createUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(createPayload) }), new URL(createUrl), ['api', 'images', 'projects'])

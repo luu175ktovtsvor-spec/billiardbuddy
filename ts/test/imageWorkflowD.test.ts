@@ -429,7 +429,7 @@ afterEach(async () => {
 
 test('15.5D Campaign 仅接受受控 Template Slot 变量，并保持草稿/replace 的幂等和 revision 边界', async () => {
   const service = await workbench('draft', { now: () => new Date('2026-08-05T00:00:00.000Z') })
-  const handler = createImageWorkbenchDomainApiHandler(service, capability)
+  const handler = createImageWorkbenchDomainApiHandler(service.applications, capability)
   const template = await createVariableTemplate(handler)
 
   const unknownVariable = await request(handler, '/api/images/campaigns', {
@@ -498,7 +498,7 @@ test('15.5D Campaign 仅接受受控 Template Slot 变量，并保持草稿/repl
 
 test('15.5D Campaign 列表按本地分页返回，257 个项目不会触发远端轮询或响应越界', async () => {
   const service = await workbench('campaign-list-page', { now: () => new Date('2026-08-05T00:00:00.000Z') })
-  const handler = createImageWorkbenchDomainApiHandler(service, capability)
+  const handler = createImageWorkbenchDomainApiHandler(service.applications, capability)
 
   const createdIds: string[] = []
   for (let index = 0; index < 257; index += 1) {
@@ -535,7 +535,7 @@ test('15.5D Campaign 报价、确认、逐项启动和失败重试均走持久�
   let nowMs = Date.parse('2026-08-05T00:00:00.000Z')
   const gateway = campaignGateway({ failPosts: [2] })
   const service = await workbench('estimate-start', { now: () => new Date(nowMs), fetchImpl: gateway.fetchImpl })
-  const handler = createImageWorkbenchDomainApiHandler(service, capability)
+  const handler = createImageWorkbenchDomainApiHandler(service.applications, capability)
 
   await withGateway(async () => {
     const insufficient = await createCampaign(handler, campaignInput({
@@ -832,7 +832,7 @@ test('15.5D Campaign 报价、确认、逐项启动和失败重试均走持久�
 test('15.5D Campaign 只会取消 queued 项目，running 竞态返回 409 且不得宣称取消成功', async () => {
   const gateway = campaignGateway()
   const service = await workbench('cancel', { now: () => new Date('2026-08-05T00:00:00.000Z'), fetchImpl: gateway.fetchImpl })
-  const handler = createImageWorkbenchDomainApiHandler(service, capability)
+  const handler = createImageWorkbenchDomainApiHandler(service.applications, capability)
 
   await withGateway(async () => {
     const queuedCampaign = await createCampaign(handler, campaignInput({
@@ -975,7 +975,7 @@ test('15.5D Campaign 远端 POST 已发起但未响应时取消不得假成功�
     now: () => new Date('2026-08-05T00:00:00.000Z'),
     fetchImpl: gateway.fetchImpl,
   })
-  const handler = createImageWorkbenchDomainApiHandler(service, capability)
+  const handler = createImageWorkbenchDomainApiHandler(service.applications, capability)
 
   await withGateway(async () => {
     const created = await createCampaign(handler, campaignInput({
@@ -1075,7 +1075,7 @@ test('15.5D 取消事务写入失败后重启优先消费取消回执，排队 O
     },
   })
   services.push(first)
-  const firstHandler = createImageWorkbenchDomainApiHandler(first, capability)
+  const firstHandler = createImageWorkbenchDomainApiHandler(first.applications, capability)
 
   await withGateway(async () => {
     const created = await createCampaign(firstHandler, campaignInput({
@@ -1159,7 +1159,7 @@ test('15.5D 取消事务写入失败后重启优先消费取消回执，排队 O
       fetchImpl: gateway.fetchImpl,
     })
     services.push(recovered)
-    const recoveredHandler = createImageWorkbenchDomainApiHandler(recovered, capability)
+    const recoveredHandler = createImageWorkbenchDomainApiHandler(recovered.applications, capability)
     await recovered.recoverInterruptedOperations()
     expect(postCount(gateway)).toBe(0)
     const state = await request(recoveredHandler, `/api/images/campaigns/${created.payload.campaign.id}`)
@@ -1195,7 +1195,7 @@ test('15.5D 旧版本 formal 已取消但 transport 未落库时恢复不得重�
     },
   })
   services.push(first)
-  const firstHandler = createImageWorkbenchDomainApiHandler(first, capability)
+  const firstHandler = createImageWorkbenchDomainApiHandler(first.applications, capability)
 
   await withGateway(async () => {
     const created = await createCampaign(firstHandler, campaignInput({
@@ -1257,7 +1257,7 @@ test('15.5D 旧版本 formal 已取消但 transport 未落库时恢复不得重�
       fetchImpl: gateway.fetchImpl,
     })
     services.push(recovered)
-    const recoveredHandler = createImageWorkbenchDomainApiHandler(recovered, capability)
+    const recoveredHandler = createImageWorkbenchDomainApiHandler(recovered.applications, capability)
     await recovered.recoverInterruptedOperations()
     expect(postCount(gateway)).toBe(0)
     const formalAfterRecovery = await recovered.repository.getGenerationOperation(item.project_id, formalBefore.id)
@@ -1285,7 +1285,7 @@ test('15.5D v10 Campaign SQLite 升级 v12 后，以绑定回执重建不可变 
     fetchImpl: gateway.fetchImpl,
   })
   services.push(first)
-  const firstHandler = createImageWorkbenchDomainApiHandler(first, capability)
+  const firstHandler = createImageWorkbenchDomainApiHandler(first.applications, capability)
 
   await withGateway(async () => {
     const template = await createTextAndQrTemplate(firstHandler)
@@ -1362,7 +1362,7 @@ test('15.5D v10 Campaign SQLite 升级 v12 后，以绑定回执重建不可变 
       fetchImpl: gateway.fetchImpl,
     })
     services.push(upgraded)
-    const upgradedHandler = createImageWorkbenchDomainApiHandler(upgraded, capability)
+    const upgradedHandler = createImageWorkbenchDomainApiHandler(upgraded.applications, capability)
     const projectionResponse = await request(upgradedHandler, `/api/images/projects/${child.project_id}/projection`)
     expect(projectionResponse.status).toBe(200)
     const projection = await projectionResponse.json() as ProjectProjectionPayload
@@ -1416,7 +1416,7 @@ test('15.5D v10 Campaign SQLite 升级 v12 后，以绑定回执重建不可变 
       fetchImpl: gateway.fetchImpl,
     })
     services.push(repaired)
-    const repairedHandler = createImageWorkbenchDomainApiHandler(repaired, capability)
+    const repairedHandler = createImageWorkbenchDomainApiHandler(repaired.applications, capability)
     const repairedProjectionResponse = await request(repairedHandler, `/api/images/projects/${child.project_id}/projection`)
     expect(repairedProjectionResponse.status).toBe(200)
     const repairedProjection = await repairedProjectionResponse.json() as ProjectProjectionPayload
@@ -1454,7 +1454,7 @@ test('15.5D Campaign 旧 attempt 的 existingRound 恢复不能绑定到已启�
       }
     },
   })
-  const handler = createImageWorkbenchDomainApiHandler(service, capability)
+  const handler = createImageWorkbenchDomainApiHandler(service.applications, capability)
 
   await withGateway(async () => {
     const template = await createTextAndQrTemplate(handler)
@@ -1660,7 +1660,7 @@ test('15.5D Campaign 已绑定且 running 的同 attempt 恢复回调必须幂�
     now: () => new Date('2026-08-05T00:00:00.000Z'),
     fetchImpl: gateway.fetchImpl,
   })
-  const handler = createImageWorkbenchDomainApiHandler(service, capability)
+  const handler = createImageWorkbenchDomainApiHandler(service.applications, capability)
 
   await withGateway(async () => {
     const input = campaignInput({
@@ -1727,12 +1727,14 @@ test('15.5D Campaign 已绑定且 running 的同 attempt 恢复回调必须幂�
       slot_bindings: [],
     })
 
-    const internal = service as unknown as {
-      bindCampaignItemProject(campaignId: string, itemId: string, expectedAttempt: number, projectId: string): Promise<unknown>
-    }
     // This is the callback boundary used by a recovered existingRound. Its
     // idempotency must be independent of the item's later running projection.
-    const rebound = await internal.bindCampaignItemProject(created.payload.campaign.id, item.id, 1, firstItem.project_id)
+    const rebound = await service.recoveryApplication.reconcileCampaignItemProjectBinding(
+      created.payload.campaign.id,
+      item.id,
+      1,
+      firstItem.project_id,
+    )
     expect(rebound).toBeDefined()
     expect((await service.listProjects())).toHaveLength(projectCountBefore)
     expect(postCount(gateway)).toBe(1)
@@ -1760,7 +1762,7 @@ test('15.5D Campaign 公开 pending retry confirmation，并可在重启后用�
     fetchImpl: gateway.fetchImpl,
   })
   services.push(first)
-  const firstHandler = createImageWorkbenchDomainApiHandler(first, capability)
+  const firstHandler = createImageWorkbenchDomainApiHandler(first.applications, capability)
 
   await withGateway(async () => {
     const created = await createCampaign(firstHandler, campaignInput({
@@ -1851,7 +1853,7 @@ test('15.5D Campaign 公开 pending retry confirmation，并可在重启后用�
       fetchImpl: gateway.fetchImpl,
     })
     services.push(recovered)
-    const recoveredHandler = createImageWorkbenchDomainApiHandler(recovered, capability)
+    const recoveredHandler = createImageWorkbenchDomainApiHandler(recovered.applications, capability)
     const restoredPendingResponse = await request(recoveredHandler, `/api/images/campaigns/${created.payload.campaign.id}`)
     expect(restoredPendingResponse.status).toBe(200)
     const restored = await restoredPendingResponse.json() as CampaignPayload
@@ -1893,7 +1895,7 @@ test('15.5D Campaign 已绑定且 Round 已入库时重启或重复 start 可恢
     },
   })
   services.push(first)
-  const firstHandler = createImageWorkbenchDomainApiHandler(first, capability)
+  const firstHandler = createImageWorkbenchDomainApiHandler(first.applications, capability)
 
   await withGateway(async () => {
     const created = await createCampaign(firstHandler, campaignInput({
@@ -1944,7 +1946,7 @@ test('15.5D Campaign 已绑定且 Round 已入库时重启或重复 start 可恢
       fetchImpl: gateway.fetchImpl,
     })
     services.push(recovered)
-    const recoveredHandler = createImageWorkbenchDomainApiHandler(recovered, capability)
+    const recoveredHandler = createImageWorkbenchDomainApiHandler(recovered.applications, capability)
     const restoredBeforeRecovery = await request(recoveredHandler, `/api/images/campaigns/${created.payload.campaign.id}`)
     expect(restoredBeforeRecovery.status).toBe(200)
     expect((await restoredBeforeRecovery.json() as CampaignPayload).items).toEqual([
@@ -1987,7 +1989,7 @@ test('15.5D Campaign 取消在逐项完成后崩溃时保留 intent，并以原�
     },
   })
   services.push(first)
-  const firstHandler = createImageWorkbenchDomainApiHandler(first, capability)
+  const firstHandler = createImageWorkbenchDomainApiHandler(first.applications, capability)
 
   await withGateway(async () => {
     const created = await createCampaign(firstHandler, campaignInput({
@@ -2038,7 +2040,7 @@ test('15.5D Campaign 取消在逐项完成后崩溃时保留 intent，并以原�
       fetchImpl: gateway.fetchImpl,
     })
     services.push(recovered)
-    const recoveredHandler = createImageWorkbenchDomainApiHandler(recovered, capability)
+    const recoveredHandler = createImageWorkbenchDomainApiHandler(recovered.applications, capability)
     await recovered.recoverInterruptedOperations()
     const recoveredState = await request(recoveredHandler, `/api/images/campaigns/${created.payload.campaign.id}`)
     expect(recoveredState.status).toBe(200)
