@@ -21,6 +21,8 @@ import {
   applyVideoAlternativeInputSchema,
   acceptVideoCreativeProposalInputSchema,
   createVideoCreativeSessionInputSchema,
+  createVideoReviewNoteInputSchema,
+  createVideoApprovalDecisionInputSchema,
   createVideoEditorialPlanInputSchema,
   createVideoSourceRangeDecisionInputSchema,
   createDeliveryVariantInputSchema,
@@ -55,6 +57,7 @@ import {
   updateVideoTimelineInputSchema,
   upsertVideoDeliveryIntentInputSchema,
   postVideoCreativeMessageInputSchema,
+  resolveVideoReviewNoteInputSchema,
   quickCreateVideoInputSchema,
   videoCreativeProposalSchema,
   videoCreativeResponseSchema,
@@ -64,6 +67,8 @@ import {
   videoEditorialPlanSchema,
   videoSourceRangeDecisionSchema,
   videoQuickCreateBatchSchema,
+  videoReviewNoteSchema,
+  videoApprovalDecisionSchema,
   type PublicMediaTask,
   type PublicVideoStudioProject,
   type VideoStudioProject,
@@ -72,6 +77,7 @@ import { ApiError, errorResponse } from '../middleware/errorHandler.js'
 import { VideoWorkbenchRepositoryError, type VideoOperation, type VideoOperationEvent } from '../services/videoWorkbenchRepository.js'
 import { VideoWorkbenchService, VideoWorkbenchServiceError } from '../services/videoWorkbenchService.js'
 import { factKind, factSourceRange, type VideoFact, type VideoFactKind } from '../video/domain/mediaFacts/model.js'
+import { materializeVideoReviewNotes } from '../video/domain/editorial/review.js'
 import { VideoFactsRepositoryError } from '../video/infrastructure/sqliteMediaFactsRepository.js'
 
 function methodNotAllowed(method: string): ApiError {
@@ -149,6 +155,7 @@ export function publicVideoProject(project: VideoStudioProject): PublicVideoStud
   const failure = rawError ? mediaSafeError(errorCode ?? 'MEDIA_VIDEO_EXPORT_FAILED') : null
   return publicVideoStudioProjectSchema.parse({
     ...safeProject,
+    review_notes: materializeVideoReviewNotes(project),
     ...(failure ? { error: failure.message, error_code: failure.code } : {}),
   })
 }
@@ -371,6 +378,56 @@ export function createVideoWorkbenchApiHandler(
         if (!segments[7]) {
           if (req.method !== 'GET') throw methodNotAllowed(req.method)
           return Response.json({ timeline: editorialTimelineVersionSchema.parse(await service.getEditorialTimeline(projectId, versionId)) })
+        }
+        if (segments[7] === 'review-notes') {
+          const noteId = segments[8]
+          if (!noteId) {
+            if (req.method === 'GET' && !segments[8]) {
+              return Response.json({ notes: (await service.getReviewNotes(projectId, versionId)).map(note => videoReviewNoteSchema.parse(note)) })
+            }
+            if (req.method !== 'POST' || segments[8]) throw methodNotAllowed(req.method)
+            const result = await service.createReviewNote(
+              projectId,
+              versionId,
+              createVideoReviewNoteInputSchema.parse(await parseJson(req)),
+              requireIdempotencyKey(req),
+            )
+            return Response.json({
+              project: publicVideoProject(result.project),
+              note: videoReviewNoteSchema.parse(result.note),
+              reused: result.reused,
+            }, { status: result.reused ? 200 : 201 })
+          }
+          if (segments[9] === 'resolve' && !segments[10]) {
+            if (req.method !== 'POST') throw methodNotAllowed(req.method)
+            const result = await service.resolveReviewNote(
+              projectId,
+              versionId,
+              noteId,
+              resolveVideoReviewNoteInputSchema.parse(await parseJson(req)),
+              requireIdempotencyKey(req),
+            )
+            return Response.json({
+              project: publicVideoProject(result.project),
+              note: videoReviewNoteSchema.parse(result.note),
+              reused: result.reused,
+            }, { status: result.reused ? 200 : 201 })
+          }
+          throw methodNotAllowed(req.method)
+        }
+        if (segments[7] === 'approval' && !segments[8]) {
+          if (req.method !== 'POST') throw methodNotAllowed(req.method)
+          const result = await service.createApprovalDecision(
+            projectId,
+            versionId,
+            createVideoApprovalDecisionInputSchema.parse(await parseJson(req)),
+            requireIdempotencyKey(req),
+          )
+          return Response.json({
+            project: publicVideoProject(result.project),
+            decision: videoApprovalDecisionSchema.parse(result.decision),
+            reused: result.reused,
+          }, { status: result.reused ? 200 : 201 })
         }
         if (segments[7] === 'commands' && !segments[8]) {
           if (req.method !== 'POST') throw methodNotAllowed(req.method)

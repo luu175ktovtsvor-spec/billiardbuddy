@@ -1,4 +1,4 @@
-import { mediaSafeError, type AnalyzeVideoBeatInput, type AnalyzeVideoProjectInput, type AnalyzeVideoSubjectTrackInput, type CreateDeliveryVariantInput, type CreateRemoteAnalysisConsentInput, type CreateVideoAudioFinishingPlanInput, type CreateVideoBeatSyncDraftInput, type CreateVideoCaptionDraftInput, type CreateVideoCaptionRevisionInput, type CreateVideoCaptionTranslationInput, type CreateVideoCompositionPlanInput, type DeliveryVariantCommand, type EditorialTimelineCommand, type PublicMediaTask } from '../../../shared/contracts/media.js'
+import { mediaSafeError, type AnalyzeVideoBeatInput, type AnalyzeVideoProjectInput, type AnalyzeVideoSubjectTrackInput, type CreateDeliveryVariantInput, type CreateRemoteAnalysisConsentInput, type CreateVideoAudioFinishingPlanInput, type CreateVideoBeatSyncDraftInput, type CreateVideoCaptionDraftInput, type CreateVideoCaptionRevisionInput, type CreateVideoCaptionTranslationInput, type CreateVideoCompositionPlanInput, type CreateVideoReviewNoteInput, type CreateVideoApprovalDecisionInput, type DeliveryVariantCommand, type EditorialTimelineCommand, type PublicMediaTask, type ResolveVideoReviewNoteInput } from '../../../shared/contracts/media.js'
 import {
   buildDeliveryVariantCommandRequest,
   buildEditorialCommandRequest,
@@ -198,6 +198,24 @@ export class VideoWorkbenchController {
     const cursor = this.state.snapshot?.fact_search?.next_cursor
     if (!query || !cursor) return this.invalidRequest()
     return await this.searchFacts(query, { cursor })
+  }
+
+  async createReviewNote(idempotencyKey: string, input: CreateVideoReviewNoteInput): Promise<VideoWorkbenchResult<unknown>> {
+    const timelineId = this.state.snapshot?.current_timeline?.id
+    if (!timelineId) return this.invalidRequest()
+    return await this.run('create_review_note', idempotencyKey, async () => await this.bridge.createReviewNote(this.projectId, timelineId, { idempotency_key: idempotencyKey, input }))
+  }
+
+  async resolveReviewNote(idempotencyKey: string, reviewNoteId: string, input: ResolveVideoReviewNoteInput): Promise<VideoWorkbenchResult<unknown>> {
+    const note = this.state.snapshot?.project.review_notes.find(candidate => candidate.id === reviewNoteId)
+    if (!note) return this.invalidRequest()
+    return await this.run('resolve_review_note', idempotencyKey, async () => await this.bridge.resolveReviewNote(this.projectId, note.timeline_version_id, reviewNoteId, { idempotency_key: idempotencyKey, input }))
+  }
+
+  async createApprovalDecision(idempotencyKey: string, input: CreateVideoApprovalDecisionInput): Promise<VideoWorkbenchResult<unknown>> {
+    const timelineId = this.state.snapshot?.current_timeline?.id
+    if (!timelineId) return this.invalidRequest()
+    return await this.run('create_approval_decision', idempotencyKey, async () => await this.bridge.createApprovalDecision(this.projectId, timelineId, { idempotency_key: idempotencyKey, input }))
   }
 
   async estimateBudget(

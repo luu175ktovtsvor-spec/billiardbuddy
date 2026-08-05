@@ -1240,6 +1240,16 @@ async function handleVideoWorkbenchIpc(event: Electron.IpcMainInvokeEvent, paylo
     case 'load_operation_events': return await actions.loadOperationEvents(request.projectId, request.cursor)
     case 'load_facts': return await actions.loadFacts(request.projectId, request.kind, request.request)
     case 'search_facts': return await actions.searchFacts(request.projectId, request.query, request.request)
+    case 'load_review_notes': return await actions.loadReviewNotes(request.projectId, request.timelineVersionId)
+    case 'create_review_note':
+      return await replayVideoCommand('video-review-note', request, async () =>
+        await actions.createReviewNote(request.projectId, request.timelineVersionId, request.command.input, request.command.idempotency_key))
+    case 'resolve_review_note':
+      return await replayVideoCommand('video-review-resolution', request, async () =>
+        await actions.resolveReviewNote(request.projectId, request.timelineVersionId, request.reviewNoteId, request.command.input, request.command.idempotency_key))
+    case 'create_approval_decision':
+      return await replayVideoCommand('video-approval-decision', request, async () =>
+        await actions.createApprovalDecision(request.projectId, request.timelineVersionId, request.command.input, request.command.idempotency_key))
     case 'choose_sources': return await chooseVideoSources(event, request.projectId)
     case 'add_sources':
       return await videoWorkbenchReplays.execute('video-source-import', request.idempotencyKey, {

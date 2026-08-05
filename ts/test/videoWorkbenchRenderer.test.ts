@@ -42,7 +42,7 @@ function task(overrides: Record<string, unknown> = {}) {
   }
 }
 
-function workspace(options: { lockedTrack?: boolean; preflight?: 'passed' | 'blocked' | 'needs_user_decision'; outputVerified?: boolean; revision?: number; pendingQuality?: boolean } = {}): VideoWorkbenchSnapshot {
+function workspace(options: { lockedTrack?: boolean; preflight?: 'passed' | 'blocked' | 'needs_user_decision'; outputVerified?: boolean; revision?: number; pendingQuality?: boolean; reviewNote?: boolean } = {}): VideoWorkbenchSnapshot {
   const track = { id: 'track_00000001', kind: 'primary_video', order: 0, locked: options.lockedTrack ?? false, muted: false }
   const item = {
     id: 'item_00000001',
@@ -155,6 +155,18 @@ function workspace(options: { lockedTrack?: boolean; preflight?: 'passed' | 'blo
       composition_plans: [],
       audio_finishing_plans: [],
       quality_reports: [],
+      review_notes: options.reviewNote ? [{
+        id: 'review_note_00000001',
+        project_id: 'video_00000001',
+        timeline_version_id: 'timeline_00000001',
+        anchor: { kind: 'timeline_range', editorial_timeline_version_id: 'timeline_00000001', range },
+        body: '请在击球瞬间收紧画面。',
+        status: 'open',
+        actor_id: 'reviewer_0001',
+        event_sequence: 1,
+        created_at: at,
+      }] : [],
+      approval_decisions: [],
       export_profiles: [{ id: 'profile_00000001', scope: 'product_preset', current_revision_id: profile.id, created_at: at }],
       export_profile_revisions: [profile],
       execution_plans: [],
@@ -656,6 +668,132 @@ test('桌面输入表单只生成结构化视频请求，不接收路径、grant
       }],
     },
   })
+})
+
+test('版本化 Review 与 Approval 表单固定不可变版本，且不会把路径或自由 JSON 带入请求', () => {
+  const snapshot = workspace({ reviewNote: true })
+  const base = {
+    project: snapshot.project,
+    snapshot,
+    selection: { review_note_id: 'review_note_00000001', draft_item_ids: [], timeline_item_ids: [] },
+  }
+  const noteRequest = { ...base, action: 'create_review_note' as const }
+  expect(createVideoWorkbenchActionForm(noteRequest)?.fields.map(field => field.name)).toEqual(['actor_id', 'start_ms', 'end_ms', 'body'])
+  expect(createVideoWorkbenchActionInput(noteRequest, {
+    actor_id: 'reviewer_0002', start_ms: '100', end_ms: '900', body: '  这里需要保留完整击球声  ', ignored_path: '/private/video.mp4', raw_json: '{}',
+  })).toEqual({
+    ok: true,
+    value: {
+      action: 'create_review_note',
+      input: {
+        actor_id: 'reviewer_0002',
+        anchor: {
+          kind: 'timeline_range',
+          editorial_timeline_version_id: 'timeline_00000001',
+          range: { start: time('100'), duration: time('800') },
+        },
+        body: '这里需要保留完整击球声',
+      },
+    },
+  })
+
+  const approvalRequest = { ...base, action: 'create_approval_decision' as const }
+  expect(createVideoWorkbenchActionInput(approvalRequest, {
+    actor_id: 'approver_0001', state: 'changes_requested', note_ids: ['review_note_00000001'], raw_json: '{}',
+  })).toEqual({
+    ok: true,
+    value: {
+      action: 'create_approval_decision',
+      input: { actor_id: 'approver_0001', state: 'changes_requested', note_ids: ['review_note_00000001'] },
+    },
+  })
+
+  const resolutionRequest = { ...base, action: 'resolve_review_note' as const, target_id: 'review_note_00000001' }
+  expect(createVideoWorkbenchActionInput(resolutionRequest, { actor_id: 'editor_0001', state: 'addressed' })).toMatchObject({
+    ok: false,
+    message: expect.stringContaining('新的 Timeline Version'),
+  })
+  expect(createVideoWorkbenchActionInput(resolutionRequest, { actor_id: 'editor_0001', state: 'dismissed', ignored_path: '/private/video.mp4' })).toEqual({
+    ok: true,
+    value: { action: 'resolve_review_note', review_note_id: 'review_note_00000001', input: { actor_id: 'editor_0001', state: 'dismissed' } },
+  })
+})
+
+test('真实桌面产品旅程把 Review、处理和审批经同一受控桥接提交，并在每步后重读权威快照', async () => {
+  const snapshot = workspace({ reviewNote: true })
+  const calls: { name: string; value: unknown }[] = []
+  let key = 0
+  const bridge = {
+    listProjects: async () => ({ ok: true, value: [snapshot.project] }),
+    loadWorkspace: async () => ({ ok: true, value: snapshot }),
+    createReviewNote: async (projectId: string, timelineId: string, command: unknown) => {
+      calls.push({ name: 'create_review', value: { projectId, timelineId, command } })
+      return { ok: true, value: { note: snapshot.project.review_notes[0], reused: false } }
+    },
+    resolveReviewNote: async (projectId: string, timelineId: string, noteId: string, command: unknown) => {
+      calls.push({ name: 'resolve_review', value: { projectId, timelineId, noteId, command } })
+      return { ok: true, value: { note: snapshot.project.review_notes[0], reused: false } }
+    },
+    createApprovalDecision: async (projectId: string, timelineId: string, command: unknown) => {
+      calls.push({ name: 'approval', value: { projectId, timelineId, command } })
+      return { ok: true, value: { decision: { id: 'approval_00000001' }, reused: false } }
+    },
+  } as unknown as VideoWorkbenchBridge
+  const product = new VideoWorkbenchProductController(bridge, {
+    requestProject: async () => undefined,
+    requestAction: async request => {
+      if (request.action === 'create_review_note') return {
+        action: 'create_review_note',
+        input: {
+          actor_id: 'reviewer_0002',
+          anchor: { kind: 'timeline_range', editorial_timeline_version_id: 'timeline_00000001', range: { start: time('100'), duration: time('800') } },
+          body: '请保留击球瞬间。',
+        },
+      }
+      if (request.action === 'resolve_review_note') return {
+        action: 'resolve_review_note',
+        review_note_id: request.target_id!,
+        input: { actor_id: 'editor_0001', state: 'dismissed' },
+      }
+      if (request.action === 'create_approval_decision') return {
+        action: 'create_approval_decision',
+        input: { actor_id: 'approver_0001', state: 'changes_requested', note_ids: ['review_note_00000001'] },
+      }
+      return undefined
+    },
+  }, () => `video-ui-review-key-${++key}`)
+
+  await product.start()
+  await product.selectProject('video_00000001')
+  await product.perform('create_review_note')
+  await product.perform('resolve_review_note', 'review_note_00000001')
+  await product.perform('create_approval_decision')
+
+  expect(calls).toEqual([
+    {
+      name: 'create_review',
+      value: {
+        projectId: 'video_00000001', timelineId: 'timeline_00000001',
+        command: { idempotency_key: 'video-ui-review-key-1', input: expect.objectContaining({ actor_id: 'reviewer_0002', body: '请保留击球瞬间。' }) },
+      },
+    },
+    {
+      name: 'resolve_review',
+      value: {
+        projectId: 'video_00000001', timelineId: 'timeline_00000001', noteId: 'review_note_00000001',
+        command: { idempotency_key: 'video-ui-review-key-2', input: { actor_id: 'editor_0001', state: 'dismissed' } },
+      },
+    },
+    {
+      name: 'approval',
+      value: {
+        projectId: 'video_00000001', timelineId: 'timeline_00000001',
+        command: { idempotency_key: 'video-ui-review-key-3', input: { actor_id: 'approver_0001', state: 'changes_requested', note_ids: ['review_note_00000001'] } },
+      },
+    },
+  ])
+  expect(product.getState().workspace?.pending_action).toBeUndefined()
+  product.dispose()
 })
 
 test('拒绝远程范围表单不会构造预算或授权写入，编辑动作始终是 CommandSet', () => {

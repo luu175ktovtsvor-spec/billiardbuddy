@@ -9,6 +9,7 @@
 ```sh
 git rev-parse HEAD
 cd ts
+bun run test
 bun run test:video
 bun run typecheck:server
 bun run audit:source
@@ -16,7 +17,7 @@ bun run check:desktop
 bun run check:electron
 ```
 
-记录完整 SHA、每条命令退出码、测试通过/跳过/失败数，以及 `git status --short --branch`。上方视频测试命令包含视频 Sidecar、Video Media Relay/OSS/DashScope 合同、素材事实、编辑、完成层、IPC/grant 和 Renderer 的本地测试；其中 live OSS contract 默认跳过，不可把 skip 标为 smoke 成功。
+记录完整 SHA、每条命令退出码、测试通过/跳过/失败数，以及 `git status --short --branch`。全量测试用于发现视频与共享边界回归；视频测试命令包含视频 Sidecar、Video Media Relay/OSS/DashScope 合同、素材事实、编辑、完成层、IPC/grant 和 Renderer 的本地测试。Review/Approval 还应覆盖专用锚点、不可变 resolution、幂等回放、API capability 与 Main/Preload/Renderer 旅程；其中 live OSS contract 默认跳过，不可把 skip 标为 smoke 成功。
 
 ## 受控环境前置条件
 
@@ -42,6 +43,7 @@ git rev-parse HEAD
 test "$(git rev-parse HEAD)" = "$RELEASE_SHA"
 
 cd ts
+bun run test
 bun run test:video
 bun run typecheck:server
 bun run audit:source

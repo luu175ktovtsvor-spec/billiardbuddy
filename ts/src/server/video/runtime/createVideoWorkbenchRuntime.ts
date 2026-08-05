@@ -52,7 +52,7 @@ export class VideoWorkbenchCompositionRoot {
     })
     this.projectAssets = new ProjectAssets(this.runtime, projectStore, errors)
     this.analysisIndex = new AnalysisIndex(this.runtime, projectStore, analysisState, errors)
-    this.editorial = new Editorial(this.runtime, editorialRules)
+    this.editorial = new Editorial(this.runtime, projectStore, editorialRules, errors, now)
     this.finishingDelivery = new FinishingDelivery(this.runtime, projectStore, finishingState, finishingRules, errors)
   }
 

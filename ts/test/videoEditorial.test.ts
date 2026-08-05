@@ -518,6 +518,146 @@ test('Editorial v2 API 以单一 CommandSet 写入草稿、版本、变体和受
   service.repository.close()
 })
 
+test('版本化 Review Note 与 Approval 走 Editorial 唯一 writer、幂等回放和不可变处理事件', async () => {
+  const root = await testRoot('review-approval')
+  const service = new VideoWorkbenchService({ root, now: () => new Date(at) })
+  const created = await service.createProject({ title: 'Review 与审批' })
+  const hash = `sha256:${'b'.repeat(64)}`
+  const tickRate = { num: 1_000, den: 1 }
+  const initialTimeline = {
+    schema_version: 2 as const,
+    id: 'timeline_00000001',
+    project_revision: 1,
+    source_fingerprint_set_hash: hash,
+    facts_basis_hash: hash,
+    tick_rate: tickRate,
+    tracks: [{ id: 'track_00000001', kind: 'primary_video' as const, order: 0, locked: false, muted: false }],
+    items: [{
+      id: 'item_00000001',
+      track_id: 'track_00000001',
+      kind: 'video' as const,
+      timeline_range: { start: rationalTime('0', tickRate), duration: rationalTime('10000', tickRate) },
+      binding: {
+        kind: 'source' as const,
+        source_id: 'source_00000001',
+        source_fingerprint: hash,
+        source_range: { start: rationalTime('0', tickRate), duration: rationalTime('10000', tickRate) },
+      },
+      linked_camera_shot_ids: [],
+      linked_content_segment_ids: [],
+      locked: false,
+      evidence_ids: [],
+    }],
+    created_by_command_set_id: 'command_00000001',
+    created_at: at,
+  }
+  const resolvedTimeline = {
+    ...initialTimeline,
+    id: 'timeline_00000002',
+    parent_version_id: initialTimeline.id,
+    project_revision: 2,
+    created_by_command_set_id: 'command_00000002',
+  }
+  await service.repository.saveProject({
+    ...created,
+    state: 'ready',
+    revision: 1,
+    editorial_timeline_versions: [initialTimeline, resolvedTimeline],
+    current_editorial_timeline_version_id: initialTimeline.id,
+  })
+  const capability = 'capability_0123456789abcdef0123456789'
+  const handler = createVideoWorkbenchDomainApiHandler(service, capability)
+  const request = async (url: URL, init: RequestInit = {}) => {
+    const headers = new Headers(init.headers)
+    headers.set(MEDIA_UI_CAPABILITY_HEADER, capability)
+    return await handler(new Request(url, { ...init, headers }), url, requestSegments(url))
+  }
+  const reviewUrl = new URL(`http://localhost/api/videos/projects/${created.id}/timelines/${initialTimeline.id}/review-notes`)
+  const reviewBody = {
+    actor_id: 'creator_001',
+    anchor: {
+      kind: 'timeline_range',
+      editorial_timeline_version_id: initialTimeline.id,
+      range: { start: rationalTime('0', tickRate), duration: rationalTime('1000', tickRate) },
+    },
+    body: '00:00 到 00:01 需要换成更直接的镜头。',
+  }
+
+  const denied = await handler(new Request(reviewUrl, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': 'review-note-denied-key-0001' }, body: JSON.stringify(reviewBody),
+  }), reviewUrl, requestSegments(reviewUrl))
+  expect(denied.status).toBe(403)
+
+  const createdNote = await request(reviewUrl, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': 'review-note-key-0001' }, body: JSON.stringify(reviewBody),
+  })
+  expect(createdNote.status).toBe(201)
+  const createdNoteBody = await createdNote.json() as { note: { id: string; status: string; event_sequence: number }; reused: boolean; project: Record<string, unknown> }
+  expect(createdNoteBody).toMatchObject({ reused: false, note: { status: 'open', event_sequence: 1 } })
+  expect('review_resolutions' in createdNoteBody.project).toBeFalse()
+
+  const unpinned = await request(reviewUrl, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': 'review-note-unpinned-key-0001' }, body: JSON.stringify({ ...reviewBody, anchor: { kind: 'project' } }),
+  })
+  expect(unpinned.status).toBe(400)
+  const outOfBounds = await request(reviewUrl, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': 'review-note-out-of-bounds-key-0001' }, body: JSON.stringify({
+      ...reviewBody,
+      anchor: {
+        ...reviewBody.anchor,
+        range: { start: rationalTime('9900', tickRate), duration: rationalTime('1000', tickRate) },
+      },
+    }),
+  })
+  expect(outOfBounds.status).toBe(400)
+
+  const replayedNote = await request(reviewUrl, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': 'review-note-key-0001' }, body: JSON.stringify(reviewBody),
+  })
+  expect(replayedNote.status).toBe(200)
+  expect(await replayedNote.json()).toMatchObject({ reused: true, note: { id: createdNoteBody.note.id } })
+  const conflictingReplay = await request(reviewUrl, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': 'review-note-key-0001' }, body: JSON.stringify({ ...reviewBody, body: '不同反馈' }),
+  })
+  expect(conflictingReplay.status).toBe(409)
+
+  const approvalUrl = new URL(`http://localhost/api/videos/projects/${created.id}/timelines/${initialTimeline.id}/approval`)
+  const approvalBody = { actor_id: 'reviewer_001', state: 'changes_requested', note_ids: [createdNoteBody.note.id] }
+  const approval = await request(approvalUrl, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': 'approval-key-0001' }, body: JSON.stringify(approvalBody),
+  })
+  expect(approval.status).toBe(201)
+  expect(await approval.json()).toMatchObject({ reused: false, decision: { state: 'changes_requested', event_sequence: 2, note_ids: [createdNoteBody.note.id] } })
+  const approvalReplay = await request(approvalUrl, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': 'approval-key-0001' }, body: JSON.stringify(approvalBody),
+  })
+  expect(approvalReplay.status).toBe(200)
+  expect(await approvalReplay.json()).toMatchObject({ reused: true })
+
+  const resolveUrl = new URL(`${reviewUrl}/${createdNoteBody.note.id}/resolve`)
+  const resolutionBody = { actor_id: 'editor_001', state: 'addressed', resolved_by_timeline_version_id: resolvedTimeline.id }
+  const resolution = await request(resolveUrl, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': 'review-resolution-key-0001' }, body: JSON.stringify(resolutionBody),
+  })
+  expect(resolution.status).toBe(201)
+  expect(await resolution.json()).toMatchObject({ reused: false, note: { id: createdNoteBody.note.id, status: 'addressed', resolved_by_timeline_version_id: resolvedTimeline.id, event_sequence: 1 } })
+  const resolutionReplay = await request(resolveUrl, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': 'review-resolution-key-0001' }, body: JSON.stringify(resolutionBody),
+  })
+  expect(resolutionReplay.status).toBe(200)
+  expect(await resolutionReplay.json()).toMatchObject({ reused: true, note: { status: 'addressed' } })
+  const finalNote = await request(reviewUrl)
+  expect(finalNote.status).toBe(200)
+  expect(await finalNote.json()).toMatchObject({ notes: [{ id: createdNoteBody.note.id, status: 'addressed', resolved_by_timeline_version_id: resolvedTimeline.id }] })
+
+  const persisted = await service.getProject(created.id)
+  expect(persisted.editorial_timeline_versions.map(item => item.id)).toEqual([initialTimeline.id, resolvedTimeline.id])
+  expect(persisted.review_notes).toHaveLength(1)
+  expect(persisted.review_resolutions).toHaveLength(1)
+  expect(persisted.approval_decisions).toHaveLength(1)
+  service.repository.close()
+})
+
 test('旧时间线选择、场景锁定和备选应用经由 CommandSet，且保留锁定与 A/V 规则', async () => {
   const root = await testRoot('legacy-command-bridge')
   const sourcePath = join(root, 'source.mp4')

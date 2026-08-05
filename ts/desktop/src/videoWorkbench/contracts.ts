@@ -13,6 +13,8 @@ import type {
   CreateVideoCaptionTranslationInput,
   CreateVideoBeatSyncDraftInput,
   CreateVideoCompositionPlanInput,
+  CreateVideoReviewNoteInput,
+  CreateVideoApprovalDecisionInput,
   ConfirmVideoPostRenderQualityInput,
   DeliveryVariant,
   DeliveryVariantVersion,
@@ -27,6 +29,7 @@ import type {
   PublicVideoFactSummary,
   PublicVideoStudioProject,
   RenderVideoVariantInput,
+  ResolveVideoReviewNoteInput,
   TimelineDraft,
   VideoAudioFinishingPlan,
   VideoCaptionDocument,
@@ -37,6 +40,8 @@ import type {
   VideoPreview,
   VideoQualityReport,
   VideoQualityAcknowledgement,
+  VideoReviewNote,
+  VideoApprovalDecision,
 } from '../../../shared/contracts/media.js'
 
 /**
@@ -151,6 +156,7 @@ export type VideoWorkbenchSelection = Readonly<{
   timeline_item_ids: readonly string[]
   variant_id?: string
   quality_report_id?: string
+  review_note_id?: string
   operation_id?: string
 }>
 
@@ -225,6 +231,16 @@ export type VideoPostRenderQualityConfirmationResult = Readonly<{
   reused: boolean
 }>
 
+export type VideoReviewNoteResult = Readonly<{
+  note: VideoReviewNote
+  reused: boolean
+}>
+
+export type VideoApprovalDecisionResult = Readonly<{
+  decision: VideoApprovalDecision
+  reused: boolean
+}>
+
 /**
  * Renderer-facing future IPC port. This file is intentionally local until
  * the shared Main/preload registration can be synchronized with its owner.
@@ -238,6 +254,10 @@ export type VideoWorkbenchBridge = Readonly<{
   loadOperationEvents(projectId: string, cursor: number): Promise<VideoWorkbenchResult<PublicMediaJobEventPage>>
   loadFacts(projectId: string, kind: VideoWorkbenchFactKind, request?: VideoFactPageRequest): Promise<VideoWorkbenchResult<PublicVideoFactPage>>
   searchFacts(projectId: string, query: string, request?: VideoFactSearchRequest): Promise<VideoWorkbenchResult<PublicVideoFactSearchPage>>
+  loadReviewNotes(projectId: string, timelineVersionId: string): Promise<VideoWorkbenchResult<readonly VideoReviewNote[]>>
+  createReviewNote(projectId: string, timelineVersionId: string, command: VideoCommandEnvelope<CreateVideoReviewNoteInput>): Promise<VideoWorkbenchResult<VideoReviewNoteResult>>
+  resolveReviewNote(projectId: string, timelineVersionId: string, reviewNoteId: string, command: VideoCommandEnvelope<ResolveVideoReviewNoteInput>): Promise<VideoWorkbenchResult<VideoReviewNoteResult>>
+  createApprovalDecision(projectId: string, timelineVersionId: string, command: VideoCommandEnvelope<CreateVideoApprovalDecisionInput>): Promise<VideoWorkbenchResult<VideoApprovalDecisionResult>>
   /** Main binds each native selection to the active project before exposing its opaque token. */
   chooseSources(projectId: string): Promise<VideoWorkbenchResult<readonly VideoSourceSelection[]>>
   addSources(projectId: string, selections: readonly string[], idempotencyKey: string): Promise<VideoWorkbenchResult<readonly PublicMediaTask[]>>

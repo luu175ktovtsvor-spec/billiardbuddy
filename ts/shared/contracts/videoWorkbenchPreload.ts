@@ -13,6 +13,8 @@ import type {
   CreateVideoCaptionRevisionInput,
   CreateVideoCaptionTranslationInput,
   CreateVideoCompositionPlanInput,
+  CreateVideoReviewNoteInput,
+  CreateVideoApprovalDecisionInput,
   CreateVideoProjectInput,
   DeliveryVariant,
   DeliveryVariantVersion,
@@ -27,6 +29,7 @@ import type {
   PublicVideoFactSummary,
   PublicVideoStudioProject,
   RenderVideoVariantInput,
+  ResolveVideoReviewNoteInput,
   TimelineDraft,
   VideoAudioFinishingPlan,
   VideoCaptionDocument,
@@ -37,6 +40,8 @@ import type {
   VideoPreview,
   VideoQualityAcknowledgement,
   VideoQualityReport,
+  VideoReviewNote,
+  VideoApprovalDecision,
 } from './media.js'
 
 /** Expected public media failures cross Electron as an explicit safe envelope. */
@@ -143,6 +148,16 @@ export type VideoPostRenderQualityConfirmationResult = Readonly<{
   reused: boolean
 }>
 
+export type VideoReviewNoteResult = Readonly<{
+  note: VideoReviewNote
+  reused: boolean
+}>
+
+export type VideoApprovalDecisionResult = Readonly<{
+  decision: VideoApprovalDecision
+  reused: boolean
+}>
+
 /**
  * The only video capability exposed by Preload. It is deliberately typed in
  * shared code so a future UI cannot regress to an unbounded Promise<unknown>
@@ -155,6 +170,10 @@ export type VideoWorkbenchPreloadBridge = Readonly<{
   loadOperationEvents(projectId: string, cursor: number): Promise<VideoWorkbenchIpcResponse<PublicMediaJobEventPage>>
   loadFacts(projectId: string, kind: string, request?: VideoFactPageRequest): Promise<VideoWorkbenchIpcResponse<PublicVideoFactPage>>
   searchFacts(projectId: string, query: string, request?: VideoFactSearchRequest): Promise<VideoWorkbenchIpcResponse<PublicVideoFactSearchPage>>
+  loadReviewNotes(projectId: string, timelineVersionId: string): Promise<VideoWorkbenchIpcResponse<readonly VideoReviewNote[]>>
+  createReviewNote(projectId: string, timelineVersionId: string, command: VideoCommandEnvelope<CreateVideoReviewNoteInput>): Promise<VideoWorkbenchIpcResponse<VideoReviewNoteResult>>
+  resolveReviewNote(projectId: string, timelineVersionId: string, reviewNoteId: string, command: VideoCommandEnvelope<ResolveVideoReviewNoteInput>): Promise<VideoWorkbenchIpcResponse<VideoReviewNoteResult>>
+  createApprovalDecision(projectId: string, timelineVersionId: string, command: VideoCommandEnvelope<CreateVideoApprovalDecisionInput>): Promise<VideoWorkbenchIpcResponse<VideoApprovalDecisionResult>>
   chooseSources(projectId: string): Promise<VideoWorkbenchIpcResponse<readonly VideoSourceSelection[]>>
   addSources(projectId: string, selectionIds: readonly string[], idempotencyKey: string): Promise<VideoWorkbenchIpcResponse<readonly PublicMediaTask[]>>
   estimateRemoteAnalysis(projectId: string, command: VideoCommandEnvelope<{ purposes: readonly CreateRemoteAnalysisConsentInput['purposes'][number][]; source_ids: readonly string[] }>): Promise<VideoWorkbenchIpcResponse<PublicVideoStudioProject['remote_analysis_budgets'][number]>>

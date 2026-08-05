@@ -59,6 +59,25 @@ test('视频正式 IPC 只保留受控 workbench 通道，并拒绝 Renderer 路
     action: 'apply_editorial_command_set', projectId,
     command: { idempotency_key: idempotencyKey, input: { base_timeline_version_id: timelineId, commands: [] } },
   })).toBeFalse()
+  expect(validateElectronIpcPayload(ELECTRON_IPC_CHANNELS.videoWorkbench, {
+    action: 'create_review_note', projectId, timelineVersionId: timelineId,
+    command: {
+      idempotency_key: idempotencyKey,
+      input: {
+        actor_id: 'reviewer_001',
+        anchor: { kind: 'timeline_range', editorial_timeline_version_id: timelineId, range: { start: { ticks: '0', tick_rate: { num: 1_000, den: 1 } }, duration: { ticks: '1000', tick_rate: { num: 1_000, den: 1 } } } },
+        body: '请调整这一秒的镜头。',
+      },
+    },
+  })).toBeTrue()
+  expect(validateElectronIpcPayload(ELECTRON_IPC_CHANNELS.videoWorkbench, {
+    action: 'create_review_note', projectId, timelineVersionId: timelineId,
+    command: { idempotency_key: idempotencyKey, input: { actor_id: 'reviewer_001', anchor: { kind: 'project' }, body: 'x', path: '/private/review.txt' } },
+  })).toBeFalse()
+  expect(validateElectronIpcPayload(ELECTRON_IPC_CHANNELS.videoWorkbench, {
+    action: 'create_review_note', projectId, timelineVersionId: timelineId,
+    command: { idempotency_key: idempotencyKey, input: { actor_id: 'reviewer_001', anchor: { kind: 'project' }, body: 'x' } },
+  })).toBeFalse()
 })
 
 test('视频 Main 重放缓存只复用完全相同的首次结果，变更请求失败关闭', async () => {
@@ -128,4 +147,47 @@ test('Renderer bridge 只把 opaque 导出授权交给 Preload，不能附带本
     { idempotency_key: idempotencyKey, input: { base_revision: 1, base_variant_version_id: 'variant_version_00000001' } },
   ])
   expect(JSON.stringify(received)).not.toContain('/private/')
+})
+
+test('Review 与 Approval 也只能经同一 Main IPC 命令并保留幂等键', async () => {
+  let reviewArgs: unknown[] | undefined
+  let approvalArgs: unknown[] | undefined
+  const preload = {
+    createReviewNote: async (...args: unknown[]) => {
+      reviewArgs = args
+      return { ok: true, value: { note: { id: 'review_note_00000001', status: 'open' }, reused: false } }
+    },
+    createApprovalDecision: async (...args: unknown[]) => {
+      approvalArgs = args
+      return { ok: true, value: { decision: { id: 'approval_00000001', state: 'approved' }, reused: false } }
+    },
+  } as unknown as VideoWorkbenchPreloadBridge
+  const bridge = createVideoWorkbenchElectronBridge(preload)
+  const review = await bridge.createReviewNote(projectId, timelineId, {
+    idempotency_key: idempotencyKey,
+    input: {
+      actor_id: 'reviewer_001',
+      anchor: { kind: 'timeline_range', editorial_timeline_version_id: timelineId, range: { start: { ticks: '0', tick_rate: { num: 1_000, den: 1 } }, duration: { ticks: '1000', tick_rate: { num: 1_000, den: 1 } } } },
+      body: '请调整开场。',
+    },
+  })
+  const approval = await bridge.createApprovalDecision(projectId, timelineId, {
+    idempotency_key: 'approval-ipc-contract-key-0001',
+    input: { actor_id: 'reviewer_001', state: 'approved', note_ids: [] },
+  })
+  expect(review).toMatchObject({ ok: true, value: { note: { id: 'review_note_00000001' } } })
+  expect(approval).toMatchObject({ ok: true, value: { decision: { id: 'approval_00000001' } } })
+  expect(reviewArgs).toEqual([projectId, timelineId, {
+    idempotency_key: idempotencyKey,
+    input: {
+      actor_id: 'reviewer_001',
+      anchor: { kind: 'timeline_range', editorial_timeline_version_id: timelineId, range: { start: { ticks: '0', tick_rate: { num: 1_000, den: 1 } }, duration: { ticks: '1000', tick_rate: { num: 1_000, den: 1 } } } },
+      body: '请调整开场。',
+    },
+  }])
+  expect(approvalArgs).toEqual([projectId, timelineId, {
+    idempotency_key: 'approval-ipc-contract-key-0001',
+    input: { actor_id: 'reviewer_001', state: 'approved', note_ids: [] },
+  }])
+  expect(JSON.stringify([reviewArgs, approvalArgs])).not.toContain('/private/')
 })

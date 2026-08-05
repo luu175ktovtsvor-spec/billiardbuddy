@@ -22,6 +22,9 @@ export type VideoWorkbenchActionKind =
   | 'add_sources'
   | 'load_facts'
   | 'search_facts'
+  | 'create_review_note'
+  | 'resolve_review_note'
+  | 'create_approval_decision'
   | 'estimate_budget'
   | 'confirm_budget'
   | 'create_quick_draft'
@@ -105,6 +108,7 @@ function preserveSelection(selection: VideoWorkbenchSelection, snapshot: VideoWo
   const draftIds = snapshot.timeline_drafts.map(draft => draft.id)
   const variantIds = snapshot.variants.map(variant => variant.variant.id)
   const reportIds = snapshot.quality_reports.map(report => report.id)
+  const reviewNoteIds = snapshot.project.review_notes.map(note => note.id)
   const operationIds = snapshot.operations.map(operation => operation.id)
   const draftItemIds = new Set(snapshot.timeline_drafts.flatMap(draft => draft.items.map(item => item.id)))
   const timelineItemIds = new Set(snapshot.current_timeline?.items.map(item => item.id) ?? [])
@@ -116,6 +120,7 @@ function preserveSelection(selection: VideoWorkbenchSelection, snapshot: VideoWo
     timeline_item_ids: selection.timeline_item_ids.filter(itemId => timelineItemIds.has(itemId)),
     variant_id: selectedOrUndefined(selection.variant_id, variantIds),
     quality_report_id: selectedOrUndefined(selection.quality_report_id, reportIds),
+    review_note_id: selectedOrUndefined(selection.review_note_id, reviewNoteIds),
     operation_id: selectedOrUndefined(selection.operation_id, operationIds),
   }
 }

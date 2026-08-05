@@ -293,6 +293,69 @@ export function createVideoWorkbenchActionForm(request: VideoWorkbenchActionInpu
           { name: 'subject_id', label: '主体名称或编号', kind: 'text', required: true, placeholder: '例如：选手 A' },
         ],
       }
+    case 'create_review_note':
+      return timeline ? {
+        title: '新增版本化反馈',
+        description: '反馈会固定关联到当前不可变 Timeline Version。后续处理只能追加新的处理事件，不能改写原反馈。',
+        confirmLabel: '保存反馈',
+        fields: [
+          { name: 'actor_id', label: '反馈人', kind: 'text', required: true, defaultValue: 'local_creator' },
+          { name: 'start_ms', label: '起始时间（毫秒）', kind: 'number', required: true, defaultValue: 0, min: 0, step: 1 },
+          { name: 'end_ms', label: '结束时间（毫秒）', kind: 'number', required: true, defaultValue: 1_000, min: 1, step: 1 },
+          { name: 'body', label: '反馈内容', kind: 'textarea', required: true, placeholder: '说明需要调整的内容和依据。' },
+        ],
+      } : undefined
+    case 'resolve_review_note': {
+      const review = request.snapshot.project.review_notes.find(note => note.id === request.target_id)
+      return review?.status === 'open' ? {
+        title: '处理版本化反馈',
+        description: '已处理必须关联一个新的不可变 Timeline Version；驳回不会伪造替代版本。',
+        confirmLabel: '追加处理事件',
+        fields: [
+          { name: 'actor_id', label: '处理人', kind: 'text', required: true, defaultValue: 'local_creator' },
+          {
+            name: 'state',
+            label: '处理结果',
+            kind: 'select',
+            required: true,
+            defaultValue: 'dismissed',
+            options: [
+              { value: 'addressed', label: '已处理（关联当前新版本）', disabled: timeline?.id === review.timeline_version_id },
+              { value: 'dismissed', label: '驳回（保留原反馈）' },
+            ],
+          },
+        ],
+      } : undefined
+    }
+    case 'create_approval_decision':
+      return timeline ? {
+        title: '提交审批决定',
+        description: '审批决定会追加到当前 Timeline Version；要求修改时必须明确关联尚未处理的反馈。',
+        confirmLabel: '保存审批决定',
+        fields: [
+          { name: 'actor_id', label: '审批人', kind: 'text', required: true, defaultValue: 'local_creator' },
+          {
+            name: 'state',
+            label: '审批决定',
+            kind: 'select',
+            required: true,
+            defaultValue: 'approved',
+            options: [
+              { value: 'approved', label: '通过' },
+              { value: 'changes_requested', label: '要求修改' },
+            ],
+          },
+          {
+            name: 'note_ids',
+            label: '关联反馈',
+            kind: 'choices',
+            options: request.snapshot.project.review_notes
+              .filter(note => note.timeline_version_id === timeline.id && note.status === 'open')
+              .map(note => ({ value: note.id, label: `${note.body.slice(0, 72)} · ${note.actor_id}` })),
+            help: '“要求修改”必须至少选择一条当前版本未处理的反馈。',
+          },
+        ],
+      } : undefined
     case 'confirm_post_render_quality':
       return request.pending_quality ? {
         title: '确认后渲染质量报告',
@@ -490,6 +553,69 @@ export function createVideoWorkbenchActionInput(
       const sourceId = value(values, 'source_id')
       const subjectId = value(values, 'subject_id')
       return sourceId && subjectId ? { ok: true, value: { action: 'analyze_subject_track', input: { source_id: sourceId, subject_id: subjectId } } } : inputError('请选择素材并填写主体。')
+    }
+    case 'create_review_note': {
+      const actorId = value(values, 'actor_id')
+      const body = value(values, 'body')
+      const startMs = numeric(values, 'start_ms')
+      const endMs = numeric(values, 'end_ms')
+      if (!timeline || !actorId || !body || startMs === undefined || endMs === undefined || startMs < 0 || endMs <= startMs) {
+        return inputError('请填写反馈人、有效时间范围和反馈内容。')
+      }
+      return {
+        ok: true,
+        value: {
+          action: 'create_review_note',
+          input: {
+            actor_id: actorId,
+            anchor: {
+              kind: 'timeline_range',
+              editorial_timeline_version_id: timeline.id,
+              range: {
+                start: rationalTime(startMs, { num: 1_000, den: 1 }),
+                duration: rationalTime(endMs - startMs, { num: 1_000, den: 1 }),
+              },
+            },
+            body,
+          },
+        },
+      }
+    }
+    case 'resolve_review_note': {
+      const review = request.snapshot.project.review_notes.find(note => note.id === request.target_id)
+      const actorId = value(values, 'actor_id')
+      const state = value(values, 'state')
+      if (!review || review.status !== 'open' || !request.target_id || !actorId || (state !== 'addressed' && state !== 'dismissed')) {
+        return inputError('当前反馈已变化，请刷新后重试。')
+      }
+      if (state === 'dismissed') {
+        return { ok: true, value: { action: 'resolve_review_note', review_note_id: review.id, input: { actor_id: actorId, state } } }
+      }
+      if (!timeline || timeline.id === review.timeline_version_id) {
+        return inputError('请先通过编辑 CommandSet 创建新的 Timeline Version，再标记反馈已处理。')
+      }
+      return {
+        ok: true,
+        value: {
+          action: 'resolve_review_note',
+          review_note_id: review.id,
+          input: { actor_id: actorId, state, resolved_by_timeline_version_id: timeline.id },
+        },
+      }
+    }
+    case 'create_approval_decision': {
+      const actorId = value(values, 'actor_id')
+      const state = value(values, 'state')
+      const noteIds = selected(values, 'note_ids')
+      if (!timeline || !actorId || (state !== 'approved' && state !== 'changes_requested')) {
+        return inputError('请填写审批人和审批决定。')
+      }
+      if (state === 'changes_requested' && !noteIds.length) return inputError('要求修改时必须关联至少一条反馈。')
+      const validNoteIds = new Set(request.snapshot.project.review_notes
+        .filter(note => note.timeline_version_id === timeline.id && note.status === 'open')
+        .map(note => note.id))
+      if (!noteIds.every(noteId => validNoteIds.has(noteId))) return inputError('只能关联当前版本尚未处理的反馈。')
+      return { ok: true, value: { action: 'create_approval_decision', input: { actor_id: actorId, state, note_ids: [...noteIds] } } }
     }
     case 'confirm_post_render_quality':
       return checked(values, 'confirmed') ? { ok: true, value: { action: 'confirm_post_render_quality', confirmed: true } } : inputError('请明确确认全部待确认项。')

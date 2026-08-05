@@ -22,6 +22,9 @@ export type VideoWorkbenchSurfaceAction =
   | 'analyze_beat'
   | 'create_beat_sync_draft'
   | 'analyze_subject_track'
+  | 'create_review_note'
+  | 'resolve_review_note'
+  | 'create_approval_decision'
   | 'preflight'
   | 'preview'
   | 'render'
@@ -326,6 +329,24 @@ function finishing(model: VideoWorkbenchViewModel, callbacks: VideoWorkbenchSurf
 
 function reviewDelivery(model: VideoWorkbenchViewModel, callbacks: VideoWorkbenchSurfaceCallbacks): HTMLElement {
   const sectionNode = section('审阅与交付')
+  const reviews = section('版本化反馈')
+  reviews.classList.add('bb-video-subsection')
+  reviews.append(list(model.review_delivery.review_notes.map(note => {
+    const row = element('li', `bb-video-row ${stateClass(note.status)}`)
+    row.append(text('strong', note.status), text('span', note.actor_id), text('span', note.body))
+    row.append(actionButton('处理反馈', 'resolve_review_note', note.resolve, callbacks, note.id))
+    return selectableRow(row, note.selected, () => callbacks.onSelection({ review_note_id: note.id }))
+  }), '当前版本尚无 Review Note。'))
+  const reviewControls = element('div', 'bb-video-actions')
+  reviewControls.append(actionButton('新增反馈', 'create_review_note', model.review_delivery.create_review_note, callbacks))
+  reviewControls.append(actionButton('提交审批决定', 'create_approval_decision', model.review_delivery.create_approval_decision, callbacks))
+  reviews.append(reviewControls)
+  sectionNode.append(reviews)
+  if (model.review_delivery.approval_decisions.length) {
+    sectionNode.append(list(model.review_delivery.approval_decisions.map(decision =>
+      text('li', `${decision.state} · ${decision.actor_id} · ${decision.note_count} 条反馈`),
+    ), ''))
+  }
   sectionNode.append(list(model.review_delivery.quality_reports.map(report => {
     const row = element('li', `bb-video-row ${stateClass(report.state)}`)
     row.append(text('strong', report.kind), text('span', report.state), text('span', `${report.check_count} 项检查`))

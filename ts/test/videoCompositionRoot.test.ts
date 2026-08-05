@@ -29,6 +29,7 @@ test('视频组合根向四个领域应用注入同一个持久化写入与运�
   expect(root.projectAssets.projectStore).toBe(root.runtime.projectStore)
   expect(root.projectAssets.projectStore.repository).toBe(root.repository)
   expect(root.analysisIndex.projectStore).toBe(root.projectAssets.projectStore)
+  expect(root.editorial.projectStore).toBe(root.projectAssets.projectStore)
   expect(root.finishingDelivery.projectStore).toBe(root.projectAssets.projectStore)
   expect(root.analysisIndex.operationState).toBe(runtime.analysisState)
   expect(root.finishingDelivery.operationState).toBe(runtime.finishingState)
@@ -106,6 +107,10 @@ test('应用模块不反向导入具体运行时，组合根是唯一适配位�
   expect(sources[0]).toContain('ProjectAssetsCommandPort')
   expect(sources[1]).toContain('AnalysisIndexCommandPort')
   expect(sources[2]).toContain('EditorialCommandPort')
+  expect(sources[2]).toContain('projectStore.mutate')
+  expect(sources[2]).not.toContain('this.commands.createReviewNote')
+  expect(sources[2]).not.toContain('this.commands.resolveReviewNote')
+  expect(sources[2]).not.toContain('this.commands.createApprovalDecision')
   expect(sources[3]).toContain('FinishingDeliveryCommandPort')
 })
 

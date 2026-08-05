@@ -122,6 +122,17 @@ export type VideoWorkbenchViewModel = Readonly<{
     can_create_beat_sync_draft: VideoWorkbenchActionAvailability
   }>
   review_delivery: Readonly<{
+    review_notes: readonly Readonly<{
+      id: string
+      status: 'open' | 'addressed' | 'dismissed'
+      actor_id: string
+      body: string
+      selected: boolean
+      resolve: VideoWorkbenchActionAvailability
+    }>[]
+    approval_decisions: readonly Readonly<{ id: string; state: 'approved' | 'changes_requested'; actor_id: string; note_count: number }>[]
+    create_review_note: VideoWorkbenchActionAvailability
+    create_approval_decision: VideoWorkbenchActionAvailability
     quality_reports: readonly Readonly<{ id: string; kind: string; state: string; check_count: number; selected: boolean }>[]
     pending_quality_confirmations: readonly Readonly<{
       operation_id: string
@@ -367,7 +378,18 @@ export function createVideoWorkbenchViewModel(state: VideoWorkbenchUiState): Vid
         can_analyze_beat: unavailable('项目尚未加载。'),
         can_create_beat_sync_draft: unavailable('项目尚未加载。'),
       },
-      review_delivery: { quality_reports: [], pending_quality_confirmations: [], output_verification: { state: 'missing' }, preflight: unavailable('项目尚未加载。'), preview: unavailable('项目尚未加载。'), render: unavailable('项目尚未加载。') },
+      review_delivery: {
+        review_notes: [],
+        approval_decisions: [],
+        create_review_note: unavailable('项目尚未加载。'),
+        create_approval_decision: unavailable('项目尚未加载。'),
+        quality_reports: [],
+        pending_quality_confirmations: [],
+        output_verification: { state: 'missing' },
+        preflight: unavailable('项目尚未加载。'),
+        preview: unavailable('项目尚未加载。'),
+        render: unavailable('项目尚未加载。'),
+      },
       operation_center: { event_cursor: state.last_event_cursor, reset_required: state.event_reset_required, requires_refresh: state.requires_authoritative_refresh, poll_operations: unavailable('项目尚未加载。'), operations: [] },
     }
   }
@@ -523,6 +545,24 @@ export function createVideoWorkbenchViewModel(state: VideoWorkbenchUiState): Vid
         : unavailable('先选择素材、节拍证据和当前编辑时间线。'),
     },
     review_delivery: {
+      review_notes: snapshot.project.review_notes.map(note => ({
+        id: note.id,
+        status: note.status,
+        actor_id: note.actor_id,
+        body: note.body,
+        selected: state.selection.review_note_id === note.id,
+        resolve: action.enabled && note.status === 'open'
+          ? readyAction()
+          : action.enabled ? unavailable('该反馈已有最终处理结果。') : action,
+      })),
+      approval_decisions: snapshot.project.approval_decisions.map(decision => ({
+        id: decision.id,
+        state: decision.state,
+        actor_id: decision.actor_id,
+        note_count: decision.note_ids.length,
+      })),
+      create_review_note: timeline ? action : unavailable('先创建或选择编辑时间线。'),
+      create_approval_decision: timeline ? action : unavailable('先创建或选择编辑时间线。'),
       quality_reports: snapshot.quality_reports.map(report => ({
         id: report.id,
         kind: report.kind,

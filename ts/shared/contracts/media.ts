@@ -1021,6 +1021,14 @@ export const videoCreativeContextAnchorSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('delivery_variant'), variant_version_id: mediaIdSchema, item_id: mediaIdSchema.optional() }),
 ])
 
+/** Formal review is narrower than conversational context: every note is
+ * pinned to a frozen timeline/variant and an actual timeline position. */
+export const videoReviewAnchorSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('timeline_range'), editorial_timeline_version_id: mediaIdSchema, range: videoEditorialTimeRangeSchema }),
+  z.object({ kind: z.literal('timeline_item'), editorial_timeline_version_id: mediaIdSchema, item_id: mediaIdSchema }),
+  z.object({ kind: z.literal('delivery_variant'), variant_version_id: mediaIdSchema, item_id: mediaIdSchema }),
+])
+
 export const videoCreativeSessionSchema = z.object({
   id: mediaIdSchema,
   project_id: mediaIdSchema,
@@ -1086,6 +1094,67 @@ export const videoCreativeProposalSchema = z.object({
   created_at: mediaIsoDateSchema,
 })
 
+/**
+ * A review note is immutable feedback tied to one frozen Editorial Version.
+ * Its current status is a read projection from append-only resolution events;
+ * no review action ever rewrites a Timeline or Delivery Variant in place.
+ */
+export const videoReviewNoteSchema = z.object({
+  id: mediaIdSchema,
+  project_id: mediaIdSchema,
+  timeline_version_id: mediaIdSchema,
+  anchor: videoReviewAnchorSchema,
+  body: z.string().trim().min(1).max(8_000),
+  status: z.enum(['open', 'addressed', 'dismissed']),
+  actor_id: z.string().trim().min(1).max(160),
+  event_sequence: z.number().int().positive(),
+  resolution_proposal_id: mediaIdSchema.optional(),
+  resolved_by_timeline_version_id: mediaIdSchema.optional(),
+  resolved_by_variant_version_id: mediaIdSchema.optional(),
+  created_at: mediaIsoDateSchema,
+  resolved_at: mediaIsoDateSchema.optional(),
+})
+
+/** The append-only event which makes a Review Note addressed or dismissed. */
+export const videoReviewResolutionSchema = z.object({
+  id: mediaIdSchema,
+  project_id: mediaIdSchema,
+  review_note_id: mediaIdSchema,
+  state: z.enum(['addressed', 'dismissed']),
+  actor_id: z.string().trim().min(1).max(160),
+  event_sequence: z.number().int().positive(),
+  resolution_proposal_id: mediaIdSchema.optional(),
+  resolved_by_timeline_version_id: mediaIdSchema.optional(),
+  resolved_by_variant_version_id: mediaIdSchema.optional(),
+  created_at: mediaIsoDateSchema,
+}).superRefine((value, context) => {
+  const references = [
+    value.resolution_proposal_id,
+    value.resolved_by_timeline_version_id,
+    value.resolved_by_variant_version_id,
+  ].filter(Boolean)
+  if (value.state === 'addressed' && references.length !== 1) {
+    context.addIssue({ code: 'custom', message: 'addressed review requires exactly one immutable resolution reference' })
+  }
+  if (value.state === 'dismissed' && references.length > 0) {
+    context.addIssue({ code: 'custom', message: 'dismissed review cannot claim a replacement version' })
+  }
+})
+
+/** Approval is an immutable decision event. Pending is only a query projection. */
+export const videoApprovalDecisionSchema = z.object({
+  id: mediaIdSchema,
+  project_id: mediaIdSchema,
+  timeline_version_id: mediaIdSchema,
+  state: z.enum(['approved', 'changes_requested']),
+  actor_id: z.string().trim().min(1).max(160),
+  event_sequence: z.number().int().positive(),
+  note_ids: z.array(mediaIdSchema).max(2_000).superRefine((value, context) => {
+    if (new Set(value).size !== value.length) context.addIssue({ code: 'custom', message: 'note_ids 不能重复' })
+  }),
+  created_at: mediaIsoDateSchema,
+})
+
 /** This is an advisory marker only. Adding media never rewrites a user
  * accepted draft or Timeline; the user can explicitly request a fresh plan. */
 export const videoPlanningUpdateSchema = z.object({
@@ -1129,7 +1198,16 @@ export const videoQuickCreateBatchSchema = z.object({
  * receipt points at immutable/append-only resources and never becomes a
  * second Timeline writer. */
 export const videoEditorialMutationReceiptSchema = z.object({
-  kind: z.enum(['source_range_decision', 'editorial_plan', 'creative_session', 'creative_message', 'creative_proposal_rejection']),
+  kind: z.enum([
+    'source_range_decision',
+    'editorial_plan',
+    'creative_session',
+    'creative_message',
+    'creative_proposal_rejection',
+    'review_note',
+    'review_resolution',
+    'approval_decision',
+  ]),
   idempotency_key: z.string().min(16).max(160),
   request_hash: z.string().regex(/^sha256:[a-f0-9]{64}$/),
   resource_ids: z.array(mediaIdSchema).min(1).max(500),
@@ -1467,6 +1545,9 @@ export const videoStudioProjectSchema = mediaProjectBaseSchema.extend({
   creative_messages: z.array(videoCreativeMessageSchema).max(20_000).default([]),
   creative_responses: z.array(videoCreativeResponseSchema).max(20_000).default([]),
   creative_proposals: z.array(videoCreativeProposalSchema).max(10_000).default([]),
+  review_notes: z.array(videoReviewNoteSchema).max(20_000).default([]),
+  review_resolutions: z.array(videoReviewResolutionSchema).max(20_000).default([]),
+  approval_decisions: z.array(videoApprovalDecisionSchema).max(20_000).default([]),
   planning_updates: z.array(videoPlanningUpdateSchema).max(2_000).default([]),
   quick_create_batches: z.array(videoQuickCreateBatchSchema).max(2_000).default([]),
   editorial_mutation_receipts: z.array(videoEditorialMutationReceiptSchema).max(10_000).default([]),
@@ -1543,6 +1624,7 @@ export const publicVideoStudioProjectSchema = videoStudioProjectSchema.omit({
   delivery_variant_creation_receipts: true,
   finishing_receipts: true,
   editorial_mutation_receipts: true,
+  review_resolutions: true,
   video_asset_attestations: true,
   editorial_timeline_versions: true,
   timeline_drafts: true,
@@ -2029,6 +2111,40 @@ export const postVideoCreativeMessageInputSchema = z.object({
   }).optional(),
 })
 
+export const createVideoReviewNoteInputSchema = z.object({
+  actor_id: z.string().trim().min(1).max(160),
+  anchor: videoReviewAnchorSchema,
+  body: z.string().trim().min(1).max(8_000),
+})
+
+export const resolveVideoReviewNoteInputSchema = z.object({
+  actor_id: z.string().trim().min(1).max(160),
+  state: z.enum(['addressed', 'dismissed']),
+  resolution_proposal_id: mediaIdSchema.optional(),
+  resolved_by_timeline_version_id: mediaIdSchema.optional(),
+  resolved_by_variant_version_id: mediaIdSchema.optional(),
+}).superRefine((value, context) => {
+  const references = [
+    value.resolution_proposal_id,
+    value.resolved_by_timeline_version_id,
+    value.resolved_by_variant_version_id,
+  ].filter(Boolean)
+  if (value.state === 'addressed' && references.length !== 1) {
+    context.addIssue({ code: 'custom', message: 'addressed review requires exactly one immutable resolution reference' })
+  }
+  if (value.state === 'dismissed' && references.length > 0) {
+    context.addIssue({ code: 'custom', message: 'dismissed review cannot claim a replacement version' })
+  }
+})
+
+export const createVideoApprovalDecisionInputSchema = z.object({
+  actor_id: z.string().trim().min(1).max(160),
+  state: z.enum(['approved', 'changes_requested']),
+  note_ids: z.array(mediaIdSchema).max(2_000).default([]).superRefine((value, context) => {
+    if (new Set(value).size !== value.length) context.addIssue({ code: 'custom', message: 'note_ids 不能重复' })
+  }),
+})
+
 export const acceptVideoCreativeProposalInputSchema = z.object({
   base_revision: z.number().int().nonnegative(),
   /** Partial acceptance is limited to a subset of a proposed CommandSet and
@@ -2282,10 +2398,14 @@ export type VideoDurationFeasibility = z.infer<typeof videoDurationFeasibilitySc
 export type VideoEditorialPlan = z.infer<typeof videoEditorialPlanSchema>
 export type VideoCreativeRecipeId = z.infer<typeof videoCreativeRecipeIdSchema>
 export type VideoCreativeContextAnchor = z.infer<typeof videoCreativeContextAnchorSchema>
+export type VideoReviewAnchor = z.infer<typeof videoReviewAnchorSchema>
 export type VideoCreativeSession = z.infer<typeof videoCreativeSessionSchema>
 export type VideoCreativeMessage = z.infer<typeof videoCreativeMessageSchema>
 export type VideoCreativeResponse = z.infer<typeof videoCreativeResponseSchema>
 export type VideoCreativeProposal = z.infer<typeof videoCreativeProposalSchema>
+export type VideoReviewNote = z.infer<typeof videoReviewNoteSchema>
+export type VideoReviewResolution = z.infer<typeof videoReviewResolutionSchema>
+export type VideoApprovalDecision = z.infer<typeof videoApprovalDecisionSchema>
 export type VideoPlanningUpdate = z.infer<typeof videoPlanningUpdateSchema>
 export type VideoQuickCreateCandidate = z.infer<typeof videoQuickCreateCandidateSchema>
 export type VideoQuickCreateBatch = z.infer<typeof videoQuickCreateBatchSchema>
@@ -2324,6 +2444,9 @@ export type CreateVideoEditorialPlanInput = z.input<typeof createVideoEditorialP
 export type QuickCreateVideoInput = z.input<typeof quickCreateVideoInputSchema>
 export type CreateVideoCreativeSessionInput = z.input<typeof createVideoCreativeSessionInputSchema>
 export type PostVideoCreativeMessageInput = z.input<typeof postVideoCreativeMessageInputSchema>
+export type CreateVideoReviewNoteInput = z.input<typeof createVideoReviewNoteInputSchema>
+export type ResolveVideoReviewNoteInput = z.input<typeof resolveVideoReviewNoteInputSchema>
+export type CreateVideoApprovalDecisionInput = z.input<typeof createVideoApprovalDecisionInputSchema>
 export type AcceptVideoCreativeProposalInput = z.input<typeof acceptVideoCreativeProposalInputSchema>
 export type CreateRemoteAnalysisConsentInput = z.input<typeof createRemoteAnalysisConsentInputSchema>
 export type EstimateRemoteAnalysisInput = z.input<typeof estimateRemoteAnalysisInputSchema>

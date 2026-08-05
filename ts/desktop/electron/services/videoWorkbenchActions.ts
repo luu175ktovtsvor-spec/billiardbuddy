@@ -21,6 +21,8 @@ import {
   videoExecutionPlanSchema,
   videoQualityAcknowledgementSchema,
   videoQualityReportSchema,
+  videoReviewNoteSchema,
+  videoApprovalDecisionSchema,
   videoRemoteBudgetSchema,
   videoWorkbenchWorkspaceSnapshotSchema,
   type AnalyzeVideoBeatInput,
@@ -37,10 +39,13 @@ import {
   type CreateVideoCaptionRevisionInput,
   type CreateVideoCaptionTranslationInput,
   type CreateVideoCompositionPlanInput,
+  type CreateVideoReviewNoteInput,
+  type CreateVideoApprovalDecisionInput,
   type MediaSafeErrorCode,
   type PreflightVideoVariantInput,
   type PreviewVideoVariantInput,
   type RenderVideoVariantInput,
+  type ResolveVideoReviewNoteInput,
 } from '../../../shared/contracts/media.js'
 import type {
   VideoAudioFinishingPlanResult,
@@ -52,6 +57,8 @@ import type {
   VideoFactPageRequest,
   VideoFactSearchRequest,
   VideoPostRenderQualityConfirmationResult,
+  VideoReviewNoteResult,
+  VideoApprovalDecisionResult,
   VideoPreflightVariantResult,
   VideoSubjectTrackResult,
   VideoWorkbenchProjectCreateInput,
@@ -133,6 +140,17 @@ const variantReadResponseSchema = z.object({
   variant: deliveryVariantSchema,
   version: deliveryVariantVersionSchema,
 }).strict()
+const reviewNotesResponseSchema = z.object({ notes: z.array(videoReviewNoteSchema) }).strict()
+const reviewNoteResponseSchema = z.object({
+  project: publicVideoStudioProjectSchema,
+  note: videoReviewNoteSchema,
+  reused: z.boolean(),
+}).strict()
+const approvalDecisionResponseSchema = z.object({
+  project: publicVideoStudioProjectSchema,
+  decision: videoApprovalDecisionSchema,
+  reused: z.boolean(),
+}).strict()
 
 export type ElectronVideoWorkbenchActionsOptions = Readonly<{
   getServerUrl: () => Promise<string>
@@ -200,6 +218,43 @@ export class ElectronVideoWorkbenchActions {
       ...(request.cursor ? { cursor: request.cursor } : {}),
       ...(request.limit ? { limit: String(request.limit) } : {}),
     })
+  }
+
+  async loadReviewNotes(projectId: string, timelineVersionId: string) {
+    return (await this.get(
+      `/api/videos/projects/${encodeURIComponent(projectId)}/timelines/${encodeURIComponent(timelineVersionId)}/review-notes`,
+      reviewNotesResponseSchema,
+    )).notes
+  }
+
+  async createReviewNote(projectId: string, timelineVersionId: string, input: CreateVideoReviewNoteInput, idempotencyKey: string): Promise<VideoReviewNoteResult> {
+    const response = await this.post(
+      `/api/videos/projects/${encodeURIComponent(projectId)}/timelines/${encodeURIComponent(timelineVersionId)}/review-notes`,
+      input,
+      reviewNoteResponseSchema,
+      idempotencyKey,
+    )
+    return { note: response.note, reused: response.reused }
+  }
+
+  async resolveReviewNote(projectId: string, timelineVersionId: string, reviewNoteId: string, input: ResolveVideoReviewNoteInput, idempotencyKey: string): Promise<VideoReviewNoteResult> {
+    const response = await this.post(
+      `/api/videos/projects/${encodeURIComponent(projectId)}/timelines/${encodeURIComponent(timelineVersionId)}/review-notes/${encodeURIComponent(reviewNoteId)}/resolve`,
+      input,
+      reviewNoteResponseSchema,
+      idempotencyKey,
+    )
+    return { note: response.note, reused: response.reused }
+  }
+
+  async createApprovalDecision(projectId: string, timelineVersionId: string, input: CreateVideoApprovalDecisionInput, idempotencyKey: string): Promise<VideoApprovalDecisionResult> {
+    const response = await this.post(
+      `/api/videos/projects/${encodeURIComponent(projectId)}/timelines/${encodeURIComponent(timelineVersionId)}/approval`,
+      input,
+      approvalDecisionResponseSchema,
+      idempotencyKey,
+    )
+    return { decision: response.decision, reused: response.reused }
   }
 
   async assertProject(projectId: string): Promise<void> {

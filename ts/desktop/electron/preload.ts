@@ -637,6 +637,22 @@ const videos: VideoWorkbenchPreloadBridge = {
     ELECTRON_IPC_CHANNELS.videoWorkbench,
     { action: 'search_facts', projectId, query, ...(request ? { request } : {}) },
   ),
+  loadReviewNotes: (projectId, timelineVersionId) => invoke<VideoBridgeResult<'loadReviewNotes'>>(
+    ELECTRON_IPC_CHANNELS.videoWorkbench,
+    { action: 'load_review_notes', projectId, timelineVersionId },
+  ),
+  createReviewNote: (projectId, timelineVersionId, command) => invoke<VideoBridgeResult<'createReviewNote'>>(
+    ELECTRON_IPC_CHANNELS.videoWorkbench,
+    { action: 'create_review_note', projectId, timelineVersionId, command },
+  ),
+  resolveReviewNote: (projectId, timelineVersionId, reviewNoteId, command) => invoke<VideoBridgeResult<'resolveReviewNote'>>(
+    ELECTRON_IPC_CHANNELS.videoWorkbench,
+    { action: 'resolve_review_note', projectId, timelineVersionId, reviewNoteId, command },
+  ),
+  createApprovalDecision: (projectId, timelineVersionId, command) => invoke<VideoBridgeResult<'createApprovalDecision'>>(
+    ELECTRON_IPC_CHANNELS.videoWorkbench,
+    { action: 'create_approval_decision', projectId, timelineVersionId, command },
+  ),
   chooseSources: projectId => invoke<VideoBridgeResult<'chooseSources'>>(
     ELECTRON_IPC_CHANNELS.videoWorkbench,
     { action: 'choose_sources', projectId },

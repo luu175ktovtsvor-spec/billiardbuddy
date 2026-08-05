@@ -190,6 +190,22 @@ export class VideoWorkbenchService {
     return await this.root.editorial.rejectCreativeProposal(...args)
   }
 
+  async getReviewNotes(...args: Parameters<VideoWorkbenchCompositionRoot['editorial']['getReviewNotes']>) {
+    return await this.root.editorial.getReviewNotes(...args)
+  }
+
+  async createReviewNote(...args: Parameters<VideoWorkbenchCompositionRoot['editorial']['createReviewNote']>) {
+    return await this.root.editorial.createReviewNote(...args)
+  }
+
+  async resolveReviewNote(...args: Parameters<VideoWorkbenchCompositionRoot['editorial']['resolveReviewNote']>) {
+    return await this.root.editorial.resolveReviewNote(...args)
+  }
+
+  async createApprovalDecision(...args: Parameters<VideoWorkbenchCompositionRoot['editorial']['createApprovalDecision']>) {
+    return await this.root.editorial.createApprovalDecision(...args)
+  }
+
   async getDeliveryVariant(...args: Parameters<VideoWorkbenchCompositionRoot['finishingDelivery']['getDeliveryVariant']>) {
     return await this.root.finishingDelivery.getDeliveryVariant(...args)
   }

@@ -16,6 +16,8 @@ import {
   acceptVideoCreativeProposalInputSchema,
   applyVideoAlternativeInputSchema,
   createVideoCreativeSessionInputSchema,
+  createVideoReviewNoteInputSchema,
+  createVideoApprovalDecisionInputSchema,
   createVideoEditorialPlanInputSchema,
   createVideoSourceRangeDecisionInputSchema,
   createDeliveryVariantInputSchema,
@@ -39,6 +41,7 @@ import {
   updateVideoTimelineInputSchema,
   upsertVideoDeliveryIntentInputSchema,
   postVideoCreativeMessageInputSchema,
+  resolveVideoReviewNoteInputSchema,
   quickCreateVideoInputSchema,
   videoPreviewTaskResultSchema,
   videoRenderTaskResultSchema,
@@ -56,6 +59,8 @@ import {
   type AcceptVideoCreativeProposalInput,
   type ApplyVideoAlternativeInput,
   type CreateVideoCreativeSessionInput,
+  type CreateVideoReviewNoteInput,
+  type CreateVideoApprovalDecisionInput,
   type CreateVideoEditorialPlanInput,
   type CreateVideoSourceRangeDecisionInput,
   type CreateVideoProjectInput,
@@ -82,9 +87,13 @@ import {
   type UpdateVideoTimelineInput,
   type UpsertVideoDeliveryIntentInput,
   type PostVideoCreativeMessageInput,
+  type ResolveVideoReviewNoteInput,
   type QuickCreateVideoInput,
   type VideoCreativeContextAnchor,
+  type VideoReviewAnchor,
   type VideoCreativeProposal,
+  type VideoApprovalDecision,
+  type VideoReviewNote,
   type VideoDurationFeasibility,
   type VideoEditorialPlan,
   type VideoQuickCreateBatch,
@@ -185,6 +194,7 @@ import {
   type EditorialSourceBounds,
   type EditorialSourceTiming,
 } from '../video/domain/editorial/editorialApplication.js'
+import { materializeVideoReviewNotes, nextVideoReviewEventSequence } from '../video/domain/editorial/review.js'
 import {
   FinishingDeliveryApplication,
   FinishingDeliveryValidationError,
@@ -379,7 +389,7 @@ type PlanningCandidate = {
   range: SourceTimeRange
 }
 
-function id(prefix: 'vid' | 'src' | 'clip' | 'task' | 'timeline' | 'draft' | 'evidence' | 'alternative' | 'consent' | 'budget' | 'feasibility' | 'duration_variant' | 'delivery_intent' | 'range_decision' | 'chapter' | 'plan' | 'creative_session' | 'creative_message' | 'creative_response' | 'creative_proposal' | 'scene' | 'quick_batch' | 'quick_candidate' | 'planning_update'): string {
+function id(prefix: 'vid' | 'src' | 'clip' | 'task' | 'timeline' | 'draft' | 'evidence' | 'alternative' | 'consent' | 'budget' | 'feasibility' | 'duration_variant' | 'delivery_intent' | 'range_decision' | 'chapter' | 'plan' | 'creative_session' | 'creative_message' | 'creative_response' | 'creative_proposal' | 'review_note' | 'review_resolution' | 'approval' | 'scene' | 'quick_batch' | 'quick_candidate' | 'planning_update'): string {
   return `${prefix}_${randomUUID().replaceAll('-', '')}`
 }
 

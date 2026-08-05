@@ -11,8 +11,11 @@ import {
   type CreateVideoCaptionRevisionInput,
   type CreateVideoCaptionTranslationInput,
   type CreateVideoCompositionPlanInput,
+  type CreateVideoReviewNoteInput,
+  type CreateVideoApprovalDecisionInput,
   type DeliveryVariantCommand,
   type EditorialTimelineCommand,
+  type ResolveVideoReviewNoteInput,
 } from '../../../shared/contracts/media.js'
 import type { VideoWorkbenchBridge, VideoWorkbenchFactKind, VideoWorkbenchProjectCreateInput, VideoWorkbenchProjectProjection, VideoWorkbenchSelection, VideoWorkbenchSnapshot } from './contracts.js'
 import { VideoWorkbenchController } from './controller.js'
@@ -39,6 +42,9 @@ export type VideoWorkbenchInputAction =
   | 'analyze_beat'
   | 'create_beat_sync_draft'
   | 'analyze_subject_track'
+  | 'create_review_note'
+  | 'resolve_review_note'
+  | 'create_approval_decision'
   | 'confirm_post_render_quality'
 
 /**
@@ -67,6 +73,9 @@ export type VideoWorkbenchActionInput =
   | Readonly<{ action: 'analyze_beat'; input: AnalyzeVideoBeatInput }>
   | Readonly<{ action: 'create_beat_sync_draft'; input: CreateVideoBeatSyncDraftInput }>
   | Readonly<{ action: 'analyze_subject_track'; input: AnalyzeVideoSubjectTrackInput }>
+  | Readonly<{ action: 'create_review_note'; input: CreateVideoReviewNoteInput }>
+  | Readonly<{ action: 'resolve_review_note'; review_note_id: string; input: ResolveVideoReviewNoteInput }>
+  | Readonly<{ action: 'create_approval_decision'; input: CreateVideoApprovalDecisionInput }>
   /** The provider must collect an explicit affirmative action.  Check ids and
    * the output hash stay controller-derived to prevent stale acknowledgements. */
   | Readonly<{ action: 'confirm_post_render_quality'; confirmed: true }>
@@ -76,6 +85,7 @@ export type VideoWorkbenchActionInputRequest = Readonly<{
   project: VideoWorkbenchProjectProjection
   snapshot: VideoWorkbenchSnapshot
   selection: VideoWorkbenchSelection
+  target_id?: string
   pending_quality?: VideoPendingPostRenderQualityConfirmation
 }>
 
@@ -348,6 +358,23 @@ export class VideoWorkbenchProductController {
           if (!input || input.action !== 'analyze_subject_track') return
           return await workspace.analyzeSubjectTrack(this.idempotencyKey(), input.input).then(() => undefined)
         }
+        case 'create_review_note': {
+          const input = await this.requestInput('create_review_note')
+          if (!input || input.action !== 'create_review_note') return
+          return await workspace.createReviewNote(this.idempotencyKey(), input.input).then(() => undefined)
+        }
+        case 'resolve_review_note': {
+          if (!targetId) return this.rejectInput()
+          workspace.dispatch({ type: 'select', selection: { review_note_id: targetId } })
+          const input = await this.requestInput('resolve_review_note', undefined, targetId)
+          if (!input || input.action !== 'resolve_review_note' || input.review_note_id !== targetId) return
+          return await workspace.resolveReviewNote(this.idempotencyKey(), targetId, input.input).then(() => undefined)
+        }
+        case 'create_approval_decision': {
+          const input = await this.requestInput('create_approval_decision')
+          if (!input || input.action !== 'create_approval_decision') return
+          return await workspace.createApprovalDecision(this.idempotencyKey(), input.input).then(() => undefined)
+        }
         case 'preflight': return await this.withSelectedVariant(variantId => workspace.preflight(this.idempotencyKey(), variantId))
         case 'preview': return await this.withSelectedVariant(variantId => workspace.preview(this.idempotencyKey(), variantId))
         case 'render': return await this.withSelectedVariant(variantId => workspace.render(this.idempotencyKey(), variantId))
@@ -394,6 +421,7 @@ export class VideoWorkbenchProductController {
   private async requestInput(
     action: VideoWorkbenchInputAction,
     pendingQuality?: VideoPendingPostRenderQualityConfirmation,
+    targetId?: string,
   ): Promise<VideoWorkbenchActionInput | undefined> {
     const state = this.workspace?.getState()
     const snapshot = state?.snapshot
@@ -407,6 +435,7 @@ export class VideoWorkbenchProductController {
         project: snapshot.project,
         snapshot,
         selection: state.selection,
+        ...(targetId ? { target_id: targetId } : {}),
         ...(pendingQuality ? { pending_quality: pendingQuality } : {}),
       })
       if (input && input.action !== action) {

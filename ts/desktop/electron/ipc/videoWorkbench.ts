@@ -14,12 +14,15 @@ import {
   createVideoCaptionRevisionInputSchema,
   createVideoCaptionTranslationInputSchema,
   createVideoCompositionPlanInputSchema,
+  createVideoReviewNoteInputSchema,
+  createVideoApprovalDecisionInputSchema,
   createVideoProjectInputSchema,
   estimateRemoteAnalysisInputSchema,
   mediaIdSchema,
   preflightVideoVariantInputSchema,
   previewVideoVariantInputSchema,
   renderVideoVariantInputSchema,
+  resolveVideoReviewNoteInputSchema,
 } from '../../../shared/contracts/media.js'
 
 const idempotencyKeySchema = z.string().trim().min(16).max(160)
@@ -64,6 +67,10 @@ export const videoWorkbenchIpcPayloadSchema = z.discriminatedUnion('action', [
   z.object({ action: z.literal('load_operation_events'), projectId: mediaIdSchema, cursor: z.number().int().nonnegative() }).strict(),
   z.object({ action: z.literal('load_facts'), projectId: mediaIdSchema, kind: factKindSchema, request: factPageRequestSchema.optional() }).strict(),
   z.object({ action: z.literal('search_facts'), projectId: mediaIdSchema, query: z.string().trim().min(1).max(1000), request: factSearchRequestSchema.optional() }).strict(),
+  z.object({ action: z.literal('load_review_notes'), projectId: mediaIdSchema, timelineVersionId: mediaIdSchema }).strict(),
+  z.object({ action: z.literal('create_review_note'), projectId: mediaIdSchema, timelineVersionId: mediaIdSchema, command: command(createVideoReviewNoteInputSchema.strict()) }).strict(),
+  z.object({ action: z.literal('resolve_review_note'), projectId: mediaIdSchema, timelineVersionId: mediaIdSchema, reviewNoteId: mediaIdSchema, command: command(resolveVideoReviewNoteInputSchema.strict()) }).strict(),
+  z.object({ action: z.literal('create_approval_decision'), projectId: mediaIdSchema, timelineVersionId: mediaIdSchema, command: command(createVideoApprovalDecisionInputSchema.strict()) }).strict(),
   z.object({ action: z.literal('choose_sources'), projectId: mediaIdSchema }).strict(),
   z.object({ action: z.literal('add_sources'), projectId: mediaIdSchema, selectionIds: z.array(sourceSelectionIdSchema).min(1).max(200), idempotencyKey: idempotencyKeySchema }).strict(),
   z.object({ action: z.literal('estimate_remote_analysis'), projectId: mediaIdSchema, command: command(estimateRemoteAnalysisInputSchema.strict()) }).strict(),
