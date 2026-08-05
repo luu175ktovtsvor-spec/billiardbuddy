@@ -159,6 +159,8 @@ App Server 异常退出时，待处理审批立即失败，活动 Turn 的客户
 
 Chat 适配器不保存会话、不生成摘要、不计算压缩阈值、不重试 Agent，也不伪造 Responses-only 托管工具。它只做协议转换。直接 Responses 路线不转换协议。
 
+截至 2026-08-05，DeepSeek 的官方 Responses 文档只将 `deepseek-v4-flash` 列为正式支持模型；它不提供 `previous_response_id`、`conversation`、`truncation` 或 `context_management`，并会把 `input_image` 静默替换为占位文本。BilliardBuddy 因此不向 Core 写入上下文窗口或压缩覆盖，也不尝试补造远端会话；Core 继续保有完整历史与本地压缩。托管 DeepSeek 路线在本机适配器入口拒绝图片，以免把“图片被静默降级”伪装为原生视觉能力；function、web search 与 `apply_patch` 以 Provider 实际协议结果为准。这个适配边界不修改 Codex 的 Tool Router、Thread/Turn 或压缩语义。
+
 ## 5. 审批与高权限宿主边界
 
 Rust Core 的审批仍是 Agent 工具审批权威。Electron 不为每次点击、输入、文件写入或 MCP 工具再建一套审批状态。
@@ -231,7 +233,7 @@ runtime-assets/agent-marketplace/
 
 ## 8. 本机 `.app` 只读审计结论
 
-本次只读检查对象：`/Applications/ChatGPT.app` 版本 `26.727.51351`。
+本次只读检查对象：`/Applications/ChatGPT.app` 版本 `26.730.61639`（build `6234`）。
 
 可验证事实：
 
@@ -269,15 +271,13 @@ runtime-assets/agent-marketplace/
 
 ### 9.1 本轮本地验证快照
 
-本段只记录本次仍可复核的命令结果；旧的本机构建缓存、旧提交或文件存在不算证据。最终命令输出同步写入 [Agent 后端能力证据矩阵](docs/重构/Agent后端能力证据矩阵.md)。
+本段只记录当前源树仍可复核的结果；旧提交、旧缓存和已删除的 staging 目录都不是本轮证据。最终命令输出同步写入 [Agent 后端能力证据矩阵](docs/重构/Agent后端能力证据矩阵.md)。
 
-- 完整 Bun 套件通过：`283 pass`、`1 skip`、`0 fail`、`1830 expect`、`42 files`。`bun run check:server`、`bun run check:electron`、`bun run audit:source` 也通过；后者没有缺失导入目标，两个既有人工审阅入口不属于本轮 Agent 路径。
-- 锁定源码、两份产品补丁和协议总账已通过 `bun run verify:codex-engine-source`：73 个直连 client request、63 个逐项审计但不暴露的请求、6 类 server request。任何上游 revision 或协议变化都要求重新审计。
-- 已暂存 macOS arm64 Core/插件通过 App Server `thread/search`/ripgrep smoke、受管 Responses Thread/Turn/恢复 E2E、Hook capability 隔离 E2E、四个插件 verify/MCP smoke 和独立 Browser Use Electron E2E；两个 macOS 原生 Swift 服务通过 `swiftc -typecheck`。以上均不使用真实 Provider。
-- Windows workflow YAML 和 `git diff --check` 已通过本地语法/空白审计；这不是 Windows 成品证据。
-- 当前机器按用户明确限制不进行 Rust `cargo` 编译或测试，避免再次耗尽磁盘/内存；Rust `fmt/check/test`、Windows C++/MSVC 链接、NSIS 解包和成品 smoke 由用户说“构建”后的远程 Windows workflow 取得证据。
-- 真实 Provider 冒烟需要的显式确认、端点、模型、协议和专用 Key 环境变量当前均未配置，因此没有产生计费请求。真实 Screen Recording/Accessibility、Chrome extension 连接、安装包 UI 旅程和真实远端 Git push 均不因源码或 mock 通过而自动视为已验证；它们保留在证据矩阵的受控验证计划中。
-- 本轮不提交、不推送、不触发 GitHub，直到用户明确说“构建”。
+- `bun run verify:codex-engine-source` 已重新通过：锁定 revision、两份产品补丁、73 个直连 client request、63 个逐项审计但不暴露的请求和 6 类 server request 均与当前 Rust 源码相符。任何上游 revision 或协议变化都要求重新审计。
+- 当前工作树存在被 `.gitignore` 排除的 macOS arm64 引擎、`codex-code-mode-host`、`rg` 与插件工件；它们没有本轮从锁定源码重新生成、stage/handshake 或安装包审计的可复核收据，不能当作当前成品证据。Windows 工件与安装包成品同样没有本轮证据；唯一远程构建必须重新生成并验证这些对象。
+- 当前机器按用户明确限制不安装依赖、不进行 Rust `cargo` 编译或全量 Bun 类型/测试，避免再次耗尽磁盘/内存；Rust `fmt/check/test`、Swift、Windows C++/MSVC 链接、插件 stage/smoke、Browser E2E、NSIS 解包和 `app.asar` 成品审计由用户说“构建”后的远程 workflow 取得证据。
+- 真实 Provider 冒烟需使用可撤销、低额度专用 Key，且仅在静态和打包门禁完成后运行；当前尚未发起计费请求。真实 Screen Recording/Accessibility、Chrome extension 连接、安装包 UI 旅程和远端 Git push 均不因源码或 mock 通过而自动视为已验证。
+- 用户已明确说“构建”；本次仅允许执行一次 Windows workflow。workflow 完成前，Windows 原生编译、安装包、PE/NSIS 与成品资源审计仍不算已验证。
 
 ## 10. 最终完成标准
 

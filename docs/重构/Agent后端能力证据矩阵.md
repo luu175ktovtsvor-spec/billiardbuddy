@@ -16,7 +16,7 @@
 | 审批、追问、MCP 表单与通知回调 | Core 发起 server request；Electron 只转发并绑定发起窗口 | `app-server-protocol` 的 server request 定义和 [App Server](https://learn.chatgpt.com/docs/app-server) 审批/事件模型 | App Server request -> Runtime 校验 -> Main 以 Thread/Turn 绑定 `webContents.id` -> 后续 Renderer 回答同一 request id；窗口销毁时拒绝未决请求 | 两平台相同；系统权限另由宿主管理 | 6 类 server request 合同、所有权释放和崩溃清理受测试/协议脚本保护 | 无审批 UI 时必须 fail-closed；没有用户可见旅程 | Electron 审批数据库、自动批准或绕过 Core |
 | 原生终端和模糊文件搜索 | Codex App Server；Main 仅守住 workspace 与窗口所有权 | 协议 `command/exec*`、`fuzzyFileSearch*`；上游 App Server message processor | Preload 窄参数 -> Main 从 Thread 取已绑定 cwd -> Runtime -> 原生 PTY/搜索；process/session id 的输出只回发起窗口 | 两平台协议；PTY 实现归上游 | 协议及所有权/输入边界测试 | Windows 真正 PTY、终端 UI 及打包产物待远程与前端验证 | Renderer 任意 `spawn`、任意 cwd、任意 fs/write 或独立 Shell 服务 |
 | MCP、Skills、Hooks、Plugin、本地市场和外部 Agent 配置迁移 | Codex Core/App Server；BilliardBuddy 只随包提供本地市场 | 上游 `mcp`、`skills`、`hooks`、`external-agent-migration` 模块；[Plugins](https://learn.chatgpt.com/docs/plugins) 和 App Server 文档 | Preload -> IPC -> Main -> 原生 `mcpServer*`、`skills*`、`hooks/*`、`plugin/*`、`marketplace/*`、迁移请求；Hook 信任仅在 Main 明确确认后写入上游已有 hash 状态 | 同一配置语义；本地插件二进制按平台 | 锁定协议、补丁内容和 Hook 子进程环境验证；插件 stage/verify/smoke 由本地和远程门禁执行 | 本地市场条目是 `AVAILABLE`，不是启动即安装；没有插件/迁移 UI；上游标为实验/开发中的接口不承诺跨 revision 稳定 | ChatGPT 私有市场、远程插件共享、MCP Apps UI、绕过原生权限或自建 MCP 生命周期 |
-| 托管 DeepSeek、用户 Responses Key、旧 Chat Completions Key 进入同一个 Core | BilliardBuddy 本机凭据桥/无状态协议适配；Core 仍是唯一 Agent | Codex Core 只走 Responses wire；锁定 provider/config 源码；[Responses API](https://platform.openai.com/docs/api-reference/responses) | 安装会话或个人 Key -> Main 路由 -> loopback capability -> Rust App Server -> 本机 adapter；旧 Chat 只做 request/SSE 协议转换，不能保存 Thread 或重写工具 | TypeScript 路径两平台相同 | adapter 回归含 key 反射错误脱敏、图像能力拒绝、协议转换；Key 不进入 Rust 子进程的正常环境白名单 | 真实 Provider 只能用可撤销、低额度专用 Key 做每协议两 Turn smoke；当前不把 mock 当线上证据 | OpenAI 登录/计费/云推理；用户填写上下文窗口或最大输出；改写 Core 压缩 |
+| 托管 DeepSeek、用户 Responses Key、旧 Chat Completions Key 进入同一个 Core | BilliardBuddy 本机凭据桥/无状态协议适配；Core 仍是唯一 Agent | Codex Core 只走 Responses wire；锁定 provider/config 源码；[DeepSeek Responses 兼容性](https://api-docs.deepseek.com/zh-cn/guides/responses_api) | 安装会话或个人 Key -> Main 路由 -> loopback capability -> Rust App Server -> 本机 adapter；旧 Chat 只做 request/SSE 协议转换，不能保存 Thread 或重写工具 | TypeScript 路径两平台相同 | adapter 回归含 key 反射错误脱敏、图像能力拒绝、协议转换；Key 不进入 Rust 子进程的正常环境白名单；2026-08-05 官方 DeepSeek 文档确认无远端会话/截断管理，且图片会静默降级 | 真实 Provider 必须使用专用可撤销 Key：先做两 Turn+重启恢复的最小探针，再按协议、工具和视觉能力分组扩展；当前不把 mock 或静态目录当线上证据 | OpenAI 登录/计费/云推理；用户填写上下文窗口或最大输出；改写 Core 压缩 |
 | 多模态模型的视觉输入 | 所选 Provider 的模型能力；BilliardBuddy 只按模型能力传递输入 | Responses 输入图片语义和 Core 的 image input；模型是否视觉由 Provider/模型决定，不由 Agent 伪造 | Appshot 或普通 image Turn -> Main -> Runtime -> adapter；托管 DeepSeek 文本模型在 adapter 入口拒绝 `input_image`，视觉模型则按其 Responses 能力直通 | 与 Provider 无关的宿主边界两平台相同 | capability registry 和 adapter 负例测试 | 没有把非视觉模型“补成视觉”的隐式 Agent 功能；用户自接视觉模型需做真实图片 smoke | 用 Skill/MCP 把视觉结果伪装成模型原生视觉，或为模型设置上下文/输出限制 |
 | Computer Use 的语义化系统操作 | BilliardBuddy Computer Use 插件和 macOS AX / Windows UIA 服务；Core 管工具调用/审批 | [Computer Use](https://learn.chatgpt.com/docs/computer-use) 的桌面产品语义；本机包的插件/专用宿主形态只用于职责反推 | Core MCP 工具 -> 原生审批回调 -> Rust MCP -> Swift AX 或 C++ UIA -> 动作前重新验证前台 app/window/元素 fingerprint -> 结果回 Core | macOS Swift；Windows C++/UIA | 语义 snapshot、敏感控件拒绝、UTF-16/UIA/DPI/前台复核和打包静态审计有代码与测试；macOS Swift typecheck、插件 verify/smoke 已通过 | 坐标 click/drag/scroll 仍是受 app/window/前台/边界复核的兜底，不能说“没有坐标”；真实权限用户旅程和 Windows 编译待远程 | 后台任意控制、盲目坐标宏、密码/支付输入、复制私有执行器 |
 | 独立 Browser Use 与受限 Browser Developer Mode | Electron `InAppBrowserHost` + Browser MCP；Core 管工具 | 本机包的 Browser Skill/客户端形态；Browser 不属于 App Server 会话状态 | Core MCP 工具 -> approval -> loopback capability -> Main 的隔离 Electron partition -> 隔离世界元素句柄；Developer Mode 只投影 DOM/Layout/Performance | Electron 行为两平台一致 | Browser E2E、句柄失效、脱敏 Console/Network/Performance 和 CDP allowlist 有自动验证门 | Windows 打包后 E2E 尚待唯一远程构建；无 Browser UI | 用户 Chrome Profile、Cookie/Storage、任意 CDP、页面主世界注入 |
@@ -29,13 +29,12 @@
 
 ## 本轮可复核验证
 
-- 完整 Bun 套件执行 `bun test --preload ./test/setup.ts --max-concurrency=1 ./test ../gateway ../relay`：`283 pass`、`1 skip`、`0 fail`、`1830 expect`、`42 files`。本机受限 sandbox 不允许 loopback listen，因此该命令在受控的非 sandbox 测试环境运行；没有残留测试服务。
-- `bun run check:server`、`bun run check:electron`、`bun run audit:source` 均通过。导入扫描没有缺失目标；它只报告两个与本轮 Agent 无关的既有人工审阅入口，不能据此宣布产品路径断开。
-- `bun run verify:codex-engine-source` 通过：锁定 revision、两份最小凭据隔离补丁、73 个直连 client request、63 个审计但不暴露的请求和 6 类 server request 均与源码相符。
-- 暂存 macOS arm64 产物通过 `verify:codex-engine`、原生 `thread/search`/ripgrep smoke、四个插件的 verify/MCP smoke、受管 Responses Thread/Turn/恢复 E2E、Hook capability 隔离 E2E，以及独立 Browser Use Electron E2E。它们均使用临时目录或本地模拟上游，未调用真实 Provider。
-- `BilliardBuddyComputerUseService.swift` 与 `BilliardBuddyRecordReplayService.swift` 已通过 macOS arm64 `swiftc -typecheck`；临时 module cache 已删除。
-- 三份 GitHub workflow YAML 已解析，`git diff --check` 通过。Windows MSVC、Rust `fmt/check/test`、NSIS 解包和最终 `app.asar` 资源审计仍待用户明确“构建”后唯一一次 Windows workflow。
-- 真实 Provider 冒烟所需的显式确认、端点、模型、协议和专用 Key 环境变量均未配置，因此未运行，也没有任何计费请求。真实系统权限、Chrome 扩展连接、安装包 UI 旅程和远端 Git push 同样不因本地验证而视为完成。
+- 当前源树已重新执行 `bun run verify:codex-engine-source`：锁定 revision、两份最小凭据隔离补丁、73 个直连 client request、63 个审计但不暴露的请求和 6 类 server request 均与源码相符。
+- 本轮尝试运行选定的无 Rust 编译 Agent 边界测试：已执行部分为 `22 pass`、`113 expect`，但 `codexNativeClientBoundary` 与 `localEnvironment` 分别因本机未安装 `zod/v4`、`smol-toml` 而无法加载，整次命令失败。按当前“不安装依赖、不本机编译”边界，这不是代码通过证据；必须在远程构建环境重跑。
+- 当前工作树存在被忽略的 macOS arm64 引擎和插件工件，但没有本轮从锁定源码重新生成、stage/handshake 或成品审计的可复核收据。因此先前的 macOS staging、Swift typecheck、插件 handshake、Browser E2E 和受管 Thread/Turn E2E 不能被当作当前成品证据；Windows 工件与安装包同样须在唯一远程构建中重新生成后验证。
+- 当前机器按用户明确限制不安装依赖或编译 Rust；全量 TypeScript 检查/测试、Rust `fmt/check/test`、Swift typecheck、插件 stage/smoke、Browser E2E、Windows MSVC/PE、NSIS 解包和最终 `app.asar` 资源审计均待用户明确“构建”后的远程 workflow。
+- 真实 Provider 冒烟尚未运行。它必须使用可撤销、低额度、限速的专用 Key，在静态和打包门禁通过后执行；系统权限、Chrome 扩展连接、安装包 UI 旅程和远端 Git push 不因源码或 mock 通过而视为完成。
+- 用户已明确说“构建”；本次只触发一次 Windows workflow。workflow 完成前，Windows 原生编译、安装包、PE/NSIS 与成品资源审计仍未验证。
 
 ## 对抗审计结论
 
@@ -56,7 +55,7 @@
 真实网络验证只在用户提供的可撤销、低额度、限速测试 Key 已进入受控环境后执行；脚本不读取或打印现有用户长期 Key。
 
 1. 先跑 mock/本地 Core 测试，覆盖协议转换、Thread/Turn、错误脱敏、Key 不进 Rust 子进程和 Hook capability 隔离。
-2. 每种协议仅运行一次固定两 Turn 小烟测：Responses、旧 Chat Completions、一个确认支持图像的 Responses 模型。
+2. 每种协议先运行固定两 Turn（含重启后的 Thread 恢复与历史读取）的小烟测：Responses、旧 Chat Completions、一个确认支持图像的 Responses 模型。只有这一步通过，才允许按协议、工具和视觉能力分组扩大样本；每一批都要有独立的次数、超时和费用上限，并与 CI 和长期 Key 隔离。
 3. 多模态烟测使用固定无敏感图片，验证的是该模型自身的视觉输入，不把视觉结果伪装成文本模型原生能力。
 4. 在安装包产物上人工完成一次 UI 旅程：保存 Key、创建/恢复 Thread、拒绝一次审批、清除 Key。它才验证 Preload/IPC/Main、安全存储和打包路径。
 
