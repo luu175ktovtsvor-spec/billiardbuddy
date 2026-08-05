@@ -91,10 +91,14 @@ export function safePersonalModelBaseUrl(value: string, protocol: PersonalModelP
       throw new Error('PERSONAL_MODEL_BASE_URL_CONTAINS_SECRET')
     }
   }
+  // The provider owns the API root. Do not invent `/v1` when the user or
+  // official preset intentionally supplies an origin-only URL (DeepSeek's
+  // Responses endpoint is `/responses`, not `/v1/responses`). Existing
+  // providers that require `/v1` keep it because it is part of their input.
   let pathname = url.pathname.replace(/\/+$/, '')
   const endpointSuffix = protocol === 'openai-compatible' ? '/chat/completions' : '/responses'
   if (pathname.endsWith(endpointSuffix)) pathname = pathname.slice(0, -endpointSuffix.length)
-  url.pathname = pathname || '/v1'
+  url.pathname = pathname || '/'
   return url.toString().replace(/\/$/, '')
 }
 

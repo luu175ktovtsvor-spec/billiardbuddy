@@ -6,7 +6,10 @@ import {
   startCodexNativeProvider,
 } from '../desktop/electron/services/codexNativeProvider'
 import { personalModelProviderPreset } from '../shared/product/personalModelProviderCatalog'
-import type { PersonalModelProfile } from '../shared/product/personalModels'
+import {
+  normalizePersonalModelProfile,
+  type PersonalModelProfile,
+} from '../shared/product/personalModels'
 
 const adapters: ChatCompletionsResponsesAdapter[] = []
 const servers: Server[] = []
@@ -370,5 +373,22 @@ describe('personal provider catalog', () => {
       supported_protocols: ['openai-responses', 'openai-compatible'],
       documentation_url: 'https://api-docs.deepseek.com/zh-cn/guides/responses_api',
     })
+  })
+
+  test('preserves an origin-only Responses endpoint instead of inventing /v1', () => {
+    expect(normalizePersonalModelProfile({
+      label: 'DeepSeek Responses',
+      base_url: 'https://api.deepseek.com',
+      model: 'deepseek-v4-flash',
+      protocol: 'openai-responses',
+      api_key: 'deepseek-test-key',
+    }, 'deepseek-profile').base_url).toBe('https://api.deepseek.com')
+    expect(normalizePersonalModelProfile({
+      label: 'OpenAI Responses',
+      base_url: 'https://api.openai.com/v1',
+      model: 'example-model',
+      protocol: 'openai-responses',
+      api_key: 'openai-test-key',
+    }, 'openai-profile').base_url).toBe('https://api.openai.com/v1')
   })
 })

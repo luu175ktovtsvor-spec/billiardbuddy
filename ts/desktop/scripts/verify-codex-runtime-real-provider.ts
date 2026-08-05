@@ -160,8 +160,17 @@ function prompt(index: number): string {
 
 function safeFailureCode(error: unknown): string {
   const message = error instanceof Error ? error.message : ''
-  return message.match(/BILLIARDBUDDY_REAL_PROVIDER_SMOKE_[A-Z0-9_]+/)?.[0]
-    ?? 'BILLIARDBUDDY_REAL_PROVIDER_SMOKE_FAILED'
+  const safeCodes = [
+    /BILLIARDBUDDY_REAL_PROVIDER_SMOKE_[A-Z0-9_]+/,
+    /PERSONAL_MODEL_[A-Z0-9_]+/,
+    /CODEX_[A-Z0-9_]+/,
+    /NATIVE_[A-Z0-9_]+/,
+  ]
+  for (const pattern of safeCodes) {
+    const code = message.match(pattern)?.[0]
+    if (code) return code
+  }
+  return 'BILLIARDBUDDY_REAL_PROVIDER_SMOKE_FAILED'
 }
 
 async function main(): Promise<void> {
