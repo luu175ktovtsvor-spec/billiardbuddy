@@ -161,12 +161,22 @@ export function auditPackagedResources(options: AuditOptions): void {
   }
 
   const toolchainDir = join(resources, 'app.asar.unpacked', 'runtime-assets', 'binaries')
-  stageMediaToolchain({
-    destinationDir: toolchainDir,
-    platform: options.platform,
-    target: options.platform === 'win32' ? options.target as WindowsNativeTarget : undefined,
-    verifyOnly: true,
-  })
+  if (process.env.BB_AGENT_ONLY_BUILD !== '1') {
+    stageMediaToolchain({
+      destinationDir: toolchainDir,
+      platform: options.platform,
+      target: options.platform === 'win32' ? options.target as WindowsNativeTarget : undefined,
+      verifyOnly: true,
+    })
+  } else {
+    const mediaBinaryNames = options.platform === 'win32'
+      ? ['ffmpeg.exe', 'ffprobe.exe']
+      : ['ffmpeg', 'ffprobe']
+    const packagedMediaBinary = mediaBinaryNames.find(name => existsSync(join(toolchainDir, name)))
+    if (packagedMediaBinary) {
+      throw new Error(`Agent-only 安装包不应包含媒体工具链: ${packagedMediaBinary}`)
+    }
+  }
   verifyStagedCodexEngine({
     destinationDir: toolchainDir,
     target: options.target,

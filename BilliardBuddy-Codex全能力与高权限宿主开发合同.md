@@ -217,7 +217,7 @@ runtime-assets/agent-marketplace/
 ### 7.1 当前仍需保留的完成门
 
 1. 真实 Provider 仍只能以可撤销、低额度专用 Key 的固定两 Turn smoke 取得证据；不读取、导出或猜测用户已有长期 Key。
-2. Windows x64/ARM64 目前只有静态和跨架构 fail-closed 证据。用户明确说“构建”前，不打包、不推送、不触发 GitHub；之后的一次 Windows workflow 才能证明 MSVC、Rust target、NSIS、解包与 PE 审计。
+2. Windows x64/ARM64 目前只有静态和跨架构 fail-closed 证据。用户明确说“构建”前，不打包、不推送、不触发 GitHub；之后的 Agent-only Windows/macOS workflow 才能证明对应原生编译、安装包、NSIS/签名、解包与资源审计。媒体工具链不进入本轮 Agent 包。
 3. Computer Use、Chrome、Record & Replay、Appshots、Worktree、Git 和 Local Environment 均无前端用户旅程；系统权限、Chrome 扩展人工安装和现场行为不能由类型检查替代。
 4. Scheduled Tasks 只在桌面应用和主窗口存活时运行原生 Turn；没有关闭应用后的系统调度、RRULE、显式时区或重叠策略。
 5. 正式安装包资源审计必须以生成的 `app.asar`/NSIS 成品为对象；staging 清单不能替代它。
@@ -267,7 +267,7 @@ runtime-assets/agent-marketplace/
 9. 文档中的“已完成”与真实代码和证据一致；
 10. 用户明确说“构建”。
 
-本次唯一的 GitHub Windows 构建职责是提供 Windows 原生编译、安装包与目标架构证据，不是发现基础架构遗漏的第一道检查。构建失败后只根据真实日志修复一次根因，再由用户决定是否继续触发。
+本次 Agent-only GitHub Windows/macOS 构建职责是提供 Agent 原生编译、安装包、目标架构和成品资源证据，不是发现基础架构遗漏的第一道检查；它不下载或验证媒体工具链。构建失败后只根据真实日志修复一次根因，再由用户决定是否继续触发。
 
 ### 9.1 本轮本地验证快照
 
@@ -277,7 +277,7 @@ runtime-assets/agent-marketplace/
 - 当前工作树存在被 `.gitignore` 排除的 macOS arm64 引擎、`codex-code-mode-host`、`rg` 与插件工件；它们没有本轮从锁定源码重新生成、stage/handshake 或安装包审计的可复核收据，不能当作当前成品证据。Windows 工件与安装包成品同样没有本轮证据；唯一远程构建必须重新生成并验证这些对象。
 - 当前机器按用户明确限制不安装依赖、不进行 Rust `cargo` 编译或全量 Bun 类型/测试，避免再次耗尽磁盘/内存；Rust `fmt/check/test`、Swift、Windows C++/MSVC 链接、插件 stage/smoke、Browser E2E、NSIS 解包和 `app.asar` 成品审计由用户说“构建”后的远程 workflow 取得证据。
 - 真实 Provider 冒烟需使用可撤销、低额度专用 Key，且仅在静态和打包门禁完成后运行；当前尚未发起计费请求。真实 Screen Recording/Accessibility、Chrome extension 连接、安装包 UI 旅程和远端 Git push 均不因源码或 mock 通过而自动视为已验证。
-- 用户已明确说“构建”；本次仅允许执行一次 Windows workflow。workflow 完成前，Windows 原生编译、安装包、PE/NSIS 与成品资源审计仍不算已验证。
+- 用户已明确说“构建”；本次仅允许执行 Agent-only Windows 与 macOS workflow。workflow 完成前，两平台原生编译、安装包、PE/签名/NSIS 与成品资源审计仍不算已验证；媒体不属于本轮构建门。
 
 ## 10. 最终完成标准
 

@@ -1,4 +1,4 @@
-name: 桌面版-Windows现役TS出包
+name: 桌面版-Windows Agent-only出包
 
 on:
   workflow_dispatch:
@@ -19,6 +19,8 @@ jobs:
   verify-and-build:
     name: Windows ${{ matrix.architecture }}
     runs-on: windows-latest
+    env:
+      BB_AGENT_ONLY_BUILD: '1'
     # Codex App Server is built from the locked Rust source before Electron
     # packaging; keep this aligned with the macOS source-build budget.
     timeout-minutes: ${{ matrix.timeout_minutes }}
@@ -183,83 +185,11 @@ jobs:
             cargo test --locked --manifest-path "${manifest}" --all-targets
           done
 
-      - name: 固定 Windows x64 Canvas golden 并生成审计证据
-        if: matrix.architecture == 'x64'
-        working-directory: ts
-        shell: pwsh
-        env:
-          BB_IMAGE_GOLDEN_REPORT: ${{ runner.temp }}\\image-canvas-golden-windows-x64.json
-        run: |
-          $ErrorActionPreference = 'Stop'
-          bun test --preload ./test/setup.ts --timeout 60000 ./test/imageCanvasGolden.test.ts
-          if ($LASTEXITCODE -ne 0) { throw 'Windows x64 Canvas golden 不匹配' }
-          if (-not (Test-Path -LiteralPath $env:BB_IMAGE_GOLDEN_REPORT -PathType Leaf)) { throw '缺少 Windows x64 golden 审计证据' }
-
-      - name: 保存 Windows x64 Canvas golden 审计证据
-        if: matrix.architecture == 'x64'
-        uses: actions/upload-artifact@v4
-        with:
-          name: image-canvas-golden-windows-x64-${{ github.sha }}
-          if-no-files-found: error
-          retention-days: 14
-          path: ${{ runner.temp }}/image-canvas-golden-windows-x64.json
-
-      - name: 准备经审核的媒体工具链
-        shell: pwsh
-        env:
-          BB_WINDOWS_MEDIA_TOOLCHAIN_URL: ${{ secrets.BB_WINDOWS_MEDIA_TOOLCHAIN_URL }}
-          BB_WINDOWS_MEDIA_TOOLCHAIN_SHA256: ${{ secrets.BB_WINDOWS_MEDIA_TOOLCHAIN_SHA256 }}
-          BB_WINDOWS_MEDIA_TOOLCHAIN_ARM64_URL: ${{ secrets.BB_WINDOWS_MEDIA_TOOLCHAIN_ARM64_URL }}
-          BB_WINDOWS_MEDIA_TOOLCHAIN_ARM64_SHA256: ${{ secrets.BB_WINDOWS_MEDIA_TOOLCHAIN_ARM64_SHA256 }}
-        run: |
-          $ErrorActionPreference = 'Stop'
-
-          $architecture = '${{ matrix.architecture }}'
-          if ($architecture -eq 'arm64') {
-            $mediaUrl = $env:BB_WINDOWS_MEDIA_TOOLCHAIN_ARM64_URL
-            $configuredHash = $env:BB_WINDOWS_MEDIA_TOOLCHAIN_ARM64_SHA256
-            $secretLabel = 'BB_WINDOWS_MEDIA_TOOLCHAIN_ARM64_URL / BB_WINDOWS_MEDIA_TOOLCHAIN_ARM64_SHA256'
-          } else {
-            $mediaUrl = $env:BB_WINDOWS_MEDIA_TOOLCHAIN_URL
-            $configuredHash = $env:BB_WINDOWS_MEDIA_TOOLCHAIN_SHA256
-            $secretLabel = 'BB_WINDOWS_MEDIA_TOOLCHAIN_URL / BB_WINDOWS_MEDIA_TOOLCHAIN_SHA256'
-          }
-          $expectedHash = ([string]$configuredHash).Trim().ToLowerInvariant()
-          if ([string]::IsNullOrWhiteSpace($mediaUrl)) {
-            throw "缺少 GitHub Secret: $secretLabel"
-          }
-          if ($mediaUrl -notmatch '^https://') {
-            throw "$secretLabel 必须使用 HTTPS"
-          }
-          if ($expectedHash -notmatch '^[a-f0-9]{64}$') {
-            throw "$secretLabel 必须提供 64 位十六进制 SHA-256"
-          }
-
-          $archive = Join-Path $env:RUNNER_TEMP "billiardbuddy-media-toolchain-$architecture.zip"
-          $sourceDir = Join-Path $env:RUNNER_TEMP "billiardbuddy-media-toolchain-$architecture"
-          Remove-Item $archive, $sourceDir -Recurse -Force -ErrorAction SilentlyContinue
-          Invoke-WebRequest -Uri $mediaUrl -OutFile $archive
-
-          $actualHash = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant()
-          if ($actualHash -ne $expectedHash) {
-            throw '媒体工具链压缩包 SHA-256 不匹配'
-          }
-
-          Expand-Archive -LiteralPath $archive -DestinationPath $sourceDir
-          @('ffmpeg.exe', 'ffprobe.exe', 'LICENSE.txt', 'media-toolchain-source.json') | ForEach-Object {
-            if (-not (Test-Path -LiteralPath (Join-Path $sourceDir $_) -PathType Leaf)) {
-              throw "媒体工具链压缩包根目录缺少必需文件: $_"
-            }
-          }
-
-          "BB_MEDIA_TOOLCHAIN_SOURCE_DIR=$sourceDir" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "BB_MEDIA_TOOLCHAIN_ARCHITECTURE=$architecture" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-
       - name: 构建 Windows 安装包（sidecar + renderer + Electron + 打包，脚本内置 --publish never）
         working-directory: .
         env:
           SKIP_INSTALL: '1'
-        run: pwsh -NoProfile -ExecutionPolicy Bypass -File ts/desktop/scripts/build-windows-x64.ps1 -Architecture ${{ matrix.architecture }}
+        run: pwsh -NoProfile -ExecutionPolicy Bypass -File ts/desktop/scripts/build-windows-x64.ps1 -Architecture ${{ matrix.architecture }} -AgentOnly
 
       - name: 验证 x64 受管 Runtime、Hook、插件与 Browser 生产链
         if: matrix.architecture == 'x64'
@@ -391,14 +321,12 @@ jobs:
           & ssh @sshArgs root@zzyppz.cn ($publishCommands -join '; ')
           if ($LASTEXITCODE -ne 0) { throw 'Windows 发布文件校验或切换失败' }
 
-      - name: 清理临时凭据与媒体工具链
+      - name: 清理临时凭据
         if: always()
         shell: pwsh
         run: |
           Remove-Item 'ts/desktop/build/product-secrets.json' -Force -ErrorAction SilentlyContinue
           Remove-Item (Join-Path $env:USERPROFILE '.ssh\billiardbuddy-release-upload') -Force -ErrorAction SilentlyContinue
-          Remove-Item (Join-Path $env:RUNNER_TEMP "billiardbuddy-media-toolchain-$env:BB_MEDIA_TOOLCHAIN_ARCHITECTURE.zip") -Force -ErrorAction SilentlyContinue
-          Remove-Item (Join-Path $env:RUNNER_TEMP "billiardbuddy-media-toolchain-$env:BB_MEDIA_TOOLCHAIN_ARCHITECTURE") -Recurse -Force -ErrorAction SilentlyContinue
           Remove-Item (Join-Path $env:RUNNER_TEMP 'billiardbuddy-published-0.4.9-installer') -Recurse -Force -ErrorAction SilentlyContinue
 
 # Windows 发布文件仅在本工作流完成构建和完整性校验后上传至受控更新源；electron-builder 本身始终不直接发布。

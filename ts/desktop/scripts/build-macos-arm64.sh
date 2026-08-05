@@ -23,6 +23,8 @@ Environment:
   SKIP_INSTALL=1   Skip `bun install` in the repo root and desktop app.
   SIGN_BUILD=1     Allow electron-builder to auto-discover signing identities.
   REBUILD_NATIVE=1 Run `electron-builder install-app-deps` before packaging.
+  BB_AGENT_ONLY_BUILD=1
+                   Skip media toolchain staging and package verification.
   MAC_TARGETS      Electron Builder macOS targets. Defaults to "dmg zip".
   BB_MEDIA_TOOLCHAIN_SOURCE_DIR
                    Directory containing audited LGPL ffmpeg/ffprobe, LICENSE.txt, and media-toolchain-source.json.
@@ -44,6 +46,8 @@ if [[ "$(uname -m)" != "arm64" ]]; then
   echo "[build-macos-arm64] This script is intended for Apple Silicon hosts (arm64)." >&2
   exit 1
 fi
+
+export BB_AGENT_ONLY_BUILD="${BB_AGENT_ONLY_BUILD:-0}"
 
 acquire_build_lock() {
   mkdir -p "$(dirname "${BUILD_LOCK_DIR}")"
@@ -120,8 +124,12 @@ if [[ "${SKIP_INSTALL:-0}" != "1" ]]; then
   (cd "${DESKTOP_DIR}" && bun install)
 fi
 
-echo "[build-macos-arm64] Staging audited media toolchain..."
-(cd "${DESKTOP_DIR}" && BB_MEDIA_TOOLCHAIN_PLATFORM=darwin bun run stage:media-toolchain)
+if [[ "${BB_AGENT_ONLY_BUILD}" == "1" ]]; then
+  echo "[build-macos-arm64] Agent-only build: skipping media toolchain staging."
+else
+  echo "[build-macos-arm64] Staging audited media toolchain..."
+  (cd "${DESKTOP_DIR}" && BB_MEDIA_TOOLCHAIN_PLATFORM=darwin bun run stage:media-toolchain)
+fi
 
 echo "[build-macos-arm64] Building and staging managed Codex engine..."
 (cd "${DESKTOP_DIR}" && CODEX_ENGINE_TARGET="${TARGET_TRIPLE}" bun run stage:codex-engine)

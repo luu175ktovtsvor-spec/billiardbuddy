@@ -62,11 +62,15 @@ function validateProductPackageFiles(desktopDir = path.join(__dirname, '..')) {
 
 async function beforePack() {
   validateProductPackageFiles()
-  execFileSync('bun', [path.join(__dirname, 'stage-media-toolchain.ts'), '--verify'], {
-    cwd: path.join(__dirname, '..'),
-    env: process.env,
-    stdio: 'inherit',
-  })
+  if (process.env.BB_AGENT_ONLY_BUILD !== '1') {
+    execFileSync('bun', [path.join(__dirname, 'stage-media-toolchain.ts'), '--verify'], {
+      cwd: path.join(__dirname, '..'),
+      env: process.env,
+      stdio: 'inherit',
+    })
+  } else {
+    console.log('[package] Agent-only build: skipped media toolchain verification')
+  }
   execFileSync('bun', [path.join(__dirname, 'stage-codex-engine.ts'), '--verify'], {
     cwd: path.join(__dirname, '..'),
     env: process.env,

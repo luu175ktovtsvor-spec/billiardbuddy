@@ -2,6 +2,7 @@
 param(
   [ValidateSet('x64', 'arm64')]
   [string]$Architecture = 'x64',
+  [switch]$AgentOnly,
   [Parameter(ValueFromRemainingArguments = $true)]
   [string[]]$BuilderArgs
 )
@@ -10,6 +11,7 @@ param(
 #   SKIP_INSTALL=1        Skip root/desktop dependency installation.
 #   REBUILD_NATIVE=1      Rebuild Electron native dependencies before packaging.
 #   BB_MEDIA_TOOLCHAIN_SOURCE_DIR  Audited LGPL FFmpeg toolchain input directory.
+#   -AgentOnly             Build the Agent host without staging or auditing media binaries.
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -113,6 +115,7 @@ Import-VsDevEnvironment
 Install-LockedRustTarget
 $env:BILLIARDBUDDY_WINDOWS_TARGET = $targetTriple
 $env:BB_MEDIA_TOOLCHAIN_TARGET = $targetTriple
+$env:BB_AGENT_ONLY_BUILD = if ($AgentOnly) { '1' } else { '0' }
 
 if ($env:SKIP_INSTALL -ne '1') {
   Write-Step 'Installing root dependencies...'
@@ -138,16 +141,20 @@ if ($env:SKIP_INSTALL -ne '1') {
   }
 }
 
-Write-Step 'Staging audited media toolchain...'
-Push-Location $desktopDir
-try {
-  $env:BB_MEDIA_TOOLCHAIN_PLATFORM = 'win32'
-  & bun run stage:media-toolchain
-  if ($LASTEXITCODE -ne 0) {
-    throw "[build-windows-x64] stage:media-toolchain failed (exit $LASTEXITCODE)"
+if ($AgentOnly) {
+  Write-Step 'Agent-only build: skipping media toolchain staging.'
+} else {
+  Write-Step 'Staging audited media toolchain...'
+  Push-Location $desktopDir
+  try {
+    $env:BB_MEDIA_TOOLCHAIN_PLATFORM = 'win32'
+    & bun run stage:media-toolchain
+    if ($LASTEXITCODE -ne 0) {
+      throw "[build-windows-x64] stage:media-toolchain failed (exit $LASTEXITCODE)"
+    }
+  } finally {
+    Pop-Location
   }
-} finally {
-  Pop-Location
 }
 
 Write-Step 'Building and staging managed Codex engine...'

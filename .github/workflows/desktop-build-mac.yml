@@ -1,4 +1,4 @@
-name: 桌面版-macOS现役TS出包
+name: 桌面版-macOS Agent-only出包
 
 on:
   workflow_dispatch:
@@ -19,6 +19,8 @@ jobs:
   verify-and-build:
     runs-on: macos-14
     timeout-minutes: 150
+    env:
+      BB_AGENT_ONLY_BUILD: '1'
     steps:
       - uses: actions/checkout@v5
         with:
@@ -56,11 +58,9 @@ jobs:
           bun run check:electron
           bun run verify:codex-engine-source
 
-      - name: 准备经审核的媒体工具链与签名凭据
+      - name: 准备签名与公证凭据
         shell: bash
         env:
-          BB_MACOS_MEDIA_TOOLCHAIN_URL: ${{ secrets.BB_MACOS_MEDIA_TOOLCHAIN_URL }}
-          BB_MACOS_MEDIA_TOOLCHAIN_SHA256: ${{ secrets.BB_MACOS_MEDIA_TOOLCHAIN_SHA256 }}
           BB_MACOS_CERTIFICATE_P12_B64: ${{ secrets.BB_MACOS_CERTIFICATE_P12_B64 }}
           BB_MACOS_CERTIFICATE_PASSWORD: ${{ secrets.BB_MACOS_CERTIFICATE_PASSWORD }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
@@ -70,8 +70,6 @@ jobs:
           set -euo pipefail
 
           required=(
-            BB_MACOS_MEDIA_TOOLCHAIN_URL
-            BB_MACOS_MEDIA_TOOLCHAIN_SHA256
             BB_MACOS_CERTIFICATE_P12_B64
             BB_MACOS_CERTIFICATE_PASSWORD
             APPLE_ID
@@ -84,36 +82,6 @@ jobs:
               exit 1
             fi
           done
-          if [[ ! "${BB_MACOS_MEDIA_TOOLCHAIN_URL}" =~ ^https:// ]]; then
-            echo 'BB_MACOS_MEDIA_TOOLCHAIN_URL 必须使用 HTTPS' >&2
-            exit 1
-          fi
-          expected_hash="$(printf '%s' "${BB_MACOS_MEDIA_TOOLCHAIN_SHA256}" | tr '[:upper:]' '[:lower:]')"
-          if [[ ! "${expected_hash}" =~ ^[a-f0-9]{64}$ ]]; then
-            echo 'BB_MACOS_MEDIA_TOOLCHAIN_SHA256 必须是 64 位十六进制 SHA-256' >&2
-            exit 1
-          fi
-
-          archive="${RUNNER_TEMP}/billiardbuddy-media-toolchain-macos-arm64.tar.gz"
-          source_dir="${RUNNER_TEMP}/billiardbuddy-media-toolchain-macos-arm64"
-          rm -rf "${archive}" "${source_dir}"
-          curl --fail --location --proto '=https' --tlsv1.2 \
-            "${BB_MACOS_MEDIA_TOOLCHAIN_URL}" \
-            --output "${archive}"
-          actual_hash="$(shasum -a 256 "${archive}" | awk '{print $1}')"
-          if [[ "${actual_hash}" != "${expected_hash}" ]]; then
-            echo 'macOS 媒体工具链压缩包 SHA-256 不匹配' >&2
-            exit 1
-          fi
-          mkdir -p "${source_dir}"
-          tar -xzf "${archive}" -C "${source_dir}"
-          for file in ffmpeg ffprobe LICENSE.txt media-toolchain-source.json; do
-            if [[ ! -f "${source_dir}/${file}" ]]; then
-              echo "媒体工具链压缩包根目录缺少必需文件: ${file}" >&2
-              exit 1
-            fi
-          done
-
           certificate_path="${RUNNER_TEMP}/billiardbuddy-developer-id.p12"
           keychain_path="${RUNNER_TEMP}/billiardbuddy-build.keychain-db"
           keychain_password="$(openssl rand -hex 32)"
@@ -137,7 +105,6 @@ jobs:
             grep -F 'Developer ID Application'
 
           {
-            printf 'BB_MEDIA_TOOLCHAIN_SOURCE_DIR=%s\n' "${source_dir}"
             printf 'BB_MACOS_BUILD_KEYCHAIN=%s\n' "${keychain_path}"
             printf 'BB_MACOS_CERTIFICATE_PATH=%s\n' "${certificate_path}"
           } >> "${GITHUB_ENV}"
@@ -151,7 +118,6 @@ jobs:
           CSC_IDENTITY_AUTO_DISCOVERY: 'true'
         run: |
           set -euo pipefail
-          BB_MEDIA_TOOLCHAIN_PLATFORM=darwin bun run stage:media-toolchain
           CODEX_ENGINE_TARGET=aarch64-apple-darwin bun run stage:codex-engine
           bun run verify:codex-engine-smoke -- --target aarch64-apple-darwin
           bun run stage:agent-plugins -- --target aarch64-apple-darwin
@@ -278,15 +244,13 @@ jobs:
           command="$(IFS=';'; printf '%s' "${publish_commands[*]}")"
           ssh "${ssh_args[@]}" root@zzyppz.cn "${command}"
 
-      - name: 清理临时凭据与媒体工具链
+      - name: 清理临时凭据
         if: always()
         shell: bash
         run: |
           rm -f ts/desktop/build/product-secrets.json
           rm -f "${HOME}/.ssh/billiardbuddy-release-upload"
           rm -f "${BB_MACOS_CERTIFICATE_PATH:-}"
-          rm -rf "${RUNNER_TEMP}/billiardbuddy-media-toolchain-macos-arm64"
-          rm -f "${RUNNER_TEMP}/billiardbuddy-media-toolchain-macos-arm64.tar.gz"
           if [[ -n "${BB_MACOS_BUILD_KEYCHAIN:-}" ]]; then
             security delete-keychain "${BB_MACOS_BUILD_KEYCHAIN}" || true
           fi

@@ -120,7 +120,11 @@ function validatePackagedAgentPlugins(context) {
 }
 
 function validatePackagedRuntimeAssets(context) {
-  validatePackagedMediaToolchain(context)
+  if (process.env.BB_AGENT_ONLY_BUILD !== '1') {
+    validatePackagedMediaToolchain(context)
+  } else {
+    console.log('[package] Agent-only build: skipped packaged media toolchain verification')
+  }
   validatePackagedCodexEngine(context)
   validatePackagedAgentPlugins(context)
   const platform = packagePlatform(context)
