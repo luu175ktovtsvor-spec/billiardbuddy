@@ -134,6 +134,10 @@ jobs:
           fi
           base_url="${base_url#"${base_url%%[![:space:]]*}"}"
           base_url="${base_url%"${base_url##*[![:space:]]}"}"
+          if [[ -z "$base_url" ]]; then
+            echo 'DeepSeek Base URL Secret 为空，使用官方 Responses origin'
+            base_url='https://api.deepseek.com'
+          fi
           base_url="${base_url%/}"
           if [[ "$base_url" =~ ^https://api\.deepseek\.com/v1(/responses)?$ ]]; then
             base_url='https://api.deepseek.com'
