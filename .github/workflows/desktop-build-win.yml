@@ -216,11 +216,28 @@ jobs:
           isolated_core_tests=(
             'session::turn::tests::post_sampling_token_estimate_is_disabled_by_always_on_sinks'
           )
+          windows_sandbox_tests=(
+            'suite::windows_sandbox::windows_elevated_does_not_create_missing_workspace_metadata'
+            'suite::windows_sandbox::windows_elevated_enforces_deny_read_and_protects_setup_marker'
+          )
+          cleanup_windows_sandbox_helpers() {
+            # The locked Windows sandbox helper deliberately outlives the
+            # command that requested the ACL refresh. Stop only these test
+            # helpers between isolated invocations so the next upstream test
+            # can replace its staged executable on Windows.
+            powershell.exe -NoProfile -NonInteractive -Command \
+              "Get-Process -Name codex-windows-sandbox-setup,codex-command-runner -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue" \
+              >/dev/null 2>&1 || true
+          }
+          cleanup_windows_sandbox_helpers
           # Run the rest of the locked upstream suite first, then execute the
-          # timing-sensitive and tracing-callsite-sensitive cases one by one.
-          # This is partitioning, not an exclusion: every name is invoked
-          # explicitly below. The tracing test is isolated because its
-          # event_enabled callsite interest is global across dispatchers.
+          # timing-sensitive, tracing-callsite-sensitive, and Windows helper
+          # lifecycle-sensitive cases one by one. This is partitioning, not an
+          # exclusion: every name is invoked explicitly below. The tracing
+          # test is isolated because its event_enabled callsite interest is
+          # global across dispatchers. The Windows tests are isolated because
+          # their official helper intentionally outlives the command and holds
+          # the staged executable open until the process is terminated.
           cargo test --locked --target "${target}" --all-targets \
             --package codex-app-server \
             --package codex-core \
@@ -232,7 +249,9 @@ jobs:
             --skip "${timing_sensitive_tests[1]}" \
             --skip "${timing_sensitive_tests[2]}" \
             --skip "${timing_sensitive_tests[3]}" \
-            --skip "${isolated_core_tests[0]}"
+            --skip "${isolated_core_tests[0]}" \
+            --skip "${windows_sandbox_tests[0]}" \
+            --skip "${windows_sandbox_tests[1]}"
           for test_name in "${timing_sensitive_tests[@]}"; do
             cargo test --locked --target "${target}" \
               --package codex-app-server \
@@ -248,6 +267,16 @@ jobs:
               -- \
               --exact \
               --test-threads=1
+          done
+          for test_name in "${windows_sandbox_tests[@]}"; do
+            cleanup_windows_sandbox_helpers
+            cargo test --locked --target "${target}" \
+              --package codex-core \
+              --test all "${test_name}" \
+              -- \
+              --exact \
+              --test-threads=1
+            cleanup_windows_sandbox_helpers
           done
           popd
 
