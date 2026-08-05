@@ -1,7 +1,13 @@
 import { describe, expect, test } from 'bun:test'
 import { ImageWorkbenchShell, renderImageWorkbenchShell } from '../desktop/src/image-workbench/app/imageWorkbenchShell.js'
 import type { ImageWorkbenchClient, ImageWorkbenchProjectProjection } from '../desktop/src/image-workbench/api/imageWorkbenchClient.js'
-import { imageCandidatePreviewResponseSchema, type ImageQuickCreateInput } from '../shared/contracts/imageWorkflow.js'
+import {
+  IMAGE_WORKBENCH_MASK_MAX_BYTES,
+  IMAGE_WORKBENCH_UPLOAD_MAX_BYTES,
+  IMAGE_WORKBENCH_UPLOAD_TOTAL_MAX_BYTES,
+  imageCandidatePreviewResponseSchema,
+  type ImageQuickCreateInput,
+} from '../shared/contracts/imageWorkflow.js'
 import {
   createImageWorkbenchViewState,
   parseImageWorkbenchViewState,
@@ -269,6 +275,7 @@ test('quick-create maps an optional first-round file to its typed input and stop
 
     const validFile = {
       type: 'image/png',
+      size: 1,
       data_url: 'data:image/png;base64,AA==',
     } as unknown as File
     await internals.quickCreateFromForm(form(validFile, 'product'))
@@ -280,12 +287,130 @@ test('quick-create maps an optional first-round file to its typed input and stop
     expect(submissions).toHaveLength(2)
     expect(shell.snapshot().notice).toBe('请选择有效的首轮参考角色。')
 
-    const unreadableFile = { type: 'image/png', fail: true } as unknown as File
+    const unreadableFile = { type: 'image/png', size: 1, fail: true } as unknown as File
     await expect(internals.quickCreateFromForm(form(unreadableFile, 'product'))).rejects.toThrow('IMAGE_FILE_READ_FAILED')
     expect(submissions).toHaveLength(2)
   } finally {
     if (previousFileReader === undefined) delete globalWithFileReader.FileReader
     else globalWithFileReader.FileReader = previousFileReader
+  }
+})
+
+test('Renderer rejects oversize references, inspiration images, and masks before FileReader, and checks decodable pixels when available', async () => {
+  const root = { innerHTML: '', addEventListener: () => undefined } as unknown as HTMLElement
+  const shell = new ImageWorkbenchShell({
+    root,
+    client: {} as ImageWorkbenchClient,
+    idempotency_key_factory: () => 'image_ui_upload_boundary_0123456789',
+  })
+  const internals = shell as unknown as {
+    projection?: ImageWorkbenchProjectProjection
+    quickCreate: (input: ImageQuickCreateInput) => Promise<void>
+    quickCreateFromForm: (form: HTMLFormElement) => Promise<void>
+    addFilesAsReferences: (form: HTMLFormElement) => Promise<void>
+    addReferences: (input: unknown) => Promise<void>
+    upsertInspirationFromForm: (form: HTMLFormElement) => Promise<void>
+    upsertInspirationItems: (input: unknown) => Promise<void>
+    deriveCandidateFromForm: (form: HTMLFormElement) => Promise<void>
+    deriveSelectedCandidate: (id: string, instruction: string, kind: 'edit' | 'inpaint', mask?: string) => Promise<void>
+    deriveVersionFromForm: (form: HTMLFormElement) => Promise<void>
+    deriveSelectedVersion: (id: string, instruction: string, kind: 'edit' | 'inpaint', mask?: string) => Promise<void>
+  }
+  internals.projection = { project: { id: projectId, revision: 3 } } as unknown as ImageWorkbenchProjectProjection
+  internals.quickCreate = async () => undefined
+  internals.addReferences = async () => undefined
+  internals.upsertInspirationItems = async () => undefined
+  internals.deriveSelectedCandidate = async () => undefined
+  internals.deriveSelectedVersion = async () => undefined
+
+  const form = (fields: Record<string, unknown>, dataset: Record<string, string> = {}) => ({
+    dataset,
+    querySelector: (selector: string) => fields[selector] ?? null,
+  }) as unknown as HTMLFormElement
+  const oversizeReference = { type: 'image/png', size: IMAGE_WORKBENCH_UPLOAD_MAX_BYTES + 1 } as File
+  const oversizeMask = { type: 'image/png', size: IMAGE_WORKBENCH_MASK_MAX_BYTES + 1 } as File
+  const globals = globalThis as unknown as { FileReader?: unknown; createImageBitmap?: unknown }
+  const previousFileReader = globals.FileReader
+  const previousCreateImageBitmap = globals.createImageBitmap
+  let fileReads = 0
+  class CountingFileReader {
+    result: string | null = null
+    error: Error | null = null
+    onload: (() => void) | null = null
+    onerror: (() => void) | null = null
+    readAsDataURL(): void { fileReads += 1 }
+  }
+  globals.FileReader = CountingFileReader
+  globals.createImageBitmap = undefined
+  try {
+    await expect(internals.quickCreateFromForm(form({
+      '[data-quick-prompt]': { value: '制作台球赛事海报' },
+      '[data-quick-preset]': { value: 'square' },
+      '[data-quick-reference-file]': { files: [oversizeReference] },
+      '[data-quick-reference-role]': { value: 'product' },
+      '[data-quick-brief-confirmed-facts]': { value: '' },
+      '[data-quick-brief-must-preserve]': { value: '' },
+      '[data-quick-brief-may-change]': { value: '' },
+      '[data-quick-brief-exact-text]': { value: '' },
+    }))).rejects.toThrow('IMAGE_WORKBENCH_IMAGE_FILE_TOO_LARGE')
+    await expect(internals.addFilesAsReferences(form({
+      '[data-reference-files]': { files: [oversizeReference] },
+      '[data-reference-role]': { value: 'product' },
+      '[data-reference-influence]': { value: 'medium' },
+      '[data-reference-preservation]': { value: 'prefer_preserve' },
+      '[data-reference-priority]': { value: '100' },
+    }))).rejects.toThrow('IMAGE_WORKBENCH_IMAGE_FILE_TOO_LARGE')
+    const individuallyValidReferences = Array.from({ length: 3 }, () => ({
+      type: 'image/png',
+      size: Math.floor(IMAGE_WORKBENCH_UPLOAD_TOTAL_MAX_BYTES / 3) + 1,
+    } as File))
+    await expect(internals.addFilesAsReferences(form({
+      '[data-reference-files]': { files: individuallyValidReferences },
+      '[data-reference-role]': { value: 'product' },
+      '[data-reference-influence]': { value: 'medium' },
+      '[data-reference-preservation]': { value: 'prefer_preserve' },
+      '[data-reference-priority]': { value: '100' },
+    }))).rejects.toThrow('IMAGE_WORKBENCH_IMAGE_FILE_TOO_LARGE')
+    await expect(internals.upsertInspirationFromForm(form({
+      '[data-inspiration-file]': { files: [oversizeReference] },
+      '[data-inspiration-note]': { value: '' },
+    }))).rejects.toThrow('IMAGE_WORKBENCH_IMAGE_FILE_TOO_LARGE')
+    await expect(internals.deriveCandidateFromForm(form({
+      '[data-derive-instruction]': { value: '只修改桌布' },
+      '[data-derive-kind]': { value: 'inpaint' },
+      '[data-derive-mask]': { files: [oversizeMask] },
+    }, { candidateId: candidateId }))).rejects.toThrow('IMAGE_WORKBENCH_IMAGE_FILE_TOO_LARGE')
+    await expect(internals.deriveVersionFromForm(form({
+      '[data-derive-version-instruction]': { value: '只修改桌布' },
+      '[data-derive-version-kind]': { value: 'inpaint' },
+      '[data-derive-version-mask]': { files: [oversizeMask] },
+    }, { versionId: 'version_001' }))).rejects.toThrow('IMAGE_WORKBENCH_IMAGE_FILE_TOO_LARGE')
+    expect(fileReads).toBe(0)
+
+    let decoded = 0
+    let closed = 0
+    globals.createImageBitmap = async () => {
+      decoded += 1
+      return { width: 12_001, height: 1, close: () => { closed += 1 } }
+    }
+    await expect(internals.quickCreateFromForm(form({
+      '[data-quick-prompt]': { value: '制作台球赛事海报' },
+      '[data-quick-preset]': { value: 'square' },
+      '[data-quick-reference-file]': { files: [{ type: 'image/png', size: 1 }] },
+      '[data-quick-reference-role]': { value: 'product' },
+      '[data-quick-brief-confirmed-facts]': { value: '' },
+      '[data-quick-brief-must-preserve]': { value: '' },
+      '[data-quick-brief-may-change]': { value: '' },
+      '[data-quick-brief-exact-text]': { value: '' },
+    }))).rejects.toThrow('IMAGE_WORKBENCH_IMAGE_FILE_PIXELS_INVALID')
+    expect(decoded).toBe(1)
+    expect(closed).toBe(1)
+    expect(fileReads).toBe(0)
+  } finally {
+    if (previousFileReader === undefined) delete globals.FileReader
+    else globals.FileReader = previousFileReader
+    if (previousCreateImageBitmap === undefined) delete globals.createImageBitmap
+    else globals.createImageBitmap = previousCreateImageBitmap
   }
 })
 

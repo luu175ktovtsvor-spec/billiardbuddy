@@ -7,6 +7,9 @@ export type { MediaSafeError, MediaSafeErrorCode } from './mediaErrors.js'
 export const MEDIA_UI_CAPABILITY_HEADER = 'X-BilliardBuddy-Media-Capability'
 export const MAX_REFERENCE_IMAGE_BYTES = 8 * 1024 * 1024
 export const MAX_REFERENCE_IMAGES_TOTAL_BYTES = 20 * 1024 * 1024
+export const MAX_IMAGE_MASK_BYTES = 32 * 1024 * 1024
+export const MAX_IMAGE_UPLOAD_DIMENSION = 12_000
+export const MAX_IMAGE_UPLOAD_PIXELS = 100_000_000
 const MAX_REFERENCE_IMAGE_DATA_URL_CHARS = Math.ceil(MAX_REFERENCE_IMAGE_BYTES * 4 / 3) + 128
 const referenceImageDataUrlSchema = z.string()
   .max(MAX_REFERENCE_IMAGE_DATA_URL_CHARS)

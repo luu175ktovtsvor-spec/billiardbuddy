@@ -5,6 +5,11 @@ import {
   mediaIdSchema,
   mediaIsoDateSchema,
   mediaOwnerSchema,
+  MAX_REFERENCE_IMAGE_BYTES,
+  MAX_REFERENCE_IMAGES_TOTAL_BYTES,
+  MAX_IMAGE_MASK_BYTES,
+  MAX_IMAGE_UPLOAD_DIMENSION,
+  MAX_IMAGE_UPLOAD_PIXELS,
   publicImageWorkbenchProjectSchema,
 } from './media.js'
 import {
@@ -22,10 +27,49 @@ import {
   publicImageOperationV2Schema,
 } from './imageGeneration.js'
 
-const MAX_IMAGE_DATA_URL_CHARS = Math.ceil(8 * 1024 * 1024 * 4 / 3) + 128
+/**
+ * A user-selected reference or inspiration image must stay within this
+ * decoded-byte limit before the Renderer turns it into a Base64 data URL.
+ */
+export const IMAGE_WORKBENCH_UPLOAD_MAX_BYTES = MAX_REFERENCE_IMAGE_BYTES
+export const IMAGE_WORKBENCH_UPLOAD_TOTAL_MAX_BYTES = MAX_REFERENCE_IMAGES_TOTAL_BYTES
+/** PNG masks are intentionally larger, but still have a hard decoded limit. */
+export const IMAGE_WORKBENCH_MASK_MAX_BYTES = MAX_IMAGE_MASK_BYTES
+/** Keep the Browser's early decode gate aligned with ImageAssetStore. */
+export const IMAGE_WORKBENCH_UPLOAD_MAX_DIMENSION = MAX_IMAGE_UPLOAD_DIMENSION
+export const IMAGE_WORKBENCH_UPLOAD_MAX_PIXELS = MAX_IMAGE_UPLOAD_PIXELS
+/**
+ * Largest valid command is one Base64-encoded PNG mask plus a small command
+ * envelope. The Sidecar must enforce this while streaming, before JSON.parse
+ * or ticket body-hash verification materializes a string.
+ */
+export const IMAGE_WORKBENCH_REQUEST_BODY_MAX_BYTES = 48 * 1024 * 1024
+
+const MAX_IMAGE_DATA_URL_CHARS = Math.ceil(IMAGE_WORKBENCH_UPLOAD_MAX_BYTES * 4 / 3) + 128
 const imageDataUrlSchema = z.string()
   .max(MAX_IMAGE_DATA_URL_CHARS)
   .regex(/^data:image\/(?:png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/)
+
+function approximateImageDataUrlBytes(value: string): number {
+  const comma = value.indexOf(',')
+  const payload = comma >= 0 ? value.slice(comma + 1) : value
+  return Math.floor(payload.length * 3 / 4)
+}
+
+function assertImageUploadTotal(
+  dataUrls: readonly (string | undefined)[],
+  context: z.RefinementCtx,
+  path: readonly (string | number)[],
+): void {
+  const total = dataUrls.reduce((sum, dataUrl) => sum + (dataUrl ? approximateImageDataUrlBytes(dataUrl) : 0), 0)
+  if (total > IMAGE_WORKBENCH_UPLOAD_TOTAL_MAX_BYTES) {
+    context.addIssue({
+      code: 'custom',
+      path: [...path],
+      message: 'image uploads exceed the total size limit',
+    })
+  }
+}
 
 const commandFields = {
   idempotency_key: z.string().min(16).max(160),
@@ -125,7 +169,9 @@ const inspirationItemInputSchema = z.object({
 export const upsertImageInspirationItemsInputSchema = z.object({
   ...commandFields,
   items: z.array(inspirationItemInputSchema).min(1).max(32),
-}).strict()
+}).strict().superRefine((value, context) => {
+  assertImageUploadTotal(value.items.map(item => item.data_url), context, ['items'])
+})
 
 export const promoteImageInspirationItemInputSchema = z.object({
   ...commandFields,
@@ -148,7 +194,9 @@ export const imageReferenceInputSchema = z.object({
 export const addImageWorkflowReferencesInputSchema = z.object({
   ...commandFields,
   references: z.array(imageReferenceInputSchema).min(1).max(8),
-}).strict()
+}).strict().superRefine((value, context) => {
+  assertImageUploadTotal(value.references.map(reference => reference.data_url), context, ['references'])
+})
 
 export const removeImageWorkflowReferenceInputSchema = z.object({
   ...commandFields,
@@ -201,7 +249,9 @@ export const imageQuickCreateInputSchema = z.object({
     currency: z.string().regex(/^[A-Z]{3}$/),
     amount_minor: z.number().int().positive().max(2_000_000_000),
   }).strict().optional(),
-}).strict()
+}).strict().superRefine((value, context) => {
+  assertImageUploadTotal(value.reference_inputs.map(reference => reference.data_url), context, ['reference_inputs'])
+})
 
 export const imageQuickCreateResponseSchema = z.object({
   project: publicImageWorkbenchProjectSchema,

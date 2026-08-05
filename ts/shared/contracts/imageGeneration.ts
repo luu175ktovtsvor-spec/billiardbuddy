@@ -1,4 +1,5 @@
 import { z } from 'zod/v4'
+import { MAX_IMAGE_MASK_BYTES } from './media.js'
 import {
   imageGenerationModelSchema,
   mediaAssetSchema,
@@ -788,7 +789,7 @@ export const deriveImageCandidateInputSchema = z.object({
   confirm: z.literal(true),
   kind: z.enum(['edit', 'inpaint']).default('edit'),
   mask_data_url: z.string()
-    .max(Math.ceil(32 * 1024 * 1024 * 4 / 3) + 128)
+    .max(Math.ceil(MAX_IMAGE_MASK_BYTES * 4 / 3) + 128)
     .regex(/^data:image\/png;base64,[A-Za-z0-9+/=]+$/)
     .optional(),
 }).strict().superRefine((value, context) => {
@@ -804,7 +805,7 @@ export const estimateDeriveImageCandidateInputSchema = z.object({
   instruction: z.string().min(1).max(4_000),
   kind: z.enum(['edit', 'inpaint']).default('edit'),
   mask_data_url: z.string()
-    .max(Math.ceil(32 * 1024 * 1024 * 4 / 3) + 128)
+    .max(Math.ceil(MAX_IMAGE_MASK_BYTES * 4 / 3) + 128)
     .regex(/^data:image\/png;base64,[A-Za-z0-9+/=]+$/)
     .optional(),
 }).strict().superRefine((value, context) => {

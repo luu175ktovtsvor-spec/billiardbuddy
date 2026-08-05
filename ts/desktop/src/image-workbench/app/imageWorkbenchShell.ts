@@ -19,6 +19,13 @@ import type {
   ReviseImageTemplateInput,
   UpsertImageInspirationItemsInput,
 } from '../../../../shared/contracts/imageWorkflow.js'
+import {
+  IMAGE_WORKBENCH_MASK_MAX_BYTES,
+  IMAGE_WORKBENCH_UPLOAD_MAX_BYTES,
+  IMAGE_WORKBENCH_UPLOAD_MAX_DIMENSION,
+  IMAGE_WORKBENCH_UPLOAD_MAX_PIXELS,
+  IMAGE_WORKBENCH_UPLOAD_TOTAL_MAX_BYTES,
+} from '../../../../shared/contracts/imageWorkflow.js'
 import type {
   CreateCreativePlanInput,
   CreateGenerationRoundInput,
@@ -200,6 +207,25 @@ const QUICK_CREATE_REFERENCE_ROLE_LABELS: Record<(typeof QUICK_CREATE_REFERENCE_
 }
 
 const QUICK_CREATE_REFERENCE_MIME_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp'])
+const PNG_MASK_MIME_TYPES = new Set(['image/png'])
+
+type ImageFileReadPolicy = {
+  acceptedMimeTypes: ReadonlySet<string>
+  maxBytes: number
+  kind: 'reference' | 'mask'
+}
+
+const REFERENCE_IMAGE_FILE_POLICY: ImageFileReadPolicy = {
+  acceptedMimeTypes: QUICK_CREATE_REFERENCE_MIME_TYPES,
+  maxBytes: IMAGE_WORKBENCH_UPLOAD_MAX_BYTES,
+  kind: 'reference',
+}
+
+const MASK_IMAGE_FILE_POLICY: ImageFileReadPolicy = {
+  acceptedMimeTypes: PNG_MASK_MIME_TYPES,
+  maxBytes: IMAGE_WORKBENCH_MASK_MAX_BYTES,
+  kind: 'mask',
+}
 
 type QuickCreateReferenceRole = (typeof QUICK_CREATE_REFERENCE_ROLES)[number]
 
@@ -1136,7 +1162,72 @@ export function renderImageWorkbenchShell(snapshot: ImageWorkbenchShellSnapshot)
   </div>`
 }
 
-async function fileAsDataUrl(file: File): Promise<string> {
+/**
+ * Validate the inexpensive file facts before FileReader copies a user-selected
+ * image into a Base64 string. Electron supports createImageBitmap, so it also
+ * rejects hostile dimensions before the Sidecar receives the upload. The
+ * fallback keeps older test/browser environments functional; ImageAssetStore
+ * remains the authoritative decode gate in every environment.
+ */
+export async function validateImageWorkbenchFileBeforeRead(
+  file: File,
+  policy: ImageFileReadPolicy = REFERENCE_IMAGE_FILE_POLICY,
+): Promise<void> {
+  if (!policy.acceptedMimeTypes.has(file.type)) {
+    throw new Error(policy.kind === 'mask'
+      ? 'IMAGE_WORKBENCH_INPAINT_MASK_PNG_REQUIRED'
+      : 'IMAGE_WORKBENCH_IMAGE_FILE_TYPE_INVALID')
+  }
+  if (!Number.isSafeInteger(file.size) || file.size < 1) {
+    throw new Error('IMAGE_WORKBENCH_IMAGE_FILE_INVALID')
+  }
+  if (file.size > policy.maxBytes) {
+    throw new Error('IMAGE_WORKBENCH_IMAGE_FILE_TOO_LARGE')
+  }
+
+  const decode = globalThis.createImageBitmap
+  if (typeof decode !== 'function') return
+  let bitmap: ImageBitmap
+  try {
+    bitmap = await decode(file)
+  } catch {
+    throw new Error('IMAGE_WORKBENCH_IMAGE_FILE_INVALID')
+  }
+  try {
+    if (
+      !Number.isSafeInteger(bitmap.width)
+      || !Number.isSafeInteger(bitmap.height)
+      || bitmap.width < 1
+      || bitmap.height < 1
+      || bitmap.width > IMAGE_WORKBENCH_UPLOAD_MAX_DIMENSION
+      || bitmap.height > IMAGE_WORKBENCH_UPLOAD_MAX_DIMENSION
+      || bitmap.width * bitmap.height > IMAGE_WORKBENCH_UPLOAD_MAX_PIXELS
+    ) {
+      throw new Error('IMAGE_WORKBENCH_IMAGE_FILE_PIXELS_INVALID')
+    }
+  } finally {
+    bitmap.close()
+  }
+}
+
+/**
+ * A multi-reference command must be rejected as a whole before its first
+ * FileReader allocation. Per-file validation alone would still allow several
+ * individually valid files to be copied into Base64 before the 20 MiB command
+ * limit rejects them.
+ */
+export async function validateImageWorkbenchFilesBeforeRead(
+  files: readonly File[],
+  policy: ImageFileReadPolicy = REFERENCE_IMAGE_FILE_POLICY,
+): Promise<void> {
+  const totalBytes = files.reduce((total, file) => total + file.size, 0)
+  if (!Number.isSafeInteger(totalBytes) || totalBytes > IMAGE_WORKBENCH_UPLOAD_TOTAL_MAX_BYTES) {
+    throw new Error('IMAGE_WORKBENCH_IMAGE_FILE_TOO_LARGE')
+  }
+  await Promise.all(files.map(file => validateImageWorkbenchFileBeforeRead(file, policy)))
+}
+
+async function readValidatedImageFileAsDataUrl(file: File): Promise<string> {
   return await new Promise<string>((resolve, reject) => {
     const reader = new FileReader()
     reader.onerror = () => reject(reader.error ?? new Error('IMAGE_FILE_READ_FAILED'))
@@ -1145,6 +1236,14 @@ async function fileAsDataUrl(file: File): Promise<string> {
       : reject(new Error('IMAGE_FILE_READ_FAILED'))
     reader.readAsDataURL(file)
   })
+}
+
+async function fileAsDataUrl(
+  file: File,
+  policy: ImageFileReadPolicy = REFERENCE_IMAGE_FILE_POLICY,
+): Promise<string> {
+  await validateImageWorkbenchFileBeforeRead(file, policy)
+  return await readValidatedImageFileAsDataUrl(file)
 }
 
 /**
@@ -1590,7 +1689,7 @@ export class ImageWorkbenchShell {
       return
     }
     const reference_inputs = referenceFile && isQuickCreateReferenceRole(referenceRole)
-      ? [{ data_url: await fileAsDataUrl(referenceFile), role: referenceRole }]
+      ? [{ data_url: await fileAsDataUrl(referenceFile, REFERENCE_IMAGE_FILE_POLICY), role: referenceRole }]
       : []
     const brief_overrides = {
       ...(confirmedFacts.length > 0 ? { confirmed_facts: confirmedFacts } : {}),
@@ -2978,7 +3077,7 @@ export class ImageWorkbenchShell {
     const mask = form.querySelector<HTMLInputElement>('[data-derive-mask]')?.files?.[0]
     if (kind === 'inpaint') {
       if (!mask || mask.type !== 'image/png') throw new Error('IMAGE_WORKBENCH_INPAINT_MASK_PNG_REQUIRED')
-      await this.deriveSelectedCandidate(candidateId, instruction, kind, await fileAsDataUrl(mask))
+      await this.deriveSelectedCandidate(candidateId, instruction, kind, await fileAsDataUrl(mask, MASK_IMAGE_FILE_POLICY))
       return
     }
     await this.deriveSelectedCandidate(candidateId, instruction, kind)
@@ -2994,7 +3093,7 @@ export class ImageWorkbenchShell {
     const mask = form.querySelector<HTMLInputElement>('[data-derive-version-mask]')?.files?.[0]
     if (kind === 'inpaint') {
       if (!mask || mask.type !== 'image/png') throw new Error('IMAGE_WORKBENCH_INPAINT_MASK_PNG_REQUIRED')
-      await this.deriveSelectedVersion(versionId, instruction, kind, await fileAsDataUrl(mask))
+      await this.deriveSelectedVersion(versionId, instruction, kind, await fileAsDataUrl(mask, MASK_IMAGE_FILE_POLICY))
       return
     }
     await this.deriveSelectedVersion(versionId, instruction, kind)
@@ -3272,7 +3371,7 @@ export class ImageWorkbenchShell {
     await this.upsertInspirationItems({
       idempotency_key: this.idempotencyKey(),
       base_revision: projection.project.revision,
-      items: [{ data_url: await fileAsDataUrl(file), ...(note ? { note } : {}) }],
+      items: [{ data_url: await fileAsDataUrl(file, REFERENCE_IMAGE_FILE_POLICY), ...(note ? { note } : {}) }],
     })
   }
 
@@ -3602,7 +3701,9 @@ export class ImageWorkbenchShell {
       this.setNotice('请选择带有明确角色的参考图。')
       return
     }
-    const dataUrls = await Promise.all([...fileInput.files].map(fileAsDataUrl))
+    const files = [...fileInput.files]
+    await validateImageWorkbenchFilesBeforeRead(files, REFERENCE_IMAGE_FILE_POLICY)
+    const dataUrls = await Promise.all(files.map(readValidatedImageFileAsDataUrl))
     const project = this.projection?.project
     if (!project) throw new Error('IMAGE_WORKBENCH_PROJECT_SELECTION_REQUIRED')
     await this.addReferences({

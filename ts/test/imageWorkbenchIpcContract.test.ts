@@ -21,7 +21,11 @@ import {
 } from '../shared/contracts/imageWorkbenchIpc.js'
 import type { ImageWorkbenchPreloadBridge } from '../shared/contracts/imageWorkbenchPreload.js'
 import { createElectronImageWorkbenchClient } from '../desktop/src/image-workbench/api/imageWorkbenchClient.js'
-import { consumeImageUiTicketSecret, createImageWorkbenchDomainApiHandler } from '../src/server/api/imageWorkbench.js'
+import {
+  consumeImageUiTicketSecret,
+  createImageWorkbenchDomainApiHandler,
+  readImageWorkbenchRequestBody,
+} from '../src/server/api/imageWorkbench.js'
 import { consumeMediaUiCapability } from '../src/server/api/media.js'
 import { ImageWorkbenchService } from '../src/server/services/imageWorkbenchService.js'
 import { imageTicketHeaders } from './helpers/imageUiTicket.js'
@@ -39,6 +43,7 @@ import type {
   ImageSaveOutputInput,
   ImageSaveOutputResponse,
 } from '../shared/contracts/imageGeneration.js'
+import { IMAGE_WORKBENCH_REQUEST_BODY_MAX_BYTES } from '../shared/contracts/imageWorkflow.js'
 
 const projectId = 'img_00000001'
 const versionId = 'ver_00000001'
@@ -762,6 +767,64 @@ test('15.5 image API accepts only a short-lived exact-request Main ticket', asyn
     const validTicket = invalidSignatureHeaders.get(MEDIA_UI_CAPABILITY_HEADER)!
     invalidSignatureHeaders.set(MEDIA_UI_CAPABILITY_HEADER, `${validTicket.slice(0, -1)}${validTicket.endsWith('a') ? 'b' : 'a'}`)
     await expectDenied(signedRequest(projectsUrl, body, body, invalidSignatureHeaders))
+  } finally {
+    service.repository.close()
+    await Promise.all([
+      rm(root, { recursive: true, force: true }),
+      rm(legacyMediaRoot, { recursive: true, force: true }),
+    ])
+  }
+})
+
+test('image Sidecar bounds streamed JSON before materializing text and rejects declared oversize Base64 bodies without reading them', async () => {
+  let streamCancelled = false
+  let streamedChunks = 0
+  const stream = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      streamedChunks += 1
+      if (streamedChunks === 1) controller.enqueue(new TextEncoder().encode('abc'))
+      else controller.enqueue(new TextEncoder().encode('d'))
+    },
+    cancel() { streamCancelled = true },
+  })
+  await expect(readImageWorkbenchRequestBody(new Request('http://127.0.0.1:3456/api/images/projects', {
+    method: 'POST', body: stream,
+  }), 3)).rejects.toMatchObject({ statusCode: 413, code: 'IMAGE_REQUEST_BODY_TOO_LARGE' })
+  expect(streamedChunks).toBe(2)
+  expect(streamCancelled).toBeTrue()
+
+  const root = await mkdtemp(join(tmpdir(), 'billiardbuddy-image-body-limit-'))
+  const legacyMediaRoot = await mkdtemp(join(tmpdir(), 'billiardbuddy-image-body-limit-legacy-'))
+  const service = new ImageWorkbenchService({ root, legacyMediaRoot })
+  const handler = createImageWorkbenchDomainApiHandler(service.applications, capability)
+  const url = new URL('http://127.0.0.1:3456/api/images/projects')
+  let inboundBodyPulled = 0
+  const inboundBody = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      inboundBodyPulled += 1
+      controller.enqueue(new Uint8Array([123]))
+    },
+  })
+  try {
+    const initialized = await handler(new Request(url), url, url.pathname.split('/').filter(Boolean))
+    expect(initialized.status).toBe(200)
+    const oversizeRequest = new Request(url, {
+      method: 'POST',
+      headers: {
+        Origin: url.origin,
+        [MEDIA_UI_CAPABILITY_HEADER]: 'bbimg1.not-a-valid-ticket',
+        'Content-Length': String(IMAGE_WORKBENCH_REQUEST_BODY_MAX_BYTES + 1),
+      },
+      body: inboundBody,
+    })
+    const pullsBeforeSidecar = inboundBodyPulled
+    const response = await handler(oversizeRequest, url, url.pathname.split('/').filter(Boolean))
+    expect(response.status).toBe(413)
+    expect(await response.json()).toEqual({
+      error: 'MEDIA_IMAGE_INPUT_TOO_LARGE',
+      message: mediaSafeError('MEDIA_IMAGE_INPUT_TOO_LARGE').message,
+    })
+    expect(inboundBodyPulled).toBe(pullsBeforeSidecar)
   } finally {
     service.repository.close()
     await Promise.all([
