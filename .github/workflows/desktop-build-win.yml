@@ -199,9 +199,14 @@ jobs:
             'suite::v2::realtime_conversation::websocket_v2_tool_call_delegated_turn_can_execute_shell_tool'
             'suite::v2::thread_name_websocket::thread_name_updated_broadcasts_for_loaded_threads'
           )
+          isolated_core_tests=(
+            'session::turn::tests::post_sampling_token_estimate_is_disabled_by_always_on_sinks'
+          )
           # Run the rest of the locked upstream suite first, then execute the
-          # timing-sensitive cases one by one. This is partitioning, not an
-          # exclusion: all four names are invoked explicitly below.
+          # timing-sensitive and tracing-callsite-sensitive cases one by one.
+          # This is partitioning, not an exclusion: every name is invoked
+          # explicitly below. The tracing test is isolated because its
+          # event_enabled callsite interest is global across dispatchers.
           cargo test --locked --target "${target}" --all-targets \
             --package codex-app-server \
             --package codex-core \
@@ -212,11 +217,20 @@ jobs:
             --skip "${timing_sensitive_tests[0]}" \
             --skip "${timing_sensitive_tests[1]}" \
             --skip "${timing_sensitive_tests[2]}" \
-            --skip "${timing_sensitive_tests[3]}"
+            --skip "${timing_sensitive_tests[3]}" \
+            --skip "${isolated_core_tests[0]}"
           for test_name in "${timing_sensitive_tests[@]}"; do
             cargo test --locked --target "${target}" \
               --package codex-app-server \
               --test all "${test_name}" \
+              -- \
+              --exact \
+              --test-threads=1
+          done
+          for test_name in "${isolated_core_tests[@]}"; do
+            cargo test --locked --target "${target}" \
+              --package codex-core \
+              --lib "${test_name}" \
               -- \
               --exact \
               --test-threads=1

@@ -705,7 +705,14 @@ void setElementValue(IUIAutomationElement* element, const std::wstring& value) {
   if (isSensitiveAutomationElement(element)) throw ServiceError("Computer Use will not read or change a password, credential, or payment field");
   IUIAutomationValuePattern* pattern = nullptr;
   if (FAILED(element->GetCurrentPatternAs(UIA_ValuePatternId, IID_PPV_ARGS(&pattern))) || !pattern) throw ServiceError("The selected element does not accept a text value");
-  const HRESULT hr = pattern->SetValue(value.c_str()); pattern->Release();
+  BSTR bstrValue = SysAllocStringLen(value.data(), static_cast<UINT>(value.size()));
+  if (!bstrValue) {
+    pattern->Release();
+    throw ServiceError("Could not allocate the requested element value");
+  }
+  const HRESULT hr = pattern->SetValue(bstrValue);
+  SysFreeString(bstrValue);
+  pattern->Release();
   if (FAILED(hr)) throw ServiceError("The selected element rejected the requested value");
 }
 
