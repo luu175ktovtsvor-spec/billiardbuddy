@@ -312,14 +312,18 @@ function readManifest(path: string): EngineManifest {
 }
 
 function run(command: string, args: string[], cwd?: string, environment?: NodeJS.ProcessEnv): string {
+  const configuredTimeoutMinutes = Number.parseInt(process.env.CODEX_ENGINE_BUILD_TIMEOUT_MINUTES ?? '', 10)
+  const timeoutMinutes = Number.isFinite(configuredTimeoutMinutes) && configuredTimeoutMinutes > 0
+    ? configuredTimeoutMinutes
+    : 60
   const result = spawnSync(command, args, {
     cwd,
     env: environment,
     encoding: 'utf8',
-    // The pinned App Server enables LTO. A clean macOS release link can take
-    // longer than 30 minutes on a busy developer machine, while GitHub's
-    // release runners retain a 90 minute job budget.
-    timeout: 60 * 60_000,
+    // The pinned App Server enables LTO. Keep the normal local/macOS budget
+    // at one hour, while allowing slower cross-compiled Windows ARM64 jobs to
+    // opt into a longer budget without changing the build itself.
+    timeout: timeoutMinutes * 60_000,
   })
   if (result.error || result.status !== 0) {
     const detail = [result.error?.message, result.stdout, result.stderr]

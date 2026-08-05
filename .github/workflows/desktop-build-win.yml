@@ -32,9 +32,11 @@ jobs:
           - architecture: x64
             target: x86_64-pc-windows-msvc
             timeout_minutes: 360
+            codex_build_timeout_minutes: 60
           - architecture: arm64
             target: aarch64-pc-windows-msvc
             timeout_minutes: 180
+            codex_build_timeout_minutes: 120
     steps:
       - uses: actions/checkout@v5
         with:
@@ -143,6 +145,11 @@ jobs:
           # the Windows libtest harness the same larger stack used by Codex's
           # own stack-sensitive tests; this changes only test execution.
           RUST_MIN_STACK: '8388608'
+          # The locked app-server integration suite contains timing-sensitive
+          # mock/stdio tests. Serialize the harness on Windows so unrelated
+          # test processes do not starve each other's short deadlines; every
+          # test still runs.
+          RUST_TEST_THREADS: '1'
         run: |
           set -euo pipefail
           target='${{ matrix.target }}'
@@ -202,6 +209,7 @@ jobs:
         working-directory: .
         env:
           SKIP_INSTALL: '1'
+          CODEX_ENGINE_BUILD_TIMEOUT_MINUTES: '${{ matrix.codex_build_timeout_minutes }}'
         run: pwsh -NoProfile -ExecutionPolicy Bypass -File ts/desktop/scripts/build-windows-x64.ps1 -Architecture ${{ matrix.architecture }} -AgentOnly
 
       - name: 验证 x64 受管 Runtime、Hook、插件与 Browser 生产链
