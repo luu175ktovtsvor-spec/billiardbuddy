@@ -35,8 +35,11 @@ jobs:
             codex_build_timeout_minutes: 60
           - architecture: arm64
             target: aarch64-pc-windows-msvc
-            timeout_minutes: 180
-            codex_build_timeout_minutes: 120
+            # ARM64 cross-compilation on the hosted x64 runner exceeded the
+            # previous 120-minute engine budget; this only gives CI more time
+            # and does not change Codex or BilliardBuddy runtime behavior.
+            timeout_minutes: 360
+            codex_build_timeout_minutes: 240
     steps:
       - uses: actions/checkout@v5
         with:
