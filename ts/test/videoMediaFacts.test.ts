@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { VideoWorkbenchRepository, type VideoOperation } from '../src/server/services/videoWorkbenchRepository.js'
 import { VideoWorkbenchService } from '../src/server/services/videoWorkbenchService.js'
+import { VideoWorkbenchRuntime } from '../src/server/services/videoWorkbenchRuntime.js'
 import { probeVideoFactSource } from '../src/server/services/videoExecution.js'
 import { VideoMediaRelayClient, VideoMediaRelayClientError } from '../src/server/video/infrastructure/providers/videoMediaRelayClient.js'
 import { createVideoWorkbenchDomainApiHandler } from '../src/server/api/videoWorkbench.js'
@@ -29,6 +30,13 @@ import { materializeTranscriptRevision, transcriptRevisionFingerprint } from '..
 const roots: string[] = []
 const at = '2026-08-03T00:00:00.000Z'
 const hash = (character: string): `sha256:${string}` => `sha256:${character.repeat(64)}`
+
+/** Public API assertions use the façade. The few relay crash-injection tests
+ * exercise the internal analysis runtime explicitly so the façade stays free
+ * of provider and recovery methods. */
+function analysisRuntime(service: VideoWorkbenchService): VideoWorkbenchRuntime {
+  return (service as unknown as { root: { runtime: VideoWorkbenchRuntime } }).root.runtime
+}
 
 async function testRoot(label: string): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), `billiardbuddy-facts-${label}-`))
@@ -513,13 +521,58 @@ test('Media Facts 正式 API 返回带来源、范围、generation 与 cursor �
   const searchUrl = new URL(`http://localhost/api/videos/projects/${created.id}/search?q=%E7%90%83&limit=1`)
   const search = await handler(new Request(searchUrl), searchUrl, searchUrl.pathname.split('/').filter(Boolean).map((part, index) => index === 0 ? 'api' : part))
   expect(search.status).toBe(200)
-  const firstPage = await search.json() as { schema_version: number; generation: number; items: Array<{ source_id: string; range: { start: { ticks: string } } }>; next_cursor?: string }
+  const firstPage = await search.json() as { schema_version: number; generation: number; items: Array<{ id: string; source_id: string; range: { start: { ticks: string } } }>; next_cursor?: string }
+  expect(typeof firstPage.generation).toBe('number')
+  const firstGeneration = firstPage.generation
   expect(firstPage).toMatchObject({ schema_version: 1, generation: expect.any(Number), items: [{ source_id: videoSource.id, range: { start: { ticks: expect.any(String) } } }] })
   expect(typeof firstPage.next_cursor).toBe('string')
   const nextUrl = new URL(searchUrl)
   nextUrl.searchParams.set('cursor', firstPage.next_cursor!)
   const next = await handler(new Request(nextUrl), nextUrl, nextUrl.pathname.split('/').filter(Boolean).map((part, index) => index === 0 ? 'api' : part))
-  expect((await next.json() as { generation: number; items: unknown[] }).items).toHaveLength(1)
+  const secondPage = await next.json() as {
+    generation: number
+    items: Array<{
+      id: string
+      source_id: string
+      range: { start: { ticks: string } }
+    }>
+  }
+  expect(secondPage.generation).toBe(firstGeneration)
+  expect(secondPage.items).toHaveLength(1)
+  expect(secondPage.items[0]).toMatchObject({ source_id: videoSource.id, range: { start: { ticks: expect.any(String) } } })
+  expect(secondPage.items[0]?.id).not.toBe(firstPage.items[0]?.id)
+  const visualUrl = new URL(`http://localhost/api/videos/projects/${created.id}/facts/evidence?source_id=${videoSource.id}&limit=1`)
+  const visualFirstResponse = await handler(new Request(visualUrl), visualUrl, visualUrl.pathname.split('/').filter(Boolean).map((part, index) => index === 0 ? 'api' : part))
+  expect(visualFirstResponse.status).toBe(200)
+  const visualFirst = await visualFirstResponse.json() as {
+    items: Array<{
+      id: string
+      source_id: string
+      range: { start: { ticks: string }; duration: { ticks: string } }
+    }>
+    next_cursor?: string
+  }
+  expect(visualFirst.items).toHaveLength(1)
+  expect(visualFirst.items[0]).toMatchObject({ source_id: videoSource.id, range: { start: { ticks: expect.any(String) }, duration: { ticks: expect.any(String) } } })
+  expect(typeof visualFirst.next_cursor).toBe('string')
+  const visualNextUrl = new URL(visualUrl)
+  visualNextUrl.searchParams.set('cursor', visualFirst.next_cursor!)
+  const visualSecondResponse = await handler(new Request(visualNextUrl), visualNextUrl, visualNextUrl.pathname.split('/').filter(Boolean).map((part, index) => index === 0 ? 'api' : part))
+  const visualSecond = await visualSecondResponse.json() as {
+    items: Array<{
+      id: string
+      source_id: string
+      range: { start: { ticks: string } }
+    }>
+  }
+  expect(visualSecond.items).toHaveLength(1)
+  expect(visualSecond.items[0]).toMatchObject({ source_id: videoSource.id, range: { start: { ticks: expect.any(String) } } })
+  expect(visualSecond.items[0]?.id).not.toBe(visualFirst.items[0]?.id)
+  const visualScopeMismatch = new URL(visualNextUrl)
+  visualScopeMismatch.searchParams.set('source_id', 'src_99999999')
+  const visualScopeMismatchResponse = await handler(new Request(visualScopeMismatch), visualScopeMismatch, visualScopeMismatch.pathname.split('/').filter(Boolean).map((part, index) => index === 0 ? 'api' : part))
+  expect(visualScopeMismatchResponse.status).toBe(400)
+  expect(await visualScopeMismatchResponse.json()).toMatchObject({ error: 'MEDIA_INVALID_REQUEST' })
   const factsUrl = new URL(`http://localhost/api/videos/projects/${created.id}/facts/source?limit=1`)
   const facts = await handler(new Request(factsUrl), factsUrl, factsUrl.pathname.split('/').filter(Boolean).map((part, index) => index === 0 ? 'api' : part))
   const factPage = await facts.json() as { schema_version: number; items: Array<Record<string, unknown>> }
@@ -528,11 +581,25 @@ test('Media Facts 正式 API 返回带来源、范围、generation 与 cursor �
   for (const invalidUrl of [
     new URL(`http://localhost/api/videos/projects/${created.id}/facts/source?cursor=not-a-valid-cursor`),
     new URL(`http://localhost/api/videos/projects/${created.id}/search?q=%E7%90%83&cursor=not-a-valid-cursor`),
+    // These cursors are syntactically valid Base64 JSON. They still must be
+    // rejected when their immutable scope differs from the requested page.
+    new URL(`http://localhost/api/videos/projects/${created.id}/facts/source?cursor=${Buffer.from(JSON.stringify({
+      kind: 'fact-page-v2', project_id: created.id, fact_kind: 'evidence', source_id: null, updated_at: at, id: 'evidence_00000001',
+    })).toString('base64url')}`),
+    new URL(`http://localhost/api/videos/projects/${created.id}/facts/source?cursor=${Buffer.from(JSON.stringify({
+      kind: 'fact-page-v2', project_id: 'vid_00000002', fact_kind: 'source', source_id: null, updated_at: at, id: videoSource.id,
+    })).toString('base64url')}`),
   ]) {
     const invalid = await handler(new Request(invalidUrl), invalidUrl, invalidUrl.pathname.split('/').filter(Boolean).map((part, index) => index === 0 ? 'api' : part))
     expect(invalid.status).toBe(400)
     expect(await invalid.json()).toMatchObject({ error: 'MEDIA_INVALID_REQUEST' })
   }
+  const changedQueryUrl = new URL(searchUrl)
+  changedQueryUrl.searchParams.set('q', '关键')
+  changedQueryUrl.searchParams.set('cursor', firstPage.next_cursor!)
+  const changedQuery = await handler(new Request(changedQueryUrl), changedQueryUrl, changedQueryUrl.pathname.split('/').filter(Boolean).map((part, index) => index === 0 ? 'api' : part))
+  expect(changedQuery.status).toBe(400)
+  expect(await changedQuery.json()).toMatchObject({ error: 'MEDIA_INVALID_REQUEST' })
   service.repository.close()
 })
 
@@ -692,7 +759,7 @@ test('正式 ASR 只在完整授权范围内流式上传，并持久化原始 PT
     created_at: at,
     updated_at: at,
   })
-  const invoke = service as unknown as {
+  const invoke = analysisRuntime(service) as unknown as {
     remoteTranscriptEvidence: (project: VideoStudioProject, source: VideoStudioProject['sources'][number], fact: VideoFactSource, directory: string, operationId: string, signal: AbortSignal) => Promise<{ evidence: Array<{ in_ms: number; out_ms: number }>; acknowledgements: VideoStudioProject['pending_relay_acknowledgements'] } | null>
     flushPendingRelayAcknowledgements: (projectId: string) => Promise<void>
   }
@@ -835,7 +902,7 @@ test('ASR 本地预算预留失败时不写远端提交栅栏或 outcome_unknown
     remote_analysis_budgets: [{ id: 'budget_00000001', estimate_hash: hash('e'), state: 'reserved', requests: 0, total_tokens: 0, input_bytes: 0, visual_frames: 0, proxy_seconds: 0, asr_seconds: 0, estimated_amount_micros: 0, settlements: [], created_at: at, updated_at: at }],
   })
   await service.repository.saveOperation({ schema_version: 1, id: 'task_00000001', project_id: created.id, kind: 'video.analyze', status: 'running', progress: 10, stage: 'ASR', result: { user_goal: '预算拒绝' }, created_at: at, updated_at: at })
-  const invoke = service as unknown as { remoteTranscriptEvidence: (project: VideoStudioProject, source: VideoStudioProject['sources'][number], fact: VideoFactSource, directory: string, operationId: string, signal: AbortSignal) => Promise<unknown> }
+  const invoke = analysisRuntime(service) as unknown as { remoteTranscriptEvidence: (project: VideoStudioProject, source: VideoStudioProject['sources'][number], fact: VideoFactSource, directory: string, operationId: string, signal: AbortSignal) => Promise<unknown> }
   await expect(invoke.remoteTranscriptEvidence(saved, saved.sources[0]!, sourceFact, root, 'task_00000001', new AbortController().signal)).rejects.toMatchObject({ code: 'VIDEO_PROJECT_BUDGET_EXCEEDED' })
   expect(relayRequests).toBe(0)
   expect((await service.repository.getOperation('task_00000001')).result?.asr_checkpoints).toMatchObject([{ state: 'uploading' }])
@@ -872,7 +939,7 @@ test('ASR 预算预留成功后上传失败不写提交栅栏并可安全恢复�
     remote_analysis_budgets: [{ id: 'budget_00000001', estimate_hash: hash('e'), state: 'reserved', requests: 1, total_tokens: 0, input_bytes: 128, visual_frames: 0, proxy_seconds: 0, asr_seconds: 30, estimated_amount_micros: 3_600, settlements: [], created_at: at, updated_at: at }],
   })
   await service.repository.saveOperation({ schema_version: 1, id: 'task_00000001', project_id: created.id, kind: 'video.analyze', status: 'running', progress: 10, stage: 'ASR', result: { user_goal: '上传失败恢复' }, created_at: at, updated_at: at })
-  const invoke = service as unknown as { remoteTranscriptEvidence: (project: VideoStudioProject, source: VideoStudioProject['sources'][number], fact: VideoFactSource, directory: string, operationId: string, signal: AbortSignal) => Promise<unknown> }
+  const invoke = analysisRuntime(service) as unknown as { remoteTranscriptEvidence: (project: VideoStudioProject, source: VideoStudioProject['sources'][number], fact: VideoFactSource, directory: string, operationId: string, signal: AbortSignal) => Promise<unknown> }
 
   await expect(invoke.remoteTranscriptEvidence(saved, saved.sources[0]!, sourceFact, root, 'task_00000001', new AbortController().signal)).rejects.toMatchObject({ code: 'relay_control_unavailable' })
   expect(fenceSeenDuringUpload).toBeFalse()
@@ -922,7 +989,7 @@ test('ASR fence 后 499 保留 outcome_unknown，并经 local_operation_id 权�
     remote_analysis_budgets: [{ id: 'budget_00000001', estimate_hash: hash('e'), state: 'reserved', requests: 1, total_tokens: 0, input_bytes: 128, visual_frames: 0, proxy_seconds: 0, asr_seconds: 30, estimated_amount_micros: 3_600, settlements: [], created_at: at, updated_at: at }],
   })
   await first.repository.saveOperation({ schema_version: 1, id: 'task_00000001', project_id: created.id, kind: 'video.analyze', status: 'running', progress: 10, stage: 'ASR', result: { user_goal: 'fence 死区' }, created_at: at, updated_at: at })
-  const invoke = (service: VideoWorkbenchService) => service as unknown as { remoteTranscriptEvidence: (project: VideoStudioProject, source: VideoStudioProject['sources'][number], fact: VideoFactSource, directory: string, operationId: string, signal: AbortSignal) => Promise<unknown> }
+  const invoke = (service: VideoWorkbenchService) => analysisRuntime(service) as unknown as { remoteTranscriptEvidence: (project: VideoStudioProject, source: VideoStudioProject['sources'][number], fact: VideoFactSource, directory: string, operationId: string, signal: AbortSignal) => Promise<unknown> }
   await expect(invoke(first).remoteTranscriptEvidence(saved, saved.sources[0]!, sourceFact, root, 'task_00000001', new AbortController().signal)).rejects.toMatchObject({ status: 499, code: 'relay_control_cancelled' })
   const fenced = (await first.repository.getOperation('task_00000001')).result?.asr_checkpoints?.[0]
   expect(fenced).toMatchObject({ state: 'outcome_unknown', object_ref: 'object_00000001' })
@@ -998,7 +1065,7 @@ test('ASR submission fence 后 HTTP 409 保留预算并只恢复已有 Relay Ope
     remote_analysis_budgets: [{ id: 'budget_00000001', estimate_hash: hash('e'), state: 'reserved', requests: 1, total_tokens: 0, input_bytes: 128, visual_frames: 0, proxy_seconds: 0, asr_seconds: 30, estimated_amount_micros: 3_600, settlements: [], created_at: at, updated_at: at }],
   })
   await seed.repository.saveOperation({ schema_version: 1, id: 'task_00000001', project_id: created.id, kind: 'video.analyze', status: 'running', progress: 20, stage: 'ASR submission', result: { user_goal: '409 恢复' }, created_at: at, updated_at: at })
-  const firstInvoke = seed as unknown as { remoteTranscriptEvidence: (project: VideoStudioProject, source: VideoStudioProject['sources'][number], fact: VideoFactSource, directory: string, operationId: string, signal: AbortSignal) => Promise<unknown> }
+  const firstInvoke = analysisRuntime(seed) as unknown as { remoteTranscriptEvidence: (project: VideoStudioProject, source: VideoStudioProject['sources'][number], fact: VideoFactSource, directory: string, operationId: string, signal: AbortSignal) => Promise<unknown> }
   await expect(firstInvoke.remoteTranscriptEvidence(saved, saved.sources[0]!, sourceFact, root, 'task_00000001', new AbortController().signal)).rejects.toMatchObject({ status: 409, code: 'local_operation_conflict' })
   expect(firstRequests).toEqual([
     'POST /v1/video-media/object-leases',
@@ -1019,7 +1086,7 @@ test('ASR submission fence 后 HTTP 409 保留预算并只恢复已有 Relay Ope
       return Response.json({ id: 'operation_00000009', state: 'expired', account_quota_reservation_id: 'quota_00000009', created_at: at, updated_at: at })
     },
   })
-  const invoke = recovered as unknown as { remoteTranscriptEvidence: (project: VideoStudioProject, source: VideoStudioProject['sources'][number], fact: VideoFactSource, directory: string, operationId: string, signal: AbortSignal) => Promise<unknown> }
+  const invoke = analysisRuntime(recovered) as unknown as { remoteTranscriptEvidence: (project: VideoStudioProject, source: VideoStudioProject['sources'][number], fact: VideoFactSource, directory: string, operationId: string, signal: AbortSignal) => Promise<unknown> }
   const recoveredProject = await recovered.getProject(created.id)
   await expect(invoke.remoteTranscriptEvidence(recoveredProject, recoveredProject.sources[0]!, sourceFact, root, 'task_00000001', new AbortController().signal)).rejects.toThrow('ASR 结果保留期已过期')
   expect(requests).toEqual([`GET /v1/video-media/operations/by-local-operation/${localOperationId}`])
@@ -1055,7 +1122,7 @@ test('长 ASR 重启后仅轮询已持久化 Relay 任务，超过两分钟轮�
   })
   seed.repository.close()
 
-  const invokeRecovery = (service: VideoWorkbenchService) => service as unknown as {
+  const invokeRecovery = (service: VideoWorkbenchService) => analysisRuntime(service) as unknown as {
     remoteTranscriptEvidence: (project: VideoStudioProject, source: VideoStudioProject['sources'][number], fact: VideoFactSource, directory: string, operationId: string, signal: AbortSignal) => Promise<{ evidence: Array<{ text: string }> } | null>
   }
   const resetCheckpoint = async (service: VideoWorkbenchService) => {
@@ -1202,7 +1269,7 @@ test('ASR GET 中取消后使用未绑定 client，在 Provider 不支持 cancel
       })
     },
   })
-  const invoke = (service: VideoWorkbenchService) => service as unknown as { remoteTranscriptEvidence: (project: VideoStudioProject, source: VideoStudioProject['sources'][number], fact: VideoFactSource, directory: string, operationId: string, signal: AbortSignal) => Promise<unknown> }
+  const invoke = (service: VideoWorkbenchService) => analysisRuntime(service) as unknown as { remoteTranscriptEvidence: (project: VideoStudioProject, source: VideoStudioProject['sources'][number], fact: VideoFactSource, directory: string, operationId: string, signal: AbortSignal) => Promise<unknown> }
   const controller = new AbortController()
   const pending = invoke(interrupted).remoteTranscriptEvidence(saved, saved.sources[0]!, sourceFact, root, 'task_00000001', controller.signal)
   await getStarted
@@ -1241,7 +1308,7 @@ test('Relay ACK 已确认结果对象过期时只在本地 Fact 可验证后退�
     ...created,
     pending_relay_acknowledgements: [{ operation_id: 'task_00000001', relay_operation_id: 'operation_00000001', receipt_id: 'receipt_00000001', result_hashes: [hash('c')], created_at: at }],
   })
-  const invoke = service as unknown as { flushPendingRelayAcknowledgements: (projectId: string) => Promise<void> }
+  const invoke = analysisRuntime(service) as unknown as { flushPendingRelayAcknowledgements: (projectId: string) => Promise<void> }
   await invoke.flushPendingRelayAcknowledgements(created.id)
   expect((await service.getProject(created.id)).pending_relay_acknowledgements).toHaveLength(1)
   status = 410
@@ -1283,7 +1350,7 @@ test('四类远程能力按 Operation 结算、释放或围栏，而不改变整
     ...created,
     remote_analysis_budgets: [{ id: 'budget_00000001', estimate_hash: hash('a'), state: 'reserved', requests: 20, total_tokens: 20_000, input_bytes: 20_000_000, visual_frames: 20, proxy_seconds: 20, asr_seconds: 20, estimated_amount_micros: 20_000, reservations: [], settlements: [], created_at: at, updated_at: at }],
   })
-  const invoke = service as unknown as {
+  const invoke = analysisRuntime(service) as unknown as {
     reserveRemoteBudget: (projectId: string, budgetId: string, operationId: string, capability: 'visual_evidence' | 'media_reasoning' | 'speech_transcription' | 'semantic_embedding', usage: { requests: number; total_tokens: number; input_bytes: number; visual_frames: number; proxy_seconds: number; asr_seconds: number; estimated_amount_micros: number }) => Promise<void>
     settleRemoteBudget: (projectId: string, budgetId: string, operationId: string, receipt: { id: string; capability: 'visual_evidence' | 'media_reasoning' | 'speech_transcription' | 'semantic_embedding'; usage: { requests: number; total_tokens: number; input_bytes: number; visual_frames: number; proxy_seconds: number; asr_seconds: number; estimated_amount_micros: number } }) => Promise<void>
     finalizeRemoteBudgetFailure: (projectId: string, budgetId: string, operationId: string, error: unknown, options?: { submissionFenced?: boolean }) => Promise<void>
@@ -1391,7 +1458,7 @@ test('视觉、规划与 Embedding 在 fenced 499 后严格重放同一 Relay Op
     ...created,
     remote_analysis_budgets: [{ id: 'budget_00000001', estimate_hash: hash('a'), state: 'reserved', requests: 10, total_tokens: 100, input_bytes: 1_000, visual_frames: 2, proxy_seconds: 0, asr_seconds: 0, estimated_amount_micros: 100, reservations: [], settlements: [], created_at: at, updated_at: at }],
   })
-  const invoke = service as unknown as {
+  const invoke = analysisRuntime(service) as unknown as {
     videoMediaRelay: () => VideoMediaRelayClient | null
     reserveAndRunRemote: <T>(projectId: string, budgetId: string, capability: Request['capability'], usage: { requests: number; total_tokens: number; input_bytes: number; visual_frames: number; proxy_seconds: number; asr_seconds: number; estimated_amount_micros: number }, relay: VideoMediaRelayClient, request: Request, consume: (client: VideoMediaRelayClient, operation: Projection) => Promise<T>) => Promise<T>
     settleRemoteBudget: (projectId: string, budgetId: string, operationId: string, receipt: NonNullable<Projection['provider_receipt']>) => Promise<void>
@@ -1483,7 +1550,7 @@ test('远程规划 consume 后先以 staged Operation 原子替换 fence，重�
   type RelayRequest = Parameters<VideoMediaRelayClient['createOperation']>[0]
   type RelayProjection = Awaited<ReturnType<VideoMediaRelayClient['createOperation']>>
   const request: RelayRequest = { local_operation_id: planTask.id, consent_revision_id: 'consent_00000001', consent_scope_hash: hash('c'), local_budget_reservation_id: 'budget_00000001', request_hash: hash('b'), capability: 'media_reasoning', application_role: 'planning', input: { object_refs: [], facts_basis_hash: saved.evidence_revision!, evidence: [{ id: evidence.id, kind: 'visual_fact', text: evidence.text, confidence: evidence.confidence }], language: 'zh', output_schema_version: 1 } }
-  const invoke = service as unknown as {
+  const invoke = analysisRuntime(service) as unknown as {
     videoMediaRelay: () => VideoMediaRelayClient | null
     reserveAndRunRemote: <T>(projectId: string, budgetId: string, capability: 'media_reasoning', allocation: typeof usage, relay: VideoMediaRelayClient, request: RelayRequest, consume: (client: VideoMediaRelayClient, operation: RelayProjection) => Promise<T>, options: { parentOperationId: string }) => Promise<T>
     settleRemoteBudget: (projectId: string, budgetId: string, operationId: string, receipt: NonNullable<RelayProjection['provider_receipt']>) => Promise<void>
@@ -1559,7 +1626,7 @@ test('正式视觉证据路径在 POST 响应丢失后查询旧任务，不产�
     coverage: { generation: 1, request_budget: { max_windows: 1, max_visual_requests: 1, max_frames: 1, max_proxy_seconds: 0, max_input_tokens: 100, max_covered_ticks: '90000' }, request_usage: { windows: 1, visual_requests: 1, frames: 1, proxy_seconds: 0, estimated_input_tokens: 1, covered_ticks: '90000' }, uncovered: [] }, created_at: at,
   }
   await service.repository.saveOperation({ schema_version: 1, id: 'task_visual_parent', project_id: created.id, kind: 'video.analyze', status: 'running', progress: 45, stage: '视觉恢复', result: { user_goal: '恢复视觉证据' }, created_at: at, updated_at: at })
-  const invoke = service as unknown as {
+  const invoke = analysisRuntime(service) as unknown as {
     remoteVisualEvidence: (project: VideoStudioProject, operationId: string, extracted: { frames: Array<{ source_id: string; in_ms: number; range_end_ms: number; evidence_window_id: string; data_url: string }>; transcripts: []; relay_acknowledgements: []; gaps: []; source_facts: Map<string, VideoFactSource>; evidence_windows: Map<string, typeof window> }, signal: AbortSignal) => Promise<{ evidence: Array<{ text: string }>; acknowledgements: VideoStudioProject['pending_relay_acknowledgements'] } | null>
   }
   const recovered = await invoke.remoteVisualEvidence(saved, 'task_visual_parent', {

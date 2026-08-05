@@ -4,8 +4,9 @@ import { link, mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/pro
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { createVideoWorkbenchDomainApiHandler } from '../src/server/api/videoWorkbench.js'
-import { buildExecutionPlanRenderCommand, fastVideoIdentity, selectDeliveryVideoEncoder, verifyDeliveryVideoOutput, videoFingerprint, writeExecutionPlanCaption } from '../src/server/services/videoExecution.js'
+import { buildExecutionPlanRenderCommand, fastVideoIdentity, selectDeliveryVideoEncoder, verifyDeliveryVideoOutput, videoFingerprint, writeExecutionPlanCaption, type VideoProcessRunner } from '../src/server/services/videoExecution.js'
 import { VideoWorkbenchService, type LocalPcmDecoder } from '../src/server/services/videoWorkbenchService.js'
+import { VideoWorkbenchRuntime } from '../src/server/services/videoWorkbenchRuntime.js'
 import { detectBeatGrid, detectBeatGridFromPcmChunks } from '../src/server/video/domain/finishingDelivery/beatDetector.js'
 import { FinishingDeliveryApplication } from '../src/server/video/domain/finishingDelivery/finishingDeliveryApplication.js'
 import { EditorialApplication } from '../src/server/video/domain/editorial/editorialApplication.js'
@@ -28,6 +29,13 @@ import {
 const roots: string[] = []
 const at = '2026-08-05T00:00:00.000Z'
 const capability = 'capability_0123456789abcdef0123456789'
+
+/** Public delivery journeys stay on the compatibility facade. Low-level
+ * FFmpeg and publication fault injection targets the internal delivery
+ * runtime, keeping those executor methods out of the API surface. */
+function deliveryRuntime(service: VideoWorkbenchService): VideoWorkbenchRuntime {
+  return (service as unknown as { root: { runtime: VideoWorkbenchRuntime } }).root.runtime
+}
 
 async function testRoot(label: string): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), `billiardbuddy-finishing-${label}-`))
@@ -81,18 +89,20 @@ function outputProbe(options: {
   sampleAspectRatio?: string
   displayAspectRatio?: string
   rotation?: number
+  durationSeconds?: number
   omitVideoDuration?: boolean
   omitAudioDuration?: boolean
 } = {}) {
   const audioStreams = options.audioStreams ?? 1
+  const duration = (options.durationSeconds ?? 10).toFixed(3)
   return JSON.stringify({
-    format: { duration: '10.000', format_name: 'mov,mp4,m4a,3gp,3g2,mj2', tags: { major_brand: options.majorBrand ?? 'isom' } },
+    format: { duration, format_name: 'mov,mp4,m4a,3gp,3g2,mj2', tags: { major_brand: options.majorBrand ?? 'isom' } },
     streams: [
       {
         codec_type: 'video', codec_name: options.videoCodec ?? 'h264', width: 1080, height: 1920,
         ...(options.proresProfile ? { profile: options.proresProfile } : {}),
         avg_frame_rate: '30/1',
-        ...(options.omitVideoDuration ? {} : { duration: '10.000' }),
+        ...(options.omitVideoDuration ? {} : { duration }),
         pix_fmt: options.pixelFormat ?? 'yuv420p',
         color_space: 'bt709', color_transfer: 'bt709', color_primaries: 'bt709', color_range: options.colorRange ?? 'tv',
         sample_aspect_ratio: options.sampleAspectRatio ?? '1:1', display_aspect_ratio: options.displayAspectRatio ?? '9:16',
@@ -100,7 +110,7 @@ function outputProbe(options: {
       },
       ...Array.from({ length: audioStreams }, () => ({
         codec_type: 'audio', codec_name: options.audioCodec ?? 'aac',
-        ...(options.omitAudioDuration ? {} : { duration: '10.000' }),
+        ...(options.omitAudioDuration ? {} : { duration }),
         sample_rate: String(options.sampleRate ?? 48_000),
         channels: options.channels ?? 2, channel_layout: (options.channels ?? 2) === 1 ? 'mono' : 'stereo',
       })),
@@ -165,7 +175,10 @@ function finishingRunner(commands: string[][]) {
 async function seededService(root: string, options: {
   pcmDecoder?: LocalPcmDecoder
   offsetAudio?: boolean
-  runProcess?: (command: string[]) => Promise<{ exitCode: number; stdout: string; stderr: string }>
+  primaryVideoStreamIndex?: number
+  primaryVideoDurationMs?: number
+  presentationDurationMs?: number
+  runProcess?: VideoProcessRunner
   env?: Record<string, string | undefined>
 } = {}) {
   const commands: string[][] = []
@@ -185,6 +198,8 @@ async function seededService(root: string, options: {
   const timeBase = mediaTimeBase(1, 1_000)
   const tickRate = tickRateForTimeBase(timeBase)
   const sourceId = 'src_00000001'
+  const primaryVideoDurationMs = options.primaryVideoDurationMs ?? 10_000
+  const presentationDurationMs = options.presentationDurationMs ?? primaryVideoDurationMs
   const primaryStart = options.offsetAudio ? rationalTime('1000', tickRate) : rationalTime('0', tickRate)
   const audioTracks = options.offsetAudio
     ? [{
@@ -216,10 +231,10 @@ async function seededService(root: string, options: {
     fingerprint,
     fingerprint_state: 'ready',
     primary_video_stream: {
-      stream_index: 0,
+      stream_index: options.primaryVideoStreamIndex ?? 0,
       time_base: timeBase,
       start_time: primaryStart,
-      duration: rationalTime('10000', tickRate),
+      duration: rationalTime(String(primaryVideoDurationMs), tickRate),
       codec: 'h264',
       width: 1920,
       height: 1080,
@@ -232,7 +247,7 @@ async function seededService(root: string, options: {
       hdr_kind: 'sdr',
       variable_frame_rate: false,
     },
-    presentation_duration: rationalTime('10000', tickRate),
+    presentation_duration: rationalTime(String(presentationDurationMs), tickRate),
     audio_tracks: audioTracks,
     state: 'ready',
     created_at: at,
@@ -246,7 +261,7 @@ async function seededService(root: string, options: {
       id: sourceId,
       path: sourcePath,
       name: 'source.mp4',
-      duration_ms: 10_000,
+      duration_ms: primaryVideoDurationMs,
       width: 1920,
       height: 1080,
       fps: 30,
@@ -258,7 +273,7 @@ async function seededService(root: string, options: {
       missing: false,
       content_changed: false,
     }],
-    timeline: [{ id: 'clip_00000001', source_id: sourceId, in_ms: 0, out_ms: 10_000 }],
+    timeline: [{ id: 'clip_00000001', source_id: sourceId, in_ms: 0, out_ms: primaryVideoDurationMs }],
   })
   // This read creates the one allowed v2 baseline from the legacy projection.
   await expect(service.getEditorialTimeline(created.id, 'timeline_missing')).rejects.toMatchObject({ code: 'VIDEO_TIMELINE_MISSING' })
@@ -719,7 +734,7 @@ test('正式 ExecutionPlan 在烧录字幕时预检 subtitles 过滤器，缺失
       cues: [],
     },
   } as VideoExecutionPlan
-  const filterPreflight = service as unknown as { assertExecutionPlanFiltersSupported(value: VideoExecutionPlan): Promise<void> }
+  const filterPreflight = deliveryRuntime(service) as unknown as { assertExecutionPlanFiltersSupported(value: VideoExecutionPlan): Promise<void> }
   await expect(filterPreflight.assertExecutionPlanFiltersSupported(plan)).rejects.toMatchObject({ code: 'VIDEO_FINISHING_UNAVAILABLE' })
   expect(filterListed).toBeTrue()
   service.repository.close()
@@ -762,7 +777,7 @@ test('正式字幕预检在实际执行 Sidecar 验证受控字体目录、字�
       cues: [],
     },
   } as VideoExecutionPlan
-  const preflight = service as unknown as { assertExecutionPlanFiltersSupported(value: VideoExecutionPlan): Promise<void> }
+  const preflight = deliveryRuntime(service) as unknown as { assertExecutionPlanFiltersSupported(value: VideoExecutionPlan): Promise<void> }
 
   await expect(preflight.assertExecutionPlanFiltersSupported(plan)).resolves.toBeUndefined()
   const probeCommand = commands.find(command => command.includes('-vf'))
@@ -844,6 +859,7 @@ test('正式预检、预览和导出只消费冻结 Variant/ExecutionPlan，并�
   expect((await waitForTerminalOperation(service, previewTask.task.id)).status).toBe('succeeded')
 
   const afterPreview = await service.getProject(created.id)
+  expect(afterPreview.preview_task_id).toBeUndefined()
   const outputPath = join(root, 'formal-delivery.mp4')
   const renderUrl = new URL(`http://localhost/api/videos/projects/${created.id}/delivery-variants/${variant.variant.id}/render`)
   const render = await request(renderUrl, {
@@ -857,15 +873,372 @@ test('正式预检、预览和导出只消费冻结 Variant/ExecutionPlan，并�
   expect(renderTask.task.result).not.toHaveProperty('output_path')
   const terminal = await waitForTerminalOperation(service, renderTask.task.id)
   expect(terminal.status).toBe('succeeded')
+  const previewStagingPath = join(service.repository.paths().exports, 'execution-plans', `${preflightResult.plan.id}.mp4.partial-${previewTask.task.id}.mp4`)
+  const renderStagingPath = join(service.repository.paths().exports, 'execution-plans', `${preflightResult.plan.id}.mp4.partial-${renderTask.task.id}.mp4`)
+  // The user-selected target is publication-only. Both encoder invocations
+  // must consume the frozen plan and write to its managed staging location.
+  expect(commands.some(command => command.at(-1) === previewStagingPath)).toBeTrue()
+  expect(commands.some(command => command.at(-1) === renderStagingPath)).toBeTrue()
+  expect(commands.some(command => command.at(-1) === outputPath)).toBeFalse()
   const completed = await service.getProject(created.id)
   expect(completed).toMatchObject({
     state: 'complete',
     output_path: outputPath,
     output_verification: { execution_plan_id: preflightResult.plan.id, decoded: true, packet_timestamps_monotonic: true },
   })
+  expect(completed.task_id).toBeUndefined()
   expect(completed.quality_reports.at(-1)).toMatchObject({ kind: 'post_render', state: 'passed', execution_plan_id: preflightResult.plan.id })
+  expect(await readFile(outputPath, 'utf8')).toBe('formal-video-output')
   expect(commands.some(command => command.includes('-filter_complex') && command.join(' ').includes('concat=n=1:v=1:a=0'))).toBeTrue()
   expect(commands.some(command => command.includes('-show_packets'))).toBeTrue()
+  service.repository.close()
+})
+
+test('正式预览失败后清除 Project 的活动预览投影', async () => {
+  const root = await testRoot('formal-preview-terminal-state')
+  const commands: string[][] = []
+  const runner = finishingRunner(commands)
+  const { service, created } = await seededService(root, {
+    runProcess: async command => command.includes('-filter_complex')
+      ? { exitCode: 1, stdout: '', stderr: 'fixture preview encoder failure' }
+      : await runner(command),
+  })
+  const initial = await service.getProject(created.id)
+  const variant = await service.createDeliveryVariant(created.id, {
+    name: '失败预览交付',
+    editorial_timeline_version_id: initial.current_editorial_timeline_version_id!,
+  }, 'preview-terminal-variant-key-0001')
+  const preflight = await service.preflightDeliveryVariant(created.id, variant.variant.id, {
+    base_revision: variant.project.revision,
+    base_variant_version_id: variant.version.id,
+  }, 'preview-terminal-preflight-key-0001')
+  const handler = createVideoWorkbenchDomainApiHandler(service, capability)
+  const url = new URL(`http://localhost/api/videos/projects/${created.id}/delivery-variants/${variant.variant.id}/preview`)
+  const response = await handler(new Request(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Idempotency-Key': 'preview-terminal-api-key-0001',
+      [MEDIA_UI_CAPABILITY_HEADER]: capability,
+    },
+    body: JSON.stringify({ base_revision: preflight.project.revision, base_variant_version_id: variant.version.id }),
+  }), url, requestSegments(url))
+  expect(response.status).toBe(202)
+  const body = await response.json() as { task: { id: string } }
+  expect(await waitForTerminalOperation(service, body.task.id)).toMatchObject({ status: 'failed' })
+  expect((await service.getProject(created.id)).preview_task_id).toBeUndefined()
+  service.repository.close()
+})
+
+test('正式导出失败后清除 Project 的活动导出投影，API 可立即重试', async () => {
+  const root = await testRoot('formal-render-terminal-state')
+  const commands: string[][] = []
+  const runner = finishingRunner(commands)
+  let rejectEncoder = true
+  const { service, created } = await seededService(root, {
+    runProcess: async command => command.includes('-filter_complex') && rejectEncoder
+      ? { exitCode: 1, stdout: '', stderr: 'fixture render encoder failure' }
+      : await runner(command),
+  })
+  const initial = await service.getProject(created.id)
+  const variant = await service.createDeliveryVariant(created.id, {
+    name: '失败导出交付',
+    editorial_timeline_version_id: initial.current_editorial_timeline_version_id!,
+  }, 'render-terminal-variant-key-0001')
+  const preflight = await service.preflightDeliveryVariant(created.id, variant.variant.id, {
+    base_revision: variant.project.revision,
+    base_variant_version_id: variant.version.id,
+  }, 'render-terminal-preflight-key-0001')
+  const handler = createVideoWorkbenchDomainApiHandler(service, capability)
+  const url = new URL(`http://localhost/api/videos/projects/${created.id}/delivery-variants/${variant.variant.id}/render`)
+  const body = JSON.stringify({
+    base_revision: preflight.project.revision,
+    base_variant_version_id: variant.version.id,
+    output_path: join(root, 'failed-formal-render.mp4'),
+  })
+  const failed = await handler(new Request(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Idempotency-Key': 'render-terminal-api-key-0001',
+      [MEDIA_UI_CAPABILITY_HEADER]: capability,
+    },
+    body,
+  }), url, requestSegments(url))
+  expect(failed.status).toBe(202)
+  const firstTask = await failed.json() as { task: { id: string } }
+  expect(await waitForTerminalOperation(service, firstTask.task.id)).toMatchObject({ status: 'failed' })
+  const afterFailure = await service.getProject(created.id)
+  expect(afterFailure.state).toBe('failed')
+  expect(afterFailure.task_id).toBeUndefined()
+
+  rejectEncoder = false
+  const retried = await handler(new Request(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Idempotency-Key': 'render-terminal-api-key-0002',
+      [MEDIA_UI_CAPABILITY_HEADER]: capability,
+    },
+    body: JSON.stringify({
+      base_revision: preflight.project.revision,
+      base_variant_version_id: variant.version.id,
+      output_path: join(root, 'retried-formal-render.mp4'),
+    }),
+  }), url, requestSegments(url))
+  expect(retried.status).toBe(202)
+  const retryTask = await retried.json() as { task: { id: string } }
+  expect(await waitForTerminalOperation(service, retryTask.task.id)).toMatchObject({ status: 'succeeded' })
+  expect((await service.getProject(created.id)).task_id).toBeUndefined()
+  service.repository.close()
+})
+
+test('正式导出取消 API 在返回终态前清除 Project 的活动导出投影', async () => {
+  const root = await testRoot('formal-render-cancel-terminal-state')
+  const commands: string[][] = []
+  const runner = finishingRunner(commands)
+  let started!: () => void
+  const startedEncoder = new Promise<void>(resolve => { started = resolve })
+  const { service, created } = await seededService(root, {
+    runProcess: async (command, options) => {
+      if (!command.includes('-filter_complex')) return await runner(command)
+      started()
+      await new Promise<void>(resolve => {
+        if (options?.signal?.aborted) return resolve()
+        options?.signal?.addEventListener('abort', () => resolve(), { once: true })
+      })
+      return { exitCode: 1, stdout: '', stderr: 'fixture render cancelled' }
+    },
+  })
+  const initial = await service.getProject(created.id)
+  const variant = await service.createDeliveryVariant(created.id, {
+    name: '取消导出交付',
+    editorial_timeline_version_id: initial.current_editorial_timeline_version_id!,
+  }, 'render-cancel-variant-key-0001')
+  const preflight = await service.preflightDeliveryVariant(created.id, variant.variant.id, {
+    base_revision: variant.project.revision,
+    base_variant_version_id: variant.version.id,
+  }, 'render-cancel-preflight-key-0001')
+  const handler = createVideoWorkbenchDomainApiHandler(service, capability)
+  const renderUrl = new URL(`http://localhost/api/videos/projects/${created.id}/delivery-variants/${variant.variant.id}/render`)
+  const render = await handler(new Request(renderUrl, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Idempotency-Key': 'render-cancel-api-key-0001',
+      [MEDIA_UI_CAPABILITY_HEADER]: capability,
+    },
+    body: JSON.stringify({
+      base_revision: preflight.project.revision,
+      base_variant_version_id: variant.version.id,
+      output_path: join(root, 'cancelled-formal-render.mp4'),
+    }),
+  }), renderUrl, requestSegments(renderUrl))
+  expect(render.status).toBe(202)
+  const createdTask = await render.json() as { task: { id: string } }
+  await startedEncoder
+
+  const cancelUrl = new URL(`http://localhost/api/videos/operations/${createdTask.task.id}/cancel`)
+  const cancelled = await handler(new Request(cancelUrl, {
+    method: 'POST',
+    headers: { [MEDIA_UI_CAPABILITY_HEADER]: capability },
+  }), cancelUrl, requestSegments(cancelUrl))
+  expect(cancelled.status).toBe(200)
+  expect(await cancelled.json()).toMatchObject({ task: { id: createdTask.task.id, status: 'cancelled' } })
+  const afterCancellation = await service.getProject(created.id)
+  expect(afterCancellation.state).toBe('ready')
+  expect(afterCancellation.task_id).toBeUndefined()
+  service.repository.close()
+})
+
+test('正式预检从主视频事实冻结绝对流索引，并以原始视频流时长编译', async () => {
+  const root = await testRoot('primary-stream-freeze')
+  const { service, created } = await seededService(root, {
+    primaryVideoStreamIndex: 2,
+    primaryVideoDurationMs: 3_000,
+    presentationDurationMs: 10_000,
+  })
+  const initial = await service.getProject(created.id)
+  const variant = await service.createDeliveryVariant(created.id, {
+    name: '主视频绝对流索引交付',
+    editorial_timeline_version_id: initial.current_editorial_timeline_version_id!,
+  }, 'primary-stream-variant-key-0001')
+  const handler = createVideoWorkbenchDomainApiHandler(service, capability)
+  const url = new URL(`http://localhost/api/videos/projects/${created.id}/delivery-variants/${variant.variant.id}/preflight`)
+  const response = await handler(new Request(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Idempotency-Key': 'primary-stream-preflight-key-0001',
+      [MEDIA_UI_CAPABILITY_HEADER]: capability,
+    },
+    body: JSON.stringify({ base_revision: variant.project.revision, base_variant_version_id: variant.version.id }),
+  }), url, requestSegments(url))
+  expect(response.status).toBe(201)
+  const result = await response.json() as { plan: VideoExecutionPlan }
+  expect(result.plan.inputs).toEqual(expect.arrayContaining([
+    expect.objectContaining({
+      kind: 'source',
+      video_stream_index: 2,
+      source_range: expect.objectContaining({ duration: expect.objectContaining({ ticks: '3000' }) }),
+    }),
+  ]))
+
+  const project = await service.getProject(created.id)
+  const command = buildExecutionPlanRenderCommand('ffmpeg', project, result.plan, join(root, 'primary-stream.mp4'))
+  const filter = command[command.indexOf('-filter_complex') + 1] ?? ''
+  expect(filter).toContain('[0:2]')
+  expect(filter).not.toMatch(/\[\d+:v\]/)
+
+  const missingStream = structuredClone(result.plan) as VideoExecutionPlan
+  missingStream.inputs = missingStream.inputs.map(input => input.kind === 'source'
+    ? { ...input, video_stream_index: undefined }
+    : input)
+  expect(() => buildExecutionPlanRenderCommand('ffmpeg', project, missingStream, join(root, 'missing-primary-stream.mp4')))
+    .toThrow('源视频缺少冻结的绝对视频流索引')
+  service.repository.close()
+})
+
+test('应用旧备选后，正式预览和导出只执行新 CommandSet 生成的 Version', async () => {
+  const root = await testRoot('alternative-formal-execution')
+  const commands: string[][] = []
+  const runner = finishingRunner(commands)
+  const { service, created } = await seededService(root, {
+    runProcess: async command => command.includes('-show_format') && command.includes('-show_streams')
+      ? { exitCode: 0, stdout: outputProbe({ durationSeconds: 3 }), stderr: '' }
+      : await runner(command),
+  })
+  const initial = await service.getProject(created.id)
+  const source = initial.sources[0]
+  const baseTimelineId = initial.current_timeline_version_id ?? initial.current_editorial_timeline_version_id
+  if (!source || !baseTimelineId || !initial.current_editorial_timeline_version_id) throw new Error('fixture must have an editorial baseline')
+  await service.repository.saveProject({
+    ...initial,
+    alternatives: [{
+      id: 'alternative_00000001',
+      base_timeline_version_id: baseTimelineId,
+      label: '从第二秒开始的正式备选',
+      tradeoff: '缩短开场，保留三秒主镜头',
+      scenes: [{
+        id: 'scene_00000001',
+        source_id: source.id,
+        in_ms: 2_000,
+        out_ms: 5_000,
+        story_role: 'hook',
+        evidence_ids: [],
+        rationale: '备选镜头范围',
+        needs_review: false,
+      }],
+    }],
+  })
+  const handler = createVideoWorkbenchDomainApiHandler(service, capability)
+  const request = async (url: URL, init: RequestInit = {}) => {
+    const headers = new Headers(init.headers)
+    headers.set(MEDIA_UI_CAPABILITY_HEADER, capability)
+    return await handler(new Request(url, { ...init, headers }), url, requestSegments(url))
+  }
+
+  const applied = await request(new URL(`http://localhost/api/videos/projects/${created.id}/alternatives/alternative_00000001/apply`), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ base_revision: initial.revision }),
+  })
+  expect(applied.status).toBe(200)
+  const afterAlternative = await service.getProject(created.id)
+  const alternativeTimelineId = afterAlternative.current_editorial_timeline_version_id
+  expect(alternativeTimelineId).not.toBe(initial.current_editorial_timeline_version_id)
+  const alternativeTimeline = afterAlternative.editorial_timeline_versions.find(version => version.id === alternativeTimelineId)
+  expect(alternativeTimeline?.items).toEqual(expect.arrayContaining([
+    expect.objectContaining({
+      kind: 'video',
+      binding: expect.objectContaining({
+        kind: 'source',
+        source_range: expect.objectContaining({
+          start: expect.objectContaining({ ticks: '2000' }),
+          duration: expect.objectContaining({ ticks: '3000' }),
+        }),
+      }),
+    }),
+  ]))
+  expect(afterAlternative.editorial_command_receipts.at(-1)).toMatchObject({
+    target_kind: 'editorial',
+    created_version_id: alternativeTimelineId,
+  })
+
+  const variantResponse = await request(new URL(`http://localhost/api/videos/projects/${created.id}/delivery-variants`), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Idempotency-Key': 'alternative-formal-variant-key-0001' },
+    body: JSON.stringify({ name: '备选正式交付', editorial_timeline_version_id: alternativeTimelineId }),
+  })
+  expect(variantResponse.status).toBe(201)
+  const variant = await variantResponse.json() as {
+    project: { revision: number }
+    variant: { id: string }
+    version: { id: string }
+  }
+  const preflightResponse = await request(new URL(`http://localhost/api/videos/projects/${created.id}/delivery-variants/${variant.variant.id}/preflight`), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Idempotency-Key': 'alternative-formal-preflight-key-0001' },
+    body: JSON.stringify({ base_revision: variant.project.revision, base_variant_version_id: variant.version.id }),
+  })
+  expect(preflightResponse.status).toBe(201)
+  const preflight = await preflightResponse.json() as {
+    project: { revision: number }
+    plan: {
+      id: string
+      editorial_timeline_version_id: string
+      timeline_items: Array<{
+        kind: string
+        binding: {
+          kind: string
+          source_range?: { start: { ticks: string }; duration: { ticks: string } }
+        }
+      }>
+    }
+  }
+  expect(preflight.plan.editorial_timeline_version_id).toBe(alternativeTimelineId)
+  expect(preflight.plan.timeline_items).toEqual(expect.arrayContaining([
+    expect.objectContaining({
+      kind: 'video',
+      binding: expect.objectContaining({
+        kind: 'source',
+        source_range: expect.objectContaining({
+          start: expect.objectContaining({ ticks: '2000' }),
+          duration: expect.objectContaining({ ticks: '3000' }),
+        }),
+      }),
+    }),
+  ]))
+  const previewResponse = await request(new URL(`http://localhost/api/videos/projects/${created.id}/delivery-variants/${variant.variant.id}/preview`), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Idempotency-Key': 'alternative-formal-preview-key-0001' },
+    body: JSON.stringify({ base_revision: preflight.project.revision, base_variant_version_id: variant.version.id }),
+  })
+  expect(previewResponse.status).toBe(202)
+  const preview = await previewResponse.json() as { task: { id: string; result: { execution_plan_id: string } } }
+  expect(preview.task.result.execution_plan_id).toBe(preflight.plan.id)
+  expect((await waitForTerminalOperation(service, preview.task.id)).status).toBe('succeeded')
+
+  const beforeRender = await service.getProject(created.id)
+  const outputPath = join(root, 'alternative-formal-delivery.mp4')
+  const renderResponse = await request(new URL(`http://localhost/api/videos/projects/${created.id}/delivery-variants/${variant.variant.id}/render`), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Idempotency-Key': 'alternative-formal-render-key-0001' },
+    body: JSON.stringify({ base_revision: beforeRender.revision, base_variant_version_id: variant.version.id, output_path: outputPath }),
+  })
+  expect(renderResponse.status).toBe(202)
+  const render = await renderResponse.json() as { task: { id: string; result: { execution_plan_id: string } } }
+  expect(render.task.result.execution_plan_id).toBe(preflight.plan.id)
+  expect((await waitForTerminalOperation(service, render.task.id)).status).toBe('succeeded')
+
+  const executions = commands.filter(command => command.includes('-filter_complex') && (
+    command.at(-1) === join(service.repository.paths().exports, 'execution-plans', `${preflight.plan.id}.mp4.partial-${preview.task.id}.mp4`)
+    || command.at(-1) === join(service.repository.paths().exports, 'execution-plans', `${preflight.plan.id}.mp4.partial-${render.task.id}.mp4`)
+  ))
+  expect(executions).toHaveLength(2)
+  for (const command of executions) {
+    expect(command).toEqual(expect.arrayContaining(['-ss', '2.000000', '-t', '3.000000', '-i', source.path]))
+  }
   service.repository.close()
 })
 
@@ -1043,8 +1416,10 @@ test('预览任务中断后同时清理视频与 sidecar 临时文件', async ()
     created_at: at,
     updated_at: at,
   })
+  await service.repository.saveProject({ ...project, preview_task_id: operation.id })
   await service.recoverInterruptedOperations()
   expect(await service.getOperation(operation.id)).toMatchObject({ status: 'failed' })
+  expect((await service.getProject(created.id)).preview_task_id).toBeUndefined()
   expect(await Bun.file(temporaryOutput).exists()).toBeFalse()
   expect(await Bun.file(temporarySidecar).exists()).toBeFalse()
   service.repository.close()
@@ -1254,7 +1629,7 @@ test('受管项目资产按哈希和许可进入多轨 ExecutionPlan，非法后
         provenance: 'licensed_library',
         license_attestation: 'test license',
         video_color: brollColor,
-        video_stream: { start: range.start, duration: range.duration },
+        video_stream: { stream_index: 2, start: range.start, duration: range.duration },
         approved_at: at,
       },
       { asset_id: logoId, provenance: 'brand_owned', license_attestation: 'test license', approved_at: at },
@@ -1285,12 +1660,19 @@ test('受管项目资产按哈希和许可进入多轨 ExecutionPlan，非法后
         asset_content_hash: brollHash,
         source_range: range,
         video_color: brollColor,
+        video_stream_index: 2,
         video_start: range.start,
         video_duration: range.duration,
       },
       { kind: 'project_asset', asset_id: logoId, asset_content_hash: logoHash },
     ],
     audio_pipeline: { ...base.audio_pipeline, policy: 'music_with_source' as const },
+    maps: [
+      ...base.maps,
+      { track_id: 'track_music_00000001', output: 'audio' as const },
+      { track_id: 'track_broll_00000001', output: 'video' as const },
+      { track_id: 'track_overlay_00000001', output: 'video' as const },
+    ],
   } as VideoExecutionPlan
   const command = buildExecutionPlanRenderCommand('ffmpeg', enriched, plan, join(root, 'out.mp4'), undefined, {
     projectAssets: new Map([
@@ -1301,6 +1683,7 @@ test('受管项目资产按哈希和许可进入多轨 ExecutionPlan，非法后
   })
   expect(command.join(' ')).toContain('amix=inputs=2')
   expect(command.join(' ')).toContain('overlay=')
+  expect(command.join(' ')).toContain('[1:2]')
   expect(command).toEqual(expect.arrayContaining(['-loop', '1', logoPath]))
   const projectAssets = new Map([
     [musicId, { path: musicPath, content_hash: musicHash, mime_type: 'audio/mpeg' }],
@@ -1805,6 +2188,7 @@ test('音频完成计划只建议带 Transcript 锚点的语义剪辑，并将�
     timeline_range: musicItem.timeline_range,
     binding: musicItem.binding,
   }]
+  execution.maps = [...execution.maps, { track_id: musicTrack.id, output: 'audio' }]
   execution.inputs = [...execution.inputs, {
     kind: 'project_asset',
     asset_id: musicItem.binding.asset_id,
@@ -2048,6 +2432,10 @@ test('短且后置的 music_only 轨道显式补前后静音，正式音频时�
       audio_channels: 2,
     }],
     audio_pipeline: { ...base.audio_pipeline, policy: 'music_only' as const },
+    maps: [
+      { track_id: mainVideo.track_id, output: 'video' as const },
+      { track_id: 'track_music_00000002', output: 'audio' as const },
+    ],
   } as VideoExecutionPlan
   const command = buildExecutionPlanRenderCommand('ffmpeg', withMusic, plan, join(root, 'late-music.mp4'), undefined, {
     projectAssets: new Map([[musicId, { path: musicPath, content_hash: musicHash, mime_type: 'audio/mpeg' }]]),
@@ -2296,6 +2684,7 @@ test('正式 A/V 链冻结默认音轨及各自 PTS，旧计划缺失映射时�
         kind: 'source' as const,
         source_id: input.source_id,
         source_fingerprint: input.source_fingerprint,
+        video_stream_index: input.video_stream_index,
         source_start: input.source_start,
         source_range: input.source_range,
         video_color: input.video_color,
@@ -2335,7 +2724,7 @@ test('正式交付文件组无覆盖发布，sidecar 失败会保留临时字节
     writeFile(outputSidecar, 'user-existing-sidecar'),
   ])
   const [videoHash, sidecarHash] = await Promise.all([videoFingerprint(temporaryVideo), videoFingerprint(temporarySidecar)])
-  const publisher = service as unknown as {
+  const publisher = deliveryRuntime(service) as unknown as {
     publishFiles(files: ReadonlyArray<{ source: string; destination: string; content_hash?: string }>): Promise<void>
   }
   await expect(publisher.publishFiles([
@@ -2723,7 +3112,9 @@ test('重启恢复只发布同时具备 output_verify 与 post_render 收据的�
   })
   await recovered.recoverInterruptedOperations()
   expect(await recovered.getOperation(render.id)).toMatchObject({ status: 'succeeded' })
-  expect(await recovered.getProject(first.created.id)).toMatchObject({ state: 'complete', output_path: output })
+  const recoveredCompleted = await recovered.getProject(first.created.id)
+  expect(recoveredCompleted).toMatchObject({ state: 'complete', output_path: output })
+  expect(recoveredCompleted.task_id).toBeUndefined()
 
   const recoveredOutputVerify = await recovered.repository.getOperation(outputVerify.id)
   await recovered.repository.saveOperation({
@@ -2914,6 +3305,7 @@ test('HDR 素材只走真实 tone-map，未知颜色和 reject Profile 都失败
     }
   }
   const pqBounds = new Map([[source.id, {
+    video_stream_index: fact.primary_video_stream.stream_index,
     start: fact.primary_video_stream.start_time,
     duration: fact.primary_video_stream.duration!,
     video_color: {

@@ -183,7 +183,12 @@ test('工作台快照返回可供桌面权威恢复的版本和 cursor，但不�
   expect(typeof variants[0]?.variant?.id).toBe('string')
   expect(typeof variants[0]?.version?.id).toBe('string')
   expect(body.facts).toEqual({ schema_version: 1, items: [] })
-  expect((body.events as { cursor?: unknown; reset_required?: unknown; events?: unknown[] })).toEqual({ cursor: 0, reset_required: false, events: [] })
+  expect((body.events as { cursor?: unknown; next_cursor?: unknown; reset_required?: unknown; events?: unknown[] })).toEqual({
+    cursor: 0,
+    next_cursor: 1,
+    reset_required: false,
+    events: [],
+  })
   const serialized = JSON.stringify(body)
   expect(serialized).not.toContain(root)
   expect(serialized).not.toContain(workspaceRoot)
@@ -193,6 +198,49 @@ test('工作台快照返回可供桌面权威恢复的版本和 cursor，但不�
   const invalid = new URL(`http://localhost/api/videos/projects/${created.id}/workspace?event_cursor=-1`)
   const invalidResponse = await handler(new Request(invalid), invalid, requestSegments(invalid))
   expect(invalidResponse.status).toBe(400)
+
+  const queued = await service.repository.saveOperation({
+    schema_version: 1,
+    id: 'task_00000001',
+    project_id: created.id,
+    kind: 'video.probe',
+    status: 'queued',
+    progress: 0,
+    stage: '等待读取素材',
+    created_at: at,
+    updated_at: at,
+  })
+  await service.repository.saveOperation({
+    ...queued,
+    status: 'running',
+    progress: 50,
+    stage: '正在读取素材',
+  })
+  const eventsUrl = new URL(`http://localhost/api/videos/projects/${created.id}/events?cursor=0&wait_ms=0`)
+  const eventsResponse = await handler(new Request(eventsUrl), eventsUrl, requestSegments(eventsUrl))
+  expect(eventsResponse.status).toBe(200)
+  expect(await eventsResponse.json()).toMatchObject({
+    cursor: 2,
+    next_cursor: 3,
+    reset_required: false,
+    events: [
+      { cursor: 1, task: { id: 'task_00000001', status_sequence: 1 } },
+      { cursor: 2, task: { id: 'task_00000001', status_sequence: 2 } },
+    ],
+  })
+  const continuedUrl = new URL(`http://localhost/api/videos/projects/${created.id}/events?cursor=1&wait_ms=0`)
+  const continuedResponse = await handler(new Request(continuedUrl), continuedUrl, requestSegments(continuedUrl))
+  expect(continuedResponse.status).toBe(200)
+  expect(await continuedResponse.json()).toEqual({
+    cursor: 2,
+    next_cursor: 3,
+    reset_required: false,
+    events: [expect.objectContaining({ cursor: 2, task: expect.objectContaining({ id: 'task_00000001', status_sequence: 2 }) })],
+  })
+  const aheadUrl = new URL(`http://localhost/api/videos/projects/${created.id}/events?cursor=3&wait_ms=0`)
+  const aheadResponse = await handler(new Request(aheadUrl), aheadUrl, requestSegments(aheadUrl))
+  expect(aheadResponse.status).toBe(200)
+  expect(await aheadResponse.json()).toEqual({ events: [], cursor: 2, next_cursor: 3, reset_required: true })
   service.repository.close()
 })
 

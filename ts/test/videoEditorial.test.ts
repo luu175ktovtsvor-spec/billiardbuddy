@@ -437,6 +437,48 @@ test('Editorial v2 API 以单一 CommandSet 写入草稿、版本、变体和受
   expect(command).toEqual(expect.arrayContaining(['-filter_complex']))
   expect(command.join(' ')).toContain('concat=n=1:v=1:a=0')
   expect(command.join(' ')).toContain('[aout]')
+  // Output maps are a frozen routing decision. They must not merely describe
+  // the plan while the compiler silently consumes a track that was muted or
+  // mapped to a different output.
+  const unmappedPrimary = structuredClone(compiled.plan)
+  const primaryTrackId = compiled.plan.timeline_items.find(item => item.kind === 'video' && item.track_kind === 'primary_video')!.track_id
+  unmappedPrimary.maps = unmappedPrimary.maps.filter(map => map.track_id !== primaryTrackId)
+  expect(() => buildExecutionPlanRenderCommand('ffmpeg', compiled.project, unmappedPrimary, join(root, 'unmapped-primary.mp4')))
+    .toThrow('缺少视频输出映射')
+  const sourceAudioTrackId = compiled.plan.timeline_items.find(item => item.kind === 'audio' && item.track_kind === 'source_audio')!.track_id
+  const unmappedAudio = structuredClone(compiled.plan)
+  unmappedAudio.maps = unmappedAudio.maps.filter(map => map.track_id !== sourceAudioTrackId)
+  expect(() => buildExecutionPlanRenderCommand('ffmpeg', compiled.project, unmappedAudio, join(root, 'unmapped-audio.mp4')))
+    .toThrow('缺少冻结轨道输出映射')
+  const mismappedPrimary = structuredClone(compiled.plan)
+  mismappedPrimary.maps = mismappedPrimary.maps.map(map => map.track_id === primaryTrackId ? { ...map, output: 'audio' as const } : map)
+  expect(() => buildExecutionPlanRenderCommand('ffmpeg', compiled.project, mismappedPrimary, join(root, 'mismapped-primary.mp4')))
+    .toThrow('输出映射与冻结轨道类型不一致')
+  const duplicateMap = structuredClone(compiled.plan)
+  duplicateMap.maps = [...duplicateMap.maps, duplicateMap.maps[0]!]
+  expect(() => buildExecutionPlanRenderCommand('ffmpeg', compiled.project, duplicateMap, join(root, 'duplicate-map.mp4')))
+    .toThrow('未知或重复轨道')
+  const inconsistentTrack = structuredClone(compiled.plan)
+  const primaryItem = inconsistentTrack.timeline_items.find(item => item.track_id === primaryTrackId)!
+  inconsistentTrack.timeline_items = [...inconsistentTrack.timeline_items, {
+    ...primaryItem,
+    item_id: 'item_inconsistent_track_0001',
+    track_kind: 'source_audio',
+    kind: 'audio',
+  }]
+  expect(() => buildExecutionPlanRenderCommand('ffmpeg', compiled.project, inconsistentTrack, join(root, 'inconsistent-track.mp4')))
+    .toThrow('同一轨道不能冻结为不同轨道类型')
+  const voiceOver = structuredClone(compiled.plan)
+  voiceOver.timeline_items = [...voiceOver.timeline_items, {
+    ...primaryItem,
+    item_id: 'item_voice_over_00000001',
+    track_id: 'track_voice_over_00000001',
+    track_kind: 'voice_over',
+    kind: 'audio',
+  }]
+  voiceOver.maps = [...voiceOver.maps, { track_id: 'track_voice_over_00000001', output: 'audio' }]
+  expect(() => buildExecutionPlanRenderCommand('ffmpeg', compiled.project, voiceOver, join(root, 'voice-over.mp4')))
+    .toThrow('声音旁白轨尚未实现')
 
   // A/V is a structural invariant, not merely a ripple-delete convenience:
   // time-warping one side must fail, while an explicitly equal paired speed
@@ -648,12 +690,14 @@ test('旧时间线选择、场景锁定和备选应用经由 CommandSet，且保
   })
   expect(appliedAlternative.status).toBe(200)
   const afterAlternative = await service.getProject(created.id)
-  expect(afterAlternative.timeline_versions).toHaveLength(2)
-  expect(afterAlternative.timeline.map(clip => clip.id)).toEqual([sceneA.id, 'scene_00000004'])
-  const alternativeFormalVersion = afterAlternative.timeline_versions.find(version => version.id === afterAlternative.current_timeline_version_id)!
-  expect(alternativeFormalVersion.id).not.toBe(selectedV1.id)
-  expect(alternativeFormalVersion.scenes.map(scene => scene.id)).toEqual([sceneA.id, 'scene_00000004'])
+  // Legacy Timeline stays a read-compatible projection. Applying an old
+  // alternative creates only the formal Editorial Version through CommandSet.
+  expect(afterAlternative.timeline_versions).toHaveLength(1)
+  expect(afterAlternative.timeline.map(clip => clip.id)).toEqual([sceneA.id, sceneB.id, sceneC.id])
+  expect(afterAlternative.current_timeline_version_id).toBe(selectedV1.id)
   const alternativeEditorial = afterAlternative.editorial_timeline_versions.find(version => version.id === afterAlternative.current_editorial_timeline_version_id)!
+  expect(alternativeEditorial.id).not.toBe(initialEditorial.id)
+  expect(alternativeEditorial.items.filter(item => item.kind === 'video').map(item => item.legacy_scene_id)).toEqual([sceneA.id, 'scene_00000004'])
   expect(alternativeEditorial.items.filter(item => item.legacy_scene_id === sceneA.id)).toEqual(expect.arrayContaining([
     expect.objectContaining({ kind: 'video', locked: true }),
     expect.objectContaining({ kind: 'audio', locked: true }),
@@ -661,13 +705,13 @@ test('旧时间线选择、场景锁定和备选应用经由 CommandSet，且保
   const preview = await request(new URL(`http://localhost/api/videos/projects/${created.id}/preview`), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ base_revision: afterAlternative.revision, timeline_version_id: alternativeFormalVersion.id }),
+    body: JSON.stringify({ base_revision: afterAlternative.revision, timeline_version_id: alternativeEditorial.id }),
   })
   expect(preview.status).toBe(404)
   const render = await request(new URL(`http://localhost/api/videos/projects/${created.id}/render`), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', [MEDIA_UI_CAPABILITY_HEADER]: capability },
-    body: JSON.stringify({ base_revision: afterAlternative.revision, timeline_version_id: alternativeFormalVersion.id, output_path: outputPath }),
+    body: JSON.stringify({ base_revision: afterAlternative.revision, timeline_version_id: alternativeEditorial.id, output_path: outputPath }),
   })
   expect(render.status).toBe(404)
   const select = await request(new URL(`http://localhost/api/videos/projects/${created.id}/timeline/versions/${selectedV1.id}/select`), {
@@ -677,7 +721,7 @@ test('旧时间线选择、场景锁定和备选应用经由 CommandSet，且保
   })
   expect(select.status).toBe(200)
   const afterSelect = await service.getProject(created.id)
-  expect(afterSelect.timeline_versions).toHaveLength(2)
+  expect(afterSelect.timeline_versions).toHaveLength(1)
   expect(afterSelect.current_timeline_version_id).toBe(selectedV1.id)
   expect(afterSelect.current_editorial_timeline_version_id).not.toBe(initialEditorial.id)
 
@@ -705,7 +749,7 @@ test('旧时间线选择、场景锁定和备选应用经由 CommandSet，且保
   })
   expect(relock.status).toBe(200)
   const afterRelock = await service.getProject(created.id)
-  expect(afterRelock.timeline_versions).toHaveLength(2)
+  expect(afterRelock.timeline_versions).toHaveLength(1)
   expect(afterRelock.editorial_timeline_versions).toHaveLength(initial.editorial_timeline_versions.length + 4)
   service.repository.close()
 })
@@ -953,13 +997,12 @@ test('编辑 API 拒绝越界素材与锁定目标轨道，旧 Timeline Preview/
   })
   expect(updated.status).toBe(200)
   const afterUpdate = await service.getProject(created.id)
-  const formalVersion = afterUpdate.timeline_versions.find(version => version.id === afterUpdate.current_timeline_version_id)!
-  expect(formalVersion.id).not.toBe(initialVersionId)
-  expect(formalVersion.scenes.map(scene => [scene.id, scene.in_ms, scene.out_ms])).toEqual([
-    [secondClip.id, 2_000, 3_000],
-    [firstClip.id, 0, 1_000],
-  ])
-  expect(afterUpdate.timeline).toEqual(updatedClips)
+  const formalVersion = afterUpdate.editorial_timeline_versions.find(version => version.id === afterUpdate.current_editorial_timeline_version_id)!
+  expect(formalVersion.id).not.toBe(baseTimeline.id)
+  expect(formalVersion.items.filter(item => item.kind === 'video').map(item => item.legacy_scene_id)).toEqual([secondClip.id, firstClip.id])
+  expect(afterUpdate.timeline_versions).toHaveLength(1)
+  expect(afterUpdate.current_timeline_version_id).toBe(initialVersionId)
+  expect(afterUpdate.timeline).toEqual([firstClip, secondClip])
 
   const preview = await request(new URL(`http://localhost/api/videos/projects/${created.id}/preview`), {
     method: 'POST',

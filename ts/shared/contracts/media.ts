@@ -496,6 +496,11 @@ export const videoColorFactSchema = z.object({
  * seek range instead of treating a file's presentation duration as truth.
  */
 export const videoAssetVideoStreamFactSchema = z.object({
+  /**
+   * Absolute FFprobe stream index. Historical attestations without this value
+   * remain readable, but cannot be compiled into a new formal ExecutionPlan.
+   */
+  stream_index: z.number().int().nonnegative().optional(),
   start: videoRationalTimeSchema,
   duration: videoRationalTimeSchema,
 })
@@ -888,9 +893,14 @@ export const editorialCommandReceiptSchema = z.object({
 export const deliveryVariantCreationReceiptSchema = z.object({
   idempotency_key: z.string().min(16).max(160),
   request_hash: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+  /** New receipts prove the Version provenance without requiring a legacy writer. */
+  command_set_id: mediaIdSchema.optional(),
   variant_id: mediaIdSchema,
   /** The immutable version created by the original create request. */
   version_id: mediaIdSchema.optional(),
+  editorial_timeline_version_id: mediaIdSchema.optional(),
+  export_profile_revision_id: mediaIdSchema.optional(),
+  export_profile_hash: z.string().regex(/^sha256:[a-f0-9]{64}$/).optional(),
   created_at: mediaIsoDateSchema,
 })
 
@@ -913,6 +923,12 @@ export const videoExecutionInputSchema = z.discriminatedUnion('kind', [
     kind: z.literal('source'),
     source_id: mediaIdSchema,
     source_fingerprint: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+    /**
+     * Frozen absolute FFmpeg stream index for the source primary video.
+     * Legacy persisted plans can still be decoded, but render fails closed
+     * until they are recompiled from current source facts.
+     */
+    video_stream_index: z.number().int().nonnegative().optional(),
     source_start: videoRationalTimeSchema,
     source_range: videoSourceTimeRangeSchema,
     /** A/V selection is frozen: source stream 0 is not necessarily the default audio. */
@@ -932,6 +948,8 @@ export const videoExecutionInputSchema = z.discriminatedUnion('kind', [
     source_range: videoSourceTimeRangeSchema.optional(),
     /** Required when this managed asset is used as a video input. */
     video_color: videoColorFactSchema.optional(),
+    /** Frozen absolute FFmpeg video stream index for a video project asset. */
+    video_stream_index: z.number().int().nonnegative().optional(),
     video_start: videoRationalTimeSchema.optional(),
     video_duration: videoRationalTimeSchema.optional(),
     audio_stream_index: z.number().int().nonnegative().optional(),
@@ -1357,6 +1375,8 @@ export const publicMediaJobEventSchema = mediaJobEventSchema.omit({ task: true }
 export const publicMediaJobEventPageSchema = z.object({
   events: z.array(publicMediaJobEventSchema).max(200),
   cursor: z.number().int().nonnegative(),
+  /** Raw journal continuation value. Resume with `next_cursor - 1`. */
+  next_cursor: z.number().int().positive(),
   reset_required: z.boolean(),
 })
 

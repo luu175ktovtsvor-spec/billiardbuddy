@@ -4,6 +4,10 @@ import {
   VideoWorkbenchProductController,
   buildDeliveryVariantCommandRequest,
   buildPartialDraftAcceptance,
+  createProjectForm,
+  createProjectInput,
+  createVideoWorkbenchActionForm,
+  createVideoWorkbenchActionInput,
   createVideoWorkbenchUiState,
   createVideoWorkbenchViewModel,
   reduceVideoWorkbenchUiState,
@@ -205,7 +209,7 @@ function workspace(options: { lockedTrack?: boolean; preflight?: 'passed' | 'blo
         awaiting_quality_confirmation: true,
       },
     }) : task()],
-    events: { cursor: 4, reset_required: false, events: [] },
+    events: { cursor: 4, next_cursor: 5, reset_required: false, events: [] },
   } as unknown as VideoWorkbenchSnapshot
 }
 
@@ -238,6 +242,7 @@ test('事件 cursor reset 不合并可能静默漏掉的 Operation，并要求�
   let state = reduceVideoWorkbenchUiState(createVideoWorkbenchUiState(), { type: 'hydrate', snapshot })
   state = reduceVideoWorkbenchUiState(state, { type: 'operation_events', page: {
     cursor: 42,
+    next_cursor: 43,
     reset_required: true,
     events: [{ schema_version: 1, cursor: 42, project_id: 'video_00000001', task_id: 'task_00000001', operation_id: 'task_00000001', status_sequence: 7, occurred_at: at, task: task({ status: 'succeeded', status_sequence: 7, progress: 100 }) }],
   } as never })
@@ -442,6 +447,7 @@ test('事件 reset 后权威刷新失败会冻结旧快照的一切写入，直�
     },
     loadOperationEvents: async () => ({ ok: true, value: {
       cursor: 42,
+      next_cursor: 43,
       reset_required: true,
       events: [{ schema_version: 1, cursor: 42, project_id: 'video_00000001', task_id: 'task_00000001', operation_id: 'task_00000001', status_sequence: 7, occurred_at: at, task: task({ status: 'succeeded', status_sequence: 7, progress: 100 }) }],
     } }),
@@ -582,4 +588,87 @@ test('失效的检索 cursor 会丢弃旧页并从同一查询首页重新读取
     { query: '连续检索', request: {} },
   ])
   expect(controller.getState().snapshot?.fact_search).toMatchObject({ generation: 2, items: [{ id: 'fact_00000032' }] })
+})
+
+test('桌面输入表单只生成结构化视频请求，不接收路径、grant 或任意 JSON', () => {
+  const snapshot = workspace()
+  const request = {
+    action: 'estimate_budget' as const,
+    project: snapshot.project,
+    snapshot,
+    selection: { source_id: 'source_00000001', draft_item_ids: [], timeline_item_ids: [] },
+  }
+  const form = createVideoWorkbenchActionForm(request)
+  expect(form).toMatchObject({ title: '远程分析范围与预算', confirmLabel: '估算预算' })
+  expect(form?.fields.map(field => field.name)).toEqual(['source_id', 'start_ms', 'end_ms', 'purposes', 'data_kinds'])
+  expect(JSON.stringify(form)).not.toContain('path')
+  expect(JSON.stringify(form)).not.toContain('grant')
+  expect(JSON.stringify(form)).not.toContain('JSON')
+
+  const input = createVideoWorkbenchActionInput(request, {
+    source_id: 'source_00000001',
+    start_ms: '100',
+    end_ms: '9000',
+    purposes: ['asr', 'planning'],
+    data_kinds: ['audio_extract'],
+    ignored_path: '/Users/example/private.mp4',
+    ignored_grant: 'grant_should_not_cross',
+  })
+  expect(input).toEqual({
+    ok: true,
+    value: {
+      action: 'estimate_budget',
+      purposes: ['asr', 'planning'],
+      source_ids: ['source_00000001'],
+      data_kinds: ['audio_extract'],
+      coverage: [{
+        source_id: 'source_00000001',
+        ranges: [{
+          start: { ticks: '100', tick_rate: { num: 1_000, den: 1 } },
+          duration: { ticks: '8900', tick_rate: { num: 1_000, den: 1 } },
+        }],
+      }],
+    },
+  })
+})
+
+test('拒绝远程范围表单不会构造预算或授权写入，编辑动作始终是 CommandSet', () => {
+  const snapshot = workspace()
+  const estimateRequest = {
+    action: 'estimate_budget' as const,
+    project: snapshot.project,
+    snapshot,
+    selection: { source_id: 'source_00000001', draft_item_ids: [], timeline_item_ids: [] },
+  }
+  expect(createVideoWorkbenchActionInput(estimateRequest, {
+    source_id: 'source_00000001', start_ms: '0', end_ms: '10000', purposes: [], data_kinds: [],
+  })).toMatchObject({ ok: false })
+
+  const editorRequest = {
+    action: 'open_editor' as const,
+    project: snapshot.project,
+    snapshot,
+    selection: { source_id: 'source_00000001', timeline_item_ids: ['item_00000001'], draft_item_ids: [] },
+  }
+  const command = createVideoWorkbenchActionInput(editorRequest, {
+    editorial_kind: 'ripple_delete',
+    item_ids: ['item_00000001'],
+    legacy_timeline: 'not accepted',
+  })
+  expect(command).toEqual({
+    ok: true,
+    value: { action: 'open_editor', commands: [{ kind: 'ripple_delete', item_ids: ['item_00000001'], close_gap: true }] },
+  })
+})
+
+test('项目表单与恢复提示提供受控下一步，不依赖 prompt 或 JSON 文本', () => {
+  expect(createProjectForm()).toMatchObject({ title: '新建视频项目', fields: [{ name: 'title', kind: 'text' }] })
+  expect(createProjectInput({ title: '  视频集锦  ' })).toEqual({ ok: true, value: { title: '视频集锦' } })
+  expect(createProjectInput({ title: ' ' })).toMatchObject({ ok: false })
+
+  const recovered = reduceVideoWorkbenchUiState(createVideoWorkbenchUiState(), { type: 'hydrate', snapshot: workspace() })
+  const conflicted = reduceVideoWorkbenchUiState(recovered, { type: 'action_failed', error: { code: 'MEDIA_STATE_CONFLICT', message: '项目已更新' } })
+  expect(createVideoWorkbenchViewModel(conflicted).failure_recovery).toEqual({ code: 'MEDIA_STATE_CONFLICT', label: '刷新项目状态', action: 'refresh' })
+  const sourceFailed = reduceVideoWorkbenchUiState(recovered, { type: 'action_failed', error: { code: 'MEDIA_VIDEO_SOURCE_UNREADABLE', message: '素材不可读' } })
+  expect(createVideoWorkbenchViewModel(sourceFailed).failure_recovery).toEqual({ code: 'MEDIA_VIDEO_SOURCE_UNREADABLE', label: '重新选择素材', action: 'choose_sources' })
 })

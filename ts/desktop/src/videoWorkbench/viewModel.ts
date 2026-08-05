@@ -41,6 +41,11 @@ export type VideoWorkbenchViewModel = Readonly<{
   active_panel: VideoWorkbenchPanel
   title: string
   status_message: string
+  failure_recovery?: Readonly<{
+    code: string
+    label: string
+    action: 'refresh' | 'choose_sources' | 'estimate_budget' | 'poll_operations'
+  }>
   action_pending: boolean
   panels: readonly VideoWorkbenchPanelModel[]
   project_home: Readonly<{
@@ -227,6 +232,35 @@ function statusMessage(state: VideoWorkbenchUiState): string {
   return '项目状态已同步'
 }
 
+/** A safe error must leave the person with one concrete next step. These
+ * actions reuse existing typed workbench commands and never fabricate retry
+ * endpoints or bypass an expired native grant. */
+function failureRecovery(state: VideoWorkbenchUiState): VideoWorkbenchViewModel['failure_recovery'] {
+  if (state.event_reset_required || state.requires_authoritative_refresh) {
+    return { code: 'MEDIA_STATE_CONFLICT', label: '重新读取权威项目快照', action: 'refresh' }
+  }
+  switch (state.last_error?.code) {
+    case 'MEDIA_STATE_CONFLICT':
+      return { code: state.last_error.code, label: '刷新项目状态', action: 'refresh' }
+    case 'MEDIA_VIDEO_SOURCE_UNREADABLE':
+    case 'MEDIA_VIDEO_SOURCE_CHANGED':
+    case 'MEDIA_VIDEO_PROBE_INTERRUPTED':
+    case 'MEDIA_RESOURCE_UNAVAILABLE':
+      return { code: state.last_error.code, label: '重新选择素材', action: 'choose_sources' }
+    case 'MEDIA_VIDEO_PROJECT_BUDGET_EXCEEDED':
+    case 'MEDIA_VIDEO_PLATFORM_QUOTA_EXHAUSTED':
+      return { code: state.last_error.code, label: '调整范围并重新估算', action: 'estimate_budget' }
+    case 'MEDIA_TEMPORARILY_UNAVAILABLE':
+    case 'MEDIA_VIDEO_ANALYSIS_UNAVAILABLE':
+    case 'MEDIA_VIDEO_FINISHING_UNAVAILABLE':
+    case 'MEDIA_VIDEO_PREVIEW_INTERRUPTED':
+    case 'MEDIA_VIDEO_EXPORT_INTERRUPTED':
+      return { code: state.last_error.code, label: '续读操作状态', action: 'poll_operations' }
+    default:
+      return undefined
+  }
+}
+
 function unavailable(reason: string): VideoWorkbenchActionAvailability {
   return { enabled: false, reason }
 }
@@ -305,6 +339,7 @@ export function createVideoWorkbenchViewModel(state: VideoWorkbenchUiState): Vid
       active_panel: state.panel,
       title: '视频工作台',
       status_message: statusMessage(state),
+      ...(failureRecovery(state) ? { failure_recovery: failureRecovery(state) } : {}),
       action_pending: Boolean(state.pending_action),
       panels,
       project_home: { source_count: 0, missing_source_count: 0, changed_source_count: 0, variant_count: 0, operation_count: 0, recovery_required: false, can_import_sources: unavailable('项目尚未加载。') },
@@ -362,6 +397,7 @@ export function createVideoWorkbenchViewModel(state: VideoWorkbenchUiState): Vid
     active_panel: state.panel,
     title: snapshot.project.title,
     status_message: statusMessage(state),
+    ...(failureRecovery(state) ? { failure_recovery: failureRecovery(state) } : {}),
     action_pending: Boolean(state.pending_action),
     panels,
     project_home: {

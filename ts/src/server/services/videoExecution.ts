@@ -628,6 +628,51 @@ function assetLooksLikeImage(asset: ExecutionPlanProjectAsset): boolean {
   return asset.mime_type?.startsWith('image/') === true || /\.(?:avif|gif|jpe?g|png|webp)$/i.test(asset.path)
 }
 
+type ExecutionTrackKind = VideoExecutionPlan['timeline_items'][number]['track_kind']
+
+function executionTrackOutput(kind: ExecutionTrackKind): 'video' | 'audio' | 'caption' {
+  if (kind === 'primary_video' || kind === 'b_roll' || kind === 'overlay') return 'video'
+  if (kind === 'caption') return 'caption'
+  return 'audio'
+}
+
+function executionTrackItemKind(kind: ExecutionTrackKind): 'video' | 'audio' | 'caption' | 'overlay' {
+  if (kind === 'primary_video' || kind === 'b_roll') return 'video'
+  if (kind === 'overlay') return 'overlay'
+  if (kind === 'caption') return 'caption'
+  return 'audio'
+}
+
+function assertExecutionPlanRouting(plan: VideoExecutionPlan): void {
+  if (plan.output_target.kind !== 'managed' || plan.output_target.locator !== `execution-plans/${plan.id}`) {
+    throw new Error('ExecutionPlan 输出目标不是该冻结计划的受管 locator')
+  }
+  const tracks = new Map<string, ExecutionTrackKind>()
+  for (const item of plan.timeline_items) {
+    const previous = tracks.get(item.track_id)
+    if (previous && previous !== item.track_kind) throw new Error('ExecutionPlan 同一轨道不能冻结为不同轨道类型')
+    if (item.track_kind === 'voice_over') throw new Error('ExecutionPlan 声音旁白轨尚未实现，不能静默导出')
+    if (item.track_kind === 'caption') throw new Error('ExecutionPlan 不能包含旧字幕轨道条目')
+    if (item.kind !== executionTrackItemKind(item.track_kind)) {
+      throw new Error('ExecutionPlan 条目类型与冻结轨道类型不一致')
+    }
+    tracks.set(item.track_id, item.track_kind)
+  }
+  const seen = new Set<string>()
+  for (const map of plan.maps) {
+    const kind = tracks.get(map.track_id)
+    if (!kind || seen.has(map.track_id)) throw new Error('ExecutionPlan 输出映射包含未知或重复轨道')
+    seen.add(map.track_id)
+    if (map.output !== executionTrackOutput(kind)) throw new Error('ExecutionPlan 输出映射与冻结轨道类型不一致')
+  }
+  for (const [trackId, kind] of tracks) {
+    if (seen.has(trackId)) continue
+    if (kind === 'primary_video') throw new Error('ExecutionPlan 缺少视频输出映射')
+    throw new Error('ExecutionPlan 缺少冻结轨道输出映射')
+  }
+  if (!plan.maps.some(map => map.output === 'video')) throw new Error('ExecutionPlan 缺少视频输出映射')
+}
+
 /**
  * Compile the frozen v2 ExecutionPlan directly to FFmpeg. Timeline order,
  * placement, audio policy and every asset binding are explicit in the plan;
@@ -641,12 +686,17 @@ export function buildExecutionPlanRenderCommand(
   encoder: VideoEncoderProfile = FALLBACK_VIDEO_ENCODER,
   options: ExecutionPlanRenderOptions = {},
 ): string[] {
+  assertExecutionPlanRouting(plan)
   const items = [...plan.timeline_items].sort((left, right) => left.order - right.order)
+  // Muted tracks are excluded before plan creation. Every track represented by
+  // this frozen plan has exactly one checked output mapping.
+  const outputForTrack = new Map(plan.maps.map(map => [map.track_id, map.output]))
+  const isMapped = (item: VideoExecutionPlan['timeline_items'][number], output: 'video' | 'audio' | 'caption') => outputForTrack.get(item.track_id) === output
   type PlanItem = VideoExecutionPlan['timeline_items'][number]
   type SourcePlanItem = PlanItem & { binding: Extract<PlanItem['binding'], { kind: 'source' }> }
-  const videos = items.filter((item): item is SourcePlanItem => item.kind === 'video' && item.track_kind === 'primary_video' && item.binding.kind === 'source')
+  const videos = items.filter((item): item is SourcePlanItem => item.kind === 'video' && item.track_kind === 'primary_video' && item.binding.kind === 'source' && isMapped(item, 'video'))
   if (!videos.length) throw new Error('ExecutionPlan 缺少主视频条目')
-  if (items.some(item => item.kind === 'video' && item.track_kind === 'primary_video' && item.binding.kind !== 'source')) {
+  if (items.some(item => item.kind === 'video' && item.track_kind === 'primary_video' && isMapped(item, 'video') && item.binding.kind !== 'source')) {
     throw new Error('主视频轨只能引用已校验的源素材')
   }
   if (items.some(item => item.track_kind === 'music' && item.binding.kind !== 'project_asset')) {
@@ -700,6 +750,8 @@ export function buildExecutionPlanRenderCommand(
     duration: number
     image: boolean
     speed: number
+    /** Absolute stream index; required for every non-image video filter. */
+    videoStreamIndex?: number
     audioStreamIndex?: number
     hdrKind: 'sdr' | 'pq' | 'hlg' | 'unknown'
   }
@@ -749,7 +801,19 @@ export function buildExecutionPlanRenderCommand(
       if (sourceRangeStart + 0.000001 < sourceStart || sourceRangeStart < 0) {
         throw new Error('ExecutionPlan 源视频 PTS 不能安全映射为输入 seek 位置')
       }
-      return { path: source.path, start: sourceRangeStart, duration, image: false, speed, hdrKind: sourceInput.video_color?.hdr_kind ?? 'unknown' }
+      const videoStreamIndex = sourceInput.video_stream_index
+      if (videoStreamIndex === undefined || !Number.isSafeInteger(videoStreamIndex) || videoStreamIndex < 0) {
+        throw new Error('ExecutionPlan 源视频缺少冻结的绝对视频流索引')
+      }
+      return {
+        path: source.path,
+        start: sourceRangeStart,
+        duration,
+        image: false,
+        speed,
+        videoStreamIndex,
+        hdrKind: sourceInput.video_color?.hdr_kind ?? 'unknown',
+      }
     }
     if (item.binding.kind === 'project_asset') {
       const asset = options.projectAssets?.get(item.binding.asset_id)
@@ -776,10 +840,16 @@ export function buildExecutionPlanRenderCommand(
       if (requiresVideoColor && (!color || color.hdr_kind === 'unknown')) {
         throw new Error('ExecutionPlan 项目视频资产缺少可验证的颜色特征，拒绝将其标记为 SDR')
       }
+      let videoStreamIndex: number | undefined
       if (requiresVideoColor) {
         if (!frozen.video_start || !frozen.video_duration) {
           throw new Error('ExecutionPlan 项目视频资产缺少冻结的原始视频流边界')
         }
+        const frozenVideoStreamIndex = frozen.video_stream_index
+        if (frozenVideoStreamIndex === undefined || !Number.isSafeInteger(frozenVideoStreamIndex) || frozenVideoStreamIndex < 0) {
+          throw new Error('ExecutionPlan 项目视频资产缺少冻结的绝对视频流索引')
+        }
+        videoStreamIndex = frozenVideoStreamIndex
         const videoStart = planSeconds(frozen.video_start)
         const videoEnd = videoStart + planSeconds(frozen.video_duration)
         if (start + 0.000001 < videoStart || start + duration > videoEnd + 0.000001) {
@@ -808,6 +878,7 @@ export function buildExecutionPlanRenderCommand(
         duration,
         image,
         speed: 1,
+        ...(videoStreamIndex === undefined ? {} : { videoStreamIndex }),
         ...(audioStreamIndex === undefined ? {} : { audioStreamIndex }),
         hdrKind: image || item.kind === 'audio' ? 'sdr' : color?.hdr_kind ?? 'unknown',
       }
@@ -858,7 +929,13 @@ export function buildExecutionPlanRenderCommand(
     }
     if (timelineOffset) parts.push(`setpts=PTS+${timelineOffset.toFixed(6)}/TB`)
     parts.push(`scale=${width}:${height}:force_original_aspect_ratio=decrease`, `pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2`, 'setsar=1', `fps=${fps.toFixed(8)}`)
-    filters.push(`[${inputIndex}:v]${parts.join(',')}[${output}]`)
+    if (media.videoStreamIndex === undefined && !media.image) {
+      throw new Error('ExecutionPlan 视频输入缺少冻结的绝对视频流索引')
+    }
+    // `[input:stream]` is an absolute FFmpeg stream selection. Never use
+    // `[input:v]`: a container may have a non-default primary video stream.
+    const inputLabel = `[${inputIndex}:${media.videoStreamIndex ?? 0}]`
+    filters.push(`${inputLabel}${parts.join(',')}[${output}]`)
   }
 
   let cursor = 0
@@ -886,7 +963,7 @@ export function buildExecutionPlanRenderCommand(
   filters.push(`${videoConcat.join('')}concat=n=${videoConcat.length}:v=1:a=0[vbase]`)
 
   let currentVideo = 'vbase'
-  const composited = items.filter(item => (item.track_kind === 'b_roll' && item.kind === 'video') || (item.track_kind === 'overlay' && item.kind === 'overlay'))
+  const composited = items.filter(item => isMapped(item, 'video') && ((item.track_kind === 'b_roll' && item.kind === 'video') || (item.track_kind === 'overlay' && item.kind === 'overlay')))
   for (const [index, item] of composited.entries()) {
     if (item.binding.kind === 'caption_document') throw new Error('视频合成条目不能引用字幕文档')
     const media = resolvedInput(item)
@@ -913,8 +990,8 @@ export function buildExecutionPlanRenderCommand(
     filters.push(`[${currentVideo}]null[vout]`)
   }
 
-  const sourceAudio = items.filter(item => item.kind === 'audio' && item.track_kind === 'source_audio')
-  const music = items.filter(item => item.kind === 'audio' && item.track_kind === 'music')
+  const sourceAudio = items.filter(item => item.kind === 'audio' && item.track_kind === 'source_audio' && isMapped(item, 'audio'))
+  const music = items.filter(item => item.kind === 'audio' && item.track_kind === 'music' && isMapped(item, 'audio'))
   if (plan.audio_pipeline.policy === 'source_only' && music.length) throw new Error('冻结音频策略为 source_only，不能编译音乐轨')
   if (plan.audio_pipeline.policy === 'music_only' && !music.length) throw new Error('冻结音频策略为 music_only，但时间线没有音乐条目')
   const audioItems = plan.audio_pipeline.policy === 'source_only'

@@ -35,6 +35,8 @@ export type EditorialSourceTiming = {
 }
 
 export type EditorialSourceBounds = {
+  /** Absolute FFprobe index of the primary video stream. */
+  video_stream_index: number
   start: RationalTime
   duration: RationalTime
   /** Immutable FFprobe color facts needed to choose the HDR delivery path. */
@@ -880,6 +882,10 @@ export class EditorialApplication {
       : undefined
     if (existing && project.delivery_variants.length && project.export_profile_revisions.length) return project
     const now = this.iso()
+    const legacyCurrent = project.current_timeline_version_id
+      ? project.timeline_versions.find(version => version.id === project.current_timeline_version_id)
+      : undefined
+    const bootstrapCommandSetId = id('command')
     const timeline = existing ?? editorialTimelineVersionSchema.parse({
       schema_version: 2,
       id: id('editorial_timeline'),
@@ -889,18 +895,42 @@ export class EditorialApplication {
       tick_rate: EDITORIAL_TICK_RATE,
       tracks: defaultTracks(),
       items: [],
-      created_by_command_set_id: id('command'),
+      created_by_command_set_id: bootstrapCommandSetId,
       created_at: now,
     })
+    let bootstrapCommandSet: TimelineCommandSet | undefined
     if (!existing) {
-      const legacyCurrent = project.current_timeline_version_id
-        ? project.timeline_versions.find(version => version.id === project.current_timeline_version_id)
-        : undefined
+      // v1 TimelineVersion is the only canonical legacy selection. The old
+      // project.timeline cache can differ after an interrupted old write and
+      // must never silently win over the version that Preview/Render used.
+      const canonicalClips = legacyCurrent?.scenes.map(scene => ({
+        id: scene.id,
+        source_id: scene.source_id,
+        in_ms: scene.in_ms,
+        out_ms: scene.out_ms,
+      })) ?? (project.timeline.length ? project.timeline : project.sources.map(source => ({
+        id: `clip_${source.id}`,
+        source_id: source.id,
+        in_ms: 0,
+        out_ms: source.duration_ms,
+      })))
       timeline.items = withLegacySceneMetadata(
-        legacyItems(project, timeline.tracks, timing, sourceBounds),
+        legacyItems({ ...project, timeline: canonicalClips }, timeline.tracks, timing, sourceBounds),
         legacyCurrent?.scenes ?? [],
       )
       validateEditorialTimeline(project, timeline, sourceBounds)
+      // Bootstrapping has no v2 parent to apply against. It is still a real,
+      // immutable CommandSet receipt: the first formal Version can therefore
+      // be audited and replayed exactly like every later edit.
+      bootstrapCommandSet = {
+        id: timeline.created_by_command_set_id,
+        project_id: project.id,
+        actor_id: 'system_video_migration',
+        idempotency_key: `system-bootstrap-${timeline.id}`,
+        created_at: now,
+        target: { kind: 'editorial', base_timeline_version_id: legacyCurrent?.id ?? timeline.id },
+        commands: timeline.items.map(item => ({ kind: 'insert' as const, track_id: item.track_id, item })),
+      } as TimelineCommandSet
     }
     const defaults = project.export_profile_revisions.length ? undefined : defaultProfile(project, now)
     const profile = project.export_profiles
@@ -930,6 +960,14 @@ export class EditorialApplication {
       export_profile_revisions: project.export_profile_revisions.some(candidate => candidate.id === profile.id) ? project.export_profile_revisions : [...project.export_profile_revisions, profile],
       delivery_variants: variant ? project.delivery_variants : [...project.delivery_variants, createdVariant],
       delivery_variant_versions: variantVersion ? project.delivery_variant_versions : [...project.delivery_variant_versions, createdVariantVersion],
+      editorial_command_receipts: bootstrapCommandSet ? [...project.editorial_command_receipts, {
+        idempotency_key: bootstrapCommandSet.idempotency_key,
+        command_set_id: bootstrapCommandSet.id,
+        request_hash: requestHash(bootstrapCommandSet),
+        target_kind: 'editorial' as const,
+        created_version_id: timeline.id,
+        created_at: now,
+      }] : project.editorial_command_receipts,
       revision: project.revision + (existing && variant && variantVersion && project.export_profile_revisions.length ? 0 : 1),
       updated_at: now,
     }
@@ -1305,6 +1343,9 @@ export class EditorialApplication {
             const binding = item.binding
             const bounds = sourceBounds.get(binding.source_id)
             if (!bounds) throw new EditorialValidationError('缺少原始视频流时间边界，不能编译执行计划', 'VIDEO_EDITORIAL_INVALID')
+            if (!Number.isSafeInteger(bounds.video_stream_index) || bounds.video_stream_index < 0) {
+              throw new EditorialValidationError('缺少冻结的主视频绝对流索引，不能编译正式交付', 'VIDEO_EDITORIAL_INVALID')
+            }
             // Freeze one immutable stream envelope per source.  Individual
             // timeline items carry their own trim ranges; duplicating inputs
             // per trim makes a legitimate multi-cut source look conflicting
@@ -1316,6 +1357,7 @@ export class EditorialApplication {
               kind: 'source',
               source_id: binding.source_id,
               source_fingerprint: binding.source_fingerprint,
+              video_stream_index: bounds.video_stream_index,
               source_start: bounds.start,
               source_range: range(bounds.start, bounds.duration),
               video_color: bounds.video_color,
@@ -1337,9 +1379,14 @@ export class EditorialApplication {
             const isVideo = asset?.mime_type?.startsWith('video/') === true
             const isAudio = asset?.mime_type?.startsWith('audio/') === true
             const videoColor = isVideo ? attestation?.video_color : undefined
-            const stream = isVideo ? attestation?.video_stream : isAudio ? attestation?.audio_stream : undefined
+            const videoStream = isVideo ? attestation?.video_stream : undefined
+            const videoStreamIndex = videoStream?.stream_index
+            const stream = videoStream ?? (isAudio ? attestation?.audio_stream : undefined)
             if (isVideo && (!videoColor || videoColor.hdr_kind === 'unknown')) {
               throw new EditorialValidationError('视频项目资产缺少可验证的颜色特征，不能编译正式交付', 'VIDEO_EDITORIAL_INVALID')
+            }
+            if (isVideo && (videoStreamIndex === undefined || !Number.isSafeInteger(videoStreamIndex) || videoStreamIndex < 0)) {
+              throw new EditorialValidationError('视频项目资产缺少冻结的绝对视频流索引，不能编译正式交付', 'VIDEO_EDITORIAL_INVALID')
             }
             if ((isVideo || isAudio) && !stream) {
               throw new EditorialValidationError('项目 A/V 资产缺少冻结的原始流边界，不能编译正式交付', 'VIDEO_EDITORIAL_INVALID')
@@ -1356,9 +1403,10 @@ export class EditorialApplication {
               asset_content_hash: binding.asset_content_hash,
               ...(sourceRange ? { source_range: sourceRange } : {}),
               ...(videoColor ? { video_color: videoColor } : {}),
-              ...(isVideo && attestation?.video_stream ? {
-                video_start: attestation.video_stream.start,
-                video_duration: attestation.video_stream.duration,
+              ...(isVideo && videoStream && videoStreamIndex !== undefined ? {
+                video_stream_index: videoStreamIndex,
+                video_start: videoStream.start,
+                video_duration: videoStream.duration,
               } : {}),
               ...(isAudio && attestation?.audio_stream ? {
                 audio_stream_index: attestation.audio_stream.stream_index,

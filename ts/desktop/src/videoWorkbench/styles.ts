@@ -48,6 +48,8 @@ const styles = `
   .bb-video-header h1 { font-size: 20px; }
   .bb-video-section h2 { font-size: 15px; }
   .bb-video-status, .bb-video-summary, .bb-video-notice { margin: 0; color: var(--bb-video-muted); }
+  .bb-video-recovery { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 12px; padding: 9px 10px; border-left: 3px solid var(--bb-video-warning); background: #302c1d; }
+  .bb-video-recovery-code { color: #ffd98d; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
   .bb-video-status.is-failed, .bb-video-notice { color: #ffd2d2; }
   .bb-video-status.is-stale, .bb-video-status.is-needs-user-decision { color: #ffd98d; }
   .bb-video-section { padding: 20px 0; border-bottom: 1px solid var(--bb-video-line); }
@@ -80,9 +82,37 @@ const styles = `
   .bb-video-selection.is-selected { color: #061811; border-color: var(--bb-video-accent); background: var(--bb-video-accent); }
   .bb-video-action { border-color: var(--bb-video-line); background: #26302d; text-align: center; }
   .bb-video-action:disabled { color: #68736f; border-color: #303936; background: #1d2220; cursor: not-allowed; }
+  .bb-video-action.is-danger { border-color: #9d4545; background: #6f3030; }
   .bb-video-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, max-content)); gap: 4px 18px; margin: 12px 0 0; }
   .bb-video-metrics dt { color: var(--bb-video-muted); }
   .bb-video-metrics dd { margin: 0; font-weight: 650; }
+  .bb-video-form-dialog {
+    width: min(660px, calc(100vw - 32px));
+    max-height: min(760px, calc(100vh - 32px));
+    margin: auto;
+    padding: 0;
+    border: 1px solid var(--bb-video-line);
+    border-radius: 6px;
+    color: var(--bb-video-text);
+    background: var(--bb-video-panel);
+  }
+  .bb-video-form-dialog::backdrop { background: rgba(0, 0, 0, 0.58); }
+  .bb-video-form { display: grid; gap: 14px; max-height: inherit; padding: 20px; overflow: auto; }
+  .bb-video-form-header { display: grid; gap: 7px; padding-bottom: 4px; border-bottom: 1px solid var(--bb-video-line); }
+  .bb-video-form-header h2 { margin: 0; font-size: 17px; font-weight: 650; }
+  .bb-video-form-header p { margin: 0; color: var(--bb-video-muted); }
+  .bb-video-form-field { display: grid; gap: 6px; color: var(--bb-video-text); }
+  .bb-video-form-label { color: var(--bb-video-muted); font-size: 13px; }
+  .bb-video-form-control { width: 100%; min-height: 34px; padding: 6px 8px; border: 1px solid var(--bb-video-line); border-radius: 4px; color: var(--bb-video-text); background: #171d1b; font: inherit; }
+  textarea.bb-video-form-control { min-height: 84px; resize: vertical; }
+  .bb-video-form-checkbox { inline-size: 16px; block-size: 16px; margin: 0; accent-color: var(--bb-video-accent); }
+  .bb-video-form-check-label { color: var(--bb-video-text); }
+  .bb-video-form-choices { display: flex; flex-wrap: wrap; gap: 6px 12px; }
+  .bb-video-form-choice { display: inline-flex; align-items: center; gap: 6px; min-height: 28px; color: var(--bb-video-muted); }
+  .bb-video-form-choice input { accent-color: var(--bb-video-accent); }
+  .bb-video-form-help { color: var(--bb-video-muted); font-size: 12px; }
+  .bb-video-form-error { min-height: 1.4em; margin: 0; color: #ffd2d2; }
+  .bb-video-form-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px; padding-top: 12px; border-top: 1px solid var(--bb-video-line); }
   @media (max-width: 720px) {
     .bb-video-workbench { grid-template-columns: 1fr; }
     .bb-video-nav { grid-template-columns: repeat(4, minmax(0, 1fr)); border-right: 0; border-bottom: 1px solid var(--bb-video-line); overflow-x: auto; }
@@ -92,6 +122,8 @@ const styles = `
     .bb-video-row, .bb-video-operation { grid-template-columns: minmax(0, 1fr) auto; }
     .bb-video-row span:first-of-type, .bb-video-operation span:first-of-type { grid-column: 1; }
     .bb-video-actions { grid-column: 1 / -1; }
+    .bb-video-form-dialog { width: calc(100vw - 24px); }
+    .bb-video-form { padding: 16px; }
   }
 `
 

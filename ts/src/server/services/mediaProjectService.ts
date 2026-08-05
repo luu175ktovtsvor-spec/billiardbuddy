@@ -1326,7 +1326,7 @@ export class MediaProjectService {
     projectId: string,
     afterCursor = 0,
     limit = 100,
-  ): Promise<{ events: MediaJobEvent[]; cursor: number; reset_required: boolean }> {
+  ): Promise<{ events: MediaJobEvent[]; cursor: number; next_cursor: number; reset_required: boolean }> {
     const journal = await this.readEventJournal(projectId)
     const safeCursor = Math.max(0, Math.trunc(afterCursor) || 0)
     const safeLimit = Math.max(1, Math.min(200, Math.trunc(limit) || 100))
@@ -1341,6 +1341,7 @@ export class MediaProjectService {
     return {
       events,
       cursor: events.at(-1)?.cursor ?? (resetRequired ? latestCursor : safeCursor),
+      next_cursor: journal.next_cursor,
       reset_required: resetRequired,
     }
   }
@@ -1351,7 +1352,7 @@ export class MediaProjectService {
     limit = 100,
     waitMs = 25_000,
     signal?: AbortSignal,
-  ): Promise<{ events: MediaJobEvent[]; cursor: number; reset_required: boolean }> {
+  ): Promise<{ events: MediaJobEvent[]; cursor: number; next_cursor: number; reset_required: boolean }> {
     let existing = await this.listJobEvents(projectId, afterCursor, limit)
     if (existing.events.length > 0 || existing.reset_required || waitMs <= 0 || signal?.aborted) return existing
     const remoteRefreshDelay = await this.remoteImageRefreshDelay(projectId)

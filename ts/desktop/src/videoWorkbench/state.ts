@@ -156,6 +156,10 @@ function mergeOperationEvents(
   return { ...snapshot, operations: [...byId.values()], events: page }
 }
 
+function continuationCursor(page: PublicMediaJobEventPage): number {
+  return Math.max(0, page.next_cursor - 1)
+}
+
 export function createVideoWorkbenchUiState(panel: VideoWorkbenchPanel = 'project_home'): VideoWorkbenchUiState {
   return {
     phase: 'loading',
@@ -179,14 +183,21 @@ export function reduceVideoWorkbenchUiState(
 ): VideoWorkbenchUiState {
   switch (event.type) {
     case 'hydrate':
+      // Repository snapshots are writer-fenced, but merge a non-reset page as
+      // defense in depth: an Operation event always carries the newest durable
+      // status sequence and must not be discarded while its cursor advances.
+      {
+        const snapshot = event.snapshot.events.reset_required
+          ? event.snapshot
+          : mergeOperationEvents(event.snapshot, event.snapshot.events)
       return {
         ...state,
-        phase: phaseForSnapshot(event.snapshot),
-        snapshot: event.snapshot,
-        selection: preserveSelection(state.selection, event.snapshot),
+        phase: phaseForSnapshot(snapshot),
+        snapshot,
+        selection: preserveSelection(state.selection, snapshot),
         pending_action: undefined,
         last_error: undefined,
-        last_event_cursor: event.snapshot.events.cursor,
+        last_event_cursor: continuationCursor(snapshot.events),
         // loadWorkspace is a complete authoritative operation/project query.
         // It is precisely the recovery action required after an event reset.
         event_reset_required: false,
@@ -194,6 +205,7 @@ export function reduceVideoWorkbenchUiState(
         material_fact_kind: 'evidence_window',
         material_fact_source_id: undefined,
         material_search_query: undefined,
+      }
       }
     case 'set_panel':
       return { ...state, panel: event.panel }
@@ -280,14 +292,14 @@ export function reduceVideoWorkbenchUiState(
     case 'operation_events': {
       if (!state.snapshot) return {
         ...state,
-        last_event_cursor: event.page.cursor,
+        last_event_cursor: continuationCursor(event.page),
         event_reset_required: event.page.reset_required,
         requires_authoritative_refresh: state.requires_authoritative_refresh || event.page.reset_required,
       }
       if (event.page.reset_required) {
         return {
           ...state,
-          last_event_cursor: event.page.cursor,
+          last_event_cursor: continuationCursor(event.page),
           event_reset_required: true,
           requires_authoritative_refresh: true,
         }
@@ -301,7 +313,7 @@ export function reduceVideoWorkbenchUiState(
         snapshot,
         phase: phaseForSnapshot(snapshot),
         pending_action: eventFinishedAction && isTerminal(eventFinishedAction) ? undefined : state.pending_action,
-        last_event_cursor: Math.max(state.last_event_cursor, event.page.cursor, ...event.page.events.map(item => item.cursor)),
+        last_event_cursor: Math.max(state.last_event_cursor, continuationCursor(event.page), ...event.page.events.map(item => item.cursor)),
         event_reset_required: false,
         requires_authoritative_refresh: state.requires_authoritative_refresh || Boolean(eventFinishedAction && isTerminal(eventFinishedAction)),
       }

@@ -469,7 +469,14 @@ export function renderVideoWorkbenchSurface(
   const main = element('main', 'bb-video-main')
   const header = element('header', 'bb-video-header')
   header.append(text('h1', model.title), text('p', model.status_message, `bb-video-status ${stateClass(model.phase)}`))
-  main.append(header, content(model, callbacks))
+  main.append(header)
+  if (model.failure_recovery) {
+    const recovery = element('div', 'bb-video-recovery')
+    recovery.append(text('span', model.failure_recovery.code, 'bb-video-recovery-code'))
+    recovery.append(actionButton(model.failure_recovery.label, model.failure_recovery.action, { enabled: !model.action_pending }, callbacks))
+    main.append(recovery)
+  }
+  main.append(content(model, callbacks))
   shell.append(nav, main)
   if (model.action_pending) {
     for (const button of shell.querySelectorAll<HTMLButtonElement>('[data-video-action]')) {

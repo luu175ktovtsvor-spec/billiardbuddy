@@ -296,12 +296,22 @@ test('legacy JSON keeps Timeline and formal Export, status_sequence and cursor/n
   expect((await repository.getOperation(legacyOperation.id)).status_sequence).toBe(7)
   expect(await repository.listOperationEvents(legacyProject.id, 41, 10)).toMatchObject({
     cursor: 42,
+    next_cursor: 43,
     reset_required: false,
     events: [{ cursor: 42, status_sequence: 7 }],
   })
   expect(await repository.listOperationEvents(legacyProject.id, 0, 10)).toEqual({
     events: [],
     cursor: 42,
+    next_cursor: 43,
+    reset_required: true,
+  })
+  // A client that persisted a cursor beyond the historical head must reload
+  // rather than silently wait for events it has never consumed.
+  expect(await repository.listOperationEvents(legacyProject.id, 43, 10)).toEqual({
+    events: [],
+    cursor: 42,
+    next_cursor: 43,
     reset_required: true,
   })
   const advanced = await repository.saveOperation({
@@ -327,6 +337,57 @@ test('legacy JSON keeps Timeline and formal Export, status_sequence and cursor/n
   expect((await reopened.getProject(legacyProject.id)).current_timeline_version_id).toBe('timeline_00000001')
   expect((await reopened.listOperationEvents(legacyProject.id, 42, 10)).events[0]?.cursor).toBe(43)
   reopened.close()
+})
+
+test('旧泛媒体迁移逐项目保留 status_sequence、Event 续读并保持旧目录只读', async () => {
+  const root = await testRoot('generic-media-target')
+  const legacyRoot = await testRoot('generic-media-source')
+  await Promise.all([
+    mkdir(join(legacyRoot, 'projects'), { recursive: true }),
+    mkdir(join(legacyRoot, 'tasks'), { recursive: true }),
+    mkdir(join(legacyRoot, 'events'), { recursive: true }),
+  ])
+  const legacyProject = project('vid_00000002')
+  const legacyOperation = { ...operation(legacyProject.id, 'succeeded', 7), id: 'task_00000002', operation_id: 'op_00000002' }
+  await writeFile(join(legacyRoot, 'projects', `${legacyProject.id}.json`), JSON.stringify(legacyProject))
+  await writeFile(join(legacyRoot, 'tasks', `${legacyOperation.id}.json`), JSON.stringify(legacyOperation))
+  await writeFile(join(legacyRoot, 'events', `${legacyProject.id}.json`), JSON.stringify({
+    schema_version: 1,
+    next_cursor: 43,
+    events: [{
+      schema_version: 1,
+      cursor: 42,
+      project_id: legacyProject.id,
+      task_id: legacyOperation.id,
+      operation_id: legacyOperation.operation_id,
+      status_sequence: 7,
+      occurred_at: at,
+      task: legacyOperation,
+    }],
+  }))
+
+  const service = new VideoWorkbenchService({ root, legacyMediaRoot: legacyRoot, now: () => new Date(at) })
+  await expect(service.migrateLegacyMediaStore()).resolves.toEqual({ migrated_project_ids: [legacyProject.id], skipped_project_ids: [] })
+  expect((await service.getOperation(legacyOperation.id)).status_sequence).toBe(7)
+  expect(await service.repository.listOperationEvents(legacyProject.id, 41, 10)).toMatchObject({
+    cursor: 42,
+    next_cursor: 43,
+    reset_required: false,
+    events: [{ cursor: 42, status_sequence: 7 }],
+  })
+  expect(await service.repository.listOperationEvents(legacyProject.id, 43, 10)).toEqual({
+    events: [],
+    cursor: 42,
+    next_cursor: 43,
+    reset_required: true,
+  })
+  // A completed source receipt makes restart reconciliation idempotent; it
+  // does not move, delete or close the old generic reader.
+  await expect(service.migrateLegacyMediaStore()).resolves.toEqual({ migrated_project_ids: [], skipped_project_ids: [legacyProject.id] })
+  expect(await Bun.file(join(legacyRoot, 'projects', `${legacyProject.id}.json`)).exists()).toBeTrue()
+  expect(await Bun.file(join(legacyRoot, 'tasks', `${legacyOperation.id}.json`)).exists()).toBeTrue()
+  expect(await Bun.file(join(legacyRoot, 'events', `${legacyProject.id}.json`)).exists()).toBeTrue()
+  service.repository.close()
 })
 
 test('existing Gateway visual evidence and media reasoning features retain their protocol contract', async () => {
@@ -494,7 +555,7 @@ test('restart recovery uses the durable operation store instead of in-memory exe
   service.repository.close()
 })
 
-test('existing import, timeline, preview and render paths stay durable through the SQLite repository', async () => {
+test('旧 Timeline 路径会迁入正式编辑版本，但旧 Preview/Render 不再形成第二条执行写入源', async () => {
   const root = await testRoot('video-production-path')
   const sourcePath = join(root, 'source.mp4')
   const outputPath = join(root, 'result.mp4')
@@ -508,12 +569,15 @@ test('existing import, timeline, preview and render paths stay durable through t
   const created = await service.createProject({ title: '完整路径' })
   const imported = await service.addVideoSource(created.id, { path: sourcePath })
   expect(imported.task.status).toBe('succeeded')
-  expect(imported.project.timeline).toHaveLength(1)
+  // The fast probe may provide UI metadata, but it must not create a v1
+  // Timeline before the immutable source fingerprint exists.
+  expect(imported.project.timeline).toEqual([])
   const fingerprintTask = (await service.repository.listOperations(imported.project.id)).find(task => task.kind === 'video.fingerprint')
   expect(fingerprintTask).toBeDefined()
   expect((await waitForTerminalOperation(service, fingerprintTask!.id)).status).toBe('succeeded')
   const fingerprinted = await service.getProject(imported.project.id)
   expect(fingerprinted.sources[0]?.fingerprint).toMatch(/^sha256:/)
+  expect(fingerprinted.current_editorial_timeline_version_id).toBeDefined()
   await expect(service.analyzeVideoProject(imported.project.id, {
     base_revision: imported.project.revision - 1,
     user_goal: '不应以过期版本分析',
@@ -521,32 +585,33 @@ test('existing import, timeline, preview and render paths stay durable through t
 
   const edited = await service.updateTimeline(imported.project.id, {
     base_revision: fingerprinted.revision,
-    base_timeline_version_id: fingerprinted.current_timeline_version_id,
-    clips: fingerprinted.timeline,
+    base_timeline_version_id: fingerprinted.current_editorial_timeline_version_id,
+    clips: [{
+      id: 'clip_legacy_00000001',
+      source_id: fingerprinted.sources[0]!.id,
+      in_ms: 0,
+      out_ms: fingerprinted.sources[0]!.duration_ms,
+    }],
   })
   expect(edited.current_editorial_timeline_version_id).not.toBe(fingerprinted.current_editorial_timeline_version_id)
   const selected = await service.selectTimelineVersion(imported.project.id, {
     revision: edited.revision,
-    version_id: fingerprinted.current_timeline_version_id!,
+    version_id: fingerprinted.current_editorial_timeline_version_id!,
   })
-  expect(selected.current_timeline_version_id).toBe(fingerprinted.current_timeline_version_id)
+  expect(selected.current_editorial_timeline_version_id).not.toBe(fingerprinted.current_editorial_timeline_version_id)
 
-  const preview = await service.previewVideo(selected.id, {
+  await expect(service.previewVideo(selected.id, {
     base_revision: selected.revision,
-    timeline_version_id: selected.current_timeline_version_id!,
-  })
-  expect((await waitForTerminalOperation(service, preview.id)).status).toBe('succeeded')
-  const afterPreview = await service.getProject(selected.id)
-  expect(afterPreview.preview?.asset_id).toBeDefined()
-
-  const render = await service.renderVideo(afterPreview.id, {
-    base_revision: afterPreview.revision,
-    timeline_version_id: afterPreview.current_timeline_version_id,
+    timeline_version_id: selected.current_editorial_timeline_version_id!,
+  })).rejects.toMatchObject({ code: 'VIDEO_LEGACY_RENDER_RETIRED' })
+  await expect(service.renderVideo(selected.id, {
+    base_revision: selected.revision,
+    timeline_version_id: selected.current_editorial_timeline_version_id,
     output_path: outputPath,
-  })
-  expect((await waitForTerminalOperation(service, render.id)).status).toBe('succeeded')
-  expect(await Bun.file(outputPath).exists()).toBeTrue()
-  expect((await service.getProject(selected.id)).state).toBe('complete')
+  })).rejects.toMatchObject({ code: 'VIDEO_LEGACY_RENDER_RETIRED' })
+  const retained = await service.getProject(selected.id)
+  expect(retained.current_editorial_timeline_version_id).toBeDefined()
+  expect(retained.state).toBe('ready')
   service.repository.close()
 })
 

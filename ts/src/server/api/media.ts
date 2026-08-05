@@ -236,9 +236,14 @@ export function createMediaApiHandler(
 
       // Image projects, operations, assets and event replay now live under
       // `/api/images/*`. This legacy endpoint cannot remain a second writable
-      // image path while old media data is still importable.
+      // path while old media data is still importable. Video has the same
+      // requirement: invoking the old reader can mutate a legacy JSON record
+      // during its compatibility upgrade, so no generic route may reach it.
       if (area === 'images') return retiredImageMediaResponse()
       if (area === 'videos') throw ApiError.notFound('视频接口已迁移到 /api/videos')
+      if (['projects', 'assets', 'deletions', 'project', 'tasks'].includes(area ?? '')) {
+        throw ApiError.notFound('通用媒体接口已退役，请使用 /api/images 或 /api/videos')
+      }
 
       if (area === 'projects') {
         const projectId = segments[3]
