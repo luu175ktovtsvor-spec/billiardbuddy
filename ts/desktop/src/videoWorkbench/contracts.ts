@@ -257,7 +257,8 @@ export type VideoWorkbenchBridge = Readonly<{
   analyzeSubjectTrack(projectId: string, command: VideoCommandEnvelope<AnalyzeVideoSubjectTrackInput>): Promise<VideoWorkbenchResult<VideoSubjectTrackResult>>
   preflightVariant(projectId: string, variantId: string, command: VideoCommandEnvelope<PreflightVideoVariantInput>): Promise<VideoWorkbenchResult<VideoPreflightVariantResult>>
   previewVariant(projectId: string, variantId: string, command: VideoCommandEnvelope<PreviewVideoVariantInput>): Promise<VideoWorkbenchResult<PublicMediaTask>>
-  chooseExportDestination(projectId: string, variantId: string): Promise<VideoWorkbenchResult<VideoExportDestinationGrant>>
+  /** A native save-dialog cancel is an intentional no-op, never a transport error. */
+  chooseExportDestination(projectId: string, variantId: string): Promise<VideoWorkbenchResult<VideoExportDestinationGrant | undefined>>
   renderVariant(projectId: string, variantId: string, destination: VideoExportDestinationGrant, command: VideoCommandEnvelope<Omit<RenderVideoVariantInput, 'output_path'>>): Promise<VideoWorkbenchResult<PublicMediaTask>>
   confirmPostRenderQuality(projectId: string, operationId: string, command: VideoCommandEnvelope<ConfirmVideoPostRenderQualityInput>): Promise<VideoWorkbenchResult<VideoPostRenderQualityConfirmationResult>>
   cancelOperation(operationId: string): Promise<VideoWorkbenchResult<PublicMediaTask>>

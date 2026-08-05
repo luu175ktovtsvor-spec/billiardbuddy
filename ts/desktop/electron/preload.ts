@@ -8,6 +8,7 @@ import type {
   ImageWorkbenchIpcPayloadByMethod,
   ImageWorkbenchIpcValueByMethod,
 } from '../../shared/contracts/imageWorkbenchIpc.js'
+import type { VideoWorkbenchPreloadBridge } from '../../shared/contracts/videoWorkbenchPreload.js'
 import { ELECTRON_EVENT_CHANNELS, ELECTRON_IPC_CHANNELS, type ElectronIpcChannel } from './ipc/channels'
 
 function invoke<T>(channel: ElectronIpcChannel, payload?: unknown): Promise<T> {
@@ -16,6 +17,8 @@ function invoke<T>(channel: ElectronIpcChannel, payload?: unknown): Promise<T> {
 
 type ImageBridgeResult<Method extends keyof ImageWorkbenchPreloadBridge> =
   Awaited<ReturnType<ImageWorkbenchPreloadBridge[Method]>>
+type VideoBridgeResult<Method extends keyof VideoWorkbenchPreloadBridge> =
+  Awaited<ReturnType<VideoWorkbenchPreloadBridge[Method]>>
 
 function invokeImageWorkbench<Method extends ImageWorkbenchIpcMethod>(
   method: Method,
@@ -607,16 +610,126 @@ const images: ImageWorkbenchPreloadBridge = {
   retryCampaignItem: input => invokeImageWorkbench('retryCampaignItem', input),
 }
 
+// Video deliberately has a single discriminated IPC channel. Preload exposes
+// typed methods, while Main still receives a strict, auditable command union.
+const videos: VideoWorkbenchPreloadBridge = {
+  listProjects: () => invoke<VideoBridgeResult<'listProjects'>>(
+    ELECTRON_IPC_CHANNELS.videoWorkbench,
+    { action: 'list_projects' },
+  ),
+  createProject: input => invoke<VideoBridgeResult<'createProject'>>(
+    ELECTRON_IPC_CHANNELS.videoWorkbench,
+    { action: 'create_project', input },
+  ),
+  loadWorkspace: (projectId, eventCursor) => invoke<VideoBridgeResult<'loadWorkspace'>>(
+    ELECTRON_IPC_CHANNELS.videoWorkbench,
+    { action: 'load_workspace', projectId, eventCursor },
+  ),
+  loadOperationEvents: (projectId, cursor) => invoke<VideoBridgeResult<'loadOperationEvents'>>(
+    ELECTRON_IPC_CHANNELS.videoWorkbench,
+    { action: 'load_operation_events', projectId, cursor },
+  ),
+  loadFacts: (projectId, kind, request) => invoke<VideoBridgeResult<'loadFacts'>>(
+    ELECTRON_IPC_CHANNELS.videoWorkbench,
+    { action: 'load_facts', projectId, kind, ...(request ? { request } : {}) },
+  ),
+  searchFacts: (projectId, query, request) => invoke<VideoBridgeResult<'searchFacts'>>(
+    ELECTRON_IPC_CHANNELS.videoWorkbench,
+    { action: 'search_facts', projectId, query, ...(request ? { request } : {}) },
+  ),
+  chooseSources: projectId => invoke<VideoBridgeResult<'chooseSources'>>(
+    ELECTRON_IPC_CHANNELS.videoWorkbench,
+    { action: 'choose_sources', projectId },
+  ),
+  addSources: (projectId, selectionIds, idempotencyKey) => invoke<VideoBridgeResult<'addSources'>>(
+    ELECTRON_IPC_CHANNELS.videoWorkbench,
+    { action: 'add_sources', projectId, selectionIds, idempotencyKey },
+  ),
+  estimateRemoteAnalysis: (projectId, command) => invoke<VideoBridgeResult<'estimateRemoteAnalysis'>>(
+    ELECTRON_IPC_CHANNELS.videoWorkbench,
+    { action: 'estimate_remote_analysis', projectId, command },
+  ),
+  grantRemoteAnalysisConsent: (projectId, command) => invoke<VideoBridgeResult<'grantRemoteAnalysisConsent'>>(
+    ELECTRON_IPC_CHANNELS.videoWorkbench,
+    { action: 'grant_remote_analysis_consent', projectId, command },
+  ),
+  createQuickDraft: (projectId, command) => invoke<VideoBridgeResult<'createQuickDraft'>>(
+    ELECTRON_IPC_CHANNELS.videoWorkbench,
+    { action: 'create_quick_draft', projectId, command },
+  ),
+  applyEditorialCommandSet: (projectId, command) => invoke<VideoBridgeResult<'applyEditorialCommandSet'>>(
+    ELECTRON_IPC_CHANNELS.videoWorkbench,
+    { action: 'apply_editorial_command_set', projectId, command },
+  ),
+  createDeliveryVariant: (projectId, command) => invoke<VideoBridgeResult<'createDeliveryVariant'>>(
+    ELECTRON_IPC_CHANNELS.videoWorkbench,
+    { action: 'create_delivery_variant', projectId, command },
+  ),
+  applyDeliveryVariantCommandSet: (projectId, variantId, command) => invoke<VideoBridgeResult<'applyDeliveryVariantCommandSet'>>(
+    ELECTRON_IPC_CHANNELS.videoWorkbench,
+    { action: 'apply_delivery_variant_command_set', projectId, variantId, command },
+  ),
+  createCaptionDraft: (projectId, command) => invoke<VideoBridgeResult<'createCaptionDraft'>>(
+    ELECTRON_IPC_CHANNELS.videoWorkbench,
+    { action: 'create_caption_draft', projectId, command },
+  ),
+  createCaptionRevision: (projectId, captionDocumentId, command) => invoke<VideoBridgeResult<'createCaptionRevision'>>(
+    ELECTRON_IPC_CHANNELS.videoWorkbench,
+    { action: 'create_caption_revision', projectId, captionDocumentId, command },
+  ),
+  createCaptionTranslation: (projectId, captionDocumentId, command) => invoke<VideoBridgeResult<'createCaptionTranslation'>>(
+    ELECTRON_IPC_CHANNELS.videoWorkbench,
+    { action: 'create_caption_translation', projectId, captionDocumentId, command },
+  ),
+  createCompositionPlan: (projectId, command) => invoke<VideoBridgeResult<'createCompositionPlan'>>(
+    ELECTRON_IPC_CHANNELS.videoWorkbench,
+    { action: 'create_composition_plan', projectId, command },
+  ),
+  createAudioFinishingPlan: (projectId, command) => invoke<VideoBridgeResult<'createAudioFinishingPlan'>>(
+    ELECTRON_IPC_CHANNELS.videoWorkbench,
+    { action: 'create_audio_finishing_plan', projectId, command },
+  ),
+  analyzeBeat: (projectId, command) => invoke<VideoBridgeResult<'analyzeBeat'>>(
+    ELECTRON_IPC_CHANNELS.videoWorkbench,
+    { action: 'analyze_beat', projectId, command },
+  ),
+  createBeatSyncDraft: (projectId, command) => invoke<VideoBridgeResult<'createBeatSyncDraft'>>(
+    ELECTRON_IPC_CHANNELS.videoWorkbench,
+    { action: 'create_beat_sync_draft', projectId, command },
+  ),
+  analyzeSubjectTrack: (projectId, command) => invoke<VideoBridgeResult<'analyzeSubjectTrack'>>(
+    ELECTRON_IPC_CHANNELS.videoWorkbench,
+    { action: 'analyze_subject_track', projectId, command },
+  ),
+  preflightVariant: (projectId, variantId, command) => invoke<VideoBridgeResult<'preflightVariant'>>(
+    ELECTRON_IPC_CHANNELS.videoWorkbench,
+    { action: 'preflight_variant', projectId, variantId, command },
+  ),
+  previewVariant: (projectId, variantId, command) => invoke<VideoBridgeResult<'previewVariant'>>(
+    ELECTRON_IPC_CHANNELS.videoWorkbench,
+    { action: 'preview_variant', projectId, variantId, command },
+  ),
+  chooseExportDestination: (projectId, variantId) => invoke<VideoBridgeResult<'chooseExportDestination'>>(
+    ELECTRON_IPC_CHANNELS.videoWorkbench,
+    { action: 'choose_export_destination', projectId, variantId },
+  ),
+  renderVariant: (projectId, variantId, destinationGrantId, command) => invoke<VideoBridgeResult<'renderVariant'>>(
+    ELECTRON_IPC_CHANNELS.videoWorkbench,
+    { action: 'render_variant', projectId, variantId, destinationGrantId, command },
+  ),
+  confirmPostRenderQuality: (projectId, operationId, command) => invoke<VideoBridgeResult<'confirmPostRenderQuality'>>(
+    ELECTRON_IPC_CHANNELS.videoWorkbench,
+    { action: 'confirm_post_render_quality', projectId, operationId, command },
+  ),
+  cancelOperation: operationId => invoke<VideoBridgeResult<'cancelOperation'>>(
+    ELECTRON_IPC_CHANNELS.videoWorkbench,
+    { action: 'cancel_operation', operationId },
+  ),
+}
+
 const media = {
   images,
-  videos: {
-    addSource: (projectId: string, path: string) => invoke(
-      ELECTRON_IPC_CHANNELS.videoAddSource,
-      { projectId, path },
-    ),
-    render: (input: unknown) => invoke(ELECTRON_IPC_CHANNELS.videoRender, input),
-    analyze: (input: unknown) => invoke(ELECTRON_IPC_CHANNELS.videoAnalyze, input),
-  },
+  videos,
 }
 
 if (process.isMainFrame) {

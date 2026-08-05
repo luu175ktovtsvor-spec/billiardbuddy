@@ -430,8 +430,8 @@ export class VideoWorkbenchProductController {
   }
 }
 
-/** Mounts the isolated product surface.  Electron registration is intentionally
- * deferred; callers must inject the later Main/preload bridge themselves. */
+/** Mounts the isolated product surface. Lifecycle ownership stays with the
+ * caller so startup can complete before operation polling begins. */
 export function mountVideoWorkbenchProduct(
   root: HTMLElement,
   product: VideoWorkbenchProductController,
@@ -463,7 +463,6 @@ export function mountVideoWorkbenchProduct(
     })
   }
   const unsubscribe = product.subscribe(render)
-  void product.start()
   return () => {
     unsubscribe()
     product.dispose()

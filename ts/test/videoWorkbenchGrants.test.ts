@@ -80,3 +80,15 @@ test('视频授权显示名只能由受控路径基名导出，绝不回显调�
   expect(destination.display_name).toBe('delivery.mov')
   expect(JSON.stringify(destination)).not.toContain('/private/secret')
 })
+
+test('应用重启后不存在可恢复的路径租约，旧 opaque token 必须失败关闭', () => {
+  const sourcesBeforeRestart = new VideoSourceGrants()
+  const source = sourcesBeforeRestart.issue(projectId, '/private/restart-source.mp4', 'video/mp4', undefined, 1_000)
+  const destinationsBeforeRestart = new VideoDestinationGrants()
+  const destination = destinationsBeforeRestart.issue(projectId, variantId, '/private/restart-output.mp4', 'video/mp4', 1_000)
+
+  const sourcesAfterRestart = new VideoSourceGrants()
+  const destinationsAfterRestart = new VideoDestinationGrants()
+  expect(sourcesAfterRestart.consume(projectId, [source.selection_id], 1_001)).toBeNull()
+  expect(destinationsAfterRestart.consume(projectId, variantId, 'video/mp4', destination.destination_grant_id, 1_001)).toBeNull()
+})

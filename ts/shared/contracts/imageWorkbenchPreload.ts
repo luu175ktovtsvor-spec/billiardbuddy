@@ -51,6 +51,7 @@ import type {
   ImageWorkbenchIpcPayloadByMethod,
   ImageWorkbenchIpcValueByMethod,
 } from './imageWorkbenchIpc.js'
+import type { VideoWorkbenchPreloadBridge } from './videoWorkbenchPreload.js'
 
 export type ImageWorkbenchIpcResponse<Value> =
   | { ok: true; value: Value }
@@ -139,4 +140,5 @@ export type ImageWorkbenchPreloadBridge = {
 
 export type BilliardBuddyMediaPreloadBridge = {
   images: ImageWorkbenchPreloadBridge
+  videos: VideoWorkbenchPreloadBridge
 }

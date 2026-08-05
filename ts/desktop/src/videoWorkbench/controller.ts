@@ -337,7 +337,9 @@ export class VideoWorkbenchController {
         return { ok: false, error: destination.error }
       }
       this.dispatch({ type: 'action_cancelled' })
-      return await this.run('render', idempotencyKey, async () => await this.bridge.renderVariant(this.projectId, variantId, destination.value, { idempotency_key: idempotencyKey, input }))
+      const selectedDestination = destination.value
+      if (!selectedDestination) return { ok: true, value: undefined }
+      return await this.run('render', idempotencyKey, async () => await this.bridge.renderVariant(this.projectId, variantId, selectedDestination, { idempotency_key: idempotencyKey, input }))
     } catch {
       const error = mediaSafeError('MEDIA_TEMPORARILY_UNAVAILABLE')
       this.dispatch({ type: 'action_failed', error })
