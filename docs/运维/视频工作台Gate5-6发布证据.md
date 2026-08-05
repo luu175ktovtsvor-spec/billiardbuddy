@@ -27,11 +27,17 @@ bun run check:electron
 - 先确认 Video Relay 镜像 digest、`readyz`、受控 CJK 字幕运行时日志和清理策略；对真实模型调用先创建最小 consent 与项目预算。
 - 所有测试输出必须落在临时目录，最后核对没有未确认 Operation、`outcome_unknown`、活动对象租约、暂存 sidecar 或测试进程。
 
-## 当前共享桌面集成阻塞
+## 本轮共享桌面最终集成审计
+
+- 最终审计基线为已提交的 `main@bf86525aa6a91589d613f4f999bbee3bcfda539e`（其中包含 Agent 桌面宿主收口提交 `b53f078a`）。视频分支已以该提交为祖先，`git rebase main` 返回 `Current branch ... is up to date`，没有重写或修改 `main`。
+- 已人工核对唯一 `desktop:video:workbench` channel 的 trusted sender 校验、Zod discriminated command schema、Main-only `MEDIA_UI_CAPABILITY_HEADER` 注入、来源/导出 grant 的项目/用途/MIME/一次性约束、内存 replay receipt、Preload typed bridge、Renderer 的受控输入以及关闭时 replay 清理。`bun run check:desktop`、`bun run check:electron` 和视频 IPC/Renderer contract 均在此基线上通过。
+- 这项审计只证明本地 TypeScript、打包构建和受控协议旅程；不会替代已安装 Electron 的原生选择器、Sidecar 或实际 Preview/Render smoke。
+
+## 仍待受控环境完成的桌面字体与安装包证据
 
 Video Media Relay 镜像已对 CJK burn-in 字体做启动验证；但正式 Preview/Render 由桌面 Sidecar 的本机 FFmpeg 执行。该路径只接受绝对路径的 `VIDEO_MEDIA_SUBTITLE_FONT_DIR`，而当前共享 Electron runtime 仅注入媒体二进制目录，现有打包步骤也没有随安装包放入受控的 `NotoSansCJKSC-Regular.ttc` 与对应 fontconfig 资源。
 
-因此，缺少该受控注入时 CJK burn-in 会失败关闭，不可将 Relay `readyz` 或本地单测视为桌面安装包的烧录成功。按本轮共享 Electron/打包边界，此分支不修改这些共享文件；后续协调集成必须先审查并打包受控字体资产、由 Main 进程仅向 Sidecar 注入目录，再执行 macOS/Windows 安装包 CJK Preview/Render smoke。
+因此，缺少该受控注入时 CJK burn-in 会失败关闭，不可将 Relay `readyz` 或本地单测视为桌面安装包的烧录成功。此分支没有擅自扩张到共享桌面打包资产；后续受控发布必须先审查并打包受控字体资产、由 Main 进程仅向 Sidecar 注入目录，再执行 macOS/Windows 安装包 CJK Preview/Render smoke。
 
 ## 经批准后执行的命令
 
