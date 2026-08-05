@@ -13,7 +13,7 @@ import { PayloadCommitProtocol } from '../src/server/media/kernel/storage/payloa
 import { SqliteUnitOfWork } from '../src/server/media/kernel/storage/sqliteUnitOfWork.js'
 import { fixedIntervalContentSegments, planEvidenceWindows, sourceRangeForSegment } from '../src/server/video/domain/mediaFacts/analysis.js'
 import { MEDIA_UI_CAPABILITY_HEADER, type VideoStudioProject } from '../shared/contracts/media.js'
-import { createHostedEvidence, type TimedTranscript, type VideoDerivative, type VideoFactSource } from '../src/server/video/domain/mediaFacts/model.js'
+import { createHostedEvidence, factBasisHash, type TimedTranscript, type VideoDerivative, type VideoFactSource } from '../src/server/video/domain/mediaFacts/model.js'
 import {
   compareRationalTime,
   editorialTimeRange,
@@ -345,6 +345,66 @@ test('Media Facts 保持不可变 payload、全文检索、转录修订和派生
   expect((await repository.pageCurrentFacts('source', created.id)).items[0]).toMatchObject({ state: 'changed', fingerprint_state: 'failed' })
   expect(await repository.reclaimLeastRecentlyUsedDerivatives(created.id, 1)).toEqual([derivative.id])
   expect(await repository.getFact('derivative', derivative.id)).toMatchObject({ state: 'missing' })
+  repository.close()
+})
+
+test('事实仓储拒绝跨项目、失配指纹和超出原始主视频流的派生 Fact', async () => {
+  const root = await testRoot('fact-source-integrity')
+  const repository = new VideoWorkbenchRepository({ root, now: () => new Date(at) })
+  const firstProject = await repository.saveProject(project())
+  const secondProject = await repository.saveProject(project('vid_00000002'))
+  const firstSource = {
+    ...source(firstProject.id),
+    // The container can present a longer duration than its primary stream.
+    // Fact ranges must still be bounded by the latter.
+    presentation_duration: rationalTime('5400000', { num: 90_000, den: 1 }),
+  }
+  const secondSource = {
+    ...source(secondProject.id),
+    id: 'src_00000002',
+    path: '/media/second-source.mp4',
+    name: 'second-source.mp4',
+  }
+  await repository.saveFact(firstSource)
+  await repository.saveFact(secondSource)
+  const baseDerivative: VideoDerivative = {
+    id: 'derivative_00000011',
+    project_id: firstProject.id,
+    source_id: firstSource.id,
+    source_fingerprint: firstSource.fingerprint,
+    kind: 'proxy',
+    source_range: sourceTimeRange(firstSource.primary_video_stream.start_time, firstSource.primary_video_stream.duration!),
+    asset: {
+      id: 'asset_00000011', role: 'source', version_id: 'version_00000011',
+      storage: { kind: 'managed', locator: 'facts/integrity-proxy.mp4' }, mime_type: 'video/mp4',
+      content_hash: hash('c'), byte_size: 12, created_at: at,
+    },
+    content_hash: hash('c'), byte_size: 12, generator_name: 'ffmpeg', generator_version: '7.0',
+    parameters_hash: hash('d'), created_by_operation_id: 'op_00000011', created_at: at, state: 'ready',
+  }
+  await expect(repository.saveFact({
+    ...baseDerivative,
+    id: 'derivative_00000012',
+    source_range: sourceTimeRange(firstSource.primary_video_stream.start_time, rationalTime('2700001', { num: 90_000, den: 1 })),
+  })).rejects.toMatchObject({ code: 'VIDEO_FACTS_INVALID' })
+  await expect(repository.saveFact({
+    ...baseDerivative,
+    id: 'derivative_00000013',
+    source_id: secondSource.id,
+    source_fingerprint: secondSource.fingerprint,
+  })).rejects.toMatchObject({ code: 'VIDEO_FACTS_INVALID' })
+  await expect(repository.saveFact({
+    ...baseDerivative,
+    id: 'derivative_00000014',
+    source_fingerprint: hash('e'),
+  })).rejects.toMatchObject({ code: 'VIDEO_FACTS_INVALID' })
+  const outOfBoundsEvidence = createHostedEvidence({
+    kind: 'visual', projectId: firstProject.id, source: firstSource,
+    range: sourceTimeRange(firstSource.primary_video_stream.start_time, rationalTime('2700001', { num: 90_000, den: 1 })),
+    promptVersion: 'media-facts-v1', createdAt: at,
+    payload: { summary: '超出原始主视频流的伪造证据', subjects: [], warnings: [] },
+  })
+  await expect(repository.saveFact(outOfBoundsEvidence)).rejects.toMatchObject({ code: 'VIDEO_FACTS_INVALID' })
   repository.close()
 })
 
@@ -1383,7 +1443,7 @@ test('四类远程能力按 Operation 结算、释放或围栏，而不改变整
 
 test('视觉、规划与 Embedding 在 fenced 499 后严格重放同一 Relay Operation 并结算', async () => {
   const root = await testRoot('remote-operation-strict-recovery')
-  type Request = Parameters<VideoMediaRelayClient['createOperation']>[0]
+  type Request = Omit<Parameters<VideoMediaRelayClient['createOperation']>[0], 'remote_consent_claim'>
   type Projection = Awaited<ReturnType<VideoMediaRelayClient['createOperation']>>
   const records = new Map<string, { body: string; projection: Projection; lostResponses: number; idempotencyKey: string }>()
   let providerCalls = 0
@@ -1454,8 +1514,18 @@ test('视觉、规划与 Embedding 在 fenced 499 后严格重放同一 Relay Op
     },
   })
   const created = await service.createProject({ title: '全能力严格恢复' })
+  const consent = {
+    id: 'consent_00000001', project_id: created.id, revision: 1, state: 'active' as const,
+    provider: 'aliyun_bailian' as const, region: 'cn-beijing' as const,
+    purposes: ['visual_evidence', 'planning', 'semantic_search'] as const,
+    data_kinds: ['keyframes', 'transcript'] as const,
+    coverage: [{ source_id: 'src_00000001', ranges: [sourceTimeRange(rationalTime('0', { num: 1_000, den: 1 }), rationalTime('1000', { num: 1_000, den: 1 }))] }],
+    acknowledged_estimate_hash: hash('a'), granted_by_actor_id: 'local', granted_at: at,
+  }
+  const consentScopeHash = factBasisHash({ revision: consent.revision, coverage: consent.coverage, purposes: consent.purposes, data_kinds: consent.data_kinds })
   await service.repository.saveProject({
     ...created,
+    remote_analysis_consents: [consent],
     remote_analysis_budgets: [{ id: 'budget_00000001', estimate_hash: hash('a'), state: 'reserved', requests: 10, total_tokens: 100, input_bytes: 1_000, visual_frames: 2, proxy_seconds: 0, asr_seconds: 0, estimated_amount_micros: 100, reservations: [], settlements: [], created_at: at, updated_at: at }],
   })
   const invoke = analysisRuntime(service) as unknown as {
@@ -1465,9 +1535,9 @@ test('视觉、规划与 Embedding 在 fenced 499 后严格重放同一 Relay Op
   }
   const relay = invoke.videoMediaRelay()!
   const requests: Request[] = [
-    { local_operation_id: 'task_visual_00000001', consent_revision_id: 'consent_00000001', consent_scope_hash: hash('a'), local_budget_reservation_id: 'budget_00000001', request_hash: hash('b'), capability: 'visual_evidence', application_role: 'shot_evidence', input: { object_refs: ['object_00000001'], evidence_window_id: 'window_00000001', facts_basis_hash: hash('c'), language: 'zh', output_schema_version: 1 } },
-    { local_operation_id: 'task_planning_00000001', consent_revision_id: 'consent_00000001', consent_scope_hash: hash('a'), local_budget_reservation_id: 'budget_00000001', request_hash: hash('c'), capability: 'media_reasoning', application_role: 'planning', input: { object_refs: [], facts_basis_hash: hash('d'), evidence: [], language: 'zh', output_schema_version: 1 } },
-    { local_operation_id: 'task_embedding_00000001', consent_revision_id: 'consent_00000001', consent_scope_hash: hash('a'), local_budget_reservation_id: 'budget_00000001', request_hash: hash('d'), capability: 'semantic_embedding', application_role: 'search_index', input: { embedding_role: 'query', items: [{ id: 'embed_00000001', text: '开球' }], model: 'text-embedding-v4', dimension: 768, instruction_version: 'video-facts-v1' } },
+    { local_operation_id: 'task_visual_00000001', consent_revision_id: consent.id, consent_scope_hash: consentScopeHash, local_budget_reservation_id: 'budget_00000001', request_hash: hash('b'), capability: 'visual_evidence', application_role: 'shot_evidence', input: { object_refs: ['object_00000001'], evidence_window_id: 'window_00000001', facts_basis_hash: hash('c'), language: 'zh', output_schema_version: 1 } },
+    { local_operation_id: 'task_planning_00000001', consent_revision_id: consent.id, consent_scope_hash: consentScopeHash, local_budget_reservation_id: 'budget_00000001', request_hash: hash('c'), capability: 'media_reasoning', application_role: 'planning', input: { object_refs: [], facts_basis_hash: hash('d'), evidence: [], language: 'zh', output_schema_version: 1 } },
+    { local_operation_id: 'task_embedding_00000001', consent_revision_id: consent.id, consent_scope_hash: consentScopeHash, local_budget_reservation_id: 'budget_00000001', request_hash: hash('d'), capability: 'semantic_embedding', application_role: 'search_index', input: { embedding_role: 'query', items: [{ id: 'embed_00000001', text: '开球' }], model: 'text-embedding-v4', dimension: 768, instruction_version: 'video-facts-v1' } },
   ]
   const usageFor = (request: Request) => request.capability === 'visual_evidence'
     ? { requests: 1, total_tokens: 0, input_bytes: 100, visual_frames: 1, proxy_seconds: 0, asr_seconds: 0, estimated_amount_micros: 10 }
@@ -1529,12 +1599,20 @@ test('远程规划 consume 后先以 staged Operation 原子替换 fence，重�
   const sourceFact = source(created.id)
   await service.repository.saveFact(sourceFact)
   const evidence = { id: 'evidence_00000001', kind: 'visual' as const, source_id: sourceFact.id, source_fingerprint: sourceFact.fingerprint, in_ms: 0, out_ms: 1_000, text: '真实击球片段', confidence: 0.9, warnings: [], created_at: at }
+  const consent = {
+    id: 'consent_00000001', project_id: created.id, revision: 1, state: 'active' as const,
+    provider: 'aliyun_bailian' as const, region: 'cn-beijing' as const,
+    purposes: ['planning'] as const, data_kinds: ['transcript'] as const,
+    coverage: [{ source_id: sourceFact.id, ranges: [{ start: sourceFact.primary_video_stream.start_time, duration: sourceFact.primary_video_stream.duration! }] }],
+    acknowledged_estimate_hash: hash('e'), granted_by_actor_id: 'local', granted_at: at,
+  }
+  const consentScopeHash = factBasisHash({ revision: consent.revision, coverage: consent.coverage, purposes: consent.purposes, data_kinds: consent.data_kinds })
   const saved = await service.repository.saveProject({
     ...created,
     sources: [{ id: sourceFact.id, path: sourceFact.path, name: sourceFact.name, duration_ms: 30_000, width: 1920, height: 1080, fps: 30, has_audio: true, fingerprint: sourceFact.fingerprint, rotation: 0, video_stream_count: 1, audio_stream_count: 1, missing: false, content_changed: false }],
     evidence: [evidence],
     evidence_revision: hash('a'),
-    remote_analysis_consents: [{ id: 'consent_00000001', project_id: created.id, revision: 1, state: 'active', provider: 'aliyun_bailian', region: 'cn-beijing', purposes: ['planning'], data_kinds: ['transcript'], coverage: [{ source_id: sourceFact.id, ranges: [{ start: sourceFact.primary_video_stream.start_time, duration: sourceFact.primary_video_stream.duration! }] }], acknowledged_estimate_hash: hash('e'), granted_by_actor_id: 'local', granted_at: at }],
+    remote_analysis_consents: [consent],
     remote_analysis_budgets: [{ id: 'budget_00000001', estimate_hash: hash('e'), state: 'reserved', ...usage, settlements: [], created_at: at, updated_at: at }],
   })
   const planTask = await service.repository.saveOperation({
@@ -1547,9 +1625,9 @@ test('远程规划 consume 后先以 staged Operation 原子替换 fence，重�
     scenes: [{ source_id: sourceFact.id, in_ms: 0, out_ms: 1_000, story_role: 'hook', evidence_ids: [evidence.id], rationale: '真实击球开场', needs_review: false }],
     alternatives: [],
   }
-  type RelayRequest = Parameters<VideoMediaRelayClient['createOperation']>[0]
+  type RelayRequest = Omit<Parameters<VideoMediaRelayClient['createOperation']>[0], 'remote_consent_claim'>
   type RelayProjection = Awaited<ReturnType<VideoMediaRelayClient['createOperation']>>
-  const request: RelayRequest = { local_operation_id: planTask.id, consent_revision_id: 'consent_00000001', consent_scope_hash: hash('c'), local_budget_reservation_id: 'budget_00000001', request_hash: hash('b'), capability: 'media_reasoning', application_role: 'planning', input: { object_refs: [], facts_basis_hash: saved.evidence_revision!, evidence: [{ id: evidence.id, kind: 'visual_fact', text: evidence.text, confidence: evidence.confidence }], language: 'zh', output_schema_version: 1 } }
+  const request: RelayRequest = { local_operation_id: planTask.id, consent_revision_id: consent.id, consent_scope_hash: consentScopeHash, local_budget_reservation_id: 'budget_00000001', request_hash: hash('b'), capability: 'media_reasoning', application_role: 'planning', input: { object_refs: [], facts_basis_hash: saved.evidence_revision!, evidence: [{ id: evidence.id, kind: 'visual_fact', text: evidence.text, confidence: evidence.confidence }], language: 'zh', output_schema_version: 1 } }
   const invoke = analysisRuntime(service) as unknown as {
     videoMediaRelay: () => VideoMediaRelayClient | null
     reserveAndRunRemote: <T>(projectId: string, budgetId: string, capability: 'media_reasoning', allocation: typeof usage, relay: VideoMediaRelayClient, request: RelayRequest, consume: (client: VideoMediaRelayClient, operation: RelayProjection) => Promise<T>, options: { parentOperationId: string }) => Promise<T>
@@ -1612,6 +1690,7 @@ test('正式视觉证据路径在 POST 响应丢失后查询旧任务，不产�
   })
   const created = await service.createProject({ title: '视觉恢复' })
   const sourceFact = source(created.id)
+  await service.repository.saveFact(sourceFact)
   const videoSource = { id: sourceFact.id, path: sourceFact.path, name: sourceFact.name, duration_ms: 30_000, width: 1920, height: 1080, fps: 30, has_audio: true, fingerprint: sourceFact.fingerprint, rotation: 0, video_stream_count: 1, audio_stream_count: 1, missing: false, content_changed: false }
   const saved = await service.repository.saveProject({
     ...created,
@@ -1625,6 +1704,7 @@ test('正式视觉证据路径在 POST 响应丢失后查询旧任务，不产�
     sample_strategy: 'representative_frame' as const, keyframe_derivative_ids: [], transcript_segment_ids: [], evidence_ids: [], analysis_depth: 'summary' as const, sampling_receipt_id: 'receipt_sampling_0001',
     coverage: { generation: 1, request_budget: { max_windows: 1, max_visual_requests: 1, max_frames: 1, max_proxy_seconds: 0, max_input_tokens: 100, max_covered_ticks: '90000' }, request_usage: { windows: 1, visual_requests: 1, frames: 1, proxy_seconds: 0, estimated_input_tokens: 1, covered_ticks: '90000' }, uncovered: [] }, created_at: at,
   }
+  await service.repository.saveFact(window)
   await service.repository.saveOperation({ schema_version: 1, id: 'task_visual_parent', project_id: created.id, kind: 'video.analyze', status: 'running', progress: 45, stage: '视觉恢复', result: { user_goal: '恢复视觉证据' }, created_at: at, updated_at: at })
   const invoke = analysisRuntime(service) as unknown as {
     remoteVisualEvidence: (project: VideoStudioProject, operationId: string, extracted: { frames: Array<{ source_id: string; in_ms: number; range_end_ms: number; evidence_window_id: string; data_url: string }>; transcripts: []; relay_acknowledgements: []; gaps: []; source_facts: Map<string, VideoFactSource>; evidence_windows: Map<string, typeof window> }, signal: AbortSignal) => Promise<{ evidence: Array<{ text: string }>; acknowledgements: VideoStudioProject['pending_relay_acknowledgements'] } | null>

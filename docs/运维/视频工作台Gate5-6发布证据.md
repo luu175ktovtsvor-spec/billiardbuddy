@@ -9,7 +9,7 @@
 ```sh
 git rev-parse HEAD
 cd ts
-bun test --preload ./test/setup.ts ./test/videoCaptionTranslation.test.ts ./test/videoCompositionRoot.test.ts ./test/videoDashScopeProvider.test.ts ./test/videoDeliveryBoundary.test.ts ./test/videoEditorial.test.ts ./test/videoFinishingDelivery.test.ts ./test/videoFunAsrAdapter.test.ts ./test/videoLocalFinishingAlgorithms.test.ts ./test/videoMediaFacts.test.ts ./test/videoMediaRelay.test.ts ./test/videoOssContract.test.ts ./test/videoRelayRenderingRuntimeContract.test.ts ./test/videoRemoteConsent.test.ts ./test/videoWorkbenchGrants.test.ts ./test/videoWorkbenchIpcContract.test.ts ./test/videoWorkbenchRenderer.test.ts ./test/videoWorkbenchRepository.test.ts
+bun run test:video
 bun run typecheck:server
 bun run audit:source
 bun run check:desktop
@@ -42,7 +42,7 @@ git rev-parse HEAD
 test "$(git rev-parse HEAD)" = "$RELEASE_SHA"
 
 cd ts
-bun test --preload ./test/setup.ts ./test/videoCaptionTranslation.test.ts ./test/videoCompositionRoot.test.ts ./test/videoDashScopeProvider.test.ts ./test/videoDeliveryBoundary.test.ts ./test/videoEditorial.test.ts ./test/videoFinishingDelivery.test.ts ./test/videoFunAsrAdapter.test.ts ./test/videoLocalFinishingAlgorithms.test.ts ./test/videoMediaFacts.test.ts ./test/videoMediaRelay.test.ts ./test/videoOssContract.test.ts ./test/videoRelayRenderingRuntimeContract.test.ts ./test/videoRemoteConsent.test.ts ./test/videoWorkbenchGrants.test.ts ./test/videoWorkbenchIpcContract.test.ts ./test/videoWorkbenchRenderer.test.ts ./test/videoWorkbenchRepository.test.ts
+bun run test:video
 bun run typecheck:server
 bun run audit:source
 bun run check:desktop
@@ -51,6 +51,8 @@ bun run check:electron
 # 仅在运维明确授权时，由既有发布流程构建视频相关安装包和 Relay 镜像。
 # 不在这里执行 electron:package、真实 Provider smoke 或跨平台远程构建。
 ```
+
+当前分支的 Gate 5/6 回归以服务端/Relay/API/IPC contract 为准：它覆盖交付意图、范围决定、分层规划、Quick Create Draft、Proposal CommandSet 接受和幂等重放。它不是已完成的桌面安装包旅程证据；在共享 Electron 集成完成并由受控环境提供安装包后，仍须执行下面的真实 Renderer smoke。
 
 ## 受控 Smoke 矩阵
 

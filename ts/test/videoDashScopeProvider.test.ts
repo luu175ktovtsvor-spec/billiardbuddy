@@ -10,6 +10,7 @@ function captionTranslationRequest() {
     local_operation_id: 'task_caption_translation_0001',
     consent_revision_id: 'consent_caption_translation_0001',
     consent_scope_hash: hash,
+    remote_consent_claim: 'aaaaaaaaaaaaaaaa.bbbbbbbbbbbbbbbb',
     local_budget_reservation_id: 'budget_caption_translation_0001',
     request_hash: hash,
     capability: 'media_reasoning' as const,
@@ -34,8 +35,8 @@ test('DashScope video provider pins Qwen planning and 768-dimensional embedding 
   const calls: Array<{ url: string; body: Record<string, unknown> }> = []
   const provider = new DashScopeVideoProvider({ apiKey: 'key', now: () => new Date('2026-08-03T00:00:00.000Z'), fetchImpl: async (url, init) => {
     const body = JSON.parse(String(init?.body)) as Record<string, unknown>; calls.push({ url: String(url), body })
-    if (String(url).endsWith('/embeddings')) return Response.json({ data: [{ embedding: Array.from({ length: 768 }, () => 0.25) }], usage: { total_tokens: 3 } })
-    return Response.json({ choices: [{ message: { content: JSON.stringify({ brief: { content_type: '片段' }, scenes: [] }) } }], usage: { total_tokens: 5 } })
+    if (String(url).endsWith('/embeddings')) return Response.json({ data: [{ embedding: Array.from({ length: 768 }, () => 0.25) }], usage: { total_tokens: 3, total_fee: 0.000003 } })
+    return Response.json({ choices: [{ message: { content: JSON.stringify({ brief: { content_type: '片段' }, scenes: [] }) } }], usage: { total_tokens: 5, total_fee: 0.000005 } })
   } })
   const embedding = await provider.execute({ local_operation_id: 'task_12345678', consent_revision_id: 'consent_12345678', consent_scope_hash: hash, local_budget_reservation_id: 'budget_12345678', request_hash: hash, capability: 'semantic_embedding', application_role: 'search_index', input: { embedding_role: 'document', items: [{ id: 'fact_12345678', text: '球桌边库' }], model: 'text-embedding-v4', dimension: 768, instruction_version: 'v1' } }, identity)
   expect(embedding.receipt).toMatchObject({ model_snapshot: 'text-embedding-v4', region: 'cn-beijing' })
@@ -76,7 +77,7 @@ test('字幕翻译 Relay 契约只接受文本 Cue，并用专门提示和严格
       return Response.json({ choices: [{ message: { content: JSON.stringify({
         kind: 'caption_translation',
         translations: [{ cue_id: request.input.evidence[0]!.id, text: 'First subtitle' }],
-      }) } }], usage: { total_tokens: 7 } })
+      }) } }], usage: { total_tokens: 7, total_fee: 0.000007 } })
     },
   })
   const translated = await provider.execute(request, identity)
@@ -119,6 +120,50 @@ test('DashScope receipt uses upstream usage and immutable uploaded-object bytes'
   expect(result.receipt.upstream_receipt_hash).toMatch(/^sha256:/)
 })
 
+test('DashScope 不会把缺失的上游价格折叠为零费用回执', async () => {
+  const request = {
+    local_operation_id: 'task_price_receipt_0001',
+    consent_revision_id: 'consent_price_receipt_0001',
+    consent_scope_hash: hash,
+    local_budget_reservation_id: 'budget_price_receipt_0001',
+    request_hash: hash,
+    capability: 'semantic_embedding' as const,
+    application_role: 'search_index' as const,
+    input: {
+      embedding_role: 'document' as const,
+      items: [{ id: 'fact_price_receipt_0001', text: '价格回执' }],
+      model: 'text-embedding-v4' as const,
+      dimension: 768 as const,
+      instruction_version: 'v1',
+    },
+  }
+  const missingPrice = new DashScopeVideoProvider({
+    apiKey: 'key',
+    fetchImpl: async () => Response.json({
+      data: [{ embedding: Array.from({ length: 768 }, () => 0.25) }],
+      usage: { total_tokens: 3 },
+    }),
+  })
+  await expect(missingPrice.execute(request, identity)).rejects.toMatchObject({
+    status: 503,
+    code: 'provider_usage_amount_missing',
+  })
+
+  // A provider-reported zero is distinct from an omitted price and remains a
+  // verifiable free/promotional invocation.
+  const reportedZero = new DashScopeVideoProvider({
+    apiKey: 'key',
+    fetchImpl: async () => Response.json({
+      data: [{ embedding: Array.from({ length: 768 }, () => 0.25) }],
+      usage: { total_tokens: 3, total_fee: 0 },
+    }),
+  })
+  await expect(reportedZero.execute(request, identity)).resolves.toMatchObject({
+    state: 'succeeded',
+    receipt: { usage: { estimated_amount_micros: 0 } },
+  })
+})
+
 test('DashScope Fun-ASR long task submits once and polls a persisted task id', async () => {
   const calls: string[] = []
   let transcriptionRequest: RequestInit | undefined
@@ -126,7 +171,7 @@ test('DashScope Fun-ASR long task submits once and polls a persisted task id', a
     calls.push(`${init?.method ?? 'GET'} ${String(url)}`)
     if (init?.method === 'POST') return Response.json({ output: { task_id: 'task-remote-1' } })
     if (String(url).startsWith('https://dashscope-result-bj.oss-cn-beijing.aliyuncs.com/')) { transcriptionRequest = init; return Response.json({ transcripts: [{ text: '长文件转写', sentences: [{ text: '长文件转写', begin_time: 0, end_time: 1000, words: [{ text: '长', begin_time: 0, end_time: 300 }] }] }] }) }
-    return Response.json({ output: { task_status: 'SUCCEEDED', results: [{ transcription_url: 'https://dashscope-result-bj.oss-cn-beijing.aliyuncs.com/transcript.json' }] } })
+    return Response.json({ output: { task_status: 'SUCCEEDED', results: [{ transcription_url: 'https://dashscope-result-bj.oss-cn-beijing.aliyuncs.com/transcript.json' }] }, usage: { total_fee: 0.000008 } })
   } })
   const input = { local_operation_id: 'task_12345678', consent_revision_id: 'consent_12345678', consent_scope_hash: hash, local_budget_reservation_id: 'budget_12345678', request_hash: hash, capability: 'speech_transcription' as const, application_role: 'asr' as const, input: { mode: 'long_async' as const, audio_object_ref: 'object_12345678', source_offset: { ticks: '0', tick_rate: { num: 1000, den: 1 } }, hotwords: ['开球'], speaker_diarization: true, sentence_timestamps: true as const, word_timestamps: true as const } }
   const accepted: Array<{ provider_task_id: string; receipt_id: string }> = []

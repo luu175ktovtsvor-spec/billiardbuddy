@@ -22,6 +22,9 @@ function requiredInteger(env: Environment, name: string, min: number, max: numbe
 }
 export function validateVideoMediaRelayEnvironment(env: Environment): void {
   requireValue(env, 'VIDEO_MEDIA_GATEWAY_INTROSPECTION_TOKEN', 32)
+  // Separate Sidecar-to-Relay authority. It must never be substituted with a
+  // Gateway bearer, OSS credential, or Provider key.
+  requireValue(env, 'VIDEO_MEDIA_REMOTE_CONSENT_SIGNING_KEY', 32)
   const base = requireValue(env, 'VIDEO_MEDIA_GATEWAY_INTROSPECTION_BASE')
   const url = new URL(base)
   if (!((url.protocol === 'http:' && url.hostname === 'gateway' && (!url.port || url.port === '8799')) || url.protocol === 'https:')) fail('VIDEO_MEDIA_GATEWAY_INTROSPECTION_BASE must be the private gateway service or HTTPS')

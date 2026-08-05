@@ -2,7 +2,7 @@
 // closure currently lives under ts/. Keep the contract source shared without
 // making the Relay resolve through a project-local filesystem at runtime.
 import { z } from '../../ts/node_modules/zod/v4'
-import { createHash } from 'node:crypto'
+import { createHash, createHmac, timingSafeEqual } from 'node:crypto'
 
 /**
  * The only wire contract shared by the Video Sidecar and Video Media Relay.
@@ -33,6 +33,96 @@ const opaqueId = z.string().regex(/^[a-z][a-z0-9_]{7,127}$/)
 const iso = z.string().datetime({ offset: true })
 const sourceTime = z.object({ ticks: z.string().regex(/^-?(?:0|[1-9]\d*)$/), tick_rate: z.object({ num: z.number().int().positive(), den: z.number().int().positive() }) })
 
+/**
+ * A Relay never has the Project database, so an authenticated desktop bearer
+ * alone cannot prove that a local RemoteAnalysisConsent authorized this exact
+ * remote call.  The Sidecar therefore signs this short-lived, least-privilege
+ * envelope with its separately configured consent-issuer secret.  Relay
+ * independently verifies the signature and binds its token fingerprint to the
+ * bearer it just introspected through Gateway.
+ *
+ * The compact form deliberately contains no bearer, path, provider key or
+ * object URL.  A fresh claim may be attached to an idempotent replay: it is an
+ * authorization envelope, not part of the logical paid request hash.
+ */
+export const VIDEO_REMOTE_CONSENT_CLAIM_MAX_TTL_MS = 5 * 60_000
+export const videoRemoteConsentPurposeSchema = z.enum([
+  'visual_evidence',
+  'planning',
+  'caption_translation',
+  'asr',
+  'semantic_search',
+])
+export type VideoRemoteConsentPurpose = z.infer<typeof videoRemoteConsentPurposeSchema>
+
+export const videoRemoteConsentClaimPayloadSchema = z.object({
+  v: z.literal(1),
+  identity_token_hash: hash,
+  project_id: opaqueId,
+  /** A deterministic, non-empty source set makes project-wide planning
+   * explicit rather than silently unscoped. */
+  source_ids: z.array(opaqueId).min(1).max(64)
+    .refine(value => new Set(value).size === value.length, { message: 'remote_consent_source_ids_duplicate' })
+    .refine(value => value.every((item, index) => index === 0 || value[index - 1]! < item), { message: 'remote_consent_source_ids_not_sorted' }),
+  purpose: videoRemoteConsentPurposeSchema,
+  consent_revision_id: opaqueId,
+  consent_scope_hash: hash,
+  region: z.literal('cn-beijing'),
+  issued_at: z.number().int().nonnegative(),
+  expires_at: z.number().int().positive(),
+}).strict()
+export type VideoRemoteConsentClaimPayload = z.infer<typeof videoRemoteConsentClaimPayloadSchema>
+
+/** A compact JWS-like value without algorithm negotiation: HMAC-SHA-256 is
+ * fixed by this private Sidecar-to-Relay contract. */
+export const videoRemoteConsentClaimSchema = z.string()
+  .regex(/^[A-Za-z0-9_-]{16,8192}\.[A-Za-z0-9_-]{16,128}$/)
+
+function stableJson(item: unknown): string {
+  if (Array.isArray(item)) return `[${item.map(stableJson).join(',')}]`
+  if (item && typeof item === 'object') return `{${Object.keys(item as Record<string, unknown>).sort().map(key => `${JSON.stringify(key)}:${stableJson((item as Record<string, unknown>)[key])}`).join(',')}}`
+  return JSON.stringify(item)
+}
+
+export function installationAccessTokenHash(accessToken: string): `sha256:${string}` {
+  return `sha256:${createHash('sha256').update(accessToken).digest('hex')}`
+}
+
+export function issueVideoRemoteConsentClaim(
+  payload: VideoRemoteConsentClaimPayload,
+  signingKey: string,
+): string {
+  const parsed = videoRemoteConsentClaimPayloadSchema.parse(payload)
+  if (signingKey.trim().length < 32) throw new Error('remote consent signing key must be at least 32 characters')
+  const encoded = Buffer.from(stableJson(parsed)).toString('base64url')
+  const signature = createHmac('sha256', signingKey).update(encoded).digest('base64url')
+  return `${encoded}.${signature}`
+}
+
+/** `null` is intentionally non-diagnostic: callers turn every malformed,
+ * forged, future or expired envelope into the same safe Relay error. */
+export function verifyVideoRemoteConsentClaim(
+  claim: string,
+  signingKey: string,
+  now: number,
+): VideoRemoteConsentClaimPayload | null {
+  if (signingKey.trim().length < 32) return null
+  if (!videoRemoteConsentClaimSchema.safeParse(claim).success) return null
+  const [encoded, signature, extra] = claim.split('.')
+  if (!encoded || !signature || extra !== undefined) return null
+  const expected = createHmac('sha256', signingKey).update(encoded).digest()
+  let presented: Buffer
+  try { presented = Buffer.from(signature, 'base64url') } catch { return null }
+  if (presented.byteLength !== expected.byteLength || !timingSafeEqual(presented, expected)) return null
+  let payload: unknown
+  try { payload = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8')) } catch { return null }
+  const parsed = videoRemoteConsentClaimPayloadSchema.safeParse(payload)
+  if (!parsed.success) return null
+  const value = parsed.data
+  if (value.issued_at > now || value.expires_at <= now || value.expires_at - value.issued_at > VIDEO_REMOTE_CONSENT_CLAIM_MAX_TTL_MS) return null
+  return value
+}
+
 export const createMediaObjectLeaseRequestSchema = z.object({
   local_operation_id: opaqueId,
   purpose: z.enum(['visual_frames', 'proxy_video', 'audio_for_asr', 'transcript_for_reasoning']),
@@ -41,6 +131,7 @@ export const createMediaObjectLeaseRequestSchema = z.object({
   content_type: z.string().min(3).max(160),
   consent_revision_id: opaqueId,
   consent_scope_hash: hash,
+  remote_consent_claim: videoRemoteConsentClaimSchema,
 }).strict()
 export type CreateMediaObjectLeaseRequest = z.infer<typeof createMediaObjectLeaseRequestSchema>
 
@@ -81,6 +172,7 @@ const operationBase = z.object({
   local_operation_id: opaqueId,
   consent_revision_id: opaqueId,
   consent_scope_hash: hash,
+  remote_consent_claim: videoRemoteConsentClaimSchema,
   local_budget_reservation_id: opaqueId,
   request_hash: hash,
 })
@@ -166,10 +258,11 @@ export type VideoRelayOperationProjection = z.infer<typeof videoRelayOperationPr
 
 export const operationAcknowledgementSchema = z.object({ result_hashes: z.array(hash).max(64), receipt_id: opaqueId }).strict()
 export function canonicalRelayRequestHash(value: unknown): `sha256:${string}` {
-  const stable = (item: unknown): string => {
-    if (Array.isArray(item)) return `[${item.map(stable).join(',')}]`
-    if (item && typeof item === 'object') return `{${Object.keys(item as Record<string, unknown>).sort().map(key => `${JSON.stringify(key)}:${stable((item as Record<string, unknown>)[key])}`).join(',')}}`
-    return JSON.stringify(item)
-  }
-  return `sha256:${createHash('sha256').update(stable(value)).digest('hex')}`
+  // Credentials rotate faster than a durable idempotency fence.  Deliberately
+  // exclude only this signed authorization envelope so a restarted Sidecar
+  // can prove the same logical request with a fresh short-lived claim.
+  const logical = value && typeof value === 'object' && !Array.isArray(value)
+    ? Object.fromEntries(Object.entries(value as Record<string, unknown>).filter(([key]) => key !== 'remote_consent_claim'))
+    : value
+  return `sha256:${createHash('sha256').update(stableJson(logical)).digest('hex')}`
 }

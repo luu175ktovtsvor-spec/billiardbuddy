@@ -1019,3 +1019,234 @@ test('编辑 API 拒绝越界素材与锁定目标轨道，旧 Timeline Preview/
   expect(render.status).toBe(404)
   service.repository.close()
 })
+
+test('交付意图、范围、分层规划和创作 Proposal 只经 Editorial API 持久化，接受时才生成可重放 CommandSet 版本', async () => {
+  const root = await testRoot('delivery-intent-creative-api')
+  const sourcePath = join(root, 'source.mp4')
+  await writeFile(sourcePath, 'creative-planning-source')
+  const service = new VideoWorkbenchService({ root, now: () => new Date(at), platform: 'linux' })
+  const created = await service.createProject({ title: '创作规划 API' })
+  const fingerprint = await videoFingerprint(sourcePath)
+  const identity = await fastVideoIdentity(sourcePath)
+  const timeBase = mediaTimeBase(1, 1_000)
+  const tickRate = tickRateForTimeBase(timeBase)
+  const sourceId = 'src_00000091'
+  await service.repository.saveFact({
+    id: sourceId,
+    project_id: created.id,
+    path: sourcePath,
+    name: 'source.mp4',
+    fast_identity: identity,
+    fingerprint,
+    fingerprint_state: 'ready',
+    primary_video_stream: {
+      stream_index: 0,
+      time_base: timeBase,
+      start_time: rationalTime('0', tickRate),
+      duration: rationalTime('10000', tickRate),
+      codec: 'h264',
+      width: 1920,
+      height: 1080,
+      rotation: 0,
+      ...sdrVideoColor(),
+      variable_frame_rate: false,
+    },
+    presentation_duration: rationalTime('20000', tickRate),
+    audio_tracks: [],
+    state: 'ready',
+    created_at: at,
+    updated_at: at,
+  })
+  await service.repository.saveProject({
+    ...created,
+    state: 'ready',
+    revision: 1,
+    sources: [{
+      id: sourceId,
+      path: sourcePath,
+      name: 'source.mp4',
+      duration_ms: 20_000,
+      width: 1920,
+      height: 1080,
+      fps: 30,
+      has_audio: false,
+      fingerprint,
+      rotation: 0,
+      video_stream_count: 1,
+      audio_stream_count: 0,
+      missing: false,
+      content_changed: false,
+    }],
+    timeline: [{ id: 'clip_00000091', source_id: sourceId, in_ms: 0, out_ms: 10_000 }],
+  })
+  await service.repository.saveFact({
+    id: 'segment_00000091',
+    project_id: created.id,
+    source_id: sourceId,
+    source_fingerprint: fingerprint,
+    range: { start: rationalTime('0', tickRate), duration: rationalTime('10000', tickRate) },
+    camera_shot_ids: [],
+    segmentation_source: 'manual',
+    created_at: at,
+  })
+  await expect(service.getEditorialTimeline(created.id, 'timeline_missing')).rejects.toMatchObject({ code: 'VIDEO_TIMELINE_MISSING' })
+  const capability = 'capability_0123456789abcdef0123456789'
+  const handler = createVideoWorkbenchDomainApiHandler(service, capability)
+  const request = async (url: URL, init: RequestInit = {}) => {
+    const headers = new Headers(init.headers)
+    headers.set(MEDIA_UI_CAPABILITY_HEADER, capability)
+    return await handler(new Request(url, { ...init, headers }), url, requestSegments(url))
+  }
+
+  let project = await service.getProject(created.id)
+  const intentUrl = new URL(`http://localhost/api/videos/projects/${created.id}/delivery-intent`)
+  const intentResponse = await request(intentUrl, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      base_revision: project.revision,
+      goal: '保留完整的一次击球过程',
+      duration_mode: 'natural',
+      coverage_preference: 'complete_when_feasible',
+      editing_strategy: 'manual',
+    }),
+  })
+  expect(intentResponse.status).toBe(200)
+  expect(await intentResponse.json()).toMatchObject({ intent: { duration_mode: 'natural' }, feasibility: { fit_status: 'fit' } })
+
+  project = await service.getProject(created.id)
+  const outOfPrimary = await request(new URL(`http://localhost/api/videos/projects/${created.id}/range-decisions`), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Idempotency-Key': 'range-decision-invalid-0001' },
+    body: JSON.stringify({
+      base_revision: project.revision,
+      source_id: sourceId,
+      source_fingerprint: fingerprint,
+      range: { start: rationalTime('10000', tickRate), duration: rationalTime('1', tickRate) },
+      decision: 'pick',
+    }),
+  })
+  expect(outOfPrimary.status).toBe(400)
+
+  const decision = await request(new URL(`http://localhost/api/videos/projects/${created.id}/range-decisions`), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Idempotency-Key': 'range-decision-required-0001' },
+    body: JSON.stringify({
+      base_revision: project.revision,
+      source_id: sourceId,
+      source_fingerprint: fingerprint,
+      range: { start: rationalTime('0', tickRate), duration: rationalTime('10000', tickRate) },
+      decision: 'required',
+    }),
+  })
+  expect(decision.status).toBe(201)
+
+  project = await service.getProject(created.id)
+  const plansBody = { base_revision: project.revision }
+  const plansResponse = await request(new URL(`http://localhost/api/videos/projects/${created.id}/editorial-plans`), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Idempotency-Key': 'editorial-plans-api-key-0001' },
+    body: JSON.stringify(plansBody),
+  })
+  expect(plansResponse.status).toBe(201)
+  expect((await plansResponse.json() as { plans: Array<{ kind: string }> }).plans.map(plan => plan.kind)).toEqual(['outline', 'chapter', 'global_review'])
+  const plansReplay = await request(new URL(`http://localhost/api/videos/projects/${created.id}/editorial-plans`), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Idempotency-Key': 'editorial-plans-api-key-0001' },
+    body: JSON.stringify(plansBody),
+  })
+  expect(plansReplay.status).toBe(200)
+  expect(await plansReplay.json()).toMatchObject({ reused: true, plans: [{ kind: 'outline' }, { kind: 'chapter' }, { kind: 'global_review' }] })
+
+  project = await service.getProject(created.id)
+  const beforeQuickCreateTimeline = project.current_editorial_timeline_version_id
+  const beforeQuickCreateVersions = project.editorial_timeline_versions.length
+  const quickCreateUrl = new URL(`http://localhost/api/videos/projects/${created.id}/quick-create`)
+  const quickCreateBody = { base_revision: project.revision, max_candidates: 3 }
+  const quickCreated = await request(quickCreateUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Idempotency-Key': 'quick-create-api-key-0001' },
+    body: JSON.stringify(quickCreateBody),
+  })
+  expect(quickCreated.status).toBe(201)
+  const quickCreate = await quickCreated.json() as { batch: { candidates: Array<{ draft_id: string }>; explanation: string }; drafts: Array<{ id: string; status: string }>; reused: boolean }
+  expect(quickCreate).toMatchObject({ reused: false, drafts: [{ status: 'proposed' }] })
+  expect(quickCreate.batch.candidates).toHaveLength(1)
+  expect(quickCreate.batch.explanation).toContain('一个保守候选')
+  const afterQuickCreate = await service.getProject(created.id)
+  expect(afterQuickCreate.current_editorial_timeline_version_id).toBe(beforeQuickCreateTimeline)
+  expect(afterQuickCreate.editorial_timeline_versions).toHaveLength(beforeQuickCreateVersions)
+  const quickReplay = await request(quickCreateUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Idempotency-Key': 'quick-create-api-key-0001' },
+    body: JSON.stringify(quickCreateBody),
+  })
+  expect(quickReplay.status).toBe(200)
+  expect(await quickReplay.json()).toMatchObject({ reused: true, drafts: [{ id: quickCreate.drafts[0]!.id }] })
+
+  const sessionResponse = await request(new URL(`http://localhost/api/videos/projects/${created.id}/creative-sessions`), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Idempotency-Key': 'creative-session-api-key-0001' },
+    body: JSON.stringify({ title: '手动调整建议' }),
+  })
+  expect(sessionResponse.status).toBe(201)
+  const session = await sessionResponse.json() as { session: { id: string } }
+  project = await service.getProject(created.id)
+  const beforeTimeline = project.current_editorial_timeline_version_id!
+  const beforeVersions = project.editorial_timeline_versions.length
+  const timeline = project.editorial_timeline_versions.find(item => item.id === beforeTimeline)!
+  const proposalResponse = await request(new URL(`http://localhost/api/videos/projects/${created.id}/creative-sessions/${session.session.id}/messages`), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Idempotency-Key': 'creative-message-api-key-0001' },
+    body: JSON.stringify({
+      text: '给这个片段增加人工锁定',
+      anchors: [{ kind: 'content_segment', content_segment_id: 'segment_00000091' }],
+      proposal: {
+        kind: 'timeline_patch',
+        summary: '锁定视频轨道',
+        rationale: ['保留用户确认的镜头结构'],
+        proposed_command_set: {
+          id: 'command_00000091',
+          project_id: created.id,
+          actor_id: 'video-owner',
+          idempotency_key: 'proposal-template-command-0001',
+          created_at: at,
+          target: { kind: 'editorial', base_timeline_version_id: timeline.id },
+          commands: [{ kind: 'set_track_state', track_id: timeline.tracks.find(track => track.kind === 'primary_video')!.id, locked: true }],
+        },
+      },
+    }),
+  })
+  expect(proposalResponse.status).toBe(201)
+  const proposal = await proposalResponse.json() as { proposal: { id: string; status: string } }
+  expect(proposal.proposal.status).toBe('proposed')
+  const afterProposal = await service.getProject(created.id)
+  expect(afterProposal.current_editorial_timeline_version_id).toBe(beforeTimeline)
+  expect(afterProposal.editorial_timeline_versions).toHaveLength(beforeVersions)
+
+  const acceptUrl = new URL(`http://localhost/api/videos/projects/${created.id}/creative-proposals/${proposal.proposal.id}/accept`)
+  const acceptBody = { base_revision: afterProposal.revision }
+  const accepted = await request(acceptUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Idempotency-Key': 'creative-proposal-accept-0001' },
+    body: JSON.stringify(acceptBody),
+  })
+  expect(accepted.status).toBe(200)
+  const acceptedBody = await accepted.json() as { timeline: { id: string; parent_version_id: string }; proposal: { status: string }; reused: boolean }
+  expect(acceptedBody).toMatchObject({ proposal: { status: 'accepted' }, reused: false, timeline: { parent_version_id: beforeTimeline } })
+
+  const replay = await request(acceptUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Idempotency-Key': 'creative-proposal-accept-0001' },
+    body: JSON.stringify(acceptBody),
+  })
+  expect(replay.status).toBe(200)
+  expect(await replay.json()).toMatchObject({ reused: true, timeline: { id: acceptedBody.timeline.id }, proposal: { status: 'accepted' } })
+  const differentReplay = await request(acceptUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Idempotency-Key': 'creative-proposal-accept-other-0001' },
+    body: JSON.stringify(acceptBody),
+  })
+  expect(differentReplay.status).toBe(409)
+  service.repository.close()
+})

@@ -19,6 +19,10 @@ import {
   applyEditorialTimelineCommandsInputSchema,
   analyzeVideoProjectInputSchema,
   applyVideoAlternativeInputSchema,
+  acceptVideoCreativeProposalInputSchema,
+  createVideoCreativeSessionInputSchema,
+  createVideoEditorialPlanInputSchema,
+  createVideoSourceRangeDecisionInputSchema,
   createDeliveryVariantInputSchema,
   createVideoProjectInputSchema,
   createRemoteAnalysisConsentInputSchema,
@@ -49,6 +53,17 @@ import {
   editorialTimelineVersionSchema,
   timelineDraftSchema,
   updateVideoTimelineInputSchema,
+  upsertVideoDeliveryIntentInputSchema,
+  postVideoCreativeMessageInputSchema,
+  quickCreateVideoInputSchema,
+  videoCreativeProposalSchema,
+  videoCreativeResponseSchema,
+  videoCreativeSessionSchema,
+  videoDeliveryIntentSchema,
+  videoDurationFeasibilitySchema,
+  videoEditorialPlanSchema,
+  videoSourceRangeDecisionSchema,
+  videoQuickCreateBatchSchema,
   type PublicMediaTask,
   type PublicVideoStudioProject,
   type VideoStudioProject,
@@ -381,6 +396,123 @@ export function createVideoWorkbenchApiHandler(
             requireIdempotencyKey(req),
           )
           return Response.json({ project: publicVideoProject(result.project), timeline: editorialTimelineVersionSchema.parse(result.version), reused: result.reused })
+        }
+        throw methodNotAllowed(req.method)
+      }
+      if (action === 'delivery-intent') {
+        if (req.method !== 'PUT' || segments[6]) throw methodNotAllowed(req.method)
+        const result = await service.updateDeliveryIntent(
+          projectId,
+          upsertVideoDeliveryIntentInputSchema.parse(await parseJson(req)),
+        )
+        return Response.json({
+          project: publicVideoProject(result.project),
+          intent: videoDeliveryIntentSchema.parse(result.intent),
+          feasibility: videoDurationFeasibilitySchema.parse(result.feasibility),
+        })
+      }
+      if (action === 'duration-feasibility') {
+        if (req.method !== 'GET' || segments[6]) throw methodNotAllowed(req.method)
+        return Response.json({ feasibility: videoDurationFeasibilitySchema.parse(await service.getDurationFeasibility(projectId)) })
+      }
+      if (action === 'range-decisions') {
+        if (req.method !== 'POST' || segments[6]) throw methodNotAllowed(req.method)
+        const result = await service.createSourceRangeDecision(
+          projectId,
+          createVideoSourceRangeDecisionInputSchema.parse(await parseJson(req)),
+          requireIdempotencyKey(req),
+        )
+        return Response.json({
+          project: publicVideoProject(result.project),
+          decision: videoSourceRangeDecisionSchema.parse(result.decision),
+          ...(result.feasibility ? { feasibility: videoDurationFeasibilitySchema.parse(result.feasibility) } : {}),
+          reused: result.reused,
+        }, { status: result.reused ? 200 : 201 })
+      }
+      if (action === 'editorial-plans') {
+        if (req.method !== 'POST' || segments[6]) throw methodNotAllowed(req.method)
+        const result = await service.createEditorialPlans(
+          projectId,
+          createVideoEditorialPlanInputSchema.parse(await parseJson(req)),
+          requireIdempotencyKey(req),
+        )
+        return Response.json({
+          project: publicVideoProject(result.project),
+          plans: result.plans.map(plan => videoEditorialPlanSchema.parse(plan)),
+          feasibility: videoDurationFeasibilitySchema.parse(result.feasibility),
+          reused: result.reused,
+        }, { status: result.reused ? 200 : 201 })
+      }
+      if (action === 'quick-create') {
+        if (req.method !== 'POST' || segments[6]) throw methodNotAllowed(req.method)
+        const result = await service.quickCreate(
+          projectId,
+          quickCreateVideoInputSchema.parse(await parseJson(req)),
+          requireIdempotencyKey(req),
+        )
+        return Response.json({
+          project: publicVideoProject(result.project),
+          batch: videoQuickCreateBatchSchema.parse(result.batch),
+          drafts: result.drafts.map(draft => timelineDraftSchema.parse(draft)),
+          reused: result.reused,
+        }, { status: result.reused ? 200 : 201 })
+      }
+      if (action === 'creative-sessions') {
+        const sessionId = segments[6]
+        if (!sessionId) {
+          if (req.method !== 'POST') throw methodNotAllowed(req.method)
+          const result = await service.createCreativeSession(
+            projectId,
+            createVideoCreativeSessionInputSchema.parse(await parseJson(req)),
+            requireIdempotencyKey(req),
+          )
+          return Response.json({ project: publicVideoProject(result.project), session: videoCreativeSessionSchema.parse(result.session), reused: result.reused }, { status: result.reused ? 200 : 201 })
+        }
+        if (segments[7] === 'messages' && !segments[8]) {
+          if (req.method !== 'POST') throw methodNotAllowed(req.method)
+          const result = await service.postCreativeMessage(
+            projectId,
+            sessionId,
+            postVideoCreativeMessageInputSchema.parse(await parseJson(req)),
+            requireIdempotencyKey(req),
+          )
+          return Response.json({
+            project: publicVideoProject(result.project),
+            response: videoCreativeResponseSchema.parse(result.response),
+            ...(result.proposal ? { proposal: videoCreativeProposalSchema.parse(result.proposal) } : {}),
+            reused: result.reused,
+          }, { status: result.reused ? 200 : 201 })
+        }
+        throw methodNotAllowed(req.method)
+      }
+      if (action === 'creative-proposals') {
+        const proposalId = segments[6]
+        if (!proposalId) throw ApiError.badRequest('缺少创作 Proposal ID')
+        if (!segments[7]) {
+          if (req.method !== 'GET') throw methodNotAllowed(req.method)
+          return Response.json({ proposal: videoCreativeProposalSchema.parse(await service.getCreativeProposal(projectId, proposalId)) })
+        }
+        if (segments[7] === 'accept' && !segments[8]) {
+          if (req.method !== 'POST') throw methodNotAllowed(req.method)
+          const result = await service.acceptCreativeProposal(
+            projectId,
+            proposalId,
+            acceptVideoCreativeProposalInputSchema.parse(await parseJson(req)),
+            requireIdempotencyKey(req),
+          )
+          return Response.json({
+            project: publicVideoProject(result.project),
+            proposal: videoCreativeProposalSchema.parse(result.proposal),
+            ...(result.version && 'tracks' in result.version
+              ? { timeline: editorialTimelineVersionSchema.parse(result.version) }
+              : { variant_version: deliveryVariantVersionSchema.parse(result.version) }),
+            reused: result.reused,
+          })
+        }
+        if (segments[7] === 'reject' && !segments[8]) {
+          if (req.method !== 'POST') throw methodNotAllowed(req.method)
+          const result = await service.rejectCreativeProposal(projectId, proposalId, requireIdempotencyKey(req))
+          return Response.json({ project: publicVideoProject(result.project), proposal: videoCreativeProposalSchema.parse(result.proposal), reused: result.reused })
         }
         throw methodNotAllowed(req.method)
       }

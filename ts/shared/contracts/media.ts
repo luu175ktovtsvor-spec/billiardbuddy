@@ -881,6 +881,261 @@ export const timelineCommandSetSchema = z.union([
   }),
 ])
 
+/** A curation decision is anchored to immutable source time. It can narrow a
+ * later plan, but never writes a Timeline by itself. */
+export const videoSourceRangeDecisionSchema = z.object({
+  id: mediaIdSchema,
+  project_id: mediaIdSchema,
+  source_id: mediaIdSchema,
+  source_fingerprint: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+  range: videoSourceTimeRangeSchema,
+  decision: z.enum(['required', 'pick', 'maybe', 'reject']),
+  reason: z.string().trim().min(1).max(2_000).optional(),
+  created_at: mediaIsoDateSchema,
+  updated_at: mediaIsoDateSchema,
+})
+
+const videoDeliveryIntentFieldsSchema = z.object({
+  goal: z.string().trim().min(1).max(8_000),
+  duration_mode: z.enum(['natural', 'target', 'exact']),
+  target_duration: videoRationalTimeSchema.optional(),
+  target_min_duration: videoRationalTimeSchema.optional(),
+  target_max_duration: videoRationalTimeSchema.optional(),
+  exact_tolerance: videoRationalTimeSchema.optional(),
+  coverage_preference: z.enum(['highlights', 'balanced', 'complete_when_feasible']),
+  editing_strategy: z.enum(['manual', 'speech_story', 'highlights', 'beat_sync', 'mixed']),
+})
+
+function validateVideoDeliveryIntent(
+  value: z.infer<typeof videoDeliveryIntentFieldsSchema>,
+  context: z.RefinementCtx,
+): void {
+  const hasTargetRange = Boolean(value.target_min_duration || value.target_max_duration)
+  if (value.duration_mode === 'natural') {
+    if (value.target_duration || hasTargetRange || value.exact_tolerance) {
+      context.addIssue({ code: 'custom', message: 'natural 时长不能伪造目标时长' })
+    }
+    return
+  }
+  if (value.duration_mode === 'target') {
+    if (!value.target_duration && !hasTargetRange) {
+      context.addIssue({ code: 'custom', message: 'target 时长必须给出目标或目标范围' })
+    }
+    if (value.exact_tolerance) context.addIssue({ code: 'custom', message: 'target 时长不能带 exact_tolerance' })
+    return
+  }
+  if (!value.target_duration || !value.exact_tolerance) {
+    context.addIssue({ code: 'custom', message: 'exact 时长必须给出目标和容差' })
+  }
+  if (hasTargetRange) context.addIssue({ code: 'custom', message: 'exact 时长不能混用目标范围' })
+}
+
+export const videoDeliveryIntentSchema = videoDeliveryIntentFieldsSchema.extend({
+  id: mediaIdSchema,
+  project_id: mediaIdSchema,
+  revision: z.number().int().positive(),
+  created_at: mediaIsoDateSchema,
+  updated_at: mediaIsoDateSchema,
+}).superRefine(validateVideoDeliveryIntent)
+
+export const videoDurationFeasibilitySchema = z.object({
+  id: mediaIdSchema,
+  project_id: mediaIdSchema,
+  intent_revision: z.number().int().positive(),
+  facts_basis_hash: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+  natural_duration_range: z.object({ min: videoRationalTimeSchema, max: videoRationalTimeSchema }),
+  recommended_variants: z.array(z.object({
+    id: mediaIdSchema,
+    label: z.string().trim().min(1).max(160),
+    estimated_duration: videoRationalTimeSchema,
+    coverage: z.enum(['highlights', 'balanced', 'complete_when_feasible']),
+    included_segment_ids: z.array(mediaIdSchema).max(2_000),
+    omissions: z.array(z.object({ target_id: mediaIdSchema, reason: z.string().trim().min(1).max(1_000) })).max(2_000),
+  })).max(3),
+  fit_status: z.enum(['fit', 'insufficient_material', 'excess_material', 'required_conflict']),
+  warnings: z.array(z.string().trim().min(1).max(1_000)).max(200),
+  created_at: mediaIsoDateSchema,
+})
+
+const videoPlanBaseSchema = z.object({
+  id: mediaIdSchema,
+  project_id: mediaIdSchema,
+  project_revision: z.number().int().nonnegative(),
+  facts_basis_hash: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+  delivery_intent_id: mediaIdSchema,
+  intent_revision: z.number().int().positive(),
+  /** A remote plan is auditable by its immutable receipt. A conservative
+   * local fallback explicitly carries no receipt and cannot claim remote
+   * understanding. */
+  origin: z.enum(['provider', 'local_conservative']),
+  provider_receipt_ids: z.array(mediaIdSchema).max(64),
+  target_duration: videoRationalTimeSchema.optional(),
+  created_at: mediaIsoDateSchema,
+})
+
+export const videoEditorialPlanSchema = z.discriminatedUnion('kind', [
+  videoPlanBaseSchema.extend({
+    kind: z.literal('outline'),
+    chapters: z.array(z.object({
+      id: mediaIdSchema,
+      label: z.string().trim().min(1).max(300),
+      segment_ids: z.array(mediaIdSchema).max(2_000),
+      evidence_ids: z.array(mediaIdSchema).max(2_000),
+      target_duration: videoRationalTimeSchema.optional(),
+    })).min(1).max(200),
+  }),
+  videoPlanBaseSchema.extend({
+    kind: z.literal('chapter'),
+    outline_plan_id: mediaIdSchema,
+    chapter_id: mediaIdSchema,
+    candidate_segment_ids: z.array(mediaIdSchema).max(2_000),
+    omissions: z.array(z.object({ target_id: mediaIdSchema, reason: z.string().trim().min(1).max(1_000) })).max(2_000),
+  }),
+  videoPlanBaseSchema.extend({
+    kind: z.literal('global_review'),
+    outline_plan_id: mediaIdSchema,
+    chapter_plan_ids: z.array(mediaIdSchema).min(1).max(200),
+    conflicts: z.array(z.string().trim().min(1).max(1_000)).max(500),
+    omissions: z.array(z.object({ target_id: mediaIdSchema, reason: z.string().trim().min(1).max(1_000) })).max(2_000),
+  }),
+])
+
+export const videoCreativeRecipeIdSchema = z.enum([
+  'memory_recap',
+  'event_recap',
+  'talking_head_highlight',
+  'course_condense',
+  'product_explainer',
+  'podcast_clips',
+])
+
+export const videoCreativeContextAnchorSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('project') }),
+  z.object({ kind: z.literal('source'), source_id: mediaIdSchema }),
+  z.object({ kind: z.literal('camera_shot'), camera_shot_id: mediaIdSchema }),
+  z.object({ kind: z.literal('content_segment'), content_segment_id: mediaIdSchema }),
+  z.object({ kind: z.literal('evidence_window'), evidence_window_id: mediaIdSchema }),
+  z.object({ kind: z.literal('transcript_range'), transcript_id: mediaIdSchema, range: videoSourceTimeRangeSchema }),
+  z.object({ kind: z.literal('timeline_range'), editorial_timeline_version_id: mediaIdSchema, range: videoEditorialTimeRangeSchema }),
+  z.object({ kind: z.literal('timeline_item'), editorial_timeline_version_id: mediaIdSchema, item_id: mediaIdSchema }),
+  z.object({ kind: z.literal('delivery_variant'), variant_version_id: mediaIdSchema, item_id: mediaIdSchema.optional() }),
+])
+
+export const videoCreativeSessionSchema = z.object({
+  id: mediaIdSchema,
+  project_id: mediaIdSchema,
+  title: z.string().trim().min(1).max(300),
+  recipe_id: videoCreativeRecipeIdSchema.optional(),
+  created_at: mediaIsoDateSchema,
+  archived_at: mediaIsoDateSchema.optional(),
+})
+
+export const videoCreativeMessageSchema = z.object({
+  id: mediaIdSchema,
+  project_id: mediaIdSchema,
+  session_id: mediaIdSchema,
+  role: z.enum(['user', 'assistant']),
+  text: z.string().trim().min(1).max(32_000),
+  anchors: z.array(videoCreativeContextAnchorSchema).max(200),
+  response_ids: z.array(mediaIdSchema).max(200),
+  proposal_ids: z.array(mediaIdSchema).max(200),
+  provider_receipt_id: mediaIdSchema.optional(),
+  created_at: mediaIsoDateSchema,
+})
+
+export const videoCreativeResponseSchema = z.object({
+  id: mediaIdSchema,
+  project_id: mediaIdSchema,
+  session_id: mediaIdSchema,
+  kind: z.enum(['answer', 'search_result']),
+  anchors: z.array(videoCreativeContextAnchorSchema).max(200),
+  evidence_ids: z.array(mediaIdSchema).max(2_000),
+  text: z.string().trim().min(1).max(32_000),
+  created_at: mediaIsoDateSchema,
+})
+
+export const videoCreativeProposalSchema = z.object({
+  id: mediaIdSchema,
+  project_id: mediaIdSchema,
+  session_id: mediaIdSchema,
+  created_by_message_id: mediaIdSchema,
+  base_project_revision: z.number().int().nonnegative(),
+  facts_basis_hash: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+  base_timeline_version_id: mediaIdSchema.optional(),
+  base_variant_version_id: mediaIdSchema.optional(),
+  anchors: z.array(videoCreativeContextAnchorSchema).max(200),
+  kind: z.enum(['timeline_draft', 'timeline_patch', 'delivery_variant_patch', 'quality_fix']),
+  summary: z.string().trim().min(1).max(4_000),
+  rationale: z.array(z.string().trim().min(1).max(1_000)).max(200),
+  evidence_ids: z.array(mediaIdSchema).max(2_000),
+  proposed_timeline_draft_id: mediaIdSchema.optional(),
+  proposed_command_set: timelineCommandSetSchema.optional(),
+  estimated_duration: videoRationalTimeSchema.optional(),
+  quality_report_id: mediaIdSchema.optional(),
+  provider_receipt_ids: z.array(mediaIdSchema).max(64),
+  actual_cost: z.object({
+    model_calls: z.number().int().nonnegative(),
+    total_tokens: z.number().int().nonnegative(),
+    input_bytes: z.number().int().nonnegative(),
+    visual_frames: z.number().int().nonnegative(),
+    proxy_seconds: z.number().nonnegative(),
+    asr_seconds: z.number().nonnegative(),
+    cache_hits: z.number().int().nonnegative(),
+  }),
+  status: z.enum(['proposed', 'accepted', 'partially_accepted', 'rejected', 'stale']),
+  created_at: mediaIsoDateSchema,
+})
+
+/** This is an advisory marker only. Adding media never rewrites a user
+ * accepted draft or Timeline; the user can explicitly request a fresh plan. */
+export const videoPlanningUpdateSchema = z.object({
+  id: mediaIdSchema,
+  project_id: mediaIdSchema,
+  source_id: mediaIdSchema,
+  authorized_depth: z.enum(['summary', 'standard', 'deep']),
+  plan_ids: z.array(mediaIdSchema).max(500),
+  reason: z.string().trim().min(1).max(1_000),
+  created_at: mediaIsoDateSchema,
+})
+
+/** A Quick Create batch is a durable set of reviewable Drafts. It is not a
+ * Timeline writer: every candidate remains independently accept/rejectable. */
+export const videoQuickCreateCandidateSchema = z.object({
+  id: mediaIdSchema,
+  draft_id: mediaIdSchema,
+  label: z.string().trim().min(1).max(160),
+  explanation: z.string().trim().min(1).max(1_000),
+  estimated_duration: videoRationalTimeSchema,
+  included_segment_ids: z.array(mediaIdSchema).min(1).max(2_000),
+  omissions: z.array(z.object({ target_id: mediaIdSchema, reason: z.string().trim().min(1).max(1_000) })).max(2_000),
+})
+
+export const videoQuickCreateBatchSchema = z.object({
+  id: mediaIdSchema,
+  project_id: mediaIdSchema,
+  idempotency_key: z.string().min(16).max(160),
+  base_revision: z.number().int().nonnegative(),
+  max_candidates: z.number().int().min(1).max(3),
+  request_hash: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+  intent_revision: z.number().int().positive(),
+  facts_basis_hash: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+  editorial_plan_ids: z.array(mediaIdSchema).min(1).max(500),
+  candidates: z.array(videoQuickCreateCandidateSchema).min(1).max(3),
+  explanation: z.string().trim().min(1).max(1_000),
+  created_at: mediaIsoDateSchema,
+})
+
+/** Non-CommandSet editorial requests still need a durable replay record. The
+ * receipt points at immutable/append-only resources and never becomes a
+ * second Timeline writer. */
+export const videoEditorialMutationReceiptSchema = z.object({
+  kind: z.enum(['source_range_decision', 'editorial_plan', 'creative_session', 'creative_message', 'creative_proposal_rejection']),
+  idempotency_key: z.string().min(16).max(160),
+  request_hash: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+  resource_ids: z.array(mediaIdSchema).min(1).max(500),
+  created_at: mediaIsoDateSchema,
+})
+
 export const editorialCommandReceiptSchema = z.object({
   idempotency_key: z.string().min(16).max(160),
   command_set_id: mediaIdSchema,
@@ -1204,6 +1459,17 @@ export const videoStudioProjectSchema = mediaProjectBaseSchema.extend({
   evidence_revision: z.string().regex(/^sha256:[a-f0-9]{64}$/).optional(),
   remote_analysis_consents: z.array(remoteAnalysisConsentSchema).max(200).default([]),
   remote_analysis_budgets: z.array(videoRemoteBudgetSchema).max(10_000).default([]),
+  source_range_decisions: z.array(videoSourceRangeDecisionSchema).max(20_000).default([]),
+  delivery_intent: videoDeliveryIntentSchema.optional(),
+  duration_feasibility: videoDurationFeasibilitySchema.optional(),
+  editorial_plans: z.array(videoEditorialPlanSchema).max(2_000).default([]),
+  creative_sessions: z.array(videoCreativeSessionSchema).max(2_000).default([]),
+  creative_messages: z.array(videoCreativeMessageSchema).max(20_000).default([]),
+  creative_responses: z.array(videoCreativeResponseSchema).max(20_000).default([]),
+  creative_proposals: z.array(videoCreativeProposalSchema).max(10_000).default([]),
+  planning_updates: z.array(videoPlanningUpdateSchema).max(2_000).default([]),
+  quick_create_batches: z.array(videoQuickCreateBatchSchema).max(2_000).default([]),
+  editorial_mutation_receipts: z.array(videoEditorialMutationReceiptSchema).max(10_000).default([]),
   pending_relay_acknowledgements: z.array(videoRelayPendingAcknowledgementSchema).max(10_000).default([]),
   /** An ACK removes a temporary Relay result but must remain recorded locally;
    * otherwise startup reconciliation would re-ACK every historical Fact. */
@@ -1276,6 +1542,7 @@ export const publicVideoStudioProjectSchema = videoStudioProjectSchema.omit({
   retired_relay_operations: true,
   delivery_variant_creation_receipts: true,
   finishing_receipts: true,
+  editorial_mutation_receipts: true,
   video_asset_attestations: true,
   editorial_timeline_versions: true,
   timeline_drafts: true,
@@ -1709,6 +1976,66 @@ export const analyzeVideoProjectInputSchema = z.object({
   user_goal: z.string().trim().min(1).max(8000),
 })
 
+export const upsertVideoDeliveryIntentInputSchema = videoDeliveryIntentFieldsSchema
+  .extend({ base_revision: z.number().int().nonnegative() })
+  .superRefine(validateVideoDeliveryIntent)
+
+export const createVideoSourceRangeDecisionInputSchema = videoSourceRangeDecisionSchema.omit({
+  id: true,
+  project_id: true,
+  created_at: true,
+  updated_at: true,
+}).extend({ base_revision: z.number().int().nonnegative() })
+
+export const createVideoEditorialPlanInputSchema = z.object({
+  base_revision: z.number().int().nonnegative(),
+  delivery_intent_id: mediaIdSchema.optional(),
+})
+
+export const quickCreateVideoInputSchema = z.object({
+  base_revision: z.number().int().nonnegative(),
+  max_candidates: z.number().int().min(1).max(3).default(3),
+})
+
+export const createVideoCreativeSessionInputSchema = z.object({
+  title: z.string().trim().min(1).max(300),
+  recipe_id: videoCreativeRecipeIdSchema.optional(),
+})
+
+export const postVideoCreativeMessageInputSchema = z.object({
+  text: z.string().trim().min(1).max(32_000),
+  anchors: z.array(videoCreativeContextAnchorSchema).max(200).default([]),
+  /** A proposal remains inert until a separate accept endpoint sends its
+   * CommandSet through the same versioned editor/variant validator. */
+  proposal: z.object({
+    kind: z.enum(['timeline_draft', 'timeline_patch', 'delivery_variant_patch', 'quality_fix']),
+    summary: z.string().trim().min(1).max(4_000),
+    rationale: z.array(z.string().trim().min(1).max(1_000)).max(200).default([]),
+    evidence_ids: z.array(mediaIdSchema).max(2_000).default([]),
+    proposed_timeline_draft_id: mediaIdSchema.optional(),
+    proposed_command_set: timelineCommandSetSchema.optional(),
+    estimated_duration: videoRationalTimeSchema.optional(),
+    quality_report_id: mediaIdSchema.optional(),
+    provider_receipt_ids: z.array(mediaIdSchema).max(64).default([]),
+    actual_cost: z.object({
+      model_calls: z.number().int().nonnegative().default(0),
+      total_tokens: z.number().int().nonnegative().default(0),
+      input_bytes: z.number().int().nonnegative().default(0),
+      visual_frames: z.number().int().nonnegative().default(0),
+      proxy_seconds: z.number().nonnegative().default(0),
+      asr_seconds: z.number().nonnegative().default(0),
+      cache_hits: z.number().int().nonnegative().default(0),
+    }).default({ model_calls: 0, total_tokens: 0, input_bytes: 0, visual_frames: 0, proxy_seconds: 0, asr_seconds: 0, cache_hits: 0 }),
+  }).optional(),
+})
+
+export const acceptVideoCreativeProposalInputSchema = z.object({
+  base_revision: z.number().int().nonnegative(),
+  /** Partial acceptance is limited to a subset of a proposed CommandSet and
+   * always remains one new immutable Version. */
+  command_indexes: z.array(z.number().int().nonnegative()).max(1_000).optional(),
+})
+
 export const lockVideoSceneInputSchema = z.object({
   base_revision: z.number().int().nonnegative(),
   timeline_version_id: mediaIdSchema,
@@ -1949,6 +2276,20 @@ export type DeliveryVariantVersion = z.infer<typeof deliveryVariantVersionSchema
 export type EditorialTimelineCommand = z.infer<typeof editorialTimelineCommandSchema>
 export type DeliveryVariantCommand = z.infer<typeof deliveryVariantCommandSchema>
 export type TimelineCommandSet = z.infer<typeof timelineCommandSetSchema>
+export type VideoSourceRangeDecision = z.infer<typeof videoSourceRangeDecisionSchema>
+export type VideoDeliveryIntent = z.infer<typeof videoDeliveryIntentSchema>
+export type VideoDurationFeasibility = z.infer<typeof videoDurationFeasibilitySchema>
+export type VideoEditorialPlan = z.infer<typeof videoEditorialPlanSchema>
+export type VideoCreativeRecipeId = z.infer<typeof videoCreativeRecipeIdSchema>
+export type VideoCreativeContextAnchor = z.infer<typeof videoCreativeContextAnchorSchema>
+export type VideoCreativeSession = z.infer<typeof videoCreativeSessionSchema>
+export type VideoCreativeMessage = z.infer<typeof videoCreativeMessageSchema>
+export type VideoCreativeResponse = z.infer<typeof videoCreativeResponseSchema>
+export type VideoCreativeProposal = z.infer<typeof videoCreativeProposalSchema>
+export type VideoPlanningUpdate = z.infer<typeof videoPlanningUpdateSchema>
+export type VideoQuickCreateCandidate = z.infer<typeof videoQuickCreateCandidateSchema>
+export type VideoQuickCreateBatch = z.infer<typeof videoQuickCreateBatchSchema>
+export type VideoEditorialMutationReceipt = z.infer<typeof videoEditorialMutationReceiptSchema>
 export type VideoExecutionInput = z.infer<typeof videoExecutionInputSchema>
 export type VideoExecutionPlan = z.infer<typeof videoExecutionPlanSchema>
 export type VideoPreview = z.infer<typeof videoPreviewSchema>
@@ -1977,6 +2318,13 @@ export type AddVideoSourceInput = z.input<typeof addVideoSourceInputSchema>
 export type UpdateVideoTimelineInput = z.input<typeof updateVideoTimelineInputSchema>
 export type SelectVideoTimelineVersionInput = z.input<typeof selectVideoTimelineVersionInputSchema>
 export type AnalyzeVideoProjectInput = z.input<typeof analyzeVideoProjectInputSchema>
+export type UpsertVideoDeliveryIntentInput = z.input<typeof upsertVideoDeliveryIntentInputSchema>
+export type CreateVideoSourceRangeDecisionInput = z.input<typeof createVideoSourceRangeDecisionInputSchema>
+export type CreateVideoEditorialPlanInput = z.input<typeof createVideoEditorialPlanInputSchema>
+export type QuickCreateVideoInput = z.input<typeof quickCreateVideoInputSchema>
+export type CreateVideoCreativeSessionInput = z.input<typeof createVideoCreativeSessionInputSchema>
+export type PostVideoCreativeMessageInput = z.input<typeof postVideoCreativeMessageInputSchema>
+export type AcceptVideoCreativeProposalInput = z.input<typeof acceptVideoCreativeProposalInputSchema>
 export type CreateRemoteAnalysisConsentInput = z.input<typeof createRemoteAnalysisConsentInputSchema>
 export type EstimateRemoteAnalysisInput = z.input<typeof estimateRemoteAnalysisInputSchema>
 export type LockVideoSceneInput = z.input<typeof lockVideoSceneInputSchema>

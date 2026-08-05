@@ -1,8 +1,12 @@
 import { createHash } from 'node:crypto'
 import {
+  VIDEO_REMOTE_CONSENT_CLAIM_MAX_TTL_MS,
   VIDEO_MEDIA_RELAY_RESULT_MAX_BYTES,
+  canonicalRelayRequestHash,
   createMediaObjectLeaseRequestSchema,
   createVideoRelayOperationRequestSchema,
+  installationAccessTokenHash,
+  issueVideoRemoteConsentClaim,
   mediaObjectLeaseSchema,
   operationAcknowledgementSchema,
   videoRelayOperationProjectionSchema,
@@ -10,6 +14,7 @@ import {
   type MultipartUploadedPart,
   type CreateVideoRelayOperationRequest,
   type MediaObjectLease,
+  type VideoRemoteConsentClaimPayload,
   type VideoRelayOperationProjection,
 } from '../../../../../../video-media-relay/contracts/relayApi.ts'
 
@@ -30,6 +35,18 @@ export type VideoMediaRelayTransportPolicy = {
   uploadRetries: number
   controlTimeoutMs: number
   resultTimeoutMs: number
+}
+
+/** The runtime supplies only Project/Consent facts; the client binds the
+ * short-lived claim to the exact installation bearer it will transmit. */
+export type CreateVideoRemoteConsentClaimInput = Omit<
+  VideoRemoteConsentClaimPayload,
+  'v' | 'identity_token_hash' | 'issued_at' | 'expires_at'
+>
+
+/** Shared durable fences must survive a short-lived claim refresh. */
+export function relayLogicalRequestFingerprint(value: unknown): `sha256:${string}` {
+  return canonicalRelayRequestHash(value)
 }
 
 function transportInteger(
@@ -77,6 +94,10 @@ export class VideoMediaRelayClient {
     /** Result objects use a separate bounded transfer window; signed URLs can
      * legitimately take longer than control JSON but never indefinitely. */
     resultTimeoutMs?: number
+    /** Sidecar-only issuer credential. It is distinct from Gateway's bearer,
+     * Relay introspection service credential, OSS credentials and Provider
+     * credentials, and must never be exposed to Renderer. */
+    remoteConsentSigningKey?: string
     /** Sidecar cancellation is propagated to Relay control requests; it never
      * lengthens the client's own bounded timeout. */
     signal?: AbortSignal
@@ -99,6 +120,19 @@ export class VideoMediaRelayClient {
   private controlTimeoutMs(): number { return Math.max(1_000, Math.min(60_000, this.options.controlTimeoutMs ?? 15_000)) }
   private resultTimeoutMs(): number { return Math.max(1_000, Math.min(5 * 60_000, this.options.resultTimeoutMs ?? 60_000)) }
   private nowMs(): number { return (this.options.now?.() ?? new Date()).getTime() }
+
+  createRemoteConsentClaim(input: CreateVideoRemoteConsentClaimInput): string {
+    const signingKey = this.options.remoteConsentSigningKey?.trim() ?? ''
+    if (signingKey.length < 32) throw new VideoMediaRelayClientError(503, 'relay_remote_consent_signer_unavailable')
+    const issuedAt = this.nowMs()
+    return issueVideoRemoteConsentClaim({
+      ...input,
+      v: 1,
+      identity_token_hash: installationAccessTokenHash(this.options.accessToken),
+      issued_at: issuedAt,
+      expires_at: issuedAt + VIDEO_REMOTE_CONSENT_CLAIM_MAX_TTL_MS,
+    }, signingKey)
+  }
 
   private abortError(timedOut: boolean, scope: 'control' | 'result'): VideoMediaRelayClientError {
     return new VideoMediaRelayClientError(timedOut ? 503 : 499, timedOut ? `relay_${scope}_timeout` : `relay_${scope}_cancelled`)

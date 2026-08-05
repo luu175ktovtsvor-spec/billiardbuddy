@@ -131,6 +131,34 @@ test('Video Repository uses SQLite as the only new writer and publishes durable 
   reopened.close()
 })
 
+test('Operation Event 分页使用当前页 continuation，不能把全局 head 当作续读位置', async () => {
+  const root = await testRoot('event-page-continuation')
+  const repository = new VideoWorkbenchRepository({ root, now: () => new Date(at) })
+  const created = await repository.saveProject(project())
+
+  for (let index = 1; index <= 205; index += 1) {
+    const suffix = index.toString(16).padStart(8, '0')
+    await repository.saveOperation({
+      ...operation(created.id),
+      id: `task_${suffix}`,
+      operation_id: `op_${suffix}`,
+    })
+  }
+
+  const first = await repository.listOperationEvents(created.id, 0, 100)
+  expect(first).toMatchObject({ cursor: 100, next_cursor: 101, reset_required: false })
+  expect(first.events.map(event => event.cursor)).toEqual(Array.from({ length: 100 }, (_, index) => index + 1))
+
+  const second = await repository.listOperationEvents(created.id, first.next_cursor - 1, 100)
+  expect(second).toMatchObject({ cursor: 200, next_cursor: 201, reset_required: false })
+  expect(second.events.map(event => event.cursor)).toEqual(Array.from({ length: 100 }, (_, index) => index + 101))
+
+  const final = await repository.listOperationEvents(created.id, second.next_cursor - 1, 100)
+  expect(final).toMatchObject({ cursor: 205, next_cursor: 206, reset_required: false })
+  expect(final.events.map(event => event.cursor)).toEqual([201, 202, 203, 204, 205])
+  repository.close()
+})
+
 test('payload protocol recovers every durable crash point without exposing uncommitted data', async () => {
   const stages: Array<{ label: string; state: 'staging' | 'payload_ready' | 'prepared' | 'published' | 'committed'; expectsReady: boolean; expectsAbandoned: boolean }> = [
     { label: 'staging-row-before-file', state: 'staging', expectsReady: false, expectsAbandoned: true },

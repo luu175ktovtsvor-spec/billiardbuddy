@@ -150,6 +150,46 @@ export class VideoWorkbenchService {
     return await this.root.editorial.applyAlternative(...args)
   }
 
+  async updateDeliveryIntent(...args: Parameters<VideoWorkbenchCompositionRoot['editorial']['updateDeliveryIntent']>) {
+    return await this.root.editorial.updateDeliveryIntent(...args)
+  }
+
+  async getDurationFeasibility(...args: Parameters<VideoWorkbenchCompositionRoot['editorial']['getDurationFeasibility']>) {
+    return await this.root.editorial.getDurationFeasibility(...args)
+  }
+
+  async createSourceRangeDecision(...args: Parameters<VideoWorkbenchCompositionRoot['editorial']['createSourceRangeDecision']>) {
+    return await this.root.editorial.createSourceRangeDecision(...args)
+  }
+
+  async createEditorialPlans(...args: Parameters<VideoWorkbenchCompositionRoot['editorial']['createEditorialPlans']>) {
+    return await this.root.editorial.createEditorialPlans(...args)
+  }
+
+  async quickCreate(...args: Parameters<VideoWorkbenchCompositionRoot['editorial']['quickCreate']>) {
+    return await this.root.editorial.quickCreate(...args)
+  }
+
+  async createCreativeSession(...args: Parameters<VideoWorkbenchCompositionRoot['editorial']['createCreativeSession']>) {
+    return await this.root.editorial.createCreativeSession(...args)
+  }
+
+  async postCreativeMessage(...args: Parameters<VideoWorkbenchCompositionRoot['editorial']['postCreativeMessage']>) {
+    return await this.root.editorial.postCreativeMessage(...args)
+  }
+
+  async getCreativeProposal(...args: Parameters<VideoWorkbenchCompositionRoot['editorial']['getCreativeProposal']>) {
+    return await this.root.editorial.getCreativeProposal(...args)
+  }
+
+  async acceptCreativeProposal(...args: Parameters<VideoWorkbenchCompositionRoot['editorial']['acceptCreativeProposal']>) {
+    return await this.root.editorial.acceptCreativeProposal(...args)
+  }
+
+  async rejectCreativeProposal(...args: Parameters<VideoWorkbenchCompositionRoot['editorial']['rejectCreativeProposal']>) {
+    return await this.root.editorial.rejectCreativeProposal(...args)
+  }
+
   async getDeliveryVariant(...args: Parameters<VideoWorkbenchCompositionRoot['finishingDelivery']['getDeliveryVariant']>) {
     return await this.root.finishingDelivery.getDeliveryVariant(...args)
   }

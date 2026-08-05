@@ -113,7 +113,26 @@ export class DashScopeVideoProvider {
           : input.application_role === 'caption_translation'
             ? captionTranslationResult(parsed)
             : planningResult(parsed)
-    return { state: 'succeeded', result, receipt: this.receipt(input, descriptor.model_id, body, raw, parsed, input.capability === 'speech_transcription' ? asrSeconds(parsed) : undefined, media) }
+    // A terminal success without a Provider-reported amount is not a free
+    // invocation.  The Sidecar uses this receipt to replace its per-operation
+    // reservation, so collapsing an absent upstream price to zero would make
+    // a paid call invisible to the local project budget.  Fail closed after
+    // the Provider boundary; Relay then retains the durable reservation as an
+    // outcome whose spend cannot yet be reconciled.
+    return {
+      state: 'succeeded',
+      result,
+      receipt: this.receipt(
+        input,
+        descriptor.model_id,
+        body,
+        raw,
+        parsed,
+        input.capability === 'speech_transcription' ? asrSeconds(parsed) : undefined,
+        media,
+        { requireProviderAmount: true },
+      ),
+    }
   }
 
   async poll(input: CreateVideoRelayOperationRequest, providerTaskId: string, _identity: Identity, media: { object_urls: string[]; object_byte_sizes?: number[] } = { object_urls: [] }, options: { signal?: AbortSignal } = {}): Promise<DashScopePollExecution> {
@@ -161,7 +180,21 @@ export class DashScopeVideoProvider {
       if (error instanceof UpstreamDeadlineExceededError) throw new DashScopeProviderError(503, 'provider_timeout')
       throw new DashScopeProviderError(503, 'asr_result_download_unavailable')
     }
-    return { state: 'succeeded', provider_task_id: providerTaskId, result: asrResult(transcription), receipt: this.receipt(input, descriptor.model_id, {}, raw, parsed, asrSeconds(transcription), media) }
+    return {
+      state: 'succeeded',
+      provider_task_id: providerTaskId,
+      result: asrResult(transcription),
+      receipt: this.receipt(
+        input,
+        descriptor.model_id,
+        {},
+        raw,
+        parsed,
+        asrSeconds(transcription),
+        media,
+        { requireProviderAmount: true },
+      ),
+    }
   }
 
   /** DashScope's asynchronous-task API can cancel only PENDING work. A 2xx
@@ -208,12 +241,25 @@ export class DashScopeVideoProvider {
     if (status === 'CANCELED' || status === 'CANCELLED') return { cancelled: true }
   }
 
-  private receipt(input: CreateVideoRelayOperationRequest, model: string, body: unknown, raw: string, parsed: Record<string, unknown>, measuredAsrSeconds?: number, media: { object_urls: string[]; object_byte_sizes?: number[] } = { object_urls: [] }): ProviderExecutionReceipt {
+  private receipt(
+    input: CreateVideoRelayOperationRequest,
+    model: string,
+    body: unknown,
+    raw: string,
+    parsed: Record<string, unknown>,
+    measuredAsrSeconds?: number,
+    media: { object_urls: string[]; object_byte_sizes?: number[] } = { object_urls: [] },
+    options: { requireProviderAmount?: boolean } = {},
+  ): ProviderExecutionReceipt {
     const usage = parsed.usage && typeof parsed.usage === 'object' ? parsed.usage as Record<string, unknown> : {}
     // DashScope's token fields and the Relay's immutable object sizes together
     // describe what was actually handed to the provider.  Do not substitute a
     // guessed source duration or a cache estimate for this receipt.
     const inputBytes = Buffer.byteLength(JSON.stringify(body), 'utf8') + (media.object_byte_sizes ?? []).reduce((sum, value) => sum + (Number.isSafeInteger(value) && value > 0 ? value : 0), 0)
+    const amountMicros = providerAmountMicros(usage)
+    if (options.requireProviderAmount && amountMicros === undefined) {
+      throw new DashScopeProviderError(503, 'provider_usage_amount_missing')
+    }
     return {
       id: `receipt_${randomUUID().replaceAll('-', '')}`,
       capability: input.capability,
@@ -223,18 +269,44 @@ export class DashScopeVideoProvider {
         ? 'caption-translation-v1'
         : 'video-media-v1',
       input_basis_hash: input.request_hash,
-      usage: { requests: 1, total_tokens: safeNumber(usage.total_tokens) || safeNumber(usage.input_tokens) + safeNumber(usage.output_tokens), input_bytes: inputBytes, visual_frames: input.capability === 'visual_evidence' ? media.object_urls.length : 0, proxy_seconds: safeDecimal(usage.proxy_seconds), asr_seconds: measuredAsrSeconds ?? safeDecimal(usage.asr_seconds), estimated_amount_micros: providerAmountMicros(usage) },
+      usage: { requests: 1, total_tokens: safeNumber(usage.total_tokens) || safeNumber(usage.input_tokens) + safeNumber(usage.output_tokens), input_bytes: inputBytes, visual_frames: input.capability === 'visual_evidence' ? media.object_urls.length : 0, proxy_seconds: safeDecimal(usage.proxy_seconds), asr_seconds: measuredAsrSeconds ?? safeDecimal(usage.asr_seconds), estimated_amount_micros: amountMicros ?? 0 },
       cache_hit: false, upstream_receipt_hash: `sha256:${createHash('sha256').update(raw).digest('hex')}`, created_at: (this.options.now ?? (() => new Date()))().toISOString(),
     }
   }
 }
 function safeNumber(value: unknown): number { return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? Math.trunc(value) : 0 }
 function safeDecimal(value: unknown): number { return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : 0 }
-function providerAmountMicros(usage: Record<string, unknown>): number {
-  const direct = safeNumber(usage.amount_micros ?? usage.estimated_amount_micros)
-  if (direct) return direct
-  const fee = usage.total_fee ?? usage.total_cost ?? usage.cost
-  return typeof fee === 'number' && Number.isFinite(fee) && fee >= 0 ? Math.round(fee * 1_000_000) : 0
+function providerAmountMicros(usage: Record<string, unknown>): number | undefined {
+  // Presence matters: 0 is a valid Provider-reported promotional/free
+  // charge, while an omitted field is an unknown paid outcome.  Do not use
+  // truthiness here or a missing price and a verified zero become identical.
+  for (const field of ['amount_micros', 'estimated_amount_micros']) {
+    if (!Object.hasOwn(usage, field)) continue
+    const amount = usage[field]
+    if (typeof amount === 'number' && Number.isSafeInteger(amount) && amount >= 0) return amount
+    return undefined
+  }
+  for (const field of ['total_fee', 'total_cost', 'cost']) {
+    if (!Object.hasOwn(usage, field)) continue
+    const micros = decimalAmountMicros(usage[field])
+    if (micros !== undefined) return micros
+    return undefined
+  }
+  return undefined
+}
+function decimalAmountMicros(value: unknown): number | undefined {
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value) || value < 0) return undefined
+    const micros = Math.round(value * 1_000_000)
+    return Number.isSafeInteger(micros) ? micros : undefined
+  }
+  const text = typeof value === 'string' ? value.trim() : ''
+  const match = /^(0|[1-9][0-9]*)(?:\.([0-9]{1,6}))?$/.exec(text)
+  if (!match) return undefined
+  const whole = Number(match[1])
+  const fraction = Number((match[2] ?? '').padEnd(6, '0'))
+  const micros = whole * 1_000_000 + fraction
+  return Number.isSafeInteger(micros) ? micros : undefined
 }
 function embeddingResult(raw: Record<string, unknown>, ids: string[]) {
   const rows = Array.isArray(raw.data) ? raw.data : []

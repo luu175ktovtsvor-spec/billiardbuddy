@@ -14,11 +14,14 @@ import {
   normalizeFactSearchText,
   type VideoFact,
   type VideoFactKind,
+  type VideoDerivative,
+  type VideoFactEvidence,
+  type VideoFactSource,
   type TimedTranscript,
   type TranscriptRevision,
 } from '../domain/mediaFacts/model.js'
 import { materializeTranscriptRevision, transcriptRevisionFingerprint } from '../domain/mediaFacts/transcript.js'
-import { sourceTimeRange, type SourceTimeRange } from '../domain/mediaFacts/time.js'
+import { compareRationalTime, endOfRange, sourceTimeRange, type SourceTimeRange } from '../domain/mediaFacts/time.js'
 
 type FactRow = {
   id: string
@@ -595,6 +598,19 @@ export class SqliteMediaFactsRepository {
   }
 
   private async saveLocked(kind: VideoFactKind, value: VideoFact): Promise<VideoFact> {
+    let cacheInvalidation = false
+    if (kind === 'derivative') {
+      const existing = this.unitOfWork.database.query('SELECT * FROM video_fact_derivatives WHERE id=?').get(value.id) as FactRow | null
+      if (existing) {
+        const stored = await this.readRow('derivative', existing) as VideoDerivative
+        if (JSON.stringify(stored) === JSON.stringify(value)) return stored
+        cacheInvalidation = this.isDerivativeCacheInvalidation(stored, value as VideoDerivative)
+      }
+    }
+    // A derivative can be marked missing while reclaiming its already-managed
+    // bytes after the source has changed. This is a cache invalidation, not a
+    // new source-derived Fact; every other write must bind to a current source.
+    if (!cacheInvalidation) await this.assertFactSourceIntegrity(kind, value)
     if (kind === 'transcript') {
       const existing = this.unitOfWork.database.query('SELECT * FROM video_fact_transcripts WHERE id=?').get(value.id) as FactRow | null
       if (existing) {
@@ -666,6 +682,86 @@ export class SqliteMediaFactsRepository {
       })
       throw error
     }
+  }
+
+  /**
+   * Facts are immutable, but their source binding is not merely descriptive:
+   * it is the boundary that prevents a stale, cross-project, or display-only
+   * range from becoming editorial evidence.  Validate it before staging a
+   * payload so no corrupted child Fact can be made durable and later hidden by
+   * a best-effort projection.
+   */
+  private async assertFactSourceIntegrity(kind: VideoFactKind, value: VideoFact): Promise<void> {
+    if (kind === 'source' || kind === 'transcript_revision') return
+    if (!('source_id' in value) || !('source_fingerprint' in value)) {
+      throw new VideoFactsRepositoryError('视频事实缺少来源绑定', 'VIDEO_FACTS_INVALID')
+    }
+    const row = this.unitOfWork.database.query('SELECT * FROM video_fact_sources WHERE id=?').get(value.source_id) as FactRow | null
+    if (!row) throw new VideoFactsRepositoryError('视频事实引用的来源不存在', 'VIDEO_FACTS_INVALID')
+    const source = await this.readRow('source', row) as VideoFactSource
+    if (source.project_id !== value.project_id
+      || source.id !== value.source_id
+      || source.state !== 'ready'
+      || source.fingerprint_state !== 'ready'
+      || !source.fingerprint
+      || source.fingerprint !== value.source_fingerprint
+    ) throw new VideoFactsRepositoryError('视频事实来源已变化、不可用或不属于当前项目', 'VIDEO_FACTS_INVALID')
+
+    const primaryDuration = source.primary_video_stream.duration
+    if (!primaryDuration) throw new VideoFactsRepositoryError('原始主视频流时长缺失，不能验证事实范围', 'VIDEO_FACTS_INVALID')
+    const primaryRange = sourceTimeRange(source.primary_video_stream.start_time, primaryDuration)
+    const assertRange = (range: SourceTimeRange, label: string) => {
+      if (
+        compareRationalTime(range.start, primaryRange.start) < 0
+        || compareRationalTime(endOfRange(range), endOfRange(primaryRange)) > 0
+      ) throw new VideoFactsRepositoryError(`${label}超出原始主视频流 PTS 范围`, 'VIDEO_FACTS_INVALID')
+    }
+    const assertPoint = (at: { ticks: string; tick_rate: { num: number; den: number } }, label: string) => {
+      assertRange(sourceTimeRange(at, { ticks: '0', tick_rate: at.tick_rate }), label)
+    }
+
+    if (kind === 'derivative') {
+      const derivative = value as Extract<VideoFact, { generator_name: string }>
+      if (derivative.source_range) assertRange(derivative.source_range, '派生素材范围')
+      return
+    }
+    if (kind === 'transcript') {
+      const transcript = value as TimedTranscript
+      assertPoint(transcript.source_offset, '转录来源偏移')
+      for (const segment of transcript.segments) {
+        if (segment.source_id !== source.id) throw new VideoFactsRepositoryError('转录片段来源与转录不一致', 'VIDEO_FACTS_INVALID')
+        assertRange(sourceTimeRange(segment.start, segment.duration), '转录片段范围')
+      }
+      return
+    }
+    if (kind === 'evidence_window') {
+      const window = value as Extract<VideoFact, { sample_strategy: string }>
+      assertRange(window.range, '证据窗口范围')
+      for (const uncovered of window.coverage.uncovered) assertRange(uncovered.range, '未覆盖范围')
+      return
+    }
+
+    const range = factSourceRange(value)
+    if (range) assertRange(range, '视频事实范围')
+    if (kind !== 'evidence') return
+    const evidence = value as VideoFactEvidence
+    if (evidence.kind === 'beat_grid') {
+      for (const coverage of evidence.payload.coverage) assertRange(coverage, '节拍覆盖范围')
+      for (const beat of evidence.payload.beat_times) assertPoint(beat, '节拍时间')
+      for (const beat of evidence.payload.beats) assertPoint(beat.at, '节拍时间')
+    }
+    if (evidence.kind === 'subject_track') {
+      for (const point of evidence.payload.points) assertPoint(point.at, '主体轨迹时间')
+      for (const unresolved of evidence.payload.unresolved_ranges) assertRange(unresolved.range, '主体未解决范围')
+    }
+  }
+
+  private isDerivativeCacheInvalidation(stored: VideoDerivative, candidate: VideoDerivative): boolean {
+    const { state: storedState, ...storedIdentity } = stored
+    const { state: candidateState, ...candidateIdentity } = candidate
+    return storedState !== candidateState
+      && (candidateState === 'stale' || candidateState === 'missing')
+      && JSON.stringify(storedIdentity) === JSON.stringify(candidateIdentity)
   }
 
   private recordPayloadReference(intent: PayloadCommitIntent): void {

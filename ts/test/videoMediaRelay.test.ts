@@ -4,9 +4,9 @@ import { unlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Database } from 'bun:sqlite'
-import { createVideoMediaRelayFetch, type MediaObjectStore, type VideoMediaProvider } from '../../video-media-relay/app.ts'
+import { createVideoMediaRelayFetch as createVideoMediaRelayFetchImpl, type MediaObjectStore, type VideoMediaProvider } from '../../video-media-relay/app.ts'
 import { videoMediaCapacityPolicyFromEnvironment, type VideoMediaAdmissionBackend, type VideoMediaAdmissionScope } from '../../video-media-relay/capacityPolicy.ts'
-import { videoMediaOperationByLocalOperationPath, type ProviderExecutionReceipt, type VideoRelayOperationProjection } from '../../video-media-relay/contracts/relayApi.ts'
+import { installationAccessTokenHash, issueVideoRemoteConsentClaim, videoMediaOperationByLocalOperationPath, type ProviderExecutionReceipt, type VideoRelayOperationProjection, type VideoRemoteConsentPurpose } from '../../video-media-relay/contracts/relayApi.ts'
 import { DashScopeProviderError } from '../../video-media-relay/providers/dashscope.ts'
 import { validateVideoMediaRelayEnvironment } from '../../video-media-relay/validate-deployment-env.ts'
 import { VideoMediaRelayClient, VideoMediaRelayClientError, videoMediaRelayTransportPolicyFromEnvironment } from '../src/server/video/infrastructure/providers/videoMediaRelayClient.ts'
@@ -16,10 +16,95 @@ const hash = `sha256:${'a'.repeat(64)}`
 const now = () => new Date('2026-08-03T00:00:00.000Z')
 const headers = (key: string) => ({ Authorization: 'Bearer installation-token', 'Content-Type': 'application/json', 'Idempotency-Key': key, 'X-Request-Timestamp': new Date().toISOString() })
 const identityFetch = async () => Response.json({ active: true, principal_id: 'installation:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', installation_id: 'install_12345678', session_id: 'abcdefghijklmnopqrstuvwx', expires_at: Date.now() + 60_000, owner: 'installation:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:install_12345678' })
+const remoteConsentSigningKey = 'test-video-remote-consent-signing-key-000000000000000000000000'
+
+function testConsentPurpose(raw: Record<string, unknown>, lease: boolean): VideoRemoteConsentPurpose {
+  if (lease) {
+    if (raw.purpose === 'visual_frames') return 'visual_evidence'
+    if (raw.purpose === 'audio_for_asr') return 'asr'
+    return 'planning'
+  }
+  if (raw.application_role === 'shot_evidence') return 'visual_evidence'
+  if (raw.application_role === 'planning') return 'planning'
+  if (raw.application_role === 'caption_translation') return 'caption_translation'
+  if (raw.application_role === 'asr') return 'asr'
+  return 'semantic_search'
+}
+
+/** Existing Relay tests exercise storage/recovery concerns. This wrapper gives
+ * them the same genuine HMAC claim a Sidecar would send, without making each
+ * storage fixture repeat unrelated authorization boilerplate. Dedicated tests
+ * below call the implementation directly for forged/expired/cross-owner cases. */
+function createVideoMediaRelayFetch(...args: Parameters<typeof createVideoMediaRelayFetchImpl>) {
+  const deps = args[0] ?? {}
+  const clock = deps.now ?? (() => new Date())
+  const handler = createVideoMediaRelayFetchImpl({
+    ...deps,
+    env: { ...deps.env, VIDEO_MEDIA_REMOTE_CONSENT_SIGNING_KEY: remoteConsentSigningKey },
+  })
+  return async (request: Request): Promise<Response> => {
+    const url = new URL(request.url)
+    const isLease = request.method === 'POST' && url.pathname === '/v1/video-media/object-leases'
+    const isOperation = request.method === 'POST' && url.pathname === '/v1/video-media/operations'
+    if (!isLease && !isOperation) return await handler(request)
+    let raw: Record<string, unknown>
+    try {
+      const candidate = await request.clone().json()
+      if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return await handler(request)
+      raw = candidate as Record<string, unknown>
+    } catch {
+      return await handler(request)
+    }
+    if (typeof raw.consent_revision_id !== 'string' || typeof raw.consent_scope_hash !== 'string') return await handler(request)
+    if (typeof raw.remote_consent_claim !== 'string') {
+      const bearer = request.headers.get('Authorization')?.replace(/^Bearer\s+/i, '') ?? ''
+      const issuedAt = clock().getTime()
+      raw.remote_consent_claim = issueVideoRemoteConsentClaim({
+        v: 1,
+        identity_token_hash: installationAccessTokenHash(bearer),
+        project_id: 'vid_consent_test',
+        source_ids: ['src_consent_test'],
+        purpose: testConsentPurpose(raw, isLease),
+        consent_revision_id: String(raw.consent_revision_id),
+        consent_scope_hash: String(raw.consent_scope_hash) as `sha256:${string}`,
+        region: 'cn-beijing',
+        issued_at: issuedAt,
+        expires_at: issuedAt + 60_000,
+      }, remoteConsentSigningKey)
+    }
+    return await handler(new Request(request.url, {
+      method: request.method,
+      headers: request.headers,
+      body: JSON.stringify(raw),
+      signal: request.signal,
+    }))
+  }
+}
+
+type ClientLeaseInput = Parameters<VideoMediaRelayClient['uploadObject']>[0]
+function clientLeaseInput(input: Omit<ClientLeaseInput, 'remote_consent_claim'>): ClientLeaseInput {
+  const issuedAt = now().getTime()
+  return {
+    ...input,
+    remote_consent_claim: issueVideoRemoteConsentClaim({
+      v: 1,
+      identity_token_hash: installationAccessTokenHash('installation-token'),
+      project_id: 'vid_consent_test',
+      source_ids: ['src_consent_test'],
+      purpose: testConsentPurpose({ purpose: input.purpose }, true),
+      consent_revision_id: input.consent_revision_id,
+      consent_scope_hash: input.consent_scope_hash,
+      region: 'cn-beijing',
+      issued_at: issuedAt,
+      expires_at: issuedAt + 60_000,
+    }, remoteConsentSigningKey),
+  }
+}
 
 function deploymentEnvironment(): Record<string, string> {
   return {
     VIDEO_MEDIA_GATEWAY_INTROSPECTION_TOKEN: token,
+    VIDEO_MEDIA_REMOTE_CONSENT_SIGNING_KEY: remoteConsentSigningKey,
     VIDEO_MEDIA_GATEWAY_INTROSPECTION_BASE: 'http://gateway:8799',
     VIDEO_MEDIA_RELAY_DB: '/var/lib/video-media-relay/relay.sqlite',
     VIDEO_MEDIA_DASHSCOPE_API_KEY: 'd'.repeat(24),
@@ -125,6 +210,79 @@ test('Video Media Relay 只在容器字幕运行时探针成功后声明 readyz 
     component: 'video-media-relay',
     subtitle_burn_in: { available: true, font_family: 'Noto Sans CJK SC' },
   })
+})
+
+test('Video Media Relay 拒绝伪造、过期、跨 bearer 与用途扩大的远程授权声明，并在验签器缺失时失败关闭', async () => {
+  const baseEnv = {
+    VIDEO_MEDIA_GATEWAY_INTROSPECTION_TOKEN: token,
+    VIDEO_MEDIA_GATEWAY_INTROSPECTION_BASE: 'http://gateway:8799',
+    VIDEO_MEDIA_RELAY_DB: ':memory:',
+    VIDEO_MEDIA_REMOTE_CONSENT_SIGNING_KEY: remoteConsentSigningKey,
+  }
+  const handler = createVideoMediaRelayFetchImpl({ env: baseEnv, fetchImpl: identityFetch, now })
+  const issuedAt = now().getTime()
+  const lease = (claim: string) => ({
+    local_operation_id: 'task_consent_claim_0001',
+    purpose: 'audio_for_asr' as const,
+    content_hash: hash,
+    byte_size: 4,
+    content_type: 'audio/wav',
+    consent_revision_id: 'consent_claim_0001',
+    consent_scope_hash: hash,
+    remote_consent_claim: claim,
+  })
+  const claim = (overrides: Partial<Parameters<typeof issueVideoRemoteConsentClaim>[0]> = {}) => issueVideoRemoteConsentClaim({
+    v: 1,
+    identity_token_hash: installationAccessTokenHash('installation-token'),
+    project_id: 'project_consent_0001',
+    source_ids: ['src_consent_0001'],
+    purpose: 'asr',
+    consent_revision_id: 'consent_claim_0001',
+    consent_scope_hash: hash,
+    region: 'cn-beijing',
+    issued_at: issuedAt,
+    expires_at: issuedAt + 60_000,
+    ...overrides,
+  }, remoteConsentSigningKey)
+
+  const valid = claim()
+  const forged = `${valid.slice(0, -1)}${valid.endsWith('a') ? 'b' : 'a'}`
+  const forgedResponse = await handler(new Request('http://relay/v1/video-media/object-leases', {
+    method: 'POST', headers: headers('consent-forged-claim-0001'), body: JSON.stringify(lease(forged)),
+  }))
+  expect(forgedResponse.status).toBe(403)
+  expect(await forgedResponse.json()).toMatchObject({ error: 'remote_consent_claim_invalid' })
+
+  const expiredResponse = await handler(new Request('http://relay/v1/video-media/object-leases', {
+    method: 'POST', headers: headers('consent-expired-claim-001'),
+    body: JSON.stringify(lease(claim({ issued_at: issuedAt - 60_001, expires_at: issuedAt - 1 }))),
+  }))
+  expect(expiredResponse.status).toBe(403)
+  expect(await expiredResponse.json()).toMatchObject({ error: 'remote_consent_claim_invalid' })
+
+  const crossBearerResponse = await handler(new Request('http://relay/v1/video-media/object-leases', {
+    method: 'POST',
+    headers: { ...headers('consent-cross-bearer-001'), Authorization: 'Bearer another-installation-token' },
+    body: JSON.stringify(lease(valid)),
+  }))
+  expect(crossBearerResponse.status).toBe(403)
+  expect(await crossBearerResponse.json()).toMatchObject({ error: 'remote_consent_claim_identity_mismatch' })
+
+  const widenedResponse = await handler(new Request('http://relay/v1/video-media/object-leases', {
+    method: 'POST', headers: headers('consent-widen-purpose-001'),
+    body: JSON.stringify({ ...lease(claim({ purpose: 'visual_evidence' })), local_operation_id: 'task_consent_claim_0002' }),
+  }))
+  expect(widenedResponse.status).toBe(422)
+  expect(await widenedResponse.json()).toMatchObject({ error: 'remote_consent_claim_purpose_mismatch' })
+
+  const unavailableVerifier = createVideoMediaRelayFetchImpl({
+    env: { ...baseEnv, VIDEO_MEDIA_REMOTE_CONSENT_SIGNING_KEY: undefined }, fetchImpl: identityFetch, now,
+  })
+  const unavailableResponse = await unavailableVerifier(new Request('http://relay/v1/video-media/object-leases', {
+    method: 'POST', headers: headers('consent-verifier-missing'), body: JSON.stringify(lease(valid)),
+  }))
+  expect(unavailableResponse.status).toBe(503)
+  expect(await unavailableResponse.json()).toMatchObject({ error: 'remote_consent_verifier_unavailable' })
 })
 
 test('Video Media Relay creates both concurrency and RPM gates through the replaceable backend', async () => {
@@ -406,7 +564,7 @@ test('Relay rejects an oversized UTF-8 control stream without trusting Content-L
 })
 
 test('Relay bounds a stalled control body, propagates client aborts, and treats invalid UTF-8 as a 400', async () => {
-  const handler = createVideoMediaRelayFetch({ env: {
+  const handler = createVideoMediaRelayFetchImpl({ env: {
     VIDEO_MEDIA_GATEWAY_INTROSPECTION_TOKEN: token,
     VIDEO_MEDIA_GATEWAY_INTROSPECTION_BASE: 'http://gateway:8799',
     VIDEO_MEDIA_RELAY_DB: ':memory:',
@@ -795,7 +953,7 @@ test('Relay fails closed planning object refs and validates purpose, MIME and op
     })
     const wrongPurpose = await handler(new Request('http://relay/v1/video-media/operations', { method: 'POST', headers: headers('object-admission-purpose-op'), body: JSON.stringify(visual('task_visual_audio_12345678', audioLease.object_ref)) }))
     expect(wrongPurpose.status).toBe(422)
-    expect(await wrongPurpose.json()).toMatchObject({ error: 'object_purpose_mismatch' })
+    expect(await wrongPurpose.json()).toMatchObject({ error: 'object_consent_scope_mismatch' })
     expect({ providerCalls, readUrlCalls, ...operationRows() }).toEqual({ providerCalls: 0, readUrlCalls: 0, rows: 0, quotas: 0 })
 
     const malformedMimeLease = await createLease('object-admission-mime-key', {
@@ -894,6 +1052,75 @@ test('provider-bound failures retain conservative daily account usage while ambi
   const blocked = await unknown(new Request('http://relay/v1/video-media/operations', { method: 'POST', headers: headers('visual-unknown-quota-key'), body: JSON.stringify({ local_operation_id: 'task_embedding_unknown_12345678', consent_revision_id: 'consent_embedding_unknown_12345678', consent_scope_hash: hash, local_budget_reservation_id: 'budget_embedding_unknown_12345678', request_hash: hash, capability: 'semantic_embedding', application_role: 'search_index', input: { embedding_role: 'query', items: [{ id: 'fact_embedding_unknown_12345678', text: 'unknown must retain quota' }], model: 'text-embedding-v4', dimension: 768, instruction_version: 'v1' } }) }))
   expect(blocked.status).toBe(429)
   expect(deleted).toEqual([lease.lease_id])
+})
+
+test('DashScope 成功响应缺失价格回执时保留逐操作额度，而不是按零费用结算', async () => {
+  let dashScopeCalls = 0
+  const handler = createVideoMediaRelayFetch({
+    env: {
+      VIDEO_MEDIA_GATEWAY_INTROSPECTION_TOKEN: token,
+      VIDEO_MEDIA_GATEWAY_INTROSPECTION_BASE: 'http://gateway:8799',
+      VIDEO_MEDIA_RELAY_DB: ':memory:',
+      VIDEO_MEDIA_DASHSCOPE_API_KEY: 'd'.repeat(24),
+      VIDEO_MEDIA_OWNER_DAILY_QUOTA_UNITS: '1',
+      VIDEO_MEDIA_ACCOUNT_DAILY_QUOTA_UNITS: '1',
+    },
+    fetchImpl: async (input, init) => {
+      if (String(input).startsWith('http://gateway:8799')) return await identityFetch(input, init)
+      if (String(input).endsWith('/embeddings')) {
+        dashScopeCalls += 1
+        return Response.json({
+          data: [{ embedding: Array.from({ length: 768 }, () => 0.25) }],
+          usage: { total_tokens: 3 },
+        })
+      }
+      throw new Error(`unexpected URL: ${String(input)}`)
+    },
+    now,
+  })
+  const operation = {
+    local_operation_id: 'task_missing_price_0001',
+    consent_revision_id: 'consent_missing_price_0001',
+    consent_scope_hash: hash,
+    local_budget_reservation_id: 'budget_missing_price_0001',
+    request_hash: hash,
+    capability: 'semantic_embedding' as const,
+    application_role: 'search_index' as const,
+    input: {
+      embedding_role: 'query' as const,
+      items: [{ id: 'fact_missing_price_0001', text: '不能按零费用结算' }],
+      model: 'text-embedding-v4' as const,
+      dimension: 768 as const,
+      instruction_version: 'v1',
+    },
+  }
+  const first = await handler(new Request('http://relay/v1/video-media/operations', {
+    method: 'POST',
+    headers: headers('missing-price-operation-key-0001'),
+    body: JSON.stringify(operation),
+  }))
+  expect(first.status).toBe(503)
+  expect(await first.json()).toMatchObject({ error: 'provider_usage_amount_missing' })
+
+  const retained = await handler(new Request(`http://relay${videoMediaOperationByLocalOperationPath(operation.local_operation_id)}`, {
+    headers: { Authorization: 'Bearer installation-token' },
+  }))
+  expect(await retained.json()).toMatchObject({
+    state: 'outcome_unknown',
+    safe_error_code: 'provider_outcome_unknown',
+  })
+
+  const blocked = await handler(new Request('http://relay/v1/video-media/operations', {
+    method: 'POST',
+    headers: headers('missing-price-operation-key-0002'),
+    body: JSON.stringify({
+      ...operation,
+      local_operation_id: 'task_missing_price_0002',
+      local_budget_reservation_id: 'budget_missing_price_0002',
+    }),
+  }))
+  expect(blocked.status).toBe(429)
+  expect(dashScopeCalls).toBe(1)
 })
 
 test('Relay releases known pre-provider failures, cleans inputs, and replays the terminal operation without a second submission', async () => {
@@ -1165,7 +1392,7 @@ test('Sidecar resumes only missing multipart parts and retries a timed-out cross
       return new Response(null, { status: 200, headers: { ETag: 'etag-two' } })
     },
   })
-  const ref = await client.uploadObject({ local_operation_id: 'task_12345678', purpose: 'proxy_video', content_hash: hash, byte_size: 6, content_type: 'video/mp4', consent_revision_id: 'consent_12345678', consent_scope_hash: hash }, new Uint8Array([1, 2, 3, 4, 5, 6]))
+  const ref = await client.uploadObject(clientLeaseInput({ local_operation_id: 'task_12345678', purpose: 'proxy_video', content_hash: hash, byte_size: 6, content_type: 'video/mp4', consent_revision_id: 'consent_12345678', consent_scope_hash: hash }), new Uint8Array([1, 2, 3, 4, 5, 6]))
   expect(ref).toBe('object_12345678')
   expect(partTwoAttempts).toBe(2)
   expect(completed).toEqual({ parts: [{ part_number: 1, etag: 'etag-one' }, { part_number: 2, etag: 'etag-two' }] })
@@ -1198,7 +1425,7 @@ test('Sidecar accepts a refreshed Relay-confirmed multipart part after an ambigu
       return new Response(null, { status: 200, headers: { ETag: 'etag-two' } })
     },
   })
-  await expect(client.uploadObject({ local_operation_id: 'task_12345678', purpose: 'proxy_video', content_hash: hash, byte_size: 6, content_type: 'video/mp4', consent_revision_id: 'consent_12345678', consent_scope_hash: hash }, new Uint8Array([1, 2, 3, 4, 5, 6]))).resolves.toBe('object_12345678')
+  await expect(client.uploadObject(clientLeaseInput({ local_operation_id: 'task_12345678', purpose: 'proxy_video', content_hash: hash, byte_size: 6, content_type: 'video/mp4', consent_revision_id: 'consent_12345678', consent_scope_hash: hash }), new Uint8Array([1, 2, 3, 4, 5, 6]))).resolves.toBe('object_12345678')
   expect(firstPartPuts).toBe(1)
   expect(leaseReads).toBe(2)
   expect(completed).toEqual({ parts: [{ part_number: 1, etag: 'oss-confirmed-etag-one' }, { part_number: 2, etag: 'etag-two' }] })
@@ -1222,7 +1449,7 @@ test('Sidecar reconciles an ambiguous immutable direct PUT through the same Rela
       return new Response(null, { status: 409 })
     },
   })
-  await expect(client.uploadObject({ local_operation_id: 'task_12345678', purpose: 'audio_for_asr', content_hash: hash, byte_size: 4, content_type: 'audio/wav', consent_revision_id: 'consent_12345678', consent_scope_hash: hash }, new Uint8Array([1, 2, 3, 4]))).resolves.toBe('object_12345678')
+  await expect(client.uploadObject(clientLeaseInput({ local_operation_id: 'task_12345678', purpose: 'audio_for_asr', content_hash: hash, byte_size: 4, content_type: 'audio/wav', consent_revision_id: 'consent_12345678', consent_scope_hash: hash }), new Uint8Array([1, 2, 3, 4]))).resolves.toBe('object_12345678')
   expect(puts).toBe(1)
   expect(completes).toBe(1)
 })
@@ -1251,7 +1478,7 @@ test('Sidecar stream upload accepts Relay-confirmed parts after an ambiguous 409
     },
   })
   const bytes = new Uint8Array([1, 2, 3, 4, 5, 6])
-  await expect(client.uploadObjectStream({ local_operation_id: 'task_12345678', purpose: 'proxy_video', content_hash: `sha256:${createHash('sha256').update(bytes).digest('hex')}`, byte_size: bytes.byteLength, content_type: 'video/mp4', consent_revision_id: 'consent_12345678', consent_scope_hash: hash }, () => new ReadableStream({ start(controller) { controller.enqueue(bytes); controller.close() } }))).resolves.toBe('object_12345678')
+  await expect(client.uploadObjectStream(clientLeaseInput({ local_operation_id: 'task_12345678', purpose: 'proxy_video', content_hash: `sha256:${createHash('sha256').update(bytes).digest('hex')}`, byte_size: bytes.byteLength, content_type: 'video/mp4', consent_revision_id: 'consent_12345678', consent_scope_hash: hash }), () => new ReadableStream({ start(controller) { controller.enqueue(bytes); controller.close() } }))).resolves.toBe('object_12345678')
   expect(firstPartPuts).toBe(1)
   expect(leaseReads).toBe(2)
 })
@@ -1280,7 +1507,7 @@ test('Sidecar 在 direct PUT 前以旧到期时间幂等续租同一 lease', asy
       throw new Error(`unexpected request ${url}`)
     },
   })
-  await expect(client.uploadObject({ local_operation_id: 'task_12345678', purpose: 'audio_for_asr', content_hash: hash, byte_size: 4, content_type: 'audio/wav', consent_revision_id: 'consent_12345678', consent_scope_hash: hash }, new Uint8Array([1, 2, 3, 4]))).resolves.toBe('object_12345678')
+  await expect(client.uploadObject(clientLeaseInput({ local_operation_id: 'task_12345678', purpose: 'audio_for_asr', content_hash: hash, byte_size: 4, content_type: 'audio/wav', consent_revision_id: 'consent_12345678', consent_scope_hash: hash }), new Uint8Array([1, 2, 3, 4]))).resolves.toBe('object_12345678')
   expect(oldCapabilityUsed).toBeFalse()
   expect(paths.filter(path => path.endsWith('/renew'))).toHaveLength(1)
   expect(renewalKeys).toHaveLength(1)
@@ -1324,7 +1551,7 @@ test('Sidecar 流式 multipart 在下一片签名前续租同一 lease 并沿用
       throw new Error(`unexpected request ${url}`)
     },
   })
-  await expect(client.uploadObjectStream({ local_operation_id: 'task_12345678', purpose: 'proxy_video', content_hash: `sha256:${createHash('sha256').update(bytes).digest('hex')}`, byte_size: bytes.byteLength, content_type: 'video/mp4', consent_revision_id: 'consent_12345678', consent_scope_hash: hash }, () => new ReadableStream({ start(controller) { controller.enqueue(bytes); controller.close() } }))).resolves.toBe('object_12345678')
+  await expect(client.uploadObjectStream(clientLeaseInput({ local_operation_id: 'task_12345678', purpose: 'proxy_video', content_hash: `sha256:${createHash('sha256').update(bytes).digest('hex')}`, byte_size: bytes.byteLength, content_type: 'video/mp4', consent_revision_id: 'consent_12345678', consent_scope_hash: hash }), () => new ReadableStream({ start(controller) { controller.enqueue(bytes); controller.close() } }))).resolves.toBe('object_12345678')
   expect({ creates, renewals }).toEqual({ creates: 1, renewals: 1 })
   expect(putUrls).toEqual(['https://oss.example.test/part/1?epoch=1', 'https://oss.example.test/part/2?epoch=2'])
 })
@@ -1346,7 +1573,7 @@ test('Sidecar 中止正在进行的 OSS PUT，且不会盲重试或完成 lease'
       return await new Promise<Response>((_resolve, reject) => init?.signal?.addEventListener('abort', () => { putSawAbort = true; reject(new Error('PUT aborted')) }, { once: true }))
     },
   })
-  const pending = client.uploadObject({ local_operation_id: 'task_12345678', purpose: 'audio_for_asr', content_hash: hash, byte_size: 4, content_type: 'audio/wav', consent_revision_id: 'consent_12345678', consent_scope_hash: hash }, new Uint8Array([1, 2, 3, 4]))
+  const pending = client.uploadObject(clientLeaseInput({ local_operation_id: 'task_12345678', purpose: 'audio_for_asr', content_hash: hash, byte_size: 4, content_type: 'audio/wav', consent_revision_id: 'consent_12345678', consent_scope_hash: hash }), new Uint8Array([1, 2, 3, 4]))
   await putStarted
   controller.abort()
   await expect(pending).rejects.toMatchObject({ status: 499, code: 'relay_upload_cancelled' } satisfies Partial<VideoMediaRelayClientError>)
@@ -1372,7 +1599,7 @@ test('Sidecar 中止等待中的源流读取，不继续读取或发出 OSS PUT'
     pull() { beganRead(); return new Promise(() => {}) },
     cancel() { cancellations += 1 },
   })
-  const pending = client.uploadObjectStream({ local_operation_id: 'task_12345678', purpose: 'proxy_video', content_hash: hash, byte_size: 6, content_type: 'video/mp4', consent_revision_id: 'consent_12345678', consent_scope_hash: hash }, source)
+  const pending = client.uploadObjectStream(clientLeaseInput({ local_operation_id: 'task_12345678', purpose: 'proxy_video', content_hash: hash, byte_size: 6, content_type: 'video/mp4', consent_revision_id: 'consent_12345678', consent_scope_hash: hash }), source)
   await readStarted
   controller.abort()
   await expect(pending).rejects.toMatchObject({ status: 499, code: 'relay_upload_cancelled' } satisfies Partial<VideoMediaRelayClientError>)
@@ -1522,7 +1749,7 @@ test('Sidecar streams a large source by fixed parts without materializing cross-
     },
   })
   const bytes = new Uint8Array([1, 2, 3, 4, 5, 6])
-  const ref = await client.uploadObjectStream({ local_operation_id: 'task_12345678', purpose: 'proxy_video', content_hash: `sha256:${createHash('sha256').update(bytes).digest('hex')}`, byte_size: bytes.byteLength, content_type: 'video/mp4', consent_revision_id: 'consent_12345678', consent_scope_hash: hash }, () => new ReadableStream({ start(controller) { controller.enqueue(bytes.subarray(0, 4)); controller.enqueue(bytes.subarray(4)); controller.close() } }))
+  const ref = await client.uploadObjectStream(clientLeaseInput({ local_operation_id: 'task_12345678', purpose: 'proxy_video', content_hash: `sha256:${createHash('sha256').update(bytes).digest('hex')}`, byte_size: bytes.byteLength, content_type: 'video/mp4', consent_revision_id: 'consent_12345678', consent_scope_hash: hash }), () => new ReadableStream({ start(controller) { controller.enqueue(bytes.subarray(0, 4)); controller.enqueue(bytes.subarray(4)); controller.close() } }))
   expect(ref).toBe('object_12345678')
   expect(uploadedPartTwo).toBe(1)
 })
@@ -1538,8 +1765,8 @@ test('Sidecar reuses a ready or bound deterministic lease after a local restart'
     },
   })
   const input = { local_operation_id: 'task_12345678', purpose: 'audio_for_asr' as const, content_hash: hash, byte_size: 4, content_type: 'audio/wav', consent_revision_id: 'consent_12345678', consent_scope_hash: hash }
-  expect(await client.uploadObject(input, new Uint8Array([1, 2, 3, 4]))).toBe('object_12345678')
-  expect(await client.uploadObjectStream(input, () => { throw new Error('ready/bound lease must not reread audio') })).toBe('object_12345678')
+  expect(await client.uploadObject(clientLeaseInput(input), new Uint8Array([1, 2, 3, 4]))).toBe('object_12345678')
+  expect(await client.uploadObjectStream(clientLeaseInput(input), () => { throw new Error('ready/bound lease must not reread audio') })).toBe('object_12345678')
   expect(calls).toBe(2)
 })
 

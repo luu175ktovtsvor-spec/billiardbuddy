@@ -13,7 +13,11 @@ import {
   applyDeliveryVariantCommandsInputSchema,
   applyEditorialTimelineCommandsInputSchema,
   analyzeVideoProjectInputSchema,
+  acceptVideoCreativeProposalInputSchema,
   applyVideoAlternativeInputSchema,
+  createVideoCreativeSessionInputSchema,
+  createVideoEditorialPlanInputSchema,
+  createVideoSourceRangeDecisionInputSchema,
   createDeliveryVariantInputSchema,
   createVideoAudioFinishingPlanInputSchema,
   createVideoCaptionDraftInputSchema,
@@ -33,6 +37,9 @@ import {
   renderVideoVariantInputSchema,
   selectVideoTimelineVersionInputSchema,
   updateVideoTimelineInputSchema,
+  upsertVideoDeliveryIntentInputSchema,
+  postVideoCreativeMessageInputSchema,
+  quickCreateVideoInputSchema,
   videoPreviewTaskResultSchema,
   videoRenderTaskResultSchema,
   videoCaptionDocumentRevisionSchema,
@@ -46,7 +53,11 @@ import {
   type ApplyDeliveryVariantCommandsInput,
   type ApplyEditorialTimelineCommandsInput,
   type AnalyzeVideoProjectInput,
+  type AcceptVideoCreativeProposalInput,
   type ApplyVideoAlternativeInput,
+  type CreateVideoCreativeSessionInput,
+  type CreateVideoEditorialPlanInput,
+  type CreateVideoSourceRangeDecisionInput,
   type CreateVideoProjectInput,
   type CreateDeliveryVariantInput,
   type CreateVideoAudioFinishingPlanInput,
@@ -69,6 +80,15 @@ import {
   type RenderVideoVariantInput,
   type SelectVideoTimelineVersionInput,
   type UpdateVideoTimelineInput,
+  type UpsertVideoDeliveryIntentInput,
+  type PostVideoCreativeMessageInput,
+  type QuickCreateVideoInput,
+  type VideoCreativeContextAnchor,
+  type VideoCreativeProposal,
+  type VideoDurationFeasibility,
+  type VideoEditorialPlan,
+  type VideoQuickCreateBatch,
+  type VideoSourceRangeDecision,
   type VideoClip,
   type VideoCaptionDocumentRevision,
   type VideoEvidence,
@@ -114,11 +134,14 @@ import {
 import {
   createHostedEvidence,
   factBasisHash,
+  factKind,
+  factSourceRange,
   type CameraShot,
   type EvidenceWindow,
   type TimedTranscript,
   type VideoDerivative,
   type VideoFactEvidence,
+  type VideoFact,
   type VideoFactKind,
   type VideoFactSource,
   type TranscriptRevision,
@@ -321,7 +344,10 @@ type RemoteUsage = {
   asr_seconds: number
   estimated_amount_micros: number
 }
-type RelayOperationRequest = Parameters<VideoMediaRelayClient['createOperation']>[0]
+/** A signed consent envelope is intentionally refreshed at transport time.
+ * It is not part of the durable paid-operation fingerprint. */
+type RelayOperationRequest = Omit<Parameters<VideoMediaRelayClient['createOperation']>[0], 'remote_consent_claim'>
+type AuthorizedRelayOperationRequest = Parameters<VideoMediaRelayClient['createOperation']>[0]
 type RelayOperationProjection = Awaited<ReturnType<VideoMediaRelayClient['createOperation']>>
 
 /** The local task owns this submission journal before the Relay POST. It is
@@ -346,7 +372,14 @@ type StagedSemanticQueryResult = {
   acknowledgement: PendingRelayAcknowledgement
 }
 
-function id(prefix: 'vid' | 'src' | 'clip' | 'task' | 'timeline' | 'draft' | 'evidence' | 'alternative' | 'consent' | 'budget'): string {
+type PlanningCandidate = {
+  id: string
+  source_id: string
+  source_fingerprint: `sha256:${string}`
+  range: SourceTimeRange
+}
+
+function id(prefix: 'vid' | 'src' | 'clip' | 'task' | 'timeline' | 'draft' | 'evidence' | 'alternative' | 'consent' | 'budget' | 'feasibility' | 'duration_variant' | 'delivery_intent' | 'range_decision' | 'chapter' | 'plan' | 'creative_session' | 'creative_message' | 'creative_response' | 'creative_proposal' | 'scene' | 'quick_batch' | 'quick_candidate' | 'planning_update'): string {
   return `${prefix}_${randomUUID().replaceAll('-', '')}`
 }
 
@@ -620,7 +653,14 @@ export class VideoWorkbenchRuntime {
     this.repository = this.projectStore.repository
     this.runProcess = options.runProcess ?? defaultVideoProcessRunner
     this.fetchImpl = options.fetchImpl
-    this.env = options.env ?? process.env
+    this.env = options.env
+      ? {
+          ...options.env,
+          ...(options.env.BB_VIDEO_REMOTE_CONSENT_SIGNING_KEY === undefined && process.env.BB_VIDEO_REMOTE_CONSENT_SIGNING_KEY
+            ? { BB_VIDEO_REMOTE_CONSENT_SIGNING_KEY: process.env.BB_VIDEO_REMOTE_CONSENT_SIGNING_KEY }
+            : {}),
+        }
+      : process.env
     this.platform = options.platform ?? process.platform
     this.pcmDecoder = options.pcmDecoder
     this.legacyMediaRoot = options.legacyMediaRoot
@@ -665,8 +705,56 @@ export class VideoWorkbenchRuntime {
       fetchImpl: this.fetchImpl,
       signal,
       now: this.now,
+      remoteConsentSigningKey: this.env.BB_VIDEO_REMOTE_CONSENT_SIGNING_KEY,
       ...videoMediaRelayTransportPolicyFromEnvironment(this.env),
     }) : null
+  }
+
+  private consentScopeHash(consent: VideoStudioProject['remote_analysis_consents'][number]): `sha256:${string}` {
+    return factBasisHash({ revision: consent.revision, coverage: consent.coverage, purposes: consent.purposes, data_kinds: consent.data_kinds })
+  }
+
+  private remoteConsentClaim(
+    project: VideoStudioProject,
+    consent: VideoStudioProject['remote_analysis_consents'][number],
+    relay: VideoMediaRelayClient,
+    purpose: 'visual_evidence' | 'planning' | 'caption_translation' | 'asr' | 'semantic_search',
+  ): string {
+    if (consent.project_id !== project.id || consent.state !== 'active' || consent.region !== 'cn-beijing' || !consent.purposes.includes(purpose)) {
+      throw new VideoWorkbenchServiceError('远程授权当前不可用于该能力', 409, 'VIDEO_REMOTE_CONSENT_SCOPE_INVALID')
+    }
+    const sourceIds = [...new Set(consent.coverage.map(item => item.source_id))].sort()
+    if (!sourceIds.length) throw new VideoWorkbenchServiceError('远程授权缺少素材范围', 409, 'VIDEO_REMOTE_CONSENT_SCOPE_INVALID')
+    return relay.createRemoteConsentClaim({
+      project_id: project.id,
+      source_ids: sourceIds,
+      purpose,
+      consent_revision_id: consent.id,
+      consent_scope_hash: this.consentScopeHash(consent),
+      region: 'cn-beijing',
+    })
+  }
+
+  private async authorizeRelayOperation(
+    projectId: string,
+    relay: VideoMediaRelayClient,
+    request: RelayOperationRequest,
+  ): Promise<AuthorizedRelayOperationRequest> {
+    const project = await this.requireVideoProject(projectId)
+    const purpose = request.application_role === 'shot_evidence'
+      ? 'visual_evidence'
+      : request.application_role === 'planning'
+        ? 'planning'
+        : request.application_role === 'caption_translation'
+          ? 'caption_translation'
+          : request.application_role === 'asr'
+            ? 'asr'
+            : 'semantic_search'
+    const consent = project.remote_analysis_consents.find(item => item.id === request.consent_revision_id)
+    if (!consent || this.consentScopeHash(consent) !== request.consent_scope_hash) {
+      throw new VideoWorkbenchServiceError('远程请求不匹配已确认授权范围', 409, 'VIDEO_REMOTE_CONSENT_SCOPE_INVALID')
+    }
+    return { ...request, remote_consent_claim: this.remoteConsentClaim(project, consent, relay, purpose) } as AuthorizedRelayOperationRequest
   }
 
   private appendPendingRelayAcknowledgements(
@@ -1854,7 +1942,7 @@ export class VideoWorkbenchRuntime {
     }
     let accepted: RelayOperationProjection | undefined
     try {
-      accepted = await relay.createOperation(request)
+      accepted = await relay.createOperation(await this.authorizeRelayOperation(projectId, relay, request))
       const value = await consume(relay, accepted)
       // A caller with a parent Operation clears/replaces its fence only inside
       // `consume`, together with a durable local result (Fact, staged Plan, or
@@ -1898,7 +1986,7 @@ export class VideoWorkbenchRuntime {
         }
         // Lookup is read-only recovery; this strict replay is the fingerprint
         // authority. A changed request can only fail 409, never reach Provider.
-        replayed = await recoveryRelay.createOperation(request)
+        replayed = await recoveryRelay.createOperation(await this.authorizeRelayOperation(projectId, recoveryRelay, request))
         if (replayed.id !== existing.id) throw new VideoMediaRelayClientError(409, 'local_operation_projection_conflict')
         const value = await consume(recoveryRelay, replayed)
         return value
@@ -2000,6 +2088,29 @@ export class VideoWorkbenchRuntime {
       resource_ids: resourceIds,
       created_at: this.iso(),
     }
+  }
+
+  private editorialMutationReplay(
+    project: VideoStudioProject,
+    kind: VideoStudioProject['editorial_mutation_receipts'][number]['kind'],
+    idempotencyKey: string,
+    requestHash: `sha256:${string}`,
+  ): string[] | null {
+    const receipt = project.editorial_mutation_receipts.find(item => item.kind === kind && item.idempotency_key === idempotencyKey)
+    if (!receipt) return null
+    if (receipt.request_hash !== requestHash) {
+      throw new VideoWorkbenchServiceError('同一幂等键不能提交不同的编辑请求', 409, 'VIDEO_EDITORIAL_IDEMPOTENCY_CONFLICT')
+    }
+    return [...receipt.resource_ids]
+  }
+
+  private editorialMutationReceipt(
+    kind: VideoStudioProject['editorial_mutation_receipts'][number]['kind'],
+    idempotencyKey: string,
+    requestHash: `sha256:${string}`,
+    resourceIds: string[],
+  ): VideoStudioProject['editorial_mutation_receipts'][number] {
+    return { kind, idempotency_key: idempotencyKey, request_hash: requestHash, resource_ids: resourceIds, created_at: this.iso() }
   }
 
   private async startFinishingOperation(
@@ -4560,6 +4671,786 @@ export class VideoWorkbenchRuntime {
     })
   }
 
+  /** Planning operates only on durable facts and explicit curation choices.
+   * It deliberately has no access to source paths, provider prompts or the
+   * mutable legacy Timeline projection. */
+  private async planningCandidates(project: VideoStudioProject): Promise<PlanningCandidate[]> {
+    const segments = await this.repository.listFacts('content_segment', project.id)
+    const factual = segments.flatMap(item => 'segmentation_source' in item
+      ? [{
+          id: item.id,
+          source_id: item.source_id,
+          source_fingerprint: item.source_fingerprint as `sha256:${string}`,
+          range: item.range,
+        }]
+      : [])
+    if (factual.length) return factual
+    // Projects upgraded from the old scene planner can still make a truthful
+    // feasibility assessment from persisted evidence. No source duration is
+    // invented and no unbounded presentation duration is substituted here.
+    return project.evidence.flatMap(item => {
+      const source = project.sources.find(candidate => candidate.id === item.source_id)
+      if (!source?.fingerprint || source.missing || source.content_changed) return []
+      return [{
+        id: item.id,
+        source_id: item.source_id,
+        source_fingerprint: source.fingerprint as `sha256:${string}`,
+        range: sourceTimeRange(
+          rationalTime(String(item.in_ms), { num: 1_000, den: 1 }),
+          rationalTime(String(item.out_ms - item.in_ms), { num: 1_000, den: 1 }),
+        ),
+      }]
+    })
+  }
+
+  private planningBasis(
+    project: VideoStudioProject,
+    candidates: ReadonlyArray<PlanningCandidate>,
+  ): `sha256:${string}` {
+    const locked = project.current_editorial_timeline_version_id
+      ? project.editorial_timeline_versions.find(item => item.id === project.current_editorial_timeline_version_id)
+        ?.items.filter(item => item.locked).map(item => ({ id: item.id, binding: item.binding, range: item.timeline_range })) ?? []
+      : []
+    return factBasisHash({
+      candidates: candidates.map(item => ({ id: item.id, source_id: item.source_id, source_fingerprint: item.source_fingerprint, range: item.range }))
+        .sort((left, right) => left.id.localeCompare(right.id)),
+      decisions: project.source_range_decisions.map(item => ({ id: item.id, source_id: item.source_id, source_fingerprint: item.source_fingerprint, range: item.range, decision: item.decision }))
+        .sort((left, right) => left.id.localeCompare(right.id)),
+      locked,
+    })
+  }
+
+  private decisionForCandidate(
+    project: VideoStudioProject,
+    candidate: Pick<PlanningCandidate, 'source_id' | 'source_fingerprint' | 'range'>,
+  ): VideoSourceRangeDecision['decision'] | undefined {
+    const sameRange = (left: SourceTimeRange, right: SourceTimeRange) => compareRationalTime(left.start, right.start) === 0
+      && compareRationalTime(left.duration, right.duration) === 0
+    const matching = project.source_range_decisions
+      .filter(item => item.source_id === candidate.source_id
+        && item.source_fingerprint === candidate.source_fingerprint
+        && sameRange(item.range as SourceTimeRange, candidate.range))
+      .sort((left, right) => right.updated_at.localeCompare(left.updated_at) || right.id.localeCompare(left.id))
+    return matching[0]?.decision
+  }
+
+  private planningDuration(candidates: ReadonlyArray<Pick<PlanningCandidate, 'range'>>): RationalTime {
+    const rate = { num: 90_000, den: 1 }
+    const ticks = candidates.reduce((total, candidate) => total + parseInt64(rescaleRationalTime(candidate.range.duration, rate, 'floor').ticks), 0n)
+    return rationalTime(ticks, rate)
+  }
+
+  private durationTarget(intent: NonNullable<VideoStudioProject['delivery_intent']>): RationalTime | undefined {
+    if (intent.duration_mode === 'natural') return undefined
+    return intent.target_duration ?? intent.target_max_duration ?? intent.target_min_duration
+  }
+
+  private async calculateDurationFeasibility(project: VideoStudioProject): Promise<VideoDurationFeasibility> {
+    const intent = project.delivery_intent
+    if (!intent) throw new VideoWorkbenchServiceError('请先确认交付意图后再评估时长', 409, 'VIDEO_DELIVERY_INTENT_REQUIRED')
+    const candidates = await this.planningCandidates(project)
+    const basis = this.planningBasis(project, candidates)
+    const active = candidates.filter(candidate => this.decisionForCandidate(project, candidate) !== 'reject')
+    const required = active.filter(candidate => this.decisionForCandidate(project, candidate) === 'required')
+    const natural = { min: this.planningDuration(required), max: this.planningDuration(active) }
+    const target = this.durationTarget(intent)
+    const targetAtPlanRate = target ? rescaleRationalTime(target, natural.max.tick_rate, 'nearest') : undefined
+    const tolerance = intent.exact_tolerance
+      ? rescaleRationalTime(intent.exact_tolerance, natural.max.tick_rate, 'ceil')
+      : rationalTime('0', natural.max.tick_rate)
+    const timeline = project.current_editorial_timeline_version_id
+      ? project.editorial_timeline_versions.find(item => item.id === project.current_editorial_timeline_version_id)
+      : undefined
+    let lockedRejected = false
+    for (const item of timeline?.items ?? []) {
+      if (!item.locked || item.binding.kind !== 'source') continue
+      const binding = item.binding
+      for (const candidate of candidates) {
+        if (this.decisionForCandidate(project, candidate) !== 'reject'
+          || candidate.source_id !== binding.source_id
+          || candidate.source_fingerprint !== binding.source_fingerprint
+          || compareRationalTime(candidate.range.start, endOfRange(binding.source_range)) >= 0
+          || compareRationalTime(binding.source_range.start, endOfRange(candidate.range)) >= 0) continue
+        lockedRejected = true
+        break
+      }
+      if (lockedRejected) break
+    }
+    let fitStatus: VideoDurationFeasibility['fit_status'] = 'fit'
+    const warnings: string[] = []
+    if (!active.length) {
+      fitStatus = 'insufficient_material'
+      warnings.push('没有可用的 Content Segment 或可锚定 Evidence，不能虚构时长可行性。')
+    } else if (lockedRejected) {
+      fitStatus = 'required_conflict'
+      warnings.push('已锁定的时间线条目与 reject 范围冲突，必须先由用户解除冲突。')
+    } else if (targetAtPlanRate && parseInt64(natural.max.ticks) < parseInt64(targetAtPlanRate.ticks) - parseInt64(tolerance.ticks)) {
+      fitStatus = 'insufficient_material'
+      warnings.push('可用且未拒绝的素材不足以达到目标时长。')
+    } else if (targetAtPlanRate && parseInt64(natural.min.ticks) > parseInt64(targetAtPlanRate.ticks) + parseInt64(tolerance.ticks)) {
+      fitStatus = 'required_conflict'
+      warnings.push('required 范围的时长已超过目标，不能靠自动变速或冻结素材凑时长。')
+    } else if (targetAtPlanRate && parseInt64(natural.max.ticks) > parseInt64(targetAtPlanRate.ticks) + parseInt64(tolerance.ticks)) {
+      fitStatus = 'excess_material'
+      warnings.push('存在可省略素材；候选会明确列出 omission，而不会静默丢弃。')
+    }
+    const included = active.slice(0, intent.coverage_preference === 'highlights' ? 1 : 200).map(item => item.id)
+    const omissions = active.filter(item => !included.includes(item.id)).map(item => ({
+      target_id: item.id,
+      reason: intent.coverage_preference === 'highlights' ? 'highlights 策略只保留最高优先级的可用片段。' : '当前推荐变体未纳入该可选片段。',
+    }))
+    return {
+      id: id('feasibility'),
+      project_id: project.id,
+      intent_revision: intent.revision,
+      facts_basis_hash: basis,
+      natural_duration_range: natural,
+      recommended_variants: active.length ? [{
+        id: id('duration_variant'),
+        label: intent.duration_mode === 'natural' ? '自然时长建议' : '目标时长建议',
+        estimated_duration: targetAtPlanRate ?? natural.max,
+        coverage: intent.coverage_preference,
+        included_segment_ids: included,
+        omissions,
+      }] : [],
+      fit_status: fitStatus,
+      warnings,
+      created_at: this.iso(),
+    }
+  }
+
+  async updateDeliveryIntent(projectId: string, raw: UpsertVideoDeliveryIntentInput): Promise<{
+    project: VideoStudioProject
+    intent: NonNullable<VideoStudioProject['delivery_intent']>
+    feasibility: VideoDurationFeasibility
+  }> {
+    return await this.mutateProject(projectId, async () => {
+      const input = upsertVideoDeliveryIntentInputSchema.parse(raw)
+      const project = await this.requireVideoProject(projectId)
+      if (project.revision !== input.base_revision) throw new VideoWorkbenchServiceError('项目已更新，请刷新后重新确认交付意图', 409, 'VIDEO_REVISION_CONFLICT')
+      const now = this.iso()
+      const current = project.delivery_intent
+      const intent = {
+        id: current?.id ?? id('delivery_intent'),
+        project_id: project.id,
+        goal: input.goal,
+        duration_mode: input.duration_mode,
+        ...(input.target_duration ? { target_duration: input.target_duration } : {}),
+        ...(input.target_min_duration ? { target_min_duration: input.target_min_duration } : {}),
+        ...(input.target_max_duration ? { target_max_duration: input.target_max_duration } : {}),
+        ...(input.exact_tolerance ? { exact_tolerance: input.exact_tolerance } : {}),
+        coverage_preference: input.coverage_preference,
+        editing_strategy: input.editing_strategy,
+        revision: (current?.revision ?? 0) + 1,
+        created_at: current?.created_at ?? now,
+        updated_at: now,
+      } as NonNullable<VideoStudioProject['delivery_intent']>
+      const preliminary = videoStudioProjectSchema.parse({ ...project, delivery_intent: intent })
+      const feasibility = await this.calculateDurationFeasibility(preliminary)
+      const saved = await this.repository.saveProject(videoStudioProjectSchema.parse({
+        ...preliminary,
+        duration_feasibility: feasibility,
+        revision: project.revision + 1,
+        updated_at: now,
+      }))
+      return { project: saved, intent, feasibility }
+    })
+  }
+
+  async getDurationFeasibility(projectId: string): Promise<VideoDurationFeasibility> {
+    return await this.mutateProject(projectId, async () => {
+      const project = await this.requireVideoProject(projectId)
+      const feasibility = project.duration_feasibility
+      if (!feasibility || feasibility.intent_revision !== project.delivery_intent?.revision) {
+        throw new VideoWorkbenchServiceError('时长可行性尚未生成或已过期，请重新确认交付意图', 409, 'VIDEO_DURATION_FEASIBILITY_STALE')
+      }
+      const candidates = await this.planningCandidates(project)
+      if (feasibility.facts_basis_hash !== this.planningBasis(project, candidates)) {
+        throw new VideoWorkbenchServiceError('素材或范围决定已变化，请重新确认交付意图', 409, 'VIDEO_DURATION_FEASIBILITY_STALE')
+      }
+      return feasibility
+    })
+  }
+
+  async createSourceRangeDecision(projectId: string, raw: CreateVideoSourceRangeDecisionInput, idempotencyKey: string): Promise<{
+    project: VideoStudioProject
+    decision: VideoSourceRangeDecision
+    feasibility?: VideoDurationFeasibility
+    reused: boolean
+  }> {
+    return await this.mutateProject(projectId, async () => {
+      const input = createVideoSourceRangeDecisionInputSchema.parse(raw)
+      const project = await this.requireVideoProject(projectId)
+      const requestHash = factBasisHash({ kind: 'source_range_decision', input })
+      const replay = this.editorialMutationReplay(project, 'source_range_decision', idempotencyKey, requestHash)
+      if (replay) {
+        const decision = project.source_range_decisions.find(item => item.id === replay[0])
+        if (!decision) throw new VideoWorkbenchServiceError('范围决定幂等记录已损坏', 409, 'VIDEO_EDITORIAL_INVALID')
+        return { project, decision, ...(project.duration_feasibility ? { feasibility: project.duration_feasibility } : {}), reused: true }
+      }
+      if (project.revision !== input.base_revision) throw new VideoWorkbenchServiceError('项目已更新，请刷新后再标记范围', 409, 'VIDEO_REVISION_CONFLICT')
+      const source = project.sources.find(item => item.id === input.source_id)
+      if (!source || !source.fingerprint || source.fingerprint !== input.source_fingerprint || source.missing || source.content_changed) {
+        throw new VideoWorkbenchServiceError('范围决定引用的素材不可用或已变化', 409, 'VIDEO_SOURCE_FINGERPRINT_PENDING')
+      }
+      const sourceFact = await this.repository.getFact('source', source.id).catch(() => null)
+      if (!sourceFact || !('primary_video_stream' in sourceFact) || !sourceFact.primary_video_stream.duration) {
+        throw new VideoWorkbenchServiceError('缺少主视频流事实，不能接受范围决定', 409, 'VIDEO_EDITORIAL_FACTS_UNAVAILABLE')
+      }
+      const end = endOfRange(input.range)
+      const sourceEnd = endOfRange(sourceTimeRange(sourceFact.primary_video_stream.start_time, sourceFact.primary_video_stream.duration))
+      if (compareRationalTime(input.range.start, sourceFact.primary_video_stream.start_time) < 0 || compareRationalTime(end, sourceEnd) > 0) {
+        throw new VideoWorkbenchServiceError('范围决定超出原始主视频流时长', 400, 'VIDEO_EDITORIAL_INVALID')
+      }
+      const now = this.iso()
+      const decision: VideoSourceRangeDecision = {
+        id: id('range_decision'),
+        project_id: project.id,
+        source_id: input.source_id,
+        source_fingerprint: input.source_fingerprint,
+        range: input.range as SourceTimeRange,
+        decision: input.decision,
+        ...(input.reason ? { reason: input.reason } : {}),
+        created_at: now,
+        updated_at: now,
+      }
+      const preliminary = videoStudioProjectSchema.parse({ ...project, source_range_decisions: [...project.source_range_decisions, decision] })
+      const feasibility = preliminary.delivery_intent ? await this.calculateDurationFeasibility(preliminary) : undefined
+      const saved = await this.repository.saveProject(videoStudioProjectSchema.parse({
+        ...preliminary,
+        ...(feasibility ? { duration_feasibility: feasibility } : {}),
+        editorial_mutation_receipts: [...project.editorial_mutation_receipts, this.editorialMutationReceipt('source_range_decision', idempotencyKey, requestHash, [decision.id])],
+        revision: project.revision + 1,
+        updated_at: now,
+      }))
+      return { project: saved, decision, ...(feasibility ? { feasibility } : {}), reused: false }
+    })
+  }
+
+  async createEditorialPlans(projectId: string, raw: CreateVideoEditorialPlanInput, idempotencyKey: string): Promise<{
+    project: VideoStudioProject
+    plans: VideoEditorialPlan[]
+    feasibility: VideoDurationFeasibility
+    reused: boolean
+  }> {
+    return await this.mutateProject(projectId, async () => {
+      const input = createVideoEditorialPlanInputSchema.parse(raw)
+      const project = await this.requireVideoProject(projectId)
+      const requestHash = factBasisHash({ kind: 'editorial_plan', input })
+      const replay = this.editorialMutationReplay(project, 'editorial_plan', idempotencyKey, requestHash)
+      if (replay) {
+        const plans = replay.map(id => project.editorial_plans.find(item => item.id === id)).filter((plan): plan is VideoEditorialPlan => Boolean(plan))
+        if (plans.length !== replay.length || !project.duration_feasibility) throw new VideoWorkbenchServiceError('规划幂等记录已损坏', 409, 'VIDEO_EDITORIAL_INVALID')
+        return { project, plans, feasibility: project.duration_feasibility, reused: true }
+      }
+      if (project.revision !== input.base_revision) throw new VideoWorkbenchServiceError('项目已更新，请刷新后重新规划', 409, 'VIDEO_REVISION_CONFLICT')
+      const intent = project.delivery_intent
+      if (!intent || (input.delivery_intent_id && input.delivery_intent_id !== intent.id)) {
+        throw new VideoWorkbenchServiceError('交付意图不存在或已变化', 409, 'VIDEO_DELIVERY_INTENT_REQUIRED')
+      }
+      const feasibility = await this.calculateDurationFeasibility(project)
+      if (feasibility.fit_status === 'required_conflict') {
+        throw new VideoWorkbenchServiceError('required、reject 或锁定内容存在冲突，不能安全生成规划', 409, 'VIDEO_DURATION_REQUIRED_CONFLICT')
+      }
+      if (feasibility.fit_status === 'insufficient_material') {
+        throw new VideoWorkbenchServiceError('可用素材不足，不能伪造剪辑规划', 409, 'VIDEO_DURATION_INSUFFICIENT_MATERIAL')
+      }
+      const candidates = (await this.planningCandidates(project)).filter(candidate => this.decisionForCandidate(project, candidate) !== 'reject')
+      const basis = this.planningBasis(project, candidates)
+      const now = this.iso()
+      const target = this.durationTarget(intent)
+      const chapters = candidates.slice(0, 200).map(candidate => ({
+        id: id('chapter'),
+        label: `素材片段 ${candidate.id.slice(-8)}`,
+        segment_ids: [candidate.id],
+        evidence_ids: project.evidence.filter(item => item.source_id === candidate.source_id && item.in_ms >= 0).slice(0, 100).map(item => item.id),
+        ...(target ? { target_duration: target } : {}),
+      }))
+      const outline: VideoEditorialPlan = {
+        id: id('plan'), project_id: project.id, project_revision: project.revision, facts_basis_hash: basis,
+        delivery_intent_id: intent.id, intent_revision: intent.revision, origin: 'local_conservative', provider_receipt_ids: [],
+        ...(target ? { target_duration: target } : {}), kind: 'outline', chapters, created_at: now,
+      }
+      const chapterPlans: VideoEditorialPlan[] = chapters.map(chapter => ({
+        id: id('plan'), project_id: project.id, project_revision: project.revision, facts_basis_hash: basis,
+        delivery_intent_id: intent.id, intent_revision: intent.revision, origin: 'local_conservative', provider_receipt_ids: [],
+        ...(target ? { target_duration: target } : {}), kind: 'chapter', outline_plan_id: outline.id, chapter_id: chapter.id,
+        candidate_segment_ids: chapter.segment_ids, omissions: [], created_at: now,
+      }))
+      const review: VideoEditorialPlan = {
+        id: id('plan'), project_id: project.id, project_revision: project.revision, facts_basis_hash: basis,
+        delivery_intent_id: intent.id, intent_revision: intent.revision, origin: 'local_conservative', provider_receipt_ids: [],
+        ...(target ? { target_duration: target } : {}), kind: 'global_review', outline_plan_id: outline.id,
+        chapter_plan_ids: chapterPlans.map(item => item.id), conflicts: [],
+        omissions: feasibility.recommended_variants.flatMap(item => item.omissions), created_at: now,
+      }
+      const plans = [outline, ...chapterPlans, review]
+      const saved = await this.repository.saveProject(videoStudioProjectSchema.parse({
+        ...project,
+        duration_feasibility: feasibility,
+        editorial_plans: [...project.editorial_plans, ...plans],
+        editorial_mutation_receipts: [...project.editorial_mutation_receipts, this.editorialMutationReceipt('editorial_plan', idempotencyKey, requestHash, plans.map(plan => plan.id))],
+        revision: project.revision + 1,
+        updated_at: now,
+      }))
+      return { project: saved, plans, feasibility, reused: false }
+    })
+  }
+
+  private quickCreateSelections(
+    project: VideoStudioProject,
+    candidates: readonly PlanningCandidate[],
+    maximum: number,
+  ): Array<{ label: string; explanation: string; candidates: PlanningCandidate[] }> {
+    const ordered = [...candidates].sort((left, right) => left.source_id.localeCompare(right.source_id)
+      || compareRationalTime(left.range.start, right.range.start)
+      || left.id.localeCompare(right.id))
+    const selected: Array<{ label: string; explanation: string; candidates: PlanningCandidate[] }> = []
+    const add = (label: string, explanation: string, next: PlanningCandidate[]) => {
+      if (!next.length || selected.length >= maximum) return
+      const key = next.map(item => item.id).sort().join('\0')
+      if (selected.some(item => item.candidates.map(candidate => candidate.id).sort().join('\0') === key)) return
+      selected.push({ label, explanation, candidates: next })
+    }
+    const required = ordered.filter(item => this.decisionForCandidate(project, item) === 'required')
+    const picked = ordered.filter(item => ['required', 'pick'].includes(this.decisionForCandidate(project, item) ?? 'maybe'))
+    const highlights = ordered.filter(item => this.decisionForCandidate(project, item) !== 'maybe')
+    add(
+      project.delivery_intent?.coverage_preference === 'highlights' ? '完整素材候选' : '完整覆盖候选',
+      '按当前未拒绝范围生成；不会覆盖任何已接受的正式时间线。',
+      ordered,
+    )
+    if (required.length && required.length < ordered.length) {
+      add('必留范围候选', '仅包含用户标记为 required 的范围，便于与完整覆盖候选比较。', required)
+    }
+    if (picked.length && picked.length < ordered.length) {
+      add('精选范围候选', '包含 required 与 pick 范围，省略 maybe 范围且在接受前保持草稿。', picked)
+    }
+    if (highlights.length && highlights.length < ordered.length) {
+      add('高光范围候选', '只保留有明确取舍的范围；未选择的范围会作为 omission 显示。', highlights)
+    }
+    return selected
+  }
+
+  private async quickCreateScenes(project: VideoStudioProject, candidates: readonly PlanningCandidate[]): Promise<VideoScene[]> {
+    const sourceFacts = new Map<string, VideoFactSource>()
+    for (const candidate of candidates) {
+      if (sourceFacts.has(candidate.source_id)) continue
+      const fact = await this.repository.getFact('source', candidate.source_id).catch(() => null)
+      if (!fact || !('primary_video_stream' in fact) || fact.project_id !== project.id
+        || fact.fingerprint_state !== 'ready' || !fact.fingerprint
+        || fact.fingerprint !== candidate.source_fingerprint
+        || !fact.primary_video_stream.duration) {
+        throw new VideoWorkbenchServiceError('生成快速草稿所需的主视频流事实不可用', 409, 'VIDEO_EDITORIAL_FACTS_UNAVAILABLE')
+      }
+      sourceFacts.set(candidate.source_id, fact)
+    }
+    return candidates.map((candidate, index) => {
+      const source = sourceFacts.get(candidate.source_id)!
+      const rate = source.primary_video_stream.start_time.tick_rate
+      const start = rescaleRationalTime(candidate.range.start, rate, 'nearest')
+      const duration = rescaleRationalTime(candidate.range.duration, rate, 'nearest')
+      const sourceStart = source.primary_video_stream.start_time
+      const sourceEnd = endOfRange(sourceTimeRange(sourceStart, source.primary_video_stream.duration!))
+      const rangeEnd = endOfRange(sourceTimeRange(start, duration))
+      if (compareRationalTime(start, sourceStart) < 0 || compareRationalTime(rangeEnd, sourceEnd) > 0 || parseInt64(duration.ticks) <= 0n) {
+        throw new VideoWorkbenchServiceError('快速草稿范围超出原始主视频流', 409, 'VIDEO_EDITORIAL_FACTS_UNAVAILABLE')
+      }
+      const inMs = timeToMilliseconds(rationalTime(parseInt64(start.ticks) - parseInt64(sourceStart.ticks), rate))
+      const durationMs = timeToMilliseconds(duration)
+      const outMs = inMs + durationMs
+      if (inMs < 0 || durationMs <= 0 || !Number.isSafeInteger(outMs)) {
+        throw new VideoWorkbenchServiceError('快速草稿时间范围不可安全转换', 409, 'VIDEO_EDITORIAL_FACTS_UNAVAILABLE')
+      }
+      const evidenceIds = project.evidence
+        .filter(item => item.source_id === candidate.source_id && item.in_ms < outMs && item.out_ms > inMs)
+        .map(item => item.id)
+        .slice(0, 100)
+      return {
+        id: id('scene'),
+        source_id: candidate.source_id,
+        in_ms: inMs,
+        out_ms: outMs,
+        story_role: index === 0 ? 'hook' : index === candidates.length - 1 ? 'result' : 'action',
+        evidence_ids: evidenceIds,
+        rationale: `基于 Content Segment ${candidate.id} 与当前范围决定生成。`,
+        needs_review: false,
+        locked: false,
+      }
+    })
+  }
+
+  /** Quick Create is intentionally a Draft producer. Its response may expose
+   * one conservative candidate when no real curation difference exists, but
+   * it never advances the formal Editorial Timeline head. */
+  async quickCreate(
+    projectId: string,
+    raw: QuickCreateVideoInput,
+    idempotencyKey: string,
+  ): Promise<{ project: VideoStudioProject; batch: VideoQuickCreateBatch; drafts: TimelineDraft[]; reused: boolean }> {
+    const input = quickCreateVideoInputSchema.parse(raw)
+    const initial = await this.requireVideoProject(projectId)
+    const existingBatch = initial.quick_create_batches.find(item => item.idempotency_key === idempotencyKey)
+    if (existingBatch) {
+      if (existingBatch.base_revision !== input.base_revision || existingBatch.max_candidates !== input.max_candidates) {
+        throw new VideoWorkbenchServiceError('同一幂等键不能生成不同快速草稿', 409, 'VIDEO_EDITORIAL_IDEMPOTENCY_CONFLICT')
+      }
+      const drafts = existingBatch.candidates.map(candidate => initial.timeline_drafts.find(draft => draft.id === candidate.draft_id)).filter((draft): draft is TimelineDraft => Boolean(draft))
+      if (drafts.length !== existingBatch.candidates.length) throw new VideoWorkbenchServiceError('快速草稿幂等记录已损坏', 409, 'VIDEO_EDITORIAL_INVALID')
+      return { project: initial, batch: existingBatch, drafts, reused: true }
+    }
+    if (initial.revision !== input.base_revision) {
+      throw new VideoWorkbenchServiceError('项目已更新，请刷新后重新生成快速草稿', 409, 'VIDEO_REVISION_CONFLICT')
+    }
+    const initialCandidates = await this.planningCandidates(initial)
+    const initialBasis = this.planningBasis(initial, initialCandidates)
+    const intent = initial.delivery_intent
+    if (!intent) throw new VideoWorkbenchServiceError('请先确认交付意图后再快速创建', 409, 'VIDEO_DELIVERY_INTENT_REQUIRED')
+    const existingPlan = initial.editorial_plans.find(plan => plan.kind === 'global_review'
+      && plan.delivery_intent_id === intent.id
+      && plan.intent_revision === intent.revision
+      && plan.facts_basis_hash === initialBasis)
+    if (!existingPlan) {
+      await this.createEditorialPlans(projectId, { base_revision: initial.revision, delivery_intent_id: intent.id }, `quick-create-plan-${factBasisHash({ project_id: projectId, intent_id: intent.id, basis: initialBasis }).slice(-32)}`)
+    }
+    return await this.mutateProject(projectId, async () => {
+      const project = await this.prepareEditorialProject(projectId)
+      const currentIntent = project.delivery_intent
+      if (!currentIntent) throw new VideoWorkbenchServiceError('交付意图已变化，请重新确认后再快速创建', 409, 'VIDEO_DELIVERY_INTENT_REQUIRED')
+      const candidates = (await this.planningCandidates(project)).filter(item => this.decisionForCandidate(project, item) !== 'reject')
+      const basis = this.planningBasis(project, candidates)
+      const planIds = project.editorial_plans
+        .filter(plan => plan.delivery_intent_id === currentIntent.id && plan.intent_revision === currentIntent.revision && plan.facts_basis_hash === basis)
+        .map(plan => plan.id)
+      if (!planIds.length) throw new VideoWorkbenchServiceError('规划基础已变化，请先重新生成 Outline/Chapter/Global Review', 409, 'VIDEO_DURATION_FEASIBILITY_STALE')
+      const requestHash = factBasisHash({ kind: 'quick_create', intent_revision: currentIntent.revision, facts_basis_hash: basis, plan_ids: planIds, max_candidates: input.max_candidates })
+      const prior = project.quick_create_batches.find(item => item.idempotency_key === idempotencyKey)
+      if (prior) {
+        if (prior.base_revision !== input.base_revision || prior.max_candidates !== input.max_candidates) {
+          throw new VideoWorkbenchServiceError('同一幂等键不能生成不同快速草稿', 409, 'VIDEO_EDITORIAL_IDEMPOTENCY_CONFLICT')
+        }
+        const drafts = prior.candidates.map(candidate => project.timeline_drafts.find(draft => draft.id === candidate.draft_id)).filter((draft): draft is TimelineDraft => Boolean(draft))
+        if (drafts.length !== prior.candidates.length) throw new VideoWorkbenchServiceError('快速草稿幂等记录已损坏', 409, 'VIDEO_EDITORIAL_INVALID')
+        return { project, batch: prior, drafts, reused: true }
+      }
+      const feasibility = await this.calculateDurationFeasibility(project)
+      if (feasibility.fit_status === 'required_conflict' || feasibility.fit_status === 'insufficient_material') {
+        throw new VideoWorkbenchServiceError('范围、锁定项或素材数量不能安全生成快速草稿', 409, feasibility.fit_status === 'required_conflict' ? 'VIDEO_DURATION_REQUIRED_CONFLICT' : 'VIDEO_DURATION_INSUFFICIENT_MATERIAL')
+      }
+      const current = this.editorial.currentTimeline(project)
+      if (current.tracks.some(track => track.locked) || current.items.some(item => item.locked)) {
+        throw new VideoWorkbenchServiceError('快速草稿不能重排已有锁定条目；请先手工编辑或解除锁定。', 409, 'VIDEO_LOCKED_SCENE_CONFLICT')
+      }
+      const selectionOptions = this.quickCreateSelections(project, candidates, 3)
+      const selections = selectionOptions.slice(0, input.max_candidates)
+      if (!selections.length) throw new VideoWorkbenchServiceError('没有可用范围可以生成快速草稿', 409, 'VIDEO_DURATION_INSUFFICIENT_MATERIAL')
+      const timings = await this.editorialTimings(project)
+      const sourceBounds = await this.editorialSourceBounds(project)
+      const allIds = new Set(candidates.map(item => item.id))
+      const drafts: TimelineDraft[] = []
+      const batchCandidates: VideoQuickCreateBatch['candidates'] = []
+      for (const selection of selections) {
+        const scenes = await this.quickCreateScenes(project, selection.candidates)
+        const draft = this.editorial.createDraft(project, scenes, timings, planIds, sourceBounds)
+        const included = new Set(selection.candidates.map(item => item.id))
+        drafts.push(draft)
+        batchCandidates.push({
+          id: id('quick_candidate'),
+          draft_id: draft.id,
+          label: selection.label,
+          explanation: selection.explanation,
+          estimated_duration: this.planningDuration(selection.candidates),
+          included_segment_ids: selection.candidates.map(item => item.id),
+          omissions: [...allIds].filter(item => !included.has(item)).map(item => ({ target_id: item, reason: '该候选采用不同的范围取舍，保留为可比较 omission。' })),
+        })
+      }
+      const explanation = selectionOptions.length === 1
+        ? '当前范围决定没有形成第二个可验证的剪辑取舍，因此只提供一个保守候选。'
+        : selectionOptions.length > batchCandidates.length
+          ? `当前请求最多返回 ${input.max_candidates} 个候选；其余可验证取舍未在本批次创建。`
+          : '候选基于不同的显式 required/pick/maybe 范围；均保持为 Draft，等待用户比较或放弃。'
+      const batch: VideoQuickCreateBatch = {
+        id: id('quick_batch'),
+        project_id: project.id,
+        idempotency_key: idempotencyKey,
+        base_revision: input.base_revision,
+        max_candidates: input.max_candidates,
+        request_hash: requestHash,
+        intent_revision: currentIntent.revision,
+        facts_basis_hash: basis,
+        editorial_plan_ids: planIds,
+        candidates: batchCandidates,
+        explanation,
+        created_at: this.iso(),
+      }
+      const saved = await this.repository.saveProject(videoStudioProjectSchema.parse({
+        ...project,
+        duration_feasibility: feasibility,
+        timeline_drafts: [...project.timeline_drafts, ...drafts],
+        quick_create_batches: [...project.quick_create_batches, batch],
+        revision: project.revision + 1,
+        updated_at: this.iso(),
+      }))
+      return { project: saved, batch, drafts, reused: false }
+    })
+  }
+
+  private async assertCreativeAnchors(project: VideoStudioProject, anchors: readonly VideoCreativeContextAnchor[]): Promise<void> {
+    for (const anchor of anchors) {
+      if (anchor.kind === 'project') continue
+      if (anchor.kind === 'source') {
+        if (!project.sources.some(source => source.id === anchor.source_id)) throw new VideoWorkbenchServiceError('创作上下文引用了不存在的素材', 400, 'VIDEO_CREATIVE_ANCHOR_INVALID')
+        continue
+      }
+      if (anchor.kind === 'camera_shot' || anchor.kind === 'content_segment' || anchor.kind === 'evidence_window') {
+        const factId = anchor.kind === 'camera_shot'
+          ? anchor.camera_shot_id
+          : anchor.kind === 'content_segment'
+            ? anchor.content_segment_id
+            : anchor.evidence_window_id
+        const fact = await this.repository.getFact(anchor.kind, factId).catch(() => null)
+        if (!fact || !('project_id' in fact) || fact.project_id !== project.id) throw new VideoWorkbenchServiceError('创作上下文不能跨项目引用媒体事实', 400, 'VIDEO_CREATIVE_ANCHOR_INVALID')
+        continue
+      }
+      if (anchor.kind === 'transcript_range') {
+        const transcript = await this.repository.getFact('transcript', anchor.transcript_id).catch(() => null)
+        if (!transcript || factKind(transcript) !== 'transcript' || transcript.project_id !== project.id) throw new VideoWorkbenchServiceError('创作上下文不能跨项目引用转写', 400, 'VIDEO_CREATIVE_ANCHOR_INVALID')
+        continue
+      }
+      if (anchor.kind === 'timeline_range' || anchor.kind === 'timeline_item') {
+        const timeline = project.editorial_timeline_versions.find(item => item.id === anchor.editorial_timeline_version_id)
+        if (!timeline || (anchor.kind === 'timeline_item' && !timeline.items.some(item => item.id === anchor.item_id))) {
+          throw new VideoWorkbenchServiceError('创作上下文引用的时间线已不存在', 400, 'VIDEO_CREATIVE_ANCHOR_INVALID')
+        }
+        continue
+      }
+      if (!project.delivery_variant_versions.some(item => item.id === anchor.variant_version_id)) {
+        throw new VideoWorkbenchServiceError('创作上下文引用的交付变体已不存在', 400, 'VIDEO_CREATIVE_ANCHOR_INVALID')
+      }
+    }
+  }
+
+  async createCreativeSession(projectId: string, raw: CreateVideoCreativeSessionInput, idempotencyKey: string) {
+    return await this.mutateProject(projectId, async () => {
+      const input = createVideoCreativeSessionInputSchema.parse(raw)
+      const project = await this.requireVideoProject(projectId)
+      const requestHash = factBasisHash({ kind: 'creative_session', input })
+      const replay = this.editorialMutationReplay(project, 'creative_session', idempotencyKey, requestHash)
+      if (replay) {
+        const session = project.creative_sessions.find(item => item.id === replay[0])
+        if (!session) throw new VideoWorkbenchServiceError('创作会话幂等记录已损坏', 409, 'VIDEO_EDITORIAL_INVALID')
+        return { project, session, reused: true }
+      }
+      const session = { id: id('creative_session'), project_id: project.id, title: input.title, ...(input.recipe_id ? { recipe_id: input.recipe_id } : {}), created_at: this.iso() }
+      const saved = await this.repository.saveProject(videoStudioProjectSchema.parse({
+        ...project,
+        creative_sessions: [...project.creative_sessions, session],
+        editorial_mutation_receipts: [...project.editorial_mutation_receipts, this.editorialMutationReceipt('creative_session', idempotencyKey, requestHash, [session.id])],
+        revision: project.revision + 1,
+        updated_at: this.iso(),
+      }))
+      return { project: saved, session, reused: false }
+    })
+  }
+
+  async postCreativeMessage(projectId: string, sessionId: string, raw: PostVideoCreativeMessageInput, idempotencyKey: string) {
+    return await this.mutateProject(projectId, async () => {
+      const input = postVideoCreativeMessageInputSchema.parse(raw)
+      const project = await this.requireVideoProject(projectId)
+      const session = project.creative_sessions.find(item => item.id === sessionId && !item.archived_at)
+      if (!session) throw new VideoWorkbenchServiceError('创作会话不存在或已归档', 404, 'VIDEO_CREATIVE_SESSION_NOT_FOUND')
+      const requestHash = factBasisHash({ kind: 'creative_message', session_id: sessionId, input })
+      const replay = this.editorialMutationReplay(project, 'creative_message', idempotencyKey, requestHash)
+      if (replay) {
+        const message = project.creative_messages.find(item => item.id === replay[0])
+        const response = project.creative_responses.find(item => item.id === replay[1])
+        const proposal = replay[2] ? project.creative_proposals.find(item => item.id === replay[2]) : undefined
+        if (!message || !response || (replay[2] && !proposal)) throw new VideoWorkbenchServiceError('创作消息幂等记录已损坏', 409, 'VIDEO_EDITORIAL_INVALID')
+        return { project, message, response, ...(proposal ? { proposal } : {}), reused: true }
+      }
+      await this.assertCreativeAnchors(project, input.anchors)
+      const now = this.iso()
+      const userMessageId = id('creative_message')
+      const response = {
+        id: id('creative_response'), project_id: project.id, session_id: session.id, kind: 'answer' as const,
+        anchors: input.anchors, evidence_ids: [],
+        text: '已记录本轮创作要求。它仅作为项目内只读建议；任何时间线或交付改变都必须先接受带版本基准的 Proposal。',
+        created_at: now,
+      }
+      let proposal: VideoCreativeProposal | undefined
+      if (input.proposal) {
+        const candidate = input.proposal.proposed_command_set
+        const proposalDraft = input.proposal.proposed_timeline_draft_id
+          ? project.timeline_drafts.find(item => item.id === input.proposal!.proposed_timeline_draft_id)
+          : undefined
+        if (candidate && candidate.project_id !== project.id) throw new VideoWorkbenchServiceError('Proposal CommandSet 不属于当前项目', 400, 'VIDEO_CREATIVE_PROPOSAL_INVALID')
+        if (input.proposal.proposed_timeline_draft_id && !proposalDraft) {
+          throw new VideoWorkbenchServiceError('Proposal 引用的时间线草稿不存在', 400, 'VIDEO_CREATIVE_PROPOSAL_INVALID')
+        }
+        if (!candidate && !input.proposal.proposed_timeline_draft_id) {
+          throw new VideoWorkbenchServiceError('可接受 Proposal 必须包含 Timeline Draft 或 typed CommandSet', 400, 'VIDEO_CREATIVE_PROPOSAL_INVALID')
+        }
+        proposal = {
+          id: id('creative_proposal'), project_id: project.id, session_id: session.id, created_by_message_id: userMessageId,
+          base_project_revision: project.revision, facts_basis_hash: editorialFactsBasisHash(project),
+          ...(candidate?.target.kind === 'editorial' ? { base_timeline_version_id: candidate.target.base_timeline_version_id } : {}),
+          ...(candidate?.target.kind === 'delivery_variant' ? { base_variant_version_id: candidate.target.base_variant_version_id } : {}),
+          ...(!candidate && proposalDraft ? { base_timeline_version_id: proposalDraft.base_timeline_version_id } : {}),
+          anchors: input.anchors, kind: input.proposal.kind, summary: input.proposal.summary, rationale: input.proposal.rationale,
+          evidence_ids: input.proposal.evidence_ids,
+          ...(input.proposal.proposed_timeline_draft_id ? { proposed_timeline_draft_id: input.proposal.proposed_timeline_draft_id } : {}),
+          ...(candidate ? { proposed_command_set: candidate } : {}),
+          ...(input.proposal.estimated_duration ? { estimated_duration: input.proposal.estimated_duration } : {}),
+          ...(input.proposal.quality_report_id ? { quality_report_id: input.proposal.quality_report_id } : {}),
+          provider_receipt_ids: input.proposal.provider_receipt_ids,
+          actual_cost: input.proposal.actual_cost,
+          status: 'proposed', created_at: now,
+        }
+      }
+      const user = { id: userMessageId, project_id: project.id, session_id: session.id, role: 'user' as const, text: input.text, anchors: input.anchors, response_ids: [response.id], proposal_ids: proposal ? [proposal.id] : [], created_at: now }
+      const assistant = { id: id('creative_message'), project_id: project.id, session_id: session.id, role: 'assistant' as const, text: response.text, anchors: input.anchors, response_ids: [response.id], proposal_ids: proposal ? [proposal.id] : [], created_at: now }
+      const saved = await this.repository.saveProject(videoStudioProjectSchema.parse({
+        ...project,
+        creative_messages: [...project.creative_messages, user, assistant],
+        creative_responses: [...project.creative_responses, response],
+        creative_proposals: proposal ? [...project.creative_proposals, proposal] : project.creative_proposals,
+        editorial_mutation_receipts: [...project.editorial_mutation_receipts, this.editorialMutationReceipt('creative_message', idempotencyKey, requestHash, [user.id, response.id, ...(proposal ? [proposal.id] : [])])],
+        revision: project.revision + 1,
+        updated_at: now,
+      }))
+      return { project: saved, message: user, response, ...(proposal ? { proposal } : {}), reused: false }
+    })
+  }
+
+  async getCreativeProposal(projectId: string, proposalId: string): Promise<VideoCreativeProposal> {
+    const project = await this.requireVideoProject(projectId)
+    const proposal = project.creative_proposals.find(item => item.id === proposalId)
+    if (!proposal) throw new VideoWorkbenchServiceError('创作 Proposal 不存在', 404, 'VIDEO_CREATIVE_PROPOSAL_NOT_FOUND')
+    return proposal
+  }
+
+  async rejectCreativeProposal(projectId: string, proposalId: string, idempotencyKey: string): Promise<{ project: VideoStudioProject; proposal: VideoCreativeProposal; reused: boolean }> {
+    return await this.mutateProject(projectId, async () => {
+      const project = await this.requireVideoProject(projectId)
+      const proposal = project.creative_proposals.find(item => item.id === proposalId)
+      if (!proposal) throw new VideoWorkbenchServiceError('创作 Proposal 不存在', 404, 'VIDEO_CREATIVE_PROPOSAL_NOT_FOUND')
+      const requestHash = factBasisHash({ kind: 'creative_proposal_rejection', proposal_id: proposalId })
+      const replay = this.editorialMutationReplay(project, 'creative_proposal_rejection', idempotencyKey, requestHash)
+      if (replay) {
+        const persisted = project.creative_proposals.find(item => item.id === replay[0])
+        if (!persisted) throw new VideoWorkbenchServiceError('Proposal 拒绝幂等记录已损坏', 409, 'VIDEO_EDITORIAL_INVALID')
+        return { project, proposal: persisted, reused: true }
+      }
+      if (proposal.status !== 'proposed') throw new VideoWorkbenchServiceError('创作 Proposal 已有最终决定', 409, 'VIDEO_CREATIVE_PROPOSAL_FINAL')
+      const next = { ...proposal, status: 'rejected' as const }
+      const saved = await this.repository.saveProject(videoStudioProjectSchema.parse({
+        ...project,
+        creative_proposals: project.creative_proposals.map(item => item.id === proposal.id ? next : item),
+        editorial_mutation_receipts: [...project.editorial_mutation_receipts, this.editorialMutationReceipt('creative_proposal_rejection', idempotencyKey, requestHash, [proposal.id])],
+        revision: project.revision + 1,
+        updated_at: this.iso(),
+      }))
+      return { project: saved, proposal: next, reused: false }
+    })
+  }
+
+  async acceptCreativeProposal(
+    projectId: string,
+    proposalId: string,
+    raw: AcceptVideoCreativeProposalInput,
+    idempotencyKey: string,
+  ): Promise<{ project: VideoStudioProject; proposal: VideoCreativeProposal; version: EditorialTimelineVersion | DeliveryVariantVersion; reused: boolean }> {
+    return await this.mutateProject(projectId, async () => {
+      const input = acceptVideoCreativeProposalInputSchema.parse(raw)
+      let project = await this.prepareEditorialProject(projectId)
+      const proposal = project.creative_proposals.find(item => item.id === proposalId)
+      if (!proposal) throw new VideoWorkbenchServiceError('创作 Proposal 不存在', 404, 'VIDEO_CREATIVE_PROPOSAL_NOT_FOUND')
+      if (proposal.status !== 'proposed') {
+        const receipt = project.editorial_command_receipts.find(item => item.idempotency_key === idempotencyKey)
+        const version = receipt && (receipt.target_kind === 'editorial'
+          ? project.editorial_timeline_versions.find(item => item.id === receipt.created_version_id)
+          : project.delivery_variant_versions.find(item => item.id === receipt.created_version_id))
+        if (version && ['accepted', 'partially_accepted'].includes(proposal.status)) {
+          return { project, proposal, version, reused: true }
+        }
+        throw new VideoWorkbenchServiceError('创作 Proposal 已有最终决定', 409, 'VIDEO_CREATIVE_PROPOSAL_FINAL')
+      }
+      if (proposal.facts_basis_hash !== editorialFactsBasisHash(project)) {
+        if (proposal.status === 'proposed') {
+          project = await this.repository.saveProject(videoStudioProjectSchema.parse({
+            ...project,
+            creative_proposals: project.creative_proposals.map(item => item.id === proposal.id ? { ...item, status: 'stale' as const } : item),
+            revision: project.revision + 1,
+            updated_at: this.iso(),
+          }))
+        }
+        throw new VideoWorkbenchServiceError('Proposal 的素材事实已变化，请重新生成建议', 409, 'VIDEO_CREATIVE_PROPOSAL_STALE')
+      }
+      let commandSet = proposal.proposed_command_set
+      if (!commandSet && proposal.proposed_timeline_draft_id) {
+        const draft = project.timeline_drafts.find(item => item.id === proposal.proposed_timeline_draft_id)
+        const current = this.editorial.currentTimeline(project)
+        if (!draft || draft.status !== 'proposed' || draft.base_timeline_version_id !== current.id || draft.facts_basis_hash !== editorialFactsBasisHash(project)) {
+          throw new VideoWorkbenchServiceError('Proposal 中的时间线草稿已过期', 409, 'VIDEO_CREATIVE_PROPOSAL_STALE')
+        }
+        commandSet = timelineCommandSetSchema.parse({
+          id: `command_${randomUUID().replaceAll('-', '')}`,
+          project_id: project.id,
+          actor_id: STANDALONE_VIDEO_OWNER.owner_id,
+          idempotency_key: idempotencyKey,
+          created_at: this.iso(),
+          target: { kind: 'editorial', base_timeline_version_id: current.id },
+          commands: [
+            ...(current.items.length ? [{ kind: 'ripple_delete' as const, item_ids: current.items.map(item => item.id), close_gap: false }] : []),
+            ...draft.items.map(item => ({ kind: 'insert' as const, track_id: item.track_id, item })),
+          ],
+        })
+      }
+      if (!commandSet) throw new VideoWorkbenchServiceError('该 Proposal 只有只读回答，不能被接受', 409, 'VIDEO_CREATIVE_PROPOSAL_NOT_ACCEPTABLE')
+      let commands: unknown = commandSet.commands
+      const indexes = input.command_indexes
+      if (indexes) {
+        if (new Set(indexes).size !== indexes.length || indexes.some(index => index >= commandSet!.commands.length)) {
+          throw new VideoWorkbenchServiceError('部分接受包含无效的 CommandSet 序号', 400, 'VIDEO_CREATIVE_PROPOSAL_INVALID')
+        }
+        commands = indexes.map(index => commandSet!.commands[index]!)
+      }
+      if (!Array.isArray(commands) || !commands.length) throw new VideoWorkbenchServiceError('至少选择一条 Proposal CommandSet 命令', 400, 'VIDEO_CREATIVE_PROPOSAL_INVALID')
+      if (commandSet.target.kind === 'editorial' && proposal.base_timeline_version_id !== commandSet.target.base_timeline_version_id) {
+        throw new VideoWorkbenchServiceError('Proposal 的编辑版本基准不一致', 409, 'VIDEO_CREATIVE_PROPOSAL_STALE')
+      }
+      if (commandSet.target.kind === 'delivery_variant' && proposal.base_variant_version_id !== commandSet.target.base_variant_version_id) {
+        throw new VideoWorkbenchServiceError('Proposal 的交付版本基准不一致', 409, 'VIDEO_CREATIVE_PROPOSAL_STALE')
+      }
+      const acceptedCommandSet = timelineCommandSetSchema.parse({
+        ...commandSet,
+        id: `command_${randomUUID().replaceAll('-', '')}`,
+        project_id: project.id,
+        actor_id: STANDALONE_VIDEO_OWNER.owner_id,
+        idempotency_key: idempotencyKey,
+        created_at: this.iso(),
+        commands,
+      })
+      let applied: ReturnType<EditorialApplication['applyCommandSet']>
+      try {
+        applied = this.editorial.applyCommandSet(project, acceptedCommandSet, await this.editorialSourceBounds(project))
+      } catch (error) {
+        return this.editorialError(error)
+      }
+      const nextProposal: VideoCreativeProposal = {
+        ...proposal,
+        status: indexes && indexes.length < commandSet.commands.length ? 'partially_accepted' : 'accepted',
+      }
+      const next = videoStudioProjectSchema.parse({
+        ...applied.project,
+        creative_proposals: applied.project.creative_proposals.map(item => item.id === proposal.id ? nextProposal : item),
+        ...(applied.reused ? { revision: project.revision + 1, updated_at: this.iso() } : {}),
+      })
+      const saved = await this.repository.saveProject(next)
+      return { project: saved, proposal: nextProposal, version: applied.version, reused: applied.reused }
+    })
+  }
+
   /** Decode audio locally and stream the temporary WAV to the Relay's object
    * capability.  The host stores only the returned immutable transcript. */
   private async remoteTranscriptEvidence(
@@ -4685,6 +5576,7 @@ export class VideoWorkbenchRuntime {
           objectRef = await relay.uploadObjectStream({
             local_operation_id: localOperationId, purpose: 'audio_for_asr', content_hash: contentHash, byte_size: audio.size, content_type: 'audio/wav',
             consent_revision_id: consent.id, consent_scope_hash: scopeHash,
+            remote_consent_claim: this.remoteConsentClaim(project, consent, relay, 'asr'),
           }, () => Readable.toWeb(createReadStream(audioPath)) as unknown as ReadableStream<Uint8Array>)
           const uploaded = await this.saveAsrCheckpoint(operationId, source.id, { object_ref: objectRef, state: 'uploading' })
           if (!uploaded?.object_ref) throw new VideoWorkbenchServiceError('ASR 对象检查点持久化失败，已拒绝远程提交', 503, 'VIDEO_REMOTE_OPERATION_UNAVAILABLE')
@@ -4728,7 +5620,7 @@ export class VideoWorkbenchRuntime {
         input: { mode: route, audio_object_ref: objectRef, source_offset: sourceFact.primary_video_stream.start_time, language: 'zh', hotwords: [], speaker_diarization: false, sentence_timestamps: true, word_timestamps: true },
       }
       try {
-        remote = await relay.createOperation(asrRequest)
+        remote = await relay.createOperation(await this.authorizeRelayOperation(project.id, relay, asrRequest))
       } catch (error) {
         const quotaError = videoHostedQuotaError(error)
         if (quotaError) {
@@ -4770,7 +5662,7 @@ export class VideoWorkbenchRuntime {
           }
           await this.reserveRemoteBudget(project.id, budget.id, localOperationId, 'speech_transcription', reservedUsage)
           try {
-            remote = await control.createOperation(asrRequest)
+            remote = await control.createOperation(await this.authorizeRelayOperation(project.id, control, asrRequest))
           } catch (retryError) {
             const quotaError = videoHostedQuotaError(retryError)
             if (quotaError) {
@@ -5184,6 +6076,7 @@ export class VideoWorkbenchRuntime {
           local_operation_id: frameOperationId,
           purpose: 'visual_frames', content_hash: contentHash, byte_size: bytes.byteLength, content_type: match[1]!,
           consent_revision_id: consent.id, consent_scope_hash: scopeHash,
+          remote_consent_claim: this.remoteConsentClaim(project, consent, relay, 'visual_evidence'),
         }, bytes)
       } catch (error) {
         // Object transfer precedes the Provider submission. A reserved call
@@ -5681,6 +6574,19 @@ export class VideoWorkbenchRuntime {
           sourceEvidence,
         ]
         const nextEvidenceRevision = evidenceRevision(evidence)
+        const planningUpdate = project.editorial_plans.length
+          ? {
+              id: id('planning_update'),
+              project_id: project.id,
+              source_id: sourceId,
+              // Fingerprint completion creates only the local summary facts
+              // above. Deeper analysis still requires its own active consent.
+              authorized_depth: 'summary' as const,
+              plan_ids: project.editorial_plans.map(plan => plan.id),
+              reason: '新素材已完成本地摘要，已有规划可重新生成；不会自动改写已接受时间线。',
+              created_at: this.iso(),
+            }
+          : undefined
         const persisted = await this.repository.saveProject(videoStudioProjectSchema.parse({
           ...project,
           sources: project.sources.map(item => item.id === sourceId
@@ -5689,6 +6595,7 @@ export class VideoWorkbenchRuntime {
           assets: project.assets.map(asset => asset.id === sourceId ? { ...asset, content_hash: sourceFact.fingerprint } : asset),
           evidence,
           evidence_revision: nextEvidenceRevision,
+          ...(planningUpdate ? { planning_updates: [...project.planning_updates, planningUpdate] } : {}),
           revision: project.revision + 1,
         }))
         // The legacy scene list remains readable for the compatibility API.

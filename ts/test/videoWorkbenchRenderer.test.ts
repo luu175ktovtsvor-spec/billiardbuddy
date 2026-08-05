@@ -254,6 +254,32 @@ test('事件 cursor reset 不合并可能静默漏掉的 Operation，并要求�
   expect(state.requires_authoritative_refresh).toBeFalse()
 })
 
+test('正常事件分页从当前页末尾续读，不会跳到全局 head', async () => {
+  const snapshot = workspace()
+  snapshot.events = { cursor: 100, next_cursor: 101, reset_required: false, events: [] }
+  const seenCursors: number[] = []
+  const bridge = {
+    loadWorkspace: async () => ({ ok: true, value: snapshot }),
+    loadOperationEvents: async (_projectId: string, cursor: number) => {
+      seenCursors.push(cursor)
+      return {
+        ok: true,
+        value: {
+          cursor: cursor + 100,
+          next_cursor: cursor + 101,
+          reset_required: false,
+          events: [],
+        },
+      }
+    },
+  } as unknown as VideoWorkbenchBridge
+  const controller = new VideoWorkbenchController('video_00000001', bridge)
+  await controller.refresh()
+  await controller.pollOperationEvents()
+  await controller.pollOperationEvents()
+  expect(seenCursors).toEqual([100, 200])
+})
+
 test('预检和输出验证决定 Preview/Render 状态，不能由本地乐观状态绕过', () => {
   let state = reduceVideoWorkbenchUiState(createVideoWorkbenchUiState(), { type: 'hydrate', snapshot: workspace({ preflight: 'blocked', outputVerified: false }) })
   state = reduceVideoWorkbenchUiState(state, { type: 'select', selection: { variant_id: 'variant_00000001' } })

@@ -72,7 +72,14 @@ export class EventJournal {
       return { events: [], cursor: state.next_cursor - 1, next_cursor: state.next_cursor, reset_required: true }
     }
     const events = this.listAllAfter(projectId, after, limit)
-    return { events, cursor: events.at(-1)?.cursor ?? after, next_cursor: nextCursor, reset_required: false }
+    const cursor = events.at(-1)?.cursor ?? after
+    // `next_cursor` is a continuation value, not the current global head.
+    // A client resumes from `next_cursor - 1`; returning the global head for a
+    // truncated page would skip every event between this page and that head.
+    // Empty pages may still expose the durable head so a long-polling client
+    // remains aligned with a journal that has no newly committed rows.
+    const continuation = events.length > 0 ? cursor + 1 : nextCursor
+    return { events, cursor, next_cursor: continuation, reset_required: false }
   }
 
   listAll(projectId: string): PersistedOutboxEvent[] {

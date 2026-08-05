@@ -33,6 +33,16 @@ export interface EditorialCommandPort extends Pick<VideoWorkbenchRuntime,
   | 'selectTimelineVersion'
   | 'lockScene'
   | 'applyAlternative'
+  | 'updateDeliveryIntent'
+  | 'getDurationFeasibility'
+  | 'createSourceRangeDecision'
+  | 'createEditorialPlans'
+  | 'quickCreate'
+  | 'createCreativeSession'
+  | 'postCreativeMessage'
+  | 'getCreativeProposal'
+  | 'acceptCreativeProposal'
+  | 'rejectCreativeProposal'
 > {}
 
 export interface FinishingDeliveryCommandPort extends Pick<VideoWorkbenchRuntime,
