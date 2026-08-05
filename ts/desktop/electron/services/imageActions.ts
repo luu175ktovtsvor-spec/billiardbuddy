@@ -40,9 +40,12 @@ import {
 } from '../../../shared/contracts/imageWorkbenchIpc'
 import {
   imageCandidatePreviewResponseSchema,
+  imageVersionPreviewResponseSchema,
   type ImageCandidatePreviewResponse,
+  type ImageVersionPreviewResponse,
 } from '../../../shared/contracts/imageWorkflow'
 import { createHash } from 'node:crypto'
+import { issueImageUiCapabilityTicket } from '../../../shared/product/imageUiCapabilityTicket'
 import type {
   AdoptImageCandidateInput,
   ImageCandidateAdoptionResponse,
@@ -58,7 +61,9 @@ import type {
   CreateGenerationRoundInput,
   DecideImageCandidateInput,
   DeriveImageCandidateInput,
+  DeriveImageVersionInput,
   EstimateDeriveImageCandidateInput,
+  EstimateDeriveImageVersionInput,
   EstimateGenerationRoundInput,
   UpdateImageReferenceControlInput,
   ImageCanvasCommandRequestInput,
@@ -82,10 +87,12 @@ import type {
 
 type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
 type ResponseSchema<T> = { parse(value: unknown): T }
+const MAX_IMAGE_PREVIEW_BYTES = 8 * 1024 * 1024
 
 export type ElectronImageActionsOptions = {
   getServerUrl: () => Promise<string>
-  capability: string
+  /** Main-only HMAC key. It is never forwarded as a bearer header. */
+  ticketSecret: string
   fetchImpl?: FetchLike
 }
 
@@ -104,9 +111,11 @@ export class ElectronImageActionError extends Error {
 /** Main-process-only bridge for image operations that need the desktop nonce. */
 export class ElectronImageActions {
   private readonly fetchImpl: FetchLike
+  private readonly ticketSecret: string
 
   constructor(private readonly options: ElectronImageActionsOptions) {
-    if (options.capability.length < 32) throw new Error('Image UI capability is too short')
+    this.ticketSecret = options.ticketSecret
+    if (this.ticketSecret.length < 32) throw new Error('Image UI ticket secret is too short')
     this.fetchImpl = options.fetchImpl ?? fetch
   }
 
@@ -155,6 +164,10 @@ export class ElectronImageActions {
     return this.post(`/api/images/projects/${encodeURIComponent(projectId)}/candidates/${encodeURIComponent(candidateId)}/derivations/estimate`, input, imageDerivationEstimateResponseSchema)
   }
 
+  estimateVersionDerivation(projectId: string, versionId: string, input: EstimateDeriveImageVersionInput): Promise<ImageDerivationEstimateResponse> {
+    return this.post(`/api/images/projects/${encodeURIComponent(projectId)}/versions/${encodeURIComponent(versionId)}/derivations/estimate`, input, imageDerivationEstimateResponseSchema)
+  }
+
   createGenerationRound(projectId: string, input: CreateGenerationRoundInput): Promise<ImageGenerationRoundResponse> {
     return this.post(`/api/images/projects/${encodeURIComponent(projectId)}/generation-rounds`, input, imageGenerationRoundResponseSchema)
   }
@@ -177,6 +190,10 @@ export class ElectronImageActions {
 
   deriveCandidate(projectId: string, candidateId: string, input: DeriveImageCandidateInput): Promise<ImageCandidateDerivationResponse> {
     return this.post(`/api/images/projects/${encodeURIComponent(projectId)}/candidates/${encodeURIComponent(candidateId)}/derivations`, input, imageCandidateDerivationResponseSchema)
+  }
+
+  deriveVersion(projectId: string, versionId: string, input: DeriveImageVersionInput): Promise<ImageCandidateDerivationResponse> {
+    return this.post(`/api/images/projects/${encodeURIComponent(projectId)}/versions/${encodeURIComponent(versionId)}/derivations`, input, imageCandidateDerivationResponseSchema)
   }
 
   cancelGenerationOperation(operationId: string): Promise<ImageGenerationCancelResponse> {
@@ -260,12 +277,18 @@ export class ElectronImageActions {
         return this.get(`/api/images/projects/${encodeURIComponent(request.payload.projectId)}/candidate-groups/${encodeURIComponent(request.payload.candidateGroupId)}`, imageWorkbenchIpcResponseSchemas.getCandidateGroup)
       case 'getCandidatePreview':
         return this.downloadCandidatePreview(request.payload.projectId, request.payload.candidateId)
+      case 'getVersionPreview':
+        return this.downloadVersionPreview(request.payload.projectId, request.payload.versionId)
       case 'decideCandidate':
         return this.decideCandidate(request.payload.projectId, request.payload.candidateId, request.payload.input)
       case 'estimateCandidateDerivation':
         return this.estimateDerivation(request.payload.projectId, request.payload.candidateId, request.payload.input)
       case 'deriveCandidate':
         return this.deriveCandidate(request.payload.projectId, request.payload.candidateId, request.payload.input)
+      case 'estimateVersionDerivation':
+        return this.estimateVersionDerivation(request.payload.projectId, request.payload.versionId, request.payload.input)
+      case 'deriveVersion':
+        return this.deriveVersion(request.payload.projectId, request.payload.versionId, request.payload.input)
       case 'adoptCandidate':
         return this.adoptCandidate(request.payload.projectId, request.payload.candidateId, request.payload.input)
       case 'cancelOperation':
@@ -290,6 +313,8 @@ export class ElectronImageActions {
         return this.exportDelivery(request.payload.projectId, request.payload.input)
       case 'getDeliverySet':
         return this.get(`/api/images/projects/${encodeURIComponent(request.payload.projectId)}/delivery-sets/${encodeURIComponent(request.payload.deliverySetId)}`, imageWorkbenchIpcResponseSchemas.getDeliverySet)
+      case 'getExportReceipt':
+        return this.get(`/api/images/projects/${encodeURIComponent(request.payload.projectId)}/export-receipts/${encodeURIComponent(request.payload.receiptId)}`, imageWorkbenchIpcResponseSchemas.getExportReceipt)
       case 'getProjectLibrary':
         return this.get(`/api/images/projects/${encodeURIComponent(request.payload.projectId)}/library`, imageWorkbenchIpcResponseSchemas.getProjectLibrary)
       case 'listBrandKits':
@@ -346,13 +371,25 @@ export class ElectronImageActions {
     }
   }
 
-  async downloadVersion(projectId: string, versionId: string): Promise<{ bytes: Buffer; verification: SaveImageOutputResult['verification'] }> {
+  async downloadVersion(
+    projectId: string,
+    versionId: string,
+    maximumBytes?: number,
+  ): Promise<{ bytes: Buffer; verification: SaveImageOutputResult['verification'] }> {
     const baseUrl = (await this.options.getServerUrl()).replace(/\/+$/, '')
-    const response = await this.fetchImpl(`${baseUrl}/api/images/projects/${encodeURIComponent(projectId)}/versions/${encodeURIComponent(versionId)}/content`, {
-      headers: { [MEDIA_UI_CAPABILITY_HEADER]: this.options.capability },
+    const path = `/api/images/projects/${encodeURIComponent(projectId)}/versions/${encodeURIComponent(versionId)}/content`
+    const response = await this.fetchImpl(`${baseUrl}${path}`, {
+      headers: this.ticketHeaders(baseUrl, path, 'GET', ''),
     }).catch(() => { throw new ElectronImageActionError('MEDIA_TEMPORARILY_UNAVAILABLE') })
     if (!response.ok) throw new ElectronImageActionError((await response.json().catch(() => ({})) as { error?: unknown }).error)
+    const declaredByteSize = Number(response.headers.get('content-length'))
+    if (maximumBytes !== undefined && Number.isFinite(declaredByteSize) && declaredByteSize > maximumBytes) {
+      throw new ElectronImageActionError('MEDIA_RESOURCE_UNAVAILABLE')
+    }
     const bytes = Buffer.from(await response.arrayBuffer())
+    if (maximumBytes !== undefined && bytes.byteLength > maximumBytes) {
+      throw new ElectronImageActionError('MEDIA_RESOURCE_UNAVAILABLE')
+    }
     const contentHash = `sha256:${createHash('sha256').update(bytes).digest('hex')}`
     const expectedHash = response.headers.get('X-BilliardBuddy-Media-Hash')
     const width = Number(response.headers.get('X-BilliardBuddy-Media-Width'))
@@ -365,12 +402,25 @@ export class ElectronImageActions {
     return { bytes, verification: { byte_size: bytes.byteLength, mime_type, width, height, content_hash: contentHash, verified_at: new Date().toISOString() } }
   }
 
+  /**
+   * The Renderer receives a bounded data URL only after Main has verified the
+   * protected Version response's content hash, dimensions and MIME type.
+   */
+  private async downloadVersionPreview(projectId: string, versionId: string): Promise<ImageVersionPreviewResponse> {
+    const downloaded = await this.downloadVersion(projectId, versionId, MAX_IMAGE_PREVIEW_BYTES)
+    return imageVersionPreviewResponseSchema.parse({
+      version_id: versionId,
+      data_url: `data:${downloaded.verification.mime_type};base64,${downloaded.bytes.toString('base64')}`,
+    })
+  }
+
   private async downloadCandidatePreview(projectId: string, candidateId: string): Promise<ImageCandidatePreviewResponse> {
     const baseUrl = (await this.options.getServerUrl()).replace(/\/+$/, '')
+    const path = `/api/images/projects/${encodeURIComponent(projectId)}/candidates/${encodeURIComponent(candidateId)}/content`
     let response: Response
     try {
-      response = await this.fetchImpl(`${baseUrl}/api/images/projects/${encodeURIComponent(projectId)}/candidates/${encodeURIComponent(candidateId)}/content`, {
-        headers: { [MEDIA_UI_CAPABILITY_HEADER]: this.options.capability },
+      response = await this.fetchImpl(`${baseUrl}${path}`, {
+        headers: this.ticketHeaders(baseUrl, path, 'GET', ''),
       })
     } catch {
       throw new ElectronImageActionError('MEDIA_TEMPORARILY_UNAVAILABLE')
@@ -380,7 +430,7 @@ export class ElectronImageActions {
       throw new ElectronImageActionError(error.success ? error.data.error : undefined)
     }
     const bytes = Buffer.from(await response.arrayBuffer())
-    if (bytes.byteLength > 8 * 1024 * 1024) throw new ElectronImageActionError('MEDIA_RESOURCE_UNAVAILABLE')
+    if (bytes.byteLength > MAX_IMAGE_PREVIEW_BYTES) throw new ElectronImageActionError('MEDIA_RESOURCE_UNAVAILABLE')
     const mimeType = response.headers.get('content-type')?.split(';')[0]
     const expectedHash = response.headers.get('X-BilliardBuddy-Media-Hash')
     const contentHash = `sha256:${createHash('sha256').update(bytes).digest('hex')}`
@@ -406,15 +456,16 @@ export class ElectronImageActions {
 
   private async request<T>(path: string, method: 'GET' | 'POST' | 'PUT', body: unknown, responseSchema: ResponseSchema<T>): Promise<T> {
     const baseUrl = (await this.options.getServerUrl()).replace(/\/+$/, '')
+    const rawBody = body === undefined ? '' : JSON.stringify(body)
     let response: Response
     try {
       response = await this.fetchImpl(`${baseUrl}${path}`, {
         method,
         headers: {
           ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
-          [MEDIA_UI_CAPABILITY_HEADER]: this.options.capability,
+          ...this.ticketHeaders(baseUrl, path, method, rawBody),
         },
-        body: body === undefined ? undefined : JSON.stringify(body),
+        body: body === undefined ? undefined : rawBody,
       })
     } catch {
       throw new ElectronImageActionError('MEDIA_TEMPORARILY_UNAVAILABLE')
@@ -426,6 +477,19 @@ export class ElectronImageActions {
       return responseSchema.parse(payload)
     } catch {
       throw new ElectronImageActionError('MEDIA_TEMPORARILY_UNAVAILABLE')
+    }
+  }
+
+  private ticketHeaders(baseUrl: string, path: string, method: 'GET' | 'POST' | 'PUT', body: string, range = ''): Record<string, string> {
+    const url = new URL(path, `${baseUrl}/`)
+    return {
+      Origin: url.origin,
+      [MEDIA_UI_CAPABILITY_HEADER]: issueImageUiCapabilityTicket(this.ticketSecret, {
+        method,
+        url,
+        body,
+        range,
+      }),
     }
   }
 }

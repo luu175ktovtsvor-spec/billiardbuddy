@@ -147,6 +147,7 @@ import {
 app.setName('BilliardBuddy')
 
 const mediaUiCapability = randomBytes(32).toString('base64url')
+const imageUiTicketSecret = randomBytes(32).toString('base64url')
 const gatewayAccessTokenCapability = randomBytes(32).toString('base64url')
 
 let mainWindow: BrowserWindow | null = null
@@ -1028,6 +1029,7 @@ function getServerRuntime() {
     resolveInstallationAccessToken: () => getInstallationSessionManager().accessToken(),
     resolveCachedInstallationAccessToken: () => getInstallationSessionManager().cachedAccessToken(),
     mediaUiCapability,
+    imageUiTicketSecret,
     gatewayAccessTokenCapability,
   })
   return serverRuntime
@@ -1036,7 +1038,7 @@ function getServerRuntime() {
 function getImageActions() {
   imageActions ??= new ElectronImageActions({
     getServerUrl: () => getServerRuntime().getServerUrl(),
-    capability: mediaUiCapability,
+    ticketSecret: imageUiTicketSecret,
   })
   return imageActions
 }
@@ -1074,8 +1076,13 @@ function currentWindow(event: Electron.IpcMainInvokeEvent) {
   return window
 }
 
-async function writeGrantedImageDestination(destinationGrantId: string, projectId: string, versionId: string) {
-  const destination = imageDestinationGrants.consume(destinationGrantId)
+async function writeGrantedImageDestination(
+  senderId: number,
+  destinationGrantId: string,
+  projectId: string,
+  versionId: string,
+) {
+  const destination = imageDestinationGrants.consume(destinationGrantId, { senderId, projectId, versionId })
   if (!destination) throw new Error('Image destination grant is expired or already consumed')
   const downloaded = await getImageActions().downloadVersion(projectId, versionId)
   await mkdir(path.dirname(destination), { recursive: true, mode: 0o700 })
@@ -2421,10 +2428,10 @@ function registerIpcHandlers() {
     const request = imageUpdateUnknownProjectIpcPayloadSchema.parse(payload)
     return getImageActions().updateUnknownProject(request.projectId, request.input)
   })
-  registerImageHandler(ELECTRON_IPC_CHANNELS.imageSaveOutput, (_event, payload) => {
+  registerImageHandler(ELECTRON_IPC_CHANNELS.imageSaveOutput, (event, payload) => {
     const request = imageSaveOutputIpcPayloadSchema.parse(payload)
     if (!request.input.version_id) throw new Error('Formal image export requires version_id')
-    return writeGrantedImageDestination(request.input.destination_grant_id, request.projectId, request.input.version_id)
+    return writeGrantedImageDestination(event.sender.id, request.input.destination_grant_id, request.projectId, request.input.version_id)
   })
   registerImageHandler(ELECTRON_IPC_CHANNELS.imageRequestDestination, async (event, payload) => {
     const request = imageRequestDestinationIpcPayloadSchema.parse(payload)
@@ -2434,7 +2441,11 @@ function registerIpcHandlers() {
       filters: [{ name: '图片', extensions: ['png', 'jpg', 'jpeg', 'webp'] }],
     })
     if (!destination) throw new Error('Image destination selection cancelled')
-    return imageDestinationGrants.issue(destination)
+    return imageDestinationGrants.issue(destination, {
+      senderId: event.sender.id,
+      projectId: request.project_id,
+      versionId: request.version_id,
+    })
   })
   registerImageHandler(ELECTRON_IPC_CHANNELS.imageCreateCreativePlan, (_event, payload) => {
     const request = imageCreateCreativePlanIpcPayloadSchema.parse(payload)

@@ -9,7 +9,9 @@ import type {
   CreateGenerationRoundInput,
   DecideImageCandidateInput,
   DeriveImageCandidateInput,
+  DeriveImageVersionInput,
   EstimateDeriveImageCandidateInput,
+  EstimateDeriveImageVersionInput,
   EstimateGenerationRoundInput,
   ImageCanvasCommandRequestInput,
   ImageCanvasCommandResponse,
@@ -19,13 +21,18 @@ import type {
   ImageCanvasRenderInput,
   ImageCanvasRenderResponse,
   ImageCanvasRevision,
+  ImageArtboardSelectVersionInput,
+  ImageArtboardSelectVersionResponse,
   ImageCandidateAdoptionResponse,
   ImageCandidateDecisionResponse,
   ImageCandidateDerivationResponse,
   ImageCreativePlanResponse,
   ImageDeliverySet,
+  ImageExportReceipt,
   ImageDeliverySpecRevisionInput,
   ImageDeliverySpecRevisionResponse,
+  ImageDestinationGrant,
+  ImageDestinationGrantRequest,
   ImageDerivationEstimateResponse,
   ImageExportInput,
   ImageExportResponse,
@@ -33,6 +40,8 @@ import type {
   ImageGenerationRoundEstimateResponse,
   ImageGenerationRoundResponse,
   ImageReferenceControlResponse,
+  ImageSaveOutputInput,
+  ImageSaveOutputResponse,
   PublicImageCandidateGroup,
   UpdateImageReferenceControlInput,
 } from '../../../../shared/contracts/imageGeneration.js'
@@ -57,6 +66,7 @@ import type {
   ImageCampaignListResponse,
   ImageCampaignResponse,
   ImageCandidatePreviewResponse,
+  ImageVersionPreviewResponse,
   ImageInspirationBoardReadResponse,
   ImageInspirationBoardResponse,
   ImageProjectLibrary,
@@ -76,6 +86,11 @@ import type {
   UpsertImageInspirationItemsInput,
 } from '../../../../shared/contracts/imageWorkflow.js'
 import type { ImageWorkbenchPreloadBridge } from '../../../../shared/contracts/imageWorkbenchPreload.js'
+
+// Keep the exhaustive Preload type assertions on the renderer's compiled
+// dependency path. This exports types only, so it cannot create a runtime
+// bridge or grant the renderer any additional capability.
+export type { ImageWorkbenchPreloadTypeContract } from '../../imageWorkbenchPreloadContract.js'
 
 export type { ImageWorkbenchProjectProjection } from '../../../../shared/contracts/imageWorkflow.js'
 
@@ -107,6 +122,8 @@ export function unwrapImageWorkbenchClientResult<Value>(
 
 export type ImageProjectIdentifier = { project_id: string }
 export type ImageCandidateIdentifier = ImageProjectIdentifier & { candidate_id: string }
+export type ImageVersionIdentifier = ImageProjectIdentifier & { version_id: string }
+export type ImageExportReceiptIdentifier = ImageProjectIdentifier & { export_receipt_id: string }
 export type ImageCanvasIdentifier = ImageProjectIdentifier & { canvas_id: string }
 export type ImageReferenceIdentifier = ImageProjectIdentifier & { reference_id: string }
 export type ImageOperationIdentifier = ImageProjectIdentifier & { operation_id: string }
@@ -188,6 +205,14 @@ export type ImageCandidateDerivationCommand = ImageCandidateIdentifier & {
   input: DeriveImageCandidateInput
 }
 
+export type ImageVersionDerivationEstimateCommand = ImageVersionIdentifier & {
+  input: EstimateDeriveImageVersionInput
+}
+
+export type ImageVersionDerivationCommand = ImageVersionIdentifier & {
+  input: DeriveImageVersionInput
+}
+
 export type ImageCandidateAdoptionCommand = ImageCandidateIdentifier & {
   input: AdoptImageCandidateInput
 }
@@ -208,12 +233,25 @@ export type ImageCanvasRenderCommand = ImageCanvasIdentifier & {
   input: ImageCanvasRenderInput
 }
 
+export type ImageArtboardVersionSelectionCommand = ImageProjectIdentifier & {
+  artboard_id: string
+  input: ImageArtboardSelectVersionInput
+}
+
 export type ImageDeliverySpecCommand = ImageProjectIdentifier & {
   input: ImageDeliverySpecRevisionInput
 }
 
 export type ImageExportCommand = ImageProjectIdentifier & {
   input: ImageExportInput
+}
+
+/**
+ * The native save dialog returns an opaque destination grant. The renderer
+ * may only pass that grant back to Main together with the result to save.
+ */
+export type ImageSaveOutputCommand = ImageProjectIdentifier & {
+  input: ImageSaveOutputInput
 }
 
 export type ImageBrandKitRevisionCommand = {
@@ -299,9 +337,12 @@ export interface ImageWorkbenchClient {
   decideCandidate(command: ImageCandidateDecisionCommand): Promise<ImageWorkbenchClientResult<ImageCandidateDecisionResponse>>
   estimateCandidateDerivation(command: ImageCandidateDerivationEstimateCommand): Promise<ImageWorkbenchClientResult<ImageDerivationEstimateResponse>>
   deriveCandidate(command: ImageCandidateDerivationCommand): Promise<ImageWorkbenchClientResult<ImageCandidateDerivationResponse>>
+  estimateVersionDerivation(command: ImageVersionDerivationEstimateCommand): Promise<ImageWorkbenchClientResult<ImageDerivationEstimateResponse>>
+  deriveVersion(command: ImageVersionDerivationCommand): Promise<ImageWorkbenchClientResult<ImageCandidateDerivationResponse>>
   adoptCandidate(command: ImageCandidateAdoptionCommand): Promise<ImageWorkbenchClientResult<ImageCandidateAdoptionResponse>>
   cancelOperation(input: ImageOperationIdentifier): Promise<ImageWorkbenchClientResult<ImageGenerationCancelResponse>>
   getCandidatePreview(input: ImageCandidateIdentifier): Promise<ImageWorkbenchClientResult<ImageCandidatePreviewResponse>>
+  getVersionPreview(input: ImageVersionIdentifier): Promise<ImageWorkbenchClientResult<ImageVersionPreviewResponse>>
 
   listCanvases(input: ImageProjectIdentifier): Promise<ImageWorkbenchClientResult<ImageCanvasListResponse>>
   getCanvas(input: ImageCanvasIdentifier & { revision?: number }): Promise<ImageWorkbenchClientResult<ImageCanvasResponse>>
@@ -309,9 +350,13 @@ export interface ImageWorkbenchClient {
   applyCanvasCommand(command: ImageCanvasCommand): Promise<ImageWorkbenchClientResult<ImageCanvasCommandResponse>>
   preflightCanvas(command: ImageCanvasPreflightCommand): Promise<ImageWorkbenchClientResult<ImageCanvasPreflightResponse>>
   renderCanvas(command: ImageCanvasRenderCommand): Promise<ImageWorkbenchClientResult<ImageCanvasRenderResponse>>
+  selectArtboardVersion(command: ImageArtboardVersionSelectionCommand): Promise<ImageWorkbenchClientResult<ImageArtboardSelectVersionResponse>>
   createDeliverySpec(command: ImageDeliverySpecCommand): Promise<ImageWorkbenchClientResult<ImageDeliverySpecRevisionResponse>>
   exportDelivery(command: ImageExportCommand): Promise<ImageWorkbenchClientResult<ImageExportResponse>>
   getDeliverySet(input: ImageProjectIdentifier & { delivery_set_id: string }): Promise<ImageWorkbenchClientResult<{ delivery_set: ImageDeliverySet }>>
+  getExportReceipt(input: ImageExportReceiptIdentifier): Promise<ImageWorkbenchClientResult<{ export_receipt: ImageExportReceipt }>>
+  requestDestination(input: ImageDestinationGrantRequest): Promise<ImageWorkbenchClientResult<ImageDestinationGrant>>
+  saveOutput(command: ImageSaveOutputCommand): Promise<ImageWorkbenchClientResult<ImageSaveOutputResponse>>
 
   getProjectLibrary(input: ImageProjectIdentifier): Promise<ImageWorkbenchClientResult<ImageProjectLibrary>>
   listBrandKits(): Promise<ImageWorkbenchClientResult<ImageBrandKitListResponse>>
@@ -394,11 +439,17 @@ export function createElectronImageWorkbenchClient(
     decideCandidate: command => bridge.decideCandidate(command.project_id, command.candidate_id, command.input),
     estimateCandidateDerivation: command => bridge.estimateDerivation(command.project_id, command.candidate_id, command.input),
     deriveCandidate: command => bridge.deriveCandidate(command.project_id, command.candidate_id, command.input),
+    estimateVersionDerivation: command => bridge.estimateVersionDerivation(command.project_id, command.version_id, command.input),
+    deriveVersion: command => bridge.deriveVersion(command.project_id, command.version_id, command.input),
     adoptCandidate: command => bridge.adoptCandidate(command.project_id, command.candidate_id, command.input),
     cancelOperation: input => bridge.cancelGenerationOperation(input.operation_id),
     getCandidatePreview: input => bridge.getCandidatePreview({
       projectId: input.project_id,
       candidateId: input.candidate_id,
+    }),
+    getVersionPreview: input => bridge.getVersionPreview({
+      projectId: input.project_id,
+      versionId: input.version_id,
     }),
     listCanvases: input => bridge.listCanvases(input.project_id),
     getCanvas: input => bridge.getCanvas({
@@ -410,12 +461,19 @@ export function createElectronImageWorkbenchClient(
     applyCanvasCommand: command => bridge.applyCanvasCommand(command.project_id, command.canvas_id, command.input),
     preflightCanvas: command => bridge.preflightCanvas(command.project_id, command.canvas_id, command.input),
     renderCanvas: command => bridge.renderCanvas(command.project_id, command.canvas_id, command.input),
+    selectArtboardVersion: command => bridge.selectArtboardVersion(command.project_id, command.artboard_id, command.input),
     createDeliverySpec: command => bridge.createDeliverySpecRevision(command.project_id, command.input),
     exportDelivery: command => bridge.exportDelivery(command.project_id, command.input),
     getDeliverySet: input => bridge.getDeliverySet({
       projectId: input.project_id,
       deliverySetId: input.delivery_set_id,
     }),
+    getExportReceipt: input => bridge.getExportReceipt({
+      projectId: input.project_id,
+      receiptId: input.export_receipt_id,
+    }),
+    requestDestination: input => bridge.requestDestination(input),
+    saveOutput: command => bridge.saveOutput(command.project_id, command.input),
     getProjectLibrary: input => bridge.getProjectLibrary(input.project_id),
     listBrandKits: () => bridge.listBrandKits(),
     getBrandKit: input => bridge.getBrandKit(input.brand_kit_id),

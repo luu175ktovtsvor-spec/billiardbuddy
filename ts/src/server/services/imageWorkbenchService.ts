@@ -2,12 +2,11 @@ import {
   ImageWorkbenchRuntime,
   type ImageWorkbenchRuntimeOptions,
 } from './imageWorkbenchRuntime.js'
-import { ImageCanvasApplication } from '../media/image/application/imageCanvasApplication.js'
-import { ImageDeliveryApplication } from '../media/image/application/imageDeliveryApplication.js'
-import { ImageGenerationApplication } from '../media/image/application/imageGenerationApplication.js'
-import { createImageApplicationPorts } from '../media/image/runtime/imageApplicationPorts.js'
-import { ImageProjectApplication } from '../media/image/application/imageProjectApplication.js'
-import { ImageRecoveryApplication } from '../media/image/application/imageRecoveryApplication.js'
+import {
+  createImageApplicationRuntime,
+  type ImageApplicationRuntime,
+  type ImageWorkbenchApplications,
+} from '../media/image/runtime/createImageApplicationRuntime.js'
 
 export {
   ImageWorkbenchServiceError,
@@ -18,28 +17,11 @@ export type {
   ImageWorkbenchRuntimeOptions,
 } from './imageWorkbenchRuntime.js'
 
-export type ImageWorkbenchApplications = {
-  project: ImageProjectApplication
-  generation: ImageGenerationApplication
-  canvas: ImageCanvasApplication
-  delivery: ImageDeliveryApplication
-  recovery: ImageRecoveryApplication
-}
+export type { ImageWorkbenchApplications } from '../media/image/runtime/createImageApplicationRuntime.js'
 
 export type ImageWorkbenchComposition = {
   applications: ImageWorkbenchApplications
   facade: ImageWorkbenchService
-}
-
-function createImageWorkbenchApplications(runtime: ImageWorkbenchRuntime): ImageWorkbenchApplications {
-  const ports = createImageApplicationPorts(runtime)
-  return Object.freeze({
-    project: new ImageProjectApplication(ports.project),
-    generation: new ImageGenerationApplication(ports.generation),
-    canvas: new ImageCanvasApplication(ports.canvas),
-    delivery: new ImageDeliveryApplication(ports.delivery),
-    recovery: new ImageRecoveryApplication(ports.recovery),
-  })
 }
 
 /**
@@ -56,18 +38,15 @@ class ImageWorkbenchFacade {
   /** @internal Test-only inspection hook. It is not installed in production. */
   declare readonly assets: ImageWorkbenchRuntime['assets']
   readonly applications: ImageWorkbenchApplications
-  readonly projectApplication: ImageProjectApplication
-  readonly generationApplication: ImageGenerationApplication
-  readonly canvasApplication: ImageCanvasApplication
-  readonly deliveryApplication: ImageDeliveryApplication
-  readonly recoveryApplication: ImageRecoveryApplication
+  readonly projectApplication: ImageWorkbenchApplications['project']
+  readonly generationApplication: ImageWorkbenchApplications['generation']
+  readonly canvasApplication: ImageWorkbenchApplications['canvas']
+  readonly deliveryApplication: ImageWorkbenchApplications['delivery']
+  readonly recoveryApplication: ImageWorkbenchApplications['recovery']
 
-  constructor(options: ImageWorkbenchRuntimeOptions = {}, composition?: {
-    runtime: ImageWorkbenchRuntime
-    applications: ImageWorkbenchApplications
-  }) {
-    const runtime = composition?.runtime ?? new ImageWorkbenchRuntime(options)
-    const applications = composition?.applications ?? createImageWorkbenchApplications(runtime)
+  constructor(options: ImageWorkbenchRuntimeOptions = {}, composition?: ImageApplicationRuntime) {
+    const applicationRuntime = composition ?? createImageApplicationRuntime(options)
+    const { runtime, applications } = applicationRuntime
     // Old tests deliberately inspect persisted state and inject storage
     // failures. Do not make those raw infrastructure handles part of the
     // production façade or MediaRuntime API.
@@ -102,11 +81,11 @@ class ImageWorkbenchFacade {
  * remains constructible as `new ImageWorkbenchService(options)`.
  */
 export type ImageWorkbenchService = ImageWorkbenchFacade
-  & ImageProjectApplication
-  & ImageGenerationApplication
-  & ImageCanvasApplication
-  & ImageDeliveryApplication
-  & ImageRecoveryApplication
+  & ImageWorkbenchApplications['project']
+  & ImageWorkbenchApplications['generation']
+  & ImageWorkbenchApplications['canvas']
+  & ImageWorkbenchApplications['delivery']
+  & ImageWorkbenchApplications['recovery']
 
 export const ImageWorkbenchService: new (options?: ImageWorkbenchRuntimeOptions) => ImageWorkbenchService =
   ImageWorkbenchFacade as unknown as new (options?: ImageWorkbenchRuntimeOptions) => ImageWorkbenchService
@@ -117,8 +96,7 @@ export const ImageWorkbenchService: new (options?: ImageWorkbenchRuntimeOptions)
  * for existing API/tests, but both paths create exactly one runtime.
  */
 export function createImageWorkbenchComposition(options: ImageWorkbenchRuntimeOptions = {}): ImageWorkbenchComposition {
-  const runtime = new ImageWorkbenchRuntime(options)
-  const applications = createImageWorkbenchApplications(runtime)
-  const facade = new ImageWorkbenchFacade({}, { runtime, applications }) as ImageWorkbenchService
-  return { applications, facade }
+  const applicationRuntime = createImageApplicationRuntime(options)
+  const facade = new ImageWorkbenchFacade({}, applicationRuntime) as ImageWorkbenchService
+  return { applications: applicationRuntime.applications, facade }
 }

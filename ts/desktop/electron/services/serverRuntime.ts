@@ -40,6 +40,8 @@ type ServerRuntimeOptions = {
   resolveCachedInstallationAccessToken?: () => string | undefined
   /** Electron-owned capability for paid/final media actions. Never inherited by non-media processes. */
   mediaUiCapability?: string
+  /** Main-only HMAC key for one-shot image sidecar request tickets. */
+  imageUiTicketSecret?: string
   /** Main-only capability for rotating the local Server's short-lived bearer. */
   gatewayAccessTokenCapability?: string
 }
@@ -54,6 +56,7 @@ export class ElectronServerRuntime {
   private readonly resolveCachedInstallationAccessToken?: () => string | undefined
   private installationAccessToken: string | undefined
   private readonly mediaUiCapability?: string
+  private readonly imageUiTicketSecret?: string
   private readonly gatewayAccessTokenCapability?: string
   private sidecarEnvPromise: Promise<NodeJS.ProcessEnv> | null = null
   private server: { url: string, child: SidecarChild } | null = null
@@ -72,6 +75,7 @@ export class ElectronServerRuntime {
     this.resolveInstallationAccessToken = options.resolveInstallationAccessToken
     this.resolveCachedInstallationAccessToken = options.resolveCachedInstallationAccessToken
     this.mediaUiCapability = options.mediaUiCapability
+    this.imageUiTicketSecret = options.imageUiTicketSecret
     this.gatewayAccessTokenCapability = options.gatewayAccessTokenCapability
   }
 
@@ -81,9 +85,12 @@ export class ElectronServerRuntime {
     const withMediaCapability = this.mediaUiCapability
       ? { ...withGateway, BB_MEDIA_UI_CAPABILITY: this.mediaUiCapability }
       : withGateway
-    const withGatewayCapability = this.gatewayAccessTokenCapability
-      ? { ...withMediaCapability, BB_GATEWAY_ACCESS_TOKEN_CAPABILITY: this.gatewayAccessTokenCapability }
+    const withImageTicketSecret = this.imageUiTicketSecret
+      ? { ...withMediaCapability, BB_IMAGE_UI_TICKET_SECRET: this.imageUiTicketSecret }
       : withMediaCapability
+    const withGatewayCapability = this.gatewayAccessTokenCapability
+      ? { ...withImageTicketSecret, BB_GATEWAY_ACCESS_TOKEN_CAPABILITY: this.gatewayAccessTokenCapability }
+      : withImageTicketSecret
 
     const mediaBinDir = path.join(this.desktopRoot, 'runtime-assets', 'binaries')
     const executableSuffix = process.platform === 'win32' ? '.exe' : ''

@@ -28,11 +28,15 @@ import type {
   ImageCanvasLayer,
   ImageCanvasPreflightInput,
   ImageCanvasRenderInput,
+  ImageDeliverySet,
   ImageDeliverySpecRevisionInput,
   ImageDerivationEstimateResponse,
+  ImageExportReceipt,
+  ImageExportResponse,
   EstimateGenerationRoundInput,
   ImageGenerationRoundEstimateResponse,
   ImageExportInput,
+  ImageSaveOutputResponse,
   UpdateImageReferenceControlInput,
 } from '../../../../shared/contracts/imageGeneration.js'
 import {
@@ -92,7 +96,8 @@ type ImageGenerationQuote = ImagePaidQuote & {
 type ImageDerivationQuote = Pick<ImageDerivationEstimateResponse,
   'estimate_hash' | 'paid_operation_count' | 'candidate_count_per_operation' | 'concurrency' | 'price_upper_bound' | 'expires_at'> & {
   project_id: string
-  candidate_id: string
+  source_kind: 'candidate' | 'version'
+  source_id: string
   project_revision: number
   instruction: string
   kind: 'edit' | 'inpaint'
@@ -103,6 +108,20 @@ type ImageCampaignQuote = {
   campaign_id: string
   item_id?: string
   estimate: ImageCampaignEstimate
+}
+
+/**
+ * Ephemeral renderer presentation state for an export action.  It deliberately
+ * retains hashes and verification facts, never a filesystem destination.
+ */
+export type ImageWorkbenchDeliveryExportState = {
+  project_id: string
+  export?: ImageExportResponse
+  /** Re-read from the authoritative projection pointer after a restart. */
+  delivery_set?: ImageDeliverySet
+  /** Full durable receipts re-read from the Delivery Set after a restart. */
+  export_receipts?: readonly ImageExportReceipt[]
+  saved_outputs: Readonly<Record<string, ImageSaveOutputResponse>>
 }
 
 export type ImageWorkbenchShellOptions = {
@@ -118,6 +137,7 @@ export type ImageWorkbenchShellSnapshot = {
   campaigns: readonly ImageCampaign[]
   projects?: readonly ImageWorkbenchProjectListResponse['projects'][number][]
   candidate_previews?: Readonly<Record<string, string>>
+  version_previews?: Readonly<Record<string, string>>
   campaign_details?: readonly ImageCampaignResponse[]
   campaign_next_cursor?: number
   campaign_quotes?: readonly ImageCampaignQuote[]
@@ -127,6 +147,8 @@ export type ImageWorkbenchShellSnapshot = {
   brand_kits?: readonly ImageBrandKit[]
   templates?: readonly ImageTemplate[]
   asset_grants?: readonly ImageAssetGrant[]
+  selected_canvas_layer_id?: string
+  latest_export?: ImageWorkbenchDeliveryExportState
   notice?: string
 }
 
@@ -148,6 +170,7 @@ const MAX_CANDIDATE_PREVIEW_DATA_URL_CHARS = Math.ceil(8 * 1024 * 1024 * 4 / 3) 
 const MAX_CANDIDATE_PREVIEWS_PER_REFRESH = 12
 const MAX_CANDIDATE_PREVIEW_CONCURRENCY = 3
 const MAX_CANDIDATE_PREVIEW_CACHE_CHARS = MAX_CANDIDATE_PREVIEW_DATA_URL_CHARS * 3
+const MAX_VERSION_PREVIEW_CACHE_CHARS = MAX_CANDIDATE_PREVIEW_DATA_URL_CHARS
 const IMAGE_WORKBENCH_EVENT_PAGE_LIMIT = 200
 const IMAGE_WORKBENCH_EVENT_WAIT_MS = 25_000
 const IMAGE_WORKBENCH_EVENT_RETRY_MS = 1_000
@@ -187,6 +210,15 @@ function isQuickCreateReferenceRole(value: string | undefined): value is QuickCr
 function safeCandidatePreviewDataUrl(value: string | undefined): string | undefined {
   if (!value || value.length > MAX_CANDIDATE_PREVIEW_DATA_URL_CHARS) return undefined
   return /^data:image\/(?:png|jpeg|webp);base64,[A-Za-z0-9+/]+={0,2}$/u.test(value) ? value : undefined
+}
+
+function exportReceiptsFor(state: ImageWorkbenchDeliveryExportState | undefined): readonly ImageExportReceipt[] {
+  if (!state) return []
+  const byArtboard = new Map<string, ImageExportReceipt>()
+  for (const receipt of [...(state.export?.export_receipts ?? []), ...(state.export_receipts ?? [])]) {
+    byArtboard.set(receipt.artboard_id, receipt)
+  }
+  return [...byArtboard.values()]
 }
 
 function quoteIsActive(quote: { expires_at: string }, projectId: string, revision: number, quoteProjectId: string, quoteRevision: number): boolean {
@@ -261,6 +293,147 @@ function canvasTextLayers(layers: readonly ImageCanvasLayer[]): Array<Extract<Im
   return layers.flatMap(layer => layer.kind === 'group'
     ? canvasTextLayers(layer.children)
     : layer.kind === 'text' ? [layer] : [])
+}
+
+type ImageCanvasLayerEntry = {
+  layer: ImageCanvasLayer
+  depth: number
+}
+
+type ImageCanvasLayerTransform = {
+  x: number
+  y: number
+  width: number
+  height: number
+  rotation_degrees: number
+  scale_x: number
+  scale_y: number
+}
+
+function canvasLayerEntries(layers: readonly ImageCanvasLayer[], depth = 0): ImageCanvasLayerEntry[] {
+  return layers.flatMap(layer => [
+    { layer, depth },
+    ...(layer.kind === 'group' ? canvasLayerEntries(layer.children, depth + 1) : []),
+  ])
+}
+
+function canvasLayerById(layers: readonly ImageCanvasLayer[], layerId: string): ImageCanvasLayer | undefined {
+  return canvasLayerEntries(layers).find(entry => entry.layer.id === layerId)?.layer
+}
+
+function isCanvasLayerTransformable(layer: ImageCanvasLayer): boolean {
+  return layer.kind !== 'group' && layer.kind !== 'mask'
+}
+
+function canvasLayerTransform(
+  layer: ImageCanvasLayer,
+  canvasWidth: number,
+  canvasHeight: number,
+): ImageCanvasLayerTransform | undefined {
+  switch (layer.kind) {
+    case 'raster':
+    case 'logo':
+    case 'qrcode':
+    case 'shape':
+      return { ...layer.transform }
+    case 'text':
+      return {
+        x: layer.position.x,
+        y: layer.position.y,
+        width: layer.max_width ?? Math.min(12_000, Math.max(1, canvasWidth - layer.position.x)),
+        height: layer.max_height ?? Math.min(12_000, Math.max(1, canvasHeight - layer.position.y)),
+        rotation_degrees: layer.rotation_degrees,
+        scale_x: layer.scale_x ?? 1,
+        scale_y: layer.scale_y ?? 1,
+      }
+    case 'group':
+    case 'mask':
+      return undefined
+  }
+}
+
+function withCanvasLayerTransform(
+  layer: ImageCanvasLayer,
+  transform: ImageCanvasLayerTransform,
+): ImageCanvasLayer {
+  switch (layer.kind) {
+    case 'raster':
+    case 'logo':
+    case 'qrcode':
+    case 'shape':
+      return { ...layer, transform: { ...layer.transform, ...transform } }
+    case 'text':
+      return {
+        ...layer,
+        position: { x: transform.x, y: transform.y },
+        max_width: transform.width,
+        max_height: transform.height,
+        rotation_degrees: transform.rotation_degrees,
+        scale_x: transform.scale_x,
+        scale_y: transform.scale_y,
+      }
+    case 'group':
+    case 'mask':
+      return layer
+  }
+}
+
+function canvasLayerLabel(layer: ImageCanvasLayer): string {
+  switch (layer.kind) {
+    case 'text': return `文字：${layer.text.slice(0, 32)}`
+    case 'raster': return '图片素材'
+    case 'logo': return 'Logo'
+    case 'qrcode': return '二维码'
+    case 'shape': return `形状：${layer.shape}`
+    case 'group': return '图层组'
+    case 'mask': return '蒙版'
+  }
+}
+
+function canvasLayerPreviewLabel(layer: ImageCanvasLayer): string {
+  switch (layer.kind) {
+    case 'text': return layer.text.slice(0, 24)
+    case 'shape': return layer.shape
+    case 'qrcode': return 'QR'
+    case 'logo': return 'Logo'
+    case 'raster': return '图片'
+    case 'group': return '组'
+    case 'mask': return '蒙版'
+  }
+}
+
+function cssFinite(value: number, fallback = 0): string {
+  return (Number.isFinite(value) ? value : fallback).toFixed(3)
+}
+
+function boundedCanvasPreviewPercent(value: number, total: number): string {
+  const percent = total > 0 && Number.isFinite(value) ? value / total * 100 : 0
+  return cssFinite(Math.max(-1_000, Math.min(1_000, percent)))
+}
+
+function canvasDragDelta(
+  state: ImageWorkbenchViewState,
+  projectId: string,
+  canvasId: string,
+  layerId: string,
+): { x: number; y: number } {
+  const draft = state.drag_draft
+  if (!draft || draft.kind !== 'canvas-layer' || draft.project_id !== projectId || draft.canvas_id !== canvasId || draft.layer_id !== layerId) {
+    return { x: 0, y: 0 }
+  }
+  return {
+    x: draft.current.x - draft.origin.x,
+    y: draft.current.y - draft.origin.y,
+  }
+}
+
+function suggestedExportName(label: string, format: 'png' | 'jpeg' | 'webp'): string {
+  const stem = label
+    .replaceAll(/[\\/:*?"<>|\u0000-\u001f]/gu, '_')
+    .replaceAll(/^\.+|\.+$/gu, '')
+    .trim()
+    .slice(0, 120)
+  return `${stem || '图片交付'}.${format}`
 }
 
 function renderCreativeIntake(
@@ -429,7 +602,8 @@ function renderCandidateReview(
   const candidates = projection?.candidate_groups.flatMap(group => group.candidates) ?? []
   const selected = candidates.find(candidate => candidate.id === selectedCandidateId) ?? candidates[0]
   const activeDerivationQuote = selected && projection && derivationQuote
-    && derivationQuote.candidate_id === selected.id
+    && derivationQuote.source_kind === 'candidate'
+    && derivationQuote.source_id === selected.id
     && quoteIsActive(derivationQuote, projection.project.id, projection.project.revision, derivationQuote.project_id, derivationQuote.project_revision)
     ? derivationQuote
     : undefined
@@ -475,19 +649,145 @@ function renderCanvasEditor(
   state: ImageWorkbenchViewState,
   brandKits: readonly ImageBrandKit[],
   templates: readonly ImageTemplate[],
+  selectedCanvasLayerId: string | undefined,
+  versionPreviews: Readonly<Record<string, string>>,
+  derivationQuote: ImageDerivationQuote | undefined,
 ): string {
   const canvases = projection?.canvases ?? []
   const selectedCanvas = canvases.find(canvas => canvas.canvas_id === state.selected_canvas_id) ?? canvases[0]
+  const selectedArtboardId = selectedCanvas?.document.artboard_id
+  const currentVersionId = selectedArtboardId
+    ? projection?.project?.current_versions_by_artboard?.[selectedArtboardId]
+    : undefined
+  const formalVersions = selectedArtboardId
+    ? (projection?.project?.version_history ?? []).filter(version => (
+        version.artboard_id === selectedArtboardId && version.kind === 'canvas'
+      ))
+    : []
+  const currentFormalVersion = currentVersionId
+    ? formalVersions.find(version => version.id === currentVersionId)
+    : undefined
+  const activeVersionDerivationQuote = currentFormalVersion && projection && derivationQuote
+    && derivationQuote.source_kind === 'version'
+    && derivationQuote.source_id === currentFormalVersion.id
+    && quoteIsActive(derivationQuote, projection.project.id, projection.project.revision, derivationQuote.project_id, derivationQuote.project_revision)
+    ? derivationQuote
+    : undefined
+  const renderedPreview = currentFormalVersion
+    ? safeCandidatePreviewDataUrl(versionPreviews[currentFormalVersion.id])
+    : undefined
   const textLayers = selectedCanvas ? canvasTextLayers(selectedCanvas.document.layers) : []
+  const layerEntries = selectedCanvas ? canvasLayerEntries(selectedCanvas.document.layers) : []
+  const selectedLayer = selectedCanvas && selectedCanvasLayerId
+    ? canvasLayerById(selectedCanvas.document.layers, selectedCanvasLayerId)
+    : undefined
   const brandOptions = `<option value="">选择品牌包</option>${brandKits.map(brand => `<option value="${escapeHtml(brand.id)}">${escapeHtml(brand.name)} r${brand.revision}</option>`).join('')}`
   const templateOptions = `<option value="">选择模板</option>${templates.map(template => `<option value="${escapeHtml(template.id)}">${escapeHtml(template.name)} r${template.revision}</option>`).join('')}`
   const canvasRows = canvases.length === 0
     ? '<p class="image-workbench-empty">采纳候选后可创建画布</p>'
     : canvases.map(canvas => `
-      <button type="button" class="image-workbench-list-button${canvas.canvas_id === state.selected_canvas_id ? ' is-selected' : ''}" data-action="select-canvas" data-canvas-id="${escapeHtml(canvas.canvas_id)}">
+      <button type="button" class="image-workbench-list-button${canvas.canvas_id === selectedCanvas?.canvas_id ? ' is-selected' : ''}" data-action="select-canvas" data-canvas-id="${escapeHtml(canvas.canvas_id)}">
         <span>${escapeHtml(canvas.document.artboard_id)}</span><small>版本 ${canvas.revision}</small>
       </button>
     `).join('')
+  const canvasWidth = Math.max(1, selectedCanvas?.document.width ?? 1)
+  const canvasHeight = Math.max(1, selectedCanvas?.document.height ?? 1)
+  const previewLayers = selectedCanvas
+    ? layerEntries.flatMap(entry => {
+      const transform = canvasLayerTransform(entry.layer, canvasWidth, canvasHeight)
+      if (!transform) return []
+      const drag = canvasDragDelta(state, projection?.project.id ?? selectedCanvas.document.project_id, selectedCanvas.canvas_id, entry.layer.id)
+      const left = transform.x + drag.x
+      const top = transform.y + drag.y
+      const selected = entry.layer.id === selectedCanvasLayerId
+      return [`<button type="button" class="image-workbench-canvas-preview-layer image-workbench-canvas-preview-layer--${escapeHtml(entry.layer.kind)}${selected ? ' is-selected' : ''}" data-action="select-canvas-layer" data-canvas-drag-layer="true" data-canvas-id="${escapeHtml(selectedCanvas.canvas_id)}" data-layer-id="${escapeHtml(entry.layer.id)}" style="left:${boundedCanvasPreviewPercent(left, canvasWidth)}%;top:${boundedCanvasPreviewPercent(top, canvasHeight)}%;width:${boundedCanvasPreviewPercent(transform.width, canvasWidth)}%;height:${boundedCanvasPreviewPercent(transform.height, canvasHeight)}%;transform:rotate(${cssFinite(transform.rotation_degrees)}deg) scale(${cssFinite(transform.scale_x, 1)},${cssFinite(transform.scale_y, 1)});"><span>${escapeHtml(canvasLayerPreviewLabel(entry.layer))}</span></button>`]
+    })
+    : []
+  const structurePreview = selectedCanvas
+    ? `<section class="image-workbench-canvas-structure-section" aria-label="画布结构预览">
+        <header><h3>结构预览</h3><small>仅反映持久化图层与坐标，最终像素以渲染结果为准</small></header>
+        <div class="image-workbench-canvas-structure" data-canvas-preview-id="${escapeHtml(selectedCanvas.canvas_id)}" data-canvas-width="${canvasWidth}" data-canvas-height="${canvasHeight}" style="aspect-ratio:${canvasWidth} / ${canvasHeight}">
+          ${previewLayers.length > 0 ? previewLayers.join('') : '<span class="image-workbench-canvas-preview-empty">画布暂无可变换图层</span>'}
+        </div>
+      </section>`
+    : ''
+  const currentVersionLabel = currentFormalVersion
+    ? '<small>Version ' + escapeHtml(currentFormalVersion.id) + '</small>'
+    : ''
+  const renderedPreviewBody = renderedPreview
+    ? '<img src="' + escapeHtml(renderedPreview) + '" alt="画板 ' + escapeHtml(selectedCanvas?.document.artboard_id) + ' 的当前正式渲染 Version" />'
+    : currentFormalVersion
+      ? '<p class="image-workbench-empty">正在通过 Main 加载已校验的版本像素预览。</p>'
+      : '<p class="image-workbench-empty">该画板尚未产生当前正式渲染 Version。</p>'
+  const renderedPixelPreview = selectedCanvas
+    ? [
+        '<section class="image-workbench-canvas-render-preview" data-feature="canvas-render-preview">',
+        '<header><h3>当前正式像素预览</h3>', currentVersionLabel, '</header>',
+        renderedPreviewBody,
+        '</section>',
+      ].join('')
+    : ''
+  const versionHistoryRows = formalVersions.map(version => [
+    '<button type="button" class="image-workbench-list-button',
+    version.id === currentVersionId ? ' is-selected' : '',
+    '" data-action="select-artboard-version" data-artboard-id="',
+    escapeHtml(selectedCanvas?.document.artboard_id),
+    '" data-version-id="', escapeHtml(version.id), '">',
+    '<span>', escapeHtml(version.id), '</span><small>', escapeHtml(version.created_at), '</small>',
+    '</button>',
+  ].join('')).join('')
+  const versionHistory = selectedCanvas
+    ? [
+        '<section class="image-workbench-subsection" data-feature="canvas-version-history">',
+        '<header><h3>该画板的正式 Version 历史</h3><span>', String(formalVersions.length), '</span></header>',
+        formalVersions.length > 0
+          ? '<div class="image-workbench-list">' + versionHistoryRows + '</div>'
+          : '<p class="image-workbench-empty">完成一次画布渲染后，这里会保留可回切的正式 Version。</p>',
+        '</section>',
+      ].join('')
+    : ''
+  const versionDerivation = currentFormalVersion
+    ? `<section class="image-workbench-subsection" data-feature="version-derivation">
+        <header><h3>基于当前正式 Version 编辑</h3><small>${escapeHtml(currentFormalVersion.id)}</small></header>
+        <p class="image-workbench-empty">派生不会覆盖此 Version；确认费用后会创建可恢复的新候选方向。</p>
+        <form data-derive-version-form data-version-id="${escapeHtml(currentFormalVersion.id)}">
+          <input data-derive-version-instruction maxlength="4000" required aria-label="正式 Version 派生要求" placeholder="描述要修改的内容" />
+          <select data-derive-version-kind aria-label="正式 Version 派生方式"><option value="edit">整体编辑</option><option value="inpaint">局部重绘</option></select>
+          <input data-derive-version-mask type="file" accept="image/png" aria-label="正式 Version 局部重绘 PNG 蒙版" />
+          <button type="submit">估算派生费用</button>
+        </form>
+        ${activeVersionDerivationQuote ? `${renderPaidQuote(activeVersionDerivationQuote)}<button type="button" data-action="confirm-derive-version" data-version-id="${escapeHtml(currentFormalVersion.id)}">确认并派生</button>` : ''}
+      </section>`
+    : ''
+  const layerRows = layerEntries.length === 0
+    ? '<p class="image-workbench-empty">当前画布暂无图层</p>'
+    : `<div class="image-workbench-canvas-layer-list">${layerEntries.map(entry => `
+        <button type="button" class="image-workbench-list-button${entry.layer.id === selectedCanvasLayerId ? ' is-selected' : ''}" data-action="select-canvas-layer" data-canvas-id="${escapeHtml(selectedCanvas!.canvas_id)}" data-layer-id="${escapeHtml(entry.layer.id)}" style="padding-left:${12 + entry.depth * 16}px">
+          <span>${escapeHtml(canvasLayerLabel(entry.layer))}</span><small>${escapeHtml(entry.layer.id)}</small>
+        </button>
+      `).join('')}</div>`
+  const selectedLayerTransform = selectedLayer && selectedCanvas
+    ? canvasLayerTransform(selectedLayer, canvasWidth, canvasHeight)
+    : undefined
+  const selectedLayerEditor = selectedLayer && selectedCanvas
+    ? `<section class="image-workbench-subsection" data-feature="canvas-layer-transform">
+        <header><h3>图层变换：${escapeHtml(canvasLayerLabel(selectedLayer))}</h3>
+          <button type="button" data-action="remove-canvas-layer" data-canvas-id="${escapeHtml(selectedCanvas.canvas_id)}" data-layer-id="${escapeHtml(selectedLayer.id)}">删除图层</button>
+        </header>
+        ${selectedLayerTransform
+          ? `<form data-canvas-layer-transform-form data-canvas-id="${escapeHtml(selectedCanvas.canvas_id)}" data-layer-id="${escapeHtml(selectedLayer.id)}">
+              <input data-canvas-layer-x required type="number" value="${escapeHtml(selectedLayerTransform.x)}" aria-label="图层横坐标" />
+              <input data-canvas-layer-y required type="number" value="${escapeHtml(selectedLayerTransform.y)}" aria-label="图层纵坐标" />
+              <input data-canvas-layer-width required type="number" min="0.001" max="12000" value="${escapeHtml(selectedLayerTransform.width)}" aria-label="图层宽度" />
+              <input data-canvas-layer-height required type="number" min="0.001" max="12000" value="${escapeHtml(selectedLayerTransform.height)}" aria-label="图层高度" />
+              <input data-canvas-layer-rotation required type="number" min="-360" max="360" value="${escapeHtml(selectedLayerTransform.rotation_degrees)}" aria-label="图层旋转角度" />
+              <input data-canvas-layer-scale-x required type="number" min="0.001" max="100" step="0.01" value="${escapeHtml(selectedLayerTransform.scale_x)}" aria-label="图层横向缩放" />
+              <input data-canvas-layer-scale-y required type="number" min="0.001" max="100" step="0.01" value="${escapeHtml(selectedLayerTransform.scale_y)}" aria-label="图层纵向缩放" />
+              <button type="submit">保存位置与变换</button>
+            </form>`
+          : '<p class="image-workbench-empty">图层组和蒙版不直接支持位置、尺寸或旋转；请选择其具体图层。</p>'}
+      </section>`
+    : '<p class="image-workbench-empty">选择一个图层即可编辑坐标、尺寸、旋转和缩放。</p>'
   return `<section class="image-workbench-section" data-feature="canvas-editor" data-panel-content="canvas-editor">
     <header><h2>画布</h2><span>${canvases.length}</span></header>
     <div class="image-workbench-list">${canvasRows}</div>
@@ -499,6 +799,15 @@ function renderCanvasEditor(
           ? `<button type="button" data-action="apply-campaign-intent" data-canvas-id="${escapeHtml(selectedCanvas.canvas_id)}">应用 Campaign 模板</button>`
           : ''}
       </div>
+      ${renderedPixelPreview}
+      ${structurePreview}
+      ${versionHistory}
+      ${versionDerivation}
+      <section class="image-workbench-subsection" data-feature="canvas-layer-list">
+        <header><h3>图层</h3><span>${layerEntries.length}</span></header>
+        ${layerRows}
+        ${selectedLayerEditor}
+      </section>
       <form data-add-canvas-text-form data-canvas-id="${escapeHtml(selectedCanvas.canvas_id)}">
         <input data-canvas-text required maxlength="2000" aria-label="画布文字" placeholder="添加画布文字" />
         <input data-canvas-text-x required type="number" value="80" aria-label="文字横坐标" />
@@ -506,6 +815,23 @@ function renderCanvasEditor(
         <input data-canvas-text-size required type="number" min="1" max="1024" value="64" aria-label="文字字号" />
         <input data-canvas-text-fill required pattern="#[0-9A-Fa-f]{6}" value="#101820" aria-label="文字颜色" />
         <button type="submit">添加文字层</button>
+      </form>
+      <form data-add-canvas-shape-form data-canvas-id="${escapeHtml(selectedCanvas.canvas_id)}">
+        <select data-canvas-shape-kind aria-label="形状类型"><option value="rectangle">矩形</option><option value="ellipse">椭圆</option><option value="line">线条</option></select>
+        <input data-canvas-shape-x required type="number" value="80" aria-label="形状横坐标" />
+        <input data-canvas-shape-y required type="number" value="80" aria-label="形状纵坐标" />
+        <input data-canvas-shape-width required type="number" min="0.001" max="12000" value="240" aria-label="形状宽度" />
+        <input data-canvas-shape-height required type="number" min="0.001" max="12000" value="160" aria-label="形状高度" />
+        <input data-canvas-shape-fill required pattern="#[0-9A-Fa-f]{6}" value="#174C80" aria-label="形状填充色" />
+        <button type="submit">添加形状层</button>
+      </form>
+      <form data-add-canvas-qr-form data-canvas-id="${escapeHtml(selectedCanvas.canvas_id)}">
+        <input data-canvas-qr-payload required maxlength="2048" aria-label="二维码内容" placeholder="二维码内容" />
+        <input data-canvas-qr-x required type="number" value="80" aria-label="二维码横坐标" />
+        <input data-canvas-qr-y required type="number" value="80" aria-label="二维码纵坐标" />
+        <input data-canvas-qr-size required type="number" min="0.001" max="12000" value="160" aria-label="二维码尺寸" />
+        <select data-canvas-qr-error-correction aria-label="二维码容错级别"><option value="M">M</option><option value="Q">Q</option><option value="H">H</option></select>
+        <button type="submit">添加二维码层</button>
       </form>
       ${brandKits.length > 0 ? `<form data-apply-brand-form data-canvas-id="${escapeHtml(selectedCanvas.canvas_id)}">
         <select data-apply-brand-id required aria-label="应用到画布的品牌包">${brandOptions}</select>
@@ -523,19 +849,41 @@ function renderCanvasEditor(
     </section>`
 }
 
-function renderDeliveryPanel(projection: ImageWorkbenchProjectProjection | undefined, state: ImageWorkbenchViewState): string {
+function renderDeliveryPanel(
+  projection: ImageWorkbenchProjectProjection | undefined,
+  state: ImageWorkbenchViewState,
+  latestExport: ImageWorkbenchDeliveryExportState | undefined,
+): string {
   const artboards = projection?.delivery_spec?.artboards ?? []
+  const exportForProject = latestExport?.project_id === projection?.project.id ? latestExport : undefined
+  const receiptByArtboard = new Map(exportReceiptsFor(exportForProject).map(receipt => [receipt.artboard_id, receipt]))
+  const deliverySet = exportForProject?.export?.delivery_set ?? exportForProject?.delivery_set
   const artboardRows = artboards.length === 0
     ? '<p class="image-workbench-empty">尚未设置交付规格</p>'
-    : artboards.map(artboard => `
-      <button type="button" class="image-workbench-list-button${artboard.id === state.selected_artboard_id ? ' is-selected' : ''}" data-action="select-artboard" data-artboard-id="${escapeHtml(artboard.id)}">
+    : artboards.map(artboard => {
+      const receipt = receiptByArtboard.get(artboard.id)
+      const versionId = receipt?.version_id ?? deliverySet?.version_ids_by_artboard[artboard.id]
+      const saved = exportForProject?.saved_outputs[artboard.id]
+      return `
+      <div class="image-workbench-delivery-artboard${artboard.id === state.selected_artboard_id ? ' is-selected' : ''}">
+      <button type="button" class="image-workbench-list-button" data-action="select-artboard" data-artboard-id="${escapeHtml(artboard.id)}">
         <span>${escapeHtml(artboard.label)}</span><small>${artboard.width} x ${artboard.height}</small>
       </button>
-    `).join('')
+      ${receipt ? `<dl class="image-workbench-delivery-receipt"><div><dt>输出哈希</dt><dd>${escapeHtml(receipt.output_hash)}</dd></div><div><dt>文件大小</dt><dd>${receipt.byte_size}</dd></div><div><dt>完成时间</dt><dd>${escapeHtml(receipt.created_at)}</dd></div></dl>` : deliverySet?.export_receipt_ids_by_artboard[artboard.id] ? `<dl class="image-workbench-delivery-receipt"><div><dt>持久化导出回执</dt><dd>${escapeHtml(deliverySet.export_receipt_ids_by_artboard[artboard.id])}</dd></div><div><dt>版本</dt><dd>${escapeHtml(versionId)}</dd></div></dl>` : ''}
+      ${versionId ? `<button type="button" data-action="save-export-artboard" data-artboard-id="${escapeHtml(artboard.id)}" data-version-id="${escapeHtml(versionId)}" data-output-format="${escapeHtml(receipt?.output_format ?? artboard.output.format)}">保存此画板</button>` : ''}
+      ${saved ? `<p class="image-workbench-delivery-saved" data-saved-artboard-id="${escapeHtml(artboard.id)}">已验证保存：${saved.verification.byte_size} 字节，${escapeHtml(saved.verification.content_hash)}</p>` : ''}
+      </div>`
+    }).join('')
+  const exportStatus = exportForProject?.export
+    ? `<section class="image-workbench-subsection" data-feature="delivery-export-result"><header><h3>最近导出</h3><strong>${escapeHtml(operationLabel(exportForProject.export.operation.status))}</strong></header>${exportForProject.export.export_receipts?.length ? '<p class="image-workbench-empty">每个导出回执包含最终输出哈希；选择“保存此画板”后，系统会先由 Main 请求一次性目标授权，再使用不透明 grant 完成保存。</p>' : '<p class="image-workbench-empty">导出尚未产生最终回执，恢复或刷新项目后会按持久化操作状态继续。</p>'}</section>`
+    : deliverySet
+      ? `<section class="image-workbench-subsection" data-feature="delivery-export-result" data-delivery-set-id="${escapeHtml(deliverySet.id)}"><header><h3>已恢复交付集</h3><strong>持久化完成</strong></header><p class="image-workbench-empty">已重新读取每张画板的持久化导出回执、输出哈希、字节数与完成时间。</p></section>`
+      : ''
   return `<section class="image-workbench-section" data-feature="delivery-panel" data-panel-content="delivery-panel">
     <header><h2>交付</h2><span>${artboards.length}</span></header>
     <div class="image-workbench-list">${artboardRows}</div>
     ${artboards.length > 0 ? '<div class="image-workbench-command-row"><button type="button" data-action="export-delivery">导出当前交付</button></div>' : ''}
+    ${exportStatus}
     <form data-delivery-spec-form>
       <select data-delivery-purpose aria-label="交付用途"><option value="social_cover">社交封面</option><option value="product_marketing">产品营销</option><option value="poster">海报</option><option value="custom" selected>自定义</option></select>
       <input data-delivery-label required maxlength="120" value="正式交付" aria-label="画板名称" />
@@ -668,6 +1016,13 @@ function renderQuickCreatePanel(): string {
         <label>首轮参考图<input data-quick-reference-file type="file" accept="image/png,image/jpeg,image/webp" aria-label="首轮参考图" /></label>
         <label>参考角色<select data-quick-reference-role aria-label="首轮参考角色"><option value="">选择角色</option>${referenceRoles}</select></label>
       </div>
+      <details class="image-workbench-quick-brief" open>
+        <summary>首次付费生成前确认 Brief（可选）</summary>
+        <textarea data-quick-brief-confirmed-facts aria-label="首次创建已确认事实" placeholder="每行一条已确认事实"></textarea>
+        <textarea data-quick-brief-must-preserve aria-label="首次创建必须保留" placeholder="每行一条必须保留内容"></textarea>
+        <textarea data-quick-brief-may-change aria-label="首次创建允许改变" placeholder="每行一条允许改变内容"></textarea>
+        <textarea data-quick-brief-exact-text aria-label="首次创建精确文字" placeholder="每行一条精确文字"></textarea>
+      </details>
       <button type="submit">生成</button>
     </form>
   </section>`
@@ -681,8 +1036,8 @@ function renderActivePanel(snapshot: ImageWorkbenchShellSnapshot): string {
     case 'inspiration-board': return renderInspirationBoard(projection)
     case 'reference-tray': return renderReferenceTray(projection)
     case 'candidate-review': return renderCandidateReview(projection, state.selected_candidate_id, snapshot.candidate_previews ?? {}, snapshot.derivation_quote)
-    case 'canvas-editor': return renderCanvasEditor(projection, state, snapshot.brand_kits ?? [], snapshot.templates ?? [])
-    case 'delivery-panel': return renderDeliveryPanel(projection, state)
+    case 'canvas-editor': return renderCanvasEditor(projection, state, snapshot.brand_kits ?? [], snapshot.templates ?? [], snapshot.selected_canvas_layer_id, snapshot.version_previews ?? {}, snapshot.derivation_quote)
+    case 'delivery-panel': return renderDeliveryPanel(projection, state, snapshot.latest_export)
     case 'project-library': return renderLibrary(projection)
     case 'campaign': return renderCampaigns(
       snapshot.campaigns,
@@ -731,6 +1086,8 @@ export function renderImageWorkbenchShell(snapshot: ImageWorkbenchShellSnapshot)
       .image-workbench-section form.image-workbench-quick-form { display: grid; grid-template-columns: minmax(0, 1fr) 128px auto; gap: 8px; }
       .image-workbench-quick-reference { grid-column: 1 / -1; display: grid; grid-template-columns: minmax(0, 1fr) minmax(160px, 220px); gap: 8px; }
       .image-workbench-quick-reference label { display: grid; gap: 4px; min-width: 0; }
+      .image-workbench-quick-brief { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; padding: 8px; border: 1px solid #dfe3e8; border-radius: 4px; }
+      .image-workbench-quick-brief summary { grid-column: 1 / -1; cursor: pointer; }
       .image-workbench-quick-form input, .image-workbench-quick-form select, .image-workbench-section form input, .image-workbench-section form select, .image-workbench-section form textarea { min-width: 0; border: 1px solid #b9c1c9; border-radius: 4px; padding: 8px; background: #fff; color: inherit; }
       .image-workbench-section button, .image-workbench-quick-form button { border: 1px solid #1966c2; border-radius: 4px; padding: 7px 10px; background: #1966c2; color: #fff; cursor: pointer; }
       .image-workbench-section form { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
@@ -745,8 +1102,27 @@ export function renderImageWorkbenchShell(snapshot: ImageWorkbenchShellSnapshot)
       .image-workbench-split { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
       .image-workbench-list { display: grid; gap: 6px; }
       .image-workbench-list-button { display: flex; justify-content: space-between; padding: 8px; background: #fff; border-color: #dfe3e8; }
+      .image-workbench-canvas-structure-section { margin-top: 14px; }
+      .image-workbench-canvas-structure-section header { align-items: baseline; }
+      .image-workbench-canvas-structure-section header small { color: #59636e; }
+      .image-workbench-canvas-render-preview { display: grid; gap: 8px; margin-top: 14px; }
+      .image-workbench-canvas-render-preview img { display: block; width: min(100%, 680px); max-height: 680px; object-fit: contain; border: 1px solid #b9c1c9; border-radius: 4px; background: #eef1f4; }
+      .image-workbench-canvas-structure { position: relative; width: min(100%, 680px); min-height: 180px; overflow: hidden; border: 1px solid #b9c1c9; border-radius: 4px; background: repeating-conic-gradient(#f3f5f7 0% 25%, #ffffff 0% 50%) 50% / 24px 24px; }
+      .image-workbench-canvas-preview-empty { position: absolute; inset: 0; display: grid; place-items: center; color: #68737d; }
+      .image-workbench-canvas-preview-layer { position: absolute; display: grid; place-items: center; min-width: 5px; min-height: 5px; padding: 2px; overflow: hidden; border: 1px solid #1966c2; border-radius: 2px; background: rgb(25 102 194 / 14%); color: #0b3d75; cursor: grab; transform-origin: center; user-select: none; touch-action: none; }
+      .image-workbench-canvas-preview-layer:active { cursor: grabbing; }
+      .image-workbench-canvas-preview-layer--qrcode { border-style: dashed; background: rgb(35 35 35 / 13%); color: #242424; }
+      .image-workbench-canvas-preview-layer--shape { border-color: #7b4bc4; background: rgb(123 75 196 / 13%); color: #4d287d; }
+      .image-workbench-canvas-preview-layer.is-selected, .image-workbench-delivery-artboard.is-selected { box-shadow: 0 0 0 2px #1966c2; }
+      .image-workbench-canvas-layer-list { display: grid; gap: 6px; }
+      .image-workbench-delivery-artboard { display: grid; gap: 6px; padding: 4px; border-radius: 4px; }
+      .image-workbench-delivery-receipt { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; margin: 0; font-size: 12px; }
+      .image-workbench-delivery-receipt div { min-width: 0; padding: 6px; background: #f7f8fa; }
+      .image-workbench-delivery-receipt dt { color: #59636e; }
+      .image-workbench-delivery-receipt dd { margin: 2px 0 0; overflow-wrap: anywhere; }
+      .image-workbench-delivery-saved { margin: 0; color: #0d6c36; overflow-wrap: anywhere; }
       .image-workbench-notice { margin: 0; padding: 8px 10px; border-left: 3px solid #1966c2; background: #edf5ff; overflow-wrap: anywhere; }
-      @media (max-width: 720px) { .image-workbench-layout { grid-template-columns: 1fr; } .image-workbench-nav { grid-template-columns: repeat(3, minmax(0, 1fr)); border-right: 0; border-bottom: 1px solid #dfe3e8; } .image-workbench-nav button { white-space: normal; } .image-workbench-section form.image-workbench-quick-form, .image-workbench-quick-reference, .image-workbench-split { grid-template-columns: 1fr; } }
+      @media (max-width: 720px) { .image-workbench-layout { grid-template-columns: 1fr; } .image-workbench-nav { grid-template-columns: repeat(3, minmax(0, 1fr)); border-right: 0; border-bottom: 1px solid #dfe3e8; } .image-workbench-nav button { white-space: normal; } .image-workbench-section form.image-workbench-quick-form, .image-workbench-quick-reference, .image-workbench-quick-brief, .image-workbench-split { grid-template-columns: 1fr; } .image-workbench-delivery-receipt { grid-template-columns: 1fr; } }
     </style>
     <header class="image-workbench-header"><h1>图片工作台</h1><form data-project-select-form><select data-project-select aria-label="已有图片项目">${projectOptions}</select><button type="submit">打开项目</button></form><button type="button" data-action="refresh-project-list">刷新项目</button><span>${escapeHtml(projection?.project.state ?? '未选择项目')}</span></header>
     <div class="image-workbench-layout">
@@ -790,11 +1166,16 @@ export class ImageWorkbenchShell {
   private readonly campaignQuotes = new Map<string, ImageCampaignQuote>()
   private readonly campaignRetryReceipts = new Map<string, { campaign_id: string; item_id: string; confirmation_receipt_id: string; estimate_hash: string }>()
   private readonly candidatePreviews = new Map<string, string>()
+  private readonly versionPreviews = new Map<string, string>()
+  private versionPreviewProjectId?: string
   private generationQuote?: ImageGenerationQuote
   private derivationQuote?: ImageDerivationQuote
   private brandKits: readonly ImageBrandKit[] = []
   private templates: readonly ImageTemplate[] = []
   private assetGrants: readonly ImageAssetGrant[] = []
+  private selectedCanvasLayerId?: string
+  private latestExport?: ImageWorkbenchDeliveryExportState
+  private activeCanvasDragPointerId?: number
   private notice?: string
   private eventPumpEpoch = 0
   private eventPumpProjectId?: string
@@ -812,6 +1193,10 @@ export class ImageWorkbenchShell {
     this.abortController = new AbortController()
     this.root.addEventListener('click', this.handleClick, { signal: this.abortController.signal })
     this.root.addEventListener('submit', this.handleSubmit, { signal: this.abortController.signal })
+    this.root.addEventListener('pointerdown', this.handleCanvasPointerDown, { signal: this.abortController.signal })
+    this.root.addEventListener('pointermove', this.handleCanvasPointerMove, { signal: this.abortController.signal })
+    this.root.addEventListener('pointerup', this.handleCanvasPointerUp, { signal: this.abortController.signal })
+    this.root.addEventListener('pointercancel', this.handleCanvasPointerCancel, { signal: this.abortController.signal })
     this.render()
     void this.runInteractive(() => this.refreshProjects())
     void this.runInteractive(() => this.refreshCampaigns())
@@ -821,6 +1206,7 @@ export class ImageWorkbenchShell {
 
   unmount(): void {
     this.stopEventPump()
+    this.activeCanvasDragPointerId = undefined
     this.abortController?.abort()
     this.abortController = undefined
   }
@@ -831,6 +1217,7 @@ export class ImageWorkbenchShell {
       ...(this.projection ? { projection: this.projection } : {}),
       projects: this.projects,
       candidate_previews: Object.fromEntries(this.candidatePreviews),
+      version_previews: Object.fromEntries(this.versionPreviews),
       campaigns: this.campaigns,
       campaign_details: this.campaignDetails,
       ...(this.campaignNextCursor === undefined ? {} : { campaign_next_cursor: this.campaignNextCursor }),
@@ -841,6 +1228,8 @@ export class ImageWorkbenchShell {
       brand_kits: this.brandKits,
       templates: this.templates,
       asset_grants: this.assetGrants,
+      ...(this.selectedCanvasLayerId ? { selected_canvas_layer_id: this.selectedCanvasLayerId } : {}),
+      ...(this.latestExport ? { latest_export: this.latestExport } : {}),
       ...(this.notice ? { notice: this.notice } : {}),
     }
   }
@@ -879,9 +1268,55 @@ export class ImageWorkbenchShell {
     return unwrapImageWorkbenchClientResult(await call)
   }
 
+  /**
+   * Delivery Set is durable business state.  The Shell may retain a richer
+   * transient export response, but a restart must rebuild its actionable
+   * artboard/version map from the project pointer rather than from memory.
+   */
+  private async reloadPersistedDeliverySet(projection: ImageWorkbenchProjectProjection): Promise<void> {
+    const deliverySetId = projection.project.latest_delivery_set_id
+    if (!deliverySetId || typeof this.client.getDeliverySet !== 'function') return
+    const currentDeliverySetId = this.latestExport?.export?.delivery_set?.id ?? this.latestExport?.delivery_set?.id
+    const existingReceipts = exportReceiptsFor(this.latestExport)
+    const currentReceiptIds = new Set(existingReceipts.map(receipt => receipt.id))
+    if (
+      this.latestExport?.project_id === projection.project.id
+      && currentDeliverySetId === deliverySetId
+      && Object.values(this.latestExport.export?.delivery_set?.export_receipt_ids_by_artboard
+        ?? this.latestExport.delivery_set?.export_receipt_ids_by_artboard
+        ?? {}).every(receiptId => currentReceiptIds.has(receiptId))
+    ) return
+    const response = await this.resolve(this.client.getDeliverySet({
+      project_id: projection.project.id,
+      delivery_set_id: deliverySetId,
+    }))
+    const receiptIds = [...new Set(Object.values(response.delivery_set.export_receipt_ids_by_artboard))]
+    const exportReceipts = typeof this.client.getExportReceipt === 'function'
+      ? (await Promise.allSettled(receiptIds.map(async receiptId => {
+          const response = await this.resolve(this.client.getExportReceipt({
+            project_id: projection.project.id,
+            export_receipt_id: receiptId,
+          }))
+          return response.export_receipt
+        }))).flatMap(result => result.status === 'fulfilled' ? [result.value] : [])
+      : []
+    this.latestExport = {
+      project_id: projection.project.id,
+      delivery_set: response.delivery_set,
+      export_receipts: exportReceipts,
+      saved_outputs: this.latestExport?.project_id === projection.project.id
+        ? this.latestExport.saved_outputs
+        : {},
+    }
+  }
+
   private async refreshProject(projectId = this.projectId()): Promise<ImageWorkbenchProjectProjection> {
     const projection = await this.resolve(this.client.getProjectProjection({ project_id: projectId }))
     this.projection = projection
+    if (this.versionPreviewProjectId !== projection.project.id) {
+      this.versionPreviews.clear()
+      this.versionPreviewProjectId = projection.project.id
+    }
     if (this.generationQuote && !quoteIsActive(this.generationQuote, projection.project.id, projection.project.revision, this.generationQuote.project_id, this.generationQuote.project_revision)) {
       this.generationQuote = undefined
     }
@@ -889,8 +1324,16 @@ export class ImageWorkbenchShell {
       this.derivationQuote = undefined
     }
     this.state = reconcileImageWorkbenchViewState(this.state, imageWorkbenchSelectionIndex(projection))
+    const selectedCanvas = projection.canvases.find(canvas => canvas.canvas_id === this.state.selected_canvas_id)
+      ?? projection.canvases[0]
+    if (!selectedCanvas || !this.selectedCanvasLayerId || !canvasLayerById(selectedCanvas.document.layers, this.selectedCanvasLayerId)) {
+      this.selectedCanvasLayerId = undefined
+    }
+    if (this.latestExport?.project_id !== projection.project.id) this.latestExport = undefined
     this.persist()
+    await this.reloadPersistedDeliverySet(projection)
     await this.refreshCandidatePreviews(projection)
+    await this.refreshVersionPreviews(projection)
     this.render()
     return projection
   }
@@ -949,12 +1392,45 @@ export class ImageWorkbenchShell {
     }
   }
 
+  /** Loads at most one formal Canvas Version preview through the typed Main bridge. */
+  private async refreshVersionPreviews(projection: ImageWorkbenchProjectProjection): Promise<void> {
+    const selectedCanvas = projection.canvases.find(canvas => canvas.canvas_id === this.state.selected_canvas_id)
+      ?? projection.canvases[0]
+    if (!selectedCanvas || typeof this.client.getVersionPreview !== 'function') return
+    const versionId = projection.project.current_versions_by_artboard[selectedCanvas.document.artboard_id]
+    const version = versionId
+      ? projection.project.version_history.find(candidate => (
+          candidate.id === versionId
+          && candidate.kind === 'canvas'
+          && candidate.artboard_id === selectedCanvas.document.artboard_id
+        ))
+      : undefined
+    if (!version || this.versionPreviews.has(version.id)) return
+    try {
+      const response = await this.resolve(this.client.getVersionPreview({
+        project_id: projection.project.id,
+        version_id: version.id,
+      }))
+      const dataUrl = response.version_id === version.id
+        ? safeCandidatePreviewDataUrl(response.data_url)
+        : undefined
+      if (!dataUrl) return
+      this.versionPreviews.clear()
+      if (dataUrl.length <= MAX_VERSION_PREVIEW_CACHE_CHARS) this.versionPreviews.set(version.id, dataUrl)
+    } catch {
+      // Pixel preview is nonessential to Project recovery. A later refresh
+      // retries via the same Main-only validated bridge.
+    }
+  }
+
   async refreshProjects(): Promise<readonly ImageWorkbenchProjectListResponse['projects'][number][]> {
     const response = await this.resolve(this.client.listProjects())
     this.projects = response.projects
     if (this.state.selected_project_id && !this.projects.some(project => project.id === this.state.selected_project_id)) {
       this.state = reduceImageWorkbenchViewState(this.state, { kind: 'select-project' })
       this.projection = undefined
+      this.selectedCanvasLayerId = undefined
+      this.latestExport = undefined
       this.persist()
     }
     this.render()
@@ -966,6 +1442,8 @@ export class ImageWorkbenchShell {
     this.state = reduceImageWorkbenchViewState(this.state, { kind: 'select-project', project_id: projectId })
     this.projection = undefined
     this.generationQuote = undefined
+    this.selectedCanvasLayerId = undefined
+    this.latestExport = undefined
     this.persist()
     await this.resumeSelectedProject()
   }
@@ -1078,6 +1556,8 @@ export class ImageWorkbenchShell {
     this.state = reduceImageWorkbenchViewState(this.state, { kind: 'select-project', project_id: created.project.id })
     this.state = reduceImageWorkbenchViewState(this.state, { kind: 'open-panel', panel: 'candidate-review' })
     this.generationQuote = undefined
+    this.selectedCanvasLayerId = undefined
+    this.latestExport = undefined
     this.persist()
     await this.refreshProjects()
     if (typeof this.client.listOperationEvents === 'function') await this.resumeSelectedProject()
@@ -1089,6 +1569,10 @@ export class ImageWorkbenchShell {
     const outputPreset = form.querySelector<HTMLSelectElement>('[data-quick-preset]')?.value
     const referenceFile = form.querySelector<HTMLInputElement>('[data-quick-reference-file]')?.files?.[0]
     const referenceRole = form.querySelector<HTMLSelectElement>('[data-quick-reference-role]')?.value
+    const confirmedFacts = this.linesFromForm(form, '[data-quick-brief-confirmed-facts]', 40)
+    const mustPreserve = this.linesFromForm(form, '[data-quick-brief-must-preserve]', 40)
+    const mayChange = this.linesFromForm(form, '[data-quick-brief-may-change]', 40)
+    const exactText = this.linesFromForm(form, '[data-quick-brief-exact-text]', 40)
     if (!prompt || (outputPreset !== 'square' && outputPreset !== 'landscape' && outputPreset !== 'portrait' && outputPreset !== 'auto')) {
       this.setNotice('请填写图片描述并选择输出规格。')
       return
@@ -1108,11 +1592,18 @@ export class ImageWorkbenchShell {
     const reference_inputs = referenceFile && isQuickCreateReferenceRole(referenceRole)
       ? [{ data_url: await fileAsDataUrl(referenceFile), role: referenceRole }]
       : []
+    const brief_overrides = {
+      ...(confirmedFacts.length > 0 ? { confirmed_facts: confirmedFacts } : {}),
+      ...(mustPreserve.length > 0 ? { must_preserve: mustPreserve } : {}),
+      ...(mayChange.length > 0 ? { may_change: mayChange } : {}),
+      ...(exactText.length > 0 ? { exact_text: exactText } : {}),
+    }
     await this.quickCreate({
       idempotency_key: this.idempotencyKey(),
       prompt,
       output_preset: outputPreset,
       reference_inputs,
+      ...(Object.keys(brief_overrides).length > 0 ? { brief_overrides } : {}),
     })
   }
 
@@ -1220,10 +1711,11 @@ export class ImageWorkbenchShell {
     await this.refreshSelectedProject()
   }
 
-  async exportDelivery(input: ImageExportInput): Promise<void> {
+  async exportDelivery(input: ImageExportInput): Promise<ImageExportResponse> {
     const command: ImageExportCommand = { project_id: this.projectId(), input }
-    await this.resolve(this.client.exportDelivery(command))
+    const response = await this.resolve(this.client.exportDelivery(command))
     await this.refreshSelectedProject()
+    return response
   }
 
   async createDeliverySpec(input: ImageDeliverySpecRevisionInput): Promise<void> {
@@ -1387,6 +1879,12 @@ export class ImageWorkbenchShell {
     return candidate
   }
 
+  private version(versionId: string) {
+    const version = this.currentProjection().project.version_history.find(value => value.id === versionId)
+    if (!version) throw new Error('IMAGE_WORKBENCH_VERSION_SELECTION_REQUIRED')
+    return version
+  }
+
   private canvas(canvasId?: string) {
     const projection = this.currentProjection()
     const canvas = projection.canvases.find(value => value.canvas_id === canvasId)
@@ -1457,7 +1955,8 @@ export class ImageWorkbenchShell {
     }))
     this.derivationQuote = {
       project_id: projection.project.id,
-      candidate_id: candidateId,
+      source_kind: 'candidate',
+      source_id: candidateId,
       project_revision: projection.project.revision,
       instruction,
       kind,
@@ -1477,7 +1976,8 @@ export class ImageWorkbenchShell {
     const quote = this.derivationQuote
     if (
       !quote
-      || quote.candidate_id !== candidateId
+      || quote.source_kind !== 'candidate'
+      || quote.source_id !== candidateId
       || !quoteIsActive(quote, projection.project.id, projection.project.revision, quote.project_id, quote.project_revision)
     ) {
       throw new Error('IMAGE_WORKBENCH_DERIVATION_ESTIMATE_REQUIRED')
@@ -1491,6 +1991,72 @@ export class ImageWorkbenchShell {
       kind: quote.kind,
       ...(quote.mask_data_url ? { mask_data_url: quote.mask_data_url } : {}),
     })
+    this.derivationQuote = undefined
+    this.render()
+  }
+
+  private async deriveSelectedVersion(
+    versionId: string,
+    instruction: string,
+    kind: 'edit' | 'inpaint',
+    maskDataUrl?: string,
+  ): Promise<void> {
+    const projection = this.currentProjection()
+    this.version(versionId)
+    if (kind === 'inpaint' && !maskDataUrl) throw new Error('IMAGE_WORKBENCH_INPAINT_MASK_REQUIRED')
+    const estimate = await this.resolve(this.client.estimateVersionDerivation({
+      project_id: projection.project.id,
+      version_id: versionId,
+      input: {
+        base_revision: projection.project.revision,
+        instruction,
+        kind,
+        ...(maskDataUrl ? { mask_data_url: maskDataUrl } : {}),
+      },
+    }))
+    this.derivationQuote = {
+      project_id: projection.project.id,
+      source_kind: 'version',
+      source_id: versionId,
+      project_revision: projection.project.revision,
+      instruction,
+      kind,
+      ...(maskDataUrl ? { mask_data_url: maskDataUrl } : {}),
+      estimate_hash: estimate.estimate_hash,
+      paid_operation_count: estimate.paid_operation_count,
+      candidate_count_per_operation: estimate.candidate_count_per_operation,
+      concurrency: estimate.concurrency,
+      price_upper_bound: estimate.price_upper_bound,
+      expires_at: estimate.expires_at,
+    }
+    this.render()
+  }
+
+  private async confirmDerivedVersion(versionId: string): Promise<void> {
+    const projection = this.currentProjection()
+    const quote = this.derivationQuote
+    if (
+      !quote
+      || quote.source_kind !== 'version'
+      || quote.source_id !== versionId
+      || !quoteIsActive(quote, projection.project.id, projection.project.revision, quote.project_id, quote.project_revision)
+    ) {
+      throw new Error('IMAGE_WORKBENCH_DERIVATION_ESTIMATE_REQUIRED')
+    }
+    this.version(versionId)
+    await this.resolve(this.client.deriveVersion({
+      project_id: projection.project.id,
+      version_id: versionId,
+      input: {
+        idempotency_key: this.idempotencyKey(),
+        base_revision: quote.project_revision,
+        instruction: quote.instruction,
+        estimate_hash: quote.estimate_hash,
+        confirm: true,
+        kind: quote.kind,
+        ...(quote.mask_data_url ? { mask_data_url: quote.mask_data_url } : {}),
+      },
+    }))
     this.derivationQuote = undefined
     this.render()
   }
@@ -1548,6 +2114,60 @@ export class ImageWorkbenchShell {
     return layer
   }
 
+  private canvasLayer(canvasId: string, layerId: string): ImageCanvasLayer {
+    const layer = canvasLayerById(this.canvas(canvasId).document.layers, layerId)
+    if (!layer) throw new Error('IMAGE_WORKBENCH_CANVAS_LAYER_NOT_FOUND')
+    return layer
+  }
+
+  private validCanvasLayerTransform(raw: ImageCanvasLayerTransform): ImageCanvasLayerTransform {
+    const values = Object.values(raw)
+    if (values.some(value => !Number.isFinite(value))) throw new Error('IMAGE_WORKBENCH_CANVAS_TRANSFORM_INVALID')
+    if (
+      raw.x < -12_000 || raw.x > 24_000 || raw.y < -12_000 || raw.y > 24_000
+      || raw.width <= 0 || raw.width > 12_000 || raw.height <= 0 || raw.height > 12_000
+      || raw.rotation_degrees < -360 || raw.rotation_degrees > 360
+      || raw.scale_x <= 0 || raw.scale_x > 100 || raw.scale_y <= 0 || raw.scale_y > 100
+    ) throw new Error('IMAGE_WORKBENCH_CANVAS_TRANSFORM_INVALID')
+    return raw
+  }
+
+  private async updateCanvasLayerTransform(
+    canvasId: string,
+    layerId: string,
+    transform: ImageCanvasLayerTransform,
+  ): Promise<void> {
+    const projection = this.currentProjection()
+    const canvas = this.canvas(canvasId)
+    const layer = this.canvasLayer(canvasId, layerId)
+    if (!isCanvasLayerTransformable(layer)) throw new Error('IMAGE_WORKBENCH_CANVAS_LAYER_TRANSFORM_UNSUPPORTED')
+    await this.applyCanvasCommand(canvas.canvas_id, {
+      base_project_revision: projection.project.revision,
+      command: {
+        idempotency_key: this.idempotencyKey(),
+        base_revision: canvas.revision,
+        kind: 'replace_layer',
+        payload: { layer: withCanvasLayerTransform(layer, this.validCanvasLayerTransform(transform)) },
+      },
+    })
+  }
+
+  private async removeCanvasLayer(canvasId: string, layerId: string): Promise<void> {
+    const projection = this.currentProjection()
+    const canvas = this.canvas(canvasId)
+    this.canvasLayer(canvasId, layerId)
+    if (this.selectedCanvasLayerId === layerId) this.selectedCanvasLayerId = undefined
+    await this.applyCanvasCommand(canvas.canvas_id, {
+      base_project_revision: projection.project.revision,
+      command: {
+        idempotency_key: this.idempotencyKey(),
+        base_revision: canvas.revision,
+        kind: 'remove_layer',
+        payload: { layer_id: layerId },
+      },
+    })
+  }
+
   private async addCanvasTextLayer(
     canvasId: string,
     input: { text: string; x: number; y: number; font_size: number; fill: string },
@@ -1596,6 +2216,83 @@ export class ImageWorkbenchShell {
     })
   }
 
+  private async addCanvasShapeLayer(
+    canvasId: string,
+    input: { shape: 'rectangle' | 'ellipse' | 'line'; x: number; y: number; width: number; height: number; fill: string },
+  ): Promise<void> {
+    const projection = this.currentProjection()
+    const canvas = this.canvas(canvasId)
+    if (!['rectangle', 'ellipse', 'line'].includes(input.shape) || !/^#[0-9A-Fa-f]{6}(?:[0-9A-Fa-f]{2})?$/u.test(input.fill)) {
+      throw new Error('IMAGE_WORKBENCH_CANVAS_SHAPE_INVALID')
+    }
+    const transform = this.validCanvasLayerTransform({
+      x: input.x,
+      y: input.y,
+      width: input.width,
+      height: input.height,
+      rotation_degrees: 0,
+      scale_x: 1,
+      scale_y: 1,
+    })
+    await this.applyCanvasCommand(canvas.canvas_id, {
+      base_project_revision: projection.project.revision,
+      command: {
+        idempotency_key: this.idempotencyKey(),
+        base_revision: canvas.revision,
+        kind: 'add_layer',
+        payload: {
+          layer: {
+            id: this.localEntityId('layer'),
+            kind: 'shape',
+            shape: input.shape,
+            transform,
+            fill: input.fill,
+            opacity: 1,
+          },
+        },
+      },
+    })
+  }
+
+  private async addCanvasQrLayer(
+    canvasId: string,
+    input: { payload: string; x: number; y: number; size: number; error_correction: 'M' | 'Q' | 'H' },
+  ): Promise<void> {
+    const projection = this.currentProjection()
+    const canvas = this.canvas(canvasId)
+    if (!input.payload || input.payload.length > 2_048 || !['M', 'Q', 'H'].includes(input.error_correction)) {
+      throw new Error('IMAGE_WORKBENCH_CANVAS_QR_INVALID')
+    }
+    const transform = this.validCanvasLayerTransform({
+      x: input.x,
+      y: input.y,
+      width: input.size,
+      height: input.size,
+      rotation_degrees: 0,
+      scale_x: 1,
+      scale_y: 1,
+    })
+    await this.applyCanvasCommand(canvas.canvas_id, {
+      base_project_revision: projection.project.revision,
+      command: {
+        idempotency_key: this.idempotencyKey(),
+        base_revision: canvas.revision,
+        kind: 'add_layer',
+        payload: {
+          layer: {
+            id: this.localEntityId('layer'),
+            kind: 'qrcode',
+            source: { kind: 'payload', value: input.payload },
+            transform,
+            error_correction: input.error_correction,
+            quiet_zone_modules: 4,
+            verify_after_render: true,
+          },
+        },
+      },
+    })
+  }
+
   private async updateCanvasTextLayer(canvasId: string, layerId: string, text: string): Promise<void> {
     const projection = this.currentProjection()
     const canvas = this.canvas(canvasId)
@@ -1620,11 +2317,75 @@ export class ImageWorkbenchShell {
       if (!version) throw new Error('IMAGE_WORKBENCH_RENDERED_VERSION_REQUIRED')
       return [artboard.id, version]
     }))
-    await this.exportDelivery({
+    const exported = await this.exportDelivery({
       idempotency_key: this.idempotencyKey(),
       base_revision: projection.project.revision,
       version_ids_by_artboard,
     })
+    this.latestExport = {
+      project_id: projection.project.id,
+      export: exported,
+      ...(exported.delivery_set ? { delivery_set: exported.delivery_set } : {}),
+      saved_outputs: {},
+    }
+    this.setNotice(exported.export_receipts?.length ? '导出完成，已记录最终输出哈希。' : `导出已进入${operationLabel(exported.operation.status)}状态。`)
+  }
+
+  private async selectArtboardVersion(artboardId: string, versionId: string): Promise<void> {
+    const projection = this.currentProjection()
+    const version = projection.project.version_history.find(candidate => (
+      candidate.id === versionId
+      && candidate.kind === 'canvas'
+      && candidate.artboard_id === artboardId
+    ))
+    if (!version) throw new Error('IMAGE_WORKBENCH_ARTBOARD_VERSION_INVALID')
+    await this.resolve(this.client.selectArtboardVersion({
+      project_id: projection.project.id,
+      artboard_id: artboardId,
+      input: {
+        idempotency_key: this.idempotencyKey(),
+        base_revision: projection.project.revision,
+        version_id: version.id,
+      },
+    }))
+    await this.refreshProject(projection.project.id)
+    this.setNotice('已将该画板切换到历史正式 Version。')
+  }
+
+  private async saveExportedArtboard(
+    artboardId: string,
+    versionId: string,
+    format: 'png' | 'jpeg' | 'webp',
+  ): Promise<void> {
+    const projection = this.currentProjection()
+    const latestExport = this.latestExport
+    const artboard = projection.delivery_spec?.artboards.find(value => value.id === artboardId)
+    if (!latestExport || latestExport.project_id !== projection.project.id || !artboard) {
+      throw new Error('IMAGE_WORKBENCH_EXPORT_RECEIPT_REQUIRED')
+    }
+    const receipt = exportReceiptsFor(latestExport).find(value => value.artboard_id === artboardId)
+    const expectedVersion = receipt?.version_id
+      ?? latestExport.export?.delivery_set?.version_ids_by_artboard[artboardId]
+      ?? latestExport.delivery_set?.version_ids_by_artboard[artboardId]
+    if (!expectedVersion || expectedVersion !== versionId) throw new Error('IMAGE_WORKBENCH_EXPORT_RECEIPT_REQUIRED')
+    const destination = await this.resolve(this.client.requestDestination({
+      project_id: projection.project.id,
+      version_id: versionId,
+      intent: 'save_version',
+      suggested_name: suggestedExportName(artboard.label, format),
+    }))
+    const saved = await this.resolve(this.client.saveOutput({
+      project_id: projection.project.id,
+      input: {
+        version_id: versionId,
+        destination_grant_id: destination.destination_grant_id,
+      },
+    }))
+    this.latestExport = {
+      ...latestExport,
+      saved_outputs: { ...latestExport.saved_outputs, [artboardId]: saved },
+    }
+    this.setNotice(`已验证保存 ${artboard.label}：${saved.verification.byte_size} 字节。`)
   }
 
   /** Applies the persisted Campaign intent only after explicit Candidate adoption. */
@@ -1780,6 +2541,119 @@ export class ImageWorkbenchShell {
     })
   }
 
+  private canvasPreviewPoint(event: PointerEvent, canvasId: string): { x: number; y: number } | undefined {
+    const preview = [...this.root.querySelectorAll<HTMLElement>('[data-canvas-preview-id]')]
+      .find(element => element.dataset.canvasPreviewId === canvasId)
+    if (!preview) return undefined
+    const canvasWidth = Number(preview.dataset.canvasWidth)
+    const canvasHeight = Number(preview.dataset.canvasHeight)
+    const rect = preview.getBoundingClientRect()
+    if (!Number.isFinite(canvasWidth) || !Number.isFinite(canvasHeight) || canvasWidth <= 0 || canvasHeight <= 0 || rect.width <= 0 || rect.height <= 0) {
+      return undefined
+    }
+    return {
+      x: (event.clientX - rect.left) * canvasWidth / rect.width,
+      y: (event.clientY - rect.top) * canvasHeight / rect.height,
+    }
+  }
+
+  private discardCanvasDrag(): void {
+    this.activeCanvasDragPointerId = undefined
+    if (this.state.drag_draft) {
+      this.state = reduceImageWorkbenchViewState(this.state, { kind: 'discard-drag' })
+      this.persist()
+    }
+    this.render()
+  }
+
+  private async persistCanvasDrag(): Promise<void> {
+    const draft = this.state.drag_draft
+    if (!draft || draft.kind !== 'canvas-layer') return
+    const projection = this.projection
+    if (!projection || projection.project.id !== draft.project_id) {
+      this.discardCanvasDrag()
+      return
+    }
+    const canvas = projection.canvases.find(value => value.canvas_id === draft.canvas_id)
+    const layer = canvas ? canvasLayerById(canvas.document.layers, draft.layer_id) : undefined
+    const transform = layer && canvas ? canvasLayerTransform(layer, canvas.document.width, canvas.document.height) : undefined
+    const delta = { x: draft.current.x - draft.origin.x, y: draft.current.y - draft.origin.y }
+    this.state = reduceImageWorkbenchViewState(this.state, { kind: 'discard-drag' })
+    this.persist()
+    if (!canvas || !layer || !transform || !isCanvasLayerTransformable(layer) || (!delta.x && !delta.y)) {
+      this.render()
+      return
+    }
+    await this.updateCanvasLayerTransform(canvas.canvas_id, layer.id, {
+      ...transform,
+      x: transform.x + delta.x,
+      y: transform.y + delta.y,
+    })
+  }
+
+  private readonly handleCanvasPointerDown = (event: PointerEvent): void => {
+    if (!event.isPrimary || event.button !== 0) return
+    const target = event.target
+    if (!(target instanceof Element)) return
+    const layerElement = target.closest<HTMLElement>('[data-canvas-drag-layer]')
+    const canvasId = layerElement?.dataset.canvasId
+    const layerId = layerElement?.dataset.layerId
+    const projection = this.projection
+    if (!layerElement || !canvasId || !layerId || !projection || projection.project.id !== this.state.selected_project_id) return
+    const canvas = projection.canvases.find(value => value.canvas_id === canvasId)
+    const layer = canvas ? canvasLayerById(canvas.document.layers, layerId) : undefined
+    const point = this.canvasPreviewPoint(event, canvasId)
+    if (!canvas || !layer || !isCanvasLayerTransformable(layer) || !point) return
+    event.preventDefault()
+    this.selectedCanvasLayerId = layerId
+    this.activeCanvasDragPointerId = event.pointerId
+    try {
+      this.root.setPointerCapture(event.pointerId)
+    } catch {
+      // Pointer capture is an ergonomics improvement; the command itself is
+      // still protected by the persisted drag draft and Canvas revision.
+    }
+    this.state = reduceImageWorkbenchViewState(this.state, {
+      kind: 'begin-drag',
+      draft: {
+        kind: 'canvas-layer',
+        project_id: projection.project.id,
+        canvas_id: canvasId,
+        layer_id: layerId,
+        origin: point,
+        current: point,
+      },
+    })
+    this.persist()
+    this.render()
+  }
+
+  private readonly handleCanvasPointerMove = (event: PointerEvent): void => {
+    if (this.activeCanvasDragPointerId !== event.pointerId || !this.state.drag_draft) return
+    const point = this.canvasPreviewPoint(event, this.state.drag_draft.canvas_id)
+    if (!point) return
+    event.preventDefault()
+    this.state = reduceImageWorkbenchViewState(this.state, { kind: 'update-drag', current: point })
+    this.persist()
+    this.render()
+  }
+
+  private readonly handleCanvasPointerUp = (event: PointerEvent): void => {
+    if (this.activeCanvasDragPointerId !== event.pointerId) return
+    try {
+      this.root.releasePointerCapture(event.pointerId)
+    } catch {
+      // Capture may already be released after a platform-level cancellation.
+    }
+    this.activeCanvasDragPointerId = undefined
+    void this.runInteractive(() => this.persistCanvasDrag())
+  }
+
+  private readonly handleCanvasPointerCancel = (event: PointerEvent): void => {
+    if (this.activeCanvasDragPointerId !== event.pointerId) return
+    this.discardCanvasDrag()
+  }
+
   private readonly handleClick = (event: Event): void => {
     const target = event.target
     if (!(target instanceof Element)) return
@@ -1794,18 +2668,34 @@ export class ImageWorkbenchShell {
       return
     }
     if (action === 'select-candidate' && button.dataset.candidateId) {
-      if (this.derivationQuote?.candidate_id !== button.dataset.candidateId) this.derivationQuote = undefined
+      if (this.derivationQuote?.source_kind !== 'candidate' || this.derivationQuote.source_id !== button.dataset.candidateId) this.derivationQuote = undefined
       this.dispatch({ kind: 'select-candidate', candidate_id: button.dataset.candidateId })
       const projection = this.projection
       if (projection) void this.refreshCandidatePreviews(projection).then(() => this.render()).catch(() => undefined)
       return
     }
     if (action === 'select-canvas' && button.dataset.canvasId) {
+      this.selectedCanvasLayerId = undefined
       this.dispatch({ kind: 'select-canvas', canvas_id: button.dataset.canvasId })
+      const projection = this.projection
+      if (projection) void this.refreshVersionPreviews(projection).then(() => this.render()).catch(() => undefined)
+      return
+    }
+    if (action === 'select-canvas-layer' && button.dataset.canvasId && button.dataset.layerId) {
+      this.selectedCanvasLayerId = button.dataset.layerId
+      if (this.state.selected_canvas_id !== button.dataset.canvasId) {
+        this.state = reduceImageWorkbenchViewState(this.state, { kind: 'select-canvas', canvas_id: button.dataset.canvasId })
+        this.persist()
+      }
+      this.render()
       return
     }
     if (action === 'select-artboard' && button.dataset.artboardId) {
       this.dispatch({ kind: 'select-artboard', artboard_id: button.dataset.artboardId })
+      return
+    }
+    if (action === 'select-artboard-version' && button.dataset.artboardId && button.dataset.versionId) {
+      void this.runInteractive(() => this.selectArtboardVersion(button.dataset.artboardId!, button.dataset.versionId!))
       return
     }
     if (action === 'compile-brief') {
@@ -1836,6 +2726,10 @@ export class ImageWorkbenchShell {
       void this.runInteractive(() => this.confirmDerivedCandidate(button.dataset.candidateId!))
       return
     }
+    if (action === 'confirm-derive-version' && button.dataset.versionId) {
+      void this.runInteractive(() => this.confirmDerivedVersion(button.dataset.versionId!))
+      return
+    }
     if (action === 'adopt-candidate' && button.dataset.candidateId) {
       void this.runInteractive(() => this.adoptSelectedCandidate(button.dataset.candidateId!, [this.artboardId()]))
       return
@@ -1854,6 +2748,24 @@ export class ImageWorkbenchShell {
     }
     if (action === 'export-delivery') {
       void this.runInteractive(() => this.exportCurrentDelivery())
+      return
+    }
+    const outputFormat = button.dataset.outputFormat
+    if (
+      action === 'save-export-artboard'
+      && button.dataset.artboardId
+      && button.dataset.versionId
+      && (outputFormat === 'png' || outputFormat === 'jpeg' || outputFormat === 'webp')
+    ) {
+      void this.runInteractive(() => this.saveExportedArtboard(
+        button.dataset.artboardId!,
+        button.dataset.versionId!,
+        outputFormat,
+      ))
+      return
+    }
+    if (action === 'remove-canvas-layer' && button.dataset.canvasId && button.dataset.layerId) {
+      void this.runInteractive(() => this.removeCanvasLayer(button.dataset.canvasId!, button.dataset.layerId!))
       return
     }
     if (action === 'apply-campaign-intent') {
@@ -1969,6 +2881,10 @@ export class ImageWorkbenchShell {
       void this.runInteractive(() => this.deriveCandidateFromForm(target))
       return
     }
+    if (target.matches('[data-derive-version-form]')) {
+      void this.runInteractive(() => this.deriveVersionFromForm(target))
+      return
+    }
     if (target.matches('[data-adopt-candidate-form]')) {
       void this.runInteractive(() => this.adoptCandidateFromForm(target))
       return
@@ -1992,6 +2908,18 @@ export class ImageWorkbenchShell {
     }
     if (target.matches('[data-edit-canvas-text-form]')) {
       void this.runInteractive(() => this.updateCanvasTextFromForm(target))
+      return
+    }
+    if (target.matches('[data-canvas-layer-transform-form]')) {
+      void this.runInteractive(() => this.updateCanvasLayerTransformFromForm(target))
+      return
+    }
+    if (target.matches('[data-add-canvas-shape-form]')) {
+      void this.runInteractive(() => this.addCanvasShapeFromForm(target))
+      return
+    }
+    if (target.matches('[data-add-canvas-qr-form]')) {
+      void this.runInteractive(() => this.addCanvasQrFromForm(target))
       return
     }
     if (target.matches('[data-apply-brand-form]')) {
@@ -2056,6 +2984,22 @@ export class ImageWorkbenchShell {
     await this.deriveSelectedCandidate(candidateId, instruction, kind)
   }
 
+  private async deriveVersionFromForm(form: HTMLFormElement): Promise<void> {
+    const versionId = form.dataset.versionId
+    const instruction = form.querySelector<HTMLInputElement>('[data-derive-version-instruction]')?.value.trim() ?? ''
+    const kind = form.querySelector<HTMLSelectElement>('[data-derive-version-kind]')?.value
+    if (!versionId || !instruction || (kind !== 'edit' && kind !== 'inpaint')) {
+      throw new Error('IMAGE_WORKBENCH_VERSION_DERIVATION_INVALID')
+    }
+    const mask = form.querySelector<HTMLInputElement>('[data-derive-version-mask]')?.files?.[0]
+    if (kind === 'inpaint') {
+      if (!mask || mask.type !== 'image/png') throw new Error('IMAGE_WORKBENCH_INPAINT_MASK_PNG_REQUIRED')
+      await this.deriveSelectedVersion(versionId, instruction, kind, await fileAsDataUrl(mask))
+      return
+    }
+    await this.deriveSelectedVersion(versionId, instruction, kind)
+  }
+
   private async addCanvasTextFromForm(form: HTMLFormElement): Promise<void> {
     const canvasId = form.dataset.canvasId
     const text = form.querySelector<HTMLInputElement>('[data-canvas-text]')?.value.trim() ?? ''
@@ -2073,6 +3017,55 @@ export class ImageWorkbenchShell {
     const text = form.querySelector<HTMLInputElement>('[data-canvas-existing-text]')?.value.trim() ?? ''
     if (!canvasId || !layerId) throw new Error('IMAGE_WORKBENCH_CANVAS_TEXT_LAYER_NOT_FOUND')
     await this.updateCanvasTextLayer(canvasId, layerId, text)
+  }
+
+  private async updateCanvasLayerTransformFromForm(form: HTMLFormElement): Promise<void> {
+    const canvasId = form.dataset.canvasId
+    const layerId = form.dataset.layerId
+    if (!canvasId || !layerId) throw new Error('IMAGE_WORKBENCH_CANVAS_LAYER_NOT_FOUND')
+    const transform = {
+      x: Number(form.querySelector<HTMLInputElement>('[data-canvas-layer-x]')?.value),
+      y: Number(form.querySelector<HTMLInputElement>('[data-canvas-layer-y]')?.value),
+      width: Number(form.querySelector<HTMLInputElement>('[data-canvas-layer-width]')?.value),
+      height: Number(form.querySelector<HTMLInputElement>('[data-canvas-layer-height]')?.value),
+      rotation_degrees: Number(form.querySelector<HTMLInputElement>('[data-canvas-layer-rotation]')?.value),
+      scale_x: Number(form.querySelector<HTMLInputElement>('[data-canvas-layer-scale-x]')?.value),
+      scale_y: Number(form.querySelector<HTMLInputElement>('[data-canvas-layer-scale-y]')?.value),
+    }
+    await this.updateCanvasLayerTransform(canvasId, layerId, transform)
+  }
+
+  private async addCanvasShapeFromForm(form: HTMLFormElement): Promise<void> {
+    const canvasId = form.dataset.canvasId
+    const shape = form.querySelector<HTMLSelectElement>('[data-canvas-shape-kind]')?.value
+    const fill = form.querySelector<HTMLInputElement>('[data-canvas-shape-fill]')?.value.trim() ?? ''
+    if (!canvasId || (shape !== 'rectangle' && shape !== 'ellipse' && shape !== 'line')) {
+      throw new Error('IMAGE_WORKBENCH_CANVAS_SHAPE_INVALID')
+    }
+    await this.addCanvasShapeLayer(canvasId, {
+      shape,
+      x: Number(form.querySelector<HTMLInputElement>('[data-canvas-shape-x]')?.value),
+      y: Number(form.querySelector<HTMLInputElement>('[data-canvas-shape-y]')?.value),
+      width: Number(form.querySelector<HTMLInputElement>('[data-canvas-shape-width]')?.value),
+      height: Number(form.querySelector<HTMLInputElement>('[data-canvas-shape-height]')?.value),
+      fill,
+    })
+  }
+
+  private async addCanvasQrFromForm(form: HTMLFormElement): Promise<void> {
+    const canvasId = form.dataset.canvasId
+    const payload = form.querySelector<HTMLInputElement>('[data-canvas-qr-payload]')?.value.trim() ?? ''
+    const errorCorrection = form.querySelector<HTMLSelectElement>('[data-canvas-qr-error-correction]')?.value
+    if (!canvasId || (errorCorrection !== 'M' && errorCorrection !== 'Q' && errorCorrection !== 'H')) {
+      throw new Error('IMAGE_WORKBENCH_CANVAS_QR_INVALID')
+    }
+    await this.addCanvasQrLayer(canvasId, {
+      payload,
+      x: Number(form.querySelector<HTMLInputElement>('[data-canvas-qr-x]')?.value),
+      y: Number(form.querySelector<HTMLInputElement>('[data-canvas-qr-y]')?.value),
+      size: Number(form.querySelector<HTMLInputElement>('[data-canvas-qr-size]')?.value),
+      error_correction: errorCorrection,
+    })
   }
 
   private async applyBrandKitFromForm(form: HTMLFormElement): Promise<void> {

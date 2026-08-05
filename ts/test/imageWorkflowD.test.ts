@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createImageWorkbenchDomainApiHandler } from '../src/server/api/imageWorkbench.js'
 import { ImageWorkbenchService } from '../src/server/services/imageWorkbenchService.js'
+import { imageTicketRequest } from './helpers/imageUiTicket.js'
 
 const roots: string[] = []
 const services: ImageWorkbenchService[] = []
@@ -128,7 +129,7 @@ async function request(
   init: RequestInit = {},
 ): Promise<Response> {
   const url = new URL(path, 'http://127.0.0.1:3456')
-  return await handler(new Request(url, init), url, url.pathname.split('/').filter(Boolean))
+  return await handler(imageTicketRequest(url, init), url, url.pathname.split('/').filter(Boolean))
 }
 
 const headers = {
@@ -1505,7 +1506,6 @@ test('15.5D Campaign 旧 attempt 的 existingRound 恢复不能绑定到已启�
           amount_minor: estimate.estimate.price_upper_bound.amount_minor / estimate.estimate.paid_operation_count,
         },
         reference_inputs: [],
-      }, {
         brief_overrides: {
           confirmed_facts: input.shared_brief.confirmed_facts,
           must_preserve: input.shared_brief.must_preserve,

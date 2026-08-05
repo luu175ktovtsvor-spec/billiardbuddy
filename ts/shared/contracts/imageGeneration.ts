@@ -278,6 +278,8 @@ export const imageGenerationEstimateSchema = z.object({
   kind: z.enum(['generation_round', 'derivation']),
   creative_plan_id: mediaIdSchema.optional(),
   candidate_id: mediaIdSchema.optional(),
+  /** A formal Version is an alternative immutable source for a paid edit. */
+  version_id: mediaIdSchema.optional(),
   direction_ids: z.array(mediaIdSchema).min(1).max(8),
   request_hash: imageHashSchema,
   estimate_hash: imageHashSchema,
@@ -303,8 +305,8 @@ export const imageGenerationEstimateSchema = z.object({
   if (estimate.kind === 'generation_round' && !estimate.creative_plan_id) {
     context.addIssue({ code: 'custom', message: 'generation round estimate requires creative_plan_id' })
   }
-  if (estimate.kind === 'derivation' && !estimate.candidate_id) {
-    context.addIssue({ code: 'custom', message: 'derivation estimate requires candidate_id' })
+  if (estimate.kind === 'derivation' && Boolean(estimate.candidate_id) === Boolean(estimate.version_id)) {
+    context.addIssue({ code: 'custom', message: 'derivation estimate requires exactly one source: candidate_id or version_id' })
   }
 })
 
@@ -676,7 +678,13 @@ export const imageSaveOutputInputSchema = z.object({
   output_id: mediaIdSchema.optional(),
   destination_grant_id: mediaIdSchema,
 }).strict().refine(value => Boolean(value.version_id || value.output_id), { message: 'version_id or output_id is required' })
-export const imageDestinationGrantRequestSchema = z.object({ suggested_name: z.string().min(1).max(180).optional() }).strict()
+/** A native save dialog may only authorise one explicit Project Version save. */
+export const imageDestinationGrantRequestSchema = z.object({
+  project_id: mediaIdSchema,
+  version_id: mediaIdSchema,
+  intent: z.literal('save_version'),
+  suggested_name: z.string().min(1).max(180).optional(),
+}).strict()
 export const imageDestinationGrantSchema = z.object({ destination_grant_id: mediaIdSchema, expires_at: mediaIsoDateSchema }).strict()
 
 export const imageCanvasPreflightSchema = z.object({
@@ -808,6 +816,20 @@ export const estimateDeriveImageCandidateInputSchema = z.object({
   }
 })
 
+/** Version derivation has the same paid command envelope as Candidate derivation. */
+export const deriveImageVersionInputSchema = deriveImageCandidateInputSchema
+export const estimateDeriveImageVersionInputSchema = estimateDeriveImageCandidateInputSchema
+
+/** Internal/API source identity: a paid derivation always has one immutable base. */
+export const imageDerivationSourceSchema = z.object({
+  candidate_id: mediaIdSchema.optional(),
+  version_id: mediaIdSchema.optional(),
+}).strict().superRefine((source, context) => {
+  if (Boolean(source.candidate_id) === Boolean(source.version_id)) {
+    context.addIssue({ code: 'custom', message: 'derivation source requires exactly one of candidate_id or version_id' })
+  }
+})
+
 export type ImageReferenceV2 = z.infer<typeof imageReferenceV2Schema>
 export type ImageBriefSnapshot = z.infer<typeof imageBriefSnapshotSchema>
 export type ImageDeliverySpec = z.infer<typeof imageDeliverySpecSchema>
@@ -875,6 +897,9 @@ export type DecideImageCandidateInput = z.input<typeof decideImageCandidateInput
 export type AdoptImageCandidateInput = z.input<typeof adoptImageCandidateInputSchema>
 export type DeriveImageCandidateInput = z.input<typeof deriveImageCandidateInputSchema>
 export type EstimateDeriveImageCandidateInput = z.input<typeof estimateDeriveImageCandidateInputSchema>
+export type DeriveImageVersionInput = z.input<typeof deriveImageVersionInputSchema>
+export type EstimateDeriveImageVersionInput = z.input<typeof estimateDeriveImageVersionInputSchema>
+export type ImageDerivationSource = z.infer<typeof imageDerivationSourceSchema>
 
 /** The only binary fact exposed to the 15.2 repository transaction. */
 export const imageCandidateAssetSchema = mediaAssetSchema.extend({ role: z.literal('result') })

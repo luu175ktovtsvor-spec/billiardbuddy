@@ -61,6 +61,31 @@ export function consumeMediaUiCapability(
   return capability
 }
 
+function retiredImageMediaResponse(): Response {
+  const safe = mediaSafeError('MEDIA_INVALID_REQUEST')
+  return Response.json(
+    {
+      error: safe.code,
+      message: '生图接口已迁移到 /api/images',
+    },
+    { status: 410 },
+  )
+}
+
+async function retiredImageProjectResponse(
+  service: MediaProjectService,
+  projectId: string,
+  includeDeletion = false,
+): Promise<Response | null> {
+  const projectKind = await service.inspectStoredProjectKind(projectId)
+  const deletionKind = includeDeletion && projectKind === null
+    ? await service.inspectStoredDeletionProjectKind(projectId)
+    : null
+  return projectKind === 'image' || deletionKind === 'image'
+    ? retiredImageMediaResponse()
+    : null
+}
+
 function publicProject(project: MediaProject): PublicMediaProject {
   const {
     owner: _owner,
@@ -107,6 +132,9 @@ function publicProject(project: MediaProject): PublicMediaProject {
           parent_version_id: version.parent_version_id,
           kind: version.kind ?? output?.version_kind ?? 'generated',
           operation_id: version.operation_id ?? output?.operation_id,
+          ...(version.artboard_id ? { artboard_id: version.artboard_id } : {}),
+          ...(version.canvas_id ? { canvas_id: version.canvas_id } : {}),
+          ...(version.canvas_revision === undefined ? {} : { canvas_revision: version.canvas_revision }),
           asset_id: asset.id,
           image_path: imagePath,
           mime_type: asset.mime_type,
@@ -209,7 +237,7 @@ export function createMediaApiHandler(
       // Image projects, operations, assets and event replay now live under
       // `/api/images/*`. This legacy endpoint cannot remain a second writable
       // image path while old media data is still importable.
-      if (area === 'images') throw ApiError.notFound('生图接口已迁移到 /api/images')
+      if (area === 'images') return retiredImageMediaResponse()
       if (area === 'videos') throw ApiError.notFound('视频接口已迁移到 /api/videos')
 
       if (area === 'projects') {
@@ -217,6 +245,8 @@ export function createMediaApiHandler(
         if (projectId) {
           if (segments[4] !== 'events' || segments[5]) throw ApiError.badRequest('无效的媒体项目操作')
           if (req.method !== 'GET') throw methodNotAllowed(req.method)
+          const retired = await retiredImageProjectResponse(service, projectId)
+          if (retired) return retired
           await service.assertProjectOwner(projectId, STANDALONE_MEDIA_OWNER)
           const cursor = Number(url.searchParams.get('cursor') ?? 0)
           const limit = Number(url.searchParams.get('limit') ?? 100)
@@ -235,9 +265,12 @@ export function createMediaApiHandler(
         if (requestedKind !== null && requestedKind !== 'image' && requestedKind !== 'video') {
           throw ApiError.badRequest('kind 只能是 image 或 video')
         }
-        const kind = requestedKind === 'image' || requestedKind === 'video' ? requestedKind : undefined
+        if (requestedKind === 'image') return retiredImageMediaResponse()
+        const kind = requestedKind === 'video' ? requestedKind : undefined
         return Response.json({
-          projects: (await service.listProjectsForOwner(STANDALONE_MEDIA_OWNER, kind)).map(publicProject),
+          // Never enumerate a legacy image through getProject(): that method
+          // can repair records, poll a task, or acknowledge a remote result.
+          projects: await service.listStoredProjectsForOwner(STANDALONE_MEDIA_OWNER, kind ?? 'video').then(projects => projects.map(publicProject)),
         })
       }
 
@@ -246,13 +279,15 @@ export function createMediaApiHandler(
         const projectId = segments[3]
         const fileName = segments[4]
         if (!projectId || !fileName || segments[5]) throw ApiError.badRequest('无效的媒体资产地址')
+        const retired = await retiredImageProjectResponse(service, projectId)
+        if (retired) return retired
         await service.assertProjectOwner(projectId, STANDALONE_MEDIA_OWNER)
         return await service.assetResponse(projectId, fileName, req)
       }
 
       if (area === 'deletions') {
         if (req.method !== 'GET' || segments[3]) throw methodNotAllowed(req.method)
-        const deletions = await service.listDeletionsForOwner(STANDALONE_MEDIA_OWNER)
+        const deletions = await service.listStoredDeletionsForOwner(STANDALONE_MEDIA_OWNER, 'video')
         deletions.sort((left, right) => right.deleted_at.localeCompare(left.deleted_at))
         return Response.json({
           deletions: deletions.map(receipt => publicMediaDeletionReceiptSchema.parse(receipt)),
@@ -263,6 +298,8 @@ export function createMediaApiHandler(
         const projectId = segments[3]
         if (!projectId) throw ApiError.badRequest('缺少媒体项目 ID')
         const action = segments[4]
+        const retired = await retiredImageProjectResponse(service, projectId, action === 'restore')
+        if (retired) return retired
         if (action === 'restore') {
           if (req.method !== 'POST' || segments[5]) throw methodNotAllowed(req.method)
           const receipt = publicMediaDeletionReceiptSchema.parse(
@@ -283,6 +320,9 @@ export function createMediaApiHandler(
       if (area === 'tasks') {
         const taskId = segments[3]
         if (!taskId) throw ApiError.badRequest('缺少媒体任务 ID')
+        if (await service.inspectStoredTaskKind(taskId) === 'image.generate') {
+          return retiredImageMediaResponse()
+        }
         await service.assertTaskOwner(taskId, STANDALONE_MEDIA_OWNER)
         if (segments[4] === 'cancel') {
           if (req.method !== 'POST') throw methodNotAllowed(req.method)

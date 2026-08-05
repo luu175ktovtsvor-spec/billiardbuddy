@@ -166,10 +166,54 @@ test('quick-create form exposes an optional first-round reference with only acce
   expect(html).toContain('data-quick-reference-file')
   expect(html).toContain('accept="image/png,image/jpeg,image/webp"')
   expect(html).toContain('data-quick-reference-role')
+  expect(html).toContain('data-quick-brief-confirmed-facts')
+  expect(html).toContain('data-quick-brief-must-preserve')
+  expect(html).toContain('data-quick-brief-may-change')
+  expect(html).toContain('data-quick-brief-exact-text')
   for (const role of ['subject', 'product', 'character', 'style', 'composition', 'environment', 'brand', 'logo', 'qrcode']) {
     expect(html).toContain(`value="${role}"`)
   }
   expect(html).not.toContain('value="unclassified"')
+})
+
+test('quick-create compiles optional complete Brief before its first paid Round', async () => {
+  const submissions: ImageQuickCreateInput[] = []
+  const root = { innerHTML: '', addEventListener: () => undefined } as unknown as HTMLElement
+  const shell = new ImageWorkbenchShell({
+    root,
+    client: {} as ImageWorkbenchClient,
+    idempotency_key_factory: () => 'image_ui_0123456789abcdef',
+  })
+  const internals = shell as unknown as {
+    quickCreate: (input: ImageQuickCreateInput) => Promise<void>
+    quickCreateFromForm: (form: HTMLFormElement) => Promise<void>
+  }
+  internals.quickCreate = async input => {
+    submissions.push(input)
+  }
+  const form = {
+    querySelector: (selector: string) => ({
+      '[data-quick-prompt]': { value: '为台球赛事制作门店宣传图' },
+      '[data-quick-preset]': { value: 'square' },
+      '[data-quick-reference-file]': { files: [] },
+      '[data-quick-reference-role]': { value: '' },
+      '[data-quick-brief-confirmed-facts]': { value: '门店主题是夏季联赛\n活动时间已确认' },
+      '[data-quick-brief-must-preserve]': { value: '品牌主色\n活动标题' },
+      '[data-quick-brief-may-change]': { value: '背景装饰' },
+      '[data-quick-brief-exact-text]': { value: '夏季联赛' },
+    }[selector] ?? null),
+  } as unknown as HTMLFormElement
+
+  await internals.quickCreateFromForm(form)
+
+  expect(submissions).toEqual([expect.objectContaining({
+    brief_overrides: {
+      confirmed_facts: ['门店主题是夏季联赛', '活动时间已确认'],
+      must_preserve: ['品牌主色', '活动标题'],
+      may_change: ['背景装饰'],
+      exact_text: ['夏季联赛'],
+    },
+  })])
 })
 
 test('quick-create maps an optional first-round file to its typed input and stops invalid role or file reads', async () => {
@@ -933,4 +977,495 @@ test('shell creates a Campaign from the selected Template revision instead of re
     brand_kit_revision_id: 'brand_revision_003',
     items: [{ variable_values: [{ slot_id: 'title', value: '夏季联赛' }] }],
   }])
+})
+
+test('canvas Shell lists layers and persists Shape, QR, transform, and drag through Canvas commands', async () => {
+  const canvasLayer = {
+    id: layerId,
+    kind: 'shape',
+    shape: 'rectangle',
+    transform: { x: 20, y: 30, width: 160, height: 90, rotation_degrees: 0, scale_x: 1, scale_y: 1 },
+    fill: '#174C80',
+    opacity: 1,
+  }
+  const projection = {
+    project: { id: projectId, revision: 8 },
+    candidate_groups: [],
+    delivery_spec: null,
+    canvases: [{
+      canvas_id: canvasId,
+      revision: 5,
+      document: {
+        project_id: projectId,
+        artboard_id: artboardId,
+        width: 1024,
+        height: 768,
+        layers: [canvasLayer],
+      },
+    }],
+    library: { project_id: projectId, entries: [] },
+    creative_plans: [],
+    generation_rounds: [],
+    operations: [],
+    inspiration_board: undefined,
+    campaign_intent: null,
+  } as unknown as ImageWorkbenchProjectProjection
+  const state = reduceImageWorkbenchViewState(
+    reduceImageWorkbenchViewState(
+      reduceImageWorkbenchViewState(createImageWorkbenchViewState(), { kind: 'select-project', project_id: projectId }),
+      { kind: 'select-canvas', canvas_id: canvasId },
+    ),
+    { kind: 'open-panel', panel: 'canvas-editor' },
+  )
+  const html = renderImageWorkbenchShell({
+    view_state: state,
+    projection,
+    campaigns: [],
+    selected_canvas_layer_id: layerId,
+  })
+  expect(html).toContain('data-canvas-preview-id="canvas_001"')
+  expect(html).toContain('最终像素以渲染结果为准')
+  expect(html).toContain('data-canvas-layer-transform-form')
+  expect(html).toContain('data-add-canvas-shape-form')
+  expect(html).toContain('data-add-canvas-qr-form')
+
+  const calls: unknown[] = []
+  const ok = <Value>(value: Value) => Promise.resolve({ ok: true as const, value })
+  const client = {
+    getProjectProjection: async () => ok(projection),
+    applyCanvasCommand: async (command: unknown) => {
+      calls.push(command)
+      return ok({})
+    },
+  } as unknown as ImageWorkbenchClient
+  const root = { innerHTML: '', addEventListener: () => undefined } as unknown as HTMLElement
+  const shell = new ImageWorkbenchShell({ root, client, idempotency_key_factory: () => 'image_ui_0123456789abcdef' })
+  const internals = shell as unknown as {
+    state: ReturnType<typeof createImageWorkbenchViewState>
+    projection?: ImageWorkbenchProjectProjection
+    addCanvasShapeFromForm: (form: HTMLFormElement) => Promise<void>
+    addCanvasQrFromForm: (form: HTMLFormElement) => Promise<void>
+    updateCanvasLayerTransformFromForm: (form: HTMLFormElement) => Promise<void>
+    persistCanvasDrag: () => Promise<void>
+  }
+  internals.state = { ...internals.state, selected_project_id: projectId, selected_canvas_id: canvasId }
+  internals.projection = projection
+  const fieldForm = (dataset: Record<string, string>, fields: Record<string, unknown>) => ({
+    dataset,
+    querySelector: (selector: string) => fields[selector] ?? null,
+  }) as unknown as HTMLFormElement
+
+  await internals.addCanvasShapeFromForm(fieldForm({ canvasId }, {
+    '[data-canvas-shape-kind]': { value: 'ellipse' },
+    '[data-canvas-shape-x]': { value: '80' },
+    '[data-canvas-shape-y]': { value: '90' },
+    '[data-canvas-shape-width]': { value: '240' },
+    '[data-canvas-shape-height]': { value: '120' },
+    '[data-canvas-shape-fill]': { value: '#FFFFFF' },
+  }))
+  await internals.addCanvasQrFromForm(fieldForm({ canvasId }, {
+    '[data-canvas-qr-payload]': { value: 'https://example.test/league' },
+    '[data-canvas-qr-x]': { value: '600' },
+    '[data-canvas-qr-y]': { value: '480' },
+    '[data-canvas-qr-size]': { value: '160' },
+    '[data-canvas-qr-error-correction]': { value: 'H' },
+  }))
+  await internals.updateCanvasLayerTransformFromForm(fieldForm({ canvasId, layerId }, {
+    '[data-canvas-layer-x]': { value: '40' },
+    '[data-canvas-layer-y]': { value: '50' },
+    '[data-canvas-layer-width]': { value: '220' },
+    '[data-canvas-layer-height]': { value: '110' },
+    '[data-canvas-layer-rotation]': { value: '35' },
+    '[data-canvas-layer-scale-x]': { value: '1.5' },
+    '[data-canvas-layer-scale-y]': { value: '0.8' },
+  }))
+  internals.state = reduceImageWorkbenchViewState(internals.state, {
+    kind: 'begin-drag',
+    draft: {
+      kind: 'canvas-layer', project_id: projectId, canvas_id: canvasId, layer_id: layerId,
+      origin: { x: 10, y: 10 }, current: { x: 40, y: 30 },
+    },
+  })
+  await internals.persistCanvasDrag()
+
+  expect(calls).toMatchObject([
+    { canvas_id: canvasId, input: { command: { kind: 'add_layer', payload: { layer: { kind: 'shape', shape: 'ellipse' } } } } },
+    { canvas_id: canvasId, input: { command: { kind: 'add_layer', payload: { layer: { kind: 'qrcode', source: { kind: 'payload', value: 'https://example.test/league' }, error_correction: 'H' } } } } },
+    { canvas_id: canvasId, input: { command: { kind: 'replace_layer', payload: { layer: { id: layerId, transform: { x: 40, y: 50, width: 220, height: 110, rotation_degrees: 35, scale_x: 1.5, scale_y: 0.8 } } } } } },
+    { canvas_id: canvasId, input: { command: { kind: 'replace_layer', payload: { layer: { id: layerId, transform: { x: 50, y: 50, width: 160, height: 90, rotation_degrees: 0, scale_x: 1, scale_y: 1 } } } } } },
+  ])
+})
+
+test('delivery Shell restores the durable Delivery Set and saves each artboard through an opaque grant', async () => {
+  const versionId = 'version_001'
+  const deliverySetId = 'delivery_set_001'
+  const receipt = {
+    id: 'export_receipt_001', project_id: projectId, artboard_id: artboardId, version_id: versionId,
+    source_hash: `sha256:${'a'.repeat(64)}`, output_asset_id: 'output_asset_001', output_format: 'png', output_hash: `sha256:${'b'.repeat(64)}`,
+    width: 1024, height: 1024, byte_size: 4096, release_check_result_id: 'release_check_001', created_at: '2026-08-05T00:00:00.000Z',
+  }
+  const deliverySet = {
+    id: deliverySetId, project_id: projectId, delivery_spec_id: 'delivery_001', delivery_spec_revision: 2,
+    version_ids_by_artboard: { [artboardId]: versionId },
+    export_receipt_ids_by_artboard: { [artboardId]: receipt.id },
+    created_at: '2026-08-05T00:00:00.000Z',
+  }
+  const projection = {
+    project: {
+      id: projectId, revision: 9, latest_delivery_set_id: deliverySetId,
+      current_versions_by_artboard: { [artboardId]: versionId },
+    },
+    candidate_groups: [],
+    delivery_spec: {
+      id: 'delivery_001', revision: 2,
+      artboards: [{ id: artboardId, label: '正式海报', width: 1024, height: 1024, output: { format: 'png', transparent: false } }],
+    },
+    canvases: [], library: { project_id: projectId, entries: [] }, creative_plans: [], generation_rounds: [], operations: [], inspiration_board: undefined, campaign_intent: null,
+  } as unknown as ImageWorkbenchProjectProjection
+  const exportCalls: unknown[] = []
+  const destinationCalls: unknown[] = []
+  const saveCalls: unknown[] = []
+  let deliverySetReads = 0
+  let receiptReads = 0
+  const ok = <Value>(value: Value) => Promise.resolve({ ok: true as const, value })
+  const client = {
+    getProjectProjection: async () => ok(projection),
+    getDeliverySet: async () => {
+      deliverySetReads += 1
+      return ok({ delivery_set: deliverySet })
+    },
+    getExportReceipt: async (input: { export_receipt_id: string }) => {
+      receiptReads += 1
+      expect(input).toEqual({ project_id: projectId, export_receipt_id: receipt.id })
+      return ok({ export_receipt: receipt })
+    },
+    exportDelivery: async (command: unknown) => {
+      exportCalls.push(command)
+      return ok({
+        operation: { id: 'operation_export_001', status: 'succeeded' },
+        export_receipts: [receipt], delivery_set: deliverySet, project_revision: 10,
+      })
+    },
+    requestDestination: async (input: unknown) => {
+      destinationCalls.push(input)
+      return ok({ destination_grant_id: 'destination_grant_001', expires_at: '2026-08-05T00:05:00.000Z' })
+    },
+    saveOutput: async (command: unknown) => {
+      saveCalls.push(command)
+      return ok({
+        destination_grant_id: 'destination_grant_001',
+        verification: { byte_size: 4096, mime_type: 'image/png', width: 1024, height: 1024, content_hash: `sha256:${'b'.repeat(64)}`, verified_at: '2026-08-05T00:00:01.000Z' },
+      })
+    },
+  } as unknown as ImageWorkbenchClient
+  const root = { innerHTML: '', addEventListener: () => undefined } as unknown as HTMLElement
+  const shell = new ImageWorkbenchShell({ root, client, idempotency_key_factory: () => 'image_ui_0123456789abcdef' })
+  const internals = shell as unknown as {
+    state: ReturnType<typeof createImageWorkbenchViewState>
+    projection?: ImageWorkbenchProjectProjection
+    exportCurrentDelivery: () => Promise<void>
+    saveExportedArtboard: (artboardId: string, versionId: string, format: 'png' | 'jpeg' | 'webp') => Promise<void>
+  }
+  internals.state = reduceImageWorkbenchViewState(
+    reduceImageWorkbenchViewState(createImageWorkbenchViewState(), { kind: 'select-project', project_id: projectId }),
+    { kind: 'open-panel', panel: 'delivery-panel' },
+  )
+  internals.projection = projection
+
+  await internals.exportCurrentDelivery()
+  await internals.saveExportedArtboard(artboardId, versionId, 'png')
+
+  expect(exportCalls).toMatchObject([{
+    project_id: projectId,
+    input: { version_ids_by_artboard: { [artboardId]: versionId } },
+  }])
+  expect(destinationCalls).toEqual([{
+    project_id: projectId,
+    version_id: versionId,
+    intent: 'save_version',
+    suggested_name: '正式海报.png',
+  }])
+  expect(saveCalls).toEqual([{
+    project_id: projectId,
+    input: { version_id: versionId, destination_grant_id: 'destination_grant_001' },
+  }])
+  expect(JSON.stringify([...destinationCalls, ...saveCalls])).not.toContain('path')
+  expect(shell.snapshot().latest_export?.saved_outputs[artboardId]?.verification.content_hash).toBe(receipt.output_hash)
+  expect(root.innerHTML).toContain(receipt.output_hash)
+
+  const restoredRoot = { innerHTML: '', addEventListener: () => undefined } as unknown as HTMLElement
+  const restored = new ImageWorkbenchShell({ root: restoredRoot, client })
+  const restoredInternals = restored as unknown as { state: ReturnType<typeof createImageWorkbenchViewState> }
+  restoredInternals.state = reduceImageWorkbenchViewState(
+    reduceImageWorkbenchViewState(createImageWorkbenchViewState(), { kind: 'select-project', project_id: projectId }),
+    { kind: 'open-panel', panel: 'delivery-panel' },
+  )
+  await restored.refreshSelectedProject()
+
+  expect(deliverySetReads).toBeGreaterThanOrEqual(2)
+  expect(receiptReads).toBeGreaterThanOrEqual(1)
+  expect(restored.snapshot().latest_export).toMatchObject({
+    project_id: projectId,
+    delivery_set: { id: deliverySetId },
+    export_receipts: [receipt],
+  })
+  expect(restoredRoot.innerHTML).toContain(`data-delivery-set-id="${deliverySetId}"`)
+  expect(restoredRoot.innerHTML).toContain(receipt.output_hash)
+  expect(restoredRoot.innerHTML).toContain(String(receipt.byte_size))
+  expect(restoredRoot.innerHTML).toContain(receipt.created_at)
+})
+
+test('Canvas Shell renders only the current formal Version through Main and switches same-artboard history with a command envelope', async () => {
+  const currentVersionId = 'version_canvas_current_001'
+  const historicalVersionId = 'version_canvas_history_001'
+  let projection = {
+    project: {
+      id: projectId,
+      revision: 11,
+      current_versions_by_artboard: { [artboardId]: currentVersionId },
+      version_history: [
+        {
+          id: historicalVersionId, kind: 'canvas', artboard_id: artboardId, canvas_id: canvasId, canvas_revision: 1,
+          asset_id: 'asset_history_001', image_path: '/api/images/projects/project_001/outputs/asset_history_001/content', mime_type: 'image/png',
+          text_layers: [], image_layers: [], created_at: '2026-08-05T00:00:00.000Z',
+        },
+        {
+          id: currentVersionId, kind: 'canvas', artboard_id: artboardId, canvas_id: canvasId, canvas_revision: 2,
+          asset_id: 'asset_current_001', image_path: '/api/images/projects/project_001/outputs/asset_current_001/content', mime_type: 'image/png',
+          text_layers: [], image_layers: [], created_at: '2026-08-05T00:01:00.000Z',
+        },
+        {
+          id: 'version_other_artboard_001', kind: 'canvas', artboard_id: 'artboard_002', canvas_id: 'canvas_002', canvas_revision: 1,
+          asset_id: 'asset_other_001', image_path: '/api/images/projects/project_001/outputs/asset_other_001/content', mime_type: 'image/png',
+          text_layers: [], image_layers: [], created_at: '2026-08-05T00:02:00.000Z',
+        },
+      ],
+    },
+    candidate_groups: [],
+    canvases: [{
+      canvas_id: canvasId,
+      revision: 2,
+      document: {
+        id: canvasId, project_id: projectId, artboard_id: artboardId,
+        width: 1024, height: 1024, layers: [],
+      },
+    }],
+    library: { project_id: projectId, entries: [] }, creative_plans: [], generation_rounds: [], operations: [], inspiration_board: undefined, campaign_intent: null,
+  } as unknown as ImageWorkbenchProjectProjection
+  const previewCalls: unknown[] = []
+  const selectCalls: unknown[] = []
+  const versionDerivationCalls: Array<{ kind: 'estimate' | 'derive'; command: unknown }> = []
+  const ok = <Value>(value: Value) => Promise.resolve({ ok: true as const, value })
+  const client = {
+    getProjectProjection: async () => ok(projection),
+    getVersionPreview: async (input: unknown) => {
+      previewCalls.push(input)
+      const version = (input as { version_id: string }).version_id
+      return ok({ version_id: version, data_url: 'data:image/png;base64,AA==' })
+    },
+    estimateVersionDerivation: async (command: unknown) => {
+      versionDerivationCalls.push({ kind: 'estimate', command })
+      return ok({
+        estimate_hash: `sha256:${'a'.repeat(64)}`,
+        paid_operation_count: 1,
+        candidate_count_per_operation: 3,
+        concurrency: 1,
+        price_upper_bound: {
+          currency: 'USD', amount_minor: 42, per_operation_amount_minor: 42, pricing_revision: 'fixture',
+          usage_upper_bound: { requests: 1, input_bytes: 0, output_images: 3 },
+        },
+        expires_at: '2099-08-05T12:00:00.000Z',
+      })
+    },
+    deriveVersion: async (command: unknown) => {
+      versionDerivationCalls.push({ kind: 'derive', command })
+      return ok({})
+    },
+    selectArtboardVersion: async (command: unknown) => {
+      const { project_id: project, artboard_id: artboard, input } = command as {
+        project_id: string
+        artboard_id: string
+        input: { version_id: string }
+      }
+      selectCalls.push({ project, artboard, input })
+      projection = {
+        ...projection,
+        project: {
+          ...projection.project,
+          revision: projection.project.revision + 1,
+          current_versions_by_artboard: { [artboardId]: (input as { version_id: string }).version_id },
+        },
+      } as ImageWorkbenchProjectProjection
+      return ok({ project: projection.project })
+    },
+  } as unknown as ImageWorkbenchClient
+  const root = { innerHTML: '', addEventListener: () => undefined } as unknown as HTMLElement
+  const shell = new ImageWorkbenchShell({
+    root,
+    client,
+    idempotency_key_factory: () => 'image_ui_canvas_history_0123456789',
+  })
+  const internals = shell as unknown as {
+    state: ReturnType<typeof createImageWorkbenchViewState>
+    selectArtboardVersion: (artboard: string, version: string) => Promise<void>
+    deriveSelectedVersion: (version: string, instruction: string, kind: 'edit' | 'inpaint', mask?: string) => Promise<void>
+    confirmDerivedVersion: (version: string) => Promise<void>
+  }
+  internals.state = reduceImageWorkbenchViewState(
+    reduceImageWorkbenchViewState(
+      reduceImageWorkbenchViewState(createImageWorkbenchViewState(), { kind: 'select-project', project_id: projectId }),
+      { kind: 'select-canvas', canvas_id: canvasId },
+    ),
+    { kind: 'open-panel', panel: 'canvas-editor' },
+  )
+
+  await shell.refreshSelectedProject()
+
+  expect(previewCalls).toEqual([{ project_id: projectId, version_id: currentVersionId }])
+  expect(root.innerHTML).toContain('data-feature="canvas-render-preview"')
+  expect(root.innerHTML).toContain('data:image/png;base64,AA==')
+  expect(root.innerHTML).toContain('data-feature="canvas-version-history"')
+  expect(root.innerHTML).toContain('data-feature="version-derivation"')
+  expect(root.innerHTML).toContain(`data-version-id="${currentVersionId}"`)
+  expect(root.innerHTML).toContain(`data-version-id="${historicalVersionId}"`)
+  expect(root.innerHTML).not.toContain('version_other_artboard_001')
+  expect(root.innerHTML).not.toContain('/api/images/projects/project_001/versions/')
+
+  await internals.selectArtboardVersion(artboardId, historicalVersionId)
+
+  expect(selectCalls).toEqual([{
+    project: projectId,
+    artboard: artboardId,
+    input: {
+      idempotency_key: 'image_ui_canvas_history_0123456789',
+      base_revision: 11,
+      version_id: historicalVersionId,
+    },
+  }])
+  expect(previewCalls).toEqual([
+    { project_id: projectId, version_id: currentVersionId },
+    { project_id: projectId, version_id: historicalVersionId },
+  ])
+  expect(shell.snapshot().version_previews).toEqual({
+    [historicalVersionId]: 'data:image/png;base64,AA==',
+  })
+
+  await internals.deriveSelectedVersion(historicalVersionId, '只调整背景亮度', 'edit')
+  expect(root.innerHTML).toContain('确认并派生')
+  await internals.confirmDerivedVersion(historicalVersionId)
+  await internals.deriveSelectedVersion(historicalVersionId, '只替换角落背景', 'inpaint', 'data:image/png;base64,AA==')
+  await internals.confirmDerivedVersion(historicalVersionId)
+
+  expect(versionDerivationCalls).toEqual([
+    {
+      kind: 'estimate',
+      command: {
+        project_id: projectId,
+        version_id: historicalVersionId,
+        input: { base_revision: 12, instruction: '只调整背景亮度', kind: 'edit' },
+      },
+    },
+    {
+      kind: 'derive',
+      command: {
+        project_id: projectId,
+        version_id: historicalVersionId,
+        input: {
+          idempotency_key: 'image_ui_canvas_history_0123456789',
+          base_revision: 12,
+          instruction: '只调整背景亮度',
+          kind: 'edit',
+          estimate_hash: `sha256:${'a'.repeat(64)}`,
+          confirm: true,
+        },
+      },
+    },
+    {
+      kind: 'estimate',
+      command: {
+        project_id: projectId,
+        version_id: historicalVersionId,
+        input: {
+          base_revision: 12,
+          instruction: '只替换角落背景',
+          kind: 'inpaint',
+          mask_data_url: 'data:image/png;base64,AA==',
+        },
+      },
+    },
+    {
+      kind: 'derive',
+      command: {
+        project_id: projectId,
+        version_id: historicalVersionId,
+        input: {
+          idempotency_key: 'image_ui_canvas_history_0123456789',
+          base_revision: 12,
+          instruction: '只替换角落背景',
+          kind: 'inpaint',
+          mask_data_url: 'data:image/png;base64,AA==',
+          estimate_hash: `sha256:${'a'.repeat(64)}`,
+          confirm: true,
+        },
+      },
+    },
+  ])
+})
+
+test('Delivery recovery keeps the durable Delivery Set when one receipt read is temporarily unavailable', async () => {
+  const firstArtboard = 'artboard_001'
+  const secondArtboard = 'artboard_002'
+  const successfulReceipt = {
+    id: 'export_receipt_available_001', project_id: projectId, artboard_id: firstArtboard, version_id: 'version_canvas_001',
+    source_hash: `sha256:${'c'.repeat(64)}`, output_asset_id: 'output_asset_available_001', output_format: 'png', output_hash: `sha256:${'d'.repeat(64)}`,
+    width: 1024, height: 1024, byte_size: 2048, release_check_result_id: 'release_available_001', created_at: '2026-08-05T00:00:00.000Z',
+  }
+  const unavailableReceiptId = 'export_receipt_pending_002'
+  const deliverySet = {
+    id: 'delivery_set_partial_001', project_id: projectId, delivery_spec_id: 'delivery_001', delivery_spec_revision: 2,
+    version_ids_by_artboard: { [firstArtboard]: 'version_canvas_001', [secondArtboard]: 'version_canvas_002' },
+    export_receipt_ids_by_artboard: { [firstArtboard]: successfulReceipt.id, [secondArtboard]: unavailableReceiptId },
+    created_at: '2026-08-05T00:00:00.000Z',
+  }
+  const projection = {
+    project: {
+      id: projectId, revision: 12, latest_delivery_set_id: deliverySet.id,
+      current_versions_by_artboard: deliverySet.version_ids_by_artboard,
+    },
+    candidate_groups: [],
+    delivery_spec: {
+      id: 'delivery_001', revision: 2,
+      artboards: [
+        { id: firstArtboard, label: '主画板', width: 1024, height: 1024, output: { format: 'png', transparent: false } },
+        { id: secondArtboard, label: '副画板', width: 1024, height: 1024, output: { format: 'png', transparent: false } },
+      ],
+    },
+    canvases: [], library: { project_id: projectId, entries: [] }, creative_plans: [], generation_rounds: [], operations: [], inspiration_board: undefined, campaign_intent: null,
+  } as unknown as ImageWorkbenchProjectProjection
+  const ok = <Value>(value: Value) => Promise.resolve({ ok: true as const, value })
+  const client = {
+    getProjectProjection: async () => ok(projection),
+    getDeliverySet: async () => ok({ delivery_set: deliverySet }),
+    getExportReceipt: async (input: { export_receipt_id: string }) => {
+      if (input.export_receipt_id === successfulReceipt.id) return ok({ export_receipt: successfulReceipt })
+      throw new Error('temporary receipt lookup failure')
+    },
+  } as unknown as ImageWorkbenchClient
+  const root = { innerHTML: '', addEventListener: () => undefined } as unknown as HTMLElement
+  const shell = new ImageWorkbenchShell({ root, client })
+  const internals = shell as unknown as { state: ReturnType<typeof createImageWorkbenchViewState> }
+  internals.state = reduceImageWorkbenchViewState(
+    reduceImageWorkbenchViewState(createImageWorkbenchViewState(), { kind: 'select-project', project_id: projectId }),
+    { kind: 'open-panel', panel: 'delivery-panel' },
+  )
+
+  await shell.refreshSelectedProject()
+
+  expect(shell.snapshot().latest_export).toMatchObject({
+    delivery_set: { id: deliverySet.id },
+    export_receipts: [successfulReceipt],
+  })
+  expect(root.innerHTML).toContain(successfulReceipt.output_hash)
+  expect(root.innerHTML).toContain(unavailableReceiptId)
+  expect(root.innerHTML).not.toContain('如需输出哈希，请重新导出')
 })

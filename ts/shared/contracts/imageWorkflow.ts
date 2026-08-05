@@ -54,6 +54,21 @@ export const imageCandidatePreviewResponseSchema = z.object({
   data_url: imageDataUrlSchema,
 }).strict()
 
+/**
+ * Main resolves a rendered Version through the protected content route and
+ * returns only bounded, verified pixels to the Renderer. The Renderer must
+ * never turn a Version path into a directly loadable URL.
+ */
+export const imageVersionPreviewInputSchema = z.object({
+  project_id: mediaIdSchema,
+  version_id: mediaIdSchema,
+}).strict()
+
+export const imageVersionPreviewResponseSchema = z.object({
+  version_id: mediaIdSchema,
+  data_url: imageDataUrlSchema,
+}).strict()
+
 export const imageAssetProvenanceSchema = z.object({
   asset_id: mediaIdSchema,
   owner: imageWorkflowAssetOwnerSchema,
@@ -172,6 +187,12 @@ export const imageQuickCreateInputSchema = z.object({
   prompt: z.string().min(1).max(8_000),
   title: z.string().min(1).max(160).optional(),
   output_preset: z.enum(['square', 'landscape', 'portrait', 'auto']),
+  /**
+   * Optional full Intake supplied before Quick Create persists its first
+   * paid Round. These user-confirmed facts must therefore be part of the
+   * command hash, Project snapshot and provider request from the outset.
+   */
+  brief_overrides: imageBriefOverridesSchema.optional(),
   reference_inputs: z.array(z.object({
     data_url: imageDataUrlSchema,
     role: imageReferenceRoleForInputSchema,
@@ -597,6 +618,8 @@ export const imageCampaignConfirmationResponseSchema = z.object({
 export type ImageWorkflowAssetOwner = z.infer<typeof imageWorkflowAssetOwnerSchema>
 export type ImageCandidatePreviewInput = z.infer<typeof imageCandidatePreviewInputSchema>
 export type ImageCandidatePreviewResponse = z.infer<typeof imageCandidatePreviewResponseSchema>
+export type ImageVersionPreviewInput = z.infer<typeof imageVersionPreviewInputSchema>
+export type ImageVersionPreviewResponse = z.infer<typeof imageVersionPreviewResponseSchema>
 export type ImageAssetProvenance = z.infer<typeof imageAssetProvenanceSchema>
 export type ImageAssetGrant = z.infer<typeof imageAssetGrantSchema>
 export type ImageInspirationBoard = z.infer<typeof imageInspirationBoardSchema>

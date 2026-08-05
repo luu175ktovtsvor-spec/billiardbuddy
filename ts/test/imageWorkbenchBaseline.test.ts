@@ -4,19 +4,30 @@ import { createHash } from 'node:crypto'
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import sharp from 'sharp'
 import { createRelayFetch } from '../../relay/app.ts'
 import {
   imageWorkbenchProjectSchema,
+  mediaDeletionReceiptSchema,
   mediaJobEventJournalSchema,
   mediaSafeError,
   mediaSafeErrorForServiceError,
   mediaTaskSchema,
 } from '../shared/contracts/media.js'
 import { createImageWorkbenchDomainApiHandler } from '../src/server/api/imageWorkbench.js'
+import { createMediaApiHandler } from '../src/server/api/media.js'
+import { handleApiRequest } from '../src/server/router.js'
 import { createMediaRuntime } from '../src/server/media/runtime/createMediaRuntime.js'
+import { ImageRecoveryApplication } from '../src/server/media/image/application/imageRecoveryApplication.js'
+import type { ImageRecoveryApplicationPort } from '../src/server/media/image/runtime/imageApplicationPorts.js'
+import { MediaProjectService } from '../src/server/services/mediaProjectService.js'
 import { productGatewayTarget, productImageRelayTarget } from '../src/server/product/productGatewayRuntime.js'
-import { ImageWorkbenchService } from '../src/server/services/imageWorkbenchService.js'
+import {
+  ImageWorkbenchService,
+  type ImageWorkbenchApplications,
+} from '../src/server/services/imageWorkbenchService.js'
 import type { ImageOperation } from '../src/server/services/imageWorkbenchRepository.js'
+import { imageTicketRequest } from './helpers/imageUiTicket.js'
 
 const roots: string[] = []
 const at = '2026-08-03T00:00:00.000Z'
@@ -61,6 +72,271 @@ test('MediaRuntime 仅公开五个 Application，不泄露兼容 façade 或 raw
   const response = await handler(new Request(url), url, ['api', 'images', 'projects'])
   expect(response.status).toBe(200)
   expect(await response.json()).toMatchObject({ projects: [{ id: project.id }] })
+})
+
+test('Recovery Application 固定取消、远端、Canvas/Export、Qwen ACK、Campaign 的重启顺序', async () => {
+  const calls: string[] = []
+  const transport = { id: 'task_recovery_order_0001', status: 'committing' } as ImageOperation
+  const generation = { id: 'op_recovery_order_0001' }
+  const canvas = { id: 'op_recovery_canvas_0001', local_delivery: { kind: 'canvas_render' } }
+  const exportOperation = { id: 'op_recovery_export_0001', local_delivery: { kind: 'export' } }
+  const receipt = { id: 'receipt_recovery_advice_0001' }
+  const unused = async () => undefined
+  const port = {
+    listDeletions: async () => [],
+    hasProjectHistory: async () => false,
+    hasOperationHistory: async () => false,
+    deleteProject: unused,
+    restoreProject: unused,
+    getOperation: async () => transport,
+    listOperationEvents: async () => ({ events: [], next_cursor: 0 }),
+    waitForOperationEvents: async () => ({ events: [], next_cursor: 0 }),
+    migrateLegacyMediaStore: async () => ({ migrated_project_ids: [], skipped_project_ids: [] }),
+    cancelOperation: async () => transport,
+    reconcileCampaignItemProjectBinding: unused,
+    recovery: {
+      recoverPreparedCampaignCancellations: async () => { calls.push('campaign-cancellation') },
+      listTransportOperations: async () => { calls.push('transport-list'); return [transport] },
+      fenceInterruptedSubmission: async () => { calls.push('transport-fence'); return transport },
+      findGenerationOperationByTransportTask: async () => { calls.push('formal-lookup'); return generation },
+      resumeUnpostedGenerationOperation: async () => { calls.push('transport-resume'); return transport },
+      recoverOutcomeUnknownOperation: async () => { calls.push('outcome-lookup'); return transport },
+      refreshPersistedOperation: async () => { calls.push('committing-refresh'); return transport },
+      acknowledgeRemoteResult: async () => { calls.push('remote-ack'); return transport },
+      syncGenerationOperationFromTransport: async () => { calls.push('formal-sync'); return generation },
+      listRecoverableLocalDeliveryOperations: async () => { calls.push('local-list'); return [canvas, exportOperation] },
+      resumeCanvasRender: async () => { calls.push('canvas-resume') },
+      resumeExportDelivery: async () => { calls.push('export-resume') },
+      listUnacknowledgedGatewayAdviceReceipts: async () => { calls.push('advice-list'); return [receipt] },
+      acknowledgeQwenGatewayResult: async () => { calls.push('advice-ack'); return receipt },
+      recoverCampaigns: async () => { calls.push('campaign-recover') },
+    },
+  } as unknown as ImageRecoveryApplicationPort
+
+  await new ImageRecoveryApplication(port).recoverInterruptedOperations()
+  expect(calls).toEqual([
+    'campaign-cancellation',
+    'transport-list',
+    'transport-fence',
+    'formal-lookup',
+    'transport-resume',
+    'outcome-lookup',
+    'committing-refresh',
+    'remote-ack',
+    'formal-lookup',
+    'formal-sync',
+    'local-list',
+    'canvas-resume',
+    'export-resume',
+    'advice-list',
+    'advice-ack',
+    'campaign-recover',
+  ])
+})
+
+test('正式图片 API 按用例 Application 分派，不重新合并成通用 service', async () => {
+  const service = await createService('application-route-dispatch')
+  const project = await createProject(service)
+  const referenceProject = await service.applications.project.createProject({
+    title: 'Reference Control 应用路由',
+    user_request: '为主体参考图设置明确控制规则',
+    size: '1024x1024',
+    reference_images: [await dataUrl()],
+    reference_roles: ['subject'],
+  })
+  const traced = traceApplications(service.applications)
+  const capability = 'applicationroutedispatchcapability0000'
+  const handler = createImageWorkbenchDomainApiHandler(traced.applications, capability)
+
+  await expect(request(handler, '/api/images/projects')).resolves.toMatchObject({ status: 200 })
+  expect(traced.calls).toEqual(['project.listProjects'])
+
+  traced.calls.splice(0)
+  await expect(request(handler, '/api/images/deletions')).resolves.toMatchObject({ status: 200 })
+  expect(traced.calls).toEqual(['recovery.listDeletions'])
+
+  traced.calls.splice(0)
+  await expect(request(handler, `/api/images/projects/${project.id}/library`)).resolves.toMatchObject({ status: 200 })
+  expect(traced.calls).toEqual(['delivery.listProjectLibrary'])
+
+  traced.calls.splice(0)
+  await expect(request(handler, `/api/images/projects/${project.id}/canvases`)).resolves.toMatchObject({ status: 200 })
+  expect(traced.calls).toEqual(['canvas.listCanvases'])
+
+  traced.calls.splice(0)
+  await expect(request(handler, `/api/images/projects/${project.id}/operations`)).resolves.toMatchObject({ status: 200 })
+  expect(traced.calls).toEqual(['generation.listGenerationOperations'])
+
+  traced.calls.splice(0)
+  const planResponse = await request(handler, `/api/images/projects/${project.id}/creative-plans`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-BilliardBuddy-Media-Capability': capability,
+    },
+    body: JSON.stringify({
+      base_revision: project.revision,
+      idempotency_key: 'bb-image-generation-application-plan-route-0001',
+    }),
+  })
+  expect(planResponse.status).toBe(201)
+  expect(traced.calls).toEqual(['generation.createCreativePlan'])
+
+  const delivery = await service.repository.currentDeliverySpec(project.id)
+  if (!delivery) throw new Error('expected initial delivery specification')
+  traced.calls.splice(0)
+  const exportResponse = await request(handler, `/api/images/projects/${project.id}/exports`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-BilliardBuddy-Media-Capability': capability,
+    },
+    body: JSON.stringify({
+      base_revision: project.revision,
+      idempotency_key: 'bb-image-delivery-application-export-route-0001',
+      // The acceptance route must be testable without rendering a real
+      // version; the worker will deterministically close this invalid job.
+      version_ids_by_artboard: { [delivery.artboards[0]!.id]: 'ver_export_route_missing_0001' },
+    }),
+  })
+  expect(exportResponse.status).toBe(202)
+  expect(traced.calls).toEqual(['delivery.exportDelivery'])
+
+  const referenceId = `ref_${createHash('sha256').update([referenceProject.id, referenceProject.references[0]!.asset_id].join('\0')).digest('hex').slice(0, 32)}`
+  traced.calls.splice(0)
+  const referenceResponse = await request(handler, `/api/images/projects/${referenceProject.id}/references/${referenceId}/commands/update-control`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-BilliardBuddy-Media-Capability': capability,
+    },
+    body: JSON.stringify({
+      base_revision: referenceProject.revision,
+      idempotency_key: 'bb-image-project-application-reference-control-0001',
+      role: 'subject',
+      influence_strength: 'high',
+      preservation: 'must_preserve',
+      priority: 100,
+    }),
+  })
+  expect(referenceResponse.status).toBe(200)
+  expect(traced.calls).toEqual(['project.assertProjectOwner', 'project.updateReferenceControl'])
+})
+
+test('Reference Control 由 Project Application 重放并补回中断前缺失的 generation header', async () => {
+  const service = await createService('reference-control-header-replay')
+  const project = await service.applications.project.createProject({
+    title: 'Reference Control header 回放',
+    user_request: '先修改参考图控制，再验证本地 header 恢复',
+    size: '1024x1024',
+    reference_images: [await dataUrl()],
+    reference_roles: ['subject'],
+  })
+  const referenceId = `ref_${createHash('sha256').update([project.id, project.references[0]!.asset_id].join('\0')).digest('hex').slice(0, 32)}`
+  const input = {
+    base_revision: project.revision,
+    idempotency_key: 'bb-image-project-application-header-replay-0001',
+    role: 'product' as const,
+    influence_strength: 'high' as const,
+    preservation: 'must_preserve' as const,
+    priority: 88,
+  }
+  const controlled = await service.applications.project.updateReferenceControl(project.id, referenceId, input)
+  expect(controlled.current_brief_id).toMatch(/^brf_/)
+  expect(controlled.current_delivery_spec_id).toMatch(/^dsp_/)
+
+  const headerLost = await service.repository.saveProject({
+    ...controlled,
+    current_brief_id: undefined,
+    current_delivery_spec_id: undefined,
+    current_delivery_spec_revision: undefined,
+    revision: controlled.revision + 1,
+  })
+  const replayed = await service.applications.project.updateReferenceControl(project.id, referenceId, input)
+
+  expect(replayed.revision).toBe(headerLost.revision + 1)
+  expect(replayed.current_brief_id).toMatch(/^brf_/)
+  expect(replayed.current_delivery_spec_id).toMatch(/^dsp_/)
+  expect(replayed.references[0]).toMatchObject({
+    role: 'product', influence_strength: 'high', preservation: 'must_preserve', priority: 88,
+  })
+})
+
+test('旧 /api/media 在调用 writer、恢复或 Relay 前拒绝全部图片项目路径', async () => {
+  const root = await testRoot('retired-generic-image-route')
+  const project = imageWorkbenchProjectSchema.parse(await fixtureJson('legacy/project.json'))
+  const task = mediaTaskSchema.parse(await fixtureJson('legacy/operation.json')) as ImageOperation
+  const deletion = mediaDeletionReceiptSchema.parse({
+    schema_version: 1,
+    deletion_id: 'del_legacy_image_route',
+    project_id: project.id,
+    project_kind: 'image',
+    project_title: project.title,
+    owner: project.owner,
+    status: 'deleted',
+    deleted_at: at,
+    purge_after: '2026-09-03T00:00:00.000Z',
+    task_ids: [task.id],
+    managed_asset_count: 0,
+    managed_asset_bytes: 0,
+    trash_key: 'del_legacy_image_route',
+  })
+  await Promise.all([
+    mkdir(join(root, 'projects'), { recursive: true }),
+    mkdir(join(root, 'tasks'), { recursive: true }),
+    mkdir(join(root, 'deletions'), { recursive: true }),
+  ])
+  await Promise.all([
+    writeFile(join(root, 'projects', `${project.id}.json`), JSON.stringify(project)),
+    writeFile(join(root, 'tasks', `${task.id}.json`), JSON.stringify(task)),
+    writeFile(join(root, 'deletions', `${deletion.deletion_id}.json`), JSON.stringify(deletion)),
+  ])
+  const beforeProject = await readFile(join(root, 'projects', `${project.id}.json`), 'utf8')
+  const beforeTask = await readFile(join(root, 'tasks', `${task.id}.json`), 'utf8')
+  const beforeDeletion = await readFile(join(root, 'deletions', `${deletion.deletion_id}.json`), 'utf8')
+  let relayCalls = 0
+  const service = new MediaProjectService({
+    root,
+    fetchImpl: async () => {
+      relayCalls += 1
+      throw new Error('generic image route must not reach Relay')
+    },
+  })
+  const media = createMediaApiHandler(service)
+  const request = async (path: string, init: RequestInit = {}) => {
+    const url = new URL(path, 'http://127.0.0.1:3456')
+    return await handleApiRequest(new Request(url, init), url, {
+      media,
+      images: async () => new Response('unexpected images route', { status: 500 }),
+      videos: async () => new Response('unexpected videos route', { status: 500 }),
+      product: async () => new Response('unexpected product route', { status: 500 }),
+    })
+  }
+
+  for (const [path, init] of [
+    ['/api/media/images', {}],
+    ['/api/media/projects?kind=image', {}],
+    [`/api/media/projects/${project.id}/events`, {}],
+    [`/api/media/assets/${project.id}/legacy.png`, {}],
+    [`/api/media/project/${project.id}`, {}],
+    [`/api/media/project/${project.id}`, { method: 'DELETE' }],
+    [`/api/media/project/${project.id}/restore`, { method: 'POST' }],
+    [`/api/media/tasks/${task.id}`, {}],
+    [`/api/media/tasks/${task.id}/cancel`, { method: 'POST' }],
+  ] as const) {
+    const response = await request(path, init)
+    expect(response.status).toBe(410)
+    expect(await response.json()).toMatchObject({ error: 'MEDIA_INVALID_REQUEST' })
+  }
+
+  expect((await request('/api/media/projects')).status).toBe(200)
+  expect(await (await request('/api/media/projects')).json()).toEqual({ projects: [] })
+  expect(await (await request('/api/media/deletions')).json()).toEqual({ deletions: [] })
+  expect(await readFile(join(root, 'projects', `${project.id}.json`), 'utf8')).toBe(beforeProject)
+  expect(await readFile(join(root, 'tasks', `${task.id}.json`), 'utf8')).toBe(beforeTask)
+  expect(await readFile(join(root, 'deletions', `${deletion.deletion_id}.json`), 'utf8')).toBe(beforeDeletion)
+  await expect(stat(join(root, 'locks'))).rejects.toMatchObject({ code: 'ENOENT' })
+  expect(relayCalls).toBe(0)
 })
 
 async function testRoot(label: string): Promise<string> {
@@ -168,6 +444,33 @@ async function createService(label: string, fetchImpl: typeof fetch = fetch): Pr
   })
 }
 
+function traceApplications(applications: ImageWorkbenchApplications): {
+  applications: ImageWorkbenchApplications
+  calls: string[]
+} {
+  const calls: string[] = []
+  const trace = <Application extends object>(name: string, application: Application): Application => new Proxy(application, {
+    get(target, property, receiver) {
+      const value = Reflect.get(target, property, receiver)
+      if (typeof value !== 'function') return value
+      return (...args: unknown[]) => {
+        calls.push(`${name}.${String(property)}`)
+        return Reflect.apply(value, target, args)
+      }
+    },
+  })
+  return {
+    calls,
+    applications: {
+      project: trace('project', applications.project),
+      generation: trace('generation', applications.generation),
+      canvas: trace('canvas', applications.canvas),
+      delivery: trace('delivery', applications.delivery),
+      recovery: trace('recovery', applications.recovery),
+    },
+  }
+}
+
 async function createProject(service: ImageWorkbenchService) {
   return await service.createProject({
     title: '图片基线项目',
@@ -176,6 +479,32 @@ async function createProject(service: ImageWorkbenchService) {
     reference_images: [],
     reference_roles: [],
   })
+}
+
+/** Build a formal Version through the existing Candidate adoption path. */
+async function createFormalVersion(service: ImageWorkbenchService): Promise<{
+  project: Awaited<ReturnType<ImageWorkbenchService['getProject']>>
+  version_id: string
+  asset_hash: `sha256:${string}`
+}> {
+  const project = await createProject(service)
+  const submitted = await service.submitProject(project.id)
+  const completed = await service.getOperation(submitted.id)
+  const generation = await service.findGenerationOperation(completed.operation_id!)
+  if (!generation?.result || generation.result.kind !== 'candidate_group') throw new Error('expected formal source Candidate Group')
+  const group = await service.getCandidateGroup(project.id, generation.result.candidate_group_id)
+  const current = await service.getProject(project.id)
+  const delivery = await service.repository.currentDeliverySpec(project.id)
+  if (!delivery) throw new Error('expected delivery specification')
+  const adopted = await service.adoptCandidate(project.id, group.candidates[0]!.id, {
+    base_revision: current.revision,
+    idempotency_key: 'bb-image-version-derivation-source-adopt-0001',
+    adoptions: [{ artboard_id: delivery.artboards[0]!.id, placement: { fit: 'cover', focus_x: 0.5, focus_y: 0.5 } }],
+  })
+  const versionId = adopted.adoptions[0]!.version_id
+  const asset = adopted.project.assets.find(item => item.id === group.candidates[0]!.asset_id)
+  if (!asset?.content_hash) throw new Error('expected formal Version result asset')
+  return { project: adopted.project, version_id: versionId, asset_hash: asset.content_hash as `sha256:${string}` }
 }
 
 function operation(projectId: string): ImageOperation {
@@ -204,7 +533,7 @@ async function request(
   init: RequestInit = {},
 ): Promise<Response> {
   const url = new URL(path, 'http://127.0.0.1:3456')
-  return await handler(new Request(url, init), url, url.pathname.split('/').filter(Boolean))
+  return await handler(imageTicketRequest(url, init), url, url.pathname.split('/').filter(Boolean))
 }
 
 afterEach(async () => {
@@ -417,6 +746,59 @@ test('15.1 imports the pre-existing image JSON root before safe CAS orphan colle
   sourceChanged.repository.close()
 })
 
+test('15.1 generic-media 迁移源变化会在冷启动 CAS 对账前失效收据并阻断回收', async () => {
+  const root = await testRoot('generic-media-source-change')
+  const legacyRoot = await testRoot('generic-media-source-change-legacy')
+  let nowMs = Date.parse(at)
+  const legacyProject = imageWorkbenchProjectSchema.parse(await fixtureJson('legacy/project.json'))
+  const legacyOperation = mediaTaskSchema.parse(await fixtureJson('legacy/operation.json')) as ImageOperation
+  const legacyJournal = mediaJobEventJournalSchema.parse(await fixtureJson('legacy/event-journal.json'))
+  const orphanBytes = Buffer.from('generic source change must block CAS orphan GC')
+  const orphanHash = createHash('sha256').update(orphanBytes).digest('hex')
+  await Promise.all([
+    mkdir(join(root, 'cas', 'sha256'), { recursive: true }),
+    mkdir(join(legacyRoot, 'projects'), { recursive: true }),
+    mkdir(join(legacyRoot, 'tasks'), { recursive: true }),
+    mkdir(join(legacyRoot, 'events'), { recursive: true }),
+  ])
+  await Promise.all([
+    writeFile(join(root, 'cas', 'sha256', orphanHash), orphanBytes),
+    writeFile(join(legacyRoot, 'projects', `${legacyProject.id}.json`), JSON.stringify(legacyProject)),
+    writeFile(join(legacyRoot, 'tasks', `${legacyOperation.id}.json`), JSON.stringify(legacyOperation)),
+    writeFile(join(legacyRoot, 'events', `${legacyProject.id}.json`), JSON.stringify(legacyJournal)),
+  ])
+  const imported = new ImageWorkbenchService({
+    root,
+    legacyMediaRoot: legacyRoot,
+    now: () => new Date(nowMs),
+    casOrphanRetentionMs: 1_000,
+  })
+  await expect(readFile(join(root, 'cas', 'sha256', orphanHash))).resolves.toEqual(orphanBytes)
+  expect((await imported.migrateLegacyMediaStore()).migrated_project_ids).toEqual([legacyProject.id])
+  imported.repository.close()
+
+  nowMs += 1_001
+  await writeFile(join(legacyRoot, 'events', `${legacyProject.id}.json`), JSON.stringify({
+    ...legacyJournal,
+    next_cursor: legacyJournal.next_cursor + 1,
+  }))
+  const restarted = new ImageWorkbenchService({
+    root,
+    legacyMediaRoot: legacyRoot,
+    now: () => new Date(nowMs),
+    casOrphanRetentionMs: 1_000,
+  })
+  await restarted.listProjects()
+  await expect(readFile(join(root, 'cas', 'sha256', orphanHash))).resolves.toEqual(orphanBytes)
+  expect(await restarted.repository.projectMigrationReceipt('generic-media-json-v1', legacyProject.id)).toBeNull()
+  expect(await restarted.repository.projectMigrationInvalidation('generic-media-json-v1', legacyProject.id)).toMatchObject({
+    source_hash: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+    previous_source_hash: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+  })
+  await expect(restarted.migrateLegacyMediaStore()).rejects.toMatchObject({ code: 'IMAGE_LEGACY_SOURCE_CHANGED' })
+  restarted.repository.close()
+})
+
 test('15.1 CAS orphan GC requires retention plus a second scan before physical deletion', async () => {
   const root = await testRoot('cas-orphan-retention')
   let nowMs = Date.parse(at)
@@ -606,7 +988,7 @@ test('15.1 injects a crash after CAS publication, then restarts by refetching th
     first.repository.close()
 
     const recovered = new ImageWorkbenchService({ root, legacyMediaRoot: legacyRoot, now: () => new Date(at), fetchImpl: gateway.fetchImpl })
-    await recovered.recoverInterruptedOperations()
+    await recovered.applications.recovery.recoverInterruptedOperations()
     expect(await recovered.getOperation(submitted.id)).toMatchObject({
       status: 'succeeded',
       remote_result_acknowledged_at: at,
@@ -649,7 +1031,7 @@ test('15.2 injects a crash after Candidate Group transaction and retries only Re
     first.repository.close()
 
     const recovered = new ImageWorkbenchService({ root, legacyMediaRoot: legacyRoot, now: () => new Date(at), fetchImpl: gateway.fetchImpl })
-    await recovered.recoverInterruptedOperations()
+    await recovered.applications.recovery.recoverInterruptedOperations()
     expect(await recovered.getOperation(submitted.id)).toMatchObject({ status: 'succeeded', remote_result_acknowledged_at: at })
     expect(gateway.calls.filter(call => call.path === '/image-generation/v1/images/tasks' && call.method === 'POST')).toHaveLength(1)
     expect(gateway.calls.filter(call => call.path === '/image-generation/v1/images/tasks/relay_task_0001' && call.method === 'GET')).toHaveLength(1)
@@ -1264,7 +1646,7 @@ test('15.2 persists a Round before POST and resumes it after a process crash wit
     first.repository.close()
 
     const recovered = new ImageWorkbenchService({ root, legacyMediaRoot, now: () => new Date(at), fetchImpl: gateway })
-    await recovered.recoverInterruptedOperations()
+    await recovered.applications.recovery.recoverInterruptedOperations()
     const resumed = await recovered.repository.getGenerationOperation(project.id, formal.id)
     const resumedTransport = await recovered.repository.getOperation(resumed.transport_task_id!)
     expect(resumed).toMatchObject({ status: 'queued', remote_task_id: 'relay_task_after_restart' })
@@ -1326,7 +1708,7 @@ test('15.2 recovers an outcome_unknown Generation Round through a read-only orig
     first.repository.close()
 
     const recovered = new ImageWorkbenchService({ root, legacyMediaRoot, now: () => new Date(at), fetchImpl: gateway })
-    await recovered.recoverInterruptedOperations()
+    await recovered.applications.recovery.recoverInterruptedOperations()
     const resumed = await recovered.repository.getGenerationOperation(project.id, created.operations[0]!.id)
     expect(resumed).toMatchObject({ status: 'queued', remote_task_id: 'relay_task_idempotent_recovery' })
     const posts = calls.filter(call => call.path === '/image-generation/v1/images/tasks' && call.method === 'POST')
@@ -1554,8 +1936,9 @@ test('15.2 projects every Command idempotency and revision conflict through stab
       base_revision: controlled.revision,
       idempotency_key: 'bb-image-plan-conflict-0001',
     }
-    const plan = await service.createCreativePlan(initial.id, planCommand)
-    expect((await service.createCreativePlan(initial.id, planCommand)).id).toBe(plan.id)
+    const generation = service.applications.generation
+    const plan = await generation.createCreativePlan(initial.id, planCommand)
+    expect((await generation.createCreativePlan(initial.id, planCommand)).id).toBe(plan.id)
     const planIdempotencyConflict = {
       ...planCommand,
       directions: [{
@@ -1565,7 +1948,7 @@ test('15.2 projects every Command idempotency and revision conflict through stab
         preservation_rules: [],
       }],
     }
-    await expect(service.createCreativePlan(initial.id, planIdempotencyConflict))
+    await expect(generation.createCreativePlan(initial.id, planIdempotencyConflict))
       .rejects.toMatchObject({ status: 409, code: 'IMAGE_IDEMPOTENCY_CONFLICT' })
     await expectPublicCommandConflict(`${projectPath}/creative-plans`, planIdempotencyConflict, 'MEDIA_IMAGE_IDEMPOTENCY_CONFLICT')
     const planRevisionConflict = {
@@ -1573,7 +1956,7 @@ test('15.2 projects every Command idempotency and revision conflict through stab
       base_revision: initial.revision,
       idempotency_key: 'bb-image-plan-revision-0001',
     }
-    await expect(service.createCreativePlan(initial.id, planRevisionConflict))
+    await expect(generation.createCreativePlan(initial.id, planRevisionConflict))
       .rejects.toMatchObject({ status: 409, code: 'IMAGE_REVISION_CONFLICT' })
     await expectPublicCommandConflict(`${projectPath}/creative-plans`, planRevisionConflict, 'MEDIA_IMAGE_REVISION_CONFLICT')
 
@@ -2082,4 +2465,235 @@ test('15.5B Inpaint stays on the formal Candidate -> Estimate -> Round path and 
     })).rejects.toThrow('inpaint requires a PNG mask')
   })
   service.repository.close()
+})
+
+test('15.5B Version -> Edit/Inpaint reuses the formal Round path with source-bound estimates and relay recovery facts', async () => {
+  const png = (await dataUrl()).split(',', 2)[1]!
+  let now = new Date(at)
+  const gateway = gatewayFixture(png)
+  const service = new ImageWorkbenchService({
+    root: await testRoot('15b-version-derivation'),
+    legacyMediaRoot: await testRoot('15b-version-derivation-legacy'),
+    now: () => now,
+    fetchImpl: gateway.fetchImpl,
+  })
+  const capability = '15bversionderivationcapability000000000'
+  const handler = createImageWorkbenchDomainApiHandler(service.applications, capability)
+  await withGateway(async () => {
+    const source = await createFormalVersion(service)
+    const path = `/api/images/projects/${source.project.id}/versions/${source.version_id}/derivations`
+    const headers = { 'Content-Type': 'application/json', 'X-BilliardBuddy-Media-Capability': capability }
+    const unauthorisedUrl = new URL(`${path}/estimate`, 'http://127.0.0.1:3456')
+    const unauthorised = await handler(new Request(unauthorisedUrl, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+    }), unauthorisedUrl, unauthorisedUrl.pathname.split('/').filter(Boolean))
+    expect(unauthorised.status).toBe(403)
+    const mismatchedMask = `data:image/png;base64,${(await sharp({
+      create: { width: 2, height: 1, channels: 4, background: { r: 255, g: 255, b: 255, alpha: 1 } },
+    }).png().toBuffer()).toString('base64')}`
+    const invalidMask = await request(handler, `${path}/estimate`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        base_revision: source.project.revision,
+        instruction: '仅替换背景',
+        kind: 'inpaint',
+        mask_data_url: mismatchedMask,
+      }),
+    })
+    expect(invalidMask.status).toBe(400)
+
+    const expiringEstimateResponse = await request(handler, `${path}/estimate`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ base_revision: source.project.revision, instruction: '将背景改为浅灰色', kind: 'edit' }),
+    })
+    expect(expiringEstimateResponse.status).toBe(200)
+    const expiringEstimate = await expiringEstimateResponse.json() as { estimate_hash: string; expires_at: string }
+    now = new Date(Date.parse(expiringEstimate.expires_at) + 1)
+    const expired = await request(handler, path, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        base_revision: source.project.revision,
+        idempotency_key: 'bb-image-version-derive-expired-estimate-0001',
+        instruction: '将背景改为浅灰色',
+        kind: 'edit',
+        estimate_hash: expiringEstimate.estimate_hash,
+        confirm: true,
+      }),
+    })
+    expect(expired.status).toBe(409)
+    expect(await expired.json()).toMatchObject({ error: 'MEDIA_IMAGE_REVISION_CONFLICT' })
+
+    now = new Date(at)
+    const estimateResponse = await request(handler, `${path}/estimate`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ base_revision: source.project.revision, instruction: '将背景改为浅灰色', kind: 'edit' }),
+    })
+    expect(estimateResponse.status).toBe(200)
+    const estimate = await estimateResponse.json() as { estimate_hash: string }
+    const staleRevision = await request(handler, path, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        base_revision: source.project.revision - 1,
+        idempotency_key: 'bb-image-version-derive-stale-revision-0001',
+        instruction: '将背景改为浅灰色',
+        kind: 'edit',
+        estimate_hash: estimate.estimate_hash,
+        confirm: true,
+      }),
+    })
+    expect(staleRevision.status).toBe(409)
+    expect(await staleRevision.json()).toMatchObject({ error: 'MEDIA_IMAGE_REVISION_CONFLICT' })
+    const tampered = await request(handler, path, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        base_revision: source.project.revision,
+        idempotency_key: 'bb-image-version-derive-tampered-estimate-0001',
+        instruction: '改为夜景背景',
+        kind: 'edit',
+        estimate_hash: estimate.estimate_hash,
+        confirm: true,
+      }),
+    })
+    expect(tampered.status).toBe(409)
+    expect(await tampered.json()).toMatchObject({ error: 'MEDIA_IMAGE_REVISION_CONFLICT' })
+
+    const command = {
+      base_revision: source.project.revision,
+      idempotency_key: 'bb-image-version-derive-edit-0001',
+      instruction: '将背景改为浅灰色',
+      kind: 'edit' as const,
+      estimate_hash: estimate.estimate_hash,
+      confirm: true as const,
+    }
+    const derivedResponse = await request(handler, path, { method: 'POST', headers, body: JSON.stringify(command) })
+    expect(derivedResponse.status).toBe(202)
+    const derived = await derivedResponse.json() as { round: { id: string }; operation: { id: string; base_version_id?: string; base_candidate_id?: string } }
+    expect(derived.operation).toMatchObject({ base_version_id: source.version_id })
+    expect(derived.operation.base_candidate_id).toBeUndefined()
+    const persisted = await service.repository.getGenerationOperation(source.project.id, derived.operation.id)
+    expect(persisted).toMatchObject({ base_version_id: source.version_id, kind: 'edit' })
+    expect(persisted.base_candidate_id).toBeUndefined()
+    expect(persisted.input_refs.asset_hashes).toContain(source.asset_hash)
+    const transport = await service.repository.getOperation(persisted.transport_task_id!)
+    expect(transport.image_operation).toMatchObject({ kind: 'edit', base_version_id: source.version_id })
+    expect(transport.image_operation.base_candidate_asset_id).toBeUndefined()
+    const editPost = gateway.calls.filter(call => call.path === '/image-generation/v1/images/tasks' && call.method === 'POST').at(-1)
+    expect(editPost?.body).toMatchObject({ mode: 'edit', n: 3, images: [await dataUrl()] })
+    const postsBeforeReplay = gateway.calls.filter(call => call.path === '/image-generation/v1/images/tasks' && call.method === 'POST').length
+    const replay = await request(handler, path, { method: 'POST', headers, body: JSON.stringify(command) })
+    expect(replay.status).toBe(202)
+    expect((await replay.json() as { round: { id: string }; operation: { id: string } })).toMatchObject({ round: { id: derived.round.id }, operation: { id: derived.operation.id } })
+    expect(gateway.calls.filter(call => call.path === '/image-generation/v1/images/tasks' && call.method === 'POST')).toHaveLength(postsBeforeReplay)
+    const idempotencyConflict = await request(handler, path, {
+      method: 'POST', headers, body: JSON.stringify({ ...command, instruction: '将背景改为深灰色' }),
+    })
+    expect(idempotencyConflict.status).toBe(409)
+    expect(await idempotencyConflict.json()).toMatchObject({ error: 'MEDIA_IMAGE_IDEMPOTENCY_CONFLICT' })
+    expect(gateway.calls.filter(call => call.path === '/image-generation/v1/images/tasks' && call.method === 'POST')).toHaveLength(postsBeforeReplay)
+
+    const completed = await service.getGenerationOperation(source.project.id, derived.operation.id)
+    if (!completed.result || completed.result.kind !== 'candidate_group') throw new Error('expected Version derivation Candidate Group')
+    const group = await service.getCandidateGroup(source.project.id, completed.result.candidate_group_id)
+    expect(group.group.base_version_id).toBe(source.version_id)
+    expect(group.candidates.every(candidate => candidate.derived_from_candidate_id === undefined)).toBeTrue()
+
+    const current = await service.getProject(source.project.id)
+    const mask = await dataUrl()
+    const inpaintEstimateResponse = await request(handler, `${path}/estimate`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        base_revision: current.revision,
+        instruction: '仅局部替换背景',
+        kind: 'inpaint',
+        mask_data_url: mask,
+      }),
+    })
+    expect(inpaintEstimateResponse.status).toBe(200)
+    const inpaintEstimate = await inpaintEstimateResponse.json() as { estimate_hash: string }
+    const inpaint = await request(handler, path, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        base_revision: current.revision,
+        idempotency_key: 'bb-image-version-derive-inpaint-0001',
+        instruction: '仅局部替换背景',
+        kind: 'inpaint',
+        mask_data_url: mask,
+        estimate_hash: inpaintEstimate.estimate_hash,
+        confirm: true,
+      }),
+    })
+    expect(inpaint.status).toBe(202)
+    const inpaintPayload = await inpaint.json() as { operation: { id: string; base_version_id?: string; mask_asset_id?: string } }
+    expect(inpaintPayload.operation).toMatchObject({ base_version_id: source.version_id, mask_asset_id: expect.stringMatching(/^mask_/) })
+    const inpaintPost = gateway.calls.filter(call => call.path === '/image-generation/v1/images/tasks' && call.method === 'POST').at(-1)
+    expect(inpaintPost?.body).toMatchObject({ mode: 'edit', n: 3, images: [await dataUrl()], mask })
+  })
+  service.repository.close()
+})
+
+test('15.5B Version derivation recovers a persisted-before-POST Round once without re-submission', async () => {
+  const root = await testRoot('15b-version-derivation-recovery')
+  const legacyMediaRoot = await testRoot('15b-version-derivation-recovery-legacy')
+  const png = (await dataUrl()).split(',', 2)[1]!
+  const gateway = gatewayFixture(png)
+  let crashAfterVersionRound = false
+  const first = new ImageWorkbenchService({
+    root,
+    legacyMediaRoot,
+    now: () => new Date(at),
+    fetchImpl: gateway.fetchImpl,
+    crashInjector: point => {
+      if (point === 'after_generation_round_persisted_before_post' && crashAfterVersionRound) {
+        crashAfterVersionRound = false
+        throw new Error('INJECTED_VERSION_DERIVATION_BEFORE_POST')
+      }
+    },
+  })
+  await withGateway(async () => {
+    const source = await createFormalVersion(first)
+    const estimate = await first.estimateVersionDerivation(source.project.id, source.version_id, {
+      base_revision: source.project.revision,
+      instruction: '恢复后仍应只提交同一个正式版本编辑请求',
+      kind: 'edit',
+    })
+    const command = {
+      base_revision: source.project.revision,
+      idempotency_key: 'bb-image-version-derive-recovery-0001',
+      instruction: '恢复后仍应只提交同一个正式版本编辑请求',
+      kind: 'edit' as const,
+      estimate_hash: estimate.estimate_hash,
+      confirm: true as const,
+    }
+    const postsBeforeCrash = gateway.calls.filter(call => call.path === '/image-generation/v1/images/tasks' && call.method === 'POST').length
+    crashAfterVersionRound = true
+    await expect(first.deriveVersion(source.project.id, source.version_id, command)).rejects.toThrow('INJECTED_VERSION_DERIVATION_BEFORE_POST')
+    expect(gateway.calls.filter(call => call.path === '/image-generation/v1/images/tasks' && call.method === 'POST')).toHaveLength(postsBeforeCrash)
+    const roundId = `rnd_${createHash('sha256').update([source.project.id, 'derive', command.idempotency_key].join('\0')).digest('hex').slice(0, 32)}`
+    const round = await first.repository.getGenerationRound(source.project.id, roundId)
+    const pending = await first.repository.getGenerationOperation(source.project.id, round.direction_operations[0]!.operation_id)
+    const pendingTransport = await first.repository.getOperation(pending.transport_task_id!)
+    expect(pending).toMatchObject({ status: 'queued', base_version_id: source.version_id })
+    expect(pendingTransport.image_operation).toMatchObject({ base_version_id: source.version_id })
+    expect(pendingTransport.remote_task_id).toBeUndefined()
+    first.repository.close()
+
+    const recovered = new ImageWorkbenchService({ root, legacyMediaRoot, now: () => new Date(at), fetchImpl: gateway.fetchImpl })
+    await recovered.applications.recovery.recoverInterruptedOperations()
+    const resumed = await recovered.repository.getGenerationOperation(source.project.id, pending.id)
+    expect(resumed).toMatchObject({ status: 'queued', base_version_id: source.version_id, remote_task_id: 'relay_task_0001' })
+    expect(gateway.calls.filter(call => call.path === '/image-generation/v1/images/tasks' && call.method === 'POST')).toHaveLength(postsBeforeCrash + 1)
+    await recovered.applications.recovery.recoverInterruptedOperations()
+    const replay = await recovered.deriveVersion(source.project.id, source.version_id, command)
+    expect(replay.operation.id).toBe(pending.id)
+    expect(gateway.calls.filter(call => call.path === '/image-generation/v1/images/tasks' && call.method === 'POST')).toHaveLength(postsBeforeCrash + 1)
+    recovered.repository.close()
+  })
 })
