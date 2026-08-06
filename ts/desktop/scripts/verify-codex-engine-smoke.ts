@@ -5,6 +5,7 @@ import { delimiter, join, resolve } from 'node:path'
 import {
   codexEngineManifestName,
   codexRipgrepBinaryName,
+  canExecuteCodexEngineTarget,
   isSupportedCodexEngineTarget,
   stagedCodexEngineBinaryName,
   verifyStagedCodexEngine,
@@ -33,6 +34,11 @@ function parseOptions(argv: string[]): { target: string; destinationDir: string 
 async function verifyRuntimeSearch(target: string, destinationDir: string): Promise<void> {
   const supportedTarget = target as Parameters<typeof stagedCodexEngineBinaryName>[0]
   verifyStagedCodexEngine({ destinationDir, target: supportedTarget, verifyOnly: true })
+
+  if (!canExecuteCodexEngineTarget(supportedTarget)) {
+    console.log(`[codex-engine-smoke] skipped executable spawn for cross target ${target}; staged binaries, PE metadata, helper files, and ripgrep were verified`)
+    return
+  }
 
   const engineHome = mkdtempSync(join(tmpdir(), 'billiardbuddy-engine-smoke-'))
   const resolvedHome = realpathSync(engineHome)
