@@ -54,6 +54,8 @@ Agent 后端的实际调用链、能力归属、平台状态、验证结果、�
 
 只有两条个人协议路径：`Responses` 直接代理，或旧 `Chat Completions` 在本机做无状态协议适配。两条都进入同一个 Rust Codex Agent，Agent Loop、Thread、工具执行和压缩不会因此另写一套；但旧 Chat 接口无法表达的 Responses 专属托管工具不会被伪造，例如 hosted web search 只在真实 Responses Provider 上保留。标准 Chat 图片与 WAV/MP3 音频输入会按旧接口格式转换；工具返回的图片或音频会转换成紧随工具结果的标准多模态消息，不会被静默丢弃。厂商私有多模态协议不在兼容范围。
 
+未来 Renderer 的配置槽位已经固定为 `window.billiardBuddyNative.models`（共享类型见 `shared/contracts/personalModelPreload.ts`）：先读取 `summary()` 和 `providerPresets()`，用 `openProviderPortal()` 跳转官方 Key 申请页，用 `openProviderDocumentation()` 打开官方文档，用 `savePreset()` 或 `save()` 保存连接，用 `discoverProfile(profileId)` 从 Main 安全发现该 Provider 当前可用模型，用 `activate(profileId)` 切换已保存连接，用 `useManaged()` 保留个人配置但显式切回托管路由，用 `remove(profileId)` 删除。`summary().active_route` 明确当前是 `managed` 还是 `personal`，`summary().codex_wire_api` 只读且固定为 `responses`，表示 BilliardBuddy 到 Codex Rust App Server/Core 的原生边界；用户不需要再次提交已保存的 Key，也不能在 Renderer 伪造上下文窗口、最大输出或 Agent 能力开关。预设模型发现可以在该预设已声明的协议范围内选择备用协议；协议选择仍只是上游兼容性字段：默认优先 Responses，只有确实只提供旧 Chat Completions 的 Provider 才走本机无状态转换器。模型发现只返回上游模型 ID，不把 CC Switch 式上下文窗口、模型能力或推理参数目录复制成产品约束。
+
 ## 开发与验证
 
 需要 Bun、Node.js、Electron 工具链和 Rust/Cargo（构建原生 App Server、Code Mode Host 与本地插件时）。

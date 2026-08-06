@@ -18,7 +18,8 @@
   "verify:codex-engine-source": "bun desktop/scripts/verify-codex-engine-source.ts && bun desktop/scripts/verify-codex-native-protocol.ts",
   "verify:codex-hook-environment": "bun desktop/scripts/verify-codex-hook-environment.ts",
   "verify:codex-runtime-personal-e2e": "bun desktop/scripts/verify-codex-runtime-personal-e2e.ts",
-    "verify:codex-runtime-real-provider": "bun desktop/scripts/verify-codex-runtime-real-provider.ts"
+  "verify:codex-runtime-real-provider": "bun desktop/scripts/verify-codex-runtime-real-provider.ts",
+  "verify:codex-runtime-real-agent": "bun desktop/scripts/verify-codex-runtime-real-agent.ts"
   },
   "dependencies": {
     "ali-oss": "6.23.0",

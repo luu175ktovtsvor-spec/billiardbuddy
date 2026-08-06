@@ -149,8 +149,12 @@ function sse(response: ServerResponse, type: string, data: JsonObject): void {
 }
 
 function loopbackAddress(address: string | undefined): boolean {
-  return address === '127.0.0.1' || address === '::ffff:127.0.0.1'
+  return address === '127.0.0.1' || address === '::ffff:127.0.0.1' || address === '::1'
 }
+
+// Keep the listener on IPv4 loopback, but advertise `localhost` to the Rust
+// client so platform network handling cannot redirect this local bridge.
+const LOOPBACK_PROVIDER_HOST = 'localhost'
 
 async function requestText(request: IncomingMessage): Promise<string> {
   const declaredLength = Number(request.headers['content-length'] ?? 0)
@@ -286,7 +290,22 @@ function reasoningContent(item: JsonObject): string {
  * and function calls as separate items, whereas Chat requires the reasoning
  * continuation and tool calls to share one assistant message.
  */
-function responseInputToChatMessages(input: unknown, instructions: unknown): JsonObject[] {
+type ChatToolSource = { namespace?: string, name: string }
+
+type ChatToolNameMapping = {
+  externalToSource: Map<string, ChatToolSource>
+  sourceToExternal: Map<string, string>
+}
+
+function chatToolSourceKey(source: ChatToolSource): string {
+  return `${source.namespace ?? ''}\u0000${source.name}`
+}
+
+function responseInputToChatMessages(
+  input: unknown,
+  instructions: unknown,
+  toolNames: ChatToolNameMapping,
+): JsonObject[] {
   const messages: JsonObject[] = []
   let pendingReasoning = ''
   let pendingAssistant: JsonObject | undefined
@@ -306,7 +325,7 @@ function responseInputToChatMessages(input: unknown, instructions: unknown): Jso
     pendingAssistant = { role: 'assistant', content }
   }
 
-  const appendFunctionCall = (callId: string, name: string, argumentsValue: string) => {
+  const appendFunctionCall = (callId: string, name: string, argumentsValue: string, namespace?: string) => {
     if (!pendingAssistant) {
       // DeepSeek's documented thinking/tool continuation contract requires a
       // non-null assistant content value even when the visible text is empty.
@@ -315,7 +334,9 @@ function responseInputToChatMessages(input: unknown, instructions: unknown): Jso
     const toolCalls = Array.isArray(pendingAssistant.tool_calls)
       ? pendingAssistant.tool_calls as JsonObject[]
       : []
-    toolCalls.push({ id: callId, type: 'function', function: { name, arguments: argumentsValue } })
+    const externalName = toolNames.sourceToExternal.get(chatToolSourceKey({ namespace, name }))
+      ?? (namespace ? `${namespace}__${name}` : name)
+    toolCalls.push({ id: callId, type: 'function', function: { name: externalName, arguments: argumentsValue } })
     pendingAssistant.tool_calls = toolCalls
   }
 
@@ -351,7 +372,8 @@ function responseInputToChatMessages(input: unknown, instructions: unknown): Jso
       const name = nonEmptyString(item.name, 512)
       const argumentsValue = string(item.arguments, 8 * 1024 * 1024)
       if (!callId || !name || argumentsValue === undefined) throw new Error('CODEX_CHAT_ADAPTER_FUNCTION_CALL_INVALID')
-      appendFunctionCall(callId, name, argumentsValue)
+      const namespace = typeof item.namespace === 'string' ? item.namespace : undefined
+      appendFunctionCall(callId, name, argumentsValue, namespace)
       continue
     }
     if (type === 'function_call_output') {
@@ -379,27 +401,64 @@ function responseInputToChatMessages(input: unknown, instructions: unknown): Jso
   return messages
 }
 
-function chatTools(value: unknown): JsonObject[] | undefined {
-  if (value === undefined || value === null) return undefined
+function chatTools(value: unknown): { tools?: JsonObject[], names: ChatToolNameMapping } {
+  const names: ChatToolNameMapping = {
+    externalToSource: new Map(),
+    sourceToExternal: new Map(),
+  }
+  if (value === undefined || value === null) return { names }
   if (!Array.isArray(value)) throw new Error('CODEX_CHAT_ADAPTER_TOOLS_INVALID')
   const tools: JsonObject[] = []
-  for (const raw of value) {
-    const tool = record(raw)
-    if (!tool || tool.type !== 'function') throw new Error('CODEX_CHAT_ADAPTER_TOOL_UNSUPPORTED')
+  const usedNames = new Set<string>()
+  const addFunction = (tool: JsonObject, namespace?: string): void => {
     const name = nonEmptyString(tool.name, 512)
-    const parameters = record(tool.parameters) ?? { type: 'object', properties: {} }
     if (!name) throw new Error('CODEX_CHAT_ADAPTER_TOOL_INVALID')
+    const source = { ...(namespace ? { namespace } : {}), name }
+    const sourceKey = chatToolSourceKey(source)
+    let externalName = namespace ? `${namespace}__${name}` : name
+    externalName = externalName.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 512)
+    if (!externalName) throw new Error('CODEX_CHAT_ADAPTER_TOOL_INVALID')
+    let suffix = 2
+    while (usedNames.has(externalName)) externalName = `${externalName.slice(0, 500)}__${suffix++}`
+    usedNames.add(externalName)
+    names.externalToSource.set(externalName, source)
+    names.sourceToExternal.set(sourceKey, externalName)
+    const parameters = record(tool.parameters) ?? { type: 'object', properties: {} }
     tools.push({
       type: 'function',
       function: {
-        name,
+        name: externalName,
         ...(typeof tool.description === 'string' ? { description: tool.description } : {}),
         parameters,
         ...(typeof tool.strict === 'boolean' ? { strict: tool.strict } : {}),
       },
     })
   }
-  return tools
+  for (const raw of value) {
+    const tool = record(raw)
+    const type = typeof tool?.type === 'string' ? tool.type : undefined
+    if (!tool || !type) throw new Error('CODEX_CHAT_ADAPTER_TOOL_INVALID')
+    if (type === 'function') {
+      addFunction(tool)
+      continue
+    }
+    if (type === 'namespace') {
+      const namespace = nonEmptyString(tool.name, 512)
+      if (!namespace || !Array.isArray(tool.tools)) throw new Error('CODEX_CHAT_ADAPTER_NAMESPACE_TOOL_INVALID')
+      for (const childValue of tool.tools) {
+        const child = record(childValue)
+        if (!child || child.type !== 'function') {
+          throw new Error('CODEX_CHAT_ADAPTER_NAMESPACE_TOOL_UNSUPPORTED')
+        }
+        addFunction(child, namespace)
+      }
+      continue
+    }
+    const safeType = type.toUpperCase().replace(/[^A-Z0-9_-]/g, '_').slice(0, 64)
+    const safeName = typeof tool.name === 'string' ? tool.name.toUpperCase().replace(/[^A-Z0-9_-]/g, '_').slice(0, 64) : 'UNKNOWN'
+    throw new Error(`CODEX_CHAT_ADAPTER_TOOL_UNSUPPORTED_${safeType}_${safeName}`)
+  }
+  return { tools, names }
 }
 
 function chatResponseFormat(value: unknown): JsonObject | undefined {
@@ -417,15 +476,15 @@ function chatResponseFormat(value: unknown): JsonObject | undefined {
   }
 }
 
-function chatRequest(profile: PersonalModelProfile, request: JsonObject): JsonObject {
-  const tools = chatTools(request.tools)
+function chatRequest(profile: PersonalModelProfile, request: JsonObject): { body: JsonObject, names: ChatToolNameMapping } {
+  const translatedTools = chatTools(request.tools)
   const maxOutputTokens = typeof request.max_output_tokens === 'number' ? request.max_output_tokens : undefined
   const reasoning = record(request.reasoning)
-  return {
+  const body: JsonObject = {
     model: profile.model,
     stream: true,
-    messages: responseInputToChatMessages(request.input, request.instructions),
-    ...(tools?.length ? { tools } : {}),
+    messages: responseInputToChatMessages(request.input, request.instructions, translatedTools.names),
+    ...(translatedTools.tools?.length ? { tools: translatedTools.tools } : {}),
     ...(request.tool_choice !== undefined ? { tool_choice: request.tool_choice } : {}),
     ...(typeof request.parallel_tool_calls === 'boolean'
       ? { parallel_tool_calls: request.parallel_tool_calls }
@@ -435,6 +494,7 @@ function chatRequest(profile: PersonalModelProfile, request: JsonObject): JsonOb
     ...(typeof reasoning?.effort === 'string' ? { reasoning_effort: reasoning.effort } : {}),
     ...(chatResponseFormat(request.text) ? { response_format: chatResponseFormat(request.text) } : {}),
   }
+  return { body, names: translatedTools.names }
 }
 
 type ChatToolCall = {
@@ -495,7 +555,7 @@ export class ChatCompletionsResponsesAdapter {
       await this.close()
       throw new Error('CODEX_CHAT_ADAPTER_LISTEN_FAILED')
     }
-    return { baseUrl: `http://127.0.0.1:${address.port}/v1`, capabilityToken: this.capabilityToken }
+    return { baseUrl: `http://${LOOPBACK_PROVIDER_HOST}:${address.port}/v1`, capabilityToken: this.capabilityToken }
   }
 
   async close(): Promise<void> {
@@ -525,8 +585,8 @@ export class ChatCompletionsResponsesAdapter {
       return adapterFailure(response, code === 'CODEX_CHAT_ADAPTER_REQUEST_TOO_LARGE' ? 413 : 400, code)
     }
     if (body.stream !== true) return adapterFailure(response, 400, 'CODEX_CHAT_ADAPTER_STREAM_REQUIRED')
-    let upstreamBody: JsonObject
-    try { upstreamBody = chatRequest(this.profile, body) } catch (error) {
+    let translatedRequest: { body: JsonObject, names: ChatToolNameMapping }
+    try { translatedRequest = chatRequest(this.profile, body) } catch (error) {
       return adapterFailure(response, 400, error instanceof Error ? error.message : 'CODEX_CHAT_ADAPTER_REQUEST_INVALID')
     }
     const controller = new AbortController()
@@ -544,7 +604,7 @@ export class ChatCompletionsResponsesAdapter {
           Accept: 'text/event-stream',
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify(upstreamBody),
+        body: JSON.stringify(translatedRequest.body),
         redirect: 'error',
         signal: controller.signal,
       })
@@ -557,7 +617,7 @@ export class ChatCompletionsResponsesAdapter {
         Connection: 'keep-alive',
         'X-Accel-Buffering': 'no',
       })
-      await this.streamResponse(response, upstream, controller.signal)
+      await this.streamResponse(response, upstream, controller.signal, translatedRequest.names)
     } catch (error) {
       if (!response.headersSent) {
         return adapterFailure(response, controller.signal.aborted ? 499 : 502, controller.signal.aborted ? 'CODEX_CHAT_ADAPTER_ABORTED' : 'CODEX_CHAT_ADAPTER_UPSTREAM_UNAVAILABLE')
@@ -578,7 +638,12 @@ export class ChatCompletionsResponsesAdapter {
     return { id: `resp_${randomUUID()}`, object: 'response', created_at: Math.floor(Date.now() / 1_000), model: this.profile.model, status, ...more }
   }
 
-  private async streamResponse(response: ServerResponse, upstream: Response, signal: AbortSignal): Promise<void> {
+  private async streamResponse(
+    response: ServerResponse,
+    upstream: Response,
+    signal: AbortSignal,
+    toolNames: ChatToolNameMapping,
+  ): Promise<void> {
     const responseId = `resp_${randomUUID()}`
     const base = { id: responseId, object: 'response', created_at: Math.floor(Date.now() / 1_000), model: this.profile.model }
     const output: JsonObject[] = []
@@ -586,6 +651,7 @@ export class ChatCompletionsResponsesAdapter {
     const textItem = { id: `msg_${randomUUID()}`, type: 'message', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: '' }] }
     let textStarted = false
     let text = ''
+    const textDeltas: string[] = []
     let reasoning = ''
     let result: ChatStreamResult = {}
     sse(response, 'response.created', { response: { ...base, status: 'in_progress', output: [] } })
@@ -605,13 +671,9 @@ export class ChatCompletionsResponsesAdapter {
       }
       const content = string(delta?.content)
       if (content) {
-        if (!textStarted) {
-          textStarted = true
-          sse(response, 'response.output_item.added', { output_index: output.length, item: { ...textItem, status: 'in_progress', content: [] } })
-          sse(response, 'response.content_part.added', { output_index: output.length, content_index: 0, part: { type: 'output_text', text: '' } })
-        }
+        textStarted = true
         text += content
-        sse(response, 'response.output_text.delta', { output_index: output.length, content_index: 0, delta: content })
+        textDeltas.push(content)
       }
       const toolCalls = Array.isArray(delta?.tool_calls) ? delta.tool_calls : []
       for (let position = 0; position < toolCalls.length; position += 1) {
@@ -658,20 +720,28 @@ export class ChatCompletionsResponsesAdapter {
       output.push(item)
     }
     if (textStarted) {
+      const outputIndex = output.length
+      sse(response, 'response.output_item.added', { output_index: outputIndex, item: { ...textItem, status: 'in_progress', content: [] } })
+      sse(response, 'response.content_part.added', { output_index: outputIndex, content_index: 0, part: { type: 'output_text', text: '' } })
+      for (const delta of textDeltas) {
+        sse(response, 'response.output_text.delta', { output_index: outputIndex, content_index: 0, delta })
+      }
       textItem.content = [{ type: 'output_text', text }]
-      sse(response, 'response.output_text.done', { output_index: output.length, content_index: 0, text })
-      sse(response, 'response.content_part.done', { output_index: output.length, content_index: 0, part: { type: 'output_text', text } })
-      sse(response, 'response.output_item.done', { output_index: output.length, item: textItem })
+      sse(response, 'response.output_text.done', { output_index: outputIndex, content_index: 0, text })
+      sse(response, 'response.content_part.done', { output_index: outputIndex, content_index: 0, part: { type: 'output_text', text } })
+      sse(response, 'response.output_item.done', { output_index: outputIndex, item: textItem })
       output.push(textItem)
     }
     for (const call of [...calls.values()].sort((left, right) => left.index - right.index)) {
       if (!call.name || !call.arguments) throw new Error('CODEX_CHAT_ADAPTER_TOOL_CALL_INCOMPLETE')
+      const source = toolNames.externalToSource.get(call.name)
       const item = {
         id: call.itemId,
         type: 'function_call',
         status: 'completed',
         call_id: call.callId,
-        name: call.name,
+        name: source?.name ?? call.name,
+        ...(source?.namespace ? { namespace: source.namespace } : {}),
         arguments: call.arguments,
       }
       sse(response, 'response.output_item.done', { output_index: output.length, item })
@@ -778,7 +848,7 @@ class ResponsesCredentialAdapter {
       await this.close()
       throw new Error(this.code('LISTEN_FAILED'))
     }
-    return { baseUrl: `http://127.0.0.1:${address.port}/v1`, capabilityToken: this.capabilityToken }
+    return { baseUrl: `http://${LOOPBACK_PROVIDER_HOST}:${address.port}/v1`, capabilityToken: this.capabilityToken }
   }
 
   async close(): Promise<void> {

@@ -3,10 +3,13 @@ import {
   normalizePersonalModelProfile,
   parsePersonalModelConfiguration,
   safePersonalModelBaseUrl,
+  PERSONAL_MODEL_CODEX_WIRE_API,
   validPersonalModelProfileId,
   validPersonalModelProviderPresetId,
   type PersonalModelConfiguration,
   type PersonalModelConfigurationSummary,
+  type PersonalModelDiscoveryInput,
+  type PersonalModelDiscoveryResult,
   type PersonalModelProfile,
   type PersonalModelProfileInput,
   type PersonalModelProviderPresetDiscoveryInput,
@@ -20,8 +23,7 @@ import {
 import type { CredentialStore } from './keychain'
 import {
   discoverPersonalModels,
-  type PersonalModelDiscoveryInput,
-  type PersonalModelDiscoveryResult,
+  type PersonalModelDiscoveryDependencies,
 } from './personalModelDiscovery'
 
 export type ProviderCredentialConfigurationSummary = PersonalModelConfigurationSummary
@@ -61,6 +63,8 @@ function resolvedProviderPresetBaseUrl(
 function summary(value: PersonalModelConfiguration): ProviderCredentialConfigurationSummary {
   return {
     managed_model: 'BilliardBuddy 托管模型',
+    codex_wire_api: PERSONAL_MODEL_CODEX_WIRE_API,
+    active_route: value.active_profile_id ? 'personal' : 'managed',
     profiles: value.profiles.map(({ api_key: _apiKey, ...profile }) => ({ ...profile, configured: true })),
     ...(value.active_profile_id ? { active_profile_id: value.active_profile_id } : {}),
   }
@@ -71,7 +75,10 @@ function summary(value: PersonalModelConfiguration): ProviderCredentialConfigura
  * provider connection. It has no model-capacity, context or Agent policy.
  */
 export class ProviderCredentialService {
-  constructor(private readonly store: CredentialStore) {}
+  constructor(
+    private readonly store: CredentialStore,
+    private readonly network: PersonalModelDiscoveryDependencies = {},
+  ) {}
 
   summary(): ProviderCredentialConfigurationSummary { return summary(this.read()) }
 
@@ -86,7 +93,7 @@ export class ProviderCredentialService {
   }
 
   async discover(input: PersonalModelDiscoveryInput): Promise<PersonalModelDiscoveryResult> {
-    return await discoverPersonalModels(input)
+    return await discoverPersonalModels(input, this.network)
   }
 
   async discoverPreset(input: PersonalModelProviderPresetDiscoveryInput): Promise<PersonalModelDiscoveryResult> {
@@ -98,17 +105,39 @@ export class ProviderCredentialService {
       || input.api_key.length < 8
       || input.api_key.length > 4_096
       || (input.base_url !== undefined && (typeof input.base_url !== 'string' || input.base_url.length > 2_048))
+      || (input.protocol !== undefined && (input.protocol !== 'openai-compatible' && input.protocol !== 'openai-responses'))
     ) throw new Error('PERSONAL_MODEL_PROVIDER_PRESET_DISCOVERY_INVALID')
     const preset = this.providerPreset(input.provider_preset_id)
     if (preset.model_discovery !== 'openai-compatible') {
       throw new Error('PERSONAL_MODEL_PROVIDER_PRESET_DISCOVERY_UNSUPPORTED')
     }
+    const protocol = input.protocol ?? preset.default_protocol
+    if (!preset.supported_protocols.includes(protocol)) {
+      throw new Error('PERSONAL_MODEL_PROVIDER_PRESET_PROTOCOL_UNSUPPORTED')
+    }
     return await discoverPersonalModels({
-      base_url: resolvedProviderPresetBaseUrl(preset, input.base_url, preset.default_protocol),
+      base_url: resolvedProviderPresetBaseUrl(preset, input.base_url, protocol),
       api_key: input.api_key,
-      protocol: preset.default_protocol,
+      protocol,
       auth_mode: preset.auth_mode,
-    })
+    }, this.network)
+  }
+
+  /**
+   * Re-fetch the model list for a saved profile without returning its Key to
+   * the Renderer. The result remains a discovery hint: it contains model IDs
+   * only and never becomes a product capability or context-window contract.
+   */
+  async discoverProfile(profileId: string): Promise<PersonalModelDiscoveryResult> {
+    if (!validPersonalModelProfileId(profileId)) throw new Error('PERSONAL_MODEL_PROFILE_ID_INVALID')
+    const profile = this.read().profiles.find(candidate => candidate.id === profileId)
+    if (!profile) throw new Error('PERSONAL_MODEL_PROFILE_NOT_FOUND')
+    return await discoverPersonalModels({
+      base_url: profile.base_url,
+      api_key: profile.api_key,
+      protocol: profile.protocol,
+      auth_mode: profile.auth_mode,
+    }, this.network)
   }
 
   savePreset(input: PersonalModelProviderPresetSelectionInput): ProviderCredentialConfigurationSummary {
@@ -167,6 +196,39 @@ export class ProviderCredentialService {
     // session. No separate capability-routing layer is involved.
     value.active_profile_id = profile.id
     this.write(value)
+    return summary(value)
+  }
+
+  /**
+   * Select an already stored connection without asking the Renderer to send
+   * the Key again. The active connection is consumed only by Electron Main's
+   * native Codex route resolver; no new Agent loop or capability policy is
+   * created here.
+   */
+  activate(profileId: string): ProviderCredentialConfigurationSummary {
+    if (!validPersonalModelProfileId(profileId)) throw new Error('PERSONAL_MODEL_PROFILE_ID_INVALID')
+    const value = this.read()
+    if (!value.profiles.some(profile => profile.id === profileId)) {
+      throw new Error('PERSONAL_MODEL_PROFILE_NOT_FOUND')
+    }
+    if (value.active_profile_id !== profileId) {
+      value.active_profile_id = profileId
+      this.write(value)
+    }
+    return summary(value)
+  }
+
+  /**
+   * Keep every saved personal connection but select the managed route for the
+   * next native Agent session. This is an explicit route choice, not a
+   * fallback after a personal Provider failure.
+   */
+  useManaged(): ProviderCredentialConfigurationSummary {
+    const value = this.read()
+    if (value.active_profile_id !== undefined) {
+      delete value.active_profile_id
+      this.write(value)
+    }
     return summary(value)
   }
 

@@ -344,11 +344,15 @@ const PERSONAL_MODEL_PROVIDER_SETUP_CATALOG: readonly PersonalModelProviderSetup
     is_coding_plan: false,
     requires_provider_compatibility_confirmation: false,
     base_url: 'https://api.xiaomimimo.com/v1',
+    // MiMo publishes a Responses endpoint, but its current tool-capability
+    // surface rejects the native Codex tool envelope. Keep this preset on the
+    // documented Chat path so the local adapter can flatten namespaces and
+    // disable unsupported hosted tools without changing Core's Agent loop.
     default_protocol: 'openai-compatible',
     supported_protocols: ['openai-compatible'],
     auth_mode: 'bearer',
     api_key_url: 'https://platform.xiaomimimo.com/#/console/api-keys',
-    documentation_url: 'https://platform.xiaomimimo.com',
+    documentation_url: 'https://mimo.mi.com/docs/api/chat/openai-api',
     model_discovery: 'openai-compatible',
   },
   {

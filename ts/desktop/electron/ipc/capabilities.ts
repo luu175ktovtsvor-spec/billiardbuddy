@@ -1041,10 +1041,11 @@ const modelConfigurationDiscover: Validator = value =>
 
 const modelConfigurationDiscoverPreset: Validator = value =>
   isRecord(value)
-  && hasOnlyKeys(value, ['provider_preset_id', 'api_key', 'base_url'])
+  && hasOnlyKeys(value, ['provider_preset_id', 'api_key', 'base_url', 'protocol'])
   && personalModelProviderPresetId(value.provider_preset_id)
   && typeof value.api_key === 'string' && value.api_key.length >= 8 && value.api_key.length <= 4_096
   && (value.base_url === undefined || typeof value.base_url === 'string' && value.base_url.trim().length > 0 && value.base_url.length <= 2_048)
+  && (value.protocol === undefined || personalModelProtocol(value.protocol))
 
 const modelConfigurationSavePreset: Validator = value =>
   isRecord(value)
@@ -1248,10 +1249,14 @@ export const ELECTRON_IPC_VALIDATORS = {
   [ELECTRON_IPC_CHANNELS.modelConfigurationSummary]: noPayload,
   [ELECTRON_IPC_CHANNELS.modelConfigurationProviderPresets]: noPayload,
   [ELECTRON_IPC_CHANNELS.modelConfigurationOpenProviderPortal]: personalModelProviderPresetId,
+  [ELECTRON_IPC_CHANNELS.modelConfigurationOpenProviderDocumentation]: personalModelProviderPresetId,
   [ELECTRON_IPC_CHANNELS.modelConfigurationDiscover]: modelConfigurationDiscover,
   [ELECTRON_IPC_CHANNELS.modelConfigurationDiscoverPreset]: modelConfigurationDiscoverPreset,
+  [ELECTRON_IPC_CHANNELS.modelConfigurationDiscoverProfile]: personalModelProfileId,
   [ELECTRON_IPC_CHANNELS.modelConfigurationSavePreset]: modelConfigurationSavePreset,
   [ELECTRON_IPC_CHANNELS.modelConfigurationSave]: modelConfigurationSave,
+  [ELECTRON_IPC_CHANNELS.modelConfigurationActivate]: personalModelProfileId,
+  [ELECTRON_IPC_CHANNELS.modelConfigurationUseManaged]: noPayload,
   [ELECTRON_IPC_CHANNELS.modelConfigurationRemove]: personalModelProfileId,
   [ELECTRON_IPC_CHANNELS.nativeAgentStartThread]: nativeAgentStartThread,
   [ELECTRON_IPC_CHANNELS.nativeAgentWindowsSandboxReadiness]: nativeAgentWindowsSandboxReadiness,

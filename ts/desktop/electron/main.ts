@@ -1,4 +1,4 @@
-import { app, BrowserWindow, clipboard, dialog, ipcMain, Notification, safeStorage, screen, session, webContents } from 'electron'
+import { app, BrowserWindow, clipboard, dialog, ipcMain, net, Notification, safeStorage, screen, session, webContents } from 'electron'
 import { autoUpdater } from 'electron-updater'
 import { randomBytes } from 'node:crypto'
 import { mkdir, open, rename, rm } from 'node:fs/promises'
@@ -305,6 +305,7 @@ function getInstallationSessionManager() {
 function getProviderCredentialService(): ProviderCredentialService {
   providerCredentialService ??= new ProviderCredentialService(
     createCredentialStore(process.platform, app.getPath('userData'), 'provider-credentials', safeStorage),
+    { fetchImpl: (input, init) => net.fetch(input instanceof URL ? input.toString() : input, init) },
   )
   return providerCredentialService
 }
@@ -748,6 +749,9 @@ function getNativeAgentRuntime(): ElectronCodexNativeRuntime {
   nativeAgentRuntime ??= new ElectronCodexNativeRuntime({
     desktopRoot: unpackedRoot(),
     userDataPath: app.getPath('userData'),
+    // Provider traffic uses Electron's host network stack; BilliardBuddy does
+    // not add a second network policy around the native Agent.
+    fetchImpl: (input, init) => net.fetch(input instanceof URL ? input.toString() : input, init),
     onNotification: forwardNativeAgentNotification,
     onServerRequest: requestNativeAgentServerRequest,
     onAppServerUnavailable: error => {
@@ -1173,14 +1177,24 @@ function registerIpcHandlers() {
     const preset = getProviderCredentialService().providerPreset(String(payload))
     await openExternalUrl(preset.api_key_url)
   })
+  registerHandler(ELECTRON_IPC_CHANNELS.modelConfigurationOpenProviderDocumentation, async (_event, payload) => {
+    const preset = getProviderCredentialService().providerPreset(String(payload))
+    await openExternalUrl(preset.documentation_url)
+  })
   registerHandler(ELECTRON_IPC_CHANNELS.modelConfigurationDiscover, async (_event, payload) =>
     await getProviderCredentialService().discover(payload as Parameters<ProviderCredentialService['discover']>[0]))
   registerHandler(ELECTRON_IPC_CHANNELS.modelConfigurationDiscoverPreset, async (_event, payload) =>
     await getProviderCredentialService().discoverPreset(payload as Parameters<ProviderCredentialService['discoverPreset']>[0]))
+  registerHandler(ELECTRON_IPC_CHANNELS.modelConfigurationDiscoverProfile, async (_event, payload) =>
+    await getProviderCredentialService().discoverProfile(String(payload)))
   registerHandler(ELECTRON_IPC_CHANNELS.modelConfigurationSavePreset, (_event, payload) =>
     mutateProviderCredentials(service => service.savePreset(payload as Parameters<ProviderCredentialService['savePreset']>[0])))
   registerHandler(ELECTRON_IPC_CHANNELS.modelConfigurationSave, (_event, payload) =>
     mutateProviderCredentials(service => service.save(payload as Parameters<ProviderCredentialService['save']>[0])))
+  registerHandler(ELECTRON_IPC_CHANNELS.modelConfigurationActivate, (_event, payload) =>
+    mutateProviderCredentials(service => service.activate(String(payload))))
+  registerHandler(ELECTRON_IPC_CHANNELS.modelConfigurationUseManaged, () =>
+    mutateProviderCredentials(service => service.useManaged()))
   registerHandler(ELECTRON_IPC_CHANNELS.modelConfigurationRemove, (_event, payload) =>
     mutateProviderCredentials(service => service.remove(String(payload))))
   registerHandler(ELECTRON_IPC_CHANNELS.nativeAgentStartThread, async (event, payload) => {

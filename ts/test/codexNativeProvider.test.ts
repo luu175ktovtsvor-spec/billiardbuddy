@@ -5,14 +5,25 @@ import {
   ChatCompletionsResponsesAdapter,
   startCodexNativeProvider,
 } from '../desktop/electron/services/codexNativeProvider'
+import { projectFuzzyFileSearchResponse } from '../desktop/electron/services/codexNativeAppServer'
 import { personalModelProviderPreset } from '../shared/product/personalModelProviderCatalog'
 import {
   normalizePersonalModelProfile,
   type PersonalModelProfile,
 } from '../shared/product/personalModels'
+import { ProviderCredentialService } from '../desktop/electron/services/providerCredentials'
+import type { CredentialStore } from '../desktop/electron/services/keychain'
 
 const adapters: ChatCompletionsResponsesAdapter[] = []
 const servers: Server[] = []
+
+class MemoryCredentialStore implements CredentialStore {
+  private value: string | null = null
+
+  load(): string | null { return this.value }
+  save(value: string): void { this.value = value }
+  clear(): void { this.value = null }
+}
 
 afterEach(async () => {
   await Promise.all(adapters.splice(0).map(adapter => adapter.close()))
@@ -23,6 +34,28 @@ afterEach(async () => {
 })
 
 describe('Chat Completions to Responses adapter', () => {
+  test('projects the locked Rust fuzzy-file response snake_case fields', () => {
+    expect(projectFuzzyFileSearchResponse({
+      files: [{
+        root: '/tmp/workspace',
+        path: 'src/example.ts',
+        match_type: 'file',
+        file_name: 'example.ts',
+        score: 42,
+        indices: [0, 1],
+      }],
+    })).toEqual({
+      files: [{
+        root: '/tmp/workspace',
+        path: 'src/example.ts',
+        matchType: 'file',
+        fileName: 'example.ts',
+        score: 42,
+        indices: [0, 1],
+      }],
+    })
+  })
+
   test('preserves reasoning and tool continuation while returning Responses SSE', async () => {
     let upstreamRequest: Record<string, unknown> | undefined
     let authorization: string | undefined
@@ -56,6 +89,7 @@ describe('Chat Completions to Responses adapter', () => {
     const adapter = new ChatCompletionsResponsesAdapter(profile)
     adapters.push(adapter)
     const started = await adapter.start()
+    expect(started.baseUrl).toMatch(/^http:\/\/localhost:/)
     const response = await fetch(`${started.baseUrl}/responses`, {
       method: 'POST',
       headers: {
@@ -125,6 +159,77 @@ describe('Chat Completions to Responses adapter', () => {
       { type: 'image_url', image_url: { url: 'data:image/png;base64,aW1hZ2U=', detail: 'low' } },
     ] })
     expect(messages[5]).toEqual({ role: 'user', content: [{ type: 'text', text: 'Compacted history summary.' }] })
+  })
+
+  test('flattens Responses namespaces for Chat and restores the namespace on tool calls', async () => {
+    let upstreamRequest: Record<string, unknown> | undefined
+    const upstream = createServer(async (request, response) => {
+      const chunks: Buffer[] = []
+      for await (const chunk of request) chunks.push(Buffer.from(chunk))
+      upstreamRequest = JSON.parse(Buffer.concat(chunks).toString('utf8')) as Record<string, unknown>
+      response.writeHead(200, { 'content-type': 'text/event-stream' })
+      response.end([
+        'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_spawn","function":{"name":"multi_agent__spawn_agent","arguments":"{\\"task_name\\":\\"probe\\"}"}}]},"finish_reason":"tool_calls"}]}',
+        'data: {"choices":[],"usage":{"prompt_tokens":2,"completion_tokens":3,"total_tokens":5}}',
+        'data: [DONE]',
+        '',
+      ].join('\n\n'))
+    })
+    servers.push(upstream)
+    upstream.listen(0, '127.0.0.1')
+    await once(upstream, 'listening')
+    const address = upstream.address()
+    if (!address || typeof address === 'string') throw new Error('namespace test upstream address is invalid')
+
+    const profile: PersonalModelProfile = {
+      id: 'testnamespace1',
+      label: 'Test namespaced Chat provider',
+      base_url: `http://127.0.0.1:${address.port}/v1`,
+      model: 'test-namespaced-model',
+      protocol: 'openai-compatible',
+      auth_mode: 'bearer',
+      api_key: 'test-api-key',
+    }
+    const adapter = new ChatCompletionsResponsesAdapter(profile)
+    adapters.push(adapter)
+    const started = await adapter.start()
+    const response = await fetch(`${started.baseUrl}/responses`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-billiardbuddy-engine-token': started.capabilityToken,
+      },
+      body: JSON.stringify({
+        model: profile.model,
+        stream: true,
+        input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'spawn one agent' }] }],
+        tools: [{
+          type: 'namespace',
+          name: 'multi_agent',
+          description: 'Native collaboration tools',
+          tools: [{
+            type: 'function',
+            name: 'spawn_agent',
+            description: 'Start one agent',
+            parameters: { type: 'object', properties: { task_name: { type: 'string' } } },
+          }],
+        }],
+      }),
+    })
+
+    expect(response.status).toBe(200)
+    const events = await response.text()
+    expect(events).toContain('"namespace":"multi_agent"')
+    expect(events).toContain('"name":"spawn_agent"')
+    const tools = upstreamRequest?.tools as Array<Record<string, unknown>>
+    expect(tools?.[0]).toEqual({
+      type: 'function',
+      function: {
+        name: 'multi_agent__spawn_agent',
+        description: 'Start one agent',
+        parameters: { type: 'object', properties: { task_name: { type: 'string' } } },
+      },
+    })
   })
 
   test('rejects requests without the private loopback capability', async () => {
@@ -364,6 +469,94 @@ describe('Chat Completions to Responses adapter', () => {
   })
 })
 
+describe('Personal model configuration bridge', () => {
+  test('keeps the Codex wire slot on Responses and activates saved profiles without resending a Key', () => {
+    const service = new ProviderCredentialService(new MemoryCredentialStore())
+    expect(service.summary().active_route).toBe('managed')
+    const first = service.savePreset({
+      provider_preset_id: 'deepseek',
+      api_key: 'deepseek-test-key',
+      model: 'deepseek-chat',
+      protocol: 'openai-compatible',
+    })
+    const firstProfileId = first.profiles[0]?.id
+    if (!firstProfileId) throw new Error('first profile was not saved')
+
+    const second = service.savePreset({
+      provider_preset_id: 'deepseek',
+      api_key: 'deepseek-responses-test-key',
+      model: 'deepseek-reasoner',
+      protocol: 'openai-responses',
+    })
+    expect(second.active_profile_id).not.toBe(firstProfileId)
+    expect(second.codex_wire_api).toBe('responses')
+    expect(second.active_route).toBe('personal')
+    expect(second.profiles.every(profile => !('api_key' in profile))).toBe(true)
+
+    const activated = service.activate(firstProfileId)
+    expect(activated.active_profile_id).toBe(firstProfileId)
+    expect(activated.codex_wire_api).toBe('responses')
+    expect(activated.active_route).toBe('personal')
+    expect(service.agentTextReasoningProfile()?.id).toBe(firstProfileId)
+    const managed = service.useManaged()
+    expect(managed.active_route).toBe('managed')
+    expect(managed.profiles).toHaveLength(2)
+    expect(service.agentTextReasoningProfile()).toBeNull()
+    expect(() => service.activate('missing-profile')).toThrow('PERSONAL_MODEL_PROFILE_NOT_FOUND')
+  })
+
+  test('discovers models for a saved profile in Main without exposing its Key to the Renderer', async () => {
+    let requestUrl = ''
+    let authorization = ''
+    const service = new ProviderCredentialService(new MemoryCredentialStore(), {
+      fetchImpl: async (input, init) => {
+        requestUrl = String(input)
+        authorization = String(new Headers(init?.headers).get('authorization'))
+        return new Response(JSON.stringify({ data: [{ id: 'model-z' }, { id: 'model-a' }] }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      },
+    })
+    const saved = service.savePreset({
+      provider_preset_id: 'deepseek',
+      api_key: 'deepseek-saved-key',
+      model: 'deepseek-chat',
+      protocol: 'openai-compatible',
+    })
+    const profileId = saved.profiles[0]?.id
+    if (!profileId) throw new Error('saved profile was not created')
+
+    await expect(service.discoverProfile(profileId)).resolves.toEqual({
+      models: [{ id: 'model-a' }, { id: 'model-z' }],
+    })
+    expect(requestUrl).toBe('https://api.deepseek.com/models')
+    expect(authorization).toBe('Bearer deepseek-saved-key')
+    expect(() => service.discoverProfile('missing-profile')).toThrow('PERSONAL_MODEL_PROFILE_NOT_FOUND')
+  })
+
+  test('allows a preset discovery request to choose a supported alternate protocol', async () => {
+    let requestUrl = ''
+    const service = new ProviderCredentialService(new MemoryCredentialStore(), {
+      fetchImpl: async input => {
+        requestUrl = String(input)
+        return Response.json({ data: [{ id: 'deepseek-chat' }] })
+      },
+    })
+    await expect(service.discoverPreset({
+      provider_preset_id: 'deepseek',
+      api_key: 'deepseek-discovery-key',
+      protocol: 'openai-compatible',
+    })).resolves.toEqual({ models: [{ id: 'deepseek-chat' }] })
+    expect(requestUrl).toBe('https://api.deepseek.com/models')
+    await expect(service.discoverPreset({
+      provider_preset_id: 'xiaomi-mimo',
+      api_key: 'mimo-discovery-key',
+      protocol: 'openai-responses',
+    })).rejects.toThrow('PERSONAL_MODEL_PROVIDER_PRESET_PROTOCOL_UNSUPPORTED')
+  })
+})
+
 describe('personal provider catalog', () => {
   test('DeepSeek uses the official Responses origin and model protocol defaults', () => {
     const preset = personalModelProviderPreset('deepseek')
@@ -372,6 +565,17 @@ describe('personal provider catalog', () => {
       default_protocol: 'openai-responses',
       supported_protocols: ['openai-responses', 'openai-compatible'],
       documentation_url: 'https://api-docs.deepseek.com/zh-cn/guides/responses_api',
+    })
+  })
+
+  test('MiMo uses the official Chat Completions origin while allowing the Core Responses route', () => {
+    const preset = personalModelProviderPreset('xiaomi-mimo')
+    expect(preset).toMatchObject({
+      base_url: 'https://api.xiaomimimo.com/v1',
+      default_protocol: 'openai-compatible',
+      supported_protocols: ['openai-compatible'],
+      auth_mode: 'bearer',
+      documentation_url: 'https://mimo.mi.com/docs/api/chat/openai-api',
     })
   })
 

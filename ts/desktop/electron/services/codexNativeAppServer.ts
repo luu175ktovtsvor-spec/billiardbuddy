@@ -384,6 +384,12 @@ export type ElectronCodexNativeRuntimeOptions = {
   desktopRoot: string
   /** Electron app userData; never the user's standalone Codex home. */
   userDataPath: string
+  /**
+   * Main-process network implementation for the external provider bridge.
+   * Electron supplies `net.fetch` for the host network stack; tests may inject
+   * the platform-neutral fetch implementation.
+   */
+  fetchImpl?: typeof fetch
   onNotification?(notification: CodexNativeNotification): void | Promise<void>
   /**
    * App Server issues approvals, user questions and MCP forms as server
@@ -649,6 +655,18 @@ function childEnvironment(
   for (const [key, value] of Object.entries(input)) {
     if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) && value) environment[key] = value
   }
+  // The model provider URL is a Main-owned loopback bridge. Keep the local
+  // bridge direct without changing Codex's outbound network policy.
+  const noProxyEntries = (environment.NO_PROXY ?? environment.no_proxy ?? '')
+    .split(/[,\s]+/)
+    .map(entry => entry.trim())
+    .filter(Boolean)
+  const knownNoProxyEntries = new Set(noProxyEntries.map(entry => entry.toLowerCase()))
+  for (const entry of ['localhost', '127.0.0.1', '::1']) {
+    if (!knownNoProxyEntries.has(entry)) noProxyEntries.push(entry)
+  }
+  environment.NO_PROXY = noProxyEntries.join(',')
+  environment.no_proxy = environment.NO_PROXY
   if (managedBinaryDirectory) {
     const separator = process.platform === 'win32' ? ';' : ':'
     environment.PATH = environment.PATH
@@ -1121,18 +1139,23 @@ function projectCommandExecResponse(value: CodexNativeJsonObject): NativeCodexCo
   return { exitCode: value.exitCode, stdout: value.stdout, stderr: value.stderr }
 }
 
-function projectFuzzyFileSearchResponse(value: CodexNativeJsonObject): { files: NativeCodexFuzzyFileSearchResult[] } {
+export function projectFuzzyFileSearchResponse(value: CodexNativeJsonObject): { files: NativeCodexFuzzyFileSearchResult[] } {
   if (!Array.isArray(value.files) || value.files.length > 2_000) {
     throw new Error('CODEX_NATIVE_FUZZY_RESPONSE_INVALID')
   }
   const files = value.files.map(candidate => {
     const item = jsonObject(candidate)
+    // The locked Rust struct intentionally has no `rename_all` attribute, so
+    // these two fields are snake_case on the JSON-RPC wire. Project them into
+    // the Electron camelCase boundary without inventing a second search model.
+    const matchType = item?.match_type ?? item?.matchType
+    const fileName = item?.file_name ?? item?.fileName
     if (
       !item
       || !nonEmptyText(item.root, 4_096)
       || !nonEmptyText(item.path, 4_096)
-      || (item.matchType !== 'file' && item.matchType !== 'directory')
-      || !nonEmptyText(item.fileName, 4_096)
+      || (matchType !== 'file' && matchType !== 'directory')
+      || !nonEmptyText(fileName, 4_096)
       || typeof item.score !== 'number'
       || !Number.isSafeInteger(item.score)
       || item.score < 0
@@ -1142,12 +1165,12 @@ function projectFuzzyFileSearchResponse(value: CodexNativeJsonObject): { files: 
         || !item.indices.every(index => typeof index === 'number' && Number.isSafeInteger(index) && index >= 0)
       ))
     ) throw new Error('CODEX_NATIVE_FUZZY_RESPONSE_INVALID')
-    const matchType: NativeCodexFuzzyFileSearchResult['matchType'] = item.matchType
+    const projectedMatchType: NativeCodexFuzzyFileSearchResult['matchType'] = matchType
     return {
       root: item.root,
       path: item.path,
-      matchType,
-      fileName: item.fileName,
+      matchType: projectedMatchType,
+      fileName,
       score: item.score,
       ...(item.indices === undefined ? {} : { indices: [...item.indices] as number[] }),
     }
@@ -3107,7 +3130,7 @@ export class ElectronCodexNativeRuntime {
     if (!this.client || this.client.isAvailable()) this.assertModelRouteMayChange()
     const generation = ++this.routeGeneration
     await this.closeCurrentProcess()
-    const provider = await startCodexNativeProvider(route)
+    const provider = await startCodexNativeProvider(route, { fetchImpl: this.options.fetchImpl })
     this.startingProviders.add(provider)
     let client: CodexNativeAppServerClient | undefined
     try {

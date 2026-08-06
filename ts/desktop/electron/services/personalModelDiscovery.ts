@@ -4,7 +4,8 @@ import {
   validPersonalModelAuthMode,
   validPersonalModelProtocol,
   type PersonalModelAuthMode,
-  type PersonalModelProtocol,
+  type PersonalModelDiscoveryInput,
+  type PersonalModelDiscoveryResult,
 } from '../../../shared/product/personalModels'
 
 const DISCOVERY_TIMEOUT_MS = 10_000
@@ -21,19 +22,9 @@ type DiscoveryFailureCode =
   | 'PERSONAL_MODEL_DISCOVERY_RESPONSE_TOO_LARGE'
   | 'PERSONAL_MODEL_DISCOVERY_INVALID_RESPONSE'
 
-export type PersonalModelDiscoveryInput = {
-  base_url: string
-  api_key: string
-  protocol: PersonalModelProtocol
-  auth_mode?: PersonalModelAuthMode
-}
-
-export type DiscoveredPersonalModel = {
-  id: string
-}
-
-export type PersonalModelDiscoveryResult = {
-  models: DiscoveredPersonalModel[]
+export type PersonalModelDiscoveryDependencies = {
+  /** Electron Main injects `net.fetch` for the host network stack. */
+  fetchImpl?: typeof fetch
 }
 
 function validDiscoveredModelId(value: unknown): value is string {
@@ -141,6 +132,7 @@ function parseDiscoveredModelIds(raw: string): string[] {
  */
 export async function discoverPersonalModels(
   input: PersonalModelDiscoveryInput,
+  dependencies: PersonalModelDiscoveryDependencies = {},
 ): Promise<PersonalModelDiscoveryResult> {
   const apiKey = input.api_key.trim()
   if (
@@ -160,7 +152,7 @@ export async function discoverPersonalModels(
     for (const endpoint of modelDiscoveryEndpoints(baseUrl)) {
       let response: Response
       try {
-        response = await fetch(endpoint, {
+        response = await (dependencies.fetchImpl ?? fetch)(endpoint, {
           method: 'GET',
           headers: {
             Accept: 'application/json',

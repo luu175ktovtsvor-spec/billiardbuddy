@@ -9,6 +9,16 @@ export const PERSONAL_MODEL_PROTOCOLS = [
 ] as const
 export type PersonalModelProtocol = (typeof PERSONAL_MODEL_PROTOCOLS)[number]
 
+/**
+ * Codex's native Rust App Server/Core boundary is always Responses. A saved
+ * provider may still use the local stateless Chat Completions adapter, but
+ * that adapter is an upstream compatibility detail and is never a second
+ * Agent protocol exposed to the future Renderer.
+ */
+export const PERSONAL_MODEL_CODEX_WIRE_API = 'responses' as const
+export const PERSONAL_MODEL_ROUTE_SOURCES = ['managed', 'personal'] as const
+export type PersonalModelRouteSource = (typeof PERSONAL_MODEL_ROUTE_SOURCES)[number]
+
 export const PERSONAL_MODEL_AUTH_MODES = ['bearer', 'x-api-key', 'api-key'] as const
 export type PersonalModelAuthMode = (typeof PERSONAL_MODEL_AUTH_MODES)[number]
 
@@ -45,7 +55,19 @@ export type PersonalModelProviderPresetDiscoveryInput = {
   provider_preset_id: string
   api_key: string
   base_url?: string
+  /** Optional alternate upstream wire; defaults to the preset's native choice. */
+  protocol?: PersonalModelProtocol
 }
+
+export type PersonalModelDiscoveryInput = {
+  base_url: string
+  api_key: string
+  protocol: PersonalModelProtocol
+  auth_mode?: PersonalModelAuthMode
+}
+
+export type DiscoveredPersonalModel = { id: string }
+export type PersonalModelDiscoveryResult = { models: DiscoveredPersonalModel[] }
 
 export type PersonalModelConfiguration = {
   version: 2
@@ -56,6 +78,10 @@ export type PersonalModelConfiguration = {
 export type PersonalModelProfileSummary = Omit<PersonalModelProfile, 'api_key'> & { configured: true }
 export type PersonalModelConfigurationSummary = {
   managed_model: string
+  /** Read-only capability of the BilliardBuddy -> Codex native boundary. */
+  codex_wire_api: typeof PERSONAL_MODEL_CODEX_WIRE_API
+  /** Read-only route currently selected for the next native Agent session. */
+  active_route: PersonalModelRouteSource
   profiles: PersonalModelProfileSummary[]
   active_profile_id?: string
 }

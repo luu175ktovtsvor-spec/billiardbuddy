@@ -19,8 +19,9 @@ import {
   type NativeCodexThread,
   type NativeCodexTurn,
 } from '../electron/services/codexNativeAppServer'
+import { EphemeralCredentialStore } from '../electron/services/keychain'
+import { ProviderCredentialService } from '../electron/services/providerCredentials'
 import {
-  normalizePersonalModelProfile,
   type PersonalModelAuthMode,
   type PersonalModelProfile,
   type PersonalModelProtocol,
@@ -32,6 +33,28 @@ const DEFAULT_TURNS = 2
 const MIN_TIMEOUT_MS = 15_000
 const MAX_TIMEOUT_MS = 300_000
 const DEFAULT_TIMEOUT_MS = 120_000
+
+type HostNetwork = {
+  fetchImpl?: typeof fetch
+}
+
+async function hostNetwork(): Promise<HostNetwork> {
+  if (!process.versions.electron) return {}
+  const { app, net } = await import('electron')
+  await app.whenReady()
+  return {
+    fetchImpl: (input, init) => net.fetch(input instanceof URL ? input.toString() : input, init),
+  }
+}
+
+async function finish(code: number): Promise<void> {
+  if (process.versions.electron) {
+    const { app } = await import('electron')
+    app.exit(code)
+    return
+  }
+  if (code !== 0) process.exitCode = code
+}
 
 function requiredEnvironment(name: string): string {
   const value = process.env[name]?.trim()
@@ -89,8 +112,34 @@ function agentMessageText(notification: CodexNativeNotification): string | undef
   return item?.type === 'agentMessage' && typeof item.text === 'string' ? item.text : undefined
 }
 
+/** Keep paid smoke failures classified without printing provider diagnostics. */
+function safeCodexErrorCode(error: CodexNativeJsonObject | undefined): string {
+  const direct = error?.code
+  if (typeof direct === 'string' && /^[A-Za-z0-9_-]{1,96}$/.test(direct)) return direct
+  if (typeof direct === 'number' && Number.isSafeInteger(direct)) return `CODE_${direct}`
+  const info = jsonObject(error?.codexErrorInfo)
+  if (typeof error?.codexErrorInfo === 'string' && /^[A-Za-z0-9_-]{1,96}$/.test(error.codexErrorInfo)) {
+    return error.codexErrorInfo.toUpperCase()
+  }
+  if (info) {
+    const variant = Object.keys(info).find(key => /^[A-Za-z0-9_-]{1,96}$/.test(key))
+    if (variant) {
+      const status = info[variant]
+      if (status && typeof status === 'object' && !Array.isArray(status)) {
+        const httpStatusCode = (status as CodexNativeJsonObject).httpStatusCode
+        if (typeof httpStatusCode === 'number' && Number.isSafeInteger(httpStatusCode)) {
+          return `${variant.toUpperCase()}_HTTP_${httpStatusCode}`
+        }
+      }
+      return variant.toUpperCase()
+    }
+  }
+  return 'UNCLASSIFIED'
+}
+
 class RuntimeEvents {
   private readonly completed = new Map<string, string | undefined>()
+  private readonly failures = new Map<string, string>()
   private readonly turnWaiters = new Map<string, () => void>()
   private readonly agentMessages = new Map<string, string[]>()
   readonly serverRequests: string[] = []
@@ -105,6 +154,15 @@ class RuntimeEvents {
     }
     if (notification.method === 'turn/completed' && turnId) {
       this.completed.set(turnId, completedTurnStatus(notification))
+      this.turnWaiters.get(turnId)?.()
+      this.turnWaiters.delete(turnId)
+      return
+    }
+    if (notification.method === 'error' && turnId) {
+      const params = jsonObject(notification.params)
+      const error = jsonObject(params?.error)
+      const code = safeCodexErrorCode(error)
+      this.failures.set(turnId, code)
       this.turnWaiters.get(turnId)?.()
       this.turnWaiters.delete(turnId)
     }
@@ -128,8 +186,14 @@ class RuntimeEvents {
         })
       })
     }
-    if (this.completed.get(turn.id) !== 'completed') {
-      throw new Error('BILLIARDBUDDY_REAL_PROVIDER_SMOKE_TURN_NOT_COMPLETED')
+    const failure = this.failures.get(turn.id)
+    if (failure) throw new Error(`BILLIARDBUDDY_REAL_PROVIDER_SMOKE_TURN_ERROR_${failure}`)
+    const status = this.completed.get(turn.id)
+    if (status !== 'completed') {
+      const safeStatus = typeof status === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(status)
+        ? status.toUpperCase()
+        : 'UNKNOWN'
+      throw new Error(`BILLIARDBUDDY_REAL_PROVIDER_SMOKE_TURN_STATUS_${safeStatus}`)
     }
   }
 
@@ -182,16 +246,17 @@ async function main(): Promise<void> {
   if (process.env.BILLIARDBUDDY_REAL_PROVIDER_SMOKE_CONFIRMATION !== `RUN_BILLABLE_PERSONAL_AGENT_TURNS_${turns}`) {
     throw new Error('BILLIARDBUDDY_REAL_PROVIDER_SMOKE_CONFIRMATION_REQUIRED')
   }
+  const host = await hostNetwork()
 
-  const profile: PersonalModelProfile = normalizePersonalModelProfile({
+  const requestedProfile = {
     label: 'BilliardBuddy real provider smoke',
     base_url: requiredEnvironment('BILLIARDBUDDY_REAL_PROVIDER_BASE_URL'),
     model: requiredEnvironment('BILLIARDBUDDY_REAL_PROVIDER_MODEL'),
     protocol: protocol(requiredEnvironment('BILLIARDBUDDY_REAL_PROVIDER_PROTOCOL')),
     auth_mode: authMode(process.env.BILLIARDBUDDY_REAL_PROVIDER_AUTH_MODE?.trim()),
     api_key: requiredEnvironment('BILLIARDBUDDY_REAL_PROVIDER_API_KEY'),
-  }, 'realprovidersmoke')
-  const route = { kind: 'personal' as const, profile }
+  }
+  const credentials = new ProviderCredentialService(new EphemeralCredentialStore())
   const desktopRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
   const workspace = await mkdtemp(path.join(tmpdir(), 'billiardbuddy-real-provider-workspace-'))
   const userDataPath = await mkdtemp(path.join(tmpdir(), 'billiardbuddy-real-provider-user-data-'))
@@ -199,13 +264,25 @@ async function main(): Promise<void> {
   const createRuntime = () => new ElectronCodexNativeRuntime({
     desktopRoot,
     userDataPath,
+    fetchImpl: host.fetchImpl,
     onNotification: notification => events.notify(notification),
     onServerRequest: async request => events.rejectServerRequest(request),
   })
   let runtime: ElectronCodexNativeRuntime | undefined
+  let profile: PersonalModelProfile | undefined
   const turnIds: string[] = []
 
   try {
+    // Mirror the Main-process startup order: save the user-owned connection,
+    // select it, then resolve the active profile for the native Agent route.
+    const saved = credentials.save({ id: 'realprovidersmoke', ...requestedProfile })
+    if (saved.active_profile_id !== 'realprovidersmoke') {
+      throw new Error('BILLIARDBUDDY_REAL_PROVIDER_SMOKE_PROFILE_NOT_SELECTED')
+    }
+    profile = credentials.agentTextReasoningProfile() ?? undefined
+    if (!profile) throw new Error('BILLIARDBUDDY_REAL_PROVIDER_SMOKE_PROFILE_NOT_READ_BACK')
+    const route = { kind: 'personal' as const, profile }
+
     runtime = createRuntime()
     let thread = await runtime.startThread({ cwd: workspace, route, permissionMode: 'ask' })
     for (let index = 1; index <= turns; index += 1) {
@@ -219,6 +296,7 @@ async function main(): Promise<void> {
       const turn = await runtime.startTurn(thread, [{ type: 'text', text: prompt(index) }], `real-provider-smoke-turn-${index}`)
       turnIds.push(turn.id)
       await events.waitForCompletedTurn(turn, timeoutMs)
+      console.log(`BILLIARDBUDDY_REAL_PROVIDER_STAGE=turn_${index}_completed`)
       events.assertExactAgentMessage(turn, marker(index))
       if (events.serverRequests.length > 0) throw new Error('BILLIARDBUDDY_REAL_PROVIDER_SMOKE_SERVER_REQUEST_FORBIDDEN')
     }
@@ -233,6 +311,9 @@ async function main(): Promise<void> {
     console.log(`[codex-runtime-real-provider] passed ${turns} billable text-only Turns with Rust Thread resume and no tool approval`)
   } finally {
     await runtime?.close().catch(() => undefined)
+    if (profile) {
+      try { credentials.remove(profile.id) } catch { /* cleanup must not hide the smoke failure */ }
+    }
     await rm(workspace, { recursive: true, force: true })
     await rm(userDataPath, { recursive: true, force: true })
   }
@@ -240,9 +321,10 @@ async function main(): Promise<void> {
 
 try {
   await main()
+  await finish(0)
 } catch (error) {
   // A provider may return arbitrary diagnostic text. Keep a paid-test failure
   // useful without ever echoing a credential or provider response to stdout.
   console.error(`[codex-runtime-real-provider] failed ${safeFailureCode(error)}`)
-  process.exitCode = 1
+  await finish(1)
 }

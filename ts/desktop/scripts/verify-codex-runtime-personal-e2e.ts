@@ -61,7 +61,8 @@ async function closeServer(server: Server): Promise<void> {
 
 class RuntimeEvents {
   private readonly completed = new Set<string>()
-  private readonly waiters = new Map<string, () => void>()
+  private readonly failures = new Map<string, Error>()
+  private readonly waiters = new Map<string, { resolve(): void, reject(error: Error): void }>()
   readonly notifications: CodexNativeNotification[] = []
 
   notify(notification: CodexNativeNotification): void {
@@ -69,21 +70,46 @@ class RuntimeEvents {
     const turnId = notificationTurnId(notification)
     if (notification.method === 'turn/completed' && turnId) {
       this.completed.add(turnId)
-      this.waiters.get(turnId)?.()
+      this.waiters.get(turnId)?.resolve()
+      this.waiters.delete(turnId)
+      return
+    }
+    if (notification.method === 'error' && turnId) {
+      const params = jsonObject(notification.params)
+      const error = jsonObject(params?.error)
+      const message = typeof error?.message === 'string' && error.message.trim()
+        ? error.message
+        : 'Rust App Server reported an unclassified Turn error'
+      const details = typeof params?.additionalDetails === 'string' && params.additionalDetails.trim()
+        ? `; ${params.additionalDetails}`
+        : typeof error?.additionalDetails === 'string' && error.additionalDetails.trim()
+          ? `; ${error.additionalDetails}`
+          : ''
+      const failure = new Error(`native turn ${turnId} failed: ${message}${details}`)
+      this.failures.set(turnId, failure)
+      this.waiters.get(turnId)?.reject(failure)
       this.waiters.delete(turnId)
     }
   }
 
   async waitForTurn(turn: NativeCodexTurn): Promise<void> {
     if (this.completed.has(turn.id)) return
+    const failure = this.failures.get(turn.id)
+    if (failure) throw failure
     await new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.waiters.delete(turn.id)
         reject(new Error(`native turn ${turn.id} did not complete`))
       }, TURN_TIMEOUT_MS)
-      this.waiters.set(turn.id, () => {
-        clearTimeout(timer)
-        resolve()
+      this.waiters.set(turn.id, {
+        resolve: () => {
+          clearTimeout(timer)
+          resolve()
+        },
+        reject: error => {
+          clearTimeout(timer)
+          reject(error)
+        },
       })
     })
   }
@@ -156,7 +182,7 @@ async function main(): Promise<void> {
   const profile: PersonalModelProfile = {
     id: 'runtime-e2e-personal-responses',
     label: 'Runtime E2E local Responses upstream',
-    base_url: `http://127.0.0.1:${address.port}/v1`,
+    base_url: `http://localhost:${address.port}/v1`,
     model: MODEL,
     protocol: 'openai-responses',
     auth_mode: 'bearer',

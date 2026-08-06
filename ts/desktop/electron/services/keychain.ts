@@ -95,8 +95,11 @@ export class SecureSessionStore {
     private readonly platform: NodeJS.Platform = process.platform,
   ) {}
   load(): string | null {
-    assertSecureStorageAvailable(this.safeStorage, this.platform)
     if (!existsSync(this.file)) return null
+    // A normal launch with no saved personal Key must not touch the OS vault.
+    // Only an existing encrypted record needs safeStorage availability and
+    // decryption, so macOS does not prompt merely to resolve the managed route.
+    assertSecureStorageAvailable(this.safeStorage, this.platform)
     try { return this.safeStorage.decryptString(Buffer.from(readFileSync(this.file, 'utf8'), 'base64')) }
     catch (error) {
       const failure = Object.assign(new Error('Secure credential storage is corrupt or cannot be decrypted'), {

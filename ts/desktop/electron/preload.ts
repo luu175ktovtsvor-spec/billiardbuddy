@@ -3,6 +3,7 @@ import type {
   ImageWorkbenchIpcResponse,
   ImageWorkbenchPreloadBridge,
 } from '../../shared/contracts/imageWorkbenchPreload.js'
+import type { PersonalModelPreloadBridge } from '../../shared/contracts/personalModelPreload.js'
 import type {
   ImageWorkbenchIpcMethod,
   ImageWorkbenchIpcPayloadByMethod,
@@ -16,6 +17,9 @@ function invoke<T>(channel: ElectronIpcChannel, payload?: unknown): Promise<T> {
 
 type ImageBridgeResult<Method extends keyof ImageWorkbenchPreloadBridge> =
   Awaited<ReturnType<ImageWorkbenchPreloadBridge[Method]>>
+
+type PersonalModelBridgeResult<Method extends keyof PersonalModelPreloadBridge> =
+  Awaited<ReturnType<PersonalModelPreloadBridge[Method]>>
 
 function invokeImageWorkbench<Method extends ImageWorkbenchIpcMethod>(
   method: Method,
@@ -461,6 +465,52 @@ const nativeAgent = {
   onEvent: nativeAgentEventListener,
 }
 
+const models: PersonalModelPreloadBridge = {
+  summary: () => invoke<PersonalModelBridgeResult<'summary'>>(ELECTRON_IPC_CHANNELS.modelConfigurationSummary),
+  providerPresets: () => invoke<PersonalModelBridgeResult<'providerPresets'>>(
+    ELECTRON_IPC_CHANNELS.modelConfigurationProviderPresets,
+  ),
+  openProviderPortal: (providerPresetId: string) => invoke<PersonalModelBridgeResult<'openProviderPortal'>>(
+    ELECTRON_IPC_CHANNELS.modelConfigurationOpenProviderPortal,
+    providerPresetId,
+  ),
+  openProviderDocumentation: (providerPresetId: string) => invoke<PersonalModelBridgeResult<'openProviderDocumentation'>>(
+    ELECTRON_IPC_CHANNELS.modelConfigurationOpenProviderDocumentation,
+    providerPresetId,
+  ),
+  discover: (input) => invoke<PersonalModelBridgeResult<'discover'>>(
+    ELECTRON_IPC_CHANNELS.modelConfigurationDiscover,
+    input,
+  ),
+  discoverPreset: (input) => invoke<PersonalModelBridgeResult<'discoverPreset'>>(
+    ELECTRON_IPC_CHANNELS.modelConfigurationDiscoverPreset,
+    input,
+  ),
+  discoverProfile: (profileId: string) => invoke<PersonalModelBridgeResult<'discoverProfile'>>(
+    ELECTRON_IPC_CHANNELS.modelConfigurationDiscoverProfile,
+    profileId,
+  ),
+  savePreset: (input) => invoke<PersonalModelBridgeResult<'savePreset'>>(
+    ELECTRON_IPC_CHANNELS.modelConfigurationSavePreset,
+    input,
+  ),
+  save: (input) => invoke<PersonalModelBridgeResult<'save'>>(
+    ELECTRON_IPC_CHANNELS.modelConfigurationSave,
+    input,
+  ),
+  activate: (profileId: string) => invoke<PersonalModelBridgeResult<'activate'>>(
+    ELECTRON_IPC_CHANNELS.modelConfigurationActivate,
+    profileId,
+  ),
+  useManaged: () => invoke<PersonalModelBridgeResult<'useManaged'>>(
+    ELECTRON_IPC_CHANNELS.modelConfigurationUseManaged,
+  ),
+  remove: (profileId: string) => invoke<PersonalModelBridgeResult<'remove'>>(
+    ELECTRON_IPC_CHANNELS.modelConfigurationRemove,
+    profileId,
+  ),
+}
+
 // These are product-owned capabilities, not Agent tools. The future renderer
 // uses this narrow bridge to reach the existing image and video backends.
 const images: ImageWorkbenchPreloadBridge = {
@@ -623,18 +673,6 @@ if (process.isMainFrame) {
   contextBridge.exposeInMainWorld('billiardBuddyNative', {
     nativeAgent,
     media,
-    models: {
-      summary: () => invoke(ELECTRON_IPC_CHANNELS.modelConfigurationSummary),
-      providerPresets: () => invoke(ELECTRON_IPC_CHANNELS.modelConfigurationProviderPresets),
-      openProviderPortal: (providerPresetId: string) => invoke(
-        ELECTRON_IPC_CHANNELS.modelConfigurationOpenProviderPortal,
-        providerPresetId,
-      ),
-      discover: (input: unknown) => invoke(ELECTRON_IPC_CHANNELS.modelConfigurationDiscover, input),
-      discoverPreset: (input: unknown) => invoke(ELECTRON_IPC_CHANNELS.modelConfigurationDiscoverPreset, input),
-      savePreset: (input: unknown) => invoke(ELECTRON_IPC_CHANNELS.modelConfigurationSavePreset, input),
-      save: (input: unknown) => invoke(ELECTRON_IPC_CHANNELS.modelConfigurationSave, input),
-      remove: (profileId: string) => invoke(ELECTRON_IPC_CHANNELS.modelConfigurationRemove, profileId),
-    },
+    models,
   })
 }
