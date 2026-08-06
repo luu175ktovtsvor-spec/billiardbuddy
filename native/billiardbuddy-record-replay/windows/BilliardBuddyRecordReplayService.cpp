@@ -164,7 +164,7 @@ bool elementBelongsToRecordedWindow(IUIAutomation* automation, IUIAutomationElem
   for (size_t depth = 0; current && depth < 64; ++depth) {
     UIA_HWND nativeHandle = 0;
     if (SUCCEEDED(current->get_CurrentNativeWindowHandle(&nativeHandle)) && nativeHandle) {
-      const HWND candidate = GetAncestor(reinterpret_cast<HWND>(static_cast<LONG_PTR>(nativeHandle)), GA_ROOT);
+      const HWND candidate = GetAncestor(reinterpret_cast<HWND>(nativeHandle), GA_ROOT);
       if (candidate) {
         matches = candidate == expected;
         break;
