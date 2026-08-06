@@ -2,6 +2,8 @@ import { z } from 'zod/v4'
 import {
   videoBriefSchema,
   type VideoBrief,
+  type VideoCreationBrief,
+  type VideoDeliveryIntent,
   type VideoEvidence,
   type VideoScene,
   type VideoSource,
@@ -85,6 +87,8 @@ type VideoPlanningInput = {
   currentScenes: VideoScene[]
   userGoal: string
   analysisGaps: string[]
+  creationBrief?: VideoCreationBrief
+  deliveryIntent?: VideoDeliveryIntent
 }
 
 export class VideoAnalysisError extends Error {
@@ -207,12 +211,15 @@ function deterministicFallbackPlan(input: VideoPlanningInput): VideoPlanDraft {
   })
 
   if (scenes.length === 0) throw new VideoAnalysisError('没有足够的真实证据生成视频方案')
+  const creator = input.creationBrief
   return planDraftSchema.parse({
     brief: {
-      content_type: '视频短片',
-      output_channel: '未指定',
-      must_preserve_text: [],
-      recommended_direction: '先保留真实素材顺序与已有时间线，再由用户确认剪辑方向。',
+      content_type: creator?.use_case ?? '视频短片',
+      output_channel: creator?.distribution ?? '未指定',
+      must_preserve_text: creator?.must_preserve ?? [],
+      recommended_direction: creator
+        ? `按“${creator.user_request}”保留真实素材顺序与已有时间线；远程规划不可用时不虚构剪辑取舍。`
+        : '先保留真实素材顺序与已有时间线，再由用户确认剪辑方向。',
       rationale: ['智能剪辑建议不可用时，Host 只保留已验证的素材、时间范围和证据引用。'],
       gaps: [...new Set([
         ...input.analysisGaps,
@@ -335,7 +342,7 @@ export async function planVideoTimeline(
       {
         role: 'user',
         content: [
-          '根据证据编译 Brief，并生成一个主方案和最多三个同版本备选方案。不要强制固定时长。',
+          '根据证据编译 Brief，并生成一个主方案和最多三个同版本备选方案。先选择可引用的候选片段，再按用户 story_structure 组织为 Scene；Scene 不是摄像机镜头或原始切点。不要强制固定时长。',
           'Brief 结构：content_type、output_channel、must_preserve_text、recommended_direction、rationale、gaps。',
           'scene 结构：source_id、in_ms、out_ms、story_role(hook|context|action|result|cta|b_roll)、evidence_ids、rationale、needs_review。',
           '每个 scene 至少引用一个 evidence id。锁定场景会由 Host 强制保留；规划时避免用其它场景覆盖其时间范围。',
@@ -344,6 +351,8 @@ export async function planVideoTimeline(
             sources: input.sources.map(sourceProjection),
             evidence: input.evidence,
             current_scenes: input.currentScenes,
+            creation_brief: input.creationBrief,
+            delivery_intent: input.deliveryIntent,
             analysis_gaps: input.analysisGaps,
           }),
         ].join('\n'),

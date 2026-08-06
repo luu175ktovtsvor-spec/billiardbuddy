@@ -867,11 +867,11 @@ test('current Main-only image action bridge signs fixed image action entrypoints
         return Response.json({
           estimate_hash: `sha256:${'c'.repeat(64)}`,
           paid_operation_count: 1,
-          candidate_count_per_operation: 3,
+          candidate_count_per_operation: 1,
           concurrency: 1,
           price_upper_bound: {
             currency: 'USD', amount_minor: 42, per_operation_amount_minor: 42, pricing_revision: 'test-price-v1',
-            usage_upper_bound: { requests: 1, input_bytes: 0, output_images: 3 },
+            usage_upper_bound: { requests: 1, input_bytes: 0, output_images: 1 },
           },
           expires_at: '2026-08-03T00:05:00.000Z',
         })

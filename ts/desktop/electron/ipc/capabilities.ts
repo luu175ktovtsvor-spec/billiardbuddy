@@ -23,6 +23,7 @@ import {
 import {
   imageWorkbenchIpcRequestSchema,
 } from '../../../shared/contracts/imageWorkbenchIpc'
+import { videoWorkbenchIpcPayloadSchema } from './videoWorkbench'
 import {
   mediaIdSchema,
   startImageOperationInputSchema,
@@ -1076,40 +1077,7 @@ const updateCheckOptions: Validator = value => {
   return value.proxy === undefined || (typeof value.proxy === 'string' && value.proxy.trim().length > 0)
 }
 
-const mediaProjectId = (value: unknown): value is string =>
-  typeof value === 'string'
-  && /^[a-z0-9][a-z0-9_-]{7,79}$/.test(value)
-
-const videoAddSource: Validator = value =>
-  isRecord(value)
-  && hasOnlyKeys(value, ['projectId', 'path'])
-  && mediaProjectId(value.projectId)
-  && typeof value.path === 'string'
-  && value.path.length > 0
-  && value.path.length <= 4096
-
-const videoRender: Validator = value =>
-  isRecord(value)
-  && hasOnlyKeys(value, ['projectId', 'baseRevision', 'timelineVersionId', 'outputPath'])
-  && mediaProjectId(value.projectId)
-  && typeof value.baseRevision === 'number'
-  && Number.isInteger(value.baseRevision)
-  && value.baseRevision >= 0
-  && mediaProjectId(value.timelineVersionId)
-  && typeof value.outputPath === 'string'
-  && value.outputPath.length > 0
-  && value.outputPath.length <= 4096
-
-const videoAnalyze: Validator = value =>
-  isRecord(value)
-  && hasOnlyKeys(value, ['projectId', 'baseRevision', 'userGoal'])
-  && mediaProjectId(value.projectId)
-  && typeof value.baseRevision === 'number'
-  && Number.isInteger(value.baseRevision)
-  && value.baseRevision >= 0
-  && typeof value.userGoal === 'string'
-  && value.userGoal.trim().length > 0
-  && value.userGoal.length <= 8000
+const videoWorkbench: Validator = value => videoWorkbenchIpcPayloadSchema.safeParse(value).success
 
 export const imageSubmitProjectIpcPayloadSchema = z.object({
   projectId: mediaIdSchema,
@@ -1402,9 +1370,7 @@ export const ELECTRON_IPC_VALIDATORS = {
   [ELECTRON_IPC_CHANNELS.imageRequestDestination]: imageRequestDestination,
   [ELECTRON_IPC_CHANNELS.imageSelectArtboardVersion]: imageSelectArtboardVersion,
   [ELECTRON_IPC_CHANNELS.imageWorkbenchInvoke]: imageWorkbenchInvoke,
-  [ELECTRON_IPC_CHANNELS.videoAddSource]: videoAddSource,
-  [ELECTRON_IPC_CHANNELS.videoRender]: videoRender,
-  [ELECTRON_IPC_CHANNELS.videoAnalyze]: videoAnalyze,
+  [ELECTRON_IPC_CHANNELS.videoWorkbench]: videoWorkbench,
   [ELECTRON_IPC_CHANNELS.updateCheck]: updateCheckOptions,
   [ELECTRON_IPC_CHANNELS.updateDownload]: noPayload,
   [ELECTRON_IPC_CHANNELS.updateInstall]: noPayload,

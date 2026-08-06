@@ -1,4 +1,5 @@
 import { afterEach, expect, test } from 'bun:test'
+import { createHash } from 'node:crypto'
 import { mkdtemp, readFile, readdir, rm, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -21,6 +22,11 @@ import { createImageWorkbenchDomainApiHandler } from '../src/server/api/imageWor
 import { handleApiRequest } from '../src/server/router.js'
 import { ImageWorkbenchService } from '../src/server/services/imageWorkbenchService.js'
 import { imageTicketRequest } from './helpers/imageUiTicket.js'
+import {
+  PROVIDER_OPERATION_RESULT_CAPABILITY_HEADER,
+  PROVIDER_OPERATION_RESULT_FINGERPRINT_HEADER,
+  PROVIDER_OPERATION_RESULT_ID_HEADER,
+} from '../shared/product/providerGateway.js'
 import {
   createImageWorkbenchViewState,
   imageWorkbenchSelectionIndex,
@@ -49,6 +55,10 @@ type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Respo
 type ProductionPathPreloadBridge = Pick<
   ImageWorkbenchPreloadBridge,
   | 'quickCreate'
+  | 'understandProject'
+  | 'createCreativePlan'
+  | 'estimateGenerationRound'
+  | 'createGenerationRound'
   | 'getProjectProjection'
   | 'listOperationEvents'
   | 'getCandidatePreview'
@@ -129,8 +139,8 @@ async function withGateway<T>(action: () => Promise<T>): Promise<T> {
   }
 }
 
-/** A strict Relay-shaped fixture: submission is queued, then ordinary polling commits three candidates. */
-function successfulGateway(png: string): { calls: GatewayCall[]; fetchImpl: FetchLike } {
+/** A strict Relay-shaped fixture: submission is queued, then polling commits one product candidate. */
+function successfulGateway(png: string, options: { includeAdvice?: boolean } = {}): { calls: GatewayCall[]; fetchImpl: FetchLike } {
   const calls: GatewayCall[] = []
   const tasks = new Map<string, { id: string; status: 'queued' | 'succeeded' }>()
   const receipt = 'e'.repeat(64)
@@ -169,15 +179,36 @@ function successfulGateway(png: string): { calls: GatewayCall[]; fetchImpl: Fetc
           task_id: task.id,
           status: task.status,
           provider_receipt_hash: receipt,
-          result_urls: [0, 1, 2].map(index => `${imageRelayUrl}/v1/images/results/result.${receipt}/${index}`),
+          result_urls: [0].map(index => `${imageRelayUrl}/v1/images/results/result.${receipt}/${index}`),
         })
       }
     }
     if (url.pathname.startsWith('/image-generation/v1/images/results/') && method === 'GET') {
       return Response.json({ data: [{ b64_json: png, mime_type: 'image/png' }] })
     }
-    // Quality reasoning is non-blocking and must not alter image facts when unavailable.
-    if (url.pathname.endsWith('/v1/image/reasoning')) return Response.json({ error: 'unavailable' }, { status: 503 })
+    if (url.pathname.endsWith('/v1/image/reasoning')) {
+      if (!options.includeAdvice) return Response.json({ error: 'unavailable' }, { status: 503 })
+      const operationId = requestHeaders.get('X-BB-Operation-ID') ?? ''
+      const fingerprint = createHash('sha256').update(`ImageAdvice\0${String(init?.body ?? '')}`).digest('hex')
+      return Response.json({
+        schema_version: 1,
+        application_role: 'image_understanding',
+        provider: 'qwen',
+        model_id: 'qwen3-vl-flash',
+        usage: { input_bytes: 128, input_tokens: 32, output_tokens: 24 },
+        output: {
+          confidence: 'high',
+          visible_facts: ['用户需要一张台球赛事宣传图'],
+          preservation_risks: ['Logo 和产品主体应避免被重绘'],
+          composition_suggestions: ['保留清晰标题区和主体层级'],
+          missing_information: [],
+        },
+      }, { headers: {
+        [PROVIDER_OPERATION_RESULT_ID_HEADER]: operationId,
+        [PROVIDER_OPERATION_RESULT_CAPABILITY_HEADER]: 'ImageAdvice',
+        [PROVIDER_OPERATION_RESULT_FINGERPRINT_HEADER]: fingerprint,
+      } })
+    }
     if (url.pathname.includes('/by-idempotency/') && method === 'GET') return Response.json({ error: 'no task' }, { status: 404 })
     throw new Error(`unexpected strict Relay fixture request: ${method} ${url.pathname}`)
   }
@@ -219,6 +250,10 @@ function createProductionPathPreloadBridge(actions: ElectronImageActions): Produ
 
   return {
     quickCreate: input => invoke('quickCreate', { input }),
+    understandProject: (projectId, input) => imageWorkbenchIpcResponse(async () => await actions.understandProject(projectId, input)),
+    createCreativePlan: (projectId, input) => invoke('createCreativePlan', { projectId, input }),
+    estimateGenerationRound: (projectId, input) => invoke('estimateGenerationRound', { projectId, input }),
+    createGenerationRound: (projectId, input) => invoke('createGenerationRound', { projectId, input }),
     getProjectProjection: projectId => invoke('getProjectProjection', { projectId }),
     listOperationEvents: input => invoke('listOperationEvents', input),
     getCandidatePreview: input => invoke('getCandidatePreview', input),
@@ -329,7 +364,7 @@ afterEach(async () => {
 test('15.5E Quick Create 首轮参考图在付费 Round 前持久化，并拒绝错误 role 或图片文件', async () => {
   const rootPath = await root('quick-create-first-reference')
   const legacyRoot = await root('quick-create-first-reference-legacy')
-  const gateway = successfulGateway(await fixturePng())
+  const gateway = successfulGateway(await fixturePng(), { includeAdvice: true })
   const service = new ImageWorkbenchService({
     root: rootPath,
     legacyMediaRoot: legacyRoot,
@@ -367,11 +402,7 @@ test('15.5E Quick Create 首轮参考图在付费 Round 前持久化，并拒绝
       must_preserve: ['门店赛事主题'],
       exact_text: ['夏季冠军赛'],
     })
-    expect(paidSubmissions()).toHaveLength(1)
-    expect(paidSubmissions()[0]?.body).toMatchObject({
-      mode: 'generate',
-      prompt: expect.stringContaining('赛事时间为 2026 年 8 月'),
-    })
+    expect(paidSubmissions()).toHaveLength(0)
 
     const changedReplay = await request(handler, '/api/images/quick-create', {
       method: 'POST',
@@ -385,7 +416,7 @@ test('15.5E Quick Create 首轮参考图在付费 Round 前持久化，并拒绝
     })
     expect(changedReplay.status).toBe(409)
     expect(await changedReplay.json()).toMatchObject({ error: 'MEDIA_IMAGE_IDEMPOTENCY_CONFLICT' })
-    expect(paidSubmissions()).toHaveLength(1)
+    expect(paidSubmissions()).toHaveLength(0)
 
     const firstReference = await fixtureDataUrl()
     const withReference = await request(handler, '/api/images/quick-create', {
@@ -401,17 +432,7 @@ test('15.5E Quick Create 首轮参考图在付费 Round 前持久化，并拒绝
     expect(withReference.status).toBe(202)
     expect((await withReference.json() as { project: { references: Array<{ role: string }> } }).project.references)
       .toEqual([expect.objectContaining({ role: 'product' })])
-    expect(paidSubmissions()).toHaveLength(2)
-    expect(paidSubmissions()[1]?.body).toMatchObject({
-      mode: 'edit',
-      reference_controls: [{
-        image_index: 0,
-        role: 'product',
-        influence_strength: 'high',
-        preservation: 'must_preserve',
-        priority: 0,
-      }],
-    })
+    expect(paidSubmissions()).toHaveLength(0)
 
     const invalidRole = await request(handler, '/api/images/quick-create', {
       method: 'POST',
@@ -425,7 +446,7 @@ test('15.5E Quick Create 首轮参考图在付费 Round 前持久化，并拒绝
     })
     expect(invalidRole.status).toBe(400)
     expect(await invalidRole.json()).toMatchObject({ error: 'MEDIA_INVALID_REQUEST' })
-    expect(paidSubmissions()).toHaveLength(2)
+    expect(paidSubmissions()).toHaveLength(0)
 
     const invalidFile = await request(handler, '/api/images/quick-create', {
       method: 'POST',
@@ -439,14 +460,42 @@ test('15.5E Quick Create 首轮参考图在付费 Round 前持久化，并拒绝
     })
     expect(invalidFile.status).toBe(400)
     expect(await invalidFile.json()).toMatchObject({ error: 'MEDIA_INVALID_REQUEST' })
-    expect(paidSubmissions()).toHaveLength(2)
+    expect(paidSubmissions()).toHaveLength(0)
+  })
+})
+
+test('15.5E formal Image Operation 的 durable event long-poll 会按 Relay backoff 自动刷新进度', async () => {
+  const rootPath = await root('formal-operation-progress')
+  const legacyRoot = await root('formal-operation-progress-legacy')
+  const gateway = successfulGateway(await fixturePng())
+  const clockStartedAt = Date.now()
+  const service = new ImageWorkbenchService({
+    root: rootPath,
+    legacyMediaRoot: legacyRoot,
+    now: () => new Date(new Date('2026-08-05T00:00:00.000Z').getTime() + (Date.now() - clockStartedAt)),
+    fetchImpl: gateway.fetchImpl,
+  })
+  services.push(service)
+  await withGateway(async () => {
+    const created = await service.quickCreate({
+      idempotency_key: 'bb-image-formal-progress-0001',
+      prompt: '观察正式图片操作进度',
+      output_preset: 'square',
+      reference_inputs: [],
+    })
+    const before = await service.listOperationEvents(created.project.id, 0, 200)
+    const refreshed = await service.waitForOperationEvents(created.project.id, before.cursor, 200, 1_500)
+    expect(gateway.calls.some(call => call.path.includes('/image-generation/v1/images/tasks/') && call.method === 'GET')).toBeTrue()
+    expect(refreshed.events.length).toBeGreaterThan(0)
+    const projection = await service.getProjectProjection(created.project.id)
+    expect(projection.operations[0]).toMatchObject({ status: 'succeeded', progress: 100, stage: '候选组已保存，等待用户采纳' })
   })
 })
 
 test('15.5E 从建项、受控参考、候选采纳到画布和素材库均可通过公开投影恢复', async () => {
   const rootPath = await root('full-flow')
   const legacyRoot = await root('full-flow-legacy')
-  const gateway = successfulGateway(await fixturePng())
+  const gateway = successfulGateway(await fixturePng(), { includeAdvice: true })
   const first = new ImageWorkbenchService({
     root: rootPath,
     legacyMediaRoot: legacyRoot,
@@ -469,8 +518,59 @@ test('15.5E 从建项、受控参考、候选采纳到画布和素材库均可�
       }),
     })
     expect(quickCreate.status).toBe(202)
-    const created = await quickCreate.json() as { project: { id: string; references: Array<{ role: string }> }; operations: Array<{ id: string }> }
-    expect(created.project.references).toEqual([expect.objectContaining({ role: 'product' })])
+    const prepared = await quickCreate.json() as { mode: 'prepared'; project: { id: string; revision: number; references: Array<{ role: string }> } }
+    expect(prepared.mode).toBe('prepared')
+    expect(prepared.project.references).toEqual([expect.objectContaining({ role: 'product' })])
+
+    const adviceResponse = await request(firstHandler, `/api/images/projects/${prepared.project.id}/understanding`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        base_revision: prepared.project.revision,
+        idempotency_key: 'bb-image-15-5e-advice-0001',
+      }),
+    })
+    expect(adviceResponse.status).toBe(200)
+    const advice = await adviceResponse.json() as { suggestion: { execution_receipt_id: string; project_revision: number } }
+    expect(advice.suggestion.project_revision).toBe(prepared.project.revision)
+
+    const planResponse = await request(firstHandler, `/api/images/projects/${prepared.project.id}/creative-plans`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        base_revision: prepared.project.revision,
+        idempotency_key: 'bb-image-15-5e-plan-0001',
+        accept_suggestion_receipt_id: advice.suggestion.execution_receipt_id,
+      }),
+    })
+    expect(planResponse.status).toBe(201)
+    const plan = await planResponse.json() as { plan: { id: string; directions: Array<{ id: string }> } }
+    const estimateResponse = await request(firstHandler, `/api/images/projects/${prepared.project.id}/generation-rounds/estimate`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        base_revision: prepared.project.revision,
+        creative_plan_id: plan.plan.id,
+        direction_ids: [plan.plan.directions[0]!.id],
+      }),
+    })
+    expect(estimateResponse.status).toBe(200)
+    const roundEstimate = await estimateResponse.json() as { estimate_hash: string }
+    const roundResponse = await request(firstHandler, `/api/images/projects/${prepared.project.id}/generation-rounds`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        base_revision: prepared.project.revision,
+        idempotency_key: 'bb-image-15-5e-round-0001',
+        creative_plan_id: plan.plan.id,
+        direction_ids: [plan.plan.directions[0]!.id],
+        estimate_hash: roundEstimate.estimate_hash,
+        confirm: true,
+      }),
+    })
+    expect(roundResponse.status).toBe(202)
+    const roundPayload = await roundResponse.json() as { round: { id: string; creative_plan_id: string; estimate_hash: string }; operations: Array<{ id: string }> }
+    const created = { project: prepared.project, round: roundPayload.round, operations: roundPayload.operations }
     expect(created.operations).toHaveLength(1)
 
     // This is the normal UI reconciliation clock: polling the public operation
@@ -490,7 +590,7 @@ test('15.5E 从建项、受控参考、候选采纳到画布和素材库均可�
       library: { project_id: created.project.id },
     })
     expect(beforeAdoption.candidate_groups).toHaveLength(1)
-    expect(beforeAdoption.candidate_groups[0]?.candidates).toHaveLength(3)
+    expect(beforeAdoption.candidate_groups[0]?.candidates).toHaveLength(1)
     expect(JSON.stringify(beforeAdoption)).not.toContain('remote_task_id')
     expect(JSON.stringify(beforeAdoption)).not.toContain('idempotency_key')
 
@@ -523,6 +623,7 @@ test('15.5E 从建项、受控参考、候选采纳到画布和素材库均可�
     const eventPage = publicMediaJobEventPageSchema.parse(await firstEvents.json())
     expect(eventPage.events.length).toBeGreaterThan(0)
     expect(eventPage.events.map(event => event.cursor)).toEqual([...eventPage.events].map(event => event.cursor).sort((left, right) => left - right))
+    expect(eventPage.next_cursor).toBe(eventPage.events.at(-1)!.cursor + 1)
 
     // Only selections and the cursor survive the desktop restart. Server facts
     // are reloaded from /projection and reconciled against its current IDs.
@@ -623,7 +724,7 @@ test('15.5E 从建项、受控参考、候选采纳到画布和素材库均可�
 test('15.5E 真实侧车 socket 经 Main/Preload 类型桥接完成完整图片工作流及 CAS→DB 崩溃恢复', async () => {
   const rootPath = await root('production-path-socket')
   const legacyRoot = await root('production-path-socket-legacy')
-  const relay = successfulGateway(await fixturePng())
+  const relay = successfulGateway(await fixturePng(), { includeAdvice: true })
   const socketCallSets: LocalSocketCall[][] = []
   let runningServer: ReturnType<typeof Bun.serve> | undefined
   let runningService: ImageWorkbenchService | undefined
@@ -658,7 +759,7 @@ test('15.5E 真实侧车 socket 经 Main/Preload 类型桥接完成完整图片�
       const productReference = await fixtureDataUrl()
       const styleReference = await fixtureDataUrl()
       const logoReferenceData = await fixtureDataUrl()
-      const quickCreate = unwrapImageWorkbenchClientResult(await firstClient.quickCreate({
+      const prepared = unwrapImageWorkbenchClientResult(await firstClient.quickCreate({
         idempotency_key: 'bb-image-15-5e-production-path-quick-create-0001',
         title: '15.5E 真实侧车链路海报',
         prompt: '为台球门店夏季冠军赛制作一张专业宣传图。',
@@ -674,8 +775,51 @@ test('15.5E 真实侧车 socket 经 Main/Preload 类型桥接完成完整图片�
           { data_url: logoReferenceData, role: 'logo' },
         ],
       }))
-      const projectId = quickCreate.project.id
-      const quickCreatePlanId = quickCreate.round.creative_plan_id
+      expect(prepared.mode).toBe('prepared')
+      const projectId = prepared.project.id
+      const advice = unwrapImageWorkbenchClientResult(await firstClient.requestImageAdvice({
+        project_id: projectId,
+        input: {
+          base_revision: prepared.project.revision,
+          idempotency_key: 'bb-image-15-5e-production-path-advice-0001',
+        },
+      }))
+      const plan = unwrapImageWorkbenchClientResult(await firstClient.createCreativePlan({
+        project_id: projectId,
+        input: {
+          base_revision: prepared.project.revision,
+          idempotency_key: 'bb-image-15-5e-production-path-plan-0001',
+          accept_suggestion_receipt_id: advice.suggestion.execution_receipt_id,
+        },
+      }))
+      const directionId = plan.plan.directions[0]?.id
+      if (!directionId) throw new Error('expected a persisted creative direction after advice confirmation')
+      const estimate = unwrapImageWorkbenchClientResult(await firstClient.estimateGenerationRound({
+        project_id: projectId,
+        input: {
+          base_revision: prepared.project.revision,
+          creative_plan_id: plan.plan.id,
+          direction_ids: [directionId],
+        },
+      }))
+      const createdRound = unwrapImageWorkbenchClientResult(await firstClient.createGenerationRound({
+        project_id: projectId,
+        input: {
+          base_revision: prepared.project.revision,
+          idempotency_key: 'bb-image-15-5e-production-path-round-0001',
+          creative_plan_id: plan.plan.id,
+          direction_ids: [directionId],
+          estimate_hash: estimate.estimate_hash,
+          confirm: true,
+        },
+      }))
+      const quickCreate = {
+        mode: 'started' as const,
+        project: prepared.project,
+        round: createdRound.round,
+        operations: createdRound.operations,
+      }
+      const quickCreatePlanId = plan.plan.id
       const quickCreateRoundId = quickCreate.round.id
       const quickCreateEstimateHash = quickCreate.round.estimate_hash
       const quickCreateConfirmedAt = quickCreate.round.confirmed_at
@@ -744,7 +888,7 @@ test('15.5E 真实侧车 socket 经 Main/Preload 类型桥接完成完整图片�
       }))
       const derivationEstimateHash = derivationEstimate.estimate_hash
       expect(derivationEstimate.paid_operation_count).toBe(1)
-      expect(derivationEstimate.candidate_count_per_operation).toBe(3)
+      expect(derivationEstimate.candidate_count_per_operation).toBe(1)
       expect(derivationEstimateHash).toMatch(/^sha256:/)
       const derivation = unwrapImageWorkbenchClientResult(await firstClient.deriveCandidate({
         project_id: projectId,

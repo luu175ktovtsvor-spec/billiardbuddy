@@ -90,6 +90,25 @@ test('OSS response contract reads real HTTP headers, streams bytes, and uses ali
   ])
 })
 
+test('OSS multipart recovery normalizes ali-oss single-part object responses', async () => {
+  const client = {
+    async signatureUrlV4() { return 'https://oss.example.test/signed' },
+    async head() { return { res: { headers: { 'content-type': 'video/mp4' } } } },
+    async getStream() { return { stream: Readable.from([]) } },
+    async putStream() {}, async delete() {},
+    async listParts() {
+      return { isTruncated: false, parts: { PartNumber: '1', ETag: 'etag-one' } }
+    },
+    async listUploads() { return { isTruncated: false, uploads: [] } },
+    async abortMultipartUpload() {}, async completeMultipartUpload() {},
+    async initMultipartUpload() { return { uploadId: 'upload-single-part' } },
+  }
+  const store = new OssObjectStore({ ...credentials, client })
+
+  await expect(store.listMultipartParts({ leaseId: 'lease_single_part_123', uploadId: 'upload-single-part' }))
+    .resolves.toEqual([{ part_number: 1, etag: 'etag-one' }])
+})
+
 test('OSS byte verification is globally and per-owner bounded, stops at expected bytes plus one, and releases failed permits', async () => {
   const held: Readable[] = []
   let streamsStarted = 0

@@ -1,10 +1,11 @@
 import { app, BrowserWindow, clipboard, dialog, ipcMain, net, Notification, safeStorage, screen, session, webContents } from 'electron'
 import { autoUpdater } from 'electron-updater'
 import { randomBytes } from 'node:crypto'
-import { mkdir, open, rename, rm } from 'node:fs/promises'
+import { mkdir, open, rename, rm, stat } from 'node:fs/promises'
 import path from 'node:path'
 import { ELECTRON_EVENT_CHANNELS, ELECTRON_IPC_CHANNELS, type ElectronIpcChannel } from './ipc/channels'
 import { imageWorkbenchIpcResponse } from './ipc/imageResponse'
+import { videoWorkbenchIpcResponse, VideoWorkbenchReplayCache } from './ipc/videoWorkbenchResponse'
 import {
   imageAdoptCandidateIpcPayloadSchema,
   imageSelectArtboardVersionIpcPayloadSchema,
@@ -36,6 +37,7 @@ import {
 import {
   parseImageWorkbenchIpcRequest,
 } from '../../shared/contracts/imageWorkbenchIpc'
+import { videoWorkbenchIpcPayloadSchema, type VideoWorkbenchIpcPayload } from './ipc/videoWorkbench'
 import { ElectronServerRuntime } from './services/serverRuntime'
 import { openDialog, saveDialog } from './services/dialogs'
 import { openExternalUrl, openSystemPath, openSystemSettingsUrl } from './services/shell'
@@ -57,7 +59,9 @@ import { ElectronUpdaterService } from './services/updater'
 import { createUpdateSmokeUpdaterFromEnv } from './services/updateSmoke'
 import { ElectronImageActions } from './services/imageActions'
 import { ImageDestinationGrants } from './services/imageDestinationGrants'
-import { ElectronVideoActions } from './services/videoActions'
+import { ElectronVideoWorkbenchActions, ElectronVideoWorkbenchActionError } from './services/videoWorkbenchActions'
+import { VideoDestinationGrants } from './services/videoDestinationGrants'
+import { VideoSourceGrants } from './services/videoSourceGrants'
 import {
   applyDefaultConfigDir,
   applyStartupPortableMode,
@@ -156,7 +160,10 @@ let installationSessionManager: InstallationSessionManager | null = null
 let updaterService: ElectronUpdaterService | null = null
 let imageActions: ElectronImageActions | null = null
 const imageDestinationGrants = new ImageDestinationGrants()
-let videoActions: ElectronVideoActions | null = null
+let videoWorkbenchActions: ElectronVideoWorkbenchActions | null = null
+const videoSourceGrants = new VideoSourceGrants()
+const videoDestinationGrants = new VideoDestinationGrants()
+const videoWorkbenchReplays = new VideoWorkbenchReplayCache()
 let providerCredentialService: ProviderCredentialService | null = null
 let nativeAgentRuntime: ElectronCodexNativeRuntime | null = null
 let inAppBrowserHost: InAppBrowserHost | null = null
@@ -1047,12 +1054,12 @@ function getImageActions() {
   return imageActions
 }
 
-function getVideoActions() {
-  videoActions ??= new ElectronVideoActions({
+function getVideoWorkbenchActions() {
+  videoWorkbenchActions ??= new ElectronVideoWorkbenchActions({
     getServerUrl: () => getServerRuntime().getServerUrl(),
     capability: mediaUiCapability,
   })
-  return videoActions
+  return videoWorkbenchActions
 }
 
 function getUpdaterService() {
@@ -1164,6 +1171,167 @@ async function handleCommandInvoke(payload: unknown): Promise<unknown> {
       return openSystemSettingsUrl('ms-settings:notifications')
     default:
       throw new Error(`Unsupported Electron command: ${command}`)
+  }
+}
+
+function selectedVideoMime(filePath: string): string {
+  switch (path.extname(filePath).toLowerCase()) {
+    case '.mp4':
+    case '.m4v': return 'video/mp4'
+    case '.mov': return 'video/quicktime'
+    case '.webm': return 'video/webm'
+    case '.mkv': return 'video/x-matroska'
+    case '.avi': return 'video/x-msvideo'
+    case '.ts': return 'video/mp2t'
+    case '.mxf': return 'video/mxf'
+    default: throw new ElectronVideoWorkbenchActionError('MEDIA_INVALID_REQUEST')
+  }
+}
+
+async function chooseVideoSources(event: Electron.IpcMainInvokeEvent, projectId: string) {
+  // Establish the project boundary before a local picker can create a grant.
+  await getVideoWorkbenchActions().assertProject(projectId)
+  const result = await dialog.showOpenDialog(currentWindow(event), {
+    title: '导入视频素材',
+    properties: ['openFile', 'multiSelections'],
+    filters: [{ name: '视频素材', extensions: ['mp4', 'm4v', 'mov', 'webm', 'mkv', 'avi', 'ts', 'mxf'] }],
+  })
+  if (result.canceled) return []
+  const selections = []
+  for (const filePath of result.filePaths.slice(0, 200)) {
+    let details: Awaited<ReturnType<typeof stat>>
+    try {
+      details = await stat(filePath)
+    } catch {
+      throw new ElectronVideoWorkbenchActionError('MEDIA_RESOURCE_UNAVAILABLE')
+    }
+    if (!details.isFile()) throw new ElectronVideoWorkbenchActionError('MEDIA_INVALID_REQUEST')
+    selections.push(videoSourceGrants.issue(projectId, filePath, selectedVideoMime(filePath), details.size))
+  }
+  return selections
+}
+
+async function chooseVideoExportDestination(event: Electron.IpcMainInvokeEvent, projectId: string, variantId: string) {
+  const profile = await getVideoWorkbenchActions().exportDestination(projectId, variantId)
+  const result = await dialog.showSaveDialog(currentWindow(event), {
+    title: '保存视频交付文件',
+    defaultPath: profile.defaultName,
+    filters: [{ name: profile.extension === 'mov' ? 'QuickTime 视频' : 'MP4 视频', extensions: [profile.extension] }],
+  })
+  if (result.canceled || !result.filePath) return undefined
+  return videoDestinationGrants.issue(projectId, variantId, result.filePath, profile.mimeType)
+}
+
+async function replayVideoCommand<Value>(
+  scope: string,
+  request: Readonly<{ projectId: string; command: Readonly<{ idempotency_key: string; input: unknown }> }>,
+  action: () => Promise<Value>,
+): Promise<Value> {
+  return await videoWorkbenchReplays.execute(scope, request.command.idempotency_key, {
+    project_id: request.projectId,
+    input: request.command.input,
+  }, action)
+}
+
+/** The formal Video Workbench Main boundary. Local paths only exist below here. */
+async function handleVideoWorkbenchIpc(event: Electron.IpcMainInvokeEvent, payload: unknown): Promise<unknown> {
+  const request: VideoWorkbenchIpcPayload = videoWorkbenchIpcPayloadSchema.parse(payload)
+  const actions = getVideoWorkbenchActions()
+  switch (request.action) {
+    case 'list_projects': return await actions.listProjects()
+    case 'create_project': return await actions.createProject(request.input)
+    case 'load_workspace': return await actions.loadWorkspace(request.projectId, request.eventCursor)
+    case 'load_operation_events': return await actions.loadOperationEvents(request.projectId, request.cursor)
+    case 'load_facts': return await actions.loadFacts(request.projectId, request.kind, request.request)
+    case 'search_facts': return await actions.searchFacts(request.projectId, request.query, request.request)
+    case 'load_review_notes': return await actions.loadReviewNotes(request.projectId, request.timelineVersionId)
+    case 'create_review_note':
+      return await replayVideoCommand('video-review-note', request, async () =>
+        await actions.createReviewNote(request.projectId, request.timelineVersionId, request.command.input, request.command.idempotency_key))
+    case 'resolve_review_note':
+      return await replayVideoCommand('video-review-resolution', request, async () =>
+        await actions.resolveReviewNote(request.projectId, request.timelineVersionId, request.reviewNoteId, request.command.input, request.command.idempotency_key))
+    case 'create_approval_decision':
+      return await replayVideoCommand('video-approval-decision', request, async () =>
+        await actions.createApprovalDecision(request.projectId, request.timelineVersionId, request.command.input, request.command.idempotency_key))
+    case 'choose_sources': return await chooseVideoSources(event, request.projectId)
+    case 'add_sources':
+      return await videoWorkbenchReplays.execute('video-source-import', request.idempotencyKey, {
+        project_id: request.projectId,
+        selection_ids: request.selectionIds,
+      }, async () => {
+        const paths = videoSourceGrants.consume(request.projectId, request.selectionIds)
+        if (!paths) throw new ElectronVideoWorkbenchActionError('MEDIA_INVALID_REQUEST')
+        return await actions.addSources(request.projectId, paths)
+      })
+    case 'estimate_remote_analysis':
+      return await replayVideoCommand('video-remote-analysis-estimate', request, async () =>
+        await actions.estimateRemoteAnalysis(request.projectId, request.command.input))
+    case 'grant_remote_analysis_consent':
+      return await replayVideoCommand('video-remote-analysis-consent', request, async () =>
+        await actions.grantRemoteAnalysisConsent(request.projectId, request.command.input))
+    case 'create_quick_draft':
+      return await replayVideoCommand('video-quick-draft', request, async () =>
+        await actions.createQuickDraft(request.projectId, request.command.input, request.command.idempotency_key))
+    case 'apply_editorial_command_set':
+      return await replayVideoCommand('video-editorial-command-set', request, async () =>
+        await actions.applyEditorialCommandSet(request.projectId, request.command.input, request.command.idempotency_key))
+    case 'create_delivery_variant':
+      return await replayVideoCommand('video-create-delivery-variant', request, async () =>
+        await actions.createDeliveryVariant(request.projectId, request.command.input, request.command.idempotency_key))
+    case 'apply_delivery_variant_command_set':
+      return await replayVideoCommand('video-delivery-command-set', request, async () =>
+        await actions.applyDeliveryVariantCommandSet(request.projectId, request.variantId, request.command.input, request.command.idempotency_key))
+    case 'create_caption_draft':
+      return await replayVideoCommand('video-caption-draft', request, async () =>
+        await actions.createCaptionDraft(request.projectId, request.command.input, request.command.idempotency_key))
+    case 'create_caption_revision':
+      return await replayVideoCommand('video-caption-revision', request, async () =>
+        await actions.createCaptionRevision(request.projectId, request.captionDocumentId, request.command.input, request.command.idempotency_key))
+    case 'create_caption_translation':
+      return await replayVideoCommand('video-caption-translation', request, async () =>
+        await actions.createCaptionTranslation(request.projectId, request.captionDocumentId, request.command.input, request.command.idempotency_key))
+    case 'create_composition_plan':
+      return await replayVideoCommand('video-composition-plan', request, async () =>
+        await actions.createCompositionPlan(request.projectId, request.command.input, request.command.idempotency_key))
+    case 'create_audio_finishing_plan':
+      return await replayVideoCommand('video-audio-finishing-plan', request, async () =>
+        await actions.createAudioFinishingPlan(request.projectId, request.command.input, request.command.idempotency_key))
+    case 'analyze_beat':
+      return await replayVideoCommand('video-beat-analysis', request, async () =>
+        await actions.analyzeBeat(request.projectId, request.command.input, request.command.idempotency_key))
+    case 'create_beat_sync_draft':
+      return await replayVideoCommand('video-beat-sync-draft', request, async () =>
+        await actions.createBeatSyncDraft(request.projectId, request.command.input, request.command.idempotency_key))
+    case 'analyze_subject_track':
+      return await replayVideoCommand('video-subject-track', request, async () =>
+        await actions.analyzeSubjectTrack(request.projectId, request.command.input, request.command.idempotency_key))
+    case 'preflight_variant':
+      return await replayVideoCommand('video-preflight', request, async () =>
+        await actions.preflightVariant(request.projectId, request.variantId, request.command.input, request.command.idempotency_key))
+    case 'preview_variant':
+      return await replayVideoCommand('video-preview', request, async () =>
+        await actions.previewVariant(request.projectId, request.variantId, request.command.input, request.command.idempotency_key))
+    case 'choose_export_destination': return await chooseVideoExportDestination(event, request.projectId, request.variantId)
+    case 'render_variant':
+      return await videoWorkbenchReplays.execute('video-render-destination', request.command.idempotency_key, {
+        project_id: request.projectId,
+        variant_id: request.variantId,
+        destination_grant_id: request.destinationGrantId,
+        input: request.command.input,
+      }, async () => {
+        const profile = await actions.exportDestination(request.projectId, request.variantId)
+        const outputPath = videoDestinationGrants.consume(request.projectId, request.variantId, profile.mimeType, request.destinationGrantId)
+        if (!outputPath) throw new ElectronVideoWorkbenchActionError('MEDIA_INVALID_REQUEST')
+        return await actions.renderVariant(request.projectId, request.variantId, {
+          ...request.command.input,
+          output_path: outputPath,
+        }, request.command.idempotency_key)
+      })
+    case 'confirm_post_render_quality':
+      return await replayVideoCommand('video-post-render-quality-confirmation', request, async () =>
+        await actions.confirmPostRenderQuality(request.projectId, request.operationId, request.command.input, request.command.idempotency_key))
+    case 'cancel_operation': return await actions.cancelOperation(request.operationId)
   }
 }
 
@@ -2541,25 +2709,8 @@ function registerIpcHandlers() {
     const request = parseImageWorkbenchIpcRequest(payload)
     return await getImageActions().invokeWorkbench(request)
   })
-  registerHandler(ELECTRON_IPC_CHANNELS.videoAddSource, (_event, payload) => {
-    const input = payload as { projectId: string; path: string }
-    return getVideoActions().addVideoSource(input.projectId, input.path)
-  })
-  registerHandler(ELECTRON_IPC_CHANNELS.videoRender, (_event, payload) => {
-    const input = payload as { projectId: string, baseRevision: number, timelineVersionId: string, outputPath: string }
-    return getVideoActions().renderVideo(input.projectId, {
-      base_revision: input.baseRevision,
-      timeline_version_id: input.timelineVersionId,
-      output_path: input.outputPath,
-    })
-  })
-  registerHandler(ELECTRON_IPC_CHANNELS.videoAnalyze, (_event, payload) => {
-    const input = payload as { projectId: string, baseRevision: number, userGoal: string }
-    return getVideoActions().analyzeVideo(input.projectId, {
-      base_revision: input.baseRevision,
-      user_goal: input.userGoal,
-    })
-  })
+  registerHandler(ELECTRON_IPC_CHANNELS.videoWorkbench, async (event, payload) =>
+    await videoWorkbenchIpcResponse(async () => await handleVideoWorkbenchIpc(event, payload)))
   registerHandler(ELECTRON_IPC_CHANNELS.updateCheck, (_event, payload) =>
     getUpdaterService().checkForUpdates(payload as Parameters<ElectronUpdaterService['checkForUpdates']>[0]))
   registerHandler(ELECTRON_IPC_CHANNELS.updateDownload, () => getUpdaterService().downloadUpdate(event => {
@@ -2735,6 +2886,11 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', () => {
   isQuitting = true
+  // Native source/destination grants and their replay receipts are process
+  // scoped. Never persist a local path across a desktop restart.
+  videoSourceGrants.revokeAll()
+  videoDestinationGrants.revokeAll()
+  videoWorkbenchReplays.revokeAll()
   if (mainWindow) saveWindowState(app, mainWindow)
   trayController?.dispose()
   trayController = null

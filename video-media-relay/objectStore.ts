@@ -52,11 +52,13 @@ type OssSdk = {
   putStream(name: string, stream: Readable, options?: { mime?: string; meta?: Record<string, string>; contentLength?: number; headers?: Record<string, string> }): Promise<unknown>
   delete(name: string): Promise<unknown>
   initMultipartUpload(name: string, options?: { mime?: string; meta?: Record<string, string>; headers?: Record<string, string> }): Promise<{ uploadId?: string }>
-  listParts(name: string, uploadId: string, query?: Record<string, string | number>): Promise<{ parts?: Array<{ PartNumber?: string | number; ETag?: string }>; nextPartNumberMarker?: string | number; isTruncated?: boolean | string }>
+  listParts(name: string, uploadId: string, query?: Record<string, string | number>): Promise<{ parts?: OssSdkPart | OssSdkPart[] | null; nextPartNumberMarker?: string | number; isTruncated?: boolean | string }>
   listUploads(query?: Record<string, string | number>): Promise<{ uploads?: Array<{ name?: string; uploadId?: string; initiated?: string }>; nextKeyMarker?: string; nextUploadIdMarker?: string; isTruncated?: boolean | string }>
   completeMultipartUpload(name: string, uploadId: string, parts: Array<{ number: number; etag: string }>, options?: { headers?: Record<string, string> }): Promise<unknown>
   abortMultipartUpload(name: string, uploadId: string): Promise<unknown>
 }
+
+type OssSdkPart = { PartNumber?: string | number; ETag?: string }
 
 const requestTimeout = 60_000
 
@@ -242,7 +244,12 @@ export class OssObjectStore implements RelayObjectStore {
         // after one page, so revalidate at every external I/O boundary.
         await permit.assertCurrent?.()
         try { response = await this.client.listParts(this.inputKey(input.leaseId), input.uploadId, { 'max-parts': 1000, ...(marker ? { 'part-number-marker': marker } : {}) }) } catch { throw new Error('oss_multipart_list_failed') }
-        for (const part of response.parts ?? []) {
+        // ali-oss returns a single object instead of an array when OSS reports
+        // exactly one uploaded part. Keep the Relay contract stable for both
+        // response shapes so recovery does not fail only on one-part uploads.
+        const rawParts = response.parts
+        const pageParts = rawParts == null ? [] : Array.isArray(rawParts) ? rawParts : [rawParts]
+        for (const part of pageParts) {
           const partNumber = Number(part.PartNumber); const etag = part.ETag
           if (!Number.isSafeInteger(partNumber) || partNumber < 1 || !etag) throw new Error('oss_multipart_list_invalid')
           parts.push({ part_number: partNumber, etag })

@@ -9,6 +9,7 @@ import type {
 
 type ImageProjectPortNames =
   | 'listProjects' | 'getProject' | 'getProjectProjection' | 'assertProjectOwner'
+  | 'generationPreferencesCatalog'
   | 'createProject' | 'quickCreate' | 'updateProject' | 'addReferences' | 'compileBrief'
   | 'applyBriefOverrides' | 'addWorkflowReferences' | 'removeWorkflowReference'
   | 'getInspirationBoard' | 'upsertInspirationItems' | 'promoteInspirationItem'
@@ -87,7 +88,7 @@ export function createImageApplicationPorts(runtime: ImageWorkbenchRuntime): Ima
   return {
     project: Object.freeze({
       ...bindPort(runtime, [
-        'listProjects', 'getProject', 'getProjectProjection', 'assertProjectOwner', 'createProject', 'quickCreate',
+        'listProjects', 'getProject', 'getProjectProjection', 'assertProjectOwner', 'generationPreferencesCatalog', 'createProject', 'quickCreate',
         'updateProject', 'addReferences', 'compileBrief', 'applyBriefOverrides', 'addWorkflowReferences',
         'removeWorkflowReference', 'getInspirationBoard', 'upsertInspirationItems', 'promoteInspirationItem',
         'listBrandKits', 'getBrandKit', 'createBrandKit', 'reviseBrandKit', 'trashBrandKit', 'listTemplates',

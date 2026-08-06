@@ -22,6 +22,8 @@ export type EventCursorState = {
 export type EventJournalPage = {
   events: PersistedOutboxEvent[]
   cursor: number
+  /** Raw journal continuation value. Clients continue from `next_cursor - 1`. */
+  next_cursor: number
   reset_required: boolean
 }
 
@@ -62,11 +64,22 @@ export class EventJournal {
 
   list(projectId: string, after: number, limit: number): EventJournalPage {
     const state = this.cursorState(projectId)
-    if (state && after < state.retained_from_cursor - 1) {
-      return { events: [], cursor: state.next_cursor - 1, reset_required: true }
+    const nextCursor = state?.next_cursor ?? 1
+    // A cursor beyond the durable head is just as unsafe as one that has
+    // fallen behind retention. Returning an ordinary empty page would let a
+    // client advance its local checkpoint past events it has never observed.
+    if (state && (after < state.retained_from_cursor - 1 || after > state.next_cursor - 1)) {
+      return { events: [], cursor: state.next_cursor - 1, next_cursor: state.next_cursor, reset_required: true }
     }
     const events = this.listAllAfter(projectId, after, limit)
-    return { events, cursor: events.at(-1)?.cursor ?? after, reset_required: false }
+    const cursor = events.at(-1)?.cursor ?? after
+    // `next_cursor` is a continuation value, not the current global head.
+    // A client resumes from `next_cursor - 1`; returning the global head for a
+    // truncated page would skip every event between this page and that head.
+    // Empty pages may still expose the durable head so a long-polling client
+    // remains aligned with a journal that has no newly committed rows.
+    const continuation = events.length > 0 ? cursor + 1 : nextCursor
+    return { events, cursor, next_cursor: continuation, reset_required: false }
   }
 
   listAll(projectId: string): PersistedOutboxEvent[] {

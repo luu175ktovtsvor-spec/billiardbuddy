@@ -10,7 +10,8 @@ import {
   applyVideoAlternativeInputSchema,
   commitImageVersionInputSchema,
   createImageProjectInputSchema,
-  createVideoProjectInputSchema,
+  createVideoProjectInputValidationSchema,
+  videoOutputSettingsForPreset,
   imageGenerationModelSchema,
   imageSizeSupportedByModel,
   imageWorkbenchProjectSchema,
@@ -82,6 +83,7 @@ import {
   IMAGE_RELAY_TASKS_PATH,
   isImageRelayQuotaErrorCode,
 } from '../../../shared/product/imageRelayProtocol.js'
+import { IMAGE_PRODUCT_OUTPUT_COUNT } from '../../../shared/product/imageGenerationPolicy.js'
 import { diagnosticsService } from './diagnosticsService.js'
 import { lock } from '../../utils/lockfile.js'
 import {
@@ -1326,7 +1328,7 @@ export class MediaProjectService {
     projectId: string,
     afterCursor = 0,
     limit = 100,
-  ): Promise<{ events: MediaJobEvent[]; cursor: number; reset_required: boolean }> {
+  ): Promise<{ events: MediaJobEvent[]; cursor: number; next_cursor: number; reset_required: boolean }> {
     const journal = await this.readEventJournal(projectId)
     const safeCursor = Math.max(0, Math.trunc(afterCursor) || 0)
     const safeLimit = Math.max(1, Math.min(200, Math.trunc(limit) || 100))
@@ -1341,6 +1343,7 @@ export class MediaProjectService {
     return {
       events,
       cursor: events.at(-1)?.cursor ?? (resetRequired ? latestCursor : safeCursor),
+      next_cursor: journal.next_cursor,
       reset_required: resetRequired,
     }
   }
@@ -1351,7 +1354,7 @@ export class MediaProjectService {
     limit = 100,
     waitMs = 25_000,
     signal?: AbortSignal,
-  ): Promise<{ events: MediaJobEvent[]; cursor: number; reset_required: boolean }> {
+  ): Promise<{ events: MediaJobEvent[]; cursor: number; next_cursor: number; reset_required: boolean }> {
     let existing = await this.listJobEvents(projectId, afterCursor, limit)
     if (existing.events.length > 0 || existing.reset_required || waitMs <= 0 || signal?.aborted) return existing
     const remoteRefreshDelay = await this.remoteImageRefreshDelay(projectId)
@@ -2859,8 +2862,8 @@ export class MediaProjectService {
         model: routedModel,
         prompt: providerPrompt,
         size: input.size,
-        count: 3,
-        candidate_count: 3,
+        count: IMAGE_PRODUCT_OUTPUT_COUNT,
+        candidate_count: IMAGE_PRODUCT_OUTPUT_COUNT,
         brief,
         brief_overrides: {},
         references,
@@ -2939,7 +2942,7 @@ export class MediaProjectService {
       image_operation: {
         kind: 'generate',
         model: project.model,
-        output_count: 3,
+        output_count: IMAGE_PRODUCT_OUTPUT_COUNT,
       },
       created_at: now,
       updated_at: now,
@@ -3034,9 +3037,9 @@ export class MediaProjectService {
       kind: input.kind,
       base_version_id: input.base_version_id,
       instruction: providerInstruction,
-      mask_asset_id: maskAsset?.id,
+      ...(maskAsset ? { mask_asset_id: maskAsset.id } : {}),
       model,
-      output_count: 1,
+      output_count: IMAGE_PRODUCT_OUTPUT_COUNT,
     } as const
     const payload = await this.imageSubmissionPayload(
       { ...project, assets: maskAsset ? [...project.assets, maskAsset] : project.assets },
@@ -3119,7 +3122,10 @@ export class MediaProjectService {
       mode: project.mode,
       model: operation?.model ?? project.model,
       prompt: project.prompt,
-      n: operation?.output_count ?? project.count,
+      // New compatibility operations are created with the single-output
+      // policy. Historical task records retain their original count so their
+      // result reconciliation remains faithful to the recorded operation.
+      n: operation?.output_count ?? Math.min(project.count, IMAGE_PRODUCT_OUTPUT_COUNT),
       size: project.size,
       ...(project.model === 'doubao-seedream-4-5-251128' ? { response_format: 'b64_json' } : {}),
       ...(project.mode === 'edit' ? { images: referenceImages } : {}),
@@ -3381,9 +3387,10 @@ export class MediaProjectService {
       const briefOverrides = input.brief_overrides ?? project.brief_overrides
       const brief = applyImageBriefOverrides(compiled.brief, briefOverrides)
       const providerPrompt = providerPromptForImageBrief(brief)
+      const size = input.size ?? project.size
       const routedModel = routedImageModel(
         input.user_request,
-        input.size,
+        size,
         nextReferences.some(reference => reference.role === 'subject'),
       )
       return await this.saveProject({
@@ -3399,9 +3406,9 @@ export class MediaProjectService {
         mode: nextReferences.length > 0 ? 'edit' : 'generate',
         title: defaultTitle(input.user_request, project.title),
         model: routedModel,
-        size: input.size,
-        count: 3,
-        candidate_count: 3,
+        size,
+        count: IMAGE_PRODUCT_OUTPUT_COUNT,
+        candidate_count: IMAGE_PRODUCT_OUTPUT_COUNT,
         revision: project.revision + 1,
         error: undefined,
         error_code: undefined,
@@ -3884,7 +3891,7 @@ export class MediaProjectService {
   }
 
   async createVideoProject(raw: CreateVideoProjectInput): Promise<VideoStudioProject> {
-    const input = createVideoProjectInputSchema.parse(raw)
+    const input = createVideoProjectInputValidationSchema.parse(raw)
     const now = this.iso()
     const project = videoStudioProjectSchema.parse({
       schema_version: 1,
@@ -3898,7 +3905,8 @@ export class MediaProjectService {
       state: 'draft',
       sources: [],
       timeline: [],
-      output: input.output,
+      output: input.output ?? (input.output_preset ? videoOutputSettingsForPreset(input.output_preset) : undefined),
+      delivery_format: input.delivery_format,
     })
     return await this.migrateVideoTimeline(await this.saveProject(project) as VideoStudioProject)
   }
@@ -4007,10 +4015,13 @@ export class MediaProjectService {
       if (!video) throw new Error('素材中没有视频轨道')
       const videoStreams = metadata.streams?.filter(stream => stream.codec_type === 'video') ?? []
       const audioStreams = metadata.streams?.filter(stream => stream.codec_type === 'audio') ?? []
-      const rotationRaw = (video.tags as Record<string, unknown> | undefined)?.rotate
-        ?? (Array.isArray(video.side_data_list)
-          ? (video.side_data_list as Array<Record<string, unknown>>).find(item => item.rotation !== undefined)?.rotation
-          : undefined)
+      // Display Matrix is authoritative; legacy `rotate` tags can carry the
+      // opposite sign and vary by FFprobe version for the same iPhone file.
+      const displayMatrixRotation = Array.isArray(video.side_data_list)
+        ? (video.side_data_list as Array<Record<string, unknown>>).find(item => item.rotation !== undefined)?.rotation
+        : undefined
+      const rotationRaw = displayMatrixRotation
+        ?? (video.tags as Record<string, unknown> | undefined)?.rotate
       const rotation = Number(rotationRaw)
       const fingerprint = await this.fileFingerprint(input.path)
       const source: VideoSource = {

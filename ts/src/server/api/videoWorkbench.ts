@@ -2,13 +2,32 @@ import { timingSafeEqual } from 'node:crypto'
 import { z } from 'zod/v4'
 import {
   addVideoSourceInputSchema,
+  addVideoProjectAssetInputSchema,
+  analyzeVideoBeatInputSchema,
+  createVideoBeatSyncDraftInputSchema,
+  analyzeVideoSubjectTrackInputSchema,
+  createVideoAudioFinishingPlanInputSchema,
+  createVideoCaptionDraftInputSchema,
+  createVideoCaptionRevisionInputSchema,
+  createVideoCaptionTranslationInputSchema,
+  createVideoCompositionPlanInputSchema,
+  confirmVideoPostRenderQualityInputSchema,
+  preflightVideoVariantInputSchema,
+  previewVideoVariantInputSchema,
+  renderVideoVariantInputSchema,
   acceptTimelineDraftInputSchema,
   applyDeliveryVariantCommandsInputSchema,
   applyEditorialTimelineCommandsInputSchema,
   analyzeVideoProjectInputSchema,
   applyVideoAlternativeInputSchema,
+  acceptVideoCreativeProposalInputSchema,
+  createVideoCreativeSessionInputSchema,
+  createVideoReviewNoteInputSchema,
+  createVideoApprovalDecisionInputSchema,
+  createVideoEditorialPlanInputSchema,
+  createVideoSourceRangeDecisionInputSchema,
   createDeliveryVariantInputSchema,
-  createVideoProjectInputSchema,
+  createVideoProjectInputValidationSchema,
   createRemoteAnalysisConsentInputSchema,
   estimateRemoteAnalysisInputSchema,
   revokeRemoteAnalysisConsentInputSchema,
@@ -16,22 +35,45 @@ import {
   mediaSafeError,
   mediaSafeErrorForServiceError,
   MEDIA_UI_CAPABILITY_HEADER,
+  VIDEO_WORKBENCH_REQUEST_BODY_MAX_BYTES,
   publicMediaDeletionReceiptSchema,
-  previewVideoInputSchema,
   publicMediaJobEventPageSchema,
   publicMediaTaskSchema,
   publicVideoFactPageSchema,
   publicVideoFactSearchPageSchema,
   publicVideoFactSummarySchema,
   publicVideoStudioProjectSchema,
-  renderVideoInputSchema,
+  publicVideoProjectAssetSchema,
+  videoWorkbenchWorkspaceSnapshotSchema,
   selectVideoTimelineVersionInputSchema,
   deliveryVariantSchema,
   deliveryVariantVersionSchema,
+  videoCaptionDocumentRevisionSchema,
+  videoCaptionDocumentSchema,
+  videoCompositionPlanSchema,
+  videoAudioFinishingPlanSchema,
+  videoQualityReportSchema,
+  videoQualityAcknowledgementSchema,
   videoExecutionPlanSchema,
   editorialTimelineVersionSchema,
   timelineDraftSchema,
   updateVideoTimelineInputSchema,
+  upsertVideoCreationBriefInputSchema,
+  upsertVideoDeliveryIntentInputSchema,
+  postVideoCreativeMessageInputSchema,
+  resolveVideoReviewNoteInputSchema,
+  quickCreateVideoInputSchema,
+  videoCreativeProposalSchema,
+  videoCreativeResponseSchema,
+  videoCreativeSessionSchema,
+  videoCreationBriefSchema,
+  videoDeliveryIntentSchema,
+  videoDurationFeasibilitySchema,
+  videoEditorialPlanSchema,
+  videoSourceRangeDecisionSchema,
+  videoQuickCreateBatchSchema,
+  videoReviewNoteSchema,
+  videoApprovalDecisionSchema,
   type PublicMediaTask,
   type PublicVideoStudioProject,
   type VideoStudioProject,
@@ -40,16 +82,73 @@ import { ApiError, errorResponse } from '../middleware/errorHandler.js'
 import { VideoWorkbenchRepositoryError, type VideoOperation, type VideoOperationEvent } from '../services/videoWorkbenchRepository.js'
 import { VideoWorkbenchService, VideoWorkbenchServiceError } from '../services/videoWorkbenchService.js'
 import { factKind, factSourceRange, type VideoFact, type VideoFactKind } from '../video/domain/mediaFacts/model.js'
+import { materializeVideoReviewNotes } from '../video/domain/editorial/review.js'
 import { VideoFactsRepositoryError } from '../video/infrastructure/sqliteMediaFactsRepository.js'
 
 function methodNotAllowed(method: string): ApiError {
   return new ApiError(405, `Method ${method} not allowed`, 'METHOD_NOT_ALLOWED')
 }
 
+const rawRequestBodies = new WeakMap<Request, Promise<string>>()
+
+/**
+ * Video commands are JSON control data, not media uploads. Read them in a
+ * bounded stream so a malformed or hostile request cannot allocate an
+ * unbounded string before Zod gets a chance to reject it.
+ */
+export async function readVideoWorkbenchRequestBody(
+  req: Request,
+  maxBytes = VIDEO_WORKBENCH_REQUEST_BODY_MAX_BYTES,
+): Promise<string> {
+  const declaredLength = req.headers.get('content-length')?.trim()
+  if (declaredLength && /^\d+$/u.test(declaredLength) && Number(declaredLength) > maxBytes) {
+    throw new ApiError(413, '视频请求体超过安全上限', 'VIDEO_REQUEST_BODY_TOO_LARGE')
+  }
+  if (!req.body) return ''
+
+  const reader = req.body.getReader()
+  const chunks: Uint8Array[] = []
+  let total = 0
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      total += value.byteLength
+      if (total > maxBytes) {
+        void reader.cancel().catch(() => undefined)
+        throw new ApiError(413, '视频请求体超过安全上限', 'VIDEO_REQUEST_BODY_TOO_LARGE')
+      }
+      chunks.push(value)
+    }
+  } finally {
+    reader.releaseLock()
+  }
+  const bytes = new Uint8Array(total)
+  let offset = 0
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset)
+    offset += chunk.byteLength
+  }
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(bytes)
+  } catch {
+    throw ApiError.badRequest('请求体不是合法 JSON')
+  }
+}
+
+function rawRequestBody(req: Request): Promise<string> {
+  const existing = rawRequestBodies.get(req)
+  if (existing) return existing
+  const body = readVideoWorkbenchRequestBody(req)
+  rawRequestBodies.set(req, body)
+  return body
+}
+
 async function parseJson(req: Request): Promise<unknown> {
   try {
-    return await req.json()
-  } catch {
+    return JSON.parse(await rawRequestBody(req)) as unknown
+  } catch (error) {
+    if (error instanceof ApiError) throw error
     throw ApiError.badRequest('请求体不是合法 JSON')
   }
 }
@@ -65,6 +164,10 @@ function requireMediaUiCapability(req: Request, expected: string): void {
   ) {
     throw new VideoWorkbenchServiceError('此操作只能从 BilliardBuddy 桌面工作台确认', 403, 'MEDIA_UI_CONFIRMATION_REQUIRED')
   }
+}
+
+function isVideoWriteMethod(method: string): boolean {
+  return method === 'POST' || method === 'PUT' || method === 'PATCH' || method === 'DELETE'
 }
 
 function requireIdempotencyKey(req: Request): string {
@@ -104,13 +207,31 @@ export function publicVideoProject(project: VideoStudioProject): PublicVideoStud
     writer_fence: _writerFence,
     assets: _assets,
     versions: _versions,
+    output_path: _outputPath,
+    workspace_root: _workspaceRoot,
     error: rawError,
     error_code: errorCode,
     ...safeProject
   } = project
   const failure = rawError ? mediaSafeError(errorCode ?? 'MEDIA_VIDEO_EXPORT_FAILED') : null
+  const projectAssets = project.assets.flatMap(asset => {
+    if (asset.storage.kind !== 'managed' || !asset.content_hash || !asset.byte_size || !asset.mime_type) return []
+    const attestation = project.video_asset_attestations.find(candidate => candidate.asset_id === asset.id)
+    if (!attestation?.asset_kind) return []
+    return [publicVideoProjectAssetSchema.parse({
+      id: asset.id,
+      asset_kind: attestation.asset_kind,
+      provenance: attestation.provenance,
+      mime_type: asset.mime_type,
+      byte_size: asset.byte_size,
+      content_hash: asset.content_hash,
+      created_at: asset.created_at,
+    })]
+  })
   return publicVideoStudioProjectSchema.parse({
     ...safeProject,
+    project_assets: projectAssets,
+    review_notes: materializeVideoReviewNotes(project),
     ...(failure ? { error: failure.message, error_code: failure.code } : {}),
   })
 }
@@ -121,8 +242,12 @@ export function publicVideoTask(operation: VideoOperation): PublicMediaTask {
     ? 'MEDIA_VIDEO_SOURCE_UNREADABLE'
     : operation.kind === 'video.fingerprint'
       ? 'MEDIA_VIDEO_SOURCE_UNREADABLE'
-    : operation.kind === 'video.analyze' || operation.kind === 'video.plan'
+    : operation.kind === 'video.analyze' || operation.kind === 'video.plan' || operation.kind === 'video.beat_analyze'
       ? 'MEDIA_VIDEO_ANALYSIS_UNAVAILABLE'
+    : operation.kind === 'video.caption_draft' || operation.kind === 'video.caption_translation' || operation.kind === 'video.composition_plan' || operation.kind === 'video.audio_finish_plan' || operation.kind === 'video.subject_track' || operation.kind === 'video.beat_sync_draft'
+        ? 'MEDIA_VIDEO_FINISHING_UNAVAILABLE'
+        : operation.kind === 'video.quality_preflight' || operation.kind === 'video.quality_post_render'
+          ? 'MEDIA_VIDEO_QUALITY_BLOCKED'
       : operation.kind === 'video.preview'
         ? 'MEDIA_VIDEO_PREVIEW_FAILED'
         : 'MEDIA_VIDEO_EXPORT_FAILED'
@@ -132,12 +257,30 @@ export function publicVideoTask(operation: VideoOperation): PublicMediaTask {
     : operation.kind === 'video.fingerprint'
       ? ['source_id', 'media_facts']
       : operation.kind === 'video.analyze'
-        ? ['evidence_revision', 'evidence_count', 'next_task_id']
-        : operation.kind === 'video.plan'
-          ? ['timeline_draft_id', 'project_revision', 'alternative_count']
+        ? ['evidence_revision', 'evidence_count', 'next_task_id', 'workflow', 'creative_session_id']
+      : operation.kind === 'video.plan'
+      ? ['timeline_draft_id', 'project_revision', 'alternative_count', 'planning_origin', 'workflow']
+          : operation.kind === 'video.beat_analyze'
+            ? ['source_id', 'audio_stream_index', 'evidence_id', 'confidence', 'bpm']
+            : operation.kind === 'video.subject_track'
+              ? ['source_id', 'subject_id', 'evidence_id', 'confidence']
+              : operation.kind === 'video.beat_sync_draft'
+                ? ['timeline_draft_id', 'evidence_id', 'confidence', 'cut_count']
+            : operation.kind === 'video.caption_draft' || operation.kind === 'video.caption_translation'
+              ? ['caption_document_id', 'caption_revision_id', 'caption_style_id']
+              : operation.kind === 'video.composition_plan'
+                ? ['composition_plan_id']
+                : operation.kind === 'video.audio_finish_plan'
+                  ? ['audio_finishing_plan_id']
+                  : operation.kind === 'video.quality_preflight'
+                    ? ['execution_plan_id', 'report_id', 'report']
+                    : operation.kind === 'video.output_verify'
+                      ? ['parent_operation_id', 'execution_plan_id', 'output_verification']
+                      : operation.kind === 'video.quality_post_render'
+                        ? ['parent_operation_id', 'execution_plan_id', 'report_id', 'report']
         : operation.kind === 'video.preview'
-          ? ['preview_revision', 'timeline_version_id', 'asset_id', 'asset_path', 'content_hash']
-          : ['render_revision', 'timeline_version_id', 'output_path', 'output_asset_id', 'output_content_hash', 'output_verification', 'video_encoder']
+          ? ['preview_revision', 'timeline_version_id', 'delivery_variant_version_id', 'execution_plan_id', 'preflight_report_id', 'asset_id', 'asset_path', 'content_hash', 'sidecar_caption', 'video_encoder', 'encoder_fallback_from']
+          : ['render_revision', 'timeline_version_id', 'delivery_variant_version_id', 'execution_plan_id', 'preflight_report_id', 'post_render_report_id', 'output_asset_id', 'output_content_hash', 'output_verification', 'post_render_report', 'awaiting_quality_confirmation', 'quality_acknowledgement', 'video_encoder', 'encoder_fallback_from']
   const safeResult = result ? Object.fromEntries(allowedKeys.flatMap(key => result[key] === undefined ? [] : [[key, result[key]]])) : undefined
   return publicMediaTaskSchema.parse({
     ...safeOperation,
@@ -205,6 +348,10 @@ export function createVideoWorkbenchApiHandler(
   return async function handleVideoWorkbenchApi(req: Request, url: URL, segments: string[]): Promise<Response> {
     try {
       if (segments[2] !== 'videos') throw ApiError.notFound('找不到视频接口')
+      // All state-changing video routes are desktop-confirmed.  Keep this at
+      // the route boundary so legacy compatibility endpoints cannot become a
+      // second unguarded writer when they are revived or moved.
+      if (isVideoWriteMethod(req.method)) requireMediaUiCapability(req, mediaUiCapability)
       if (segments[3] === 'toolchain') {
         if (req.method !== 'GET' || segments[4]) throw methodNotAllowed(req.method)
         const status = await service.toolchainStatus()
@@ -216,13 +363,50 @@ export function createVideoWorkbenchApiHandler(
       if (!projectId) {
         if (req.method === 'GET' && !action) return Response.json({ projects: (await service.listProjects()).map(publicVideoProject) })
         if (req.method !== 'POST' || action) throw methodNotAllowed(req.method)
-        const input = createVideoProjectInputSchema.parse(await parseJson(req))
+        const input = createVideoProjectInputValidationSchema.parse(await parseJson(req))
         return Response.json({ project: publicVideoProject(await service.createProject(input)) }, { status: 201 })
       }
       await service.assertProjectOwner(projectId)
       if (!action) {
         if (req.method !== 'GET') throw methodNotAllowed(req.method)
         return Response.json({ project: publicVideoProject(await service.getProject(projectId)) })
+      }
+      if (action === 'workspace') {
+        if (req.method !== 'GET' || segments[6]) throw methodNotAllowed(req.method)
+        const eventCursor = boundedQueryInteger(url.searchParams.get('event_cursor'), 0, 0, Number.MAX_SAFE_INTEGER, 'event_cursor')
+        const snapshot = await service.getWorkspaceSnapshotData(projectId, eventCursor)
+        const currentTimeline = snapshot.project.current_editorial_timeline_version_id
+          ? snapshot.project.editorial_timeline_versions.find(candidate => candidate.id === snapshot.project.current_editorial_timeline_version_id)
+          : undefined
+        if (snapshot.project.current_editorial_timeline_version_id && !currentTimeline) {
+          throw new VideoWorkbenchServiceError('当前编辑时间线引用已损坏，无法提供工作台快照', 409, 'VIDEO_EDITORIAL_STALE')
+        }
+        const variants = snapshot.project.delivery_variants.map(variant => {
+          const version = snapshot.project.delivery_variant_versions.find(candidate => candidate.id === variant.current_version_id)
+          if (!version) throw new VideoWorkbenchServiceError('交付变体版本引用已损坏，无法提供工作台快照', 409, 'VIDEO_FINISHING_STALE')
+          return { variant, version }
+        })
+        return Response.json(videoWorkbenchWorkspaceSnapshotSchema.parse({
+          project: publicVideoProject(snapshot.project),
+          ...(currentTimeline ? { current_timeline: editorialTimelineVersionSchema.parse(currentTimeline) } : {}),
+          timeline_drafts: snapshot.project.timeline_drafts,
+          variants,
+          facts: publicVideoFactPageSchema.parse({
+            schema_version: 1,
+            items: snapshot.facts.items.map(publicVideoFactSummary),
+            ...(snapshot.facts.next_cursor ? { next_cursor: snapshot.facts.next_cursor } : {}),
+          }),
+          caption_documents: snapshot.project.caption_documents,
+          caption_revisions: snapshot.project.caption_document_revisions,
+          composition_plans: snapshot.project.composition_plans,
+          audio_finishing_plans: snapshot.project.audio_finishing_plans,
+          execution_plans: snapshot.project.execution_plans,
+          quality_reports: snapshot.project.quality_reports,
+          ...(snapshot.project.preview ? { preview: snapshot.project.preview } : {}),
+          ...(snapshot.project.output_verification ? { output_verification: snapshot.project.output_verification } : {}),
+          operations: snapshot.operations.map(publicVideoTask),
+          events: publicVideoEventPage(snapshot.events),
+        }))
       }
       if (action === 'sources') {
         const sourceId = segments[6]
@@ -234,6 +418,13 @@ export function createVideoWorkbenchApiHandler(
         const input = addVideoSourceInputSchema.parse(await parseJson(req))
         const result = await service.addVideoSource(projectId, input)
         return Response.json({ project: publicVideoProject(result.project), task: publicVideoTask(result.task) }, { status: 201 })
+      }
+      if (action === 'assets') {
+        if (segments[6] || req.method !== 'POST') throw methodNotAllowed(req.method)
+        const result = await service.importProjectAsset(projectId, addVideoProjectAssetInputSchema.parse(await parseJson(req)))
+        const asset = publicVideoProject(result.project).project_assets.find(candidate => candidate.id === result.asset.id)
+        if (!asset) throw new VideoWorkbenchServiceError('项目资产导入结果不可用', 500, 'VIDEO_PROJECT_ASSET_IMPORT_FAILED')
+        return Response.json({ project: publicVideoProject(result.project), asset, reused: result.reused }, { status: result.reused ? 200 : 201 })
       }
       if (action === 'facts') {
         if (req.method !== 'GET' || !segments[6] || segments[7]) throw methodNotAllowed(req.method)
@@ -271,6 +462,56 @@ export function createVideoWorkbenchApiHandler(
           if (req.method !== 'GET') throw methodNotAllowed(req.method)
           return Response.json({ timeline: editorialTimelineVersionSchema.parse(await service.getEditorialTimeline(projectId, versionId)) })
         }
+        if (segments[7] === 'review-notes') {
+          const noteId = segments[8]
+          if (!noteId) {
+            if (req.method === 'GET' && !segments[8]) {
+              return Response.json({ notes: (await service.getReviewNotes(projectId, versionId)).map(note => videoReviewNoteSchema.parse(note)) })
+            }
+            if (req.method !== 'POST' || segments[8]) throw methodNotAllowed(req.method)
+            const result = await service.createReviewNote(
+              projectId,
+              versionId,
+              createVideoReviewNoteInputSchema.parse(await parseJson(req)),
+              requireIdempotencyKey(req),
+            )
+            return Response.json({
+              project: publicVideoProject(result.project),
+              note: videoReviewNoteSchema.parse(result.note),
+              reused: result.reused,
+            }, { status: result.reused ? 200 : 201 })
+          }
+          if (segments[9] === 'resolve' && !segments[10]) {
+            if (req.method !== 'POST') throw methodNotAllowed(req.method)
+            const result = await service.resolveReviewNote(
+              projectId,
+              versionId,
+              noteId,
+              resolveVideoReviewNoteInputSchema.parse(await parseJson(req)),
+              requireIdempotencyKey(req),
+            )
+            return Response.json({
+              project: publicVideoProject(result.project),
+              note: videoReviewNoteSchema.parse(result.note),
+              reused: result.reused,
+            }, { status: result.reused ? 200 : 201 })
+          }
+          throw methodNotAllowed(req.method)
+        }
+        if (segments[7] === 'approval' && !segments[8]) {
+          if (req.method !== 'POST') throw methodNotAllowed(req.method)
+          const result = await service.createApprovalDecision(
+            projectId,
+            versionId,
+            createVideoApprovalDecisionInputSchema.parse(await parseJson(req)),
+            requireIdempotencyKey(req),
+          )
+          return Response.json({
+            project: publicVideoProject(result.project),
+            decision: videoApprovalDecisionSchema.parse(result.decision),
+            reused: result.reused,
+          }, { status: result.reused ? 200 : 201 })
+        }
         if (segments[7] === 'commands' && !segments[8]) {
           if (req.method !== 'POST') throw methodNotAllowed(req.method)
           const input = applyEditorialTimelineCommandsInputSchema.parse({ ...(await parseJson(req) as Record<string, unknown>), base_timeline_version_id: versionId })
@@ -298,6 +539,276 @@ export function createVideoWorkbenchApiHandler(
         }
         throw methodNotAllowed(req.method)
       }
+      if (action === 'delivery-intent') {
+        if (req.method !== 'PUT' || segments[6]) throw methodNotAllowed(req.method)
+        const result = await service.updateDeliveryIntent(
+          projectId,
+          upsertVideoDeliveryIntentInputSchema.parse(await parseJson(req)),
+        )
+        return Response.json({
+          project: publicVideoProject(result.project),
+          intent: videoDeliveryIntentSchema.parse(result.intent),
+          feasibility: videoDurationFeasibilitySchema.parse(result.feasibility),
+        })
+      }
+      if (action === 'creation-brief') {
+        if (req.method !== 'PUT' || segments[6]) throw methodNotAllowed(req.method)
+        const result = await service.updateCreationBrief(
+          projectId,
+          upsertVideoCreationBriefInputSchema.parse(await parseJson(req)),
+        )
+        return Response.json({
+          project: publicVideoProject(result.project),
+          brief: videoCreationBriefSchema.parse(result.brief),
+          intent: videoDeliveryIntentSchema.parse(result.intent),
+          feasibility: videoDurationFeasibilitySchema.parse(result.feasibility),
+        })
+      }
+      if (action === 'duration-feasibility') {
+        if (req.method !== 'GET' || segments[6]) throw methodNotAllowed(req.method)
+        return Response.json({ feasibility: videoDurationFeasibilitySchema.parse(await service.getDurationFeasibility(projectId)) })
+      }
+      if (action === 'range-decisions') {
+        if (req.method !== 'POST' || segments[6]) throw methodNotAllowed(req.method)
+        const result = await service.createSourceRangeDecision(
+          projectId,
+          createVideoSourceRangeDecisionInputSchema.parse(await parseJson(req)),
+          requireIdempotencyKey(req),
+        )
+        return Response.json({
+          project: publicVideoProject(result.project),
+          decision: videoSourceRangeDecisionSchema.parse(result.decision),
+          ...(result.feasibility ? { feasibility: videoDurationFeasibilitySchema.parse(result.feasibility) } : {}),
+          reused: result.reused,
+        }, { status: result.reused ? 200 : 201 })
+      }
+      if (action === 'editorial-plans') {
+        if (req.method !== 'POST' || segments[6]) throw methodNotAllowed(req.method)
+        const result = await service.createEditorialPlans(
+          projectId,
+          createVideoEditorialPlanInputSchema.parse(await parseJson(req)),
+          requireIdempotencyKey(req),
+        )
+        return Response.json({
+          project: publicVideoProject(result.project),
+          plans: result.plans.map(plan => videoEditorialPlanSchema.parse(plan)),
+          feasibility: videoDurationFeasibilitySchema.parse(result.feasibility),
+          reused: result.reused,
+        }, { status: result.reused ? 200 : 201 })
+      }
+      if (action === 'quick-create') {
+        if (req.method !== 'POST' || segments[6]) throw methodNotAllowed(req.method)
+        const result = await service.quickCreate(
+          projectId,
+          quickCreateVideoInputSchema.parse(await parseJson(req)),
+          requireIdempotencyKey(req),
+        )
+        return Response.json({
+          project: publicVideoProject(result.project),
+          batch: videoQuickCreateBatchSchema.parse(result.batch),
+          drafts: result.drafts.map(draft => timelineDraftSchema.parse(draft)),
+          reused: result.reused,
+        }, { status: result.reused ? 200 : 201 })
+      }
+      if (action === 'creative-sessions') {
+        const sessionId = segments[6]
+        if (!sessionId) {
+          if (req.method !== 'POST') throw methodNotAllowed(req.method)
+          const result = await service.createCreativeSession(
+            projectId,
+            createVideoCreativeSessionInputSchema.parse(await parseJson(req)),
+            requireIdempotencyKey(req),
+          )
+          return Response.json({ project: publicVideoProject(result.project), session: videoCreativeSessionSchema.parse(result.session), reused: result.reused }, { status: result.reused ? 200 : 201 })
+        }
+        if (segments[7] === 'suggest' && !segments[8]) {
+          if (req.method !== 'POST') throw methodNotAllowed(req.method)
+          requireMediaUiCapability(req, mediaUiCapability)
+          const task = await service.requestCreativeSuggestion(
+            projectId,
+            sessionId,
+            analyzeVideoProjectInputSchema.parse(await parseJson(req)),
+            requireIdempotencyKey(req),
+          )
+          return Response.json({ task: publicVideoTask(task) }, { status: 202 })
+        }
+        if (segments[7] === 'messages' && !segments[8]) {
+          if (req.method !== 'POST') throw methodNotAllowed(req.method)
+          const result = await service.postCreativeMessage(
+            projectId,
+            sessionId,
+            postVideoCreativeMessageInputSchema.parse(await parseJson(req)),
+            requireIdempotencyKey(req),
+          )
+          return Response.json({
+            project: publicVideoProject(result.project),
+            response: videoCreativeResponseSchema.parse(result.response),
+            ...(result.proposal ? { proposal: videoCreativeProposalSchema.parse(result.proposal) } : {}),
+            reused: result.reused,
+          }, { status: result.reused ? 200 : 201 })
+        }
+        throw methodNotAllowed(req.method)
+      }
+      if (action === 'creative-proposals') {
+        const proposalId = segments[6]
+        if (!proposalId) throw ApiError.badRequest('缺少创作 Proposal ID')
+        if (!segments[7]) {
+          if (req.method !== 'GET') throw methodNotAllowed(req.method)
+          return Response.json({ proposal: videoCreativeProposalSchema.parse(await service.getCreativeProposal(projectId, proposalId)) })
+        }
+        if (segments[7] === 'accept' && !segments[8]) {
+          if (req.method !== 'POST') throw methodNotAllowed(req.method)
+          const result = await service.acceptCreativeProposal(
+            projectId,
+            proposalId,
+            acceptVideoCreativeProposalInputSchema.parse(await parseJson(req)),
+            requireIdempotencyKey(req),
+          )
+          return Response.json({
+            project: publicVideoProject(result.project),
+            proposal: videoCreativeProposalSchema.parse(result.proposal),
+            ...(result.version && 'tracks' in result.version
+              ? { timeline: editorialTimelineVersionSchema.parse(result.version) }
+              : { variant_version: deliveryVariantVersionSchema.parse(result.version) }),
+            reused: result.reused,
+          })
+        }
+        if (segments[7] === 'reject' && !segments[8]) {
+          if (req.method !== 'POST') throw methodNotAllowed(req.method)
+          const result = await service.rejectCreativeProposal(projectId, proposalId, requireIdempotencyKey(req))
+          return Response.json({ project: publicVideoProject(result.project), proposal: videoCreativeProposalSchema.parse(result.proposal), reused: result.reused })
+        }
+        throw methodNotAllowed(req.method)
+      }
+      if (action === 'captions') {
+        if (segments[6] === 'drafts' && !segments[7]) {
+          if (req.method !== 'POST') throw methodNotAllowed(req.method)
+          requireMediaUiCapability(req, mediaUiCapability)
+          const result = await service.createCaptionDraft(
+            projectId,
+            createVideoCaptionDraftInputSchema.parse(await parseJson(req)),
+            requireIdempotencyKey(req),
+          )
+          return Response.json({
+            project: publicVideoProject(result.project),
+            document: videoCaptionDocumentSchema.parse(result.document),
+            revision: videoCaptionDocumentRevisionSchema.parse(result.revision),
+            task: publicVideoTask(result.task),
+          }, { status: 201 })
+        }
+        const documentId = segments[6]
+        if (documentId && segments[7] === 'translations' && !segments[8]) {
+          if (req.method !== 'POST') throw methodNotAllowed(req.method)
+          requireMediaUiCapability(req, mediaUiCapability)
+          const result = await service.createCaptionTranslation(
+            projectId,
+            documentId,
+            createVideoCaptionTranslationInputSchema.parse(await parseJson(req)),
+            requireIdempotencyKey(req),
+          )
+          return Response.json({
+            project: publicVideoProject(result.project),
+            revision: videoCaptionDocumentRevisionSchema.parse(result.revision),
+            task: publicVideoTask(result.task),
+          }, { status: 201 })
+        }
+        if (documentId && segments[7] === 'revisions' && !segments[8]) {
+          if (req.method !== 'POST') throw methodNotAllowed(req.method)
+          requireMediaUiCapability(req, mediaUiCapability)
+          const result = await service.createCaptionRevision(
+            projectId,
+            documentId,
+            createVideoCaptionRevisionInputSchema.parse(await parseJson(req)),
+            requireIdempotencyKey(req),
+          )
+          return Response.json({ project: publicVideoProject(result.project), revision: videoCaptionDocumentRevisionSchema.parse(result.revision), task: publicVideoTask(result.task) }, { status: 201 })
+        }
+        throw methodNotAllowed(req.method)
+      }
+      if (action === 'composition-plans') {
+        if (req.method !== 'POST' || segments[6]) throw methodNotAllowed(req.method)
+        requireMediaUiCapability(req, mediaUiCapability)
+        const result = await service.createCompositionPlan(
+          projectId,
+          createVideoCompositionPlanInputSchema.parse(await parseJson(req)),
+          requireIdempotencyKey(req),
+        )
+        return Response.json({ project: publicVideoProject(result.project), plan: videoCompositionPlanSchema.parse(result.plan), task: publicVideoTask(result.task) }, { status: 201 })
+      }
+      if (action === 'audio-finishing-plans') {
+        if (req.method !== 'POST' || segments[6]) throw methodNotAllowed(req.method)
+        requireMediaUiCapability(req, mediaUiCapability)
+        const result = await service.createAudioFinishingPlan(
+          projectId,
+          createVideoAudioFinishingPlanInputSchema.parse(await parseJson(req)),
+          requireIdempotencyKey(req),
+        )
+        return Response.json({ project: publicVideoProject(result.project), plan: videoAudioFinishingPlanSchema.parse(result.plan), task: publicVideoTask(result.task) }, { status: 201 })
+      }
+      if (action === 'beat-analysis') {
+        if (req.method !== 'POST' || segments[6]) throw methodNotAllowed(req.method)
+        requireMediaUiCapability(req, mediaUiCapability)
+        return Response.json({ task: publicVideoTask(await service.analyzeVideoBeat(
+          projectId,
+          analyzeVideoBeatInputSchema.parse(await parseJson(req)),
+          requireIdempotencyKey(req),
+        )) }, { status: 202 })
+      }
+      if (action === 'beat-sync-drafts') {
+        if (req.method !== 'POST' || segments[6]) throw methodNotAllowed(req.method)
+        requireMediaUiCapability(req, mediaUiCapability)
+        const result = await service.createBeatSyncTimelineDraft(
+          projectId,
+          createVideoBeatSyncDraftInputSchema.parse(await parseJson(req)),
+          requireIdempotencyKey(req),
+        )
+        return Response.json({
+          project: publicVideoProject(result.project),
+          draft: timelineDraftSchema.parse(result.draft),
+          task: publicVideoTask(result.task),
+        }, { status: 201 })
+      }
+      if (action === 'subject-tracks') {
+        if (req.method !== 'POST' || segments[6]) throw methodNotAllowed(req.method)
+        requireMediaUiCapability(req, mediaUiCapability)
+        const result = await service.analyzeVideoSubjectTrack(
+          projectId,
+          analyzeVideoSubjectTrackInputSchema.parse(await parseJson(req)),
+          requireIdempotencyKey(req),
+        )
+        return Response.json({
+          project: publicVideoProject(result.project),
+          evidence: publicVideoFactSummary(result.evidence),
+          task: publicVideoTask(result.task),
+        }, { status: 201 })
+      }
+      if (action === 'quality-reports') {
+        const reportId = segments[6]
+        if (!reportId || segments[7] || req.method !== 'GET') throw methodNotAllowed(req.method)
+        return Response.json({ report: videoQualityReportSchema.parse(await service.getQualityReport(projectId, reportId)) })
+      }
+      if (action === 'renders') {
+        const operationId = segments[6]
+        if (!operationId || segments[7] !== 'quality-confirmation' || segments[8] || req.method !== 'POST') throw methodNotAllowed(req.method)
+        requireMediaUiCapability(req, mediaUiCapability)
+        // Keep the final publication acknowledgement on the same desktop
+        // command boundary as every other video mutation.  The service itself
+        // makes the acknowledgement idempotent against the frozen render,
+        // while this header prevents an untracked write path from appearing
+        // when the Electron broker is wired in.
+        requireIdempotencyKey(req)
+        const result = await service.confirmPostRenderQuality(
+          projectId,
+          operationId,
+          confirmVideoPostRenderQualityInputSchema.parse(await parseJson(req)),
+        )
+        return Response.json({
+          project: publicVideoProject(result.project),
+          acknowledgement: videoQualityAcknowledgementSchema.parse(result.acknowledgement),
+          task: publicVideoTask(result.task),
+          reused: result.reused,
+        }, { status: result.reused ? 200 : 201 })
+      }
       if (action === 'delivery-variants') {
         const variantId = segments[6]
         if (!variantId) {
@@ -324,10 +835,39 @@ export function createVideoWorkbenchApiHandler(
           )
           return Response.json({ project: publicVideoProject(result.project), version: deliveryVariantVersionSchema.parse(result.version), reused: result.reused })
         }
-        if (segments[7] === 'compile' && !segments[8]) {
+        if (segments[7] === 'preflight' && !segments[8]) {
           if (req.method !== 'POST') throw methodNotAllowed(req.method)
-          const result = await service.compileDeliveryVariant(projectId, variantId)
-          return Response.json({ project: publicVideoProject(result.project), plan: videoExecutionPlanSchema.parse(result.plan) })
+          requireMediaUiCapability(req, mediaUiCapability)
+          const result = await service.preflightDeliveryVariant(
+            projectId,
+            variantId,
+            preflightVideoVariantInputSchema.parse(await parseJson(req)),
+            requireIdempotencyKey(req),
+          )
+          return Response.json({ project: publicVideoProject(result.project), plan: videoExecutionPlanSchema.parse(result.plan), report: videoQualityReportSchema.parse(result.report), task: publicVideoTask(result.task) }, { status: 201 })
+        }
+        if (segments[7] === 'preview' && !segments[8]) {
+          if (req.method !== 'POST') throw methodNotAllowed(req.method)
+          requireMediaUiCapability(req, mediaUiCapability)
+          return Response.json({ task: publicVideoTask(await service.previewDeliveryVariant(
+            projectId,
+            variantId,
+            previewVideoVariantInputSchema.parse(await parseJson(req)),
+            requireIdempotencyKey(req),
+          )) }, { status: 202 })
+        }
+        if (segments[7] === 'render' && !segments[8]) {
+          if (req.method !== 'POST') throw methodNotAllowed(req.method)
+          requireMediaUiCapability(req, mediaUiCapability)
+          return Response.json({ task: publicVideoTask(await service.renderDeliveryVariant(
+            projectId,
+            variantId,
+            renderVideoVariantInputSchema.parse(await parseJson(req)),
+            requireIdempotencyKey(req),
+          )) }, { status: 202 })
+        }
+        if (segments[7] === 'compile' && !segments[8]) {
+          throw ApiError.notFound('交付编译由预检与执行任务内部完成')
         }
         throw methodNotAllowed(req.method)
       }
@@ -378,19 +918,18 @@ export function createVideoWorkbenchApiHandler(
       if (action === 'preview') {
         if (segments[6] === 'content') throw ApiError.notFound('找不到视频预览')
         if (req.method !== 'POST' || segments[6]) throw methodNotAllowed(req.method)
-        const input = previewVideoInputSchema.parse(await parseJson(req))
-        return Response.json({ task: publicVideoTask(await service.previewVideo(projectId, input)) }, { status: 202 })
+        throw ApiError.notFound('旧时间线预览已退役，请先对交付变体预检后调用 /delivery-variants/:id/preview')
       }
       if (action === 'previews') {
         const assetId = segments[6]
-        if (!assetId || segments[7] !== 'content' || segments[8] || req.method !== 'GET') throw methodNotAllowed(req.method)
-        return await service.previewResponse(projectId, assetId, req)
+        if (!assetId || segments[8] || req.method !== 'GET') throw methodNotAllowed(req.method)
+        if (segments[7] === 'content') return await service.previewResponse(projectId, assetId, req)
+        if (segments[7] === 'sidecar') return await service.previewSidecarResponse(projectId, assetId)
+        throw methodNotAllowed(req.method)
       }
       if (action === 'render') {
         if (req.method !== 'POST' || segments[6]) throw methodNotAllowed(req.method)
-        requireMediaUiCapability(req, mediaUiCapability)
-        const input = renderVideoInputSchema.parse(await parseJson(req))
-        return Response.json({ task: publicVideoTask(await service.renderVideo(projectId, input)) }, { status: 202 })
+        throw ApiError.notFound('旧时间线导出已退役，请先对交付变体预检后调用 /delivery-variants/:id/render')
       }
       throw ApiError.notFound('找不到视频接口')
     } catch (error) {
@@ -415,6 +954,9 @@ export function createVideoWorkbenchDomainApiHandler(
   ): Promise<Response> {
     try {
       if (segments[1] !== 'videos') throw ApiError.notFound('找不到视频接口')
+      // This wrapper owns delete/restore/cancel before delegating to the
+      // project handler, so it needs the same fail-closed capability gate.
+      if (isVideoWriteMethod(req.method)) requireMediaUiCapability(req, mediaUiCapability)
       const area = segments[2]
       if (area === 'deletions') {
         if (req.method !== 'GET' || segments[3]) throw methodNotAllowed(req.method)

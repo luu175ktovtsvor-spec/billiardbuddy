@@ -1,17 +1,22 @@
 import { createHash, randomUUID, timingSafeEqual } from 'node:crypto'
 import { Database } from 'bun:sqlite'
 import {
+  captionTranslationRelayResultSchema,
   canonicalRelayRequestHash,
   completeMediaObjectLeaseRequestSchema,
   createMediaObjectLeaseRequestSchema,
   createVideoRelayOperationRequestSchema,
+  installationAccessTokenHash,
   mediaObjectLeaseSchema,
   operationAcknowledgementSchema,
+  verifyVideoRemoteConsentClaim,
   videoMediaOperationByLocalOperationPath,
   VIDEO_MEDIA_RELAY_MAX_MULTIPART_PARTS,
   VIDEO_MEDIA_RELAY_RESULT_MAX_BYTES,
   type CreateVideoRelayOperationRequest,
   type ProviderExecutionReceipt,
+  type VideoRemoteConsentClaimPayload,
+  type VideoRemoteConsentPurpose,
 } from './contracts/relayApi.ts'
 import { DashScopeProviderError, DashScopeVideoProvider } from './providers/dashscope.ts'
 import { ObjectVerificationError, OssObjectStore, type ObjectMetadata, type ObjectStoreRequest, type ObjectVerificationRequest, type RelayObjectStore } from './objectStore.ts'
@@ -30,7 +35,7 @@ import {
 
 type Env = Record<string, string | undefined>
 type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
-type Identity = VideoMediaRelayIdentity
+type Identity = VideoMediaRelayIdentity & { access_token_hash: `sha256:${string}` }
 export type MediaObjectStore = RelayObjectStore
 export type VideoMediaProviderExecutionOptions = {
   signal?: AbortSignal
@@ -63,6 +68,13 @@ function isOutcomeUnknown(error: unknown): boolean {
 }
 function safeFailureCode(error: unknown): string {
   return error instanceof RelayError || error instanceof DashScopeProviderError ? error.code : 'provider_outcome_unknown'
+}
+function isKnownCaptionTranslationResultRejection(error: unknown): boolean {
+  return (error instanceof RelayError || error instanceof DashScopeProviderError)
+    && error.code === 'caption_translation_result_invalid'
+}
+function isProviderUsageAmountMissing(error: unknown): boolean {
+  return error instanceof DashScopeProviderError && error.code === 'provider_usage_amount_missing'
 }
 function json(data: unknown, status = 200, id = requestId()): Response { return Response.json(data, { status, headers: { 'X-Request-Id': id, 'Cache-Control': 'no-store' } }) }
 function digest(value: string): string { return `sha256:${createHash('sha256').update(value).digest('hex')}` }
@@ -155,6 +167,17 @@ async function body(request: Request, timeoutMs: number): Promise<unknown> {
 }
 function ttl(env: Env): number { return Math.max(60_000, Math.min(60 * 60_000, Number(env.VIDEO_MEDIA_LEASE_TTL_MS ?? 15 * 60_000))) }
 function outcomeUnknownRetention(env: Env): number { return Math.max(ttl(env), Math.min(7 * 24 * 60 * 60_000, Number(env.VIDEO_MEDIA_OUTCOME_UNKNOWN_RETENTION_MS ?? 72 * 60 * 60_000))) }
+/**
+ * A lease may be renewed to replace an expiring OSS capability, but that must
+ * not turn the immutable input object into an indefinitely retained blob.
+ * The deadline is copied into each lease so later environment changes cannot
+ * retroactively extend a capability that was already issued.
+ */
+function leaseMaximumRetention(env: Env): number {
+  const value = boundedEnvInt(env, 'VIDEO_MEDIA_LEASE_MAX_RETENTION_MS', 7 * 24 * 60 * 60_000, 60_000, 30 * 24 * 60 * 60_000)
+  if (value < ttl(env)) throw new Error('VIDEO_MEDIA_LEASE_MAX_RETENTION_MS must be at least VIDEO_MEDIA_LEASE_TTL_MS')
+  return value
+}
 function multipartThreshold(env: Env): number { return Math.max(5 * 1024 * 1024, Number(env.VIDEO_MEDIA_MULTIPART_THRESHOLD_BYTES ?? 8 * 1024 * 1024)) }
 function multipartPartSize(env: Env): number { return Math.max(1024 * 1024, Math.min(512 * 1024 * 1024, Number(env.VIDEO_MEDIA_MULTIPART_PART_SIZE_BYTES ?? 8 * 1024 * 1024))) }
 function boundedEnvInt(env: Env, name: string, fallback: number, min: number, max: number): number {
@@ -204,14 +227,89 @@ function assertLeasePurposeAndMime(input: { purpose: string; content_type: strin
   if (!permitted[input.purpose]?.includes(mime)) throw new RelayError(422, 'lease_purpose_mime_mismatch')
 }
 
+function purposesForCapability(input: CreateVideoRelayOperationRequest): readonly string[] {
+  if (input.capability === 'visual_evidence') return ['visual_frames']
+  if (input.capability === 'speech_transcription') return ['audio_for_asr']
+  return []
+}
+
+function consentPurposeForLease(purpose: string): VideoRemoteConsentPurpose {
+  switch (purpose) {
+    case 'visual_frames': return 'visual_evidence'
+    case 'audio_for_asr': return 'asr'
+    case 'proxy_video':
+    case 'transcript_for_reasoning': return 'planning'
+    default: throw new RelayError(422, 'remote_consent_claim_purpose_mismatch')
+  }
+}
+
+function consentPurposeForOperation(input: CreateVideoRelayOperationRequest): VideoRemoteConsentPurpose {
+  if (input.application_role === 'shot_evidence') return 'visual_evidence'
+  if (input.application_role === 'planning') return 'planning'
+  if (input.application_role === 'caption_translation') return 'caption_translation'
+  if (input.application_role === 'asr') return 'asr'
+  return 'semantic_search'
+}
+
+function sameConsentSourceScope(row: { consent_project_id?: unknown; consent_source_ids_json?: unknown; consent_purpose?: unknown }, claim: VideoRemoteConsentClaimPayload): boolean {
+  if (row.consent_project_id !== claim.project_id || row.consent_purpose !== claim.purpose) return false
+  try {
+    const sources = JSON.parse(String(row.consent_source_ids_json ?? '')) as unknown
+    return Array.isArray(sources)
+      && sources.length === claim.source_ids.length
+      && sources.every((source, index) => source === claim.source_ids[index])
+  } catch {
+    return false
+  }
+}
+
+function assertOperationObjectInputSupported(input: CreateVideoRelayOperationRequest): void {
+  // The deployed DashScope planning adapter consumes only the structured
+  // evidence envelope. It does not attach proxy-video or transcript object
+  // URLs to its upstream request, so accepting those leases would bind and
+  // retain media without ever using it. Keep no-object planning available and
+  // fail closed until a provider adapter has an explicit, tested mapping.
+  if (input.capability === 'media_reasoning' && input.application_role === 'planning' && input.input.object_refs.length > 0) {
+    throw new RelayError(422, 'planning_object_refs_unsupported')
+  }
+}
+
+function assertPlanningEvidenceScope(
+  input: CreateVideoRelayOperationRequest,
+  claim: VideoRemoteConsentClaimPayload,
+): void {
+  if (input.capability !== 'media_reasoning' || input.application_role !== 'planning') return
+  const allowedSources = new Set(claim.source_ids)
+  const declaredSources = new Set(input.input.sources.map(source => source.id))
+  if ([...declaredSources].some(sourceId => !allowedSources.has(sourceId))) {
+    throw new RelayError(422, 'planning_source_scope_mismatch')
+  }
+  for (const item of input.input.evidence) {
+    if (item.kind === 'delivery_intent' || item.kind === 'user_constraint') {
+      if (item.source_id !== undefined || item.in_ms !== undefined || item.out_ms !== undefined) {
+        throw new RelayError(422, 'planning_constraint_anchor_invalid')
+      }
+      continue
+    }
+    if (
+      !item.source_id
+      || !allowedSources.has(item.source_id)
+      || !declaredSources.has(item.source_id)
+      || item.in_ms === undefined
+      || item.out_ms === undefined
+      || item.out_ms <= item.in_ms
+    ) throw new RelayError(422, 'planning_evidence_scope_mismatch')
+  }
+}
+
 class RelayStore {
   readonly db: Database
   constructor(path: string, private readonly now: () => Date, accountKey: string) {
     this.db = new Database(path)
     this.db.exec('PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;')
     this.db.exec(`CREATE TABLE IF NOT EXISTS video_media_idempotency_v1(owner TEXT NOT NULL, key TEXT NOT NULL, request_hash TEXT NOT NULL, resource_id TEXT NOT NULL, PRIMARY KEY(owner,key));
-      CREATE TABLE IF NOT EXISTS video_media_leases_v1(id TEXT PRIMARY KEY, owner TEXT NOT NULL, local_operation_id TEXT NOT NULL, purpose TEXT NOT NULL, content_hash TEXT NOT NULL, byte_size INTEGER NOT NULL, content_type TEXT NOT NULL, consent_revision_id TEXT NOT NULL, consent_scope_hash TEXT NOT NULL, state TEXT NOT NULL, object_ref TEXT, expires_at TEXT NOT NULL, created_at TEXT NOT NULL, multipart_upload_id TEXT, multipart_part_size INTEGER, multipart_phase TEXT, multipart_parts_json TEXT);
-      CREATE TABLE IF NOT EXISTS video_media_operations_v1(id TEXT PRIMARY KEY, owner TEXT NOT NULL, local_operation_id TEXT NOT NULL, idempotency_key TEXT NOT NULL, request_hash TEXT NOT NULL, request_json TEXT NOT NULL, state TEXT NOT NULL, provider_task_id TEXT, result_object_refs TEXT, provider_receipt TEXT, account_quota_reservation_id TEXT NOT NULL, safe_error_code TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, acknowledged_at TEXT, submission_started_at TEXT, UNIQUE(owner,local_operation_id));
+      CREATE TABLE IF NOT EXISTS video_media_leases_v1(id TEXT PRIMARY KEY, owner TEXT NOT NULL, local_operation_id TEXT NOT NULL, purpose TEXT NOT NULL, content_hash TEXT NOT NULL, byte_size INTEGER NOT NULL, content_type TEXT NOT NULL, consent_revision_id TEXT NOT NULL, consent_scope_hash TEXT NOT NULL, consent_project_id TEXT, consent_source_ids_json TEXT, consent_purpose TEXT, consent_region TEXT, state TEXT NOT NULL, object_ref TEXT, expires_at TEXT NOT NULL, initial_expires_at TEXT, max_expires_at TEXT, created_at TEXT NOT NULL, multipart_upload_id TEXT, multipart_part_size INTEGER, multipart_phase TEXT, multipart_parts_json TEXT);
+      CREATE TABLE IF NOT EXISTS video_media_operations_v1(id TEXT PRIMARY KEY, owner TEXT NOT NULL, local_operation_id TEXT NOT NULL, idempotency_key TEXT NOT NULL, request_hash TEXT NOT NULL, request_json TEXT NOT NULL, consent_project_id TEXT, consent_source_ids_json TEXT, consent_purpose TEXT, consent_region TEXT, state TEXT NOT NULL, provider_task_id TEXT, result_object_refs TEXT, provider_receipt TEXT, account_quota_reservation_id TEXT NOT NULL, safe_error_code TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, acknowledged_at TEXT, submission_started_at TEXT, UNIQUE(owner,local_operation_id));
       CREATE TABLE IF NOT EXISTS video_media_result_objects_v1(object_ref TEXT PRIMARY KEY, operation_id TEXT NOT NULL REFERENCES video_media_operations_v1(id), content_hash TEXT NOT NULL, byte_size INTEGER NOT NULL, content_type TEXT NOT NULL, expires_at TEXT NOT NULL, acknowledged_at TEXT, state TEXT NOT NULL DEFAULT 'published', publication_state TEXT, publication_provider_task_id TEXT, publication_receipt TEXT, publication_safe_error_code TEXT, payload BLOB);
       CREATE TABLE IF NOT EXISTS video_media_object_cleanup_v1(id TEXT PRIMARY KEY, object_kind TEXT NOT NULL, lease_id TEXT NOT NULL, object_ref TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, next_attempt_at TEXT NOT NULL, completed_at TEXT, last_error TEXT, phase TEXT NOT NULL DEFAULT 'active', UNIQUE(object_kind,lease_id,object_ref));
       CREATE TABLE IF NOT EXISTS video_media_quota_v1(owner TEXT NOT NULL, reservation_id TEXT NOT NULL, operation_id TEXT NOT NULL, state TEXT NOT NULL, units INTEGER NOT NULL, period TEXT NOT NULL, policy_revision TEXT NOT NULL, account_key TEXT NOT NULL, settled_units INTEGER NOT NULL DEFAULT 0, actual_usage_json TEXT, created_at TEXT NOT NULL, settled_at TEXT, PRIMARY KEY(owner,reservation_id));
@@ -224,6 +322,8 @@ class RelayStore {
     try { this.db.exec('ALTER TABLE video_media_leases_v1 ADD COLUMN multipart_part_size INTEGER') } catch { /* already present */ }
     try { this.db.exec('ALTER TABLE video_media_leases_v1 ADD COLUMN multipart_phase TEXT') } catch { /* already present */ }
     try { this.db.exec('ALTER TABLE video_media_leases_v1 ADD COLUMN multipart_parts_json TEXT') } catch { /* already present */ }
+    try { this.db.exec('ALTER TABLE video_media_leases_v1 ADD COLUMN initial_expires_at TEXT') } catch { /* already present */ }
+    try { this.db.exec('ALTER TABLE video_media_leases_v1 ADD COLUMN max_expires_at TEXT') } catch { /* already present */ }
     try { this.db.exec("ALTER TABLE video_media_result_objects_v1 ADD COLUMN state TEXT NOT NULL DEFAULT 'published'") } catch { /* already present */ }
     try { this.db.exec('ALTER TABLE video_media_result_objects_v1 ADD COLUMN publication_state TEXT') } catch { /* already present */ }
     try { this.db.exec('ALTER TABLE video_media_result_objects_v1 ADD COLUMN publication_provider_task_id TEXT') } catch { /* already present */ }
@@ -232,6 +332,14 @@ class RelayStore {
     try { this.db.exec('ALTER TABLE video_media_result_objects_v1 ADD COLUMN payload BLOB') } catch { /* already present */ }
     try { this.db.exec("ALTER TABLE video_media_object_cleanup_v1 ADD COLUMN phase TEXT NOT NULL DEFAULT 'active'") } catch { /* already present */ }
     try { this.db.exec('ALTER TABLE video_media_operations_v1 ADD COLUMN submission_started_at TEXT') } catch { /* already present */ }
+    try { this.db.exec('ALTER TABLE video_media_leases_v1 ADD COLUMN consent_project_id TEXT') } catch { /* already present */ }
+    try { this.db.exec('ALTER TABLE video_media_leases_v1 ADD COLUMN consent_source_ids_json TEXT') } catch { /* already present */ }
+    try { this.db.exec('ALTER TABLE video_media_leases_v1 ADD COLUMN consent_purpose TEXT') } catch { /* already present */ }
+    try { this.db.exec('ALTER TABLE video_media_leases_v1 ADD COLUMN consent_region TEXT') } catch { /* already present */ }
+    try { this.db.exec('ALTER TABLE video_media_operations_v1 ADD COLUMN consent_project_id TEXT') } catch { /* already present */ }
+    try { this.db.exec('ALTER TABLE video_media_operations_v1 ADD COLUMN consent_source_ids_json TEXT') } catch { /* already present */ }
+    try { this.db.exec('ALTER TABLE video_media_operations_v1 ADD COLUMN consent_purpose TEXT') } catch { /* already present */ }
+    try { this.db.exec('ALTER TABLE video_media_operations_v1 ADD COLUMN consent_region TEXT') } catch { /* already present */ }
     try { this.db.exec("ALTER TABLE video_media_quota_v1 ADD COLUMN period TEXT") } catch { /* already present */ }
     try { this.db.exec("ALTER TABLE video_media_quota_v1 ADD COLUMN policy_revision TEXT") } catch { /* already present */ }
     try { this.db.exec("ALTER TABLE video_media_quota_v1 ADD COLUMN account_key TEXT") } catch { /* already present */ }
@@ -242,6 +350,10 @@ class RelayStore {
     // The pre-ledger schema had no timestamp. Preserve every reservation by
     // assigning it the migration UTC day rather than silently dropping it.
     this.db.query("UPDATE video_media_quota_v1 SET period=COALESCE(period,strftime('%Y-%m-%d','now')),policy_revision=COALESCE(policy_revision,'legacy-v1'),account_key=COALESCE(account_key,'video-dashscope-account'),settled_units=CASE WHEN settled_units IS NULL OR settled_units<1 THEN units ELSE settled_units END,created_at=COALESCE(created_at,strftime('%Y-%m-%dT%H:%M:%fZ','now')) WHERE period IS NULL OR policy_revision IS NULL OR account_key IS NULL OR created_at IS NULL").run()
+    // Old leases predate the hard retention contract.  Preserve their
+    // existing expiry as both deadlines rather than granting a retrospective
+    // renewal window when a Relay upgrades in place.
+    this.db.query('UPDATE video_media_leases_v1 SET initial_expires_at=COALESCE(initial_expires_at,expires_at),max_expires_at=COALESCE(max_expires_at,expires_at) WHERE initial_expires_at IS NULL OR max_expires_at IS NULL').run()
     // `video-dashscope-account` identified every physical account before the
     // binding existed. Upgrade those rows exactly once to the first explicit
     // binding that opens this database; later account moves retain their own
@@ -314,7 +426,7 @@ function defaultObjectStore(env: Env, admissionBackend: VideoMediaAdmissionBacke
 function defaultProvider(now: () => Date): VideoMediaProvider {
   return { async execute(input) {
     const capability = input.capability
-    const receipt: ProviderExecutionReceipt = { id: opaque('receipt'), capability, model_snapshot: capability === 'visual_evidence' ? 'qwen3-vl-flash' : capability === 'media_reasoning' ? 'qwen3.6-flash' : capability === 'speech_transcription' ? (input.input.mode === 'short_sync' ? 'fun-asr-flash-2026-06-15' : 'fun-asr') : 'text-embedding-v4', region: 'cn-beijing', request_schema_version: 1, prompt_version: 'video-media-v1', input_basis_hash: input.request_hash, usage: { requests: 1, total_tokens: 0, input_bytes: 0, visual_frames: capability === 'visual_evidence' ? input.input.object_refs.length : 0, proxy_seconds: 0, asr_seconds: 0, estimated_amount_micros: 0 }, cache_hit: false, created_at: iso(now) }
+    const receipt: ProviderExecutionReceipt = { id: opaque('receipt'), capability, model_snapshot: videoProviderFor(input).model_id, region: 'cn-beijing', request_schema_version: 1, prompt_version: 'video-media-v1', input_basis_hash: input.request_hash, usage: { requests: 1, total_tokens: 0, input_bytes: 0, visual_frames: capability === 'visual_evidence' ? input.input.object_refs.length : 0, proxy_seconds: 0, asr_seconds: 0, estimated_amount_micros: 0 }, cache_hit: false, created_at: iso(now) }
     // A configured deployment replaces this adapter with provider adapters. It
     // fails closed: no fake evidence, transcript or embedding is persisted.
     throw new RelayError(503, 'provider_not_configured')
@@ -324,8 +436,15 @@ function defaultProvider(now: () => Date): VideoMediaProvider {
 export function createVideoMediaRelayFetch(deps: RelayDeps = {}) {
   const env = deps.env ?? process.env
   const now = deps.now ?? (() => new Date())
+  const remoteConsentSigningKey = env.VIDEO_MEDIA_REMOTE_CONSENT_SIGNING_KEY?.trim() ?? ''
+  // The container entry command sets this only after the same image's
+  // subtitles/fontconfig/one-frame libass probe succeeds. Do not let a
+  // running Relay claim burn-in readiness when it was launched outside that
+  // controlled runtime contract.
+  const subtitleBurnInReady = env.VIDEO_MEDIA_SUBTITLE_RUNTIME_READY === '1'
   const processStartedAt = iso(now)
   const acceptedOrphanGraceMs = boundedEnvInt(env, 'VIDEO_MEDIA_ACCEPTED_ORPHAN_GRACE_MS', 60_000, 1_000, 10 * 60_000)
+  const maximumLeaseRetentionMs = leaseMaximumRetention(env)
   const capacity = videoMediaCapacityPolicyFromEnvironment(env)
   const quotaPolicy = videoMediaQuotaPolicyFromEnvironment(env, capacity.account.account_key)
   const store = new RelayStore(env.VIDEO_MEDIA_RELAY_DB ?? ':memory:', now, capacity.account.account_key)
@@ -451,6 +570,18 @@ export function createVideoMediaRelayFetch(deps: RelayDeps = {}) {
     if (!row) throw new RelayError(409, 'lease_recovery_missing')
     return row
   }
+  const leaseMaximumDeadline = (row: Row): number => Date.parse(String(row.max_expires_at ?? row.expires_at))
+  const leaseCurrentDeadline = (row: Row): number => Date.parse(String(row.expires_at))
+  function assertLeaseActive(row: Row): void {
+    if (row.state === 'deleted') throw new RelayError(410, 'lease_deleted')
+    if (row.state === 'expired') throw new RelayError(410, 'lease_expired')
+    const currentDeadline = leaseCurrentDeadline(row)
+    const maximumDeadline = leaseMaximumDeadline(row)
+    if (!Number.isFinite(currentDeadline) || !Number.isFinite(maximumDeadline) || currentDeadline <= now().getTime() || maximumDeadline <= now().getTime()) {
+      expireLease(row)
+      throw new RelayError(410, 'lease_expired')
+    }
+  }
   const verificationRequest = (row: Row, signal?: AbortSignal): ObjectVerificationRequest => ({
     owner: row.owner as string,
     signal,
@@ -474,11 +605,17 @@ export function createVideoMediaRelayFetch(deps: RelayDeps = {}) {
   }
   const retainOutcomeUnknownInputs = (input: CreateVideoRelayOperationRequest, owner: string): void => {
     const refs = input.capability === 'speech_transcription' ? [input.input.audio_object_ref] : input.capability === 'visual_evidence' || input.capability === 'media_reasoning' ? input.input.object_refs : []
-    const expiresAt = new Date(now().getTime() + outcomeUnknownRetention(env)).toISOString()
     for (const ref of refs) {
-      store.db.query("UPDATE video_media_leases_v1 SET state='bound',expires_at=? WHERE owner=? AND object_ref=? AND state IN ('ready','bound')").run(expiresAt, owner, ref)
-      const lease = store.db.query('SELECT id FROM video_media_leases_v1 WHERE owner=? AND object_ref=?').get(owner, ref) as { id: string } | null
-      if (lease) store.db.query("UPDATE video_media_lease_quota_v1 SET state='outcome_unknown' WHERE lease_id=? AND state='reserved'").run(lease.id)
+      const lease = store.db.query("SELECT * FROM video_media_leases_v1 WHERE owner=? AND object_ref=? AND state IN ('ready','bound')").get(owner, ref) as Row | null
+      if (!lease) continue
+      const maximumDeadline = leaseMaximumDeadline(lease)
+      const expiresAt = Math.min(now().getTime() + outcomeUnknownRetention(env), maximumDeadline)
+      if (!Number.isFinite(expiresAt) || expiresAt <= now().getTime()) {
+        expireLease(lease)
+        continue
+      }
+      store.db.query("UPDATE video_media_leases_v1 SET state='bound',expires_at=? WHERE id=? AND state IN ('ready','bound')").run(new Date(expiresAt).toISOString(), lease.id)
+      store.db.query("UPDATE video_media_lease_quota_v1 SET state='outcome_unknown' WHERE lease_id=? AND state='reserved'").run(lease.id)
     }
   }
   const verified = (row: Row, actual: Awaited<ReturnType<MediaObjectStore['head']>>): boolean => Boolean(actual && actual.byte_size === row.byte_size && actual.content_hash === row.content_hash && actual.content_type === row.content_type)
@@ -554,8 +691,10 @@ export function createVideoMediaRelayFetch(deps: RelayDeps = {}) {
     return leaseRow(row.id as string)
   }
   async function leaseCapabilities(row: Row, verification?: ObjectVerificationRequest) {
+    assertLeaseActive(row)
     row = await recoverMultipart(row, verification)
-    if (row.state !== 'awaiting_upload' || Date.parse(row.expires_at as string) <= now().getTime()) return {}
+    assertLeaseActive(row)
+    if (row.state !== 'awaiting_upload') return {}
     const multipartUploadId = row.multipart_upload_id as string | null
     if (!multipartUploadId) {
       return await objectStore.createPutUrl({ leaseId: row.id as string, hash: row.content_hash as string, byteSize: row.byte_size as number, contentType: row.content_type as string, expiresAt: row.expires_at as string })
@@ -645,7 +784,20 @@ export function createVideoMediaRelayFetch(deps: RelayDeps = {}) {
   function hasPublishingResult(operationId: string): boolean {
     return Boolean(store.db.query("SELECT 1 FROM video_media_result_objects_v1 WHERE operation_id=? AND state='publishing' LIMIT 1").get(operationId))
   }
+  function resultAllowedForOperation(operation: { request_json: string }, result: unknown): unknown {
+    let input: CreateVideoRelayOperationRequest
+    try { input = createVideoRelayOperationRequestSchema.parse(JSON.parse(operation.request_json)) } catch {
+      throw new RelayError(502, 'operation_request_invalid')
+    }
+    if (input.capability !== 'media_reasoning' || input.application_role !== 'caption_translation') return result
+    const parsed = captionTranslationRelayResultSchema.safeParse(result)
+    if (!parsed.success) throw new RelayError(502, 'caption_translation_result_invalid')
+    return parsed.data
+  }
   async function persistResult(operationId: string, result: unknown, publication: ResultPublication): Promise<string[]> {
+    const operation = store.db.query('SELECT id,request_json FROM video_media_operations_v1 WHERE id=?').get(operationId) as { id: string; request_json: string } | null
+    if (!operation) throw new RelayError(503, 'operation_missing_for_result')
+    result = resultAllowedForOperation(operation, result)
     let encoded: string
     try { encoded = JSON.stringify(result) } catch { throw new RelayError(502, 'provider_result_not_serializable') }
     const bytes = new TextEncoder().encode(encoded)
@@ -653,8 +805,6 @@ export function createVideoMediaRelayFetch(deps: RelayDeps = {}) {
     const objectRef = opaque('result')
     const contentHash = `sha256:${createHash('sha256').update(bytes).digest('hex')}`
     const expiresAt = new Date(now().getTime() + ttl(env)).toISOString()
-    const operation = store.db.query('SELECT id FROM video_media_operations_v1 WHERE id=?').get(operationId) as { id: string } | null
-    if (!operation) throw new RelayError(503, 'operation_missing_for_result')
     activeResultPublications.add(objectRef)
     try {
       store.transaction(() => {
@@ -831,7 +981,7 @@ export function createVideoMediaRelayFetch(deps: RelayDeps = {}) {
         store.retainUnknownQuota(operation.account_quota_reservation_id)
       })
     }
-    const leases = store.db.query("SELECT id FROM video_media_leases_v1 WHERE expires_at<=? AND state IN ('awaiting_upload','ready','bound')").all(current) as Array<{ id: string }>
+    const leases = store.db.query("SELECT id FROM video_media_leases_v1 WHERE (expires_at<=? OR max_expires_at<=?) AND state IN ('awaiting_upload','ready','bound')").all(current, current) as Array<{ id: string }>
     for (const lease of leases) {
       store.transaction(() => {
         store.db.query("UPDATE video_media_leases_v1 SET state='expired' WHERE id=? AND state IN ('awaiting_upload','ready','bound')").run(lease.id)
@@ -850,6 +1000,9 @@ export function createVideoMediaRelayFetch(deps: RelayDeps = {}) {
     }
   }
   async function refreshOperation(row: Row, principal: Identity, signal?: AbortSignal): Promise<void> {
+    // `outcome_unknown` is a terminal local state for automatic work.  It
+    // deliberately requires an explicit reconciliation action; a GET must
+    // never turn an indeterminate Provider result into an unbounded poll loop.
     if (!['submitted', 'running'].includes(row.state as string) || !row.provider_task_id || !provider.poll) return
     const input = createVideoRelayOperationRequestSchema.parse(JSON.parse(row.request_json as string))
     try {
@@ -883,12 +1036,30 @@ export function createVideoMediaRelayFetch(deps: RelayDeps = {}) {
       }
       if (['succeeded', 'failed', 'expired', 'cancelled'].includes(polled.state)) queueInputCleanup(input, principal.owner)
     } catch (error) {
-      // A known remote task is recoverable by read-only polling. A transient
-      // polling outage must never turn it into a permanently unrecoverable
-      // unknown operation, and must never authorize a second submission.
+      // A known remote task is readable only while the Provider explicitly
+      // keeps it submitted/running. A failed status query cannot be treated as
+      // pending forever: it becomes outcome_unknown without a second submit.
+      if (isProviderUsageAmountMissing(error)) {
+        store.transaction(() => {
+          store.db.query("UPDATE video_media_operations_v1 SET state='outcome_unknown',provider_receipt=NULL,safe_error_code=?,updated_at=? WHERE id=? AND provider_task_id IS NOT NULL")
+            .run('provider_usage_amount_missing', iso(now), row.id)
+          store.retainUnknownQuota(row.account_quota_reservation_id)
+        })
+        retainOutcomeUnknownInputs(input, principal.owner)
+        return
+      }
       if (row.provider_task_id && isOutcomeUnknown(error)) {
-        store.db.query("UPDATE video_media_operations_v1 SET state='submitted',safe_error_code='provider_poll_pending_retry',updated_at=? WHERE id=? AND state IN ('submitted','running')")
-          .run(iso(now), row.id)
+        // A task id proves that submission crossed the Provider boundary, but
+        // a failed status query proves neither success nor failure. Preserve
+        // the reservation and input lease, then stop touching the Provider.
+        // The next GET must be a read-only projection until an explicit
+        // reconciliation/cancellation path is invoked.
+        store.transaction(() => {
+          store.db.query("UPDATE video_media_operations_v1 SET state='outcome_unknown',safe_error_code=?,updated_at=? WHERE id=? AND state IN ('submitted','running')")
+            .run(safeFailureCode(error), iso(now), row.id)
+          store.retainUnknownQuota(row.account_quota_reservation_id)
+        })
+        retainOutcomeUnknownInputs(input, principal.owner)
         return
       }
       const unknown = isOutcomeUnknown(error)
@@ -917,12 +1088,30 @@ export function createVideoMediaRelayFetch(deps: RelayDeps = {}) {
       // cancelling one caller must not tear down an in-flight deduplicated
       // introspection that other callers are awaiting. Control-body handling
       // still observes the request signal and returns its 499.
-      return await identityIntrospector.introspect(accessToken)
+      return {
+        ...await identityIntrospector.introspect(accessToken),
+        access_token_hash: installationAccessTokenHash(accessToken),
+      }
     } catch (error) {
       if (request.signal.aborted) throw new RelayError(499, 'request_aborted')
       if (error instanceof VideoMediaRelayIdentityError) throw new RelayError(error.status, error.code)
       throw new RelayError(503, 'identity_unavailable')
     }
+  }
+  function assertRemoteConsent(
+    raw: { remote_consent_claim: string; consent_revision_id: string; consent_scope_hash: string },
+    principal: Identity,
+    purpose: VideoRemoteConsentPurpose,
+  ): VideoRemoteConsentClaimPayload {
+    if (remoteConsentSigningKey.length < 32) throw new RelayError(503, 'remote_consent_verifier_unavailable')
+    const claim = verifyVideoRemoteConsentClaim(raw.remote_consent_claim, remoteConsentSigningKey, now().getTime())
+    if (!claim) throw new RelayError(403, 'remote_consent_claim_invalid')
+    if (claim.identity_token_hash !== principal.access_token_hash) throw new RelayError(403, 'remote_consent_claim_identity_mismatch')
+    if (claim.consent_revision_id !== raw.consent_revision_id || claim.consent_scope_hash !== raw.consent_scope_hash) {
+      throw new RelayError(422, 'remote_consent_claim_scope_mismatch')
+    }
+    if (claim.purpose !== purpose || claim.region !== 'cn-beijing') throw new RelayError(422, 'remote_consent_claim_purpose_mismatch')
+    return claim
   }
   // Run once at process start without waiting for a client request, then keep
   // the bounded cleanup queue moving even when no desktop is open. The timer
@@ -941,7 +1130,18 @@ export function createVideoMediaRelayFetch(deps: RelayDeps = {}) {
     try {
       const url = new URL(request.url)
       if (request.method === 'GET' && url.pathname === '/healthz') return json({ ok: true, component: 'video-media-relay' }, 200, id)
-      if (request.method === 'GET' && url.pathname === '/readyz') return json({ ok: true, component: 'video-media-relay', identity_configured: Boolean(env.VIDEO_MEDIA_GATEWAY_INTROSPECTION_TOKEN && env.VIDEO_MEDIA_GATEWAY_INTROSPECTION_BASE), capacity_policy_revision: capacity.revision }, 200, id)
+      if (request.method === 'GET' && url.pathname === '/readyz') {
+        return json({
+          ok: subtitleBurnInReady,
+          component: 'video-media-relay',
+          identity_configured: Boolean(env.VIDEO_MEDIA_GATEWAY_INTROSPECTION_TOKEN && env.VIDEO_MEDIA_GATEWAY_INTROSPECTION_BASE),
+          capacity_policy_revision: capacity.revision,
+          subtitle_burn_in: {
+            available: subtitleBurnInReady,
+            font_family: 'Noto Sans CJK SC',
+          },
+        }, subtitleBurnInReady ? 200 : 503, id)
+      }
       const principal = await identity(request)
       const lookupPrefix = videoMediaOperationByLocalOperationPath('')
       if (request.method === 'GET' && url.pathname.startsWith(lookupPrefix)) {
@@ -960,13 +1160,16 @@ export function createVideoMediaRelayFetch(deps: RelayDeps = {}) {
       await recoverPublishingResults()
       await retryObjectCleanup()
       if (request.method === 'POST' && url.pathname === '/v1/video-media/object-leases') {
-        const key = requireControlHeaders(request); const raw = createMediaObjectLeaseRequestSchema.parse(await body(request, controlBodyTimeout(env))); assertLeasePurposeAndMime(raw); const hash = canonicalRelayRequestHash(raw)
+        const key = requireControlHeaders(request); const raw = createMediaObjectLeaseRequestSchema.parse(await body(request, controlBodyTimeout(env))); assertLeasePurposeAndMime(raw)
+        const claim = assertRemoteConsent(raw, principal, consentPurposeForLease(raw.purpose)); const hash = canonicalRelayRequestHash(raw)
         const replay = store.replay(principal.owner, key, hash); if (replay) {
           const row = store.db.query('SELECT * FROM video_media_leases_v1 WHERE id=? AND owner=?').get(replay, principal.owner) as Row | null
           if (!row) throw new RelayError(409, 'idempotency_resource_missing')
+          if (!sameConsentSourceScope(row, claim) || row.consent_region !== claim.region) throw new RelayError(422, 'remote_consent_claim_scope_mismatch')
           // A crash after receiving the lease but before completing a direct
           // PUT must be resumable.  Re-signing does not change its immutable
           // hash/size/type/object key and cannot widen the consent scope.
+          assertLeaseActive(row)
           const signed = await leaseCapabilities(row, verificationRequest(row, request.signal))
           return json(mediaObjectLeaseSchema.parse({ lease_id: row.id, state: row.state, ...(row.object_ref ? { object_ref: row.object_ref } : {}), ...signed, expires_at: row.expires_at }), 200, id)
         }
@@ -974,7 +1177,7 @@ export function createVideoMediaRelayFetch(deps: RelayDeps = {}) {
         // issuing a fresh OSS capability, while preserving idempotent recovery
         // for a lease that was already accepted before the policy changed.
         assertVideoQuotaAllowsNewWork(quotaPolicy)
-        const leaseId = opaque('lease'); const expiresAt = new Date(now().getTime() + ttl(env)).toISOString()
+        const leaseId = opaque('lease'); const expiresAt = new Date(now().getTime() + ttl(env)).toISOString(); const maximumExpiresAt = new Date(now().getTime() + maximumLeaseRetentionMs).toISOString()
         const multipart = raw.byte_size >= multipartThreshold(env)
         const partSize = multipart ? multipartPartSize(env) : null
         if (partSize && Math.ceil(raw.byte_size / partSize) > VIDEO_MEDIA_RELAY_MAX_MULTIPART_PARTS) {
@@ -985,9 +1188,11 @@ export function createVideoMediaRelayFetch(deps: RelayDeps = {}) {
           // capability issuance from unbounded client-side upload attempts.
           store.reserveLease(principal.owner, leaseId, objectLeaseQuotaUnits)
           store.db.query(`INSERT INTO video_media_leases_v1(
-            id,owner,local_operation_id,purpose,content_hash,byte_size,content_type,consent_revision_id,consent_scope_hash,state,object_ref,expires_at,created_at,multipart_upload_id,multipart_part_size,multipart_phase,multipart_parts_json
-          ) VALUES(?,?,?,?,?,?,?,?,?,'awaiting_upload',NULL,?,?,?,? ,?,NULL)`).run(
-            leaseId, principal.owner, raw.local_operation_id, raw.purpose, raw.content_hash, raw.byte_size, raw.content_type, raw.consent_revision_id, raw.consent_scope_hash, expiresAt, iso(now), null, partSize, multipart ? 'initializing' : null,
+            id,owner,local_operation_id,purpose,content_hash,byte_size,content_type,consent_revision_id,consent_scope_hash,consent_project_id,consent_source_ids_json,consent_purpose,consent_region,state,object_ref,expires_at,initial_expires_at,max_expires_at,created_at,multipart_upload_id,multipart_part_size,multipart_phase,multipart_parts_json
+          ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?, 'awaiting_upload',NULL,?,?,?,?,?,?,?,NULL)`).run(
+            leaseId, principal.owner, raw.local_operation_id, raw.purpose, raw.content_hash, raw.byte_size, raw.content_type, raw.consent_revision_id, raw.consent_scope_hash,
+            claim.project_id, JSON.stringify(claim.source_ids), claim.purpose, claim.region,
+            expiresAt, expiresAt, maximumExpiresAt, iso(now), null, partSize, multipart ? 'initializing' : null,
           )
           store.db.query('INSERT INTO video_media_idempotency_v1 VALUES(?,?,?,?)').run(principal.owner, key, hash, leaseId)
         })
@@ -998,11 +1203,19 @@ export function createVideoMediaRelayFetch(deps: RelayDeps = {}) {
       if (leaseMatch && request.method === 'POST') {
         const key = requireControlHeaders(request); const leaseId = leaseMatch[1]!; const action = leaseMatch[2]!; const rawBody = await body(request, controlBodyTimeout(env)); const completion = action === 'complete' ? completeMediaObjectLeaseRequestSchema.parse(rawBody) : (rawBody, {})
         let row = store.db.query('SELECT * FROM video_media_leases_v1 WHERE id=? AND owner=?').get(leaseId, principal.owner) as Row | null; if (!row) throw new RelayError(404, 'lease_not_found')
+        assertLeaseActive(row)
         row = await recoverMultipart(row, verificationRequest(row, request.signal))
+        assertLeaseActive(row)
         const hash = canonicalRelayRequestHash({ lease_id: leaseId, action, completion }); const replay = store.replay(principal.owner, key, hash); if (replay) return json(mediaObjectLeaseSchema.parse({ lease_id: row.id, state: row.state, ...(row.object_ref ? { object_ref: row.object_ref } : {}), ...await leaseCapabilities(row, verificationRequest(row, request.signal)), expires_at: row.expires_at }), 200, id)
-        if (action === 'renew') { if (Date.parse(row.expires_at as string) <= now().getTime() || row.state === 'deleted') { expireLease(row); throw new RelayError(410, 'lease_expired') }; const expiresAt = new Date(now().getTime() + ttl(env)).toISOString(); store.db.query('UPDATE video_media_leases_v1 SET expires_at=? WHERE id=?').run(expiresAt, leaseId); store.db.query('INSERT INTO video_media_idempotency_v1 VALUES(?,?,?,?)').run(principal.owner, key, hash, leaseId); const renewed = store.db.query('SELECT * FROM video_media_leases_v1 WHERE id=?').get(leaseId) as Row; return json(mediaObjectLeaseSchema.parse({ lease_id: leaseId, state: row.state, ...(row.object_ref ? { object_ref: row.object_ref } : {}), ...await leaseCapabilities(renewed, verificationRequest(renewed, request.signal)), expires_at: expiresAt }), 200, id) }
-        if (Date.parse(row.expires_at as string) <= now().getTime()) { expireLease(row); throw new RelayError(410, 'lease_expired') }
-        if (row.state === 'deleted') throw new RelayError(410, 'lease_deleted')
+        if (action === 'renew') {
+          const nextExpiration = now().getTime() + ttl(env)
+          if (nextExpiration > leaseMaximumDeadline(row)) throw new RelayError(409, 'lease_retention_limit_reached')
+          const expiresAt = new Date(nextExpiration).toISOString()
+          store.db.query('UPDATE video_media_leases_v1 SET expires_at=? WHERE id=?').run(expiresAt, leaseId)
+          store.db.query('INSERT INTO video_media_idempotency_v1 VALUES(?,?,?,?)').run(principal.owner, key, hash, leaseId)
+          const renewed = leaseRow(leaseId)
+          return json(mediaObjectLeaseSchema.parse({ lease_id: leaseId, state: renewed.state, ...(renewed.object_ref ? { object_ref: renewed.object_ref } : {}), ...await leaseCapabilities(renewed, verificationRequest(renewed, request.signal)), expires_at: expiresAt }), 200, id)
+        }
         if (row.state === 'ready' || row.state === 'bound') {
           if (action === 'complete') store.db.query('INSERT OR IGNORE INTO video_media_idempotency_v1 VALUES(?,?,?,?)').run(principal.owner, key, hash, leaseId)
           return json(mediaObjectLeaseSchema.parse({ lease_id: row.id, state: row.state, object_ref: row.object_ref, expires_at: row.expires_at }), 200, id)
@@ -1048,11 +1261,13 @@ export function createVideoMediaRelayFetch(deps: RelayDeps = {}) {
         return new Response(null, { status: 204, headers: { 'X-Request-Id': id } })
       }
       if (request.method === 'POST' && url.pathname === '/v1/video-media/operations') {
-        const key = requireControlHeaders(request); const raw = createVideoRelayOperationRequestSchema.parse(await body(request, controlBodyTimeout(env))); const hash = canonicalRelayRequestHash(raw); const replay = store.replay(principal.owner, key, hash)
+        const key = requireControlHeaders(request); const raw = createVideoRelayOperationRequestSchema.parse(await body(request, controlBodyTimeout(env))); assertOperationObjectInputSupported(raw)
+        const claim = assertRemoteConsent(raw, principal, consentPurposeForOperation(raw)); assertPlanningEvidenceScope(raw, claim); const hash = canonicalRelayRequestHash(raw); const replay = store.replay(principal.owner, key, hash)
         let replayRow: Row | null = null
         if (replay) {
           replayRow = store.db.query('SELECT * FROM video_media_operations_v1 WHERE id=? AND owner=?').get(replay, principal.owner) as Row | null
           if (!replayRow) throw new RelayError(409, 'idempotency_resource_missing')
+          if (!sameConsentSourceScope(replayRow, claim) || replayRow.consent_region !== claim.region) throw new RelayError(422, 'remote_consent_claim_scope_mismatch')
           // Terminal idempotency replays are independent of source-object
           // retention: input cleanup must never turn a completed replay into
           // object_not_ready.
@@ -1080,10 +1295,21 @@ export function createVideoMediaRelayFetch(deps: RelayDeps = {}) {
           }
         }
         const objectRefs = raw.capability === 'visual_evidence' || raw.capability === 'media_reasoning' ? raw.input.object_refs : raw.capability === 'speech_transcription' ? [raw.input.audio_object_ref] : []
-        const referencedObjects = objectRefs.map(ref => store.db.query("SELECT consent_revision_id,consent_scope_hash,local_operation_id,state FROM video_media_leases_v1 WHERE owner=? AND object_ref=? AND state IN ('ready','bound')").get(principal.owner, ref) as { consent_revision_id: string; consent_scope_hash: string; local_operation_id: string; state: string } | null)
+        const referencedObjects = objectRefs.map(ref => store.db.query("SELECT consent_revision_id,consent_scope_hash,consent_project_id,consent_source_ids_json,consent_purpose,consent_region,local_operation_id,state,purpose,content_type FROM video_media_leases_v1 WHERE owner=? AND object_ref=? AND state IN ('ready','bound')").get(principal.owner, ref) as { consent_revision_id: string; consent_scope_hash: string; consent_project_id?: string; consent_source_ids_json?: string; consent_purpose?: string; consent_region?: string; local_operation_id: string; state: string; purpose: string; content_type: string } | null)
         if (referencedObjects.some(item => !item)) throw new RelayError(422, 'object_not_ready')
         if (referencedObjects.some(item => item!.consent_revision_id !== raw.consent_revision_id || item!.consent_scope_hash !== raw.consent_scope_hash)) throw new RelayError(422, 'object_consent_scope_mismatch')
-        if (referencedObjects.some(item => item!.state === 'bound' && item!.local_operation_id !== raw.local_operation_id)) throw new RelayError(422, 'object_already_bound')
+        if (referencedObjects.some(item => !sameConsentSourceScope(item!, claim) || item!.consent_region !== claim.region)) throw new RelayError(422, 'object_consent_scope_mismatch')
+        if (referencedObjects.some(item => item!.local_operation_id !== raw.local_operation_id)) throw new RelayError(422, 'object_already_bound')
+        const allowedPurposes = purposesForCapability(raw)
+        if (referencedObjects.some(item => !allowedPurposes.includes(item!.purpose))) throw new RelayError(422, 'object_purpose_mismatch')
+        if (referencedObjects.some(item => {
+          try {
+            assertLeasePurposeAndMime({ purpose: item!.purpose, content_type: item!.content_type })
+            return false
+          } catch {
+            return true
+          }
+        })) throw new RelayError(422, 'object_purpose_mismatch')
         let operationId: string
         let quota: string
         if (replay) {
@@ -1097,8 +1323,12 @@ export function createVideoMediaRelayFetch(deps: RelayDeps = {}) {
             quota = store.transaction(() => {
               const reservation = store.reserve(principal.owner, operationId, units, quotaPolicy)
               store.db.query(`INSERT INTO video_media_operations_v1(
-                id,owner,local_operation_id,idempotency_key,request_hash,request_json,state,provider_task_id,result_object_refs,provider_receipt,account_quota_reservation_id,safe_error_code,created_at,updated_at,acknowledged_at,submission_started_at
-              ) VALUES(?,?,?,?,?,?, 'accepted',NULL,NULL,NULL,?,NULL,?,?,NULL,NULL)`).run(operationId, principal.owner, raw.local_operation_id, key, hash, JSON.stringify(raw), reservation, created, created)
+                id,owner,local_operation_id,idempotency_key,request_hash,request_json,consent_project_id,consent_source_ids_json,consent_purpose,consent_region,state,provider_task_id,result_object_refs,provider_receipt,account_quota_reservation_id,safe_error_code,created_at,updated_at,acknowledged_at,submission_started_at
+              ) VALUES(?,?,?,?,?,?,?,?,?,?, 'accepted',NULL,NULL,NULL,?,NULL,?,?,NULL,NULL)`).run(
+                operationId, principal.owner, raw.local_operation_id, key, hash, JSON.stringify(raw),
+                claim.project_id, JSON.stringify(claim.source_ids), claim.purpose, claim.region,
+                reservation, created, created,
+              )
               store.db.query('INSERT INTO video_media_idempotency_v1 VALUES(?,?,?,?)').run(principal.owner, key, hash, operationId)
               return reservation
             })
@@ -1115,6 +1345,7 @@ export function createVideoMediaRelayFetch(deps: RelayDeps = {}) {
           }
         }
         let ownsProviderSubmission = false
+        let executed: Awaited<ReturnType<VideoMediaProvider['execute']>> | undefined
         try {
           const providerInputExpiry = raw.capability === 'speech_transcription' && raw.input.mode === 'long_async'
             ? new Date(now().getTime() + 48 * 60 * 60_000).toISOString()
@@ -1123,12 +1354,14 @@ export function createVideoMediaRelayFetch(deps: RelayDeps = {}) {
             // A submitted Fun-ASR task may not fetch the URL immediately. This
             // only extends the already-bound immutable input for this exact
             // local operation; it never widens client upload capability.
-            store.db.query("UPDATE video_media_leases_v1 SET state='bound',expires_at=? WHERE owner=? AND object_ref=? AND state='ready' AND local_operation_id=?")
-              .run(providerInputExpiry, principal.owner, objectRefs[0], raw.local_operation_id)
+            const retained = store.db.query("SELECT * FROM video_media_leases_v1 WHERE owner=? AND object_ref=? AND state='ready' AND local_operation_id=?").get(principal.owner, objectRefs[0], raw.local_operation_id) as Row | null
+            if (!retained || Date.parse(providerInputExpiry) > leaseMaximumDeadline(retained)) throw new RelayError(422, 'object_retention_limit_reached')
+            store.db.query("UPDATE video_media_leases_v1 SET state='bound',expires_at=? WHERE id=? AND state='ready'")
+              .run(providerInputExpiry, retained.id)
           }
           const objectMedia = await Promise.all(objectRefs.map(async ref => {
-            const lease = store.db.query("SELECT id,expires_at,byte_size,state,local_operation_id FROM video_media_leases_v1 WHERE owner=? AND object_ref=? AND state IN ('ready','bound')").get(principal.owner, ref) as { id: string; expires_at: string; byte_size: number; state: string; local_operation_id: string } | null
-            if (!lease || Date.parse(lease.expires_at) <= now().getTime()) throw new RelayError(503, 'object_read_lease_unavailable')
+            const lease = store.db.query("SELECT id,expires_at,max_expires_at,byte_size,state,local_operation_id FROM video_media_leases_v1 WHERE owner=? AND object_ref=? AND state IN ('ready','bound')").get(principal.owner, ref) as { id: string; expires_at: string; max_expires_at: string; byte_size: number; state: string; local_operation_id: string } | null
+            if (!lease || Date.parse(lease.expires_at) <= now().getTime() || Date.parse(lease.max_expires_at) <= now().getTime()) throw new RelayError(503, 'object_read_lease_unavailable')
             if (lease.state === 'bound' && lease.local_operation_id !== raw.local_operation_id) throw new RelayError(422, 'object_already_bound')
             return { url: await objectStore.createReadUrl({ leaseId: lease.id, expiresAt: lease.expires_at }), byte_size: lease.byte_size }
           }))
@@ -1137,7 +1370,6 @@ export function createVideoMediaRelayFetch(deps: RelayDeps = {}) {
           // fence: a restart may resume only a record still provably before
           // this boundary, never submit the same paid work twice.
           const permit = await acquireProviderCapacity(raw, principal.owner, request.signal)
-          let executed: Awaited<ReturnType<VideoMediaProvider['execute']>>
           try {
             await permit.assertCurrent?.()
             store.transaction(() => {
@@ -1191,6 +1423,37 @@ export function createVideoMediaRelayFetch(deps: RelayDeps = {}) {
           const row = store.db.query('SELECT submission_started_at,provider_task_id FROM video_media_operations_v1 WHERE id=?').get(operationId) as { submission_started_at: string | null; provider_task_id: string | null } | null
           const crossedProviderBoundary = Boolean(row?.submission_started_at)
           if (ownsProviderSubmission) activeProviderSubmissions.delete(operationId)
+          if (crossedProviderBoundary && isProviderUsageAmountMissing(error)) {
+            store.transaction(() => {
+              const unknown = store.db.query("UPDATE video_media_operations_v1 SET state='outcome_unknown',provider_task_id=?,provider_receipt=NULL,safe_error_code=?,updated_at=? WHERE id=? AND state IN ('accepted','submitted','running','outcome_unknown')")
+                .run(executed?.provider_task_id ?? row?.provider_task_id ?? null, 'provider_usage_amount_missing', iso(now), operationId)
+              if (unknown.changes === 1) store.retainUnknownQuota(quota)
+            })
+            retainOutcomeUnknownInputs(raw, principal.owner)
+            if (error instanceof DashScopeProviderError) throw new RelayError(error.status, error.code)
+            throw new RelayError(503, 'provider_usage_amount_missing')
+          }
+          if (crossedProviderBoundary && isKnownCaptionTranslationResultRejection(error)) {
+            const receipt = executed?.receipt
+            if (!receipt) {
+              store.transaction(() => {
+                const unknown = store.db.query("UPDATE video_media_operations_v1 SET state='outcome_unknown',provider_task_id=?,provider_receipt=NULL,safe_error_code=?,updated_at=? WHERE id=? AND state IN ('accepted','submitted','running','outcome_unknown')")
+                  .run(executed?.provider_task_id ?? row?.provider_task_id ?? null, 'provider_receipt_missing', iso(now), operationId)
+                if (unknown.changes === 1) store.retainUnknownQuota(quota)
+              })
+              retainOutcomeUnknownInputs(raw, principal.owner)
+              throw new RelayError(503, 'provider_outcome_unknown')
+            }
+            store.transaction(() => {
+              const failed = store.db.query("UPDATE video_media_operations_v1 SET state='failed',provider_task_id=?,provider_receipt=?,safe_error_code=?,updated_at=? WHERE id=? AND state IN ('accepted','submitted','running','outcome_unknown')")
+                .run(executed?.provider_task_id ?? row?.provider_task_id ?? null, JSON.stringify(receipt), 'caption_translation_result_invalid', iso(now), operationId)
+              if (failed.changes === 1) store.settleQuota(quota, receipt)
+            })
+            queueInputCleanup(raw, principal.owner)
+            await retryObjectCleanup()
+            if (error instanceof RelayError || error instanceof DashScopeProviderError) throw new RelayError(error.status, error.code)
+            throw new RelayError(502, 'caption_translation_result_invalid')
+          }
           if (!crossedProviderBoundary) {
             const released = await failBeforeProvider(operationId, quota, raw, principal.owner)
             if (released) {
@@ -1282,6 +1545,7 @@ export function createVideoMediaRelayFetch(deps: RelayDeps = {}) {
                   // Cancel can race a real terminal Provider transition. Poll
                   // once through the ordinary durable path; only an explicit
                   // CANCELED status may satisfy this cancellation request.
+                  if (!provider.poll) throw new RelayError(409, 'operation_cancel_unconfirmed')
                   await refreshOperation(row, principal, request.signal)
                   const refreshed = store.db.query('SELECT state,provider_receipt FROM video_media_operations_v1 WHERE id=?').get(idValue) as { state: string; provider_receipt: string | null } | null
                   if (refreshed?.state !== 'cancelled') throw new RelayError(409, 'operation_cancel_unconfirmed')
@@ -1289,12 +1553,25 @@ export function createVideoMediaRelayFetch(deps: RelayDeps = {}) {
                   try { receipt = refreshed.provider_receipt ? JSON.parse(refreshed.provider_receipt) as ProviderExecutionReceipt : undefined } catch { /* cancellation state remains Provider-authoritative */ }
                   cancellation = { cancelled: true, ...(receipt ? { receipt } : {}) }
                 }
+                if (!cancellation.receipt) {
+                  // A cancellation without an immutable Provider receipt is
+                  // not a free outcome. Preserve both the account reservation
+                  // and the input lease until a later poll supplies usage.
+                  store.transaction(() => {
+                    const unknown = store.db.query("UPDATE video_media_operations_v1 SET state='outcome_unknown',provider_receipt=NULL,safe_error_code='provider_receipt_missing',updated_at=? WHERE id=? AND state IN ('submitted','running','cancelled')")
+                      .run(iso(now), idValue)
+                    if (unknown.changes === 1) store.retainUnknownQuota(row.account_quota_reservation_id as string)
+                  })
+                  retainOutcomeUnknownInputs(input, principal.owner)
+                  throw new RelayError(503, 'operation_cancel_indeterminate')
+                }
+                const receipt = cancellation.receipt
                 store.transaction(() => {
-                  store.db.query("UPDATE video_media_operations_v1 SET state='cancelled',updated_at=? WHERE id=? AND state IN ('submitted','running')").run(iso(now), idValue)
+                  const cancelled = store.db.query("UPDATE video_media_operations_v1 SET state='cancelled',provider_receipt=?,updated_at=? WHERE id=? AND state IN ('submitted','running')").run(JSON.stringify(receipt), iso(now), idValue)
                   // Submission already crossed the provider boundary. A
                   // confirmed cancellation is terminal but never erases its
                   // conservative account charge.
-                  store.settleQuota(row.account_quota_reservation_id as string, cancellation.receipt)
+                  if (cancelled.changes === 1) store.settleQuota(row.account_quota_reservation_id as string, receipt)
                   store.db.query('INSERT INTO video_media_idempotency_v1 VALUES(?,?,?,?)').run(principal.owner, key, actionHash, idValue)
                 })
                 queueInputCleanup(input, principal.owner)

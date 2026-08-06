@@ -62,6 +62,7 @@ import {
   PROVIDER_GATEWAY_PROTOCOL,
   PROVIDER_GATEWAY_PROTOCOL_HEADER,
   PROVIDER_OPERATION_ACK_PATH,
+  PROVIDER_IMAGE_ADVICE_RESULT_PATH,
   PROVIDER_OPERATION_RESULT_CAPABILITY_HEADER,
   PROVIDER_OPERATION_RESULT_FINGERPRINT_HEADER,
   PROVIDER_OPERATION_RESULT_ID_HEADER,
@@ -1691,6 +1692,34 @@ export function createGatewayFetch(deps: GatewayDeps = {}) {
           if (error instanceof HttpError) throw error
           operationResultFailure(error)
         }
+      }
+
+      // Image advice recovery is deliberately read-only.  A client that lost
+      // the POST response can query the same fully-bound operation without
+      // reserving quota, touching the Provider, or changing the result state.
+      if (request.method === 'GET' && url.pathname === PROVIDER_IMAGE_ADVICE_RESULT_PATH) {
+        const identity = auth(authority, request)
+        requireProviderProtocol(request)
+        const binding: GatewayOperationResultBinding = {
+          principal_id: identity.principalId,
+          installation_id: identity.installationId,
+          operation_id: request.headers.get(PROVIDER_OPERATION_RESULT_ID_HEADER)?.trim() ?? '',
+          capability: request.headers.get(PROVIDER_OPERATION_RESULT_CAPABILITY_HEADER)?.trim() as GatewayOperationResultBinding['capability'],
+          fingerprint: request.headers.get(PROVIDER_OPERATION_RESULT_FINGERPRINT_HEADER)?.trim() ?? '',
+        }
+        if (binding.capability !== 'ImageAdvice') throw new HttpError(400, 'OPERATION_RESULT_CAPABILITY_UNSUPPORTED')
+        let result: ReturnType<GatewayOperationResultStore['lookup']>
+        try { result = operationResults.lookup(binding) }
+        catch (error) { operationResultFailure(error) }
+        if (result.outcome === 'not_found') throw new HttpError(404, 'OPERATION_RESULT_NOT_FOUND')
+        if (result.outcome === 'in_progress') throw new HttpError(409, 'OPERATION_IN_PROGRESS')
+        if (result.outcome === 'outcome_unknown') throw new HttpError(409, 'OPERATION_OUTCOME_UNKNOWN')
+        const stored = parseImageAdviceResult(result.payload)
+        const headers = new Headers({ 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' })
+        headers.set(PROVIDER_OPERATION_RESULT_ID_HEADER, binding.operation_id)
+        headers.set(PROVIDER_OPERATION_RESULT_CAPABILITY_HEADER, binding.capability)
+        headers.set(PROVIDER_OPERATION_RESULT_FINGERPRINT_HEADER, binding.fingerprint)
+        return new Response(JSON.stringify(stored.response), { status: 200, headers })
       }
 
       // Media workbenches use MiMo V2.5 directly for visual understanding and

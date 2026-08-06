@@ -203,6 +203,17 @@ const MAX_BASE64_BYTES_PER_IMAGE = Math.ceil(MAX_PROVIDER_IMAGE_RESPONSE_BYTES /
 // Provider JSON may legitimately carry up to the catalog's maximum number of
 // base64 images. This is still a fixed upper bound, not an unbounded text read.
 const MAX_PROVIDER_JSON_RESPONSE_BYTES = MAX_BASE64_BYTES_PER_IMAGE * MAX_IMAGE_OUTPUT_COUNT + 1024 * 1024
+const INLINE_IMAGE_DATA_URI = /^data:(image\/(?:png|jpeg|webp));base64,([A-Za-z0-9+/]+={0,2})$/
+
+function validateInlineImageDataUri(value: unknown, label: string): void {
+  if (typeof value !== 'string') throw new HttpError(400, `relay: ${label} 必须是图片 data-uri`)
+  const match = INLINE_IMAGE_DATA_URI.exec(value)
+  if (!match) throw new HttpError(400, `relay: ${label} 必须是 PNG/JPEG/WebP 的规范 base64 data-uri`)
+  const bytes = Buffer.from(match[2]!, 'base64')
+  if (bytes.length === 0 || bytes.length > MAX_PROVIDER_IMAGE_RESPONSE_BYTES || bytes.toString('base64') !== match[2]) {
+    throw new HttpError(400, `relay: ${label} 图片数据无效或超出大小限制`)
+  }
+}
 
 function imageModelDescriptor(model: string) {
   const entry = managedModelById(model)
@@ -233,9 +244,23 @@ function validateSubmitBody(body: SubmitBody, arkConfigured: boolean): void {
   if (body.mode !== undefined && body.mode !== 'generate' && body.mode !== 'edit') {
     throw new HttpError(400, 'relay: 不支持这个生图方式')
   }
+  if (Array.isArray(body.images) && body.images.length > 0 && body.mode !== 'edit') {
+    throw new HttpError(400, 'relay: 带图片输入的请求必须明确使用 edit 模式')
+  }
+  if (body.reference_controls !== undefined && body.mode !== 'edit') {
+    throw new HttpError(400, 'relay: 参考图控制只能用于 edit 模式')
+  }
+  if (body.mask !== undefined && body.mode !== 'edit') {
+    throw new HttpError(400, 'relay: 蒙版只能用于 edit 模式')
+  }
   if (body.mode === 'edit' && (!Array.isArray(body.images) || body.images.length === 0)) {
     throw new HttpError(400, 'relay: 参考图编辑缺少图片')
   }
+  if (body.images !== undefined) {
+    if (!Array.isArray(body.images)) throw new HttpError(400, 'relay: 图片输入必须是数组')
+    body.images.forEach((image, index) => validateInlineImageDataUri(image, `图片 ${index + 1}`))
+  }
+  if (body.mask !== undefined) validateInlineImageDataUri(body.mask, '蒙版')
   if (body.reference_controls !== undefined) {
     if (!Array.isArray(body.images) || !Array.isArray(body.reference_controls) || body.reference_controls.length === 0 || body.reference_controls.length > body.images.length) {
       throw new HttpError(400, 'relay: 参考图控制与图片输入不匹配')
@@ -254,6 +279,17 @@ function validateSubmitBody(body: SubmitBody, arkConfigured: boolean): void {
         throw new HttpError(400, 'relay: 参考图控制无效')
       }
       indexes.add(control.image_index)
+    }
+    const sortedIndexes = [...indexes].sort((left, right) => left - right)
+    const coversAllImages = sortedIndexes.length === body.images.length
+      && sortedIndexes.every((index, position) => index === position)
+    // Edit requests may contain one un-controlled base image at index 0;
+    // every actual reference image after it must still carry controls.
+    const coversReferencesAfterBase = body.mode === 'edit'
+      && sortedIndexes.length === body.images.length - 1
+      && sortedIndexes.every((index, position) => index === position + 1)
+    if (!coversAllImages && !coversReferencesAfterBase) {
+      throw new HttpError(400, 'relay: 每张参考图都必须声明完整控制字段')
     }
   }
 }
@@ -980,10 +1016,10 @@ class TaskStore {
 
 /** data:<ct>;base64,<b64> → File(用于 multipart /images/edits)。 */
 function dataUriToFile(uri: string, name: string): File | null {
-  const m = /^data:([^;,]*)?(;base64)?,(.*)$/s.exec(uri)
+  const m = INLINE_IMAGE_DATA_URI.exec(uri)
   if (!m) return null
-  const contentType = m[1] || 'image/png'
-  const bytes = m[2] ? Buffer.from(m[3], 'base64') : Buffer.from(decodeURIComponent(m[3]), 'utf8')
+  const contentType = m[1]!
+  const bytes = Buffer.from(m[2]!, 'base64')
   return new File([bytes], name, { type: contentType })
 }
 
@@ -2130,6 +2166,11 @@ export function createRelayFetch(deps: RelayDeps): (req: Request) => Promise<Res
           operation_id: rec.id,
           status: rec.status,
           reused: true,
+          // The lookup is the durable proof that this idempotency key already
+          // owns a remote task. Preserve the Provider receipt hash here too so
+          // a lost POST response can settle the local cost fence without an
+          // additional write or a second Provider request.
+          provider_receipt_hash: rec.provider_receipt_hash ?? undefined,
           ...(pollAfter ? { poll_after_seconds: pollAfter } : {}),
         }, { headers: { 'Cache-Control': 'no-store' } })
       }

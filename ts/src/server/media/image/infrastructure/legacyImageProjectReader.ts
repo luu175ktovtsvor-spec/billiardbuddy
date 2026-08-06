@@ -23,14 +23,43 @@ export type LegacyImageStoreSnapshot = {
   source_hash: string
 }
 
+/**
+ * The first generic-media image writer persisted the Project intent but did
+ * not yet copy the private `image_operation` request into each Task/Event.
+ * Those records are still useful historical Operations: the Project is the
+ * only authoritative source for the old mode/model/prompt/count, and filling
+ * that private request locally cannot submit or bill anything remotely.
+ */
+function normalizeLegacyImageOperation(
+  operation: MediaTask,
+  project: ImageWorkbenchProject | undefined,
+): LegacyImageOperation | null {
+  if (operation.kind !== 'image.generate') return null
+  if (operation.image_operation) return operation as LegacyImageOperation
+  if (!project) return null
+
+  const operationKind = project.mode === 'edit' ? 'edit' : 'generate'
+  const outputCount = Math.min(3, Math.max(1, project.count ?? project.candidate_count ?? 1))
+  return {
+    ...operation,
+    image_operation: {
+      kind: operationKind,
+      instruction: project.prompt,
+      model: project.model,
+      output_count: outputCount,
+    },
+  } as LegacyImageOperation
+}
+
 /** Include journal-only operations: old stores were allowed to lose task files. */
 export function legacyProjectOperations(snapshot: LegacyImageStoreSnapshot, projectId: string): LegacyImageOperation[] {
   const operations = new Map([...snapshot.operations.values()]
     .filter(operation => operation.project_id === projectId)
     .map(operation => [operation.id, operation]))
+  const project = snapshot.projects.find(candidate => candidate.id === projectId)
   for (const event of snapshot.journals.get(projectId)?.events ?? []) {
-    const operation = event.task as LegacyImageOperation
-    if (operation.project_id === projectId) operations.set(operation.id, operation)
+    const operation = normalizeLegacyImageOperation(event.task, project)
+    if (operation?.project_id === projectId) operations.set(operation.id, operation)
   }
   return [...operations.values()].sort((left, right) => left.id.localeCompare(right.id))
 }
@@ -70,16 +99,21 @@ export class LegacyImageProjectReader {
       sources.push({ path, text })
       projects.push(project)
     }
+    const projectsById = new Map(projects.map(project => [project.id, project]))
     const operations = new Map<string, LegacyImageOperation>()
     for (const [name, path] of operationFiles) {
       const text = await this.readText(path)
       const operation = mediaTaskSchema.parse(JSON.parse(text))
       if (operation.kind !== 'image.generate') continue
-      if (!operation.image_operation || name !== `${operation.id}.json`) {
+      if (name !== `${operation.id}.json`) {
         throw new Error('IMAGE_LEGACY_OPERATION_INVALID')
       }
+      // Include even a legacy record that cannot be imported in the global
+      // source hash. This keeps a later source edit visible without making an
+      // orphaned, non-image operation a boot-time blocker.
       sources.push({ path, text })
-      operations.set(operation.id, operation as LegacyImageOperation)
+      const normalized = normalizeLegacyImageOperation(operation, projectsById.get(operation.project_id))
+      if (normalized) operations.set(operation.id, normalized)
     }
     const journals = new Map<string, MediaJobEventJournal>()
     const imageProjectIds = new Set(projects.map(project => project.id))
@@ -91,8 +125,17 @@ export class LegacyImageProjectReader {
       if (journal.events.some(event => event.project_id !== projectId || event.task.kind !== 'image.generate')) {
         throw new Error('IMAGE_LEGACY_EVENT_INVALID')
       }
+      const normalizedEvents: MediaJobEventJournal['events'] = []
+      for (const event of journal.events) {
+        const normalized = normalizeLegacyImageOperation(event.task, projectsById.get(projectId))
+        // A journal for an image Project should remain importable even when an
+        // old Task file was missing its private request. If the event cannot
+        // be reconstructed, leave it out of the Operation projection while
+        // retaining the raw journal in the source hash for operator review.
+        if (normalized) normalizedEvents.push({ ...event, task: normalized })
+      }
       sources.push({ path, text })
-      journals.set(projectId, journal)
+      journals.set(projectId, { ...journal, events: normalizedEvents })
     }
     const digest = createHash('sha256')
     for (const source of sources.sort((left, right) => left.path.localeCompare(right.path))) {

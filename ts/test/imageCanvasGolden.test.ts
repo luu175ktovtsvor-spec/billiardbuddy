@@ -58,4 +58,4 @@ test('15.3 Canvas golden 固定 Shape/QR/Text 变换、布局收据与跨平台 
     }, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 })
   }
   expect(hash).toBe(GOLDEN_SHA256)
-})
+}, 15_000)

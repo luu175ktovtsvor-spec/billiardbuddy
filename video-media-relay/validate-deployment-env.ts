@@ -22,6 +22,9 @@ function requiredInteger(env: Environment, name: string, min: number, max: numbe
 }
 export function validateVideoMediaRelayEnvironment(env: Environment): void {
   requireValue(env, 'VIDEO_MEDIA_GATEWAY_INTROSPECTION_TOKEN', 32)
+  // Separate Sidecar-to-Relay authority. It must never be substituted with a
+  // Gateway bearer, OSS credential, or Provider key.
+  requireValue(env, 'VIDEO_MEDIA_REMOTE_CONSENT_SIGNING_KEY', 32)
   const base = requireValue(env, 'VIDEO_MEDIA_GATEWAY_INTROSPECTION_BASE')
   const url = new URL(base)
   if (!((url.protocol === 'http:' && url.hostname === 'gateway' && (!url.port || url.port === '8799')) || url.protocol === 'https:')) fail('VIDEO_MEDIA_GATEWAY_INTROSPECTION_BASE must be the private gateway service or HTTPS')
@@ -52,6 +55,10 @@ export function validateVideoMediaRelayEnvironment(env: Environment): void {
   // impossible before provider admission is even considered.
   requiredInteger(env, 'VIDEO_MEDIA_OBJECT_LEASE_QUOTA_UNITS', 8, 1_000_000)
   requiredInteger(env, 'VIDEO_MEDIA_LEASE_TTL_MS', 60_000, 60 * 60_000)
+  requiredInteger(env, 'VIDEO_MEDIA_LEASE_MAX_RETENTION_MS', 60_000, 30 * 24 * 60 * 60_000)
+  if (Number(env.VIDEO_MEDIA_LEASE_MAX_RETENTION_MS) < Number(env.VIDEO_MEDIA_LEASE_TTL_MS)) {
+    fail('VIDEO_MEDIA_LEASE_MAX_RETENTION_MS must be at least VIDEO_MEDIA_LEASE_TTL_MS')
+  }
   requiredInteger(env, 'VIDEO_MEDIA_OUTCOME_UNKNOWN_RETENTION_MS', 60 * 60_000, 7 * 24 * 60 * 60_000)
   requiredInteger(env, 'VIDEO_MEDIA_CONTROL_BODY_TIMEOUT_MS', 1_000, 120_000)
   requiredInteger(env, 'VIDEO_MEDIA_GATEWAY_INTROSPECTION_TIMEOUT_MS', 1_000, 60_000)

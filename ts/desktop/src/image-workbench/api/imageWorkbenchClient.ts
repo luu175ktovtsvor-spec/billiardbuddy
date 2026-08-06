@@ -39,6 +39,8 @@ import type {
   ImageGenerationCancelResponse,
   ImageGenerationRoundEstimateResponse,
   ImageGenerationRoundResponse,
+  ImageUnderstandingInput,
+  ImageUnderstandingResponse,
   ImageReferenceControlResponse,
   ImageSaveOutputInput,
   ImageSaveOutputResponse,
@@ -331,6 +333,7 @@ export interface ImageWorkbenchClient {
   updateReferenceControl(command: ImageReferenceControlCommand): Promise<ImageWorkbenchClientResult<ImageReferenceControlResponse>>
 
   createCreativePlan(command: ImageCreativePlanCommand): Promise<ImageWorkbenchClientResult<ImageCreativePlanResponse>>
+  requestImageAdvice(command: ImageProjectIdentifier & { input: ImageUnderstandingInput }): Promise<ImageWorkbenchClientResult<ImageUnderstandingResponse>>
   estimateGenerationRound(command: ImageGenerationRoundEstimateCommand): Promise<ImageWorkbenchClientResult<ImageGenerationRoundEstimateResponse>>
   createGenerationRound(command: ImageGenerationRoundCommand): Promise<ImageWorkbenchClientResult<ImageGenerationRoundResponse>>
   getCandidateGroup(input: ImageProjectIdentifier & { candidate_group_id: string }): Promise<ImageWorkbenchClientResult<ImageCandidateGroupResponse>>
@@ -430,6 +433,7 @@ export function createElectronImageWorkbenchClient(
     }),
     updateReferenceControl: command => bridge.updateReferenceControl(command.project_id, command.reference_id, command.input),
     createCreativePlan: command => bridge.createCreativePlan(command.project_id, command.input),
+    requestImageAdvice: command => bridge.understandProject(command.project_id, command.input),
     estimateGenerationRound: command => bridge.estimateGenerationRound(command.project_id, command.input),
     createGenerationRound: command => bridge.createGenerationRound(command.project_id, command.input),
     getCandidateGroup: input => bridge.getCandidateGroup({

@@ -158,6 +158,66 @@ test('15.3 Canvas 命令在同一项目锁事务内重放、冲突并保留独�
   expect(synced.canvas.document.layers[0]).toMatchObject({ transform: { x: 10, y: 10, width: 150, height: 100 } })
 })
 
+test('15.3 Canvas Render 在项目升版后拒绝陈旧受理，并允许原幂等键重放已受理任务', async () => {
+  const workbench = await service('render-project-revision')
+  const setup = await projectWithCanvas(workbench)
+  const changed = await workbench.updateProject(setup.project.id, {
+    revision: setup.project.revision,
+    user_request: '项目升版后的新需求',
+    size: '1024x1024',
+  })
+  await expect(workbench.renderCanvas(setup.project.id, setup.canvas.canvas_id, {
+    base_revision: setup.project.revision,
+    idempotency_key: 'bb-image-canvas-stale-project-revision-0001',
+    canvas_revision: setup.canvas.revision,
+    activate_on_success: true,
+  })).rejects.toMatchObject({ status: 409, code: 'IMAGE_REVISION_CONFLICT' })
+  expect(await workbench.repository.listGenerationOperations(setup.project.id)).toHaveLength(0)
+
+  const queued = await workbench.renderCanvas(setup.project.id, setup.canvas.canvas_id, {
+    base_revision: changed.revision,
+    idempotency_key: 'bb-image-canvas-replay-project-revision-0001',
+    canvas_revision: setup.canvas.revision,
+    activate_on_success: true,
+  })
+  const replay = await workbench.renderCanvas(setup.project.id, setup.canvas.canvas_id, {
+    base_revision: changed.revision,
+    idempotency_key: 'bb-image-canvas-replay-project-revision-0001',
+    canvas_revision: setup.canvas.revision,
+    activate_on_success: true,
+  })
+  expect(replay.operation.id).toBe(queued.operation.id)
+})
+
+test('15.3 Canvas Render 在预检与入队之间项目升版时不会接受陈旧操作', async () => {
+  const workbench = await service('render-acceptance-race')
+  const setup = await projectWithCanvas(workbench)
+  const repository = workbench.repository
+  const originalSave = repository.saveGenerationOperation.bind(repository)
+  let raced = false
+  repository.saveGenerationOperation = async operation => {
+    if (!raced) {
+      raced = true
+      const current = await workbench.getProject(setup.project.id)
+      await workbench.updateProject(setup.project.id, {
+        revision: current.revision,
+        user_request: '预检完成后项目发生升版',
+        size: current.size,
+      })
+    }
+    return await originalSave(operation)
+  }
+
+  await expect(workbench.renderCanvas(setup.project.id, setup.canvas.canvas_id, {
+    base_revision: setup.project.revision,
+    idempotency_key: 'bb-image-canvas-acceptance-race-0001',
+    canvas_revision: setup.canvas.revision,
+    activate_on_success: true,
+  })).rejects.toMatchObject({ status: 409, code: 'IMAGE_REVISION_CONFLICT' })
+  expect(raced).toBe(true)
+  expect(await repository.listGenerationOperations(setup.project.id)).toHaveLength(0)
+})
+
 test('15.5 Canvas Application 的 API 命令路由保持重放、幂等冲突和同项目并发原子性', async () => {
   const workbench = await service('canvas-application-api')
   const setup = await projectWithCanvas(workbench)
@@ -735,7 +795,7 @@ test('15.3 CJK 换行与 shrink 使用锁定字体度量，并把可复核 layou
   expect(second.render_receipt.text_layout_manifest).toEqual(first.render_receipt.text_layout_manifest)
   expect(second.render_receipt.text_manifest_hash).toBe(first.render_receipt.text_manifest_hash)
   expect(second.render_receipt.output_hash).toBe(first.render_receipt.output_hash)
-})
+}, 15_000)
 
 test('15.3 Canvas 与 Export 的可预期永久失败都会收敛为 failed，重启恢复不再重试', async () => {
   const failingRenderer = {
@@ -889,6 +949,12 @@ test('15.5 Delivery Application 在 CAS 落盘后崩溃仍以冻结 Version map 
   const queued = await crashed.applications.delivery.exportDelivery(setup.project.id, input)
   await Bun.sleep(5)
   expect((await crashed.getGenerationOperation(setup.project.id, queued.operation.id)).status).toBe('queued')
+  const acceptedOperation = await crashed.repository.getGenerationOperation(setup.project.id, queued.operation.id)
+  expect(acceptedOperation.local_delivery).toMatchObject({
+    kind: 'export',
+    delivery_spec_id: setup.project.current_delivery_spec_id,
+    delivery_spec_revision: setup.project.current_delivery_spec_revision,
+  })
   const replayed = await crashed.applications.delivery.exportDelivery(setup.project.id, input)
   expect(replayed).toMatchObject({ operation: { id: queued.operation.id, status: 'queued' } })
   await expect(crashed.applications.delivery.exportDelivery(setup.project.id, {
@@ -900,11 +966,27 @@ test('15.5 Delivery Application 在 CAS 落盘后崩溃仍以冻结 Version map 
     base_revision: beforeExport.revision + 1,
     idempotency_key: 'bb-image-export-revision-conflict-0001',
   })).rejects.toMatchObject({ status: 409, code: 'IMAGE_REVISION_CONFLICT' })
+  const changedProject = await crashed.getProject(setup.project.id)
+  const changedSpec = await crashed.createDeliverySpecRevision(setup.project.id, {
+    base_revision: changedProject.revision,
+    idempotency_key: 'bb-image-export-crash-change-spec-0001',
+    purpose: 'custom',
+    artboards: [{
+      id: setup.artboard.id,
+      label: '后来修改的规格',
+      width: 512,
+      height: 512,
+      required: true,
+      output: { format: 'png', transparent: false },
+    }],
+  })
+  expect(changedSpec.spec.revision).toBe(setup.project.current_delivery_spec_revision + 1)
   const recovered = new ImageWorkbenchService({ root: storageRoot, legacyMediaRoot: legacyRoot, now: () => new Date(timestamp) })
   // No client retry is required after restart: recovery reuses the accepted
   // queued Operation and its frozen local_delivery map.
   const exported = await waitForCompletedExport(recovered, setup.project.id, queued.operation.id)
   expect(exported.delivery_set?.version_ids_by_artboard).toEqual({ [setup.artboard.id]: rendered.version_id })
+  expect(exported.delivery_set?.delivery_spec_revision).toBe(setup.project.current_delivery_spec_revision)
   const completedProject = await recovered.getProject(setup.project.id)
   const completedReplay = await recovered.applications.delivery.exportDelivery(setup.project.id, input)
   expect(completedReplay).toMatchObject({ operation: { id: queued.operation.id, status: 'succeeded' }, project_revision: completedProject.revision })

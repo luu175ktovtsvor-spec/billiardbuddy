@@ -10,6 +10,13 @@ export const MAX_REFERENCE_IMAGES_TOTAL_BYTES = 20 * 1024 * 1024
 export const MAX_IMAGE_MASK_BYTES = 32 * 1024 * 1024
 export const MAX_IMAGE_UPLOAD_DIMENSION = 12_000
 export const MAX_IMAGE_UPLOAD_PIXELS = 100_000_000
+/**
+ * Video commands carry only structured control data. Media bytes are never
+ * embedded in this JSON body, so keep the limit high enough for large caption
+ * revisions and timelines while still preventing an unbounded Request.json()
+ * allocation before schema validation.
+ */
+export const VIDEO_WORKBENCH_REQUEST_BODY_MAX_BYTES = 64 * 1024 * 1024
 const MAX_REFERENCE_IMAGE_DATA_URL_CHARS = Math.ceil(MAX_REFERENCE_IMAGE_BYTES * 4 / 3) + 128
 const referenceImageDataUrlSchema = z.string()
   .max(MAX_REFERENCE_IMAGE_DATA_URL_CHARS)
@@ -138,6 +145,38 @@ export const IMAGE_GENERATION_MODELS = [
   'doubao-seedream-4-5-251128',
 ] as const
 export const imageGenerationModelSchema = z.enum(IMAGE_GENERATION_MODELS)
+
+/**
+ * Renderer-facing image choices deliberately describe the job a picture has
+ * to do, rather than exposing one provider's arbitrary pixel picker.  The
+ * runtime maps these stable intent names to a native size only after the user
+ * has chosen a model (or the automatic policy has done so).
+ *
+ * `landscape` and `portrait` remain accepted only for existing clients and
+ * persisted Campaigns.  The public catalog never advertises them.
+ */
+export const IMAGE_OUTPUT_PRESETS = [
+  'auto',
+  'square',
+  'social_landscape',
+  'social_portrait',
+  'story',
+  'presentation',
+  'wide_banner',
+  'landscape',
+  'portrait',
+] as const
+export const imageOutputPresetSchema = z.enum(IMAGE_OUTPUT_PRESETS)
+export const IMAGE_GENERATION_MODEL_SELECTIONS = [
+  'auto',
+  ...IMAGE_GENERATION_MODELS,
+] as const
+export const imageGenerationModelSelectionSchema = z.enum(IMAGE_GENERATION_MODEL_SELECTIONS)
+export const imageGenerationPreferencesSchema = z.object({
+  /** `auto` is a product choice, not the name of a hidden third-party model. */
+  model_selection: imageGenerationModelSelectionSchema.default('auto'),
+  output_preset: imageOutputPresetSchema.default('auto'),
+}).strict()
 
 export const GPT_IMAGE_CANVAS_SIZES = [
   '1024x1024',
@@ -325,12 +364,17 @@ export const imageWorkbenchProjectSchema = mediaProjectBaseSchema.extend({
   kind: z.literal('image'),
   state: z.enum(['draft', 'queued', 'generating', 'ready', 'failed']),
   mode: z.enum(['generate', 'edit']).default('generate'),
+  /** The user's durable choices; the resolved Provider model stays server-owned. */
+  generation_preferences: imageGenerationPreferencesSchema.default({
+    model_selection: 'auto',
+    output_preset: 'auto',
+  }),
   model: imageGenerationModelSchema.default('gpt-image-2'),
   prompt: z.string().min(1).max(8000),
   size: imageCanvasSizeSchema.default('1024x1024'),
   count: z.number().int().min(1).max(4).default(1),
-  /** New provider-neutral projects always request one three-candidate operation. */
-  candidate_count: z.literal(3).default(3),
+  /** New projects request one output; historical projects with three remain readable. */
+  candidate_count: z.number().int().min(1).max(3).default(1),
   /** Project-scoped paid-work ceiling.  Quotes and submitted charge-possible
    * operations are counted before the remote request is accepted. */
   budget_limit: imageBudgetLimitSchema.optional(),
@@ -391,6 +435,41 @@ export const videoOutputSettingsSchema = z.object({
   fps: z.number().int().min(12).max(60).default(30),
 })
 
+/**
+ * User-facing delivery choices are deliberately finite.  A project may still
+ * carry a validated custom `output` for imported/advanced callers, but the
+ * desktop workflow sends one of these stable presets instead of inventing
+ * width/height pairs that the delivery compiler cannot explain to a user.
+ */
+export const videoOutputPresetSchema = z.enum([
+  'vertical_1080',
+  'horizontal_1080',
+  'vertical_4k',
+  'horizontal_4k',
+])
+
+export const VIDEO_OUTPUT_PRESET_SETTINGS = {
+  vertical_1080: { width: 1080, height: 1920, fps: 30 },
+  horizontal_1080: { width: 1920, height: 1080, fps: 30 },
+  vertical_4k: { width: 2160, height: 3840, fps: 30 },
+  horizontal_4k: { width: 3840, height: 2160, fps: 30 },
+} as const satisfies Record<z.infer<typeof videoOutputPresetSchema>, { width: number; height: number; fps: number }>
+
+export function videoOutputSettingsForPreset(preset: z.infer<typeof videoOutputPresetSchema>): z.infer<typeof videoOutputSettingsSchema> {
+  return { ...VIDEO_OUTPUT_PRESET_SETTINGS[preset] }
+}
+
+/**
+ * These are the only first-release delivery encodings.  Source containers and
+ * codecs are detected from the bytes; output format is an explicit user
+ * choice so a source file never silently determines the deliverable.
+ */
+export const videoDeliveryFormatSchema = z.enum([
+  'mp4_h264_aac',
+  'mov_prores_422_pcm',
+  'mov_prores_422_hq_pcm',
+])
+
 export const videoEvidenceSchema = z.object({
   id: mediaIdSchema,
   kind: z.enum(['source_role', 'transcript', 'visual', 'audio', 'shot']),
@@ -431,6 +510,10 @@ export const videoSceneSchema = z.object({
   out_ms: z.number().int().positive(),
   story_role: z.enum(['hook', 'context', 'action', 'result', 'cta', 'b_roll']),
   evidence_ids: z.array(mediaIdSchema).max(100),
+  /** A Scene may assemble one or more selected Content Segments. This keeps
+   * the consumer-facing Storyboard choice traceable after compilation into
+   * timeline items, without treating a camera cut as the decision itself. */
+  content_segment_ids: z.array(mediaIdSchema).max(2_000).optional(),
   rationale: z.string().min(1).max(1000),
   needs_review: z.boolean().default(false),
   locked: z.boolean().default(false),
@@ -479,9 +562,66 @@ export const videoPlaybackSpeedSchema = videoRationalSchema.refine(
   { message: 'playback speed must be between 1/100x and 100x' },
 )
 
+/** Immutable FFprobe color evidence required for every formal video input. */
+export const videoColorFactSchema = z.object({
+  hdr_kind: z.enum(['sdr', 'pq', 'hlg', 'unknown']),
+  color_space: z.string().trim().min(1).max(80).optional(),
+  color_transfer: z.string().trim().min(1).max(80).optional(),
+  color_primaries: z.string().trim().min(1).max(80).optional(),
+  color_range: z.string().trim().min(1).max(80).optional(),
+  pixel_format: z.string().trim().min(1).max(80).optional(),
+})
+
+/**
+ * Managed B-roll, overlay-video and music assets do not inherit the source
+ * probe record.  Keep their independently probed stream envelopes next to
+ * the licensing attestation so a formal ExecutionPlan can freeze an actual
+ * seek range instead of treating a file's presentation duration as truth.
+ */
+export const videoAssetVideoStreamFactSchema = z.object({
+  /**
+   * Absolute FFprobe stream index. Historical attestations without this value
+   * remain readable, but cannot be compiled into a new formal ExecutionPlan.
+   */
+  stream_index: z.number().int().nonnegative().optional(),
+  start: videoRationalTimeSchema,
+  duration: videoRationalTimeSchema,
+})
+
+export const videoAssetAudioStreamFactSchema = z.object({
+  stream_index: z.number().int().nonnegative(),
+  start: videoRationalTimeSchema,
+  duration: videoRationalTimeSchema,
+  sample_rate: z.number().int().positive(),
+  channels: z.number().int().positive(),
+})
+
+/**
+ * A user-imported project asset is still only a managed input.  It does not
+ * grant a caller permission to write a Timeline; the asset must later be
+ * referenced by an accepted CommandSet and frozen into an immutable Version.
+ */
+export const videoProjectAssetKindSchema = z.enum(['music', 'voice_over', 'b_roll', 'overlay'])
+export const addVideoProjectAssetInputSchema = z.object({
+  path: z.string().trim().min(1).max(4096),
+  asset_kind: videoProjectAssetKindSchema,
+  provenance: z.enum(['user_import', 'licensed_library', 'generated', 'brand_owned']),
+  license_attestation: z.string().trim().min(1).max(2_000),
+})
+
+export const publicVideoProjectAssetSchema = z.object({
+  id: mediaIdSchema,
+  asset_kind: videoProjectAssetKindSchema,
+  provenance: z.enum(['user_import', 'licensed_library', 'generated', 'brand_owned']),
+  mime_type: z.string().min(1).max(160),
+  byte_size: z.number().int().nonnegative(),
+  content_hash: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+  created_at: mediaIsoDateSchema,
+})
+
 export const videoTimelineTrackSchema = z.object({
   id: mediaIdSchema,
-  kind: z.enum(['primary_video', 'b_roll', 'source_audio', 'music', 'caption', 'overlay']),
+  kind: z.enum(['primary_video', 'b_roll', 'source_audio', 'music', 'voice_over', 'caption', 'overlay']),
   order: z.number().int().min(0).max(100),
   locked: z.boolean().default(false),
   muted: z.boolean().default(false),
@@ -507,10 +647,36 @@ export const videoTimelineAssetBindingSchema = z.discriminatedUnion('kind', [
   }),
 ])
 
+/**
+ * Formal delivery never dereferences an arbitrary URL or an arbitrary local
+ * path from a Timeline.  An asset has to be materialized under the managed
+ * store and carry an explicit project-level provenance/license declaration
+ * before an immutable Timeline Version may reference it.
+ */
+export const videoProjectAssetAttestationSchema = z.object({
+  asset_id: mediaIdSchema,
+  asset_kind: videoProjectAssetKindSchema.optional(),
+  provenance: z.enum(['user_import', 'licensed_library', 'generated', 'brand_owned']),
+  license_attestation: z.string().trim().min(1).max(2_000),
+  /** Required for video assets; image and audio assets deliberately omit it. */
+  video_color: videoColorFactSchema.optional(),
+  /** Required for video assets used by a formal timeline. */
+  video_stream: videoAssetVideoStreamFactSchema.optional(),
+  /** Required for audio assets used by a formal timeline. */
+  audio_stream: videoAssetAudioStreamFactSchema.optional(),
+  approved_at: mediaIsoDateSchema,
+})
+
 export const videoTimelineItemSchema = z.object({
   id: mediaIdSchema,
   /** Stable bridge for read-only v1 scenes while v2 is the only writer. */
   legacy_scene_id: mediaIdSchema.optional(),
+  /**
+   * Durable AVSplit identity. Video and its paired source-audio item keep the
+   * same group across immutable Timeline Versions; derived split halves get a
+   * new group instead of relying on coincidental equal ranges.
+   */
+  linked_av_group_id: mediaIdSchema.optional(),
   track_id: mediaIdSchema,
   kind: z.enum(['video', 'audio', 'caption', 'overlay']),
   timeline_range: videoEditorialTimeRangeSchema,
@@ -542,7 +708,16 @@ export const timelineDraftSchema = z.object({
   project_id: mediaIdSchema,
   facts_basis_hash: z.string().regex(/^sha256:[a-f0-9]{64}$/),
   base_timeline_version_id: mediaIdSchema.optional(),
+  /** Provenance is visible review metadata, never a write authority. */
+  planning_origin: z.enum(['provider', 'local_conservative', 'unknown']).default('unknown'),
   plan_ids: z.array(mediaIdSchema).max(200).default([]),
+  beat_sync: z.object({
+    evidence_id: mediaIdSchema,
+    source_id: mediaIdSchema,
+    source_fingerprint: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+    analyzer_version: z.string().min(1).max(160),
+    facts_basis_hash: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+  }).optional(),
   tracks: z.array(videoTimelineTrackSchema).min(1).max(100),
   items: z.array(videoTimelineItemSchema).max(2000),
   status: z.enum(['proposed', 'accepted', 'rejected', 'stale']),
@@ -567,6 +742,8 @@ export const videoDeliveryItemOverrideSchema = z.object({
   item_id: mediaIdSchema,
   transform_keyframes: z.array(videoKeyframeSchema(videoTransformSchema)).max(1000).optional(),
   volume_keyframes: z.array(videoKeyframeSchema(z.number().min(0).max(4))).max(1000).optional(),
+  /** The only supported first-release denoiser.  It maps to FFmpeg afftdn. */
+  denoise_noise_reduction_db: z.number().finite().min(1).max(12).optional(),
   fade_in: videoRationalTimeSchema.optional(),
   fade_out: videoRationalTimeSchema.optional(),
   caption_style_id: mediaIdSchema.optional(),
@@ -590,6 +767,28 @@ export const initialEncodingProfileSchema = z.union([
   }),
 ])
 
+export const videoAudioPolicySchema = z.enum([
+  'source_only',
+  'music_with_source',
+  'music_only',
+  'voice_over_with_source',
+  'voice_over_only',
+  'music_with_voice_over',
+  'source_music_with_voice_over',
+])
+
+export function videoAudioPolicyTrackKinds(policy: z.infer<typeof videoAudioPolicySchema>): Array<'source_audio' | 'music' | 'voice_over'> {
+  switch (policy) {
+    case 'source_only': return ['source_audio']
+    case 'music_with_source': return ['source_audio', 'music']
+    case 'music_only': return ['music']
+    case 'voice_over_with_source': return ['source_audio', 'voice_over']
+    case 'voice_over_only': return ['voice_over']
+    case 'music_with_voice_over': return ['music', 'voice_over']
+    case 'source_music_with_voice_over': return ['source_audio', 'music', 'voice_over']
+  }
+}
+
 export const videoExportProfileRevisionSchema = z.object({
   id: mediaIdSchema,
   profile_id: mediaIdSchema,
@@ -602,7 +801,7 @@ export const videoExportProfileRevisionSchema = z.object({
   hdr_input_policy: z.enum(['tone_map_to_sdr', 'reject']),
   caption_mode: z.enum(['none', 'burn_in', 'sidecar']),
   sidecar_caption_format: z.enum(['srt', 'vtt']).optional(),
-  audio_policy: z.enum(['source_only', 'music_with_source', 'music_only']),
+  audio_policy: videoAudioPolicySchema,
   content_hash: z.string().regex(/^sha256:[a-f0-9]{64}$/),
   created_at: mediaIsoDateSchema,
 })
@@ -611,6 +810,57 @@ export const videoExportProfileSchema = z.object({
   id: mediaIdSchema,
   scope: z.enum(['product_preset', 'project_custom']),
   current_revision_id: mediaIdSchema,
+  created_at: mediaIsoDateSchema,
+})
+
+/** Captions are a delivery projection, never a mutation of ASR facts. */
+export const videoCaptionStyleSchema = z.object({
+  id: mediaIdSchema,
+  name: z.string().trim().min(1).max(160),
+  font_family: z.string().trim().min(1).max(160),
+  font_size: z.number().positive().max(512),
+  fill: z.string().regex(/^#[a-fA-F0-9]{6}$/),
+  outline_fill: z.string().regex(/^#[a-fA-F0-9]{6}$/),
+  outline_width: z.number().min(0).max(32),
+  /** Fractional output coordinates.  The compiler turns this into pixels. */
+  bottom_safe_area: z.number().min(0).max(0.5),
+  max_width: z.number().min(0.1).max(1),
+  created_at: mediaIsoDateSchema,
+})
+
+export const videoCaptionCueSchema = z.object({
+  id: mediaIdSchema,
+  source_anchor: z.object({
+    transcript_id: mediaIdSchema,
+    segment_ids: z.array(mediaIdSchema).min(1).max(10_000),
+    word_ids: z.array(mediaIdSchema).max(10_000).default([]),
+  }),
+  timeline_range: videoEditorialTimeRangeSchema,
+  text: z.string().trim().min(1).max(16_000),
+  translation_of_cue_id: mediaIdSchema.optional(),
+  alignment_confidence: z.number().min(0).max(1),
+  alignment_state: z.enum(['ready', 'needs_calibration']),
+})
+
+export const videoCaptionDocumentSchema = z.object({
+  id: mediaIdSchema,
+  project_id: mediaIdSchema,
+  current_revision_id: mediaIdSchema,
+  created_at: mediaIsoDateSchema,
+})
+
+export const videoCaptionDocumentRevisionSchema = z.object({
+  id: mediaIdSchema,
+  document_id: mediaIdSchema,
+  project_id: mediaIdSchema,
+  parent_revision_id: mediaIdSchema.optional(),
+  editorial_timeline_version_id: mediaIdSchema,
+  transcript_id: mediaIdSchema,
+  transcript_revision_id: mediaIdSchema.optional(),
+  language: z.string().trim().min(2).max(32),
+  style_id: mediaIdSchema,
+  cues: z.array(videoCaptionCueSchema).max(20_000),
+  basis_hash: z.string().regex(/^sha256:[a-f0-9]{64}$/),
   created_at: mediaIsoDateSchema,
 })
 
@@ -650,12 +900,103 @@ export const editorialTimelineCommandSchema = z.discriminatedUnion('kind', [
 
 export const deliveryVariantCommandSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('set_caption_revision'), caption_document_id: mediaIdSchema, caption_revision_id: mediaIdSchema }),
+  z.object({ kind: z.literal('set_audio_policy'), policy: videoAudioPolicySchema }),
+  z.object({ kind: z.literal('set_composition_plan'), composition_plan_id: mediaIdSchema }),
+  z.object({ kind: z.literal('set_audio_finishing_plan'), audio_finishing_plan_id: mediaIdSchema }),
   z.object({ kind: z.literal('set_transform_keyframes'), item_id: mediaIdSchema, keyframes: z.array(videoKeyframeSchema(videoTransformSchema)).min(1).max(1000) }),
   z.object({ kind: z.literal('set_volume_keyframes'), item_id: mediaIdSchema, keyframes: z.array(videoKeyframeSchema(z.number().min(0).max(4))).min(1).max(1000) }),
+  z.object({ kind: z.literal('set_audio_denoise'), item_id: mediaIdSchema, noise_reduction_db: z.number().finite().min(1).max(12) }),
   z.object({ kind: z.literal('set_audio_fades'), item_id: mediaIdSchema, fade_in: videoRationalTimeSchema.optional(), fade_out: videoRationalTimeSchema.optional() }).refine(value => value.fade_in || value.fade_out, { message: 'audio fade is required' }),
   z.object({ kind: z.literal('set_caption_style'), item_id: mediaIdSchema, caption_style_id: mediaIdSchema }),
   z.object({ kind: z.literal('set_export_profile'), export_profile_revision_id: mediaIdSchema, expected_profile_hash: z.string().regex(/^sha256:[a-f0-9]{64}$/) }),
 ])
+
+export const videoCompositionPlanSchema = z.object({
+  id: mediaIdSchema,
+  project_id: mediaIdSchema,
+  editorial_timeline_version_id: mediaIdSchema,
+  export_profile_revision_id: mediaIdSchema,
+  export_profile_hash: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+  facts_basis_hash: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+  subject_evidence_ids: z.array(mediaIdSchema).max(10_000),
+  proposed_commands: z.array(deliveryVariantCommandSchema).max(2_000),
+  unresolved_ranges: z.array(z.object({
+    item_id: mediaIdSchema,
+    range: videoEditorialTimeRangeSchema,
+    reason: z.string().trim().min(1).max(1_000),
+  })).max(2_000),
+  created_at: mediaIsoDateSchema,
+})
+
+const videoSemanticCutSuggestionSchema = z.object({
+  source_id: mediaIdSchema,
+  range: videoSourceTimeRangeSchema,
+  kind: z.enum(['silence', 'filler']),
+  /** A newly-created suggestion always carries immutable Transcript anchors. */
+  transcript_anchor_ids: z.array(mediaIdSchema).max(10_000),
+})
+
+const videoSemanticCutNotRecommendedSchema = z.object({
+  source_id: mediaIdSchema,
+  range: videoSourceTimeRangeSchema,
+  kind: z.enum(['silence', 'filler']),
+  reason: z.string().trim().min(1).max(1_000),
+})
+
+export const videoAudioFinishingPlanSchema = z.object({
+  id: mediaIdSchema,
+  project_id: mediaIdSchema,
+  editorial_timeline_version_id: mediaIdSchema,
+  analysis_receipt_ids: z.array(mediaIdSchema).max(2_000),
+  measured_loudness: z.array(z.object({
+    item_id: mediaIdSchema,
+    audio_stream_index: z.number().int().nonnegative(),
+    integrated_lufs: z.number().finite().min(-100).max(20).optional(),
+    true_peak_db: z.number().finite().min(-100).max(20).optional(),
+    silence_ratio: z.number().min(0).max(1).optional(),
+    /** Exact source-time intervals from the local silencedetect receipt. */
+    silence_ranges: z.array(videoSourceTimeRangeSchema).max(500).default([]),
+  })).max(2_000),
+  proposed_commands: z.array(deliveryVariantCommandSchema).max(2_000),
+  semantic_cut_suggestions: z.array(videoSemanticCutSuggestionSchema).max(2_000).default([]),
+  /** A detected quiet range without a transcript anchor must be visible as a
+   * non-recommendation instead of becoming a blind semantic cut. */
+  semantic_cut_not_recommended: z.array(videoSemanticCutNotRecommendedSchema).max(2_000).default([]),
+  /** Metadata keeps the intent of generated music-volume keyframes reviewable. */
+  ducking: z.array(z.object({
+    music_item_id: mediaIdSchema,
+    speech_transcript_anchor_ids: z.array(mediaIdSchema).min(1).max(10_000),
+    duck_gain: z.number().min(0.1).max(1),
+    attack_ms: z.number().int().min(0).max(1_000),
+    release_ms: z.number().int().min(0).max(1_000),
+  })).max(2_000).default([]),
+  facts_basis_hash: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+  created_at: mediaIsoDateSchema,
+}).transform(value => {
+  // Early Gate 5 payloads recorded raw silencedetect intervals with an empty
+  // anchor list.  Preserve them as explicit non-recommendations so a project
+  // remains readable without presenting an ungrounded semantic cut.
+  const legacyUnanchored = value.semantic_cut_suggestions.filter(item => item.transcript_anchor_ids.length === 0)
+  const suggested = value.semantic_cut_suggestions.filter(item => item.transcript_anchor_ids.length > 0)
+  const notRecommended = [...value.semantic_cut_not_recommended]
+  for (const item of legacyUnanchored) {
+    if (notRecommended.some(candidate => candidate.source_id === item.source_id
+      && candidate.kind === item.kind
+      && candidate.range.start.ticks === item.range.start.ticks
+      && candidate.range.duration.ticks === item.range.duration.ticks)) continue
+    notRecommended.push({
+      source_id: item.source_id,
+      range: item.range,
+      kind: item.kind,
+      reason: '历史音频建议缺少不可变 Transcript 锚点，已降级为不建议语义剪辑。',
+    })
+  }
+  return {
+    ...value,
+    semantic_cut_suggestions: suggested,
+    semantic_cut_not_recommended: notRecommended,
+  }
+})
 
 export const timelineCommandSetSchema = z.union([
   z.object({
@@ -678,6 +1019,440 @@ export const timelineCommandSetSchema = z.union([
   }),
 ])
 
+/** A curation decision is anchored to immutable source time. It can narrow a
+ * later plan, but never writes a Timeline by itself. */
+export const videoSourceRangeDecisionSchema = z.object({
+  id: mediaIdSchema,
+  project_id: mediaIdSchema,
+  source_id: mediaIdSchema,
+  source_fingerprint: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+  range: videoSourceTimeRangeSchema,
+  decision: z.enum(['required', 'pick', 'maybe', 'reject']),
+  reason: z.string().trim().min(1).max(2_000).optional(),
+  created_at: mediaIsoDateSchema,
+  updated_at: mediaIsoDateSchema,
+})
+
+const videoDeliveryIntentFieldsSchema = z.object({
+  goal: z.string().trim().min(1).max(8_000),
+  duration_mode: z.enum(['natural', 'target', 'exact']),
+  target_duration: videoRationalTimeSchema.optional(),
+  target_min_duration: videoRationalTimeSchema.optional(),
+  target_max_duration: videoRationalTimeSchema.optional(),
+  exact_tolerance: videoRationalTimeSchema.optional(),
+  coverage_preference: z.enum(['highlights', 'balanced', 'complete_when_feasible']),
+  editing_strategy: z.enum(['manual', 'speech_story', 'highlights', 'beat_sync', 'mixed']),
+})
+
+function validateVideoDeliveryIntent(
+  value: z.infer<typeof videoDeliveryIntentFieldsSchema>,
+  context: z.RefinementCtx,
+): void {
+  const hasTargetRange = Boolean(value.target_min_duration || value.target_max_duration)
+  if (value.duration_mode === 'natural') {
+    if (value.target_duration || hasTargetRange || value.exact_tolerance) {
+      context.addIssue({ code: 'custom', message: 'natural 时长不能伪造目标时长' })
+    }
+    return
+  }
+  if (value.duration_mode === 'target') {
+    if (!value.target_duration && !hasTargetRange) {
+      context.addIssue({ code: 'custom', message: 'target 时长必须给出目标或目标范围' })
+    }
+    if (value.exact_tolerance) context.addIssue({ code: 'custom', message: 'target 时长不能带 exact_tolerance' })
+    return
+  }
+  if (!value.target_duration || !value.exact_tolerance) {
+    context.addIssue({ code: 'custom', message: 'exact 时长必须给出目标和容差' })
+  }
+  if (hasTargetRange) context.addIssue({ code: 'custom', message: 'exact 时长不能混用目标范围' })
+}
+
+export const videoDeliveryIntentSchema = videoDeliveryIntentFieldsSchema.extend({
+  id: mediaIdSchema,
+  project_id: mediaIdSchema,
+  revision: z.number().int().positive(),
+  created_at: mediaIsoDateSchema,
+  updated_at: mediaIsoDateSchema,
+}).superRefine(validateVideoDeliveryIntent)
+
+/**
+ * A small, explicit creative direction rather than a hidden template.  These
+ * values describe what the director should preserve or propose; they do not
+ * grant the model permission to write a timeline or synthesize a voice.
+ * `audio_mode` is intentionally source-first and makes narration a reviewed
+ * choice, so a creator's own voice is never silently replaced.
+ */
+export const videoCreativeDirectionSchema = z.object({
+  narrative_voice: z.enum(['plainspoken', 'observational', 'intimate', 'confident', 'playful', 'cinematic']).default('plainspoken'),
+  emotional_arc: z.enum(['clarity', 'curiosity', 'warmth', 'energy', 'tension_release', 'none']).default('clarity'),
+  audio_mode: z.enum(['preserve_source', 'source_plus_music', 'music_only', 'narration_after_review', 'silent']).default('preserve_source'),
+  voiceover_persona: z.enum(['none', 'calm_guide', 'warm_friend', 'confident_host', 'playful_commentator']).default('none'),
+  caption_strategy: z.enum(['spoken_rhythm', 'minimal_emphasis', 'kinetic_keywords', 'full_transcript', 'none']).default('spoken_rhythm'),
+  keep_natural_pauses: z.boolean().default(true),
+  human_notes: z.string().trim().max(1_000).default(''),
+})
+
+/**
+ * A concise, consumer-facing intent for a new video.  This is deliberately
+ * separate from DeliveryIntent: the former tells the AI what outcome the
+ * creator wants, while the latter freezes the editorial duration/coverage
+ * constraints that are used to build formal Timeline Versions.
+ */
+export const videoCreationBriefFieldsSchema = z.object({
+  use_case: z.enum([
+    'auto_highlight',
+    'social_short',
+    'talking_head',
+    'interview',
+    'tutorial',
+    'product_demo',
+    'event_recap',
+    'sports_highlight',
+    'podcast_clip',
+    'custom',
+  ]),
+  user_request: z.string().trim().min(1).max(8_000),
+  audience: z.string().trim().min(1).max(500).default('大众观众'),
+  distribution: z.enum(['vertical_short', 'horizontal_video', 'square_social', 'presentation', 'custom']).default('vertical_short'),
+  tone: z.enum(['clear', 'energetic', 'warm', 'professional', 'cinematic', 'playful']).default('clear'),
+  pace: z.enum(['calm', 'balanced', 'fast']).default('balanced'),
+  caption_preference: z.enum(['auto', 'burn_in', 'sidecar', 'none']).default('auto'),
+  hook_strategy: z.enum(['auto', 'strongest_moment', 'chronological', 'custom']).default('auto'),
+  /** The creator-facing story shape.  A Scene remains a compiled timeline
+   * assembly; it is not the unit a beginner has to choose by hand. */
+  story_structure: z.enum([
+    'auto',
+    'chronological',
+    'hook_value_payoff',
+    'problem_solution',
+    'how_to',
+    'highlight_reel',
+  ]).default('auto'),
+  /** Which evidence family should break ties between otherwise eligible
+   * Content Segments. `auto` never invents a semantic preference. */
+  selection_focus: z.enum(['auto', 'speech', 'action', 'visual', 'people', 'product']).default('auto'),
+  must_preserve: z.array(z.string().trim().min(1).max(500)).max(40).default([]),
+  creative_direction: videoCreativeDirectionSchema.default({
+    narrative_voice: 'plainspoken',
+    emotional_arc: 'clarity',
+    audio_mode: 'preserve_source',
+    voiceover_persona: 'none',
+    caption_strategy: 'spoken_rhythm',
+    keep_natural_pauses: true,
+    human_notes: '',
+  }),
+})
+
+export const videoCreationBriefSchema = videoCreationBriefFieldsSchema.extend({
+  id: mediaIdSchema,
+  project_id: mediaIdSchema,
+  revision: z.number().int().positive(),
+  /** Present only while the current Delivery Intent is still this Brief's
+   * generated preset. An explicit Delivery Intent intentionally leaves this
+   * pointer stale, so a later Brief edit cannot overwrite the advanced user. */
+  compiled_delivery_intent: z.object({
+    id: mediaIdSchema,
+    revision: z.number().int().positive(),
+  }).optional(),
+  created_at: mediaIsoDateSchema,
+  updated_at: mediaIsoDateSchema,
+})
+
+export const videoDurationFeasibilitySchema = z.object({
+  id: mediaIdSchema,
+  project_id: mediaIdSchema,
+  intent_revision: z.number().int().positive(),
+  facts_basis_hash: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+  natural_duration_range: z.object({ min: videoRationalTimeSchema, max: videoRationalTimeSchema }),
+  recommended_variants: z.array(z.object({
+    id: mediaIdSchema,
+    label: z.string().trim().min(1).max(160),
+    estimated_duration: videoRationalTimeSchema,
+    coverage: z.enum(['highlights', 'balanced', 'complete_when_feasible']),
+    included_segment_ids: z.array(mediaIdSchema).max(2_000),
+    omissions: z.array(z.object({ target_id: mediaIdSchema, reason: z.string().trim().min(1).max(1_000) })).max(2_000),
+  })).max(3),
+  fit_status: z.enum(['fit', 'insufficient_material', 'excess_material', 'required_conflict']),
+  warnings: z.array(z.string().trim().min(1).max(1_000)).max(200),
+  created_at: mediaIsoDateSchema,
+})
+
+const videoPlanBaseSchema = z.object({
+  id: mediaIdSchema,
+  project_id: mediaIdSchema,
+  project_revision: z.number().int().nonnegative(),
+  facts_basis_hash: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+  delivery_intent_id: mediaIdSchema,
+  intent_revision: z.number().int().positive(),
+  /** A remote plan is auditable by its immutable receipt. A conservative
+   * local fallback explicitly carries no receipt and cannot claim remote
+   * understanding. */
+  origin: z.enum(['provider', 'local_conservative']),
+  provider_receipt_ids: z.array(mediaIdSchema).max(64),
+  target_duration: videoRationalTimeSchema.optional(),
+  created_at: mediaIsoDateSchema,
+})
+
+export const videoEditorialPlanSchema = z.discriminatedUnion('kind', [
+  videoPlanBaseSchema.extend({
+    kind: z.literal('outline'),
+    /** A durable explanation of how content segments become editorial
+     * candidates. Old outlines remain readable without this projection. */
+    selection_model: z.object({
+      version: z.literal('storyboard-selection-v1'),
+      story_structure: z.enum(['chronological', 'hook_value_payoff', 'problem_solution', 'how_to', 'highlight_reel']),
+      selection_focus: z.enum(['auto', 'speech', 'action', 'visual', 'people', 'product']),
+      ordering: z.enum(['chronological', 'narrative']),
+    }).optional(),
+    chapters: z.array(z.object({
+      id: mediaIdSchema,
+      label: z.string().trim().min(1).max(300),
+      segment_ids: z.array(mediaIdSchema).max(2_000),
+      evidence_ids: z.array(mediaIdSchema).max(2_000),
+      target_duration: videoRationalTimeSchema.optional(),
+      /** Candidate metadata is advisory and evidence-bound. It never writes a
+       * Timeline; accepting a Draft still compiles one CommandSet. */
+      story_role: z.enum(['hook', 'context', 'action', 'result', 'cta', 'b_roll']).optional(),
+      selection_rank: z.number().int().positive().max(20_000).optional(),
+      selection_score: z.number().int().nonnegative().max(100_000).optional(),
+      selection_reasons: z.array(z.string().trim().min(1).max(1_000)).max(20).optional(),
+    })).min(1).max(200),
+  }),
+  videoPlanBaseSchema.extend({
+    kind: z.literal('chapter'),
+    outline_plan_id: mediaIdSchema,
+    chapter_id: mediaIdSchema,
+    candidate_segment_ids: z.array(mediaIdSchema).max(2_000),
+    omissions: z.array(z.object({ target_id: mediaIdSchema, reason: z.string().trim().min(1).max(1_000) })).max(2_000),
+    story_role: z.enum(['hook', 'context', 'action', 'result', 'cta', 'b_roll']).optional(),
+    selection_rank: z.number().int().positive().max(20_000).optional(),
+    selection_score: z.number().int().nonnegative().max(100_000).optional(),
+    selection_reasons: z.array(z.string().trim().min(1).max(1_000)).max(20).optional(),
+  }),
+  videoPlanBaseSchema.extend({
+    kind: z.literal('global_review'),
+    outline_plan_id: mediaIdSchema,
+    chapter_plan_ids: z.array(mediaIdSchema).min(1).max(200),
+    conflicts: z.array(z.string().trim().min(1).max(1_000)).max(500),
+    omissions: z.array(z.object({ target_id: mediaIdSchema, reason: z.string().trim().min(1).max(1_000) })).max(2_000),
+  }),
+])
+
+export const videoCreativeRecipeIdSchema = z.enum([
+  'memory_recap',
+  'event_recap',
+  'talking_head_highlight',
+  'course_condense',
+  'product_explainer',
+  'podcast_clips',
+])
+
+export const videoCreativeContextAnchorSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('project') }),
+  z.object({ kind: z.literal('source'), source_id: mediaIdSchema }),
+  z.object({ kind: z.literal('camera_shot'), camera_shot_id: mediaIdSchema }),
+  z.object({ kind: z.literal('content_segment'), content_segment_id: mediaIdSchema }),
+  z.object({ kind: z.literal('evidence_window'), evidence_window_id: mediaIdSchema }),
+  z.object({ kind: z.literal('transcript_range'), transcript_id: mediaIdSchema, range: videoSourceTimeRangeSchema }),
+  z.object({ kind: z.literal('timeline_range'), editorial_timeline_version_id: mediaIdSchema, range: videoEditorialTimeRangeSchema }),
+  z.object({ kind: z.literal('timeline_item'), editorial_timeline_version_id: mediaIdSchema, item_id: mediaIdSchema }),
+  z.object({ kind: z.literal('delivery_variant'), variant_version_id: mediaIdSchema, item_id: mediaIdSchema.optional() }),
+])
+
+/** Formal review is narrower than conversational context: every note is
+ * pinned to a frozen timeline/variant and an actual timeline position. */
+export const videoReviewAnchorSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('timeline_range'), editorial_timeline_version_id: mediaIdSchema, range: videoEditorialTimeRangeSchema }),
+  z.object({ kind: z.literal('timeline_item'), editorial_timeline_version_id: mediaIdSchema, item_id: mediaIdSchema }),
+  z.object({ kind: z.literal('delivery_variant'), variant_version_id: mediaIdSchema, item_id: mediaIdSchema }),
+])
+
+export const videoCreativeSessionSchema = z.object({
+  id: mediaIdSchema,
+  project_id: mediaIdSchema,
+  title: z.string().trim().min(1).max(300),
+  recipe_id: videoCreativeRecipeIdSchema.optional(),
+  created_at: mediaIsoDateSchema,
+  archived_at: mediaIsoDateSchema.optional(),
+})
+
+export const videoCreativeMessageSchema = z.object({
+  id: mediaIdSchema,
+  project_id: mediaIdSchema,
+  session_id: mediaIdSchema,
+  role: z.enum(['user', 'assistant']),
+  text: z.string().trim().min(1).max(32_000),
+  anchors: z.array(videoCreativeContextAnchorSchema).max(200),
+  response_ids: z.array(mediaIdSchema).max(200),
+  proposal_ids: z.array(mediaIdSchema).max(200),
+  provider_receipt_id: mediaIdSchema.optional(),
+  created_at: mediaIsoDateSchema,
+})
+
+export const videoCreativeResponseSchema = z.object({
+  id: mediaIdSchema,
+  project_id: mediaIdSchema,
+  session_id: mediaIdSchema,
+  kind: z.enum(['answer', 'search_result']),
+  anchors: z.array(videoCreativeContextAnchorSchema).max(200),
+  evidence_ids: z.array(mediaIdSchema).max(2_000),
+  text: z.string().trim().min(1).max(32_000),
+  created_at: mediaIsoDateSchema,
+})
+
+export const videoCreativeProposalSchema = z.object({
+  id: mediaIdSchema,
+  project_id: mediaIdSchema,
+  session_id: mediaIdSchema,
+  created_by_message_id: mediaIdSchema,
+  base_project_revision: z.number().int().nonnegative(),
+  facts_basis_hash: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+  base_timeline_version_id: mediaIdSchema.optional(),
+  base_variant_version_id: mediaIdSchema.optional(),
+  anchors: z.array(videoCreativeContextAnchorSchema).max(200),
+  kind: z.enum(['timeline_draft', 'timeline_patch', 'delivery_variant_patch', 'quality_fix']),
+  summary: z.string().trim().min(1).max(4_000),
+  rationale: z.array(z.string().trim().min(1).max(1_000)).max(200),
+  evidence_ids: z.array(mediaIdSchema).max(2_000),
+  proposed_timeline_draft_id: mediaIdSchema.optional(),
+  proposed_command_set: timelineCommandSetSchema.optional(),
+  estimated_duration: videoRationalTimeSchema.optional(),
+  quality_report_id: mediaIdSchema.optional(),
+  provider_receipt_ids: z.array(mediaIdSchema).max(64),
+  actual_cost: z.object({
+    model_calls: z.number().int().nonnegative(),
+    total_tokens: z.number().int().nonnegative(),
+    input_bytes: z.number().int().nonnegative(),
+    visual_frames: z.number().int().nonnegative(),
+    proxy_seconds: z.number().nonnegative(),
+    asr_seconds: z.number().nonnegative(),
+    cache_hits: z.number().int().nonnegative(),
+  }),
+  status: z.enum(['proposed', 'accepted', 'partially_accepted', 'rejected', 'stale']),
+  created_at: mediaIsoDateSchema,
+})
+
+/**
+ * A review note is immutable feedback tied to one frozen Editorial Version.
+ * Its current status is a read projection from append-only resolution events;
+ * no review action ever rewrites a Timeline or Delivery Variant in place.
+ */
+export const videoReviewNoteSchema = z.object({
+  id: mediaIdSchema,
+  project_id: mediaIdSchema,
+  timeline_version_id: mediaIdSchema,
+  anchor: videoReviewAnchorSchema,
+  body: z.string().trim().min(1).max(8_000),
+  status: z.enum(['open', 'addressed', 'dismissed']),
+  actor_id: z.string().trim().min(1).max(160),
+  event_sequence: z.number().int().positive(),
+  resolution_proposal_id: mediaIdSchema.optional(),
+  resolved_by_timeline_version_id: mediaIdSchema.optional(),
+  resolved_by_variant_version_id: mediaIdSchema.optional(),
+  created_at: mediaIsoDateSchema,
+  resolved_at: mediaIsoDateSchema.optional(),
+})
+
+/** The append-only event which makes a Review Note addressed or dismissed. */
+export const videoReviewResolutionSchema = z.object({
+  id: mediaIdSchema,
+  project_id: mediaIdSchema,
+  review_note_id: mediaIdSchema,
+  state: z.enum(['addressed', 'dismissed']),
+  actor_id: z.string().trim().min(1).max(160),
+  event_sequence: z.number().int().positive(),
+  resolution_proposal_id: mediaIdSchema.optional(),
+  resolved_by_timeline_version_id: mediaIdSchema.optional(),
+  resolved_by_variant_version_id: mediaIdSchema.optional(),
+  created_at: mediaIsoDateSchema,
+}).superRefine((value, context) => {
+  const references = [
+    value.resolution_proposal_id,
+    value.resolved_by_timeline_version_id,
+    value.resolved_by_variant_version_id,
+  ].filter(Boolean)
+  if (value.state === 'addressed' && references.length !== 1) {
+    context.addIssue({ code: 'custom', message: 'addressed review requires exactly one immutable resolution reference' })
+  }
+  if (value.state === 'dismissed' && references.length > 0) {
+    context.addIssue({ code: 'custom', message: 'dismissed review cannot claim a replacement version' })
+  }
+})
+
+/** Approval is an immutable decision event. Pending is only a query projection. */
+export const videoApprovalDecisionSchema = z.object({
+  id: mediaIdSchema,
+  project_id: mediaIdSchema,
+  timeline_version_id: mediaIdSchema,
+  state: z.enum(['approved', 'changes_requested']),
+  actor_id: z.string().trim().min(1).max(160),
+  event_sequence: z.number().int().positive(),
+  note_ids: z.array(mediaIdSchema).max(2_000).superRefine((value, context) => {
+    if (new Set(value).size !== value.length) context.addIssue({ code: 'custom', message: 'note_ids 不能重复' })
+  }),
+  created_at: mediaIsoDateSchema,
+})
+
+/** This is an advisory marker only. Adding media never rewrites a user
+ * accepted draft or Timeline; the user can explicitly request a fresh plan. */
+export const videoPlanningUpdateSchema = z.object({
+  id: mediaIdSchema,
+  project_id: mediaIdSchema,
+  source_id: mediaIdSchema,
+  authorized_depth: z.enum(['summary', 'standard', 'deep']),
+  plan_ids: z.array(mediaIdSchema).max(500),
+  reason: z.string().trim().min(1).max(1_000),
+  created_at: mediaIsoDateSchema,
+})
+
+/** A Quick Create batch is a durable set of reviewable Drafts. It is not a
+ * Timeline writer: every candidate remains independently accept/rejectable. */
+export const videoQuickCreateCandidateSchema = z.object({
+  id: mediaIdSchema,
+  draft_id: mediaIdSchema,
+  label: z.string().trim().min(1).max(160),
+  explanation: z.string().trim().min(1).max(1_000),
+  estimated_duration: videoRationalTimeSchema,
+  included_segment_ids: z.array(mediaIdSchema).min(1).max(2_000),
+  omissions: z.array(z.object({ target_id: mediaIdSchema, reason: z.string().trim().min(1).max(1_000) })).max(2_000),
+})
+
+export const videoQuickCreateBatchSchema = z.object({
+  id: mediaIdSchema,
+  project_id: mediaIdSchema,
+  idempotency_key: z.string().min(16).max(160),
+  base_revision: z.number().int().nonnegative(),
+  max_candidates: z.number().int().min(1).max(3),
+  request_hash: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+  intent_revision: z.number().int().positive(),
+  facts_basis_hash: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+  editorial_plan_ids: z.array(mediaIdSchema).min(1).max(500),
+  candidates: z.array(videoQuickCreateCandidateSchema).min(1).max(3),
+  explanation: z.string().trim().min(1).max(1_000),
+  created_at: mediaIsoDateSchema,
+})
+
+/** Non-CommandSet editorial requests still need a durable replay record. The
+ * receipt points at immutable/append-only resources and never becomes a
+ * second Timeline writer. */
+export const videoEditorialMutationReceiptSchema = z.object({
+  kind: z.enum([
+    'source_range_decision',
+    'editorial_plan',
+    'creative_session',
+    'creative_message',
+    'creative_proposal_rejection',
+    'review_note',
+    'review_resolution',
+    'approval_decision',
+  ]),
+  idempotency_key: z.string().min(16).max(160),
+  request_hash: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+  resource_ids: z.array(mediaIdSchema).min(1).max(500),
+  created_at: mediaIsoDateSchema,
+})
+
 export const editorialCommandReceiptSchema = z.object({
   idempotency_key: z.string().min(16).max(160),
   command_set_id: mediaIdSchema,
@@ -690,11 +1465,72 @@ export const editorialCommandReceiptSchema = z.object({
 export const deliveryVariantCreationReceiptSchema = z.object({
   idempotency_key: z.string().min(16).max(160),
   request_hash: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+  /** New receipts prove the Version provenance without requiring a legacy writer. */
+  command_set_id: mediaIdSchema.optional(),
   variant_id: mediaIdSchema,
   /** The immutable version created by the original create request. */
   version_id: mediaIdSchema.optional(),
+  editorial_timeline_version_id: mediaIdSchema.optional(),
+  export_profile_revision_id: mediaIdSchema.optional(),
+  export_profile_hash: z.string().regex(/^sha256:[a-f0-9]{64}$/).optional(),
   created_at: mediaIsoDateSchema,
 })
+
+/**
+ * Finishing resources are immutable, but their creation endpoints are still
+ * commands.  Keep the replay receipt with the project payload so a restart or
+ * an HTTP retry returns the original immutable resource instead of creating a
+ * second Caption/Plan/Report.
+ */
+export const videoFinishingReceiptSchema = z.object({
+  kind: z.enum(['caption_draft', 'caption_revision', 'caption_translation', 'composition_plan', 'audio_finishing_plan', 'quality_preflight', 'subject_track', 'beat_sync_draft']),
+  idempotency_key: z.string().min(16).max(160),
+  request_hash: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+  resource_ids: z.array(mediaIdSchema).min(1).max(4),
+  created_at: mediaIsoDateSchema,
+})
+
+export const videoExecutionInputSchema = z.discriminatedUnion('kind', [
+  z.object({
+    kind: z.literal('source'),
+    source_id: mediaIdSchema,
+    source_fingerprint: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+    /**
+     * Frozen absolute FFmpeg stream index for the source primary video.
+     * Legacy persisted plans can still be decoded, but render fails closed
+     * until they are recompiled from current source facts.
+     */
+    video_stream_index: z.number().int().nonnegative().optional(),
+    source_start: videoRationalTimeSchema,
+    source_range: videoSourceTimeRangeSchema,
+    /** A/V selection is frozen: source stream 0 is not necessarily the default audio. */
+    audio_stream_index: z.number().int().nonnegative().optional(),
+    audio_start: videoRationalTimeSchema.optional(),
+    audio_duration: videoRationalTimeSchema.optional(),
+    audio_sample_rate: z.number().int().positive().optional(),
+    audio_channels: z.number().int().positive().optional(),
+    /** Frozen FFprobe color facts.  The renderer uses these to do real HDR->SDR conversion. */
+    video_color: videoColorFactSchema,
+  }),
+  z.object({
+    kind: z.literal('project_asset'),
+    asset_id: mediaIdSchema,
+    asset_content_hash: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+    /** Compiler-frozen selected range; old plans lacking it fail at execution. */
+    source_range: videoSourceTimeRangeSchema.optional(),
+    /** Required when this managed asset is used as a video input. */
+    video_color: videoColorFactSchema.optional(),
+    /** Frozen absolute FFmpeg video stream index for a video project asset. */
+    video_stream_index: z.number().int().nonnegative().optional(),
+    video_start: videoRationalTimeSchema.optional(),
+    video_duration: videoRationalTimeSchema.optional(),
+    audio_stream_index: z.number().int().nonnegative().optional(),
+    audio_start: videoRationalTimeSchema.optional(),
+    audio_duration: videoRationalTimeSchema.optional(),
+    audio_sample_rate: z.number().int().positive().optional(),
+    audio_channels: z.number().int().positive().optional(),
+  }),
+])
 
 export const videoExecutionPlanSchema = z.object({
   id: mediaIdSchema,
@@ -704,6 +1540,7 @@ export const videoExecutionPlanSchema = z.object({
   timeline_items: z.array(z.object({
     order: z.number().int().nonnegative(),
     item_id: mediaIdSchema,
+    linked_av_group_id: mediaIdSchema.optional(),
     track_id: mediaIdSchema,
     track_kind: z.enum(['primary_video', 'b_roll', 'source_audio', 'music', 'voice_over', 'caption', 'overlay']),
     kind: z.enum(['video', 'audio', 'caption', 'overlay']),
@@ -711,33 +1548,60 @@ export const videoExecutionPlanSchema = z.object({
     binding: videoTimelineAssetBindingSchema,
     speed: videoPlaybackSpeedSchema.optional(),
   })).max(2000),
-  inputs: z.array(z.object({ source_id: mediaIdSchema, source_fingerprint: z.string().regex(/^sha256:[a-f0-9]{64}$/), source_start: videoRationalTimeSchema, source_range: videoSourceTimeRangeSchema })).max(2000),
+  inputs: z.array(videoExecutionInputSchema).max(2000),
   filters: z.array(z.discriminatedUnion('kind', [
     z.object({ kind: z.literal('scale_pad'), width: z.number().int().positive(), height: z.number().int().positive() }),
     z.object({ kind: z.literal('transform'), item_id: mediaIdSchema, keyframes: z.array(videoKeyframeSchema(videoTransformSchema)).max(1000) }),
     z.object({ kind: z.literal('volume'), item_id: mediaIdSchema, keyframes: z.array(videoKeyframeSchema(z.number().min(0).max(4))).max(1000) }),
+    z.object({ kind: z.literal('audio_denoise'), item_id: mediaIdSchema, noise_reduction_db: z.number().finite().min(1).max(12) }),
     z.object({ kind: z.literal('audio_fade'), item_id: mediaIdSchema, fade_in: videoRationalTimeSchema.optional(), fade_out: videoRationalTimeSchema.optional() }).refine(value => value.fade_in || value.fade_out, { message: 'audio fade is required' }),
   ])).max(4000),
+  caption: z.object({
+    document_id: mediaIdSchema,
+    revision_id: mediaIdSchema,
+    basis_hash: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+    mode: z.enum(['burn_in', 'sidecar']),
+    sidecar_format: z.enum(['srt', 'vtt']).optional(),
+    language: z.string().trim().min(2).max(32),
+    style: videoCaptionStyleSchema,
+    cues: z.array(videoCaptionCueSchema).max(20_000),
+  }).optional(),
   maps: z.array(z.object({ track_id: mediaIdSchema, output: z.enum(['video', 'audio', 'caption']) })).max(100),
   encoder: videoExportProfileRevisionSchema,
   color_pipeline: z.object({ output: z.literal('sdr_bt709'), hdr_input_policy: z.enum(['tone_map_to_sdr', 'reject']) }),
-  audio_pipeline: z.object({ policy: z.enum(['source_only', 'music_with_source', 'music_only']), sample_rate: z.literal(48_000), channels: z.union([z.literal(1), z.literal(2)]) }),
+  audio_pipeline: z.object({ policy: videoAudioPolicySchema, sample_rate: z.literal(48_000), channels: z.union([z.literal(1), z.literal(2)]) }),
   output_target: z.object({ kind: z.literal('managed'), locator: z.string().regex(/^execution-plans\/[a-z0-9_-]+$/) }),
   compiler_version: z.literal('editorial-compiler-v1'),
   basis_hash: z.string().regex(/^sha256:[a-f0-9]{64}$/),
   created_at: mediaIsoDateSchema,
 })
 
+const videoCaptionArtifactSchema = z.object({
+  format: z.enum(['srt', 'vtt']),
+  byte_size: z.number().int().positive(),
+  content_hash: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+  caption_basis_hash: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+})
+
+const videoPreviewCaptionArtifactSchema = videoCaptionArtifactSchema.extend({
+  asset_path: z.string().regex(/^\/api\/videos\/projects\//),
+})
+
 export const videoPreviewSchema = z.object({
   timeline_version_id: mediaIdSchema,
+  delivery_variant_version_id: mediaIdSchema.optional(),
+  execution_plan_id: mediaIdSchema.optional(),
   asset_id: mediaIdSchema,
   asset_path: z.string().regex(/^\/api\/(?:media\/assets\/|videos\/projects\/)/),
   content_hash: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+  sidecar_caption: videoPreviewCaptionArtifactSchema.optional(),
   created_at: mediaIsoDateSchema,
 })
 
 export const videoOutputVerificationSchema = z.object({
   timeline_version_id: mediaIdSchema,
+  delivery_variant_version_id: mediaIdSchema.optional(),
+  execution_plan_id: mediaIdSchema.optional(),
   byte_size: z.number().int().positive(),
   file_mtime_ms: z.number().finite().nonnegative().optional(),
   duration_ms: z.number().int().positive(),
@@ -746,8 +1610,79 @@ export const videoOutputVerificationSchema = z.object({
   width: z.number().int().positive().max(12000).optional(),
   height: z.number().int().positive().max(12000).optional(),
   fps: z.number().positive().max(240).optional(),
+  container: z.enum(['mp4', 'mov']).optional(),
+  video_codec: z.enum(['h264', 'prores_422']).optional(),
+  prores_profile: z.enum(['standard', 'hq']).optional(),
+  audio_codec: z.enum(['aac_lc', 'pcm_s16le']).optional(),
+  pixel_format: z.enum(['yuv420p', 'yuv422p10le']).optional(),
+  color_range: z.literal('sdr_bt709').optional(),
+  audio_sample_rate: z.number().int().positive().optional(),
+  audio_channels: z.number().int().positive().optional(),
+  audio_channel_layout: z.string().trim().min(1).max(160).optional(),
+  sample_aspect_ratio: z.string().trim().min(1).max(80).optional(),
+  display_aspect_ratio: z.string().trim().min(1).max(80).optional(),
+  rotation: z.number().int().min(-360).max(360).optional(),
+  decoded: z.boolean().optional(),
+  packet_timestamps_monotonic: z.boolean().optional(),
+  expected_duration_ms: z.number().int().positive().optional(),
+  duration_delta_ms: z.number().int().nonnegative().optional(),
+  audio_video_duration_delta_ms: z.number().int().nonnegative().optional(),
+  /** Full-output FFmpeg blackdetect evidence retained for post-render recovery. */
+  black_duration_ms: z.number().int().nonnegative().optional(),
+  black_ratio: z.number().min(0).max(1).optional(),
+  /** Full-output FFmpeg silencedetect evidence retained for post-render recovery. */
+  silence_duration_ms: z.number().int().nonnegative().optional(),
+  silence_ratio: z.number().min(0).max(1).optional(),
+  sidecar_caption: videoCaptionArtifactSchema.optional(),
   content_hash: z.string().regex(/^sha256:[a-f0-9]{64}$/),
   verified_at: mediaIsoDateSchema,
+})
+
+export const videoQualityCheckSchema = z.object({
+  id: mediaIdSchema,
+  code: z.string().trim().min(1).max(160),
+  state: z.enum(['passed', 'blocked', 'needs_user_decision']),
+  severity: z.enum(['info', 'warning', 'error']),
+  message: z.string().trim().min(1).max(2_000),
+  item_id: mediaIdSchema.optional(),
+  range: videoEditorialTimeRangeSchema.optional(),
+})
+
+/** A quality report only records checks that were actually possible at its stage. */
+export const videoQualityReportSchema = z.object({
+  id: mediaIdSchema,
+  project_id: mediaIdSchema,
+  kind: z.enum(['preflight', 'post_render']),
+  state: z.enum(['passed', 'blocked', 'needs_user_decision']),
+  editorial_timeline_version_id: mediaIdSchema,
+  delivery_variant_version_id: mediaIdSchema,
+  export_profile_revision_id: mediaIdSchema,
+  execution_plan_id: mediaIdSchema.optional(),
+  facts_basis_hash: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+  variant_basis_hash: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+  checks: z.array(videoQualityCheckSchema).min(1).max(2_000),
+  output_verification: videoOutputVerificationSchema.optional(),
+  created_at: mediaIsoDateSchema,
+})
+
+/**
+ * A post-render warning never becomes an implicit approval.  This receipt
+ * binds the explicit acknowledgement to the exact frozen render artefact.
+ */
+export const videoQualityAcknowledgementSchema = z.object({
+  id: mediaIdSchema,
+  project_id: mediaIdSchema,
+  render_operation_id: mediaIdSchema,
+  report_id: mediaIdSchema,
+  execution_plan_id: mediaIdSchema,
+  delivery_variant_version_id: mediaIdSchema,
+  output_content_hash: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+  accepted_check_ids: z.array(mediaIdSchema).min(1).max(2_000).superRefine((value, context) => {
+    if (new Set(value).size !== value.length) {
+      context.addIssue({ code: 'custom', message: 'accepted_check_ids 不能重复' })
+    }
+  }),
+  acknowledged_at: mediaIsoDateSchema,
 })
 
 const remoteAnalysisRangeSchema = z.object({
@@ -772,6 +1707,21 @@ export const remoteAnalysisConsentSchema = z.object({
 export const videoRemoteBudgetSchema = z.object({
   id: mediaIdSchema,
   estimate_hash: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+  /** New estimates record the exact consent basis. Older persisted budgets
+   * may omit this field and remain readable, but cannot be used to authorize a
+   * broader or differently priced consent revision. */
+  estimate_scope: z.object({
+    purposes: z.array(z.enum(['visual_evidence', 'planning', 'caption_translation', 'asr', 'semantic_search'])).min(1).max(5),
+    source_ids: z.array(mediaIdSchema).min(1).max(200),
+    usage_policy_revision: z.string().min(1).max(80),
+    model_bindings: z.object({
+      visualEvidence: z.string().min(1).max(200),
+      mediaReasoning: z.string().min(1).max(200),
+      shortAsr: z.string().min(1).max(200),
+      longAsr: z.string().min(1).max(200),
+      semanticEmbedding: z.string().min(1).max(200),
+    }).strict(),
+  }).strict().optional(),
   state: z.enum(['estimated', 'reserved', 'settled', 'released', 'outcome_unknown']),
   requests: z.number().int().nonnegative(),
   total_tokens: z.number().int().nonnegative(),
@@ -838,10 +1788,26 @@ export const videoStudioProjectSchema = mediaProjectBaseSchema.extend({
   sources: z.array(videoSourceSchema).max(200).default([]),
   timeline: z.array(videoClipSchema).max(500).default([]),
   output: videoOutputSettingsSchema.default({ width: 1080, height: 1920, fps: 30 }),
+  delivery_format: videoDeliveryFormatSchema.default('mp4_h264_aac'),
   evidence: z.array(videoEvidenceSchema).max(5000).default([]),
   evidence_revision: z.string().regex(/^sha256:[a-f0-9]{64}$/).optional(),
   remote_analysis_consents: z.array(remoteAnalysisConsentSchema).max(200).default([]),
   remote_analysis_budgets: z.array(videoRemoteBudgetSchema).max(10_000).default([]),
+  source_range_decisions: z.array(videoSourceRangeDecisionSchema).max(20_000).default([]),
+  creation_brief: videoCreationBriefSchema.optional(),
+  delivery_intent: videoDeliveryIntentSchema.optional(),
+  duration_feasibility: videoDurationFeasibilitySchema.optional(),
+  editorial_plans: z.array(videoEditorialPlanSchema).max(2_000).default([]),
+  creative_sessions: z.array(videoCreativeSessionSchema).max(2_000).default([]),
+  creative_messages: z.array(videoCreativeMessageSchema).max(20_000).default([]),
+  creative_responses: z.array(videoCreativeResponseSchema).max(20_000).default([]),
+  creative_proposals: z.array(videoCreativeProposalSchema).max(10_000).default([]),
+  review_notes: z.array(videoReviewNoteSchema).max(20_000).default([]),
+  review_resolutions: z.array(videoReviewResolutionSchema).max(20_000).default([]),
+  approval_decisions: z.array(videoApprovalDecisionSchema).max(20_000).default([]),
+  planning_updates: z.array(videoPlanningUpdateSchema).max(2_000).default([]),
+  quick_create_batches: z.array(videoQuickCreateBatchSchema).max(2_000).default([]),
+  editorial_mutation_receipts: z.array(videoEditorialMutationReceiptSchema).max(10_000).default([]),
   pending_relay_acknowledgements: z.array(videoRelayPendingAcknowledgementSchema).max(10_000).default([]),
   /** An ACK removes a temporary Relay result but must remain recorded locally;
    * otherwise startup reconciliation would re-ACK every historical Fact. */
@@ -859,10 +1825,19 @@ export const videoStudioProjectSchema = mediaProjectBaseSchema.extend({
   timeline_drafts: z.array(timelineDraftSchema).max(1000).default([]),
   delivery_variants: z.array(deliveryVariantSchema).max(1000).default([]),
   delivery_variant_versions: z.array(deliveryVariantVersionSchema).max(2000).default([]),
+  video_asset_attestations: z.array(videoProjectAssetAttestationSchema).max(2_000).default([]),
+  caption_styles: z.array(videoCaptionStyleSchema).max(1_000).default([]),
+  caption_documents: z.array(videoCaptionDocumentSchema).max(2_000).default([]),
+  caption_document_revisions: z.array(videoCaptionDocumentRevisionSchema).max(10_000).default([]),
+  composition_plans: z.array(videoCompositionPlanSchema).max(2_000).default([]),
+  audio_finishing_plans: z.array(videoAudioFinishingPlanSchema).max(2_000).default([]),
+  quality_reports: z.array(videoQualityReportSchema).max(10_000).default([]),
+  quality_acknowledgements: z.array(videoQualityAcknowledgementSchema).max(10_000).default([]),
   export_profiles: z.array(videoExportProfileSchema).max(200).default([]),
   export_profile_revisions: z.array(videoExportProfileRevisionSchema).max(1000).default([]),
   editorial_command_receipts: z.array(editorialCommandReceiptSchema).max(5000).default([]),
   delivery_variant_creation_receipts: z.array(deliveryVariantCreationReceiptSchema).max(1000).default([]),
+  finishing_receipts: z.array(videoFinishingReceiptSchema).max(5000).default([]),
   execution_plans: z.array(videoExecutionPlanSchema).max(2000).default([]),
   task_id: mediaIdSchema.optional(),
   preview_task_id: mediaIdSchema.optional(),
@@ -888,9 +1863,10 @@ const persistedMediaProjectFields = {
 } as const
 export const publicImageWorkbenchProjectSchema = imageWorkbenchProjectSchema.omit({
   ...persistedMediaProjectFields,
-  /** Provider routing and the compiled provider prompt stay server-owned. */
+  /** Provider routing, compiler details and raw native pixels stay server-owned. */
   model: true,
   prompt: true,
+  size: true,
   count: true,
   /** Legacy result projection remains persisted for migration but is not a UI authority. */
   outputs: true,
@@ -904,12 +1880,23 @@ export const publicVideoStudioProjectSchema = videoStudioProjectSchema.omit({
   acknowledged_relay_operations: true,
   retired_relay_operations: true,
   delivery_variant_creation_receipts: true,
+  finishing_receipts: true,
+  editorial_mutation_receipts: true,
+  review_resolutions: true,
+  video_asset_attestations: true,
   editorial_timeline_versions: true,
   timeline_drafts: true,
   delivery_variant_versions: true,
   execution_plans: true,
+  /** Native export destinations stay server/Main-owned. */
+  output_path: true,
+  /** The project workspace is a server/Main-owned local filesystem boundary. */
+  workspace_root: true,
 }).extend({
   sources: z.array(publicVideoSourceSchema).max(200),
+  /** Managed secondary inputs are public by identity and facts only; their
+   * local locator, path and license text stay server-owned. */
+  project_assets: z.array(publicVideoProjectAssetSchema).max(2_000).default([]),
 })
 export const publicMediaProjectSchema = z.discriminatedUnion('kind', [
   publicImageWorkbenchProjectSchema,
@@ -924,7 +1911,12 @@ export const mediaTaskSchema = z.object({
   operation_id: mediaIdSchema.optional(),
   owner: mediaOwnerSchema.optional(),
   attempt: z.number().int().positive().default(1),
-  kind: z.enum(['image.generate', 'video.probe', 'video.fingerprint', 'video.analyze', 'video.plan', 'video.transcribe', 'video.understand', 'video.index', 'video.preview', 'video.render']),
+  kind: z.enum([
+    'image.generate',
+    'video.probe', 'video.fingerprint', 'video.analyze', 'video.plan', 'video.transcribe', 'video.understand', 'video.index',
+    'video.beat_analyze', 'video.beat_sync_draft', 'video.subject_track', 'video.caption_draft', 'video.caption_translation', 'video.composition_plan', 'video.audio_finish_plan', 'video.quality_preflight',
+    'video.timeline_compile', 'video.preview', 'video.render', 'video.output_verify', 'video.quality_post_render',
+  ]),
   status: mediaTaskStatusSchema,
   /** Monotonic sequence for user-visible changes to this persisted job. */
   status_sequence: z.number().int().nonnegative().default(0),
@@ -965,6 +1957,44 @@ export const publicMediaTaskSchema = mediaTaskSchema.omit({
   remote_result_acknowledged_at: true,
 })
 
+/**
+ * Safe, user-facing progress for the ordinary video planning journey.  It is
+ * carried inside a video Operation result rather than becoming a second job
+ * state machine: the persisted Operation/Event remains the source of truth.
+ * The fields deliberately describe only work completed and the next user
+ * action; they never expose prompts, provider payloads, credentials or paths.
+ */
+export const videoPlanningWorkflowPhaseSchema = z.enum([
+  'collecting_evidence',
+  'interpreting_goal',
+  'drafting_candidates',
+  'awaiting_confirmation',
+  'failed',
+])
+
+export const videoPlanningWorkflowNextActionSchema = z.enum([
+  'wait_for_analysis',
+  'review_suggestions',
+  'accept_draft',
+  'retry_analysis',
+  'refresh_project',
+])
+
+export const videoPlanningWorkflowSchema = z.object({
+  phase: videoPlanningWorkflowPhaseSchema,
+  completed_units: z.number().int().min(0).max(20),
+  total_units: z.number().int().positive().max(20),
+  next_action: videoPlanningWorkflowNextActionSchema,
+  interpreted_goal: z.string().trim().min(1).max(8000).optional(),
+  clarifications: z.array(z.string().trim().min(1).max(500)).max(20).default([]),
+}).superRefine((value, context) => {
+  if (value.completed_units > value.total_units) {
+    context.addIssue({ code: 'custom', path: ['completed_units'], message: 'completed_units cannot exceed total_units' })
+  }
+})
+
+export type VideoPlanningWorkflow = z.infer<typeof videoPlanningWorkflowSchema>
+
 /** Shared API, Main and Preload response contract for ordinary image operations. */
 export const imageTaskResponseSchema = z.object({ task: publicMediaTaskSchema }).strict()
 export const imageProjectResponseSchema = z.object({ project: publicImageWorkbenchProjectSchema }).strict()
@@ -993,6 +2023,8 @@ export const publicMediaJobEventSchema = mediaJobEventSchema.omit({ task: true }
 export const publicMediaJobEventPageSchema = z.object({
   events: z.array(publicMediaJobEventSchema).max(200),
   cursor: z.number().int().nonnegative(),
+  /** Raw journal continuation value. Resume with `next_cursor - 1`. */
+  next_cursor: z.number().int().positive(),
   reset_required: z.boolean(),
 })
 
@@ -1080,9 +2112,39 @@ export const publicVideoFactSearchPageSchema = z.object({
   next_cursor: z.string().min(1).max(2048).optional(),
 })
 
+/**
+ * The desktop reads this one safe, authoritative projection after an event
+ * reset.  Historical editorial/variant versions are intentionally included
+ * as immutable values, while paths, credentials, provider prompts and relay
+ * internals remain absent from the Renderer contract.
+ */
+export const videoWorkbenchWorkspaceSnapshotSchema = z.object({
+  project: publicVideoStudioProjectSchema,
+  current_timeline: editorialTimelineVersionSchema.optional(),
+  timeline_drafts: z.array(timelineDraftSchema).max(1000),
+  variants: z.array(z.object({
+    variant: deliveryVariantSchema,
+    version: deliveryVariantVersionSchema,
+  })).max(1000),
+  /** Initial material-browser page; individual kind/cursor pages use /facts. */
+  facts: publicVideoFactPageSchema,
+  caption_documents: z.array(videoCaptionDocumentSchema).max(2_000),
+  caption_revisions: z.array(videoCaptionDocumentRevisionSchema).max(10_000),
+  composition_plans: z.array(videoCompositionPlanSchema).max(2_000),
+  audio_finishing_plans: z.array(videoAudioFinishingPlanSchema).max(2_000),
+  execution_plans: z.array(videoExecutionPlanSchema).max(2_000),
+  quality_reports: z.array(videoQualityReportSchema).max(10_000),
+  preview: videoPreviewSchema.optional(),
+  output_verification: videoOutputVerificationSchema.optional(),
+  operations: z.array(publicMediaTaskSchema).max(10_000),
+  events: publicMediaJobEventPageSchema,
+})
+
 export const imageGenerationTaskResultSchema = z.object({
   output_count: z.number().int().nonnegative(),
   outputs: z.array(imageWorkbenchOutputSchema).max(16).default([]),
+  /** Some paid Provider attempts cannot be proven complete even when a subset is deliverable. */
+  partial_outcome_unknown: z.boolean().optional(),
   input_fidelity_requested: z.string().optional(),
   input_fidelity_status: z.enum(['accepted', 'unsupported']).optional(),
   input_fidelity_risk: z.string().max(2000).optional(),
@@ -1091,21 +2153,36 @@ export const imageGenerationTaskResultSchema = z.object({
 export const videoRenderTaskResultSchema = z.object({
   render_revision: z.number().int().nonnegative(),
   timeline_version_id: mediaIdSchema.optional(),
+  delivery_variant_version_id: mediaIdSchema.optional(),
+  execution_plan_id: mediaIdSchema.optional(),
+  preflight_report_id: mediaIdSchema.optional(),
+  post_render_report_id: mediaIdSchema.optional(),
   output_path: z.string().min(1).max(4096),
   output_asset_id: mediaIdSchema.optional(),
   output_content_hash: z.string().regex(/^sha256:[a-f0-9]{64}$/).optional(),
   output_verification: videoOutputVerificationSchema.optional(),
   temporary_output: z.string().min(1).max(4096).optional(),
-  video_encoder: z.enum(['h264_videotoolbox', 'h264_mf', 'mpeg4']).optional(),
+  temporary_sidecar_path: z.string().min(1).max(4096).optional(),
+  post_render_report: videoQualityReportSchema.optional(),
+  /** The output remains in a server-owned temporary path until this is confirmed. */
+  awaiting_quality_confirmation: z.boolean().optional(),
+  quality_acknowledgement: videoQualityAcknowledgementSchema.optional(),
+  video_encoder: z.enum(['h264_videotoolbox', 'h264_mf', 'libx264', 'prores_ks', 'mpeg4']).optional(),
+  encoder_fallback_from: z.enum(['h264_videotoolbox', 'h264_mf']).optional(),
+  sidecar_caption_path: z.string().min(1).max(4096).optional(),
 })
 
 export const videoPreviewTaskResultSchema = z.object({
   preview_revision: z.number().int().nonnegative(),
   timeline_version_id: mediaIdSchema,
+  delivery_variant_version_id: mediaIdSchema.optional(),
+  execution_plan_id: mediaIdSchema.optional(),
   asset_id: mediaIdSchema,
   asset_path: z.string().regex(/^\/api\/(?:media\/assets\/|videos\/projects\/)/),
   content_hash: z.string().regex(/^sha256:[a-f0-9]{64}$/).optional(),
   temporary_output: z.string().min(1).max(4096).optional(),
+  temporary_sidecar_path: z.string().min(1).max(4096).optional(),
+  sidecar_caption: videoPreviewCaptionArtifactSchema.optional(),
 })
 
 export const createImageProjectInputSchema = z.object({
@@ -1114,6 +2191,8 @@ export const createImageProjectInputSchema = z.object({
   /** One-release compatibility for Core callers created before the Brief contract. */
   prompt: z.string().min(1).max(8000).optional(),
   workspace_root: z.string().min(1).max(4096).optional(),
+  /** New image UI uses this intent-based selection instead of a raw-size picker. */
+  generation_preferences: imageGenerationPreferencesSchema.optional(),
   size: imageCanvasSizeSchema.default('1024x1024'),
   budget_limit: imageBudgetLimitSchema.optional(),
   reference_images: z.array(referenceImageDataUrlSchema).max(8).default([]),
@@ -1152,12 +2231,29 @@ export const createVideoProjectInputSchema = z.object({
   title: z.string().min(1).max(160).optional(),
   workspace_root: z.string().min(1).max(4096).optional(),
   output: videoOutputSettingsSchema.optional(),
+  output_preset: videoOutputPresetSchema.optional(),
+  delivery_format: videoDeliveryFormatSchema.optional(),
+})
+
+/** Runtime parser with cross-field checks.  Keep the base object schema
+ * refinement-free because Electron derives a workspace-safe `.omit()` view
+ * from it for the IPC discriminated union. */
+export const createVideoProjectInputValidationSchema = createVideoProjectInputSchema.superRefine((value, context) => {
+  if (value.output && value.output_preset) {
+    context.addIssue({
+      code: 'custom',
+      path: ['output_preset'],
+      message: 'output and output_preset cannot both be provided',
+    })
+  }
 })
 
 export const updateImageProjectInputSchema = z.object({
   revision: z.number().int().nonnegative(),
   user_request: z.string().min(1).max(8000),
-  size: imageCanvasSizeSchema,
+  generation_preferences: imageGenerationPreferencesSchema.optional(),
+  /** Legacy callers may still supply a raw canvas size. New UI sends preferences only. */
+  size: imageCanvasSizeSchema.optional(),
   brief_overrides: imageBriefOverridesSchema.optional(),
   references: z.array(imageProjectReferenceSchema).max(8).optional(),
   new_reference_images: z.array(referenceImageDataUrlSchema).max(8).default([]),
@@ -1166,6 +2262,9 @@ export const updateImageProjectInputSchema = z.object({
   start_new_generation_round: z.boolean().default(false),
   confirm_unknown_retry: z.boolean().default(false),
 }).superRefine((value, context) => {
+  if (!value.size && !value.generation_preferences) {
+    context.addIssue({ code: 'custom', path: ['generation_preferences'], message: 'size or generation_preferences is required' })
+  }
   if (value.references?.some(reference => reference.role === 'unclassified')) {
     context.addIssue({ code: 'custom', path: ['references'], message: 'reference image roles must be confirmed' })
   }
@@ -1277,9 +2376,137 @@ export const selectVideoTimelineVersionInputSchema = z.object({
   version_id: mediaIdSchema,
 })
 
+const videoAnalysisBriefOverridesSchema = videoCreationBriefFieldsSchema.pick({
+  use_case: true,
+  audience: true,
+  distribution: true,
+  tone: true,
+  pace: true,
+  caption_preference: true,
+  hook_strategy: true,
+  story_structure: true,
+  selection_focus: true,
+  must_preserve: true,
+}).partial().strict()
+
+const videoAnalysisPlanningOverridesSchema = z.object({
+  /** User-facing seconds are converted to the project's rational time domain on the server. */
+  target_duration_seconds: z.number().finite().positive().max(3_600)
+    .refine(value => Math.abs(value - Math.round(value * 1_000) / 1_000) < 1e-9, '目标时长最多精确到毫秒。')
+    .optional(),
+  coverage_preference: z.enum(['highlights', 'balanced', 'complete_when_feasible']).optional(),
+  editing_strategy: z.enum(['manual', 'speech_story', 'highlights', 'beat_sync', 'mixed']).optional(),
+}).strict()
+
 export const analyzeVideoProjectInputSchema = z.object({
   base_revision: z.number().int().nonnegative(),
   user_goal: z.string().trim().min(1).max(8000),
+  /** Optional first-pass creative choices collected with the planning request.
+   * The server persists them into the current Brief before starting the
+   * Operation; they remain constraints, never direct timeline commands. */
+  creative_direction: videoCreativeDirectionSchema.partial().optional(),
+  /** Optional consumer-facing Brief fields collected alongside the free-form goal. */
+  brief: videoAnalysisBriefOverridesSchema.optional(),
+  /** Optional initial DeliveryIntent constraints; explicit saved intents still win. */
+  planning: videoAnalysisPlanningOverridesSchema.optional(),
+})
+
+export const upsertVideoDeliveryIntentInputSchema = videoDeliveryIntentFieldsSchema
+  .extend({ base_revision: z.number().int().nonnegative() })
+  .superRefine(validateVideoDeliveryIntent)
+
+export const upsertVideoCreationBriefInputSchema = videoCreationBriefFieldsSchema.extend({
+  base_revision: z.number().int().nonnegative(),
+})
+
+export const createVideoSourceRangeDecisionInputSchema = videoSourceRangeDecisionSchema.omit({
+  id: true,
+  project_id: true,
+  created_at: true,
+  updated_at: true,
+}).extend({ base_revision: z.number().int().nonnegative() })
+
+export const createVideoEditorialPlanInputSchema = z.object({
+  base_revision: z.number().int().nonnegative(),
+  delivery_intent_id: mediaIdSchema.optional(),
+})
+
+export const quickCreateVideoInputSchema = z.object({
+  base_revision: z.number().int().nonnegative(),
+  max_candidates: z.number().int().min(1).max(3).default(3),
+})
+
+export const createVideoCreativeSessionInputSchema = z.object({
+  title: z.string().trim().min(1).max(300),
+  recipe_id: videoCreativeRecipeIdSchema.optional(),
+})
+
+export const postVideoCreativeMessageInputSchema = z.object({
+  text: z.string().trim().min(1).max(32_000),
+  anchors: z.array(videoCreativeContextAnchorSchema).max(200).default([]),
+  /** A proposal remains inert until a separate accept endpoint sends its
+   * CommandSet through the same versioned editor/variant validator. */
+  proposal: z.object({
+    kind: z.enum(['timeline_draft', 'timeline_patch', 'delivery_variant_patch', 'quality_fix']),
+    summary: z.string().trim().min(1).max(4_000),
+    rationale: z.array(z.string().trim().min(1).max(1_000)).max(200).default([]),
+    evidence_ids: z.array(mediaIdSchema).max(2_000).default([]),
+    proposed_timeline_draft_id: mediaIdSchema.optional(),
+    proposed_command_set: timelineCommandSetSchema.optional(),
+    estimated_duration: videoRationalTimeSchema.optional(),
+    quality_report_id: mediaIdSchema.optional(),
+    provider_receipt_ids: z.array(mediaIdSchema).max(64).default([]),
+    actual_cost: z.object({
+      model_calls: z.number().int().nonnegative().default(0),
+      total_tokens: z.number().int().nonnegative().default(0),
+      input_bytes: z.number().int().nonnegative().default(0),
+      visual_frames: z.number().int().nonnegative().default(0),
+      proxy_seconds: z.number().nonnegative().default(0),
+      asr_seconds: z.number().nonnegative().default(0),
+      cache_hits: z.number().int().nonnegative().default(0),
+    }).default({ model_calls: 0, total_tokens: 0, input_bytes: 0, visual_frames: 0, proxy_seconds: 0, asr_seconds: 0, cache_hits: 0 }),
+  }).optional(),
+})
+
+export const createVideoReviewNoteInputSchema = z.object({
+  actor_id: z.string().trim().min(1).max(160),
+  anchor: videoReviewAnchorSchema,
+  body: z.string().trim().min(1).max(8_000),
+})
+
+export const resolveVideoReviewNoteInputSchema = z.object({
+  actor_id: z.string().trim().min(1).max(160),
+  state: z.enum(['addressed', 'dismissed']),
+  resolution_proposal_id: mediaIdSchema.optional(),
+  resolved_by_timeline_version_id: mediaIdSchema.optional(),
+  resolved_by_variant_version_id: mediaIdSchema.optional(),
+}).superRefine((value, context) => {
+  const references = [
+    value.resolution_proposal_id,
+    value.resolved_by_timeline_version_id,
+    value.resolved_by_variant_version_id,
+  ].filter(Boolean)
+  if (value.state === 'addressed' && references.length !== 1) {
+    context.addIssue({ code: 'custom', message: 'addressed review requires exactly one immutable resolution reference' })
+  }
+  if (value.state === 'dismissed' && references.length > 0) {
+    context.addIssue({ code: 'custom', message: 'dismissed review cannot claim a replacement version' })
+  }
+})
+
+export const createVideoApprovalDecisionInputSchema = z.object({
+  actor_id: z.string().trim().min(1).max(160),
+  state: z.enum(['approved', 'changes_requested']),
+  note_ids: z.array(mediaIdSchema).max(2_000).default([]).superRefine((value, context) => {
+    if (new Set(value).size !== value.length) context.addIssue({ code: 'custom', message: 'note_ids 不能重复' })
+  }),
+})
+
+export const acceptVideoCreativeProposalInputSchema = z.object({
+  base_revision: z.number().int().nonnegative(),
+  /** Partial acceptance is limited to a subset of a proposed CommandSet and
+   * always remains one new immutable Version. */
+  command_indexes: z.array(z.number().int().nonnegative()).max(1_000).optional(),
 })
 
 export const lockVideoSceneInputSchema = z.object({
@@ -1291,6 +2518,117 @@ export const lockVideoSceneInputSchema = z.object({
 export const applyVideoAlternativeInputSchema = z.object({
   base_revision: z.number().int().nonnegative(),
   alternative_id: mediaIdSchema,
+})
+
+export const createVideoCaptionDraftInputSchema = z.object({
+  editorial_timeline_version_id: mediaIdSchema,
+  transcript_id: mediaIdSchema.optional(),
+  transcript_revision_id: mediaIdSchema.optional(),
+  language: z.string().trim().min(2).max(32).default('zh'),
+  style: z.object({
+    name: z.string().trim().min(1).max(160).default('默认字幕'),
+    font_family: z.string().trim().min(1).max(160).default('Noto Sans CJK SC'),
+    font_size: z.number().positive().max(512).default(48),
+    fill: z.string().regex(/^#[a-fA-F0-9]{6}$/).default('#FFFFFF'),
+    outline_fill: z.string().regex(/^#[a-fA-F0-9]{6}$/).default('#000000'),
+    outline_width: z.number().min(0).max(32).default(2),
+    bottom_safe_area: z.number().min(0).max(0.5).default(0.08),
+    max_width: z.number().min(0.1).max(1).default(0.9),
+  }).default({
+    name: '默认字幕',
+    font_family: 'Noto Sans CJK SC',
+    font_size: 48,
+    fill: '#FFFFFF',
+    outline_fill: '#000000',
+    outline_width: 2,
+    bottom_safe_area: 0.08,
+    max_width: 0.9,
+  }),
+})
+
+export const createVideoCaptionRevisionInputSchema = z.object({
+  base_revision_id: mediaIdSchema,
+  editorial_timeline_version_id: mediaIdSchema,
+  language: z.string().trim().min(2).max(32).optional(),
+  style_id: mediaIdSchema.optional(),
+  cues: z.array(videoCaptionCueSchema.omit({ id: true })).min(1).max(20_000),
+})
+
+/** Remote translation is a proposal over one immutable Caption Revision. It
+ * never switches a document head; applying a candidate remains a separate
+ * Delivery Variant command. */
+export const createVideoCaptionTranslationInputSchema = z.object({
+  base_revision_id: mediaIdSchema,
+  editorial_timeline_version_id: mediaIdSchema,
+  language: z.string().trim().min(2).max(32),
+  style_id: mediaIdSchema.optional(),
+})
+
+/** The Relay may only return one translated string for every source Cue. The
+ * Sidecar owns all anchors, timeline ranges and alignment state. */
+export const videoCaptionTranslationResultSchema = z.object({
+  translations: z.array(z.object({
+    cue_id: mediaIdSchema,
+    text: z.string().trim().min(1).max(16_000),
+  }).strict()).min(1).max(2_000),
+}).strict()
+
+export const createVideoCompositionPlanInputSchema = z.object({
+  variant_id: mediaIdSchema,
+  base_variant_version_id: mediaIdSchema,
+})
+
+export const createVideoAudioFinishingPlanInputSchema = z.object({
+  variant_id: mediaIdSchema,
+  base_variant_version_id: mediaIdSchema,
+})
+
+export const analyzeVideoBeatInputSchema = z.object({
+  source_id: mediaIdSchema,
+  /** The first release analyses the selected original audio stream locally. */
+  audio_stream_index: z.number().int().nonnegative().optional(),
+})
+
+/** Beat Sync only creates a reviewable draft; accepting it still uses a CommandSet. */
+export const createVideoBeatSyncDraftInputSchema = z.object({
+  source_id: mediaIdSchema,
+  beat_evidence_id: mediaIdSchema,
+  base_timeline_version_id: mediaIdSchema,
+  minimum_cut_interval_ms: z.number().int().min(500).max(10_000).default(1_500),
+})
+
+/** Local tracking consumes only validated visual/object anchors from one Source. */
+export const analyzeVideoSubjectTrackInputSchema = z.object({
+  source_id: mediaIdSchema,
+  subject_id: mediaIdSchema,
+  source_range: videoSourceTimeRangeSchema.optional(),
+})
+
+export const preflightVideoVariantInputSchema = z.object({
+  base_revision: z.number().int().nonnegative(),
+  base_variant_version_id: mediaIdSchema,
+})
+
+export const previewVideoVariantInputSchema = z.object({
+  base_revision: z.number().int().nonnegative(),
+  base_variant_version_id: mediaIdSchema,
+})
+
+export const renderVideoVariantInputSchema = z.object({
+  base_revision: z.number().int().nonnegative(),
+  base_variant_version_id: mediaIdSchema,
+  /** Main resolves this from a native destination grant before Sidecar use. */
+  output_path: z.string().min(1).max(4096),
+})
+
+export const confirmVideoPostRenderQualityInputSchema = z.object({
+  report_id: mediaIdSchema,
+  output_content_hash: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+  accepted_check_ids: z.array(mediaIdSchema).min(1).max(2_000).superRefine((value, context) => {
+    if (new Set(value).size !== value.length) {
+      context.addIssue({ code: 'custom', message: 'accepted_check_ids 不能重复' })
+    }
+  }),
 })
 
 export const renderVideoInputSchema = z.object({
@@ -1317,6 +2655,13 @@ export const createDeliveryVariantInputSchema = z.object({
   name: z.string().trim().min(1).max(160),
   editorial_timeline_version_id: mediaIdSchema.optional(),
   export_profile_revision_id: mediaIdSchema.optional(),
+  /** Create a standard profile for this variant when no existing revision is selected. */
+  output_preset: videoOutputPresetSchema.optional(),
+  delivery_format: videoDeliveryFormatSchema.optional(),
+}).superRefine((value, context) => {
+  if (value.export_profile_revision_id && (value.output_preset || value.delivery_format)) {
+    context.addIssue({ code: 'custom', path: ['export_profile_revision_id'], message: 'export_profile_revision_id cannot be combined with a delivery preset' })
+  }
 })
 
 export const applyDeliveryVariantCommandsInputSchema = z.object({
@@ -1401,6 +2746,12 @@ export type VideoAlternative = z.infer<typeof videoAlternativeSchema>
 export type VideoTimelineVersion = z.infer<typeof videoTimelineVersionSchema>
 export type VideoTimelineTrack = z.infer<typeof videoTimelineTrackSchema>
 export type VideoTimelineItem = z.infer<typeof videoTimelineItemSchema>
+export type VideoProjectAssetAttestation = z.infer<typeof videoProjectAssetAttestationSchema>
+export type VideoProjectAssetKind = z.infer<typeof videoProjectAssetKindSchema>
+export type AddVideoProjectAssetInput = z.infer<typeof addVideoProjectAssetInputSchema>
+export type PublicVideoProjectAsset = z.infer<typeof publicVideoProjectAssetSchema>
+export type VideoOutputPreset = z.infer<typeof videoOutputPresetSchema>
+export type VideoDeliveryFormat = z.infer<typeof videoDeliveryFormatSchema>
 export type EditorialTimelineVersion = z.infer<typeof editorialTimelineVersionSchema>
 export type TimelineDraft = z.infer<typeof timelineDraftSchema>
 export type VideoExportProfile = z.infer<typeof videoExportProfileSchema>
@@ -1410,9 +2761,40 @@ export type DeliveryVariantVersion = z.infer<typeof deliveryVariantVersionSchema
 export type EditorialTimelineCommand = z.infer<typeof editorialTimelineCommandSchema>
 export type DeliveryVariantCommand = z.infer<typeof deliveryVariantCommandSchema>
 export type TimelineCommandSet = z.infer<typeof timelineCommandSetSchema>
+export type VideoSourceRangeDecision = z.infer<typeof videoSourceRangeDecisionSchema>
+export type VideoDeliveryIntent = z.infer<typeof videoDeliveryIntentSchema>
+export type VideoCreationBrief = z.infer<typeof videoCreationBriefSchema>
+export type VideoCreativeDirection = z.infer<typeof videoCreativeDirectionSchema>
+export type VideoDurationFeasibility = z.infer<typeof videoDurationFeasibilitySchema>
+export type VideoEditorialPlan = z.infer<typeof videoEditorialPlanSchema>
+export type VideoCreativeRecipeId = z.infer<typeof videoCreativeRecipeIdSchema>
+export type VideoCreativeContextAnchor = z.infer<typeof videoCreativeContextAnchorSchema>
+export type VideoReviewAnchor = z.infer<typeof videoReviewAnchorSchema>
+export type VideoCreativeSession = z.infer<typeof videoCreativeSessionSchema>
+export type VideoCreativeMessage = z.infer<typeof videoCreativeMessageSchema>
+export type VideoCreativeResponse = z.infer<typeof videoCreativeResponseSchema>
+export type VideoCreativeProposal = z.infer<typeof videoCreativeProposalSchema>
+export type VideoReviewNote = z.infer<typeof videoReviewNoteSchema>
+export type VideoReviewResolution = z.infer<typeof videoReviewResolutionSchema>
+export type VideoApprovalDecision = z.infer<typeof videoApprovalDecisionSchema>
+export type VideoPlanningUpdate = z.infer<typeof videoPlanningUpdateSchema>
+export type VideoQuickCreateCandidate = z.infer<typeof videoQuickCreateCandidateSchema>
+export type VideoQuickCreateBatch = z.infer<typeof videoQuickCreateBatchSchema>
+export type VideoEditorialMutationReceipt = z.infer<typeof videoEditorialMutationReceiptSchema>
+export type VideoExecutionInput = z.infer<typeof videoExecutionInputSchema>
 export type VideoExecutionPlan = z.infer<typeof videoExecutionPlanSchema>
 export type VideoPreview = z.infer<typeof videoPreviewSchema>
 export type VideoOutputVerification = z.infer<typeof videoOutputVerificationSchema>
+export type VideoCaptionStyle = z.infer<typeof videoCaptionStyleSchema>
+export type VideoCaptionCue = z.infer<typeof videoCaptionCueSchema>
+export type VideoCaptionDocument = z.infer<typeof videoCaptionDocumentSchema>
+export type VideoCaptionDocumentRevision = z.infer<typeof videoCaptionDocumentRevisionSchema>
+export type VideoCompositionPlan = z.infer<typeof videoCompositionPlanSchema>
+export type VideoAudioFinishingPlan = z.infer<typeof videoAudioFinishingPlanSchema>
+export type VideoQualityCheck = z.infer<typeof videoQualityCheckSchema>
+export type VideoQualityReport = z.infer<typeof videoQualityReportSchema>
+export type VideoQualityAcknowledgement = z.infer<typeof videoQualityAcknowledgementSchema>
+export type VideoFinishingReceipt = z.infer<typeof videoFinishingReceiptSchema>
 export type ImageOutputVerification = z.infer<typeof imageOutputVerificationSchema>
 export type SaveImageOutputResult = z.infer<typeof saveImageOutputResultSchema>
 export type CreateImageProjectInput = z.input<typeof createImageProjectInputSchema>
@@ -1427,10 +2809,34 @@ export type AddVideoSourceInput = z.input<typeof addVideoSourceInputSchema>
 export type UpdateVideoTimelineInput = z.input<typeof updateVideoTimelineInputSchema>
 export type SelectVideoTimelineVersionInput = z.input<typeof selectVideoTimelineVersionInputSchema>
 export type AnalyzeVideoProjectInput = z.input<typeof analyzeVideoProjectInputSchema>
+export type UpsertVideoDeliveryIntentInput = z.input<typeof upsertVideoDeliveryIntentInputSchema>
+export type UpsertVideoCreationBriefInput = z.input<typeof upsertVideoCreationBriefInputSchema>
+export type CreateVideoSourceRangeDecisionInput = z.input<typeof createVideoSourceRangeDecisionInputSchema>
+export type CreateVideoEditorialPlanInput = z.input<typeof createVideoEditorialPlanInputSchema>
+export type QuickCreateVideoInput = z.input<typeof quickCreateVideoInputSchema>
+export type CreateVideoCreativeSessionInput = z.input<typeof createVideoCreativeSessionInputSchema>
+export type PostVideoCreativeMessageInput = z.input<typeof postVideoCreativeMessageInputSchema>
+export type CreateVideoReviewNoteInput = z.input<typeof createVideoReviewNoteInputSchema>
+export type ResolveVideoReviewNoteInput = z.input<typeof resolveVideoReviewNoteInputSchema>
+export type CreateVideoApprovalDecisionInput = z.input<typeof createVideoApprovalDecisionInputSchema>
+export type AcceptVideoCreativeProposalInput = z.input<typeof acceptVideoCreativeProposalInputSchema>
 export type CreateRemoteAnalysisConsentInput = z.input<typeof createRemoteAnalysisConsentInputSchema>
 export type EstimateRemoteAnalysisInput = z.input<typeof estimateRemoteAnalysisInputSchema>
 export type LockVideoSceneInput = z.input<typeof lockVideoSceneInputSchema>
 export type ApplyVideoAlternativeInput = z.input<typeof applyVideoAlternativeInputSchema>
+export type CreateVideoCaptionDraftInput = z.input<typeof createVideoCaptionDraftInputSchema>
+export type CreateVideoCaptionRevisionInput = z.input<typeof createVideoCaptionRevisionInputSchema>
+export type CreateVideoCaptionTranslationInput = z.input<typeof createVideoCaptionTranslationInputSchema>
+export type VideoCaptionTranslationResult = z.infer<typeof videoCaptionTranslationResultSchema>
+export type CreateVideoCompositionPlanInput = z.input<typeof createVideoCompositionPlanInputSchema>
+export type CreateVideoAudioFinishingPlanInput = z.input<typeof createVideoAudioFinishingPlanInputSchema>
+export type AnalyzeVideoBeatInput = z.input<typeof analyzeVideoBeatInputSchema>
+export type CreateVideoBeatSyncDraftInput = z.input<typeof createVideoBeatSyncDraftInputSchema>
+export type AnalyzeVideoSubjectTrackInput = z.input<typeof analyzeVideoSubjectTrackInputSchema>
+export type PreflightVideoVariantInput = z.input<typeof preflightVideoVariantInputSchema>
+export type PreviewVideoVariantInput = z.input<typeof previewVideoVariantInputSchema>
+export type RenderVideoVariantInput = z.input<typeof renderVideoVariantInputSchema>
+export type ConfirmVideoPostRenderQualityInput = z.input<typeof confirmVideoPostRenderQualityInputSchema>
 export type RenderVideoInput = z.input<typeof renderVideoInputSchema>
 export type PreviewVideoInput = z.input<typeof previewVideoInputSchema>
 export type ApplyEditorialTimelineCommandsInput = z.input<typeof applyEditorialTimelineCommandsInputSchema>

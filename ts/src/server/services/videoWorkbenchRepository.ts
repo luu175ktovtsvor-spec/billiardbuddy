@@ -78,16 +78,38 @@ type OperationRow = {
   deleted: number
 }
 
-type LegacyEventJournal = {
+export type VideoLegacyEventJournal = {
   next_cursor: number
   events: VideoOperationEvent[]
+}
+
+/** A retained generic-media snapshot copied by the Video runtime. The source
+ * hash is a receipt for the read-only source files, never a writer token. */
+export type VideoLegacyMigrationSnapshot = {
+  source_id: string
+  source_hash: `sha256:${string}`
+  project: VideoStudioProject
+  operations: VideoOperation[]
+  journal: VideoLegacyEventJournal | null
+}
+
+export type VideoWorkspaceSnapshot = {
+  project: VideoStudioProject
+  facts: VideoFactsPage
+  operations: VideoOperation[]
+  events: {
+    events: VideoOperationEvent[]
+    cursor: number
+    next_cursor: number
+    reset_required: boolean
+  }
 }
 
 type LegacyDeletedProject = {
   receipt: MediaDeletionReceipt
   project: VideoStudioProject | null
   operations: VideoOperation[]
-  journal: LegacyEventJournal | null
+  journal: VideoLegacyEventJournal | null
 }
 
 export class VideoWorkbenchRepositoryError extends Error {
@@ -357,7 +379,11 @@ export class VideoWorkbenchRepository {
   }
 
   private async importLegacyProject(project: VideoStudioProject): Promise<void> {
-    if (this.projectRow(project.id, true)) return
+    const existing = this.projectRow(project.id, true)
+    if (existing) {
+      if (this.sameMigrationProject(project, await this.loadProject(existing))) return
+      throw new VideoWorkbenchRepositoryError('旧视频项目与已写入记录不一致，无法安全恢复迁移', 500, 'VIDEO_STORAGE_INVALID')
+    }
     // Migration is a copy into immutable payloads, not a user update. Keep the
     // old project document verbatim so current Timeline/Export projections can
     // be reconciled before the old reader is ever retired.
@@ -498,6 +524,11 @@ export class VideoWorkbenchRepository {
     return await this.facts.searchPage(projectId, query, options)
   }
 
+  async searchFactsCursorKind(cursor: string): Promise<'lexical' | 'hybrid' | 'invalid'> {
+    await this.ready()
+    return this.facts.cursorKind(cursor)
+  }
+
   async listCurrentSearchCandidates(projectId: string) {
     await this.ready()
     return await this.facts.listCurrentSearchCandidates(projectId)
@@ -506,6 +537,11 @@ export class VideoWorkbenchRepository {
   async missingSearchEmbeddingEntries(projectId: string, entryIds: string[]) {
     await this.ready()
     return await this.facts.missingSearchEmbeddingEntries(projectId, entryIds)
+  }
+
+  async ensureSearchEmbeddingBasis(projectId: string, modelSnapshot: string, instructionVersion: string) {
+    await this.ready()
+    return await this.facts.ensureSearchEmbeddingBasis(projectId, modelSnapshot, instructionVersion)
   }
 
   async saveFactEmbeddings(projectId: string, entries: VideoFactEmbedding[]): Promise<number> {
@@ -566,6 +602,82 @@ export class VideoWorkbenchRepository {
     return await this.fences.run(`project-${input.project_id}`, async () => await this.saveOperationLocked(input, true))
   }
 
+  /**
+   * Imports one project from the retired generic Media store. This is not a
+   * normal write: it keeps historical status sequences and journal cursors
+   * verbatim, records a source receipt only after a complete reconciliation,
+   * and never mutates the source directory. A restart before that receipt can
+   * repeat the copy; a conflicting partially imported row fails closed.
+   */
+  async importLegacyMediaSnapshot(raw: VideoLegacyMigrationSnapshot): Promise<{
+    project_id: string
+    state: 'imported' | 'already_reconciled'
+  }> {
+    await this.ready()
+    const project = videoStudioProjectSchema.parse(raw.project)
+    const sourceId = raw.source_id
+    if (!/^[a-z0-9][a-z0-9_-]{2,79}$/.test(sourceId) || !/^sha256:[a-f0-9]{64}$/.test(raw.source_hash)) {
+      throw new VideoWorkbenchRepositoryError('旧媒体迁移收据无效', 500, 'VIDEO_STORAGE_INVALID')
+    }
+    const operations = raw.operations.map(operation => canonicalOperation(operation))
+    if (operations.some(operation => operation.project_id !== project.id)) {
+      throw new VideoWorkbenchRepositoryError('旧媒体任务与项目不匹配', 500, 'VIDEO_STORAGE_INVALID')
+    }
+    const journal = raw.journal
+      ? this.parseLegacyJournal({ schema_version: 1, next_cursor: raw.journal.next_cursor, events: raw.journal.events }, project.id)
+      : null
+    const operationsById = new Map<string, VideoOperation>()
+    for (const operation of operations) {
+      const existing = operationsById.get(operation.id)
+      if (existing && JSON.stringify(existing) !== JSON.stringify(operation)) {
+        throw new VideoWorkbenchRepositoryError('旧媒体任务存在重复 ID', 500, 'VIDEO_STORAGE_INVALID')
+      }
+      operationsById.set(operation.id, operation)
+    }
+    for (const event of journal?.events ?? []) {
+      const existing = operationsById.get(event.operation.id)
+      if (existing && existing.status_sequence < event.operation.status_sequence) {
+        throw new VideoWorkbenchRepositoryError('旧媒体任务与 Event 状态序列不一致', 500, 'VIDEO_STORAGE_INVALID')
+      }
+      if (!existing) operationsById.set(event.operation.id, event.operation)
+    }
+    const effectiveOperations = [...operationsById.values()]
+    const receiptPrefix = `video-generic-media-v2:${sourceId}:${project.id}:`
+    const receiptKey = `${receiptPrefix}${raw.source_hash.slice('sha256:'.length)}`
+    const receiptState = () => this.unitOfWork.database.query('SELECT migration_key FROM media_legacy_imports WHERE migration_key LIKE ?')
+      .all(`${receiptPrefix}%`) as Array<{ migration_key: string }>
+    const completed = receiptState()
+    if (completed.some(item => item.migration_key === receiptKey)) {
+      return { project_id: project.id, state: 'already_reconciled' }
+    }
+    if (completed.length > 0) {
+      throw new VideoWorkbenchRepositoryError('旧媒体目录在完成对账后发生变化，已停止迁移', 500, 'VIDEO_STORAGE_INVALID')
+    }
+    return await this.fences.run(`project-${project.id}`, async () => {
+      const lockedCompleted = receiptState()
+      if (lockedCompleted.some(item => item.migration_key === receiptKey)) {
+        return { project_id: project.id, state: 'already_reconciled' as const }
+      }
+      if (lockedCompleted.length > 0) {
+        throw new VideoWorkbenchRepositoryError('旧媒体目录在完成对账后发生变化，已停止迁移', 500, 'VIDEO_STORAGE_INVALID')
+      }
+      await this.importLegacyProject(project)
+      for (const operation of effectiveOperations) await this.importLegacyOperation(operation)
+      if (journal) await this.importLegacyJournal(project.id, journal, `generic-media/${sourceId}/${project.id}`, true)
+      await this.reconcileLegacyImport({
+        projects: [project],
+        operations: effectiveOperations,
+        journals: journal ? new Map([[project.id, journal]]) : new Map(),
+        deletedProjects: [],
+      })
+      this.unitOfWork.transaction(() => {
+        this.unitOfWork.database.query('INSERT INTO media_legacy_imports(migration_key,completed_at) VALUES(?,?)')
+          .run(receiptKey, this.iso())
+      })
+      return { project_id: project.id, state: 'imported' as const }
+    })
+  }
+
   private async saveOperationLocked(input: VideoOperation, emitsEvent: boolean): Promise<VideoOperation> {
     const projectRow = this.projectRow(input.project_id)
     if (!projectRow) throw new VideoWorkbenchRepositoryError('视频项目不存在', 404, 'VIDEO_PROJECT_NOT_FOUND')
@@ -591,7 +703,10 @@ export class VideoWorkbenchRepository {
       operation_id: operation.operation_id ?? operationId(operation.project_id, operation),
     })
     const existing = this.operationRow(operation.id, true)
-    if (existing && JSON.stringify(await this.loadOperation(existing)) === JSON.stringify(canonical)) return
+    if (existing) {
+      if (JSON.stringify(await this.loadOperation(existing)) === JSON.stringify(canonical)) return
+      throw new VideoWorkbenchRepositoryError('旧视频操作与已写入记录不一致，无法安全恢复迁移', 500, 'VIDEO_STORAGE_INVALID')
+    }
     // Do not route a legacy value through saveOperationLocked(): that method
     // intentionally generates the next sequence for a new write. Import must
     // retain the original status_sequence and timestamps exactly.
@@ -685,12 +800,51 @@ export class VideoWorkbenchRepository {
     })
   }
 
-  async listOperationEvents(projectId: string, after = 0, limit = 200): Promise<{ events: VideoOperationEvent[]; cursor: number; reset_required: boolean }> {
+  async listOperationEvents(projectId: string, after = 0, limit = 200): Promise<{
+    events: VideoOperationEvent[]
+    cursor: number
+    next_cursor: number
+    reset_required: boolean
+  }> {
     await this.ready()
     this.assertId(projectId, 'project')
     const page = this.events.list(projectId, after, limit)
     const events = await Promise.all(page.events.map(async row => await this.eventFromRow(row)))
-    return { events, cursor: page.cursor, reset_required: page.reset_required }
+    return { events, cursor: page.cursor, next_cursor: page.next_cursor, reset_required: page.reset_required }
+  }
+
+  /**
+   * A workspace reply is a continuation checkpoint, so its project, facts,
+   * operations and Event page must observe one writer-fenced point in time.
+   * Facts, project mutations and Operation/Event writes all use this fence.
+   */
+  async getWorkspaceSnapshot(projectId: string, after = 0): Promise<VideoWorkspaceSnapshot> {
+    await this.ready()
+    this.assertId(projectId, 'project')
+    return await this.fences.run(`project-${projectId}`, async () => {
+      const projectRow = this.projectRow(projectId)
+      if (!projectRow) throw new VideoWorkbenchRepositoryError('视频项目不存在', 404, 'VIDEO_PROJECT_NOT_FOUND')
+      const eventPage = this.events.list(projectId, after, 200)
+      const operationRows = this.unitOfWork.database.query(`SELECT * FROM video_operations
+        WHERE deleted=0 AND project_id=? ORDER BY updated_at DESC`).all(projectId) as OperationRow[]
+      const [project, facts, operations, events] = await Promise.all([
+        this.loadProject(projectRow),
+        this.facts.pageCurrent('evidence_window', projectId, { limit: 200 }),
+        Promise.all(operationRows.map(async row => await this.loadOperation(row))),
+        Promise.all(eventPage.events.map(async row => await this.eventFromRow(row))),
+      ])
+      return {
+        project,
+        facts,
+        operations,
+        events: {
+          events,
+          cursor: eventPage.cursor,
+          next_cursor: eventPage.next_cursor,
+          reset_required: eventPage.reset_required,
+        },
+      }
+    })
   }
 
   private async eventFromRow(row: PersistedOutboxEvent): Promise<VideoOperationEvent> {
@@ -1023,13 +1177,33 @@ export class VideoWorkbenchRepository {
   }
 
   private async migrateLegacyJson(): Promise<void> {
-    const migrationKey = 'video-json-to-sqlite-v1-imported'
     // Always open and validate the retained reader. It remains deliberately
     // read-only after import, so legacy projects can be audited before a
     // separate retirement change proves the contract exit conditions.
     const legacy = await this.readLegacyJson()
-    const complete = this.unitOfWork.database.query('SELECT migration_key FROM media_legacy_imports WHERE migration_key=?').get(migrationKey)
-    if (complete) return
+    const sourceHash = this.legacySnapshotHash(legacy)
+    const receiptPrefix = 'video-json-to-sqlite-v2-imported:'
+    const migrationKey = `${receiptPrefix}${sourceHash.slice('sha256:'.length)}`
+    const receipts = this.unitOfWork.database.query('SELECT migration_key FROM media_legacy_imports WHERE migration_key LIKE ?')
+      .all(`${receiptPrefix}%`) as Array<{ migration_key: string }>
+    if (receipts.some(item => item.migration_key === migrationKey)) return
+    if (receipts.length > 0) {
+      throw new VideoWorkbenchRepositoryError('保留的旧视频目录在完成对账后发生变化，已停止迁移', 500, 'VIDEO_STORAGE_INVALID')
+    }
+    const v1Marker = this.unitOfWork.database.query('SELECT migration_key FROM media_legacy_imports WHERE migration_key=?')
+      .get('video-json-to-sqlite-v1-imported')
+    if (v1Marker) {
+      // A v1 marker predates source receipts. It has already completed the
+      // original exact reconciliation, but newer writes may legitimately have
+      // advanced SQLite past that baseline. Preserve the old files, record
+      // their now-validated digest, and keep retirement blocked until the
+      // documented independent acceptance report is produced.
+      this.unitOfWork.transaction(() => {
+        this.unitOfWork.database.query('INSERT INTO media_legacy_imports(migration_key,completed_at) VALUES(?,?)')
+          .run(migrationKey, this.iso())
+      })
+      return
+    }
 
     for (const project of legacy.projects) {
       await this.fences.run(`project-${project.id}`, async () => await this.importLegacyProject(project))
@@ -1052,6 +1226,15 @@ export class VideoWorkbenchRepository {
       this.unitOfWork.database.query('INSERT INTO media_legacy_imports(migration_key,completed_at) VALUES(?,?)')
         .run(migrationKey, this.iso())
     })
+  }
+
+  private legacySnapshotHash(legacy: Awaited<ReturnType<VideoWorkbenchRepository['readLegacyJson']>>): `sha256:${string}` {
+    return `sha256:${createHash('sha256').update(JSON.stringify({
+      projects: legacy.projects,
+      operations: legacy.operations,
+      journals: [...legacy.journals.entries()],
+      deleted_projects: legacy.deletedProjects,
+    })).digest('hex')}`
   }
 
   /**
@@ -1090,12 +1273,16 @@ export class VideoWorkbenchRepository {
     }
   }
 
-  private async importLegacyJournal(projectId: string, journal: LegacyEventJournal, legacyPath: string): Promise<void> {
+  private async importLegacyJournal(
+    projectId: string,
+    journal: VideoLegacyEventJournal,
+    legacyPath: string,
+    alreadyFenced = false,
+  ): Promise<void> {
     for (const event of journal.events) {
-      await this.fences.run(`project-${projectId}`, async () => await this.importLegacyEvent(
-        event,
-        `${legacyPath}#${event.cursor}`,
-      ))
+      const importEvent = async () => await this.importLegacyEvent(event, `${legacyPath}#${event.cursor}`)
+      if (alreadyFenced) await importEvent()
+      else await this.fences.run(`project-${projectId}`, importEvent)
     }
     this.unitOfWork.transaction(() => this.events.preserveLegacyCursorState(
       projectId,
@@ -1107,7 +1294,7 @@ export class VideoWorkbenchRepository {
   private async readLegacyJson(): Promise<{
     projects: VideoStudioProject[]
     operations: VideoOperation[]
-    journals: Map<string, LegacyEventJournal>
+    journals: Map<string, VideoLegacyEventJournal>
     deletedProjects: LegacyDeletedProject[]
   }> {
     // `legacy-import/` is read only for a short-lived compatibility upgrade:
@@ -1128,7 +1315,7 @@ export class VideoWorkbenchRepository {
       if (name !== `${item.id}.json`) throw new VideoWorkbenchRepositoryError('旧视频操作文件名与内容不匹配', 500, 'VIDEO_STORAGE_INVALID')
       return item
     }))
-    const journals = new Map<string, LegacyEventJournal>()
+    const journals = new Map<string, VideoLegacyEventJournal>()
     for (const [name, path] of eventFiles) {
       const projectId = name.slice(0, -'.json'.length)
       this.assertId(projectId, 'project')
@@ -1192,7 +1379,7 @@ export class VideoWorkbenchRepository {
     }
   }
 
-  private parseLegacyJournal(value: unknown, expectedProjectId: string): LegacyEventJournal {
+  private parseLegacyJournal(value: unknown, expectedProjectId: string): VideoLegacyEventJournal {
     if (!value || typeof value !== 'object') throw new VideoWorkbenchRepositoryError('旧视频操作日志损坏，无法安全迁移', 500, 'VIDEO_STORAGE_INVALID')
     const journal = value as { schema_version?: unknown; next_cursor?: unknown; events?: unknown }
     if (journal.schema_version !== 1 || !isPositiveSafeInteger(journal.next_cursor) || !Array.isArray(journal.events)) {
@@ -1289,7 +1476,7 @@ export class VideoWorkbenchRepository {
     })
   }
 
-  private async reconcileLegacyJournal(projectId: string, journal: LegacyEventJournal): Promise<void> {
+  private async reconcileLegacyJournal(projectId: string, journal: VideoLegacyEventJournal): Promise<void> {
     const actualRows = this.events.listAll(projectId)
     if (actualRows.length !== journal.events.length) {
       throw new VideoWorkbenchRepositoryError('旧视频 Event 数量对账失败', 500, 'VIDEO_STORAGE_INVALID')

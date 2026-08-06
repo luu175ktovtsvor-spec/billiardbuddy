@@ -26,7 +26,8 @@ const VIDEO_WORKLOADS: ReadonlyArray<{
   workload: ManagedModelWorkload
 }> = [
   { capability: 'visual_evidence', application_roles: ['shot_evidence'], workload: 'video_visual_evidence' },
-  { capability: 'media_reasoning', application_roles: ['planning', 'caption_translation'], workload: 'video_media_reasoning' },
+  { capability: 'media_reasoning', application_roles: ['planning'], workload: 'video_media_reasoning' },
+  { capability: 'media_reasoning', application_roles: ['caption_translation'], workload: 'video_media_reasoning' },
   { capability: 'speech_transcription', application_roles: ['asr'], workload: 'video_speech_transcription' },
   { capability: 'semantic_embedding', application_roles: ['search_index'], workload: 'video_semantic_embedding' },
 ]

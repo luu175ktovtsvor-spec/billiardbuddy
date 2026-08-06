@@ -1,6 +1,8 @@
 import { z } from 'zod/v4'
 import {
   imageBriefOverridesSchema,
+  imageGenerationModelSelectionSchema,
+  imageOutputPresetSchema,
   mediaAssetSchema,
   mediaIdSchema,
   mediaIsoDateSchema,
@@ -19,6 +21,7 @@ import {
   imageDeliverySpecSchema,
   imageGenerationRoundSchema,
   imageHashSchema,
+  imageUnderstandingSuggestionSchema,
   imageReferenceInfluenceSchema,
   imageReferencePreservationSchema,
   imageReferenceRoleV2Schema,
@@ -234,7 +237,10 @@ export const imageQuickCreateInputSchema = z.object({
   idempotency_key: z.string().min(16).max(160),
   prompt: z.string().min(1).max(8_000),
   title: z.string().min(1).max(160).optional(),
-  output_preset: z.enum(['square', 'landscape', 'portrait', 'auto']),
+  /** User-facing output intent. The runtime resolves a native provider size. */
+  output_preset: imageOutputPresetSchema,
+  /** A visible image-model choice; `auto` leaves selection to image policy. */
+  model_selection: imageGenerationModelSelectionSchema.default('auto'),
   /**
    * Optional full Intake supplied before Quick Create persists its first
    * paid Round. These user-confirmed facts must therefore be part of the
@@ -253,10 +259,49 @@ export const imageQuickCreateInputSchema = z.object({
   assertImageUploadTotal(value.reference_inputs.map(reference => reference.data_url), context, ['reference_inputs'])
 })
 
-export const imageQuickCreateResponseSchema = z.object({
+const imageQuickCreatePreparedResponseSchema = z.object({
+  mode: z.literal('prepared'),
+  project: publicImageWorkbenchProjectSchema,
+}).strict()
+
+const imageQuickCreateStartedResponseSchema = z.object({
+  mode: z.literal('started'),
   project: publicImageWorkbenchProjectSchema,
   round: imageGenerationRoundSchema,
   operations: z.array(publicImageOperationV2Schema).min(1).max(1),
+}).strict()
+
+/**
+ * Public Quick Create is a two-phase workflow.  `prepared` means that the
+ * Project and user inputs are durable but no paid Provider request exists;
+ * `started` is retained only for explicit internal/compatibility callers.
+ */
+export const imageQuickCreateResponseSchema = z.discriminatedUnion('mode', [
+  imageQuickCreatePreparedResponseSchema,
+  imageQuickCreateStartedResponseSchema,
+])
+
+/**
+ * Public picker data for the image workbench.  It intentionally contains no
+ * provider-native `WIDTHxHEIGHT` values: those are an implementation detail
+ * selected by the backend and retained only in the durable Project.
+ */
+export const imageGenerationPreferencesCatalogSchema = z.object({
+  models: z.array(z.object({
+    id: imageGenerationModelSelectionSchema,
+    label: z.string().min(1).max(80),
+    description: z.string().min(1).max(240),
+  }).strict()).min(3).max(3),
+  output_presets: z.array(z.object({
+    id: imageOutputPresetSchema.exclude(['auto', 'landscape', 'portrait']),
+    label: z.string().min(1).max(80),
+    description: z.string().min(1).max(240),
+    use_cases: z.array(z.string().min(1).max(80)).min(1).max(4),
+  }).strict()).min(6).max(6),
+}).strict()
+
+export const imageGenerationPreferencesCatalogResponseSchema = z.object({
+  generation_preferences: imageGenerationPreferencesCatalogSchema,
 }).strict()
 
 export const imageLibraryEntrySchema = z.object({
@@ -333,6 +378,8 @@ export const imageWorkbenchProjectProjectionSchema = z.object({
   creative_plans: z.array(imageCreativePlanSchema).max(512),
   generation_rounds: z.array(imageGenerationRoundSchema).max(512),
   operations: z.array(publicImageOperationV2Schema).max(2_000),
+  /** Latest same-revision Qwen advice; advice is visible but not authoritative. */
+  latest_understanding_suggestion: imageUnderstandingSuggestionSchema.nullable().optional(),
   candidate_groups: z.array(publicImageCandidateGroupSchema).max(2_000),
   canvases: z.array(imageCanvasRevisionSchema).max(512),
   delivery_spec: imageDeliverySpecSchema.nullable(),
@@ -503,7 +550,8 @@ export const imageCampaignSchema = z.object({
   template_id: mediaIdSchema.optional(),
   template_revision_id: mediaIdSchema.optional(),
   shared_brief: imageCampaignSharedBriefSchema,
-  output_preset: z.enum(['square', 'landscape', 'portrait']),
+  output_preset: imageOutputPresetSchema,
+  model_selection: imageGenerationModelSelectionSchema.default('auto'),
   planned_item_count: z.number().int().nonnegative().max(256),
   estimated_paid_operations: z.number().int().nonnegative().max(256),
   estimate_hash: imageHashSchema.optional(),
@@ -599,7 +647,8 @@ export const createImageCampaignInputSchema = z.object({
   template_id: mediaIdSchema.optional(),
   template_revision_id: mediaIdSchema.optional(),
   shared_brief: imageCampaignSharedBriefSchema,
-  output_preset: z.enum(['square', 'landscape', 'portrait']),
+  output_preset: imageOutputPresetSchema,
+  model_selection: imageGenerationModelSelectionSchema.default('auto'),
   budget_limit: z.object({ currency: z.string().regex(/^[A-Z]{3}$/), amount_minor: z.number().int().positive() }).strict().optional(),
   items: z.array(campaignItemDraftSchema).min(1).max(256),
 }).strict().superRefine((value, context) => {

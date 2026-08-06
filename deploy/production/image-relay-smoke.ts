@@ -1,16 +1,23 @@
 import { createHash, randomUUID } from 'node:crypto'
+import {
+  imageCanvasSizeSchema,
+  imageGenerationModelSchema,
+  imageSizeSupportedByModel,
+} from '../../ts/shared/contracts/media.ts'
 
 const base = (process.env.IMAGE_RELAY_SMOKE_BASE_URL ?? 'https://zzyppz.cn/image-generation').replace(/\/+$/, '')
 const token = process.env.IMAGE_RELAY_SMOKE_ACCESS_TOKEN?.trim()
 const confirmation = process.env.IMAGE_RELAY_SMOKE_CONFIRMATION
-const model = process.env.IMAGE_RELAY_SMOKE_MODEL?.trim() || 'gpt-image-2'
+const model = imageGenerationModelSchema.parse(process.env.IMAGE_RELAY_SMOKE_MODEL?.trim() || 'gpt-image-2')
+const size = imageCanvasSizeSchema.parse(process.env.IMAGE_RELAY_SMOKE_SIZE?.trim()
+  || (model === 'doubao-seedream-4-5-251128' ? '2048x2048' : '1024x1024'))
 const taskLimit = process.env.IMAGE_RELAY_SMOKE_MAX_TASKS
 
 if (!token || token.length < 16) throw new Error('IMAGE_RELAY_SMOKE_ACCESS_TOKEN is required and is never persisted by this smoke tool')
 if (confirmation !== 'ONE_BILLED_IMAGE_TASK') throw new Error('IMAGE_RELAY_SMOKE_CONFIRMATION must be ONE_BILLED_IMAGE_TASK')
 if (taskLimit !== '1') throw new Error('IMAGE_RELAY_SMOKE_MAX_TASKS must be exactly 1')
 if (new URL(base).protocol !== 'https:') throw new Error('IMAGE_RELAY_SMOKE_BASE_URL must use HTTPS')
-if (!/^[A-Za-z0-9._-]{1,120}$/.test(model)) throw new Error('IMAGE_RELAY_SMOKE_MODEL is invalid')
+if (!imageSizeSupportedByModel(model, size)) throw new Error(`IMAGE_RELAY_SMOKE_SIZE is unsupported by ${model}`)
 
 const protocolHeader = 'X-BB-Provider-Protocol'
 const protocolVersion = 'bb-provider-gateway/1.0'
@@ -79,7 +86,7 @@ const taskBody = JSON.stringify({
   model,
   prompt: 'BilliardBuddy controlled deployment smoke: one neutral gray square, no text, no logo, no people.',
   n: 1,
-  size: '1024x1024',
+  size,
 })
 const submitHeaders = {
   ...authHeaders(),
@@ -146,7 +153,7 @@ try {
     await readBytesBounded(retiredGrant, 256 * 1024).catch(() => new Uint8Array())
     throw new Error(`Image Relay result grant remained readable after acknowledgement (${retiredGrant.status})`)
   }
-  console.log(`IMAGE_RELAY_SMOKE_OK task=${taskId} receipt=${terminal.provider_receipt_hash} sha256=${digest}`)
+  console.log(`IMAGE_RELAY_SMOKE_OK model=${model} size=${size} task=${taskId} receipt=${terminal.provider_receipt_hash} sha256=${digest}`)
 } finally {
   if (taskId && lastStatus === 'queued') {
     const response = await fetch(`${base}/v1/images/tasks/${encodeURIComponent(taskId)}/cancel`, {

@@ -10,7 +10,7 @@ import { createVideoWorkbenchDomainApiHandler } from './api/videoWorkbench.js'
 import { isLongMediaRequestPath } from './mediaRequestTimeout.js'
 import { handleProductControlApi } from './api/productControl.js'
 import { MediaProjectService } from './services/mediaProjectService.js'
-import { VideoWorkbenchService } from './services/videoWorkbenchService.js'
+import { createVideoWorkbenchService } from './services/videoWorkbenchService.js'
 import { createMediaRuntime } from './media/runtime/createMediaRuntime.js'
 import { voiceOperationService } from './services/voiceOperationService.js'
 import {
@@ -94,7 +94,7 @@ export function startServer(port = PORT, host = HOST) {
   // each own their state, operation journal and recovery paths.
   const mediaService = new MediaProjectService()
   const mediaRuntime = createMediaRuntime()
-  const videoWorkbenchService = new VideoWorkbenchService()
+  const videoWorkbenchService = createVideoWorkbenchService()
   if (process.env.NODE_ENV !== 'test') {
     void voiceOperationService.purgeExpired().catch(error => diagnosticsService.recordEvent({
       type: 'voice_gc_failed',
