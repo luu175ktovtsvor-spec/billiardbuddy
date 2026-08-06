@@ -170,6 +170,11 @@ test('quick-create form exposes an optional first-round reference with only acce
   const html = renderImageWorkbenchShell({ view_state: state, campaigns: [] })
 
   expect(html).toContain('data-quick-reference-file')
+  expect(html).toContain('data-quick-model')
+  expect(html).toContain('value="auto"')
+  expect(html).toContain('创建项目并进入需求确认')
+  expect(html).toContain('data-feature="workflow-stepper"')
+  expect(html).toContain('这里只保存你的需求和参考输入，不会立刻扣费或调用生图 Provider')
   expect(html).toContain('accept="image/png,image/jpeg,image/webp"')
   expect(html).toContain('data-quick-reference-role')
   expect(html).toContain('data-quick-brief-confirmed-facts')
@@ -540,11 +545,11 @@ test('creative plan exposes the persisted estimate before generation confirmatio
       estimate_hash: 'a'.repeat(64),
       project_revision: 3,
       paid_operation_count: 1,
-      candidate_count_per_operation: 3,
+      candidate_count_per_operation: 1,
       concurrency: 1,
       price_upper_bound: {
         currency: 'USD', amount_minor: 42, per_operation_amount_minor: 42, pricing_revision: 'fixture',
-        usage_upper_bound: { requests: 1, input_bytes: 0, output_images: 3 },
+        usage_upper_bound: { requests: 1, input_bytes: 0, output_images: 1 },
       },
       expires_at: '2099-08-05T12:00:00.000Z',
     },
@@ -554,7 +559,107 @@ test('creative plan exposes the persisted estimate before generation confirmatio
   expect(html).toContain('data-generation-confirm-form')
   expect(html).toContain('data-generation-confirm-plan-id')
   expect(html).toContain('付费操作')
-  expect(html).toContain('USD 42')
+  expect(html).toContain('USD 0.42')
+})
+
+test('creative intake shows metered AI analysis, explicit confirmation, and durable operation progress', () => {
+  const state = reduceImageWorkbenchViewState(createImageWorkbenchViewState(), {
+    kind: 'open-panel',
+    panel: 'creative-intake',
+  })
+  const html = renderImageWorkbenchShell({
+    view_state: state,
+    projection: {
+      project: { id: projectId, revision: 3 },
+      latest_understanding_suggestion: {
+        id: 'suggestion_001', project_id: projectId, execution_receipt_id: 'receipt_001', project_revision: 3,
+        confidence: 'medium', visible_facts: ['主体清晰'], preservation_risks: [],
+        composition_suggestions: ['顶部预留标题空间'], missing_information: [], created_at: '2026-08-05T00:00:00.000Z',
+        user_intent: {
+          purpose: 'promote', channel: 'social_feed', audience: '台球爱好者', subject: '夏季联赛',
+          desired_effect: '让用户一眼看懂活动并愿意参与', style_keywords: ['清晰', '有动感'],
+          priority_order: ['subject', 'text', 'layout'],
+        },
+      },
+      operations: [{ id: 'operation_001', kind: 'generate', status: 'running', progress: 35, stage: '正在等待 Provider' }],
+      creative_plans: [], generation_rounds: [], candidate_groups: [], canvases: [], delivery_spec: undefined,
+      library: { project_id: projectId, entries: [] }, inspiration_board: undefined, campaign_intent: null,
+    } as unknown as ImageWorkbenchProjectProjection,
+    campaigns: [],
+  })
+  expect(html).toContain('AI 需求分析（不启动生图）')
+  expect(html).toContain('这一步会调用 AI 理解模型并记录建议，但不会启动图片生成')
+  expect(html).toContain('data-feature="workflow-stepper"')
+  expect(html).toContain('<details class="image-workbench-subsection" data-feature="brand-template-manager">')
+  expect(html).toContain('不会自动应用')
+  expect(html).toContain('<details class="image-workbench-subsection" data-feature="template-manager">')
+  expect(html).toContain('data-action="request-image-advice"')
+  expect(html).toContain('data-confirm-image-advice')
+  expect(html).toContain('顶部预留标题空间')
+  expect(html).toContain('AI 对用途的理解')
+  expect(html).toContain('目标受众')
+  expect(html).toContain('台球爱好者')
+  const operationHtml = renderImageWorkbenchShell({
+    view_state: reduceImageWorkbenchViewState(createImageWorkbenchViewState(), { kind: 'open-panel', panel: 'operation-center' }),
+    projection: {
+      project: { id: projectId, revision: 3 },
+      operations: [{ id: 'operation_001', kind: 'generate', status: 'running', progress: 35, stage: '正在等待 Provider' }],
+    } as unknown as ImageWorkbenchProjectProjection,
+    campaigns: [],
+  })
+  expect(operationHtml).toContain('data-operation-stage="operation_001"')
+  expect(operationHtml).toContain('value="35"')
+})
+
+test('AI advice coalesces concurrent clicks and reuses the same revision key after a lost response', async () => {
+  const projection = {
+    project: { id: projectId, revision: 3 },
+    candidate_groups: [],
+    canvases: [],
+    operations: [],
+    library: { project_id: projectId, entries: [] },
+    creative_plans: [],
+    generation_rounds: [],
+    inspiration_board: undefined,
+    campaign_intent: null,
+  } as unknown as ImageWorkbenchProjectProjection
+  const ok = <Value>(value: Value) => Promise.resolve({ ok: true as const, value })
+  const calls: unknown[] = []
+  const pending: Array<() => void> = []
+  const client = {
+    requestImageAdvice: async (command: unknown) => {
+      calls.push(command)
+      await new Promise<void>(resolve => pending.push(resolve))
+      return ok({})
+    },
+    getProjectProjection: async () => ok(projection),
+  } as unknown as ImageWorkbenchClient
+  const root = { innerHTML: '', addEventListener: () => undefined } as unknown as HTMLElement
+  const shell = new ImageWorkbenchShell({ root, client })
+  const internals = shell as unknown as {
+    state: ReturnType<typeof createImageWorkbenchViewState>
+    projection?: ImageWorkbenchProjectProjection
+  }
+  internals.state = reduceImageWorkbenchViewState(internals.state, { kind: 'select-project', project_id: projectId })
+  internals.projection = projection
+
+  const first = shell.requestImageAdvice()
+  const second = shell.requestImageAdvice()
+  await Promise.resolve()
+  expect(calls).toEqual([{
+    project_id: projectId,
+    input: { base_revision: 3, idempotency_key: `image_advice_${projectId}_3` },
+  }])
+
+  pending.shift()?.()
+  await Promise.all([first, second])
+
+  const retry = shell.requestImageAdvice()
+  await Promise.resolve()
+  expect(calls).toHaveLength(2)
+  expect(calls[1]).toEqual(calls[0])
+  pending.shift()?.()
+  await retry
 })
 
 test('project-owned library assets add directly while cross-project assets request a grant', async () => {
@@ -837,11 +942,11 @@ test('shell sends multi-artboard adoption, PNG inpaint, and canvas text through 
       return ok({
         estimate_hash: 'b'.repeat(64),
         paid_operation_count: 1,
-        candidate_count_per_operation: 3,
+        candidate_count_per_operation: 1,
         concurrency: 1,
         price_upper_bound: {
           currency: 'USD', amount_minor: 42, per_operation_amount_minor: 42, pricing_revision: 'fixture',
-          usage_upper_bound: { requests: 1, input_bytes: 0, output_images: 3 },
+          usage_upper_bound: { requests: 1, input_bytes: 0, output_images: 1 },
         },
         expires_at: '2099-08-05T12:00:00.000Z',
       })
@@ -1393,11 +1498,11 @@ test('Canvas Shell renders only the current formal Version through Main and swit
       return ok({
         estimate_hash: `sha256:${'a'.repeat(64)}`,
         paid_operation_count: 1,
-        candidate_count_per_operation: 3,
+        candidate_count_per_operation: 1,
         concurrency: 1,
         price_upper_bound: {
           currency: 'USD', amount_minor: 42, per_operation_amount_minor: 42, pricing_revision: 'fixture',
-          usage_upper_bound: { requests: 1, input_bytes: 0, output_images: 3 },
+          usage_upper_bound: { requests: 1, input_bytes: 0, output_images: 1 },
         },
         expires_at: '2099-08-05T12:00:00.000Z',
       })

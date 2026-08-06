@@ -5,6 +5,7 @@ import { resolve } from 'node:path'
 const deployment = readFileSync(resolve(import.meta.dir, 'deploy.sh'), 'utf8')
 const nginxInstaller = readFileSync(resolve(import.meta.dir, 'install-nginx-relay-routes.sh'), 'utf8')
 const videoSmoke = readFileSync(resolve(import.meta.dir, 'video-media-smoke.ts'), 'utf8')
+const videoUserJourney = readFileSync(resolve(import.meta.dir, 'video-media-user-journey.ts'), 'utf8')
 
 function position(source: string, fragment: string): number {
   const value = source.indexOf(fragment)
@@ -51,4 +52,14 @@ test('video smoke requires the public Gateway-only introspection path to be a co
   expect(cancel).toBeLessThan(exact404)
   expect(videoSmoke).not.toContain('object lease quota returned')
   expect(videoSmoke).toContain('Quota ceilings are an external deployment policy')
+})
+
+test('video user journey is video-only, configurable by rounds, and always logs out its bootstrapped session', () => {
+  expect(videoUserJourney).toContain('VIDEO_MEDIA_JOURNEY_ROUNDS')
+  expect(videoUserJourney).toContain('VIDEO_MEDIA_JOURNEY_PARALLELISM')
+  expect(videoUserJourney).toContain('REAL_VIDEO_USER_JOURNEY_${rounds}_ROUNDS')
+  expect(videoUserJourney).toContain('await logoutSession(session.accessToken, session.refreshToken)')
+  expect(videoUserJourney).toContain('VIDEO_MEDIA_SMOKE_MAX_PROVIDER_OPERATIONS: \'4\'')
+  expect(videoUserJourney).not.toContain('image-relay-smoke')
+  expect(videoUserJourney).not.toContain('gateway-smoke')
 })

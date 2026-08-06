@@ -14,11 +14,14 @@ import {
   normalizeFactSearchText,
   type VideoFact,
   type VideoFactKind,
+  type VideoDerivative,
+  type VideoFactEvidence,
+  type VideoFactSource,
   type TimedTranscript,
   type TranscriptRevision,
 } from '../domain/mediaFacts/model.js'
 import { materializeTranscriptRevision, transcriptRevisionFingerprint } from '../domain/mediaFacts/transcript.js'
-import { sourceTimeRange, type SourceTimeRange } from '../domain/mediaFacts/time.js'
+import { compareRationalTime, endOfRange, sourceTimeRange, type SourceTimeRange } from '../domain/mediaFacts/time.js'
 
 type FactRow = {
   id: string
@@ -175,7 +178,7 @@ export class SqliteMediaFactsRepository {
   async page(kind: VideoFactKind, projectId: string, options: { sourceId?: string; cursor?: string; limit?: number } = {}): Promise<VideoFactsPage> {
     const table = TABLE_BY_KIND[kind]
     const limit = Math.max(1, Math.min(200, options.limit ?? 50))
-    const cursor = options.cursor ? this.decodeCursor(options.cursor) : undefined
+    const cursor = options.cursor ? this.decodeCursor(options.cursor, { kind, projectId, sourceId: options.sourceId }) : undefined
     const values: Array<string | number> = [projectId]
     let where = "project_id=? AND state NOT IN ('prepared','abandoned')"
     if (options.sourceId) {
@@ -193,7 +196,7 @@ export class SqliteMediaFactsRepository {
     return {
       items: await Promise.all(visible.map(async row => await this.readRow(kind, row))),
       ...(rows.length > limit && visible.at(-1)
-        ? { next_cursor: this.encodeCursor(visible.at(-1)!) }
+        ? { next_cursor: this.encodeCursor(visible.at(-1)!, { kind, projectId, sourceId: options.sourceId }) }
         : {}),
     }
   }
@@ -202,7 +205,7 @@ export class SqliteMediaFactsRepository {
   async pageCurrent(kind: VideoFactKind, projectId: string, options: { sourceId?: string; cursor?: string; limit?: number } = {}): Promise<VideoFactsPage> {
     const table = TABLE_BY_KIND[kind]
     const limit = Math.max(1, Math.min(200, options.limit ?? 50))
-    let cursor = options.cursor ? this.decodeCursor(options.cursor) : undefined
+    let cursor = options.cursor ? this.decodeCursor(options.cursor, { kind, projectId, sourceId: options.sourceId }) : undefined
     const accepted: Array<{ row: FactRow; value: VideoFact }> = []
     let scanned = 0
     let exhausted = false
@@ -240,8 +243,8 @@ export class SqliteMediaFactsRepository {
     return {
       items: visible.map(item => item.value),
       ...(accepted.length > limit && visible.at(-1)
-        ? { next_cursor: this.encodeCursor(visible.at(-1)!.row) }
-        : !exhausted && cursor ? { next_cursor: this.encodeCursor(cursor) } : {}),
+        ? { next_cursor: this.encodeCursor(visible.at(-1)!.row, { kind, projectId, sourceId: options.sourceId }) }
+        : !exhausted && cursor ? { next_cursor: this.encodeCursor(cursor, { kind, projectId, sourceId: options.sourceId }) } : {}),
     }
   }
 
@@ -278,19 +281,36 @@ export class SqliteMediaFactsRepository {
     return missing
   }
 
+  /** Model/instruction changes invalidate the current vector generation even
+   * when every document already has an older vector. Without this fence a new
+   * catalog binding would silently search with stale embeddings. */
+  async ensureSearchEmbeddingBasis(projectId: string, modelSnapshot: string, instructionVersion: string): Promise<number> {
+    const generation = await this.ensureSearchGeneration(projectId)
+    const latest = this.unitOfWork.database.query(`SELECT model_snapshot,instruction_version
+      FROM video_fact_embeddings WHERE project_id=? AND generation=? LIMIT 1`).get(projectId, generation) as { model_snapshot: string; instruction_version: string } | null
+    if (latest && (latest.model_snapshot !== modelSnapshot || latest.instruction_version !== instructionVersion)) {
+      this.unitOfWork.transaction(() => {
+        if (this.searchGeneration(projectId) === generation) this.bumpSearchGeneration(projectId)
+      })
+      return this.searchGeneration(projectId) ?? generation + 1
+    }
+    return generation
+  }
+
   async searchPage(projectId: string, query: string, options: { cursor?: string; limit?: number } = {}): Promise<VideoFactSearchPage> {
     const normalized = query.trim()
     const generation = await this.ensureSearchGeneration(projectId)
+    const queryHash = this.searchQueryHash(normalized)
+    const cursor = options.cursor ? this.decodeSearchCursor(options.cursor, { projectId, queryHash }) : undefined
+    if (cursor && cursor.generation !== generation) {
+      throw new VideoFactsRepositoryError('搜索索引已更新，请从第一页重新查询', 'VIDEO_FACTS_INVALID')
+    }
     if (!normalized) return { generation, items: [] }
     const terms = [...normalized].filter(character => /[\u3400-\u9fff]/u.test(character))
     const searchable = terms.length ? terms : normalized.match(/[\p{L}\p{N}_]+/gu) ?? []
     if (!searchable.length) return { generation, items: [] }
     const match = searchable.map(term => `"${term.replaceAll('"', '""')}"`).join(' AND ')
     const limit = Math.max(1, Math.min(100, options.limit ?? 50))
-    const cursor = options.cursor ? this.decodeSearchCursor(options.cursor) : undefined
-    if (cursor && cursor.generation !== generation) {
-      throw new VideoFactsRepositoryError('搜索索引已更新，请从第一页重新查询', 'VIDEO_FACTS_INVALID')
-    }
     const accepted: Array<{ rowid: number; result: VideoFactSearchResult }> = []
     let after = cursor?.rowid ?? 0
     let scanned = 0
@@ -324,9 +344,9 @@ export class SqliteMediaFactsRepository {
       generation,
       items: visible.map(item => item.result),
       ...(accepted.length > limit && visible.at(-1)
-        ? { next_cursor: this.encodeSearchCursor({ generation, rowid: visible.at(-1)!.rowid }) }
+        ? { next_cursor: this.encodeSearchCursor({ generation, rowid: visible.at(-1)!.rowid }, { projectId, queryHash }) }
         : !exhausted && after > (cursor?.rowid ?? 0)
-          ? { next_cursor: this.encodeSearchCursor({ generation, rowid: after }) }
+          ? { next_cursor: this.encodeSearchCursor({ generation, rowid: after }, { projectId, queryHash }) }
           : {}),
     }
   }
@@ -356,7 +376,8 @@ export class SqliteMediaFactsRepository {
     if (acknowledgement) this.assertEmbeddingAcknowledgement(acknowledgement)
     await this.ensureSearchGeneration(projectId)
     return await this.fences.run(`project-${projectId}`, async () => this.unitOfWork.transaction(() => {
-      const latest = this.unitOfWork.database.query(`SELECT model_snapshot,instruction_version FROM video_fact_embeddings WHERE project_id=? ORDER BY generation DESC LIMIT 1`).get(projectId) as { model_snapshot: string; instruction_version: string } | null
+      const latestGeneration = this.searchGeneration(projectId) ?? 1
+      const latest = this.unitOfWork.database.query(`SELECT model_snapshot,instruction_version FROM video_fact_embeddings WHERE project_id=? AND generation=? LIMIT 1`).get(projectId, latestGeneration) as { model_snapshot: string; instruction_version: string } | null
       if (latest && (latest.model_snapshot !== model || latest.instruction_version !== instruction)) this.bumpSearchGeneration(projectId)
       const generation = this.searchGeneration(projectId) ?? 1
       const createdAt = this.now().toISOString()
@@ -450,7 +471,7 @@ export class SqliteMediaFactsRepository {
     const generation = await this.ensureSearchGeneration(projectId)
     const vectorHash = `sha256:${createHash('sha256').update(JSON.stringify(queryVector)).digest('hex')}`
     const cursor = options.cursor ? this.decodeHybridSearchCursor(options.cursor) : undefined
-    if (cursor && (cursor.generation !== generation || cursor.query_hash !== this.searchQueryHash(query) || cursor.vector_hash !== vectorHash)) {
+    if (cursor && (cursor.project_id !== projectId || cursor.generation !== generation || cursor.query_hash !== this.searchQueryHash(query) || cursor.vector_hash !== vectorHash)) {
       throw new VideoFactsRepositoryError('搜索索引或查询已更新，请从第一页重新查询', 'VIDEO_FACTS_INVALID')
     }
     const lexical = await this.searchPage(projectId, query, { limit: 100 })
@@ -488,7 +509,7 @@ export class SqliteMediaFactsRepository {
     return {
       generation,
       items,
-      ...(offset + items.length < ordered.length ? { next_cursor: this.encodeHybridSearchCursor({ generation, offset: offset + items.length, query_hash: this.searchQueryHash(query), vector_hash: vectorHash }) } : {}),
+      ...(offset + items.length < ordered.length ? { next_cursor: this.encodeHybridSearchCursor({ project_id: projectId, generation, offset: offset + items.length, query_hash: this.searchQueryHash(query), vector_hash: vectorHash }) } : {}),
     }
   }
 
@@ -594,6 +615,19 @@ export class SqliteMediaFactsRepository {
   }
 
   private async saveLocked(kind: VideoFactKind, value: VideoFact): Promise<VideoFact> {
+    let cacheInvalidation = false
+    if (kind === 'derivative') {
+      const existing = this.unitOfWork.database.query('SELECT * FROM video_fact_derivatives WHERE id=?').get(value.id) as FactRow | null
+      if (existing) {
+        const stored = await this.readRow('derivative', existing) as VideoDerivative
+        if (JSON.stringify(stored) === JSON.stringify(value)) return stored
+        cacheInvalidation = this.isDerivativeCacheInvalidation(stored, value as VideoDerivative)
+      }
+    }
+    // A derivative can be marked missing while reclaiming its already-managed
+    // bytes after the source has changed. This is a cache invalidation, not a
+    // new source-derived Fact; every other write must bind to a current source.
+    if (!cacheInvalidation) await this.assertFactSourceIntegrity(kind, value)
     if (kind === 'transcript') {
       const existing = this.unitOfWork.database.query('SELECT * FROM video_fact_transcripts WHERE id=?').get(value.id) as FactRow | null
       if (existing) {
@@ -665,6 +699,86 @@ export class SqliteMediaFactsRepository {
       })
       throw error
     }
+  }
+
+  /**
+   * Facts are immutable, but their source binding is not merely descriptive:
+   * it is the boundary that prevents a stale, cross-project, or display-only
+   * range from becoming editorial evidence.  Validate it before staging a
+   * payload so no corrupted child Fact can be made durable and later hidden by
+   * a best-effort projection.
+   */
+  private async assertFactSourceIntegrity(kind: VideoFactKind, value: VideoFact): Promise<void> {
+    if (kind === 'source' || kind === 'transcript_revision') return
+    if (!('source_id' in value) || !('source_fingerprint' in value)) {
+      throw new VideoFactsRepositoryError('视频事实缺少来源绑定', 'VIDEO_FACTS_INVALID')
+    }
+    const row = this.unitOfWork.database.query('SELECT * FROM video_fact_sources WHERE id=?').get(value.source_id) as FactRow | null
+    if (!row) throw new VideoFactsRepositoryError('视频事实引用的来源不存在', 'VIDEO_FACTS_INVALID')
+    const source = await this.readRow('source', row) as VideoFactSource
+    if (source.project_id !== value.project_id
+      || source.id !== value.source_id
+      || source.state !== 'ready'
+      || source.fingerprint_state !== 'ready'
+      || !source.fingerprint
+      || source.fingerprint !== value.source_fingerprint
+    ) throw new VideoFactsRepositoryError('视频事实来源已变化、不可用或不属于当前项目', 'VIDEO_FACTS_INVALID')
+
+    const primaryDuration = source.primary_video_stream.duration
+    if (!primaryDuration) throw new VideoFactsRepositoryError('原始主视频流时长缺失，不能验证事实范围', 'VIDEO_FACTS_INVALID')
+    const primaryRange = sourceTimeRange(source.primary_video_stream.start_time, primaryDuration)
+    const assertRange = (range: SourceTimeRange, label: string) => {
+      if (
+        compareRationalTime(range.start, primaryRange.start) < 0
+        || compareRationalTime(endOfRange(range), endOfRange(primaryRange)) > 0
+      ) throw new VideoFactsRepositoryError(`${label}超出原始主视频流 PTS 范围`, 'VIDEO_FACTS_INVALID')
+    }
+    const assertPoint = (at: { ticks: string; tick_rate: { num: number; den: number } }, label: string) => {
+      assertRange(sourceTimeRange(at, { ticks: '0', tick_rate: at.tick_rate }), label)
+    }
+
+    if (kind === 'derivative') {
+      const derivative = value as Extract<VideoFact, { generator_name: string }>
+      if (derivative.source_range) assertRange(derivative.source_range, '派生素材范围')
+      return
+    }
+    if (kind === 'transcript') {
+      const transcript = value as TimedTranscript
+      assertPoint(transcript.source_offset, '转录来源偏移')
+      for (const segment of transcript.segments) {
+        if (segment.source_id !== source.id) throw new VideoFactsRepositoryError('转录片段来源与转录不一致', 'VIDEO_FACTS_INVALID')
+        assertRange(sourceTimeRange(segment.start, segment.duration), '转录片段范围')
+      }
+      return
+    }
+    if (kind === 'evidence_window') {
+      const window = value as Extract<VideoFact, { sample_strategy: string }>
+      assertRange(window.range, '证据窗口范围')
+      for (const uncovered of window.coverage.uncovered) assertRange(uncovered.range, '未覆盖范围')
+      return
+    }
+
+    const range = factSourceRange(value)
+    if (range) assertRange(range, '视频事实范围')
+    if (kind !== 'evidence') return
+    const evidence = value as VideoFactEvidence
+    if (evidence.kind === 'beat_grid') {
+      for (const coverage of evidence.payload.coverage) assertRange(coverage, '节拍覆盖范围')
+      for (const beat of evidence.payload.beat_times) assertPoint(beat, '节拍时间')
+      for (const beat of evidence.payload.beats) assertPoint(beat.at, '节拍时间')
+    }
+    if (evidence.kind === 'subject_track') {
+      for (const point of evidence.payload.points) assertPoint(point.at, '主体轨迹时间')
+      for (const unresolved of evidence.payload.unresolved_ranges) assertRange(unresolved.range, '主体未解决范围')
+    }
+  }
+
+  private isDerivativeCacheInvalidation(stored: VideoDerivative, candidate: VideoDerivative): boolean {
+    const { state: storedState, ...storedIdentity } = stored
+    const { state: candidateState, ...candidateIdentity } = candidate
+    return storedState !== candidateState
+      && (candidateState === 'stale' || candidateState === 'missing')
+      && JSON.stringify(storedIdentity) === JSON.stringify(candidateIdentity)
   }
 
   private recordPayloadReference(intent: PayloadCommitIntent): void {
@@ -855,51 +969,107 @@ export class SqliteMediaFactsRepository {
     return Boolean(sourceId && fingerprint && await this.isCurrentSourceProjection(value.project_id, sourceId, fingerprint))
   }
 
-  private encodeSearchCursor(value: { generation: number; rowid: number }): string {
-    return Buffer.from(JSON.stringify(value), 'utf8').toString('base64url')
+  private encodeSearchCursor(
+    value: { generation: number; rowid: number },
+    scope: { projectId: string; queryHash: string },
+  ): string {
+    return Buffer.from(JSON.stringify({
+      kind: 'fact-search-v2',
+      project_id: scope.projectId,
+      query_hash: scope.queryHash,
+      ...value,
+    }), 'utf8').toString('base64url')
   }
 
-  private decodeSearchCursor(cursor: string): { generation: number; rowid: number } {
+  private decodeSearchCursor(
+    cursor: string,
+    scope: { projectId: string; queryHash: string },
+  ): { generation: number; rowid: number } {
     try {
       const value = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as Record<string, unknown>
       const generation = value.generation
       const rowid = value.rowid
-      if (typeof generation !== 'number' || typeof rowid !== 'number' || !Number.isSafeInteger(generation) || !Number.isSafeInteger(rowid) || generation < 0 || rowid < 0) throw new Error('invalid')
+      if (
+        value.kind !== 'fact-search-v2'
+        || value.project_id !== scope.projectId
+        || value.query_hash !== scope.queryHash
+        || typeof generation !== 'number'
+        || typeof rowid !== 'number'
+        || !Number.isSafeInteger(generation)
+        || !Number.isSafeInteger(rowid)
+        || generation < 0
+        || rowid < 0
+      ) throw new Error('invalid')
       return { generation, rowid }
     } catch {
       throw new VideoFactsRepositoryError('视频事实搜索游标无效', 'VIDEO_FACTS_INVALID')
     }
   }
 
+  /** Identify the public cursor envelope before choosing the search pipeline.
+   * Scope and generation validation remain in the respective decoders. */
+  cursorKind(cursor: string): 'lexical' | 'hybrid' | 'invalid' {
+    try {
+      const value = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as Record<string, unknown>
+      if (value.kind === 'fact-search-v2') return 'lexical'
+      if (value.kind === 'hybrid-v2') return 'hybrid'
+    } catch { /* The normal decoder reports the stable invalid-cursor error. */ }
+    return 'invalid'
+  }
+
   private searchQueryHash(query: string): `sha256:${string}` {
     return `sha256:${createHash('sha256').update(query.trim()).digest('hex')}`
   }
 
-  private encodeHybridSearchCursor(value: { generation: number; offset: number; query_hash: string; vector_hash: string }): string {
-    return Buffer.from(JSON.stringify({ kind: 'hybrid-v1', ...value }), 'utf8').toString('base64url')
+  private encodeHybridSearchCursor(value: { project_id: string; generation: number; offset: number; query_hash: string; vector_hash: string }): string {
+    return Buffer.from(JSON.stringify({ kind: 'hybrid-v2', ...value }), 'utf8').toString('base64url')
   }
 
-  private decodeHybridSearchCursor(cursor: string): { generation: number; offset: number; query_hash: string; vector_hash: string } {
+  private decodeHybridSearchCursor(cursor: string): { project_id: string; generation: number; offset: number; query_hash: string; vector_hash: string } {
     try {
       const value = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as Record<string, unknown>
-      if (value.kind !== 'hybrid-v1' || typeof value.generation !== 'number' || typeof value.offset !== 'number'
+      if (value.kind !== 'hybrid-v2' || typeof value.project_id !== 'string' || !value.project_id || typeof value.generation !== 'number' || typeof value.offset !== 'number'
         || !Number.isSafeInteger(value.generation) || !Number.isSafeInteger(value.offset) || value.generation < 0 || value.offset < 0
         || typeof value.query_hash !== 'string' || typeof value.vector_hash !== 'string') throw new Error('invalid')
-      return { generation: value.generation, offset: value.offset, query_hash: value.query_hash, vector_hash: value.vector_hash }
+      return { project_id: value.project_id, generation: value.generation, offset: value.offset, query_hash: value.query_hash, vector_hash: value.vector_hash }
     } catch {
       throw new VideoFactsRepositoryError('视频事实搜索游标无效', 'VIDEO_FACTS_INVALID')
     }
   }
 
-  private encodeCursor(row: Pick<FactRow, 'updated_at' | 'id'>): string {
-    return Buffer.from(JSON.stringify({ updated_at: row.updated_at, id: row.id }), 'utf8').toString('base64url')
+  private encodeCursor(
+    row: Pick<FactRow, 'updated_at' | 'id'>,
+    scope: { kind: VideoFactKind; projectId: string; sourceId?: string },
+  ): string {
+    return Buffer.from(JSON.stringify({
+      kind: 'fact-page-v2',
+      project_id: scope.projectId,
+      fact_kind: scope.kind,
+      source_id: scope.sourceId ?? null,
+      updated_at: row.updated_at,
+      id: row.id,
+    }), 'utf8').toString('base64url')
   }
 
-  private decodeCursor(cursor: string): { updated_at: string; id: string } {
+  private decodeCursor(
+    cursor: string,
+    scope: { kind: VideoFactKind; projectId: string; sourceId?: string },
+  ): { updated_at: string; id: string } {
     try {
       const base64 = cursor.replaceAll('-', '+').replaceAll('_', '/')
       const value = JSON.parse(Buffer.from(base64, 'base64').toString('utf8')) as Record<string, unknown>
-      if (typeof value.updated_at !== 'string' || typeof value.id !== 'string') throw new Error('invalid')
+      if (
+        value.kind !== 'fact-page-v2'
+        || value.project_id !== scope.projectId
+        || value.fact_kind !== scope.kind
+        || value.source_id !== (scope.sourceId ?? null)
+        || typeof value.updated_at !== 'string'
+        || Number.isNaN(Date.parse(value.updated_at))
+        || new Date(value.updated_at).toISOString() !== value.updated_at
+        || typeof value.id !== 'string'
+        || !value.id
+        || value.id.length > 160
+      ) throw new Error('invalid')
       return { updated_at: value.updated_at, id: value.id }
     } catch {
       throw new VideoFactsRepositoryError('视频事实分页游标无效', 'VIDEO_FACTS_INVALID')

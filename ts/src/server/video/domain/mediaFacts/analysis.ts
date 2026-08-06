@@ -63,9 +63,14 @@ export function fixedIntervalContentSegments(input: {
   const intervalSeconds = input.intervalSeconds ?? 30
   if (!Number.isSafeInteger(intervalSeconds) || intervalSeconds <= 0) throw new Error('固定分段间隔无效')
   const ids = input.ids ?? defaultIdentifiers(input.source)
-  const rate = input.source.presentation_duration.tick_rate
+  const primaryDuration = input.source.primary_video_stream.duration
+  if (!primaryDuration) throw new Error('原始主视频流时长缺失，不能生成内容分段')
+  const rate = input.source.primary_video_stream.start_time.tick_rate
   const start = input.source.primary_video_stream.start_time
-  const duration = input.source.presentation_duration
+  // A container presentation duration can include discontinuities or streams
+  // that are not part of the primary-video editorial source. Content ranges
+  // must stay inside the exact stream that later execution will read.
+  const duration = primaryDuration
   const end = endOfRange(sourceTimeRange(start, duration))
   const step = BigInt(intervalSeconds) * BigInt(rate.num) / BigInt(rate.den)
   if (step <= 0n) throw new Error('固定分段间隔无法表示为素材时间')
@@ -247,7 +252,9 @@ export function planEvidenceWindows(input: {
 /** Safe construction helper for one existing source range; no milliseconds are accepted. */
 export function sourceRangeForSegment(range: SourceTimeRange, source: VideoFactSource): SourceTimeRange {
   assertReadySource(source)
-  const presentation = sourceTimeRange(source.primary_video_stream.start_time, source.presentation_duration)
+  const primaryDuration = source.primary_video_stream.duration
+  if (!primaryDuration) throw new Error('原始主视频流时长缺失，不能验证事实范围')
+  const presentation = sourceTimeRange(source.primary_video_stream.start_time, primaryDuration)
   if (
     compareRationalTime(range.start, presentation.start) < 0
     || compareRationalTime(endOfRange(range), endOfRange(presentation)) > 0

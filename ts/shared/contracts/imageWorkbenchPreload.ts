@@ -6,6 +6,7 @@ import type {
   SubmitImageProjectInput,
   UpdateImageProjectInput,
 } from './media.js'
+import type { VideoWorkbenchPreloadBridge } from './videoWorkbenchPreload.js'
 import type {
   AdoptImageCandidateInput,
   CreateCreativePlanInput,
@@ -139,4 +140,5 @@ export type ImageWorkbenchPreloadBridge = {
 
 export type BilliardBuddyMediaPreloadBridge = {
   images: ImageWorkbenchPreloadBridge
+  videos: VideoWorkbenchPreloadBridge
 }

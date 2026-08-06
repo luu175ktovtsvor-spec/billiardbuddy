@@ -1,6 +1,36 @@
 FROM oven/bun:1.3.14
 
 WORKDIR /app/video-media-relay
+
+# Subtitle burn-in is a controlled runtime capability.  Do not rely on a host
+# font registry or on libass silently choosing a fallback font: the release
+# image carries exactly the reviewed Simplified-Chinese Noto face and a
+# prebuilt fontconfig cache under an application-owned directory.
+ENV VIDEO_MEDIA_SUBTITLE_FONT_DIR=/app/runtime-assets/fonts
+ENV VIDEO_MEDIA_SUBTITLE_FONT_CONFIG=/app/runtime-assets/fonts/fonts.conf
+ENV VIDEO_MEDIA_SUBTITLE_FONT_PROBE=/app/runtime-assets/font-probe.srt
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ffmpeg fontconfig fonts-noto-cjk libass9 \
+ && rm -rf /var/lib/apt/lists/* \
+ && mkdir -p "$VIDEO_MEDIA_SUBTITLE_FONT_DIR" /app/runtime-assets/font-cache \
+ && font_path="$(fc-match -f '%{file}' 'Noto Sans CJK SC:style=Regular' | head -n 1)" \
+ && test -n "$font_path" \
+ && test -r "$font_path" \
+ && cp "$font_path" "$VIDEO_MEDIA_SUBTITLE_FONT_DIR/NotoSansCJKSC-Regular.ttc" \
+ && printf '%s\n' '<?xml version="1.0"?>' '<!DOCTYPE fontconfig SYSTEM "fonts.dtd">' '<fontconfig>' "  <dir>$VIDEO_MEDIA_SUBTITLE_FONT_DIR</dir>" '  <cachedir>/app/runtime-assets/font-cache</cachedir>' '</fontconfig>' > "$VIDEO_MEDIA_SUBTITLE_FONT_CONFIG" \
+ && FONTCONFIG_FILE="$VIDEO_MEDIA_SUBTITLE_FONT_CONFIG" FONTCONFIG_PATH=/etc/fonts fc-cache -f \
+ && test "$(FONTCONFIG_FILE="$VIDEO_MEDIA_SUBTITLE_FONT_CONFIG" FONTCONFIG_PATH=/etc/fonts fc-match -f '%{file}' 'Noto Sans CJK SC:style=Regular')" = "$VIDEO_MEDIA_SUBTITLE_FONT_DIR/NotoSansCJKSC-Regular.ttc" \
+ && printf '%s\n' '1' '00:00:00,000 --> 00:00:00,040' '台球字幕' > "$VIDEO_MEDIA_SUBTITLE_FONT_PROBE" \
+ && chown -R bun:bun /app/runtime-assets
+
+# Keep font discovery inside the image even when the production root filesystem
+# is read-only.  libass receives the same explicit directory in the startup
+# probe, so a missing subtitle filter, font or cache fails closed before the
+# Relay accepts any provider work.
+ENV FONTCONFIG_FILE=/app/runtime-assets/fonts/fonts.conf
+ENV FONTCONFIG_PATH=/etc/fonts
+
 COPY --chown=bun:bun video-media-relay/app.ts video-media-relay/objectStore.ts video-media-relay/providerRegistry.ts video-media-relay/capacityPolicy.ts video-media-relay/identityIntrospection.ts video-media-relay/network.ts video-media-relay/validate-deployment-env.ts ./
 COPY --chown=bun:bun video-media-relay/contracts /app/video-media-relay/contracts
 COPY --chown=bun:bun video-media-relay/providers /app/video-media-relay/providers
@@ -19,4 +49,4 @@ COPY --chown=bun:bun deploy/production/container-entrypoint.sh /app/container-en
 USER bun
 EXPOSE 8791
 ENTRYPOINT ["/bin/sh", "/app/container-entrypoint.sh"]
-CMD ["bun", "/app/video-media-relay/app.ts"]
+CMD ["/bin/sh", "-ec", "ffmpeg -hide_banner -filters | grep -q '[[:space:]]subtitles[[:space:]]' && test \"$(fc-match -f '%{file}' 'Noto Sans CJK SC:style=Regular')\" = \"$VIDEO_MEDIA_SUBTITLE_FONT_DIR/NotoSansCJKSC-Regular.ttc\" && ffmpeg -hide_banner -loglevel error -f lavfi -i color=c=black:s=320x180:r=25:d=0.04 -vf \"subtitles=filename=$VIDEO_MEDIA_SUBTITLE_FONT_PROBE:fontsdir=$VIDEO_MEDIA_SUBTITLE_FONT_DIR:force_style='FontName=Noto Sans CJK SC,FontSize=24,Alignment=2'\" -frames:v 1 -f null - && export VIDEO_MEDIA_SUBTITLE_RUNTIME_READY=1 && printf '%s\\n' 'video_relay_subtitle_runtime_ready' >&2 && exec bun /app/video-media-relay/app.ts"]

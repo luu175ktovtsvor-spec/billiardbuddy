@@ -63,6 +63,7 @@ bb_runtime_paths=(
   ts/shared/product/providerGateway.ts
   ts/shared/product/serviceIntrospection.ts
   ts/shared/product/imageRelayProtocol.ts
+  ts/shared/product/imageUserIntent.ts
   ts/shared/product/imageVisualReasoning.ts
 )
 
@@ -108,6 +109,7 @@ for bb_required in \
   ts/shared/product/providerContracts.ts \
   ts/shared/product/modelCatalog.ts \
   ts/shared/product/serviceIntrospection.ts \
+  ts/shared/product/imageUserIntent.ts \
   ts/shared/product/imageVisualReasoning.ts \
   ts/package.json \
   ts/bun.lock \

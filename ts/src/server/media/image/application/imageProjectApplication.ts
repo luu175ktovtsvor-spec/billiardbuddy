@@ -35,6 +35,7 @@ export class ImageProjectApplication extends ImageApplication<ImageProjectApplic
   readonly #referenceControl: ImageReferenceControlRuntimePort
 
   readonly listProjects = this.bind('listProjects')
+  readonly generationPreferencesCatalog = this.bind('generationPreferencesCatalog')
   readonly getProject = this.bind('getProject')
   readonly getProjectProjection = this.bind('getProjectProjection')
   readonly assertProjectOwner = this.bind('assertProjectOwner')

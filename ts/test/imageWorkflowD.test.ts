@@ -580,7 +580,7 @@ test('15.5D Campaign 报价、确认、逐项启动和失败重试均走持久�
     expect(estimate.estimate).toMatchObject({
       campaign_revision: 0,
       paid_operation_count: 2,
-      price_upper_bound: { currency: 'USD', usage_upper_bound: { requests: 2, output_images: 6 } },
+      price_upper_bound: { currency: 'USD', usage_upper_bound: { requests: 2, output_images: 2 } },
     })
     expect(estimate.estimate.concurrency).toBeGreaterThan(0)
 
@@ -675,7 +675,7 @@ test('15.5D Campaign 报价、确认、逐项启动和失败重试均走持久�
     const failedOperations = await service.repository.listGenerationOperations(failedItem.project_id)
     const queuedOperations = await service.repository.listGenerationOperations(queuedItem.project_id)
     expect(failedOperations).toHaveLength(1)
-    expect(failedOperations[0]).toMatchObject({ status: 'failed', cost_state: 'submitted_charge_possible' })
+    expect(failedOperations[0]).toMatchObject({ status: 'failed', cost_state: 'not_submitted' })
     expect(queuedOperations).toHaveLength(1)
     expect(queuedOperations[0]).toMatchObject({ status: 'queued', cost_state: 'submitted_charge_possible' })
     const firstAttemptProjectionResponse = await request(handler, `/api/images/projects/${failedItem.project_id}/projection`)

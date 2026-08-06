@@ -12,6 +12,8 @@ export const PROVIDER_OPERATION_RESULT_ID_HEADER = 'X-BB-Result-Operation'
 export const PROVIDER_OPERATION_RESULT_CAPABILITY_HEADER = 'X-BB-Result-Capability'
 export const PROVIDER_OPERATION_RESULT_FINGERPRINT_HEADER = 'X-BB-Result-Fingerprint'
 export const PROVIDER_OPERATION_ACK_PATH = '/v1/operations/ack'
+/** Read-only replay for a durable ImageAdvice result; it never reserves usage. */
+export const PROVIDER_IMAGE_ADVICE_RESULT_PATH = '/v1/image/reasoning/result'
 export const MEDIA_RESULT_HANDOFF_HEADER = 'X-BB-Media-Result-Handoff'
 export const MEDIA_RESULT_HANDOFF_DIRECT_V1 = 'direct-v1'
 export const GATEWAY_ACCESS_TOKEN_CAPABILITY_HEADER = 'X-BB-Gateway-Access-Token-Capability'

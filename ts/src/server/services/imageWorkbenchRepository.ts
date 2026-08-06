@@ -2826,6 +2826,8 @@ export class ImageWorkbenchRepository {
       const committedOperation = imageOperationV2Schema.parse({
         ...operation,
         status: 'succeeded',
+        progress: 100,
+        stage: '画布渲染完成',
         completion_freshness: freshness,
         result: { kind: 'rendered_version', version_id: version.id, render_receipt_id: receipt.id },
         completed_at: operation.completed_at ?? receipt.created_at,
@@ -2893,6 +2895,8 @@ export class ImageWorkbenchRepository {
       const committedOperation = imageOperationV2Schema.parse({
         ...operation,
         status: 'succeeded',
+        progress: 100,
+        stage: '导出完成',
         result: { kind: 'export_receipts', export_receipt_ids: receipts.map(receipt => receipt.id), delivery_set_id: deliverySet?.id },
         completed_at: operation.completed_at ?? receipts[0]!.created_at,
         updated_at: receipts[0]!.created_at,
@@ -2972,7 +2976,18 @@ export class ImageWorkbenchRepository {
       const existing = this.unitOfWork.database.query('SELECT project_id,document_json,request_hash FROM image_creative_plans WHERE id=?')
         .get(input.id) as { project_id: string; document_json: string; request_hash: string } | null
       if (existing) {
-        if (existing.project_id !== input.project_id || existing.request_hash !== request_hash) {
+        if (existing.project_id !== input.project_id) {
+          throw new ImageWorkbenchRepositoryError('创作方向幂等键对应的请求内容不一致', 409, 'IMAGE_IDEMPOTENCY_CONFLICT')
+        }
+        // V6 added request_hash after these rows already existed.  There is
+        // no historical command hash to compare, so bind the first verified
+        // replay under the project fence and keep later replays strict.
+        if (existing.request_hash === '') {
+          this.unitOfWork.transaction(() => {
+            this.unitOfWork.database.query('UPDATE image_creative_plans SET request_hash=? WHERE id=? AND project_id=? AND request_hash=\'\'')
+              .run(request_hash, input.id, input.project_id)
+          })
+        } else if (existing.request_hash !== request_hash) {
           throw new ImageWorkbenchRepositoryError('创作方向幂等键对应的请求内容不一致', 409, 'IMAGE_IDEMPOTENCY_CONFLICT')
         }
         return this.generationDocument(existing, value => imageCreativePlanSchema.parse(value))
@@ -3025,9 +3040,21 @@ export class ImageWorkbenchRepository {
       const duplicate = this.unitOfWork.database.query(`SELECT document_json,request_hash FROM image_generation_operations
         WHERE project_id=? AND idempotency_key=?`).get(input.project_id, input.idempotency_key) as { document_json: string; request_hash: string } | null
       if (duplicate && duplicate.request_hash !== input.request_hash) {
-        throw new ImageWorkbenchRepositoryError('图片操作幂等键对应的请求内容不一致', 409, 'IMAGE_STORAGE_INVALID')
+        throw new ImageWorkbenchRepositoryError('图片操作幂等键对应的请求内容不一致', 409, 'IMAGE_IDEMPOTENCY_CONFLICT')
       }
       if (duplicate) return this.loadGenerationOperation(duplicate)
+      // Canvas acceptance is conditional on the project revision observed by
+      // the caller. Keep this check under the same project fence as the
+      // insert, otherwise a project edit between the runtime preflight and
+      // this write could enqueue a stale render.
+      if (input.kind === 'canvas_render') {
+        const current = this.projectRow(input.project_id)
+        if (!current) throw new ImageWorkbenchRepositoryError('图片项目不存在', 404, 'IMAGE_PROJECT_NOT_FOUND')
+        const project = this.loadProject(current)
+        if (project.revision !== input.input_refs.project_revision) {
+          throw new ImageWorkbenchRepositoryError('图片项目已更新，请刷新画布后重试', 409, 'IMAGE_REVISION_CONFLICT')
+        }
+      }
       this.unitOfWork.transaction(() => this.persistGenerationOperation(input))
       return input
     })
@@ -3161,6 +3188,66 @@ export class ImageWorkbenchRepository {
     })
   }
 
+  /**
+   * Cancel a formal generation that is still entirely local.  The formal and
+   * transport rows must move together, otherwise recovery could observe a
+   * cancelled formal Operation beside a queued transport and POST it.
+   */
+  async cancelGenerationBeforeSubmission(input: {
+    project_id: string
+    operation_id: string
+    updated_at: string
+  }): Promise<{ cancelled: boolean; operation: ImageOperationV2; transport: ImageOperation }> {
+    await this.ready()
+    return await this.fences.run(`project-${input.project_id}`, async () => {
+      let shouldNotify = false
+      const result = this.unitOfWork.transaction(() => {
+        const operationRow = this.unitOfWork.database.query('SELECT document_json FROM image_generation_operations WHERE id=? AND project_id=?')
+          .get(input.operation_id, input.project_id) as { document_json: string } | null
+        if (!operationRow) throw new ImageWorkbenchRepositoryError('图片生成操作不存在', 404, 'IMAGE_OPERATION_NOT_FOUND')
+        const currentOperation = this.loadGenerationOperation(operationRow)
+        if (!currentOperation.transport_task_id) throw new ImageWorkbenchRepositoryError('图片生成操作缺少传输任务', 500, 'IMAGE_STORAGE_INVALID')
+        const transportRow = this.operationRow(currentOperation.transport_task_id, true)
+        if (!transportRow || transportRow.deleted) throw new ImageWorkbenchRepositoryError('图片生成操作缺少传输任务', 404, 'IMAGE_OPERATION_NOT_FOUND')
+        const currentTransport = this.loadOperation(transportRow)
+        const isLocalOnly = currentOperation.status === 'queued'
+          && currentTransport.status === 'queued'
+          && !currentTransport.remote_task_id
+          && !currentTransport.remote_submission_started_at
+        if (!isLocalOnly) return { cancelled: false, operation: currentOperation, transport: currentTransport }
+
+        const safe = mediaSafeError('MEDIA_IMAGE_CANCELLED')
+        const nextOperation = imageOperationV2Schema.parse({
+          ...currentOperation,
+          status: 'cancelled',
+          cost_state: 'not_submitted',
+          cancellation: {
+            requested_at: currentOperation.cancellation?.requested_at ?? input.updated_at,
+            remote_state: 'confirmed',
+            late_result_policy: 'retain_as_unadopted',
+          },
+          completed_at: currentOperation.completed_at ?? input.updated_at,
+          updated_at: input.updated_at,
+        })
+        const transportUpdate = this.updateOperationWithinTransaction(canonicalImageOperation({
+          ...currentTransport,
+          status: 'cancelled',
+          progress: 0,
+          stage: '已取消',
+          error: safe.message,
+          error_code: safe.code,
+          outcome_unknown: false,
+          updated_at: input.updated_at,
+        }))
+        this.persistGenerationOperation(nextOperation)
+        shouldNotify ||= transportUpdate.changed
+        return { cancelled: true, operation: nextOperation, transport: transportUpdate.operation }
+      })
+      if (shouldNotify) this.notify(input.project_id)
+      return result
+    })
+  }
+
   async getGenerationOperation(projectId: string, operationId: string): Promise<ImageOperationV2> {
     await this.ready()
     this.assertGenerationProject(projectId)
@@ -3181,6 +3268,14 @@ export class ImageWorkbenchRepository {
     await this.ready()
     const row = this.unitOfWork.database.query('SELECT document_json FROM image_generation_operations WHERE id=?')
       .get(operationId) as { document_json: string } | null
+    return row ? this.loadGenerationOperation(row) : null
+  }
+
+  async findGenerationOperationByIdempotency(projectId: string, idempotencyKey: string): Promise<ImageOperationV2 | null> {
+    await this.ready()
+    this.assertGenerationProject(projectId)
+    const row = this.unitOfWork.database.query(`SELECT document_json FROM image_generation_operations
+      WHERE project_id=? AND idempotency_key=?`).get(projectId, idempotencyKey) as { document_json: string } | null
     return row ? this.loadGenerationOperation(row) : null
   }
 
@@ -3348,11 +3443,20 @@ export class ImageWorkbenchRepository {
   }
 
   async latestUnderstandingSuggestion(projectId: string): Promise<ImageUnderstandingSuggestion | null> {
+    const latest = await this.latestUnderstandingSuggestionRecord(projectId)
+    return latest?.suggestion ?? null
+  }
+
+  async latestUnderstandingSuggestionRecord(projectId: string): Promise<{ suggestion: ImageUnderstandingSuggestion; request_hash: string; idempotency_key: string } | null> {
     await this.ready()
     this.assertGenerationProject(projectId)
-    const row = this.unitOfWork.database.query(`SELECT document_json FROM image_understanding_suggestions
-      WHERE project_id=? ORDER BY created_at DESC, rowid DESC LIMIT 1`).get(projectId) as { document_json: string } | null
-    return row ? this.generationDocument(row, value => imageUnderstandingSuggestionSchema.parse(value)) : null
+    const row = this.unitOfWork.database.query(`SELECT document_json,request_hash,idempotency_key FROM image_understanding_suggestions
+      WHERE project_id=? ORDER BY created_at DESC, rowid DESC LIMIT 1`).get(projectId) as { document_json: string; request_hash: string; idempotency_key: string } | null
+    return row ? {
+      suggestion: this.generationDocument(row, value => imageUnderstandingSuggestionSchema.parse(value)),
+      request_hash: row.request_hash,
+      idempotency_key: row.idempotency_key,
+    } : null
   }
 
   async understandingSuggestionByIdempotency(projectId: string, idempotencyKey: string): Promise<{ suggestion: ImageUnderstandingSuggestion; request_hash: string } | null> {
@@ -3364,11 +3468,23 @@ export class ImageWorkbenchRepository {
   }
 
   async latestVisualAssessmentForCandidate(projectId: string, candidateId: string): Promise<ImageVisualAssessment | null> {
+    return (await this.latestVisualAssessmentRecordForCandidate(projectId, candidateId))?.assessment ?? null
+  }
+
+  async latestVisualAssessmentRecordForCandidate(projectId: string, candidateId: string): Promise<{ assessment: ImageVisualAssessment; request_hash: string } | null> {
     await this.ready()
     this.assertGenerationProject(projectId)
-    const row = this.unitOfWork.database.query(`SELECT document_json FROM image_visual_assessments
-      WHERE project_id=? AND candidate_id=? ORDER BY created_at DESC LIMIT 1`).get(projectId, candidateId) as { document_json: string } | null
-    return row ? this.generationDocument(row, value => imageVisualAssessmentSchema.parse(value)) : null
+    const row = this.unitOfWork.database.query(`SELECT document_json,request_hash FROM image_visual_assessments
+      WHERE project_id=? AND candidate_id=? ORDER BY created_at DESC LIMIT 1`).get(projectId, candidateId) as { document_json: string; request_hash: string } | null
+    return row ? { assessment: this.generationDocument(row, value => imageVisualAssessmentSchema.parse(value)), request_hash: row.request_hash } : null
+  }
+
+  async latestVisualAssessmentRecordForVersion(projectId: string, versionId: string): Promise<{ assessment: ImageVisualAssessment; request_hash: string } | null> {
+    await this.ready()
+    this.assertGenerationProject(projectId)
+    const row = this.unitOfWork.database.query(`SELECT document_json,request_hash FROM image_visual_assessments
+      WHERE project_id=? AND version_id=? ORDER BY created_at DESC LIMIT 1`).get(projectId, versionId) as { document_json: string; request_hash: string } | null
+    return row ? { assessment: this.generationDocument(row, value => imageVisualAssessmentSchema.parse(value)), request_hash: row.request_hash } : null
   }
 
   async visualAssessmentByIdempotency(projectId: string, idempotencyKey: string): Promise<{ assessment: ImageVisualAssessment; request_hash: string } | null> {
@@ -3388,7 +3504,18 @@ export class ImageWorkbenchRepository {
       const existing = this.unitOfWork.database.query('SELECT project_id,document_json,request_hash FROM image_generation_rounds WHERE id=?')
         .get(input.id) as { project_id: string; document_json: string; request_hash: string } | null
       if (existing) {
-        if (existing.project_id !== input.project_id || existing.request_hash !== request_hash) {
+        if (existing.project_id !== input.project_id) {
+          throw new ImageWorkbenchRepositoryError('生成轮次幂等键对应的请求内容不一致', 409, 'IMAGE_IDEMPOTENCY_CONFLICT')
+        }
+        // V6 added request_hash after these rows already existed.  Bind the
+        // first verified replay while the project fence is held; subsequent
+        // replays use the normal strict request identity check.
+        if (existing.request_hash === '') {
+          this.unitOfWork.transaction(() => {
+            this.unitOfWork.database.query('UPDATE image_generation_rounds SET request_hash=? WHERE id=? AND project_id=? AND request_hash=\'\'')
+              .run(request_hash, input.id, input.project_id)
+          })
+        } else if (existing.request_hash !== request_hash) {
           throw new ImageWorkbenchRepositoryError('生成轮次幂等键对应的请求内容不一致', 409, 'IMAGE_IDEMPOTENCY_CONFLICT')
         }
         return this.generationDocument(existing, value => imageGenerationRoundSchema.parse(value))
@@ -3425,6 +3552,17 @@ export class ImageWorkbenchRepository {
       .get(roundId, projectId) as { request_hash: string } | null
     if (!row) throw new ImageWorkbenchRepositoryError('生成轮次不存在', 404, 'IMAGE_STORAGE_INVALID')
     return row.request_hash
+  }
+
+  /** Bind the first replay identity for a V6 round created before request_hash existed. */
+  async bindLegacyGenerationRoundRequestHash(projectId: string, roundId: string, requestHash: string): Promise<void> {
+    await this.ready()
+    this.assertGenerationProject(projectId)
+    const request_hash = imageHashSchema.parse(requestHash)
+    await this.fences.run(`project-${projectId}`, async () => this.unitOfWork.transaction(() => {
+      this.unitOfWork.database.query('UPDATE image_generation_rounds SET request_hash=? WHERE id=? AND project_id=? AND request_hash=\'\'')
+        .run(request_hash, roundId, projectId)
+    }))
   }
 
   async generationRoundForOperation(projectId: string, operationId: string): Promise<ImageGenerationRound> {
@@ -3471,8 +3609,15 @@ export class ImageWorkbenchRepository {
         .get(round.id) as { document_json: string; request_hash: string } | null
       if (existingRound) {
         const restored = this.generationDocument(existingRound, value => imageGenerationRoundSchema.parse(value))
-        if (restored.project_id !== projectInput.id || restored.estimate_hash !== round.estimate_hash || existingRound.request_hash !== request_hash) {
+        if (restored.project_id !== projectInput.id || restored.estimate_hash !== round.estimate_hash
+          || (existingRound.request_hash !== '' && existingRound.request_hash !== request_hash)) {
           throw new ImageWorkbenchRepositoryError('图片生成轮次幂等键冲突', 409, 'IMAGE_IDEMPOTENCY_CONFLICT')
+        }
+        if (existingRound.request_hash === '') {
+          this.unitOfWork.transaction(() => {
+            this.unitOfWork.database.query('UPDATE image_generation_rounds SET request_hash=? WHERE id=? AND project_id=? AND request_hash=\'\'')
+              .run(request_hash, round.id, projectInput.id)
+          })
         }
         const restoredOperations = await Promise.all(restored.direction_operations.map(async direction => await this.getGenerationOperation(projectInput.id, direction.operation_id)))
         const restoredTransports = await Promise.all(restoredOperations.map(async operation => {

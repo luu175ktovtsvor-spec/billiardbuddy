@@ -72,6 +72,7 @@ import {
   type ImageWorkbenchClient,
   type ImageWorkbenchClientResult,
   type ImageWorkbenchProjectProjection,
+  ImageWorkbenchClientFailure,
   unwrapImageWorkbenchClientResult,
 } from '../api/imageWorkbenchClient.js'
 import {
@@ -87,6 +88,7 @@ import {
   type ImageWorkbenchViewStateStorage,
   writeImageWorkbenchViewState,
 } from '../state/imageWorkbenchViewState.js'
+import { IMAGE_PRODUCT_OUTPUT_COUNT } from '../../../../shared/product/imageGenerationPolicy.js'
 
 type IdempotencyKeyFactory = () => string
 
@@ -115,6 +117,18 @@ type ImageCampaignQuote = {
   campaign_id: string
   item_id?: string
   estimate: ImageCampaignEstimate
+}
+
+const imageIntentPurposeLabels: Record<string, string> = {
+  sell: '促进购买或转化', promote: '宣传推广', announce: '发布通知或活动信息', inform: '说明信息或知识',
+  brand: '强化品牌识别', social_engagement: '提升社交传播和互动', personal: '个人表达或纪念', other: '特定用途', unknown: '尚未判断',
+}
+const imageIntentChannelLabels: Record<string, string> = {
+  social_feed: '社交信息流', poster: '海报或活动物料', product_page: '商品详情或产品页面', presentation: '演示或汇报页面',
+  story: '竖屏故事或视频封面', print: '线下印刷物料', other: '其他渠道', unknown: '尚未判断',
+}
+const imageIntentPriorityLabels: Record<string, string> = {
+  subject: '主体', product: '产品', character: '角色', brand: '品牌', text: '文字区域', layout: '版式层级', mood: '情绪氛围', background: '背景',
 }
 
 /**
@@ -156,12 +170,25 @@ export type ImageWorkbenchShellSnapshot = {
   asset_grants?: readonly ImageAssetGrant[]
   selected_canvas_layer_id?: string
   latest_export?: ImageWorkbenchDeliveryExportState
+  /** True while the revision-bound AI advice request is in flight. */
+  advice_loading?: boolean
+  /** True while a user-triggered image command is in flight. */
+  interactive_busy?: boolean
   notice?: string
 }
 
 function defaultIdempotencyKey(): string {
   const random = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}_${Math.random().toString(36).slice(2)}`
   return `image_ui_${random}`
+}
+
+/**
+ * Advice is a read-only analysis for one durable project revision. Binding its
+ * key to that revision makes a lost response safe to retry without submitting
+ * another metered model request; a new revision intentionally gets a new key.
+ */
+function imageAdviceIdempotencyKey(projectId: string, revision: number): string {
+  return `image_advice_${projectId}_${revision}`
 }
 
 function escapeHtml(value: string | number | undefined): string {
@@ -205,6 +232,12 @@ const QUICK_CREATE_REFERENCE_ROLE_LABELS: Record<(typeof QUICK_CREATE_REFERENCE_
   logo: 'Logo',
   qrcode: '二维码',
 }
+
+const IMAGE_MODEL_OPTIONS = [
+  { id: 'auto', label: '智能推荐', description: '由服务端按用途和参考图约束选择模型' },
+  { id: 'gpt-image-2', label: 'GPT Image', description: '主体保持和局部编辑更稳' },
+  { id: 'doubao-seedream-4-5-251128', label: 'Seedream', description: '中文商业主视觉和海报' },
+] as const
 
 const QUICK_CREATE_REFERENCE_MIME_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp'])
 const PNG_MASK_MIME_TYPES = new Set(['image/png'])
@@ -255,13 +288,45 @@ function quoteIsActive(quote: { expires_at: string }, projectId: string, revisio
     && expiresAt > Date.now()
 }
 
+function currencyFractionDigits(currency: string): number {
+  try {
+    return new Intl.NumberFormat('en-US', { style: 'currency', currency }).resolvedOptions().maximumFractionDigits ?? 2
+  } catch {
+    return 2
+  }
+}
+
+/**
+ * Quotes and budgets persist the smallest currency unit. Keep that wire
+ * representation intact, but never make the user mentally convert it while
+ * deciding whether to pay (USD 10 means USD 0.10, not USD 10.00).
+ */
+function formatMinorCurrency(currency: string, amountMinor: number): string {
+  const fractionDigits = currencyFractionDigits(currency)
+  const divisor = 10 ** fractionDigits
+  return `${currency} ${(amountMinor / divisor).toFixed(fractionDigits)}`
+}
+
+function parseMajorCurrencyAmountToMinor(raw: string, currency: string): number | undefined {
+  if (!/^(?:0|[1-9]\d*)(?:\.\d+)?$/u.test(raw)) return undefined
+  const fractionDigits = currencyFractionDigits(currency)
+  const parts = raw.split('.')
+  const whole = parts[0] ?? ''
+  const fraction = parts[1] ?? ''
+  if (fraction.length > fractionDigits) return undefined
+  const scale = 10 ** fractionDigits
+  const minor = BigInt(whole) * BigInt(scale) + BigInt(fraction.padEnd(fractionDigits, '0') || '0')
+  if (minor < 1n || minor > BigInt(Number.MAX_SAFE_INTEGER)) return undefined
+  return Number(minor)
+}
+
 function renderPaidQuote(quote: ImagePaidQuote): string {
   const price = quote.price_upper_bound
   return `<dl class="image-workbench-quote" data-paid-operation-count="${quote.paid_operation_count}">
     <div><dt>付费操作</dt><dd>${quote.paid_operation_count}</dd></div>
-    <div><dt>候选数量</dt><dd>${quote.candidate_count_per_operation} / 操作</dd></div>
+    <div><dt>每次生成</dt><dd>${quote.candidate_count_per_operation} 张（单图）</dd></div>
     <div><dt>并发</dt><dd>${quote.concurrency}</dd></div>
-    <div><dt>成本上界</dt><dd>${escapeHtml(price.currency)} ${price.amount_minor}</dd></div>
+    <div><dt>成本上界</dt><dd data-price-amount-minor="${price.amount_minor}">${escapeHtml(formatMinorCurrency(price.currency, price.amount_minor))}</dd></div>
     <div><dt>有效至</dt><dd>${escapeHtml(quote.expires_at)}</dd></div>
   </dl>`
 }
@@ -278,8 +343,9 @@ function renderCampaignQuote(quote: ImageCampaignQuote): string {
   const estimate = quote.estimate
   return `<dl class="image-workbench-quote" data-campaign-estimate-hash="${escapeHtml(estimate.estimate_hash)}">
     <div><dt>付费操作</dt><dd>${estimate.paid_operation_count}</dd></div>
+    <div><dt>每次生成</dt><dd>${IMAGE_PRODUCT_OUTPUT_COUNT} 张（单图）</dd></div>
     <div><dt>并发</dt><dd>${estimate.concurrency}</dd></div>
-    <div><dt>成本上界</dt><dd>${escapeHtml(estimate.price_upper_bound.currency)} ${estimate.price_upper_bound.amount_minor}</dd></div>
+    <div><dt>成本上界</dt><dd data-price-amount-minor="${estimate.price_upper_bound.amount_minor}">${escapeHtml(formatMinorCurrency(estimate.price_upper_bound.currency, estimate.price_upper_bound.amount_minor))}</dd></div>
     <div><dt>有效至</dt><dd>${escapeHtml(estimate.expires_at)}</dd></div>
   </dl>`
 }
@@ -313,6 +379,87 @@ function operationLabel(status: string): string {
     outcome_unknown: '结果待确认',
   }
   return labels[status] ?? status
+}
+
+const IMAGE_WORKBENCH_NOTICE_MESSAGES: Record<string, string> = {
+  IMAGE_WORKBENCH_PROJECT_SELECTION_REQUIRED: '请先选择一个图片项目。',
+  IMAGE_WORKBENCH_PROJECT_NOT_FOUND: '图片项目不存在，请刷新项目列表后重试。',
+  IMAGE_WORKBENCH_CANDIDATE_SELECTION_REQUIRED: '请先选择一个候选图。',
+  IMAGE_WORKBENCH_VERSION_SELECTION_REQUIRED: '请先选择一个正式图片版本。',
+  IMAGE_WORKBENCH_CANVAS_SELECTION_REQUIRED: '请先选择一个画布。',
+  IMAGE_WORKBENCH_ARTBOARD_SELECTION_REQUIRED: '请先选择一个交付画板。',
+  IMAGE_WORKBENCH_DERIVATION_ESTIMATE_REQUIRED: '派生报价已失效，请重新估算后再确认。',
+  IMAGE_WORKBENCH_DELIVERY_SPEC_REQUIRED: '请先设置交付规格和画板。',
+  IMAGE_WORKBENCH_IMAGE_FILE_TYPE_INVALID: '图片格式不受支持，请选择 PNG、JPEG 或 WebP。',
+  IMAGE_WORKBENCH_IMAGE_FILE_INVALID: '图片无法读取，请换一张有效图片后重试。',
+  IMAGE_WORKBENCH_IMAGE_FILE_TOO_LARGE: '图片文件超过大小限制，请压缩后重试。',
+  IMAGE_WORKBENCH_IMAGE_FILE_PIXELS_INVALID: '图片尺寸或像素数量超过限制，请缩小后重试。',
+  IMAGE_FILE_READ_FAILED: '读取图片失败，请重新选择文件后重试。',
+  IMAGE_WORKBENCH_INPAINT_MASK_REQUIRED: '局部重绘需要先选择 PNG 蒙版。',
+  IMAGE_WORKBENCH_INPAINT_MASK_PNG_REQUIRED: '局部重绘蒙版必须是 PNG 图片。',
+  IMAGE_WORKBENCH_INPAINT_MASK_INVALID: '局部重绘蒙版与来源图片不匹配，请重新选择。',
+  IMAGE_WORKBENCH_GENERATION_ESTIMATE_REQUIRED: '费用估算已失效，请重新估算后再确认生成。',
+  IMAGE_WORKBENCH_ADVICE_CONFIRM_REQUIRED: '请先确认当前需求和参考图约束；如有 AI 建议，也请确认建议。',
+  IMAGE_WORKBENCH_ADVICE_UNAVAILABLE: 'AI 需求分析服务暂时不可用，请稍后重试；这次没有启动生图，也没有扣除生图费用。',
+  IMAGE_WORKBENCH_ADVICE_OUTCOME_UNKNOWN: '暂时无法确认 AI 需求分析结果，请先刷新建议，不要重复提交。',
+  IMAGE_WORKBENCH_CANVAS_TEXT_LAYER_NOT_FOUND: '所选文字图层已不存在，请刷新画布后重试。',
+  IMAGE_WORKBENCH_CANVAS_LAYER_NOT_FOUND: '所选图层已不存在，请刷新画布后重试。',
+  IMAGE_WORKBENCH_CANVAS_TRANSFORM_INVALID: '位置、尺寸、旋转或缩放参数无效，请检查输入。',
+  IMAGE_WORKBENCH_CANVAS_LAYER_TRANSFORM_UNSUPPORTED: '当前图层不支持位置或变换编辑。',
+  IMAGE_WORKBENCH_CANVAS_TEXT_INVALID: '请输入有效文字，长度不能超过 2000 个字符。',
+  IMAGE_WORKBENCH_CANVAS_SHAPE_INVALID: '形状或颜色参数无效，请检查输入。',
+  IMAGE_WORKBENCH_CANVAS_QR_INVALID: '二维码内容或纠错级别无效，请检查输入。',
+  IMAGE_WORKBENCH_RENDERED_VERSION_REQUIRED: '请先渲染并激活每张画板的正式版本。',
+  IMAGE_WORKBENCH_ARTBOARD_VERSION_INVALID: '所选画板版本已不存在，请刷新交付面板。',
+  IMAGE_WORKBENCH_EXPORT_RECEIPT_REQUIRED: '请先完成当前交付导出，再保存画板文件。',
+  IMAGE_WORKBENCH_CAMPAIGN_INTENT_REQUIRED: '当前项目还没有可应用的 Campaign 设计意图。',
+  IMAGE_WORKBENCH_CAMPAIGN_CANVAS_INTENT_EMPTY: 'Campaign 没有可应用的模板或品牌包。',
+  IMAGE_WORKBENCH_CAMPAIGN_NOT_FOUND: 'Campaign 不存在，请刷新 Campaign 列表。',
+  IMAGE_WORKBENCH_CAMPAIGN_ESTIMATE_REQUIRED: 'Campaign 报价已失效，请重新报价。',
+  IMAGE_WORKBENCH_CAMPAIGN_CONFIRMATION_REQUIRED: '请先确认有效的 Campaign 报价。',
+  IMAGE_WORKBENCH_CAMPAIGN_RETRY_CONFIRMATION_REQUIRED: '请先确认有效的重试报价。',
+  IMAGE_WORKBENCH_TEXT_LIST_INVALID: '每行文字不能为空，且条数或单行长度不能超过限制。',
+  IMAGE_WORKBENCH_CANDIDATE_DERIVATION_INVALID: '候选图派生参数无效，请检查输入。',
+  IMAGE_WORKBENCH_VERSION_DERIVATION_INVALID: '图片版本派生参数无效，请检查输入。',
+  IMAGE_WORKBENCH_BRAND_KIT_SELECTION_REQUIRED: '请先选择一个品牌包。',
+  IMAGE_WORKBENCH_TEMPLATE_SLOT_BINDINGS_JSON_INVALID: '模板变量 JSON 格式无效，请按示例填写。',
+  IMAGE_WORKBENCH_TEMPLATE_SLOT_BINDING_INVALID: '模板变量绑定无效，请检查变量名和值。',
+  IMAGE_WORKBENCH_TEMPLATE_REQUIRED_SLOT_MISSING: '模板仍缺少必填变量，请补齐后重试。',
+  IMAGE_WORKBENCH_TEMPLATE_SELECTION_REQUIRED: '请先选择一个模板。',
+  IMAGE_WORKBENCH_ASSET_GRANT_INVALID: '素材授权参数无效，请检查素材和用途。',
+  IMAGE_WORKBENCH_BRIEF_REQUIRED: '当前项目还没有可用 Brief，请先完成需求确认。',
+  IMAGE_WORKBENCH_BRIEF_OVERRIDES_REQUIRED: '请至少填写一项要修改的 Brief 内容。',
+  IMAGE_WORKBENCH_CREATIVE_PLAN_REQUIRED: '请先创建创作方向。',
+  IMAGE_WORKBENCH_GENERATION_DIRECTION_REQUIRED: '请至少选择一个创作方向。',
+  IMAGE_WORKBENCH_INSPIRATION_FILE_REQUIRED: '请先选择一张灵感图。',
+  IMAGE_WORKBENCH_INSPIRATION_PROMOTION_INVALID: '灵感图提升参数无效，请检查角色、影响强度和保留程度。',
+  IMAGE_WORKBENCH_DELIVERY_OUTPUT_INVALID: '导出格式无效，请选择 PNG、JPEG 或 WebP。',
+  IMAGE_WORKBENCH_DELIVERY_SAFE_AREA_INVALID: '安全区参数无效，请检查边距和画板尺寸。',
+  IMAGE_WORKBENCH_DELIVERY_ARTBOARDS_JSON_INVALID: '附加画板 JSON 无效，请按示例填写。',
+  IMAGE_WORKBENCH_DELIVERY_SPEC_INVALID: '交付规格无效，请检查用途、尺寸、安全区和格式。',
+  IMAGE_WORKBENCH_BRAND_KIT_NAME_REQUIRED: '请输入品牌包名称。',
+  IMAGE_WORKBENCH_BRAND_KIT_REVISION_INVALID: '品牌包修改参数无效，请检查颜色或 Logo 素材。',
+  IMAGE_WORKBENCH_BRAND_KIT_NOT_FOUND: '品牌包不存在，请刷新后重试。',
+  IMAGE_WORKBENCH_TEMPLATE_INPUT_INVALID: '模板名称或画板尺寸无效，请检查输入。',
+  IMAGE_WORKBENCH_TEMPLATE_REVISION_INVALID: '模板层参数无效，请检查文字、二维码或 Logo 输入。',
+  IMAGE_WORKBENCH_TEMPLATE_LAYER_LIMIT: '模板图层已达到上限，请先删除不需要的图层。',
+  IMAGE_WORKBENCH_TEMPLATE_SLOT_EXISTS: '该模板变量名已存在，请换一个名称。',
+  IMAGE_WORKBENCH_TEMPLATE_NOT_FOUND: '模板不存在，请刷新后重试。',
+  IMAGE_WORKBENCH_REFERENCE_CONTROL_INVALID: '参考图控制参数无效，请检查角色、影响强度和优先级。',
+  IMAGE_WORKBENCH_CAMPAIGN_ITEMS_REQUIRED: '请至少填写一个 Campaign 项目。',
+  IMAGE_WORKBENCH_CAMPAIGN_ITEMS_JSON_REQUIRED: 'Campaign 项目必须填写 JSON 数组。',
+  IMAGE_WORKBENCH_CAMPAIGN_ITEMS_INVALID: 'Campaign 项目 JSON 无效，请检查变量名和值。',
+  IMAGE_WORKBENCH_CAMPAIGN_TEMPLATE_BRAND_MISMATCH: '模板和品牌包版本不一致，请重新选择匹配的版本。',
+  IMAGE_WORKBENCH_OPERATION_CANCEL_NOT_QUEUED: '只有仍在排队的操作可以取消。',
+  IMAGE_WORKBENCH_OPERATION_NOT_FOUND: '图片操作不存在，请刷新操作中心。',
+  IMAGE_WORKBENCH_CAMPAIGN_INPUT_INVALID: 'Campaign 输入或预算金额不合法，请检查后重试。',
+}
+
+function imageWorkbenchNoticeForError(error: unknown): string {
+  const raw = error instanceof Error ? error.message : ''
+  if (!raw) return '图片操作未完成，请检查输入后重试。'
+  return IMAGE_WORKBENCH_NOTICE_MESSAGES[raw]
+    ?? (/^[A-Z][A-Z0-9_]+$/u.test(raw) ? '图片操作未完成，请检查输入后重试。' : raw)
 }
 
 function canvasTextLayers(layers: readonly ImageCanvasLayer[]): Array<Extract<ImageCanvasLayer, { kind: 'text' }>> {
@@ -462,15 +609,39 @@ function suggestedExportName(label: string, format: 'png' | 'jpeg' | 'webp'): st
   return `${stem || '图片交付'}.${format}`
 }
 
+function renderImageWorkflowStepper(
+  projection: ImageWorkbenchProjectProjection | undefined,
+  suggestionIsCurrent: boolean,
+  hasPlan: boolean,
+  hasQuote: boolean,
+): string {
+  const operations = projection?.operations ?? []
+  const hasGeneration = operations.some(operation =>
+    ['generate', 'edit', 'inpaint'].includes(operation.kind) && operation.status === 'succeeded')
+  const hasCandidate = (projection?.candidate_groups ?? []).some(group => group.candidates.length > 0)
+  const steps = [
+    { label: '输入需求', done: Boolean(projection?.project) },
+    { label: 'AI 建议', done: suggestionIsCurrent },
+    { label: '确认需求', done: hasPlan },
+    { label: '费用估算', done: hasQuote },
+    { label: '付费生成', done: hasGeneration },
+    { label: '候选审核', done: hasCandidate },
+  ]
+  return `<ol class="image-workbench-workflow-stepper" data-feature="workflow-stepper" aria-label="图片工作流进度">${steps.map(step => `<li class="${step.done ? 'is-done' : ''}">${step.done ? '✓' : '○'} ${step.label}</li>`).join('')}</ol>`
+}
+
 function renderCreativeIntake(
   projection: ImageWorkbenchProjectProjection | undefined,
   generationQuote: ImageGenerationQuote | undefined,
   brandKits: readonly ImageBrandKit[],
   templates: readonly ImageTemplate[],
   assetGrants: readonly ImageAssetGrant[],
+  adviceLoading = false,
 ): string {
   const project = projection?.project
   const plans = projection?.creative_plans ?? []
+  const suggestion = projection?.latest_understanding_suggestion
+  const suggestionIsCurrent = Boolean(project && suggestion && suggestion.project_revision === project.revision)
   const planOptions = plans.map(plan => `<option value="${escapeHtml(plan.id)}">${escapeHtml(plan.directions.map(direction => direction.label).join(' / '))}</option>`).join('')
   const quoteForCurrentProject = project && generationQuote
     && quoteIsActive(generationQuote, project.id, project.revision, generationQuote.project_id, generationQuote.project_revision)
@@ -493,8 +664,39 @@ function renderCreativeIntake(
   const grantRows = activeGrants.length === 0
     ? '<p class="image-workbench-empty">没有可撤销的有效素材授权</p>'
     : `<ul>${activeGrants.map(grant => `<li data-asset-grant-id="${escapeHtml(grant.id)}"><span>${escapeHtml(grant.asset_id)}</span><small>${escapeHtml(grant.to_owner.kind)}:${escapeHtml(grant.to_owner.id)} / ${escapeHtml(grant.purpose)}</small><button type="button" data-action="revoke-asset-grant" data-grant-id="${escapeHtml(grant.id)}">撤销授权</button></li>`).join('')}</ul>`
+  const advicePanel = suggestion
+    ? `<section class="image-workbench-subsection" data-feature="image-advice" data-advice-revision="${suggestion.project_revision ?? ''}">
+      <header><h3>AI 需求分析（不启动生图）</h3><strong>${suggestionIsCurrent ? '待你确认' : '已过期，请重新分析'}</strong></header>
+      <p class="image-workbench-empty">这一步会调用 AI 理解模型并记录建议，但不会启动图片生成；AI 只提供可修改的建议，不会直接改写需求、参考图或工作指针。</p>
+      ${suggestion.user_intent ? `<details open><summary>AI 对用途的理解</summary><dl class="image-workbench-intent-summary">
+        <dt>目的</dt><dd>${escapeHtml(imageIntentPurposeLabels[suggestion.user_intent.purpose] ?? suggestion.user_intent.purpose)}</dd>
+        <dt>渠道</dt><dd>${escapeHtml(imageIntentChannelLabels[suggestion.user_intent.channel] ?? suggestion.user_intent.channel)}</dd>
+        ${suggestion.user_intent.audience ? `<dt>目标受众</dt><dd>${escapeHtml(suggestion.user_intent.audience)}</dd>` : ''}
+        ${suggestion.user_intent.subject ? `<dt>核心主体</dt><dd>${escapeHtml(suggestion.user_intent.subject)}</dd>` : ''}
+        ${suggestion.user_intent.desired_effect ? `<dt>希望达到</dt><dd>${escapeHtml(suggestion.user_intent.desired_effect)}</dd>` : ''}
+        ${suggestion.user_intent.style_keywords.length > 0 ? `<dt>视觉关键词</dt><dd>${escapeHtml(suggestion.user_intent.style_keywords.join('、'))}</dd>` : ''}
+        ${suggestion.user_intent.priority_order.length > 0 ? `<dt>优先层级</dt><dd>${escapeHtml(suggestion.user_intent.priority_order.map(value => imageIntentPriorityLabels[value] ?? value).join(' → '))}</dd>` : ''}
+      </dl></details>` : ''}
+      ${suggestion.visible_facts.length > 0 ? `<details open><summary>识别到的事实</summary><ul>${suggestion.visible_facts.map(value => `<li>${escapeHtml(value)}</li>`).join('')}</ul></details>` : ''}
+      ${suggestion.composition_suggestions.length > 0 ? `<details open><summary>构图建议</summary><ul>${suggestion.composition_suggestions.map(value => `<li>${escapeHtml(value)}</li>`).join('')}</ul></details>` : ''}
+      ${suggestion.preservation_risks.length > 0 ? `<details><summary>需要留意</summary><ul>${suggestion.preservation_risks.map(value => `<li>${escapeHtml(value)}</li>`).join('')}</ul></details>` : ''}
+      ${suggestion.missing_information.length > 0 ? `<details open><summary>还需要确认</summary><ul>${suggestion.missing_information.map(value => `<li>${escapeHtml(value)}</li>`).join('')}</ul></details>` : ''}
+    </section>`
+    : '<p class="image-workbench-empty">还没有 AI 建议；你可以先请求 AI 理解，也可以直接确认当前需求后进入付费估算。</p>'
+  const adviceAction = adviceLoading
+    ? '<button type="button" data-action="request-image-advice" disabled aria-busy="true">AI 分析中…</button>'
+    : '<button type="button" data-action="request-image-advice">AI 分析需求</button>'
+  const adviceProgress = adviceLoading
+    ? '<p class="image-workbench-empty" role="status" aria-live="polite">正在请求 AI 理解建议；这一步不会启动生图，也不会扣除生图费用。</p>'
+    : ''
+  const planConfirmationLabel = suggestionIsCurrent
+    ? '我已确认需求、参考图约束和 AI 建议'
+    : '我已确认当前需求和参考图约束（可跳过 AI 建议）'
   return `<section class="image-workbench-section" data-feature="creative-intake" data-panel-content="creative-intake">
-    <header><h2>创作输入</h2><button type="button" data-action="compile-brief">刷新 Brief</button></header>
+    <header><h2>创作输入</h2><div>${adviceAction}<button type="button" data-action="compile-brief">刷新 Brief</button></div></header>
+    ${adviceProgress}
+    ${renderImageWorkflowStepper(projection, suggestionIsCurrent, plans.length > 0, Boolean(quoteForCurrentProject))}
+    <p class="image-workbench-empty">流程由你控制：AI 只理解和建议；你确认需求后才创建方向、显示费用，最后由你确认付费生成。模板和品牌包不会自动套用。</p>
     <form data-brief-overrides-form>
       <textarea data-brief-confirmed-facts aria-label="已确认事实" placeholder="每行一条已确认事实"></textarea>
       <textarea data-brief-must-preserve aria-label="必须保留" placeholder="每行一条必须保留内容"></textarea>
@@ -502,8 +704,10 @@ function renderCreativeIntake(
       <textarea data-brief-exact-text aria-label="精确文字" placeholder="每行一条精确文字"></textarea>
       <button type="submit">应用 Brief</button>
     </form>
+    ${advicePanel}
     <form data-create-plan-form>
-      <button type="submit">创建创作方向</button>
+      <label><input type="checkbox" data-confirm-image-advice /> ${planConfirmationLabel}</label>
+      <button type="submit">确认需求并创建创作方向</button>
     </form>
     ${plans.length > 0 ? `<form data-generation-estimate-form>
       <select data-generation-plan-id aria-label="创作方向">${planOptions}</select>
@@ -513,7 +717,9 @@ function renderCreativeIntake(
       <input type="hidden" data-generation-confirm-plan-id value="${escapeHtml(quoteForCurrentProject.creative_plan_id)}" />
       <button type="submit">确认并生成</button>
     </form>` : ''}
-    <section class="image-workbench-subsection" data-feature="brand-template-manager">
+    <details class="image-workbench-subsection" data-feature="brand-template-manager">
+      <summary>可选复用工具：品牌包与模板（不会自动应用）</summary>
+      <p class="image-workbench-empty">只有你明确选择并在画布中应用时才会生效；不使用它们也可以完成整条生图流程。</p>
       <header><h3>品牌包</h3></header>
       ${brandRows}
       <form data-brand-create-form>
@@ -527,8 +733,9 @@ function renderCreativeIntake(
         <input data-brand-logo-asset-id list="image-workbench-assets" aria-label="品牌 Logo 素材标识" placeholder="Logo 素材标识（先授权）" />
         <button type="submit">新增品牌颜色</button>
       </form>
-    </section>
-    <section class="image-workbench-subsection" data-feature="template-manager">
+    </details>
+    <details class="image-workbench-subsection" data-feature="template-manager">
+      <summary>模板库（可选）</summary>
       <header><h3>模板</h3></header>
       ${templateRows}
       <form data-template-create-form>
@@ -547,7 +754,7 @@ function renderCreativeIntake(
         <input data-template-logo-asset-id list="image-workbench-assets" aria-label="模板 Logo 素材标识" placeholder="Logo 素材标识（可选）" />
         <button type="submit">追加模板层</button>
       </form>
-    </section>
+    </details>
     ${assetTargets || activeGrants.length > 0 ? `<section class="image-workbench-subsection" data-feature="reusable-asset-grants">
       <header><h3>授权复用素材</h3></header>
       ${assetTargets ? `<form data-reusable-asset-grant-form>
@@ -709,13 +916,20 @@ function renderCanvasEditor(
     : undefined
   const brandOptions = `<option value="">选择品牌包</option>${brandKits.map(brand => `<option value="${escapeHtml(brand.id)}">${escapeHtml(brand.name)} r${brand.revision}</option>`).join('')}`
   const templateOptions = `<option value="">选择模板</option>${templates.map(template => `<option value="${escapeHtml(template.id)}">${escapeHtml(template.name)} r${template.revision}</option>`).join('')}`
+  const existingArtboardIds = new Set(canvases.map(canvas => canvas.document.artboard_id))
+  const blankCanvasActions = (projection?.delivery_spec?.artboards ?? [])
+    .filter(artboard => !existingArtboardIds.has(artboard.id))
+    .map(artboard => `<button type="button" data-action="create-blank-canvas" data-artboard-id="${escapeHtml(artboard.id)}">创建空白画布：${escapeHtml(artboard.label)}</button>`)
+    .join('')
   const canvasRows = canvases.length === 0
-    ? '<p class="image-workbench-empty">采纳候选后可创建画布</p>'
-    : canvases.map(canvas => `
+    ? projection?.delivery_spec
+      ? `<div class="image-workbench-empty"><p>当前项目还没有画布。可以先创建一个空白画布，再从项目素材库复用历史图片。</p><div class="image-workbench-command-row">${blankCanvasActions}</div></div>`
+      : '<p class="image-workbench-empty">先在“交付”中创建交付规格，再创建画布。</p>'
+    : `${canvases.map(canvas => `
       <button type="button" class="image-workbench-list-button${canvas.canvas_id === selectedCanvas?.canvas_id ? ' is-selected' : ''}" data-action="select-canvas" data-canvas-id="${escapeHtml(canvas.canvas_id)}">
         <span>${escapeHtml(canvas.document.artboard_id)}</span><small>版本 ${canvas.revision}</small>
       </button>
-    `).join('')
+    `).join('')}${blankCanvasActions ? `<div class="image-workbench-command-row">${blankCanvasActions}</div>` : ''}`
   const canvasWidth = Math.max(1, selectedCanvas?.document.width ?? 1)
   const canvasHeight = Math.max(1, selectedCanvas?.document.height ?? 1)
   const previewLayers = selectedCanvas
@@ -934,7 +1148,9 @@ function renderOperationCenter(projection: ImageWorkbenchProjectProjection | und
       <li>
         <span>${escapeHtml(operation.kind)}</span>
         <strong data-operation-status="${escapeHtml(operation.status)}">${escapeHtml(operationLabel(operation.status))}</strong>
-        <small>${escapeHtml(operation.safe_error?.message)}</small>
+        ${operation.stage ? `<small data-operation-stage="${escapeHtml(operation.id)}">${escapeHtml(operation.stage)}</small>` : ''}
+        ${operation.progress !== undefined ? `<progress max="100" value="${Math.max(0, Math.min(100, operation.progress))}" aria-label="${escapeHtml(operation.stage ?? operationLabel(operation.status))}"></progress><small>${Math.round(operation.progress)}%</small>` : ''}
+        ${operation.safe_error?.message ? `<small>${escapeHtml(operation.safe_error.message)}</small>` : ''}
         ${operation.status === 'queued'
           ? `<button type="button" data-action="cancel-operation" data-operation-id="${escapeHtml(operation.id)}">取消</button>`
           : ''}
@@ -951,7 +1167,7 @@ function renderLibrary(projection: ImageWorkbenchProjectProjection | undefined):
   const rows = entries.length === 0
     ? '<p class="image-workbench-empty">项目素材将显示在这里</p>'
     : entries.map(entry => `
-      <li><span>${escapeHtml(entry.origin)}</span><small>${escapeHtml(entry.asset_id)}</small></li>
+      <li><button type="button" data-action="select-library-asset" data-asset-id="${escapeHtml(entry.asset_id)}">选择</button><span>${escapeHtml(entry.origin)}</span><small>${escapeHtml(entry.asset_id)}${entry.source_version_id ? ` · 历史 Version ${escapeHtml(entry.source_version_id)}` : ''}</small></li>
     `).join('')
   return `<section class="image-workbench-section" data-feature="project-library" data-panel-content="project-library">
     <header><h2>项目素材库</h2><span>${entries.length}</span></header>
@@ -1009,7 +1225,7 @@ function renderCampaigns(
             : `<button type="button" data-action="estimate-campaign-retry" data-campaign-id="${escapeHtml(campaign.id)}" data-item-id="${escapeHtml(item.id)}">重试报价</button>`
         return `<li><span>项目 ${item.ordinal + 1}</span><strong>${escapeHtml(item.state)}</strong>${activeQuote ? renderCampaignQuote(activeQuote) : ''}${retryAction}</li>`
       }).join('') ?? ''
-      return `<li class="image-workbench-campaign-row"><div><span>${escapeHtml(campaign.name)}</span><strong>${escapeHtml(campaign.state)}</strong><small>${campaign.planned_item_count} 项</small>${campaign.budget_limit ? `<small>预算 ${escapeHtml(campaign.budget_limit.currency)} ${campaign.budget_limit.amount_minor}</small>` : ''}${activeStartQuote ? renderCampaignQuote(activeStartQuote) : ''}${startAction}</div>${itemRows ? `<ul>${itemRows}</ul>` : ''}</li>`
+      return `<li class="image-workbench-campaign-row"><div><span>${escapeHtml(campaign.name)}</span><strong>${escapeHtml(campaign.state)}</strong><small>${campaign.planned_item_count} 项</small>${campaign.budget_limit ? `<small>预算 ${escapeHtml(formatMinorCurrency(campaign.budget_limit.currency, campaign.budget_limit.amount_minor))}</small>` : ''}${activeStartQuote ? renderCampaignQuote(activeStartQuote) : ''}${startAction}</div>${itemRows ? `<ul>${itemRows}</ul>` : ''}</li>`
     }).join('')
   return `<section class="image-workbench-section" data-feature="batch-production" data-panel-content="campaign">
     <header><h2>批量制作</h2><span>${campaigns.length}</span></header>
@@ -1022,7 +1238,7 @@ function renderCampaigns(
       <select data-campaign-template-id aria-label="Campaign 模板">${templateOptions}</select>
       <select data-campaign-brand-kit-id aria-label="Campaign 品牌包">${brandOptions}</select>
       <input data-campaign-budget-currency maxlength="3" pattern="[A-Z]{3}" value="USD" aria-label="Campaign 预算币种" />
-      <input data-campaign-budget-minor type="number" min="1" step="1" aria-label="Campaign 预算上限最小币种单位" placeholder="预算上限（最小币种单位，可选）" />
+      <input data-campaign-budget-minor type="number" min="0.01" step="0.01" aria-label="Campaign 预算上限（主要货币单位）" placeholder="预算上限（例如 USD 1.00，可选）" />
       <textarea data-campaign-items aria-label="Campaign 项目" placeholder='填写项目 JSON 数组，例如 [{"variable_values":[{"slot_id":"title","value":"夏季联赛"}]}]'></textarea>
       <button type="submit">创建 Campaign</button>
     </form>
@@ -1033,11 +1249,17 @@ function renderQuickCreatePanel(): string {
   const referenceRoles = QUICK_CREATE_REFERENCE_ROLES
     .map(role => `<option value="${role}">${QUICK_CREATE_REFERENCE_ROLE_LABELS[role]}</option>`)
     .join('')
+  const modelOptions = IMAGE_MODEL_OPTIONS
+    .map(model => `<option value="${model.id}">${model.label}：${model.description}</option>`)
+    .join('')
   return `<section class="image-workbench-section" data-feature="quick-create" data-panel-content="quick-create">
-    <header><h2>快速创建</h2></header>
+    <header><h2>开始一个图片项目</h2></header>
+    <p class="image-workbench-empty">这里只保存你的需求和参考输入，不会立刻扣费或调用生图 Provider。下一步由 AI 给出可修改建议，你确认后才进入费用估算。</p>
+    ${renderImageWorkflowStepper(undefined, false, false, false)}
     <form class="image-workbench-quick-form" data-quick-create-form>
       <input data-quick-prompt required maxlength="8000" placeholder="描述你要制作的图片" aria-label="图片描述" />
       <select data-quick-preset aria-label="输出规格"><option value="square">方形</option><option value="landscape">横版</option><option value="portrait">竖版</option><option value="auto">自动</option></select>
+      <select data-quick-model aria-label="图片模型">${modelOptions}</select>
       <div class="image-workbench-quick-reference">
         <label>首轮参考图<input data-quick-reference-file type="file" accept="image/png,image/jpeg,image/webp" aria-label="首轮参考图" /></label>
         <label>参考角色<select data-quick-reference-role aria-label="首轮参考角色"><option value="">选择角色</option>${referenceRoles}</select></label>
@@ -1049,7 +1271,7 @@ function renderQuickCreatePanel(): string {
         <textarea data-quick-brief-may-change aria-label="首次创建允许改变" placeholder="每行一条允许改变内容"></textarea>
         <textarea data-quick-brief-exact-text aria-label="首次创建精确文字" placeholder="每行一条精确文字"></textarea>
       </details>
-      <button type="submit">生成</button>
+      <button type="submit">创建项目并进入需求确认</button>
     </form>
   </section>`
 }
@@ -1058,7 +1280,7 @@ function renderActivePanel(snapshot: ImageWorkbenchShellSnapshot): string {
   const { projection, view_state: state } = snapshot
   switch (state.active_panel) {
     case 'quick-create': return renderQuickCreatePanel()
-    case 'creative-intake': return renderCreativeIntake(projection, snapshot.generation_quote, snapshot.brand_kits ?? [], snapshot.templates ?? [], snapshot.asset_grants ?? [])
+    case 'creative-intake': return renderCreativeIntake(projection, snapshot.generation_quote, snapshot.brand_kits ?? [], snapshot.templates ?? [], snapshot.asset_grants ?? [], snapshot.advice_loading === true)
     case 'inspiration-board': return renderInspirationBoard(projection)
     case 'reference-tray': return renderReferenceTray(projection)
     case 'candidate-review': return renderCandidateReview(projection, state.selected_candidate_id, snapshot.candidate_previews ?? {}, snapshot.derivation_quote)
@@ -1092,6 +1314,7 @@ export function renderImageWorkbenchShell(snapshot: ImageWorkbenchShellSnapshot)
     <style>
       .image-workbench-shell { color: #17202a; background: #f7f8fa; min-height: 100%; font: 14px/1.45 system-ui, -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif; }
       .image-workbench-shell * { box-sizing: border-box; }
+      .image-workbench-interactive { min-width: 0; margin: 0; padding: 0; border: 0; }
       .image-workbench-header { display: flex; align-items: center; justify-content: space-between; padding: 16px 20px; background: #ffffff; border-bottom: 1px solid #dfe3e8; }
       .image-workbench-header h1 { margin: 0; font-size: 18px; font-weight: 650; letter-spacing: 0; }
       .image-workbench-layout { display: grid; grid-template-columns: 172px minmax(0, 1fr); min-height: calc(100vh - 58px); }
@@ -1108,6 +1331,7 @@ export function renderImageWorkbenchShell(snapshot: ImageWorkbenchShellSnapshot)
       .image-workbench-section ul { list-style: none; padding: 0; margin: 0; display: grid; gap: 7px; }
       .image-workbench-section li { display: flex; align-items: baseline; gap: 9px; min-width: 0; }
       .image-workbench-section li small { overflow-wrap: anywhere; color: #59636e; }
+      .image-workbench-campaign-row > div { display: flex; align-items: baseline; gap: 9px; flex-wrap: wrap; }
       .image-workbench-empty { color: #68737d; margin: 0; }
       .image-workbench-section form.image-workbench-quick-form { display: grid; grid-template-columns: minmax(0, 1fr) 128px auto; gap: 8px; }
       .image-workbench-quick-reference { grid-column: 1 / -1; display: grid; grid-template-columns: minmax(0, 1fr) minmax(160px, 220px); gap: 8px; }
@@ -1116,6 +1340,7 @@ export function renderImageWorkbenchShell(snapshot: ImageWorkbenchShellSnapshot)
       .image-workbench-quick-brief summary { grid-column: 1 / -1; cursor: pointer; }
       .image-workbench-quick-form input, .image-workbench-quick-form select, .image-workbench-section form input, .image-workbench-section form select, .image-workbench-section form textarea { min-width: 0; border: 1px solid #b9c1c9; border-radius: 4px; padding: 8px; background: #fff; color: inherit; }
       .image-workbench-section button, .image-workbench-quick-form button { border: 1px solid #1966c2; border-radius: 4px; padding: 7px 10px; background: #1966c2; color: #fff; cursor: pointer; }
+      .image-workbench-section button:disabled, .image-workbench-quick-form button:disabled { opacity: .62; cursor: wait; }
       .image-workbench-section form { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
       .image-workbench-section form textarea { min-height: 72px; flex: 1 1 200px; resize: vertical; }
       .image-workbench-subsection { margin-top: 14px; padding-top: 14px; border-top: 1px solid #dfe3e8; }
@@ -1147,18 +1372,22 @@ export function renderImageWorkbenchShell(snapshot: ImageWorkbenchShellSnapshot)
       .image-workbench-delivery-receipt dt { color: #59636e; }
       .image-workbench-delivery-receipt dd { margin: 2px 0 0; overflow-wrap: anywhere; }
       .image-workbench-delivery-saved { margin: 0; color: #0d6c36; overflow-wrap: anywhere; }
+      .image-workbench-busy { margin: 0; padding: 8px 10px; border-left: 3px solid #8a5a00; background: #fff7df; overflow-wrap: anywhere; }
       .image-workbench-notice { margin: 0; padding: 8px 10px; border-left: 3px solid #1966c2; background: #edf5ff; overflow-wrap: anywhere; }
       @media (max-width: 720px) { .image-workbench-layout { grid-template-columns: 1fr; } .image-workbench-nav { grid-template-columns: repeat(3, minmax(0, 1fr)); border-right: 0; border-bottom: 1px solid #dfe3e8; } .image-workbench-nav button { white-space: normal; } .image-workbench-section form.image-workbench-quick-form, .image-workbench-quick-reference, .image-workbench-quick-brief, .image-workbench-split { grid-template-columns: 1fr; } .image-workbench-delivery-receipt { grid-template-columns: 1fr; } }
-    </style>
-    <header class="image-workbench-header"><h1>图片工作台</h1><form data-project-select-form><select data-project-select aria-label="已有图片项目">${projectOptions}</select><button type="submit">打开项目</button></form><button type="button" data-action="refresh-project-list">刷新项目</button><span>${escapeHtml(projection?.project.state ?? '未选择项目')}</span></header>
-    <div class="image-workbench-layout">
-      <nav class="image-workbench-nav" aria-label="图片工作台导航">${panelButtons}</nav>
-      <main class="image-workbench-main">
-        ${snapshot.notice ? `<p class="image-workbench-notice" role="status">${escapeHtml(snapshot.notice)}</p>` : ''}
-        <section class="image-workbench-project"><h2>${escapeHtml(projectTitle)}</h2><button type="button" data-action="resume-project">恢复</button></section>
-        ${renderActivePanel(snapshot)}
-      </main>
-    </div>
+      </style>
+    <fieldset class="image-workbench-interactive"${snapshot.interactive_busy ? ' disabled aria-busy="true"' : ''}>
+      <header class="image-workbench-header"><h1>图片工作台</h1><form data-project-select-form><select data-project-select aria-label="已有图片项目">${projectOptions}</select><button type="submit">打开项目</button></form><button type="button" data-action="refresh-project-list">刷新项目</button><span>${escapeHtml(projection?.project.state ?? '未选择项目')}</span></header>
+      <div class="image-workbench-layout">
+        <nav class="image-workbench-nav" aria-label="图片工作台导航">${panelButtons}</nav>
+        <main class="image-workbench-main">
+          ${snapshot.interactive_busy ? '<p class="image-workbench-busy" role="status" aria-live="polite">正在处理上一项图片操作，请稍候；不会重复扣费。</p>' : ''}
+          ${snapshot.notice ? `<p class="image-workbench-notice" role="status">${escapeHtml(snapshot.notice)}</p>` : ''}
+          <section class="image-workbench-project"><h2>${escapeHtml(projectTitle)}</h2><button type="button" data-action="resume-project">恢复</button></section>
+          ${renderActivePanel(snapshot)}
+        </main>
+      </div>
+    </fieldset>
   </div>`
 }
 
@@ -1256,6 +1485,7 @@ export class ImageWorkbenchShell {
   private readonly storage?: ImageWorkbenchViewStateStorage
   private readonly idempotencyKey: IdempotencyKeyFactory
   private abortController?: AbortController
+  private readonly activeAdviceRequests = new Map<string, Promise<void>>()
   private state: ImageWorkbenchViewState
   private projection?: ImageWorkbenchProjectProjection
   private projects: readonly ImageWorkbenchProjectListResponse['projects'][number][] = []
@@ -1274,6 +1504,7 @@ export class ImageWorkbenchShell {
   private assetGrants: readonly ImageAssetGrant[] = []
   private selectedCanvasLayerId?: string
   private latestExport?: ImageWorkbenchDeliveryExportState
+  private interactiveBusy = false
   private activeCanvasDragPointerId?: number
   private notice?: string
   private eventPumpEpoch = 0
@@ -1297,10 +1528,9 @@ export class ImageWorkbenchShell {
     this.root.addEventListener('pointerup', this.handleCanvasPointerUp, { signal: this.abortController.signal })
     this.root.addEventListener('pointercancel', this.handleCanvasPointerCancel, { signal: this.abortController.signal })
     this.render()
-    void this.runInteractive(() => this.refreshProjects())
-    void this.runInteractive(() => this.refreshCampaigns())
-    void this.runInteractive(() => this.refreshReusableDesigns())
-    if (this.state.selected_project_id) void this.runInteractive(() => this.resumeSelectedProject())
+    void this.runBackground(() => this.restoreSelectedProjectAfterListRefresh())
+    void this.runBackground(() => this.refreshCampaigns())
+    void this.runBackground(() => this.refreshReusableDesigns())
   }
 
   unmount(): void {
@@ -1329,6 +1559,8 @@ export class ImageWorkbenchShell {
       asset_grants: this.assetGrants,
       ...(this.selectedCanvasLayerId ? { selected_canvas_layer_id: this.selectedCanvasLayerId } : {}),
       ...(this.latestExport ? { latest_export: this.latestExport } : {}),
+      advice_loading: this.activeAdviceRequests.size > 0,
+      ...(this.interactiveBusy ? { interactive_busy: true } : {}),
       ...(this.notice ? { notice: this.notice } : {}),
     }
   }
@@ -1361,6 +1593,14 @@ export class ImageWorkbenchShell {
     const projectId = this.state.selected_project_id
     if (!projectId) throw new Error('IMAGE_WORKBENCH_PROJECT_SELECTION_REQUIRED')
     return projectId
+  }
+
+  private async restoreSelectedProjectAfterListRefresh(): Promise<void> {
+    // Reconcile the persisted renderer selection before attempting recovery.
+    // Otherwise a fresh install (or a deleted old project) can race the
+    // project-list refresh and surface a misleading stale-project error.
+    await this.refreshProjects()
+    if (this.state.selected_project_id) await this.resumeSelectedProject()
   }
 
   private async resolve<Value>(call: Promise<ImageWorkbenchClientResult<Value>>): Promise<Value> {
@@ -1527,6 +1767,9 @@ export class ImageWorkbenchShell {
     this.projects = response.projects
     if (this.state.selected_project_id && !this.projects.some(project => project.id === this.state.selected_project_id)) {
       this.state = reduceImageWorkbenchViewState(this.state, { kind: 'select-project' })
+      if (this.projects.length === 0) {
+        this.state = reduceImageWorkbenchViewState(this.state, { kind: 'open-panel', panel: 'quick-create' })
+      }
       this.projection = undefined
       this.selectedCanvasLayerId = undefined
       this.latestExport = undefined
@@ -1553,7 +1796,7 @@ export class ImageWorkbenchShell {
       this.setNotice(undefined)
       return projection
     } catch (error) {
-      this.setNotice(error instanceof Error ? error.message : '无法刷新项目。')
+      this.setNotice(imageWorkbenchNoticeForError(error))
       throw error
     }
   }
@@ -1645,7 +1888,7 @@ export class ImageWorkbenchShell {
       this.setNotice(undefined)
       return projection
     } catch (error) {
-      this.setNotice(error instanceof Error ? error.message : '无法恢复图片项目。')
+      this.setNotice(imageWorkbenchNoticeForError(error))
       throw error
     }
   }
@@ -1653,7 +1896,10 @@ export class ImageWorkbenchShell {
   async quickCreate(input: ImageQuickCreateInput): Promise<void> {
     const created = await this.resolve(this.client.quickCreate(input))
     this.state = reduceImageWorkbenchViewState(this.state, { kind: 'select-project', project_id: created.project.id })
-    this.state = reduceImageWorkbenchViewState(this.state, { kind: 'open-panel', panel: 'candidate-review' })
+    this.state = reduceImageWorkbenchViewState(this.state, {
+      kind: 'open-panel',
+      panel: created.mode === 'prepared' ? 'creative-intake' : 'candidate-review',
+    })
     this.generationQuote = undefined
     this.selectedCanvasLayerId = undefined
     this.latestExport = undefined
@@ -1661,11 +1907,15 @@ export class ImageWorkbenchShell {
     await this.refreshProjects()
     if (typeof this.client.listOperationEvents === 'function') await this.resumeSelectedProject()
     else await this.refreshProject(created.project.id)
+    if (created.mode === 'prepared') {
+      this.setNotice('项目已保存；可请求 AI 建议，也可直接确认当前需求后再估算费用。')
+    }
   }
 
   private async quickCreateFromForm(form: HTMLFormElement): Promise<void> {
     const prompt = form.querySelector<HTMLInputElement>('[data-quick-prompt]')?.value.trim() ?? ''
     const outputPreset = form.querySelector<HTMLSelectElement>('[data-quick-preset]')?.value
+    const modelSelection = form.querySelector<HTMLSelectElement>('[data-quick-model]')?.value ?? 'auto'
     const referenceFile = form.querySelector<HTMLInputElement>('[data-quick-reference-file]')?.files?.[0]
     const referenceRole = form.querySelector<HTMLSelectElement>('[data-quick-reference-role]')?.value
     const confirmedFacts = this.linesFromForm(form, '[data-quick-brief-confirmed-facts]', 40)
@@ -1674,6 +1924,10 @@ export class ImageWorkbenchShell {
     const exactText = this.linesFromForm(form, '[data-quick-brief-exact-text]', 40)
     if (!prompt || (outputPreset !== 'square' && outputPreset !== 'landscape' && outputPreset !== 'portrait' && outputPreset !== 'auto')) {
       this.setNotice('请填写图片描述并选择输出规格。')
+      return
+    }
+    if (!IMAGE_MODEL_OPTIONS.some(model => model.id === modelSelection)) {
+      this.setNotice('请选择有效的图片模型。')
       return
     }
     if ((referenceFile === undefined) !== (referenceRole === undefined || referenceRole === '')) {
@@ -1701,6 +1955,7 @@ export class ImageWorkbenchShell {
       idempotency_key: this.idempotencyKey(),
       prompt,
       output_preset: outputPreset,
+      model_selection: modelSelection as ImageQuickCreateInput['model_selection'],
       reference_inputs,
       ...(Object.keys(brief_overrides).length > 0 ? { brief_overrides } : {}),
     })
@@ -1750,6 +2005,53 @@ export class ImageWorkbenchShell {
   async createCreativePlan(input: CreateCreativePlanInput): Promise<void> {
     await this.resolve(this.client.createCreativePlan({ project_id: this.projectId(), input }))
     await this.refreshSelectedProject()
+  }
+
+  async requestImageAdvice(): Promise<void> {
+    const projection = this.currentProjection()
+    const requestKey = `${projection.project.id}:${projection.project.revision}`
+    const active = this.activeAdviceRequests.get(requestKey)
+    if (active) return active
+
+    const promise = this.requestImageAdviceForRevision(
+      projection,
+      imageAdviceIdempotencyKey(projection.project.id, projection.project.revision),
+    ).finally(() => {
+      if (this.activeAdviceRequests.get(requestKey) === promise) {
+        this.activeAdviceRequests.delete(requestKey)
+        this.render()
+      }
+    })
+    this.activeAdviceRequests.set(requestKey, promise)
+    this.render()
+    return promise
+  }
+
+  private async requestImageAdviceForRevision(
+    projection: ImageWorkbenchProjectProjection,
+    idempotencyKey: string,
+  ): Promise<void> {
+    try {
+      await this.resolve(this.client.requestImageAdvice({
+        project_id: projection.project.id,
+        input: {
+          base_revision: projection.project.revision,
+          idempotency_key: idempotencyKey,
+        },
+      }))
+    } catch (error) {
+      if (error instanceof ImageWorkbenchClientFailure) {
+        if (error.error.code === 'MEDIA_IMAGE_UNAVAILABLE' || error.error.code === 'MEDIA_IMAGE_REASONING_UNAVAILABLE') {
+          throw new Error('IMAGE_WORKBENCH_ADVICE_UNAVAILABLE')
+        }
+        if (error.error.code === 'MEDIA_IMAGE_OUTCOME_UNKNOWN') {
+          throw new Error('IMAGE_WORKBENCH_ADVICE_OUTCOME_UNKNOWN')
+        }
+      }
+      throw error
+    }
+    await this.refreshSelectedProject()
+    this.setNotice('AI 需求建议已生成；请确认需求后再估算图片费用。')
   }
 
   async createGenerationRound(input: CreateGenerationRoundInput): Promise<void> {
@@ -2031,6 +2333,22 @@ export class ImageWorkbenchShell {
         placement: { fit: 'contain', focus_x: 0.5, focus_y: 0.5 },
       })),
     })
+  }
+
+  private async createBlankCanvas(artboardId: string): Promise<void> {
+    const projection = this.currentProjection()
+    const artboard = projection.delivery_spec?.artboards.find(value => value.id === artboardId)
+    if (!artboard) throw new Error('IMAGE_WORKBENCH_ARTBOARD_SELECTION_REQUIRED')
+    await this.resolve(this.client.createCanvas({
+      project_id: projection.project.id,
+      input: {
+        artboard_id: artboard.id,
+        base_revision: projection.project.revision,
+        idempotency_key: this.idempotencyKey(),
+      },
+    }))
+    await this.refreshSelectedProject()
+    this.setNotice(`已创建“${artboard.label}”空白画布。可在项目素材库选择历史图片并加入当前画布。`)
   }
 
   private async deriveSelectedCandidate(
@@ -2691,7 +3009,7 @@ export class ImageWorkbenchShell {
   }
 
   private readonly handleCanvasPointerDown = (event: PointerEvent): void => {
-    if (!event.isPrimary || event.button !== 0) return
+    if (this.interactiveBusy || !event.isPrimary || event.button !== 0) return
     const target = event.target
     if (!(target instanceof Element)) return
     const layerElement = target.closest<HTMLElement>('[data-canvas-drag-layer]')
@@ -2797,8 +3115,24 @@ export class ImageWorkbenchShell {
       void this.runInteractive(() => this.selectArtboardVersion(button.dataset.artboardId!, button.dataset.versionId!))
       return
     }
+    if (action === 'create-blank-canvas' && button.dataset.artboardId) {
+      void this.runInteractive(() => this.createBlankCanvas(button.dataset.artboardId!))
+      return
+    }
+    if (action === 'select-library-asset' && button.dataset.assetId) {
+      const input = this.root.querySelector<HTMLInputElement>('[data-library-asset-id]')
+      if (input) {
+        input.value = button.dataset.assetId
+        input.focus()
+      }
+      return
+    }
     if (action === 'compile-brief') {
       void this.runInteractive(() => this.compileBrief())
+      return
+    }
+    if (action === 'request-image-advice') {
+      void this.runInteractive(() => this.requestImageAdvice())
       return
     }
     if (action === 'trash-brand-kit' && button.dataset.brandKitId) {
@@ -2957,7 +3291,7 @@ export class ImageWorkbenchShell {
       return
     }
     if (target.matches('[data-create-plan-form]')) {
-      void this.runInteractive(() => this.createDefaultCreativePlan())
+      void this.runInteractive(() => this.createDefaultCreativePlan(target))
       return
     }
     if (target.matches('[data-generation-estimate-form]')) {
@@ -3318,11 +3652,16 @@ export class ImageWorkbenchShell {
     })
   }
 
-  private async createDefaultCreativePlan(): Promise<void> {
+  private async createDefaultCreativePlan(form?: HTMLFormElement): Promise<void> {
     const projection = this.currentProjection()
+    const suggestion = projection.latest_understanding_suggestion
+    const confirmed = form?.querySelector<HTMLInputElement>('[data-confirm-image-advice]')?.checked ?? false
+    if (!confirmed) throw new Error('IMAGE_WORKBENCH_ADVICE_CONFIRM_REQUIRED')
+    const currentSuggestion = suggestion?.project_revision === projection.project.revision ? suggestion : undefined
     await this.createCreativePlan({
       idempotency_key: this.idempotencyKey(),
       base_revision: projection.project.revision,
+      ...(currentSuggestion ? { accept_suggestion_receipt_id: currentSuggestion.execution_receipt_id } : {}),
     })
   }
 
@@ -3790,12 +4129,14 @@ export class ImageWorkbenchShell {
     const selectedBrandKitId = form.querySelector<HTMLSelectElement>('[data-campaign-brand-kit-id]')?.value || undefined
     const itemsValue = form.querySelector<HTMLTextAreaElement>('[data-campaign-items]')?.value ?? ''
     const budgetCurrency = form.querySelector<HTMLInputElement>('[data-campaign-budget-currency]')?.value.trim().toUpperCase() ?? ''
-    const budgetMinorRaw = form.querySelector<HTMLInputElement>('[data-campaign-budget-minor]')?.value.trim() ?? ''
-    const budgetMinor = budgetMinorRaw === '' ? undefined : Number(budgetMinorRaw)
+    const budgetAmountRaw = form.querySelector<HTMLInputElement>('[data-campaign-budget-minor]')?.value.trim() ?? ''
+    const budgetMinor = budgetAmountRaw === '' || !/^[A-Z]{3}$/u.test(budgetCurrency)
+      ? undefined
+      : parseMajorCurrencyAmountToMinor(budgetAmountRaw, budgetCurrency)
     if (
       !name || !userRequest
       || (outputPreset !== 'square' && outputPreset !== 'landscape' && outputPreset !== 'portrait')
-      || (budgetMinor !== undefined && (!/^[A-Z]{3}$/u.test(budgetCurrency) || !Number.isSafeInteger(budgetMinor) || budgetMinor < 1))
+      || (budgetAmountRaw !== '' && (!/^[A-Z]{3}$/u.test(budgetCurrency) || budgetMinor === undefined))
     ) {
       throw new Error('IMAGE_WORKBENCH_CAMPAIGN_INPUT_INVALID')
     }
@@ -3824,12 +4165,26 @@ export class ImageWorkbenchShell {
     })
   }
 
-  private async runInteractive<Value>(operation: () => Promise<Value>): Promise<void> {
+  private async runBackground<Value>(operation: () => Promise<Value>): Promise<void> {
     try {
       await operation()
-      this.setNotice(undefined)
     } catch (error) {
-      this.setNotice(error instanceof Error ? error.message : '图片操作未完成。')
+      this.setNotice(imageWorkbenchNoticeForError(error))
+    }
+  }
+
+  private async runInteractive<Value>(operation: () => Promise<Value>): Promise<void> {
+    if (this.interactiveBusy) return
+    this.interactiveBusy = true
+    this.notice = undefined
+    this.render()
+    try {
+      await operation()
+    } catch (error) {
+      this.setNotice(imageWorkbenchNoticeForError(error))
+    } finally {
+      this.interactiveBusy = false
+      this.render()
     }
   }
 }

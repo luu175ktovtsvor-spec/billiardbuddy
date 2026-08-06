@@ -420,6 +420,59 @@ describe('Image Relay resource governance', () => {
     ])
   })
 
+  test('不完整参考图控制或非法 data-uri 在付费准入前拒绝', async () => {
+    let providerCalls = 0
+    const relay = createRelayFetch({
+      env: environment('openai-input-contract-key'),
+      identityFetchImpl: identityFetch,
+      fetchImpl: async () => {
+        providerCalls += 1
+        return Response.json({ data: [{ b64_json: 'aGVsbG8=' }] })
+      },
+    })
+    const incompleteControls = await relay(new Request('https://relay.example.test/v1/images/tasks', {
+      method: 'POST',
+      headers: requestHeaders('desktop-a', 'operation-incomplete-reference-controls'),
+      body: JSON.stringify({
+        mode: 'edit', model: 'gpt-image-2', prompt: 'two references', n: 1,
+        images: ['data:image/png;base64,aGVsbG8=', 'data:image/png;base64,aGVsbG8='],
+        reference_controls: [{ image_index: 0, role: 'product', influence_strength: 'high', preservation: 'exact', priority: 100 }],
+      }),
+    }))
+    expect(incompleteControls.status).toBe(400)
+
+    const malformedImage = await relay(new Request('https://relay.example.test/v1/images/tasks', {
+      method: 'POST',
+      headers: requestHeaders('desktop-a', 'operation-malformed-reference-image'),
+      body: JSON.stringify({
+        mode: 'edit', model: 'gpt-image-2', prompt: 'malformed reference', n: 1,
+        images: ['data:image/png;base64:not-base64'],
+      }),
+    }))
+    expect(malformedImage.status).toBe(400)
+
+    const silentlyIgnoredInput = await relay(new Request('https://relay.example.test/v1/images/tasks', {
+      method: 'POST',
+      headers: requestHeaders('desktop-a', 'operation-generate-with-image-input'),
+      body: JSON.stringify({
+        mode: 'generate', model: 'gpt-image-2', prompt: 'must not drop input', n: 1,
+        images: ['data:image/png;base64,aGVsbG8='],
+      }),
+    }))
+    expect(silentlyIgnoredInput.status).toBe(400)
+
+    const silentlyIgnoredMask = await relay(new Request('https://relay.example.test/v1/images/tasks', {
+      method: 'POST',
+      headers: requestHeaders('desktop-a', 'operation-generate-with-mask'),
+      body: JSON.stringify({
+        mode: 'generate', model: 'gpt-image-2', prompt: 'must not drop mask', n: 1,
+        mask: 'data:image/png;base64,aGVsbG8=',
+      }),
+    }))
+    expect(silentlyIgnoredMask.status).toBe(400)
+    expect(providerCalls).toBe(0)
+  })
+
   test('uses Gateway-introspected owners for fair admission and never projects secrets', async () => {
     const started: string[] = []
     const releases: Array<() => void> = []
@@ -589,6 +642,22 @@ describe('Image Relay resource governance', () => {
     expect(providerCalls).toBe(1)
 
     release?.()
+    await waitFor(async () => {
+      const response = await relay(new Request(`https://relay.example.test/v1/images/tasks/${firstTask.task_id}`, {
+        headers: { Authorization: 'Bearer desktop-a' },
+      }))
+      return (await response.json() as { status: string }).status === 'succeeded'
+    }, 'recovered task did not reach a durable terminal result')
+    const completedLookup = await relay(new Request(`https://relay.example.test${lookupPath}`, {
+      headers: { Authorization: 'Bearer desktop-a' },
+    }))
+    expect(completedLookup.status).toBe(200)
+    expect(await completedLookup.json()).toMatchObject({
+      task_id: firstTask.task_id,
+      reused: true,
+      provider_receipt_hash: expect.stringMatching(/^[a-f0-9]{64}$/),
+    })
+    expect(providerCalls).toBe(1)
   })
 
   test('bounds a slow chunked submit body even when stream cancellation never resolves', async () => {

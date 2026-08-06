@@ -19,6 +19,10 @@ export type GatewayOperationStart =
   | { outcome: 'in_progress' }
   | { outcome: 'outcome_unknown' }
 
+export type GatewayOperationLookup =
+  | { outcome: 'not_found' }
+  | Exclude<GatewayOperationStart, { outcome: 'started' }>
+
 export type GatewayOperationAcknowledgement = 'acknowledged' | 'in_progress' | 'outcome_unknown'
 export type GatewayConsumerAckBacklog = {
   installation: { rows: number; bytes: number; max_rows: number; max_bytes: number }
@@ -40,6 +44,8 @@ export interface GatewayOperationResultStore {
     binding: GatewayOperationResultBinding,
     options?: { awaitingConsumerAck?: boolean },
   ): GatewayOperationStart
+  /** Read-only state/result lookup. It must not reserve, settle, or mutate usage. */
+  lookup(binding: GatewayOperationResultBinding): GatewayOperationLookup
   complete(
     binding: GatewayOperationResultBinding,
     fencingToken: number,
@@ -223,6 +229,40 @@ export class SqliteGatewayOperationResultStore implements GatewayOperationResult
       )
       this.db.exec('COMMIT')
       return { outcome: 'started', fencing_token: token }
+    } catch (error) {
+      this.rollback()
+      if (error instanceof GatewayOperationResultError) throw error
+      throw new GatewayOperationResultError(503, 'OPERATION_RESULT_UNAVAILABLE')
+    }
+  }
+
+  lookup(binding: GatewayOperationResultBinding): GatewayOperationLookup {
+    validateBinding(binding)
+    this.db.exec('BEGIN')
+    try {
+      const row = this.find(binding)
+      if (!row) {
+        this.db.exec('COMMIT')
+        return { outcome: 'not_found' }
+      }
+      assertSameBinding(row, binding)
+      const now = Date.now()
+      if (row.state === 'succeeded' && row.acknowledged_at !== null && row.expires_at <= now) {
+        this.db.exec('COMMIT')
+        return { outcome: 'not_found' }
+      }
+      if (row.state === 'reserved' && row.expires_at <= now) {
+        this.db.exec('COMMIT')
+        return { outcome: 'outcome_unknown' }
+      }
+      if (row.state === 'succeeded') {
+        if (!row.payload) throw new GatewayOperationResultError(503, 'OPERATION_RESULT_UNAVAILABLE')
+        validatePayload(binding.capability, row.payload)
+        this.db.exec('COMMIT')
+        return { outcome: 'succeeded', payload: row.payload }
+      }
+      this.db.exec('COMMIT')
+      return { outcome: row.state === 'reserved' ? 'in_progress' : 'outcome_unknown' }
     } catch (error) {
       this.rollback()
       if (error instanceof GatewayOperationResultError) throw error

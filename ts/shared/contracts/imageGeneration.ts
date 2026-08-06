@@ -9,6 +9,7 @@ import {
   publicImageWorkbenchProjectSchema,
   saveImageOutputResultSchema,
 } from './media.js'
+import { imageUserIntentSchema } from '../product/imageVisualReasoning.js'
 
 export const imageHashSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/)
 export const imageReferenceInfluenceSchema = z.enum(['low', 'medium', 'high'])
@@ -156,11 +157,14 @@ export const imageUnderstandingSuggestionSchema = z.object({
   id: mediaIdSchema,
   project_id: mediaIdSchema,
   execution_receipt_id: mediaIdSchema,
+  /** The immutable Project revision the advice was derived from. */
+  project_revision: z.number().int().nonnegative().optional(),
   confidence: imageReasoningConfidenceSchema,
   visible_facts: z.array(z.string().min(1).max(500)).max(30),
   preservation_risks: z.array(z.string().min(1).max(500)).max(20),
   composition_suggestions: z.array(z.string().min(1).max(500)).max(20),
   missing_information: z.array(z.string().min(1).max(500)).max(20),
+  user_intent: imageUserIntentSchema.optional(),
   created_at: mediaIsoDateSchema,
 }).strict()
 export const imageVisualAssessmentSchema = z.object({
@@ -185,6 +189,7 @@ export const imageOperationResultSchema = z.discriminatedUnion('kind', [
     kind: z.literal('candidate_group'), candidate_group_id: mediaIdSchema,
     expected_count: z.number().int().positive().max(4), valid_count: z.number().int().nonnegative().max(4),
     invalid: z.array(z.object({ index: z.number().int().nonnegative().max(3), safe_error_code: z.string().min(1).max(120) }).strict()).max(4),
+    partial_outcome_unknown: z.boolean().optional(),
   }).strict(),
   z.object({ kind: z.literal('visual_assessment'), assessment_id: mediaIdSchema }).strict(),
   z.object({ kind: z.literal('rendered_version'), version_id: mediaIdSchema, render_receipt_id: mediaIdSchema }).strict(),
@@ -217,6 +222,9 @@ export const imageOperationV2Schema = z.object({
   execution_receipt_id: mediaIdSchema.optional(),
   result: imageOperationResultSchema.optional(),
   completion_freshness: z.enum(['current', 'stale']).optional(),
+  /** User-visible progress is copied from the durable transport projection. */
+  progress: z.number().min(0).max(100).optional(),
+  stage: z.string().max(160).optional(),
   safe_error: z.object({ code: z.string().min(1).max(120), message: z.string().min(1).max(500) }).strict().optional(),
   cancellation: z.object({
     requested_at: mediaIsoDateSchema,
@@ -240,7 +248,17 @@ export const imageOperationV2Schema = z.object({
       expected_current_version_id_source: z.enum(['client', 'acceptance']).optional(),
       activate_on_success: z.boolean(),
     }).strict(),
-    z.object({ kind: z.literal('export'), version_ids_by_artboard: z.record(mediaIdSchema, mediaIdSchema) }).strict(),
+    z.object({
+      kind: z.literal('export'),
+      version_ids_by_artboard: z.record(mediaIdSchema, mediaIdSchema),
+      /** Delivery geometry/output is frozen at acceptance and reused on recovery. */
+      delivery_spec_id: mediaIdSchema.optional(),
+      delivery_spec_revision: z.number().int().nonnegative().optional(),
+    }).strict().superRefine((value, context) => {
+      if (Boolean(value.delivery_spec_id) !== (value.delivery_spec_revision !== undefined)) {
+        context.addIssue({ code: 'custom', message: 'export recovery snapshot must bind delivery spec id and revision together' })
+      }
+    }),
   ]).optional(),
   submitted_at: mediaIsoDateSchema.optional(),
   completed_at: mediaIsoDateSchema.optional(),
@@ -260,10 +278,14 @@ export const imageCreativeDirectionSchema = z.object({
   preservation_rules: z.array(z.string().min(1).max(500)).max(40),
 }).strict()
 
+/** Keep the implementation model private while preserving legacy plan reads. */
+const imageCreativePlanSourceSchema = z.enum(['deterministic', 'assisted', 'qwen_suggestion'])
+  .transform(value => value === 'qwen_suggestion' ? 'assisted' as const : value)
+
 export const imageCreativePlanSchema = z.object({
   id: mediaIdSchema, project_id: mediaIdSchema, brief_snapshot_hash: imageHashSchema,
   directions: z.array(imageCreativeDirectionSchema).min(1).max(8),
-  source: z.enum(['deterministic', 'qwen_suggestion']), suggestion_receipt_id: mediaIdSchema.optional(), created_at: mediaIsoDateSchema,
+  source: imageCreativePlanSourceSchema, suggestion_receipt_id: mediaIdSchema.optional(), created_at: mediaIsoDateSchema,
 }).strict()
 
 export const imageGenerationRoundSchema = z.object({
@@ -750,6 +772,8 @@ const commandEnvelopeFields = {
 
 export const createCreativePlanInputSchema = z.object({
   ...commandEnvelopeFields,
+  /** Explicit UI acknowledgement of the current non-binding LLM advice. */
+  accept_suggestion_receipt_id: mediaIdSchema.optional(),
   directions: z.array(imageCreativeDirectionSchema.omit({ id: true })).min(1).max(8).optional(),
 }).strict()
 export const imageUnderstandingInputSchema = z.object({ ...commandEnvelopeFields }).strict()

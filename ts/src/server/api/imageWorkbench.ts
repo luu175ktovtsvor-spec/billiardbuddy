@@ -85,6 +85,7 @@ import {
   imageCampaignListInputSchema,
   imageCampaignListResponseSchema,
   imageCampaignResponseSchema,
+  imageGenerationPreferencesCatalogResponseSchema,
   imageInspirationBoardReadResponseSchema,
   imageInspirationBoardResponseSchema,
   imageProjectLibrarySchema,
@@ -630,15 +631,30 @@ export function createImageWorkbenchDomainApiHandler(
         if (generationOperation) return Response.json({ operation: publicGenerationOperation(generationOperation) })
         return Response.json({ task: publicImageTask(await recovery.getOperation(operationId)) })
       }
+      if (area === 'generation-preferences') {
+        if (req.method !== 'GET' || segments[3]) throw methodNotAllowed(req.method)
+        return Response.json(imageGenerationPreferencesCatalogResponseSchema.parse({
+          generation_preferences: project.generationPreferencesCatalog(),
+        }))
+      }
       if (area === 'quick-create') {
         if (req.method !== 'POST' || segments[3]) throw methodNotAllowed(req.method)
         requireMediaUiCapability(req, mediaUiCapability)
         const input = imageQuickCreateInputSchema.parse(await parseJson(req))
-        const created = await project.quickCreate(input)
+        // The public desktop entry is intentionally prepare-only.  It creates
+        // the durable Project and inputs, then the user reviews non-billable
+        // advice and confirms the estimate through the formal Generation
+        // Application before any paid Provider boundary is crossed.
+        const created = await project.quickCreate(input, { mode: 'prepare' })
         return Response.json(imageQuickCreateResponseSchema.parse({
+          mode: created.mode,
           project: publicImageProject(created.project),
-          round: created.round,
-          operations: created.operations.map(publicGenerationOperation),
+          ...(created.mode === 'started'
+            ? {
+                round: created.round,
+                operations: created.operations.map(publicGenerationOperation),
+              }
+            : {}),
         }), { status: 202 })
       }
       if (area === 'campaigns') {
@@ -797,6 +813,7 @@ export function createImageWorkbenchDomainApiHandler(
           creative_plans: projection.creative_plans,
           generation_rounds: projection.generation_rounds,
           operations: projection.operations.map(publicGenerationOperation),
+          latest_understanding_suggestion: projection.latest_understanding_suggestion,
           candidate_groups: projection.candidate_groups.map(({ group, candidates }) =>
             publicCandidateGroup(projectId, group, candidates)),
           canvases: projection.canvases,
@@ -1147,8 +1164,14 @@ export function createImageWorkbenchDomainApiHandler(
 }
 
 export function publicImageEventPage(page: Awaited<ReturnType<ImageWorkbenchApplications['recovery']['waitForOperationEvents']>>) {
+  const events = page.events.map(publicImageEvent)
+  const lastEvent = events.at(-1)
   return publicMediaJobEventPageSchema.parse({
     ...page,
-    events: page.events.map(publicImageEvent),
+    // The shared event envelope now carries an explicit continuation. Image
+    // events already expose a durable cursor, so derive the next raw journal
+    // position from the actual page rather than inventing a second sequence.
+    next_cursor: lastEvent ? lastEvent.cursor + 1 : Math.max(1, page.cursor + 1),
+    events,
   })
 }

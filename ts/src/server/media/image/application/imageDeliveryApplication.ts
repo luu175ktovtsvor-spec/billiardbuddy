@@ -59,6 +59,8 @@ export class ImageDeliveryApplication extends ImageApplication<ImageDeliveryAppl
   readonly exportDelivery = async (projectId: string, raw: ImageExportInput): Promise<ExportDeliveryResult> => {
     const input = imageExportInputSchema.parse(raw)
     const project = await this.#exportDelivery.loadProject(projectId)
+    const deliverySpec = await this.#exportDelivery.currentDeliverySpec(projectId)
+    if (!deliverySpec) throw this.#exportDelivery.deliverySpecRequired()
     const requestHash = sha256(input)
     // An accepted Export is replayable even after its eventual DB commit has
     // advanced the Project revision. Check immutable command identity before
@@ -87,7 +89,12 @@ export class ImageDeliveryApplication extends ImageApplication<ImageDeliveryAppl
         asset_hashes: [],
       },
       cost_state: 'not_submitted',
-      local_delivery: { kind: 'export', version_ids_by_artboard: input.version_ids_by_artboard },
+      local_delivery: {
+        kind: 'export',
+        version_ids_by_artboard: input.version_ids_by_artboard,
+        delivery_spec_id: deliverySpec.id,
+        delivery_spec_revision: deliverySpec.revision,
+      },
       created_at: this.#exportDelivery.iso(),
       updated_at: this.#exportDelivery.iso(),
     }

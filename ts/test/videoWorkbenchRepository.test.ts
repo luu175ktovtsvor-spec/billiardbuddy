@@ -12,6 +12,7 @@ import { analyzeVideoEvidence, planVideoTimeline } from '../src/server/services/
 import { VideoWorkbenchRepository } from '../src/server/services/videoWorkbenchRepository.js'
 import { VideoWorkbenchService } from '../src/server/services/videoWorkbenchService.js'
 import {
+  MEDIA_UI_CAPABILITY_HEADER,
   type MediaTask,
   type VideoEvidence,
   type VideoSource,
@@ -49,6 +50,93 @@ function mediaProcessRunner(command: string[]) {
   return mkdir(join(output, '..'), { recursive: true })
     .then(async () => await writeFile(output, 'simulated-media-output'))
     .then(() => ({ exitCode: 0, stdout: '', stderr: '' }))
+}
+
+function fractionalDurationMediaProcessRunner(command: string[]) {
+  if (command.includes('-show_format') && command.includes('-show_streams')) {
+    return Promise.resolve({
+      exitCode: 0,
+      stdout: JSON.stringify({
+        format: { duration: '97.066666' },
+        streams: [
+          {
+            index: 0,
+            codec_type: 'video',
+            codec_name: 'h264',
+            width: 1080,
+            height: 1920,
+            time_base: '1/30',
+            start_time: '0',
+            duration: '97.066666',
+            avg_frame_rate: '30/1',
+            pix_fmt: 'yuv420p',
+            color_space: 'bt709',
+            color_transfer: 'bt709',
+            color_primaries: 'bt709',
+            color_range: 'tv',
+          },
+          {
+            index: 1,
+            codec_type: 'audio',
+            codec_name: 'aac',
+            time_base: '1/44100',
+            start_time: '0',
+            duration: '97.082993',
+            sample_rate: '44100',
+            channels: 2,
+            channel_layout: 'stereo',
+          },
+        ],
+      }),
+      stderr: '',
+    })
+  }
+  return mediaProcessRunner(command)
+}
+
+function iphoneVfrMediaProcessRunner(command: string[]) {
+  if (command.includes('-show_format') && command.includes('-show_streams')) {
+    return Promise.resolve({
+      exitCode: 0,
+      stdout: JSON.stringify({
+        format: { duration: '4.351678' },
+        streams: [
+          {
+            index: 0,
+            codec_type: 'video',
+            codec_name: 'hevc',
+            width: 1920,
+            height: 1080,
+            time_base: '1/600',
+            start_pts: 0,
+            duration_ts: 2611,
+            avg_frame_rate: '39150/653',
+            r_frame_rate: '60000/1001',
+            pix_fmt: 'yuv420p',
+            color_space: 'bt709',
+            color_transfer: 'bt709',
+            color_primaries: 'bt709',
+            color_range: 'tv',
+            tags: { rotate: '90' },
+            side_data_list: [{ rotation: -90 }],
+          },
+          {
+            index: 1,
+            codec_type: 'audio',
+            codec_name: 'aac',
+            time_base: '1/44100',
+            start_pts: 0,
+            duration_ts: 191909,
+            sample_rate: '44100',
+            channels: 2,
+            channel_layout: 'stereo',
+          },
+        ],
+      }),
+      stderr: '',
+    })
+  }
+  return mediaProcessRunner(command)
 }
 
 async function waitForTerminalOperation(service: VideoWorkbenchService, operationId: string) {
@@ -128,6 +216,34 @@ test('Video Repository uses SQLite as the only new writer and publishes durable 
   expect((await reopened.getOperation(queued.id)).status).toBe('succeeded')
   expect((await reopened.listOperationEvents(created.id, 0, 10)).events).toHaveLength(2)
   reopened.close()
+})
+
+test('Operation Event 分页使用当前页 continuation，不能把全局 head 当作续读位置', async () => {
+  const root = await testRoot('event-page-continuation')
+  const repository = new VideoWorkbenchRepository({ root, now: () => new Date(at) })
+  const created = await repository.saveProject(project())
+
+  for (let index = 1; index <= 205; index += 1) {
+    const suffix = index.toString(16).padStart(8, '0')
+    await repository.saveOperation({
+      ...operation(created.id),
+      id: `task_${suffix}`,
+      operation_id: `op_${suffix}`,
+    })
+  }
+
+  const first = await repository.listOperationEvents(created.id, 0, 100)
+  expect(first).toMatchObject({ cursor: 100, next_cursor: 101, reset_required: false })
+  expect(first.events.map(event => event.cursor)).toEqual(Array.from({ length: 100 }, (_, index) => index + 1))
+
+  const second = await repository.listOperationEvents(created.id, first.next_cursor - 1, 100)
+  expect(second).toMatchObject({ cursor: 200, next_cursor: 201, reset_required: false })
+  expect(second.events.map(event => event.cursor)).toEqual(Array.from({ length: 100 }, (_, index) => index + 101))
+
+  const final = await repository.listOperationEvents(created.id, second.next_cursor - 1, 100)
+  expect(final).toMatchObject({ cursor: 205, next_cursor: 206, reset_required: false })
+  expect(final.events.map(event => event.cursor)).toEqual([201, 202, 203, 204, 205])
+  repository.close()
 })
 
 test('payload protocol recovers every durable crash point without exposing uncommitted data', async () => {
@@ -295,12 +411,22 @@ test('legacy JSON keeps Timeline and formal Export, status_sequence and cursor/n
   expect((await repository.getOperation(legacyOperation.id)).status_sequence).toBe(7)
   expect(await repository.listOperationEvents(legacyProject.id, 41, 10)).toMatchObject({
     cursor: 42,
+    next_cursor: 43,
     reset_required: false,
     events: [{ cursor: 42, status_sequence: 7 }],
   })
   expect(await repository.listOperationEvents(legacyProject.id, 0, 10)).toEqual({
     events: [],
     cursor: 42,
+    next_cursor: 43,
+    reset_required: true,
+  })
+  // A client that persisted a cursor beyond the historical head must reload
+  // rather than silently wait for events it has never consumed.
+  expect(await repository.listOperationEvents(legacyProject.id, 43, 10)).toEqual({
+    events: [],
+    cursor: 42,
+    next_cursor: 43,
     reset_required: true,
   })
   const advanced = await repository.saveOperation({
@@ -326,6 +452,57 @@ test('legacy JSON keeps Timeline and formal Export, status_sequence and cursor/n
   expect((await reopened.getProject(legacyProject.id)).current_timeline_version_id).toBe('timeline_00000001')
   expect((await reopened.listOperationEvents(legacyProject.id, 42, 10)).events[0]?.cursor).toBe(43)
   reopened.close()
+})
+
+test('旧泛媒体迁移逐项目保留 status_sequence、Event 续读并保持旧目录只读', async () => {
+  const root = await testRoot('generic-media-target')
+  const legacyRoot = await testRoot('generic-media-source')
+  await Promise.all([
+    mkdir(join(legacyRoot, 'projects'), { recursive: true }),
+    mkdir(join(legacyRoot, 'tasks'), { recursive: true }),
+    mkdir(join(legacyRoot, 'events'), { recursive: true }),
+  ])
+  const legacyProject = project('vid_00000002')
+  const legacyOperation = { ...operation(legacyProject.id, 'succeeded', 7), id: 'task_00000002', operation_id: 'op_00000002' }
+  await writeFile(join(legacyRoot, 'projects', `${legacyProject.id}.json`), JSON.stringify(legacyProject))
+  await writeFile(join(legacyRoot, 'tasks', `${legacyOperation.id}.json`), JSON.stringify(legacyOperation))
+  await writeFile(join(legacyRoot, 'events', `${legacyProject.id}.json`), JSON.stringify({
+    schema_version: 1,
+    next_cursor: 43,
+    events: [{
+      schema_version: 1,
+      cursor: 42,
+      project_id: legacyProject.id,
+      task_id: legacyOperation.id,
+      operation_id: legacyOperation.operation_id,
+      status_sequence: 7,
+      occurred_at: at,
+      task: legacyOperation,
+    }],
+  }))
+
+  const service = new VideoWorkbenchService({ root, legacyMediaRoot: legacyRoot, now: () => new Date(at) })
+  await expect(service.migrateLegacyMediaStore()).resolves.toEqual({ migrated_project_ids: [legacyProject.id], skipped_project_ids: [] })
+  expect((await service.getOperation(legacyOperation.id)).status_sequence).toBe(7)
+  expect(await service.repository.listOperationEvents(legacyProject.id, 41, 10)).toMatchObject({
+    cursor: 42,
+    next_cursor: 43,
+    reset_required: false,
+    events: [{ cursor: 42, status_sequence: 7 }],
+  })
+  expect(await service.repository.listOperationEvents(legacyProject.id, 43, 10)).toEqual({
+    events: [],
+    cursor: 42,
+    next_cursor: 43,
+    reset_required: true,
+  })
+  // A completed source receipt makes restart reconciliation idempotent; it
+  // does not move, delete or close the old generic reader.
+  await expect(service.migrateLegacyMediaStore()).resolves.toEqual({ migrated_project_ids: [], skipped_project_ids: [legacyProject.id] })
+  expect(await Bun.file(join(legacyRoot, 'projects', `${legacyProject.id}.json`)).exists()).toBeTrue()
+  expect(await Bun.file(join(legacyRoot, 'tasks', `${legacyOperation.id}.json`)).exists()).toBeTrue()
+  expect(await Bun.file(join(legacyRoot, 'events', `${legacyProject.id}.json`)).exists()).toBeTrue()
+  service.repository.close()
 })
 
 test('existing Gateway visual evidence and media reasoning features retain their protocol contract', async () => {
@@ -493,7 +670,7 @@ test('restart recovery uses the durable operation store instead of in-memory exe
   service.repository.close()
 })
 
-test('existing import, timeline, preview and render paths stay durable through the SQLite repository', async () => {
+test('旧 Timeline 路径会迁入正式编辑版本，但旧 Preview/Render 不再形成第二条执行写入源', async () => {
   const root = await testRoot('video-production-path')
   const sourcePath = join(root, 'source.mp4')
   const outputPath = join(root, 'result.mp4')
@@ -507,12 +684,15 @@ test('existing import, timeline, preview and render paths stay durable through t
   const created = await service.createProject({ title: '完整路径' })
   const imported = await service.addVideoSource(created.id, { path: sourcePath })
   expect(imported.task.status).toBe('succeeded')
-  expect(imported.project.timeline).toHaveLength(1)
+  // The fast probe may provide UI metadata, but it must not create a v1
+  // Timeline before the immutable source fingerprint exists.
+  expect(imported.project.timeline).toEqual([])
   const fingerprintTask = (await service.repository.listOperations(imported.project.id)).find(task => task.kind === 'video.fingerprint')
   expect(fingerprintTask).toBeDefined()
   expect((await waitForTerminalOperation(service, fingerprintTask!.id)).status).toBe('succeeded')
   const fingerprinted = await service.getProject(imported.project.id)
   expect(fingerprinted.sources[0]?.fingerprint).toMatch(/^sha256:/)
+  expect(fingerprinted.current_editorial_timeline_version_id).toBeDefined()
   await expect(service.analyzeVideoProject(imported.project.id, {
     base_revision: imported.project.revision - 1,
     user_goal: '不应以过期版本分析',
@@ -520,42 +700,135 @@ test('existing import, timeline, preview and render paths stay durable through t
 
   const edited = await service.updateTimeline(imported.project.id, {
     base_revision: fingerprinted.revision,
-    base_timeline_version_id: fingerprinted.current_timeline_version_id,
-    clips: fingerprinted.timeline,
+    base_timeline_version_id: fingerprinted.current_editorial_timeline_version_id,
+    clips: [{
+      id: 'clip_legacy_00000001',
+      source_id: fingerprinted.sources[0]!.id,
+      in_ms: 0,
+      out_ms: fingerprinted.sources[0]!.duration_ms,
+    }],
   })
   expect(edited.current_editorial_timeline_version_id).not.toBe(fingerprinted.current_editorial_timeline_version_id)
   const selected = await service.selectTimelineVersion(imported.project.id, {
     revision: edited.revision,
-    version_id: fingerprinted.current_timeline_version_id!,
+    version_id: fingerprinted.current_editorial_timeline_version_id!,
   })
-  expect(selected.current_timeline_version_id).toBe(fingerprinted.current_timeline_version_id)
+  expect(selected.current_editorial_timeline_version_id).not.toBe(fingerprinted.current_editorial_timeline_version_id)
 
-  const preview = await service.previewVideo(selected.id, {
+  await expect(service.previewVideo(selected.id, {
     base_revision: selected.revision,
-    timeline_version_id: selected.current_timeline_version_id!,
-  })
-  expect((await waitForTerminalOperation(service, preview.id)).status).toBe('succeeded')
-  const afterPreview = await service.getProject(selected.id)
-  expect(afterPreview.preview?.asset_id).toBeDefined()
-
-  const render = await service.renderVideo(afterPreview.id, {
-    base_revision: afterPreview.revision,
-    timeline_version_id: afterPreview.current_timeline_version_id,
+    timeline_version_id: selected.current_editorial_timeline_version_id!,
+  })).rejects.toMatchObject({ code: 'VIDEO_LEGACY_RENDER_RETIRED' })
+  await expect(service.renderVideo(selected.id, {
+    base_revision: selected.revision,
+    timeline_version_id: selected.current_editorial_timeline_version_id,
     output_path: outputPath,
+  })).rejects.toMatchObject({ code: 'VIDEO_LEGACY_RENDER_RETIRED' })
+  const retained = await service.getProject(selected.id)
+  expect(retained.current_editorial_timeline_version_id).toBeDefined()
+  expect(retained.state).toBe('ready')
+  service.repository.close()
+})
+
+test('分析规划把小数目标时长持久化为可比较的有理时间，不静默截断', async () => {
+  const root = await testRoot('decimal-planning-duration')
+  const sourcePath = join(root, 'source.mp4')
+  await writeFile(sourcePath, 'simulated-source')
+  const service = new VideoWorkbenchService({
+    root,
+    now: () => new Date(at),
+    platform: 'linux',
+    runProcess: mediaProcessRunner,
   })
-  expect((await waitForTerminalOperation(service, render.id)).status).toBe('succeeded')
-  expect(await Bun.file(outputPath).exists()).toBeTrue()
-  expect((await service.getProject(selected.id)).state).toBe('complete')
+  const created = await service.createProject({ title: '小数目标时长' })
+  const imported = await service.addVideoSource(created.id, { path: sourcePath })
+  const fingerprintTask = (await service.repository.listOperations(imported.project.id)).find(task => task.kind === 'video.fingerprint')
+  expect(fingerprintTask).toBeDefined()
+  await waitForTerminalOperation(service, fingerprintTask!.id)
+
+  const project = await service.getProject(created.id)
+  const analysis = await service.analyzeVideoProject(project.id, {
+    base_revision: project.revision,
+    user_goal: '做一条 15.5 秒短片',
+    planning: { target_duration_seconds: 15.5 },
+  })
+  const persisted = await service.getProject(project.id)
+  expect(persisted.delivery_intent?.target_duration).toEqual({ ticks: '155', tick_rate: { num: 10, den: 1 } })
+  const terminal = await waitForTerminalOperation(service, analysis.id)
+  expect(['succeeded', 'failed', 'cancelled']).toContain(terminal.status)
+  service.repository.close()
+})
+
+test('兼容时间线按真实流 tick 投影非整数毫秒时长并保持 A/V 对齐', async () => {
+  const root = await testRoot('fractional-stream-duration')
+  const sourcePath = join(root, 'fractional-source.mp4')
+  await writeFile(sourcePath, 'simulated-source')
+  const service = new VideoWorkbenchService({
+    root,
+    now: () => new Date(at),
+    platform: 'linux',
+    runProcess: fractionalDurationMediaProcessRunner,
+  })
+  const created = await service.createProject({ title: '非整数帧时长' })
+  const imported = await service.addVideoSource(created.id, { path: sourcePath })
+  const fingerprintTask = (await service.repository.listOperations(imported.project.id)).find(task => task.kind === 'video.fingerprint')
+  expect(fingerprintTask).toBeDefined()
+  expect((await waitForTerminalOperation(service, fingerprintTask!.id)).status).toBe('succeeded')
+
+  const project = await service.getProject(created.id)
+  expect(project.current_editorial_timeline_version_id).toBeDefined()
+  const timeline = await service.getEditorialTimeline(project.id, project.current_editorial_timeline_version_id!)
+  const video = timeline.items.find(item => item.kind === 'video')
+  const audio = timeline.items.find(item => item.kind === 'audio')
+  expect(video?.binding.kind).toBe('source')
+  expect(audio?.binding.kind).toBe('source')
+  expect(video?.binding.kind === 'source' ? video.binding.source_range.duration : undefined).toEqual({
+    ticks: '2912',
+    tick_rate: { num: 30, den: 1 },
+  })
+  expect(video?.timeline_range.duration).toEqual(audio?.timeline_range.duration)
+  service.repository.close()
+})
+
+test('iPhone VFR 的 1/600 视频时基与 44.1kHz 音频量化误差不误报 speed', async () => {
+  const root = await testRoot('iphone-vfr-stream-duration')
+  const sourcePath = join(root, 'IMG_2673.MP4')
+  await writeFile(sourcePath, 'simulated-iphone-vfr-source')
+  const service = new VideoWorkbenchService({
+    root,
+    now: () => new Date(at),
+    platform: 'linux',
+    runProcess: iphoneVfrMediaProcessRunner,
+  })
+  const created = await service.createProject({ title: 'iPhone VFR 原片' })
+  const imported = await service.addVideoSource(created.id, { path: sourcePath })
+  const fingerprintTask = (await service.repository.listOperations(imported.project.id)).find(task => task.kind === 'video.fingerprint')
+  expect(fingerprintTask).toBeDefined()
+  expect((await waitForTerminalOperation(service, fingerprintTask!.id)).status).toBe('succeeded')
+
+  const project = await service.getProject(created.id)
+  expect(project.sources[0]?.rotation).toBe(270)
+  const timeline = await service.getEditorialTimeline(project.id, project.current_editorial_timeline_version_id!)
+  const video = timeline.items.find(item => item.kind === 'video')
+  const audio = timeline.items.find(item => item.kind === 'audio')
+  expect(video?.binding.kind).toBe('source')
+  expect(audio?.binding.kind).toBe('source')
+  expect(video?.binding.kind === 'source' ? video.binding.source_range.duration : undefined).toEqual({
+    ticks: '2611',
+    tick_rate: { num: 600, den: 1 },
+  })
+  expect(video?.timeline_range.duration).toEqual(audio?.timeline_range.duration)
   service.repository.close()
 })
 
 test('video API create path reaches the SQLite-backed repository', async () => {
   const root = await testRoot('api')
   const service = new VideoWorkbenchService({ root, now: () => new Date(at) })
-  const handler = createVideoWorkbenchDomainApiHandler(service)
+  const capability = 'capability_0123456789abcdef0123456789'
+  const handler = createVideoWorkbenchDomainApiHandler(service, capability)
   const request = new Request('http://localhost/api/videos/projects', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', [MEDIA_UI_CAPABILITY_HEADER]: capability },
     body: JSON.stringify({ title: '从 API 创建' }),
   })
   const response = await handler(request, new URL(request.url), ['api', 'videos', 'projects'])
