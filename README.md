@@ -30,6 +30,8 @@ Video Media Relay、Image Relay 与 Gateway 是三条不重叠的正式执行路
 
 Agent 后端的实际调用链、能力归属、平台状态、验证结果、真实缺口和非目标见 [docs/重构/Agent后端能力证据矩阵.md](docs/重构/Agent后端能力证据矩阵.md)。这里的后端边界不表示当前空 Renderer 已向用户交付对应界面。
 
+新版 Codex 客户端的页面、事件和交互参考，以及它们与 BilliardBuddy 现有 Electron/Rust 边界的逐项对照见 [docs/重构/Codex客户端逆向参考与BilliardBuddy实现对照.md](docs/重构/Codex客户端逆向参考与BilliardBuddy实现对照.md)。本机安装包快照在被 `.gitignore` 排除的 `codex-frontend-reference/` 中，仅作为本地阅读参考。
+
 ## 目录
 
 | 路径 | 职责 |
